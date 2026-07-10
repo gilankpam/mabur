@@ -1,0 +1,40 @@
+#!/bin/sh
+DAEMON=/usr/bin/maburd
+CONF=/etc/mabur.json
+PIDFILE=/var/run/mabur-loop.pid
+
+loop() {
+  while true; do
+    # Truncate on every (re)start rather than appending: /tmp is RAM-backed,
+    # so an ever-growing log across a long respawn loop can exhaust it. This
+    # keeps only the current run's log, which is also what install.sh/README
+    # document ("cat /tmp/mabur.log") — without this redirection there was no
+    # log at all.
+    "$DAEMON" -c "$CONF" > /tmp/mabur.log 2>&1
+    echo "maburd exited ($?) - respawn in 2s" >&2
+    sleep 2
+  done
+}
+
+case "$1" in
+  start)
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && exit 0
+    loop &
+    echo $! > "$PIDFILE"
+    ;;
+  stop)
+    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE"
+    # The PID kill only stops the respawn-loop subshell; the foreground daemon survives without this.
+    killall maburd 2>/dev/null
+    ;;
+  restart)
+    "$0" stop
+    sleep 1
+    "$0" start
+    ;;
+  *)
+    echo "usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac

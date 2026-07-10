@@ -1,0 +1,43 @@
+{
+  "radio": {
+    "usb_vid": 3034,
+    "usb_pid": 0,
+    "channel": 149,
+    "width": 20,
+    "bw_set": [20, 40],
+    "max_txagc": 63,
+    "thermal_max_delta": 25
+  },
+  "fec": {
+    "k": 8,
+    "symbol_size": 64,
+    "blocks_per_body": [4, 8, 16, 16],
+    "base_overhead": 0.25,
+    "flush_ms": 15
+  },
+  "waybeam": {
+    "host": "127.0.0.1",
+    "port": 80,
+    "idr_path": "/api/v1/idr",
+    "bitrate_min_kbps": 1000,
+    "bitrate_max_kbps": 20000,
+    "airtime_budget": 0.65,
+    "roi_threshold_kbps": 3000,
+    "roi_qp_low": 8,
+    "roi_qp_normal": 0
+  },
+  "link": {
+    "vtx_id": 1,
+    "failsafe_ms": 1000,
+    "rendezvous_ms": 30000,
+    "tick_ms": 100
+  },
+  "ring_name": "mabur",
+  "flags": {
+    "crit_ldpc": true,
+    "crit_stbc": true,
+    "t0_ldpc": true,
+    "t0_stbc": true
+  },
+  "power_offset_db": [0, 0, 0, 0]
+}

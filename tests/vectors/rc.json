@@ -1,0 +1,65 @@
+{
+ "disc": [
+  {
+   "fields": {
+    "cap_bits": 0,
+    "init_profile": 0,
+    "op_channel": 149,
+    "op_width": 20,
+    "seq": 2,
+    "table_ver": 1,
+    "vrx_nonce": 3405643777,
+    "vtx_id": 1
+   },
+   "wire": "4352010204010000000100feca95140100000002000f69"
+  }
+ ],
+ "disc_ack": [
+  {
+   "fields": {
+    "agreed_channel": 149,
+    "agreed_width": 20,
+    "chip_caps": 3,
+    "seq": 1,
+    "vrx_nonce": 3405643777,
+    "vtx_id": 1
+   },
+   "wire": "4352010304010000000100feca03009514010060c0"
+  }
+ ],
+ "rcf": [
+  {
+   "fields": {
+    "ack_seq": 3800,
+    "fec_overhead_16ths": 8,
+    "flags": 0,
+    "layer_delivery": [
+     100,
+     98,
+     80,
+     10
+    ],
+    "profile": 36,
+    "pwr_idx": 40,
+    "score": 1543,
+    "seq": 7,
+    "vtx_id": 3735928559
+   },
+   "wire": "4352010100efbeadde0700d80e2407062808046462500a9eff"
+  },
+  {
+   "fields": {
+    "ack_seq": 0,
+    "fec_overhead_16ths": 16,
+    "flags": 2,
+    "layer_delivery": [],
+    "profile": 0,
+    "pwr_idx": 255,
+    "score": 1000,
+    "seq": 65535,
+    "vtx_id": 1
+   },
+   "wire": "435201010201000000ffff000000e803ff10009cf8"
+  }
+ ]
+}

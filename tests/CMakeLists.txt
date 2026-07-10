@@ -1,0 +1,32 @@
+function(add_mtest name)
+  cmake_parse_arguments(MT "" "" "LIBS" ${ARGN})
+  add_executable(${name} ${MT_UNPARSED_ARGUMENTS})
+  target_link_libraries(${name} PRIVATE mabur_common ${MT_LIBS})
+  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party)
+  target_compile_definitions(${name} PRIVATE
+    MABUR_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/vectors"
+    MABUR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+add_mtest(test_smoke test_smoke.cpp)
+add_mtest(test_rs test_rs.cpp)
+add_mtest(test_sbi test_sbi.cpp)
+add_mtest(test_nal test_nal.cpp)
+add_mtest(test_frag test_frag.cpp)
+add_mtest(test_uep test_uep.cpp)
+add_mtest(test_rc test_rc.cpp)
+add_mtest(test_profile test_profile.cpp)
+if(MABUR_BUILD_DRONE)
+  add_mtest(test_config test_config.cpp LIBS mabur_drone_core)
+  target_compile_definitions(test_config PRIVATE
+    MABUR_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/bundle")
+  add_mtest(test_waybeam_client test_waybeam_client.cpp LIBS mabur_drone_core)
+  add_mtest(test_ring test_ring.cpp LIBS mabur_drone_core)
+  add_mtest(test_radio_tx test_radio_tx.cpp LIBS mabur_drone_core)
+  add_mtest(test_agent test_agent.cpp LIBS mabur_drone_core)
+
+  add_test(NAME host_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_host_e2e.sh)
+  set_tests_properties(host_e2e PROPERTIES
+    ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
+endif()

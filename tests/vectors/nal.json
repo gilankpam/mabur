@@ -1,0 +1,82 @@
+{
+ "cases": [
+  {
+   "critical": true,
+   "in": "400127466584a3c2",
+   "tid": 0,
+   "type": 32
+  },
+  {
+   "critical": true,
+   "in": "420138577695b4d3",
+   "tid": 0,
+   "type": 33
+  },
+  {
+   "critical": true,
+   "in": "4401496887a6c5e4",
+   "tid": 0,
+   "type": 34
+  },
+  {
+   "critical": true,
+   "in": "26014a6988a7c6e5",
+   "tid": 0,
+   "type": 19
+  },
+  {
+   "critical": true,
+   "in": "28015b7a99b8d7f6",
+   "tid": 0,
+   "type": 20
+  },
+  {
+   "critical": true,
+   "in": "2a016c8baac9e807",
+   "tid": 0,
+   "type": 21
+  },
+  {
+   "critical": false,
+   "in": "02011837567594b3",
+   "tid": 0,
+   "type": 1
+  },
+  {
+   "critical": false,
+   "in": "02021837567594b3",
+   "tid": 1,
+   "type": 1
+  },
+  {
+   "critical": false,
+   "in": "02031837567594b3",
+   "tid": 2,
+   "type": 1
+  },
+  {
+   "critical": false,
+   "in": "00010726456483a2",
+   "tid": 0,
+   "type": 0
+  },
+  {
+   "critical": true,
+   "in": "20021736557493b2",
+   "tid": 1,
+   "type": 16
+  },
+  {
+   "critical": true,
+   "in": "2e038eadcceb0a29",
+   "tid": 2,
+   "type": 23
+  },
+  {
+   "critical": false,
+   "in": "7e0136557493b2d1",
+   "tid": 0,
+   "type": 63
+  }
+ ]
+}
