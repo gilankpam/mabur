@@ -209,6 +209,78 @@ Full Jaguar3 bring-up trace = build with `DEVOURER_LOG_MAX_LEVEL=TRACE`
   tests with and without it set and compare RX sensitivity/desense before
   calling this fully closed.
 
+## Bench results — 2026-07-12 (reflashed image; E-series session)
+
+Drone reflashed with the openipc-builder image (kernel 2026-07-11 17:14 UTC).
+The stock boot path now works end-to-end: **`/usr/bin/maburd` from the image
+runs via S96mabur with no side-loading and no env** — TX decodes on air
+(bug-2 packaging fix and devourer bugs 4–7 all confirmed present in the
+shipped binary). Proto-GS = host 8812AU running devourer `duplex` driven by
+`adaptive_link.py --role vrx` (`--vtx-id 1 --channel 149`), with duplex
+stdout tee'd for capture.
+
+**E2 ✅ · E4 ✅ · E5 ✅ · E6 ✅ · B6 ✅ (now complete).** No new mabur bugs.
+Session evidence:
+
+- **Post-flash TX sanity:** 16,454 frames / 15 s, **100% CRC-clean**, all
+  MCS0 + `ldpc:1`/`stbc:1`. Pre-FEC air loss 7.6% (down from ~20% on
+  2026-07-11); post-FEC stream 0 **0.000%**, stream 1 2.9% — strict E1
+  "post-FEC 0" still needs link-budget work (E1 stays PARTIAL).
+- **⚠️ Flashed binary predates the B7 clamp (4252b02).** Confirmed on air:
+  lost frames cluster at exactly one mod-32 slot (556/1356 lost = 3.1% of
+  all frames = the `seq%32==8` probe slot, observed at hw-seq slot 9 due to
+  the EN_HWSEQ offset), and the boot log has no clamp warning. The image was
+  built from the *committed* pin 641bded; the working-tree `mabur.mk` bump
+  to 423d286 is uncommitted. **Remediation options:** edit `/etc/mabur.json`
+  `bw_set` to `[20]` on the drone (works on any binary), and/or commit the
+  mk bump + rebuild/reflash. Until then the drone burns 3.1% of frames as
+  dead-air 40 MHz probes.
+- **B6 complete.** Waybeam restart mid-stream: maburd unaffected — `sent`
+  stalls ~6–9 s while waybeam re-inits, then resumes at full rate; no drop
+  burst, `waybeam_failures=0`. Dongle "re-plug" (EHCI unbind/bind = VBUS
+  cold-cycle with maburd holding the device): maburd dies with the bus,
+  S96 respawn retries through `libusb_init failed (-99)` while USB is down,
+  and full FW-reboot + streaming resume within ~3 s of rebind. No manual
+  intervention.
+- **E2 PASS.** Drone RENDEZVOUS→LINKED (state 1→2) on GS DISC/RCF across
+  four separate sessions. **The FCS-tail risk did not materialize** — no
+  tail-trim needed; received RC frames pass CRC + vtx_id as-is. Applied
+  on-air witness: the tee'd GS capture shows the drone's TX rate move to
+  exactly the vrx-commanded rungs (318k frames MCS0 + 1,774 MCS1 + 550 MCS2
+  across sessions where the controller commanded MCS1/MCS2).
+- **E4 PASS.** Timed kill (host↔drone clock mapped to ±5 ms via
+  `/proc/uptime`, drone polled at 10 Hz): GS TX stop → FAILSAFE entry
+  **≤1.05 s** (bound includes 1 Hz stats-line lag), within the ~1.2 s spec.
+  Encoder floor confirmed: waybeam `video0.bitrate` = 1400 after failsafe.
+  Resume: relaunched vrx re-linked the drone (FAILSAFE/RENDEZVOUS → LINKED);
+  IDR-on-recovery is code-pinned (`entering_linked → request_idr()`), only
+  weakly witnessable on air because this waybeam config's short GOP emits
+  IRAPs every ~1 s anyway.
+- **E5 PASS.** maburd restarted under an already-beaconing GS: exactly one
+  RENDEZVOUS stats line before LINKED — **cold rendezvous in ~2 s**, no
+  manual channel setup. (Contrast: re-link onto a vrx already in SESSION
+  took 40–165 s — that's a proto-GS artifact: `adaptive_link` stops DISC
+  beaconing once it hears video and relies on sparse RCFs getting through
+  the marginal GS→drone direction. Not a mabur issue; mabur links instantly
+  when a DISC arrives.)
+- **E6 characterized, clean.** 30 s LINKED window under sustained injection:
+  TX 1,168 fps steady, `tx_failed=0`, drops flat, RC frames kept landing
+  mid-injection (state held LINKED ⇒ ≥1 valid RCF per 1 s failsafe window
+  throughout), `GetTxStats`/`GetThermalStatus` polled every 100 ms tick with
+  no stall. No RX starvation, no contention symptoms.
+- **Bench observation for E-series at range:** the GS→drone feedback
+  direction is the weak side of this bench link (vrx TXes RCF at low
+  power/rate defaults; link-up latency varied 2 s–165 s depending on whether
+  DISC beaconing was active). For E3/range work, favor forcing the vrx to
+  keep beaconing or raise its feedback rate (`--feedback-ms`).
+
+**Remaining after this session:** E1 strict pass (link budget / antenna),
+E3 degradation staircase (needs attenuation or the SDR interferer),
+path-B-AGC desense A/B at range (`DEVOURER_PROTECT_PATHB_AGC`), commit the
+`mabur.mk` 423d286 bump + reflash (or `bw_set` config edit) for the B7
+clamp, and the `bundle/install.sh` `json_cli` flag-spelling check (B4
+leftover).
+
 ## Two ways to get maburd onto the camera
 
 Pick one:
@@ -310,12 +382,15 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
   the 40 MHz rung (`seq%32==8`) is aired but unreceivable (B7). NB the
   stock committed binaries still have broken TX until the devourer fix
   lands (bug 4).
-- [~] **B6 — kill/restart matrix.** PARTIAL. maburd restart DONE: soft
+- [x] **B6 — kill/restart matrix.** DONE (2026-07-12). maburd restart: soft
   `/etc/init.d/S96mabur restart` (no USB cold-cycle) re-boots FW and streams
   immediately — the clean de-init in the fixed binary lets the chip re-init
   without a VBUS cycle (the earlier need for cold-cycles was an artifact of the
-  broken binary's crash-loop leaving the chip wedged). Still TODO: waybeam
-  restart mid-stream (ring reattach), dongle re-plug.
+  broken binary's crash-loop leaving the chip wedged). Waybeam restart
+  mid-stream: maburd rides through (~6–9 s stall while waybeam re-inits,
+  then full-rate resume, no crash). Dongle re-plug (EHCI unbind/bind VBUS
+  cycle): maburd dies with the bus, S96 respawn recovers fully within ~3 s
+  of rebind. See the 2026-07-12 results section.
 
 ### Bench end-to-end (camera + GS PC), the acceptance gate
 
@@ -337,30 +412,33 @@ Each scenario has a pass criterion from the spec's Testing section.
   work (antenna orientation/positioning; RSSI at the receiver is only
   ~32 raw at 1 m, low) before the strict E1 pass. T2/T1 correctly shed
   (streams 2/3 empty in RENDEZVOUS). No DISC/RC frames on air — correct:
-  the drone only answers a beaconing GS (E5).
-- [ ] **E2 — RC frame acceptance (verify B-item first).** Confirm a real
-  received RC frame is accepted by mabur's parser. **Known risk:** devourer's
-  `Packet.Data` on RX may include a trailing 4-byte FCS; if so, mabur's
-  `on_rc_frame` computes `body_len = len - 24` including 4 junk bytes and the
-  RCF CRC check rejects valid commands. Test: have the GS send one RCF; check
-  maburd's log/`SIGUSR1` for `rc_records` accepted vs dropped. If dropped,
-  the fix is a one-line tail-trim in `drone/src/main.cpp` rx_callback (trim
-  4 bytes if the driver appends FCS) — file it back to the mabur repo.
+  the drone only answers a beaconing GS (E5). **2026-07-12 update
+  (reflashed image):** pre-FEC air loss down to 7.6% (3.1 points of which
+  is the B7 dead-air probe slot — see the 2026-07-12 section), 100%
+  CRC-clean, stream 0 still 0.000%, stream 1 2.9%. Closer, but strict
+  "post-FEC 0" still needs link-budget work + the bw_set remediation.
+- [x] **E2 — RC frame acceptance.** PASS (2026-07-12). Drone
+  RENDEZVOUS→LINKED on GS DISC/RCF, four sessions. The FCS-tail risk did
+  NOT materialize — `Packet.Data` carries no trailing FCS on this path; no
+  tail-trim needed. Applied-witness on air: drone TX rate followed the
+  vrx-commanded rungs (MCS1/MCS2 frames in the GS capture).
 - [ ] **E3 — degradation staircase.** Add attenuation / interference (devourer
   has `tests/sdr_interferer.py` for a calibrated co-channel source). GS
   commands down the ladder; observe T2 sheds first, then T1, waybeam bitrate
   follows within ~2 s, video never freezes.
-- [ ] **E4 — feedback kill → failsafe.** Stop GS TX. maburd must reach
-  MAX_RANGE within ~1.2 s (failsafe_ms 1000 + margin) — verify via log. Also
-  confirm the encoder bitrate drops to the floor (~1400 kbps), not just the
-  MCS. Resume GS → recovery + an IDR request.
-- [ ] **E5 — cold rendezvous.** Boot the drone with the GS already beaconing
-  DISC on the configured channel → drone links and streams at the init
-  profile with no manual channel setup. Confirms DISC/DISC_ACK.
-- [ ] **E6 — concurrent TX+RX sanity.** RC frames arrive while maburd is
-  mid-injection (Jaguar3 does TX+RX on one handle via `StartRxLoop`). Watch
-  for RX starvation or `GetTxStats`/`GetThermalStatus` contention under
-  sustained bulk TX. No spec number here — characterize behavior.
+- [x] **E4 — feedback kill → failsafe.** PASS (2026-07-12). GS TX stop →
+  FAILSAFE ≤1.05 s (timed at 10 Hz with ±5 ms clock mapping); waybeam
+  bitrate at the 1400 floor after entry; resume → re-link (recovery
+  confirmed; IDR-on-recovery code-pinned, weak on-air witness due to the
+  short-GOP encoder config).
+- [x] **E5 — cold rendezvous.** PASS (2026-07-12). maburd (re)booted under
+  an already-beaconing GS links in ~2 s (one RENDEZVOUS stats line before
+  LINKED), no manual channel setup. DISC path confirmed.
+- [x] **E6 — concurrent TX+RX sanity.** DONE (2026-07-12), clean. 30 s
+  LINKED under sustained injection: 1,168 fps TX, `tx_failed=0`, RCFs
+  accepted mid-injection continuously (state held LINKED the whole window),
+  100 ms-tick `GetTxStats`/`GetThermalStatus` never stalled. No RX
+  starvation or contention observed.
 
 ### Config-edge / known non-blocking items
 
