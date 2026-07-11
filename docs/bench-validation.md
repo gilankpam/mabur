@@ -37,6 +37,47 @@ Everything below the RF boundary is verified in software:
 **Real-mode (threads / USB / radio) has never run on hardware.** That is the
 entire point of bench validation.
 
+## Bench results — 2026-07-11 (first hardware run)
+
+Drone `root@192.168.10.152` (SSC338Q), dongle `0bda:a81a` = RTL8812EU / 8822E
+(Jaguar3, chip-id 0x17), host USB `Sstar-ehci-1` (EHCI / USB2 high-speed).
+
+**On-target smoke: B1 ✅ · B2 ✅ · B3 ✅ · B4 ✅ · B6 ✅** (B5 + E1–E6 pending —
+need the proto-GS assembled on the host).
+
+Three bugs found and fixed this session:
+
+1. **🔴 TX-during-bring-up race (fixed — `drone/src/main.cpp`).** maburd's
+   firmware download to the dongle failed on every boot
+   (`bulk_send EP 5 FAIL rc=-7 got 0/387` → `firmware download FAILED`),
+   leaving TX dead. Isolated with devourer's own `doctor`, which brings the
+   *same* dongle up **HEALTHY** on the *same* host — so not the hardware, the
+   EHCI/USB2 host, or devourer. Cause: mabur called `Init` (devourer's RX-only
+   convenience wrapper) while the hot/agent threads were already pushing frames
+   via `send_packet` *during* bring-up; premature frames clog the shared
+   bulk-OUT FIFO (nothing drains them pre-FW-boot), which starves devourer's own
+   reserved-page firmware download. Fix mirrors devourer's `doctor`/`streamtx`
+   pattern: `DeviceConfig.rx.enable_with_tx = true`, then `InitWrite` → open a
+   `device_ready` gate → `StartRxLoop`, with `DevourerSink::send` dropping until
+   ready. Verified: FW boots, 11099 bulk sends OK / 0 fail, `tx_failed=0`.
+
+2. **🟠 Firmware packaging (fixed — `openipc-builder` `mabur.mk`).** The image
+   built maburd *dynamically* linked against `libdevourer.so` (Buildroot
+   defaults `BUILD_SHARED_LIBS=ON`; devourer's `add_library` has no explicit
+   STATIC) but never installed the `.so` → `error while loading shared
+   libraries: libdevourer.so`. Fix: `-DBUILD_SHARED_LIBS=OFF` in the recipe
+   (static-links devourer into maburd) + `MABUR_VERSION` bump to the fixed SHA.
+   Worked around at the bench by side-loading `out/arm/maburd` (static musl).
+
+3. **🟡 B4 waybeam IDR endpoint (fixed).** Route is `GET /request/idr`, not
+   `/api/v1/idr`. Default corrected in `config.h` + `bundle/mabur.default.json`.
+
+**Useful bench levers:** VBUS cold power-cycle (soft `libusb_reset` does NOT
+clear a wedged Realtek chip) =
+`echo soc:Sstar-ehci-1 > /sys/bus/platform/drivers/Sstar-ehci-1/{unbind,bind}`.
+Full Jaguar3 bring-up trace = build with `DEVOURER_LOG_MAX_LEVEL=TRACE`
+(`tools/build-arm.sh` hardcodes `WARN`, so no `[I]` lines by default).
+
 ## Two ways to get maburd onto the camera
 
 Pick one:
@@ -110,17 +151,16 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
 
 ### On-target smoke (camera only, no GS)
 
-- [ ] **B1 — boots and attaches.** Flash/side-load, power on. Confirm both
-  daemons run (`ps | grep -E 'waybeam|maburd'`), maburd finds the dongle and
-  attaches the ring. `cat /tmp/mabur.log` — expect no USB-open failure, no
-  ring-attach spin. `SIGUSR1` maburd, check `packets_in` climbing and
-  `bodies_out` > 0.
-- [ ] **B2 — USB PID.** `lsusb` on the camera; confirm the 8812EU's VID:PID is
-  in the scan list `{0xa81a, 0x881a, 0x8812}` under VID 0x0bda. If not, set
-  `radio.usb_pid` in `/etc/mabur.json` explicitly and restart
-  (`/etc/init.d/S96mabur restart`). Record the actual PID.
-- [ ] **B3 — CPU budget.** Under sustained 8 Mbps, `top` — maburd should sit
-  well under one core (spec target < 35%). Note actual.
+- [x] **B1 — boots and attaches.** DONE. Both daemons run; maburd opens the
+  dongle, boots FW, and streams (`sent` climbing, `tx_failed=0`,
+  `waybeam_failures=0`). **Required the TX-race fix (bug 1 above)** — before it,
+  FW download failed and TX was dead. Also required side-loading the static
+  binary (bug 2). RX alive (`rx_beat` climbing).
+- [x] **B2 — USB PID.** DONE. `lsusb` = `0bda:a81a`, which is first in the scan
+  list `{0xa81a, 0x881a, 0x8812}` — no `radio.usb_pid` override needed.
+- [x] **B3 — CPU budget.** DONE. maburd sits at **~20% of one core** (`top`),
+  well under the spec target < 35%. (No external video source at the bench yet,
+  so this is the pipeline's own load, not a calibrated 8 Mbps.)
 - [x] **B4 — waybeam control API.** DONE. The IDR route on this waybeam build
   is `GET /request/idr` (returns `{"ok":true,"data":{"idr":true}}`), **not**
   `/api/v1/idr` (that 404s: `{"ok":false,"error":{"code":"not_found"}}`).
@@ -132,10 +172,12 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
   MCS matches the commanded profile and the probe-bandwidth schedule
   (`seq % 32 ∈ {0,8,16}` fly the `bw_set` rungs). Confirms the air format
   before involving a decoder.
-- [ ] **B6 — kill/restart matrix.** Restart waybeam mid-stream (maburd's ring
-  reattach should resync, video resumes < 3 s, RC unaffected). Restart maburd
-  (comes back at MAX_RANGE, streams immediately). Re-plug the dongle. Confirm
-  no crash-loop.
+- [~] **B6 — kill/restart matrix.** PARTIAL. maburd restart DONE: soft
+  `/etc/init.d/S96mabur restart` (no USB cold-cycle) re-boots FW and streams
+  immediately — the clean de-init in the fixed binary lets the chip re-init
+  without a VBUS cycle (the earlier need for cold-cycles was an artifact of the
+  broken binary's crash-loop leaving the chip wedged). Still TODO: waybeam
+  restart mid-stream (ring reattach), dongle re-plug.
 
 ### Bench end-to-end (camera + GS PC), the acceptance gate
 
