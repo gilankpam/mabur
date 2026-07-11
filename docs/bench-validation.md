@@ -521,6 +521,11 @@ Each scenario has a pass criterion from the spec's Testing section.
      skips/adds vs the TX+RX path post-bring-up.
   3. **streamtx segfaults at EOF shutdown on Jaguar3** (TX completes fine;
      crash is in de-init after stdin closes).
+  4. **8822E per-chain RSSI chain-A reads off-scale** (128–131 raw on a
+     0–110 PWDB scale) in duplex rx.frame events while chain-B RSSI and
+     both SNR fields are sane — phystatus parse suspect. Until fixed, use
+     chain-B RSSI + SNR for link judgment on the EU
+     (`tools/bench/phy_meter.py` shows all four live).
 - **Per-layer TX power (v1.1).** Needs the devourer Jaguar3 `TXPWR_OFSET` port
   first (8822E TX descriptor has the same 3-bit LUT field as Jaguar2, at
   `txdesc+0x14[30:28]`; devourer only wires it for Jaguar2 today — confirmed
