@@ -47,6 +47,88 @@ need the proto-GS assembled on the host).
 
 Three bugs found and fixed this session:
 
+### B5 session (2026-07-11 afternoon) — TX was never valid on air; root-caused
+
+B5 initially read as "capture sees nothing". Root-caused to **two independent
+problems**, one per side:
+
+4. **✅ FIXED — devourer 8822E TX+RX mode breaks on-air TX (devourer fork
+   `master` @ `c2f4dbd`).** maburd's frames have NEVER decoded on
+   air: USB-level TX is green (`sent` climbing, `tx_failed=0`) but a monitor
+   receiver sees only ~8% of frames as undecodable PHY hash (fa≈cca, no
+   PLCP lock). Bisected with the same ARM `txdemo` on the drone dongle:
+   pure TX (`InitWrite` only) = **7057/18s clean HT-MCS0 decodes**; identical
+   flood with `DEVOURER_TX_WITH_RX=thread` (maburd's exact mode, from the
+   fd1fa69 TX-race fix) = **0 decodes**. Mechanism: in TX+RX mode on the
+   8822E, devourer deliberately skips the **path-B OFDM TXAGC reference
+   (0x41e8)** on every TXAGC apply (`skip_path_b_ofdm_ref`, an RX-desense
+   quirk) — but the chip transmits OFDM on both chains, and the unwritten
+   path-B reference corrupts the combined waveform. Forcing the write
+   (temp env knob `DEVOURER_FORCE_PATHB_REF=1`, uncommitted edit in
+   `../devourer` `RtlJaguar3Device.cpp:apply_tx_power_current`) fixes TX
+   completely: **19,814 frames / 20 s, 99.94% CRC-clean, rate=12 = HT MCS0**
+   = the commanded MAX_RANGE profile. Bench-range RX check with the forced
+   ref showed **no desense** (drone heard 4165/5000 of a host flood vs
+   3872/5000 stock) — devourer's "any nonzero 0x41e8 → near-deaf RX"
+   finding did NOT reproduce at 1 m; re-verify at range during E-series.
+   Proper devourer fix TBD (candidates: TX-path-A-only mapping in TX+RX
+   mode so 0x41e8 stays 0 for RX, or write the ref and re-validate desense).
+   **Re-confirmed on devourer `master` (ab89f1b, evening retest)** with a
+   single-binary env A/B — same txdemo build, TX+RX mode: stock = 0 frames
+   on air, `DEVOURER_FORCE_PATHB_REF=1` = 5833 clean/15 s — removing any
+   rebuild confound (the afternoon tests were built from the
+   per-packet-txpower feature branch; behavior is identical on master).
+   Master-built maburd + knob: 14,815 frames / 15 s, 99.6% CRC-clean, MCS0.
+   **Landed for real on devourer fork `master` @ `c2f4dbd`**: the temp env
+   hack is gone; the path-B OFDM TXAGC reference (0x41e8) is now written by
+   default (`skip_path_b_ofdm_ref` inverted to opt-in legacy behavior via
+   `DEVOURER_PROTECT_PATHB_AGC`, see bug 5's note below). Final A/B re-run
+   against stock master-built maburd (no env at all): **5644 clean frames**
+   vs **0 frames** with the legacy knob forced on — confirms the new default
+   is the fix, not an artifact of the temp knob.
+5. **✅ FIXED — devourer J3 radiotap parser drops LDPC/STBC on HT frames**
+   (devourer fork `master` @ `c2f4dbd`). `send_packet`'s
+   `IEEE80211_RADIOTAP_MCS` case read BW/SGI/MCS but ignored the FEC (0x10)
+   and STBC (0x20) known/flag bits — only the VHT case parsed them. So
+   mabur's MAX_RANGE `LDPC(+STBC)` robustness flags never reached the chip;
+   everything flew as plain HT. Fixed via `RadiotapTxFlags.h` +
+   `decode_radiotap_mcs_field` honouring the known/flag bits on Jaguar2/3
+   (with a selftest). Re-validated live: **5701 frames, 100% `ldpc:1` /
+   `stbc:1`**, with **no decode penalty vs plain MCS0** — this is bug 5's
+   "RX-desense" concern from the note above answered in practice: writing
+   the reference does not desense the on-air link at this range. (Note:
+   `skip_path_b_ofdm_ref`'s **legacy** RX-desense-guard behavior is still
+   available, opt-in, via `DEVOURER_PROTECT_PATHB_AGC` — see the open item
+   below for the E-series range A/B.)
+6. **✅ FIXED — devourer J3 coex thread dies silently on any register
+   hiccup** (devourer fork `master` @ `c2f4dbd`). `coex_runtime_loop`'s 2 s
+   tick body was `try { … } catch (...) { break; }` — one USB glitch
+   permanently killed the thread that (per devourer docs) keeps sustained
+   5 GHz TX alive (`coex_run_5g` + `pwr_track`), with no `[E]` log. Fixed:
+   the tick body now retries transient register failures instead of dying
+   silently. Coex soak re-run post-fix: clean, no thread death observed.
+7. **✅ FIXED — devourer #253 zerocopy RX intermittently deaf on the GS
+   host** (devourer fork `master` @ `c2f4dbd`). The default-on
+   `DEVOURER_RX_ZEROCOPY` DMA RX path (master ab89f1b) delivered ZERO frames
+   on one run and worked on another, same host/dongle/channel; the heap path
+   was 100% reliable. Fixed by flipping the **default to off**
+   (zerocopy is now opt-in); verified both directions (zerocopy explicitly
+   off, and default-off with no env at all) give the same reliable heap-path
+   behavior — bench captures no longer need `DEVOURER_RX_ZEROCOPY=0`.
+
+**B7 answered (see checklist):** 40 MHz probe frames on a 20 MHz-tuned device
+are aired but **unreceivable even by a 40 MHz-tuned monitor** — a 20 MHz BB
+cannot emit a valid 40 MHz PPDU. Exactly 1/32 of frames (the `seq%32==8`
+probe slot) are lost on air. mabur should clamp `bw_set` rungs to
+`radio.width` (config-load warning + drop), and probing wider bandwidths
+needs `radio.width` ≥ the widest rung.
+
+Also confirmed: the chip's `EN_HWSEQ=1` means the **on-air 802.11 seq is the
+hardware counter**, offset from mabur's internal seq — GS-side gap detection
+still works (lockstep +1) but slot arithmetic on captured seqs is shifted.
+
+Earlier bugs (morning session):
+
 1. **🔴 TX-during-bring-up race (fixed — `drone/src/main.cpp`).** maburd's
    firmware download to the dongle failed on every boot
    (`bulk_send EP 5 FAIL rc=-7 got 0/387` → `firmware download FAILED`),
@@ -77,6 +159,54 @@ clear a wedged Realtek chip) =
 `echo soc:Sstar-ehci-1 > /sys/bus/platform/drivers/Sstar-ehci-1/{unbind,bind}`.
 Full Jaguar3 bring-up trace = build with `DEVOURER_LOG_MAX_LEVEL=TRACE`
 (`tools/build-arm.sh` hardcodes `WARN`, so no `[I]` lines by default).
+
+**Bench state as of 2026-07-11 evening (B5 session):**
+
+- The GS-side 8812EU (`0bda:a81a`) is **hard-wedged off the host's USB bus**
+  (failed enumeration -71 at plug-in, dropped mid-re-enumeration at 12:44,
+  sysfs per-port `disable` toggle did not revive it — desktop ports don't cut
+  VBUS). **Physically re-plug it** before using it. Interim proto-GS receiver
+  = the RTL8812AU (`0bda:8812`) — works well; its kernel driver
+  (`rtw88_8812au`) was detached by rxdemo's libusb claim; rebind with
+  `echo 2-2:1.0 | sudo tee /sys/bus/usb/drivers/rtw88_8812au/bind` if the
+  kernel interface is wanted back.
+
+**Bench state as of 2026-07-11, post-merge rollout (bugs 4–7 fixed):**
+
+- Devourer fork `master` @ `c2f4dbd` (merge of
+  `fix/8822e-txrx-tx-break`) is pushed to `origin/master`
+  (`git@github.com:gilankpam/devourer.git`) — bugs 4/5/6/7 above are all
+  fixed there, not workarounds. `../devourer` (the sibling checkout used by
+  mabur's cross-build via `DEVOURER_DIR=../devourer`) is **clean `master`,
+  no local edits** — the temp `DEVOURER_FORCE_PATHB_REF` getenv hack is
+  gone entirely.
+- The drone runs an **env-free**, master-built `maburd` from
+  `/tmp/maburd-master` (rebuilt from mabur `master` after bumping
+  `third_party/devourer` to `c2f4dbd`, cross-compiled with the standard
+  `MABUR_CROSS_CC`/`MABUR_CROSS_CXX` toolchain env, no `DEVOURER_*` knobs at
+  launch) — confirmed live: `tx_failed=0`, `sent` climbing steadily.
+  `/tmp` is volatile; `/etc/init.d/S96mabur` is stopped (left alone per
+  policy) and **still points at the old broken-TX binary** — rebuilding the
+  openipc-builder image (which vendors `third_party/devourer` for the
+  Buildroot recipe) so S96 ships the fixed binary is the one remaining
+  deployment step.
+- Bench captures **no longer need `DEVOURER_RX_ZEROCOPY=0`** — the default
+  flipped to off with bug 7's fix, so a plain capture invocation (no env)
+  now gets the reliable heap RX path.
+- Final numbers from this rollout's live E2E re-validation (env-free
+  master maburd → host `rxdemo` capture): fix-1 A/B = **5644 clean frames**
+  stock vs **0** with the legacy knob forced on; fix-2 = **5701 frames,
+  100% `ldpc:1`/`stbc:1`, no decode penalty vs plain MCS0**; coex soak
+  clean (no thread death); zerocopy default-off verified both directions.
+  Whole-branch final review: **clean, "Ready to merge."**
+- **Open item carried forward:** RX-desense-at-range for the path-B OFDM
+  TXAGC reference has NOT been re-verified beyond ~1 m bench range (see bug
+  4/5 notes above — no desense observed at 1 m, but devourer's own
+  historical concern was about range). The A/B lever for the E-series is
+  now the properly named `DEVOURER_PROTECT_PATHB_AGC` env (restores the old
+  legacy skip-the-reference behavior for comparison) — run E-series range
+  tests with and without it set and compare RX sensitivity/desense before
+  calling this fully closed.
 
 ## Two ways to get maburd onto the camera
 
@@ -167,11 +297,18 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
   `waybeam.idr_path` default fixed to `/request/idr` in `drone/src/config.h` +
   `bundle/mabur.default.json`. Still TODO: confirm `bundle/install.sh`'s
   `json_cli` flag spelling matches the on-device `json_cli`.
-- [ ] **B5 — monitor-mode capture.** From a nearby laptop with a monitor-mode
-  dongle, capture a few seconds of maburd's injected frames. Verify radiotap
-  MCS matches the commanded profile and the probe-bandwidth schedule
-  (`seq % 32 ∈ {0,8,16}` fly the `bw_set` rungs). Confirms the air format
-  before involving a decoder.
+- [x] **B5 — monitor-mode capture.** DONE (with the bug-4 workaround; see
+  above). Receiver = the host's RTL8812AU (`0bda:8812`) running devourer's
+  `rxdemo` (`DEVOURER_PID=0x8812 DEVOURER_CHANNEL=149 DEVOURER_STREAM_OUT=1
+  DEVOURER_RX_DUMP_ALL=1 DEVOURER_RX_KEEP_CORRUPTED=1 DEVOURER_EVENTS=stdout`),
+  no root needed once the kernel driver is detached. With maburd running
+  under `DEVOURER_FORCE_PATHB_REF=1`: 19,814 frames / 20 s (~all of the
+  ~1100 fps), 99.94% CRC-clean, **rate index 12 = HT MCS0 = the commanded
+  MAX_RANGE profile** ✓. Probe schedule: the 20 MHz rungs (`seq%32 ∈ {0,16}`)
+  fly (indistinguishable from the default 20 MHz — correct for this config);
+  the 40 MHz rung (`seq%32==8`) is aired but unreceivable (B7). NB the
+  stock committed binaries still have broken TX until the devourer fix
+  lands (bug 4).
 - [~] **B6 — kill/restart matrix.** PARTIAL. maburd restart DONE: soft
   `/etc/init.d/S96mabur restart` (no USB cold-cycle) re-boots FW and streams
   immediately — the clean de-init in the fixed binary lets the chip re-init
@@ -183,8 +320,23 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
 
 Each scenario has a pass criterion from the spec's Testing section.
 
-- [ ] **E1 — clean link.** GS decodes H.265, plays at commanded bitrate,
-  post-FEC RTP loss = 0.
+- [~] **E1 — clean link.** PARTIAL (2026-07-11 first light, receive-only —
+  no vrx feedback yet). Full pipeline proven live: drone camera → waybeam →
+  maburd → air → host 8812AU rxdemo → SBI unpack → RS decode → FRAG
+  reassembly → RTP → **HEVC 2560×1440@25 identified by ffprobe and decoded
+  by ffmpeg** (`scratchpad live_decode.py` / `rtp_to_h265.py`; capture:
+  `DEVOURER_RX_ZEROCOPY=0 DEVOURER_PID=0x8812 DEVOURER_CHANNEL=149
+  DEVOURER_STREAM_OUT=1 DEVOURER_EVENTS=stdout rxdemo`). Numbers (15 s):
+  11,652/~15,000 frames captured (~20% pre-FEC air/RX loss at 1 m —
+  characteristic of this bench link, matches host→drone flood loss);
+  post-FEC: **stream 0 (VPS/SPS/PPS) 0.000% loss**, stream 1 3.6% —
+  exactly what k=8 + 0.25 overhead predicts at 20% symbol loss, i.e. the
+  FEC is at its design edge. Recovered payload ≈ 1.15 Mbps = the MAX_RANGE
+  floor bitrate ✓. **"post-FEC loss = 0" NOT yet met** — needs link-budget
+  work (antenna orientation/positioning; RSSI at the receiver is only
+  ~32 raw at 1 m, low) before the strict E1 pass. T2/T1 correctly shed
+  (streams 2/3 empty in RENDEZVOUS). No DISC/RC frames on air — correct:
+  the drone only answers a beaconing GS (E5).
 - [ ] **E2 — RC frame acceptance (verify B-item first).** Confirm a real
   received RC frame is accepted by mabur's parser. **Known risk:** devourer's
   `Packet.Data` on RX may include a trailing 4-byte FCS; if so, mabur's
@@ -211,11 +363,13 @@ Each scenario has a pass criterion from the spec's Testing section.
 
 ### Config-edge / known non-blocking items
 
-- [ ] **B7 — 40 MHz probes on a 20 MHz device.** `bw_set` includes 40 while
-  `radio.width` is 20; probe frames inject at 40 MHz radiotap on a 20 MHz-tuned
-  device. Confirm the GS still receives them (or drop 40 from `bw_set` if it
-  causes trouble). This is the one place device tuning and per-packet
-  bandwidth can disagree.
+- [x] **B7 — 40 MHz probes on a 20 MHz device.** ANSWERED (2026-07-11): they
+  do NOT work. The frames are aired (seq consumed, HW seq advances) but are
+  unreceivable even by a 40 MHz-tuned monitor — a 20 MHz-tuned baseband
+  cannot emit a valid 40 MHz PPDU. Net effect: exactly 1/32 of frames
+  (probe slot `seq%32==8`) are dead air. **TODO (mabur):** clamp `bw_set`
+  rungs to `radio.width` at config load (warn + drop); until then set
+  `"bw_set": [20]` when `radio.width` is 20.
 - [ ] **B8 — watchdog edge (only if you change config).** With default
   `failsafe_ms` (1000) < watchdog `stale_ms` (3000) the RX watchdog is safe.
   If you raise `failsafe_ms` above 3000, a quiet channel while LINKED could
