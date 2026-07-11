@@ -82,8 +82,19 @@ struct FileSink : mabur::FrameSink {
 struct DevourerSink : mabur::FrameSink {
   IRtlDevice* dev = nullptr;
   std::mutex m;
+  // Opened true only after InitWrite() finishes device bring-up (power-on,
+  // firmware download, TX-path enable). Until then every send is dropped:
+  // pushing frames into the chip's bulk-OUT FIFO *during* bring-up fills it
+  // with packets the not-yet-booted MAC cannot transmit, which then starves
+  // devourer's own reserved-page firmware download (its bulk-OUT to the same
+  // endpoint times out) — the FW never boots and TX is bricked for the whole
+  // session. Bench-confirmed on the SSC338Q: devourer's `doctor` brings the
+  // same dongle up HEALTHY in isolation, while maburd's concurrent hot/agent
+  // sends made DLFW fail after ~3 frames.
+  std::atomic<bool>* ready = nullptr;
 
   bool send(const uint8_t* p, size_t n) override {
+    if (ready && !ready->load(std::memory_order_acquire)) return false;
     std::lock_guard<std::mutex> l(m);
     return dev->send_packet(p, n);
   }
@@ -483,8 +494,15 @@ int run_real_mode(const Config& cfg) {
     return 1;
   }
 
+  // Jaguar3 TX+RX on one claimed handle: enable_with_tx makes InitWrite keep
+  // the RX filters open so a later StartRxLoop can run concurrently with TX
+  // (mirrors devourer's doctor/streamtx examples). Retrofitting RX after a
+  // plain InitWrite is unreliable on this chip.
+  devourer::DeviceConfig dev_cfg;
+  dev_cfg.rx.enable_with_tx = true;
+
   WiFiDriver wifi_driver{logger};
-  auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock);
+  auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);
   if (!rtl_device) {
     std::fprintf(stderr, "error: CreateRtlDevice failed (unsupported chip or already in use)\n");
     libusb_release_interface(handle, 0);
@@ -493,8 +511,12 @@ int run_real_mode(const Config& cfg) {
     return 1;
   }
 
+  // Gate for DevourerSink: stays false until InitWrite() completes bring-up.
+  std::atomic<bool> device_ready{false};
+
   DevourerSink dev_sink;
   dev_sink.dev = rtl_device.get();
+  dev_sink.ready = &device_ready;
 
   RadioTx tx(dev_sink, cfg.radio.bw_set);
 
@@ -661,9 +683,18 @@ int run_real_mode(const Config& cfg) {
                  cfg.radio.width);
   }
 
+  // Bring up TX FIRST and let it finish before anything transmits. InitWrite
+  // runs the full power-on + firmware download + TX-path enable and returns
+  // only once the chip is ready; StartRxLoop then runs the (blocking) RX worker
+  // with TX+RX concurrent on the same handle. Opening device_ready between the
+  // two is what keeps the hot/agent threads from clogging the bulk-OUT FIFO
+  // mid-DLFW — see DevourerSink::ready.
+  std::fprintf(stderr, "maburd bringing up TX on channel %d\n", cfg.radio.channel);
+  rtl_device->InitWrite(
+      SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+  device_ready.store(true, std::memory_order_release);
   std::fprintf(stderr, "maburd entering RX loop on channel %d\n", cfg.radio.channel);
-  rtl_device->Init(rx_callback,
-                   SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+  rtl_device->StartRxLoop(rx_callback);
 
   // Init() returns once g_devourer_should_stop is set (SIGINT/SIGTERM) or the
   // device errors out internally. Ensure the flag is set on the error-out
