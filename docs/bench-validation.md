@@ -281,6 +281,43 @@ path-B-AGC desense A/B at range (`DEVOURER_PROTECT_PATHB_AGC`), commit the
 clamp, and the `bundle/install.sh` `json_cli` flag-spelling check (B4
 leftover).
 
+## Bench results — 2026-07-12 (late session): E1 STRICT PASS + receiver root-cause
+
+`bw_set` remediated on the drone (`/etc/mabur.json` → `[20]`, restart);
+confirmed on air: loss went flat across mod-32 slots (probe-slot spike
+gone). Then the day's "link budget problem" got root-caused — it was never
+the drone TX or the air link. Two GS-receiver findings:
+
+1. **The RTL8812AU (`0bda:8812`) is a lossy receiver at this bench** —
+   5–25% pre-FEC loss with slow multi-second swings at stable RSSI, all
+   day, through every antenna/positioning change. Every "air loss" number
+   measured through it (including 2026-07-11's ~20%) is AU-RX-bounded, not
+   the link. Do not use it for quantitative captures.
+2. **🐛 NEW devourer bug — 8822E RX-only bring-up is near-deaf.** The
+   8812EU (`0bda:a81a`, same 8822E as the drone's) heard **2 frames/15 s**
+   via `rxdemo` (RX-only `Init` path) but **20,143 frames/60 s** via
+   `duplex` (TX+RX `InitWrite`+`StartRxLoop` — the same mode maburd uses,
+   which is why the drone's RX always worked). Chip is HEALTHY per
+   `doctor`; EU TX radiates fine (drone heard a 4k-frame `streamtx` flood).
+   Not the path-B AGC ref: `DEVOURER_PROTECT_PATHB_AGC` A/B in RX-only mode
+   made no difference (2 frames either way) — so that desense A/B remains
+   untested (redo it in TX+RX mode at range). **File upstream to the
+   devourer fork.** Bench workaround: capture through `duplex`
+   (keep stdin open, e.g. `tail -f /dev/null | duplex`). Minor: `streamtx`
+   segfaults at EOF shutdown on Jaguar3 (TX itself completes fine).
+
+- [x] **E1 — clean link. STRICT PASS (2026-07-12, 8812EU + duplex).**
+  ~34 s steady-state window at the full stream rate (~1,050 fps received ≈
+  TX rate): 35,329 frames, **0 CRC errors**, **stream 0 post-FEC 0.000%,
+  stream 1 post-FEC 0.000%** (the naive FRAG-span number shows 20.9% but
+  it is entirely one discontinuity during duplex's ~25 s bring-up — the
+  steady-state region 49776..54199 is gap-free). Recovered payload
+  1.27 Mbps = MAX_RANGE floor ✓, T2/T1 shed ✓. Notes for repeat runs:
+  duplex events carry `seq: 0` (no hw seq — use FRAG-level continuity, not
+  802.11 seq gaps) and the 24-byte dot11 header is stripped from `body`.
+  Cross-receiver RSSI caveat: raw RSSI is not comparable between chips —
+  the EU reports lower raw values than the AU while receiving losslessly.
+
 ## Two ways to get maburd onto the camera
 
 Pick one:
@@ -311,7 +348,11 @@ There is no finished GS. The bench GS is assembled from devourer's own tools
 (the spec calls this the proto-GS; `tools/bench/` is its starting point):
 
 - **Receive + decode video:** a second RTL8812-class dongle on a Linux PC
-  running devourer's `duplex` example (or `rxdemo`). It emits `rx.frame` JSONL
+  running devourer's `duplex` example (or `rxdemo`). **Receiver choice
+  matters (2026-07-12):** the 8812EU (`0bda:a81a`) through `duplex` is the
+  lossless reference receiver; `rxdemo` on the EU is near-deaf (devourer
+  RX-only-mode bug, see the late-session section), and the 8812AU
+  (`0bda:8812`) loses 5–25% regardless of tool. It emits `rx.frame` JSONL
   events (per-frame `seq_num`, `rssi[2]`, `snr[2]`, `crc`) and can inject on
   the same handle. Pipe its output to a decoder built on
   `tools/bench/decode_bodies.py` logic (fec_subblock.unpack → stream_fec rs
@@ -396,7 +437,10 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
 
 Each scenario has a pass criterion from the spec's Testing section.
 
-- [~] **E1 — clean link.** PARTIAL (2026-07-11 first light, receive-only —
+- [x] **E1 — clean link.** STRICT PASS 2026-07-12 via 8812EU + duplex (see
+  the late-session section above; post-FEC 0.000% both streams). History
+  below is the 2026-07-11 partial (measured through the lossy AU receiver):
+  PARTIAL (2026-07-11 first light, receive-only —
   no vrx feedback yet). Full pipeline proven live: drone camera → waybeam →
   maburd → air → host 8812AU rxdemo → SBI unpack → RS decode → FRAG
   reassembly → RTP → **HEVC 2560×1440@25 identified by ffprobe and decoded
