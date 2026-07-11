@@ -119,9 +119,10 @@ problems**, one per side:
 **B7 answered (see checklist):** 40 MHz probe frames on a 20 MHz-tuned device
 are aired but **unreceivable even by a 40 MHz-tuned monitor** — a 20 MHz BB
 cannot emit a valid 40 MHz PPDU. Exactly 1/32 of frames (the `seq%32==8`
-probe slot) are lost on air. mabur should clamp `bw_set` rungs to
-`radio.width` (config-load warning + drop), and probing wider bandwidths
-needs `radio.width` ≥ the widest rung.
+probe slot) are lost on air. FIXED in mabur 4252b02: config load
+drops `bw_set` rungs > `radio.width` with a warning, and the default
+`bw_set` is now `[20]`. Probing wider bandwidths needs `radio.width` ≥
+the widest rung.
 
 Also confirmed: the chip's `EN_HWSEQ=1` means the **on-air 802.11 seq is the
 hardware counter**, offset from mabur's internal seq — GS-side gap detection
@@ -265,7 +266,7 @@ Defaults that matter for bench (full defaults in `bundle/mabur.default.json`):
 | `radio.usb_pid` | `0` = scan `{0xa81a, 0x881a, 0x8812}` | **confirm your 8812EU's PID (B2)** |
 | `radio.channel` | `149` | 5 GHz; match the GS |
 | `radio.width` | `20` | values ≠ 20 warn + fall back to 20 |
-| `radio.bw_set` | `[20, 40]` | probe rungs (B7) |
+| `radio.bw_set` | `[20]` | probe rungs; rungs > `radio.width` are dropped at load (B7, 4252b02) |
 | `radio.max_txagc` | `63` | power clamp |
 | `link.vtx_id` | `1` | must match the GS's target |
 | `link.failsafe_ms` | `1000` | silence → MAX_RANGE |
@@ -367,9 +368,9 @@ Each scenario has a pass criterion from the spec's Testing section.
   do NOT work. The frames are aired (seq consumed, HW seq advances) but are
   unreceivable even by a 40 MHz-tuned monitor — a 20 MHz-tuned baseband
   cannot emit a valid 40 MHz PPDU. Net effect: exactly 1/32 of frames
-  (probe slot `seq%32==8`) are dead air. **TODO (mabur):** clamp `bw_set`
-  rungs to `radio.width` at config load (warn + drop); until then set
-  `"bw_set": [20]` when `radio.width` is 20.
+  (probe slot `seq%32==8`) are dead air. **FIXED (mabur 4252b02):** config
+  load drops rungs > `radio.width` with a stderr warning; default `bw_set`
+  is now `[20]`.
 - [ ] **B8 — watchdog edge (only if you change config).** With default
   `failsafe_ms` (1000) < watchdog `stale_ms` (3000) the RX watchdog is safe.
   If you raise `failsafe_ms` above 3000, a quiet channel while LINKED could
