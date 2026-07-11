@@ -99,7 +99,7 @@ Defaults that matter for bench (full defaults in `bundle/mabur.default.json`):
 | `link.vtx_id` | `1` | must match the GS's target |
 | `link.failsafe_ms` | `1000` | silence → MAX_RANGE |
 | `ring_name` | `"mabur"` | must equal waybeam `outgoing.server` `shm://mabur` |
-| `waybeam.idr_path` | `/api/v1/idr` | **verify endpoint (B4)** |
+| `waybeam.idr_path` | `/request/idr` | bench-confirmed route (B4); GET → `{"ok":true,"data":{"idr":true}}` |
 
 maburd logs to `/tmp/mabur.log` (S96mabur truncates per respawn). `SIGUSR1`
 dumps full counters to stderr.
@@ -121,11 +121,12 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
   (`/etc/init.d/S96mabur restart`). Record the actual PID.
 - [ ] **B3 — CPU budget.** Under sustained 8 Mbps, `top` — maburd should sit
   well under one core (spec target < 35%). Note actual.
-- [ ] **B4 — waybeam control API.** Confirm the IDR endpoint mabur calls
-  actually exists on this waybeam build: `curl http://127.0.0.1/api/v1/idr`
-  (or whatever the running waybeam exposes — check its README/`/api/v1`).
-  Also confirm `bundle/install.sh`'s `json_cli` flag spelling matches the
-  on-device `json_cli`. Fix `waybeam.idr_path` if the path differs.
+- [x] **B4 — waybeam control API.** DONE. The IDR route on this waybeam build
+  is `GET /request/idr` (returns `{"ok":true,"data":{"idr":true}}`), **not**
+  `/api/v1/idr` (that 404s: `{"ok":false,"error":{"code":"not_found"}}`).
+  `waybeam.idr_path` default fixed to `/request/idr` in `drone/src/config.h` +
+  `bundle/mabur.default.json`. Still TODO: confirm `bundle/install.sh`'s
+  `json_cli` flag spelling matches the on-device `json_cli`.
 - [ ] **B5 — monitor-mode capture.** From a nearby laptop with a monitor-mode
   dongle, capture a few seconds of maburd's injected frames. Verify radiotap
   MCS matches the commanded profile and the probe-bandwidth schedule

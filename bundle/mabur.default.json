@@ -18,7 +18,7 @@
   "waybeam": {
     "host": "127.0.0.1",
     "port": 80,
-    "idr_path": "/api/v1/idr",
+    "idr_path": "/request/idr",
     "bitrate_min_kbps": 1000,
     "bitrate_max_kbps": 20000,
     "airtime_budget": 0.65,
