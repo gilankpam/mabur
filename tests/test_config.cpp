@@ -131,6 +131,30 @@ TEST(load_config_type_mismatch_fec_k_string_throws_runtime_error_with_dotted_pat
   std::filesystem::remove(path);
 }
 
+TEST(load_config_bw_set_rungs_above_width_are_dropped) {
+  // B7 (docs/bench-validation.md): a 20 MHz-tuned baseband cannot emit a
+  // valid 40 MHz PPDU — probe rungs wider than radio.width are dead air, so
+  // config load drops them (with a stderr warning) instead of flying them.
+  auto path = write_temp_json(R"({"radio":{"width":20,"bw_set":[20,40]}})");
+  Config cfg = load_config(path.string());
+  CHECK((cfg.radio.bw_set == std::vector<uint8_t>{20}));
+  std::filesystem::remove(path);
+}
+
+TEST(load_config_bw_set_rungs_within_width_are_kept) {
+  auto path = write_temp_json(R"({"radio":{"width":40,"bw_set":[20,40]}})");
+  Config cfg = load_config(path.string());
+  CHECK((cfg.radio.bw_set == std::vector<uint8_t>{20, 40}));
+  std::filesystem::remove(path);
+}
+
+TEST(load_config_bw_set_all_rungs_dropped_leaves_empty_probe_set) {
+  auto path = write_temp_json(R"({"radio":{"width":20,"bw_set":[40,80]}})");
+  Config cfg = load_config(path.string());
+  CHECK(cfg.radio.bw_set.empty());
+  std::filesystem::remove(path);
+}
+
 TEST(load_config_type_mismatch_radio_bw_set_string_throws_runtime_error_with_dotted_path) {
   auto path = write_temp_json(R"({"radio":{"bw_set":"wide"}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });

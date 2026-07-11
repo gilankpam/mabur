@@ -4,7 +4,7 @@
     "usb_pid": 0,
     "channel": 149,
     "width": 20,
-    "bw_set": [20, 40],
+    "bw_set": [20],
     "max_txagc": 63,
     "thermal_max_delta": 25
   },

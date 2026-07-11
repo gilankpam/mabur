@@ -14,7 +14,7 @@ struct RadioCfg {
   uint16_t usb_pid = 0;  // 0 = scan
   uint8_t channel = 149;
   uint8_t width = 20;
-  std::vector<uint8_t> bw_set = {20, 40};
+  std::vector<uint8_t> bw_set = {20};
   int max_txagc = 63;
   int thermal_max_delta = 25;
 };

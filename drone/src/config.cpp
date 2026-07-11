@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -70,6 +71,18 @@ void parse_radio(const json& j, RadioCfg& r) {
     if (bw <= prev) fail("radio.bw_set", "values must be strictly ascending");
     prev = bw;
   }
+
+  // B7 (docs/bench-validation.md): a device tuned to radio.width cannot emit
+  // a valid PPDU wider than that — such probe rungs are dead air (transmitted
+  // but unreceivable). Drop them with a warning rather than flying them.
+  std::erase_if(r.bw_set, [&](uint8_t bw) {
+    if (bw <= r.width) return false;
+    std::fprintf(stderr,
+                 "mabur config: radio.bw_set rung %u > radio.width %u — "
+                 "dropped (a %u MHz-tuned device cannot emit %u MHz frames)\n",
+                 bw, r.width, r.width, bw);
+    return true;
+  });
 }
 
 void parse_fec(const json& j, FecCfg& f) {
