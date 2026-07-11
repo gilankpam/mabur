@@ -501,6 +501,26 @@ Each scenario has a pass criterion from the spec's Testing section.
 
 ## Deferred to a future iteration (not bench-blocking)
 
+- **Devourer follow-ups from the 2026-07-12 bench (file/fix on the fork):**
+  1. **Host bring-up is 41 s on the 8822E** (measured, duplex on the GS
+     host, timestamps from a clean profile run): power-on+FW 6.5 s →
+     BB/AGC/RF register tables **15 s** (~40,300 one-at-a-time USB control
+     transfers ≈ 370 µs each) → IQK **13 s** → TXGAPK **6 s** → RX loop at
+     41 s. The drone's identical chip through the same code brings up in a
+     couple of seconds (embedded EHCI round-trips are ~an order of
+     magnitude faster), so the chip doesn't need 41 s — the host is
+     per-transfer-latency bound. Improvement: **batch/aggregate the table
+     writes** (would collapse the 15 s phase to ~1 s); bench palliatives:
+     keep duplex resident instead of restarting per capture, and
+     `DEVOURER_DISABLE_IQK=1` saves ~13 s when calibration accuracy doesn't
+     matter (monitoring, not measurement).
+  2. **8822E RX-only bring-up near-deaf** (the E1-session bug, see the
+     late-session section above): `Init`/rxdemo path hears ~nothing while
+     `InitWrite`+`StartRxLoop` (duplex/maburd mode) is lossless on the same
+     device. Root-cause candidates start at whatever the RX-only path
+     skips/adds vs the TX+RX path post-bring-up.
+  3. **streamtx segfaults at EOF shutdown on Jaguar3** (TX completes fine;
+     crash is in de-init after stdin closes).
 - **Per-layer TX power (v1.1).** Needs the devourer Jaguar3 `TXPWR_OFSET` port
   first (8822E TX descriptor has the same 3-bit LUT field as Jaguar2, at
   `txdesc+0x14[30:28]`; devourer only wires it for Jaguar2 today — confirmed
