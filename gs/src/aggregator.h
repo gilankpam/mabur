@@ -1,0 +1,62 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+#include "mabur/node.h"
+#include "mabur/uep_decoder.h"
+
+namespace maburgs {
+
+// Rolling per-card link state, maintained from CRC-clean frames only (a
+// corrupt frame's seq and phystatus are untrustworthy). rssi_b_ema tracks
+// chain B: chain A reads off-scale (128-131) on the 8822E (devourer
+// phystatus bug); snr_ema tracks the best chain.
+struct CardTrack {
+  uint64_t frames = 0, crc_fail = 0, rc_frames = 0, video_bodies = 0;
+  uint64_t seq_expected = 0, seq_received = 0;
+  double rssi_b_ema = 0.0, snr_ema = 0.0;
+  bool has_ema = false, has_seq = false;
+  uint16_t last_seq = 0;
+  uint64_t last_frame_us = 0;
+};
+
+// Core-thread router: RC-magic frames go to the control sink (Plan 2's
+// agent), everything else through the UepDecoder to the RTP sink. Multi-card
+// dedup happens inside the decoder (RS symbol identity), so bodies from all
+// cards are fed straight in. Single-threaded by contract (core thread only).
+class Aggregator {
+ public:
+  using RtpSink = std::function<void(const mabur::DecodedRtp&)>;
+  using RcSink = std::function<void(uint8_t card_id,
+                                    const std::vector<uint8_t>& frame,
+                                    uint64_t mono_us)>;
+
+  Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
+             uint64_t block_max_age_ms, int n_cards);
+
+  void set_rtp_sink(RtpSink s) { rtp_sink_ = std::move(s); }
+  void set_rc_sink(RcSink s) { rc_sink_ = std::move(s); }
+
+  void on_rx_body(const mabur::node::RxBody& m);
+  void poll(uint64_t now_ms) { dec_.poll(now_ms); }
+
+  const CardTrack& card(int id) const { return cards_[static_cast<size_t>(id)]; }
+  int n_cards() const { return static_cast<int>(cards_.size()); }
+  mabur::UepDecoder& decoder() { return dec_; }
+  uint16_t last_video_seq() const { return last_video_seq_; }
+  uint64_t last_video_us() const { return last_video_us_; }
+  uint64_t bad_card_msgs() const { return bad_card_msgs_; }
+
+ private:
+  mabur::UepDecoder dec_;
+  std::vector<CardTrack> cards_;
+  RtpSink rtp_sink_;
+  RcSink rc_sink_;
+  uint16_t last_video_seq_ = 0;
+  uint64_t last_video_us_ = 0;
+  uint64_t bad_card_msgs_ = 0;
+};
+
+}  // namespace maburgs
