@@ -15,6 +15,10 @@ target_include_directories(mabur_gs_core
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(mabur_gs_core PUBLIC mabur_common)
 
+add_library(mabur_gs_radio STATIC src/radio_frontend.cpp)
+target_include_directories(mabur_gs_radio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mabur_gs_radio PUBLIC mabur_gs_core mabur_common devourer)
+
 add_executable(maburgs src/main.cpp)
 target_include_directories(maburgs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(maburgs PRIVATE mabur_gs_core mabur_common pthread)
+target_link_libraries(maburgs PRIVATE mabur_gs_core mabur_gs_radio mabur_common pthread)

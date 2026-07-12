@@ -1,0 +1,65 @@
+#pragma once
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <thread>
+#include <vector>
+
+#include <libusb.h>
+
+#include "body_queue.h"
+
+// Forward declarations for devourer types
+class WiFiDriver;
+class IRtlDevice;
+struct Packet;
+
+namespace devourer {
+class UsbDeviceLock;
+}
+
+namespace maburgs {
+
+// Pure: MAX_RANGE radiotap + 24-byte dot11 probe-req header (canonical SA
+// 57:42:75:05:d6:00, broadcast DA, seq<<4) + body. Mirrors drone radio_tx.cpp.
+std::vector<uint8_t> build_control_frame(uint16_t seq, const uint8_t* body, size_t len);
+
+class RadioFrontend {
+ public:
+  struct Cfg {
+    uint16_t usb_vid = 0x0bda;
+    uint16_t usb_pid = 0;      // 0 = scan {0xa81a,0x881a,0x8812}
+    int index = 0;             // ordinal among matching devices
+    uint8_t channel = 149;
+    uint8_t card_id = 0;
+  };
+
+  RadioFrontend(Cfg cfg, BodyQueue& out);
+  ~RadioFrontend();                               // stop() if running
+  bool open_and_start();                          // full bring-up; false on any failure
+  void stop();                                    // StopRxLoop + join + release usb
+  bool ready() const;                             // InitWrite completed
+  bool alive() const;                             // RX loop thread still running
+  uint64_t rx_frames() const;
+  bool send_control(const std::vector<uint8_t>& body);  // false pre-ready/on error
+
+ private:
+  void on_packet(const Packet& pkt);
+
+  Cfg cfg_;
+  BodyQueue& out_;
+  libusb_context* usb_ctx_ = nullptr;
+  libusb_device_handle* handle_ = nullptr;
+  std::shared_ptr<WiFiDriver> driver_;
+  std::shared_ptr<IRtlDevice> device_;
+  std::thread rx_thread_;
+  std::atomic<bool> ready_{false};
+  std::atomic<bool> alive_{false};
+  std::atomic<uint64_t> rx_frames_{0};
+  uint16_t tx_seq_ = 0;
+  std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
+};
+
+}  // namespace maburgs
