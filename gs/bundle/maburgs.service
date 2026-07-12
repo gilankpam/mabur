@@ -1,0 +1,11 @@
+[Unit]
+Description=mabur ground station (maburgs)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/maburgs -c /etc/maburgs.json
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
