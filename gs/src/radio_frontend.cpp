@@ -11,6 +11,7 @@
 #include "RxPacket.h"
 #include "TxMode.h"
 #include "UsbDeviceLock.h"
+#include "UsbOpen.h"
 #include "WiFiDriver.h"
 #include "logger.h"
 #include "mabur/node.h"
@@ -92,8 +93,10 @@ bool RadioFrontend::open_and_start() {
     return false;
   }
   libusb_free_device_list(list, 1);
-  libusb_set_auto_detach_kernel_driver(handle_, 1);
-  if (libusb_claim_interface(handle_, 0) != 0) {
+
+  logger_ = std::make_shared<Logger>();
+  int rc = devourer::claim_interface_then_reset(handle_, 0, logger_, /*do_reset=*/true, usb_lock_);
+  if (rc != 0) {
     libusb_close(handle_);
     libusb_exit(usb_ctx_);
     handle_ = nullptr;
@@ -101,10 +104,9 @@ bool RadioFrontend::open_and_start() {
     return false;
   }
 
-  auto logger = std::make_shared<Logger>();
   devourer::DeviceConfig dev_cfg;
   dev_cfg.rx.enable_with_tx = true;  // TX+RX duplex: mandatory on the 8822E
-  driver_ = std::make_unique<WiFiDriver>(logger);
+  driver_ = std::make_unique<WiFiDriver>(logger_);
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
   device_->InitWrite(SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
@@ -144,6 +146,7 @@ bool RadioFrontend::send_control(const std::vector<uint8_t>& body) {
 void RadioFrontend::stop() {
   if (device_ && alive_.load(std::memory_order_acquire)) device_->StopRxLoop();
   if (rx_thread_.joinable()) rx_thread_.join();
+  if (device_) device_->Stop();
   device_.reset();
   driver_.reset();
   ready_.store(false, std::memory_order_release);

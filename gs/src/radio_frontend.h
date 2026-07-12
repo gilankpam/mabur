@@ -10,6 +10,7 @@
 #include <libusb.h>
 
 #include "body_queue.h"
+#include "logger.h"
 
 // Forward declarations for devourer types
 class WiFiDriver;
@@ -50,6 +51,7 @@ class RadioFrontend {
 
   Cfg cfg_;
   BodyQueue& out_;
+  std::shared_ptr<Logger> logger_;
   libusb_context* usb_ctx_ = nullptr;
   libusb_device_handle* handle_ = nullptr;
   std::shared_ptr<WiFiDriver> driver_;
