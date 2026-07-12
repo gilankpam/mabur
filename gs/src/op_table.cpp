@@ -28,6 +28,11 @@ double LinkTable::p_deliver(double snr_db, int mcs, double overhead) const {
   // Python: bucket = round(snr / 1.0) * 1.0 (banker's rounding) — nearbyint
   // under the default FE_TONEAREST mode is the same tie-to-even.
   int bi = static_cast<int>(std::nearbyint((snr_db - gen::kSnrLo) / gen::kSnrBucket));
+  // Python's _snr_bucket is unbounded (it simulates a fresh cell for out-of-range
+  // SNR); we clamp to the grid edges instead. These agree ONLY because the grid
+  // endpoints saturate (0.0 at the low end, 1.0 at the high end). A future grid
+  // regen that left a non-saturated endpoint would silently diverge — the
+  // edges_pdeliver golden vectors (snr=-50->0.0, snr=100->1.0) guard this.
   if (bi < 0) bi = 0;
   if (bi >= gen::kSnrBuckets) bi = gen::kSnrBuckets - 1;
   const int oi = overhead_index(overhead);
