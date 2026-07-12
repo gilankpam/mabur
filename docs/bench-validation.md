@@ -502,7 +502,25 @@ SysV respawn script (does `rmmod 8812eu` at start).
    URB/s aggregate; single-card was clean at the same rate) — dual-card
    is fine at mcs0-2 rates, single-card (or a second EHCI root) for
    high-rate work.
-10. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
+10. **1400 B bodies validated end-to-end; the last blocker is the power/
+    rung estimator (2026-07-12, final session).** `fec.symbol_size 164`
+    (both ends; body = 8x175 = 1400 B, frame 1424 B — under the proven
+    1461 B TX limit) works through the whole pipeline: maburd sustained
+    ~1,780 fps = **20.3 Mbps raw from the real video path** (vs the
+    14 Mbps ceiling at 600 B bodies), GS arrival 90-95 %, FRAG/RS clean.
+    A drone-dongle VBUS cycle (`Sstar-ehci-1` unbind/bind) cured the
+    residual LINKED-FAILSAFE flapping — the drone chip accumulates RX
+    degradation across soft restarts exactly like the GS cards (finding
+    1); cold-cycle both ends before quantitative runs. Delivered video
+    reached 7.6 Mbps (dirty, mcs3/ov0.50 = 78 % airtime, congestion) or
+    ~4 Mbps clean (mcs5/ov0.25) depending on WHICH rung the controller's
+    roulette lands: the path-loss estimate is survivor-biased chip SNR
+    (finding 9a), so rung+power selection is nondeterministic per
+    session. Everything else in the 17 Mbps chain is now proven; the
+    single remaining blocker is 9a (delivery-closed power/rung control —
+    v1.1). Repo defaults left at symbol_size 64 pending the per-rung
+    body-sizing design; bench devices run 164.
+11. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
    Union/dedup still delivered **0.000 %** from two ~50 % receivers — the
@@ -530,7 +548,7 @@ SysV respawn script (does `rmmod 8812eu` at start).
 - [x] **G4 PASS.** Drone reboot under running maburgs: exactly one
   RENDEZVOUS stats line before LINKED (~2 s cold rendezvous) — E5 parity.
 - [x] **G5 PASS (software proxy).** Both cards up in stats with per-card
-  f/cf/snr; union keeps 0.000 % (finding 10 notwithstanding). TX-card drop
+  f/cf/snr; union keeps 0.000 % (finding 11 notwithstanding). TX-card drop
   (`authorized=0`, the closest software analogue to unplug on soldered
   cards): `tx_card` failed over, SESSION held, video uninterrupted, still
   0.000 %. Reattach: front-end reopened via the 2 s backoff, **no process
