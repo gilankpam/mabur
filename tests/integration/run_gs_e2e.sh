@@ -28,7 +28,7 @@ echo "== clean: all 18 packets byte-exact =="
 "$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" --out-rtp "$TMP/rtp0.bin"
 python3 tests/integration/verify_rtp.py "$TMP/rtp0.bin" "$FIX" --require-all
 
-echo "== 20% single-card loss: UEP staircase (stream 0 must fully deliver) =="
+echo "== 15% single-card loss: UEP staircase (stream 0 must fully deliver) =="
 # Seed 7 with 20% drop: observed stream 0 delivery at 83% (5/6). Lowered to 15% drop.
 "$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" \
   --drop-pct 15 --seed 7 --out-rtp "$TMP/rtp1.bin"
