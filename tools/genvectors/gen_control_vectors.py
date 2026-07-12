@@ -87,3 +87,38 @@ dump("optable.json", {"edges_pdeliver": edges_pdeliver,
                                 "sgi": r.sgi, "ov": r.overhead, "snr_req": r.snr_req}
                                for r in rows],
                       "snr_req": snr_req})
+
+# --- score -------------------------------------------------------------------
+from score import ScoreWindow, RungWindow
+
+def run_trace(frames, residual=None):
+    w = ScoreWindow()
+    for rssi, snr, crc, seq, t in frames:
+        w.add_frame(rssi, snr, crc, seq, t)
+    return {"frames": frames, "n": w.n(),
+            "snr_est": w.snr_estimate(), "rssi_est": w.rssi_estimate(),
+            "fcs_loss": w.fcs_loss(), "seq_gap_loss": w.seq_gap_loss(),
+            "ack_seq": w.ack_seq(),
+            "score_none": w.score(), "score_residual": w.score(residual),
+            "residual": residual}
+
+score_cases = [
+    run_trace([(-55.0, 22.0, False, 10, 0.00), (-56.0, 21.0, False, 11, 0.05),
+               (-54.0, 23.0, True, 13, 0.10)], residual=0.02),
+    # 12-bit wrap inside the window: must NOT read as a giant gap
+    run_trace([(-60.0, 15.0, False, 4093, 0.00), (-60.0, 15.0, False, 4095, 0.02),
+               (-60.0, 15.0, False, 1, 0.04), (-60.0, 15.0, False, 2, 0.06)],
+              residual=0.0),
+    # window pruning: first frame falls out of the 0.5 s window
+    run_trace([(-50.0, 30.0, False, 1, 0.00), (-80.0, 5.0, False, 2, 0.60),
+               (-80.0, 5.0, False, 3, 0.65)], residual=None),
+    run_trace([], residual=None),
+]
+rw = RungWindow((20, 40))
+rung_seqs = [s for s in range(64) if s % 5 != 0]      # drop every 5th seq
+for s in rung_seqs:
+    rw.add_seq(s)
+rung_stats = {str(bw): [d, n] for bw, (d, n) in rw.stats().items()}
+dump("score.json", {"score": score_cases,
+                    "rung": {"bw_set": [20, 40], "seqs": rung_seqs,
+                             "stats": rung_stats}})
