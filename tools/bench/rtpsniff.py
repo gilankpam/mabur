@@ -49,7 +49,10 @@ while time.time() < end:
     if last_seq is not None:
         delta = (seq - last_seq) & 0xFFFF
         if delta == 1: pass
-        elif delta == 0: dups += 1
+        elif delta == 0:
+            # loopback shows each datagram twice (lo TX + RX): count it,
+            # but keep the duplicate out of the FU/frame state machines.
+            dups += 1; n -= 1; bytes_total -= len(d); continue
         elif delta <= 0x7FFF:
             gaps += 1; gap_seqs += delta - 1; frame_has_gap = True
             if len(gap_log) < 12: gap_log.append((round(time.time()-t0,1), delta-1))
