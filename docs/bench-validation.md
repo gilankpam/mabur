@@ -397,7 +397,7 @@ SysV respawn script (does `rmmod 8812eu` at start).
    steady ~250/s, 0 unrecoverable both streams, no freeze. Steady state
    on this channel: drone rides the FAILSAFE floor (~2.5 Mbps effective)
    with brief LINKED excursions. **Do not read that as the channel
-   limit — see finding 8.**
+   limit — see finding 8 (resolved) and finding 9.**
 7. **⚠️ ~10 dB performance gap vs the kernel-driver baseline (LARGELY
    RESOLVED — upstream devourer b5a6df7, merged as ef9b449 / mabur
    2896083).** Operator baseline on the SAME path, SAME cards:
@@ -471,7 +471,38 @@ SysV respawn script (does `rmmod 8812eu` at start).
    (accepted over USB, discarded pre-air; 600 B airs, 3000 B does not -
    bisect the exact bound and file upstream; mabur's ~600 B bodies are
    safe).
-9. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
+9. **The 17 Mbps video question — full causal chain (2026-07-12 late).**
+   Attempted end-to-end: GS `link.src_bitrate_mbps 17` (new knob) moves
+   the controller to mcs4-7 rungs exactly as the energy model predicts
+   (rungs that can't carry src*(1+ov) are infeasible; the 4 Mbps default
+   was why it parked at mcs2). Datapath at the top rung is clean
+   (mcs7/ov0.25: 0 unrecoverable both streams over 128 s). Sustained
+   17 Mbps is blocked by four now-quantified items:
+   (a) **open-loop power control on a lying sensor** — chip per-frame SNR
+   reads 35-55 dB on survivor frames while the channel at the commanded
+   agc0 delivers 10-36% of frames; nothing feeds observed delivery back
+   into the power choice (the starvation guard only catches TOTAL
+   collapse). `margin_db` (exposed, default 2.0) shims it partially but
+   the lie varies more than any fixed margin. v1.1: delivery-closed
+   power loop or per-chip SNR calibration.
+   (b) **drone control-RX starvation scales with TX duty** — at mcs7
+   (39% duty) `failsafe_ms 3000` held 122/2 LINKED; at mcs3 (60% duty)
+   it still flapped 77/51. v1.1: devourer RX-under-TX work or TX-gap /
+   TDMA-style control listening (devourer has a tdma example).
+   (c) **~600 B bodies cap the USB TX pace at ~2800 fps ≈ 10-11 Mbps
+   video** — the 1400 B raw benchmark did 27.4 Mbps on the same pace.
+   Bigger bodies (fec.symbol_size 128 -> ~1100 B, both ends) is the
+   lever, untested.
+   (d) **8822E STBC TX at high MCS is broken post-b5a6df7** — 57,500
+   MCS5/LDPC/STBC frames -> ~0 received where plain LDPC delivered
+   99.1% (worked at mcs2). Drone `t0_stbc`/`crit_stbc` set false on the
+   bench; file upstream (their 1SS-single-path fix likely never covered
+   STBC's two-path requirement). Also: **dual-card RX at >2×~2800 fps
+   overruns the Radxa EHCI** (both cards' copies hollowed at 5600
+   URB/s aggregate; single-card was clean at the same rate) — dual-card
+   is fine at mcs0-2 rates, single-card (or a second EHCI root) for
+   high-rate work.
+10. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
    Union/dedup still delivered **0.000 %** from two ~50 % receivers — the
@@ -499,7 +530,7 @@ SysV respawn script (does `rmmod 8812eu` at start).
 - [x] **G4 PASS.** Drone reboot under running maburgs: exactly one
   RENDEZVOUS stats line before LINKED (~2 s cold rendezvous) — E5 parity.
 - [x] **G5 PASS (software proxy).** Both cards up in stats with per-card
-  f/cf/snr; union keeps 0.000 % (finding 8 notwithstanding). TX-card drop
+  f/cf/snr; union keeps 0.000 % (finding 10 notwithstanding). TX-card drop
   (`authorized=0`, the closest software analogue to unplug on soldered
   cards): `tx_card` failed over, SESSION held, video uninterrupted, still
   0.000 %. Reattach: front-end reopened via the 2 s backoff, **no process
