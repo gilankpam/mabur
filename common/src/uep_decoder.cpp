@@ -56,7 +56,9 @@ UepDecoder::LayerStats UepDecoder::stats(int sid) const {
   const Layer& L = layers_[static_cast<size_t>(sid)];
   return LayerStats{L.bodies,          L.subblocks_failed,
                     L.rs.blocks_decoded(), L.rs.blocks_unrecoverable(),
-                    L.rs.packets_out(),    L.reasm.evicted()};
+                    L.rs.packets_out(),    L.reasm.evicted(),
+                    L.rs.symbols_in(),     L.rs.symbols_dropped_stale_block(),
+                    L.rs.symbols_dropped_bad_cfg(), L.rs.in_flight_blocks()};
 }
 
 int UepDecoder::window_delivery_pct(int sid) const {

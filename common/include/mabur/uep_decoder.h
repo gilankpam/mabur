@@ -34,6 +34,9 @@ class UepDecoder {
   struct LayerStats {
     uint64_t bodies = 0, subblocks_failed = 0, blocks_decoded = 0,
              blocks_unrecoverable = 0, packets_out = 0, frag_evicted = 0;
+    // diagnostic depth (RsDecoder internals)
+    uint64_t symbols_in = 0, symbols_stale = 0, symbols_bad_cfg = 0;
+    size_t blocks_in_flight = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }

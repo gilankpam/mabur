@@ -99,11 +99,16 @@ std::vector<std::vector<uint8_t>> RsDecoder::unpack(
 }
 
 int RsDecoder::expire_blocks_older_than(uint64_t max_age_ms, uint64_t now_ms) {
-  // Precondition: now_ms must be monotonic non-decreasing across calls.
-  // Passing a now_ms below a block's first_seen_ms underflows and expires it immediately.
+  // A block stamped at-or-after now_ms has age zero, never "negative": the
+  // GS main loop captures its clock, then blocks in the RX-queue drain, so
+  // bodies routinely carry stamps newer than the poll clock. The unguarded
+  // subtraction underflowed and insta-expired every block created in the
+  // same iteration (bench 2026-07-13 — invisible pre-interleaving because a
+  // block then lived and died inside one drain batch).
   int unrecoverable = 0;
   for (auto it = blocks_.begin(); it != blocks_.end();) {
-    if (now_ms - it->second.first_seen_ms > max_age_ms) {
+    if (now_ms > it->second.first_seen_ms &&
+        now_ms - it->second.first_seen_ms > max_age_ms) {
       if (!it->second.decoded) ++unrecoverable;
       it = blocks_.erase(it);
     } else {

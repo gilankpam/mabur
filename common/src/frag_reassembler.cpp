@@ -7,10 +7,12 @@ FragReassembler::FragReassembler(size_t max_pending, uint64_t max_age_ms)
 
 void FragReassembler::sweep_expired(uint64_t now_ms) {
   if (max_age_ms_ == 0 || now_ms == 0) return;
-  if (now_ms - last_sweep_ms_ < 50) return;  // throttle the O(pending) scan
+  if (now_ms < last_sweep_ms_ + 50) return;  // throttle the O(pending) scan
   last_sweep_ms_ = now_ms;
   for (auto it = pending_.begin(); it != pending_.end();) {
-    if (now_ms - it->second.t_ms > max_age_ms_) {
+    // now_ms > guard: multi-card body stamps interleave slightly out of
+    // order; a younger-than-clock entry must read as age 0, not underflow.
+    if (now_ms > it->second.t_ms && now_ms - it->second.t_ms > max_age_ms_) {
       it = pending_.erase(it);
       ++evicted_;
     } else {

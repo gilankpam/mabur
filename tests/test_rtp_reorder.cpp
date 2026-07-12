@@ -60,6 +60,24 @@ TEST(gap_skips_after_hold_and_counts) {
   CHECK(r.late_dropped() == 1);
 }
 
+TEST(poll_with_stale_clock_never_skips) {
+  // Same underflow class as the decoder expiry bug (bench 2026-07-13):
+  // packets are pushed with a fresh clock inside the drain loop, then polled
+  // with the iteration's older stamp. now - t_ms must not underflow into an
+  // instant gap-skip.
+  std::vector<uint16_t> out;
+  RtpReorder r([&](const std::vector<uint8_t>& p) { out.push_back(seq_of(p)); },
+               100);
+  r.push(rtp(10), 1000);
+  r.push(rtp(12), 1000);  // gap: 11 missing, held
+  r.poll(900);            // stale clock: must NOT skip the gap
+  CHECK(out.size() == 1);
+  CHECK(r.skipped() == 0);
+  r.push(rtp(11), 1001);  // gap fills normally afterwards
+  REQUIRE(out.size() == 3);
+  CHECK(out[2] == 12);
+}
+
 TEST(seq_wraparound_stays_ordered) {
   std::vector<uint16_t> out;
   RtpReorder r([&](const std::vector<uint8_t>& p) { out.push_back(seq_of(p)); });

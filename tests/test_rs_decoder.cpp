@@ -51,6 +51,22 @@ TEST(expiry_counts_unrecoverable) {
   CHECK(dec.in_flight_blocks() == 0);
 }
 
+TEST(expiry_clock_behind_block_is_noop) {
+  // Bench 2026-07-13: the GS main loop captured its clock, then blocked in
+  // queue.drain() — bodies arriving during the drain carried NEWER stamps,
+  // and poll(now) with the stale stamp underflowed now - first_seen and
+  // insta-expired every block created that iteration (decoded markers too).
+  // A clock at-or-behind a block's first_seen must never expire it.
+  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rs_decode.json");
+  auto e = mtest::unhex(j["cases"][0]["envelopes"][0].get<std::string>());
+  RsDecoder dec(RsConfig{8, 64, 1.0});
+  CHECK(dec.add_symbol(e.data(), e.size(), 1000).empty());
+  CHECK(dec.expire_blocks_older_than(250, 995) == 0);   // clock behind
+  CHECK(dec.expire_blocks_older_than(250, 1000) == 0);  // clock equal
+  CHECK(dec.in_flight_blocks() == 1);
+  CHECK(dec.blocks_unrecoverable() == 0);
+}
+
 TEST(reject_nonzero_version_byte) {
   // Nonzero version byte (env[2]) must be rejected like bad magic,
   // with no counter change. Matches Python stream_fec_rs.py _unpack_header.

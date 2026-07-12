@@ -167,8 +167,13 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<double>(m.mono_us) / 1000.0);
       }
     }
-    agg.poll(now_ms_u);
-    reorder.poll(now_ms_u);
+    // Re-read the clock: the drain above blocked up to 10 ms, and bodies
+    // processed in it carry stamps newer than now_ms_u. Expiry/hold math
+    // must run on a clock >= every stamp it has seen (the decoder and
+    // reorder buffer also guard against stale clocks internally).
+    const uint64_t drained_ms = mono_ms();
+    agg.poll(drained_ms);
+    reorder.poll(drained_ms);
 
     // Control step: layer delivery + residual from the decode window.
     std::array<uint8_t, 4> ld{};
@@ -220,11 +225,22 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       for (int s = 0; s < 4; ++s) {
         const auto st = agg.decoder().stats(s);
-        std::fprintf(stderr, " s%d[p=%llu u=%llu fe=%llu]", s,
-                     static_cast<unsigned long long>(st.packets_out),
+        if (st.bodies == 0) continue;  // idle streams: keep the line short
+        std::fprintf(stderr,
+                     " s%d[p=%llu u=%llu fe=%llu dec=%llu si=%llu st=%llu"
+                     " bc=%llu sbf=%llu fl=%zu]",
+                     s, static_cast<unsigned long long>(st.packets_out),
                      static_cast<unsigned long long>(st.blocks_unrecoverable),
-                     static_cast<unsigned long long>(st.frag_evicted));
+                     static_cast<unsigned long long>(st.frag_evicted),
+                     static_cast<unsigned long long>(st.blocks_decoded),
+                     static_cast<unsigned long long>(st.symbols_in),
+                     static_cast<unsigned long long>(st.symbols_stale),
+                     static_cast<unsigned long long>(st.symbols_bad_cfg),
+                     static_cast<unsigned long long>(st.subblocks_failed),
+                     st.blocks_in_flight);
       }
+      std::fprintf(stderr, " mis=%llu",
+                   static_cast<unsigned long long>(agg.decoder().bodies_misrouted()));
       std::fprintf(stderr, " ord[ok=%llu gap=%llu(+%llu) back=%llu buf=%zu skip=%llu late=%llu]",
                    static_cast<unsigned long long>(rtp_order.in_order),
                    static_cast<unsigned long long>(rtp_order.fwd_gap),

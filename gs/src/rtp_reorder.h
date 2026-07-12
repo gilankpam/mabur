@@ -68,7 +68,11 @@ class RtpReorder {
         emit_(it->second.pkt);
         buf_.erase(it);
         ++next_;
-      } else if (now_ms - it->second.t_ms >= hold_ms_) {
+      } else if (now_ms > it->second.t_ms &&
+                 now_ms - it->second.t_ms >= hold_ms_) {
+        // now_ms > guard: push() stamps with a clock read during the drain
+        // loop, poll() with one read before it — the stale-clock diff must
+        // not underflow into an instant gap-skip.
         skipped_ += it->first - next_;
         next_ = it->first;  // give up on the gap; emit from here
       } else {
