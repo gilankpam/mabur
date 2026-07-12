@@ -161,3 +161,99 @@ Plan of attack (half-day):
   re-enable; kernel driver contact requires a full GS power cycle after.
 - Last tap (30 s): 4.87 Mbps, 0 out-of-order, 7.8 % seqs missing, 72 %
   frames bad, ok_fps 16.5.
+
+---
+
+# UPDATE 2026-07-13 (overnight autonomous session): FIX LANDED — video delivery closed
+
+The plan in §4 was executed and it worked, but only after finding and fixing
+a second, hidden bug the interleaver exposed. Post-FEC delivery went from
+**92% (7.8% missing, 72% frames bad)** to **≥99.9% at 10.1 Mbps / MCS5**,
+with several 60 s windows at exactly **0 lost sequences** at 6.5 Mbps.
+
+## What landed (commits, this branch)
+
+1. `0ffcd91` **feat(fec): encoder-side symbol interleaving** (`fec.interleave`)
+   — exactly §4's design: `SymbolInterleaver` between RsEncoder and SbiPacker,
+   one symbol from each of W different blocks per body. Decoder unchanged;
+   flag-off byte-identical to Python (golden vectors pass). Loss-injection
+   matrix in `tests/test_uep_interleave.cpp`.
+2. `7d01768` **latency budget** — FRAG eviction by AGE (block-horizon-tied,
+   count cap kept as backstop), reorder hold 350→300 ms.
+3. `1e6ece3` **fix(gs): stale-clock underflow insta-expired FEC blocks** —
+   THE hidden killer, see below.
+4. `8b151d0` **feat(drone): `radio.power_mode`** = override|offset|none
+   (`none` = leave the efuse per-rate table alone, streamtx-proven;
+   `offset` = fixed `SetTxPowerOffsetQdb` trim; offset/none bypass thermal
+   derate — documented in config.h).
+5. `c7eabb0` **feat(fec): `fec.interleave_depth`** — window W decoupled from
+   blocks_per_body. Depth 32 ⇒ a block spans n·W/bpb bodies (~33–47 ms of
+   air) and shrugs off the 5–20 ms fades that killed depth-8 blocks.
+6. `96f2cde` **tools/bench/rtpsniff.py** — passive AF_PACKET tap of the LIVE
+   session (rtptap's port-swap restarts maburgs = kills the session under
+   test). Caveat: python drops capture above ~2 k pkt/s on the Radxa — at
+   high rates trust the maburgs stats line, not the sniffer.
+
+## The second bug (this is the one to remember)
+
+Interleaving alone made things WORSE on air (u≈1300/s ≈ 2× block rate,
+fl≈1200) while the same code was clean in a realistic-timing loopback sim.
+Diagnostic counters added to the stats line (`dec/si/st/bc/sbf/fl`, `mis=`)
+showed clean bodies (bc=0 sbf=0) but stale-drops ~1000/s below expectation:
+**decoded-block markers were vanishing**. Root cause: `gs/src/main.cpp`
+captured `now_ms`, then **blocked up to 10 ms in `queue.drain()`** — bodies
+processed in that iteration carry NEWER stamps, so `agg.poll(now_ms)` /
+`reorder.poll(now_ms)` ran with a clock OLDER than blocks just created:
+`now - first_seen` (uint64) underflowed ⇒ instant expiry of everything
+created that iteration. Invisible pre-interleave because a block lived and
+died inside ONE drain batch; fatal once blocks spanned many batches. Fixed
+at the call site (re-read clock after drain) + guards in
+`RsDecoder::expire_blocks_older_than`, `RtpReorder::flush`,
+`FragReassembler::sweep_expired`. Tests:
+`expiry_clock_behind_block_is_noop`, `poll_with_stale_clock_never_skips`.
+
+## Measured ladder (established sessions, 3 m NLOS bench, single card)
+
+| config | video rate | post-FEC loss |
+|---|---|---|
+| pre-fix (depth 8 + clock bug, age 250) | 6.5 Mbps | ~31% missing |
+| clock fix, depth 8, mcs4/ov0.25 | 6.5 Mbps | 1.8% (u=11/s, bursty fades) |
+| + mcs5/ov0.5 (same airtime) | 6.5 Mbps | 0.5% |
+| + interleave_depth 32 | 6.5 Mbps | **0 lost seqs / 60 s** |
+| + bitrate pin 11 M (waybeam emits ~10.1) ov0.25 | 10.1 Mbps | 0.11% |
+| + ov0.375 (final overnight config) | ~8–10 Mbps | **0.011% (17 seqs / 180 s, u=3 blocks)** |
+
+Also proven: waybeam terminates frame-final FU chains WITHOUT the E bit
+(rtptap's `lost_end`≈11/s and "18% bad" at ZERO transport loss is stream
+idiosyncrasy, present under wfb-ng too — do not chase it). Waybeam config
+on the bench drone: 1080p60 CBR, `gopSize: 0.1` (sub-second GOP = the big
+s0/IDR share). The 8.5 M pin emitted only 6.5 M on the night scene; the
+11 M pin emitted ~10.1 M.
+
+## Deployed end state (bench, 2026-07-13 ~02:00)
+
+- Drone `/etc/mabur.json`: symbol 164, bpb [8,8,8,8], `interleave: true`,
+  `interleave_depth: 32`, `power_mode: "none"`, max_txagc 40 (irrelevant in
+  none-mode), bitrate pinned 11000–11100, backup at
+  `/etc/mabur.json.bak-il`.
+- GS `/etc/maburgs.json`: symbol 164, `block_max_age_ms: 250`, static
+  mcs5/ov0.375/agc48 (agc irrelevant in none-mode), video_out :5600 (PP),
+  backup at `/etc/maburgs.json.bak-il`. Binaries both rebuilt from this
+  branch (maburgs includes the diagnostic stats fields).
+- Worst-case airtime at the pin: ~10 M × 2.125 ≈ 21 Mbps of MCS5's measured
+  27.4 — ~78% duty. If a daylight scene pushes the encoder to the pin and
+  the link degrades, drop the pin or overhead first.
+
+## Still open (next session)
+
+1. **PP visual confirmation** — all overnight evidence is transport-level
+   (0 gaps / 0 reorder at the UDP sink). Latency check too: depth 32 adds
+   ~25–50 ms encoder buffering at these rates (config knob if too much).
+2. Adaptive re-enable: delivery-closed power/rung loop (finding 9a) — the
+   controller still can't be trusted with open-loop SNR; static mode is the
+   shipped workaround. `power_mode` semantics for the adaptive path TBD
+   (commanded pwr_idx is ignored in none/offset modes).
+3. Per-rung geometry/overhead table (symbol/bpb/depth currently global).
+4. Upstream devourer filings (unchanged list, §5.3) + push
+   `merge-upstream-b5a6df7` (38fdde4) to the fork BEFORE pushing this branch.
+5. G6 staircase (unchanged).
