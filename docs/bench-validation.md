@@ -412,12 +412,19 @@ SysV respawn script (does `rmmod 8812eu` at start).
    match kernel RX sensitivity); (b) path-B RX chain effectively dead →
    no MRC, worst exactly in NLOS multipath (check `GetActiveRxPaths` /
    `DEVOURER_RX_ALLPATHS` per-chain RSSI); (c) drone-side devourer TX
-   power/table application vs kernel TX. Measurement plan (needs two GS
-   power-cycles for uncontaminated arms): fixed drone TX (maburd, agc63,
-   MCS0) → virgin-boot kernel-monitor frame count + RSSI vs virgin-boot
-   devourer duplex count on the same card; then per-chain RSSI dump; then
-   the reciprocal TX A/B against a fixed receiver. File the outcome
-   upstream to the devourer fork with the numbers.
+   power/table application vs kernel TX. **First hard evidence (per-chain
+   SNR EMAs now live in the maburgs stats line, `a=`/`b=`):** across the
+   two 2×2 cards only ONE of four RX chains was alive (c1: path A dead at
+   −5…−15 dB, path B carrying 11–18 dB; c0: BOTH chains at −8…−15), and
+   which chains survive varies per bring-up — devourer's 8822E duplex
+   bring-up leaves RX chains dead nondeterministically, so there is no
+   MRC and often not even one healthy chain per card. The kernel driver
+   runs MRC on both chains on every card; this alone plausibly covers
+   most of the gap. File upstream with these numbers. Remaining plan
+   (needs two GS power-cycles for uncontaminated arms): fixed drone TX →
+   virgin-boot kernel-monitor count/RSSI vs virgin-boot devourer duplex
+   count on the same card; then the reciprocal TX A/B against a fixed
+   receiver.
 8. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
