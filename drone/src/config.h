@@ -38,6 +38,10 @@ struct FecCfg {
   // Symbol interleaving across blocks_per_body RS blocks per body (parity
   // break vs svc_uep_fec.py; decoder needs no flag). See mabur/interleaver.h.
   bool interleave = false;
+  // Interleaver window in blocks (0 = blocks_per_body). Deeper = more
+  // time-diversity against multi-frame fades, + depth blocks of encoder
+  // buffering latency (~1.3 KB per block at symbol 164).
+  int interleave_depth = 0;
 };
 
 struct WaybeamCfg {

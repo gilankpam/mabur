@@ -94,7 +94,7 @@ void parse_radio(const json& j, RadioCfg& r) {
 }
 
 void parse_fec(const json& j, FecCfg& f) {
-  check_known_keys(j, {"k", "symbol_size", "blocks_per_body", "base_overhead", "flush_ms", "interleave"}, "fec");
+  check_known_keys(j, {"k", "symbol_size", "blocks_per_body", "base_overhead", "flush_ms", "interleave", "interleave_depth"}, "fec");
   assign_if_present(j, "k", f.k, "fec");
   assign_if_present(j, "symbol_size", f.symbol_size, "fec");
   if (j.contains("blocks_per_body")) {
@@ -109,12 +109,15 @@ void parse_fec(const json& j, FecCfg& f) {
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
   assign_if_present(j, "interleave", f.interleave, "fec");
+  assign_if_present(j, "interleave_depth", f.interleave_depth, "fec");
 
   if (f.k < 2 || f.k > 32) fail("fec.k", "must be in [2,32]");
   if (f.symbol_size < 16 || f.symbol_size > 1024) fail("fec.symbol_size", "must be in [16,1024]");
   for (int b : f.blocks_per_body)
     if (b < 1 || b > 255) fail("fec.blocks_per_body", "must be in [1,255]");
   if (f.base_overhead < 0.05 || f.base_overhead > 2.0) fail("fec.base_overhead", "must be in [0.05,2.0]");
+  if (f.interleave_depth < 0 || f.interleave_depth > 128)
+    fail("fec.interleave_depth", "must be in [0,128]");
 }
 
 void parse_waybeam(const json& j, WaybeamCfg& w) {
@@ -167,6 +170,7 @@ std::array<UepLayerCfg, 4> Config::uep_layers() const {
     double overhead = uep_layer_overhead(sid, fec.base_overhead);
     layers[static_cast<size_t>(sid)].fec = RsConfig{fec.k, fec.symbol_size, overhead};
     layers[static_cast<size_t>(sid)].blocks_per_body = fec.blocks_per_body[static_cast<size_t>(sid)];
+    layers[static_cast<size_t>(sid)].interleave_depth = fec.interleave_depth;
   }
   return layers;
 }

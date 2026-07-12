@@ -23,10 +23,17 @@ inline constexpr double kUepRefOverhead[4] = {1.00, 0.75, 0.50, 0.25};
 double uep_layer_overhead(int stream_id, double cmd_overhead);
 
 // Per-layer configuration: the RS scheme knobs plus how many FEC envelopes
-// SbiPacker groups into one radio body for this layer.
+// SbiPacker groups into one radio body for this layer. interleave_depth
+// widens the interleaver window beyond blocks_per_body (0 = same as
+// blocks_per_body): a block then spans n * depth/blocks_per_body bodies,
+// buying time-diversity against multi-frame fades at the cost of
+// depth-blocks of encoder buffering latency. Only used when the encoder's
+// interleave flag is on; bodies still carry distinct blocks at any depth
+// >= blocks_per_body (smaller values are clamped up).
 struct UepLayerCfg {
   RsConfig fec;
   int blocks_per_body = 4;
+  int interleave_depth = 0;
 };
 
 // One radio-bound body plus which layer's SBI stream it belongs to.
@@ -87,7 +94,8 @@ class UepEncoder {
     Layer(const UepLayerCfg& cfg, uint8_t sid)
         : fec(cfg.fec),
           rs(cfg.fec),
-          il(cfg.blocks_per_body),
+          il(cfg.interleave_depth > cfg.blocks_per_body ? cfg.interleave_depth
+                                                        : cfg.blocks_per_body),
           packer(11 + cfg.fec.symbol_size, cfg.blocks_per_body, sid),
           usable(cfg.fec.max_packet_size() - 4) {}
   };

@@ -24,12 +24,14 @@ struct SimResult {
   bool mixed_block_bodies_ok = true;  // full bodies carry distinct block_ids
 };
 
-std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base) {
+std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base,
+                                      int depth = 0) {
   std::array<UepLayerCfg, 4> layers{};
   const int bpb[4] = {bpb_base, bpb_base, bpb_base * 2, bpb_base * 2};
   for (int s = 0; s < 4; ++s) {
     layers[s].fec = RsConfig{8, symbol_size, kUepRefOverhead[s]};
     layers[s].blocks_per_body = bpb[s];
+    layers[s].interleave_depth = depth;
   }
   return layers;
 }
@@ -51,8 +53,9 @@ bool body_blocks_distinct(const std::vector<uint8_t>& body, int symbol_size,
 }
 
 SimResult run_sim(int symbol_size, int bpb_base, bool interleave, int n_pkts,
-                  double drop_pct, int burst_len, bool check_mixing = false) {
-  auto layers = layers_for(symbol_size, bpb_base);
+                  double drop_pct, int burst_len, bool check_mixing = false,
+                  int depth = 0) {
+  auto layers = layers_for(symbol_size, bpb_base, depth);
   UepEncoder enc(layers, /*flush_ms=*/15, interleave);
   UepDecoder dec(layers, /*block_max_age_ms=*/2000);
 
@@ -149,6 +152,24 @@ TEST(interleave_survives_burst_loss) {
   auto on = run_sim(164, 8, true, 20000, 1.0, 4);
   CHECK(pct(on) >= 99.0);
   CHECK(pct(on) >= pct(off));
+}
+
+TEST(deeper_window_survives_long_bursts) {
+  // 1% loss events × 12-frame bursts: at depth 8 a burst erases most of a
+  // 14-symbol span; at depth 32 (block spans 56 bodies) it costs each block
+  // at most ~3 symbols. Bodies must still carry distinct blocks even when
+  // depth is not tied to blocks_per_body.
+  auto d8 = run_sim(164, 8, true, 20000, 1.0, 12, /*check_mixing=*/true, 8);
+  auto d32 = run_sim(164, 8, true, 20000, 1.0, 12, /*check_mixing=*/true, 32);
+  CHECK(d8.mixed_block_bodies_ok);
+  CHECK(d32.mixed_block_bodies_ok);
+  CHECK(pct(d32) >= 99.5);
+  CHECK(pct(d32) > pct(d8));
+  // Lossless with a non-multiple depth: alignment/flush must still deliver
+  // everything with distinct-block bodies.
+  auto odd = run_sim(164, 8, true, 5000, 0.0, 1, /*check_mixing=*/true, 12);
+  CHECK(odd.delivered == odd.sent);
+  CHECK(odd.mixed_block_bodies_ok);
 }
 
 TEST(interleave_alternate_geometry) {
