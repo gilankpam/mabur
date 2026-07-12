@@ -398,8 +398,9 @@ SysV respawn script (does `rmmod 8812eu` at start).
    on this channel: drone rides the FAILSAFE floor (~2.5 Mbps effective)
    with brief LINKED excursions. **Do not read that as the channel
    limit — see finding 8.**
-7. **⚠️ ~10 dB performance gap vs the kernel-driver baseline (OPEN — the
-   headline item).** Operator baseline on the SAME path, SAME cards:
+7. **⚠️ ~10 dB performance gap vs the kernel-driver baseline (LARGELY
+   RESOLVED — upstream devourer b5a6df7, merged as ef9b449 / mabur
+   2896083).** Operator baseline on the SAME path, SAME cards:
    kernel driver + wfb-ng runs **MCS5, ~30 Mbps raw / ~17 Mbps video**
    through this NLOS doorway. The mabur stack (devourer both ends)
    settles at MCS0–2 / ~2.5 Mbps with GS SNR reading 10–15 dB at full
@@ -420,11 +421,27 @@ SysV respawn script (does `rmmod 8812eu` at start).
    bring-up leaves RX chains dead nondeterministically, so there is no
    MRC and often not even one healthy chain per card. The kernel driver
    runs MRC on both chains on every card; this alone plausibly covers
-   most of the gap. File upstream with these numbers. Remaining plan
-   (needs two GS power-cycles for uncontaminated arms): fixed drone TX →
-   virgin-boot kernel-monitor count/RSSI vs virgin-boot devourer duplex
-   count on the same card; then the reciprocal TX A/B against a fixed
-   receiver.
+   most of the gap. **Resolution: upstream OpenIPC/devourer `b5a6df7`
+   (landed the same day, independently root-causing the same silicon):
+   the DPDT antenna switch was never routed to WL control, OFDM 1SS TX
+   must ride one path (`0x820`), IGI toggle after every channel set
+   (the intermittent post-switch RX deafness — our dead-chain lottery),
+   phydm runtime DIG/FA/CCA tracking, TXAGC re-apply after FW H2Cs, and
+   the MCS4+/48M+ TX fix. Merged into the fork (`ef9b449`, keeping the
+   radiotap HT LDPC/STBC, coex-retry and zerocopy-off fork fixes;
+   `DEVOURER_PROTECT_PATHB_AGC` retired as superseded), both ends
+   rebuilt and redeployed. On-air after: all 4 RX chains alive (path A
+   33–36 dB, path B 21–26 dB — path A had read −5…−15 everywhere),
+   drone 125/125 stats lines LINKED (zero failsafe, control-link
+   starvation gone at this op), op rock-stable at `mcs2/ov0.25/agc0`
+   (minimum power — thermal solved too), rtp 526/s ≈ 2× prior, stream 0
+   post-FEC 0.000 %.** Residual items: s1 showed ~15 blocks/s
+   unrecoverable at the higher aggregate rate (suspect the finding-2
+   EHCI ceiling — retest, maybe raise s1 blocks_per_body); the
+   controller is energy-min by design so it parks at the cheapest
+   adequate rung (mcs2) rather than chasing wfb-ng's ~17 Mbps — closing
+   the remaining throughput gap is a controller-policy/op-table
+   question now, not RF.
 8. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
