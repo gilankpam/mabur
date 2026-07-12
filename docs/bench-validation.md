@@ -520,7 +520,31 @@ SysV respawn script (does `rmmod 8812eu` at start).
     single remaining blocker is 9a (delivery-closed power/rung control —
     v1.1). Repo defaults left at symbol_size 64 pending the per-rung
     body-sizing design; bench devices run 164.
-11. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
+11. **🐛 GS-restart RCF lockout — FIXED (417ae7c) — and the static-link
+    session that found it.** Static-link mode landed (`link.static_mcs/
+    static_overhead/static_txagc`, c81ad55) to debug with the controller
+    out of the loop. It immediately exposed a metronomic 3 s LINKED /
+    1 s FAILSAFE cycle while the drone was hearing 8-19 control frames
+    EVERY second: the port-added stale-seq window (Python has no stale
+    check at all) persists across GS restarts, so a restarted maburgs
+    (seq near 0) had every RCF rejected for up to 32k seqs — the drone
+    rode keep-alive DISCs alone. **This was the engine behind most of
+    the day's flapping** (it correlated with which side restarted last,
+    not with TX duty as earlier recorded — findings 5/9b are partially
+    superseded; re-quantify duty starvation post-fix). Fix: seq baseline
+    forgotten at session boundaries (failsafe entry, DISC re-link).
+    With the fix, the FIRST VALID MCS5 power sweep (static, 1400 B
+    bodies, 6.8 Mbps source): arrival 70/71/72/71/24/1 % at txagc
+    63/56/48/40/32/16 — plateau 40-63, cliff below 40, NO saturation at
+    63 (the earlier "flat-63 corrupts MCS5" reading was a phantom of the
+    lockout). Remaining gap vs raw streamtx (99.1 %): suspect the flat
+    `SetTxPowerIndexOverride` vs the calibrated per-rate table — v1.1:
+    move maburd to `SetTxPowerOffsetQdb` (devourer's recommended,
+    shape-preserving power lever). **Stable static operating point
+    demonstrated: mcs4 / txagc48 / ov1.00 -> ~6.5 Mbps video delivered,
+    0 unrecoverable, LINKED 67/67** (ov0.50 leaves ~15 % of s1 blocks to
+    bursty air loss; ov1.00 covers it).
+12. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
    Union/dedup still delivered **0.000 %** from two ~50 % receivers — the
@@ -548,7 +572,7 @@ SysV respawn script (does `rmmod 8812eu` at start).
 - [x] **G4 PASS.** Drone reboot under running maburgs: exactly one
   RENDEZVOUS stats line before LINKED (~2 s cold rendezvous) — E5 parity.
 - [x] **G5 PASS (software proxy).** Both cards up in stats with per-card
-  f/cf/snr; union keeps 0.000 % (finding 11 notwithstanding). TX-card drop
+  f/cf/snr; union keeps 0.000 % (finding 12 notwithstanding). TX-card drop
   (`authorized=0`, the closest software analogue to unplug on soldered
   cards): `tx_card` failed over, SESSION held, video uninterrupted, still
   0.000 %. Reattach: front-end reopened via the 2 s backoff, **no process
