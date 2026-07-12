@@ -12,6 +12,8 @@ TEST(score_window_matches_python) {
     CHECK(w.n() == c["n"].get<size_t>());
     if (c["snr_est"].is_null()) CHECK(!w.snr_estimate().has_value());
     else CHECK(*w.snr_estimate() == c["snr_est"].get<double>());
+    if (c["rssi_est"].is_null()) CHECK(!w.rssi_estimate().has_value());
+    else CHECK(*w.rssi_estimate() == c["rssi_est"].get<double>());
     CHECK(w.fcs_loss() == c["fcs_loss"].get<double>());
     CHECK(w.seq_gap_loss() == c["seq_gap_loss"].get<double>());
     CHECK(w.ack_seq() == c["ack_seq"].get<int>());
