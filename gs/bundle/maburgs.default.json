@@ -1,0 +1,16 @@
+{
+  "radio": {
+    "channel": 149,
+    "width": 20,
+    "cards": [{"usb_vid": 3034, "usb_pid": 0, "index": 0}],
+    "tx_card": -1
+  },
+  "fec": {"k": 8, "symbol_size": 64, "block_max_age_ms": 2000},
+  "link": {
+    "vtx_id": 1,
+    "feedback_ms": 100,
+    "beacon_keepalive_ms": 1000,
+    "video_silence_ms": 3000
+  },
+  "video_out": {"host": "127.0.0.1", "port": 5600}
+}

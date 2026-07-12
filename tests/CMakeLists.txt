@@ -36,3 +36,8 @@ if(MABUR_BUILD_DRONE)
   set_tests_properties(host_e2e PROPERTIES
     ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
 endif()
+if(MABUR_BUILD_GS)
+  add_mtest(test_gs_config test_gs_config.cpp LIBS mabur_gs_core)
+  target_compile_definitions(test_gs_config PRIVATE
+    MABUR_GS_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/bundle")
+endif()
