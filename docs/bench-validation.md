@@ -376,8 +376,8 @@ SysV respawn script (does `rmmod 8812eu` at start).
    flaps, 86 % control frames heard. `feedback_ms 50` and
    `airtime_budget 0.45` help marginally; the real fix is devourer-level
    RX-under-TX-load work (v1.1 / G8 follow-up).
-6. **🐛 Controller estimator deadlock at minimum power (OPEN — v1.1 fix
-   required before flying).** Observed live: a fade (operator walking
+6. **🐛 Controller estimator deadlock at minimum power (FIXED — GS
+   starvation guard, b96b505).** Observed live: a fade (operator walking
    through the path, on re-degraded cards) collapsed video decode while the
    controller was at agc0 — and it **stayed** at agc0 with video frozen
    indefinitely. Mechanism: (a) the ScoreWindow SNR feed is
@@ -388,10 +388,17 @@ SysV respawn script (does `rmmod 8812eu` at start).
    delivery; (c) the `video_silence_ms` escape valve never fires because a
    trickle of frames keeps refreshing last-video. High SNR + "100 %"
    delivery ⇒ the controller keeps commanding minimum power. Recovery:
-   restart maburgs (controller reboots at MAX_RANGE). Candidate fixes:
-   treat an empty decode window as 0 % when the session has seen traffic,
-   and/or feed pre-FEC frame-rate continuity into the score, and/or a
-   commanded-power floor while delivery is unmeasurable.
+   restart maburgs (controller reboots at MAX_RANGE). **Fix shipped
+   (b96b505):** a decode window that completed zero base-layer packets
+   (with video previously seen) is flagged starved; `VrxController::step`
+   withholds `ctrl_.update()` so the controller's own blind-side `on_tick`
+   restores MAX_RANGE within `feedback_timeout_ms` — self-heals in ~1–2 s.
+   Bench re-run (150 s, uncapped, NLOS ~3 m through a doorway — note the
+   "bench" was NLOS all along, which also reframes the day's low SNR
+   readings as genuine path loss): rtp steady ~250/s, 0 unrecoverable
+   both streams, no freeze. Steady state on this channel: drone rides the
+   FAILSAFE floor (~2.5 Mbps effective) with brief LINKED excursions —
+   the honest operating point given finding 5.
 7. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
