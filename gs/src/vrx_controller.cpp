@@ -33,7 +33,12 @@ std::optional<VrxController::Out> VrxController::step(
   // Blind-side failsafe: with no feedback (no video -> no update() calls) the
   // controller pins MAX_RANGE, so the first RCF after recovery commands the
   // conservative floor, not the last aggressive point.
-  if (auto op = ctrl_.on_tick(now_ms)) {
+  if (cfg_.pin_mcs >= 0) {
+    // Static-link mode: fixed op, estimator fully out of the loop.
+    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_txagc,
+                      cfg_.pin_overhead, 0.0, 0.0, 1.0};
+    cur_txagc_ = cfg_.pin_txagc;
+  } else if (auto op = ctrl_.on_tick(now_ms)) {
     cur_op_ = *op;
     cur_txagc_ = op->txagc;
   }
@@ -54,7 +59,7 @@ std::optional<VrxController::Out> VrxController::step(
   // Decode collapse: the frames still decoding are the lucky strong ones, so
   // the SNR window lies high while the stream is dead. Withhold the update
   // and let on_tick's blind-side timeout walk the op back to MAX_RANGE.
-  if (auto snr = win_.snr_estimate(); snr && !video_starved) {
+  if (auto snr = win_.snr_estimate(); snr && !video_starved && cfg_.pin_mcs < 0) {
     if (auto op = ctrl_.update(*snr, cur_txagc_, now_ms)) {
       cur_op_ = *op;
       cur_txagc_ = op->txagc;

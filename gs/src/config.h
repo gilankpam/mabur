@@ -52,6 +52,13 @@ struct LinkCfg {
   // path-loss estimate. The durable fix (delivery-closed power loop) is
   // v1.1 work.
   double margin_db = 2.0;
+  // Static-link mode: when static_mcs >= 0 the adaptive controller is
+  // bypassed entirely and every RCF commands exactly this op (HT, 20 MHz).
+  // Rendezvous/keep-alive/failsafe machinery is unaffected. For bench
+  // debugging with a fixed operating point (2026-07-12).
+  int static_mcs = -1;
+  double static_overhead = 0.25;
+  int static_txagc = 63;
 };
 
 /// Video output destination.

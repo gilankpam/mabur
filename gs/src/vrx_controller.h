@@ -17,6 +17,11 @@ struct VrxCfg {
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
   ControllerConfig ctrl;
+  // Static-link pin: mcs >= 0 bypasses the adaptive controller (see
+  // LinkCfg::static_mcs). overhead/txagc used only when pinned.
+  int pin_mcs = -1;
+  double pin_overhead = 0.25;
+  int pin_txagc = 63;
   ScoreConfig score;
   std::vector<uint8_t> bw_set;  // rungs only when >1 entry
 };

@@ -121,3 +121,31 @@ TEST(starved_windows_fall_back_to_max_range) {
   }
   CHECK(!(vrx.cur_op().mcs == 0 && vrx.cur_op().txagc == 63));
 }
+
+// Static-link mode: pin_mcs >= 0 bypasses the adaptive controller — every
+// RCF carries exactly the pinned op regardless of SNR/delivery input, and
+// neither blind-side MAX_RANGE nor ctrl updates can move it.
+TEST(static_pin_overrides_controller) {
+  static LinkTable lt;
+  VrxCfg cfg;
+  cfg.vtx_id = 1;
+  cfg.pin_mcs = 5;
+  cfg.pin_overhead = 0.25;
+  cfg.pin_txagc = 40;
+  VrxController vrx(lt, cfg);
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  std::optional<VrxController::Out> out;
+  double now = 0;
+  for (; now < 8000; now += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    auto o = vrx.step(now, ld, 0.0);
+    if (o && !o->is_disc) out = o;
+  }
+  CHECK(vrx.cur_op().mcs == 5);
+  CHECK(vrx.cur_op().txagc == 40);
+  REQUIRE(out.has_value());
+  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+  REQUIRE(r.has_value());
+  CHECK(r->pwr_idx == 40);
+  CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(0.25));
+}
