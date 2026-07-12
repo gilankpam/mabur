@@ -513,3 +513,34 @@ TEST(bitrate_policy_hysteresis_within_one_second) {
 }
 
 MTEST_MAIN
+
+// A restarted GS resets its RCF seq to ~0 while the drone's tracker holds
+// the old session's high seq — Python has NO stale check (applies every
+// valid RCF), so the port's replay protection must forget its baseline at
+// session boundaries (failsafe entry / DISC re-link) or a GS restart locks
+// the drone out for up to 32k seqs (bench 2026-07-12).
+TEST(gs_restart_low_seq_accepted_after_failsafe) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto old_sess = make_rcf_wire(cfg.link.vtx_id, 40000, profile_byte, 40, 8);
+  agent.on_rc_frame(old_sess.data(), old_sess.size(), 100);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+
+  // GS dies; failsafe fires.
+  agent.tick(1200, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+
+  // Restarted GS: fresh seq numbering near zero must be accepted.
+  auto new_sess = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 40, 8);
+  agent.on_rc_frame(new_sess.data(), new_sess.size(), 1300);
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  uint64_t gen = agent.current().generation;
+
+  // In-session replay protection still works: same seq again is ignored.
+  agent.on_rc_frame(new_sess.data(), new_sess.size(), 1400);
+  CHECK(agent.current().generation == gen);
+}

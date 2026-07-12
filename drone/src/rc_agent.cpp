@@ -246,6 +246,9 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     state_ = State::LINKED;
     last_fb_ms_ = now_ms;
     have_last_fb_ = true;
+    // A DISC establishes a (new) GS session — same session-boundary seq
+    // reset as failsafe entry above.
+    have_last_seq_ = false;
 
     // Same rationale as RCF's entering_linked force: DISC always
     // (re)establishes LINKED from RENDEZVOUS/FAILSAFE, so the newly resolved
@@ -317,6 +320,14 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     if (have_last_fb_ && now_ms - last_fb_ms_ >= static_cast<uint64_t>(cfg_.link.failsafe_ms)) {
       apply_max_range(now_ms);
       state_ = State::FAILSAFE;
+      // Session boundary: forget the RCF seq baseline. The Python VTX has
+      // NO stale-seq check at all (adaptive_link.py applies every valid
+      // RCF); the port added replay protection, which locked out a
+      // RESTARTED GS (its seq restarts at 0 -> every RCF reads stale for
+      // up to 32k seqs, ~28 min at 20 Hz — bench 2026-07-12: metronomic
+      // 3 s LINKED / 1 s FAILSAFE with a healthy air link). Resetting at
+      // failsafe keeps in-session replay protection with no lockout.
+      have_last_seq_ = false;
       // Rebase the rendezvous_ms timer from the moment failsafe was
       // entered (not the last real feedback), so a link silent since t=0
       // with failsafe_ms=1000/rendezvous_ms=30000 falls back to
