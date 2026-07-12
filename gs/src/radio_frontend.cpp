@@ -152,6 +152,11 @@ void RadioFrontend::stop() {
   ready_.store(false, std::memory_order_release);
   alive_.store(false, std::memory_order_release);
   if (handle_) { libusb_release_interface(handle_, 0); libusb_close(handle_); handle_ = nullptr; }
+  // Release the per-adapter advisory lock (claim_interface_then_reset filled
+  // it) or the next open_and_start() on this same card refuses with "already
+  // in use by another devourer process" — the process deadlocks against its
+  // own stale lock and a replugged card can never reopen (bench 2026-07-12).
+  usb_lock_.reset();
   if (usb_ctx_) { libusb_exit(usb_ctx_); usb_ctx_ = nullptr; }
 }
 

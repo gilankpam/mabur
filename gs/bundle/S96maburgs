@@ -1,0 +1,42 @@
+#!/bin/sh
+# maburgs respawn loop for BusyBox-init GS images (OpenIPC SBC GS / buildroot).
+# Mirrors the drone's S96mabur. systemd hosts use maburgs.service instead.
+DAEMON=/usr/local/bin/maburgs
+CONF=/etc/maburgs.json
+PIDFILE=/var/run/maburgs-loop.pid
+
+loop() {
+  while true; do
+    # Truncate on every (re)start: /tmp is RAM-backed, an ever-growing log
+    # across a long respawn loop can exhaust it.
+    "$DAEMON" -c "$CONF" > /tmp/maburgs.log 2>&1
+    echo "maburgs exited ($?) - respawn in 2s" >&2
+    sleep 2
+  done
+}
+
+case "$1" in
+  start)
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && exit 0
+    # devourer owns the cards via libusb; drop the kernel driver so it can't
+    # re-bind them after the USB reset in claim_interface_then_reset.
+    rmmod 8812eu 2>/dev/null
+    loop &
+    echo $! > "$PIDFILE"
+    ;;
+  stop)
+    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE"
+    # The PID kill only stops the respawn-loop subshell; the foreground daemon survives without this.
+    killall maburgs 2>/dev/null
+    ;;
+  restart)
+    "$0" stop
+    sleep 1
+    "$0" start
+    ;;
+  *)
+    echo "usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
