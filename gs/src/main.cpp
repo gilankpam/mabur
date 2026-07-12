@@ -85,6 +85,8 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.op_channel = cfg.radio.channel;
   vcfg.feedback_ms = cfg.link.feedback_ms;
   vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
+  vcfg.ctrl.src_bitrate_bps = cfg.link.src_bitrate_mbps * 1e6;
+  vcfg.ctrl.margin_db = cfg.link.margin_db;
   maburgs::VrxController vrx(lt, vcfg);
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);

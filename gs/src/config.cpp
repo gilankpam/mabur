@@ -32,6 +32,15 @@ long get_int(const json& o, const char* key, long dflt, long lo, long hi,
   return v;
 }
 
+double get_num(const json& o, const char* key, double dflt, double lo,
+               double hi, const std::string& where) {
+  if (!o.contains(key)) return dflt;
+  if (!o[key].is_number()) fail(where + "." + key, "not a number");
+  const double v = o[key].get<double>();
+  if (v < lo || v > hi) fail(where + "." + key, "out of range");
+  return v;
+}
+
 std::string get_str(const json& o, const char* key, const std::string& dflt,
                     const std::string& where) {
   if (!o.contains(key)) return dflt;
@@ -98,11 +107,13 @@ Config load_config(const std::string& path) {
 
   if (j.contains("link")) {
     const json& r = j["link"];
-    check_keys(r, "link", {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "video_silence_ms"});
+    check_keys(r, "link", {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "video_silence_ms", "src_bitrate_mbps", "margin_db"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
     c.link.video_silence_ms = static_cast<int>(get_int(r, "video_silence_ms", 3000, 500, 60000, "link"));
+    c.link.src_bitrate_mbps = get_num(r, "src_bitrate_mbps", 4.0, 0.5, 50.0, "link");
+    c.link.margin_db = get_num(r, "margin_db", 2.0, 0.0, 50.0, "link");
   }
 
   if (j.contains("video_out")) {

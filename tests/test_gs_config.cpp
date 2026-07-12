@@ -62,3 +62,20 @@ TEST(tx_card_validates_against_effective_card_list) {
   CHECK(threw);  // out of range against the effective single default card
 }
 MTEST_MAIN
+
+// link.src_bitrate_mbps drives the controller's energy-model design point
+// (rungs that can't carry src*(1+overhead) are infeasible). Optional,
+// fractional, defaults to the Python controller's 4 Mbps.
+TEST(src_bitrate_mbps_parses_and_defaults) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.src_bitrate_mbps > 3.999 && cfg.link.src_bitrate_mbps < 4.001);
+  cfg = maburgs::load_config(
+      write_tmp("{\"link\": {\"src_bitrate_mbps\": 17.5}}"));
+  CHECK(cfg.link.src_bitrate_mbps > 17.499 && cfg.link.src_bitrate_mbps < 17.501);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"src_bitrate_mbps\": 99}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // out of range
+  cfg = maburgs::load_config(write_tmp("{\"link\": {\"margin_db\": 35}}"));
+  CHECK(cfg.link.margin_db > 34.999 && cfg.link.margin_db < 35.001);
+}
