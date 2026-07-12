@@ -14,4 +14,11 @@ void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len);
 // N×K systematic MDS encoding matrix: top K rows = identity, any K rows
 // invertible. Built once per (k, n) and cached (thread-safe).
 const std::vector<std::vector<uint8_t>>& encoding_matrix(int k, int n);
+
+using Matrix = std::vector<std::vector<uint8_t>>;
+
+// Gauss-Jordan inverse over GF(2^8) — mirror of stream_fec_rs.py's _mat_inv.
+// Throws std::runtime_error on a singular matrix (cannot happen for any K
+// rows of encoding_matrix; the decoder relies on that MDS property).
+Matrix mat_inv(const Matrix& m);
 }  // namespace mabur::gf

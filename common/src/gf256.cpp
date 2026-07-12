@@ -68,6 +68,34 @@ Matrix mat_mul(const Matrix& a, const Matrix& b) {
   return out;
 }
 
+std::mutex& matrix_cache_mutex() {
+  static std::mutex m;
+  return m;
+}
+
+std::map<std::pair<int, int>, Matrix>& matrix_cache() {
+  static std::map<std::pair<int, int>, Matrix> cache;
+  return cache;
+}
+
+}  // namespace
+
+uint8_t mul(uint8_t a, uint8_t b) {
+  if (a == 0 || b == 0) return 0;
+  const Tables& t = tables();
+  return t.exp[static_cast<size_t>(t.log[a]) + t.log[b]];
+}
+
+void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len) {
+  if (coeff == 0) return;
+  const Tables& t = tables();
+  uint8_t lc = t.log[coeff];
+  for (size_t i = 0; i < len; ++i) {
+    uint8_t s = sym[i];
+    if (s) acc[i] = static_cast<uint8_t>(acc[i] ^ t.exp[static_cast<size_t>(lc) + t.log[s]]);
+  }
+}
+
 Matrix mat_inv(const Matrix& m) {
   const Tables& t = tables();
   size_t n = m.size();
@@ -105,34 +133,6 @@ Matrix mat_inv(const Matrix& m) {
   for (size_t i = 0; i < n; ++i)
     for (size_t j = 0; j < n; ++j) inv[i][j] = a[i][n + j];
   return inv;
-}
-
-std::mutex& matrix_cache_mutex() {
-  static std::mutex m;
-  return m;
-}
-
-std::map<std::pair<int, int>, Matrix>& matrix_cache() {
-  static std::map<std::pair<int, int>, Matrix> cache;
-  return cache;
-}
-
-}  // namespace
-
-uint8_t mul(uint8_t a, uint8_t b) {
-  if (a == 0 || b == 0) return 0;
-  const Tables& t = tables();
-  return t.exp[static_cast<size_t>(t.log[a]) + t.log[b]];
-}
-
-void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len) {
-  if (coeff == 0) return;
-  const Tables& t = tables();
-  uint8_t lc = t.log[coeff];
-  for (size_t i = 0; i < len; ++i) {
-    uint8_t s = sym[i];
-    if (s) acc[i] = static_cast<uint8_t>(acc[i] ^ t.exp[static_cast<size_t>(lc) + t.log[s]]);
-  }
 }
 
 const std::vector<std::vector<uint8_t>>& encoding_matrix(int k, int n) {
