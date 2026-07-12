@@ -65,4 +65,24 @@ TEST(drops_are_deterministic_and_independent_per_card) {
   CHECK(!src.next().has_value());    // 100% drop -> nothing
   CHECK(src.dropped() == 6);
 }
+
+TEST(mono_us_same_per_air_frame_across_cards) {
+  FrameFileSource src(write_frames(), FrameFileSource::Options{2, 0, 1});
+  uint64_t prev_mono_us = 0;
+  for (uint8_t i = 0; i < 3; ++i) {
+    auto card0 = src.next();
+    auto card1 = src.next();
+    REQUIRE(card0 && card1);
+    // Two cards emitting the same air frame get equal mono_us
+    CHECK(card0->mono_us == card1->mono_us);
+    // mono_us is strictly increasing across successive air frames
+    CHECK(card0->mono_us > prev_mono_us);
+    prev_mono_us = card0->mono_us;
+  }
+  // Sanity: mono_us > 0 for the first frame
+  src = FrameFileSource(write_frames(), FrameFileSource::Options{2, 0, 1});
+  auto first = src.next();
+  REQUIRE(first);
+  CHECK(first->mono_us > 0);
+}
 MTEST_MAIN

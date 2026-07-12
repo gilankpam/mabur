@@ -49,7 +49,8 @@ bool FrameFileSource::card_drops(int card) {
 
 std::optional<mabur::node::RxBody> FrameFileSource::next() {
   while (frame_i_ < frames_.size()) {
-    const Frame& f = frames_[frame_i_];
+    const size_t frame_index = frame_i_;  // capture before ++card_i_ block may bump frame_i_
+    const Frame& f = frames_[frame_index];
     const int card = card_i_;
     if (++card_i_ >= opt_.cards) {
       card_i_ = 0;
@@ -61,7 +62,7 @@ std::optional<mabur::node::RxBody> FrameFileSource::next() {
     }
     mabur::node::RxBody m;
     m.card_id = static_cast<uint8_t>(card);
-    m.mono_us = (frame_i_ + 1) * 900;   // ~1100 fps, monotone across cards
+    m.mono_us = (frame_index + 1) * 900;  // same air frame -> same timestamp across cards, monotone across frames
     m.rssi[0] = 40; m.rssi[1] = 42;
     m.snr[0] = 25; m.snr[1] = 24;
     m.crc_ok = true;
