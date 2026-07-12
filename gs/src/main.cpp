@@ -17,6 +17,7 @@
 #include "mabur/rc_proto.h"
 #include "op_table.h"
 #include "radio_frontend.h"
+#include "rtp_reorder.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
 #include "vrx_controller.h"
@@ -75,8 +76,40 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::Aggregator agg(cfg.uep_layers(),
                           static_cast<uint64_t>(cfg.fec.block_max_age_ms), n_cards);
   maburgs::UdpSink udp(cfg.video_out.host, cfg.video_out.port);
+  // RTP order health of the emitted stream (bench 2026-07-13): packets
+  // leave on FEC-block completion, so ordering is NOT guaranteed by
+  // construction — a live decoder discards late/reordered RTP that the
+  // transport counters happily count as delivered. seq16 from the RTP
+  // header; fwd_gap = skipped-ahead seqs (missing-at-emit or reorder),
+  // back = packets emitted behind the highest seq seen (late emissions).
+  struct RtpOrder {
+    bool has_last = false;
+    uint16_t last = 0;
+    uint64_t in_order = 0, fwd_gap = 0, back = 0, gap_seqs = 0;
+  } rtp_order;
+  // Reorder buffer between the FEC decoder and the UDP sink; the order
+  // tracker sits AFTER it, so ord[] in the stats line reports the health of
+  // the stream the decoder actually receives.
+  maburgs::RtpReorder reorder(
+      [&](const std::vector<uint8_t>& pkt) {
+        if (pkt.size() >= 4) {
+          const uint16_t seq = static_cast<uint16_t>((pkt[2] << 8) | pkt[3]);
+          if (rtp_order.has_last) {
+            const uint16_t d = static_cast<uint16_t>(seq - rtp_order.last);
+            if (d == 1) ++rtp_order.in_order;
+            else if (d >= 1 && d <= 32767) { ++rtp_order.fwd_gap; rtp_order.gap_seqs += d - 1; }
+            else ++rtp_order.back;
+            if (d >= 1 && d <= 32767) rtp_order.last = seq;
+          } else {
+            rtp_order.has_last = true;
+            rtp_order.last = seq;
+          }
+        }
+        udp.send(pkt.data(), pkt.size());
+      },
+      /*hold_ms=*/100);
   agg.set_rtp_sink([&](const mabur::DecodedRtp& r) {
-    udp.send(r.pkt.data(), r.pkt.size());
+    reorder.push(r.pkt, mono_ms());
   });
 
   maburgs::LinkTable lt;
@@ -132,6 +165,7 @@ static int run_radio(const maburgs::Config& cfg) {
       }
     }
     agg.poll(now_ms_u);
+    reorder.poll(now_ms_u);
 
     // Control step: layer delivery + residual from the decode window.
     std::array<uint8_t, 4> ld{};
@@ -187,6 +221,14 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned long long>(st.packets_out),
                      static_cast<unsigned long long>(st.blocks_unrecoverable));
       }
+      std::fprintf(stderr, " ord[ok=%llu gap=%llu(+%llu) back=%llu buf=%zu skip=%llu late=%llu]",
+                   static_cast<unsigned long long>(rtp_order.in_order),
+                   static_cast<unsigned long long>(rtp_order.fwd_gap),
+                   static_cast<unsigned long long>(rtp_order.gap_seqs),
+                   static_cast<unsigned long long>(rtp_order.back),
+                   reorder.depth(),
+                   static_cast<unsigned long long>(reorder.skipped()),
+                   static_cast<unsigned long long>(reorder.late_dropped()));
       std::fprintf(stderr, "\n");
     }
   }
