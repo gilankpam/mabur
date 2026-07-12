@@ -141,6 +141,46 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(!act.bitrates.empty());
 }
 
+// 2b. Keep-alive DISC while LINKED is ignored end-to-end — Python parity
+// (rendezvous.feed_disc: `if self.state not in (RC_LOST, DISCOVERY): return
+// None`). The GS sends a SESSION keep-alive DISC (~1 Hz, init_profile 0 =
+// MAX_RANGE row) so a drone that silently fell back re-links immediately; a
+// healthy LINKED drone must not ACK it, must not apply the init profile
+// (which would yank the op to MAX_RANGE/floor every second — bench-observed
+// op thrash, 2026-07-12), and must not refresh the failsafe watchdog.
+TEST(keepalive_disc_while_linked_is_ignored) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  // Link via RCF at a non-default rung (mcs2, pwr 40, ov 0.5).
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 40, 8);
+  agent.on_rc_frame(rcf.data(), rcf.size(), 100);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  const uint64_t gen = agent.current().generation;
+  const size_t n_controls = act.controls.size();
+  const size_t n_bitrates = act.bitrates.size();
+
+  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20,
+                             /*init_profile=*/0, /*seq=*/7);
+  agent.on_rc_frame(disc.data(), disc.size(), 600);
+
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.current().generation == gen);   // op untouched (no MAX_RANGE yank)
+  CHECK(agent.current().ladder[1].mcs == 2);  // still the RCF rung
+  CHECK(act.controls.size() == n_controls);   // no DISC_ACK
+  CHECK(act.bitrates.size() == n_bitrates);   // bitrate policy not re-forced
+
+  // The ignored DISC must not have refreshed the failsafe watchdog: last
+  // real feedback was the RCF at t=100, so failsafe_ms=1000 fires at t=1100.
+  agent.tick(1099, RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  agent.tick(1100, RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+}
+
 // 3. RCF profile HT mcs2/20, pwr 40, fec16=8 (ov=0.5) -> op ladder T1=mcs3/
 // T2=mcs4, pwr 40, ov 0.5; set_bitrate_kbps called with ~5100.
 TEST(rcf_apply_computes_ladder_power_fec_and_bitrate) {

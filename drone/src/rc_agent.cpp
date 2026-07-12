@@ -211,6 +211,15 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     auto d = rc::parse_disc(body, len);
     if (!d.has_value() || d->vtx_id != cfg_.link.vtx_id) return;
 
+    // Python parity (rendezvous.feed_disc: `if self.state not in (RC_LOST,
+    // DISCOVERY): return None`): a DISC only re-establishes a lost link. The
+    // GS's SESSION keep-alive DISC (~1 Hz) exists for a drone that silently
+    // fell back to rendezvous; a LINKED drone must ignore it outright — no
+    // DISC_ACK, no init-profile apply, no watchdog refresh. Without this
+    // guard every heard keep-alive yanked the op to the MAX_RANGE row and
+    // floor bitrate once a second (bench-observed op thrash, 2026-07-12).
+    if (state_ == State::LINKED) return;
+
     // Echo the drone's ACTUAL operating channel/width, not the GS-requested
     // d->op_channel/op_width — the drone doesn't retune in v1 (its channel
     // is fixed from its own config at startup), so acking back the GS's
