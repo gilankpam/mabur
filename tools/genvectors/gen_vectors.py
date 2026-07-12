@@ -202,4 +202,91 @@ dump("profile.json", {"profiles": prof_cases, "probe": probe_cases,
                       "table": [{"ladder": p.svc_ladder, "pwr": p.pwr_idx,
                                  "ov": p.fec_overhead, "bw": p.bw}
                                 for p in rc_proto.DEFAULT_PROFILE_TABLE]})
+
+# --- rs decode -----------------------------------------------------------
+# Adversarial decode scenarios; expected outputs from the Python RsDecoder.
+cfg_d = stream_fec.FecConfig(k=8, symbol_size=64, overhead=1.0, scheme="rs")
+enc_d = stream_fec_rs.RsEncoder(cfg_d)
+d_pkts = [pat(n, i) for i, n in enumerate(PKT_SIZES)]
+d_envs = []
+for p in d_pkts:
+    d_envs += enc_d.add_packet(p)
+d_envs += enc_d.flush()
+blocks = [d_envs[i:i + 16] for i in range(0, len(d_envs), 16)]  # n=16 at ov=1.0
+assert len(blocks) >= 2 and all(len(b) == 16 for b in blocks)
+
+bad_k = bytearray(blocks[0][0]); bad_k[3] = 5  # header k != cfg.k -> bad_cfg drop
+scenarios = {
+    "systematic_only": [e for b in blocks for e in b[:8]],
+    "parity_heavy": [e for b in blocks for e in b[4:16]],       # 4 stale drops/blk
+    "parity_only_first_block": blocks[0][8:16] + [e for b in blocks[1:] for e in b[:8]],
+    "reordered": [e for b in blocks for e in reversed(b[:9])],  # 1 stale drop/blk
+    "duplicates": [e for b in blocks for e in (b[:8] + b[:2])],
+    "bad_cfg_then_clean": [bytes(bad_k)] + blocks[0][:8],
+}
+rsd_cases = []
+for name, seq in scenarios.items():
+    dec = stream_fec_rs.RsDecoder(cfg_d)
+    out = []
+    for e in seq:
+        out += dec.add_symbol(e)
+    rsd_cases.append({"name": name, "k": 8, "symbol_size": 64,
+                      "envelopes": [hx(e) for e in seq],
+                      "packets": [hx(p) for p in out],
+                      "blocks_decoded": dec.blocks_decoded,
+                      "dropped_stale": dec.symbols_dropped_stale_block,
+                      "dropped_bad_cfg": dec.symbols_dropped_bad_cfg})
+dump("rs_decode.json", {"cases": rsd_cases})
+
+# --- sbi unpack ----------------------------------------------------------
+su_cases = []
+for bh in sbi_stream + sbi_flush:
+    body = bytes.fromhex(bh)
+    variants = [("clean", body)]
+    c1 = bytearray(body); c1[fec_subblock.SBI_HDR_LEN + 2 + 3] ^= 0xFF  # 1st sub-blk payload
+    variants.append(("one_subblock_corrupt", bytes(c1)))
+    c2 = bytearray(body); c2[0] ^= 0xFF                                  # header magic
+    variants.append(("header_corrupt", bytes(c2)))
+    for name, b in variants:
+        r = fec_subblock.unpack(b, 75)
+        su_cases.append({"name": name, "body": hx(b), "block_payload": 75,
+                         "survivors": [hx(s) for s in r.survivors],
+                         "n_blocks": r.n_blocks, "n_failed": r.n_failed,
+                         "header_ok": r.header_ok, "stream_id": r.stream_id})
+su_cases.append({"name": "short", "body": hx(b"\xb0\xf5\x00"), "block_payload": 75,
+                 "survivors": [], "n_blocks": 0, "n_failed": 0,
+                 "header_ok": False, "stream_id": 0})
+dump("sbi_unpack.json", {"cases": su_cases})
+
+# --- node (RxBody / CardStatus, NEW mabur wire format v0) -----------------
+def pack_rx_body(card_id, mono_us, rssi, snr, crc_ok, mac_seq, body):
+    hdr = struct.pack("<HBBQBBbbBHH", 0xF5A0, 0, card_id, mono_us,
+                      rssi[0], rssi[1], snr[0], snr[1],
+                      1 if crc_ok else 0, mac_seq, len(body))
+    buf = hdr + body
+    return buf + struct.pack("<H", fec_subblock.crc16_ccitt(buf))
+
+def pack_card_status(card_id, mono_us, frames_seen, crc_fail, uptime_s):
+    buf = struct.pack("<HBBQIII", 0xF5A5, 0, card_id, mono_us,
+                      frames_seen, crc_fail, uptime_s)
+    return buf + struct.pack("<H", fec_subblock.crc16_ccitt(buf))
+
+nb_cases = [
+    {"card_id": 0, "mono_us": 0, "rssi": [0, 0], "snr": [0, 0], "crc_ok": True,
+     "mac_seq": 0, "body": hx(b"")},
+    {"card_id": 3, "mono_us": 1720000123456, "rssi": [42, 55], "snr": [25, -3],
+     "crc_ok": False, "mac_seq": 4095, "body": hx(pat(75, 9))},
+    {"card_id": 1, "mono_us": 2**63, "rssi": [200, 131], "snr": [127, -128],
+     "crc_ok": True, "mac_seq": 2048, "body": hx(pat(1239, 2))},
+]
+for c in nb_cases:
+    c["wire"] = hx(pack_rx_body(c["card_id"], c["mono_us"], c["rssi"], c["snr"],
+                                c["crc_ok"], c["mac_seq"], bytes.fromhex(c["body"])))
+cs_cases = [{"card_id": 2, "mono_us": 5_000_000, "frames_seen": 123456,
+             "crc_fail": 78, "uptime_s": 3600}]
+for c in cs_cases:
+    c["wire"] = hx(pack_card_status(c["card_id"], c["mono_us"], c["frames_seen"],
+                                    c["crc_fail"], c["uptime_s"]))
+dump("node.json", {"rx_body": nb_cases, "card_status": cs_cases})
+
 print("done")
