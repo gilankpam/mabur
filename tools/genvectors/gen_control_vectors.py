@@ -44,3 +44,31 @@ g_cases = [{"need_db": d,
            for d in [0.0, 0.001, 5.0, 24.9, 25.0, 30.0]]
 dump("energy.json", {"cases": e_cases, "gain": g_cases,
                      "bw_noise": [{"bw": b, "db": em.bw_noise_db(b)} for b in (20, 40, 80)]})
+
+# --- optable ------------------------------------------------------------------
+import link_model as lm
+import op_table
+
+link = lm.LinkModel()
+snr_req = [{"mcs": m, "ov": ov, "target": t,
+            "req": link.snr_required(m, ov, t)}
+           for m in range(8) for ov in (0.10, 0.25, 0.50, 0.75, 1.00)
+           for t in (0.90, 0.99, 0.999)]
+rows = op_table.build_link_rows(link, 0.99, range(8),
+                                (0.10, 0.25, 0.50, 0.75, 1.00), 20)
+res_cases = []
+for pl in (-10.0, 0.0, 5.5, 12.0, 30.0):
+    for r in rows[::7]:                       # sample every 7th row
+        op = op_table.resolve(r, pl, cal, link, 1024, 4e6, 2.0)
+        res_cases.append({
+            "row": {"vht": r.mode == "vht", "mcs": r.mcs, "bw": r.bw,
+                    "sgi": r.sgi, "ov": r.overhead, "snr_req": r.snr_req},
+            "pl": pl,
+            "op": None if op is None else {
+                "txagc": op.txagc, "e_bit": None if op.e_bit == float("inf") else op.e_bit,
+                "p_deliver": op.p_deliver}})
+dump("optable.json", {"snr_req": snr_req,
+                      "rows": [{"vht": r.mode == "vht", "mcs": r.mcs, "bw": r.bw,
+                                "sgi": r.sgi, "ov": r.overhead, "snr_req": r.snr_req}
+                               for r in rows],
+                      "resolve": res_cases})

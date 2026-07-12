@@ -1,0 +1,1504 @@
+{
+ "resolve": [
+  {
+   "op": null,
+   "pl": -10.0,
+   "row": {
+    "bw": 20,
+    "mcs": 0,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 15.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.9705847731370196e-07,
+    "p_deliver": 1.0,
+    "txagc": 36
+   },
+   "pl": -10.0,
+   "row": {
+    "bw": 20,
+    "mcs": 1,
+    "ov": 0.5,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.867343800080128e-07,
+    "p_deliver": 1.0,
+    "txagc": 36
+   },
+   "pl": -10.0,
+   "row": {
+    "bw": 20,
+    "mcs": 2,
+    "ov": 1.0,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": null,
+   "pl": -10.0,
+   "row": {
+    "bw": 20,
+    "mcs": 4,
+    "ov": 0.25,
+    "sgi": false,
+    "snr_req": 21.0,
+    "vht": false
+   }
+  },
+  {
+   "op": null,
+   "pl": -10.0,
+   "row": {
+    "bw": 20,
+    "mcs": 5,
+    "ov": 0.75,
+    "sgi": false,
+    "snr_req": 21.5,
+    "vht": false
+   }
+  },
+  {
+   "op": null,
+   "pl": -10.0,
+   "row": {
+    "bw": 20,
+    "mcs": 7,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 33.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.9871108367168814e-07,
+    "p_deliver": 0.997,
+    "txagc": 22
+   },
+   "pl": 0.0,
+   "row": {
+    "bw": 20,
+    "mcs": 0,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 15.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.3587585261418267e-07,
+    "p_deliver": 1.0,
+    "txagc": 13
+   },
+   "pl": 0.0,
+   "row": {
+    "bw": 20,
+    "mcs": 1,
+    "ov": 0.5,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.3072677784455128e-07,
+    "p_deliver": 1.0,
+    "txagc": 13
+   },
+   "pl": 0.0,
+   "row": {
+    "bw": 20,
+    "mcs": 2,
+    "ov": 1.0,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.1890091020633013e-07,
+    "p_deliver": 1.0,
+    "txagc": 44
+   },
+   "pl": 0.0,
+   "row": {
+    "bw": 20,
+    "mcs": 4,
+    "ov": 0.25,
+    "sgi": false,
+    "snr_req": 21.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.2595501239483173e-07,
+    "p_deliver": 1.0,
+    "txagc": 47
+   },
+   "pl": 0.0,
+   "row": {
+    "bw": 20,
+    "mcs": 5,
+    "ov": 0.75,
+    "sgi": false,
+    "snr_req": 21.5,
+    "vht": false
+   }
+  },
+  {
+   "op": null,
+   "pl": 0.0,
+   "row": {
+    "bw": 20,
+    "mcs": 7,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 33.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.620130037303551e-07,
+    "p_deliver": 0.9985,
+    "txagc": 13
+   },
+   "pl": 5.5,
+   "row": {
+    "bw": 20,
+    "mcs": 0,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 15.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.1345694861778846e-07,
+    "p_deliver": 1.0,
+    "txagc": 6
+   },
+   "pl": 5.5,
+   "row": {
+    "bw": 20,
+    "mcs": 1,
+    "ov": 0.5,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.102041366185897e-07,
+    "p_deliver": 1.0,
+    "txagc": 6
+   },
+   "pl": 5.5,
+   "row": {
+    "bw": 20,
+    "mcs": 2,
+    "ov": 1.0,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.026698592748397e-07,
+    "p_deliver": 1.0,
+    "txagc": 23
+   },
+   "pl": 5.5,
+   "row": {
+    "bw": 20,
+    "mcs": 4,
+    "ov": 0.25,
+    "sgi": false,
+    "snr_req": 21.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.0742553335336538e-07,
+    "p_deliver": 1.0,
+    "txagc": 25
+   },
+   "pl": 5.5,
+   "row": {
+    "bw": 20,
+    "mcs": 5,
+    "ov": 0.75,
+    "sgi": false,
+    "snr_req": 21.5,
+    "vht": false
+   }
+  },
+  {
+   "op": null,
+   "pl": 5.5,
+   "row": {
+    "bw": 20,
+    "mcs": 7,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 33.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.249942612235661e-07,
+    "p_deliver": 0.9985,
+    "txagc": 5
+   },
+   "pl": 12.0,
+   "row": {
+    "bw": 20,
+    "mcs": 0,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 15.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.8727088341346154e-07,
+    "p_deliver": 1.0,
+    "txagc": 0
+   },
+   "pl": 12.0,
+   "row": {
+    "bw": 20,
+    "mcs": 1,
+    "ov": 0.5,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.8623297275641024e-07,
+    "p_deliver": 1.0,
+    "txagc": 0
+   },
+   "pl": 12.0,
+   "row": {
+    "bw": 20,
+    "mcs": 2,
+    "ov": 1.0,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.9298998710436697e-07,
+    "p_deliver": 1.0,
+    "txagc": 12
+   },
+   "pl": 12.0,
+   "row": {
+    "bw": 20,
+    "mcs": 4,
+    "ov": 0.25,
+    "sgi": false,
+    "snr_req": 21.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.9593480881911056e-07,
+    "p_deliver": 1.0,
+    "txagc": 13
+   },
+   "pl": 12.0,
+   "row": {
+    "bw": 20,
+    "mcs": 5,
+    "ov": 0.75,
+    "sgi": false,
+    "snr_req": 21.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 2.0262941403686944e-07,
+    "p_deliver": 0.9965,
+    "txagc": 47
+   },
+   "pl": 12.0,
+   "row": {
+    "bw": 20,
+    "mcs": 7,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 33.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.924601862980769e-07,
+    "p_deliver": 1.0,
+    "txagc": 0
+   },
+   "pl": 30.0,
+   "row": {
+    "bw": 20,
+    "mcs": 0,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 15.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.8727088341346154e-07,
+    "p_deliver": 1.0,
+    "txagc": 0
+   },
+   "pl": 30.0,
+   "row": {
+    "bw": 20,
+    "mcs": 1,
+    "ov": 0.5,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.8623297275641024e-07,
+    "p_deliver": 1.0,
+    "txagc": 0
+   },
+   "pl": 30.0,
+   "row": {
+    "bw": 20,
+    "mcs": 2,
+    "ov": 1.0,
+    "sgi": false,
+    "snr_req": 9.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.7881547976762818e-07,
+    "p_deliver": 1.0,
+    "txagc": 0
+   },
+   "pl": 30.0,
+   "row": {
+    "bw": 20,
+    "mcs": 4,
+    "ov": 0.25,
+    "sgi": false,
+    "snr_req": 21.0,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.792198768028846e-07,
+    "p_deliver": 1.0,
+    "txagc": 0
+   },
+   "pl": 30.0,
+   "row": {
+    "bw": 20,
+    "mcs": 5,
+    "ov": 0.75,
+    "sgi": false,
+    "snr_req": 21.5,
+    "vht": false
+   }
+  },
+  {
+   "op": {
+    "e_bit": 1.8197738297985256e-07,
+    "p_deliver": 0.9965,
+    "txagc": 5
+   },
+   "pl": 30.0,
+   "row": {
+    "bw": 20,
+    "mcs": 7,
+    "ov": 0.1,
+    "sgi": false,
+    "snr_req": 33.5,
+    "vht": false
+   }
+  }
+ ],
+ "rows": [
+  {
+   "bw": 20,
+   "mcs": 0,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 15.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 0,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 9.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 0,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 7.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 0,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 7.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 0,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 5.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 1,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 17.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 1,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 11.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 1,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 9.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 1,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 9.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 1,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 7.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 2,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 17.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 2,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 13.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 2,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 11.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 2,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 11.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 2,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 9.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 3,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 21.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 3,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 17.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 3,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 15.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 3,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 13.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 3,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 13.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 4,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 25.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 4,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 21.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 4,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 19.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 4,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 17.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 4,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 17.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 5,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 29.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 5,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 25.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 5,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 23.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 5,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 21.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 5,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 21.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 6,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 31.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 6,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 27.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 6,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 25.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 6,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 23.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 6,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 23.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 7,
+   "ov": 0.1,
+   "sgi": false,
+   "snr_req": 33.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 7,
+   "ov": 0.25,
+   "sgi": false,
+   "snr_req": 29.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 7,
+   "ov": 0.5,
+   "sgi": false,
+   "snr_req": 27.5,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 7,
+   "ov": 0.75,
+   "sgi": false,
+   "snr_req": 27.0,
+   "vht": false
+  },
+  {
+   "bw": 20,
+   "mcs": 7,
+   "ov": 1.0,
+   "sgi": false,
+   "snr_req": 25.5,
+   "vht": false
+  }
+ ],
+ "snr_req": [
+  {
+   "mcs": 0,
+   "ov": 0.1,
+   "req": 13.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 0,
+   "ov": 0.1,
+   "req": 15.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 0,
+   "ov": 0.1,
+   "req": 21.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 0,
+   "ov": 0.25,
+   "req": 9.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 0,
+   "ov": 0.25,
+   "req": 9.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 0,
+   "ov": 0.25,
+   "req": 11.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 0,
+   "ov": 0.5,
+   "req": 7.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 0,
+   "ov": 0.5,
+   "req": 7.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 0,
+   "ov": 0.5,
+   "req": 9.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 0,
+   "ov": 0.75,
+   "req": 5.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 0,
+   "ov": 0.75,
+   "req": 7.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 0,
+   "ov": 0.75,
+   "req": 7.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 0,
+   "ov": 1.0,
+   "req": 5.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 0,
+   "ov": 1.0,
+   "req": 5.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 0,
+   "ov": 1.0,
+   "req": 5.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 1,
+   "ov": 0.1,
+   "req": 15.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 1,
+   "ov": 0.1,
+   "req": 17.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 1,
+   "ov": 0.1,
+   "req": 19.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 1,
+   "ov": 0.25,
+   "req": 11.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 1,
+   "ov": 0.25,
+   "req": 11.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 1,
+   "ov": 0.25,
+   "req": 13.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 1,
+   "ov": 0.5,
+   "req": 9.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 1,
+   "ov": 0.5,
+   "req": 9.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 1,
+   "ov": 0.5,
+   "req": 9.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 1,
+   "ov": 0.75,
+   "req": 7.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 1,
+   "ov": 0.75,
+   "req": 9.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 1,
+   "ov": 0.75,
+   "req": 9.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 1,
+   "ov": 1.0,
+   "req": 7.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 1,
+   "ov": 1.0,
+   "req": 7.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 1,
+   "ov": 1.0,
+   "req": 7.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 2,
+   "ov": 0.1,
+   "req": 17.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 2,
+   "ov": 0.1,
+   "req": 17.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 2,
+   "ov": 0.1,
+   "req": 21.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 2,
+   "ov": 0.25,
+   "req": 13.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 2,
+   "ov": 0.25,
+   "req": 13.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 2,
+   "ov": 0.25,
+   "req": 15.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 2,
+   "ov": 0.5,
+   "req": 11.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 2,
+   "ov": 0.5,
+   "req": 11.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 2,
+   "ov": 0.5,
+   "req": 11.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 2,
+   "ov": 0.75,
+   "req": 9.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 2,
+   "ov": 0.75,
+   "req": 11.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 2,
+   "ov": 0.75,
+   "req": 11.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 2,
+   "ov": 1.0,
+   "req": 9.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 2,
+   "ov": 1.0,
+   "req": 9.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 2,
+   "ov": 1.0,
+   "req": 9.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 3,
+   "ov": 0.1,
+   "req": 19.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 3,
+   "ov": 0.1,
+   "req": 21.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 3,
+   "ov": 0.1,
+   "req": 23.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 3,
+   "ov": 0.25,
+   "req": 15.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 3,
+   "ov": 0.25,
+   "req": 17.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 3,
+   "ov": 0.25,
+   "req": 17.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 3,
+   "ov": 0.5,
+   "req": 13.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 3,
+   "ov": 0.5,
+   "req": 15.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 3,
+   "ov": 0.5,
+   "req": 15.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 3,
+   "ov": 0.75,
+   "req": 13.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 3,
+   "ov": 0.75,
+   "req": 13.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 3,
+   "ov": 0.75,
+   "req": 13.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 3,
+   "ov": 1.0,
+   "req": 11.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 3,
+   "ov": 1.0,
+   "req": 13.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 3,
+   "ov": 1.0,
+   "req": 13.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 4,
+   "ov": 0.1,
+   "req": 23.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 4,
+   "ov": 0.1,
+   "req": 25.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 4,
+   "ov": 0.1,
+   "req": 27.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 4,
+   "ov": 0.25,
+   "req": 19.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 4,
+   "ov": 0.25,
+   "req": 21.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 4,
+   "ov": 0.25,
+   "req": 21.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 4,
+   "ov": 0.5,
+   "req": 17.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 4,
+   "ov": 0.5,
+   "req": 19.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 4,
+   "ov": 0.5,
+   "req": 19.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 4,
+   "ov": 0.75,
+   "req": 17.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 4,
+   "ov": 0.75,
+   "req": 17.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 4,
+   "ov": 0.75,
+   "req": 17.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 4,
+   "ov": 1.0,
+   "req": 15.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 4,
+   "ov": 1.0,
+   "req": 17.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 4,
+   "ov": 1.0,
+   "req": 17.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 5,
+   "ov": 0.1,
+   "req": 27.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 5,
+   "ov": 0.1,
+   "req": 29.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 5,
+   "ov": 0.1,
+   "req": 31.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 5,
+   "ov": 0.25,
+   "req": 23.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 5,
+   "ov": 0.25,
+   "req": 25.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 5,
+   "ov": 0.25,
+   "req": 25.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 5,
+   "ov": 0.5,
+   "req": 21.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 5,
+   "ov": 0.5,
+   "req": 23.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 5,
+   "ov": 0.5,
+   "req": 23.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 5,
+   "ov": 0.75,
+   "req": 21.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 5,
+   "ov": 0.75,
+   "req": 21.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 5,
+   "ov": 0.75,
+   "req": 21.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 5,
+   "ov": 1.0,
+   "req": 19.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 5,
+   "ov": 1.0,
+   "req": 21.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 5,
+   "ov": 1.0,
+   "req": 21.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 6,
+   "ov": 0.1,
+   "req": 29.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 6,
+   "ov": 0.1,
+   "req": 31.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 6,
+   "ov": 0.1,
+   "req": 37.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 6,
+   "ov": 0.25,
+   "req": 25.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 6,
+   "ov": 0.25,
+   "req": 27.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 6,
+   "ov": 0.25,
+   "req": 27.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 6,
+   "ov": 0.5,
+   "req": 23.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 6,
+   "ov": 0.5,
+   "req": 25.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 6,
+   "ov": 0.5,
+   "req": 25.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 6,
+   "ov": 0.75,
+   "req": 23.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 6,
+   "ov": 0.75,
+   "req": 23.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 6,
+   "ov": 0.75,
+   "req": 23.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 6,
+   "ov": 1.0,
+   "req": 21.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 6,
+   "ov": 1.0,
+   "req": 23.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 6,
+   "ov": 1.0,
+   "req": 23.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 7,
+   "ov": 0.1,
+   "req": 33.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 7,
+   "ov": 0.1,
+   "req": 33.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 7,
+   "ov": 0.1,
+   "req": 39.5,
+   "target": 0.999
+  },
+  {
+   "mcs": 7,
+   "ov": 0.25,
+   "req": 29.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 7,
+   "ov": 0.25,
+   "req": 29.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 7,
+   "ov": 0.25,
+   "req": 31.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 7,
+   "ov": 0.5,
+   "req": 27.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 7,
+   "ov": 0.5,
+   "req": 27.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 7,
+   "ov": 0.5,
+   "req": 29.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 7,
+   "ov": 0.75,
+   "req": 25.5,
+   "target": 0.9
+  },
+  {
+   "mcs": 7,
+   "ov": 0.75,
+   "req": 27.0,
+   "target": 0.99
+  },
+  {
+   "mcs": 7,
+   "ov": 0.75,
+   "req": 27.0,
+   "target": 0.999
+  },
+  {
+   "mcs": 7,
+   "ov": 1.0,
+   "req": 25.0,
+   "target": 0.9
+  },
+  {
+   "mcs": 7,
+   "ov": 1.0,
+   "req": 25.5,
+   "target": 0.99
+  },
+  {
+   "mcs": 7,
+   "ov": 1.0,
+   "req": 27.0,
+   "target": 0.999
+  }
+ ]
+}

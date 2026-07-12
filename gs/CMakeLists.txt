@@ -3,7 +3,8 @@ add_library(mabur_gs_core STATIC
   src/aggregator.cpp
   src/udp_sink.cpp
   src/frame_file_source.cpp
-  src/energy.cpp)
+  src/energy.cpp
+  src/op_table.cpp)
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
