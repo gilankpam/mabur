@@ -204,20 +204,28 @@ int main(int argc, char** argv) {
     else { std::fprintf(stderr, "error: unknown arg %s\n", a.c_str()); usage(); return 2; }
   }
 
+  if (!dry_run) {
+    // real-radio mode: load config, then run. (Branches off BEFORE the
+    // dry-run-only arg checks, exactly where the Plan-1 stub sat.)
+    maburgs::Config cfg;
+    try { cfg = maburgs::load_config(config_path); }
+    catch (const std::exception& e) { std::fprintf(stderr, "error: %s\n", e.what()); return 2; }
+    return run_radio(cfg);
+  }
+
+  // ---- dry-run path: MUST be byte-identical to Plan 1 ----
+  if (in_path.empty()) { usage(); return 2; }
+  if (src_opt.cards < 1) {
+    std::fprintf(stderr, "error: --cards must be >= 1\n");
+    usage();
+    return 2;
+  }
+
   maburgs::Config cfg;
   try {
     cfg = maburgs::load_config(config_path);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
-    return 2;
-  }
-
-  if (!dry_run) return run_radio(cfg);
-
-  if (in_path.empty()) { usage(); return 2; }
-  if (src_opt.cards < 1) {
-    std::fprintf(stderr, "error: --cards must be >= 1\n");
-    usage();
     return 2;
   }
 
