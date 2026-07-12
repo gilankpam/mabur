@@ -376,7 +376,23 @@ SysV respawn script (does `rmmod 8812eu` at start).
    flaps, 86 % control frames heard. `feedback_ms 50` and
    `airtime_budget 0.45` help marginally; the real fix is devourer-level
    RX-under-TX-load work (v1.1 / G8 follow-up).
-6. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
+6. **🐛 Controller estimator deadlock at minimum power (OPEN — v1.1 fix
+   required before flying).** Observed live: a fade (operator walking
+   through the path, on re-degraded cards) collapsed video decode while the
+   controller was at agc0 — and it **stayed** at agc0 with video frozen
+   indefinitely. Mechanism: (a) the ScoreWindow SNR feed is
+   survivor-biased — at faint signal only the luckiest frames decode, and
+   their SNR reads high (EMA showed 38–48 dB while the GS heard 20–40 fps
+   of a 1,750 fps stream); (b) `window_delivery_pct` returns **100 when the
+   window saw no traffic**, so total decode collapse reads as perfect
+   delivery; (c) the `video_silence_ms` escape valve never fires because a
+   trickle of frames keeps refreshing last-video. High SNR + "100 %"
+   delivery ⇒ the controller keeps commanding minimum power. Recovery:
+   restart maburgs (controller reboots at MAX_RANGE). Candidate fixes:
+   treat an empty decode window as 0 % when the session has seen traffic,
+   and/or feed pre-FEC frame-rate continuity into the score, and/or a
+   commanded-power floor while delivery is unmeasurable.
+7. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
    Union/dedup still delivered **0.000 %** from two ~50 % receivers — the
@@ -404,7 +420,7 @@ SysV respawn script (does `rmmod 8812eu` at start).
 - [x] **G4 PASS.** Drone reboot under running maburgs: exactly one
   RENDEZVOUS stats line before LINKED (~2 s cold rendezvous) — E5 parity.
 - [x] **G5 PASS (software proxy).** Both cards up in stats with per-card
-  f/cf/snr; union keeps 0.000 % (finding 6 notwithstanding). TX-card drop
+  f/cf/snr; union keeps 0.000 % (finding 7 notwithstanding). TX-card drop
   (`authorized=0`, the closest software analogue to unplug on soldered
   cards): `tx_card` failed over, SESSION held, video uninterrupted, still
   0.000 %. Reattach: front-end reopened via the 2 s backoff, **no process
@@ -415,7 +431,10 @@ SysV respawn script (does `rmmod 8812eu` at start).
 - [x] **G7 PASS.** Survives a full GS power-cycle: S96maburgs auto-starts,
   relinks, G1 numbers achieved on the Radxa itself. CPU ~8 % (maburgs) +
   ~4 % (PixelPilot). USB with 2 cards: stable through the session; findings
-  1/6 are the caveats to carry.
+  1/7 are the caveats to carry. Caution learned post-hoc: the G5
+  `authorized`-toggles themselves re-contaminate chip state (the doctor
+  doc's warning, bench-confirmed) — after any toggle test, power-cycle the
+  GS before trusting RX sensitivity again.
 - [ ] **G8 (record-only, carried).** `DEVOURER_PROTECT_PATHB_AGC` A/B remains
   impossible in-link (the skip corrupts all TX in TX+RX mode); desense at
   range still untested. Finding 5 belongs on this list for range work too.
