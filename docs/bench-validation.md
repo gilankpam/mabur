@@ -393,13 +393,32 @@ SysV respawn script (does `rmmod 8812eu` at start).
    (with video previously seen) is flagged starved; `VrxController::step`
    withholds `ctrl_.update()` so the controller's own blind-side `on_tick`
    restores MAX_RANGE within `feedback_timeout_ms` — self-heals in ~1–2 s.
-   Bench re-run (150 s, uncapped, NLOS ~3 m through a doorway — note the
-   "bench" was NLOS all along, which also reframes the day's low SNR
-   readings as genuine path loss): rtp steady ~250/s, 0 unrecoverable
-   both streams, no freeze. Steady state on this channel: drone rides the
-   FAILSAFE floor (~2.5 Mbps effective) with brief LINKED excursions —
-   the honest operating point given finding 5.
-7. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
+   Bench re-run (150 s, uncapped, NLOS ~3 m through a doorway): rtp
+   steady ~250/s, 0 unrecoverable both streams, no freeze. Steady state
+   on this channel: drone rides the FAILSAFE floor (~2.5 Mbps effective)
+   with brief LINKED excursions. **Do not read that as the channel
+   limit — see finding 8.**
+7. **⚠️ ~10 dB performance gap vs the kernel-driver baseline (OPEN — the
+   headline item).** Operator baseline on the SAME path, SAME cards:
+   kernel driver + wfb-ng runs **MCS5, ~30 Mbps raw / ~17 Mbps video**
+   through this NLOS doorway. The mabur stack (devourer both ends)
+   settles at MCS0–2 / ~2.5 Mbps with GS SNR reading 10–15 dB at full
+   drone power — a **~7× throughput deficit**, so the path supports
+   ~20+ dB SNR and the loss is in our stack, not the air. The day's
+   functional gates (G1–G5, G7) validate correctness, NOT performance
+   parity; parity is currently failing. Suspects, in order: (a) devourer
+   8822E RX quality vs the vendor driver (the RX-only-deaf bug already
+   shows this bring-up has gaps; TX+RX mode works but was never shown to
+   match kernel RX sensitivity); (b) path-B RX chain effectively dead →
+   no MRC, worst exactly in NLOS multipath (check `GetActiveRxPaths` /
+   `DEVOURER_RX_ALLPATHS` per-chain RSSI); (c) drone-side devourer TX
+   power/table application vs kernel TX. Measurement plan (needs two GS
+   power-cycles for uncontaminated arms): fixed drone TX (maburd, agc63,
+   MCS0) → virgin-boot kernel-monitor frame count + RSSI vs virgin-boot
+   devourer duplex count on the same card; then per-chain RSSI dump; then
+   the reciprocal TX A/B against a fixed receiver. File the outcome
+   upstream to the devourer fork with the numbers.
+8. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
    Union/dedup still delivered **0.000 %** from two ~50 % receivers — the
@@ -427,7 +446,7 @@ SysV respawn script (does `rmmod 8812eu` at start).
 - [x] **G4 PASS.** Drone reboot under running maburgs: exactly one
   RENDEZVOUS stats line before LINKED (~2 s cold rendezvous) — E5 parity.
 - [x] **G5 PASS (software proxy).** Both cards up in stats with per-card
-  f/cf/snr; union keeps 0.000 % (finding 7 notwithstanding). TX-card drop
+  f/cf/snr; union keeps 0.000 % (finding 8 notwithstanding). TX-card drop
   (`authorized=0`, the closest software analogue to unplug on soldered
   cards): `tx_card` failed over, SESSION held, video uninterrupted, still
   0.000 %. Reattach: front-end reopened via the 2 s backoff, **no process
@@ -438,7 +457,7 @@ SysV respawn script (does `rmmod 8812eu` at start).
 - [x] **G7 PASS.** Survives a full GS power-cycle: S96maburgs auto-starts,
   relinks, G1 numbers achieved on the Radxa itself. CPU ~8 % (maburgs) +
   ~4 % (PixelPilot). USB with 2 cards: stable through the session; findings
-  1/7 are the caveats to carry. Caution learned post-hoc: the G5
+  1/8 are the caveats to carry. Caution learned post-hoc: the G5
   `authorized`-toggles themselves re-contaminate chip state (the doctor
   doc's warning, bench-confirmed) — after any toggle test, power-cycle the
   GS before trusting RX sensitivity again.
