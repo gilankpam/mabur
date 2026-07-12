@@ -442,7 +442,36 @@ SysV respawn script (does `rmmod 8812eu` at start).
    adequate rung (mcs2) rather than chasing wfb-ng's ~17 Mbps — closing
    the remaining throughput gap is a controller-policy/op-table
    question now, not RF.
-8. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
+8. **Raw-link MCS sweep — radio at kernel/wfb-ng parity (2026-07-12,
+   post-merge).** streamtx (drone, duplex-mode bring-up, LDPC, 1400 B
+   payloads) -> duplex (GS), 3 m NLOS, per-MCS 15-20 s floods, RX counted
+   at the GS (hits resolution 500):
+
+   | MCS | PHY | ideal goodput | TX pace | pre-FEC delivered | actual goodput |
+   |---|---|---|---|---|---|
+   | 0 | 6.5 | 6.1 Mbps | 417 fps (76 %) | 93.8 % | 4.4 Mbps |
+   | 2 | 19.5 | 17.4 | 1127 fps (73 %) | 97.9 % | 12.4 Mbps |
+   | 4 | 39 | 32.4 | 1982 fps (69 %) | 98.9 % | 22.0 Mbps |
+   | 5 | 52 | 41.3 | 2467 fps (67 %) | 99.1 % | 27.4 Mbps |
+   | 7 | 65 | 51.7 | 2869 fps (65 %) | 92.1 % | 29.6 Mbps |
+
+   (ideal = back-to-back 1461 B MPDUs, ~36 us HT preamble + ~10 us gap, no
+   aggregation.) **MCS5 raw goodput 27.4 Mbps at 99.1 % delivery ==
+   the operator's wfb-ng baseline (~30 Mbps raw at MCS5)** - the radio
+   underneath is no longer the bottleneck; the remaining ~30 % vs ideal is
+   per-frame USB injection overhead (no aggregation), same class as
+   wfb-ng's. MCS7 delivery dips to 92 % - MCS5/6 is this path's sweet
+   spot. Method traps hit on the way (recorded so the next sweep is
+   30 min, not 3 h): streamtx/duplex PID lists lack a81a
+   (DEVOURER_PID=0xa81a required); mabur cross-builds compile devourer
+   with -DDEVOURER_LOG_MAX_LEVEL=WARN which strips the JSONL event plane
+   (build benchmark tools from a default-flags tree); drone-side
+   standalone TX needs DEVOURER_TX_WITH_RX=thread (maburd's bring-up) --
+   and **PSDUs > ~600 B and <= 3000 B silently never air on the 8822E**
+   (accepted over USB, discarded pre-air; 600 B airs, 3000 B does not -
+   bisect the exact bound and file upstream; mabur's ~600 B bodies are
+   safe).
+9. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
    card A's RX loop is live yields run-to-run varying per-card RX quality
    (one card can come up near-deaf; which one swaps with config order).
    Union/dedup still delivered **0.000 %** from two ~50 % receivers — the
