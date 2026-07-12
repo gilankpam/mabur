@@ -107,7 +107,7 @@ static int run_radio(const maburgs::Config& cfg) {
         }
         udp.send(pkt.data(), pkt.size());
       },
-      /*hold_ms=*/100);
+      /*hold_ms=*/350);
   agg.set_rtp_sink([&](const mabur::DecodedRtp& r) {
     reorder.push(r.pkt, mono_ms());
   });
@@ -217,9 +217,10 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       for (int s = 0; s < 4; ++s) {
         const auto st = agg.decoder().stats(s);
-        std::fprintf(stderr, " s%d[p=%llu u=%llu]", s,
+        std::fprintf(stderr, " s%d[p=%llu u=%llu fe=%llu]", s,
                      static_cast<unsigned long long>(st.packets_out),
-                     static_cast<unsigned long long>(st.blocks_unrecoverable));
+                     static_cast<unsigned long long>(st.blocks_unrecoverable),
+                     static_cast<unsigned long long>(st.frag_evicted));
       }
       std::fprintf(stderr, " ord[ok=%llu gap=%llu(+%llu) back=%llu buf=%zu skip=%llu late=%llu]",
                    static_cast<unsigned long long>(rtp_order.in_order),
