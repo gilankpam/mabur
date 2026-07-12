@@ -41,4 +41,5 @@ if(MABUR_BUILD_GS)
   target_compile_definitions(test_gs_config PRIVATE
     MABUR_GS_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/bundle")
   add_mtest(test_aggregator test_aggregator.cpp LIBS mabur_gs_core)
+  add_mtest(test_udp_sink test_udp_sink.cpp LIBS mabur_gs_core)
 endif()
