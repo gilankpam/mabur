@@ -6,7 +6,8 @@ add_library(mabur_gs_core STATIC
   src/energy.cpp
   src/op_table.cpp
   src/score.cpp
-  src/controller.cpp)
+  src/controller.cpp
+  src/rendezvous.cpp)
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
