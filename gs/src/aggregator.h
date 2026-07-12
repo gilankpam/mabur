@@ -17,6 +17,9 @@ struct CardTrack {
   uint64_t frames = 0, crc_fail = 0, rc_frames = 0, video_bodies = 0;
   uint64_t seq_expected = 0, seq_received = 0;
   double rssi_b_ema = 0.0, snr_ema = 0.0;
+  // Per-RX-chain SNR EMAs (path A / path B). A dead path B = no MRC
+  // diversity, worth real dB in NLOS multipath (2026-07-12 perf-gap triage).
+  double snr_a_ema = 0.0, snr_b_ema = 0.0;
   bool has_ema = false, has_seq = false;
   uint16_t last_seq = 0;
   uint64_t last_frame_us = 0;

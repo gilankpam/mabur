@@ -46,10 +46,14 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     if (!c.has_ema) {
       c.rssi_b_ema = m.rssi[1];
       c.snr_ema = snr;
+      c.snr_a_ema = m.snr[0];
+      c.snr_b_ema = m.snr[1];
       c.has_ema = true;
     } else {
       c.rssi_b_ema = (1 - kEmaAlpha) * c.rssi_b_ema + kEmaAlpha * m.rssi[1];
       c.snr_ema = (1 - kEmaAlpha) * c.snr_ema + kEmaAlpha * snr;
+      c.snr_a_ema = (1 - kEmaAlpha) * c.snr_a_ema + kEmaAlpha * m.snr[0];
+      c.snr_b_ema = (1 - kEmaAlpha) * c.snr_b_ema + kEmaAlpha * m.snr[1];
     }
   }
 

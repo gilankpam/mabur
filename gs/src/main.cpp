@@ -170,10 +170,11 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(queue.dropped()));
       for (int i = 0; i < n_cards; ++i) {
         const auto& t = agg.card(i);
-        std::fprintf(stderr, " c%d[%s f=%llu cf=%llu snr=%.1f]", i,
-                     fronts[static_cast<size_t>(i)]->alive() ? "up" : "DOWN",
+        std::fprintf(stderr, " c%d[%s f=%llu cf=%llu snr=%.1f a=%.1f b=%.1f]",
+                     i, fronts[static_cast<size_t>(i)]->alive() ? "up" : "DOWN",
                      static_cast<unsigned long long>(t.frames),
-                     static_cast<unsigned long long>(t.crc_fail), t.snr_ema);
+                     static_cast<unsigned long long>(t.crc_fail), t.snr_ema,
+                     t.snr_a_ema, t.snr_b_ema);
       }
       for (int s = 0; s < 4; ++s) {
         const auto st = agg.decoder().stats(s);
