@@ -83,10 +83,10 @@ Config load_config(const std::string& path) {
         c.radio.cards.push_back(card);
       }
     }
-    if (c.radio.tx_card >= static_cast<int>(c.radio.cards.size()))
-      fail("radio.tx_card", "no such card");
   }
   if (c.radio.cards.empty()) c.radio.cards.push_back(CardCfg{});
+  if (c.radio.tx_card >= static_cast<int>(c.radio.cards.size()))
+    fail("radio.tx_card", "no such card");
 
   if (j.contains("fec")) {
     const json& r = j["fec"];

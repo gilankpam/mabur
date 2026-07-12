@@ -48,4 +48,17 @@ TEST(errors_are_fail_fast) {
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // zero cards is a config error
 }
+
+TEST(tx_card_validates_against_effective_card_list) {
+  // Test: tx_card 0 with default single card should load without error
+  auto cfg = maburgs::load_config(write_tmp("{\"radio\": {\"tx_card\": 0}}"));
+  CHECK(cfg.radio.cards.size() == 1);
+  CHECK(cfg.radio.tx_card == 0);
+
+  // Test: tx_card 5 with default single card should fail (out of range)
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"radio\": {\"tx_card\": 5}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // out of range against the effective single default card
+}
 MTEST_MAIN
