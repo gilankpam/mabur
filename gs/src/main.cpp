@@ -59,6 +59,11 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (in_path.empty()) { usage(); return 2; }
+  if (src_opt.cards < 1) {
+    std::fprintf(stderr, "error: --cards must be >= 1\n");
+    usage();
+    return 2;
+  }
 
   maburgs::Config cfg;
   try {
@@ -109,11 +114,12 @@ int main(int argc, char** argv) {
   // Final expiry so unrecoverable blocks are accounted before the report.
   agg.poll(last_ms + static_cast<uint64_t>(cfg.fec.block_max_age_ms) + 1);
 
-  std::fprintf(stderr, "frames=%llu dropped=%llu malformed=%llu rc=%llu\n",
+  std::fprintf(stderr, "frames=%llu dropped=%llu malformed=%llu rc=%llu bad_card=%llu\n",
                static_cast<unsigned long long>(src.frames_read()),
                static_cast<unsigned long long>(src.dropped()),
                static_cast<unsigned long long>(src.malformed()),
-               static_cast<unsigned long long>(rc_frames));
+               static_cast<unsigned long long>(rc_frames),
+               static_cast<unsigned long long>(agg.bad_card_msgs()));
   for (int c = 0; c < n_cards; ++c) {
     const auto& t = agg.card(c);
     std::fprintf(stderr,
