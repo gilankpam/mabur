@@ -31,9 +31,16 @@ class VrxController {
     std::vector<uint8_t> frame;
     bool is_disc;
   };
+  // video_starved: the decode window since the last RCF completed ZERO
+  // base-layer packets while video frames were still arriving. The SNR
+  // estimate is survivor-biased in that regime (only the luckiest frames
+  // decode, reading 30+ dB while the stream is effectively dead), so the
+  // controller update is skipped and its blind-side on_tick restores
+  // MAX_RANGE after feedback_timeout_ms (bench 2026-07-12 deadlock fix).
   std::optional<Out> step(double now_ms,
                           const std::array<uint8_t, 4>& layer_delivery,
-                          std::optional<double> residual_loss);
+                          std::optional<double> residual_loss,
+                          bool video_starved = false);
   const OpPoint& cur_op() const;
   VrxState link_state() const;
   uint16_t rcf_seq() const;

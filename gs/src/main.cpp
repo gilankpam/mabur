@@ -138,7 +138,12 @@ static int run_radio(const maburgs::Config& cfg) {
     std::optional<double> residual;
     if (e0 + e1 > 0)
       residual = 1.0 - static_cast<double>(d0 + d1) / static_cast<double>(e0 + e1);
-    if (auto out = vrx.step(now_ms, ld, residual)) {
+    // Zero completed base-layer packets while video frames still arrive =
+    // decode collapse; the SNR window is survivor-biased then (see
+    // VrxController::step). Gate on having ever seen video so a pre-link
+    // idle window doesn't count as starvation.
+    const bool starved = (e0 + e1 == 0) && agg.last_video_us() != 0;
+    if (auto out = vrx.step(now_ms, ld, residual, starved)) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period
       std::vector<maburgs::CardSnapshot> snaps;
       for (int i = 0; i < n_cards; ++i) {

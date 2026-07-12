@@ -84,3 +84,40 @@ TEST(disc_ack_feeds_rendezvous) {
   CHECK(vrx.link_state() == VrxState::SESSION);
 }
 MTEST_MAIN
+
+// Starvation guard: a decode-collapse window (zero completed base-layer
+// packets) must NOT feed the controller the survivor-biased SNR of the few
+// frames that still decode — bench 2026-07-12: at NLOS range the estimator
+// read 38-48 dB off a 20 fps trickle of a 1,750 fps stream, delivery read
+// 100 (empty window), and the controller pinned agc0 with video frozen
+// indefinitely. With video_starved=true the update is skipped, so the
+// controller's own blind-side on_tick (feedback_timeout_ms) restores
+// MAX_RANGE and the link self-heals.
+TEST(starved_windows_fall_back_to_max_range) {
+  auto vrx = make();
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  // Healthy phase: strong SNR, real traffic -> controller walks off the
+  // MAX_RANGE floor (same stimulus as the pacing test).
+  double now = 0;
+  for (; now < 8000; now += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    vrx.step(now, ld, 0.0);
+  }
+  REQUIRE(!(vrx.cur_op().mcs == 0 && vrx.cur_op().txagc == 63));
+
+  // Collapse phase: survivor frames keep arriving with HIGH reported SNR,
+  // but the caller signals starvation (no completed packets this window).
+  for (; now < 10000; now += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    vrx.step(now, ld, std::nullopt, /*video_starved=*/true);
+  }
+  CHECK(vrx.cur_op().mcs == 0);
+  CHECK(vrx.cur_op().txagc == 63);
+
+  // Traffic returns -> updates resume, controller may walk up again.
+  for (; now < 18000; now += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    vrx.step(now, ld, 0.0);
+  }
+  CHECK(!(vrx.cur_op().mcs == 0 && vrx.cur_op().txagc == 63));
+}
