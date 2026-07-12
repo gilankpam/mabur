@@ -17,7 +17,9 @@ RsDecoder::RsDecoder(const RsConfig& cfg) : cfg_(cfg) {}
 std::vector<std::vector<uint8_t>> RsDecoder::add_symbol(const uint8_t* env,
                                                         size_t len,
                                                         uint64_t now_ms) {
-  if (len < kRsHeaderLen || rd_u16(env) != kRsMagic) return {};
+  // Reject if envelope too short, magic wrong, or version (env[2]) nonzero.
+  // Version check matches Python's stream_fec_rs.py _unpack_header.
+  if (len < kRsHeaderLen || rd_u16(env) != kRsMagic || env[2] != 0) return {};
   const int k = env[3], kreal = env[4];
   const int ss = rd_u16(env + 5);
   const uint16_t block_id = rd_u16(env + 7);
@@ -97,6 +99,8 @@ std::vector<std::vector<uint8_t>> RsDecoder::unpack(
 }
 
 int RsDecoder::expire_blocks_older_than(uint64_t max_age_ms, uint64_t now_ms) {
+  // Precondition: now_ms must be monotonic non-decreasing across calls.
+  // Passing a now_ms below a block's first_seen_ms underflows and expires it immediately.
   int unrecoverable = 0;
   for (auto it = blocks_.begin(); it != blocks_.end();) {
     if (now_ms - it->second.first_seen_ms > max_age_ms) {

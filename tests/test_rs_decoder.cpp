@@ -50,4 +50,27 @@ TEST(expiry_counts_unrecoverable) {
   CHECK(dec.blocks_unrecoverable() == 1);
   CHECK(dec.in_flight_blocks() == 0);
 }
+
+TEST(reject_nonzero_version_byte) {
+  // Nonzero version byte (env[2]) must be rejected like bad magic,
+  // with no counter change. Matches Python stream_fec_rs.py _unpack_header.
+  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rs_decode.json");
+  auto e = mtest::unhex(j["cases"][0]["envelopes"][0].get<std::string>());
+  // Sanity: envelope must start with kRsMagic (0xF540 little-endian = "40f5")
+  CHECK(e[0] == 0x40 && e[1] == 0xF5);
+  CHECK(e[2] == 0x00);  // version is 0 in golden vector
+
+  // Flip version to 1, keeping everything else the same.
+  e[2] = 0x01;
+
+  RsDecoder dec(RsConfig{8, 64, 1.0});
+  uint64_t prev_symbols_in = dec.symbols_in();
+  uint64_t prev_dropped = dec.symbols_dropped_bad_cfg();
+
+  // add_symbol should return empty, with no counter increments.
+  auto result = dec.add_symbol(e.data(), e.size(), 0);
+  CHECK(result.empty());
+  CHECK(dec.symbols_in() == prev_symbols_in);  // no increment
+  CHECK(dec.symbols_dropped_bad_cfg() == prev_dropped);  // no increment
+}
 MTEST_MAIN

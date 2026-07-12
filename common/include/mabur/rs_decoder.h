@@ -26,6 +26,7 @@ class RsDecoder {
 
   // Drops blocks first seen more than max_age_ms ago; undecoded ones count
   // as unrecoverable. Returns how many were unrecoverable.
+  // Precondition: now_ms must be monotonic non-decreasing across calls.
   int expire_blocks_older_than(uint64_t max_age_ms, uint64_t now_ms);
 
   uint64_t blocks_decoded() const { return blocks_decoded_; }
