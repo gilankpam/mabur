@@ -29,4 +29,15 @@ TEST(peek_stream_id) {
       CHECK(sid == -1);  // header_corrupt (bad magic) and short both peek -1
   }
 }
+
+TEST(negative_block_payload_guard) {
+  // Guard against negative block_payload causing unbounded OOB reads.
+  // Reaching this assertion proves no OOB occurred (no crash).
+  uint8_t buf[100] = {};
+  auto r = sbi_unpack(buf, sizeof(buf), -1);
+  CHECK(r.survivors.empty());
+  CHECK(r.n_blocks == 0);
+  CHECK(r.n_failed == 0);
+}
+
 MTEST_MAIN

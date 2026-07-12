@@ -63,6 +63,9 @@ uint16_t sbi_rd_u16(const uint8_t* p) {
 
 SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload) {
   SbiUnpackResult r;
+  // Memory-safety guard: negative block_payload would wrap stride to a huge value,
+  // causing unbounded reads in crc16_ccitt(). Python is safe via slice semantics.
+  if (block_payload <= 0) return r;
   const size_t stride = 2 + static_cast<size_t>(block_payload);
   if (len >= static_cast<size_t>(SBI_HDR_LEN)) {
     const uint16_t magic = sbi_rd_u16(body);
