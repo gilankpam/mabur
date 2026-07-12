@@ -71,4 +71,9 @@ void UepDecoder::reset_window() {
   }
 }
 
+std::pair<uint64_t, uint64_t> UepDecoder::window_counts(int sid) const {
+  const Layer& L = layers_[static_cast<size_t>(sid)];
+  return {L.win_delivered, L.win_expected};
+}
+
 }  // namespace mabur

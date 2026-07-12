@@ -45,6 +45,11 @@ class UepDecoder {
   int window_delivery_pct(int sid) const;
   void reset_window();
 
+  // Raw window counters {delivered, expected} for stream sid — callers that
+  // combine streams (e.g. residual loss over the never-shed base layers)
+  // need the counts, not the rounded percent.
+  std::pair<uint64_t, uint64_t> window_counts(int sid) const;
+
  private:
   struct Layer {
     explicit Layer(const UepLayerCfg& cfg)

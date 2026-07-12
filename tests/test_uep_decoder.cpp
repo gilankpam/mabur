@@ -79,4 +79,11 @@ TEST(window_delivery_full_on_clean_stream) {
   dec.reset_window();
   for (int s = 0; s < 4; ++s) CHECK(dec.window_delivery_pct(s) == 100);  // empty = 100
 }
+
+TEST(window_counts_accessor) {
+  UepDecoder dec(vec_layers());
+  auto [d, e] = dec.window_counts(0);
+  CHECK(d == 0);
+  CHECK(e == 0);
+}
 MTEST_MAIN
