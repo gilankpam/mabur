@@ -502,18 +502,25 @@ Each scenario has a pass criterion from the spec's Testing section.
 ## Deferred to a future iteration (not bench-blocking)
 
 - **Devourer follow-ups from the 2026-07-12 bench (file/fix on the fork):**
-  1. **Host bring-up is 41 s on the 8822E** (measured, duplex on the GS
-     host, timestamps from a clean profile run): power-on+FW 6.5 s →
-     BB/AGC/RF register tables **15 s** (~40,300 one-at-a-time USB control
-     transfers ≈ 370 µs each) → IQK **13 s** → TXGAPK **6 s** → RX loop at
-     41 s. The drone's identical chip through the same code brings up in a
-     couple of seconds (embedded EHCI round-trips are ~an order of
-     magnitude faster), so the chip doesn't need 41 s — the host is
-     per-transfer-latency bound. Improvement: **batch/aggregate the table
-     writes** (would collapse the 15 s phase to ~1 s); bench palliatives:
-     keep duplex resident instead of restarting per capture, and
-     `DEVOURER_DISABLE_IQK=1` saves ~13 s when calibration accuracy doesn't
-     matter (monitoring, not measurement).
+  1. **Bring-up is 41 s only on the PC dev host — the real GS is fine
+     (VALIDATED 2026-07-12).** Cold `duplex` bring-up measured on the
+     deployment GS (Radxa Zero 3W, 8812EU on its EHCI bus, static aarch64
+     musl cross-build of devourer, stderr stage lines timestamped
+     externally): **3.58 s total with full calibration** — power-on 0.09 s
+     → FW download+boot 0.68 s → BB/AGC/RF tables 1.9 s → cal_init 0.7 s →
+     IQK 0.42 s (times=1, fail_step=0) → TXGAPK 0.51 s → RX loop at
+     3.58 s. So the earlier "41 s on the 8822E" profile is a PC-host
+     pathology, not a chip or devourer-design problem, and it is only
+     partly per-transfer latency: GS sync reads are 243 µs/op (`reglat`)
+     vs ~370 µs on the PC (1.5×), yet PC IQK is 31× slower (13 s vs
+     0.42 s) — an untriaged PC-specific effect (suspects: IQK poll
+     timeout/retry behavior, xHCI write-path latency). Follow-up demoted
+     accordingly: **batch/aggregate table writes** is now only a PC-dev
+     nicety (measured on the GS: queued control URBs at depth ≥ 4 run at
+     66 µs/op vs 240 µs sync, so ~3.6× is available if ever wanted). PC
+     palliatives unchanged: keep duplex resident instead of restarting per
+     capture, and `DEVOURER_DISABLE_IQK=1` saves ~13 s there when
+     calibration accuracy doesn't matter (monitoring, not measurement).
   2. **8822E RX-only bring-up near-deaf** (the E1-session bug, see the
      late-session section above): `Init`/rxdemo path hears ~nothing while
      `InitWrite`+`StartRxLoop` (duplex/maburd mode) is lossless on the same
