@@ -122,3 +122,33 @@ rung_stats = {str(bw): [d, n] for bw, (d, n) in rw.stats().items()}
 dump("score.json", {"score": score_cases,
                     "rung": {"bw_set": [20, 40], "seqs": rung_seqs,
                              "stats": rung_stats}})
+
+# --- controller replay --------------------------------------------------------
+from controller import Controller, ControllerConfig
+
+ctrl = Controller(link, cal, ControllerConfig(target=0.99, allow_shed=False,
+                                              src_bitrate_bps=4e6))
+def op_out(op):
+    if op is None:
+        return None
+    return {"vht": op.mode == "vht", "mcs": op.mcs, "bw": op.bw,
+            "txagc": op.txagc, "ov": op.overhead}
+
+applied_txagc = 32
+replay = []
+for t in range(200):
+    now = t * 100.0
+    pl = 35.0 - abs(t - 100) * 0.45          # far -> close -> far triangle
+    if 120 <= t < 135:                        # feedback blackout: on_tick path
+        op = ctrl.on_tick(now)
+        replay.append({"kind": "tick", "now": now, "out": op_out(op)})
+    else:
+        snr = pl + cal.gain_db(applied_txagc)
+        op = ctrl.update(snr, applied_txagc, now)
+        replay.append({"kind": "update", "now": now, "snr": snr,
+                       "txagc": applied_txagc, "out": op_out(op)})
+        if op is not None:
+            applied_txagc = op.txagc
+dump("controller_replay.json", {"cfg": {"target": 0.99, "allow_shed": False,
+                                        "src_bitrate_bps": 4e6},
+                                "trace": replay})
