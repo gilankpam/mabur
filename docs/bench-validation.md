@@ -318,6 +318,117 @@ the drone TX or the air link. Two GS-receiver findings:
   Cross-receiver RSSI caveat: raw RSSI is not comparable between chips —
   the EU reports lower raw values than the AU while receiving losslessly.
 
+## Bench results — 2026-07-12 (evening session): maburgs on the Radxa (Task 13, G-series)
+
+Rig: drone SSC338Q `maburd` @192.168.10.152 (8812EU); GS **Radxa Zero 3W**
+(OpenIPC SBC GS buildroot image, BusyBox init, no systemd) @10.18.0.1 with
+**two 8812EU soldered** behind a USB2 hub on the EHCI bus; PixelPilot on the
+GS as the `:5600` RTP sink. maburgs = static aarch64 (`tools/build-arm64.sh`);
+the systemd bundle doesn't apply to this image → new `gs/bundle/S96maburgs`
+SysV respawn script (does `rmmod 8812eu` at start).
+
+### Root-caused findings (chronological)
+
+1. **Kernel-driver chip contamination (deployment requirement).** The image's
+   `8812eu` kernel module auto-loads at boot and on every re-enumeration;
+   `rmmod` actively de-inits the RF and **the chip retains that state across
+   every soft re-init** (devourer's documented gotcha, now bench-proven on
+   the GS): devourer bring-up on a contaminated chip is severely desensed —
+   after a kernel monitor-mode session + rmmod the GS heard **~10 fps of a
+   ~1,400 fps stream at full drone power** with a clean DACK/IQK log.
+   `authorized`-toggle and EHCI unbind/rebind do NOT clear it on this board
+   (VBUS hardwired). Remediation: **8812eu.ko removed from /lib/modules**
+   (moved to `/root/8812eu.ko.disabled`) + one full GS power-off. Deploy rule:
+   no kernel driver may ever touch the cards; cold VBUS after any contact.
+2. **G1 blocker root cause — critical-stream (s0) post-FEC loss.** Stream 0 =
+   critical NALs (VPS/SPS/PPS + IDR), `blocks_per_body=4` → ~310 B bodies;
+   an IDR train arrives as back-to-back small frames at ~2× the normal frame
+   rate and **overflows the Radxa EHCI RX path** (~50–115 unrecoverable
+   blocks/s at power 63; s1 flat 0 through it all — the PC's xHCI absorbed
+   the same bursts, which is why E1 passed there). Remediation: drone
+   `fec.blocks_per_body` **[4,8,16,16] → [8,8,16,16]** (halves burst frame
+   rate; also finer per-body RS interleave) → **0 unrecoverable, both
+   streams, instantly and repeatably**.
+3. **🐛 maburd keep-alive-DISC parity bug — FIXED this session.** Python
+   `rendezvous.feed_disc` ignores a DISC unless RC_LOST/DISCOVERY;
+   `RcAgent::on_rc_frame` had no such guard, so the GS's 1 Hz SESSION
+   keep-alive DISC (`init_profile=0` = MAX_RANGE row) **yanked a LINKED
+   drone's op to MAX_RANGE + floor bitrate every second** (op thrash,
+   bitrate yo-yo, spurious DISC_ACKs). Never seen on air before because the
+   proto-GS stopped DISC-beaconing in SESSION. Fix: LINKED guard in the
+   T_DISC path + `keepalive_disc_while_linked_is_ignored` test; deployed to
+   the bench drone mid-session.
+4. **🐛 maburgs stale USB lock broke hot-replug — FIXED this session.**
+   `RadioFrontend::stop()` never released the devourer per-adapter advisory
+   lock, so a died card's reopen refused against the process's own stale
+   lock ("already in use by another devourer process") forever. Fix:
+   `usb_lock_.reset()` in `stop()`; reattach now recovers via the 2 s
+   backoff with no process restart.
+5. **Control-link starvation under TX load (OPEN — platform).** Once video
+   ramps ≥~5 Mbps the drone hears only ~40–55 % of GS control frames with
+   **multi-second deaf windows** (USB bulk contention drone-side, possibly
+   compounded GS-side; the two are correlated at the bench and not yet
+   separable without an on-air witness card). Consequence: LINKED↔FAILSAFE
+   oscillation against the 1 s failsafe window. **Delivery stays 0.000 %
+   throughout** (failsafe floor keeps video alive — the design degrades as
+   specified), but quality yo-yos. Bench stability ceiling:
+   `bitrate_max_kbps 3000` → 95/97 stats lines LINKED; floor bitrate → 0
+   flaps, 86 % control frames heard. `feedback_ms 50` and
+   `airtime_budget 0.45` help marginally; the real fix is devourer-level
+   RX-under-TX-load work (v1.1 / G8 follow-up).
+6. **Dual-card bring-up nondeterminism (OPEN).** Bringing up card B while
+   card A's RX loop is live yields run-to-run varying per-card RX quality
+   (one card can come up near-deaf; which one swaps with config order).
+   Union/dedup still delivered **0.000 %** from two ~50 % receivers — the
+   multi-card architecture masks it — but per-card health is not currently
+   trustworthy at bring-up. Candidate fix: serialize card bring-ups (defer
+   StartRxLoop of card A until card B's InitWrite completes) or re-run IQK.
+
+### Gate results
+
+- [x] **G1 PASS** (with remediations 1+2). RENDEZVOUS→SESSION, drone LINKED,
+  RTP on `:5600` into PixelPilot (`udp_fail=0`, `q_drop=0`), **post-FEC
+  0.000 % / 0.000 % on streams 0/1 over a 129 s full-control-loop window**
+  (200k + 251k packets, 216 rtp/s, 0 CRC-fail) and over a 69 s fixed-op
+  steady-state window. maburgs CPU ~8 % of one A55 core.
+- [x] **G2 PASS (indirect witness).** No monitor capture taken; applied-op
+  evidence instead: commanded MCS2 under a TX-power clamp collapsed video
+  exactly as a real mode switch must; s0 loss rate and GS SNR tracked every
+  commanded `agc` step; op excursions mcs0↔mcs2 visible end-to-end. Optional:
+  repeat with a sniffer for the E2-style capture.
+- [x] **G3 PASS (with note).** Kill → FAILSAFE within ≤~1.35 s (1 Hz stats
+  bound, E4 methodology). Restart → LINKED over 5 trials: **4.92 / 5.46 /
+  4.02 / 4.54 / 4.11 s** (includes maburgs' ~3–4 s radio bring-up; one trial
+  marginally over the 5 s line). The 40–165 s proto re-link pathology is
+  **gone** — keep-alive DISC works (after finding-3 fix).
+- [x] **G4 PASS.** Drone reboot under running maburgs: exactly one
+  RENDEZVOUS stats line before LINKED (~2 s cold rendezvous) — E5 parity.
+- [x] **G5 PASS (software proxy).** Both cards up in stats with per-card
+  f/cf/snr; union keeps 0.000 % (finding 6 notwithstanding). TX-card drop
+  (`authorized=0`, the closest software analogue to unplug on soldered
+  cards): `tx_card` failed over, SESSION held, video uninterrupted, still
+  0.000 %. Reattach: front-end reopened via the 2 s backoff, **no process
+  restart** (after finding-4 fix). Physical antenna-pull left to operator.
+- [ ] **G6 NOT RUN** — needs the attenuator rig or the SDR interferer. Run it
+  with `bitrate_max_kbps 3000` until finding 5 is fixed, or the failsafe
+  flapping will alias into the staircase.
+- [x] **G7 PASS.** Survives a full GS power-cycle: S96maburgs auto-starts,
+  relinks, G1 numbers achieved on the Radxa itself. CPU ~8 % (maburgs) +
+  ~4 % (PixelPilot). USB with 2 cards: stable through the session; findings
+  1/6 are the caveats to carry.
+- [ ] **G8 (record-only, carried).** `DEVOURER_PROTECT_PATHB_AGC` A/B remains
+  impossible in-link (the skip corrupts all TX in TX+RX mode); desense at
+  range still untested. Finding 5 belongs on this list for range work too.
+
+### Bench config deltas (persisted on the targets)
+
+- GS `/etc/maburgs.json`: `cards` ×2 (index 0+1), `feedback_ms: 50`.
+- Drone `/etc/mabur.json`: `blocks_per_body: [8,8,16,16]`,
+  `airtime_budget: 0.45`, `bitrate_max_kbps: 3000` (stability ceiling —
+  revisit after finding 5). `max_txagc` back at 63.
+- GS image: `8812eu.ko` disabled (finding 1); `/etc/init.d/S96maburgs`
+  installed (BusyBox init — repo copy in `gs/bundle/`).
+
 ## Two ways to get maburd onto the camera
 
 Pick one:
