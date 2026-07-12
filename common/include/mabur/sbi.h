@@ -46,4 +46,24 @@ class SbiPacker {
   std::vector<std::vector<uint8_t>> pending_;
 };
 
+// Receiver-side split of a radio body into CRC-surviving sub-blocks. Port of
+// fec_subblock.py's unpack(): block_payload comes from the receiver's CONFIG
+// and is authoritative — the body's header is sanity-checked (header_ok) but
+// never trusted to drive partitioning, so a corrupted header cannot desync
+// the scan. Works identically on clean and kept-corrupt bodies.
+struct SbiUnpackResult {
+  std::vector<std::vector<uint8_t>> survivors;  // CRC-valid sub-block payloads
+  int n_blocks = 0;                             // sub-blocks scanned
+  int n_failed = 0;                             // CRC-mismatched (erasures)
+  bool header_ok = false;
+  uint8_t stream_id = 0;                        // 0 when the header is short
+};
+SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload);
+
+// SBI STREAM_ID peek for routing (fixed 7-byte header, independent of
+// block_payload), or -1 on a short/bad-magic/bad-version header. A corrupt
+// header may misroute a body, but the wrong stream's decoder then rejects
+// the mismatched sub-blocks — a dropped body, never a mis-decode.
+int sbi_peek_stream_id(const uint8_t* body, size_t len);
+
 }  // namespace mabur
