@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "mabur/frag.h"
+#include "mabur/interleaver.h"
 #include "mabur/rs_encoder.h"
 #include "mabur/sbi.h"
 
@@ -39,9 +40,15 @@ struct UepBody {
 // fragmentation sequence, RS redundancy, and SBI sub-block framing. Byte-
 // exact port of devourer's tools/precoder/svc_uep_fec.py's SvcUepEncoder
 // (fragment=True) composition order.
+//
+// With interleave=true a SymbolInterleaver sits between each layer's RS
+// encoder and SBI packer, so a body carries symbols of blocks_per_body
+// DIFFERENT blocks (see interleaver.h). Wire format is unchanged and the
+// decoder needs no flag; interleave=false stays byte-identical to Python.
 class UepEncoder {
  public:
-  UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15);
+  UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15,
+             bool interleave = false);
 
   // Classifies pkt via classify_rtp, drops it if that stream is shed
   // (counted in dropped()), otherwise fragments (usable = fec.max_packet_size()
@@ -69,6 +76,7 @@ class UepEncoder {
     RsConfig fec;
     Fragmenter frag;
     RsEncoder rs;
+    SymbolInterleaver il;
     SbiPacker packer;
     int usable;
     bool shed = false;
@@ -79,12 +87,22 @@ class UepEncoder {
     Layer(const UepLayerCfg& cfg, uint8_t sid)
         : fec(cfg.fec),
           rs(cfg.fec),
+          il(cfg.blocks_per_body),
           packer(11 + cfg.fec.symbol_size, cfg.blocks_per_body, sid),
           usable(cfg.fec.max_packet_size() - 4) {}
   };
 
+  // Feeds one completed RS block's envelopes toward layer's packer, through
+  // the interleaver when enabled.
+  void pack_block(Layer& layer, uint8_t sid,
+                  std::vector<std::vector<uint8_t>> envs,
+                  std::vector<UepBody>& out);
+  // Flush tail: drains the interleaver window then the packer.
+  void drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out);
+
   std::array<Layer, 4> layers_;
   int flush_ms_;
+  bool interleave_;
 };
 
 }  // namespace mabur

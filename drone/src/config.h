@@ -25,6 +25,9 @@ struct FecCfg {
   std::array<int, 4> blocks_per_body = {4, 8, 16, 16};
   double base_overhead = 0.25;
   int flush_ms = 15;
+  // Symbol interleaving across blocks_per_body RS blocks per body (parity
+  // break vs svc_uep_fec.py; decoder needs no flag). See mabur/interleaver.h.
+  bool interleave = false;
 };
 
 struct WaybeamCfg {

@@ -58,6 +58,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.fec.blocks_per_body == def.fec.blocks_per_body);
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == def.fec.flush_ms);
+  CHECK(cfg.fec.interleave == false);
 
   CHECK(cfg.waybeam.host == def.waybeam.host);
   CHECK(cfg.waybeam.port == def.waybeam.port);

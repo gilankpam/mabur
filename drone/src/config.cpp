@@ -86,7 +86,7 @@ void parse_radio(const json& j, RadioCfg& r) {
 }
 
 void parse_fec(const json& j, FecCfg& f) {
-  check_known_keys(j, {"k", "symbol_size", "blocks_per_body", "base_overhead", "flush_ms"}, "fec");
+  check_known_keys(j, {"k", "symbol_size", "blocks_per_body", "base_overhead", "flush_ms", "interleave"}, "fec");
   assign_if_present(j, "k", f.k, "fec");
   assign_if_present(j, "symbol_size", f.symbol_size, "fec");
   if (j.contains("blocks_per_body")) {
@@ -100,6 +100,7 @@ void parse_fec(const json& j, FecCfg& f) {
   }
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
+  assign_if_present(j, "interleave", f.interleave, "fec");
 
   if (f.k < 2 || f.k > 32) fail("fec.k", "must be in [2,32]");
   if (f.symbol_size < 16 || f.symbol_size > 1024) fail("fec.symbol_size", "must be in [16,1024]");
