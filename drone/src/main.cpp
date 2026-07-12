@@ -158,6 +158,8 @@ struct RealActuator : mabur::Actuator {
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
+  std::string power_mode = "override";  // radio.power_mode (see config.h)
+  int power_offset_qdb = 0;
 
   std::vector<uint8_t> control_radiotap;  // built once; control channel is fixed
   uint16_t control_seq = 0;
@@ -165,7 +167,11 @@ struct RealActuator : mabur::Actuator {
   void apply_op(const AppliedOp& op) override {
     tx->set_ladder(op.ladder);
     if (dev) {
-      dev->SetTxPowerIndexOverride(op.pwr_idx);
+      if (power_mode == "override")
+        dev->SetTxPowerIndexOverride(op.pwr_idx);
+      else if (power_mode == "offset")
+        dev->SetTxPowerOffsetQdb(power_offset_qdb);
+      // "none": leave the efuse per-rate table untouched
     } else if (dry_run) {
       std::fprintf(stderr, "[dry-run] pwr_idx=%d fec_overhead=%.3f gen=%llu\n",
                    op.pwr_idx, op.fec_overhead,
@@ -531,6 +537,8 @@ int run_real_mode(const Config& cfg) {
   actuator.shared_op = &shared_op;
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
+  actuator.power_mode = cfg.radio.power_mode;
+  actuator.power_offset_qdb = cfg.radio.power_offset_qdb;
 
   RcAgent agent(cfg, actuator);
 

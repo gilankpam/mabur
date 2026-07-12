@@ -46,7 +46,8 @@ void assign_if_present(const json& j, const char* key, T& out,
 
 void parse_radio(const json& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width", "bw_set",
-                        "max_txagc", "thermal_max_delta"},
+                        "max_txagc", "thermal_max_delta", "power_mode",
+                        "power_offset_qdb"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
@@ -62,8 +63,15 @@ void parse_radio(const json& j, RadioCfg& r) {
   }
   assign_if_present(j, "max_txagc", r.max_txagc, "radio");
   assign_if_present(j, "thermal_max_delta", r.thermal_max_delta, "radio");
+  assign_if_present(j, "power_mode", r.power_mode, "radio");
+  assign_if_present(j, "power_offset_qdb", r.power_offset_qdb, "radio");
 
   if (r.channel < 1 || r.channel > 177) fail("radio.channel", "must be in [1,177]");
+  if (r.power_mode != "override" && r.power_mode != "offset" &&
+      r.power_mode != "none")
+    fail("radio.power_mode", "must be \"override\", \"offset\" or \"none\"");
+  if (r.power_offset_qdb < -128 || r.power_offset_qdb > 128)
+    fail("radio.power_offset_qdb", "must be in [-128,128]");
 
   uint8_t prev = 0;
   for (uint8_t bw : r.bw_set) {

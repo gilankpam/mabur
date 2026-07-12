@@ -17,6 +17,16 @@ struct RadioCfg {
   std::vector<uint8_t> bw_set = {20};
   int max_txagc = 63;
   int thermal_max_delta = 25;
+  // How apply_op drives TX power (bench 2026-07-13, docs/handover-video-
+  // delivery.md §5.1: the flat override costs ~25dB-equivalent of delivery
+  // at high MCS vs the efuse per-rate table):
+  //   "override" — flat SetTxPowerIndexOverride(pwr_idx), Python parity.
+  //   "offset"   — SetTxPowerOffsetQdb(power_offset_qdb): shape-preserving
+  //                trim on the calibrated table; commanded pwr_idx ignored.
+  //   "none"     — never touch power (efuse table as-is, streamtx-proven).
+  // offset/none bypass the thermal derate (it acts via pwr_idx).
+  std::string power_mode = "override";
+  int power_offset_qdb = 0;
 };
 
 struct FecCfg {

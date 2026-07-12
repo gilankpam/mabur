@@ -52,6 +52,8 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.bw_set == def.radio.bw_set);
   CHECK(cfg.radio.max_txagc == def.radio.max_txagc);
   CHECK(cfg.radio.thermal_max_delta == def.radio.thermal_max_delta);
+  CHECK(cfg.radio.power_mode == "override");
+  CHECK(cfg.radio.power_offset_qdb == 0);
 
   CHECK(cfg.fec.k == def.fec.k);
   CHECK(cfg.fec.symbol_size == def.fec.symbol_size);
