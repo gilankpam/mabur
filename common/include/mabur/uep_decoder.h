@@ -52,8 +52,12 @@ class UepDecoder {
 
  private:
   struct Layer {
-    explicit Layer(const UepLayerCfg& cfg)
-        : env_size(11 + cfg.fec.symbol_size), rs(cfg.fec) {}
+    // FRAG entries older than the block horizon can never complete (their
+    // missing fragments' blocks have expired) — evict by that same age.
+    Layer(const UepLayerCfg& cfg, uint64_t block_max_age_ms)
+        : env_size(11 + cfg.fec.symbol_size),
+          rs(cfg.fec),
+          reasm(512, block_max_age_ms) {}
     int env_size;
     RsDecoder rs;
     FragReassembler reasm;

@@ -107,7 +107,10 @@ static int run_radio(const maburgs::Config& cfg) {
         }
         udp.send(pkt.data(), pkt.size());
       },
-      /*hold_ms=*/350);
+      // End-to-end latency budget: decoder block_max_age (device config,
+      // ~250ms) < this hold, so a block that completes at its age limit
+      // still beats the reorder deadline instead of landing in late_dropped.
+      /*hold_ms=*/300);
   agg.set_rtp_sink([&](const mabur::DecodedRtp& r) {
     reorder.push(r.pkt, mono_ms());
   });

@@ -2,9 +2,26 @@
 
 namespace mabur {
 
-FragReassembler::FragReassembler(size_t max_pending) : max_pending_(max_pending) {}
+FragReassembler::FragReassembler(size_t max_pending, uint64_t max_age_ms)
+    : max_pending_(max_pending), max_age_ms_(max_age_ms) {}
 
-std::vector<FragCompleted> FragReassembler::add(const uint8_t* pkt, size_t len) {
+void FragReassembler::sweep_expired(uint64_t now_ms) {
+  if (max_age_ms_ == 0 || now_ms == 0) return;
+  if (now_ms - last_sweep_ms_ < 50) return;  // throttle the O(pending) scan
+  last_sweep_ms_ = now_ms;
+  for (auto it = pending_.begin(); it != pending_.end();) {
+    if (now_ms - it->second.t_ms > max_age_ms_) {
+      it = pending_.erase(it);
+      ++evicted_;
+    } else {
+      ++it;
+    }
+  }
+}
+
+std::vector<FragCompleted> FragReassembler::add(const uint8_t* pkt, size_t len,
+                                                uint64_t now_ms) {
+  sweep_expired(now_ms);
   if (len < 4) return {};
   const uint16_t seq = static_cast<uint16_t>(pkt[0] | (pkt[1] << 8));
   const int idx = pkt[2], count = pkt[3];
@@ -14,6 +31,7 @@ std::vector<FragCompleted> FragReassembler::add(const uint8_t* pkt, size_t len) 
   if (it == pending_.end()) {
     it = pending_.emplace(seq, Entry{}).first;
     it->second.order = order_counter_++;
+    it->second.t_ms = now_ms;
   }
   Entry& e = it->second;
   e.count = count;

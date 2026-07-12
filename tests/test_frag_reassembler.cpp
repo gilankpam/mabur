@@ -48,6 +48,37 @@ TEST(eviction_bounds_pending) {
   CHECK(r.evicted() == 1);
 }
 
+TEST(age_eviction_expires_stale_entries) {
+  FragReassembler r(512, /*max_age_ms=*/200);
+  // Incomplete entry (seq 0, chunk 0-of-2) at t=1000.
+  uint8_t a0[5] = {0, 0, 0, 2, 0xAA};
+  CHECK(r.add(a0, sizeof(a0), 1000).empty());
+  // Within horizon: still pending.
+  uint8_t b0[5] = {1, 0, 0, 2, 0xBB};
+  CHECK(r.add(b0, sizeof(b0), 1100).empty());
+  CHECK(r.pending() == 2);
+  // Past the horizon for seq 0 only: swept, seq 1 (age 150) survives.
+  uint8_t c0[5] = {2, 0, 0, 2, 0xCC};
+  CHECK(r.add(c0, sizeof(c0), 1250).empty());
+  CHECK(r.pending() == 2);
+  CHECK(r.evicted() == 1);
+  // Late second chunk of the evicted seq 0 starts a fresh (incomplete)
+  // entry rather than completing with stale data.
+  uint8_t a1[5] = {0, 0, 1, 2, 0xAD};
+  CHECK(r.add(a1, sizeof(a1), 1251).empty());
+  CHECK(r.completed() == 0);
+}
+
+TEST(age_eviction_disabled_without_clock) {
+  FragReassembler r(512, /*max_age_ms=*/200);
+  uint8_t a0[5] = {0, 0, 0, 2, 0xAA};
+  CHECK(r.add(a0, sizeof(a0)).empty());  // now_ms = 0: age checks off
+  uint8_t b0[5] = {1, 0, 0, 2, 0xBB};
+  CHECK(r.add(b0, sizeof(b0)).empty());
+  CHECK(r.pending() == 2);
+  CHECK(r.evicted() == 0);
+}
+
 TEST(malformed_dropped) {
   FragReassembler r;
   uint8_t count0[4] = {0, 0, 0, 0};          // count == 0

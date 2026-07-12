@@ -6,8 +6,10 @@ namespace mabur {
 
 UepDecoder::UepDecoder(const std::array<UepLayerCfg, 4>& layers,
                        uint64_t block_max_age_ms)
-    : layers_{Layer(layers[0]), Layer(layers[1]), Layer(layers[2]),
-              Layer(layers[3])},
+    : layers_{Layer(layers[0], block_max_age_ms),
+              Layer(layers[1], block_max_age_ms),
+              Layer(layers[2], block_max_age_ms),
+              Layer(layers[3], block_max_age_ms)},
       block_max_age_ms_(block_max_age_ms) {}
 
 std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
@@ -24,7 +26,7 @@ std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
   std::vector<DecodedRtp> out;
   for (const auto& env : r.survivors) {
     for (const auto& pkt : L.rs.add_symbol(env.data(), env.size(), now_ms)) {
-      for (auto& done : L.reasm.add(pkt.data(), pkt.size())) {
+      for (auto& done : L.reasm.add(pkt.data(), pkt.size(), now_ms)) {
         // Delivery window: forward FRAG-seq gap = packets that will never
         // complete; backward/duplicate (gap 0 or > 0x8000) = reorder, count
         // delivered only. Monster gaps are an outage, not per-packet info —
