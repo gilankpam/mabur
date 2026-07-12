@@ -67,8 +67,23 @@ for pl in (-10.0, 0.0, 5.5, 12.0, 30.0):
             "op": None if op is None else {
                 "txagc": op.txagc, "e_bit": None if op.e_bit == float("inf") else op.e_bit,
                 "p_deliver": op.p_deliver}})
-dump("optable.json", {"snr_req": snr_req,
+# Edge cases: sentinel and grid clamping (parity test hazards, never exercised above)
+# Sentinel: impossible target (2.0 > max p_deliver 1.0) must return hi+step = 40.5
+edges_snr_req = [
+    {"mcs": 0, "ov": 0.10, "target": 2.0, "snr_req": link.snr_required(0, 0.10, 2.0)},
+    {"mcs": 7, "ov": 1.00, "target": 2.0, "snr_req": link.snr_required(7, 1.00, 2.0)},
+]
+# Grid clamp: SNR outside [-20, 60] bucket range must clamp to edge bucket
+# snr=-50 clamps to bucket -20; snr=100 clamps to bucket 60
+edges_pdeliver = [
+    {"mcs": 3, "ov": 0.50, "snr": -50.0, "p_deliver": link.p_deliver(-50.0, 3, 0.50, sbi=True)},
+    {"mcs": 5, "ov": 0.75, "snr": 100.0, "p_deliver": link.p_deliver(100.0, 5, 0.75, sbi=True)},
+]
+
+dump("optable.json", {"edges_pdeliver": edges_pdeliver,
+                      "edges_snr_req": edges_snr_req,
+                      "resolve": res_cases,
                       "rows": [{"vht": r.mode == "vht", "mcs": r.mcs, "bw": r.bw,
                                 "sgi": r.sgi, "ov": r.overhead, "snr_req": r.snr_req}
                                for r in rows],
-                      "resolve": res_cases})
+                      "snr_req": snr_req})

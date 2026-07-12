@@ -11,7 +11,8 @@ namespace {
 int overhead_index(double ov) {
   for (int i = 0; i < gen::kOverheadCount; ++i)
     if (std::fabs(gen::kOverheads[i] - ov) < 1e-9) return i;
-  // Defensive: nearest known overhead (config only offers the table set).
+  // Defensive guard (pure safety, never called out-of-range by current callers):
+  // nearest known overhead fallback when ov not in table set.
   int best = 0;
   for (int i = 1; i < gen::kOverheadCount; ++i)
     if (std::fabs(gen::kOverheads[i] - ov) < std::fabs(gen::kOverheads[best] - ov))
@@ -21,6 +22,7 @@ int overhead_index(double ov) {
 }  // namespace
 
 double LinkTable::p_deliver(double snr_db, int mcs, double overhead) const {
+  // Defensive guard (pure safety, never called out-of-range by current callers):
   if (mcs < 0) mcs = 0;
   if (mcs >= gen::kMcsCount) mcs = gen::kMcsCount - 1;
   // Python: bucket = round(snr / 1.0) * 1.0 (banker's rounding) — nearbyint

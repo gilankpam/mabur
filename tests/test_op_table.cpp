@@ -39,4 +39,17 @@ TEST(resolve_matches_python) {
     else CHECK(op->e_bit == c["op"]["e_bit"].get<double>());
   }
 }
+
+TEST(edge_cases_snr_required_sentinel_and_pdeliver_clamp) {
+  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/optable.json");
+  LinkTable lt;
+  // Sentinel: impossible target (2.0 > max p_deliver 1.0) must return hi+step = 40.5
+  for (auto& c : j["edges_snr_req"]) {
+    CHECK(lt.snr_required(c["mcs"], c["ov"], c["target"]) == c["snr_req"].get<double>());
+  }
+  // Grid clamp: SNR outside [-20, 60] bucket range must clamp to edge bucket
+  for (auto& c : j["edges_pdeliver"]) {
+    CHECK(lt.p_deliver(c["snr"], c["mcs"], c["ov"]) == c["p_deliver"].get<double>());
+  }
+}
 MTEST_MAIN

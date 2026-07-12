@@ -1,4 +1,32 @@
 {
+ "edges_pdeliver": [
+  {
+   "mcs": 3,
+   "ov": 0.5,
+   "p_deliver": 0.0,
+   "snr": -50.0
+  },
+  {
+   "mcs": 5,
+   "ov": 0.75,
+   "p_deliver": 1.0,
+   "snr": 100.0
+  }
+ ],
+ "edges_snr_req": [
+  {
+   "mcs": 0,
+   "ov": 0.1,
+   "snr_req": 40.5,
+   "target": 2.0
+  },
+  {
+   "mcs": 7,
+   "ov": 1.0,
+   "snr_req": 40.5,
+   "target": 2.0
+  }
+ ],
  "resolve": [
   {
    "op": null,
