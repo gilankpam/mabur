@@ -5,6 +5,10 @@
 #include <mutex>
 #include <stdexcept>
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
 namespace mabur::gf {
 namespace {
 
@@ -86,11 +90,76 @@ uint8_t mul(uint8_t a, uint8_t b) {
   return t.exp[static_cast<size_t>(t.log[a]) + t.log[b]];
 }
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+namespace {
+// Split-nibble multiply tables for the NEON vtbl path:
+// lo[c][x] = c·x and hi[c][x] = c·(x<<4) for x in 0..15, so a full byte is
+// c·s = lo[s & 0xF] ^ hi[s >> 4]. 256 coeffs × 32 B = 8 KB, built once.
+struct NibbleTables {
+  alignas(16) uint8_t lo[256][16];
+  alignas(16) uint8_t hi[256][16];
+  NibbleTables() {
+    const Tables& t = tables();
+    auto mul = [&](int a, int b) -> uint8_t {
+      if (a == 0 || b == 0) return 0;
+      return t.exp[static_cast<size_t>(t.log[static_cast<size_t>(a)]) +
+                   t.log[static_cast<size_t>(b)]];
+    };
+    for (int c = 0; c < 256; ++c)
+      for (int x = 0; x < 16; ++x) {
+        lo[c][x] = mul(c, x);
+        hi[c][x] = mul(c, x << 4);
+      }
+  }
+};
+const NibbleTables& nibble_tables() {
+  static const NibbleTables nt;
+  return nt;
+}
+}  // namespace
+#endif
+
 void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len) {
   if (coeff == 0) return;
+  size_t i = 0;
+#if defined(__aarch64__)
+  // Table-lookup SIMD, 16 bytes/iteration. The scalar log/exp loop is ~10
+  // cycles/byte and made RS parity generation the drone pipeline bottleneck
+  // (bench 2026-07-13: SSC338Q hot thread saturated below the 60 fps
+  // producer rate, venc ring pinned full, waybeam aborted slice tails).
+  {
+    const NibbleTables& nt = nibble_tables();
+    const uint8x16_t tlo = vld1q_u8(nt.lo[coeff]);
+    const uint8x16_t thi = vld1q_u8(nt.hi[coeff]);
+    const uint8x16_t mask = vdupq_n_u8(0x0F);
+    for (; i + 16 <= len; i += 16) {
+      const uint8x16_t s = vld1q_u8(sym + i);
+      const uint8x16_t prod = veorq_u8(vqtbl1q_u8(tlo, vandq_u8(s, mask)),
+                                       vqtbl1q_u8(thi, vshrq_n_u8(s, 4)));
+      vst1q_u8(acc + i, veorq_u8(vld1q_u8(acc + i), prod));
+    }
+  }
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+  // ARMv7 NEON (Cortex-A7): vtbl2 on 8-byte lanes, 16-byte table pairs.
+  {
+    const NibbleTables& nt = nibble_tables();
+    uint8x8x2_t tlo, thi;
+    tlo.val[0] = vld1_u8(nt.lo[coeff]);
+    tlo.val[1] = vld1_u8(nt.lo[coeff] + 8);
+    thi.val[0] = vld1_u8(nt.hi[coeff]);
+    thi.val[1] = vld1_u8(nt.hi[coeff] + 8);
+    const uint8x8_t mask = vdup_n_u8(0x0F);
+    for (; i + 8 <= len; i += 8) {
+      const uint8x8_t s = vld1_u8(sym + i);
+      const uint8x8_t prod = veor_u8(vtbl2_u8(tlo, vand_u8(s, mask)),
+                                     vtbl2_u8(thi, vshr_n_u8(s, 4)));
+      vst1_u8(acc + i, veor_u8(vld1_u8(acc + i), prod));
+    }
+  }
+#endif
   const Tables& t = tables();
   uint8_t lc = t.log[coeff];
-  for (size_t i = 0; i < len; ++i) {
+  for (; i < len; ++i) {
     uint8_t s = sym[i];
     if (s) acc[i] = static_cast<uint8_t>(acc[i] ^ t.exp[static_cast<size_t>(lc) + t.log[s]]);
   }
