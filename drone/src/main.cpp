@@ -35,6 +35,7 @@
 #include "rc_agent.h"
 #include "ring_source.h"
 #include "tx_queue.h"
+#include "usb_tx_pool.h"
 #include "waybeam_client.h"
 
 #if defined(MABUR_DRY_RUN_ONLY)
@@ -94,6 +95,13 @@ struct DevourerSink : mabur::FrameSink {
   // sends made DLFW fail after ~3 frames.
   std::atomic<bool>* ready = nullptr;
 
+  // Parallel USB sender pool (radio.tx_threads > 1): send_many submits
+  // frames here and returns immediately; N pool threads each block in
+  // their own sync bulk transfer, keeping ~N URBs in flight (the chip
+  // flow-controls sync URB acceptance — one blocking sender caps air at
+  // ~26 Mbps regardless of MCS). Null = direct synchronous path.
+  mabur::UsbTxPool* pool = nullptr;
+
   bool send(const uint8_t* p, size_t n) override {
     if (ready && !ready->load(std::memory_order_acquire)) return false;
     std::lock_guard<std::mutex> l(m);
@@ -102,9 +110,17 @@ struct DevourerSink : mabur::FrameSink {
 
   // Batch path: devourer's send_packets packs consecutive frames into
   // shared bulk-OUT URBs when tx.usb_agg_max > 0 (one transfer per batch
-  // instead of one per frame). Same ready-gate and mutex as send().
+  // instead of one per frame). Same ready-gate as send(). With a pool,
+  // "accepted" means queued to the senders (frames are copied; real air
+  // failures surface via GetTxStats + the pool's own counters).
   size_t send_many(const View* frames, size_t n) override {
     if (ready && !ready->load(std::memory_order_acquire)) return 0;
+    if (pool) {
+      size_t ok = 0;
+      for (size_t i = 0; i < n; ++i)
+        if (pool->submit(frames[i].data, frames[i].len)) ++ok;
+      return ok;
+    }
     std::vector<TxPacketView> v(n);
     for (size_t i = 0; i < n; ++i) v[i] = {frames[i].data, frames[i].len};
     std::lock_guard<std::mutex> l(m);
@@ -543,6 +559,20 @@ int run_real_mode(const Config& cfg) {
   dev_sink.dev = rtl_device.get();
   dev_sink.ready = &device_ready;
 
+  // Capacity 6 frames per sender: enough to keep every sender's next ≤3-
+  // frame URB staged while it blocks in the current one, small enough that
+  // backlog still lands in TxQueue (whose drop-oldest policy is the
+  // FEC-recoverable erasure path).
+  mabur::UsbTxPool tx_pool(
+      [dev = rtl_device.get()](const std::vector<std::vector<uint8_t>>& b) {
+        std::vector<TxPacketView> v(b.size());
+        for (size_t i = 0; i < b.size(); ++i) v[i] = {b[i].data(), b[i].size()};
+        return dev->send_packets(v.data(), v.size());
+      },
+      cfg.radio.tx_threads,
+      static_cast<size_t>(cfg.radio.tx_threads) * 6);
+  if (cfg.radio.tx_threads > 1) dev_sink.pool = &tx_pool;
+
   RadioTx tx(dev_sink, cfg.radio.bw_set);
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
@@ -767,6 +797,7 @@ int run_real_mode(const Config& cfg) {
   if (hot_thread.joinable()) hot_thread.join();
   if (tx_thread.joinable()) tx_thread.join();
   if (agent_thread.joinable()) agent_thread.join();
+  tx_pool.stop();  // drain + join senders before device teardown
 
   rtl_device->Stop();
   libusb_release_interface(handle, 0);

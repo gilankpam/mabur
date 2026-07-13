@@ -32,6 +32,7 @@ if(MABUR_BUILD_DRONE)
   add_mtest(test_ring test_ring.cpp LIBS mabur_drone_core)
   add_mtest(test_radio_tx test_radio_tx.cpp LIBS mabur_drone_core)
   add_mtest(test_tx_queue test_tx_queue.cpp LIBS mabur_drone_core)
+  add_mtest(test_tx_pool test_tx_pool.cpp LIBS mabur_drone_core)
   add_mtest(test_agent test_agent.cpp LIBS mabur_drone_core)
 
   add_test(NAME host_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_host_e2e.sh)

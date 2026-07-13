@@ -29,17 +29,29 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     ++c.crc_fail;
   } else {
     // Per-card delivery from 12-bit hw-seq gaps. The drone's counter numbers
-    // every injected frame (video and the rare DISC_ACK alike).
+    // every injected frame (video and the rare DISC_ACK alike). last_seq is
+    // a MAX-seq high-water mark, not the previous frame: the drone's
+    // parallel USB feed can swap ≤3-frame URB batches on air, and a
+    // late-but-delivered frame must credit delivery (received++ with no
+    // expected bump — its slot was already counted when the leading frame
+    // advanced the mark). Walking the previous frame instead booked every
+    // swap as an outage AND re-counted the gap on the way back up.
     if (c.has_seq) {
-      uint16_t gap = static_cast<uint16_t>((m.mac_seq - c.last_seq) & 0x0FFF);
-      if (gap == 0) gap = 1;  // duplicate/retry: count as one delivered frame
-      c.seq_expected += gap > kMaxSeqGap ? 1 : gap;
+      const uint16_t adv =
+          static_cast<uint16_t>((m.mac_seq - c.last_seq) & 0x0FFF);
+      if (adv == 0) {
+        c.seq_expected += 1;  // duplicate/retry: count as one delivered frame
+      } else if (adv < 2048) {
+        c.seq_expected += adv > kMaxSeqGap ? 1 : adv;
+        c.last_seq = m.mac_seq;
+      }
+      // adv >= 2048: behind the mark (reorder) — expected already counted.
     } else {
       c.seq_expected += 1;
       c.has_seq = true;
+      c.last_seq = m.mac_seq;
     }
     c.seq_received += 1;
-    c.last_seq = m.mac_seq;
     last_video_seq_ = m.mac_seq;
 
     const double snr = static_cast<double>(m.snr[0] > m.snr[1] ? m.snr[0] : m.snr[1]);

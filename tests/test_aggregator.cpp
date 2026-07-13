@@ -66,6 +66,20 @@ TEST(seq_gap_tracking_crc_ok_only) {
   CHECK(agg.last_video_seq() == 14);
 }
 
+// maburd's parallel USB feed can swap whole ≤3-frame URB batches on air.
+// A swap is reordering, not loss: late frames must credit delivery, not
+// book an outage AND re-count the gap (the old last_seq walk did both —
+// one swap inflated seq_expected by ~6).
+TEST(seq_urb_batch_swap_is_not_loss) {
+  Aggregator agg(vec_layers(), 2000, 1);
+  std::vector<uint8_t> junk(20, 0);
+  const uint16_t order[] = {0, 1, 2, 6, 7, 8, 3, 4, 5, 9};
+  for (uint16_t s : order) agg.on_rx_body(msg(0, s, true, junk));
+  const CardTrack& c = agg.card(0);
+  CHECK(c.seq_received == 10);
+  CHECK(c.seq_expected == 10);   // 0..9 all arrived — 100% delivery
+}
+
 TEST(ema_uses_chain_b_rssi_and_max_snr) {
   Aggregator agg(vec_layers(), 2000, 1);
   std::vector<uint8_t> junk(20, 0);

@@ -27,6 +27,14 @@ struct RadioCfg {
   // offset/none bypass the thermal derate (it acts via pwr_idx).
   std::string power_mode = "override";
   int power_offset_qdb = 0;
+  // Parallel USB sender threads (URBs in flight). The 8822E flow-controls
+  // sync bulk-OUT URBs (~0.4 ms acceptance handshake + FIFO drain), so a
+  // single blocking sender caps air throughput at ~26 Mbps regardless of
+  // MCS; ~4 saturate (linkbench bisect 2026-07-14, devourer
+  // docs/aggregation.md). 1 = strict on-air frame order (>1 can swap
+  // ≤3-frame URB batches, which the block-id-addressed FEC datapath and
+  // the GS max-seq delivery accounting both tolerate).
+  int tx_threads = 4;
 };
 
 struct FecCfg {
