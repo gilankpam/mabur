@@ -87,11 +87,8 @@ std::vector<uint8_t> SwEncoder::make_repair() {
 
 std::vector<std::vector<uint8_t>> SwEncoder::flush() {
   std::vector<std::vector<uint8_t>> out;
-  const bool had_partial = !current_symbol_.empty() &&
-                            static_cast<int>(current_symbol_.size()) < cfg_.symbol_size;
   seal_current(out);
-  if (had_partial && tail_repair_pending_ && !window_.empty())
-    out.push_back(make_repair());
+  if (tail_repair_pending_ && !window_.empty()) out.push_back(make_repair());
   return out;
 }
 

@@ -34,16 +34,20 @@ std::vector<std::vector<uint8_t>> feed(SwEncoder& e, int n_packets) {
 TEST(source_envelopes_carry_monotonic_seq) {
   SwEncoder e(SwConfig{64, 8, 0.0});
   auto envs = feed(e, 5);          // 5 full-size packets: symbols 0..3 sealed
-  auto tail = e.flush();           // seals the 5th
+  auto tail = e.flush();           // seals the 5th + one tail repair
   for (auto& t : tail) envs.push_back(std::move(t));
-  CHECK(envs.size() == 5);
-  for (uint32_t i = 0; i < envs.size(); ++i) {
+  // 5 sources then exactly one tail repair (flush's burst-tail protection
+  // fires even at overhead 0 — it is gated on seals, not credit).
+  CHECK(envs.size() == 6);
+  for (uint32_t i = 0; i < 5; ++i) {
     auto h = hdr(envs[i]);
     CHECK(!h.repair);
     CHECK(h.seq == i);
     CHECK(h.symbol_size == 64);
     CHECK(envs[i].size() == sw::kSwHeaderLen + 64);
   }
+  CHECK(hdr(envs[5]).repair);
+  CHECK(e.repairs_out() == 1);
 }
 
 TEST(credit_emits_one_repair_per_source_at_overhead_1) {
