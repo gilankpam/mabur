@@ -26,7 +26,10 @@ struct RxSnapshot {
   uint64_t frames = 0;        // bench-stream bodies seen (any CRC state)
   uint64_t crc_bad = 0;       // ...of which FCS-corrupt
   uint64_t air_bytes = 0;     // dot11 + body bytes (excl radiotap/PLCP/FCS)
-  uint64_t mac_lost = 0;      // 12-bit seq gaps over CRC-ok bench frames
+  uint64_t mac_lost = 0;      // expected-vs-received deficit over CRC-ok bench
+                              // frames (max-seq advance estimator: reorder from
+                              // the threaded TX feed's URB swaps is credited,
+                              // not counted as loss)
   uint64_t sub_blocks = 0;    // SBI sub-blocks scanned
   uint64_t sub_crc_fail = 0;  // ...of which CRC16-failed (erasures)
   uint64_t blocks_decoded = 0;
@@ -46,7 +49,10 @@ inline RxSnapshot snapshot_delta(const RxSnapshot& n, const RxSnapshot& o) {
   d.frames = n.frames - o.frames;
   d.crc_bad = n.crc_bad - o.crc_bad;
   d.air_bytes = n.air_bytes - o.air_bytes;
-  d.mac_lost = n.mac_lost - o.mac_lost;
+  // Cumulative mac_lost can shrink when a frame counted lost in a prior
+  // interval arrives late (reorder across the boundary) — clamp instead of
+  // wrapping unsigned.
+  d.mac_lost = n.mac_lost >= o.mac_lost ? n.mac_lost - o.mac_lost : 0;
   d.sub_blocks = n.sub_blocks - o.sub_blocks;
   d.sub_crc_fail = n.sub_crc_fail - o.sub_crc_fail;
   d.blocks_decoded = n.blocks_decoded - o.blocks_decoded;
@@ -87,15 +93,20 @@ class RxPipeline {
       c_.snr_sum[0] += snr[0] / 2.0;
       c_.snr_sum[1] += snr[1] / 2.0;
       ++c_.sig_frames;
+      // Max-seq advance estimator: expected frames = total forward advance
+      // of the highest seq seen (+1); every CRC-ok frame counts as received
+      // whether in-order or late. Loss = expected − received, derived in
+      // snapshot(). Robust to the ≤3-frame URB swaps a multi-threaded TX
+      // feed produces (a per-frame gap counter books those as phantom loss).
       if (have_mac_seq_) {
-        const int d = seq_fwd_delta12(last_mac_seq_, mac_seq);
+        const int d = seq_fwd_delta12(max_mac_seq_, mac_seq);
         if (d >= 1 && d < 2048) {
-          c_.mac_lost += static_cast<uint64_t>(d - 1);
-          last_mac_seq_ = mac_seq;
+          mac_advance_ += static_cast<uint64_t>(d);
+          max_mac_seq_ = mac_seq;
         }
-        // d == 0 (dup) or >= 2048 (reorder/stale): ignore, keep last.
+        // d == 0 (dup/max) or >= 2048 (behind max): received, no advance.
       } else {
-        last_mac_seq_ = mac_seq;
+        max_mac_seq_ = mac_seq;
         have_mac_seq_ = true;
       }
     }
@@ -117,6 +128,10 @@ class RxPipeline {
     s.blocks_decoded = dec_.blocks_decoded();
     s.blocks_unrec = dec_.blocks_unrecoverable();
     s.sym_badcfg = dec_.symbols_dropped_bad_cfg();
+    if (have_mac_seq_) {
+      const uint64_t expected = mac_advance_ + 1;
+      s.mac_lost = expected > c_.sig_frames ? expected - c_.sig_frames : 0;
+    }
     if (have_app_seq_)
       s.pkts_expected = static_cast<uint64_t>(max_app_seq_ - first_app_seq_) + 1;
     return s;
@@ -141,7 +156,8 @@ class RxPipeline {
   FecParams p_;
   mabur::RsDecoder dec_;
   RxSnapshot c_;
-  uint16_t last_mac_seq_ = 0;
+  uint16_t max_mac_seq_ = 0;
+  uint64_t mac_advance_ = 0;
   bool have_mac_seq_ = false;
   uint32_t first_app_seq_ = 0, max_app_seq_ = 0;
   bool have_app_seq_ = false;

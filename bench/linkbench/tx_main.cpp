@@ -6,10 +6,14 @@
 // complete before the first send or the bulk-OUT FIFO fills mid-DLFW and
 // bricks TX for the session.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -45,6 +49,13 @@ struct Args {
   int pwr = 63;
   int pwr_offset_qdb = 0;
   uint16_t usb_vid = 0x0bda, usb_pid = 0;
+  // Parallel sender threads = URBs in flight. The chip flow-controls sync
+  // bulk URBs (~0.4 ms acceptance handshake + FIFO drain), so a single
+  // blocking sender leaves the radio idle between host round-trips and caps
+  // air throughput at ~23-32 Mbps regardless of MCS. ~4 saturates on the
+  // HalMAC family (devourer docs/aggregation.md). 1 = strict on-air frame
+  // order (threads can swap ≤3-frame URB batches; RX accounting tolerates).
+  int tx_threads = 4;
 };
 
 void usage(const char* argv0) {
@@ -53,7 +64,7 @@ void usage(const char* argv0) {
     "  [-k 8] [--overhead 0.5] [--symbol-size 64] [--bpb 16] [--interleave 0]\n"
     "  [--size B] [--ldpc] [--stbc]\n"
     "  [--pwr-mode override|none|offset] [--pwr 0..63] [--pwr-offset-qdb Q]\n"
-    "  [--usb-vid 0x0bda] [--usb-pid 0]\n", argv0);
+    "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n", argv0);
 }
 
 bool parse_args(int argc, char** argv, Args* a) {
@@ -94,6 +105,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--pwr-offset-qdb") { if (!next(&a->pwr_offset_qdb)) return false; }
     else if (k == "--usb-vid") { int v; if (!next(&v)) return false; a->usb_vid = static_cast<uint16_t>(v); }
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
+    else if (k == "--tx-threads") { if (!next(&a->tx_threads)) return false; }
     else { return false; }
   }
   const int maxp = a->fec.symbol_size - 2;
@@ -104,6 +116,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     return false;
   }
   if (a->mcs < 0 || a->mcs > 7) return false;
+  if (a->tx_threads < 1 || a->tx_threads > 16) return false;
   return true;
 }
 
@@ -171,6 +184,7 @@ int main(int argc, char** argv) {
                a.fec.interleave > 0 ? a.fec.effective_bpb() : 0, a.size,
                a.pwr_mode.c_str(), a.pwr,
                mabur::gf::backend());
+  std::fprintf(stderr, "  tx-threads %d (URBs in flight)\n", a.tx_threads);
 
   auto logger = std::make_shared<Logger>();
   logger->set_level(Logger::Level::Warn);
@@ -233,28 +247,64 @@ int main(int argc, char** argv) {
                                 static_cast<double>(a.bitrate_bps) / 8.0 * 0.010));
     uint32_t app_seq = 0;
     uint16_t mac_seq = 0;
-    uint64_t app_bytes = 0, air_bytes = 0, frames_ok = 0, frames_fail = 0;
-    uint64_t iv_app = 0, iv_air = 0, iv_frm = 0, iv_fail = 0, iv_blk0 = 0;
+    uint64_t app_bytes = 0, air_bytes = 0;
+    uint64_t iv_app = 0, iv_air = 0, iv_blk0 = 0;
+    uint64_t iv_frm0 = 0, iv_fail0 = 0;
     const uint64_t t0 = mono_us();
     uint64_t next_stats = t0 + 1'000'000;
     const uint64_t deadline =
         a.time_s > 0 ? t0 + static_cast<uint64_t>(a.time_s) * 1'000'000 : 0;
 
+    // Frame queue feeding N sender threads. Each sender blocks in its own
+    // sync bulk transfer, so ~N URBs ride the endpoint at once — the deep
+    // feed that keeps the chip's TX FIFO from idling during host round
+    // trips (devourer docs/aggregation.md; sync bulk from multiple threads
+    // is legal and simply queues). Bounded so a slow link backpressures the
+    // pacer (token bucket overflows → offered load reflects reality).
+    std::mutex qm;
+    std::condition_variable q_fill, q_space;
+    std::deque<std::vector<uint8_t>> q;
+    bool q_done = false;
+    constexpr size_t kQueueCap = 256;  // frames (~64-85 URBs of headroom)
+    std::atomic<uint64_t> frames_ok{0}, frames_fail{0};
+    std::vector<std::thread> senders;
+    senders.reserve(static_cast<size_t>(a.tx_threads));
+    for (int s = 0; s < a.tx_threads; ++s) {
+      senders.emplace_back([&] {
+        std::vector<std::vector<uint8_t>> batch;
+        for (;;) {
+          {
+            std::unique_lock<std::mutex> lk(qm);
+            q_fill.wait(lk, [&] { return q_done || !q.empty(); });
+            if (q.empty()) return;  // q_done and drained
+            // Batches of ≤3: the HalMAC per-transfer descriptor limit
+            // devourer's send_packets aggregation packs into one URB.
+            const size_t n = std::min<size_t>(3, q.size());
+            for (size_t i = 0; i < n; ++i) {
+              batch.push_back(std::move(q.front()));
+              q.pop_front();
+            }
+          }
+          q_space.notify_one();
+          TxPacketView v[3];
+          for (size_t i = 0; i < batch.size(); ++i)
+            v[i] = {batch[i].data(), batch[i].size()};
+          const size_t ok = dev->send_packets(v, batch.size());
+          frames_ok += ok;
+          frames_fail += batch.size() - ok;
+          batch.clear();
+        }
+      });
+    }
+
     std::vector<std::vector<uint8_t>> bodies;
-    std::vector<std::vector<uint8_t>> frames;  // built, pending send
+    std::vector<std::vector<uint8_t>> frames;  // built, pending enqueue
     auto send_frames = [&] {
-      // Batches of ≤3: the HalMAC per-transfer descriptor limit devourer's
-      // send_packets aggregation packs into one URB.
-      for (size_t i = 0; i < frames.size(); i += 3) {
-        TxPacketView v[3];
-        const size_t n = std::min<size_t>(3, frames.size() - i);
-        for (size_t j = 0; j < n; ++j)
-          v[j] = {frames[i + j].data(), frames[i + j].size()};
-        const size_t ok = dev->send_packets(v, n);
-        frames_ok += ok;
-        iv_frm += ok;
-        frames_fail += n - ok;
-        iv_fail += n - ok;
+      std::unique_lock<std::mutex> lk(qm);
+      for (auto& f : frames) {
+        q_space.wait(lk, [&] { return q.size() < kQueueCap; });
+        q.push_back(std::move(f));
+        q_fill.notify_one();
       }
       frames.clear();
     };
@@ -289,16 +339,19 @@ int main(int argc, char** argv) {
         next_stats += 1'000'000;
         const uint64_t t = (now - t0) / 1'000'000;
         const uint64_t blk = pipe.blocks_encoded();
+        const uint64_t frm = frames_ok.load(), fail = frames_fail.load();
         std::fprintf(stderr,
                      "[%3llus] app %.2fM air %.2fM | frm %llu fail %llu | blk %llu%s\n",
                      static_cast<unsigned long long>(t), iv_app * 8.0 / 1e6,
                      iv_air * 8.0 / 1e6,
-                     static_cast<unsigned long long>(iv_frm),
-                     static_cast<unsigned long long>(iv_fail),
+                     static_cast<unsigned long long>(frm - iv_frm0),
+                     static_cast<unsigned long long>(fail - iv_fail0),
                      static_cast<unsigned long long>(blk - iv_blk0),
                      iv_app * 8.0 < a.bitrate_bps * 0.95 ? "  ** under target **"
                                                          : "");
-        iv_app = iv_air = iv_frm = iv_fail = 0;
+        iv_app = iv_air = 0;
+        iv_frm0 = frm;
+        iv_fail0 = fail;
         iv_blk0 = blk;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -308,6 +361,12 @@ int main(int argc, char** argv) {
     pipe.flush(bodies);
     for (auto& b : bodies) body_to_frame(b);
     if (!frames.empty()) send_frames();
+    {
+      std::lock_guard<std::mutex> lk(qm);
+      q_done = true;
+    }
+    q_fill.notify_all();
+    for (auto& s : senders) s.join();
     const double dur = (mono_us() - t0) / 1e6;
     std::fprintf(stderr,
                  "done: %.1fs, %llu pkts (%.2f Mbps app), %llu frames "

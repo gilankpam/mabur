@@ -47,7 +47,7 @@ TEST(rxpipe_clean_pass_counts_everything) {
   CHECK(s.snr_sum[1] == 13.0 * static_cast<double>(s.sig_frames));
 }
 
-TEST(rxpipe_mac_gap_counts_lost_and_ignores_reorder) {
+TEST(rxpipe_mac_gap_counts_lost_and_credits_reorder) {
   FecParams p;
   RxPipeline rx(p);
   // Minimal valid-looking body isn't needed for mac accounting — but
@@ -64,10 +64,47 @@ TEST(rxpipe_mac_gap_counts_lost_and_ignores_reorder) {
   const int8_t snr[2] = {20, 20};
   rx.on_body(bodies[0].data(), bodies[0].size(), 10, true, rssi, snr, 1);
   rx.on_body(bodies[1].data(), bodies[1].size(), 14, true, rssi, snr, 2);  // gap of 3
-  rx.on_body(bodies[2].data(), bodies[2].size(), 13, true, rssi, snr, 3);  // reorder
+  rx.on_body(bodies[2].data(), bodies[2].size(), 13, true, rssi, snr, 3);  // late arrival fills one slot
   auto s = rx.snapshot();
-  CHECK(s.mac_lost == 3);
+  // Expected span 10..14 = 5 frames, 3 arrived (10, 14, 13) → 11 and 12 lost.
+  CHECK(s.mac_lost == 2);
   CHECK(s.frames == 3);
+}
+
+// The multi-threaded TX feed can swap whole ≤3-frame URB batches on air.
+// A swap is reordering, not loss — mac_lost must stay 0.
+TEST(rxpipe_urb_batch_swap_is_not_loss) {
+  FecParams p;
+  RxPipeline rx(p);
+  TxPipeline tx(p);
+  std::vector<std::vector<uint8_t>> bodies;
+  for (uint32_t s = 0; s < 8 * 16; ++s) {
+    auto pkt = build_bench_packet(s, 62);
+    tx.add_packet(pkt.data(), pkt.size(), bodies);
+  }
+  tx.flush(bodies);
+  REQUIRE(bodies.size() >= 10);
+  const uint8_t rssi[2] = {50, 50};
+  const int8_t snr[2] = {20, 20};
+  // Arrival order: URB0(0,1,2), URB2(6,7,8), URB1(3,4,5), then 9.
+  const uint16_t order[] = {0, 1, 2, 6, 7, 8, 3, 4, 5, 9};
+  for (size_t i = 0; i < 10; ++i)
+    rx.on_body(bodies[i].data(), bodies[i].size(), order[i], true, rssi, snr,
+               static_cast<uint64_t>(i + 1));
+  auto s = rx.snapshot();
+  CHECK(s.frames == 10);
+  CHECK(s.mac_lost == 0);
+}
+
+// A late frame can arrive AFTER a snapshot that already counted it lost —
+// the cumulative counter shrinks, and the interval delta must clamp to 0
+// instead of wrapping unsigned.
+TEST(rxpipe_snapshot_delta_clamps_shrinking_mac_lost) {
+  RxSnapshot a, b;
+  a.mac_lost = 3;
+  b.mac_lost = 0;
+  auto d = snapshot_delta(b, a);
+  CHECK(d.mac_lost == 0);
 }
 
 TEST(rxpipe_non_bench_stream_ignored) {
