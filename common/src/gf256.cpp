@@ -90,19 +90,7 @@ uint8_t mul(uint8_t a, uint8_t b) {
   return t.exp[static_cast<size_t>(t.log[a]) + t.log[b]];
 }
 
-uint8_t inv(uint8_t a) {
-  static const std::array<uint8_t, 256> table = [] {
-    std::array<uint8_t, 256> t{};
-    for (int x = 1; x < 256; ++x)
-      for (int y = 1; y < 256; ++y)
-        if (mul(static_cast<uint8_t>(x), static_cast<uint8_t>(y)) == 1) {
-          t[static_cast<size_t>(x)] = static_cast<uint8_t>(y);
-          break;
-        }
-    return t;
-  }();
-  return table[a];
-}
+uint8_t inv(uint8_t a) { return a ? gf_inv(a) : 0; }
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 namespace {
