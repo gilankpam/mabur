@@ -7,6 +7,10 @@ namespace mabur::gf {
 // devourer's stream_fec_rs.py).
 uint8_t mul(uint8_t a, uint8_t b);
 
+// Multiplicative inverse; inv(0) = 0 (no caller passes 0 — repair
+// coefficients are drawn from [1,255]).
+uint8_t inv(uint8_t a);
+
 // acc[i] ^= coeff * sym[i] for i in [0, len) — GF(2^8) linear combination
 // accumulation, mirrors the inner loop of Python's _lincomb.
 void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len);

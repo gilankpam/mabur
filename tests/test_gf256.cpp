@@ -37,4 +37,13 @@ TEST(gf256_backend_reports_known_value) {
   std::string s = b;
   CHECK(s == "neon-vqtbl" || s == "neon-vtbl2" || s == "scalar");
 }
+
+TEST(inv_roundtrip_all_nonzero) {
+  for (int a = 1; a < 256; ++a) {
+    const uint8_t ia = gf::inv(static_cast<uint8_t>(a));
+    CHECK(ia != 0);
+    CHECK(gf::mul(static_cast<uint8_t>(a), ia) == 1);
+  }
+  CHECK(gf::inv(0) == 0);
+}
 MTEST_MAIN
