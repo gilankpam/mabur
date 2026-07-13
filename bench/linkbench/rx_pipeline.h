@@ -37,7 +37,7 @@ struct RxSnapshot {
   uint64_t pattern_bad = 0;   // decoded but fill mismatch (decode bug!)
   uint64_t good_bytes = 0;    // post-FEC app payload bytes
   double rssi_sum[2] = {0, 0};  // raw PWDB sums over CRC-ok bench frames
-  double snr_sum[2] = {0, 0};
+  double snr_sum[2] = {0, 0};   // dB sums (half-dB raw converted on ingest)
   uint64_t sig_frames = 0;      // denominator for the sums
 };
 
@@ -81,8 +81,11 @@ class RxPipeline {
     } else {
       c_.rssi_sum[0] += rssi[0];
       c_.rssi_sum[1] += rssi[1];
-      c_.snr_sum[0] += snr[0];
-      c_.snr_sum[1] += snr[1];
+      // The phystatus rxsnr field is the vendor's s(8,1) format — HALF-dB
+      // units (devourer FrameParserJaguar3.h; RxQuality.h converts with
+      // snr_db = snr_raw/2). Convert at ingestion so every display reads dB.
+      c_.snr_sum[0] += snr[0] / 2.0;
+      c_.snr_sum[1] += snr[1] / 2.0;
       ++c_.sig_frames;
       if (have_mac_seq_) {
         const int d = seq_fwd_delta12(last_mac_seq_, mac_seq);

@@ -41,6 +41,10 @@ TEST(rxpipe_clean_pass_counts_everything) {
   CHECK(s.pattern_bad == 0);
   CHECK(s.good_bytes == npkt * 62ull);
   CHECK(s.sig_frames == bodies.size());
+  // rxsnr arrives in the vendor's half-dB s(8,1) format; ingestion converts
+  // to dB (raw 25/26 → 12.5/13.0 per frame).
+  CHECK(s.snr_sum[0] == 12.5 * static_cast<double>(s.sig_frames));
+  CHECK(s.snr_sum[1] == 13.0 * static_cast<double>(s.sig_frames));
 }
 
 TEST(rxpipe_mac_gap_counts_lost_and_ignores_reorder) {
