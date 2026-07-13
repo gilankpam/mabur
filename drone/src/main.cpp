@@ -486,6 +486,9 @@ int run_real_mode(const Config& cfg) {
   install_devourer_signal_handlers();
 
   auto logger = std::make_shared<Logger>();
+  // Info-level events include one tx.agg line per aggregated URB (~600/s at
+  // video rate) — that floods the RAM-backed /tmp/mabur.log. Warnings only.
+  logger->set_level(Logger::Level::Warn);
 
   libusb_context* usb_ctx = nullptr;
   int rc = libusb_init(&usb_ctx);
@@ -609,10 +612,19 @@ int run_real_mode(const Config& cfg) {
         last_applied_op = op;
       }
 
-      int n = ring.read(buf, sizeof buf, 5);
-      if (n > 0) {
+      // Drain a BURST per iteration, not one packet: the per-iteration
+      // overhead (op check, poll, beat) capped the old 1-packet loop at
+      // ~800 reads/s while waybeam produces 1000+ pkt/s at 60fps — the SHM
+      // ring pinned at full (bench: fill 457-511/512) and waybeam's
+      // packetizer aborted NALs mid-chain on the overflow. First read
+      // blocks up to 5 ms; the rest are non-blocking.
+      int burst = 0;
+      int n;
+      while (burst < 64 &&
+             (n = ring.read(buf, sizeof buf, burst == 0 ? 5 : 0)) > 0) {
         auto bodies = uep.add_rtp(buf, static_cast<size_t>(n), now);
         for (auto& b : bodies) txq.push(std::move(b));
+        ++burst;
       }
 
       auto polled = uep.poll(now);
