@@ -21,4 +21,10 @@ using Matrix = std::vector<std::vector<uint8_t>>;
 // Throws std::runtime_error on a singular matrix (cannot happen for any K
 // rows of encoding_matrix; the decoder relies on that MDS property).
 Matrix mat_inv(const Matrix& m);
+
+// Compile-time-selected lincomb backend, for startup logs: "neon-vqtbl"
+// (aarch64 ASIMD), "neon-vtbl2" (ARMv7 NEON), or "scalar". Lets a bench log
+// prove the SIMD path is actually compiled in (a build-flag regression
+// otherwise shows up only as mysterious CPU load).
+const char* backend();
 }  // namespace mabur::gf

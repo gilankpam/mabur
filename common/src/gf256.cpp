@@ -165,6 +165,16 @@ void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len) {
   }
 }
 
+const char* backend() {
+#if defined(__aarch64__)
+  return "neon-vqtbl";
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+  return "neon-vtbl2";
+#else
+  return "scalar";
+#endif
+}
+
 Matrix mat_inv(const Matrix& m) {
   const Tables& t = tables();
   size_t n = m.size();

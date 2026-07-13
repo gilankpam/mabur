@@ -1,5 +1,6 @@
 #include "mtest.h"
 #include "mabur/gf256.h"
+#include <string>
 using namespace mabur;
 
 // Multiply two matrices with the public mul() (mat_mul is internal).
@@ -28,5 +29,12 @@ TEST(mat_inv_times_original_is_identity) {
   for (size_t i = 0; i < 4; ++i)
     for (size_t j = 0; j < 4; ++j)
       CHECK(prod[i][j] == (i == j ? 1 : 0));
+}
+
+TEST(gf256_backend_reports_known_value) {
+  const char* b = gf::backend();
+  REQUIRE(b != nullptr);
+  std::string s = b;
+  CHECK(s == "neon-vqtbl" || s == "neon-vtbl2" || s == "scalar");
 }
 MTEST_MAIN
