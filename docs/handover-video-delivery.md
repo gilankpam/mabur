@@ -301,3 +301,23 @@ operating point: **9 Mbps @ ov0.375 (73% duty)**.
   fade margin), 40 MHz, or MCS6/7 — measure before promising.
 - rtpsniff caveat: python capture drops >~2 k pkt/s; run it at ≤10 M rates
   or trust in-process stats.
+
+## Post-tuning addendum (same morning): depth/flush interaction — READ THIS BEFORE TOUCHING EITHER
+
+`interleave_depth` small (0/8) + `flush_ms` 15 at 60 fps = **tiny-body storm**:
+every inter-frame gap (16.7 ms > flush_ms) triggers drain_layer, and the
+drain emits one short body PER ROUND of the leftover window — at depth 8
+that's ~17 bodies of 1–2 symbols per frame, +~500 frames/s of air for zero
+extra payload. Bench-proven: depth 0 → drone TX 2540 fps, 16.7% seqs lost,
+PP at 30 fps. Deployed cure: **depth 16 + flush_ms 25** — the idle flush
+never fires mid-stream at 60 fps, the window persists across frames (true
+cross-frame interleaving), bodies are always full, and the per-frame padded
+flush block disappears (~8% airtime saved). Cost: frame-tail packets ship
+~1 frame later. Verified: 9.31 Mbps, 0 gaps, 1197/1198 frames, 59.9 ok-fps.
+v1.1 code fix if small depths are ever needed: drain should pack rounds
+consecutively and flush the packer once (trades tail-block spread for body
+efficiency) — see drain_round() note in interleaver.h.
+
+**Final deployed config (2026-07-13):** drone: 9000–9100 pin, symbol 164,
+bpb [8,8,8,8], interleave on, depth 16, flush 25, power_mode none. GS:
+mcs5 / ov0.375 / age 250 / hold 300. PP visually confirmed clean by user.
