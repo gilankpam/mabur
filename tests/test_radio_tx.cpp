@@ -189,4 +189,62 @@ TEST(send_body_before_set_ladder_drops_and_consumes_seq) {
   CHECK(tx.seq() == 1);  // Sequence was still consumed
 }
 
+namespace {
+// Records send_many batch sizes; accepts everything.
+class BatchSink : public FrameSink {
+ public:
+  bool send(const uint8_t* frame, size_t len) override {
+    frames_.emplace_back(frame, frame + len);
+    return true;
+  }
+  size_t send_many(const View* v, size_t n) override {
+    batches_.push_back(n);
+    for (size_t i = 0; i < n; ++i) frames_.emplace_back(v[i].data, v[i].data + v[i].len);
+    return n;
+  }
+  std::vector<std::vector<uint8_t>> frames_;
+  std::vector<size_t> batches_;
+};
+}  // namespace
+
+TEST(send_bodies_matches_send_body_framing) {
+  // Batch and per-body paths must produce byte-identical frames and the
+  // same seq/sent accounting (CaptureSink exercises the default send_many
+  // per-frame fallback).
+  CaptureSink a_sink;
+  CaptureSink b_sink;
+  RadioTx a(a_sink, {20, 40});
+  RadioTx b(b_sink, {20, 40});
+  auto ladder = ladder_from(PhyMode::HT, 2, 20, FlagPolicy{});
+  a.set_ladder(ladder);
+  b.set_ladder(ladder);
+
+  std::vector<UepBody> bodies;
+  for (uint8_t i = 0; i < 7; ++i)
+    bodies.push_back(UepBody{static_cast<uint8_t>(i % 4),
+                             std::vector<uint8_t>(40 + i, static_cast<uint8_t>(i))});
+
+  for (auto& bd : bodies) a.send_body(bd.stream_id, bd.body.data(), bd.body.size());
+  CHECK(b.send_bodies(bodies) == bodies.size());
+
+  REQUIRE(a_sink.frames_.size() == b_sink.frames_.size());
+  for (size_t i = 0; i < a_sink.frames_.size(); ++i)
+    CHECK(a_sink.frames_[i] == b_sink.frames_[i]);
+  CHECK(a.seq() == b.seq());
+  CHECK(a.sent() == b.sent());
+  CHECK(b.drops() == 0);
+}
+
+TEST(send_bodies_submits_one_batch) {
+  BatchSink sink;
+  RadioTx tx(sink, {20});
+  tx.set_ladder(ladder_from(PhyMode::HT, 2, 20, FlagPolicy{}));
+  std::vector<UepBody> bodies;
+  for (int i = 0; i < 5; ++i) bodies.push_back(UepBody{1, std::vector<uint8_t>(32, 0x5A)});
+  CHECK(tx.send_bodies(bodies) == 5);
+  REQUIRE(sink.batches_.size() == 1);
+  CHECK(sink.batches_[0] == 5);
+  CHECK(tx.sent() == 5);
+}
+
 MTEST_MAIN

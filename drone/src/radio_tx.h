@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "mabur/profile.h"
+#include "mabur/uep_encoder.h"
 
 namespace mabur {
 
@@ -16,8 +17,24 @@ namespace mabur {
 // build, a capture double in tests).
 class FrameSink {
  public:
+  struct View {
+    const uint8_t* data;
+    size_t len;
+  };
+
   virtual ~FrameSink() = default;
   virtual bool send(const uint8_t* frame, size_t len) = 0;
+
+  // Batch submit; returns how many frames the sink accepted. The default is
+  // a per-frame send() loop; sinks with a cheaper bulk path (devourer's
+  // send_packets USB TX aggregation packs up to 3 frames per bulk-OUT URB
+  // on Jaguar3) override it.
+  virtual size_t send_many(const View* frames, size_t n) {
+    size_t ok = 0;
+    for (size_t i = 0; i < n; ++i)
+      if (frames[i].data && send(frames[i].data, frames[i].len)) ++ok;
+    return ok;
+  }
 };
 
 // Builds `radiotap(layer, effective_bw) | 24-byte 802.11 header | body`
@@ -66,6 +83,13 @@ class RadioTx {
   // NOTE: send_body() before set_ladder() drops frames (missing radiotap cache).
   bool send_body(uint8_t stream_id, const uint8_t* body, size_t len);
 
+  // Batch variant: builds one frame per body, then hands them all to
+  // sink.send_many() in a single call (URB-aggregating sinks pack several
+  // frames per bulk transfer). Framing, seq consumption and sent/drops
+  // accounting match the equivalent send_body() loop. Same
+  // single-caller-thread contract as send_body (shares its buffer pool).
+  size_t send_bodies(const std::vector<UepBody>& bodies);
+
   uint16_t seq() const { return seq_; }
   uint64_t sent() const { return sent_; }
   uint64_t drops() const { return drops_; }
@@ -83,6 +107,12 @@ class RadioTx {
     std::array<LayerCache, 4> layers;
   };
 
+  // Builds `radiotap | dot11(seq_) | body` into out, consuming seq_. False
+  // (drop counted) when the radiotap cache has no entry for the effective
+  // bw (send before set_ladder).
+  bool build_frame(const Cache& cache, uint8_t stream_id, const uint8_t* body,
+                   size_t len, std::vector<uint8_t>& out);
+
   FrameSink& sink_;
   std::vector<uint8_t> bw_set_;
   std::atomic<std::shared_ptr<Cache>> cache_;
@@ -90,6 +120,7 @@ class RadioTx {
   uint64_t sent_ = 0;
   uint64_t drops_ = 0;
   std::vector<uint8_t> scratch_;  // reusable frame buffer (single-threaded use)
+  std::vector<std::vector<uint8_t>> pool_;  // send_bodies frame buffers
 };
 
 }  // namespace mabur

@@ -75,10 +75,11 @@ void RadioTx::set_ladder(const std::array<rc::LayerTxSpec, 4>& ladder) {
   cache_.store(next);
 }
 
-bool RadioTx::send_body(uint8_t stream_id, const uint8_t* body, size_t len) {
-  auto cache = cache_.load();
-  size_t idx = stream_id < cache->layers.size() ? stream_id : cache->layers.size() - 1;
-  const LayerCache& lc = cache->layers[idx];
+bool RadioTx::build_frame(const Cache& cache, uint8_t stream_id,
+                          const uint8_t* body, size_t len,
+                          std::vector<uint8_t>& out) {
+  size_t idx = stream_id < cache.layers.size() ? stream_id : cache.layers.size() - 1;
+  const LayerCache& lc = cache.layers[idx];
 
   int probe = rc::probe_bw(seq_, bw_set_);
   uint8_t effective_bw = probe >= 0 ? static_cast<uint8_t>(probe) : lc.default_bw;
@@ -86,9 +87,9 @@ bool RadioTx::send_body(uint8_t stream_id, const uint8_t* body, size_t len) {
   const auto& by_bw = lc.by_bw;
   auto it = by_bw.find(effective_bw);
 
-  // Detect missing radiotap cache entry (e.g. send_body called before set_ladder).
+  // Missing radiotap cache entry (e.g. called before set_ladder). Sequence
+  // is consumed regardless to let a ground-station gap detector see the drop.
   if (it == by_bw.end()) {
-    // Sequence is consumed regardless to let ground-station gap detector see the drop.
     seq_ = static_cast<uint16_t>((seq_ + 1) & 0xFFF);
     ++drops_;
     return false;
@@ -98,23 +99,52 @@ bool RadioTx::send_body(uint8_t stream_id, const uint8_t* body, size_t len) {
 
   size_t rl = radiotap.size();
   size_t frame_len = rl + kDot11HeaderLen + len;
-  if (scratch_.size() < frame_len) scratch_.resize(frame_len);
+  if (out.size() < frame_len) out.resize(frame_len);
 
-  std::memcpy(scratch_.data(), radiotap.data(), rl);
-  write_dot11_header(scratch_.data() + rl, seq_);
-  if (len > 0) std::memcpy(scratch_.data() + rl + kDot11HeaderLen, body, len);
+  std::memcpy(out.data(), radiotap.data(), rl);
+  write_dot11_header(out.data() + rl, seq_);
+  if (len > 0) std::memcpy(out.data() + rl + kDot11HeaderLen, body, len);
+  out.resize(frame_len);
 
-  bool ok = sink_.send(scratch_.data(), frame_len);
-
-  // Sequence is consumed regardless of send() outcome, so a ground-station
-  // gap detector observes the drop as a skipped sequence number.
+  // Sequence is consumed regardless of the eventual send() outcome, so a
+  // ground-station gap detector observes any drop as a skipped seq number.
   seq_ = static_cast<uint16_t>((seq_ + 1) & 0xFFF);
+  return true;
+}
 
+bool RadioTx::send_body(uint8_t stream_id, const uint8_t* body, size_t len) {
+  auto cache = cache_.load();
+  if (!build_frame(*cache, stream_id, body, len, scratch_)) return false;
+
+  bool ok = sink_.send(scratch_.data(), scratch_.size());
   if (ok) {
     ++sent_;
   } else {
     ++drops_;
   }
+  return ok;
+}
+
+size_t RadioTx::send_bodies(const std::vector<UepBody>& bodies) {
+  if (bodies.empty()) return 0;
+  auto cache = cache_.load();
+  if (pool_.size() < bodies.size()) pool_.resize(bodies.size());
+
+  std::vector<FrameSink::View> views;
+  views.reserve(bodies.size());
+  size_t built = 0;
+  for (const auto& b : bodies) {
+    if (!build_frame(*cache, b.stream_id, b.body.data(), b.body.size(),
+                     pool_[built]))
+      continue;  // drop already counted; seq consumed
+    views.push_back(FrameSink::View{pool_[built].data(), pool_[built].size()});
+    ++built;
+  }
+  if (views.empty()) return 0;
+
+  size_t ok = sink_.send_many(views.data(), views.size());
+  sent_ += ok;
+  drops_ += views.size() - ok;
   return ok;
 }
 

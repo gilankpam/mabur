@@ -34,6 +34,7 @@
 #include "radio_tx.h"
 #include "rc_agent.h"
 #include "ring_source.h"
+#include "tx_queue.h"
 #include "waybeam_client.h"
 
 #if defined(MABUR_DRY_RUN_ONLY)
@@ -97,6 +98,17 @@ struct DevourerSink : mabur::FrameSink {
     if (ready && !ready->load(std::memory_order_acquire)) return false;
     std::lock_guard<std::mutex> l(m);
     return dev->send_packet(p, n);
+  }
+
+  // Batch path: devourer's send_packets packs consecutive frames into
+  // shared bulk-OUT URBs when tx.usb_agg_max > 0 (one transfer per batch
+  // instead of one per frame). Same ready-gate and mutex as send().
+  size_t send_many(const View* frames, size_t n) override {
+    if (ready && !ready->load(std::memory_order_acquire)) return 0;
+    std::vector<TxPacketView> v(n);
+    for (size_t i = 0; i < n; ++i) v[i] = {frames[i].data, frames[i].len};
+    std::lock_guard<std::mutex> l(m);
+    return dev->send_packets(v.data(), n);
   }
 };
 
@@ -506,6 +518,10 @@ int run_real_mode(const Config& cfg) {
   // plain InitWrite is unreliable on this chip.
   devourer::DeviceConfig dev_cfg;
   dev_cfg.rx.enable_with_tx = true;
+  // USB TX aggregation: pack up to 3 frames (the HalMAC per-transfer
+  // descriptor limit) into one bulk-OUT URB via send_packets — amortizes
+  // the per-URB tax that capped inline per-frame injection at ~2500 fps.
+  dev_cfg.tx.usb_agg_max = 3;
 
   WiFiDriver wifi_driver{logger};
   auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);
@@ -559,8 +575,17 @@ int run_real_mode(const Config& cfg) {
     }
   };
 
+  // TX body queue between the encode (hot) thread and the USB writer
+  // thread: a bulk-OUT stall backs up HERE (bounded, drop-oldest =
+  // FEC-recoverable erasures) instead of in the waybeam SHM ring, whose
+  // overflow makes the RTP packetizer abort NALs mid-chain — sender-side
+  // slice truncation no FEC can repair (bench 2026-07-13, the PixelPilot
+  // glitch root cause). ~256 bodies ≈ 150 ms at 1700 bodies/s.
+  TxQueue txq(256);
+
   // Hot thread: pulls RTP off the real SHM ring, runs it through the UEP
-  // pipeline, sends bodies. Owns the UepEncoder exclusively.
+  // pipeline, queues bodies for the TX writer. Owns the UepEncoder
+  // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
     RingSource ring(cfg.ring_name);
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, cfg.fec.interleave);
@@ -587,13 +612,28 @@ int run_real_mode(const Config& cfg) {
       int n = ring.read(buf, sizeof buf, 5);
       if (n > 0) {
         auto bodies = uep.add_rtp(buf, static_cast<size_t>(n), now);
-        for (auto& b : bodies) tx.send_body(b.stream_id, b.body.data(), b.body.size());
+        for (auto& b : bodies) txq.push(std::move(b));
       }
 
       auto polled = uep.poll(now);
-      for (auto& b : polled) tx.send_body(b.stream_id, b.body.data(), b.body.size());
+      for (auto& b : polled) txq.push(std::move(b));
 
       hot_beat.fetch_add(1, std::memory_order_relaxed);
+    }
+    txq.close();
+  });
+
+  // TX writer thread: sole caller of tx.send_bodies (RadioTx's
+  // single-thread contract). Batches up to 3 bodies per call — devourer's
+  // Jaguar3 send_packets packs them into one bulk-OUT URB (HalMAC parses at
+  // most 3 descriptors per transfer), amortizing the per-URB tax that
+  // capped the old inline path at ~2500 fps.
+  std::thread tx_thread([&]() {
+    std::vector<UepBody> batch;
+    while (!g_devourer_should_stop) {
+      batch.clear();
+      if (txq.pop_batch(batch, 3, 5) == 0) continue;
+      tx.send_bodies(batch);
     }
   });
 
@@ -668,11 +708,14 @@ int run_real_mode(const Config& cfg) {
         last_stats_ms = now;
         std::fprintf(stderr,
                      "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
+                     "txq=%zu txq_drop=%llu "
                      "thermal_delta=%d tx_failed=%llu waybeam_failures=%llu\n",
                      static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
                      static_cast<unsigned long long>(rb), tx.seq(),
                      static_cast<unsigned long long>(tx.sent()),
-                     static_cast<unsigned long long>(tx.drops()), health.thermal_delta,
+                     static_cast<unsigned long long>(tx.drops()),
+                     txq.depth(), static_cast<unsigned long long>(txq.dropped()),
+                     health.thermal_delta,
                      static_cast<unsigned long long>(txstats.failed),
                      static_cast<unsigned long long>(waybeam.failures()));
       }
@@ -710,6 +753,7 @@ int run_real_mode(const Config& cfg) {
   // guaranteed to exit and these joins complete.
   g_devourer_should_stop = true;
   if (hot_thread.joinable()) hot_thread.join();
+  if (tx_thread.joinable()) tx_thread.join();
   if (agent_thread.joinable()) agent_thread.join();
 
   rtl_device->Stop();
