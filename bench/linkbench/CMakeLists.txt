@@ -5,3 +5,8 @@
 add_library(linkbench_core INTERFACE)
 target_include_directories(linkbench_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(linkbench_core INTERFACE mabur_common)
+
+if(TARGET devourer)
+  add_executable(linkbench-tx tx_main.cpp)
+  target_link_libraries(linkbench-tx PRIVATE linkbench_core devourer pthread)
+endif()
