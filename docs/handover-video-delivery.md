@@ -257,3 +257,47 @@ s0/IDR share). The 8.5 M pin emitted only 6.5 M on the night scene; the
 4. Upstream devourer filings (unchanged list, §5.3) + push
    `merge-upstream-b5a6df7` (38fdde4) to the fork BEFORE pushing this branch.
 5. G6 staircase (unchanged).
+
+---
+
+# UPDATE 2 — 2026-07-13 morning: the OTHER half of the glitches (drone pipeline)
+
+PP still glitched after the overnight transport fixes ("~5 Mbps usable of
+11 M set"). Morning forensics (rtpsniff + rtpdump payload capture) found the
+transport CLEAN (0 seq gaps) while ~26 FU chains/s were missing their tail
+fragments — **packets that never got RTP seq numbers**. waybeam's packetizer
+consumes a seq only on writer success and ABORTS the rest of the NAL on
+failure (`rtp_packetizer.c`), so producer-side drops are invisible to every
+seq-gap counter. The failing writer was the mabur SHM ring (wfb never used
+it — why wfb was "clean"): `/dev/shm/mabur` header showed the ring PINNED at
+457–511/512.
+
+Chased through three layers (each real, each necessary):
+1. **USB inline TX** — hot thread did blocking bulk-OUT per body.
+   → `97abe6e`: bounded TxQueue (drop-oldest = FEC erasures) + TX writer
+   thread + `RadioTx::send_bodies` → `send_packets` with
+   `tx.usb_agg_max=3` (3 frames/URB, HalMAC limit). Watch `txq=`/`txq_drop=`
+   and devourer `tx.agg` events (logger now Warn — info flooded tmpfs).
+2. **One-ring-read-per-loop** — per-iteration overhead capped drain at
+   ~800 pkt/s vs 1000+ produced. → `f5729b1`: burst-drain ≤64/iteration.
+3. **Scalar GF256** — the real ceiling: log/exp lincomb ≈ 38 MB/s on the
+   Cortex-A7; RS parity at 60 fps rates ate the core (ring still pinned).
+   → `ff080fd`: NEON vtbl split-nibble lincomb (aarch64 + ARMv7 paths),
+   **4.1×** (156.6 MB/s), encoder 1037→1389 pkt/s on-target
+   (`tools/bench/gf_bench.cpp`, includes a byte-exact verify mode).
+
+**Airtime is the final wall, not a bug**: at MCS5/20 MHz (~26-27 Mbps
+practical), video×(1+eff_overhead) must stay ≲75% duty. 11 M @ ov0.375 =
+23.4 M air = 90% → chip TX FIFO saturates (txq_drop climbing). The tuned
+operating point: **9 Mbps @ ov0.375 (73% duty)**.
+
+## Verified end state (2026-07-13 ~10:00, PP feed live)
+
+- rtpsniff 20 s: **9.32 Mbps, 0 gaps, 0/1199 bad frames, 59.9 ok-fps**
+  (was 60% bad at 8 AM). GS 60 s: skip 0.026%, late=0, back=0. Drone:
+  ring_fill≈7/512, txq=0, thermal Δ1.
+- Configs: drone pin 9000–9100, interleave depth 32, power_mode none;
+  GS mcs5/ov0.375/age250. Bitrate ladder beyond 9 M needs ov0.25 (less
+  fade margin), 40 MHz, or MCS6/7 — measure before promising.
+- rtpsniff caveat: python capture drops >~2 k pkt/s; run it at ≤10 M rates
+  or trust in-process stats.
