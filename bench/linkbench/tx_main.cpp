@@ -168,7 +168,8 @@ int main(int argc, char** argv) {
                a.channel, a.mcs, a.ldpc ? "ldpc " : "", a.stbc ? "stbc " : "",
                a.bitrate_bps / 1e6, a.bitrate_bps / 1e6 * afac, afac,
                a.fec.k, a.fec.rs().n(), a.fec.symbol_size, a.fec.bpb,
-               a.fec.interleave, a.size, a.pwr_mode.c_str(), a.pwr,
+               a.fec.interleave > 0 ? a.fec.effective_bpb() : 0, a.size,
+               a.pwr_mode.c_str(), a.pwr,
                mabur::gf::backend());
 
   auto logger = std::make_shared<Logger>();
@@ -222,8 +223,14 @@ int main(int argc, char** argv) {
   // watches g_devourer_should_stop) exactly like maburd.
   std::thread tx_thread([&] {
     TxPipeline pipe(a.fec);
+    // Burst must scale with rate: a fixed cap of a few KB divided by the
+    // real loop period (1 ms nominal, 2+ ms under scheduler jitter) would
+    // ceiling the offered load below the very link knee this bench exists
+    // to find (MCS5 app knee ~16-17 Mbps vs a 3968-byte cap's ~16-31 Mbps
+    // ceiling). 10 ms of rate keeps catch-up bursts bench-harmless.
     TokenBucket bucket(static_cast<double>(a.bitrate_bps) / 8.0,
-                       static_cast<double>(a.size) * 64.0);
+                       std::max(static_cast<double>(a.size) * 64.0,
+                                static_cast<double>(a.bitrate_bps) / 8.0 * 0.010));
     uint32_t app_seq = 0;
     uint16_t mac_seq = 0;
     uint64_t app_bytes = 0, air_bytes = 0, frames_ok = 0, frames_fail = 0;
