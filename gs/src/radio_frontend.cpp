@@ -113,12 +113,9 @@ bool RadioFrontend::open_and_start() {
   // here explicitly. Inert unless the env vars are set.
   dev_cfg.debug.dump_canary = std::getenv("DEVOURER_DUMP_CANARY") != nullptr;
   dev_cfg.debug.bb_dump = std::getenv("DEVOURER_BB_DUMP") != nullptr;
-  // Legacy 8822E path-B AGC protection (skips the 0x41e8 TXAGC ref write
-  // whose RX-desense devourer#268 retired as "artifact" — measured only via
-  // total frame counts, which chain A dominates). Kept env-gated for
-  // per-chain A/B experiments.
-  dev_cfg.rx.protect_pathb_agc =
-      std::getenv("DEVOURER_PROTECT_PATHB_AGC") != nullptr;
+  // (The 0x41e8 protect_pathb_agc knob was chased here too — exonerated:
+  // the real path-B killer was the DPDT pin-mux, fixed by devourer's eFEM
+  // pinmux port; see DEVOURER_DPDT_MODE in RtlJaguar3Device.)
   driver_ = std::make_unique<WiFiDriver>(logger_);
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
