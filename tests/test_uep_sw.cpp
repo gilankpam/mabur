@@ -243,4 +243,79 @@ TEST(mixed_symbol_sizes_burst_within_budget) {
   for (int s = 0; s < 4; ++s) CHECK(r.delivered[s] == r.sent[s]);
 }
 
+// Single stream-1 pipeline (sym 1312 / bpb 1 / window 64) exposing the
+// decoder so we can assert the loss-accounting invariant, not just delivery.
+// Drops a fixed run of bodies starting at `drop_start`.
+struct AcctResult {
+  uint64_t sent = 0, delivered = 0;
+  uint64_t syms_delivered = 0, syms_recovered = 0, syms_abandoned = 0;
+  uint64_t frag_evicted = 0;
+};
+
+AcctResult run_stream1_acct(int n_pkts, uint64_t drop_start, uint64_t drop_count) {
+  auto layers = mixed_layers();
+  UepEncoder enc(layers, /*flush_ms=*/15);
+  UepDecoder dec(layers, /*decode_deadline_ms=*/200);
+
+  AcctResult r;
+  uint64_t body_idx = 0;
+  uint64_t now = 1000;
+  auto consume = [&](std::vector<UepBody>& bodies) {
+    for (auto& b : bodies) {
+      uint64_t idx = body_idx++;
+      if (drop_count > 0 && idx >= drop_start && idx < drop_start + drop_count)
+        continue;
+      for (auto& d : dec.add_body(b.body.data(), b.body.size(), now))
+        if (d.stream_id == 1) ++r.delivered;
+    }
+  };
+
+  std::mt19937 rng(3);
+  for (int i = 0; i < n_pkts; ++i) {
+    auto pkt = make_stream_rtp(1, static_cast<uint32_t>(i), rng);  // all stream 1
+    ++r.sent;
+    auto bodies = enc.add_rtp(pkt.data(), pkt.size(), now);
+    consume(bodies);
+    if (i % 30 == 29) { now += 15; auto f = enc.poll(now); consume(f); }
+  }
+  now += 100;
+  auto tail = enc.flush_all();
+  consume(tail);
+  dec.poll(now + 5000);
+
+  auto st = dec.stats(1);
+  r.syms_delivered = st.syms_delivered;
+  r.syms_recovered = st.syms_recovered;
+  r.syms_abandoned = st.syms_abandoned;
+  r.frag_evicted = st.frag_evicted;
+  return r;
+}
+
+// REPRODUCES the hardware "uncounted RTP loss" bug (bigsymbol-bug-report.md).
+// Withholding the OPENING body of a stream-1 (sym 1312 / bpb 1) run costs one
+// RTP packet — but the decoder anchors base_ at the FIRST source it *sees*, so
+// the lost leading source(s) sit permanently below base_ and are NEVER booked
+// as syms_abandoned (nor frag_evicted). That is the exact hardware signature:
+// packets vanish while every loss counter stays frozen. The invariant every
+// non-abandoned source must be delivered/recovered is violated silently.
+//
+// This is the systematic, sustained mechanism (not a one-off tail): it fires on
+// every stream (re)join and after any burst that wipes the leading sources of a
+// re-anchoring window — matching the measured 2.6-3.65% stream-1 loss.
+TEST(opening_loss_is_accounted) {
+  // Withhold the first two bodies of the run. That loses the leading
+  // source(s) of stream 1 — but the decoder sets base_ to the FIRST source it
+  // actually sees, so those lost sources sit permanently below base_ and are
+  // never booked as syms_abandoned (nor caught by frag_evicted). FEC cannot
+  // recover them either (their covering repairs arrive before any anchor and
+  // are dropped as stale). Result: RTP packets vanish with every loss counter
+  // frozen — the measured hardware signature.
+  auto r = run_stream1_acct(400, /*drop_start=*/0, /*drop_count=*/2);
+  const uint64_t missing = r.sent - r.delivered;
+  const uint64_t counted_loss = r.syms_abandoned + r.frag_evicted;
+  // Every missing RTP packet MUST be accounted by some loss counter.
+  // FAILS today: missing >= 1 while counted_loss == 0 (uncounted vanish).
+  CHECK(missing == 0 || counted_loss >= missing);
+}
+
 MTEST_MAIN

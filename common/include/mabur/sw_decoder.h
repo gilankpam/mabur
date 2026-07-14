@@ -59,6 +59,10 @@ class SwDecoder {
   };
 
   uint64_t unwrap(uint32_t s) const;
+  // Genuinely-unrecoverable floor (newest_v_ - horizon_); admit/drop checks
+  // use this rather than base_, which lags at newest_v_ during the opening
+  // horizon after a join. See sw_decoder.cpp for the join-loss bug this fixes.
+  uint64_t live_floor() const;
   void reset_state(uint64_t v);
   void advance(uint64_t newest_candidate);
   // Reduce r against existing pivot rows, normalize, insert. Newly solved

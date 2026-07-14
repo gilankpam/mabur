@@ -30,15 +30,32 @@ void SwDecoder::reset_state(uint64_t v) {
   ++resets_;
 }
 
+// The floor below which a seq is genuinely unrecoverable (older than the
+// horizon behind the newest symbol seen). This — NOT base_ — is what the
+// admit/drop checks must use. base_ only catches up to newest_v_ - horizon_
+// after the first `horizon` symbols; for that opening window base_ sits AT
+// the first source seen, so any earlier-or-reordered source (leading loss in
+// a join burst, or merely a lower seq that arrived after a higher one at
+// bpb=1 where each symbol is its own air frame) tested `< base_` and was
+// dropped stale — never delivered, recovered, nor abandoned. Whole RTP
+// packets vanished with every loss counter frozen (hardware 2026-07-15,
+// bpb=1 big-symbol video corruption). Using the horizon floor admits them
+// during the join window and is identical to base_ in steady state.
+uint64_t SwDecoder::live_floor() const { return newest_v_ - horizon_; }
+
 void SwDecoder::advance(uint64_t newest_candidate) {
   if (newest_candidate <= newest_v_) return;
   newest_v_ = newest_candidate;
   const uint64_t nb = newest_v_ - horizon_;  // vseqs start at 2^32 >> horizon
   if (nb <= base_) return;
   // Every seq in [base_, nb) that never became known is lost for good.
+  // Evict all known seqs below nb, but only those in [base_, nb) offset the
+  // abandoned count: seqs below base_ (delivered/recovered after arriving
+  // reordered-earlier than the join anchor, via live_floor()) were never in
+  // the [base_, nb) accounting span, so counting them would underflow it.
   uint64_t known_in_range = 0;
   for (auto it = known_.begin(); it != known_.end() && it->first < nb;) {
-    ++known_in_range;
+    if (it->first >= base_) ++known_in_range;
     it = known_.erase(it);
   }
   syms_abandoned_ += (nb - base_) - known_in_range;
@@ -109,7 +126,7 @@ void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
     queue.pop_back();
     const bool count_as_source = source && first;
     first = false;
-    if (s < base_ || known_.count(s)) continue;
+    if (s < live_floor() || known_.count(s)) continue;
     unpack_symbol(payload.data(), out);
     if (count_as_source) ++syms_delivered_; else ++syms_recovered_;
     auto [kit, ok] = known_.emplace(s, std::move(payload));
@@ -162,7 +179,7 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
       reset_state(kAnchor + h.seq);
       v = newest_v_;
     }
-    if (v < base_ || known_.count(v)) {
+    if (v < live_floor() || known_.count(v)) {
       ++symbols_dropped_stale_;
       return out;
     }
@@ -186,9 +203,9 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
     return out;
   }
   advance(wend - 1);  // a repair implies its whole window was sent
-  if (ws < base_) {
-    // References an evicted seq — unsolvable, and (if any covered seq is
-    // still unknown) that seq is already booked abandoned by the horizon.
+  if (ws < live_floor()) {
+    // References a seq older than the horizon — unsolvable, and (if any
+    // covered seq is still unknown) that seq is already booked abandoned.
     ++symbols_dropped_stale_;
     return out;
   }
