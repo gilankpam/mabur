@@ -11,6 +11,18 @@ import sw_fec  # noqa: E402
 
 FRAG_HDR = struct.Struct("<HBB")
 
+def parse_symbol_size(text):
+    """Accepts a single int (shared by all 4 streams) or a comma-separated
+    4-list, one per UEP stream (e.g. "164,1312,1312,1312"), mirroring the
+    GS/drone bundle's scalar-or-array fec.symbol_size."""
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) == 1:
+        return [int(parts[0])] * 4
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            "--symbol-size must be a single int or a comma-separated 4-list")
+    return [int(p) for p in parts]
+
 def read_frames(path):
     out = []
     with open(path, "rb") as f:
@@ -38,7 +50,7 @@ def read_fixture(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", required=True); ap.add_argument("--fixture", required=True)
-    ap.add_argument("--symbol-size", type=int, default=64)
+    ap.add_argument("--symbol-size", type=parse_symbol_size, default=[64, 64, 64, 64])
     ap.add_argument("--drop-pct", type=float, default=0.0); ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--min-critical", type=float, default=1.0)  # delivery floor under loss
     ap.add_argument("--expect-mcs", type=int); ap.add_argument("--after", type=int, default=0)
@@ -55,8 +67,8 @@ def main():
 
     frames = read_frames(a.frames)
     rng = random.Random(a.seed)
-    decs = {s: sw_fec.SwDecoder(symbol_size=a.symbol_size) for s in range(4)}
-    env_size = sw_fec.SW_HDR_LEN + a.symbol_size
+    decs = {s: sw_fec.SwDecoder(symbol_size=a.symbol_size[s]) for s in range(4)}
+    env_size = {s: sw_fec.SW_HDR_LEN + a.symbol_size[s] for s in range(4)}
     reasm, reasm_n, recovered, per_stream_in = {}, {}, [], {s: 0 for s in range(4)}
 
     if a.expect_mcs is not None:  # RCF-application check: HT radiotap MCS byte is
@@ -79,7 +91,7 @@ def main():
         if sid is None or sid > 3: continue
         per_stream_in[sid] += 1
         if a.drop_pct and rng.random() * 100 < a.drop_pct: continue
-        for env in fec_subblock.unpack(body, env_size).survivors:
+        for env in fec_subblock.unpack(body, env_size[sid]).survivors:
             for pkt in decs[sid].add_symbol(env):
                 if len(pkt) < FRAG_HDR.size: continue
                 seq, idx, n = FRAG_HDR.unpack_from(pkt)

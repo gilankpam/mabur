@@ -5,7 +5,11 @@
     "cards": [{"usb_vid": 3034, "usb_pid": 0, "index": 0}],
     "tx_card": -1
   },
-  "fec": {"symbol_size": 64, "decode_deadline_ms": 200, "seq_horizon": 512},
+  "fec": {
+    "symbol_size": [164, 1312, 1312, 1312],
+    "decode_deadline_ms": 200,
+    "seq_horizon": 512
+  },
   "link": {
     "vtx_id": 1,
     "feedback_ms": 100,

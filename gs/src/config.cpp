@@ -54,8 +54,8 @@ std::array<mabur::UepLayerCfg, 4> Config::uep_layers() const {
   for (int s = 0; s < 4; ++s) {
     // window is TX-side; 128 here only feeds SwDecoder's auto-horizon
     // default, which the explicit seq_horizon (below) overrides.
-    out[static_cast<size_t>(s)].fec =
-        mabur::SwConfig{fec.symbol_size, 128, mabur::kUepRefOverhead[s]};
+    out[static_cast<size_t>(s)].fec = mabur::SwConfig{
+        fec.symbol_size[static_cast<size_t>(s)], 128, mabur::kUepRefOverhead[s]};
     out[static_cast<size_t>(s)].blocks_per_body = 4;  // unused on decode
   }
   return out;
@@ -102,7 +102,20 @@ Config load_config(const std::string& path) {
   if (j.contains("fec")) {
     const json& r = j["fec"];
     check_keys(r, "fec", {"symbol_size", "decode_deadline_ms", "seq_horizon"});
-    c.fec.symbol_size = static_cast<int>(get_int(r, "symbol_size", 64, 8, 1024, "fec"));
+    if (r.contains("symbol_size")) {
+      auto& s = r.at("symbol_size");
+      if (s.is_array()) {
+        if (s.size() != 4) fail("fec.symbol_size", "array must have 4 ints");
+        for (size_t i = 0; i < 4; ++i)
+          c.fec.symbol_size[i] = static_cast<int>(s.at(i).get<int64_t>());
+      } else if (s.is_number_integer()) {
+        c.fec.symbol_size.fill(static_cast<int>(s.get<int64_t>()));
+      } else {
+        fail("fec.symbol_size", "not an integer");
+      }
+      for (int v : c.fec.symbol_size)
+        if (v < 32 || v > 1500) fail("fec.symbol_size", "must be in [32,1500]");
+    }
     c.fec.decode_deadline_ms = static_cast<int>(get_int(r, "decode_deadline_ms", 200, 20, 5000, "fec"));
     c.fec.seq_horizon = static_cast<int>(get_int(r, "seq_horizon", 512, 16, 65536, "fec"));
   }

@@ -25,7 +25,10 @@ struct RadioCfg {
 
 /// FEC configuration: sliding-window decoder parameters.
 struct FecCfg {
-  int symbol_size = 64;
+  // Per-layer symbol size (stream 0..3); must match the drone's fec config
+  // layer-for-layer or that layer's symbols drop as bad_cfg (visible in
+  // per-layer stats, not silent). JSON: scalar fans out, or 4-array.
+  std::array<int, 4> symbol_size = {64, 64, 64, 64};
   int decode_deadline_ms = 200;
   int seq_horizon = 512;
 };

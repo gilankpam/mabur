@@ -49,6 +49,29 @@ TEST(errors_are_fail_fast) {
   CHECK(threw);  // zero cards is a config error
 }
 
+TEST(fec_symbol_size_array_per_layer) {
+  auto cfg = maburgs::load_config(
+      write_tmp(R"({"fec":{"symbol_size":[164,1312,1312,1312]}})"));
+  auto layers = cfg.uep_layers();
+  CHECK(layers[0].fec.symbol_size == 164);
+  CHECK(layers[3].fec.symbol_size == 1312);
+}
+
+TEST(fec_symbol_size_scalar_fans_out) {
+  auto cfg = maburgs::load_config(write_tmp(R"({"fec":{"symbol_size":328}})"));
+  auto layers = cfg.uep_layers();
+  for (int s = 0; s < 4; ++s) CHECK(layers[(size_t)s].fec.symbol_size == 328);
+}
+
+TEST(fec_symbol_size_bounds) {
+  bool threw = false;
+  try {
+    maburgs::load_config(
+        write_tmp(R"({"fec":{"symbol_size":[164,1312,1312,1600]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // 1600 > 1500 upper bound
+}
+
 TEST(tx_card_validates_against_effective_card_list) {
   // Test: tx_card 0 with default single card should load without error
   auto cfg = maburgs::load_config(write_tmp("{\"radio\": {\"tx_card\": 0}}"));
