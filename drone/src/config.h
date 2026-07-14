@@ -38,7 +38,12 @@ struct RadioCfg {
 };
 
 struct FecCfg {
-  int symbol_size = 64;
+  // Per-layer symbol size (stream 0..3). JSON accepts a scalar (fans out)
+  // or a 4-array. Big symbols suit the bulk video layers (1..3): fewer
+  // symbols lost per body, window spans more airtime, cheaper GF per byte
+  // (burst_sim table, spec 2026-07-15). Layer 0 (critical NALs) stays
+  // small so VPS/SPS/PPS seal without padding/latency.
+  std::array<int, 4> symbol_size = {64, 64, 64, 64};
   // Sliding-window burst budget: a layer at overhead ov survives a hole of
   // up to L <= window*ov/(1+ov) consecutive lost symbols. 128 lets the
   // ov-0.25 layer survive one full bpb-16 body loss.

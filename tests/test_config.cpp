@@ -55,12 +55,14 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.power_mode == "override");
   CHECK(cfg.radio.power_offset_qdb == 0);
 
-  CHECK(cfg.fec.symbol_size == def.fec.symbol_size);
-  CHECK(cfg.fec.window == def.fec.window);
-  CHECK(cfg.fec.blocks_per_body == def.fec.blocks_per_body);
+  // The bundle intentionally diverges from struct defaults for fec (Task 1's
+  // sliding-window winners), so check against the bundle's actual values
+  // rather than the struct defaults used for everything else.
+  CHECK((cfg.fec.symbol_size == std::array<int, 4>{164, 1312, 1312, 1312}));
+  CHECK(cfg.fec.window == 64);
+  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 1, 1, 1}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
-  CHECK(cfg.fec.flush_ms == def.fec.flush_ms);
-  CHECK(cfg.fec.window == 128);
+  CHECK(cfg.fec.flush_ms == 25);
 
   CHECK(cfg.waybeam.host == def.waybeam.host);
   CHECK(cfg.waybeam.port == def.waybeam.port);
@@ -215,9 +217,84 @@ TEST(uep_layers_overhead_ladder_at_base_0_25) {
   CHECK(layers[2].fec.overhead == 0.5);
   CHECK(layers[3].fec.overhead == 0.25);
   CHECK(layers[0].fec.window == cfg.fec.window);
-  CHECK(layers[0].fec.symbol_size == cfg.fec.symbol_size);
+  CHECK(layers[0].fec.symbol_size == cfg.fec.symbol_size[0]);
   CHECK(layers[0].blocks_per_body == cfg.fec.blocks_per_body[0]);
   CHECK(layers[3].blocks_per_body == cfg.fec.blocks_per_body[3]);
+}
+
+TEST(fec_symbol_size_scalar_fans_out) {
+  // 164 (not an arbitrary probe value): with the default blocks_per_body
+  // {4,8,16,16}, this is the largest symbol_size that keeps every layer's
+  // body (bpb*(hdr+symbol_size)) within kMaxBodyBytes (16*(14+164)=2848 <
+  // 2900) — a bigger scalar here would trip the oversize-body guard before
+  // fan-out could even be observed.
+  auto path = write_temp_json(R"({"fec":{"symbol_size":164}})");
+  Config cfg = load_config(path.string());
+  for (int s = 0; s < 4; ++s) CHECK(cfg.fec.symbol_size[s] == 164);
+  std::filesystem::remove(path);
+}
+
+TEST(fec_symbol_size_array_per_layer) {
+  auto path = write_temp_json(
+      R"({"fec":{"symbol_size":[164,1312,1312,1312],"blocks_per_body":[4,1,1,1]}})");
+  Config cfg = load_config(path.string());
+  CHECK(cfg.fec.symbol_size[0] == 164);
+  CHECK(cfg.fec.symbol_size[3] == 1312);
+  auto layers = cfg.uep_layers();
+  CHECK(layers[0].fec.symbol_size == 164);
+  CHECK(layers[3].fec.symbol_size == 1312);
+  std::filesystem::remove(path);
+}
+
+TEST(fec_symbol_size_rejects_wrong_len_array) {
+  auto path = write_temp_json(R"({"fec":{"symbol_size":[164,1312]}})");
+  bool threw = false;
+  try {
+    (void)load_config(path.string());
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  CHECK(threw);
+  std::filesystem::remove(path);
+}
+
+TEST(fec_symbol_size_rejects_oversize_body) {
+  // 1312B symbols at bpb 8 -> 8*(14+1312) = 10608 > kMaxBodyBytes 2900
+  auto path = write_temp_json(
+      R"({"fec":{"symbol_size":1312,"blocks_per_body":[8,8,8,8]}})");
+  bool threw = false;
+  try {
+    (void)load_config(path.string());
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  CHECK(threw);
+  std::filesystem::remove(path);
+}
+
+TEST(fec_symbol_size_bounds) {
+  {
+    auto path = write_temp_json(R"({"fec":{"symbol_size":16}})");  // <32
+    bool threw = false;
+    try {
+      (void)load_config(path.string());
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    CHECK(threw);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_json(R"({"fec":{"symbol_size":1600}})");  // >1500
+    bool threw = false;
+    try {
+      (void)load_config(path.string());
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    CHECK(threw);
+    std::filesystem::remove(path);
+  }
 }
 
 MTEST_MAIN

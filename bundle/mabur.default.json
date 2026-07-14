@@ -9,11 +9,11 @@
     "thermal_max_delta": 25
   },
   "fec": {
-    "symbol_size": 64,
-    "window": 128,
-    "blocks_per_body": [4, 8, 16, 16],
+    "symbol_size": [164, 1312, 1312, 1312],
+    "window": 64,
+    "blocks_per_body": [4, 1, 1, 1],
     "base_overhead": 0.25,
-    "flush_ms": 15
+    "flush_ms": 25
   },
   "waybeam": {
     "host": "127.0.0.1",

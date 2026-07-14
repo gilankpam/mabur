@@ -4,6 +4,14 @@
 #include <vector>
 namespace mabur {
 
+// Hard cap on one SBI body (one injected air frame's payload). No 802.11
+// constant enforces this in code — the chip accepts well past the 2304B
+// MSDU nominal via injection — 2900 covers every geometry proven on air
+// (2848B linkbench bodies 2026-07-13; 2652-2680B big-symbol probes
+// 2026-07-15) while rejecting configs that would silently change the
+// airtime/PER envelope.
+inline constexpr int kMaxBodyBytes = 2900;
+
 // Sub-Block Integrity (SBI) framing constants. Byte-exact port of devourer's
 // tools/precoder/fec_subblock.py (SBI_MAGIC, SBI_HDR_LEN, SBI_HDR_STRUCT
 // "<HBBHB" = MAGIC, VER, STREAM_ID, BLOCK_PAYLOAD, N_BLOCKS).

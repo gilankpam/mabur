@@ -7,6 +7,8 @@
 #include <stdexcept>
 
 #include "json.hpp"
+#include "mabur/sbi.h"
+#include "mabur/sw_wire.h"
 
 namespace mabur {
 namespace {
@@ -98,7 +100,23 @@ void parse_radio(const json& j, RadioCfg& r) {
 
 void parse_fec(const json& j, FecCfg& f) {
   check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms"}, "fec");
-  assign_if_present(j, "symbol_size", f.symbol_size, "fec");
+  if (j.contains("symbol_size")) {
+    auto& s = j.at("symbol_size");
+    if (s.is_array()) {
+      if (s.size() != 4) fail("fec.symbol_size", "array must have 4 ints");
+      try {
+        for (size_t i = 0; i < 4; ++i) f.symbol_size[i] = s.at(i).get<int>();
+      } catch (const json::exception&) {
+        fail("fec.symbol_size", "wrong type");
+      }
+    } else {
+      int v = 0;
+      try { v = s.get<int>(); } catch (const json::exception&) {
+        fail("fec.symbol_size", "wrong type");
+      }
+      f.symbol_size.fill(v);
+    }
+  }
   assign_if_present(j, "window", f.window, "fec");
   if (j.contains("blocks_per_body")) {
     auto& arr = j.at("blocks_per_body");
@@ -112,10 +130,17 @@ void parse_fec(const json& j, FecCfg& f) {
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
 
-  if (f.symbol_size < 16 || f.symbol_size > 1024) fail("fec.symbol_size", "must be in [16,1024]");
+  for (int s : f.symbol_size)
+    if (s < 32 || s > 1500) fail("fec.symbol_size", "must be in [32,1500]");
   if (f.window < 2 || f.window > 255) fail("fec.window", "must be in [2,255]");
   for (int b : f.blocks_per_body)
     if (b < 1 || b > 255) fail("fec.blocks_per_body", "must be in [1,255]");
+  for (size_t i = 0; i < 4; ++i) {
+    const int body = f.blocks_per_body[i] *
+                     (static_cast<int>(sw::kSwHeaderLen) + f.symbol_size[i]);
+    if (body > kMaxBodyBytes)
+      fail("fec", "layer body bytes exceed kMaxBodyBytes (2900)");
+  }
   if (f.base_overhead < 0.05 || f.base_overhead > 2.0) fail("fec.base_overhead", "must be in [0.05,2.0]");
 }
 
@@ -167,7 +192,8 @@ std::array<UepLayerCfg, 4> Config::uep_layers() const {
   std::array<UepLayerCfg, 4> layers;
   for (int sid = 0; sid < 4; ++sid) {
     double overhead = uep_layer_overhead(sid, fec.base_overhead);
-    layers[static_cast<size_t>(sid)].fec = SwConfig{fec.symbol_size, fec.window, overhead};
+    layers[static_cast<size_t>(sid)].fec =
+        SwConfig{fec.symbol_size[static_cast<size_t>(sid)], fec.window, overhead};
     layers[static_cast<size_t>(sid)].blocks_per_body = fec.blocks_per_body[static_cast<size_t>(sid)];
   }
   return layers;
