@@ -406,3 +406,41 @@ per-layer symbol size does not exist yet.
 **Deployment state (2026-07-15):** q16 linkbench-tx deployed to the drone
 (rollback: /tmp/linkbench-tx.pre-q16); q16 maburd built in out/arm but NOT
 deployed; GS binaries untouched (aarch64 path unchanged).
+
+# UPDATE 2026-07-15 (2): per-layer symbol_size shipped — sim-chosen defaults, bench-verified
+
+**Config change (both ends, commits c7ec7ef/c8f4b34):** `fec.symbol_size` is
+now per-layer (scalar fans out; 4-array sets each stream). Bundle defaults
+are the burst_sim winners: `[164, 1312, 1312, 1312]` with
+`blocks_per_body [4, 1, 1, 1]`, window 64 — video layers ride whole-packet
+symbols (no fragmentation), layer 0 (critical NALs) keeps small ones.
+Validation: per-layer `bpb*(14+sym) <= kMaxBodyBytes (2900, sbi.h)`;
+bounds [32,1500] both ends.
+
+**Why (tools/bench/burst_sim.cpp, ctest `burst_sim_selfcheck`):** body-loss
+sweep over the real UepEncoder->UepDecoder at 9.1M video-shaped traffic.
+mixed-164/1312 is the only config with ZERO bulk residual across periodic
+bursts B=1..32 (deployed-164 breaks from B~2-4); Gilbert-Elliott ~3%/burst-5
+residual 0.039% vs deployed 1.700% (~44x). Self-check pins the sim to the
+analytic guarantee region — NB `L <= W*ov/(1+ov)` is a ONE-SIDED bound on
+lost sources (GE suffix-chaining recovers beyond it; empirical single-layer
+edge at sym1312/bpb1/w64/ov0.25 is 20 consecutive bodies).
+
+**Bench-verify (test binaries /tmp, production restored after):** 150s live
+video x2 + forced-IDR probes, per-layer config vs production 164-global:
+bc=0 every layer both ends (config match proven live), abn=0 entire run
+(prod carries 30), rec climbing, s1 frag_evicted 1 vs 803 (packets no
+longer fragment). Forced-IDR (4x): end-to-end ord skips EQUAL (9 vs 8 per
+150s) — the small IDR-driven trickle is shared, not a regression; IDR
+slices ride stream 0 which still fragments at 164B in both configs (future
+lever: s0 geometry, vs parameter-set latency). `mis` counter grows ~4-8/s
+in BOTH configs = foreign ch149 frames, ambient, harmless. Drone maburd
+CPU ~equal (72.9 vs 69.8% of 2xA7, single samples) — GF is a modest share
+of daemon CPU at 9.1M; the q16+symbol wins show up in linkbench ceilings
+and robustness, not daemon CPU at this rate.
+
+**Rollout is manual and BOTH-ENDS (config-only, no wire break):** a layer
+whose symbol_size mismatches drops as bad_cfg per layer (visible in stats,
+not silent). Production /etc configs still 164-global + the pre-q16
+binaries; staged test artifacts left at /tmp/{maburd,maburgs}-test{,.json}
+on the devices.
