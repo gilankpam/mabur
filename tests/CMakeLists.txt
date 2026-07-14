@@ -62,6 +62,12 @@ if(MABUR_BUILD_GS)
     set_tests_properties(gs_e2e PROPERTIES ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
   endif()
 endif()
+# Host-only burst-loss simulator (spec 2026-07-15-per-layer-symbol-size).
+# Not a benchmark of real time — fake clock — so safe as a ctest.
+add_executable(burst_sim ${CMAKE_SOURCE_DIR}/tools/bench/burst_sim.cpp)
+target_link_libraries(burst_sim PRIVATE mabur_common)
+add_test(NAME burst_sim_selfcheck COMMAND burst_sim --self-check)
+
 if(MABUR_BUILD_LINKBENCH)
   add_mtest(test_linkbench_wire test_linkbench_wire.cpp LIBS linkbench_core)
   add_mtest(test_linkbench_pacer test_linkbench_pacer.cpp LIBS linkbench_core)
