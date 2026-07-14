@@ -126,8 +126,12 @@ SimOut run(const std::array<UepLayerCfg, 4>& layers, Loss loss,
   uint32_t seq[4] = {0, 0, 0, 0};
   // 9.1 Mbps = 1137.5 B/ms; one 1200B packet every ~1.055ms -> send one
   // packet per ms and skip every 20th ms to average ~9.1M.
-  const int mix[20] = {3, 3, 2, 3, 3, 1, 3, 2, 3, 3,   // 50/25/15 mix by
-                       1, 3, 2, 3, 3, 1, 3, 2, 3, 3};  // slot count
+  // mix[0] is never used (now%20==0 is the rate-trim slot); the 19 active
+  // slots hold 11x stream3 / 5x stream2 / 3x stream1 = 57.9/26.3/15.8% of
+  // bulk bytes (the 50/25/15 target normalized to bulk-only), interleaved
+  // so no stream aligns with the 250ms burst period.
+  const int mix[20] = {3, 3, 2, 3, 1, 3, 2, 3, 3, 2,
+                       3, 1, 3, 2, 3, 3, 2, 3, 1, 3};
   // Runs a batch of encoder-produced bodies through the loss channel and the
   // decoder, crediting delivery/latency. Shared by the live add_rtp() path
   // and the idle-timeout poll() path — both carry real traffic subject to
@@ -325,6 +329,8 @@ int main(int argc, char** argv) {
   }
 
   // ---- machine-readable CSV block ----
+  // CSV,<config>,<model>,<B>,<bulk residual %>. GE has no burst-length knob,
+  // so its rows carry B=0 as a placeholder.
   std::printf("== csv ==\n");
   for (const auto& row : periodic_rows)
     for (size_t i = 0; i < bursts.size(); ++i)
