@@ -428,7 +428,8 @@ edge at sym1312/bpb1/w64/ov0.25 is 20 consecutive bodies).
 
 **Bench-verify (test binaries /tmp, production restored after):** 150s live
 video x2 + forced-IDR probes, per-layer config vs production 164-global:
-bc=0 every layer both ends (config match proven live), abn=0 entire run
+bc=0 every layer both ends (NB bc cannot fire on a size mismatch — see
+rollout note; rec climbing was the real config-match evidence), abn=0 entire run
 (prod carries 30), rec climbing, s1 frag_evicted 1 vs 803 (packets no
 longer fragment). Forced-IDR (4x): end-to-end ord skips EQUAL (9 vs 8 per
 150s) — the small IDR-driven trickle is shared, not a regression; IDR

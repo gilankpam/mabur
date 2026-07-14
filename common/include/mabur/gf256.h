@@ -32,7 +32,7 @@ using Matrix = std::vector<std::vector<uint8_t>>;
 Matrix mat_inv(const Matrix& m);
 
 // Compile-time-selected lincomb backend, for startup logs: "neon-vqtbl"
-// (aarch64 ASIMD), "neon-vtbl2" (ARMv7 NEON), or "scalar". Lets a bench log
+// (aarch64 ASIMD), "neon-vtbl2-q16" (ARMv7 NEON), or "scalar". Lets a bench log
 // prove the SIMD path is actually compiled in (a build-flag regression
 // otherwise shows up only as mysterious CPU load).
 const char* backend();
