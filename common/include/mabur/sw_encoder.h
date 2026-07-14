@@ -5,7 +5,8 @@
 #include <vector>
 namespace mabur {
 
-// Config for the systematic sliding-window RLC FEC scheme (replaces RsConfig).
+// Config for the systematic sliding-window RLC FEC scheme (the sole FEC
+// scheme; block RS is retired).
 // window is the encoder ring / repair span in symbols, [2, 255] (wire u8).
 struct SwConfig {
   int symbol_size = 64;
@@ -15,14 +16,13 @@ struct SwConfig {
 };
 
 // Systematic sliding-window encoder: packets concatenation-pack into
-// fixed-size symbols exactly like RsEncoder did (2-byte LE length prefix,
-// zero pad, a packet NEVER spans two symbols), but each sealed symbol ships
-// immediately as a source envelope — no k-block accumulation. Repairs are
-// GF(256) linear combinations of the last <=window sealed symbols
-// (coefficients from sw::repair_coeffs), emitted by a credit system:
-// credit += overhead per seal, one repair per whole credit. Overlapping
-// repair windows spread protection across subsequent air frames — the time
-// diversity the SymbolInterleaver used to buy, without delaying sources.
+// fixed-size symbols (2-byte LE length prefix, zero pad, a packet NEVER
+// spans two symbols), but each sealed symbol ships immediately as a source
+// envelope — no block accumulation. Repairs are GF(256) linear combinations
+// of the last <=window sealed symbols (coefficients from sw::repair_coeffs),
+// emitted by a credit system: credit += overhead per seal, one repair per
+// whole credit. Overlapping repair windows spread protection across
+// subsequent air frames, buying time diversity without delaying sources.
 class SwEncoder {
  public:
   explicit SwEncoder(const SwConfig& cfg);

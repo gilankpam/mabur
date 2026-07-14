@@ -213,8 +213,8 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
 }
 
 int SwDecoder::expire_rows_older_than(uint64_t deadline_ms, uint64_t now_ms) {
-  // Same underflow guard as RsDecoder::expire_blocks_older_than — bodies
-  // routinely carry stamps newer than the poll clock (bench 2026-07-13).
+  // now_ms > guard against underflow — bodies routinely carry stamps newer
+  // than the poll clock (bench 2026-07-13).
   int dropped = 0;
   for (auto it = rows_.begin(); it != rows_.end();) {
     if (now_ms > it->second.first_seen_ms &&

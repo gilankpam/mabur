@@ -1,9 +1,9 @@
 // Loss-injection matrix for the sliding-window FEC through the full UEP
-// pipeline (UepEncoder -> lossy channel -> UepDecoder). Replaces the
-// interleaver matrix (test_uep_interleave.cpp): time diversity now comes
-// from overlapping repair windows, so sources never wait — the checks here
-// pin delivery under the same random/burst loss the interleaver was built
-// for (bench 2026-07-13, docs/handover-video-delivery.md §2).
+// pipeline (UepEncoder -> lossy channel -> UepDecoder). Replaces the retired
+// block-FEC time-diversity buffer matrix: time diversity now comes from
+// overlapping repair windows, so sources never wait — the checks here pin
+// delivery under the same random/burst loss the old scheme was built for
+// (bench 2026-07-13, docs/handover-video-delivery.md §2).
 #include <array>
 #include <cstdint>
 #include <random>
@@ -101,7 +101,7 @@ TEST(lossless_delivers_everything) {
 
 TEST(survives_random_frame_loss) {
   // The bench geometry (symbol 164 / bpb 8) at 5% random body loss — the
-  // scenario that killed non-interleaved block FEC at ~91%.
+  // scenario that killed the old block-FEC scheme at ~91%.
   auto r = run_sim(164, 8, 128, 20000, 5.0, 1);
   CHECK(pct(r) >= 99.5);
 }

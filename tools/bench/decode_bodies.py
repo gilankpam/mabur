@@ -5,7 +5,9 @@ import argparse, os, random, struct, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.abspath(os.path.join(ROOT, "..", "devourer", "tools", "precoder")))
-import fec_subblock, stream_fec  # noqa: E402
+import fec_subblock  # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
+import sw_fec  # noqa: E402
 
 FRAG_HDR = struct.Struct("<HBB")
 
@@ -36,7 +38,7 @@ def read_fixture(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", required=True); ap.add_argument("--fixture", required=True)
-    ap.add_argument("--k", type=int, default=8); ap.add_argument("--symbol-size", type=int, default=64)
+    ap.add_argument("--symbol-size", type=int, default=64)
     ap.add_argument("--drop-pct", type=float, default=0.0); ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--min-critical", type=float, default=1.0)  # delivery floor under loss
     ap.add_argument("--expect-mcs", type=int); ap.add_argument("--after", type=int, default=0)
@@ -53,9 +55,8 @@ def main():
 
     frames = read_frames(a.frames)
     rng = random.Random(a.seed)
-    decs = {s: stream_fec.make_decoder(stream_fec.FecConfig(
-        k=a.k, symbol_size=a.symbol_size, overhead=1.0, scheme="rs")) for s in range(4)}
-    env_size = 11 + a.symbol_size
+    decs = {s: sw_fec.SwDecoder(symbol_size=a.symbol_size) for s in range(4)}
+    env_size = 14 + a.symbol_size
     reasm, reasm_n, recovered, per_stream_in = {}, {}, [], {s: 0 for s in range(4)}
 
     if a.expect_mcs is not None:  # RCF-application check: HT radiotap MCS byte is

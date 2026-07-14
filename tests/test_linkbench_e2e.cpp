@@ -3,9 +3,9 @@
 // must surface as abandoned symbols; a symbol_size mismatch must surface as
 // visible pre-FEC failure (sub-block CRC, not sym_badcfg — see the two
 // config-mismatch tests below for why). Window width matters for burst
-// loss: a wide window's repairs span more of the burst than a narrow one
-// (the time diversity the SymbolInterleaver used to buy, now bought by
-// overlapping repair windows — see common/include/mabur/sw_encoder.h).
+// loss: a wide window's repairs span more of the burst than a narrow one —
+// time diversity bought by overlapping repair windows, not by delaying
+// sources (see common/include/mabur/sw_encoder.h).
 #include "mtest.h"
 #include "bench_wire.h"
 #include "rx_pipeline.h"

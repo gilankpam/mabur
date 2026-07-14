@@ -8,7 +8,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 PRECODER = os.path.abspath(os.path.join(ROOT, "..", "devourer", "tools", "precoder"))
 sys.path.insert(0, PRECODER)
 
-import fec_subblock, rc_proto, stream_fec, stream_fec_rs, svc_uep_fec  # noqa: E402
+import fec_subblock, rc_proto, svc_uep_fec  # noqa: E402
 import adaptive_link, energy_model  # noqa: E402
 
 VEC = os.path.join(ROOT, "tests", "vectors")
@@ -29,21 +29,6 @@ def dump(name, obj):
 dump("crc16.json", {"cases": [
     {"in": hx(pat(n, s)), "crc": fec_subblock.crc16_ccitt(pat(n, s))}
     for n, s in [(0, 0), (1, 1), (9, 2), (32, 3), (75, 4), (1400, 5)]]})
-
-# --- rs ----------------------------------------------------------------
-PKT_SIZES = [10, 50, 62, 1, 30, 62, 44, 62, 20, 62, 62, 5, 61, 33]
-rs_cases = []
-for ov in (0.25, 0.50, 0.75, 1.00):
-    cfg = stream_fec.FecConfig(k=8, symbol_size=64, overhead=ov, scheme="rs")
-    enc = stream_fec_rs.RsEncoder(cfg)
-    stream_envs, pkts = [], []
-    for i, n in enumerate(PKT_SIZES):
-        p = pat(n, i); pkts.append(hx(p))
-        stream_envs += [hx(e) for e in enc.add_packet(p)]
-    flush_envs = [hx(e) for e in enc.flush()]
-    rs_cases.append({"k": 8, "symbol_size": 64, "overhead": ov,
-                     "packets": pkts, "stream": stream_envs, "flush": flush_envs})
-dump("rs.json", {"cases": rs_cases})
 
 # --- sliding-window fec (mabur-native; reference = tools/pyref/sw_fec.py) --
 sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
@@ -159,9 +144,9 @@ def classify(pkt):  # mirror of mabur classify_rtp (authoritative NAL rule above
     return 0 if crit else 1 + min(tid, 2)
 
 REF_OV = [1.00, 0.75, 0.50, 0.25]
-encs = [stream_fec_rs.RsEncoder(stream_fec.FecConfig(
-            k=8, symbol_size=64, overhead=o, scheme="rs")) for o in REF_OV]
-pks = [fec_subblock.SubBlockPacker(75, 4, stream_id=s) for s in range(4)]
+encs = [sw_fec.SwEncoder(symbol_size=64, window=128, overhead=o) for o in REF_OV]
+UEP_BLOCK_PAYLOAD = sw_fec.SW_HDR_LEN + 64  # 14 + symbol_size, matches Layer::packer in uep_encoder.h
+pks = [fec_subblock.SubBlockPacker(UEP_BLOCK_PAYLOAD, 4, stream_id=s) for s in range(4)]
 fseq = [0, 0, 0, 0]
 uep_stream, uep_sids = [], []
 def frag4(sid, pkt, usable=58):
@@ -184,7 +169,12 @@ for sid in range(4):
             uep_flush.append({"sid": sid, "body": hx(body)})
     for body in pks[sid].flush():
         uep_flush.append({"sid": sid, "body": hx(body)})
-dump("uep.json", {"k": 8, "symbol_size": 64, "blocks_per_body": 4,
+# test_uep.cpp only reads symbol_size/blocks_per_body/overheads/classify (it
+# round-trips body content live through UepEncoder/UepDecoder rather than
+# pinning uep_stream/uep_flush bytes -- see the comment above that test).
+# stream/flush are kept for debugging visibility; the RS-era "k" field is
+# gone since nothing reads it under the sliding-window scheme.
+dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
                   "overheads": REF_OV, "classify": uep_sids,
                   "stream": uep_stream, "flush": uep_flush})
 
@@ -235,41 +225,6 @@ dump("profile.json", {"profiles": prof_cases, "probe": probe_cases,
                       "table": [{"ladder": p.svc_ladder, "pwr": p.pwr_idx,
                                  "ov": p.fec_overhead, "bw": p.bw}
                                 for p in rc_proto.DEFAULT_PROFILE_TABLE]})
-
-# --- rs decode -----------------------------------------------------------
-# Adversarial decode scenarios; expected outputs from the Python RsDecoder.
-cfg_d = stream_fec.FecConfig(k=8, symbol_size=64, overhead=1.0, scheme="rs")
-enc_d = stream_fec_rs.RsEncoder(cfg_d)
-d_pkts = [pat(n, i) for i, n in enumerate(PKT_SIZES)]
-d_envs = []
-for p in d_pkts:
-    d_envs += enc_d.add_packet(p)
-d_envs += enc_d.flush()
-blocks = [d_envs[i:i + 16] for i in range(0, len(d_envs), 16)]  # n=16 at ov=1.0
-assert len(blocks) >= 2 and all(len(b) == 16 for b in blocks)
-
-bad_k = bytearray(blocks[0][0]); bad_k[3] = 5  # header k != cfg.k -> bad_cfg drop
-scenarios = {
-    "systematic_only": [e for b in blocks for e in b[:8]],
-    "parity_heavy": [e for b in blocks for e in b[4:16]],       # 4 stale drops/blk
-    "parity_only_first_block": blocks[0][8:16] + [e for b in blocks[1:] for e in b[:8]],
-    "reordered": [e for b in blocks for e in reversed(b[:9])],  # 1 stale drop/blk
-    "duplicates": [e for b in blocks for e in (b[:8] + b[:2])],
-    "bad_cfg_then_clean": [bytes(bad_k)] + blocks[0][:8],
-}
-rsd_cases = []
-for name, seq in scenarios.items():
-    dec = stream_fec_rs.RsDecoder(cfg_d)
-    out = []
-    for e in seq:
-        out += dec.add_symbol(e)
-    rsd_cases.append({"name": name, "k": 8, "symbol_size": 64,
-                      "envelopes": [hx(e) for e in seq],
-                      "packets": [hx(p) for p in out],
-                      "blocks_decoded": dec.blocks_decoded,
-                      "dropped_stale": dec.symbols_dropped_stale_block,
-                      "dropped_bad_cfg": dec.symbols_dropped_bad_cfg})
-dump("rs_decode.json", {"cases": rsd_cases})
 
 # --- sbi unpack ----------------------------------------------------------
 su_cases = []

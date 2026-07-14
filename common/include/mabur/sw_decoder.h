@@ -14,8 +14,7 @@ namespace mabur {
 // coefficient is a recovered symbol (delivered late, then substituted back,
 // which can cascade). No in-order contract: symbols are self-contained
 // (packets never span symbols) and FragReassembler tolerates any arrival
-// order, so there is no reorder stage — that's where the interleaver's
-// latency went.
+// order, so there is no reorder-and-wait stage before delivery.
 //
 // Wire u32 seqs are unwrapped to internal u64 ("virtual") seqs so std::map
 // ordering survives wrap. A source seq jumping more than kResetSpan from the

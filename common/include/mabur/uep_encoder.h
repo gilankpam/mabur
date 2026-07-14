@@ -40,9 +40,9 @@ struct UepBody {
 // fragmentation sequence, sliding-window FEC redundancy, and SBI sub-block
 // framing.
 //
-// The interleaver is gone: SwEncoder's overlapping repair windows carry the
-// time diversity a block-FEC interleaver used to buy, so sources ship in the
-// body they were sealed in instead of waiting out a reorder stage.
+// No reorder-buffer stage: SwEncoder's overlapping repair windows carry the
+// time diversity that a block-FEC time-diversity buffer used to buy, so
+// sources ship in the body they were sealed in instead of waiting.
 class UepEncoder {
  public:
   UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15);

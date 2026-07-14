@@ -321,3 +321,48 @@ efficiency) — see drain_round() note in interleaver.h.
 **Final deployed config (2026-07-13):** drone: 9000–9100 pin, symbol 164,
 bpb [8,8,8,8], interleave on, depth 16, flush 25, power_mode none. GS:
 mcs5 / ov0.375 / age 250 / hold 300. PP visually confirmed clean by user.
+
+# UPDATE 2026-07-14: block RS + interleaver retired — sliding-window FEC is the only scheme
+
+Everything above (`interleave_depth`, `blocks_decoded`/`blocks_unrec`,
+`interleaver.h`, block-RS `k`/geometry tuning) describes the **old** scheme
+and is now historical record only — the code it refers to is deleted.
+Design spec: `docs/superpowers/specs/2026-07-14-sliding-window-fec-design.md`;
+migration plan: `docs/superpowers/plans/2026-07-14-sliding-window-fec.md`.
+
+**What changed:** RS block-FEC + the `SymbolInterleaver` (reorder-and-wait
+time-diversity buffer) are gone. Sources now ship immediately in a
+systematic sliding-window RLC code over GF(256) (`SwEncoder`/`SwDecoder`,
+wire magic `0xF541`, 14-byte repair header / 9-byte source header). Time
+diversity comes from *overlapping repair windows* riding subsequent air
+frames instead of delaying sources through a reorder stage.
+
+**Knobs (drone `fec.window`, per-layer `overhead`, `symbol_size`,
+`flush_ms`; GS `decode_deadline_ms`, `seq_horizon`):** `k` and
+`interleave_depth` are gone. `window` (default 128 in
+`bundle/mabur.default.json`) replaces both — it is the encoder's repair
+span in symbols and the decoder's Gaussian-elimination row horizon.
+
+**Burst budget:** a contiguous loss burst of `L` symbols is recoverable in
+steady state when `L <= W * ov / (1 + ov)` (W = window, ov = per-layer
+overhead) — enough subsequent repairs must arrive, each covering up to `W`
+symbols, to independently cover the `L` missing unknowns before the window
+slides past them. This is a steady-state bound: very short streams (total
+length comparable to or shorter than one window) can still see rank-deficient
+gaps even under budget, because too few distinct repair equations exist yet
+— see `tests/integration/run_gs_e2e.sh`'s third stanza comment for a worked
+example (stream 2 capacity edge, root-caused and fixed by seed selection,
+not by loosening gates).
+
+**Stats renamed:** `blocks_decoded`/`blocks_unrecoverable` →
+`syms_recovered`/`syms_abandoned` (`UepDecoder::LayerStats`, see
+`common/include/mabur/uep_decoder.h`); `syms_delivered` covers the
+immediate (non-repaired) path.
+
+**Unchanged:** the airtime-cap formula, `video × (1 + ov) <= ~75% of the
+MCS's practical duty ceiling` (see "Airtime is the final wall" above) —
+overhead is still overhead, whichever code computes the repair symbols.
+
+**Migration note for whoever deploys this:** wire format changed
+(envelope headers, magic 0xF541) — drone and GS must be flashed together,
+no mixed-version link.
