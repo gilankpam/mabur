@@ -35,7 +35,9 @@ struct RxSnapshot {
   uint64_t syms_delivered = 0;  // source symbols delivered as-is
   uint64_t syms_recovered = 0;  // symbols solved from repairs
   uint64_t syms_abandoned = 0;  // lost to the seq horizon, never recovered
-  uint64_t sym_badcfg = 0;    // symbol_size/window mismatch vs TX
+  uint64_t sym_badcfg = 0;    // symbol_size mismatch vs TX (window rides
+                               // per-repair in window_len on the wire, so
+                               // only symbol_size is checked here)
   uint64_t pkts = 0;          // bench packets recovered post-FEC
   uint64_t pkts_expected = 0; // max_seq - first_seq + 1 (0 until first pkt)
   uint64_t pattern_bad = 0;   // decoded but fill mismatch (decode bug!)

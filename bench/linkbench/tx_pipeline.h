@@ -35,9 +35,13 @@ struct FecParams {
 
 class TxPipeline {
  public:
-  explicit TxPipeline(const FecParams& p)
+  // initial_seq forwards to SwEncoder (default 0, so tests stay
+  // deterministic); live tx_main passes a random draw so a restarted bench
+  // run doesn't land within SwDecoder's kResetSpan of its predecessor and
+  // get read as stale (final-review Critical, see sw_encoder.h).
+  explicit TxPipeline(const FecParams& p, uint32_t initial_seq = 0)
       : p_(p),
-        sw_(p.sw()),
+        sw_(p.sw(), initial_seq),
         packer_(p.envelope_len(), p.bpb, kBenchStreamId) {}
 
   // Feeds one app packet; appends any completed SBI bodies to out.

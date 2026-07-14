@@ -59,11 +59,11 @@ def repair_coeffs(key, n):
 
 
 class SwEncoder:
-    def __init__(self, symbol_size=64, window=128, overhead=0.25):
+    def __init__(self, symbol_size=64, window=128, overhead=0.25, initial_seq=0):
         self.ss, self.window, self.overhead = symbol_size, window, overhead
         self.ring = []          # last <=window sealed payloads
         self.cur = bytearray()
-        self.next_seq = 0
+        self.next_seq = initial_seq
         self.repair_key = 0
         self.credit = 0.0
         self.tail_pending = False

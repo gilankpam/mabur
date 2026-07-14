@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 #include "mabur/frag.h"
@@ -15,7 +16,7 @@ namespace mabur {
 // mirrors devourer's svc_uep_fec.default_uep_policy overhead assignments.
 inline constexpr double kUepRefOverhead[4] = {1.00, 0.75, 0.50, 0.25};
 
-// Scales stream_id's reference RS overhead by cmd_overhead/0.25 (0.25 is the
+// Scales stream_id's reference FEC overhead by cmd_overhead/0.25 (0.25 is the
 // "baseline" command value), clamped to [0.125, 2.0]. Byte-exact port of the
 // per-layer FEC-rate scaling devourer's rate-control uses to trade outer-code
 // redundancy for goodput under a single scalar "how much overhead can we
@@ -43,6 +44,13 @@ struct UepBody {
 // No reorder-buffer stage: SwEncoder's overlapping repair windows carry the
 // time diversity that a block-FEC time-diversity buffer used to buy, so
 // sources ship in the body they were sealed in instead of waiting.
+//
+// Each layer's SwEncoder starts at a random seq (std::random_device seeding
+// one std::mt19937, one draw per layer) rather than 0: a restarted maburd
+// re-sending seq 0 within SwDecoder's kResetSpan of the predecessor's last
+// seq is otherwise dropped as stale for that predecessor's entire lifetime
+// (final-review Critical). This only affects live process startup — it does
+// not change any wire byte for a given seq.
 class UepEncoder {
  public:
   UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15);
@@ -80,9 +88,9 @@ class UepEncoder {
     uint64_t last_activity_ms = 0;
     bool has_activity = false;
 
-    Layer(const UepLayerCfg& cfg, uint8_t sid)
+    Layer(const UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq)
         : fec(cfg.fec),
-          sw(cfg.fec),
+          sw(cfg.fec, initial_seq),
           packer(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
           usable(cfg.fec.max_packet_size() - 4) {}

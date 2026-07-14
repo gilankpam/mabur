@@ -5,7 +5,8 @@
 
 namespace mabur {
 
-SwEncoder::SwEncoder(const SwConfig& cfg) : cfg_(cfg) {
+SwEncoder::SwEncoder(const SwConfig& cfg, uint32_t initial_seq)
+    : cfg_(cfg), next_seq_(initial_seq) {
   if (cfg_.window < 2) cfg_.window = 2;
   if (cfg_.window > sw::kMaxWindow) cfg_.window = sw::kMaxWindow;
 }

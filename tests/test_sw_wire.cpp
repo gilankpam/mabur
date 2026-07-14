@@ -54,6 +54,11 @@ TEST(header_rejects_garbage) {
   std::vector<uint8_t> sb; sw::pack_header(sb, s);
   auto src_wl = sb; src_wl[9] = 1;
   CHECK(!sw::parse_header(src_wl.data(), src_wl.size(), &g));
+  // source header with window_len==0 but repair_key!=0 (bytes 10-13) must
+  // also fail — a source must carry a fully-zeroed repair_key, not just a
+  // zero window_len.
+  auto src_key = sb; src_key[10] = 0xEF;
+  CHECK(!sw::parse_header(src_key.data(), src_key.size(), &g));
 }
 
 TEST(coeffs_deterministic_nonzero_and_key_sensitive) {

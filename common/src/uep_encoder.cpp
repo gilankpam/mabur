@@ -5,6 +5,21 @@
 #include "mabur/nal.h"
 
 namespace mabur {
+namespace {
+// One random seq per layer so a restarted encoder lands far from its
+// predecessor's stream (see uep_encoder.h class comment / SwEncoder's
+// initial_seq doc). Seeded once per UepEncoder instance from
+// std::random_device, not per layer, so the four draws aren't correlated by
+// a shared reseed.
+std::array<uint32_t, 4> random_initial_seqs() {
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<uint32_t> dist;
+  std::array<uint32_t, 4> seqs;
+  for (auto& s : seqs) s = dist(gen);
+  return seqs;
+}
+}  // namespace
 
 double uep_layer_overhead(int stream_id, double cmd_overhead) {
   double ref = kUepRefOverhead[stream_id];
@@ -13,7 +28,11 @@ double uep_layer_overhead(int stream_id, double cmd_overhead) {
 }
 
 UepEncoder::UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms)
-    : layers_{Layer(layers[0], 0), Layer(layers[1], 1), Layer(layers[2], 2), Layer(layers[3], 3)},
+    : layers_{[&] {
+        const auto seq = random_initial_seqs();
+        return std::array<Layer, 4>{Layer(layers[0], 0, seq[0]), Layer(layers[1], 1, seq[1]),
+                                     Layer(layers[2], 2, seq[2]), Layer(layers[3], 3, seq[3])};
+      }()},
       flush_ms_(flush_ms) {}
 
 void UepEncoder::pack_envs(Layer& layer, uint8_t sid,

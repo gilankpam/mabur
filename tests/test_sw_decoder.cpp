@@ -149,6 +149,34 @@ TEST(encoder_restart_resets_decoder) {
   CHECK(to_set(got) == to_set(pkts2));
 }
 
+TEST(encoder_restart_with_random_seq_recovers) {
+  // A rebooted encoder must land >kResetSpan away so the decoder resets
+  // instead of swallowing the new stream as stale (final-review Critical:
+  // seq-0 restart after N<2^20 symbols silently dropped N+1 packets).
+  SwConfig cfg{64, 8, 0.5};
+  SwEncoder e1(cfg, 0);
+  SwDecoder d(cfg);
+  std::vector<uint8_t> p(62, 0xAA);
+  for (int i = 0; i < 200; ++i)
+    for (auto& env : e1.add_packet(p.data(), p.size())) d.add_symbol(env.data(), env.size(), 1000);
+
+  // Restart lands far away (simulated random draw): decoder re-anchors.
+  SwEncoder e2(cfg, 0x40000000u);
+  std::vector<std::vector<uint8_t>> pkts2, got;
+  for (int i = 0; i < 50; ++i) {
+    auto q = p;
+    q[0] = static_cast<uint8_t>(i);
+    pkts2.push_back(q);
+    for (auto& env : e2.add_packet(q.data(), q.size()))
+      for (auto& out : d.add_symbol(env.data(), env.size(), 2000)) got.push_back(std::move(out));
+  }
+  for (auto& env : e2.flush())
+    for (auto& out : d.add_symbol(env.data(), env.size(), 2000)) got.push_back(std::move(out));
+  CHECK(d.resets() == 1);
+  CHECK(got.size() == pkts2.size());
+  CHECK(to_set(got) == to_set(pkts2));
+}
+
 TEST(deadline_expires_stuck_rows) {
   SwConfig cfg{64, 8, 1.0};
   auto envs = encode_stream(cfg, 6, nullptr);

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -236,7 +237,14 @@ int main(int argc, char** argv) {
   // TX hot loop in its own thread; main blocks in StartRxLoop (which
   // watches g_devourer_should_stop) exactly like maburd.
   std::thread tx_thread([&] {
-    TxPipeline pipe(a.fec);
+    // Random initial seq: a restarted linkbench-tx re-sending seq 0 within
+    // SwDecoder's kResetSpan of the previous run's seqs is otherwise
+    // dropped as stale for that run's lifetime (final-review Critical, see
+    // sw_encoder.h / tx_pipeline.h). Tests keep the deterministic 0
+    // default; only this live entry point randomizes.
+    std::random_device rd;
+    std::mt19937 seed_gen(rd());
+    TxPipeline pipe(a.fec, std::uniform_int_distribution<uint32_t>()(seed_gen));
     // Burst must scale with rate: a fixed cap of a few KB divided by the
     // real loop period (1 ms nominal, 2+ ms under scheduler jitter) would
     // ceiling the offered load below the very link knee this bench exists

@@ -333,7 +333,8 @@ migration plan: `docs/superpowers/plans/2026-07-14-sliding-window-fec.md`.
 **What changed:** RS block-FEC + the `SymbolInterleaver` (reorder-and-wait
 time-diversity buffer) are gone. Sources now ship immediately in a
 systematic sliding-window RLC code over GF(256) (`SwEncoder`/`SwDecoder`,
-wire magic `0xF541`, 14-byte repair header / 9-byte source header). Time
+wire magic `0xF541`, one unified 14-byte envelope header shared by source
+and repair symbols — sources carry `window_len=0, repair_key=0`). Time
 diversity comes from *overlapping repair windows* riding subsequent air
 frames instead of delaying sources through a reorder stage.
 

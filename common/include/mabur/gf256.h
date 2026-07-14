@@ -15,6 +15,11 @@ uint8_t inv(uint8_t a);
 // accumulation, mirrors the inner loop of Python's _lincomb.
 void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len);
 
+// RS-era leftover: block RS FEC is retired (sliding-window FEC is the only
+// scheme now). encoding_matrix/mat_inv are no longer used by any production
+// encoder/decoder — kept deliberately because test_gf256's golden vectors
+// still pin them; deletion tracked post-merge. Do not delete.
+//
 // N×K systematic MDS encoding matrix: top K rows = identity, any K rows
 // invertible. Built once per (k, n) and cached (thread-safe).
 const std::vector<std::vector<uint8_t>>& encoding_matrix(int k, int n);

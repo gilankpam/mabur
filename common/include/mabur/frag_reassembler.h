@@ -21,10 +21,11 @@ struct FragCompleted {
 //
 // With max_age_ms > 0 and callers passing now_ms, entries whose first
 // fragment is older than max_age_ms are also evicted (throttled sweep) — an
-// entry older than the FEC block horizon can never complete, and count-only
-// eviction let a full map at sustained partial loss evict entries that WOULD
-// have completed (bench 2026-07-13 `fe=` blowups). The count cap remains as
-// a memory backstop.
+// entry older than the sliding-window FEC's decode horizon (SwDecoder's
+// symbol/row expiry) can never complete, and count-only eviction let a full
+// map at sustained partial loss evict entries that WOULD have completed
+// (bench 2026-07-13 `fe=` blowups). The count cap remains as a memory
+// backstop.
 class FragReassembler {
  public:
   explicit FragReassembler(size_t max_pending = 512, uint64_t max_age_ms = 0);

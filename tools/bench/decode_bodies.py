@@ -56,7 +56,7 @@ def main():
     frames = read_frames(a.frames)
     rng = random.Random(a.seed)
     decs = {s: sw_fec.SwDecoder(symbol_size=a.symbol_size) for s in range(4)}
-    env_size = 14 + a.symbol_size
+    env_size = sw_fec.SW_HDR_LEN + a.symbol_size
     reasm, reasm_n, recovered, per_stream_in = {}, {}, [], {s: 0 for s in range(4)}
 
     if a.expect_mcs is not None:  # RCF-application check: HT radiotap MCS byte is

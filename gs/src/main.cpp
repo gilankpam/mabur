@@ -78,8 +78,9 @@ static int run_radio(const maburgs::Config& cfg) {
                           static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
   maburgs::UdpSink udp(cfg.video_out.host, cfg.video_out.port);
   // RTP order health of the emitted stream (bench 2026-07-13): packets
-  // leave on FEC-block completion, so ordering is NOT guaranteed by
-  // construction — a live decoder discards late/reordered RTP that the
+  // leave as soon as the sliding-window decoder resolves them (delivered
+  // in-order or recovered late off a repair), so ordering is NOT guaranteed
+  // by construction — a live decoder discards late/reordered RTP that the
   // transport counters happily count as delivered. seq16 from the RTP
   // header; fwd_gap = skipped-ahead seqs (missing-at-emit or reorder),
   // back = packets emitted behind the highest seq seen (late emissions).

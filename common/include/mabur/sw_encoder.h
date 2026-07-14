@@ -25,7 +25,15 @@ struct SwConfig {
 // subsequent air frames, buying time diversity without delaying sources.
 class SwEncoder {
  public:
-  explicit SwEncoder(const SwConfig& cfg);
+  // initial_seq seeds next_seq_ (default 0, which is what every existing
+  // unit test and golden vector pins — do not change the default). A fresh
+  // encoder instance MUST start >kResetSpan (sw_decoder.cpp) away from any
+  // prior run's seqs with high probability, or a restarted drone's stream
+  // is dropped as stale for its predecessor's lifetime: callers that
+  // survive process restarts (UepEncoder, linkbench tx_main) should pass a
+  // random draw (residual collision odds ~2^-11 against kResetSpan=2^20
+  // over a ~2^32 seq space).
+  explicit SwEncoder(const SwConfig& cfg, uint32_t initial_seq = 0);
 
   // Feeds one packet. Returns any envelopes that became due: at most one
   // source (a symbol sealed to make room) plus credited repairs. A packet
