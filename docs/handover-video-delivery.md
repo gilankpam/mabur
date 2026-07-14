@@ -407,6 +407,20 @@ per-layer symbol size does not exist yet.
 (rollback: /tmp/linkbench-tx.pre-q16); q16 maburd built in out/arm but NOT
 deployed; GS binaries untouched (aarch64 path unchanged).
 
+**DEPLOYED TO PRODUCTION 2026-07-15 (build @ 2fcd712, both ends):** q16
+maburd on the drone + per-layer maburgs on the GS, /etc configs set to
+`symbol_size [164,1312,1312,1312]` (drone `blocks_per_body [4,1,1,1]`,
+window 64; GS deadline 200 / horizon 512). Startup banners on both daemons
+confirmed the loaded geometry. Post-deploy live link: `bc=0` and `sbf=0` on
+both active layers (the config-match proof — a size mismatch climbs `sbf`,
+never `bc`), steady-state ~0.005% end-to-end loss, stream-1 abandons and
+fragment-evictions frozen (zero new in steady state). Only streams 0 and 1
+carry traffic (encoder runs a flat temporal structure); measured goodput
+split ~0.09M critical / ~8.07M base video. ROLLBACK is a both-ends matched
+set: `*.pre-perlayer` binary + config on each device, restored together
+(old scalar binaries cannot parse the array config). Remaining human check:
+visual video-clean confirmation.
+
 # UPDATE 2026-07-15 (2): per-layer symbol_size shipped — sim-chosen defaults, bench-verified
 
 **Config change (both ends, commits c7ec7ef/c8f4b34):** `fec.symbol_size` is
