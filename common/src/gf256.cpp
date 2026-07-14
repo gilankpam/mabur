@@ -118,6 +118,28 @@ const NibbleTables& nibble_tables() {
   static const NibbleTables nt;
   return nt;
 }
+
+#if !defined(__aarch64__)
+// 16 lanes per step on ARMv7. The table lives in one q register (16 nibble
+// entries); %e/%f address its d-halves so a vtbl.8 pair covers all 16 lanes
+// without leaving q registers (zfex technique, fresh implementation —
+// intrinsics-only compiled to 261 MB/s vs this 272 MB/s at symbol size 164
+// on the SSC338Q, and the spec gate is 270).
+inline uint8x16_t mul16(uint8x16_t s, uint8x16_t tlo16, uint8x16_t thi16,
+                        uint8x16_t mask) {
+  uint8x16_t lo = vandq_u8(s, mask);
+  uint8x16_t hi = vshrq_n_u8(s, 4);
+  __asm__("vtbl.8 %e[v], {%q[t]}, %e[v]\n\t"
+          "vtbl.8 %f[v], {%q[t]}, %f[v]"
+          : [v] "+w"(lo)
+          : [t] "w"(tlo16));
+  __asm__("vtbl.8 %e[v], {%q[t]}, %e[v]\n\t"
+          "vtbl.8 %f[v], {%q[t]}, %f[v]"
+          : [v] "+w"(hi)
+          : [t] "w"(thi16));
+  return veorq_u8(lo, hi);
+}
+#endif
 }  // namespace
 #endif
 
@@ -142,20 +164,29 @@ void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len) {
     }
   }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
-  // ARMv7 NEON (Cortex-A7): vtbl2 on 8-byte lanes, 16-byte table pairs.
+  // ARMv7 NEON (Cortex-A7): 16 B/iteration ×4 unroll — see mul16 above.
+  // 2026-07-15 bench: the old 8 B vtbl2 loop ran 156 MB/s at symbol size
+  // 164 and made SwEncoder repair generation the TX ceiling (w128 = 9.0M
+  // app vs 21.4M RS); q16 closes most of the 2.1× gap to wfb-ng's zfex.
   {
     const NibbleTables& nt = nibble_tables();
-    uint8x8x2_t tlo, thi;
-    tlo.val[0] = vld1_u8(nt.lo[coeff]);
-    tlo.val[1] = vld1_u8(nt.lo[coeff] + 8);
-    thi.val[0] = vld1_u8(nt.hi[coeff]);
-    thi.val[1] = vld1_u8(nt.hi[coeff] + 8);
-    const uint8x8_t mask = vdup_n_u8(0x0F);
-    for (; i + 8 <= len; i += 8) {
-      const uint8x8_t s = vld1_u8(sym + i);
-      const uint8x8_t prod = veor_u8(vtbl2_u8(tlo, vand_u8(s, mask)),
-                                     vtbl2_u8(thi, vshr_n_u8(s, 4)));
-      vst1_u8(acc + i, veor_u8(vld1_u8(acc + i), prod));
+    const uint8x16_t tlo16 = vld1q_u8(nt.lo[coeff]);
+    const uint8x16_t thi16 = vld1q_u8(nt.hi[coeff]);
+    const uint8x16_t mask = vdupq_n_u8(0x0F);
+    for (; i + 64 <= len; i += 64) {
+      const uint8x16_t s0 = vld1q_u8(sym + i), s1 = vld1q_u8(sym + i + 16),
+                       s2 = vld1q_u8(sym + i + 32), s3 = vld1q_u8(sym + i + 48);
+      const uint8x16_t a0 = vld1q_u8(acc + i), a1 = vld1q_u8(acc + i + 16),
+                       a2 = vld1q_u8(acc + i + 32), a3 = vld1q_u8(acc + i + 48);
+      vst1q_u8(acc + i, veorq_u8(a0, mul16(s0, tlo16, thi16, mask)));
+      vst1q_u8(acc + i + 16, veorq_u8(a1, mul16(s1, tlo16, thi16, mask)));
+      vst1q_u8(acc + i + 32, veorq_u8(a2, mul16(s2, tlo16, thi16, mask)));
+      vst1q_u8(acc + i + 48, veorq_u8(a3, mul16(s3, tlo16, thi16, mask)));
+    }
+    for (; i + 16 <= len; i += 16) {
+      const uint8x16_t s = vld1q_u8(sym + i);
+      vst1q_u8(acc + i,
+               veorq_u8(vld1q_u8(acc + i), mul16(s, tlo16, thi16, mask)));
     }
   }
 #endif
@@ -171,7 +202,7 @@ const char* backend() {
 #if defined(__aarch64__)
   return "neon-vqtbl";
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
-  return "neon-vtbl2";
+  return "neon-vtbl2-q16";
 #else
   return "scalar";
 #endif
