@@ -92,6 +92,94 @@ double pct(const SimResult& r) {
                 : 0.0;
 }
 
+// Mixed per-layer geometry: stream 0 is the bench's critical-NAL config
+// (sym 164/bpb 4), streams 1..3 share the "global" 1312-symbol config at
+// bpb 1 — the matrix burst_sim.cpp sweeps as "mixed-164/1312".
+std::array<UepLayerCfg, 4> mixed_layers() {
+  std::array<UepLayerCfg, 4> layers{};
+  const int sym[4] = {164, 1312, 1312, 1312};
+  const int bpb[4] = {4, 1, 1, 1};
+  for (int s = 0; s < 4; ++s) {
+    layers[static_cast<size_t>(s)].fec = SwConfig{sym[s], 64, kUepRefOverhead[s]};
+    layers[static_cast<size_t>(s)].blocks_per_body = bpb[s];
+  }
+  return layers;
+}
+
+// RTP+HEVC packet that classify_rtp routes to the requested stream (same
+// convention as tools/bench/burst_sim.cpp::make_rtp): stream 0 -> NAL type
+// 32 (VPS, critical), streams 1..3 -> NAL type 1 (TRAIL_R) with
+// nuh_temporal_id_plus1 = stream.
+std::vector<uint8_t> make_stream_rtp(int stream, uint32_t seq, std::mt19937& rng) {
+  const size_t paylen = 1388;
+  std::vector<uint8_t> pkt(12 + paylen);
+  pkt[0] = 0x80; pkt[1] = 0x60;
+  pkt[2] = static_cast<uint8_t>(seq >> 8);
+  pkt[3] = static_cast<uint8_t>(seq & 0xFF);
+  if (stream == 0) {
+    pkt[12] = 32 << 1;  // NAL type 32 = VPS -> critical, stream 0
+    pkt[13] = 1;
+  } else {
+    pkt[12] = 1 << 1;   // NAL type 1 = TRAIL_R
+    pkt[13] = static_cast<uint8_t>(stream);  // tid_plus1 -> stream 1..3
+  }
+  for (size_t b = 14; b < pkt.size(); ++b)
+    pkt[b] = static_cast<uint8_t>(rng());
+  return pkt;
+}
+
+// Per-layer sent/delivered counters, plus a running index of the next body
+// (across all layers) so a caller can drop a fixed, deterministic run of
+// consecutive bodies mid-stream.
+struct MixedResult {
+  uint64_t sent[4] = {0, 0, 0, 0};
+  uint64_t delivered[4] = {0, 0, 0, 0};
+};
+
+// Feeds n_pkts round-robined across all 4 layers through the real
+// UepEncoder -> (optional drop window) -> UepDecoder pipeline, following the
+// same feed/poll/flush/drain cadence as run_sim(). drop_start/drop_count
+// name a single deterministic window of consecutive *bodies* (not packets)
+// to withhold from the decoder, mid-run; pass drop_count == 0 for the
+// loss-free case.
+MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) {
+  auto layers = mixed_layers();
+  UepEncoder enc(layers, /*flush_ms=*/15);
+  UepDecoder dec(layers, /*decode_deadline_ms=*/200);
+
+  MixedResult r;
+  uint64_t body_idx = 0;
+  auto consume = [&](std::vector<UepBody>& bodies, uint64_t now) {
+    for (auto& b : bodies) {
+      uint64_t idx = body_idx++;
+      if (drop_count > 0 && idx >= drop_start && idx < drop_start + drop_count)
+        continue;
+      for (auto& d : dec.add_body(b.body.data(), b.body.size(), now))
+        ++r.delivered[d.stream_id];
+    }
+  };
+
+  std::mt19937 rng(42);
+  uint64_t now = 1000;
+  for (int i = 0; i < n_pkts; ++i) {
+    int stream = i % 4;
+    auto pkt = make_stream_rtp(stream, static_cast<uint32_t>(i), rng);
+    ++r.sent[stream];
+    auto bodies = enc.add_rtp(pkt.data(), pkt.size(), now);
+    consume(bodies, now);
+    if (i % 30 == 29) {
+      now += 15;
+      auto flushed = enc.poll(now);
+      consume(flushed, now);
+    }
+  }
+  now += 100;
+  auto tail = enc.flush_all();
+  consume(tail, now);
+  dec.poll(now + 5000);
+  return r;
+}
+
 }  // namespace
 
 TEST(lossless_delivers_everything) {
@@ -130,6 +218,29 @@ TEST(wider_window_survives_longer_bursts) {
 TEST(alternate_geometry) {
   auto r = run_sim(340, 4, 128, 20000, 5.0, 1);
   CHECK(pct(r) >= 99.0);
+}
+
+TEST(mixed_symbol_sizes_lossfree_delivery) {
+  // ~2000 packets round-robined across all 4 layers of the mixed geometry
+  // (sym 164/1312/1312/1312, bpb 4/1/1/1, window 64), zero loss -> every
+  // layer must deliver exactly what it sent.
+  auto r = run_mixed_sim(2000, /*drop_start=*/0, /*drop_count=*/0);
+  for (int s = 0; s < 4; ++s) CHECK(r.delivered[s] == r.sent[s]);
+}
+
+TEST(mixed_symbol_sizes_burst_within_budget) {
+  // Same traffic; drop 8 consecutive bodies once, mid-run. bpb 1 on layers
+  // 1..3 means those bodies interleave source/repair envelopes for whichever
+  // layer they land on, so 8 consecutive bodies costs a given layer well
+  // under its worst-case symbol loss. Layer 3 (sym 1312/bpb1/window 64,
+  // overhead 0.25) has the tightest guarantee band: burst_sim.cpp's
+  // self-check gate proves this exact geometry lossless up to B<=14
+  // consecutive bodies on single-layer stream-3 traffic, so 8 is comfortably
+  // within budget for every layer here (layer 0's bpb 4 gives it an even
+  // wider margin per body). Deterministic, fixed start index (not seeded
+  // random).
+  auto r = run_mixed_sim(2000, /*drop_start=*/500, /*drop_count=*/8);
+  for (int s = 0; s < 4; ++s) CHECK(r.delivered[s] == r.sent[s]);
 }
 
 MTEST_MAIN
