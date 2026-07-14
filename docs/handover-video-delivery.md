@@ -367,3 +367,42 @@ overhead is still overhead, whichever code computes the repair symbols.
 **Migration note for whoever deploys this:** wire format changed
 (envelope headers, magic 0xF541) — drone and GS must be flashed together,
 no mixed-version link.
+
+# UPDATE 2026-07-15: ARMv7 lincomb q16 kernel + symbol-size finding — encoder ceiling anatomy
+
+**SW-vs-RS TX regression root-caused on hardware** (linkbench matrix, MCS5/
+pwr45/ch149/ov0.5, 30M offered, reps deterministic): the ceiling is SwEncoder
+repair GF cost on the drone's 2x Cortex-A7 — window-scaled, NOT devourer
+(master af18c61 vs chainb-hunt f79c3e9 = identical ceilings), NOT the radio
+(window-2 control pushes the same ~22.4M app / ~38M air as RS k=8).
+
+**Kernel:** `gf::lincomb`'s ARMv7 path now processes 16 B/iteration
+x4-unrolled with q-register vtbl inline asm (`neon-vtbl2-q16` in banners,
+commit 2d6da89; freshly written, zfex-technique, verified byte-identical vs
+zfex over random unaligned cases on target). Drone kernel: 156 -> 271 MB/s at
+symbol 164, 200 -> 442 MB/s at 1450B (parity with wfb-ng's zfex). Live TX
+ceiling at w128: 8.97 -> 11.4M app; w64: 13.3 -> 15.9M app; 0% pkt loss at
+ceiling both ends of the change.
+
+**Two stacked ceilings** (measure against both when tuning): (1) the
+transmission ceiling — USB URB feed + MCS5 airtime — at ~22.4M app / ~38M
+air with ov 0.5 (RS and window-2 both sit on it); (2) the GF ceiling, which
+scales with window count and now sits at 15.9M (w64) / 11.4M (w128) with
+164B symbols.
+
+**Symbol size is the remaining big lever** (this is why wfb-ng swfec reaches
+full raw bandwidth: their symbols are whole ~1400B packets). GF demand per
+app byte is ov x window *count*, but small symbols run the kernel in its
+slow regime (271 vs 442 MB/s) and pay per-symbol overheads 8.5x more often.
+On-air, window 64 / ov 0.5 / MCS5: sym 164 = 15.9M, sym 656 (bpb 4) =
+20.3M, sym 1312 (bpb 2) = 22.35M app — flush against the transmission
+ceiling, all 0.00% pkt loss. Bigger symbols also widen the window's airtime
+span (64 x 1312B ~ 30ms at 22M vs ~4ms at 164B) — more burst protection per
+unit of math. Production trade-offs before adopting: symbol_size is a
+both-ends config (not a wire break — header carries it, but decoder cfg
+must match), low-rate layers pad/latency out bigger symbols (flush_ms), and
+per-layer symbol size does not exist yet.
+
+**Deployment state (2026-07-15):** q16 linkbench-tx deployed to the drone
+(rollback: /tmp/linkbench-tx.pre-q16); q16 maburd built in out/arm but NOT
+deployed; GS binaries untouched (aarch64 path unchanged).
