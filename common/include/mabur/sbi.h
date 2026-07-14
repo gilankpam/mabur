@@ -10,6 +10,15 @@ namespace mabur {
 // (2848B linkbench bodies 2026-07-13; 2652-2680B big-symbol probes
 // 2026-07-15) while rejecting configs that would silently change the
 // airtime/PER envelope.
+//
+// NOTE: the config-load guard that enforces this (drone/src/config.cpp)
+// measures only bpb*(kSwHeaderLen + symbol_size) — the per-block SW-header
+// envelope — NOT the real air body. It excludes the 7B SBI header and the
+// 2B per-block CRC that SbiPacker actually adds on top, so the true body
+// size is 7 + bpb*(16 + symbol_size), up to ~133B more than what the guard
+// computes (at bpb=16 max). The 2900 constant carries slack for exactly
+// this gap: proven bodies on air measured 2887B actual against a
+// 2848B-by-the-guard-formula config, comfortably under 2900 either way.
 inline constexpr int kMaxBodyBytes = 2900;
 
 // Sub-Block Integrity (SBI) framing constants. Byte-exact port of devourer's

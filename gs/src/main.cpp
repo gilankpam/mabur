@@ -56,6 +56,12 @@ struct RtpFileOut {
 };
 
 static int run_radio(const maburgs::Config& cfg) {
+  std::fprintf(stderr,
+               "fec: symbol_size=[%d,%d,%d,%d] decode_deadline_ms=%d seq_horizon=%d\n",
+               cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
+               cfg.fec.symbol_size[2], cfg.fec.symbol_size[3],
+               cfg.fec.decode_deadline_ms, cfg.fec.seq_horizon);
+
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
   std::signal(SIGUSR1, on_usr1);

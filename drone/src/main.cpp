@@ -858,6 +858,14 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  std::fprintf(stderr,
+               "fec: symbol_size=[%d,%d,%d,%d] bpb=[%d,%d,%d,%d] window=%d\n",
+               cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
+               cfg.fec.symbol_size[2], cfg.fec.symbol_size[3],
+               cfg.fec.blocks_per_body[0], cfg.fec.blocks_per_body[1],
+               cfg.fec.blocks_per_body[2], cfg.fec.blocks_per_body[3],
+               cfg.fec.window);
+
   if (dry_run) {
     if (in_path.empty() || out_path.empty()) {
       std::fprintf(stderr, "error: --dry-run requires --in and --out\n");

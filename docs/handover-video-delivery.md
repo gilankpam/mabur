@@ -440,7 +440,11 @@ of daemon CPU at 9.1M; the q16+symbol wins show up in linkbench ceilings
 and robustness, not daemon CPU at this rate.
 
 **Rollout is manual and BOTH-ENDS (config-only, no wire break):** a layer
-whose symbol_size mismatches drops as bad_cfg per layer (visible in stats,
-not silent). Production /etc configs still 164-global + the pre-q16
-binaries; staged test artifacts left at /tmp/{maburd,maburgs}-test{,.json}
-on the devices.
+whose symbol_size mismatches is caught at the SBI layer, not by the
+sliding-window decoder's bad_cfg counter — that counter is unreachable for
+this failure mode. The visible signal is per-layer `sbf` (subblocks_failed)
+climbing, or — when the configured stride exceeds the body region —
+`bodies` incrementing while `si` (symbols_in) stays frozen at 0. Not
+silent, but not bad_cfg. Production /etc configs still 164-global + the
+pre-q16 binaries; staged test artifacts left at
+/tmp/{maburd,maburgs}-test{,.json} on the devices.

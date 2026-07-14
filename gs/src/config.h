@@ -26,8 +26,12 @@ struct RadioCfg {
 /// FEC configuration: sliding-window decoder parameters.
 struct FecCfg {
   // Per-layer symbol size (stream 0..3); must match the drone's fec config
-  // layer-for-layer or that layer's symbols drop as bad_cfg (visible in
-  // per-layer stats, not silent). JSON: scalar fans out, or 4-array.
+  // layer-for-layer or that layer's SBI framing misparses on the receive
+  // side: subblocks_failed (sbf) climbs for that layer, or — if the
+  // mismatched stride exceeds the body region — bodies increments while
+  // symbols_in (si) stays frozen at 0. Not silent, but not bad_cfg either;
+  // symbols never reach the sliding-window decoder to be flagged there.
+  // JSON: scalar fans out, or 4-array.
   std::array<int, 4> symbol_size = {64, 64, 64, 64};
   int decode_deadline_ms = 200;
   int seq_horizon = 512;

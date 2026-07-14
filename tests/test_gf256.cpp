@@ -35,7 +35,7 @@ TEST(gf256_backend_reports_known_value) {
   const char* b = gf::backend();
   REQUIRE(b != nullptr);
   std::string s = b;
-  CHECK(s == "neon-vqtbl" || s == "neon-vtbl2" || s == "scalar");
+  CHECK(s == "neon-vqtbl" || s == "neon-vtbl2-q16" || s == "scalar");
 }
 
 TEST(inv_roundtrip_all_nonzero) {
