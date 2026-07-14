@@ -12,8 +12,9 @@ constexpr double kEmaAlpha = 0.1;
 }  // namespace
 
 Aggregator::Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
-                       uint64_t block_max_age_ms, int n_cards)
-    : dec_(layers, block_max_age_ms),
+                       uint64_t decode_deadline_ms, uint32_t seq_horizon,
+                       int n_cards)
+    : dec_(layers, decode_deadline_ms, seq_horizon),
       cards_(static_cast<size_t>(n_cards)) {}
 
 void Aggregator::on_rx_body(const mabur::node::RxBody& m) {

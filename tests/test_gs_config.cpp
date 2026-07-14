@@ -15,11 +15,11 @@ TEST(default_bundle_config_loads) {
   CHECK(cfg.radio.channel == 149);
   CHECK(cfg.radio.cards.size() == 1);
   CHECK(cfg.radio.tx_card == -1);
-  CHECK(cfg.fec.k == 8);
+  CHECK(cfg.fec.decode_deadline_ms == 200);
+  CHECK(cfg.fec.seq_horizon == 512);
   CHECK(cfg.link.vtx_id == 1);
   CHECK(cfg.video_out.port == 5600);
   auto L = cfg.uep_layers();
-  CHECK(L[0].fec.k == 8);
   CHECK(L[0].fec.overhead == 1.00);
   CHECK(L[3].fec.overhead == 0.25);
 }

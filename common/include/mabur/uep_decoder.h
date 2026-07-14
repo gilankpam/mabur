@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "mabur/frag_reassembler.h"
-#include "mabur/rs_decoder.h"
+#include "mabur/sw_decoder.h"
 #include "mabur/uep_encoder.h"
 
 namespace mabur {
@@ -15,28 +15,29 @@ struct DecodedRtp {
   std::vector<uint8_t> pkt;
 };
 
-// Receiver mirror of UepEncoder — port of svc_uep_fec.py's SvcUepDecoder
-// (fragment=True): route a body by its SBI stream_id to that layer's
-// sbi_unpack -> RsDecoder -> FragReassembler chain. Duplicate bodies/symbols
-// (the same air frame heard by several cards) are idempotent end-to-end, so
-// multi-card merge needs no dedup step. Callers pass now_ms (monotonic).
+// Receiver mirror of UepEncoder: route a body by its SBI stream_id to that
+// layer's sbi_unpack -> SwDecoder -> FragReassembler chain. Multi-card merge
+// needs no dedup step: duplicate bodies/symbols (the same air frame heard by
+// several cards) are idempotent end-to-end via seq identity and SwDecoder's
+// GE-redundancy dedup. Callers pass now_ms (monotonic).
 class UepDecoder {
  public:
   UepDecoder(const std::array<UepLayerCfg, 4>& layers,
-             uint64_t block_max_age_ms = 2000);
+             uint64_t decode_deadline_ms = 200, uint32_t seq_horizon = 0);
 
   std::vector<DecodedRtp> add_body(const uint8_t* body, size_t len,
                                    uint64_t now_ms);
 
-  // Expires RS blocks older than block_max_age_ms on every layer. Call ~1 Hz.
+  // Expires stale sliding-window rows/FRAG entries on every layer. Call ~1 Hz.
   void poll(uint64_t now_ms);
 
   struct LayerStats {
-    uint64_t bodies = 0, subblocks_failed = 0, blocks_decoded = 0,
-             blocks_unrecoverable = 0, packets_out = 0, frag_evicted = 0;
-    // diagnostic depth (RsDecoder internals)
+    uint64_t bodies = 0, subblocks_failed = 0, syms_delivered = 0,
+             syms_recovered = 0, syms_abandoned = 0, packets_out = 0,
+             frag_evicted = 0;
+    // diagnostic depth (SwDecoder internals)
     uint64_t symbols_in = 0, symbols_stale = 0, symbols_bad_cfg = 0;
-    size_t blocks_in_flight = 0;
+    size_t rows_in_flight = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }
@@ -55,14 +56,14 @@ class UepDecoder {
 
  private:
   struct Layer {
-    // FRAG entries older than the block horizon can never complete (their
-    // missing fragments' blocks have expired) — evict by that same age.
-    Layer(const UepLayerCfg& cfg, uint64_t block_max_age_ms)
-        : env_size(11 + cfg.fec.symbol_size),
-          rs(cfg.fec),
-          reasm(512, block_max_age_ms) {}
+    // FRAG entries older than the decode deadline can never complete (their
+    // missing fragments' rows have expired) — evict by that same age.
+    Layer(const UepLayerCfg& cfg, uint64_t decode_deadline_ms, uint32_t seq_horizon)
+        : env_size(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size),
+          sw(cfg.fec, seq_horizon),
+          reasm(512, decode_deadline_ms) {}
     int env_size;
-    RsDecoder rs;
+    SwDecoder sw;
     FragReassembler reasm;
     uint64_t bodies = 0, subblocks_failed = 0;
     // delivery window
@@ -71,7 +72,7 @@ class UepDecoder {
     uint64_t win_delivered = 0, win_expected = 0;
   };
   std::array<Layer, 4> layers_;
-  uint64_t block_max_age_ms_;
+  uint64_t decode_deadline_ms_;
   uint64_t bodies_misrouted_ = 0;
 };
 

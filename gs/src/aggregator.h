@@ -27,8 +27,9 @@ struct CardTrack {
 
 // Core-thread router: RC-magic frames go to the control sink (Plan 2's
 // agent), everything else through the UepDecoder to the RTP sink. Multi-card
-// dedup happens inside the decoder (RS symbol identity), so bodies from all
-// cards are fed straight in. Single-threaded by contract (core thread only).
+// dedup happens inside the decoder (seq identity / GE-redundancy dedup), so
+// bodies from all cards are fed straight in. Single-threaded by contract
+// (core thread only).
 class Aggregator {
  public:
   using RtpSink = std::function<void(const mabur::DecodedRtp&)>;
@@ -37,7 +38,7 @@ class Aggregator {
                                     uint64_t mono_us)>;
 
   Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
-             uint64_t block_max_age_ms, int n_cards);
+             uint64_t decode_deadline_ms, uint32_t seq_horizon, int n_cards);
 
   void set_rtp_sink(RtpSink s) { rtp_sink_ = std::move(s); }
   void set_rc_sink(RcSink s) { rc_sink_ = std::move(s); }

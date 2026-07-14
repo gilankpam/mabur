@@ -32,24 +32,20 @@ struct RadioCfg {
   // single blocking sender caps air throughput at ~26 Mbps regardless of
   // MCS; ~4 saturate (linkbench bisect 2026-07-14, devourer
   // docs/aggregation.md). 1 = strict on-air frame order (>1 can swap
-  // ≤3-frame URB batches, which the block-id-addressed FEC datapath and
+  // ≤3-frame URB batches, which the seq-addressed FEC datapath and
   // the GS max-seq delivery accounting both tolerate).
   int tx_threads = 4;
 };
 
 struct FecCfg {
-  int k = 8;
   int symbol_size = 64;
+  // Sliding-window burst budget: a layer at overhead ov survives a hole of
+  // up to L <= window*ov/(1+ov) consecutive lost symbols. 128 lets the
+  // ov-0.25 layer survive one full bpb-16 body loss.
+  int window = 128;
   std::array<int, 4> blocks_per_body = {4, 8, 16, 16};
   double base_overhead = 0.25;
   int flush_ms = 15;
-  // Symbol interleaving across blocks_per_body RS blocks per body (parity
-  // break vs svc_uep_fec.py; decoder needs no flag). See mabur/interleaver.h.
-  bool interleave = false;
-  // Interleaver window in blocks (0 = blocks_per_body). Deeper = more
-  // time-diversity against multi-frame fades, + depth blocks of encoder
-  // buffering latency (~1.3 KB per block at symbol 164).
-  int interleave_depth = 0;
 };
 
 struct WaybeamCfg {

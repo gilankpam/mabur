@@ -1,10 +1,12 @@
 #include <array>
 #include <cstdint>
 #include <fstream>
+#include <map>
 #include <vector>
 
 #include "mtest.h"
 #include "vectors.h"
+#include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 #include "mabur/nal.h"
 #include "mabur/sbi.h"
@@ -28,54 +30,58 @@ std::vector<std::vector<uint8_t>> load_rtp_stream(const std::string& path) {
   return pkts;
 }
 
-std::array<UepLayerCfg, 4> make_layers(int k, int symbol_size, int blocks_per_body,
+std::array<UepLayerCfg, 4> make_layers(int symbol_size, int blocks_per_body,
                                         const std::vector<double>& overheads) {
   std::array<UepLayerCfg, 4> layers;
   for (int sid = 0; sid < 4; ++sid) {
-    layers[static_cast<size_t>(sid)].fec = RsConfig{k, symbol_size, overheads[static_cast<size_t>(sid)]};
+    layers[static_cast<size_t>(sid)].fec =
+        SwConfig{symbol_size, 128, overheads[static_cast<size_t>(sid)]};
     layers[static_cast<size_t>(sid)].blocks_per_body = blocks_per_body;
   }
   return layers;
 }
 }  // namespace
 
-TEST(uep_encoder_matches_python_composed_vectors) {
+// Sliding-window envelopes are not byte-identical to the RS/Python-composed
+// vectors in uep.json (different wire scheme entirely — see sw_wire.h), so
+// this no longer pins body bytes against uep.json. classify_rtp routing is
+// still scheme-agnostic and stays pinned against the vector; body content is
+// verified as a full encode -> lossless channel -> decode round-trip against
+// the same fixture (packet round-trips are scheme-agnostic).
+TEST(uep_encoder_round_trips_fixture_through_decoder) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/uep.json");
-  int k = j["k"].get<int>();
   int symbol_size = j["symbol_size"].get<int>();
   int blocks_per_body = j["blocks_per_body"].get<int>();
   std::vector<double> overheads;
   for (auto& o : j["overheads"]) overheads.push_back(o.get<double>());
 
-  auto layers = make_layers(k, symbol_size, blocks_per_body, overheads);
+  auto layers = make_layers(symbol_size, blocks_per_body, overheads);
   UepEncoder enc(layers, /*flush_ms=*/1'000'000'000ULL);
+  UepDecoder dec(layers, /*decode_deadline_ms=*/1'000'000'000ULL);
 
   auto pkts = load_rtp_stream(std::string(MABUR_FIXTURE_DIR) + "/rtp_stream.bin");
   REQUIRE(pkts.size() == j["classify"].size());
 
-  std::vector<std::pair<int, std::string>> stream;
+  std::map<int, std::vector<std::string>> want, got;
   for (size_t i = 0; i < pkts.size(); ++i) {
     int expect_sid = j["classify"][i].get<int>();
     int actual_sid = classify_rtp(pkts[i].data(), pkts[i].size());
     CHECK(actual_sid == expect_sid);
+    want[actual_sid].push_back(mtest::hex(pkts[i]));
 
     auto bodies = enc.add_rtp(pkts[i].data(), pkts[i].size(), /*now_ms=*/0);
-    for (auto& b : bodies) stream.emplace_back(b.stream_id, mtest::hex(b.body));
+    for (auto& b : bodies)
+      for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0))
+        got[d.stream_id].push_back(mtest::hex(d.pkt));
   }
+  for (auto& b : enc.flush_all())
+    for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0))
+      got[d.stream_id].push_back(mtest::hex(d.pkt));
 
-  REQUIRE(stream.size() == j["stream"].size());
-  for (size_t i = 0; i < stream.size(); ++i) {
-    auto& c = j["stream"][i];
-    CHECK(stream[i].first == c["sid"].get<int>());
-    CHECK(stream[i].second == c["body"].get<std::string>());
-  }
-
-  auto flushed = enc.flush_all();
-  REQUIRE(flushed.size() == j["flush"].size());
-  for (size_t i = 0; i < flushed.size(); ++i) {
-    auto& c = j["flush"][i];
-    CHECK(flushed[i].stream_id == c["sid"].get<int>());
-    CHECK(mtest::hex(flushed[i].body) == c["body"].get<std::string>());
+  for (auto& [sid, expect_pkts] : want) {
+    REQUIRE(got[sid].size() == expect_pkts.size());
+    for (size_t i = 0; i < expect_pkts.size(); ++i)
+      CHECK(got[sid][i] == expect_pkts[i]);
   }
 }
 
@@ -91,7 +97,7 @@ TEST(uep_layer_overhead_math_and_clamps) {
 
 TEST(uep_set_shed_drops_stream_and_counts) {
   std::vector<double> overheads = {1.0, 0.75, 0.5, 0.25};
-  auto layers = make_layers(8, 64, 4, overheads);
+  auto layers = make_layers(64, 4, overheads);
   UepEncoder enc(layers, /*flush_ms=*/1'000'000'000ULL);
   enc.set_shed(3, true);
 
@@ -112,21 +118,21 @@ TEST(uep_set_shed_drops_stream_and_counts) {
   CHECK(enc.dropped(3) == 2);
 }
 
-TEST(uep_poll_after_idle_emits_short_block_with_kreal_lt_k) {
+TEST(uep_poll_after_idle_seals_pending_symbol) {
   std::vector<double> overheads = {1.0, 0.75, 0.5, 0.25};
-  auto layers = make_layers(8, 64, 4, overheads);
+  auto layers = make_layers(64, 4, overheads);
   uint64_t flush_ms = 15;
   UepEncoder enc(layers, static_cast<int>(flush_ms));
 
   // One small non-critical, tid-0 packet -> stream 1. Leaves the layer with
-  // pending (unflushed) data since a single packet doesn't fill k=8 symbols.
+  // pending (unflushed) data since a single packet doesn't fill a symbol.
   std::vector<uint8_t> pkt = {
       0x80, 0x61, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0xDE, 0xAD, 0xBE, 0xEF,
       0x02, 0x01, 0xAA, 0xBB, 0xCC};
   CHECK(classify_rtp(pkt.data(), pkt.size()) == 1);
 
   auto immediate = enc.add_rtp(pkt.data(), pkt.size(), 0);
-  CHECK(immediate.empty());  // not enough to complete a block yet
+  CHECK(immediate.empty());  // not enough to seal a symbol yet
 
   auto before_idle = enc.poll(flush_ms - 1);
   CHECK(before_idle.empty());
@@ -134,11 +140,9 @@ TEST(uep_poll_after_idle_emits_short_block_with_kreal_lt_k) {
   auto after_idle = enc.poll(flush_ms + 1);
   REQUIRE(!after_idle.empty());
   CHECK(after_idle[0].stream_id == 1);
-  // First envelope's kreal (RS header byte 4) must be < k (8): a short block.
+  // Sealed tail carries a source envelope: sw::kSwHeaderLen + symbol_size.
   const auto& body = after_idle[0].body;
-  REQUIRE(body.size() >= SBI_HDR_LEN + 2 + 5);
-  uint8_t kreal = body[SBI_HDR_LEN + 2 + 4];
-  CHECK(kreal < 8);
+  CHECK(body.size() >= SBI_HDR_LEN + 2 + mabur::sw::kSwHeaderLen);
 }
 
 MTEST_MAIN

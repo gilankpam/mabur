@@ -9,8 +9,8 @@
     "thermal_max_delta": 25
   },
   "fec": {
-    "k": 8,
     "symbol_size": 64,
+    "window": 128,
     "blocks_per_body": [4, 8, 16, 16],
     "base_overhead": 0.25,
     "flush_ms": 15

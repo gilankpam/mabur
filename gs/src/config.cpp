@@ -52,8 +52,10 @@ std::string get_str(const json& o, const char* key, const std::string& dflt,
 std::array<mabur::UepLayerCfg, 4> Config::uep_layers() const {
   std::array<mabur::UepLayerCfg, 4> out{};
   for (int s = 0; s < 4; ++s) {
+    // window is TX-side; 128 here only feeds SwDecoder's auto-horizon
+    // default, which the explicit seq_horizon (below) overrides.
     out[static_cast<size_t>(s)].fec =
-        mabur::RsConfig{fec.k, fec.symbol_size, mabur::kUepRefOverhead[s]};
+        mabur::SwConfig{fec.symbol_size, 128, mabur::kUepRefOverhead[s]};
     out[static_cast<size_t>(s)].blocks_per_body = 4;  // unused on decode
   }
   return out;
@@ -99,10 +101,10 @@ Config load_config(const std::string& path) {
 
   if (j.contains("fec")) {
     const json& r = j["fec"];
-    check_keys(r, "fec", {"k", "symbol_size", "block_max_age_ms"});
-    c.fec.k = static_cast<int>(get_int(r, "k", 8, 1, 128, "fec"));
+    check_keys(r, "fec", {"symbol_size", "decode_deadline_ms", "seq_horizon"});
     c.fec.symbol_size = static_cast<int>(get_int(r, "symbol_size", 64, 8, 1024, "fec"));
-    c.fec.block_max_age_ms = static_cast<int>(get_int(r, "block_max_age_ms", 2000, 100, 60000, "fec"));
+    c.fec.decode_deadline_ms = static_cast<int>(get_int(r, "decode_deadline_ms", 200, 20, 5000, "fec"));
+    c.fec.seq_horizon = static_cast<int>(get_int(r, "seq_horizon", 512, 16, 65536, "fec"));
   }
 
   if (j.contains("link")) {

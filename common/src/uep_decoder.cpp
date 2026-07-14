@@ -5,12 +5,12 @@
 namespace mabur {
 
 UepDecoder::UepDecoder(const std::array<UepLayerCfg, 4>& layers,
-                       uint64_t block_max_age_ms)
-    : layers_{Layer(layers[0], block_max_age_ms),
-              Layer(layers[1], block_max_age_ms),
-              Layer(layers[2], block_max_age_ms),
-              Layer(layers[3], block_max_age_ms)},
-      block_max_age_ms_(block_max_age_ms) {}
+                       uint64_t decode_deadline_ms, uint32_t seq_horizon)
+    : layers_{Layer(layers[0], decode_deadline_ms, seq_horizon),
+              Layer(layers[1], decode_deadline_ms, seq_horizon),
+              Layer(layers[2], decode_deadline_ms, seq_horizon),
+              Layer(layers[3], decode_deadline_ms, seq_horizon)},
+      decode_deadline_ms_(decode_deadline_ms) {}
 
 std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
                                              uint64_t now_ms) {
@@ -25,7 +25,7 @@ std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
   L.subblocks_failed += static_cast<uint64_t>(r.n_failed);
   std::vector<DecodedRtp> out;
   for (const auto& env : r.survivors) {
-    for (const auto& pkt : L.rs.add_symbol(env.data(), env.size(), now_ms)) {
+    for (const auto& pkt : L.sw.add_symbol(env.data(), env.size(), now_ms)) {
       for (auto& done : L.reasm.add(pkt.data(), pkt.size(), now_ms)) {
         // Delivery window: forward FRAG-seq gap = packets that will never
         // complete; backward/duplicate (gap 0 or > 0x8000) = reorder, count
@@ -49,16 +49,17 @@ std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
 }
 
 void UepDecoder::poll(uint64_t now_ms) {
-  for (auto& L : layers_) L.rs.expire_blocks_older_than(block_max_age_ms_, now_ms);
+  for (auto& L : layers_) L.sw.expire_rows_older_than(decode_deadline_ms_, now_ms);
 }
 
 UepDecoder::LayerStats UepDecoder::stats(int sid) const {
   const Layer& L = layers_[static_cast<size_t>(sid)];
-  return LayerStats{L.bodies,          L.subblocks_failed,
-                    L.rs.blocks_decoded(), L.rs.blocks_unrecoverable(),
-                    L.rs.packets_out(),    L.reasm.evicted(),
-                    L.rs.symbols_in(),     L.rs.symbols_dropped_stale_block(),
-                    L.rs.symbols_dropped_bad_cfg(), L.rs.in_flight_blocks()};
+  return LayerStats{L.bodies,               L.subblocks_failed,
+                    L.sw.syms_delivered(),  L.sw.syms_recovered(),
+                    L.sw.syms_abandoned(),  L.sw.packets_out(),
+                    L.reasm.evicted(),      L.sw.symbols_in(),
+                    L.sw.symbols_dropped_stale(),
+                    L.sw.symbols_dropped_bad_cfg(), L.sw.rows_in_flight()};
 }
 
 int UepDecoder::window_delivery_pct(int sid) const {

@@ -12,40 +12,20 @@ double uep_layer_overhead(int stream_id, double cmd_overhead) {
   return std::clamp(v, 0.125, 2.0);
 }
 
-UepEncoder::UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms, bool interleave)
+UepEncoder::UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms)
     : layers_{Layer(layers[0], 0), Layer(layers[1], 1), Layer(layers[2], 2), Layer(layers[3], 3)},
-      flush_ms_(flush_ms),
-      interleave_(interleave) {}
+      flush_ms_(flush_ms) {}
 
-void UepEncoder::pack_block(Layer& layer, uint8_t sid,
-                            std::vector<std::vector<uint8_t>> envs,
-                            std::vector<UepBody>& out) {
-  if (interleave_) {
-    for (auto& env : layer.il.add_block(std::move(envs)))
-      for (auto& b : layer.packer.add(env.data(), env.size()))
-        out.push_back(UepBody{sid, std::move(b)});
-    return;
-  }
+void UepEncoder::pack_envs(Layer& layer, uint8_t sid,
+                           std::vector<std::vector<uint8_t>> envs,
+                           std::vector<UepBody>& out) {
   for (auto& env : envs)
     for (auto& b : layer.packer.add(env.data(), env.size()))
       out.push_back(UepBody{sid, std::move(b)});
 }
 
 void UepEncoder::drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out) {
-  pack_block(layer, sid, layer.rs.flush(), out);
-  if (interleave_) {
-    // Each sub-depth round becomes its own short body so every body still
-    // carries at most one symbol per block (see drain_round()).
-    for (;;) {
-      auto round = layer.il.drain_round();
-      if (round.empty()) break;
-      for (auto& env : round)
-        for (auto& b : layer.packer.add(env.data(), env.size()))
-          out.push_back(UepBody{sid, std::move(b)});
-      for (auto& b : layer.packer.flush())
-        out.push_back(UepBody{sid, std::move(b)});
-    }
-  }
+  pack_envs(layer, sid, layer.sw.flush(), out);
   for (auto& b : layer.packer.flush())
     out.push_back(UepBody{sid, std::move(b)});
 }
@@ -65,9 +45,9 @@ std::vector<UepBody> UepEncoder::add_rtp(const uint8_t* pkt, size_t len, uint64_
 
   auto frags = layer.frag.fragment(pkt, len, layer.usable);
   for (auto& f : frags) {
-    auto envs = layer.rs.add_packet(f.data(), f.size());
+    auto envs = layer.sw.add_packet(f.data(), f.size());
     if (envs.empty()) continue;
-    pack_block(layer, static_cast<uint8_t>(sid), std::move(envs), out);
+    pack_envs(layer, static_cast<uint8_t>(sid), std::move(envs), out);
   }
   return out;
 }
@@ -95,7 +75,7 @@ std::vector<UepBody> UepEncoder::flush_all() {
 
 void UepEncoder::set_overhead_scale(double cmd_overhead) {
   for (int sid = 0; sid < 4; ++sid)
-    layers_[static_cast<size_t>(sid)].rs.set_overhead(uep_layer_overhead(sid, cmd_overhead));
+    layers_[static_cast<size_t>(sid)].sw.set_overhead(uep_layer_overhead(sid, cmd_overhead));
 }
 
 void UepEncoder::set_shed(int stream_id, bool shed) {

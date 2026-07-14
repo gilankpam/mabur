@@ -23,11 +23,11 @@ struct RadioCfg {
   int tx_card = -1;            // -1 = auto-select (Plan 2)
 };
 
-/// FEC configuration: Reed-Solomon parameters and block aging.
+/// FEC configuration: sliding-window decoder parameters.
 struct FecCfg {
-  int k = 8;
   int symbol_size = 64;
-  int block_max_age_ms = 2000;
+  int decode_deadline_ms = 200;
+  int seq_horizon = 512;
 };
 
 /// Link-layer configuration: VTX ID, feedback rate, keepalive, silence timeout.

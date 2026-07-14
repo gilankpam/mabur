@@ -63,16 +63,15 @@ int main() {
     std::printf("lincomb: %.1f MB/s\n", iters * 164.0 / dt / 1e6);
   }
 
-  // end-to-end encoder pkt/s at bench geometry (symbol 164, bpb 8, depth 32,
+  // end-to-end encoder pkt/s at bench geometry (symbol 164, bpb 8, window 128,
   // overhead ladder at cmd 0.375 equivalent: use ref ladder scaled 1.5)
   {
     std::array<UepLayerCfg, 4> layers{};
     for (int s = 0; s < 4; ++s) {
-      layers[s].fec = RsConfig{8, 164, kUepRefOverhead[s] * 1.5};
+      layers[s].fec = SwConfig{164, 128, kUepRefOverhead[s] * 1.5};
       layers[s].blocks_per_body = 8;
-      layers[s].interleave_depth = 32;
     }
-    UepEncoder enc(layers, 15, true);
+    UepEncoder enc(layers, 15);
     std::vector<uint8_t> pkt(12 + 1388);
     pkt[0] = 0x80; pkt[1] = 0x60;
     pkt[12] = 49 << 1; pkt[13] = 1; pkt[14] = 1;

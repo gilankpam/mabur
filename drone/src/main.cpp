@@ -333,7 +333,7 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   actuator.dry_run = true;
 
   RcAgent agent(cfg, actuator);
-  UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, cfg.fec.interleave);
+  UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms);
 
   auto pkts = read_len_prefixed_u16(in_path);
   auto rc_recs = read_rc_in(rc_in_path);
@@ -621,7 +621,7 @@ int run_real_mode(const Config& cfg) {
   // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
     RingSource ring(cfg.ring_name);
-    UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, cfg.fec.interleave);
+    UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms);
     uint8_t buf[4096];
 
     std::shared_ptr<const AppliedOp> last_applied_op;

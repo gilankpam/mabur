@@ -1,13 +1,14 @@
 #include "mtest.h"
 #include "vectors.h"
 #include "aggregator.h"
+#include "mabur/uep_encoder.h"
 
 using namespace maburgs;
 
 static std::array<mabur::UepLayerCfg, 4> vec_layers() {
   std::array<mabur::UepLayerCfg, 4> L{};
   const double ov[4] = {1.00, 0.75, 0.50, 0.25};
-  for (int s = 0; s < 4; ++s) L[s] = mabur::UepLayerCfg{mabur::RsConfig{8, 64, ov[s]}, 4};
+  for (int s = 0; s < 4; ++s) L[s] = mabur::UepLayerCfg{mabur::SwConfig{64, 128, ov[s]}, 4};
   return L;
 }
 
@@ -22,24 +23,39 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
   return m;
 }
 
+// Video bodies come from a real UepEncoder over rtp_stream.bin — the
+// sliding-window scheme has no golden-vector wire format to pin against
+// (see test_uep.cpp), so the aggregator is exercised against its paired
+// encoder's output, same as the drone/GS pairing on air.
+static std::vector<std::vector<uint8_t>> encode_fixture_bodies() {
+  mabur::UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
+  std::vector<std::vector<uint8_t>> bodies;
+  std::string path = std::string(MABUR_FIXTURE_DIR) + "/rtp_stream.bin";
+  FILE* f = fopen(path.c_str(), "rb");
+  REQUIRE(f != nullptr);
+  uint8_t hdr[2];
+  while (fread(hdr, 1, 2, f) == 2) {
+    size_t n = static_cast<size_t>(hdr[0] | (hdr[1] << 8));
+    std::vector<uint8_t> pkt(n);
+    REQUIRE(fread(pkt.data(), 1, n, f) == n);
+    for (auto& b : enc.add_rtp(pkt.data(), pkt.size(), 0)) bodies.push_back(std::move(b.body));
+  }
+  fclose(f);
+  for (auto& b : enc.flush_all()) bodies.push_back(std::move(b.body));
+  return bodies;
+}
+
 TEST(routes_video_to_decoder_and_rc_to_control) {
-  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/uep.json");
   auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  Aggregator agg(vec_layers(), 2000, 2);
+  auto bodies = encode_fixture_bodies();
+  Aggregator agg(vec_layers(), 200, 512, 2);
   int rtp = 0, rcs = 0;
   agg.set_rtp_sink([&](const mabur::DecodedRtp&) { ++rtp; });
   agg.set_rc_sink([&](uint8_t card, const std::vector<uint8_t>&, uint64_t) {
     ++rcs; CHECK(card == 1);
   });
   uint16_t seq = 0;
-  for (auto& e : j["stream"]) {
-    auto b = mtest::unhex(e["body"].get<std::string>());
-    agg.on_rx_body(msg(0, seq++, true, b));
-  }
-  for (auto& e : j["flush"]) {
-    auto b = mtest::unhex(e["body"].get<std::string>());
-    agg.on_rx_body(msg(0, seq++, true, b));
-  }
+  for (auto& b : bodies) agg.on_rx_body(msg(0, seq++, true, b));
   auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
   agg.on_rx_body(msg(1, seq++, true, ack));
   CHECK(rtp == 18);            // whole fixture decodes
@@ -52,7 +68,7 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
 }
 
 TEST(seq_gap_tracking_crc_ok_only) {
-  Aggregator agg(vec_layers(), 2000, 1);
+  Aggregator agg(vec_layers(), 200, 512, 1);
   std::vector<uint8_t> junk(20, 0);   // not SBI, not RC -> misroutes, still counted
   agg.on_rx_body(msg(0, 10, true, junk));
   agg.on_rx_body(msg(0, 13, true, junk));      // gap of 3: 2 lost
@@ -71,7 +87,7 @@ TEST(seq_gap_tracking_crc_ok_only) {
 // book an outage AND re-count the gap (the old last_seq walk did both —
 // one swap inflated seq_expected by ~6).
 TEST(seq_urb_batch_swap_is_not_loss) {
-  Aggregator agg(vec_layers(), 2000, 1);
+  Aggregator agg(vec_layers(), 200, 512, 1);
   std::vector<uint8_t> junk(20, 0);
   const uint16_t order[] = {0, 1, 2, 6, 7, 8, 3, 4, 5, 9};
   for (uint16_t s : order) agg.on_rx_body(msg(0, s, true, junk));
@@ -81,7 +97,7 @@ TEST(seq_urb_batch_swap_is_not_loss) {
 }
 
 TEST(ema_uses_chain_b_rssi_and_max_snr) {
-  Aggregator agg(vec_layers(), 2000, 1);
+  Aggregator agg(vec_layers(), 200, 512, 1);
   std::vector<uint8_t> junk(20, 0);
   agg.on_rx_body(msg(0, 1, true, junk));
   CHECK(agg.card(0).rssi_b_ema == 40.0);       // seeded from first frame
@@ -91,7 +107,7 @@ TEST(ema_uses_chain_b_rssi_and_max_snr) {
 }
 
 TEST(unknown_card_dropped) {
-  Aggregator agg(vec_layers(), 2000, 1);
+  Aggregator agg(vec_layers(), 200, 512, 1);
   std::vector<uint8_t> junk(20, 0);
   agg.on_rx_body(msg(7, 1, true, junk));
   CHECK(agg.bad_card_msgs() == 1);

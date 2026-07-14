@@ -55,12 +55,12 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.power_mode == "override");
   CHECK(cfg.radio.power_offset_qdb == 0);
 
-  CHECK(cfg.fec.k == def.fec.k);
   CHECK(cfg.fec.symbol_size == def.fec.symbol_size);
+  CHECK(cfg.fec.window == def.fec.window);
   CHECK(cfg.fec.blocks_per_body == def.fec.blocks_per_body);
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == def.fec.flush_ms);
-  CHECK(cfg.fec.interleave == false);
+  CHECK(cfg.fec.window == 128);
 
   CHECK(cfg.waybeam.host == def.waybeam.host);
   CHECK(cfg.waybeam.port == def.waybeam.port);
@@ -102,10 +102,10 @@ TEST(load_config_missing_file_throws) {
 }
 
 TEST(load_config_out_of_range_field_throws_naming_field) {
-  auto path = write_temp_json(R"({"fec":{"k":40}})");
+  auto path = write_temp_json(R"({"fec":{"window":9999}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
-  CHECK(msg.find("fec.k") != std::string::npos);
+  CHECK(msg.find("fec.window") != std::string::npos);
   std::filesystem::remove(path);
 }
 
@@ -125,11 +125,11 @@ TEST(load_config_unknown_nested_key_throws_naming_it) {
   std::filesystem::remove(path);
 }
 
-TEST(load_config_type_mismatch_fec_k_string_throws_runtime_error_with_dotted_path) {
-  auto path = write_temp_json(R"({"fec":{"k":"eight"}})");
+TEST(load_config_type_mismatch_fec_window_string_throws_runtime_error_with_dotted_path) {
+  auto path = write_temp_json(R"({"fec":{"window":"wide"}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
-  CHECK(msg.find("fec.k") != std::string::npos);
+  CHECK(msg.find("fec.window") != std::string::npos);
   CHECK(msg.find("wrong type") != std::string::npos);
   std::filesystem::remove(path);
 }
@@ -214,7 +214,7 @@ TEST(uep_layers_overhead_ladder_at_base_0_25) {
   CHECK(layers[1].fec.overhead == 0.75);
   CHECK(layers[2].fec.overhead == 0.5);
   CHECK(layers[3].fec.overhead == 0.25);
-  CHECK(layers[0].fec.k == cfg.fec.k);
+  CHECK(layers[0].fec.window == cfg.fec.window);
   CHECK(layers[0].fec.symbol_size == cfg.fec.symbol_size);
   CHECK(layers[0].blocks_per_body == cfg.fec.blocks_per_body[0]);
   CHECK(layers[3].blocks_per_body == cfg.fec.blocks_per_body[3]);

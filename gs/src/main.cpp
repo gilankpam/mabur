@@ -74,7 +74,8 @@ static int run_radio(const maburgs::Config& cfg) {
   }
 
   maburgs::Aggregator agg(cfg.uep_layers(),
-                          static_cast<uint64_t>(cfg.fec.block_max_age_ms), n_cards);
+                          static_cast<uint64_t>(cfg.fec.decode_deadline_ms),
+                          static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
   maburgs::UdpSink udp(cfg.video_out.host, cfg.video_out.port);
   // RTP order health of the emitted stream (bench 2026-07-13): packets
   // leave on FEC-block completion, so ordering is NOT guaranteed by
@@ -107,8 +108,8 @@ static int run_radio(const maburgs::Config& cfg) {
         }
         udp.send(pkt.data(), pkt.size());
       },
-      // End-to-end latency budget: decoder block_max_age (device config,
-      // ~250ms) < this hold, so a block that completes at its age limit
+      // End-to-end latency budget: decoder decode_deadline_ms (device config,
+      // ~200ms) < this hold, so a row that completes at its age limit
       // still beats the reorder deadline instead of landing in late_dropped.
       /*hold_ms=*/300);
   agg.set_rtp_sink([&](const mabur::DecodedRtp& r) {
@@ -227,17 +228,17 @@ static int run_radio(const maburgs::Config& cfg) {
         const auto st = agg.decoder().stats(s);
         if (st.bodies == 0) continue;  // idle streams: keep the line short
         std::fprintf(stderr,
-                     " s%d[p=%llu u=%llu fe=%llu dec=%llu si=%llu st=%llu"
+                     " s%d[p=%llu abn=%llu fe=%llu rec=%llu si=%llu st=%llu"
                      " bc=%llu sbf=%llu fl=%zu]",
                      s, static_cast<unsigned long long>(st.packets_out),
-                     static_cast<unsigned long long>(st.blocks_unrecoverable),
+                     static_cast<unsigned long long>(st.syms_abandoned),
                      static_cast<unsigned long long>(st.frag_evicted),
-                     static_cast<unsigned long long>(st.blocks_decoded),
+                     static_cast<unsigned long long>(st.syms_recovered),
                      static_cast<unsigned long long>(st.symbols_in),
                      static_cast<unsigned long long>(st.symbols_stale),
                      static_cast<unsigned long long>(st.symbols_bad_cfg),
                      static_cast<unsigned long long>(st.subblocks_failed),
-                     st.blocks_in_flight);
+                     st.rows_in_flight);
       }
       std::fprintf(stderr, " mis=%llu",
                    static_cast<unsigned long long>(agg.decoder().bodies_misrouted()));
@@ -310,7 +311,8 @@ int main(int argc, char** argv) {
 
   const int n_cards = src_opt.cards;
   maburgs::Aggregator agg(cfg.uep_layers(),
-                          static_cast<uint64_t>(cfg.fec.block_max_age_ms), n_cards);
+                          static_cast<uint64_t>(cfg.fec.decode_deadline_ms),
+                          static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
   RtpFileOut file_out;
   std::unique_ptr<maburgs::UdpSink> udp;
   if (!out_rtp_path.empty()) {
@@ -340,8 +342,8 @@ int main(int argc, char** argv) {
       last_ms = now_ms;
     }
   }
-  // Final expiry so unrecoverable blocks are accounted before the report.
-  agg.poll(last_ms + static_cast<uint64_t>(cfg.fec.block_max_age_ms) + 1);
+  // Final expiry so abandoned symbols are accounted before the report.
+  agg.poll(last_ms + static_cast<uint64_t>(cfg.fec.decode_deadline_ms) + 1);
 
   std::fprintf(stderr, "frames=%llu dropped=%llu malformed=%llu rc=%llu bad_card=%llu\n",
                static_cast<unsigned long long>(src.frames_read()),
@@ -364,12 +366,12 @@ int main(int argc, char** argv) {
   for (int s = 0; s < 4; ++s) {
     const auto st = agg.decoder().stats(s);
     std::fprintf(stderr,
-                 "stream %d: bodies=%llu sub_fail=%llu blocks=%llu unrec=%llu "
+                 "stream %d: bodies=%llu sub_fail=%llu rec=%llu abn=%llu "
                  "pkts=%llu delivery=%d%%\n",
                  s, static_cast<unsigned long long>(st.bodies),
                  static_cast<unsigned long long>(st.subblocks_failed),
-                 static_cast<unsigned long long>(st.blocks_decoded),
-                 static_cast<unsigned long long>(st.blocks_unrecoverable),
+                 static_cast<unsigned long long>(st.syms_recovered),
+                 static_cast<unsigned long long>(st.syms_abandoned),
                  static_cast<unsigned long long>(st.packets_out),
                  agg.decoder().window_delivery_pct(s));
   }
