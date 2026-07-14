@@ -37,7 +37,8 @@ struct Args {
 void usage(const char* argv0) {
   std::fprintf(stderr,
     "usage: %s --channel N [--card 0] [--usb-vid 0x0bda] [--usb-pid 0]\n"
-    "  [--index 0] [-k 8] [--overhead 0.5] [--symbol-size 64] [--bpb 16]\n"
+    "  [--index 0] [--overhead 0.5] [--symbol-size 64] [--window 128] "
+    "[--bpb 16]\n"
     "  [--json FILE] [--time S]\n", argv0);
 }
 
@@ -52,7 +53,6 @@ bool parse_args(int argc, char** argv, Args* a) {
     if (k == "--channel") { if (!next(&a->channel)) return false; }
     else if (k == "--card") { if (!next(&a->card)) return false; }
     else if (k == "--index") { if (!next(&a->index)) return false; }
-    else if (k == "-k") { if (!next(&a->fec.k)) return false; }
     else if (k == "--overhead") {
       if (i + 1 >= argc) return false;
       a->fec.overhead = std::strtod(argv[++i], nullptr);
@@ -60,6 +60,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     }
     else if (k == "--symbol-size") { if (!next(&a->fec.symbol_size)) return false; }
     else if (k == "--bpb") { if (!next(&a->fec.bpb)) return false; }
+    else if (k == "--window") { if (!next(&a->fec.window)) return false; }
     else if (k == "--json") {
       if (i + 1 >= argc) return false;
       a->json_path = argv[++i];
@@ -89,12 +90,12 @@ int main(int argc, char** argv) {
   install_devourer_signal_handlers();
 
   std::fprintf(stderr,
-               "linkbench-rx: ch %d card %d | fec k=%d n=%d symbol=%d bpb=%d | "
-               "gf256=%s\n"
+               "linkbench-rx: ch %d card %d | fec window=%d overhead=%.2f "
+               "symbol=%d bpb=%d | gf256=%s\n"
                "  air bytes = dot11+body (radiotap/PLCP/FCS excluded); rssi "
                "dBm ~= pwdb-110, chains A/B\n",
-               a.channel, a.card, a.fec.k, a.fec.rs().n(), a.fec.symbol_size,
-               a.fec.bpb, mabur::gf::backend());
+               a.channel, a.card, a.fec.window, a.fec.overhead,
+               a.fec.symbol_size, a.fec.bpb, mabur::gf::backend());
 
   FILE* jf = nullptr;
   if (!a.json_path.empty()) {
@@ -170,7 +171,7 @@ int main(int argc, char** argv) {
         badcfg_hinted = true;
         std::fprintf(stderr,
                      "hint: %llu symbols dropped bad-cfg and nothing decodes "
-                     "— -k/--symbol-size mismatch with TX?\n",
+                     "— --symbol-size mismatch with TX?\n",
                      static_cast<unsigned long long>(cur.sym_badcfg));
       }
       if (!idle_warned && now - last_frame_us > 5'000'000) {
@@ -190,10 +191,10 @@ int main(int argc, char** argv) {
       "--- summary (%.1fs) ---\n"
       "frames %llu (crc_bad %llu, mac_lost %llu = %.2f%%)\n"
       "air %.2f Mbps | goodput %.2f Mbps\n"
-      "blocks decoded %llu unrecoverable %llu | sub-blocks %llu crc-fail %llu | badcfg %llu\n"
+      "syms recovered %llu abandoned %llu | sub-blocks %llu crc-fail %llu | badcfg %llu\n"
       "pkts %llu / expected %llu (loss %.2f%%) pattern_bad %llu\n"
       "rssi %.1f/%.1f dBm  snr %.1f/%.1f dB (means over %llu frames)\n"
-      "config: k=%d n=%d symbol=%d bpb=%d channel=%d\n",
+      "config: window=%d overhead=%.2f symbol=%d bpb=%d channel=%d\n",
       dur,
       static_cast<unsigned long long>(s.frames),
       static_cast<unsigned long long>(s.crc_bad),
@@ -202,8 +203,8 @@ int main(int argc, char** argv) {
           ? 100.0 * s.mac_lost / static_cast<double>(ok_frames + s.mac_lost)
           : 0.0,
       s.air_bytes * 8.0 / 1e6 / dur, s.good_bytes * 8.0 / 1e6 / dur,
-      static_cast<unsigned long long>(s.blocks_decoded),
-      static_cast<unsigned long long>(s.blocks_unrec),
+      static_cast<unsigned long long>(s.syms_recovered),
+      static_cast<unsigned long long>(s.syms_abandoned),
       static_cast<unsigned long long>(s.sub_blocks),
       static_cast<unsigned long long>(s.sub_crc_fail),
       static_cast<unsigned long long>(s.sym_badcfg),
@@ -216,7 +217,7 @@ int main(int argc, char** argv) {
       s.rssi_sum[0] / n - 110.0, s.rssi_sum[1] / n - 110.0,
       s.snr_sum[0] / n, s.snr_sum[1] / n,
       static_cast<unsigned long long>(s.sig_frames),
-      a.fec.k, a.fec.rs().n(), a.fec.symbol_size, a.fec.bpb, a.channel);
+      a.fec.window, a.fec.overhead, a.fec.symbol_size, a.fec.bpb, a.channel);
 
   fe.stop();
   if (jf) std::fclose(jf);

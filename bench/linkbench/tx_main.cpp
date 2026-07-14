@@ -1,6 +1,7 @@
 // linkbench-tx — drone-side link bench transmitter. Generates a paced,
-// sequenced test stream, encodes it with mabur's RS+SBI FEC (single stream,
-// id 0xB0), and injects it via devourer at the chosen channel/MCS/power.
+// sequenced test stream, encodes it with mabur's sliding-window+SBI FEC
+// (single stream, id 0xB0), and injects it via devourer at the chosen
+// channel/MCS/power.
 // Spec: docs/superpowers/specs/2026-07-13-linkbench-design.md. Bring-up
 // order mirrors maburd run_real_mode (drone/src/main.cpp): InitWrite must
 // complete before the first send or the bulk-OUT FIFO fills mid-DLFW and
@@ -42,7 +43,7 @@ struct Args {
   int mcs = 5;
   uint64_t bitrate_bps = 8'000'000;
   int time_s = 0;  // 0 = until SIGINT
-  FecParams fec;   // k/overhead/symbol_size/bpb/interleave defaults
+  FecParams fec;   // overhead/symbol_size/window/bpb defaults
   int size = 0;    // 0 = max_packet_size for the symbol size
   bool ldpc = false, stbc = false;
   std::string pwr_mode = "override";
@@ -61,7 +62,7 @@ struct Args {
 void usage(const char* argv0) {
   std::fprintf(stderr,
     "usage: %s --channel N --mcs 0..7 --bitrate 8M [--time S]\n"
-    "  [-k 8] [--overhead 0.5] [--symbol-size 64] [--bpb 16] [--interleave 0]\n"
+    "  [--overhead 0.5] [--symbol-size 64] [--window 128] [--bpb 16]\n"
     "  [--size B] [--ldpc] [--stbc]\n"
     "  [--pwr-mode override|none|offset] [--pwr 0..63] [--pwr-offset-qdb Q]\n"
     "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n", argv0);
@@ -83,7 +84,6 @@ bool parse_args(int argc, char** argv, Args* a) {
       if (a->bitrate_bps == 0) return false;
     }
     else if (k == "--time") { if (!next(&a->time_s)) return false; }
-    else if (k == "-k") { if (!next(&a->fec.k)) return false; }
     else if (k == "--overhead") {
       if (i + 1 >= argc) return false;
       a->fec.overhead = std::strtod(argv[++i], nullptr);
@@ -91,7 +91,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     }
     else if (k == "--symbol-size") { if (!next(&a->fec.symbol_size)) return false; }
     else if (k == "--bpb") { if (!next(&a->fec.bpb)) return false; }
-    else if (k == "--interleave") { if (!next(&a->fec.interleave)) return false; }
+    else if (k == "--window") { if (!next(&a->fec.window)) return false; }
     else if (k == "--size") { if (!next(&a->size)) return false; }
     else if (k == "--ldpc") { a->ldpc = true; }
     else if (k == "--stbc") { a->stbc = true; }
@@ -140,18 +140,19 @@ uint64_t mono_us() {
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-// Estimated over-the-air bytes per app payload byte at this geometry: RS
-// expansion × (per-symbol wire cost + per-body overhead share) over app
+// Estimated over-the-air bytes per app payload byte at this geometry:
+// sliding-window expansion (1 repair symbol per source symbol per unit of
+// overhead) × (per-symbol wire cost + per-body overhead share) over app
 // bytes per symbol. Banner-grade math, not an airtime model.
 double air_factor(const FecParams& f, int app_size, size_t radiotap_len) {
-  const double n_over_k = static_cast<double>(f.rs().n()) / f.k;
+  const double expansion = 1.0 + f.overhead;
   const double sym_wire = 2.0 + f.envelope_len();
   const double per_body =
       7.0 + kDot11HeaderLen + static_cast<double>(radiotap_len) + 4.0;  // +FCS
-  const double body_share = per_body / f.effective_bpb();
+  const double body_share = per_body / f.bpb;
   const double app_per_symbol = static_cast<double>(f.symbol_size) *
       (static_cast<double>(app_size) / (app_size + 2.0));
-  return n_over_k * (sym_wire + body_share) / app_per_symbol;
+  return expansion * (sym_wire + body_share) / app_per_symbol;
 }
 
 }  // namespace
@@ -176,13 +177,12 @@ int main(int argc, char** argv) {
   std::fprintf(stderr,
                "linkbench-tx: ch %d mcs %d %s%sbitrate %.2f Mbps app "
                "(~%.2f Mbps air, factor %.2f)\n"
-               "  fec k=%d n=%d symbol=%d bpb=%d interleave=%d size=%d "
+               "  fec window=%d overhead=%.2f symbol=%d bpb=%d size=%d "
                "pwr-mode=%s pwr=%d gf256=%s\n",
                a.channel, a.mcs, a.ldpc ? "ldpc " : "", a.stbc ? "stbc " : "",
                a.bitrate_bps / 1e6, a.bitrate_bps / 1e6 * afac, afac,
-               a.fec.k, a.fec.rs().n(), a.fec.symbol_size, a.fec.bpb,
-               a.fec.interleave > 0 ? a.fec.effective_bpb() : 0, a.size,
-               a.pwr_mode.c_str(), a.pwr,
+               a.fec.window, a.fec.overhead, a.fec.symbol_size, a.fec.bpb,
+               a.size, a.pwr_mode.c_str(), a.pwr,
                mabur::gf::backend());
   std::fprintf(stderr, "  tx-threads %d (URBs in flight)\n", a.tx_threads);
 
@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
     uint32_t app_seq = 0;
     uint16_t mac_seq = 0;
     uint64_t app_bytes = 0, air_bytes = 0;
-    uint64_t iv_app = 0, iv_air = 0, iv_blk0 = 0;
+    uint64_t iv_app = 0, iv_air = 0, iv_src0 = 0;
     uint64_t iv_frm0 = 0, iv_fail0 = 0;
     const uint64_t t0 = mono_us();
     uint64_t next_stats = t0 + 1'000'000;
@@ -338,21 +338,21 @@ int main(int argc, char** argv) {
       if (now >= next_stats) {
         next_stats += 1'000'000;
         const uint64_t t = (now - t0) / 1'000'000;
-        const uint64_t blk = pipe.blocks_encoded();
+        const uint64_t src = pipe.sources_sent();
         const uint64_t frm = frames_ok.load(), fail = frames_fail.load();
         std::fprintf(stderr,
-                     "[%3llus] app %.2fM air %.2fM | frm %llu fail %llu | blk %llu%s\n",
+                     "[%3llus] app %.2fM air %.2fM | frm %llu fail %llu | src %llu%s\n",
                      static_cast<unsigned long long>(t), iv_app * 8.0 / 1e6,
                      iv_air * 8.0 / 1e6,
                      static_cast<unsigned long long>(frm - iv_frm0),
                      static_cast<unsigned long long>(fail - iv_fail0),
-                     static_cast<unsigned long long>(blk - iv_blk0),
+                     static_cast<unsigned long long>(src - iv_src0),
                      iv_app * 8.0 < a.bitrate_bps * 0.95 ? "  ** under target **"
                                                          : "");
         iv_app = iv_air = 0;
         iv_frm0 = frm;
         iv_fail0 = fail;
-        iv_blk0 = blk;
+        iv_src0 = src;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -370,13 +370,15 @@ int main(int argc, char** argv) {
     const double dur = (mono_us() - t0) / 1e6;
     std::fprintf(stderr,
                  "done: %.1fs, %llu pkts (%.2f Mbps app), %llu frames "
-                 "(%.2f Mbps air), %llu send-fail, %llu blocks, %zu oversize\n",
+                 "(%.2f Mbps air), %llu send-fail, %llu sources %llu repairs, "
+                 "%zu oversize\n",
                  dur, static_cast<unsigned long long>(app_seq),
                  app_bytes * 8.0 / 1e6 / dur,
                  static_cast<unsigned long long>(frames_ok),
                  air_bytes * 8.0 / 1e6 / dur,
                  static_cast<unsigned long long>(frames_fail),
-                 static_cast<unsigned long long>(pipe.blocks_encoded()),
+                 static_cast<unsigned long long>(pipe.sources_sent()),
+                 static_cast<unsigned long long>(pipe.repairs_sent()),
                  pipe.oversize_drops());
     g_devourer_should_stop = true;
   });

@@ -1,6 +1,6 @@
 #pragma once
 // RX side of the bench: SBI bodies (from RadioFrontend's BodyQueue) →
-// stream filter → sbi_unpack → RsDecoder → bench-packet verification, with
+// stream filter → sbi_unpack → SwDecoder → bench-packet verification, with
 // cumulative counters snapshotted once a second by rx_main. Header-only and
 // devourer-free so the host e2e test drives it directly.
 #include <cstdint>
@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "bench_wire.h"
-#include "mabur/rs_decoder.h"
 #include "mabur/sbi.h"
+#include "mabur/sw_decoder.h"
 #include "tx_pipeline.h"  // FecParams
 
 namespace linkbench {
@@ -32,9 +32,10 @@ struct RxSnapshot {
                               // not counted as loss)
   uint64_t sub_blocks = 0;    // SBI sub-blocks scanned
   uint64_t sub_crc_fail = 0;  // ...of which CRC16-failed (erasures)
-  uint64_t blocks_decoded = 0;
-  uint64_t blocks_unrec = 0;
-  uint64_t sym_badcfg = 0;    // k/symbol_size mismatch vs TX
+  uint64_t syms_delivered = 0;  // source symbols delivered as-is
+  uint64_t syms_recovered = 0;  // symbols solved from repairs
+  uint64_t syms_abandoned = 0;  // lost to the seq horizon, never recovered
+  uint64_t sym_badcfg = 0;    // symbol_size/window mismatch vs TX
   uint64_t pkts = 0;          // bench packets recovered post-FEC
   uint64_t pkts_expected = 0; // max_seq - first_seq + 1 (0 until first pkt)
   uint64_t pattern_bad = 0;   // decoded but fill mismatch (decode bug!)
@@ -55,8 +56,9 @@ inline RxSnapshot snapshot_delta(const RxSnapshot& n, const RxSnapshot& o) {
   d.mac_lost = n.mac_lost >= o.mac_lost ? n.mac_lost - o.mac_lost : 0;
   d.sub_blocks = n.sub_blocks - o.sub_blocks;
   d.sub_crc_fail = n.sub_crc_fail - o.sub_crc_fail;
-  d.blocks_decoded = n.blocks_decoded - o.blocks_decoded;
-  d.blocks_unrec = n.blocks_unrec - o.blocks_unrec;
+  d.syms_delivered = n.syms_delivered - o.syms_delivered;
+  d.syms_recovered = n.syms_recovered - o.syms_recovered;
+  d.syms_abandoned = n.syms_abandoned - o.syms_abandoned;
   d.sym_badcfg = n.sym_badcfg - o.sym_badcfg;
   d.pkts = n.pkts - o.pkts;
   d.pkts_expected = n.pkts_expected - o.pkts_expected;
@@ -72,7 +74,7 @@ inline RxSnapshot snapshot_delta(const RxSnapshot& n, const RxSnapshot& o) {
 
 class RxPipeline {
  public:
-  explicit RxPipeline(const FecParams& p) : p_(p), dec_(p.rs()) {}
+  explicit RxPipeline(const FecParams& p) : p_(p), dec_(p.sw()) {}
 
   void on_body(const uint8_t* body, size_t len, uint16_t mac_seq, bool crc_ok,
                const uint8_t rssi[2], const int8_t snr[2], uint64_t now_ms) {
@@ -118,15 +120,17 @@ class RxPipeline {
         on_app_packet(pkt);
   }
 
-  // Age out stuck blocks (undecoded ones count as unrecoverable). 300 ms is
-  // generous at bench body rates; now_ms must be the same monotonic clock
-  // passed to on_body (the GS stale-clock lesson, commit 1e6ece3).
-  void expire(uint64_t now_ms) { dec_.expire_blocks_older_than(300, now_ms); }
+  // Drop stuck repair rows (rows it drops are NOT counted abandoned — the
+  // seq horizon owns loss accounting; see sw_decoder.h). 300 ms is generous
+  // at bench body rates; now_ms must be the same monotonic clock passed to
+  // on_body (the GS stale-clock lesson, commit 1e6ece3).
+  void expire(uint64_t now_ms) { dec_.expire_rows_older_than(300, now_ms); }
 
   RxSnapshot snapshot() const {
     RxSnapshot s = c_;
-    s.blocks_decoded = dec_.blocks_decoded();
-    s.blocks_unrec = dec_.blocks_unrecoverable();
+    s.syms_delivered = dec_.syms_delivered();
+    s.syms_recovered = dec_.syms_recovered();
+    s.syms_abandoned = dec_.syms_abandoned();
     s.sym_badcfg = dec_.symbols_dropped_bad_cfg();
     if (have_mac_seq_) {
       const uint64_t expected = mac_advance_ + 1;
@@ -154,7 +158,7 @@ class RxPipeline {
   }
 
   FecParams p_;
-  mabur::RsDecoder dec_;
+  mabur::SwDecoder dec_;
   RxSnapshot c_;
   uint16_t max_mac_seq_ = 0;
   uint64_t mac_advance_ = 0;
@@ -183,12 +187,12 @@ inline std::string format_line(uint64_t t_sec, const RxSnapshot& d) {
   char buf[256];
   std::snprintf(buf, sizeof buf,
                 "[%3llus] air %.2fM good %.2fM | frm %llu loss %.1f%% | "
-                "blk %llu unrec %llu | pkt %llu loss %.1f%% | "
+                "rec %llu abn %llu | pkt %llu loss %.1f%% | "
                 "rssi %.0f/%.0f snr %.0f/%.0f",
                 static_cast<unsigned long long>(t_sec), air_mbps, good_mbps,
                 static_cast<unsigned long long>(d.frames), frm_loss,
-                static_cast<unsigned long long>(d.blocks_decoded),
-                static_cast<unsigned long long>(d.blocks_unrec),
+                static_cast<unsigned long long>(d.syms_recovered),
+                static_cast<unsigned long long>(d.syms_abandoned),
                 static_cast<unsigned long long>(d.pkts), pkt_loss,
                 d.rssi_sum[0] / n - 110.0, d.rssi_sum[1] / n - 110.0,
                 d.snr_sum[0] / n, d.snr_sum[1] / n);
@@ -202,7 +206,7 @@ inline std::string format_json(uint64_t t_sec, const RxSnapshot& d) {
       buf, sizeof buf,
       "{\"t\":%llu,\"air_bytes\":%llu,\"good_bytes\":%llu,\"frames\":%llu,"
       "\"crc_bad\":%llu,\"mac_lost\":%llu,\"sub_blocks\":%llu,"
-      "\"sub_crc_fail\":%llu,\"blocks_decoded\":%llu,\"blocks_unrec\":%llu,"
+      "\"sub_crc_fail\":%llu,\"syms_recovered\":%llu,\"syms_abandoned\":%llu,"
       "\"sym_badcfg\":%llu,\"pkts\":%llu,\"pkts_expected\":%llu,"
       "\"pattern_bad\":%llu,\"rssi\":[%.1f,%.1f],\"snr\":[%.1f,%.1f]}",
       static_cast<unsigned long long>(t_sec),
@@ -213,8 +217,8 @@ inline std::string format_json(uint64_t t_sec, const RxSnapshot& d) {
       static_cast<unsigned long long>(d.mac_lost),
       static_cast<unsigned long long>(d.sub_blocks),
       static_cast<unsigned long long>(d.sub_crc_fail),
-      static_cast<unsigned long long>(d.blocks_decoded),
-      static_cast<unsigned long long>(d.blocks_unrec),
+      static_cast<unsigned long long>(d.syms_recovered),
+      static_cast<unsigned long long>(d.syms_abandoned),
       static_cast<unsigned long long>(d.sym_badcfg),
       static_cast<unsigned long long>(d.pkts),
       static_cast<unsigned long long>(d.pkts_expected),

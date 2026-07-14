@@ -4,56 +4,97 @@
 #include "mabur/sbi.h"
 using namespace linkbench;
 
-// One RS block completes after 9 packets of max size (one packet per symbol).
-// RsEncoder seals a symbol lazily when the next packet doesn't fit, so the
-// 9th packet completes the 8-symbol block. n envelopes then need n/bpb bodies
-// (bpb 12 = n → exactly one).
-TEST(txpipe_emits_one_body_per_block_at_bpb_n) {
-  FecParams p;  // k=8 ov=0.5 ss=64 → n=12
-  p.bpb = 12;
+// SwEncoder seals a symbol LAZILY when the next packet doesn't fit — the
+// Nth max-size packet doesn't complete a symbol until the (N+1)th packet
+// arrives and finds no room. So N packets of max size yield N-1 source
+// envelopes; the Nth stays buffered in current_symbol_ until flush() (or the
+// next packet) seals it (common/src/sw_encoder.cpp add_packet/seal_current).
+TEST(txpipe_lazy_seal_yields_n_minus_1_sources) {
+  FecParams p;  // overhead=0.5 symbol_size=64 window=128 → max_packet_size 62
+  p.overhead = 0.0;  // isolate source counting from credited repairs
   TxPipeline tx(p);
   std::vector<std::vector<uint8_t>> out;
-  for (uint32_t s = 0; s < 9; ++s) {
+  const uint32_t n = 9;
+  for (uint32_t s = 0; s < n; ++s) {
+    auto pkt = build_bench_packet(s, 62);
+    tx.add_packet(pkt.data(), pkt.size(), out);
+  }
+  CHECK(tx.sources_sent() == n - 1);
+  CHECK(tx.repairs_sent() == 0);
+}
+
+// flush() seals whatever partial symbol is pending (the final source) and,
+// since a seal happened since the last repair, emits exactly one tail
+// repair — even at overhead 0 (SwEncoder::flush: tail_repair_pending_ is
+// set by every seal_current() and cleared only by an actual repair).
+TEST(txpipe_flush_yields_final_source_and_tail_repair) {
+  FecParams p;
+  p.overhead = 0.0;
+  TxPipeline tx(p);
+  std::vector<std::vector<uint8_t>> out;
+  const uint32_t n = 9;
+  for (uint32_t s = 0; s < n; ++s) {
+    auto pkt = build_bench_packet(s, 62);
+    tx.add_packet(pkt.data(), pkt.size(), out);
+  }
+  CHECK(tx.sources_sent() == n - 1);
+  tx.flush(out);
+  CHECK(tx.sources_sent() == n);       // the 9th packet's symbol sealed
+  CHECK(tx.repairs_sent() == 1);       // one tail repair, despite overhead 0
+}
+
+// overhead 0.5 credits one repair every 2 seals: 8 seals -> exactly 4
+// repairs. Reach exactly 8 seals via flush() (9 packets: 8 lazy-sealed in
+// the loop, the 9th sealed by flush) — the 8th seal's credited repair
+// clears tail_repair_pending_, but flush() itself performs a 9th seal (the
+// pending packet), which re-arms the flag and adds its own tail repair. A
+// SECOND, idle flush() (nothing pending) must then add nothing more.
+TEST(txpipe_overhead_half_credits_repair_every_two_seals) {
+  FecParams p;
+  CHECK(p.overhead == 0.5);
+  TxPipeline tx(p);
+  std::vector<std::vector<uint8_t>> out;
+  // 9 packets of max size -> 8 seals (lazy seal: Nth packet seals symbol
+  // N-1), leaving the 9th packet's symbol pending.
+  const uint32_t n = 9;
+  for (uint32_t s = 0; s < n; ++s) {
+    auto pkt = build_bench_packet(s, 62);
+    tx.add_packet(pkt.data(), pkt.size(), out);
+  }
+  CHECK(tx.sources_sent() == 8);
+  CHECK(tx.repairs_sent() == 4);
+  tx.flush(out);
+  CHECK(tx.sources_sent() == 9);       // flush sealed the 9th packet's symbol
+  CHECK(tx.repairs_sent() == 5);       // flush's own tail repair for that seal
+  tx.flush(out);                       // idle: nothing pending, no new seal
+  CHECK(tx.sources_sent() == 9);
+  CHECK(tx.repairs_sent() == 5);       // tail_repair_pending_ stays cleared
+}
+
+// Bodies form once bpb envelopes accumulate (SbiPacker), independent of the
+// source/repair split — a run producing bpb-worth of envelopes yields
+// exactly one body.
+TEST(txpipe_body_forms_when_bpb_envelopes_accumulate) {
+  FecParams p;
+  p.bpb = 12;
+  p.overhead = 0.0;  // envelope count == source count, easy to hit bpb exactly
+  TxPipeline tx(p);
+  std::vector<std::vector<uint8_t>> out;
+  // 13 packets -> 12 sources (lazy seal), landing exactly on bpb=12.
+  for (uint32_t s = 0; s < 13; ++s) {
     auto pkt = build_bench_packet(s, 62);
     tx.add_packet(pkt.data(), pkt.size(), out);
   }
   REQUIRE(out.size() == 1);
-  CHECK(tx.blocks_encoded() == 1);
-  // 7-byte SBI header + 12 × (2-byte crc + 75-byte envelope)
-  CHECK(out[0].size() == 7u + 12u * (2u + 75u));
+  CHECK(tx.sources_sent() == 12);
+  // 7-byte SBI header + 12 × (2-byte crc + envelope_len bytes)
+  CHECK(out[0].size() == 7u + 12u * (2u + static_cast<size_t>(p.envelope_len())));
   CHECK(mabur::sbi_peek_stream_id(out[0].data(), out[0].size()) == kBenchStreamId);
 }
 
-// With interleave depth 12 the packer holds bodies back until 12 blocks are
-// pending, then emits 12 bodies each carrying one envelope from each block.
-// 89 packets encode 11 blocks (packet 88 completes block 11, with 0-87 sealing
-// blocks 0-10). Packet 96 completes block 12.
-TEST(txpipe_interleave_defers_then_emits_rounds) {
-  FecParams p;
-  p.bpb = 12;
-  p.interleave = 12;
-  TxPipeline tx(p);
-  std::vector<std::vector<uint8_t>> out;
-  for (uint32_t s = 0; s < 89; ++s) {  // 89 packets = 11 full blocks: below depth
-    auto pkt = build_bench_packet(s, 62);
-    tx.add_packet(pkt.data(), pkt.size(), out);
-  }
-  CHECK(out.empty());
-  for (uint32_t s = 89; s < 97; ++s) {  // 8 more packets complete the 12th block
-    auto pkt = build_bench_packet(s, 62);
-    tx.add_packet(pkt.data(), pkt.size(), out);
-  }
-  CHECK(out.size() == 12);
-}
-
-// flush() drains a partial block and (with interleave) sub-depth rounds as
-// short bodies — nothing may remain buffered. 20 packets seal 19 symbols: 2
-// full blocks (16 symbols) + partial 3rd block (3 sealed). flush() pads to k=8
-// and encodes the partial block.
 TEST(txpipe_flush_drains_everything) {
   FecParams p;
   p.bpb = 12;
-  p.interleave = 12;
   TxPipeline tx(p);
   std::vector<std::vector<uint8_t>> out;
   for (uint32_t s = 0; s < 20; ++s) {
@@ -64,11 +105,11 @@ TEST(txpipe_flush_drains_everything) {
   REQUIRE(!out.empty());
   size_t envs = 0;
   for (auto& b : out) {
-    auto r = mabur::sbi_unpack(b.data(), b.size(), 75);
+    auto r = mabur::sbi_unpack(b.data(), b.size(), p.envelope_len());
     CHECK(r.header_ok);
     envs += r.survivors.size();
   }
-  CHECK(envs == 3u * 12u);  // 3 blocks (last one padded) × n envelopes
+  CHECK(envs == tx.sources_sent() + tx.repairs_sent());
 }
 
 TEST(txpipe_oversize_packet_counted_not_crashed) {

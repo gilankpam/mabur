@@ -18,12 +18,13 @@ TEST(rxpipe_clean_pass_counts_everything) {
   TxPipeline tx(p);
   RxPipeline rx(p);
   std::vector<std::vector<uint8_t>> bodies;
-  const uint32_t npkt = 8 * 50;  // 50 full blocks
+  const uint32_t npkt = 8 * 50;
   for (uint32_t s = 0; s < npkt; ++s) {
     auto pkt = build_bench_packet(s, 62);
     tx.add_packet(pkt.data(), pkt.size(), bodies);
   }
-  // RsEncoder seals symbols lazily — flush() completes the final block (see rs_encoder.cpp add_packet)
+  // SwEncoder seals symbols lazily — flush() seals the final one and emits
+  // its tail repair (see tx_pipeline.h / sw_encoder.cpp).
   tx.flush(bodies);
   const uint8_t rssi[2] = {50, 52};
   const int8_t snr[2] = {25, 26};
@@ -34,8 +35,9 @@ TEST(rxpipe_clean_pass_counts_everything) {
   CHECK(s.frames == bodies.size());
   CHECK(s.crc_bad == 0);
   CHECK(s.mac_lost == 0);
-  CHECK(s.blocks_decoded == 50);
-  CHECK(s.blocks_unrec == 0);
+  CHECK(s.syms_delivered == tx.sources_sent());
+  CHECK(s.syms_recovered == 0);  // clean channel: nothing needed repairing
+  CHECK(s.syms_abandoned == 0);
   CHECK(s.pkts == npkt);
   CHECK(s.pkts_expected == npkt);
   CHECK(s.pattern_bad == 0);
@@ -117,27 +119,37 @@ TEST(rxpipe_non_bench_stream_ignored) {
   CHECK(rx.snapshot().frames == 0);
 }
 
+// A hole (one dropped body) whose seqs never get recovered is only counted
+// once the seq horizon (default 4*window) advances past it. With the bench
+// default window=128 that needs >=512 symbols of forward progress, which is
+// slow to simulate — use a small window here so the horizon test stays
+// fast (SwDecoder(cfg, seq_horizon=0) == auto 4*window; sw_decoder.h).
 TEST(rxpipe_expire_counts_unrecoverable) {
   FecParams p;
-  p.bpb = 12;
+  p.window = 8;      // horizon = 4*8 = 32 symbols
+  p.overhead = 0.0;   // no repairs: the dropped body's symbols are unrecoverable
+  p.bpb = 1;          // one envelope per body so dropping one body drops one symbol
   TxPipeline tx(p);
   RxPipeline rx(p);
   std::vector<std::vector<uint8_t>> bodies;
-  for (uint32_t s = 0; s < 8; ++s) {  // one block → one body at bpb=12
+  const uint32_t npkt = 40;  // well past 32 symbols of horizon after the hole
+  for (uint32_t s = 0; s < npkt; ++s) {
     auto pkt = build_bench_packet(s, 62);
     tx.add_packet(pkt.data(), pkt.size(), bodies);
   }
   tx.flush(bodies);
-  REQUIRE(bodies.size() == 1);
-  // Truncate the body so only 3 sub-blocks survive (< k=8): undecodable.
-  auto& b = bodies[0];
+  REQUIRE(bodies.size() >= 33);
   const uint8_t rssi[2] = {50, 50};
   const int8_t snr[2] = {20, 20};
-  rx.on_body(b.data(), 7 + 3 * (2 + 75), 0, true, rssi, snr, 1000);
-  rx.expire(2000);  // > 300 ms age
+  uint16_t mseq = 0;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    if (i == 5) continue;  // drop one body/symbol — the hole
+    rx.on_body(bodies[i].data(), bodies[i].size(), mseq++, true, rssi, snr,
+               1000 + i);
+  }
   auto s = rx.snapshot();
-  CHECK(s.blocks_unrec == 1);
-  CHECK(s.pkts == 0);
+  CHECK(s.syms_abandoned > 0);
+  CHECK(s.pkts < npkt);
 }
 
 TEST(rxpipe_snapshot_delta_subtracts) {
@@ -154,7 +166,7 @@ TEST(rxpipe_snapshot_delta_subtracts) {
 TEST(format_line_and_json_render) {
   RxSnapshot d;
   d.frames = 1352; d.air_bytes = 1227500; d.mac_lost = 29;
-  d.blocks_decoded = 1733; d.blocks_unrec = 2;
+  d.syms_recovered = 1733; d.syms_abandoned = 2;
   d.pkts = 15987; d.pkts_expected = 16132; d.good_bytes = 991194;
   d.rssi_sum[0] = 1352 * 52.0; d.rssi_sum[1] = 1352 * 49.0;
   d.snr_sum[0] = 1352 * 28.0; d.snr_sum[1] = 1352 * 26.0;
@@ -163,13 +175,15 @@ TEST(format_line_and_json_render) {
   CHECK(line.find("air 9.82M") != std::string::npos);
   CHECK(line.find("good 7.93M") != std::string::npos);
   CHECK(line.find("frm 1352") != std::string::npos);
-  CHECK(line.find("unrec 2") != std::string::npos);
+  CHECK(line.find("rec 1733") != std::string::npos);
+  CHECK(line.find("abn 2") != std::string::npos);
   CHECK(line.find("rssi -58/-61") != std::string::npos);
   CHECK(line.find("snr 28/26") != std::string::npos);
   auto js = format_json(5, d);
   CHECK(js.find("\"t\":5") != std::string::npos);
   CHECK(js.find("\"frames\":1352") != std::string::npos);
-  CHECK(js.find("\"blocks_unrec\":2") != std::string::npos);
+  CHECK(js.find("\"syms_recovered\":1733") != std::string::npos);
+  CHECK(js.find("\"syms_abandoned\":2") != std::string::npos);
 }
 
 MTEST_MAIN
