@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -7,6 +8,7 @@
 #include "mabur/sw_encoder.h"
 #include "mabur/sw_wire.h"
 #include "mtest.h"
+#include "vectors.h"
 
 using namespace mabur;
 
@@ -173,6 +175,30 @@ TEST(deadline_expires_stuck_rows) {
   CHECK(d.rows_in_flight() == 1);
   CHECK(d.expire_rows_older_than(200, 1500) == 1);
   CHECK(d.rows_in_flight() == 0);
+}
+
+TEST(vectors_decode_scenarios) {
+  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/sw.json");
+  for (const auto& c : j["cases"]) {
+    std::vector<std::vector<uint8_t>> envs;
+    for (const auto& s : c["stream"]) envs.push_back(mtest::unhex(s.get<std::string>()));
+    for (const auto& s : c["flush"]) envs.push_back(mtest::unhex(s.get<std::string>()));
+    for (const auto& d : c["decode"]) {
+      std::set<size_t> drop;
+      for (const auto& x : d["drop"]) drop.insert(x.get<size_t>());
+      SwDecoder dec(SwConfig{c["symbol_size"], c["window"], c["overhead"]});
+      std::vector<std::string> got;
+      for (size_t i = 0; i < envs.size(); ++i) {
+        if (drop.count(i)) continue;
+        for (auto& p : dec.add_symbol(envs[i].data(), envs[i].size(), 1000))
+          got.push_back(mtest::hex(p));
+      }
+      std::sort(got.begin(), got.end());
+      size_t k = 0;
+      for (const auto& s : d["recovered_sorted"]) CHECK(got.at(k++) == s.get<std::string>());
+      CHECK(k == got.size());
+    }
+  }
 }
 
 TEST(bad_cfg_and_garbage_counted_dropped) {

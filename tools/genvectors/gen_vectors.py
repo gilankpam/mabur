@@ -45,6 +45,39 @@ for ov in (0.25, 0.50, 0.75, 1.00):
                      "packets": pkts, "stream": stream_envs, "flush": flush_envs})
 dump("rs.json", {"cases": rs_cases})
 
+# --- sliding-window fec (mabur-native; reference = tools/pyref/sw_fec.py) --
+sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
+import sw_fec  # noqa: E402
+
+SW_PKT_SIZES = [10, 50, 62, 1, 30, 62, 44, 62, 20, 62, 62, 5, 61, 33, 62, 62]
+sw_cases = []
+for window, ov in ((8, 1.0), (16, 0.5), (128, 0.25)):
+    enc = sw_fec.SwEncoder(symbol_size=64, window=window, overhead=ov)
+    stream, pkts = [], []
+    for i, n in enumerate(SW_PKT_SIZES):
+        p = pat(n, i)
+        pkts.append(hx(p))
+        stream += [hx(e) for e in enc.add_packet(p)]
+    flush = [hx(e) for e in enc.flush()]
+    envs = [bytes.fromhex(h) for h in stream + flush]
+    src_idx = [i for i, e in enumerate(envs) if not (e[2] & 1)]
+    # Decode scenarios: clean, drop one source, drop two consecutive sources.
+    scen = [[], [src_idx[2]], src_idx[3:5]]
+    decode = []
+    for drop in scen:
+        dec = sw_fec.SwDecoder(symbol_size=64)
+        got = []
+        for i, e in enumerate(envs):
+            if i in drop:
+                continue
+            got += dec.add_symbol(e)
+        decode.append({"drop": sorted(drop),
+                       "recovered_sorted": sorted(hx(g) for g in got)})
+    sw_cases.append({"symbol_size": 64, "window": window, "overhead": ov,
+                     "packets": pkts, "stream": stream, "flush": flush,
+                     "decode": decode})
+dump("sw.json", {"cases": sw_cases})
+
 # --- sbi ---------------------------------------------------------------
 pk = fec_subblock.SubBlockPacker(75, 4, stream_id=2)
 sbi_stream, envs = [], [pat(75, i + 40) for i in range(9)]

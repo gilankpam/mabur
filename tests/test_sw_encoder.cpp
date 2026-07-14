@@ -4,6 +4,7 @@
 #include "mabur/sw_encoder.h"
 #include "mabur/sw_wire.h"
 #include "mtest.h"
+#include "vectors.h"
 
 using namespace mabur;
 
@@ -110,6 +111,25 @@ TEST(oversize_packet_dropped_counted) {
   auto p = pat(63, 0);               // > max_packet_size() == 62
   CHECK(e.add_packet(p.data(), p.size()).empty());
   CHECK(e.oversize_drops() == 1);
+}
+
+TEST(vectors_byte_exact) {
+  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/sw.json");
+  for (const auto& c : j["cases"]) {
+    SwEncoder e(SwConfig{c["symbol_size"], c["window"], c["overhead"]});
+    std::vector<std::string> got;
+    for (const auto& ph : c["packets"]) {
+      auto p = mtest::unhex(ph.get<std::string>());
+      for (auto& env : e.add_packet(p.data(), p.size())) got.push_back(mtest::hex(env));
+    }
+    size_t i = 0;
+    for (const auto& s : c["stream"]) CHECK(got.at(i++) == s.get<std::string>());
+    CHECK(i == got.size());
+    std::vector<std::string> fl;
+    for (auto& env : e.flush()) fl.push_back(mtest::hex(env));
+    CHECK(fl.size() == c["flush"].size());
+    for (size_t k = 0; k < fl.size(); ++k) CHECK(fl[k] == c["flush"][k].get<std::string>());
+  }
 }
 
 TEST(packets_never_span_symbols) {
