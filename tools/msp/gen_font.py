@@ -58,8 +58,10 @@ def main():
     gw, gh = W // pages, H // chars
     n = pages * chars
     words = []
-    for ch in range(chars):
-        for page in range(pages):
+    # Emit in linear index order g = char | (page<<8): page OUTER, char INNER,
+    # so glyph g lands at pixels[g*gw*gh] (matches msp_font.h's contract).
+    for page in range(pages):
+        for ch in range(chars):
             for y in range(gh):
                 for x in range(gw):
                     words.append(premult_argb(*rgba(index(page*gw + x, ch*gh + y))))

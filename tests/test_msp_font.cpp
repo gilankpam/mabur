@@ -19,10 +19,13 @@ static int opaque_px(int gi) {
 }
 
 TEST(known_glyphs_present) {
-  // Char '1' (0x31) and 'A' (0x41) on page 0 have ink; the null char is empty.
-  CHECK(opaque_px(0x31) > 0);
-  CHECK(opaque_px(0x41) > 0);
-  CHECK(opaque_px(0x00) == 0);
+  // EXACT opaque-pixel counts (measured from font_btfl_hd.png) pin the
+  // char|(page<<8) index mapping — a wrong glyph-table order changes these.
+  CHECK(opaque_px(0x31) == 91);             // '1' page 0
+  CHECK(opaque_px(0x41) == 169);            // 'A' page 0
+  CHECK(opaque_px(0x41 | (1 << 8)) == 169); // 'A' page 1 (locks the page bit)
+  CHECK(opaque_px(0x20) == 0);              // space page 0 blank
+  CHECK(opaque_px(0x00) == 0);              // null page 0 blank
 }
 
 MTEST_MAIN;
