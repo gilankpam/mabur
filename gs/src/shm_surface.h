@@ -33,6 +33,10 @@ class ShmSurface {
 
  private:
   void unmap_();
+  // width/height come from the producer-written region; reject one whose
+  // declared width*height*4 does not fit the actual mapping, so callers using
+  // data()/data_size() can never read/write past the mmap.
+  bool dims_ok_() const;
   std::string name_;
   void* map_ = nullptr;
   size_t map_size_ = 0;

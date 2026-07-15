@@ -12,6 +12,12 @@ void ShmSurface::unmap_() {
   region_ = nullptr;
 }
 
+bool ShmSurface::dims_ok_() const {
+  if (!region_ || region_->width == 0 || region_->height == 0) return false;
+  const size_t need = (size_t)region_->width * region_->height * 4;
+  return need <= map_size_ - sizeof(ShmRegion);
+}
+
 bool ShmSurface::acquire() {
   int fd = shm_open(name_.c_str(), O_RDWR, 0);
   if (fd < 0) return ok();  // not created yet: keep any existing map
@@ -25,7 +31,7 @@ bool ShmSurface::acquire() {
   // (a PixelPilot restart re-creates the region with a new inode).
   if (map_ && (size_t)st.st_size == map_size_ && (uint64_t)st.st_ino == ino_) {
     close(fd);
-    return region_->width > 0 && region_->height > 0;
+    return dims_ok_();
   }
   unmap_();
   void* m = mmap(nullptr, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -35,7 +41,8 @@ bool ShmSurface::acquire() {
   map_size_ = st.st_size;
   ino_ = st.st_ino;
   region_ = static_cast<ShmRegion*>(m);
-  return region_->width > 0 && region_->height > 0;
+  if (!dims_ok_()) { unmap_(); return false; }  // region lies about its size
+  return true;
 }
 
 }  // namespace maburgs

@@ -48,4 +48,22 @@ TEST(acquire_false_when_absent) {
   CHECK(s.ok() == false);
 }
 
+TEST(acquire_false_when_dims_exceed_mapping) {
+  const char* name = "mabur_test_shm_oob";
+  shm_unlink(name);
+  int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
+  REQUIRE(fd >= 0);
+  // Only room for the header + 1 px, but declare a 100x100 region.
+  size_t sz = sizeof(ShmRegion) + 4;
+  REQUIRE(ftruncate(fd, sz) == 0);
+  auto* r = static_cast<ShmRegion*>(mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+  REQUIRE(r != MAP_FAILED);
+  r->width = 100; r->height = 100;  // lies: 100*100*4 >> mapping
+  munmap(r, sz); close(fd);
+  ShmSurface s(name);
+  CHECK(s.acquire() == false);  // must reject, not accept an OOB region
+  CHECK(s.ok() == false);
+  shm_unlink(name);
+}
+
 MTEST_MAIN;
