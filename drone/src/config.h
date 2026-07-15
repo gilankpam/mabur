@@ -70,11 +70,22 @@ struct LinkCfg {
   int tick_ms = 100;
 };
 
+struct MspCfg {
+  bool enable = false;
+  std::string serial = "/dev/ttyS2";
+  int baud = 115200;
+  double update_rate_hz = 1.0;  // ceiling on forwarded snapshots
+  int symbol_size = 1312;       // one snapshot per symbol
+  int window = 16;
+  double overhead = 1.0;
+};
+
 struct Config {
   RadioCfg radio;
   FecCfg fec;
   WaybeamCfg waybeam;
   LinkCfg link;
+  MspCfg msp;
   std::string ring_name = "mabur";
   rc::FlagPolicy flags;
   std::array<int8_t, 4> power_offset_db = {0, 0, 0, 0};

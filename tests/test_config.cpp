@@ -297,4 +297,57 @@ TEST(fec_symbol_size_bounds) {
   }
 }
 
+TEST(msp_defaults_and_parse) {
+  // Defaults: disabled, ttyS2, 1 Hz.
+  {
+    auto path = write_temp_json("{}");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.msp.enable == false);
+    CHECK(cfg.msp.serial == "/dev/ttyS2");
+    CHECK(cfg.msp.baud == 115200);
+    CHECK(cfg.msp.update_rate_hz == 1.0);
+    CHECK(cfg.msp.symbol_size == 1312);
+    std::filesystem::remove(path);
+  }
+  // Explicit values.
+  {
+    auto path = write_temp_json(
+        R"({"msp":{"enable":true,"serial":"/dev/ttyS1","baud":230400,)"
+        R"("update_rate_hz":2.0,"symbol_size":1024,"window":32,"overhead":0.5}})");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.msp.enable == true);
+    CHECK(cfg.msp.serial == "/dev/ttyS1");
+    CHECK(cfg.msp.baud == 230400);
+    CHECK(cfg.msp.update_rate_hz == 2.0);
+    CHECK(cfg.msp.symbol_size == 1024);
+    CHECK(cfg.msp.window == 32);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(msp_rejects_bad_values) {
+  {
+    auto path = write_temp_json(R"({"msp":{"update_rate_hz":0}})");
+    bool threw = false;
+    try {
+      (void)load_config(path.string());
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK(threw == true);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_json(R"({"msp":{"nonsense":1}})");
+    bool threw = false;
+    try {
+      (void)load_config(path.string());
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK(threw == true);
+    std::filesystem::remove(path);
+  }
+}
+
 MTEST_MAIN

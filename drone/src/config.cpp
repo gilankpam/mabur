@@ -178,6 +178,25 @@ void parse_link(const json& j, LinkCfg& l) {
   if (l.vtx_id == 0) fail("link.vtx_id", "must be non-zero");
 }
 
+void parse_msp(const json& j, MspCfg& m) {
+  check_known_keys(j, {"enable", "serial", "baud", "update_rate_hz",
+                        "symbol_size", "window", "overhead"}, "msp");
+  assign_if_present(j, "enable", m.enable, "msp");
+  assign_if_present(j, "serial", m.serial, "msp");
+  assign_if_present(j, "baud", m.baud, "msp");
+  assign_if_present(j, "update_rate_hz", m.update_rate_hz, "msp");
+  assign_if_present(j, "symbol_size", m.symbol_size, "msp");
+  assign_if_present(j, "window", m.window, "msp");
+  assign_if_present(j, "overhead", m.overhead, "msp");
+
+  if (m.update_rate_hz <= 0) fail("msp.update_rate_hz", "must be > 0");
+  if (m.symbol_size < 16 || m.symbol_size > 2048)
+    fail("msp.symbol_size", "must be in [16,2048]");
+  if (m.window < 2 || m.window > 255) fail("msp.window", "must be in [2,255]");
+  if (m.overhead < 0.0 || m.overhead > 4.0) fail("msp.overhead", "must be in [0,4]");
+  if (m.baud <= 0) fail("msp.baud", "must be > 0");
+}
+
 void parse_flags(const json& j, rc::FlagPolicy& fp) {
   check_known_keys(j, {"crit_ldpc", "crit_stbc", "t0_ldpc", "t0_stbc"}, "flags");
   assign_if_present(j, "crit_ldpc", fp.crit_ldpc, "flags");
@@ -213,7 +232,7 @@ Config load_config(const std::string& path) {
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
   check_known_keys(j,
-                    {"radio", "fec", "waybeam", "link", "ring_name", "flags", "power_offset_db"},
+                    {"radio", "fec", "waybeam", "link", "msp", "ring_name", "flags", "power_offset_db"},
                     "");
 
   Config cfg;
@@ -221,6 +240,7 @@ Config load_config(const std::string& path) {
   if (j.contains("fec")) parse_fec(j.at("fec"), cfg.fec);
   if (j.contains("waybeam")) parse_waybeam(j.at("waybeam"), cfg.waybeam);
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
+  if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
   assign_if_present(j, "ring_name", cfg.ring_name, "");
   if (j.contains("flags")) parse_flags(j.at("flags"), cfg.flags);
   if (j.contains("power_offset_db")) {
