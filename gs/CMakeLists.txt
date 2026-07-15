@@ -20,9 +20,12 @@ target_include_directories(mabur_gs_core
 target_link_libraries(mabur_gs_core PUBLIC mabur_common)
 
 # shm_open/mmap need librt on glibc hosts; the musl aarch64 cross-build folds
-# it into libc and has no separate librt, so guard rather than hardcode -lrt.
+# it into libc and has no separate librt. NOT CMAKE_CROSSCOMPILING is required:
+# find_library otherwise resolves the HOST glibc librt.so and tries to
+# static-link that (wrong-arch, dynamic) into the musl binary, which fails
+# with "attempted static link of dynamic object".
 find_library(RT_LIB rt)
-if(RT_LIB)
+if(RT_LIB AND NOT CMAKE_CROSSCOMPILING)
   target_link_libraries(mabur_gs_core PUBLIC ${RT_LIB})
 endif()
 
