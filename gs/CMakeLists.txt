@@ -10,7 +10,8 @@ add_library(mabur_gs_core STATIC
   src/rendezvous.cpp
   src/vrx_controller.cpp
   src/tx_selector.cpp
-  src/msp_sink.cpp)
+  src/msp_sink.cpp
+  src/msp_font_btfl.cpp)
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
