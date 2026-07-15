@@ -27,6 +27,11 @@ inline constexpr int kMaxBodyBytes = 2900;
 constexpr uint16_t SBI_MAGIC = 0xF5B0;
 constexpr int SBI_HDR_LEN = 7;
 
+// Reserved SBI stream_id for the MSP DisplayPort OSD side-channel (video uses
+// 0..3). Bodies tagged with this id route to the GS MspSink, not the video
+// decoder.
+constexpr uint8_t kMspStreamId = 4;
+
 // Packs fixed-size FEC envelopes into SBI radio bodies, each sub-block
 // guarded by its own CRC16-CCITT so a corrupted body still yields its
 // surviving sub-blocks as usable symbols. Byte-exact port of
