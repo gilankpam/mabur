@@ -15,6 +15,8 @@
 #include "config.h"
 #include "frame_file_source.h"
 #include "mabur/rc_proto.h"
+#include "mabur/sbi.h"
+#include "msp_sink.h"
 #include "op_table.h"
 #include "radio_frontend.h"
 #include "rtp_reorder.h"
@@ -139,6 +141,20 @@ static int run_radio(const maburgs::Config& cfg) {
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
   });
 
+  std::unique_ptr<maburgs::UdpSink> msp_udp;
+  std::unique_ptr<maburgs::MspSink> msp_sink;
+  if (cfg.msp.enable) {
+    msp_udp = std::make_unique<maburgs::UdpSink>(cfg.msp.out_host, cfg.msp.out_port);
+    msp_sink = std::make_unique<maburgs::MspSink>(
+        cfg.msp.symbol_size, cfg.msp.window,
+        [&](const uint8_t* d, size_t n) { msp_udp->send(d, n); });
+    agg.set_msp_sink([&](const uint8_t* b, size_t n, uint64_t us) {
+      msp_sink->on_body(b, n, us / 1000);
+    });
+    std::fprintf(stderr, "maburgs: MSP OSD -> udp %s:%d\n",
+                 cfg.msp.out_host.c_str(), cfg.msp.out_port);
+  }
+
   maburgs::TxSelector sel(
       maburgs::TxSelectorCfg{cfg.radio.tx_card, 3.0, 2000, 1500}, n_cards);
 
@@ -166,8 +182,16 @@ static int run_radio(const maburgs::Config& cfg) {
     queue.drain(batch, 10);
     for (const auto& m : batch) {
       agg.on_rx_body(m);
+      // Exclude RC frames AND MSP frames (SBI stream_id == kMspStreamId) from
+      // the score window, mirroring Task 6's aggregator routing: MSP bodies
+      // carry their own independent 802.11 seq, and letting them through here
+      // would contaminate ScoreWindow::seq_gap_loss() with a gap sequence the
+      // video decoder never sees. This keeps MSP traffic invisible to the
+      // adaptive-link controller end-to-end (decoder residual + score window).
       if (m.crc_ok &&
-          mabur::rc::frame_type(m.body.data(), m.body.size()) < 0) {
+          mabur::rc::frame_type(m.body.data(), m.body.size()) < 0 &&
+          mabur::sbi_peek_stream_id(m.body.data(), m.body.size()) !=
+              mabur::kMspStreamId) {
         // Video frame meta -> score window (max-chain values, Python parity).
         const double rssi = static_cast<double>(std::max(m.rssi[0], m.rssi[1]));
         const double snr = static_cast<double>(std::max(m.snr[0], m.snr[1]));
@@ -214,6 +238,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // 1 Hz stats line / SIGUSR1 dump.
     if (g_dump.exchange(false) || now_ms_u - last_stats_ms >= 1000) {
       last_stats_ms = now_ms_u;
+      if (msp_sink) msp_sink->tick(now_ms_u);  // expire stale repair rows
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
                    "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f/agc%d "
