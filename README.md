@@ -115,6 +115,23 @@ PixelPilot composites over the video. One-way display only — see
 `docs/superpowers/specs/2026-07-15-msp-displayport-osd-design.md` for the
 drone-side-burn-in and GS→FC-menu future doors.
 
+### Direct PixelPilot render (no msposd)
+
+Set `msp.render = "shm"` on the GS (`maburgs.json`) to have `maburgs` render the
+OSD straight into PixelPilot's shared-memory surface — no msposd, no UDP hop.
+`maburgs` writes the region named `msp.shm.name` (default `"msp"`); PixelPilot
+must be configured to create + composite it. Add to `/etc/pixelpilot/osd.json`
+`widgets`:
+
+    { "type": "ExternalSurfaceWidget", "name": "msp", "x": 0, "y": 0 }
+
+(the `name` must equal `msp.shm.name`). Restart PixelPilot **via its service** —
+its `pixelpilot.sh` loop does not respawn on SIGTERM/SIGKILL, so `killall` stops
+the display. The OSD (betaflight HD font) is scaled to fill the canvas;
+`msp.shm.x_offset`/`y_offset` inset it if the display overscans. `msp.render =
+"udp"` (default) keeps the previous behavior (emit MSP to UDP for an external
+renderer).
+
 ## Benchmarking
 
 On-target and PC-side bench tooling (loss/recovery measurement against
