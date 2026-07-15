@@ -39,5 +39,14 @@
     "t0_ldpc": true,
     "t0_stbc": true
   },
-  "power_offset_db": [0, 0, 0, 0]
+  "power_offset_db": [0, 0, 0, 0],
+  "msp": {
+    "enable": false,
+    "serial": "/dev/ttyS2",
+    "baud": 115200,
+    "update_rate_hz": 1,
+    "symbol_size": 1312,
+    "window": 16,
+    "overhead": 1.0
+  }
 }

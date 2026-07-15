@@ -102,6 +102,19 @@ startup warning (`radio.width=N not supported in v1, using 20 MHz`) instead
 of silently doing something the config didn't ask for. 40/80 MHz tuning
 support is not implemented in v1.
 
+## MSP DisplayPort OSD (ground-side)
+
+Set `msp.enable=true` on the drone (`mabur.json`) and GS (`maburgs.json`);
+`msp.symbol_size`/`msp.window` must match on both ends. The drone taps the
+flight controller's MSP DisplayPort UART (`msp.serial`, default `/dev/ttyS2`)
+and forwards full-screen keyframe snapshots at `msp.update_rate_hz` (default
+1 Hz) as their own FEC-protected air stream. The GS re-emits the MSP bytes over
+UDP to `msp.out` (default `127.0.0.1:14560`); render them with msposd on the
+GS, e.g. `msposd 127.0.0.1:14560 --osd`, which draws to the shm surface
+PixelPilot composites over the video. One-way display only — see
+`docs/superpowers/specs/2026-07-15-msp-displayport-osd-design.md` for the
+drone-side-burn-in and GS→FC-menu future doors.
+
 ## Benchmarking
 
 On-target and PC-side bench tooling (loss/recovery measurement against

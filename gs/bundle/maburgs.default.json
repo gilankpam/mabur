@@ -16,5 +16,11 @@
     "beacon_keepalive_ms": 1000,
     "video_silence_ms": 3000
   },
-  "video_out": {"host": "127.0.0.1", "port": 5600}
+  "video_out": {"host": "127.0.0.1", "port": 5600},
+  "msp": {
+    "enable": false,
+    "out": { "host": "127.0.0.1", "port": 14560 },
+    "symbol_size": 1312,
+    "window": 16
+  }
 }
