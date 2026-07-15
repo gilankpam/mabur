@@ -32,6 +32,7 @@
 #include "mabur/msp_source.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
+#include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_serial.h"
 #include "radio_tx.h"
@@ -679,6 +680,11 @@ int run_real_mode(const Config& cfg) {
           dev_sink.send(frame.data(), frame.size());
         },
         rd());  // random initial_seq (SwEncoder restart-safety contract)
+      std::fprintf(stderr,
+          "maburd msp: enabled symbol_size=%d window=%d block_payload=%d update_rate_hz=%.2g serial=%s baud=%d\n",
+          cfg.msp.symbol_size, cfg.msp.window,
+          cfg.msp.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen),
+          cfg.msp.update_rate_hz, cfg.msp.serial.c_str(), cfg.msp.baud);
       MspSerial serial;
       uint8_t buf[512];
       while (!g_devourer_should_stop) {

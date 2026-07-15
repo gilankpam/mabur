@@ -25,6 +25,9 @@ void MspSource::on_serial_bytes(const uint8_t* p, size_t n, uint64_t now_ms) {
   for (auto& m : parser_.feed(p, n)) {
     if (!screen_.apply(m)) continue;  // not a completed screen
     double period_ms = 1000.0 / (cfg_.update_rate_hz > 0 ? cfg_.update_rate_hz : 1.0);
+    // Unsigned: assumes non-decreasing now_ms (real mode feeds monotonic
+    // now_steady_ms()); a clock regression wraps and forwards immediately
+    // (fail-open).
     if (!have_forwarded_ ||
         static_cast<double>(now_ms - last_forward_ms_) >= period_ms) {
       forward_snapshot(now_ms);

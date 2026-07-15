@@ -16,6 +16,7 @@
 #include "frame_file_source.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
+#include "mabur/sw_wire.h"
 #include "msp_sink.h"
 #include "op_table.h"
 #include "radio_frontend.h"
@@ -151,8 +152,10 @@ static int run_radio(const maburgs::Config& cfg) {
     agg.set_msp_sink([&](const uint8_t* b, size_t n, uint64_t us) {
       msp_sink->on_body(b, n, us / 1000);
     });
-    std::fprintf(stderr, "maburgs: MSP OSD -> udp %s:%d\n",
-                 cfg.msp.out_host.c_str(), cfg.msp.out_port);
+    std::fprintf(stderr,
+                 "maburgs: MSP OSD -> udp %s:%d symbol_size=%d window=%d block_payload=%d\n",
+                 cfg.msp.out_host.c_str(), cfg.msp.out_port, cfg.msp.symbol_size, cfg.msp.window,
+                 cfg.msp.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen));
   }
 
   maburgs::TxSelector sel(

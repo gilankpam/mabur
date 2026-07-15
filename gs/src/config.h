@@ -84,7 +84,7 @@ struct MspCfg {
   int window = 16;
 };
 
-/// Ground station configuration: radio, FEC, link, and video output.
+/// Ground station configuration: radio, FEC, link, video output, and MSP OSD output.
 struct Config {
   RadioCfg radio;
   FecCfg fec;

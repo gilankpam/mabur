@@ -44,6 +44,11 @@ TEST(e2e_survives_periodic_body_loss) {
   maburgs::MspSink sink(cfg.symbol_size, cfg.window,
                         [&](const uint8_t*, size_t){ ++out; });
   // Drop every 5th body; the per-snapshot repair recovers isolated losses.
+  // Each snapshot = 1 source + 1 repair on separate bodies; dropping every
+  // 5th never drops an adjacent source+repair pair, and the window-16
+  // repair overlap recovers isolated losses. If MspSourceCfg defaults
+  // (blocks_per_body=1 / one-symbol-per-snapshot) change, revisit this
+  // stride.
   int idx = 0;
   for (auto& b : bodies) {
     if (idx++ % 5 != 0) sink.on_body(b.data(), b.size(), 11000);
