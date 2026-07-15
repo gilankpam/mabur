@@ -11,11 +11,19 @@ add_library(mabur_gs_core STATIC
   src/vrx_controller.cpp
   src/tx_selector.cpp
   src/msp_sink.cpp
-  src/msp_font_btfl.cpp)
+  src/msp_font_btfl.cpp
+  src/shm_surface.cpp)
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(mabur_gs_core PUBLIC mabur_common)
+
+# shm_open/mmap need librt on glibc hosts; the musl aarch64 cross-build folds
+# it into libc and has no separate librt, so guard rather than hardcode -lrt.
+find_library(RT_LIB rt)
+if(RT_LIB)
+  target_link_libraries(mabur_gs_core PUBLIC ${RT_LIB})
+endif()
 
 add_library(mabur_gs_radio STATIC src/radio_frontend.cpp)
 target_include_directories(mabur_gs_radio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
