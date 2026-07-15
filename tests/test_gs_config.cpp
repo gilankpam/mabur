@@ -84,6 +84,26 @@ TEST(tx_card_validates_against_effective_card_list) {
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // out of range against the effective single default card
 }
+TEST(gs_msp_defaults_and_parse) {
+  {
+    auto cfg = maburgs::load_config(write_tmp("{}"));
+    CHECK(cfg.msp.enable == false);
+    CHECK(cfg.msp.out_host == "127.0.0.1");
+    CHECK(cfg.msp.out_port == 14560);
+    CHECK(cfg.msp.symbol_size == 1312);
+    CHECK(cfg.msp.window == 16);
+  }
+  {
+    auto cfg = maburgs::load_config(write_tmp(
+        R"({"msp":{"enable":true,"out":{"host":"10.0.0.9","port":15000},)"
+        R"("symbol_size":1024,"window":32}})"));
+    CHECK(cfg.msp.enable == true);
+    CHECK(cfg.msp.out_host == "10.0.0.9");
+    CHECK(cfg.msp.out_port == 15000);
+    CHECK(cfg.msp.symbol_size == 1024);
+    CHECK(cfg.msp.window == 32);
+  }
+}
 MTEST_MAIN
 
 // link.src_bitrate_mbps drives the controller's energy-model design point

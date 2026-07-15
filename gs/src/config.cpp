@@ -70,7 +70,7 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"radio", "fec", "link", "video_out"});
+  check_keys(j, "", {"radio", "fec", "link", "video_out", "msp"});
   Config c;
 
   if (j.contains("radio")) {
@@ -139,6 +139,23 @@ Config load_config(const std::string& path) {
     check_keys(r, "video_out", {"host", "port"});
     c.video_out.host = get_str(r, "host", "127.0.0.1", "video_out");
     c.video_out.port = static_cast<int>(get_int(r, "port", 5600, 1, 65535, "video_out"));
+  }
+
+  if (j.contains("msp")) {
+    const json& r = j["msp"];
+    check_keys(r, "msp", {"enable", "out", "symbol_size", "window"});
+    if (r.contains("enable")) {
+      if (!r["enable"].is_boolean()) fail("msp.enable", "not a boolean");
+      c.msp.enable = r["enable"].get<bool>();
+    }
+    if (r.contains("out")) {
+      const json& o = r["out"];
+      check_keys(o, "msp.out", {"host", "port"});
+      c.msp.out_host = get_str(o, "host", "127.0.0.1", "msp.out");
+      c.msp.out_port = static_cast<int>(get_int(o, "port", 14560, 1, 65535, "msp.out"));
+    }
+    c.msp.symbol_size = static_cast<int>(get_int(r, "symbol_size", 1312, 16, 2048, "msp"));
+    c.msp.window = static_cast<int>(get_int(r, "window", 16, 2, 255, "msp"));
   }
   return c;
 }

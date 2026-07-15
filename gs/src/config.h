@@ -74,12 +74,23 @@ struct VideoOutCfg {
   int port = 5600;
 };
 
+/// MSP DisplayPort OSD side-channel output. symbol_size/window must match the
+/// drone's msp config.
+struct MspCfg {
+  bool enable = false;
+  std::string out_host = "127.0.0.1";
+  int out_port = 14560;
+  int symbol_size = 1312;
+  int window = 16;
+};
+
 /// Ground station configuration: radio, FEC, link, and video output.
 struct Config {
   RadioCfg radio;
   FecCfg fec;
   LinkCfg link;
   VideoOutCfg video_out;
+  MspCfg msp;
 
   /// Builds decoder configuration with per-stream RS and UEP overhead.
   std::array<mabur::UepLayerCfg, 4> uep_layers() const;
