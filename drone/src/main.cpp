@@ -23,14 +23,17 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "config.h"
+#include "mabur/msp_source.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/uep_encoder.h"
+#include "msp_serial.h"
 #include "radio_tx.h"
 #include "rc_agent.h"
 #include "ring_source.h"
@@ -78,6 +81,25 @@ struct FileSink : mabur::FrameSink {
     return true;
   }
 };
+
+// u32_le len | body — same record framing as FileSink, for --msp-out.
+void write_len_prefixed(FILE* f, const uint8_t* p, size_t n) {
+  uint8_t hdr[4] = {static_cast<uint8_t>(n & 0xFF),
+                    static_cast<uint8_t>((n >> 8) & 0xFF),
+                    static_cast<uint8_t>((n >> 16) & 0xFF),
+                    static_cast<uint8_t>((n >> 24) & 0xFF)};
+  std::fwrite(hdr, 1, 4, f);
+  if (n > 0) std::fwrite(p, 1, n, f);
+}
+
+MspSourceCfg to_msp_source_cfg(const MspCfg& m) {
+  MspSourceCfg c;
+  c.update_rate_hz = m.update_rate_hz;
+  c.symbol_size = m.symbol_size;
+  c.window = m.window;
+  c.overhead = m.overhead;
+  return c;
+}
 
 // Wraps IRtlDevice::send_packet with a mutex — shared between the hot
 // thread (video bodies) and the agent thread (send_control / DISC_ACK).
@@ -288,6 +310,17 @@ std::vector<std::vector<uint8_t>> read_len_prefixed_u16(const std::string& path)
   return pkts;
 }
 
+std::vector<uint8_t> read_whole_file(const std::string& path) {
+  std::vector<uint8_t> v;
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return v;
+  uint8_t buf[4096];
+  size_t r;
+  while ((r = std::fread(buf, 1, sizeof buf, f)) > 0) v.insert(v.end(), buf, buf + r);
+  std::fclose(f);
+  return v;
+}
+
 std::vector<RcInRecord> read_rc_in(const std::string& path) {
   std::vector<RcInRecord> recs;
   if (path.empty()) return recs;
@@ -312,7 +345,8 @@ std::vector<RcInRecord> read_rc_in(const std::string& path) {
 }
 
 int run_dry_run(const Config& cfg, const std::string& in_path, const std::string& out_path,
-                const std::string& rc_in_path) {
+                const std::string& rc_in_path, const std::string& msp_in_path,
+                const std::string& msp_out_path) {
   FileSink file_sink;
   file_sink.f = std::fopen(out_path.c_str(), "wb");
   if (!file_sink.f) {
@@ -429,6 +463,23 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   }
 
   std::fclose(file_sink.f);
+
+  if (!msp_in_path.empty() && !msp_out_path.empty()) {
+    FILE* mf = std::fopen(msp_out_path.c_str(), "wb");
+    if (mf) {
+      MspSource msp(to_msp_source_cfg(cfg.msp),
+                    [&](const uint8_t* body, size_t n){ write_len_prefixed(mf, body, n); });
+      auto bytes = read_whole_file(msp_in_path);
+      // Advance the clock past the rate-gate period per feed chunk so every
+      // captured screen forwards (gate correctness is unit-tested separately).
+      uint64_t clk = 0;
+      for (size_t off = 0; off < bytes.size(); off += 64, clk += 10000)
+        msp.on_serial_bytes(bytes.data() + off, std::min<size_t>(64, bytes.size() - off), clk);
+      std::fclose(mf);
+      std::fprintf(stderr, "[dry-run] msp: snapshots_sent=%llu\n",
+                   static_cast<unsigned long long>(msp.snapshots_sent()));
+    }
+  }
 
   std::fprintf(stderr,
               "maburd dry-run stats: packets_in=%zu bodies_out=%llu seq=%u sent=%llu drops=%llu "
@@ -607,6 +658,44 @@ int run_real_mode(const Config& cfg) {
       rc_queue.push(body, body_len);
     }
   };
+
+  std::thread msp_thread;
+  if (cfg.msp.enable) {
+    msp_thread = std::thread([&]() {
+      // Robust control modulation, same tier as DISC_ACK; MSP is a third
+      // producer on the mutex-guarded dev_sink.send() path (never the pool).
+      std::vector<uint8_t> radiotap = devourer::build_stream_radiotap(control_tx_mode());
+      uint16_t seq = 0;
+      std::random_device rd;
+      MspSource src(to_msp_source_cfg(cfg.msp),
+        [&](const uint8_t* body, size_t n) {
+          std::vector<uint8_t> frame;
+          frame.reserve(radiotap.size() + kDot11HeaderLen + n);
+          frame.insert(frame.end(), radiotap.begin(), radiotap.end());
+          auto hdr = build_dot11_header(seq);
+          seq = static_cast<uint16_t>((seq + 1) & 0xFFF);
+          frame.insert(frame.end(), hdr.begin(), hdr.end());
+          frame.insert(frame.end(), body, body + n);
+          dev_sink.send(frame.data(), frame.size());
+        },
+        rd());  // random initial_seq (SwEncoder restart-safety contract)
+      MspSerial serial;
+      uint8_t buf[512];
+      while (!g_devourer_should_stop) {
+        if (!serial.is_open()) {
+          if (!serial.open(cfg.msp.serial, cfg.msp.baud)) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+          }
+          std::fprintf(stderr, "maburd msp: reading %s @ %d\n",
+                       cfg.msp.serial.c_str(), cfg.msp.baud);
+        }
+        int n = serial.read(buf, sizeof buf);
+        if (n > 0) src.on_serial_bytes(buf, static_cast<size_t>(n), now_steady_ms());
+        else if (n < 0) serial.close();  // error -> reconnect
+      }
+    });
+  }
 
   // TX body queue between the encode (hot) thread and the USB writer
   // thread: a bulk-OUT stall backs up HERE (bounded, drop-oldest =
@@ -797,6 +886,7 @@ int run_real_mode(const Config& cfg) {
   if (hot_thread.joinable()) hot_thread.join();
   if (tx_thread.joinable()) tx_thread.join();
   if (agent_thread.joinable()) agent_thread.join();
+  if (msp_thread.joinable()) msp_thread.join();
   tx_pool.stop();  // drain + join senders before device teardown
 
   rtl_device->Stop();
@@ -822,6 +912,7 @@ int main(int argc, char** argv) {
   std::string cfg_path;
   bool dry_run = false;
   std::string in_path, out_path, rc_in_path;
+  std::string msp_in_path, msp_out_path;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -835,6 +926,10 @@ int main(int argc, char** argv) {
       out_path = argv[++i];
     } else if (a == "--rc-in" && i + 1 < argc) {
       rc_in_path = argv[++i];
+    } else if (a == "--msp-in" && i + 1 < argc) {
+      msp_in_path = argv[++i];
+    } else if (a == "--msp-out" && i + 1 < argc) {
+      msp_out_path = argv[++i];
     } else if (a == "-h" || a == "--help") {
       print_usage(argv[0]);
       return 0;
@@ -872,7 +967,7 @@ int main(int argc, char** argv) {
       print_usage(argv[0]);
       return 1;
     }
-    return run_dry_run(cfg, in_path, out_path, rc_in_path);
+    return run_dry_run(cfg, in_path, out_path, rc_in_path, msp_in_path, msp_out_path);
   }
 
   return run_real_mode(cfg);
