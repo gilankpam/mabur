@@ -1,14 +1,24 @@
 # Per-layer big-symbol video corruption — debug handoff (2026-07-15)
 
-**Status: PARTIALLY SOLVED. One real decoder bug found + fixed (commit
-`e49e8f4`), which improved but did NOT cure the hardware symptom. A second,
-uncracked loss mechanism remains.** Production is safely reverted to the
-known-good scalar-164 config. This doc is a cold-start handoff for the next
-debugger.
+**Status: SOLVED (mechanism identified). The residual is NOT transport loss
+and NOT a decoder/reorder bug — it is source-side FU-chain truncation from
+drone venc-ring overflow, because the per-layer geometry costs the drone TX
+path ~1.63× more air bytes than scalar and the hot thread cannot drain the
+SHM ring fast enough. Same mechanism as the previously-known waybeam ring-full
+truncation; the per-layer geometry just re-triggers it. Making per-layer work
+is a drone-TX-throughput problem, not a transport problem.** Production is
+safely on the known-good scalar-164 config (re-verified clean this session:
+rtpsniff 55.9 ok_fps, 4% bad — all gaps in the venc restart transient).
+
+The decoder fix `e49e8f4` was **sufficient for the transport side**: an
+independent set-membership seq dump measures true transport loss at **0.02%**
+under the broken config (13 of 79346 seqs), not the 3.13% rtpsniff reported.
+See §4 for the correction and the evidence.
 
 Branch: `sliding-window-fec`. Devices: drone `root@192.168.10.152` (TX,
 armv7 SSC338Q), GS `root@10.18.0.1` (RX, aarch64 Radxa). Note: BusyBox on
-BOTH — no `pgrep`/`pkill`, kill by PID.
+BOTH — no `pgrep`/`pkill`, kill by PID. Also: drone has **no sftp-server** —
+`scp` needs the legacy `-O` flag (`scp -O local remote`).
 
 ---
 
@@ -97,44 +107,106 @@ Full root-cause writeup: `.superpowers/sdd/bigsymbol-bug-report.md`.
 
 ---
 
-## 4. The residual (UNCRACKED) — start here
+## 4. The residual — RESOLVED (2026-07-15 session 2)
 
-Post-fix hardware still loses **3.13%**, and the fingerprint is UNCHANGED:
-all GS+drone counters frozen (verified `abn`/`fe`/`skip`/`late`/`drops`/
-`txq_drop` flat over 12s samples), yet rtpsniff sees the gaps.
+The prior handoff called the residual an "uncracked" ~3.13% loss and pointed
+the next debugger at the aggregator/reorder and cross-layer merge. That was
+chasing a **measurement ghost**. The three candidate paths (#1 reorder, #2
+stream-0 keyframes, #3 rtpsniff artifact) were investigated by measuring
+transport loss INDEPENDENTLY of rtpsniff. Result: **#3 is correct — rtpsniff
+over-counts, and the real transport loss is ~0.**
 
-**Since the GS decoder counters are frozen, the decoder is (now) delivering
-everything it receives** — so the surviving loss is almost certainly NOT in
-`SwDecoder`. Candidate locations, in rough priority:
+### 4a. The loss is real to the eye but is NOT transport loss
 
-1. **Cross-layer reorder / two-card merge.** `gs/src/aggregator.cpp` merges
-   the two RX cards; `gs/src/rtp_reorder.h` (`RtpReorder`, `hold_ms=300`)
-   re-orders the decoded output by RTP seq before the UDP sink. Stream 0
-   (critical/keyframes, sym 164, separate `SwDecoder`) and stream 1 (video,
-   sym 1312) decode on independent timelines. If a stream-0 keyframe packet
-   is slow, the reorder holds the gap — but `skip` is frozen, so either the
-   packet is dropped somewhere the reorder doesn't count, or the merge drops
-   it. INSTRUMENT the aggregator + reorder for per-seq drops.
+Built `tools/bench/seqdump.py` (raw AF_PACKET dump of every RTP seq +
+kernel `PACKET_STATISTICS` drop counter) and `seqdump_analyze.py`
+(**set-membership** gap detection: a seq is missing only if NEITHER loopback
+copy — lo TX + lo RX — ever appears anywhere in the capture; immune to the
+duplicate-interleaving that fools sequential-delta accounting).
 
-2. **The loss may be stream-0 (keyframe) packets specifically** — gaps at ~1s
-   keyframe cadence. Classify the MISSING seqs by layer: extend rtpsniff (or
-   a new sniffer) to parse the HEVC NAL type of each delivered packet and, on
-   a gap, infer whether the missing seq range is keyframe-adjacent. `s0` uses
-   sym 164 / bpb 4 — its geometry ALSO changed (bpb 8→4). Consider testing
-   per-layer with stream-0 left at the OLD bpb 8, or scalar-164 for stream 0
-   only, to isolate.
+120 s capture under the broken per-layer config, `kernel_drops=0` (capture
+trustworthy):
 
-3. **rtpsniff measurement artifact.** Cross-check before trusting 3.13%:
-   `tools/bench/rtpsniff.py` de-dups loopback (delta==0) and does FU-chain
-   accounting. With this specific traffic (heavy FU, two-card, big symbols)
-   confirm the seq-gap count with an INDEPENDENT raw seq-continuity dump
-   (log every delivered RTP seq to a file, diff for gaps offline). If the
-   independent dump shows 0 gaps, the residual is a measurement artifact and
-   the fix may actually be sufficient.
+| Metric | rtpsniff (delta-based) | seqdump (set-membership) |
+|---|---|---|
+| missing RTP seqs | 1130 (**1.42%**) | **13 (0.02%)** |
 
-**First move for the next debugger:** resolve #3 (is the loss real?) with an
-independent seq dump, THEN instrument the aggregator/reorder (#1) and
-classify missing seqs by layer (#2).
+The baseline (scalar) capture cross-checks the tools: rtpsniff 343 missing
+(0.67%), seqdump **0 missing**. rtpsniff's sequential-delta logic false-
+positives on loopback dual-copy interleaving; set-membership is authoritative
+(copies histogram was `{2: 79332}` — every seq present exactly twice). **True
+transport loss under per-layer is ~0.02%. The decoder fix `e49e8f4` fully
+solved the transport side.** The GS decoder counters being frozen was
+CORRECT all along — nothing was lost for it to recover.
+
+### 4b. Where the 74% bad frames actually come from — source truncation
+
+`tools/bench/fu_chain_analyze.py` walks FU chains in RTP-seq order on the
+deduped set and separates two failure modes:
+
+| | broken (per-layer) | baseline (scalar) |
+|---|---|---|
+| FU chains | 7199 | 3598 |
+| ok (end reached) | 1879 | 3597 |
+| **trunc_contig** (chain broken with NO missing seq) | **5306** | 0 |
+| trunc_at_gap (chain broken across a lost seq) | 13 | 0 |
+
+**5306 chains truncate with fully contiguous RTP seqs** — a FU-start appears
+while a chain is still open, and nothing was lost in transit between them.
+That is only possible if the encoder/packetizer emitted a partial NAL (no end
+fragment) and moved on: **source-side slice-tail truncation**. This is the
+previously-documented waybeam ring-full abort (see mabur-project memory root
+cause #2, and the `TxQueue` comment at `drone/src/main.cpp:611`). The
+truncated tails have contiguous seqs, so EVERY transport/decoder counter
+stays frozen — this is the whole "uncounted loss" fingerprint, explained.
+
+### 4c. Why per-layer triggers it and scalar doesn't — drone TX throughput
+
+`tools/bench/encbench.cpp` runs the real `UepEncoder` (classify → fragment →
+SW-FEC → SBI pack) over a synthetic 60 fps / 8.8 Mbps HEVC-FU stream. On the
+SSC338Q (`gf=neon-vtbl2-q16`):
+
+| | air bytes produced | inflation vs input |
+|---|---|---|
+| scalar `[164]×4`, bpb 8 | 21.80 Mbps | ×2.47 |
+| per-layer `[164,1312,1312,1312]`, bpb `[4,1,1,1]` | **35.49 Mbps** | ×4.03 |
+
+Per-layer emits **1.63× the air bytes** for identical video (tiny-payload-in-
+big-symbol waste: a 1400 B packet → two 1312 B symbols, each its own body at
+bpb 1, plus the scaled overhead ladder). Live per-thread sampling under the
+broken config: the hot thread ran at **~79% of one core (of 2)** and the loop
+completed only **~10.7 iterations/s** (`hot_beat` 601→708 over 10 s). Each
+iteration drains ≤64 ring packets → ≤685 pkt/s, **below the ~780 pkt/s video
+packet rate** (60 fps × ~13 FU/frame) → the venc SHM ring fills → waybeam
+aborts slice tails. Scalar under the same sampling ran `hot_beat` ~14/s
+(≈896 pkt/s drain, > 780, keeps up) and stays clean. The 685/896 pkt/s drain
+rates straddle the 780 pkt/s demand exactly as the starvation model predicts.
+
+### 4d. What this means for making per-layer work
+
+The bottleneck is **drone TX cost per second**, not FEC recovery. To land
+per-layer you must cut the drone-side air-byte + GF workload back under the
+hot thread's sustainable drain, e.g. any of:
+
+- Raise `blocks_per_body` for the big-symbol video layers (bpb 1 → 4/8) so
+  each body amortizes SBI/PHY framing over more symbols — directly attacks
+  the 1.63× inflation, and bpb 1 was also what hit the join-anchor bug hardest.
+- Lower the per-layer overhead ladder / `base_overhead` for the video layers.
+- Increase the hot-thread ring-drain burst cap above 64, or give the hot
+  thread more CPU (it already owns ~1 of 2 cores; the venc + waybeam contend).
+- Or keep scalar-164 (current production) — it is the known-good point.
+
+Whatever the change, **gate it on `rtpsniff` frame integrity AND a `seqdump`
+set-membership pass on hardware** — byte-rate and burst_sim both green-lit
+the failing config.
+
+### Landmines corrected from the prior handoff
+- The "3.13% residual transport loss" was a **rtpsniff over-count**, not real
+  loss. Do not re-instrument the aggregator/reorder for it (prior §4 #1) —
+  transport is clean. The `RtpReorder`/two-card merge are not implicated.
+- The "~1 s keyframe-cadence gaps" (prior §4 #2) were rtpsniff delta artifacts
+  clustered by the dual-copy interleave, not stream-0 keyframe loss. seqdump
+  shows only 13 scattered single-seq gaps, not keyframe-aligned runs.
 
 ---
 
@@ -143,12 +215,49 @@ classify missing seqs by layer (#2).
 **Frame-integrity measurement (THE gate — byte-rate/skip checks missed this
 bug entirely):** `tools/bench/rtpsniff.py` (committed). Run ON the GS:
 ```
-scp tools/bench/rtpsniff.py root@10.18.0.1:/tmp/         # or already there
+scp -O tools/bench/rtpsniff.py root@10.18.0.1:/tmp/      # or already there
 ssh root@10.18.0.1 'python3 /tmp/rtpsniff.py lo 5600 <seconds>'
 ```
 Reports pkts/Mbps, seq gaps (%), FU truncations, and ok/bad frames + ok_fps.
 Passive AF_PACKET sniff of the maburgs→pixelpilot loopback — does not disturb
-the session. **Use this, not byte-rate, to judge any FEC change.**
+the session. **Use this for frame integrity — but its seq-gap % OVER-counts
+on the loopback dual-copy (1.42% vs true 0.02%); cross-check gaps with
+seqdump.** ok/bad-frame and FU accounting are reliable.
+
+**Authoritative transport-loss measurement (this session, committed):**
+`tools/bench/seqdump.py` + `seqdump_analyze.py` + `fu_chain_analyze.py`.
+```
+scp -O tools/bench/seqdump.py root@10.18.0.1:/tmp/
+# capture (run alongside rtpsniff for a frame-integrity read on the same window):
+ssh root@10.18.0.1 'python3 /tmp/seqdump.py lo 5600 <seconds> /tmp/seqdump.txt'
+scp -O root@10.18.0.1:/tmp/seqdump.txt /tmp/
+python3 tools/bench/seqdump_analyze.py /tmp/seqdump.txt   # set-membership gaps + lateness
+python3 tools/bench/fu_chain_analyze.py /tmp/seqdump.txt  # trunc_contig vs trunc_at_gap
+```
+seqdump logs `kernel_drops` at exit — if nonzero the capture is untrustworthy
+(raise `SO_RCVBUF`). analyze uses set-membership (immune to loopback dup
+interleaving); fu_chain separates source truncation (`trunc_contig`) from
+transport loss (`trunc_at_gap`) — the distinction that cracked this bug. NOTE:
+to classify FU packets by layer (s0 vs s1) the analyzers read a `fu_rt` 8th
+column; re-`scp -O` the current `seqdump.py` to the GS before capturing (the
+copy used this session predated that column, so its dumps show `fu_rt=-1`).
+
+**Drone encoder-capacity bench (this session, committed):**
+`tools/bench/encbench.cpp` — measures air-byte inflation + sustainable pkt/s
+of a given FEC geometry, ON the drone (the throughput ceiling that per-layer
+blows past). Cross-build + run with maburd stopped:
+```
+./toolchain/cc/bin/armv7l-unknown-linux-musleabihf-g++ -O2 -std=c++17 -static \
+  -mfpu=neon-vfpv4 -I common/include tools/bench/encbench.cpp \
+  common/src/uep_encoder.cpp common/src/sw_encoder.cpp common/src/sw_wire.cpp \
+  common/src/sbi.cpp common/src/frag.cpp common/src/gf256.cpp common/src/nal.cpp \
+  common/src/crc16.cpp -o /tmp/encbench-arm
+scp -O /tmp/encbench-arm root@192.168.10.152:/tmp/encbench
+ssh root@192.168.10.152 '/etc/init.d/S96mabur stop; sleep 1; \
+  /tmp/encbench scalar 10; /tmp/encbench perlayer 10; /etc/init.d/S96mabur start'
+```
+(`-mfpu=neon-vfpv4` matches `common/CMakeLists.txt:10` so the bench uses the
+same `neon-vtbl2-q16` GF path as the deployed maburd.)
 
 **Host simulations (recreate — they were in session scratch, not committed).**
 Build any `<sim>.cpp` against the common sources:
