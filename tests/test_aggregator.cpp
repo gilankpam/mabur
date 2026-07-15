@@ -2,6 +2,9 @@
 #include "vectors.h"
 #include "aggregator.h"
 #include "mabur/uep_encoder.h"
+#include "mabur/msp_source.h"
+#include "mabur/msp_dp.h"
+#include "mabur/sbi.h"
 
 using namespace maburgs;
 
@@ -112,5 +115,31 @@ TEST(unknown_card_dropped) {
   agg.on_rx_body(msg(7, 1, true, junk));
   CHECK(agg.bad_card_msgs() == 1);
   CHECK(agg.card(0).frames == 0);
+}
+
+TEST(msp_stream_body_routes_to_msp_sink_not_video) {
+  // Build a valid MSP body via MspSource so it carries stream_id == 4.
+  mabur::MspSourceCfg cfg;
+  std::vector<std::vector<uint8_t>> bodies;
+  mabur::MspSource src(cfg, [&](const uint8_t* b, size_t n){ bodies.emplace_back(b, b + n); });
+  std::vector<uint8_t> blob;
+  std::vector<uint8_t> clear = {2};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, clear.data(), clear.size());
+  std::vector<uint8_t> ds = {3, 0, 0, 0, 'X'};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, ds.data(), ds.size());
+  std::vector<uint8_t> draw = {4};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, draw.data(), draw.size());
+  src.on_serial_bytes(blob.data(), blob.size(), 1000);
+  REQUIRE(!bodies.empty());
+
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  int msp_hits = 0, rtp_hits = 0;
+  agg.set_msp_sink([&](const uint8_t*, size_t, uint64_t){ ++msp_hits; });
+  agg.set_rtp_sink([&](const mabur::DecodedRtp&){ ++rtp_hits; });
+
+  agg.on_rx_body(msg(0, 1, true, bodies[0]));
+
+  CHECK(msp_hits == 1);
+  CHECK(rtp_hits == 0);
 }
 MTEST_MAIN

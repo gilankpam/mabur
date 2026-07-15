@@ -36,12 +36,15 @@ class Aggregator {
   using RcSink = std::function<void(uint8_t card_id,
                                     const std::vector<uint8_t>& frame,
                                     uint64_t mono_us)>;
+  using MspSink = std::function<void(const uint8_t* body, size_t len,
+                                     uint64_t mono_us)>;
 
   Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
              uint64_t decode_deadline_ms, uint32_t seq_horizon, int n_cards);
 
   void set_rtp_sink(RtpSink s) { rtp_sink_ = std::move(s); }
   void set_rc_sink(RcSink s) { rc_sink_ = std::move(s); }
+  void set_msp_sink(MspSink s) { msp_sink_ = std::move(s); }
 
   void on_rx_body(const mabur::node::RxBody& m);
   void poll(uint64_t now_ms) { dec_.poll(now_ms); }
@@ -58,6 +61,7 @@ class Aggregator {
   std::vector<CardTrack> cards_;
   RtpSink rtp_sink_;
   RcSink rc_sink_;
+  MspSink msp_sink_;
   uint16_t last_video_seq_ = 0;
   uint64_t last_video_us_ = 0;
   uint64_t bad_card_msgs_ = 0;

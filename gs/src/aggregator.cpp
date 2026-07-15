@@ -1,6 +1,7 @@
 #include "aggregator.h"
 
 #include "mabur/rc_proto.h"
+#include "mabur/sbi.h"
 
 namespace maburgs {
 namespace {
@@ -73,6 +74,10 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   if (mabur::rc::frame_type(m.body.data(), m.body.size()) >= 0) {
     ++c.rc_frames;
     if (rc_sink_) rc_sink_(m.card_id, m.body, m.mono_us);
+    return;
+  }
+  if (mabur::sbi_peek_stream_id(m.body.data(), m.body.size()) == mabur::kMspStreamId) {
+    if (msp_sink_) msp_sink_(m.body.data(), m.body.size(), m.mono_us);
     return;
   }
   ++c.video_bodies;
