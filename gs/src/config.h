@@ -82,6 +82,10 @@ struct MspCfg {
   int out_port = 14560;
   int symbol_size = 1312;
   int window = 16;
+  std::string render = "udp";      // "udp" | "shm"
+  std::string shm_name = "msp";    // shm mode: region name (== osd.json widget name)
+  int shm_x_offset = 0;            // shm mode: scale-to-fill inset (px)
+  int shm_y_offset = 0;
 };
 
 /// Ground station configuration: radio, FEC, link, video output, and MSP OSD output.

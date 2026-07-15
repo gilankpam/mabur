@@ -104,6 +104,28 @@ TEST(gs_msp_defaults_and_parse) {
     CHECK(cfg.msp.window == 32);
   }
 }
+TEST(gs_msp_render_mode_and_shm) {
+  {  // default render is udp
+    auto cfg = maburgs::load_config(write_tmp("{}"));
+    CHECK(cfg.msp.render == "udp");
+    CHECK(cfg.msp.shm_name == "msp");
+    CHECK(cfg.msp.shm_x_offset == 0);
+  }
+  {  // explicit shm mode
+    auto cfg = maburgs::load_config(write_tmp(
+        R"({"msp":{"enable":true,"render":"shm","shm":{"name":"osd","x_offset":8,"y_offset":4}}})"));
+    CHECK(cfg.msp.render == "shm");
+    CHECK(cfg.msp.shm_name == "osd");
+    CHECK(cfg.msp.shm_x_offset == 8);
+    CHECK(cfg.msp.shm_y_offset == 4);
+  }
+  {  // invalid render value rejected
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(R"({"msp":{"render":"drm"}})")); }
+    catch (const std::exception&) { threw = true; }
+    CHECK(threw == true);
+  }
+}
 MTEST_MAIN
 
 // link.src_bitrate_mbps drives the controller's energy-model design point
