@@ -37,13 +37,25 @@ echo "starting recorder on $GS ..."
 RX_PID=$(ssh "$GS" "rm -f /tmp/sweep.jsonl; nohup /tmp/txagcbench-rx \
   --channel $CHANNEL --out /tmp/sweep.jsonl $RX_ARGS \
   >/tmp/txagcbench-rx.log 2>&1 & echo \$!")
+
+cleanup() {
+  ssh "$GS" "kill -INT $RX_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 sleep 8   # RX bring-up (RadioFrontend open_and_start is ~2-3 s; margin)
+
+if ! ssh "$GS" "kill -0 $RX_PID" 2>/dev/null; then
+  echo "error: recorder died during bring-up — log tail:" >&2
+  ssh "$GS" "tail -20 /tmp/txagcbench-rx.log" >&2 || true
+  exit 1
+fi
 
 echo "sweeping on $DRONE ..."
 ssh "$DRONE" "/tmp/txagcbench-tx --channel $CHANNEL $TX_ARGS"
 
 sleep 2
-ssh "$GS" "kill -INT $RX_PID 2>/dev/null || true"
+# cleanup trap (EXIT) will SIGINT the RX; allow flush time before scp
 sleep 2
 scp "$GS:/tmp/sweep.jsonl" "$OUT"
 ssh "$GS" "tail -3 /tmp/txagcbench-rx.log" || true
