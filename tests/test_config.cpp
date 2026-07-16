@@ -52,11 +52,13 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.bw_set == def.radio.bw_set);
   CHECK(cfg.radio.max_txagc == def.radio.max_txagc);
   CHECK(cfg.radio.thermal_max_delta == def.radio.thermal_max_delta);
-  CHECK(cfg.radio.power_mode == "override");
+  CHECK(cfg.radio.power_mode == "none");
   CHECK(cfg.radio.power_offset_qdb == 0);
 
-  // Bundle carries this unit's measured wall-equalization values (Task 9)
-  // even though power_mode stays "override" until an operator opts in.
+  // Default bundle ships power-inert ("none" = efuse/kernel per-rate table
+  // untouched). "offset" is the adaptive opt-in at deploy time; "override"
+  // is bench-diagnostic only. Bundle carries unit's measured wall-equalization
+  // values (Task 9) alongside the inert power mode.
   CHECK((cfg.radio.rate_walls_idx ==
          std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
   CHECK(cfg.radio.legacy_wall_idx == 91);
