@@ -77,8 +77,8 @@ def load_rows(path, chain):
         try:
             o = json.loads(line)
             idx = int(o["idx"])
-            if not 0 <= idx <= 63:
-                die(f"{path}:{ln}: idx {idx} out of range 0..63")
+            if not 0 <= idx <= 127:
+                die(f"{path}:{ln}: idx {idx} out of range 0..127")
             rows.append((idx, int(o["pass"]), float(o[key]) - 110.0))
         except (ValueError, KeyError) as e:
             die(f"{path}:{ln}: bad record ({e})")
@@ -104,10 +104,17 @@ def analyze(rows, table, min_samples, out=print):
         out("FAIL: fewer than 2 indices with enough samples")
         return False, None
 
-    anchor = min(med)
+    # The reference table only covers idx 0..63; higher indices (7-bit
+    # Jaguar3 TXAGC) are measured-only: shown in the curve, excluded from
+    # the verdict.
+    cmp_idx = [i for i in med if i < len(table)]
+    if len(cmp_idx) < 2:
+        out("FAIL: fewer than 2 table-range indices with enough samples")
+        return False, None
+    anchor = min(cmp_idx)
     meas_rel = {i: med[i] - med[anchor] for i in med}
-    tab_rel = {i: table[i] - table[anchor] for i in med}
-    errs = {i: meas_rel[i] - tab_rel[i] for i in med}
+    tab_rel = {i: table[i] - table[anchor] for i in cmp_idx}
+    errs = {i: meas_rel[i] - tab_rel[i] for i in cmp_idx}
 
     drift = {}
     for idx in med:
@@ -121,9 +128,12 @@ def analyze(rows, table, min_samples, out=print):
         f"{'err':>6} {'drift':>6}")
     for idx in sorted(med):
         d = f"{drift[idx]:+.2f}" if idx in drift else "n/a"
+        if idx in errs:
+            tcol = f"{tab_rel[idx]:>8.2f} {errs[idx]:>+6.2f}"
+        else:
+            tcol = f"{'n/a':>8} {'n/a':>6}"
         out(f"{idx:>3} {len(by_idx[idx]):>5} {med[idx]:>7.1f} "
-            f"{meas_rel[idx]:>9.2f} {tab_rel[idx]:>8.2f} "
-            f"{errs[idx]:>+6.2f} {d:>6}")
+            f"{meas_rel[idx]:>9.2f} {tcol} {d:>6}")
 
     e = list(errs.values())
     rms = math.sqrt(sum(x * x for x in e) / len(e))
@@ -132,8 +142,11 @@ def analyze(rows, table, min_samples, out=print):
     mono_bad = [b for a_, b in zip(srt, srt[1:])
                 if med[b] < med[a_] - MONO_SLACK_DB]
 
-    out(f"\nmeasured {len(med)}/64 indices | RMS {rms:.2f} dB | "
-        f"max |err| {abs(errs[worst]):.2f} dB @ idx {worst}")
+    out(f"\nmeasured {len(med)} indices ({len(cmp_idx)} in table range 0.."
+        f"{len(table) - 1}) | RMS {rms:.2f} dB | "
+        f"max |err| {abs(errs[worst]):.2f} dB @ idx {worst}"
+        + (" | verdict covers table range only" if len(cmp_idx) < len(med)
+           else ""))
     if drift:
         dworst = max(drift, key=lambda i: abs(drift[i]))
         out(f"up/down drift: max {drift[dworst]:+.2f} dB @ idx {dworst} "
@@ -157,7 +170,9 @@ def analyze(rows, table, min_samples, out=print):
 
 
 def emit_table(med, out=print):
-    idxs = sorted(med)
+    # Drop-in stays 64 entries: mabur's power axis is idx 0..63 today.
+    # Measured indices above 63 are reported in the curve but not emitted.
+    idxs = sorted(i for i in med if i <= 63)
     g = [None] * 64
     for i in idxs:
         g[i] = med[i] - med[idxs[0]]

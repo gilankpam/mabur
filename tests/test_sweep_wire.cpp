@@ -34,8 +34,16 @@ TEST(rejects_corrupt_fill) {
   CHECK(!parse_sweep_payload(p.data(), p.size(), &si));
 }
 
-TEST(rejects_idx_over_63) {
-  auto p = build_sweep_payload(64, 1, 1, 0);
+TEST(accepts_full_7bit_idx) {
+  // Jaguar3 TXAGC is 7-bit: 127 is the top legal index.
+  auto p = build_sweep_payload(127, 2, 9, 0);
+  SweepInfo si;
+  CHECK(parse_sweep_payload(p.data(), p.size(), &si));
+  CHECK(si.idx == 127);
+}
+
+TEST(rejects_idx_over_127) {
+  auto p = build_sweep_payload(128, 1, 1, 0);
   SweepInfo si;
   CHECK(!parse_sweep_payload(p.data(), p.size(), &si));
 }

@@ -55,7 +55,7 @@ inline bool parse_sweep_payload(const uint8_t* p, size_t len, SweepInfo* out) {
   out->pass = p[5];
   out->seq = static_cast<uint16_t>(p[6] | (p[7] << 8));
   out->mcs = p[8];
-  if (out->idx > 63) return false;
+  if (out->idx > 127) return false;  // Jaguar3 TXAGC is 7-bit (0..127)
   const uint8_t fill = static_cast<uint8_t>(0x5A ^ out->idx);
   for (size_t i = kSweepHeaderLen; i < kSweepPayloadLen; ++i)
     if (p[i] != fill) return false;

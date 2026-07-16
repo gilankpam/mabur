@@ -41,7 +41,7 @@ struct Args {
 
 void usage(const char* argv0) {
   std::fprintf(stderr,
-    "usage: %s [--channel 149] [--lo 0] [--hi 63] [--frames 50]\n"
+    "usage: %s [--channel 149] [--lo 0] [--hi 63, max 127] [--frames 50]\n"
     "  [--settle-ms 100] [--gap-us 2000] [--mcs 0]\n"
     "  [--usb-vid 0x0bda] [--usb-pid 0]\n", argv0);
 }
@@ -65,7 +65,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
     else { return false; }
   }
-  if (a->lo < 0 || a->hi > 63 || a->lo > a->hi) return false;
+  if (a->lo < 0 || a->hi > 127 || a->lo > a->hi) return false;  // 7-bit TXAGC
   if (a->mcs < 0 || a->mcs > 7) return false;
   if (a->frames < 1 || a->settle_ms < 0 || a->gap_us < 0) return false;
   return true;
