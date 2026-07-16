@@ -24,6 +24,21 @@ constexpr uint8_t F_DISCOVERY = 0x04;
 
 constexpr uint8_t PWR_NO_CHANGE = 0xFF;
 
+// TX-power command. SEMANTIC DIVERGENCE from the frozen Python prototype
+// (devourer tools/precoder/rc_proto.py, which carries a TXAGC index):
+// since 2026-07-17 this byte is a BIASED SIGNED OFFSET in qdB —
+// value = offset_qdb + 64 (so 64 = calibrated baseline, 52 = -3 dB),
+// clamped to 0..127 on encode. 0xFF (PWR_NO_CHANGE) is unchanged.
+// Rationale + measurements: docs/txagc-calibration.md.
+inline uint8_t encode_pwr_offset_qdb(int qdb) {
+  int clamped = qdb < -64 ? -64 : (qdb > 63 ? 63 : qdb);
+  return static_cast<uint8_t>(clamped + 64);
+}
+
+inline int decode_pwr_offset_qdb(uint8_t b) {
+  return static_cast<int>(b) - 64;
+}
+
 // VRX -> VTX feedback: GS-authoritative profile + alink-style score +
 // explicit power/FEC + per-layer delivery stats.
 struct Rcf {
@@ -32,7 +47,7 @@ struct Rcf {
   uint16_t ack_seq = 0;
   uint8_t profile = 0;
   uint16_t score = 1000;
-  uint8_t pwr_idx = PWR_NO_CHANGE;
+  uint8_t pwr_offset_biased = PWR_NO_CHANGE;
   uint8_t fec_overhead_16ths = 4;
   uint8_t flags = 0;
   std::vector<uint8_t> layer_delivery;

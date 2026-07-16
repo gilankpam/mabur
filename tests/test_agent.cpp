@@ -53,7 +53,7 @@ std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profil
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
-  r.pwr_idx = pwr_idx;
+  r.pwr_offset_biased = pwr_idx;
   r.fec_overhead_16ths = fec_overhead_16ths;
   return pack_rcf(r);
 }

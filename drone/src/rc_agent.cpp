@@ -283,8 +283,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     merge_power_offsets(ladder, cfg_.power_offset_db);
 
     int pwr_idx = commanded_pwr_idx_;
-    if (r->pwr_idx != rc::PWR_NO_CHANGE) {
-      pwr_idx = std::clamp<int>(r->pwr_idx, 0, cfg_.radio.max_txagc);
+    if (r->pwr_offset_biased != rc::PWR_NO_CHANGE) {
+      pwr_idx = std::clamp<int>(r->pwr_offset_biased, 0, cfg_.radio.max_txagc);
     }
 
     State prev_state = state_;

@@ -75,7 +75,7 @@ std::optional<VrxController::Out> VrxController::step(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
   r.score = static_cast<uint16_t>(win_.score(residual_loss));
-  r.pwr_idx = static_cast<uint8_t>(cur_op_.txagc);
+  r.pwr_offset_biased = static_cast<uint8_t>(cur_op_.txagc);
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
   r.layer_delivery.assign(layer_delivery.begin(), layer_delivery.end());
   return Out{mabur::rc::pack_rcf(r), false};

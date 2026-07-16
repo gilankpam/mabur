@@ -45,7 +45,7 @@ TEST(rcf_fields_are_correct) {
   CHECK(r->ack_seq >= 500);
   REQUIRE(r->layer_delivery.size() == 4);
   CHECK(r->layer_delivery[2] == 80);
-  CHECK(r->pwr_idx == vrx.cur_op().txagc);
+  CHECK(r->pwr_offset_biased == vrx.cur_op().txagc);
   CHECK(r->fec_overhead_16ths ==
         mabur::rc::overhead_to_16ths(vrx.cur_op().overhead));
 }
@@ -146,6 +146,6 @@ TEST(static_pin_overrides_controller) {
   REQUIRE(out.has_value());
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
-  CHECK(r->pwr_idx == 40);
+  CHECK(r->pwr_offset_biased == 40);
   CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(0.25));
 }
