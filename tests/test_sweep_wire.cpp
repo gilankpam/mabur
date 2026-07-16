@@ -40,6 +40,25 @@ TEST(rejects_idx_over_63) {
   CHECK(!parse_sweep_payload(p.data(), p.size(), &si));
 }
 
+TEST(accepts_fcs_suffixed_body) {
+  // devourer RX contract: body arrives with the trailing 4-byte FCS.
+  auto p = build_sweep_payload(12, 1, 42, 0);
+  p.push_back(0xDE); p.push_back(0xAD); p.push_back(0xBE); p.push_back(0xEF);
+  SweepInfo si;
+  CHECK(parse_sweep_payload(p.data(), p.size(), &si));
+  CHECK(si.idx == 12);
+  CHECK(si.seq == 42);
+}
+
+TEST(rejects_off_by_one_lengths) {
+  auto p = build_sweep_payload(12, 1, 42, 0);
+  p.resize(kSweepPayloadLen + 3);   // 67: neither bare nor FCS-suffixed
+  SweepInfo si;
+  CHECK(!parse_sweep_payload(p.data(), p.size(), &si));
+  p.resize(kSweepPayloadLen + 5);   // 69
+  CHECK(!parse_sweep_payload(p.data(), p.size(), &si));
+}
+
 TEST(dot11_header_canonical) {
   auto h = build_dot11_header(7);
   CHECK(h.size() == kDot11HeaderLen);

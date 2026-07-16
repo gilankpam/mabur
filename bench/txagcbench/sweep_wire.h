@@ -41,8 +41,16 @@ inline std::vector<uint8_t> build_sweep_payload(uint8_t idx, uint8_t pass,
 
 // False on anything that is not an intact sweep payload (short/long body,
 // wrong magic, idx out of TXAGC range, fill mismatch).
+//
+// Devourer's RX contract hands consumers the full 802.11 frame INCLUDING
+// the trailing 4-byte FCS (see the Packet.Data comment in
+// third_party/devourer/src/RxPacket.h, ~line 86); protocol boundaries strip
+// it themselves. maburgs::RadioFrontend::on_packet (gs/src/radio_frontend.cpp)
+// strips only the 24-byte dot11 header, so the body handed to us here may be
+// either the bare kSweepPayloadLen-byte payload or that plus the 4-byte FCS.
+// Accept both lengths; only the first kSweepPayloadLen bytes are validated.
 inline bool parse_sweep_payload(const uint8_t* p, size_t len, SweepInfo* out) {
-  if (len != kSweepPayloadLen) return false;
+  if (len != kSweepPayloadLen && len != kSweepPayloadLen + 4) return false;
   if (std::memcmp(p, kMagic, 4) != 0) return false;
   out->idx = p[4];
   out->pass = p[5];
