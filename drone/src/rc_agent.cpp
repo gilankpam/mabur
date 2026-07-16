@@ -27,9 +27,7 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 
 }  // namespace
 
-RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {
-  commanded_pwr_idx_ = std::min(63, cfg_.radio.max_txagc);
-}
+RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {}
 
 // Applies the MAX_RANGE operating point (profile_table()[MAX_RANGE_PROFILE]
 // via ladder_from). This is a state-transition apply (BOOT's initial op, or
@@ -40,7 +38,7 @@ RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {
 void RcAgent::apply_max_range(uint64_t now_ms) {
   auto ladder = rc::ladder_from(PhyMode::HT, 0, 20, cfg_.flags);
   merge_power_offsets(ladder, cfg_.power_offset_db);
-  commanded_pwr_idx_ = std::min(63, cfg_.radio.max_txagc);
+  commanded_offset_qdb_ = 0;  // full legal power
   thermal_derate_ = 0;
 
   // Forced shed while MAX_RANGE is the operating point (BOOT/RENDEZVOUS or a
@@ -52,7 +50,7 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
 
   applied_.ladder = ladder;
   applied_.fec_overhead = 1.0;
-  applied_.pwr_idx = commanded_pwr_idx_;
+  applied_.pwr_offset_qdb = commanded_offset_qdb_;
   applied_.shed[0] = false;
   applied_.shed[1] = false;
   applied_.shed[2] = true;  // T1 shed in MAX_RANGE, per spec (already covers shed_level_>=2)
@@ -65,9 +63,9 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
 // Applies a resolved (DISC row or RCF-decoded) ladder/power/FEC operating
 // point. Does NOT run the bitrate policy itself — callers on the RCF path
 // invoke run_bitrate_policy() explicitly afterwards, per the spec.
-void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder, int pwr_idx,
+void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder, int pwr_offset_qdb,
                               double fec_overhead) {
-  commanded_pwr_idx_ = pwr_idx;
+  commanded_offset_qdb_ = pwr_offset_qdb;
   thermal_derate_ = 0;
 
   // A resolved DISC/RCF op is only ever applied on a path that (re)enters
@@ -78,7 +76,7 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder, int pwr_
 
   applied_.ladder = ladder;
   applied_.fec_overhead = fec_overhead;
-  applied_.pwr_idx = commanded_pwr_idx_;
+  applied_.pwr_offset_qdb = commanded_offset_qdb_;
   applied_.shed[0] = false;
   applied_.shed[1] = false;
   applied_.shed[2] = shed_level_ >= 2;
@@ -106,7 +104,8 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder, int pwr_
 // Without the OR, this recompute-from-shed_level_-alone would clobber a
 // forced failsafe shed the moment a congestion tick runs while in FAILSAFE.
 void RcAgent::reapply_with_derate_and_shed() {
-  applied_.pwr_idx = std::max(0, commanded_pwr_idx_ - thermal_derate_);
+  applied_.pwr_offset_qdb =
+      std::max(cfg_.radio.min_offset_qdb, commanded_offset_qdb_ - thermal_derate_);
   applied_.shed[2] = failsafe_shed_ || (shed_level_ >= 2);
   applied_.shed[3] = failsafe_shed_ || (shed_level_ >= 1);
   act_.apply_op(applied_);
@@ -156,7 +155,12 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 
 void RcAgent::run_thermal_guard(const RadioHealth& health) {
   if (health.thermal_delta > cfg_.radio.thermal_max_delta) {
-    thermal_derate_ = std::min(commanded_pwr_idx_, thermal_derate_ + 4);
+    // Cap the escalating derate at the span between commanded and the floor
+    // — beyond that, further escalation is a no-op (reapply already floors
+    // the result at min_offset_qdb), so there's no reason to let the
+    // internal counter grow without bound while the radio stays hot.
+    int max_derate = commanded_offset_qdb_ - cfg_.radio.min_offset_qdb;
+    thermal_derate_ = std::min(max_derate, thermal_derate_ + 4);
     reapply_with_derate_and_shed();
   } else if (health.thermal_delta <= cfg_.radio.thermal_max_delta - 2) {
     if (thermal_derate_ != 0) {
@@ -241,7 +245,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     auto ladder = rc::ladder_for_row(row_idx, cfg_.flags);
     merge_power_offsets(ladder, cfg_.power_offset_db);
     const auto& row = rc::profile_table()[static_cast<size_t>(row_idx)];
-    apply_ladder_op(ladder, row.pwr_offset_qdb, row.fec_overhead);
+    int offset_qdb = std::clamp<int>(row.pwr_offset_qdb, cfg_.radio.min_offset_qdb, 0);
+    apply_ladder_op(ladder, offset_qdb, row.fec_overhead);
 
     state_ = State::LINKED;
     last_fb_ms_ = now_ms;
@@ -282,13 +287,14 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     auto ladder = rc::ladder_from(mode, mcs, bw, cfg_.flags);
     merge_power_offsets(ladder, cfg_.power_offset_db);
 
-    int pwr_idx = commanded_pwr_idx_;
+    int offset_qdb = commanded_offset_qdb_;
     if (r->pwr_offset_biased != rc::PWR_NO_CHANGE) {
-      pwr_idx = std::clamp<int>(r->pwr_offset_biased, 0, cfg_.radio.max_txagc);
+      offset_qdb = std::clamp(rc::decode_pwr_offset_qdb(r->pwr_offset_biased),
+                               cfg_.radio.min_offset_qdb, 0);
     }
 
     State prev_state = state_;
-    apply_ladder_op(ladder, pwr_idx, r->fec_overhead());
+    apply_ladder_op(ladder, offset_qdb, r->fec_overhead());
 
     state_ = State::LINKED;
     last_fb_ms_ = now_ms;

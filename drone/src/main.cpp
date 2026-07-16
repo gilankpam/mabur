@@ -35,6 +35,7 @@
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_serial.h"
+#include "power_plan.h"
 #include "radio_tx.h"
 #include "rc_agent.h"
 #include "ring_source.h"
@@ -210,7 +211,6 @@ struct RealActuator : mabur::Actuator {
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
   std::string power_mode = "override";  // radio.power_mode (see config.h)
-  int power_offset_qdb = 0;
 
   std::vector<uint8_t> control_radiotap;  // built once; control channel is fixed
   uint16_t control_seq = 0;
@@ -218,14 +218,14 @@ struct RealActuator : mabur::Actuator {
   void apply_op(const AppliedOp& op) override {
     tx->set_ladder(op.ladder);
     if (dev) {
-      if (power_mode == "override")
-        dev->SetTxPowerIndexOverride(op.pwr_idx);
-      else if (power_mode == "offset")
-        dev->SetTxPowerOffsetQdb(power_offset_qdb);
-      // "none": leave the efuse per-rate table untouched
+      if (power_mode == "offset")
+        dev->SetTxPowerOffsetQdb(op.pwr_offset_qdb);
+      // "override": bench-diagnostic, ignores RCF-commanded power entirely
+      // (see config.h's power_mode comment) — applies nothing per-op.
+      // "none": leave the efuse per-rate table untouched.
     } else if (dry_run) {
-      std::fprintf(stderr, "[dry-run] pwr_idx=%d fec_overhead=%.3f gen=%llu\n",
-                   op.pwr_idx, op.fec_overhead,
+      std::fprintf(stderr, "[dry-run] pwr_offset_qdb=%d fec_overhead=%.3f gen=%llu\n",
+                   op.pwr_offset_qdb, op.fec_overhead,
                    static_cast<unsigned long long>(op.generation));
     }
     shared_op->store(std::make_shared<const AppliedOp>(op));
@@ -639,7 +639,6 @@ int run_real_mode(const Config& cfg) {
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
   actuator.power_mode = cfg.radio.power_mode;
-  actuator.power_offset_qdb = cfg.radio.power_offset_qdb;
 
   RcAgent agent(cfg, actuator);
 
@@ -880,6 +879,34 @@ int run_real_mode(const Config& cfg) {
   std::fprintf(stderr, "maburd bringing up TX on channel %d\n", cfg.radio.channel);
   rtl_device->InitWrite(
       SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+
+  // power_mode == "offset": program the wall-equalized per-rate diff table
+  // once at bring-up (RcAgent's per-op SetTxPowerOffsetQdb calls trim
+  // *around* this table; they don't replace it). SetTxPowerRateDiffs
+  // returns false on non-8822E boards (8822E-only in v1, TxPower.h) — warn
+  // and continue rather than aborting bring-up, so "offset" configured on
+  // an unsupported chip degrades to the untrimmed efuse table instead of
+  // failing to fly.
+  if (cfg.radio.power_mode == "offset") {
+    auto plan = make_power_plan(cfg.radio.rate_walls_idx, cfg.radio.legacy_wall_idx,
+                                 cfg.radio.base_ref_idx, cfg.radio.wall_margin_db);
+    devourer::TxRateDiffsQdb diffs;
+    diffs.cck = plan.cck;
+    diffs.legacy = plan.legacy;
+    for (int i = 0; i < 8; ++i) diffs.mcs[i] = plan.mcs[i];
+    if (!rtl_device->SetTxPowerRateDiffs(diffs)) {
+      std::fprintf(stderr,
+                   "warning: SetTxPowerRateDiffs failed (non-8822E board?); "
+                   "power_mode=offset will trim the untrimmed efuse table\n");
+    }
+    // Boot offset: the last commanded/config offset until the first
+    // RCF/DISC op supersedes it, clamped the same way RcAgent clamps every
+    // commanded offset.
+    int boot_offset =
+        std::clamp(cfg.radio.power_offset_qdb, cfg.radio.min_offset_qdb, 0);
+    rtl_device->SetTxPowerOffsetQdb(boot_offset);
+  }
+
   device_ready.store(true, std::memory_order_release);
   std::fprintf(stderr, "maburd entering RX loop on channel %d\n", cfg.radio.channel);
   rtl_device->StartRxLoop(rx_callback);

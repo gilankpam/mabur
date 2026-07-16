@@ -11,21 +11,24 @@ namespace mabur {
 
 // One fully-resolved operating point ready to hand to the radio/encoder:
 // the 4-rung PHY ladder, the FEC overhead scalar (fed to
-// uep_layer_overhead), the commanded TX power index, per-layer shed flags
+// uep_layer_overhead), the commanded TX power offset, per-layer shed flags
 // (failsafe-forced OR local congestion-directed), and a generation counter
 // bumped only when a *new* operating point (ladder/FEC) is applied
 // (BOOT/DISC/RCF/failsafe entry) — NOT on every publish. Thermal derate and
 // congestion shed re-apply the *current* op (same ladder/FEC) with updated
-// pwr_idx/shed and publish a fresh AppliedOp WITHOUT bumping generation, so
-// consumers MUST NOT use generation to detect "did a new AppliedOp get
-// published" — every apply_op() call (via Actuator::apply_op) constructs and
-// stores a brand new object, so callers that need "did the published object
-// change" should identity-compare the shared_ptr they last observed against
-// the newly loaded one instead.
+// pwr_offset_qdb/shed and publish a fresh AppliedOp WITHOUT bumping
+// generation, so consumers MUST NOT use generation to detect "did a new
+// AppliedOp get published" — every apply_op() call (via Actuator::apply_op)
+// constructs and stores a brand new object, so callers that need "did the
+// published object change" should identity-compare the shared_ptr they last
+// observed against the newly loaded one instead.
 struct AppliedOp {
   std::array<rc::LayerTxSpec, 4> ladder;
   double fec_overhead = 1.0;
-  int pwr_idx = 63;
+  // Commanded TX power expressed as a qdB offset from the calibrated
+  // wall-equalized baseline; 0 = full legal power, negative = backed off.
+  // Never positive (a plan's max legal offset is always 0).
+  int pwr_offset_qdb = 0;
   std::array<bool, 4> shed = {false, false, false, false};
   uint64_t generation = 0;
 };
@@ -80,7 +83,13 @@ class RcAgent {
   State state_ = State::BOOT;
 
   AppliedOp applied_;
-  int commanded_pwr_idx_ = 63;  // last GS/MAX_RANGE-commanded power (pre-thermal-derate)
+  // Last GS-commanded qdB power offset (pre-thermal-derate). MAX_RANGE
+  // (apply_max_range) always sets this to 0 (full legal power); an RCF with
+  // a real (non-PWR_NO_CHANGE) offset byte sets it to
+  // clamp(decode_pwr_offset_qdb(byte), cfg_.radio.min_offset_qdb, 0); a DISC
+  // row's pwr_offset_qdb goes through the same clamp. PWR_NO_CHANGE leaves
+  // it untouched.
+  int commanded_offset_qdb_ = 0;
 
   uint64_t last_fb_ms_ = 0;
   bool have_last_fb_ = false;
@@ -115,7 +124,7 @@ class RcAgent {
   bool failsafe_shed_ = false;
 
   void apply_max_range(uint64_t now_ms);
-  void apply_ladder_op(const std::array<rc::LayerTxSpec, 4>& ladder, int pwr_idx,
+  void apply_ladder_op(const std::array<rc::LayerTxSpec, 4>& ladder, int pwr_offset_qdb,
                         double fec_overhead);
   void reapply_with_derate_and_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
