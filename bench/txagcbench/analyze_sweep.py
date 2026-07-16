@@ -18,9 +18,19 @@ indices. Exit codes: 0 PASS, 1 FAIL, 2 usage/input error.
 re-anchored so entry 0 = 0.0 (table convention), interior gaps linearly
 interpolated, head/tail gaps extended flat (warned).
 
---selftest needs no hardware: synthesizes a sweep from the committed
-table's own shape (+0.3 dB noise, must PASS) and from a linear
-0.5 dB/step curve (must FAIL vs the committed saturating curve).
+--measured-only skips the reference-table load and the table-comparison
+columns/verdict entirely: prints per-idx medians/n/drift and the health
+warnings only, exit 0 always (mabur's power model moved to a linear
+offset-qdB gain — gs/src/gen/gen_tables.h no longer carries kTxagcGainDb,
+see tools/pyref/offset_power.py — so this is the mode to use post-move).
+
+--selftest needs no hardware and does NOT read kTxagcGainDb (or any file):
+it synthesizes two small built-in reference curves — a saturating "ref"
+curve and a distinct linear 0.5 dB/step curve — and proves the analyzer's
+PASS/FAIL shape discrimination: a sweep synthesized from the ref curve
+(+0.3 dB noise) must PASS against it, and a sweep synthesized from the
+linear curve must FAIL against it. This only tests analyze()'s judging
+logic, not any real gain table.
 
 Spec: docs/superpowers/specs/2026-07-16-txagcbench-design.md.
 """
@@ -55,7 +65,12 @@ def parse_gain_table(path):
         die(f"cannot read {path}: {e}")
     m = re.search(r"kTxagcGainDb\[\]\s*=\s*\{([^}]*)\}", text)
     if not m:
-        die(f"kTxagcGainDb not found in {path}")
+        die(f"kTxagcGainDb not found in {path} — mabur's power model moved "
+            f"to a linear offset-qdB gain (gs/src/energy.h, "
+            f"tools/pyref/offset_power.py) and the table was deleted; use "
+            f"--measured-only for shape-only analysis with no reference "
+            f"table, or pass --table <path> pointing at a file that still "
+            f"has kTxagcGainDb[]")
     vals = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", m.group(1))]
     if len(vals) != 64:
         die(f"expected 64 kTxagcGainDb entries, got {len(vals)}")
@@ -169,6 +184,69 @@ def analyze(rows, table, min_samples, out=print):
     return passed, med
 
 
+def analyze_measured_only(rows, min_samples, out=print):
+    """Shape-only report with no reference table: medians/n/drift + the same
+    health warnings as analyze(), minus the table columns and verdict.
+    -> med: {idx: median_dbm} or None."""
+    by_idx, by_idx_pass = {}, {}
+    for idx, pss, dbm in rows:
+        by_idx.setdefault(idx, []).append(dbm)
+        by_idx_pass.setdefault((idx, pss), []).append(dbm)
+
+    med, skipped = {}, []
+    for idx, vals in sorted(by_idx.items()):
+        if len(vals) < min_samples:
+            skipped.append((idx, len(vals)))
+            continue
+        med[idx] = statistics.median(vals)
+    if len(med) < 2:
+        out("FAIL: fewer than 2 indices with enough samples")
+        return None
+
+    anchor = min(med)
+    meas_rel = {i: med[i] - med[anchor] for i in med}
+
+    drift = {}
+    for idx in med:
+        p1 = by_idx_pass.get((idx, 1), [])
+        p2 = by_idx_pass.get((idx, 2), [])
+        if p1 and p2:
+            drift[idx] = statistics.median(p2) - statistics.median(p1)
+
+    out(f"anchor: idx {anchor} = 0 dB (shape-only; measured-only mode, no "
+        f"reference table)")
+    out(f"{'idx':>3} {'n':>5} {'dBm':>7} {'meas_rel':>9} {'drift':>6}")
+    for idx in sorted(med):
+        d = f"{drift[idx]:+.2f}" if idx in drift else "n/a"
+        out(f"{idx:>3} {len(by_idx[idx]):>5} {med[idx]:>7.1f} "
+            f"{meas_rel[idx]:>9.2f} {d:>6}")
+
+    srt = sorted(med)
+    mono_bad = [b for a_, b in zip(srt, srt[1:])
+                if med[b] < med[a_] - MONO_SLACK_DB]
+
+    out(f"\nmeasured {len(med)} indices (measured-only, no verdict)")
+    if drift:
+        dworst = max(drift, key=lambda i: abs(drift[i]))
+        out(f"up/down drift: max {drift[dworst]:+.2f} dB @ idx {dworst} "
+            f"(large = thermal drift during the run)")
+    if skipped:
+        out(f"UNMEASURED (n < {min_samples}): "
+            + ", ".join(f"idx {i} (n={n})" for i, n in skipped))
+    if mono_bad:
+        out(f"WARNING: non-monotonic at idx {mono_bad} "
+            f"(> {MONO_SLACK_DB} dB reversal)")
+    if max(med.values()) > SAT_WARN_DBM:
+        out(f"WARNING: max median {max(med.values()):.1f} dBm > "
+            f"{SAT_WARN_DBM} — RX may be saturating; add attenuation or "
+            f"distance and re-run")
+    if min(med.values()) < FLOOR_WARN_DBM:
+        out(f"WARNING: min median {min(med.values()):.1f} dBm < "
+            f"{FLOOR_WARN_DBM} — bottom of sweep near sensitivity floor")
+
+    return med
+
+
 def emit_table(med, out=print):
     # Drop-in stays 64 entries: mabur's power axis is idx 0..63 today.
     # Measured indices above 63 are reported in the curve but not emitted.
@@ -199,8 +277,17 @@ def emit_table(med, out=print):
     out("};")
 
 
-def selftest(table):
+def selftest():
+    """Self-contained: proves analyze()'s PASS/FAIL shape discrimination
+    using two small built-in synthetic curves. Reads no file (not even
+    kTxagcGainDb) — this only exercises the judging logic, not any real
+    hardware table."""
     random.seed(1234)
+
+    # A saturating reference curve (distinct shape from the linear FAIL
+    # case below) stands in for a real gain table.
+    ref = [8.0 * math.log2(1 + i) for i in range(64)]
+    linear = [0.5 * i for i in range(64)]
 
     def synth(curve):
         rows = []
@@ -212,10 +299,9 @@ def selftest(table):
         return rows
 
     silent = lambda *a, **k: None
-    ok1, _ = analyze(synth(table), table, 20, out=silent)
-    linear = [0.5 * i for i in range(64)]
-    ok2, _ = analyze(synth(linear), table, 20, out=silent)
-    print(f"selftest: table-shaped input -> {'PASS' if ok1 else 'FAIL'} "
+    ok1, _ = analyze(synth(ref), ref, 20, out=silent)
+    ok2, _ = analyze(synth(linear), ref, 20, out=silent)
+    print(f"selftest: ref-shaped input -> {'PASS' if ok1 else 'FAIL'} "
           f"(expect PASS)")
     print(f"selftest: linear 0.5 dB/step input -> "
           f"{'PASS' if ok2 else 'FAIL'} (expect FAIL)")
@@ -234,16 +320,27 @@ def main():
     ap.add_argument("--min-samples", type=int, default=20)
     ap.add_argument("--emit-table", action="store_true",
                     help="print a drop-in kTxagcGainDb[] from the measurement")
+    ap.add_argument("--measured-only", action="store_true",
+                    help="skip the reference-table load/compare/verdict; "
+                         "print medians/drift/health only, exit 0 always")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
-    table = parse_gain_table(args.table)
     if args.selftest:
-        sys.exit(selftest(table))
+        sys.exit(selftest())
     if not args.jsonl:
         ap.error("jsonl input required (or --selftest)")
 
     rows = load_rows(args.jsonl, args.chain)
+
+    if args.measured_only:
+        med = analyze_measured_only(rows, args.min_samples)
+        if args.emit_table and med:
+            print()
+            emit_table(med)
+        sys.exit(0)
+
+    table = parse_gain_table(args.table)
     passed, med = analyze(rows, table, args.min_samples)
     if args.emit_table and med:
         print()

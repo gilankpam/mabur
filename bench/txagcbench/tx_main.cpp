@@ -40,6 +40,10 @@ struct Args {
   // sweep). "none": never touch power; bring-up state stands, i.e. the efuse
   // refs + phy_reg_pg per-rate diffs stay live. Use with --lo 0 --hi 0 to
   // measure the as-deployed per-rate power (the stamped idx is then a dummy).
+  // "offset": SetTxPowerOffsetQdb(idx - 64) per index — sweeps the linear
+  // offset-qdB knob WITH the per-rate diffs live (unlike "override", which
+  // flattens them); lo/hi are then BIASED (idx - 64), e.g. --lo 24 --hi 64
+  // sweeps -10..0 dB.
   std::string pwr_mode = "override";
   uint16_t usb_vid = 0x0bda, usb_pid = 0;
 };
@@ -47,8 +51,11 @@ struct Args {
 void usage(const char* argv0) {
   std::fprintf(stderr,
     "usage: %s [--channel 149] [--lo 0] [--hi 63, max 127] [--frames 50]\n"
-    "  [--settle-ms 100] [--gap-us 2000] [--mcs 0] [--pwr-mode override|none]\n"
-    "  [--usb-vid 0x0bda] [--usb-pid 0]\n", argv0);
+    "  [--settle-ms 100] [--gap-us 2000] [--mcs 0]\n"
+    "  [--pwr-mode override|none|offset]\n"
+    "  [--usb-vid 0x0bda] [--usb-pid 0]\n"
+    "  offset mode: lo/hi are biased qdB (idx - 64), 64 = baseline; e.g.\n"
+    "  --pwr-mode offset --lo 24 --hi 64 sweeps -10..0 dB.\n", argv0);
 }
 
 bool parse_args(int argc, char** argv, Args* a) {
@@ -69,7 +76,8 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--pwr-mode") {
       if (i + 1 >= argc) return false;
       a->pwr_mode = argv[++i];
-      if (a->pwr_mode != "override" && a->pwr_mode != "none") return false;
+      if (a->pwr_mode != "override" && a->pwr_mode != "none" &&
+          a->pwr_mode != "offset") return false;
     }
     else if (k == "--usb-vid") { int v; if (!next(&v)) return false; a->usb_vid = static_cast<uint16_t>(v); }
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
@@ -169,7 +177,8 @@ int main(int argc, char** argv) {
       // repointing the power, so no frame transmits at power N+1 while
       // stamped N
       std::this_thread::sleep_for(std::chrono::microseconds(a.gap_us));
-      if (a.pwr_mode == "override") dev->SetTxPowerIndexOverride(idx);
+      if (a.pwr_mode == "offset") dev->SetTxPowerOffsetQdb(idx - 64);
+      else if (a.pwr_mode == "override") dev->SetTxPowerIndexOverride(idx);
       // "none": bring-up power stands (efuse refs + per-rate diffs live).
       std::this_thread::sleep_for(std::chrono::milliseconds(a.settle_ms));
       for (int f = 0; f < a.frames && !g_devourer_should_stop; ++f) {
