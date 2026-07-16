@@ -5,4 +5,9 @@
 if(TARGET devourer)
   add_executable(txagcbench-tx tx_main.cpp)
   target_link_libraries(txagcbench-tx PRIVATE devourer pthread)
+
+  if(TARGET mabur_gs_radio)
+    add_executable(txagcbench-rx rx_main.cpp)
+    target_link_libraries(txagcbench-rx PRIVATE mabur_gs_radio devourer pthread)
+  endif()
 endif()
