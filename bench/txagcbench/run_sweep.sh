@@ -30,8 +30,8 @@ if ssh "$GS" pidof maburgs >/dev/null 2>&1; then
   exit 1
 fi
 
-scp "$TX_BIN" "$DRONE:/tmp/txagcbench-tx"
-scp "$RX_BIN" "$GS:/tmp/txagcbench-rx"
+scp -O "$TX_BIN" "$DRONE:/tmp/txagcbench-tx"
+scp -O "$RX_BIN" "$GS:/tmp/txagcbench-rx"
 
 echo "starting recorder on $GS ..."
 RX_PID=$(ssh "$GS" "rm -f /tmp/sweep.jsonl; nohup /tmp/txagcbench-rx \
@@ -56,7 +56,7 @@ ssh "$DRONE" "/tmp/txagcbench-tx --channel $CHANNEL $TX_ARGS"
 
 cleanup   # stop the recorder now so it flushes and releases the radio; the EXIT trap stays armed as a failure-path safety net (idempotent)
 sleep 2
-scp "$GS:/tmp/sweep.jsonl" "$OUT"
+scp -O "$GS:/tmp/sweep.jsonl" "$OUT"
 ssh "$GS" "tail -3 /tmp/txagcbench-rx.log" || true
 
 python3 bench/txagcbench/analyze_sweep.py "$OUT" "$@"
