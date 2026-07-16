@@ -43,14 +43,22 @@ FLOOR_WARN_DBM = -85.0
 MONO_SLACK_DB = 0.5
 
 
+def die(msg):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
 def parse_gain_table(path):
-    text = Path(path).read_text()
+    try:
+        text = Path(path).read_text()
+    except OSError as e:
+        die(f"cannot read {path}: {e}")
     m = re.search(r"kTxagcGainDb\[\]\s*=\s*\{([^}]*)\}", text)
     if not m:
-        sys.exit(f"error: kTxagcGainDb not found in {path}")
+        die(f"kTxagcGainDb not found in {path}")
     vals = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", m.group(1))]
     if len(vals) != 64:
-        sys.exit(f"error: expected 64 kTxagcGainDb entries, got {len(vals)}")
+        die(f"expected 64 kTxagcGainDb entries, got {len(vals)}")
     return vals
 
 
@@ -58,7 +66,11 @@ def load_rows(path, chain):
     """-> list of (idx, pass, dbm)."""
     key = "rssi_b" if chain == "b" else "rssi_a"
     rows = []
-    for ln, line in enumerate(Path(path).read_text().splitlines(), 1):
+    try:
+        text = Path(path).read_text()
+    except OSError as e:
+        die(f"cannot read {path}: {e}")
+    for ln, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
             continue
@@ -66,9 +78,9 @@ def load_rows(path, chain):
             o = json.loads(line)
             rows.append((int(o["idx"]), int(o["pass"]), float(o[key]) - 110.0))
         except (ValueError, KeyError) as e:
-            sys.exit(f"error: {path}:{ln}: bad record ({e})")
+            die(f"{path}:{ln}: bad record ({e})")
     if not rows:
-        sys.exit(f"error: {path}: no records")
+        die(f"{path}: no records")
     return rows
 
 
