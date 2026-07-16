@@ -155,6 +155,10 @@ int main(int argc, char** argv) {
     uint16_t mac_seq = 0, seq = 0;
     uint64_t sent = 0, fail = 0;
     auto run_index = [&](int idx, uint8_t pass) {
+      // drain: let the previous index's last frame clear the TX FIFO before
+      // repointing the power, so no frame transmits at power N+1 while
+      // stamped N
+      std::this_thread::sleep_for(std::chrono::microseconds(a.gap_us));
       dev->SetTxPowerIndexOverride(idx);
       std::this_thread::sleep_for(std::chrono::milliseconds(a.settle_ms));
       for (int f = 0; f < a.frames && !g_devourer_should_stop; ++f) {
