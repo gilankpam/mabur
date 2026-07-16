@@ -36,13 +36,18 @@ struct Args {
   int settle_ms = 100;
   int gap_us = 2000;
   int mcs = 0;
+  // "override": SetTxPowerIndexOverride per index (flat power — the gain/wall
+  // sweep). "none": never touch power; bring-up state stands, i.e. the efuse
+  // refs + phy_reg_pg per-rate diffs stay live. Use with --lo 0 --hi 0 to
+  // measure the as-deployed per-rate power (the stamped idx is then a dummy).
+  std::string pwr_mode = "override";
   uint16_t usb_vid = 0x0bda, usb_pid = 0;
 };
 
 void usage(const char* argv0) {
   std::fprintf(stderr,
     "usage: %s [--channel 149] [--lo 0] [--hi 63, max 127] [--frames 50]\n"
-    "  [--settle-ms 100] [--gap-us 2000] [--mcs 0]\n"
+    "  [--settle-ms 100] [--gap-us 2000] [--mcs 0] [--pwr-mode override|none]\n"
     "  [--usb-vid 0x0bda] [--usb-pid 0]\n", argv0);
 }
 
@@ -61,6 +66,11 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--settle-ms") { if (!next(&a->settle_ms)) return false; }
     else if (k == "--gap-us") { if (!next(&a->gap_us)) return false; }
     else if (k == "--mcs") { if (!next(&a->mcs)) return false; }
+    else if (k == "--pwr-mode") {
+      if (i + 1 >= argc) return false;
+      a->pwr_mode = argv[++i];
+      if (a->pwr_mode != "override" && a->pwr_mode != "none") return false;
+    }
     else if (k == "--usb-vid") { int v; if (!next(&v)) return false; a->usb_vid = static_cast<uint16_t>(v); }
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
     else { return false; }
@@ -159,7 +169,8 @@ int main(int argc, char** argv) {
       // repointing the power, so no frame transmits at power N+1 while
       // stamped N
       std::this_thread::sleep_for(std::chrono::microseconds(a.gap_us));
-      dev->SetTxPowerIndexOverride(idx);
+      if (a.pwr_mode == "override") dev->SetTxPowerIndexOverride(idx);
+      // "none": bring-up power stands (efuse refs + per-rate diffs live).
       std::this_thread::sleep_for(std::chrono::milliseconds(a.settle_ms));
       for (int f = 0; f < a.frames && !g_devourer_should_stop; ++f) {
         const auto payload = build_sweep_payload(
