@@ -54,8 +54,7 @@ fi
 echo "sweeping on $DRONE ..."
 ssh "$DRONE" "/tmp/txagcbench-tx --channel $CHANNEL $TX_ARGS"
 
-sleep 2
-# cleanup trap (EXIT) will SIGINT the RX; allow flush time before scp
+cleanup   # stop the recorder now so it flushes and releases the radio; the EXIT trap stays armed as a failure-path safety net (idempotent)
 sleep 2
 scp "$GS:/tmp/sweep.jsonl" "$OUT"
 ssh "$GS" "tail -3 /tmp/txagcbench-rx.log" || true
