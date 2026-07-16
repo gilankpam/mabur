@@ -24,7 +24,7 @@ struct OpPoint {
   int mcs = 0;
   int bw = 20;
   bool sgi = false;
-  int txagc = 63;
+  int pwr_offset_qdb = 0;
   double overhead = 1.0;
   double snr_req = 0.0;
   double e_bit;
@@ -52,13 +52,16 @@ std::vector<LinkRow> build_link_rows(const LinkTable& lt, double target,
                                      int bw, bool sgi,
                                      const std::vector<int>& bw_set, bool vht);
 
-// Resolve a LinkRow at given path_loss_db; compute required TX AGC, received
-// SNR, p_deliver, and energy/bit. Return std::nullopt if TX gain insufficient.
+// Resolve a LinkRow at given path_loss_db; compute the required qdB power
+// offset, received SNR, p_deliver, and energy/bit. Return std::nullopt if
+// even max_offset_qdb can't supply the needed gain.
 std::optional<OpPoint> resolve(const LinkRow& row, double path_loss_db,
                                const LinkTable& lt, int payload_bytes,
-                               double src_bitrate_bps, double margin_db);
+                               double src_bitrate_bps, double margin_db,
+                               int min_offset_qdb, int max_offset_qdb,
+                               int base_ref_idx);
 
-// Sentinel: HT MCS0 BW20, TXAGC 63, overhead 1.0, 0 delivery (max range).
-OpPoint max_range();
+// Sentinel: HT MCS0 BW20, max_offset_qdb, overhead 1.0, 0 delivery (max range).
+OpPoint max_range(int max_offset_qdb);
 
 }  // namespace maburgs

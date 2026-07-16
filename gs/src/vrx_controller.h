@@ -18,10 +18,10 @@ struct VrxCfg {
   int beacon_keepalive_ms = 1000;
   ControllerConfig ctrl;
   // Static-link pin: mcs >= 0 bypasses the adaptive controller (see
-  // LinkCfg::static_mcs). overhead/txagc used only when pinned.
+  // LinkCfg::static_mcs). overhead/offset used only when pinned.
   int pin_mcs = -1;
   double pin_overhead = 0.25;
-  int pin_txagc = 63;
+  int pin_offset_qdb = 0;
   ScoreConfig score;
   std::vector<uint8_t> bw_set;  // rungs only when >1 entry
 };
@@ -60,7 +60,7 @@ class VrxController {
   double last_keepalive_ms_ = -1e18;
   uint16_t seq_ = 0;
   OpPoint cur_op_;
-  int cur_txagc_ = 32;
+  int cur_offset_qdb_ = 0;
 };
 
 }  // namespace maburgs

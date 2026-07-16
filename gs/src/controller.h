@@ -27,6 +27,13 @@ struct ControllerConfig {
   double rung_block_delta = 0.15;
   int rung_block_hold_ms = 5000;
   int rung_min_samples = 8;
+  // qdB offset rail (RCF wire semantics, rc_proto bias-64). max_offset_qdb
+  // is ZERO by construction: the wall-equalized diffs already park every
+  // rate at wall - margin at offset 0, so no legal offset can exceed it
+  // (docs/txagc-calibration.md). min_offset_qdb is the deployable floor.
+  int min_offset_qdb = -40;
+  int max_offset_qdb = 0;
+  int base_ref_idx = 53;
 };
 
 class Controller {
@@ -34,7 +41,7 @@ class Controller {
   Controller(const LinkTable& lt, ControllerConfig cfg);
   void report_rung_delivery(const std::map<int, std::pair<double, int>>& stats,
                             double now_ms);
-  std::optional<OpPoint> update(double reported_snr, int reported_txagc, double now_ms);
+  std::optional<OpPoint> update(double reported_snr, int reported_offset_qdb, double now_ms);
   std::optional<OpPoint> on_tick(double now_ms);
   bool shed() const;
   bool primary_dirty() const;
@@ -54,7 +61,7 @@ class Controller {
   std::map<int, double> rung_block_;
   bool primary_dirty_ = false;
 
-  double path_loss(double reported_snr, int reported_txagc) const;
+  double path_loss(double reported_snr, int reported_offset_qdb) const;
   bool rung_blocked(int bw) const;
   std::optional<OpPoint> best(double path_loss, double margin) const;
   std::optional<OpPoint> decide(double path_loss, double now_ms);

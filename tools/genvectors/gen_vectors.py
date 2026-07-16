@@ -273,9 +273,13 @@ rate_cases = [{"mode": m, "mcs": mc, "bw": bw, "sgi": sgi,
                                      ("vht", 4, 40, True)]]
 dump("profile.json", {"profiles": prof_cases, "probe": probe_cases,
                       "rates": rate_cases,
-                      "table": [{"ladder": p.svc_ladder, "pwr": p.pwr_idx,
+                      # pwr_offset_qdb DIVERGES from devourer's frozen
+                      # DEFAULT_PROFILE_TABLE.pwr_idx (TXAGC index) since
+                      # 2026-07-17 — see tools/pyref/offset_power.py.
+                      "table": [{"ladder": p.svc_ladder,
+                                 "pwr_offset_qdb": offset_power.PROFILE_TABLE_PWR_OFFSET_QDB[i],
                                  "ov": p.fec_overhead, "bw": p.bw}
-                                for p in rc_proto.DEFAULT_PROFILE_TABLE]})
+                                for i, p in enumerate(rc_proto.DEFAULT_PROFILE_TABLE)]})
 
 # --- sbi unpack ----------------------------------------------------------
 su_cases = []

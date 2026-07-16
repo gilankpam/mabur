@@ -30,10 +30,10 @@ TEST(resolve_matches_python) {
   for (auto& c : j["resolve"]) {
     LinkRow r{c["row"]["vht"], c["row"]["mcs"], c["row"]["bw"], c["row"]["sgi"],
               c["row"]["ov"], c["row"]["snr_req"]};
-    auto op = resolve(r, c["pl"], lt, 1024, 4e6, 2.0);
+    auto op = resolve(r, c["pl"], lt, 1024, 4e6, 2.0, -40, 0, 53);
     if (c["op"].is_null()) { CHECK(!op.has_value()); continue; }
     REQUIRE(op.has_value());
-    CHECK(op->txagc == c["op"]["txagc"].get<int>());
+    CHECK(op->pwr_offset_qdb == c["op"]["pwr_offset_qdb"].get<int>());
     CHECK(op->p_deliver == c["op"]["p_deliver"].get<double>());
     if (c["op"]["e_bit"].is_null()) CHECK(std::isinf(op->e_bit));
     else CHECK(op->e_bit == c["op"]["e_bit"].get<double>());

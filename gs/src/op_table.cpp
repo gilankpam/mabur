@@ -1,5 +1,6 @@
 #include "op_table.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -69,24 +70,24 @@ std::vector<LinkRow> build_link_rows(const LinkTable& lt, double target,
 
 std::optional<OpPoint> resolve(const LinkRow& row, double path_loss_db,
                                const LinkTable& lt, int payload_bytes,
-                               double src_bitrate_bps, double margin_db) {
+                               double src_bitrate_bps, double margin_db,
+                               int min_offset_qdb, int max_offset_qdb,
+                               int base_ref_idx) {
   const double need_gain = (row.snr_req + margin_db) - path_loss_db;
-  int txagc = 0;
-  if (need_gain > 0) {
-    txagc = min_txagc_for_gain(need_gain);
-    if (txagc < 0) return std::nullopt;
-  }
-  const double recv = path_loss_db + gain_db(txagc);
+  int off = min_offset_qdb_for_gain(need_gain);
+  if (off > max_offset_qdb) return std::nullopt;
+  off = std::max(off, min_offset_qdb);
+  const double recv = path_loss_db + gain_db(off);
   const double pdel = lt.p_deliver(recv - bw_noise_db(row.bw), row.mcs, row.overhead);
-  const TxPoint pt{row.vht, row.mcs, row.bw, row.sgi, txagc};
+  const TxPoint pt{row.vht, row.mcs, row.bw, row.sgi, off, base_ref_idx};
   const double eb = energy_per_delivered_bit(pt, src_bitrate_bps, row.overhead,
                                              payload_bytes, pdel);
-  return OpPoint{row.vht, row.mcs, row.bw, row.sgi, txagc,
+  return OpPoint{row.vht, row.mcs, row.bw, row.sgi, off,
                  row.overhead, row.snr_req, eb, pdel};
 }
 
-OpPoint max_range() {
-  return OpPoint{false, 0, 20, false, 63, 1.00, 0.0,
+OpPoint max_range(int max_offset_qdb) {
+  return OpPoint{false, 0, 20, false, max_offset_qdb, 1.00, 0.0,
                  std::numeric_limits<double>::infinity(), 0.0};
 }
 

@@ -141,11 +141,11 @@ std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
 
 const std::array<ProfileRow, 5>& profile_table() {
   static const std::array<ProfileRow, 5> table = {{
-      {"CRIT=MCS0/20/LDPC;T0=MCS0/20/LDPC;T1=MCS0/20;T2=MCS0/20", 63, 1.00, 20},
-      {"CRIT=MCS0/20/LDPC;T0=MCS1/20;T1=MCS2/20;T2=MCS2/20", 48, 0.75, 20},
-      {"CRIT=MCS1/20/LDPC;T0=MCS2/20;T1=MCS4/20;T2=MCS4/20", 32, 0.50, 20},
-      {"CRIT=MCS2/20;T0=MCS4/20;T1=MCS5/20;T2=MCS7/20/SGI", 20, 0.25, 20},
-      {"CRIT=MCS4/20;T0=MCS5/20;T1=MCS7/20;T2=MCS7/40/SGI", 8, 0.10, 20},
+      {"CRIT=MCS0/20/LDPC;T0=MCS0/20/LDPC;T1=MCS0/20;T2=MCS0/20", 0, 1.00, 20},
+      {"CRIT=MCS0/20/LDPC;T0=MCS1/20;T1=MCS2/20;T2=MCS2/20", -4, 0.75, 20},
+      {"CRIT=MCS1/20/LDPC;T0=MCS2/20;T1=MCS4/20;T2=MCS4/20", -8, 0.50, 20},
+      {"CRIT=MCS2/20;T0=MCS4/20;T1=MCS5/20;T2=MCS7/20/SGI", -12, 0.25, 20},
+      {"CRIT=MCS4/20;T0=MCS5/20;T1=MCS7/20;T2=MCS7/40/SGI", -16, 0.10, 20},
   }};
   return table;
 }

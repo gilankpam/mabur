@@ -241,7 +241,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     auto ladder = rc::ladder_for_row(row_idx, cfg_.flags);
     merge_power_offsets(ladder, cfg_.power_offset_db);
     const auto& row = rc::profile_table()[static_cast<size_t>(row_idx)];
-    apply_ladder_op(ladder, row.pwr_idx, row.fec_overhead);
+    apply_ladder_op(ladder, row.pwr_offset_qdb, row.fec_overhead);
 
     state_ = State::LINKED;
     last_fb_ms_ = now_ms;

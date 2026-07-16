@@ -136,9 +136,12 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
   vcfg.ctrl.src_bitrate_bps = cfg.link.src_bitrate_mbps * 1e6;
   vcfg.ctrl.margin_db = cfg.link.margin_db;
+  vcfg.ctrl.min_offset_qdb = cfg.link.min_offset_qdb;
+  vcfg.ctrl.max_offset_qdb = cfg.link.max_offset_qdb;
+  vcfg.ctrl.base_ref_idx = cfg.link.base_ref_idx;
   vcfg.pin_mcs = cfg.link.static_mcs;
   vcfg.pin_overhead = cfg.link.static_overhead;
-  vcfg.pin_txagc = cfg.link.static_txagc;
+  vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
   maburgs::VrxController vrx(lt, vcfg);
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
@@ -257,10 +260,10 @@ static int run_radio(const maburgs::Config& cfg) {
       if (msp_sink) msp_sink->tick(now_ms_u);  // expire stale repair rows
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
-                   "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f/agc%d "
+                   "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f/off%d "
                    "rtp=%llu udp_fail=%llu q_drop=%llu",
                    static_cast<int>(vrx.link_state()), sel.selected(), op.mcs,
-                   op.bw, op.overhead, op.txagc,
+                   op.bw, op.overhead, op.pwr_offset_qdb,
                    static_cast<unsigned long long>(udp.sent()),
                    static_cast<unsigned long long>(udp.failed()),
                    static_cast<unsigned long long>(queue.dropped()));

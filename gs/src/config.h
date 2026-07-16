@@ -65,7 +65,13 @@ struct LinkCfg {
   // debugging with a fixed operating point (2026-07-12).
   int static_mcs = -1;
   double static_overhead = 0.25;
-  int static_txagc = 63;
+  // qdB power offset from the calibrated baseline (RCF wire semantics,
+  // rc_proto bias-64); used only when static_mcs >= 0.
+  int static_offset_qdb = 0;
+  // Controller qdB offset rail + PA-draw base index (see ControllerConfig).
+  int min_offset_qdb = -40;
+  int max_offset_qdb = 0;
+  int base_ref_idx = 53;
 };
 
 /// Video output destination.
