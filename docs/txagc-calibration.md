@@ -5,13 +5,18 @@ deployed drone hardware, 2026-07-16. Written to be reproducible from a fresh
 session. Paths relative to the mabur repo root; tool source under
 `bench/txagcbench/`.
 
-**TL;DR:** the adaptive controller's power model (`gen::kTxagcGainDb`,
-`gs/src/gen/gen_tables.h`) bears no resemblance to the hardware. The real
-curve is a flat floor below idx ~29, a ~0.3 dB/step ramp, and a **per-MCS
-compression wall** — max clean power falls ~7 dB from MCS0 to MCS7, and the
-factory-default operating point already overdrives MCS6/7. No layer of the
-current stack (efuse → devourer → maburd) enforces per-rate limits. The
-measured wall table below is the authoritative clamp data for the fix.
+**TL;DR:** the adaptive controller's original power model (`kTxagcGainDb`,
+since deleted from `gs/src/gen/gen_tables.h`) bore no resemblance to the
+hardware. The real curve is a flat floor below idx ~29, a ~0.3 dB/step ramp,
+and a **per-MCS compression wall** — max clean power falls ~7 dB from MCS0 to
+MCS7. No layer of the current stack (efuse → devourer → maburd) enforced
+per-rate limits at the time of this sweep. The measured wall table below is
+the authoritative clamp data for the fix, now consumed as config (see
+"Consuming the walls"). **Deployed-baseline safety finding (2026-07-16/17):**
+the original "MCS6/7 already overdriven" claim was a flat-override artifact —
+under the actually-shipped `power_mode: "none"`, devourer's default per-rate
+diffs keep every MCS 3–6 dB below its wall at 98–100% delivery; the deployed
+baseline was never in the danger zone this doc originally implied.
 
 ## The wall table (the headline result)
 
@@ -87,17 +92,34 @@ never derived from hardware.
 |---|---|---|
 | eFuse (silicon) | base index + rate-group calibration | present; base = **53** for ch149 (read back, `rb:1`) |
 | devourer read | reads base + PA-bias trim | works — the 53 is applied |
-| devourer apply | 8822E per-rate diff registers | **deliberately zeroed** — `set_tx_power_ref(idx, zero_diffs=true)`: "every rate emits at idx" (`RadioManagementJaguar3.h:85-91`) |
+| devourer apply | 8822E per-rate diff registers | zeroed **only under flat-override** — `set_tx_power_ref(idx, zero_diffs=true)`: "every rate emits at idx" (`RadioManagementJaguar3.h:85-91`); the 8822E **default path applies the phy_reg_pg per-rate diffs**, and `SetTxPowerOffsetQdb` preserves them (light ref-only writes) — see 2026-07-16/17 correction below |
 | per-packet TXAGC | TX-descriptor power field | inert on Jaguar3 (devourer docs) — per-frame power is impossible |
-| maburd deployed | `radio.power_mode` | `"none"` → fixed at 53; commanded `pwr_idx` ignored (adaptive power leg is a no-op today) |
+| maburd deployed | `radio.power_mode` | `"none"` → fixed at 53, phy_reg_pg diffs live; `"offset"` → wall-equalized custom diffs, adaptive offsets (see "Consuming the walls" below); commanded `pwr_idx` under `"none"` is ignored |
 
-Consequences at the factory-default 53:
+Consequences at the factory-default 53, **under flat-override** (the mode
+active during the original sweep — devourer's per-rate diffs zeroed, every
+rate forced to emit at raw idx 53):
 
 - MCS5 (wall 56) has **1 dB of margin — by luck**, which is why the clean
   bench runs worked.
 - MCS6 (wall 51) and MCS7 (wall 49) are **already overdriven**: any UEP ladder
   rung flying them transmits into compression and dies at TX before the link
   or FEC get a vote.
+
+> **Correction (2026-07-16/17):** the above is a flat-override artifact, not
+> the deployed behavior. Under the actually-deployed `power_mode: "none"`,
+> devourer takes the 8822E **default path** and applies the efuse
+> `phy_reg_pg` per-rate diffs instead of zeroing them — each MCS is *not*
+> pinned to raw idx 53. Re-measured per-MCS on-air power under `"none"`:
+>
+> | MCS | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+> |---|---|---|---|---|---|---|---|---|
+> | on-air power | −66 dBm | −65 dBm | −66 dBm | −67 dBm | −70 dBm | −72 dBm | −71 dBm | −72 dBm |
+>
+> 98–100% delivery at every MCS, **3–6 dB of margin** below the compression
+> walls above — no rate is overdriven. The "MCS6/7 already overdriven"
+> finding holds only for the flat-override configuration (raw idx 53, diffs
+> zeroed), which is not how the shipped baseline runs.
 
 ## Cross-validation against the vendor driver (`../rtl88x2eu-20230815`)
 
@@ -126,6 +148,24 @@ Consequences at the factory-default 53:
 4. Extending the command range past idx 63 is not worth it (+4 dB at MCS0,
    nothing at MCS4+); remapping onto idx 28..91 is actively dangerous for
    MCS5+ ladders. The wall-aware clamp is the correct shape of the fix.
+
+## Consuming the walls
+
+The measured wall table above is now live config, not just findings. It's
+read at `radio.rate_walls_idx` in `bundle/mabur.default.json`, set to this
+unit's measured ceilings (with `legacy_wall_idx` for the OFDM control rate),
+alongside `wall_margin_db` and `base_ref_idx`. `radio.power_mode: "offset"`
+switches the drone from the deployed `"none"` baseline to the adaptive path:
+`drone/src/power_plan.h` derives per-rate qdB diffs from the walls so that,
+at offset 0, every rate's effective TXAGC index sits at `wall − margin`
+(`wall_margin_db`, in qdB steps) — every rate parked at wall-minus-margin,
+level-continuous with the `"none"` baseline measured above. `max_offset_qdb`
+is always 0 under this formulation: offset 0 already equalizes every rate to
+its wall, so the controller only ever backs off (`offset ≤ 0`), scaling
+every rate down uniformly by the commanded amount. A different unit's card
+gets its own walls by re-running the sweep (`bench/txagcbench/`) and
+updating `rate_walls_idx` — the walls do not transfer unit-to-unit (see
+Caveats below).
 
 ## How the measurement works (methodology)
 
