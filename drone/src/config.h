@@ -27,6 +27,16 @@ struct RadioCfg {
   // offset/none bypass the thermal derate (it acts via pwr_idx).
   std::string power_mode = "override";
   int power_offset_qdb = 0;
+  // Wall-equalization inputs (Task 9): measured per-rate clean-air TXAGC
+  // ceilings and the plan derived from them. rate_walls_idx is REQUIRED
+  // when power_mode == "offset" (the plan can't be built without it);
+  // otherwise it may be left absent/default. See power_plan.h for the
+  // diff[r] = walls[r] - m - base_ref_idx formulation.
+  std::array<int, 8> rate_walls_idx = {0, 0, 0, 0, 0, 0, 0, 0};
+  int legacy_wall_idx = 91;
+  double wall_margin_db = 1.0;
+  int min_offset_qdb = -40;
+  int base_ref_idx = 53;
   // Parallel USB sender threads (URBs in flight). The 8822E flow-controls
   // sync bulk-OUT URBs (~0.4 ms acceptance handshake + FIFO drain), so a
   // single blocking sender caps air throughput at ~26 Mbps regardless of

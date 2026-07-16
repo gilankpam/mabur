@@ -6,7 +6,12 @@
     "width": 20,
     "bw_set": [20],
     "max_txagc": 63,
-    "thermal_max_delta": 25
+    "thermal_max_delta": 25,
+    "rate_walls_idx": [91, 91, 91, 91, 73, 56, 51, 49],
+    "legacy_wall_idx": 91,
+    "wall_margin_db": 1.0,
+    "min_offset_qdb": -40,
+    "base_ref_idx": 53
   },
   "fec": {
     "symbol_size": [164, 1312, 1312, 1312],

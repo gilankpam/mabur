@@ -55,6 +55,15 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.power_mode == "override");
   CHECK(cfg.radio.power_offset_qdb == 0);
 
+  // Bundle carries this unit's measured wall-equalization values (Task 9)
+  // even though power_mode stays "override" until an operator opts in.
+  CHECK((cfg.radio.rate_walls_idx ==
+         std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
+  CHECK(cfg.radio.legacy_wall_idx == 91);
+  CHECK(cfg.radio.wall_margin_db == 1.0);
+  CHECK(cfg.radio.min_offset_qdb == -40);
+  CHECK(cfg.radio.base_ref_idx == 53);
+
   // The bundle intentionally diverges from struct defaults for fec (Task 1's
   // sliding-window winners), so check against the bundle's actual values
   // rather than the struct defaults used for everything else.
@@ -348,6 +357,39 @@ TEST(msp_rejects_bad_values) {
     CHECK(threw == true);
     std::filesystem::remove(path);
   }
+}
+
+TEST(radio_wall_equalization_keys_parse) {
+  auto path = write_temp_json(
+      R"({"radio":{"power_mode":"offset",)"
+      R"("rate_walls_idx":[91,91,91,91,73,56,51,49],)"
+      R"("legacy_wall_idx":91,"wall_margin_db":2.0,)"
+      R"("min_offset_qdb":-32,"base_ref_idx":50}})");
+  Config cfg = load_config(path.string());
+  CHECK((cfg.radio.rate_walls_idx ==
+         std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
+  CHECK(cfg.radio.legacy_wall_idx == 91);
+  CHECK(cfg.radio.wall_margin_db == 2.0);
+  CHECK(cfg.radio.min_offset_qdb == -32);
+  CHECK(cfg.radio.base_ref_idx == 50);
+  std::filesystem::remove(path);
+}
+
+TEST(radio_rate_walls_idx_wrong_length_rejected) {
+  auto path = write_temp_json(
+      R"({"radio":{"rate_walls_idx":[91,91,91]}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(radio_power_mode_offset_requires_rate_walls_idx) {
+  auto path = write_temp_json(R"({"radio":{"power_mode":"offset"}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  std::filesystem::remove(path);
 }
 
 MTEST_MAIN
