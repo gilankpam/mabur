@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Golden vectors for mabur, generated from devourer's Python references.
-Deterministic (no randomness, no time). Re-run + git diff must be clean."""
+Deterministic (no randomness, no time). Re-run + git diff must be clean.
+
+energy.json's power-model cases (gain/pa-index) diverge from the prototype
+since 2026-07-17 — see tools/pyref/offset_power.py. The airtime/rate/
+baseline-power dimensions are unchanged and still ride devourer's frozen
+energy_model.py."""
 import json, os, struct, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +37,7 @@ dump("crc16.json", {"cases": [
 
 # --- sliding-window fec (mabur-native; reference = tools/pyref/sw_fec.py) --
 sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
-import sw_fec  # noqa: E402
+import sw_fec, offset_power  # noqa: E402
 
 SW_PKT_SIZES = [10, 50, 62, 1, 30, 62, 44, 62, 20, 62, 62, 5, 61, 33, 62, 62]
 sw_cases = []
@@ -62,6 +67,52 @@ for window, ov in ((8, 1.0), (16, 0.5), (128, 0.25)):
                      "packets": pkts, "stream": stream, "flush": flush,
                      "decode": decode})
 dump("sw.json", {"cases": sw_cases})
+
+# --- energy (gs/src/energy.h/.cpp) --------------------------------------
+# Airtime/rate/baseline-power dimensions are unchanged: still ride the
+# frozen devourer energy_model.py calibration (p_baseline_w, t_pre_us,
+# p_pa_w curve). Gain and PA-index lookups now go through the mabur-owned
+# tools/pyref/offset_power.py (linear offset qdB semantics), which diverges
+# from energy_model.py's txagc-index gain curve since 2026-07-17.
+_cal = energy_model.load_calibration()
+
+def _energy_case(mode, mcs, bw, sgi, offset_qdb, base_ref_idx, src, ov,
+                 payload, p_deliver):
+    pt = energy_model.TxPoint(mode=mode, mcs=mcs, bw=bw, sgi=sgi,
+                              txagc=offset_power.pa_index(offset_qdb, base_ref_idx))
+    # energy_per_delivered_bit reads calib.pa_w(txagc), so routing the
+    # offset through pa_index() above reproduces the C++ side's
+    # pa_w(offset_qdb, base_ref_idx) exactly (same kPaW curve, same clamp).
+    eff_bps = energy_model.phy_rate_eff_bps(pt, payload, _cal)
+    airtime = energy_model.airtime_fraction(pt, src, ov, payload, _cal)
+    e_bit = energy_model.energy_per_delivered_bit(pt, src, ov, payload,
+                                                  p_deliver, _cal)
+    return {"vht": mode == "vht", "mcs": mcs, "bw": bw, "sgi": sgi,
+           "pwr_offset_qdb": offset_qdb, "base_ref_idx": base_ref_idx,
+           "src": src, "ov": ov, "payload": payload, "p_deliver": p_deliver,
+           "eff_bps": eff_bps, "airtime": airtime,
+           "e_bit": None if e_bit == float("inf") else e_bit}
+
+energy_cases = [
+    _energy_case("ht", 0, 20, False, 10, 53, 1400000.0, 1.0, 1024, 1.0),
+    _energy_case("ht", 2, 20, False, -21, 53, 4000000.0, 0.25, 1024, 0.99),
+    _energy_case("ht", 7, 40, True, -43, 53, 8000000.0, 0.1, 1024, 0.95),
+    _energy_case("vht", 8, 80, False, -53, 53, 20000000.0, 0.1, 1024, 1.0),
+    _energy_case("ht", 0, 20, False, 10, 53, 50000000.0, 1.0, 1024, 1.0),
+    _energy_case("ht", 4, 20, False, -21, 53, 4000000.0, 0.25, 1024, 0.0),
+]
+energy_gain_cases = [
+    {"need_db": 0.0, "idx": offset_power.min_offset_qdb_for_gain(0.0)},
+    {"need_db": 0.001, "idx": offset_power.min_offset_qdb_for_gain(0.001)},
+    {"need_db": 5.0, "idx": offset_power.min_offset_qdb_for_gain(5.0)},
+    {"need_db": 24.9, "idx": offset_power.min_offset_qdb_for_gain(24.9)},
+    {"need_db": 25.0, "idx": offset_power.min_offset_qdb_for_gain(25.0)},
+    {"need_db": -10.0, "idx": offset_power.min_offset_qdb_for_gain(-10.0)},
+]
+energy_bw_noise = [{"bw": bw, "db": energy_model.bw_noise_db(bw)}
+                   for bw in (20, 40, 80)]
+dump("energy.json", {"cases": energy_cases, "gain": energy_gain_cases,
+                     "bw_noise": energy_bw_noise})
 
 # --- sbi ---------------------------------------------------------------
 pk = fec_subblock.SubBlockPacker(75, 4, stream_id=2)

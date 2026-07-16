@@ -16,6 +16,7 @@
  "cases": [
   {
    "airtime": 0.44444110576923074,
+   "base_ref_idx": 53,
    "bw": 20,
    "e_bit": 9.761868990384615e-07,
    "eff_bps": 6300047.326076669,
@@ -23,13 +24,14 @@
    "ov": 1.0,
    "p_deliver": 1.0,
    "payload": 1024,
+   "pwr_offset_qdb": 10,
    "sgi": false,
    "src": 1400000.0,
-   "txagc": 63,
    "vht": false
   },
   {
    "airtime": 0.28082431891025644,
+   "base_ref_idx": 53,
    "bw": 20,
    "e_bit": 2.4160547342920387e-07,
    "eff_bps": 17804725.813642442,
@@ -37,13 +39,14 @@
    "ov": 0.25,
    "p_deliver": 0.99,
    "payload": 1024,
+   "pwr_offset_qdb": -21,
    "sgi": false,
    "src": 4000000.0,
-   "txagc": 32,
    "vht": false
   },
   {
    "airtime": 0.10163541666666666,
+   "base_ref_idx": 53,
    "bw": 40,
    "e_bit": 9.773666762609649e-08,
    "eff_bps": 86583990.98083428,
@@ -51,13 +54,14 @@
    "ov": 0.1,
    "p_deliver": 0.95,
    "payload": 1024,
+   "pwr_offset_qdb": -43,
    "sgi": true,
    "src": 8000000.0,
-   "txagc": 10,
    "vht": false
   },
   {
    "airtime": 0.1700999376780627,
+   "base_ref_idx": 53,
    "bw": 80,
    "e_bit": 3.585049968839031e-08,
    "eff_bps": 129335732.27779776,
@@ -65,13 +69,14 @@
    "ov": 0.1,
    "p_deliver": 1.0,
    "payload": 1024,
+   "pwr_offset_qdb": -53,
    "sgi": false,
    "src": 20000000.0,
-   "txagc": 0,
    "vht": true
   },
   {
    "airtime": 15.872896634615383,
+   "base_ref_idx": 53,
    "bw": 20,
    "e_bit": null,
    "eff_bps": 6300047.326076669,
@@ -79,13 +84,14 @@
    "ov": 1.0,
    "p_deliver": 1.0,
    "payload": 1024,
+   "pwr_offset_qdb": 10,
    "sgi": false,
    "src": 50000000.0,
-   "txagc": 63,
    "vht": false
   },
   {
    "airtime": 0.15261919070512817,
+   "base_ref_idx": 53,
    "bw": 20,
    "e_bit": null,
    "eff_bps": 32761279.737489752,
@@ -93,9 +99,9 @@
    "ov": 0.25,
    "p_deliver": 0.0,
    "payload": 1024,
+   "pwr_offset_qdb": -21,
    "sgi": false,
    "src": 4000000.0,
-   "txagc": 32,
    "vht": false
   }
  ],
@@ -109,20 +115,20 @@
    "need_db": 0.001
   },
   {
-   "idx": 5,
+   "idx": 20,
    "need_db": 5.0
   },
   {
-   "idx": 62,
+   "idx": 100,
    "need_db": 24.9
   },
   {
-   "idx": 63,
+   "idx": 100,
    "need_db": 25.0
   },
   {
-   "idx": -1,
-   "need_db": 30.0
+   "idx": -40,
+   "need_db": -10.0
   }
  ]
 }

@@ -26,13 +26,16 @@ double bw_noise_db(int bw) {
   return 10.0 * std::log10(bw / 20.0);
 }
 
-double gain_db(int txagc) { return gen::kTxagcGainDb[clamp_idx(txagc)]; }
-double pa_w(int txagc) { return gen::kPaW[clamp_idx(txagc)]; }
+double gain_db(int offset_qdb) { return 0.25 * offset_qdb; }
 
-int min_txagc_for_gain(double need_db) {
-  for (int idx = 0; idx < 64; ++idx)
-    if (gen::kTxagcGainDb[idx] >= need_db) return idx;
-  return -1;
+int min_offset_qdb_for_gain(double need_db) {
+  return static_cast<int>(std::ceil(need_db * 4.0));
+}
+
+double pa_w_index(int idx) { return gen::kPaW[clamp_idx(idx)]; }
+
+double pa_w(int offset_qdb, int base_ref_idx) {
+  return pa_w_index(base_ref_idx + offset_qdb);
 }
 
 double phy_rate_eff_bps(const TxPoint& p, int payload_bytes) {
@@ -50,7 +53,7 @@ double airtime_fraction(const TxPoint& p, double src_bitrate_bps,
 
 double avg_power_w(const TxPoint& p, double airtime_frac) {
   const double af = airtime_frac < 1.0 ? airtime_frac : 1.0;
-  return gen::kPBaselineW + af * pa_w(p.txagc);
+  return gen::kPBaselineW + af * pa_w(p.pwr_offset_qdb, p.base_ref_idx);
 }
 
 double energy_per_delivered_bit(const TxPoint& p, double src_bitrate_bps,
