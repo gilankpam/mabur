@@ -78,7 +78,7 @@ std::optional<OpPoint> Controller::decide(double path_loss, double now_ms) {
                            cfg_.max_offset_qdb, cfg_.base_ref_idx);
     cur_ok = cur_now.has_value() && cur_now->p_deliver >= cfg_.target &&
              !rung_blocked(cur_->bw);
-    if (cur_ok) cur_ = cur_now;  // refresh txagc/e_bit at the new path loss
+    if (cur_ok) cur_ = cur_now;  // refresh offset/e_bit at the new path loss
   }
 
   auto cand = best(path_loss, cfg_.margin_db);

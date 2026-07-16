@@ -29,6 +29,9 @@ add_mtest(test_msp_dp test_msp_dp.cpp)
 add_mtest(test_msp_source test_msp_source.cpp)
 add_mtest(test_sweep_wire test_sweep_wire.cpp)
 target_include_directories(test_sweep_wire PRIVATE ${CMAKE_SOURCE_DIR}/bench/txagcbench)
+add_mtest(test_gen_tables_guard test_gen_tables_guard.cpp)
+target_compile_definitions(test_gen_tables_guard PRIVATE
+  MABUR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(MABUR_BUILD_DRONE)
   add_mtest(test_config test_config.cpp LIBS mabur_drone_core)
   target_compile_definitions(test_config PRIVATE

@@ -148,6 +148,16 @@ rate forced to emit at raw idx 53):
 4. Extending the command range past idx 63 is not worth it (+4 dB at MCS0,
    nothing at MCS4+); remapping onto idx 28..91 is actively dangerous for
    MCS5+ ladders. The wall-aware clamp is the correct shape of the fix.
+5. **Model validity range**: `gs/src/energy.h`'s `gain_db()` linear 0.25
+   dB/qdB model is bench-valid only over the PA ramp region (idx ~29..91).
+   Below effective index ~29 output floors and the model overstates
+   back-off. For this unit's wall-equalized diffs, that floor lands at
+   offset_qdb ~= -16 on the fastest rungs (MCS7 sits at effective idx 45 at
+   offset 0 with the default 1 dB margin, and 45-16=29). The pre-flight
+   bench campaign for any unit must either raise `min_offset_qdb` to this
+   floor-aware value or re-measure the ramp/floor boundary for that unit's
+   card; an MCS7 offset sweep down to the floor belongs in the acceptance
+   list before flight.
 
 ## Consuming the walls
 

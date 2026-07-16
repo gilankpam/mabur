@@ -394,4 +394,24 @@ TEST(radio_power_mode_offset_requires_rate_walls_idx) {
   std::filesystem::remove(path);
 }
 
+// The 8822E's per-rate diff field is 7-bit two's complement: diff[r] =
+// walls[r] - wall_margin_db*4 - base_ref_idx must land in [-64,63], or the
+// value silently wraps on air (e.g. +70 -> -58, sign-flipping per-rate
+// power) with no error. base_ref_idx left at 0 (a plausible miscalibration:
+// forgetting to set the unit's efuse anchor) drives every wall straight out
+// of range, so config load must fail loudly rather than let power_plan.h's
+// clamp paper over it silently.
+TEST(radio_offset_diff_out_of_range_rejected) {
+  auto path = write_temp_json(
+      R"({"radio":{"power_mode":"offset",)"
+      R"("rate_walls_idx":[127,127,127,127,127,127,127,127],)"
+      R"("legacy_wall_idx":91,"wall_margin_db":0.0,)"
+      R"("min_offset_qdb":-32,"base_ref_idx":0}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  CHECK(msg.find("[-64,63]") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
 MTEST_MAIN

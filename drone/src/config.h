@@ -39,7 +39,7 @@ struct RadioCfg {
   //   "none"     — never touch power (efuse table as-is, streamtx-proven);
   //                still bypasses the thermal derate's actuation (nothing
   //                for it to drive).
-  std::string power_mode = "override";
+  std::string power_mode = "none";
   int power_offset_qdb = 0;
   // Wall-equalization inputs (Task 9): measured per-rate clean-air TXAGC
   // ceilings and the plan derived from them. rate_walls_idx is REQUIRED

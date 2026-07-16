@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -109,6 +110,33 @@ void parse_radio(const json& j, RadioCfg& r) {
     fail("radio.min_offset_qdb", "must be in [-64,0]");
   if (r.base_ref_idx < 0 || r.base_ref_idx > 127)
     fail("radio.base_ref_idx", "must be in [0,127]");
+
+  // The 8822E's per-rate diff field is 7-bit two's complement (devourer's
+  // pack_rate_diff_word masks & 0x7f), so every diff make_power_plan will
+  // derive — walls[r] - m - base_ref_idx, and the same for legacy_wall_idx —
+  // must land in [-64, 63]. Outside that range the value silently wraps on
+  // air (e.g. +70 becomes -58) with no error, sign-flipping per-rate power.
+  // A miscalibrated config (e.g. base_ref_idx left at 0) must refuse to
+  // boot here rather than let power_plan.h's clamp silently paper over it.
+  if (r.power_mode == "offset") {
+    const int m = static_cast<int>(std::lround(r.wall_margin_db * 4.0));
+    for (int w : r.rate_walls_idx) {
+      const int diff = w - m - r.base_ref_idx;
+      if (diff < -64 || diff > 63)
+        fail("radio.rate_walls_idx",
+             "derived diff (wall - wall_margin_db*4 - base_ref_idx) = " +
+                 std::to_string(diff) +
+                 " is out of the 7-bit hardware field range [-64,63] — "
+                 "check base_ref_idx/wall_margin_db calibration");
+    }
+    const int legacy_diff = r.legacy_wall_idx - m - r.base_ref_idx;
+    if (legacy_diff < -64 || legacy_diff > 63)
+      fail("radio.legacy_wall_idx",
+           "derived diff (legacy_wall_idx - wall_margin_db*4 - base_ref_idx) = " +
+               std::to_string(legacy_diff) +
+               " is out of the 7-bit hardware field range [-64,63] — "
+               "check base_ref_idx/wall_margin_db calibration");
+  }
 
   uint8_t prev = 0;
   for (uint8_t bw : r.bw_set) {

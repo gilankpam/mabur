@@ -28,6 +28,18 @@ double bw_noise_db(int bw);
 
 // Radiated-power gain (dB) at a signed qdB offset from baseline: linear,
 // 0.25 dB/qdB (bench-validated slope, docs/txagc-calibration.md).
+//
+// Model validity: this linear model is bench-valid over the PA ramp region
+// only (measured idx ~29..91, docs/txagc-calibration.md). Below effective
+// TXAGC index ~29 the hardware output floors (PA/TSSI minimum — commanding
+// more back-off does nothing), so the model overstates back-off past that
+// point. For this unit's wall-equalized diffs (base_ref_idx=53, MCS7 wall
+// 49, default 1 dB margin -> MCS7 sits at effective idx 45 at offset 0),
+// that floor is reached at offset_qdb ~= -16 on the fastest rungs — offsets
+// below that no longer buy the commanded gain. The pre-flight bench
+// campaign must either raise min_offset_qdb to this floor-aware value or
+// re-measure the ramp/floor boundary for the unit being flown; see
+// docs/txagc-calibration.md, "Implications for the adaptive controller".
 double gain_db(int offset_qdb);
 
 // Smallest offset (qdB) giving >= need_db radiated gain. No clamping —

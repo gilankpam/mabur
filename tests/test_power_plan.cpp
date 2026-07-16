@@ -31,4 +31,28 @@ TEST(margin_scales) {
   CHECK(p.mcs[7] == -12);  // 49-8-53
 }
 
+// Belt-and-braces clamp: the 8822E's diff field is 7-bit two's complement
+// (devourer's pack_rate_diff_word masks & 0x7f), so the clamp target is the
+// FIELD range [-64, 63], not the full int8 [-128, 127]. A miscalibrated
+// config (e.g. base_ref_idx left at 0) can drive the raw diff to +127; the
+// clamp must saturate at 63, never wrap through the field's two's-complement
+// boundary.
+TEST(clamp_saturates_to_field_range_not_int8) {
+  std::array<int, 8> walls = {127, 127, 127, 127, 127, 127, 127, 127};
+  auto p = mabur::make_power_plan(walls, /*legacy_wall=*/127,
+                                  /*base_ref=*/0, /*margin_db=*/0.0);
+  // Raw diff = 127-0-0 = 127, which would wrap to -1 under 7-bit two's
+  // complement on air if left unclamped. Must clamp to the field max, 63.
+  for (int r = 0; r < 8; ++r) CHECK(p.mcs[r] == 63);
+  CHECK(p.legacy == 63);
+  CHECK(p.cck == 63);
+
+  std::array<int, 8> walls_lo = {0, 0, 0, 0, 0, 0, 0, 0};
+  auto p_lo = mabur::make_power_plan(walls_lo, /*legacy_wall=*/0,
+                                     /*base_ref=*/127, /*margin_db=*/0.0);
+  // Raw diff = 0-0-127 = -127; must clamp to the field min, -64.
+  for (int r = 0; r < 8; ++r) CHECK(p_lo.mcs[r] == -64);
+  CHECK(p_lo.legacy == -64);
+}
+
 MTEST_MAIN

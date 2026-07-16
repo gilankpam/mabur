@@ -23,8 +23,16 @@ struct PowerPlan {
 };
 
 namespace detail {
+// The 8822E's per-rate diff field is 7-bit two's complement (devourer's
+// pack_rate_diff_word masks each byte & 0x7f before packing), so its valid
+// range is [-64, 63], not the full int8 [-128, 127]. A diff outside this
+// range would silently wrap on air (e.g. +70 -> -58) with no error. This is
+// a defensive belt-and-braces clamp only — config.cpp's radio-section
+// validation is the loud layer that refuses to load a config whose diffs
+// would land out of range in the first place; this function still always
+// returns a value (never throws).
 inline int8_t clamp_i8(int v) {
-  return static_cast<int8_t>(std::clamp(v, -128, 127));
+  return static_cast<int8_t>(std::clamp(v, -64, 63));
 }
 }  // namespace detail
 
