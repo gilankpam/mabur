@@ -76,7 +76,10 @@ def load_rows(path, chain):
             continue
         try:
             o = json.loads(line)
-            rows.append((int(o["idx"]), int(o["pass"]), float(o[key]) - 110.0))
+            idx = int(o["idx"])
+            if not 0 <= idx <= 63:
+                die(f"{path}:{ln}: idx {idx} out of range 0..63")
+            rows.append((idx, int(o["pass"]), float(o[key]) - 110.0))
         except (ValueError, KeyError) as e:
             die(f"{path}:{ln}: bad record ({e})")
     if not rows:
