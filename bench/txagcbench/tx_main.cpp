@@ -45,6 +45,11 @@ struct Args {
   // flattens them); lo/hi are then BIASED (idx - 64), e.g. --lo 24 --hi 64
   // sweeps -10..0 dB.
   std::string pwr_mode = "override";
+  // Optional custom per-rate diff table, programmed once after bring-up:
+  // "cck,legacy,m0,...,m7" (10 signed qdB ints, txpower's format). Lets the
+  // matrix/offset sweeps run with mabur's wall-equalized ladder live instead
+  // of the kernel phy_reg_pg shape. Empty = leave bring-up diffs.
+  std::string rate_diffs;
   uint16_t usb_vid = 0x0bda, usb_pid = 0;
 };
 
@@ -78,6 +83,10 @@ bool parse_args(int argc, char** argv, Args* a) {
       a->pwr_mode = argv[++i];
       if (a->pwr_mode != "override" && a->pwr_mode != "none" &&
           a->pwr_mode != "offset") return false;
+    }
+    else if (k == "--rate-diffs") {
+      if (i + 1 >= argc) return false;
+      a->rate_diffs = argv[++i];
     }
     else if (k == "--usb-vid") { int v; if (!next(&v)) return false; a->usb_vid = static_cast<uint16_t>(v); }
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
@@ -168,6 +177,33 @@ int main(int argc, char** argv) {
   std::fprintf(stderr, "bringing up TX on channel %d\n", a.channel);
   dev->InitWrite(SelectedChannel{static_cast<uint8_t>(a.channel), 0,
                                  CHANNEL_WIDTH_20});
+
+  if (!a.rate_diffs.empty()) {
+    devourer::TxRateDiffsQdb d;
+    int v[10] = {0};
+    int n = 0;
+    const char* p = a.rate_diffs.c_str();
+    char* end = nullptr;
+    while (n < 10) {
+      v[n++] = static_cast<int>(std::strtol(p, &end, 10));
+      if (*end != ',') break;
+      p = end + 1;
+    }
+    if (n != 10 || *end != '\0') {
+      std::fprintf(stderr, "error: --rate-diffs wants 10 comma ints "
+                           "(cck,legacy,m0..m7)\n");
+      return 2;
+    }
+    d.cck = static_cast<int8_t>(v[0]);
+    d.legacy = static_cast<int8_t>(v[1]);
+    for (int j = 0; j < 8; ++j) d.mcs[j] = static_cast<int8_t>(v[2 + j]);
+    if (!dev->SetTxPowerRateDiffs(d)) {
+      std::fprintf(stderr, "error: SetTxPowerRateDiffs unsupported on this chip\n");
+      return 3;
+    }
+    std::fprintf(stderr, "custom rate diffs applied: legacy %d mcs0 %d mcs7 %d\n",
+                 v[1], v[2], v[9]);
+  }
 
   std::thread tx_thread([&] {
     uint16_t mac_seq = 0, seq = 0;
