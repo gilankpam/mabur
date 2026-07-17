@@ -159,7 +159,7 @@ void parse_radio(const json& j, RadioCfg& r) {
 }
 
 void parse_fec(const json& j, FecCfg& f) {
-  check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms"}, "fec");
+  check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms", "async_worker", "worker_cpu"}, "fec");
   if (j.contains("symbol_size")) {
     auto& s = j.at("symbol_size");
     if (s.is_array()) {
@@ -189,6 +189,8 @@ void parse_fec(const json& j, FecCfg& f) {
   }
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
+  assign_if_present(j, "async_worker", f.async_worker, "fec");
+  assign_if_present(j, "worker_cpu", f.worker_cpu, "fec");
 
   for (int s : f.symbol_size)
     if (s < 32 || s > 1500) fail("fec.symbol_size", "must be in [32,1500]");
@@ -202,6 +204,7 @@ void parse_fec(const json& j, FecCfg& f) {
       fail("fec", "layer body bytes exceed kMaxBodyBytes (2900)");
   }
   if (f.base_overhead < 0.05 || f.base_overhead > 2.0) fail("fec.base_overhead", "must be in [0.05,2.0]");
+  if (f.worker_cpu < -1) fail("fec.worker_cpu", "must be -1 (unpinned) or a core index");
 }
 
 void parse_waybeam(const json& j, WaybeamCfg& w) {

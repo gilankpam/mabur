@@ -75,6 +75,12 @@ struct FecCfg {
   std::array<int, 4> blocks_per_body = {4, 8, 16, 16};
   double base_overhead = 0.25;
   int flush_ms = 15;
+  // Transitional gate for the async FEC worker (spec 2026-07-17): exists so
+  // hardware acceptance can A/B with one config line. Once async is
+  // confirmed on the rig, a follow-up removes BOTH keys and makes async the
+  // only mode — do not build tooling around them.
+  bool async_worker = false;
+  int worker_cpu = -1;  // >= 0 pins the worker thread to that core
 };
 
 struct WaybeamCfg {
