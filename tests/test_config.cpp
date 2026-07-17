@@ -414,26 +414,13 @@ TEST(radio_offset_diff_out_of_range_rejected) {
   std::filesystem::remove(path);
 }
 
-TEST(fec_async_worker_defaults_off) {
-  auto p = write_temp_json(R"({"fec":{}})");
-  Config cfg = load_config(p.string());
-  CHECK(cfg.fec.async_worker == false);
-  CHECK(cfg.fec.worker_cpu == -1);
-  std::filesystem::remove(p);
-}
-
-TEST(fec_async_worker_and_cpu_parse) {
-  auto p = write_temp_json(R"({"fec":{"async_worker":true,"worker_cpu":1}})");
-  Config cfg = load_config(p.string());
-  CHECK(cfg.fec.async_worker == true);
-  CHECK(cfg.fec.worker_cpu == 1);
-  std::filesystem::remove(p);
-}
-
-TEST(fec_worker_cpu_below_minus_one_throws_naming_field) {
-  auto p = write_temp_json(R"({"fec":{"worker_cpu":-2}})");
+// The transitional async gate was removed after hardware acceptance (plan
+// 2026-07-17 Task 7): async is the only mode. A stale config still carrying
+// the key must fail loudly, not be silently ignored.
+TEST(fec_stale_async_worker_key_throws) {
+  auto p = write_temp_json(R"({"fec":{"async_worker":true}})");
   std::string w = what_of([&] { load_config(p.string()); });
-  CHECK(w.find("fec.worker_cpu") != std::string::npos);
+  CHECK(w.find("async_worker") != std::string::npos);
   std::filesystem::remove(p);
 }
 

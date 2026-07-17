@@ -27,8 +27,8 @@ struct FecRepairJob {
 //
 // ARMv7 rules (measured on the SSC338Q, bench/fecbench/RESULTS.md — both
 // are load-bearing, do not "simplify"):
-//  - Spin loops read with memory_order_relaxed and fence-acquire once after
-//    the awaited change is seen. An acquire load in the loop is LDR+DMB;
+//  - Spin loops read with memory_order_relaxed and one acquire LOAD once the
+//    awaited change is seen. An acquire load in the loop is LDR+DMB;
 //    an idle spinner's barrier storm slowed the OTHER core 10-22%.
 //  - The worker sleeps (futex) after kSpinIters; a permanent spinner keeps
 //    the scheduler migrating the hot thread and erases the offload gain.

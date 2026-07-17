@@ -105,7 +105,7 @@ class SwEncoder {
   // returns nothing now. Both allocate key/counters identically.
   void emit_or_enqueue_repair(std::vector<std::vector<uint8_t>>& out);
   void drain_done(std::vector<std::vector<uint8_t>>& out);
-  // Spins (relaxed + one acquire fence) until no jobs are outstanding.
+  // Spins (relaxed + one acquire load) until no jobs are outstanding.
   // Worst wait = one in-flight repair build; the hot-thread watchdog
   // (hot_beat) covers a wedged worker.
   void join();
