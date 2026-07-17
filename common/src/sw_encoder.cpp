@@ -1,5 +1,6 @@
 #include "mabur/sw_encoder.h"
 
+#include <cassert>
 #include <cstring>
 
 #include "mabur/gf256.h"
@@ -135,6 +136,9 @@ void SwEncoder::emit_or_enqueue_repair(std::vector<std::vector<uint8_t>>& out) {
 }
 
 void SwEncoder::execute_repair_job(const FecRepairJob& j) {
+  // Precondition: async mode. Only FecWorker::loop and the inline
+  // queue-full fallback call this; both exist only when async_ is set.
+  assert(async_);
   auto env = build_repair(j.repair_key, j.header_seq, j.window_len, j.start_slot);
   {
     std::lock_guard<std::mutex> l(async_->done_m);
@@ -151,7 +155,11 @@ void SwEncoder::drain_done(std::vector<std::vector<uint8_t>>& out) {
 
 void SwEncoder::join() {
   while (async_->outstanding.load(std::memory_order_relaxed) != 0) { /* spin */ }
-  std::atomic_thread_fence(std::memory_order_acquire);
+  // One acquire LOAD (not a fence) pairs with execute_repair_job's
+  // fetch_sub(release), publishing the worker's writes (done list, env
+  // bytes). A fence would be equivalent per the standard, but TSAN cannot
+  // model fence-based synchronization — a load keeps this verifiable.
+  (void)async_->outstanding.load(std::memory_order_acquire);
   seals_since_join_ = 0;
 }
 

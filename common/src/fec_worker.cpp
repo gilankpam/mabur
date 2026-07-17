@@ -56,15 +56,23 @@ void FecWorker::loop() {
       if (++spins >= kSpinIters) {
         std::unique_lock<std::mutex> l(m_);
         sleeping_.store(true, std::memory_order_seq_cst);
+        // Predicate loads are seq_cst: they pair with try_enqueue's seq_cst
+        // tail_ store + sleeping_ load in the single total order, closing
+        // the lost-wake window a relaxed read would leave open. This
+        // predicate runs at most twice per sleep cycle — it is NOT the hot
+        // spin loop above, so the ARMv7 no-DMB-in-spin rule doesn't apply.
         cv_.wait(l, [&] {
-          return tail_.load(std::memory_order_relaxed) != seen ||
-                 quit_.load(std::memory_order_relaxed);
+          return tail_.load(std::memory_order_seq_cst) != seen ||
+                 quit_.load(std::memory_order_seq_cst);
         });
         sleeping_.store(false, std::memory_order_seq_cst);
         spins = 0;
       }
     }
-    std::atomic_thread_fence(std::memory_order_acquire);
+    // Acquire LOAD instead of an acquire fence: pairs with try_enqueue's
+    // tail_ store, publishing the queue-slot write. Equivalent sync, but
+    // TSAN can model it (it cannot model fences).
+    (void)tail_.load(std::memory_order_acquire);
     FecRepairJob j = q_[seen % q_.size()];
     head_.store(seen + 1, std::memory_order_release);
     ++seen;
