@@ -5,6 +5,7 @@
 #include <random>
 #include <vector>
 
+#include "mabur/fec_worker.h"
 #include "mabur/frag.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_encoder.h"
@@ -53,7 +54,11 @@ struct UepBody {
 // not change any wire byte for a given seq.
 class UepEncoder {
  public:
-  UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15);
+  // worker: optional shared async FEC worker handed to every layer's
+  // SwEncoder (see sw_encoder.h). nullptr = fully synchronous, today's
+  // exact behavior.
+  UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15,
+             FecWorker* worker = nullptr);
 
   // Classifies pkt via classify_rtp, drops it if that stream is shed
   // (counted in dropped()), otherwise fragments (usable = fec.max_packet_size()
@@ -88,9 +93,10 @@ class UepEncoder {
     uint64_t last_activity_ms = 0;
     bool has_activity = false;
 
-    Layer(const UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq)
+    Layer(const UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq,
+          FecWorker* worker)
         : fec(cfg.fec),
-          sw(cfg.fec, initial_seq),
+          sw(cfg.fec, initial_seq, worker),
           packer(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
           usable(cfg.fec.max_packet_size() - 4) {}

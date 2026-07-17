@@ -27,11 +27,14 @@ double uep_layer_overhead(int stream_id, double cmd_overhead) {
   return std::clamp(v, 0.125, 2.0);
 }
 
-UepEncoder::UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms)
+UepEncoder::UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms,
+                       FecWorker* worker)
     : layers_{[&] {
         const auto seq = random_initial_seqs();
-        return std::array<Layer, 4>{Layer(layers[0], 0, seq[0]), Layer(layers[1], 1, seq[1]),
-                                     Layer(layers[2], 2, seq[2]), Layer(layers[3], 3, seq[3])};
+        return std::array<Layer, 4>{Layer(layers[0], 0, seq[0], worker),
+                                     Layer(layers[1], 1, seq[1], worker),
+                                     Layer(layers[2], 2, seq[2], worker),
+                                     Layer(layers[3], 3, seq[3], worker)};
       }()},
       flush_ms_(flush_ms) {}
 

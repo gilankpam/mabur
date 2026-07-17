@@ -9,6 +9,7 @@
 #include <random>
 #include <vector>
 
+#include "mabur/fec_worker.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 #include "mtest.h"
@@ -34,9 +35,9 @@ std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base, int window)
 }
 
 SimResult run_sim(int symbol_size, int bpb_base, int window, int n_pkts,
-                  double drop_pct, int burst_len) {
+                  double drop_pct, int burst_len, FecWorker* worker = nullptr) {
   auto layers = layers_for(symbol_size, bpb_base, window);
-  UepEncoder enc(layers, /*flush_ms=*/15);
+  UepEncoder enc(layers, /*flush_ms=*/15, worker);
   UepDecoder dec(layers, /*decode_deadline_ms=*/200);
 
   std::mt19937 drop_rng(7);
@@ -316,6 +317,23 @@ TEST(opening_loss_is_accounted) {
   // Every missing RTP packet MUST be accounted by some loss counter.
   // FAILS today: missing >= 1 while counted_loss == 0 (uncounted vanish).
   CHECK(missing == 0 || counted_loss >= missing);
+}
+
+// Async worker through the full UEP pipeline: zero loss must deliver 100%
+// (repairs trailing their sources is invisible to the decoder), and lossy
+// delivery must match the sync pipeline within noise (the drop pattern
+// shifts because repairs pack into different bodies, hence the tolerance).
+TEST(uep_async_no_loss_delivers_everything) {
+  FecWorker worker;
+  SimResult r = run_sim(164, 8, 64, 3000, 0.0, 1, &worker);
+  CHECK(r.delivered == r.sent);
+}
+
+TEST(uep_async_recovers_under_loss_like_sync) {
+  SimResult sync_r = run_sim(164, 8, 64, 4000, 5.0, 3);
+  FecWorker worker;
+  SimResult async_r = run_sim(164, 8, 64, 4000, 5.0, 3, &worker);
+  CHECK(pct(async_r) >= pct(sync_r) - 1.0);
 }
 
 MTEST_MAIN
