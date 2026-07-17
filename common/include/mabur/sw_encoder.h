@@ -1,7 +1,6 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <vector>
 namespace mabur {
 
@@ -55,12 +54,26 @@ class SwEncoder {
   uint64_t repairs_out() const { return repairs_out_; }
 
  private:
+  // Sealed symbols live in one contiguous 16 B-aligned fixed-stride ring of
+  // window + kSlackRows rows (not a deque of vectors). The slack keeps a
+  // row readable for kSlackRows further seals after it leaves the window —
+  // the async repair path (spec 2026-07-17) queues jobs that reference ring
+  // rows by slot instead of copying the window.
+  static constexpr size_t kSlackRows = 64;
+
   void append_to_current(const uint8_t* data, size_t len);
   void seal_current(std::vector<std::vector<uint8_t>>& out);
   std::vector<uint8_t> make_repair();
+  // Envelope construction shared by the sync and (later) async paths; pure
+  // reader of ring rows [start_slot, start_slot + window_len).
+  std::vector<uint8_t> build_repair(uint32_t repair_key, uint32_t header_seq,
+                                    int window_len, size_t start_slot) const;
+  const uint8_t* row(size_t oldest_i) const;  // 0 = oldest held symbol
 
   SwConfig cfg_;
-  std::deque<std::vector<uint8_t>> window_;  // last <=window sealed payloads
+  size_t stride_ = 0, cap_ = 0, count_ = 0, next_slot_ = 0;
+  std::vector<uint8_t> ring_raw_;
+  uint8_t* ring_ = nullptr;  // 16B-aligned base inside ring_raw_
   std::vector<uint8_t> current_symbol_;
   uint32_t next_seq_ = 0;   // seq the next sealed symbol gets
   uint32_t repair_key_ = 0;
