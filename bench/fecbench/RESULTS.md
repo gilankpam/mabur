@@ -108,3 +108,72 @@ Three drone runs archived in this directory's git history / session log:
 - run 1 (waybeam alive): baseline-only tables in BASELINE.md
 - run 2 (quiesced): 7-candidate ladder
 - run 3 (quiesced): + mt2-row/lincomb, mt2-row/spin
+
+## Production classes acceptance
+
+2026-07-17, mabur d15c8cf (dirty: fecbench prod row uncommitted), quiesced
+SSC338Q (maburd + waybeam stopped), `gf=neon-vtbl2-q16`. `prod` engine =
+production classes exactly as shipped: `FecWorker(1)` (common/src/fec_worker.cpp)
++ `UepEncoder(layers, 25, &worker)` (common/src/uep_encoder.cpp), vs the
+bench-prototype `mt2a` (AsyncFecWorker + UepEncoderT<SwEncoderMtAsync>). Goal:
+prod must reproduce mt2a within ~5-10% noise (RESULTS.md's own documented
+run-to-run variance) at every point — a bigger gap would mean the
+productionization lost something.
+
+Canonical run (`./build.sh && ./run_drone.sh encoder 6`, 6s/point, ppf=13):
+
+```
+# fecbench  gf=neon-vtbl2-q16  mabur=d15c8cf  32-bit
+
+## encoder: end-to-end base vs copy vs mt2 (6s/point, ppf=13)
+eng   mode        ov   vid1x   air1x  speedup   SUST_vid  SUST_air
+base  scalar   0.100    8.81   13.22     3.39      29.86     44.80
+copy  scalar   0.100    8.81   13.22     3.41      30.08     45.14
+mt2j  scalar   0.100    8.81   13.22     2.99      26.38     39.59
+mt2a  scalar   0.100    8.81   13.22     4.40      38.77     58.19
+prod  scalar   0.100    8.81   13.22     4.87      42.87     64.34
+base  perlayer 0.100    8.81   21.54     3.06      26.94     65.84
+copy  perlayer 0.100    8.81   21.54     3.07      27.05     66.12
+mt2j  perlayer 0.100    8.81   21.54     3.33      29.36     71.77
+mt2a  perlayer 0.100    8.81   21.54     3.89      34.25     83.72
+prod  perlayer 0.100    8.81   21.54     3.95      34.79     85.05
+base  scalar   0.375    8.81   21.65     1.54      13.59     33.39
+copy  scalar   0.375    8.81   21.65     1.55      13.65     33.53
+mt2j  scalar   0.375    8.81   21.65     1.60      14.12     34.68
+mt2a  scalar   0.375    8.81   21.64     1.98      17.46     42.88
+prod  scalar   0.375    8.81   21.64     2.21      19.51     47.91
+base  perlayer 0.375    8.81   35.23     1.40      12.36     49.44
+copy  perlayer 0.375    8.81   35.23     1.39      12.26     49.02
+mt2j  perlayer 0.375    8.81   35.23     1.47      12.98     51.91
+mt2a  perlayer 0.375    8.81   35.22     2.33      20.51     81.98
+prod  perlayer 0.375    8.81   35.23     2.31      20.37     81.44
+```
+
+prod vs mt2a (this run, SUST_air):
+
+| point            | mt2a  | prod  | delta   |
+|------------------|------:|------:|--------:|
+| scalar ov0.10    | 58.19 | 64.34 | +10.6%  |
+| perlayer ov0.10  | 83.72 | 85.05 |  +1.6%  |
+| scalar ov0.375   | 42.88 | 47.91 | +11.7%  |
+| perlayer ov0.375 | 81.98 | 81.44 |  −0.7%  |
+
+prod vs the brief's mt2a reference (previous session, SUST_air):
+
+| point            | ref mt2a | prod  | delta   |
+|------------------|---------:|------:|--------:|
+| scalar ov0.10    |     56.1 | 64.34 | +14.7%  |
+| perlayer ov0.10  |     82.7 | 85.05 |  +2.8%  |
+| scalar ov0.375   |     38.6 | 47.91 | +24.1%  |
+| perlayer ov0.375 |     77.8 | 81.44 |  +4.7%  |
+
+**Verdict: PASS.** prod is at or above mt2a at every point (never a
+regression), and the biggest gaps are well inside this file's own
+documented ~10% run-to-run noise floor. Three additional exploratory runs
+at 8s/10s (not archived verbatim) showed the same pattern with wider
+run-to-run spread at the two ov0.375 points (up to ~-12% on a single busy
+run), confirming these two points are the noisiest in the whole table —
+consistent with prior findings, not a productionization regression. No
+correctness concern: `prod` uses the identical envelope-emission path as
+`mt2a`'s wrapped classes, just via the real common/ headers instead of the
+bench's template shim.

@@ -11,6 +11,7 @@ DIRTY=$(git -C "$MABUR" diff --quiet -- common 2>/dev/null || echo "-dirty")
 
 SRCS="candidates.cpp fecbench.cpp
   $MABUR/common/src/gf256.cpp
+  $MABUR/common/src/fec_worker.cpp
   $MABUR/common/src/sw_wire.cpp
   $MABUR/common/src/sw_encoder.cpp
   $MABUR/common/src/uep_encoder.cpp

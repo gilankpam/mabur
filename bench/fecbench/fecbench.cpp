@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "candidates.h"
+#include "mabur/fec_worker.h"
 #include "mabur/gf256.h"
 #include "mabur/uep_encoder.h"
 #include "mt_encoder.h"
@@ -393,6 +394,15 @@ static void run_encoder_bench(int sim) {
         UepEncoderT<SwEncoderMtAsync> uep(layers, 25, kSeqs, &worker);
         feed_stream(uep, 13, sim, &wall, &air, &in);
         print_enc_row("mt2a", mode, ov, wall, sim, air, in);
+      }
+      {
+        // The PRODUCTION classes (common/ SwEncoder+FecWorker through the
+        // real UepEncoder). Must reproduce mt2a within noise (~5%) — a
+        // bigger gap means the productionization lost something.
+        FecWorker worker(1);
+        UepEncoder uep(layers, 25, &worker);
+        feed_stream(uep, 13, sim, &wall, &air, &in);
+        print_enc_row("prod", mode, ov, wall, sim, air, in);
       }
     }
   }
