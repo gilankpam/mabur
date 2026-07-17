@@ -92,7 +92,6 @@ class SwEncoder {
   // reader of ring rows [start_slot, start_slot + window_len).
   std::vector<uint8_t> build_repair(uint32_t repair_key, uint32_t header_seq,
                                     int window_len, size_t start_slot) const;
-  const uint8_t* row(size_t oldest_i) const;  // 0 = oldest held symbol
 
   struct AsyncState {  // heap-held so SwEncoder stays movable
     std::atomic<int> outstanding{0};

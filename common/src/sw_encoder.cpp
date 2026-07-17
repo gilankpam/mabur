@@ -25,11 +25,6 @@ SwEncoder::~SwEncoder() {
   if (async_) join();
 }
 
-const uint8_t* SwEncoder::row(size_t oldest_i) const {
-  const size_t start = (next_slot_ + cap_ - count_) % cap_;
-  return ring_ + ((start + oldest_i) % cap_) * stride_;
-}
-
 void SwEncoder::append_to_current(const uint8_t* data, size_t len) {
   const uint16_t ln = static_cast<uint16_t>(len);
   current_symbol_.push_back(static_cast<uint8_t>(ln & 0xFF));

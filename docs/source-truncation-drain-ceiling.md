@@ -138,7 +138,7 @@ Truncation follows the op's air cost and nothing else.
 
 ## UPDATE 2026-07-17 (later): async FEC worker raised the ceiling
 
-maburd with the async FEC repair worker (`fec.async_worker`, branch mt-fec)
+maburd with the async FEC repair worker (`fec.async_worker gate, branch mt-fec; gate since removed — async is always on)
 deployed. Measured on-air with fu_probe (all at full wall-parked power,
 SNR ~63):
 

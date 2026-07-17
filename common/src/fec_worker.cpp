@@ -1,5 +1,7 @@
 #include "mabur/fec_worker.h"
 
+#include <cassert>
+
 #include "mabur/sw_encoder.h"
 
 #if defined(__linux__)
@@ -10,7 +12,11 @@
 namespace mabur {
 
 FecWorker::FecWorker(int cpu, uint32_t queue_slots)
-    : cpu_(cpu), q_(queue_slots), th_([this] { loop(); }) {}
+    : cpu_(cpu), q_(queue_slots), th_([this] { loop(); }) {
+  // Free-running u32 head/tail indices with % q_.size() require a
+  // power-of-two slot count to stay collision-free across index wrap.
+  assert(queue_slots > 0 && (queue_slots & (queue_slots - 1)) == 0);
+}
 
 FecWorker::~FecWorker() {
   quit_.store(true, std::memory_order_seq_cst);
