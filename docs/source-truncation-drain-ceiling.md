@@ -135,3 +135,21 @@ Truncation follows the op's air cost and nothing else.
   never show source truncation. Sniff the 5600 stream.
 - waybeam's `[venc_config] Config saved` line count is a free proxy
   counter for maburd restarts/link-flaps across maburd log truncations.
+
+## UPDATE 2026-07-17 (later): async FEC worker raised the ceiling
+
+maburd with the async FEC repair worker (`fec.async_worker`, branch mt-fec)
+deployed. Measured on-air with fu_probe (all at full wall-parked power,
+SNR ~63):
+
+| op | air | result |
+|---|---|---|
+| mcs7/ov0.10 | 8.8 M | clean (0 trunc, 59.5 fps) — no regression |
+| mcs5/ov0.375 | 11.0 M | MARGINAL: 0-7.2% trunc across probes (was 51-67%) |
+| mcs5/ov0.375, clamp 10000 | 13.75 M | 64.5% trunc, 21 fps — over ceiling |
+| **mcs5/ov0.25** | **10.0 M** | **clean (0 trunc, 59.5 fps, 2 probes/75 s) — new pin** |
+
+New ceiling: ~11 Mbps air (sits ON it; not a safe op). Safe envelope with
+async worker: **<= 10 Mbps air** (was <= 9). Deployed pin changed to
+mcs5/ov0.25 static on the GS. Item 1 (encode the ceiling into bitrate
+policy) still stands — the number just moved.
