@@ -33,6 +33,7 @@
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sw_wire.h"
+#include "mabur/fec_worker.h"
 #include "mabur/uep_encoder.h"
 #include "msp_serial.h"
 #include "power_plan.h"
@@ -368,6 +369,8 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   actuator.dry_run = true;
 
   RcAgent agent(cfg, actuator);
+  // Deterministic replay output: the async FEC worker is never attached in
+  // dry-run mode (repair emission order would depend on thread timing).
   UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms);
 
   auto pkts = read_len_prefixed_u16(in_path);
@@ -715,7 +718,15 @@ int run_real_mode(const Config& cfg) {
   // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
     RingSource ring(cfg.ring_name);
-    UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms);
+    // Async FEC worker (spec 2026-07-17): repair envelopes build on the
+    // second core. Declared BEFORE the UepEncoder so it is destroyed after
+    // it — each layer's SwEncoder joins its outstanding jobs in its own
+    // dtor first. A wedged worker shows up as flush()'s join spinning on
+    // this thread, which the hot_beat watchdog already catches.
+    std::unique_ptr<FecWorker> fec_worker;
+    if (cfg.fec.async_worker)
+      fec_worker = std::make_unique<FecWorker>(cfg.fec.worker_cpu);
+    UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, fec_worker.get());
     uint8_t buf[4096];
 
     std::shared_ptr<const AppliedOp> last_applied_op;
@@ -987,12 +998,13 @@ int main(int argc, char** argv) {
   }
 
   std::fprintf(stderr,
-               "fec: symbol_size=[%d,%d,%d,%d] bpb=[%d,%d,%d,%d] window=%d\n",
+               "fec: symbol_size=[%d,%d,%d,%d] bpb=[%d,%d,%d,%d] window=%d async_worker=%s worker_cpu=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
                cfg.fec.symbol_size[2], cfg.fec.symbol_size[3],
                cfg.fec.blocks_per_body[0], cfg.fec.blocks_per_body[1],
                cfg.fec.blocks_per_body[2], cfg.fec.blocks_per_body[3],
-               cfg.fec.window);
+               cfg.fec.window, cfg.fec.async_worker ? "on" : "off",
+               cfg.fec.worker_cpu);
 
   if (dry_run) {
     if (in_path.empty() || out_path.empty()) {
