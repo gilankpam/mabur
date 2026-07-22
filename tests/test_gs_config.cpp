@@ -186,3 +186,15 @@ TEST(offset_qdb_keys_parse_and_default) {
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
+
+// frame_gap_timeout_ms/frame_lookahead: FrameStream tuning knobs for the
+// session-negotiated frame-wire tail (Task 10). JSON keys under video_out.
+TEST(video_out_frame_keys) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.video_out.frame_gap_timeout_ms == 50);
+  CHECK(cfg.video_out.frame_lookahead == 8);
+  auto cfg2 = maburgs::load_config(write_tmp(
+      "{\"video_out\": {\"frame_gap_timeout_ms\": 30, \"frame_lookahead\": 4}}"));
+  CHECK(cfg2.video_out.frame_gap_timeout_ms == 30);
+  CHECK(cfg2.video_out.frame_lookahead == 4);
+}

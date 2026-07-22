@@ -14,6 +14,7 @@
 #include "body_queue.h"
 #include "config.h"
 #include "frame_file_source.h"
+#include "frame_stream.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
@@ -22,6 +23,7 @@
 #include "msp_sink.h"
 #include "op_table.h"
 #include "radio_frontend.h"
+#include "rtp_packetizer.h"
 #include "rtp_reorder.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
@@ -124,8 +126,28 @@ static int run_radio(const maburgs::Config& cfg) {
       // ~200ms) < this hold, so a row that completes at its age limit
       // still beats the reorder deadline instead of landing in late_dropped.
       /*hold_ms=*/300);
+
+  // Frame-wire tail: FrameStream reassembles whole frames from raw wide
+  // FRAG fragments and streams Annex-B bytes into RtpPacketizer, which
+  // re-emits RFC 7798 RTP over the same udp sink. Only active when the
+  // negotiated session (peer_caps() & CAP_FRAME_WIRE) selects it below;
+  // old-format sessions keep the reorder -> udp path untouched.
+  maburgs::RtpPacketizer pktz(
+      {97, 0x4D414252u, 1400, 16667},
+      [&](const std::vector<uint8_t>& p) { udp.send(p.data(), p.size()); });
+  maburgs::FrameStream fstream(
+      {static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms),
+       cfg.video_out.frame_lookahead},
+      {[&](const mabur::framewire::FrameHdr& h) { pktz.begin_frame(h); },
+       [&](const uint8_t* d, size_t n) { pktz.data(d, n); },
+       [&](bool c) { pktz.end_frame(c); }});
+  bool frame_wire = false;  // core-thread-owned, like everything else here
+
   agg.set_rtp_sink([&](const mabur::DecodedRtp& r) {
-    reorder.push(r.pkt, mono_ms());
+    if (frame_wire)
+      fstream.push_fragment(r.stream_id, r.pkt.data(), r.pkt.size(), mono_ms());
+    else
+      reorder.push(r.pkt, mono_ms());
   });
 
   maburgs::LinkTable lt;
@@ -224,7 +246,22 @@ static int run_radio(const maburgs::Config& cfg) {
     // reorder buffer also guard against stale clocks internally).
     const uint64_t drained_ms = mono_ms();
     agg.poll(drained_ms);
-    reorder.poll(drained_ms);
+
+    // Session capability gate: peer must be in an active SESSION (not
+    // beaconing/pre-rendezvous) AND have advertised CAP_FRAME_WIRE in its
+    // DiscAck for this GS to switch its own tail to frame-wire. On any
+    // change, flip the decoder's FRAG width to match and reset FrameStream
+    // so no half-assembled state survives the format switch.
+    const bool fw = vrx.link_state() == maburgs::VrxState::SESSION &&
+                    (vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
+    if (fw != frame_wire) {
+      frame_wire = fw;
+      agg.decoder().set_wide_frag(fw);
+      fstream.reset();
+      std::fprintf(stderr, "maburgs: video wire format -> %s\n",
+                   fw ? "frame" : "rtp");
+    }
+    if (frame_wire) fstream.poll(drained_ms); else reorder.poll(drained_ms);
 
     // Control step: layer delivery + residual from the decode window.
     std::array<uint8_t, 4> ld{};
@@ -301,6 +338,11 @@ static int run_radio(const maburgs::Config& cfg) {
                    reorder.depth(),
                    static_cast<unsigned long long>(reorder.skipped()),
                    static_cast<unsigned long long>(reorder.late_dropped()));
+      if (frame_wire)
+        std::fprintf(stderr, " frames[clean/trunc/drop]=%llu/%llu/%llu",
+                     static_cast<unsigned long long>(fstream.frames_clean()),
+                     static_cast<unsigned long long>(fstream.frames_truncated()),
+                     static_cast<unsigned long long>(fstream.frames_dropped()));
       std::fprintf(stderr, "\n");
     }
   }

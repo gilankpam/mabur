@@ -49,6 +49,10 @@ class VrxController {
   const OpPoint& cur_op() const;
   VrxState link_state() const;
   uint16_t rcf_seq() const;
+  // chip_caps from the most recently accepted DiscAck; 0 before any accept.
+  // Drives GS main's frame-wire vs legacy-RTP tail selection (see
+  // mabur::rc::CAP_FRAME_WIRE).
+  uint16_t peer_caps() const { return peer_caps_; }
 
  private:
   VrxCfg cfg_;
@@ -61,6 +65,7 @@ class VrxController {
   uint16_t seq_ = 0;
   OpPoint cur_op_;
   int cur_offset_qdb_ = 0;
+  uint16_t peer_caps_ = 0;
 };
 
 }  // namespace maburgs
