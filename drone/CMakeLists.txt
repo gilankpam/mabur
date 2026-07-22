@@ -2,10 +2,12 @@ add_library(mabur_drone_core STATIC
   src/config.cpp
   src/waybeam_client.cpp
   src/ring_source.cpp
+  src/frame_source.cpp
   src/radio_tx.cpp
   src/rc_agent.cpp
   src/msp_serial.cpp
-  vendor/venc_ring.c)
+  vendor/venc_ring.c
+  vendor/venc_frame_ring.c)
 target_include_directories(mabur_drone_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/vendor
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
