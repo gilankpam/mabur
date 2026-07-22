@@ -74,6 +74,33 @@ std::vector<UepBody> UepEncoder::add_rtp(const uint8_t* pkt, size_t len, uint64_
   return out;
 }
 
+std::vector<UepBody> UepEncoder::add_frame(int stream_id, const uint8_t* data,
+                                           size_t len, uint64_t now_ms) {
+  std::vector<UepBody> out;
+  int sid = stream_id < 0 ? 0 : (stream_id > 3 ? 3 : stream_id);
+  Layer& layer = layers_[static_cast<size_t>(sid)];
+  if (layer.shed) {
+    ++layer.dropped_count;
+    return out;
+  }
+  auto frags = layer.frag.fragment(data, len, layer.usable);
+  for (auto& f : frags)
+    pack_envs(layer, static_cast<uint8_t>(sid),
+              layer.sw.add_packet(f.data(), f.size()), out);
+  // Frame-end seal: flush() seals the partial tail symbol and emits one
+  // tail repair; idle re-flush is a no-op so back-to-back empty frames
+  // cannot spam repairs. Also flush the SBI packer's pending group as a
+  // short final body — otherwise the tail envelope(s) just sealed above sit
+  // buffered until a future frame's envelopes happen to fill the group,
+  // defeating the "ship now" point of the frame-end seal.
+  pack_envs(layer, static_cast<uint8_t>(sid), layer.sw.flush(), out);
+  for (auto& b : layer.packer.flush())
+    out.push_back(UepBody{static_cast<uint8_t>(sid), std::move(b)});
+  layer.last_activity_ms = now_ms;
+  layer.has_activity = true;
+  return out;
+}
+
 std::vector<UepBody> UepEncoder::poll(uint64_t now_ms) {
   std::vector<UepBody> out;
   for (int sid = 0; sid < 4; ++sid) {

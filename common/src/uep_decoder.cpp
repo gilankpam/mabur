@@ -12,6 +12,23 @@ UepDecoder::UepDecoder(const std::array<UepLayerCfg, 4>& layers,
               Layer(layers[3], decode_deadline_ms, seq_horizon)},
       decode_deadline_ms_(decode_deadline_ms) {}
 
+void UepDecoder::note_delivery(Layer& l, uint16_t seq) {
+  // Delivery window: forward FRAG-seq gap = packets that will never
+  // complete; backward/duplicate (gap 0 or > 0x8000) = reorder, count
+  // delivered only. Monster gaps are an outage, not per-packet info —
+  // cap at 512 like the RungWindow's bounded walk.
+  if (!l.has_last_seq) {
+    l.win_expected += 1;
+  } else {
+    uint16_t gap = static_cast<uint16_t>(seq - l.last_seq);
+    if (gap == 0 || gap > 0x8000) gap = 0;       // reorder/dup
+    l.win_expected += gap > 512 ? 1 : (gap == 0 ? 1 : gap);
+  }
+  l.win_delivered += 1;
+  l.has_last_seq = true;
+  l.last_seq = seq;
+}
+
 std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
                                              uint64_t now_ms) {
   const int sid = sbi_peek_stream_id(body, len);
@@ -26,22 +43,28 @@ std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
   std::vector<DecodedRtp> out;
   for (const auto& env : r.survivors) {
     for (const auto& pkt : L.sw.add_symbol(env.data(), env.size(), now_ms)) {
-      for (auto& done : L.reasm.add(pkt.data(), pkt.size(), now_ms)) {
-        // Delivery window: forward FRAG-seq gap = packets that will never
-        // complete; backward/duplicate (gap 0 or > 0x8000) = reorder, count
-        // delivered only. Monster gaps are an outage, not per-packet info —
-        // cap at 512 like the RungWindow's bounded walk.
-        if (!L.has_last_seq) {
-          L.win_expected += 1;
-        } else {
-          uint16_t gap = static_cast<uint16_t>(done.seq - L.last_seq);
-          if (gap == 0 || gap > 0x8000) gap = 0;       // reorder/dup
-          L.win_expected += gap > 512 ? 1 : (gap == 0 ? 1 : gap);
+      if (wide_frag_) {
+        // Frame path: emit the raw fragment (6-byte FRAG header + chunk) —
+        // FrameStream on the GS does per-frame reassembly with streaming
+        // prefix emission, which a complete-units-only reassembler can't do.
+        if (pkt.size() >= 6) {
+          uint16_t fseq = static_cast<uint16_t>(pkt[0] | (pkt[1] << 8));
+          uint16_t idx = static_cast<uint16_t>(pkt[2] | (pkt[3] << 8));
+          uint16_t count = static_cast<uint16_t>(pkt[4] | (pkt[5] << 8));
+          // Delivery window: count a unit on last-fragment arrival, by
+          // FRAG-seq continuity — the same accounting the narrow path does
+          // on completed units. Approximation (a unit missing a MIDDLE
+          // fragment but keeping its tail still counts delivered);
+          // acceptable for the transitional controller signal, documented
+          // here deliberately.
+          if (static_cast<uint16_t>(idx + 1) == count) note_delivery(L, fseq);
+          out.push_back(DecodedRtp{static_cast<uint8_t>(sid), pkt});
         }
-        L.win_delivered += 1;
-        L.has_last_seq = true;
-        L.last_seq = done.seq;
-        out.push_back(DecodedRtp{static_cast<uint8_t>(sid), std::move(done.pkt)});
+      } else {
+        for (auto& done : L.reasm.add(pkt.data(), pkt.size(), now_ms)) {
+          note_delivery(L, done.seq);
+          out.push_back(DecodedRtp{static_cast<uint8_t>(sid), std::move(done.pkt)});
+        }
       }
     }
   }
@@ -50,6 +73,16 @@ std::vector<DecodedRtp> UepDecoder::add_body(const uint8_t* body, size_t len,
 
 void UepDecoder::poll(uint64_t now_ms) {
   for (auto& L : layers_) L.sw.expire_rows_older_than(decode_deadline_ms_, now_ms);
+}
+
+void UepDecoder::set_wide_frag(bool wide) {
+  if (wide == wide_frag_) return;
+  wide_frag_ = wide;
+  for (auto& l : layers_) {
+    // Format flip invalidates any half-assembled units; start clean.
+    l.reasm = FragReassembler(512, decode_deadline_ms_, wide);
+    l.has_last_seq = false;
+  }
 }
 
 UepDecoder::LayerStats UepDecoder::stats(int sid) const {

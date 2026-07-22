@@ -29,6 +29,7 @@ double uep_layer_overhead(int stream_id, double cmd_overhead);
 struct UepLayerCfg {
   SwConfig fec;
   int blocks_per_body = 4;
+  bool wide_frag = false;
 };
 
 // One radio-bound body plus which layer's SBI stream it belongs to.
@@ -66,6 +67,14 @@ class UepEncoder {
   // and SBI packer. Stamps the layer's last_activity_ms to now_ms.
   std::vector<UepBody> add_rtp(const uint8_t* pkt, size_t len, uint64_t now_ms);
 
+  // Frame-unit ingest (frame-shm path): data = FrameHdr + Annex-B frame,
+  // stream_id already chosen by the caller (classify_frame + meta IDR flag).
+  // Fragments through the wide FRAG format and seals the sliding window at
+  // frame end (SwEncoder::flush) so tail symbols + their repair ship now
+  // instead of at next-frame arrival (spec 2026-07-22).
+  std::vector<UepBody> add_frame(int stream_id, const uint8_t* data, size_t len,
+                                 uint64_t now_ms);
+
   // Flushes any layer that has pending (unflushed) data and has been idle
   // (no add_rtp activity) for >= flush_ms.
   std::vector<UepBody> poll(uint64_t now_ms);
@@ -96,10 +105,11 @@ class UepEncoder {
     Layer(const UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq,
           FecWorker* worker)
         : fec(cfg.fec),
+          frag(cfg.wide_frag),
           sw(cfg.fec, initial_seq, worker),
           packer(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
-          usable(cfg.fec.max_packet_size() - 4) {}
+          usable(cfg.fec.max_packet_size() - (cfg.wide_frag ? 6 : 4)) {}
   };
 
   // Feeds a batch of sliding-window envelopes toward layer's SBI packer.

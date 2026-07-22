@@ -31,6 +31,12 @@ class UepDecoder {
   // Expires stale sliding-window rows/FRAG entries on every layer. Call ~1 Hz.
   void poll(uint64_t now_ms);
 
+  // Switches between narrow (RTP, completed-unit reassembly) and wide
+  // (frame-shm, raw-fragment passthrough) FRAG decoding. Rebuilds every
+  // layer's FragReassembler at the new width and resets delivery-window
+  // continuity, since a format flip invalidates any half-assembled units.
+  void set_wide_frag(bool wide);
+
   struct LayerStats {
     uint64_t bodies = 0, subblocks_failed = 0, syms_delivered = 0,
              syms_recovered = 0, syms_abandoned = 0, packets_out = 0,
@@ -71,9 +77,15 @@ class UepDecoder {
     uint16_t last_seq = 0;
     uint64_t win_delivered = 0, win_expected = 0;
   };
+  // Shared delivery-window accounting, called on each completed unit
+  // (narrow path) or each last-fragment arrival (wide path) so the FRAG-seq
+  // continuity logic stays single-sourced.
+  void note_delivery(Layer& l, uint16_t seq);
+
   std::array<Layer, 4> layers_;
   uint64_t decode_deadline_ms_;
   uint64_t bodies_misrouted_ = 0;
+  bool wide_frag_ = false;
 };
 
 }  // namespace mabur
