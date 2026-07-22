@@ -141,4 +141,51 @@ TEST(classify_rtp_non_rtp_version_is_stream0) {
   CHECK(classify_rtp(pkt.data(), pkt.size()) == 0);
 }
 
+namespace {
+// Builds one Annex-B NAL: 4-byte start code + 2-byte HEVC header + payload.
+std::vector<uint8_t> mk_nal(uint8_t type, uint8_t tid, size_t payload = 8) {
+  std::vector<uint8_t> v = {0x00, 0x00, 0x00, 0x01,
+                            static_cast<uint8_t>(type << 1),
+                            static_cast<uint8_t>(tid + 1)};
+  v.resize(v.size() + payload, 0x55);
+  return v;
+}
+std::vector<uint8_t> cat(std::initializer_list<std::vector<uint8_t>> parts) {
+  std::vector<uint8_t> v;
+  for (auto& p : parts) v.insert(v.end(), p.begin(), p.end());
+  return v;
+}
+}  // namespace
+
+TEST(classify_frame_idr_with_param_sets_is_critical) {
+  // VPS(32) + SPS(33) + PPS(34) + IDR_W_RADL(19) — the typical IDR frame.
+  auto f = cat({mk_nal(32, 0), mk_nal(33, 0), mk_nal(34, 0), mk_nal(19, 0, 5000)});
+  CHECK(classify_frame(f.data(), f.size()) == 0);
+}
+
+TEST(classify_frame_p_frame_by_tid) {
+  CHECK(classify_frame(mk_nal(1, 0, 2000).data(), mk_nal(1, 0, 2000).size()) == 1);
+  CHECK(classify_frame(mk_nal(1, 1, 2000).data(), mk_nal(1, 1, 2000).size()) == 2);
+  CHECK(classify_frame(mk_nal(1, 2, 2000).data(), mk_nal(1, 2, 2000).size()) == 3);
+  CHECK(classify_frame(mk_nal(1, 5, 2000).data(), mk_nal(1, 5, 2000).size()) == 3);  // tid clamp
+}
+
+TEST(classify_frame_sei_then_slice_uses_slice_tid) {
+  // Prefix SEI (39, non-VCL, non-critical) must not pick the layer.
+  auto f = cat({mk_nal(39, 0), mk_nal(1, 2, 2000)});
+  CHECK(classify_frame(f.data(), f.size()) == 3);
+}
+
+TEST(classify_frame_three_byte_start_code) {
+  std::vector<uint8_t> f = {0x00, 0x00, 0x01, static_cast<uint8_t>(1 << 1), 0x02};
+  f.resize(f.size() + 100, 0x55);
+  CHECK(classify_frame(f.data(), f.size()) == 2);  // tid 1
+}
+
+TEST(classify_frame_garbage_protects_up) {
+  std::vector<uint8_t> junk(64, 0xFF);
+  CHECK(classify_frame(junk.data(), junk.size()) == 0);
+  CHECK(classify_frame(nullptr, 0) == 0);
+}
+
 MTEST_MAIN
