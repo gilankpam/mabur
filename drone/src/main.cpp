@@ -29,7 +29,10 @@
 #include <vector>
 
 #include "config.h"
+#include "frame_source.h"
+#include "mabur/frame_wire.h"
 #include "mabur/msp_source.h"
+#include "mabur/nal.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sw_wire.h"
@@ -634,6 +637,24 @@ int run_real_mode(const Config& cfg) {
 
   WaybeamClient waybeam(cfg.waybeam);
 
+  // One-shot transport cross-check (spec 2026-07-22): frame_ring ingest only
+  // makes sense if waybeam is actually publishing frames over the frame-shm
+  // ring rather than the legacy RTP-packet ring. A mismatch is a
+  // misconfiguration, not a transient fault, so this logs loudly and keeps
+  // running rather than aborting: FrameSource keeps retrying attach on its
+  // own, matching the spec's "absent but screaming" failure mode instead of
+  // a hard crash-loop.
+  if (cfg.video_input == "frame_ring") {
+    std::string body;
+    if (waybeam.get_param("outgoing.server", body) &&
+        body.find("frame-shm://") == std::string::npos) {
+      std::fprintf(stderr,
+          "maburd: FATAL MISMATCH: video_input=frame_ring but waybeam "
+          "outgoing.server is not frame-shm:// (got: %s). Video will not "
+          "flow until waybeam is reconfigured + restarted.\n", body.c_str());
+    }
+  }
+
   RealActuator actuator;
   actuator.tx = &tx;
   actuator.wb = &waybeam;
@@ -717,7 +738,21 @@ int run_real_mode(const Config& cfg) {
   // pipeline, queues bodies for the TX writer. Owns the UepEncoder
   // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
-    RingSource ring(cfg.ring_name);
+    // frame_mode selected once, before the loop: "ring" (default) keeps the
+    // pre-built-RTP path byte-identical (the safety property of the whole
+    // frame-shm-ingest plan); "frame_ring" swaps in the whole-frame path.
+    // Both sources are constructed unconditionally (cheap: neither blocks
+    // or requires the ring to exist yet) so the branch below only ever
+    // touches the one selected by frame_mode.
+    const bool frame_mode = (cfg.video_input == "frame_ring");
+    RingSource ring(cfg.ring_name);          // used when !frame_mode
+    FrameSource fsrc(cfg.frame_ring_name);   // used when frame_mode
+    std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
+    uint16_t next_frame_id = 0;
+    bool discont = true;  // first frame after start
+    uint64_t last_reattach = 0, idr_disagree = 0;
+    uint64_t last_ring_stats_ms = 0;
+
     // Async FEC worker (spec 2026-07-17, promoted after hardware
     // acceptance): always on, unpinned (the worker sleeps when idle, so the
     // scheduler places it correctly). Declared before the UepEncoder so
@@ -744,19 +779,68 @@ int run_real_mode(const Config& cfg) {
         last_applied_op = op;
       }
 
-      // Drain a BURST per iteration, not one packet: the per-iteration
-      // overhead (op check, poll, beat) capped the old 1-packet loop at
-      // ~800 reads/s while waybeam produces 1000+ pkt/s at 60fps — the SHM
-      // ring pinned at full (bench: fill 457-511/512) and waybeam's
-      // packetizer aborted NALs mid-chain on the overflow. First read
-      // blocks up to 5 ms; the rest are non-blocking.
-      int burst = 0;
-      int n;
-      while (burst < 64 &&
-             (n = ring.read(buf, sizeof buf, burst == 0 ? 5 : 0)) > 0) {
-        auto bodies = uep.add_rtp(buf, static_cast<size_t>(n), now);
-        for (auto& b : bodies) txq.push(std::move(b));
-        ++burst;
+      if (frame_mode) {
+        // Frame-shm ingest path (spec 2026-07-22): one whole Annex-B frame
+        // per iteration instead of a 64-packet burst — a frame unit is
+        // already the atomic thing waybeam's producer publishes, so there's
+        // no equivalent "drain more" knob here; the ring's own depth (default
+        // a handful of slots) is the backlog buffer.
+        VencFrameMeta meta{};
+        int n = fsrc.read(fbuf.data(), fbuf.size(), 5, &meta);
+        if (n > 0) {
+          if (fsrc.reattach_count() != last_reattach) {
+            last_reattach = fsrc.reattach_count();
+            discont = true;  // joined a new ring mid-GOP
+          }
+          const uint8_t* payload = fbuf.data() + VENC_FRAME_META_SIZE;
+          int sid = mabur::classify_frame(payload, static_cast<size_t>(n));
+          if ((meta.flags & VENC_FRAME_FLAG_IDR) && sid != 0) {
+            sid = 0;  // trust the union of scan and producer flag (protect-up);
+            ++idr_disagree;  // disagreement is a bug signal, surfaced in stats
+          }
+          mabur::framewire::FrameHdr h;
+          h.frame_id = next_frame_id++;
+          h.flags = ((meta.flags & VENC_FRAME_FLAG_IDR) ? mabur::framewire::kFlagIdr : 0) |
+                    (discont ? mabur::framewire::kFlagDiscont : 0);
+          h.codec = meta.codec;
+          h.pts_us = meta.pts;
+          discont = false;
+          // FrameHdr overwrites the 8-byte meta region in place — the frame
+          // unit (hdr + Annex-B) is contiguous in fbuf with zero copies.
+          mabur::framewire::pack_frame_hdr(h, fbuf.data());
+          auto bodies = uep.add_frame(
+              sid, fbuf.data(), mabur::framewire::kFrameHdrLen + static_cast<size_t>(n), now);
+          for (auto& b : bodies) txq.push(std::move(b));
+        }
+        // Ring-pressure observability (spec: the drain-feedback policy's
+        // future input): one stderr line every 5 s.
+        if (now - last_ring_stats_ms >= 5000) {
+          last_ring_stats_ms = now;
+          venc_frame_ring_fill_t f{};
+          if (fsrc.fill(&f))
+            std::fprintf(stderr,
+                "maburd frame_ring: fill=%u%% writes=%llu full_drops=%llu "
+                "oversize=%llu idr_disagree=%llu\n",
+                f.fill_pct, (unsigned long long)f.writes,
+                (unsigned long long)f.full_drops,
+                (unsigned long long)f.oversize_drops,
+                (unsigned long long)idr_disagree);
+        }
+      } else {
+        // Drain a BURST per iteration, not one packet: the per-iteration
+        // overhead (op check, poll, beat) capped the old 1-packet loop at
+        // ~800 reads/s while waybeam produces 1000+ pkt/s at 60fps — the SHM
+        // ring pinned at full (bench: fill 457-511/512) and waybeam's
+        // packetizer aborted NALs mid-chain on the overflow. First read
+        // blocks up to 5 ms; the rest are non-blocking.
+        int burst = 0;
+        int n;
+        while (burst < 64 &&
+               (n = ring.read(buf, sizeof buf, burst == 0 ? 5 : 0)) > 0) {
+          auto bodies = uep.add_rtp(buf, static_cast<size_t>(n), now);
+          for (auto& b : bodies) txq.push(std::move(b));
+          ++burst;
+        }
       }
 
       auto polled = uep.poll(now);
