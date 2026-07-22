@@ -104,6 +104,12 @@ bool WaybeamClient::set_param(const std::string& key,
 
 bool WaybeamClient::request_idr() { return do_get(cfg_.idr_path); }
 
+bool WaybeamClient::get_param(const std::string& key, std::string& body_out) {
+  bool ok = do_get("/api/v1/get?" + key);
+  if (ok) body_out = last_body_;
+  return ok;
+}
+
 bool WaybeamClient::do_get(const std::string& path) {
   int fd = connect_with_timeout(cfg_.host, cfg_.port, kTimeoutMs);
   if (fd < 0) {
@@ -152,6 +158,19 @@ bool WaybeamClient::do_get(const std::string& path) {
     log_rate_limited("non-200 response from " + cfg_.host + ":" +
                       std::to_string(cfg_.port) + ": " + status_line);
   }
+
+  // Capture the body (everything after the header/blank-line separator) for
+  // get_param(). Tolerates either CRLFCRLF or bare-LFLF separators.
+  auto body_pos = response.find("\r\n\r\n");
+  size_t sep_len = 4;
+  if (body_pos == std::string::npos) {
+    body_pos = response.find("\n\n");
+    sep_len = 2;
+  }
+  last_body_ = body_pos == std::string::npos
+                   ? std::string()
+                   : response.substr(body_pos + sep_len);
+
   return ok;
 }
 

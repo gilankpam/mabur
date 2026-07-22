@@ -156,6 +156,28 @@ TEST(request_idr_uses_cfg_idr_path) {
   CHECK(request_line == "GET /api/v1/idr HTTP/1.0");
 }
 
+TEST(get_param_returns_body) {
+  uint16_t port;
+  int listen_fd = bind_listener(&port);
+  std::string request_line;
+  std::thread server(
+      serve_one, listen_fd,
+      "HTTP/1.0 200 OK\r\n\r\n{\"ok\":true,\"value\":\"frame-shm://mabur_f\"}",
+      &request_line);
+
+  WaybeamCfg cfg;
+  cfg.host = "127.0.0.1";
+  cfg.port = port;
+  WaybeamClient client(cfg);
+  std::string body;
+  bool ok = client.get_param("outgoing.server", body);
+
+  server.join();
+  CHECK(ok);
+  CHECK(request_line == "GET /api/v1/get?outgoing.server HTTP/1.0");
+  CHECK(body.find("frame-shm://") != std::string::npos);
+}
+
 TEST(recv_timeout_silent_server_returns_false) {
   uint16_t port;
   int listen_fd = bind_listener(&port);

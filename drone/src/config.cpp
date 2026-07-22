@@ -274,6 +274,7 @@ std::array<UepLayerCfg, 4> Config::uep_layers() const {
     layers[static_cast<size_t>(sid)].fec =
         SwConfig{fec.symbol_size[static_cast<size_t>(sid)], fec.window, overhead};
     layers[static_cast<size_t>(sid)].blocks_per_body = fec.blocks_per_body[static_cast<size_t>(sid)];
+    layers[static_cast<size_t>(sid)].wide_frag = (video_input == "frame_ring");
   }
   return layers;
 }
@@ -292,7 +293,9 @@ Config load_config(const std::string& path) {
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
   check_known_keys(j,
-                    {"radio", "fec", "waybeam", "link", "msp", "ring_name", "flags", "power_offset_db"},
+                    {"radio", "fec", "waybeam", "link", "msp", "ring_name",
+                     "video_input", "frame_ring_name", "flags",
+                     "power_offset_db"},
                     "");
 
   Config cfg;
@@ -302,6 +305,10 @@ Config load_config(const std::string& path) {
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
   assign_if_present(j, "ring_name", cfg.ring_name, "");
+  assign_if_present(j, "video_input", cfg.video_input, "");
+  assign_if_present(j, "frame_ring_name", cfg.frame_ring_name, "");
+  if (cfg.video_input != "ring" && cfg.video_input != "frame_ring")
+    fail("video_input", "must be \"ring\" or \"frame_ring\"");
   if (j.contains("flags")) parse_flags(j.at("flags"), cfg.flags);
   if (j.contains("power_offset_db")) {
     auto& arr = j.at("power_offset_db");

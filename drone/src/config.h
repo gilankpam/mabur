@@ -111,6 +111,12 @@ struct Config {
   LinkCfg link;
   MspCfg msp;
   std::string ring_name = "mabur";
+  // Gates the frame-shm ingest path (plan 2026-07-22): "ring" (default) is
+  // the pre-built-RTP path; "frame_ring" opts into the frame-wire path
+  // (wide 6-byte FRAG headers, see uep_layers() below) and the
+  // frame_ring_name shm ring is consulted instead of ring_name.
+  std::string video_input = "ring";
+  std::string frame_ring_name = "mabur_f";
   rc::FlagPolicy flags;
   std::array<int8_t, 4> power_offset_db = {0, 0, 0, 0};
 

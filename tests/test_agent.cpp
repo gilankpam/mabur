@@ -143,6 +143,42 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(!act.bitrates.empty());
 }
 
+// 2c. DiscAck.chip_caps advertises CAP_FRAME_WIRE iff cfg.video_input ==
+// "frame_ring" (plan 2026-07-22 frame-shm ingest, Task 8). Default
+// video_input ("ring") must NOT set the bit.
+TEST(disc_ack_advertises_frame_wire_cap) {
+  Config cfg = make_cfg();
+  cfg.video_input = "frame_ring";
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+                              /*op_width=*/40, 0, 2);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  REQUIRE(act.controls.size() == 1);
+  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
+}
+
+TEST(disc_ack_default_video_input_has_no_frame_wire_cap) {
+  Config cfg = make_cfg();  // video_input defaults to "ring"
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+                              /*op_width=*/40, 0, 2);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  REQUIRE(act.controls.size() == 1);
+  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  REQUIRE(parsed.has_value());
+  CHECK((parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE) == 0);
+}
+
 // 2b. Keep-alive DISC while LINKED is ignored end-to-end — Python parity
 // (rendezvous.feed_disc: `if self.state not in (RC_LOST, DISCOVERY): return
 // None`). The GS sends a SESSION keep-alive DISC (~1 Hz, init_profile 0 =

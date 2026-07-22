@@ -424,4 +424,33 @@ TEST(fec_stale_async_worker_key_throws) {
   std::filesystem::remove(p);
 }
 
+// video_input gates the frame-shm ingest path (plan 2026-07-22): default
+// "ring" keeps the pre-built-RTP path (wide_frag off on every UEP layer);
+// "frame_ring" opts into the frame-wire path (wide_frag on); anything else
+// is a config error.
+TEST(video_input_defaults_and_validation) {
+  auto path = write_temp_json("{}");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.video_input == "ring");
+  CHECK(cfg.frame_ring_name == "mabur_f");
+  for (auto& l : cfg.uep_layers()) CHECK(!l.wide_frag);
+  std::filesystem::remove(path);
+
+  auto path2 = write_temp_json(R"({"video_input": "frame_ring"})");
+  auto cfg2 = load_config(path2.string());
+  CHECK(cfg2.video_input == "frame_ring");
+  for (auto& l : cfg2.uep_layers()) CHECK(l.wide_frag);
+  std::filesystem::remove(path2);
+
+  auto path3 = write_temp_json(R"({"video_input": "bogus"})");
+  bool threw = false;
+  try {
+    (void)load_config(path3.string());
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  CHECK(threw);
+  std::filesystem::remove(path3);
+}
+
 MTEST_MAIN
