@@ -50,15 +50,21 @@ struct Metrics {
 
 // Feed a `sim_seconds` long, 60 fps stream of `ppf` FU packets/frame (1400 B
 // payload each) through a fresh UepEncoder at the given geometry, flat out.
-static Metrics run_point(bool perlayer, double cmd_ov, int ppf, int sim_seconds) {
+// A scalar geometry (all layers identical) may override symbol size, window
+// and blocks_per_body via ss/win/bpb_n; pass 0s for the 164/64/8 default.
+static Metrics run_point(bool perlayer, double cmd_ov, int ppf, int sim_seconds,
+                         int ss = 0, int win = 0, int bpb_n = 0) {
   std::array<UepLayerCfg, 4> layers;
-  const int syms[4] = {164, perlayer ? 1312 : 164, perlayer ? 1312 : 164,
-                       perlayer ? 1312 : 164};
-  const int bpb[4] = {perlayer ? 4 : 8, perlayer ? 1 : 8, perlayer ? 1 : 8,
-                      perlayer ? 1 : 8};
+  const int s0 = ss ? ss : 164;
+  const int w0 = win ? win : 64;
+  const int b0 = bpb_n ? bpb_n : 8;
+  const int syms[4] = {perlayer ? 164 : s0, perlayer ? 1312 : s0,
+                       perlayer ? 1312 : s0, perlayer ? 1312 : s0};
+  const int bpb[4] = {perlayer ? 4 : b0, perlayer ? 1 : b0, perlayer ? 1 : b0,
+                      perlayer ? 1 : b0};
   for (int s = 0; s < 4; ++s) {
     layers[static_cast<size_t>(s)].fec =
-        SwConfig{syms[s], 64, uep_layer_overhead(s, cmd_ov)};
+        SwConfig{syms[s], perlayer ? 64 : w0, uep_layer_overhead(s, cmd_ov)};
     layers[static_cast<size_t>(s)].blocks_per_body = bpb[s];
   }
   UepEncoder uep(layers, 25);
@@ -140,6 +146,41 @@ int main(int argc, char** argv) {
       Metrics m = run_point(false, 0.10, ppf, sim);
       print_row(0.10, ppf, m);
       (void)feed_video_mbps;
+    }
+    return 0;
+  }
+
+  if (mode == "symsweep") {
+    // Symbol-size axis: does the parity ceiling lift with bigger symbols?
+    // Two ladders at fixed ov/ppf:
+    //  - same-SPAN: window rows scale down with symbol size (w*ss = 10496 B
+    //    held constant) -> tests "small symbols force more rows for the same
+    //    protection span" (MAC work per src byte = ov * window_rows).
+    //  - same-ROWS: w64 at every size -> isolates per-call kernel efficiency
+    //    (span grows with ss; MAC work per src byte identical in theory).
+    const double ov = argc > 2 ? std::atof(argv[2]) : 0.25;
+    const int ppf = argc > 3 ? std::atoi(argv[3]) : 13;
+    const int sim = argc > 4 ? std::atoi(argv[4]) : 8;
+    struct Geo { int ss, win, bpb; };
+    std::printf("# gf=%s  symsweep ov=%.3f ppf=%d sim=%ds/point\n\n",
+                gf::backend(), ov, ppf, sim);
+    std::printf("## Same protection span (win*ss = 10496 B):\n");
+    std::printf("%5s %4s %4s ", "ss", "win", "bpb");
+    header();
+    for (Geo g : {Geo{164, 64, 8}, Geo{328, 32, 4}, Geo{656, 16, 2},
+                  Geo{1312, 8, 1}}) {
+      Metrics m = run_point(false, ov, ppf, sim, g.ss, g.win, g.bpb);
+      std::printf("%5d %4d %4d ", g.ss, g.win, g.bpb);
+      print_row(ov, ppf, m);
+    }
+    std::printf("\n## Same window rows (w64; span grows with ss):\n");
+    std::printf("%5s %4s %4s ", "ss", "win", "bpb");
+    header();
+    for (Geo g : {Geo{164, 64, 8}, Geo{328, 64, 4}, Geo{656, 64, 2},
+                  Geo{1312, 64, 1}}) {
+      Metrics m = run_point(false, ov, ppf, sim, g.ss, g.win, g.bpb);
+      std::printf("%5d %4d %4d ", g.ss, g.win, g.bpb);
+      print_row(ov, ppf, m);
     }
     return 0;
   }
