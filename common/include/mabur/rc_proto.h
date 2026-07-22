@@ -24,6 +24,11 @@ constexpr uint8_t F_DISCOVERY = 0x04;
 
 constexpr uint8_t PWR_NO_CHANGE = 0xFF;
 
+// DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
+// (8-byte FrameHdr units + 6-byte wide FRAG headers) instead of pre-built
+// RTP packets + 4-byte FRAG headers. Spec 2026-07-22 frame-shm ingest.
+constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
+
 // TX-power command. SEMANTIC DIVERGENCE from the frozen Python prototype
 // (devourer tools/precoder/rc_proto.py, which carries a TXAGC index):
 // since 2026-07-17 this byte is a BIASED SIGNED OFFSET in qdB —
