@@ -1,5 +1,6 @@
 #include "mtest.h"
 #include "vectors.h"
+#include "mabur/frag.h"
 #include "mabur/frag_reassembler.h"
 #include <algorithm>
 using namespace mabur;
@@ -96,4 +97,26 @@ TEST(malformed_dropped) {
   CHECK(r.pending() == 0);
   CHECK(r.evicted() == 1);
 }
+TEST(wide_reassembler_roundtrip_large_unit) {
+  Fragmenter frag(/*wide=*/true);
+  FragReassembler reasm(512, 0, /*wide=*/true);
+  std::vector<uint8_t> p(100 * 1024);
+  for (size_t i = 0; i < p.size(); ++i) p[i] = static_cast<uint8_t>(i * 7);
+  auto frags = frag.fragment(p.data(), p.size(), 158);
+  REQUIRE(frags.size() > 255);
+  std::vector<FragCompleted> done;
+  for (auto& f : frags) {
+    auto out = reasm.add(f.data(), f.size());
+    for (auto& c : out) done.push_back(std::move(c));
+  }
+  REQUIRE(done.size() == 1);
+  CHECK(done[0].pkt == p);
+}
+
+TEST(wide_reassembler_rejects_short_header) {
+  FragReassembler reasm(512, 0, /*wide=*/true);
+  uint8_t buf[5] = {0, 0, 0, 0, 0};  // < 6-byte wide header
+  CHECK(reasm.add(buf, sizeof buf).empty());
+}
+
 MTEST_MAIN

@@ -2,8 +2,8 @@
 
 namespace mabur {
 
-FragReassembler::FragReassembler(size_t max_pending, uint64_t max_age_ms)
-    : max_pending_(max_pending), max_age_ms_(max_age_ms) {}
+FragReassembler::FragReassembler(size_t max_pending, uint64_t max_age_ms, bool wide)
+    : max_pending_(max_pending), max_age_ms_(max_age_ms), wide_(wide) {}
 
 void FragReassembler::sweep_expired(uint64_t now_ms) {
   if (max_age_ms_ == 0 || now_ms == 0) return;
@@ -24,9 +24,17 @@ void FragReassembler::sweep_expired(uint64_t now_ms) {
 std::vector<FragCompleted> FragReassembler::add(const uint8_t* pkt, size_t len,
                                                 uint64_t now_ms) {
   sweep_expired(now_ms);
-  if (len < 4) return {};
+  const size_t hdr_len = wide_ ? 6 : 4;
+  if (len < hdr_len) return {};
   const uint16_t seq = static_cast<uint16_t>(pkt[0] | (pkt[1] << 8));
-  const int idx = pkt[2], count = pkt[3];
+  int idx, count;
+  if (wide_) {
+    idx = static_cast<int>(pkt[2] | (pkt[3] << 8));
+    count = static_cast<int>(pkt[4] | (pkt[5] << 8));
+  } else {
+    idx = pkt[2];
+    count = pkt[3];
+  }
   if (count == 0) return {};
 
   auto it = pending_.find(seq);
@@ -37,7 +45,7 @@ std::vector<FragCompleted> FragReassembler::add(const uint8_t* pkt, size_t len,
   }
   Entry& e = it->second;
   e.count = count;
-  e.chunks.emplace(idx, std::vector<uint8_t>(pkt + 4, pkt + len));
+  e.chunks.emplace(idx, std::vector<uint8_t>(pkt + hdr_len, pkt + len));
 
   if (static_cast<int>(e.chunks.size()) < e.count) {
     if (pending_.size() > max_pending_) {  // evict oldest incomplete entry

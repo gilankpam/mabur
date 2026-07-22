@@ -15,6 +15,10 @@ struct FragCompleted {
 // (<HBB>: seq u16, idx u8, count u8) keyed by seq and emits the reassembled
 // packet once all `count` chunks arrived. A packet whose fragments never all
 // decode is simply never emitted — the per-packet UEP delivery semantics.
+//
+// wide=true switches to the 6-byte header (<u16 seq, u16 idx, u16 count>)
+// matching Fragmenter(wide=true), for whole-frame units beyond the
+// 255-fragment narrow ceiling.
 // Port of svc_uep_fec.py SvcUepDecoder._reassemble, hardened: bounded
 // pending map (oldest evicted + counted), and malformed inputs (count == 0,
 // non-contiguous indices from corruption) are dropped instead of crashing.
@@ -28,7 +32,8 @@ struct FragCompleted {
 // backstop.
 class FragReassembler {
  public:
-  explicit FragReassembler(size_t max_pending = 512, uint64_t max_age_ms = 0);
+  explicit FragReassembler(size_t max_pending = 512, uint64_t max_age_ms = 0,
+                           bool wide = false);
 
   // One recovered FEC packet in; zero or one completed packets out.
   // now_ms == 0 (or max_age_ms == 0) disables age eviction.
@@ -51,6 +56,7 @@ class FragReassembler {
   std::map<uint16_t, Entry> pending_;
   size_t max_pending_;
   uint64_t max_age_ms_;
+  bool wide_;
   uint64_t last_sweep_ms_ = 0;
   uint64_t order_counter_ = 0, completed_ = 0, evicted_ = 0;
 };
