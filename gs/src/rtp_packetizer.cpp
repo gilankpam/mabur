@@ -1,10 +1,15 @@
 #include "rtp_packetizer.h"
+#include <cassert>
 #include <cstring>
 
 namespace maburgs {
 
 RtpPacketizer::RtpPacketizer(RtpPacketizerCfg cfg, Emit emit)
-    : cfg_(cfg), emit_(std::move(emit)) {}
+    : cfg_(cfg), emit_(std::move(emit)) {
+  // FU chunking needs headroom for the 2-byte PayloadHdr + 1-byte FU header;
+  // a max_payload <= 3 would make chunk_cap 0 and silently drop bytes.
+  assert(cfg_.max_payload > 3);
+}
 
 void RtpPacketizer::emit_rtp(const uint8_t* payload, size_t n, bool marker) {
   std::vector<uint8_t> p(12 + n);

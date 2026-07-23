@@ -115,6 +115,10 @@ void FrameStream::poll(uint64_t now_ms) {
 }
 
 void FrameStream::reset() {
+  // Close any in-flight frame at the packetizer with a truncated end so its
+  // in-flight FU doesn't dangle across the session/format-flip boundary.
+  for (auto& [k, s] : slots_)
+    if (s.began) cb_.end_frame(false);
   slots_.clear();
   have_id_base_ = false;
   last_id64_ = 0;

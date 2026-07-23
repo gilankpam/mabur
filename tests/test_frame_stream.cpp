@@ -140,4 +140,25 @@ TEST(discontinuity_resets_ordering) {
   CHECK(fs.frames_clean() == 2);  // both emitted despite the backward jump
 }
 
+TEST(reset_closes_in_flight_frame_truncated) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag(true);
+  std::vector<uint8_t> pay(2000, 0xEF);
+  auto frags = frag_frame(frag, 0, pay);
+  REQUIRE(frags.size() >= 4);
+  // Deliver only fragment 0: the frame begins and streams its prefix, but
+  // never completes.
+  fs.push_fragment(1, frags[0].data(), frags[0].size(), 10);
+  REQUIRE(cap.evs.size() == 1);
+  CHECK(cap.evs[0].kind == 'B');
+  fs.reset();
+  REQUIRE(cap.evs.size() == 2);
+  CHECK(cap.evs[1].kind == 'E');
+  CHECK(!cap.evs[1].complete);
+  // reset() must not touch FrameStream's own accounting.
+  CHECK(fs.frames_clean() == 0);
+  CHECK(fs.frames_truncated() == 0);
+}
+
 MTEST_MAIN
