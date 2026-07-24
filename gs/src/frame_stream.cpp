@@ -19,6 +19,7 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
     if (!h) { ++bad_frags_; slots_.erase(key); return; }
     s.have_hdr = true;
     s.hdr = *h;
+    s.discont = (h->flags & mabur::framewire::kFlagDiscont) != 0;
     s.id64 = unwrap_id(h->frame_id, h->flags);
   }
   try_emit(now_ms);
@@ -29,7 +30,9 @@ uint64_t FrameStream::unwrap_id(uint16_t id, uint8_t flags) {
     // First frame, or producer restart: re-base far above anything emitted
     // so ordering never waits on pre-discontinuity ids.
     have_id_base_ = true;
-    last_id64_ = (have_next_emit_ ? next_emit_id64_ + 0x20000 : 0x10000) + id;
+    uint64_t base = have_next_emit_ ? (next_emit_id64_ + 0x20000) : 0x10000;
+    base &= ~static_cast<uint64_t>(0xFFFF);  // low16(base)=0 so low16(last_id64_)=id
+    last_id64_ = base + id;
     return last_id64_;
   }
   int16_t d = static_cast<int16_t>(id - static_cast<uint16_t>(last_id64_));
@@ -62,13 +65,19 @@ void FrameStream::try_emit(uint64_t now_ms) {
     }
     if (!head) return;
     if (have_next_emit_ && head->id64 > next_emit_id64_) {
-      // Gap of whole frames before head. Skip only when the gap frame is
-      // stale (timeout) or the pipeline has run ahead (lookahead).
-      bool stale = now_ms >= head->first_ms + cfg_.gap_timeout_ms;
-      bool ahead = max_known >= next_emit_id64_ + static_cast<uint64_t>(cfg_.lookahead);
-      if (!stale && !ahead) return;
-      dropped_ += head->id64 - next_emit_id64_;
-      next_emit_id64_ = head->id64;
+      if (head->discont) {
+        // Producer restart: the re-based id64 is a synthetic jump, not lost
+        // frames. Advance the cursor without booking it as dropped.
+        next_emit_id64_ = head->id64;
+      } else {
+        // Gap of whole frames before head. Skip only when the gap frame is
+        // stale (timeout) or the pipeline has run ahead (lookahead).
+        bool stale = now_ms >= head->first_ms + cfg_.gap_timeout_ms;
+        bool ahead = max_known >= next_emit_id64_ + static_cast<uint64_t>(cfg_.lookahead);
+        if (!stale && !ahead) return;
+        dropped_ += head->id64 - next_emit_id64_;
+        next_emit_id64_ = head->id64;
+      }
     }
     if (!have_next_emit_) { have_next_emit_ = true; next_emit_id64_ = head->id64; }
 

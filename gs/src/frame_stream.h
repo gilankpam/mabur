@@ -47,6 +47,7 @@ class FrameStream {
     uint64_t last_progress_ms = 0;  // last time emitted_upto advanced
     uint16_t emitted_upto = 0;      // next chunk idx to emit
     bool began = false;
+    bool discont = false;           // fragment 0's header had kFlagDiscont set
   };
   void try_emit(uint64_t now_ms);
   void finish(Slot& s, bool complete);

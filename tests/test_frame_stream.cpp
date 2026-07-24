@@ -161,4 +161,49 @@ TEST(reset_closes_in_flight_frame_truncated) {
   CHECK(fs.frames_truncated() == 0);
 }
 
+TEST(waybeam_restart_discont_continues_clean) {
+  // waybeam (drone video producer) restarts mid-stream: the ring is recreated
+  // and maburd's FrameSource reattaches, setting kFlagDiscont on ONE frame —
+  // but maburd itself keeps running, so frame_id does NOT reset; it keeps
+  // climbing from wherever it was. Establish the stream at a nonzero starting
+  // frame_id (5000) so next_emit_id64_ has nonzero low-16 bits: that's what
+  // exposes the re-base bug (next_emit_id64_ + 0x20000 inherits those bits).
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag(true);
+  std::vector<uint8_t> pay(100, 0x42);
+  for (uint16_t id = 5000; id <= 5002; ++id)
+    for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
+  REQUIRE(fs.frames_clean() == 3);
+  // Producer restart: id continues climbing (NOT reset) but discont flag set.
+  for (auto& p : frag_frame(frag, 5003, pay, mabur::framewire::kFlagDiscont))
+    fs.push_fragment(1, p.data(), p.size(), 20);
+  for (uint16_t id = 5004; id <= 5006; ++id)
+    for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 21);
+  CHECK(fs.frames_clean() == 7);  // all seven frames emit, none wedged/dropped
+  // Confirm real emission (not just a counter), by checking payload bytes.
+  REQUIRE(cap.evs.size() == 14);  // B E per frame x 7
+  for (size_t i = 0; i < 14; i += 2) {
+    CHECK(cap.evs[i].kind == 'B');
+    CHECK(cap.evs[i + 1].complete);
+    CHECK(cap.evs[i + 1].bytes == pay);
+  }
+}
+
+TEST(waybeam_restart_discont_no_phantom_drops) {
+  // Same restart scenario: the discont re-base must not book a synthetic
+  // ~0x20000 id jump as real "dropped" frames.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag(true);
+  std::vector<uint8_t> pay(100, 0x42);
+  for (uint16_t id = 5000; id <= 5002; ++id)
+    for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
+  for (auto& p : frag_frame(frag, 5003, pay, mabur::framewire::kFlagDiscont))
+    fs.push_fragment(1, p.data(), p.size(), 20);
+  for (uint16_t id = 5004; id <= 5006; ++id)
+    for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 21);
+  CHECK(fs.frames_dropped() < 100);  // not a huge synthetic ~131072 jump
+}
+
 MTEST_MAIN
