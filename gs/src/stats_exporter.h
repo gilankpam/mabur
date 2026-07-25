@@ -12,15 +12,25 @@
 
 namespace maburgs {
 
+struct StatsClassIn {  // copied from ClassTrack (gs/src/aggregator.h)
+  uint64_t frames = 0;
+  bool has_ema = false;
+  double rssi_ema = 0, rssi_a_ema = 0, rssi_b_ema = 0;
+  double snr_ema = 0, snr_a_ema = 0, snr_b_ema = 0;
+};
+
+// Class index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.
+constexpr int kNumStatsClasses = 6;
+
 struct StatsCardIn {
   bool up = false;
   uint64_t frames = 0, crc_fail = 0;
   uint64_t seq_expected = 0, seq_received = 0;
   uint64_t rx_bytes = 0;
-  bool has_ema = false;
-  double rssi_ema = 0, rssi_a_ema = 0, rssi_b_ema = 0;
-  double snr_ema = 0, snr_a_ema = 0, snr_b_ema = 0;
   uint64_t last_frame_us = 0;  // GS monotonic; 0 = never heard
+  uint64_t self_frames = 0;    // GS-originated RC types heard cross-card
+  uint64_t foreign = 0;        // CRC-clean, non-canonical-SA frames dropped upstream
+  std::array<StatsClassIn, kNumStatsClasses> classes{};
 };
 
 struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
@@ -30,6 +40,7 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
 };
 
 struct StatsInput {
+  uint32_t vtx_id = 0;
   bool in_session = false;  // VrxState::SESSION
   int tx_card = 0;
   OpPoint op;
@@ -54,7 +65,10 @@ class StatsExporter {
   uint64_t send_failed() const;
 
  private:
-  struct CardPrev { uint64_t frames = 0, rx_bytes = 0, seq_expected = 0, seq_received = 0; };
+  struct CardPrev {
+    uint64_t frames = 0, rx_bytes = 0, seq_expected = 0, seq_received = 0;
+    uint64_t self_frames = 0, foreign = 0;
+  };
   struct StreamPrev { uint64_t syms_recovered = 0, syms_abandoned = 0, symbols_in = 0; };
   uint32_t session_;
   int interval_ms_;
@@ -63,9 +77,13 @@ class StatsExporter {
   bool emitted_ = false;             // first-poll gate + null-rates flag
   uint64_t last_emit_ms_ = 0;
   std::vector<CardPrev> prev_cards_;
+  // Per-(card, class) previous frame counts (for pps) and sticky-seen mask,
+  // resized alongside prev_cards_ whenever the card count changes.
+  std::vector<std::array<uint64_t, kNumStatsClasses>> prev_class_frames_;
+  std::vector<std::array<bool, kNumStatsClasses>> class_seen_;
   std::array<StreamPrev, 4> prev_streams_{};
   uint64_t prev_udp_bytes_ = 0;
-  std::array<bool, 4> fec_seen_{};   // sticky rows
+  std::array<bool, 4> stream_seen_{};   // sticky link.streams[] rows
   // frame-emit tracking (fps + RFC3550 jitter)
   uint64_t frames_in_window_ = 0;
   uint64_t last_frame_ms_ = 0;
