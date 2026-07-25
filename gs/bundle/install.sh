@@ -31,6 +31,9 @@ ssh "$HOST" '
 # no /usr/libexec/sftp-server (BusyBox); also accepted by full OpenSSH.
 scp -O "$BIN" "$HOST:/usr/local/bin/maburgs"
 scp -O gs/bundle/S96maburgs "$HOST:/etc/init.d/S96maburgs"
+# maburtop goes to /usr/bin: the GS shell's default PATH does not include
+# /usr/local/bin (maburgs itself is only ever launched by absolute path).
+scp -O tools/maburtop.py "$HOST:/usr/bin/maburtop"
 # Config: install the default only if none exists (never clobber a tuned one).
 ssh "$HOST" "[ -f /etc/maburgs.json ]" || \
   scp -O gs/bundle/maburgs.default.json "$HOST:/etc/maburgs.json"
@@ -40,7 +43,7 @@ ssh "$HOST" "[ -f /etc/maburgs.json ]" || \
 # /tmp/maburgs.log, so start returns without holding this ssh channel open.
 ssh "$HOST" '
   set -e
-  chmod +x /usr/local/bin/maburgs /etc/init.d/S96maburgs
+  chmod +x /usr/local/bin/maburgs /etc/init.d/S96maburgs /usr/bin/maburtop
   /etc/init.d/S96maburgs start
 '
 echo "installed. logs: ssh $HOST 'tail -f /tmp/maburgs.log'"
