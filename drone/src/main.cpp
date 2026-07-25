@@ -704,6 +704,11 @@ int run_real_mode(const Config& cfg) {
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};
   std::atomic<uint64_t> hot_beat{0};
+  // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
+  // frame encoded so far died before the air — re-mark the discontinuity
+  // window so the GS gets the re-base signal on frames that can actually
+  // land (docs/gs-frame-stall-after-drone-restart-handoff.md).
+  std::atomic<bool> link_up_discont{false};
 
   // RX callback: pulls RC frames (rc::frame_type >= 0) off the air and
   // queues them for the agent thread. Runs on the main thread (inside
@@ -815,6 +820,8 @@ int run_real_mode(const Config& cfg) {
           last_reattach = fsrc.reattach_count();
           pipe.mark_discontinuity();  // joined a new ring mid-GOP
         }
+        if (link_up_discont.exchange(false, std::memory_order_relaxed))
+          pipe.mark_discontinuity();  // link just came up: pre-link frames died
         for (auto& b : pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now))
           txq.push(std::move(b));
       }
@@ -890,6 +897,8 @@ int run_real_mode(const Config& cfg) {
       health.thermal_delta = thermal.valid ? thermal.delta : 0;
       health.tx_drops = txstats.failed;
       agent.tick(now, health);
+      if (agent.take_link_established())
+        link_up_discont.store(true, std::memory_order_relaxed);
 
       // Watchdog: after an initial grace period, a heartbeat going stale for
       // > stale_ms means the corresponding loop is wedged — EXCEPT rx_beat,

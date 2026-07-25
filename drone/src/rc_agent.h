@@ -77,10 +77,23 @@ class RcAgent {
   State state() const { return state_; }
   const AppliedOp& current() const { return applied_; }
 
+  // Latched on a BOOT/RENDEZVOUS -> LINKED transition — the process-(re)start
+  // link-up, when frames encoded so far never reached the air and the GS may
+  // hold a stale frame-id cursor. The caller consumes it to re-mark the frame
+  // discontinuity window (FramePipeline::mark_discontinuity). Deliberately
+  // NOT latched on FAILSAFE -> LINKED: a routine RF flap re-basing the GS's
+  // id space would evict its in-flight frames for nothing.
+  bool take_link_established() {
+    bool v = link_established_;
+    link_established_ = false;
+    return v;
+  }
+
  private:
   const Config& cfg_;
   Actuator& act_;
   State state_ = State::BOOT;
+  bool link_established_ = false;  // see take_link_established()
 
   AppliedOp applied_;
   // Last GS-commanded qdB power offset (pre-thermal-derate). MAX_RANGE

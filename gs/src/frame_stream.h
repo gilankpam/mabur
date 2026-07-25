@@ -10,6 +10,10 @@ namespace maburgs {
 struct FrameStreamCfg {
   uint64_t gap_timeout_ms = 50;  // unfilled gap older than this => truncate
   int lookahead = 8;             // frames ahead of head-of-line => force advance
+  uint64_t stall_reset_ms = 500; // frames arriving but none emitted for this
+                                 // long => self-reset (0 disables). Backstop
+                                 // for a wedged emit cursor, e.g. a producer
+                                 // restart whose discont signal was lost.
 };
 
 // Reassembles whole frames from raw wide UEP fragments across layers, orders
@@ -33,6 +37,7 @@ class FrameStream {
   uint64_t frames_truncated() const { return truncated_; }
   uint64_t frames_dropped() const { return dropped_; }
   uint64_t bad_fragments() const { return bad_frags_; }
+  uint64_t stall_resets() const { return stall_resets_; }
 
  private:
   struct Slot {
@@ -47,11 +52,11 @@ class FrameStream {
     uint64_t last_progress_ms = 0;  // last time emitted_upto advanced
     uint16_t emitted_upto = 0;      // next chunk idx to emit
     bool began = false;
-    bool discont = false;           // fragment 0's header had kFlagDiscont set
+    bool discont = false;           // this frame re-based the id64 space
   };
   void try_emit(uint64_t now_ms);
   void finish(Slot& s, bool complete);
-  uint64_t unwrap_id(uint16_t id, uint8_t flags);
+  uint64_t unwrap_id(uint16_t id, uint8_t flags, bool* rebased);
 
   FrameStreamCfg cfg_;
   Callbacks cb_;
@@ -60,7 +65,13 @@ class FrameStream {
   uint64_t last_id64_ = 0;           // unwrap reference
   uint64_t next_emit_id64_ = 0;      // head-of-line
   bool have_next_emit_ = false;
+  bool in_discont_run_ = false;      // last unwrapped frame carried kFlagDiscont
+  bool stall_armed_ = false;         // a frame arrived with nothing emitted since
+  uint64_t stall_arm_ms_ = 0;        // when that first post-emit frame arrived
+  bool discont_seen_since_emit_ = false;
+  uint64_t last_stall_log_ms_ = 0;
   uint64_t clean_ = 0, truncated_ = 0, dropped_ = 0, bad_frags_ = 0;
+  uint64_t stall_resets_ = 0;
 };
 
 }  // namespace maburgs
