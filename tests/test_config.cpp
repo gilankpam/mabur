@@ -66,12 +66,15 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.min_offset_qdb == -40);
   CHECK(cfg.radio.base_ref_idx == 53);
 
-  // The bundle intentionally diverges from struct defaults for fec (Task 1's
-  // sliding-window winners), so check against the bundle's actual values
-  // rather than the struct defaults used for everything else.
-  CHECK((cfg.fec.symbol_size == std::array<int, 4>{164, 1312, 1312, 1312}));
-  CHECK(cfg.fec.window == 64);
-  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 1, 1, 1}));
+  // The bundle intentionally diverges from struct defaults for fec, so check
+  // against the bundle's actual values rather than the struct defaults used
+  // for everything else. 328/w32/bpb4 is the 2026-07-25 gated geometry
+  // (docs/fec-symbol-size-328.md): same ~1.4kB body and ~11kB window span as
+  // scalar-164/w64/bpb8 but ~5% less airtime and -7.5% maburd CPU, quality
+  // parity on-air.
+  CHECK((cfg.fec.symbol_size == std::array<int, 4>{328, 328, 328, 328}));
+  CHECK(cfg.fec.window == 32);
+  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 4, 4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == 25);
 
