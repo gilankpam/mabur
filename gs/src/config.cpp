@@ -70,7 +70,7 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"radio", "fec", "link", "video_out", "msp"});
+  check_keys(j, "", {"radio", "fec", "link", "video_out", "msp", "stats"});
   Config c;
 
   if (j.contains("radio")) {
@@ -175,6 +175,19 @@ Config load_config(const std::string& path) {
       c.msp.shm_x_offset = static_cast<int>(get_int(s, "x_offset", 0, 0, 4096, "msp.shm"));
       c.msp.shm_y_offset = static_cast<int>(get_int(s, "y_offset", 0, 0, 4096, "msp.shm"));
     }
+  }
+
+  if (j.contains("stats")) {
+    const json& r = j["stats"];
+    check_keys(r, "stats", {"enable", "host", "port", "interval_ms"});
+    if (r.contains("enable")) {
+      if (!r["enable"].is_boolean()) fail("stats.enable", "not a boolean");
+      c.stats.enable = r["enable"].get<bool>();
+    }
+    c.stats.host = get_str(r, "host", "127.0.0.1", "stats");
+    c.stats.port = static_cast<int>(get_int(r, "port", 8300, 1, 65535, "stats"));
+    c.stats.interval_ms =
+        static_cast<int>(get_int(r, "interval_ms", 500, 100, 10000, "stats"));
   }
   return c;
 }

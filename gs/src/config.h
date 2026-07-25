@@ -99,6 +99,15 @@ struct MspCfg {
   int shm_y_offset = 0;
 };
 
+/// Stats sideport: periodic UDP JSON datagram with link/FEC/video stats
+/// (docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
+struct StatsCfg {
+  bool enable = false;
+  std::string host = "127.0.0.1";
+  int port = 8300;
+  int interval_ms = 500;  // clamped to [100, 10000] at load
+};
+
 /// Ground station configuration: radio, FEC, link, video output, and MSP OSD output.
 struct Config {
   RadioCfg radio;
@@ -106,6 +115,7 @@ struct Config {
   LinkCfg link;
   VideoOutCfg video_out;
   MspCfg msp;
+  StatsCfg stats;
 
   /// Builds decoder configuration with per-stream RS and UEP overhead.
   std::array<mabur::UepLayerCfg, 4> uep_layers() const;

@@ -126,6 +126,33 @@ TEST(gs_msp_render_mode_and_shm) {
     CHECK(threw == true);
   }
 }
+
+TEST(stats_defaults_disabled) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(!cfg.stats.enable);
+  CHECK(cfg.stats.host == "127.0.0.1");
+  CHECK(cfg.stats.port == 8300);
+  CHECK(cfg.stats.interval_ms == 500);
+}
+
+TEST(stats_section_parses_and_validates) {
+  auto cfg = maburgs::load_config(write_tmp(
+      "{\"stats\": {\"enable\": true, \"host\": \"10.0.0.2\","
+      " \"port\": 9000, \"interval_ms\": 250}}"));
+  CHECK(cfg.stats.enable);
+  CHECK(cfg.stats.host == "10.0.0.2");
+  CHECK(cfg.stats.port == 9000);
+  CHECK(cfg.stats.interval_ms == 250);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"stats\": {\"interval_ms\": 50}}")); }
+  catch (const std::exception& e) { threw = std::string(e.what()).find("interval_ms") != std::string::npos; }
+  CHECK(threw);  // below the 100 ms floor
+  threw = false;
+  try { maburgs::load_config(write_tmp("{\"stats\": {\"prot\": 1}}")); }
+  catch (const std::exception& e) { threw = std::string(e.what()).find("prot") != std::string::npos; }
+  CHECK(threw);  // unknown key fail-fast, like every other section
+}
+
 MTEST_MAIN
 
 // link.src_bitrate_mbps drives the controller's energy-model design point
