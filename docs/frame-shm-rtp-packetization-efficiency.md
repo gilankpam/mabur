@@ -128,6 +128,11 @@ Make FU emission MTU-greedy and chunking-independent: accumulate `data()` input 
 
 ### A/B method (for the hardware re-check)
 
+> Historical: this A/B is no longer runnable — `video_input` and the RTP-packet
+> arm were deleted after acceptance (see
+> `docs/frame-shm-old-path-removal.md`). Kept as the record of how the
+> measurement was taken.
+
 Flip **only** the drone's `video_input` between arms; the GS auto-follows via `CAP_FRAME_WIRE`. Same rig/day. Devices: drone `root@192.168.10.152`, GS `root@10.18.0.1`.
 - Frame arm: drone `/etc/mabur.json` `video_input:"frame_ring"` + waybeam `/etc/waybeam.json` `outgoing.server:"frame-shm://mabur_f"`.
 - Baseline arm: `video_input:"ring"` + waybeam `outgoing.server:"shm://mabur"`.
@@ -137,6 +142,6 @@ Flip **only** the drone's `video_input` between arms; the GS auto-follows via `C
 
 ## Context
 
-- The frame-shm feature (whole-frame ingest + frame-aligned FEC, GS `FrameStream` → `RtpPacketizer` → RTP :5600) is on branch `frame-shm-ingest`, PR #1, gated behind drone `video_input` (default `"ring"`; frame path only when `"frame_ring"`).
+- The frame-shm feature (whole-frame ingest + frame-aligned FEC, GS `FrameStream` → `RtpPacketizer` → RTP :5600) is on branch `frame-shm-ingest`, PR #1. It shipped behind the drone `video_input` gate; post-acceptance that gate and the old RTP-packet path were deleted, so the frame path is unconditional (`docs/frame-shm-old-path-removal.md`).
 - As of this writing the rig runs the frame path deployed and hardware-validated at parity, with graceful degradation and both maburd- and waybeam-restart recovery confirmed. This pps gap and a glass-to-glass latency measurement (needs a physical timer rig) are the only open acceptance items.
 - Design/spec: `docs/superpowers/specs/2026-07-22-frame-shm-ingest-design.md`, plan Task 6 in `docs/superpowers/plans/2026-07-22-frame-shm-ingest.md`.

@@ -137,18 +137,28 @@ bool WaybeamClient::do_get(const std::string& path) {
     return false;
   }
 
+  // Read to EOF (HTTP/1.0: the server closes when done), not just once — a
+  // server that writes headers and body in separate segments would otherwise
+  // hand us headers with an empty body, and get_param() would report success
+  // with no value (rig 2026-07-25: maburd's waybeam cross-check claimed
+  // `FATAL MISMATCH ... (got: )` against a correctly configured waybeam).
+  // Capped so a chatty or wedged server cannot grow this unboundedly; replies
+  // of interest are a few hundred bytes.
+  constexpr size_t kMaxResponse = 8192;
+  std::string response;
   char buf[512];
-  ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+  while (response.size() < kMaxResponse) {
+    ssize_t n = recv(fd, buf, sizeof(buf), 0);
+    if (n <= 0) break;
+    response.append(buf, static_cast<size_t>(n));
+  }
   close(fd);
-  if (n <= 0) {
+  if (response.empty()) {
     ++failures_;
     log_rate_limited("read failed/timed out from " + cfg_.host + ":" +
                       std::to_string(cfg_.port));
     return false;
   }
-  buf[n] = '\0';
-
-  std::string response(buf);
   auto eol = response.find('\n');
   std::string status_line =
       eol == std::string::npos ? response : response.substr(0, eol);

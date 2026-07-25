@@ -38,7 +38,7 @@
     "rendezvous_ms": 30000,
     "tick_ms": 100
   },
-  "ring_name": "mabur",
+  "frame_ring_name": "mabur_f",
   "flags": {
     "crit_ldpc": true,
     "crit_stbc": true,

@@ -1,8 +1,7 @@
-#include <cstdio>
 #include <map>
 #include "mtest.h"
+#include "frame_fixture.h"
 #include "vectors.h"
-#include "mabur/nal.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 using namespace mabur;
@@ -16,20 +15,17 @@ static std::array<UepLayerCfg, 4> vec_layers() {
   return L;
 }
 
-// Fixture RTP packets grouped per stream via the same classifier the drone used.
+static std::vector<mtest::FrameRecord> fixture_frames() {
+  return mtest::load_frame_fixture(std::string(MABUR_FIXTURE_DIR) + "/frame_stream.bin");
+}
+
+// The wire units maburd sends for the fixture, grouped per layer.
 static std::map<int, std::vector<std::string>> fixture_by_stream() {
   std::map<int, std::vector<std::string>> out;
-  std::string path = std::string(MABUR_FIXTURE_DIR) + "/rtp_stream.bin";
-  FILE* f = fopen(path.c_str(), "rb");
-  REQUIRE(f != nullptr);
-  uint8_t hdr[2];
-  while (fread(hdr, 1, 2, f) == 2) {
-    size_t n = static_cast<size_t>(hdr[0] | (hdr[1] << 8));
-    std::vector<uint8_t> pkt(n);
-    REQUIRE(fread(pkt.data(), 1, n, f) == n);
-    out[classify_rtp(pkt.data(), pkt.size())].push_back(mtest::hex(pkt));
-  }
-  fclose(f);
+  auto frames = fixture_frames();
+  for (size_t i = 0; i < frames.size(); ++i)
+    out[frames[i].stream_id()].push_back(
+        mtest::hex(mtest::frame_unit(frames[i], static_cast<uint16_t>(i))));
   return out;
 }
 
@@ -40,17 +36,12 @@ static std::map<int, std::vector<std::string>> fixture_by_stream() {
 static std::vector<UepBody> encode_fixture_bodies() {
   UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
   std::vector<UepBody> bodies;
-  std::string path = std::string(MABUR_FIXTURE_DIR) + "/rtp_stream.bin";
-  FILE* f = fopen(path.c_str(), "rb");
-  REQUIRE(f != nullptr);
-  uint8_t hdr[2];
-  while (fread(hdr, 1, 2, f) == 2) {
-    size_t n = static_cast<size_t>(hdr[0] | (hdr[1] << 8));
-    std::vector<uint8_t> pkt(n);
-    REQUIRE(fread(pkt.data(), 1, n, f) == n);
-    for (auto& b : enc.add_rtp(pkt.data(), pkt.size(), 0)) bodies.push_back(std::move(b));
+  auto frames = fixture_frames();
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
+    for (auto& b : enc.add_frame(frames[i].stream_id(), unit.data(), unit.size(), 0))
+      bodies.push_back(std::move(b));
   }
-  fclose(f);
   for (auto& b : enc.flush_all()) bodies.push_back(std::move(b));
   return bodies;
 }
@@ -58,17 +49,20 @@ static std::vector<UepBody> encode_fixture_bodies() {
 static void feed_and_check(bool duplicate_bodies) {
   auto bodies = encode_fixture_bodies();
   UepDecoder dec(vec_layers());
-  std::map<int, std::vector<std::string>> got;
+  mtest::FragCollector got;
   for (auto& b : bodies) {
     int reps = duplicate_bodies ? 2 : 1;
     for (int r = 0; r < reps; ++r)
-      for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0))
-        got[d.stream_id].push_back(mtest::hex(d.pkt));
+      for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0)) got.add(d);
   }
+  std::map<int, std::vector<std::string>> recovered;
+  for (auto& [sid, unit] : got.completed()) recovered[sid].push_back(mtest::hex(unit));
   auto want = fixture_by_stream();
-  for (auto& [sid, pkts] : want) {
-    REQUIRE(got[sid].size() == pkts.size());   // duplicates must NOT double output
-    for (size_t i = 0; i < pkts.size(); ++i) CHECK(got[sid][i] == pkts[i]);
+  for (auto& [sid, units] : want) {
+    // Duplicates must NOT double output: a re-fed body's fragments are
+    // dropped as known seqs inside SwDecoder, so no unit completes twice.
+    REQUIRE(recovered[sid].size() == units.size());
+    for (size_t i = 0; i < units.size(); ++i) CHECK(recovered[sid][i] == units[i]);
   }
   CHECK(dec.bodies_misrouted() == 0);
 }

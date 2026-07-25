@@ -1,6 +1,6 @@
 // Bench-side wiring of the winning repair shape (mt2-row/spin, RESULTS.md)
-// into the FULL encode pipeline — zero mabur changes. Reuses Fragmenter,
-// SbiPacker and classify_rtp unmodified; only the sliding-window engine is
+// into the FULL encode pipeline — zero mabur changes. Reuses Fragmenter and
+// SbiPacker unmodified; only the sliding-window engine is
 // swapped:
 //
 //   SpinWorker    one shared worker thread, atomic spin handoff (measures
@@ -554,19 +554,22 @@ class UepEncoderT {
                 Layer(layers[3], 3, seqs[3], worker)},
         flush_ms_(flush_ms) {}
 
-  std::vector<mabur::UepBody> add_rtp(const uint8_t* pkt, size_t len,
-                                      uint64_t now_ms) {
+  // Mirrors mabur UepEncoder::add_frame, including the frame-end seal (window
+  // flush + SBI group flush) — the shape that decides how much repair work the
+  // engine under test has to do per frame.
+  std::vector<mabur::UepBody> add_frame(int stream_id, const uint8_t* data,
+                                        size_t len, uint64_t now_ms) {
     std::vector<mabur::UepBody> out;
-    int sid = mabur::classify_rtp(pkt, len);
+    const int sid = stream_id < 0 ? 0 : (stream_id > 3 ? 3 : stream_id);
     Layer& layer = layers_[(size_t)sid];
+    auto frags = layer.frag.fragment(data, len, layer.usable);
+    for (auto& f : frags)
+      pack_envs(layer, (uint8_t)sid, layer.sw.add_packet(f.data(), f.size()), out);
+    pack_envs(layer, (uint8_t)sid, layer.sw.flush(), out);
+    for (auto& b : layer.packer.flush())
+      out.push_back(mabur::UepBody{(uint8_t)sid, std::move(b)});
     layer.last_activity_ms = now_ms;
     layer.has_activity = true;
-    auto frags = layer.frag.fragment(pkt, len, layer.usable);
-    for (auto& f : frags) {
-      auto envs = layer.sw.add_packet(f.data(), f.size());
-      if (envs.empty()) continue;
-      pack_envs(layer, (uint8_t)sid, std::move(envs), out);
-    }
     return out;
   }
 
@@ -596,7 +599,8 @@ class UepEncoderT {
           sw(cfg.fec, initial_seq, worker),
           packer((int)mabur::sw::kSwHeaderLen + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
-          usable(cfg.fec.max_packet_size() - 4) {}
+          usable(cfg.fec.max_packet_size() -
+                 (int)mabur::Fragmenter::kHdrLen) {}
   };
 
   void pack_envs(Layer& layer, uint8_t sid,

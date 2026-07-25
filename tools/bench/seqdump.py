@@ -7,8 +7,8 @@
 #   python3 seqdump.py [iface] [port] [seconds] [outfile]
 # Line: <us_since_start> <seq> <rtp_ts> <marker> <nal_type> <fu_flags> <paylen> <fu_rt>
 #   fu_flags: bit0=FU start, bit1=FU end (0 if not FU type 49)
-#   fu_rt: FU inner (real) NAL type, -1 if not FU — this is what the drone's
-#   classify_rtp uses for layer routing (crit 16-23/32-34 -> stream 0)
+#   fu_rt: FU inner (real) NAL type, -1 if not FU — same NAL rule the drone
+#   routes frames by (crit 16-23/32-34 -> stream 0)
 import socket, struct, sys, time
 
 iface = sys.argv[1] if len(sys.argv) > 1 else "lo"

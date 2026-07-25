@@ -1,4 +1,4 @@
-add_library(mabur_common STATIC src/crc16.cpp src/gf256.cpp src/sbi.cpp src/nal.cpp src/frag.cpp src/frag_reassembler.cpp src/uep_encoder.cpp src/uep_decoder.cpp src/rc_proto.cpp src/profile.cpp src/node.cpp src/sw_wire.cpp src/sw_encoder.cpp src/sw_decoder.cpp src/msp_dp.cpp src/msp_source.cpp src/fec_worker.cpp src/frame_wire.cpp)
+add_library(mabur_common STATIC src/crc16.cpp src/gf256.cpp src/sbi.cpp src/nal.cpp src/frag.cpp src/uep_encoder.cpp src/uep_decoder.cpp src/rc_proto.cpp src/profile.cpp src/node.cpp src/sw_wire.cpp src/sw_encoder.cpp src/sw_decoder.cpp src/msp_dp.cpp src/msp_source.cpp src/fec_worker.cpp src/frame_wire.cpp)
 target_include_directories(mabur_common PUBLIC include)
 find_package(Threads REQUIRED)
 target_link_libraries(mabur_common PUBLIC Threads::Threads)

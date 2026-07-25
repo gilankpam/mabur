@@ -50,9 +50,14 @@ class VrxController {
   VrxState link_state() const;
   uint16_t rcf_seq() const;
   // chip_caps from the most recently accepted DiscAck; 0 before any accept.
-  // Drives GS main's frame-wire vs legacy-RTP tail selection (see
-  // mabur::rc::CAP_FRAME_WIRE).
+  // Gates GS main's video tail on mabur::rc::CAP_FRAME_WIRE.
   uint16_t peer_caps() const { return peer_caps_; }
+  // Whether any DiscAck has ever been accepted. peer_caps() == 0 is ambiguous
+  // on its own — a peer may genuinely advertise no caps — and the rendezvous
+  // starts in SESSION, so callers that want to complain about a peer's missing
+  // capability must wait for this to be true or they complain about a peer
+  // they have not heard from yet.
+  bool peer_acked() const { return peer_acked_; }
 
  private:
   VrxCfg cfg_;
@@ -66,6 +71,7 @@ class VrxController {
   OpPoint cur_op_;
   int cur_offset_qdb_ = 0;
   uint16_t peer_caps_ = 0;
+  bool peer_acked_ = false;
 };
 
 }  // namespace maburgs

@@ -1,5 +1,14 @@
 # Frame-SHM Bench Acceptance + Deployment Notes
 
+> **STATUS (2026-07-25): historical record — the A/B this runbook describes is
+> finished and the old path is gone.** The bench gates below all passed, the
+> deployed default was flipped, and the pre-frame-shm video path has since been
+> deleted: there is no `video_input` key and no second arm to select. Read this
+> for what was measured and how; read
+> [frame-shm-old-path-removal.md](frame-shm-old-path-removal.md) for the
+> current shape of the system and the config migration. Sections 1.1–1.3
+> (waybeam bring-up) and 2 (fu_probe method) still apply verbatim.
+
 Operational runbook for deploying and bench-accepting the `frame-shm://`
 video path (Tasks 1–11 of the frame-shm-ingest work). Written to be followed
 from a fresh session with no prior context, in the style of
@@ -21,9 +30,9 @@ drain-ceiling incident. RTP generation for H.265 also moves to the GS side
 re-packetization for this path. Everything downstream of RTP (PixelPilot on
 `:5600`, PT 97, ssrc `0x4D414252` "MABR") is unchanged.
 
-This is a **temporary A/B gate**, same pattern as the async-FEC-worker
-rollout (commit 5a30989): both paths ship together behind a drone-side
-config switch, get bench-accepted here, then the old path is deleted in a
+This was a **temporary A/B gate**, same pattern as the async-FEC-worker
+rollout (commit 5a30989): both paths shipped together behind a drone-side
+config switch, got bench-accepted here, and the old path was then deleted in a
 follow-up commit (see "Post-acceptance" below).
 
 Rig for this runbook: drone `root@192.168.10.152` (SSC338Q), GS
@@ -115,13 +124,17 @@ applied by hand.
 
 ### 1.4 Drone config: `/etc/mabur.json` gains two keys
 
-The new binary understands two new top-level keys, with these defaults
+> Post-deletion: `video_input` no longer exists. A config that still carries it
+> (or `ring_name`) loads fine — both are accepted-and-ignored with a WARNING
+> line — but the frame path is unconditional. Only `frame_ring_name` remains.
+
+The A/B binary understood two new top-level keys, with these defaults
 baked into the code (`drone/src/config.h`) if omitted from the file:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `video_input` | `"ring"` | `"ring"` = old RTP-packet shm path (unchanged behavior). `"frame_ring"` = new whole-frame path. |
-| `frame_ring_name` | `"mabur_f"` | Name of the waybeam frame-shm ring to attach to when `video_input = "frame_ring"`. Must match waybeam's `outgoing.server = frame-shm://<name>`. |
+| `video_input` | `"ring"` | **removed** — was `"ring"` = old RTP-packet shm path, `"frame_ring"` = whole-frame path. |
+| `frame_ring_name` | `"mabur_f"` | Name of the waybeam frame-shm ring to attach to. Must match waybeam's `outgoing.server = frame-shm://<name>`. |
 
 **Start the baseline arm with `video_input: "ring"` explicitly** (or simply
 omit the key — `"ring"` is the default) even though waybeam is already

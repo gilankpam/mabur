@@ -24,7 +24,6 @@ std::array<UepLayerCfg, 4> layers() {
     l[i].fec.window = 128;
     l[i].fec.overhead = ov[i];
     l[i].blocks_per_body = 4;
-    l[i].wide_frag = true;
   }
   return l;
 }
@@ -50,7 +49,6 @@ TEST(frame_e2e_clean_and_lossy) {
   std::mt19937 rng(1234);
   UepEncoder enc(layers(), 15);
   UepDecoder dec(layers(), 200);
-  dec.set_wide_frag(true);
 
   std::vector<std::vector<uint8_t>> emitted_frames;
   std::vector<uint8_t> cur;
@@ -98,7 +96,7 @@ TEST(frame_e2e_clean_and_lossy) {
     for (auto& b : bodies) {
       if (u(rng) < 0.05) continue;  // 5% body loss — well inside overhead
       for (auto& p : dec.add_body(b.body.data(), b.body.size(), now))
-        fs.push_fragment(p.stream_id, p.pkt.data(), p.pkt.size(), now);
+        fs.push_fragment(p.stream_id, p.frag.data(), p.frag.size(), now);
     }
     fs.poll(now);
     ++now;

@@ -24,7 +24,10 @@ void VrxController::on_video(double rssi, double snr, bool crc_err,
 void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
   if (mabur::rc::frame_type(buf, len) != mabur::rc::T_DISC_ACK) return;
   auto ack = mabur::rc::parse_disc_ack(buf, len);
-  if (ack && rz_.feed_disc_ack(*ack, now_ms)) peer_caps_ = ack->chip_caps;
+  if (ack && rz_.feed_disc_ack(*ack, now_ms)) {
+    peer_caps_ = ack->chip_caps;
+    peer_acked_ = true;
+  }
 }
 
 std::optional<VrxController::Out> VrxController::step(

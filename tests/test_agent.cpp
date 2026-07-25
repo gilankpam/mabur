@@ -143,12 +143,11 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(!act.bitrates.empty());
 }
 
-// 2c. DiscAck.chip_caps advertises CAP_FRAME_WIRE iff cfg.video_input ==
-// "frame_ring" (plan 2026-07-22 frame-shm ingest, Task 8). Default
-// video_input ("ring") must NOT set the bit.
+// 2c. DiscAck.chip_caps always advertises CAP_FRAME_WIRE: the frame wire is
+// the only video format maburd speaks since the pre-frame-shm path was
+// deleted. The bit stays on the wire so a GS can refuse a peer without it.
 TEST(disc_ack_advertises_frame_wire_cap) {
   Config cfg = make_cfg();
-  cfg.video_input = "frame_ring";
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
@@ -161,22 +160,6 @@ TEST(disc_ack_advertises_frame_wire_cap) {
   auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
   REQUIRE(parsed.has_value());
   CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
-}
-
-TEST(disc_ack_default_video_input_has_no_frame_wire_cap) {
-  Config cfg = make_cfg();  // video_input defaults to "ring"
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
-                              /*op_width=*/40, 0, 2);
-  agent.on_rc_frame(wire.data(), wire.size(), 100);
-
-  REQUIRE(act.controls.size() == 1);
-  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
-  REQUIRE(parsed.has_value());
-  CHECK((parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE) == 0);
 }
 
 // 2b. Keep-alive DISC while LINKED is ignored end-to-end — Python parity

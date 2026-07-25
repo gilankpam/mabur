@@ -124,16 +124,10 @@ dump("sbi.json", {"block_payload": 75, "blocks_per_body": 4, "stream_id": 2,
                   "envelopes": [hx(e) for e in envs],
                   "stream": sbi_stream, "flush": sbi_flush})
 
-# --- frag --------------------------------------------------------------
-class _P:  # minimal shim exposing what _frag_packets reads
-    def __init__(self): self._seq = {0: 0}
-frag_cases, shim = [], svc_uep_fec.SvcUepEncoder(svc_uep_fec.default_uep_policy(), fragment=True)
-for n in (5, 58, 59, 200, 1400):
-    p = pat(n, n & 7)
-    frags = shim._frag_packets(0, p)  # usable = 64-2-4 = 58 for symbol_size 64
-    frag_cases.append({"stream_id": 0, "usable": 58, "in": hx(p),
-                       "out": [hx(f) for f in frags]})
-dump("frag.json", {"cases": frag_cases})
+# No frag vectors: the 4-byte FRAG format devourer's svc_uep_fec mirrors was
+# deleted with the pre-frame-shm video path. The 6-byte wide format that
+# replaced it is mabur-native (no Python reference); tests/test_frag.cpp pins
+# it directly.
 
 # --- nal (HEVC NAL header classification, devourer's parser) -----------
 def nal_bytes(t, tid, size=8):
@@ -147,87 +141,62 @@ for t, tid in [(32, 0), (33, 0), (34, 0), (19, 0), (20, 0), (21, 0), (1, 0),
                       "critical": info.critical})
 dump("nal.json", {"cases": nal_cases})
 
-# --- RTP fixture + uep -------------------------------------------------
-def rtp(seq, ts, payload, marker=0):
-    return struct.pack(">BBHII", 0x80, (marker << 7) | 97, seq & 0xFFFF,
-                       ts & 0xFFFFFFFF, 0x11223344) + payload
+# --- frame fixture + uep -----------------------------------------------
+# One record per encoded frame, byte-identical to what waybeam's frame-shm
+# ring hands maburd (drone/vendor/venc_frame_ring.h):
+#
+#   u32-LE record length | VencFrameMeta | Annex-B frame
+#   VencFrameMeta = pts u32-LE (µs) | codec u8 | flags u8 | reserved u16
+#
+# Access units follow the standard grouping rule the encoder emits: the
+# parameter sets belong to the IDR that follows them, and each later VCL NAL
+# is its own AU. Same NAL payloads (pat() seeds) as the pre-frame-shm
+# rtp_stream.bin fixture this replaced, so the video content is unchanged —
+# only the framing is.
+VENC_FRAME_CODEC_H265 = 0x01
+VENC_FRAME_FLAG_IDR = 0x01
+START_CODE = b"\x00\x00\x00\x01"
 
 def hevc_hdr(t, tid): return bytes([(t << 1) & 0xFF, (tid + 1) & 0x07])
 
-def fu(t, tid, chunk, start, end):
-    fh = (0x80 if start else 0) | (0x40 if end else 0) | (t & 0x3F)
-    return hevc_hdr(49, tid) + bytes([fh]) + chunk
+def annexb(*nals): return b"".join(START_CODE + n for n in nals)
 
-rtp_packets, rtp_seq = [], 0
-def emit(payload, marker=0):
-    global rtp_seq
-    rtp_packets.append(rtp(rtp_seq, 90000 + 3000 * rtp_seq, payload, marker))
-    rtp_seq += 1
+frames = [(VENC_FRAME_FLAG_IDR,
+           annexb(hevc_hdr(32, 0) + pat(20, 1),      # VPS
+                  hevc_hdr(33, 0) + pat(40, 2),      # SPS
+                  hevc_hdr(34, 0) + pat(12, 3),      # PPS
+                  hevc_hdr(19, 0) + pat(3000, 4)))]  # IDR_W_RADL slice
+for f in range(12):                                  # P frames, tids 0,1,2
+    frames.append((0, annexb(hevc_hdr(1, f % 3) + pat(900 + 37 * f, 5 + f))))
 
-emit(hevc_hdr(32, 0) + pat(20, 1))          # VPS
-emit(hevc_hdr(33, 0) + pat(40, 2))          # SPS
-emit(hevc_hdr(34, 0) + pat(12, 3))          # PPS
-idr = pat(3000, 4)                            # IDR sliced into 1200 B FUs
-for i in range(0, len(idr), 1200):
-    c = idr[i:i + 1200]
-    emit(fu(19, 0, c, i == 0, i + 1200 >= len(idr)), marker=(i + 1200 >= len(idr)))
-for f in range(12):                           # P frames on tids 0,1,2 round-robin
-    tid = f % 3
-    emit(hevc_hdr(1, tid) + pat(900 + 37 * f, 5 + f), marker=1)
+with open(os.path.join(FIX, "frame_stream.bin"), "wb") as f:
+    for i, (flags, data) in enumerate(frames):
+        meta = struct.pack("<IBBH", (i * 16667) & 0xFFFFFFFF,  # 60 fps pts
+                           VENC_FRAME_CODEC_H265, flags, 0)
+        f.write(struct.pack("<I", len(meta) + len(data)))
+        f.write(meta + data)
+print("wrote frame_stream.bin,", len(frames), "frames")
 
-with open(os.path.join(FIX, "rtp_stream.bin"), "wb") as f:
-    for p in rtp_packets:
-        f.write(struct.pack("<H", len(p))); f.write(p)
-print("wrote rtp_stream.bin,", len(rtp_packets), "packets")
+def classify_frame(data):  # mirror of mabur classify_frame (nal.cpp)
+    if len(data) < 5: return 0
+    sid, i = None, 0
+    while i + 4 < len(data):
+        if data[i:i + 3] != b"\x00\x00\x01":
+            i += 1
+            continue
+        info = svc_uep_fec.parse_hevc_nal(data[i + 3:])
+        if info.critical: return 0
+        if sid is None and info.type < 16: sid = 1 + min(info.tid, 2)
+        i += 3
+    return 0 if sid is None else sid
 
-def classify(pkt):  # mirror of mabur classify_rtp (authoritative NAL rule above)
-    if len(pkt) < 14 or (pkt[0] >> 6) != 2: return 0
-    off = 12 + 4 * (pkt[0] & 0x0F); p = pkt[off:]
-    t = (p[0] >> 1) & 0x3F
-    if t == 49:
-        real, tid = p[2] & 0x3F, (p[1] & 7) - 1
-    elif t == 48:
-        return 0
-    else:
-        real, tid = t, (p[1] & 7) - 1
-    tid = max(tid, 0)
-    crit = (16 <= real <= 23) or (32 <= real <= 34)
-    return 0 if crit else 1 + min(tid, 2)
-
-REF_OV = [1.00, 0.75, 0.50, 0.25]
-encs = [sw_fec.SwEncoder(symbol_size=64, window=128, overhead=o) for o in REF_OV]
-UEP_BLOCK_PAYLOAD = sw_fec.SW_HDR_LEN + 64  # 14 + symbol_size, matches Layer::packer in uep_encoder.h
-pks = [fec_subblock.SubBlockPacker(UEP_BLOCK_PAYLOAD, 4, stream_id=s) for s in range(4)]
-fseq = [0, 0, 0, 0]
-uep_stream, uep_sids = [], []
-def frag4(sid, pkt, usable=58):
-    global fseq
-    chunks = [pkt[i:i + usable] for i in range(0, max(len(pkt), 1), usable)]
-    s = fseq[sid]; fseq[sid] = (s + 1) & 0xFFFF
-    return [struct.pack("<HBB", s, i, len(chunks)) + c
-            for i, c in enumerate(chunks)]
-for pkt in rtp_packets:
-    sid = classify(pkt)
-    uep_sids.append(sid)
-    for fp in frag4(sid, pkt):
-        for env in encs[sid].add_packet(fp):
-            for body in pks[sid].add(env):
-                uep_stream.append({"sid": sid, "body": hx(body)})
-uep_flush = []
-for sid in range(4):
-    for env in encs[sid].flush():
-        for body in pks[sid].add(env):
-            uep_flush.append({"sid": sid, "body": hx(body)})
-    for body in pks[sid].flush():
-        uep_flush.append({"sid": sid, "body": hx(body)})
-# test_uep.cpp only reads symbol_size/blocks_per_body/overheads/classify (it
-# round-trips body content live through UepEncoder/UepDecoder rather than
-# pinning uep_stream/uep_flush bytes -- see the comment above that test).
-# stream/flush are kept for debugging visibility; the RS-era "k" field is
-# gone since nothing reads it under the sliding-window scheme.
+# test_uep.cpp reads symbol_size/blocks_per_body/overheads/classify: body
+# content is round-tripped live through UepEncoder/UepDecoder rather than
+# pinned byte-wise (sliding-window envelopes have no Python reference), while
+# classify stays pinned against this mirror of the C++ classifier.
 dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
-                  "overheads": REF_OV, "classify": uep_sids,
-                  "stream": uep_stream, "flush": uep_flush})
+                  "overheads": [1.00, 0.75, 0.50, 0.25],
+                  "classify": [classify_frame(d) for _, d in frames]})
 
 # --- rc ----------------------------------------------------------------
 rcfs = [rc_proto.Rcf(vtx_id=0xDEADBEEF, seq=7, ack_seq=3800, profile=0x24,

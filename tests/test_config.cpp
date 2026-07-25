@@ -93,7 +93,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
-  CHECK(cfg.ring_name == def.ring_name);
+  CHECK(cfg.frame_ring_name == def.frame_ring_name);
   CHECK(cfg.flags.crit_ldpc == def.flags.crit_ldpc);
   CHECK(cfg.flags.crit_stbc == def.flags.crit_stbc);
   CHECK(cfg.flags.t0_ldpc == def.flags.t0_ldpc);
@@ -427,32 +427,42 @@ TEST(fec_stale_async_worker_key_throws) {
   std::filesystem::remove(p);
 }
 
-// video_input gates the frame-shm ingest path (plan 2026-07-22): default
-// "ring" keeps the pre-built-RTP path (wide_frag off on every UEP layer);
-// "frame_ring" opts into the frame-wire path (wide_frag on); anything else
-// is a config error.
-TEST(video_input_defaults_and_validation) {
+// Video ingest is frame-shm only: the frame ring is named by frame_ring_name
+// and there is no mode to select.
+TEST(frame_ring_name_default) {
   auto path = write_temp_json("{}");
   auto cfg = load_config(path.string());
-  CHECK(cfg.video_input == "ring");
   CHECK(cfg.frame_ring_name == "mabur_f");
-  for (auto& l : cfg.uep_layers()) CHECK(!l.wide_frag);
   std::filesystem::remove(path);
 
-  auto path2 = write_temp_json(R"({"video_input": "frame_ring"})");
-  auto cfg2 = load_config(path2.string());
-  CHECK(cfg2.video_input == "frame_ring");
-  for (auto& l : cfg2.uep_layers()) CHECK(l.wide_frag);
+  auto path2 = write_temp_json(R"({"frame_ring_name": "other"})");
+  CHECK(load_config(path2.string()).frame_ring_name == "other");
+  std::filesystem::remove(path2);
+}
+
+// video_input/ring_name selected and named the pre-frame-shm RTP-packet ring.
+// Unlike the fec.async_worker gate above (never set in a device config, so
+// failing loudly cost nothing), video_input IS pinned in the drone's live
+// /etc/mabur.json by the bench procedure — throwing on it would leave an
+// upgraded maburd unable to start, i.e. no video at all. So these two parse,
+// warn, and are ignored for one release.
+TEST(deprecated_video_input_keys_are_accepted_and_ignored) {
+  auto path = write_temp_json(
+      R"({"video_input": "frame_ring", "ring_name": "mabur"})");
+  auto cfg = load_config(path.string());  // must not throw
+  CHECK(cfg.frame_ring_name == "mabur_f");
+  std::filesystem::remove(path);
+
+  // Any other value is equally ignored — including the one that used to select
+  // the deleted path.
+  auto path2 = write_temp_json(R"({"video_input": "ring"})");
+  (void)load_config(path2.string());
   std::filesystem::remove(path2);
 
-  auto path3 = write_temp_json(R"({"video_input": "bogus"})");
-  bool threw = false;
-  try {
-    (void)load_config(path3.string());
-  } catch (const std::runtime_error&) {
-    threw = true;
-  }
-  CHECK(threw);
+  // The blanket unknown-key check still applies to everything else.
+  auto path3 = write_temp_json(R"({"video_output": "ring"})");
+  CHECK(what_of([&] { load_config(path3.string()); }).find("video_output") !=
+        std::string::npos);
   std::filesystem::remove(path3);
 }
 

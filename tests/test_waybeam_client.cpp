@@ -63,6 +63,32 @@ void serve_one(int listen_fd, const std::string& reply,
   close(listen_fd);
 }
 
+// Like serve_one, but writes the reply in TWO segments with a pause between
+// them — how a real server behaves when it writes headers and body separately.
+// A client that parses only its first recv() sees headers with an empty body.
+void serve_one_split(int listen_fd, const std::string& head,
+                     const std::string& body, std::string* request_line_out) {
+  int conn = accept(listen_fd, nullptr, nullptr);
+  if (conn < 0) {
+    close(listen_fd);
+    return;
+  }
+  char buf[4096];
+  ssize_t n = read(conn, buf, sizeof(buf) - 1);
+  if (n > 0) {
+    buf[n] = '\0';
+    std::string request(buf);
+    auto pos = request.find("\r\n");
+    if (pos == std::string::npos) pos = request.find('\n');
+    *request_line_out = request.substr(0, pos);
+  }
+  (void)write(conn, head.data(), head.size());
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  (void)write(conn, body.data(), body.size());
+  close(conn);
+  close(listen_fd);
+}
+
 // Silent server that accepts, reads the request, but never sends a reply.
 // Meant to be run on a background thread. The fd must already be listening.
 void serve_silent(int listen_fd) {
@@ -176,6 +202,33 @@ TEST(get_param_returns_body) {
   CHECK(ok);
   CHECK(request_line == "GET /api/v1/get?outgoing.server HTTP/1.0");
   CHECK(body.find("frame-shm://") != std::string::npos);
+}
+
+// REPRODUCES the drone-side false alarm found on the rig 2026-07-25: waybeam
+// answered correctly (`"value":"frame-shm://mabur_f"`) but maburd logged
+// `FATAL MISMATCH ... (got: )` at every start. Root cause was here, not in the
+// check: a single recv() that lands only the headers leaves the body empty
+// while the status line still says 200, so get_param returned true with "".
+TEST(get_param_body_arriving_after_headers_is_still_read) {
+  uint16_t port;
+  int listen_fd = bind_listener(&port);
+  std::string request_line;
+  std::thread server(
+      serve_one_split, listen_fd, "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n",
+      "{\"ok\":true,\"data\":{\"field\":\"outgoing.server\","
+      "\"value\":\"frame-shm://mabur_f\"}}",
+      &request_line);
+
+  WaybeamCfg cfg;
+  cfg.host = "127.0.0.1";
+  cfg.port = port;
+  WaybeamClient client(cfg);
+  std::string body;
+  bool ok = client.get_param("outgoing.server", body);
+
+  server.join();
+  CHECK(ok);
+  CHECK(body.find("frame-shm://mabur_f") != std::string::npos);
 }
 
 TEST(recv_timeout_silent_server_returns_false) {

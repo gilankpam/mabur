@@ -37,7 +37,7 @@ std::vector<std::vector<uint8_t>> frag_frame(mabur::Fragmenter& f, uint16_t fram
 TEST(in_order_frames_emit_clean) {
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter frag(true);
+  mabur::Fragmenter frag;
   std::vector<uint8_t> pay(1000, 0xAB);
   for (uint16_t id = 0; id < 3; ++id)
     for (auto& p : frag_frame(frag, id, pay))
@@ -58,7 +58,7 @@ TEST(mid_stream_reorder_holds_for_gap_frame) {
   // 1 -> 2 once frame 1 arrives.
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter fa(true), fb(true);
+  mabur::Fragmenter fa, fb;
   std::vector<uint8_t> p0(500, 0x00), p1(500, 0x11), p2(500, 0x22);
   for (auto& p : frag_frame(fa, 0, p0)) fs.push_fragment(1, p.data(), p.size(), 10);
   REQUIRE(cap.evs.size() == 2);  // frame 0 emitted clean
@@ -77,7 +77,7 @@ TEST(late_frame_after_advance_is_dropped) {
   // an earlier frame decoding later is late -> dropped, never emitted.
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter fa(true), fb(true);
+  mabur::Fragmenter fa, fb;
   std::vector<uint8_t> p0(500, 0x00), p1(500, 0x11);
   for (auto& p : frag_frame(fb, 1, p1)) fs.push_fragment(2, p.data(), p.size(), 10);
   REQUIRE(cap.evs.size() == 2);  // frame 1 emitted at cold start
@@ -90,7 +90,7 @@ TEST(late_frame_after_advance_is_dropped) {
 TEST(gap_timeout_truncates_prefix) {
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter frag(true);
+  mabur::Fragmenter frag;
   std::vector<uint8_t> pay(2000, 0xCD);
   auto frags = frag_frame(frag, 0, pay);
   REQUIRE(frags.size() >= 4);
@@ -113,7 +113,7 @@ TEST(lookahead_forces_advance) {
   FrameStream fs({5000, 3}, cap.cbs());  // huge timeout: only lookahead fires
   // ONE fragmenter per layer: FRAG seq must advance across frames, or the
   // per-(sid,fseq) slots collide.
-  mabur::Fragmenter frag(true);
+  mabur::Fragmenter frag;
   std::vector<uint8_t> pay(400, 0x77);   // 408-byte unit -> 3 fragments
   auto f0 = frag_frame(frag, 0, pay);
   REQUIRE(f0.size() == 3);
@@ -131,7 +131,7 @@ TEST(lookahead_forces_advance) {
 TEST(discontinuity_resets_ordering) {
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter frag(true);
+  mabur::Fragmenter frag;
   std::vector<uint8_t> pay(100, 0x42);
   for (auto& p : frag_frame(frag, 100, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
   // Producer restarted: id jumps backward with the discont flag set.
@@ -143,7 +143,7 @@ TEST(discontinuity_resets_ordering) {
 TEST(reset_closes_in_flight_frame_truncated) {
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter frag(true);
+  mabur::Fragmenter frag;
   std::vector<uint8_t> pay(2000, 0xEF);
   auto frags = frag_frame(frag, 0, pay);
   REQUIRE(frags.size() >= 4);
@@ -170,7 +170,7 @@ TEST(waybeam_restart_discont_continues_clean) {
   // exposes the re-base bug (next_emit_id64_ + 0x20000 inherits those bits).
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter frag(true);
+  mabur::Fragmenter frag;
   std::vector<uint8_t> pay(100, 0x42);
   for (uint16_t id = 5000; id <= 5002; ++id)
     for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
@@ -195,7 +195,7 @@ TEST(waybeam_restart_discont_no_phantom_drops) {
   // ~0x20000 id jump as real "dropped" frames.
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
-  mabur::Fragmenter frag(true);
+  mabur::Fragmenter frag;
   std::vector<uint8_t> pay(100, 0x42);
   for (uint16_t id = 5000; id <= 5002; ++id)
     for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 10);

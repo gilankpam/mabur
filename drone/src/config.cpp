@@ -274,7 +274,6 @@ std::array<UepLayerCfg, 4> Config::uep_layers() const {
     layers[static_cast<size_t>(sid)].fec =
         SwConfig{fec.symbol_size[static_cast<size_t>(sid)], fec.window, overhead};
     layers[static_cast<size_t>(sid)].blocks_per_body = fec.blocks_per_body[static_cast<size_t>(sid)];
-    layers[static_cast<size_t>(sid)].wide_frag = (video_input == "frame_ring");
   }
   return layers;
 }
@@ -304,11 +303,18 @@ Config load_config(const std::string& path) {
   if (j.contains("waybeam")) parse_waybeam(j.at("waybeam"), cfg.waybeam);
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
-  assign_if_present(j, "ring_name", cfg.ring_name, "");
-  assign_if_present(j, "video_input", cfg.video_input, "");
   assign_if_present(j, "frame_ring_name", cfg.frame_ring_name, "");
-  if (cfg.video_input != "ring" && cfg.video_input != "frame_ring")
-    fail("video_input", "must be \"ring\" or \"frame_ring\"");
+  // Deprecated: both named/selected the pre-frame-shm RTP-packet ring, which
+  // no longer exists. Accepted-and-ignored (not fatal) for one release because
+  // the bench procedure pins video_input in the drone's live /etc/mabur.json —
+  // failing here would leave an upgraded maburd unable to start.
+  for (const char* dead : {"video_input", "ring_name"})
+    if (j.contains(dead))
+      std::fprintf(stderr,
+                   "maburd config: WARNING: '%s' is obsolete and ignored — "
+                   "video ingest is frame-shm only (frame_ring_name). Remove "
+                   "it from this config.\n",
+                   dead);
   if (j.contains("flags")) parse_flags(j.at("flags"), cfg.flags);
   if (j.contains("power_offset_db")) {
     auto& arr = j.at("power_offset_db");

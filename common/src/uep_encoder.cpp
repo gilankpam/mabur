@@ -2,8 +2,6 @@
 
 #include <algorithm>
 
-#include "mabur/nal.h"
-
 namespace mabur {
 namespace {
 // One random seq per layer so a restarted encoder lands far from its
@@ -50,28 +48,6 @@ void UepEncoder::drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& ou
   pack_envs(layer, sid, layer.sw.flush(), out);
   for (auto& b : layer.packer.flush())
     out.push_back(UepBody{sid, std::move(b)});
-}
-
-std::vector<UepBody> UepEncoder::add_rtp(const uint8_t* pkt, size_t len, uint64_t now_ms) {
-  std::vector<UepBody> out;
-  int sid = classify_rtp(pkt, len);
-  Layer& layer = layers_[static_cast<size_t>(sid)];
-
-  layer.last_activity_ms = now_ms;
-  layer.has_activity = true;
-
-  if (layer.shed) {
-    ++layer.dropped_count;
-    return out;
-  }
-
-  auto frags = layer.frag.fragment(pkt, len, layer.usable);
-  for (auto& f : frags) {
-    auto envs = layer.sw.add_packet(f.data(), f.size());
-    if (envs.empty()) continue;
-    pack_envs(layer, static_cast<uint8_t>(sid), std::move(envs), out);
-  }
-  return out;
 }
 
 std::vector<UepBody> UepEncoder::add_frame(int stream_id, const uint8_t* data,

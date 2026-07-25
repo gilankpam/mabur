@@ -73,10 +73,8 @@ class FrameSource {
 
   // Whether this FrameSource has ever completed a successful attach
   // before. The very first attach must NOT snap read_idx to the current
-  // write head: unlike RingSource's RTP-packet ring (whose production
-  // consumer always attaches before the producer starts writing),
-  // whole-frame producers may publish a frame before the very first
-  // FrameSource attach happens, and that frame must still be delivered.
+  // write head: a whole-frame producer may publish a frame before the very
+  // first FrameSource attach happens, and that frame must still be delivered.
   // Only attaches that follow a detected producer restart (i.e. every
   // attach after the first) should skip stale backlog via snap-to-head.
   bool ever_attached_ = false;
