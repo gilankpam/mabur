@@ -11,8 +11,27 @@ import json
 import socket
 import time
 
-GRID_WIDTH = 86
 STALE_S = 2.0
+
+# One spec per grid: (title, width). Header titles and data cells are both
+# rendered from these, right-aligned into the same slots — they cannot
+# misalign. Label column (CARD / "  c0") is LABEL_W wide, cells are joined
+# with a single space.
+LABEL_W = 6
+CARD_COLS = [("st", 4), ("pps", 5), ("Mbps", 5), ("loss%", 5), ("rssi", 6),
+             ("rssiA", 6), ("rssiB", 6), ("snr", 5), ("snrA", 5), ("snrB", 5),
+             ("crc", 5), ("age", 6)]
+FEC_COLS = [("str", 4), ("rec/s", 7), ("abn/s", 7), ("in/s", 7), ("sfail", 5),
+            ("flight", 6)]
+
+
+def _grid_row(label, cells):
+    """label padded/truncated to LABEL_W, then one space before each
+    fixed-width cell. Both header and data rows come through here."""
+    return label[:LABEL_W].ljust(LABEL_W) + "".join(" " + c for c in cells)
+
+
+GRID_WIDTH = LABEL_W + sum(w + 1 for _, w in CARD_COLS)  # widest grid row
 
 
 def _f(v, w, prec=1):
@@ -144,50 +163,45 @@ def render_rows(model, wall, width):
     )
 
     # --- CARD ---
-    rows.append(
-        "CARD    st   pps   Mbps  loss%   rssi  rssiA  rssiB    snr   snrA   snrB   crc   age"
-    )
+    rows.append(_grid_row("CARD", [t.rjust(w) for t, w in CARD_COLS]))
     if not cards:
-        rows.append("  --    no cards")
+        rows.append(_grid_row("  --", ["no cards".ljust(GRID_WIDTH - LABEL_W - 1)]))
     else:
         for c in cards:
-            cid = c.get("id")
             up = c.get("up")
             st_s = "UP" if up else ("DOWN" if up is not None else None)
-            age_s = _age_cell(c.get("last_frame_age_ms"), 6)
-            row = (
-                f"  c{_s(cid)}"
-                f"  {_f(st_s, 5)}"
-                f" {_f(c.get('pps'), 6)}"
-                f" {_f(c.get('rx_mbps'), 7, 1)}"
-                f" {_f(c.get('loss_pct'), 7, 1)}"
-                f" {_f(c.get('rssi'), 7, 1)}"
-                f" {_f(c.get('rssi_a'), 7, 1)}"
-                f" {_f(c.get('rssi_b'), 7, 1)}"
-                f" {_f(c.get('snr'), 7, 1)}"
-                f" {_f(c.get('snr_a'), 7, 1)}"
-                f" {_f(c.get('snr_b'), 7, 1)}"
-                f" {_f(c.get('crc_fail'), 6)}"
-                f" {age_s}"
-            )
-            rows.append(row)
+            cells = [
+                _f(st_s, CARD_COLS[0][1]),
+                _f(c.get("pps"), CARD_COLS[1][1], 0),
+                _f(c.get("rx_mbps"), CARD_COLS[2][1], 1),
+                _f(c.get("loss_pct"), CARD_COLS[3][1], 1),
+                _f(c.get("rssi"), CARD_COLS[4][1], 1),
+                _f(c.get("rssi_a"), CARD_COLS[5][1], 1),
+                _f(c.get("rssi_b"), CARD_COLS[6][1], 1),
+                _f(c.get("snr"), CARD_COLS[7][1], 1),
+                _f(c.get("snr_a"), CARD_COLS[8][1], 1),
+                _f(c.get("snr_b"), CARD_COLS[9][1], 1),
+                _f(c.get("crc_fail"), CARD_COLS[10][1]),
+                _age_cell(c.get("last_frame_age_ms"), CARD_COLS[11][1]),
+            ]
+            rows.append(_grid_row(f"  c{_s(c.get('id'))}", cells))
 
     # --- FEC (sticky) ---
-    rows.append("FEC     str  rec/s  abn/s   in/s  sfail  flight")
+    rows.append(_grid_row("FEC", [t.rjust(w) for t, w in FEC_COLS]))
     if not model.fec_rows:
-        rows.append("  --    no fec streams")
+        rows.append(_grid_row("  --", ["no fec streams".ljust(GRID_WIDTH - LABEL_W - 1)]))
     else:
         for sid in sorted(model.fec_rows):
             f = model.fec_rows[sid]
-            row = (
-                f"  s{_s(sid)}"
-                f" {_f(f.get('recovered_s'), 9, 1)}"
-                f" {_f(f.get('abandoned_s'), 7, 1)}"
-                f" {_f(f.get('syms_in_s'), 7, 0)}"
-                f" {_f(f.get('sub_fail'), 7)}"
-                f" {_f(f.get('in_flight'), 8)}"
-            )
-            rows.append(row)
+            cells = [
+                _f(f"s{_s(sid)}", FEC_COLS[0][1]),
+                _f(f.get("recovered_s"), FEC_COLS[1][1], 1),
+                _f(f.get("abandoned_s"), FEC_COLS[2][1], 1),
+                _f(f.get("syms_in_s"), FEC_COLS[3][1], 0),
+                _f(f.get("sub_fail"), FEC_COLS[4][1]),
+                _f(f.get("in_flight"), FEC_COLS[5][1]),
+            ]
+            rows.append(_grid_row("", cells))
 
     # --- VIDEO ---
     rows.append(

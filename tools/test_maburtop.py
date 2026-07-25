@@ -89,6 +89,28 @@ class RenderTest(unittest.TestCase):
         rows = render_rows(m, wall=100.1, width=GRID_WIDTH)
         self.assertTrue(any("unsupported schema" in r for r in rows))
 
+    def test_header_and_data_columns_align(self):
+        # Every column is right-aligned, so a title's right edge must be the
+        # right edge of the value below it — for both the CARD and FEC grids.
+        rows = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
+        for header_key, data_key, titles in (
+            ("CARD", "c0", ("st", "pps", "Mbps", "loss%", "rssi", "rssiA",
+                            "rssiB", "snr", "snrA", "snrB", "crc", "age")),
+            ("FEC", "s0", ("str", "rec/s", "abn/s", "in/s", "sfail", "flight")),
+        ):
+            header = next(r for r in rows if r.startswith(header_key))
+            data = next(r for r in rows if r.lstrip().startswith(data_key))
+            for title in titles:
+                end = header.index(title) + len(title)
+                self.assertNotEqual(
+                    data[end - 1], " ",
+                    f"{header_key}/{title}: no value ending at col {end}\n"
+                    f"{header!r}\n{data!r}")
+                self.assertTrue(
+                    end == len(data) or data[end] == " ",
+                    f"{header_key}/{title}: value overruns col {end}\n"
+                    f"{header!r}\n{data!r}")
+
     def test_narrow_terminal_single_line(self):
         rows = render_rows(self.fresh(), wall=100.2, width=40)
         self.assertEqual(len(rows), 1)
