@@ -6,7 +6,7 @@
     "tx_card": -1
   },
   "fec": {
-    "symbol_size": [164, 1312, 1312, 1312],
+    "symbol_size": 328,
     "decode_deadline_ms": 200,
     "seq_horizon": 512
   },

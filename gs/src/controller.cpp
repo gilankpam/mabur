@@ -13,8 +13,8 @@ Controller::Controller(const LinkTable& lt, ControllerConfig cfg)
                           cfg_.bw, false, cfg_.bw_set, cfg_.vht);
 }
 
-double Controller::path_loss(double reported_snr, int reported_txagc) const {
-  return reported_snr - gain_db(reported_txagc);
+double Controller::path_loss(double reported_snr, int reported_offset_qdb) const {
+  return reported_snr - gain_db(reported_offset_qdb);
 }
 
 bool Controller::rung_blocked(int bw) const {
@@ -45,7 +45,8 @@ std::optional<OpPoint> Controller::best(double path_loss, double margin) const {
   for (const auto& r : rows_) {
     if (rung_blocked(r.bw)) continue;
     auto op = resolve(r, path_loss, lt_, cfg_.payload_bytes,
-                      cfg_.src_bitrate_bps, margin);
+                      cfg_.src_bitrate_bps, margin, cfg_.min_offset_qdb,
+                      cfg_.max_offset_qdb, cfg_.base_ref_idx);
     if (!op || op->p_deliver < cfg_.target || std::isinf(op->e_bit)) continue;
     if (!out || op->e_bit < out->e_bit) out = op;
   }
@@ -53,10 +54,10 @@ std::optional<OpPoint> Controller::best(double path_loss, double margin) const {
 }
 
 std::optional<OpPoint> Controller::update(double reported_snr,
-                                          int reported_txagc, double now_ms) {
+                                          int reported_offset_qdb, double now_ms) {
   last_feedback_ms_ = now_ms;
   now_ms_ = now_ms;
-  const double pl_inst = path_loss(reported_snr, reported_txagc);
+  const double pl_inst = path_loss(reported_snr, reported_offset_qdb);
   if (!has_ema_) {
     snr_ema_ = pl_inst;
     has_ema_ = true;
@@ -73,10 +74,11 @@ std::optional<OpPoint> Controller::decide(double path_loss, double now_ms) {
     const LinkRow row{cur_->vht, cur_->mcs, cur_->bw, cur_->sgi,
                       cur_->overhead, cur_->snr_req};
     auto cur_now = resolve(row, path_loss, lt_, cfg_.payload_bytes,
-                           cfg_.src_bitrate_bps, 0.0);
+                           cfg_.src_bitrate_bps, 0.0, cfg_.min_offset_qdb,
+                           cfg_.max_offset_qdb, cfg_.base_ref_idx);
     cur_ok = cur_now.has_value() && cur_now->p_deliver >= cfg_.target &&
              !rung_blocked(cur_->bw);
-    if (cur_ok) cur_ = cur_now;  // refresh txagc/e_bit at the new path loss
+    if (cur_ok) cur_ = cur_now;  // refresh offset/e_bit at the new path loss
   }
 
   auto cand = best(path_loss, cfg_.margin_db);
@@ -88,7 +90,7 @@ std::optional<OpPoint> Controller::decide(double path_loss, double now_ms) {
       cur_.reset();
       return std::nullopt;
     }
-    cur_ = max_range();
+    cur_ = max_range(cfg_.max_offset_qdb);
     return cur_;
   }
 
@@ -113,7 +115,7 @@ std::optional<OpPoint> Controller::decide(double path_loss, double now_ms) {
 std::optional<OpPoint> Controller::on_tick(double now_ms) {
   if (now_ms - last_feedback_ms_ > cfg_.feedback_timeout_ms) {
     shed_ = false;
-    cur_ = max_range();
+    cur_ = max_range(cfg_.max_offset_qdb);
   }
   return cur_;
 }

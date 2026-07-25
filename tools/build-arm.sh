@@ -117,12 +117,13 @@ cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-musl.cmake \
   -DCMAKE_BUILD_TYPE=Release -DMABUR_BUILD_TESTS=OFF \
   -DDEVOURER_JAGUAR1=OFF -DDEVOURER_8814=OFF -DDEVOURER_JAGUAR2_8822B=OFF \
   -DDEVOURER_JAGUAR2_8821C=OFF -DDEVOURER_JAGUAR3_8822C=OFF \
-  -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_LOG_MAX_LEVEL=WARN
+  -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_KESTREL_8852B=OFF -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
 
-cmake --build build-arm -j"$(nproc)" --target maburd linkbench-tx
+cmake --build build-arm -j"$(nproc)" --target maburd linkbench-tx txagcbench-tx
 
 "${TARGET_TRIPLE}-strip" build-arm/drone/maburd -o out/arm/maburd
 "${TARGET_TRIPLE}-strip" build-arm/bench/linkbench/linkbench-tx -o out/arm/linkbench-tx
+"${TARGET_TRIPLE}-strip" build-arm/bench/txagcbench/txagcbench-tx -o out/arm/txagcbench-tx
 
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then
@@ -130,4 +131,4 @@ if [ ! -e toolchain/file ]; then
     'with import <nixpkgs> {}; file' \
     -o toolchain/file
 fi
-"$(readlink -f toolchain/file)/bin/file" out/arm/maburd out/arm/linkbench-tx
+"$(readlink -f toolchain/file)/bin/file" out/arm/maburd out/arm/linkbench-tx out/arm/txagcbench-tx

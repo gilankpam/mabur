@@ -122,7 +122,7 @@ Config load_config(const std::string& path) {
 
   if (j.contains("link")) {
     const json& r = j["link"];
-    check_keys(r, "link", {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "video_silence_ms", "src_bitrate_mbps", "margin_db", "static_mcs", "static_overhead", "static_txagc"});
+    check_keys(r, "link", {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "video_silence_ms", "src_bitrate_mbps", "margin_db", "static_mcs", "static_overhead", "static_offset_qdb", "min_offset_qdb", "max_offset_qdb", "base_ref_idx"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
@@ -131,14 +131,23 @@ Config load_config(const std::string& path) {
     c.link.margin_db = get_num(r, "margin_db", 2.0, 0.0, 50.0, "link");
     c.link.static_mcs = static_cast<int>(get_int(r, "static_mcs", -1, -1, 7, "link"));
     c.link.static_overhead = get_num(r, "static_overhead", 0.25, 0.10, 1.0, "link");
-    c.link.static_txagc = static_cast<int>(get_int(r, "static_txagc", 63, 0, 63, "link"));
+    c.link.static_offset_qdb = static_cast<int>(get_int(r, "static_offset_qdb", 0, -64, 63, "link"));
+    c.link.min_offset_qdb = static_cast<int>(get_int(r, "min_offset_qdb", -40, -64, 0, "link"));
+    c.link.max_offset_qdb = static_cast<int>(get_int(r, "max_offset_qdb", 0, -64, 0, "link"));
+    if (c.link.min_offset_qdb > c.link.max_offset_qdb)
+      fail("link.min_offset_qdb", "must be <= max_offset_qdb");
+    c.link.base_ref_idx = static_cast<int>(get_int(r, "base_ref_idx", 53, 0, 127, "link"));
   }
 
   if (j.contains("video_out")) {
     const json& r = j["video_out"];
-    check_keys(r, "video_out", {"host", "port"});
+    check_keys(r, "video_out", {"host", "port", "frame_gap_timeout_ms", "frame_lookahead"});
     c.video_out.host = get_str(r, "host", "127.0.0.1", "video_out");
     c.video_out.port = static_cast<int>(get_int(r, "port", 5600, 1, 65535, "video_out"));
+    c.video_out.frame_gap_timeout_ms = static_cast<int>(
+        get_int(r, "frame_gap_timeout_ms", 50, 10, 1000, "video_out"));
+    c.video_out.frame_lookahead = static_cast<int>(
+        get_int(r, "frame_lookahead", 8, 2, 64, "video_out"));
   }
 
   if (j.contains("msp")) {

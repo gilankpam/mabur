@@ -3,11 +3,13 @@
 `mabur` turns an SSC338Q (SigmaStar Infinity6E) FPV camera into an adaptive
 video transmitter. It bridges **waybeam** (H.265/SVC-T encoder, unmodified,
 `../waybeam_venc`) and **devourer** (RTL8812EU raw-injection driver, used as a
-library): `maburd` reads RTP packets off waybeam's shared-memory ring,
-classifies them by temporal layer, applies per-layer Reed-Solomon UEP FEC with
-SBI framing, injects them with per-layer modulation/power, consumes the
-ground-station adaptive-link feedback (RC/RCF), and drives waybeam's encoder
-knobs (bitrate, ROI QP, IDR) in response.
+library): `maburd` reads whole encoded frames off waybeam's frame-shm ring,
+classifies each frame by temporal layer, applies per-layer sliding-window UEP
+FEC with SBI framing (the window sealed at every frame boundary), injects the
+bodies with per-layer modulation/power, consumes the ground-station
+adaptive-link feedback (RC/RCF), and drives waybeam's encoder knobs (bitrate,
+ROI QP, IDR) in response. RTP is built on the ground station, from the frames
+it reassembles.
 
 The full design — architecture, wire formats, protocol, and the testing
 strategy — is in
@@ -81,7 +83,7 @@ bash bundle/install.sh root@<camera-ip>
 This copies `out/arm/maburd` to `/usr/bin/maburd`, seeds `/etc/mabur.json`
 from `bundle/mabur.default.json` if one isn't already present, installs
 `bundle/S96mabur` (a BusyBox-compatible init script with a respawn loop) to
-`/etc/init.d/S96mabur`, configures waybeam's `shm://` RTP output via
+`/etc/init.d/S96mabur`, configures waybeam's `frame-shm://` output via
 `json_cli`, and (re)starts both `S95waybeam` and `S96mabur`.
 
 Prerequisites: `bash tools/build-arm.sh` has been run so `out/arm/maburd`

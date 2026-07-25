@@ -52,15 +52,29 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.bw_set == def.radio.bw_set);
   CHECK(cfg.radio.max_txagc == def.radio.max_txagc);
   CHECK(cfg.radio.thermal_max_delta == def.radio.thermal_max_delta);
-  CHECK(cfg.radio.power_mode == "override");
+  CHECK(cfg.radio.power_mode == "none");
   CHECK(cfg.radio.power_offset_qdb == 0);
 
-  // The bundle intentionally diverges from struct defaults for fec (Task 1's
-  // sliding-window winners), so check against the bundle's actual values
-  // rather than the struct defaults used for everything else.
-  CHECK((cfg.fec.symbol_size == std::array<int, 4>{164, 1312, 1312, 1312}));
-  CHECK(cfg.fec.window == 64);
-  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 1, 1, 1}));
+  // Default bundle ships power-inert ("none" = efuse/kernel per-rate table
+  // untouched). "offset" is the adaptive opt-in at deploy time; "override"
+  // is bench-diagnostic only. Bundle carries unit's measured wall-equalization
+  // values (Task 9) alongside the inert power mode.
+  CHECK((cfg.radio.rate_walls_idx ==
+         std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
+  CHECK(cfg.radio.legacy_wall_idx == 91);
+  CHECK(cfg.radio.wall_margin_db == 1.0);
+  CHECK(cfg.radio.min_offset_qdb == -40);
+  CHECK(cfg.radio.base_ref_idx == 53);
+
+  // The bundle intentionally diverges from struct defaults for fec, so check
+  // against the bundle's actual values rather than the struct defaults used
+  // for everything else. 328/w32/bpb4 is the 2026-07-25 gated geometry
+  // (docs/fec-symbol-size-328.md): same ~1.4kB body and ~11kB window span as
+  // scalar-164/w64/bpb8 but ~5% less airtime and -7.5% maburd CPU, quality
+  // parity on-air.
+  CHECK((cfg.fec.symbol_size == std::array<int, 4>{328, 328, 328, 328}));
+  CHECK(cfg.fec.window == 32);
+  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 4, 4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == 25);
 
@@ -79,7 +93,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
-  CHECK(cfg.ring_name == def.ring_name);
+  CHECK(cfg.frame_ring_name == def.frame_ring_name);
   CHECK(cfg.flags.crit_ldpc == def.flags.crit_ldpc);
   CHECK(cfg.flags.crit_stbc == def.flags.crit_stbc);
   CHECK(cfg.flags.t0_ldpc == def.flags.t0_ldpc);
@@ -348,6 +362,108 @@ TEST(msp_rejects_bad_values) {
     CHECK(threw == true);
     std::filesystem::remove(path);
   }
+}
+
+TEST(radio_wall_equalization_keys_parse) {
+  auto path = write_temp_json(
+      R"({"radio":{"power_mode":"offset",)"
+      R"("rate_walls_idx":[91,91,91,91,73,56,51,49],)"
+      R"("legacy_wall_idx":91,"wall_margin_db":2.0,)"
+      R"("min_offset_qdb":-32,"base_ref_idx":50}})");
+  Config cfg = load_config(path.string());
+  CHECK((cfg.radio.rate_walls_idx ==
+         std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
+  CHECK(cfg.radio.legacy_wall_idx == 91);
+  CHECK(cfg.radio.wall_margin_db == 2.0);
+  CHECK(cfg.radio.min_offset_qdb == -32);
+  CHECK(cfg.radio.base_ref_idx == 50);
+  std::filesystem::remove(path);
+}
+
+TEST(radio_rate_walls_idx_wrong_length_rejected) {
+  auto path = write_temp_json(
+      R"({"radio":{"rate_walls_idx":[91,91,91]}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(radio_power_mode_offset_requires_rate_walls_idx) {
+  auto path = write_temp_json(R"({"radio":{"power_mode":"offset"}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+// The 8822E's per-rate diff field is 7-bit two's complement: diff[r] =
+// walls[r] - wall_margin_db*4 - base_ref_idx must land in [-64,63], or the
+// value silently wraps on air (e.g. +70 -> -58, sign-flipping per-rate
+// power) with no error. base_ref_idx left at 0 (a plausible miscalibration:
+// forgetting to set the unit's efuse anchor) drives every wall straight out
+// of range, so config load must fail loudly rather than let power_plan.h's
+// clamp paper over it silently.
+TEST(radio_offset_diff_out_of_range_rejected) {
+  auto path = write_temp_json(
+      R"({"radio":{"power_mode":"offset",)"
+      R"("rate_walls_idx":[127,127,127,127,127,127,127,127],)"
+      R"("legacy_wall_idx":91,"wall_margin_db":0.0,)"
+      R"("min_offset_qdb":-32,"base_ref_idx":0}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  CHECK(msg.find("[-64,63]") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+// The transitional async gate was removed after hardware acceptance (plan
+// 2026-07-17 Task 7): async is the only mode. A stale config still carrying
+// the key must fail loudly, not be silently ignored.
+TEST(fec_stale_async_worker_key_throws) {
+  auto p = write_temp_json(R"({"fec":{"async_worker":true}})");
+  std::string w = what_of([&] { load_config(p.string()); });
+  CHECK(w.find("async_worker") != std::string::npos);
+  std::filesystem::remove(p);
+}
+
+// Video ingest is frame-shm only: the frame ring is named by frame_ring_name
+// and there is no mode to select.
+TEST(frame_ring_name_default) {
+  auto path = write_temp_json("{}");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.frame_ring_name == "mabur_f");
+  std::filesystem::remove(path);
+
+  auto path2 = write_temp_json(R"({"frame_ring_name": "other"})");
+  CHECK(load_config(path2.string()).frame_ring_name == "other");
+  std::filesystem::remove(path2);
+}
+
+// video_input/ring_name selected and named the pre-frame-shm RTP-packet ring.
+// Unlike the fec.async_worker gate above (never set in a device config, so
+// failing loudly cost nothing), video_input IS pinned in the drone's live
+// /etc/mabur.json by the bench procedure — throwing on it would leave an
+// upgraded maburd unable to start, i.e. no video at all. So these two parse,
+// warn, and are ignored for one release.
+TEST(deprecated_video_input_keys_are_accepted_and_ignored) {
+  auto path = write_temp_json(
+      R"({"video_input": "frame_ring", "ring_name": "mabur"})");
+  auto cfg = load_config(path.string());  // must not throw
+  CHECK(cfg.frame_ring_name == "mabur_f");
+  std::filesystem::remove(path);
+
+  // Any other value is equally ignored — including the one that used to select
+  // the deleted path.
+  auto path2 = write_temp_json(R"({"video_input": "ring"})");
+  (void)load_config(path2.string());
+  std::filesystem::remove(path2);
+
+  // The blanket unknown-key check still applies to everything else.
+  auto path3 = write_temp_json(R"({"video_output": "ring"})");
+  CHECK(what_of([&] { load_config(path3.string()); }).find("video_output") !=
+        std::string::npos);
+  std::filesystem::remove(path3);
 }
 
 MTEST_MAIN

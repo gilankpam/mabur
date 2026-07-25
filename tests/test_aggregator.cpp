@@ -1,4 +1,5 @@
 #include "mtest.h"
+#include "frame_fixture.h"
 #include "vectors.h"
 #include "aggregator.h"
 #include "mabur/uep_encoder.h"
@@ -26,24 +27,20 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
   return m;
 }
 
-// Video bodies come from a real UepEncoder over rtp_stream.bin — the
+// Video bodies come from a real UepEncoder over frame_stream.bin — the
 // sliding-window scheme has no golden-vector wire format to pin against
 // (see test_uep.cpp), so the aggregator is exercised against its paired
 // encoder's output, same as the drone/GS pairing on air.
 static std::vector<std::vector<uint8_t>> encode_fixture_bodies() {
   mabur::UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
   std::vector<std::vector<uint8_t>> bodies;
-  std::string path = std::string(MABUR_FIXTURE_DIR) + "/rtp_stream.bin";
-  FILE* f = fopen(path.c_str(), "rb");
-  REQUIRE(f != nullptr);
-  uint8_t hdr[2];
-  while (fread(hdr, 1, 2, f) == 2) {
-    size_t n = static_cast<size_t>(hdr[0] | (hdr[1] << 8));
-    std::vector<uint8_t> pkt(n);
-    REQUIRE(fread(pkt.data(), 1, n, f) == n);
-    for (auto& b : enc.add_rtp(pkt.data(), pkt.size(), 0)) bodies.push_back(std::move(b.body));
+  auto frames = mtest::load_frame_fixture(std::string(MABUR_FIXTURE_DIR) +
+                                          "/frame_stream.bin");
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
+    for (auto& b : enc.add_frame(frames[i].stream_id(), unit.data(), unit.size(), 0))
+      bodies.push_back(std::move(b.body));
   }
-  fclose(f);
   for (auto& b : enc.flush_all()) bodies.push_back(std::move(b.body));
   return bodies;
 }
@@ -52,8 +49,9 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
   auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   auto bodies = encode_fixture_bodies();
   Aggregator agg(vec_layers(), 200, 512, 2);
-  int rtp = 0, rcs = 0;
-  agg.set_rtp_sink([&](const mabur::DecodedRtp&) { ++rtp; });
+  int rcs = 0;
+  mtest::FragCollector frames;
+  agg.set_frag_sink([&](const mabur::DecodedFrag& f) { frames.add(f); });
   agg.set_rc_sink([&](uint8_t card, const std::vector<uint8_t>&, uint64_t) {
     ++rcs; CHECK(card == 1);
   });
@@ -61,7 +59,9 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
   for (auto& b : bodies) agg.on_rx_body(msg(0, seq++, true, b));
   auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
   agg.on_rx_body(msg(1, seq++, true, ack));
-  CHECK(rtp == 18);            // whole fixture decodes
+  // Every fixture frame reassembles from the fragments the sink emitted.
+  CHECK(frames.completed().size() == 13);
+  CHECK(frames.pending() == 0);
   CHECK(rcs == 1);
   CHECK(agg.card(0).video_bodies > 0);
   CHECK(agg.card(1).rc_frames == 1);
@@ -133,13 +133,13 @@ TEST(msp_stream_body_routes_to_msp_sink_not_video) {
   REQUIRE(!bodies.empty());
 
   Aggregator agg(vec_layers(), 200, 512, 1);
-  int msp_hits = 0, rtp_hits = 0;
+  int msp_hits = 0, video_hits = 0;
   agg.set_msp_sink([&](const uint8_t*, size_t, uint64_t){ ++msp_hits; });
-  agg.set_rtp_sink([&](const mabur::DecodedRtp&){ ++rtp_hits; });
+  agg.set_frag_sink([&](const mabur::DecodedFrag&){ ++video_hits; });
 
   agg.on_rx_body(msg(0, 1, true, bodies[0]));
 
   CHECK(msp_hits == 1);
-  CHECK(rtp_hits == 0);
+  CHECK(video_hits == 0);
 }
 MTEST_MAIN

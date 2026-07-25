@@ -83,7 +83,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   ++c.video_bodies;
   last_video_us_ = m.mono_us;
   for (const auto& r : dec_.add_body(m.body.data(), m.body.size(), m.mono_us / 1000))
-    if (rtp_sink_) rtp_sink_(r);
+    if (frag_sink_) frag_sink_(r);
 }
 
 }  // namespace maburgs

@@ -13,7 +13,9 @@ add_library(mabur_gs_core STATIC
   src/msp_sink.cpp
   src/msp_font_btfl.cpp
   src/shm_surface.cpp
-  src/msp_renderer.cpp)
+  src/msp_renderer.cpp
+  src/frame_stream.cpp
+  src/rtp_packetizer.cpp)
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)

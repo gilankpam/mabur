@@ -26,13 +26,14 @@ struct CardTrack {
 };
 
 // Core-thread router: RC-magic frames go to the control sink (Plan 2's
-// agent), everything else through the UepDecoder to the RTP sink. Multi-card
+// agent), everything else through the UepDecoder to the fragment sink (whose
+// consumer is FrameStream, the frame assembler). Multi-card
 // dedup happens inside the decoder (seq identity / GE-redundancy dedup), so
 // bodies from all cards are fed straight in. Single-threaded by contract
 // (core thread only).
 class Aggregator {
  public:
-  using RtpSink = std::function<void(const mabur::DecodedRtp&)>;
+  using FragSink = std::function<void(const mabur::DecodedFrag&)>;
   using RcSink = std::function<void(uint8_t card_id,
                                     const std::vector<uint8_t>& frame,
                                     uint64_t mono_us)>;
@@ -42,7 +43,7 @@ class Aggregator {
   Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
              uint64_t decode_deadline_ms, uint32_t seq_horizon, int n_cards);
 
-  void set_rtp_sink(RtpSink s) { rtp_sink_ = std::move(s); }
+  void set_frag_sink(FragSink s) { frag_sink_ = std::move(s); }
   void set_rc_sink(RcSink s) { rc_sink_ = std::move(s); }
   void set_msp_sink(MspSink s) { msp_sink_ = std::move(s); }
 
@@ -59,7 +60,7 @@ class Aggregator {
  private:
   mabur::UepDecoder dec_;
   std::vector<CardTrack> cards_;
-  RtpSink rtp_sink_;
+  FragSink frag_sink_;
   RcSink rc_sink_;
   MspSink msp_sink_;
   uint16_t last_video_seq_ = 0;

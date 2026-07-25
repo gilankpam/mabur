@@ -19,14 +19,16 @@ struct NalInfo {
 // malformed input is treated as base layer, never as critical.
 NalInfo parse_hevc_nal(const uint8_t* nal, size_t len);
 
-// Classifies an RTP packet carrying HEVC (RFC 7798) payload into a stream id
-// in [0, 3] for waybeam's layered link. stream_id mapping: critical NAL ->
-// 0; otherwise 1 + min(tid, 2). Anything unparseable (short/truncated
-// packet, bad RTP version, malformed HEVC payload) -> 0. This is a
-// deliberate protect-up policy: waybeam is a trusted producer, so
-// misclassifying a non-critical NAL as critical only costs extra airtime,
-// while misclassifying a critical NAL (e.g. an IDR) as non-critical risks
-// losing it under adverse link conditions.
-int classify_rtp(const uint8_t* pkt, size_t len);
+// Classifies a whole encoded Annex-B frame (as delivered by waybeam's
+// frame-shm ring) into a stream id in [0, 3] for the layered link. Walks
+// 00 00 01 start codes (a 4-byte 00 00 00 01 code contains one): any critical
+// NAL (VPS/SPS/PPS 32-34, IRAP 16-23) -> 0 immediately; otherwise the first
+// VCL NAL (type < 16) picks 1 + min(tid, 2). No parseable NAL -> 0.
+//
+// The unparseable -> 0 fallback is a deliberate protect-up policy: waybeam is
+// a trusted producer, so misclassifying a non-critical frame as critical only
+// costs extra airtime, while misclassifying a critical frame (e.g. an IDR) as
+// non-critical risks losing it under adverse link conditions.
+int classify_frame(const uint8_t* annexb, size_t len);
 
 }  // namespace mabur

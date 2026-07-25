@@ -45,7 +45,8 @@ TEST(rcf_fields_are_correct) {
   CHECK(r->ack_seq >= 500);
   REQUIRE(r->layer_delivery.size() == 4);
   CHECK(r->layer_delivery[2] == 80);
-  CHECK(r->pwr_idx == vrx.cur_op().txagc);
+  CHECK(r->pwr_offset_biased ==
+        mabur::rc::encode_pwr_offset_qdb(vrx.cur_op().pwr_offset_qdb));
   CHECK(r->fec_overhead_16ths ==
         mabur::rc::overhead_to_16ths(vrx.cur_op().overhead));
 }
@@ -65,7 +66,7 @@ TEST(silence_beacons_fast_and_recovers) {
   CHECK(discs >= 45);                       // ~50 in 1 s at 20 ms pacing
   // Failsafe op point while blind:
   CHECK(vrx.cur_op().mcs == 0);
-  CHECK(vrx.cur_op().txagc == 63);
+  CHECK(vrx.cur_op().pwr_offset_qdb == 0);
   // Video returns -> SESSION and RCFs resume.
   vrx.on_video(-55.0, 25.0, false, 900, 2500.0);
   CHECK(vrx.link_state() == VrxState::SESSION);
@@ -82,6 +83,49 @@ TEST(disc_ack_feeds_rendezvous) {
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
   CHECK(vrx.link_state() == VrxState::SESSION);
+}
+
+// peer_caps() surfaces the most recently accepted DiscAck's chip_caps (0
+// before any accept), so main.cpp's core loop can gate the frame-wire tail
+// on the peer's advertised CAP_FRAME_WIRE bit (Task 10).
+TEST(peer_caps_captured_from_disc_ack) {
+  auto vrx = make();
+  CHECK(vrx.peer_caps() == 0);
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  vrx.step(1500, ld, std::nullopt);          // silence -> BEACONING
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = 1;
+  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
+  CHECK(vrx.link_state() == VrxState::SESSION);
+  CHECK(vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
+}
+
+// peer_acked() separates "no DiscAck yet" from "peer advertised caps == 0".
+// Both read peer_caps() == 0, and the rendezvous starts in SESSION, so without
+// this main.cpp cannot tell a fresh start from a pre-frame-wire drone — it
+// logged "upgrade maburd" at every maburgs startup (caught on the rig
+// 2026-07-25).
+TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
+  auto vrx = make();
+  CHECK(!vrx.peer_acked());
+  CHECK(vrx.peer_caps() == 0);
+  CHECK(vrx.link_state() == VrxState::SESSION);  // initial state, no peer yet
+
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  vrx.step(1500, ld, std::nullopt);              // silence -> BEACONING
+  CHECK(!vrx.peer_acked());
+
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = 1;
+  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.chip_caps = 0;                             // a peer that advertises none
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
+  CHECK(vrx.peer_acked());                       // now caps==0 means it truly said 0
+  CHECK(vrx.peer_caps() == 0);
 }
 MTEST_MAIN
 
@@ -103,7 +147,7 @@ TEST(starved_windows_fall_back_to_max_range) {
     vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
     vrx.step(now, ld, 0.0);
   }
-  REQUIRE(!(vrx.cur_op().mcs == 0 && vrx.cur_op().txagc == 63));
+  REQUIRE(!(vrx.cur_op().mcs == 0 && vrx.cur_op().pwr_offset_qdb == 0));
 
   // Collapse phase: survivor frames keep arriving with HIGH reported SNR,
   // but the caller signals starvation (no completed packets this window).
@@ -112,14 +156,14 @@ TEST(starved_windows_fall_back_to_max_range) {
     vrx.step(now, ld, std::nullopt, /*video_starved=*/true);
   }
   CHECK(vrx.cur_op().mcs == 0);
-  CHECK(vrx.cur_op().txagc == 63);
+  CHECK(vrx.cur_op().pwr_offset_qdb == 0);
 
   // Traffic returns -> updates resume, controller may walk up again.
   for (; now < 18000; now += 10) {
     vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
     vrx.step(now, ld, 0.0);
   }
-  CHECK(!(vrx.cur_op().mcs == 0 && vrx.cur_op().txagc == 63));
+  CHECK(!(vrx.cur_op().mcs == 0 && vrx.cur_op().pwr_offset_qdb == 0));
 }
 
 // Static-link mode: pin_mcs >= 0 bypasses the adaptive controller — every
@@ -131,7 +175,7 @@ TEST(static_pin_overrides_controller) {
   cfg.vtx_id = 1;
   cfg.pin_mcs = 5;
   cfg.pin_overhead = 0.25;
-  cfg.pin_txagc = 40;
+  cfg.pin_offset_qdb = -12;
   VrxController vrx(lt, cfg);
   std::array<uint8_t, 4> ld{100, 100, 100, 100};
   std::optional<VrxController::Out> out;
@@ -142,10 +186,10 @@ TEST(static_pin_overrides_controller) {
     if (o && !o->is_disc) out = o;
   }
   CHECK(vrx.cur_op().mcs == 5);
-  CHECK(vrx.cur_op().txagc == 40);
+  CHECK(vrx.cur_op().pwr_offset_qdb == -12);
   REQUIRE(out.has_value());
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
-  CHECK(r->pwr_idx == 40);
+  CHECK(r->pwr_offset_biased == mabur::rc::encode_pwr_offset_qdb(-12));
   CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(0.25));
 }

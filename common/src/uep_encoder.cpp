@@ -2,8 +2,6 @@
 
 #include <algorithm>
 
-#include "mabur/nal.h"
-
 namespace mabur {
 namespace {
 // One random seq per layer so a restarted encoder lands far from its
@@ -27,11 +25,14 @@ double uep_layer_overhead(int stream_id, double cmd_overhead) {
   return std::clamp(v, 0.125, 2.0);
 }
 
-UepEncoder::UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms)
+UepEncoder::UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms,
+                       FecWorker* worker)
     : layers_{[&] {
         const auto seq = random_initial_seqs();
-        return std::array<Layer, 4>{Layer(layers[0], 0, seq[0]), Layer(layers[1], 1, seq[1]),
-                                     Layer(layers[2], 2, seq[2]), Layer(layers[3], 3, seq[3])};
+        return std::array<Layer, 4>{Layer(layers[0], 0, seq[0], worker),
+                                     Layer(layers[1], 1, seq[1], worker),
+                                     Layer(layers[2], 2, seq[2], worker),
+                                     Layer(layers[3], 3, seq[3], worker)};
       }()},
       flush_ms_(flush_ms) {}
 
@@ -49,25 +50,30 @@ void UepEncoder::drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& ou
     out.push_back(UepBody{sid, std::move(b)});
 }
 
-std::vector<UepBody> UepEncoder::add_rtp(const uint8_t* pkt, size_t len, uint64_t now_ms) {
+std::vector<UepBody> UepEncoder::add_frame(int stream_id, const uint8_t* data,
+                                           size_t len, uint64_t now_ms) {
   std::vector<UepBody> out;
-  int sid = classify_rtp(pkt, len);
+  int sid = stream_id < 0 ? 0 : (stream_id > 3 ? 3 : stream_id);
   Layer& layer = layers_[static_cast<size_t>(sid)];
-
-  layer.last_activity_ms = now_ms;
-  layer.has_activity = true;
-
   if (layer.shed) {
     ++layer.dropped_count;
     return out;
   }
-
-  auto frags = layer.frag.fragment(pkt, len, layer.usable);
-  for (auto& f : frags) {
-    auto envs = layer.sw.add_packet(f.data(), f.size());
-    if (envs.empty()) continue;
-    pack_envs(layer, static_cast<uint8_t>(sid), std::move(envs), out);
-  }
+  auto frags = layer.frag.fragment(data, len, layer.usable);
+  for (auto& f : frags)
+    pack_envs(layer, static_cast<uint8_t>(sid),
+              layer.sw.add_packet(f.data(), f.size()), out);
+  // Frame-end seal: flush() seals the partial tail symbol and emits one
+  // tail repair; idle re-flush is a no-op so back-to-back empty frames
+  // cannot spam repairs. Also flush the SBI packer's pending group as a
+  // short final body — otherwise the tail envelope(s) just sealed above sit
+  // buffered until a future frame's envelopes happen to fill the group,
+  // defeating the "ship now" point of the frame-end seal.
+  pack_envs(layer, static_cast<uint8_t>(sid), layer.sw.flush(), out);
+  for (auto& b : layer.packer.flush())
+    out.push_back(UepBody{static_cast<uint8_t>(sid), std::move(b)});
+  layer.last_activity_ms = now_ms;
+  layer.has_activity = true;
   return out;
 }
 

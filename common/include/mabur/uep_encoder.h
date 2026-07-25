@@ -5,6 +5,7 @@
 #include <random>
 #include <vector>
 
+#include "mabur/fec_worker.h"
 #include "mabur/frag.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_encoder.h"
@@ -53,16 +54,24 @@ struct UepBody {
 // not change any wire byte for a given seq.
 class UepEncoder {
  public:
-  UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15);
+  // worker: optional shared async FEC worker handed to every layer's
+  // SwEncoder (see sw_encoder.h). nullptr = fully synchronous, today's
+  // exact behavior.
+  UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15,
+             FecWorker* worker = nullptr);
 
-  // Classifies pkt via classify_rtp, drops it if that stream is shed
-  // (counted in dropped()), otherwise fragments (usable = fec.max_packet_size()
-  // - 4) and feeds each fragment through that layer's sliding-window encoder
-  // and SBI packer. Stamps the layer's last_activity_ms to now_ms.
-  std::vector<UepBody> add_rtp(const uint8_t* pkt, size_t len, uint64_t now_ms);
+  // Frame-unit ingest: data = FrameHdr + Annex-B frame, stream_id already
+  // chosen by the caller (classify_frame + the producer's IDR flag). Drops the
+  // frame if that stream is shed (counted in dropped()), otherwise fragments
+  // (usable = fec.max_packet_size() - Fragmenter::kHdrLen), feeds each
+  // fragment through that layer's sliding-window encoder and SBI packer, and
+  // seals the window at frame end (SwEncoder::flush) so tail symbols + their
+  // repair ship now instead of at next-frame arrival (spec 2026-07-22).
+  std::vector<UepBody> add_frame(int stream_id, const uint8_t* data, size_t len,
+                                 uint64_t now_ms);
 
   // Flushes any layer that has pending (unflushed) data and has been idle
-  // (no add_rtp activity) for >= flush_ms.
+  // (no add_frame activity) for >= flush_ms.
   std::vector<UepBody> poll(uint64_t now_ms);
 
   // Flushes every layer in stream_id ascending order: sliding-window flush,
@@ -88,12 +97,14 @@ class UepEncoder {
     uint64_t last_activity_ms = 0;
     bool has_activity = false;
 
-    Layer(const UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq)
+    Layer(const UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq,
+          FecWorker* worker)
         : fec(cfg.fec),
-          sw(cfg.fec, initial_seq),
+          sw(cfg.fec, initial_seq, worker),
           packer(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
-          usable(cfg.fec.max_packet_size() - 4) {}
+          usable(cfg.fec.max_packet_size() -
+                 static_cast<int>(Fragmenter::kHdrLen)) {}
   };
 
   // Feeds a batch of sliding-window envelopes toward layer's SBI packer.

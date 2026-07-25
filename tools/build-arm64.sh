@@ -118,12 +118,14 @@ cmake -S . -B build-arm64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-musl.cmake \
   -DMABUR_BUILD_GS=ON -DDEVOURER_JAGUAR1=OFF -DDEVOURER_8814=OFF \
   -DDEVOURER_JAGUAR2_8822B=OFF -DDEVOURER_JAGUAR2_8821C=OFF \
   -DDEVOURER_JAGUAR3_8822C=OFF -DDEVOURER_JAGUAR3_8822E=ON \
+  -DDEVOURER_KESTREL_8852B=OFF -DDEVOURER_KESTREL_8852C=OFF \
   -DDEVOURER_LOG_MAX_LEVEL=WARN
 
-cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx
+cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx txagcbench-rx
 
 "${TARGET_TRIPLE}-strip" build-arm64/gs/maburgs -o out/arm64/maburgs
 "${TARGET_TRIPLE}-strip" build-arm64/bench/linkbench/linkbench-rx -o out/arm64/linkbench-rx
+"${TARGET_TRIPLE}-strip" build-arm64/bench/txagcbench/txagcbench-rx -o out/arm64/txagcbench-rx
 
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then
@@ -131,4 +133,4 @@ if [ ! -e toolchain/file ]; then
     'with import <nixpkgs> {}; file' \
     -o toolchain/file
 fi
-"$(readlink -f toolchain/file)/bin/file" out/arm64/maburgs out/arm64/linkbench-rx
+"$(readlink -f toolchain/file)/bin/file" out/arm64/maburgs out/arm64/linkbench-rx out/arm64/txagcbench-rx

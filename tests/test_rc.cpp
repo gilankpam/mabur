@@ -11,7 +11,7 @@ static Rcf rcf_from_json(const nlohmann::json& f) {
   r.ack_seq = f["ack_seq"].get<uint16_t>();
   r.profile = f["profile"].get<uint8_t>();
   r.score = f["score"].get<uint16_t>();
-  r.pwr_idx = f["pwr_idx"].get<uint8_t>();
+  r.pwr_offset_biased = f["pwr_idx"].get<uint8_t>();
   r.fec_overhead_16ths = f["fec_overhead_16ths"].get<uint8_t>();
   r.flags = f["flags"].get<uint8_t>();
   for (auto& v : f["layer_delivery"]) r.layer_delivery.push_back(v.get<uint8_t>());
@@ -57,7 +57,7 @@ TEST(rcf_matches_python_vectors) {
     CHECK(parsed->ack_seq == r.ack_seq);
     CHECK(parsed->profile == r.profile);
     CHECK(parsed->score == r.score);
-    CHECK(parsed->pwr_idx == r.pwr_idx);
+    CHECK(parsed->pwr_offset_biased == r.pwr_offset_biased);
     CHECK(parsed->fec_overhead_16ths == r.fec_overhead_16ths);
     CHECK(parsed->flags == r.flags);
     CHECK(parsed->layer_delivery == r.layer_delivery);
@@ -163,7 +163,7 @@ TEST(rcf_single_byte_flip_fails) {
         CHECK(parsed->ack_seq == orig_parsed->ack_seq);
         CHECK(parsed->profile == orig_parsed->profile);
         CHECK(parsed->score == orig_parsed->score);
-        CHECK(parsed->pwr_idx == orig_parsed->pwr_idx);
+        CHECK(parsed->pwr_offset_biased == orig_parsed->pwr_offset_biased);
         CHECK(parsed->fec_overhead_16ths == orig_parsed->fec_overhead_16ths);
         CHECK(parsed->flags == orig_parsed->flags);
         CHECK(parsed->layer_delivery == orig_parsed->layer_delivery);
@@ -210,6 +210,25 @@ TEST(overhead_to_16ths_cases) {
   CHECK(overhead_to_16ths(2.0) == 16);  // clamp high
   CHECK(overhead_to_16ths(-1.0) == 1);  // clamp low
   CHECK(overhead_to_16ths(0.10) == 2);  // round(1.6) == 2
+}
+
+TEST(pwr_offset_bias_encoding) {
+  CHECK(encode_pwr_offset_qdb(0) == 64);
+  CHECK(encode_pwr_offset_qdb(-12) == 52);
+  CHECK(encode_pwr_offset_qdb(16) == 80);
+  CHECK(encode_pwr_offset_qdb(-100) == 0);    // clamped
+  CHECK(encode_pwr_offset_qdb(100) == 127);   // clamped, never 0xFF
+  CHECK(decode_pwr_offset_qdb(52) == -12);
+  CHECK(decode_pwr_offset_qdb(64) == 0);
+}
+
+TEST(rcf_carries_biased_offset) {
+  Rcf r;
+  r.pwr_offset_biased = encode_pwr_offset_qdb(-8);
+  auto b = pack_rcf(r);
+  auto p = parse_rcf(b.data(), b.size());
+  CHECK(p.has_value());
+  CHECK(decode_pwr_offset_qdb(p->pwr_offset_biased) == -8);
 }
 
 MTEST_MAIN

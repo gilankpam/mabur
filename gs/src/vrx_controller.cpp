@@ -10,7 +10,7 @@ VrxController::VrxController(const LinkTable& lt, VrxCfg cfg)
       ctrl_(lt, cfg.ctrl),
       win_(cfg.score),
       rz_(VrxRzConfig{cfg.vtx_id, 1000, 20, cfg.op_channel}),
-      cur_op_(max_range()) {
+      cur_op_(max_range(cfg.ctrl.max_offset_qdb)) {
   if (cfg_.bw_set.size() > 1) rungs_.emplace(cfg_.bw_set);
 }
 
@@ -24,7 +24,10 @@ void VrxController::on_video(double rssi, double snr, bool crc_err,
 void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
   if (mabur::rc::frame_type(buf, len) != mabur::rc::T_DISC_ACK) return;
   auto ack = mabur::rc::parse_disc_ack(buf, len);
-  if (ack) rz_.feed_disc_ack(*ack, now_ms);
+  if (ack && rz_.feed_disc_ack(*ack, now_ms)) {
+    peer_caps_ = ack->chip_caps;
+    peer_acked_ = true;
+  }
 }
 
 std::optional<VrxController::Out> VrxController::step(
@@ -35,12 +38,12 @@ std::optional<VrxController::Out> VrxController::step(
   // conservative floor, not the last aggressive point.
   if (cfg_.pin_mcs >= 0) {
     // Static-link mode: fixed op, estimator fully out of the loop.
-    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_txagc,
+    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_offset_qdb,
                       cfg_.pin_overhead, 0.0, 0.0, 1.0};
-    cur_txagc_ = cfg_.pin_txagc;
+    cur_offset_qdb_ = cfg_.pin_offset_qdb;
   } else if (auto op = ctrl_.on_tick(now_ms)) {
     cur_op_ = *op;
-    cur_txagc_ = op->txagc;
+    cur_offset_qdb_ = op->pwr_offset_qdb;
   }
   const VrxAction act = rz_.tick(now_ms);
   if (act == VrxAction::Beacon)
@@ -60,9 +63,9 @@ std::optional<VrxController::Out> VrxController::step(
   // the SNR window lies high while the stream is dead. Withhold the update
   // and let on_tick's blind-side timeout walk the op back to MAX_RANGE.
   if (auto snr = win_.snr_estimate(); snr && !video_starved && cfg_.pin_mcs < 0) {
-    if (auto op = ctrl_.update(*snr, cur_txagc_, now_ms)) {
+    if (auto op = ctrl_.update(*snr, cur_offset_qdb_, now_ms)) {
       cur_op_ = *op;
-      cur_txagc_ = op->txagc;
+      cur_offset_qdb_ = op->pwr_offset_qdb;
     }
   }
   seq_ = static_cast<uint16_t>(seq_ + 1);
@@ -75,7 +78,7 @@ std::optional<VrxController::Out> VrxController::step(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
   r.score = static_cast<uint16_t>(win_.score(residual_loss));
-  r.pwr_idx = static_cast<uint8_t>(cur_op_.txagc);
+  r.pwr_offset_biased = mabur::rc::encode_pwr_offset_qdb(cur_op_.pwr_offset_qdb);
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
   r.layer_delivery.assign(layer_delivery.begin(), layer_delivery.end());
   return Out{mabur::rc::pack_rcf(r), false};

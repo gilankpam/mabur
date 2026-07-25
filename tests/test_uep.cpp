@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "mtest.h"
+#include "frame_fixture.h"
 #include "vectors.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
@@ -13,23 +14,6 @@
 using namespace mabur;
 
 namespace {
-std::vector<std::vector<uint8_t>> load_rtp_stream(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
-  if (!f) throw std::runtime_error("cannot open " + path);
-  std::vector<std::vector<uint8_t>> pkts;
-  while (true) {
-    uint8_t lenb[2];
-    f.read(reinterpret_cast<char*>(lenb), 2);
-    if (f.gcount() != 2) break;
-    uint16_t len = static_cast<uint16_t>(lenb[0]) | (static_cast<uint16_t>(lenb[1]) << 8);
-    std::vector<uint8_t> pkt(len);
-    f.read(reinterpret_cast<char*>(pkt.data()), len);
-    if (f.gcount() != static_cast<std::streamsize>(len)) break;
-    pkts.push_back(std::move(pkt));
-  }
-  return pkts;
-}
-
 std::array<UepLayerCfg, 4> make_layers(int symbol_size, int blocks_per_body,
                                         const std::vector<double>& overheads) {
   std::array<UepLayerCfg, 4> layers;
@@ -42,12 +26,10 @@ std::array<UepLayerCfg, 4> make_layers(int symbol_size, int blocks_per_body,
 }
 }  // namespace
 
-// Sliding-window envelopes are not byte-identical to the RS/Python-composed
-// vectors in uep.json (different wire scheme entirely — see sw_wire.h), so
-// this no longer pins body bytes against uep.json. classify_rtp routing is
-// still scheme-agnostic and stays pinned against the vector; body content is
-// verified as a full encode -> lossless channel -> decode round-trip against
-// the same fixture (packet round-trips are scheme-agnostic).
+// Sliding-window envelopes have no Python reference (different wire scheme
+// entirely — see sw_wire.h), so body bytes aren't pinned against uep.json.
+// What stays pinned is classify_frame's per-frame layer routing; unit content
+// is verified as a full encode -> lossless channel -> decode round-trip.
 TEST(uep_encoder_round_trips_fixture_through_decoder) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/uep.json");
   int symbol_size = j["symbol_size"].get<int>();
@@ -59,29 +41,31 @@ TEST(uep_encoder_round_trips_fixture_through_decoder) {
   UepEncoder enc(layers, /*flush_ms=*/1'000'000'000ULL);
   UepDecoder dec(layers, /*decode_deadline_ms=*/1'000'000'000ULL);
 
-  auto pkts = load_rtp_stream(std::string(MABUR_FIXTURE_DIR) + "/rtp_stream.bin");
-  REQUIRE(pkts.size() == j["classify"].size());
+  auto frames = mtest::load_frame_fixture(std::string(MABUR_FIXTURE_DIR) +
+                                          "/frame_stream.bin");
+  REQUIRE(frames.size() == j["classify"].size());
 
-  std::map<int, std::vector<std::string>> want, got;
-  for (size_t i = 0; i < pkts.size(); ++i) {
-    int expect_sid = j["classify"][i].get<int>();
-    int actual_sid = classify_rtp(pkts[i].data(), pkts[i].size());
-    CHECK(actual_sid == expect_sid);
-    want[actual_sid].push_back(mtest::hex(pkts[i]));
+  std::map<int, std::vector<std::string>> want;
+  mtest::FragCollector got;
+  for (size_t i = 0; i < frames.size(); ++i) {
+    const int expect_sid = j["classify"][i].get<int>();
+    const int sid = mabur::classify_frame(frames[i].annexb.data(), frames[i].annexb.size());
+    CHECK(sid == expect_sid);
 
-    auto bodies = enc.add_rtp(pkts[i].data(), pkts[i].size(), /*now_ms=*/0);
-    for (auto& b : bodies)
-      for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0))
-        got[d.stream_id].push_back(mtest::hex(d.pkt));
+    auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
+    want[sid].push_back(mtest::hex(unit));
+    for (auto& b : enc.add_frame(sid, unit.data(), unit.size(), /*now_ms=*/0))
+      for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0)) got.add(d);
   }
   for (auto& b : enc.flush_all())
-    for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0))
-      got[d.stream_id].push_back(mtest::hex(d.pkt));
+    for (auto& d : dec.add_body(b.body.data(), b.body.size(), 0)) got.add(d);
 
-  for (auto& [sid, expect_pkts] : want) {
-    REQUIRE(got[sid].size() == expect_pkts.size());
-    for (size_t i = 0; i < expect_pkts.size(); ++i)
-      CHECK(got[sid][i] == expect_pkts[i]);
+  std::map<int, std::vector<std::string>> recovered;
+  for (auto& [sid, unit] : got.completed()) recovered[sid].push_back(mtest::hex(unit));
+  for (auto& [sid, expect_units] : want) {
+    REQUIRE(recovered[sid].size() == expect_units.size());
+    for (size_t i = 0; i < expect_units.size(); ++i)
+      CHECK(recovered[sid][i] == expect_units[i]);
   }
 }
 
@@ -101,48 +85,44 @@ TEST(uep_set_shed_drops_stream_and_counts) {
   UepEncoder enc(layers, /*flush_ms=*/1'000'000'000ULL);
   enc.set_shed(3, true);
 
-  // Build a minimal RTP packet that classifies to stream 3 (tid 2, non-critical).
-  // RTP header (12 bytes, no CSRC/ext) + HEVC NAL: type=1 (non-critical), tid byte -> tid 2.
-  std::vector<uint8_t> pkt = {
-      0x80, 0x61, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0xDE, 0xAD, 0xBE, 0xEF,
-      0x02, 0x03, 0xAA, 0xBB, 0xCC};
-  CHECK(classify_rtp(pkt.data(), pkt.size()) == 3);
+  // One frame unit routed to the shed layer: FrameHdr + a tid-2 slice NAL.
+  std::vector<uint8_t> unit(framewire::kFrameHdrLen, 0);
+  framewire::pack_frame_hdr(framewire::FrameHdr{}, unit.data());
+  for (uint8_t b : {0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0xAA, 0xBB, 0xCC})
+    unit.push_back(b);
+  CHECK(classify_frame(unit.data() + framewire::kFrameHdrLen,
+                       unit.size() - framewire::kFrameHdrLen) == 3);
 
   CHECK(enc.dropped(3) == 0);
-  auto out = enc.add_rtp(pkt.data(), pkt.size(), 0);
-  CHECK(out.empty());
+  CHECK(enc.add_frame(3, unit.data(), unit.size(), 0).empty());
   CHECK(enc.dropped(3) == 1);
 
-  auto out2 = enc.add_rtp(pkt.data(), pkt.size(), 1);
-  CHECK(out2.empty());
+  CHECK(enc.add_frame(3, unit.data(), unit.size(), 1).empty());
   CHECK(enc.dropped(3) == 2);
 }
 
-TEST(uep_poll_after_idle_seals_pending_symbol) {
+TEST(uep_poll_has_nothing_to_seal_after_a_frame) {
+  // add_frame seals the window AND flushes the SBI group at frame end, so a
+  // synchronous encoder has no tail left for the idle flush to find. This is
+  // the guard on that contract: were the frame-end seal dropped, the frame's
+  // tail would surface here (one flush_ms later) instead of on the wire
+  // immediately. poll() itself stays live for the async FEC worker, whose
+  // repair envelopes surface at a later drain (see test_uep_sw).
   std::vector<double> overheads = {1.0, 0.75, 0.5, 0.25};
   auto layers = make_layers(64, 4, overheads);
-  uint64_t flush_ms = 15;
-  UepEncoder enc(layers, static_cast<int>(flush_ms));
+  const int flush_ms = 15;
+  UepEncoder enc(layers, flush_ms);
 
-  // One small non-critical, tid-0 packet -> stream 1. Leaves the layer with
-  // pending (unflushed) data since a single packet doesn't fill a symbol.
-  std::vector<uint8_t> pkt = {
-      0x80, 0x61, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0xDE, 0xAD, 0xBE, 0xEF,
-      0x02, 0x01, 0xAA, 0xBB, 0xCC};
-  CHECK(classify_rtp(pkt.data(), pkt.size()) == 1);
+  std::vector<uint8_t> unit(framewire::kFrameHdrLen + 500, 0x5A);
+  framewire::pack_frame_hdr(framewire::FrameHdr{}, unit.data());
+  auto sealed = enc.add_frame(1, unit.data(), unit.size(), 0);
+  REQUIRE(!sealed.empty());
+  CHECK(sealed[0].stream_id == 1);
+  // Sealed body carries a source envelope: sw::kSwHeaderLen + symbol_size.
+  CHECK(sealed[0].body.size() >= SBI_HDR_LEN + 2 + mabur::sw::kSwHeaderLen);
 
-  auto immediate = enc.add_rtp(pkt.data(), pkt.size(), 0);
-  CHECK(immediate.empty());  // not enough to seal a symbol yet
-
-  auto before_idle = enc.poll(flush_ms - 1);
-  CHECK(before_idle.empty());
-
-  auto after_idle = enc.poll(flush_ms + 1);
-  REQUIRE(!after_idle.empty());
-  CHECK(after_idle[0].stream_id == 1);
-  // Sealed tail carries a source envelope: sw::kSwHeaderLen + symbol_size.
-  const auto& body = after_idle[0].body;
-  CHECK(body.size() >= SBI_HDR_LEN + 2 + mabur::sw::kSwHeaderLen);
+  CHECK(enc.poll(flush_ms - 1).empty());
+  CHECK(enc.poll(flush_ms + 1).empty());
 }
 
 MTEST_MAIN

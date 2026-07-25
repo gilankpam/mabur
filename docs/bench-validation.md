@@ -665,7 +665,7 @@ Defaults that matter for bench (full defaults in `bundle/mabur.default.json`):
 | `radio.max_txagc` | `63` | power clamp |
 | `link.vtx_id` | `1` | must match the GS's target |
 | `link.failsafe_ms` | `1000` | silence → MAX_RANGE |
-| `ring_name` | `"mabur"` | must equal waybeam `outgoing.server` `shm://mabur` |
+| `frame_ring_name` | `"mabur_f"` | must equal waybeam `outgoing.server` `frame-shm://mabur_f` |
 | `waybeam.idr_path` | `/request/idr` | bench-confirmed route (B4); GET → `{"ok":true,"data":{"idr":true}}` |
 
 maburd logs to `/tmp/mabur.log` (S96mabur truncates per respawn). `SIGUSR1`

@@ -28,6 +28,12 @@ class WaybeamClient {
   // line contains "200".
   bool request_idr();
 
+  // GET /api/v1/get?<key> HTTP/1.0 — returns true iff the response status
+  // line contains "200", with the raw response body (everything after the
+  // header/blank-line separator) copied into `body_out` on success.
+  // `body_out` is left untouched on failure.
+  bool get_param(const std::string& key, std::string& body_out);
+
   // Cumulative count of failed requests (connect failure, timeout,
   // non-200 status, etc.) since construction.
   uint64_t failures() const;
@@ -37,6 +43,7 @@ class WaybeamClient {
 
   WaybeamCfg cfg_;
   uint64_t failures_ = 0;
+  std::string last_body_;
 };
 
 }  // namespace mabur

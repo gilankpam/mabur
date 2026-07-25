@@ -65,13 +65,24 @@ struct LinkCfg {
   // debugging with a fixed operating point (2026-07-12).
   int static_mcs = -1;
   double static_overhead = 0.25;
-  int static_txagc = 63;
+  // qdB power offset from the calibrated baseline (RCF wire semantics,
+  // rc_proto bias-64); used only when static_mcs >= 0.
+  int static_offset_qdb = 0;
+  // Controller qdB offset rail + PA-draw base index (see ControllerConfig).
+  int min_offset_qdb = -40;
+  int max_offset_qdb = 0;
+  int base_ref_idx = 53;
 };
 
 /// Video output destination.
 struct VideoOutCfg {
   std::string host = "127.0.0.1";
   int port = 5600;
+  // FrameStream tuning for the session-negotiated frame-wire tail (Task 10):
+  // gap_timeout_ms before an unfilled chunk gap is truncated, and lookahead
+  // frames ahead of head-of-line before it is force-advanced.
+  int frame_gap_timeout_ms = 50;
+  int frame_lookahead = 8;
 };
 
 /// MSP DisplayPort OSD side-channel output. symbol_size/window must match the

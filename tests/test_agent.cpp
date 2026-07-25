@@ -47,13 +47,15 @@ Config make_cfg() {
 }
 
 // Builds a CRC-valid RCF wire frame for vtx_id/seq/profile/pwr/fec_overhead.
+// pwr_offset_biased is the RCF wire byte as-is (PWR_NO_CHANGE or
+// encode_pwr_offset_qdb(qdb)) — callers pass the biased byte directly.
 std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
-                                    uint8_t pwr_idx, uint8_t fec_overhead_16ths) {
+                                    uint8_t pwr_offset_biased, uint8_t fec_overhead_16ths) {
   Rcf r;
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
-  r.pwr_idx = pwr_idx;
+  r.pwr_offset_biased = pwr_offset_biased;
   r.fec_overhead_16ths = fec_overhead_16ths;
   return pack_rcf(r);
 }
@@ -91,7 +93,7 @@ TEST(boot_first_tick_applies_max_range_and_moves_to_rendezvous) {
     CHECK(op.ladder[static_cast<size_t>(i)].mcs == expect_ladder[static_cast<size_t>(i)].mcs);
     CHECK(op.ladder[static_cast<size_t>(i)].bw == expect_ladder[static_cast<size_t>(i)].bw);
   }
-  CHECK(op.pwr_idx == 63);
+  CHECK(op.pwr_offset_qdb == 0);  // MAX_RANGE = full legal power (offset 0)
   CHECK(op.fec_overhead > 0.999 && op.fec_overhead < 1.001);
   CHECK(op.shed[0] == false);
   CHECK(op.shed[1] == false);
@@ -141,6 +143,25 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(!act.bitrates.empty());
 }
 
+// 2c. DiscAck.chip_caps always advertises CAP_FRAME_WIRE: the frame wire is
+// the only video format maburd speaks since the pre-frame-shm path was
+// deleted. The bit stays on the wire so a GS can refuse a peer without it.
+TEST(disc_ack_advertises_frame_wire_cap) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+                              /*op_width=*/40, 0, 2);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  REQUIRE(act.controls.size() == 1);
+  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
+}
+
 // 2b. Keep-alive DISC while LINKED is ignored end-to-end — Python parity
 // (rendezvous.feed_disc: `if self.state not in (RC_LOST, DISCOVERY): return
 // None`). The GS sends a SESSION keep-alive DISC (~1 Hz, init_profile 0 =
@@ -181,8 +202,8 @@ TEST(keepalive_disc_while_linked_is_ignored) {
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
 }
 
-// 3. RCF profile HT mcs2/20, pwr 40, fec16=8 (ov=0.5) -> op ladder T1=mcs3/
-// T2=mcs4, pwr 40, ov 0.5; set_bitrate_kbps called with ~5100.
+// 3. RCF profile HT mcs2/20, pwr offset -24qdb, fec16=8 (ov=0.5) -> op ladder
+// T1=mcs3/T2=mcs4, offset -24qdb, ov 0.5; set_bitrate_kbps called with ~5100.
 TEST(rcf_apply_computes_ladder_power_fec_and_bitrate) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -190,7 +211,7 @@ TEST(rcf_apply_computes_ladder_power_fec_and_bitrate) {
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 40, 8);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, encode_pwr_offset_qdb(-24), 8);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -199,11 +220,64 @@ TEST(rcf_apply_computes_ladder_power_fec_and_bitrate) {
   CHECK(op.ladder[1].mcs == 2);  // T0
   CHECK(op.ladder[2].mcs == 3);  // T1
   CHECK(op.ladder[3].mcs == 4);  // T2
-  CHECK(op.pwr_idx == 40);
+  CHECK(op.pwr_offset_qdb == -24);
   CHECK(op.fec_overhead > 0.499 && op.fec_overhead < 0.501);
 
   REQUIRE(!act.bitrates.empty());
   CHECK(act.bitrates.back() == 5100);
+}
+
+// 3b. RCF-commanded power offsets: decoded verbatim within range, clamped to
+// 0 at the top (a plan's max legal offset is always 0), clamped to
+// min_offset_qdb at the bottom, and PWR_NO_CHANGE retains whatever was
+// previously commanded instead of resetting to 0.
+TEST(rcf_offset_applied_and_clamped) {
+  Config cfg = make_cfg();
+  cfg.radio.min_offset_qdb = -40;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+
+  // encode(-12) -> applied pwr_offset_qdb == -12.
+  auto wire1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, encode_pwr_offset_qdb(-12), 8);
+  agent.on_rc_frame(wire1.data(), wire1.size(), 100);
+  CHECK(agent.current().pwr_offset_qdb == -12);
+
+  // encode(+8) -> clamped to 0 (max legal offset is 0).
+  auto wire2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, encode_pwr_offset_qdb(8), 200);
+  agent.on_rc_frame(wire2.data(), wire2.size(), 200);
+  CHECK(agent.current().pwr_offset_qdb == 0);
+
+  // encode(-100) -> clamped to min_offset_qdb (-40).
+  auto wire3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, encode_pwr_offset_qdb(-100), 8);
+  agent.on_rc_frame(wire3.data(), wire3.size(), 300);
+  CHECK(agent.current().pwr_offset_qdb == -40);
+
+  // PWR_NO_CHANGE -> previous offset (-40) retained.
+  auto wire4 = make_rcf_wire(cfg.link.vtx_id, 4, profile_byte, rc::PWR_NO_CHANGE, 8);
+  agent.on_rc_frame(wire4.data(), wire4.size(), 400);
+  CHECK(agent.current().pwr_offset_qdb == -40);
+}
+
+// 3c. Failsafe entry (MAX_RANGE) always applies offset 0 (full legal power),
+// regardless of whatever offset was last RCF-commanded.
+TEST(max_range_is_offset_zero) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS: MAX_RANGE, offset 0
+  CHECK(agent.current().pwr_offset_qdb == 0);
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, encode_pwr_offset_qdb(-24), 8);
+  agent.on_rc_frame(wire.data(), wire.size(), 0);  // -> LINKED, offset -24
+  CHECK(agent.current().pwr_offset_qdb == -24);
+
+  agent.tick(1000, RadioHealth{});  // silence -> FAILSAFE (MAX_RANGE reapplied)
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(agent.current().pwr_offset_qdb == 0);
 }
 
 // 4. Stale seq (same seq again, then seq-1) -> no new apply_op (generation
@@ -267,7 +341,7 @@ TEST(failsafe_and_rendezvous_timers_fire_exactly) {
   agent.tick(1000, RadioHealth{});
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   const AppliedOp& op = agent.current();
-  CHECK(op.pwr_idx == 63);
+  CHECK(op.pwr_offset_qdb == 0);  // MAX_RANGE = full legal power (offset 0)
   CHECK(op.ladder[0].mcs == 0);
   CHECK(op.fec_overhead > 0.999 && op.fec_overhead < 1.001);
 
@@ -306,30 +380,56 @@ TEST(rcf_after_failsafe_requests_idr) {
   CHECK(act.idr_calls == idr_before + 1);
 }
 
-// 8. Thermal 30 (>25) for 3 ticks -> pwr drops 12 below commanded; thermal 20
-// -> restored.
-TEST(thermal_guard_steps_down_and_restores) {
+// 8. Thermal 30 (>25) for 3 ticks -> offset drops 12 qdB below commanded
+// (4 qdB/escalation, floored at min_offset_qdb); thermal 20 -> restored.
+// Mirrors the old pwr_idx-derate test, now acting in qdB (thermal derate is
+// ACTIVE in offset mode — see the config.h comment update).
+TEST(thermal_derate_acts_in_qdb) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 40, 8);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, encode_pwr_offset_qdb(-8), 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
-  CHECK(agent.current().pwr_idx == 40);  // commanded
+  CHECK(agent.current().pwr_offset_qdb == -8);  // commanded
 
   RadioHealth hot{30, 0};
   agent.tick(100, hot);
-  CHECK(agent.current().pwr_idx == 36);
+  CHECK(agent.current().pwr_offset_qdb == -12);
   agent.tick(200, hot);
-  CHECK(agent.current().pwr_idx == 32);
+  CHECK(agent.current().pwr_offset_qdb == -16);
   agent.tick(300, hot);
-  CHECK(agent.current().pwr_idx == 28);  // 40 - 12
+  CHECK(agent.current().pwr_offset_qdb == -20);  // -8 - 12
 
   RadioHealth cool{20, 0};  // <= 25 - 2
   agent.tick(400, cool);
-  CHECK(agent.current().pwr_idx == 40);  // restored to commanded
+  CHECK(agent.current().pwr_offset_qdb == -8);  // restored to commanded
+}
+
+// 8b. Thermal derate floors at min_offset_qdb rather than going more
+// negative — with a commanded offset already near the floor, three
+// escalation ticks (12 qdB total) would otherwise undercut min_offset_qdb.
+TEST(thermal_derate_floors_at_min_offset) {
+  Config cfg = make_cfg();
+  cfg.radio.min_offset_qdb = -10;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, encode_pwr_offset_qdb(-4), 8);
+  agent.on_rc_frame(wire.data(), wire.size(), 0);
+  CHECK(agent.current().pwr_offset_qdb == -4);  // commanded
+
+  RadioHealth hot{30, 0};
+  agent.tick(100, hot);
+  CHECK(agent.current().pwr_offset_qdb == -8);   // -4 - 4
+  agent.tick(200, hot);
+  CHECK(agent.current().pwr_offset_qdb == -10);  // -4 - 8 = -12, floored at -10
+  agent.tick(300, hot);
+  CHECK(agent.current().pwr_offset_qdb == -10);  // -4 - 12 = -16, still floored
 }
 
 // 9. tx_drops rising 2 ticks -> shed[3] then shed[2] true; 2s clean -> back

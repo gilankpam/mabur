@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -49,7 +50,9 @@ void assign_if_present(const json& j, const char* key, T& out,
 void parse_radio(const json& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width", "bw_set",
                         "max_txagc", "thermal_max_delta", "power_mode",
-                        "power_offset_qdb", "tx_threads"},
+                        "power_offset_qdb", "tx_threads", "rate_walls_idx",
+                        "legacy_wall_idx", "wall_margin_db",
+                        "min_offset_qdb", "base_ref_idx"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
@@ -69,6 +72,23 @@ void parse_radio(const json& j, RadioCfg& r) {
   assign_if_present(j, "power_offset_qdb", r.power_offset_qdb, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
 
+  bool rate_walls_idx_present = j.contains("rate_walls_idx");
+  if (rate_walls_idx_present) {
+    auto& arr = j.at("rate_walls_idx");
+    if (!arr.is_array() || arr.size() != 8)
+      fail("radio.rate_walls_idx", "must be an array of 8 ints");
+    try {
+      for (size_t i = 0; i < 8; ++i)
+        r.rate_walls_idx[i] = arr.at(i).get<int>();
+    } catch (const json::exception&) {
+      fail("radio.rate_walls_idx", "wrong type");
+    }
+  }
+  assign_if_present(j, "legacy_wall_idx", r.legacy_wall_idx, "radio");
+  assign_if_present(j, "wall_margin_db", r.wall_margin_db, "radio");
+  assign_if_present(j, "min_offset_qdb", r.min_offset_qdb, "radio");
+  assign_if_present(j, "base_ref_idx", r.base_ref_idx, "radio");
+
   if (r.channel < 1 || r.channel > 177) fail("radio.channel", "must be in [1,177]");
   if (r.tx_threads < 1 || r.tx_threads > 8)
     fail("radio.tx_threads", "must be in [1,8]");
@@ -77,6 +97,46 @@ void parse_radio(const json& j, RadioCfg& r) {
     fail("radio.power_mode", "must be \"override\", \"offset\" or \"none\"");
   if (r.power_offset_qdb < -128 || r.power_offset_qdb > 128)
     fail("radio.power_offset_qdb", "must be in [-128,128]");
+
+  if (r.power_mode == "offset" && !rate_walls_idx_present)
+    fail("radio.rate_walls_idx", "required when radio.power_mode is \"offset\"");
+  for (int w : r.rate_walls_idx)
+    if (w < 0 || w > 127) fail("radio.rate_walls_idx", "values must be in [0,127]");
+  if (r.legacy_wall_idx < 0 || r.legacy_wall_idx > 127)
+    fail("radio.legacy_wall_idx", "must be in [0,127]");
+  if (r.wall_margin_db < 0.0 || r.wall_margin_db > 6.0)
+    fail("radio.wall_margin_db", "must be in [0,6]");
+  if (r.min_offset_qdb < -64 || r.min_offset_qdb > 0)
+    fail("radio.min_offset_qdb", "must be in [-64,0]");
+  if (r.base_ref_idx < 0 || r.base_ref_idx > 127)
+    fail("radio.base_ref_idx", "must be in [0,127]");
+
+  // The 8822E's per-rate diff field is 7-bit two's complement (devourer's
+  // pack_rate_diff_word masks & 0x7f), so every diff make_power_plan will
+  // derive — walls[r] - m - base_ref_idx, and the same for legacy_wall_idx —
+  // must land in [-64, 63]. Outside that range the value silently wraps on
+  // air (e.g. +70 becomes -58) with no error, sign-flipping per-rate power.
+  // A miscalibrated config (e.g. base_ref_idx left at 0) must refuse to
+  // boot here rather than let power_plan.h's clamp silently paper over it.
+  if (r.power_mode == "offset") {
+    const int m = static_cast<int>(std::lround(r.wall_margin_db * 4.0));
+    for (int w : r.rate_walls_idx) {
+      const int diff = w - m - r.base_ref_idx;
+      if (diff < -64 || diff > 63)
+        fail("radio.rate_walls_idx",
+             "derived diff (wall - wall_margin_db*4 - base_ref_idx) = " +
+                 std::to_string(diff) +
+                 " is out of the 7-bit hardware field range [-64,63] — "
+                 "check base_ref_idx/wall_margin_db calibration");
+    }
+    const int legacy_diff = r.legacy_wall_idx - m - r.base_ref_idx;
+    if (legacy_diff < -64 || legacy_diff > 63)
+      fail("radio.legacy_wall_idx",
+           "derived diff (legacy_wall_idx - wall_margin_db*4 - base_ref_idx) = " +
+               std::to_string(legacy_diff) +
+               " is out of the 7-bit hardware field range [-64,63] — "
+               "check base_ref_idx/wall_margin_db calibration");
+  }
 
   uint8_t prev = 0;
   for (uint8_t bw : r.bw_set) {
@@ -232,7 +292,9 @@ Config load_config(const std::string& path) {
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
   check_known_keys(j,
-                    {"radio", "fec", "waybeam", "link", "msp", "ring_name", "flags", "power_offset_db"},
+                    {"radio", "fec", "waybeam", "link", "msp", "ring_name",
+                     "video_input", "frame_ring_name", "flags",
+                     "power_offset_db"},
                     "");
 
   Config cfg;
@@ -241,7 +303,18 @@ Config load_config(const std::string& path) {
   if (j.contains("waybeam")) parse_waybeam(j.at("waybeam"), cfg.waybeam);
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
-  assign_if_present(j, "ring_name", cfg.ring_name, "");
+  assign_if_present(j, "frame_ring_name", cfg.frame_ring_name, "");
+  // Deprecated: both named/selected the pre-frame-shm RTP-packet ring, which
+  // no longer exists. Accepted-and-ignored (not fatal) for one release because
+  // the bench procedure pins video_input in the drone's live /etc/mabur.json —
+  // failing here would leave an upgraded maburd unable to start.
+  for (const char* dead : {"video_input", "ring_name"})
+    if (j.contains(dead))
+      std::fprintf(stderr,
+                   "maburd config: WARNING: '%s' is obsolete and ignored — "
+                   "video ingest is frame-shm only (frame_ring_name). Remove "
+                   "it from this config.\n",
+                   dead);
   if (j.contains("flags")) parse_flags(j.at("flags"), cfg.flags);
   if (j.contains("power_offset_db")) {
     auto& arr = j.at("power_offset_db");

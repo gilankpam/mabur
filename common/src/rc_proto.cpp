@@ -55,7 +55,7 @@ std::vector<uint8_t> pack_rcf(const Rcf& r) {
   put16(body, r.ack_seq);
   body.push_back(r.profile);
   put16(body, r.score);
-  body.push_back(r.pwr_idx);
+  body.push_back(r.pwr_offset_biased);
   body.push_back(r.fec_overhead_16ths);
   body.push_back(static_cast<uint8_t>(layers.size()));
   body.insert(body.end(), layers.begin(), layers.end());
@@ -85,7 +85,7 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.ack_seq = get16(buf, 11);
   r.profile = buf[13];
   r.score = get16(buf, 14);
-  r.pwr_idx = buf[16];
+  r.pwr_offset_biased = buf[16];
   r.fec_overhead_16ths = buf[17];
   r.layer_delivery.assign(buf + RCF_HEAD_LEN, buf + RCF_HEAD_LEN + n_layers);
   return r;

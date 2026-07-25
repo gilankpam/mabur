@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """Golden vectors for GS energy control, generated from devourer's Python
 energy_model. Deterministic: no randomness, no time. Re-run + git diff must be
-clean."""
+clean.
+
+optable/controller sections' power math moved to the mabur-owned
+tools/pyref/offset_power.py (linear qdB-offset semantics) since 2026-07-17 —
+same pattern as gen_vectors.py's energy.json section. Non-power dimensions
+(snr_req, p_deliver, rows, airtime) still ride the frozen devourer
+link_model/op_table/energy_model imports."""
 import json, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 PRECODER = os.path.abspath(os.path.join(ROOT, "..", "devourer", "tools", "precoder"))
 sys.path.insert(0, PRECODER)
+sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
 
 import energy_model as em  # noqa: E402
+import offset_power  # noqa: E402
 
 VEC = os.path.join(ROOT, "tests", "vectors")
 os.makedirs(VEC, exist_ok=True)
@@ -20,30 +28,12 @@ def dump(name, obj):
     print("wrote", name)
 
 # --- energy ---------------------------------------------------------------
-cal = em.load_calibration()
-e_cases = []
-for mode, mcs, bw, sgi, txagc, src, ov, payload, pdel in [
-    ("ht", 0, 20, False, 63, 1.4e6, 1.00, 1024, 1.0),
-    ("ht", 2, 20, False, 32, 4e6, 0.25, 1024, 0.99),
-    ("ht", 7, 40, True, 10, 8e6, 0.10, 1024, 0.95),
-    ("vht", 8, 80, False, 0, 20e6, 0.10, 1024, 1.0),
-    ("ht", 0, 20, False, 63, 50e6, 1.00, 1024, 1.0),   # infeasible: airtime > 1
-    ("ht", 4, 20, False, 32, 4e6, 0.25, 1024, 0.0),    # nothing delivered
-]:
-    pt = em.TxPoint(mode, mcs, bw, sgi, txagc)
-    af = em.airtime_fraction(pt, src, ov, payload, cal)
-    eb = em.energy_per_delivered_bit(pt, src, ov, payload, pdel, cal)
-    e_cases.append({"vht": mode == "vht", "mcs": mcs, "bw": bw, "sgi": sgi,
-                    "txagc": txagc, "src": src, "ov": ov, "payload": payload,
-                    "p_deliver": pdel,
-                    "eff_bps": em.phy_rate_eff_bps(pt, payload, cal),
-                    "airtime": af,
-                    "e_bit": None if eb == float("inf") else eb})
-g_cases = [{"need_db": d,
-            "idx": (lambda r: -1 if r is None else r)(cal.min_txagc_for_gain(d))}
-           for d in [0.0, 0.001, 5.0, 24.9, 25.0, 30.0]]
-dump("energy.json", {"cases": e_cases, "gain": g_cases,
-                     "bw_noise": [{"bw": b, "db": em.bw_noise_db(b)} for b in (20, 40, 80)]})
+# NOTE: this script's own energy.json write is superseded by
+# gen_vectors.py's energy section (mabur-owned offset semantics) — kept here
+# unused/dead would be confusing, so this section is intentionally REMOVED.
+# gen_vectors.py is the source of truth for energy.json; run it after this
+# script (or before) and its write wins either order since both are
+# deterministic and this script no longer touches energy.json.
 
 # --- optable ------------------------------------------------------------------
 import link_model as lm
@@ -56,16 +46,20 @@ snr_req = [{"mcs": m, "ov": ov, "target": t,
            for t in (0.90, 0.99, 0.999)]
 rows = op_table.build_link_rows(link, 0.99, range(8),
                                 (0.10, 0.25, 0.50, 0.75, 1.00), 20)
+MIN_OFFSET_QDB, MAX_OFFSET_QDB, BASE_REF_IDX = -40, 0, 53
 res_cases = []
 for pl in (-10.0, 0.0, 5.5, 12.0, 30.0):
     for r in rows[::7]:                       # sample every 7th row
-        op = op_table.resolve(r, pl, cal, link, 1024, 4e6, 2.0)
+        op = offset_power.resolve(r, pl, link, 1024, 4e6, 2.0,
+                                  MIN_OFFSET_QDB, MAX_OFFSET_QDB,
+                                  BASE_REF_IDX, em)
         res_cases.append({
             "row": {"vht": r.mode == "vht", "mcs": r.mcs, "bw": r.bw,
                     "sgi": r.sgi, "ov": r.overhead, "snr_req": r.snr_req},
             "pl": pl,
             "op": None if op is None else {
-                "txagc": op.txagc, "e_bit": None if op.e_bit == float("inf") else op.e_bit,
+                "pwr_offset_qdb": op.txagc,
+                "e_bit": None if op.e_bit == float("inf") else op.e_bit,
                 "p_deliver": op.p_deliver}})
 # Edge cases: sentinel and grid clamping (parity test hazards, never exercised above)
 # Sentinel: impossible target (2.0 > max p_deliver 1.0) must return hi+step = 40.5
@@ -124,17 +118,20 @@ dump("score.json", {"score": score_cases,
                              "stats": rung_stats}})
 
 # --- controller replay --------------------------------------------------------
-from controller import Controller, ControllerConfig
-
-ctrl = Controller(link, cal, ControllerConfig(target=0.99, allow_shed=False,
-                                              src_bitrate_bps=4e6))
+ctrl = offset_power.Controller(
+    link, em,
+    offset_power.ControllerConfig(target=0.99, allow_shed=False,
+                                  src_bitrate_bps=4e6,
+                                  min_offset_qdb=MIN_OFFSET_QDB,
+                                  max_offset_qdb=MAX_OFFSET_QDB,
+                                  base_ref_idx=BASE_REF_IDX))
 def op_out(op):
     if op is None:
         return None
     return {"vht": op.mode == "vht", "mcs": op.mcs, "bw": op.bw,
-            "txagc": op.txagc, "ov": op.overhead}
+            "pwr_offset_qdb": op.txagc, "ov": op.overhead}
 
-applied_txagc = 32
+applied_offset_qdb = 0
 replay = []
 for t in range(200):
     now = t * 100.0
@@ -143,12 +140,12 @@ for t in range(200):
         op = ctrl.on_tick(now)
         replay.append({"kind": "tick", "now": now, "out": op_out(op)})
     else:
-        snr = pl + cal.gain_db(applied_txagc)
-        op = ctrl.update(snr, applied_txagc, now)
+        snr = pl + offset_power.gain_db(applied_offset_qdb)
+        op = ctrl.update(snr, applied_offset_qdb, now)
         replay.append({"kind": "update", "now": now, "snr": snr,
-                       "txagc": applied_txagc, "out": op_out(op)})
+                       "pwr_offset_qdb": applied_offset_qdb, "out": op_out(op)})
         if op is not None:
-            applied_txagc = op.txagc
+            applied_offset_qdb = op.txagc
 dump("controller_replay.json", {"cfg": {"target": 0.99, "allow_shed": False,
                                         "src_bitrate_bps": 4e6},
                                 "trace": replay})

@@ -144,3 +144,57 @@ TEST(src_bitrate_mbps_parses_and_defaults) {
   cfg = maburgs::load_config(write_tmp("{\"link\": {\"margin_db\": 35}}"));
   CHECK(cfg.link.margin_db > 34.999 && cfg.link.margin_db < 35.001);
 }
+
+// static_txagc was renamed to static_offset_qdb (USER-FACING, qdB offset
+// semantics since 2026-07-17); min_offset_qdb/max_offset_qdb/base_ref_idx
+// are new controller rail keys. max_offset_qdb is validated <= 0 (ZERO is
+// the max legal offset — docs/txagc-calibration.md).
+TEST(offset_qdb_keys_parse_and_default) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.static_offset_qdb == 0);
+  CHECK(cfg.link.min_offset_qdb == -40);
+  CHECK(cfg.link.max_offset_qdb == 0);
+  CHECK(cfg.link.base_ref_idx == 53);
+
+  cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"static_offset_qdb":-12,"min_offset_qdb":-32,)"
+      R"("max_offset_qdb":-4,"base_ref_idx":40}})"));
+  CHECK(cfg.link.static_offset_qdb == -12);
+  CHECK(cfg.link.min_offset_qdb == -32);
+  CHECK(cfg.link.max_offset_qdb == -4);
+  CHECK(cfg.link.base_ref_idx == 40);
+
+  // Old key name is now unknown -> rejected.
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"static_txagc":63}})")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("static_txagc") != std::string::npos;
+  }
+  CHECK(threw);
+
+  // max_offset_qdb must be <= 0.
+  threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"max_offset_qdb":5}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+
+  // min_offset_qdb must be <= max_offset_qdb.
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"min_offset_qdb":-4,"max_offset_qdb":-8}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+// frame_gap_timeout_ms/frame_lookahead: FrameStream tuning knobs for the
+// session-negotiated frame-wire tail (Task 10). JSON keys under video_out.
+TEST(video_out_frame_keys) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.video_out.frame_gap_timeout_ms == 50);
+  CHECK(cfg.video_out.frame_lookahead == 8);
+  auto cfg2 = maburgs::load_config(write_tmp(
+      "{\"video_out\": {\"frame_gap_timeout_ms\": 30, \"frame_lookahead\": 4}}"));
+  CHECK(cfg2.video_out.frame_gap_timeout_ms == 30);
+  CHECK(cfg2.video_out.frame_lookahead == 4);
+}
