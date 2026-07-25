@@ -1,8 +1,13 @@
 # Handoff: validate the "chain-A RSSI is off-scale on the 8822E" claim
 
-Status: OPEN — claim unverified, blocks `rssi_a` from the planned GS stats
-sideport schema. Written 2026-07-25. This doc is self-contained; start here,
-not from the conversation that produced it.
+Status: RESOLVED 2026-07-25 — **claim REFUTED on hardware** (devourer HEAD
+`13998ec`, both GS cards, both DPDT modes, ~42k frames: chain A never read
+≥128; it tracks chain B within ~1.5 dB). `rssi_a` is unblocked for the GS
+stats sideport. Hypothesis 1 (stale-era artifact) confirmed as the verdict;
+see "Validation results" below for the evidence. mabur fixes applied:
+CardTrack now has `rssi_a_ema`, comments corrected, per-card stderr stats
+print rssiA. The rebuild of deployed maburgs against synced ../devourer is
+still pending (tracked separately).
 
 ## Why this matters
 
@@ -147,3 +152,48 @@ cross-check happens on a bench adapter on a dev host only.
     window until the value is trustworthy.
 - Update this doc's Status line and the memory entry that points here when
   resolved.
+
+## Validation results (2026-07-25)
+
+Bench: drone (maburd, ch149/20MHz, stock config) transmitting; rxdemo built
+from devourer HEAD `13998ec` via mabur's arm64 cross toolchain, run on the GS
+with `DEVOURER_RX_ALLPATHS=1`; maburgs stopped during capture, restarted and
+RTP-verified clean afterwards (59.4 fps, 0 gaps, 0 bad frames). Raw per-chain
+distributions, first 200 frames (AGC settle) excluded:
+
+| Cell | n | rssi_a mean (raw) | rssi_b mean (raw) | A or B ≥128 |
+|---|---|---|---|---|
+| card1, efem (HEAD default) | 9977 | 58.8 | 60.0 | 0 |
+| card1, DPDT legacy (pre-fix route) | 10009 | 59.0 | **10.9** | 0 |
+| card1, TX −3 dB (wall_margin 4.0) | 5231 | 57.2 | 59.0 | 0 |
+| card1, TX −5 dB (wall_margin 6.0) | 5225 | 58.5 | 58.0 | 0 |
+| card2 (port 1.4), efem | 5274 | 59.0 | 60.5 | 0 |
+
+Findings:
+
+- **Chain A is sane and tracks chain B within ~1.5 dB in every cell.** Raw
+  58–60 ≈ −51 dBm, plausible for the bench geometry. Zero samples ≥128 in
+  ~42k frames across two cards.
+- The `legacy` DPDT cell reproduces the *documented* chain-B-at-noise-floor
+  signature (raw ~11 ≈ −99 dBm) from `../devourer/docs/8822e-quirks.md` —
+  and even under that pre-fix front-end route, chain A does **not** read
+  128–131. The original observation was made on a pre-eFEM build; whatever
+  produced 128–131 does not reproduce on current devourer in either mode.
+- devourer git history shows no jgr3 pwdb parsing change since the claim era
+  — only the eFEM pin-mux (#289) landed in between, supporting hypothesis 1.
+- Dynamic range confirmed: chain A reads noise floor (~11–12 raw) during
+  init/AGC settle and normal levels after; both chains move together when TX
+  power changes. (TX-side response to the margin sweep is compressed because
+  the walls sit at PA-compression ceilings — equally visible on both chains,
+  so not an rssi_a validity issue.)
+- Vendor phydm cross-check (plan step 4) skipped: it gates hypotheses 2/3,
+  which have no observable support on this hardware.
+
+Follow-ups applied in mabur (refuted path): `CardTrack.rssi_a_ema` added with
+the same EMA treatment as B (`gs/src/aggregator.{h,cpp}`), stale comments
+fixed (`gs/src/aggregator.h`, `common/include/mabur/node.h`), per-card stderr
+stats now print `rssiA`, `tests/test_aggregator.cpp` updated (58/58 host
+tests pass). The score window's `max(rssi[0], rssi[1])` input is now known to
+be honest — no change needed. When the GS stats sideport spec is written,
+include `rssi_a` (additive v1 field) and a `rssiA` column in
+`tools/maburtop.py`.

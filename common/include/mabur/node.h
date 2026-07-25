@@ -20,7 +20,7 @@ constexpr uint8_t NODE_VERSION = 0;
 struct RxBody {
   uint8_t card_id = 0;
   uint64_t mono_us = 0;      // sender's monotonic clock, microseconds
-  uint8_t rssi[2] = {0, 0};  // per-chain raw (chain A is off-scale on 8822E)
+  uint8_t rssi[2] = {0, 0};  // per-chain raw, dBm = value - 110 (both chains valid on 8822E)
   int8_t snr[2] = {0, 0};
   bool crc_ok = true;        // 802.11 FCS; corrupt frames still carry bodies
   uint16_t mac_seq = 0;      // 12-bit hw seq from the dot11 header

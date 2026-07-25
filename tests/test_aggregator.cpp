@@ -20,7 +20,7 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
                                std::vector<uint8_t> body) {
   mabur::node::RxBody m;
   m.card_id = card; m.mac_seq = seq; m.crc_ok = crc_ok;
-  m.rssi[0] = 130; m.rssi[1] = 40;   // chain A off-scale, chain B sane
+  m.rssi[0] = 38; m.rssi[1] = 40;   // both chains sane (see docs/chain-a-rssi-validation-handoff.md)
   m.snr[0] = 10; m.snr[1] = 25;
   m.mono_us = 1000u * seq;
   m.body = std::move(body);
@@ -99,14 +99,16 @@ TEST(seq_urb_batch_swap_is_not_loss) {
   CHECK(c.seq_expected == 10);   // 0..9 all arrived — 100% delivery
 }
 
-TEST(ema_uses_chain_b_rssi_and_max_snr) {
+TEST(ema_tracks_both_rssi_chains_and_max_snr) {
   Aggregator agg(vec_layers(), 200, 512, 1);
   std::vector<uint8_t> junk(20, 0);
   agg.on_rx_body(msg(0, 1, true, junk));
-  CHECK(agg.card(0).rssi_b_ema == 40.0);       // seeded from first frame
+  CHECK(agg.card(0).rssi_a_ema == 38.0);       // seeded from first frame
+  CHECK(agg.card(0).rssi_b_ema == 40.0);
   CHECK(agg.card(0).snr_ema == 25.0);          // max(10, 25)
   agg.on_rx_body(msg(0, 2, true, junk));
-  CHECK(agg.card(0).rssi_b_ema == 40.0);       // constant input -> constant EMA
+  CHECK(agg.card(0).rssi_a_ema == 38.0);       // constant input -> constant EMA
+  CHECK(agg.card(0).rssi_b_ema == 40.0);
 }
 
 TEST(unknown_card_dropped) {

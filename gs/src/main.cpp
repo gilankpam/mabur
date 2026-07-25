@@ -471,13 +471,13 @@ int main(int argc, char** argv) {
     const auto& t = agg.card(c);
     std::fprintf(stderr,
                  "card %d: frames=%llu crc_fail=%llu video=%llu seq %llu/%llu "
-                 "rssiB=%.1f snr=%.1f\n",
+                 "rssiA=%.1f rssiB=%.1f snr=%.1f\n",
                  c, static_cast<unsigned long long>(t.frames),
                  static_cast<unsigned long long>(t.crc_fail),
                  static_cast<unsigned long long>(t.video_bodies),
                  static_cast<unsigned long long>(t.seq_received),
-                 static_cast<unsigned long long>(t.seq_expected), t.rssi_b_ema,
-                 t.snr_ema);
+                 static_cast<unsigned long long>(t.seq_expected), t.rssi_a_ema,
+                 t.rssi_b_ema, t.snr_ema);
   }
   for (int s = 0; s < 4; ++s) {
     const auto st = agg.decoder().stats(s);
