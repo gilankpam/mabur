@@ -168,4 +168,47 @@ TEST(card_rssi_ema_tracks_per_frame_chain_max) {
   agg.on_rx_body(m3);
   CHECK(agg.card(0).rssi_ema > 58.9 && agg.card(0).rssi_ema < 59.1);
 }
+
+TEST(class_split_video_msp_ctrl) {
+  auto bodies = encode_fixture_bodies();     // stream-tagged video bodies
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  uint16_t seq = 0;
+  for (auto& b : bodies) agg.on_rx_body(msg(0, seq++, true, b));
+  auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
+  agg.on_rx_body(msg(0, seq++, true, ack));
+  const CardTrack& c = agg.card(0);
+  uint64_t stream_frames = 0;
+  for (int s = 0; s < 4; ++s) stream_frames += c.cls[s].frames;
+  CHECK(stream_frames > 0);                        // video bodies classified
+  CHECK(c.cls[int(RfClass::Ctrl)].frames == 1);    // the DISC_ACK
+  CHECK(c.cls[int(RfClass::Ctrl)].has_ema);
+  CHECK(c.cls[int(RfClass::Ctrl)].snr_ema == 25.0);  // msg() snr max
+  CHECK(c.self_frames == 0);
+}
+
+TEST(self_rc_frames_counted_but_never_tracked) {
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  int rc_routed = 0;
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
+  auto rcf = mtest::unhex(rc["rcf"][0]["wire"].get<std::string>());
+  agg.on_rx_body(msg(0, 100, true, rcf));          // GS-originated type
+  const CardTrack& c = agg.card(0);
+  CHECK(c.self_frames == 1);
+  CHECK(c.frames == 0);                            // excluded from totals
+  CHECK(c.rx_bytes == 0);
+  CHECK(!c.has_seq);                               // GS seq counter kept out
+  CHECK(!c.cls[int(RfClass::Ctrl)].has_ema);
+  CHECK(rc_routed == 1);                           // still routed to the sink
+}
+
+TEST(crc_fail_stays_out_of_classes) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  std::vector<uint8_t> junk(20, 0);
+  agg.on_rx_body(msg(0, 1, false, junk));
+  const CardTrack& c = agg.card(0);
+  CHECK(c.frames == 1 && c.crc_fail == 1);
+  for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
+}
 MTEST_MAIN

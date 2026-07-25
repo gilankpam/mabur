@@ -24,6 +24,22 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     return;
   }
   CardTrack& c = cards_[m.card_id];
+
+  // Classify once: GS-self-originated RC frames (RCF/DISC) heard back on
+  // the GS's own monitor-mode capture are diverted before any accounting —
+  // they never touch frames/rx_bytes/seq/EMA, only self_frames + the rc
+  // routing.
+  const int rc_t = mabur::rc::frame_type(m.body.data(), m.body.size());
+  const bool is_self = (rc_t == mabur::rc::T_RCF || rc_t == mabur::rc::T_DISC);
+  if (is_self) {
+    ++c.self_frames;
+    ++c.rc_frames;
+    if (rc_sink_) rc_sink_(m.card_id, m.body, m.mono_us);
+    return;
+  }
+
+  const int stream_id = mabur::sbi_peek_stream_id(m.body.data(), m.body.size());
+
   ++c.frames;
   c.rx_bytes += m.body.size();
   c.last_frame_us = m.mono_us;
@@ -75,14 +91,46 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       c.snr_a_ema = (1 - kEmaAlpha) * c.snr_a_ema + kEmaAlpha * m.snr[0];
       c.snr_b_ema = (1 - kEmaAlpha) * c.snr_b_ema + kEmaAlpha * m.snr[1];
     }
+
+    // Per-RF-class EMA, mirroring the pooled block above exactly. Ctrl
+    // (non-self rc frames, e.g. DISC_ACK) takes priority over stream id;
+    // an unparseable/misrouted body gets no class (card totals only).
+    int class_idx = -1;
+    if (rc_t >= 0) {
+      class_idx = static_cast<int>(RfClass::Ctrl);
+    } else if (stream_id == mabur::kMspStreamId) {
+      class_idx = static_cast<int>(RfClass::Msp);
+    } else if (stream_id >= 0 && stream_id < 4) {
+      class_idx = stream_id;
+    }
+    if (class_idx >= 0) {
+      ClassTrack& ct = c.cls[static_cast<size_t>(class_idx)];
+      ++ct.frames;
+      if (!ct.has_ema) {
+        ct.rssi_ema = rssi;
+        ct.rssi_a_ema = m.rssi[0];
+        ct.rssi_b_ema = m.rssi[1];
+        ct.snr_ema = snr;
+        ct.snr_a_ema = m.snr[0];
+        ct.snr_b_ema = m.snr[1];
+        ct.has_ema = true;
+      } else {
+        ct.rssi_ema = (1 - kEmaAlpha) * ct.rssi_ema + kEmaAlpha * rssi;
+        ct.rssi_a_ema = (1 - kEmaAlpha) * ct.rssi_a_ema + kEmaAlpha * m.rssi[0];
+        ct.rssi_b_ema = (1 - kEmaAlpha) * ct.rssi_b_ema + kEmaAlpha * m.rssi[1];
+        ct.snr_ema = (1 - kEmaAlpha) * ct.snr_ema + kEmaAlpha * snr;
+        ct.snr_a_ema = (1 - kEmaAlpha) * ct.snr_a_ema + kEmaAlpha * m.snr[0];
+        ct.snr_b_ema = (1 - kEmaAlpha) * ct.snr_b_ema + kEmaAlpha * m.snr[1];
+      }
+    }
   }
 
-  if (mabur::rc::frame_type(m.body.data(), m.body.size()) >= 0) {
+  if (rc_t >= 0) {
     ++c.rc_frames;
     if (rc_sink_) rc_sink_(m.card_id, m.body, m.mono_us);
     return;
   }
-  if (mabur::sbi_peek_stream_id(m.body.data(), m.body.size()) == mabur::kMspStreamId) {
+  if (stream_id == mabur::kMspStreamId) {
     if (msp_sink_) msp_sink_(m.body.data(), m.body.size(), m.mono_us);
     return;
   }

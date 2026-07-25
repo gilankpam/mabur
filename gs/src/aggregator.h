@@ -9,6 +9,22 @@
 
 namespace maburgs {
 
+// RF traffic class: stream_id 0..3 map to S0..S3 (video sub-streams), Msp is
+// the OSD sideband, Ctrl is RC-magic frames that aren't GS-self-originated
+// (e.g. DISC_ACK). Indexes CardTrack::cls[].
+enum class RfClass { S0 = 0, S1, S2, S3, Msp, Ctrl };
+constexpr int kNumRfClasses = 6;
+
+// Per-class signal track, same shape/semantics as the pooled EMAs below but
+// scoped to one RfClass — lets the stats sideport (Task 3/4) report signal
+// quality per traffic class instead of only the card-wide pool.
+struct ClassTrack {
+  uint64_t frames = 0;
+  double rssi_ema = 0, rssi_a_ema = 0, rssi_b_ema = 0;
+  double snr_ema = 0, snr_a_ema = 0, snr_b_ema = 0;
+  bool has_ema = false;
+};
+
 // Rolling per-card link state, maintained from CRC-clean frames only (a
 // corrupt frame's seq and phystatus are untrustworthy). rssi_a/b_ema and
 // snr_a/b_ema track the two RX chains; rssi_ema/snr_ema track the per-frame
@@ -25,6 +41,14 @@ struct CardTrack {
   bool has_ema = false, has_seq = false;
   uint16_t last_seq = 0;
   uint64_t last_frame_us = 0;
+  // Per-RF-class signal tracks (video streams, MSP, ctrl) — pooled EMAs
+  // above REMAIN untouched (TxSelector + stderr consume them).
+  std::array<ClassTrack, kNumRfClasses> cls{};
+  // GS-originated RC frames (RCF/DISC, sent to the drone): the GS's own
+  // monitor-mode capture hears its own transmission, so these show up on
+  // on_rx_body too. Counted here, excluded from every other total
+  // (frames/rx_bytes/seq/EMA).
+  uint64_t self_frames = 0;
 };
 
 // Core-thread router: RC-magic frames go to the control sink (Plan 2's
