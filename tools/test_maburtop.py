@@ -42,8 +42,18 @@ class RenderTest(unittest.TestCase):
         rows_a = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
         big = dict(DGRAM)
         big["cards"] = [dict(DGRAM["cards"][0],
-                             frames=999999999, pps=99999, rx_mbps=999.9)]
+                             frames=999999999, pps=99999, rx_mbps=999.9,
+                             last_frame_age_ms=15000)]
         rows_b = render_rows(self.fresh(big), wall=100.2, width=GRID_WIDTH)
+        self.assertEqual([len(r) for r in rows_a], [len(r) for r in rows_b])
+
+    def test_fixed_width_survives_huge_last_frame_age(self):
+        # A card silent for minutes (age >= 10s) must not widen the CARD row
+        # (regression: naive "{ms}ms".rjust(6) overflowed past 10000 ms).
+        rows_a = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
+        huge = dict(DGRAM)
+        huge["cards"] = [dict(DGRAM["cards"][0], last_frame_age_ms=123456789)]
+        rows_b = render_rows(self.fresh(huge), wall=100.2, width=GRID_WIDTH)
         self.assertEqual([len(r) for r in rows_a], [len(r) for r in rows_b])
 
     def test_null_renders_dashes(self):
@@ -84,6 +94,19 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         for cell in ("session", "mcs5", "59.9", "9.31"):
             self.assertIn(cell, rows[0])
+
+    def test_update_ignores_non_dict_input(self):
+        # A UDP datagram that is valid JSON but not an object (null, a bare
+        # number, a list, ...) must not crash Model.update or disturb the
+        # last good state.
+        m = self.fresh(wall=100.0)
+        before = (m.d, m.session, m.last_rx_wall, m.restarts,
+                  dict(m.fec_rows), m.bad_version)
+        for bad in (None, 42, [1, 2, 3], "oops", 3.14):
+            m.update(bad, 999.0)
+        after = (m.d, m.session, m.last_rx_wall, m.restarts,
+                 dict(m.fec_rows), m.bad_version)
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

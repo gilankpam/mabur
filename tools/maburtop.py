@@ -26,6 +26,22 @@ def _f(v, w, prec=1):
     return s[:w].rjust(w) if len(s) > w else s.rjust(w)
 
 
+def _age_cell(age_ms, w=6):
+    """Fixed-width 'time since last frame' cell: None -> '--'. Auto-scales
+    ms -> s -> m so a card silent for minutes still reads as a sane number
+    instead of overflowing the column (and, as a last resort, truncates —
+    same never-widen contract as _f())."""
+    if age_ms is None:
+        return "--".rjust(w)
+    if age_ms < 10_000:
+        s = f"{age_ms}ms"
+    elif age_ms < 1_000_000:
+        s = f"{age_ms // 1000}s"
+    else:
+        s = f"{age_ms // 60_000}m"
+    return s[:w].rjust(w) if len(s) > w else s.rjust(w)
+
+
 class Model:
     """Latest datagram + feed bookkeeping. update() is pure bookkeeping;
     all layout lives in render_rows()."""
@@ -40,6 +56,8 @@ class Model:
         self.bad_version = None
 
     def update(self, dgram, wall):
+        if not isinstance(dgram, dict):
+            return  # malformed/non-object datagram: keep last good state
         v = dgram.get("v")
         if v != 1:
             self.bad_version = v
@@ -134,8 +152,7 @@ def render_rows(model, wall, width):
             cid = c.get("id")
             up = c.get("up")
             st_s = "UP" if up else ("DOWN" if up is not None else None)
-            age = c.get("last_frame_age_ms")
-            age_s = ("--" if age is None else f"{age}ms").rjust(6)
+            age_s = _age_cell(c.get("last_frame_age_ms"), 6)
             row = (
                 f"  c{_s(cid)}"
                 f"  {_f(st_s, 5)}"
@@ -227,7 +244,7 @@ def main():
                 data, _ = sock.recvfrom(65535)
                 try:
                     model.update(json.loads(data.decode()), time.time())
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError, AttributeError):
                     pass  # malformed datagram: keep last good state
             except socket.timeout:
                 pass
