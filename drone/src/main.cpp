@@ -820,16 +820,26 @@ int run_real_mode(const Config& cfg) {
       }
       // Ring-pressure observability (spec: the drain-feedback policy's
       // future input): one stderr line every 5 s.
+      //
+      // Only counters this process can actually move. venc_frame_ring_fill_t
+      // snapshots the *local handle*, and writes/full_drops are incremented
+      // solely by the write path — they are structurally 0 for a consumer, and
+      // the shm header carries write_idx/read_idx but no counters, so the
+      // producer's copies cannot cross. fill_pct is the real cross-process
+      // signal (write_idx - read_idx); waybeam's own drop count has to come
+      // from waybeam. See tests/test_frame_source.cpp
+      // (consumer_fill_reports_only_consumer_side_counters).
       if (now - last_ring_stats_ms >= 5000) {
         last_ring_stats_ms = now;
         venc_frame_ring_fill_t f{};
         if (fsrc.fill(&f))
           std::fprintf(stderr,
-              "maburd frame_ring: fill=%u%% writes=%llu full_drops=%llu "
-              "oversize=%llu idr_disagree=%llu\n",
-              f.fill_pct, (unsigned long long)f.writes,
-              (unsigned long long)f.full_drops,
+              "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
+              "bad_slot=%llu idr_disagree=%llu\n",
+              f.fill_pct, f.used_slots, f.slot_count,
+              (unsigned long long)f.reads,
               (unsigned long long)f.oversize_drops,
+              (unsigned long long)f.bad_slot_drops,
               (unsigned long long)pipe.idr_disagreements());
       }
 

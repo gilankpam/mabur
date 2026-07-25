@@ -65,4 +65,39 @@ TEST(producer_restart_reattaches) {
   venc_frame_ring_destroy(prod);
 }
 
+// venc_frame_ring_fill_t is a snapshot of the *local handle's* counters (the
+// vendored header calls it "Producer-side observability"), and only the write
+// path touches writes/full_drops. maburd attaches as a consumer, so those two
+// fields are structurally pinned at 0 in its process no matter what the
+// producer does — the shm header carries write_idx/read_idx and no counters,
+// so there is no path for them to cross. Locks that in so nobody re-adds them
+// to maburd's stats line expecting a live number.
+TEST(consumer_fill_reports_only_consumer_side_counters) {
+  venc_frame_ring_t* prod = venc_frame_ring_create(kName, 16, 64 * 1024);
+  REQUIRE(prod != nullptr);
+  FrameSource src(kName, 10);
+  std::vector<uint8_t> buf(VENC_FRAME_META_SIZE + 64 * 1024);
+  VencFrameMeta meta{}, got{};
+  uint8_t payload[100] = {0x42};
+  for (int i = 0; i < 3; ++i) {
+    REQUIRE(venc_frame_ring_write(prod, &meta, payload, sizeof payload) == 0);
+    REQUIRE(src.read(buf.data(), buf.size(), 200, &got) == 100);
+  }
+
+  venc_frame_ring_fill_t consumer{};
+  REQUIRE(src.fill(&consumer));
+  CHECK(consumer.reads == 3);       // the consumer's own work: real
+  CHECK(consumer.writes == 0);      // producer-only: always 0 here
+  CHECK(consumer.full_drops == 0);  // producer-only: always 0 here
+
+  // The same counters are live in the producer's handle, which is the process
+  // that would have to report them.
+  venc_frame_ring_fill_t producer{};
+  REQUIRE(venc_frame_ring_get_fill(prod, &producer) == 0);
+  CHECK(producer.writes == 3);
+  CHECK(producer.reads == 0);
+
+  venc_frame_ring_destroy(prod);
+}
+
 MTEST_MAIN
