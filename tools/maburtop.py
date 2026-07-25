@@ -100,8 +100,10 @@ def render_rows(model, wall, width):
     loss = cards[0].get("loss_pct") if cards else None
 
     if width < GRID_WIDTH:
+        stale = model.last_rx_wall is not None and (wall - model.last_rx_wall) > STALE_S
+        prefix = "STALE " if stale else ""
         line = (
-            f"{_s(state)} mcs{_s(mcs)} {_s(fps, 1)} fps "
+            f"{prefix}{_s(state)} mcs{_s(mcs)} {_s(fps, 1)} fps "
             f"{_s(mbps, 2)} Mbps loss {_s(loss, 1)}%"
         )
         return [line]
@@ -255,14 +257,20 @@ def main():
                 last_draw = now
                 h, w = scr.getmaxyx()
                 scr.erase()
-                for y, row in enumerate(render_rows(model, now, w - 1)):
-                    if y >= h:
-                        break
-                    attr = curses.A_REVERSE if ("STALE" in row and y == 0) else 0
-                    scr.addnstr(y, 0, row, w - 1, attr)
+                try:
+                    for y, row in enumerate(render_rows(model, now, w - 1)):
+                        if y >= h:
+                            break
+                        attr = curses.A_REVERSE if ("STALE" in row and y == 0) else 0
+                        scr.addnstr(y, 0, row, w - 1, attr)
+                except Exception:
+                    pass
                 scr.refresh()
 
-    curses.wrapper(loop)
+    try:
+        curses.wrapper(loop)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

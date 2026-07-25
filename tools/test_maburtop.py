@@ -95,6 +95,18 @@ class RenderTest(unittest.TestCase):
         for cell in ("session", "mcs5", "59.9", "9.31"):
             self.assertIn(cell, rows[0])
 
+    def test_narrow_fallback_stale_prefix(self):
+        # Narrow fallback must prefix with "STALE " when feed is >2s stale
+        m = self.fresh(wall=100.0)
+        # Not stale yet
+        rows = render_rows(m, wall=101.5, width=40)
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("STALE", rows[0])
+        # Now stale (>2s)
+        rows = render_rows(m, wall=103.5, width=40)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("STALE", rows[0])
+
     def test_update_ignores_non_dict_input(self):
         # A UDP datagram that is valid JSON but not an object (null, a bare
         # number, a list, ...) must not crash Model.update or disturb the
