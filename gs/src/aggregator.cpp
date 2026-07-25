@@ -28,9 +28,13 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   // Classify once: GS-self-originated RC frames (RCF/DISC) heard back on
   // the GS's own monitor-mode capture are diverted before any accounting —
   // they never touch frames/rx_bytes/seq/EMA, only self_frames + the rc
-  // routing.
+  // routing. Gated on crc_ok: real self frames are point-blank captures and
+  // always CRC-clean, so a corrupt frame whose bytes happen to parse as
+  // T_RCF/T_DISC must NOT be diverted here — it still owes frames/crc_fail/
+  // rx_bytes accounting like any other received frame.
   const int rc_t = mabur::rc::frame_type(m.body.data(), m.body.size());
-  const bool is_self = (rc_t == mabur::rc::T_RCF || rc_t == mabur::rc::T_DISC);
+  const bool is_self =
+      m.crc_ok && (rc_t == mabur::rc::T_RCF || rc_t == mabur::rc::T_DISC);
   if (is_self) {
     ++c.self_frames;
     ++c.rc_frames;

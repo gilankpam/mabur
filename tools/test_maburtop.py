@@ -195,6 +195,21 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertIn("STALE", rows[0])
 
+    def test_card_missing_id_does_not_poison_sig_rows(self):
+        # A card dict missing "id" must not enter sig_rows with a None key —
+        # a mix of int and None keys makes sorted() in render_rows raise
+        # TypeError on every redraw (regression: permanently blank screen).
+        d = dict(DGRAM)
+        d["cards"] = list(DGRAM["cards"]) + [
+            {"up": True, "frames": 1, "crc_fail": 0, "loss_pct": 0.0,
+             "rx_mbps": 0.0, "pps": 0,
+             "classes": {"s0": {"pps": 1.0, "rssi": -40.0}}},
+        ]
+        m = self.fresh(d)
+        self.assertNotIn(None, [cid for cid, _cls in m.sig_rows])
+        rows = render_rows(m, wall=100.2, width=GRID_WIDTH)
+        self.assertTrue(len(rows) > 0)
+
     def test_update_ignores_non_dict_input(self):
         # A UDP datagram that is valid JSON but not an object (null, a bare
         # number, a list, ...) must not crash Model.update or disturb the

@@ -211,4 +211,55 @@ TEST(crc_fail_stays_out_of_classes) {
   CHECK(c.frames == 1 && c.crc_fail == 1);
   for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
 }
+
+// A corrupt frame whose bytes happen to byte-match an RCF wire must NOT be
+// diverted as a self frame — the self-diversion is gated on crc_ok because
+// real self frames are point-blank captures and always CRC-clean. It still
+// owes ordinary frame/crc_fail/rx_bytes accounting, and — being CRC-fail —
+// no class movement.
+TEST(crc_fail_rcf_lookalike_not_diverted_as_self) {
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  int rc_routed = 0;
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
+  auto rcf = mtest::unhex(rc["rcf"][0]["wire"].get<std::string>());
+  agg.on_rx_body(msg(0, 100, false, rcf));   // crc fail but byte-matches RCF wire
+  const CardTrack& c = agg.card(0);
+  CHECK(c.frames == 1);
+  CHECK(c.crc_fail == 1);
+  CHECK(c.self_frames == 0);
+  for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
+}
+
+TEST(msp_body_classified_into_msp_class) {
+  // Build a valid MSP body via MspSource so it carries stream_id == 4, same
+  // as msp_stream_body_routes_to_msp_sink_not_video above.
+  mabur::MspSourceCfg cfg;
+  std::vector<std::vector<uint8_t>> bodies;
+  mabur::MspSource src(cfg, [&](const uint8_t* b, size_t n){ bodies.emplace_back(b, b + n); });
+  std::vector<uint8_t> blob;
+  std::vector<uint8_t> clear = {2};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, clear.data(), clear.size());
+  std::vector<uint8_t> ds = {3, 0, 0, 0, 'X'};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, ds.data(), ds.size());
+  std::vector<uint8_t> draw = {4};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, draw.data(), draw.size());
+  src.on_serial_bytes(blob.data(), blob.size(), 1000);
+  REQUIRE(!bodies.empty());
+
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  agg.on_rx_body(msg(0, 1, true, bodies[0]));
+  const CardTrack& c = agg.card(0);
+  CHECK(c.cls[int(RfClass::Msp)].frames == 1);
+  CHECK(c.cls[int(RfClass::Msp)].has_ema);
+}
+
+TEST(crc_clean_unparseable_body_gets_no_class) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  std::vector<uint8_t> junk(20, 0);   // not SBI, not RC -> misroutes, still counted
+  agg.on_rx_body(msg(0, 1, true, junk));
+  const CardTrack& c = agg.card(0);
+  CHECK(c.frames == 1);
+  for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
+}
 MTEST_MAIN

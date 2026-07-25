@@ -103,6 +103,8 @@ class Model:
         self.rx_times = (self.rx_times + [wall])[-10:]
         for card in dgram.get("cards", []):
             cid = card.get("id")
+            if cid is None:
+                continue  # unindexable card: don't poison sig_rows' sort key
             for cls_key, cls_val in (card.get("classes") or {}).items():
                 self.sig_rows[(cid, cls_key)] = cls_val
         link = dgram.get("link") or {}
