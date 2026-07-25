@@ -1,6 +1,27 @@
 # Follow-up: GS RtpPacketizer under-fills RTP packets (~2× packet rate)
 
-**Status:** open finding from the frame-shm hardware A/B acceptance (2026-07-23), branch `frame-shm-ingest` / PR #1. Non-blocking (no video-quality impact), but worth fixing before pushing to higher bitrates.
+**Status:** **CLOSED — fixed and hardware-verified 2026-07-25** (commit `12333c6`, deployed to the GS same day). Root cause and A/B results in the Resolution section below; the rest of the doc is kept as the original hand-off for reference.
+
+## Resolution (2026-07-25)
+
+**Root cause — hypothesis 1 was right about under-fill but wrong about the mechanism.** FU emission was never tied to input-chunk cadence: `data()` feeds `feed_byte()` one byte at a time, so chunking could not matter (which is why `byte_at_a_time_equals_bulk` always passed). The actual bug was in `drain_fu()`'s non-force loop: after emitting a full `chunk_cap` (= `max_payload - 3` = 1397 B) FU, the `if (!force_all) continue;` iterated again and emitted the leftover `avail - reserve` bytes as their own tiny FU instead of retaining them. Each drain trigger (unsent > `max_payload + 1` = 1402) therefore produced **two** packets — 1400 B + ~7 B — i.e. avg ≈ 703 B and 2× the packet count, quantitatively matching the measured ~720 B / ~24 pkts/frame.
+
+**Fix** (`gs/src/rtp_packetizer.cpp`, in `drain_fu()`): one guard — `if (!force_all && take < chunk_cap) return;` — so mid-stream FUs are emitted only when full; partial remainders stay pending until more bytes arrive or `close_nal()` force-drains at NAL end. Retain-≥1-byte, truncation/no-fake-E, pts unwrap, PT 97, SSRC all unchanged. Regression test `fu_packets_mtu_filled_regardless_of_chunking` (feeds a 5000 B NAL in 158 B chunks, asserts every FU but the last fills `max_payload` exactly) fails on the old code, passes on the fix. Full mabur suite + `test_frame_e2e` green.
+
+**Hardware A/B (2026-07-25, same rig/method as below, maburgs `45120d24` deployed, backup `maburgs.pre-mtufix`):**
+
+| Metric | Frame arm before fix | Frame arm after fix | Baseline |
+|---|---|---|---|
+| packets/sec | ~1449 | **759** | 761 |
+| packets/frame | ~24 | **12.8** | 12.8 |
+| avg RTP payload | ~720 B | **1341 B** | 1337 B |
+| fps / loss / bitrate | 59.5 / 0% / 8.28M | 59.5 / 0% / 8.21M | 59.5 / 0% / 8.21M |
+
+92% of frame-arm packets now land in the 1400 B histogram bucket (remainder = last-FU tails + small non-VCL NALs). Verification criteria 1 and 2 below: both met. Hypothesis 2 (no AP aggregation) remains true but immaterial — parity with baseline was reached without it. Measurement gotcha for future re-runs: the first sniffer window right after an arm flip shows transient "loss" (~1.5%) and low bitrate from restart churn — discard it and re-measure after settling.
+
+---
+
+The original hand-off follows, unchanged.
 
 **Owner:** unassigned — this doc is the hand-off for a follow-up agent.
 
