@@ -74,6 +74,31 @@ TEST(large_nal_fu_fragments) {
   CHECK((out.front().payload[2] & 0x3F) == 1);            // FuType = orig type
 }
 
+TEST(fu_packets_mtu_filled_regardless_of_chunking) {
+  std::vector<Rtp> out;
+  RtpPacketizer pk({97, 1, 200, 16667},
+                   [&](const std::vector<uint8_t>& p) { out.push_back(parse(p)); });
+  auto f = nal(1, 5000);
+  pk.begin_frame(hdr(0, 0));
+  // Deliver in small chunks like FrameStream's ~158 B wide-FRAG fragments.
+  for (size_t off = 0; off < f.size(); off += 158) {
+    size_t n = f.size() - off < 158 ? f.size() - off : 158;
+    pk.data(f.data() + off, n);
+  }
+  pk.end_frame(true);
+  REQUIRE(out.size() >= 2);
+  // Every FU except the last must fill max_payload exactly.
+  for (size_t i = 0; i + 1 < out.size(); ++i)
+    CHECK(out[i].payload.size() == 200);
+  CHECK(out.back().payload.size() <= 200);
+  CHECK((out.back().payload[2] & 0x40) != 0);  // E on last
+  CHECK(out.back().marker);
+  // NAL body still reassembles intact.
+  std::vector<uint8_t> got = {f[4], f[5]};
+  for (auto& r : out) got.insert(got.end(), r.payload.begin() + 3, r.payload.end());
+  CHECK(got == std::vector<uint8_t>(f.begin() + 4, f.end()));
+}
+
 TEST(byte_at_a_time_equals_bulk) {
   auto run = [](bool bytewise) {
     std::vector<std::vector<uint8_t>> out;

@@ -72,6 +72,9 @@ void RtpPacketizer::drain_fu(bool force_all, bool allow_end) {
     size_t take = avail - reserve;
     if (take > chunk_cap) take = chunk_cap;
     if (take == 0) return;
+    // MTU-greedy: mid-stream FUs go out only when full; a partial chunk
+    // stays pending until more bytes arrive or the NAL closes.
+    if (!force_all && take < chunk_cap) return;
 
     bool is_last_chunk = force_all && (fu_sent_ + take == pending_.size() - 2);
     bool s_bit = !fu_started_;
