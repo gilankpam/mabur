@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <random>
 #include <string>
 #include <thread>
 
@@ -25,6 +27,7 @@
 #include "op_table.h"
 #include "radio_frontend.h"
 #include "rtp_packetizer.h"
+#include "stats_exporter.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
 #include "vrx_controller.h"
@@ -102,6 +105,27 @@ static int run_radio(const maburgs::Config& cfg) {
     uint64_t in_order = 0, fwd_gap = 0, back = 0, gap_seqs = 0;
   } rtp_order;
 
+  // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
+  // Declared here (ahead of the RtpPacketizer/FrameStream construction below)
+  // so the FrameStream end_frame lambda can capture `stats` by reference; both
+  // must also outlive every lambda that captures them.
+  // session id: nonzero random u32 so consumers detect restarts.
+  std::optional<maburgs::UdpSink> stats_udp;
+  std::optional<maburgs::StatsExporter> stats;
+  if (cfg.stats.enable) {
+    stats_udp.emplace(cfg.stats.host, cfg.stats.port);
+    uint32_t session = 0;
+    std::random_device rd;
+    while (session == 0) session = rd();
+    stats.emplace(session, cfg.stats.interval_ms,
+                  [&](const std::string& s) {
+                    return stats_udp->send(
+                        reinterpret_cast<const uint8_t*>(s.data()), s.size());
+                  });
+    std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
+                 cfg.stats.host.c_str(), cfg.stats.port, cfg.stats.interval_ms);
+  }
+
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits and streams Annex-B bytes into RtpPacketizer,
   // which builds RFC 7798 RTP for the udp sink.
@@ -128,7 +152,10 @@ static int run_radio(const maburgs::Config& cfg) {
        cfg.video_out.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h) { pktz.begin_frame(h); },
        [&](const uint8_t* d, size_t n) { pktz.data(d, n); },
-       [&](bool c) { pktz.end_frame(c); }});
+       [&](bool c) {
+         pktz.end_frame(c);
+         if (stats) stats->on_frame(mono_ms());
+       }});
   // Only fragments from a peer that advertised the frame wire format may reach
   // FrameStream: an older drone's bodies carry a mutually unparseable frag
   // header, and feeding them here would produce garbage video rather than an
@@ -347,6 +374,61 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(fstream.bad_fragments()),
                    static_cast<unsigned long long>(fstream.stall_resets()));
       std::fprintf(stderr, "\n");
+    }
+
+    if (stats) {
+      maburgs::StatsInput sin;
+      sin.in_session = in_session;
+      sin.tx_card = sel.selected();
+      sin.op = vrx.cur_op();
+      sin.deadline_ms = cfg.fec.decode_deadline_ms;
+      sin.residual_loss = residual;
+      for (int s = 0; s < 4; ++s)
+        sin.layer_delivery_pct[static_cast<size_t>(s)] = ld[static_cast<size_t>(s)];
+      for (int i = 0; i < n_cards; ++i) {
+        const auto& t = agg.card(i);
+        maburgs::StatsCardIn ci;
+        ci.up = fronts[static_cast<size_t>(i)]->alive();
+        ci.frames = t.frames;
+        ci.crc_fail = t.crc_fail;
+        ci.seq_expected = t.seq_expected;
+        ci.seq_received = t.seq_received;
+        ci.rx_bytes = t.rx_bytes;
+        ci.has_ema = t.has_ema;
+        ci.rssi_ema = t.rssi_ema;
+        ci.rssi_a_ema = t.rssi_a_ema;
+        ci.rssi_b_ema = t.rssi_b_ema;
+        ci.snr_ema = t.snr_ema;
+        ci.snr_a_ema = t.snr_a_ema;
+        ci.snr_b_ema = t.snr_b_ema;
+        ci.last_frame_us = t.last_frame_us;
+        sin.cards.push_back(ci);
+      }
+      for (int s = 0; s < 4; ++s) {
+        const auto st = agg.decoder().stats(s);
+        auto& o = sin.streams[static_cast<size_t>(s)];
+        o.bodies = st.bodies;
+        o.subblocks_failed = st.subblocks_failed;
+        o.syms_recovered = st.syms_recovered;
+        o.syms_abandoned = st.syms_abandoned;
+        o.symbols_in = st.symbols_in;
+        o.symbols_stale = st.symbols_stale;
+        o.symbols_bad_cfg = st.symbols_bad_cfg;
+        o.rows_in_flight = st.rows_in_flight;
+      }
+      sin.frames_clean = fstream.frames_clean();
+      sin.frames_truncated = fstream.frames_truncated();
+      sin.frames_dropped = fstream.frames_dropped();
+      sin.stall_resets = fstream.stall_resets();
+      sin.rtp_ok = rtp_order.in_order;
+      sin.rtp_gap = rtp_order.fwd_gap;
+      sin.rtp_gap_seqs = rtp_order.gap_seqs;
+      sin.rtp_back = rtp_order.back;
+      sin.udp_sent = udp.sent();
+      sin.udp_failed = udp.failed();
+      sin.udp_bytes = udp.bytes();
+      sin.q_drop = queue.dropped();
+      stats->poll(drained_ms, sin);
     }
   }
   queue.close();
