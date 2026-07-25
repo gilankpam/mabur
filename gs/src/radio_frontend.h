@@ -27,6 +27,10 @@ namespace maburgs {
 // 57:42:75:05:d6:00, broadcast DA, seq<<4) + body. Mirrors drone radio_tx.cpp.
 std::vector<uint8_t> build_control_frame(uint16_t seq, const uint8_t* body, size_t len);
 
+// Pure: true when the dot11 header's SA (bytes 10..15) is the canonical
+// mabur SA. Frames too short to carry an SA are not canonical.
+bool sa_canonical(const uint8_t* dot11, size_t len);
+
 class RadioFrontend {
  public:
   struct Cfg {
@@ -44,6 +48,7 @@ class RadioFrontend {
   bool ready() const;                             // InitWrite completed
   bool alive() const;                             // RX loop thread still running
   uint64_t rx_frames() const;
+  uint64_t foreign() const;   // CRC-clean frames dropped by the SA filter
   bool send_control(const std::vector<uint8_t>& body);  // false pre-ready/on error
 
  private:
@@ -60,6 +65,7 @@ class RadioFrontend {
   std::atomic<bool> ready_{false};
   std::atomic<bool> alive_{false};
   std::atomic<uint64_t> rx_frames_{0};
+  std::atomic<uint64_t> foreign_{0};
   uint16_t tx_seq_ = 0;
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
 };
