@@ -188,7 +188,13 @@ int main(int argc, char** argv) {
   std::fprintf(stderr, "  tx-threads %d (URBs in flight)\n", a.tx_threads);
 
   auto logger = std::make_shared<Logger>();
+  // set_level() gates the diagnostic channel only; the JSON event stream is
+  // gated solely by EventSink::enabled() (defaults to stdout, enabled,
+  // flush-per-line). Without the disable(), jaguar3's per-URB "tx.agg" event
+  // is one fwrite+fflush per bulk-OUT on the TX hot path — noise in the
+  // measurement and ~1.5 MB/min of log for a run nothing here parses.
   logger->set_level(Logger::Level::Warn);
+  logger->events().disable();
 
   libusb_context* usb_ctx = nullptr;
   if (libusb_init(&usb_ctx) < 0) {

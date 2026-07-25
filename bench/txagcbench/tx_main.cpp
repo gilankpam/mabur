@@ -136,7 +136,12 @@ int main(int argc, char** argv) {
                    (a.settle_ms / 1e3 + a.frames * a.gap_us / 1e6));
 
   auto logger = std::make_shared<Logger>();
+  // Same trap as maburd: set_level() does not gate devourer's JSON events —
+  // only EventSink::enabled() does, and it defaults to stdout + enabled +
+  // flush-per-line. Mute it so the per-URB "tx.agg" fwrite+fflush stays off
+  // the TX path during a sweep.
   logger->set_level(Logger::Level::Warn);
+  logger->events().disable();
 
   libusb_context* usb_ctx = nullptr;
   if (libusb_init(&usb_ctx) < 0) {

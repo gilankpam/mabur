@@ -583,9 +583,16 @@ int run_real_mode(const Config& cfg) {
   install_devourer_signal_handlers();
 
   auto logger = std::make_shared<Logger>();
-  // Info-level events include one tx.agg line per aggregated URB (~600/s at
-  // video rate) — that floods the RAM-backed /tmp/mabur.log. Warnings only.
+  // devourer has two independent output channels and this daemon wants both
+  // quiet. set_level() gates only the human diagnostics (logger->info/warn/…);
+  // the JSON event stream is gated solely by EventSink::enabled(), which
+  // defaults to stdout + enabled + flush-per-line. S96mabur redirects stdout
+  // into the RAM-backed /tmp/mabur.log, so jaguar3's per-URB "tx.agg" event
+  // (~600/s at video rate) wrote ~1.5 MB/min and filled the drone's 45 MB
+  // /tmp in ~30 min — after which every log write failed silently. Nothing is
+  // lost by muting the stream: our stats line already carries tx_failed=.
   logger->set_level(Logger::Level::Warn);
+  logger->events().disable();
 
   libusb_context* usb_ctx = nullptr;
   int rc = libusb_init(&usb_ctx);
@@ -813,16 +820,26 @@ int run_real_mode(const Config& cfg) {
       }
       // Ring-pressure observability (spec: the drain-feedback policy's
       // future input): one stderr line every 5 s.
+      //
+      // Only counters this process can actually move. venc_frame_ring_fill_t
+      // snapshots the *local handle*, and writes/full_drops are incremented
+      // solely by the write path — they are structurally 0 for a consumer, and
+      // the shm header carries write_idx/read_idx but no counters, so the
+      // producer's copies cannot cross. fill_pct is the real cross-process
+      // signal (write_idx - read_idx); waybeam's own drop count has to come
+      // from waybeam. See tests/test_frame_source.cpp
+      // (consumer_fill_reports_only_consumer_side_counters).
       if (now - last_ring_stats_ms >= 5000) {
         last_ring_stats_ms = now;
         venc_frame_ring_fill_t f{};
         if (fsrc.fill(&f))
           std::fprintf(stderr,
-              "maburd frame_ring: fill=%u%% writes=%llu full_drops=%llu "
-              "oversize=%llu idr_disagree=%llu\n",
-              f.fill_pct, (unsigned long long)f.writes,
-              (unsigned long long)f.full_drops,
+              "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
+              "bad_slot=%llu idr_disagree=%llu\n",
+              f.fill_pct, f.used_slots, f.slot_count,
+              (unsigned long long)f.reads,
               (unsigned long long)f.oversize_drops,
+              (unsigned long long)f.bad_slot_drops,
               (unsigned long long)pipe.idr_disagreements());
       }
 

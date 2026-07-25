@@ -227,10 +227,23 @@ gate is not "does it stay clean" (it may not) but "does overload degrade the
 - Run `fu_probe.py` as before, and simultaneously watch:
   - **maburd's frame-ring stderr line** (drone side, every 5 s):
     ```
-    maburd frame_ring: fill=NN% writes=N full_drops=N oversize=N idr_disagree=N
+    maburd frame_ring: fill=NN% (U/S) reads=N oversize=N bad_slot=N idr_disagree=N
     ```
-    Rising `full_drops` here means the ring is shedding whole frames under
-    pressure — the intended failure mode.
+    Rising **`fill`** is the pressure signal: it is computed from the shm
+    header's `write_idx - read_idx`, so it is the one number that crosses the
+    process boundary. Sustained high fill means maburd is not draining as fast
+    as waybeam produces, which is the state immediately before waybeam starts
+    shedding frames.
+
+    > **`full_drops` is NOT observable here** (corrected 2026-07-25; the line
+    > used to print it, always as 0). `venc_frame_ring_fill_t` snapshots the
+    > *local handle*, and `writes`/`full_drops` are incremented only by the
+    > write path — they live in waybeam's process, and the shm header carries
+    > no counters for them to cross in. Any earlier run of this gate that
+    > recorded "full_drops stayed 0" recorded nothing. **Get the drop count
+    > from waybeam's own logging**, or infer it consumer-side from `pts` gaps
+    > in `VencFrameMeta` (not implemented). Locked in by
+    > `tests/test_frame_source.cpp`.
   - **maburgs' periodic stats line** (GS side) gains a frame-counter
     suffix in frame mode:
     ```
@@ -240,8 +253,9 @@ gate is not "does it stay clean" (it may not) but "does overload degrade the
     `trunc`/`drop` climb together with `fu_probe`'s `end_HARD` count.
 - **Pass:** as the pin gets marginal, `fu_probe`'s truncations should show
   up as **counted** drops/truncations in maburgs' `frames[.../.../..]`
-  line and maburd's `full_drops`/ring fill — not as silent transport loss
-  with no corresponding counter movement. Note qualitatively whether the
+  line, with maburd's ring `fill` rising to corroborate back-pressure — not
+  as silent transport loss with no corresponding counter movement. maburgs'
+  frame counters carry this gate; maburd's side of it is `fill` only. Note qualitatively whether the
   drain ceiling itself has moved up, down, or stayed at ~11 Mbps vs the old
   path's known ceiling; this is a record-only observation, not a hard gate.
 
