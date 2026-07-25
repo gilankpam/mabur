@@ -18,11 +18,17 @@ STALE_S = 2.0
 # misalign. Label column (CARD / "  c0") is LABEL_W wide, cells are joined
 # with a single space.
 LABEL_W = 6
-CARD_COLS = [("st", 4), ("pps", 5), ("Mbps", 5), ("loss%", 5), ("rssi", 6),
-             ("rssiA", 6), ("rssiB", 6), ("snr", 5), ("snrA", 5), ("snrB", 5),
-             ("crc", 5), ("age", 6)]
-FEC_COLS = [("str", 4), ("rec/s", 7), ("abn/s", 7), ("in/s", 7), ("sfail", 5),
-            ("flight", 6)]
+CARD_COLS = [("st", 4), ("pps", 5), ("Mbps", 5), ("loss%", 5), ("crc", 5),
+             ("age", 6), ("forgn", 6), ("self", 6)]
+SIG_COLS = [("cls", 4), ("pps", 5), ("rssi", 6), ("rssiA", 6), ("rssiB", 6),
+            ("snr", 5), ("snrA", 5), ("snrB", 5)]
+STRM_COLS = [("str", 4), ("ov", 5), ("rec/s", 7), ("abn/s", 7), ("in/s", 7),
+             ("sfail", 5), ("flight", 6)]
+
+# Sticky class rows render in this fixed order regardless of dict/arrival
+# order; "ctrl" gets the short display label "ctl" (cls column is 4 wide).
+CLASS_ORDER = ["s0", "s1", "s2", "s3", "msp", "ctrl"]
+CLASS_LABELS = {"ctrl": "ctl"}
 
 
 def _grid_row(label, cells):
@@ -31,7 +37,12 @@ def _grid_row(label, cells):
     return label[:LABEL_W].ljust(LABEL_W) + "".join(" " + c for c in cells)
 
 
-GRID_WIDTH = LABEL_W + sum(w + 1 for _, w in CARD_COLS)  # widest grid row
+def _grid_width(cols):
+    return LABEL_W + sum(w + 1 for _, w in cols)
+
+
+GRID_WIDTH = max(_grid_width(CARD_COLS), _grid_width(SIG_COLS),
+                  _grid_width(STRM_COLS))  # widest grid row
 
 
 def _f(v, w, prec=1):
@@ -71,7 +82,8 @@ class Model:
         self.session = None
         self.restarts = 0
         self.rx_times = []       # wall clocks of last ~10 datagrams -> rx Hz
-        self.fec_rows = {}       # stream id -> last row dict (sticky)
+        self.sig_rows = {}       # (card_id, class_key) -> last class dict (sticky)
+        self.strm_rows = {}      # stream id -> last row dict (sticky)
         self.bad_version = None
 
     def update(self, dgram, wall):
@@ -89,8 +101,13 @@ class Model:
         self.d = dgram
         self.last_rx_wall = wall
         self.rx_times = (self.rx_times + [wall])[-10:]
-        for row in dgram.get("fec", []):
-            self.fec_rows[row["stream"]] = row
+        for card in dgram.get("cards", []):
+            cid = card.get("id")
+            for cls_key, cls_val in (card.get("classes") or {}).items():
+                self.sig_rows[(cid, cls_key)] = cls_val
+        link = dgram.get("link") or {}
+        for row in link.get("streams", []):
+            self.strm_rows[row["stream"]] = row
 
 
 def _s(v, prec=None):
@@ -108,7 +125,7 @@ def render_rows(model, wall, width):
     link = d.get("link") or {}
     op = link.get("op") or {}
     cards = d.get("cards") or []
-    video = d.get("video") or {}
+    video = link.get("video") or {}
     rtp = video.get("rtp") or {}
     udpstats = video.get("udp") or {}
 
@@ -136,13 +153,14 @@ def render_rows(model, wall, width):
         header = f"STALE — last seen {age:.1f} s ago".ljust(width)
     else:
         tx_card = link.get("tx_card")
+        vtx_id = link.get("vtx_id")
         bw = op.get("bw")
         overhead = op.get("overhead")
         offset_qdb = op.get("offset_qdb")
         deadline_ms = link.get("deadline_ms")
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
-            f"maburgs   {state_s}   tx c{_s(tx_card)}   "
+            f"maburgs   {state_s}   vtx {_s(vtx_id)}   tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   ov {_s(overhead, 2)}   "
             f"off {_s(offset_qdb)} qdB   deadline {_s(deadline_ms)} ms"
         ).ljust(width)
@@ -162,7 +180,7 @@ def render_rows(model, wall, width):
         f"LINK    residual {_f(residual_pct, 5, 1)} %     layers {layers_s} %"
     )
 
-    # --- CARD ---
+    # --- CARD --- physical radio totals (canonical traffic only)
     rows.append(_grid_row("CARD", [t.rjust(w) for t, w in CARD_COLS]))
     if not cards:
         rows.append(_grid_row("  --", ["no cards".ljust(GRID_WIDTH - LABEL_W - 1)]))
@@ -175,31 +193,52 @@ def render_rows(model, wall, width):
                 _f(c.get("pps"), CARD_COLS[1][1], 0),
                 _f(c.get("rx_mbps"), CARD_COLS[2][1], 1),
                 _f(c.get("loss_pct"), CARD_COLS[3][1], 1),
-                _f(c.get("rssi"), CARD_COLS[4][1], 1),
-                _f(c.get("rssi_a"), CARD_COLS[5][1], 1),
-                _f(c.get("rssi_b"), CARD_COLS[6][1], 1),
-                _f(c.get("snr"), CARD_COLS[7][1], 1),
-                _f(c.get("snr_a"), CARD_COLS[8][1], 1),
-                _f(c.get("snr_b"), CARD_COLS[9][1], 1),
-                _f(c.get("crc_fail"), CARD_COLS[10][1]),
-                _age_cell(c.get("last_frame_age_ms"), CARD_COLS[11][1]),
+                _f(c.get("crc_fail"), CARD_COLS[4][1]),
+                _age_cell(c.get("last_frame_age_ms"), CARD_COLS[5][1]),
+                _f(c.get("foreign_pps"), CARD_COLS[6][1], 1),
+                _f(c.get("self_pps"), CARD_COLS[7][1], 1),
             ]
             rows.append(_grid_row(f"  c{_s(c.get('id'))}", cells))
 
-    # --- FEC (sticky) ---
-    rows.append(_grid_row("FEC", [t.rjust(w) for t, w in FEC_COLS]))
-    if not model.fec_rows:
-        rows.append(_grid_row("  --", ["no fec streams".ljust(GRID_WIDTH - LABEL_W - 1)]))
+    # --- SIG (sticky per card/class) ---
+    rows.append(_grid_row("SIG", [t.rjust(w) for t, w in SIG_COLS]))
+    if not model.sig_rows:
+        rows.append(_grid_row("  --", ["no sig data".ljust(GRID_WIDTH - LABEL_W - 1)]))
     else:
-        for sid in sorted(model.fec_rows):
-            f = model.fec_rows[sid]
+        card_ids = sorted({cid for cid, _cls in model.sig_rows})
+        for cid in card_ids:
+            for cls in CLASS_ORDER:
+                key = (cid, cls)
+                if key not in model.sig_rows:
+                    continue
+                s = model.sig_rows[key]
+                cells = [
+                    _f(CLASS_LABELS.get(cls, cls), SIG_COLS[0][1]),
+                    _f(s.get("pps"), SIG_COLS[1][1], 0),
+                    _f(s.get("rssi"), SIG_COLS[2][1], 1),
+                    _f(s.get("rssi_a"), SIG_COLS[3][1], 1),
+                    _f(s.get("rssi_b"), SIG_COLS[4][1], 1),
+                    _f(s.get("snr"), SIG_COLS[5][1], 1),
+                    _f(s.get("snr_a"), SIG_COLS[6][1], 1),
+                    _f(s.get("snr_b"), SIG_COLS[7][1], 1),
+                ]
+                rows.append(_grid_row(f"  c{_s(cid)}", cells))
+
+    # --- STRM (sticky, link's per-stream decode rows) ---
+    rows.append(_grid_row("STRM", [t.rjust(w) for t, w in STRM_COLS]))
+    if not model.strm_rows:
+        rows.append(_grid_row("  --", ["no stream data".ljust(GRID_WIDTH - LABEL_W - 1)]))
+    else:
+        for sid in sorted(model.strm_rows):
+            f = model.strm_rows[sid]
             cells = [
-                _f(f"s{_s(sid)}", FEC_COLS[0][1]),
-                _f(f.get("recovered_s"), FEC_COLS[1][1], 1),
-                _f(f.get("abandoned_s"), FEC_COLS[2][1], 1),
-                _f(f.get("syms_in_s"), FEC_COLS[3][1], 0),
-                _f(f.get("sub_fail"), FEC_COLS[4][1]),
-                _f(f.get("in_flight"), FEC_COLS[5][1]),
+                _f(f"s{_s(sid)}", STRM_COLS[0][1]),
+                _f(f.get("ov"), STRM_COLS[1][1], 2),
+                _f(f.get("recovered_s"), STRM_COLS[2][1], 1),
+                _f(f.get("abandoned_s"), STRM_COLS[3][1], 1),
+                _f(f.get("syms_in_s"), STRM_COLS[4][1], 0),
+                _f(f.get("sub_fail"), STRM_COLS[5][1]),
+                _f(f.get("in_flight"), STRM_COLS[6][1]),
             ]
             rows.append(_grid_row("", cells))
 
