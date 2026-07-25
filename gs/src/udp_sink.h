@@ -20,10 +20,11 @@ class UdpSink {
   bool send(const uint8_t* data, size_t len);
   uint64_t sent() const { return sent_; }
   uint64_t failed() const { return failed_; }
+  uint64_t bytes() const { return bytes_; }
 
  private:
   int fd_ = -1;
-  uint64_t sent_ = 0, failed_ = 0;
+  uint64_t sent_ = 0, failed_ = 0, bytes_ = 0;
 };
 
 }  // namespace maburgs

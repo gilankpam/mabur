@@ -37,4 +37,26 @@ TEST(bad_address_fails_soft) {
   CHECK(!sink.send(pkt, 1));
   CHECK(sink.failed() == 1);
 }
+
+TEST(bytes_accumulates_on_success_only) {
+  int rx = socket(AF_INET, SOCK_DGRAM, 0);
+  REQUIRE(rx >= 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  REQUIRE(bind(rx, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+  socklen_t alen = sizeof(addr);
+  REQUIRE(getsockname(rx, reinterpret_cast<sockaddr*>(&addr), &alen) == 0);
+  UdpSink sink("127.0.0.1", ntohs(addr.sin_port));
+  const uint8_t pkt[7] = {0};
+  CHECK(sink.send(pkt, 7));
+  CHECK(sink.send(pkt, 3));
+  CHECK(sink.bytes() == 10);
+  close(rx);
+
+  UdpSink dead("not-an-ip", 5600);
+  CHECK(!dead.send(pkt, 7));
+  CHECK(dead.bytes() == 0);  // failed sends don't count
+}
 MTEST_MAIN
