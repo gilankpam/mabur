@@ -144,4 +144,28 @@ TEST(msp_stream_body_routes_to_msp_sink_not_video) {
   CHECK(msp_hits == 1);
   CHECK(video_hits == 0);
 }
+
+TEST(card_rx_bytes_counts_all_frames) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  agg.on_rx_body(msg(0, 1, true, {1, 2, 3}));         // 3 bytes, crc ok
+  agg.on_rx_body(msg(0, 2, false, {1, 2, 3, 4, 5}));  // 5 bytes, crc fail
+  CHECK(agg.card(0).rx_bytes == 8);  // air bytes: CRC-fail bodies count too
+}
+
+TEST(card_rssi_ema_tracks_per_frame_chain_max) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  auto m1 = msg(0, 1, true, {1});
+  m1.rssi[0] = 60; m1.rssi[1] = 40;  // chain A wins this frame
+  agg.on_rx_body(m1);
+  CHECK(agg.card(0).rssi_ema == 60.0);  // first clean frame seeds the EMA
+  auto m2 = msg(0, 2, true, {1});
+  m2.rssi[0] = 40; m2.rssi[1] = 50;  // chain B wins this frame
+  agg.on_rx_body(m2);
+  // kEmaAlpha = 0.1: 0.9*60 + 0.1*50 = 59.0 (per-frame max, NOT max of EMAs)
+  CHECK(agg.card(0).rssi_ema > 58.9 && agg.card(0).rssi_ema < 59.1);
+  auto m3 = msg(0, 3, false, {1});  // crc fail: EMAs must not move
+  m3.rssi[0] = 0; m3.rssi[1] = 0;
+  agg.on_rx_body(m3);
+  CHECK(agg.card(0).rssi_ema > 58.9 && agg.card(0).rssi_ema < 59.1);
+}
 MTEST_MAIN

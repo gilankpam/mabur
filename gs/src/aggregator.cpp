@@ -25,6 +25,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   }
   CardTrack& c = cards_[m.card_id];
   ++c.frames;
+  c.rx_bytes += m.body.size();
   c.last_frame_us = m.mono_us;
 
   if (!m.crc_ok) {
@@ -56,8 +57,10 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     c.seq_received += 1;
     last_video_seq_ = m.mac_seq;
 
+    const double rssi = static_cast<double>(m.rssi[0] > m.rssi[1] ? m.rssi[0] : m.rssi[1]);
     const double snr = static_cast<double>(m.snr[0] > m.snr[1] ? m.snr[0] : m.snr[1]);
     if (!c.has_ema) {
+      c.rssi_ema = rssi;
       c.rssi_a_ema = m.rssi[0];
       c.rssi_b_ema = m.rssi[1];
       c.snr_ema = snr;
@@ -65,6 +68,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       c.snr_b_ema = m.snr[1];
       c.has_ema = true;
     } else {
+      c.rssi_ema = (1 - kEmaAlpha) * c.rssi_ema + kEmaAlpha * rssi;
       c.rssi_a_ema = (1 - kEmaAlpha) * c.rssi_a_ema + kEmaAlpha * m.rssi[0];
       c.rssi_b_ema = (1 - kEmaAlpha) * c.rssi_b_ema + kEmaAlpha * m.rssi[1];
       c.snr_ema = (1 - kEmaAlpha) * c.snr_ema + kEmaAlpha * snr;
