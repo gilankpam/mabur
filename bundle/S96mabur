@@ -2,29 +2,59 @@
 DAEMON=/usr/bin/maburd
 CONF=/etc/mabur.json
 PIDFILE=/var/run/mabur-loop.pid
+LOGPIDFILE=/var/run/mabur-logwatch.pid
+LOG=/tmp/mabur.log
+LOG_MAX=$((4 * 1024 * 1024))
 
 loop() {
   while true; do
-    # Truncate on every (re)start rather than appending: /tmp is RAM-backed,
-    # so an ever-growing log across a long respawn loop can exhaust it. This
-    # keeps only the current run's log, which is also what install.sh/README
-    # document ("cat /tmp/mabur.log") — without this redirection there was no
-    # log at all.
-    "$DAEMON" -c "$CONF" > /tmp/mabur.log 2>&1
+    # Truncate on every (re)start rather than appending across runs: /tmp is
+    # RAM-backed, so an ever-growing log over a long respawn loop can exhaust
+    # it. This keeps only the current run's log, which is also what
+    # install.sh/README document ("cat /tmp/mabur.log") — without this
+    # redirection there was no log at all.
+    #
+    # The redirect is O_APPEND (>>) with an explicit truncate first, NOT a
+    # plain >. Both start the run at an empty file, but only O_APPEND lets
+    # logwatch() truncate underneath a running daemon: with a plain >, the
+    # daemon's file offset survives the truncate and the next write recreates
+    # a sparse file of the old size instead of restarting at zero.
+    : > "$LOG"
+    "$DAEMON" -c "$CONF" >> "$LOG" 2>&1
     echo "maburd exited ($?) - respawn in 2s" >&2
     sleep 2
   done
 }
 
+# Defence in depth for the 45 MB RAM-backed /tmp: cap the log independent of
+# what the daemon (or a library it links) decides to print. A chatty line at
+# URB rate once filled /tmp in ~30 min, after which every log write failed
+# silently and the log froze — losing exactly the tail you would debug from.
+# Losing the oldest 4 MB is strictly better than losing the newest everything.
+logwatch() {
+  while true; do
+    sleep 60
+    if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt "$LOG_MAX" ]; then
+      : > "$LOG"
+      echo "mabur: log exceeded $LOG_MAX bytes - truncated" >> "$LOG"
+    fi
+  done
+}
+
+running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+
 case "$1" in
   start)
-    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && exit 0
-    loop &
-    echo $! > "$PIDFILE"
+    running "$PIDFILE" || { loop & echo $! > "$PIDFILE"; }
+    # Checked independently of the respawn loop: a live daemon must not mask a
+    # dead logwatch, since an uncapped log is the failure this guards against.
+    running "$LOGPIDFILE" || { logwatch & echo $! > "$LOGPIDFILE"; }
     ;;
   stop)
     [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
     rm -f "$PIDFILE"
+    [ -f "$LOGPIDFILE" ] && kill "$(cat "$LOGPIDFILE")" 2>/dev/null
+    rm -f "$LOGPIDFILE"
     # The PID kill only stops the respawn-loop subshell; the foreground daemon survives without this.
     killall maburd 2>/dev/null
     ;;

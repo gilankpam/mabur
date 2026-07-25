@@ -277,7 +277,8 @@ Chased through three layers (each real, each necessary):
    → `97abe6e`: bounded TxQueue (drop-oldest = FEC erasures) + TX writer
    thread + `RadioTx::send_bodies` → `send_packets` with
    `tx.usb_agg_max=3` (3 frames/URB, HalMAC limit). Watch `txq=`/`txq_drop=`
-   and devourer `tx.agg` events (logger now Warn — info flooded tmpfs).
+   (devourer's per-URB `tx.agg` event is muted in maburd — it flooded tmpfs;
+   `set_level(Warn)` never gated it, see `drone-log-flood-handoff.md`).
 2. **One-ring-read-per-loop** — per-iteration overhead capped drain at
    ~800 pkt/s vs 1000+ produced. → `f5729b1`: burst-drain ≤64/iteration.
 3. **Scalar GF256** — the real ceiling: log/exp lincomb ≈ 38 MB/s on the

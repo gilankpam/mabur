@@ -583,9 +583,16 @@ int run_real_mode(const Config& cfg) {
   install_devourer_signal_handlers();
 
   auto logger = std::make_shared<Logger>();
-  // Info-level events include one tx.agg line per aggregated URB (~600/s at
-  // video rate) — that floods the RAM-backed /tmp/mabur.log. Warnings only.
+  // devourer has two independent output channels and this daemon wants both
+  // quiet. set_level() gates only the human diagnostics (logger->info/warn/…);
+  // the JSON event stream is gated solely by EventSink::enabled(), which
+  // defaults to stdout + enabled + flush-per-line. S96mabur redirects stdout
+  // into the RAM-backed /tmp/mabur.log, so jaguar3's per-URB "tx.agg" event
+  // (~600/s at video rate) wrote ~1.5 MB/min and filled the drone's 45 MB
+  // /tmp in ~30 min — after which every log write failed silently. Nothing is
+  // lost by muting the stream: our stats line already carries tx_failed=.
   logger->set_level(Logger::Level::Warn);
+  logger->events().disable();
 
   libusb_context* usb_ctx = nullptr;
   int rc = libusb_init(&usb_ctx);
