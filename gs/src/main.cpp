@@ -378,6 +378,7 @@ static int run_radio(const maburgs::Config& cfg) {
 
     if (stats) {
       maburgs::StatsInput sin;
+      sin.vtx_id = cfg.link.vtx_id;
       sin.in_session = in_session;
       sin.tx_card = sel.selected();
       sin.op = vrx.cur_op();
@@ -394,14 +395,21 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.seq_expected = t.seq_expected;
         ci.seq_received = t.seq_received;
         ci.rx_bytes = t.rx_bytes;
-        ci.has_ema = t.has_ema;
-        ci.rssi_ema = t.rssi_ema;
-        ci.rssi_a_ema = t.rssi_a_ema;
-        ci.rssi_b_ema = t.rssi_b_ema;
-        ci.snr_ema = t.snr_ema;
-        ci.snr_a_ema = t.snr_a_ema;
-        ci.snr_b_ema = t.snr_b_ema;
         ci.last_frame_us = t.last_frame_us;
+        ci.self_frames = t.self_frames;
+        ci.foreign = fronts[static_cast<size_t>(i)]->foreign();
+        for (int k = 0; k < maburgs::kNumStatsClasses; ++k) {
+          auto& cls = ci.classes[static_cast<size_t>(k)];
+          const auto& tcls = t.cls[static_cast<size_t>(k)];
+          cls.frames = tcls.frames;
+          cls.has_ema = tcls.has_ema;
+          cls.rssi_ema = tcls.rssi_ema;
+          cls.rssi_a_ema = tcls.rssi_a_ema;
+          cls.rssi_b_ema = tcls.rssi_b_ema;
+          cls.snr_ema = tcls.snr_ema;
+          cls.snr_a_ema = tcls.snr_a_ema;
+          cls.snr_b_ema = tcls.snr_b_ema;
+        }
         sin.cards.push_back(ci);
       }
       for (int s = 0; s < 4; ++s) {
