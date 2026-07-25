@@ -30,10 +30,14 @@ class FramePipeline {
   std::vector<UepBody> encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
                               const VencFrameMeta& meta, uint64_t now_ms);
 
-  // Marks the NEXT frame as a pts/frame_id re-base point: start of stream, or
-  // a reattach that joined a new producer's ring mid-GOP. The GS rebases on
-  // that frame and its decoder recovers at the next IDR.
-  void mark_discontinuity() { discont_ = true; }
+  // Marks a pts/frame_id re-base point: start of stream, or a reattach that
+  // joined a new producer's ring mid-GOP. kFlagDiscont then rides on EVERY
+  // frame for the next kDiscontStickyMs — a one-shot flag is sent right at
+  // radio bring-up and is systematically lost, wedging the GS's emit cursor
+  // above the new epoch for up to a full 16-bit id wrap
+  // (docs/gs-frame-stall-after-drone-restart-handoff.md). The GS rebases once
+  // per flagged run and its decoder recovers at the next IDR.
+  void mark_discontinuity() { discont_pending_ = true; }
 
   // Frames whose Annex-B scan disagreed with the producer's IDR flag. A bug
   // signal (producer vs. scanner), surfaced in maburd's stats line — never a
@@ -41,9 +45,12 @@ class FramePipeline {
   uint64_t idr_disagreements() const { return idr_disagree_; }
   uint16_t next_frame_id() const { return next_frame_id_; }
 
+  static constexpr uint64_t kDiscontStickyMs = 1000;
+
  private:
   uint16_t next_frame_id_ = 0;
-  bool discont_ = true;  // first frame after start
+  bool discont_pending_ = true;    // first frame after start anchors the window
+  uint64_t discont_until_ms_ = 0;  // flag rides on frames until this deadline
   uint64_t idr_disagree_ = 0;
 };
 

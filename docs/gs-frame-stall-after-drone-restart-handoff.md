@@ -1,6 +1,79 @@
 # Handoff: restarting maburd stalls GS video output for minutes
 
-**Status:** root-caused to a specific code path, reproduced 3/3, **not fixed**.
+**Status: FIXED + HARDWARE-VERIFIED 2026-07-25** (candidate fixes 1+2 below,
+plus a third layer the rig demanded — see *Link-up anchor*). 3/3 maburd
+restarts on the rig now recover in ~4–5 s (= the daemon + radio bring-up
+downtime itself; was 52 s / 72 s / 460 s, worst case 18.2 min), `stall=0` new
+increments across all three, drops booked per restart +18…+157 (was
+~6 300…54 900), and a 30 s rtpsniff tap after reads the healthy signature
+(8.21 Mbps, gaps=0, out_of_order=0, ok_fps=59.4, 0% bad).
+
+**The open hypothesis is settled, and it was worse than guessed.** With the
+1 s sticky discont window deployed, the first hardware stall's watchdog onset
+line read:
+
+```
+maburgs: frame stall: no emit for 504 ms with frames arriving
+  (next_emit=87218 last_id64=65706 discont_seen=0) -> reset
+```
+
+`discont_seen=0` after 60+ flagged frames were sent: the **entire first
+second-plus of frames after a restart never reaches the GS** — maburd starts
+encoding immediately, but BOOT→RENDEZVOUS→LINKED takes longer than any
+fixed-duration flag window, so every flagged frame dies before the link is
+up. Not "one unlucky lost frame" — systematic loss of the whole window. Hence
+the third fix layer:
+
+- **Link-up anchor** (`RcAgent::take_link_established()` → hot thread
+  re-marks the window): the agent latches BOOT/RENDEZVOUS→LINKED transitions
+  (deliberately NOT FAILSAFE→LINKED — a routine RF flap re-basing the id
+  space would evict in-flight frames for nothing), and maburd's hot loop
+  re-marks the discontinuity window when it fires, so the flag rides the
+  first ~1 s of frames that can actually land. On the rig this resolves every
+  restart through the normal discont re-base path — the watchdog never fires.
+
+What shipped:
+
+- **GS stall watchdog** (`gs/src/frame_stream.cpp`, `FrameStreamCfg::
+  stall_reset_ms`, default 500 ms): if frames keep arriving with nothing
+  emitted for 500 ms, `FrameStream` logs one rate-limited stderr line with the
+  wedged-cursor state (`next_emit`, `last_id64`, `discont_seen` — the
+  instrumentation asked for below) and self-`reset()`s. Backstops the whole
+  class, whatever the trigger. Counted as `stall=` on the maburgs stats line.
+- **Sticky discont** (`drone/src/frame_pipeline.h`, `kDiscontStickyMs` =
+  1 s): `kFlagDiscont` rides on every frame for ~1 s after start/reattach
+  instead of exactly one frame, so losing frames at radio bring-up cannot lose
+  the re-base signal.
+- **Run-aware unwrap** (`gs/src/frame_stream.cpp:unwrap_id`): only the first
+  flagged frame of a discont run re-bases; the rest delta-track, and
+  `Slot::discont` now means "this frame re-based" — so the sticky flag doesn't
+  re-base per frame, reorder frames inside the window, or skip gap-holds.
+- Tests: `lost_discont_restart_recovers_via_stall_watchdog` (the outage's
+  exact signature: backward id64 rebase, eviction stall, watchdog recovery),
+  `discont_run_rebases_once_and_holds_order`, the two rewritten
+  sticky-window pipeline tests, and the two `link_established` latch tests
+  in test_agent.cpp (RCF and DISC link-up paths, FAILSAFE-flap negative). `decode_bodies.py` now masks `FLAG_DISCONT`
+  in its byte-exact comparison (which frames carry it is timing-dependent by
+  design) while still requiring it on frame 0.
+
+The ~119/s drop-rate mystery (below) is also explained: an evicted frame's
+*remaining* fragments re-create its slot (`push_fragment`'s `slots_[key]`),
+which never gets a header and is aged out by `poll()` with a second
+`++dropped_` — exactly 2 per multi-fragment frame, ≈ 2 × 59.7 fps. The counter
+over-books by up to 2× during eviction storms; with the watchdog capping
+storms at 500 ms this was documented, not fixed.
+
+One rig gotcha found during verification, unrelated to this bug: the drone
+radio can come up deaf/quiet after an S96mabur restart (GS sees SNR collapse
+64→14 dB on one card, drone flaps LINKED↔FAILSAFE at ~74 pps, no video). Cure
+is another restart — same family as the linkbench RX wedge. Nothing here can
+paper over that; it is a radio bring-up issue, not a transport one.
+
+---
+
+Original handoff follows.
+
+**Original status:** root-caused to a specific code path, reproduced 3/3, **not fixed**.
 The final link in the chain (why the discontinuity signal is missed) is
 hypothesised, not proven — see *What is not proven*. Found 2026-07-25 while
 deploying the `frame_ring` stats fix; the stall is **pre-existing** and

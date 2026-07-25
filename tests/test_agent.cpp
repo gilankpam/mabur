@@ -612,6 +612,48 @@ TEST(bitrate_policy_hysteresis_within_one_second) {
   CHECK(act.bitrates.size() == count_after_first);
 }
 
+TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) {
+  // BOOT/RENDEZVOUS -> LINKED is the process-(re)start scenario: frames
+  // encoded before the link is up never reach the air (rig 2026-07-25:
+  // discont_seen=0 at every stall onset), so main re-marks the frame
+  // discontinuity window when the link first comes up. FAILSAFE -> LINKED
+  // must NOT latch: a routine RF flap would re-base the GS's id space and
+  // evict its in-flight frames for nothing.
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  CHECK(!agent.take_link_established());  // BOOT: nothing yet
+  agent.tick(0, RadioHealth{});           // BOOT -> RENDEZVOUS
+  CHECK(!agent.take_link_established());
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto rcf1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 40, 8);
+  agent.on_rc_frame(rcf1.data(), rcf1.size(), 10);  // RENDEZVOUS -> LINKED
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.take_link_established());
+  CHECK(!agent.take_link_established());  // consumed
+
+  agent.tick(1010, RadioHealth{});        // feedback silence -> FAILSAFE
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  auto rcf2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 40, 8);
+  agent.on_rc_frame(rcf2.data(), rcf2.size(), 1020);  // FAILSAFE -> LINKED
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  CHECK(!agent.take_link_established());  // flap, not a (re)start
+}
+
+TEST(link_established_latches_on_disc_link_up) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20,
+                             /*init_profile=*/0, /*seq=*/1);
+  agent.on_rc_frame(disc.data(), disc.size(), 10);  // RENDEZVOUS -> LINKED
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.take_link_established());
+  CHECK(!agent.take_link_established());
+}
+
 MTEST_MAIN
 
 // A restarted GS resets its RCF seq to ~0 while the drone's tracker holds

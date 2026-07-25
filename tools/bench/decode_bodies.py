@@ -74,11 +74,18 @@ def classify_frame(annexb):
         i += 3
     return 0 if sid is None else sid
 
-def expected_unit(rec, frame_id, discont):
+def expected_unit(rec, frame_id):
     """The wire unit maburd builds for this fixture frame (drone
-    frame_pipeline.cpp): FrameHdr stamped over the producer meta."""
-    flags = (FLAG_IDR if rec["flags"] & FLAG_IDR else 0) | (FLAG_DISCONT if discont else 0)
+    frame_pipeline.cpp): FrameHdr stamped over the producer meta. FLAG_DISCONT
+    is stripped by mask_discont() before comparing: the flag rides on every
+    frame for kDiscontStickyMs after start, so which frames carry it depends
+    on wall-clock timing, not fixture content."""
+    flags = FLAG_IDR if rec["flags"] & FLAG_IDR else 0
     return FRAME_HDR.pack(frame_id, flags, rec["codec"], rec["pts"]) + rec["annexb"]
+
+def mask_discont(unit):
+    fid, flags, codec, pts = FRAME_HDR.unpack_from(unit)
+    return FRAME_HDR.pack(fid, flags & ~FLAG_DISCONT, codec, pts) + unit[FRAME_HDR.size:]
 
 def main():
     ap = argparse.ArgumentParser()
@@ -139,11 +146,13 @@ def main():
     # Recovered units are keyed by the frame_id maburd stamped: a global
     # counter across layers, so it is the fixture's frame index.
     got = {}
+    discont_on_first = False
     for unit in recovered:
         if len(unit) < FRAME_HDR.size: continue
-        got[FRAME_HDR.unpack_from(unit)[0]] = unit
-    all_want = {i: expected_unit(rec, i, discont=(i == 0))
-                for i, rec in enumerate(fixture)}
+        fid, flags = FRAME_HDR.unpack_from(unit)[:2]
+        if fid == 0 and flags & FLAG_DISCONT: discont_on_first = True
+        got[fid] = mask_discont(unit)
+    all_want = {i: expected_unit(rec, i) for i, rec in enumerate(fixture)}
     # --max-stream restricts "want" to streams that are actually reachable
     # under the exercised link state: maburd's MAX_RANGE boot default sheds
     # streams 2/3 (T1/T2) until an RCF/DISC lands (drone/src/rc_agent.cpp),
@@ -158,6 +167,9 @@ def main():
     crit_ok = sum(1 for i in crit if got.get(i) == want[i])
     print(f"recovered {exact}/{len(want)} frames; critical {crit_ok}/{len(crit)}; "
           f"bodies per stream {per_stream_in}")
+    if 0 in got and not discont_on_first:
+        print("frame 0 recovered without FLAG_DISCONT: start-of-stream signal missing")
+        sys.exit(1)
     if a.drop_pct == 0:
         sys.exit(0 if exact == len(want) else 1)
     sys.exit(0 if crit_ok >= a.min_critical * len(crit) else 1)

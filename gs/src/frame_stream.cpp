@@ -1,10 +1,33 @@
 #include "frame_stream.h"
 
+#include <cstdio>
+
 namespace maburgs {
 
 void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
                                 uint64_t now_ms) {
   if (!pkt || len < 6) { ++bad_frags_; return; }
+  // Stall watchdog: frames have been arriving for stall_reset_ms with nothing
+  // emitted — the emit cursor is wedged above the incoming id64 space (e.g. a
+  // producer restart whose discont signal never landed). A receiver must not
+  // sit discarding a healthy stream; re-base from scratch.
+  if (stall_armed_ && cfg_.stall_reset_ms &&
+      now_ms - stall_arm_ms_ >= cfg_.stall_reset_ms) {
+    if (last_stall_log_ms_ == 0 ||
+        now_ms - last_stall_log_ms_ >= 5000) {  // one line per onset, not per frame
+      last_stall_log_ms_ = now_ms;
+      std::fprintf(stderr,
+                   "maburgs: frame stall: no emit for %llu ms with frames "
+                   "arriving (next_emit=%llu last_id64=%llu discont_seen=%d) "
+                   "-> reset\n",
+                   static_cast<unsigned long long>(now_ms - stall_arm_ms_),
+                   static_cast<unsigned long long>(next_emit_id64_),
+                   static_cast<unsigned long long>(last_id64_),
+                   discont_seen_since_emit_ ? 1 : 0);
+    }
+    ++stall_resets_;
+    reset();
+  }
   uint16_t fseq = static_cast<uint16_t>(pkt[0] | (pkt[1] << 8));
   uint16_t idx = static_cast<uint16_t>(pkt[2] | (pkt[3] << 8));
   uint16_t count = static_cast<uint16_t>(pkt[4] | (pkt[5] << 8));
@@ -19,22 +42,35 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
     if (!h) { ++bad_frags_; slots_.erase(key); return; }
     s.have_hdr = true;
     s.hdr = *h;
-    s.discont = (h->flags & mabur::framewire::kFlagDiscont) != 0;
-    s.id64 = unwrap_id(h->frame_id, h->flags);
+    bool rebased = false;
+    s.id64 = unwrap_id(h->frame_id, h->flags, &rebased);
+    s.discont = rebased;
+    if ((h->flags & mabur::framewire::kFlagDiscont) != 0)
+      discont_seen_since_emit_ = true;
+    if (have_next_emit_ && !stall_armed_) {
+      stall_armed_ = true;
+      stall_arm_ms_ = now_ms;
+    }
   }
   try_emit(now_ms);
 }
 
-uint64_t FrameStream::unwrap_id(uint16_t id, uint8_t flags) {
-  if (!have_id_base_ || (flags & mabur::framewire::kFlagDiscont)) {
+uint64_t FrameStream::unwrap_id(uint16_t id, uint8_t flags, bool* rebased) {
+  bool discont = (flags & mabur::framewire::kFlagDiscont) != 0;
+  if (!have_id_base_ || (discont && !in_discont_run_)) {
     // First frame, or producer restart: re-base far above anything emitted
-    // so ordering never waits on pre-discontinuity ids.
+    // so ordering never waits on pre-discontinuity ids. The drone flags every
+    // frame of its ~1 s discont window, so only the first flagged frame of a
+    // run re-bases — the rest delta-track below to keep in-window ordering.
     have_id_base_ = true;
     uint64_t base = have_next_emit_ ? (next_emit_id64_ + 0x20000) : 0x10000;
     base &= ~static_cast<uint64_t>(0xFFFF);  // low16(base)=0 so low16(last_id64_)=id
     last_id64_ = base + id;
+    in_discont_run_ = discont;
+    *rebased = true;
     return last_id64_;
   }
+  in_discont_run_ = discont;
   int16_t d = static_cast<int16_t>(id - static_cast<uint16_t>(last_id64_));
   last_id64_ = static_cast<uint64_t>(static_cast<int64_t>(last_id64_) + d);
   return last_id64_;
@@ -106,6 +142,8 @@ void FrameStream::finish(Slot& s, bool complete) {
   cb_.end_frame(complete);
   complete ? ++clean_ : ++truncated_;
   next_emit_id64_ = s.id64 + 1;
+  stall_armed_ = false;
+  discont_seen_since_emit_ = false;
   slots_.erase((static_cast<uint32_t>(s.sid) << 16) | s.fseq);
 }
 
@@ -133,6 +171,9 @@ void FrameStream::reset() {
   last_id64_ = 0;
   next_emit_id64_ = 0;
   have_next_emit_ = false;
+  in_discont_run_ = false;
+  stall_armed_ = false;
+  discont_seen_since_emit_ = false;
 }
 
 }  // namespace maburgs

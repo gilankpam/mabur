@@ -79,41 +79,38 @@ TEST(frame_pipeline_frame_id_increments_per_frame) {
   CHECK(pipe.next_frame_id() == 3);
 }
 
-TEST(frame_pipeline_first_frame_is_a_discontinuity) {
+// The discont flag rides on EVERY frame for ~1 s, not exactly one: the first
+// frame after a restart is sent into a link that just came back up, so a
+// one-shot flag is systematically lost and the GS's emit cursor wedges above
+// the new epoch's ids (docs/gs-frame-stall-after-drone-restart-handoff.md).
+namespace {
+bool discont_at(UepEncoder& enc, FramePipeline& pipe, uint64_t now_ms) {
+  auto buf = ring_buf(1, 0, 500);
+  pipe.encode(enc, buf.data(), payload_len(buf), meta_of(0, false), now_ms);
+  auto h = framewire::parse_frame_hdr(buf.data(), buf.size());
+  REQUIRE(h.has_value());
+  return (h->flags & framewire::kFlagDiscont) != 0;
+}
+}  // namespace
+
+TEST(frame_pipeline_discont_sticks_for_a_second_after_start) {
   UepEncoder enc(layers(), 15);
   FramePipeline pipe;
-
-  auto first = ring_buf(1, 0, 500);
-  pipe.encode(enc, first.data(), payload_len(first), meta_of(0, false), 1);
-  auto h0 = framewire::parse_frame_hdr(first.data(), first.size());
-  REQUIRE(h0.has_value());
-  CHECK((h0->flags & framewire::kFlagDiscont) != 0);
-
-  auto second = ring_buf(1, 0, 500);
-  pipe.encode(enc, second.data(), payload_len(second), meta_of(16667, false), 2);
-  auto h1 = framewire::parse_frame_hdr(second.data(), second.size());
-  REQUIRE(h1.has_value());
-  CHECK((h1->flags & framewire::kFlagDiscont) == 0);
+  CHECK(discont_at(enc, pipe, 1));     // first frame
+  CHECK(discont_at(enc, pipe, 500));   // still inside the sticky window
+  CHECK(!discont_at(enc, pipe, 1100)); // window expired
 }
 
-TEST(frame_pipeline_mark_discontinuity_flags_the_next_frame_only) {
+TEST(frame_pipeline_mark_discontinuity_restarts_the_sticky_window) {
   UepEncoder enc(layers(), 15);
   FramePipeline pipe;
-  auto warmup = ring_buf(1, 0, 500);
-  pipe.encode(enc, warmup.data(), payload_len(warmup), meta_of(0, false), 1);
+  CHECK(discont_at(enc, pipe, 1));
+  CHECK(!discont_at(enc, pipe, 2000));  // start window long gone
 
   pipe.mark_discontinuity();  // producer restart: joined a new ring mid-GOP
-  auto rejoin = ring_buf(1, 0, 500);
-  pipe.encode(enc, rejoin.data(), payload_len(rejoin), meta_of(99, false), 2);
-  auto h = framewire::parse_frame_hdr(rejoin.data(), rejoin.size());
-  REQUIRE(h.has_value());
-  CHECK((h->flags & framewire::kFlagDiscont) != 0);
-
-  auto after = ring_buf(1, 0, 500);
-  pipe.encode(enc, after.data(), payload_len(after), meta_of(116, false), 3);
-  auto h2 = framewire::parse_frame_hdr(after.data(), after.size());
-  REQUIRE(h2.has_value());
-  CHECK((h2->flags & framewire::kFlagDiscont) == 0);
+  CHECK(discont_at(enc, pipe, 2001));
+  CHECK(discont_at(enc, pipe, 2900));   // sticky: window anchors at the mark
+  CHECK(!discont_at(enc, pipe, 3100));
 }
 
 TEST(frame_pipeline_routes_by_temporal_id) {

@@ -340,11 +340,12 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(rtp_order.fwd_gap),
                    static_cast<unsigned long long>(rtp_order.gap_seqs),
                    static_cast<unsigned long long>(rtp_order.back));
-      std::fprintf(stderr, " frames[clean/trunc/drop]=%llu/%llu/%llu badfrag=%llu",
+      std::fprintf(stderr, " frames[clean/trunc/drop]=%llu/%llu/%llu badfrag=%llu stall=%llu",
                    static_cast<unsigned long long>(fstream.frames_clean()),
                    static_cast<unsigned long long>(fstream.frames_truncated()),
                    static_cast<unsigned long long>(fstream.frames_dropped()),
-                   static_cast<unsigned long long>(fstream.bad_fragments()));
+                   static_cast<unsigned long long>(fstream.bad_fragments()),
+                   static_cast<unsigned long long>(fstream.stall_resets()));
       std::fprintf(stderr, "\n");
     }
   }

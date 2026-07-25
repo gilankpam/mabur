@@ -250,6 +250,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     int offset_qdb = std::clamp<int>(row.pwr_offset_qdb, cfg_.radio.min_offset_qdb, 0);
     apply_ladder_op(ladder, offset_qdb, row.fec_overhead);
 
+    if (state_ != State::FAILSAFE) link_established_ = true;
     state_ = State::LINKED;
     last_fb_ms_ = now_ms;
     have_last_fb_ = true;
@@ -298,6 +299,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     State prev_state = state_;
     apply_ladder_op(ladder, offset_qdb, r->fec_overhead());
 
+    if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
+      link_established_ = true;
     state_ = State::LINKED;
     last_fb_ms_ = now_ms;
     have_last_fb_ = true;

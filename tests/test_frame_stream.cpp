@@ -190,6 +190,34 @@ TEST(waybeam_restart_discont_continues_clean) {
   }
 }
 
+TEST(discont_run_rebases_once_and_holds_order) {
+  // Sticky discont (drone side) sets the flag on EVERY frame for ~1 s after a
+  // restart. Only the first flagged arrival may re-base; the rest must
+  // delta-track so ordering inside the run survives out-of-order decode, and
+  // a flagged frame that did NOT re-base must not skip the gap-hold.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter fa, fb;
+  std::vector<uint8_t> p0(100, 0x00), p1(100, 0x11), p2(100, 0x22);
+  for (auto& p : frag_frame(fa, 3000, p0)) fs.push_fragment(1, p.data(), p.size(), 10);
+  REQUIRE(fs.frames_clean() == 1);
+  // Restart: new epoch, ids 0..2 all flagged. Frame 1 (layer 1) decodes late:
+  // arrival order 0, 2, 1.
+  for (auto& p : frag_frame(fa, 0, p0, mabur::framewire::kFlagDiscont))
+    fs.push_fragment(1, p.data(), p.size(), 20);
+  for (auto& p : frag_frame(fb, 2, p2, mabur::framewire::kFlagDiscont))
+    fs.push_fragment(2, p.data(), p.size(), 21);
+  for (auto& p : frag_frame(fa, 1, p1, mabur::framewire::kFlagDiscont))
+    fs.push_fragment(1, p.data(), p.size(), 22);
+  // All four frames emitted, in id order — frame 2 held for frame 1.
+  REQUIRE(cap.evs.size() == 8);
+  CHECK(cap.evs[2].hdr.frame_id == 0);
+  CHECK(cap.evs[4].hdr.frame_id == 1);
+  CHECK(cap.evs[6].hdr.frame_id == 2);
+  CHECK(fs.frames_clean() == 4);
+  CHECK(fs.frames_dropped() == 0);
+}
+
 TEST(waybeam_restart_discont_no_phantom_drops) {
   // Same restart scenario: the discont re-base must not book a synthetic
   // ~0x20000 id jump as real "dropped" frames.
@@ -204,6 +232,33 @@ TEST(waybeam_restart_discont_no_phantom_drops) {
   for (uint16_t id = 5004; id <= 5006; ++id)
     for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 21);
   CHECK(fs.frames_dropped() < 100);  // not a huge synthetic ~131072 jump
+}
+
+TEST(lost_discont_restart_recovers_via_stall_watchdog) {
+  // The 2026-07-25 rig outage: maburd restarts, every frame of its discont
+  // window is lost at radio bring-up, and the new epoch's ids unwrap BELOW
+  // the surviving emit cursor via the signed-16 delta. Every arriving frame
+  // is then evicted as "late" — no emission for up to 18 min. The watchdog
+  // must notice frames arriving with nothing emitted and reset ordering.
+  Capture cap;
+  FrameStream fs({50, 8, 500}, cap.cbs());  // stall_reset_ms = 500
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(100, 0x42);
+  // Establish the stream ~3000 frames into the old epoch (a ~50 s session).
+  for (uint16_t id = 3000; id <= 3002; ++id)
+    for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
+  REQUIRE(fs.frames_clean() == 3);
+  // Restart: ids resume near 0 with NO discont flag, 60 fps.
+  uint64_t t = 100;
+  uint16_t id = 1;
+  for (; id <= 10; ++id, t += 16)  // well under stall_reset_ms: still stalled
+    for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), t);
+  CHECK(cap.evs.size() == 6);      // nothing emitted since the restart
+  CHECK(fs.frames_dropped() >= 10);
+  for (; id <= 60; ++id, t += 16)  // keep arriving past the watchdog window
+    for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), t);
+  CHECK(fs.stall_resets() == 1);
+  CHECK(fs.frames_clean() > 13);   // emission resumed and kept going
 }
 
 MTEST_MAIN
