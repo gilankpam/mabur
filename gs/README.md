@@ -22,7 +22,7 @@ Radio-mode design: `docs/superpowers/specs/2026-07-12-mabur-gs-design.md`.
 ## Stats sideport
 
 With `"stats": {"enable": true}` in maburgs.json, maburgs pushes a JSON
-datagram (schema v1: link/cards/fec/video, rates + totals) to
+datagram (schema v1: cards with per-RF-class signal stats, link{streams,video}, rates + totals) to
 `host:port` (default 127.0.0.1:8300) every `interval_ms` (default 500).
 Consumers: `tools/maburtop.py` (fullscreen console), PixelPilot OSD
 (planned), or `nc -lu 8300` for a raw look. Spec:
