@@ -15,9 +15,9 @@
     "base_ref_idx": 53
   },
   "fec": {
-    "symbol_size": [164, 1312, 1312, 1312],
-    "window": 64,
-    "blocks_per_body": [4, 1, 1, 1],
+    "symbol_size": 328,
+    "window": 32,
+    "blocks_per_body": [4, 4, 4, 4],
     "base_overhead": 0.25,
     "flush_ms": 25
   },
@@ -38,7 +38,7 @@
     "rendezvous_ms": 30000,
     "tick_ms": 100
   },
-  "ring_name": "mabur",
+  "frame_ring_name": "mabur_f",
   "flags": {
     "crit_ldpc": true,
     "crit_stbc": true,

@@ -143,6 +143,25 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(!act.bitrates.empty());
 }
 
+// 2c. DiscAck.chip_caps always advertises CAP_FRAME_WIRE: the frame wire is
+// the only video format maburd speaks since the pre-frame-shm path was
+// deleted. The bit stays on the wire so a GS can refuse a peer without it.
+TEST(disc_ack_advertises_frame_wire_cap) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+                              /*op_width=*/40, 0, 2);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  REQUIRE(act.controls.size() == 1);
+  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
+}
+
 // 2b. Keep-alive DISC while LINKED is ignored end-to-end — Python parity
 // (rendezvous.feed_disc: `if self.state not in (RC_LOST, DISCOVERY): return
 // None`). The GS sends a SESSION keep-alive DISC (~1 Hz, init_profile 0 =

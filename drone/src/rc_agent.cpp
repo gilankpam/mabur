@@ -234,7 +234,9 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     DiscAck ack;
     ack.vtx_id = cfg_.link.vtx_id;
     ack.vrx_nonce = d->vrx_nonce;
-    ack.chip_caps = 0;
+    // Frame wire is the only video format maburd speaks; the bit stays on the
+    // wire (one legal value) so a GS can still refuse a peer that lacks it.
+    ack.chip_caps = rc::CAP_FRAME_WIRE;
     ack.agreed_channel = cfg_.radio.channel;
     ack.agreed_width = cfg_.radio.width;
     ack.seq = d->seq;

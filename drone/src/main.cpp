@@ -1,15 +1,15 @@
-// maburd — drone-side daemon: reads RTP from the waybeam venc SHM ring (or,
-// in --dry-run, a fixture file), runs it through the UEP/FEC pipeline, and
-// hands radio-bound bodies to the adaptive-link-controlled RadioTx. A
-// parallel agent thread runs RcAgent against inbound RC frames + periodic
-// radio-health ticks, publishing AppliedOp changes the hot path picks up via
-// a lock-free shared_ptr handoff.
+// maburd — drone-side daemon: reads whole encoded frames off the waybeam venc
+// frame-shm ring (or, in --dry-run, a fixture file), runs them through the
+// UEP/FEC pipeline, and hands radio-bound bodies to the adaptive-link-
+// controlled RadioTx. A parallel agent thread runs RcAgent against inbound RC
+// frames + periodic radio-health ticks, publishing AppliedOp changes the hot
+// path picks up via a lock-free shared_ptr handoff.
 //
 // Two modes:
 //   maburd -c /etc/mabur.json                     — real mode (devourer USB radio)
 //   maburd -c cfg.json --dry-run --in F --out F [--rc-in F]  — file-driven, no radio
 //
-// Dry-run is the tested path (see tests/fixtures/rtp_stream.bin smoke test);
+// Dry-run is the tested path (see tests/fixtures/frame_stream.bin smoke test);
 // real mode must compile and be structurally sound but is not exercised here
 // (no bench hardware in this environment).
 #include <algorithm>
@@ -29,6 +29,9 @@
 #include <vector>
 
 #include "config.h"
+#include "frame_pipeline.h"
+#include "frame_source.h"
+#include "mabur/frame_wire.h"
 #include "mabur/msp_source.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
@@ -39,7 +42,6 @@
 #include "power_plan.h"
 #include "radio_tx.h"
 #include "rc_agent.h"
-#include "ring_source.h"
 #include "tx_queue.h"
 #include "usb_tx_pool.h"
 #include "waybeam_client.h"
@@ -292,24 +294,43 @@ void apply_op_to_uep(const AppliedOp& op, UepEncoder& uep) {
 // ---------------------------------------------------------------------------
 
 struct RcInRecord {
-  uint32_t after_packet_index;
+  // Wire field (u32-LE in the --rc-in file): deliver this frame once that many
+  // video frames have been consumed.
+  uint32_t after_frame_index;
   std::vector<uint8_t> body;
 };
 
-std::vector<std::vector<uint8_t>> read_len_prefixed_u16(const std::string& path) {
-  std::vector<std::vector<uint8_t>> pkts;
+// One record of a --dry-run frame file: the whole-frame records waybeam's
+// frame-shm ring publishes, serialized as
+//   u32-LE record length | VencFrameMeta (8 B) | Annex-B frame
+// The buffer keeps the meta room up front exactly as FrameSource::read fills
+// it, so FramePipeline can stamp the FrameHdr over it in place.
+struct DryRunFrame {
+  VencFrameMeta meta{};
+  std::vector<uint8_t> buf;  // VENC_FRAME_META_SIZE + payload
+  size_t payload_len() const { return buf.size() - VENC_FRAME_META_SIZE; }
+};
+
+std::vector<DryRunFrame> read_frame_file(const std::string& path) {
+  std::vector<DryRunFrame> out;
   FILE* f = std::fopen(path.c_str(), "rb");
-  if (!f) return pkts;
+  if (!f) return out;
   while (true) {
-    uint8_t lenb[2];
-    if (std::fread(lenb, 1, 2, f) != 2) break;
-    uint16_t len = static_cast<uint16_t>(lenb[0]) | (static_cast<uint16_t>(lenb[1]) << 8);
-    std::vector<uint8_t> pkt(len);
-    if (len > 0 && std::fread(pkt.data(), 1, len, f) != len) break;
-    pkts.push_back(std::move(pkt));
+    uint8_t lenb[4];
+    if (std::fread(lenb, 1, 4, f) != 4) break;
+    const uint32_t len = static_cast<uint32_t>(lenb[0]) |
+                         (static_cast<uint32_t>(lenb[1]) << 8) |
+                         (static_cast<uint32_t>(lenb[2]) << 16) |
+                         (static_cast<uint32_t>(lenb[3]) << 24);
+    if (len < VENC_FRAME_META_SIZE) break;
+    DryRunFrame fr;
+    fr.buf.resize(len);
+    if (std::fread(fr.buf.data(), 1, len, f) != len) break;
+    std::memcpy(&fr.meta, fr.buf.data(), VENC_FRAME_META_SIZE);
+    out.push_back(std::move(fr));
   }
   std::fclose(f);
-  return pkts;
+  return out;
 }
 
 std::vector<uint8_t> read_whole_file(const std::string& path) {
@@ -373,14 +394,15 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   // dry-run mode (repair emission order would depend on thread timing).
   UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms);
 
-  auto pkts = read_len_prefixed_u16(in_path);
+  auto frames = read_frame_file(in_path);
+  FramePipeline pipe;
   auto rc_recs = read_rc_in(rc_in_path);
   size_t rc_idx = 0;
 
   std::shared_ptr<const AppliedOp> last_applied_op;
 
   uint64_t sent_bodies = 0;
-  uint64_t consumed_packets = 0;
+  uint64_t consumed_frames = 0;
 
   // First tick: BOOT -> RENDEZVOUS, applies MAX_RANGE op.
   agent.tick(now_steady_ms(), RadioHealth{});
@@ -403,38 +425,41 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   };
   pump_op_change();
 
-  // Drain semantics: deliver every RC record whose after_packet_index is
-  // <= consumed_packets, in file order, regardless of whether that exact
+  // Drain semantics: deliver every RC record whose after_frame_index is
+  // <= consumed_frames, in file order, regardless of whether that exact
   // count was ever hit as a distinct step. A strict `==` check (the
   // previous implementation) blocks forever on a record whose index is 0
-  // (never equal to consumed_packets, which is incremented starting from
-  // 1), duplicated, out-of-order, or >= pkts.size() — and because rc_idx
+  // (never equal to consumed_frames, which is incremented starting from
+  // 1), duplicated, out-of-order, or >= frames.size() — and because rc_idx
   // only ever advances past a match, one stuck record wedges every
   // subsequent record too. Draining on `<=` delivers exact matches at the
-  // same point as before (e.g. after_packet_index=3 still lands right
-  // after the 3rd packet is consumed) while guaranteeing every record is
+  // same point as before (e.g. after_frame_index=3 still lands right
+  // after the 3rd frame is consumed) while guaranteeing every record is
   // eventually delivered — before the loop for index 0, inline as the
-  // packet count catches up, and at EOF for anything left over.
+  // frame count catches up, and at EOF for anything left over.
   auto drain_rc_records = [&](uint64_t now, bool drain_all = false) {
-    uint64_t gate = drain_all ? UINT64_MAX : consumed_packets;
-    while (rc_idx < rc_recs.size() && rc_recs[rc_idx].after_packet_index <= gate) {
+    uint64_t gate = drain_all ? UINT64_MAX : consumed_frames;
+    while (rc_idx < rc_recs.size() && rc_recs[rc_idx].after_frame_index <= gate) {
       agent.on_rc_frame(rc_recs[rc_idx].body.data(), rc_recs[rc_idx].body.size(), now);
-      std::fprintf(stderr, "[dry-run] rc-in delivered record %zu (after_packet_index=%u) at consumed_packets=%llu\n",
-                  rc_idx, rc_recs[rc_idx].after_packet_index,
-                  static_cast<unsigned long long>(consumed_packets));
+      std::fprintf(stderr, "[dry-run] rc-in delivered record %zu (after_frame_index=%u) at consumed_frames=%llu\n",
+                  rc_idx, rc_recs[rc_idx].after_frame_index,
+                  static_cast<unsigned long long>(consumed_frames));
       ++rc_idx;
     }
   };
 
-  // Deliver any records due before the first packet (after_packet_index=0).
+  // Deliver any records due before the first frame (after_frame_index=0).
   drain_rc_records(now_steady_ms());
 
-  for (size_t i = 0; i < pkts.size(); ++i) {
+  for (size_t i = 0; i < frames.size(); ++i) {
     uint64_t now = now_steady_ms();
 
     pump_op_change();
 
-    auto bodies = uep.add_rtp(pkts[i].data(), pkts[i].size(), now);
+    // Same ingest step as the real hot thread (classify, IDR protect-up,
+    // FrameHdr stamp), so replayed bytes are the bytes the drone would send.
+    auto bodies = pipe.encode(uep, frames[i].buf.data(), frames[i].payload_len(),
+                              frames[i].meta, now);
     for (auto& b : bodies) {
       tx.send_body(b.stream_id, b.body.data(), b.body.size());
       ++sent_bodies;
@@ -446,9 +471,9 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
       ++sent_bodies;
     }
 
-    ++consumed_packets;
+    ++consumed_frames;
 
-    // Deliver any RC records due at or before this packet index, then tick
+    // Deliver any RC records due at or before this frame index, then tick
     // the agent (simulated radio health: empty/no drops).
     drain_rc_records(now);
     agent.tick(now, RadioHealth{});
@@ -456,7 +481,7 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   }
 
   // EOF: deliver any records left over (duplicate/out-of-order/>=
-  // pkts.size() indices), flush every layer, send whatever falls out, then
+  // frames.size() indices), flush every layer, send whatever falls out, then
   // stop.
   uint64_t now = now_steady_ms();
   drain_rc_records(now, true);
@@ -486,11 +511,12 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   }
 
   std::fprintf(stderr,
-              "maburd dry-run stats: packets_in=%zu bodies_out=%llu seq=%u sent=%llu drops=%llu "
-              "agent_state=%d rc_records=%zu/%zu\n",
-              pkts.size(), static_cast<unsigned long long>(sent_bodies), tx.seq(),
+              "maburd dry-run stats: frames_in=%zu bodies_out=%llu seq=%u sent=%llu drops=%llu "
+              "agent_state=%d rc_records=%zu/%zu idr_disagree=%llu\n",
+              frames.size(), static_cast<unsigned long long>(sent_bodies), tx.seq(),
               static_cast<unsigned long long>(tx.sent()), static_cast<unsigned long long>(tx.drops()),
-              static_cast<int>(agent.state()), rc_idx, rc_recs.size());
+              static_cast<int>(agent.state()), rc_idx, rc_recs.size(),
+              static_cast<unsigned long long>(pipe.idr_disagreements()));
   return 0;
 }
 
@@ -634,6 +660,29 @@ int run_real_mode(const Config& cfg) {
 
   WaybeamClient waybeam(cfg.waybeam);
 
+  // One-shot transport cross-check (spec 2026-07-22): ingest only works if
+  // waybeam is actually publishing whole frames over the frame-shm ring. A
+  // mismatch is a misconfiguration, not a transient fault, so this logs loudly
+  // and keeps running rather than aborting: FrameSource keeps retrying attach
+  // on its own, matching the spec's "absent but screaming" failure mode
+  // instead of a hard crash-loop.
+  {
+    std::string body;
+    if (!waybeam.get_param("outgoing.server", body) || body.empty()) {
+      // Unreadable is NOT a mismatch: waybeam may simply not be up yet. Saying
+      // FATAL here would cry wolf on a correctly configured drone and teach
+      // the operator to ignore the line that matters.
+      std::fprintf(stderr,
+          "maburd: could not read waybeam outgoing.server — skipping the "
+          "frame-shm transport cross-check.\n");
+    } else if (body.find("frame-shm://") == std::string::npos) {
+      std::fprintf(stderr,
+          "maburd: FATAL MISMATCH: waybeam outgoing.server is not frame-shm:// "
+          "(got: %s). Video will not flow until waybeam is reconfigured + "
+          "restarted.\n", body.c_str());
+    }
+  }
+
   RealActuator actuator;
   actuator.tx = &tx;
   actuator.wb = &waybeam;
@@ -713,18 +762,22 @@ int run_real_mode(const Config& cfg) {
   // glitch root cause). ~256 bodies ≈ 150 ms at 1700 bodies/s.
   TxQueue txq(256);
 
-  // Hot thread: pulls RTP off the real SHM ring, runs it through the UEP
-  // pipeline, queues bodies for the TX writer. Owns the UepEncoder
+  // Hot thread: pulls whole frames off the real SHM ring, runs them through
+  // the UEP pipeline, queues bodies for the TX writer. Owns the UepEncoder
   // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
-    RingSource ring(cfg.ring_name);
+    FrameSource fsrc(cfg.frame_ring_name);
+    FramePipeline pipe;
+    std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
+    uint64_t last_reattach = 0;
+    uint64_t last_ring_stats_ms = 0;
+
     // Async FEC worker (spec 2026-07-17, promoted after hardware
     // acceptance): always on, unpinned (the worker sleeps when idle, so the
     // scheduler places it correctly). Declared before the UepEncoder so
     // engine dtors join their jobs first.
     FecWorker fec_worker;
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
-    uint8_t buf[4096];
 
     std::shared_ptr<const AppliedOp> last_applied_op;
 
@@ -744,19 +797,33 @@ int run_real_mode(const Config& cfg) {
         last_applied_op = op;
       }
 
-      // Drain a BURST per iteration, not one packet: the per-iteration
-      // overhead (op check, poll, beat) capped the old 1-packet loop at
-      // ~800 reads/s while waybeam produces 1000+ pkt/s at 60fps — the SHM
-      // ring pinned at full (bench: fill 457-511/512) and waybeam's
-      // packetizer aborted NALs mid-chain on the overflow. First read
-      // blocks up to 5 ms; the rest are non-blocking.
-      int burst = 0;
-      int n;
-      while (burst < 64 &&
-             (n = ring.read(buf, sizeof buf, burst == 0 ? 5 : 0)) > 0) {
-        auto bodies = uep.add_rtp(buf, static_cast<size_t>(n), now);
-        for (auto& b : bodies) txq.push(std::move(b));
-        ++burst;
+      // One whole Annex-B frame per iteration: a frame is already the atomic
+      // thing waybeam's producer publishes, so there's no "drain more" knob
+      // here; the ring's own depth (default a handful of slots) is the backlog
+      // buffer.
+      VencFrameMeta meta{};
+      int n = fsrc.read(fbuf.data(), fbuf.size(), 5, &meta);
+      if (n > 0) {
+        if (fsrc.reattach_count() != last_reattach) {
+          last_reattach = fsrc.reattach_count();
+          pipe.mark_discontinuity();  // joined a new ring mid-GOP
+        }
+        for (auto& b : pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now))
+          txq.push(std::move(b));
+      }
+      // Ring-pressure observability (spec: the drain-feedback policy's
+      // future input): one stderr line every 5 s.
+      if (now - last_ring_stats_ms >= 5000) {
+        last_ring_stats_ms = now;
+        venc_frame_ring_fill_t f{};
+        if (fsrc.fill(&f))
+          std::fprintf(stderr,
+              "maburd frame_ring: fill=%u%% writes=%llu full_drops=%llu "
+              "oversize=%llu idr_disagree=%llu\n",
+              f.fill_pct, (unsigned long long)f.writes,
+              (unsigned long long)f.full_drops,
+              (unsigned long long)f.oversize_drops,
+              (unsigned long long)pipe.idr_disagreements());
       }
 
       auto polled = uep.poll(now);

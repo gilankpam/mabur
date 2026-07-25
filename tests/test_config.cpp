@@ -66,12 +66,15 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.min_offset_qdb == -40);
   CHECK(cfg.radio.base_ref_idx == 53);
 
-  // The bundle intentionally diverges from struct defaults for fec (Task 1's
-  // sliding-window winners), so check against the bundle's actual values
-  // rather than the struct defaults used for everything else.
-  CHECK((cfg.fec.symbol_size == std::array<int, 4>{164, 1312, 1312, 1312}));
-  CHECK(cfg.fec.window == 64);
-  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 1, 1, 1}));
+  // The bundle intentionally diverges from struct defaults for fec, so check
+  // against the bundle's actual values rather than the struct defaults used
+  // for everything else. 328/w32/bpb4 is the 2026-07-25 gated geometry
+  // (docs/fec-symbol-size-328.md): same ~1.4kB body and ~11kB window span as
+  // scalar-164/w64/bpb8 but ~5% less airtime and -7.5% maburd CPU, quality
+  // parity on-air.
+  CHECK((cfg.fec.symbol_size == std::array<int, 4>{328, 328, 328, 328}));
+  CHECK(cfg.fec.window == 32);
+  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 4, 4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == 25);
 
@@ -90,7 +93,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
-  CHECK(cfg.ring_name == def.ring_name);
+  CHECK(cfg.frame_ring_name == def.frame_ring_name);
   CHECK(cfg.flags.crit_ldpc == def.flags.crit_ldpc);
   CHECK(cfg.flags.crit_stbc == def.flags.crit_stbc);
   CHECK(cfg.flags.t0_ldpc == def.flags.t0_ldpc);
@@ -422,6 +425,45 @@ TEST(fec_stale_async_worker_key_throws) {
   std::string w = what_of([&] { load_config(p.string()); });
   CHECK(w.find("async_worker") != std::string::npos);
   std::filesystem::remove(p);
+}
+
+// Video ingest is frame-shm only: the frame ring is named by frame_ring_name
+// and there is no mode to select.
+TEST(frame_ring_name_default) {
+  auto path = write_temp_json("{}");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.frame_ring_name == "mabur_f");
+  std::filesystem::remove(path);
+
+  auto path2 = write_temp_json(R"({"frame_ring_name": "other"})");
+  CHECK(load_config(path2.string()).frame_ring_name == "other");
+  std::filesystem::remove(path2);
+}
+
+// video_input/ring_name selected and named the pre-frame-shm RTP-packet ring.
+// Unlike the fec.async_worker gate above (never set in a device config, so
+// failing loudly cost nothing), video_input IS pinned in the drone's live
+// /etc/mabur.json by the bench procedure — throwing on it would leave an
+// upgraded maburd unable to start, i.e. no video at all. So these two parse,
+// warn, and are ignored for one release.
+TEST(deprecated_video_input_keys_are_accepted_and_ignored) {
+  auto path = write_temp_json(
+      R"({"video_input": "frame_ring", "ring_name": "mabur"})");
+  auto cfg = load_config(path.string());  // must not throw
+  CHECK(cfg.frame_ring_name == "mabur_f");
+  std::filesystem::remove(path);
+
+  // Any other value is equally ignored — including the one that used to select
+  // the deleted path.
+  auto path2 = write_temp_json(R"({"video_input": "ring"})");
+  (void)load_config(path2.string());
+  std::filesystem::remove(path2);
+
+  // The blanket unknown-key check still applies to everything else.
+  auto path3 = write_temp_json(R"({"video_output": "ring"})");
+  CHECK(what_of([&] { load_config(path3.string()); }).find("video_output") !=
+        std::string::npos);
+  std::filesystem::remove(path3);
 }
 
 MTEST_MAIN

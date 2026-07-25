@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "mabur/gf256.h"
+#include "mabur/frame_wire.h"
 #include "mabur/uep_encoder.h"
 
 using namespace mabur;
@@ -63,8 +64,9 @@ int main() {
     std::printf("lincomb: %.1f MB/s\n", iters * 164.0 / dt / 1e6);
   }
 
-  // end-to-end encoder pkt/s at bench geometry (symbol 164, bpb 8, window 128,
-  // overhead ladder at cmd 0.375 equivalent: use ref ladder scaled 1.5)
+  // end-to-end encoder frames/s at bench geometry (symbol 164, bpb 8,
+  // window 128, overhead ladder at cmd 0.375 equivalent: ref ladder x1.5).
+  // 14000 B frames at 60 fps ~ 6.7 Mbps of video, the shape maburd ingests.
   {
     std::array<UepLayerCfg, 4> layers{};
     for (int s = 0; s < 4; ++s) {
@@ -72,21 +74,27 @@ int main() {
       layers[s].blocks_per_body = 8;
     }
     UepEncoder enc(layers, 15);
-    std::vector<uint8_t> pkt(12 + 1388);
-    pkt[0] = 0x80; pkt[1] = 0x60;
-    pkt[12] = 49 << 1; pkt[13] = 1; pkt[14] = 1;
-    for (size_t i = 15; i < pkt.size(); ++i) pkt[i] = (uint8_t)rng();
-    const int npkt = 20000;
+    const size_t kFrameBytes = 14000;
+    std::vector<uint8_t> unit(framewire::kFrameHdrLen + kFrameBytes);
+    const size_t off = framewire::kFrameHdrLen;
+    unit[off] = 0; unit[off + 1] = 0; unit[off + 2] = 0; unit[off + 3] = 1;
+    unit[off + 4] = 1 << 1;  // TRAIL_R
+    unit[off + 5] = 1;       // tid 0
+    for (size_t i = off + 6; i < unit.size(); ++i) unit[i] = (uint8_t)rng();
+    const int nframes = 2000;
     uint64_t now = 1000, bodies = 0;
     auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < npkt; ++i) {
-      pkt[2] = (uint8_t)(i >> 8); pkt[3] = (uint8_t)i;
-      bodies += enc.add_rtp(pkt.data(), pkt.size(), now).size();
-      if (i % 20 == 19) ++now;
+    for (int i = 0; i < nframes; ++i) {
+      framewire::FrameHdr h;
+      h.frame_id = (uint16_t)i;
+      h.pts_us = (uint32_t)i * 16667u;
+      framewire::pack_frame_hdr(h, unit.data());
+      bodies += enc.add_frame(1, unit.data(), unit.size(), now).size();
+      now += 16;
     }
     auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("encoder: %.0f pkt/s (%.1f Mbps video), %llu bodies\n",
-                npkt / dt, npkt / dt * 1400 * 8 / 1e6,
+    std::printf("encoder: %.0f frames/s (%.1f Mbps video), %llu bodies\n",
+                nframes / dt, nframes / dt * (double)kFrameBytes * 8 / 1e6,
                 (unsigned long long)bodies);
   }
   return 0;

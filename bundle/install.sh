@@ -4,8 +4,10 @@
 # tools/build-arm.sh) so no shared libs (e.g. libusb) need to be copied.
 # Usage: bundle/install.sh root@<camera-ip> [path/to/maburd]
 #
-# waybeam's shm RTP output (waybeam.json .outgoing = shm://mabur / rtp) is a
-# one-time, out-of-band setup on the camera — this script does not touch it.
+# waybeam's frame-shm output (waybeam.json .outgoing.server =
+# frame-shm://mabur_f, waybeam >= v0.42.0) is a one-time, out-of-band setup on
+# the camera — this script does not touch it. maburd cross-checks it at startup
+# and logs FATAL MISMATCH if it is still the pre-frame-shm shm:// RTP ring.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

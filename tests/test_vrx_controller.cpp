@@ -84,6 +84,49 @@ TEST(disc_ack_feeds_rendezvous) {
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
   CHECK(vrx.link_state() == VrxState::SESSION);
 }
+
+// peer_caps() surfaces the most recently accepted DiscAck's chip_caps (0
+// before any accept), so main.cpp's core loop can gate the frame-wire tail
+// on the peer's advertised CAP_FRAME_WIRE bit (Task 10).
+TEST(peer_caps_captured_from_disc_ack) {
+  auto vrx = make();
+  CHECK(vrx.peer_caps() == 0);
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  vrx.step(1500, ld, std::nullopt);          // silence -> BEACONING
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = 1;
+  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
+  CHECK(vrx.link_state() == VrxState::SESSION);
+  CHECK(vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
+}
+
+// peer_acked() separates "no DiscAck yet" from "peer advertised caps == 0".
+// Both read peer_caps() == 0, and the rendezvous starts in SESSION, so without
+// this main.cpp cannot tell a fresh start from a pre-frame-wire drone — it
+// logged "upgrade maburd" at every maburgs startup (caught on the rig
+// 2026-07-25).
+TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
+  auto vrx = make();
+  CHECK(!vrx.peer_acked());
+  CHECK(vrx.peer_caps() == 0);
+  CHECK(vrx.link_state() == VrxState::SESSION);  // initial state, no peer yet
+
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  vrx.step(1500, ld, std::nullopt);              // silence -> BEACONING
+  CHECK(!vrx.peer_acked());
+
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = 1;
+  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.chip_caps = 0;                             // a peer that advertises none
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
+  CHECK(vrx.peer_acked());                       // now caps==0 means it truly said 0
+  CHECK(vrx.peer_caps() == 0);
+}
 MTEST_MAIN
 
 // Starvation guard: a decode-collapse window (zero completed base-layer

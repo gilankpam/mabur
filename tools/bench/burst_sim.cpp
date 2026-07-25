@@ -1,6 +1,6 @@
 // Host-side burst-loss simulator for the sliding-window UEP pipeline.
 // Real UepEncoder -> body-loss channel -> real UepDecoder, fake clock.
-// Quantifies residual per-layer RTP loss vs burst length across
+// Quantifies residual per-layer frame loss vs burst length across
 // symbol_size/bpb/window configs (spec: 2026-07-15-per-layer-symbol-size).
 //
 // Modes:
@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "mabur/frame_wire.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 
@@ -40,38 +41,77 @@ std::array<UepLayerCfg, 4> layers_for(const LayerSpec& sp) {
   return layers;
 }
 
-// RTP+HEVC packet that classify_rtp routes to the wanted stream:
-// stream 0 -> NAL type 32 (VPS, critical); stream 1..3 -> type 1 (TRAIL_R)
-// with nuh_temporal_id_plus1 = stream (tid = stream-1, sid = 1+min(tid,2)).
-// Payload carries [stream u8 | seq u32 LE] for exact delivery accounting.
-std::vector<uint8_t> make_rtp(int stream, uint32_t seq, size_t total_len) {
+// One frame unit for the wanted layer, as maburd sends it: FrameHdr + a single
+// Annex-B NAL whose header matches the layer (stream 0 -> NAL type 32 (VPS,
+// critical); streams 1..3 -> type 1 (TRAIL_R) with nuh_temporal_id_plus1 =
+// stream). The NAL payload carries [stream u8 | seq u32 LE] for exact delivery
+// accounting.
+std::vector<uint8_t> make_unit(int stream, uint32_t seq, size_t total_len) {
   std::vector<uint8_t> p(total_len, 0xC5);
-  p[0] = 0x80;  // RTP v2, no padding/ext/csrc
-  p[1] = 96;    // dynamic PT
-  // bytes 2..11: seq/ts/ssrc — content irrelevant to classify_rtp
-  const size_t off = 12;
+  framewire::FrameHdr h;
+  h.frame_id = (uint16_t)seq;
+  h.flags = stream == 0 ? framewire::kFlagIdr : 0;
+  h.pts_us = seq * 16667u;
+  framewire::pack_frame_hdr(h, p.data());
+  const size_t off = framewire::kFrameHdrLen;
+  p[off] = 0x00; p[off + 1] = 0x00; p[off + 2] = 0x00; p[off + 3] = 0x01;
   if (stream == 0) {
-    p[off] = (uint8_t)(32 << 1);  // NAL type 32 = VPS
-    p[off + 1] = 1;               // tid_plus1 = 1
+    p[off + 4] = (uint8_t)(32 << 1);  // NAL type 32 = VPS
+    p[off + 5] = 1;                   // tid_plus1 = 1
   } else {
-    p[off] = (uint8_t)(1 << 1);   // NAL type 1 = TRAIL_R
-    p[off + 1] = (uint8_t)stream; // tid_plus1 1..3 -> stream 1..3
+    p[off + 4] = (uint8_t)(1 << 1);   // NAL type 1 = TRAIL_R
+    p[off + 5] = (uint8_t)stream;     // tid_plus1 1..3 -> stream 1..3
   }
-  p[off + 2] = (uint8_t)stream;
-  p[off + 3] = (uint8_t)(seq & 0xFF);
-  p[off + 4] = (uint8_t)((seq >> 8) & 0xFF);
-  p[off + 5] = (uint8_t)((seq >> 16) & 0xFF);
-  p[off + 6] = (uint8_t)((seq >> 24) & 0xFF);
+  p[off + 6] = (uint8_t)stream;
+  p[off + 7] = (uint8_t)(seq & 0xFF);
+  p[off + 8] = (uint8_t)((seq >> 8) & 0xFF);
+  p[off + 9] = (uint8_t)((seq >> 16) & 0xFF);
+  p[off + 10] = (uint8_t)((seq >> 24) & 0xFF);
   return p;
 }
 
-bool read_tag(const std::vector<uint8_t>& pkt, int* stream, uint32_t* seq) {
-  if (pkt.size() < 19) return false;
-  *stream = pkt[14];
-  *seq = (uint32_t)pkt[15] | ((uint32_t)pkt[16] << 8) |
-         ((uint32_t)pkt[17] << 16) | ((uint32_t)pkt[18] << 24);
+bool read_tag(const std::vector<uint8_t>& unit, int* stream, uint32_t* seq) {
+  const size_t off = framewire::kFrameHdrLen + 6;  // start code + NAL header
+  if (unit.size() < off + 5) return false;
+  *stream = unit[off];
+  *seq = (uint32_t)unit[off + 1] | ((uint32_t)unit[off + 2] << 8) |
+         ((uint32_t)unit[off + 3] << 16) | ((uint32_t)unit[off + 4] << 24);
   return true;
 }
+
+// Reassembles whole units from the raw FRAG fragments UepDecoder emits — the
+// job FrameStream does on the GS, reduced to what delivery accounting needs.
+class UnitAssembler {
+ public:
+  // Returns the completed unit, or an empty vector while fragments are missing.
+  std::vector<uint8_t> add(const DecodedFrag& f) {
+    if (f.frag.size() < Fragmenter::kHdrLen) return {};
+    const uint16_t fseq = (uint16_t)(f.frag[0] | (f.frag[1] << 8));
+    const uint16_t idx = (uint16_t)(f.frag[2] | (f.frag[3] << 8));
+    const uint16_t count = (uint16_t)(f.frag[4] | (f.frag[5] << 8));
+    if (count == 0) return {};
+    const uint32_t key = ((uint32_t)f.stream_id << 16) | fseq;
+    auto& e = pending_[key];
+    e.count = count;
+    e.chunks[idx].assign(f.frag.begin() + (long)Fragmenter::kHdrLen, f.frag.end());
+    if (e.chunks.size() != count) return {};
+    std::vector<uint8_t> unit;
+    for (uint16_t i = 0; i < count; ++i) {
+      auto c = e.chunks.find(i);
+      if (c == e.chunks.end()) return {};
+      unit.insert(unit.end(), c->second.begin(), c->second.end());
+    }
+    pending_.erase(key);
+    return unit;
+  }
+
+ private:
+  struct Entry {
+    std::map<uint16_t, std::vector<uint8_t>> chunks;
+    uint16_t count = 0;
+  };
+  std::map<uint32_t, Entry> pending_;
+};
 
 // Loss channel interface: returns true if this body is dropped.
 struct PeriodicBurst {
@@ -112,38 +152,57 @@ struct SimOut {
   uint64_t bodies = 0, dropped = 0;
 };
 
-// Video-shaped traffic at ~9.1 Mbps for dur_ms of fake time.
-// Layer byte mix ~ t3 50% / t2 25% / t1 15% (1200B packets), stream 0 = two
-// 60B critical NALs every 1000ms. single_layer >= 0 sends ALL bulk on that
-// stream (self-check mode needs a crisp single-layer budget edge).
+// Video-shaped traffic at ~9.1 Mbps for dur_ms of fake time: whole frames at
+// 62.5 fps, layer byte mix ~ t3 50% / t2 25% / t1 15%, one IDR frame per second
+// on stream 0. single_layer >= 0 sends ALL frames on that stream (self-check
+// mode needs a crisp single-layer budget edge).
 template <typename Loss>
 SimOut run(const std::array<UepLayerCfg, 4>& layers, Loss loss,
            uint64_t dur_ms, int single_layer = -1) {
   UepEncoder enc(layers, /*flush_ms=*/15);
   UepDecoder dec(layers, /*decode_deadline_ms=*/200, /*seq_horizon=*/512);
   SimOut out{};
+  UnitAssembler asm_;
   std::map<std::pair<int, uint32_t>, uint64_t> sent_at;
   uint32_t seq[4] = {0, 0, 0, 0};
-  // 9.1 Mbps = 1137.5 B/ms; one 1200B packet every ~1.055ms -> send one
-  // packet per ms and skip every 20th ms to average ~9.1M.
-  // mix[0] is never used (now%20==0 is the rate-trim slot); the 19 active
-  // slots hold 11x stream3 / 5x stream2 / 3x stream1 = 57.9/26.3/15.8% of
-  // bulk bytes (the 50/25/15 target normalized to bulk-only), interleaved
-  // so no stream aligns with the 250ms burst period.
+  // Traffic shape: whole frames, one per kFrameMs, which is what the frame-shm
+  // ingest path actually sends. 18200 B every 16 ms = 9.1 Mbps at 62.5 fps.
+  // Frame SIZE matters to this sim beyond bitrate: add_frame seals the window
+  // at every frame end (one tail repair per frame), so modelling video as many
+  // small units would inflate redundancy far past what the layer's overhead
+  // setting buys — 1200 B units made stream 3 lossless out to B=80.
+  //
+  // The 20-slot pattern assigns each frame a layer: 11x stream3 / 5x stream2 /
+  // 3x stream1 = 57.9/26.3/15.8% of bulk bytes (the 50/25/15 target normalized
+  // to bulk-only, and with equal-size frames the frame counts ARE the byte
+  // mix), interleaved so no stream aligns with the 250 ms burst period. Slot 0
+  // carries the periodic IDR in multi-layer mode.
+  const uint64_t kFrameMs = 16;
+  const size_t kFrameBytes = 18200;
+  // Frames keep flowing for kCooldownMs past dur_ms but are NOT counted: the
+  // last counted frame needs following traffic for its sliding window to
+  // complete, else it shows as a permanent loss that is an artifact of the sim
+  // ending rather than of the channel (before this, every B >= 5 lost exactly
+  // frame N-1 and nothing else).
+  const uint64_t kCooldownMs = 500;
   const int mix[20] = {3, 3, 2, 3, 1, 3, 2, 3, 3, 2,
                        3, 1, 3, 2, 3, 3, 2, 3, 1, 3};
   // Runs a batch of encoder-produced bodies through the loss channel and the
-  // decoder, crediting delivery/latency. Shared by the live add_rtp() path
-  // and the idle-timeout poll() path — both carry real traffic subject to
-  // the same channel.
+  // decoder, crediting delivery/latency per reassembled unit. Shared by the
+  // live add_frame() path and the idle-timeout poll() path — both carry real
+  // traffic subject to the same channel.
+  bool counting = true;
+  uint32_t counted_upto[4] = {0, 0, 0, 0};  // valid once counting == false
   auto sink = [&](std::vector<UepBody>& bodies, uint64_t now) {
     for (auto& b : bodies) {
       ++out.bodies;
       if (loss.drop(now)) { ++out.dropped; continue; }
       for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) {
+        auto unit = asm_.add(d);
         int ds;
         uint32_t dq;
-        if (!read_tag(d.pkt, &ds, &dq)) continue;
+        if (unit.empty() || !read_tag(unit, &ds, &dq)) continue;
+        if (!counting && dq >= counted_upto[(size_t)ds]) continue;  // cooldown
         ++out.layer[(size_t)ds].delivered;
         uint64_t lat = now - sent_at[{ds, dq}];
         if (lat > out.layer[(size_t)ds].max_latency_ms)
@@ -151,24 +210,28 @@ SimOut run(const std::array<UepLayerCfg, 4>& layers, Loss loss,
       }
     }
   };
-  auto feed = [&](const std::vector<uint8_t>& pkt, uint64_t now) {
+  auto feed = [&](const std::vector<uint8_t>& unit, uint64_t now) {
     int st;
     uint32_t sq;
-    read_tag(pkt, &st, &sq);
+    read_tag(unit, &st, &sq);
     sent_at[{st, sq}] = now;
-    ++out.layer[(size_t)st].sent;
-    auto bodies = enc.add_rtp(pkt.data(), pkt.size(), now);
+    if (counting) ++out.layer[(size_t)st].sent;
+    auto bodies = enc.add_frame(st, unit.data(), unit.size(), now);
     sink(bodies, now);
   };
-  for (uint64_t now = 1; now <= dur_ms; ++now) {
-    if (now % 20 == 0) { /* rate trim slot, no packet */ }
-    else {
-      int st = single_layer >= 0 ? single_layer : mix[now % 20];
-      feed(make_rtp(st, seq[st]++, 1200), now);
+  uint64_t frame_i = 0;
+  for (uint64_t now = 1; now <= dur_ms + kCooldownMs; ++now) {
+    if (counting && now > dur_ms) {
+      for (int s = 0; s < 4; ++s) counted_upto[(size_t)s] = seq[s];
+      counting = false;
     }
-    if (single_layer < 0 && now % 1000 == 500) {
-      feed(make_rtp(0, seq[0]++, 60), now);
-      feed(make_rtp(0, seq[0]++, 60), now);
+    if (now % kFrameMs == 0) {
+      int st = single_layer >= 0 ? single_layer : mix[frame_i % 20];
+      // One IDR per second of video lands on the critical layer, replacing
+      // that interval's P frame (a real GOP boundary, not extra traffic).
+      if (single_layer < 0 && frame_i % 60 == 0) st = 0;
+      feed(make_unit(st, seq[st]++, kFrameBytes), now);
+      ++frame_i;
     }
     if (now % 100 == 0) {
       auto polled = enc.poll(now);
@@ -184,13 +247,15 @@ SimOut run(const std::array<UepLayerCfg, 4>& layers, Loss loss,
   // instrumentation: the tail body's drop coincided with the periodic
   // channel's next scheduled kill on every affected config). Deliver it
   // unconditionally, matching a real deployment where there is no "end".
-  uint64_t now = dur_ms;
+  uint64_t now = dur_ms + kCooldownMs;
   for (auto& b : enc.flush_all()) {
     ++out.bodies;
     for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) {
+      auto unit = asm_.add(d);
       int ds;
       uint32_t dq;
-      if (read_tag(d.pkt, &ds, &dq)) ++out.layer[(size_t)ds].delivered;
+      if (!unit.empty() && read_tag(unit, &ds, &dq))
+        ++out.layer[(size_t)ds].delivered;
     }
   }
   dec.poll(now + 500);
@@ -222,7 +287,10 @@ int self_check() {
   // ≈ 15 bodies at that mix, minus 1 body alignment margin -> every
   // B <= 14 must be lossless. Recovery beyond the bound (GE
   // suffix-chaining) is allowed, so the first lossy B may land past it —
-  // assert it exists in [15, 24] (measured edge: B=20).
+  // assert it exists in [15, 24] (measured edge: B=21 under whole-frame
+  // traffic, was B=20 under the pre-frame-shm 1200 B packet stream: a
+  // 18200 B frame is ~14 sources, so the one tail repair add_frame emits per
+  // frame end adds only ~7% redundancy on top of the layer's overhead).
   int first_lossy = -1;
   for (int B = 2; B <= 24; B += 1) {
     auto o = run(layers_for(big), PeriodicBurst{B}, 60000, /*single_layer=*/3);

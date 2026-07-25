@@ -1,9 +1,10 @@
-#include "ring_source.h"
+#include "frame_source.h"
 
 #include <sys/stat.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <thread>
 
 namespace mabur {
@@ -16,11 +17,11 @@ int64_t steady_now_ms() {
       .count();
 }
 
-// Mirrors the path-building venc_ring.c does internally: shm_open() with a
-// leading-'/' name maps to /dev/shm/<name-without-slash>. We build the
-// equivalent /dev/shm path here (outside the vendored code) purely for
-// stat()-based producer-restart detection; venc_ring itself never sees
-// this string.
+// Mirrors the path-building venc_frame_ring.c does internally: shm_open()
+// with a leading-'/' name maps to /dev/shm/<name-without-slash>. We build
+// the equivalent /dev/shm path here (outside the vendored code) purely for
+// stat()-based producer-restart detection; venc_frame_ring itself never
+// sees this string.
 std::string shm_stat_path(const std::string& shm_name) {
   const std::string& n =
       (!shm_name.empty() && shm_name[0] == '/') ? shm_name.substr(1)
@@ -30,31 +31,37 @@ std::string shm_stat_path(const std::string& shm_name) {
 
 }  // namespace
 
-RingSource::RingSource(std::string shm_name, int attach_backoff_ms)
+FrameSource::FrameSource(std::string shm_name, int attach_backoff_ms)
     : shm_name_(std::move(shm_name)), attach_backoff_ms_(attach_backoff_ms) {}
 
-RingSource::~RingSource() { detach(); }
+FrameSource::~FrameSource() { detach(); }
 
-void RingSource::detach() {
+void FrameSource::detach() {
   if (ring_) {
-    venc_ring_destroy(ring_);
+    venc_frame_ring_destroy(ring_);
     ring_ = nullptr;
   }
   have_inode_ = false;
 }
 
-void RingSource::snap_to_head() {
+void FrameSource::snap_to_head() {
   if (!ring_ || !ring_->hdr) return;
   uint64_t w = __atomic_load_n(&ring_->hdr->write_idx, __ATOMIC_ACQUIRE);
   __atomic_store_n(&ring_->hdr->read_idx, w, __ATOMIC_RELEASE);
 }
 
-bool RingSource::try_attach() {
-  venc_ring_t* r = venc_ring_attach(shm_name_.c_str());
+bool FrameSource::try_attach() {
+  venc_frame_ring_t* r = venc_frame_ring_attach(shm_name_.c_str());
   if (!r) return false;
 
   ring_ = r;
-  snap_to_head();
+  // Skip snap-to-head on the very first attach so a frame the producer
+  // wrote before this FrameSource ever attached is still delivered; only
+  // reattaches (after a detected producer restart) skip stale backlog.
+  if (ever_attached_) {
+    snap_to_head();
+  }
+  ever_attached_ = true;
 
   struct stat st;
   if (stat(shm_stat_path(shm_name_).c_str(), &st) == 0) {
@@ -70,7 +77,7 @@ bool RingSource::try_attach() {
   return true;
 }
 
-bool RingSource::producer_restarted() const {
+bool FrameSource::producer_restarted() const {
   struct stat st;
   if (stat(shm_stat_path(shm_name_).c_str(), &st) != 0) {
     return true;  // ENOENT (or other stat failure) — treat as restarted
@@ -80,7 +87,8 @@ bool RingSource::producer_restarted() const {
          static_cast<uint64_t>(st.st_ino) != attached_ino_;
 }
 
-int RingSource::read(uint8_t* buf, size_t buf_size, int timeout_ms) {
+int FrameSource::read(uint8_t* buf, size_t buf_size, int timeout_ms,
+                       VencFrameMeta* meta) {
   if (!ring_) {
     // When timeout_ms <= 0, return immediately (instant poll, no sleep).
     if (timeout_ms <= 0) {
@@ -116,22 +124,29 @@ int RingSource::read(uint8_t* buf, size_t buf_size, int timeout_ms) {
     }
   }
 
-  uint16_t out_len = 0;
+  uint32_t out_len = 0;
   int rc;
 
   // Special-case timeout_ms <= 0: non-blocking poll (not infinite wait).
-  // venc_ring_read_wait's contract is "timeout_ms <= 0 = infinite", but our
-  // documented contract is "0 = instant poll". Use the non-blocking
-  // venc_ring_read to implement the poll semantics.
+  // venc_frame_ring_read_wait's contract is "timeout_ms <= 0 = infinite",
+  // but our documented contract is "0 = instant poll". Use the
+  // non-blocking venc_frame_ring_read to implement the poll semantics.
   if (timeout_ms <= 0) {
-    rc = venc_ring_read(ring_, buf, static_cast<uint16_t>(buf_size), &out_len);
+    rc = venc_frame_ring_read(ring_, buf, static_cast<uint32_t>(buf_size),
+                               &out_len);
   } else {
-    rc = venc_ring_read_wait(ring_, buf, static_cast<uint16_t>(buf_size),
-                              &out_len, timeout_ms);
+    rc = venc_frame_ring_read_wait(ring_, buf, static_cast<uint32_t>(buf_size),
+                                    &out_len, timeout_ms);
   }
 
   if (rc == 0) {
-    return static_cast<int>(out_len);
+    if (out_len < VENC_FRAME_META_SIZE) {
+      return 0;
+    }
+    if (meta) {
+      std::memcpy(meta, buf, VENC_FRAME_META_SIZE);
+    }
+    return static_cast<int>(out_len - VENC_FRAME_META_SIZE);
   }
 
   // Timeout (or, with timeout_ms<=0, spurious wake) — this is the
@@ -149,8 +164,13 @@ int RingSource::read(uint8_t* buf, size_t buf_size, int timeout_ms) {
   return 0;
 }
 
-bool RingSource::attached() const { return ring_ != nullptr; }
+bool FrameSource::attached() const { return ring_ != nullptr; }
 
-uint64_t RingSource::reattach_count() const { return reattach_count_; }
+uint64_t FrameSource::reattach_count() const { return reattach_count_; }
+
+bool FrameSource::fill(venc_frame_ring_fill_t* out) const {
+  if (!ring_) return false;
+  return venc_frame_ring_get_fill(ring_, out) == 0;
+}
 
 }  // namespace mabur

@@ -66,7 +66,7 @@ def ctx(e, side, k=4):
     sel = by_seq[max(0, i - k):i] if side < 0 else by_seq[i:i + k]
     return [rows[first[s]] for s in sel]
 
-CRIT = set(range(16, 24)) | {32, 33, 34}  # classify_rtp critical -> stream 0
+CRIT = set(range(16, 24)) | {32, 33, 34}  # critical NALs -> stream 0
 def layer_of(nal, fu_rt):
     t = fu_rt if nal == 49 and fu_rt >= 0 else nal
     return "s0" if t in CRIT or nal == 48 else "s1+"

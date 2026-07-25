@@ -17,6 +17,7 @@ SRCS="candidates.cpp fecbench.cpp
   $MABUR/common/src/uep_encoder.cpp
   $MABUR/common/src/sbi.cpp
   $MABUR/common/src/frag.cpp
+  $MABUR/common/src/frame_wire.cpp
   $MABUR/common/src/nal.cpp
   $MABUR/common/src/crc16.cpp"
 FLAGS="-O2 -std=c++17 -pthread -I $MABUR/common/include -DFECBENCH_SHA=\"\\\"$SHA$DIRTY\\\"\""

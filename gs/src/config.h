@@ -78,6 +78,11 @@ struct LinkCfg {
 struct VideoOutCfg {
   std::string host = "127.0.0.1";
   int port = 5600;
+  // FrameStream tuning for the session-negotiated frame-wire tail (Task 10):
+  // gap_timeout_ms before an unfilled chunk gap is truncated, and lookahead
+  // frames ahead of head-of-line before it is force-advanced.
+  int frame_gap_timeout_ms = 50;
+  int frame_lookahead = 8;
 };
 
 /// MSP DisplayPort OSD side-channel output. symbol_size/window must match the

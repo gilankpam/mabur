@@ -9,7 +9,9 @@
 #include <random>
 #include <vector>
 
+#include "frame_fixture.h"
 #include "mabur/fec_worker.h"
+#include "mabur/frame_wire.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 #include "mtest.h"
@@ -18,10 +20,38 @@ using namespace mabur;
 
 namespace {
 
+// sent/delivered count whole UNITS (frames): the encoder fragments each unit
+// and the decoder emits raw fragments, so delivery is measured by units the
+// receiver can fully reassemble — mtest::FragCollector does that assembly, the
+// same job FrameStream does on the GS.
 struct SimResult {
   uint64_t sent = 0, delivered = 0;
   uint64_t bodies = 0, bodies_dropped = 0;
 };
+
+// One frame unit for `stream`: FrameHdr + one Annex-B NAL whose type/tid match
+// the layer (type 32 = VPS -> critical/stream 0; type 1 = TRAIL_R with
+// nuh_temporal_id_plus1 = stream for streams 1..3), then random payload.
+std::vector<uint8_t> make_unit(int stream, uint32_t frame_id, size_t paylen,
+                               std::mt19937& rng) {
+  std::vector<uint8_t> unit(framewire::kFrameHdrLen);
+  framewire::FrameHdr h;
+  h.frame_id = static_cast<uint16_t>(frame_id);
+  h.flags = stream == 0 ? framewire::kFlagIdr : 0;
+  h.pts_us = frame_id * 16667u;
+  framewire::pack_frame_hdr(h, unit.data());
+  for (uint8_t b : {0x00, 0x00, 0x00, 0x01}) unit.push_back(b);
+  if (stream == 0) {
+    unit.push_back(32 << 1);  // VPS -> critical
+    unit.push_back(1);
+  } else {
+    unit.push_back(1 << 1);   // TRAIL_R
+    unit.push_back(static_cast<uint8_t>(stream));  // tid_plus1 -> stream 1..3
+  }
+  while (unit.size() < framewire::kFrameHdrLen + paylen)
+    unit.push_back(static_cast<uint8_t>(rng()));
+  return unit;
+}
 
 std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base, int window) {
   std::array<UepLayerCfg, 4> layers{};
@@ -57,22 +87,17 @@ SimResult run_sim(int symbol_size, int bpb_base, int window, int n_pkts,
 
   std::mt19937 rng(42);
   uint64_t now = 1000;
+  mtest::FragCollector got;
   auto consume = [&](std::vector<UepBody>& bodies) {
     for (auto& b : bodies)
       if (keep())
-        r.delivered += dec.add_body(b.body.data(), b.body.size(), now).size();
+        for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) got.add(d);
   };
   for (int i = 0; i < n_pkts; ++i) {
     const size_t paylen = (i % 7 == 6) ? 300 : 1388;
-    std::vector<uint8_t> pkt(12 + paylen);
-    pkt[0] = 0x80; pkt[1] = 0x60;
-    pkt[2] = static_cast<uint8_t>(i >> 8);
-    pkt[3] = static_cast<uint8_t>(i & 0xFF);
-    pkt[12] = 49 << 1; pkt[13] = 1; pkt[14] = 1;  // HEVC FU -> stream 1 (T0)
-    for (size_t b = 15; b < pkt.size(); ++b)
-      pkt[b] = static_cast<uint8_t>(rng());
+    auto unit = make_unit(/*stream=*/1, static_cast<uint32_t>(i), paylen, rng);
     ++r.sent;
-    auto bodies = enc.add_rtp(pkt.data(), pkt.size(), now);
+    auto bodies = enc.add_frame(1, unit.data(), unit.size(), now);
     consume(bodies);
     if (i % 30 == 29) {
       now += 15;
@@ -84,6 +109,7 @@ SimResult run_sim(int symbol_size, int bpb_base, int window, int n_pkts,
   auto tail = enc.flush_all();
   consume(tail);
   dec.poll(now + 5000);
+  r.delivered = got.completed().size();
   return r;
 }
 
@@ -107,28 +133,6 @@ std::array<UepLayerCfg, 4> mixed_layers() {
   return layers;
 }
 
-// RTP+HEVC packet that classify_rtp routes to the requested stream (same
-// convention as tools/bench/burst_sim.cpp::make_rtp): stream 0 -> NAL type
-// 32 (VPS, critical), streams 1..3 -> NAL type 1 (TRAIL_R) with
-// nuh_temporal_id_plus1 = stream.
-std::vector<uint8_t> make_stream_rtp(int stream, uint32_t seq, std::mt19937& rng) {
-  const size_t paylen = 1388;
-  std::vector<uint8_t> pkt(12 + paylen);
-  pkt[0] = 0x80; pkt[1] = 0x60;
-  pkt[2] = static_cast<uint8_t>(seq >> 8);
-  pkt[3] = static_cast<uint8_t>(seq & 0xFF);
-  if (stream == 0) {
-    pkt[12] = 32 << 1;  // NAL type 32 = VPS -> critical, stream 0
-    pkt[13] = 1;
-  } else {
-    pkt[12] = 1 << 1;   // NAL type 1 = TRAIL_R
-    pkt[13] = static_cast<uint8_t>(stream);  // tid_plus1 -> stream 1..3
-  }
-  for (size_t b = 14; b < pkt.size(); ++b)
-    pkt[b] = static_cast<uint8_t>(rng());
-  return pkt;
-}
-
 // Per-layer sent/delivered counters, plus a running index of the next body
 // (across all layers) so a caller can drop a fixed, deterministic run of
 // consecutive bodies mid-stream.
@@ -150,13 +154,13 @@ MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) 
 
   MixedResult r;
   uint64_t body_idx = 0;
+  mtest::FragCollector got;
   auto consume = [&](std::vector<UepBody>& bodies, uint64_t now) {
     for (auto& b : bodies) {
       uint64_t idx = body_idx++;
       if (drop_count > 0 && idx >= drop_start && idx < drop_start + drop_count)
         continue;
-      for (auto& d : dec.add_body(b.body.data(), b.body.size(), now))
-        ++r.delivered[d.stream_id];
+      for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) got.add(d);
     }
   };
 
@@ -164,9 +168,9 @@ MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) 
   uint64_t now = 1000;
   for (int i = 0; i < n_pkts; ++i) {
     int stream = i % 4;
-    auto pkt = make_stream_rtp(stream, static_cast<uint32_t>(i), rng);
+    auto unit = make_unit(stream, static_cast<uint32_t>(i), 1388, rng);
     ++r.sent[stream];
-    auto bodies = enc.add_rtp(pkt.data(), pkt.size(), now);
+    auto bodies = enc.add_frame(stream, unit.data(), unit.size(), now);
     consume(bodies, now);
     if (i % 30 == 29) {
       now += 15;
@@ -178,6 +182,7 @@ MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) 
   auto tail = enc.flush_all();
   consume(tail, now);
   dec.poll(now + 5000);
+  for (auto& [sid, unit] : got.completed()) ++r.delivered[sid];
   return r;
 }
 
@@ -250,7 +255,6 @@ TEST(mixed_symbol_sizes_burst_within_budget) {
 struct AcctResult {
   uint64_t sent = 0, delivered = 0;
   uint64_t syms_delivered = 0, syms_recovered = 0, syms_abandoned = 0;
-  uint64_t frag_evicted = 0;
 };
 
 AcctResult run_stream1_acct(int n_pkts, uint64_t drop_start, uint64_t drop_count) {
@@ -261,21 +265,21 @@ AcctResult run_stream1_acct(int n_pkts, uint64_t drop_start, uint64_t drop_count
   AcctResult r;
   uint64_t body_idx = 0;
   uint64_t now = 1000;
+  mtest::FragCollector got;
   auto consume = [&](std::vector<UepBody>& bodies) {
     for (auto& b : bodies) {
       uint64_t idx = body_idx++;
       if (drop_count > 0 && idx >= drop_start && idx < drop_start + drop_count)
         continue;
-      for (auto& d : dec.add_body(b.body.data(), b.body.size(), now))
-        if (d.stream_id == 1) ++r.delivered;
+      for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) got.add(d);
     }
   };
 
   std::mt19937 rng(3);
   for (int i = 0; i < n_pkts; ++i) {
-    auto pkt = make_stream_rtp(1, static_cast<uint32_t>(i), rng);  // all stream 1
+    auto unit = make_unit(1, static_cast<uint32_t>(i), 1388, rng);  // all stream 1
     ++r.sent;
-    auto bodies = enc.add_rtp(pkt.data(), pkt.size(), now);
+    auto bodies = enc.add_frame(1, unit.data(), unit.size(), now);
     consume(bodies);
     if (i % 30 == 29) { now += 15; auto f = enc.poll(now); consume(f); }
   }
@@ -284,21 +288,22 @@ AcctResult run_stream1_acct(int n_pkts, uint64_t drop_start, uint64_t drop_count
   consume(tail);
   dec.poll(now + 5000);
 
+  for (auto& [sid, unit] : got.completed())
+    if (sid == 1) ++r.delivered;
   auto st = dec.stats(1);
   r.syms_delivered = st.syms_delivered;
   r.syms_recovered = st.syms_recovered;
   r.syms_abandoned = st.syms_abandoned;
-  r.frag_evicted = st.frag_evicted;
   return r;
 }
 
-// REPRODUCES the hardware "uncounted RTP loss" bug (bigsymbol-bug-report.md).
+// REPRODUCES the hardware "uncounted loss" bug (bigsymbol-bug-report.md).
 // Withholding the OPENING body of a stream-1 (sym 1312 / bpb 1) run costs one
-// RTP packet — but the decoder anchors base_ at the FIRST source it *sees*, so
-// the lost leading source(s) sit permanently below base_ and are NEVER booked
-// as syms_abandoned (nor frag_evicted). That is the exact hardware signature:
-// packets vanish while every loss counter stays frozen. The invariant every
-// non-abandoned source must be delivered/recovered is violated silently.
+// unit — but the decoder anchors base_ at the FIRST source it *sees*, so the
+// lost leading source(s) sit permanently below base_ and are NEVER booked as
+// syms_abandoned. That is the exact hardware signature: units vanish while
+// every loss counter stays frozen. The invariant every non-abandoned source
+// must be delivered/recovered is violated silently.
 //
 // This is the systematic, sustained mechanism (not a one-off tail): it fires on
 // every stream (re)join and after any burst that wipes the leading sources of a
@@ -307,16 +312,15 @@ TEST(opening_loss_is_accounted) {
   // Withhold the first two bodies of the run. That loses the leading
   // source(s) of stream 1 — but the decoder sets base_ to the FIRST source it
   // actually sees, so those lost sources sit permanently below base_ and are
-  // never booked as syms_abandoned (nor caught by frag_evicted). FEC cannot
-  // recover them either (their covering repairs arrive before any anchor and
-  // are dropped as stale). Result: RTP packets vanish with every loss counter
-  // frozen — the measured hardware signature.
+  // never booked as syms_abandoned. FEC cannot recover them either (their
+  // covering repairs arrive before any anchor and are dropped as stale).
+  // Result: units vanish with every loss counter frozen — the measured
+  // hardware signature.
   auto r = run_stream1_acct(400, /*drop_start=*/0, /*drop_count=*/2);
   const uint64_t missing = r.sent - r.delivered;
-  const uint64_t counted_loss = r.syms_abandoned + r.frag_evicted;
-  // Every missing RTP packet MUST be accounted by some loss counter.
-  // FAILS today: missing >= 1 while counted_loss == 0 (uncounted vanish).
-  CHECK(missing == 0 || counted_loss >= missing);
+  // Every missing unit MUST be accounted by some loss counter.
+  // FAILS today: missing >= 1 while syms_abandoned == 0 (uncounted vanish).
+  CHECK(missing == 0 || r.syms_abandoned >= missing);
 }
 
 // Async worker through the full UEP pipeline: zero loss must deliver 100%

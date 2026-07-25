@@ -1,9 +1,10 @@
 # gs/ — ground station (maburgs)
 
-Datapath (this tree) decodes maburd's air frames back to RTP: SBI unpack ->
-per-layer RS decode -> FRAG reassembly (`libmabur_common` decode classes),
-multi-card union/dedup at the FEC symbol level, UDP RTP out (default
-127.0.0.1:5600).
+Datapath (this tree) turns maburd's air frames back into RTP: SBI unpack ->
+per-layer sliding-window decode (`libmabur_common` decode classes) -> whole-frame
+assembly ordered by `frame_id` (`FrameStream`) -> RFC 7798 packetization
+(`RtpPacketizer`), with multi-card union/dedup at the FEC symbol level and UDP
+RTP out (default 127.0.0.1:5600).
 
 ## Modes
 

@@ -292,7 +292,9 @@ Config load_config(const std::string& path) {
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
   check_known_keys(j,
-                    {"radio", "fec", "waybeam", "link", "msp", "ring_name", "flags", "power_offset_db"},
+                    {"radio", "fec", "waybeam", "link", "msp", "ring_name",
+                     "video_input", "frame_ring_name", "flags",
+                     "power_offset_db"},
                     "");
 
   Config cfg;
@@ -301,7 +303,18 @@ Config load_config(const std::string& path) {
   if (j.contains("waybeam")) parse_waybeam(j.at("waybeam"), cfg.waybeam);
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
-  assign_if_present(j, "ring_name", cfg.ring_name, "");
+  assign_if_present(j, "frame_ring_name", cfg.frame_ring_name, "");
+  // Deprecated: both named/selected the pre-frame-shm RTP-packet ring, which
+  // no longer exists. Accepted-and-ignored (not fatal) for one release because
+  // the bench procedure pins video_input in the drone's live /etc/mabur.json —
+  // failing here would leave an upgraded maburd unable to start.
+  for (const char* dead : {"video_input", "ring_name"})
+    if (j.contains(dead))
+      std::fprintf(stderr,
+                   "maburd config: WARNING: '%s' is obsolete and ignored — "
+                   "video ingest is frame-shm only (frame_ring_name). Remove "
+                   "it from this config.\n",
+                   dead);
   if (j.contains("flags")) parse_flags(j.at("flags"), cfg.flags);
   if (j.contains("power_offset_db")) {
     auto& arr = j.at("power_offset_db");

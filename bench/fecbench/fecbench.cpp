@@ -28,6 +28,7 @@
 
 #include "candidates.h"
 #include "mabur/fec_worker.h"
+#include "mabur/frame_wire.h"
 #include "mabur/gf256.h"
 #include "mabur/uep_encoder.h"
 #include "mt_encoder.h"
@@ -220,16 +221,19 @@ static void run_repair_bench() {
 
 using namespace mabur;
 
-static std::vector<uint8_t> make_fu(int inner, bool start, bool end,
-                                    size_t paylen, uint16_t seq) {
-  std::vector<uint8_t> p(12 + paylen, 0xA5);
-  p[0] = 0x80;
-  p[1] = 96;
-  p[2] = (uint8_t)(seq >> 8);
-  p[3] = (uint8_t)(seq & 0xFF);
-  p[12] = 49 << 1;  // FU
-  p[13] = 1;        // tid 0
-  p[14] = (uint8_t)((start ? 0x80 : 0) | (end ? 0x40 : 0) | inner);
+// One frame unit as maburd sends it: FrameHdr + a single Annex-B NAL of the
+// given type (19 = IDR_W_RADL, 1 = TRAIL_R at tid 0).
+static std::vector<uint8_t> make_frame(int nal_type, size_t paylen, uint16_t id) {
+  std::vector<uint8_t> p(framewire::kFrameHdrLen + paylen, 0xA5);
+  framewire::FrameHdr h;
+  h.frame_id = id;
+  h.flags = nal_type == 19 ? framewire::kFlagIdr : 0;
+  h.pts_us = id * 16667u;
+  framewire::pack_frame_hdr(h, p.data());
+  const size_t off = framewire::kFrameHdrLen;
+  p[off] = 0; p[off + 1] = 0; p[off + 2] = 0; p[off + 3] = 1;
+  p[off + 4] = (uint8_t)(nal_type << 1);
+  p[off + 5] = 1;  // tid 0
   return p;
 }
 
@@ -255,7 +259,7 @@ static void feed_stream(Enc& uep, int ppf, int sim_seconds, double* wall,
   uint64_t now = 1;
   *air_bytes = 0;
   *in_bytes = 0;
-  uint16_t seq = 0;
+  uint16_t id = 0;
   auto sink = [&](std::vector<UepBody> out) {
     for (auto& b : out) {
       *air_bytes += b.body.size();
@@ -268,12 +272,11 @@ static void feed_stream(Enc& uep, int ppf, int sim_seconds, double* wall,
   const double t0 = now_s();
   for (int s = 0; s < sim_seconds; ++s) {
     for (int f = 0; f < 60; ++f) {
-      const int inner = (f == 0) ? 19 : 1;  // IDR_W_RADL vs TRAIL_R
-      for (int k = 0; k < ppf; ++k) {
-        const auto p = make_fu(inner, k == 0, k == ppf - 1, 1400, seq++);
-        sink(uep.add_rtp(p.data(), p.size(), now));
-        *in_bytes += p.size();
-      }
+      const int nal = (f == 0) ? 19 : 1;  // IDR_W_RADL vs TRAIL_R
+      const int sid = (f == 0) ? 0 : 1;   // critical vs T0
+      const auto p = make_frame(nal, (size_t)ppf * 1400, id++);
+      sink(uep.add_frame(sid, p.data(), p.size(), now));
+      *in_bytes += p.size();
       now += 16;
       sink(uep.poll(now));
     }

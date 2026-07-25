@@ -110,7 +110,9 @@ struct Config {
   WaybeamCfg waybeam;
   LinkCfg link;
   MspCfg msp;
-  std::string ring_name = "mabur";
+  // Name of waybeam's frame-shm ring (its outgoing.server =
+  // frame-shm://<name>), the one and only video ingest.
+  std::string frame_ring_name = "mabur_f";
   rc::FlagPolicy flags;
   std::array<int8_t, 4> power_offset_db = {0, 0, 0, 0};
 

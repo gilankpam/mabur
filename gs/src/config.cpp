@@ -141,9 +141,13 @@ Config load_config(const std::string& path) {
 
   if (j.contains("video_out")) {
     const json& r = j["video_out"];
-    check_keys(r, "video_out", {"host", "port"});
+    check_keys(r, "video_out", {"host", "port", "frame_gap_timeout_ms", "frame_lookahead"});
     c.video_out.host = get_str(r, "host", "127.0.0.1", "video_out");
     c.video_out.port = static_cast<int>(get_int(r, "port", 5600, 1, 65535, "video_out"));
+    c.video_out.frame_gap_timeout_ms = static_cast<int>(
+        get_int(r, "frame_gap_timeout_ms", 50, 10, 1000, "video_out"));
+    c.video_out.frame_lookahead = static_cast<int>(
+        get_int(r, "frame_lookahead", 8, 2, 64, "video_out"));
   }
 
   if (j.contains("msp")) {

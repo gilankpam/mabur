@@ -104,6 +104,12 @@ bool WaybeamClient::set_param(const std::string& key,
 
 bool WaybeamClient::request_idr() { return do_get(cfg_.idr_path); }
 
+bool WaybeamClient::get_param(const std::string& key, std::string& body_out) {
+  bool ok = do_get("/api/v1/get?" + key);
+  if (ok) body_out = last_body_;
+  return ok;
+}
+
 bool WaybeamClient::do_get(const std::string& path) {
   int fd = connect_with_timeout(cfg_.host, cfg_.port, kTimeoutMs);
   if (fd < 0) {
@@ -131,18 +137,28 @@ bool WaybeamClient::do_get(const std::string& path) {
     return false;
   }
 
+  // Read to EOF (HTTP/1.0: the server closes when done), not just once — a
+  // server that writes headers and body in separate segments would otherwise
+  // hand us headers with an empty body, and get_param() would report success
+  // with no value (rig 2026-07-25: maburd's waybeam cross-check claimed
+  // `FATAL MISMATCH ... (got: )` against a correctly configured waybeam).
+  // Capped so a chatty or wedged server cannot grow this unboundedly; replies
+  // of interest are a few hundred bytes.
+  constexpr size_t kMaxResponse = 8192;
+  std::string response;
   char buf[512];
-  ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+  while (response.size() < kMaxResponse) {
+    ssize_t n = recv(fd, buf, sizeof(buf), 0);
+    if (n <= 0) break;
+    response.append(buf, static_cast<size_t>(n));
+  }
   close(fd);
-  if (n <= 0) {
+  if (response.empty()) {
     ++failures_;
     log_rate_limited("read failed/timed out from " + cfg_.host + ":" +
                       std::to_string(cfg_.port));
     return false;
   }
-  buf[n] = '\0';
-
-  std::string response(buf);
   auto eol = response.find('\n');
   std::string status_line =
       eol == std::string::npos ? response : response.substr(0, eol);
@@ -152,6 +168,19 @@ bool WaybeamClient::do_get(const std::string& path) {
     log_rate_limited("non-200 response from " + cfg_.host + ":" +
                       std::to_string(cfg_.port) + ": " + status_line);
   }
+
+  // Capture the body (everything after the header/blank-line separator) for
+  // get_param(). Tolerates either CRLFCRLF or bare-LFLF separators.
+  auto body_pos = response.find("\r\n\r\n");
+  size_t sep_len = 4;
+  if (body_pos == std::string::npos) {
+    body_pos = response.find("\n\n");
+    sep_len = 2;
+  }
+  last_body_ = body_pos == std::string::npos
+                   ? std::string()
+                   : response.substr(body_pos + sep_len);
+
   return ok;
 }
 
