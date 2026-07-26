@@ -20,10 +20,11 @@ STALE_S = 2.0
 LABEL_W = 6
 CARD_COLS = [("st", 4), ("pps", 5), ("Mbps", 5), ("loss%", 5), ("crc", 5),
              ("age", 6), ("forgn", 6), ("self", 6)]
-SIG_COLS = [("cls", 4), ("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6),
-            ("rssiB", 6), ("snr", 5), ("snrA", 5), ("snrB", 5)]
-STRM_COLS = [("str", 4), ("ov", 5), ("rec/s", 7), ("abn/s", 7), ("in/s", 7),
-             ("sfail", 5), ("flight", 6)]
+# LNK blocks: one block per link type (class), a decode line for the FEC
+# streams, then per-card signal rows sharing these columns across all blocks
+# (their titles live on the LNK rule line).
+LNKSIG_COLS = [("card", 4), ("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6),
+               ("rssiB", 6), ("snr", 5), ("snrA", 5), ("snrB", 5)]
 
 # Sticky class rows render in this fixed order regardless of dict/arrival
 # order; "ctrl" gets the short display label "ctl" (cls column is 4 wide).
@@ -41,8 +42,18 @@ def _grid_width(cols):
     return LABEL_W + sum(w + 1 for _, w in cols)
 
 
-GRID_WIDTH = max(_grid_width(CARD_COLS), _grid_width(SIG_COLS),
-                  _grid_width(STRM_COLS))  # widest grid row
+def _dec_line(label, strm, dlv):
+    """Per-stream decode line: inline-labeled, fixed cell widths so the
+    s0..s3 lines align vertically. strm = the sticky link.streams row."""
+    return (
+        f"{label:<{LABEL_W}} ov {_f(strm.get('ov'), 4, 2)}"
+        f"  dlv {_f(dlv, 3, 0)}%"
+        f"  rec/s {_f(strm.get('recovered_s'), 6, 1)}"
+        f"  abn/s {_f(strm.get('abandoned_s'), 5, 1)}"
+        f"  in/s {_f(strm.get('syms_in_s'), 6, 0)}"
+        f"  sfail {_f(strm.get('sub_fail'), 3)}"
+        f"  flt {_f(strm.get('in_flight'), 3)}"
+    )
 
 
 def _f(v, w, prec=1):
@@ -70,6 +81,10 @@ def _age_cell(age_ms, w=6):
     else:
         s = f"{age_ms // 60_000}m"
     return s[:w].rjust(w) if len(s) > w else s.rjust(w)
+
+
+GRID_WIDTH = max(_grid_width(CARD_COLS), _grid_width(LNKSIG_COLS),
+                 len(_dec_line("s0", {}, None)))  # widest grid row
 
 
 class Model:
@@ -173,15 +188,6 @@ def render_rows(model, wall, width):
     else:
         rows.append(("─" * width)[:width])
 
-    # --- LINK ---
-    residual = link.get("residual_loss")
-    residual_pct = None if residual is None else residual * 100.0
-    layers = link.get("layer_delivery_pct")
-    layers_s = " ".join(_f(v, 3) for v in layers) if layers else "--"
-    rows.append(
-        f"LINK    residual {_f(residual_pct, 5, 1)} %     layers {layers_s} %"
-    )
-
     # --- CARD --- physical radio totals (canonical traffic only)
     rows.append(_grid_row("CARD", [t.rjust(w) for t, w in CARD_COLS]))
     if not cards:
@@ -202,50 +208,51 @@ def render_rows(model, wall, width):
             ]
             rows.append(_grid_row(f"  c{_s(c.get('id'))}", cells))
 
-    # --- SIG (sticky per card/class) ---
-    rows.append(_grid_row("SIG", [t.rjust(w) for t, w in SIG_COLS]))
-    if not model.sig_rows:
-        rows.append(_grid_row("  --", ["no sig data".ljust(GRID_WIDTH - LABEL_W - 1)]))
-    else:
-        card_ids = sorted({cid for cid, _cls in model.sig_rows})
-        for cid in card_ids:
-            for cls in CLASS_ORDER:
-                key = (cid, cls)
-                if key not in model.sig_rows:
-                    continue
-                s = model.sig_rows[key]
-                mbps = s.get("mbps")
-                kbps = None if mbps is None else mbps * 1000.0
-                cells = [
-                    _f(CLASS_LABELS.get(cls, cls), SIG_COLS[0][1]),
-                    _f(s.get("pps"), SIG_COLS[1][1], 0),
-                    _f(kbps, SIG_COLS[2][1], 0),
-                    _f(s.get("rssi"), SIG_COLS[3][1], 1),
-                    _f(s.get("rssi_a"), SIG_COLS[4][1], 1),
-                    _f(s.get("rssi_b"), SIG_COLS[5][1], 1),
-                    _f(s.get("snr"), SIG_COLS[6][1], 1),
-                    _f(s.get("snr_a"), SIG_COLS[7][1], 1),
-                    _f(s.get("snr_b"), SIG_COLS[8][1], 1),
-                ]
-                rows.append(_grid_row(f"  c{_s(cid)}", cells))
-
-    # --- STRM (sticky, link's per-stream decode rows) ---
-    rows.append(_grid_row("STRM", [t.rjust(w) for t, w in STRM_COLS]))
-    if not model.strm_rows:
-        rows.append(_grid_row("  --", ["no stream data".ljust(GRID_WIDTH - LABEL_W - 1)]))
-    else:
-        for sid in sorted(model.strm_rows):
-            f = model.strm_rows[sid]
+    # --- LNK blocks: one per link type, decode line + per-card signal rows.
+    # Signal columns are shared across every block; their titles ride the
+    # LNK rule line so the alignment contract holds grid-wide.
+    hdr = _grid_row("LNK ──", [t.rjust(w) for t, w in LNKSIG_COLS])
+    rows.append(hdr + " " + ("─" * max(0, width - len(hdr) - 1)))
+    seen_classes = {cls for _cid, cls in model.sig_rows}
+    seen_classes |= {f"s{sid}" for sid in model.strm_rows}
+    if not seen_classes:
+        rows.append(_grid_row("  --", ["no link data".ljust(GRID_WIDTH - LABEL_W - 1)]))
+    layers = link.get("layer_delivery_pct") or []
+    for cls in CLASS_ORDER:
+        if cls not in seen_classes:
+            continue
+        label = CLASS_LABELS.get(cls, cls)
+        sid = int(cls[1]) if cls.startswith("s") and cls[1:].isdigit() else None
+        if sid is not None and sid in model.strm_rows:
+            dlv = layers[sid] if sid < len(layers) else None
+            rows.append(_dec_line(label, model.strm_rows[sid], dlv))
+        elif cls == "msp":
+            rows.append(f"{label:<{LABEL_W}} (osd side-channel — no fec decode)")
+        elif cls == "ctrl":
+            rows.append(f"{label:<{LABEL_W}} (control — tx at rendezvous only)")
+        else:
+            rows.append(f"{label:<{LABEL_W}}")
+        for cid in sorted({c for c, k in model.sig_rows if k == cls}):
+            s = model.sig_rows[(cid, cls)]
+            mbps_c = s.get("mbps")
+            kbps = None if mbps_c is None else mbps_c * 1000.0
             cells = [
-                _f(f"s{_s(sid)}", STRM_COLS[0][1]),
-                _f(f.get("ov"), STRM_COLS[1][1], 2),
-                _f(f.get("recovered_s"), STRM_COLS[2][1], 1),
-                _f(f.get("abandoned_s"), STRM_COLS[3][1], 1),
-                _f(f.get("syms_in_s"), STRM_COLS[4][1], 0),
-                _f(f.get("sub_fail"), STRM_COLS[5][1]),
-                _f(f.get("in_flight"), STRM_COLS[6][1]),
+                _f(f"c{_s(cid)}", LNKSIG_COLS[0][1]),
+                _f(s.get("pps"), LNKSIG_COLS[1][1], 0),
+                _f(kbps, LNKSIG_COLS[2][1], 0),
+                _f(s.get("rssi"), LNKSIG_COLS[3][1], 1),
+                _f(s.get("rssi_a"), LNKSIG_COLS[4][1], 1),
+                _f(s.get("rssi_b"), LNKSIG_COLS[5][1], 1),
+                _f(s.get("snr"), LNKSIG_COLS[6][1], 1),
+                _f(s.get("snr_a"), LNKSIG_COLS[7][1], 1),
+                _f(s.get("snr_b"), LNKSIG_COLS[8][1], 1),
             ]
             rows.append(_grid_row("", cells))
+
+    # --- link-wide residual (per-stream delivery now lives on the dec lines)
+    residual = link.get("residual_loss")
+    residual_pct = None if residual is None else residual * 100.0
+    rows.append(f"LINK    residual {_f(residual_pct, 5, 1)} %")
 
     # --- VIDEO ---
     rows.append(

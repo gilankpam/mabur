@@ -1,6 +1,6 @@
 import unittest
 
-from maburtop import CARD_COLS, SIG_COLS, STRM_COLS, Model, render_rows, GRID_WIDTH
+from maburtop import CARD_COLS, LNKSIG_COLS, Model, render_rows, GRID_WIDTH
 
 DGRAM = {
     "v": 1, "session": 0xDEADBEEF, "seq": 7, "t_ms": 567890,
@@ -31,6 +31,8 @@ DGRAM = {
          "classes": {
              "s1": {"pps": 890.0, "mbps": 14.2, "rssi": -50.1, "rssi_a": -50.9, "rssi_b": -52.3,
                     "snr": 27.1, "snr_a": 26.0, "snr_b": 24.5},
+             "msp": {"pps": 8.0, "mbps": 0.084, "rssi": -49.0, "rssi_a": -50.0,
+                     "rssi_b": -49.0, "snr": 67.0, "snr_a": 66.9, "snr_b": 66.1},
              "ctrl": {"pps": 1.0, "mbps": 0.004, "rssi": -47.2, "rssi_a": -47.9, "rssi_b": -49.0,
                       "snr": 25.0, "snr_a": 24.1, "snr_b": 23.6},
          }},
@@ -62,26 +64,44 @@ class RenderTest(unittest.TestCase):
         for cell in ("UP", "1450", "15.6", "20.1", "3.2"):
             self.assertIn(cell, card)
 
-    def test_sig_row_content(self):
-        rows = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
-        sig_header_idx = next(i for i, r in enumerate(rows) if r.startswith("SIG"))
-        sig_rows = rows[sig_header_idx + 1:]
-        c0_s1 = next(r for r in sig_rows if r.lstrip().startswith("c0")
-                     and "s1" in r)
-        for cell in ("890", "14200", "-50.1", "-50.9", "-52.3", "27.1", "26.0", "24.5"):
-            self.assertIn(cell, c0_s1)
-        # "ctrl" class renders as "ctl" (4-wide cls column)
-        c0_ctrl = next(r for r in sig_rows if r.lstrip().startswith("c0")
-                       and "ctl" in r)
-        self.assertIn("-47.2", c0_ctrl)
+    def _lnk_block(self, rows, label):
+        """Rows of one LNK class block: from its label/decode line up to the
+        next block label or section."""
+        start = next(i for i, r in enumerate(rows)
+                     if r.startswith(label + " ") or r == label.ljust(6).rstrip()
+                     or r.startswith(label.ljust(6)))
+        out = [rows[start]]
+        for r in rows[start + 1:]:
+            if not r.startswith(" " * 6):
+                break
+            out.append(r)
+        return out
 
-    def test_strm_row_content(self):
+    def test_lnk_block_signal_rows(self):
         rows = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
-        s0 = next(r for r in rows if r.lstrip().startswith("s0"))
-        for cell in ("1.00", "12.0", "4210"):
+        s1_block = self._lnk_block(rows, "s1")
+        c0 = next(r for r in s1_block[1:] if r.lstrip().startswith("c0"))
+        for cell in ("890", "14200", "-50.1", "-50.9", "-52.3", "27.1", "26.0", "24.5"):
+            self.assertIn(cell, c0)
+        # "ctrl" class renders as "ctl", with its annotation line
+        ctl_block = self._lnk_block(rows, "ctl")
+        self.assertIn("rendezvous", ctl_block[0])
+        c0_ctl = next(r for r in ctl_block[1:] if r.lstrip().startswith("c0"))
+        self.assertIn("-47.2", c0_ctl)
+        # msp annotation
+        msp_block = self._lnk_block(rows, "msp")
+        self.assertIn("no fec decode", msp_block[0])
+
+    def test_decode_line_content(self):
+        rows = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
+        s0 = next(r for r in rows if r.startswith("s0"))
+        for cell in ("ov 1.00", "dlv 100%", "rec/s   12.0", "in/s   4210",
+                     "sfail   1", "flt   2"):
             self.assertIn(cell, s0)
-        s1 = next(r for r in rows if r.lstrip().startswith("s1"))
-        self.assertIn("0.25", s1)
+        s1 = next(r for r in rows if r.startswith("s1"))
+        self.assertIn("ov 0.25", s1)
+        # per-stream delivery comes from link.layer_delivery_pct
+        self.assertIn("dlv 100%", s1)
 
     def test_fixed_width_rows_never_shift(self):
         rows_a = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
@@ -129,8 +149,8 @@ class RenderTest(unittest.TestCase):
         no_streams["link"] = dict(DGRAM["link"], streams=[])
         m.update(no_streams, 101.0)
         rows = render_rows(m, wall=101.1, width=GRID_WIDTH)
-        self.assertTrue(any(r.lstrip().startswith("s0") for r in rows))
-        self.assertTrue(any(r.lstrip().startswith("s1") for r in rows))
+        self.assertTrue(any(r.startswith("s0") and "ov" in r for r in rows))
+        self.assertTrue(any(r.startswith("s1") and "ov" in r for r in rows))
 
     def test_sig_rows_sticky(self):
         # A class vanishing from a later datagram must not drop its row —
@@ -140,12 +160,10 @@ class RenderTest(unittest.TestCase):
         no_classes["cards"] = [dict(c, classes={}) for c in DGRAM["cards"]]
         m.update(no_classes, 101.0)
         rows = render_rows(m, wall=101.1, width=GRID_WIDTH)
-        sig_header_idx = next(i for i, r in enumerate(rows) if r.startswith("SIG"))
-        sig_rows = rows[sig_header_idx + 1:]
-        self.assertTrue(any(r.lstrip().startswith("c0") and "s1" in r
-                            for r in sig_rows))
-        self.assertTrue(any(r.lstrip().startswith("c1") and "ctl" in r
-                            for r in sig_rows))
+        s1_block = self._lnk_block(rows, "s1")
+        self.assertTrue(any(r.lstrip().startswith("c0") for r in s1_block[1:]))
+        ctl_block = self._lnk_block(rows, "ctl")
+        self.assertTrue(any(r.lstrip().startswith("c1") for r in ctl_block[1:]))
 
     def test_unsupported_version_banner(self):
         m = Model()
@@ -159,8 +177,7 @@ class RenderTest(unittest.TestCase):
         rows = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
         for header_key, data_key, cols in (
             ("CARD", "c0", CARD_COLS),
-            ("SIG", "c0", SIG_COLS),
-            ("STRM", "s0", STRM_COLS),
+            ("LNK", "c0", LNKSIG_COLS),
         ):
             h_idx = next(i for i, r in enumerate(rows) if r.startswith(header_key))
             header = rows[h_idx]
