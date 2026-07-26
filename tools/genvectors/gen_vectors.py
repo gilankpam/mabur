@@ -68,51 +68,10 @@ for window, ov in ((8, 1.0), (16, 0.5), (128, 0.25)):
                      "decode": decode})
 dump("sw.json", {"cases": sw_cases})
 
-# --- energy (gs/src/energy.h/.cpp) --------------------------------------
-# Airtime/rate/baseline-power dimensions are unchanged: still ride the
-# frozen devourer energy_model.py calibration (p_baseline_w, t_pre_us,
-# p_pa_w curve). Gain and PA-index lookups now go through the mabur-owned
-# tools/pyref/offset_power.py (linear offset qdB semantics), which diverges
-# from energy_model.py's txagc-index gain curve since 2026-07-17.
-_cal = energy_model.load_calibration()
-
-def _energy_case(mode, mcs, bw, sgi, offset_qdb, base_ref_idx, src, ov,
-                 payload, p_deliver):
-    pt = energy_model.TxPoint(mode=mode, mcs=mcs, bw=bw, sgi=sgi,
-                              txagc=offset_power.pa_index(offset_qdb, base_ref_idx))
-    # energy_per_delivered_bit reads calib.pa_w(txagc), so routing the
-    # offset through pa_index() above reproduces the C++ side's
-    # pa_w(offset_qdb, base_ref_idx) exactly (same kPaW curve, same clamp).
-    eff_bps = energy_model.phy_rate_eff_bps(pt, payload, _cal)
-    airtime = energy_model.airtime_fraction(pt, src, ov, payload, _cal)
-    e_bit = energy_model.energy_per_delivered_bit(pt, src, ov, payload,
-                                                  p_deliver, _cal)
-    return {"vht": mode == "vht", "mcs": mcs, "bw": bw, "sgi": sgi,
-           "pwr_offset_qdb": offset_qdb, "base_ref_idx": base_ref_idx,
-           "src": src, "ov": ov, "payload": payload, "p_deliver": p_deliver,
-           "eff_bps": eff_bps, "airtime": airtime,
-           "e_bit": None if e_bit == float("inf") else e_bit}
-
-energy_cases = [
-    _energy_case("ht", 0, 20, False, 10, 53, 1400000.0, 1.0, 1024, 1.0),
-    _energy_case("ht", 2, 20, False, -21, 53, 4000000.0, 0.25, 1024, 0.99),
-    _energy_case("ht", 7, 40, True, -43, 53, 8000000.0, 0.1, 1024, 0.95),
-    _energy_case("vht", 8, 80, False, -53, 53, 20000000.0, 0.1, 1024, 1.0),
-    _energy_case("ht", 0, 20, False, 10, 53, 50000000.0, 1.0, 1024, 1.0),
-    _energy_case("ht", 4, 20, False, -21, 53, 4000000.0, 0.25, 1024, 0.0),
-]
-energy_gain_cases = [
-    {"need_db": 0.0, "idx": offset_power.min_offset_qdb_for_gain(0.0)},
-    {"need_db": 0.001, "idx": offset_power.min_offset_qdb_for_gain(0.001)},
-    {"need_db": 5.0, "idx": offset_power.min_offset_qdb_for_gain(5.0)},
-    {"need_db": 24.9, "idx": offset_power.min_offset_qdb_for_gain(24.9)},
-    {"need_db": 25.0, "idx": offset_power.min_offset_qdb_for_gain(25.0)},
-    {"need_db": -10.0, "idx": offset_power.min_offset_qdb_for_gain(-10.0)},
-]
-energy_bw_noise = [{"bw": bw, "db": energy_model.bw_noise_db(bw)}
-                   for bw in (20, 40, 80)]
-dump("energy.json", {"cases": energy_cases, "gain": energy_gain_cases,
-                     "bw_noise": energy_bw_noise})
+# energy.json (gs/src's TX-energy golden vectors) was removed 2026-07-27
+# (SDD ladder-controller Task 5): the gs/src energy model and its only
+# consumers (the model-driven controller and link table) were deleted,
+# superseded by the measured-loss ladder controller.
 
 # --- sbi ---------------------------------------------------------------
 pk = fec_subblock.SubBlockPacker(75, 4, stream_id=2)
@@ -226,21 +185,23 @@ dump("rc.json", {
                            "agreed_width": a.agreed_width, "seq": a.seq},
                 "wire": hx(rc_proto.pack_disc_ack(a))} for a in acks]})
 
-# --- profile / ladder / probe / phy rate --------------------------------
+# --- profile / ladder / phy rate -----------------------------------------
+# The per-seq bandwidth-probe-schedule vectors were removed 2026-07-27 (SDD
+# ladder-controller Task 5): the ladder controller never varies bw
+# independently of the commanded rung, so mabur's probe-schedule port and
+# its golden vectors are dead. devourer's own reference is untouched — this
+# just stops mirroring it into mabur's vectors.
 prof_cases = [{"mode": m, "mcs": mc, "bw": bw,
                "byte": rc_proto.encode_profile(m, mc, bw),
                "ladder": adaptive_link.ladder_spec(m, mc, bw)}
               for m in ("ht", "vht") for mc in range(0, 9)
               for bw in (20, 40, 80) if not (m == "ht" and (bw == 80 or mc > 7))]
-probe_cases = [{"bw_set": list(bs),
-                "probe": [rc_proto.probe_bw(s, bs) for s in range(64)]}
-               for bs in ((20, 40), (20, 40, 80))]
 rate_cases = [{"mode": m, "mcs": mc, "bw": bw, "sgi": sgi,
                "mbps": energy_model.phy_rate_mbps(m, mc, bw, sgi)}
               for m, mc, bw, sgi in [("ht", 0, 20, False), ("ht", 4, 20, False),
                                      ("ht", 7, 40, True), ("vht", 8, 80, False),
                                      ("vht", 4, 40, True)]]
-dump("profile.json", {"profiles": prof_cases, "probe": probe_cases,
+dump("profile.json", {"profiles": prof_cases,
                       "rates": rate_cases,
                       # pwr_offset_qdb DIVERGES from devourer's frozen
                       # DEFAULT_PROFILE_TABLE.pwr_idx (TXAGC index) since

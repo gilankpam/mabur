@@ -2,7 +2,6 @@
 #include <array>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 #include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
@@ -14,7 +13,6 @@ struct RadioCfg {
   uint16_t usb_pid = 0;  // 0 = scan
   uint8_t channel = 149;
   uint8_t width = 20;
-  std::vector<uint8_t> bw_set = {20};
   int thermal_max_delta = 25;
   // How apply_op drives TX power (bench 2026-07-13, docs/handover-video-
   // delivery.md §5.1: the flat override costs ~25dB-equivalent of delivery

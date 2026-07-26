@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
-"""Golden vectors for GS energy control, generated from devourer's Python
-energy_model. Deterministic: no randomness, no time. Re-run + git diff must be
-clean.
+"""Golden vectors for the GS score window, generated from devourer's Python
+score reference (tools/precoder/score.py). Deterministic: no randomness, no
+time. Re-run + git diff must be clean.
 
-optable/controller sections' power math moved to the mabur-owned
-tools/pyref/offset_power.py (linear qdB-offset semantics) since 2026-07-17 —
-same pattern as gen_vectors.py's energy.json section. Non-power dimensions
-(snr_req, p_deliver, rows, airtime) still ride the frozen devourer
-link_model/op_table/energy_model imports."""
+optable.json, controller_replay.json, and the "rung" section of score.json
+were removed 2026-07-27 (SDD ladder-controller Task 5): the model-driven
+link table, its controller, and the per-rung delivery window are all dead
+code, superseded by the measured-loss ladder controller
+(gs/src/ladder_controller.h). ScoreWindow (this script's only remaining
+consumer) is unaffected — it never depended on the deleted models."""
 import json, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 PRECODER = os.path.abspath(os.path.join(ROOT, "..", "devourer", "tools", "precoder"))
 sys.path.insert(0, PRECODER)
-sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
-
-import energy_model as em  # noqa: E402
-import offset_power  # noqa: E402
 
 VEC = os.path.join(ROOT, "tests", "vectors")
 os.makedirs(VEC, exist_ok=True)
@@ -27,63 +24,8 @@ def dump(name, obj):
         json.dump(obj, f, indent=1, sort_keys=True)
     print("wrote", name)
 
-# --- energy ---------------------------------------------------------------
-# NOTE: this script's own energy.json write is superseded by
-# gen_vectors.py's energy section (mabur-owned offset semantics) — kept here
-# unused/dead would be confusing, so this section is intentionally REMOVED.
-# gen_vectors.py is the source of truth for energy.json; run it after this
-# script (or before) and its write wins either order since both are
-# deterministic and this script no longer touches energy.json.
-
-# --- optable ------------------------------------------------------------------
-import link_model as lm
-import op_table
-
-link = lm.LinkModel()
-snr_req = [{"mcs": m, "ov": ov, "target": t,
-            "req": link.snr_required(m, ov, t)}
-           for m in range(8) for ov in (0.10, 0.25, 0.50, 0.75, 1.00)
-           for t in (0.90, 0.99, 0.999)]
-rows = op_table.build_link_rows(link, 0.99, range(8),
-                                (0.10, 0.25, 0.50, 0.75, 1.00), 20)
-MIN_OFFSET_QDB, MAX_OFFSET_QDB, BASE_REF_IDX = -40, 0, 53
-res_cases = []
-for pl in (-10.0, 0.0, 5.5, 12.0, 30.0):
-    for r in rows[::7]:                       # sample every 7th row
-        op = offset_power.resolve(r, pl, link, 1024, 4e6, 2.0,
-                                  MIN_OFFSET_QDB, MAX_OFFSET_QDB,
-                                  BASE_REF_IDX, em)
-        res_cases.append({
-            "row": {"vht": r.mode == "vht", "mcs": r.mcs, "bw": r.bw,
-                    "sgi": r.sgi, "ov": r.overhead, "snr_req": r.snr_req},
-            "pl": pl,
-            "op": None if op is None else {
-                "pwr_offset_qdb": op.txagc,
-                "e_bit": None if op.e_bit == float("inf") else op.e_bit,
-                "p_deliver": op.p_deliver}})
-# Edge cases: sentinel and grid clamping (parity test hazards, never exercised above)
-# Sentinel: impossible target (2.0 > max p_deliver 1.0) must return hi+step = 40.5
-edges_snr_req = [
-    {"mcs": 0, "ov": 0.10, "target": 2.0, "snr_req": link.snr_required(0, 0.10, 2.0)},
-    {"mcs": 7, "ov": 1.00, "target": 2.0, "snr_req": link.snr_required(7, 1.00, 2.0)},
-]
-# Grid clamp: SNR outside [-20, 60] bucket range must clamp to edge bucket
-# snr=-50 clamps to bucket -20; snr=100 clamps to bucket 60
-edges_pdeliver = [
-    {"mcs": 3, "ov": 0.50, "snr": -50.0, "p_deliver": link.p_deliver(-50.0, 3, 0.50, sbi=True)},
-    {"mcs": 5, "ov": 0.75, "snr": 100.0, "p_deliver": link.p_deliver(100.0, 5, 0.75, sbi=True)},
-]
-
-dump("optable.json", {"edges_pdeliver": edges_pdeliver,
-                      "edges_snr_req": edges_snr_req,
-                      "resolve": res_cases,
-                      "rows": [{"vht": r.mode == "vht", "mcs": r.mcs, "bw": r.bw,
-                                "sgi": r.sgi, "ov": r.overhead, "snr_req": r.snr_req}
-                               for r in rows],
-                      "snr_req": snr_req})
-
 # --- score -------------------------------------------------------------------
-from score import ScoreWindow, RungWindow
+from score import ScoreWindow
 
 def run_trace(frames, residual=None):
     w = ScoreWindow()
@@ -108,44 +50,4 @@ score_cases = [
                (-80.0, 5.0, False, 3, 0.65)], residual=None),
     run_trace([], residual=None),
 ]
-rw = RungWindow((20, 40))
-rung_seqs = [s for s in range(64) if s % 5 != 0]      # drop every 5th seq
-for s in rung_seqs:
-    rw.add_seq(s)
-rung_stats = {str(bw): [d, n] for bw, (d, n) in rw.stats().items()}
-dump("score.json", {"score": score_cases,
-                    "rung": {"bw_set": [20, 40], "seqs": rung_seqs,
-                             "stats": rung_stats}})
-
-# --- controller replay --------------------------------------------------------
-ctrl = offset_power.Controller(
-    link, em,
-    offset_power.ControllerConfig(target=0.99, allow_shed=False,
-                                  src_bitrate_bps=4e6,
-                                  min_offset_qdb=MIN_OFFSET_QDB,
-                                  max_offset_qdb=MAX_OFFSET_QDB,
-                                  base_ref_idx=BASE_REF_IDX))
-def op_out(op):
-    if op is None:
-        return None
-    return {"vht": op.mode == "vht", "mcs": op.mcs, "bw": op.bw,
-            "pwr_offset_qdb": op.txagc, "ov": op.overhead}
-
-applied_offset_qdb = 0
-replay = []
-for t in range(200):
-    now = t * 100.0
-    pl = 35.0 - abs(t - 100) * 0.45          # far -> close -> far triangle
-    if 120 <= t < 135:                        # feedback blackout: on_tick path
-        op = ctrl.on_tick(now)
-        replay.append({"kind": "tick", "now": now, "out": op_out(op)})
-    else:
-        snr = pl + offset_power.gain_db(applied_offset_qdb)
-        op = ctrl.update(snr, applied_offset_qdb, now)
-        replay.append({"kind": "update", "now": now, "snr": snr,
-                       "pwr_offset_qdb": applied_offset_qdb, "out": op_out(op)})
-        if op is not None:
-            applied_offset_qdb = op.txagc
-dump("controller_replay.json", {"cfg": {"target": 0.99, "allow_shed": False,
-                                        "src_bitrate_bps": 4e6},
-                                "trace": replay})
+dump("score.json", {"score": score_cases})

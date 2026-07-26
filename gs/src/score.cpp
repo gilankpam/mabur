@@ -2,8 +2,6 @@
 
 #include <algorithm>
 
-#include "mabur/profile.h"
-
 namespace maburgs {
 namespace {
 double lin(double x, double lo, double hi) {
@@ -67,44 +65,6 @@ int ScoreWindow::score(std::optional<double> residual_loss) const {
   s -= cfg_.loss_penalty * loss;
   const double clamped = std::max(1000.0, std::min(2000.0, s));
   return static_cast<int>(clamped);
-}
-
-RungWindow::RungWindow(std::vector<uint8_t> bw_set, int samples_per_rung)
-    : bw_set_(std::move(bw_set)), samples_per_rung_(samples_per_rung) {
-  std::sort(bw_set_.begin(), bw_set_.end());
-  for (uint8_t bw : bw_set_) hist_[bw];  // create empty deques
-}
-
-void RungWindow::attribute(uint16_t seq, bool ok) {
-  const int bw = mabur::rc::probe_bw(seq, bw_set_);
-  if (bw < 0) return;
-  auto& h = hist_[bw];
-  h.push_back(ok);
-  while (static_cast<int>(h.size()) > samples_per_rung_) h.pop_front();
-}
-
-void RungWindow::add_seq(uint16_t seq) {
-  if (has_last_) {
-    const int gap = (seq - last_seq_) & 0x0FFF;
-    const int walk = gap < 128 ? gap : 128;
-    for (int d = 1; d < walk; ++d)
-      attribute(static_cast<uint16_t>((last_seq_ + d) & 0x0FFF), false);
-  }
-  attribute(seq, true);
-  last_seq_ = seq;
-  has_last_ = true;
-}
-
-std::map<int, std::pair<double, int>> RungWindow::stats() const {
-  std::map<int, std::pair<double, int>> out;
-  for (const auto& [bw, h] : hist_) {
-    if (h.empty()) continue;
-    int ok = 0;
-    for (bool b : h) ok += b ? 1 : 0;
-    out[bw] = {static_cast<double>(ok) / static_cast<double>(h.size()),
-               static_cast<int>(h.size())};
-  }
-  return out;
 }
 
 }  // namespace maburgs

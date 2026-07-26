@@ -3,13 +3,11 @@
 #include <algorithm>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace mabur::rc {
 
 namespace {
-constexpr int kProbePeriod = 32;
-constexpr int kProbeSlots[3] = {0, 8, 16};
-
 // Parses one rung token, e.g. "MCS0/20/LDPC" or "VHT1SS_MCS7/40/SGI", into a
 // LayerTxSpec. Mirrors devourer's parse_tx_mode_str minimally, for the
 // LayerTxSpec fields this port needs (mode/mcs/bw/ldpc/stbc/sgi).
@@ -164,19 +162,6 @@ std::array<LayerTxSpec, 4> ladder_for_row(int idx) {
   ladder[2] = ladder[1];
   ladder[3] = ladder[1];
   return ladder;
-}
-
-int probe_bw(uint16_t seq, const std::vector<uint8_t>& bw_set) {
-  std::vector<uint8_t> rungs(bw_set);
-  std::sort(rungs.begin(), rungs.end());
-  int slot = seq % kProbePeriod;
-  for (int i = 0; i < 3; ++i) {
-    if (slot == kProbeSlots[i]) {
-      if (static_cast<size_t>(i) < rungs.size()) return rungs[static_cast<size_t>(i)];
-      return -1;
-    }
-  }
-  return -1;
 }
 
 double phy_rate_mbps(const LayerTxSpec& s) {

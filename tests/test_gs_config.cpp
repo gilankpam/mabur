@@ -187,7 +187,7 @@ TEST(static_offset_qdb_key_parses_and_defaults) {
 }
 
 // src_bitrate_mbps/margin_db/min_offset_qdb/max_offset_qdb/base_ref_idx were
-// the old model-driven (Controller/LinkTable) energy-model + qdB-rail keys.
+// the old model-driven controller/link-table energy-model + qdB-rail keys.
 // The measured-loss ladder controller (SDD 2026-07-27) replaces that
 // resolver entirely; each is now an unknown key and must fail the boot like
 // any other stale key (config.cpp:check_keys, "link").

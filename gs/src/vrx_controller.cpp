@@ -7,11 +7,11 @@ namespace maburgs {
 
 namespace {
 // Rebuild an OpPoint from the ladder's current rung. PHY offset is always 0
-// in ladder mode (see step()); bw/sgi/snr_req/e_bit/p_deliver are dead
-// fields the LinkTable-era resolver used to populate — stats_exporter still
-// reads mcs/bw/overhead/offset/vht, so they keep emitting benign 0s here.
+// in ladder mode (see step()); bw/sgi/snr_req are dead fields the
+// model-driven resolver used to populate — stats_exporter still reads
+// mcs/bw/overhead/offset/vht, so they keep emitting benign 0s here.
 OpPoint op_from_rung(const Rung& r) {
-  return OpPoint{false, r.mcs, 20, false, 0, r.overhead, 0.0, 0.0, 0.0};
+  return OpPoint{false, r.mcs, 20, false, 0, r.overhead, 0.0};
 }
 }  // namespace
 
@@ -51,7 +51,7 @@ std::optional<VrxController::Out> VrxController::step(
     // Static-link mode: fixed op, ladder fully out of the loop (never
     // ticked/updated — health is ignored entirely).
     cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_offset_qdb,
-                      cfg_.pin_overhead, 0.0, 0.0, 1.0};
+                      cfg_.pin_overhead, 0.0};
   } else if (ctrl_.on_tick(now_ms)) {
     cur_op_ = op_from_rung(ctrl_.op());
   }

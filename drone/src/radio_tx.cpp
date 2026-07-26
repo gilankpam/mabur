@@ -49,8 +49,7 @@ void write_dot11_header(uint8_t* out, uint16_t seq) {
 
 }  // namespace
 
-RadioTx::RadioTx(FrameSink& sink, std::vector<uint8_t> bw_set)
-    : sink_(sink), bw_set_(std::move(bw_set)) {
+RadioTx::RadioTx(FrameSink& sink) : sink_(sink) {
   cache_.store(std::make_shared<Cache>());
 }
 
@@ -58,20 +57,12 @@ void RadioTx::set_ladder(const std::array<rc::LayerTxSpec, 4>& ladder) {
   auto next = std::make_shared<Cache>();
   for (size_t i = 0; i < ladder.size(); ++i) {
     const rc::LayerTxSpec& layer = ladder[i];
-    auto& lc = next->layers[i];
-    lc.default_bw = layer.bw;
-    std::vector<uint8_t> bws = bw_set_;
-    bws.push_back(layer.bw);
-    for (uint8_t bw : bws) {
-      if (lc.by_bw.count(bw)) continue;
-      lc.by_bw[bw] = devourer::build_stream_radiotap(to_tx_mode(layer, bw));
-    }
+    next->layers[i].radiotap =
+        devourer::build_stream_radiotap(to_tx_mode(layer, layer.bw));
   }
-  // Single atomic swap: the radiotap table AND every layer's default_bw
-  // change together, so send_body() (hot thread) can never observe one
-  // half of this update without the other (the data race this fixes: bw
-  // used to live in a plain, non-atomically-written `ladder_` member read
-  // concurrently by send_body()).
+  // Single atomic swap: the whole radiotap table changes together, so
+  // send_body() (hot thread) can never observe a torn mix of old and new
+  // layer entries.
   cache_.store(next);
 }
 
@@ -81,21 +72,15 @@ bool RadioTx::build_frame(const Cache& cache, uint8_t stream_id,
   size_t idx = stream_id < cache.layers.size() ? stream_id : cache.layers.size() - 1;
   const LayerCache& lc = cache.layers[idx];
 
-  int probe = rc::probe_bw(seq_, bw_set_);
-  uint8_t effective_bw = probe >= 0 ? static_cast<uint8_t>(probe) : lc.default_bw;
-
-  const auto& by_bw = lc.by_bw;
-  auto it = by_bw.find(effective_bw);
-
   // Missing radiotap cache entry (e.g. called before set_ladder). Sequence
   // is consumed regardless to let a ground-station gap detector see the drop.
-  if (it == by_bw.end()) {
+  if (lc.radiotap.empty()) {
     seq_ = static_cast<uint16_t>((seq_ + 1) & 0xFFF);
     ++drops_;
     return false;
   }
 
-  const std::vector<uint8_t>& radiotap = it->second;
+  const std::vector<uint8_t>& radiotap = lc.radiotap;
 
   size_t rl = radiotap.size();
   size_t frame_len = rl + kDot11HeaderLen + len;

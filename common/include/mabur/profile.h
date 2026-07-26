@@ -2,15 +2,17 @@
 #include <array>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace mabur::rc {
 
-// PHY-facing profile byte, adaptive-link ladder spec, bandwidth probe
-// schedule, and PHY rate tables. Byte-exact port of devourer's
-// tools/precoder/rc_proto.py (encode_profile/decode_profile/probe_bw/
-// DEFAULT_PROFILE_TABLE) and tools/precoder/adaptive_link.py (ladder_spec)
-// and tools/precoder/energy_model.py (phy_rate_mbps rate tables).
+// PHY-facing profile byte, adaptive-link ladder spec, and PHY rate tables.
+// Byte-exact port of devourer's tools/precoder/rc_proto.py
+// (encode_profile/decode_profile/DEFAULT_PROFILE_TABLE) and
+// tools/precoder/adaptive_link.py (ladder_spec) and
+// tools/precoder/energy_model.py (phy_rate_mbps rate tables). The per-seq
+// bandwidth-probe schedule was removed 2026-07-27 (SDD ladder-controller
+// Task 5): the ladder controller never varies bw independently of the
+// commanded rung, so probing alternate widths per seq had no consumer left.
 
 enum class PhyMode : uint8_t { HT, VHT };
 
@@ -63,10 +65,6 @@ constexpr int MAX_RANGE_PROFILE = 0;
 // optional "/LDPC" "/STBC" "/SGI" in any order). LDPC+STBC are then forced
 // on for CRIT/T0 (supersedes whatever the string sets; T1/T2 copy T0).
 std::array<LayerTxSpec, 4> ladder_for_row(int idx);
-
-// Bandwidth this video seq must fly at as a rung probe, else -1. rungs =
-// sorted(bw_set); slots {0,8,16} of seq%32 -> rungs[i] if i < rungs.size().
-int probe_bw(uint16_t seq, const std::vector<uint8_t>& bw_set);
 
 // On-air PHY data rate (Mbps) for a LayerTxSpec.
 double phy_rate_mbps(const LayerTxSpec& s);

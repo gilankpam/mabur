@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "mabur/rc_proto.h"
-#include "op_table.h"
+#include "op_point.h"
 
 namespace maburgs {
 

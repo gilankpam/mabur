@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -48,7 +47,7 @@ void assign_if_present(const json& j, const char* key, T& out,
 }
 
 void parse_radio(const json& j, RadioCfg& r) {
-  check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width", "bw_set",
+  check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width",
                         "thermal_max_delta", "power_mode",
                         "power_offset_qdb", "tx_threads", "rate_walls_idx",
                         "legacy_wall_idx", "wall_margin_db",
@@ -58,14 +57,6 @@ void parse_radio(const json& j, RadioCfg& r) {
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
   assign_if_present(j, "channel", r.channel, "radio");
   assign_if_present(j, "width", r.width, "radio");
-  if (j.contains("bw_set")) {
-    r.bw_set.clear();
-    try {
-      for (auto& v : j.at("bw_set")) r.bw_set.push_back(v.get<uint8_t>());
-    } catch (const json::exception& e) {
-      fail("radio.bw_set", "wrong type");
-    }
-  }
   assign_if_present(j, "thermal_max_delta", r.thermal_max_delta, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "power_offset_qdb", r.power_offset_qdb, "radio");
@@ -136,25 +127,6 @@ void parse_radio(const json& j, RadioCfg& r) {
                " is out of the 7-bit hardware field range [-64,63] — "
                "check base_ref_idx/wall_margin_db calibration");
   }
-
-  uint8_t prev = 0;
-  for (uint8_t bw : r.bw_set) {
-    if (bw != 20 && bw != 40 && bw != 80) fail("radio.bw_set", "values must be in {20,40,80}");
-    if (bw <= prev) fail("radio.bw_set", "values must be strictly ascending");
-    prev = bw;
-  }
-
-  // B7 (docs/bench-validation.md): a device tuned to radio.width cannot emit
-  // a valid PPDU wider than that — such probe rungs are dead air (transmitted
-  // but unreceivable). Drop them with a warning rather than flying them.
-  std::erase_if(r.bw_set, [&](uint8_t bw) {
-    if (bw <= r.width) return false;
-    std::fprintf(stderr,
-                 "mabur config: radio.bw_set rung %u > radio.width %u — "
-                 "dropped (a %u MHz-tuned device cannot emit %u MHz frames)\n",
-                 bw, r.width, r.width, bw);
-    return true;
-  });
 }
 
 void parse_fec(const json& j, FecCfg& f) {

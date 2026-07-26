@@ -3,10 +3,7 @@ add_library(mabur_gs_core STATIC
   src/aggregator.cpp
   src/udp_sink.cpp
   src/frame_file_source.cpp
-  src/energy.cpp
-  src/op_table.cpp
   src/score.cpp
-  src/controller.cpp
   src/rendezvous.cpp
   src/vrx_controller.cpp
   src/ladder_controller.cpp

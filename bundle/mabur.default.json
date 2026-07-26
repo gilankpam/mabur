@@ -4,7 +4,6 @@
     "usb_pid": 0,
     "channel": 149,
     "width": 20,
-    "bw_set": [20],
     "thermal_max_delta": 25,
     "power_mode": "none",
     "rate_walls_idx": [91, 91, 91, 91, 73, 56, 51, 49],

@@ -23,16 +23,4 @@ TEST(score_window_matches_python) {
   }
 }
 
-TEST(rung_window_matches_python) {
-  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/score.json");
-  RungWindow rw({20, 40});
-  for (auto& s : j["rung"]["seqs"]) rw.add_seq(s.get<uint16_t>());
-  auto stats = rw.stats();
-  for (auto& [bw, dn] : j["rung"]["stats"].items()) {
-    int b = std::stoi(bw);
-    REQUIRE(stats.count(b) == 1);
-    CHECK(stats[b].first == dn[0].get<double>());
-    CHECK(stats[b].second == dn[1].get<int>());
-  }
-}
 MTEST_MAIN
