@@ -9,18 +9,19 @@ from pathlib import Path
 
 
 def synthesize_flight_jsonl():
-    """Generate a synthetic 200-line flight.jsonl fixture.
+    """Generate a synthetic flight.jsonl fixture at real 500ms cadence (2 Hz sideport).
 
     Scenario:
-    - 60 s steady at rung 5, u≈0.1
+    - 30s steady at rung 5, u≈0.1 (60 samples at 500ms)
     - util demote (reason=util, u=0.63, from rung 5 to 4)
-    - 10 s at rung 4
-    - residual episode (2 samples with residual_loss 0.02)
-    - residual demote (reason=residual, from rung 4 to 3)
+    - 5s at rung 4 (10 samples)
+    - residual burst 1: 2 consecutive samples (residual_loss 0.02, no gap between)
+    - clean recovery: 4 clean samples (no residual_loss) — 2s of gap
+    - residual burst 2: 2 consecutive samples (residual_loss 0.03, no gap between)
+    - residual demote (reason=residual)
     - recovery promote (from rung 3 to 4)
     """
     rows = []
-    t_ms = 0
 
     # Helper to create a datagram
     def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked"):
@@ -79,59 +80,70 @@ def synthesize_flight_jsonl():
         }
         return json.dumps(dg)
 
-    # Phase 1: 60 s at rung 5, u≈0.1 (60 samples at 1 Hz)
-    for i in range(60):
-        t = i * 1000
-        rows.append(make_datagram(t, rung_idx=5, util=0.08 + 0.02 * (i % 2)))
+    t_ms = 0
 
-    # Phase 2: util demote event at t=60s (rung 5 -> 4, reason=util, u=0.63)
-    event_time = 60000
+    # Phase 1: 30s at rung 5, u≈0.1 (60 samples at 500ms cadence)
+    for i in range(60):
+        rows.append(make_datagram(t_ms, rung_idx=5, util=0.08 + 0.02 * (i % 2)))
+        t_ms += 500
+
+    # Phase 2: util demote event (rung 5 -> 4, reason=util, u=0.63)
     event = {
-        "t_ms": event_time,
+        "t_ms": t_ms,
         "from": 5,
         "to": 4,
         "reason": "util",
         "u": 0.63
     }
-    rows.append(make_datagram(event_time, rung_idx=4, util=0.63, event=event))
+    rows.append(make_datagram(t_ms, rung_idx=4, util=0.63, event=event))
+    t_ms += 500
 
-    # Phase 3: 10 s at rung 4 (10 samples at 1 Hz)
-    for i in range(1, 11):
-        t = 60000 + i * 1000
-        rows.append(make_datagram(t, rung_idx=4, util=0.15 + 0.05 * (i % 2)))
+    # Phase 3: 5s at rung 4 (10 samples at 500ms)
+    for i in range(10):
+        rows.append(make_datagram(t_ms, rung_idx=4, util=0.15 + 0.05 * (i % 2)))
+        t_ms += 500
 
-    # Phase 4: residual episode (2 consecutive samples with residual_loss 0.02)
-    # These are NOT demote events yet, just elevated residual_loss
+    # Phase 4: residual burst 1 (2 consecutive samples with residual_loss 0.02)
     for i in range(2):
-        t = 70000 + i * 1000
-        rows.append(make_datagram(t, rung_idx=4, util=0.20, residual_loss=0.02))
+        rows.append(make_datagram(t_ms, rung_idx=4, util=0.20, residual_loss=0.02))
+        t_ms += 500
 
-    # Phase 5: residual demote event (rung 4 -> 3, reason=residual)
-    event_time = 72000
+    # Phase 5: clean recovery (4 clean samples = 2s gap > 750ms threshold)
+    for i in range(4):
+        rows.append(make_datagram(t_ms, rung_idx=4, util=0.12))
+        t_ms += 500
+
+    # Phase 6: residual burst 2 (2 consecutive samples with residual_loss 0.03)
+    for i in range(2):
+        rows.append(make_datagram(t_ms, rung_idx=4, util=0.22, residual_loss=0.03))
+        t_ms += 500
+
+    # Phase 7: residual demote event (rung 4 -> 3, reason=residual)
     event = {
-        "t_ms": event_time,
+        "t_ms": t_ms,
         "from": 4,
         "to": 3,
         "reason": "residual",
         "u": 0.30
     }
-    rows.append(make_datagram(event_time, rung_idx=3, util=0.30, event=event, drone_state="linked"))
+    rows.append(make_datagram(t_ms, rung_idx=3, util=0.30, event=event, drone_state="linked"))
+    t_ms += 500
 
-    # Phase 6: recovery promote (rung 3 -> 4, reason=promote)
-    event_time = 75000
+    # Phase 8: recovery promote (rung 3 -> 4, reason=promote)
     event = {
-        "t_ms": event_time,
+        "t_ms": t_ms,
         "from": 3,
         "to": 4,
         "reason": "promote",
         "u": 0.25
     }
-    rows.append(make_datagram(event_time, rung_idx=4, util=0.25, event=event, drone_state="linked"))
+    rows.append(make_datagram(t_ms, rung_idx=4, util=0.25, event=event, drone_state="linked"))
+    t_ms += 500
 
-    # Phase 7: a few more samples at rung 4 to complete the fixture
+    # Phase 9: final samples at rung 4
     for i in range(3):
-        t = 75000 + (i + 1) * 1000
-        rows.append(make_datagram(t, rung_idx=4, util=0.12))
+        rows.append(make_datagram(t_ms, rung_idx=4, util=0.12))
+        t_ms += 500
 
     return "\n".join(rows) + "\n"
 
@@ -183,13 +195,18 @@ def test_flightreport_structure():
     # Should have p50/p95/max pattern: "rung X: 0.XX/0.XX/0.XX  n=N"
     assert "/" in u_section, "Missing p50/p95/max format"
 
-    # Verify RESIDUAL EPISODES section
-    assert "RESIDUAL EPISODES: 1" in output, "Should have exactly 1 residual episode (merged from 2 consecutive samples)"
+    # Verify RESIDUAL EPISODES section: 2 bursts separated by clean samples
+    assert "RESIDUAL EPISODES: 2" in output, "Should have exactly 2 residual episodes (separated by 4 clean samples > 750ms threshold)"
+
+    # Verify each episode has expected residual values
+    residual_section = output[output.find("RESIDUAL EPISODES"):]
+    assert "residual=0.0200" in residual_section, "Missing first residual burst (0.02)"
+    assert "residual=0.0300" in residual_section, "Missing second residual burst (0.03)"
 
     # Verify drone state context join
     # The output should reference drone states somewhere in the transition context
     # At minimum, we should see drone state info
-    assert "drone" in output.lower() or "state" in output.lower(), "Missing drone state context"
+    assert "drone_state=linked" in output, "Missing drone state context in output"
 
     print("\n✓ All assertions passed!")
 

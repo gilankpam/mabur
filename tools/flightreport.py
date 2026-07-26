@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl).
-Usage: flightreport.py flight.jsonl"""
-import json, sys, statistics
+Usage: flightreport.py flight.jsonl
+
+Note: last_event is a single overwritten struct on the wire; multiple rung transitions
+inside one 500ms export window surface only as the LAST transition. Reported counts are
+a lower bound due to this schema limitation."""
+import json, sys
 
 
 def load(path):
@@ -20,35 +24,40 @@ def merge_consecutive_residuals(residuals):
     """Merge consecutive residual-positive samples into episodes.
 
     Each element is (t, residual_loss, traj, drone_state, rssi, snr).
+    Consecutive = no clean (non-residual) sample between. At the real 500ms
+    sideport cadence (2 Hz), use 750ms gap threshold (1.5× sample interval)
+    to detect breaks.
     Returns merged list where consecutive samples become one episode.
     """
     if not residuals:
         return []
 
     merged = []
-    current_episode = residuals[0]
+    episode_start_t, episode_max_rl, episode_trajs = residuals[0][0], residuals[0][1], [residuals[0][2]]
+    episode_ds, episode_rssi, episode_snr = residuals[0][3], residuals[0][4], residuals[0][5]
+    last_sample_t = residuals[0][0]
 
     for i in range(1, len(residuals)):
         t, rl, traj, ds, rssi, snr = residuals[i]
-        prev_t, prev_rl, prev_traj, prev_ds, prev_rssi, prev_snr = current_episode
 
-        # Check if consecutive (within ~2 samples = ~2 seconds)
-        if t - prev_t <= 2500:
-            # Merge: keep start time, use max residual loss, extend trajectory
-            current_episode = (
-                prev_t,
-                max(prev_rl, rl),
-                prev_traj + traj,  # concatenate trajectories
-                ds,  # use latest drone state
-                rssi,  # use latest RSSI
-                snr   # use latest SNR
-            )
+        # Check if consecutive: gap from PREVIOUS sample > 750ms means a clean sample(s) between
+        if t - last_sample_t > 750:
+            # Gap detected: finish current episode and start new one
+            merged.append((episode_start_t, episode_max_rl, episode_trajs, episode_ds, episode_rssi, episode_snr))
+            episode_start_t, episode_max_rl, episode_trajs = t, rl, [traj]
+            episode_ds, episode_rssi, episode_snr = ds, rssi, snr
         else:
-            # Gap detected: start new episode
-            merged.append(current_episode)
-            current_episode = residuals[i]
+            # Consecutive: extend current episode
+            episode_max_rl = max(episode_max_rl, rl)
+            episode_trajs.append(traj)
+            episode_ds = ds
+            episode_rssi = rssi
+            episode_snr = snr
 
-    merged.append(current_episode)
+        last_sample_t = t
+
+    # Finalize last episode
+    merged.append((episode_start_t, episode_max_rl, episode_trajs, episode_ds, episode_rssi, episode_snr))
     return merged
 
 
@@ -120,10 +129,12 @@ def main(path):
         print(f"  rung {r}: {p(.5):.2f}/{p(.95):.2f}/{us[-1]:.2f}  n={len(us)}")
 
     print(f"RESIDUAL EPISODES: {len(residuals)}")
-    for t, rl, traj, drone_state, rssi_s1, snr_s1 in residuals:
+    for t, rl, trajs, drone_state, rssi_s1, snr_s1 in residuals:
         rssi_str = f" rssi={rssi_s1:.1f}" if rssi_s1 is not None else ""
         snr_str = f" snr={snr_s1:.1f}" if snr_s1 is not None else ""
-        print(f"  t={t} residual={rl:.4f} u[-5s..]={traj} drone_state={drone_state}{rssi_str}{snr_str}")
+        # Flatten list of trajectory lists
+        flat_traj = [u for traj in trajs for u in traj]
+        print(f"  t={t} residual={rl:.4f} u[-5s..]={flat_traj} drone_state={drone_state}{rssi_str}{snr_str}")
 
 
 if __name__ == "__main__":
