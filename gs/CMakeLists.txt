@@ -9,6 +9,7 @@ add_library(mabur_gs_core STATIC
   src/controller.cpp
   src/rendezvous.cpp
   src/vrx_controller.cpp
+  src/ladder_controller.cpp
   src/tx_selector.cpp
   src/msp_sink.cpp
   src/msp_font_btfl.cpp
