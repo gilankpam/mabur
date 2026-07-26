@@ -150,6 +150,8 @@ Config load_config(const std::string& path) {
     if (r.contains("ladder")) {
       if (!r["ladder"].is_array() || r["ladder"].empty())
         fail("link.ladder", "must be a non-empty array");
+      if (r["ladder"].size() > 8)
+        fail("link.ladder", "must have at most 8 entries");
       std::vector<Rung> parsed;
       int i = 0;
       for (const json& rj : r["ladder"]) {
@@ -172,6 +174,8 @@ Config load_config(const std::string& path) {
     }
     c.link.ladder_cfg.down_util = get_num(r, "down_util", 0.6, 0.0, 1.0, "link");
     c.link.ladder_cfg.up_util = get_num(r, "up_util", 0.15, 0.0, 1.0, "link");
+    if (c.link.ladder_cfg.up_util <= 0.0)
+      fail("link.up_util", "must be > 0");
     if (c.link.ladder_cfg.up_util >= c.link.ladder_cfg.down_util)
       fail("link.up_util", "must be < down_util");
     c.link.ladder_cfg.confirm_ms =

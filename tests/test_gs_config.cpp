@@ -295,10 +295,36 @@ TEST(ladder_rung_overhead_out_of_range_rejected) {
   CHECK(threw);
 }
 
+TEST(ladder_rung_overhead_boundary_values_accepted) {
+  // overhead exactly at the [0.05, 1.0] boundary must load, not throw.
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"ladder":[{"mcs":0,"overhead":0.05},{"mcs":7,"overhead":1.0}]}})"));
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 2);
+  CHECK(cfg.link.ladder_cfg.ladder[0].overhead > 0.0499 && cfg.link.ladder_cfg.ladder[0].overhead < 0.0501);
+  CHECK(cfg.link.ladder_cfg.ladder[1].overhead > 0.999 && cfg.link.ladder_cfg.ladder[1].overhead < 1.001);
+}
+
 TEST(ladder_empty_array_rejected) {
   bool threw = false;
   try { maburgs::load_config(write_tmp(R"({"link":{"ladder":[]}})")); }
   catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+// Spec: ladder must have 1-8 entries. A 9-rung ladder must be rejected even
+// though every individual rung is otherwise valid.
+TEST(ladder_over_eight_entries_rejected) {
+  std::string json = R"({"link":{"ladder":[)";
+  for (int i = 0; i < 9; ++i) {
+    if (i) json += ",";
+    json += "{\"mcs\":" + std::to_string(i % 8) + ",\"overhead\":0.25}";
+  }
+  json += "]}}";
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(json.c_str())); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("link.ladder") != std::string::npos;
+  }
   CHECK(threw);
 }
 
@@ -339,6 +365,20 @@ TEST(up_util_must_be_less_than_down_util) {
   try {
     maburgs::load_config(write_tmp(R"({"link":{"up_util":0.7,"down_util":0.6}})"));
   } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+// Spec: 0 < up_util < down_util <= 1. up_util == 0 satisfies the
+// less-than-down_util check but must still be rejected: at 0 the clean
+// window (u < up_util) can never be satisfied (u is never negative), so a
+// misconfigured link would be permanently stuck unable to promote off
+// rung 0.
+TEST(up_util_must_be_strictly_positive) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"up_util":0.0}})")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("link.up_util") != std::string::npos;
+  }
   CHECK(threw);
 }
 
