@@ -154,19 +154,20 @@ TEST(ladder_from_applies_default_flag_policy) {
   CHECK(ladder[1].bw == 20);
   CHECK(ladder[1].ldpc == true);
   CHECK(ladder[1].stbc == true);
-  // T1 — same MCS as CRIT/T0 (all rungs ride the scored base rate; FEC
-  // overhead is the only per-layer differentiator).
+  // T1 — identical PHY to T0 (hw 2026-07-26 follow-up: all rungs ride the
+  // scored base rate AND T0's ldpc/stbc; FEC overhead is the only
+  // per-layer differentiator).
   CHECK(ladder[2].mode == PhyMode::HT);
   CHECK(ladder[2].mcs == 2);
   CHECK(ladder[2].bw == 20);
-  CHECK(ladder[2].ldpc == false);
-  CHECK(ladder[2].stbc == false);
+  CHECK(ladder[2].ldpc == true);
+  CHECK(ladder[2].stbc == true);
   // T2
   CHECK(ladder[3].mode == PhyMode::HT);
   CHECK(ladder[3].mcs == 2);
   CHECK(ladder[3].bw == 20);
-  CHECK(ladder[3].ldpc == false);
-  CHECK(ladder[3].stbc == false);
+  CHECK(ladder[3].ldpc == true);
+  CHECK(ladder[3].stbc == true);
 }
 
 TEST(ladder_from_respects_disabled_flags) {
@@ -182,6 +183,8 @@ TEST(ladder_from_respects_disabled_flags) {
   CHECK(ladder[1].stbc == false);
   CHECK(ladder[2].ldpc == false);
   CHECK(ladder[2].stbc == false);
+  CHECK(ladder[3].ldpc == false);
+  CHECK(ladder[3].stbc == false);
 }
 
 TEST(ladder_from_clamps_at_top) {
@@ -224,25 +227,21 @@ TEST(ladder_for_row_matches_table_strings_verbatim) {
     CHECK(ladder[0].stbc == (oracle[0].stbc || fp.crit_stbc));
     CHECK(ladder[1].ldpc == (oracle[1].ldpc || fp.t0_ldpc));
     CHECK(ladder[1].stbc == (oracle[1].stbc || fp.t0_stbc));
-    // hw 2026-07-26 ruling: T1/T2 ride T0's scored rate — ladder_for_row
-    // enforces that at parse time by overwriting T1/T2's rate fields
-    // (mode/mcs/bw/sgi) wholesale with T0's, regardless of what the
-    // vendored row string itself carries for T1/T2 (some rows still spell
-    // out a devourer-style spread there; it's ignored by the applied
-    // ladder). ldpc/stbc are NOT part of that flatten — aligned with
-    // ladder_from (the RCF path), T1/T2 keep whatever the row string
-    // itself parses to for those flags (always false; the table never
-    // sets LDPC/STBC on a T1/T2 token), never inheriting T0's
-    // policy-applied flags.
+    // hw 2026-07-26 ruling (+ same-day follow-up): T1/T2 ride T0's ENTIRE
+    // spec — rate fields and policy-applied ldpc/stbc alike — regardless
+    // of what the vendored row string carries for T1/T2 (some rows still
+    // spell out a devourer-style spread there; it's ignored by the applied
+    // ladder). Uniform PHY across all video streams; only FEC overhead
+    // differentiates layers. (Flags-off T1/T2 was tried first and measured
+    // 2-3 dB weaker on air — single-chain, no coding gain — with the
+    // weaker GS card losing 3-5x more of stream 3's frames.)
     for (int i = 2; i < 4; ++i) {
       CHECK(ladder[static_cast<size_t>(i)].mode == ladder[1].mode);
       CHECK(ladder[static_cast<size_t>(i)].mcs == ladder[1].mcs);
       CHECK(ladder[static_cast<size_t>(i)].bw == ladder[1].bw);
       CHECK(ladder[static_cast<size_t>(i)].sgi == ladder[1].sgi);
-      CHECK(ladder[static_cast<size_t>(i)].ldpc == oracle[static_cast<size_t>(i)].ldpc);
-      CHECK(ladder[static_cast<size_t>(i)].stbc == oracle[static_cast<size_t>(i)].stbc);
-      CHECK(ladder[static_cast<size_t>(i)].ldpc == false);
-      CHECK(ladder[static_cast<size_t>(i)].stbc == false);
+      CHECK(ladder[static_cast<size_t>(i)].ldpc == ladder[1].ldpc);
+      CHECK(ladder[static_cast<size_t>(i)].stbc == ladder[1].stbc);
     }
   }
 }
@@ -254,11 +253,9 @@ TEST(ladder_for_row_flattens_t1_t2_to_t0_rate) {
   // ride T0's scored rate; only FEC overhead differentiates them. Pin
   // that the *applied* ladder enforces this even though the committed
   // table row keeps devourer's own spread. FlagPolicy defaults all true,
-  // so T0 picks up ldpc/stbc from the policy — but per ladder_from (the
-  // RCF path), that must NOT leak onto T1/T2: only the rate fields
-  // (mode/mcs/bw/sgi) flatten to T0's; T1/T2 ldpc/stbc stay exactly what
-  // the row string parses to (false — no T1/T2 token in the table ever
-  // sets LDPC/STBC).
+  // and T1/T2 take T0's WHOLE spec — rate fields and policy-applied
+  // ldpc/stbc alike (hw 2026-07-26 follow-up: uniform PHY; flags-off T1/T2
+  // measured 2-3 dB weaker on air at the same MCS).
   FlagPolicy fp;
   auto ladder = ladder_for_row(3, fp);
 
@@ -272,14 +269,14 @@ TEST(ladder_for_row_flattens_t1_t2_to_t0_rate) {
   CHECK(ladder[1].bw == ladder[3].bw);
   CHECK(ladder[1].sgi == ladder[3].sgi);
 
-  // T0 keeps its policy-applied flags (defaults all true); T1/T2 do NOT
-  // inherit them — they stay false, matching ladder_from.
+  // T0's policy-applied flags (defaults all true) carry onto T1/T2 —
+  // identical PHY, matching ladder_from.
   CHECK(ladder[1].ldpc == true);
   CHECK(ladder[1].stbc == true);
-  CHECK(ladder[2].ldpc == false);
-  CHECK(ladder[2].stbc == false);
-  CHECK(ladder[3].ldpc == false);
-  CHECK(ladder[3].stbc == false);
+  CHECK(ladder[2].ldpc == true);
+  CHECK(ladder[2].stbc == true);
+  CHECK(ladder[3].ldpc == true);
+  CHECK(ladder[3].stbc == true);
 
   // Concretely: T0 in row 3 is MCS4/20, no SGI. T1/T2 must match that —
   // NOT the row string's own MCS5 / MCS7-SGI.

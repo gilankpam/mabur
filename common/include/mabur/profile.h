@@ -37,10 +37,11 @@ struct FlagPolicy {
 };
 
 // Builds the 4-rung ladder (CRIT, T0, T1, T2) for a (mode, base mcs, bw)
-// operating point, applying fp's ldpc/stbc flags to CRIT and T0 only. All
-// four rungs ride the same base mcs (hw 2026-07-26: per-rung +1/+2 MCS
-// bumps on T1/T2 put SVC-T enhance traffic past the link wall); per-layer
-// differentiation is exclusively FEC overhead plus the CRIT/T0 flag policy.
+// operating point. All four rungs ride the same base mcs, and T1/T2 carry
+// T0's whole spec including its policy-applied ldpc/stbc (hw 2026-07-26:
+// per-rung +1/+2 MCS bumps put SVC-T enhance traffic past the link wall,
+// and flags-off T1/T2 measured 2-3 dB weaker at the same MCS); per-layer
+// differentiation is exclusively FEC overhead.
 std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
                                         const FlagPolicy& fp);
 
