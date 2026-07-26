@@ -236,7 +236,9 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     ack.vrx_nonce = d->vrx_nonce;
     // Frame wire is the only video format maburd speaks; the bit stays on the
     // wire (one legal value) so a GS can still refuse a peer that lacks it.
-    ack.chip_caps = rc::CAP_FRAME_WIRE;
+    // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
+    // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
+    ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY;
     ack.agreed_channel = cfg_.radio.channel;
     ack.agreed_width = cfg_.radio.width;
     ack.seq = d->seq;
@@ -283,6 +285,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     if (!fresh) return;
     last_seq_ = r->seq;
     have_last_seq_ = true;
+    ++rcf_accepted_;
 
     PhyMode mode;
     uint8_t mcs, bw;

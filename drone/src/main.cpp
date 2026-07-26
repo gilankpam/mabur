@@ -42,6 +42,7 @@
 #include "power_plan.h"
 #include "radio_tx.h"
 #include "rc_agent.h"
+#include "telemetry.h"
 #include "tx_queue.h"
 #include "usb_tx_pool.h"
 #include "waybeam_client.h"
@@ -218,6 +219,13 @@ struct RealActuator : mabur::Actuator {
   std::vector<uint8_t> control_radiotap;  // built once; control channel is fixed
   uint16_t control_seq = 0;
 
+  // Last values commanded to the encoder — read by the telemetry collector
+  // (agent thread only; RcAgent's contract calls these setters from the
+  // agent thread exclusively, same thread the collector runs on, so plain
+  // ints are safe with no lock).
+  int last_bitrate_kbps = 0;
+  int last_roi_qp = 0;
+
   void apply_op(const AppliedOp& op) override {
     tx->set_ladder(op.ladder);
     if (dev) {
@@ -249,6 +257,7 @@ struct RealActuator : mabur::Actuator {
   }
 
   void set_bitrate_kbps(int k) override {
+    last_bitrate_kbps = k;
     if (dry_run) {
       std::fprintf(stderr, "[dry-run] set_bitrate_kbps(%d)\n", k);
       return;
@@ -257,6 +266,7 @@ struct RealActuator : mabur::Actuator {
   }
 
   void set_roi_qp(int q) override {
+    last_roi_qp = q;
     if (dry_run) {
       std::fprintf(stderr, "[dry-run] set_roi_qp(%d)\n", q);
       return;
@@ -698,12 +708,30 @@ int run_real_mode(const Config& cfg) {
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
   actuator.power_mode = cfg.radio.power_mode;
+  // Encoder starts at the "normal" ROI QP (RcAgent only calls set_roi_qp on
+  // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
+  // so the telemetry collector needs this seeded to reflect what's actually
+  // commanded before the first transition ever happens.
+  actuator.last_roi_qp = cfg.waybeam.roi_qp_normal;
 
   RcAgent agent(cfg, actuator);
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};
   std::atomic<uint64_t> hot_beat{0};
+
+  // Uplink RSSI/SNR EMAs, fed from rx_callback (RX thread) on CRC-clean RC
+  // frames, read by the agent thread's 1 Hz telemetry collector (spec
+  // 2026-07-26 drone-telemetry). Thread-safe per UplinkTrack's own mutex.
+  UplinkTrack uplink_track;
+
+  // Cumulative encoder/ring counters (spec 2026-07-26 drone-telemetry):
+  // written by the hot thread, read by the agent thread's telemetry
+  // collector. FramePipeline/FrameSource don't track these themselves (see
+  // frame_ring stats block below), so maburd tracks them here.
+  std::atomic<uint64_t> enc_frames_total{0};
+  std::atomic<uint64_t> enc_bytes_total{0};
+  std::atomic<uint64_t> ring_drops_total{0};
   // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
   // frame encoded so far died before the air — re-mark the discontinuity
   // window so the GS gets the re-base signal on frames that can actually
@@ -720,6 +748,10 @@ int run_real_mode(const Config& cfg) {
     size_t body_len = pkt.Data.size() - kDot11HeaderLen;
     if (rc::frame_type(body, body_len) >= 0) {
       rc_queue.push(body, body_len);
+      // Uplink EMAs feed off CRC-clean RC frames only — a corrupt frame's
+      // attrib (rssi/snr) is not a trustworthy sample.
+      if (!pkt.RxAtrib.crc_err)
+        uplink_track.on_rc_frame(pkt.RxAtrib.rssi, pkt.RxAtrib.snr);
     }
   };
 
@@ -772,7 +804,8 @@ int run_real_mode(const Config& cfg) {
   // overflow makes the RTP packetizer abort NALs mid-chain — sender-side
   // slice truncation no FEC can repair (bench 2026-07-13, the PixelPilot
   // glitch root cause). ~256 bodies ≈ 150 ms at 1700 bodies/s.
-  TxQueue txq(256);
+  constexpr size_t kTxQueueCap = 256;  // also feeds Telem.txq_cap
+  TxQueue txq(kTxQueueCap);
 
   // Hot thread: pulls whole frames off the real SHM ring, runs them through
   // the UEP pipeline, queues bodies for the TX writer. Owns the UepEncoder
@@ -824,6 +857,8 @@ int run_real_mode(const Config& cfg) {
           pipe.mark_discontinuity();  // link just came up: pre-link frames died
         for (auto& b : pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now))
           txq.push(std::move(b));
+        enc_frames_total.fetch_add(1, std::memory_order_relaxed);
+        enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
       }
       // Ring-pressure observability (spec: the drain-feedback policy's
       // future input): one stderr line every 5 s.
@@ -839,7 +874,12 @@ int run_real_mode(const Config& cfg) {
       if (now - last_ring_stats_ms >= 5000) {
         last_ring_stats_ms = now;
         venc_frame_ring_fill_t f{};
-        if (fsrc.fill(&f))
+        if (fsrc.fill(&f)) {
+          // Telem.ring_drops (spec 2026-07-26 drone-telemetry): the two
+          // counters this process can actually move, per the comment above.
+          ring_drops_total.store(
+              static_cast<uint64_t>(f.oversize_drops) + static_cast<uint64_t>(f.bad_slot_drops),
+              std::memory_order_relaxed);
           std::fprintf(stderr,
               "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
               "bad_slot=%llu idr_disagree=%llu\n",
@@ -848,6 +888,7 @@ int run_real_mode(const Config& cfg) {
               (unsigned long long)f.oversize_drops,
               (unsigned long long)f.bad_slot_drops,
               (unsigned long long)pipe.idr_disagreements());
+        }
       }
 
       auto polled = uep.poll(now);
@@ -882,6 +923,18 @@ int run_real_mode(const Config& cfg) {
     uint64_t last_hot_beat = 0, last_rx_beat = 0;
     uint64_t last_hot_change_ms = start, last_rx_change_ms = start;
     uint64_t last_stats_ms = start;
+
+    // T_TELEM (spec 2026-07-26 drone-telemetry): sent at ~1 Hz on this same
+    // periodic path, on the mutex-guarded dev_sink.send() the MSP thread
+    // also uses. Its own radiotap (control modulation, built once) and its
+    // own dot11 seq counter — deliberately NOT the video path's tx.seq() or
+    // RealActuator's DISC_ACK control_seq, so a telemetry-send bug can never
+    // perturb either.
+    uint64_t last_telem_ms = start;
+    uint64_t rx_beat_at_last_telem = 0;
+    uint16_t telem_wire_seq = 0;
+    uint16_t telem_dot11_seq = 0;
+    std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
 
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
@@ -955,6 +1008,60 @@ int run_real_mode(const Config& cfg) {
                      health.thermal_delta,
                      static_cast<unsigned long long>(txstats.failed),
                      static_cast<unsigned long long>(waybeam.failures()));
+      }
+
+      if (now - last_telem_ms >= 1000) {
+        last_telem_ms = now;
+
+        TelemInputs ti;
+        ti.state = static_cast<int>(agent.state());
+        ti.failsafe_shed = agent.failsafe_shed();
+        // "advanced in the last 2 s" (spec) approximated as "advanced over
+        // the last telemetry tick" (~1 s here) — the collector runs on this
+        // same 1 Hz cadence, so a stricter 2 s window would just double-count
+        // the same beat across two ticks.
+        ti.radio_rx_ok = rb > rx_beat_at_last_telem;
+        rx_beat_at_last_telem = rb;
+        ti.generation = agent.current().generation;
+        // T0 rung: the same layer run_bitrate_policy() treats as "the"
+        // reference operating point for cmd_kbps. CRIT and T0 share
+        // mode/mcs/bw for every RCF/MAX_RANGE-driven op (ladder_from); they
+        // only (harmlessly) diverge for a few hundred ms right after a DISC
+        // rendezvous row is applied (ladder_for_row).
+        ti.mode = agent.current().ladder[1].mode;
+        ti.mcs = agent.current().ladder[1].mcs;
+        ti.bw = agent.current().ladder[1].bw;
+        ti.applied_ov = agent.current().fec_overhead;
+        ti.applied_off_qdb = agent.current().pwr_offset_qdb;
+        ti.derate_qdb = agent.thermal_derate_qdb();
+        ti.rcf_age_ms = agent.have_feedback() ? (now - agent.last_feedback_ms()) : 0;
+        ti.rcf_rx = agent.rcf_accepted();
+        ti.enc_frames = enc_frames_total.load(std::memory_order_relaxed);
+        ti.enc_bytes = enc_bytes_total.load(std::memory_order_relaxed);
+        ti.cmd_kbps = actuator.last_bitrate_kbps;
+        ti.qp = actuator.last_roi_qp;
+        ti.ring_drops = ring_drops_total.load(std::memory_order_relaxed);
+        ti.txq_depth = txq.depth();
+        ti.txq_cap = kTxQueueCap;
+        ti.txq_drops = txq.dropped();
+        ti.radio_sent = tx.sent();
+        ti.radio_drops = tx.drops();
+        ti.usb_fail = txstats.failed;
+        ti.uplink = uplink_track.snap();
+        ti.soc_temp_c = read_soc_temp_c();
+        ti.thermal_delta = health.thermal_delta;
+        ti.load1 = read_load1();
+
+        auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
+
+        std::vector<uint8_t> frame;
+        frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
+        frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
+        auto hdr = build_dot11_header(telem_dot11_seq);
+        telem_dot11_seq = static_cast<uint16_t>((telem_dot11_seq + 1) & 0xFFF);
+        frame.insert(frame.end(), hdr.begin(), hdr.end());
+        frame.insert(frame.end(), telem.begin(), telem.end());
+        dev_sink.send(frame.data(), frame.size());
       }
 
       std::this_thread::sleep_for(std::chrono::milliseconds(cfg.link.tick_ms));
