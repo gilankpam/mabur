@@ -203,6 +203,7 @@ class Model:
         self.restarts = 0
         self.rx_times = []       # wall clocks of last ~10 datagrams -> rx Hz
         self.sig_rows = {}       # (card_id, class_key) -> last class dict (sticky)
+        self.class_active = {}   # class_key -> wall clock of last datagram with pps > 0
         self.strm_rows = {}      # stream id -> last row dict (sticky)
         self.bad_version = None
         # Previous datagram's counters, for increased-vs-previous styling.
@@ -236,6 +237,8 @@ class Model:
                 continue  # unindexable card: don't poison sig_rows' sort key
             for cls_key, cls_val in (card.get("classes") or {}).items():
                 self.sig_rows[(cid, cls_key)] = cls_val
+                if cls_val.get("pps"):
+                    self.class_active[cls_key] = wall
         link = dgram.get("link") or {}
         for row in link.get("streams", []):
             self.strm_rows[row["stream"]] = row
@@ -774,20 +777,16 @@ def panel_video(model, wall):
     return _panel("VIDEO OUT", body)
 
 
-def _block_dormant(d, cls):
-    """A block is dormant this datagram if every card's class entry for
-    cls is absent, or all present entries have zero/null pps — the
-    frozen/dormant signal (e.g. ctl between telemetry beats)."""
-    any_present = False
-    total = 0.0
-    for c in d.get("cards") or []:
-        s = (c.get("classes") or {}).get(cls)
-        if s is not None:
-            any_present = True
-            pps = s.get("pps")
-            if pps:
-                total += pps
-    return not any_present or total == 0
+CLASS_DORMANT_S = 3.0
+
+
+def _block_dormant(model, wall, cls):
+    """A block is dormant when its class has shown zero pps for
+    CLASS_DORMANT_S — long enough that a healthy 1 Hz stream (ctl carries
+    the telemetry beat) never flickers dim between 500 ms rate windows,
+    short enough that a genuinely dead class dims within a few redraws."""
+    last = model.class_active.get(cls)
+    return last is None or (wall - last) > CLASS_DORMANT_S
 
 
 def _tx_line(label, strm, dlv):
@@ -836,7 +835,7 @@ def _radio_row(cid, sig):
     return _grid_row(f"       c{_s(cid)}", cells, label_w=RADIO_LABEL_W)
 
 
-def _build_block(model, d, link, cls):
+def _build_block(model, wall, d, link, cls):
     label = LINK_CLASS_LABELS.get(cls, cls)
     sid = int(cls[1]) if cls.startswith("s") and cls[1:].isdigit() else None
     rows = []
@@ -881,7 +880,7 @@ def _build_block(model, d, link, cls):
         for cid in card_ids:
             rows.append((_radio_row(cid, model.sig_rows[(cid, cls)]), []))
 
-    if _block_dormant(d, cls):
+    if _block_dormant(model, wall, cls):
         rows = [(t, [(0, len(t), "dim")]) for t, _ in rows]
     return rows
 
@@ -899,7 +898,7 @@ def panel_links(model, wall):
         body.append((text, [(0, len(text), "dim")]))
     else:
         for i, cls in enumerate(blocks):
-            body.extend(_build_block(model, d, link, cls))
+            body.extend(_build_block(model, wall, d, link, cls))
             if i != len(blocks) - 1:
                 body.append(("", []))
 

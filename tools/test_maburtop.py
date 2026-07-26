@@ -296,14 +296,24 @@ class LinksPanelTest(unittest.TestCase):
         self.assertTrue(any(t.strip().startswith("radio") for t, _ in ctl_block))
 
     def test_sticky_block_survives_class_disappearance_and_dims(self):
+        # Dormancy has a CLASS_DORMANT_S memory: a class that was active
+        # moments ago must NOT dim just because this 500 ms rate window
+        # read 0 pps (a healthy 1 Hz ctl/telemetry beat alternates windows
+        # — the flicker this rule exists to prevent). Only sustained
+        # silence dims the block.
         m = _fresh()
         no_classes = dict(DGRAM)
         no_classes["cards"] = [dict(c, classes={}) for c in DGRAM["cards"]]
         m.update(no_classes, 101.0)
-        rows = panel_links(m, 101.1)
+        rows = panel_links(m, 101.1)          # 1.1 s after last activity
         block = self._block(rows, "s1 ·")
         joined = "\n".join(t for t, _ in block)
         self.assertIn("c0", joined)  # frozen radio row survives
+        self.assertFalse(any(style == "dim"
+                             for _, spans in block for _, _, style in spans),
+                         "recently-active block must not flicker dim")
+        rows = panel_links(m, 104.5)          # > CLASS_DORMANT_S of silence
+        block = self._block(rows, "s1 ·")
         for t, spans in block:
             if t:
                 self.assertTrue(any(style == "dim" for _, _, style in spans),
