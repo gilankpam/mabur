@@ -117,6 +117,8 @@ struct Telem {
   int8_t soc_temp_c = -128;  // -128 = unavailable
   int8_t thermal_delta = 0;
   uint16_t load_x100 = 0;
+  uint16_t idr_disagree = 0;      // saturating; spec 2026-07-26 svct-enable
+  uint16_t enhance_disagree = 0;  // saturating
 };
 
 std::vector<uint8_t> pack_rcf(const Rcf& r);

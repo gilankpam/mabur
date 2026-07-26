@@ -17,6 +17,7 @@ TEST(make_telem_maps_and_saturates) {
   in.uplink.rssi[0] = 51.4; in.uplink.rssi[1] = 52.0;
   in.uplink.snr[0] = 21.2; in.uplink.snr[1] = 22.0;
   in.soc_temp_c = 61; in.load1 = 0.72;
+  in.idr_disagree = 3; in.enhance_disagree = 70000;
   const auto t = mabur::make_telem(9, in);
   CHECK(t.tlm_seq == 9);
   CHECK(t.state == 2);
@@ -33,6 +34,8 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.up_snr[1] == 22);
   CHECK(t.soc_temp_c == 61);
   CHECK(t.load_x100 == 72);
+  CHECK(t.idr_disagree == 3);
+  CHECK(t.enhance_disagree == 65535);  // saturates to u16
 }
 
 TEST(uplink_track_ema_and_thread_snapshot) {
