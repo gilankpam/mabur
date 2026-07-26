@@ -54,6 +54,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   if (prev_cards_.size() != in.cards.size()) {
     prev_cards_.assign(in.cards.size(), {});
     prev_class_frames_.assign(in.cards.size(), {});
+    prev_class_bytes_.assign(in.cards.size(), {});
     class_seen_.assign(in.cards.size(), {});
   }
 
@@ -111,8 +112,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       json kj;
       if (have_window) {
         kj["pps"] = rate(cls.frames, prev_class_frames_[i][ku], elapsed_s);
+        kj["mbps"] = rate(cls.bytes, prev_class_bytes_[i][ku], elapsed_s) * 8.0 / 1e6;
       } else {
         kj["pps"] = nullptr;
+        kj["mbps"] = nullptr;
       }
       if (cls.has_ema) {
         kj["rssi"] = cls.rssi_ema - 110.0;
@@ -198,8 +201,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     prev_cards_[i] = {in.cards[i].frames, in.cards[i].rx_bytes,
                       in.cards[i].seq_expected, in.cards[i].seq_received,
                       in.cards[i].self_frames, in.cards[i].foreign};
-    for (int k = 0; k < kNumStatsClasses; ++k)
+    for (int k = 0; k < kNumStatsClasses; ++k) {
       prev_class_frames_[i][static_cast<size_t>(k)] = in.cards[i].classes[static_cast<size_t>(k)].frames;
+      prev_class_bytes_[i][static_cast<size_t>(k)] = in.cards[i].classes[static_cast<size_t>(k)].bytes;
+    }
   }
   for (size_t s = 0; s < 4; ++s)
     prev_streams_[s] = {in.streams[s].syms_recovered, in.streams[s].syms_abandoned,

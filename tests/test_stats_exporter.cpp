@@ -181,6 +181,18 @@ TEST(send_failure_counted_never_thrown) {
   CHECK(ex.send_failed() == 2);
 }
 
+TEST(class_mbps_windowed) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  CHECK(cap.last()["cards"][0]["classes"]["s1"]["mbps"].is_null());  // first emission
+  in.cards[0].classes[1].bytes += 62'500;   // +0.5 Mbit over 0.5 s -> 1.0 Mbps
+  ex.poll(1500, in);
+  const double mbps = cap.last()["cards"][0]["classes"]["s1"]["mbps"].get<double>();
+  CHECK(mbps > 0.99 && mbps < 1.01);
+}
+
 TEST(class_entries_sticky_and_rates) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());

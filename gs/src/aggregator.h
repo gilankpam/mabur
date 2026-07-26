@@ -19,7 +19,7 @@ constexpr int kNumRfClasses = 6;
 // scoped to one RfClass — lets the stats sideport (Task 3/4) report signal
 // quality per traffic class instead of only the card-wide pool.
 struct ClassTrack {
-  uint64_t frames = 0;
+  uint64_t frames = 0, bytes = 0;
   double rssi_ema = 0, rssi_a_ema = 0, rssi_b_ema = 0;
   double snr_ema = 0, snr_a_ema = 0, snr_b_ema = 0;
   bool has_ema = false;

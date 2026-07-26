@@ -13,7 +13,7 @@
 namespace maburgs {
 
 struct StatsClassIn {  // copied from ClassTrack (gs/src/aggregator.h)
-  uint64_t frames = 0;
+  uint64_t frames = 0, bytes = 0;
   bool has_ema = false;
   double rssi_ema = 0, rssi_a_ema = 0, rssi_b_ema = 0;
   double snr_ema = 0, snr_a_ema = 0, snr_b_ema = 0;
@@ -80,6 +80,7 @@ class StatsExporter {
   // Per-(card, class) previous frame counts (for pps) and sticky-seen mask,
   // resized alongside prev_cards_ whenever the card count changes.
   std::vector<std::array<uint64_t, kNumStatsClasses>> prev_class_frames_;
+  std::vector<std::array<uint64_t, kNumStatsClasses>> prev_class_bytes_;
   std::vector<std::array<bool, kNumStatsClasses>> class_seen_;
   std::array<StreamPrev, 4> prev_streams_{};
   uint64_t prev_udp_bytes_ = 0;

@@ -110,6 +110,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     if (class_idx >= 0) {
       ClassTrack& ct = c.cls[static_cast<size_t>(class_idx)];
       ++ct.frames;
+      ct.bytes += m.body.size();
       if (!ct.has_ema) {
         ct.rssi_ema = rssi;
         ct.rssi_a_ema = m.rssi[0];

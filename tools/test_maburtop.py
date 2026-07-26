@@ -29,18 +29,18 @@ DGRAM = {
          "loss_pct": 0.0, "rx_mbps": 15.6, "pps": 1450,
          "last_frame_age_ms": 4, "foreign_pps": 3.2, "self_pps": 20.1,
          "classes": {
-             "s1": {"pps": 890.0, "rssi": -50.1, "rssi_a": -50.9, "rssi_b": -52.3,
+             "s1": {"pps": 890.0, "mbps": 14.2, "rssi": -50.1, "rssi_a": -50.9, "rssi_b": -52.3,
                     "snr": 27.1, "snr_a": 26.0, "snr_b": 24.5},
-             "ctrl": {"pps": 1.0, "rssi": -47.2, "rssi_a": -47.9, "rssi_b": -49.0,
+             "ctrl": {"pps": 1.0, "mbps": 0.004, "rssi": -47.2, "rssi_a": -47.9, "rssi_b": -49.0,
                       "snr": 25.0, "snr_a": 24.1, "snr_b": 23.6},
          }},
         {"id": 1, "up": True, "frames": 120000, "crc_fail": 0,
          "loss_pct": 0.0, "rx_mbps": 15.6, "pps": 1438,
          "last_frame_age_ms": 5, "foreign_pps": 1.0, "self_pps": 19.8,
          "classes": {
-             "s1": {"pps": 885.0, "rssi": -53.2, "rssi_a": -53.8, "rssi_b": -55.1,
+             "s1": {"pps": 885.0, "mbps": 14.1, "rssi": -53.2, "rssi_a": -53.8, "rssi_b": -55.1,
                     "snr": 25.2, "snr_a": 24.1, "snr_b": 22.9},
-             "ctrl": {"pps": 1.0, "rssi": -49.9, "rssi_a": -50.2, "rssi_b": -51.7,
+             "ctrl": {"pps": 1.0, "mbps": 0.003, "rssi": -49.9, "rssi_a": -50.2, "rssi_b": -51.7,
                       "snr": 24.4, "snr_a": 23.8, "snr_b": 22.5},
          }},
     ],
@@ -68,7 +68,7 @@ class RenderTest(unittest.TestCase):
         sig_rows = rows[sig_header_idx + 1:]
         c0_s1 = next(r for r in sig_rows if r.lstrip().startswith("c0")
                      and "s1" in r)
-        for cell in ("890", "-50.1", "-50.9", "-52.3", "27.1", "26.0", "24.5"):
+        for cell in ("890", "14200", "-50.1", "-50.9", "-52.3", "27.1", "26.0", "24.5"):
             self.assertIn(cell, c0_s1)
         # "ctrl" class renders as "ctl" (4-wide cls column)
         c0_ctrl = next(r for r in sig_rows if r.lstrip().startswith("c0")

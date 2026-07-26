@@ -185,6 +185,12 @@ TEST(class_split_video_msp_ctrl) {
   CHECK(c.cls[int(RfClass::Ctrl)].has_ema);
   CHECK(c.cls[int(RfClass::Ctrl)].snr_ema == 25.0);  // msg() snr max
   CHECK(c.self_frames == 0);
+  // Per-class byte accounting: class bytes partition the classified share
+  // of the card's rx_bytes (ctrl bytes = the ack body's size).
+  CHECK(c.cls[int(RfClass::Ctrl)].bytes == ack.size());
+  uint64_t class_bytes = 0;
+  for (int k = 0; k < kNumRfClasses; ++k) class_bytes += c.cls[k].bytes;
+  CHECK(class_bytes == c.rx_bytes);   // fixture bodies all classify cleanly
 }
 
 TEST(self_rc_frames_counted_but_never_tracked) {

@@ -20,8 +20,8 @@ STALE_S = 2.0
 LABEL_W = 6
 CARD_COLS = [("st", 4), ("pps", 5), ("Mbps", 5), ("loss%", 5), ("crc", 5),
              ("age", 6), ("forgn", 6), ("self", 6)]
-SIG_COLS = [("cls", 4), ("pps", 5), ("rssi", 6), ("rssiA", 6), ("rssiB", 6),
-            ("snr", 5), ("snrA", 5), ("snrB", 5)]
+SIG_COLS = [("cls", 4), ("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6),
+            ("rssiB", 6), ("snr", 5), ("snrA", 5), ("snrB", 5)]
 STRM_COLS = [("str", 4), ("ov", 5), ("rec/s", 7), ("abn/s", 7), ("in/s", 7),
              ("sfail", 5), ("flight", 6)]
 
@@ -214,15 +214,18 @@ def render_rows(model, wall, width):
                 if key not in model.sig_rows:
                     continue
                 s = model.sig_rows[key]
+                mbps = s.get("mbps")
+                kbps = None if mbps is None else mbps * 1000.0
                 cells = [
                     _f(CLASS_LABELS.get(cls, cls), SIG_COLS[0][1]),
                     _f(s.get("pps"), SIG_COLS[1][1], 0),
-                    _f(s.get("rssi"), SIG_COLS[2][1], 1),
-                    _f(s.get("rssi_a"), SIG_COLS[3][1], 1),
-                    _f(s.get("rssi_b"), SIG_COLS[4][1], 1),
-                    _f(s.get("snr"), SIG_COLS[5][1], 1),
-                    _f(s.get("snr_a"), SIG_COLS[6][1], 1),
-                    _f(s.get("snr_b"), SIG_COLS[7][1], 1),
+                    _f(kbps, SIG_COLS[2][1], 0),
+                    _f(s.get("rssi"), SIG_COLS[3][1], 1),
+                    _f(s.get("rssi_a"), SIG_COLS[4][1], 1),
+                    _f(s.get("rssi_b"), SIG_COLS[5][1], 1),
+                    _f(s.get("snr"), SIG_COLS[6][1], 1),
+                    _f(s.get("snr_a"), SIG_COLS[7][1], 1),
+                    _f(s.get("snr_b"), SIG_COLS[8][1], 1),
                 ]
                 rows.append(_grid_row(f"  c{_s(cid)}", cells))
 

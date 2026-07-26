@@ -404,6 +404,7 @@ static int run_radio(const maburgs::Config& cfg) {
           auto& cls = ci.classes[static_cast<size_t>(k)];
           const auto& tcls = t.cls[static_cast<size_t>(k)];
           cls.frames = tcls.frames;
+          cls.bytes = tcls.bytes;
           cls.has_ema = tcls.has_ema;
           cls.rssi_ema = tcls.rssi_ema;
           cls.rssi_a_ema = tcls.rssi_a_ema;
