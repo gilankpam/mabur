@@ -233,6 +233,54 @@ TEST(on_rc_frame_tolerates_unknown_type_telem) {
   CHECK(vrx.rcf_seq() == seq_before);
 }
 
+// (e) Blind-side timeout must reach the wire: after promoting off rung 0 on
+// clean feedback, feedback silently stops (sample_valid=false, e.g. the s1
+// window saw 0 expected symbols) while video keeps flowing. LadderController
+// ::on_tick() forces rung 0 internally once feedback_timeout_ms elapses, but
+// that is only useful if VrxController actually copies the demoted rung into
+// cur_op_/the next RCF -- otherwise the drone keeps flying the last
+// aggressive op on stale wire content through and after the blind period.
+TEST(blind_side_timeout_demotes_rcf_profile) {
+  LadderCfg lcfg = default_ladder();
+  lcfg.ladder = {{0, 1.0}, {4, 0.25}};
+  lcfg.up_util = 0.1;
+  lcfg.confirm_ms = 10;
+  lcfg.clean_ms = 10;
+  lcfg.probation_ms = 10;
+  lcfg.hold_after_down_ms = 0;
+  lcfg.min_between_changes_ms = 0;
+  // feedback_timeout_ms left at its default (1000 ms) -- exactly what this
+  // test is guarding.
+  auto vrx = make(lcfg);
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+
+  // Promote off rung 0 on real, healthy feedback samples.
+  double now = 0;
+  for (; now < 1000 && vrx.ctl().rung() == 0; now += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    vrx.step(now, ld, healthy());
+  }
+  REQUIRE(vrx.ctl().rung() == 1);
+  CHECK(vrx.cur_op().mcs == 4);
+
+  // Feedback goes blind (sample_valid=false) but video keeps arriving, so
+  // only the ladder's feedback timeout -- not rendezvous video silence --
+  // is in play.
+  std::optional<VrxController::Out> out;
+  const double blind_until = now + 1500;  // > default feedback_timeout_ms
+  for (; now < blind_until; now += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    if (auto o = vrx.step(now, ld, no_data()); o && !o->is_disc) out = o;
+  }
+  REQUIRE(vrx.ctl().rung() == 0);
+  CHECK(vrx.cur_op().mcs == 0);
+  REQUIRE(out.has_value());
+  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+  REQUIRE(r.has_value());
+  CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
+  CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(1.0));
+}
+
 MTEST_MAIN
 
 // (c) Starvation guard: a decode-collapse window (zero completed base-layer
