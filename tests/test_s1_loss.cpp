@@ -87,14 +87,13 @@ TEST(counter_reset_flushes_window) {
   lw.add(expected, arrived, t);
   t += 50;
 
-  // Now we have fresh deltas, but dExpected still spans the reset.
-  // The window should only reflect deltas AFTER the reset.
-  // With only one add() after reset, sample is still invalid until at least
-  // two adds establish the window.
+  // Now we have fresh deltas AFTER the reset.
+  // A single add() with positive delta is valid (one-entry window).
   auto sample_after_one_add = lw.sample(t - 1);
-  CHECK(!sample_after_one_add.valid);
+  CHECK(sample_after_one_add.valid);
+  CHECK(sample_after_one_add.loss == 0.0);
 
-  // Add one more to establish proper window
+  // Add another to verify multi-entry window still works
   expected = 250;
   arrived = 250;
   lw.add(expected, arrived, t);
@@ -154,6 +153,101 @@ TEST(arrived_greater_than_expected_clamps_to_zero) {
   // Loss should clamp to 0.0, not go negative
   CHECK(sample.loss >= 0.0);
   CHECK(approx_eq(sample.loss, 0.0, 1e-6));
+}
+
+TEST(single_add_then_sample_is_valid) {
+  // After a single add() with positive delta from zero baseline,
+  // sample() should be valid with correct loss.
+  S1LossWindow lw(500);
+
+  double t = 0;
+  // First add: 100 expected, 97 arrived (3% loss)
+  lw.add(100, 97, t);
+
+  auto sample = lw.sample(t);
+  CHECK(sample.valid);
+  CHECK(approx_eq(sample.loss, 0.03, 1e-6));
+}
+
+TEST(reset_with_nondegen_loss) {
+  // Critical test: after a reset followed by real loss,
+  // sample() must report that loss once valid (not 0% or garbage).
+  S1LossWindow lw(500);
+
+  double t = 0;
+  uint64_t expected = 0;
+  uint64_t arrived = 0;
+
+  // Build up some initial data
+  for (int i = 0; i < 3; ++i) {
+    expected += 100;
+    arrived += 100;
+    lw.add(expected, arrived, t);
+    t += 50;
+  }
+
+  // Verify initial state: valid, 0% loss
+  auto sample_before_reset = lw.sample(t - 1);
+  CHECK(sample_before_reset.valid);
+  CHECK(sample_before_reset.loss == 0.0);
+
+  // Reset: totals go backwards
+  expected = 10;
+  arrived = 10;
+  lw.add(expected, arrived, t);
+  t += 50;
+
+  // After reset, window is empty: invalid
+  auto sample_after_reset = lw.sample(t - 1);
+  CHECK(!sample_after_reset.valid);
+
+  // Add first entry post-reset: ~50% loss (100 expected, 50 arrived)
+  expected = 110;
+  arrived = 60;
+  lw.add(expected, arrived, t);
+  t += 50;
+
+  // Single entry post-reset: should be valid (dExpected > 0)
+  auto sample_one_entry = lw.sample(t - 1);
+  CHECK(sample_one_entry.valid);
+  CHECK(approx_eq(sample_one_entry.loss, 0.50, 1e-3));  // ~50% loss
+}
+
+TEST(long_run_deque_pruning) {
+  // After many adds spanning >> window_ms, window_.size() stays bounded.
+  // Loss reflects only the recent interval.
+  S1LossWindow lw(100);  // 100 ms window for faster pruning
+
+  double t = 0;
+  uint64_t expected = 0;
+  uint64_t arrived = 0;
+
+  // Add 1000 entries over 5000 ms (50 ms intervals, 100 ms window)
+  // ~2 entries in window at a time. Window should stay small.
+  for (int i = 0; i < 1000; ++i) {
+    expected += 10;
+    arrived += 9;  // 10% loss
+    lw.add(expected, arrived, t);
+    t += 5;  // 5 ms per update
+
+    // Periodically check that window size stays bounded
+    if (i % 100 == 0 && i > 0) {
+      int size = lw.size();
+      // At t >= 500, should have at most ~20 entries (100 ms window / 5 ms per entry)
+      if (t >= 500) {
+        CHECK(size <= 30);  // Conservative bound
+      }
+    }
+  }
+
+  // At the end, window should have only recent entries (100 ms window at t=5000)
+  int final_size = lw.size();
+  CHECK(final_size <= 30);  // ~20 entries for 100 ms window at 5 ms intervals
+
+  // Loss should still reflect ~10%
+  auto sample = lw.sample(t - 1);
+  CHECK(sample.valid);
+  CHECK(approx_eq(sample.loss, 0.10, 1e-3));
 }
 
 MTEST_MAIN

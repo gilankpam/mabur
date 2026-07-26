@@ -16,31 +16,39 @@ class S1LossWindow {
       : window_ms_(window_ms),
         prev_expected_(0),
         prev_arrived_(0),
-        have_first_sample_(false),
-        adds_since_reset_(0) {}
+        have_first_sample_(false) {}
 
   void add(uint64_t expected_total, uint64_t arrived_total, double now_ms) {
-    // Detect counter reset: if totals go backwards, flush the window.
+    // Detect counter reset: if totals go backwards, flush the window and
+    // re-baseline prev_expected_/prev_arrived_ without pushing an entry.
     bool reset_detected = false;
     if (have_first_sample_ &&
         (expected_total < prev_expected_ || arrived_total < prev_arrived_)) {
       window_.clear();
-      adds_since_reset_ = 0;
       reset_detected = true;
+    }
+
+    // If reset was detected, just update the baseline and return (no entry).
+    if (reset_detected) {
+      prev_expected_ = expected_total;
+      prev_arrived_ = arrived_total;
+      have_first_sample_ = true;
+      return;
     }
 
     // Compute deltas from previous state.
     uint64_t d_expected = expected_total - prev_expected_;
     uint64_t d_arrived = arrived_total - prev_arrived_;
 
-    // Only add entries with positive deltas. Also track adds since reset.
+    // Only add entries with positive deltas.
     if (d_expected > 0 || d_arrived > 0) {
       window_.push_back({now_ms, d_expected, d_arrived});
-      // Increment adds_since_reset only if we actually added an entry
-      // (not on reset detection when deltas are negative).
-      if (!reset_detected) {
-        adds_since_reset_++;
-      }
+    }
+
+    // Prune entries older than window_ms to keep deque bounded.
+    const double cutoff_time = now_ms - window_ms_;
+    while (!window_.empty() && window_.front().t < cutoff_time) {
+      window_.pop_front();
     }
 
     prev_expected_ = expected_total;
@@ -71,11 +79,9 @@ class S1LossWindow {
       total_arrived += entry.d_arrived;
     }
 
-    // Return invalid if not enough adds since reset or no traffic.
-    // After a reset (when adds_since_reset_ is reset to 0), we require at least 2 adds
-    // with positive deltas before the sample becomes valid. This ensures we accumulate
-    // fresh data after the reset.
-    if (adds_since_reset_ < 2 || total_expected == 0) {
+    // Return invalid if no traffic in the window.
+    // Valid iff dExpected > 0.
+    if (total_expected == 0) {
       return {false, 0.0};
     }
 
@@ -88,6 +94,9 @@ class S1LossWindow {
     return {true, loss_val};
   }
 
+  // Observer for testing: current number of entries in deque.
+  int size() const { return static_cast<int>(window_.size()); }
+
  private:
   struct Entry {
     double t;
@@ -99,7 +108,6 @@ class S1LossWindow {
   uint64_t prev_expected_;
   uint64_t prev_arrived_;
   bool have_first_sample_;
-  int adds_since_reset_;
   std::deque<Entry> window_;
 };
 
