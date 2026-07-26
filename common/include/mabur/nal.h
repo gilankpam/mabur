@@ -23,7 +23,9 @@ NalInfo parse_hevc_nal(const uint8_t* nal, size_t len);
 // frame-shm ring) into a stream id in [0, 3] for the layered link. Walks
 // 00 00 01 start codes (a 4-byte 00 00 00 01 code contains one): any critical
 // NAL (VPS/SPS/PPS 32-34, IRAP 16-23) -> 0 immediately; otherwise the first
-// VCL NAL (type < 16) picks 1 + min(tid, 2). No parseable NAL -> 0.
+// VCL NAL (type < 16) picks the layer — TRAIL_N (type 0, non-referenced;
+// waybeam's SVC-T enhance marker) -> 3, else 1 + min(tid, 2). No parseable
+// VCL NAL -> 0.
 //
 // The unparseable -> 0 fallback is a deliberate protect-up policy: waybeam is
 // a trusted producer, so misclassifying a non-critical frame as critical only

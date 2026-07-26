@@ -57,7 +57,9 @@ TEST(classify_frame_replays_nal_vectors_as_single_nal_frames) {
     const int tid = c["tid"].get<int>();
     // Non-VCL, non-critical NALs (e.g. SEI 39, type 63) pick no layer on
     // their own; classify_frame's no-parseable-VCL fallback is stream 0.
-    const int expect = critical ? 0 : (type < 16 ? 1 + std::min(tid, 2) : 0);
+    const int expect =
+        critical ? 0
+                 : (type == 0 ? 3 : (type < 16 ? 1 + std::min(tid, 2) : 0));
 
     std::vector<uint8_t> frame = {0x00, 0x00, 0x00, 0x01};
     frame.insert(frame.end(), nal.begin(), nal.end());
@@ -94,6 +96,30 @@ TEST(classify_frame_garbage_protects_up) {
   std::vector<uint8_t> junk(64, 0xFF);
   CHECK(classify_frame(junk.data(), junk.size()) == 0);
   CHECK(classify_frame(nullptr, 0) == 0);
+}
+
+TEST(classify_frame_trail_n_is_enhance_sid3) {
+  // waybeam SVC-T marks enhance frames by rewriting TRAIL_R -> TRAIL_N
+  // (type 0) and leaves tid at 0; TRAIL_N is non-referenced -> sid 3.
+  auto f = mk_nal(0, 0, 2000);
+  CHECK(classify_frame(f.data(), f.size()) == 3);
+  // Prefix SEI must not mask the TRAIL_N slice.
+  auto g = cat({mk_nal(39, 0), mk_nal(0, 0, 2000)});
+  CHECK(classify_frame(g.data(), g.size()) == 3);
+}
+
+TEST(classify_frame_trail_n_after_critical_stays_critical) {
+  // Critical always wins, whatever else is in the frame.
+  auto f = cat({mk_nal(32, 0), mk_nal(0, 0, 2000)});
+  CHECK(classify_frame(f.data(), f.size()) == 0);
+}
+
+TEST(classify_frame_truncated_nal_header_protects_up) {
+  // A start code followed by <2 bytes must not classify (parse_hevc_nal
+  // defaults to type 0, which now means TRAIL_N/sid 3 — the wrong-way
+  // misclassification). No parseable VCL -> 0.
+  std::vector<uint8_t> f = {0x00, 0x00, 0x01, 0x02};  // 1-byte "NAL"
+  CHECK(classify_frame(f.data(), f.size()) == 0);
 }
 
 MTEST_MAIN

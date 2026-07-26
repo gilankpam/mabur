@@ -22,8 +22,11 @@ int classify_frame(const uint8_t* annexb, size_t len) {
     size_t nal_max = len - (i + 3);
     NalInfo n = parse_hevc_nal(nal, nal_max);
     if (n.critical) return 0;
-    if (sid < 0 && n.type < 16)
-      sid = 1 + (n.tid < 2 ? n.tid : 2);
+    // nal_max >= 2: a truncated header parses as type 0, which now means
+    // TRAIL_N (sid 3, droppable) — never classify from a default-constructed
+    // NalInfo; skipping keeps the protect-up fallback.
+    if (sid < 0 && nal_max >= 2 && n.type < 16)
+      sid = n.type == 0 ? 3 : 1 + (n.tid < 2 ? n.tid : 2);
     i += 2;  // skip past the start code; loop ++i lands on the NAL header
   }
   return sid < 0 ? 0 : sid;
