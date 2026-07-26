@@ -322,15 +322,30 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(drone_rows, ["DRONE   no telemetry (old maburd / peer caps)"])
 
     def test_drone_fixed_width_survives_extreme_values(self):
+        # Untrusted values off the wire (UDP JSON, not just what the current
+        # exporter happens to emit) must never widen a DRONE-region row:
+        # u32 generation/ages, an absurd applied mcs/bw (not reachable via
+        # today's exporter — decode_profile clamps first — but maburtop
+        # doesn't get to assume the peer is well-behaved), and extreme
+        # ENC/TXQ numeric fields too.
         rows_a = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
         d = dict(DGRAM)
-        d["drone"] = dict(DGRAM["drone"], gen=4294967295,
-                           rcf={"age_ms": 123456789, "rx_pps": 19.4},
-                           tlm_age_ms=987654321)
+        d["drone"] = dict(
+            DGRAM["drone"],
+            gen=4294967295,
+            rcf={"age_ms": 123456789, "rx_pps": 19.4},
+            tlm_age_ms=987654321,
+            applied=dict(DGRAM["drone"]["applied"],
+                         mcs=999999999, bw=888888888),
+            enc=dict(DGRAM["drone"]["enc"], mbps=999999999.99),
+            txq=dict(DGRAM["drone"]["txq"], depth=999999999, cap=888888888),
+        )
         rows_b = render_rows(self.fresh(d), wall=100.2, width=GRID_WIDTH)
         drone_a = self._drone_rows(rows_a)
         drone_b = self._drone_rows(rows_b)
         self.assertEqual([len(r) for r in drone_a], [len(r) for r in drone_b])
+        for r in drone_b:
+            self.assertLessEqual(len(r), GRID_WIDTH)
 
     def test_update_ignores_non_dict_input(self):
         # A UDP datagram that is valid JSON but not an object (null, a bare

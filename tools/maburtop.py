@@ -106,24 +106,32 @@ GRID_WIDTH = max(_grid_width(CARD_COLS), _grid_width(LNKSIG_COLS),
                  len(_dec_line("s0", {}, None)))  # widest grid row
 
 
+def _applied_mcsbw_cell(mcs, bw, w=7):
+    """'mcs5/20'-style composite cell, fixed-width like _rung_cell: compose
+    then truncate/pad so an untrusted/absurd mcs or bw off the wire can't
+    widen the DRONE row. w=7 fits today's real values (1-digit mcs,
+    2-digit bw) exactly, matching the mockup with no extra padding."""
+    mcs_s = "--" if mcs is None else str(mcs)
+    bw_s = "--" if bw is None else str(bw)
+    s = f"mcs{mcs_s}/{bw_s}"
+    return s[:w].ljust(w) if len(s) > w else s.ljust(w)
+
+
 def _drone_row(drone):
     """DRONE row: link state, generation, applied op (vs the header's
     commanded op two lines up — a mismatch should be visually obvious),
     RCF freshness, telemetry age. Inline-labeled like the decode lines;
-    every variable-length field goes through _f/_age_cell so extreme
-    values (u32 generation, saturating ages) truncate instead of
-    shifting the row."""
+    every variable-length field goes through _f/_age_cell/
+    _applied_mcsbw_cell so extreme values (u32 generation, saturating
+    ages, an absurd mcs/bw off the wire) truncate instead of shifting the
+    row."""
     state = drone.get("state")
     state_s = state.upper() if isinstance(state, str) else None
     applied = drone.get("applied") or {}
-    mcs = applied.get("mcs")
-    bw = applied.get("bw")
-    mcs_s = "--" if mcs is None else str(mcs)
-    bw_s = "--" if bw is None else str(bw)
     rcf = drone.get("rcf") or {}
     return (
         f"DRONE   {_f(state_s, 8)}  gen {_f(drone.get('gen'), 6)}   "
-        f"applied mcs{mcs_s}/{bw_s}"
+        f"applied {_applied_mcsbw_cell(applied.get('mcs'), applied.get('bw'))}"
         f" ov {_f(applied.get('overhead'), 4, 2)}"
         f" off {_f(applied.get('offset_qdb'), 3)}"
         f" der {_f(applied.get('derate_qdb'), 3)}  "
