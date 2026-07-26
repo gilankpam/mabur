@@ -340,7 +340,7 @@ def render_rows_compact(model, wall, width):
         elif cls == "msp":
             rows.append(f"{label:<{LABEL_W}} (osd side-channel — no fec decode)")
         elif cls == "ctrl":
-            rows.append(f"{label:<{LABEL_W}} (control — tx at rendezvous only)")
+            rows.append(f"{label:<{LABEL_W}} (control — rendezvous + 1 Hz telemetry)")
         else:
             rows.append(f"{label:<{LABEL_W}}")
         for cid in sorted({c for c, k in model.sig_rows if k == cls}):
@@ -606,8 +606,14 @@ def panel_drone(model, wall):
     enc = drone.get("enc") or {}
     line3 = (f"encoder   {_f(enc.get('fps'), 5, 1)} fps    "
              f"{_f(enc.get('mbps'), 5, 2)} Mbps    "
-             f"cmd {_f(enc.get('cmd_kbps'), 5)}k   qp {_f(enc.get('qp'), 2)}")
-    body.append((line3, []))
+             f"cmd {_f(enc.get('cmd_kbps'), 5)}k   qp {_f(enc.get('qp'), 2)}"
+             f"   ring {_f(enc.get('ring_drops'), 5)}")
+    ring = enc.get("ring_drops")
+    spans3 = []
+    if isinstance(ring, (int, float)) and ring > 0:
+        idx = line3.rindex("ring ") + 5
+        spans3.append((idx, len(line3) - idx, "bad"))
+    body.append((line3, spans3))
 
     # queue (txq)
     txq = drone.get("txq") or {}
@@ -865,7 +871,7 @@ def _build_block(model, d, link, cls):
     elif cls == "msp":
         rows.append((_annotation_line(label, "(no fec decode — repairs in MspSink)"), []))
     elif cls == "ctrl":
-        rows.append((_annotation_line(label, "(control — tx at rendezvous only)"), []))
+        rows.append((_annotation_line(label, "(control — rendezvous + 1 Hz telemetry)"), []))
     else:
         rows.append((f"  {label}", []))
 
