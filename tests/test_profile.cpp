@@ -154,15 +154,16 @@ TEST(ladder_from_applies_default_flag_policy) {
   CHECK(ladder[1].bw == 20);
   CHECK(ladder[1].ldpc == true);
   CHECK(ladder[1].stbc == true);
-  // T1
+  // T1 — same MCS as CRIT/T0 (all rungs ride the scored base rate; FEC
+  // overhead is the only per-layer differentiator).
   CHECK(ladder[2].mode == PhyMode::HT);
-  CHECK(ladder[2].mcs == 3);
+  CHECK(ladder[2].mcs == 2);
   CHECK(ladder[2].bw == 20);
   CHECK(ladder[2].ldpc == false);
   CHECK(ladder[2].stbc == false);
   // T2
   CHECK(ladder[3].mode == PhyMode::HT);
-  CHECK(ladder[3].mcs == 4);
+  CHECK(ladder[3].mcs == 2);
   CHECK(ladder[3].bw == 20);
   CHECK(ladder[3].ldpc == false);
   CHECK(ladder[3].stbc == false);
@@ -184,16 +185,18 @@ TEST(ladder_from_respects_disabled_flags) {
 }
 
 TEST(ladder_from_clamps_at_top) {
-  // HT top = 7: mcs=6 -> CRIT/T0=6, T1=7, T2=7 (clamped)
+  // HT top = 7: an out-of-range base mcs clamps to 7, and every rung rides
+  // that same clamped value (no more per-rung +1/+2 offset to clamp
+  // separately).
   FlagPolicy fp;
-  auto ladder = ladder_from(PhyMode::HT, 6, 20, fp);
-  CHECK(ladder[0].mcs == 6);
-  CHECK(ladder[1].mcs == 6);
+  auto ladder = ladder_from(PhyMode::HT, 9, 20, fp);
+  CHECK(ladder[0].mcs == 7);
+  CHECK(ladder[1].mcs == 7);
   CHECK(ladder[2].mcs == 7);
   CHECK(ladder[3].mcs == 7);
 
-  // VHT top = 8: mcs=8 -> all clamp to 8
-  auto vladder = ladder_from(PhyMode::VHT, 8, 40, fp);
+  // VHT top = 8: mcs=10 clamps to 8, all rungs match.
+  auto vladder = ladder_from(PhyMode::VHT, 10, 40, fp);
   CHECK(vladder[0].mcs == 8);
   CHECK(vladder[1].mcs == 8);
   CHECK(vladder[2].mcs == 8);

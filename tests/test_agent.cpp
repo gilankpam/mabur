@@ -190,7 +190,8 @@ TEST(keepalive_disc_while_linked_is_ignored) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.current().generation == gen);   // op untouched (no MAX_RANGE yank)
-  CHECK(agent.current().ladder[1].mcs == 2);  // still the RCF rung
+  CHECK(agent.current().ladder[1].mcs == 2);   // still the RCF rung
+  CHECK(agent.current().ladder[2].mcs == 2);  // T1 rides the same base mcs
   CHECK(act.controls.size() == n_controls);   // no DISC_ACK
   CHECK(act.bitrates.size() == n_bitrates);   // bitrate policy not re-forced
 
@@ -203,7 +204,8 @@ TEST(keepalive_disc_while_linked_is_ignored) {
 }
 
 // 3. RCF profile HT mcs2/20, pwr offset -24qdb, fec16=8 (ov=0.5) -> op ladder
-// T1=mcs3/T2=mcs4, offset -24qdb, ov 0.5; set_bitrate_kbps called with ~5100.
+// all four rungs at mcs2 (base rate; FEC overhead is the sole per-layer
+// differentiator), offset -24qdb, ov 0.5; set_bitrate_kbps called with ~5100.
 TEST(rcf_apply_computes_ladder_power_fec_and_bitrate) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -218,8 +220,8 @@ TEST(rcf_apply_computes_ladder_power_fec_and_bitrate) {
   const AppliedOp& op = agent.current();
   CHECK(op.ladder[0].mcs == 2);  // CRIT
   CHECK(op.ladder[1].mcs == 2);  // T0
-  CHECK(op.ladder[2].mcs == 3);  // T1
-  CHECK(op.ladder[3].mcs == 4);  // T2
+  CHECK(op.ladder[2].mcs == 2);  // T1 — same base mcs
+  CHECK(op.ladder[3].mcs == 2);  // T2 — same base mcs
   CHECK(op.pwr_offset_qdb == -24);
   CHECK(op.fec_overhead > 0.499 && op.fec_overhead < 0.501);
 
