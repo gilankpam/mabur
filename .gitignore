@@ -3,3 +3,4 @@ out/
 toolchain/
 __pycache__/
 docs/superpowers/
+tests/fixtures/*-fixture.jsonl
