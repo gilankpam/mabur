@@ -95,6 +95,14 @@ add_executable(burst_sim ${CMAKE_SOURCE_DIR}/tools/bench/burst_sim.cpp)
 target_link_libraries(burst_sim PRIVATE mabur_common)
 add_test(NAME burst_sim_selfcheck COMMAND burst_sim --self-check)
 
+# Post-flight analysis test (requires Python 3)
+find_program(Python3_EXECUTABLE python3)
+if(Python3_EXECUTABLE)
+  add_test(NAME test_flightreport
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightreport.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()
+
 if(MABUR_BUILD_LINKBENCH)
   add_mtest(test_linkbench_wire test_linkbench_wire.cpp LIBS linkbench_core)
   add_mtest(test_linkbench_pacer test_linkbench_pacer.cpp LIBS linkbench_core)
