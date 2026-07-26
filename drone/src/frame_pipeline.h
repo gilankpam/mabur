@@ -43,6 +43,11 @@ class FramePipeline {
   // signal (producer vs. scanner), surfaced in maburd's stats line — never a
   // silent choice.
   uint64_t idr_disagreements() const { return idr_disagree_; }
+
+  // Frames where the producer ENHANCE flag and the TRAIL_N scan disagreed.
+  // Same contract as idr_disagreements(): a bug signal, never a silent
+  // choice — the frame protects up to base (spec 2026-07-26 svct-enable).
+  uint64_t enhance_disagreements() const { return enhance_disagree_; }
   uint16_t next_frame_id() const { return next_frame_id_; }
 
   static constexpr uint64_t kDiscontStickyMs = 1000;
@@ -52,6 +57,7 @@ class FramePipeline {
   bool discont_pending_ = true;    // first frame after start anchors the window
   uint64_t discont_until_ms_ = 0;  // flag rides on frames until this deadline
   uint64_t idr_disagree_ = 0;
+  uint64_t enhance_disagree_ = 0;
 };
 
 }  // namespace mabur

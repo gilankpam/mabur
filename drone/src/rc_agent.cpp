@@ -53,8 +53,8 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
   applied_.pwr_offset_qdb = commanded_offset_qdb_;
   applied_.shed[0] = false;
   applied_.shed[1] = false;
-  applied_.shed[2] = true;  // T1 shed in MAX_RANGE, per spec (already covers shed_level_>=2)
-  applied_.shed[3] = true;  // T2 shed in MAX_RANGE, per spec (already covers shed_level_>=1)
+  applied_.shed[2] = true;  // reserved layer shed in MAX_RANGE, per spec (already covers shed_level_>=2)
+  applied_.shed[3] = true;  // enhance layer shed in MAX_RANGE, per spec (already covers shed_level_>=1)
   ++applied_.generation;
   act_.apply_op(applied_);
   run_bitrate_policy(now_ms, /*force=*/true);
@@ -175,9 +175,10 @@ void RcAgent::run_thermal_guard(const RadioHealth& health) {
 // debounce on the way up), and decays it by exactly one step down per 2s
 // clean window (2000ms with no further drop-rise); each step-down restarts
 // the 2s window, so recovering from level 3 to level 0 takes three separate
-// 2s clean windows in a row, not one. shed_level_ >= 1 sheds T2, >= 2 also
-// sheds T1, and reaching level 3 additionally cuts the encoder bitrate by
-// 30% once. Any level change reapplies the current op (derate+shed folded
+// 2s clean windows in a row, not one. shed_level_ >= 1 sheds sid 3 (SVC-T
+// enhance, droppable), >= 2 also sheds sid 2 (reserved), and reaching level
+// 3 additionally cuts the encoder bitrate by 30% once. Any level change
+// reapplies the current op (derate+shed folded
 // in) so the change reaches the actuator immediately.
 void RcAgent::run_congestion_guard(uint64_t now_ms, const RadioHealth& health) {
   bool drops_rose = have_last_tx_drops_ && health.tx_drops > last_tx_drops_;

@@ -22,6 +22,21 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
     ++idr_disagree_;  // disagreement is a bug signal, not a silent choice
   }
 
+  const bool meta_enhance = (meta.flags & VENC_FRAME_FLAG_ENHANCE) != 0;
+  // SVC-T enhance (sid 3, droppable): producer flag and TRAIL_N scan must
+  // AGREE. Shedding a referenced frame corrupts decode, so a single signal
+  // protects up to base (critical stays 0) and is surfaced, never silent.
+  if ((sid == 3) != meta_enhance) {
+    if (sid > 1) sid = 1;
+    ++enhance_disagree_;
+  }
+
+  // Shed check BEFORE frame_id allocation: a shed frame must not punch an
+  // id gap into the GS FrameStream (each gap stalls emit for gap_timeout /
+  // lookahead). The drop is still booked in dropped(sid); the discont latch
+  // stays pending so the window anchors on a frame that actually ships.
+  if (uep.drop_if_shed(sid)) return {};
+
   if (discont_pending_) {
     discont_pending_ = false;
     discont_until_ms_ = now_ms + kDiscontStickyMs;
