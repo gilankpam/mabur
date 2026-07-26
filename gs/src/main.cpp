@@ -18,9 +18,11 @@
 #include "config.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
+#include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
+#include "mabur/uep_encoder.h"
 #include "msp_font.h"
 #include "msp_renderer.h"
 #include "msp_sink.h"
@@ -71,6 +73,22 @@ static int run_radio(const maburgs::Config& cfg) {
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
                cfg.fec.symbol_size[2], cfg.fec.symbol_size[3],
                cfg.fec.decode_deadline_ms, cfg.fec.seq_horizon);
+
+  // Ladder feasibility log: one line per effective (post-max_mcs-filter)
+  // rung, so a boot log alone tells you whether the configured ladder can
+  // physically carry the video the encoder is about to be told to produce.
+  for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
+    const maburgs::Rung& rung = cfg.link.ladder_cfg.ladder[i];
+    const auto spec = mabur::rc::ladder_from(mabur::rc::PhyMode::HT,
+                                              static_cast<uint8_t>(rung.mcs), 20)[1];
+    const double eff1 = mabur::uep_layer_overhead(1, rung.overhead);
+    const double budget = eff1 / (1 + eff1);
+    const double src_mbps =
+        mabur::rc::phy_rate_mbps(spec) * 0.65 / (1 + eff1);
+    std::fprintf(stderr,
+                 "ladder[%zu]: mcs%d ov%.2f eff1=%.2f budget=%.0f%% ~%.1f Mbps src\n",
+                 i, rung.mcs, rung.overhead, eff1, budget * 100.0, src_mbps);
+  }
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);

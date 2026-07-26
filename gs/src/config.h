@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "ladder_controller.h"
 #include "mabur/uep_encoder.h"
 
 namespace maburgs {
@@ -71,6 +72,14 @@ struct LinkCfg {
   int min_offset_qdb = -40;
   int max_offset_qdb = 0;
   int base_ref_idx = 53;
+
+  // Measured-loss ladder controller config (spec
+  // docs/superpowers/specs/2026-07-27-ladder-controller-design.md): rungs
+  // (post-`max_mcs` filter) plus the util/timing thresholds LadderController
+  // decides on. Default ladder is the spec's static feasibility floor —
+  // rung 0 is the failsafe every controller starts and falls back to.
+  LadderCfg ladder_cfg{
+      {{0, 1.0}, {2, 0.5}, {4, 0.25}, {5, 0.25}, {6, 0.15}, {7, 0.1}}};
 };
 
 /// Video output destination.

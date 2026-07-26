@@ -238,3 +238,126 @@ TEST(video_out_frame_keys) {
   CHECK(cfg2.video_out.frame_gap_timeout_ms == 30);
   CHECK(cfg2.video_out.frame_lookahead == 4);
 }
+
+// link.ladder: measured-loss ladder controller rungs + max_mcs filter +
+// thresholds (SDD 2026-07-27 ladder-controller Task 2).
+TEST(ladder_defaults_to_spec_six_rung_ladder) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto& L = cfg.link.ladder_cfg.ladder;
+  CHECK(L.size() == 6);
+  CHECK(L[0].mcs == 0); CHECK(L[0].overhead > 0.999 && L[0].overhead < 1.001);
+  CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.499 && L[1].overhead < 0.501);
+  CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.249 && L[2].overhead < 0.251);
+  CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.249 && L[3].overhead < 0.251);
+  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.149 && L[4].overhead < 0.151);
+  CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.099 && L[5].overhead < 0.101);
+}
+
+TEST(ladder_parses_explicit_array_in_order) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"ladder":[{"mcs":0,"overhead":1.0},{"mcs":3,"overhead":0.4}]}})"));
+  auto& L = cfg.link.ladder_cfg.ladder;
+  CHECK(L.size() == 2);
+  CHECK(L[0].mcs == 0);
+  CHECK(L[1].mcs == 3);
+  CHECK(L[1].overhead > 0.399 && L[1].overhead < 0.401);
+}
+
+TEST(ladder_rung_unknown_key_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":0,"overhead":1.0,"bogus":1}]}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("bogus") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
+TEST(ladder_rung_mcs_out_of_range_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":8,"overhead":0.5}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(ladder_rung_overhead_out_of_range_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":0.01}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":1.5}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(ladder_empty_array_rejected) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"ladder":[]}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(max_mcs_filters_effective_ladder) {
+  auto cfg = maburgs::load_config(write_tmp(R"({"link":{"max_mcs":5}})"));
+  auto& L = cfg.link.ladder_cfg.ladder;
+  CHECK(L.size() == 4);
+  for (auto& r : L) CHECK(r.mcs <= 5);
+}
+
+TEST(max_mcs_zero_keeps_single_mcs0_rung) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"ladder":[{"mcs":0,"overhead":1.0},{"mcs":4,"overhead":0.25}],)"
+      R"("max_mcs":0}})"));
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 1);
+  CHECK(cfg.link.ladder_cfg.ladder[0].mcs == 0);
+}
+
+TEST(max_mcs_filter_leaving_no_rungs_throws) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":4,"overhead":0.25},{"mcs":6,"overhead":0.15}],)"
+        R"("max_mcs":2}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("empty after max_mcs filter") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
+TEST(up_util_must_be_less_than_down_util) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"up_util":0.6,"down_util":0.6}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"up_util":0.7,"down_util":0.6}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(ladder_threshold_keys_parse_with_defaults) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.ladder_cfg.down_util > 0.599 && cfg.link.ladder_cfg.down_util < 0.601);
+  CHECK(cfg.link.ladder_cfg.up_util > 0.149 && cfg.link.ladder_cfg.up_util < 0.151);
+  CHECK(cfg.link.ladder_cfg.confirm_ms == 250);
+  CHECK(cfg.link.ladder_cfg.clean_ms == 5000);
+  CHECK(cfg.link.ladder_cfg.probation_ms == 3000);
+  CHECK(cfg.link.ladder_cfg.penalty_base_ms == 10000);
+  CHECK(cfg.link.ladder_cfg.penalty_max_ms == 60000);
+  CHECK(cfg.link.ladder_cfg.hold_after_down_ms == 4000);
+  CHECK(cfg.link.ladder_cfg.min_between_changes_ms == 150);
+  CHECK(cfg.link.ladder_cfg.feedback_timeout_ms == 1000);
+
+  auto cfg2 = maburgs::load_config(write_tmp(
+      R"({"link":{"down_util":0.5,"clean_ms":4000,"penalty_max_ms":30000}})"));
+  CHECK(cfg2.link.ladder_cfg.down_util > 0.499 && cfg2.link.ladder_cfg.down_util < 0.501);
+  CHECK(cfg2.link.ladder_cfg.clean_ms == 4000);
+  CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
+}

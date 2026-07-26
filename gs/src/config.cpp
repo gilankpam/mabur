@@ -122,7 +122,13 @@ Config load_config(const std::string& path) {
 
   if (j.contains("link")) {
     const json& r = j["link"];
-    check_keys(r, "link", {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "src_bitrate_mbps", "margin_db", "static_mcs", "static_overhead", "static_offset_qdb", "min_offset_qdb", "max_offset_qdb", "base_ref_idx"});
+    check_keys(r, "link",
+               {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "src_bitrate_mbps",
+                "margin_db", "static_mcs", "static_overhead", "static_offset_qdb",
+                "min_offset_qdb", "max_offset_qdb", "base_ref_idx",
+                "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
+                "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
+                "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
@@ -136,6 +142,54 @@ Config load_config(const std::string& path) {
     if (c.link.min_offset_qdb > c.link.max_offset_qdb)
       fail("link.min_offset_qdb", "must be <= max_offset_qdb");
     c.link.base_ref_idx = static_cast<int>(get_int(r, "base_ref_idx", 53, 0, 127, "link"));
+
+    // Measured-loss ladder: rungs (c.link.ladder_cfg.ladder already holds the
+    // struct default 6-rung ladder; an explicit "ladder" array replaces it
+    // wholesale, in order) then the max_mcs feasibility filter, then the
+    // change/probation/penalty thresholds.
+    if (r.contains("ladder")) {
+      if (!r["ladder"].is_array() || r["ladder"].empty())
+        fail("link.ladder", "must be a non-empty array");
+      std::vector<Rung> parsed;
+      int i = 0;
+      for (const json& rj : r["ladder"]) {
+        const std::string where = "link.ladder[" + std::to_string(i++) + "]";
+        check_keys(rj, where, {"mcs", "overhead"});
+        Rung rung;
+        rung.mcs = static_cast<int>(get_int(rj, "mcs", 0, 0, 7, where));
+        rung.overhead = get_num(rj, "overhead", 1.0, 0.05, 1.0, where);
+        parsed.push_back(rung);
+      }
+      c.link.ladder_cfg.ladder = parsed;
+    }
+    const long max_mcs = get_int(r, "max_mcs", 7, 0, 7, "link");
+    {
+      std::vector<Rung> effective;
+      for (const Rung& rung : c.link.ladder_cfg.ladder)
+        if (rung.mcs <= max_mcs) effective.push_back(rung);
+      if (effective.empty()) fail("link.ladder", "empty after max_mcs filter");
+      c.link.ladder_cfg.ladder = effective;
+    }
+    c.link.ladder_cfg.down_util = get_num(r, "down_util", 0.6, 0.0, 1.0, "link");
+    c.link.ladder_cfg.up_util = get_num(r, "up_util", 0.15, 0.0, 1.0, "link");
+    if (c.link.ladder_cfg.up_util >= c.link.ladder_cfg.down_util)
+      fail("link.up_util", "must be < down_util");
+    c.link.ladder_cfg.confirm_ms =
+        static_cast<int>(get_int(r, "confirm_ms", 250, 0, 600000, "link"));
+    c.link.ladder_cfg.clean_ms =
+        static_cast<int>(get_int(r, "clean_ms", 5000, 0, 600000, "link"));
+    c.link.ladder_cfg.probation_ms =
+        static_cast<int>(get_int(r, "probation_ms", 3000, 0, 600000, "link"));
+    c.link.ladder_cfg.penalty_base_ms =
+        static_cast<int>(get_int(r, "penalty_base_ms", 10000, 0, 600000, "link"));
+    c.link.ladder_cfg.penalty_max_ms =
+        static_cast<int>(get_int(r, "penalty_max_ms", 60000, 0, 600000, "link"));
+    c.link.ladder_cfg.hold_after_down_ms =
+        static_cast<int>(get_int(r, "hold_after_down_ms", 4000, 0, 600000, "link"));
+    c.link.ladder_cfg.min_between_changes_ms =
+        static_cast<int>(get_int(r, "min_between_changes_ms", 150, 0, 600000, "link"));
+    c.link.ladder_cfg.feedback_timeout_ms =
+        static_cast<int>(get_int(r, "feedback_timeout_ms", 1000, 0, 600000, "link"));
   }
 
   if (j.contains("video_out")) {
