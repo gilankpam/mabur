@@ -123,25 +123,17 @@ Config load_config(const std::string& path) {
   if (j.contains("link")) {
     const json& r = j["link"];
     check_keys(r, "link",
-               {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "src_bitrate_mbps",
-                "margin_db", "static_mcs", "static_overhead", "static_offset_qdb",
-                "min_offset_qdb", "max_offset_qdb", "base_ref_idx",
+               {"vtx_id", "feedback_ms", "beacon_keepalive_ms",
+                "static_mcs", "static_overhead", "static_offset_qdb",
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
-    c.link.src_bitrate_mbps = get_num(r, "src_bitrate_mbps", 4.0, 0.5, 50.0, "link");
-    c.link.margin_db = get_num(r, "margin_db", 2.0, 0.0, 50.0, "link");
     c.link.static_mcs = static_cast<int>(get_int(r, "static_mcs", -1, -1, 7, "link"));
     c.link.static_overhead = get_num(r, "static_overhead", 0.25, 0.10, 1.0, "link");
     c.link.static_offset_qdb = static_cast<int>(get_int(r, "static_offset_qdb", 0, -64, 63, "link"));
-    c.link.min_offset_qdb = static_cast<int>(get_int(r, "min_offset_qdb", -40, -64, 0, "link"));
-    c.link.max_offset_qdb = static_cast<int>(get_int(r, "max_offset_qdb", 0, -64, 0, "link"));
-    if (c.link.min_offset_qdb > c.link.max_offset_qdb)
-      fail("link.min_offset_qdb", "must be <= max_offset_qdb");
-    c.link.base_ref_idx = static_cast<int>(get_int(r, "base_ref_idx", 53, 0, 127, "link"));
 
     // Measured-loss ladder: rungs (c.link.ladder_cfg.ladder already holds the
     // struct default 6-rung ladder; an explicit "ladder" array replaces it

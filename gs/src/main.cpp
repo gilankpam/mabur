@@ -26,9 +26,9 @@
 #include "msp_font.h"
 #include "msp_renderer.h"
 #include "msp_sink.h"
-#include "op_table.h"
 #include "radio_frontend.h"
 #include "rtp_packetizer.h"
+#include "s1_loss.h"
 #include "stats_exporter.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
@@ -193,21 +193,28 @@ static int run_radio(const maburgs::Config& cfg) {
       fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), mono_ms());
   });
 
-  maburgs::LinkTable lt;
   maburgs::VrxCfg vcfg;
   vcfg.vtx_id = cfg.link.vtx_id;
   vcfg.op_channel = cfg.radio.channel;
   vcfg.feedback_ms = cfg.link.feedback_ms;
   vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
-  vcfg.ctrl.src_bitrate_bps = cfg.link.src_bitrate_mbps * 1e6;
-  vcfg.ctrl.margin_db = cfg.link.margin_db;
-  vcfg.ctrl.min_offset_qdb = cfg.link.min_offset_qdb;
-  vcfg.ctrl.max_offset_qdb = cfg.link.max_offset_qdb;
-  vcfg.ctrl.base_ref_idx = cfg.link.base_ref_idx;
+  vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
   vcfg.pin_overhead = cfg.link.static_overhead;
   vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
-  maburgs::VrxController vrx(lt, vcfg);
+  maburgs::VrxController vrx(vcfg);
+  // Measured-loss ladder feedback: stream 1 (base layer)'s cumulative
+  // (expected, arrived) symbol totals, pre-FEC-repair. expected = source
+  // symbols ever seen by seq framing (delivered directly + recovered by FEC
+  // + abandoned as unrecoverable); arrived = delivered directly (pre-repair
+  // "actually received", UepDecoder::LayerStats::syms_delivered). Not the
+  // same window as window_counts()'s post-FEC residual below: this one is
+  // symbol-level and time-windowed (S1LossWindow), that one is packet-level
+  // and RCF-period-windowed.
+  maburgs::S1LossWindow s1_loss;
+  // Change-detect on ctl().last_event(): initialize to the pre-any-event
+  // default (t_ms 0) so boot doesn't print a phantom transition line.
+  double last_ctl_event_ms = vrx.ctl().last_event().t_ms;
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
       // A CRC-clean frame can still fail to parse as a valid Telem (e.g. a
@@ -333,7 +340,8 @@ static int run_radio(const maburgs::Config& cfg) {
     }
     if (frame_wire) fstream.poll(drained_ms);
 
-    // Control step: layer delivery + residual from the decode window.
+    // Control step: layer delivery + residual from the decode window, plus
+    // stream 1's cumulative symbol totals feeding the measured-loss window.
     std::array<uint8_t, 4> ld{};
     for (int s = 0; s < 4; ++s)
       ld[static_cast<size_t>(s)] =
@@ -344,11 +352,20 @@ static int run_radio(const maburgs::Config& cfg) {
     if (e0 + e1 > 0)
       residual = 1.0 - static_cast<double>(d0 + d1) / static_cast<double>(e0 + e1);
     // Zero completed base-layer packets while video frames still arrive =
-    // decode collapse; the SNR window is survivor-biased then (see
-    // VrxController::step). Gate on having ever seen video so a pre-link
-    // idle window doesn't count as starvation.
+    // decode collapse; the ladder's video_starved path forces the failsafe
+    // rung then rather than trusting this window's (survivor-biased) loss
+    // sample. Gate on having ever seen video so a pre-link idle window
+    // doesn't count as starvation.
     const bool starved = (e0 + e1 == 0) && agg.last_video_us() != 0;
-    if (auto out = vrx.step(now_ms, ld, residual, starved)) {
+
+    const auto s1 = agg.decoder().stats(1);
+    s1_loss.add(s1.syms_delivered + s1.syms_recovered + s1.syms_abandoned,
+                s1.syms_delivered, now_ms);
+    const auto s1_sample = s1_loss.sample(now_ms);
+    const maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
+                                     residual.value_or(0.0), starved};
+
+    if (auto out = vrx.step(now_ms, ld, health)) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period
       std::vector<maburgs::CardSnapshot> snaps;
       for (int i = 0; i < n_cards; ++i) {
@@ -359,6 +376,16 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       const int tx = sel.update(snaps, now_ms_u * 1000);
       fronts[static_cast<size_t>(tx)]->send_control(out->frame);
+    }
+    // ctl: rung transition line — load-bearing for post-mortems (Task 6
+    // adds the sideport link.ctl block; this stderr line is independent of
+    // it and persists in /tmp/maburgs.log even when no sideport consumer is
+    // listening).
+    if (const auto& e = vrx.ctl().last_event(); e.t_ms != last_ctl_event_ms) {
+      last_ctl_event_ms = e.t_ms;
+      std::fprintf(stderr, "ctl: rung %d->%d reason=%s u=%.2f pre=%.3f\n",
+                   e.from, e.to, maburgs::to_string(e.reason), e.u,
+                   health.pre_fec_loss);
     }
 
     // 1 Hz stats line / SIGUSR1 dump.

@@ -168,41 +168,14 @@ TEST(stats_section_parses_and_validates) {
 
 MTEST_MAIN
 
-// link.src_bitrate_mbps drives the controller's energy-model design point
-// (rungs that can't carry src*(1+overhead) are infeasible). Optional,
-// fractional, defaults to the Python controller's 4 Mbps.
-TEST(src_bitrate_mbps_parses_and_defaults) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
-  CHECK(cfg.link.src_bitrate_mbps > 3.999 && cfg.link.src_bitrate_mbps < 4.001);
-  cfg = maburgs::load_config(
-      write_tmp("{\"link\": {\"src_bitrate_mbps\": 17.5}}"));
-  CHECK(cfg.link.src_bitrate_mbps > 17.499 && cfg.link.src_bitrate_mbps < 17.501);
-  bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"src_bitrate_mbps\": 99}}")); }
-  catch (const std::exception&) { threw = true; }
-  CHECK(threw);  // out of range
-  cfg = maburgs::load_config(write_tmp("{\"link\": {\"margin_db\": 35}}"));
-  CHECK(cfg.link.margin_db > 34.999 && cfg.link.margin_db < 35.001);
-}
-
 // static_txagc was renamed to static_offset_qdb (USER-FACING, qdB offset
-// semantics since 2026-07-17); min_offset_qdb/max_offset_qdb/base_ref_idx
-// are new controller rail keys. max_offset_qdb is validated <= 0 (ZERO is
-// the max legal offset — docs/txagc-calibration.md).
-TEST(offset_qdb_keys_parse_and_default) {
+// semantics since 2026-07-17).
+TEST(static_offset_qdb_key_parses_and_defaults) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   CHECK(cfg.link.static_offset_qdb == 0);
-  CHECK(cfg.link.min_offset_qdb == -40);
-  CHECK(cfg.link.max_offset_qdb == 0);
-  CHECK(cfg.link.base_ref_idx == 53);
 
-  cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"static_offset_qdb":-12,"min_offset_qdb":-32,)"
-      R"("max_offset_qdb":-4,"base_ref_idx":40}})"));
+  cfg = maburgs::load_config(write_tmp(R"({"link":{"static_offset_qdb":-12}})"));
   CHECK(cfg.link.static_offset_qdb == -12);
-  CHECK(cfg.link.min_offset_qdb == -32);
-  CHECK(cfg.link.max_offset_qdb == -4);
-  CHECK(cfg.link.base_ref_idx == 40);
 
   // Old key name is now unknown -> rejected.
   bool threw = false;
@@ -211,20 +184,28 @@ TEST(offset_qdb_keys_parse_and_default) {
     threw = std::string(e.what()).find("static_txagc") != std::string::npos;
   }
   CHECK(threw);
+}
 
-  // max_offset_qdb must be <= 0.
-  threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"max_offset_qdb":5}})")); }
-  catch (const std::exception&) { threw = true; }
-  CHECK(threw);
-
-  // min_offset_qdb must be <= max_offset_qdb.
-  threw = false;
-  try {
-    maburgs::load_config(write_tmp(
-        R"({"link":{"min_offset_qdb":-4,"max_offset_qdb":-8}})"));
-  } catch (const std::exception&) { threw = true; }
-  CHECK(threw);
+// src_bitrate_mbps/margin_db/min_offset_qdb/max_offset_qdb/base_ref_idx were
+// the old model-driven (Controller/LinkTable) energy-model + qdB-rail keys.
+// The measured-loss ladder controller (SDD 2026-07-27) replaces that
+// resolver entirely; each is now an unknown key and must fail the boot like
+// any other stale key (config.cpp:check_keys, "link").
+TEST(deleted_model_controller_keys_now_throw) {
+  const char* deleted_keys[] = {"src_bitrate_mbps", "margin_db",
+                                "min_offset_qdb", "max_offset_qdb",
+                                "base_ref_idx"};
+  for (const char* key : deleted_keys) {
+    bool threw = false;
+    const std::string json =
+        std::string(R"({"link":{")") + key + R"(":1}})";
+    try {
+      maburgs::load_config(write_tmp(json.c_str()));
+    } catch (const std::exception& e) {
+      threw = std::string(e.what()).find(key) != std::string::npos;
+    }
+    CHECK(threw);
+  }
 }
 
 // frame_gap_timeout_ms/frame_lookahead: FrameStream tuning knobs for the

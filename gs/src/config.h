@@ -43,22 +43,6 @@ struct LinkCfg {
   uint32_t vtx_id = 1;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
-  // Source bitrate the controller's energy model plans for (Python
-  // controller.py src_bitrate default 4 Mbps). Rungs whose effective PHY
-  // rate cannot carry src*(1+overhead) are infeasible, so this sets the
-  // floor rung the ladder converges to: at 4 the controller parks around
-  // mcs2 (~6-8 Mbps video); declare the bitrate you actually want and it
-  // selects the cheapest rung that carries it (bench 2026-07-12: 17 ->
-  // mcs5 on a 33 dB NLOS link).
-  double src_bitrate_mbps = 4.0;
-  // Energy-model SNR margin (Python controller.py margin_db default 2.0).
-  // Doubles as the calibration shim for chips whose reported per-frame SNR
-  // is optimistic vs the real channel (8822E reports 35-40 dB on survivor
-  // frames while delivering 10% at agc0 — bench 2026-07-12): raising it
-  // forces the resolver to command real TX gain despite the inflated
-  // path-loss estimate. The durable fix (delivery-closed power loop) is
-  // v1.1 work.
-  double margin_db = 2.0;
   // Static-link mode: when static_mcs >= 0 the adaptive controller is
   // bypassed entirely and every RCF commands exactly this op (HT, 20 MHz).
   // Rendezvous/keep-alive/failsafe machinery is unaffected. For bench
@@ -68,10 +52,6 @@ struct LinkCfg {
   // qdB power offset from the calibrated baseline (RCF wire semantics,
   // rc_proto bias-64); used only when static_mcs >= 0.
   int static_offset_qdb = 0;
-  // Controller qdB offset rail + PA-draw base index (see ControllerConfig).
-  int min_offset_qdb = -40;
-  int max_offset_qdb = 0;
-  int base_ref_idx = 53;
 
   // Measured-loss ladder controller config (spec
   // docs/superpowers/specs/2026-07-27-ladder-controller-design.md): rungs

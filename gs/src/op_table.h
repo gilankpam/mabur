@@ -3,6 +3,8 @@
 #include <optional>
 #include <vector>
 
+#include "op_point.h"
+
 // Port of devourer's op_table.py: LinkTable with 1 dB bucketing via
 // std::nearbyint (banker's rounding) to replicate Python's
 // round(snr/bucket)*bucket exactly. snr_required scans [lo=-5, hi=40, step=0.5]
@@ -17,18 +19,6 @@ struct LinkRow {
   bool sgi;
   double overhead;
   double snr_req;
-};
-
-struct OpPoint {
-  bool vht = false;
-  int mcs = 0;
-  int bw = 20;
-  bool sgi = false;
-  int pwr_offset_qdb = 0;
-  double overhead = 1.0;
-  double snr_req = 0.0;
-  double e_bit;
-  double p_deliver = 0.0;
 };
 
 class LinkTable {

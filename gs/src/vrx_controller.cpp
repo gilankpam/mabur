@@ -5,23 +5,30 @@
 
 namespace maburgs {
 
-VrxController::VrxController(const LinkTable& lt, VrxCfg cfg)
+namespace {
+// Rebuild an OpPoint from the ladder's current rung. PHY offset is always 0
+// in ladder mode (see step()); bw/sgi/snr_req/e_bit/p_deliver are dead
+// fields the LinkTable-era resolver used to populate — stats_exporter still
+// reads mcs/bw/overhead/offset/vht, so they keep emitting benign 0s here.
+OpPoint op_from_rung(const Rung& r) {
+  return OpPoint{false, r.mcs, 20, false, 0, r.overhead, 0.0, 0.0, 0.0};
+}
+}  // namespace
+
+VrxController::VrxController(VrxCfg cfg)
     : cfg_(cfg),
-      ctrl_(lt, cfg.ctrl),
+      ctrl_(cfg.ladder),
       win_(cfg.score),
       // link_lost_ms 1000 / beacon_period_ms 20 are deliberately fixed, not
       // config: every hw validation ran with these, and a slower fallback to
       // BEACONING after video loss only delays re-rendezvous. The removed
       // link.video_silence_ms key claimed to tune the 1000 but never did.
       rz_(VrxRzConfig{cfg.vtx_id, 1000, 20, cfg.op_channel}),
-      cur_op_(max_range(cfg.ctrl.max_offset_qdb)) {
-  if (cfg_.bw_set.size() > 1) rungs_.emplace(cfg_.bw_set);
-}
+      cur_op_(op_from_rung(ctrl_.op())) {}
 
 void VrxController::on_video(double rssi, double snr, bool crc_err,
                              uint16_t seq, double now_ms) {
   win_.add_frame(rssi, snr, crc_err, seq, now_ms / 1000.0);
-  if (rungs_) rungs_->add_seq(seq);
   rz_.feed_video(now_ms);
 }
 
@@ -36,18 +43,17 @@ void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
 
 std::optional<VrxController::Out> VrxController::step(
     double now_ms, const std::array<uint8_t, 4>& layer_delivery,
-    std::optional<double> residual_loss, bool video_starved) {
-  // Blind-side failsafe: with no feedback (no video -> no update() calls) the
-  // controller pins MAX_RANGE, so the first RCF after recovery commands the
-  // conservative floor, not the last aggressive point.
+    const LinkHealth& health) {
+  // Blind-side failsafe: with no feedback the ladder's own on_tick() forces
+  // rung 0 after feedback_timeout_ms, so the first RCF after recovery
+  // commands the conservative floor, not the last aggressive point.
   if (cfg_.pin_mcs >= 0) {
-    // Static-link mode: fixed op, estimator fully out of the loop.
+    // Static-link mode: fixed op, ladder fully out of the loop (never
+    // ticked/updated — health is ignored entirely).
     cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_offset_qdb,
                       cfg_.pin_overhead, 0.0, 0.0, 1.0};
-    cur_offset_qdb_ = cfg_.pin_offset_qdb;
-  } else if (auto op = ctrl_.on_tick(now_ms)) {
-    cur_op_ = *op;
-    cur_offset_qdb_ = op->pwr_offset_qdb;
+  } else if (ctrl_.on_tick(now_ms)) {
+    cur_op_ = op_from_rung(ctrl_.op());
   }
   const VrxAction act = rz_.tick(now_ms);
   if (act == VrxAction::Beacon)
@@ -62,15 +68,8 @@ std::optional<VrxController::Out> VrxController::step(
   if (now_ms - last_fb_ms_ < cfg_.feedback_ms) return std::nullopt;
   last_fb_ms_ = now_ms;
 
-  if (rungs_) ctrl_.report_rung_delivery(rungs_->stats(), now_ms);
-  // Decode collapse: the frames still decoding are the lucky strong ones, so
-  // the SNR window lies high while the stream is dead. Withhold the update
-  // and let on_tick's blind-side timeout walk the op back to MAX_RANGE.
-  if (auto snr = win_.snr_estimate(); snr && !video_starved && cfg_.pin_mcs < 0) {
-    if (auto op = ctrl_.update(*snr, cur_offset_qdb_, now_ms)) {
-      cur_op_ = *op;
-      cur_offset_qdb_ = op->pwr_offset_qdb;
-    }
+  if (cfg_.pin_mcs < 0 && ctrl_.update(health, now_ms)) {
+    cur_op_ = op_from_rung(ctrl_.op());
   }
   seq_ = static_cast<uint16_t>(seq_ + 1);
 
@@ -81,7 +80,7 @@ std::optional<VrxController::Out> VrxController::step(
   r.profile = mabur::rc::encode_profile(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
-  r.score = static_cast<uint16_t>(win_.score(residual_loss));
+  r.score = static_cast<uint16_t>(win_.score(health.residual_loss));
   r.pwr_offset_biased = mabur::rc::encode_pwr_offset_qdb(cur_op_.pwr_offset_qdb);
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
   r.layer_delivery.assign(layer_delivery.begin(), layer_delivery.end());
