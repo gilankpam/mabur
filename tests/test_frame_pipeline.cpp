@@ -124,19 +124,17 @@ TEST(frame_pipeline_mark_discontinuity_restarts_the_sticky_window) {
 TEST(frame_pipeline_routes_by_temporal_id) {
   UepEncoder enc(layers(), 15);
   FramePipeline pipe;
-  // tid 0,1 -> streams 1,2 unambiguously. tid 2 still classifies as sid 3
-  // via classify_frame's temporal formula, but post-SVC-T that slot is
-  // reserved for producer-flagged enhance frames: without the ENHANCE flag
-  // it is a scan/flag disagreement, so the pipeline protects it down to
-  // base (1) and books the disagreement rather than silently routing it.
-  const int want[3] = {1, 2, 1};  // tid 0,1,2 -> streams 1,2,(3 protects to 1)
+  const int want[3] = {1, 2, 3};  // tid 0,1,2 -> streams 1,2,3
   for (int i = 0; i < 3; ++i) {
     auto buf = ring_buf(1, static_cast<uint8_t>(i), 500);
     auto bodies = pipe.encode(enc, buf.data(), payload_len(buf), meta_of(0, false), 1);
     REQUIRE(!bodies.empty());
     CHECK(bodies[0].stream_id == want[i]);
   }
-  CHECK(pipe.enhance_disagreements() == 1);
+  // TRAIL_R tid 2 routes to sid 3 (devourer-tid routing) without being
+  // flagged as an enhance disagreement: the agreement check keys on real
+  // TRAIL_N-ness, not on sid == 3.
+  CHECK(pipe.enhance_disagreements() == 0);
   CHECK(pipe.idr_disagreements() == 0);
 }
 
@@ -199,6 +197,15 @@ TEST(frame_pipeline_enhance_needs_flag_and_scan_agreement) {
                           meta_flags(4000, VENC_FRAME_FLAG_IDR | VENC_FRAME_FLAG_ENHANCE), 4);
   REQUIRE(!out4.empty());
   CHECK(out4[0].stream_id == 0);
+  CHECK(pipe.enhance_disagreements() == 3);
+
+  // TRAIL_R tid 2 (devourer-tid routing, NOT enhance): sid 3 with no flag
+  // is not a disagreement, because the scan side is frame_is_trail_n, not
+  // sid == 3.
+  auto b5 = ring_buf(1, 2, 900);
+  auto out5 = pipe.encode(enc, b5.data(), payload_len(b5), meta_flags(5000, 0), 5);
+  REQUIRE(!out5.empty());
+  CHECK(out5[0].stream_id == 3);
   CHECK(pipe.enhance_disagreements() == 3);
 }
 

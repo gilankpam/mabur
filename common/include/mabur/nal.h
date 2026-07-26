@@ -33,4 +33,13 @@ NalInfo parse_hevc_nal(const uint8_t* nal, size_t len);
 // non-critical risks losing it under adverse link conditions.
 int classify_frame(const uint8_t* annexb, size_t len);
 
+// True when the frame's first VCL NAL (type < 16) is TRAIL_N (type 0) —
+// waybeam's SVC-T enhance marker (the star6e TRAIL_R->TRAIL_N rewrite).
+// Walks the same start-code scan as classify_frame; a critical NAL means
+// the frame can never be enhance -> false. Distinct from classify_frame
+// returning 3, which also covers TRAIL_R with tid >= 2 (temporal-id
+// producers): only genuine TRAIL_N participates in the producer-flag
+// agreement check (spec 2026-07-26 svct-enable).
+bool frame_is_trail_n(const uint8_t* annexb, size_t len);
+
 }  // namespace mabur

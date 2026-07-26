@@ -35,4 +35,17 @@ int classify_frame(const uint8_t* annexb, size_t len) {
   return sid < 0 ? 0 : sid;
 }
 
+bool frame_is_trail_n(const uint8_t* annexb, size_t len) {
+  if (!annexb || len < 5) return false;
+  for (size_t i = 0; i + 4 < len; ++i) {
+    if (annexb[i] != 0x00 || annexb[i + 1] != 0x00 || annexb[i + 2] != 0x01)
+      continue;
+    NalInfo n = parse_hevc_nal(annexb + i + 3, len - (i + 3));
+    if (n.critical) return false;
+    if (n.type < 16) return n.type == 0;
+    i += 2;
+  }
+  return false;
+}
+
 }  // namespace mabur
