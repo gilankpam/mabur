@@ -49,7 +49,7 @@ void assign_if_present(const json& j, const char* key, T& out,
 
 void parse_radio(const json& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width", "bw_set",
-                        "max_txagc", "thermal_max_delta", "power_mode",
+                        "thermal_max_delta", "power_mode",
                         "power_offset_qdb", "tx_threads", "rate_walls_idx",
                         "legacy_wall_idx", "wall_margin_db",
                         "min_offset_qdb", "base_ref_idx"},
@@ -66,7 +66,6 @@ void parse_radio(const json& j, RadioCfg& r) {
       fail("radio.bw_set", "wrong type");
     }
   }
-  assign_if_present(j, "max_txagc", r.max_txagc, "radio");
   assign_if_present(j, "thermal_max_delta", r.thermal_max_delta, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "power_offset_qdb", r.power_offset_qdb, "radio");
@@ -292,9 +291,8 @@ Config load_config(const std::string& path) {
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
   check_known_keys(j,
-                    {"radio", "fec", "waybeam", "link", "msp", "ring_name",
-                     "video_input", "frame_ring_name", "flags",
-                     "power_offset_db"},
+                    {"radio", "fec", "waybeam", "link", "msp",
+                     "frame_ring_name", "flags"},
                     "");
 
   Config cfg;
@@ -304,27 +302,7 @@ Config load_config(const std::string& path) {
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
   assign_if_present(j, "frame_ring_name", cfg.frame_ring_name, "");
-  // Deprecated: both named/selected the pre-frame-shm RTP-packet ring, which
-  // no longer exists. Accepted-and-ignored (not fatal) for one release because
-  // the bench procedure pins video_input in the drone's live /etc/mabur.json —
-  // failing here would leave an upgraded maburd unable to start.
-  for (const char* dead : {"video_input", "ring_name"})
-    if (j.contains(dead))
-      std::fprintf(stderr,
-                   "maburd config: WARNING: '%s' is obsolete and ignored — "
-                   "video ingest is frame-shm only (frame_ring_name). Remove "
-                   "it from this config.\n",
-                   dead);
   if (j.contains("flags")) parse_flags(j.at("flags"), cfg.flags);
-  if (j.contains("power_offset_db")) {
-    auto& arr = j.at("power_offset_db");
-    if (!arr.is_array() || arr.size() != 4) fail("power_offset_db", "must be an array of 4 ints");
-    try {
-      for (size_t i = 0; i < 4; ++i) cfg.power_offset_db[i] = arr.at(i).get<int8_t>();
-    } catch (const json::exception& e) {
-      fail("power_offset_db", "wrong type");
-    }
-  }
 
   return cfg;
 }
