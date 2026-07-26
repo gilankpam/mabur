@@ -51,6 +51,7 @@ struct TelemInputs {
   int soc_temp_c = -128;
   int thermal_delta = 0;
   double load1 = 0.0;
+  uint64_t idr_disagree = 0, enhance_disagree = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

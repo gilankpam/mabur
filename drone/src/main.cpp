@@ -522,11 +522,12 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
 
   std::fprintf(stderr,
               "maburd dry-run stats: frames_in=%zu bodies_out=%llu seq=%u sent=%llu drops=%llu "
-              "agent_state=%d rc_records=%zu/%zu idr_disagree=%llu\n",
+              "agent_state=%d rc_records=%zu/%zu idr_disagree=%llu enhance_disagree=%llu\n",
               frames.size(), static_cast<unsigned long long>(sent_bodies), tx.seq(),
               static_cast<unsigned long long>(tx.sent()), static_cast<unsigned long long>(tx.drops()),
               static_cast<int>(agent.state()), rc_idx, rc_recs.size(),
-              static_cast<unsigned long long>(pipe.idr_disagreements()));
+              static_cast<unsigned long long>(pipe.idr_disagreements()),
+              static_cast<unsigned long long>(pipe.enhance_disagreements()));
   return 0;
 }
 
@@ -728,9 +729,16 @@ int run_real_mode(const Config& cfg) {
   // Cumulative encoder/ring counters (spec 2026-07-26 drone-telemetry):
   // written by the hot thread, read by the agent thread's telemetry
   // collector. FramePipeline/FrameSource don't track these themselves (see
-  // frame_ring stats block below), so maburd tracks them here.
+  // frame_ring stats block below), so maburd tracks them here. Two
+  // different patterns live in this group: enc_frames/enc_bytes/ring_drops
+  // are computed right here (fetch_add) because nothing else tracks them,
+  // while idr_disagree_total/enhance_disagree_total are relaxed-published
+  // MIRRORS (store, not fetch_add) of counters FramePipeline already owns
+  // and updates on the hot thread — see pipe.idr_disagreements() below.
   std::atomic<uint64_t> enc_frames_total{0};
   std::atomic<uint64_t> enc_bytes_total{0};
+  std::atomic<uint64_t> idr_disagree_total{0};
+  std::atomic<uint64_t> enhance_disagree_total{0};
   std::atomic<uint64_t> ring_drops_total{0};
   // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
   // frame encoded so far died before the air — re-mark the discontinuity
@@ -859,6 +867,10 @@ int run_real_mode(const Config& cfg) {
           txq.push(std::move(b));
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
+        idr_disagree_total.store(pipe.idr_disagreements(),
+                                 std::memory_order_relaxed);
+        enhance_disagree_total.store(pipe.enhance_disagreements(),
+                                     std::memory_order_relaxed);
       }
       // Ring-pressure observability (spec: the drain-feedback policy's
       // future input): one stderr line every 5 s.
@@ -882,12 +894,13 @@ int run_real_mode(const Config& cfg) {
               std::memory_order_relaxed);
           std::fprintf(stderr,
               "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
-              "bad_slot=%llu idr_disagree=%llu\n",
+              "bad_slot=%llu idr_disagree=%llu enhance_disagree=%llu\n",
               f.fill_pct, f.used_slots, f.slot_count,
               (unsigned long long)f.reads,
               (unsigned long long)f.oversize_drops,
               (unsigned long long)f.bad_slot_drops,
-              (unsigned long long)pipe.idr_disagreements());
+              (unsigned long long)pipe.idr_disagreements(),
+              (unsigned long long)pipe.enhance_disagreements());
         }
       }
 
@@ -1059,6 +1072,8 @@ int run_real_mode(const Config& cfg) {
           ti.soc_temp_c = read_soc_temp_c_sigmastar();
         ti.thermal_delta = health.thermal_delta;
         ti.load1 = read_load1();
+        ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
+        ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
 
         auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
 

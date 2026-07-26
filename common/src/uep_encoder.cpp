@@ -107,6 +107,14 @@ void UepEncoder::set_shed(int stream_id, bool shed) {
   layers_[static_cast<size_t>(stream_id)].shed = shed;
 }
 
+bool UepEncoder::drop_if_shed(int stream_id) {
+  int sid = stream_id < 0 ? 0 : (stream_id > 3 ? 3 : stream_id);
+  Layer& layer = layers_[static_cast<size_t>(sid)];
+  if (!layer.shed) return false;
+  ++layer.dropped_count;
+  return true;
+}
+
 uint64_t UepEncoder::dropped(int stream_id) const {
   return layers_[static_cast<size_t>(stream_id)].dropped_count;
 }

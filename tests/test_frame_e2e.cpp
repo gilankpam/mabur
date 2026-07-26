@@ -7,6 +7,13 @@
 #include <random>
 #include <vector>
 #include "mtest.h"
+#ifdef MABUR_TEST_HAVE_DRONE_CORE
+// Only defined when this target also links mabur_drone_core (see
+// tests/CMakeLists.txt): the sustained-shed e2e test below drives the real
+// drone-side FramePipeline, which isn't available in GS-only configs
+// (MABUR_BUILD_DRONE=OFF).
+#include "frame_pipeline.h"
+#endif
 #include "frame_stream.h"
 #include "rtp_packetizer.h"
 #include "mabur/frame_wire.h"
@@ -118,5 +125,55 @@ TEST(frame_e2e_clean_and_lossy) {
     CHECK(ts_per_frame[i] == expect);
   }
 }
+
+#ifdef MABUR_TEST_HAVE_DRONE_CORE
+// Needs the drone-side FramePipeline (mabur_drone_core); compiled out in
+// GS-only configs (MABUR_BUILD_DRONE=OFF), which don't expose drone/src.
+TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
+  std::mt19937 rng(99);
+  UepEncoder enc(layers(), 15);
+  enc.set_shed(3, true);                  // congestion: enhance layer shed
+  UepDecoder dec(layers(), 200);
+  FramePipeline pipe;
+
+  uint64_t clean = 0, truncated = 0;
+  maburgs::FrameStream fs(
+      {50, 8},
+      {[&](const framewire::FrameHdr&) {},
+       [&](const uint8_t*, size_t) {},
+       [&](bool c) { c ? ++clean : ++truncated; }});
+
+  uint64_t now = 1;
+  int sent = 0;
+  for (int fi = 0; fi < 60; ++fi, ++now) {
+    // rally cadence: alternate base TRAIL_R and enhance TRAIL_N frames.
+    const bool enhance = fi % 2 == 1;
+    const bool idr = fi == 0;
+    auto ab = mk_annexb_frame(rng, idr, 0, 8000);
+    if (enhance) ab[4] = 0x00;            // rewrite first NAL type 1 -> 0
+    std::vector<uint8_t> unit(VENC_FRAME_META_SIZE + ab.size());
+    std::memcpy(unit.data() + VENC_FRAME_META_SIZE, ab.data(), ab.size());
+    VencFrameMeta m{};
+    m.pts = static_cast<uint32_t>(fi) * 16667u;
+    m.codec = VENC_FRAME_CODEC_H265;
+    m.flags = static_cast<uint8_t>((idr ? VENC_FRAME_FLAG_IDR : 0) |
+                                   (enhance ? VENC_FRAME_FLAG_ENHANCE : 0));
+    auto bodies = pipe.encode(enc, unit.data(), ab.size(), m, now);
+    if (enhance) { CHECK(bodies.empty()); continue; }  // shed, no id burned
+    ++sent;
+    for (auto& b : bodies)
+      for (auto& fr : dec.add_body(b.body.data(), b.body.size(), now))
+        fs.push_fragment(fr.stream_id, fr.frag.data(), fr.frag.size(), now);
+    fs.poll(now);
+  }
+
+  // Every non-shed frame emitted clean, in order, with ZERO gap-skips: the
+  // id space stayed contiguous under sustained shed.
+  CHECK(clean == static_cast<uint64_t>(sent));
+  CHECK(truncated == 0);
+  CHECK(fs.frames_dropped() == 0);
+  CHECK(enc.dropped(3) == 30);
+}
+#endif  // MABUR_TEST_HAVE_DRONE_CORE
 
 MTEST_MAIN

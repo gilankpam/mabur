@@ -100,20 +100,26 @@ std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw) {
   int top = (mode == PhyMode::VHT) ? 8 : 7;
   const char* name = (mode == PhyMode::VHT) ? "VHT1SS_MCS" : "MCS";
   int m = std::clamp(static_cast<int>(mcs), 0, top);
-  int t1 = std::min(top, m + 1);
-  int t2 = std::min(top, m + 2);
-  return "CRIT=" + std::string(name) + std::to_string(m) + "/" + std::to_string(bw) +
-         ";T0=" + std::string(name) + std::to_string(m) + "/" + std::to_string(bw) +
-         ";T1=" + std::string(name) + std::to_string(t1) + "/" + std::to_string(bw) +
-         ";T2=" + std::string(name) + std::to_string(t2) + "/" + std::to_string(bw);
+  // All four rungs ride the same (scored) base mcs — see ladder_from below
+  // for why.
+  std::string tok = std::string(name) + std::to_string(m) + "/" + std::to_string(bw);
+  return "CRIT=" + tok + ";T0=" + tok + ";T1=" + tok + ";T2=" + tok;
 }
 
+// hw 2026-07-26: the inherited devourer default (T1 = m+1, T2 = m+2) put
+// SVC-T enhance traffic past this link's wall — 20-42% RF loss concentrated
+// on the enhance frames, FEC (0.25x overhead) hopeless against it, lost
+// frame_ids stalling the GS FrameStream. Ruling: mcs is scored for the base
+// operating point, not for a faster per-rung rate; all four rungs (CRIT,
+// T0, T1, T2) ride that same base mcs. Same-day follow-up: T1/T2 also carry
+// T0's ldpc/stbc — flags-off T1/T2 measured 2-3 dB weaker on air at the
+// same MCS (single-chain TX, no coding gain), with the weaker GS card
+// losing 3-5x more of stream 3's frames. Per-layer differentiation is
+// exclusively the FEC overhead ladder (1.00/0.75/0.50/0.25 x scale).
 std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
                                         const FlagPolicy& fp) {
   int top = (mode == PhyMode::VHT) ? 8 : 7;
   int m = std::clamp(static_cast<int>(mcs), 0, top);
-  int t1 = std::min(top, m + 1);
-  int t2 = std::min(top, m + 2);
 
   std::array<LayerTxSpec, 4> ladder;
   // CRIT
@@ -128,14 +134,9 @@ std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
   ladder[1].bw = bw;
   ladder[1].ldpc = fp.t0_ldpc;
   ladder[1].stbc = fp.t0_stbc;
-  // T1
-  ladder[2].mode = mode;
-  ladder[2].mcs = static_cast<uint8_t>(t1);
-  ladder[2].bw = bw;
-  // T2
-  ladder[3].mode = mode;
-  ladder[3].mcs = static_cast<uint8_t>(t2);
-  ladder[3].bw = bw;
+  // T1/T2: identical PHY to T0 (rate and flags).
+  ladder[2] = ladder[1];
+  ladder[3] = ladder[1];
   return ladder;
 }
 
@@ -157,6 +158,16 @@ std::array<LayerTxSpec, 4> ladder_for_row(int idx, const FlagPolicy& fp) {
   ladder[0].stbc = ladder[0].stbc || fp.crit_stbc;
   ladder[1].ldpc = ladder[1].ldpc || fp.t0_ldpc;
   ladder[1].stbc = ladder[1].stbc || fp.t0_stbc;
+  // hw 2026-07-26 ruling (+ same-day follow-up): the vendored rows keep
+  // devourer's byte-exact spec strings (some still spell out a per-rung
+  // T1/T2 spread), but all video streams above CRIT ride T0's ENTIRE
+  // spec — rate fields and policy-applied ldpc/stbc alike. Redundancy,
+  // not PHY, differentiates layers: flags-off T1/T2 was tried first and
+  // measured 2-3 dB weaker on air at the same MCS. Enforce at this parse
+  // choke point so the table stays a faithful port while the applied
+  // ladder obeys the policy; matches ladder_from (the RCF path).
+  ladder[2] = ladder[1];
+  ladder[3] = ladder[1];
   return ladder;
 }
 

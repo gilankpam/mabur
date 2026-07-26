@@ -92,4 +92,28 @@ TEST(add_frame_shed_layer_drops) {
   CHECK(enc.dropped(3) == 1);
 }
 
+TEST(uep_drop_if_shed_books_drop_without_encoding) {
+  std::array<UepLayerCfg, 4> l{};
+  for (auto& c : l) {
+    c.fec.symbol_size = 164;
+    c.fec.window = 32;
+    c.fec.overhead = 0.5;
+    c.blocks_per_body = 4;
+  }
+  UepEncoder enc(l, 15);
+
+  CHECK(!enc.drop_if_shed(3));            // not shed: no-op
+  CHECK(enc.dropped(3) == 0);
+
+  enc.set_shed(3, true);
+  CHECK(enc.drop_if_shed(3));             // shed: true + booked
+  CHECK(enc.dropped(3) == 1);
+  CHECK(!enc.drop_if_shed(1));            // other layers unaffected
+  CHECK(enc.dropped(1) == 0);
+
+  enc.set_shed(3, false);
+  CHECK(!enc.drop_if_shed(3));
+  CHECK(enc.dropped(3) == 1);             // count sticks
+}
+
 MTEST_MAIN

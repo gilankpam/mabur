@@ -76,7 +76,17 @@ if(MABUR_BUILD_GS)
   add_mtest(test_msp_renderer test_msp_renderer.cpp LIBS mabur_gs_core)
   add_mtest(test_frame_stream test_frame_stream.cpp LIBS mabur_gs_core)
   add_mtest(test_rtp_packetizer test_rtp_packetizer.cpp LIBS mabur_gs_core)
-  add_mtest(test_frame_e2e test_frame_e2e.cpp LIBS mabur_gs_core)
+  if(MABUR_BUILD_DRONE)
+    # frame_e2e_sustained_shed_no_gaps_no_stalls drives the real drone-side
+    # FramePipeline into the GS-side decode/FrameStream path, the same way
+    # test_frame_pipeline pulls in mabur_drone_core for drone/src + frame_pipeline.cpp.
+    add_mtest(test_frame_e2e test_frame_e2e.cpp LIBS mabur_gs_core mabur_drone_core)
+    # Lets the test source compile out FramePipeline usage when this branch
+    # isn't taken (see the matching #ifdef in test_frame_e2e.cpp).
+    target_compile_definitions(test_frame_e2e PRIVATE MABUR_TEST_HAVE_DRONE_CORE=1)
+  else()
+    add_mtest(test_frame_e2e test_frame_e2e.cpp LIBS mabur_gs_core)
+  endif()
   add_mtest(test_stats_exporter test_stats_exporter.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
     add_test(NAME gs_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_e2e.sh)

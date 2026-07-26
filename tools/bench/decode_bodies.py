@@ -17,6 +17,7 @@ FRAG_HDR = struct.Struct("<HHH")     # seq, idx, count
 FRAME_HDR = struct.Struct("<HBBI")   # frame_id, flags, codec, pts_us
 FLAG_IDR = 0x01
 FLAG_DISCONT = 0x02
+FLAG_ENHANCE = 0x04
 
 def parse_symbol_size(text):
     """Accepts a single int (shared by all 4 streams) or a comma-separated
@@ -60,19 +61,25 @@ def read_fixture(path):
     return out
 
 def classify_frame(annexb):
-    """Mirror of mabur classify_frame (common/src/nal.cpp)."""
-    if len(annexb) < 5: return 0
-    sid, i = None, 0
+    """Mirror of mabur classify_frame (common/src/nal.cpp), extended to also
+    report TRAIL_N-ness (mabur's frame_is_trail_n): returns (sid, trail_n).
+    trail_n is only meaningful when sid == 3, since only TRAIL_N (not the
+    other route to sid 3, TRAIL_R with tid >= 2) participates in the
+    producer-flag agreement check maburd runs (spec 2026-07-26 svct-enable)."""
+    if len(annexb) < 5: return 0, False
+    sid, trail_n, i = None, False, 0
     while i + 4 < len(annexb):
         if annexb[i:i + 3] != b"\x00\x00\x01":
             i += 1
             continue
         t = (annexb[i + 3] >> 1) & 0x3F
         tid = max((annexb[i + 4] & 0x07) - 1, 0)
-        if (16 <= t <= 23) or (32 <= t <= 34): return 0
-        if sid is None and t < 16: sid = 1 + min(tid, 2)
+        if (16 <= t <= 23) or (32 <= t <= 34): return 0, False
+        if sid is None and t < 16:
+            sid = 3 if t == 0 else 1 + min(tid, 2)
+            trail_n = t == 0
         i += 3
-    return 0 if sid is None else sid
+    return (0, False) if sid is None else (sid, trail_n)
 
 def expected_unit(rec, frame_id):
     """The wire unit maburd builds for this fixture frame (drone
@@ -143,8 +150,11 @@ def main():
                     del reasm[key]
 
     fixture = read_fixture(a.fixture)
-    # Recovered units are keyed by the frame_id maburd stamped: a global
-    # counter across layers, so it is the fixture's frame index.
+    # Recovered units are keyed by the frame_id maburd stamped. maburd's
+    # FramePipeline now allocates frame_id AFTER the shed check (spec
+    # 2026-07-26 svct-enable: "shed before frame_id"), so a shed frame burns
+    # no id -- frame_id is no longer the fixture index, it is the frame's
+    # position among the frames maburd actually encodes (see "reach" below).
     got = {}
     discont_on_first = False
     for unit in recovered:
@@ -152,19 +162,29 @@ def main():
         fid, flags = FRAME_HDR.unpack_from(unit)[:2]
         if fid == 0 and flags & FLAG_DISCONT: discont_on_first = True
         got[fid] = mask_discont(unit)
-    all_want = {i: expected_unit(rec, i) for i, rec in enumerate(fixture)}
     # --max-stream restricts "want" to streams that are actually reachable
     # under the exercised link state: maburd's MAX_RANGE boot default sheds
     # streams 2/3 (T1/T2) until an RCF/DISC lands (drone/src/rc_agent.cpp),
-    # so a run with no --rc-in can never deliver those frames.
+    # so a run with no --rc-in can never deliver those frames. stream_of
+    # mirrors FramePipeline::encode's full routing: classify_frame's raw sid,
+    # then the same producer-flag/TRAIL_N agreement demotion (disagreement
+    # protects sid > 1 down to 1) before shedding is considered.
     def stream_of(i):
         rec = fixture[i]
-        return 0 if rec["flags"] & FLAG_IDR else classify_frame(rec["annexb"])
-    want = {i: u for i, u in all_want.items() if stream_of(i) <= a.max_stream}
-    exact = sum(1 for i, u in want.items() if got.get(i) == u)
+        if rec["flags"] & FLAG_IDR: return 0
+        sid, trail_n = classify_frame(rec["annexb"])
+        if trail_n != bool(rec["flags"] & FLAG_ENHANCE) and sid > 1:
+            sid = 1
+        return sid
+    # enumerate(reach)'s k is fid only if the actual shed boundary matches
+    # --max-stream exactly (MAX_RANGE default sheds >1, or --max-stream 3
+    # sheds nothing); other --max-stream values would mis-key against got.
+    reach = [i for i in range(len(fixture)) if stream_of(i) <= a.max_stream]
+    want = {k: expected_unit(fixture[i], k) for k, i in enumerate(reach)}
+    exact = sum(1 for k, u in want.items() if got.get(k) == u)
     # critical = fixture frames on stream 0 (IDR / parameter sets)
-    crit = [i for i in want if stream_of(i) == 0]
-    crit_ok = sum(1 for i in crit if got.get(i) == want[i])
+    crit = [k for k, i in enumerate(reach) if stream_of(i) == 0]
+    crit_ok = sum(1 for k in crit if got.get(k) == want[k])
     print(f"recovered {exact}/{len(want)} frames; critical {crit_ok}/{len(crit)}; "
           f"bodies per stream {per_stream_in}")
     if 0 in got and not discont_on_first:

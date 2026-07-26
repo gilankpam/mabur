@@ -83,6 +83,13 @@ class UepEncoder {
 
   void set_shed(int stream_id, bool shed);
 
+  // True — and the drop is booked in dropped(stream_id) — when that layer is
+  // shed. Lets callers skip per-frame work for shed frames BEFORE committing
+  // resources (FramePipeline checks this before allocating a frame_id, so
+  // sustained shed never punches id gaps into the GS FrameStream; spec
+  // 2026-07-26 svct-enable). Same sid clamping as add_frame.
+  bool drop_if_shed(int stream_id);
+
   uint64_t dropped(int stream_id) const;
 
  private:

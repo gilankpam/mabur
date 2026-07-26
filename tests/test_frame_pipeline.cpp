@@ -46,6 +46,14 @@ size_t payload_len(const std::vector<uint8_t>& buf) {
   return buf.size() - VENC_FRAME_META_SIZE;
 }
 
+VencFrameMeta meta_flags(uint32_t pts, uint8_t flags) {
+  VencFrameMeta m{};
+  m.pts = pts;
+  m.codec = VENC_FRAME_CODEC_H265;
+  m.flags = flags;
+  return m;
+}
+
 }  // namespace
 
 TEST(frame_pipeline_stamps_hdr_over_meta_in_place) {
@@ -123,6 +131,10 @@ TEST(frame_pipeline_routes_by_temporal_id) {
     REQUIRE(!bodies.empty());
     CHECK(bodies[0].stream_id == want[i]);
   }
+  // TRAIL_R tid 2 routes to sid 3 (devourer-tid routing) without being
+  // flagged as an enhance disagreement: the agreement check keys on real
+  // TRAIL_N-ness, not on sid == 3.
+  CHECK(pipe.enhance_disagreements() == 0);
   CHECK(pipe.idr_disagreements() == 0);
 }
 
@@ -150,6 +162,76 @@ TEST(frame_pipeline_producer_idr_flag_protects_up_and_counts_disagreement) {
   REQUIRE(!bodies.empty());
   CHECK(bodies[0].stream_id == 0);
   CHECK(pipe.idr_disagreements() == 1);
+}
+
+TEST(frame_pipeline_enhance_needs_flag_and_scan_agreement) {
+  UepEncoder enc(layers(), 15);
+  FramePipeline pipe;
+
+  // Agree: TRAIL_N (type 0) + ENHANCE flag -> sid 3.
+  auto b1 = ring_buf(/*nal_type=*/0, /*tid=*/0, 900);
+  auto out1 = pipe.encode(enc, b1.data(), payload_len(b1),
+                          meta_flags(1000, VENC_FRAME_FLAG_ENHANCE), 1);
+  REQUIRE(!out1.empty());
+  CHECK(out1[0].stream_id == 3);
+  CHECK(pipe.enhance_disagreements() == 0);
+
+  // Scan-only: TRAIL_N without the flag -> base (1) + disagree.
+  auto b2 = ring_buf(0, 0, 900);
+  auto out2 = pipe.encode(enc, b2.data(), payload_len(b2), meta_flags(2000, 0), 2);
+  REQUIRE(!out2.empty());
+  CHECK(out2[0].stream_id == 1);
+  CHECK(pipe.enhance_disagreements() == 1);
+
+  // Flag-only: TRAIL_R (type 1) with the flag -> base (1) + disagree.
+  auto b3 = ring_buf(1, 0, 900);
+  auto out3 = pipe.encode(enc, b3.data(), payload_len(b3),
+                          meta_flags(3000, VENC_FRAME_FLAG_ENHANCE), 3);
+  REQUIRE(!out3.empty());
+  CHECK(out3[0].stream_id == 1);
+  CHECK(pipe.enhance_disagreements() == 2);
+
+  // Flag on an IDR (producer bug): critical wins -> sid 0 + disagree.
+  auto b4 = ring_buf(19, 0, 900);
+  auto out4 = pipe.encode(enc, b4.data(), payload_len(b4),
+                          meta_flags(4000, VENC_FRAME_FLAG_IDR | VENC_FRAME_FLAG_ENHANCE), 4);
+  REQUIRE(!out4.empty());
+  CHECK(out4[0].stream_id == 0);
+  CHECK(pipe.enhance_disagreements() == 3);
+
+  // TRAIL_R tid 2 (devourer-tid routing, NOT enhance): sid 3 with no flag
+  // is not a disagreement, because the scan side is frame_is_trail_n, not
+  // sid == 3.
+  auto b5 = ring_buf(1, 2, 900);
+  auto out5 = pipe.encode(enc, b5.data(), payload_len(b5), meta_flags(5000, 0), 5);
+  REQUIRE(!out5.empty());
+  CHECK(out5[0].stream_id == 3);
+  CHECK(pipe.enhance_disagreements() == 3);
+}
+
+TEST(frame_pipeline_shed_frames_consume_no_frame_id) {
+  UepEncoder enc(layers(), 15);
+  enc.set_shed(3, true);
+  FramePipeline pipe;
+
+  // Shed enhance frame: no bodies, no id consumed, drop booked, discont
+  // latch NOT consumed (the window must anchor on a frame that ships).
+  auto b1 = ring_buf(0, 0, 900);
+  auto out1 = pipe.encode(enc, b1.data(), payload_len(b1),
+                          meta_flags(1000, VENC_FRAME_FLAG_ENHANCE), 1);
+  CHECK(out1.empty());
+  CHECK(pipe.next_frame_id() == 0);
+  CHECK(enc.dropped(3) == 1);
+
+  // Next base frame gets id 0 and carries the discont flag.
+  auto b2 = ring_buf(1, 0, 900);
+  auto out2 = pipe.encode(enc, b2.data(), payload_len(b2), meta_flags(2000, 0), 2);
+  REQUIRE(!out2.empty());
+  CHECK(pipe.next_frame_id() == 1);
+  auto h = framewire::parse_frame_hdr(b2.data(), b2.size());
+  REQUIRE(h.has_value());
+  CHECK(h->frame_id == 0);
+  CHECK((h->flags & framewire::kFlagDiscont) != 0);
 }
 
 MTEST_MAIN
