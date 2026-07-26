@@ -170,12 +170,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   link["layer_delivery_pct"] = in.layer_delivery_pct;
 
   // The drone's per-rung TX spec is deterministic from the commanded op
-  // (ladder_from; flag policy assumed default) — display-grade, like the
-  // injection estimates below (received rate scaled by the best card's
-  // delivery fraction; lost frames' bytes are unknowable at the GS).
+  // (ladder_from) — display-grade, like the injection estimates below
+  // (received rate scaled by the best card's delivery fraction; lost
+  // frames' bytes are unknowable at the GS).
   const auto ladder = mabur::rc::ladder_from(
       in.op.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
-      static_cast<uint8_t>(in.op.mcs), static_cast<uint8_t>(in.op.bw), {});
+      static_cast<uint8_t>(in.op.mcs), static_cast<uint8_t>(in.op.bw));
   double air_pct_sum = 0.0;
   link["streams"] = json::array();
   for (int s = 0; s < 4; ++s) {

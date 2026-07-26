@@ -38,12 +38,6 @@
     "tick_ms": 100
   },
   "frame_ring_name": "mabur_f",
-  "flags": {
-    "crit_ldpc": true,
-    "crit_stbc": true,
-    "t0_ldpc": true,
-    "t0_stbc": true
-  },
   "msp": {
     "enable": false,
     "serial": "/dev/ttyS2",

@@ -86,7 +86,7 @@ TEST(boot_first_tick_applies_max_range_and_moves_to_rendezvous) {
   CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
   REQUIRE(!act.applied.empty());
   const AppliedOp& op = act.applied.back();
-  auto expect_ladder = ladder_from(PhyMode::HT, 0, 20, cfg.flags);
+  auto expect_ladder = ladder_from(PhyMode::HT, 0, 20);
   for (int i = 0; i < 4; ++i) {
     CHECK(op.ladder[static_cast<size_t>(i)].mode == expect_ladder[static_cast<size_t>(i)].mode);
     CHECK(op.ladder[static_cast<size_t>(i)].mcs == expect_ladder[static_cast<size_t>(i)].mcs);

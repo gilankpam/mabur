@@ -116,8 +116,7 @@ std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw) {
 // same MCS (single-chain TX, no coding gain), with the weaker GS card
 // losing 3-5x more of stream 3's frames. Per-layer differentiation is
 // exclusively the FEC overhead ladder (1.00/0.75/0.50/0.25 x scale).
-std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
-                                        const FlagPolicy& fp) {
+std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
   int top = (mode == PhyMode::VHT) ? 8 : 7;
   int m = std::clamp(static_cast<int>(mcs), 0, top);
 
@@ -126,14 +125,10 @@ std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
   ladder[0].mode = mode;
   ladder[0].mcs = static_cast<uint8_t>(m);
   ladder[0].bw = bw;
-  ladder[0].ldpc = fp.crit_ldpc;
-  ladder[0].stbc = fp.crit_stbc;
+  ladder[0].ldpc = true;
+  ladder[0].stbc = true;
   // T0
-  ladder[1].mode = mode;
-  ladder[1].mcs = static_cast<uint8_t>(m);
-  ladder[1].bw = bw;
-  ladder[1].ldpc = fp.t0_ldpc;
-  ladder[1].stbc = fp.t0_stbc;
+  ladder[1] = ladder[0];
   // T1/T2: identical PHY to T0 (rate and flags).
   ladder[2] = ladder[1];
   ladder[3] = ladder[1];
@@ -151,21 +146,21 @@ const std::array<ProfileRow, 5>& profile_table() {
   return table;
 }
 
-std::array<LayerTxSpec, 4> ladder_for_row(int idx, const FlagPolicy& fp) {
+std::array<LayerTxSpec, 4> ladder_for_row(int idx) {
   const auto& row = profile_table().at(static_cast<size_t>(idx));
   auto ladder = parse_ladder_spec(row.svc_ladder);
-  ladder[0].ldpc = ladder[0].ldpc || fp.crit_ldpc;
-  ladder[0].stbc = ladder[0].stbc || fp.crit_stbc;
-  ladder[1].ldpc = ladder[1].ldpc || fp.t0_ldpc;
-  ladder[1].stbc = ladder[1].stbc || fp.t0_stbc;
+  ladder[0].ldpc = true;
+  ladder[0].stbc = true;
+  ladder[1].ldpc = true;
+  ladder[1].stbc = true;
   // hw 2026-07-26 ruling (+ same-day follow-up): the vendored rows keep
   // devourer's byte-exact spec strings (some still spell out a per-rung
   // T1/T2 spread), but all video streams above CRIT ride T0's ENTIRE
-  // spec — rate fields and policy-applied ldpc/stbc alike. Redundancy,
+  // spec — rate fields and the unconditional ldpc/stbc alike. Redundancy,
   // not PHY, differentiates layers: flags-off T1/T2 was tried first and
   // measured 2-3 dB weaker on air at the same MCS. Enforce at this parse
   // choke point so the table stays a faithful port while the applied
-  // ladder obeys the policy; matches ladder_from (the RCF path).
+  // ladder is uniform; matches ladder_from (the RCF path).
   ladder[2] = ladder[1];
   ladder[3] = ladder[1];
   return ladder;

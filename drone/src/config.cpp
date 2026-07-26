@@ -256,14 +256,6 @@ void parse_msp(const json& j, MspCfg& m) {
   if (m.baud <= 0) fail("msp.baud", "must be > 0");
 }
 
-void parse_flags(const json& j, rc::FlagPolicy& fp) {
-  check_known_keys(j, {"crit_ldpc", "crit_stbc", "t0_ldpc", "t0_stbc"}, "flags");
-  assign_if_present(j, "crit_ldpc", fp.crit_ldpc, "flags");
-  assign_if_present(j, "crit_stbc", fp.crit_stbc, "flags");
-  assign_if_present(j, "t0_ldpc", fp.t0_ldpc, "flags");
-  assign_if_present(j, "t0_stbc", fp.t0_stbc, "flags");
-}
-
 }  // namespace
 
 std::array<UepLayerCfg, 4> Config::uep_layers() const {
@@ -292,7 +284,7 @@ Config load_config(const std::string& path) {
 
   check_known_keys(j,
                     {"radio", "fec", "waybeam", "link", "msp",
-                     "frame_ring_name", "flags"},
+                     "frame_ring_name"},
                     "");
 
   Config cfg;
@@ -302,7 +294,6 @@ Config load_config(const std::string& path) {
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
   assign_if_present(j, "frame_ring_name", cfg.frame_ring_name, "");
-  if (j.contains("flags")) parse_flags(j.at("flags"), cfg.flags);
 
   return cfg;
 }

@@ -109,8 +109,6 @@ struct Config {
   // Name of waybeam's frame-shm ring (its outgoing.server =
   // frame-shm://<name>), the one and only video ingest.
   std::string frame_ring_name = "mabur_f";
-  rc::FlagPolicy flags;
-
   std::array<UepLayerCfg, 4> uep_layers() const;
 };
 

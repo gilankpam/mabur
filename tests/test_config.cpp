@@ -93,10 +93,6 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
   CHECK(cfg.frame_ring_name == def.frame_ring_name);
-  CHECK(cfg.flags.crit_ldpc == def.flags.crit_ldpc);
-  CHECK(cfg.flags.crit_stbc == def.flags.crit_stbc);
-  CHECK(cfg.flags.t0_ldpc == def.flags.t0_ldpc);
-  CHECK(cfg.flags.t0_stbc == def.flags.t0_stbc);
 
   auto layers = cfg.uep_layers();
   CHECK(layers[0].fec.overhead == 1.0);  // base_overhead 0.25 -> sid0 ref 1.00
@@ -454,6 +450,18 @@ TEST(stale_video_input_and_ring_name_keys_throw) {
   CHECK(msg2.find("ring_name") != std::string::npos);
   CHECK(msg2.find("unknown key") != std::string::npos);
   std::filesystem::remove(path2);
+}
+
+// The flags block tuned per-rung LDPC/STBC policy. Removed 2026-07-26:
+// LDPC+STBC are now hardcoded true on every rung in both ladder builders
+// (the deployed all-true config was the only shape ever flown; flags-off
+// T1/T2 measured 2-3 dB weaker on air). A stale block fails the boot.
+TEST(stale_flags_key_throws) {
+  auto path = write_temp_json(R"({"flags":{"crit_ldpc":true}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("flags") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
 }
 
 // radio.max_txagc was the legacy TXAGC-index ceiling; Task 11 moved the

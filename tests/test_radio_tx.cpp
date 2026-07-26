@@ -62,7 +62,7 @@ uint16_t read_le16(const uint8_t* p) {
 TEST(send_body_second_frame_has_ht_radiotap_and_dot11_header) {
   CaptureSink sink;
   RadioTx tx(sink, {20, 40});
-  auto ladder = ladder_from(PhyMode::HT, 2, 20, FlagPolicy{});
+  auto ladder = ladder_from(PhyMode::HT, 2, 20);
   tx.set_ladder(ladder);
 
   const uint8_t body0[] = {0xaa, 0xbb};
@@ -101,7 +101,7 @@ TEST(probe_slot_carries_probe_bandwidth_radiotap) {
   CaptureSink sink;
   std::vector<uint8_t> bw_set = {20, 40};
   RadioTx tx(sink, bw_set);
-  auto ladder = ladder_from(PhyMode::HT, 2, 20, FlagPolicy{});
+  auto ladder = ladder_from(PhyMode::HT, 2, 20);
   tx.set_ladder(ladder);
 
   const uint8_t body[] = {0x11, 0x22, 0x33};
@@ -130,7 +130,7 @@ TEST(probe_slot_carries_probe_bandwidth_radiotap) {
 TEST(seq_wraps_at_4096) {
   CaptureSink sink;
   RadioTx tx(sink, {20});
-  auto ladder = ladder_from(PhyMode::HT, 0, 20, FlagPolicy{});
+  auto ladder = ladder_from(PhyMode::HT, 0, 20);
   tx.set_ladder(ladder);
 
   const uint8_t body[] = {0x00};
@@ -143,7 +143,7 @@ TEST(seq_wraps_at_4096) {
 TEST(vht_ladder_radiotap_length_is_22) {
   CaptureSink sink;
   RadioTx tx(sink, {20, 40, 80});
-  auto ladder = ladder_from(PhyMode::VHT, 4, 80, FlagPolicy{});
+  auto ladder = ladder_from(PhyMode::VHT, 4, 80);
   tx.set_ladder(ladder);
 
   const uint8_t body[] = {0xde, 0xad, 0xbe, 0xef};
@@ -159,7 +159,7 @@ TEST(vht_ladder_radiotap_length_is_22) {
 TEST(sink_rejection_increments_drops_and_still_consumes_seq) {
   CaptureSink sink;
   RadioTx tx(sink, {20});
-  auto ladder = ladder_from(PhyMode::HT, 0, 20, FlagPolicy{});
+  auto ladder = ladder_from(PhyMode::HT, 0, 20);
   tx.set_ladder(ladder);
 
   const uint8_t body[] = {0x7};
@@ -215,7 +215,7 @@ TEST(send_bodies_matches_send_body_framing) {
   CaptureSink b_sink;
   RadioTx a(a_sink, {20, 40});
   RadioTx b(b_sink, {20, 40});
-  auto ladder = ladder_from(PhyMode::HT, 2, 20, FlagPolicy{});
+  auto ladder = ladder_from(PhyMode::HT, 2, 20);
   a.set_ladder(ladder);
   b.set_ladder(ladder);
 
@@ -238,7 +238,7 @@ TEST(send_bodies_matches_send_body_framing) {
 TEST(send_bodies_submits_one_batch) {
   BatchSink sink;
   RadioTx tx(sink, {20});
-  tx.set_ladder(ladder_from(PhyMode::HT, 2, 20, FlagPolicy{}));
+  tx.set_ladder(ladder_from(PhyMode::HT, 2, 20));
   std::vector<UepBody> bodies;
   for (int i = 0; i < 5; ++i) bodies.push_back(UepBody{1, std::vector<uint8_t>(32, 0x5A)});
   CHECK(tx.send_bodies(bodies) == 5);

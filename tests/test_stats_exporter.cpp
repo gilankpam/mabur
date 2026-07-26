@@ -206,7 +206,7 @@ TEST(stream_rung_phy_and_injection_estimates) {
   StatsExporter ex(1, 500, cap.fn());
   StatsInput in = base_input();                  // op: HT mcs5 bw20
   in.streams[1].bodies = 100;                    // activate s1's stream row
-  const auto ladder = mabur::rc::ladder_from(mabur::rc::PhyMode::HT, 5, 20, {});
+  const auto ladder = mabur::rc::ladder_from(mabur::rc::PhyMode::HT, 5, 20);
   ex.poll(1000, in);
   json j = cap.last();
   const json& s0 = j["link"]["streams"][0];
