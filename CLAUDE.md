@@ -25,7 +25,9 @@ datagram (schema v1) to UDP `127.0.0.1:8300` every 500 ms: per-card and
 per-RF-class signal stats, link op point, per-stream FEC health, video/RTP
 health, TX/injection rates, airtime estimate, and drone telemetry (state,
 applied op, encoder, queues, uplink RF, temps — via the 1 Hz T_TELEM
-control frame). Consume it with:
+control frame); `link.ctl` carries the ladder controller's rung, util,
+probation/counters, and last-transition reason, and `tools/flightreport.py`
+is the post-flight analyzer over a recorded jsonl. Consume it with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,
   grouped by link; color thresholds carry the judgment.
