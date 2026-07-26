@@ -615,9 +615,10 @@ def panel_drone(model, wall):
              f"   dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}")
     ring = enc.get("ring_drops")
     spans3 = []
+    dis_idx = line3.rindex("   dis ")  # anchor to cap ring span
     if isinstance(ring, (int, float)) and ring > 0:
         idx = line3.rindex("ring ") + 5
-        spans3.append((idx, len(line3) - idx, "bad"))
+        spans3.append((idx, dis_idx - idx, "bad"))
     idr_dis = enc.get("idr_disagree")
     enh_dis = enc.get("enhance_disagree")
     if (isinstance(idr_dis, (int, float)) and idr_dis > 0) or (isinstance(enh_dis, (int, float)) and enh_dis > 0):
