@@ -65,9 +65,12 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
   CHECK(rcs == 1);
   CHECK(agg.card(0).video_bodies > 0);
   CHECK(agg.card(1).rc_frames == 1);
-  // The drone's hw seq counter numbers ALL its injected frames, DISC_ACKs
-  // included — so the ack (the last crc-ok frame fed) is the latest seq.
-  CHECK(agg.last_video_seq() == seq - 1);
+  // last_video_seq() tracks ONLY the video/decoder-bound seq counter: RC
+  // frames (DISC_ACK here) carry their own independent dot11 seq on the
+  // drone and must never advance it, even though the ack is the last
+  // crc-ok frame fed in this test — so the mark stays on the last video
+  // body's seq (one behind the ack's).
+  CHECK(agg.last_video_seq() == seq - 2);
 }
 
 TEST(seq_gap_tracking_crc_ok_only) {
@@ -143,5 +146,149 @@ TEST(msp_stream_body_routes_to_msp_sink_not_video) {
 
   CHECK(msp_hits == 1);
   CHECK(video_hits == 0);
+}
+
+TEST(card_rx_bytes_counts_all_frames) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  agg.on_rx_body(msg(0, 1, true, {1, 2, 3}));         // 3 bytes, crc ok
+  agg.on_rx_body(msg(0, 2, false, {1, 2, 3, 4, 5}));  // 5 bytes, crc fail
+  CHECK(agg.card(0).rx_bytes == 8);  // air bytes: CRC-fail bodies count too
+}
+
+TEST(card_rssi_ema_tracks_per_frame_chain_max) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  auto m1 = msg(0, 1, true, {1});
+  m1.rssi[0] = 60; m1.rssi[1] = 40;  // chain A wins this frame
+  agg.on_rx_body(m1);
+  CHECK(agg.card(0).rssi_ema == 60.0);  // first clean frame seeds the EMA
+  auto m2 = msg(0, 2, true, {1});
+  m2.rssi[0] = 40; m2.rssi[1] = 50;  // chain B wins this frame
+  agg.on_rx_body(m2);
+  // kEmaAlpha = 0.1: 0.9*60 + 0.1*50 = 59.0 (per-frame max, NOT max of EMAs)
+  CHECK(agg.card(0).rssi_ema > 58.9 && agg.card(0).rssi_ema < 59.1);
+  auto m3 = msg(0, 3, false, {1});  // crc fail: EMAs must not move
+  m3.rssi[0] = 0; m3.rssi[1] = 0;
+  agg.on_rx_body(m3);
+  CHECK(agg.card(0).rssi_ema > 58.9 && agg.card(0).rssi_ema < 59.1);
+}
+
+TEST(class_split_video_msp_ctrl) {
+  auto bodies = encode_fixture_bodies();     // stream-tagged video bodies
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  uint16_t seq = 0;
+  for (auto& b : bodies) agg.on_rx_body(msg(0, seq++, true, b));
+  auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
+  agg.on_rx_body(msg(0, seq++, true, ack));
+  const CardTrack& c = agg.card(0);
+  uint64_t stream_frames = 0;
+  for (int s = 0; s < 4; ++s) stream_frames += c.cls[s].frames;
+  CHECK(stream_frames > 0);                        // video bodies classified
+  CHECK(c.cls[int(RfClass::Ctrl)].frames == 1);    // the DISC_ACK
+  CHECK(c.cls[int(RfClass::Ctrl)].has_ema);
+  CHECK(c.cls[int(RfClass::Ctrl)].snr_ema == 25.0);  // msg() snr max
+  CHECK(c.self_frames == 0);
+  // Per-class byte accounting: class bytes partition the classified share
+  // of the card's rx_bytes (ctrl bytes = the ack body's size).
+  CHECK(c.cls[int(RfClass::Ctrl)].bytes == ack.size());
+  uint64_t class_bytes = 0;
+  for (int k = 0; k < kNumRfClasses; ++k) class_bytes += c.cls[k].bytes;
+  CHECK(class_bytes == c.rx_bytes);   // fixture bodies all classify cleanly
+}
+
+TEST(self_rc_frames_counted_but_never_tracked) {
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  int rc_routed = 0;
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
+  auto rcf = mtest::unhex(rc["rcf"][0]["wire"].get<std::string>());
+  agg.on_rx_body(msg(0, 100, true, rcf));          // GS-originated type
+  const CardTrack& c = agg.card(0);
+  CHECK(c.self_frames == 1);
+  CHECK(c.frames == 0);                            // excluded from totals
+  CHECK(c.rx_bytes == 0);
+  CHECK(!c.has_seq);                               // GS seq counter kept out
+  CHECK(!c.cls[int(RfClass::Ctrl)].has_ema);
+  CHECK(rc_routed == 1);                           // still routed to the sink
+}
+
+TEST(crc_fail_stays_out_of_classes) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  std::vector<uint8_t> junk(20, 0);
+  agg.on_rx_body(msg(0, 1, false, junk));
+  const CardTrack& c = agg.card(0);
+  CHECK(c.frames == 1 && c.crc_fail == 1);
+  for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
+}
+
+// A corrupt frame whose bytes happen to byte-match an RCF wire must NOT be
+// diverted as a self frame — the self-diversion is gated on crc_ok because
+// real self frames are point-blank captures and always CRC-clean. It still
+// owes ordinary frame/crc_fail/rx_bytes accounting, and — being CRC-fail —
+// no class movement.
+TEST(crc_fail_rcf_lookalike_not_diverted_as_self) {
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  int rc_routed = 0;
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
+  auto rcf = mtest::unhex(rc["rcf"][0]["wire"].get<std::string>());
+  agg.on_rx_body(msg(0, 100, false, rcf));   // crc fail but byte-matches RCF wire
+  const CardTrack& c = agg.card(0);
+  CHECK(c.frames == 1);
+  CHECK(c.crc_fail == 1);
+  CHECK(c.self_frames == 0);
+  for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
+}
+
+TEST(msp_body_classified_into_msp_class) {
+  // Build a valid MSP body via MspSource so it carries stream_id == 4, same
+  // as msp_stream_body_routes_to_msp_sink_not_video above.
+  mabur::MspSourceCfg cfg;
+  std::vector<std::vector<uint8_t>> bodies;
+  mabur::MspSource src(cfg, [&](const uint8_t* b, size_t n){ bodies.emplace_back(b, b + n); });
+  std::vector<uint8_t> blob;
+  std::vector<uint8_t> clear = {2};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, clear.data(), clear.size());
+  std::vector<uint8_t> ds = {3, 0, 0, 0, 'X'};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, ds.data(), ds.size());
+  std::vector<uint8_t> draw = {4};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, draw.data(), draw.size());
+  src.on_serial_bytes(blob.data(), blob.size(), 1000);
+  REQUIRE(!bodies.empty());
+
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  agg.on_rx_body(msg(0, 1, true, bodies[0]));
+  const CardTrack& c = agg.card(0);
+  CHECK(c.cls[int(RfClass::Msp)].frames == 1);
+  CHECK(c.cls[int(RfClass::Msp)].has_ema);
+}
+
+// RC frames (DISC_ACK here) carry their own independent 802.11 seq counter
+// on the drone — a wildly different mac_seq on an interleaved RC frame must
+// not perturb the video seq-gap walk (seq_expected/seq_received/
+// last_video_seq), only the RC-frame routing/class accounting.
+TEST(rc_frame_with_wild_seq_does_not_perturb_video_seq_accounting) {
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  std::vector<uint8_t> junk(20, 0);  // not SBI, not RC -> misroutes as "video"
+  agg.on_rx_body(msg(0, 10, true, junk));    // video-ish body, seq 10
+  agg.on_rx_body(msg(0, 4000, true, ack));   // RC frame, wildly different seq
+  agg.on_rx_body(msg(0, 11, true, junk));    // next video-ish body, seq 11
+  const CardTrack& c = agg.card(0);
+  CHECK(c.seq_received == 2);            // only the two video-ish bodies
+  CHECK(c.seq_expected == 2);            // contiguous 10->11: no gap from the ack
+  CHECK(agg.last_video_seq() == 11);     // ack's seq (4000) never touches this
+  CHECK(c.rc_frames == 1);               // the ack is still routed normally
+  CHECK(c.cls[int(RfClass::Ctrl)].frames == 1);
+}
+
+TEST(crc_clean_unparseable_body_gets_no_class) {
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  std::vector<uint8_t> junk(20, 0);   // not SBI, not RC -> misroutes, still counted
+  agg.on_rx_body(msg(0, 1, true, junk));
+  const CardTrack& c = agg.card(0);
+  CHECK(c.frames == 1);
+  for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
 }
 MTEST_MAIN

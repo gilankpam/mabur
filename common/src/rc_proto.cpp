@@ -35,6 +35,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 19;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
+constexpr size_t TELEM_LEN = 59;
 
 }  // namespace
 
@@ -169,6 +170,87 @@ std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len) {
   a.agreed_width = buf[16];
   a.seq = get16(buf, 17);
   return a;
+}
+
+std::vector<uint8_t> pack_telem(const Telem& t) {
+  std::vector<uint8_t> body;
+  body.reserve(TELEM_LEN + 2);
+  put16(body, RC_MAGIC);
+  body.push_back(RC_VERSION);
+  body.push_back(T_TELEM);
+  body.push_back(t.flags);
+  put16(body, t.tlm_seq);
+  body.push_back(t.state);
+  put32(body, t.generation);
+  body.push_back(t.applied_profile);
+  body.push_back(t.applied_ov_x100);
+  body.push_back(t.applied_off_qdb);
+  body.push_back(t.derate_qdb);
+  put16(body, t.rcf_age_ms);
+  put32(body, t.rcf_rx);
+  put32(body, t.enc_frames);
+  put32(body, t.enc_kbytes);
+  put16(body, t.cmd_kbps);
+  body.push_back(t.qp);
+  put16(body, t.ring_drops);
+  body.push_back(t.txq_depth);
+  body.push_back(t.txq_cap);
+  put32(body, t.txq_drops);
+  put32(body, t.radio_sent);
+  put32(body, t.radio_drops);
+  put16(body, t.usb_fail);
+  body.push_back(t.up_rssi[0]);
+  body.push_back(t.up_rssi[1]);
+  body.push_back(static_cast<uint8_t>(t.up_snr[0]));
+  body.push_back(static_cast<uint8_t>(t.up_snr[1]));
+  body.push_back(static_cast<uint8_t>(t.soc_temp_c));
+  body.push_back(static_cast<uint8_t>(t.thermal_delta));
+  put16(body, t.load_x100);
+
+  put_crc(body);
+  return body;
+}
+
+std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
+  if (len < TELEM_LEN + 2) return std::nullopt;
+  uint16_t magic = get16(buf, 0);
+  uint8_t ver = buf[2];
+  uint8_t type = buf[3];
+  if (magic != RC_MAGIC || ver != RC_VERSION || type != T_TELEM) return std::nullopt;
+
+  uint16_t crc = get16(buf, TELEM_LEN);
+  if (crc != crc16_ccitt(buf, TELEM_LEN)) return std::nullopt;
+
+  Telem t;
+  t.flags = buf[4];
+  t.tlm_seq = get16(buf, 5);
+  t.state = buf[7];
+  t.generation = get32(buf, 8);
+  t.applied_profile = buf[12];
+  t.applied_ov_x100 = buf[13];
+  t.applied_off_qdb = buf[14];
+  t.derate_qdb = buf[15];
+  t.rcf_age_ms = get16(buf, 16);
+  t.rcf_rx = get32(buf, 18);
+  t.enc_frames = get32(buf, 22);
+  t.enc_kbytes = get32(buf, 26);
+  t.cmd_kbps = get16(buf, 30);
+  t.qp = buf[32];
+  t.ring_drops = get16(buf, 33);
+  t.txq_depth = buf[35];
+  t.txq_cap = buf[36];
+  t.txq_drops = get32(buf, 37);
+  t.radio_sent = get32(buf, 41);
+  t.radio_drops = get32(buf, 45);
+  t.usb_fail = get16(buf, 49);
+  t.up_rssi[0] = buf[51];
+  t.up_rssi[1] = buf[52];
+  t.up_snr[0] = static_cast<int8_t>(buf[53]);
+  t.up_snr[1] = static_cast<int8_t>(buf[54]);
+  t.soc_temp_c = static_cast<int8_t>(buf[55]);
+  t.thermal_delta = static_cast<int8_t>(buf[56]);
+  t.load_x100 = get16(buf, 57);
+  return t;
 }
 
 int frame_type(const uint8_t* buf, size_t len) {

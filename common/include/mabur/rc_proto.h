@@ -17,6 +17,7 @@ constexpr uint8_t RC_VERSION = 1;
 constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
 constexpr uint8_t T_DISC_ACK = 3;
+constexpr uint8_t T_TELEM = 4;
 
 constexpr uint8_t F_AUTH_ADVISORY = 0x01;
 constexpr uint8_t F_FAILSAFE = 0x02;
@@ -28,6 +29,11 @@ constexpr uint8_t PWR_NO_CHANGE = 0xFF;
 // (8-byte FrameHdr units + 6-byte wide FRAG headers) instead of pre-built
 // RTP packets + 4-byte FRAG headers. Spec 2026-07-22 frame-shm ingest.
 constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
+
+// DiscAck.chip_caps bit: drone sends T_TELEM frames on its RC uplink.
+// Display-grade only (not a safety gate): a GS lacking this bit just never
+// sees a T_TELEM frame from an old drone. Spec 2026-07-26 drone-telemetry.
+constexpr uint16_t CAP_TELEMETRY = 0x0002;
 
 // TX-power command. SEMANTIC DIVERGENCE from the frozen Python prototype
 // (devourer tools/precoder/rc_proto.py, which carries a TXAGC index):
@@ -82,6 +88,37 @@ struct DiscAck {
   uint16_t seq = 0;
 };
 
+// VTX -> VRX drone telemetry: RcAgent/pipeline/queue/radio state for the GS
+// DRONE display region. Sent unconditionally, unconditioned on peer caps;
+// an old GS ignores the unknown type. Spec 2026-07-26 drone-telemetry.
+struct Telem {
+  uint16_t tlm_seq = 0;
+  uint8_t state = 0;            // RcAgent::State numeric
+  uint8_t flags = 0;            // bit0 failsafe_shed, bit1 radio_rx_ok
+  uint32_t generation = 0;
+  uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
+  uint8_t applied_ov_x100 = 0;
+  uint8_t applied_off_qdb = 64;  // bias-64, rc wire convention
+  uint8_t derate_qdb = 0;
+  uint16_t rcf_age_ms = 0;  // saturating
+  uint32_t rcf_rx = 0;
+  uint32_t enc_frames = 0;
+  uint32_t enc_kbytes = 0;
+  uint16_t cmd_kbps = 0;
+  uint8_t qp = 0;
+  uint16_t ring_drops = 0;  // saturating
+  uint8_t txq_depth = 0, txq_cap = 0;
+  uint32_t txq_drops = 0;
+  uint32_t radio_sent = 0;
+  uint32_t radio_drops = 0;
+  uint16_t usb_fail = 0;  // saturating
+  uint8_t up_rssi[2] = {0, 0};  // raw, dBm = v - 110
+  int8_t up_snr[2] = {0, 0};
+  int8_t soc_temp_c = -128;  // -128 = unavailable
+  int8_t thermal_delta = 0;
+  uint16_t load_x100 = 0;
+};
+
 std::vector<uint8_t> pack_rcf(const Rcf& r);
 std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len);
 
@@ -90,6 +127,9 @@ std::optional<Disc> parse_disc(const uint8_t* buf, size_t len);
 
 std::vector<uint8_t> pack_disc_ack(const DiscAck& a);
 std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len);
+
+std::vector<uint8_t> pack_telem(const Telem& t);
+std::optional<Telem> parse_telem(const uint8_t* buf, size_t len);
 
 // Peeks the RC frame type without a full parse (no CRC check). Returns -1 if
 // the buffer is too short or doesn't carry the RC magic/version.

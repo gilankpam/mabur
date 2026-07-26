@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <random>
 #include <string>
 #include <thread>
 
@@ -25,6 +27,7 @@
 #include "op_table.h"
 #include "radio_frontend.h"
 #include "rtp_packetizer.h"
+#include "stats_exporter.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
 #include "vrx_controller.h"
@@ -102,6 +105,34 @@ static int run_radio(const maburgs::Config& cfg) {
     uint64_t in_order = 0, fwd_gap = 0, back = 0, gap_seqs = 0;
   } rtp_order;
 
+  // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
+  // Declared here (ahead of the RtpPacketizer/FrameStream construction below)
+  // so the FrameStream end_frame lambda can capture `stats` by reference; both
+  // must also outlive every lambda that captures them.
+  // session id: nonzero random u32 so consumers detect restarts.
+  std::optional<maburgs::UdpSink> stats_udp;
+  std::optional<maburgs::StatsExporter> stats;
+  if (cfg.stats.enable) {
+    stats_udp.emplace(cfg.stats.host, cfg.stats.port);
+    uint32_t session = 0;
+    std::random_device rd;
+    while (session == 0) session = rd();
+    stats.emplace(session, cfg.stats.interval_ms,
+                  [&](const std::string& s) {
+                    return stats_udp->send(
+                        reinterpret_cast<const uint8_t*>(s.data()), s.size());
+                  });
+    std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
+                 cfg.stats.host.c_str(), cfg.stats.port, cfg.stats.interval_ms);
+  }
+
+  // Drone telemetry (T_TELEM): display-only, not rendezvous traffic — held
+  // here for the DRONE display region rather than forwarded to the vrx
+  // controller. Core-thread-owned, like everything else in this loop.
+  // rx_ms is the GS-side mono stamp the aggregator carries on every rc frame.
+  // Spec 2026-07-26 drone-telemetry.
+  struct { std::optional<mabur::rc::Telem> t; uint64_t rx_ms = 0; } latest_telem;
+
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits and streams Annex-B bytes into RtpPacketizer,
   // which builds RFC 7798 RTP for the udp sink.
@@ -128,7 +159,10 @@ static int run_radio(const maburgs::Config& cfg) {
        cfg.video_out.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h) { pktz.begin_frame(h); },
        [&](const uint8_t* d, size_t n) { pktz.data(d, n); },
-       [&](bool c) { pktz.end_frame(c); }});
+       [&](bool c) {
+         pktz.end_frame(c);
+         if (stats) stats->on_frame(mono_ms());
+       }});
   // Only fragments from a peer that advertised the frame wire format may reach
   // FrameStream: an older drone's bodies carry a mutually unparseable frag
   // header, and feeding them here would produce garbage video rather than an
@@ -157,6 +191,18 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
   maburgs::VrxController vrx(lt, vcfg);
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
+    if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
+      // A CRC-clean frame can still fail to parse as a valid Telem (e.g. a
+      // corrupted T_TELEM whose CRC happens to pass this layer but whose
+      // internal fields don't parse) — only overwrite the holder on success,
+      // so a bad frame leaves the last good telemetry (and its rx_ms stamp)
+      // untouched rather than clobbering it with nullopt.
+      if (auto t = mabur::rc::parse_telem(f.data(), f.size())) {
+        latest_telem.t = t;
+        latest_telem.rx_ms = us / 1000;
+      }
+      return;
+    }
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
   });
 
@@ -347,6 +393,76 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(fstream.bad_fragments()),
                    static_cast<unsigned long long>(fstream.stall_resets()));
       std::fprintf(stderr, "\n");
+    }
+
+    if (stats) {
+      maburgs::StatsInput sin;
+      sin.vtx_id = cfg.link.vtx_id;
+      sin.in_session = in_session;
+      sin.tx_card = sel.selected();
+      sin.op = vrx.cur_op();
+      sin.deadline_ms = cfg.fec.decode_deadline_ms;
+      sin.residual_loss = residual;
+      for (int s = 0; s < 4; ++s)
+        sin.layer_delivery_pct[static_cast<size_t>(s)] = ld[static_cast<size_t>(s)];
+      for (int i = 0; i < n_cards; ++i) {
+        const auto& t = agg.card(i);
+        maburgs::StatsCardIn ci;
+        ci.up = fronts[static_cast<size_t>(i)]->alive();
+        ci.frames = t.frames;
+        ci.crc_fail = t.crc_fail;
+        ci.seq_expected = t.seq_expected;
+        ci.seq_received = t.seq_received;
+        ci.rx_bytes = t.rx_bytes;
+        ci.last_frame_us = t.last_frame_us;
+        ci.self_frames = t.self_frames;
+        ci.foreign = fronts[static_cast<size_t>(i)]->foreign();
+        ci.tx_frames = fronts[static_cast<size_t>(i)]->tx_frames();
+        ci.tx_fail = fronts[static_cast<size_t>(i)]->tx_fail();
+        static_assert(maburgs::kNumStatsClasses == maburgs::kNumRfClasses,
+                      "class arrays must stay in lockstep");
+        for (int k = 0; k < maburgs::kNumStatsClasses; ++k) {
+          auto& cls = ci.classes[static_cast<size_t>(k)];
+          const auto& tcls = t.cls[static_cast<size_t>(k)];
+          cls.frames = tcls.frames;
+          cls.bytes = tcls.bytes;
+          cls.has_ema = tcls.has_ema;
+          cls.rssi_ema = tcls.rssi_ema;
+          cls.rssi_a_ema = tcls.rssi_a_ema;
+          cls.rssi_b_ema = tcls.rssi_b_ema;
+          cls.snr_ema = tcls.snr_ema;
+          cls.snr_a_ema = tcls.snr_a_ema;
+          cls.snr_b_ema = tcls.snr_b_ema;
+        }
+        sin.cards.push_back(ci);
+      }
+      for (int s = 0; s < 4; ++s) {
+        const auto st = agg.decoder().stats(s);
+        auto& o = sin.streams[static_cast<size_t>(s)];
+        o.bodies = st.bodies;
+        o.subblocks_failed = st.subblocks_failed;
+        o.syms_recovered = st.syms_recovered;
+        o.syms_abandoned = st.syms_abandoned;
+        o.symbols_in = st.symbols_in;
+        o.symbols_stale = st.symbols_stale;
+        o.symbols_bad_cfg = st.symbols_bad_cfg;
+        o.rows_in_flight = st.rows_in_flight;
+      }
+      sin.frames_clean = fstream.frames_clean();
+      sin.frames_truncated = fstream.frames_truncated();
+      sin.frames_dropped = fstream.frames_dropped();
+      sin.stall_resets = fstream.stall_resets();
+      sin.rtp_ok = rtp_order.in_order;
+      sin.rtp_gap = rtp_order.fwd_gap;
+      sin.rtp_gap_seqs = rtp_order.gap_seqs;
+      sin.rtp_back = rtp_order.back;
+      sin.udp_sent = udp.sent();
+      sin.udp_failed = udp.failed();
+      sin.udp_bytes = udp.bytes();
+      sin.q_drop = queue.dropped();
+      sin.telem = latest_telem.t;
+      sin.telem_rx_ms = latest_telem.rx_ms;
+      stats->poll(drained_ms, sin);
     }
   }
   queue.close();

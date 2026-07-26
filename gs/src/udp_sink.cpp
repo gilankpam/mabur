@@ -33,6 +33,7 @@ bool UdpSink::send(const uint8_t* data, size_t len) {
     return false;
   }
   ++sent_;
+  bytes_ += len;
   return true;
 }
 

@@ -1,0 +1,383 @@
+#include <string>
+#include <vector>
+#include "json.hpp"
+#include "mabur/profile.h"
+#include "mabur/uep_encoder.h"
+#include "mtest.h"
+#include "stats_exporter.h"
+using namespace maburgs;
+using nlohmann::json;
+
+namespace {
+StatsInput base_input() {
+  StatsInput in;
+  in.vtx_id = 1;
+  in.in_session = true;
+  in.tx_card = 0;
+  in.op.mcs = 5; in.op.bw = 20; in.op.overhead = 0.25; in.op.snr_req = 18.5;
+  in.deadline_ms = 60;
+  in.residual_loss = 0.012;
+  in.layer_delivery_pct = {100, 100, 97, 91};
+  StatsCardIn c;
+  c.up = true; c.frames = 1000; c.crc_fail = 12;
+  c.seq_expected = 1000; c.seq_received = 996; c.rx_bytes = 1'000'000;
+  c.last_frame_us = 999'000;
+  c.self_frames = 100; c.foreign = 50;
+  c.classes[1].frames = 900; c.classes[1].has_ema = true;  // s1
+  c.classes[1].rssi_ema = 59.9; c.classes[1].rssi_a_ema = 59.1; c.classes[1].rssi_b_ema = 57.7;
+  c.classes[1].snr_ema = 27.1; c.classes[1].snr_a_ema = 26.0; c.classes[1].snr_b_ema = 24.5;
+  c.classes[5].frames = 10; c.classes[5].has_ema = true;  // ctrl
+  c.classes[5].rssi_ema = 62.8;
+  c.classes[5].snr_ema = 25.0;
+  c.tx_fail = 2;
+  in.cards.push_back(c);
+  in.streams[0].bodies = 500;
+  in.streams[0].syms_recovered = 40;
+  in.streams[0].symbols_in = 4000;
+  in.frames_clean = 100; in.frames_truncated = 1;
+  in.rtp_ok = 5000; in.udp_sent = 5001; in.udp_bytes = 4'000'000;
+  return in;
+}
+
+struct Capture {
+  std::vector<std::string> sent;
+  StatsExporter::SendFn fn() {
+    return [this](const std::string& s) { sent.push_back(s); return true; };
+  }
+  json last() const { return json::parse(sent.back()); }
+};
+}  // namespace
+
+TEST(first_emission_immediate_with_null_rates) {
+  Capture cap;
+  StatsExporter ex(0xDEADBEEF, 500, cap.fn());
+  CHECK(ex.poll(1000, base_input()));
+  REQUIRE(cap.sent.size() == 1);
+  const json j = cap.last();
+  CHECK(j["v"] == 1);
+  CHECK(j["session"] == 0xDEADBEEF);
+  CHECK(j["seq"] == 0);
+  CHECK(j["t_ms"] == 1000);
+  CHECK(j["link"]["video"]["fps"].is_null());        // no window yet
+  CHECK(j["cards"][0]["rx_mbps"].is_null());
+  CHECK(j["cards"][0]["loss_pct"].is_null());
+  CHECK(j["cards"][0]["foreign_pps"].is_null());
+  CHECK(j["cards"][0]["self_pps"].is_null());
+  // gauges are live even on the first datagram
+  CHECK(j["link"]["vtx_id"] == 1);
+  CHECK(j["link"]["state"] == "session");
+  CHECK(j["link"]["op"]["mcs"] == 5);
+  CHECK(j["link"]["deadline_ms"] == 60);
+  CHECK(j["cards"][0]["frames"] == 1000);
+}
+
+TEST(interval_gate_and_seq) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  CHECK(ex.poll(1000, base_input()));
+  CHECK(!ex.poll(1400, base_input()));   // 400 ms < interval
+  CHECK(ex.poll(1500, base_input()));    // due
+  CHECK(cap.sent.size() == 2);
+  CHECK(cap.last()["seq"] == 1);
+}
+
+TEST(rates_use_measured_window) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  in.cards[0].rx_bytes += 250'000;   // +2 Mbit over 1 s -> 2.0 Mbps
+  in.cards[0].frames += 500;         // 500 pps
+  in.cards[0].seq_expected += 100;
+  in.cards[0].seq_received += 98;    // 2% loss
+  in.streams[0].syms_recovered += 12;
+  in.udp_bytes += 125'000;           // 1.0 Mbps video
+  ex.poll(2000, in);                 // 1000 ms window (2x nominal: measured wins)
+  const json j = cap.last();
+  CHECK(j["cards"][0]["rx_mbps"].get<double>() > 1.99 && j["cards"][0]["rx_mbps"].get<double>() < 2.01);
+  CHECK(j["cards"][0]["pps"].get<double>() > 499 && j["cards"][0]["pps"].get<double>() < 501);
+  CHECK(j["cards"][0]["loss_pct"].get<double>() > 1.99 && j["cards"][0]["loss_pct"].get<double>() < 2.01);
+  CHECK(j["link"]["streams"][0]["recovered_s"].get<double>() > 11.9 && j["link"]["streams"][0]["recovered_s"].get<double>() < 12.1);
+  CHECK(j["link"]["video"]["mbps"].get<double>() > 0.99 && j["link"]["video"]["mbps"].get<double>() < 1.01);
+}
+
+TEST(loss_pct_null_when_no_expected_and_clamp_negative) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  ex.poll(1500, in);                 // identical counters: zero deltas
+  json j = cap.last();
+  CHECK(j["cards"][0]["loss_pct"].is_null());   // delta expected == 0
+  in.cards[0].rx_bytes -= 1000;                 // impossible regression
+  ex.poll(2000, in);
+  j = cap.last();
+  CHECK(j["cards"][0]["rx_mbps"].get<double>() == 0.0);  // clamped, not negative
+}
+
+TEST(fps_and_jitter_from_on_frame) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  ex.poll(1000, base_input());
+  // 60 fps cadence with one 4 ms wobble: intervals 16,16,20 -> D = 0,4
+  ex.on_frame(1100); ex.on_frame(1116); ex.on_frame(1132); ex.on_frame(1152);
+  ex.poll(1500, base_input());
+  json j = cap.last();
+  CHECK(j["link"]["video"]["fps"].get<double>() == 8.0);         // 4 frames / 0.5 s
+  // J: 0 +(0-0)/16 = 0, then +(4-0)/16 = 0.25
+  CHECK(j["link"]["video"]["jitter_ms"].get<double>() > 0.24 && j["link"]["video"]["jitter_ms"].get<double>() < 0.26);
+  // >1 s frame gap resets jitter
+  ex.on_frame(3000);
+  ex.poll(3100, base_input());
+  CHECK(cap.last()["link"]["video"]["jitter_ms"].get<double>() == 0.0);
+}
+
+TEST(fec_rows_sticky_and_idle_omitted) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();     // only stream 0 has bodies
+  ex.poll(1000, in);
+  json j = cap.last();
+  REQUIRE(j["link"]["streams"].size() == 1);
+  CHECK(j["link"]["streams"][0]["stream"] == 0);
+  in.streams[2].bodies = 5;         // stream 2 wakes up
+  ex.poll(1500, in);
+  CHECK(cap.last()["link"]["streams"].size() == 2);
+  in.streams[2].bodies = 5;         // no new bodies, but sticky
+  ex.poll(2000, in);
+  CHECK(cap.last()["link"]["streams"].size() == 2);
+}
+
+TEST(null_gauges_before_data) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.cards[0].classes[1].has_ema = false;   // s1 has traffic but no ema yet
+  in.cards[0].last_frame_us = 0;
+  in.residual_loss.reset();
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(j["cards"][0]["classes"]["s1"]["rssi"].is_null());
+  CHECK(j["cards"][0]["classes"]["s1"]["snr_a"].is_null());
+  CHECK(j["cards"][0]["last_frame_age_ms"].is_null());
+  CHECK(j["link"]["residual_loss"].is_null());
+}
+
+TEST(rssi_converted_to_dbm) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  ex.poll(1000, base_input());   // rssi_ema 59.9 raw (class s1)
+  const json j = cap.last();
+  CHECK(j["cards"][0]["classes"]["s1"]["rssi"].get<double>() > -50.2 &&
+        j["cards"][0]["classes"]["s1"]["rssi"].get<double>() < -50.0);
+  CHECK(j["cards"][0]["classes"]["s1"]["snr"].get<double>() > 27.0 &&
+        j["cards"][0]["classes"]["s1"]["snr"].get<double>() < 27.2);  // snr NOT shifted
+}
+
+TEST(send_failure_counted_never_thrown) {
+  int calls = 0;
+  StatsExporter ex(1, 500, [&](const std::string&) { ++calls; return false; });
+  CHECK(!ex.poll(1000, base_input()));   // emitted but send failed -> false
+  ex.poll(1500, base_input());
+  CHECK(calls == 2);
+  CHECK(ex.send_failed() == 2);
+}
+
+TEST(tx_and_injection_rates) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["cards"][0]["tx_pps"].is_null());     // first emission
+  CHECK(j["cards"][0]["inj_pps"].is_null());
+  CHECK(j["cards"][0]["tx_fail"] == 2);         // cumulative, live immediately
+  in.cards[0].tx_frames += 10;                  // 20/s over 0.5 s
+  in.cards[0].seq_expected += 750;              // drone injected 1500/s
+  in.cards[0].seq_received += 748;
+  ex.poll(1500, in);
+  j = cap.last();
+  CHECK(j["cards"][0]["tx_pps"].get<double>() > 19.9 && j["cards"][0]["tx_pps"].get<double>() < 20.1);
+  CHECK(j["cards"][0]["inj_pps"].get<double>() > 1499 && j["cards"][0]["inj_pps"].get<double>() < 1501);
+}
+
+TEST(stream_rung_phy_and_injection_estimates) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();                  // op: HT mcs5 bw20
+  in.streams[1].bodies = 100;                    // activate s1's stream row
+  const auto ladder = mabur::rc::ladder_from(mabur::rc::PhyMode::HT, 5, 20, {});
+  ex.poll(1000, in);
+  json j = cap.last();
+  const json& s0 = j["link"]["streams"][0];
+  CHECK(s0["rung_mcs"] == ladder[0].mcs);
+  CHECK(s0["rung_ldpc"] == ladder[0].ldpc);
+  CHECK(s0["rung_stbc"] == ladder[0].stbc);
+  const double want_phy = mabur::rc::phy_rate_mbps(ladder[0]);
+  CHECK(s0["phy_mbps"].get<double>() > want_phy - 1e-9 && s0["phy_mbps"].get<double>() < want_phy + 1e-9);
+  CHECK(s0["inj_kbps"].is_null());               // first emission
+  CHECK(j["link"]["air_pct"].is_null());
+  // Window: card0 hears 1 Mbps of s1 with 20% loss -> injected est 1.25 Mbps.
+  in.cards[0].classes[1].bytes += 62'500;
+  in.cards[0].seq_expected += 500;
+  in.cards[0].seq_received += 400;               // 20% card loss this window
+  ex.poll(1500, in);
+  j = cap.last();
+  const double inj = j["link"]["streams"][1]["inj_kbps"].get<double>();
+  CHECK(inj > 1240.0 && inj < 1260.0);           // 1000 kbps / 0.8
+  const double air = j["link"]["air_pct"].get<double>();
+  const double want_air = 100.0 * (1.25 / mabur::rc::phy_rate_mbps(ladder[1]));
+  CHECK(air > want_air - 0.1 && air < want_air + 0.1);
+}
+
+TEST(class_mbps_windowed) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  CHECK(cap.last()["cards"][0]["classes"]["s1"]["mbps"].is_null());  // first emission
+  in.cards[0].classes[1].bytes += 62'500;   // +0.5 Mbit over 0.5 s -> 1.0 Mbps
+  ex.poll(1500, in);
+  const double mbps = cap.last()["cards"][0]["classes"]["s1"]["mbps"].get<double>();
+  CHECK(mbps > 0.99 && mbps < 1.01);
+}
+
+TEST(class_entries_sticky_and_rates) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  json j = cap.last();
+  REQUIRE(j["cards"][0]["classes"].contains("s1"));
+  REQUIRE(j["cards"][0]["classes"].contains("ctrl"));
+  CHECK(!j["cards"][0]["classes"].contains("s0"));   // never seen -> absent
+  CHECK(j["cards"][0]["classes"]["s1"]["pps"].is_null());  // first emission
+  in.cards[0].classes[1].frames += 450;              // 900 pps over 0.5 s
+  in.cards[0].self_frames += 10;                     // 20/s
+  in.cards[0].foreign += 2;                          // 4/s
+  ex.poll(1500, in);
+  j = cap.last();
+  CHECK(j["cards"][0]["classes"]["s1"]["pps"].get<double>() > 899 &&
+        j["cards"][0]["classes"]["s1"]["pps"].get<double>() < 901);
+  CHECK(j["cards"][0]["self_pps"].get<double>() > 19.9 && j["cards"][0]["self_pps"].get<double>() < 20.1);
+  CHECK(j["cards"][0]["foreign_pps"].get<double>() > 3.9 && j["cards"][0]["foreign_pps"].get<double>() < 4.1);
+  in.cards[0].classes[1].frames += 0;                // s1 silent this window
+  ex.poll(2000, in);
+  CHECK(cap.last()["cards"][0]["classes"].contains("s1"));  // sticky
+}
+
+TEST(stream_rows_carry_effective_overhead) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();                      // op.overhead = 0.25
+  ex.poll(1000, in);
+  const json j = cap.last();
+  const double ov0 = j["link"]["streams"][0]["ov"].get<double>();
+  const double want = mabur::uep_layer_overhead(0, 0.25);
+  CHECK(ov0 > want - 1e-9 && ov0 < want + 1e-9);
+  CHECK(j["link"]["vtx_id"] == 1);
+}
+TEST(drone_section_null_then_rates) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  CHECK(cap.last()["drone"].is_null());
+  mabur::rc::Telem t;
+  t.tlm_seq = 1; t.state = 2; t.enc_frames = 1000; t.enc_kbytes = 1000;
+  t.rcf_rx = 100; t.radio_sent = 5000; t.up_rssi[1] = 52; t.soc_temp_c = 61;
+  in.telem = t; in.telem_rx_ms = 1400;
+  ex.poll(1500, in);
+  json j = cap.last();
+  CHECK(j["drone"]["state"] == "linked");
+  CHECK(j["drone"]["tlm_age_ms"] == 100);
+  CHECK(j["drone"]["enc"]["fps"].is_null());        // one snapshot only
+  CHECK(j["drone"]["uplink"]["rssi_b"].get<double>() > -58.1 &&
+        j["drone"]["uplink"]["rssi_b"].get<double>() < -57.9);
+  t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;
+  t.rcf_rx = 120; t.radio_sent = 6460;
+  in.telem = t; in.telem_rx_ms = 2400;               // 1000 ms later
+  ex.poll(2500, in);
+  j = cap.last();
+  CHECK(j["drone"]["enc"]["fps"].get<double>() > 59.9 && j["drone"]["enc"]["fps"].get<double>() < 60.1);
+  CHECK(j["drone"]["enc"]["mbps"].get<double>() > 9.1 && j["drone"]["enc"]["mbps"].get<double>() < 9.3);
+  CHECK(j["drone"]["rcf"]["rx_pps"].get<double>() > 19.9 && j["drone"]["rcf"]["rx_pps"].get<double>() < 20.1);
+  CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1459 && j["drone"]["radio"]["sent_pps"].get<double>() < 1461);
+  // same tlm_seq again: rates keep the last computed window, age grows
+  ex.poll(3000, in);
+  CHECK(cap.last()["drone"]["tlm_age_ms"] == 600);
+}
+
+// A maburd restart resets tlm_seq/generation/every cumulative counter back
+// toward 0. Two normal snapshots establish a rate window; a third snapshot
+// whose tlm_seq/generation/counters are all LOWER than the second (the
+// restart) must null every telem rate for that poll instead of computing a
+// ~4e9-scale garbage delta — and the snapshot after THAT (a fresh, distinct
+// pair with the restart as its new baseline) must produce sane rates again.
+TEST(telem_restart_nulls_rates_then_recovers) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+
+  mabur::rc::Telem t;
+  t.tlm_seq = 1; t.generation = 1; t.state = 2;
+  t.enc_frames = 1000; t.enc_kbytes = 1000;
+  t.rcf_rx = 100; t.radio_sent = 5000;
+  in.telem = t; in.telem_rx_ms = 1000;
+  ex.poll(1000, in);
+  CHECK(cap.last()["drone"]["enc"]["fps"].is_null());   // one snapshot only
+
+  t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;
+  t.rcf_rx = 120; t.radio_sent = 6460;
+  in.telem = t; in.telem_rx_ms = 2000;                  // 1000 ms later
+  ex.poll(2500, in);
+  json j = cap.last();
+  CHECK(j["drone"]["enc"]["fps"].get<double>() > 59.9 && j["drone"]["enc"]["fps"].get<double>() < 60.1);
+  CHECK(j["drone"]["enc"]["mbps"].get<double>() > 9.1 && j["drone"]["enc"]["mbps"].get<double>() < 9.3);
+  CHECK(j["drone"]["rcf"]["rx_pps"].get<double>() > 19.9 && j["drone"]["rcf"]["rx_pps"].get<double>() < 20.1);
+  CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1459 && j["drone"]["radio"]["sent_pps"].get<double>() < 1461);
+
+  // Restart: tlm_seq goes backwards (1 < 2), generation regresses (0 < 1),
+  // and every cumulative counter drops back near 0.
+  t.tlm_seq = 1; t.generation = 0;
+  t.enc_frames = 5; t.enc_kbytes = 2;
+  t.rcf_rx = 1; t.radio_sent = 10;
+  in.telem = t; in.telem_rx_ms = 3000;
+  ex.poll(3500, in);
+  j = cap.last();
+  CHECK(j["drone"]["tlm_seq"] == 1);
+  CHECK(j["drone"]["gen"] == 0);
+  CHECK(j["drone"]["enc"]["fps"].is_null());            // no garbage rate
+  CHECK(j["drone"]["enc"]["mbps"].is_null());
+  CHECK(j["drone"]["rcf"]["rx_pps"].is_null());
+  CHECK(j["drone"]["radio"]["sent_pps"].is_null());
+
+  // Next distinct snapshot after the restart: a clean pair, sane rates.
+  t.tlm_seq = 2; t.enc_frames = 65; t.enc_kbytes = 1002;
+  t.rcf_rx = 21; t.radio_sent = 1510;
+  in.telem = t; in.telem_rx_ms = 4000;                  // 1000 ms after the restart snapshot
+  ex.poll(4500, in);
+  j = cap.last();
+  CHECK(j["drone"]["enc"]["fps"].get<double>() > 59.9 && j["drone"]["enc"]["fps"].get<double>() < 60.1);
+  CHECK(j["drone"]["enc"]["mbps"].get<double>() > 8.1 && j["drone"]["enc"]["mbps"].get<double>() < 8.3);
+  CHECK(j["drone"]["rcf"]["rx_pps"].get<double>() > 19.9 && j["drone"]["rcf"]["rx_pps"].get<double>() < 20.1);
+  CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1499 && j["drone"]["radio"]["sent_pps"].get<double>() < 1501);
+}
+
+// Deaf-radio case: the wire's all-zero uplink default (never heard an RC
+// frame back from the drone) must render as null, not as a plausible-looking
+// -110.0 dBm / 0 dB SNR.
+TEST(uplink_nulled_when_both_chains_raw_zero) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  mabur::rc::Telem t;  // default-constructed: up_rssi/up_snr all zero
+  in.telem = t; in.telem_rx_ms = 900;
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(j["drone"]["uplink"]["rssi_a"].is_null());
+  CHECK(j["drone"]["uplink"]["rssi_b"].is_null());
+  CHECK(j["drone"]["uplink"]["snr_a"].is_null());
+  CHECK(j["drone"]["uplink"]["snr_b"].is_null());
+}
+MTEST_MAIN

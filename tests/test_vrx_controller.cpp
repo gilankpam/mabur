@@ -127,6 +127,32 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   CHECK(vrx.peer_acked());                       // now caps==0 means it truly said 0
   CHECK(vrx.peer_caps() == 0);
 }
+// T_TELEM frames are drone->GS display-only telemetry, not rendezvous
+// traffic: on_rc_frame must tolerate the unknown (to it) frame type and
+// leave rendezvous/link state completely untouched. GS routes T_TELEM to a
+// separate holder before it ever reaches on_rc_frame (Task 3), but the
+// controller itself must not choke if it ever sees one. Spec 2026-07-26
+// drone-telemetry.
+TEST(on_rc_frame_tolerates_unknown_type_telem) {
+  auto vrx = make();
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  vrx.step(1500, ld, std::nullopt);  // silence -> BEACONING, seq_ advances
+
+  const auto state_before = vrx.link_state();
+  const auto op_before = vrx.cur_op();
+  const auto seq_before = vrx.rcf_seq();
+
+  mabur::rc::Telem t;
+  t.tlm_seq = 42;
+  t.state = 3;
+  auto wire = mabur::rc::pack_telem(t);
+  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
+
+  CHECK(vrx.link_state() == state_before);
+  CHECK(vrx.cur_op().mcs == op_before.mcs);
+  CHECK(vrx.rcf_seq() == seq_before);
+}
+
 MTEST_MAIN
 
 // Starvation guard: a decode-collapse window (zero completed base-layer

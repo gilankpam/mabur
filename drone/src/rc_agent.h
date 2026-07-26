@@ -77,6 +77,16 @@ class RcAgent {
   State state() const { return state_; }
   const AppliedOp& current() const { return applied_; }
 
+  // Telemetry accessors (spec 2026-07-26 drone-telemetry): read-only
+  // snapshots of RcAgent-internal state the T_TELEM collector needs but
+  // that isn't otherwise exposed. All same-thread reads (the agent thread
+  // owns both RcAgent and the telemetry collector call site in main.cpp).
+  bool failsafe_shed() const { return failsafe_shed_; }
+  int thermal_derate_qdb() const { return thermal_derate_; }
+  bool have_feedback() const { return have_last_fb_; }
+  uint64_t last_feedback_ms() const { return last_fb_ms_; }
+  uint64_t rcf_accepted() const { return rcf_accepted_; }
+
   // Latched on a BOOT/RENDEZVOUS -> LINKED transition — the process-(re)start
   // link-up, when frames encoded so far never reached the air and the GS may
   // hold a stale frame-id cursor. The caller consumes it to re-mark the frame
@@ -109,6 +119,11 @@ class RcAgent {
 
   uint16_t last_seq_ = 0;
   bool have_last_seq_ = false;
+
+  // Cumulative count of RCFs accepted (fresh + matching vtx_id) — feeds
+  // Telem.rcf_rx. Never reset (a session-boundary reset would make the GS's
+  // rate computation, which is over a measured interval, ambiguous).
+  uint64_t rcf_accepted_ = 0;
 
   // Bitrate policy state.
   int last_bitrate_kbps_ = 0;

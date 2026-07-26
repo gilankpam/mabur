@@ -64,6 +64,10 @@ std::vector<uint8_t> build_control_frame(uint16_t seq, const uint8_t* body,
   return f;
 }
 
+bool sa_canonical(const uint8_t* dot11, size_t len) {
+  return len >= 16 && std::memcmp(dot11 + 10, kSa, 6) == 0;
+}
+
 // --- device management (mirrors drone/src/main.cpp bring-up) ----------------
 
 RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out) : cfg_(cfg), out_(out) {}
@@ -132,6 +136,13 @@ bool RadioFrontend::open_and_start() {
 void RadioFrontend::on_packet(const Packet& pkt) {
   rx_frames_.fetch_add(1, std::memory_order_relaxed);
   if (pkt.Data.size() < kDot11 + 1) return;
+  // Foreign traffic never reaches the queue: it polluted per-card EMAs and
+  // the seq-loss walk (spec revision 2). CRC-failed frames pass — a corrupt
+  // SA proves nothing, and they never fed EMAs/seq anyway.
+  if (!pkt.RxAtrib.crc_err && !sa_canonical(pkt.Data.data(), pkt.Data.size())) {
+    foreign_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
   mabur::node::RxBody m;
   m.card_id = cfg_.card_id;
   m.mono_us = mono_us_now();
@@ -147,10 +158,15 @@ void RadioFrontend::on_packet(const Packet& pkt) {
 }
 
 bool RadioFrontend::send_control(const std::vector<uint8_t>& body) {
-  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  if (!ready_.load(std::memory_order_acquire) || !device_) {
+    tx_fail_.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
   const auto frame = build_control_frame(tx_seq_, body.data(), body.size());
   tx_seq_ = static_cast<uint16_t>((tx_seq_ + 1) & 0xFFF);
-  return device_->send_packet(frame.data(), frame.size());
+  const bool ok = device_->send_packet(frame.data(), frame.size());
+  (ok ? tx_frames_ : tx_fail_).fetch_add(1, std::memory_order_relaxed);
+  return ok;
 }
 
 void RadioFrontend::stop() {
@@ -173,5 +189,8 @@ void RadioFrontend::stop() {
 bool RadioFrontend::ready() const { return ready_.load(std::memory_order_acquire); }
 bool RadioFrontend::alive() const { return alive_.load(std::memory_order_acquire); }
 uint64_t RadioFrontend::rx_frames() const { return rx_frames_.load(std::memory_order_relaxed); }
+uint64_t RadioFrontend::foreign() const { return foreign_.load(std::memory_order_relaxed); }
+uint64_t RadioFrontend::tx_frames() const { return tx_frames_.load(std::memory_order_relaxed); }
+uint64_t RadioFrontend::tx_fail() const { return tx_fail_.load(std::memory_order_relaxed); }
 
 }  // namespace maburgs
