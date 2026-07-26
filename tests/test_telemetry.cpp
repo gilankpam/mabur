@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "mtest.h"
 #include "telemetry.h"
 #include "mabur/rc_proto.h"
@@ -47,6 +48,23 @@ TEST(uplink_track_ema_and_thread_snapshot) {
 
 TEST(sys_readers_fail_soft) {
   CHECK(mabur::read_soc_temp_c("/nonexistent") == -128);
+  CHECK(mabur::read_soc_temp_c_sigmastar("/nonexistent") == -128);
   CHECK(mabur::read_load1("/nonexistent") == 0.0);
+}
+
+TEST(soc_temp_formats) {
+  // Standard zone: millidegrees. SigmaStar cpufreq: "Temp=NN" already in C.
+  {
+    FILE* f = std::fopen("/tmp/mabur_test_thermal", "w");
+    std::fprintf(f, "53000\n"); std::fclose(f);
+    CHECK(mabur::read_soc_temp_c("/tmp/mabur_test_thermal") == 53);
+  }
+  {
+    FILE* f = std::fopen("/tmp/mabur_test_sstar", "w");
+    std::fprintf(f, "Temp=53\n"); std::fclose(f);
+    CHECK(mabur::read_soc_temp_c_sigmastar("/tmp/mabur_test_sstar") == 53);
+    // wrong format for each reader -> unavailable, not garbage
+    CHECK(mabur::read_soc_temp_c_sigmastar("/tmp/mabur_test_thermal") == -128);
+  }
 }
 MTEST_MAIN

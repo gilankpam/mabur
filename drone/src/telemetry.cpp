@@ -100,6 +100,16 @@ int read_soc_temp_c(const char* path) {
   return static_cast<int>(millideg / 1000);
 }
 
+int read_soc_temp_c_sigmastar(const char* path) {
+  FILE* f = std::fopen(path, "r");
+  if (!f) return -128;
+  int deg = 0;
+  int n = std::fscanf(f, "Temp=%d", &deg);
+  std::fclose(f);
+  if (n != 1) return -128;
+  return deg;
+}
+
 double read_load1(const char* path) {
   FILE* f = std::fopen(path, "r");
   if (!f) return 0.0;

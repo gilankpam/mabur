@@ -1055,6 +1055,8 @@ int run_real_mode(const Config& cfg) {
         ti.usb_fail = txstats.failed;
         ti.uplink = uplink_track.snap();
         ti.soc_temp_c = read_soc_temp_c();
+        if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
+          ti.soc_temp_c = read_soc_temp_c_sigmastar();
         ti.thermal_delta = health.thermal_delta;
         ti.load1 = read_load1();
 

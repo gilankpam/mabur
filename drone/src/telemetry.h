@@ -58,7 +58,13 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);
 // Reads /sys/class/thermal/thermal_zone0/temp (millidegrees) and
 // /proc/loadavg; -128 / 0.0 when unreadable. Trivial, separated for tests
 // via path injection.
+// Standard kernel thermal zone (millidegrees). -128 when unreadable.
 int read_soc_temp_c(const char* path = "/sys/class/thermal/thermal_zone0/temp");
+// SigmaStar fallback: cpufreq's "Temp=NN" (already degrees C) — the OpenIPC
+// drone SoC ships no thermal_zone (found on hw 2026-07-26). -128 when
+// unreadable.
+int read_soc_temp_c_sigmastar(
+    const char* path = "/sys/devices/system/cpu/cpufreq/temp_out");
 double read_load1(const char* path = "/proc/loadavg");
 
 }  // namespace mabur
