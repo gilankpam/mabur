@@ -37,12 +37,11 @@ struct FecCfg {
   int seq_horizon = 512;
 };
 
-/// Link-layer configuration: VTX ID, feedback rate, keepalive, silence timeout.
+/// Link-layer configuration: VTX ID, feedback rate, keepalive.
 struct LinkCfg {
   uint32_t vtx_id = 1;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
-  int video_silence_ms = 3000;
   // Source bitrate the controller's energy model plans for (Python
   // controller.py src_bitrate default 4 Mbps). Rungs whose effective PHY
   // rate cannot carry src*(1+overhead) are infeasible, so this sets the

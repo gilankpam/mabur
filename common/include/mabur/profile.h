@@ -29,21 +29,13 @@ uint8_t encode_profile(PhyMode mode, uint8_t mcs, uint8_t bw);
 // Wire PROFILE byte -> (mode, mcs, bw). mcs is clamped to 7 (HT) / 8 (VHT).
 void decode_profile(uint8_t p, PhyMode& mode, uint8_t& mcs, uint8_t& bw);
 
-struct FlagPolicy {
-  bool crit_ldpc = true;
-  bool crit_stbc = true;
-  bool t0_ldpc = true;
-  bool t0_stbc = true;
-};
-
 // Builds the 4-rung ladder (CRIT, T0, T1, T2) for a (mode, base mcs, bw)
-// operating point. All four rungs ride the same base mcs, and T1/T2 carry
-// T0's whole spec including its policy-applied ldpc/stbc (hw 2026-07-26:
-// per-rung +1/+2 MCS bumps put SVC-T enhance traffic past the link wall,
-// and flags-off T1/T2 measured 2-3 dB weaker at the same MCS); per-layer
-// differentiation is exclusively FEC overhead.
-std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
-                                        const FlagPolicy& fp);
+// operating point. All four rungs ride the same base mcs with LDPC+STBC
+// unconditionally on (the config policy was removed 2026-07-26 — all-true
+// was the only shape ever flown, and flags-off T1/T2 measured 2-3 dB
+// weaker at the same MCS); per-layer differentiation is exclusively FEC
+// overhead.
+std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw);
 
 // DEVOURER_SVC_LADDER-style spec string, Python adaptive_link.ladder_spec
 // identical: "CRIT={name}{m}/{bw};T0=...;T1=...;T2=..." with
@@ -68,10 +60,9 @@ constexpr int MAX_RANGE_PROFILE = 0;
 
 // Builds the 4-rung ladder for profile_table()[idx] by parsing its committed
 // svc_ladder spec string (tokens "MCSn"/"VHT1SS_MCSn", "/20|/40|/80",
-// optional "/LDPC" "/STBC" "/SGI" in any order). fp's ldpc/stbc flags are
-// ONLY ADDED to CRIT/T0 (never removes a flag the ladder string itself sets)
-// and never applied to T1/T2.
-std::array<LayerTxSpec, 4> ladder_for_row(int idx, const FlagPolicy& fp);
+// optional "/LDPC" "/STBC" "/SGI" in any order). LDPC+STBC are then forced
+// on for CRIT/T0 (supersedes whatever the string sets; T1/T2 copy T0).
+std::array<LayerTxSpec, 4> ladder_for_row(int idx);
 
 // Bandwidth this video seq must fly at as a rung probe, else -1. rungs =
 // sorted(bw_set); slots {0,8,16} of seq%32 -> rungs[i] if i < rungs.size().

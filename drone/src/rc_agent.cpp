@@ -16,13 +16,6 @@ using rc::Rcf;
 
 namespace {
 
-// Merges cfg.power_offset_db (per-rung, CRIT/T0/T1/T2) into a ladder's
-// carried-but-unused-in-v1 power_offset_db field.
-void merge_power_offsets(std::array<LayerTxSpec, 4>& ladder,
-                         const std::array<int8_t, 4>& offsets) {
-  for (size_t i = 0; i < 4; ++i) ladder[i].power_offset_db = offsets[i];
-}
-
 int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 100); }
 
 }  // namespace
@@ -36,8 +29,7 @@ RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {}
 // hysteresis — the spec mandates failsafe = robust MCS + floor bitrate, and
 // a degraded radio link must never keep flooding at the last LINKED rate.
 void RcAgent::apply_max_range(uint64_t now_ms) {
-  auto ladder = rc::ladder_from(PhyMode::HT, 0, 20, cfg_.flags);
-  merge_power_offsets(ladder, cfg_.power_offset_db);
+  auto ladder = rc::ladder_from(PhyMode::HT, 0, 20);
   commanded_offset_qdb_ = 0;  // full legal power
   thermal_derate_ = 0;
 
@@ -247,8 +239,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
 
     int row_idx = std::clamp<int>(d->init_profile, 0,
                                    static_cast<int>(rc::profile_table().size()) - 1);
-    auto ladder = rc::ladder_for_row(row_idx, cfg_.flags);
-    merge_power_offsets(ladder, cfg_.power_offset_db);
+    auto ladder = rc::ladder_for_row(row_idx);
     const auto& row = rc::profile_table()[static_cast<size_t>(row_idx)];
     int offset_qdb = std::clamp<int>(row.pwr_offset_qdb, cfg_.radio.min_offset_qdb, 0);
     apply_ladder_op(ladder, offset_qdb, row.fec_overhead);
@@ -291,8 +282,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     PhyMode mode;
     uint8_t mcs, bw;
     rc::decode_profile(r->profile, mode, mcs, bw);
-    auto ladder = rc::ladder_from(mode, mcs, bw, cfg_.flags);
-    merge_power_offsets(ladder, cfg_.power_offset_db);
+    auto ladder = rc::ladder_from(mode, mcs, bw);
 
     int offset_qdb = commanded_offset_qdb_;
     if (r->pwr_offset_biased != rc::PWR_NO_CHANGE) {

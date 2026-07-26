@@ -5,7 +5,6 @@
     "channel": 149,
     "width": 20,
     "bw_set": [20],
-    "max_txagc": 63,
     "thermal_max_delta": 25,
     "power_mode": "none",
     "rate_walls_idx": [91, 91, 91, 91, 73, 56, 51, 49],
@@ -39,13 +38,6 @@
     "tick_ms": 100
   },
   "frame_ring_name": "mabur_f",
-  "flags": {
-    "crit_ldpc": true,
-    "crit_stbc": true,
-    "t0_ldpc": true,
-    "t0_stbc": true
-  },
-  "power_offset_db": [0, 0, 0, 0],
   "msp": {
     "enable": false,
     "serial": "/dev/ttyS2",

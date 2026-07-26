@@ -139,9 +139,10 @@ TEST(profile_table_matches_vectors_verbatim) {
   CHECK(MAX_RANGE_PROFILE == 0);
 }
 
-TEST(ladder_from_applies_default_flag_policy) {
-  FlagPolicy fp;  // defaults: all true
-  auto ladder = ladder_from(PhyMode::HT, 2, 20, fp);
+TEST(ladder_from_sets_ldpc_stbc_on_all_rungs) {
+  // Config policy removed 2026-07-26: LDPC+STBC are unconditionally on for
+  // every rung (the all-true policy was the only shape ever flown).
+  auto ladder = ladder_from(PhyMode::HT, 2, 20);
   // CRIT
   CHECK(ladder[0].mode == PhyMode::HT);
   CHECK(ladder[0].mcs == 2);
@@ -170,36 +171,18 @@ TEST(ladder_from_applies_default_flag_policy) {
   CHECK(ladder[3].stbc == true);
 }
 
-TEST(ladder_from_respects_disabled_flags) {
-  FlagPolicy fp;
-  fp.crit_ldpc = false;
-  fp.crit_stbc = false;
-  fp.t0_ldpc = false;
-  fp.t0_stbc = false;
-  auto ladder = ladder_from(PhyMode::HT, 2, 20, fp);
-  CHECK(ladder[0].ldpc == false);
-  CHECK(ladder[0].stbc == false);
-  CHECK(ladder[1].ldpc == false);
-  CHECK(ladder[1].stbc == false);
-  CHECK(ladder[2].ldpc == false);
-  CHECK(ladder[2].stbc == false);
-  CHECK(ladder[3].ldpc == false);
-  CHECK(ladder[3].stbc == false);
-}
-
 TEST(ladder_from_clamps_at_top) {
   // HT top = 7: an out-of-range base mcs clamps to 7, and every rung rides
   // that same clamped value (no more per-rung +1/+2 offset to clamp
   // separately).
-  FlagPolicy fp;
-  auto ladder = ladder_from(PhyMode::HT, 9, 20, fp);
+  auto ladder = ladder_from(PhyMode::HT, 9, 20);
   CHECK(ladder[0].mcs == 7);
   CHECK(ladder[1].mcs == 7);
   CHECK(ladder[2].mcs == 7);
   CHECK(ladder[3].mcs == 7);
 
   // VHT top = 8: mcs=10 clamps to 8, all rungs match.
-  auto vladder = ladder_from(PhyMode::VHT, 10, 40, fp);
+  auto vladder = ladder_from(PhyMode::VHT, 10, 40);
   CHECK(vladder[0].mcs == 8);
   CHECK(vladder[1].mcs == 8);
   CHECK(vladder[2].mcs == 8);
@@ -209,10 +192,9 @@ TEST(ladder_from_clamps_at_top) {
 TEST(ladder_for_row_matches_table_strings_verbatim) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/profile.json");
   auto& expect_rows = j["table"];
-  FlagPolicy fp;  // defaults: all true
   for (size_t idx = 0; idx < 5; ++idx) {
     auto oracle = parse_ladder_str(expect_rows[idx]["ladder"].get<std::string>());
-    auto ladder = ladder_for_row(static_cast<int>(idx), fp);
+    auto ladder = ladder_for_row(static_cast<int>(idx));
     // CRIT and T0 come straight from the vendored row string (plus flag
     // policy) — the table itself stays a byte-exact devourer port.
     for (int i = 0; i < 2; ++i) {
@@ -221,12 +203,12 @@ TEST(ladder_for_row_matches_table_strings_verbatim) {
       CHECK(ladder[static_cast<size_t>(i)].bw == oracle[static_cast<size_t>(i)].bw);
       CHECK(ladder[static_cast<size_t>(i)].sgi == oracle[static_cast<size_t>(i)].sgi);
     }
-    // FlagPolicy only ADDS ldpc/stbc to CRIT/T0 — never removes what the
-    // committed table string already sets.
-    CHECK(ladder[0].ldpc == (oracle[0].ldpc || fp.crit_ldpc));
-    CHECK(ladder[0].stbc == (oracle[0].stbc || fp.crit_stbc));
-    CHECK(ladder[1].ldpc == (oracle[1].ldpc || fp.t0_ldpc));
-    CHECK(ladder[1].stbc == (oracle[1].stbc || fp.t0_stbc));
+    // LDPC/STBC are unconditionally on — supersedes (and always satisfies)
+    // whatever the committed table string sets.
+    CHECK(ladder[0].ldpc == true);
+    CHECK(ladder[0].stbc == true);
+    CHECK(ladder[1].ldpc == true);
+    CHECK(ladder[1].stbc == true);
     // hw 2026-07-26 ruling (+ same-day follow-up): T1/T2 ride T0's ENTIRE
     // spec — rate fields and policy-applied ldpc/stbc alike — regardless
     // of what the vendored row string carries for T1/T2 (some rows still
@@ -252,12 +234,11 @@ TEST(ladder_for_row_flattens_t1_t2_to_t0_rate) {
   // byte-exact devourer port. hw 2026-07-26 ruling: streams above CRIT
   // ride T0's scored rate; only FEC overhead differentiates them. Pin
   // that the *applied* ladder enforces this even though the committed
-  // table row keeps devourer's own spread. FlagPolicy defaults all true,
-  // and T1/T2 take T0's WHOLE spec — rate fields and policy-applied
-  // ldpc/stbc alike (hw 2026-07-26 follow-up: uniform PHY; flags-off T1/T2
-  // measured 2-3 dB weaker on air at the same MCS).
-  FlagPolicy fp;
-  auto ladder = ladder_for_row(3, fp);
+  // table row keeps devourer's own spread. T1/T2 take T0's WHOLE spec —
+  // rate fields and the unconditional ldpc/stbc alike (hw 2026-07-26
+  // follow-up: uniform PHY; flags-off T1/T2 measured 2-3 dB weaker on air
+  // at the same MCS).
+  auto ladder = ladder_for_row(3);
 
   // T0/T1/T2 identical in rate fields (mode/mcs/bw/sgi).
   CHECK(ladder[1].mode == ladder[2].mode);
@@ -269,8 +250,8 @@ TEST(ladder_for_row_flattens_t1_t2_to_t0_rate) {
   CHECK(ladder[1].bw == ladder[3].bw);
   CHECK(ladder[1].sgi == ladder[3].sgi);
 
-  // T0's policy-applied flags (defaults all true) carry onto T1/T2 —
-  // identical PHY, matching ladder_from.
+  // T0's unconditional flags carry onto T1/T2 — identical PHY, matching
+  // ladder_from.
   CHECK(ladder[1].ldpc == true);
   CHECK(ladder[1].stbc == true);
   CHECK(ladder[2].ldpc == true);
@@ -289,21 +270,6 @@ TEST(ladder_for_row_flattens_t1_t2_to_t0_rate) {
   // CRIT keeps its own, more-protected row spec — independent of T0/T1/T2.
   CHECK(ladder[0].mcs == 2);
   CHECK(ladder[0].mcs != ladder[1].mcs);
-}
-
-TEST(ladder_for_row_disabled_flags_keep_string_flags) {
-  // Row 0's CRIT/T0 already set LDPC in the string; disabling the policy
-  // must NOT strip that (policy only adds, never removes).
-  FlagPolicy fp;
-  fp.crit_ldpc = false;
-  fp.crit_stbc = false;
-  fp.t0_ldpc = false;
-  fp.t0_stbc = false;
-  auto ladder = ladder_for_row(0, fp);
-  CHECK(ladder[0].ldpc == true);   // string sets it
-  CHECK(ladder[0].stbc == false);  // string never sets stbc; policy off -> off
-  CHECK(ladder[1].ldpc == true);   // string sets it (T0 also /LDPC in row 0)
-  CHECK(ladder[1].stbc == false);
 }
 
 MTEST_MAIN

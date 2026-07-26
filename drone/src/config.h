@@ -15,10 +15,6 @@ struct RadioCfg {
   uint8_t channel = 149;
   uint8_t width = 20;
   std::vector<uint8_t> bw_set = {20};
-  // Legacy TXAGC-index ceiling; no longer consulted by RcAgent's power path
-  // (Task 11 moved that to qdB offsets clamped against min_offset_qdb below)
-  // — kept only for config-file compatibility with existing deployments.
-  int max_txagc = 63;
   int thermal_max_delta = 25;
   // How apply_op drives TX power (bench 2026-07-13, docs/handover-video-
   // delivery.md §5.1: the flat override costs ~25dB-equivalent of delivery
@@ -113,9 +109,6 @@ struct Config {
   // Name of waybeam's frame-shm ring (its outgoing.server =
   // frame-shm://<name>), the one and only video ingest.
   std::string frame_ring_name = "mabur_f";
-  rc::FlagPolicy flags;
-  std::array<int8_t, 4> power_offset_db = {0, 0, 0, 0};
-
   std::array<UepLayerCfg, 4> uep_layers() const;
 };
 

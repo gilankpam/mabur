@@ -50,7 +50,6 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.channel == def.radio.channel);
   CHECK(cfg.radio.width == def.radio.width);
   CHECK(cfg.radio.bw_set == def.radio.bw_set);
-  CHECK(cfg.radio.max_txagc == def.radio.max_txagc);
   CHECK(cfg.radio.thermal_max_delta == def.radio.thermal_max_delta);
   CHECK(cfg.radio.power_mode == "none");
   CHECK(cfg.radio.power_offset_qdb == 0);
@@ -94,11 +93,6 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
   CHECK(cfg.frame_ring_name == def.frame_ring_name);
-  CHECK(cfg.flags.crit_ldpc == def.flags.crit_ldpc);
-  CHECK(cfg.flags.crit_stbc == def.flags.crit_stbc);
-  CHECK(cfg.flags.t0_ldpc == def.flags.t0_ldpc);
-  CHECK(cfg.flags.t0_stbc == def.flags.t0_stbc);
-  CHECK(cfg.power_offset_db == def.power_offset_db);
 
   auto layers = cfg.uep_layers();
   CHECK(layers[0].fec.overhead == 1.0);  // base_overhead 0.25 -> sid0 ref 1.00
@@ -441,29 +435,56 @@ TEST(frame_ring_name_default) {
 }
 
 // video_input/ring_name selected and named the pre-frame-shm RTP-packet ring.
-// Unlike the fec.async_worker gate above (never set in a device config, so
-// failing loudly cost nothing), video_input IS pinned in the drone's live
-// /etc/mabur.json by the bench procedure — throwing on it would leave an
-// upgraded maburd unable to start, i.e. no video at all. So these two parse,
-// warn, and are ignored for one release.
-TEST(deprecated_video_input_keys_are_accepted_and_ignored) {
-  auto path = write_temp_json(
-      R"({"video_input": "frame_ring", "ring_name": "mabur"})");
-  auto cfg = load_config(path.string());  // must not throw
-  CHECK(cfg.frame_ring_name == "mabur_f");
+// Their accept-and-warn grace release has passed and the drone's live
+// /etc/mabur.json no longer carries them, so they now hit the blanket
+// unknown-key check like any other stale key.
+TEST(stale_video_input_and_ring_name_keys_throw) {
+  auto path = write_temp_json(R"({"video_input": "frame_ring"})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("video_input") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
   std::filesystem::remove(path);
 
-  // Any other value is equally ignored — including the one that used to select
-  // the deleted path.
-  auto path2 = write_temp_json(R"({"video_input": "ring"})");
-  (void)load_config(path2.string());
+  auto path2 = write_temp_json(R"({"ring_name": "mabur"})");
+  std::string msg2 = what_of([&] { (void)load_config(path2.string()); });
+  CHECK(msg2.find("ring_name") != std::string::npos);
+  CHECK(msg2.find("unknown key") != std::string::npos);
   std::filesystem::remove(path2);
+}
 
-  // The blanket unknown-key check still applies to everything else.
-  auto path3 = write_temp_json(R"({"video_output": "ring"})");
-  CHECK(what_of([&] { load_config(path3.string()); }).find("video_output") !=
-        std::string::npos);
-  std::filesystem::remove(path3);
+// The flags block tuned per-rung LDPC/STBC policy. Removed 2026-07-26:
+// LDPC+STBC are now hardcoded true on every rung in both ladder builders
+// (the deployed all-true config was the only shape ever flown; flags-off
+// T1/T2 measured 2-3 dB weaker on air). A stale block fails the boot.
+TEST(stale_flags_key_throws) {
+  auto path = write_temp_json(R"({"flags":{"crit_ldpc":true}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("flags") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+// radio.max_txagc was the legacy TXAGC-index ceiling; Task 11 moved the
+// power path to qdB offsets and nothing has read it since. The live config
+// was scrubbed 2026-07-26, so a stale key fails the boot loudly (note: the
+// pre-sym328 rollback config still carries it — edit before rolling back).
+TEST(stale_radio_max_txagc_key_throws) {
+  auto path = write_temp_json(R"({"radio":{"max_txagc":40}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("radio.max_txagc") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+// power_offset_db fed the ladder's carried-but-never-emitted per-rung field
+// (radio_tx.h: no DBM_TX_POWER radiotap is ever written). Scrubbed from the
+// live config 2026-07-26; stale key fails the boot.
+TEST(stale_power_offset_db_key_throws) {
+  auto path = write_temp_json(R"({"power_offset_db":[0,0,0,0]})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("power_offset_db") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
 }
 
 MTEST_MAIN

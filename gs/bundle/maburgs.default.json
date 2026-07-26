@@ -13,8 +13,7 @@
   "link": {
     "vtx_id": 1,
     "feedback_ms": 100,
-    "beacon_keepalive_ms": 1000,
-    "video_silence_ms": 3000
+    "beacon_keepalive_ms": 1000
   },
   "video_out": {"host": "127.0.0.1", "port": 5600},
   "msp": {
