@@ -9,21 +9,19 @@ from pathlib import Path
 
 
 def synthesize_flight_jsonl():
-    """Generate a synthetic flight.jsonl fixture at real 500ms cadence (2 Hz sideport).
+    """Generate a regression test fixture at 500ms cadence (2 Hz sideport).
 
-    Scenario:
-    - 30s steady at rung 5, u≈0.1 (60 samples at 500ms)
-    - util demote (reason=util, u=0.63, from rung 5 to 4)
-    - 5s at rung 4 (10 samples)
-    - residual burst 1: 2 consecutive samples (residual_loss 0.02, no gap between)
-    - clean recovery: 4 clean samples (no residual_loss) — 2s of gap
-    - residual burst 2: 2 consecutive samples (residual_loss 0.03, no gap between)
-    - residual demote (reason=residual)
-    - recovery promote (from rung 3 to 4)
+    Regression cases:
+    1. Two-burst case: burst1 at t=0/500, gap=1500ms, burst2 at t=2000/2500
+       - Old anchor logic (2500ms from episode-start): wrongly merges → 1 episode
+       - New anchor logic (750ms from previous-sample): correctly splits → 2 episodes
+
+    2. Continuous residual run: 11 samples (5.5s continuous, 500ms apart)
+       - Old anchor logic: splits at t=2500 and t=5000 → 2-3 episodes
+       - New anchor logic: no clean samples, so 1 episode
     """
     rows = []
 
-    # Helper to create a datagram
     def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked"):
         dg = {
             "v": 1,
@@ -82,12 +80,12 @@ def synthesize_flight_jsonl():
 
     t_ms = 0
 
-    # Phase 1: 30s at rung 5, u≈0.1 (60 samples at 500ms cadence)
+    # Phase 1: Steady rung 5 (30s at 500ms = 60 samples)
     for i in range(60):
         rows.append(make_datagram(t_ms, rung_idx=5, util=0.08 + 0.02 * (i % 2)))
         t_ms += 500
 
-    # Phase 2: util demote event (rung 5 -> 4, reason=util, u=0.63)
+    # Phase 2: Util demote (rung 5 -> 4)
     event = {
         "t_ms": t_ms,
         "from": 5,
@@ -98,27 +96,57 @@ def synthesize_flight_jsonl():
     rows.append(make_datagram(t_ms, rung_idx=4, util=0.63, event=event))
     t_ms += 500
 
-    # Phase 3: 5s at rung 4 (10 samples at 500ms)
+    # Phase 3: Steady rung 4 (5s at 500ms = 10 samples)
     for i in range(10):
         rows.append(make_datagram(t_ms, rung_idx=4, util=0.15 + 0.05 * (i % 2)))
         t_ms += 500
 
-    # Phase 4: residual burst 1 (2 consecutive samples with residual_loss 0.02)
-    for i in range(2):
-        rows.append(make_datagram(t_ms, rung_idx=4, util=0.20, residual_loss=0.02))
-        t_ms += 500
+    # ===== REGRESSION TEST CASE 1: Two-burst case =====
+    # Burst 1 at t=0/500 (relative to start of bursts)
+    burst1_start = t_ms
+    rows.append(make_datagram(t_ms, rung_idx=4, util=0.20, residual_loss=0.02))
+    t_ms += 500
+    rows.append(make_datagram(t_ms, rung_idx=4, util=0.20, residual_loss=0.02))
+    t_ms += 500
 
-    # Phase 5: clean recovery (4 clean samples = 2s gap > 750ms threshold)
-    for i in range(4):
+    # Clean gap: 3 clean samples at 500ms each = 1500ms gap
+    # (>750ms threshold for new logic, but <2500ms for old logic)
+    for _ in range(3):
         rows.append(make_datagram(t_ms, rung_idx=4, util=0.12))
         t_ms += 500
 
-    # Phase 6: residual burst 2 (2 consecutive samples with residual_loss 0.03)
-    for i in range(2):
-        rows.append(make_datagram(t_ms, rung_idx=4, util=0.22, residual_loss=0.03))
+    # Burst 2 at ~2000ms from burst1_start
+    # Old anchor logic: 2000ms - burst1_start < 2500ms → merged into 1 episode
+    # New anchor logic: 2000ms - last_sample (500+1500=2000ms ago) = 500ms < 750ms → continue
+    # Wait, that's still continuous. Let me recalculate...
+
+    # Actually, if burst1 is at t_rel 0 and 500, and gap is 3 samples (1500ms),
+    # then burst2 starts at t_rel 2000.
+    # For new logic: gap between last sample of burst1 (t_rel 500) and first of burst2 (t_rel 2000)
+    # is 1500ms > 750ms → NEW EPISODE
+    # For old logic: gap between burst1_start (t_rel 0) and first of burst2 (t_rel 2000)
+    # is 2000ms < 2500ms → SAME EPISODE
+
+    rows.append(make_datagram(t_ms, rung_idx=4, util=0.22, residual_loss=0.03))
+    t_ms += 500
+    rows.append(make_datagram(t_ms, rung_idx=4, util=0.22, residual_loss=0.03))
+    t_ms += 500
+
+    # Clean gap before continuous case: 2 clean samples (1000ms)
+    for _ in range(2):
+        rows.append(make_datagram(t_ms, rung_idx=4, util=0.12))
         t_ms += 500
 
-    # Phase 7: residual demote event (rung 4 -> 3, reason=residual)
+    # ===== REGRESSION TEST CASE 2: Continuous residual run =====
+    # 11 consecutive samples with residual, no clean samples between
+    # Old logic: splits at t=2500 and t=5000 from start → 2-3 episodes
+    # New logic: no gaps, all consecutive → 1 episode
+    continuous_start = t_ms
+    for i in range(11):
+        rows.append(make_datagram(t_ms, rung_idx=4, util=0.25, residual_loss=0.04))
+        t_ms += 500
+
+    # Phase 7: Demote event (optional, after residual cases)
     event = {
         "t_ms": t_ms,
         "from": 4,
@@ -126,10 +154,10 @@ def synthesize_flight_jsonl():
         "reason": "residual",
         "u": 0.30
     }
-    rows.append(make_datagram(t_ms, rung_idx=3, util=0.30, event=event, drone_state="linked"))
+    rows.append(make_datagram(t_ms, rung_idx=3, util=0.30, event=event))
     t_ms += 500
 
-    # Phase 8: recovery promote (rung 3 -> 4, reason=promote)
+    # Phase 8: Promote event (optional)
     event = {
         "t_ms": t_ms,
         "from": 3,
@@ -137,10 +165,10 @@ def synthesize_flight_jsonl():
         "reason": "promote",
         "u": 0.25
     }
-    rows.append(make_datagram(t_ms, rung_idx=4, util=0.25, event=event, drone_state="linked"))
+    rows.append(make_datagram(t_ms, rung_idx=4, util=0.25, event=event))
     t_ms += 500
 
-    # Phase 9: final samples at rung 4
+    # Phase 9: Final samples at rung 4
     for i in range(3):
         rows.append(make_datagram(t_ms, rung_idx=4, util=0.12))
         t_ms += 500
@@ -195,17 +223,18 @@ def test_flightreport_structure():
     # Should have p50/p95/max pattern: "rung X: 0.XX/0.XX/0.XX  n=N"
     assert "/" in u_section, "Missing p50/p95/max format"
 
-    # Verify RESIDUAL EPISODES section: 2 bursts separated by clean samples
-    assert "RESIDUAL EPISODES: 2" in output, "Should have exactly 2 residual episodes (separated by 4 clean samples > 750ms threshold)"
+    # Verify RESIDUAL EPISODES section: 3 episodes (regression test cases)
+    # Case 1: burst1 (0.02) + gap + burst2 (0.03) → 2 separate episodes (gap > 750ms from last sample)
+    # Case 2: continuous run (0.04) → 1 episode (all consecutive, no gap)
+    assert "RESIDUAL EPISODES: 3" in output, "Should have exactly 3 residual episodes (2 separated bursts + 1 continuous)"
 
     # Verify each episode has expected residual values
     residual_section = output[output.find("RESIDUAL EPISODES"):]
-    assert "residual=0.0200" in residual_section, "Missing first residual burst (0.02)"
-    assert "residual=0.0300" in residual_section, "Missing second residual burst (0.03)"
+    assert "residual=0.0200" in residual_section, "Missing burst 1 (0.02)"
+    assert "residual=0.0300" in residual_section, "Missing burst 2 (0.03)"
+    assert "residual=0.0400" in residual_section, "Missing continuous run (0.04)"
 
     # Verify drone state context join
-    # The output should reference drone states somewhere in the transition context
-    # At minimum, we should see drone state info
     assert "drone_state=linked" in output, "Missing drone state context in output"
 
     print("\n✓ All assertions passed!")
