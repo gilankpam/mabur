@@ -301,6 +301,37 @@ TEST(timeout_forces_bottom) {
   CHECK(ctl.counters().timeout_drops == 1);
 }
 
+// Regression (reviewer finding 2026-07-27): update() used to stamp
+// last_feedback_ms_ unconditionally, even on an invalid (sample_valid=false)
+// sample. VrxController calls update() on every RCF slot while in SESSION,
+// so a run where the S1 window never produces a valid sample (but video is
+// still nominally arriving) stamped the feedback clock forever and
+// permanently suppressed on_tick()'s blind-side timeout, holding an
+// aggressive rung on zero real measurements. Confirm the timeout still
+// fires off the last REAL sample despite a continuous stream of invalid
+// updates in between.
+TEST(invalid_samples_do_not_suppress_feedback_timeout) {
+  auto cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  REQUIRE(ctl.rung() == 2);
+
+  LinkHealth invalid;
+  invalid.sample_valid = false;
+  bool timed_out = false;
+  for (int i = 0; i < 200 && !timed_out; ++i) {
+    CHECK(!ctl.update(invalid, t));  // invalid sample: never a decision...
+    timed_out = ctl.on_tick(t);      // ...and never resets the timeout clock.
+    t += 50;
+    REQUIRE(t < 1e6);
+  }
+  REQUIRE(timed_out);
+  CHECK(ctl.rung() == 0);
+  CHECK(ctl.last_event().reason == CtlReason::Timeout);
+  CHECK(ctl.counters().timeout_drops == 1);
+}
+
 TEST(hold_after_downgrade) {
   auto cfg = make_cfg();
   cfg.clean_ms = 100;  // isolate hold_after_down_ms as the binding gate

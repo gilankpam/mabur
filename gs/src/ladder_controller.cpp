@@ -8,16 +8,19 @@
 namespace maburgs {
 
 const char* to_string(CtlReason r) {
+  // Lowercase: this is the operator-visible contract (the ctl: stderr line
+  // and the sideport's link.ctl.last_event.reason), per the design spec's
+  // reason enum (residual | util | probation | starved | timeout | promote).
   switch (r) {
-    case CtlReason::None: return "None";
-    case CtlReason::Residual: return "Residual";
-    case CtlReason::Util: return "Util";
-    case CtlReason::Probation: return "Probation";
-    case CtlReason::Starved: return "Starved";
-    case CtlReason::Timeout: return "Timeout";
-    case CtlReason::Promote: return "Promote";
+    case CtlReason::None: return "none";
+    case CtlReason::Residual: return "residual";
+    case CtlReason::Util: return "util";
+    case CtlReason::Probation: return "probation";
+    case CtlReason::Starved: return "starved";
+    case CtlReason::Timeout: return "timeout";
+    case CtlReason::Promote: return "promote";
   }
-  return "Unknown";
+  return "unknown";
 }
 
 LadderController::LadderController(LadderCfg cfg) : cfg_(std::move(cfg)) {
@@ -102,10 +105,13 @@ int LadderController::probation_ms_left(double now_ms) const {
 }
 
 bool LadderController::update(const LinkHealth& h, double now_ms) {
-  last_feedback_ms_ = now_ms;
   check_probation_survival(now_ms);
 
   // 1. Starvation forces the failsafe rung regardless of anything else.
+  // Deliberately does NOT stamp last_feedback_ms_ (see the sample_valid gate
+  // below): starvation already forces rung 0 directly, so it doesn't need
+  // the blind-side timeout's help, and a real "no measurement" run should
+  // still be free to trip the timeout independently.
   if (h.video_starved) {
     if (idx_ == 0) return false;
     const int from = idx_;
@@ -119,8 +125,16 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     return true;
   }
 
-  // 2. No data this window -> no decision.
+  // 2. No data this window -> no decision, and — critically — no feedback
+  // stamp. update() is called on every RCF slot regardless of whether the
+  // S1 window produced a real sample; stamping last_feedback_ms_ here would
+  // let a stream of sample_valid=false health (with video still arriving)
+  // suppress on_tick()'s blind-side timeout forever, holding an aggressive
+  // rung on zero real measurements (reviewer finding 2026-07-27). Only a
+  // genuine sample counts as "feedback received."
   if (!h.sample_valid) return false;
+
+  last_feedback_ms_ = now_ms;
 
   pre_fec_loss_ = h.pre_fec_loss;
   u_ = h.pre_fec_loss / budget();
