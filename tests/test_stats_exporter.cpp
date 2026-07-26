@@ -277,4 +277,34 @@ TEST(stream_rows_carry_effective_overhead) {
   CHECK(ov0 > want - 1e-9 && ov0 < want + 1e-9);
   CHECK(j["link"]["vtx_id"] == 1);
 }
+TEST(drone_section_null_then_rates) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  CHECK(cap.last()["drone"].is_null());
+  mabur::rc::Telem t;
+  t.tlm_seq = 1; t.state = 2; t.enc_frames = 1000; t.enc_kbytes = 1000;
+  t.rcf_rx = 100; t.radio_sent = 5000; t.up_rssi[1] = 52; t.soc_temp_c = 61;
+  in.telem = t; in.telem_rx_ms = 1400;
+  ex.poll(1500, in);
+  json j = cap.last();
+  CHECK(j["drone"]["state"] == "linked");
+  CHECK(j["drone"]["tlm_age_ms"] == 100);
+  CHECK(j["drone"]["enc"]["fps"].is_null());        // one snapshot only
+  CHECK(j["drone"]["uplink"]["rssi_b"].get<double>() > -58.1 &&
+        j["drone"]["uplink"]["rssi_b"].get<double>() < -57.9);
+  t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;
+  t.rcf_rx = 120; t.radio_sent = 6460;
+  in.telem = t; in.telem_rx_ms = 2400;               // 1000 ms later
+  ex.poll(2500, in);
+  j = cap.last();
+  CHECK(j["drone"]["enc"]["fps"].get<double>() > 59.9 && j["drone"]["enc"]["fps"].get<double>() < 60.1);
+  CHECK(j["drone"]["enc"]["mbps"].get<double>() > 9.1 && j["drone"]["enc"]["mbps"].get<double>() < 9.3);
+  CHECK(j["drone"]["rcf"]["rx_pps"].get<double>() > 19.9 && j["drone"]["rcf"]["rx_pps"].get<double>() < 20.1);
+  CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1459 && j["drone"]["radio"]["sent_pps"].get<double>() < 1461);
+  // same tlm_seq again: rates keep the last computed window, age grows
+  ex.poll(3000, in);
+  CHECK(cap.last()["drone"]["tlm_age_ms"] == 600);
+}
 MTEST_MAIN

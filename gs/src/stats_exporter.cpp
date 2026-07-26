@@ -21,6 +21,8 @@ double rate(uint64_t cur, uint64_t prev, double elapsed_s) {
 
 // Index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.
 constexpr const char* kClassKeys[kNumStatsClasses] = {"s0", "s1", "s2", "s3", "msp", "ctrl"};
+
+constexpr const char* kTelemStateNames[4] = {"boot", "rendezvous", "linked", "failsafe"};
 }  // namespace
 
 StatsExporter::StatsExporter(uint32_t session_id, int interval_ms, SendFn send)
@@ -244,6 +246,86 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   v["udp"] = {{"sent", in.udp_sent}, {"failed", in.udp_failed},
               {"bytes", in.udp_bytes}};
   v["q_drop"] = in.q_drop;
+
+  if (in.telem) {
+    const mabur::rc::Telem& t = *in.telem;
+    // A new distinct snapshot (tlm_seq changed since the last one we kept)
+    // gets a fresh rate computed from the GS-clock interval between the two
+    // snapshots' arrivals; a repeat of the same tlm_seq keeps whatever rate
+    // window was last computed (age still advances every poll).
+    const bool is_new_snapshot =
+        !prev_telem_valid_ || t.tlm_seq != prev_telem_.tlm_seq;
+    if (is_new_snapshot && prev_telem_valid_ &&
+        in.telem_rx_ms > prev_telem_rx_ms_) {
+      const double dt_s =
+          static_cast<double>(in.telem_rx_ms - prev_telem_rx_ms_) / 1000.0;
+      // Wrap-safe: subtract in the counter's own (unsigned) width before
+      // widening to double, so a wrapped counter yields the correct small
+      // delta instead of a huge one.
+      const uint32_t d_frames = t.enc_frames - prev_telem_.enc_frames;
+      const uint32_t d_kbytes = t.enc_kbytes - prev_telem_.enc_kbytes;
+      const uint32_t d_rcf = t.rcf_rx - prev_telem_.rcf_rx;
+      const uint32_t d_txq_drops = t.txq_drops - prev_telem_.txq_drops;
+      const uint32_t d_radio_sent = t.radio_sent - prev_telem_.radio_sent;
+      telem_enc_fps_ = static_cast<double>(d_frames) / dt_s;
+      telem_enc_mbps_ =
+          static_cast<double>(d_kbytes) * 1024.0 * 8.0 / 1e6 / dt_s;
+      telem_rcf_rx_pps_ = static_cast<double>(d_rcf) / dt_s;
+      telem_txq_drop_pps_ = static_cast<double>(d_txq_drops) / dt_s;
+      telem_radio_sent_pps_ = static_cast<double>(d_radio_sent) / dt_s;
+      have_telem_rates_ = true;
+    }
+    if (is_new_snapshot) {
+      prev_telem_ = t;
+      prev_telem_rx_ms_ = in.telem_rx_ms;
+      prev_telem_valid_ = true;
+    }
+
+    mabur::rc::PhyMode mode;
+    uint8_t mcs = 0, bw = 0;
+    mabur::rc::decode_profile(t.applied_profile, mode, mcs, bw);
+
+    json& d = j["drone"];
+    d["tlm_age_ms"] = now_ms > in.telem_rx_ms ? now_ms - in.telem_rx_ms : 0;
+    d["tlm_seq"] = t.tlm_seq;
+    d["state"] = t.state < 4 ? kTelemStateNames[t.state] : "unknown";
+    d["gen"] = t.generation;
+    d["failsafe_shed"] = (t.flags & 0x01) != 0;
+    d["radio_rx_ok"] = (t.flags & 0x02) != 0;
+    d["applied"] = {{"mcs", mcs},
+                    {"bw", bw},
+                    {"vht", mode == mabur::rc::PhyMode::VHT},
+                    {"overhead", t.applied_ov_x100 / 100.0},
+                    {"offset_qdb", mabur::rc::decode_pwr_offset_qdb(t.applied_off_qdb)},
+                    {"derate_qdb", t.derate_qdb}};
+    json& rcf = d["rcf"];
+    rcf["age_ms"] = t.rcf_age_ms;
+    rcf["rx_pps"] = have_telem_rates_ ? json(telem_rcf_rx_pps_) : json(nullptr);
+    json& enc = d["enc"];
+    enc["fps"] = have_telem_rates_ ? json(telem_enc_fps_) : json(nullptr);
+    enc["mbps"] = have_telem_rates_ ? json(telem_enc_mbps_) : json(nullptr);
+    enc["cmd_kbps"] = t.cmd_kbps;
+    enc["qp"] = t.qp;
+    enc["ring_drops"] = t.ring_drops;
+    json& txq = d["txq"];
+    txq["depth"] = t.txq_depth;
+    txq["cap"] = t.txq_cap;  // wire value as-is (256 saturates to 255 on the wire)
+    txq["drop_pps"] = have_telem_rates_ ? json(telem_txq_drop_pps_) : json(nullptr);
+    txq["drops"] = t.txq_drops;
+    json& radio = d["radio"];
+    radio["sent_pps"] = have_telem_rates_ ? json(telem_radio_sent_pps_) : json(nullptr);
+    radio["drops"] = t.radio_drops;
+    radio["usb_fail"] = t.usb_fail;
+    d["uplink"] = {{"rssi_a", t.up_rssi[0] - 110.0},
+                   {"rssi_b", t.up_rssi[1] - 110.0},
+                   {"snr_a", t.up_snr[0]},
+                   {"snr_b", t.up_snr[1]}};
+    d["sys"] = {{"soc_temp_c", t.soc_temp_c},
+                {"thermal_delta", t.thermal_delta},
+                {"load", t.load_x100 / 100.0}};
+  } else {
+    j["drone"] = nullptr;
+  }
 
   // Roll the window forward whether or not the send succeeds — the sample
   // was taken; a lost datagram is a lost sample, not a longer next window.

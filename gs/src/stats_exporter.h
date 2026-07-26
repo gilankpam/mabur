@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "mabur/rc_proto.h"
 #include "op_table.h"
 
 namespace maburgs {
@@ -56,6 +57,10 @@ struct StatsInput {
   uint64_t rtp_ok = 0, rtp_gap = 0, rtp_gap_seqs = 0, rtp_back = 0;
   uint64_t udp_sent = 0, udp_failed = 0, udp_bytes = 0;
   uint64_t q_drop = 0;
+
+  // Latest drone telemetry, if any this session: wire struct + GS arrival clock.
+  std::optional<mabur::rc::Telem> telem;
+  uint64_t telem_rx_ms = 0;   // GS monotonic arrival stamp
 };
 
 class StatsExporter {
@@ -94,6 +99,16 @@ class StatsExporter {
   bool have_jitter_ = false;
   double jitter_ms_ = 0.0;
   uint64_t send_failed_ = 0;
+
+  // Drone telemetry: rates come from the delta between consecutive DISTINCT
+  // snapshots (tlm_seq changed), over their real GS arrival interval — not
+  // the exporter's own poll window.
+  bool prev_telem_valid_ = false;
+  mabur::rc::Telem prev_telem_{};
+  uint64_t prev_telem_rx_ms_ = 0;
+  bool have_telem_rates_ = false;
+  double telem_enc_fps_ = 0, telem_enc_mbps_ = 0, telem_rcf_rx_pps_ = 0,
+         telem_txq_drop_pps_ = 0, telem_radio_sent_pps_ = 0;
 };
 
 }  // namespace maburgs

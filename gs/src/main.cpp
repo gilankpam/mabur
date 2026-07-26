@@ -453,6 +453,8 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.udp_failed = udp.failed();
       sin.udp_bytes = udp.bytes();
       sin.q_drop = queue.dropped();
+      sin.telem = latest_telem.t;
+      sin.telem_rx_ms = latest_telem.rx_ms;
       stats->poll(drained_ms, sin);
     }
   }
