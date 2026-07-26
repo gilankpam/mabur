@@ -81,6 +81,9 @@ if(MABUR_BUILD_GS)
     # FramePipeline into the GS-side decode/FrameStream path, the same way
     # test_frame_pipeline pulls in mabur_drone_core for drone/src + frame_pipeline.cpp.
     add_mtest(test_frame_e2e test_frame_e2e.cpp LIBS mabur_gs_core mabur_drone_core)
+    # Lets the test source compile out FramePipeline usage when this branch
+    # isn't taken (see the matching #ifdef in test_frame_e2e.cpp).
+    target_compile_definitions(test_frame_e2e PRIVATE MABUR_TEST_HAVE_DRONE_CORE=1)
   else()
     add_mtest(test_frame_e2e test_frame_e2e.cpp LIBS mabur_gs_core)
   endif()

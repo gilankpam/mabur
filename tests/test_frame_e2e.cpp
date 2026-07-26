@@ -7,7 +7,13 @@
 #include <random>
 #include <vector>
 #include "mtest.h"
+#ifdef MABUR_TEST_HAVE_DRONE_CORE
+// Only defined when this target also links mabur_drone_core (see
+// tests/CMakeLists.txt): the sustained-shed e2e test below drives the real
+// drone-side FramePipeline, which isn't available in GS-only configs
+// (MABUR_BUILD_DRONE=OFF).
 #include "frame_pipeline.h"
+#endif
 #include "frame_stream.h"
 #include "rtp_packetizer.h"
 #include "mabur/frame_wire.h"
@@ -120,6 +126,9 @@ TEST(frame_e2e_clean_and_lossy) {
   }
 }
 
+#ifdef MABUR_TEST_HAVE_DRONE_CORE
+// Needs the drone-side FramePipeline (mabur_drone_core); compiled out in
+// GS-only configs (MABUR_BUILD_DRONE=OFF), which don't expose drone/src.
 TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
   std::mt19937 rng(99);
   UepEncoder enc(layers(), 15);
@@ -165,5 +174,6 @@ TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
   CHECK(fs.frames_dropped() == 0);
   CHECK(enc.dropped(3) == 30);
 }
+#endif  // MABUR_TEST_HAVE_DRONE_CORE
 
 MTEST_MAIN
