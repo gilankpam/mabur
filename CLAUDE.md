@@ -31,8 +31,12 @@ control frame). Consume it with:
   grouped by link; color thresholds carry the judgment.
 - Ad-hoc capture: any UDP listener on :8300, or passively via AF_PACKET on
   `lo` when a consumer already holds the port.
-- Flight recorder: `socat -u udp-recv:8300 - >> flight.jsonl` on the GS
-  logs every metric at 2 Hz for post-flight analysis.
+- Flight recorder: `socat -u udp-recv:8300 - | jq -c . >> flight.jsonl` on
+  the GS logs every metric at 2 Hz for post-flight analysis. The `jq -c` is
+  REQUIRED: sideport datagrams carry no trailing newline, so bare socat
+  appends concatenated JSON, not JSONL (recover such a file with
+  `jq -c . < file`). GS `/root/statsrec.py` does the same and also re-emits
+  datagrams to :8301 so a live `maburtop --port 8301` can watch alongside.
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
