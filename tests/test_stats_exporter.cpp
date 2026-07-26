@@ -286,12 +286,15 @@ TEST(drone_section_null_then_rates) {
   mabur::rc::Telem t;
   t.tlm_seq = 1; t.state = 2; t.enc_frames = 1000; t.enc_kbytes = 1000;
   t.rcf_rx = 100; t.radio_sent = 5000; t.up_rssi[1] = 52; t.soc_temp_c = 61;
+  t.idr_disagree = 1; t.enhance_disagree = 2;
   in.telem = t; in.telem_rx_ms = 1400;
   ex.poll(1500, in);
   json j = cap.last();
   CHECK(j["drone"]["state"] == "linked");
   CHECK(j["drone"]["tlm_age_ms"] == 100);
   CHECK(j["drone"]["enc"]["fps"].is_null());        // one snapshot only
+  CHECK(j["drone"]["enc"]["idr_disagree"] == 1);
+  CHECK(j["drone"]["enc"]["enhance_disagree"] == 2);
   CHECK(j["drone"]["uplink"]["rssi_b"].get<double>() > -58.1 &&
         j["drone"]["uplink"]["rssi_b"].get<double>() < -57.9);
   t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;

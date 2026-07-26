@@ -392,7 +392,8 @@ def render_rows_compact(model, wall, width):
             f"{_f(enc.get('mbps'), 5, 2)} Mbps   "
             f"cmd {_f(enc.get('cmd_kbps'), 5)}k   "
             f"qp {_f(enc.get('qp'), 2)}   "
-            f"ring {_f(enc.get('ring_drops'), 5)}"
+            f"ring {_f(enc.get('ring_drops'), 5)}   "
+            f"dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}"
         )
         rows.append(
             f"TXQ     depth {_f(txq.get('depth'), 3)}/{_f(txq.get('cap'), 3)}   "
@@ -610,11 +611,17 @@ def panel_drone(model, wall):
     line3 = (f"encoder   {_f(enc.get('fps'), 5, 1)} fps    "
              f"{_f(enc.get('mbps'), 5, 2)} Mbps    "
              f"cmd {_f(enc.get('cmd_kbps'), 5)}k   qp {_f(enc.get('qp'), 2)}"
-             f"   ring {_f(enc.get('ring_drops'), 5)}")
+             f"   ring {_f(enc.get('ring_drops'), 5)}"
+             f"   dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}")
     ring = enc.get("ring_drops")
     spans3 = []
     if isinstance(ring, (int, float)) and ring > 0:
         idx = line3.rindex("ring ") + 5
+        spans3.append((idx, len(line3) - idx, "bad"))
+    idr_dis = enc.get("idr_disagree")
+    enh_dis = enc.get("enhance_disagree")
+    if (isinstance(idr_dis, (int, float)) and idr_dis > 0) or (isinstance(enh_dis, (int, float)) and enh_dis > 0):
+        idx = line3.rindex("dis ") + 4
         spans3.append((idx, len(line3) - idx, "bad"))
     body.append((line3, spans3))
 

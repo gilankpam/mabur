@@ -329,6 +329,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     enc["cmd_kbps"] = t.cmd_kbps;
     enc["qp"] = t.qp;
     enc["ring_drops"] = t.ring_drops;
+    enc["idr_disagree"] = t.idr_disagree;
+    enc["enhance_disagree"] = t.enhance_disagree;
     json& txq = d["txq"];
     txq["depth"] = t.txq_depth;
     txq["cap"] = t.txq_cap;  // wire value as-is (256 saturates to 255 on the wire)
