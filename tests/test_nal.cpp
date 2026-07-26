@@ -115,9 +115,11 @@ TEST(classify_frame_trail_n_after_critical_stays_critical) {
 }
 
 TEST(classify_frame_truncated_nal_header_protects_up) {
-  // A start code followed by <2 bytes must not classify (parse_hevc_nal
-  // defaults to type 0, which now means TRAIL_N/sid 3 — the wrong-way
-  // misclassification). No parseable VCL -> 0.
+  // A start code followed by <2 bytes never classifies: the frame is
+  // shorter than the len < 5 minimum, and inside the scan loop the
+  // i + 4 < len bound means a truncated header can never be parsed.
+  // Pins the protect-up fallback so a future bound change that let a
+  // default NalInfo (type 0 -> sid 3) through would fail here.
   std::vector<uint8_t> f = {0x00, 0x00, 0x01, 0x02};  // 1-byte "NAL"
   CHECK(classify_frame(f.data(), f.size()) == 0);
 }
