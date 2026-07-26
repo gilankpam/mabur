@@ -60,7 +60,19 @@ void LadderController::check_probation_survival(double now_ms) {
 
 void LadderController::penalize_rung(int rung, double now_ms) {
   const auto r = static_cast<std::size_t>(rung);
-  const int k = ++fail_count_[r];
+  // Cap the consecutive-failure count itself, not just the resulting
+  // duration: shifting a (long long) by an exponent >= its bit width is UB
+  // regardless of the eventual std::min saturation to penalty_max_ms below,
+  // and a persistently marginal link can accumulate failures indefinitely
+  // (fail_count_ only resets on surviving probation). kMaxShiftExp is a
+  // generous constant bound -- for any realistic penalty_base_ms/
+  // penalty_max_ms the duration already saturates well before k reaches it
+  // (typically k~4-7), so clamping here never changes observable behavior,
+  // it only stops the counter (and the shift amount derived from it) from
+  // growing without limit.
+  constexpr int kMaxShiftExp = 32;
+  if (fail_count_[r] < kMaxShiftExp) ++fail_count_[r];
+  const int k = fail_count_[r];
   const long long shifted = static_cast<long long>(cfg_.penalty_base_ms) << (k - 1);
   const double dur = std::min(static_cast<double>(cfg_.penalty_max_ms),
                                static_cast<double>(shifted));

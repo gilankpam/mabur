@@ -224,6 +224,43 @@ TEST(probation_fail_penalizes_and_doubles) {
   CHECK(penalty_ms_for(ctl, fail3_t, 1) == cfg.penalty_base_ms);
 }
 
+// Regression: fail_count_[rung] is only reset by surviving probation, so a
+// persistently marginal link that keeps failing probation on the same rung
+// accumulates k without bound. penalize_rung() computes
+// penalty_base_ms << (k-1) before clamping to penalty_max_ms, so an
+// uncapped k eventually shifts a (long long) by >= its bit width, which is
+// UB regardless of the later std::min saturation. Drive many consecutive
+// probation failures on rung 1 (well past 64) and confirm the penalty
+// duration stays exactly capped at penalty_max_ms with no crash.
+TEST(penalty_duration_caps_after_many_consecutive_failures) {
+  auto cfg = make_cfg();
+  // Tiny timings so a fail-reclimb-fail cycle costs only a couple of 50ms
+  // ticks; probation_ms must stay comfortably above one tick (50ms) so the
+  // failing sample below still lands inside the just-opened probation
+  // window instead of finding it already survived.
+  cfg.clean_ms = 10;
+  cfg.probation_ms = 100;
+  cfg.hold_after_down_ms = 0;
+  cfg.min_between_changes_ms = 0;
+  cfg.penalty_base_ms = 1;
+  cfg.penalty_max_ms = 4;
+  LadderController ctl(cfg);
+  double t = 0;
+  constexpr int kFailures = 80;  // > 64: would UB-shift pre-fix
+  double last_fail_t = 0;
+  for (int i = 0; i < kFailures; ++i) {
+    promote_to(ctl, t, 1);
+    REQUIRE(ctl.rung() == 1);
+    REQUIRE(ctl.probation_ms_left(t) > 0);
+    last_fail_t = t;
+    CHECK(ctl.update(ok(0.7 * ctl.budget()), last_fail_t));
+    CHECK(ctl.rung() == 0);
+    t = last_fail_t + 50;
+  }
+  CHECK(ctl.counters().probation_fails == static_cast<uint64_t>(kFailures));
+  CHECK(penalty_ms_for(ctl, last_fail_t, 1) == cfg.penalty_max_ms);
+}
+
 TEST(starved_forces_bottom) {
   LadderController ctl(make_cfg());
   double t = 0;
