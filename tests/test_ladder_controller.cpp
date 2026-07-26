@@ -270,7 +270,18 @@ TEST(starved_forces_bottom) {
   LinkHealth starved;
   starved.sample_valid = true;
   starved.video_starved = true;
-  CHECK(ctl.update(starved, t));
+  // Debounce: samples inside starved_confirm_ms (300) withhold but do not
+  // demote; the drop fires once the run has persisted past the window.
+  const double t0 = t;
+  bool dropped = false;
+  while (t - t0 <= 400) {
+    dropped = ctl.update(starved, t);
+    if (dropped) break;
+    CHECK(ctl.rung() == 3);  // still holding during the confirm window
+    t += 50;
+  }
+  CHECK(dropped);
+  CHECK(t - t0 >= 300);  // did not fire early
   CHECK(ctl.rung() == 0);
   CHECK(ctl.last_event().reason == CtlReason::Starved);
   CHECK(ctl.counters().starved_drops == 1);
@@ -283,6 +294,38 @@ TEST(starved_forces_bottom) {
     CHECK(!ctl.update(invalid, t));
   }
   CHECK(ctl.rung() == 0);
+}
+
+TEST(transient_starved_is_ignored) {
+  // hw 2026-07-27: a rung transition re-keys the drone FEC stream and yields
+  // 1-2 zero-completion decode windows on a healthy link. Those must not
+  // demote — only a starved run persisting past starved_confirm_ms may.
+  LadderController ctl(make_cfg());
+  double t = 0;
+  promote_to(ctl, t, 2);
+  REQUIRE(ctl.rung() == 2);
+
+  LinkHealth starved;
+  starved.sample_valid = true;
+  starved.video_starved = true;
+  LinkHealth healthy;
+  healthy.sample_valid = true;
+  healthy.pre_fec_loss = 0.01;
+
+  for (int burst = 0; burst < 3; ++burst) {
+    // Two starved windows (100 ms) — the op-switch glitch shape.
+    for (int i = 0; i < 2; ++i) {
+      CHECK(!ctl.update(starved, t));
+      t += 50;
+    }
+    // Healthy samples resume; the starved run must reset.
+    for (int i = 0; i < 10; ++i) {
+      ctl.update(healthy, t);
+      t += 50;
+    }
+  }
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().starved_drops == 0);
 }
 
 TEST(timeout_forces_bottom) {

@@ -127,7 +127,8 @@ Config load_config(const std::string& path) {
                 "static_mcs", "static_overhead", "static_offset_qdb",
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
-                "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms"});
+                "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
+                "starved_confirm_ms"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
@@ -186,6 +187,8 @@ Config load_config(const std::string& path) {
         static_cast<int>(get_int(r, "min_between_changes_ms", 150, 0, 600000, "link"));
     c.link.ladder_cfg.feedback_timeout_ms =
         static_cast<int>(get_int(r, "feedback_timeout_ms", 1000, 0, 600000, "link"));
+    c.link.ladder_cfg.starved_confirm_ms =
+        static_cast<int>(get_int(r, "starved_confirm_ms", 300, 0, 600000, "link"));
   }
 
   if (j.contains("video_out")) {

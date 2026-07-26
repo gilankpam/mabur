@@ -22,6 +22,15 @@ struct LadderCfg {
   int penalty_base_ms = 10000, penalty_max_ms = 60000;
   int hold_after_down_ms = 4000, min_between_changes_ms = 150;
   int feedback_timeout_ms = 1000;
+  // A starved sample (zero completed base packets in a decode window while
+  // video frames still arrive) must PERSIST this long before it forces rung
+  // 0. The decode window is one RCF period (50 ms on the bench GS), and a
+  // rung transition re-keys the drone's FEC stream, which reliably produces
+  // 1-2 zero-completion windows on a perfectly healthy link — hw finding
+  // 2026-07-27: without the debounce every promote starved itself back to
+  // the floor. Transient starved samples still withhold all decisions and
+  // never stamp feedback, so the blind-side timeout stays the backstop.
+  int starved_confirm_ms = 300;
 };
 
 // One feedback sample: measured pre-FEC and residual (post-FEC) loss for the
@@ -96,6 +105,7 @@ class LadderController {
   double pre_fec_loss_ = 0.0;
 
   double last_feedback_ms_ = -1e18;
+  double starved_since_ms_ = -1.0;  // <0 = not currently in a starved run
   double last_change_ms_ = -1e18;
   double last_down_ms_ = -1e18;
 

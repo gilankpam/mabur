@@ -312,10 +312,12 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   }
   REQUIRE(vrx.ctl().rung() > 0);
 
-  // Collapse phase: starved health forces rung 0 regardless of other fields.
+  // Collapse phase: a SUSTAINED starved run forces rung 0 (single starved
+  // windows are debounced by starved_confirm_ms=300 — the op-switch FEC
+  // re-key glitch, hw 2026-07-27). 45 x 10 ms = 450 ms > 300 ms.
   std::optional<VrxController::Out> out;
   LinkHealth starved{true, 0.0, 0.0, /*video_starved=*/true};
-  for (int i = 0; i < 20 && vrx.ctl().rung() != 0; ++i) {
+  for (int i = 0; i < 45 && vrx.ctl().rung() != 0; ++i) {
     now += 10;
     vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
     out = vrx.step(now, ld, starved);

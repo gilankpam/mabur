@@ -113,7 +113,13 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // the blind-side timeout's help, and a real "no measurement" run should
   // still be free to trip the timeout independently.
   if (h.video_starved) {
+    if (starved_since_ms_ < 0.0) starved_since_ms_ = now_ms;
     if (idx_ == 0) return false;
+    // Debounce: a rung transition re-keys the drone's FEC stream and
+    // reliably yields 1-2 zero-completion decode windows on a healthy link
+    // (hw 2026-07-27). Withhold decisions but do not demote until the
+    // starved run has persisted starved_confirm_ms.
+    if (now_ms - starved_since_ms_ < cfg_.starved_confirm_ms) return false;
     const int from = idx_;
     idx_ = 0;
     last_down_ms_ = now_ms;
@@ -124,6 +130,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     set_event(now_ms, from, 0, CtlReason::Starved, 0.0);
     return true;
   }
+
+  starved_since_ms_ = -1.0;  // any non-starved sample ends the starved run
 
   // 2. No data this window -> no decision, and — critically — no feedback
   // stamp. update() is called on every RCF slot regardless of whether the
