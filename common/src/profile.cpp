@@ -161,6 +161,14 @@ std::array<LayerTxSpec, 4> ladder_for_row(int idx, const FlagPolicy& fp) {
   ladder[0].stbc = ladder[0].stbc || fp.crit_stbc;
   ladder[1].ldpc = ladder[1].ldpc || fp.t0_ldpc;
   ladder[1].stbc = ladder[1].stbc || fp.t0_stbc;
+  // hw 2026-07-26 ruling: the vendored rows keep devourer's byte-exact
+  // spec strings (some still spell out a per-rung T1/T2 spread), but all
+  // video streams above CRIT ride T0's scored rate — redundancy, not
+  // rate, differentiates layers. Enforce that at this parse choke point:
+  // overwrite T1/T2 wholesale with T0's (flag-applied) spec, so the table
+  // stays a faithful port while the applied ladder obeys the policy.
+  ladder[2] = ladder[1];
+  ladder[3] = ladder[1];
   return ladder;
 }
 

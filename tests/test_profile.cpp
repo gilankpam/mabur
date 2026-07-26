@@ -210,7 +210,9 @@ TEST(ladder_for_row_matches_table_strings_verbatim) {
   for (size_t idx = 0; idx < 5; ++idx) {
     auto oracle = parse_ladder_str(expect_rows[idx]["ladder"].get<std::string>());
     auto ladder = ladder_for_row(static_cast<int>(idx), fp);
-    for (int i = 0; i < 4; ++i) {
+    // CRIT and T0 come straight from the vendored row string (plus flag
+    // policy) — the table itself stays a byte-exact devourer port.
+    for (int i = 0; i < 2; ++i) {
       CHECK(ladder[static_cast<size_t>(i)].mode == PhyMode::HT);
       CHECK(ladder[static_cast<size_t>(i)].mcs == oracle[static_cast<size_t>(i)].mcs);
       CHECK(ladder[static_cast<size_t>(i)].bw == oracle[static_cast<size_t>(i)].bw);
@@ -222,13 +224,57 @@ TEST(ladder_for_row_matches_table_strings_verbatim) {
     CHECK(ladder[0].stbc == (oracle[0].stbc || fp.crit_stbc));
     CHECK(ladder[1].ldpc == (oracle[1].ldpc || fp.t0_ldpc));
     CHECK(ladder[1].stbc == (oracle[1].stbc || fp.t0_stbc));
-    // T1/T2 never get ldpc/stbc from FlagPolicy (only from the string itself,
-    // which for this table never sets them on T1/T2).
-    CHECK(ladder[2].ldpc == oracle[2].ldpc);
-    CHECK(ladder[2].stbc == oracle[2].stbc);
-    CHECK(ladder[3].ldpc == oracle[3].ldpc);
-    CHECK(ladder[3].stbc == oracle[3].stbc);
+    // hw 2026-07-26 ruling: T1/T2 ride T0's scored rate — ladder_for_row
+    // enforces that at parse time by overwriting T1/T2 wholesale with T0's
+    // (flag-applied) spec, regardless of what the vendored row string
+    // itself carries for T1/T2 (some rows still spell out a devourer-style
+    // spread there; it's ignored by the applied ladder).
+    for (int i = 2; i < 4; ++i) {
+      CHECK(ladder[static_cast<size_t>(i)].mode == ladder[1].mode);
+      CHECK(ladder[static_cast<size_t>(i)].mcs == ladder[1].mcs);
+      CHECK(ladder[static_cast<size_t>(i)].bw == ladder[1].bw);
+      CHECK(ladder[static_cast<size_t>(i)].sgi == ladder[1].sgi);
+      CHECK(ladder[static_cast<size_t>(i)].ldpc == ladder[1].ldpc);
+      CHECK(ladder[static_cast<size_t>(i)].stbc == ladder[1].stbc);
+    }
   }
+}
+
+TEST(ladder_for_row_flattens_t1_t2_to_t0_rate) {
+  // Row 3's vendored string is "CRIT=MCS2/20;T0=MCS4/20;T1=MCS5/20;
+  // T2=MCS7/20/SGI" — a real per-rung spread straight from the
+  // byte-exact devourer port. hw 2026-07-26 ruling: streams above CRIT
+  // ride T0's scored rate; only FEC overhead differentiates them. Pin
+  // that the *applied* ladder enforces this even though the committed
+  // table row keeps devourer's own spread.
+  FlagPolicy fp;
+  auto ladder = ladder_for_row(3, fp);
+
+  // T0/T1/T2 identical in every field (mode/mcs/bw/sgi/ldpc/stbc).
+  CHECK(ladder[1].mode == ladder[2].mode);
+  CHECK(ladder[1].mcs == ladder[2].mcs);
+  CHECK(ladder[1].bw == ladder[2].bw);
+  CHECK(ladder[1].sgi == ladder[2].sgi);
+  CHECK(ladder[1].ldpc == ladder[2].ldpc);
+  CHECK(ladder[1].stbc == ladder[2].stbc);
+  CHECK(ladder[1].mode == ladder[3].mode);
+  CHECK(ladder[1].mcs == ladder[3].mcs);
+  CHECK(ladder[1].bw == ladder[3].bw);
+  CHECK(ladder[1].sgi == ladder[3].sgi);
+  CHECK(ladder[1].ldpc == ladder[3].ldpc);
+  CHECK(ladder[1].stbc == ladder[3].stbc);
+
+  // Concretely: T0 in row 3 is MCS4/20, no SGI. T1/T2 must match that —
+  // NOT the row string's own MCS5 / MCS7-SGI.
+  CHECK(ladder[1].mcs == 4);
+  CHECK(ladder[2].mcs == 4);
+  CHECK(ladder[3].mcs == 4);
+  CHECK(ladder[2].sgi == false);
+  CHECK(ladder[3].sgi == false);
+
+  // CRIT keeps its own, more-protected row spec — independent of T0/T1/T2.
+  CHECK(ladder[0].mcs == 2);
+  CHECK(ladder[0].mcs != ladder[1].mcs);
 }
 
 TEST(ladder_for_row_disabled_flags_keep_string_flags) {
