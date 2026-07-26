@@ -29,6 +29,19 @@ DGRAM = {
                   "udp": {"sent": 812347, "failed": 0, "bytes": 123456789},
                   "q_drop": 0},
     },
+    "drone": {
+        "tlm_age_ms": 800, "tlm_seq": 4211, "state": "linked",
+        "gen": 7, "failsafe_shed": False, "radio_rx_ok": True,
+        "applied": {"mcs": 5, "bw": 20, "vht": False, "overhead": 0.25,
+                    "offset_qdb": 0, "derate_qdb": 0},
+        "rcf": {"age_ms": 45, "rx_pps": 19.4},
+        "enc": {"fps": 59.9, "mbps": 9.21, "cmd_kbps": 9000, "qp": 8,
+                "ring_drops": 0},
+        "txq": {"depth": 3, "cap": 64, "drop_pps": 0.0, "drops": 0},
+        "radio": {"sent_pps": 1461.0, "drops": 0, "usb_fail": 0},
+        "uplink": {"rssi_a": -58.9, "rssi_b": -58.0, "snr_a": 21.0, "snr_b": 22.0},
+        "sys": {"soc_temp_c": 61, "thermal_delta": 3, "load": 0.72},
+    },
     "cards": [
         {"id": 0, "up": True, "frames": 123456, "crc_fail": 0,
          "loss_pct": 0.0, "rx_mbps": 15.6, "pps": 1450,
@@ -240,6 +253,84 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn(None, [cid for cid, _cls in m.sig_rows])
         rows = render_rows(m, wall=100.2, width=GRID_WIDTH)
         self.assertTrue(len(rows) > 0)
+
+    def _drone_rows(self, rows):
+        """The five DRONE-region rows, located between the LNK region and
+        the LINK residual row."""
+        link_idx = next(i for i, r in enumerate(rows) if r.startswith("LINK"))
+        drone_idx = next(i for i, r in enumerate(rows) if r.startswith("DRONE"))
+        self.assertLess(drone_idx, link_idx)
+        return rows[drone_idx:link_idx]
+
+    def test_drone_region_row_content(self):
+        rows = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
+        drone_rows = self._drone_rows(rows)
+        self.assertEqual(len(drone_rows), 5)
+        drone, enc, txq, uplnk, sys_row = drone_rows
+
+        self.assertTrue(drone.startswith("DRONE"))
+        for cell in ("LINKED", "gen", "7", "mcs5/20", "ov 0.25",
+                     "off   0", "der   0", "45ms"):
+            self.assertIn(cell, drone)
+        # tlm age auto-scales like _age_cell (ms input, ms-scale here)
+        self.assertIn("800ms", drone)
+
+        self.assertTrue(enc.startswith("ENC"))
+        for cell in ("59.9", "fps", "9.21", "Mbps", "9000", "qp", "8", "ring"):
+            self.assertIn(cell, enc)
+
+        self.assertTrue(txq.startswith("TXQ"))
+        for cell in ("depth", "3", "64", "1461", "pps", "drop", "usb fail"):
+            self.assertIn(cell, txq)
+
+        self.assertTrue(uplnk.startswith("UPLNK"))
+        for cell in ("-58.9", "-58.0", "snr", "21.0", "22.0", "19.4"):
+            self.assertIn(cell, uplnk)
+
+        self.assertTrue(sys_row.startswith("SYS"))
+        for cell in ("61", "rf delta", "3", "load", "0.72", "radio rx", "ok"):
+            self.assertIn(cell, sys_row)
+
+    def test_drone_row_reflects_deaf_radio_and_missing_soc(self):
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"],
+                           radio_rx_ok=False,
+                           sys={"soc_temp_c": -128, "thermal_delta": 3, "load": 0.72})
+        rows = render_rows(self.fresh(d), wall=100.2, width=GRID_WIDTH)
+        sys_row = self._drone_rows(rows)[4]
+        self.assertIn("DEAF", sys_row)
+        self.assertIn("--", sys_row)  # soc unavailable (-128 sentinel)
+
+    def test_drone_row_null_rates_render_dashes(self):
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"],
+                           enc={"fps": None, "mbps": None, "cmd_kbps": 9000,
+                                "qp": 8, "ring_drops": 0},
+                           radio={"sent_pps": None, "drops": 0, "usb_fail": 0},
+                           rcf={"age_ms": 45, "rx_pps": None})
+        rows = render_rows(self.fresh(d), wall=100.2, width=GRID_WIDTH)
+        drone_rows = self._drone_rows(rows)
+        self.assertIn("--", drone_rows[1])  # ENC fps/mbps
+        self.assertIn("--", drone_rows[2])  # TXQ sent pps
+        self.assertIn("--", drone_rows[3])  # UPLNK rcf rx
+
+    def test_drone_null_state_single_line(self):
+        d = dict(DGRAM)
+        d["drone"] = None
+        rows = render_rows(self.fresh(d), wall=100.2, width=GRID_WIDTH)
+        drone_rows = self._drone_rows(rows)
+        self.assertEqual(drone_rows, ["DRONE   no telemetry (old maburd / peer caps)"])
+
+    def test_drone_fixed_width_survives_extreme_values(self):
+        rows_a = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"], gen=4294967295,
+                           rcf={"age_ms": 123456789, "rx_pps": 19.4},
+                           tlm_age_ms=987654321)
+        rows_b = render_rows(self.fresh(d), wall=100.2, width=GRID_WIDTH)
+        drone_a = self._drone_rows(rows_a)
+        drone_b = self._drone_rows(rows_b)
+        self.assertEqual([len(r) for r in drone_a], [len(r) for r in drone_b])
 
     def test_update_ignores_non_dict_input(self):
         # A UDP datagram that is valid JSON but not an object (null, a bare

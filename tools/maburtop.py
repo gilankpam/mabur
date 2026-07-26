@@ -106,6 +106,86 @@ GRID_WIDTH = max(_grid_width(CARD_COLS), _grid_width(LNKSIG_COLS),
                  len(_dec_line("s0", {}, None)))  # widest grid row
 
 
+def _drone_row(drone):
+    """DRONE row: link state, generation, applied op (vs the header's
+    commanded op two lines up — a mismatch should be visually obvious),
+    RCF freshness, telemetry age. Inline-labeled like the decode lines;
+    every variable-length field goes through _f/_age_cell so extreme
+    values (u32 generation, saturating ages) truncate instead of
+    shifting the row."""
+    state = drone.get("state")
+    state_s = state.upper() if isinstance(state, str) else None
+    applied = drone.get("applied") or {}
+    mcs = applied.get("mcs")
+    bw = applied.get("bw")
+    mcs_s = "--" if mcs is None else str(mcs)
+    bw_s = "--" if bw is None else str(bw)
+    rcf = drone.get("rcf") or {}
+    return (
+        f"DRONE   {_f(state_s, 8)}  gen {_f(drone.get('gen'), 6)}   "
+        f"applied mcs{mcs_s}/{bw_s}"
+        f" ov {_f(applied.get('overhead'), 4, 2)}"
+        f" off {_f(applied.get('offset_qdb'), 3)}"
+        f" der {_f(applied.get('derate_qdb'), 3)}  "
+        f"rcf age {_age_cell(rcf.get('age_ms'))}  "
+        f"tlm {_age_cell(drone.get('tlm_age_ms'))}"
+    )
+
+
+def _enc_row(enc):
+    """ENC row: encoder-side counters/rates (fps, mbps) that the GS can
+    cross-check against Σ stream inj_kbps on the s0..s3 decode lines to
+    localize pipeline loss (waybeam ring-full aborts etc)."""
+    return (
+        f"ENC     {_f(enc.get('fps'), 5, 1)} fps   "
+        f"{_f(enc.get('mbps'), 5, 2)} Mbps   "
+        f"cmd {_f(enc.get('cmd_kbps'), 5)}k   "
+        f"qp {_f(enc.get('qp'), 2)}   "
+        f"ring {_f(enc.get('ring_drops'), 5)}"
+    )
+
+
+def _txq_row(txq, radio):
+    """TXQ row: on-drone queue depth/drops plus RadioTx counters (sent_pps
+    cross-checks against CARD inj_pps for injection-estimator calibration).
+    usb_fail/drops are cumulative wire counters, not rates."""
+    return (
+        f"TXQ     depth {_f(txq.get('depth'), 3)}/{_f(txq.get('cap'), 3)}   "
+        f"sent {_f(radio.get('sent_pps'), 6, 0)} pps   "
+        f"drop {_f(txq.get('drops'), 5)}   "
+        f"usb fail {_f(radio.get('usb_fail'), 5)}"
+    )
+
+
+def _uplink_row(uplink, rcf):
+    """UPLNK row: the only place the drone's view of the GS is visible —
+    downlink RF is on every LNK row, this is the uplink margin."""
+    return (
+        f"UPLNK   rssi {_f(uplink.get('rssi_a'), 6, 1)} {_f(uplink.get('rssi_b'), 6, 1)}   "
+        f"snr {_f(uplink.get('snr_a'), 5, 1)} {_f(uplink.get('snr_b'), 5, 1)}   "
+        f"rcf rx {_f(rcf.get('rx_pps'), 5, 1)}/s"
+    )
+
+
+def _sys_row(sys_d, radio_rx_ok):
+    """SYS row: SoC/radio thermal state, loadavg, and the radio-RX wedge
+    flag (the 'comes up deaf after restart' condition made visible).
+    soc_temp_c == -128 is the wire sentinel for 'unavailable'."""
+    soc = sys_d.get("soc_temp_c")
+    if soc is not None and soc <= -128:
+        soc = None
+    if radio_rx_ok is None:
+        rx_s = None
+    else:
+        rx_s = "ok" if radio_rx_ok else "DEAF"
+    return (
+        f"SYS     soc {_f(soc, 3)}C   "
+        f"rf delta {_f(sys_d.get('thermal_delta'), 3)}   "
+        f"load {_f(sys_d.get('load'), 4, 2)}   "
+        f"radio rx {_f(rx_s, 4)}"
+    )
+
+
 class Model:
     """Latest datagram + feed bookkeeping. update() is pure bookkeeping;
     all layout lives in render_rows()."""
@@ -270,6 +350,18 @@ def render_rows(model, wall, width):
                 _f(s.get("snr_b"), LNKSIG_COLS[8][1], 1),
             ]
             rows.append(_grid_row("", cells))
+
+    # --- DRONE telemetry region: absent-safe (null until the first T_TELEM
+    # frame of the session / old maburd / old peer_caps).
+    drone = d.get("drone")
+    if drone is None:
+        rows.append("DRONE   no telemetry (old maburd / peer caps)")
+    else:
+        rows.append(_drone_row(drone))
+        rows.append(_enc_row(drone.get("enc") or {}))
+        rows.append(_txq_row(drone.get("txq") or {}, drone.get("radio") or {}))
+        rows.append(_uplink_row(drone.get("uplink") or {}, drone.get("rcf") or {}))
+        rows.append(_sys_row(drone.get("sys") or {}, drone.get("radio_rx_ok")))
 
     # --- link-wide residual (per-stream delivery now lives on the dec lines)
     residual = link.get("residual_loss")
