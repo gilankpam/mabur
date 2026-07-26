@@ -893,6 +893,31 @@ def _build_block(model, wall, d, link, cls):
     return rows
 
 
+def _ctl_row(ctl):
+    """Ladder-controller summary row: current rung, this window's
+    loss-pressure u against budget, and the most recent transition (or
+    'none@0.00' before the first one ever fires)."""
+    rung = ctl.get("rung") or {}
+    util = ctl.get("util")
+    budget = ctl.get("budget")
+    last_event = ctl.get("last_event") or {}
+    reason = last_event.get("reason", "none")
+    u_s = _s(last_event.get("u"), 2)
+    util_cell = f"u={_s(util, 2)}"
+    budget_s = "--" if budget is None else f"{budget:.0%}"
+    text = (
+        f"  rung {_s(rung.get('idx'))} (mcs{_s(rung.get('mcs'))}"
+        f"/ov{_s(rung.get('ov'), 2)})  {util_cell} of budget {budget_s}"
+        f"  [{reason}@{u_s}]"
+    )
+    spans = []
+    if isinstance(util, (int, float)):
+        style = "bad" if util >= 0.6 else ("warn" if util >= 0.4 else "good")
+        idx = text.index(util_cell)
+        spans.append((idx, len(util_cell), style))
+    return (text, spans)
+
+
 def panel_links(model, wall):
     d = model.d or {}
     link = d.get("link") or {}
@@ -901,6 +926,11 @@ def panel_links(model, wall):
     blocks = [cls for cls in CLASS_ORDER if cls in seen_classes]
 
     body = []
+    ctl = link.get("ctl")
+    if ctl:
+        body.append(_ctl_row(ctl))
+        body.append(("", []))
+
     if not blocks:
         text = "  no link data"
         body.append((text, [(0, len(text), "dim")]))

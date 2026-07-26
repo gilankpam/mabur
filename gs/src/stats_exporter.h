@@ -42,6 +42,26 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
            symbols_bad_cfg = 0, rows_in_flight = 0;
 };
 
+// Copied from LadderController's accessors (gs/src/ladder_controller.h) —
+// plain values only, no controller reference: main fills this from
+// vrx.ctl() each poll, matching the exporter's existing pattern for `op`.
+struct StatsCtlIn {
+  int rung_idx = 0;
+  int rung_mcs = 0;
+  double rung_ov = 0.0;
+  double util = 0.0;
+  double pre_fec_loss = 0.0;
+  double budget = 0.0;
+  int probation_ms_left = 0;
+  std::vector<std::pair<int, int>> penalized;  // {rung, ms_left}
+  uint64_t demotes_residual = 0, demotes_util = 0, promotes = 0,
+           probation_fails = 0, starved_drops = 0, timeout_drops = 0;
+  double last_event_t_ms = 0;
+  int last_event_from = 0, last_event_to = 0;
+  std::string last_event_reason = "none";  // to_string(CtlReason), lowercase
+  double last_event_u = 0.0;
+};
+
 struct StatsInput {
   uint32_t vtx_id = 0;
   bool in_session = false;  // VrxState::SESSION
@@ -52,6 +72,9 @@ struct StatsInput {
   std::array<int, 4> layer_delivery_pct{};
   std::vector<StatsCardIn> cards;
   std::array<StatsStreamIn, 4> streams;
+  // LadderController snapshot; nullopt in static-pin mode -> JSON "ctl": null
+  // (the ladder is never ticked there — see VrxController::ctl() comment).
+  std::optional<StatsCtlIn> ctl;
   uint64_t frames_clean = 0, frames_truncated = 0, frames_dropped = 0;
   uint64_t stall_resets = 0;
   uint64_t rtp_ok = 0, rtp_gap = 0, rtp_gap_seqs = 0, rtp_back = 0;

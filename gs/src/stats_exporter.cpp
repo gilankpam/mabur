@@ -169,6 +169,35 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   else link["residual_loss"] = nullptr;
   link["layer_delivery_pct"] = in.layer_delivery_pct;
 
+  // Measured-loss ladder controller snapshot; static-pin mode never ticks
+  // the controller, so it emits null rather than a frozen/meaningless state.
+  if (in.ctl) {
+    const StatsCtlIn& c = *in.ctl;
+    json& ctl = link["ctl"];
+    ctl["rung"] = {{"idx", c.rung_idx}, {"mcs", c.rung_mcs}, {"ov", c.rung_ov}};
+    ctl["util"] = c.util;
+    ctl["pre_fec_loss"] = c.pre_fec_loss;
+    ctl["budget"] = c.budget;
+    ctl["probation_ms_left"] = c.probation_ms_left;
+    json pen = json::array();
+    for (const auto& p : c.penalized)
+      pen.push_back({{"rung", p.first}, {"ms_left", p.second}});
+    ctl["penalized"] = std::move(pen);
+    ctl["counters"] = {{"demotes_residual", c.demotes_residual},
+                       {"demotes_util", c.demotes_util},
+                       {"promotes", c.promotes},
+                       {"probation_fails", c.probation_fails},
+                       {"starved_drops", c.starved_drops},
+                       {"timeout_drops", c.timeout_drops}};
+    ctl["last_event"] = {{"t_ms", c.last_event_t_ms},
+                         {"from", c.last_event_from},
+                         {"to", c.last_event_to},
+                         {"reason", c.last_event_reason},
+                         {"u", c.last_event_u}};
+  } else {
+    link["ctl"] = nullptr;
+  }
+
   // The drone's per-rung TX spec is deterministic from the commanded op
   // (ladder_from) — display-grade, like the injection estimates below
   // (received rate scaled by the best card's delivery fraction; lost

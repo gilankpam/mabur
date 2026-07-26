@@ -507,6 +507,34 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.q_drop = queue.dropped();
       sin.telem = latest_telem.t;
       sin.telem_rx_ms = latest_telem.rx_ms;
+      // Ladder controller snapshot: absent in static-pin mode, where the
+      // controller exists but is never ticked (see VrxController::ctl()).
+      if (cfg.link.static_mcs < 0) {
+        const auto& c = vrx.ctl();
+        maburgs::StatsCtlIn ci;
+        ci.rung_idx = c.rung();
+        ci.rung_mcs = c.op().mcs;
+        ci.rung_ov = c.op().overhead;
+        ci.util = c.util();
+        ci.pre_fec_loss = c.pre_fec_loss();
+        ci.budget = c.budget();
+        ci.probation_ms_left = c.probation_ms_left(now_ms);
+        for (const auto& p : c.penalized(now_ms)) ci.penalized.push_back(p);
+        const auto& cnt = c.counters();
+        ci.demotes_residual = cnt.demotes_residual;
+        ci.demotes_util = cnt.demotes_util;
+        ci.promotes = cnt.promotes;
+        ci.probation_fails = cnt.probation_fails;
+        ci.starved_drops = cnt.starved_drops;
+        ci.timeout_drops = cnt.timeout_drops;
+        const auto& e = c.last_event();
+        ci.last_event_t_ms = e.t_ms;
+        ci.last_event_from = e.from;
+        ci.last_event_to = e.to;
+        ci.last_event_reason = maburgs::to_string(e.reason);
+        ci.last_event_u = e.u;
+        sin.ctl = std::move(ci);
+      }
       stats->poll(drained_ms, sin);
     }
   }
