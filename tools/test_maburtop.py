@@ -11,13 +11,18 @@ DGRAM = {
         "deadline_ms": 60, "residual_loss": 0.012,
         "layer_delivery_pct": [100, 100, 97, 91],
         "streams": [
-            {"stream": 0, "ov": 1.0, "recovered_s": 12.0, "abandoned_s": 0.0,
+            {"stream": 0, "ov": 1.0, "rung_mcs": 5, "rung_ldpc": True,
+             "rung_stbc": True, "phy_mbps": 52.0, "inj_kbps": 650.0,
+             "recovered_s": 12.0, "abandoned_s": 0.0,
              "syms_in_s": 4210.0, "recovered": 4021, "abandoned": 3,
              "stale": 0, "bad_cfg": 0, "sub_fail": 1, "in_flight": 2},
-            {"stream": 1, "ov": 0.25, "recovered_s": 50.0, "abandoned_s": 0.0,
+            {"stream": 1, "ov": 0.25, "rung_mcs": 5, "rung_ldpc": True,
+             "rung_stbc": True, "phy_mbps": 52.0, "inj_kbps": 15600.0,
+             "recovered_s": 50.0, "abandoned_s": 0.0,
              "syms_in_s": 10876.0, "recovered": 9000, "abandoned": 0,
              "stale": 0, "bad_cfg": 0, "sub_fail": 0, "in_flight": 0},
         ],
+        "air_pct": 31.3,
         "video": {"fps": 59.9, "mbps": 9.31, "jitter_ms": 1.8,
                   "clean": 21500, "truncated": 3, "dropped": 0, "stall_resets": 0,
                   "rtp": {"ok": 812345, "gap": 2, "gap_seqs": 9, "back": 0},
@@ -28,6 +33,7 @@ DGRAM = {
         {"id": 0, "up": True, "frames": 123456, "crc_fail": 0,
          "loss_pct": 0.0, "rx_mbps": 15.6, "pps": 1450,
          "last_frame_age_ms": 4, "foreign_pps": 3.2, "self_pps": 20.1,
+         "inj_pps": 1455.0, "tx_pps": 0.0, "tx_fail": 0,
          "classes": {
              "s1": {"pps": 890.0, "mbps": 14.2, "rssi": -50.1, "rssi_a": -50.9, "rssi_b": -52.3,
                     "snr": 27.1, "snr_a": 26.0, "snr_b": 24.5},
@@ -39,6 +45,7 @@ DGRAM = {
         {"id": 1, "up": True, "frames": 120000, "crc_fail": 0,
          "loss_pct": 0.0, "rx_mbps": 15.6, "pps": 1438,
          "last_frame_age_ms": 5, "foreign_pps": 1.0, "self_pps": 19.8,
+         "inj_pps": 1455.0, "tx_pps": 20.0, "tx_fail": 1,
          "classes": {
              "s1": {"pps": 885.0, "mbps": 14.1, "rssi": -53.2, "rssi_a": -53.8, "rssi_b": -55.1,
                     "snr": 25.2, "snr_a": 24.1, "snr_b": 22.9},
@@ -61,8 +68,11 @@ class RenderTest(unittest.TestCase):
         self.assertIn("vtx 1", rows[0])
         self.assertIn("MCS 5/20", rows[0])
         card = next(r for r in rows if r.lstrip().startswith("c0"))
-        for cell in ("UP", "1450", "15.6", "20.1", "3.2"):
+        for cell in ("UP", "1450", "1455", "15.6", "20.1", "3.2"):
             self.assertIn(cell, card)
+        card1 = next(r for r in rows if r.lstrip().startswith("c1"))
+        self.assertIn("20", card1.split()[-2])   # tx_pps
+        self.assertEqual("1", card1.split()[-1])  # tx_fail
 
     def _lnk_block(self, rows, label):
         """Rows of one LNK class block: from its label/decode line up to the
@@ -95,11 +105,15 @@ class RenderTest(unittest.TestCase):
     def test_decode_line_content(self):
         rows = render_rows(self.fresh(), wall=100.2, width=GRID_WIDTH)
         s0 = next(r for r in rows if r.startswith("s0"))
-        for cell in ("ov 1.00", "dlv 100%", "rec/s   12.0", "in/s   4210",
-                     "sfail   1", "flt   2"):
+        for cell in ("mcs5+LS", "52.0M", "inj   0.7M", "ov 1.00", "dlv 100%",
+                     "rec/s   12.0", "in/s   4210", "sf  1", "fl  2"):
             self.assertIn(cell, s0)
         s1 = next(r for r in rows if r.startswith("s1"))
         self.assertIn("ov 0.25", s1)
+        self.assertIn("inj  15.6M", s1)
+        # link-wide airtime estimate on the LINK row
+        link_row = next(r for r in rows if r.startswith("LINK"))
+        self.assertIn("air ~31.3%", link_row)
         # per-stream delivery comes from link.layer_delivery_pct
         self.assertIn("dlv 100%", s1)
 

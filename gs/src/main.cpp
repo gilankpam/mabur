@@ -398,6 +398,8 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_frame_us = t.last_frame_us;
         ci.self_frames = t.self_frames;
         ci.foreign = fronts[static_cast<size_t>(i)]->foreign();
+        ci.tx_frames = fronts[static_cast<size_t>(i)]->tx_frames();
+        ci.tx_fail = fronts[static_cast<size_t>(i)]->tx_fail();
         static_assert(maburgs::kNumStatsClasses == maburgs::kNumRfClasses,
                       "class arrays must stay in lockstep");
         for (int k = 0; k < maburgs::kNumStatsClasses; ++k) {

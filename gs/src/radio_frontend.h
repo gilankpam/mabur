@@ -48,6 +48,8 @@ class RadioFrontend {
   bool ready() const;                             // InitWrite completed
   bool alive() const;                             // RX loop thread still running
   uint64_t rx_frames() const;
+  uint64_t tx_frames() const;  // control frames handed to the radio OK
+  uint64_t tx_fail() const;    // send_control calls that returned false
   uint64_t foreign() const;   // CRC-clean frames dropped by the SA filter
   bool send_control(const std::vector<uint8_t>& body);  // false pre-ready/on error
 
@@ -66,6 +68,8 @@ class RadioFrontend {
   std::atomic<bool> alive_{false};
   std::atomic<uint64_t> rx_frames_{0};
   std::atomic<uint64_t> foreign_{0};
+  std::atomic<uint64_t> tx_frames_{0};
+  std::atomic<uint64_t> tx_fail_{0};
   uint16_t tx_seq_ = 0;
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
 };

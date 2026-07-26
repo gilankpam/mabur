@@ -1,8 +1,10 @@
 #include "stats_exporter.h"
 
+#include <algorithm>
 #include <cstdio>
 
 #include "json.hpp"
+#include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
 
 namespace maburgs {
@@ -65,6 +67,11 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   j["t_ms"] = now_ms;
 
   j["cards"] = json::array();
+  // Per-card window rates collected for the stream-level TX estimates below:
+  // received Mbps per stream class and the card's delivery fraction.
+  std::vector<std::array<double, 4>> stream_mbps(in.cards.size(),
+                                                 std::array<double, 4>{});
+  std::vector<double> delivery(in.cards.size(), 1.0);
   for (size_t i = 0; i < in.cards.size(); ++i) {
     const StatsCardIn& c = in.cards[i];
     const CardPrev& p = prev_cards_[i];
@@ -82,6 +89,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
         const double got = d_rcv > d_exp ? 1.0
                              : static_cast<double>(d_rcv) / static_cast<double>(d_exp);
         cj["loss_pct"] = 100.0 * (1.0 - got);
+        delivery[i] = got;
       } else {
         cj["loss_pct"] = nullptr;
       }
@@ -89,13 +97,21 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       cj["pps"] = rate(c.frames, p.frames, elapsed_s);
       cj["foreign_pps"] = rate(c.foreign, p.foreign, elapsed_s);
       cj["self_pps"] = rate(c.self_frames, p.self_frames, elapsed_s);
+      cj["tx_pps"] = rate(c.tx_frames, p.tx_frames, elapsed_s);
+      // Drone injection estimate: the drone's hw seq counter numbers every
+      // frame it injects, so the expected-seq advance IS its TX rate as
+      // observed (lost frames included).
+      cj["inj_pps"] = rate(c.seq_expected, p.seq_expected, elapsed_s);
     } else {
       cj["loss_pct"] = nullptr;
       cj["rx_mbps"] = nullptr;
       cj["pps"] = nullptr;
       cj["foreign_pps"] = nullptr;
       cj["self_pps"] = nullptr;
+      cj["tx_pps"] = nullptr;
+      cj["inj_pps"] = nullptr;
     }
+    cj["tx_fail"] = c.tx_fail;
     if (c.last_frame_us != 0) {
       const uint64_t f_ms = c.last_frame_us / 1000;
       cj["last_frame_age_ms"] = now_ms > f_ms ? now_ms - f_ms : 0;
@@ -112,7 +128,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       json kj;
       if (have_window) {
         kj["pps"] = rate(cls.frames, prev_class_frames_[i][ku], elapsed_s);
-        kj["mbps"] = rate(cls.bytes, prev_class_bytes_[i][ku], elapsed_s) * 8.0 / 1e6;
+        const double mbps_c =
+            rate(cls.bytes, prev_class_bytes_[i][ku], elapsed_s) * 8.0 / 1e6;
+        kj["mbps"] = mbps_c;
+        if (k < 4) stream_mbps[i][ku] = mbps_c;
       } else {
         kj["pps"] = nullptr;
         kj["mbps"] = nullptr;
@@ -148,15 +167,41 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   else link["residual_loss"] = nullptr;
   link["layer_delivery_pct"] = in.layer_delivery_pct;
 
+  // The drone's per-rung TX spec is deterministic from the commanded op
+  // (ladder_from; flag policy assumed default) — display-grade, like the
+  // injection estimates below (received rate scaled by the best card's
+  // delivery fraction; lost frames' bytes are unknowable at the GS).
+  const auto ladder = mabur::rc::ladder_from(
+      in.op.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
+      static_cast<uint8_t>(in.op.mcs), static_cast<uint8_t>(in.op.bw), {});
+  double air_pct_sum = 0.0;
   link["streams"] = json::array();
   for (int s = 0; s < 4; ++s) {
     const StatsStreamIn& st = in.streams[static_cast<size_t>(s)];
     if (st.bodies > 0) stream_seen_[static_cast<size_t>(s)] = true;
     if (!stream_seen_[static_cast<size_t>(s)]) continue;
     const StreamPrev& p = prev_streams_[static_cast<size_t>(s)];
+    const mabur::rc::LayerTxSpec& rung = ladder[static_cast<size_t>(s)];
+    const double phy = mabur::rc::phy_rate_mbps(rung);
     json fj;
     fj["stream"] = s;
     fj["ov"] = mabur::uep_layer_overhead(s, in.op.overhead);
+    fj["rung_mcs"] = rung.mcs;
+    fj["rung_ldpc"] = rung.ldpc;
+    fj["rung_stbc"] = rung.stbc;
+    fj["phy_mbps"] = phy;
+    if (have_window) {
+      double inj_mbps = 0.0;
+      for (size_t i = 0; i < in.cards.size(); ++i) {
+        const double est =
+            stream_mbps[i][static_cast<size_t>(s)] / std::max(0.01, delivery[i]);
+        if (est > inj_mbps) inj_mbps = est;
+      }
+      fj["inj_kbps"] = inj_mbps * 1000.0;
+      if (phy > 0.0) air_pct_sum += 100.0 * inj_mbps / phy;
+    } else {
+      fj["inj_kbps"] = nullptr;
+    }
     if (have_window) {
       fj["recovered_s"] = rate(st.syms_recovered, p.syms_recovered, elapsed_s);
       fj["abandoned_s"] = rate(st.syms_abandoned, p.syms_abandoned, elapsed_s);
@@ -174,6 +219,11 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     fj["in_flight"] = st.rows_in_flight;
     link["streams"].push_back(std::move(fj));
   }
+  // Airtime estimate: injected bits vs each rung's PHY rate, summed over the
+  // active streams (msp/ctrl are noise at this scale). Duty of the channel
+  // the drone is burning — compare against the ~75% throttle ceiling.
+  if (have_window) link["air_pct"] = air_pct_sum;
+  else link["air_pct"] = nullptr;
 
   json& v = link["video"];
   if (have_window) {
@@ -200,7 +250,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   for (size_t i = 0; i < in.cards.size(); ++i) {
     prev_cards_[i] = {in.cards[i].frames, in.cards[i].rx_bytes,
                       in.cards[i].seq_expected, in.cards[i].seq_received,
-                      in.cards[i].self_frames, in.cards[i].foreign};
+                      in.cards[i].self_frames, in.cards[i].foreign,
+                      in.cards[i].tx_frames};
     for (int k = 0; k < kNumStatsClasses; ++k) {
       prev_class_frames_[i][static_cast<size_t>(k)] = in.cards[i].classes[static_cast<size_t>(k)].frames;
       prev_class_bytes_[i][static_cast<size_t>(k)] = in.cards[i].classes[static_cast<size_t>(k)].bytes;

@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include "json.hpp"
+#include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
 #include "mtest.h"
 #include "stats_exporter.h"
@@ -28,6 +29,7 @@ StatsInput base_input() {
   c.classes[5].frames = 10; c.classes[5].has_ema = true;  // ctrl
   c.classes[5].rssi_ema = 62.8;
   c.classes[5].snr_ema = 25.0;
+  c.tx_fail = 2;
   in.cards.push_back(c);
   in.streams[0].bodies = 500;
   in.streams[0].syms_recovered = 40;
@@ -179,6 +181,53 @@ TEST(send_failure_counted_never_thrown) {
   ex.poll(1500, base_input());
   CHECK(calls == 2);
   CHECK(ex.send_failed() == 2);
+}
+
+TEST(tx_and_injection_rates) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["cards"][0]["tx_pps"].is_null());     // first emission
+  CHECK(j["cards"][0]["inj_pps"].is_null());
+  CHECK(j["cards"][0]["tx_fail"] == 2);         // cumulative, live immediately
+  in.cards[0].tx_frames += 10;                  // 20/s over 0.5 s
+  in.cards[0].seq_expected += 750;              // drone injected 1500/s
+  in.cards[0].seq_received += 748;
+  ex.poll(1500, in);
+  j = cap.last();
+  CHECK(j["cards"][0]["tx_pps"].get<double>() > 19.9 && j["cards"][0]["tx_pps"].get<double>() < 20.1);
+  CHECK(j["cards"][0]["inj_pps"].get<double>() > 1499 && j["cards"][0]["inj_pps"].get<double>() < 1501);
+}
+
+TEST(stream_rung_phy_and_injection_estimates) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();                  // op: HT mcs5 bw20
+  in.streams[1].bodies = 100;                    // activate s1's stream row
+  const auto ladder = mabur::rc::ladder_from(mabur::rc::PhyMode::HT, 5, 20, {});
+  ex.poll(1000, in);
+  json j = cap.last();
+  const json& s0 = j["link"]["streams"][0];
+  CHECK(s0["rung_mcs"] == ladder[0].mcs);
+  CHECK(s0["rung_ldpc"] == ladder[0].ldpc);
+  CHECK(s0["rung_stbc"] == ladder[0].stbc);
+  const double want_phy = mabur::rc::phy_rate_mbps(ladder[0]);
+  CHECK(s0["phy_mbps"].get<double>() > want_phy - 1e-9 && s0["phy_mbps"].get<double>() < want_phy + 1e-9);
+  CHECK(s0["inj_kbps"].is_null());               // first emission
+  CHECK(j["link"]["air_pct"].is_null());
+  // Window: card0 hears 1 Mbps of s1 with 20% loss -> injected est 1.25 Mbps.
+  in.cards[0].classes[1].bytes += 62'500;
+  in.cards[0].seq_expected += 500;
+  in.cards[0].seq_received += 400;               // 20% card loss this window
+  ex.poll(1500, in);
+  j = cap.last();
+  const double inj = j["link"]["streams"][1]["inj_kbps"].get<double>();
+  CHECK(inj > 1240.0 && inj < 1260.0);           // 1000 kbps / 0.8
+  const double air = j["link"]["air_pct"].get<double>();
+  const double want_air = 100.0 * (1.25 / mabur::rc::phy_rate_mbps(ladder[1]));
+  CHECK(air > want_air - 0.1 && air < want_air + 0.1);
 }
 
 TEST(class_mbps_windowed) {

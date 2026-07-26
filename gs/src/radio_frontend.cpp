@@ -158,10 +158,15 @@ void RadioFrontend::on_packet(const Packet& pkt) {
 }
 
 bool RadioFrontend::send_control(const std::vector<uint8_t>& body) {
-  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  if (!ready_.load(std::memory_order_acquire) || !device_) {
+    tx_fail_.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
   const auto frame = build_control_frame(tx_seq_, body.data(), body.size());
   tx_seq_ = static_cast<uint16_t>((tx_seq_ + 1) & 0xFFF);
-  return device_->send_packet(frame.data(), frame.size());
+  const bool ok = device_->send_packet(frame.data(), frame.size());
+  (ok ? tx_frames_ : tx_fail_).fetch_add(1, std::memory_order_relaxed);
+  return ok;
 }
 
 void RadioFrontend::stop() {
@@ -185,5 +190,7 @@ bool RadioFrontend::ready() const { return ready_.load(std::memory_order_acquire
 bool RadioFrontend::alive() const { return alive_.load(std::memory_order_acquire); }
 uint64_t RadioFrontend::rx_frames() const { return rx_frames_.load(std::memory_order_relaxed); }
 uint64_t RadioFrontend::foreign() const { return foreign_.load(std::memory_order_relaxed); }
+uint64_t RadioFrontend::tx_frames() const { return tx_frames_.load(std::memory_order_relaxed); }
+uint64_t RadioFrontend::tx_fail() const { return tx_fail_.load(std::memory_order_relaxed); }
 
 }  // namespace maburgs

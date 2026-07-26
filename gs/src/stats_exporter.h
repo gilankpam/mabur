@@ -30,6 +30,8 @@ struct StatsCardIn {
   uint64_t last_frame_us = 0;  // GS monotonic; 0 = never heard
   uint64_t self_frames = 0;    // GS-originated RC types heard cross-card
   uint64_t foreign = 0;        // CRC-clean, non-canonical-SA frames dropped upstream
+  uint64_t tx_frames = 0;      // control frames this card sent OK
+  uint64_t tx_fail = 0;        // send_control failures (cumulative)
   std::array<StatsClassIn, kNumStatsClasses> classes{};
 };
 
@@ -67,7 +69,7 @@ class StatsExporter {
  private:
   struct CardPrev {
     uint64_t frames = 0, rx_bytes = 0, seq_expected = 0, seq_received = 0;
-    uint64_t self_frames = 0, foreign = 0;
+    uint64_t self_frames = 0, foreign = 0, tx_frames = 0;
   };
   struct StreamPrev { uint64_t syms_recovered = 0, syms_abandoned = 0, symbols_in = 0; };
   uint32_t session_;

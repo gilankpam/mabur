@@ -18,8 +18,9 @@ STALE_S = 2.0
 # misalign. Label column (CARD / "  c0") is LABEL_W wide, cells are joined
 # with a single space.
 LABEL_W = 6
-CARD_COLS = [("st", 4), ("pps", 5), ("Mbps", 5), ("loss%", 5), ("crc", 5),
-             ("age", 6), ("forgn", 6), ("self", 6)]
+CARD_COLS = [("st", 4), ("pps", 5), ("inj", 5), ("Mbps", 5), ("loss%", 5),
+             ("crc", 5), ("age", 6), ("forgn", 6), ("self", 6), ("tx", 4),
+             ("txf", 4)]
 # LNK blocks: one block per link type (class), a decode line for the FEC
 # streams, then per-card signal rows sharing these columns across all blocks
 # (their titles live on the LNK rule line).
@@ -42,17 +43,35 @@ def _grid_width(cols):
     return LABEL_W + sum(w + 1 for _, w in cols)
 
 
+def _rung_cell(strm, w=7):
+    """TX rung the drone airs this stream at, e.g. 'mcs5+LS' (L=LDPC,
+    S=STBC). Derived GS-side from the commanded op; '--' pre-schema."""
+    m = strm.get("rung_mcs")
+    if m is None:
+        return "--".ljust(w)
+    flags = ("L" if strm.get("rung_ldpc") else "") + \
+            ("S" if strm.get("rung_stbc") else "")
+    s = f"mcs{m}" + (f"+{flags}" if flags else "")
+    return s[:w].ljust(w) if len(s) > w else s.ljust(w)
+
+
 def _dec_line(label, strm, dlv):
-    """Per-stream decode line: inline-labeled, fixed cell widths so the
-    s0..s3 lines align vertically. strm = the sticky link.streams row."""
+    """Per-stream decode line: TX config (rung, PHY rate, injection
+    estimate) then RX decode health. Inline-labeled, fixed cell widths so
+    the s0..s3 lines align vertically. strm = the sticky link.streams row."""
+    inj_kbps = strm.get("inj_kbps")
+    inj_m = None if inj_kbps is None else inj_kbps / 1000.0
     return (
-        f"{label:<{LABEL_W}} ov {_f(strm.get('ov'), 4, 2)}"
-        f"  dlv {_f(dlv, 3, 0)}%"
-        f"  rec/s {_f(strm.get('recovered_s'), 6, 1)}"
-        f"  abn/s {_f(strm.get('abandoned_s'), 5, 1)}"
-        f"  in/s {_f(strm.get('syms_in_s'), 6, 0)}"
-        f"  sfail {_f(strm.get('sub_fail'), 3)}"
-        f"  flt {_f(strm.get('in_flight'), 3)}"
+        f"{label:<{LABEL_W}} {_rung_cell(strm)}"
+        f" {_f(strm.get('phy_mbps'), 5, 1)}M"
+        f" inj {_f(inj_m, 5, 1)}M"
+        f" ov {_f(strm.get('ov'), 4, 2)}"
+        f" dlv {_f(dlv, 3, 0)}%"
+        f" rec/s {_f(strm.get('recovered_s'), 6, 1)}"
+        f" abn/s {_f(strm.get('abandoned_s'), 5, 1)}"
+        f" in/s {_f(strm.get('syms_in_s'), 6, 0)}"
+        f" sf {_f(strm.get('sub_fail'), 2)}"
+        f" fl {_f(strm.get('in_flight'), 2)}"
     )
 
 
@@ -199,12 +218,15 @@ def render_rows(model, wall, width):
             cells = [
                 _f(st_s, CARD_COLS[0][1]),
                 _f(c.get("pps"), CARD_COLS[1][1], 0),
-                _f(c.get("rx_mbps"), CARD_COLS[2][1], 1),
-                _f(c.get("loss_pct"), CARD_COLS[3][1], 1),
-                _f(c.get("crc_fail"), CARD_COLS[4][1]),
-                _age_cell(c.get("last_frame_age_ms"), CARD_COLS[5][1]),
-                _f(c.get("foreign_pps"), CARD_COLS[6][1], 1),
-                _f(c.get("self_pps"), CARD_COLS[7][1], 1),
+                _f(c.get("inj_pps"), CARD_COLS[2][1], 0),
+                _f(c.get("rx_mbps"), CARD_COLS[3][1], 1),
+                _f(c.get("loss_pct"), CARD_COLS[4][1], 1),
+                _f(c.get("crc_fail"), CARD_COLS[5][1]),
+                _age_cell(c.get("last_frame_age_ms"), CARD_COLS[6][1]),
+                _f(c.get("foreign_pps"), CARD_COLS[7][1], 1),
+                _f(c.get("self_pps"), CARD_COLS[8][1], 1),
+                _f(c.get("tx_pps"), CARD_COLS[9][1], 0),
+                _f(c.get("tx_fail"), CARD_COLS[10][1]),
             ]
             rows.append(_grid_row(f"  c{_s(c.get('id'))}", cells))
 
@@ -252,7 +274,9 @@ def render_rows(model, wall, width):
     # --- link-wide residual (per-stream delivery now lives on the dec lines)
     residual = link.get("residual_loss")
     residual_pct = None if residual is None else residual * 100.0
-    rows.append(f"LINK    residual {_f(residual_pct, 5, 1)} %")
+    air = link.get("air_pct")
+    rows.append(f"LINK    residual {_f(residual_pct, 5, 1)} %"
+                f"   air ~{_f(air, 4, 1)}% of ladder")
 
     # --- VIDEO ---
     rows.append(
