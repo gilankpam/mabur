@@ -126,6 +126,13 @@ static int run_radio(const maburgs::Config& cfg) {
                  cfg.stats.host.c_str(), cfg.stats.port, cfg.stats.interval_ms);
   }
 
+  // Drone telemetry (T_TELEM): display-only, not rendezvous traffic — held
+  // here for the DRONE display region rather than forwarded to the vrx
+  // controller. Core-thread-owned, like everything else in this loop.
+  // rx_ms is the GS-side mono stamp the aggregator carries on every rc frame.
+  // Spec 2026-07-26 drone-telemetry.
+  struct { std::optional<mabur::rc::Telem> t; uint64_t rx_ms = 0; } latest_telem;
+
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits and streams Annex-B bytes into RtpPacketizer,
   // which builds RFC 7798 RTP for the udp sink.
@@ -184,6 +191,11 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
   maburgs::VrxController vrx(lt, vcfg);
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
+    if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
+      latest_telem.t = mabur::rc::parse_telem(f.data(), f.size());
+      latest_telem.rx_ms = us / 1000;
+      return;
+    }
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
   });
 
