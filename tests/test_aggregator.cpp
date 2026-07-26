@@ -65,9 +65,12 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
   CHECK(rcs == 1);
   CHECK(agg.card(0).video_bodies > 0);
   CHECK(agg.card(1).rc_frames == 1);
-  // The drone's hw seq counter numbers ALL its injected frames, DISC_ACKs
-  // included — so the ack (the last crc-ok frame fed) is the latest seq.
-  CHECK(agg.last_video_seq() == seq - 1);
+  // last_video_seq() tracks ONLY the video/decoder-bound seq counter: RC
+  // frames (DISC_ACK here) carry their own independent dot11 seq on the
+  // drone and must never advance it, even though the ack is the last
+  // crc-ok frame fed in this test — so the mark stays on the last video
+  // body's seq (one behind the ack's).
+  CHECK(agg.last_video_seq() == seq - 2);
 }
 
 TEST(seq_gap_tracking_crc_ok_only) {
@@ -258,6 +261,26 @@ TEST(msp_body_classified_into_msp_class) {
   const CardTrack& c = agg.card(0);
   CHECK(c.cls[int(RfClass::Msp)].frames == 1);
   CHECK(c.cls[int(RfClass::Msp)].has_ema);
+}
+
+// RC frames (DISC_ACK here) carry their own independent 802.11 seq counter
+// on the drone — a wildly different mac_seq on an interleaved RC frame must
+// not perturb the video seq-gap walk (seq_expected/seq_received/
+// last_video_seq), only the RC-frame routing/class accounting.
+TEST(rc_frame_with_wild_seq_does_not_perturb_video_seq_accounting) {
+  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
+  Aggregator agg(vec_layers(), 200, 512, 1);
+  std::vector<uint8_t> junk(20, 0);  // not SBI, not RC -> misroutes as "video"
+  agg.on_rx_body(msg(0, 10, true, junk));    // video-ish body, seq 10
+  agg.on_rx_body(msg(0, 4000, true, ack));   // RC frame, wildly different seq
+  agg.on_rx_body(msg(0, 11, true, junk));    // next video-ish body, seq 11
+  const CardTrack& c = agg.card(0);
+  CHECK(c.seq_received == 2);            // only the two video-ish bodies
+  CHECK(c.seq_expected == 2);            // contiguous 10->11: no gap from the ack
+  CHECK(agg.last_video_seq() == 11);     // ack's seq (4000) never touches this
+  CHECK(c.rc_frames == 1);               // the ack is still routed normally
+  CHECK(c.cls[int(RfClass::Ctrl)].frames == 1);
 }
 
 TEST(crc_clean_unparseable_body_gets_no_class) {

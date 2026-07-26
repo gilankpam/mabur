@@ -307,4 +307,77 @@ TEST(drone_section_null_then_rates) {
   ex.poll(3000, in);
   CHECK(cap.last()["drone"]["tlm_age_ms"] == 600);
 }
+
+// A maburd restart resets tlm_seq/generation/every cumulative counter back
+// toward 0. Two normal snapshots establish a rate window; a third snapshot
+// whose tlm_seq/generation/counters are all LOWER than the second (the
+// restart) must null every telem rate for that poll instead of computing a
+// ~4e9-scale garbage delta — and the snapshot after THAT (a fresh, distinct
+// pair with the restart as its new baseline) must produce sane rates again.
+TEST(telem_restart_nulls_rates_then_recovers) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+
+  mabur::rc::Telem t;
+  t.tlm_seq = 1; t.generation = 1; t.state = 2;
+  t.enc_frames = 1000; t.enc_kbytes = 1000;
+  t.rcf_rx = 100; t.radio_sent = 5000;
+  in.telem = t; in.telem_rx_ms = 1000;
+  ex.poll(1000, in);
+  CHECK(cap.last()["drone"]["enc"]["fps"].is_null());   // one snapshot only
+
+  t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;
+  t.rcf_rx = 120; t.radio_sent = 6460;
+  in.telem = t; in.telem_rx_ms = 2000;                  // 1000 ms later
+  ex.poll(2500, in);
+  json j = cap.last();
+  CHECK(j["drone"]["enc"]["fps"].get<double>() > 59.9 && j["drone"]["enc"]["fps"].get<double>() < 60.1);
+  CHECK(j["drone"]["enc"]["mbps"].get<double>() > 9.1 && j["drone"]["enc"]["mbps"].get<double>() < 9.3);
+  CHECK(j["drone"]["rcf"]["rx_pps"].get<double>() > 19.9 && j["drone"]["rcf"]["rx_pps"].get<double>() < 20.1);
+  CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1459 && j["drone"]["radio"]["sent_pps"].get<double>() < 1461);
+
+  // Restart: tlm_seq goes backwards (1 < 2), generation regresses (0 < 1),
+  // and every cumulative counter drops back near 0.
+  t.tlm_seq = 1; t.generation = 0;
+  t.enc_frames = 5; t.enc_kbytes = 2;
+  t.rcf_rx = 1; t.radio_sent = 10;
+  in.telem = t; in.telem_rx_ms = 3000;
+  ex.poll(3500, in);
+  j = cap.last();
+  CHECK(j["drone"]["tlm_seq"] == 1);
+  CHECK(j["drone"]["gen"] == 0);
+  CHECK(j["drone"]["enc"]["fps"].is_null());            // no garbage rate
+  CHECK(j["drone"]["enc"]["mbps"].is_null());
+  CHECK(j["drone"]["rcf"]["rx_pps"].is_null());
+  CHECK(j["drone"]["radio"]["sent_pps"].is_null());
+
+  // Next distinct snapshot after the restart: a clean pair, sane rates.
+  t.tlm_seq = 2; t.enc_frames = 65; t.enc_kbytes = 1002;
+  t.rcf_rx = 21; t.radio_sent = 1510;
+  in.telem = t; in.telem_rx_ms = 4000;                  // 1000 ms after the restart snapshot
+  ex.poll(4500, in);
+  j = cap.last();
+  CHECK(j["drone"]["enc"]["fps"].get<double>() > 59.9 && j["drone"]["enc"]["fps"].get<double>() < 60.1);
+  CHECK(j["drone"]["enc"]["mbps"].get<double>() > 8.1 && j["drone"]["enc"]["mbps"].get<double>() < 8.3);
+  CHECK(j["drone"]["rcf"]["rx_pps"].get<double>() > 19.9 && j["drone"]["rcf"]["rx_pps"].get<double>() < 20.1);
+  CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1499 && j["drone"]["radio"]["sent_pps"].get<double>() < 1501);
+}
+
+// Deaf-radio case: the wire's all-zero uplink default (never heard an RC
+// frame back from the drone) must render as null, not as a plausible-looking
+// -110.0 dBm / 0 dB SNR.
+TEST(uplink_nulled_when_both_chains_raw_zero) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  mabur::rc::Telem t;  // default-constructed: up_rssi/up_snr all zero
+  in.telem = t; in.telem_rx_ms = 900;
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(j["drone"]["uplink"]["rssi_a"].is_null());
+  CHECK(j["drone"]["uplink"]["rssi_b"].is_null());
+  CHECK(j["drone"]["uplink"]["snr_a"].is_null());
+  CHECK(j["drone"]["uplink"]["snr_b"].is_null());
+}
 MTEST_MAIN

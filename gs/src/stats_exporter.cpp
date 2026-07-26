@@ -255,7 +255,23 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // window was last computed (age still advances every poll).
     const bool is_new_snapshot =
         !prev_telem_valid_ || t.tlm_seq != prev_telem_.tlm_seq;
-    if (is_new_snapshot && prev_telem_valid_ &&
+    // A maburd restart resets tlm_seq/generation/every cumulative counter
+    // back to ~0. Naively wrap-safe-subtracting the u16/u32 counters against
+    // the pre-restart baseline then yields a ~4e9-scale (or huge tlm_seq
+    // delta) garbage rate for exactly one window. Detect the restart instead
+    // of computing a rate across it: an (unsigned) tlm_seq delta outside
+    // [1, 32767] is either a huge forward jump (impossible at ~1 Hz) or a
+    // seq that went backwards (delta wraps to something huge); generation
+    // regressing (cur < prev) is the same signal from the op-state side.
+    // is_new_snapshot already guarantees tlm_seq changed, so the delta is
+    // never 0 here.
+    bool is_restart = false;
+    if (is_new_snapshot && prev_telem_valid_) {
+      const uint16_t seq_delta =
+          static_cast<uint16_t>(t.tlm_seq - prev_telem_.tlm_seq);
+      is_restart = seq_delta > 32767 || t.generation < prev_telem_.generation;
+    }
+    if (is_new_snapshot && prev_telem_valid_ && !is_restart &&
         in.telem_rx_ms > prev_telem_rx_ms_) {
       const double dt_s =
           static_cast<double>(in.telem_rx_ms - prev_telem_rx_ms_) / 1000.0;
@@ -274,6 +290,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       telem_txq_drop_pps_ = static_cast<double>(d_txq_drops) / dt_s;
       telem_radio_sent_pps_ = static_cast<double>(d_radio_sent) / dt_s;
       have_telem_rates_ = true;
+    }
+    if (is_restart) {
+      // Reseed the baseline on the restart snapshot itself but withhold
+      // rates: the next distinct snapshot after this one gets a clean
+      // interval to compute from.
+      have_telem_rates_ = false;
     }
     if (is_new_snapshot) {
       prev_telem_ = t;
@@ -316,10 +338,19 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     radio["sent_pps"] = have_telem_rates_ ? json(telem_radio_sent_pps_) : json(nullptr);
     radio["drops"] = t.radio_drops;
     radio["usb_fail"] = t.usb_fail;
-    d["uplink"] = {{"rssi_a", t.up_rssi[0] - 110.0},
-                   {"rssi_b", t.up_rssi[1] - 110.0},
-                   {"snr_a", t.up_snr[0]},
-                   {"snr_b", t.up_snr[1]}};
+    // Raw rssi 0 on both chains is never a legitimate live reading — it is
+    // the wire's all-zero default for "no RC frame ever heard" (deaf radio /
+    // pre-DISC). Rendering it as -110.0 dBm would read as plausible signal,
+    // so surface the honest "no data" instead.
+    if (t.up_rssi[0] == 0 && t.up_rssi[1] == 0) {
+      d["uplink"] = {{"rssi_a", nullptr}, {"rssi_b", nullptr},
+                     {"snr_a", nullptr}, {"snr_b", nullptr}};
+    } else {
+      d["uplink"] = {{"rssi_a", t.up_rssi[0] - 110.0},
+                     {"rssi_b", t.up_rssi[1] - 110.0},
+                     {"snr_a", t.up_snr[0]},
+                     {"snr_b", t.up_snr[1]}};
+    }
     d["sys"] = {{"soc_temp_c", t.soc_temp_c},
                 {"thermal_delta", t.thermal_delta},
                 {"load", t.load_x100 / 100.0}};

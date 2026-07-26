@@ -1034,7 +1034,13 @@ int run_real_mode(const Config& cfg) {
         ti.applied_ov = agent.current().fec_overhead;
         ti.applied_off_qdb = agent.current().pwr_offset_qdb;
         ti.derate_qdb = agent.thermal_derate_qdb();
-        ti.rcf_age_ms = agent.have_feedback() ? (now - agent.last_feedback_ms()) : 0;
+        // have_feedback() false means no RCF has EVER been accepted (still
+        // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
+        // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
+        // 65535 ("never"), matching the wire field's documented sentinel.
+        ti.rcf_age_ms = agent.have_feedback()
+                            ? (now - agent.last_feedback_ms())
+                            : static_cast<uint64_t>(UINT16_MAX) + 1;
         ti.rcf_rx = agent.rcf_accepted();
         ti.enc_frames = enc_frames_total.load(std::memory_order_relaxed);
         ti.enc_bytes = enc_bytes_total.load(std::memory_order_relaxed);

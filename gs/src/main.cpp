@@ -192,8 +192,15 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::VrxController vrx(lt, vcfg);
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
-      latest_telem.t = mabur::rc::parse_telem(f.data(), f.size());
-      latest_telem.rx_ms = us / 1000;
+      // A CRC-clean frame can still fail to parse as a valid Telem (e.g. a
+      // corrupted T_TELEM whose CRC happens to pass this layer but whose
+      // internal fields don't parse) — only overwrite the holder on success,
+      // so a bad frame leaves the last good telemetry (and its rx_ms stamp)
+      // untouched rather than clobbering it with nullopt.
+      if (auto t = mabur::rc::parse_telem(f.data(), f.size())) {
+        latest_telem.t = t;
+        latest_telem.rx_ms = us / 1000;
+      }
       return;
     }
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
