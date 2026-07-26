@@ -225,17 +225,24 @@ TEST(ladder_for_row_matches_table_strings_verbatim) {
     CHECK(ladder[1].ldpc == (oracle[1].ldpc || fp.t0_ldpc));
     CHECK(ladder[1].stbc == (oracle[1].stbc || fp.t0_stbc));
     // hw 2026-07-26 ruling: T1/T2 ride T0's scored rate — ladder_for_row
-    // enforces that at parse time by overwriting T1/T2 wholesale with T0's
-    // (flag-applied) spec, regardless of what the vendored row string
-    // itself carries for T1/T2 (some rows still spell out a devourer-style
-    // spread there; it's ignored by the applied ladder).
+    // enforces that at parse time by overwriting T1/T2's rate fields
+    // (mode/mcs/bw/sgi) wholesale with T0's, regardless of what the
+    // vendored row string itself carries for T1/T2 (some rows still spell
+    // out a devourer-style spread there; it's ignored by the applied
+    // ladder). ldpc/stbc are NOT part of that flatten — aligned with
+    // ladder_from (the RCF path), T1/T2 keep whatever the row string
+    // itself parses to for those flags (always false; the table never
+    // sets LDPC/STBC on a T1/T2 token), never inheriting T0's
+    // policy-applied flags.
     for (int i = 2; i < 4; ++i) {
       CHECK(ladder[static_cast<size_t>(i)].mode == ladder[1].mode);
       CHECK(ladder[static_cast<size_t>(i)].mcs == ladder[1].mcs);
       CHECK(ladder[static_cast<size_t>(i)].bw == ladder[1].bw);
       CHECK(ladder[static_cast<size_t>(i)].sgi == ladder[1].sgi);
-      CHECK(ladder[static_cast<size_t>(i)].ldpc == ladder[1].ldpc);
-      CHECK(ladder[static_cast<size_t>(i)].stbc == ladder[1].stbc);
+      CHECK(ladder[static_cast<size_t>(i)].ldpc == oracle[static_cast<size_t>(i)].ldpc);
+      CHECK(ladder[static_cast<size_t>(i)].stbc == oracle[static_cast<size_t>(i)].stbc);
+      CHECK(ladder[static_cast<size_t>(i)].ldpc == false);
+      CHECK(ladder[static_cast<size_t>(i)].stbc == false);
     }
   }
 }
@@ -246,23 +253,33 @@ TEST(ladder_for_row_flattens_t1_t2_to_t0_rate) {
   // byte-exact devourer port. hw 2026-07-26 ruling: streams above CRIT
   // ride T0's scored rate; only FEC overhead differentiates them. Pin
   // that the *applied* ladder enforces this even though the committed
-  // table row keeps devourer's own spread.
+  // table row keeps devourer's own spread. FlagPolicy defaults all true,
+  // so T0 picks up ldpc/stbc from the policy — but per ladder_from (the
+  // RCF path), that must NOT leak onto T1/T2: only the rate fields
+  // (mode/mcs/bw/sgi) flatten to T0's; T1/T2 ldpc/stbc stay exactly what
+  // the row string parses to (false — no T1/T2 token in the table ever
+  // sets LDPC/STBC).
   FlagPolicy fp;
   auto ladder = ladder_for_row(3, fp);
 
-  // T0/T1/T2 identical in every field (mode/mcs/bw/sgi/ldpc/stbc).
+  // T0/T1/T2 identical in rate fields (mode/mcs/bw/sgi).
   CHECK(ladder[1].mode == ladder[2].mode);
   CHECK(ladder[1].mcs == ladder[2].mcs);
   CHECK(ladder[1].bw == ladder[2].bw);
   CHECK(ladder[1].sgi == ladder[2].sgi);
-  CHECK(ladder[1].ldpc == ladder[2].ldpc);
-  CHECK(ladder[1].stbc == ladder[2].stbc);
   CHECK(ladder[1].mode == ladder[3].mode);
   CHECK(ladder[1].mcs == ladder[3].mcs);
   CHECK(ladder[1].bw == ladder[3].bw);
   CHECK(ladder[1].sgi == ladder[3].sgi);
-  CHECK(ladder[1].ldpc == ladder[3].ldpc);
-  CHECK(ladder[1].stbc == ladder[3].stbc);
+
+  // T0 keeps its policy-applied flags (defaults all true); T1/T2 do NOT
+  // inherit them — they stay false, matching ladder_from.
+  CHECK(ladder[1].ldpc == true);
+  CHECK(ladder[1].stbc == true);
+  CHECK(ladder[2].ldpc == false);
+  CHECK(ladder[2].stbc == false);
+  CHECK(ladder[3].ldpc == false);
+  CHECK(ladder[3].stbc == false);
 
   // Concretely: T0 in row 3 is MCS4/20, no SGI. T1/T2 must match that —
   // NOT the row string's own MCS5 / MCS7-SGI.

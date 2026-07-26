@@ -165,10 +165,19 @@ std::array<LayerTxSpec, 4> ladder_for_row(int idx, const FlagPolicy& fp) {
   // spec strings (some still spell out a per-rung T1/T2 spread), but all
   // video streams above CRIT ride T0's scored rate — redundancy, not
   // rate, differentiates layers. Enforce that at this parse choke point:
-  // overwrite T1/T2 wholesale with T0's (flag-applied) spec, so the table
-  // stays a faithful port while the applied ladder obeys the policy.
-  ladder[2] = ladder[1];
-  ladder[3] = ladder[1];
+  // overwrite T1/T2's rate fields (mode/mcs/bw/sgi) wholesale with T0's,
+  // so the table stays a faithful port while the applied ladder obeys the
+  // policy. ldpc/stbc are left as parsed (false — the table rows never
+  // set them on T1/T2), matching ladder_from, which never sets T1/T2
+  // flags either.
+  ladder[2].mode = ladder[1].mode;
+  ladder[2].mcs = ladder[1].mcs;
+  ladder[2].bw = ladder[1].bw;
+  ladder[2].sgi = ladder[1].sgi;
+  ladder[3].mode = ladder[1].mode;
+  ladder[3].mcs = ladder[1].mcs;
+  ladder[3].bw = ladder[1].bw;
+  ladder[3].sgi = ladder[1].sgi;
   return ladder;
 }
 

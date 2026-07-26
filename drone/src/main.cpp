@@ -729,7 +729,12 @@ int run_real_mode(const Config& cfg) {
   // Cumulative encoder/ring counters (spec 2026-07-26 drone-telemetry):
   // written by the hot thread, read by the agent thread's telemetry
   // collector. FramePipeline/FrameSource don't track these themselves (see
-  // frame_ring stats block below), so maburd tracks them here.
+  // frame_ring stats block below), so maburd tracks them here. Two
+  // different patterns live in this group: enc_frames/enc_bytes/ring_drops
+  // are computed right here (fetch_add) because nothing else tracks them,
+  // while idr_disagree_total/enhance_disagree_total are relaxed-published
+  // MIRRORS (store, not fetch_add) of counters FramePipeline already owns
+  // and updates on the hot thread — see pipe.idr_disagreements() below.
   std::atomic<uint64_t> enc_frames_total{0};
   std::atomic<uint64_t> enc_bytes_total{0};
   std::atomic<uint64_t> idr_disagree_total{0};

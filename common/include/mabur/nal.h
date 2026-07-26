@@ -35,8 +35,12 @@ int classify_frame(const uint8_t* annexb, size_t len);
 
 // True when the frame's first VCL NAL (type < 16) is TRAIL_N (type 0) —
 // waybeam's SVC-T enhance marker (the star6e TRAIL_R->TRAIL_N rewrite).
-// Walks the same start-code scan as classify_frame; a critical NAL means
-// the frame can never be enhance -> false. Distinct from classify_frame
+// Walks the same start-code scan as classify_frame; a critical NAL seen
+// BEFORE the first VCL NAL returns false. A critical NAL after the first
+// VCL is never reached by this scan (it returns as soon as it finds a VCL
+// NAL) — harmless, since classify_frame already maps such frames to sid 0
+// regardless, and agreement demotion (this function feeding into it) only
+// ever lowers sid, never raises it. Distinct from classify_frame
 // returning 3, which also covers TRAIL_R with tid >= 2 (temporal-id
 // producers): only genuine TRAIL_N participates in the producer-flag
 // agreement check (spec 2026-07-26 svct-enable).

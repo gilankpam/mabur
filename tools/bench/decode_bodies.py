@@ -176,6 +176,9 @@ def main():
         if trail_n != bool(rec["flags"] & FLAG_ENHANCE) and sid > 1:
             sid = 1
         return sid
+    # enumerate(reach)'s k is fid only if the actual shed boundary matches
+    # --max-stream exactly (MAX_RANGE default sheds >1, or --max-stream 3
+    # sheds nothing); other --max-stream values would mis-key against got.
     reach = [i for i in range(len(fixture)) if stream_of(i) <= a.max_stream]
     want = {k: expected_unit(fixture[i], k) for k, i in enumerate(reach)}
     exact = sum(1 for k, u in want.items() if got.get(k) == u)

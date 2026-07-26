@@ -190,7 +190,7 @@ TEST(keepalive_disc_while_linked_is_ignored) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.current().generation == gen);   // op untouched (no MAX_RANGE yank)
-  CHECK(agent.current().ladder[1].mcs == 2);   // still the RCF rung
+  CHECK(agent.current().ladder[1].mcs == 2);  // still the RCF rung
   CHECK(agent.current().ladder[2].mcs == 2);  // T1 rides the same base mcs
   CHECK(act.controls.size() == n_controls);   // no DISC_ACK
   CHECK(act.bitrates.size() == n_bitrates);   // bitrate policy not re-forced
