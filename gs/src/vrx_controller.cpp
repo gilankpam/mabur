@@ -9,6 +9,10 @@ VrxController::VrxController(const LinkTable& lt, VrxCfg cfg)
     : cfg_(cfg),
       ctrl_(lt, cfg.ctrl),
       win_(cfg.score),
+      // link_lost_ms 1000 / beacon_period_ms 20 are deliberately fixed, not
+      // config: every hw validation ran with these, and a slower fallback to
+      // BEACONING after video loss only delays re-rendezvous. The removed
+      // link.video_silence_ms key claimed to tune the 1000 but never did.
       rz_(VrxRzConfig{cfg.vtx_id, 1000, 20, cfg.op_channel}),
       cur_op_(max_range(cfg.ctrl.max_offset_qdb)) {
   if (cfg_.bw_set.size() > 1) rungs_.emplace(cfg_.bw_set);

@@ -122,11 +122,10 @@ Config load_config(const std::string& path) {
 
   if (j.contains("link")) {
     const json& r = j["link"];
-    check_keys(r, "link", {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "video_silence_ms", "src_bitrate_mbps", "margin_db", "static_mcs", "static_overhead", "static_offset_qdb", "min_offset_qdb", "max_offset_qdb", "base_ref_idx"});
+    check_keys(r, "link", {"vtx_id", "feedback_ms", "beacon_keepalive_ms", "src_bitrate_mbps", "margin_db", "static_mcs", "static_overhead", "static_offset_qdb", "min_offset_qdb", "max_offset_qdb", "base_ref_idx"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
-    c.link.video_silence_ms = static_cast<int>(get_int(r, "video_silence_ms", 3000, 500, 60000, "link"));
     c.link.src_bitrate_mbps = get_num(r, "src_bitrate_mbps", 4.0, 0.5, 50.0, "link");
     c.link.margin_db = get_num(r, "margin_db", 2.0, 0.0, 50.0, "link");
     c.link.static_mcs = static_cast<int>(get_int(r, "static_mcs", -1, -1, 7, "link"));

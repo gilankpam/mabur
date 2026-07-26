@@ -28,7 +28,20 @@ TEST(missing_keys_fall_back_to_defaults) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   CHECK(cfg.radio.channel == 149);
   CHECK(cfg.video_out.host == "127.0.0.1");
-  CHECK(cfg.link.video_silence_ms == 3000);
+}
+
+// link.video_silence_ms claimed to tune the video-silence escape valve, but
+// the valve (VrxRzConfig.link_lost_ms, rendezvous.cpp) has been hardcoded to
+// 1000 ms since the GS scaffold (34fe0b9) — the key was never wired to it.
+// Removed 2026-07-26 in favor of the hardcode every bench run validated; a
+// stale key fails the boot like any other unknown key.
+TEST(stale_video_silence_ms_key_throws) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"video_silence_ms\": 3000}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("video_silence_ms") != std::string::npos;
+  }
+  CHECK(threw);
 }
 
 TEST(errors_are_fail_fast) {
