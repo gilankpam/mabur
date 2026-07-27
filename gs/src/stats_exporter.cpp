@@ -235,14 +235,18 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     }
     if (have_window) {
       fj["recovered_s"] = rate(st.syms_recovered, p.syms_recovered, elapsed_s);
+      fj["recovered_arrived_s"] =
+          rate(st.syms_recovered_arrived, p.syms_recovered_arrived, elapsed_s);
       fj["abandoned_s"] = rate(st.syms_abandoned, p.syms_abandoned, elapsed_s);
       fj["syms_in_s"] = rate(st.symbols_in, p.symbols_in, elapsed_s);
     } else {
       fj["recovered_s"] = nullptr;
+      fj["recovered_arrived_s"] = nullptr;
       fj["abandoned_s"] = nullptr;
       fj["syms_in_s"] = nullptr;
     }
     fj["recovered"] = st.syms_recovered;
+    fj["recovered_arrived"] = st.syms_recovered_arrived;
     fj["abandoned"] = st.syms_abandoned;
     fj["stale"] = st.symbols_stale;
     fj["bad_cfg"] = st.symbols_bad_cfg;
@@ -402,8 +406,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     }
   }
   for (size_t s = 0; s < 4; ++s)
-    prev_streams_[s] = {in.streams[s].syms_recovered, in.streams[s].syms_abandoned,
-                        in.streams[s].symbols_in};
+    prev_streams_[s] = {in.streams[s].syms_recovered,
+                        in.streams[s].syms_recovered_arrived,
+                        in.streams[s].syms_abandoned, in.streams[s].symbols_in};
   prev_udp_bytes_ = in.udp_bytes;
   frames_in_window_ = 0;
   last_emit_ms_ = now_ms;

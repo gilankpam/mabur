@@ -206,11 +206,14 @@ static int run_radio(const maburgs::Config& cfg) {
   // Measured-loss ladder feedback: stream 1 (base layer)'s cumulative
   // (expected, arrived) symbol totals, pre-FEC-repair. expected = source
   // symbols ever seen by seq framing (delivered directly + recovered by FEC
-  // + abandoned as unrecoverable); arrived = delivered directly (pre-repair
-  // "actually received", UepDecoder::LayerStats::syms_delivered). Not the
-  // same window as window_counts()'s post-FEC residual below: this one is
-  // symbol-level and time-windowed (S1LossWindow), that one is packet-level
-  // and RCF-period-windowed.
+  // + abandoned as unrecoverable); arrived = delivered directly PLUS
+  // recovered symbols whose direct copy landed afterwards
+  // (syms_recovered_arrived) — a repair that merely wins an arrival race is
+  // not channel loss. Without that term, rung 0's 2x parity read a clean
+  // bench as 19-26% pre-FEC loss and pinned u above up_util forever (stuck
+  // at mcs0, 2026-07-27). Not the same window as window_counts()'s post-FEC
+  // residual below: this one is symbol-level and time-windowed
+  // (S1LossWindow), that one is packet-level and RCF-period-windowed.
   maburgs::S1LossWindow s1_loss;
   // Change-detect on ctl().last_event(): initialize to the pre-any-event
   // default (t_ms 0) so boot doesn't print a phantom transition line.
@@ -360,7 +363,7 @@ static int run_radio(const maburgs::Config& cfg) {
 
     const auto s1 = agg.decoder().stats(1);
     s1_loss.add(s1.syms_delivered + s1.syms_recovered + s1.syms_abandoned,
-                s1.syms_delivered, now_ms);
+                s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
     const auto s1_sample = s1_loss.sample(now_ms);
     const maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
                                      residual.value_or(0.0), starved};
@@ -413,11 +416,12 @@ static int run_radio(const maburgs::Config& cfg) {
         const auto st = agg.decoder().stats(s);
         if (st.bodies == 0) continue;  // idle streams: keep the line short
         std::fprintf(stderr,
-                     " s%d[p=%llu abn=%llu rec=%llu si=%llu st=%llu"
+                     " s%d[p=%llu abn=%llu rec=%llu ra=%llu si=%llu st=%llu"
                      " bc=%llu sbf=%llu fl=%zu]",
                      s, static_cast<unsigned long long>(st.packets_out),
                      static_cast<unsigned long long>(st.syms_abandoned),
                      static_cast<unsigned long long>(st.syms_recovered),
+                     static_cast<unsigned long long>(st.syms_recovered_arrived),
                      static_cast<unsigned long long>(st.symbols_in),
                      static_cast<unsigned long long>(st.symbols_stale),
                      static_cast<unsigned long long>(st.symbols_bad_cfg),
@@ -487,6 +491,7 @@ static int run_radio(const maburgs::Config& cfg) {
         o.bodies = st.bodies;
         o.subblocks_failed = st.subblocks_failed;
         o.syms_recovered = st.syms_recovered;
+        o.syms_recovered_arrived = st.syms_recovered_arrived;
         o.syms_abandoned = st.syms_abandoned;
         o.symbols_in = st.symbols_in;
         o.symbols_stale = st.symbols_stale;

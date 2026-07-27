@@ -69,6 +69,7 @@ UepDecoder::LayerStats UepDecoder::stats(int sid) const {
   const Layer& L = layers_[static_cast<size_t>(sid)];
   return LayerStats{L.bodies,              L.subblocks_failed,
                     L.sw.syms_delivered(), L.sw.syms_recovered(),
+                    L.sw.syms_recovered_arrived(),
                     L.sw.syms_abandoned(), L.sw.packets_out(),
                     L.sw.symbols_in(),     L.sw.symbols_dropped_stale(),
                     L.sw.symbols_dropped_bad_cfg(), L.sw.rows_in_flight()};

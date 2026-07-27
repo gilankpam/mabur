@@ -45,7 +45,8 @@ class UepDecoder {
 
   struct LayerStats {
     uint64_t bodies = 0, subblocks_failed = 0, syms_delivered = 0,
-             syms_recovered = 0, syms_abandoned = 0, packets_out = 0;
+             syms_recovered = 0, syms_recovered_arrived = 0,
+             syms_abandoned = 0, packets_out = 0;
     // diagnostic depth (SwDecoder internals)
     uint64_t symbols_in = 0, symbols_stale = 0, symbols_bad_cfg = 0;
     size_t rows_in_flight = 0;

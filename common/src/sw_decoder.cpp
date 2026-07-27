@@ -25,6 +25,7 @@ uint64_t SwDecoder::unwrap(uint32_t s) const {
 void SwDecoder::reset_state(uint64_t v) {
   known_.clear();
   rows_.clear();
+  recovered_await_src_.clear();
   newest_v_ = v;
   base_ = v;
   ++resets_;
@@ -59,6 +60,10 @@ void SwDecoder::advance(uint64_t newest_candidate) {
     it = known_.erase(it);
   }
   syms_abandoned_ += (nb - base_) - known_in_range;
+  // A recovered seq evicted before its direct copy showed stays "recovered"
+  // for good: within the horizon the channel never delivered it.
+  recovered_await_src_.erase(recovered_await_src_.begin(),
+                             recovered_await_src_.lower_bound(nb));
   // Rows are keyed by pivot = their smallest referenced seq, so everything
   // that references an evicted seq is at the front of the map.
   while (!rows_.empty() && rows_.begin()->first < nb) rows_.erase(rows_.begin());
@@ -128,7 +133,12 @@ void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
     first = false;
     if (s < live_floor() || known_.count(s)) continue;
     unpack_symbol(payload.data(), out);
-    if (count_as_source) ++syms_delivered_; else ++syms_recovered_;
+    if (count_as_source) {
+      ++syms_delivered_;
+    } else {
+      ++syms_recovered_;
+      recovered_await_src_.insert(s);
+    }
     auto [kit, ok] = known_.emplace(s, std::move(payload));
     (void)ok;
     // Pull every row referencing s, reduce, re-insert (rows only ever
@@ -180,7 +190,12 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
       v = newest_v_;
     }
     if (v < live_floor() || known_.count(v)) {
-      ++symbols_dropped_stale_;
+      // First direct copy of a repair-recovered symbol: the channel did
+      // deliver it, the repair just won the race. Not a stale dup.
+      if (recovered_await_src_.erase(v))
+        ++syms_recovered_arrived_;
+      else
+        ++symbols_dropped_stale_;
       return out;
     }
     advance(v);

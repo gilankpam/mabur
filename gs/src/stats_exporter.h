@@ -38,8 +38,8 @@ struct StatsCardIn {
 
 struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
   uint64_t bodies = 0, subblocks_failed = 0, syms_recovered = 0,
-           syms_abandoned = 0, symbols_in = 0, symbols_stale = 0,
-           symbols_bad_cfg = 0, rows_in_flight = 0;
+           syms_recovered_arrived = 0, syms_abandoned = 0, symbols_in = 0,
+           symbols_stale = 0, symbols_bad_cfg = 0, rows_in_flight = 0;
 };
 
 // Copied from LadderController's accessors (gs/src/ladder_controller.h) —
@@ -99,7 +99,10 @@ class StatsExporter {
     uint64_t frames = 0, rx_bytes = 0, seq_expected = 0, seq_received = 0;
     uint64_t self_frames = 0, foreign = 0, tx_frames = 0;
   };
-  struct StreamPrev { uint64_t syms_recovered = 0, syms_abandoned = 0, symbols_in = 0; };
+  struct StreamPrev {
+    uint64_t syms_recovered = 0, syms_recovered_arrived = 0,
+             syms_abandoned = 0, symbols_in = 0;
+  };
   uint32_t session_;
   int interval_ms_;
   SendFn send_;

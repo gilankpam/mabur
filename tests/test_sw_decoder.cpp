@@ -102,6 +102,47 @@ TEST(duplicate_sources_and_repairs_idempotent) {
   CHECK(d.symbols_dropped_stale() >= 10);  // dup sources counted
 }
 
+TEST(late_source_copy_of_recovered_symbol_counted_arrived) {
+  // Repair-vs-arrival race (bench 2026-07-27): a repair processed before a
+  // reordered source symbol solves it ("recovered"); the direct copy landing
+  // moments later must count syms_recovered_arrived, so the ladder's pre-FEC
+  // loss metric can tell a race win from a symbol that truly never arrived.
+  SwConfig cfg{64, 8, 1.0};
+  std::vector<std::vector<uint8_t>> pkts;
+  auto envs = encode_stream(cfg, 10, &pkts);
+  SwDecoder d(cfg);
+  std::vector<uint8_t> held;  // source seq 2, delayed past its repairs
+  std::vector<std::vector<uint8_t>> got;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    CHECK(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair && h.seq == 2) { held = env; continue; }
+    for (auto& p : d.add_symbol(env.data(), env.size(), 1000)) got.push_back(std::move(p));
+  }
+  CHECK(d.syms_recovered() == 1);          // repair won the race
+  CHECK(d.syms_recovered_arrived() == 0);  // copy not seen yet
+  CHECK(d.add_symbol(held.data(), held.size(), 1001).empty());  // dup payload
+  CHECK(d.syms_recovered_arrived() == 1);
+  CHECK(d.syms_delivered() == 9);  // reclassification never touches delivered
+  CHECK(to_set(got) == to_set(pkts));
+
+  // A SECOND copy of the same symbol is a plain stale dup again.
+  const auto stale_before = d.symbols_dropped_stale();
+  CHECK(d.add_symbol(held.data(), held.size(), 1002).empty());
+  CHECK(d.syms_recovered_arrived() == 1);
+  CHECK(d.symbols_dropped_stale() == stale_before + 1);
+}
+
+TEST(dup_of_delivered_symbol_not_counted_recovered_arrived) {
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 10, nullptr);
+  SwDecoder d(cfg);
+  for (int pass = 0; pass < 2; ++pass)  // every envelope twice (two cards)
+    for (auto& env : envs) d.add_symbol(env.data(), env.size(), 1000);
+  CHECK(d.syms_recovered() == 0);
+  CHECK(d.syms_recovered_arrived() == 0);
+}
+
 TEST(loss_beyond_horizon_counts_abandoned) {
   SwConfig cfg{64, 4, 0.0};  // no repairs at all
   auto envs = encode_stream(cfg, 60, nullptr);

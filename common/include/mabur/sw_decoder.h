@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <vector>
 
 #include "mabur/sw_encoder.h"  // SwConfig
@@ -43,6 +44,12 @@ class SwDecoder {
 
   uint64_t syms_delivered() const { return syms_delivered_; }
   uint64_t syms_recovered() const { return syms_recovered_; }
+  // Recovered symbols whose direct source copy later arrived anyway: the
+  // repair merely won an arrival race, the channel did deliver the symbol.
+  // Loss metrics must treat these as arrived — recovered alone reads a
+  // reorder-heavy healthy link as lossy (2x-parity rung 0 measured 19-26%
+  // phantom pre-FEC loss on a clean bench, 2026-07-27).
+  uint64_t syms_recovered_arrived() const { return syms_recovered_arrived_; }
   uint64_t syms_abandoned() const { return syms_abandoned_; }
   uint64_t symbols_in() const { return symbols_in_; }
   uint64_t symbols_dropped_bad_cfg() const { return symbols_dropped_bad_cfg_; }
@@ -80,8 +87,10 @@ class SwDecoder {
   uint64_t base_ = 0;      // state floor (inclusive)
   std::map<uint64_t, std::vector<uint8_t>> known_;  // vseq -> payload
   std::map<uint64_t, Row> rows_;                    // pivot vseq -> row
+  std::set<uint64_t> recovered_await_src_;  // recovered, direct copy not yet seen
 
   uint64_t syms_delivered_ = 0, syms_recovered_ = 0, syms_abandoned_ = 0;
+  uint64_t syms_recovered_arrived_ = 0;
   uint64_t symbols_in_ = 0, symbols_dropped_bad_cfg_ = 0;
   uint64_t symbols_dropped_stale_ = 0, packets_out_ = 0, resets_ = 0;
 };

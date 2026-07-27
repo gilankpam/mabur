@@ -101,6 +101,25 @@ TEST(rates_use_measured_window) {
   CHECK(j["link"]["video"]["mbps"].get<double>() > 0.99 && j["link"]["video"]["mbps"].get<double>() < 1.01);
 }
 
+TEST(recovered_arrived_exported_with_rate) {
+  // Repair-vs-arrival race counter (schema-additive under v:1): cumulative on
+  // every datagram, windowed rate once a measured window exists.
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.streams[0].syms_recovered_arrived = 30;
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["link"]["streams"][0]["recovered_arrived"] == 30);
+  CHECK(j["link"]["streams"][0]["recovered_arrived_s"].is_null());
+  in.streams[0].syms_recovered_arrived += 9;
+  ex.poll(2000, in);  // 1 s window -> 9.0/s
+  j = cap.last();
+  CHECK(j["link"]["streams"][0]["recovered_arrived"] == 39);
+  CHECK(j["link"]["streams"][0]["recovered_arrived_s"].get<double>() > 8.9 &&
+        j["link"]["streams"][0]["recovered_arrived_s"].get<double>() < 9.1);
+}
+
 TEST(loss_pct_null_when_no_expected_and_clamp_negative) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
