@@ -58,8 +58,11 @@ struct LinkCfg {
   // (post-`max_mcs` filter) plus the util/timing thresholds LadderController
   // decides on. Default ladder is the spec's static feasibility floor —
   // rung 0 is the failsafe every controller starts and falls back to.
+  // mcs6 rides ov 0.25 (not the spec's 0.15): with bpb=4 a dead body is a
+  // 4-symbol cluster, and 0.15 leaves the s3 window unable to absorb two
+  // dead bodies — see docs/mcs6-bench-anomaly.md ov0.25 experiment.
   LadderCfg ladder_cfg{
-      {{0, 1.0}, {2, 0.5}, {4, 0.25}, {5, 0.25}, {6, 0.15}, {7, 0.1}}};
+      {{0, 1.0}, {2, 0.5}, {4, 0.25}, {5, 0.25}, {6, 0.25}, {7, 0.1}}};
 };
 
 /// Video output destination.

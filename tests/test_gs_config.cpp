@@ -230,7 +230,9 @@ TEST(ladder_defaults_to_spec_six_rung_ladder) {
   CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.499 && L[1].overhead < 0.501);
   CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.249 && L[2].overhead < 0.251);
   CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.249 && L[3].overhead < 0.251);
-  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.149 && L[4].overhead < 0.151);
+  // mcs6 rung at 0.25 (not the spec's 0.15) since 2026-07-29 — see the
+  // ladder_cfg comment in gs/src/config.h and docs/mcs6-bench-anomaly.md.
+  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.249 && L[4].overhead < 0.251);
   CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.099 && L[5].overhead < 0.101);
 }
 

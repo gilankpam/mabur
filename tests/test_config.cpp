@@ -66,11 +66,12 @@ TEST(load_config_default_file_matches_struct_defaults) {
 
   // The bundle intentionally diverges from struct defaults for fec, so check
   // against the bundle's actual values rather than the struct defaults used
-  // for everything else. 328/w32/bpb4 is the 2026-07-25 gated geometry
-  // (docs/fec-symbol-size-328.md): same ~1.4kB body and ~11kB window span as
-  // scalar-164/w64/bpb8 but ~5% less airtime and -7.5% maburd CPU, quality
-  // parity on-air.
-  CHECK((cfg.fec.symbol_size == std::array<int, 4>{328, 328, 328, 328}));
+  // for everything else. 332/w32/bpb4 is the 2026-07-29 geometry: same CPU/
+  // air profile as the 2026-07-25 gated 328 (docs/fec-symbol-size-328.md),
+  // shifted +4 because 328x4 = 1396 B air frames sit exactly in the
+  // mcs6+STBC PHY hole (docs/mcs6-bench-anomaly.md — air MPDUs 1392-1400 B
+  // vanish whole at RX). Any new size needs the all-8-MCS hole-scan.
+  CHECK((cfg.fec.symbol_size == std::array<int, 4>{332, 332, 332, 332}));
   CHECK(cfg.fec.window == 32);
   CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 4, 4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);

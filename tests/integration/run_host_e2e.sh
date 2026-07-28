@@ -18,7 +18,7 @@ trap 'rm -rf "$TMP"' EXIT
 echo "== clean pipe: all reachable (CRIT+T0) frames must reconstruct byte-exact =="
 "$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f0.bin"
 python3 tools/bench/decode_bodies.py --frames "$TMP/f0.bin" --fixture "$FIX" \
-  --symbol-size 328,328,328,328 --max-stream 1
+  --symbol-size 332,332,332,332 --max-stream 1
 
 echo "== 20% body loss: critical stream must still fully deliver =="
 "$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f1.bin"
@@ -29,7 +29,7 @@ echo "== 20% body loss: critical stream must still fully deliver =="
 # rank-deficient the GF(256) solve. That is a genuine capacity edge on a
 # single-frame stream, not a decoder bug. Seed 1 clears it.
 python3 tools/bench/decode_bodies.py --frames "$TMP/f1.bin" --fixture "$FIX" \
-  --symbol-size 328,328,328,328 --drop-pct 20 --seed 1 --min-critical 1.0 --max-stream 1
+  --symbol-size 332,332,332,332 --drop-pct 20 --seed 1 --min-critical 1.0 --max-stream 1
 
 echo "== RCF application: profile HT mcs4 after frame 1 changes T0 radiotap MCS =="
 python3 - "$TMP/rc.bin" <<'EOF'
@@ -50,10 +50,10 @@ EOF
 # stream-1 (T0) frame is ever encoded, so every T0 body in f2.bin postdates it
 # and --after 0 is exact rather than cautious.
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
-  --symbol-size 328,328,328,328 --expect-mcs 4 --stream 1 --after 0
+  --symbol-size 332,332,332,332 --expect-mcs 4 --stream 1 --after 0
 
 echo "== full 4-stream recovery: all 13 frames byte-exact post-RCF =="
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
-  --symbol-size 328,328,328,328
+  --symbol-size 332,332,332,332
 
 echo "== all E2E checks passed =="
