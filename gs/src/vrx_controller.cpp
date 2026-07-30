@@ -99,7 +99,7 @@ int VrxController::stress_offset_qdb(double now_ms) const {
   int steps = 0;
   if (cfg_.stress_step_qdb != 0) {
     steps = static_cast<int>((now_ms - stress_anchor_ms_) /
-                             (cfg_.stress_period_s * 1000.0));
+                             (std::max(1, cfg_.stress_period_s) * 1000.0));
   }
   return std::max(cfg_.stress_floor_qdb,
                   cfg_.stress_qdb + cfg_.stress_step_qdb * steps);

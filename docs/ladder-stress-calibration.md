@@ -5,21 +5,25 @@ Date 2026-07-30. Branch `feat/ladder-stress-calib`. Bench GS
 
 ## Method
 
-Spec: `.superpowers/sdd/2026-07-30-ladder-stress-calibration/task-5-brief.md`
-(design spec referenced therein). The GS carries a bench-only
-`link.stress_offset` config knob (Tasks 1-3) that subtracts a configurable
-quarter-dB offset from the TX power the drone applies, either as a static
-level or a ramp (`step_qdb` per `period_s`, clamped at `floor_qdb`),
-logged loudly (`*** STRESS OFFSET ACTIVE ... — bench instrument, NOT for
-flight ***`) and deployed+smoke-tested on hardware in Task 4. This
-campaign's goal: record the ladder controller's behavior under induced
-power stress and use `tools/flightreport.py --calib` to derive new
-`down_util`/`up_util`/`confirm_ms` values so the util-path (a proactive,
-leading-indicator demote) catches degradation *before* residual loss is
-observed, per a binding selection rule (below). Recordings were taken via
-a passive AF_PACKET tap on `lo:8300` (`.superpowers/sdd/2026-07-30-ladder-stress-calibration/statstap.py`)
-rather than binding the sideport UDP port, since the bench GS's `maburtop`
-held it exclusively throughout.
+Spec: `docs/superpowers/specs/2026-07-30-ladder-stress-calibration-design.md`
+(local, gitignored — not committed to the repo). The GS carries a
+bench-only `link.stress_offset` config knob (Tasks 1-3) that subtracts a
+configurable quarter-dB offset from the TX power the drone applies,
+either as a static level or a ramp (`step_qdb` per `period_s`, clamped at
+`floor_qdb`), logged loudly (`*** STRESS OFFSET ACTIVE ... — bench
+instrument, NOT for flight ***`) and deployed+smoke-tested on hardware in
+Task 4. This campaign's goal: record the ladder controller's behavior
+under induced power stress and use `tools/flightreport.py --calib` to
+derive new `down_util`/`up_util`/`confirm_ms` values so the util-path (a
+proactive, leading-indicator demote) catches degradation *before*
+residual loss is observed, per a binding selection rule (below).
+Recordings were taken via a passive AF_PACKET tap on `lo` filtering UDP
+dport 8300 (per CLAUDE.md's "passively via AF_PACKET on `lo` when a
+consumer already holds the port" guidance, mirroring `rtpsniff.py`'s
+technique: sniff raw Ethernet frames, dedupe the loopback double-send,
+decode JSON, write one compact JSON object per line), rather than binding
+the sideport UDP port directly, since the bench GS's `maburtop` held it
+exclusively throughout.
 
 Run matrix executed: 600 s clean baseline (knob off); static staircase at
 `qdb` = −8, −16, −24, −32, −40 (300 s each, `−40` = the knob's floor,
