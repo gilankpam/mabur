@@ -926,7 +926,7 @@ def _ladder_rung_rows(ctl):
     cur = (ctl.get("rung") or {}).get("idx")
     prob_ms = ctl.get("probation_ms_left") or 0
     pen = {p.get("rung"): p.get("ms_left")
-           for p in (ctl.get("penalized") or []) if p.get("rung") is not None}
+           for p in (ctl.get("penalized") or []) if isinstance(p, dict) and p.get("rung") is not None}
     rows = []
     for idx in range(len(ladder) - 1, -1, -1):
         r = ladder[idx] or {}
