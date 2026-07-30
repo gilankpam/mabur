@@ -166,6 +166,36 @@ TEST(stats_section_parses_and_validates) {
   CHECK(threw);  // unknown key fail-fast, like every other section
 }
 
+// link.stress_offset: bench stress instrument (SDD 2026-07-30 ladder stress
+// calibration). Defaults = off; strict keys; qdb/floor in [-40,0], step in
+// [-8,0], period >= 1.
+TEST(stress_offset_defaults_off) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.stress_qdb == 0);
+  CHECK(cfg.link.stress_step_qdb == 0);
+  CHECK(cfg.link.stress_period_s == 30);
+  CHECK(cfg.link.stress_floor_qdb == -40);
+}
+
+TEST(stress_offset_parses_and_validates) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"stress_offset":{"qdb":-16,"step_qdb":-2,"period_s":30,"floor_qdb":-32}}})"));
+  CHECK(cfg.link.stress_qdb == -16);
+  CHECK(cfg.link.stress_step_qdb == -2);
+  CHECK(cfg.link.stress_period_s == 30);
+  CHECK(cfg.link.stress_floor_qdb == -32);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"stress_offset":{"qdb":4}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // positive qdb out of range
+  threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"stress_offset":{"stepqdb":-2}}})")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("stepqdb") != std::string::npos;
+  }
+  CHECK(threw);  // unknown nested key named in the error
+}
+
 MTEST_MAIN
 
 // static_txagc was renamed to static_offset_qdb (USER-FACING, qdB offset

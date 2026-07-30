@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl).
-Usage: flightreport.py flight.jsonl
+Usage: flightreport.py flight.jsonl | --calib [--confirm-ms N] run1.jsonl [run2 ...]
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
 inside one 500ms export window surface only as the LAST transition. Reported counts are
@@ -59,6 +59,93 @@ def merge_consecutive_residuals(residuals):
     # Finalize last episode
     merged.append((episode_start_t, episode_max_rl, episode_trajs, episode_ds, episode_rssi, episode_snr))
     return merged
+
+
+def _percentile(sorted_vals, q):
+    return sorted_vals[min(len(sorted_vals) - 1, int(q * len(sorted_vals)))]
+
+
+def calib(paths, confirm_ms=250):
+    """Threshold calibration over one or more recordings (spec 2026-07-30):
+    clean-u percentiles per rung from stress-off residual-free runs, and a
+    candidate down_util sweep scoring lead time from sustained crossing to
+    first residual. Caveat printed with the output: the sideport samples u at
+    2 Hz while the controller ticks at ~20 Hz, so leads are +/-500 ms and a
+    sub-500ms confirm window is treated as one sample."""
+    candidates = [round(0.05 * i, 2) for i in range(1, 13)]  # 0.05 .. 0.60
+    clean_u = {}
+    episodes = []
+    for path in paths:
+        rows = load(path)
+        samples = []
+        for d in rows:
+            link = d.get("link") or {}
+            ctl = link.get("ctl")
+            if not ctl:
+                continue
+            samples.append((d.get("t_ms", 0),
+                            ctl.get("util", 0.0),
+                            (ctl.get("rung") or {}).get("idx"),
+                            (link.get("op") or {}).get("offset_qdb") or 0,
+                            (link.get("residual_loss") or 0) > 0))
+        if not samples:
+            continue
+        has_resid = any(s[4] for s in samples)
+        stress_on = any(s[3] != 0 for s in samples)
+        if not has_resid and not stress_on:
+            for _t, u, rung, _off, _r in samples:
+                clean_u.setdefault(rung, []).append(u)
+        prev_resid = False
+        scan_from = None  # end of the previous episode; a catch can only come
+                           # from the degradation run leading into THIS episode
+        for i, (t, _u, rung, off, resid) in enumerate(samples):
+            if resid and not prev_resid:
+                leads = {}
+                for c in candidates:
+                    fire = None       # first completed confirm window above c
+                    run_start = None
+                    for t2, u2, _rg, _of, _rs in samples:
+                        if scan_from is not None and t2 <= scan_from:
+                            continue
+                        if t2 >= t:
+                            break
+                        if u2 > c:
+                            if run_start is None:
+                                run_start = t2
+                            if fire is None and t2 - run_start >= confirm_ms - 500:
+                                fire = t2  # 2 Hz sampling: one sample above c
+                                           # already spans >= any confirm <= 500
+                        else:
+                            run_start = None
+                            fire = None  # recovered below c: an earlier crossing
+                                         # doesn't count as catching THIS episode
+                    leads[c] = (t - fire) if fire is not None else None
+                episodes.append((path, t, rung, off, leads))
+            elif prev_resid and not resid:
+                scan_from = t  # this episode cleared; the next episode's scan
+                                # must not reach back across it
+            prev_resid = resid
+
+    print("CLEAN U PER RUNG (stress-off, residual-free runs)")
+    for rung in sorted(k for k in clean_u if k is not None):
+        us = sorted(clean_u[rung])
+        print(f"  rung {rung}: p50 {_percentile(us, .5):.3f} "
+              f"p95 {_percentile(us, .95):.3f} p99 {_percentile(us, .99):.3f} n={len(us)}")
+    print(f"CANDIDATE down_util SWEEP (episodes={len(episodes)}, confirm_ms={confirm_ms}, "
+          f"leads +/-500ms at 2 Hz sampling)")
+    for c in candidates:
+        caught = [e[4][c] for e in episodes if e[4][c] is not None]
+        med = sorted(caught)[len(caught) // 2] / 1000.0 if caught else 0.0
+        print(f"  {c:.2f}: caught {len(caught)}/{len(episodes)}, median lead {med:.1f}s")
+    print("EPISODES")
+    for path, t, rung, off, leads in episodes:
+        ls = " ".join(f"{c:.2f}->{leads[c]/1000.0:.1f}s" for c in candidates
+                      if leads[c] is not None)
+        print(f"  {path} t={t} rung={rung} offset={off} {ls or 'uncaught at all candidates'}")
+    print("SELECTION RULE (spec 2026-07-30): up_util > clean p99 x >=2; "
+          "down_util = highest candidate catching >=80% of SLOW-ramp episodes "
+          "with median lead >= 2s; confirm_ms <= half that median lead; "
+          "fast-ramp episodes are informational only.")
 
 
 def main(path):
@@ -138,5 +225,15 @@ def main(path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2: sys.exit(__doc__)
-    main(sys.argv[1])
+    args = sys.argv[1:]
+    if args and args[0] == "--calib":
+        args = args[1:]
+        confirm = 250
+        if args and args[0] == "--confirm-ms":
+            confirm = int(args[1]); args = args[2:]
+        if not args: sys.exit(__doc__)
+        calib(args, confirm)
+    elif len(args) == 1:
+        main(args[0])
+    else:
+        sys.exit(__doc__)

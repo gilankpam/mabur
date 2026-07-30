@@ -202,6 +202,20 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.pin_mcs = cfg.link.static_mcs;
   vcfg.pin_overhead = cfg.link.static_overhead;
   vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
+  vcfg.stress_qdb = cfg.link.stress_qdb;
+  vcfg.stress_step_qdb = cfg.link.stress_step_qdb;
+  vcfg.stress_period_s = cfg.link.stress_period_s;
+  vcfg.stress_floor_qdb = cfg.link.stress_floor_qdb;
+  const bool stress_active =
+      cfg.link.static_mcs < 0 &&
+      (cfg.link.stress_qdb != 0 || cfg.link.stress_step_qdb != 0);
+  if (stress_active) {
+    std::fprintf(stderr,
+                 "maburgs: *** STRESS OFFSET ACTIVE qdb=%d step=%d/%ds floor=%d"
+                 " — bench instrument, NOT for flight ***\n",
+                 cfg.link.stress_qdb, cfg.link.stress_step_qdb,
+                 cfg.link.stress_period_s, cfg.link.stress_floor_qdb);
+  }
   maburgs::VrxController vrx(vcfg);
   // Measured-loss ladder feedback: stream 1 (base layer)'s cumulative
   // (expected, arrived) symbol totals, pre-FEC-repair. expected = source
@@ -404,6 +418,7 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(udp.sent()),
                    static_cast<unsigned long long>(udp.failed()),
                    static_cast<unsigned long long>(queue.dropped()));
+      if (stress_active) std::fprintf(stderr, " STRESS");
       for (int i = 0; i < n_cards; ++i) {
         const auto& t = agg.card(i);
         std::fprintf(stderr, " c%d[%s f=%llu cf=%llu snr=%.1f a=%.1f b=%.1f]",

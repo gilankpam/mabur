@@ -128,7 +128,7 @@ Config load_config(const std::string& path) {
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
-                "starved_confirm_ms"});
+                "starved_confirm_ms", "stress_offset"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
@@ -189,6 +189,20 @@ Config load_config(const std::string& path) {
         static_cast<int>(get_int(r, "feedback_timeout_ms", 1000, 0, 600000, "link"));
     c.link.ladder_cfg.starved_confirm_ms =
         static_cast<int>(get_int(r, "starved_confirm_ms", 300, 0, 600000, "link"));
+
+    // Bench stress instrument (spec 2026-07-30 ladder stress calibration).
+    if (r.contains("stress_offset")) {
+      const json& s = r["stress_offset"];
+      check_keys(s, "link.stress_offset", {"qdb", "step_qdb", "period_s", "floor_qdb"});
+      c.link.stress_qdb =
+          static_cast<int>(get_int(s, "qdb", 0, -40, 0, "link.stress_offset"));
+      c.link.stress_step_qdb =
+          static_cast<int>(get_int(s, "step_qdb", 0, -8, 0, "link.stress_offset"));
+      c.link.stress_period_s =
+          static_cast<int>(get_int(s, "period_s", 30, 1, 3600, "link.stress_offset"));
+      c.link.stress_floor_qdb =
+          static_cast<int>(get_int(s, "floor_qdb", -40, -40, 0, "link.stress_offset"));
+    }
   }
 
   if (j.contains("video_out")) {
