@@ -8,6 +8,66 @@ import tempfile
 from pathlib import Path
 
 
+def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked", offset_qdb=0):
+    """Helper for tests: create a sideport datagram. Shared by
+    synthesize_flight_jsonl() and the --calib tests."""
+    dg = {
+        "v": 1,
+        "t_ms": t,
+        "link": {
+            "state": drone_state,
+            "residual_loss": residual_loss if residual_loss > 0 else None,
+            "op": {"offset_qdb": offset_qdb},
+            "ctl": {
+                "rung": {"idx": rung_idx, "mcs": 5 - rung_idx, "ov": 0.25},
+                "util": util,
+                "pre_fec_loss": 0.01,
+                "budget": 0.5,
+                "probation_ms_left": 0,
+                "penalized": [],
+                "counters": {
+                    "demotes_residual": 0,
+                    "demotes_util": 0,
+                    "promotes": 0,
+                    "probation_fails": 0,
+                    "starved_drops": 0,
+                    "timeout_drops": 0
+                },
+                "last_event": event or {
+                    "t_ms": 0,
+                    "from": 0,
+                    "to": 0,
+                    "reason": "none",
+                    "u": 0.0
+                }
+            }
+        },
+        "cards": [
+            {
+                "frames": 1000,
+                "classes": {
+                    "s1": {
+                        "rssi": -50.0,
+                        "snr": 27.0,
+                        "pps": 900
+                    },
+                    "ctrl": {
+                        "rssi": -47.2,
+                        "snr": 25.0
+                    }
+                }
+            }
+        ],
+        "drone": {
+            "state": drone_state,
+            "tlm_age_ms": 100,
+            "enc": {"fps": 59.9},
+            "uplink": {"rssi_b": -57.95}
+        }
+    }
+    return dg
+
+
 def synthesize_flight_jsonl():
     """Generate a regression test fixture at 500ms cadence (2 Hz sideport).
 
@@ -21,64 +81,6 @@ def synthesize_flight_jsonl():
        - New anchor logic: no clean samples, so 1 episode
     """
     rows = []
-
-    def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked", offset_qdb=0):
-        dg = {
-            "v": 1,
-            "t_ms": t,
-            "link": {
-                "state": drone_state,
-                "residual_loss": residual_loss if residual_loss > 0 else None,
-                "op": {"offset_qdb": offset_qdb},
-                "ctl": {
-                    "rung": {"idx": rung_idx, "mcs": 5 - rung_idx, "ov": 0.25},
-                    "util": util,
-                    "pre_fec_loss": 0.01,
-                    "budget": 0.5,
-                    "probation_ms_left": 0,
-                    "penalized": [],
-                    "counters": {
-                        "demotes_residual": 0,
-                        "demotes_util": 0,
-                        "promotes": 0,
-                        "probation_fails": 0,
-                        "starved_drops": 0,
-                        "timeout_drops": 0
-                    },
-                    "last_event": event or {
-                        "t_ms": 0,
-                        "from": 0,
-                        "to": 0,
-                        "reason": "none",
-                        "u": 0.0
-                    }
-                }
-            },
-            "cards": [
-                {
-                    "frames": 1000,
-                    "classes": {
-                        "s1": {
-                            "rssi": -50.0,
-                            "snr": 27.0,
-                            "pps": 900
-                        },
-                        "ctrl": {
-                            "rssi": -47.2,
-                            "snr": 25.0
-                        }
-                    }
-                }
-            ],
-            "drone": {
-                "state": drone_state,
-                "tlm_age_ms": 100,
-                "enc": {"fps": 59.9},
-                "uplink": {"rssi_b": -57.95}
-            }
-        }
-        return json.dumps(dg)
-
     t_ms = 0
 
     # Phase 1: Steady rung 5 (30s at 500ms = 60 samples)
@@ -174,7 +176,7 @@ def synthesize_flight_jsonl():
         rows.append(make_datagram(t_ms, rung_idx=4, util=0.12))
         t_ms += 500
 
-    return "\n".join(rows) + "\n"
+    return "\n".join(json.dumps(r) for r in rows) + "\n"
 
 
 def test_flightreport_structure():
@@ -241,65 +243,6 @@ def test_flightreport_structure():
     print("\n✓ All assertions passed!")
 
 
-def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked", offset_qdb=0):
-    """Helper for tests: create a sideport datagram."""
-    dg = {
-        "v": 1,
-        "t_ms": t,
-        "link": {
-            "state": drone_state,
-            "residual_loss": residual_loss if residual_loss > 0 else None,
-            "op": {"offset_qdb": offset_qdb},
-            "ctl": {
-                "rung": {"idx": rung_idx, "mcs": 5 - rung_idx, "ov": 0.25},
-                "util": util,
-                "pre_fec_loss": 0.01,
-                "budget": 0.5,
-                "probation_ms_left": 0,
-                "penalized": [],
-                "counters": {
-                    "demotes_residual": 0,
-                    "demotes_util": 0,
-                    "promotes": 0,
-                    "probation_fails": 0,
-                    "starved_drops": 0,
-                    "timeout_drops": 0
-                },
-                "last_event": event or {
-                    "t_ms": 0,
-                    "from": 0,
-                    "to": 0,
-                    "reason": "none",
-                    "u": 0.0
-                }
-            }
-        },
-        "cards": [
-            {
-                "frames": 1000,
-                "classes": {
-                    "s1": {
-                        "rssi": -50.0,
-                        "snr": 27.0,
-                        "pps": 900
-                    },
-                    "ctrl": {
-                        "rssi": -47.2,
-                        "snr": 25.0
-                    }
-                }
-            }
-        ],
-        "drone": {
-            "state": drone_state,
-            "tlm_age_ms": 100,
-            "enc": {"fps": 59.9},
-            "uplink": {"rssi_b": -57.95}
-        }
-    }
-    return dg
-
-
 def test_calib_mode():
     """Test flightreport.py --calib mode for threshold calibration."""
     # Run A (clean baseline): 20 samples at u=0.01, rung 5, no residual, offset 0.
@@ -325,13 +268,61 @@ def test_calib_mode():
     assert "CLEAN U PER RUNG" in out
     assert "rung 5" in out                    # baseline percentiles present
     assert "CANDIDATE down_util SWEEP" in out
-    # u crossed 0.20 at t=1500 and residual hit at t=5000: candidate 0.20
-    # must be caught with ~3.5 s lead; candidate 0.60 must catch nothing.
+    # u=0.20 (t=1500) is not > 0.20, so the first sample to actually cross
+    # candidate 0.20 is u=0.25 at t=2000; residual hits at t=5000: candidate
+    # 0.20 must be caught with a 3.0 s lead; candidate 0.60 must catch nothing.
     assert "0.2" in out and "1/1" in out
     assert "0/1" in out                       # 0.60 (and others above 0.55) miss
     assert "EPISODES" in out
 
 
+def test_calib_no_phantom_catch_after_recovery():
+    """Regression: a residual preceded by a FULL recovery must not inherit a
+    phantom "catch" from an earlier, already-recovered crossing (the util
+    path lost the race; a crossing that recovered before the episode is a
+    loss, not a catch). Reviewer repro: u=0.4 for a couple of samples
+    (crosses candidate 0.20), then u=0.0 for 20s, then a residual sample —
+    candidate 0.20 must NOT catch this episode."""
+    rows = []
+    t_ms = 0
+    # Brief spike above 0.20 that fully recovers before the episode.
+    for _ in range(2):
+        rows.append(make_datagram(t_ms, 4, 0.4))
+        t_ms += 500
+    # 20s of quiet (u=0.0): the spike is long gone by the time the residual
+    # below fires, so no candidate should be scored as having caught it.
+    quiet_until = t_ms + 20000
+    while t_ms < quiet_until:
+        rows.append(make_datagram(t_ms, 4, 0.0))
+        t_ms += 500
+    rows.append(make_datagram(t_ms, 4, 0.0, residual_loss=0.01))
+
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "recovered.jsonl")
+        with open(p, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows))
+        out = subprocess.run(
+            ["python3", os.path.join(os.path.dirname(__file__), "..", "tools", "flightreport.py"),
+             "--calib", p],
+            capture_output=True, text=True, check=True).stdout
+
+    assert "CANDIDATE down_util SWEEP (episodes=1" in out
+    sweep_section = out[out.find("CANDIDATE down_util SWEEP"):out.find("EPISODES")]
+    for line in sweep_section.splitlines():
+        if line.strip().startswith("0.20:"):
+            assert "caught 0/1" in line, f"phantom catch survived: {line!r}"
+            break
+    else:
+        raise AssertionError("candidate 0.20 missing from sweep output")
+    # The episode line itself should show it uncaught at every candidate.
+    episodes_section = out[out.find("EPISODES"):]
+    assert "uncaught at all candidates" in episodes_section, episodes_section
+
+    # Same fixture also carries the pre-existing ramp case (test_calib_mode)
+    # unaffected: verified separately there, still caught.
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_calib_mode()
+    test_calib_no_phantom_catch_after_recovery()

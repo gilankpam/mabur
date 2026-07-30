@@ -96,6 +96,8 @@ def calib(paths, confirm_ms=250):
             for _t, u, rung, _off, _r in samples:
                 clean_u.setdefault(rung, []).append(u)
         prev_resid = False
+        scan_from = None  # end of the previous episode; a catch can only come
+                           # from the degradation run leading into THIS episode
         for i, (t, _u, rung, off, resid) in enumerate(samples):
             if resid and not prev_resid:
                 leads = {}
@@ -103,6 +105,8 @@ def calib(paths, confirm_ms=250):
                     fire = None       # first completed confirm window above c
                     run_start = None
                     for t2, u2, _rg, _of, _rs in samples:
+                        if scan_from is not None and t2 <= scan_from:
+                            continue
                         if t2 >= t:
                             break
                         if u2 > c:
@@ -113,8 +117,13 @@ def calib(paths, confirm_ms=250):
                                            # already spans >= any confirm <= 500
                         else:
                             run_start = None
+                            fire = None  # recovered below c: an earlier crossing
+                                         # doesn't count as catching THIS episode
                     leads[c] = (t - fire) if fire is not None else None
                 episodes.append((path, t, rung, off, leads))
+            elif prev_resid and not resid:
+                scan_from = t  # this episode cleared; the next episode's scan
+                                # must not reach back across it
             prev_resid = resid
 
     print("CLEAN U PER RUNG (stress-off, residual-free runs)")
