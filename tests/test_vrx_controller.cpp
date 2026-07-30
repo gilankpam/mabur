@@ -65,9 +65,9 @@ TEST(rcf_fields_are_correct) {
         mabur::rc::overhead_to_16ths(vrx.cur_op().overhead));
 }
 
-// (a) Non-pin RCFs always carry offset 0, regardless of health — the ladder
-// differentiates rungs by MCS + FEC overhead only; RCF power offset is
-// fixed at the calibrated baseline (offset 0) in ladder mode.
+// (a) With the stress knob off (default), non-pin RCFs always carry offset 0,
+// regardless of health — the ladder differentiates rungs by MCS + FEC
+// overhead only. The bench stress knob (below) is the sole exception.
 TEST(non_pin_rcf_offset_always_zero) {
   auto vrx = make();
   std::array<uint8_t, 4> ld{100, 100, 100, 100};
@@ -370,4 +370,76 @@ TEST(static_pin_overrides_controller) {
   REQUIRE(r.has_value());
   CHECK(r->pwr_offset_biased == mabur::rc::encode_pwr_offset_qdb(-12));
   CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(0.25));
+}
+
+// Bench stress knob (SDD 2026-07-30): a static level rides every ladder-mode
+// RCF, replacing the hardcoded 0.
+TEST(stress_offset_static_level_on_rcf) {
+  VrxCfg cfg;
+  cfg.vtx_id = 1;
+  cfg.ladder = default_ladder();
+  cfg.stress_qdb = -16;
+  VrxController vrx(cfg);
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  std::optional<VrxController::Out> out;
+  double now = 0;
+  for (int i = 0; i < 60 && (!out || out->is_disc); ++i) {
+    now += 10;
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    out = vrx.step(now, ld, healthy());
+  }
+  REQUIRE(out.has_value());
+  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+  REQUIRE(r.has_value());
+  CHECK(r->pwr_offset_biased == mabur::rc::encode_pwr_offset_qdb(-16));
+  CHECK(vrx.cur_op().pwr_offset_qdb == -16);
+}
+
+// Ramp: anchored at the first video frame, steps step_qdb per period_s,
+// floored at floor_qdb; before any video the start level applies.
+TEST(stress_offset_ramp_steps_and_floors) {
+  VrxCfg cfg;
+  cfg.vtx_id = 1;
+  cfg.ladder = default_ladder();
+  cfg.stress_qdb = 0;
+  cfg.stress_step_qdb = -2;
+  cfg.stress_period_s = 1;   // 1 s per step for the test clock
+  cfg.stress_floor_qdb = -6;
+  VrxController vrx(cfg);
+  CHECK(vrx.stress_offset_qdb(0.0) == 0);       // no video yet -> start level
+  vrx.on_video(-55.0, 25.0, false, 0, 1000.0);  // anchor at t=1000 ms
+  CHECK(vrx.stress_offset_qdb(1500.0) == 0);    // 0.5 periods elapsed
+  CHECK(vrx.stress_offset_qdb(2100.0) == -2);   // 1.1 periods
+  CHECK(vrx.stress_offset_qdb(4100.0) == -6);   // 3.1 periods, floored
+  CHECK(vrx.stress_offset_qdb(60000.0) == -6);  // floored forever
+}
+
+// Off means off: defaults produce 0 at any clock, anchored or not.
+TEST(stress_offset_off_is_zero) {
+  auto vrx = make();
+  vrx.on_video(-55.0, 25.0, false, 0, 1000.0);
+  CHECK(vrx.stress_offset_qdb(99999.0) == 0);
+}
+
+// Pin mode ignores the knob entirely; static_offset_qdb owns pin offset.
+TEST(stress_offset_ignored_in_pin_mode) {
+  VrxCfg cfg;
+  cfg.vtx_id = 1;
+  cfg.ladder = default_ladder();
+  cfg.pin_mcs = 5;
+  cfg.pin_offset_qdb = -4;
+  cfg.stress_qdb = -16;
+  VrxController vrx(cfg);
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  std::optional<VrxController::Out> out;
+  double now = 0;
+  for (int i = 0; i < 60 && (!out || out->is_disc); ++i) {
+    now += 10;
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    out = vrx.step(now, ld, healthy());
+  }
+  REQUIRE(out.has_value());
+  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+  REQUIRE(r.has_value());
+  CHECK(r->pwr_offset_biased == mabur::rc::encode_pwr_offset_qdb(-4));
 }

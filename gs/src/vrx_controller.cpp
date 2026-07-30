@@ -1,5 +1,6 @@
 #include "vrx_controller.h"
 
+#include <algorithm>
 #include "mabur/rc_proto.h"
 #include "mabur/profile.h"
 
@@ -28,6 +29,7 @@ VrxController::VrxController(VrxCfg cfg)
 
 void VrxController::on_video(double rssi, double snr, bool crc_err,
                              uint16_t seq, double now_ms) {
+  if (stress_anchor_ms_ < 0.0) stress_anchor_ms_ = now_ms;
   win_.add_frame(rssi, snr, crc_err, seq, now_ms / 1000.0);
   rz_.feed_video(now_ms);
 }
@@ -71,6 +73,10 @@ std::optional<VrxController::Out> VrxController::step(
   if (cfg_.pin_mcs < 0 && ctrl_.update(health, now_ms)) {
     cur_op_ = op_from_rung(ctrl_.op());
   }
+  // Bench stress instrument: every ladder-mode RCF carries the (possibly
+  // ramping) stress offset — 0 when the knob is off. Stamped after any
+  // rung-change rebuild so op_from_rung's 0 never leaks onto the wire.
+  if (cfg_.pin_mcs < 0) cur_op_.pwr_offset_qdb = stress_offset_qdb(now_ms);
   seq_ = static_cast<uint16_t>(seq_ + 1);
 
   mabur::rc::Rcf r;
@@ -85,6 +91,18 @@ std::optional<VrxController::Out> VrxController::step(
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
   r.layer_delivery.assign(layer_delivery.begin(), layer_delivery.end());
   return Out{mabur::rc::pack_rcf(r), false};
+}
+
+int VrxController::stress_offset_qdb(double now_ms) const {
+  if (cfg_.stress_qdb == 0 && cfg_.stress_step_qdb == 0) return 0;
+  if (stress_anchor_ms_ < 0.0) return cfg_.stress_qdb;
+  int steps = 0;
+  if (cfg_.stress_step_qdb != 0) {
+    steps = static_cast<int>((now_ms - stress_anchor_ms_) /
+                             (cfg_.stress_period_s * 1000.0));
+  }
+  return std::max(cfg_.stress_floor_qdb,
+                  cfg_.stress_qdb + cfg_.stress_step_qdb * steps);
 }
 
 const OpPoint& VrxController::cur_op() const { return cur_op_; }
