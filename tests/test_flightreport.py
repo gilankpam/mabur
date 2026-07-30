@@ -22,13 +22,14 @@ def synthesize_flight_jsonl():
     """
     rows = []
 
-    def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked"):
+    def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked", offset_qdb=0):
         dg = {
             "v": 1,
             "t_ms": t,
             "link": {
                 "state": drone_state,
                 "residual_loss": residual_loss if residual_loss > 0 else None,
+                "op": {"offset_qdb": offset_qdb},
                 "ctl": {
                     "rung": {"idx": rung_idx, "mcs": 5 - rung_idx, "ov": 0.25},
                     "util": util,
@@ -240,5 +241,97 @@ def test_flightreport_structure():
     print("\n✓ All assertions passed!")
 
 
+def make_datagram(t, rung_idx, util, residual_loss=0.0, event=None, drone_state="linked", offset_qdb=0):
+    """Helper for tests: create a sideport datagram."""
+    dg = {
+        "v": 1,
+        "t_ms": t,
+        "link": {
+            "state": drone_state,
+            "residual_loss": residual_loss if residual_loss > 0 else None,
+            "op": {"offset_qdb": offset_qdb},
+            "ctl": {
+                "rung": {"idx": rung_idx, "mcs": 5 - rung_idx, "ov": 0.25},
+                "util": util,
+                "pre_fec_loss": 0.01,
+                "budget": 0.5,
+                "probation_ms_left": 0,
+                "penalized": [],
+                "counters": {
+                    "demotes_residual": 0,
+                    "demotes_util": 0,
+                    "promotes": 0,
+                    "probation_fails": 0,
+                    "starved_drops": 0,
+                    "timeout_drops": 0
+                },
+                "last_event": event or {
+                    "t_ms": 0,
+                    "from": 0,
+                    "to": 0,
+                    "reason": "none",
+                    "u": 0.0
+                }
+            }
+        },
+        "cards": [
+            {
+                "frames": 1000,
+                "classes": {
+                    "s1": {
+                        "rssi": -50.0,
+                        "snr": 27.0,
+                        "pps": 900
+                    },
+                    "ctrl": {
+                        "rssi": -47.2,
+                        "snr": 25.0
+                    }
+                }
+            }
+        ],
+        "drone": {
+            "state": drone_state,
+            "tlm_age_ms": 100,
+            "enc": {"fps": 59.9},
+            "uplink": {"rssi_b": -57.95}
+        }
+    }
+    return dg
+
+
+def test_calib_mode():
+    """Test flightreport.py --calib mode for threshold calibration."""
+    # Run A (clean baseline): 20 samples at u=0.01, rung 5, no residual, offset 0.
+    # Run B (slow ramp): u climbs 0.05..0.50 over 10 samples (500 ms apart,
+    # offset ramping negative), then a residual sample at the end.
+    rows_a = [make_datagram(t * 500, 5, 0.01) for t in range(20)]
+    rows_b = []
+    for i, u in enumerate([0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]):
+        rows_b.append(make_datagram(i * 500, 4, u, offset_qdb=-2 * i))
+    rows_b.append(make_datagram(5000, 4, 0.55, residual_loss=0.01, offset_qdb=-20))
+
+    with tempfile.TemporaryDirectory() as td:
+        pa, pb = os.path.join(td, "a.jsonl"), os.path.join(td, "b.jsonl")
+        with open(pa, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows_a))
+        with open(pb, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows_b))
+        out = subprocess.run(
+            ["python3", os.path.join(os.path.dirname(__file__), "..", "tools", "flightreport.py"),
+             "--calib", pa, pb],
+            capture_output=True, text=True, check=True).stdout
+
+    assert "CLEAN U PER RUNG" in out
+    assert "rung 5" in out                    # baseline percentiles present
+    assert "CANDIDATE down_util SWEEP" in out
+    # u crossed 0.20 at t=1500 and residual hit at t=5000: candidate 0.20
+    # must be caught with ~3.5 s lead; candidate 0.60 must catch nothing.
+    assert "0.2" in out and "1/1" in out
+    assert "0/1" in out                       # 0.60 (and others above 0.55) miss
+    assert "EPISODES" in out
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
+    test_calib_mode()
