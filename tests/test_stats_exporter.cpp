@@ -451,6 +451,27 @@ TEST(ctl_default_event_is_none_with_zeros) {
   CHECK(ctl["penalized"].empty());
 }
 
+TEST(ctl_ladder_and_thresholds) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsCtlIn ci;
+  ci.ladder = {{0, 1.0}, {2, 0.5}, {7, 0.1}};
+  ci.down_util = 0.6;
+  ci.up_util = 0.15;
+  in.ctl = ci;
+  CHECK(ex.poll(1000, in));
+  const json ctl = cap.last()["link"]["ctl"];
+  REQUIRE(ctl["ladder"].size() == 3);
+  CHECK(ctl["ladder"][0]["mcs"] == 0);
+  CHECK(ctl["ladder"][0]["ov"].get<double>() > 0.999 && ctl["ladder"][0]["ov"].get<double>() < 1.001);
+  CHECK(ctl["ladder"][1]["mcs"] == 2);
+  CHECK(ctl["ladder"][2]["mcs"] == 7);
+  CHECK(ctl["ladder"][2]["ov"].get<double>() > 0.099 && ctl["ladder"][2]["ov"].get<double>() < 0.101);
+  CHECK(ctl["down_util"].get<double>() > 0.599 && ctl["down_util"].get<double>() < 0.601);
+  CHECK(ctl["up_util"].get<double>() > 0.149 && ctl["up_util"].get<double>() < 0.151);
+}
+
 TEST(uplink_nulled_when_both_chains_raw_zero) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());

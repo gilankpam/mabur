@@ -183,6 +183,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     for (const auto& p : c.penalized)
       pen.push_back({{"rung", p.first}, {"ms_left", p.second}});
     ctl["penalized"] = std::move(pen);
+    json lad = json::array();
+    for (const auto& r : c.ladder)
+      lad.push_back({{"mcs", r.first}, {"ov", r.second}});
+    ctl["ladder"] = std::move(lad);
+    ctl["down_util"] = c.down_util;
+    ctl["up_util"] = c.up_util;
     ctl["counters"] = {{"demotes_residual", c.demotes_residual},
                        {"demotes_util", c.demotes_util},
                        {"promotes", c.promotes},

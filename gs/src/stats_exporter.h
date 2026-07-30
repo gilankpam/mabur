@@ -60,6 +60,11 @@ struct StatsCtlIn {
   int last_event_from = 0, last_event_to = 0;
   std::string last_event_reason = "none";  // to_string(CtlReason), lowercase
   double last_event_u = 0.0;
+  // Effective ladder ({mcs, overhead} per rung, index = rung index) and the
+  // util thresholds, copied from LadderCfg — static per-run but re-sent every
+  // datagram so consumers stay stateless.
+  std::vector<std::pair<int, double>> ladder;  // {mcs, ov}
+  double down_util = 0.0, up_util = 0.0;
 };
 
 struct StatsInput {

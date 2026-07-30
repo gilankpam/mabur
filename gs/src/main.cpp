@@ -525,6 +525,10 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.budget = c.budget();
         ci.probation_ms_left = c.probation_ms_left(now_ms);
         for (const auto& p : c.penalized(now_ms)) ci.penalized.push_back(p);
+        for (const auto& r : cfg.link.ladder_cfg.ladder)
+          ci.ladder.emplace_back(r.mcs, r.overhead);
+        ci.down_util = cfg.link.ladder_cfg.down_util;
+        ci.up_util = cfg.link.ladder_cfg.up_util;
         const auto& cnt = c.counters();
         ci.demotes_residual = cnt.demotes_residual;
         ci.demotes_util = cnt.demotes_util;
