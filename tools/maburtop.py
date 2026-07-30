@@ -918,7 +918,93 @@ def _ctl_row(ctl):
     return (text, spans)
 
 
-def panel_links(model, wall):
+def _ladder_rung_rows(ctl):
+    """One row per rung, top = highest index. Current rung gets the marker +
+    good style; annotations: PROB countdown (current rung on probation),
+    pen countdown (penalized), failsafe (rung 0)."""
+    ladder = ctl.get("ladder") or []
+    cur = (ctl.get("rung") or {}).get("idx")
+    prob_ms = ctl.get("probation_ms_left") or 0
+    pen = {p.get("rung"): p.get("ms_left")
+           for p in (ctl.get("penalized") or []) if p.get("rung") is not None}
+    rows = []
+    for idx in range(len(ladder) - 1, -1, -1):
+        r = ladder[idx] or {}
+        cell = f"{idx} mcs{_s(r.get('mcs'))}/ov{_s(r.get('ov'), 2)}"
+        marker = "▶" if idx == cur else " "
+        note, note_style = "", None
+        if idx == cur and prob_ms > 0:
+            note, note_style = f"PROB {prob_ms / 1000:.1f}s", "warn"
+        elif pen.get(idx) is not None:
+            note, note_style = f"pen {max(pen[idx], 0) // 1000}s", "dim"
+        elif idx == 0:
+            note, note_style = "failsafe", "dim"
+        text = f" {marker}{cell:<16} {note}".rstrip()
+        spans = []
+        if idx == cur:
+            spans.append((1, 1 + len(cell), "good"))
+        if note:
+            spans.append((text.index(note), len(note), note_style))
+        rows.append((text, spans))
+    return rows
+
+
+def _ladder_footer_rows(ctl, t_ms):
+    """Pressure line (u vs the real thresholds + raw pre-FEC loss + budget),
+    last-event line with client-computed age (datagram t_ms − event t_ms,
+    same daemon clock), and the lifetime transition counters."""
+    util, down, up = ctl.get("util"), ctl.get("down_util"), ctl.get("up_util")
+    loss, budget = ctl.get("pre_fec_loss"), ctl.get("budget")
+    u_cell = f"u={_s(util, 2)}/{_s(down, 2)}"
+    loss_s = "--" if not isinstance(loss, (int, float)) else f"{loss * 100:.1f}%"
+    bud_s = "--" if not isinstance(budget, (int, float)) else f"{budget:.0%}"
+    line1 = f" {u_cell}  loss {loss_s}  bud {bud_s}"
+    spans1 = []
+    if isinstance(util, (int, float)):
+        if isinstance(down, (int, float)) and util >= down:
+            style = "bad"
+        elif isinstance(up, (int, float)) and util >= up:
+            style = "warn"
+        else:
+            style = "good"
+        spans1.append((1, len(u_cell), style))
+
+    ev = ctl.get("last_event") or {}
+    reason = ev.get("reason", "none")
+    if reason == "none":
+        line2, spans2 = " last: none", [(1, len("last: none"), "dim")]
+    else:
+        age = ""
+        ev_t = ev.get("t_ms")
+        if isinstance(ev_t, (int, float)) and isinstance(t_ms, (int, float)):
+            age = f"  {_age_cell(int(max(t_ms - ev_t, 0))).strip()} ago"
+        line2 = (f" last: {reason} {_s(ev.get('from'))}→{_s(ev.get('to'))}"
+                 f" @{_s(ev.get('u'), 2)}{age}")
+        spans2 = []
+
+    c = ctl.get("counters") or {}
+    line3 = (f" ↑{_s(c.get('promotes'))} ↓res{_s(c.get('demotes_residual'))}"
+             f" ↓util{_s(c.get('demotes_util'))}"
+             f" prob✗{_s(c.get('probation_fails'))}"
+             f" stv{_s(c.get('starved_drops'))} to{_s(c.get('timeout_drops'))}")
+    return [(line1, spans1), (line2, spans2), (line3, [])]
+
+
+def panel_ladder(model, wall):
+    """Ladder-controller panel (wide mode). Empty when the feed has no ctl
+    block (static pin) or predates the ladder field (old daemon) — callers
+    then fall back to the one-line ctl row inside LINKS."""
+    d = model.d or {}
+    ctl = (d.get("link") or {}).get("ctl")
+    if not ctl or not ctl.get("ladder"):
+        return []
+    body = _ladder_rung_rows(ctl)
+    body.append(("", []))
+    body.extend(_ladder_footer_rows(ctl, d.get("t_ms")))
+    return _panel("LADDER", body, min_width=34)
+
+
+def panel_links(model, wall, ctl_row=True):
     d = model.d or {}
     link = d.get("link") or {}
     seen_classes = {cls for _cid, cls in model.sig_rows}
@@ -927,7 +1013,7 @@ def panel_links(model, wall):
 
     body = []
     ctl = link.get("ctl")
-    if ctl:
+    if ctl and ctl_row:
         body.append(_ctl_row(ctl))
         body.append(("", []))
 
@@ -1003,7 +1089,8 @@ def render_screen(model, wall, w, h):
     rows = list(panel_topbar(model, wall))
     drone_rows = panel_drone(model, wall)
     video_rows = panel_video(model, wall)
-    links_rows = panel_links(model, wall)
+    ladder_rows = panel_ladder(model, wall)
+    links_rows = panel_links(model, wall, ctl_row=not ladder_rows)
     gs_rows = panel_gs_radios(model, wall)
 
     rows.append(("", []))
@@ -1014,7 +1101,17 @@ def render_screen(model, wall, w, h):
         rows.append(("", []))
         rows.extend(video_rows)
     rows.append(("", []))
-    rows.extend(links_rows)
+    if ladder_rows:
+        lw = max(len(t) for t, _ in links_rows)
+        aw = max(len(t) for t, _ in ladder_rows)
+        if lw + 4 + aw <= w:
+            rows.extend(hstack(links_rows, ladder_rows))
+        else:
+            rows.extend(ladder_rows)
+            rows.append(("", []))
+            rows.extend(links_rows)
+    else:
+        rows.extend(links_rows)
     rows.append(("", []))
     rows.extend(gs_rows)
     return rows
