@@ -924,12 +924,14 @@ def _ladder_rung_rows(ctl):
     pen countdown (penalized), failsafe (rung 0)."""
     ladder = ctl.get("ladder") or []
     cur = (ctl.get("rung") or {}).get("idx")
-    prob_ms = ctl.get("probation_ms_left") or 0
+    prob_ms = ctl.get("probation_ms_left")
+    prob_ms = prob_ms if isinstance(prob_ms, (int, float)) else 0
     pen = {p.get("rung"): p.get("ms_left")
-           for p in (ctl.get("penalized") or []) if isinstance(p, dict) and p.get("rung") is not None}
+           for p in (ctl.get("penalized") or [])
+           if isinstance(p, dict) and p.get("rung") is not None and isinstance(p.get("ms_left"), (int, float))}
     rows = []
     for idx in range(len(ladder) - 1, -1, -1):
-        r = ladder[idx] or {}
+        r = ladder[idx] if isinstance(ladder[idx], dict) else {}
         cell = f"{idx} mcs{_s(r.get('mcs'))}/ov{_s(r.get('ov'), 2)}"
         marker = "▶" if idx == cur else " "
         note, note_style = "", None
