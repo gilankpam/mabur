@@ -63,6 +63,16 @@ struct LinkCfg {
   // dead bodies — see docs/mcs6-bench-anomaly.md ov0.25 experiment.
   LadderCfg ladder_cfg{
       {{0, 1.0}, {2, 0.5}, {4, 0.25}, {5, 0.25}, {6, 0.25}, {7, 0.1}}};
+
+  // Bench stress instrument (link.stress_offset, spec
+  // 2026-07-30-ladder-stress-calibration-design.md): negative qdB offset,
+  // optionally stepping stress_step_qdb every stress_period_s, floored at
+  // stress_floor_qdb, carried on every ladder-mode RCF to emulate range.
+  // qdb == 0 && step_qdb == 0 (the defaults) = off. Pin mode ignores it.
+  int stress_qdb = 0;
+  int stress_step_qdb = 0;
+  int stress_period_s = 30;
+  int stress_floor_qdb = -40;
 };
 
 /// Video output destination.
