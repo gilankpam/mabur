@@ -21,8 +21,8 @@ interpolated, head/tail gaps extended flat (warned).
 --measured-only skips the reference-table load and the table-comparison
 columns/verdict entirely: prints per-idx medians/n/drift and the health
 warnings only, exit 0 always (mabur's power model moved to a linear
-offset-qdB gain — gs/src/gen/gen_tables.h no longer carries kTxagcGainDb,
-see tools/pyref/offset_power.py — so this is the mode to use post-move).
+offset-qdB gain, see tools/pyref/offset_power.py — kTxagcGainDb no longer
+ships anywhere in-tree, so this is the mode to use post-move).
 
 --selftest needs no hardware and does NOT read kTxagcGainDb (or any file):
 it synthesizes two small built-in reference curves — a saturating "ref"
@@ -44,7 +44,12 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_TABLE = REPO / "gs" / "src" / "gen" / "gen_tables.h"
+# No default reference table ships in-tree any more (kTxagcGainDb was
+# retired along with the rest of the gs/src model-era power/link sources,
+# SDD ladder-controller Task 5) — callers wanting the table-comparison mode
+# must pass --table pointing at a file that still has kTxagcGainDb[]
+# (e.g. an old git revision), or use --measured-only.
+DEFAULT_TABLE = None
 
 RMS_LIMIT_DB = 1.0
 MAX_LIMIT_DB = 2.0
@@ -66,11 +71,11 @@ def parse_gain_table(path):
     m = re.search(r"kTxagcGainDb\[\]\s*=\s*\{([^}]*)\}", text)
     if not m:
         die(f"kTxagcGainDb not found in {path} — mabur's power model moved "
-            f"to a linear offset-qdB gain (gs/src/energy.h, "
-            f"tools/pyref/offset_power.py) and the table was deleted; use "
-            f"--measured-only for shape-only analysis with no reference "
-            f"table, or pass --table <path> pointing at a file that still "
-            f"has kTxagcGainDb[]")
+            f"to a linear offset-qdB gain (tools/pyref/offset_power.py) "
+            f"and the table was deleted; use --measured-only for "
+            f"shape-only analysis with no reference table, or pass "
+            f"--table <path> pointing at a file that still has "
+            f"kTxagcGainDb[]")
     vals = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", m.group(1))]
     if len(vals) != 64:
         die(f"expected 64 kTxagcGainDb entries, got {len(vals)}")
@@ -314,7 +319,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("jsonl", nargs="?", help="txagcbench-rx output")
-    ap.add_argument("--table", default=str(DEFAULT_TABLE))
+    ap.add_argument("--table", default=DEFAULT_TABLE,
+                    help="path to a file with a kTxagcGainDb[] table; no "
+                         "default ships in-tree any more (retired with "
+                         "gs/src/energy.h) — required unless --measured-only")
     ap.add_argument("--chain", choices=["a", "b"], default="b",
                     help="RSSI chain (A is off-scale on 8822E; default b)")
     ap.add_argument("--min-samples", type=int, default=20)
@@ -339,6 +347,10 @@ def main():
             print()
             emit_table(med)
         sys.exit(0)
+
+    if not args.table:
+        ap.error("--table is required (no default reference table ships "
+                 "in-tree any more) unless --measured-only")
 
     table = parse_gain_table(args.table)
     passed, med = analyze(rows, table, args.min_samples)

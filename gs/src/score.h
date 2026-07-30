@@ -2,9 +2,7 @@
 
 #include <cstdint>
 #include <deque>
-#include <map>
 #include <optional>
-#include <vector>
 
 namespace maburgs {
 
@@ -42,21 +40,6 @@ class ScoreWindow {
   std::deque<Frame> frames_;
   uint16_t max_seq_ = 0;
   bool has_max_ = false;
-};
-
-class RungWindow {
- public:
-  explicit RungWindow(std::vector<uint8_t> bw_set, int samples_per_rung = 24);
-  void add_seq(uint16_t seq);  // gap walk capped at 128
-  std::map<int, std::pair<double, int>> stats() const;  // bw -> (delivery, n)
-
- private:
-  void attribute(uint16_t seq, bool ok);
-  std::vector<uint8_t> bw_set_;
-  int samples_per_rung_;
-  std::map<int, std::deque<bool>> hist_;
-  uint16_t last_seq_ = 0;
-  bool has_last_ = false;
 };
 
 }  // namespace maburgs

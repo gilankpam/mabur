@@ -94,21 +94,6 @@ TEST(decode_profile_clamps_mcs) {
   CHECK(bw == 20);
 }
 
-TEST(probe_bw_matches_vectors) {
-  auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/profile.json");
-  for (auto& c : j["probe"]) {
-    std::vector<uint8_t> bw_set;
-    for (auto& v : c["bw_set"]) bw_set.push_back(v.get<uint8_t>());
-
-    auto& probes = c["probe"];
-    for (size_t seq = 0; seq < probes.size(); ++seq) {
-      int expect = probes[seq].is_null() ? -1 : probes[seq].get<int>();
-      int got = probe_bw(static_cast<uint16_t>(seq), bw_set);
-      CHECK(got == expect);
-    }
-  }
-}
-
 TEST(phy_rate_mbps_matches_vectors) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/profile.json");
   for (auto& c : j["rates"]) {

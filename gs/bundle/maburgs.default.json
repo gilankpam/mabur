@@ -13,7 +13,27 @@
   "link": {
     "vtx_id": 1,
     "feedback_ms": 100,
-    "beacon_keepalive_ms": 1000
+    "beacon_keepalive_ms": 1000,
+    "ladder": [
+      {"mcs": 0, "overhead": 1.0},
+      {"mcs": 2, "overhead": 0.5},
+      {"mcs": 4, "overhead": 0.25},
+      {"mcs": 5, "overhead": 0.25},
+      {"mcs": 6, "overhead": 0.15},
+      {"mcs": 7, "overhead": 0.1}
+    ],
+    "max_mcs": 7,
+    "down_util": 0.6,
+    "up_util": 0.15,
+    "confirm_ms": 250,
+    "clean_ms": 5000,
+    "probation_ms": 3000,
+    "penalty_base_ms": 10000,
+    "penalty_max_ms": 60000,
+    "hold_after_down_ms": 4000,
+    "min_between_changes_ms": 150,
+    "starved_confirm_ms": 300,
+    "feedback_timeout_ms": 1000
   },
   "video_out": {"host": "127.0.0.1", "port": 5600},
   "msp": {

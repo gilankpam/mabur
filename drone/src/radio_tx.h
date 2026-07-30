@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
-#include <map>
 #include <memory>
 #include <vector>
 
@@ -37,24 +36,20 @@ class FrameSink {
   }
 };
 
-// Builds `radiotap(layer, effective_bw) | 24-byte 802.11 header | body`
-// frames for the 4-rung adaptive-link ladder and hands them to a FrameSink.
+// Builds `radiotap(layer.bw) | 24-byte 802.11 header | body` frames for the
+// 4-rung adaptive-link ladder and hands them to a FrameSink. Every frame
+// transmits at the ladder's configured width — there is no per-seq
+// bandwidth-probe schedule (removed 2026-07-27, SDD ladder-controller
+// Task 5: the ladder controller never varies bw independently of the
+// commanded rung, so probing alternate widths had no consumer left).
 //
-// Radiotap headers are prebuilt per (layer, bw) pair in set_ladder() — called
-// from the agent thread whenever the ladder changes — and cached in a
-// std::shared_ptr<Cache> that send_body() reads via atomic load. Each
-// layer's default bw (the fallback effective_bw used whenever probe_bw()
-// isn't overriding it — see send_body()) lives INSIDE that same Cache, next
-// to the radiotap table it was built from, so one atomic shared_ptr swap in
-// set_ladder() covers both consistently. This keeps the hot thread
-// (send_body, ~1350 fps) from ever observing a torn combination of new
-// radiotap bytes paired with a stale (or vice versa) default bw: in the
-// pre-fix layout, bw lived in a separate plain (non-atomic) member that
-// set_ladder() wrote and send_body() read from another thread with no
-// synchronization between them at all — a plain data race, and in practice
-// one that could pair a layer's freshly rebuilt bw with the *previous*
-// cache generation's radiotap table. Now both are swapped in atomically
-// together as one unit.
+// Radiotap headers are prebuilt per layer in set_ladder() — called from the
+// agent thread whenever the ladder changes — and cached in a
+// std::shared_ptr<Cache> that send_body() reads via atomic load. This keeps
+// the hot thread (send_body, ~1350 fps) from ever observing a torn
+// combination of new radiotap bytes paired with a stale (or vice versa)
+// cache generation: one atomic shared_ptr swap in set_ladder() covers the
+// whole table consistently.
 //
 // send_body() itself is NOT thread-safe against concurrent calls from
 // multiple threads — it owns a reusable scratch buffer for the outgoing
@@ -66,12 +61,11 @@ class FrameSink {
 // A future task can add it once the radio's per-packet power path exists.
 class RadioTx {
  public:
-  RadioTx(FrameSink& sink, std::vector<uint8_t> bw_set);
+  explicit RadioTx(FrameSink& sink);
 
-  // Rebuilds the radiotap cache for the new ladder: for each of the 4 layers,
-  // prebuilds a radiotap header at every bw in {layer.bw} ∪ bw_set. Safe to
-  // call concurrently with send_body() (agent thread vs hot thread) — the
-  // cache (radiotap table + each layer's default bw) is swapped in
+  // Rebuilds the radiotap cache for the new ladder: prebuilds one radiotap
+  // header per layer, at that layer's bw. Safe to call concurrently with
+  // send_body() (agent thread vs hot thread) — the cache is swapped in
   // atomically once fully built.
   void set_ladder(const std::array<rc::LayerTxSpec, 4>& ladder);
 
@@ -95,13 +89,12 @@ class RadioTx {
   uint64_t drops() const { return drops_; }
 
  private:
-  // Per-layer radiotap bytes for every bw present in that layer's schedule
-  // ({layer.bw} ∪ bw_set), plus the layer's default bw (layer.bw at the time
-  // this Cache was built) — everything send_body() needs for one layer,
-  // read together from one atomically-swapped-in snapshot.
+  // Per-layer radiotap bytes at that layer's configured bw — everything
+  // send_body() needs for one layer, read together from one
+  // atomically-swapped-in snapshot. Empty (default-constructed) until the
+  // first set_ladder() call.
   struct LayerCache {
-    uint8_t default_bw = 20;
-    std::map<uint8_t, std::vector<uint8_t>> by_bw;
+    std::vector<uint8_t> radiotap;
   };
   struct Cache {
     std::array<LayerCache, 4> layers;
@@ -114,7 +107,6 @@ class RadioTx {
                    size_t len, std::vector<uint8_t>& out);
 
   FrameSink& sink_;
-  std::vector<uint8_t> bw_set_;
   std::atomic<std::shared_ptr<Cache>> cache_;
   uint16_t seq_ = 0;
   uint64_t sent_ = 0;

@@ -387,7 +387,7 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
     return 1;
   }
 
-  RadioTx tx(file_sink, cfg.radio.bw_set);
+  RadioTx tx(file_sink);
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
 
@@ -672,7 +672,7 @@ int run_real_mode(const Config& cfg) {
       static_cast<size_t>(cfg.radio.tx_threads) * 6);
   if (cfg.radio.tx_threads > 1) dev_sink.pool = &tx_pool;
 
-  RadioTx tx(dev_sink, cfg.radio.bw_set);
+  RadioTx tx(dev_sink);
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
 

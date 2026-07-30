@@ -86,6 +86,24 @@ TEST(window_delivery_full_on_clean_stream) {
   for (int s = 0; s < 4; ++s) CHECK(dec.window_delivery_pct(s) == 100);  // empty = 100
 }
 
+TEST(layer_stats_expose_recovered_arrived) {
+  // Hold back one stream-1 body: later repairs recover its source symbols;
+  // feeding it afterwards is the direct-copy-lost-the-race case and must
+  // surface in LayerStats.syms_recovered_arrived for the s1 health feed.
+  auto bodies = encode_fixture_bodies();
+  UepDecoder dec(vec_layers());
+  std::vector<uint8_t> held;
+  for (auto& b : bodies) {
+    if (held.empty() && b.stream_id == 1) { held = b.body; continue; }
+    dec.add_body(b.body.data(), b.body.size(), 0);
+  }
+  REQUIRE(!held.empty());
+  REQUIRE(dec.stats(1).syms_recovered >= 1);
+  CHECK(dec.stats(1).syms_recovered_arrived == 0);
+  dec.add_body(held.data(), held.size(), 0);
+  CHECK(dec.stats(1).syms_recovered_arrived >= 1);
+}
+
 TEST(window_counts_accessor) {
   UepDecoder dec(vec_layers());
   auto [d, e] = dec.window_counts(0);

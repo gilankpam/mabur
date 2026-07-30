@@ -36,6 +36,45 @@ physics (compression vs the modulation's peak-to-average ratio), so they are
 Suggested clamp values (wall − ~1 dB margin): `{0-2: 127, 3: 91, 4: 69,
 5: 52, 6: 47, 7: 45}`.
 
+### Re-measurement 2026-07-29 (walls REPRODUCED — no condition drift at the PA)
+
+Full 8-MCS matrix re-run (same rig, same protocol, 0 CRC-bad across all
+sweeps, ~100 frames/idx, max median RSSI −67 dBm = no RX saturation),
+prompted by `docs/mcs6-bench-anomaly.md`. Walls, as *end of the first
+contiguous ≥90% delivery run* — which is the definition the 2026-07-16
+numbers actually encode (see below):
+
+| MCS | 2026-07-16 wall | 2026-07-29 wall | Δ |
+|-----|-----------------|-----------------|---|
+| 3   | 95              | 95              | 0 |
+| 4   | 73              | 73              | 0 |
+| 5   | 56              | 54              | −2 (−0.5 dB) |
+| 6   | 51              | 51              | 0 |
+| 7   | 49              | 49              | 0 |
+
+Two findings about the data shape, visible at full index resolution:
+
+- **Delivery above the wall is a comb, not a cliff.** Past the first dip,
+  reproducible per-(MCS, idx) islands of good delivery persist (e.g. mcs6:
+  63% at idx 52 but 95–97% at 53–57; mcs7: 4% at idx 56 but 88% at 57).
+  Ascending and descending passes agree at every index, so this is stable
+  structure, not drift. The islands were present in the 2026-07-16 data
+  too (its every-8th matrix shows mcs6 at 99% for idx 56 despite "wall
+  51"). Consequence: "last idx with ≥90%" is ill-defined here (it reads
+  103/78/54/57/55); the walls table means **first-dip**, and the clamp
+  must stay below the first dip — the islands are not usable headroom.
+- **Operating-point sanity:** at the deployed park (wall − 1 dB margin),
+  raw-frame delivery is mcs5@52 = 96%, mcs6@47 = 99%, mcs7@45 = 98%.
+
+Implications for the mcs6 anomaly: the PA transfer did **not** drift
+between 2026-07-16 and now, and mcs6's parked index delivers 99% of raw
+64-byte/2 ms bench frames — so the 6–9% mabur bleed at mcs6 is specific to
+the mabur traffic regime (large aggregated bodies, sustained airtime),
+not the PHY power operating point. mcs5's wall came in 2 steps lower
+(54); its park at idx 52 keeps only ~0.5 dB of measured margin — consider
+`rate_walls_idx[5] = 54` at the next config touch. Data:
+`txagc_mcs0..7.jsonl` (2026-07-29 session scratchpad).
+
 Delivery vs index, measured (100 frames per cell, every 8th index shown):
 
 ```

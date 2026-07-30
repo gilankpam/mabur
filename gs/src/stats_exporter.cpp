@@ -169,6 +169,41 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   else link["residual_loss"] = nullptr;
   link["layer_delivery_pct"] = in.layer_delivery_pct;
 
+  // Measured-loss ladder controller snapshot; static-pin mode never ticks
+  // the controller, so it emits null rather than a frozen/meaningless state.
+  if (in.ctl) {
+    const StatsCtlIn& c = *in.ctl;
+    json& ctl = link["ctl"];
+    ctl["rung"] = {{"idx", c.rung_idx}, {"mcs", c.rung_mcs}, {"ov", c.rung_ov}};
+    ctl["util"] = c.util;
+    ctl["pre_fec_loss"] = c.pre_fec_loss;
+    ctl["budget"] = c.budget;
+    ctl["probation_ms_left"] = c.probation_ms_left;
+    json pen = json::array();
+    for (const auto& p : c.penalized)
+      pen.push_back({{"rung", p.first}, {"ms_left", p.second}});
+    ctl["penalized"] = std::move(pen);
+    json lad = json::array();
+    for (const auto& r : c.ladder)
+      lad.push_back({{"mcs", r.first}, {"ov", r.second}});
+    ctl["ladder"] = std::move(lad);
+    ctl["down_util"] = c.down_util;
+    ctl["up_util"] = c.up_util;
+    ctl["counters"] = {{"demotes_residual", c.demotes_residual},
+                       {"demotes_util", c.demotes_util},
+                       {"promotes", c.promotes},
+                       {"probation_fails", c.probation_fails},
+                       {"starved_drops", c.starved_drops},
+                       {"timeout_drops", c.timeout_drops}};
+    ctl["last_event"] = {{"t_ms", c.last_event_t_ms},
+                         {"from", c.last_event_from},
+                         {"to", c.last_event_to},
+                         {"reason", c.last_event_reason},
+                         {"u", c.last_event_u}};
+  } else {
+    link["ctl"] = nullptr;
+  }
+
   // The drone's per-rung TX spec is deterministic from the commanded op
   // (ladder_from) — display-grade, like the injection estimates below
   // (received rate scaled by the best card's delivery fraction; lost
@@ -206,14 +241,18 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     }
     if (have_window) {
       fj["recovered_s"] = rate(st.syms_recovered, p.syms_recovered, elapsed_s);
+      fj["recovered_arrived_s"] =
+          rate(st.syms_recovered_arrived, p.syms_recovered_arrived, elapsed_s);
       fj["abandoned_s"] = rate(st.syms_abandoned, p.syms_abandoned, elapsed_s);
       fj["syms_in_s"] = rate(st.symbols_in, p.symbols_in, elapsed_s);
     } else {
       fj["recovered_s"] = nullptr;
+      fj["recovered_arrived_s"] = nullptr;
       fj["abandoned_s"] = nullptr;
       fj["syms_in_s"] = nullptr;
     }
     fj["recovered"] = st.syms_recovered;
+    fj["recovered_arrived"] = st.syms_recovered_arrived;
     fj["abandoned"] = st.syms_abandoned;
     fj["stale"] = st.symbols_stale;
     fj["bad_cfg"] = st.symbols_bad_cfg;
@@ -373,8 +412,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     }
   }
   for (size_t s = 0; s < 4; ++s)
-    prev_streams_[s] = {in.streams[s].syms_recovered, in.streams[s].syms_abandoned,
-                        in.streams[s].symbols_in};
+    prev_streams_[s] = {in.streams[s].syms_recovered,
+                        in.streams[s].syms_recovered_arrived,
+                        in.streams[s].syms_abandoned, in.streams[s].symbols_in};
   prev_udp_bytes_ = in.udp_bytes;
   frames_in_window_ = 0;
   last_emit_ms_ = now_ms;

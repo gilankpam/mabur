@@ -367,6 +367,51 @@ class LinksPanelTest(unittest.TestCase):
         rows = panel_links(_fresh(d), 100.2)
         self.assertTrue(any("no link data" in t for t, _ in rows))
 
+    def test_ctl_row_absent_when_no_ctl(self):
+        rows = panel_links(_fresh(), 100.2)  # DGRAM carries no link.ctl
+        joined = "\n".join(t for t, _ in rows)
+        self.assertNotIn("of budget", joined)
+
+    def test_ctl_row_content_and_good_span(self):
+        d = dict(DGRAM)
+        d["link"] = dict(DGRAM["link"], ctl={
+            "rung": {"idx": 3, "mcs": 5, "ov": 0.25},
+            "util": 0.08, "pre_fec_loss": 0.035, "budget": 0.43,
+            "probation_ms_left": 0, "penalized": [],
+            "counters": {"demotes_residual": 0, "demotes_util": 3, "promotes": 4,
+                         "probation_fails": 1, "starved_drops": 0, "timeout_drops": 1},
+            "last_event": {"t_ms": 39243748, "from": 4, "to": 3,
+                           "reason": "util", "u": 0.65},
+        })
+        rows = panel_links(_fresh(d), 100.2)
+        text, spans = next((t, s) for t, s in rows if "of budget" in t)
+        self.assertIn("rung 3 (mcs5/ov0.25)", text)
+        self.assertIn("u=0.08", text)
+        self.assertIn("of budget 43%", text)
+        self.assertIn("[util@0.65]", text)
+        self.assertTrue(any(style == "good" for _, _, style in spans))
+
+    def test_ctl_row_warn_and_bad_util_thresholds(self):
+        base_ctl = {
+            "rung": {"idx": 3, "mcs": 5, "ov": 0.25},
+            "pre_fec_loss": 0.1, "budget": 0.43,
+            "probation_ms_left": 0, "penalized": [],
+            "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
+                         "probation_fails": 0, "starved_drops": 0, "timeout_drops": 0},
+            "last_event": {"t_ms": 0, "from": 0, "to": 0, "reason": "none", "u": 0.0},
+        }
+        d_warn = dict(DGRAM)
+        d_warn["link"] = dict(DGRAM["link"], ctl=dict(base_ctl, util=0.45))
+        rows = panel_links(_fresh(d_warn), 100.2)
+        _text, spans = next((t, s) for t, s in rows if "of budget" in t)
+        self.assertTrue(any(style == "warn" for _, _, style in spans))
+
+        d_bad = dict(DGRAM)
+        d_bad["link"] = dict(DGRAM["link"], ctl=dict(base_ctl, util=0.75))
+        rows = panel_links(_fresh(d_bad), 100.2)
+        _text, spans = next((t, s) for t, s in rows if "of budget" in t)
+        self.assertTrue(any(style == "bad" for _, _, style in spans))
+
 
 class GsRadiosPanelTest(unittest.TestCase):
     def test_content(self):

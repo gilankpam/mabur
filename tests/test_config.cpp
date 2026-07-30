@@ -49,7 +49,6 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.usb_pid == def.radio.usb_pid);
   CHECK(cfg.radio.channel == def.radio.channel);
   CHECK(cfg.radio.width == def.radio.width);
-  CHECK(cfg.radio.bw_set == def.radio.bw_set);
   CHECK(cfg.radio.thermal_max_delta == def.radio.thermal_max_delta);
   CHECK(cfg.radio.power_mode == "none");
   CHECK(cfg.radio.power_offset_qdb == 0);
@@ -67,11 +66,12 @@ TEST(load_config_default_file_matches_struct_defaults) {
 
   // The bundle intentionally diverges from struct defaults for fec, so check
   // against the bundle's actual values rather than the struct defaults used
-  // for everything else. 328/w32/bpb4 is the 2026-07-25 gated geometry
-  // (docs/fec-symbol-size-328.md): same ~1.4kB body and ~11kB window span as
-  // scalar-164/w64/bpb8 but ~5% less airtime and -7.5% maburd CPU, quality
-  // parity on-air.
-  CHECK((cfg.fec.symbol_size == std::array<int, 4>{328, 328, 328, 328}));
+  // for everything else. 332/w32/bpb4 is the 2026-07-29 geometry: same CPU/
+  // air profile as the 2026-07-25 gated 328 (docs/fec-symbol-size-328.md),
+  // shifted +4 because 328x4 = 1396 B air frames sit exactly in the
+  // mcs6+STBC PHY hole (docs/mcs6-bench-anomaly.md — air MPDUs 1392-1400 B
+  // vanish whole at RX). Any new size needs the all-8-MCS hole-scan.
+  CHECK((cfg.fec.symbol_size == std::array<int, 4>{332, 332, 332, 332}));
   CHECK(cfg.fec.window == 32);
   CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 4, 4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
@@ -144,36 +144,17 @@ TEST(load_config_type_mismatch_fec_window_string_throws_runtime_error_with_dotte
   std::filesystem::remove(path);
 }
 
-TEST(load_config_bw_set_rungs_above_width_are_dropped) {
-  // B7 (docs/bench-validation.md): a 20 MHz-tuned baseband cannot emit a
-  // valid 40 MHz PPDU — probe rungs wider than radio.width are dead air, so
-  // config load drops them (with a stderr warning) instead of flying them.
-  auto path = write_temp_json(R"({"radio":{"width":20,"bw_set":[20,40]}})");
-  Config cfg = load_config(path.string());
-  CHECK((cfg.radio.bw_set == std::vector<uint8_t>{20}));
-  std::filesystem::remove(path);
-}
-
-TEST(load_config_bw_set_rungs_within_width_are_kept) {
-  auto path = write_temp_json(R"({"radio":{"width":40,"bw_set":[20,40]}})");
-  Config cfg = load_config(path.string());
-  CHECK((cfg.radio.bw_set == std::vector<uint8_t>{20, 40}));
-  std::filesystem::remove(path);
-}
-
-TEST(load_config_bw_set_all_rungs_dropped_leaves_empty_probe_set) {
-  auto path = write_temp_json(R"({"radio":{"width":20,"bw_set":[40,80]}})");
-  Config cfg = load_config(path.string());
-  CHECK(cfg.radio.bw_set.empty());
-  std::filesystem::remove(path);
-}
-
-TEST(load_config_type_mismatch_radio_bw_set_string_throws_runtime_error_with_dotted_path) {
-  auto path = write_temp_json(R"({"radio":{"bw_set":"wide"}})");
+TEST(load_config_unknown_radio_bw_set_key_throws) {
+  // radio.bw_set (bandwidth-probe schedule) was removed 2026-07-27 (SDD
+  // ladder-controller Task 5): the ladder controller never varies bw
+  // independently of the commanded rung, so the probe schedule and its
+  // config key are dead. Strict-keys config load (PR #7) must reject it
+  // like any other unknown key rather than silently ignoring it.
+  auto path = write_temp_json(R"({"radio":{"bw_set":[20,40]}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
   CHECK(msg.find("radio.bw_set") != std::string::npos);
-  CHECK(msg.find("wrong type") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
   std::filesystem::remove(path);
 }
 

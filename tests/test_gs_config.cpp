@@ -168,41 +168,14 @@ TEST(stats_section_parses_and_validates) {
 
 MTEST_MAIN
 
-// link.src_bitrate_mbps drives the controller's energy-model design point
-// (rungs that can't carry src*(1+overhead) are infeasible). Optional,
-// fractional, defaults to the Python controller's 4 Mbps.
-TEST(src_bitrate_mbps_parses_and_defaults) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
-  CHECK(cfg.link.src_bitrate_mbps > 3.999 && cfg.link.src_bitrate_mbps < 4.001);
-  cfg = maburgs::load_config(
-      write_tmp("{\"link\": {\"src_bitrate_mbps\": 17.5}}"));
-  CHECK(cfg.link.src_bitrate_mbps > 17.499 && cfg.link.src_bitrate_mbps < 17.501);
-  bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"src_bitrate_mbps\": 99}}")); }
-  catch (const std::exception&) { threw = true; }
-  CHECK(threw);  // out of range
-  cfg = maburgs::load_config(write_tmp("{\"link\": {\"margin_db\": 35}}"));
-  CHECK(cfg.link.margin_db > 34.999 && cfg.link.margin_db < 35.001);
-}
-
 // static_txagc was renamed to static_offset_qdb (USER-FACING, qdB offset
-// semantics since 2026-07-17); min_offset_qdb/max_offset_qdb/base_ref_idx
-// are new controller rail keys. max_offset_qdb is validated <= 0 (ZERO is
-// the max legal offset — docs/txagc-calibration.md).
-TEST(offset_qdb_keys_parse_and_default) {
+// semantics since 2026-07-17).
+TEST(static_offset_qdb_key_parses_and_defaults) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   CHECK(cfg.link.static_offset_qdb == 0);
-  CHECK(cfg.link.min_offset_qdb == -40);
-  CHECK(cfg.link.max_offset_qdb == 0);
-  CHECK(cfg.link.base_ref_idx == 53);
 
-  cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"static_offset_qdb":-12,"min_offset_qdb":-32,)"
-      R"("max_offset_qdb":-4,"base_ref_idx":40}})"));
+  cfg = maburgs::load_config(write_tmp(R"({"link":{"static_offset_qdb":-12}})"));
   CHECK(cfg.link.static_offset_qdb == -12);
-  CHECK(cfg.link.min_offset_qdb == -32);
-  CHECK(cfg.link.max_offset_qdb == -4);
-  CHECK(cfg.link.base_ref_idx == 40);
 
   // Old key name is now unknown -> rejected.
   bool threw = false;
@@ -211,20 +184,28 @@ TEST(offset_qdb_keys_parse_and_default) {
     threw = std::string(e.what()).find("static_txagc") != std::string::npos;
   }
   CHECK(threw);
+}
 
-  // max_offset_qdb must be <= 0.
-  threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"max_offset_qdb":5}})")); }
-  catch (const std::exception&) { threw = true; }
-  CHECK(threw);
-
-  // min_offset_qdb must be <= max_offset_qdb.
-  threw = false;
-  try {
-    maburgs::load_config(write_tmp(
-        R"({"link":{"min_offset_qdb":-4,"max_offset_qdb":-8}})"));
-  } catch (const std::exception&) { threw = true; }
-  CHECK(threw);
+// src_bitrate_mbps/margin_db/min_offset_qdb/max_offset_qdb/base_ref_idx were
+// the old model-driven controller/link-table energy-model + qdB-rail keys.
+// The measured-loss ladder controller (SDD 2026-07-27) replaces that
+// resolver entirely; each is now an unknown key and must fail the boot like
+// any other stale key (config.cpp:check_keys, "link").
+TEST(deleted_model_controller_keys_now_throw) {
+  const char* deleted_keys[] = {"src_bitrate_mbps", "margin_db",
+                                "min_offset_qdb", "max_offset_qdb",
+                                "base_ref_idx"};
+  for (const char* key : deleted_keys) {
+    bool threw = false;
+    const std::string json =
+        std::string(R"({"link":{")") + key + R"(":1}})";
+    try {
+      maburgs::load_config(write_tmp(json.c_str()));
+    } catch (const std::exception& e) {
+      threw = std::string(e.what()).find(key) != std::string::npos;
+    }
+    CHECK(threw);
+  }
 }
 
 // frame_gap_timeout_ms/frame_lookahead: FrameStream tuning knobs for the
@@ -237,4 +218,169 @@ TEST(video_out_frame_keys) {
       "{\"video_out\": {\"frame_gap_timeout_ms\": 30, \"frame_lookahead\": 4}}"));
   CHECK(cfg2.video_out.frame_gap_timeout_ms == 30);
   CHECK(cfg2.video_out.frame_lookahead == 4);
+}
+
+// link.ladder: measured-loss ladder controller rungs + max_mcs filter +
+// thresholds (SDD 2026-07-27 ladder-controller Task 2).
+TEST(ladder_defaults_to_spec_six_rung_ladder) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto& L = cfg.link.ladder_cfg.ladder;
+  CHECK(L.size() == 6);
+  CHECK(L[0].mcs == 0); CHECK(L[0].overhead > 0.999 && L[0].overhead < 1.001);
+  CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.499 && L[1].overhead < 0.501);
+  CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.249 && L[2].overhead < 0.251);
+  CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.249 && L[3].overhead < 0.251);
+  // mcs6 rung at 0.25 (not the spec's 0.15) since 2026-07-29 — see the
+  // ladder_cfg comment in gs/src/config.h and docs/mcs6-bench-anomaly.md.
+  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.249 && L[4].overhead < 0.251);
+  CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.099 && L[5].overhead < 0.101);
+}
+
+TEST(ladder_parses_explicit_array_in_order) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"ladder":[{"mcs":0,"overhead":1.0},{"mcs":3,"overhead":0.4}]}})"));
+  auto& L = cfg.link.ladder_cfg.ladder;
+  CHECK(L.size() == 2);
+  CHECK(L[0].mcs == 0);
+  CHECK(L[1].mcs == 3);
+  CHECK(L[1].overhead > 0.399 && L[1].overhead < 0.401);
+}
+
+TEST(ladder_rung_unknown_key_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":0,"overhead":1.0,"bogus":1}]}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("bogus") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
+TEST(ladder_rung_mcs_out_of_range_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":8,"overhead":0.5}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(ladder_rung_overhead_out_of_range_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":0.01}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":1.5}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(ladder_rung_overhead_boundary_values_accepted) {
+  // overhead exactly at the [0.05, 1.0] boundary must load, not throw.
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"ladder":[{"mcs":0,"overhead":0.05},{"mcs":7,"overhead":1.0}]}})"));
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 2);
+  CHECK(cfg.link.ladder_cfg.ladder[0].overhead > 0.0499 && cfg.link.ladder_cfg.ladder[0].overhead < 0.0501);
+  CHECK(cfg.link.ladder_cfg.ladder[1].overhead > 0.999 && cfg.link.ladder_cfg.ladder[1].overhead < 1.001);
+}
+
+TEST(ladder_empty_array_rejected) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"ladder":[]}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+// Spec: ladder must have 1-8 entries. A 9-rung ladder must be rejected even
+// though every individual rung is otherwise valid.
+TEST(ladder_over_eight_entries_rejected) {
+  std::string json = R"({"link":{"ladder":[)";
+  for (int i = 0; i < 9; ++i) {
+    if (i) json += ",";
+    json += "{\"mcs\":" + std::to_string(i % 8) + ",\"overhead\":0.25}";
+  }
+  json += "]}}";
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(json.c_str())); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("link.ladder") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
+TEST(max_mcs_filters_effective_ladder) {
+  auto cfg = maburgs::load_config(write_tmp(R"({"link":{"max_mcs":5}})"));
+  auto& L = cfg.link.ladder_cfg.ladder;
+  CHECK(L.size() == 4);
+  for (auto& r : L) CHECK(r.mcs <= 5);
+}
+
+TEST(max_mcs_zero_keeps_single_mcs0_rung) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"ladder":[{"mcs":0,"overhead":1.0},{"mcs":4,"overhead":0.25}],)"
+      R"("max_mcs":0}})"));
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 1);
+  CHECK(cfg.link.ladder_cfg.ladder[0].mcs == 0);
+}
+
+TEST(max_mcs_filter_leaving_no_rungs_throws) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":4,"overhead":0.25},{"mcs":6,"overhead":0.15}],)"
+        R"("max_mcs":2}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("empty after max_mcs filter") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
+TEST(up_util_must_be_less_than_down_util) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"up_util":0.6,"down_util":0.6}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"up_util":0.7,"down_util":0.6}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+// Spec: 0 < up_util < down_util <= 1. up_util == 0 satisfies the
+// less-than-down_util check but must still be rejected: at 0 the clean
+// window (u < up_util) can never be satisfied (u is never negative), so a
+// misconfigured link would be permanently stuck unable to promote off
+// rung 0.
+TEST(up_util_must_be_strictly_positive) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(R"({"link":{"up_util":0.0}})")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("link.up_util") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
+TEST(ladder_threshold_keys_parse_with_defaults) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.ladder_cfg.down_util > 0.599 && cfg.link.ladder_cfg.down_util < 0.601);
+  CHECK(cfg.link.ladder_cfg.up_util > 0.149 && cfg.link.ladder_cfg.up_util < 0.151);
+  CHECK(cfg.link.ladder_cfg.confirm_ms == 250);
+  CHECK(cfg.link.ladder_cfg.clean_ms == 5000);
+  CHECK(cfg.link.ladder_cfg.probation_ms == 3000);
+  CHECK(cfg.link.ladder_cfg.penalty_base_ms == 10000);
+  CHECK(cfg.link.ladder_cfg.penalty_max_ms == 60000);
+  CHECK(cfg.link.ladder_cfg.hold_after_down_ms == 4000);
+  CHECK(cfg.link.ladder_cfg.min_between_changes_ms == 150);
+  CHECK(cfg.link.ladder_cfg.feedback_timeout_ms == 1000);
+
+  auto cfg2 = maburgs::load_config(write_tmp(
+      R"({"link":{"down_util":0.5,"clean_ms":4000,"penalty_max_ms":30000}})"));
+  CHECK(cfg2.link.ladder_cfg.down_util > 0.499 && cfg2.link.ladder_cfg.down_util < 0.501);
+  CHECK(cfg2.link.ladder_cfg.clean_ms == 4000);
+  CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
 }

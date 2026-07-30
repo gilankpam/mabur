@@ -61,7 +61,7 @@ uint16_t read_le16(const uint8_t* p) {
 
 TEST(send_body_second_frame_has_ht_radiotap_and_dot11_header) {
   CaptureSink sink;
-  RadioTx tx(sink, {20, 40});
+  RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::HT, 2, 20);
   tx.set_ladder(ladder);
 
@@ -71,7 +71,7 @@ TEST(send_body_second_frame_has_ht_radiotap_and_dot11_header) {
   CHECK(tx.send_body(0, body1, sizeof(body1)));
 
   REQUIRE(sink.frames_.size() == 2);
-  const auto& f = sink.frames_[1];  // seq 1, non-probe slot
+  const auto& f = sink.frames_[1];  // seq 1
 
   REQUIRE(f.size() > 4);
   uint16_t rl = read_le16(&f[2]);
@@ -97,39 +97,9 @@ TEST(send_body_second_frame_has_ht_radiotap_and_dot11_header) {
   CHECK(tx.seq() == 2);
 }
 
-TEST(probe_slot_carries_probe_bandwidth_radiotap) {
-  CaptureSink sink;
-  std::vector<uint8_t> bw_set = {20, 40};
-  RadioTx tx(sink, bw_set);
-  auto ladder = ladder_from(PhyMode::HT, 2, 20);
-  tx.set_ladder(ladder);
-
-  const uint8_t body[] = {0x11, 0x22, 0x33};
-
-  // seq()%32==8 is a probe slot -> rung index 1 -> bw_set sorted {20,40}[1]=40.
-  while (tx.seq() % 32 != 8) {
-    CHECK(tx.send_body(0, body, sizeof(body)));
-  }
-  size_t probe_idx = sink.frames_.size();
-  CHECK(tx.send_body(0, body, sizeof(body)));
-  REQUIRE(sink.frames_.size() == probe_idx + 1);
-
-  auto expect_40 = devourer::build_stream_radiotap(to_tx_mode(ladder[0], 40));
-  auto expect_20 = devourer::build_stream_radiotap(to_tx_mode(ladder[0], 20));
-
-  const auto& probe_frame = sink.frames_[probe_idx];
-  REQUIRE(probe_frame.size() >= expect_40.size());
-  CHECK(std::memcmp(probe_frame.data(), expect_40.data(), expect_40.size()) == 0);
-
-  // Neighbour (non-probe) frame carries the 20 MHz radiotap.
-  const auto& neighbour_frame = sink.frames_[probe_idx - 1];
-  REQUIRE(neighbour_frame.size() >= expect_20.size());
-  CHECK(std::memcmp(neighbour_frame.data(), expect_20.data(), expect_20.size()) == 0);
-}
-
 TEST(seq_wraps_at_4096) {
   CaptureSink sink;
-  RadioTx tx(sink, {20});
+  RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::HT, 0, 20);
   tx.set_ladder(ladder);
 
@@ -142,7 +112,7 @@ TEST(seq_wraps_at_4096) {
 
 TEST(vht_ladder_radiotap_length_is_22) {
   CaptureSink sink;
-  RadioTx tx(sink, {20, 40, 80});
+  RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::VHT, 4, 80);
   tx.set_ladder(ladder);
 
@@ -158,7 +128,7 @@ TEST(vht_ladder_radiotap_length_is_22) {
 
 TEST(sink_rejection_increments_drops_and_still_consumes_seq) {
   CaptureSink sink;
-  RadioTx tx(sink, {20});
+  RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::HT, 0, 20);
   tx.set_ladder(ladder);
 
@@ -177,7 +147,7 @@ TEST(sink_rejection_increments_drops_and_still_consumes_seq) {
 
 TEST(send_body_before_set_ladder_drops_and_consumes_seq) {
   CaptureSink sink;
-  RadioTx tx(sink, {20});
+  RadioTx tx(sink);
   // Intentionally do NOT call set_ladder() so radiotap cache is empty.
 
   const uint8_t body[] = {0xaa, 0xbb};
@@ -213,8 +183,8 @@ TEST(send_bodies_matches_send_body_framing) {
   // per-frame fallback).
   CaptureSink a_sink;
   CaptureSink b_sink;
-  RadioTx a(a_sink, {20, 40});
-  RadioTx b(b_sink, {20, 40});
+  RadioTx a(a_sink);
+  RadioTx b(b_sink);
   auto ladder = ladder_from(PhyMode::HT, 2, 20);
   a.set_ladder(ladder);
   b.set_ladder(ladder);
@@ -237,7 +207,7 @@ TEST(send_bodies_matches_send_body_framing) {
 
 TEST(send_bodies_submits_one_batch) {
   BatchSink sink;
-  RadioTx tx(sink, {20});
+  RadioTx tx(sink);
   tx.set_ladder(ladder_from(PhyMode::HT, 2, 20));
   std::vector<UepBody> bodies;
   for (int i = 0; i < 5; ++i) bodies.push_back(UepBody{1, std::vector<uint8_t>(32, 0x5A)});

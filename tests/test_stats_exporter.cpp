@@ -101,6 +101,25 @@ TEST(rates_use_measured_window) {
   CHECK(j["link"]["video"]["mbps"].get<double>() > 0.99 && j["link"]["video"]["mbps"].get<double>() < 1.01);
 }
 
+TEST(recovered_arrived_exported_with_rate) {
+  // Repair-vs-arrival race counter (schema-additive under v:1): cumulative on
+  // every datagram, windowed rate once a measured window exists.
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.streams[0].syms_recovered_arrived = 30;
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["link"]["streams"][0]["recovered_arrived"] == 30);
+  CHECK(j["link"]["streams"][0]["recovered_arrived_s"].is_null());
+  in.streams[0].syms_recovered_arrived += 9;
+  ex.poll(2000, in);  // 1 s window -> 9.0/s
+  j = cap.last();
+  CHECK(j["link"]["streams"][0]["recovered_arrived"] == 39);
+  CHECK(j["link"]["streams"][0]["recovered_arrived_s"].get<double>() > 8.9 &&
+        j["link"]["streams"][0]["recovered_arrived_s"].get<double>() < 9.1);
+}
+
 TEST(loss_pct_null_when_no_expected_and_clamp_negative) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
@@ -370,6 +389,89 @@ TEST(telem_restart_nulls_rates_then_recovers) {
 // Deaf-radio case: the wire's all-zero uplink default (never heard an RC
 // frame back from the drone) must render as null, not as a plausible-looking
 // -110.0 dBm / 0 dB SNR.
+TEST(ctl_null_in_pin_mode) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();          // in.ctl left nullopt (pin mode)
+  ex.poll(1000, in);
+  CHECK(cap.last()["link"]["ctl"].is_null());
+}
+
+TEST(ctl_block_shape_and_values) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsCtlIn ci;
+  ci.rung_idx = 3; ci.rung_mcs = 5; ci.rung_ov = 0.25;
+  ci.util = 0.08; ci.pre_fec_loss = 0.035; ci.budget = 0.43;
+  ci.probation_ms_left = 0;
+  ci.penalized = {{5, 8200}};
+  ci.demotes_residual = 0; ci.demotes_util = 3; ci.promotes = 4;
+  ci.probation_fails = 1; ci.starved_drops = 0; ci.timeout_drops = 1;
+  ci.last_event_t_ms = 39243748; ci.last_event_from = 4; ci.last_event_to = 3;
+  ci.last_event_reason = "util"; ci.last_event_u = 0.65;
+  in.ctl = ci;
+  ex.poll(1000, in);
+  const json ctl = cap.last()["link"]["ctl"];
+  CHECK(ctl["rung"]["idx"] == 3);
+  CHECK(ctl["rung"]["mcs"] == 5);
+  CHECK(ctl["rung"]["ov"].get<double>() > 0.249 && ctl["rung"]["ov"].get<double>() < 0.251);
+  CHECK(ctl["util"].get<double>() > 0.079 && ctl["util"].get<double>() < 0.081);
+  CHECK(ctl["pre_fec_loss"].get<double>() > 0.034 && ctl["pre_fec_loss"].get<double>() < 0.036);
+  CHECK(ctl["budget"].get<double>() > 0.429 && ctl["budget"].get<double>() < 0.431);
+  CHECK(ctl["probation_ms_left"] == 0);
+  REQUIRE(ctl["penalized"].size() == 1);
+  CHECK(ctl["penalized"][0]["rung"] == 5);
+  CHECK(ctl["penalized"][0]["ms_left"] == 8200);
+  CHECK(ctl["counters"]["demotes_residual"] == 0);
+  CHECK(ctl["counters"]["demotes_util"] == 3);
+  CHECK(ctl["counters"]["promotes"] == 4);
+  CHECK(ctl["counters"]["probation_fails"] == 1);
+  CHECK(ctl["counters"]["starved_drops"] == 0);
+  CHECK(ctl["counters"]["timeout_drops"] == 1);
+  CHECK(ctl["last_event"]["t_ms"] == 39243748);
+  CHECK(ctl["last_event"]["from"] == 4);
+  CHECK(ctl["last_event"]["to"] == 3);
+  CHECK(ctl["last_event"]["reason"] == "util");
+  CHECK(ctl["last_event"]["u"].get<double>() > 0.649 && ctl["last_event"]["u"].get<double>() < 0.651);
+}
+
+TEST(ctl_default_event_is_none_with_zeros) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.ctl = StatsCtlIn{};              // default-constructed: no event yet
+  ex.poll(1000, in);
+  const json ctl = cap.last()["link"]["ctl"];
+  CHECK(ctl["last_event"]["reason"] == "none");
+  CHECK(ctl["last_event"]["t_ms"] == 0);
+  CHECK(ctl["last_event"]["from"] == 0);
+  CHECK(ctl["last_event"]["to"] == 0);
+  CHECK(ctl["last_event"]["u"].get<double>() == 0.0);
+  CHECK(ctl["penalized"].empty());
+}
+
+TEST(ctl_ladder_and_thresholds) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsCtlIn ci;
+  ci.ladder = {{0, 1.0}, {2, 0.5}, {7, 0.1}};
+  ci.down_util = 0.6;
+  ci.up_util = 0.15;
+  in.ctl = ci;
+  CHECK(ex.poll(1000, in));
+  const json ctl = cap.last()["link"]["ctl"];
+  REQUIRE(ctl["ladder"].size() == 3);
+  CHECK(ctl["ladder"][0]["mcs"] == 0);
+  CHECK(ctl["ladder"][0]["ov"].get<double>() > 0.999 && ctl["ladder"][0]["ov"].get<double>() < 1.001);
+  CHECK(ctl["ladder"][1]["mcs"] == 2);
+  CHECK(ctl["ladder"][2]["mcs"] == 7);
+  CHECK(ctl["ladder"][2]["ov"].get<double>() > 0.099 && ctl["ladder"][2]["ov"].get<double>() < 0.101);
+  CHECK(ctl["down_util"].get<double>() > 0.599 && ctl["down_util"].get<double>() < 0.601);
+  CHECK(ctl["up_util"].get<double>() > 0.149 && ctl["up_util"].get<double>() < 0.151);
+}
+
 TEST(uplink_nulled_when_both_chains_raw_zero) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());

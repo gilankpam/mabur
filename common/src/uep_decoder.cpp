@@ -14,7 +14,8 @@ void UepDecoder::note_delivery(Layer& l, uint16_t seq) {
   // Delivery window: forward FRAG-seq gap = packets that will never
   // complete; backward/duplicate (gap 0 or > 0x8000) = reorder, count
   // delivered only. Monster gaps are an outage, not per-packet info —
-  // cap at 512 like the RungWindow's bounded walk.
+  // cap at 512, same bounded-walk stance as gs/src/aggregator.cpp's
+  // kMaxSeqGap.
   if (!l.has_last_seq) {
     l.win_expected += 1;
   } else {
@@ -68,6 +69,7 @@ UepDecoder::LayerStats UepDecoder::stats(int sid) const {
   const Layer& L = layers_[static_cast<size_t>(sid)];
   return LayerStats{L.bodies,              L.subblocks_failed,
                     L.sw.syms_delivered(), L.sw.syms_recovered(),
+                    L.sw.syms_recovered_arrived(),
                     L.sw.syms_abandoned(), L.sw.packets_out(),
                     L.sw.symbols_in(),     L.sw.symbols_dropped_stale(),
                     L.sw.symbols_dropped_bad_cfg(), L.sw.rows_in_flight()};
