@@ -13,22 +13,26 @@
 //
 // Reference for the call shape: toolchain/mpp-src/test/mpi_dec_test.c's
 // dec_simple() (upstream's canonical decode loop) -- this backend follows
-// its decode_put_packet/decode_get_frame async split and BUFFER_FULL retry
-// discipline, but skips dec_simple()'s MPP_DEC_SET_EXT_BUF_GROUP dance: on
-// this kernel MPP's default allocator (DMA_HEAP/DRM, see mpp_buffer.h) can
-// service decode_get_frame without an explicit external buffer group, and
-// that's what's verified on hardware below (see task-8-report.md).
+// its decode_put_packet/decode_get_frame async split, BUFFER_FULL retry
+// discipline, AND its MPP_DEC_SET_EXT_BUF_GROUP sequence. The internal
+// (group-less) mode verified in Task 8 sized the pool to the bare DPB:
+// fine while the sink released every frame inline, but the presenter's
+// three held frames (on-screen + queued + mailbox) starved the decoder
+// within ~50 frames on hardware. The external group (buf_size x 24, the
+// upstream default) gives DPB + display pipeline + margin.
 namespace maburplay {
 
 struct MppBackend::Impl {
   MppCtx ctx = nullptr;
   MppApi* mpi = nullptr;
+  MppBufferGroup frm_grp = nullptr;  // external decode buffer pool (see file comment)
   FrameSink sink;
   uint64_t info_change_count = 0;
   uint64_t error_count = 0;
 
   ~Impl() {
     if (ctx) mpp_destroy(ctx);
+    if (frm_grp) mpp_buffer_group_put(frm_grp);  // after mpp_destroy, per upstream order
   }
 
   // Drains every frame decode_get_frame currently has ready: forwards
@@ -50,9 +54,22 @@ struct MppBackend::Impl {
       if (!frame) break;  // MPP_OK but nothing returned this round
 
       if (mpp_frame_get_info_change(frame)) {
-        // Low-delay/first-frame resolution announcement: no external
-        // buffer group to configure (see the file-level comment above),
-        // just ack so the decoder proceeds.
+        // Resolution announcement: (re)configure the external buffer pool
+        // before acking, exactly per upstream mpi_dec_test. buf_size x 24
+        // covers the HEVC DPB plus the presenter's held frames plus slack.
+        const RK_U32 buf_size = mpp_frame_get_buf_size(frame);
+        MPP_RET gret = MPP_OK;
+        if (!frm_grp) {
+          gret = mpp_buffer_group_get_internal(&frm_grp, MPP_BUFFER_TYPE_ION);
+          if (gret == MPP_OK) gret = mpi->control(ctx, MPP_DEC_SET_EXT_BUF_GROUP, frm_grp);
+        } else {
+          gret = mpp_buffer_group_clear(frm_grp);
+        }
+        if (gret == MPP_OK) gret = mpp_buffer_group_limit_config(frm_grp, buf_size, 24);
+        if (gret != MPP_OK) {
+          std::fprintf(stderr, "MppBackend: ext buffer group setup failed ret=%d (buf_size=%u)\n",
+                       gret, buf_size);
+        }
         const MPP_RET ack = mpi->control(ctx, MPP_DEC_SET_INFO_CHANGE_READY, nullptr);
         if (ack != MPP_OK) {
           std::fprintf(stderr, "MppBackend: MPP_DEC_SET_INFO_CHANGE_READY failed ret=%d\n", ack);
@@ -64,13 +81,21 @@ struct MppBackend::Impl {
 
       const RK_U32 err_info = mpp_frame_get_errinfo(frame);
       const RK_U32 discard = mpp_frame_get_discard(frame);
-      MppBuffer buf = err_info || discard ? nullptr : mpp_frame_get_buffer(frame);
+      MppBuffer buf = discard ? nullptr : mpp_frame_get_buffer(frame);
       const int fd = buf ? mpp_buffer_get_fd(buf) : -1;
-      if (err_info || discard || !buf || fd < 0) {
+      if (discard || !buf || fd < 0) {
         ++error_count;
         mpp_frame_deinit(&frame);
         continue;
       }
+      // errinfo frames (concealment after reference loss) are counted AND
+      // EMITTED. Rally mode has no IRAP to resync from, so after a loss
+      // gap EVERY subsequent frame carries errinfo until the rolling
+      // refresh repaints -- suppressing them froze the screen and tripped
+      // the decode watchdog into a hopeless recreate/exit ladder (observed
+      // live under an antenna-cover test). A corrupted-but-healing picture
+      // is the correct behavior; it is what the RTP/PixelPilot path shows.
+      if (err_info) ++error_count;
 
       DmaFrame df;
       df.dmabuf_fd = fd;
@@ -124,6 +149,28 @@ bool MppBackend::init(const BackendCfg&, FrameSink sink) {
     std::fprintf(stderr,
                  "MppBackend: MPP_DEC_SET_IMMEDIATE_OUT failed ret=%d (continuing)\n", ret);
   }
+
+  // FPV-stream survival controls, mirrored from PixelPilot_rk's proven
+  // decoder setup (../PixelPilot_rk/src/main.cpp mpi_dec_init):
+  //  - DISABLE_ERROR: turn MPP's internal error handling off. With it ON
+  //    (the default), a loss gap poisons the reference chain permanently
+  //    -- the GDR sweep never repaints and every frame stays errinfo
+  //    forever (observed live: 60 fps of permanently-broken frames).
+  //    With error handling off, damaged frames decode as-is, refs keep
+  //    advancing, and the intra sweep genuinely heals the picture.
+  //  - ENABLE_FAST_PLAY: start decoding from parameter sets without
+  //    waiting for an IRAP -- required to join this link's IRAP-less
+  //    streams mid-session (also what makes the watchdog's fresh-context
+  //    recovery viable at all).
+  RK_U32 on = 0xffff;
+  ret = impl_->mpi->control(impl_->ctx, MPP_DEC_SET_DISABLE_ERROR, &on);
+  if (ret != MPP_OK)
+    std::fprintf(stderr, "MppBackend: MPP_DEC_SET_DISABLE_ERROR failed ret=%d (continuing)\n",
+                 ret);
+  ret = impl_->mpi->control(impl_->ctx, MPP_DEC_SET_ENABLE_FAST_PLAY, &on);
+  if (ret != MPP_OK)
+    std::fprintf(stderr,
+                 "MppBackend: MPP_DEC_SET_ENABLE_FAST_PLAY failed ret=%d (continuing)\n", ret);
 
   return true;
 }

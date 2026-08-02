@@ -219,7 +219,11 @@ int main(int argc, char** argv) {
   }
 
   const maburplay::BackendCfg bcfg = parse_screen_mode(cfg.screen_mode);
-  maburplay::VideoBackend* const backend_ptr = backend.get();
+  // NOTE: `backend` may be DESTROYED AND RECREATED mid-run by the decode
+  // watchdog's escalation path (a kernel-side rkvdec2 force-reset leaves
+  // the MPP session unrecoverable by mpi->reset() -- observed live: 52
+  // consecutive no-op resets). Every capture below therefore goes through
+  // the unique_ptr, never a cached raw pointer.
 
   // Display path: the DrmPresenter becomes the frame owner for the normal
   // (non-decode-only) run -- release_frame() is no longer called inline
@@ -231,8 +235,8 @@ int main(int argc, char** argv) {
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
-    if (!presenter->init(cfg.screen_mode, [backend_ptr](const maburplay::DmaFrame& f) {
-          backend_ptr->release_frame(f);
+    if (!presenter->init(cfg.screen_mode, [&backend](const maburplay::DmaFrame& f) {
+          backend->release_frame(f);
         })) {
       std::fprintf(stderr,
                    "maburplay: DrmPresenter init failed -- no display; frames will be "
@@ -248,7 +252,9 @@ int main(int argc, char** argv) {
   uint64_t frame_count = 0;
   bool have_first_frame = false;
   std::chrono::steady_clock::time_point t_first_frame, t_last_frame;
-  const bool init_ok = backend->init(bcfg, [&](const maburplay::DmaFrame& f) {
+  // Named so the watchdog's backend-recreation path can re-wire the same
+  // sink into the fresh decoder instance.
+  const maburplay::VideoBackend::FrameSink frame_sink = [&](const maburplay::DmaFrame& f) {
     ++frame_count;
     const auto now = std::chrono::steady_clock::now();
     if (!have_first_frame) {
@@ -262,8 +268,9 @@ int main(int argc, char** argv) {
       return;
     }
 #endif
-    backend_ptr->release_frame(f);
-  });
+    backend->release_frame(f);
+  };
+  const bool init_ok = backend->init(bcfg, frame_sink);
   if (!init_ok) {
     std::fprintf(stderr, "maburplay: backend \"%s\" init failed\n", cfg.backend.c_str());
     return 2;
@@ -299,6 +306,7 @@ int main(int argc, char** argv) {
   // after, per the amended gate's concealment-window allowance).
   bool t_sync_seen = false;
   std::chrono::steady_clock::time_point t_sync;
+  uint64_t truncated_skipped = 0;
 
   // RingClient sink: (a) DVR write (must not depend on decode health, so it
   // happens before the backend ever sees the AU), then (b) backend submit.
@@ -340,7 +348,7 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
       if (presenter) presenter->drop_all();
 #endif
-      backend_ptr->flush();
+      backend->flush();
       backend_armed = false;
     }
     if (!backend_armed) {
@@ -351,7 +359,19 @@ int main(int argc, char** argv) {
         t_sync = std::chrono::steady_clock::now();
       }
     }
-    backend_ptr->submit_au(ev.au.data(), ev.au.size(), ev.meta.pts_us);
+    // Never feed a truncated AU to the decoder. The spec's original policy
+    // (submit truncated base, let MPP conceal) HANGS rkvdec2 on this
+    // hardware: a truncated slice declares more bitstream than exists, the
+    // VPU waits for bytes that never arrive, and the kernel force-resets
+    // the session ("mpp_rkvdec2 ... task timeout ... resetting") leaving
+    // userspace MPP wedged. Counted; corruption washes out via rally's
+    // rolling refresh. (The decode watchdog in the main loop is the
+    // second line of defense if the VPU wedges anyway.)
+    if (!complete) {
+      ++truncated_skipped;
+      return;
+    }
+    backend->submit_au(ev.au.data(), ev.au.size(), ev.meta.pts_us);
     ++backend_submits;
   };
 
@@ -405,12 +425,12 @@ int main(int argc, char** argv) {
     bool ring_died = false;
     while (!g_stop.load() && std::chrono::steady_clock::now() < deadline) {
       ring.pump(100);
-      backend_ptr->poll();
+      backend->poll();
       if (!sampled_3s && t_sync_seen &&
           std::chrono::steady_clock::now() >= t_sync + std::chrono::seconds(3)) {
         sampled_3s = true;
 #ifdef MABUR_PLAYER_HW
-        if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend_ptr)) {
+        if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get())) {
           errors_at_3s = mpp->errors();
         }
 #endif
@@ -438,7 +458,7 @@ int main(int argc, char** argv) {
     uint64_t info_change_count = 0;
     uint64_t error_count = 0;
 #ifdef MABUR_PLAYER_HW
-    if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend_ptr)) {
+    if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get())) {
       info_change_count = mpp->info_changes();
       error_count = mpp->errors();
     }
@@ -465,12 +485,75 @@ int main(int argc, char** argv) {
   auto t_last_fps_log = std::chrono::steady_clock::now();
   uint64_t frames_at_last_fps_log = 0;
 
+  uint64_t flips_at_last_fps_log = 0;
+  // Decode watchdog: rkvdec2 can hang on malformed/mid-session bitstream
+  // and the kernel's force-reset leaves userspace MPP wedged (parser+hal
+  // parked on futexes, decode_get_frame silent forever, kernel log shows
+  // "mpp_rkvdec2 ... task timeout ... resetting"). If AUs keep flowing but
+  // no frame emerges for 2 s, reset the whole pipeline and resync at the
+  // next sid0 -- self-healing beats a frozen screen.
+  uint64_t wd_frames = 0, wd_submits = 0;
+  int wd_consecutive = 0;  // fruitless reset cycles since the last decoded frame
+  auto wd_last_progress = std::chrono::steady_clock::now();
   while (!g_stop.load()) {
-    ring.pump(100);
-    backend_ptr->poll();
+    // 2 ms pump: flip events must be reaped at sub-vsync latency or the
+    // mailbox frame waits for the NEXT AU burst before anyone submits it
+    // (observed live as juddery ~2-3-vsync-late presentation with a
+    // 100 ms pump -- the doorbell was the only wakeup source).
+    ring.pump(2);
+    backend->poll();
 #ifdef MABUR_PLAYER_HW
     if (presenter) presenter->poll_events();
 #endif
+    {
+      const auto now = std::chrono::steady_clock::now();
+      if (frame_count != wd_frames) {
+        wd_frames = frame_count;
+        wd_submits = backend_submits;
+        wd_last_progress = now;
+        wd_consecutive = 0;
+      } else if (backend_submits > wd_submits + 60 &&
+                 now - wd_last_progress > std::chrono::seconds(2)) {
+        ++wd_consecutive;
+        std::fprintf(stderr,
+                     "maburplay: decode watchdog -- %llu AUs submitted with no decoded frame "
+                     "for 2 s; resetting decoder and resyncing (attempt %d)\n",
+                     static_cast<unsigned long long>(backend_submits - wd_submits),
+                     wd_consecutive);
+#ifdef MABUR_PLAYER_HW
+        if (presenter) presenter->drop_all();
+#endif
+        if (wd_consecutive < 3) {
+          backend->flush();
+        } else if (wd_consecutive == 3) {
+          // Escalation: mpi->reset() is provably insufficient after a
+          // kernel-side rkvdec2 force-reset (observed live: 52 consecutive
+          // no-op resets while the ring flowed clean). Tear the whole MPP
+          // context down and build a fresh one.
+          std::fprintf(stderr,
+                       "maburplay: decode watchdog -- reset ineffective; recreating the "
+                       "decoder context\n");
+          backend.reset();  // destroy the wedged context BEFORE creating anew
+          backend = maburplay::make_backend(cfg.backend);
+          if (!backend || !backend->init(bcfg, frame_sink)) {
+            std::fprintf(stderr,
+                         "maburplay: decoder recreation failed -- exiting for respawn\n");
+            return 1;
+          }
+        } else {
+          // Even a fresh context won't decode: something below us (VPU,
+          // kernel, stream) needs a full process restart. The init wrapper
+          // respawns us in ~1 s with a clean slate.
+          std::fprintf(stderr,
+                       "maburplay: decode watchdog -- recreation ineffective; exiting for "
+                       "respawn\n");
+          return 1;
+        }
+        backend_armed = false;  // resync at the next sid0 AU
+        wd_submits = backend_submits;
+        wd_last_progress = now;
+      }
+    }
     if (fps_log) {
       const auto now = std::chrono::steady_clock::now();
       const double dt = std::chrono::duration<double>(now - t_last_fps_log).count();
@@ -478,11 +561,23 @@ int main(int argc, char** argv) {
         const double fps = static_cast<double>(frame_count - frames_at_last_fps_log) / dt;
 #ifdef MABUR_PLAYER_HW
         if (presenter) {
-          std::fprintf(stderr, "fps-log: fps=%.1f frames=%llu commit_errors=%llu async=%s\n", fps,
+          const uint64_t flips = presenter->flips();
+          std::fprintf(stderr,
+                       "fps-log: fps=%.1f flips/s=%.1f repl=%llu frames=%llu commit_errors=%llu "
+                       "async=%s\n",
+                       fps, static_cast<double>(flips - flips_at_last_fps_log) / dt,
+                       static_cast<unsigned long long>(presenter->busy_replaced()),
                        static_cast<unsigned long long>(frame_count),
                        static_cast<unsigned long long>(presenter->commit_errors()),
                        !presenter->async_probed() ? "probing"
                        : presenter->async_flip_active() ? "on" : "off");
+          flips_at_last_fps_log = flips;
+          // Stall diagnostic: a zero-fps second mid-session means the
+          // delivery chain froze somewhere -- dump where the reader sits
+          // relative to the ring so the stuck stage is identifiable.
+          if (fps < 0.5 && frame_count > 0)
+            std::fprintf(stderr, "fps-log: STALL %s trunc_skip=%llu\n", ring.debug_line().c_str(),
+                         static_cast<unsigned long long>(truncated_skipped));
         } else
 #endif
         {

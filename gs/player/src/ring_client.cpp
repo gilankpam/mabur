@@ -179,4 +179,15 @@ void RingClient::service_door_(int timeout_ms) {
   }
 }
 
+std::string RingClient::debug_line() const {
+  char buf[160];
+  std::snprintf(buf, sizeof(buf),
+                "ring: cursor=%llu wseq=%llu dead=%d ok=%d door_fd=%d delivered=%llu resyncs=%llu",
+                static_cast<unsigned long long>(reader_.debug_cursor()),
+                static_cast<unsigned long long>(reader_.debug_wseq()), reader_.dead() ? 1 : 0,
+                reader_.ok() ? 1 : 0, door_fd_, static_cast<unsigned long long>(delivered_),
+                static_cast<unsigned long long>(reader_.resyncs()));
+  return std::string(buf);
+}
+
 }  // namespace maburplay

@@ -235,6 +235,10 @@ const uint8_t* AuRingReader::slot_base_(uint64_t rec_no) const {
              (kAuSlotHdrBytes + static_cast<size_t>(geom_.slot_bytes));
 }
 
+uint64_t AuRingReader::debug_wseq() const {
+  return map_ ? load64(map_ + kOffWriteSeq) : 0;
+}
+
 AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
                                      std::vector<uint8_t>* payload) {
   if (dead_) return Res::kNone;

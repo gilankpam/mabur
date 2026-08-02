@@ -53,6 +53,8 @@ class RingClient {
   uint64_t truncated_base() const { return truncated_base_; }
   uint64_t resyncs() const { return reader_.resyncs(); }
   bool dead() const { return reader_.dead(); }
+  // Stall diagnostics: one line of reader/doorbell internals for fps-log.
+  std::string debug_line() const;
 
  private:
   // POLICY (the point of the native player, spec §maburplay):

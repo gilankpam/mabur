@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 #include <drm_fourcc.h>
 #include <xf86drm.h>
@@ -45,6 +46,37 @@ uint32_t find_property(int fd, uint32_t obj_id, uint32_t obj_type, const char* n
   }
   drmModeFreeObjectProperties(props);
   return id;
+}
+
+// Resolves a plane's mutable "zpos" range property: id + [min, max]. Returns
+// 0 when the plane has no zpos prop (immutable stacking; caller logs and
+// hopes the defaults are sane). vop2 exposes zpos on every window.
+uint32_t find_zpos_range(int fd, uint32_t plane_id, uint64_t* min_out, uint64_t* max_out) {
+  drmModeObjectPropertiesPtr props =
+      drmModeObjectGetProperties(fd, plane_id, DRM_MODE_OBJECT_PLANE);
+  if (!props) return 0;
+  uint32_t id = 0;
+  for (uint32_t i = 0; i < props->count_props; ++i) {
+    drmModePropertyPtr prop = drmModeGetProperty(fd, props->props[i]);
+    if (!prop) continue;
+    if (std::strcmp(prop->name, "zpos") == 0 && !(prop->flags & DRM_MODE_PROP_IMMUTABLE) &&
+        prop->count_values >= 2) {
+      id = prop->prop_id;
+      *min_out = static_cast<uint64_t>(prop->values[0]);
+      *max_out = static_cast<uint64_t>(prop->values[1]);
+      drmModeFreeProperty(prop);
+      break;
+    }
+    drmModeFreeProperty(prop);
+  }
+  drmModeFreeObjectProperties(props);
+  return id;
+}
+
+uint64_t mono_ms() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000u + static_cast<uint64_t>(ts.tv_nsec) / 1000000u;
 }
 
 void close_gem_handle(int fd, uint32_t handle) {
@@ -103,15 +135,23 @@ struct DrmPresenter::Impl {
   uint32_t prop_crtc_mode_id = 0;
   uint32_t prop_crtc_active = 0;
 
+  // zpos stacking (the black-screen fix): vop2's default z-order put the
+  // Smart0 backdrop ABOVE the Esmart0 video plane -- commits all succeeded
+  // while the video rendered underneath a black rectangle. Set explicitly.
+  uint32_t zpos_video_prop = 0, zpos_primary_prop = 0;
+  uint64_t zpos_video_val = 0, zpos_primary_val = 0;
+
   bool inited = false;
   bool needs_modeset = true;  // next commit must be a full blocking ALLOW_MODESET commit
   bool flip_pending = false;  // a NONBLOCK|PAGE_FLIP_EVENT commit is outstanding
+  uint64_t flip_since_ms = 0;  // when flip_pending was set (watchdog)
 
   bool async_probed = false;
   bool async_active = false;
 
   uint64_t commit_errors = 0;
   uint64_t frames_dropped_busy = 0;
+  uint64_t flips_total = 0;
 
   struct Slot {
     bool valid = false;
@@ -121,6 +161,10 @@ struct DrmPresenter::Impl {
   };
   Slot on_screen;
   Slot pending;
+  // Mailbox: newest frame that arrived while a flip was outstanding. Holds
+  // the raw DmaFrame only (fb_id 0 -- no FB created until submission);
+  // submitted by on_flip() the moment the outstanding flip lands.
+  Slot mailbox;
 
   ~Impl();
 
@@ -139,7 +183,7 @@ struct DrmPresenter::Impl {
 void DrmPresenter::Impl::release_slot(Slot& s) {
   if (!s.valid) return;
   if (fd >= 0) {
-    drmModeRmFB(fd, s.fb_id);
+    if (s.fb_id) drmModeRmFB(fd, s.fb_id);  // mailbox slots have no FB yet
     close_gem_handle(fd, s.gem_handle);
   }
   if (release) release(s.frame);
@@ -148,10 +192,21 @@ void DrmPresenter::Impl::release_slot(Slot& s) {
 
 void DrmPresenter::Impl::on_flip() {
   flip_pending = false;
-  if (!pending.valid) return;  // spurious/duplicate event -- nothing to promote
-  if (on_screen.valid) release_slot(on_screen);
-  on_screen = pending;
-  pending = Slot{};
+  if (pending.valid) {
+    ++flips_total;
+    if (on_screen.valid) release_slot(on_screen);
+    on_screen = pending;
+    pending = Slot{};
+  }
+  // Submit the mailbox frame now that the pipe has a free slot. Bounded
+  // re-entrancy: present() -> poll_events() -> on_flip() -> present() --
+  // the inner present() sees flip_pending == false and commits without
+  // recursing further (its own poll_events guard is behind flip_pending).
+  if (mailbox.valid) {
+    const DmaFrame f = mailbox.frame;
+    mailbox = Slot{};  // hand ownership to present(); do NOT release
+    present(f);
+  }
 }
 
 void DrmPresenter::Impl::on_flip_static(int /*fd*/, unsigned int /*sequence*/,
@@ -228,8 +283,15 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
   const drmModeModeInfo* preferred = nullptr;
   for (int i = 0; i < chosen->count_modes; ++i) {
     const drmModeModeInfo* m = &chosen->modes[i];
-    if (m->type & DRM_MODE_TYPE_PREFERRED) preferred = m;
-    if (have_want && static_cast<int>(m->hdisplay) == want_w &&
+    // Interlaced modes are never acceptable for this player (progressive
+    // 60 fps content on a 1080i mode = combing artifacts at half the
+    // temporal rate). The connector lists 1080i@60 AFTER 1080p@60, and an
+    // early version of this loop kept overwriting `selected` with later
+    // matches -- shipping the interlaced mode. Skip them entirely, and
+    // take the FIRST acceptable match.
+    if (m->flags & DRM_MODE_FLAG_INTERLACE) continue;
+    if (!preferred && (m->type & DRM_MODE_TYPE_PREFERRED)) preferred = m;
+    if (!selected && have_want && static_cast<int>(m->hdisplay) == want_w &&
         static_cast<int>(m->vdisplay) == want_h && static_cast<int>(m->vrefresh) == want_fps) {
       selected = m;
     }
@@ -394,6 +456,31 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
     }
   }
 
+  // Resolve zpos on both planes and pin the stacking: video at the top of
+  // its range, backdrop at the bottom. Without this the kernel's default
+  // zpos left the backdrop covering the video (observed on vop2: Smart0
+  // normalized-zpos 1 over Esmart0's 0 -- a fully black screen with every
+  // commit succeeding).
+  {
+    uint64_t vmin = 0, vmax = 0;
+    zpos_video_prop = find_zpos_range(fd, plane_id, &vmin, &vmax);
+    if (zpos_video_prop) zpos_video_val = vmax;
+    if (primary_fb_id) {
+      uint64_t pmin = 0, pmax = 0;
+      zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
+      if (zpos_primary_prop) zpos_primary_val = pmin;
+    }
+    if (!zpos_video_prop)
+      std::fprintf(stderr,
+                   "DrmPresenter: warning: video plane %u has no mutable zpos -- stacking is at "
+                   "the driver's mercy\n",
+                   plane_id);
+    else
+      std::fprintf(stderr, "DrmPresenter: zpos pinned: video plane %u -> %llu%s\n", plane_id,
+                   static_cast<unsigned long long>(zpos_video_val),
+                   zpos_primary_prop ? " (backdrop -> min)" : "");
+  }
+
   if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob_id) != 0) {
     std::fprintf(stderr, "DrmPresenter: drmModeCreatePropertyBlob(mode) failed: %s\n",
                  std::strerror(errno));
@@ -417,17 +504,45 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
   }
 
   if (flip_pending) {
-    // Backpressure: the previous NONBLOCK commit's flip event hasn't
-    // landed yet. The contract keeps only two buffers alive (on-screen +
-    // queued); rather than block or grow a third slot, drop this frame --
-    // by the time the queued one flips it would already be stale.
-    if (release) release(frame);
-    ++frames_dropped_busy;
-    if (frames_dropped_busy == 1 || frames_dropped_busy % 100 == 0) {
-      std::fprintf(stderr, "DrmPresenter: dropped frame while flip pending (count=%llu)\n",
-                   static_cast<unsigned long long>(frames_dropped_busy));
+    // The event may have already landed without the main loop reaping it
+    // yet -- drain opportunistically before deciding to drop.
+    poll_events();
+  }
+  if (flip_pending) {
+    // Watchdog (the pipeline-stall fix): a lost/unreaped flip event would
+    // otherwise leave flip_pending latched forever -- every frame drops,
+    // the two held DmaFrames never return to MPP, its internal buffer
+    // group exhausts, and decode freezes (observed live: frames counter
+    // hard-stalled while the ring kept flowing). 200 ms = 12 vsyncs, far
+    // beyond any legitimate flip latency: force-complete and carry on.
+    const uint64_t now = mono_ms();
+    if (flip_since_ms && now - flip_since_ms > 200) {
+      std::fprintf(stderr,
+                   "DrmPresenter: flip event lost (>200 ms) -- force-completing (fps may hitch)\n");
+      on_flip();
+      flip_since_ms = 0;
     }
-    return false;
+  }
+  if (flip_pending) {
+    // Mailbox backpressure: a NONBLOCK commit is still outstanding
+    // (re-committing would EBUSY). SVC-T delivery is bursty -- base and
+    // enhance frames of adjacent capture times decode back-to-back at the
+    // VENC's alternating cadence -- so dropping the NEW frame here halved
+    // the displayed rate (visible judder). Instead park the newest frame
+    // in `mailbox`; on_flip() submits it the instant the outstanding flip
+    // lands, and a newer arrival meanwhile replaces (releases) the parked
+    // one. Displayed rate stays at vsync, always with the freshest frame.
+    if (mailbox.valid) {
+      ++frames_dropped_busy;  // the replaced frame is the true "drop"
+      release_slot(mailbox);
+    }
+    Slot m;
+    m.valid = true;
+    m.fb_id = 0;  // FB not created yet -- deferred until submit
+    m.gem_handle = 0;
+    m.frame = frame;
+    mailbox = m;
+    return true;
   }
 
   uint32_t handle = 0;
@@ -476,10 +591,14 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
 
   const bool do_modeset = needs_modeset;
   if (do_modeset) {
+    if (zpos_video_prop)
+      drmModeAtomicAddProperty(req, plane_id, zpos_video_prop, zpos_video_val);
     drmModeAtomicAddProperty(req, connector_id, prop_connector_crtc_id, crtc_id);
     drmModeAtomicAddProperty(req, crtc_id, prop_crtc_mode_id, mode_blob_id);
     drmModeAtomicAddProperty(req, crtc_id, prop_crtc_active, 1);
     if (primary_fb_id) {
+      if (zpos_primary_prop)
+        drmModeAtomicAddProperty(req, primary_plane_id, zpos_primary_prop, zpos_primary_val);
       drmModeAtomicAddProperty(req, primary_plane_id, primary_props.fb_id, primary_fb_id);
       drmModeAtomicAddProperty(req, primary_plane_id, primary_props.crtc_id, crtc_id);
       drmModeAtomicAddProperty(req, primary_plane_id, primary_props.src_x, 0);
@@ -544,6 +663,7 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
   } else {
     pending = new_slot;
     flip_pending = true;
+    flip_since_ms = mono_ms();
   }
   return true;
 }
@@ -574,6 +694,7 @@ void DrmPresenter::Impl::drop_all() {
   // `pending`'s FB may still be referenced by a commit the kernel hasn't
   // confirmed as flipped -- tearing it down here is the same "unverified
   // interaction" flagged in the carried requirement; see the report.
+  if (mailbox.valid) release_slot(mailbox);
   if (pending.valid) release_slot(pending);
   if (on_screen.valid) release_slot(on_screen);
   flip_pending = false;
@@ -581,6 +702,7 @@ void DrmPresenter::Impl::drop_all() {
 }
 
 DrmPresenter::Impl::~Impl() {
+  if (mailbox.valid) release_slot(mailbox);
   if (pending.valid) release_slot(pending);
   if (on_screen.valid) release_slot(on_screen);
   if (fd >= 0) {
@@ -605,6 +727,10 @@ void DrmPresenter::poll_events() { impl_->poll_events(); }
 void DrmPresenter::drop_all() { impl_->drop_all(); }
 
 uint64_t DrmPresenter::commit_errors() const { return impl_->commit_errors; }
+
+uint64_t DrmPresenter::flips() const { return impl_->flips_total; }
+
+uint64_t DrmPresenter::busy_replaced() const { return impl_->frames_dropped_busy; }
 
 bool DrmPresenter::async_flip_active() const { return impl_->async_active; }
 

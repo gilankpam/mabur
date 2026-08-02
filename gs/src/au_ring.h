@@ -121,6 +121,10 @@ class AuRingReader {
   Res next(AuRecordMeta* meta, std::vector<uint8_t>* payload);
   uint64_t resyncs() const { return resyncs_; }
   AuRingGeom geom() const { return geom_; }
+  // Stall diagnostics only (racy reads are fine for logging).
+  bool ok() const { return map_ != nullptr; }
+  uint64_t debug_cursor() const { return cursor_; }
+  uint64_t debug_wseq() const;
   bool dead() const { return dead_; }
 
  private:

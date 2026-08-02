@@ -71,6 +71,8 @@ class DrmPresenter {
 
   // Diagnostics for --fps-log / gate reporting.
   uint64_t commit_errors() const;
+  uint64_t flips() const;           // completed page flips (frames actually shown)
+  uint64_t busy_replaced() const;   // mailbox frames replaced before display
   bool async_flip_active() const;   // true once ASYNC has been confirmed working
   bool async_probed() const;        // true once the one-shot ASYNC probe has run
 
