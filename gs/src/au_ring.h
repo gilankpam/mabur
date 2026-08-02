@@ -12,6 +12,31 @@ namespace maburgs {
 // maburplay/ausniff consume. Fixed-slot seqlock design; layout is mirrored
 // byte-for-byte by tools/bench/ausniff.py — change both together.
 // Spec: docs/superpowers/specs/2026-08-02-gs-player-au-ring-design.md.
+//
+// RingHdr (little-endian, kAuRingHdrBytes-byte header page):
+//    0 u32 magic            — 'AUBM' (kAuRingMagic)
+//    4 u32 version           — kAuRingVersion
+//    8 u32 slot_bytes
+//   12 u32 slot_count
+//   16 u64 write_seq         — records ever published; release-stored last
+//   24 u64 dropped_oversize
+//   32 u64 epoch             — writer boot stamp (CLOCK_MONOTONIC ns | 1),
+//                              nonzero; re-stamped whenever the ring file is
+//                              (re)created, independent of write_seq — this
+//                              is what lets a reader detect a writer restart
+//                              that climbed past its cursor before the next
+//                              poll (see AuRingReader::next, kResync). 0 in
+//                              the header means a pre-epoch (PR-A) writer.
+// SlotHdr (64-byte header per slot, offsets relative to the slot base):
+//    0 u32 lock              — seqlock word; odd = write in progress
+//    4 u32 len
+//    8 u64 rec_no
+//   16 u64 frame_id64
+//   24 u32 pts_us
+//   28 u8  sid
+//   29 u8  flags             — idr|discont|complete (kRecFlagComplete)
+//   30 u8  codec
+// followed by slot_bytes of Annex-B AU payload.
 inline constexpr uint32_t kAuRingMagic = 0x4D425541;  // "AUBM" LE
 inline constexpr uint32_t kAuRingVersion = 1;
 inline constexpr size_t kAuRingHdrBytes = 4096;
@@ -88,6 +113,7 @@ class AuRingReader {
   Res next(AuRecordMeta* meta, std::vector<uint8_t>* payload);
   uint64_t resyncs() const { return resyncs_; }
   AuRingGeom geom() const { return geom_; }
+  bool dead() const { return dead_; }
 
  private:
   const uint8_t* slot_base_(uint64_t rec_no) const;
@@ -97,6 +123,9 @@ class AuRingReader {
   uint64_t cursor_ = 0;
   uint64_t resyncs_ = 0;
   uint64_t last_wseq_ = 0;
+  uint64_t epoch_ = 0;      // latched at open; 0 = ring predates epochs
+  bool dead_ = false;
+  std::string path_;        // for geometry-change reopen
 };
 
 }  // namespace maburgs
