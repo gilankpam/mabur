@@ -66,4 +66,13 @@ TEST(notify_without_client_is_noop) {
   unlink(path.c_str());
 }
 
+TEST(open_rejects_overlong_path) {
+  maburgs::AuDoorbell db;
+  const std::string long_path(200, 'x');  // > sizeof(sun_path)
+  CHECK(!db.open(long_path, {4096, 8}));
+  db.poll();        // must be a no-op, not accept4 on an unbound socket
+  db.notify(1);     // no-op
+  CHECK(!db.client_connected());
+}
+
 MTEST_MAIN

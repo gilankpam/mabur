@@ -14,12 +14,15 @@ AuDoorbell::~AuDoorbell() {
 }
 
 bool AuDoorbell::open(const std::string& path, AuRingGeom geom) {
+  // Validate path length before acquiring any resources.
+  sockaddr_un a{};
+  if (path.size() >= sizeof(a.sun_path)) return false;
+
   geom_ = geom;
   listen_ = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0);
   if (listen_ < 0) return false;
-  sockaddr_un a{};
+
   a.sun_family = AF_UNIX;
-  if (path.size() >= sizeof(a.sun_path)) return false;
   std::strncpy(a.sun_path, path.c_str(), sizeof(a.sun_path) - 1);
   ::unlink(path.c_str());
   if (::bind(listen_, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0 ||
