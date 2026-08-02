@@ -91,6 +91,11 @@ if(MABUR_BUILD_GS)
     set_tests_properties(gs_e2e PROPERTIES ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
   endif()
 endif()
+if(MABUR_BUILD_DRONE AND MABUR_BUILD_GS)
+  add_test(NAME gs_au_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_au_e2e.sh)
+  set_tests_properties(gs_au_e2e PROPERTIES
+    ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
+endif()
 # Host-only burst-loss simulator (spec 2026-07-15-per-layer-symbol-size).
 # Not a benchmark of real time — fake clock — so safe as a ctest.
 add_executable(burst_sim ${CMAKE_SOURCE_DIR}/tools/bench/burst_sim.cpp)
