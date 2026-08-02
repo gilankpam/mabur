@@ -304,8 +304,13 @@ uint64_t DvrMux::unwrap_pts(uint32_t pts_us) {
   if (!have_pts_) {
     have_pts_ = true;
     last_pts_raw_ = pts_us;
-    last_pts64_ = pts_us;
-    return last_pts64_;
+    // Rebase the recording timeline to zero at the first sample. The
+    // capture pts is encoder-session-relative; writing it absolute into
+    // tfdt made players front-pad the seekbar with the session's age
+    // (observed: ffprobe duration 403 s for 68 s of content recorded
+    // ~7 min after an encoder restart).
+    last_pts64_ = 0;
+    return 0;
   }
   // Same delta-unwrap technique as AuRingWriter::finish's frame_id
   // unwrap (gs/src/au_ring.cpp): the u32-wrapped forward delta is

@@ -279,11 +279,14 @@ TEST(dvr_mux_pts_wrap_tfdt_strictly_increasing) {
   uint64_t tfdt1 = read_tfdt(moof1);
   uint64_t tfdt2 = read_tfdt(moof2);
 
-  // First sample's pts is taken verbatim as the unwrap base.
-  CHECK(tfdt1 == 0xFFFFFFF0u);
-  // Unwrap: delta(0x00000005, 0xFFFFFFF0) = 0x15 = 21 -> pts64 = base+21.
-  // Then delta(0x00004145, 0x00000005) = 0x4140 = 16704 -> pts64 = base+21+16704.
-  uint64_t expect_tfdt2 = 0xFFFFFFF0ull + 21ull + 16704ull;
+  // The recording timeline is REBASED to zero at the first sample (the
+  // raw capture pts is encoder-session-relative; absolute tfdt made
+  // players front-pad the seekbar with the session's age).
+  CHECK(tfdt1 == 0);
+  // Unwrap across the u32 wrap: delta(0x00000005, 0xFFFFFFF0) = 0x15 = 21
+  // -> t=21. Then delta(0x00004145, 0x00000005) = 0x4140 = 16704
+  // -> t = 21 + 16704.
+  uint64_t expect_tfdt2 = 21ull + 16704ull;
   CHECK(tfdt2 == expect_tfdt2);
   CHECK(tfdt2 > tfdt1);  // strictly increasing despite the raw u32 wrap
 

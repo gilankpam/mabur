@@ -1,9 +1,11 @@
 #!/bin/sh
-# maburplay respawn wrapper -- same loop contract as pixelpilot.sh:
-# exit codes 2 (config error), 143 (SIGTERM) and 137 (SIGKILL) stop the
-# loop; anything else (including the decode watchdog's exit-for-respawn
-# path, exit 1) restarts after 1 s with a clean DRM master and a fresh
-# MPP session.
+# maburplay respawn wrapper -- pixelpilot.sh's loop shape, but a stricter
+# stop contract: only exit 2 (config error) and 143 (SIGTERM, what our own
+# stop path sends) end the loop. 137 (SIGKILL) RESPAWNS, deliberately
+# diverging from pixelpilot.sh: the OOM killer and a crashed-box power cut
+# both look like SIGKILL, and an FPV ground station must come back from
+# those (the DVR crash gate kills -9 mid-recording to prove it). The
+# decode watchdog's exit-for-respawn path (exit 1) also lands here.
 
 case "$1" in
   stop)
@@ -26,7 +28,7 @@ esac
   while true; do
     /usr/local/bin/maburplay -c /etc/maburplay.json
     rc=$?
-    if [ "$rc" = 2 ] || [ "$rc" = 143 ] || [ "$rc" = 137 ]; then
+    if [ "$rc" = 2 ] || [ "$rc" = 143 ]; then
       echo "maburplay exited: $rc, skip restart ...."
       exit 2
     fi
