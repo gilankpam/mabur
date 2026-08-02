@@ -8,6 +8,18 @@ target_include_directories(mabur_player_core
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(mabur_player_core PUBLIC mabur_gs_core)
 
+# Hardware backends (rockchip mpp decode + libdrm KMS presenter): aarch64
+# cross build only. OFF by default -- the host has neither SDK, and the
+# host e2e only ever exercises the null backend. When ON, two cache vars
+# must point at the toolchain/ artifacts tools/build-arm64.sh stages:
+#   MABUR_MPP_ROOT - install prefix with lib/librockchip_mpp.a (static;
+#     built from source since nixpkgs has no rockchip-mpp package) and
+#     include/rockchip/*.h.
+#   MABUR_DRM_ROOT - prefix with lib/libdrm.a (static, prebuilt by Nix via
+#     pkgsCross.aarch64-multiplatform.pkgsStatic.libdrm) and include/
+#     (xf86drm.h, xf86drmMode.h, plus the libdrm/ subdir for driver headers).
+option(MABUR_PLAYER_HW "rockchip mpp + drm hardware backends (aarch64 cross build only); needs -DMABUR_MPP_ROOT= and -DMABUR_DRM_ROOT=, see tools/build-arm64.sh" OFF)
+
 # maburplay: main.cpp + the null backend are always built (host and cross).
 # Hardware backends (mpp_backend.cpp, drm_presenter.cpp) are appended here
 # behind MABUR_PLAYER_HW starting Task 7.
@@ -15,3 +27,21 @@ add_executable(maburplay
   src/main.cpp
   src/null_backend.cpp)
 target_link_libraries(maburplay PRIVATE mabur_player_core)
+
+if(MABUR_PLAYER_HW)
+  if(NOT MABUR_MPP_ROOT OR NOT MABUR_DRM_ROOT)
+    message(FATAL_ERROR
+      "MABUR_PLAYER_HW=ON requires -DMABUR_MPP_ROOT=<mpp install prefix> "
+      "and -DMABUR_DRM_ROOT=<libdrm install prefix>; see tools/build-arm64.sh")
+  endif()
+  target_sources(maburplay PRIVATE src/mpp_backend.cpp src/drm_presenter.cpp)
+  target_compile_definitions(maburplay PRIVATE MABUR_PLAYER_HW=1)
+  target_include_directories(maburplay PRIVATE
+    "${MABUR_MPP_ROOT}/include"
+    "${MABUR_DRM_ROOT}/include"
+    "${MABUR_DRM_ROOT}/include/libdrm")
+  target_link_libraries(maburplay PRIVATE
+    "${MABUR_MPP_ROOT}/lib/librockchip_mpp.a"
+    "${MABUR_DRM_ROOT}/lib/libdrm.a"
+    pthread)
+endif()
