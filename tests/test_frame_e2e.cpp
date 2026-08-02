@@ -72,7 +72,7 @@ TEST(frame_e2e_clean_and_lossy) {
       });
   maburgs::FrameStream fs(
       {50, 8},
-      {[&](const framewire::FrameHdr& h) { pktz.begin_frame(h); cur.clear(); },
+      {[&](const framewire::FrameHdr& h, uint8_t) { pktz.begin_frame(h); cur.clear(); },
        [&](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n);
          pktz.data(d, n); },
        [&](bool c) { pktz.end_frame(c);
@@ -139,7 +139,7 @@ TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
   uint64_t clean = 0, truncated = 0;
   maburgs::FrameStream fs(
       {50, 8},
-      {[&](const framewire::FrameHdr&) {},
+      {[&](const framewire::FrameHdr&, uint8_t) {},
        [&](const uint8_t*, size_t) {},
        [&](bool c) { c ? ++clean : ++truncated; }});
 

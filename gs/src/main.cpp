@@ -14,6 +14,8 @@
 #include <thread>
 
 #include "aggregator.h"
+#include "au_doorbell.h"
+#include "au_ring.h"
 #include "body_queue.h"
 #include "config.h"
 #include "frame_file_source.h"
@@ -151,6 +153,22 @@ static int run_radio(const maburgs::Config& cfg) {
   // Spec 2026-07-26 drone-telemetry.
   struct { std::optional<mabur::rc::Telem> t; uint64_t rx_ms = 0; } latest_telem;
 
+  maburgs::AuRingWriter au_ring;
+  maburgs::AuDoorbell au_bell;
+  bool au_on = false;
+  if (cfg.au_ring.enable) {
+    const maburgs::AuRingGeom geom{
+        static_cast<uint32_t>(cfg.au_ring.slot_kb) * 1024u,
+        static_cast<uint32_t>(cfg.au_ring.slot_count)};
+    au_on = au_ring.open(cfg.au_ring.path, geom);
+    if (au_on && !au_bell.open(cfg.au_ring.socket, au_ring.geom()))
+      std::fprintf(stderr, "warning: au_ring doorbell %s unusable\n",
+                   cfg.au_ring.socket.c_str());
+    if (!au_on)
+      std::fprintf(stderr, "warning: au_ring %s unusable; disabled\n",
+                   cfg.au_ring.path.c_str());
+  }
+
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits and streams Annex-B bytes into RtpPacketizer,
   // which builds RFC 7798 RTP for the udp sink.
@@ -175,10 +193,20 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::FrameStream fstream(
       {static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms),
        cfg.video_out.frame_lookahead},
-      {[&](const mabur::framewire::FrameHdr& h) { pktz.begin_frame(h); },
-       [&](const uint8_t* d, size_t n) { pktz.data(d, n); },
+      {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
+         pktz.begin_frame(h);
+         if (au_on) au_ring.begin(h, sid);
+       },
+       [&](const uint8_t* d, size_t n) {
+         pktz.data(d, n);
+         if (au_on) au_ring.append(d, n);
+       },
        [&](bool c) {
          pktz.end_frame(c);
+         if (au_on) {
+           const uint64_t rec = au_ring.finish(c);
+           if (rec != UINT64_MAX) au_bell.notify(rec);
+         }
          if (stats) stats->on_frame(mono_ms());
        }});
   // Only fragments from a peer that advertised the frame wire format may reach
@@ -342,6 +370,7 @@ static int run_radio(const maburgs::Config& cfg) {
                    vrx.peer_caps());
     }
     if (frame_wire) fstream.poll(drained_ms);
+    if (au_on) au_bell.poll();
 
     // Control step: layer delivery + residual from the decode window, plus
     // stream 1's cumulative symbol totals feeding the measured-loss window.
@@ -623,6 +652,22 @@ int main(int argc, char** argv) {
                    cfg.video_out.host.c_str(), cfg.video_out.port);
     emit = [&](const std::vector<uint8_t>& pkt) { udp->send(pkt.data(), pkt.size()); };
   }
+  maburgs::AuRingWriter au_ring;
+  maburgs::AuDoorbell au_bell;
+  bool au_on = false;
+  if (cfg.au_ring.enable) {
+    const maburgs::AuRingGeom geom{
+        static_cast<uint32_t>(cfg.au_ring.slot_kb) * 1024u,
+        static_cast<uint32_t>(cfg.au_ring.slot_count)};
+    au_on = au_ring.open(cfg.au_ring.path, geom);
+    if (au_on && !au_bell.open(cfg.au_ring.socket, au_ring.geom()))
+      std::fprintf(stderr, "warning: au_ring doorbell %s unusable\n",
+                   cfg.au_ring.socket.c_str());
+    if (!au_on)
+      std::fprintf(stderr, "warning: au_ring %s unusable; disabled\n",
+                   cfg.au_ring.path.c_str());
+  }
+
   // Same video tail as run_radio (fragments -> FrameStream -> RtpPacketizer),
   // so a replay exercises the real assembly and packetization rather than a
   // dry-run-only shortcut. No session negotiation here: the input file IS the
@@ -631,9 +676,21 @@ int main(int argc, char** argv) {
   maburgs::FrameStream fstream(
       {static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms),
        cfg.video_out.frame_lookahead},
-      {[&](const mabur::framewire::FrameHdr& h) { pktz.begin_frame(h); },
-       [&](const uint8_t* d, size_t n) { pktz.data(d, n); },
-       [&](bool c) { pktz.end_frame(c); }});
+      {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
+         pktz.begin_frame(h);
+         if (au_on) au_ring.begin(h, sid);
+       },
+       [&](const uint8_t* d, size_t n) {
+         pktz.data(d, n);
+         if (au_on) au_ring.append(d, n);
+       },
+       [&](bool c) {
+         pktz.end_frame(c);
+         if (au_on) {
+           const uint64_t rec = au_ring.finish(c);
+           if (rec != UINT64_MAX) au_bell.notify(rec);
+         }
+       }});
   uint64_t replay_ms = 0;  // clock of the body being fed, for gap timeouts
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {
     fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), replay_ms);
@@ -647,6 +704,7 @@ int main(int argc, char** argv) {
     agg.on_rx_body(*m);
     const uint64_t now_ms = m->mono_us / 1000;
     fstream.poll(now_ms);
+    if (au_on) au_bell.poll();
     if (now_ms >= last_ms + 1000) {
       agg.poll(now_ms);
       last_ms = now_ms;
@@ -658,6 +716,11 @@ int main(int argc, char** argv) {
   agg.poll(last_ms + static_cast<uint64_t>(cfg.fec.decode_deadline_ms) + 1);
   fstream.poll(last_ms + static_cast<uint64_t>(cfg.fec.decode_deadline_ms) +
                static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms) + 1);
+
+  if (au_on)
+    std::fprintf(stderr, "au_ring: published=%llu dropped_oversize=%llu\n",
+                 static_cast<unsigned long long>(au_ring.published()),
+                 static_cast<unsigned long long>(au_ring.dropped_oversize()));
 
   std::fprintf(stderr, "frames=%llu dropped=%llu malformed=%llu rc=%llu bad_card=%llu\n",
                static_cast<unsigned long long>(src.frames_read()),
