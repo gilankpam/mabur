@@ -102,17 +102,32 @@ std::vector<uint8_t> HevcParams::hvcc() const {
   std::vector<uint8_t> out;
   out.push_back(0x01);  // configurationVersion
 
-  // sps_[0..1] is the 2-byte NAL header; sps_[2] packs
+  // sps_[0..1] is the 2-byte NAL header; the RBSP that follows packs
   // sps_video_parameter_set_id(4)/sps_max_sub_layers_minus1(3)/
-  // sps_temporal_id_nesting_flag(1). profile_tier_level immediately
-  // follows at sps_[3], byte-aligned throughout (1 byte
-  // profile_space/tier/profile_idc, 4 bytes compat flags, 6 bytes
-  // constraint flags, 1 byte level_idc = 12 bytes, i.e. sps_[3..14]
-  // inclusive), so it copies verbatim. NOTE: this assumes no
-  // emulation-prevention (0x00 0x00 0x03) bytes fall inside sps_[3..14],
-  // which holds for the real encoder output this player targets.
+  // sps_temporal_id_nesting_flag(1) in its first byte, then the
+  // byte-aligned 12-byte profile_tier_level (1 byte profile_space/tier/
+  // profile_idc, 4 bytes compat flags, 6 bytes constraint flags, 1 byte
+  // level_idc). The wire bytes are the ESCAPED bitstream: any 00 00
+  // pair inside the PTL grows a 00 00 03 emulation-prevention byte --
+  // and a typical Main-profile SPS (compat 0x60000000, zero constraint
+  // flags) has two of them RIGHT THERE. Copying the escaped bytes
+  // shifted every field after the first EPB (final-review finding; the
+  // e2e gates can't see it because ffmpeg-family players parse the
+  // in-band SPS, not hvcC). De-escape the RBSP prefix first.
   assert(sps_.size() >= 15);
-  out.insert(out.end(), sps_.begin() + 3, sps_.begin() + 15);
+  uint8_t rbsp[13];  // RBSP bytes 0..12: sps header byte + 12-byte PTL
+  size_t got = 0, zeros = 0;
+  for (size_t i = 2; i < sps_.size() && got < sizeof(rbsp); ++i) {
+    const uint8_t b = sps_[i];
+    if (zeros >= 2 && b == 0x03) {  // emulation-prevention byte: skip
+      zeros = 0;
+      continue;
+    }
+    zeros = (b == 0x00) ? zeros + 1 : 0;
+    rbsp[got++] = b;
+  }
+  assert(got == sizeof(rbsp));
+  out.insert(out.end(), rbsp + 1, rbsp + 13);  // PTL = RBSP bytes 1..12
 
   out.push_back(0xF0);
   out.push_back(0x00);  // min_spatial_segmentation_idc=0 (reserved 1111 | 0)

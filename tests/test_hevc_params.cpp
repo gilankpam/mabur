@@ -185,6 +185,35 @@ TEST(hvcc_layout_matches_field_plan) {
   CHECK(off == h.size());  // nothing trailing/missing
 }
 
+TEST(hvcc_deescapes_emulation_prevention_in_ptl) {
+  // A realistic Main-profile SPS: compat flags 0x60000000 and zero
+  // constraint flags put two 00 00 pairs inside the PTL, which the
+  // ESCAPED wire bitstream renders with 00 00 03 emulation-prevention
+  // bytes. The hvcC copy must de-escape (final-review finding: copying
+  // wire bytes shifted every PTL field after the first EPB; ffmpeg-family
+  // gates can't see it because they parse the in-band SPS, not hvcC).
+  //
+  // RBSP:    AB | 01 60 00 00 00 90 00 00 00 00 00 00  (hdr | 12-byte PTL)
+  // Escaped: AB   01 60 00 00 03 00 90 00 00 03 00 00 03 00 00 03 00 ...
+  std::vector<uint8_t> sps_escaped =
+      cat({nal_header(33),
+           {0xAB, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x5D, 0xFF}});
+  HevcParams hp;
+  std::vector<uint8_t> au =
+      cat({kSc4, make_vps(), kSc3, sps_escaped, kSc3, make_pps()});
+  REQUIRE(hp.feed(au.data(), au.size()));
+
+  std::vector<uint8_t> h = hp.hvcc();
+  const std::vector<uint8_t> expect_ptl = {0x01, 0x60, 0x00, 0x00, 0x00, 0x90,
+                                           0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  REQUIRE(h.size() >= 13);
+  CHECK(std::memcmp(h.data() + 1, expect_ptl.data(), expect_ptl.size()) == 0);
+  // The stored SPS array payload stays ESCAPED (decoders de-escape it
+  // themselves); only the hvcC header fields are RBSP.
+  CHECK(hp.sps() == sps_escaped);
+}
+
 TEST(annexb_to_length_prefixed_roundtrip_mixed_start_codes) {
   std::vector<uint8_t> a = cat({nal_header(1), {0x01, 0x02, 0x03}});
   std::vector<uint8_t> b = cat({nal_header(19), {0xAA, 0xBB}});
