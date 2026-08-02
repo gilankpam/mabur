@@ -22,7 +22,7 @@ struct FrameStreamCfg {
 class FrameStream {
  public:
   struct Callbacks {
-    std::function<void(const mabur::framewire::FrameHdr&)> begin_frame;
+    std::function<void(const mabur::framewire::FrameHdr&, uint8_t sid)> begin_frame;
     std::function<void(const uint8_t*, size_t)> frame_data;  // Annex-B bytes, in order
     std::function<void(bool complete)> end_frame;
   };

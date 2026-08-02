@@ -175,7 +175,7 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::FrameStream fstream(
       {static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms),
        cfg.video_out.frame_lookahead},
-      {[&](const mabur::framewire::FrameHdr& h) { pktz.begin_frame(h); },
+      {[&](const mabur::framewire::FrameHdr& h, uint8_t) { pktz.begin_frame(h); },
        [&](const uint8_t* d, size_t n) { pktz.data(d, n); },
        [&](bool c) {
          pktz.end_frame(c);
@@ -631,7 +631,7 @@ int main(int argc, char** argv) {
   maburgs::FrameStream fstream(
       {static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms),
        cfg.video_out.frame_lookahead},
-      {[&](const mabur::framewire::FrameHdr& h) { pktz.begin_frame(h); },
+      {[&](const mabur::framewire::FrameHdr& h, uint8_t) { pktz.begin_frame(h); },
        [&](const uint8_t* d, size_t n) { pktz.data(d, n); },
        [&](bool c) { pktz.end_frame(c); }});
   uint64_t replay_ms = 0;  // clock of the body being fed, for gap timeouts

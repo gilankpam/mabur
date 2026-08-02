@@ -117,7 +117,7 @@ void FrameStream::try_emit(uint64_t now_ms) {
     }
     if (!have_next_emit_) { have_next_emit_ = true; next_emit_id64_ = head->id64; }
 
-    if (!head->began) { head->began = true; cb_.begin_frame(head->hdr); }
+    if (!head->began) { head->began = true; cb_.begin_frame(head->hdr, head->sid); }
     // Stream the contiguous chunk prefix (fragment 0 minus the FrameHdr).
     while (true) {
       auto it = head->chunks.find(head->emitted_upto);

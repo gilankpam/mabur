@@ -10,12 +10,12 @@ using mabur::framewire::FrameHdr;
 
 namespace {
 struct Capture {
-  struct Ev { char kind; FrameHdr hdr; std::vector<uint8_t> bytes; bool complete; };
+  struct Ev { char kind; FrameHdr hdr; std::vector<uint8_t> bytes; bool complete; uint8_t sid = 0; };
   std::vector<Ev> evs;
   std::vector<uint8_t> cur;
   FrameStream::Callbacks cbs() {
     return {
-        [this](const FrameHdr& h) { evs.push_back({'B', h, {}, false}); cur.clear(); },
+        [this](const FrameHdr& h, uint8_t sid) { evs.push_back({'B', h, {}, false, sid}); cur.clear(); },
         [this](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
         [this](bool c) { evs.push_back({'E', {}, cur, c}); cur.clear(); }};
   }
@@ -41,11 +41,12 @@ TEST(in_order_frames_emit_clean) {
   std::vector<uint8_t> pay(1000, 0xAB);
   for (uint16_t id = 0; id < 3; ++id)
     for (auto& p : frag_frame(frag, id, pay))
-      fs.push_fragment(1, p.data(), p.size(), 10 + id);
+      fs.push_fragment(3, p.data(), p.size(), 10 + id);
   REQUIRE(cap.evs.size() == 6);  // B E B E B E
   for (size_t i = 0; i < 6; i += 2) {
     CHECK(cap.evs[i].kind == 'B');
     CHECK(cap.evs[i].hdr.frame_id == i / 2);
+    CHECK(cap.evs[i].sid == 3);  // begin_frame carries the fragment's stream id
     CHECK(cap.evs[i + 1].complete);
     CHECK(cap.evs[i + 1].bytes == pay);  // FrameHdr stripped
   }
