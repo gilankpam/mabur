@@ -2,6 +2,7 @@
 // Host builds only ever link the null backend (this task); MppBackend /
 // DrmPresenter are cross-only (MABUR_PLAYER_HW, Task 7/8).
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,10 @@
 #include "ring_client.h"
 #include "video_backend.h"
 
+#ifdef MABUR_PLAYER_HW
+#include "mpp_backend.h"  // MppBackend::info_changes()/errors() for --decode-only
+#endif
+
 namespace {
 
 std::atomic<bool> g_stop{false};
@@ -29,11 +34,23 @@ void usage() {
   std::fprintf(stderr,
                "usage: maburplay [-c <config.json>] [--oneshot] "
                "[--backend null|mpp] [--no-dvr]\n"
+               "                 [--decode-only --seconds N]\n"
                "       maburplay --mux-annexb <in.265> <out.mp4>\n"
                "           (test support: mux a raw Annex-B HEVC elementary\n"
                "            stream straight through HevcParams+DvrMux to an\n"
                "            fMP4 file, bypassing the ring/backend entirely --\n"
-               "            used by the host e2e's real-HEVC decode gate)\n");
+               "            used by the host e2e's real-HEVC decode gate)\n"
+               "\n"
+               "--decode-only --seconds N: drive the backend straight off\n"
+               "  the ring for N seconds with no presenter, counting frames\n"
+               "  via the FrameSink; prints one line of stats JSON\n"
+               "  {\"frames\":N,\"fps\":X,\"fps_active\":X,\"info_changes\":N,\n"
+               "   \"errors\":N,\"errors_after_sync_3s\":N} and exits. fps is\n"
+               "  over the whole window; fps_active is over first-to-last\n"
+               "  decoded frame only (excludes the cold-attach/sid0-join\n"
+               "  wait). This is the hardware decode gate (see\n"
+               "  .superpowers/sdd/2026-08-02-pr-b-maburplay/task-8-brief.md).\n"
+               "  --no-dvr is respected as usual.\n");
 }
 
 // Reads a whole file into memory; empty vector on any failure (including a
@@ -147,6 +164,8 @@ int main(int argc, char** argv) {
   std::string config_path = "/etc/maburplay.json";
   bool oneshot = false;
   bool no_dvr = false;
+  bool decode_only = false;
+  double decode_only_seconds = 30.0;
   std::string backend_override;
 
   for (int i = 1; i < argc; ++i) {
@@ -159,6 +178,10 @@ int main(int argc, char** argv) {
       backend_override = argv[++i];
     } else if (a == "--no-dvr") {
       no_dvr = true;
+    } else if (a == "--decode-only") {
+      decode_only = true;
+    } else if (a == "--seconds" && i + 1 < argc) {
+      decode_only_seconds = std::atof(argv[++i]);
     } else {
       usage();
       return 2;
@@ -186,8 +209,22 @@ int main(int argc, char** argv) {
 
   const maburplay::BackendCfg bcfg = parse_screen_mode(cfg.screen_mode);
   maburplay::VideoBackend* const backend_ptr = backend.get();
-  const bool init_ok = backend->init(
-      bcfg, [backend_ptr](const maburplay::DmaFrame& f) { backend_ptr->release_frame(f); });
+  // Counted unconditionally (cheap, backend-agnostic): --decode-only reads
+  // frame_count/first-last frame timestamps directly; the normal run loop
+  // just carries the extra bookkeeping for free.
+  uint64_t frame_count = 0;
+  bool have_first_frame = false;
+  std::chrono::steady_clock::time_point t_first_frame, t_last_frame;
+  const bool init_ok = backend->init(bcfg, [&](const maburplay::DmaFrame& f) {
+    ++frame_count;
+    const auto now = std::chrono::steady_clock::now();
+    if (!have_first_frame) {
+      t_first_frame = now;
+      have_first_frame = true;
+    }
+    t_last_frame = now;
+    backend_ptr->release_frame(f);
+  });
   if (!init_ok) {
     std::fprintf(stderr, "maburplay: backend \"%s\" init failed\n", cfg.backend.c_str());
     return 2;
@@ -198,11 +235,41 @@ int main(int argc, char** argv) {
   bool dvr_open = false;
   uint64_t backend_submits = 0;
 
+  // Sync-point gate for the backend feed (and DVR's hvcC collection below):
+  // this live encoder's "rally" resilience mode emits exactly ONE real IRAP
+  // NAL, at session start, and never again -- au_is_irap()/kFlagIdr both
+  // stay false for the rest of the session (measured on hardware: neither
+  // ever fires past the opening IDR). The ~2 s periodic meta.sid==0 AUs are
+  // NOT IRAPs: they're parameter-set retransmission (fresh VPS/SPS/PPS)
+  // bundled with an ordinary refresh picture on sid 0 (the CRIT stream),
+  // while sid 1 (T0 base) and sid 3 (SVC-T enhance) carry ordinary P
+  // slices in between. A decoder that attaches mid-session (the normal
+  // deployment path -- the player comes up independently of the encoder)
+  // has to treat sid0 as the join/cut point instead of a true IRAP: drop
+  // AUs until the first sid==0 arrives, then feed everything in order.
+  // Because sid0 is a refresh picture, not a clean random-access point,
+  // decoders should expect concealment/errors for up to one refresh cycle
+  // (~2 s) right after joining, then clean decode. Re-armed on
+  // flush_before (discontinuity/reset drops whatever parameter-set state
+  // the decoder had) -- same join rule applies again there. au_is_irap()
+  // itself is untouched/still correct for genuinely IRAP-keyed input (see
+  // --mux-annexb's real x265 stream, used by the host e2e).
+  bool backend_armed = false;
+  // First-ever sync-point timestamp (decode-only diagnostics: buckets
+  // MppBackend's error count into "within the first 3s post-sync" vs.
+  // after, per the amended gate's concealment-window allowance).
+  bool t_sync_seen = false;
+  std::chrono::steady_clock::time_point t_sync;
+
   // RingClient sink: (a) DVR write (must not depend on decode health, so it
   // happens before the backend ever sees the AU), then (b) backend submit.
   auto sink = [&](maburplay::AuEvent&& ev) {
     const bool complete = (ev.meta.flags & maburgs::kRecFlagComplete) != 0;
-    const bool is_key = (ev.meta.flags & mabur::framewire::kFlagIdr) != 0;
+    // DVR's join/cut signal: same sid0-is-the-sync-point reasoning as the
+    // backend gate below, replacing the kFlagIdr check -- this live
+    // encoder never sets it past the opening session IDR (see comment on
+    // backend_armed above).
+    const bool is_key = ev.meta.sid == 0;
 
     if (cfg.dvr.enabled) {
       if (!complete) {
@@ -225,7 +292,18 @@ int main(int argc, char** argv) {
       }
     }
 
-    if (ev.flush_before) backend_ptr->flush();
+    if (ev.flush_before) {
+      backend_ptr->flush();
+      backend_armed = false;
+    }
+    if (!backend_armed) {
+      if (ev.meta.sid != 0) return;
+      backend_armed = true;
+      if (!t_sync_seen) {
+        t_sync_seen = true;
+        t_sync = std::chrono::steady_clock::now();
+      }
+    }
     backend_ptr->submit_au(ev.au.data(), ev.au.size(), ev.meta.pts_us);
     ++backend_submits;
   };
@@ -254,6 +332,86 @@ int main(int argc, char** argv) {
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+
+  if (decode_only) {
+    // Hardware decode gate (task-8-brief.md, amended per the sid0-join
+    // finding above): drive the backend straight off the live ring for
+    // `decode_only_seconds`, no presenter -- the frame_sink above (wired
+    // at backend->init() time, shared with the normal run loop) counts
+    // frames and timestamps the first/last decoded frame. info_changes
+    // /errors are MppBackend-internal decode-loop counters with no
+    // VideoBackend hook (that interface is frozen), so they're read via a
+    // dynamic_cast that only fires under MABUR_PLAYER_HW; a host build (or
+    // --backend null) just reports 0, correct since NullBackend never
+    // decodes anything.
+    const auto t_start = std::chrono::steady_clock::now();
+    const auto deadline =
+        t_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                      std::chrono::duration<double>(decode_only_seconds));
+    // Sampled once, the first time the loop observes t_sync + 3s having
+    // passed: MppBackend's cumulative error count at that instant, so the
+    // final report can separate "errors during the first 3s post-sync"
+    // (the sid0-refresh-picture concealment window; some are expected)
+    // from "errors afterward" (should be zero -- see the amended gate).
+    bool sampled_3s = false;
+    uint64_t errors_at_3s = 0;
+    bool ring_died = false;
+    while (!g_stop.load() && std::chrono::steady_clock::now() < deadline) {
+      ring.pump(100);
+      backend_ptr->poll();
+      if (!sampled_3s && t_sync_seen &&
+          std::chrono::steady_clock::now() >= t_sync + std::chrono::seconds(3)) {
+        sampled_3s = true;
+#ifdef MABUR_PLAYER_HW
+        if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend_ptr)) {
+          errors_at_3s = mpp->errors();
+        }
+#endif
+      }
+      if (ring.dead()) {
+        std::fprintf(stderr, "maburplay: ring reader dead, exiting\n");
+        ring_died = true;
+        break;
+      }
+    }
+
+    const double elapsed_s =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+    const double fps = elapsed_s > 0.0 ? static_cast<double>(frame_count) / elapsed_s : 0.0;
+    // fps_active: rate across the frames actually decoded (first to last),
+    // excluding the cold-attach/sid0-join wait baked into whole-window fps
+    // above -- (frame_count - 1) intervals span (t_last - t_first).
+    double fps_active = 0.0;
+    if (have_first_frame && frame_count >= 2) {
+      const double active_s =
+          std::chrono::duration<double>(t_last_frame - t_first_frame).count();
+      if (active_s > 0.0) fps_active = static_cast<double>(frame_count - 1) / active_s;
+    }
+
+    uint64_t info_change_count = 0;
+    uint64_t error_count = 0;
+#ifdef MABUR_PLAYER_HW
+    if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend_ptr)) {
+      info_change_count = mpp->info_changes();
+      error_count = mpp->errors();
+    }
+#endif
+    // If the 3s-post-sync mark was never reached (run ended too soon, or
+    // sync never happened), errors_at_3s stays 0 and errors_after_sync_3s
+    // degrades to the full total -- an honest "can't claim post-window
+    // cleanliness" rather than a false pass.
+    const uint64_t errors_after_sync_3s = error_count - errors_at_3s;
+
+    if (dvr_open) dvr.close();
+    std::printf(
+        "{\"frames\":%llu,\"fps\":%.2f,\"fps_active\":%.2f,\"info_changes\":%llu,"
+        "\"errors\":%llu,\"errors_after_sync_3s\":%llu}\n",
+        static_cast<unsigned long long>(frame_count), fps, fps_active,
+        static_cast<unsigned long long>(info_change_count),
+        static_cast<unsigned long long>(error_count),
+        static_cast<unsigned long long>(errors_after_sync_3s));
+    return ring_died ? 1 : 0;
+  }
 
   while (!g_stop.load()) {
     ring.pump(100);
