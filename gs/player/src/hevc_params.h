@@ -18,7 +18,7 @@ struct NalView {
 
 // Splits an Annex-B access unit into NAL views at 00 00 01 / 00 00 00 01
 // start codes. Mirrors the zero-run scanning style of RtpPacketizer
-// (gs/src/rtp_packetizer.cpp) but operates over a whole buffer rather than
+// (maburgs's late RTP packetizer, deleted in PR C) but operates over a whole buffer rather than
 // a byte stream. A start code with nothing after it before the next start
 // code (or the buffer end) yields no NalView for that gap — an empty NAL
 // is skipped, not emitted as a zero-length view.

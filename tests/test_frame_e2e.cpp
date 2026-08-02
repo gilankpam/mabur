@@ -15,7 +15,6 @@
 #include "frame_pipeline.h"
 #endif
 #include "frame_stream.h"
-#include "rtp_packetizer.h"
 #include "mabur/frame_wire.h"
 #include "mabur/nal.h"
 #include "mabur/uep_decoder.h"
@@ -60,26 +59,19 @@ TEST(frame_e2e_clean_and_lossy) {
   std::vector<std::vector<uint8_t>> emitted_frames;
   std::vector<uint8_t> cur;
   uint64_t clean = 0, truncated = 0;
-  std::vector<uint32_t> ts_per_frame;
-  int markers = 0;
-  uint32_t last_ts = 0;
+  std::vector<uint32_t> pts_per_frame;
+  uint32_t cur_pts = 0;
 
-  maburgs::RtpPacketizer pktz(
-      {97, 1, 1400, 16667}, [&](const std::vector<uint8_t>& p) {
-        if (p[1] & 0x80) ++markers;
-        last_ts = (static_cast<uint32_t>(p[4]) << 24) | (p[5] << 16) |
-                  (p[6] << 8) | p[7];
-      });
+  // PR C: the RTP packetizer is gone — the callbacks ARE the consumer
+  // surface now (the AU ring writer hangs off the same three lambdas in
+  // main.cpp), so the e2e captures frames and header pts directly.
   maburgs::FrameStream fs(
       {50, 8},
-      {[&](const framewire::FrameHdr& h, uint8_t) { pktz.begin_frame(h); cur.clear(); },
-       [&](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n);
-         pktz.data(d, n); },
-       [&](bool c) { pktz.end_frame(c);
+      {[&](const framewire::FrameHdr& h, uint8_t) { cur_pts = h.pts_us; cur.clear(); },
+       [&](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
+       [&](bool c) {
          if (c) { ++clean; emitted_frames.push_back(cur);
-                  // last_ts now holds THIS frame's ts (its marker packet
-                  // just emitted) — record it here, not at begin_frame.
-                  ts_per_frame.push_back(last_ts); }
+                  pts_per_frame.push_back(cur_pts); }
          else ++truncated; }});
 
   std::uniform_real_distribution<double> u(0.0, 1.0);
@@ -114,16 +106,11 @@ TEST(frame_e2e_clean_and_lossy) {
   CHECK(truncated == 0);
   REQUIRE(clean == 120);
   for (size_t i = 0; i < inputs.size(); ++i) CHECK(emitted_frames[i] == inputs[i]);
-  CHECK(markers == 120);  // one marker per complete access unit
-  // 90 kHz media clock: ts == floor(pts_us * 9 / 100) exactly. The frame
-  // period is 16667 us -> 1500.03 ticks, so consecutive deltas are 1500 or
-  // 1501 (mean 1500.03); pinning the absolute value is the correct, stronger
-  // invariant (a constant 1500-tick delta is mathematically impossible here).
-  for (size_t i = 0; i < ts_per_frame.size(); ++i) {
-    uint32_t expect =
-        static_cast<uint32_t>((static_cast<uint64_t>(16667u) * i * 9) / 100);
-    CHECK(ts_per_frame[i] == expect);
-  }
+  // Header metadata must survive the chain byte-exact too: pts_us is the
+  // capture stamp every downstream consumer (DVR timeline, latency stats)
+  // keys off, delivered in order.
+  for (size_t i = 0; i < pts_per_frame.size(); ++i)
+    CHECK(pts_per_frame[i] == 16667u * static_cast<uint32_t>(i));
 }
 
 #ifdef MABUR_TEST_HAVE_DRONE_CORE

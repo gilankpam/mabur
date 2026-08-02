@@ -89,6 +89,7 @@ class AuRingWriter {
   bool ok() const { return map_ != nullptr; }
   uint64_t published() const { return published_; }
   uint64_t dropped_oversize() const { return dropped_oversize_; }
+  uint64_t bytes_published() const { return bytes_published_; }
 
  private:
   uint8_t* slot_base_(uint64_t rec_no) const;
@@ -101,6 +102,7 @@ class AuRingWriter {
   bool in_au_ = false;
   uint64_t published_ = 0;
   uint64_t dropped_oversize_ = 0;
+  uint64_t bytes_published_ = 0;
   uint64_t last_id_ = 0;
   bool have_id_ = false;
 };

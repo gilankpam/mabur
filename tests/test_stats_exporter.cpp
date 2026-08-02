@@ -35,7 +35,7 @@ StatsInput base_input() {
   in.streams[0].syms_recovered = 40;
   in.streams[0].symbols_in = 4000;
   in.frames_clean = 100; in.frames_truncated = 1;
-  in.rtp_ok = 5000; in.udp_sent = 5001; in.udp_bytes = 4'000'000;
+  in.ring_published = 5000; in.ring_dropped_oversize = 1; in.ring_bytes = 4'000'000;
   return in;
 }
 
@@ -91,7 +91,7 @@ TEST(rates_use_measured_window) {
   in.cards[0].seq_expected += 100;
   in.cards[0].seq_received += 98;    // 2% loss
   in.streams[0].syms_recovered += 12;
-  in.udp_bytes += 125'000;           // 1.0 Mbps video
+  in.ring_bytes += 125'000;          // 1.0 Mbps video
   ex.poll(2000, in);                 // 1000 ms window (2x nominal: measured wins)
   const json j = cap.last();
   CHECK(j["cards"][0]["rx_mbps"].get<double>() > 1.99 && j["cards"][0]["rx_mbps"].get<double>() < 2.01);

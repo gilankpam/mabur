@@ -82,8 +82,9 @@ struct StatsInput {
   std::optional<StatsCtlIn> ctl;
   uint64_t frames_clean = 0, frames_truncated = 0, frames_dropped = 0;
   uint64_t stall_resets = 0;
-  uint64_t rtp_ok = 0, rtp_gap = 0, rtp_gap_seqs = 0, rtp_back = 0;
-  uint64_t udp_sent = 0, udp_failed = 0, udp_bytes = 0;
+  // AU ring publish health (PR C: replaced the rtp/udp blocks -- video
+  // leaves maburgs via the shm ring now; schema note in stats_exporter.cpp).
+  uint64_t ring_published = 0, ring_dropped_oversize = 0, ring_bytes = 0;
   uint64_t q_drop = 0;
 
   // Latest drone telemetry, if any this session: wire struct + GS arrival clock.
@@ -121,7 +122,7 @@ class StatsExporter {
   std::vector<std::array<uint64_t, kNumStatsClasses>> prev_class_bytes_;
   std::vector<std::array<bool, kNumStatsClasses>> class_seen_;
   std::array<StreamPrev, 4> prev_streams_{};
-  uint64_t prev_udp_bytes_ = 0;
+  uint64_t prev_ring_bytes_ = 0;
   std::array<bool, 4> stream_seen_{};   // sticky link.streams[] rows
   // frame-emit tracking (fps + RFC3550 jitter)
   uint64_t frames_in_window_ = 0;

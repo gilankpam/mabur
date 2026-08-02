@@ -254,8 +254,7 @@ def render_rows_compact(model, wall, width):
     op = link.get("op") or {}
     cards = d.get("cards") or []
     video = link.get("video") or {}
-    rtp = video.get("rtp") or {}
-    udpstats = video.get("udp") or {}
+    ring = video.get("ring") or {}
 
     state = link.get("state")
     mcs = op.get("mcs")
@@ -434,12 +433,11 @@ def render_rows_compact(model, wall, width):
         f"drop {_f(video.get('dropped'), 4)}"
     )
 
-    # --- RTP ---
+    # --- AU ring (PR C: replaced the RTP row -- video leaves maburgs via
+    # the shm ring; published/dropped come from the writer's own counters) ---
     rows.append(
-        f"RTP     ok {_f(rtp.get('ok'), 8)}   "
-        f"gap {_f(rtp.get('gap'), 3)} (+{_f(rtp.get('gap_seqs'), 2)})   "
-        f"back {_f(rtp.get('back'), 3)}   "
-        f"udp fail {_f(udpstats.get('failed'), 3)}   "
+        f"RING    pub {_f(ring.get('published'), 8)}   "
+        f"drop {_f(ring.get('dropped_oversize'), 3)}   "
         f"q_drop {_f(video.get('q_drop'), 3)}"
     )
 
@@ -699,11 +697,9 @@ def panel_video(model, wall):
     d = model.d or {}
     link = d.get("link") or {}
     video = link.get("video") or {}
-    rtp = video.get("rtp") or {}
-    udpstats = video.get("udp") or {}
+    ring = video.get("ring") or {}
     prev_video = model.prev_video or {}
-    prev_rtp = prev_video.get("rtp") or {}
-    prev_udp = prev_video.get("udp") or {}
+    prev_ring = prev_video.get("ring") or {}
 
     body = []
 
@@ -728,29 +724,17 @@ def panel_video(model, wall):
         spans2.append((idx, len(f"drop {drop_s}"), "bad"))
     body.append((line2, spans2))
 
-    gap_s, back_s = _f(rtp.get("gap"), 3), _f(rtp.get("back"), 3)
-    line3 = (f"rtp       ok {_f(rtp.get('ok'), 8)}     gap {gap_s} "
-             f"(+{_f(rtp.get('gap_seqs'), 2)})    back {back_s}")
+    drop_ring_s, qdrop_s = _f(ring.get("dropped_oversize"), 3), _f(video.get("q_drop"), 3)
+    line3 = (f"ring      pub {_f(ring.get('published'), 8)}    drop {drop_ring_s}"
+             f"       q_drop {qdrop_s}")
     spans3 = []
-    if _increased(rtp.get("gap"), prev_rtp.get("gap")):
-        idx = line3.index(f"gap {gap_s}")
-        spans3.append((idx, len(f"gap {gap_s}"), "bad"))
-    if _increased(rtp.get("back"), prev_rtp.get("back")):
-        idx = line3.index(f"back {back_s}")
-        spans3.append((idx, len(f"back {back_s}"), "bad"))
-    body.append((line3, spans3))
-
-    fail_s, qdrop_s = _f(udpstats.get("failed"), 3), _f(video.get("q_drop"), 3)
-    line4 = (f"udp       sent {_f(udpstats.get('sent'), 8)}   fail {fail_s}"
-             f"        q_drop {qdrop_s}")
-    spans4 = []
-    if _increased(udpstats.get("failed"), prev_udp.get("failed")):
-        idx = line4.index(f"fail {fail_s}")
-        spans4.append((idx, len(f"fail {fail_s}"), "bad"))
+    if _increased(ring.get("dropped_oversize"), prev_ring.get("dropped_oversize")):
+        idx = line3.index(f"drop {drop_ring_s}")
+        spans3.append((idx, len(f"drop {drop_ring_s}"), "bad"))
     if _increased(video.get("q_drop"), prev_video.get("q_drop")):
-        idx = line4.index(f"q_drop {qdrop_s}")
-        spans4.append((idx, len(f"q_drop {qdrop_s}"), "bad"))
-    body.append((line4, spans4))
+        idx = line3.index(f"q_drop {qdrop_s}")
+        spans3.append((idx, len(f"q_drop {qdrop_s}"), "bad"))
+    body.append((line3, spans3))
 
     residual = link.get("residual_loss")
     residual_pct = None if residual is None else residual * 100.0

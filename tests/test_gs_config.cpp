@@ -18,7 +18,7 @@ TEST(default_bundle_config_loads) {
   CHECK(cfg.fec.decode_deadline_ms == 200);
   CHECK(cfg.fec.seq_horizon == 512);
   CHECK(cfg.link.vtx_id == 1);
-  CHECK(cfg.video_out.port == 5600);
+  CHECK(cfg.video.frame_gap_timeout_ms == 50);
   auto L = cfg.uep_layers();
   CHECK(L[0].fec.overhead == 1.00);
   CHECK(L[3].fec.overhead == 0.25);
@@ -27,7 +27,7 @@ TEST(default_bundle_config_loads) {
 TEST(missing_keys_fall_back_to_defaults) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   CHECK(cfg.radio.channel == 149);
-  CHECK(cfg.video_out.host == "127.0.0.1");
+  CHECK(cfg.video.frame_lookahead == 8);
 }
 
 // link.video_silence_ms claimed to tune the video-silence escape valve, but
@@ -53,7 +53,7 @@ TEST(errors_are_fail_fast) {
   catch (const std::exception& e) { threw = std::string(e.what()).find("chanel") != std::string::npos; }
   CHECK(threw);  // unknown key named in the error
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"video_out\": {\"port\": 99999}}")); }
+  try { maburgs::load_config(write_tmp("{\"video\": {\"frame_gap_timeout_ms\": 5}}")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // out of range
   threw = false;
@@ -166,6 +166,15 @@ TEST(stats_section_parses_and_validates) {
   CHECK(threw);  // unknown key fail-fast, like every other section
 }
 
+TEST(stale_video_out_key_throws) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"video_out\": {\"port\": 5600}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("video_out") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
 MTEST_MAIN
 
 // static_txagc was renamed to static_offset_qdb (USER-FACING, qdB offset
@@ -209,15 +218,17 @@ TEST(deleted_model_controller_keys_now_throw) {
 }
 
 // frame_gap_timeout_ms/frame_lookahead: FrameStream tuning knobs for the
-// session-negotiated frame-wire tail (Task 10). JSON keys under video_out.
-TEST(video_out_frame_keys) {
+// session-negotiated frame-wire tail (Task 10). JSON keys under video
+// (PR C: the section was video_out until the RTP destination was deleted;
+// a stale video_out key now fails boot like any other unknown key).
+TEST(video_frame_keys) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
-  CHECK(cfg.video_out.frame_gap_timeout_ms == 50);
-  CHECK(cfg.video_out.frame_lookahead == 8);
+  CHECK(cfg.video.frame_gap_timeout_ms == 50);
+  CHECK(cfg.video.frame_lookahead == 8);
   auto cfg2 = maburgs::load_config(write_tmp(
-      "{\"video_out\": {\"frame_gap_timeout_ms\": 30, \"frame_lookahead\": 4}}"));
-  CHECK(cfg2.video_out.frame_gap_timeout_ms == 30);
-  CHECK(cfg2.video_out.frame_lookahead == 4);
+      "{\"video\": {\"frame_gap_timeout_ms\": 30, \"frame_lookahead\": 4}}"));
+  CHECK(cfg2.video.frame_gap_timeout_ms == 30);
+  CHECK(cfg2.video.frame_lookahead == 4);
 }
 
 // link.ladder: measured-loss ladder controller rungs + max_mcs filter +
@@ -387,7 +398,10 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
 
 TEST(au_ring_defaults) {
   auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
-  CHECK(!c.au_ring.enable);
+  // PR C: the ring IS the video output, so the shipped bundle enables it;
+  // the STRUCT default stays false (empty config checked below).
+  CHECK(c.au_ring.enable);
+  CHECK(!maburgs::load_config(write_tmp("{}")).au_ring.enable);
   CHECK(c.au_ring.path == "/dev/shm/mabur-au");
   CHECK(c.au_ring.socket == "/run/mabur-au.sock");
   CHECK(c.au_ring.slot_kb == 512);

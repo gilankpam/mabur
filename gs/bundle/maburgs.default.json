@@ -35,7 +35,6 @@
     "starved_confirm_ms": 300,
     "feedback_timeout_ms": 1000
   },
-  "video_out": {"host": "127.0.0.1", "port": 5600},
   "msp": {
     "enable": false,
     "render": "udp",
@@ -44,5 +43,5 @@
     "symbol_size": 1312,
     "window": 16
   },
-  "au_ring": { "enable": false }
+  "au_ring": { "enable": true }
 }
