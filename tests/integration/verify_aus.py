@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
-"""Compare the RTP maburgs re-built (u16-LE length-prefixed) with the frame
-fixture maburd was fed.
+"""Compare maburgs --out-aus records with the frame fixture maburd was fed.
 
-The GS no longer forwards the drone's packets: it reassembles whole frames and
-packetizes them itself (RFC 7798). So the invariant is per FRAME, not per
-packet — depacketize the output back to a NAL list and require it to equal the
-fixture frame's NAL list. Start-code widths are not compared (the packetizer
-strips them by design); everything inside a NAL must be byte-exact.
-
-Per-stream accounting uses the same classifier as the drone (a mirror of
-mabur classify_frame).
+PR C successor to verify_rtp.py: the GS no longer emits RTP — the dry-run
+captures each reassembled access unit as an LP record (u32 total_len | u8
+sid | u8 flags | u32 pts_us | Annex-B; flags = framewire idr|discont with
+bit 0x04 = complete, written by main.cpp's AuFileOut — keep in sync). The
+invariant is unchanged and per FRAME: a recovered frame counts only if it
+is complete and every NAL matches the fixture frame byte-exact. Start-code
+widths are not compared; per-stream accounting uses the same classifier as
+the drone (a mirror of mabur classify_frame), and the recorded wire sid
+must agree with that classifier.
 """
 import argparse
 import struct
 import sys
 
+FLAG_COMPLETE = 0x04
 
-def read_lp16(path):
+
+def read_aus(path):
     out = []
     with open(path, "rb") as f:
         while True:
-            h = f.read(2)
-            if len(h) < 2:
+            h = f.read(10)
+            if len(h) < 10:
                 break
-            (n,) = struct.unpack("<H", h)
+            n, sid, flags, pts = struct.unpack("<IBBI", h)
             p = f.read(n)
             if len(p) < n:
                 sys.exit(f"{path}: truncated record")
-            out.append(p)
+            out.append({"sid": sid, "flags": flags, "pts": pts,
+                        "complete": bool(flags & FLAG_COMPLETE),
+                        "nals": split_annexb(p)})
     return out
 
 
@@ -88,42 +92,6 @@ def classify(nals):  # mirror of mabur classify_frame
     return 0 if sid is None else sid
 
 
-def depacketize(packets):
-    """RTP (RFC 7798) -> [{"ts", "nals", "complete"}], grouped per frame.
-
-    A frame is one run of packets sharing an RTP timestamp; it is complete only
-    if its last packet carries the marker bit (RtpPacketizer withholds the
-    marker AND the FU end bit on a truncated frame)."""
-    frames, cur = [], None
-    for p in packets:
-        if len(p) < 14:
-            sys.exit("recovered: RTP packet shorter than a header")
-        marker = (p[1] >> 7) & 1
-        ts = struct.unpack_from(">I", p, 4)[0]
-        payload = p[12:]
-        if cur is None or ts != cur["ts"]:
-            cur = {"ts": ts, "nals": [], "complete": False, "fu": None}
-            frames.append(cur)
-        t = (payload[0] >> 1) & 0x3F
-        if t == 49:  # FU
-            start = (payload[2] >> 7) & 1
-            end = (payload[2] >> 6) & 1
-            inner = payload[2] & 0x3F
-            if start:
-                hdr = bytes([(inner << 1) | (payload[0] & 0x81), payload[1]])
-                cur["fu"] = bytearray(hdr)
-            if cur["fu"] is not None:
-                cur["fu"] += payload[3:]
-                if end:
-                    cur["nals"].append(bytes(cur["fu"]))
-                    cur["fu"] = None
-        else:
-            cur["nals"].append(bytes(payload))
-        if marker:
-            cur["complete"] = True
-    return frames
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("recovered")
@@ -134,13 +102,12 @@ def main():
                     help="required stream-0 delivery fraction (e.g. 1.0)")
     a = ap.parse_args()
 
-    packets = read_lp16(a.recovered)
+    got = read_aus(a.recovered)
     fix = read_frame_fixture(a.fixture)
-    got = depacketize(packets)
 
     # Frames are matched by content (each fixture frame's payload is unique),
-    # so a recovered frame counts only if every NAL came through byte-exact and
-    # the frame closed with the marker bit.
+    # so a recovered frame counts only if every NAL came through byte-exact
+    # and the AU record carries the complete flag.
     got_keys = {}
     for g in got:
         if g["complete"]:
@@ -149,6 +116,16 @@ def main():
     truncated = sum(1 for g in got if not g["complete"])
 
     ok = True
+    # The wire sid on each complete AU must agree with the classifier — the
+    # drone classified the frame once at encode time; a disagreement means
+    # frame bytes and routing metadata came apart somewhere in the chain.
+    for g in got:
+        if g["complete"] and classify(g["nals"]) != g["sid"]:
+            print(f"FAIL: recorded sid {g['sid']} != classified "
+                  f"{classify(g['nals'])} for a complete AU")
+            ok = False
+            break
+
     by_sid = {}
     for fr in fix:
         by_sid.setdefault(classify(fr["nals"]), []).append(tuple(fr["nals"]))
@@ -172,13 +149,16 @@ def main():
     if dup:
         print(f"FAIL: {dup} duplicate recovered frame(s)")
         ok = False
-    # RTP timestamps must be non-decreasing: FrameStream emits frames in
-    # frame_id order and RtpPacketizer derives ts from each frame's pts.
-    ts_seq = [g["ts"] for g in got]
-    if any(b < x for x, b in zip(ts_seq, ts_seq[1:])):
-        print("FAIL: RTP timestamps not monotonic")
-        ok = False
-    print(f"frames out: {len(got)} ({truncated} truncated), rtp packets: {len(packets)}")
+    # AU pts must be non-decreasing modulo u32 wrap: FrameStream emits frames
+    # in frame_id order and pts is the encoder's capture stamp. A forward
+    # delta >= 2^31 would mean a genuine reversal, not a wrap.
+    pts_seq = [g["pts"] for g in got]
+    for x, b in zip(pts_seq, pts_seq[1:]):
+        if ((b - x) & 0xFFFFFFFF) >= 0x80000000:
+            print("FAIL: AU pts regressed")
+            ok = False
+            break
+    print(f"frames out: {len(got)} ({truncated} truncated)")
     sys.exit(0 if ok else 1)
 
 

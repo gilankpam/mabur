@@ -269,7 +269,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   json& v = link["video"];
   if (have_window) {
     v["fps"] = static_cast<double>(frames_in_window_) / elapsed_s;
-    v["mbps"] = rate(in.udp_bytes, prev_udp_bytes_, elapsed_s) * 8.0 / 1e6;
+    v["mbps"] = rate(in.ring_bytes, prev_ring_bytes_, elapsed_s) * 8.0 / 1e6;
   } else {
     v["fps"] = nullptr;
     v["mbps"] = nullptr;
@@ -280,10 +280,14 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   v["truncated"] = in.frames_truncated;
   v["dropped"] = in.frames_dropped;
   v["stall_resets"] = in.stall_resets;
-  v["rtp"] = {{"ok", in.rtp_ok},           {"gap", in.rtp_gap},
-              {"gap_seqs", in.rtp_gap_seqs}, {"back", in.rtp_back}};
-  v["udp"] = {{"sent", in.udp_sent}, {"failed", in.udp_failed},
-              {"bytes", in.udp_bytes}};
+  // PR C schema note: the "rtp" and "udp" blocks are GONE (the subsystem
+  // they measured was deleted); "ring" replaces them. v stays 1 --
+  // consumers must tolerate missing keys the same way they must ignore
+  // unknown ones; maburtop/flightreport updated in the same commit.
+  v["ring"] = {{"published", in.ring_published},
+               {"dropped_oversize", in.ring_dropped_oversize},
+               {"bytes", in.ring_bytes}};
+
   v["q_drop"] = in.q_drop;
 
   if (in.telem) {
@@ -415,7 +419,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     prev_streams_[s] = {in.streams[s].syms_recovered,
                         in.streams[s].syms_recovered_arrived,
                         in.streams[s].syms_abandoned, in.streams[s].symbols_in};
-  prev_udp_bytes_ = in.udp_bytes;
+  prev_ring_bytes_ = in.ring_bytes;
   frames_in_window_ = 0;
   last_emit_ms_ = now_ms;
   emitted_ = true;

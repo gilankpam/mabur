@@ -7,7 +7,7 @@ namespace {
 
 // Locates the earliest start code (00 00 01 or 00 00 00 01) at or after
 // `from`. Returns false if none remains before `n`. Mirrors the zero-run
-// idea in RtpPacketizer::feed_byte (gs/src/rtp_packetizer.cpp), but scans
+// idea in the late RtpPacketizer::feed_byte (deleted in PR C), but scans
 // a whole buffer at once rather than a byte stream.
 bool find_start_code(const uint8_t* au, size_t n, size_t from, size_t* pos,
                       size_t* code_len) {

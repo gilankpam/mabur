@@ -65,13 +65,11 @@ struct LinkCfg {
       {{0, 1.0}, {2, 0.5}, {4, 0.25}, {5, 0.25}, {6, 0.25}, {7, 0.1}}};
 };
 
-/// Video output destination.
-struct VideoOutCfg {
-  std::string host = "127.0.0.1";
-  int port = 5600;
-  // FrameStream tuning for the session-negotiated frame-wire tail (Task 10):
-  // gap_timeout_ms before an unfilled chunk gap is truncated, and lookahead
-  // frames ahead of head-of-line before it is force-advanced.
+/// Video reassembly tuning (PR C: the RTP output destination is gone --
+/// video leaves maburgs via the shm AU ring; see AuRingOutCfg):
+/// gap_timeout_ms before an unfilled chunk gap is truncated, and lookahead
+/// frames ahead of head-of-line before it is force-advanced.
+struct VideoCfg {
   int frame_gap_timeout_ms = 50;
   int frame_lookahead = 8;
 };
@@ -114,7 +112,7 @@ struct Config {
   RadioCfg radio;
   FecCfg fec;
   LinkCfg link;
-  VideoOutCfg video_out;
+  VideoCfg video;
   MspCfg msp;
   StatsCfg stats;
   AuRingOutCfg au_ring;

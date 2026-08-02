@@ -24,16 +24,16 @@ EOF
 "$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" \
   --out "$TMP/frames.bin" --rc-in "$TMP/rc.bin"
 
-# maburgs re-builds RTP from the frames it reassembles, so verify_rtp.py
-# depacketizes its output and compares NAL lists against the fixture frames.
+# maburgs captures each reassembled AU via --out-aus (PR C: the RTP output
+# is gone), so verify_aus.py compares NAL lists against the fixture frames.
 echo "== clean: all 13 frames recovered NAL-exact =="
-"$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" --out-rtp "$TMP/rtp0.bin"
-python3 tests/integration/verify_rtp.py "$TMP/rtp0.bin" "$FIX" --require-all
+"$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" --out-aus "$TMP/aus0.bin"
+python3 tests/integration/verify_aus.py "$TMP/aus0.bin" "$FIX" --require-all
 
 echo "== 15% single-card loss: UEP staircase (stream 0 must fully deliver) =="
 "$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" \
-  --drop-pct 15 --seed 7 --out-rtp "$TMP/rtp1.bin"
-python3 tests/integration/verify_rtp.py "$TMP/rtp1.bin" "$FIX" --min-stream0 1.0
+  --drop-pct 15 --seed 7 --out-aus "$TMP/aus1.bin"
+python3 tests/integration/verify_aus.py "$TMP/aus1.bin" "$FIX" --min-stream0 1.0
 
 echo "== 2 cards, 20% independent loss each: union recovers everything =="
 # Seed pinned to 2: --cards N round-robins *frames* across cards rather than
@@ -46,7 +46,7 @@ echo "== 2 cards, 20% independent loss each: union recovers everything =="
 # Swept seeds 1-60 at the unchanged 20% drop-pct under the current bundle
 # geometry (scalar-328/window-32/bpb-4); seed 2 clears all 4 streams.
 "$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" \
-  --cards 2 --drop-pct 20 --seed 2 --out-rtp "$TMP/rtp2.bin"
-python3 tests/integration/verify_rtp.py "$TMP/rtp2.bin" "$FIX" --require-all
+  --cards 2 --drop-pct 20 --seed 2 --out-aus "$TMP/aus2.bin"
+python3 tests/integration/verify_aus.py "$TMP/aus2.bin" "$FIX" --require-all
 
 echo "== all GS E2E checks passed =="

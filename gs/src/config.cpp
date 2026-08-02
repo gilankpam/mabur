@@ -70,7 +70,7 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"radio", "fec", "link", "video_out", "msp", "stats", "au_ring"});
+  check_keys(j, "", {"radio", "fec", "link", "video", "msp", "stats", "au_ring"});
   Config c;
 
   if (j.contains("radio")) {
@@ -191,15 +191,13 @@ Config load_config(const std::string& path) {
         static_cast<int>(get_int(r, "starved_confirm_ms", 300, 0, 600000, "link"));
   }
 
-  if (j.contains("video_out")) {
-    const json& r = j["video_out"];
-    check_keys(r, "video_out", {"host", "port", "frame_gap_timeout_ms", "frame_lookahead"});
-    c.video_out.host = get_str(r, "host", "127.0.0.1", "video_out");
-    c.video_out.port = static_cast<int>(get_int(r, "port", 5600, 1, 65535, "video_out"));
-    c.video_out.frame_gap_timeout_ms = static_cast<int>(
-        get_int(r, "frame_gap_timeout_ms", 50, 10, 1000, "video_out"));
-    c.video_out.frame_lookahead = static_cast<int>(
-        get_int(r, "frame_lookahead", 8, 2, 64, "video_out"));
+  if (j.contains("video")) {
+    const json& r = j["video"];
+    check_keys(r, "video", {"frame_gap_timeout_ms", "frame_lookahead"});
+    c.video.frame_gap_timeout_ms = static_cast<int>(
+        get_int(r, "frame_gap_timeout_ms", 50, 10, 1000, "video"));
+    c.video.frame_lookahead = static_cast<int>(
+        get_int(r, "frame_lookahead", 8, 2, 64, "video"));
   }
 
   if (j.contains("msp")) {

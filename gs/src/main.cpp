@@ -1,6 +1,6 @@
 // maburgs — mabur ground station daemon.
 // Plan 1 scope: the dry-run datapath (frame file -> aggregator -> frame tail
-// -> RTP out).
+// -> AU records; the original RTP output was deleted in PR C).
 // Plan 2 scope: real-radio mode (N-card front-ends, control loop, card failover).
 #include <atomic>
 #include <csignal>
@@ -29,7 +29,6 @@
 #include "msp_renderer.h"
 #include "msp_sink.h"
 #include "radio_frontend.h"
-#include "rtp_packetizer.h"
 #include "s1_loss.h"
 #include "stats_exporter.h"
 #include "tx_selector.h"
@@ -52,21 +51,42 @@ uint64_t mono_ms() {
 void usage() {
   std::fprintf(stderr,
                "usage: maburgs -c <config.json> --dry-run --in <frames.bin>\n"
-               "               [--cards N] [--drop-pct P] [--seed S] [--out-rtp <file>]\n");
+               "               [--cards N] [--drop-pct P] [--seed S] [--out-aus <file>]\n");
 }
 
-struct RtpFileOut {
+// Dry-run AU capture for the e2e: one LP record per reassembled AU --
+// u32 total_len | u8 sid | u8 flags (framewire idr|discont, bit 0x04 =
+// complete here (NOT the ring's 0x80 -- this LP format is local to the
+// dry-run/e2e pair)) | u32 pts_us | Annex-B bytes. Parsed by
+// tests/integration/verify_aus.py; keep the two in sync.
+struct AuFileOut {
   FILE* f = nullptr;
   uint64_t written = 0;
-  bool open(const char* path) { return (f = fopen(path, "wb")) != nullptr; }
-  void write(const std::vector<uint8_t>& pkt) {
-    const uint8_t len[2] = {static_cast<uint8_t>(pkt.size() & 0xFF),
-                            static_cast<uint8_t>(pkt.size() >> 8)};
-    fwrite(len, 1, 2, f);
-    fwrite(pkt.data(), 1, pkt.size(), f);
+  std::vector<uint8_t> au;
+  mabur::framewire::FrameHdr hdr{};
+  uint8_t sid = 0;
+  bool in_au = false;
+  bool open(const char* path) { f = fopen(path, "wb"); return f != nullptr; }
+  ~AuFileOut() { if (f) fclose(f); }
+  void begin(const mabur::framewire::FrameHdr& h, uint8_t s) {
+    if (!f) return;
+    hdr = h; sid = s; au.clear(); in_au = true;
+  }
+  void append(const uint8_t* d, size_t n) {
+    if (f && in_au) au.insert(au.end(), d, d + n);
+  }
+  void finish(bool complete) {
+    if (!f || !in_au) return;
+    in_au = false;
+    const uint32_t len = static_cast<uint32_t>(au.size());
+    const uint8_t flags = static_cast<uint8_t>(hdr.flags | (complete ? 0x04 : 0));
+    fwrite(&len, 4, 1, f);
+    fwrite(&sid, 1, 1, f);
+    fwrite(&flags, 1, 1, f);
+    fwrite(&hdr.pts_us, 4, 1, f);
+    if (len) fwrite(au.data(), 1, len, f);
     ++written;
   }
-  ~RtpFileOut() { if (f) fclose(f); }
 };
 
 static int run_radio(const maburgs::Config& cfg) {
@@ -112,21 +132,8 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::Aggregator agg(cfg.uep_layers(),
                           static_cast<uint64_t>(cfg.fec.decode_deadline_ms),
                           static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
-  maburgs::UdpSink udp(cfg.video_out.host, cfg.video_out.port);
-  // RTP order health of the emitted stream. The packetizer builds RTP from
-  // frames FrameStream has already ordered by frame_id, so seq is monotonic by
-  // construction — this counter is the canary on that construction (a gap or a
-  // backward seq means the frame tail regressed), and it measures exactly what
-  // a live decoder would choke on. seq16 from the RTP header; fwd_gap =
-  // skipped-ahead seqs, back = packets emitted behind the highest seq seen.
-  struct RtpOrder {
-    bool has_last = false;
-    uint16_t last = 0;
-    uint64_t in_order = 0, fwd_gap = 0, back = 0, gap_seqs = 0;
-  } rtp_order;
-
   // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
-  // Declared here (ahead of the RtpPacketizer/FrameStream construction below)
+  // Declared here (ahead of the FrameStream construction below)
   // so the FrameStream end_frame lambda can capture `stats` by reference; both
   // must also outlive every lambda that captures them.
   // session id: nonzero random u32 so consumers detect restarts.
@@ -170,39 +177,19 @@ static int run_radio(const maburgs::Config& cfg) {
   }
 
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
-  // fragments the decoder emits and streams Annex-B bytes into RtpPacketizer,
-  // which builds RFC 7798 RTP for the udp sink.
-  maburgs::RtpPacketizer pktz(
-      {97, 0x4D414252u, 1400, 16667},
-      [&](const std::vector<uint8_t>& pkt) {
-        if (pkt.size() >= 4) {
-          const uint16_t seq = static_cast<uint16_t>((pkt[2] << 8) | pkt[3]);
-          if (rtp_order.has_last) {
-            const uint16_t d = static_cast<uint16_t>(seq - rtp_order.last);
-            if (d == 1) ++rtp_order.in_order;
-            else if (d >= 1 && d <= 32767) { ++rtp_order.fwd_gap; rtp_order.gap_seqs += d - 1; }
-            else ++rtp_order.back;
-            if (d >= 1 && d <= 32767) rtp_order.last = seq;
-          } else {
-            rtp_order.has_last = true;
-            rtp_order.last = seq;
-          }
-        }
-        udp.send(pkt.data(), pkt.size());
-      });
+  // fragments the decoder emits; whole access units leave maburgs through
+  // the shm AU ring (PR C: the RTP packetizer/UDP path is gone — maburplay
+  // is the consumer, ausniff the external gate).
   maburgs::FrameStream fstream(
-      {static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms),
-       cfg.video_out.frame_lookahead},
+      {static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms),
+       cfg.video.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
-         pktz.begin_frame(h);
          if (au_on) au_ring.begin(h, sid);
        },
        [&](const uint8_t* d, size_t n) {
-         pktz.data(d, n);
          if (au_on) au_ring.append(d, n);
        },
        [&](bool c) {
-         pktz.end_frame(c);
          if (au_on) {
            const uint64_t rec = au_ring.finish(c);
            if (rec != UINT64_MAX) au_bell.notify(rec);
@@ -427,11 +414,11 @@ static int run_radio(const maburgs::Config& cfg) {
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
                    "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f/off%d "
-                   "rtp=%llu udp_fail=%llu q_drop=%llu",
+                   "ring=%llu ring_drop=%llu q_drop=%llu",
                    static_cast<int>(vrx.link_state()), sel.selected(), op.mcs,
                    op.bw, op.overhead, op.pwr_offset_qdb,
-                   static_cast<unsigned long long>(udp.sent()),
-                   static_cast<unsigned long long>(udp.failed()),
+                   static_cast<unsigned long long>(au_ring.published()),
+                   static_cast<unsigned long long>(au_ring.dropped_oversize()),
                    static_cast<unsigned long long>(queue.dropped()));
       for (int i = 0; i < n_cards; ++i) {
         const auto& t = agg.card(i);
@@ -459,11 +446,6 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       std::fprintf(stderr, " mis=%llu",
                    static_cast<unsigned long long>(agg.decoder().bodies_misrouted()));
-      std::fprintf(stderr, " ord[ok=%llu gap=%llu(+%llu) back=%llu]",
-                   static_cast<unsigned long long>(rtp_order.in_order),
-                   static_cast<unsigned long long>(rtp_order.fwd_gap),
-                   static_cast<unsigned long long>(rtp_order.gap_seqs),
-                   static_cast<unsigned long long>(rtp_order.back));
       std::fprintf(stderr, " frames[clean/trunc/drop]=%llu/%llu/%llu badfrag=%llu stall=%llu",
                    static_cast<unsigned long long>(fstream.frames_clean()),
                    static_cast<unsigned long long>(fstream.frames_truncated()),
@@ -531,13 +513,9 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.frames_truncated = fstream.frames_truncated();
       sin.frames_dropped = fstream.frames_dropped();
       sin.stall_resets = fstream.stall_resets();
-      sin.rtp_ok = rtp_order.in_order;
-      sin.rtp_gap = rtp_order.fwd_gap;
-      sin.rtp_gap_seqs = rtp_order.gap_seqs;
-      sin.rtp_back = rtp_order.back;
-      sin.udp_sent = udp.sent();
-      sin.udp_failed = udp.failed();
-      sin.udp_bytes = udp.bytes();
+      sin.ring_published = au_ring.published();
+      sin.ring_dropped_oversize = au_ring.dropped_oversize();
+      sin.ring_bytes = au_ring.bytes_published();
       sin.q_drop = queue.dropped();
       sin.telem = latest_telem.t;
       sin.telem_rx_ms = latest_telem.rx_ms;
@@ -585,7 +563,7 @@ static int run_radio(const maburgs::Config& cfg) {
 
 int main(int argc, char** argv) {
   std::string config_path = "/etc/maburgs.json";
-  std::string in_path, out_rtp_path;
+  std::string in_path, out_aus_path;
   bool dry_run = false;
   maburgs::FrameFileSource::Options src_opt;
   for (int i = 1; i < argc; ++i) {
@@ -596,7 +574,7 @@ int main(int argc, char** argv) {
     else if (a == "--cards" && i + 1 < argc) src_opt.cards = std::atoi(argv[++i]);
     else if (a == "--drop-pct" && i + 1 < argc) src_opt.drop_pct = std::atoi(argv[++i]);
     else if (a == "--seed" && i + 1 < argc) src_opt.seed = static_cast<uint32_t>(std::atol(argv[++i]));
-    else if (a == "--out-rtp" && i + 1 < argc) out_rtp_path = argv[++i];
+    else if (a == "--out-aus" && i + 1 < argc) out_aus_path = argv[++i];
     else if (a == "-h" || a == "--help") { usage(); return 0; }
     else { std::fprintf(stderr, "error: unknown arg %s\n", a.c_str()); usage(); return 2; }
   }
@@ -636,21 +614,10 @@ int main(int argc, char** argv) {
   maburgs::Aggregator agg(cfg.uep_layers(),
                           static_cast<uint64_t>(cfg.fec.decode_deadline_ms),
                           static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
-  RtpFileOut file_out;
-  std::unique_ptr<maburgs::UdpSink> udp;
-  maburgs::RtpPacketizer::Emit emit;
-  if (!out_rtp_path.empty()) {
-    if (!file_out.open(out_rtp_path.c_str())) {
-      std::fprintf(stderr, "error: cannot write %s\n", out_rtp_path.c_str());
-      return 2;
-    }
-    emit = [&](const std::vector<uint8_t>& pkt) { file_out.write(pkt); };
-  } else {
-    udp = std::make_unique<maburgs::UdpSink>(cfg.video_out.host, cfg.video_out.port);
-    if (!udp->ok())
-      std::fprintf(stderr, "warning: video_out %s:%d unusable; decoding anyway\n",
-                   cfg.video_out.host.c_str(), cfg.video_out.port);
-    emit = [&](const std::vector<uint8_t>& pkt) { udp->send(pkt.data(), pkt.size()); };
+  AuFileOut file_out;
+  if (!out_aus_path.empty() && !file_out.open(out_aus_path.c_str())) {
+    std::fprintf(stderr, "error: cannot write %s\n", out_aus_path.c_str());
+    return 2;
   }
   maburgs::AuRingWriter au_ring;
   maburgs::AuDoorbell au_bell;
@@ -668,28 +635,28 @@ int main(int argc, char** argv) {
                    cfg.au_ring.path.c_str());
   }
 
-  // Same video tail as run_radio (fragments -> FrameStream -> RtpPacketizer),
-  // so a replay exercises the real assembly and packetization rather than a
-  // dry-run-only shortcut. No session negotiation here: the input file IS the
-  // drone's own output, so the format is known.
-  maburgs::RtpPacketizer pktz({97, 0x4D414252u, 1400, 16667}, emit);
+  // Same video tail as run_radio (fragments -> FrameStream -> AU records),
+  // so a replay exercises the real assembly rather than a dry-run-only
+  // shortcut. --out-aus captures each reassembled AU as an LP record for
+  // the e2e's NAL-exact comparison (tests/integration/verify_aus.py). No
+  // session negotiation here: the input file IS the drone's own output.
   maburgs::FrameStream fstream(
-      {static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms),
-       cfg.video_out.frame_lookahead},
+      {static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms),
+       cfg.video.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
-         pktz.begin_frame(h);
          if (au_on) au_ring.begin(h, sid);
+         file_out.begin(h, sid);
        },
        [&](const uint8_t* d, size_t n) {
-         pktz.data(d, n);
          if (au_on) au_ring.append(d, n);
+         file_out.append(d, n);
        },
        [&](bool c) {
-         pktz.end_frame(c);
          if (au_on) {
            const uint64_t rec = au_ring.finish(c);
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
+         file_out.finish(c);
        }});
   uint64_t replay_ms = 0;  // clock of the body being fed, for gap timeouts
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {
@@ -715,7 +682,7 @@ int main(int argc, char** argv) {
   // is what turns an unrecoverable hole into a truncated frame).
   agg.poll(last_ms + static_cast<uint64_t>(cfg.fec.decode_deadline_ms) + 1);
   fstream.poll(last_ms + static_cast<uint64_t>(cfg.fec.decode_deadline_ms) +
-               static_cast<uint64_t>(cfg.video_out.frame_gap_timeout_ms) + 1);
+               static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms) + 1);
 
   if (au_on)
     std::fprintf(stderr, "au_ring: published=%llu dropped_oversize=%llu\n",
@@ -758,12 +725,8 @@ int main(int argc, char** argv) {
                static_cast<unsigned long long>(fstream.frames_truncated()),
                static_cast<unsigned long long>(fstream.frames_dropped()),
                static_cast<unsigned long long>(fstream.bad_fragments()));
-  if (!out_rtp_path.empty())
-    std::fprintf(stderr, "rtp_out=%llu (file)\n",
+  if (!out_aus_path.empty())
+    std::fprintf(stderr, "aus_out=%llu (file)\n",
                  static_cast<unsigned long long>(file_out.written));
-  else
-    std::fprintf(stderr, "rtp_out=%llu udp_failed=%llu\n",
-                 static_cast<unsigned long long>(udp->sent()),
-                 static_cast<unsigned long long>(udp->failed()));
   return 0;
 }

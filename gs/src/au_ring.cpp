@@ -181,6 +181,7 @@ uint64_t AuRingWriter::finish(bool complete) {
   slot[kSOffCodec] = hdr_.codec;
   store32(slot + kSOffLock, lock + 2);  // even: stable, release
   ++published_;
+  bytes_published_ += au_.size();
   store64(map_ + kOffWriteSeq, published_);
   au_.clear();
   return n;
