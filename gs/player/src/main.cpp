@@ -22,7 +22,8 @@
 #include "video_backend.h"
 
 #ifdef MABUR_PLAYER_HW
-#include "mpp_backend.h"  // MppBackend::info_changes()/errors() for --decode-only
+#include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
+#include "mpp_backend.h"    // MppBackend::info_changes()/errors() for --decode-only
 #endif
 
 namespace {
@@ -34,7 +35,7 @@ void usage() {
   std::fprintf(stderr,
                "usage: maburplay [-c <config.json>] [--oneshot] "
                "[--backend null|mpp] [--no-dvr]\n"
-               "                 [--decode-only --seconds N]\n"
+               "                 [--decode-only --seconds N] [--fps-log]\n"
                "       maburplay --mux-annexb <in.265> <out.mp4>\n"
                "           (test support: mux a raw Annex-B HEVC elementary\n"
                "            stream straight through HevcParams+DvrMux to an\n"
@@ -50,7 +51,14 @@ void usage() {
                "  decoded frame only (excludes the cold-attach/sid0-join\n"
                "  wait). This is the hardware decode gate (see\n"
                "  .superpowers/sdd/2026-08-02-pr-b-maburplay/task-8-brief.md).\n"
-               "  --no-dvr is respected as usual.\n");
+               "  --no-dvr is respected as usual.\n"
+               "\n"
+               "--fps-log: normal (non-decode-only) run only -- once per\n"
+               "  second, prints \"fps-log: fps=X frames=N "
+               "commit_errors=N async=on|off|probing\\n\" to stderr. Under\n"
+               "  MABUR_PLAYER_HW with the DrmPresenter display path active;\n"
+               "  a no-op flag otherwise (host/null-backend builds just log\n"
+               "  fps/frames with no presenter fields).\n");
 }
 
 // Reads a whole file into memory; empty vector on any failure (including a
@@ -166,6 +174,7 @@ int main(int argc, char** argv) {
   bool no_dvr = false;
   bool decode_only = false;
   double decode_only_seconds = 30.0;
+  bool fps_log = false;
   std::string backend_override;
 
   for (int i = 1; i < argc; ++i) {
@@ -182,6 +191,8 @@ int main(int argc, char** argv) {
       decode_only = true;
     } else if (a == "--seconds" && i + 1 < argc) {
       decode_only_seconds = std::atof(argv[++i]);
+    } else if (a == "--fps-log") {
+      fps_log = true;
     } else {
       usage();
       return 2;
@@ -209,6 +220,28 @@ int main(int argc, char** argv) {
 
   const maburplay::BackendCfg bcfg = parse_screen_mode(cfg.screen_mode);
   maburplay::VideoBackend* const backend_ptr = backend.get();
+
+  // Display path: the DrmPresenter becomes the frame owner for the normal
+  // (non-decode-only) run -- release_frame() is no longer called inline
+  // here, it happens when the presenter is done with a frame (see
+  // drm_presenter.h's ownership contract). --decode-only stays
+  // presenter-free per its own brief ("no presenter"): frames are counted
+  // and released immediately, same as before Task 9.
+#ifdef MABUR_PLAYER_HW
+  std::unique_ptr<maburplay::DrmPresenter> presenter;
+  if (!decode_only) {
+    presenter = std::make_unique<maburplay::DrmPresenter>();
+    if (!presenter->init(cfg.screen_mode, [backend_ptr](const maburplay::DmaFrame& f) {
+          backend_ptr->release_frame(f);
+        })) {
+      std::fprintf(stderr,
+                   "maburplay: DrmPresenter init failed -- no display; frames will be "
+                   "decoded and released immediately\n");
+      presenter.reset();
+    }
+  }
+#endif
+
   // Counted unconditionally (cheap, backend-agnostic): --decode-only reads
   // frame_count/first-last frame timestamps directly; the normal run loop
   // just carries the extra bookkeeping for free.
@@ -223,6 +256,12 @@ int main(int argc, char** argv) {
       have_first_frame = true;
     }
     t_last_frame = now;
+#ifdef MABUR_PLAYER_HW
+    if (presenter) {
+      presenter->present(f);
+      return;
+    }
+#endif
     backend_ptr->release_frame(f);
   });
   if (!init_ok) {
@@ -293,6 +332,14 @@ int main(int argc, char** argv) {
     }
 
     if (ev.flush_before) {
+      // Flush-ordering contract carried from Task 8's review:
+      // MppBackend::flush()/mpi->reset() with DmaFrames still held by the
+      // presenter is an unverified interaction, so every held frame MUST
+      // be released back to the backend first -- present nothing until a
+      // new frame arrives -- BEFORE flush() runs.
+#ifdef MABUR_PLAYER_HW
+      if (presenter) presenter->drop_all();
+#endif
       backend_ptr->flush();
       backend_armed = false;
     }
@@ -413,9 +460,39 @@ int main(int argc, char** argv) {
     return ring_died ? 1 : 0;
   }
 
+  // --fps-log bookkeeping: a once-per-second stderr line, computed off the
+  // same frame_count the FrameSink above already maintains.
+  auto t_last_fps_log = std::chrono::steady_clock::now();
+  uint64_t frames_at_last_fps_log = 0;
+
   while (!g_stop.load()) {
     ring.pump(100);
     backend_ptr->poll();
+#ifdef MABUR_PLAYER_HW
+    if (presenter) presenter->poll_events();
+#endif
+    if (fps_log) {
+      const auto now = std::chrono::steady_clock::now();
+      const double dt = std::chrono::duration<double>(now - t_last_fps_log).count();
+      if (dt >= 1.0) {
+        const double fps = static_cast<double>(frame_count - frames_at_last_fps_log) / dt;
+#ifdef MABUR_PLAYER_HW
+        if (presenter) {
+          std::fprintf(stderr, "fps-log: fps=%.1f frames=%llu commit_errors=%llu async=%s\n", fps,
+                       static_cast<unsigned long long>(frame_count),
+                       static_cast<unsigned long long>(presenter->commit_errors()),
+                       !presenter->async_probed() ? "probing"
+                       : presenter->async_flip_active() ? "on" : "off");
+        } else
+#endif
+        {
+          std::fprintf(stderr, "fps-log: fps=%.1f frames=%llu\n", fps,
+                       static_cast<unsigned long long>(frame_count));
+        }
+        t_last_fps_log = now;
+        frames_at_last_fps_log = frame_count;
+      }
+    }
     if (ring.dead()) {
       std::fprintf(stderr, "maburplay: ring reader dead, exiting\n");
       break;
