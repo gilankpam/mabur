@@ -45,13 +45,16 @@ def main():
     try:
         f = open(a.ring, "rb")
         mm = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)
-    except (FileNotFoundError, OSError, IOError) as e:
+    except (FileNotFoundError, OSError, IOError, ValueError) as e:
         sys.exit(f"{a.ring}: {e}")
     magic, ver, slot_bytes, slot_count = struct.unpack_from("<IIII", mm, 0)
     if magic != MAGIC or ver != VERSION:
         sys.exit(f"{a.ring}: bad magic/version {magic:#x}/{ver}")
     if slot_bytes % 64 != 0 or slot_bytes == 0 or slot_count == 0:
         sys.exit(f"{a.ring}: invalid slot_bytes/slot_count {slot_bytes}/{slot_count}")
+    need = HDR + slot_count * (SLOT_HDR + slot_bytes)
+    if mm.size() < need:
+        sys.exit(f"{a.ring}: file too short for declared geometry ({mm.size()} < {need})")
 
     def wseq():
         return struct.unpack_from("<Q", mm, 16)[0]
@@ -72,23 +75,33 @@ def main():
     t0 = time.time()
     deadline = t0 + a.seconds
     first_t = last_t = None
+    stall = 0
 
     while True:
+        if not a.oneshot and time.time() >= deadline:
+            break
         w = wseq()
         if cursor >= w:
             if a.oneshot:
                 break
-            if time.time() >= deadline:
-                break
             time.sleep(0.002)
             continue
         m = read_slot(mm, slot_base(cursor), slot_bytes)
-        if m is None:
-            time.sleep(0.001)  # writer mid-slot; transient by construction
-            continue
-        if m["rec"] < cursor:
+        if m is None or m["rec"] < cursor:
+            stall += 1
+            if stall > 500:
+                if a.oneshot:
+                    sys.exit(f"{a.ring}: unreadable slot at rec {cursor} "
+                             "(torn or stale snapshot)")
+                # live ring: mirror the C++ reader — count a resync and
+                # skip to the retained tail rather than spinning
+                resyncs += 1
+                cursor = w - slot_count if w > slot_count else 0
+                stall = 0
+                continue
             time.sleep(0.001)
             continue
+        stall = 0
         if m["rec"] > cursor:  # overrun: records [cursor, rec) are gone
             resyncs += 1
         cursor = m["rec"] + 1
@@ -107,8 +120,6 @@ def main():
         if last_fid is not None and m["fid"] > last_fid + 1:
             gaps += m["fid"] - last_fid - 1
         last_fid = m["fid"]
-        if not a.oneshot and time.time() >= deadline:
-            break
 
     if dump:
         dump.close()
