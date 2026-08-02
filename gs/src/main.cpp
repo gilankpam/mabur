@@ -161,7 +161,7 @@ static int run_radio(const maburgs::Config& cfg) {
         static_cast<uint32_t>(cfg.au_ring.slot_kb) * 1024u,
         static_cast<uint32_t>(cfg.au_ring.slot_count)};
     au_on = au_ring.open(cfg.au_ring.path, geom);
-    if (au_on && !au_bell.open(cfg.au_ring.socket, geom))
+    if (au_on && !au_bell.open(cfg.au_ring.socket, au_ring.geom()))
       std::fprintf(stderr, "warning: au_ring doorbell %s unusable\n",
                    cfg.au_ring.socket.c_str());
     if (!au_on)
@@ -660,7 +660,7 @@ int main(int argc, char** argv) {
         static_cast<uint32_t>(cfg.au_ring.slot_kb) * 1024u,
         static_cast<uint32_t>(cfg.au_ring.slot_count)};
     au_on = au_ring.open(cfg.au_ring.path, geom);
-    if (au_on && !au_bell.open(cfg.au_ring.socket, geom))
+    if (au_on && !au_bell.open(cfg.au_ring.socket, au_ring.geom()))
       std::fprintf(stderr, "warning: au_ring doorbell %s unusable\n",
                    cfg.au_ring.socket.c_str());
     if (!au_on)

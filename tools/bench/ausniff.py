@@ -4,6 +4,9 @@
 # claims to publish. Layout mirrors gs/src/au_ring.h byte-for-byte — change
 # both together. Seqlock read: copy, re-check lock word, accept only stable
 # even generations; newer-lap records are accepted and counted as resyncs.
+# Live mode is best-effort on aarch64 (Python cannot issue memory fences;
+# the seqlock re-check is advisory); oneshot/post-hoc reads of a quiescent
+# ring are exact.
 #   python3 ausniff.py --ring /dev/shm/mabur-au --seconds 30
 #   python3 ausniff.py --ring RING --oneshot --dump-annexb out.bin --json
 import argparse, json, mmap, struct, sys, time
@@ -12,7 +15,7 @@ HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
 VERSION = 1
-FLAG_IDR, FLAG_DISCONT, FLAG_COMPLETE = 0x01, 0x02, 0x04
+FLAG_IDR, FLAG_DISCONT, FLAG_COMPLETE = 0x01, 0x02, 0x80
 
 
 def read_slot(mm, base, slot_bytes):
@@ -96,7 +99,8 @@ def main():
                 # live ring: mirror the C++ reader — count a resync and
                 # skip to the retained tail rather than spinning
                 resyncs += 1
-                cursor = w - slot_count if w > slot_count else 0
+                # never rewind past what we already emitted
+                cursor = max(cursor, w - slot_count if w > slot_count else 0)
                 stall = 0
                 continue
             time.sleep(0.001)

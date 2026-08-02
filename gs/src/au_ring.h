@@ -17,7 +17,10 @@ inline constexpr uint32_t kAuRingVersion = 1;
 inline constexpr size_t kAuRingHdrBytes = 4096;
 inline constexpr size_t kAuSlotHdrBytes = 64;
 // ORed into the record flags byte next to framewire kFlagIdr/kFlagDiscont.
-inline constexpr uint8_t kRecFlagComplete = 0x04;
+// ring-local bit, deliberately at the TOP of the byte; low bits remain
+// framewire's namespace (kFlagIdr 0x01, kFlagDiscont 0x02, future framewire
+// bits grow upward from there).
+inline constexpr uint8_t kRecFlagComplete = 0x80;
 
 struct AuRingGeom {
   uint32_t slot_bytes = 512 * 1024;
@@ -46,6 +49,7 @@ class AuRingWriter {
   AuRingWriter& operator=(const AuRingWriter&) = delete;
 
   bool open(const std::string& path, AuRingGeom geom);
+  AuRingGeom geom() const { return geom_; }  // effective (post-alignment) geometry — the header/hello contract
   void begin(const mabur::framewire::FrameHdr& h, uint8_t sid);
   void append(const uint8_t* p, size_t n);
   uint64_t finish(bool complete);  // rec_no, or UINT64_MAX if dropped/no-op
