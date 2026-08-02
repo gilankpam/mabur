@@ -85,4 +85,92 @@ TEST(ordering_and_truncated_flag) {
   unlink(path.c_str());
 }
 
+TEST(slot_bytes_alignment) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  // Request unaligned slot_bytes; should be rounded up to 1024.
+  REQUIRE(w.open(path, {1000, 4}));
+
+  FrameHdr h;
+  h.frame_id = 42;
+  h.pts_us = 999999;
+  const auto au = au_bytes(500, 7);
+  w.begin(h, 2);
+  w.append(au.data(), au.size());
+  CHECK(w.finish(true) == 0);
+
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  CHECK(r.geom().slot_bytes == 1024);  // rounded up from 1000
+  CHECK(r.geom().slot_count == 4);
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(m.frame_id64 == 42);
+  CHECK(m.pts_us == 999999u);
+  CHECK(m.sid == 2);
+  CHECK(got == au);
+  unlink(path.c_str());
+}
+
+TEST(writer_restart_detection) {
+  const std::string path = tmp_ring();
+  {
+    maburgs::AuRingWriter w1;
+    REQUIRE(w1.open(path, {4096, 4}));
+
+    // Write 5 AUs. Reader will start at rec_no = wseq - slot_count = 5 - 4 = 1.
+    for (int i = 0; i < 5; ++i) {
+      FrameHdr h;
+      h.frame_id = static_cast<uint16_t>(i);
+      h.pts_us = static_cast<uint32_t>(i * 100);
+      const auto au = au_bytes(200, static_cast<uint8_t>(i));
+      w1.begin(h, 1);
+      w1.append(au.data(), au.size());
+      w1.finish(true);
+    }
+  }  // w1 goes out of scope, writer is closed
+
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+
+  // Read records 1, 2, 3 from first writer: cursor advances to 4.
+  for (uint64_t i = 1; i < 4; ++i) {
+    CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+    CHECK(m.rec_no == i);
+  }
+  CHECK(r.resyncs() == 0);
+
+  // Simulate writer restart: create new writer on same path.
+  const auto expected_au = au_bytes(150, 8);
+  {
+    maburgs::AuRingWriter w2;
+    REQUIRE(w2.open(path, {4096, 4}));
+
+    // Write 1 new AU (record 0).
+    FrameHdr h;
+    h.frame_id = 100;
+    h.pts_us = 9999;
+    w2.begin(h, 2);
+    w2.append(expected_au.data(), expected_au.size());
+    w2.finish(true);
+  }  // w2 goes out of scope, writer is closed
+
+  // Reader cursor is at 4, but wseq is now 1 (from the new writer).
+  // This backward jump (1 < 4) triggers resync.
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kResync);
+  CHECK(r.resyncs() == 1);
+
+  // Next call should deliver the new record.
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(m.frame_id64 == 100);
+  CHECK(m.pts_us == 9999u);
+  CHECK(m.sid == 2);
+  CHECK(got == expected_au);
+
+  unlink(path.c_str());
+}
+
 MTEST_MAIN

@@ -21,11 +21,17 @@ constexpr size_t kSOffLock = 0, kSOffLen = 4, kSOffRecNo = 8,
 uint32_t load32(const uint8_t* p) {
   return __atomic_load_n(reinterpret_cast<const uint32_t*>(p), __ATOMIC_ACQUIRE);
 }
+uint32_t load32_relaxed(const uint8_t* p) {
+  return __atomic_load_n(reinterpret_cast<const uint32_t*>(p), __ATOMIC_RELAXED);
+}
 uint64_t load64(const uint8_t* p) {
   return __atomic_load_n(reinterpret_cast<const uint64_t*>(p), __ATOMIC_ACQUIRE);
 }
 void store32(uint8_t* p, uint32_t v) {
   __atomic_store_n(reinterpret_cast<uint32_t*>(p), v, __ATOMIC_RELEASE);
+}
+void store32_relaxed(uint8_t* p, uint32_t v) {
+  __atomic_store_n(reinterpret_cast<uint32_t*>(p), v, __ATOMIC_RELAXED);
 }
 void store64(uint8_t* p, uint64_t v) {
   __atomic_store_n(reinterpret_cast<uint64_t*>(p), v, __ATOMIC_RELEASE);
@@ -34,6 +40,11 @@ void put32(uint8_t* p, uint32_t v) { std::memcpy(p, &v, 4); }
 void put64(uint8_t* p, uint64_t v) { std::memcpy(p, &v, 8); }
 uint32_t get32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
 uint64_t get64(const uint8_t* p) { uint64_t v; std::memcpy(&v, p, 8); return v; }
+
+// Align slot_bytes up to the next multiple of 64 bytes to ensure lock word alignment.
+uint32_t align_slot_bytes(uint32_t slot_bytes) {
+  return ((slot_bytes + 63) / 64) * 64;
+}
 
 size_t ring_bytes(const AuRingGeom& g) {
   return kAuRingHdrBytes +
@@ -70,6 +81,8 @@ AuRingWriter::~AuRingWriter() {
 
 bool AuRingWriter::open(const std::string& path, AuRingGeom geom) {
   if (geom.slot_bytes == 0 || geom.slot_count == 0) return false;
+  // Round slot_bytes up to next multiple of 64 to ensure lock word alignment.
+  geom.slot_bytes = align_slot_bytes(geom.slot_bytes);
   map_ = map_file(path, ring_bytes(geom), /*create=*/true, &map_bytes_);
   if (!map_) return false;
   geom_ = geom;
@@ -112,7 +125,9 @@ uint64_t AuRingWriter::finish(bool complete) {
   const uint64_t n = published_;
   uint8_t* slot = slot_base_(n);
   const uint32_t lock = load32(slot + kSOffLock);
-  store32(slot + kSOffLock, lock + 1);  // odd: write in progress
+  store32_relaxed(slot + kSOffLock, lock + 1);  // odd: write in progress
+  // Ensure odd lock value is visible to readers before payload writes.
+  __atomic_thread_fence(__ATOMIC_RELEASE);
   std::memcpy(slot + kAuSlotHdrBytes, au_.data(), au_.size());
   put32(slot + kSOffLen, static_cast<uint32_t>(au_.size()));
   put64(slot + kSOffRecNo, n);
@@ -129,7 +144,7 @@ uint64_t AuRingWriter::finish(bool complete) {
   slot[kSOffFlags] =
       static_cast<uint8_t>(hdr_.flags | (complete ? kRecFlagComplete : 0));
   slot[kSOffCodec] = hdr_.codec;
-  store32(slot + kSOffLock, lock + 2);  // even: stable
+  store32(slot + kSOffLock, lock + 2);  // even: stable, release
   ++published_;
   store64(map_ + kOffWriteSeq, published_);
   au_.clear();
@@ -151,9 +166,16 @@ bool AuRingReader::open(const std::string& path) {
   }
   geom_.slot_bytes = get32(map_ + kOffSlotBytes);
   geom_.slot_count = get32(map_ + kOffSlotCount);
+  // Slot stride is 64 + slot_bytes; slot_bytes must be a multiple of 64 to
+  // ensure the lock word at offset 0 of each slot is properly aligned.
+  if (geom_.slot_bytes == 0 || geom_.slot_bytes % 64 != 0 || geom_.slot_count == 0) {
+    ::munmap(map_, map_bytes_);
+    map_ = nullptr;
+    return false;
+  }
   const size_t need = kAuRingHdrBytes + static_cast<size_t>(geom_.slot_count) *
                                             (kAuSlotHdrBytes + geom_.slot_bytes);
-  if (geom_.slot_bytes == 0 || geom_.slot_count == 0 || map_bytes_ < need) {
+  if (map_bytes_ < need) {
     ::munmap(map_, map_bytes_);
     map_ = nullptr;
     return false;
@@ -173,6 +195,13 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
                                      std::vector<uint8_t>* payload) {
   if (!map_) return Res::kNone;
   const uint64_t wseq = load64(map_ + kOffWriteSeq);
+  // Detect writer restart (ring re-created): write_seq went backwards.
+  // Maburgs restarts are routine on this bench.
+  if (wseq < cursor_) {
+    ++resyncs_;
+    cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
+    return Res::kResync;
+  }
   if (cursor_ >= wseq) return Res::kNone;
   const uint8_t* slot = slot_base_(cursor_);
   const uint32_t l1 = load32(slot + kSOffLock);
@@ -187,7 +216,9 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
   m.codec = slot[kSOffCodec];
   if (m.len > geom_.slot_bytes) return Res::kResync;  // torn beyond repair
   payload->assign(slot + kAuSlotHdrBytes, slot + kAuSlotHdrBytes + m.len);
-  const uint32_t l2 = load32(slot + kSOffLock);
+  // Ensure payload copy completes before checking l2.
+  __atomic_thread_fence(__ATOMIC_ACQUIRE);
+  const uint32_t l2 = load32_relaxed(slot + kSOffLock);
   if (l1 != l2) {  // writer landed on this slot mid-copy: overrun by a lap
     ++resyncs_;
     cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
