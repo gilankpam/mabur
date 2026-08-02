@@ -13,6 +13,7 @@ add_library(mabur_gs_core STATIC
   src/shm_surface.cpp
   src/msp_renderer.cpp
   src/frame_stream.cpp
+  src/au_ring.cpp
   src/rtp_packetizer.cpp
   src/stats_exporter.cpp)
 target_include_directories(mabur_gs_core
