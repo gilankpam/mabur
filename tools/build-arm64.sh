@@ -149,15 +149,37 @@ export MABUR_DRM_ROOT="$PWD/toolchain/drm-arm64"
 #        changing MPP_REF below; re-verify h265/CMakeLists.txt's file list
 #        still matches the tree before trusting a new ref.
 MPP_REF=df4864bd1e907cbfd427c397348976c5b2b05ee9
-if [ ! -d toolchain/mpp-src ]; then
-  mkdir -p toolchain/mpp-src
-  git -C toolchain/mpp-src init -q
-  git -C toolchain/mpp-src remote add origin https://github.com/rockchip-linux/mpp
-  git -C toolchain/mpp-src fetch --depth 1 origin "$MPP_REF"
-  git -C toolchain/mpp-src checkout -q FETCH_HEAD
+
+# Desired-state guard, not directory-existence: a bare `[ ! -d ... ]` check
+# has two failure modes — (a) an interrupted fetch/checkout can leave
+# toolchain/mpp-src existing-but-empty/partial, and every later run would
+# then skip the clone and die confusingly at the cmake step below with no
+# way to self-heal short of manually rm -rf'ing it; (b) bumping MPP_REF (the
+# documented re-pin procedure above) would silently keep building the OLD
+# checkout forever, since a directory-existence check can't tell the repo is
+# now pinned to a different commit. Comparing HEAD to MPP_REF fixes both.
+MPP_HEAD=$(git -C toolchain/mpp-src rev-parse HEAD 2>/dev/null || echo none)
+if [ "$MPP_HEAD" != "$MPP_REF" ]; then
+  rm -rf toolchain/mpp-src
+  # Clone into a temp dir and mv into place only after checkout succeeds, so
+  # an interrupted fetch/checkout can never leave a half-cloned directory
+  # that a future run's HEAD check would trust as complete.
+  mpp_tmp="$(mktemp -d toolchain/mpp-src.XXXXXX)"
+  git -C "$mpp_tmp" init -q
+  git -C "$mpp_tmp" remote add origin https://github.com/rockchip-linux/mpp
+  git -C "$mpp_tmp" fetch --depth 1 origin "$MPP_REF"
+  git -C "$mpp_tmp" checkout -q FETCH_HEAD
+  mv "$mpp_tmp" toolchain/mpp-src
 fi
 
-if [ ! -e toolchain/mpp-arm64/lib/librockchip_mpp.a ]; then
+# Ref-aware artifact cache: toolchain/mpp-arm64/.ref records which MPP_REF
+# the staged librockchip_mpp.a was built from, so a re-pin (MPP_REF bumped
+# above) correctly triggers a rebuild instead of silently reusing a stale
+# archive built from the old commit. .ref is written only AFTER a successful
+# build (see below), so an interrupted build also self-heals: no matching
+# .ref means the next run rebuilds rather than trusting a partial artifact.
+if [ ! -e toolchain/mpp-arm64/lib/librockchip_mpp.a ] \
+   || [ "$(cat toolchain/mpp-arm64/.ref 2>/dev/null)" != "$MPP_REF" ]; then
   # -DBUILD_TEST=OFF: test/demo binaries have glibc-isms and aren't needed.
   # -DBUILD_SHARED_LIBS=OFF: mpp's own CMakeLists always builds BOTH
   #   rockchip_mpp (SHARED) and rockchip_mpp_static regardless of this
@@ -169,11 +191,12 @@ if [ ! -e toolchain/mpp-arm64/lib/librockchip_mpp.a ]; then
   # -DCMAKE_POSITION_INDEPENDENT_CODE=ON: matches the brief's guidance for
   #   musl-static cross builds; no -Werror was hit so no warnings-as-errors
   #   flag was needed here (contra the brief's anticipated risk).
+  rm -rf toolchain/mpp-build toolchain/mpp-arm64
   cmake -S toolchain/mpp-src -B toolchain/mpp-build \
     -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
     -DCMAKE_C_COMPILER="$MABUR_CROSS_CC" -DCMAKE_CXX_COMPILER="$MABUR_CROSS_CXX" \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_TEST=OFF \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_EXE_LINKER_FLAGS=-static
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
   cmake --build toolchain/mpp-build -j"$(nproc)" --target rockchip_mpp_static
 
   # No `make install` (its `install(TARGETS rockchip_mpp ...)` line would
@@ -187,6 +210,9 @@ if [ ! -e toolchain/mpp-arm64/lib/librockchip_mpp.a ]; then
   mkdir -p toolchain/mpp-arm64/include/rockchip toolchain/mpp-arm64/lib
   cp toolchain/mpp-src/inc/*.h toolchain/mpp-arm64/include/rockchip/
   cp toolchain/mpp-build/mpp/librockchip_mpp.a toolchain/mpp-arm64/lib/
+  # Written last, only on success: marks the artifact cache as valid for
+  # this exact MPP_REF (see the skip condition above).
+  echo "$MPP_REF" > toolchain/mpp-arm64/.ref
 fi
 export MABUR_MPP_ROOT="$PWD/toolchain/mpp-arm64"
 
