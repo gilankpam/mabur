@@ -182,6 +182,7 @@ bool AuRingReader::open(const std::string& path) {
   }
   const uint64_t wseq = load64(map_ + kOffWriteSeq);
   cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
+  last_wseq_ = wseq;
   return true;
 }
 
@@ -195,13 +196,18 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
                                      std::vector<uint8_t>* payload) {
   if (!map_) return Res::kNone;
   const uint64_t wseq = load64(map_ + kOffWriteSeq);
-  // Detect writer restart (ring re-created): write_seq went backwards.
-  // Maburgs restarts are routine on this bench.
-  if (wseq < cursor_) {
+  // Detect writer restart (ring re-created): write_seq went backwards against
+  // itself, not against cursor_. Cursor can legitimately exceed wseq after an
+  // overrun (writer stores lock before write_seq, so reader can lap-ahead).
+  // Only write_seq regressing signals ring re-creation. Maburgs restarts are
+  // routine on this bench.
+  if (wseq < last_wseq_) {
     ++resyncs_;
     cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
+    last_wseq_ = wseq;
     return Res::kResync;
   }
+  last_wseq_ = wseq;
   if (cursor_ >= wseq) return Res::kNone;
   const uint8_t* slot = slot_base_(cursor_);
   const uint32_t l1 = load32(slot + kSOffLock);

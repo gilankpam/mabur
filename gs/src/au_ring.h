@@ -92,6 +92,7 @@ class AuRingReader {
   AuRingGeom geom_;
   uint64_t cursor_ = 0;
   uint64_t resyncs_ = 0;
+  uint64_t last_wseq_ = 0;
 };
 
 }  // namespace maburgs
