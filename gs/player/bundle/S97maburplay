@@ -1,0 +1,41 @@
+#!/bin/sh
+# maburplay respawn wrapper -- pixelpilot.sh's loop shape, but a stricter
+# stop contract: only exit 2 (config error) and 143 (SIGTERM, what our own
+# stop path sends) end the loop. 137 (SIGKILL) RESPAWNS, deliberately
+# diverging from pixelpilot.sh: the OOM killer and a crashed-box power cut
+# both look like SIGKILL, and an FPV ground station must come back from
+# those (the DVR crash gate kills -9 mid-recording to prove it). The
+# decode watchdog's exit-for-respawn path (exit 1) also lands here.
+
+case "$1" in
+  stop)
+    # Kill the wrapper loop first so it cannot respawn, then the player.
+    # Exclude $$ AND $PPID: `restart` runs stop as a child, and pidof
+    # matches the restarting parent too -- killing it aborted the restart
+    # before the new loop ever spawned (found by the acceptance test).
+    for pid in $(pidof S97maburplay); do
+      [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ] && kill "$pid" 2>/dev/null
+    done
+    killall maburplay 2>/dev/null
+    exit 0
+    ;;
+  restart)
+    "$0" stop
+    sleep 1
+    ;;
+  start|"") ;;
+  *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+
+(
+  while true; do
+    /usr/local/bin/maburplay -c /etc/maburplay.json
+    rc=$?
+    if [ "$rc" = 2 ] || [ "$rc" = 143 ]; then
+      echo "maburplay exited: $rc, skip restart ...."
+      exit 2
+    fi
+    echo "maburplay exited: $rc, restart ...."
+    sleep 1
+  done
+) >/tmp/maburplay.log 2>&1 &

@@ -54,6 +54,12 @@ if(MABUR_BUILD_GS)
   add_mtest(test_gs_config test_gs_config.cpp LIBS mabur_gs_core)
   target_compile_definitions(test_gs_config PRIVATE
     MABUR_GS_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/bundle")
+  add_mtest(test_player_config test_player_config.cpp LIBS mabur_player_core)
+  target_compile_definitions(test_player_config PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
+  add_mtest(test_hevc_params test_hevc_params.cpp LIBS mabur_player_core)
+  add_mtest(test_dvr_mux test_dvr_mux.cpp LIBS mabur_player_core)
+  add_mtest(test_ring_client test_ring_client.cpp LIBS mabur_player_core pthread)
   add_mtest(test_body_queue test_body_queue.cpp LIBS mabur_gs_core)
   add_mtest(test_aggregator test_aggregator.cpp LIBS mabur_gs_core)
   add_mtest(test_udp_sink test_udp_sink.cpp LIBS mabur_gs_core)
@@ -72,7 +78,7 @@ if(MABUR_BUILD_GS)
   add_mtest(test_msp_renderer test_msp_renderer.cpp LIBS mabur_gs_core)
   add_mtest(test_frame_stream test_frame_stream.cpp LIBS mabur_gs_core)
   add_mtest(test_rtp_packetizer test_rtp_packetizer.cpp LIBS mabur_gs_core)
-  add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core)
+  add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_au_doorbell test_au_doorbell.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
     # frame_e2e_sustained_shed_no_gaps_no_stalls drives the real drone-side
@@ -94,6 +100,9 @@ endif()
 if(MABUR_BUILD_DRONE AND MABUR_BUILD_GS)
   add_test(NAME gs_au_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_au_e2e.sh)
   set_tests_properties(gs_au_e2e PROPERTIES
+    ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
+  add_test(NAME player_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_player_e2e.sh)
+  set_tests_properties(player_e2e PROPERTIES
     ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
 endif()
 # Host-only burst-loss simulator (spec 2026-07-15-per-layer-symbol-size).
