@@ -107,7 +107,7 @@ struct AuRingOutCfg {
   int slot_count = 16;  // 16 x 512 KiB = 8 MiB default ring
 };
 
-/// Ground station configuration: radio, FEC, link, video output, and MSP OSD output.
+/// Ground station configuration: radio, FEC, link, video reassembly, AU ring, MSP OSD.
 struct Config {
   RadioCfg radio;
   FecCfg fec;

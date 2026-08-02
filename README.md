@@ -8,8 +8,9 @@ classifies each frame by temporal layer, applies per-layer sliding-window UEP
 FEC with SBI framing (the window sealed at every frame boundary), injects the
 bodies with per-layer modulation/power, consumes the ground-station
 adaptive-link feedback (RC/RCF), and drives waybeam's encoder knobs (bitrate,
-ROI QP, IDR) in response. RTP is built on the ground station, from the frames
-it reassembles.
+ROI QP, IDR) in response. The ground station publishes reassembled access
+units to a shm ring consumed by maburplay (MPP hardware decode to DRM/KMS,
+plus the fMP4 DVR); there is no RTP anywhere in the system.
 
 The full design — architecture, wire formats, protocol, and the testing
 strategy — is in

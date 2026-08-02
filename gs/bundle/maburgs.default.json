@@ -43,5 +43,5 @@
     "symbol_size": 1312,
     "window": 16
   },
-  "au_ring": { "enable": false }
+  "au_ring": { "enable": true }
 }

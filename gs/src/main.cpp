@@ -76,6 +76,9 @@ struct AuFileOut {
     if (f && in_au) au.insert(au.end(), d, d + n);
   }
   void finish(bool complete) {
+    // Host-endian fwrite of the u32 fields; verify_aus.py unpacks "<I".
+    // Fine on every LE host in play (the dry-run only runs on the x86-64
+    // dev box); explicit LE serialization needed if that ever changes.
     if (!f || !in_au) return;
     in_au = false;
     const uint32_t len = static_cast<uint32_t>(au.size());
@@ -174,6 +177,13 @@ static int run_radio(const maburgs::Config& cfg) {
     if (!au_on)
       std::fprintf(stderr, "warning: au_ring %s unusable; disabled\n",
                    cfg.au_ring.path.c_str());
+  } else {
+    // PR C: the ring IS the video output. A disabled ring means every
+    // reassembled frame is decoded and thrown away -- legal for FEC-only
+    // bench work, but never silently.
+    std::fprintf(stderr,
+                 "warning: au_ring disabled -- NO video output (frames are "
+                 "reassembled and discarded)\n");
   }
 
   // Video tail: FrameStream reassembles whole frames from the raw FRAG

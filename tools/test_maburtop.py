@@ -29,8 +29,8 @@ DGRAM = {
         "air_pct": 31.3,
         "video": {"fps": 59.9, "mbps": 9.31, "jitter_ms": 1.8,
                   "clean": 21500, "truncated": 3, "dropped": 0, "stall_resets": 0,
-                  "rtp": {"ok": 812345, "gap": 2, "gap_seqs": 9, "back": 0},
-                  "udp": {"sent": 812347, "failed": 0, "bytes": 123456789},
+                  "ring": {"published": 812345, "dropped_oversize": 0,
+                           "bytes": 123456789},
                   "q_drop": 0},
     },
     "drone": {
@@ -198,8 +198,8 @@ class VideoPanelTest(unittest.TestCase):
         rows = panel_video(_fresh(), 100.2)
         joined = "\n".join(texts(rows))
         for cell in ("59.9 fps", "9.31 Mbps", "jitter", "1.8 ms", "clean",
-                     "21500", "trunc", "drop", "812345", "gap", "back",
-                     "812347", "fail", "q_drop", "residual"):
+                     "21500", "trunc", "drop", "812345", "ring",
+                     "pub", "q_drop", "residual"):
             self.assertIn(cell, joined)
 
     def test_cross_check_present_with_telemetry(self):

@@ -152,9 +152,10 @@ def main():
     # AU pts must be non-decreasing modulo u32 wrap: FrameStream emits frames
     # in frame_id order and pts is the encoder's capture stamp. A forward
     # delta >= 2^31 would mean a genuine reversal, not a wrap.
-    pts_seq = [g["pts"] for g in got]
-    for x, b in zip(pts_seq, pts_seq[1:]):
-        if ((b - x) & 0xFFFFFFFF) >= 0x80000000:
+    for prev, cur in zip(got, got[1:]):
+        if cur["flags"] & 0x02:  # kFlagDiscont: pts legitimately rebases
+            continue
+        if ((cur["pts"] - prev["pts"]) & 0xFFFFFFFF) >= 0x80000000:
             print("FAIL: AU pts regressed")
             ok = False
             break

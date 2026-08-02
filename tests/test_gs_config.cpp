@@ -398,7 +398,10 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
 
 TEST(au_ring_defaults) {
   auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
-  CHECK(!c.au_ring.enable);
+  // PR C: the ring IS the video output, so the shipped bundle enables it;
+  // the STRUCT default stays false (empty config checked below).
+  CHECK(c.au_ring.enable);
+  CHECK(!maburgs::load_config(write_tmp("{}")).au_ring.enable);
   CHECK(c.au_ring.path == "/dev/shm/mabur-au");
   CHECK(c.au_ring.socket == "/run/mabur-au.sock");
   CHECK(c.au_ring.slot_kb == 512);
