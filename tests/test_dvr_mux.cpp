@@ -168,7 +168,8 @@ TEST(dvr_mux_box_tree_and_fragment_cut) {
   const Box& mdat2 = top[5];
 
   auto check_fragment = [&](const Box& moof, const Box& mdat, uint32_t expect_seq,
-                             size_t expect_sample_count, uint64_t expect_tfdt) {
+                             size_t expect_sample_count, uint64_t expect_tfdt,
+                             uint32_t expect_dur_per_sample) {
     std::vector<Box> moof_kids = parse_boxes(f, moof.payload_off(), moof.off + moof.size);
     const Box* mfhd = find(moof_kids, "mfhd");
     const Box* traf = find(moof_kids, "traf");
@@ -202,6 +203,11 @@ TEST(dvr_mux_box_tree_and_fragment_cut) {
     size_t p = trun->payload_off() + 12;
     size_t mdat_expect = 0;
     for (size_t i = 0; i < sample_count; ++i) {
+      // Every sample's duration, including the last one (which has no
+      // next sample in this fragment to measure against, so it must
+      // reuse the last real delta — never 0).
+      uint32_t dur = read_u32(f, p + 0);
+      CHECK(dur == expect_dur_per_sample);
       uint32_t size = read_u32(f, p + 4);
       CHECK(size == fake_au_mdat_bytes());
       mdat_expect += size;
@@ -210,8 +216,11 @@ TEST(dvr_mux_box_tree_and_fragment_cut) {
     CHECK(mdat.payload_size() == mdat_expect);
   };
 
-  check_fragment(moof1, mdat1, 1, 2, 0);
-  check_fragment(moof2, mdat2, 2, 3, pts[2]);  // sample 2 starts fragment 2, no wrap yet
+  // All five samples are spaced by a constant 16683us delta, so every
+  // trun entry in both fragments — including each fragment's last
+  // sample — must carry that same duration.
+  check_fragment(moof1, mdat1, 1, 2, 0, 16683);
+  check_fragment(moof2, mdat2, 2, 3, pts[2], 16683);  // sample 2 starts fragment 2, no wrap yet
 
   // Explicit sample_flags check, keyed off which global sample each trun
   // entry corresponds to (fragment1: samples 0,1; fragment2: samples 2,3,4).
@@ -277,6 +286,37 @@ TEST(dvr_mux_pts_wrap_tfdt_strictly_increasing) {
   uint64_t expect_tfdt2 = 0xFFFFFFF0ull + 21ull + 16704ull;
   CHECK(tfdt2 == expect_tfdt2);
   CHECK(tfdt2 > tfdt1);  // strictly increasing despite the raw u32 wrap
+
+  // Duration coverage: fragment 1 has 2 samples (real delta 21us, from
+  // the wrap-unwrap above), so both its trun entries — including the
+  // last — must read 21. Fragment 2 has exactly one sample (sample 2
+  // forces the cut and close() flushes immediately after), so its lone
+  // trun entry has no next-sample delta to measure and must fall back
+  // to the last real delta carried over from fragment 1: also 21, never
+  // 0.
+  auto read_trun_durations = [&](const Box& moof) -> std::vector<uint32_t> {
+    std::vector<Box> moof_kids = parse_boxes(f, moof.payload_off(), moof.off + moof.size);
+    const Box* traf = find(moof_kids, "traf");
+    std::vector<Box> traf_kids = parse_boxes(f, traf->payload_off(), traf->off + traf->size);
+    const Box* trun = find(traf_kids, "trun");
+    uint32_t sample_count = read_u32(f, trun->payload_off() + 4);
+    std::vector<uint32_t> out;
+    size_t p = trun->payload_off() + 12;
+    for (uint32_t i = 0; i < sample_count; ++i) {
+      out.push_back(read_u32(f, p));
+      p += 12;
+    }
+    return out;
+  };
+
+  std::vector<uint32_t> durs1 = read_trun_durations(moof1);
+  REQUIRE(durs1.size() == 2);
+  CHECK(durs1[0] == 21u);
+  CHECK(durs1[1] == 21u);  // last sample of fragment 1 reuses the real delta
+
+  std::vector<uint32_t> durs2 = read_trun_durations(moof2);
+  REQUIRE(durs2.size() == 1);
+  CHECK(durs2[0] == 21u);  // lone-sample fragment: carried, never 0
 }
 
 MTEST_MAIN

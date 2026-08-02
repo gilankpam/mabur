@@ -383,11 +383,15 @@ void DvrMux::flush_fragment() {
       for (size_t i = 0; i < pending_.size(); ++i) {
         uint32_t dur;
         if (i + 1 < pending_.size()) {
+          // Real delta to the next sample in this fragment — becomes the
+          // new running estimate for the next lone-sample fragment.
           dur = static_cast<uint32_t>(pending_[i + 1].pts64 - pending_[i].pts64);
-        } else if (pending_.size() >= 2) {
-          dur = static_cast<uint32_t>(pending_[i].pts64 - pending_[i - 1].pts64);
+          last_dur_us_ = dur;
         } else {
-          dur = 0;
+          // Last sample of the fragment (possibly the only one): no next
+          // sample to measure against, so reuse the running estimate.
+          // Never 0 — some players compute playback rate from duration.
+          dur = last_dur_us_;
         }
         b.u32(dur);
         b.u32(static_cast<uint32_t>(pending_[i].data.size()));
