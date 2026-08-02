@@ -37,21 +37,38 @@ def read_slot(mm, base, slot_bytes):
             "flags": flags, "codec": codec, "payload": payload}
 
 
-def open_ring(path):
-    """Map path read-only and parse/validate the header. Exits on failure."""
+def open_ring(path, exit_on_fail=True):
+    """Map path read-only and parse/validate the header.
+
+    On failure: exits with an error if exit_on_fail (the default — used for
+    the initial open and any oneshot reopen); otherwise closes what it
+    opened and returns None so a live-mode caller can retry. A ring
+    mid-recreate (writer: ftruncate -> memset -> geometry -> epoch -> magic
+    last/release, non-atomic) is routinely unreadable/torn for a live
+    reader that happens to poll during that window — that is not fatal.
+    """
+    def fail(msg, f=None, mm=None):
+        if mm is not None:
+            mm.close()
+        if f is not None:
+            f.close()
+        if exit_on_fail:
+            sys.exit(msg)
+        return None
+
     try:
         f = open(path, "rb")
         mm = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)
     except (FileNotFoundError, OSError, IOError, ValueError) as e:
-        sys.exit(f"{path}: {e}")
+        return fail(f"{path}: {e}")
     magic, ver, slot_bytes, slot_count = struct.unpack_from("<IIII", mm, 0)
     if magic != MAGIC or ver != VERSION:
-        sys.exit(f"{path}: bad magic/version {magic:#x}/{ver}")
+        return fail(f"{path}: bad magic/version {magic:#x}/{ver}", f, mm)
     if slot_bytes % 64 != 0 or slot_bytes == 0 or slot_count == 0:
-        sys.exit(f"{path}: invalid slot_bytes/slot_count {slot_bytes}/{slot_count}")
+        return fail(f"{path}: invalid slot_bytes/slot_count {slot_bytes}/{slot_count}", f, mm)
     need = HDR + slot_count * (SLOT_HDR + slot_bytes)
     if mm.size() < need:
-        sys.exit(f"{path}: file too short for declared geometry ({mm.size()} < {need})")
+        return fail(f"{path}: file too short for declared geometry ({mm.size()} < {need})", f, mm)
     epoch = struct.unpack_from("<Q", mm, 32)[0]  # 0 = pre-epoch ring
     return f, mm, slot_bytes, slot_count, epoch
 
@@ -99,7 +116,14 @@ def main():
             # and cursor together whether or not geometry actually changed.
             print(f"{a.ring}: writer epoch changed ({epoch:#x} -> "
                   f"{cur_epoch:#x}), resyncing", file=sys.stderr)
-            new_f, new_mm, new_slot_bytes, new_slot_count, new_epoch = open_ring(a.ring)
+            reopened = open_ring(a.ring, exit_on_fail=a.oneshot)
+            if reopened is None:
+                # Live mode only (oneshot exits inside open_ring above): the
+                # header is mid-recreate (unreadable/torn) — routine, not
+                # fatal. Retry on the next iteration within --seconds.
+                time.sleep(0.01)
+                continue
+            new_f, new_mm, new_slot_bytes, new_slot_count, new_epoch = reopened
             if a.oneshot and (new_slot_bytes != slot_bytes or new_slot_count != slot_count):
                 sys.exit(f"{a.ring}: geometry changed mid oneshot read "
                          f"({slot_bytes}/{slot_count} -> "
@@ -111,6 +135,8 @@ def main():
             w = wseq()
             cursor = w - slot_count if w > slot_count else 0
             resyncs += 1
+            last_fid = None  # new writer session: don't diff fid across it
+            stall = 0
             continue
         w = wseq()
         if cursor >= w:

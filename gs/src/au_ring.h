@@ -27,6 +27,14 @@ namespace maburgs {
 //                              that climbed past its cursor before the next
 //                              poll (see AuRingReader::next, kResync). 0 in
 //                              the header means a pre-epoch (PR-A) writer.
+//                              Ring re-creation is NOT atomic (ftruncate,
+//                              then memset, then geometry, then epoch, then
+//                              magic last/release): a reader polling mid-
+//                              recreate can see a torn header, and if the
+//                              new geometry is a SHRINK, a reader still
+//                              holding the old (larger) mapping is not
+//                              guaranteed a consistent view until it
+//                              re-opens on the next epoch-mismatch poll.
 // SlotHdr (64-byte header per slot, offsets relative to the slot base):
 //    0 u32 lock              — seqlock word; odd = write in progress
 //    4 u32 len
@@ -126,6 +134,12 @@ class AuRingReader {
   uint64_t epoch_ = 0;      // latched at open; 0 = ring predates epochs
   bool dead_ = false;
   std::string path_;        // for geometry-change reopen
+  // CLOCK_MONOTONIC ms timestamp of the first consecutive failed reopen
+  // attempt; 0 = not currently failing. Ring re-creation is non-atomic (see
+  // the layout comment above), so a failed reopen is expected transiently
+  // during a writer restart — dead_ only latches after reopen keeps failing
+  // past a budget (see next()).
+  uint64_t reopen_fail_ms_ = 0;
 };
 
 }  // namespace maburgs

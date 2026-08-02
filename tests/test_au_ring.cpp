@@ -263,10 +263,28 @@ TEST(epoch_stamped_nonzero_and_latched) {
   maburgs::AuRingWriter w;
   REQUIRE(w.open(path, {1024, 4}));
   write_n(w, 2, 64);
+  auto read_epoch = [&]() -> uint64_t {
+    FILE* f = fopen(path.c_str(), "rb");
+    REQUIRE(f != nullptr);
+    REQUIRE(fseek(f, 32, SEEK_SET) == 0);   // kOffEpoch: the wire contract
+    uint64_t e = 0;
+    REQUIRE(fread(&e, 8, 1, f) == 1);
+    fclose(f);
+    return e;
+  };
+  const uint64_t e1 = read_epoch();
+  CHECK(e1 != 0);
+  CHECK((e1 & 1) == 1);                     // |1 guarantee
   maburgs::AuRingReader r;
   REQUIRE(r.open(path));
   maburgs::AuRecordMeta m; std::vector<uint8_t> got;
   CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(read_epoch() == e1);                // stable across reads
+  maburgs::AuRingWriter w2;
+  REQUIRE(w2.open(path, {1024, 4}));        // restart
+  const uint64_t e2 = read_epoch();
+  CHECK(e2 != 0);
+  CHECK(e2 != e1);                          // changes across restart
   unlink(path.c_str());
 }
 
@@ -313,6 +331,36 @@ TEST(geometry_change_reopens_reader) {
   unlink(path.c_str());
 }
 
+TEST(reopen_retries_through_unreadable_header) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {1024, 4}));
+  write_n(w, 2, 64);
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRecordMeta m; std::vector<uint8_t> got;
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  // Simulate mid-recreate: zero the magic+epoch words in place.
+  FILE* f = fopen(path.c_str(), "rb+");
+  REQUIRE(f != nullptr);
+  uint8_t zeros[40] = {0};
+  fwrite(zeros, 1, 40, f);
+  fclose(f);
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kResync);  // epoch 0 mismatch
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kNone);    // reopen failing, not dead
+  CHECK(!r.dead());
+  // Writer finishes the recreate.
+  maburgs::AuRingWriter w2;
+  REQUIRE(w2.open(path, {1024, 4}));
+  write_n(w2, 3, 80);
+  maburgs::AuRingReader::Res res;
+  do { res = r.next(&m, &got); } while (res == maburgs::AuRingReader::Res::kNone && !r.dead());
+  CHECK(res == maburgs::AuRingReader::Res::kResync);
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(!r.dead());
+  unlink(path.c_str());
+}
+
 TEST(hammer_writer_reader_integrity) {
   // Full-speed writer thread vs reader: every accepted record's payload must
   // match its rec_no pattern. Laps/resyncs allowed; corruption is not.
@@ -324,7 +372,7 @@ TEST(hammer_writer_reader_integrity) {
     while (!stop.load(std::memory_order_relaxed)) {
       FrameHdr h; h.frame_id = static_cast<uint16_t>(w.published());
       const auto au = au_bytes(64 + (w.published() % 128),
-                               static_cast<uint8_t>(w.published()));
+                               static_cast<uint8_t>(w.published() % 251));
       w.begin(h, 1); w.append(au.data(), au.size()); w.finish(true);
     }
   });
@@ -335,13 +383,14 @@ TEST(hammer_writer_reader_integrity) {
   const auto t0 = std::chrono::steady_clock::now();
   while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2)) {
     if (r.next(&m, &got) != maburgs::AuRingReader::Res::kOk) continue;
-    if (got != au_bytes(64 + (m.rec_no % 128), static_cast<uint8_t>(m.rec_no)))
+    if (got != au_bytes(64 + (m.rec_no % 128), static_cast<uint8_t>(m.rec_no % 251)))
       ++corrupt;
     else ++ok;
   }
   stop = true; wr.join();
   CHECK(corrupt == 0);
   CHECK(ok > 1000);
+  CHECK(r.resyncs() > 0);
   unlink(path.c_str());
 }
 

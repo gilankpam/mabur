@@ -60,6 +60,17 @@ uint64_t now_monotonic_ns() {
          static_cast<uint64_t>(ts.tv_nsec);
 }
 
+uint64_t now_monotonic_ms() { return now_monotonic_ns() / 1000000ull; }
+
+// Budget for a reader to keep retrying a failed reopen (unreadable/torn
+// header) before giving up. Ring re-creation is non-atomic — ftruncate,
+// then memset (which zeroes epoch AND magic for the memset's duration on a
+// multi-MiB ring), then geometry, then epoch, then magic last/release — so
+// a reader polling mid-recreate seeing a torn header is the expected,
+// routine case, not a dead ring. 5 s comfortably covers that window plus
+// unlink-then-recreate shutdown/restart sequences.
+constexpr uint64_t kReopenBudgetMs = 5000;
+
 // Writer-side: create/truncate to the exact geometry and map read-write.
 uint8_t* map_file_rw(const std::string& path, size_t bytes, size_t* out_bytes) {
   int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
@@ -211,6 +222,10 @@ bool AuRingReader::open(const std::string& path) {
   const uint64_t wseq = load64(map_ + kOffWriteSeq);
   cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
   last_wseq_ = wseq;
+  // A successful (re)open means we have a good mapping again: clear any
+  // stale failure state from a previous reopen attempt.
+  dead_ = false;
+  reopen_fail_ms_ = 0;
   return true;
 }
 
@@ -222,7 +237,21 @@ const uint8_t* AuRingReader::slot_base_(uint64_t rec_no) const {
 
 AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
                                      std::vector<uint8_t>* payload) {
-  if (!map_) return Res::kNone;  // dead_ or never opened
+  if (dead_) return Res::kNone;
+  if (!map_) {
+    // A previous reopen attempt (below, or here) failed to (re)map the
+    // ring — expected transiently while a writer is mid-recreate (see the
+    // non-atomic re-creation note in au_ring.h / kReopenBudgetMs above).
+    // Retry every poll rather than latching dead_ immediately; only give
+    // up once retries have failed continuously past the budget, which also
+    // covers an unlink-then-recreate shutdown/restart sequence.
+    const std::string p = path_;  // local copy: open() writes path_ itself
+    if (open(p)) return Res::kResync;  // recovered: caller sees a discontinuity
+    const uint64_t now = now_monotonic_ms();
+    if (reopen_fail_ms_ == 0) reopen_fail_ms_ = now;
+    if (now - reopen_fail_ms_ > kReopenBudgetMs) dead_ = true;
+    return Res::kNone;
+  }
   const uint64_t ep = get64(map_ + kOffEpoch);
   // ep == epoch_ == 0 falls through here (pre-epoch ring, see the wseq
   // fallback below); any other change — including 0 -> nonzero, a reader
@@ -238,13 +267,18 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
     // scratch — cheapest safe path, and it re-latches epoch, geometry,
     // and cursor together whether or not geometry actually changed.
     ++resyncs_;
-    if (map_) {
-      ::munmap(map_, map_bytes_);
-      map_ = nullptr;
-    }
-    if (!open(path_)) {
-      dead_ = true;
-      return Res::kNone;
+    const std::string p = path_;  // local copy: open() writes path_ itself
+    ::munmap(map_, map_bytes_);
+    map_ = nullptr;
+    if (!open(p)) {
+      // Re-creation is non-atomic; an unreadable header here just means we
+      // caught the writer mid-recreate. Stay unmapped — the retry block at
+      // the top of next() above keeps trying on every subsequent poll, and
+      // only escalates to dead_ past kReopenBudgetMs. This call already
+      // observed a real discontinuity (the epoch moved), so report it now.
+      const uint64_t now = now_monotonic_ms();
+      if (reopen_fail_ms_ == 0) reopen_fail_ms_ = now;
+      return Res::kResync;
     }
     return Res::kResync;
   }
