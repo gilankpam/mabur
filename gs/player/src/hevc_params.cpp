@@ -90,6 +90,15 @@ bool HevcParams::feed(const uint8_t* au, size_t n) {
 
 std::vector<uint8_t> HevcParams::hvcc() const {
   assert(complete());
+
+  // GCC misfires -Wstringop-overflow on this function's chained
+  // insert()/push_back() growth under -O3 (verified false positive:
+  // relocates rather than disappears when the code is restructured;
+  // clean under ASan/UBSan). Scoped to just this construction.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
   std::vector<uint8_t> out;
   out.push_back(0x01);  // configurationVersion
 
@@ -124,6 +133,9 @@ std::vector<uint8_t> HevcParams::hvcc() const {
   push_array(out, 33, sps_);
   push_array(out, 34, pps_);
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
   return out;
 }
 
