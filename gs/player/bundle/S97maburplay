@@ -10,8 +10,11 @@
 case "$1" in
   stop)
     # Kill the wrapper loop first so it cannot respawn, then the player.
+    # Exclude $$ AND $PPID: `restart` runs stop as a child, and pidof
+    # matches the restarting parent too -- killing it aborted the restart
+    # before the new loop ever spawned (found by the acceptance test).
     for pid in $(pidof S97maburplay); do
-      [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null
+      [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ] && kill "$pid" 2>/dev/null
     done
     killall maburplay 2>/dev/null
     exit 0
