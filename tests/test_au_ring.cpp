@@ -173,4 +173,85 @@ TEST(writer_restart_detection) {
   unlink(path.c_str());
 }
 
+namespace {
+void write_n(maburgs::AuRingWriter& w, int n, size_t bytes, uint8_t sid = 1) {
+  for (int i = 0; i < n; ++i) {
+    FrameHdr h;
+    h.frame_id = static_cast<uint16_t>(w.published());
+    h.pts_us = static_cast<uint32_t>(w.published());
+    const auto au = au_bytes(bytes, static_cast<uint8_t>(w.published()));
+    w.begin(h, sid);
+    w.append(au.data(), au.size());
+    w.finish(true);
+  }
+}
+}  // namespace
+
+TEST(overwrite_oldest_reader_resyncs) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {1024, 4}));
+  maburgs::AuRingReader r;
+  write_n(w, 1, 64);
+  REQUIRE(r.open(path));           // cursor at rec 0
+  write_n(w, 9, 64);               // recs 1..9; recs 0..5 overwritten
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  // First read: slot 0 now holds rec 8 (8 % 4 == 0) -> overrun accepted.
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(m.rec_no >= 6);            // never a stale/garbage record
+  CHECK(r.resyncs() == 1);
+  uint64_t prev = m.rec_no;
+  while (r.next(&m, &got) == maburgs::AuRingReader::Res::kOk) {
+    CHECK(m.rec_no == prev + 1);
+    CHECK(got == au_bytes(64, static_cast<uint8_t>(m.rec_no)));
+    prev = m.rec_no;
+  }
+  CHECK(prev == 9);
+  unlink(path.c_str());
+}
+
+TEST(oversize_au_dropped_whole) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {1024, 4}));
+  FrameHdr h;
+  const auto big = au_bytes(2000, 5);
+  w.begin(h, 1);
+  w.append(big.data(), big.size());
+  CHECK(w.finish(true) == UINT64_MAX);
+  CHECK(w.dropped_oversize() == 1);
+  CHECK(w.published() == 0);
+  write_n(w, 1, 100);  // ring still functional after a drop
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(m.rec_no == 0);
+  CHECK(got.size() == 100);
+  unlink(path.c_str());
+}
+
+TEST(reader_rejects_bad_magic) {
+  const std::string path = tmp_ring();
+  FILE* f = fopen(path.c_str(), "wb");
+  REQUIRE(f != nullptr);
+  std::vector<uint8_t> junk(8192, 0xAB);
+  fwrite(junk.data(), 1, junk.size(), f);
+  fclose(f);
+  maburgs::AuRingReader r;
+  CHECK(!r.open(path));
+  unlink(path.c_str());
+}
+
+TEST(finish_without_begin_is_noop) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {1024, 4}));
+  CHECK(w.finish(true) == UINT64_MAX);
+  CHECK(w.published() == 0);
+  unlink(path.c_str());
+}
+
 MTEST_MAIN
