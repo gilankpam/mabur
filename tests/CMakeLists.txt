@@ -73,6 +73,7 @@ if(MABUR_BUILD_GS)
   add_mtest(test_frame_stream test_frame_stream.cpp LIBS mabur_gs_core)
   add_mtest(test_rtp_packetizer test_rtp_packetizer.cpp LIBS mabur_gs_core)
   add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core)
+  add_mtest(test_au_doorbell test_au_doorbell.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
     # frame_e2e_sustained_shed_no_gaps_no_stalls drives the real drone-side
     # FramePipeline into the GS-side decode/FrameStream path, the same way
