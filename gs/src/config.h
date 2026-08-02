@@ -99,6 +99,16 @@ struct StatsCfg {
   int interval_ms = 500;  // clamped to [100, 10000] at load
 };
 
+/// Shared-memory AU ring for the native player / ausniff gate
+/// (docs/superpowers/specs/2026-08-02-gs-player-au-ring-design.md).
+struct AuRingOutCfg {
+  bool enable = false;
+  std::string path = "/dev/shm/mabur-au";
+  std::string socket = "/run/mabur-au.sock";
+  int slot_kb = 512;    // payload capacity per slot
+  int slot_count = 16;  // 16 x 512 KiB = 8 MiB default ring
+};
+
 /// Ground station configuration: radio, FEC, link, video output, and MSP OSD output.
 struct Config {
   RadioCfg radio;
@@ -107,6 +117,7 @@ struct Config {
   VideoOutCfg video_out;
   MspCfg msp;
   StatsCfg stats;
+  AuRingOutCfg au_ring;
 
   /// Builds decoder configuration with per-stream RS and UEP overhead.
   std::array<mabur::UepLayerCfg, 4> uep_layers() const;

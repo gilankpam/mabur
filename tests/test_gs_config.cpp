@@ -384,3 +384,40 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
   CHECK(cfg2.link.ladder_cfg.clean_ms == 4000);
   CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
 }
+
+TEST(au_ring_defaults) {
+  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
+  CHECK(!c.au_ring.enable);
+  CHECK(c.au_ring.path == "/dev/shm/mabur-au");
+  CHECK(c.au_ring.socket == "/run/mabur-au.sock");
+  CHECK(c.au_ring.slot_kb == 512);
+  CHECK(c.au_ring.slot_count == 16);
+}
+
+TEST(au_ring_values_load) {
+  auto c = maburgs::load_config(write_tmp(
+      "{\"au_ring\": {\"enable\": true, \"path\": \"/tmp/r\","
+      " \"socket\": \"/tmp/s\", \"slot_kb\": 256, \"slot_count\": 8}}"));
+  CHECK(c.au_ring.enable);
+  CHECK(c.au_ring.path == "/tmp/r");
+  CHECK(c.au_ring.socket == "/tmp/s");
+  CHECK(c.au_ring.slot_kb == 256);
+  CHECK(c.au_ring.slot_count == 8);
+}
+
+TEST(au_ring_strictness) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"au_ring\": {\"bogus\": 1}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("bogus") != std::string::npos;
+  }
+  CHECK(threw);  // unknown key named in the error
+  threw = false;
+  try { maburgs::load_config(write_tmp("{\"au_ring\": {\"slot_kb\": 16}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // below the 64 KiB floor
+  threw = false;
+  try { maburgs::load_config(write_tmp("{\"au_ring\": {\"slot_count\": 2}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // below the 4-slot floor
+}

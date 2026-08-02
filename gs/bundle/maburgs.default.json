@@ -43,5 +43,6 @@
     "shm": { "name": "msp", "x_offset": 0, "y_offset": 0 },
     "symbol_size": 1312,
     "window": 16
-  }
+  },
+  "au_ring": { "enable": false }
 }

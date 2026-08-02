@@ -70,7 +70,7 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"radio", "fec", "link", "video_out", "msp", "stats"});
+  check_keys(j, "", {"radio", "fec", "link", "video_out", "msp", "stats", "au_ring"});
   Config c;
 
   if (j.contains("radio")) {
@@ -240,6 +240,21 @@ Config load_config(const std::string& path) {
     c.stats.port = static_cast<int>(get_int(r, "port", 8300, 1, 65535, "stats"));
     c.stats.interval_ms =
         static_cast<int>(get_int(r, "interval_ms", 500, 100, 10000, "stats"));
+  }
+
+  if (j.contains("au_ring")) {
+    const json& r = j["au_ring"];
+    check_keys(r, "au_ring", {"enable", "path", "socket", "slot_kb", "slot_count"});
+    if (r.contains("enable")) {
+      if (!r["enable"].is_boolean()) fail("au_ring.enable", "not a boolean");
+      c.au_ring.enable = r["enable"].get<bool>();
+    }
+    c.au_ring.path = get_str(r, "path", "/dev/shm/mabur-au", "au_ring");
+    c.au_ring.socket = get_str(r, "socket", "/run/mabur-au.sock", "au_ring");
+    c.au_ring.slot_kb =
+        static_cast<int>(get_int(r, "slot_kb", 512, 64, 4096, "au_ring"));
+    c.au_ring.slot_count =
+        static_cast<int>(get_int(r, "slot_count", 16, 4, 256, "au_ring"));
   }
   return c;
 }
