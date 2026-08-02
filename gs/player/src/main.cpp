@@ -46,7 +46,7 @@ void usage() {
                "  the ring for N seconds with no presenter, counting frames\n"
                "  via the FrameSink; prints one line of stats JSON\n"
                "  {\"frames\":N,\"fps\":X,\"fps_active\":X,\"info_changes\":N,\n"
-               "   \"errors\":N,\"errors_after_sync_3s\":N} and exits. fps is\n"
+               "   \"errors\":N,\"errors_after_sync_3s\":N,\"concealed\":N} and exits. fps is\n"
                "  over the whole window; fps_active is over first-to-last\n"
                "  decoded frame only (excludes the cold-attach/sid0-join\n"
                "  wait). This is the hardware decode gate (see\n"

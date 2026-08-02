@@ -39,9 +39,11 @@ struct MppBackend::Impl {
   // Drains every frame decode_get_frame currently has ready: forwards
   // decoded frames to sink (ownership of the MppFrame transfers to the
   // sink/DmaFrame::opaque, released by release_frame()), acks info_change
-  // in place, and counts hw-reported errors without emitting them. Called
-  // both from poll() (steady-state drain) and from submit_au()'s
-  // BUFFER_FULL retry path (drain to make room before retrying put).
+  // in place. Hard failures (discard/no-buffer/bad-fd) are counted and
+  // dropped; errinfo (concealment) frames are counted AND emitted -- see
+  // the comment at the emission site. Called both from poll()
+  // (steady-state drain) and from submit_au()'s BUFFER_FULL retry path
+  // (drain to make room before retrying put).
   void drain_frames() {
     for (;;) {
       MppFrame frame = nullptr;

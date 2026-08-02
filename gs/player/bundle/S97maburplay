@@ -1,0 +1,36 @@
+#!/bin/sh
+# maburplay respawn wrapper -- same loop contract as pixelpilot.sh:
+# exit codes 2 (config error), 143 (SIGTERM) and 137 (SIGKILL) stop the
+# loop; anything else (including the decode watchdog's exit-for-respawn
+# path, exit 1) restarts after 1 s with a clean DRM master and a fresh
+# MPP session.
+
+case "$1" in
+  stop)
+    # Kill the wrapper loop first so it cannot respawn, then the player.
+    for pid in $(pidof S97maburplay); do
+      [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null
+    done
+    killall maburplay 2>/dev/null
+    exit 0
+    ;;
+  restart)
+    "$0" stop
+    sleep 1
+    ;;
+  start|"") ;;
+  *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+
+(
+  while true; do
+    /usr/local/bin/maburplay -c /etc/maburplay.json
+    rc=$?
+    if [ "$rc" = 2 ] || [ "$rc" = 143 ] || [ "$rc" = 137 ]; then
+      echo "maburplay exited: $rc, skip restart ...."
+      exit 2
+    fi
+    echo "maburplay exited: $rc, restart ...."
+    sleep 1
+  done
+) >/tmp/maburplay.log 2>&1 &
