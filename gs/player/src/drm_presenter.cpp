@@ -145,6 +145,12 @@ struct DrmPresenter::Impl {
   bool needs_modeset = true;  // next commit must be a full blocking ALLOW_MODESET commit
   bool flip_pending = false;  // a NONBLOCK|PAGE_FLIP_EVENT commit is outstanding
   uint64_t flip_since_ms = 0;  // when flip_pending was set (watchdog)
+  // Events the kernel still owes us for flips that were force-completed or
+  // drop_all()'d before their event arrived. on_flip() swallows exactly
+  // this many before processing a real completion -- without it, a stale
+  // event promotes the NEXT flip early (premature dmabuf release + EBUSY
+  // on the following commit).
+  int events_to_swallow = 0;
 
   bool async_probed = false;
   bool async_active = false;
@@ -174,7 +180,7 @@ struct DrmPresenter::Impl {
   void drop_all();
 
   void release_slot(Slot& s);
-  void on_flip();
+  void on_flip(bool real_event = true);
 
   static void on_flip_static(int fd, unsigned int sequence, unsigned int tv_sec,
                               unsigned int tv_usec, unsigned int crtc_id, void* user_data);
@@ -190,10 +196,14 @@ void DrmPresenter::Impl::release_slot(Slot& s) {
   s = Slot{};
 }
 
-void DrmPresenter::Impl::on_flip() {
+void DrmPresenter::Impl::on_flip(bool real_event) {
+  if (real_event && events_to_swallow > 0) {
+    --events_to_swallow;  // stale event for an already-force-completed flip
+    return;
+  }
   flip_pending = false;
   if (pending.valid) {
-    ++flips_total;
+    if (real_event) ++flips_total;  // force-completes never actually flipped
     if (on_screen.valid) release_slot(on_screen);
     on_screen = pending;
     pending = Slot{};
@@ -519,8 +529,14 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     if (flip_since_ms && now - flip_since_ms > 200) {
       std::fprintf(stderr,
                    "DrmPresenter: flip event lost (>200 ms) -- force-completing (fps may hitch)\n");
-      on_flip();
-      flip_since_ms = 0;
+      // The kernel will still deliver this flip's event eventually --
+      // account for it so on_flip() swallows it instead of promoting the
+      // NEXT flip early. Do NOT zero flip_since_ms here: on_flip()'s
+      // mailbox submission re-stamps it via present(), and zeroing it
+      // afterwards disarmed the watchdog for every subsequent lost event
+      // (review finding: second lost event = permanent freeze).
+      ++events_to_swallow;
+      on_flip(/*real_event=*/false);
     }
   }
   if (flip_pending) {
@@ -697,6 +713,7 @@ void DrmPresenter::Impl::drop_all() {
   if (mailbox.valid) release_slot(mailbox);
   if (pending.valid) release_slot(pending);
   if (on_screen.valid) release_slot(on_screen);
+  if (flip_pending) ++events_to_swallow;  // the kernel still owes this event
   flip_pending = false;
   needs_modeset = true;  // plane content is gone; next present() must redo the full commit
 }

@@ -28,7 +28,8 @@ struct MppBackend::Impl {
   MppBufferGroup frm_grp = nullptr;  // external decode buffer pool (see file comment)
   FrameSink sink;
   uint64_t info_change_count = 0;
-  uint64_t error_count = 0;
+  uint64_t error_count = 0;      // hard failures: no buffer / bad fd / put_packet
+  uint64_t concealed_count = 0;  // errinfo frames emitted for display
 
   ~Impl() {
     if (ctx) mpp_destroy(ctx);
@@ -95,7 +96,7 @@ struct MppBackend::Impl {
       // the decode watchdog into a hopeless recreate/exit ladder (observed
       // live under an antenna-cover test). A corrupted-but-healing picture
       // is the correct behavior; it is what the RTP/PixelPilot path shows.
-      if (err_info) ++error_count;
+      if (err_info) ++concealed_count;
 
       DmaFrame df;
       df.dmabuf_fd = fd;
@@ -158,10 +159,14 @@ bool MppBackend::init(const BackendCfg&, FrameSink sink) {
   //    forever (observed live: 60 fps of permanently-broken frames).
   //    With error handling off, damaged frames decode as-is, refs keep
   //    advancing, and the intra sweep genuinely heals the picture.
-  //  - ENABLE_FAST_PLAY: start decoding from parameter sets without
-  //    waiting for an IRAP -- required to join this link's IRAP-less
-  //    streams mid-session (also what makes the watchdog's fresh-context
-  //    recovery viable at all).
+  //  - ENABLE_FAST_PLAY: fast-start on the first IDR/BLA without waiting
+  //    for full DPB state. NOTE (review-verified against h265d_flow.c):
+  //    for HEVC this shortcut is gated on IS_IDR||IS_BLA, so on this
+  //    link's IRAP-less streams it is INERT -- the mid-session join is
+  //    carried by DISABLE_ERROR (+ IMMEDIATE_OUT), not by this control.
+  //    Kept because it is harmless, matches PixelPilot's proven setup,
+  //    and matters the moment the encoder runs an IDR-bearing resilience
+  //    mode. Do not remove DISABLE_ERROR believing FAST_PLAY covers it.
   RK_U32 on = 0xffff;
   ret = impl_->mpi->control(impl_->ctx, MPP_DEC_SET_DISABLE_ERROR, &on);
   if (ret != MPP_OK)
@@ -237,6 +242,8 @@ void MppBackend::poll() {
 }
 
 uint64_t MppBackend::info_changes() const { return impl_ ? impl_->info_change_count : 0; }
+
+uint64_t MppBackend::concealed() const { return impl_ ? impl_->concealed_count : 0; }
 uint64_t MppBackend::errors() const { return impl_ ? impl_->error_count : 0; }
 
 }  // namespace maburplay

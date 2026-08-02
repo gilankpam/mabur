@@ -54,7 +54,7 @@ void usage() {
                "  --no-dvr is respected as usual.\n"
                "\n"
                "--fps-log: normal (non-decode-only) run only -- once per\n"
-               "  second, prints \"fps-log: fps=X frames=N "
+               "  second, prints \"fps-log: fps=X flips/s=X repl=N frames=N "
                "commit_errors=N async=on|off|probing\\n\" to stderr. Under\n"
                "  MABUR_PLAYER_HW with the DrmPresenter display path active;\n"
                "  a no-op flag otherwise (host/null-backend builds just log\n"
@@ -235,8 +235,13 @@ int main(int argc, char** argv) {
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
+    // Declaration order is load-bearing: `backend` is declared before
+    // `presenter`, so the presenter (and any frames it still holds) is
+    // destroyed FIRST on unwind, releasing into a live backend. The null
+    // guard covers the watchdog's recreation-failed exit path, where
+    // drop_all() has already emptied the presenter.
     if (!presenter->init(cfg.screen_mode, [&backend](const maburplay::DmaFrame& f) {
-          backend->release_frame(f);
+          if (backend) backend->release_frame(f);
         })) {
       std::fprintf(stderr,
                    "maburplay: DrmPresenter init failed -- no display; frames will be "
@@ -351,6 +356,22 @@ int main(int argc, char** argv) {
       backend->flush();
       backend_armed = false;
     }
+    // Never feed a truncated AU to the decoder. The spec's original policy
+    // (submit truncated base, let MPP conceal) HANGS rkvdec2 on this
+    // hardware: a truncated slice declares more bitstream than exists, the
+    // VPU waits for bytes that never arrive, and the kernel force-resets
+    // the session ("mpp_rkvdec2 ... task timeout ... resetting") leaving
+    // userspace MPP wedged. Counted; corruption washes out via the
+    // encoder's rolling refresh. (The decode watchdog in the main loop is
+    // the second line of defense if the VPU wedges anyway.)
+    // MUST run BEFORE the arming check: a truncated sid0 would otherwise
+    // arm the decoder and then discard the very parameter sets that made
+    // it a sync point (review finding -- everything until the next sid0
+    // would be param-less P slices, spuriously tripping the watchdog).
+    if (!complete) {
+      ++truncated_skipped;
+      return;
+    }
     if (!backend_armed) {
       if (ev.meta.sid != 0) return;
       backend_armed = true;
@@ -358,18 +379,6 @@ int main(int argc, char** argv) {
         t_sync_seen = true;
         t_sync = std::chrono::steady_clock::now();
       }
-    }
-    // Never feed a truncated AU to the decoder. The spec's original policy
-    // (submit truncated base, let MPP conceal) HANGS rkvdec2 on this
-    // hardware: a truncated slice declares more bitstream than exists, the
-    // VPU waits for bytes that never arrive, and the kernel force-resets
-    // the session ("mpp_rkvdec2 ... task timeout ... resetting") leaving
-    // userspace MPP wedged. Counted; corruption washes out via rally's
-    // rolling refresh. (The decode watchdog in the main loop is the
-    // second line of defense if the VPU wedges anyway.)
-    if (!complete) {
-      ++truncated_skipped;
-      return;
     }
     backend->submit_au(ev.au.data(), ev.au.size(), ev.meta.pts_us);
     ++backend_submits;
@@ -457,10 +466,19 @@ int main(int argc, char** argv) {
 
     uint64_t info_change_count = 0;
     uint64_t error_count = 0;
+    uint64_t concealed_count = 0;
 #ifdef MABUR_PLAYER_HW
     if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get())) {
       info_change_count = mpp->info_changes();
+      // Counter semantics under the shipped decoder config (review
+      // finding): DISABLE_ERROR suppresses MPP's errinfo marking, so
+      // errors() now means HARD failures only (no buffer / bad fd /
+      // put_packet), and concealed() counts errinfo frames that were
+      // emitted for display (rare under DISABLE_ERROR by construction).
+      // The gate criterion "errors_after_sync_3s == 0" therefore asserts
+      // pipeline integrity, not bitstream cleanliness.
       error_count = mpp->errors();
+      concealed_count = mpp->concealed();
     }
 #endif
     // If the 3s-post-sync mark was never reached (run ended too soon, or
@@ -472,11 +490,12 @@ int main(int argc, char** argv) {
     if (dvr_open) dvr.close();
     std::printf(
         "{\"frames\":%llu,\"fps\":%.2f,\"fps_active\":%.2f,\"info_changes\":%llu,"
-        "\"errors\":%llu,\"errors_after_sync_3s\":%llu}\n",
+        "\"errors\":%llu,\"errors_after_sync_3s\":%llu,\"concealed\":%llu}\n",
         static_cast<unsigned long long>(frame_count), fps, fps_active,
         static_cast<unsigned long long>(info_change_count),
         static_cast<unsigned long long>(error_count),
-        static_cast<unsigned long long>(errors_after_sync_3s));
+        static_cast<unsigned long long>(errors_after_sync_3s),
+        static_cast<unsigned long long>(concealed_count));
     return ring_died ? 1 : 0;
   }
 
@@ -512,8 +531,11 @@ int main(int argc, char** argv) {
         wd_submits = backend_submits;
         wd_last_progress = now;
         wd_consecutive = 0;
-      } else if (backend_submits > wd_submits + 60 &&
+      } else if (have_first_frame && backend_submits > wd_submits + 60 &&
                  now - wd_last_progress > std::chrono::seconds(2)) {
+        // have_first_frame gate: before the decoder has EVER produced a
+        // frame (cold attach waiting for the encoder's session sync), a
+        // fire here would be spurious -- there is nothing to reset yet.
         ++wd_consecutive;
         std::fprintf(stderr,
                      "maburplay: decode watchdog -- %llu AUs submitted with no decoded frame "

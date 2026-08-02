@@ -40,7 +40,8 @@ class MppBackend : public VideoBackend {
   // hardware gate reads these via a dynamic_cast). Not part of the
   // VideoBackend seam -- MppBackend-specific extensions only.
   uint64_t info_changes() const;
-  uint64_t errors() const;
+  uint64_t errors() const;     // hard failures only (see .cpp counter split)
+  uint64_t concealed() const;  // errinfo frames emitted for display
 
  private:
   struct Impl;
