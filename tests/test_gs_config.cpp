@@ -117,27 +117,25 @@ TEST(gs_msp_defaults_and_parse) {
     CHECK(cfg.msp.window == 32);
   }
 }
-TEST(gs_msp_render_mode_and_shm) {
-  {  // default render is udp
-    auto cfg = maburgs::load_config(write_tmp("{}"));
-    CHECK(cfg.msp.render == "udp");
-    CHECK(cfg.msp.shm_name == "msp");
-    CHECK(cfg.msp.shm_x_offset == 0);
-  }
-  {  // explicit shm mode
-    auto cfg = maburgs::load_config(write_tmp(
-        R"({"msp":{"enable":true,"render":"shm","shm":{"name":"osd","x_offset":8,"y_offset":4}}})"));
-    CHECK(cfg.msp.render == "shm");
-    CHECK(cfg.msp.shm_name == "osd");
-    CHECK(cfg.msp.shm_x_offset == 8);
-    CHECK(cfg.msp.shm_y_offset == 4);
-  }
-  {  // invalid render value rejected
-    bool threw = false;
-    try { maburgs::load_config(write_tmp(R"({"msp":{"render":"drm"}})")); }
-    catch (const std::exception&) { threw = true; }
-    CHECK(threw == true);
-  }
+TEST(msp_render_and_shm_keys_are_rejected) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp(R"({"msp":{"enable":true,"render":"shm"}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburgs::load_config(write_tmp(R"({"msp":{"enable":true,"shm":{"name":"msp"}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
+TEST(msp_udp_keys_still_parse) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"msp":{"enable":true,"out":{"host":"127.0.0.1","port":14560},)"
+      R"("symbol_size":1312,"window":16}})"));
+  CHECK(cfg.msp.enable == true);
+  CHECK(cfg.msp.out_port == 14560);
+  CHECK(cfg.msp.symbol_size == 1312);
 }
 
 TEST(stats_defaults_disabled) {

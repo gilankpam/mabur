@@ -74,18 +74,16 @@ struct VideoCfg {
   int frame_lookahead = 8;
 };
 
-/// MSP DisplayPort OSD side-channel output. symbol_size/window must match the
-/// drone's msp config.
+/// MSP DisplayPort OSD side-channel output: whole reassembled snapshots go
+/// out as UDP datagrams (maburplay renders them -- see
+/// docs/superpowers/specs/2026-08-03-maburplay-msp-osd-design.md).
+/// symbol_size/window must match the drone's msp config.
 struct MspCfg {
   bool enable = false;
   std::string out_host = "127.0.0.1";
   int out_port = 14560;
   int symbol_size = 1312;
   int window = 16;
-  std::string render = "udp";      // "udp" | "shm"
-  std::string shm_name = "msp";    // shm mode: region name (== osd.json widget name)
-  int shm_x_offset = 0;            // shm mode: scale-to-fill inset (px)
-  int shm_y_offset = 0;
 };
 
 /// Stats sideport: periodic UDP JSON datagram with link/FEC/video stats

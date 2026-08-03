@@ -202,7 +202,7 @@ Config load_config(const std::string& path) {
 
   if (j.contains("msp")) {
     const json& r = j["msp"];
-    check_keys(r, "msp", {"enable", "out", "symbol_size", "window", "render", "shm"});
+    check_keys(r, "msp", {"enable", "out", "symbol_size", "window"});
     if (r.contains("enable")) {
       if (!r["enable"].is_boolean()) fail("msp.enable", "not a boolean");
       c.msp.enable = r["enable"].get<bool>();
@@ -215,16 +215,6 @@ Config load_config(const std::string& path) {
     }
     c.msp.symbol_size = static_cast<int>(get_int(r, "symbol_size", 1312, 16, 2048, "msp"));
     c.msp.window = static_cast<int>(get_int(r, "window", 16, 2, 255, "msp"));
-    c.msp.render = get_str(r, "render", "udp", "msp");
-    if (c.msp.render != "udp" && c.msp.render != "shm")
-      fail("msp.render", "must be \"udp\" or \"shm\"");
-    if (r.contains("shm")) {
-      const json& s = r["shm"];
-      check_keys(s, "msp.shm", {"name", "x_offset", "y_offset"});
-      c.msp.shm_name = get_str(s, "name", "msp", "msp.shm");
-      c.msp.shm_x_offset = static_cast<int>(get_int(s, "x_offset", 0, 0, 4096, "msp.shm"));
-      c.msp.shm_y_offset = static_cast<int>(get_int(s, "y_offset", 0, 0, 4096, "msp.shm"));
-    }
   }
 
   if (j.contains("stats")) {

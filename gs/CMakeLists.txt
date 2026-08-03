@@ -9,9 +9,6 @@ add_library(mabur_gs_core STATIC
   src/ladder_controller.cpp
   src/tx_selector.cpp
   src/msp_sink.cpp
-  src/msp_font_btfl.cpp
-  src/shm_surface.cpp
-  src/msp_renderer.cpp
   src/frame_stream.cpp
   src/au_ring.cpp
   src/au_doorbell.cpp

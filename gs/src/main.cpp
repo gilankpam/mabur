@@ -25,8 +25,6 @@
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
-#include "msp_font.h"
-#include "msp_renderer.h"
 #include "msp_sink.h"
 #include "radio_frontend.h"
 #include "s1_loss.h"
@@ -260,26 +258,15 @@ static int run_radio(const maburgs::Config& cfg) {
   });
 
   std::unique_ptr<maburgs::UdpSink> msp_udp;
-  std::unique_ptr<maburgs::MspRenderer> msp_renderer;
   std::unique_ptr<maburgs::MspSink> msp_sink;
   if (cfg.msp.enable) {
     const int bp = cfg.msp.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen);
-    maburgs::MspSink::EmitFn emit;
-    if (cfg.msp.render == "shm") {
-      msp_renderer = std::make_unique<maburgs::MspRenderer>(
-          maburgs::MspRenderCfg{cfg.msp.shm_name, cfg.msp.shm_x_offset, cfg.msp.shm_y_offset},
-          maburgs::kMspFontBtfl);
-      emit = [&](const uint8_t* d, size_t n) { msp_renderer->on_snapshot(d, n); };
-      std::fprintf(stderr,
-                   "maburgs: MSP OSD -> shm '%s' (PixelPilot) symbol_size=%d window=%d block_payload=%d\n",
-                   cfg.msp.shm_name.c_str(), cfg.msp.symbol_size, cfg.msp.window, bp);
-    } else {
-      msp_udp = std::make_unique<maburgs::UdpSink>(cfg.msp.out_host, cfg.msp.out_port);
-      emit = [&](const uint8_t* d, size_t n) { msp_udp->send(d, n); };
-      std::fprintf(stderr,
-                   "maburgs: MSP OSD -> udp %s:%d symbol_size=%d window=%d block_payload=%d\n",
-                   cfg.msp.out_host.c_str(), cfg.msp.out_port, cfg.msp.symbol_size, cfg.msp.window, bp);
-    }
+    msp_udp = std::make_unique<maburgs::UdpSink>(cfg.msp.out_host, cfg.msp.out_port);
+    maburgs::MspSink::EmitFn emit = [&](const uint8_t* d, size_t n) { msp_udp->send(d, n); };
+    std::fprintf(stderr,
+                 "maburgs: MSP OSD -> udp %s:%d symbol_size=%d window=%d block_payload=%d\n",
+                 cfg.msp.out_host.c_str(), cfg.msp.out_port, cfg.msp.symbol_size,
+                 cfg.msp.window, bp);
     msp_sink = std::make_unique<maburgs::MspSink>(cfg.msp.symbol_size, cfg.msp.window, emit);
     agg.set_msp_sink([&](const uint8_t* b, size_t n, uint64_t us) {
       msp_sink->on_body(b, n, us / 1000);
