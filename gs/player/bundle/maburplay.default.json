@@ -1,1 +1,4 @@
-{ "backend": "mpp", "dvr": { "enabled": true } }
+{ "backend": "mpp", "dvr": { "enabled": true },
+  "osd": { "enable": true, "port": 14560,
+           "font": "/usr/local/share/mabur/font_btfl.mfont",
+           "scale": "sharp", "stale_ms": 2000 } }

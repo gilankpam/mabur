@@ -43,4 +43,42 @@ TEST(values_and_strictness) {
   CHECK(threw);  // floor 100
 }
 
+TEST(osd_defaults_are_off_and_conventional) {
+  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  CHECK(c.osd.enable == false);
+  CHECK(c.osd.port == 14560);
+  CHECK(c.osd.scale == "sharp");
+  CHECK(c.osd.stale_ms == 2000);
+  CHECK(c.osd.font == "/usr/local/share/mabur/font_btfl.mfont");
+}
+
+TEST(osd_block_is_parsed) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"backend":"null","osd":{"enable":true,"port":15000,)"
+      R"("font":"/tmp/f.mfont","scale":"fill","stale_ms":0}})"));
+  CHECK(c.osd.enable == true);
+  CHECK(c.osd.port == 15000);
+  CHECK(c.osd.font == "/tmp/f.mfont");
+  CHECK(c.osd.scale == "fill");
+  CHECK(c.osd.stale_ms == 0);
+}
+
+TEST(osd_rejects_unknown_keys_and_bad_scale) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"enabl":true}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"scale":"blurry"}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
+TEST(bundle_default_parses_with_osd_enabled) {
+  auto c = maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+  CHECK(c.osd.enable == true);
+}
+
 MTEST_MAIN
