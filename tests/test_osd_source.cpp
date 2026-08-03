@@ -50,6 +50,25 @@ TEST(datagram_becomes_a_complete_screen) {
   CHECK(src.screen().cell(2, 4) == (uint16_t)'B');
 }
 
+TEST(reopen_does_not_leak_the_previous_socket_and_still_works) {
+  OsdSource src;
+  std::string err;
+  REQUIRE(src.open(0, &err));
+  const int first_port = src.port();
+  CHECK(first_port > 0);
+
+  // Re-opening on the same instance must close the first fd rather than
+  // leaking it, and the object must still work afterward.
+  REQUIRE(src.open(0, &err));
+  CHECK(src.port() > 0);
+
+  send_to(src.port(), snapshot(1, 1, "Z"));
+  bool ready = false;
+  for (int i = 0; i < 100 && !ready; ++i) ready = src.poll(1000 + i);
+  CHECK(ready);
+  CHECK(src.screen().cell(1, 1) == (uint16_t)'Z');
+}
+
 TEST(rate_limit_suppresses_a_second_render_inside_the_window) {
   OsdSource src;
   REQUIRE(src.feed_open());  // socket-free mode for deterministic timing

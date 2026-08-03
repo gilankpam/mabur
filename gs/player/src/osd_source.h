@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "mabur/msp_dp.h"
 
@@ -58,6 +59,10 @@ class OsdSource {
   int min_interval_ms_ = 30;
   uint64_t datagrams_ = 0;
   uint64_t screens_ = 0;
+  // Per-instance receive buffer (not a function-local static): Task 8 can
+  // construct more than one OsdSource in a process, and a shared buffer
+  // would let one instance's poll() clobber another's in-flight datagram.
+  std::vector<uint8_t> buf_ = std::vector<uint8_t>(65536);
 };
 
 }  // namespace maburplay

@@ -17,6 +17,13 @@ OsdSource::~OsdSource() {
 }
 
 bool OsdSource::open(int port, std::string* err) {
+  if (fd_ >= 0) {
+    // Repeated open(): close the previous socket rather than leaking it.
+    ::close(fd_);
+    fd_ = -1;
+    opened_ = false;
+    port_ = 0;
+  }
   fd_ = ::socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (fd_ < 0) {
     if (err) *err = std::string("socket: ") + std::strerror(errno);
@@ -66,14 +73,21 @@ bool OsdSource::gate_(uint64_t now_ms) {
 bool OsdSource::poll(uint64_t now_ms) {
   if (!opened_) return false;
   if (fd_ >= 0) {
-    // 64 KiB: one datagram is one decoded MSP snapshot from MspSink, which
-    // is bounded by the sliding-window packet size, well under this.
-    static std::vector<uint8_t> buf(65536);
+    // buf_ is sized 64 KiB: one datagram is one decoded MSP snapshot from
+    // MspSink, which is bounded by the sliding-window packet size, well
+    // under this.
     for (;;) {
-      const ssize_t n = ::recv(fd_, buf.data(), buf.size(), 0);
-      if (n <= 0) break;
-      ++datagrams_;
-      consume_(buf.data(), (size_t)n, now_ms);
+      const ssize_t n = ::recv(fd_, buf_.data(), buf_.size(), 0);
+      if (n >= 0) {
+        // n == 0 is a legitimate empty UDP datagram, not end-of-data --
+        // still counts and still needs to be drained before the next one.
+        ++datagrams_;
+        consume_(buf_.data(), (size_t)n, now_ms);
+        continue;
+      }
+      if (errno == EINTR) continue;    // interrupted, not end-of-data: retry
+      if (errno == EAGAIN || errno == EWOULDBLOCK) break;  // queue drained
+      break;  // any other errno: stop draining rather than spin
     }
   }
   return gate_(now_ms);
