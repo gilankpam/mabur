@@ -117,6 +117,21 @@ struct MppEncoder::Impl {
   uint64_t frame_count = 0;
   uint64_t error_count = 0;
 
+  // Per-site failure counts for encode()'s STEADY-STATE error branches.
+  // kMaxRunningFailures in BurnRecorder only bounds a CONSECUTIVE run, and
+  // consecutive_fail resets on every success -- so an intermittent
+  // alternating ok/fail never trips the give-up and would log forever at up
+  // to fps_cap into /tmp/maburplay.log, an unrotated `>` redirect on tmpfs
+  // (which is RAM, shared with /dev/shm where the AU ring lives). Same
+  // first-then-every-300th gate the geometry-reject path uses; the counters
+  // and errors() are never throttled.
+  enum ErrSite { kErrFrameInit = 0, kErrPktInit, kErrPutFrame, kErrGetPacket, kErrSites };
+  uint64_t err_n[kErrSites] = {0};
+  bool log_err(int site) {
+    const uint64_t n = ++err_n[site];
+    return n == 1 || n % 300 == 0;
+  }
+
   Impl() { std::memset(osd_data, 0, sizeof(osd_data)); }
 
   ~Impl() {
@@ -539,7 +554,9 @@ bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstri
 
   MppFrame frame = nullptr;
   if (mpp_frame_init(&frame) != MPP_OK || !frame) {
-    std::fprintf(stderr, "MppEncoder: mpp_frame_init failed\n");
+    if (im.log_err(Impl::kErrFrameInit))
+      std::fprintf(stderr, "MppEncoder: mpp_frame_init failed (%llu so far)\n",
+                   (unsigned long long)im.err_n[Impl::kErrFrameInit]);
     ++im.error_count;
     return false;
   }
@@ -557,7 +574,9 @@ bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstri
   MppMeta meta = mpp_frame_get_meta(frame);
   MppPacket packet = nullptr;
   if (mpp_packet_init_with_buffer(&packet, im.pkt_buf) != MPP_OK || !packet) {
-    std::fprintf(stderr, "MppEncoder: output packet init failed\n");
+    if (im.log_err(Impl::kErrPktInit))
+      std::fprintf(stderr, "MppEncoder: output packet init failed (%llu so far)\n",
+                   (unsigned long long)im.err_n[Impl::kErrPktInit]);
     mpp_frame_deinit(&frame);
     ++im.error_count;
     return false;
@@ -572,7 +591,9 @@ bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstri
   const MPP_RET pr = im.mpi->encode_put_frame(im.ctx, frame);
   mpp_frame_deinit(&frame);
   if (pr != MPP_OK) {
-    std::fprintf(stderr, "MppEncoder: encode_put_frame failed ret=%d\n", pr);
+    if (im.log_err(Impl::kErrPutFrame))
+      std::fprintf(stderr, "MppEncoder: encode_put_frame failed ret=%d (%llu so far)\n", pr,
+                   (unsigned long long)im.err_n[Impl::kErrPutFrame]);
     mpp_packet_deinit(&packet);
     ++im.error_count;
     return false;
@@ -585,7 +606,9 @@ bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstri
   MppPacket outp = nullptr;
   const MPP_RET gr = im.mpi->encode_get_packet(im.ctx, &outp);
   if (gr != MPP_OK || !outp) {
-    std::fprintf(stderr, "MppEncoder: encode_get_packet failed ret=%d\n", gr);
+    if (im.log_err(Impl::kErrGetPacket))
+      std::fprintf(stderr, "MppEncoder: encode_get_packet failed ret=%d (%llu so far)\n", gr,
+                   (unsigned long long)im.err_n[Impl::kErrGetPacket]);
     mpp_packet_deinit(&packet);
     ++im.error_count;
     return false;

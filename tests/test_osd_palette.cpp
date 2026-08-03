@@ -45,6 +45,54 @@ TEST(white_is_bt601_limited_with_luma_in_the_low_byte) {
   CHECK(V(p.entry[wi]) >= 126 && V(p.entry[wi]) <= 130);  // 128
 }
 
+// tiny_palette() is achromatic -- white and black are both U=V=128 -- so a
+// TRANSPOSED U/V channel is invisible to every test above it. These two are
+// the regression insurance for that: the expected values are MPP's own
+// MPP_ENC_OSD_PLT_RED / _GREEN constants, i.e. the hardware's opinion of
+// what BT.601 red and green are, not a rederivation of ours.
+TEST(coloured_entries_match_mpps_own_red_and_green) {
+  std::vector<uint32_t> pix = {0x00000000u, 0xFFFF0000u, 0xFF00FF00u};
+  GlyphAtlas a{1, 3, 1, pix.data()};
+  const OsdPalette p = build_palette(a);
+
+  int ri = -1, gi = -1;
+  for (int i = 0; i < p.n; ++i) {
+    if (A(p.entry[i]) != 255) continue;
+    if (V(p.entry[i]) > 200) ri = i;  // red: V=240, the largest V there is
+    if (U(p.entry[i]) < 80) gi = i;   // green: U=54
+  }
+  REQUIRE(ri >= 0);
+  REQUIRE(gi >= 0);
+  // MPP_ENC_OSD_PLT_RED   -> Y=81  U=90 V=240
+  CHECK(Y(p.entry[ri]) >= 79 && Y(p.entry[ri]) <= 83);
+  CHECK(U(p.entry[ri]) >= 88 && U(p.entry[ri]) <= 92);
+  CHECK(V(p.entry[ri]) >= 238 && V(p.entry[ri]) <= 242);
+  // MPP_ENC_OSD_PLT_GREEN -> Y=145 U=54 V=34
+  CHECK(Y(p.entry[gi]) >= 143 && Y(p.entry[gi]) <= 147);
+  CHECK(U(p.entry[gi]) >= 52 && U(p.entry[gi]) <= 56);
+  CHECK(V(p.entry[gi]) >= 32 && V(p.entry[gi]) <= 36);
+}
+
+// ...and the same for the quantizer, so a swap between build_palette() and
+// nearest_entry() cannot cancel itself out either: a red pixel must land on
+// the red entry, not the green one.
+TEST(quantize_maps_a_coloured_pixel_to_its_own_entry) {
+  std::vector<uint32_t> pix = {0x00000000u, 0xFFFF0000u, 0xFF00FF00u};
+  GlyphAtlas a{1, 3, 1, pix.data()};
+  const OsdPalette p = build_palette(a);
+
+  Canvas c(32, 16);
+  c.set(1, 1, 0xFFFF0000u);  // red
+  c.set(2, 1, 0xFF00FF00u);  // green
+  OsdIndexMap m;
+  quantize(c.s, p, &m);
+  const uint8_t r_idx = m.px[(size_t)1 * m.stride() + 1];
+  const uint8_t g_idx = m.px[(size_t)1 * m.stride() + 2];
+  CHECK(r_idx != g_idx);
+  CHECK(V(p.entry[r_idx]) > 200);  // red's V
+  CHECK(U(p.entry[g_idx]) < 80);   // green's U
+}
+
 TEST(black_is_bt601_limited_luma_16) {
   const OsdPalette p = tiny_palette();
   int bi = -1;

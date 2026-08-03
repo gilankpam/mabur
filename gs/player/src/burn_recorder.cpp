@@ -1,5 +1,6 @@
 #include "burn_recorder.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -50,12 +51,23 @@ namespace maburplay {
 
 namespace {
 
-// Cap tolerance: with a 59.94 fps source and a 30 fps cap, the ideal spacing
+// Cap tolerance CEILING; the slack actually used is
+// min(kCapSlackUs, cap_interval/8), see start().
+//
+// Why any slack: with a 59.94 fps source and a 30 fps cap, the ideal spacing
 // (33'333 us) lands a hair above two source intervals (33'367 us) only when
 // arrivals are perfectly regular. Any jitter makes a strict ">= interval"
 // test reject the frame that should have been taken and wait a further 16.7
-// ms, collapsing 30 fps to 20. A tolerance of one third of a 60 fps frame
-// absorbs that without ever admitting two source frames in a row.
+// ms, collapsing 30 fps to 20.
+//
+// Why it must be PROPORTIONAL: a flat 5 ms un-caps the whole 47..59 band
+// against a 59.94 fps source. At cap 50 the interval is 20'000 us, so
+// "20'000 - 5'000" admits every 16'683 us frame and the encoder runs at
+// 59.94 -- ~2x the load and thermal budget that was asked for, with
+// rc:fps_* and rc:gop still programmed for 50. It also breaks the obvious
+// remediation: an operator who lowers a 60 fps default to 50 would change
+// nothing at all. One eighth of the interval erring UNDER the cap is
+// honest; erring over it is not.
 constexpr int64_t kCapSlackUs = 5000;
 
 // Consecutive refusals, with nothing ever encoded, after which the recorder
@@ -138,10 +150,12 @@ struct BurnRecorder::Impl {
   std::chrono::steady_clock::time_point last_admit;
   bool have_last_admit = false;
   int64_t cap_interval_us = 0;
+  int64_t cap_slack_us = 0;
 
   std::atomic<uint64_t> frames_in{0};
   std::atomic<uint64_t> frames_encoded{0};
-  std::atomic<uint64_t> frames_dropped{0};
+  std::atomic<uint64_t> frames_dropped{0};   // displaced or dead: OVERLOAD
+  std::atomic<uint64_t> frames_flushed{0};   // drop_pending()/stop(): HYGIENE
   std::atomic<uint64_t> encode_errors{0};
   std::atomic<uint64_t> osd_rejects{0};
   uint64_t consecutive_fail = 0;  // recorder thread only
@@ -295,9 +309,15 @@ struct BurnRecorder::Impl {
     }
     if (buf) {
       // REF-DRAIN: displaced by a drop_pending()/stop() rather than by a
-      // newer frame; the accounting is the same.
+      // newer frame. The reference accounting is identical, but the MEANING
+      // is not, so it gets its own counter: this is flush hygiene (a link
+      // discontinuity, a watchdog reset, shutdown), not encoder overload.
+      // Sharing one counter let a link-loss storm read as overload -- and
+      // let the hardware leak test, which reads frames_dropped(), be
+      // satisfied entirely by flushes with the displacement path never
+      // exercised at all.
       mpp_buffer_put(static_cast<MppBuffer>(buf));
-      frames_dropped.fetch_add(1);
+      frames_flushed.fetch_add(1);
     }
   }
 };
@@ -341,6 +361,7 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
   im.cfg = cfg;
   im.path = path;
   im.cap_interval_us = 1000000 / cfg.fps_cap;
+  im.cap_slack_us = std::min<int64_t>(kCapSlackUs, im.cap_interval_us / 8);
   im.have_last_admit = false;
   im.mux_open = false;
   im.mux_failed = false;
@@ -400,7 +421,7 @@ void BurnRecorder::submit(const DmaFrame& f) {
   if (im.have_last_admit) {
     const int64_t dt =
         std::chrono::duration_cast<std::chrono::microseconds>(now - im.last_admit).count();
-    if (dt < im.cap_interval_us - kCapSlackUs) return;
+    if (dt < im.cap_interval_us - im.cap_slack_us) return;
   }
 
   MppFrame frame = static_cast<MppFrame>(f.opaque);
@@ -519,12 +540,15 @@ void BurnRecorder::stop() {
   im.enc.reset();
   im.started = false;
   std::fprintf(stderr,
-               "BurnRecorder: stopped -- in=%llu encoded=%llu dropped=%llu errors=%llu "
-               "(encoder frames=%llu errors=%llu) samples=%llu fragments=%llu\n",
+               "BurnRecorder: stopped -- in=%llu encoded=%llu dropped=%llu flushed=%llu "
+               "errors=%llu osd_rejects=%llu (encoder frames=%llu errors=%llu) "
+               "samples=%llu fragments=%llu\n",
                static_cast<unsigned long long>(im.frames_in.load()),
                static_cast<unsigned long long>(im.frames_encoded.load()),
                static_cast<unsigned long long>(im.frames_dropped.load()),
+               static_cast<unsigned long long>(im.frames_flushed.load()),
                static_cast<unsigned long long>(im.encode_errors.load()),
+               static_cast<unsigned long long>(im.osd_rejects.load()),
                static_cast<unsigned long long>(enc_frames),
                static_cast<unsigned long long>(enc_errs),
                static_cast<unsigned long long>(im.mux.samples()),
@@ -536,6 +560,7 @@ bool BurnRecorder::running() const { return impl_->started && !impl_->dead.load(
 uint64_t BurnRecorder::frames_in() const { return impl_->frames_in.load(); }
 uint64_t BurnRecorder::frames_encoded() const { return impl_->frames_encoded.load(); }
 uint64_t BurnRecorder::frames_dropped() const { return impl_->frames_dropped.load(); }
+uint64_t BurnRecorder::frames_flushed() const { return impl_->frames_flushed.load(); }
 uint64_t BurnRecorder::encode_errors() const { return impl_->encode_errors.load(); }
 uint64_t BurnRecorder::osd_rejects() const { return impl_->osd_rejects.load(); }
 

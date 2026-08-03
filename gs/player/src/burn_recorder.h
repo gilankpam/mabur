@@ -64,8 +64,9 @@ struct BurnCfg {
 // encoded-then-put, displaced-in-the-mailbox-then-put, drop_pending(), or the
 // drain in stop()/~BurnRecorder(). Losing one leaks a pool buffer; ~24 leaks
 // stall decode outright. frames_dropped() is the observable that proves
-// displacement is handled: it climbs under overload while the decoder keeps
-// running at full rate.
+// DISPLACEMENT specifically is handled: it climbs under overload while the
+// decoder keeps running at full rate. The flush paths are counted separately
+// (frames_flushed()) so they cannot stand in for that proof.
 //
 // ---------------------------------------------------------------------------
 // THREADING
@@ -165,12 +166,22 @@ class BurnRecorder {
 
   bool running() const;  // started, and not disabled by a fatal encode path
 
-  // Counters. frames_in ~= frames_encoded + frames_dropped:
+  // Counters. frames_in ~= frames_encoded + frames_dropped + frames_flushed
+  // + encode_errors:
   //   frames_in      frames admitted past the fps cap (what the recorder saw)
   //   frames_encoded encode() calls that produced a packet
-  //   frames_dropped admitted frames displaced in the mailbox, or dropped by
-  //                  drop_pending()/stop() -- i.e. the OVERLOAD signal; fps-cap
-  //                  rejections are deliberately NOT counted here
+  //   frames_dropped admitted frames DISPLACED in the mailbox by a newer one,
+  //                  or dropped because the recorder had given up -- i.e. the
+  //                  OVERLOAD signal, and the proof that displacement releases
+  //                  its buffer reference. fps-cap rejections are deliberately
+  //                  NOT counted here.
+  //   frames_flushed admitted frames released by drop_pending()/stop(), i.e.
+  //                  flush HYGIENE -- a link discontinuity, a watchdog reset,
+  //                  shutdown. Separate from frames_dropped on purpose: they
+  //                  shared a counter, so a link-loss flush storm read as
+  //                  encoder overload, and the hardware leak test (which
+  //                  requires frames_dropped() to climb) could be satisfied
+  //                  by flushes alone with the displacement path never run.
   //   encode_errors  frames the encoder refused
   //   osd_rejects    index maps the encoder refused because they disagree
   //                  with its OSD region. Nonzero means the recording is a
@@ -180,6 +191,7 @@ class BurnRecorder {
   uint64_t frames_in() const;
   uint64_t frames_encoded() const;
   uint64_t frames_dropped() const;
+  uint64_t frames_flushed() const;
   uint64_t encode_errors() const;
   uint64_t osd_rejects() const;
 

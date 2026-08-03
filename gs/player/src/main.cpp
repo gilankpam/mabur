@@ -75,13 +75,15 @@ void usage() {
                "  MABUR_PLAYER_HW with the DrmPresenter display path active;\n"
                "  a no-op flag otherwise (host/null-backend builds just log\n"
                "  fps/frames with no presenter fields). With dvr.mode\n"
-               "  \"burned\" and the recorder running, five more fields are\n"
-               "  APPENDED: burn_in/burn_enc/burn_drop/burn_err/burn_osdrej\n"
-               "  (frames past the fps cap / encode() calls that produced a\n"
-               "  packet / frames displaced in the recorder's mailbox, i.e.\n"
-               "  the overload signal / frames the encoder refused / OSD\n"
-               "  index maps refused for disagreeing with the encoder's OSD\n"
-               "  region -- nonzero means the file has NO overlay).\n");
+               "  \"burned\" and the recorder running, six more fields are\n"
+               "  APPENDED: burn_in/burn_enc/burn_drop/burn_flush/burn_err/\n"
+               "  burn_osdrej -- frames past the fps cap / encode() calls\n"
+               "  that produced a packet / frames DISPLACED in the recorder's\n"
+               "  mailbox, i.e. the overload signal / frames released by a\n"
+               "  flush or reset, i.e. hygiene, NOT overload / frames the\n"
+               "  encoder refused / OSD index maps refused for disagreeing\n"
+               "  with the encoder's OSD region (nonzero means the file has\n"
+               "  NO overlay).\n");
 }
 
 // Reads a whole file into memory; empty vector on any failure (including a
@@ -928,11 +930,12 @@ int main(int argc, char** argv) {
           char burn_fields[224] = {0};
           if (burn) {
             std::snprintf(burn_fields, sizeof(burn_fields),
-                          " burn_in=%llu burn_enc=%llu burn_drop=%llu burn_err=%llu "
-                          "burn_osdrej=%llu",
+                          " burn_in=%llu burn_enc=%llu burn_drop=%llu burn_flush=%llu "
+                          "burn_err=%llu burn_osdrej=%llu",
                           static_cast<unsigned long long>(burn->frames_in()),
                           static_cast<unsigned long long>(burn->frames_encoded()),
                           static_cast<unsigned long long>(burn->frames_dropped()),
+                          static_cast<unsigned long long>(burn->frames_flushed()),
                           static_cast<unsigned long long>(burn->encode_errors()),
                           static_cast<unsigned long long>(burn->osd_rejects()));
           }
