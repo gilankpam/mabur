@@ -25,8 +25,10 @@
 #include "video_backend.h"
 
 #ifdef MABUR_PLAYER_HW
+#include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "mpp_backend.h"    // MppBackend::info_changes()/errors() for --decode-only
+#include "osd_palette.h"    // build_palette() for the encoder-side OSD
 #endif
 
 namespace {
@@ -72,7 +74,12 @@ void usage() {
                "  osd_dgrams=N osd_commit_errors=N\\n\" to stderr. Under\n"
                "  MABUR_PLAYER_HW with the DrmPresenter display path active;\n"
                "  a no-op flag otherwise (host/null-backend builds just log\n"
-               "  fps/frames with no presenter fields).\n");
+               "  fps/frames with no presenter fields). With dvr.mode\n"
+               "  \"burned\" and the recorder running, four more fields are\n"
+               "  APPENDED: burn_in/burn_enc/burn_drop/burn_err (frames past\n"
+               "  the fps cap / encode() calls that produced a packet /\n"
+               "  frames displaced in the recorder's mailbox, i.e. the\n"
+               "  overload signal / frames the encoder refused).\n");
 }
 
 // Reads a whole file into memory; empty vector on any failure (including a
@@ -405,6 +412,57 @@ int main(int argc, char** argv) {
     }
   }
 
+  // dvr.mode "burned": the recording is produced by re-encoding decoded
+  // frames with the OSD composited in by the hardware encoder, so the
+  // BurnRecorder owns the file and the raw remux in the ring sink below is
+  // SKIPPED. This flag -- not "the recorder actually started" -- is what
+  // gates that skip: a burned run whose encoder refused to come up must
+  // record nothing and say so, never quietly leave a raw file behind that
+  // the user would mistake for a burned one.
+  const bool burned_mode = cfg.dvr.enabled && cfg.dvr.mode == "burned";
+#ifdef MABUR_PLAYER_HW
+  // Declared AFTER `presenter` and `backend` so it is destroyed FIRST on
+  // unwind: stop() joins the encode thread and releases the decoder buffers
+  // it still holds while the decoder that owns them is still alive.
+  std::unique_ptr<maburplay::BurnRecorder> burn;
+  if (burned_mode && presenter) {
+    auto rec = std::make_unique<maburplay::BurnRecorder>();
+    // Palette (and with it the encoder's OSD region) ONLY when the OSD path
+    // is actually live -- osd_raster is non-null exactly when osd.enable is
+    // set, the font loaded AND the MSP socket opened. Otherwise no palette
+    // at all: a burned recording with no overlay is a legal configuration
+    // (a plain transcode), not an error, and set_osd() then costs nothing.
+    // MUST precede start(), which uploads it before the thread exists.
+    if (osd_raster) rec->set_palette(maburplay::build_palette(osd_font.native()));
+    maburplay::BurnCfg bc;
+    // Same BackendCfg the presenter runs on, so the encoder's picture size
+    // matches the decoder's -- MppEncoder latches geometry on its first
+    // frame and hard-rejects any disagreement forever after.
+    bc.width = bcfg.width;
+    bc.height = bcfg.height;
+    bc.fps_cap = cfg.dvr.burned.fps_cap;
+    bc.bitrate_kbps = cfg.dvr.burned.bitrate_kbps;
+    bc.fragment_ms = cfg.dvr.fragment_ms;
+    // backend.get() is CHECKED, not retained (see burn_recorder.h): the
+    // decode watchdog may destroy and recreate it mid-run.
+    if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
+  }
+  if (burned_mode && !burn) {
+    // Wrong backend, no presenter (--decode-only), or an encoder that would
+    // not init. BurnRecorder::start() already logged the specific reason.
+    std::fprintf(stderr,
+                 "maburplay: dvr.mode \"burned\" requested but the recorder is not "
+                 "running -- NOTHING is being recorded (no raw fallback: it would look "
+                 "like a burned file)\n");
+  }
+#else
+  if (burned_mode) {
+    std::fprintf(stderr,
+                 "maburplay: dvr.mode \"burned\" needs the hardware build (mpp encoder); "
+                 "NOTHING is being recorded\n");
+  }
+#endif
+
   // Counted unconditionally (cheap, backend-agnostic): --decode-only reads
   // frame_count/first-last frame timestamps directly; the normal run loop
   // just carries the extra bookkeeping for free.
@@ -423,6 +481,13 @@ int main(int argc, char** argv) {
     t_last_frame = now;
 #ifdef MABUR_PLAYER_HW
     if (presenter) {
+      // Burned DVR, BEFORE present(): submit() only takes an MPP buffer
+      // reference (O(1), no copy, no ownership), but present() hands the
+      // DmaFrame to the presenter and the frame must not be read through
+      // afterwards -- so the second reader goes first, where the rule is
+      // obvious. The two holders are decoupled by MPP's own refcount; the
+      // presenter's ownership contract is unchanged.
+      if (burn) burn->submit(f);
       presenter->present(f);
       return;
     }
@@ -477,7 +542,10 @@ int main(int argc, char** argv) {
     // backend_armed above).
     const bool is_key = ev.meta.sid == 0;
 
-    if (cfg.dvr.enabled) {
+    // !burned_mode: in burned mode the BurnRecorder owns the recording and
+    // writes the encoder's output to its own DvrMux instead. Everything
+    // inside is the raw path, byte-for-byte unchanged.
+    if (cfg.dvr.enabled && !burned_mode) {
       if (!complete) {
         // Truncated base AU: DVR records complete AUs only, so this one is
         // skipped whole. No explicit fragment cut needed here: DvrMux
@@ -506,6 +574,13 @@ int main(int argc, char** argv) {
       // new frame arrives -- BEFORE flush() runs.
 #ifdef MABUR_PLAYER_HW
       if (presenter) presenter->drop_all();
+      if (burn) {
+        // The recorder is the SECOND holder of decoder buffers, so it has
+        // to let go here too -- same reason, same place. Then reseal the
+        // recording: the next encoded frame after a discontinuity is an IDR.
+        burn->drop_pending();
+        burn->request_idr();
+      }
 #endif
       backend->flush();
       backend_armed = false;
@@ -718,11 +793,17 @@ int main(int argc, char** argv) {
         if (ready) {
           const int idx = presenter->osd_back_index();
           osd_raster->draw(osd_src->screen(), presenter->osd_back_surface(), &osd_shadow[idx]);
+          // Recording tracks the screen. BEFORE osd_publish(), which swaps
+          // the pair -- afterwards osd_back_surface() is the OTHER buffer.
+          // ~1 Hz (the MSP snapshot rate), which is what set_osd()'s inline
+          // full-screen quantize is budgeted for; never per video frame.
+          if (burn) burn->set_osd(presenter->osd_back_surface());
           presenter->osd_publish();
           osd_blanked = false;
         } else if (!osd_blanked && osd_src->stale(now_ms)) {
           const int idx = presenter->osd_back_index();
           osd_raster->clear(presenter->osd_back_surface(), &osd_shadow[idx]);
+          if (burn) burn->set_osd(presenter->osd_back_surface());  // blank the burn too
           presenter->osd_publish();
           osd_blanked = true;
           std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
@@ -753,6 +834,15 @@ int main(int argc, char** argv) {
                      wd_consecutive);
 #ifdef MABUR_PLAYER_HW
         if (presenter) presenter->drop_all();
+        if (burn) {
+          // Same pairing as flush_before: release the buffer the recorder is
+          // holding before the decoder is reset or torn down, and reseal the
+          // recording with an IDR once frames come back. The recorder never
+          // holds a backend pointer, so the recreation path below needs
+          // nothing else from it.
+          burn->drop_pending();
+          burn->request_idr();
+        }
 #endif
         if (wd_consecutive < 3) {
           backend->flush();
@@ -793,9 +883,25 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
         if (presenter) {
           const uint64_t flips = presenter->flips();
+          // Burned-DVR counters, APPENDED to the existing fields (existing
+          // names and order untouched) and only in burned mode, so a raw run
+          // logs exactly the line it always did. Built into one buffer rather
+          // than a second fprintf: the recorder thread writes to stderr too.
+          // burn_enc counts encode() calls that produced a packet -- NOT
+          // samples written, since a zero-length packet reaches the mux sink
+          // and is dropped there.
+          char burn_fields[160] = {0};
+          if (burn) {
+            std::snprintf(burn_fields, sizeof(burn_fields),
+                          " burn_in=%llu burn_enc=%llu burn_drop=%llu burn_err=%llu",
+                          static_cast<unsigned long long>(burn->frames_in()),
+                          static_cast<unsigned long long>(burn->frames_encoded()),
+                          static_cast<unsigned long long>(burn->frames_dropped()),
+                          static_cast<unsigned long long>(burn->encode_errors()));
+          }
           std::fprintf(stderr,
                        "fps-log: fps=%.1f flips/s=%.1f repl=%llu frames=%llu commit_errors=%llu "
-                       "async=%s osd_screens=%llu osd_dgrams=%llu osd_commit_errors=%llu\n",
+                       "async=%s osd_screens=%llu osd_dgrams=%llu osd_commit_errors=%llu%s\n",
                        fps, static_cast<double>(flips - flips_at_last_fps_log) / dt,
                        static_cast<unsigned long long>(presenter->busy_replaced()),
                        static_cast<unsigned long long>(frame_count),
@@ -804,7 +910,8 @@ int main(int argc, char** argv) {
                        : presenter->async_flip_active() ? "on" : "off",
                        static_cast<unsigned long long>(osd_src ? osd_src->screens() : 0),
                        static_cast<unsigned long long>(osd_src ? osd_src->datagrams() : 0),
-                       static_cast<unsigned long long>(presenter->osd_commit_errors()));
+                       static_cast<unsigned long long>(presenter->osd_commit_errors()),
+                       burn_fields);
           flips_at_last_fps_log = flips;
           // Stall diagnostic: a zero-fps second mid-session means the
           // delivery chain froze somewhere -- dump where the reader sits
