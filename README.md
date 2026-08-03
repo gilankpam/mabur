@@ -111,29 +111,40 @@ Set `msp.enable=true` on the drone (`mabur.json`) and GS (`maburgs.json`);
 `msp.symbol_size`/`msp.window` must match on both ends. The drone taps the
 flight controller's MSP DisplayPort UART (`msp.serial`, default `/dev/ttyS2`)
 and forwards full-screen keyframe snapshots at `msp.update_rate_hz` (default
-1 Hz) as their own FEC-protected air stream. The GS re-emits the MSP bytes over
-UDP to `msp.out` (default `127.0.0.1:14560`); render them with msposd on the
-GS, e.g. `msposd 127.0.0.1:14560 --osd`, which draws to the shm surface
-PixelPilot composites over the video. One-way display only — see
-`docs/superpowers/specs/2026-07-15-msp-displayport-osd-design.md` for the
-drone-side-burn-in and GS→FC-menu future doors.
+1 Hz) as their own FEC-protected air stream. `maburgs` reassembles the
+snapshots and re-emits the MSP bytes as loopback UDP datagrams to `msp.out`
+(default `127.0.0.1:14560`) — it renders no pixels itself. `maburplay`
+receives that feed on `osd.port`, rasterizes the character grid with a
+runtime glyph atlas and shows it on a DRM overlay plane above the decoded
+video. Neither msposd nor PixelPilot is involved any more (both they and
+the old `msp.render = "shm"` shared-memory path are gone). One-way display
+only — see `docs/superpowers/specs/2026-07-15-msp-displayport-osd-design.md`
+for the drone-side-burn-in and GS→FC-menu future doors.
 
-### Direct PixelPilot render (no msposd)
+Player-side config lives in `maburplay.json` under `osd`: `enable`, `port`,
+`font` (path to a `.mfont` atlas), `scale` (`sharp` | `fill`) and `stale_ms`
+(blank the overlay after this much silence; keep it at several multiples of
+the drone's `msp.update_rate_hz` period, default 5000 ms).
 
-Set `msp.render = "shm"` on the GS (`maburgs.json`) to have `maburgs` render the
-OSD straight into PixelPilot's shared-memory surface — no msposd, no UDP hop.
-`maburgs` writes the region named `msp.shm.name` (default `"msp"`); PixelPilot
-must be configured to create + composite it. Add to `/etc/pixelpilot/osd.json`
-`widgets`:
+Two deploy-time invariants, neither of which a daemon can check for itself:
 
-    { "type": "ExternalSurfaceWidget", "name": "msp", "x": 0, "y": 0 }
+- **`osd.port` (maburplay) must equal `msp.out.port` (maburgs).** They are
+  separate processes with separate config files. On a mismatch the OSD stays
+  empty; maburplay logs a one-shot warning naming the bound port ~10 s after
+  start.
+- **The `.mfont` atlas named by `osd.font` must exist on the GS**, by
+  default `/usr/local/share/mabur/font_btfl.mfont`. The generated Betaflight
+  36x54 atlas is committed as `gs/player/bundle/font_btfl.mfont` and staged
+  into `out/arm64/` by `tools/build-arm64.sh`; push it alongside the
+  binaries. Regenerate it from an msposd checkout next to this repo with:
 
-(the `name` must equal `msp.shm.name`). Restart PixelPilot **via its service** —
-its `pixelpilot.sh` loop does not respawn on SIGTERM/SIGKILL, so `killall` stops
-the display. The OSD (betaflight HD font) is scaled to fill the canvas;
-`msp.shm.x_offset`/`y_offset` inset it if the display overscans. `msp.render =
-"udp"` (default) keeps the previous behavior (emit MSP to UDP for an external
-renderer).
+  ```
+  tools/msp/gen_font.py ../msposd/fonts/original/betaflight/font.png \
+      gs/player/bundle/font_btfl.mfont
+  ```
+
+  If the file is missing, maburplay logs `osd disabled -- cannot open ...`
+  and runs video-only.
 
 ## Benchmarking
 

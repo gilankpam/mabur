@@ -2,7 +2,13 @@ add_library(mabur_player_core STATIC
   src/player_config.cpp
   src/hevc_params.cpp
   src/dvr_mux.cpp
-  src/ring_client.cpp)
+  src/ring_client.cpp
+  src/osd_font.cpp
+  src/osd_layout.cpp
+  src/osd_raster.cpp
+  src/osd_source.cpp
+  src/osd_palette.cpp
+  src/in_formats.cpp)
 target_include_directories(mabur_player_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
@@ -34,7 +40,12 @@ if(MABUR_PLAYER_HW)
       "MABUR_PLAYER_HW=ON requires -DMABUR_MPP_ROOT=<mpp install prefix> "
       "and -DMABUR_DRM_ROOT=<libdrm install prefix>; see tools/build-arm64.sh")
   endif()
-  target_sources(maburplay PRIVATE src/mpp_backend.cpp src/drm_presenter.cpp)
+  target_sources(maburplay PRIVATE
+    src/mpp_backend.cpp
+    src/mpp_encoder.cpp
+    src/burn_recorder.cpp
+    src/drm_presenter.cpp
+    src/osd_surface.cpp)
   target_compile_definitions(maburplay PRIVATE MABUR_PLAYER_HW=1)
   target_include_directories(maburplay PRIVATE
     "${MABUR_MPP_ROOT}/include"

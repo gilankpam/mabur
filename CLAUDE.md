@@ -70,7 +70,10 @@ read the sideport. Reach for other tools only in these cases:**
   line** in `/tmp/maburgs.log` (maburd's in `/tmp/mabur.log`, maburplay's
   fps-log + respawn history in `/tmp/maburplay.log`). It is
   numerically redundant with the sideport but persists on disk; the UDP
-  feed is ephemeral.
+  feed is ephemeral. The MSP OSD is now rendered by maburplay itself, from
+  the UDP snapshot feed maburgs emits (maburgs no longer draws pixels); the
+  OSD startup line and blanking notices land in `/tmp/maburplay.log`
+  alongside the fps-log.
 - **Radio/PHY bring-up below mabur → devourer's own tools** (`rxdemo` with
   `DEVOURER_RX_ALLPATHS=1`, `doctor`, etc. — see
   `third_party/devourer/CLAUDE.md`). Use these when the question is about

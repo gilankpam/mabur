@@ -19,6 +19,12 @@ TEST(defaults_from_bundle) {
   CHECK(c.dvr.enabled);
   CHECK(c.dvr.dir == "/media/dvr");
   CHECK(c.dvr.fragment_ms == 1000);
+  // The shipped bundle records with the OSD burned in. Pinned here because
+  // it is a product decision, not a code default -- DvrCfg::mode still
+  // defaults to "raw" so an omitted key keeps the pristine remux.
+  CHECK(c.dvr.mode == "burned");
+  CHECK(c.dvr.burned.bitrate_kbps == 8000);
+  CHECK(c.dvr.burned.fps_cap == 60);
 }
 
 TEST(values_and_strictness) {
@@ -41,6 +47,88 @@ TEST(values_and_strictness) {
   try { maburplay::load_config(write_tmp_play("{\"dvr\": {\"fragment_ms\": 50}}")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // floor 100
+}
+
+TEST(osd_defaults_are_off_and_conventional) {
+  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  CHECK(c.osd.enable == false);
+  CHECK(c.osd.port == 14560);
+  CHECK(c.osd.scale == "sharp");
+  // 5 s = 5 missed snapshots at the drone's default msp.update_rate_hz of
+  // 1 Hz; a shorter default strobes the overlay on a single dropped one.
+  CHECK(c.osd.stale_ms == 5000);
+  CHECK(c.osd.font == "/usr/local/share/mabur/font_btfl.mfont");
+}
+
+TEST(osd_block_is_parsed) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"backend":"null","osd":{"enable":true,"port":15000,)"
+      R"("font":"/tmp/f.mfont","scale":"fill","stale_ms":0}})"));
+  CHECK(c.osd.enable == true);
+  CHECK(c.osd.port == 15000);
+  CHECK(c.osd.font == "/tmp/f.mfont");
+  CHECK(c.osd.scale == "fill");
+  CHECK(c.osd.stale_ms == 0);
+}
+
+TEST(osd_rejects_unknown_keys_and_bad_scale) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"enabl":true}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"scale":"blurry"}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
+TEST(bundle_default_parses_with_osd_enabled) {
+  auto c = maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+  CHECK(c.osd.enable == true);
+}
+
+TEST(dvr_mode_defaults_to_raw) {
+  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  CHECK(c.dvr.mode == "raw");
+  CHECK(c.dvr.burned.bitrate_kbps == 12000);
+  CHECK(c.dvr.burned.fps_cap == 30);
+}
+
+TEST(dvr_burned_block_parses) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"backend":"null","dvr":{"mode":"burned",)"
+      R"("burned":{"bitrate_kbps":20000,"fps_cap":60}}})"));
+  CHECK(c.dvr.mode == "burned");
+  CHECK(c.dvr.burned.bitrate_kbps == 20000);
+  CHECK(c.dvr.burned.fps_cap == 60);
+}
+
+TEST(dvr_rejects_bad_mode_and_unknown_keys) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"mode":"burnt"}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"burned":{"bitrate":1}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
+TEST(dvr_burned_bounds_are_enforced) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(
+      R"({"dvr":{"burned":{"fps_cap":0}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(
+      R"({"dvr":{"burned":{"bitrate_kbps":500000}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
 }
 
 MTEST_MAIN

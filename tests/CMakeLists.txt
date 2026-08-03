@@ -60,6 +60,24 @@ if(MABUR_BUILD_GS)
   add_mtest(test_hevc_params test_hevc_params.cpp LIBS mabur_player_core)
   add_mtest(test_dvr_mux test_dvr_mux.cpp LIBS mabur_player_core)
   add_mtest(test_ring_client test_ring_client.cpp LIBS mabur_player_core pthread)
+  add_mtest(test_osd_font test_osd_font.cpp LIBS mabur_player_core)
+  add_mtest(test_osd_layout test_osd_layout.cpp LIBS mabur_player_core)
+  add_mtest(test_osd_raster test_osd_raster.cpp LIBS mabur_player_core)
+  add_mtest(test_zpos_plan test_zpos_plan.cpp LIBS mabur_player_core)
+  add_mtest(test_in_formats test_in_formats.cpp LIBS mabur_player_core)
+  add_mtest(test_osd_source test_osd_source.cpp LIBS mabur_player_core)
+  add_mtest(test_osd_palette test_osd_palette.cpp LIBS mabur_player_core)
+  target_compile_definitions(test_osd_palette PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
+  # Wall-clock measurement of the OSD quantizer, which runs INLINE on
+  # maburplay's 2 ms main loop. Deliberately NOT an add_test(): it is a
+  # timing bench, so neither fast nor deterministic. Build and run by hand
+  # (--target quantize_bench); see the file header.
+  add_executable(quantize_bench ${CMAKE_SOURCE_DIR}/tools/bench/quantize_bench.cpp)
+  target_link_libraries(quantize_bench PRIVATE mabur_common mabur_player_core)
+  target_include_directories(quantize_bench PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+  target_compile_definitions(quantize_bench PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_body_queue test_body_queue.cpp LIBS mabur_gs_core)
   add_mtest(test_aggregator test_aggregator.cpp LIBS mabur_gs_core)
   add_mtest(test_udp_sink test_udp_sink.cpp LIBS mabur_gs_core)
@@ -73,9 +91,6 @@ if(MABUR_BUILD_GS)
   add_mtest(test_s1_loss test_s1_loss.cpp LIBS mabur_gs_core)
   add_mtest(test_tx_selector test_tx_selector.cpp LIBS mabur_gs_core)
   add_mtest(test_control_frame test_control_frame.cpp LIBS mabur_gs_radio)
-  add_mtest(test_msp_font test_msp_font.cpp LIBS mabur_gs_core)
-  add_mtest(test_shm_surface test_shm_surface.cpp LIBS mabur_gs_core)
-  add_mtest(test_msp_renderer test_msp_renderer.cpp LIBS mabur_gs_core)
   add_mtest(test_frame_stream test_frame_stream.cpp LIBS mabur_gs_core)
 add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_au_doorbell test_au_doorbell.cpp LIBS mabur_gs_core)
@@ -115,6 +130,9 @@ find_program(Python3_EXECUTABLE python3)
 if(Python3_EXECUTABLE)
   add_test(NAME test_flightreport
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightreport.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME test_gen_font
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_gen_font.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

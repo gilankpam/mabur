@@ -49,7 +49,7 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"ring_path", "socket", "backend", "screen_mode", "dvr"});
+  check_keys(j, "", {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd"});
   Config c;
 
   c.ring_path = get_str(j, "ring_path", "/dev/shm/mabur-au", "");
@@ -64,13 +64,40 @@ Config load_config(const std::string& path) {
 
   if (j.contains("dvr")) {
     const json& r = j["dvr"];
-    check_keys(r, "dvr", {"enabled", "dir", "fragment_ms"});
+    check_keys(r, "dvr", {"enabled", "dir", "fragment_ms", "mode", "burned"});
     if (r.contains("enabled")) {
       if (!r["enabled"].is_boolean()) fail("dvr.enabled", "not a boolean");
       c.dvr.enabled = r["enabled"].get<bool>();
     }
     c.dvr.dir = get_str(r, "dir", "/media/dvr", "dvr");
     c.dvr.fragment_ms = static_cast<int>(get_int(r, "fragment_ms", 1000, 100, 10000, "dvr"));
+    c.dvr.mode = get_str(r, "mode", "raw", "dvr");
+    if (c.dvr.mode != "raw" && c.dvr.mode != "burned")
+      fail("dvr.mode", "must be \"raw\" or \"burned\"");
+    if (r.contains("burned")) {
+      const json& b = r["burned"];
+      check_keys(b, "dvr.burned", {"bitrate_kbps", "fps_cap"});
+      c.dvr.burned.bitrate_kbps =
+          static_cast<int>(get_int(b, "bitrate_kbps", 12000, 500, 100000, "dvr.burned"));
+      c.dvr.burned.fps_cap =
+          static_cast<int>(get_int(b, "fps_cap", 30, 1, 120, "dvr.burned"));
+    }
+  }
+
+  if (j.contains("osd")) {
+    const json& o = j["osd"];
+    check_keys(o, "osd", {"enable", "port", "font", "scale", "stale_ms"});
+    if (o.contains("enable")) {
+      if (!o["enable"].is_boolean()) fail("osd.enable", "not a boolean");
+      c.osd.enable = o["enable"].get<bool>();
+    }
+    c.osd.port = static_cast<int>(get_int(o, "port", 14560, 1, 65535, "osd"));
+    c.osd.font = get_str(o, "font", c.osd.font, "osd");
+    c.osd.scale = get_str(o, "scale", "sharp", "osd");
+    if (c.osd.scale != "sharp" && c.osd.scale != "fill")
+      fail("osd.scale", "must be \"sharp\" or \"fill\"");
+    // Default mirrors OsdCfg::stale_ms (see player_config.h for why 5000).
+    c.osd.stale_ms = static_cast<int>(get_int(o, "stale_ms", 5000, 0, 60000, "osd"));
   }
 
   return c;

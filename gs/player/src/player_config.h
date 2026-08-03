@@ -9,6 +9,29 @@ struct DvrCfg {
   bool enabled = true;
   std::string dir = "/media/dvr";
   int fragment_ms = 1000;
+  // "raw"    — remux the received AUs untouched (byte-exact, the default).
+  // "burned" — transcode with the MSP OSD composited in by the encoder.
+  std::string mode = "raw";
+  struct BurnedCfg {
+    int bitrate_kbps = 12000;
+    int fps_cap = 30;   // encode is capped independently of display rate
+  } burned;
+};
+
+// MSP DisplayPort OSD. `port` must match maburgs' msp.out.port -- separate
+// daemons, separate config files, so this pairing is a deploy-time
+// invariant neither binary can validate on its own.
+struct OsdCfg {
+  bool enable = false;
+  int port = 14560;
+  std::string font = "/usr/local/share/mabur/font_btfl.mfont";
+  std::string scale = "sharp";  // "sharp" | "fill"
+  // Blank the OSD after this much silence; 0 = never. MUST stay several
+  // multiples of the drone's msp.update_rate_hz period (default 1 Hz = one
+  // snapshot per second, so 5000 = 5 missed snapshots): at ~2x the period a
+  // SINGLE dropped snapshot blanks the whole overlay and the next one
+  // repaints it, which reads as a strobe rather than as staleness.
+  int stale_ms = 5000;
 };
 
 struct Config {
@@ -17,6 +40,7 @@ struct Config {
   std::string backend = "mpp";            // "mpp" | "null"
   std::string screen_mode = "1920x1080@60";
   DvrCfg dvr;
+  OsdCfg osd;
 };
 
 Config load_config(const std::string& path);  // strict; throws like maburgs
