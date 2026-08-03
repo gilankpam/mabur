@@ -238,6 +238,14 @@ cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx txagcbench-
 "${TARGET_TRIPLE}-strip" build-arm64/bench/txagcbench/txagcbench-rx -o out/arm64/txagcbench-rx
 "${TARGET_TRIPLE}-strip" build-arm64/gs/player/maburplay -o out/arm64/maburplay
 
+# maburplay's OSD glyph atlas is a runtime asset, not a linked-in blob (that
+# was the point of retiring the generated msp_font_btfl.cpp): stage the
+# committed bundle copy next to the binaries so the deploy step has one
+# directory holding everything it must push. Installs on the GS as
+# /usr/local/share/mabur/font_btfl.mfont -- the path maburplay.default.json's
+# osd.font points at. Regenerate with tools/msp/gen_font.py (see its header).
+cp gs/player/bundle/font_btfl.mfont out/arm64/font_btfl.mfont
+
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then
   nix-build -E \

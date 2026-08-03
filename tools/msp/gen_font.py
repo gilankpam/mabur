@@ -15,6 +15,19 @@ premultiplied. Glyph index `gi = char | (page << 8)`.
 Atlas layout: width = glyph_w * 4 pages, height = glyph_h * 256 chars.
 Glyph (char,page) occupies atlas cols [page*gw, page*gw+gw), rows
 [char*gh, char*gh+gh). Stdlib only (no Pillow, no numpy).
+
+Regenerating the SHIPPED atlas (`gs/player/bundle/font_btfl.mfont`, the
+Betaflight 36x54 default that `tools/build-arm64.sh` stages into
+`out/arm64/` and the deploy installs to
+`/usr/local/share/mabur/font_btfl.mfont`), from a checkout of msposd
+sitting next to this repo:
+
+  tools/msp/gen_font.py ../msposd/fonts/original/betaflight/font.png \
+      gs/player/bundle/font_btfl.mfont
+
+The source PNG is NOT vendored here; the generated .mfont is committed
+instead so a deploy needs no sibling checkout. Expect 7,962,656 bytes
+(32 B header + 1024 glyphs * 36 * 54 * 4 B).
 """
 import sys, zlib, struct
 
