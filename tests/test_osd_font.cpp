@@ -23,6 +23,19 @@ static std::string write_font(int gw, int gh, int n, uint32_t magic = 0x544E464D
   return path;
 }
 
+// Writes a .mfont with a single glyph whose gw*gh pixels are given
+// explicitly (row-major), for tests that need a specific spatial pattern
+// rather than write_font()'s single-corner-marker convention.
+static std::string write_font_pixels(int gw, int gh, const std::vector<uint32_t>& px) {
+  std::string path = std::string(std::tmpnam(nullptr)) + ".mfont";
+  std::FILE* f = std::fopen(path.c_str(), "wb");
+  uint32_t hdr[8] = {0x544E464DU, 1, (uint32_t)gw, (uint32_t)gh, 1, 0, 0, 0};
+  std::fwrite(hdr, sizeof(hdr), 1, f);
+  std::fwrite(px.data(), 4, px.size(), f);
+  std::fclose(f);
+  return path;
+}
+
 TEST(load_reports_native_geometry) {
   const std::string p = write_font(4, 6, 1024);
   OsdFont font;
@@ -56,6 +69,34 @@ TEST(load_rejects_bad_magic_and_truncation) {
 
   OsdFont f3;
   CHECK(!f3.load("/nonexistent/nope.mfont", &err));
+}
+
+TEST(load_rejects_overflowing_header) {
+  // glyph_w = glyph_h = n_glyphs = 2^22: the naive 64-bit product
+  // (glyph_w * glyph_h * n_glyphs * 4) wraps around to a tiny value, so a
+  // loader that multiplies before range-checking would treat this
+  // header-only file as a valid, absurdly-dimensioned font. It must be
+  // rejected on the field bounds instead.
+  const std::string path = std::string(std::tmpnam(nullptr)) + ".mfont";
+  std::FILE* f = std::fopen(path.c_str(), "wb");
+  uint32_t hdr[8] = {0x544E464DU, 1, 4194304u, 4194304u, 4194304u, 0, 0, 0};
+  std::fwrite(hdr, sizeof(hdr), 1, f);
+  std::fclose(f);
+
+  OsdFont font;
+  std::string err;
+  CHECK(!font.load(path, &err));
+  CHECK(!err.empty());
+  std::remove(path.c_str());
+}
+
+TEST(atlas_at_rejects_oversized_request) {
+  const std::string p = write_font(4, 6, 4);
+  OsdFont font;
+  REQUIRE(font.load(p, nullptr));
+  CHECK(font.atlas_at(5000, 6, ScaleMode::kSharp) == nullptr);
+  CHECK(font.atlas_at(4, 5000, ScaleMode::kSharp) == nullptr);
+  std::remove(p.c_str());
 }
 
 TEST(atlas_at_native_size_is_the_mapping_itself) {
@@ -100,14 +141,47 @@ TEST(atlas_at_smaller_size_box_averages) {
   std::remove(p.c_str());
 }
 
+TEST(atlas_at_box_downscale_averages_each_quadrant) {
+  // 4x4 glyph split into four constant-valued 2x2 quadrants. A correct box
+  // downscale to 2x2 must average strictly within each quadrant (the
+  // average of a constant region is itself), so each output pixel should
+  // equal its own quadrant's value exactly. An off-by-one in the box()
+  // sub-region bounds would blend across the midline and this would fail,
+  // unlike the degenerate 2x2->1x1 case above where the whole source is
+  // always the single region regardless of the boundary math.
+  const uint32_t tl = 0xFF100000u, tr = 0xFF200000u, bl = 0xFF300000u, br = 0xFF400000u;
+  const std::vector<uint32_t> px = {
+      tl, tl, tr, tr,
+      tl, tl, tr, tr,
+      bl, bl, br, br,
+      bl, bl, br, br,
+  };
+  const std::string p = write_font_pixels(4, 4, px);
+  OsdFont font;
+  REQUIRE(font.load(p, nullptr));
+  const GlyphAtlas* a = font.atlas_at(2, 2, ScaleMode::kSharp);
+  REQUIRE(a != nullptr);
+  CHECK(a->pixels[0] == tl);
+  CHECK(a->pixels[1] == tr);
+  CHECK(a->pixels[2] == bl);
+  CHECK(a->pixels[3] == br);
+  std::remove(p.c_str());
+}
+
 TEST(atlas_at_caches_one_size) {
   const std::string p = write_font(2, 3, 1024);
   OsdFont font;
   REQUIRE(font.load(p, nullptr));
   const GlyphAtlas* a = font.atlas_at(4, 6, ScaleMode::kSharp);
+  CHECK(font.builds() == 1);
   const GlyphAtlas* b = font.atlas_at(4, 6, ScaleMode::kSharp);
+  CHECK(font.builds() == 1);
   CHECK(a == b);
   CHECK(a->pixels == b->pixels);
+  // A different requested size must evict the cache and build again.
+  const GlyphAtlas* c = font.atlas_at(2, 2, ScaleMode::kSharp);
+  REQUIRE(c != nullptr);
+  CHECK(font.builds() == 2);
   std::remove(p.c_str());
 }
 

@@ -17,6 +17,13 @@ struct MfontHdr {
 static_assert(sizeof(MfontHdr) == 32, ".mfont header must be 32 bytes");
 constexpr uint32_t kMfontMagic = 0x544E464DU;  // 'MFNT', little-endian
 
+// Sanity bounds, generous next to real fonts (36x54, 1024 glyphs). Every
+// header field is validated against these BEFORE it takes part in any
+// multiplication, so the payload-size product below cannot overflow by
+// construction (4096 * 4096 * 65536 * 4 fits comfortably in 64-bit size_t).
+constexpr uint32_t kMaxGlyphDim = 4096;
+constexpr uint32_t kMaxGlyphs = 65536;
+
 void replicate(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw, int dh) {
   const int kx = dw / sw, ky = dh / sh;
   for (int y = 0; y < dh; ++y) {
@@ -81,6 +88,18 @@ OsdFont::~OsdFont() {
 }
 
 bool OsdFont::load(const std::string& path, std::string* err) {
+  // A repeated load() must not leak the previous mapping; drop it (and any
+  // state derived from it) before attempting the new one.
+  if (map_) {
+    munmap(map_, map_bytes_);
+    map_ = nullptr;
+    map_bytes_ = 0;
+  }
+  native_ = GlyphAtlas{};
+  cached_ = GlyphAtlas{};
+  scaled_.clear();
+  builds_ = 0;
+
   const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
     if (err) *err = "cannot open " + path;
@@ -100,10 +119,22 @@ bool OsdFont::load(const std::string& path, std::string* err) {
   }
   MfontHdr h{};
   std::memcpy(&h, m, sizeof(h));
+  // Range-check every field BEFORE it takes part in the payload-size
+  // multiplication below -- otherwise a crafted header (e.g. glyph_w =
+  // glyph_h = n_glyphs = 2^22) overflows the 64-bit product, wraps to a
+  // tiny `need`, and this guard would wave through a mapping that
+  // native_/atlas_at then walk far out of bounds.
+  if (h.magic != kMfontMagic || h.version != 1 ||
+      h.glyph_w == 0 || h.glyph_w > kMaxGlyphDim ||
+      h.glyph_h == 0 || h.glyph_h > kMaxGlyphDim ||
+      h.n_glyphs == 0 || h.n_glyphs > kMaxGlyphs) {
+    munmap(m, (size_t)st.st_size);
+    if (err) *err = path + ": bad .mfont header or truncated payload";
+    return false;
+  }
   const size_t need =
       sizeof(MfontHdr) + (size_t)h.glyph_w * h.glyph_h * h.n_glyphs * 4;
-  if (h.magic != kMfontMagic || h.version != 1 || h.glyph_w == 0 || h.glyph_h == 0 ||
-      h.n_glyphs == 0 || (size_t)st.st_size < need) {
+  if ((size_t)st.st_size < need) {
     munmap(m, (size_t)st.st_size);
     if (err) *err = path + ": bad .mfont header or truncated payload";
     return false;
@@ -116,11 +147,13 @@ bool OsdFont::load(const std::string& path, std::string* err) {
 }
 
 const GlyphAtlas* OsdFont::atlas_at(int w, int h, ScaleMode mode) {
-  if (!native_.pixels || w <= 0 || h <= 0) return nullptr;
+  if (!native_.pixels || w <= 0 || h <= 0 || w > (int)kMaxGlyphDim || h > (int)kMaxGlyphDim)
+    return nullptr;
   if (w == native_.glyph_w && h == native_.glyph_h) return &native_;
   if (cached_.pixels && cached_.glyph_w == w && cached_.glyph_h == h && cached_mode_ == mode)
     return &cached_;
 
+  ++builds_;
   scaled_.assign((size_t)w * h * native_.n_glyphs, 0u);
   const bool integer_up = w >= native_.glyph_w && h >= native_.glyph_h &&
                           w % native_.glyph_w == 0 && h % native_.glyph_h == 0 &&

@@ -39,8 +39,14 @@ class OsdFont {
   const GlyphAtlas& native() const { return native_; }
 
   // Atlas with glyphs exactly w x h. Cached: one non-native size at a time
-  // (canvas changes are rare). Returns nullptr if not loaded or w/h <= 0.
+  // (canvas changes are rare). Returns nullptr if not loaded, w/h <= 0, or
+  // w/h exceeds the sanity bound (kMaxGlyphDim in osd_font.cpp).
   const GlyphAtlas* atlas_at(int w, int h, ScaleMode mode);
+
+  // Number of times atlas_at() has actually built a scaled atlas (i.e. a
+  // cache miss for a non-native size). Exposed for testing the one-entry
+  // cache; not meaningful otherwise.
+  uint64_t builds() const { return builds_; }
 
  private:
   void* map_ = nullptr;
@@ -49,6 +55,7 @@ class OsdFont {
   GlyphAtlas cached_;
   ScaleMode cached_mode_ = ScaleMode::kSharp;
   std::vector<uint32_t> scaled_;
+  uint64_t builds_ = 0;
 };
 
 }  // namespace maburplay
