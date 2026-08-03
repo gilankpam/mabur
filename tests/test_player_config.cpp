@@ -19,6 +19,12 @@ TEST(defaults_from_bundle) {
   CHECK(c.dvr.enabled);
   CHECK(c.dvr.dir == "/media/dvr");
   CHECK(c.dvr.fragment_ms == 1000);
+  // The shipped bundle records with the OSD burned in. Pinned here because
+  // it is a product decision, not a code default -- DvrCfg::mode still
+  // defaults to "raw" so an omitted key keeps the pristine remux.
+  CHECK(c.dvr.mode == "burned");
+  CHECK(c.dvr.burned.bitrate_kbps == 8000);
+  CHECK(c.dvr.burned.fps_cap == 60);
 }
 
 TEST(values_and_strictness) {
