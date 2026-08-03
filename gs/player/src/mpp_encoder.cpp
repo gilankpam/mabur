@@ -101,8 +101,13 @@ struct MppEncoder::Impl {
   // Geometry programmed into the encoder, latched from the first submitted
   // frame. applied_* are meaningful only once geom_latched is true.
   bool geom_latched = false;
+  // Raised by a latch VALIDATION refusal, which is permanent (see
+  // latch_geometry): every later frame then fails fast without re-validating
+  // and without logging again.
+  bool geom_failed = false;
   int applied_w = 0, applied_h = 0, applied_stride = 0, applied_vstride = 0;
-  uint64_t geom_rejects = 0;
+  uint64_t geom_rejects = 0;  // frames refused after a successful latch
+  uint64_t latch_fails = 0;   // failed latch attempts on transient errors
 
   NalSink sink;
   std::vector<uint8_t> header;
@@ -141,17 +146,35 @@ struct MppEncoder::Impl {
   //  - A mid-stream picture-size change is not something a running fMP4 mux
   //    can consume anyway (it needs a new track, not a reconfigure), so the
   //    honest answer to a disagreeing frame is a loud refusal.
+  //
+  // Two classes of failure, deliberately handled differently. A VALIDATION
+  // refusal is PERMANENT -- a source whose picture size disagrees with
+  // EncCfg, or whose strides are smaller than its picture, will not fix
+  // itself on frame 2 -- so it raises geom_failed, logs once, and every
+  // later frame fails fast. A TRANSIENT MPP failure (SET_CFG, header mode,
+  // an allocation) keeps the retry, but its logging is rate-limited exactly
+  // like the post-latch reject path: /tmp/maburplay.log is an unrotated `>`
+  // redirect on tmpfs (bundle/S97maburplay), so an unbounded per-frame
+  // fprintf at 60 fps is a real failure mode, not a cosmetic one.
   bool latch_geometry(int w, int h, int stride, int vstride) {
     if (w != ecfg.width || h != ecfg.height) {
-      std::fprintf(stderr, "MppEncoder: first frame %dx%d != configured %dx%d, refusing\n", w, h,
-                   ecfg.width, ecfg.height);
+      geom_failed = true;
+      std::fprintf(stderr,
+                   "MppEncoder: first frame %dx%d != configured %dx%d, refusing (permanent)\n", w,
+                   h, ecfg.width, ecfg.height);
       return false;
     }
     if (stride <= 0 || vstride <= 0 || stride < w || vstride < h) {
-      std::fprintf(stderr, "MppEncoder: bad stride %d/%d for %dx%d, refusing\n", stride, vstride,
-                   w, h);
+      geom_failed = true;
+      std::fprintf(stderr, "MppEncoder: bad stride %d/%d for %dx%d, refusing (permanent)\n",
+                   stride, vstride, w, h);
       return false;
     }
+
+    // Whether THIS attempt gets to speak if it fails: first one, then every
+    // 300th (~5 s at 60 fps). The counter itself is never rate-limited, and
+    // neither is errors() at the call site.
+    const bool log = (latch_fails == 0) || (((latch_fails + 1) % 300) == 0);
 
     mpp_enc_cfg_set_s32(cfg, "prep:width", w);
     mpp_enc_cfg_set_s32(cfg, "prep:height", h);
@@ -160,8 +183,12 @@ struct MppEncoder::Impl {
     mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP);
     MPP_RET ret = mpi->control(ctx, MPP_ENC_SET_CFG, cfg);
     if (ret != MPP_OK) {
-      std::fprintf(stderr, "MppEncoder: MPP_ENC_SET_CFG (%dx%d stride %d/%d) failed ret=%d\n", w,
-                   h, stride, vstride, ret);
+      ++latch_fails;
+      if (log)
+        std::fprintf(stderr,
+                     "MppEncoder: MPP_ENC_SET_CFG (%dx%d stride %d/%d) failed ret=%d "
+                     "(%llu latch attempts failed)\n",
+                     w, h, stride, vstride, ret, (unsigned long long)latch_fails);
       return false;
     }
 
@@ -171,12 +198,23 @@ struct MppEncoder::Impl {
     MppEncHeaderMode hm = MPP_ENC_HEADER_MODE_EACH_IDR;
     ret = mpi->control(ctx, MPP_ENC_SET_HEADER_MODE, &hm);
     if (ret != MPP_OK) {
-      std::fprintf(stderr, "MppEncoder: MPP_ENC_SET_HEADER_MODE failed ret=%d\n", ret);
+      ++latch_fails;
+      if (log)
+        std::fprintf(stderr,
+                     "MppEncoder: MPP_ENC_SET_HEADER_MODE failed ret=%d "
+                     "(%llu latch attempts failed)\n",
+                     ret, (unsigned long long)latch_fails);
       return false;
     }
 
-    if (!alloc_pkt_buf((size_t)stride * (size_t)vstride * 3 / 2)) return false;
-    if (!fetch_header()) return false;
+    if (!alloc_pkt_buf((size_t)stride * (size_t)vstride * 3 / 2, log)) {
+      ++latch_fails;
+      return false;
+    }
+    if (!fetch_header(log)) {
+      ++latch_fails;
+      return false;
+    }
 
     applied_w = w;
     applied_h = h;
@@ -188,11 +226,15 @@ struct MppEncoder::Impl {
     return true;
   }
 
-  bool alloc_pkt_buf(size_t want) {
+  // `log` is the latch's rate-limit decision for this attempt; see
+  // latch_geometry(). A failed get leaves pkt_buf null, so a retry re-gets
+  // rather than overwriting a live handle.
+  bool alloc_pkt_buf(size_t want, bool log) {
     if (pkt_buf && pkt_buf_size >= want) return true;
     const MPP_RET ret = mpp_buffer_get(grp, &pkt_buf, want);
     if (ret != MPP_OK || !pkt_buf) {
-      std::fprintf(stderr, "MppEncoder: packet buffer %zu bytes failed ret=%d\n", want, ret);
+      if (log)
+        std::fprintf(stderr, "MppEncoder: packet buffer %zu bytes failed ret=%d\n", want, ret);
       pkt_buf = nullptr;
       return false;
     }
@@ -204,6 +246,9 @@ struct MppEncoder::Impl {
   // MppEncOSDData structs around them. Called exactly once, from
   // set_palette(), whose failure path leaves palette_set false -- so a
   // partial failure here can never be reached by set_osd() or encode().
+  // (Known minor: if the caller retries set_palette() after a partial
+  // failure, the buffer already gotten is overwritten rather than put back
+  // -- one leaked DRM buffer on a path that is already failing hard.)
   bool alloc_osd() {
     osd_ready = false;
     front = 0;
@@ -239,17 +284,18 @@ struct MppEncoder::Impl {
   }
 
   // VPS/SPS/PPS out of the encoder into header. Uses pkt_buf, so it runs
-  // inside the geometry latch, before any frame is in flight.
-  bool fetch_header() {
+  // inside the geometry latch, before any frame is in flight. `log` is that
+  // latch attempt's rate-limit decision; see latch_geometry().
+  bool fetch_header(bool log) {
     MppPacket hdr = nullptr;
     if (mpp_packet_init_with_buffer(&hdr, pkt_buf) != MPP_OK || !hdr) {
-      std::fprintf(stderr, "MppEncoder: header packet init failed\n");
+      if (log) std::fprintf(stderr, "MppEncoder: header packet init failed\n");
       return false;
     }
     mpp_packet_set_length(hdr, 0);
     const MPP_RET ret = mpi->control(ctx, MPP_ENC_GET_HDR_SYNC, hdr);
     if (ret != MPP_OK) {
-      std::fprintf(stderr, "MppEncoder: MPP_ENC_GET_HDR_SYNC failed ret=%d\n", ret);
+      if (log) std::fprintf(stderr, "MppEncoder: MPP_ENC_GET_HDR_SYNC failed ret=%d\n", ret);
       mpp_packet_deinit(&hdr);
       return false;
     }
@@ -257,8 +303,12 @@ struct MppEncoder::Impl {
     const size_t n = mpp_packet_get_length(hdr);
     header.assign(p, p + n);
     mpp_packet_deinit(&hdr);
+    if (header.empty()) {
+      if (log) std::fprintf(stderr, "MppEncoder: MPP_ENC_GET_HDR_SYNC returned 0 bytes\n");
+      return false;
+    }
     std::fprintf(stderr, "MppEncoder: header %zu bytes\n", header.size());
-    return !header.empty();
+    return true;
   }
 
   // MPP_PACKET_FLAG_INTRA is NOT in the installed public headers (it lives
@@ -437,6 +487,13 @@ bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstri
   if (!impl_ || !impl_->ctx || !nv12) return false;
   Impl& im = *impl_;
 
+  if (im.geom_failed) {
+    // A latch validation refusal is permanent. Fail fast and silently -- the
+    // one log line was emitted when it was diagnosed -- but keep counting,
+    // so errors() stays a truthful monotone signal of frames not encoded.
+    ++im.error_count;
+    return false;
+  }
   if (!im.geom_latched) {
     if (!im.latch_geometry(width, height, stride, vstride)) {
       ++im.error_count;

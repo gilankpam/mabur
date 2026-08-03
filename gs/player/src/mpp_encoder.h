@@ -98,6 +98,12 @@ class MppEncoder {
   // (rate-limited), counted in errors(), false returned -- and never
   // reconfigured. A mid-stream resolution change needs a new track in the
   // mux, not a reconfigured encoder, so the caller must handle it as such.
+  //
+  // If the FIRST frame fails validation (picture size disagreeing with
+  // EncCfg, or a stride smaller than the picture) the refusal is permanent:
+  // it is logged once and every later call fails fast. errors() keeps
+  // incrementing either way, so a recorder that never encodes anything shows
+  // errors() climbing with frames() stuck at 0.
   bool encode(void* nv12, int width, int height, int stride, int vstride, uint64_t pts_us);
 
   // Makes the next submitted frame an IDR (MPP_ENC_SET_IDR_FRAME).
