@@ -43,6 +43,7 @@ if(MABUR_PLAYER_HW)
   target_sources(maburplay PRIVATE
     src/mpp_backend.cpp
     src/mpp_encoder.cpp
+    src/burn_recorder.cpp
     src/drm_presenter.cpp
     src/osd_surface.cpp)
   target_compile_definitions(maburplay PRIVATE MABUR_PLAYER_HW=1)
