@@ -1,5 +1,6 @@
 #include "drm_presenter.h"
 
+#include "osd_layout.h"  // plan_zpos: the plane stacking policy, unit-tested
 #include "osd_surface.h"
 
 #include <fcntl.h>
@@ -102,11 +103,6 @@ uint32_t find_enum_property(int fd, uint32_t obj_id, uint32_t obj_type, const ch
   }
   drmModeFreeObjectProperties(props);
   return id;
-}
-
-uint64_t clamp_u64(uint64_t v, uint64_t lo, uint64_t hi) {
-  if (hi < lo) return lo;
-  return v < lo ? lo : (v > hi ? hi : v);
 }
 
 uint64_t mono_ms() {
@@ -664,28 +660,26 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
     }
   }
 
-  // Resolve zpos and pin the stacking: video at the top of its range,
-  // backdrop at the bottom. Without this the kernel's default zpos left the
-  // backdrop covering the video (observed on vop2: Smart0 normalized-zpos 1
-  // over Esmart0's 0 -- a fully black screen with every commit succeeding).
+  // Resolve zpos and pin the stacking: backdrop < video < osd. Without this
+  // the kernel's default zpos left the backdrop covering the video (observed
+  // on vop2: Smart0 normalized-zpos 1 over Esmart0's 0 -- a fully black
+  // screen with every commit succeeding).
   //
-  // The video/backdrop values below are the hardware-validated ones and are
-  // deliberately NOT derived from the OSD plane's range: doing that can tie
-  // video to the backdrop and reinstate exactly the black screen this block
-  // exists to prevent (OSD [0,1] with video/backdrop [0,7] would give
-  // video 0 == backdrop 0; disjoint ranges give video max == backdrop max).
-  // The OSD is layered strictly on top instead, and if it cannot sit above
-  // the already-chosen video value we run without it. The OSD must never
-  // perturb video's stacking.
+  // The arithmetic itself lives in plan_zpos() (osd_layout.cpp) so it can be
+  // unit-tested: the previous in-line version derived the OSD's value from
+  // the video's and disabled the OSD on every single run of the actual
+  // hardware, where all three planes share the range [0,7].
   {
-    uint64_t vmin = 0, vmax = 0;
+    uint64_t vmin = 0, vmax = 0, pmin = 0, pmax = 0, omin = 0, omax = 0;
     zpos_video_prop = find_zpos_range(fd, plane_id, &vmin, &vmax);
-    if (zpos_video_prop) zpos_video_val = vmax;
-    uint64_t pmin = 0, pmax = 0;
-    if (primary_fb_id) {
-      zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
-      if (zpos_primary_prop) zpos_primary_val = pmin;
-    }
+    if (primary_fb_id) zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
+    if (osd_plane_id) zpos_osd_prop = find_zpos_range(fd, osd_plane_id, &omin, &omax);
+
+    const ZposPlan plan = plan_zpos(osd_plane_id != 0 && zpos_osd_prop != 0, zpos_video_prop != 0,
+                                    zpos_primary_prop != 0, vmin, vmax, pmin, omax);
+    zpos_video_val = plan.video;
+    zpos_primary_val = plan.backdrop;
+    zpos_osd_val = plan.osd;
 
     if (!zpos_video_prop)
       std::fprintf(stderr,
@@ -693,35 +687,30 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
                    "the driver's mercy\n",
                    plane_id);
     else
-      std::fprintf(stderr, "DrmPresenter: zpos pinned: video plane %u -> %llu%s\n", plane_id,
-                   static_cast<unsigned long long>(zpos_video_val),
-                   zpos_primary_prop ? " (backdrop -> min)" : "");
+      std::fprintf(stderr, "DrmPresenter: zpos pinned: video plane %u -> %llu%s%llu%s%llu\n",
+                   plane_id, static_cast<unsigned long long>(zpos_video_val),
+                   zpos_primary_prop ? ", backdrop -> " : "",
+                   static_cast<unsigned long long>(zpos_primary_prop ? zpos_primary_val : 0),
+                   plan.osd_ok ? ", osd -> " : "",
+                   static_cast<unsigned long long>(plan.osd_ok ? zpos_osd_val : 0));
 
-    if (osd_plane_id) {
-      uint64_t omin = 0, omax = 0;
-      zpos_osd_prop = find_zpos_range(fd, osd_plane_id, &omin, &omax);
-      zpos_osd_val = zpos_osd_prop ? clamp_u64(zpos_video_val + 1, omin, omax) : 0;
-      // Verify the whole order really came out backdrop < video < osd. The
-      // backdrop term is skipped when there is no backdrop plane (video is
-      // itself the primary), and a video plane with no mutable zpos gives us
-      // nothing to layer above, so both of those disqualify the OSD too.
-      const bool backdrop_ok = !zpos_primary_prop || zpos_primary_val < zpos_video_val;
-      const bool osd_ok = zpos_osd_prop && zpos_video_prop && zpos_video_val < zpos_osd_val;
-      if (!backdrop_ok || !osd_ok) {
-        std::fprintf(stderr,
-                     "DrmPresenter: OSD plane %u cannot be stacked above video (zpos backdrop "
-                     "%llu / video %llu / osd %llu, osd range [%llu,%llu]) -- running WITHOUT the "
-                     "OSD rather than disturbing the video stacking\n",
-                     osd_plane_id, static_cast<unsigned long long>(zpos_primary_val),
-                     static_cast<unsigned long long>(zpos_video_val),
-                     static_cast<unsigned long long>(zpos_osd_val),
-                     static_cast<unsigned long long>(omin), static_cast<unsigned long long>(omax));
-        osd_plane_id = 0;
-        zpos_osd_prop = 0;
-        zpos_osd_val = 0;
-        osd_blend_prop = 0;
-        osd.destroy();  // nothing has been committed yet; reclaim the two buffers
-      }
+    if (osd_plane_id && !plan.osd_ok) {
+      // Not stackable above the video: run video-only rather than risk a
+      // video/backdrop tie (= the vop2 black screen) for the OSD's sake.
+      std::fprintf(stderr,
+                   "DrmPresenter: OSD plane %u cannot be stacked above video (video range "
+                   "[%llu,%llu] at %llu / backdrop %llu / osd range [%llu,%llu]) -- running "
+                   "WITHOUT the OSD rather than disturbing the video stacking\n",
+                   osd_plane_id, static_cast<unsigned long long>(vmin),
+                   static_cast<unsigned long long>(vmax),
+                   static_cast<unsigned long long>(zpos_video_val),
+                   static_cast<unsigned long long>(zpos_primary_val),
+                   static_cast<unsigned long long>(omin), static_cast<unsigned long long>(omax));
+      osd_plane_id = 0;
+      zpos_osd_prop = 0;
+      zpos_osd_val = 0;
+      osd_blend_prop = 0;
+      osd.destroy();  // nothing has been committed yet; reclaim the two buffers
     }
   }
 

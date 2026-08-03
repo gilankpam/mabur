@@ -1,6 +1,8 @@
 #ifndef MABUR_PLAYER_OSD_LAYOUT_H_
 #define MABUR_PLAYER_OSD_LAYOUT_H_
 
+#include <cstdint>
+
 #include "osd_font.h"  // ScaleMode
 
 namespace maburplay {
@@ -25,6 +27,38 @@ struct OsdLayout {
 // the pre-existing renderer look blurry). Fill mode takes the whole cell.
 OsdLayout compute_layout(int screen_w, int screen_h, int cols, int rows,
                          int glyph_w, int glyph_h, ScaleMode mode);
+
+// The DRM plane stacking order, backdrop < video < osd. Lives here rather
+// than inside DrmPresenter's pimpl because it is pure arithmetic over six
+// integers with no ioctls in it -- and an untestable version of exactly
+// this shipped a feature that disabled itself at init on the real vop2,
+// where all three planes advertise the SAME zpos range.
+struct ZposPlan {
+  uint64_t backdrop = 0;  // meaningful only when have_backdrop
+  uint64_t video = 0;     // meaningful only when have_video_prop
+  uint64_t osd = 0;       // meaningful only when osd_ok
+  bool osd_ok = false;    // false => run video-only, do not touch the OSD plane
+};
+
+// have_osd / have_backdrop / have_video_prop mean "the plane exists AND has
+// a mutable zpos property"; anything else disqualifies the OSD (there is
+// then no way to prove it lands above the video).
+//
+// Policy: the OSD takes the TOP of its own range and the video sits one
+// step below it, clamped into the video's range; the backdrop takes the
+// bottom of its own. When there is no OSD the video keeps the
+// hardware-validated top-of-range value untouched. If the resulting values
+// do not come out strictly ordered backdrop < video < osd, osd_ok is false
+// and the video/backdrop values revert to the no-OSD ones -- the OSD must
+// never perturb the video's stacking (a video/backdrop tie is the vop2
+// black screen this whole block exists to prevent).
+//
+// Only the range endpoints the policy actually consumes are parameters:
+// the backdrop's max and the OSD's min are never reachable choices (the
+// backdrop always takes pmin, the OSD always takes omax), so they are
+// deliberately not passed rather than accepted and ignored.
+ZposPlan plan_zpos(bool have_osd, bool have_video_prop, bool have_backdrop, uint64_t vmin,
+                   uint64_t vmax, uint64_t pmin, uint64_t omax);
 
 }  // namespace maburplay
 
