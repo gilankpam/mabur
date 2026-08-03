@@ -17,6 +17,9 @@
 #include "dvr_mux.h"
 #include "hevc_params.h"
 #include "mabur/frame_wire.h"
+#include "osd_font.h"
+#include "osd_raster.h"
+#include "osd_source.h"
 #include "player_config.h"
 #include "ring_client.h"
 #include "video_backend.h"
@@ -41,6 +44,16 @@ void usage() {
                "            stream straight through HevcParams+DvrMux to an\n"
                "            fMP4 file, bypassing the ring/backend entirely --\n"
                "            used by the host e2e's real-HEVC decode gate)\n"
+               "       maburplay --osd-render <snap.bin> --out-osd <out.bin>\n"
+               "                 [--font <f.mfont>] [--screen WxH] "
+               "[--scale sharp|fill]\n"
+               "           (test support: render one MSP DisplayPort snapshot\n"
+               "            through the real font/layout/raster path into a\n"
+               "            heap surface and dump it -- no ring, no backend,\n"
+               "            no DRM. Dump format: 16-byte header {u32 'OSDR',\n"
+               "            u32 width, u32 height, u32 stride_px} followed by\n"
+               "            height*stride_px little-endian ARGB32 words. This\n"
+               "            is the host e2e's OSD pixel-path gate.)\n"
                "\n"
                "--decode-only --seconds N: drive the backend straight off\n"
                "  the ring for N seconds with no presenter, counting frames\n"
@@ -55,7 +68,8 @@ void usage() {
                "\n"
                "--fps-log: normal (non-decode-only) run only -- once per\n"
                "  second, prints \"fps-log: fps=X flips/s=X repl=N frames=N "
-               "commit_errors=N async=on|off|probing\\n\" to stderr. Under\n"
+               "commit_errors=N async=on|off|probing osd_screens=N\n"
+               "  osd_dgrams=N osd_commit_errors=N\\n\" to stderr. Under\n"
                "  MABUR_PLAYER_HW with the DrmPresenter display path active;\n"
                "  a no-op flag otherwise (host/null-backend builds just log\n"
                "  fps/frames with no presenter fields).\n");
@@ -135,6 +149,58 @@ int run_mux_annexb(const std::string& in_path, const std::string& out_path) {
   return 0;
 }
 
+// player_config validates osd.scale at load time, so anything that isn't
+// the one alternative is "sharp" -- the default, and the safe one (it never
+// upscales fractionally).
+maburplay::ScaleMode scale_mode(const std::string& s) {
+  return s == "fill" ? maburplay::ScaleMode::kFill : maburplay::ScaleMode::kSharp;
+}
+
+// Test support (see usage()): renders one MSP DisplayPort snapshot file
+// through the exact OsdFont/compute_layout/OsdRaster path the live OSD uses
+// and dumps the ARGB surface. No ring, no backend, no DRM -- the DRM half
+// of the OSD cannot run off-hardware, so this is the host-side gate for
+// everything below it (atlas scaling, layout arithmetic, the blitter).
+int run_osd_render(const std::string& snap_path, const std::string& out_path,
+                   const std::string& font_path, int width, int height,
+                   maburplay::ScaleMode mode) {
+  const std::vector<uint8_t> snap = read_whole_file(snap_path);
+  if (snap.empty()) {
+    std::fprintf(stderr, "maburplay: --osd-render: cannot read %s\n", snap_path.c_str());
+    return 2;
+  }
+  maburplay::OsdFont font;
+  std::string err;
+  if (!font.load(font_path, &err)) {
+    std::fprintf(stderr, "maburplay: --osd-render: %s\n", err.c_str());
+    return 2;
+  }
+  maburplay::OsdSource src;
+  src.feed_open();
+  src.set_min_interval_ms(0);  // one-shot: no rate limiting to apply
+  if (!src.feed(snap.data(), snap.size(), 1000)) {
+    std::fprintf(stderr, "maburplay: --osd-render: no complete screen in %s\n",
+                 snap_path.c_str());
+    return 2;
+  }
+  std::vector<uint32_t> px(static_cast<size_t>(width) * height, 0u);
+  const maburplay::Surface surf{px.data(), width, height, width};
+  maburplay::OsdRaster raster(font, mode);
+  raster.draw(src.screen(), surf, nullptr);
+
+  std::FILE* f = std::fopen(out_path.c_str(), "wb");
+  if (!f) {
+    std::fprintf(stderr, "maburplay: --osd-render: cannot write %s\n", out_path.c_str());
+    return 2;
+  }
+  const uint32_t hdr[4] = {0x5244534FU, static_cast<uint32_t>(width),
+                           static_cast<uint32_t>(height), static_cast<uint32_t>(width)};
+  std::fwrite(hdr, sizeof(hdr), 1, f);
+  std::fwrite(px.data(), 4, px.size(), f);
+  std::fclose(f);
+  return 0;
+}
+
 // DVR filename convention: record_%Y-%m-%d_%H-%M-%S.mp4 under dvr.dir.
 std::string dvr_filename(const std::string& dir) {
   std::time_t t = std::time(nullptr);
@@ -167,6 +233,35 @@ int main(int argc, char** argv) {
       return 2;
     }
     return run_mux_annexb(argv[2], argv[3]);
+  }
+  if (argc >= 2 && std::string(argv[1]) == "--osd-render") {
+    std::string snap, out, font = maburplay::Config().osd.font, scale = "sharp";
+    int w = 1920, h = 1080;
+    for (int i = 2; i < argc; ++i) {
+      const std::string a = argv[i];
+      if (a == "--out-osd" && i + 1 < argc) {
+        out = argv[++i];
+      } else if (a == "--font" && i + 1 < argc) {
+        font = argv[++i];
+      } else if (a == "--screen" && i + 1 < argc) {
+        if (std::sscanf(argv[++i], "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
+          usage();
+          return 2;
+        }
+      } else if (a == "--scale" && i + 1 < argc) {
+        scale = argv[++i];
+      } else if (snap.empty() && !a.empty() && a[0] != '-') {
+        snap = a;
+      } else {
+        usage();
+        return 2;
+      }
+    }
+    if (snap.empty() || out.empty()) {
+      usage();
+      return 2;
+    }
+    return run_osd_render(snap, out, font, w, h, scale_mode(scale));
   }
 
   std::string config_path = "/etc/maburplay.json";
@@ -250,6 +345,44 @@ int main(int argc, char** argv) {
     }
   }
 #endif
+
+  // MSP DisplayPort OSD. Every failure here is non-fatal and logged exactly
+  // once: a missing font, a port already bound, or (on hardware) no spare
+  // ARGB plane all mean "run without OSD" -- the OSD must never cost video a
+  // session. --decode-only stays OSD-free: it has no presenter and is the
+  // hardware decode gate, not a display run.
+  maburplay::OsdFont osd_font;
+  std::unique_ptr<maburplay::OsdSource> osd_src;
+  std::unique_ptr<maburplay::OsdRaster> osd_raster;
+#ifdef MABUR_PLAYER_HW
+  // One ShadowGrid per OSD buffer, indexed by the presenter's back index:
+  // the two buffers hold different pixels, so a shared shadow would suppress
+  // the redraw of cells that are current in one buffer and stale in the
+  // other. Owned here because the presenter deliberately does not own them.
+  maburplay::ShadowGrid osd_shadow[2];
+  bool osd_blanked = false;
+#endif
+  if (cfg.osd.enable && !decode_only) {
+    std::string err;
+    if (!osd_font.load(cfg.osd.font, &err)) {
+      std::fprintf(stderr, "maburplay: osd disabled -- %s\n", err.c_str());
+    } else {
+      osd_src = std::make_unique<maburplay::OsdSource>();
+      if (!osd_src->open(cfg.osd.port, &err)) {
+        std::fprintf(stderr, "maburplay: osd disabled -- %s\n", err.c_str());
+        osd_src.reset();
+      } else {
+        osd_src->set_stale_ms(cfg.osd.stale_ms);
+        osd_raster =
+            std::make_unique<maburplay::OsdRaster>(osd_font, scale_mode(cfg.osd.scale));
+        std::fprintf(stderr,
+                     "maburplay: osd on udp 127.0.0.1:%d font=%s (%dx%d glyphs) scale=%s "
+                     "stale_ms=%d\n",
+                     osd_src->port(), cfg.osd.font.c_str(), osd_font.native().glyph_w,
+                     osd_font.native().glyph_h, cfg.osd.scale.c_str(), cfg.osd.stale_ms);
+      }
+    }
+  }
 
   // Counted unconditionally (cheap, backend-agnostic): --decode-only reads
   // frame_count/first-last frame timestamps directly; the normal run loop
@@ -524,6 +657,38 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
     if (presenter) presenter->poll_events();
 #endif
+    // OSD: drain the UDP intake every iteration whether or not anything can
+    // be drawn (the counters stay honest, and an undrained socket would just
+    // fill), then repaint only when a fresh complete screen arrived.
+    if (osd_src) {
+      const uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count();
+      const bool ready = osd_src->poll(now_ms);
+#ifdef MABUR_PLAYER_HW
+      // Re-checked every iteration, never cached: the presenter switches the
+      // OSD off mid-session if a commit carrying it fails repeatedly, and
+      // from that point osd_back_surface() is a null Surface. (OsdRaster
+      // tolerates that too, but there is nothing to publish.)
+      if (presenter && presenter->osd_available()) {
+        if (ready) {
+          const int idx = presenter->osd_back_index();
+          osd_raster->draw(osd_src->screen(), presenter->osd_back_surface(), &osd_shadow[idx]);
+          presenter->osd_publish();
+          osd_blanked = false;
+        } else if (!osd_blanked && osd_src->stale(now_ms)) {
+          const int idx = presenter->osd_back_index();
+          osd_raster->clear(presenter->osd_back_surface(), &osd_shadow[idx]);
+          presenter->osd_publish();
+          osd_blanked = true;
+          std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
+                       cfg.osd.stale_ms);
+        }
+      }
+#else
+      (void)ready;  // host build: no presenter, nothing to draw on
+#endif
+    }
     {
       const auto now = std::chrono::steady_clock::now();
       if (frame_count != wd_frames) {
@@ -586,13 +751,16 @@ int main(int argc, char** argv) {
           const uint64_t flips = presenter->flips();
           std::fprintf(stderr,
                        "fps-log: fps=%.1f flips/s=%.1f repl=%llu frames=%llu commit_errors=%llu "
-                       "async=%s\n",
+                       "async=%s osd_screens=%llu osd_dgrams=%llu osd_commit_errors=%llu\n",
                        fps, static_cast<double>(flips - flips_at_last_fps_log) / dt,
                        static_cast<unsigned long long>(presenter->busy_replaced()),
                        static_cast<unsigned long long>(frame_count),
                        static_cast<unsigned long long>(presenter->commit_errors()),
                        !presenter->async_probed() ? "probing"
-                       : presenter->async_flip_active() ? "on" : "off");
+                       : presenter->async_flip_active() ? "on" : "off",
+                       static_cast<unsigned long long>(osd_src ? osd_src->screens() : 0),
+                       static_cast<unsigned long long>(osd_src ? osd_src->datagrams() : 0),
+                       static_cast<unsigned long long>(presenter->osd_commit_errors()));
           flips_at_last_fps_log = flips;
           // Stall diagnostic: a zero-fps second mid-session means the
           // delivery chain froze somewhere -- dump where the reader sits

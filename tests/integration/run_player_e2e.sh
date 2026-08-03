@@ -6,6 +6,11 @@ MABURD=$BUILD/drone/maburd
 MABURGS=$BUILD/gs/maburgs
 MABURPLAY=$BUILD/gs/player/maburplay
 FIX=tests/fixtures/frame_stream.bin
+# Golden for PART C below: sha256 of the ARGB dump produced by the pinned
+# synthetic-font + canned-snapshot render. Regenerate ONLY when a deliberate
+# change to the OSD sizing/blitting rules makes the old pixels wrong -- run
+# the --osd-render command below by hand and paste the printed hash.
+OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a83
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -122,6 +127,62 @@ if [ -n "$ERR_B" ]; then
 fi
 if [ "$OUT_B" != "hevc,9" ]; then
   echo "unexpected ffprobe B output: $OUT_B (want hevc,9)" >&2
+  exit 1
+fi
+
+# --- PART C: OSD render gate (font -> layout -> raster, no DRM) --------
+# Deterministic end-to-end check of the OSD pixel path: a synthetic atlas
+# (so no multi-MB font fixture is committed) plus a canned MSP snapshot
+# render to a fixed ARGB dump, pinned by hash. Guards the sizing rules and
+# the blitter against silent regressions. The DRM half of the OSD cannot be
+# exercised off-hardware, so everything below it is gated here instead.
+echo "== OSD render gate =="
+python3 tools/msp/gen_font.py --synthetic "$TMP/syn.mfont" --glyph-size 4x6
+python3 - "$TMP/snap.bin" <<'EOF'
+import struct, sys
+
+def msp(cmd, payload):
+    out = bytearray(b"$M<")
+    out.append(len(payload)); out.append(cmd)
+    ck = len(payload) ^ cmd
+    for b in payload:
+        out.append(b); ck ^= b
+    out.append(ck & 0xFF)
+    return bytes(out)
+
+msg = b""
+msg += msp(182, bytes([2]))                                   # CLEAR
+msg += msp(182, bytes([5, 0, 1]))                             # SET_OPTIONS, HD 50x18
+msg += msp(182, bytes([3, 1, 2, 0]) + b"MABUR OSD")           # DRAW_STRING
+msg += msp(182, bytes([3, 9, 20, 0]) + b"0123456789")         # DRAW_STRING
+msg += msp(182, bytes([4]))                                   # DRAW_SCREEN
+open(sys.argv[1], "wb").write(msg)
+EOF
+
+"$MABURPLAY" --osd-render "$TMP/snap.bin" --out-osd "$TMP/osd.bin" \
+  --font "$TMP/syn.mfont" --screen 320x180 --scale sharp
+
+# Sanity floor before the hash: an all-transparent dump would match a stale
+# golden just as happily as a correct render, so assert the geometry and
+# that pixels actually landed. 18 non-blank cells (the space in "MABUR OSD"
+# is blank) x 8 lit pixels per 4x6 synthetic glyph = 144.
+python3 - "$TMP/osd.bin" <<'EOF'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+magic, w, h, stride = struct.unpack("<4I", d[:16])
+assert magic == 0x5244534F, hex(magic)
+assert (w, h, stride) == (320, 180, 320), (w, h, stride)
+assert len(d) == 16 + h * stride * 4, len(d)
+px = struct.unpack("<%dI" % (h * stride), d[16:])
+nz = sum(1 for p in px if p)
+assert nz == 144, nz
+print(f"OK osd dump: {w}x{h} stride={stride} lit={nz}")
+EOF
+
+OSD_SHA=$(sha256sum "$TMP/osd.bin" | cut -d' ' -f1)
+echo "osd render sha256: $OSD_SHA"
+if [ "$OSD_SHA" != "$OSD_SHA_EXPECTED" ]; then
+  echo "OSD render hash changed (expected $OSD_SHA_EXPECTED)" >&2
   exit 1
 fi
 
