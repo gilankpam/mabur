@@ -2,6 +2,7 @@
 #include "osd_source.h"
 #include "mabur/msp_dp.h"
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -50,18 +51,36 @@ TEST(datagram_becomes_a_complete_screen) {
   CHECK(src.screen().cell(2, 4) == (uint16_t)'B');
 }
 
+// Number of open descriptors held by this process. Counting /proc/self/fd is
+// what makes the leak observable: open(0, ...) always hands back a fresh
+// ephemeral socket, so "it still works afterwards" passes just as happily
+// with the close() removed (mutation-verified) -- only the fd count moves.
+static int open_fd_count() {
+  DIR* d = ::opendir("/proc/self/fd");
+  if (!d) return -1;
+  int n = 0;
+  while (::readdir(d)) ++n;
+  ::closedir(d);
+  return n;  // includes . / .. / the dirfd itself: constant offsets, we diff
+}
+
 TEST(reopen_does_not_leak_the_previous_socket_and_still_works) {
   OsdSource src;
   std::string err;
   REQUIRE(src.open(0, &err));
-  const int first_port = src.port();
-  CHECK(first_port > 0);
-
-  // Re-opening on the same instance must close the first fd rather than
-  // leaking it, and the object must still work afterward.
-  REQUIRE(src.open(0, &err));
   CHECK(src.port() > 0);
 
+  // Re-opening on the same instance must CLOSE the previous fd, not leak it.
+  // Eight reopens: with the close in place the count is unchanged; without
+  // it the delta is exactly the number of reopens.
+  const int before = open_fd_count();
+  REQUIRE(before > 0);  // /proc must be mounted for this to mean anything
+  for (int i = 0; i < 8; ++i) REQUIRE(src.open(0, &err));
+  const int after = open_fd_count();
+  CHECK(after - before == 0);
+
+  // ...and the instance is still functional on its latest socket.
+  CHECK(src.port() > 0);
   send_to(src.port(), snapshot(1, 1, "Z"));
   bool ready = false;
   for (int i = 0; i < 100 && !ready; ++i) ready = src.poll(1000 + i);

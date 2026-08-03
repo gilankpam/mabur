@@ -109,6 +109,21 @@ TEST(diff_render_matches_full_render_pixel_for_pixel) {
   CHECK(drawn == 1);
   raster.draw(screen, full.s, nullptr);
   CHECK(diff.px == full.px);
+
+  // Glyph -> BLANK through the incremental path (the other diff direction:
+  // a cell that had a glyph and now has none must be erased, not left
+  // behind). The last 'P' at (1,6) disappears; one cell redrawn, and the
+  // result still matches a from-scratch full render pixel for pixel.
+  feed(parser, screen, snapshot(1, 2, "HELL"));
+  const int erased = raster.draw(screen, diff.s, &shadow);
+  CHECK(erased == 1);
+  raster.draw(screen, full.s, nullptr);
+  CHECK(diff.px == full.px);
+  // ...and the vacated cell really is transparent, not a stale glyph.
+  const OsdLayout& l = raster.layout();
+  const size_t x = (size_t)(l.origin_x + 6 * l.draw_w), y = (size_t)(l.origin_y + 1 * l.draw_h);
+  CHECK(diff.px[y * 100 + x] == 0x00000000u);
+  std::remove(fp.c_str());
 }
 
 TEST(canvas_change_forces_a_full_redraw) {
