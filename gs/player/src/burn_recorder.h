@@ -12,13 +12,25 @@
 
 namespace maburplay {
 
-// Encoder-side recording settings. width/height must equal the decoded
-// picture size: MppEncoder latches geometry on its first frame and hard-
-// rejects anything that disagrees (it never reconfigures), so a mismatch
-// here means a recording that never produces a single sample.
+// Encoder-side recording settings.
+//
+// Note what is NOT here: the encoded picture size. It is the DECODED frame's
+// size, latched by MppEncoder on the first frame it sees, and the mux's
+// track header follows that latch. width/height below are only a fallback
+// for the header if the mux somehow opens before a frame has been encoded
+// (it cannot today -- the mux opens on the first encoded keyframe).
+//
+// osd_width/osd_height must be the size of the SURFACE set_osd() is called
+// with -- the actual DRM OSD buffer, not the configured screen_mode, which
+// the connector may not have offered. They size the encoder's OSD region,
+// and a region that disagrees with the maps rejects every one of them: a
+// recording with no OSD at all, which looks exactly like a deliberate plain
+// transcode. 0 means "no OSD" and is a legal configuration.
 struct BurnCfg {
-  int width = 1920;
-  int height = 1080;
+  int width = 1920;        // track-header fallback only
+  int height = 1080;       // track-header fallback only
+  int osd_width = 0;       // OSD surface size in px; 0 => no OSD region
+  int osd_height = 0;
   int fps_cap = 30;        // encode rate ceiling, independent of display rate
   int bitrate_kbps = 12000;
   int fragment_ms = 1000;  // DvrMux fragment cut, same units as the raw path
@@ -160,10 +172,16 @@ class BurnRecorder {
   //                  drop_pending()/stop() -- i.e. the OVERLOAD signal; fps-cap
   //                  rejections are deliberately NOT counted here
   //   encode_errors  frames the encoder refused
+  //   osd_rejects    index maps the encoder refused because they disagree
+  //                  with its OSD region. Nonzero means the recording is a
+  //                  plain transcode with NO overlay -- which is a legal
+  //                  configuration and therefore invisible without this
+  //                  counter.
   uint64_t frames_in() const;
   uint64_t frames_encoded() const;
   uint64_t frames_dropped() const;
   uint64_t encode_errors() const;
+  uint64_t osd_rejects() const;
 
  private:
   struct Impl;

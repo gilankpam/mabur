@@ -92,10 +92,13 @@ struct MppEncoder::Impl {
   bool osd_ready = false;    // a bitmap has been uploaded at least once
   bool palette_set = false;  // set_palette() succeeded => the OSD is wanted
   bool warned_no_palette = false;
-  // Region geometry, fixed at init from EncCfg's picture size and never
-  // recomputed: the picture size cannot change (encode() rejects any frame
-  // that disagrees), so neither can the macroblock dimensions.
+  // Region geometry, fixed at init from EncCfg's OSD region size -- i.e.
+  // from the SURFACE the caller quantizes, NOT from the picture. The two are
+  // unrelated quantities that happen to coincide at 1080p, and deriving the
+  // region from the picture is how you get every index map rejected when
+  // they ever differ.
   int mb_w = 0, mb_h = 0;
+  uint64_t osd_rejects = 0;  // maps refused for disagreeing with the region
 
   EncCfg ecfg;
   // Geometry programmed into the encoder, latched from the first submitted
@@ -157,11 +160,16 @@ struct MppEncoder::Impl {
   // redirect on tmpfs (bundle/S97maburplay), so an unbounded per-frame
   // fprintf at 60 fps is a real failure mode, not a cosmetic one.
   bool latch_geometry(int w, int h, int stride, int vstride) {
-    if (w != ecfg.width || h != ecfg.height) {
+    // The picture size is whatever the DECODER produced. It used to be
+    // checked against EncCfg, which carried the display mode -- an
+    // unrelated quantity that only coincides at 1080p, and whose
+    // disagreement made this branch permanent and the whole recording
+    // empty. Only sanity is checked now; the mux's track header follows
+    // this latch (see picture_size()).
+    if (w <= 0 || h <= 0) {
       geom_failed = true;
-      std::fprintf(stderr,
-                   "MppEncoder: first frame %dx%d != configured %dx%d, refusing (permanent)\n", w,
-                   h, ecfg.width, ecfg.height);
+      std::fprintf(stderr, "MppEncoder: first frame %dx%d is not a picture, refusing (permanent)\n",
+                   w, h);
       return false;
     }
     if (stride <= 0 || vstride <= 0 || stride < w || vstride < h) {
@@ -329,19 +337,19 @@ MppEncoder::MppEncoder() = default;
 MppEncoder::~MppEncoder() = default;
 
 bool MppEncoder::init(const EncCfg& cfg, NalSink sink) {
-  if (cfg.width <= 0 || cfg.height <= 0 || cfg.fps <= 0 || cfg.bitrate_kbps <= 0) {
-    std::fprintf(stderr, "MppEncoder: bad EncCfg %dx%d@%d %dkbps\n", cfg.width, cfg.height,
-                 cfg.fps, cfg.bitrate_kbps);
+  if (cfg.fps <= 0 || cfg.bitrate_kbps <= 0) {
+    std::fprintf(stderr, "MppEncoder: bad EncCfg @%d %dkbps\n", cfg.fps, cfg.bitrate_kbps);
     return false;
   }
 
   impl_ = std::make_unique<Impl>();
   impl_->ecfg = cfg;
   impl_->sink = std::move(sink);
-  // Full-picture region in macroblocks. ceil() on BOTH axes: 1080/16 is 67.5
-  // and the 68th row is required (measured -- see the file comment).
-  impl_->mb_w = (cfg.width + kMbSize - 1) / kMbSize;
-  impl_->mb_h = (cfg.height + kMbSize - 1) / kMbSize;
+  // OSD region in macroblocks, from the OSD SURFACE's size. ceil() on BOTH
+  // axes: 1080/16 is 67.5 and the 68th row is required (measured -- see the
+  // file comment).
+  impl_->mb_w = cfg.osd_width > 0 ? (cfg.osd_width + kMbSize - 1) / kMbSize : 0;
+  impl_->mb_h = cfg.osd_height > 0 ? (cfg.osd_height + kMbSize - 1) / kMbSize : 0;
 
   MPP_RET ret = mpp_create(&impl_->ctx, &impl_->mpi);
   if (ret != MPP_OK || !impl_->ctx || !impl_->mpi) {
@@ -408,13 +416,20 @@ bool MppEncoder::init(const EncCfg& cfg, NalSink sink) {
   }
 
   std::fprintf(stderr,
-               "MppEncoder: init %dx%d @%dfps CBR %dkbps gop %d (strides latch on frame 0)\n",
-               cfg.width, cfg.height, cfg.fps, cfg.bitrate_kbps, cfg.fps);
+               "MppEncoder: init @%dfps CBR %dkbps gop %d osd region %dx%d px "
+               "(picture size + strides latch on frame 0)\n",
+               cfg.fps, cfg.bitrate_kbps, cfg.fps, cfg.osd_width, cfg.osd_height);
   return true;
 }
 
 bool MppEncoder::set_palette(const OsdPalette& pal) {
   if (!impl_ || !impl_->ctx) return false;
+  if (impl_->mb_w <= 0 || impl_->mb_h <= 0) {
+    std::fprintf(stderr,
+                 "MppEncoder: set_palette() with no OSD region size (EncCfg osd_width/height "
+                 "unset); OSD stays off\n");
+    return false;
+  }
   if (impl_->frame_count > 0)
     std::fprintf(stderr, "MppEncoder: set_palette() after %llu frames (expected before any)\n",
                  (unsigned long long)impl_->frame_count);
@@ -449,27 +464,34 @@ bool MppEncoder::set_palette(const OsdPalette& pal) {
   return true;
 }
 
-void MppEncoder::set_osd(const OsdIndexMap& map) {
-  if (!impl_ || !impl_->ctx) return;
+bool MppEncoder::set_osd(const OsdIndexMap& map) {
+  if (!impl_ || !impl_->ctx) return false;
   if (!impl_->palette_set) {
     if (!impl_->warned_no_palette) {
       impl_->warned_no_palette = true;
       std::fprintf(stderr, "MppEncoder: set_osd() without set_palette(); OSD stays off\n");
     }
-    return;
+    return false;
   }
   // Guard rail: the HAL only WARNS about an undersized buffer and then
   // programs the register anyway, so a wrong-sized map would make the
   // encoder DMA past the end of ours. Check it here instead.
-  if (map.mb_w != impl_->mb_w || map.mb_h != impl_->mb_h) {
-    std::fprintf(stderr, "MppEncoder: OSD map %dx%d MB != region %dx%d MB, dropped\n", map.mb_w,
-                 map.mb_h, impl_->mb_w, impl_->mb_h);
-    return;
-  }
-  if (map.px.size() < impl_->osd_bytes) {
-    std::fprintf(stderr, "MppEncoder: OSD map %zu bytes < region %zu bytes, dropped\n",
-                 map.px.size(), impl_->osd_bytes);
-    return;
+  //
+  // Rate-limited, because the failure it guards is quiet: every map refused
+  // means a recording that is a clean transcode with NO OSD, which looks
+  // deliberate. At the ~4 Hz MSP rate an unthrottled line would also flood
+  // /tmp/maburplay.log, an unrotated `>` redirect on tmpfs. The caller
+  // surfaces osd_rejects() instead.
+  if (map.mb_w != impl_->mb_w || map.mb_h != impl_->mb_h ||
+      map.px.size() < impl_->osd_bytes) {
+    ++impl_->osd_rejects;
+    if (impl_->osd_rejects == 1 || impl_->osd_rejects % 300 == 0)
+      std::fprintf(stderr,
+                   "MppEncoder: OSD map %dx%d MB / %zu bytes != region %dx%d MB / %zu bytes, "
+                   "dropped -- the recording has NO OSD (%llu so far)\n",
+                   map.mb_w, map.mb_h, map.px.size(), impl_->mb_w, impl_->mb_h, impl_->osd_bytes,
+                   (unsigned long long)impl_->osd_rejects);
+    return false;
   }
 
   // Trap 3: write the BACK buffer, never the one a frame may still be using,
@@ -480,6 +502,7 @@ void MppEncoder::set_osd(const OsdIndexMap& map) {
   mpp_buffer_sync_end(impl_->osd_buf[back]);
   impl_->front = back;
   impl_->osd_ready = true;
+  return true;
 }
 
 bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstride,
@@ -586,6 +609,12 @@ void MppEncoder::request_idr() {
 const std::vector<uint8_t>& MppEncoder::header() const {
   static const std::vector<uint8_t> kEmpty;
   return impl_ ? impl_->header : kEmpty;
+}
+
+void MppEncoder::picture_size(int* w, int* h) const {
+  const bool have = impl_ && impl_->geom_latched;
+  if (w) *w = have ? impl_->applied_w : 0;
+  if (h) *h = have ? impl_->applied_h : 0;
 }
 
 uint64_t MppEncoder::frames() const { return impl_ ? impl_->frame_count : 0; }

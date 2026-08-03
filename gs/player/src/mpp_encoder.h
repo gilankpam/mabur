@@ -11,14 +11,25 @@
 
 namespace maburplay {
 
-// Encoder settings. Strides are NOT part of this: they come from the frames
-// actually submitted (the decoder's own NV12 geometry) and are applied on
-// the first encode(), see MppEncoder::encode().
+// Encoder settings.
+//
+// The PICTURE SIZE is deliberately not here. It, and the strides, come from
+// the frames actually submitted -- the decoder's own NV12 geometry -- and
+// are applied on the first encode(); see MppEncoder::encode(). Config has no
+// way to know it: the decoded size comes from the bitstream, and the one
+// thing it is NOT is the display mode.
 struct EncCfg {
-  int width = 0;
-  int height = 0;
   int fps = 60;
   int bitrate_kbps = 8000;
+  // OSD region size in PIXELS, which must be the size of the SURFACE the
+  // index maps are quantized from -- the region is ceil(w/16) x ceil(h/16)
+  // macroblocks and set_osd() rejects any map that disagrees. It is
+  // unrelated to the picture size: a region may legally overhang the
+  // picture (the hardware clips) and may be smaller than it. 0 disables the
+  // OSD -- set_palette() then refuses, since there is nothing to size the
+  // buffers from.
+  int osd_width = 0;
+  int osd_height = 0;
 };
 
 // Called once per coded picture, from inside encode(), on the caller's
@@ -62,27 +73,32 @@ class MppEncoder {
   // Creates the encoder and stages cfg. Any MPP error is fatal: logs, tears
   // the context back down, returns false.
   //
-  // Geometry is NOT applied here. EncCfg carries no strides and only the
-  // frames themselves know the decoder's real ones, so prep:*, the packet
-  // buffer and the parameter sets are deferred to the first encode(), which
-  // latches that frame's strides permanently. header() is therefore empty
-  // until the first successful encode().
+  // Geometry is NOT applied here. EncCfg carries neither the picture size
+  // nor the strides and only the frames themselves know them, so prep:*, the
+  // packet buffer and the parameter sets are deferred to the first encode(),
+  // which latches that frame's geometry permanently. header() is therefore
+  // empty until the first successful encode().
   bool init(const EncCfg& cfg, NalSink sink);
 
   // Uploads the palette (MPP_ENC_OSD_PLT_TYPE_USERDEF) and allocates the two
-  // index-bitmap buffers sized for a full-picture region. This is what turns
-  // the OSD on -- if it is never called the encoder runs with NO OSD region
-  // at all (a legal burned-DVR configuration: recording with the OSD off).
-  // Call once, before the first encode().
+  // index-bitmap buffers sized for EncCfg's osd_width/osd_height. This is
+  // what turns the OSD on -- if it is never called the encoder runs with NO
+  // OSD region at all (a legal burned-DVR configuration: recording with the
+  // OSD off). Refuses if the region size is 0. Call once, before the first
+  // encode().
   bool set_palette(const OsdPalette& pal);
 
   // Copies `map` into the back MppBuffer and flips it to the front, so the
-  // next encode() attaches it. The map's macroblock dimensions must match
-  // the region (ceil(w/16) x ceil(h/16)); a mismatch is rejected and logged
-  // rather than submitted -- the HAL's own size check is a WARNING, and an
-  // undersized buffer makes the encoder DMA past its end.
-  // No-op (with a one-shot warning) if set_palette() was never called.
-  void set_osd(const OsdIndexMap& map);
+  // next encode() attaches it. Returns false, having installed nothing, if
+  // the map's macroblock dimensions do not match the region
+  // (ceil(osd_width/16) x ceil(osd_height/16)) -- the HAL's own size check
+  // is a WARNING and an undersized buffer makes the encoder DMA past its
+  // end, so this one is real. The log for that is once-only plus every
+  // 300th: a persistent mismatch is a legal-looking configuration (a clean
+  // transcode with no OSD), so the caller is expected to surface the count,
+  // not to read the log. Also false (with a one-shot warning) if
+  // set_palette() was never called.
+  bool set_osd(const OsdIndexMap& map);
 
   // Wraps the caller's NV12 buffer (an MppBuffer; see the class comment) in
   // an MppFrame, attaches the current OSD, submits it, and delivers the
@@ -92,19 +108,24 @@ class MppEncoder {
   // call and release it afterwards. Task 4 hands the decoder's own buffer
   // straight in, so there is no copy anywhere in the path.
   //
-  // The FIRST call latches the geometry (it must match EncCfg's picture size
-  // and carry strides >= it). Every later frame must present exactly the
-  // same width/height/stride/vstride: a mismatch is REJECTED -- logged
+  // The FIRST call latches the geometry: this frame's picture size IS the
+  // encoder's, whatever it is (it only has to be sane and carry strides >=
+  // it). Every later frame must present exactly the same
+  // width/height/stride/vstride: a mismatch is REJECTED -- logged
   // (rate-limited), counted in errors(), false returned -- and never
   // reconfigured. A mid-stream resolution change needs a new track in the
   // mux, not a reconfigured encoder, so the caller must handle it as such.
   //
-  // If the FIRST frame fails validation (picture size disagreeing with
-  // EncCfg, or a stride smaller than the picture) the refusal is permanent:
-  // it is logged once and every later call fails fast. errors() keeps
-  // incrementing either way, so a recorder that never encodes anything shows
-  // errors() climbing with frames() stuck at 0.
+  // If the FIRST frame fails validation (a non-positive dimension, or a
+  // stride smaller than the picture) the refusal is permanent: it is logged
+  // once and every later call fails fast. errors() keeps incrementing either
+  // way, so a recorder that never encodes anything shows errors() climbing
+  // with frames() stuck at 0.
   bool encode(void* nv12, int width, int height, int stride, int vstride, uint64_t pts_us);
+
+  // The latched picture size, or 0x0 before the first successful encode().
+  // The mux's track header wants this, not anything from config.
+  void picture_size(int* w, int* h) const;
 
   // Makes the next submitted frame an IDR (MPP_ENC_SET_IDR_FRAME).
   void request_idr();

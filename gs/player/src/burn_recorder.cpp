@@ -143,6 +143,7 @@ struct BurnRecorder::Impl {
   std::atomic<uint64_t> frames_encoded{0};
   std::atomic<uint64_t> frames_dropped{0};
   std::atomic<uint64_t> encode_errors{0};
+  std::atomic<uint64_t> osd_rejects{0};
   uint64_t consecutive_fail = 0;  // recorder thread only
 
   // One coded picture out of the encoder, on the recorder thread, from inside
@@ -173,7 +174,17 @@ struct BurnRecorder::Impl {
         dead.store(true);
         return;
       }
-      if (!mux.open(path, params.hvcc(), cfg.width, cfg.height, cfg.fragment_ms)) {
+      // Track header from the LATCHED picture size -- the decoded frame's,
+      // which is the only thing the samples actually are. cfg.width/height
+      // is a fallback that cannot be reached today (this sink only runs from
+      // inside encode(), after the latch).
+      int tw = 0, th = 0;
+      enc->picture_size(&tw, &th);
+      if (tw <= 0 || th <= 0) {
+        tw = cfg.width;
+        th = cfg.height;
+      }
+      if (!mux.open(path, params.hvcc(), tw, th, cfg.fragment_ms)) {
         mux_failed = true;
         std::fprintf(stderr, "BurnRecorder: cannot open %s; recording disabled\n", path.c_str());
         dead.store(true);
@@ -181,7 +192,7 @@ struct BurnRecorder::Impl {
       }
       mux_open = true;
       std::fprintf(stderr, "BurnRecorder: recording %s (%dx%d, hvcC from %zu header bytes)\n",
-                   path.c_str(), cfg.width, cfg.height, hdr.size());
+                   path.c_str(), tw, th, hdr.size());
     }
     mux.write_sample(p, n, static_cast<uint32_t>(pts_us), keyframe);
   }
@@ -212,7 +223,10 @@ struct BurnRecorder::Impl {
       }
 
       if (idr_pending.exchange(false)) enc->request_idr();
-      if (have_osd) enc->set_osd(osd_work);
+      // A refused map means the encoder's region and the OSD surface
+      // disagree -- a recording that is a silent plain transcode. Counted so
+      // --fps-log can say so; the encoder's own log for it is once-only.
+      if (have_osd && !enc->set_osd(osd_work)) osd_rejects.fetch_add(1);
 
       const bool ok =
           enc->encode(m.buf, m.w, m.h, m.stride, m.vstride, static_cast<uint64_t>(m.pts_us));
@@ -334,10 +348,13 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
   im.stopping = false;
 
   EncCfg ec;
-  ec.width = cfg.width;
-  ec.height = cfg.height;
   ec.fps = cfg.fps_cap;  // the encoder's rc: rate IS the capped rate
   ec.bitrate_kbps = cfg.bitrate_kbps;
+  // The OSD region follows the OSD SURFACE, never the picture and never the
+  // configured screen mode. The picture size is not passed at all: the
+  // encoder latches it from the first decoded frame.
+  ec.osd_width = cfg.osd_width;
+  ec.osd_height = cfg.osd_height;
 
   im.enc.reset(new MppEncoder());
   Impl* pim = impl_.get();
@@ -361,9 +378,11 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
   im.idr_pending.store(true);  // consumed before the first encode
   im.started = true;
   im.th = std::thread([pim] { pim->run(); });
-  std::fprintf(stderr, "BurnRecorder: started %dx%d cap %d fps %d kbps frag %d ms osd=%s -> %s\n",
-               cfg.width, cfg.height, cfg.fps_cap, cfg.bitrate_kbps, cfg.fragment_ms,
-               im.palette_live ? "on" : "off", path.c_str());
+  std::fprintf(stderr,
+               "BurnRecorder: started cap %d fps %d kbps frag %d ms osd=%s (%dx%d px region) "
+               "-> %s (picture size latches on the first decoded frame)\n",
+               cfg.fps_cap, cfg.bitrate_kbps, cfg.fragment_ms, im.palette_live ? "on" : "off",
+               cfg.osd_width, cfg.osd_height, path.c_str());
   return true;
 }
 
@@ -518,5 +537,6 @@ uint64_t BurnRecorder::frames_in() const { return impl_->frames_in.load(); }
 uint64_t BurnRecorder::frames_encoded() const { return impl_->frames_encoded.load(); }
 uint64_t BurnRecorder::frames_dropped() const { return impl_->frames_dropped.load(); }
 uint64_t BurnRecorder::encode_errors() const { return impl_->encode_errors.load(); }
+uint64_t BurnRecorder::osd_rejects() const { return impl_->osd_rejects.load(); }
 
 }  // namespace maburplay

@@ -75,11 +75,13 @@ void usage() {
                "  MABUR_PLAYER_HW with the DrmPresenter display path active;\n"
                "  a no-op flag otherwise (host/null-backend builds just log\n"
                "  fps/frames with no presenter fields). With dvr.mode\n"
-               "  \"burned\" and the recorder running, four more fields are\n"
-               "  APPENDED: burn_in/burn_enc/burn_drop/burn_err (frames past\n"
-               "  the fps cap / encode() calls that produced a packet /\n"
-               "  frames displaced in the recorder's mailbox, i.e. the\n"
-               "  overload signal / frames the encoder refused).\n");
+               "  \"burned\" and the recorder running, five more fields are\n"
+               "  APPENDED: burn_in/burn_enc/burn_drop/burn_err/burn_osdrej\n"
+               "  (frames past the fps cap / encode() calls that produced a\n"
+               "  packet / frames displaced in the recorder's mailbox, i.e.\n"
+               "  the overload signal / frames the encoder refused / OSD\n"
+               "  index maps refused for disagreeing with the encoder's OSD\n"
+               "  region -- nonzero means the file has NO overlay).\n");
 }
 
 // Reads a whole file into memory; empty vector on any failure (including a
@@ -434,17 +436,30 @@ int main(int argc, char** argv) {
   std::unique_ptr<maburplay::BurnRecorder> burn;
   if (burned_mode && presenter) {
     auto rec = std::make_unique<maburplay::BurnRecorder>();
+    maburplay::BurnCfg bc;
     // Palette (and with it the encoder's OSD region) ONLY when the OSD path
     // is actually live -- osd_raster is non-null exactly when osd.enable is
-    // set, the font loaded AND the MSP socket opened. Otherwise no palette
-    // at all: a burned recording with no overlay is a legal configuration
-    // (a plain transcode), not an error, and set_osd() then costs nothing.
+    // set, the font loaded AND the MSP socket opened -- AND the presenter
+    // really allocated an OSD surface. Otherwise no palette at all: a burned
+    // recording with no overlay is a legal configuration (a plain
+    // transcode), not an error, and set_osd() then costs nothing.
     // MUST precede start(), which uploads it before the thread exists.
-    if (osd_raster) rec->set_palette(maburplay::build_palette(osd_font.native()));
-    maburplay::BurnCfg bc;
-    // Same BackendCfg the presenter runs on, so the encoder's picture size
-    // matches the decoder's -- MppEncoder latches geometry on its first
-    // frame and hard-rejects any disagreement forever after.
+    const maburplay::Surface osd_surf = presenter->osd_back_surface();
+    if (osd_raster && osd_surf.pixels && osd_surf.width > 0 && osd_surf.height > 0) {
+      // The region is sized from the SURFACE, not from screen_mode: the
+      // connector may not have offered that mode, in which case
+      // DrmPresenter fell back to another one and allocated the OSD at THAT
+      // size. A region built from the config would then reject every index
+      // map the quantizer produces -- a recording with no OSD at all, which
+      // looks exactly like a deliberate plain transcode.
+      bc.osd_width = osd_surf.width;
+      bc.osd_height = osd_surf.height;
+      rec->set_palette(maburplay::build_palette(osd_font.native()));
+    }
+    // Track-header FALLBACK only. The encoded picture size is the DECODED
+    // frame's, latched by MppEncoder on the first frame it sees: it comes
+    // from the bitstream, and screen_mode is an unrelated quantity that only
+    // coincides with it on this bench.
     bc.width = bcfg.width;
     bc.height = bcfg.height;
     bc.fps_cap = cfg.dvr.burned.fps_cap;
@@ -910,14 +925,16 @@ int main(int argc, char** argv) {
           // burn_enc counts encode() calls that produced a packet -- NOT
           // samples written, since a zero-length packet reaches the mux sink
           // and is dropped there.
-          char burn_fields[160] = {0};
+          char burn_fields[224] = {0};
           if (burn) {
             std::snprintf(burn_fields, sizeof(burn_fields),
-                          " burn_in=%llu burn_enc=%llu burn_drop=%llu burn_err=%llu",
+                          " burn_in=%llu burn_enc=%llu burn_drop=%llu burn_err=%llu "
+                          "burn_osdrej=%llu",
                           static_cast<unsigned long long>(burn->frames_in()),
                           static_cast<unsigned long long>(burn->frames_encoded()),
                           static_cast<unsigned long long>(burn->frames_dropped()),
-                          static_cast<unsigned long long>(burn->encode_errors()));
+                          static_cast<unsigned long long>(burn->encode_errors()),
+                          static_cast<unsigned long long>(burn->osd_rejects()));
           }
           std::fprintf(stderr,
                        "fps-log: fps=%.1f flips/s=%.1f repl=%llu frames=%llu commit_errors=%llu "
