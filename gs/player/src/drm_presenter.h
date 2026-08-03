@@ -88,6 +88,12 @@ class DrmPresenter {
   void osd_publish();              // back buffer is ready; shown on next commit
   int osd_front_prime_fd() const;  // committed buffer's dmabuf fd (Phase 2)
 
+  // OSD-attributed atomic-commit failures. Deliberately NOT folded into
+  // commit_errors(), which is video health: an OSD the driver refuses must
+  // not make video look broken. The OSD switches itself off after a few
+  // consecutive failures, so this counter is bounded and small.
+  uint64_t osd_commit_errors() const;
+
   // Diagnostics for --fps-log / gate reporting.
   uint64_t commit_errors() const;
   uint64_t flips() const;           // completed page flips (frames actually shown)

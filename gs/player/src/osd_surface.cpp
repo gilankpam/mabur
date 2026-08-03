@@ -13,7 +13,7 @@
 
 namespace maburplay {
 
-OsdSurface::~OsdSurface() {
+void OsdSurface::destroy() {
   for (Buf& b : buf_) {
     if (b.ptr) munmap(b.ptr, static_cast<size_t>(b.size));
     if (b.prime_fd >= 0) ::close(b.prime_fd);
@@ -21,8 +21,13 @@ OsdSurface::~OsdSurface() {
       if (b.fb_id) drmModeRmFB(fd_, b.fb_id);
       if (b.handle) drmModeDestroyDumbBuffer(fd_, b.handle);
     }
+    b = Buf{};
   }
+  fd_ = -1;
+  width_ = height_ = 0;
 }
+
+OsdSurface::~OsdSurface() { destroy(); }
 
 bool OsdSurface::alloc_(Buf* b, std::string* err) {
   // drmModeCreateDumbBuffer/MapDumbBuffer/DestroyDumbBuffer rather than raw
@@ -77,7 +82,14 @@ bool OsdSurface::init(int drm_fd, int width, int height, std::string* err) {
     if (err) *err = "invalid drm fd or dimensions";
     return false;
   }
-  return alloc_(&buf_[0], err) && alloc_(&buf_[1], err);
+  // All-or-nothing: buffer 0 succeeding while buffer 1 fails must not leave
+  // buffer 0's GEM object, FB, mapping and prime fd held for the process
+  // lifetime -- the caller only ever checks the bool.
+  if (!alloc_(&buf_[0], err) || !alloc_(&buf_[1], err)) {
+    destroy();  // leaves the object in the default-constructed, unusable state
+    return false;
+  }
+  return true;
 }
 
 Surface OsdSurface::cpu(int idx) const {

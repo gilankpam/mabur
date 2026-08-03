@@ -188,15 +188,26 @@ struct DrmPresenter::Impl {
   uint32_t osd_blend_prop = 0;    // "pixel blend mode", when exposed
   uint64_t osd_blend_premul = 0;  // enum value for "Pre-multiplied"
   OsdSurface osd;
-  int osd_back = 0;            // index the CPU draws into
-  bool osd_dirty = false;      // back buffer published, not yet committed
-  bool osd_on_plane = false;   // an OSD fb has been attached at least once
+  int osd_back = 0;           // index the CPU draws into
+  bool osd_dirty = false;     // back buffer published, not yet committed
+  bool osd_on_plane = false;  // an OSD fb has been attached at least once
   bool osd_commit_warned = false;
+  int osd_fail_streak = 0;             // consecutive OSD-attributed commit failures
+  uint64_t osd_commit_errors = 0;      // kept OUT of commit_errors: that one is video health
   uint64_t osd_last_commit_ms = 0;
-  uint64_t last_video_commit_ms = 0;  // gates the standalone OSD commit
+  uint64_t last_video_commit_ms = 0;   // gates the standalone OSD commit
+  // Three consecutive OSD-attributed failures and the OSD is off for good.
+  // Video must never pay for an OSD the driver will not accept.
+  static constexpr int kOsdMaxFailStreak = 3;
 
   bool inited = false;
   bool needs_modeset = true;  // next commit must be a full blocking ALLOW_MODESET commit
+  // Set by the first successful modeset and never cleared: the CRTC is
+  // active from then on. Distinct from !needs_modeset, which drop_all()
+  // re-arms on every ordinary AU-ring discontinuity without deactivating
+  // anything -- gating the standalone OSD path on that would freeze the OSD
+  // exactly when on-screen link telemetry matters most.
+  bool crtc_active = false;
   bool flip_pending = false;  // a NONBLOCK|PAGE_FLIP_EVENT commit is outstanding
   uint64_t flip_since_ms = 0;  // when flip_pending was set (watchdog)
   // Events the kernel still owes us for flips that were force-completed or
@@ -307,36 +318,55 @@ void DrmPresenter::Impl::add_osd_props(drmModeAtomicReqPtr req, int idx, bool on
 }
 
 // Standalone OSD update, for when video is not flowing and there is no
-// present() commit to ride on. Callers must have established that no flip
-// is in flight (a second NONBLOCK commit on the same CRTC would -EBUSY) and
-// that the CRTC is already modeset. Never PAGE_FLIP_EVENT (we don't want an
-// event the video path would mistake for its own flip) and never
-// PAGE_FLIP_ASYNC (async may only change FB_ID on a single plane).
+// present() commit to ride on. Callers must have established that no flip is
+// in flight and that the CRTC is already active.
+//
+// BLOCKING on purpose -- no DRM_MODE_ATOMIC_NONBLOCK. A nonblocking commit
+// stays outstanding on the CRTC and would -EBUSY the next video commit; at a
+// degraded ~5 fps every frame is more than the 100 ms of "video silence" the
+// caller requires, so that path could fire between EVERY pair of frames, not
+// just once at link recovery. Blocking costs at most one vsync of main-loop
+// stall and only after video has already been silent -- it eliminates the
+// race instead of narrowing it. Also never PAGE_FLIP_EVENT (the video path
+// would mistake the event for its own flip) and never PAGE_FLIP_ASYNC.
 void DrmPresenter::Impl::commit_osd_only() {
   drmModeAtomicReqPtr req = drmModeAtomicAlloc();
-  if (!req) {
-    ++commit_errors;
-    return;
+  int rc = -ENOMEM;
+  if (req) {
+    add_osd_props(req, osd_back, !osd_on_plane);
+    rc = drmModeAtomicCommit(fd, req, 0, this);
+    drmModeAtomicFree(req);
   }
-  add_osd_props(req, osd_back, !osd_on_plane);
-  const int rc = drmModeAtomicCommit(fd, req, DRM_MODE_ATOMIC_NONBLOCK, this);
-  drmModeAtomicFree(req);
 
-  // Stamped on failure too: it is the retry rate limiter, so a plane that
-  // keeps rejecting us retries at 10 Hz rather than every poll_events().
+  // Stamped on failure too: it is the retry rate limiter.
   osd_last_commit_ms = mono_ms();
   if (rc != 0) {
-    ++commit_errors;
+    // osd_commit_errors, NOT commit_errors: that counter is video health,
+    // printed by the fps-log and leaned on by the hardware acceptance gate.
+    // An OSD that cannot commit must not make video look broken.
+    ++osd_commit_errors;
+    ++osd_fail_streak;
+    // Clearing osd_dirty stops the retry-forever loop: the next publish is
+    // what re-arms us, so a transient failure still recovers.
+    osd_dirty = false;
     if (!osd_commit_warned) {
       osd_commit_warned = true;
       const int err = rc < 0 ? -rc : errno;
       std::fprintf(stderr, "DrmPresenter: standalone OSD commit failed: %s (logged once)\n",
                    std::strerror(err));
     }
+    if (osd_fail_streak >= kOsdMaxFailStreak) {
+      std::fprintf(stderr,
+                   "DrmPresenter: OSD plane %u rejected %d commits in a row -- disabling the OSD "
+                   "for the rest of this session; video continues unaffected\n",
+                   osd_plane_id, osd_fail_streak);
+      osd_plane_id = 0;
+    }
     return;
   }
   osd_dirty = false;
   osd_on_plane = true;
+  osd_fail_streak = 0;
   osd_back ^= 1;
 }
 
@@ -634,28 +664,26 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
     }
   }
 
-  // Resolve zpos on every plane we drive and pin the stacking explicitly:
-  // backdrop < video < osd. Without this the kernel's default zpos left the
+  // Resolve zpos and pin the stacking: video at the top of its range,
+  // backdrop at the bottom. Without this the kernel's default zpos left the
   // backdrop covering the video (observed on vop2: Smart0 normalized-zpos 1
   // over Esmart0's 0 -- a fully black screen with every commit succeeding).
-  // With an OSD plane it sets the scale -- it takes the top of its own
-  // range, video one step below, backdrop at the bottom -- and each value is
-  // then clamped into the range its own plane advertises. Without one, the
-  // original two-level scheme (video at its max, backdrop at its min).
+  //
+  // The video/backdrop values below are the hardware-validated ones and are
+  // deliberately NOT derived from the OSD plane's range: doing that can tie
+  // video to the backdrop and reinstate exactly the black screen this block
+  // exists to prevent (OSD [0,1] with video/backdrop [0,7] would give
+  // video 0 == backdrop 0; disjoint ranges give video max == backdrop max).
+  // The OSD is layered strictly on top instead, and if it cannot sit above
+  // the already-chosen video value we run without it. The OSD must never
+  // perturb video's stacking.
   {
     uint64_t vmin = 0, vmax = 0;
     zpos_video_prop = find_zpos_range(fd, plane_id, &vmin, &vmax);
+    if (zpos_video_prop) zpos_video_val = vmax;
     uint64_t pmin = 0, pmax = 0;
-    if (primary_fb_id) zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
-    uint64_t omin = 0, omax = 0;
-    if (osd_plane_id) zpos_osd_prop = find_zpos_range(fd, osd_plane_id, &omin, &omax);
-
-    if (zpos_osd_prop) {
-      zpos_osd_val = omax;
-      if (zpos_video_prop) zpos_video_val = clamp_u64(omax > 0 ? omax - 1 : 0, vmin, vmax);
-      if (zpos_primary_prop) zpos_primary_val = clamp_u64(omin, pmin, pmax);
-    } else {
-      if (zpos_video_prop) zpos_video_val = vmax;
+    if (primary_fb_id) {
+      zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
       if (zpos_primary_prop) zpos_primary_val = pmin;
     }
 
@@ -668,11 +696,33 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
       std::fprintf(stderr, "DrmPresenter: zpos pinned: video plane %u -> %llu%s\n", plane_id,
                    static_cast<unsigned long long>(zpos_video_val),
                    zpos_primary_prop ? " (backdrop -> min)" : "");
-    if (osd_plane_id && !zpos_osd_prop)
-      std::fprintf(stderr,
-                   "DrmPresenter: warning: OSD plane %u has no mutable zpos -- it may end up "
-                   "UNDER the video plane\n",
-                   osd_plane_id);
+
+    if (osd_plane_id) {
+      uint64_t omin = 0, omax = 0;
+      zpos_osd_prop = find_zpos_range(fd, osd_plane_id, &omin, &omax);
+      zpos_osd_val = zpos_osd_prop ? clamp_u64(zpos_video_val + 1, omin, omax) : 0;
+      // Verify the whole order really came out backdrop < video < osd. The
+      // backdrop term is skipped when there is no backdrop plane (video is
+      // itself the primary), and a video plane with no mutable zpos gives us
+      // nothing to layer above, so both of those disqualify the OSD too.
+      const bool backdrop_ok = !zpos_primary_prop || zpos_primary_val < zpos_video_val;
+      const bool osd_ok = zpos_osd_prop && zpos_video_prop && zpos_video_val < zpos_osd_val;
+      if (!backdrop_ok || !osd_ok) {
+        std::fprintf(stderr,
+                     "DrmPresenter: OSD plane %u cannot be stacked above video (zpos backdrop "
+                     "%llu / video %llu / osd %llu, osd range [%llu,%llu]) -- running WITHOUT the "
+                     "OSD rather than disturbing the video stacking\n",
+                     osd_plane_id, static_cast<unsigned long long>(zpos_primary_val),
+                     static_cast<unsigned long long>(zpos_video_val),
+                     static_cast<unsigned long long>(zpos_osd_val),
+                     static_cast<unsigned long long>(omin), static_cast<unsigned long long>(omax));
+        osd_plane_id = 0;
+        zpos_osd_prop = 0;
+        zpos_osd_val = 0;
+        osd_blend_prop = 0;
+        osd.destroy();  // nothing has been committed yet; reclaim the two buffers
+      }
+    }
   }
 
   if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob_id) != 0) {
@@ -773,7 +823,70 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     return false;
   }
 
-  drmModeAtomicReqPtr req = drmModeAtomicAlloc();
+  const bool do_modeset = needs_modeset;
+
+  // Ride the OSD along on this commit when it has something new to show,
+  // and re-state it on any modeset (a modeset re-runs the whole CRTC state;
+  // don't assume the plane keeps its FB across one).
+  const bool osd_ready = osd_plane_id != 0 && osd.ok();
+  bool attach_osd = osd_ready && (osd_dirty || (do_modeset && osd_on_plane));
+  // ...but never on the commit that would otherwise be the one-shot async
+  // probe. An OSD publishing at or above the video frame rate would keep
+  // `attach_osd` true forever, `probing_async` never true, and video would
+  // run vsync-paced for the whole session -- visible only as "async=probing"
+  // in the fps-log. Don't depend on the caller's publish cadence: skip the
+  // attach on the first non-modeset commit. The OSD stays dirty and rides
+  // the next one, at most ~16 ms later.
+  if (!async_probed && !do_modeset) attach_osd = false;
+  const int osd_idx = osd_dirty ? osd_back : (osd_back ^ 1);
+
+  // Factored so that a commit the kernel rejects WITH the OSD attached can
+  // be rebuilt without it and retried immediately (a drmModeAtomicReq has no
+  // "remove property"). See the failure handling after the commit.
+  auto build_req = [&](bool with_osd) -> drmModeAtomicReqPtr {
+    drmModeAtomicReqPtr r = drmModeAtomicAlloc();
+    if (!r) return nullptr;
+    drmModeAtomicAddProperty(r, plane_id, video_props.fb_id, fb_id);
+    drmModeAtomicAddProperty(r, plane_id, video_props.crtc_id, crtc_id);
+    drmModeAtomicAddProperty(r, plane_id, video_props.src_x, 0);
+    drmModeAtomicAddProperty(r, plane_id, video_props.src_y, 0);
+    drmModeAtomicAddProperty(r, plane_id, video_props.src_w,
+                             static_cast<uint64_t>(frame.width) << 16);
+    drmModeAtomicAddProperty(r, plane_id, video_props.src_h,
+                             static_cast<uint64_t>(frame.height) << 16);
+    drmModeAtomicAddProperty(r, plane_id, video_props.crtc_x, 0);
+    drmModeAtomicAddProperty(r, plane_id, video_props.crtc_y, 0);
+    drmModeAtomicAddProperty(r, plane_id, video_props.crtc_w, mode.hdisplay);
+    drmModeAtomicAddProperty(r, plane_id, video_props.crtc_h, mode.vdisplay);
+
+    if (do_modeset) {
+      if (zpos_video_prop) drmModeAtomicAddProperty(r, plane_id, zpos_video_prop, zpos_video_val);
+      drmModeAtomicAddProperty(r, connector_id, prop_connector_crtc_id, crtc_id);
+      drmModeAtomicAddProperty(r, crtc_id, prop_crtc_mode_id, mode_blob_id);
+      drmModeAtomicAddProperty(r, crtc_id, prop_crtc_active, 1);
+      if (primary_fb_id) {
+        if (zpos_primary_prop)
+          drmModeAtomicAddProperty(r, primary_plane_id, zpos_primary_prop, zpos_primary_val);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.fb_id, primary_fb_id);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.crtc_id, crtc_id);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.src_x, 0);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.src_y, 0);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.src_w,
+                                 static_cast<uint64_t>(mode.hdisplay) << 16);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.src_h,
+                                 static_cast<uint64_t>(mode.vdisplay) << 16);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.crtc_x, 0);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.crtc_y, 0);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.crtc_w, mode.hdisplay);
+        drmModeAtomicAddProperty(r, primary_plane_id, primary_props.crtc_h, mode.vdisplay);
+      }
+    }
+
+    if (with_osd) add_osd_props(r, osd_idx, !osd_on_plane || do_modeset);
+    return r;
+  };
+
+  drmModeAtomicReqPtr req = build_req(attach_osd);
   if (!req) {
     ++commit_errors;
     drmModeRmFB(fd, fb_id);
@@ -781,52 +894,6 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     if (release) release(frame);
     return false;
   }
-
-  drmModeAtomicAddProperty(req, plane_id, video_props.fb_id, fb_id);
-  drmModeAtomicAddProperty(req, plane_id, video_props.crtc_id, crtc_id);
-  drmModeAtomicAddProperty(req, plane_id, video_props.src_x, 0);
-  drmModeAtomicAddProperty(req, plane_id, video_props.src_y, 0);
-  drmModeAtomicAddProperty(req, plane_id, video_props.src_w,
-                           static_cast<uint64_t>(frame.width) << 16);
-  drmModeAtomicAddProperty(req, plane_id, video_props.src_h,
-                           static_cast<uint64_t>(frame.height) << 16);
-  drmModeAtomicAddProperty(req, plane_id, video_props.crtc_x, 0);
-  drmModeAtomicAddProperty(req, plane_id, video_props.crtc_y, 0);
-  drmModeAtomicAddProperty(req, plane_id, video_props.crtc_w, mode.hdisplay);
-  drmModeAtomicAddProperty(req, plane_id, video_props.crtc_h, mode.vdisplay);
-
-  const bool do_modeset = needs_modeset;
-  if (do_modeset) {
-    if (zpos_video_prop)
-      drmModeAtomicAddProperty(req, plane_id, zpos_video_prop, zpos_video_val);
-    drmModeAtomicAddProperty(req, connector_id, prop_connector_crtc_id, crtc_id);
-    drmModeAtomicAddProperty(req, crtc_id, prop_crtc_mode_id, mode_blob_id);
-    drmModeAtomicAddProperty(req, crtc_id, prop_crtc_active, 1);
-    if (primary_fb_id) {
-      if (zpos_primary_prop)
-        drmModeAtomicAddProperty(req, primary_plane_id, zpos_primary_prop, zpos_primary_val);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.fb_id, primary_fb_id);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.crtc_id, crtc_id);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.src_x, 0);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.src_y, 0);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.src_w,
-                               static_cast<uint64_t>(mode.hdisplay) << 16);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.src_h,
-                               static_cast<uint64_t>(mode.vdisplay) << 16);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.crtc_x, 0);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.crtc_y, 0);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.crtc_w, mode.hdisplay);
-      drmModeAtomicAddProperty(req, primary_plane_id, primary_props.crtc_h, mode.vdisplay);
-    }
-  }
-
-  // Ride the OSD along on this commit when it has something new to show,
-  // and re-state it on any modeset (a modeset re-runs the whole CRTC state;
-  // don't assume the plane keeps its FB across one).
-  const bool osd_ready = osd_plane_id != 0 && osd.ok();
-  const bool attach_osd = osd_ready && (osd_dirty || (do_modeset && osd_on_plane));
-  const int osd_idx = osd_dirty ? osd_back : (osd_back ^ 1);
-  if (attach_osd) add_osd_props(req, osd_idx, !osd_on_plane || do_modeset);
 
   uint32_t flags = do_modeset
                        ? static_cast<uint32_t>(DRM_MODE_ATOMIC_ALLOW_MODESET)
@@ -855,7 +922,41 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     std::fprintf(stderr, "DrmPresenter: PAGE_FLIP_ASYNC accepted -- async flips active\n");
   }
 
-  drmModeAtomicFree(req);
+  // The commit failed with the OSD attached. Rebuild WITHOUT the OSD and
+  // retry right now, so a driver that will not take the two-plane request
+  // costs video nothing -- not even this frame. `osd_dirty` is cleared
+  // whatever happens: leaving it set would rebuild the identical rejected
+  // shape on the very next frame, and every one after it, dropping 60
+  // frames a second forever with nothing to self-heal it (needs_modeset is
+  // untouched, drop_all() is never called, and the decode watchdog cannot
+  // fire because frames keep arriving). After kOsdMaxFailStreak consecutive
+  // OSD-attributed failures the OSD is switched off for the session.
+  if (rc != 0 && attach_osd) {
+    const int oerr = rc < 0 ? -rc : errno;
+    osd_dirty = false;
+    ++osd_commit_errors;
+    ++osd_fail_streak;
+    std::fprintf(stderr,
+                 "DrmPresenter: commit with the OSD plane attached failed: %s -- retrying "
+                 "video-only (OSD failure %d/%d)\n",
+                 std::strerror(oerr), osd_fail_streak, kOsdMaxFailStreak);
+    if (osd_fail_streak >= kOsdMaxFailStreak) {
+      std::fprintf(stderr,
+                   "DrmPresenter: OSD plane %u rejected %d commits in a row -- disabling the OSD "
+                   "for the rest of this session; video continues unaffected\n",
+                   osd_plane_id, osd_fail_streak);
+      osd_plane_id = 0;  // every osd_* entry point becomes a no-op from here
+    }
+    attach_osd = false;
+    drmModeAtomicFree(req);
+    req = build_req(false);
+    // Same `flags` deliberately: they carry no PAGE_FLIP_ASYNC (attach_osd
+    // suppressed it) and probing_async was false, so this retry can neither
+    // run nor poison the async probe. One vsync-paced frame is the whole cost.
+    rc = req ? drmModeAtomicCommit(fd, req, flags, this) : -ENOMEM;
+  }
+
+  if (req) drmModeAtomicFree(req);
 
   if (rc != 0) {
     const int err = rc < 0 ? -rc : errno;
@@ -875,6 +976,7 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
       osd_back ^= 1;  // what we just committed becomes the front buffer
     }
     osd_on_plane = true;
+    osd_fail_streak = 0;
     osd_last_commit_ms = last_video_commit_ms;
   }
 
@@ -890,6 +992,7 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     if (on_screen.valid) release_slot(on_screen);  // defensive; shouldn't normally be reachable
     on_screen = new_slot;
     needs_modeset = false;
+    crtc_active = true;  // latched: the CRTC stays active for the rest of the session
   } else {
     pending = new_slot;
     flip_pending = true;
@@ -910,15 +1013,20 @@ void DrmPresenter::Impl::poll_events() {
     drmHandleEvent(fd, &evctx);
   }
 
-  // No video commit to ride on (link down): show the OSD on its own. Gated
-  // on no flip in flight AND on video having been quiet for 100 ms, so we
-  // never race the video path into -EBUSY -- present() calls poll_events()
-  // while a flip is outstanding, and a standalone commit issued from there
-  // would be the very commit that blocks the video commit right behind it.
-  // needs_modeset also excludes the pre-first-frame case, where the CRTC
-  // isn't active yet and an OSD-only commit could not display anything.
+  // No video commit to ride on: show the OSD on its own. Gated on no flip in
+  // flight AND on video having been quiet for 100 ms -- present() calls
+  // poll_events() while a flip is outstanding, so without the quiet window a
+  // standalone commit could be issued from inside present() itself, right in
+  // front of the video commit it would then block.
+  //
+  // `crtc_active`, NOT `!needs_modeset`: drop_all() re-arms needs_modeset on
+  // every ordinary AU-ring discontinuity (main.cpp's flush_before) and from
+  // the decode watchdog, without deactivating the CRTC. Gating on it would
+  // freeze the OSD exactly when on-screen link telemetry matters most.
+  // crtc_active still excludes the pre-first-frame case, where the CRTC is
+  // not up yet and an OSD-only commit could not display anything.
   const uint64_t now = mono_ms();
-  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && !needs_modeset &&
+  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active &&
       now - last_video_commit_ms >= 100 && now - osd_last_commit_ms >= 100) {
     commit_osd_only();
   }
@@ -945,6 +1053,12 @@ void DrmPresenter::Impl::drop_all() {
 }
 
 DrmPresenter::Impl::~Impl() {
+  // Explicit, and FIRST: `osd` is a member, so ~OsdSurface would otherwise
+  // run AFTER this body -- i.e. after close(fd) below -- and issue
+  // drmModeRmFB/DestroyDumbBuffer on a closed descriptor (its own fd_ is a
+  // stale copy, so its guard cannot catch that). Every other resource here
+  // is already released before the close; this keeps the OSD in line.
+  osd.destroy();
   if (mailbox.valid) release_slot(mailbox);
   if (pending.valid) release_slot(pending);
   if (on_screen.valid) release_slot(on_screen);
@@ -993,6 +1107,8 @@ int DrmPresenter::osd_back_index() const { return impl_->osd_back; }
 void DrmPresenter::osd_publish() {
   if (osd_available()) impl_->osd_dirty = true;
 }
+
+uint64_t DrmPresenter::osd_commit_errors() const { return impl_->osd_commit_errors; }
 
 int DrmPresenter::osd_front_prime_fd() const {
   return osd_available() ? impl_->osd.prime_fd(impl_->osd_back ^ 1) : -1;

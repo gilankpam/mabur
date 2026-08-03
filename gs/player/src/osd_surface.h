@@ -27,6 +27,15 @@ class OsdSurface {
   bool init(int drm_fd, int width, int height, std::string* err);
   bool ok() const { return buf_[0].ptr != nullptr && buf_[1].ptr != nullptr; }
 
+  // Releases everything and resets to the default-constructed state.
+  // Idempotent. MUST be called before the owner closes the DRM fd -- a
+  // member destructor runs after its owner's destructor body, so
+  // DrmPresenter::~Impl calls this at the top rather than letting ~Buf-era
+  // cleanup land on an already-closed descriptor. Also used to reclaim the
+  // buffers when the presenter decides at init time that the OSD cannot be
+  // used after all.
+  void destroy();
+
   Surface cpu(int idx) const;
   uint32_t fb_id(int idx) const { return buf_[idx & 1].fb_id; }
   int prime_fd(int idx) const { return buf_[idx & 1].prime_fd; }
