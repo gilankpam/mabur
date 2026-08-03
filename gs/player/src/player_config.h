@@ -9,6 +9,13 @@ struct DvrCfg {
   bool enabled = true;
   std::string dir = "/media/dvr";
   int fragment_ms = 1000;
+  // "raw"    — remux the received AUs untouched (byte-exact, the default).
+  // "burned" — transcode with the MSP OSD composited in by the encoder.
+  std::string mode = "raw";
+  struct BurnedCfg {
+    int bitrate_kbps = 12000;
+    int fps_cap = 30;   // encode is capped independently of display rate
+  } burned;
 };
 
 // MSP DisplayPort OSD. `port` must match maburgs' msp.out.port -- separate

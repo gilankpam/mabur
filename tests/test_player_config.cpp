@@ -83,4 +83,46 @@ TEST(bundle_default_parses_with_osd_enabled) {
   CHECK(c.osd.enable == true);
 }
 
+TEST(dvr_mode_defaults_to_raw) {
+  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  CHECK(c.dvr.mode == "raw");
+  CHECK(c.dvr.burned.bitrate_kbps == 12000);
+  CHECK(c.dvr.burned.fps_cap == 30);
+}
+
+TEST(dvr_burned_block_parses) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"backend":"null","dvr":{"mode":"burned",)"
+      R"("burned":{"bitrate_kbps":20000,"fps_cap":60}}})"));
+  CHECK(c.dvr.mode == "burned");
+  CHECK(c.dvr.burned.bitrate_kbps == 20000);
+  CHECK(c.dvr.burned.fps_cap == 60);
+}
+
+TEST(dvr_rejects_bad_mode_and_unknown_keys) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"mode":"burnt"}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"burned":{"bitrate":1}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
+TEST(dvr_burned_bounds_are_enforced) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(
+      R"({"dvr":{"burned":{"fps_cap":0}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(
+      R"({"dvr":{"burned":{"bitrate_kbps":500000}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
 MTEST_MAIN

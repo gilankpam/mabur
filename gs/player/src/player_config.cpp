@@ -64,13 +64,24 @@ Config load_config(const std::string& path) {
 
   if (j.contains("dvr")) {
     const json& r = j["dvr"];
-    check_keys(r, "dvr", {"enabled", "dir", "fragment_ms"});
+    check_keys(r, "dvr", {"enabled", "dir", "fragment_ms", "mode", "burned"});
     if (r.contains("enabled")) {
       if (!r["enabled"].is_boolean()) fail("dvr.enabled", "not a boolean");
       c.dvr.enabled = r["enabled"].get<bool>();
     }
     c.dvr.dir = get_str(r, "dir", "/media/dvr", "dvr");
     c.dvr.fragment_ms = static_cast<int>(get_int(r, "fragment_ms", 1000, 100, 10000, "dvr"));
+    c.dvr.mode = get_str(r, "mode", "raw", "dvr");
+    if (c.dvr.mode != "raw" && c.dvr.mode != "burned")
+      fail("dvr.mode", "must be \"raw\" or \"burned\"");
+    if (r.contains("burned")) {
+      const json& b = r["burned"];
+      check_keys(b, "dvr.burned", {"bitrate_kbps", "fps_cap"});
+      c.dvr.burned.bitrate_kbps =
+          static_cast<int>(get_int(b, "bitrate_kbps", 12000, 500, 100000, "dvr.burned"));
+      c.dvr.burned.fps_cap =
+          static_cast<int>(get_int(b, "fps_cap", 30, 1, 120, "dvr.burned"));
+    }
   }
 
   if (j.contains("osd")) {
