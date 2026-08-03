@@ -72,6 +72,13 @@ def main():
     for y in range(gh):
         for x in range(gw):
             px[(1 * gh + y) * W + (0 * gw + x)] = (0, 255, 0, 255)
+    # glyph (char=3, page=0): partial alpha, exercises premultiplication.
+    # straight (255,0,0,128) premultiplies to r=255*128//255=128 -> 0x80800000,
+    # distinct from the straight-alpha word 0x80FF0000 a broken/deleted
+    # premultiply step would produce.
+    for y in range(gh):
+        for x in range(gw):
+            px[(3 * gh + y) * W + (0 * gw + x)] = (255, 0, 0, 128)
     rgba = os.path.join(tmp, "rgba.png")
     write_rgba_png(rgba, W, H, px)
     out = os.path.join(tmp, "rgba.mfont")
@@ -80,6 +87,8 @@ def main():
     assert (ogw, ogh, n) == (gw, gh, 1024), (ogw, ogh, n)
     assert glyph_px(pixels, gw, gh, 1, 0, 0) == 0xFF00FF00
     assert glyph_px(pixels, gw, gh, 2, 0, 0) == 0x00000000
+    assert glyph_px(pixels, gw, gh, 3, 0, 0) == 0x80800000, \
+        hex(glyph_px(pixels, gw, gh, 3, 0, 0))
 
     # --- 4-bit indexed source: same glyph, opaque red.
     idx = [0] * (W * H)
