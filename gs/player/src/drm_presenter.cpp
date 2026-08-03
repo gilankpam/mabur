@@ -1,5 +1,7 @@
 #include "drm_presenter.h"
 
+#include "osd_surface.h"
+
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -73,6 +75,40 @@ uint32_t find_zpos_range(int fd, uint32_t plane_id, uint64_t* min_out, uint64_t*
   return id;
 }
 
+// Resolves an enum property by name AND the numeric value of one of its
+// named entries (e.g. "pixel blend mode" -> "Pre-multiplied"). Returns 0
+// when the property or the entry is absent -- every caller here treats that
+// as "driver doesn't expose it, use its default" rather than an error.
+uint32_t find_enum_property(int fd, uint32_t obj_id, uint32_t obj_type, const char* name,
+                            const char* enum_name, uint64_t* value_out) {
+  drmModeObjectPropertiesPtr props = drmModeObjectGetProperties(fd, obj_id, obj_type);
+  if (!props) return 0;
+  uint32_t id = 0;
+  for (uint32_t i = 0; i < props->count_props && id == 0; ++i) {
+    drmModePropertyPtr prop = drmModeGetProperty(fd, props->props[i]);
+    if (!prop) continue;
+    if ((prop->flags & DRM_MODE_PROP_ENUM) && std::strcmp(prop->name, name) == 0) {
+      for (int e = 0; e < prop->count_enums; ++e) {
+        // enums[].name is a fixed-size char array, not guaranteed to be
+        // NUL-terminated when the name fills it exactly -- bound the compare.
+        if (std::strncmp(prop->enums[e].name, enum_name, sizeof(prop->enums[e].name)) == 0) {
+          id = prop->prop_id;
+          *value_out = static_cast<uint64_t>(prop->enums[e].value);
+          break;
+        }
+      }
+    }
+    drmModeFreeProperty(prop);
+  }
+  drmModeFreeObjectProperties(props);
+  return id;
+}
+
+uint64_t clamp_u64(uint64_t v, uint64_t lo, uint64_t hi) {
+  if (hi < lo) return lo;
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
 uint64_t mono_ms() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -137,9 +173,27 @@ struct DrmPresenter::Impl {
 
   // zpos stacking (the black-screen fix): vop2's default z-order put the
   // Smart0 backdrop ABOVE the Esmart0 video plane -- commits all succeeded
-  // while the video rendered underneath a black rectangle. Set explicitly.
+  // while the video rendered underneath a black rectangle. Set explicitly,
+  // now three-level: backdrop < video < osd.
   uint32_t zpos_video_prop = 0, zpos_primary_prop = 0;
   uint64_t zpos_video_val = 0, zpos_primary_val = 0;
+
+  // MSP OSD overlay plane. osd_plane_id == 0 means "no OSD" and every
+  // osd_* path below is a no-op -- an OSD that could not be set up must
+  // never cost us video.
+  uint32_t osd_plane_id = 0;
+  PlaneProps osd_props;
+  uint32_t zpos_osd_prop = 0;
+  uint64_t zpos_osd_val = 0;
+  uint32_t osd_blend_prop = 0;    // "pixel blend mode", when exposed
+  uint64_t osd_blend_premul = 0;  // enum value for "Pre-multiplied"
+  OsdSurface osd;
+  int osd_back = 0;            // index the CPU draws into
+  bool osd_dirty = false;      // back buffer published, not yet committed
+  bool osd_on_plane = false;   // an OSD fb has been attached at least once
+  bool osd_commit_warned = false;
+  uint64_t osd_last_commit_ms = 0;
+  uint64_t last_video_commit_ms = 0;  // gates the standalone OSD commit
 
   bool inited = false;
   bool needs_modeset = true;  // next commit must be a full blocking ALLOW_MODESET commit
@@ -181,6 +235,9 @@ struct DrmPresenter::Impl {
 
   void release_slot(Slot& s);
   void on_flip(bool real_event = true);
+
+  void add_osd_props(drmModeAtomicReqPtr req, int idx, bool one_time);
+  void commit_osd_only();
 
   static void on_flip_static(int fd, unsigned int sequence, unsigned int tv_sec,
                               unsigned int tv_usec, unsigned int crtc_id, void* user_data);
@@ -224,6 +281,63 @@ void DrmPresenter::Impl::on_flip_static(int /*fd*/, unsigned int /*sequence*/,
                                          unsigned int /*crtc_id*/, void* user_data) {
   auto* self = static_cast<Impl*>(user_data);
   if (self) self->on_flip();
+}
+
+// Full property set for the OSD plane at buffer `idx`. `one_time` adds the
+// properties that only need to be (re)stated on the first attach and on any
+// modeset: zpos and the blend mode.
+void DrmPresenter::Impl::add_osd_props(drmModeAtomicReqPtr req, int idx, bool one_time) {
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.fb_id, osd.fb_id(idx));
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.crtc_id, crtc_id);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.src_x, 0);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.src_y, 0);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.src_w,
+                           static_cast<uint64_t>(osd.width()) << 16);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.src_h,
+                           static_cast<uint64_t>(osd.height()) << 16);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.crtc_x, 0);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.crtc_y, 0);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.crtc_w, mode.hdisplay);
+  drmModeAtomicAddProperty(req, osd_plane_id, osd_props.crtc_h, mode.vdisplay);
+  if (one_time) {
+    if (zpos_osd_prop) drmModeAtomicAddProperty(req, osd_plane_id, zpos_osd_prop, zpos_osd_val);
+    if (osd_blend_prop)
+      drmModeAtomicAddProperty(req, osd_plane_id, osd_blend_prop, osd_blend_premul);
+  }
+}
+
+// Standalone OSD update, for when video is not flowing and there is no
+// present() commit to ride on. Callers must have established that no flip
+// is in flight (a second NONBLOCK commit on the same CRTC would -EBUSY) and
+// that the CRTC is already modeset. Never PAGE_FLIP_EVENT (we don't want an
+// event the video path would mistake for its own flip) and never
+// PAGE_FLIP_ASYNC (async may only change FB_ID on a single plane).
+void DrmPresenter::Impl::commit_osd_only() {
+  drmModeAtomicReqPtr req = drmModeAtomicAlloc();
+  if (!req) {
+    ++commit_errors;
+    return;
+  }
+  add_osd_props(req, osd_back, !osd_on_plane);
+  const int rc = drmModeAtomicCommit(fd, req, DRM_MODE_ATOMIC_NONBLOCK, this);
+  drmModeAtomicFree(req);
+
+  // Stamped on failure too: it is the retry rate limiter, so a plane that
+  // keeps rejecting us retries at 10 Hz rather than every poll_events().
+  osd_last_commit_ms = mono_ms();
+  if (rc != 0) {
+    ++commit_errors;
+    if (!osd_commit_warned) {
+      osd_commit_warned = true;
+      const int err = rc < 0 ? -rc : errno;
+      std::fprintf(stderr, "DrmPresenter: standalone OSD commit failed: %s (logged once)\n",
+                   std::strerror(err));
+    }
+    return;
+  }
+  osd_dirty = false;
+  osd_on_plane = true;
+  osd_back ^= 1;
 }
 
 bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
@@ -466,20 +580,85 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
     }
   }
 
-  // Resolve zpos on both planes and pin the stacking: video at the top of
-  // its range, backdrop at the bottom. Without this the kernel's default
-  // zpos left the backdrop covering the video (observed on vop2: Smart0
-  // normalized-zpos 1 over Esmart0's 0 -- a fully black screen with every
-  // commit succeeding).
+  // MSP OSD plane: the first ARGB8888-capable plane on this CRTC that is
+  // neither the video plane nor the backdrop. CURSOR-type planes are
+  // excluded -- they take ARGB8888 but are size-capped (64x64 on vop2) and
+  // would silently truncate a full-screen OSD. Every failure below is
+  // best-effort: log once, leave osd_plane_id == 0, carry on with video.
+  {
+    std::string osd_err = "no ARGB8888 plane free on this CRTC";
+    drmModePlaneResPtr pres3 = drmModeGetPlaneResources(fd);
+    if (!pres3) {
+      osd_err = std::string("drmModeGetPlaneResources failed: ") + std::strerror(errno);
+    } else {
+      for (uint32_t i = 0; i < pres3->count_planes && !osd_plane_id; ++i) {
+        drmModePlanePtr p = drmModeGetPlane(fd, pres3->planes[i]);
+        if (!p) continue;
+        const bool usable = (p->possible_crtcs & (1u << crtc_index)) != 0 &&
+                            p->plane_id != plane_id && p->plane_id != primary_plane_id;
+        bool has_argb = false;
+        if (usable) {
+          for (uint32_t f = 0; f < p->count_formats; ++f) {
+            if (p->formats[f] == DRM_FORMAT_ARGB8888) {
+              has_argb = true;
+              break;
+            }
+          }
+        }
+        if (has_argb) {
+          uint64_t type_val = 0;
+          find_property(fd, p->plane_id, DRM_MODE_OBJECT_PLANE, "type", &type_val);
+          if (type_val != DRM_PLANE_TYPE_CURSOR) osd_plane_id = p->plane_id;
+        }
+        drmModeFreePlane(p);
+      }
+      drmModeFreePlaneResources(pres3);
+    }
+
+    if (osd_plane_id && !osd_props.resolve(fd, osd_plane_id)) {
+      osd_err = "OSD plane is missing a standard property";
+      osd_plane_id = 0;
+    }
+    if (osd_plane_id && !osd.init(fd, mode.hdisplay, mode.vdisplay, &osd_err)) {
+      osd_plane_id = 0;
+    }
+    if (osd_plane_id) {
+      // Optional: ask for premultiplied blending explicitly rather than
+      // trusting the driver default. Absent on drivers that don't expose
+      // it -- then the default (premultiplied on vop2) applies.
+      osd_blend_prop = find_enum_property(fd, osd_plane_id, DRM_MODE_OBJECT_PLANE,
+                                          "pixel blend mode", "Pre-multiplied", &osd_blend_premul);
+    } else {
+      std::fprintf(stderr, "DrmPresenter: no ARGB OSD plane (%s) -- running without OSD\n",
+                   osd_err.c_str());
+    }
+  }
+
+  // Resolve zpos on every plane we drive and pin the stacking explicitly:
+  // backdrop < video < osd. Without this the kernel's default zpos left the
+  // backdrop covering the video (observed on vop2: Smart0 normalized-zpos 1
+  // over Esmart0's 0 -- a fully black screen with every commit succeeding).
+  // With an OSD plane it sets the scale -- it takes the top of its own
+  // range, video one step below, backdrop at the bottom -- and each value is
+  // then clamped into the range its own plane advertises. Without one, the
+  // original two-level scheme (video at its max, backdrop at its min).
   {
     uint64_t vmin = 0, vmax = 0;
     zpos_video_prop = find_zpos_range(fd, plane_id, &vmin, &vmax);
-    if (zpos_video_prop) zpos_video_val = vmax;
-    if (primary_fb_id) {
-      uint64_t pmin = 0, pmax = 0;
-      zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
+    uint64_t pmin = 0, pmax = 0;
+    if (primary_fb_id) zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
+    uint64_t omin = 0, omax = 0;
+    if (osd_plane_id) zpos_osd_prop = find_zpos_range(fd, osd_plane_id, &omin, &omax);
+
+    if (zpos_osd_prop) {
+      zpos_osd_val = omax;
+      if (zpos_video_prop) zpos_video_val = clamp_u64(omax > 0 ? omax - 1 : 0, vmin, vmax);
+      if (zpos_primary_prop) zpos_primary_val = clamp_u64(omin, pmin, pmax);
+    } else {
+      if (zpos_video_prop) zpos_video_val = vmax;
       if (zpos_primary_prop) zpos_primary_val = pmin;
     }
+
     if (!zpos_video_prop)
       std::fprintf(stderr,
                    "DrmPresenter: warning: video plane %u has no mutable zpos -- stacking is at "
@@ -489,6 +668,11 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
       std::fprintf(stderr, "DrmPresenter: zpos pinned: video plane %u -> %llu%s\n", plane_id,
                    static_cast<unsigned long long>(zpos_video_val),
                    zpos_primary_prop ? " (backdrop -> min)" : "");
+    if (osd_plane_id && !zpos_osd_prop)
+      std::fprintf(stderr,
+                   "DrmPresenter: warning: OSD plane %u has no mutable zpos -- it may end up "
+                   "UNDER the video plane\n",
+                   osd_plane_id);
   }
 
   if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob_id) != 0) {
@@ -502,6 +686,12 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
                connector_id, is_hdmi ? "HDMI-A" : "non-HDMI-A", mode.hdisplay, mode.vdisplay,
                mode.vrefresh, crtc_id, plane_is_primary ? "primary" : "overlay", plane_id,
                primary_fb_id ? " (+ black primary backdrop)" : "");
+  if (osd_plane_id)
+    std::fprintf(stderr,
+                 "DrmPresenter: OSD plane %u ARGB8888 %ux%u, zpos %llu, blend prop %s\n",
+                 osd_plane_id, mode.hdisplay, mode.vdisplay,
+                 static_cast<unsigned long long>(zpos_osd_val),
+                 osd_blend_prop ? "premultiplied" : "driver default");
 
   inited = true;
   return true;
@@ -630,11 +820,25 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     }
   }
 
+  // Ride the OSD along on this commit when it has something new to show,
+  // and re-state it on any modeset (a modeset re-runs the whole CRTC state;
+  // don't assume the plane keeps its FB across one).
+  const bool osd_ready = osd_plane_id != 0 && osd.ok();
+  const bool attach_osd = osd_ready && (osd_dirty || (do_modeset && osd_on_plane));
+  const int osd_idx = osd_dirty ? osd_back : (osd_back ^ 1);
+  if (attach_osd) add_osd_props(req, osd_idx, !osd_on_plane || do_modeset);
+
   uint32_t flags = do_modeset
                        ? static_cast<uint32_t>(DRM_MODE_ATOMIC_ALLOW_MODESET)
                        : static_cast<uint32_t>(DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT);
-  const bool probing_async = !do_modeset && !async_probed;
-  if (!do_modeset && (probing_async || async_active)) flags |= DRM_MODE_PAGE_FLIP_ASYNC;
+  // An async page flip may only change FB_ID on a SINGLE plane -- the kernel
+  // rejects an async commit that also touches the OSD plane. So any commit
+  // carrying the OSD is vsync-paced, AND the one-shot async probe must not
+  // run on such a commit: an EINVAL there would latch "async rejected" for
+  // the wrong reason and permanently demote video to vsync-paced flips.
+  const bool probing_async = !do_modeset && !async_probed && !attach_osd;
+  if (!do_modeset && !attach_osd && (probing_async || async_active))
+    flags |= DRM_MODE_PAGE_FLIP_ASYNC;
 
   int rc = drmModeAtomicCommit(fd, req, flags, this);
   if (rc != 0 && probing_async && rc == -EINVAL) {
@@ -664,6 +868,16 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     return false;
   }
 
+  last_video_commit_ms = mono_ms();
+  if (attach_osd) {
+    if (osd_dirty) {
+      osd_dirty = false;
+      osd_back ^= 1;  // what we just committed becomes the front buffer
+    }
+    osd_on_plane = true;
+    osd_last_commit_ms = last_video_commit_ms;
+  }
+
   Slot new_slot;
   new_slot.valid = true;
   new_slot.fb_id = fb_id;
@@ -689,13 +903,25 @@ void DrmPresenter::Impl::poll_events() {
   struct pollfd pfd {
     fd, POLLIN, 0
   };
-  if (poll(&pfd, 1, 0) <= 0) return;
-  if (!(pfd.revents & POLLIN)) return;
+  if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+    drmEventContext evctx{};
+    evctx.version = 3;  // page_flip_handler2 requires version >= 3
+    evctx.page_flip_handler2 = &Impl::on_flip_static;
+    drmHandleEvent(fd, &evctx);
+  }
 
-  drmEventContext evctx{};
-  evctx.version = 3;  // page_flip_handler2 requires version >= 3
-  evctx.page_flip_handler2 = &Impl::on_flip_static;
-  drmHandleEvent(fd, &evctx);
+  // No video commit to ride on (link down): show the OSD on its own. Gated
+  // on no flip in flight AND on video having been quiet for 100 ms, so we
+  // never race the video path into -EBUSY -- present() calls poll_events()
+  // while a flip is outstanding, and a standalone commit issued from there
+  // would be the very commit that blocks the video commit right behind it.
+  // needs_modeset also excludes the pre-first-frame case, where the CRTC
+  // isn't active yet and an OSD-only commit could not display anything.
+  const uint64_t now = mono_ms();
+  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && !needs_modeset &&
+      now - last_video_commit_ms >= 100 && now - osd_last_commit_ms >= 100) {
+    commit_osd_only();
+  }
 }
 
 void DrmPresenter::Impl::drop_all() {
@@ -752,5 +978,24 @@ uint64_t DrmPresenter::busy_replaced() const { return impl_->frames_dropped_busy
 bool DrmPresenter::async_flip_active() const { return impl_->async_active; }
 
 bool DrmPresenter::async_probed() const { return impl_->async_probed; }
+
+bool DrmPresenter::osd_available() const {
+  return impl_->osd_plane_id != 0 && impl_->osd.ok();
+}
+
+Surface DrmPresenter::osd_back_surface() {
+  if (!osd_available()) return Surface{};
+  return impl_->osd.cpu(impl_->osd_back);
+}
+
+int DrmPresenter::osd_back_index() const { return impl_->osd_back; }
+
+void DrmPresenter::osd_publish() {
+  if (osd_available()) impl_->osd_dirty = true;
+}
+
+int DrmPresenter::osd_front_prime_fd() const {
+  return osd_available() ? impl_->osd.prime_fd(impl_->osd_back ^ 1) : -1;
+}
 
 }  // namespace maburplay

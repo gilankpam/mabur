@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 
+#include "osd_raster.h"  // Surface (host-buildable; pulls in no DRM headers)
 #include "video_backend.h"
 
 namespace maburplay {
@@ -68,6 +69,24 @@ class DrmPresenter {
   // shows again until the next present(). See the flush-ordering contract
   // in the class comment.
   void drop_all();
+
+  // --- MSP OSD overlay -------------------------------------------------
+  // Allocated during init() when an ARGB-capable plane distinct from the
+  // video and backdrop planes exists. All calls are safe no-ops otherwise
+  // (osd_available() false, osd_back_surface() a null Surface, osd_publish()
+  // a no-op, osd_front_prime_fd() -1) -- an OSD that cannot be set up never
+  // affects video.
+  //
+  // Usage: draw into osd_back_surface() (with the caller's ShadowGrid for
+  // osd_back_index(); the presenter deliberately does not own those), then
+  // osd_publish(). The buffer is attached to the next commit and the pair
+  // swaps once that commit is issued. Any commit carrying the OSD plane is
+  // vsync-paced -- an async page flip may only change FB_ID on one plane.
+  bool osd_available() const;
+  Surface osd_back_surface();      // CPU-writable; pixels == nullptr if none
+  int osd_back_index() const;      // 0/1 -- picks the caller's ShadowGrid
+  void osd_publish();              // back buffer is ready; shown on next commit
+  int osd_front_prime_fd() const;  // committed buffer's dmabuf fd (Phase 2)
 
   // Diagnostics for --fps-log / gate reporting.
   uint64_t commit_errors() const;

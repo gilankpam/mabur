@@ -38,7 +38,10 @@ if(MABUR_PLAYER_HW)
       "MABUR_PLAYER_HW=ON requires -DMABUR_MPP_ROOT=<mpp install prefix> "
       "and -DMABUR_DRM_ROOT=<libdrm install prefix>; see tools/build-arm64.sh")
   endif()
-  target_sources(maburplay PRIVATE src/mpp_backend.cpp src/drm_presenter.cpp)
+  target_sources(maburplay PRIVATE
+    src/mpp_backend.cpp
+    src/drm_presenter.cpp
+    src/osd_surface.cpp)
   target_compile_definitions(maburplay PRIVATE MABUR_PLAYER_HW=1)
   target_include_directories(maburplay PRIVATE
     "${MABUR_MPP_ROOT}/include"
