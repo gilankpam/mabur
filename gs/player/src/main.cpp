@@ -320,6 +320,41 @@ int main(int argc, char** argv) {
   // consecutive no-op resets). Every capture below therefore goes through
   // the unique_ptr, never a cached raw pointer.
 
+  // MSP DisplayPort OSD: font load ONLY, done here -- BEFORE the presenter
+  // is constructed/initialised -- because DrmPresenter::init() needs to
+  // know up front whether an OSD is actually wanted. `want_osd` is that
+  // decision: cfg.osd.enable AND the font loaded successfully. Deciding
+  // this AFTER init() (deciding it too late is what F1 of the review that
+  // introduced this ordering fixed) left the presenter always claiming the
+  // primary plane and allocating two full-screen OSD buffers regardless of
+  // config -- with osd.enable:false, or a missing font, there was no way
+  // back to the pre-OSD plane layout (backdrop, no OSD buffers). Every
+  // failure here is non-fatal and logged exactly once: a missing font, a
+  // port already bound, or (on hardware) no spare ARGB plane all mean "run
+  // without OSD" -- the OSD must never cost video a session. --decode-only
+  // stays OSD-free: it has no presenter and is the hardware decode gate,
+  // not a display run.
+  maburplay::OsdFont osd_font;
+  std::unique_ptr<maburplay::OsdSource> osd_src;
+  std::unique_ptr<maburplay::OsdRaster> osd_raster;
+  bool want_osd = false;
+  if (cfg.osd.enable && !decode_only) {
+    std::string err;
+    if (!osd_font.load(cfg.osd.font, &err)) {
+      std::fprintf(stderr, "maburplay: osd disabled -- %s\n", err.c_str());
+    } else {
+      want_osd = true;
+    }
+  }
+#ifdef MABUR_PLAYER_HW
+  // One ShadowGrid per OSD buffer, indexed by the presenter's back index:
+  // the two buffers hold different pixels, so a shared shadow would suppress
+  // the redraw of cells that are current in one buffer and stale in the
+  // other. Owned here because the presenter deliberately does not own them.
+  maburplay::ShadowGrid osd_shadow[2];
+  bool osd_blanked = false;
+#endif
+
   // Display path: the DrmPresenter becomes the frame owner for the normal
   // (non-decode-only) run -- release_frame() is no longer called inline
   // here, it happens when the presenter is done with a frame (see
@@ -335,9 +370,10 @@ int main(int argc, char** argv) {
     // destroyed FIRST on unwind, releasing into a live backend. The null
     // guard covers the watchdog's recreation-failed exit path, where
     // drop_all() has already emptied the presenter.
-    if (!presenter->init(cfg.screen_mode, [&backend](const maburplay::DmaFrame& f) {
-          if (backend) backend->release_frame(f);
-        })) {
+    if (!presenter->init(cfg.screen_mode, want_osd,
+                         [&backend](const maburplay::DmaFrame& f) {
+                           if (backend) backend->release_frame(f);
+                         })) {
       std::fprintf(stderr,
                    "maburplay: DrmPresenter init failed -- no display; frames will be "
                    "decoded and released immediately\n");
@@ -346,41 +382,26 @@ int main(int argc, char** argv) {
   }
 #endif
 
-  // MSP DisplayPort OSD. Every failure here is non-fatal and logged exactly
-  // once: a missing font, a port already bound, or (on hardware) no spare
-  // ARGB plane all mean "run without OSD" -- the OSD must never cost video a
-  // session. --decode-only stays OSD-free: it has no presenter and is the
-  // hardware decode gate, not a display run.
-  maburplay::OsdFont osd_font;
-  std::unique_ptr<maburplay::OsdSource> osd_src;
-  std::unique_ptr<maburplay::OsdRaster> osd_raster;
-#ifdef MABUR_PLAYER_HW
-  // One ShadowGrid per OSD buffer, indexed by the presenter's back index:
-  // the two buffers hold different pixels, so a shared shadow would suppress
-  // the redraw of cells that are current in one buffer and stale in the
-  // other. Owned here because the presenter deliberately does not own them.
-  maburplay::ShadowGrid osd_shadow[2];
-  bool osd_blanked = false;
-#endif
-  if (cfg.osd.enable && !decode_only) {
+  // MSP DisplayPort OSD: network intake + raster, gated on want_osd (the
+  // font already loaded above). presenter->osd_available() is re-checked
+  // per frame further down -- want_osd can be true here and the OSD still
+  // end up unavailable (no qualifying plane, or the 3-strike runtime
+  // disable), which is fine: osd_src/osd_raster just have nothing to feed.
+  if (want_osd) {
     std::string err;
-    if (!osd_font.load(cfg.osd.font, &err)) {
+    osd_src = std::make_unique<maburplay::OsdSource>();
+    if (!osd_src->open(cfg.osd.port, &err)) {
       std::fprintf(stderr, "maburplay: osd disabled -- %s\n", err.c_str());
+      osd_src.reset();
     } else {
-      osd_src = std::make_unique<maburplay::OsdSource>();
-      if (!osd_src->open(cfg.osd.port, &err)) {
-        std::fprintf(stderr, "maburplay: osd disabled -- %s\n", err.c_str());
-        osd_src.reset();
-      } else {
-        osd_src->set_stale_ms(cfg.osd.stale_ms);
-        osd_raster =
-            std::make_unique<maburplay::OsdRaster>(osd_font, scale_mode(cfg.osd.scale));
-        std::fprintf(stderr,
-                     "maburplay: osd on udp 127.0.0.1:%d font=%s (%dx%d glyphs) scale=%s "
-                     "stale_ms=%d\n",
-                     osd_src->port(), cfg.osd.font.c_str(), osd_font.native().glyph_w,
-                     osd_font.native().glyph_h, cfg.osd.scale.c_str(), cfg.osd.stale_ms);
-      }
+      osd_src->set_stale_ms(cfg.osd.stale_ms);
+      osd_raster =
+          std::make_unique<maburplay::OsdRaster>(osd_font, scale_mode(cfg.osd.scale));
+      std::fprintf(stderr,
+                   "maburplay: osd on udp 127.0.0.1:%d font=%s (%dx%d glyphs) scale=%s "
+                   "stale_ms=%d\n",
+                   osd_src->port(), cfg.osd.font.c_str(), osd_font.native().glyph_w,
+                   osd_font.native().glyph_h, cfg.osd.scale.c_str(), cfg.osd.stale_ms);
     }
   }
 

@@ -1,5 +1,6 @@
 #include "drm_presenter.h"
 
+#include "in_formats.h"  // in_formats_has_linear: the IN_FORMATS parser, unit-tested
 #include "osd_layout.h"  // plan_zpos: the plane stacking policy, unit-tested
 #include "osd_surface.h"
 
@@ -113,12 +114,24 @@ uint32_t find_enum_property(int fd, uint32_t obj_id, uint32_t obj_type, const ch
 // Cluster0-win0") until the 3-strike safety path switched the OSD off.
 //
 // The authority is the IN_FORMATS blob (format list + per-format modifier
-// bitmasks). A driver too old to expose IN_FORMATS has no modifier concept
-// at all and its plain format list is implicitly linear -- that is the only
-// case where the plain list is trusted. Anything else unreadable fails
-// closed: an OSD we cannot prove will scan out is not worth a rejected
-// commit per frame.
-bool plane_takes_linear_argb(int fd, drmModePlanePtr p, std::string* why) {
+// bitmasks), parsed by in_formats_has_linear() (in_formats.{h,cpp} -- pulled
+// out to a host-buildable pure function so the parser itself is a unit test,
+// not a hardware-only code path). A driver too old to expose the IN_FORMATS
+// PROPERTY AT ALL has no modifier concept and its plain format list is
+// implicitly linear -- that is the only case where the plain list is
+// trusted. A driver that DOES expose the property is modifier-aware, so
+// anything else about it that fails to parse (including a present-but-empty
+// blob id) falls through to in_formats_has_linear() and fails closed there:
+// an OSD we cannot prove will scan out is not worth a rejected commit per
+// frame.
+//
+// `listed_argb_out`, when non-null, is set to whether the plane's plain
+// format list contains ARGB8888 at all -- independent of `why`'s text, so
+// callers can decide whether a rejection is worth logging without parsing
+// a human-readable message (editing that message must never change
+// diagnostic policy).
+bool plane_takes_linear_argb(int fd, drmModePlanePtr p, std::string* why,
+                             bool* listed_argb_out) {
   bool listed = false;
   for (uint32_t f = 0; f < p->count_formats; ++f) {
     if (p->formats[f] == DRM_FORMAT_ARGB8888) {
@@ -126,62 +139,29 @@ bool plane_takes_linear_argb(int fd, drmModePlanePtr p, std::string* why) {
       break;
     }
   }
+  if (listed_argb_out) *listed_argb_out = listed;
   if (!listed) {
     if (why) *why = "does not list ARGB8888";
     return false;
   }
 
   uint64_t blob_id = 0;
-  if (!find_property(fd, p->plane_id, DRM_MODE_OBJECT_PLANE, "IN_FORMATS", &blob_id) || !blob_id)
-    return true;  // pre-modifier driver: the format list is implicitly linear
+  const uint32_t in_formats_prop =
+      find_property(fd, p->plane_id, DRM_MODE_OBJECT_PLANE, "IN_FORMATS", &blob_id);
+  if (!in_formats_prop)
+    return true;  // property absent entirely: pre-modifier driver, the
+                  // format list is implicitly linear
 
-  drmModePropertyBlobPtr blob = drmModeGetPropertyBlob(fd, static_cast<uint32_t>(blob_id));
-  bool ok = false;
-  std::string reason = "IN_FORMATS blob unreadable";
-  if (blob && blob->data && blob->length >= sizeof(struct drm_format_modifier_blob)) {
-    // memcpy throughout: the blob's interior offsets come from the driver,
-    // so neither the format array nor the modifier array can be assumed
-    // aligned for a direct struct/u32 load.
-    struct drm_format_modifier_blob hdr {};
-    std::memcpy(&hdr, blob->data, sizeof(hdr));
-    const uint8_t* base = static_cast<const uint8_t*>(blob->data);
-    const uint64_t len = blob->length;
-    const uint64_t fend = static_cast<uint64_t>(hdr.formats_offset) + 4ull * hdr.count_formats;
-    const uint64_t mend = static_cast<uint64_t>(hdr.modifiers_offset) +
-                          static_cast<uint64_t>(sizeof(struct drm_format_modifier)) *
-                              hdr.count_modifiers;
-    if (fend > len || mend > len) {
-      reason = "IN_FORMATS blob is malformed";
-    } else {
-      // The modifier bitmasks index the BLOB's own format array, not
-      // drmModeGetPlane()'s -- they are conventionally the same list, but
-      // only the former is specified.
-      uint32_t idx = 0;
-      bool found = false;
-      for (uint32_t f = 0; f < hdr.count_formats && !found; ++f) {
-        uint32_t fourcc = 0;
-        std::memcpy(&fourcc, base + hdr.formats_offset + 4ull * f, sizeof(fourcc));
-        if (fourcc == DRM_FORMAT_ARGB8888) {
-          idx = f;
-          found = true;
-        }
-      }
-      if (!found) {
-        reason = "IN_FORMATS does not list ARGB8888";
-      } else {
-        reason = "lists ARGB8888 but with no LINEAR modifier (compression-only window)";
-        for (uint32_t m = 0; m < hdr.count_modifiers && !ok; ++m) {
-          struct drm_format_modifier e {};
-          std::memcpy(&e, base + hdr.modifiers_offset + sizeof(e) * m, sizeof(e));
-          if (e.modifier != DRM_FORMAT_MOD_LINEAR) continue;
-          if (idx < e.offset || idx - e.offset >= 64) continue;  // sliding 64-format window
-          if (e.formats & (1ull << (idx - e.offset))) ok = true;
-        }
-      }
-    }
-  }
+  // The property exists -- this driver is modifier-aware -- even if its
+  // current value is a null/zero blob id (blob stays nullptr below and
+  // in_formats_has_linear() fails closed on it, same as any other
+  // unreadable blob). Treating blob_id == 0 as "pre-modifier" here would
+  // silently trust a plane this driver has already told us it can gate.
+  drmModePropertyBlobPtr blob =
+      blob_id ? drmModeGetPropertyBlob(fd, static_cast<uint32_t>(blob_id)) : nullptr;
+  const bool ok = in_formats_has_linear(blob ? blob->data : nullptr, blob ? blob->length : 0,
+                                        DRM_FORMAT_ARGB8888, why);
   if (blob) drmModeFreePropertyBlob(blob);
-  if (!ok && why) *why = reason;
   return ok;
 }
 
@@ -324,7 +304,7 @@ struct DrmPresenter::Impl {
 
   ~Impl();
 
-  bool init(const std::string& screen_mode, ReleaseFn rel);
+  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn rel);
   bool present(const DmaFrame& frame);
   void poll_events();
   void drop_all();
@@ -427,8 +407,32 @@ void DrmPresenter::Impl::osd_give_up() {
       std::memset(s.pixels + static_cast<size_t>(y) * static_cast<size_t>(s.stride_px), 0,
                   static_cast<size_t>(s.width) * 4u);
   }
+  // Release fence for the writes above: they went through a write-combine
+  // mmap with no ioctl anywhere in this path to act as a flush point (the
+  // usual drain -- an atomic commit -- is exactly what we just gave up on).
+  // Without this, the store-visibility of the blanking writes to whatever
+  // reads the buffer next (the scanout engine, via the existing FB) is
+  // undefined rather than merely "eventually consistent by the next commit
+  // that happens not to come."
+  __sync_synchronize();
   osd_plane_id = 0;  // every osd_* entry point becomes a no-op from here
   osd_dirty = false;
+  // osd_on_primary is now purely descriptive: osd_ready (present()'s gate)
+  // is `osd_plane_id != 0 && osd.ok()`, so zeroing osd_plane_id above
+  // already makes every attach path a no-op regardless of this flag's
+  // value -- resetting it cannot change any commit's shape. It is reset
+  // anyway so the flag stops claiming a topology that no longer holds.
+  //
+  // One consequence is deliberate, not accidental: a future modeset (e.g.
+  // after drop_all()) builds its request with primary_fb_id == 0 (no
+  // backdrop was ever allocated when the OSD took the primary) and so never
+  // touches the primary plane at all. The driver leaves it showing its last
+  // committed FB -- the buffer just blanked to transparent above -- which is
+  // ordinary atomic KMS semantics (an untouched plane keeps its committed
+  // state across a modeset that doesn't mention it), not
+  // drm_atomic_add_affected_planes() reaching in on our behalf. Nothing
+  // here needs to re-attach the primary for that to keep working.
+  osd_on_primary = false;
 }
 
 // Standalone OSD update, for when video is not flowing and there is no
@@ -478,7 +482,7 @@ void DrmPresenter::Impl::commit_osd_only() {
   osd_back ^= 1;
 }
 
-bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
+bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, ReleaseFn rel) {
   release = std::move(rel);
 
   fd = open(kCardPath, O_RDWR | O_CLOEXEC);
@@ -756,8 +760,17 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
   //
   // Every failure below is best-effort: log the reason, leave osd_plane_id
   // == 0, carry on with video exactly as the pre-OSD player did.
-  std::string osd_err = "no plane on this CRTC scans out linear ARGB8888";
-  {
+  //
+  // Gated on want_osd, the caller's up-front decision (main.cpp: osd.enable
+  // AND the font actually loaded), so a disabled OSD -- or one whose font is
+  // missing -- takes NEITHER plane-selection path below: no plane is probed
+  // for the OSD, no buffers are allocated, and setup_backdrop() runs just
+  // below exactly as it did before the OSD existed. Without this gate the
+  // presenter always tried to claim a plane for the OSD regardless of
+  // config, leaving no way back to the old topology when it wasn't wanted.
+  std::string osd_err = want_osd ? "no plane on this CRTC scans out linear ARGB8888"
+                                  : "disabled by config";
+  if (want_osd) {
     drmModePlaneResPtr pres3 = drmModeGetPlaneResources(fd);
     if (!pres3) {
       osd_err = std::string("drmModeGetPlaneResources failed: ") + std::strerror(errno);
@@ -771,10 +784,14 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
           uint64_t type_val = 0;
           find_property(fd, pid, DRM_MODE_OBJECT_PLANE, "type", &type_val);
           std::string why;
+          bool listed_argb = false;  // structural signal, NOT a parse of `why`
+                                      // (a message edit must never change
+                                      // diagnostic policy -- see the out-param
+                                      // on plane_takes_linear_argb())
           if (type_val != DRM_PLANE_TYPE_CURSOR) {
-            if (plane_takes_linear_argb(fd, p, &why)) {
+            if (plane_takes_linear_argb(fd, p, &why, &listed_argb)) {
               take_it = true;
-            } else if (why.rfind("does not list", 0) != 0) {
+            } else if (listed_argb) {
               // The exact bench signature is worth naming on stderr: a plane
               // that offers ARGB8888 and still cannot take our buffer.
               std::fprintf(stderr, "DrmPresenter: plane %u unusable for the OSD: %s\n", pid,
@@ -1249,8 +1266,8 @@ DrmPresenter::Impl::~Impl() {
 DrmPresenter::DrmPresenter() : impl_(std::make_unique<Impl>()) {}
 DrmPresenter::~DrmPresenter() = default;
 
-bool DrmPresenter::init(const std::string& screen_mode, ReleaseFn release) {
-  return impl_->init(screen_mode, std::move(release));
+bool DrmPresenter::init(const std::string& screen_mode, bool want_osd, ReleaseFn release) {
+  return impl_->init(screen_mode, want_osd, std::move(release));
 }
 
 bool DrmPresenter::present(const DmaFrame& frame) { return impl_->present(frame); }

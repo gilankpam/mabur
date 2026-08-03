@@ -22,10 +22,11 @@ static const Case kCases[] = {
     // range [0,7]; the required stacking is simply video 6 below OSD 7.
     {"osd_on_primary_no_backdrop", true, true, false, 0, 7, 0, 7, true, 0, 6, 7},
 
-    // Same topology with a primary whose zpos range is narrower than the
-    // video's: the OSD still takes the top of its OWN range and the video
-    // clamps under it.
-    {"osd_on_primary_narrow_primary_range", true, true, false, 0, 7, 0, 1, true, 0, 0, 1},
+    // Same topology (no backdrop -- have_backdrop is false, so `pmin` below
+    // is unused) but the OSD's OWN zpos range [0,1] is narrower than the
+    // video's [0,7]: the OSD still takes the top of its own range and the
+    // video clamps under it.
+    {"osd_on_primary_narrow_osd_range", true, true, false, 0, 7, 0, 1, true, 0, 0, 1},
 
     // Three-plane form (OSD on a plane that is neither video nor primary, so
     // the primary keeps its backdrop): all three advertise the IDENTICAL
@@ -58,12 +59,6 @@ static const Case kCases[] = {
     // No OSD plane at all: the pre-OSD, hardware-validated fallback.
     // Video = vmax, backdrop = pmin, untouched.
     {"no_osd_plane_keeps_video_at_max", false, true, true, 0, 7, 0, 0, false, 0, 7, 0},
-
-    // The other way to end up with no backdrop: the video plane IS the
-    // primary, so the OSD is on some third plane and there was never
-    // anything to blank. Same arithmetic as osd_on_primary_no_backdrop --
-    // kept because the two reach it from opposite topologies.
-    {"no_backdrop_plane", true, true, false, 0, 7, 0, 7, true, 0, 6, 7},
 
     // Video plane has no mutable zpos: nothing to layer above provably, so
     // the OSD is disqualified even though its own range is fine.
