@@ -85,7 +85,8 @@ Config load_config(const std::string& path) {
     c.osd.scale = get_str(o, "scale", "sharp", "osd");
     if (c.osd.scale != "sharp" && c.osd.scale != "fill")
       fail("osd.scale", "must be \"sharp\" or \"fill\"");
-    c.osd.stale_ms = static_cast<int>(get_int(o, "stale_ms", 2000, 0, 60000, "osd"));
+    // Default mirrors OsdCfg::stale_ms (see player_config.h for why 5000).
+    c.osd.stale_ms = static_cast<int>(get_int(o, "stale_ms", 5000, 0, 60000, "osd"));
   }
 
   return c;

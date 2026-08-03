@@ -48,7 +48,9 @@ TEST(osd_defaults_are_off_and_conventional) {
   CHECK(c.osd.enable == false);
   CHECK(c.osd.port == 14560);
   CHECK(c.osd.scale == "sharp");
-  CHECK(c.osd.stale_ms == 2000);
+  // 5 s = 5 missed snapshots at the drone's default msp.update_rate_hz of
+  // 1 Hz; a shorter default strobes the overlay on a single dropped one.
+  CHECK(c.osd.stale_ms == 5000);
   CHECK(c.osd.font == "/usr/local/share/mabur/font_btfl.mfont");
 }
 

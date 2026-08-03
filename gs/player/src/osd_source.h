@@ -55,7 +55,7 @@ class OsdSource {
   uint64_t last_rx_ms_ = 0;
   uint64_t last_render_ms_ = 0;
   bool rendered_once_ = false;
-  int stale_ms_ = 2000;
+  int stale_ms_ = 5000;  // overridden from OsdCfg::stale_ms; kept in step
   int min_interval_ms_ = 30;
   uint64_t datagrams_ = 0;
   uint64_t screens_ = 0;

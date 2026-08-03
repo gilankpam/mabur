@@ -647,6 +647,15 @@ int main(int argc, char** argv) {
   uint64_t wd_frames = 0, wd_submits = 0;
   int wd_consecutive = 0;  // fruitless reset cycles since the last decoded frame
   auto wd_last_progress = std::chrono::steady_clock::now();
+  // OSD silence diagnostic: osd.port must equal maburgs' msp.out.port, a
+  // deploy-time pairing across two config files that neither daemon can
+  // validate. Production runs maburplay WITHOUT --fps-log (S97maburplay), so
+  // the osd_dgrams counter that would expose a mismatch is invisible -- warn
+  // once, on stderr, if nothing has ever arrived.
+  const uint64_t osd_start_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+  bool osd_silence_warned = false;
   while (!g_stop.load()) {
     // 2 ms pump: flip events must be reaped at sub-vsync latency or the
     // mailbox frame waits for the NEXT AU burst before anyone submits it
@@ -665,6 +674,20 @@ int main(int argc, char** argv) {
                                   std::chrono::steady_clock::now().time_since_epoch())
                                   .count();
       const bool ready = osd_src->poll(now_ms);
+      // Fires at most once per process: either traffic arrived (nothing to
+      // report, latch it shut) or 10 s passed with none (report, latch shut).
+      if (!osd_silence_warned) {
+        if (osd_src->datagrams() > 0) {
+          osd_silence_warned = true;
+        } else if (now_ms - osd_start_ms >= 10000) {
+          std::fprintf(stderr,
+                       "maburplay: warning: no MSP snapshot on udp 127.0.0.1:%d after 10 s -- "
+                       "maburgs must have msp.enable true and its msp.out.port MUST equal this "
+                       "player's osd.port; the OSD stays empty until one arrives\n",
+                       osd_src->port());
+          osd_silence_warned = true;
+        }
+      }
 #ifdef MABUR_PLAYER_HW
       // Re-checked every iteration, never cached: the presenter switches the
       // OSD off mid-session if a commit carrying it fails repeatedly, and

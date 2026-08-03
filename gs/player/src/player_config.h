@@ -19,7 +19,12 @@ struct OsdCfg {
   int port = 14560;
   std::string font = "/usr/local/share/mabur/font_btfl.mfont";
   std::string scale = "sharp";  // "sharp" | "fill"
-  int stale_ms = 2000;          // blank after this much silence; 0 = never
+  // Blank the OSD after this much silence; 0 = never. MUST stay several
+  // multiples of the drone's msp.update_rate_hz period (default 1 Hz = one
+  // snapshot per second, so 5000 = 5 missed snapshots): at ~2x the period a
+  // SINGLE dropped snapshot blanks the whole overlay and the next one
+  // repaints it, which reads as a strobe rather than as staleness.
+  int stale_ms = 5000;
 };
 
 struct Config {
