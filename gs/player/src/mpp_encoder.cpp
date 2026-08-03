@@ -13,6 +13,14 @@
 // MPP_ENC_SET_HEADER_MODE(EACH_IDR) -> internal DRM|CACHABLE buffer group ->
 // MPP_ENC_GET_HDR_SYNC -> per frame encode_put_frame / encode_get_packet.
 //
+// The split against the spike: everything geometry-dependent (prep:*,
+// MPP_ENC_SET_CFG, the packet buffer, MPP_ENC_GET_HDR_SYNC) is deferred to
+// the FIRST encode(), which latches that frame's strides. EncCfg carries no
+// strides and the decoder's real ones are only known once frames flow; after
+// the latch, any disagreeing frame is rejected outright rather than
+// reconfigured. See Impl::latch_geometry() for why a reconfigure is not an
+// option here.
+//
 // The four measured traps this file is built around (all silent -- each
 // produces wrong pixels with NO API error):
 //   1. MppEncOSDPltVal's {v,u,y,alpha} bitfields are wrong on little-endian.
@@ -38,9 +46,10 @@ namespace {
 constexpr int kMbSize = 16;
 
 // Scans an HEVC Annex-B elementary stream for an IRAP or a VPS: the
-// keyframe-detection fallback (see is_keyframe()). Cheap -- it stops at the
-// first hit, which for a keyframe is the very first NAL (header mode
-// EACH_IDR prepends VPS/SPS/PPS to every IDR).
+// keyframe-detection fallback (see Impl::is_keyframe()). Every keyframe this
+// encoder emits opens with an IDR NAL (type 19/20) whether or not parameter
+// sets precede it, so the scan does not depend on the header being in band
+// -- which for the very first IDR it is not (see MppEncoder::header()).
 bool hevc_has_irap(const uint8_t* p, size_t n) {
   if (!p || n < 5) return false;
   for (size_t i = 0; i + 4 < n; ++i) {
@@ -69,9 +78,9 @@ struct MppEncoder::Impl {
   MppEncCfg cfg = nullptr;
   MppBufferGroup grp = nullptr;
 
-  // Output packet buffer. One is enough: encode() is a serialized
-  // submit-then-wait pair, so the packet is consumed by the sink before the
-  // next frame can reuse the buffer.
+  // Output packet buffer, allocated when the geometry latches. One is
+  // enough: encode() is a serialized submit-then-wait pair, so the packet is
+  // consumed by the sink before the next frame can reuse the buffer.
   MppBuffer pkt_buf = nullptr;
   size_t pkt_buf_size = 0;
 
@@ -80,25 +89,27 @@ struct MppEncoder::Impl {
   MppEncOSDData osd_data[2];
   size_t osd_bytes = 0;
   int front = 0;
-  bool osd_ready = false;   // a bitmap has been uploaded at least once
-  bool palette_set = false; // set_palette() succeeded => the OSD is wanted
+  bool osd_ready = false;    // a bitmap has been uploaded at least once
+  bool palette_set = false;  // set_palette() succeeded => the OSD is wanted
   bool warned_no_palette = false;
+  // Region geometry, fixed at init from EncCfg's picture size and never
+  // recomputed: the picture size cannot change (encode() rejects any frame
+  // that disagrees), so neither can the macroblock dimensions.
   int mb_w = 0, mb_h = 0;
 
   EncCfg ecfg;
-  // Geometry currently programmed into the encoder. encode() reconfigures if
-  // a submitted frame disagrees (the decoder's real stride is only known
-  // once frames flow).
+  // Geometry programmed into the encoder, latched from the first submitted
+  // frame. applied_* are meaningful only once geom_latched is true.
+  bool geom_latched = false;
   int applied_w = 0, applied_h = 0, applied_stride = 0, applied_vstride = 0;
+  uint64_t geom_rejects = 0;
 
   NalSink sink;
   std::vector<uint8_t> header;
   uint64_t frame_count = 0;
   uint64_t error_count = 0;
 
-  Impl() {
-    std::memset(osd_data, 0, sizeof(osd_data));
-  }
+  Impl() { std::memset(osd_data, 0, sizeof(osd_data)); }
 
   ~Impl() {
     // Destroy order per bench/encosd: context first, then the buffers and
@@ -113,49 +124,72 @@ struct MppEncoder::Impl {
     if (grp) mpp_buffer_group_put(grp);
   }
 
-  // Programs prep:* for this geometry and pushes it. Also (re)sizes the
-  // output packet buffer and, when the OSD is on, the region + its bitmaps.
-  bool apply_geometry(int w, int h, int stride, int vstride) {
+  // First-frame geometry latch: prep:* + SET_CFG, the header mode, the
+  // packet buffer, and the parameter sets -- committed to applied_*/
+  // geom_latched only once every step has succeeded, so a failure leaves a
+  // consistent state that the next frame retries from rather than a
+  // half-applied one that is never revisited.
+  //
+  // Why this is a one-shot latch and NOT a reconfigure:
+  //  - MPP_ENC_SET_CFG cannot report a rejected geometry. proc_prep_cfg()
+  //    (mpp_enc_impl.c:566-591) silently restores the previous width/height/
+  //    stride when width > hor_stride || height > ver_stride, logs, and is
+  //    `static void` -- the control still returns MPP_OK. Believing it would
+  //    run the OLD geometry against the NEW buffer: exactly the silent shear
+  //    this guards against. The stride check below makes that branch
+  //    unreachable instead of trusting the return value.
+  //  - A mid-stream picture-size change is not something a running fMP4 mux
+  //    can consume anyway (it needs a new track, not a reconfigure), so the
+  //    honest answer to a disagreeing frame is a loud refusal.
+  bool latch_geometry(int w, int h, int stride, int vstride) {
+    if (w != ecfg.width || h != ecfg.height) {
+      std::fprintf(stderr, "MppEncoder: first frame %dx%d != configured %dx%d, refusing\n", w, h,
+                   ecfg.width, ecfg.height);
+      return false;
+    }
+    if (stride <= 0 || vstride <= 0 || stride < w || vstride < h) {
+      std::fprintf(stderr, "MppEncoder: bad stride %d/%d for %dx%d, refusing\n", stride, vstride,
+                   w, h);
+      return false;
+    }
+
     mpp_enc_cfg_set_s32(cfg, "prep:width", w);
     mpp_enc_cfg_set_s32(cfg, "prep:height", h);
     mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", stride);
     mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", vstride);
     mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP);
-    const MPP_RET ret = mpi->control(ctx, MPP_ENC_SET_CFG, cfg);
+    MPP_RET ret = mpi->control(ctx, MPP_ENC_SET_CFG, cfg);
     if (ret != MPP_OK) {
-      std::fprintf(stderr, "MppEncoder: MPP_ENC_SET_CFG (geometry %dx%d stride %d/%d) failed ret=%d\n",
-                   w, h, stride, vstride, ret);
+      std::fprintf(stderr, "MppEncoder: MPP_ENC_SET_CFG (%dx%d stride %d/%d) failed ret=%d\n", w,
+                   h, stride, vstride, ret);
       return false;
     }
+
+    // Parameter sets on every IDR, so a decoder joining an in-progress
+    // recording resyncs. NOTE: this does NOT cover the FIRST IDR -- see
+    // MppEncoder::header() for why, and for what the caller owes the mux.
+    MppEncHeaderMode hm = MPP_ENC_HEADER_MODE_EACH_IDR;
+    ret = mpi->control(ctx, MPP_ENC_SET_HEADER_MODE, &hm);
+    if (ret != MPP_OK) {
+      std::fprintf(stderr, "MppEncoder: MPP_ENC_SET_HEADER_MODE failed ret=%d\n", ret);
+      return false;
+    }
+
+    if (!alloc_pkt_buf((size_t)stride * (size_t)vstride * 3 / 2)) return false;
+    if (!fetch_header()) return false;
+
     applied_w = w;
     applied_h = h;
     applied_stride = stride;
     applied_vstride = vstride;
-
-    if (!ensure_pkt_buf((size_t)stride * (size_t)vstride * 3 / 2)) return false;
-
-    // Full-picture region, in macroblocks. ceil() on BOTH axes: 1080/16 is
-    // 67.5 and the 68th row is required (measured -- see the file comment).
-    const int new_mb_w = (w + kMbSize - 1) / kMbSize;
-    const int new_mb_h = (h + kMbSize - 1) / kMbSize;
-    if (palette_set && (new_mb_w != mb_w || new_mb_h != mb_h)) {
-      mb_w = new_mb_w;
-      mb_h = new_mb_h;
-      if (!alloc_osd()) return false;
-    } else {
-      mb_w = new_mb_w;
-      mb_h = new_mb_h;
-    }
+    geom_latched = true;
+    std::fprintf(stderr, "MppEncoder: geometry latched %dx%d stride %d/%d\n", w, h, stride,
+                 vstride);
     return true;
   }
 
-  bool ensure_pkt_buf(size_t want) {
+  bool alloc_pkt_buf(size_t want) {
     if (pkt_buf && pkt_buf_size >= want) return true;
-    if (pkt_buf) {
-      mpp_buffer_put(pkt_buf);
-      pkt_buf = nullptr;
-      pkt_buf_size = 0;
-    }
     const MPP_RET ret = mpp_buffer_get(grp, &pkt_buf, want);
     if (ret != MPP_OK || !pkt_buf) {
       std::fprintf(stderr, "MppEncoder: packet buffer %zu bytes failed ret=%d\n", want, ret);
@@ -166,13 +200,11 @@ struct MppEncoder::Impl {
     return true;
   }
 
-  // Allocates/reallocates the two OSD bitmaps for the current mb_w x mb_h
-  // region and rebuilds both MppEncOSDData structs around them.
+  // Allocates the two OSD bitmaps for the mb_w x mb_h region and builds both
+  // MppEncOSDData structs around them. Called exactly once, from
+  // set_palette(), whose failure path leaves palette_set false -- so a
+  // partial failure here can never be reached by set_osd() or encode().
   bool alloc_osd() {
-    for (MppBuffer& b : osd_buf) {
-      if (b) mpp_buffer_put(b);
-      b = nullptr;
-    }
     osd_ready = false;
     front = 0;
     std::memset(osd_data, 0, sizeof(osd_data));
@@ -206,8 +238,8 @@ struct MppEncoder::Impl {
     return true;
   }
 
-  // VPS/SPS/PPS out of the encoder into header. Uses pkt_buf, so it must run
-  // when no frame is in flight (init, and after a reconfigure).
+  // VPS/SPS/PPS out of the encoder into header. Uses pkt_buf, so it runs
+  // inside the geometry latch, before any frame is in flight.
   bool fetch_header() {
     MppPacket hdr = nullptr;
     if (mpp_packet_init_with_buffer(&hdr, pkt_buf) != MPP_OK || !hdr) {
@@ -256,6 +288,10 @@ bool MppEncoder::init(const EncCfg& cfg, NalSink sink) {
   impl_ = std::make_unique<Impl>();
   impl_->ecfg = cfg;
   impl_->sink = std::move(sink);
+  // Full-picture region in macroblocks. ceil() on BOTH axes: 1080/16 is 67.5
+  // and the 68th row is required (measured -- see the file comment).
+  impl_->mb_w = (cfg.width + kMbSize - 1) / kMbSize;
+  impl_->mb_h = (cfg.height + kMbSize - 1) / kMbSize;
 
   MPP_RET ret = mpp_create(&impl_->ctx, &impl_->mpi);
   if (ret != MPP_OK || !impl_->ctx || !impl_->mpi) {
@@ -283,6 +319,9 @@ bool MppEncoder::init(const EncCfg& cfg, NalSink sink) {
     return false;
   }
 
+  // Everything geometry-independent is staged on the cfg object now; the
+  // prep:* keys join it and the single MPP_ENC_SET_CFG fires when the first
+  // frame latches the strides (Impl::latch_geometry).
   const int bps = cfg.bitrate_kbps * 1000;
   MppEncCfg c = impl_->cfg;
   mpp_enc_cfg_set_s32(c, "codec:type", MPP_VIDEO_CodingHEVC);
@@ -310,13 +349,6 @@ bool MppEncoder::init(const EncCfg& cfg, NalSink sink) {
   mpp_enc_cfg_set_s32(c, "h265:level", 120);  // covers 1080p60
   mpp_enc_cfg_set_s32(c, "h265:diff_cu_qp_delta_depth", 0);
 
-  // prep:* + SET_CFG. Strides start at the 16-aligned defaults; the first
-  // encode() re-applies them if the real frames disagree.
-  const int stride = (cfg.width + 15) & ~15;
-  const int vstride = (cfg.height + 15) & ~15;
-
-  // The buffer group has to exist before apply_geometry(), which sizes the
-  // output packet buffer out of it. DRM|CACHABLE per the spike.
   ret = mpp_buffer_group_get_internal(&impl_->grp,
                                       MPP_BUFFER_TYPE_DRM | MPP_BUFFER_FLAGS_CACHABLE);
   if (ret != MPP_OK || !impl_->grp) {
@@ -325,28 +357,9 @@ bool MppEncoder::init(const EncCfg& cfg, NalSink sink) {
     return false;
   }
 
-  if (!impl_->apply_geometry(cfg.width, cfg.height, stride, vstride)) {
-    impl_.reset();
-    return false;
-  }
-
-  // Header on every IDR, so a recording that starts (or a decoder that
-  // joins) mid-stream has parameter sets in band.
-  MppEncHeaderMode hm = MPP_ENC_HEADER_MODE_EACH_IDR;
-  ret = impl_->mpi->control(impl_->ctx, MPP_ENC_SET_HEADER_MODE, &hm);
-  if (ret != MPP_OK) {
-    std::fprintf(stderr, "MppEncoder: MPP_ENC_SET_HEADER_MODE failed ret=%d\n", ret);
-    impl_.reset();
-    return false;
-  }
-
-  if (!impl_->fetch_header()) {
-    impl_.reset();
-    return false;
-  }
-
-  std::fprintf(stderr, "MppEncoder: init %dx%d stride %d/%d @%dfps CBR %dkbps gop %d\n",
-               cfg.width, cfg.height, stride, vstride, cfg.fps, cfg.bitrate_kbps, cfg.fps);
+  std::fprintf(stderr,
+               "MppEncoder: init %dx%d @%dfps CBR %dkbps gop %d (strides latch on frame 0)\n",
+               cfg.width, cfg.height, cfg.fps, cfg.bitrate_kbps, cfg.fps);
   return true;
 }
 
@@ -375,11 +388,12 @@ bool MppEncoder::set_palette(const OsdPalette& pal) {
   }
 
   if (!impl_->palette_set) {
+    // palette_set is raised only after the buffers exist: with it clear,
+    // set_osd() refuses and encode() attaches no region, so a partially
+    // allocated OSD is unreachable. (An uploaded palette with no region is
+    // inert.)
+    if (!impl_->alloc_osd()) return false;
     impl_->palette_set = true;
-    if (!impl_->alloc_osd()) {
-      impl_->palette_set = false;
-      return false;
-    }
   }
   std::fprintf(stderr, "MppEncoder: palette installed (userdef, %d entries)\n", pal.n);
   return true;
@@ -423,16 +437,24 @@ bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstri
   if (!impl_ || !impl_->ctx || !nv12) return false;
   Impl& im = *impl_;
 
-  if (width != im.applied_w || height != im.applied_h || stride != im.applied_stride ||
-      vstride != im.applied_vstride) {
-    std::fprintf(stderr,
-                 "MppEncoder: geometry %dx%d stride %d/%d -> %dx%d stride %d/%d, reconfiguring\n",
-                 im.applied_w, im.applied_h, im.applied_stride, im.applied_vstride, width, height,
-                 stride, vstride);
-    if (!im.apply_geometry(width, height, stride, vstride) || !im.fetch_header()) {
+  if (!im.geom_latched) {
+    if (!im.latch_geometry(width, height, stride, vstride)) {
       ++im.error_count;
       return false;
     }
+  } else if (width != im.applied_w || height != im.applied_h || stride != im.applied_stride ||
+             vstride != im.applied_vstride) {
+    // Hard reject, never a reconfigure (see Impl::latch_geometry). The log
+    // is rate-limited: at 60 fps a persistent mismatch would flood it.
+    ++im.geom_rejects;
+    if (im.geom_rejects == 1 || im.geom_rejects % 300 == 0)
+      std::fprintf(stderr,
+                   "MppEncoder: frame %dx%d stride %d/%d != latched %dx%d stride %d/%d, "
+                   "rejected (%llu so far)\n",
+                   width, height, stride, vstride, im.applied_w, im.applied_h, im.applied_stride,
+                   im.applied_vstride, (unsigned long long)im.geom_rejects);
+    ++im.error_count;
+    return false;
   }
 
   MppFrame frame = nullptr;
@@ -476,11 +498,10 @@ bool MppEncoder::encode(void* nv12, int width, int height, int stride, int vstri
     return false;
   }
 
-  // One packet per frame: the encoder writes into the buffer we supplied via
-  // KEY_OUTPUT_PACKET and hands that same MppPacket back, and the spike
-  // measured an exact 1:1 (1200 frames -> 1200 packets, header folded into
-  // the IDR packets by EACH_IDR). A second blocking encode_get_packet() here
-  // would have nothing to wait on, so this deliberately does not loop.
+  // One packet per frame, so no drain loop: the encoder writes into the
+  // buffer we supplied via KEY_OUTPUT_PACKET and hands that same MppPacket
+  // back, and the spike measured an exact 1:1 (1200 frames -> 1200 packets,
+  // parameter sets folded into the IDR packets by EACH_IDR).
   MppPacket outp = nullptr;
   const MPP_RET gr = im.mpi->encode_get_packet(im.ctx, &outp);
   if (gr != MPP_OK || !outp) {

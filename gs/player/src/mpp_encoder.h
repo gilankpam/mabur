@@ -59,8 +59,14 @@ class MppEncoder {
   MppEncoder(const MppEncoder&) = delete;
   MppEncoder& operator=(const MppEncoder&) = delete;
 
-  // Creates the encoder, applies cfg, and fetches VPS/SPS/PPS into header().
-  // Any MPP error is fatal: logs, tears the context back down, returns false.
+  // Creates the encoder and stages cfg. Any MPP error is fatal: logs, tears
+  // the context back down, returns false.
+  //
+  // Geometry is NOT applied here. EncCfg carries no strides and only the
+  // frames themselves know the decoder's real ones, so prep:*, the packet
+  // buffer and the parameter sets are deferred to the first encode(), which
+  // latches that frame's strides permanently. header() is therefore empty
+  // until the first successful encode().
   bool init(const EncCfg& cfg, NalSink sink);
 
   // Uploads the palette (MPP_ENC_OSD_PLT_TYPE_USERDEF) and allocates the two
@@ -85,13 +91,30 @@ class MppEncoder {
   // Does NOT take ownership: the caller must hold its reference across the
   // call and release it afterwards. Task 4 hands the decoder's own buffer
   // straight in, so there is no copy anywhere in the path.
+  //
+  // The FIRST call latches the geometry (it must match EncCfg's picture size
+  // and carry strides >= it). Every later frame must present exactly the
+  // same width/height/stride/vstride: a mismatch is REJECTED -- logged
+  // (rate-limited), counted in errors(), false returned -- and never
+  // reconfigured. A mid-stream resolution change needs a new track in the
+  // mux, not a reconfigured encoder, so the caller must handle it as such.
   bool encode(void* nv12, int width, int height, int stride, int vstride, uint64_t pts_us);
 
   // Makes the next submitted frame an IDR (MPP_ENC_SET_IDR_FRAME).
   void request_idr();
 
-  // VPS+SPS+PPS as fetched at init (MPP_ENC_GET_HDR_SYNC). Re-fetched if the
-  // submitted geometry ever forces a reconfigure. Empty if init() failed.
+  // VPS+SPS+PPS (MPP_ENC_GET_HDR_SYNC), fetched when the first encode()
+  // latches the geometry. Empty before that, and if init() failed.
+  //
+  // THE CALLER MUST CARRY THIS OUT OF BAND. The stream's first IDR does NOT
+  // contain parameter sets, despite MPP_ENC_HEADER_MODE_EACH_IDR:
+  // MPP_ENC_GET_HDR_SYNC sets hdr_status.added_by_ctrl (mpp_enc_impl.c:1367)
+  // and mpp_enc_add_sw_header skips while HDR_ADDED_MASK is set (:2023-2041),
+  // and those flags are only cleared by reset_enc_task at the END of the
+  // first task -- so frame 0's IDR is header-less and only IDRs from GOP 2
+  // onward carry them. Consequence for Task 4: the fMP4 sample entry
+  // (hvcC) must be built from header(); a bare Annex-B dump must have it
+  // prepended, or nothing can decode the first second.
   const std::vector<uint8_t>& header() const;
 
   // Diagnostics.
