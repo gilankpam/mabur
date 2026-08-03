@@ -64,6 +64,19 @@ constexpr int64_t kCapSlackUs = 5000;
 // forever would only flood the log. ~2 s at the default cap.
 constexpr uint64_t kMaxInitialFailures = 60;
 
+// The same backstop for a recording that HAD been working and then stopped --
+// the realistic trigger being the VPU session wedging mid-flight, the failure
+// class the decode watchdog exists for. Without it, a persistent failure in
+// MppEncoder's MPP-error branches (mpp_frame_init / packet init /
+// encode_put_frame / encode_get_packet, none of them rate-limited) is fed at
+// fps_cap forever: ~2 KB/s into /tmp/maburplay.log, which is an unrotated `>`
+// redirect on tmpfs, plus a decoder-buffer round-trip per frame for nothing.
+// BurnRecorder is the right place to bound that because it owns the feed rate.
+// Looser than kMaxInitialFailures on purpose (~20 s at the default cap): an
+// established recording is worth some patience, and whatever was recorded
+// before the stall is still closed cleanly by stop().
+constexpr uint64_t kMaxRunningFailures = 600;
+
 }  // namespace
 
 struct BurnRecorder::Impl {
@@ -197,14 +210,22 @@ struct BurnRecorder::Impl {
       }
       encode_errors.fetch_add(1);
       ++consecutive_fail;
-      if (frames_encoded.load() == 0 && consecutive_fail >= kMaxInitialFailures) {
-        // MppEncoder's permanent-refusal signature. It logged the reason once
-        // itself; say why the recording is over and stop feeding it, rather
-        // than burning a decoder buffer round-trip per frame forever.
+      // Two thresholds, both "stop feeding the encoder" rather than "retry
+      // forever". The tight one is MppEncoder's documented permanent-refusal
+      // signature (errors() climbing with frames() stuck at 0), which will
+      // never fix itself. The loose one bounds everything else, including a
+      // recording that worked and then stopped working.
+      const bool never_encoded = frames_encoded.load() == 0;
+      if ((never_encoded && consecutive_fail >= kMaxInitialFailures) ||
+          consecutive_fail >= kMaxRunningFailures) {
+        // MppEncoder logged the reason once itself; say why the recording is
+        // over, and stop burning a decoder-buffer round-trip per frame.
         std::fprintf(stderr,
-                     "BurnRecorder: encoder refused %llu consecutive frames with none encoded; "
-                     "recording disabled (no file written)\n",
-                     static_cast<unsigned long long>(consecutive_fail));
+                     "BurnRecorder: encoder refused %llu consecutive frames (%llu encoded so "
+                     "far); recording disabled%s\n",
+                     static_cast<unsigned long long>(consecutive_fail),
+                     static_cast<unsigned long long>(frames_encoded.load()),
+                     never_encoded ? " (no file written)" : " (file closed at stop())");
         dead.store(true);
       }
     }

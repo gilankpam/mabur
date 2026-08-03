@@ -121,6 +121,17 @@ class BurnRecorder {
   // the recorder is not holding decoder buffers across a reset either. The
   // frame the encoder is working on right now cannot be recalled, so this
   // narrows the window rather than closing it.
+  //
+  // Holding a buffer across a group teardown is BENIGN, so this is hygiene
+  // rather than a guard: mpp_buffer_group_put()/clear() on a group with a
+  // buffer still referenced does not free it -- service_put_group()
+  // (mpp_buffer_impl.c) logs, moves the group to the orphan list, and the
+  // last mpp_buffer_put() reaps it. Cost is two mpp_err lines and a slightly
+  // late DMA free. That matters because one such teardown is NOT reachable
+  // from here at all: MppBackend acks a mid-stream resolution change by
+  // calling mpp_buffer_group_clear() inside its own drain loop
+  // (mpp_backend.cpp), an event the main loop never sees and cannot precede
+  // with a drop_pending().
   void drop_pending();
 
   // Joins the thread, releases any buffer still held, and closes the mux.
