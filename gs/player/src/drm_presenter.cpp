@@ -105,6 +105,86 @@ uint32_t find_enum_property(int fd, uint32_t obj_id, uint32_t obj_type, const ch
   return id;
 }
 
+// Can this plane scan out what the OSD actually produces -- a CPU-written
+// LINEAR ARGB8888 dumb buffer? Checking only that the plane "lists
+// ARGB8888" is what shipped the bench failure: vop2's Cluster0-win0 lists
+// ARGB8888 with ARM AFBC 16x16 modifiers ONLY, so every atomic commit
+// carrying it came back EINVAL ("Unsupported linear format at
+// Cluster0-win0") until the 3-strike safety path switched the OSD off.
+//
+// The authority is the IN_FORMATS blob (format list + per-format modifier
+// bitmasks). A driver too old to expose IN_FORMATS has no modifier concept
+// at all and its plain format list is implicitly linear -- that is the only
+// case where the plain list is trusted. Anything else unreadable fails
+// closed: an OSD we cannot prove will scan out is not worth a rejected
+// commit per frame.
+bool plane_takes_linear_argb(int fd, drmModePlanePtr p, std::string* why) {
+  bool listed = false;
+  for (uint32_t f = 0; f < p->count_formats; ++f) {
+    if (p->formats[f] == DRM_FORMAT_ARGB8888) {
+      listed = true;
+      break;
+    }
+  }
+  if (!listed) {
+    if (why) *why = "does not list ARGB8888";
+    return false;
+  }
+
+  uint64_t blob_id = 0;
+  if (!find_property(fd, p->plane_id, DRM_MODE_OBJECT_PLANE, "IN_FORMATS", &blob_id) || !blob_id)
+    return true;  // pre-modifier driver: the format list is implicitly linear
+
+  drmModePropertyBlobPtr blob = drmModeGetPropertyBlob(fd, static_cast<uint32_t>(blob_id));
+  bool ok = false;
+  std::string reason = "IN_FORMATS blob unreadable";
+  if (blob && blob->data && blob->length >= sizeof(struct drm_format_modifier_blob)) {
+    // memcpy throughout: the blob's interior offsets come from the driver,
+    // so neither the format array nor the modifier array can be assumed
+    // aligned for a direct struct/u32 load.
+    struct drm_format_modifier_blob hdr {};
+    std::memcpy(&hdr, blob->data, sizeof(hdr));
+    const uint8_t* base = static_cast<const uint8_t*>(blob->data);
+    const uint64_t len = blob->length;
+    const uint64_t fend = static_cast<uint64_t>(hdr.formats_offset) + 4ull * hdr.count_formats;
+    const uint64_t mend = static_cast<uint64_t>(hdr.modifiers_offset) +
+                          static_cast<uint64_t>(sizeof(struct drm_format_modifier)) *
+                              hdr.count_modifiers;
+    if (fend > len || mend > len) {
+      reason = "IN_FORMATS blob is malformed";
+    } else {
+      // The modifier bitmasks index the BLOB's own format array, not
+      // drmModeGetPlane()'s -- they are conventionally the same list, but
+      // only the former is specified.
+      uint32_t idx = 0;
+      bool found = false;
+      for (uint32_t f = 0; f < hdr.count_formats && !found; ++f) {
+        uint32_t fourcc = 0;
+        std::memcpy(&fourcc, base + hdr.formats_offset + 4ull * f, sizeof(fourcc));
+        if (fourcc == DRM_FORMAT_ARGB8888) {
+          idx = f;
+          found = true;
+        }
+      }
+      if (!found) {
+        reason = "IN_FORMATS does not list ARGB8888";
+      } else {
+        reason = "lists ARGB8888 but with no LINEAR modifier (compression-only window)";
+        for (uint32_t m = 0; m < hdr.count_modifiers && !ok; ++m) {
+          struct drm_format_modifier e {};
+          std::memcpy(&e, base + hdr.modifiers_offset + sizeof(e) * m, sizeof(e));
+          if (e.modifier != DRM_FORMAT_MOD_LINEAR) continue;
+          if (idx < e.offset || idx - e.offset >= 64) continue;  // sliding 64-format window
+          if (e.formats & (1ull << (idx - e.offset))) ok = true;
+        }
+      }
+    }
+  }
+  if (blob) drmModeFreePropertyBlob(blob);
+  if (!ok && why) *why = reason;
+  return ok;
+}
+
 uint64_t mono_ms() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -157,7 +237,11 @@ struct DrmPresenter::Impl {
   PlaneProps video_props;
 
   // Primary-black fallback (brief: "else overlay + keep primary black via
-  // a dumb buffer") -- only populated when plane_is_primary is false.
+  // a dumb buffer") -- only populated when plane_is_primary is false AND
+  // the OSD did not take the primary. When the OSD is on the primary this
+  // buffer does not exist at all: the OSD's own transparent buffer is what
+  // the primary scans out, and present() already covers the whole CRTC with
+  // video, so there is nothing for a backdrop to fill.
   uint32_t primary_plane_id = 0;
   uint32_t primary_fb_id = 0;
   uint32_t primary_gem_handle = 0;
@@ -178,6 +262,11 @@ struct DrmPresenter::Impl {
   // osd_* path below is a no-op -- an OSD that could not be set up must
   // never cost us video.
   uint32_t osd_plane_id = 0;
+  // The OSD plane IS this CRTC's primary plane (the normal case on vop2:
+  // Cluster0 is AFBC-only, so the primary Smart0 window is the only other
+  // linear-ARGB plane). Then there is no backdrop and the OSD must be
+  // attached on every modeset, so the CRTC never comes up primary-less.
+  bool osd_on_primary = false;
   PlaneProps osd_props;
   uint32_t zpos_osd_prop = 0;
   uint64_t zpos_osd_val = 0;
@@ -245,6 +334,7 @@ struct DrmPresenter::Impl {
 
   void add_osd_props(drmModeAtomicReqPtr req, int idx, bool one_time);
   void commit_osd_only();
+  void osd_give_up();
 
   static void on_flip_static(int fd, unsigned int sequence, unsigned int tv_sec,
                               unsigned int tv_usec, unsigned int crtc_id, void* user_data);
@@ -313,6 +403,34 @@ void DrmPresenter::Impl::add_osd_props(drmModeAtomicReqPtr req, int idx, bool on
   }
 }
 
+// Runtime disable after kOsdMaxFailStreak OSD-attributed commit failures.
+//
+// The buffer stays attached to its plane -- deliberately. When the OSD is on
+// the PRIMARY there is no black buffer to switch back to (that is the whole
+// point of this topology: one buffer, not two), and manufacturing one here
+// would mean allocating a dumb buffer AND moving the primary's zpos back
+// under the video mid-session, in a commit shape the driver has just told us
+// three times it will not take. Instead the two OSD buffers are blanked to
+// fully transparent through their CPU mappings: no ioctl, no commit, cannot
+// fail, and the scanout picks it up on its own. What is left on screen is a
+// transparent primary over untouched video, rather than a frozen stale
+// overlay. Video is unaffected in either case.
+void DrmPresenter::Impl::osd_give_up() {
+  std::fprintf(stderr,
+               "DrmPresenter: OSD plane %u rejected %d commits in a row -- disabling the OSD for "
+               "the rest of this session; video continues unaffected\n",
+               osd_plane_id, osd_fail_streak);
+  for (int i = 0; i < 2; ++i) {
+    const Surface s = osd.cpu(i);
+    if (!s.pixels) continue;
+    for (int y = 0; y < s.height; ++y)
+      std::memset(s.pixels + static_cast<size_t>(y) * static_cast<size_t>(s.stride_px), 0,
+                  static_cast<size_t>(s.width) * 4u);
+  }
+  osd_plane_id = 0;  // every osd_* entry point becomes a no-op from here
+  osd_dirty = false;
+}
+
 // Standalone OSD update, for when video is not flowing and there is no
 // present() commit to ride on. Callers must have established that no flip is
 // in flight and that the CRTC is already active.
@@ -351,13 +469,7 @@ void DrmPresenter::Impl::commit_osd_only() {
       std::fprintf(stderr, "DrmPresenter: standalone OSD commit failed: %s (logged once)\n",
                    std::strerror(err));
     }
-    if (osd_fail_streak >= kOsdMaxFailStreak) {
-      std::fprintf(stderr,
-                   "DrmPresenter: OSD plane %u rejected %d commits in a row -- disabling the OSD "
-                   "for the rest of this session; video continues unaffected\n",
-                   osd_plane_id, osd_fail_streak);
-      osd_plane_id = 0;
-    }
+    if (osd_fail_streak >= kOsdMaxFailStreak) osd_give_up();
     return;
   }
   osd_dirty = false;
@@ -545,98 +657,139 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
     return false;
   }
 
-  // Overlay case: find the real primary plane on this CRTC and give it a
-  // black dumb-buffer FB so it doesn't show stale/undefined content behind
-  // the video overlay. Best-effort: failure here is logged, not fatal --
-  // the video overlay itself still works, just possibly over garbage.
-  if (!plane_is_primary) {
+  // This CRTC's primary plane. It has exactly one of two roles below:
+  //   - it carries the OSD, when the OSD can scan out of it. Then there is
+  //     no backdrop buffer at all -- the OSD's own (fully transparent)
+  //     buffer is what the primary scans out, and present() already covers
+  //     the whole CRTC with video, so nothing needs filling.
+  //   - otherwise it carries a black dumb buffer, so the video overlay does
+  //     not sit on stale/undefined content.
+  uint32_t primary_id = 0;
+  if (plane_is_primary) {
+    primary_id = plane_id;
+  } else {
     drmModePlaneResPtr pres2 = drmModeGetPlaneResources(fd);
     if (pres2) {
-      for (uint32_t i = 0; i < pres2->count_planes && !primary_plane_id; ++i) {
+      for (uint32_t i = 0; i < pres2->count_planes && !primary_id; ++i) {
         drmModePlanePtr p = drmModeGetPlane(fd, pres2->planes[i]);
         if (!p) continue;
         if (p->possible_crtcs & (1u << crtc_index)) {
           uint64_t type_val = 0;
           find_property(fd, p->plane_id, DRM_MODE_OBJECT_PLANE, "type", &type_val);
-          if (type_val == DRM_PLANE_TYPE_PRIMARY) primary_plane_id = p->plane_id;
+          if (type_val == DRM_PLANE_TYPE_PRIMARY) primary_id = p->plane_id;
         }
         drmModeFreePlane(p);
       }
       drmModeFreePlaneResources(pres2);
     }
-    if (primary_plane_id && primary_props.resolve(fd, primary_plane_id)) {
-      uint32_t handle = 0, pitch = 0;
-      uint64_t size = 0;
-      if (drmModeCreateDumbBuffer(fd, mode.hdisplay, mode.vdisplay, 32, 0, &handle, &pitch,
-                                  &size) == 0) {
-        uint64_t map_offset = 0;
-        if (drmModeMapDumbBuffer(fd, handle, &map_offset) == 0) {
-          void* map = mmap(nullptr, size, PROT_WRITE, MAP_SHARED, fd,
-                           static_cast<off_t>(map_offset));
-          if (map != MAP_FAILED) {
-            std::memset(map, 0, size);
-            munmap(map, size);
-          } else {
-            std::fprintf(stderr, "DrmPresenter: warning: mmap black-primary buffer failed: %s\n",
-                         std::strerror(errno));
-          }
-        }
-        uint32_t handles4[4] = {handle, 0, 0, 0};
-        uint32_t pitches4[4] = {pitch, 0, 0, 0};
-        uint32_t offsets4[4] = {0, 0, 0, 0};
-        uint32_t fbid = 0;
-        if (drmModeAddFB2(fd, mode.hdisplay, mode.vdisplay, DRM_FORMAT_XRGB8888, handles4,
-                          pitches4, offsets4, &fbid, 0) == 0) {
-          primary_fb_id = fbid;
-          primary_gem_handle = handle;
-        } else {
-          std::fprintf(stderr, "DrmPresenter: warning: black-primary AddFB2 failed: %s\n",
-                       std::strerror(errno));
-          drmModeDestroyDumbBuffer(fd, handle);
-        }
-      } else {
-        std::fprintf(stderr, "DrmPresenter: warning: black-primary dumb buffer create failed: %s\n",
-                     std::strerror(errno));
-      }
-    } else {
+  }
+
+  // Black dumb-buffer backdrop on the primary. Deliberately a lambda and
+  // deliberately NOT called yet: whether it runs at all depends on the OSD
+  // plane decision below, and the OSD can still be refused after that (by
+  // the zpos plan), at which point we come back and allocate it. Idempotent,
+  // and best-effort throughout -- failure is logged, never fatal.
+  auto setup_backdrop = [&]() {
+    if (plane_is_primary || primary_fb_id) return;
+    if (!primary_id) {
       std::fprintf(stderr,
                    "DrmPresenter: warning: no primary plane found to blank on CRTC %u (video "
                    "overlay may show stale content underneath)\n",
                    crtc_id);
+      return;
     }
-  }
+    if (!primary_props.resolve(fd, primary_id)) {
+      std::fprintf(stderr,
+                   "DrmPresenter: warning: primary plane %u is missing a standard property -- no "
+                   "black backdrop\n",
+                   primary_id);
+      return;
+    }
+    primary_plane_id = primary_id;
+    uint32_t handle = 0, pitch = 0;
+    uint64_t size = 0;
+    if (drmModeCreateDumbBuffer(fd, mode.hdisplay, mode.vdisplay, 32, 0, &handle, &pitch, &size) !=
+        0) {
+      std::fprintf(stderr, "DrmPresenter: warning: black-primary dumb buffer create failed: %s\n",
+                   std::strerror(errno));
+      return;
+    }
+    uint64_t map_offset = 0;
+    if (drmModeMapDumbBuffer(fd, handle, &map_offset) == 0) {
+      void* map = mmap(nullptr, size, PROT_WRITE, MAP_SHARED, fd, static_cast<off_t>(map_offset));
+      if (map != MAP_FAILED) {
+        std::memset(map, 0, size);
+        munmap(map, size);
+      } else {
+        std::fprintf(stderr, "DrmPresenter: warning: mmap black-primary buffer failed: %s\n",
+                     std::strerror(errno));
+      }
+    }
+    uint32_t handles4[4] = {handle, 0, 0, 0};
+    uint32_t pitches4[4] = {pitch, 0, 0, 0};
+    uint32_t offsets4[4] = {0, 0, 0, 0};
+    uint32_t fbid = 0;
+    if (drmModeAddFB2(fd, mode.hdisplay, mode.vdisplay, DRM_FORMAT_XRGB8888, handles4, pitches4,
+                      offsets4, &fbid, 0) == 0) {
+      primary_fb_id = fbid;
+      primary_gem_handle = handle;
+    } else {
+      std::fprintf(stderr, "DrmPresenter: warning: black-primary AddFB2 failed: %s\n",
+                   std::strerror(errno));
+      drmModeDestroyDumbBuffer(fd, handle);
+    }
+  };
 
-  // MSP OSD plane: the first ARGB8888-capable plane on this CRTC that is
-  // neither the video plane nor the backdrop. CURSOR-type planes are
-  // excluded -- they take ARGB8888 but are size-capped (64x64 on vop2) and
-  // would silently truncate a full-screen OSD. Every failure below is
-  // best-effort: log once, leave osd_plane_id == 0, carry on with video.
+  // MSP OSD plane. The plane must be PROVEN able to scan out a CPU-written
+  // linear ARGB8888 dumb buffer (plane_takes_linear_argb -> IN_FORMATS);
+  // "lists ARGB8888" alone is what put the OSD on vop2's AFBC-only
+  // Cluster0-win0 and got every commit EINVAL'd on the bench. CURSOR-type
+  // planes are excluded on top of that -- they take linear ARGB8888 but are
+  // size-capped (64x64 on vop2) and would silently truncate a full-screen
+  // OSD.
+  //
+  // The PRIMARY plane is preferred, because putting the OSD there deletes
+  // the black backdrop buffer entirely. But the capability check, not the
+  // plane's type or name, is what decides: any other qualifying non-cursor
+  // plane that is neither the video plane nor the primary is equally
+  // acceptable, and then the primary keeps its backdrop as before.
+  //
+  // Every failure below is best-effort: log the reason, leave osd_plane_id
+  // == 0, carry on with video exactly as the pre-OSD player did.
+  std::string osd_err = "no plane on this CRTC scans out linear ARGB8888";
   {
-    std::string osd_err = "no ARGB8888 plane free on this CRTC";
     drmModePlaneResPtr pres3 = drmModeGetPlaneResources(fd);
     if (!pres3) {
       osd_err = std::string("drmModeGetPlaneResources failed: ") + std::strerror(errno);
     } else {
-      for (uint32_t i = 0; i < pres3->count_planes && !osd_plane_id; ++i) {
+      for (uint32_t i = 0; i < pres3->count_planes; ++i) {
         drmModePlanePtr p = drmModeGetPlane(fd, pres3->planes[i]);
         if (!p) continue;
-        const bool usable = (p->possible_crtcs & (1u << crtc_index)) != 0 &&
-                            p->plane_id != plane_id && p->plane_id != primary_plane_id;
-        bool has_argb = false;
-        if (usable) {
-          for (uint32_t f = 0; f < p->count_formats; ++f) {
-            if (p->formats[f] == DRM_FORMAT_ARGB8888) {
-              has_argb = true;
-              break;
+        const uint32_t pid = p->plane_id;
+        bool take_it = false;
+        if ((p->possible_crtcs & (1u << crtc_index)) != 0 && pid != plane_id) {
+          uint64_t type_val = 0;
+          find_property(fd, pid, DRM_MODE_OBJECT_PLANE, "type", &type_val);
+          std::string why;
+          if (type_val != DRM_PLANE_TYPE_CURSOR) {
+            if (plane_takes_linear_argb(fd, p, &why)) {
+              take_it = true;
+            } else if (why.rfind("does not list", 0) != 0) {
+              // The exact bench signature is worth naming on stderr: a plane
+              // that offers ARGB8888 and still cannot take our buffer.
+              std::fprintf(stderr, "DrmPresenter: plane %u unusable for the OSD: %s\n", pid,
+                           why.c_str());
             }
           }
         }
-        if (has_argb) {
-          uint64_t type_val = 0;
-          find_property(fd, p->plane_id, DRM_MODE_OBJECT_PLANE, "type", &type_val);
-          if (type_val != DRM_PLANE_TYPE_CURSOR) osd_plane_id = p->plane_id;
-        }
         drmModeFreePlane(p);
+        if (!take_it) continue;
+        if (pid == primary_id) {
+          osd_plane_id = pid;  // preferred: no backdrop needed at all
+          osd_on_primary = true;
+          break;
+        }
+        if (!osd_plane_id) osd_plane_id = pid;  // keep scanning for the primary
       }
       drmModeFreePlaneResources(pres3);
     }
@@ -644,9 +797,11 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
     if (osd_plane_id && !osd_props.resolve(fd, osd_plane_id)) {
       osd_err = "OSD plane is missing a standard property";
       osd_plane_id = 0;
+      osd_on_primary = false;
     }
     if (osd_plane_id && !osd.init(fd, mode.hdisplay, mode.vdisplay, &osd_err)) {
       osd_plane_id = 0;
+      osd_on_primary = false;
     }
     if (osd_plane_id) {
       // Optional: ask for premultiplied blending explicitly rather than
@@ -654,29 +809,58 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
       // it -- then the default (premultiplied on vop2) applies.
       osd_blend_prop = find_enum_property(fd, osd_plane_id, DRM_MODE_OBJECT_PLANE,
                                           "pixel blend mode", "Pre-multiplied", &osd_blend_premul);
-    } else {
-      std::fprintf(stderr, "DrmPresenter: no ARGB OSD plane (%s) -- running without OSD\n",
-                   osd_err.c_str());
     }
   }
 
-  // Resolve zpos and pin the stacking: backdrop < video < osd. Without this
-  // the kernel's default zpos left the backdrop covering the video (observed
-  // on vop2: Smart0 normalized-zpos 1 over Esmart0's 0 -- a fully black
-  // screen with every commit succeeding).
+  // The backdrop is allocated only when the OSD did NOT take the primary.
+  if (!osd_on_primary) setup_backdrop();
+
+  // Resolve zpos and pin the stacking: video below the OSD, and (when there
+  // is one) the backdrop below the video. Without this the kernel's default
+  // zpos left the backdrop covering the video (observed on vop2: Smart0
+  // normalized-zpos 1 over Esmart0's 0 -- a fully black screen with every
+  // commit succeeding).
   //
   // The arithmetic itself lives in plan_zpos() (osd_layout.cpp) so it can be
-  // unit-tested: the previous in-line version derived the OSD's value from
+  // unit-tested: an untestable in-line version derived the OSD's value from
   // the video's and disabled the OSD on every single run of the actual
-  // hardware, where all three planes share the range [0,7].
+  // hardware, where all planes share the range [0,7].
+  uint64_t vmin = 0, vmax = 0, pmin = 0, pmax = 0, omin = 0, omax = 0;
+  ZposPlan plan;
   {
-    uint64_t vmin = 0, vmax = 0, pmin = 0, pmax = 0, omin = 0, omax = 0;
     zpos_video_prop = find_zpos_range(fd, plane_id, &vmin, &vmax);
-    if (primary_fb_id) zpos_primary_prop = find_zpos_range(fd, primary_plane_id, &pmin, &pmax);
-    if (osd_plane_id) zpos_osd_prop = find_zpos_range(fd, osd_plane_id, &omin, &omax);
+    auto replan = [&]() {
+      pmin = pmax = omin = omax = 0;
+      zpos_primary_prop = primary_fb_id ? find_zpos_range(fd, primary_plane_id, &pmin, &pmax) : 0;
+      zpos_osd_prop = osd_plane_id ? find_zpos_range(fd, osd_plane_id, &omin, &omax) : 0;
+      plan = plan_zpos(osd_plane_id != 0 && zpos_osd_prop != 0, zpos_video_prop != 0,
+                       zpos_primary_prop != 0, vmin, vmax, pmin, omax);
+    };
+    replan();
 
-    const ZposPlan plan = plan_zpos(osd_plane_id != 0 && zpos_osd_prop != 0, zpos_video_prop != 0,
-                                    zpos_primary_prop != 0, vmin, vmax, pmin, omax);
+    if (osd_plane_id && !plan.osd_ok) {
+      // Not stackable above the video: run video-only rather than risk a
+      // video/backdrop tie (= the vop2 black screen) for the OSD's sake.
+      std::fprintf(stderr,
+                   "DrmPresenter: OSD plane %u cannot be stacked above video (video range "
+                   "[%llu,%llu] / osd range [%llu,%llu]) -- running WITHOUT the OSD rather than "
+                   "disturbing the video stacking\n",
+                   osd_plane_id, static_cast<unsigned long long>(vmin),
+                   static_cast<unsigned long long>(vmax), static_cast<unsigned long long>(omin),
+                   static_cast<unsigned long long>(omax));
+      osd_err = "not stackable above the video plane";
+      const bool was_on_primary = osd_on_primary;
+      osd_plane_id = 0;
+      osd_on_primary = false;
+      osd_blend_prop = 0;
+      osd.destroy();  // nothing has been committed yet; reclaim the two buffers
+      // The primary was going to be the OSD's, so it has no buffer. Give it
+      // the black backdrop the pre-OSD player always had, then re-plan with
+      // the backdrop back in the picture.
+      if (was_on_primary) setup_backdrop();
+      replan();
+    }
+
     zpos_video_val = plan.video;
     zpos_primary_val = plan.backdrop;
     zpos_osd_val = plan.osd;
@@ -686,32 +870,6 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
                    "DrmPresenter: warning: video plane %u has no mutable zpos -- stacking is at "
                    "the driver's mercy\n",
                    plane_id);
-    else
-      std::fprintf(stderr, "DrmPresenter: zpos pinned: video plane %u -> %llu%s%llu%s%llu\n",
-                   plane_id, static_cast<unsigned long long>(zpos_video_val),
-                   zpos_primary_prop ? ", backdrop -> " : "",
-                   static_cast<unsigned long long>(zpos_primary_prop ? zpos_primary_val : 0),
-                   plan.osd_ok ? ", osd -> " : "",
-                   static_cast<unsigned long long>(plan.osd_ok ? zpos_osd_val : 0));
-
-    if (osd_plane_id && !plan.osd_ok) {
-      // Not stackable above the video: run video-only rather than risk a
-      // video/backdrop tie (= the vop2 black screen) for the OSD's sake.
-      std::fprintf(stderr,
-                   "DrmPresenter: OSD plane %u cannot be stacked above video (video range "
-                   "[%llu,%llu] at %llu / backdrop %llu / osd range [%llu,%llu]) -- running "
-                   "WITHOUT the OSD rather than disturbing the video stacking\n",
-                   osd_plane_id, static_cast<unsigned long long>(vmin),
-                   static_cast<unsigned long long>(vmax),
-                   static_cast<unsigned long long>(zpos_video_val),
-                   static_cast<unsigned long long>(zpos_primary_val),
-                   static_cast<unsigned long long>(omin), static_cast<unsigned long long>(omax));
-      osd_plane_id = 0;
-      zpos_osd_prop = 0;
-      zpos_osd_val = 0;
-      osd_blend_prop = 0;
-      osd.destroy();  // nothing has been committed yet; reclaim the two buffers
-    }
   }
 
   if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob_id) != 0) {
@@ -720,17 +878,45 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, ReleaseFn rel) {
     return false;
   }
 
-  std::fprintf(stderr,
-               "DrmPresenter: connector %u (%s) mode %ux%u@%u, crtc %u, %s NV12 plane %u%s\n",
-               connector_id, is_hdmi ? "HDMI-A" : "non-HDMI-A", mode.hdisplay, mode.vdisplay,
-               mode.vrefresh, crtc_id, plane_is_primary ? "primary" : "overlay", plane_id,
-               primary_fb_id ? " (+ black primary backdrop)" : "");
-  if (osd_plane_id)
+  // One legible topology line: which plane carries what, at which zpos.
+  // Each clause is formatted whole (snprintf) rather than assembled from
+  // conditional label/value pairs in one printf -- the previous form printed
+  // the values unconditionally and the labels conditionally, so failure
+  // paths emitted things like "backdrop -> 00".
+  {
+    char zv[32], osd_part[224], bd_part[160];
+    if (zpos_video_prop)
+      std::snprintf(zv, sizeof(zv), "%llu", static_cast<unsigned long long>(zpos_video_val));
+    else
+      std::snprintf(zv, sizeof(zv), "driver default");
+
+    if (osd_plane_id)
+      std::snprintf(osd_part, sizeof(osd_part),
+                    "OSD plane %u (%s, ARGB8888 linear %ux%u, blend %s) at zpos %llu",
+                    osd_plane_id, osd_on_primary ? "primary" : "overlay", mode.hdisplay,
+                    mode.vdisplay, osd_blend_prop ? "premultiplied" : "driver default",
+                    static_cast<unsigned long long>(zpos_osd_val));
+    else
+      std::snprintf(osd_part, sizeof(osd_part), "no OSD (%s) -- video only", osd_err.c_str());
+
+    if (primary_fb_id)
+      std::snprintf(bd_part, sizeof(bd_part), "black backdrop on primary plane %u at zpos %llu",
+                    primary_plane_id, static_cast<unsigned long long>(zpos_primary_val));
+    else if (osd_on_primary)
+      std::snprintf(bd_part, sizeof(bd_part),
+                    "no backdrop (the OSD's transparent buffer is the primary's scanout)");
+    else if (plane_is_primary)
+      std::snprintf(bd_part, sizeof(bd_part), "no backdrop (video is on the primary)");
+    else
+      std::snprintf(bd_part, sizeof(bd_part), "no backdrop");
+
+    std::fprintf(stderr, "DrmPresenter: connector %u (%s) mode %ux%u@%u, crtc %u\n", connector_id,
+                 is_hdmi ? "HDMI-A" : "non-HDMI-A", mode.hdisplay, mode.vdisplay, mode.vrefresh,
+                 crtc_id);
     std::fprintf(stderr,
-                 "DrmPresenter: OSD plane %u ARGB8888 %ux%u, zpos %llu, blend prop %s\n",
-                 osd_plane_id, mode.hdisplay, mode.vdisplay,
-                 static_cast<unsigned long long>(zpos_osd_val),
-                 osd_blend_prop ? "premultiplied" : "driver default");
+                 "DrmPresenter: topology: video on %s NV12 plane %u at zpos %s; %s; %s\n",
+                 plane_is_primary ? "primary" : "overlay", plane_id, zv, osd_part, bd_part);
+  }
 
   inited = true;
   return true;
@@ -817,8 +1003,15 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
   // Ride the OSD along on this commit when it has something new to show,
   // and re-state it on any modeset (a modeset re-runs the whole CRTC state;
   // don't assume the plane keeps its FB across one).
+  //
+  // `osd_on_primary` forces the attach on EVERY modeset, including the very
+  // first one, before anything has ever been drawn: with the OSD on the
+  // primary there is no black backdrop, so skipping it would bring the CRTC
+  // up with no primary plane attached at all. The buffer is cleared to fully
+  // transparent premultiplied 0x00000000 at allocation, so attaching it
+  // early shows nothing.
   const bool osd_ready = osd_plane_id != 0 && osd.ok();
-  bool attach_osd = osd_ready && (osd_dirty || (do_modeset && osd_on_plane));
+  bool attach_osd = osd_ready && (osd_dirty || (do_modeset && (osd_on_plane || osd_on_primary)));
   // ...but never on the commit that would otherwise be the one-shot async
   // probe. An OSD publishing at or above the video frame rate would keep
   // `attach_osd` true forever, `probing_async` never true, and video would
@@ -929,13 +1122,7 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
                  "DrmPresenter: commit with the OSD plane attached failed: %s -- retrying "
                  "video-only (OSD failure %d/%d)\n",
                  std::strerror(oerr), osd_fail_streak, kOsdMaxFailStreak);
-    if (osd_fail_streak >= kOsdMaxFailStreak) {
-      std::fprintf(stderr,
-                   "DrmPresenter: OSD plane %u rejected %d commits in a row -- disabling the OSD "
-                   "for the rest of this session; video continues unaffected\n",
-                   osd_plane_id, osd_fail_streak);
-      osd_plane_id = 0;  // every osd_* entry point becomes a no-op from here
-    }
+    if (osd_fail_streak >= kOsdMaxFailStreak) osd_give_up();
     attach_osd = false;
     drmModeAtomicFree(req);
     req = build_req(false);

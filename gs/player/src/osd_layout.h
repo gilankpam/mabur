@@ -28,11 +28,25 @@ struct OsdLayout {
 OsdLayout compute_layout(int screen_w, int screen_h, int cols, int rows,
                          int glyph_w, int glyph_h, ScaleMode mode);
 
-// The DRM plane stacking order, backdrop < video < osd. Lives here rather
-// than inside DrmPresenter's pimpl because it is pure arithmetic over six
-// integers with no ioctls in it -- and an untestable version of exactly
-// this shipped a feature that disabled itself at init on the real vop2,
-// where all three planes advertise the SAME zpos range.
+// The DRM plane stacking order. Two topologies use it:
+//
+//   OSD available  -- the OSD is on the CRTC's PRIMARY plane, above the
+//                     video, and there is NO backdrop (have_backdrop
+//                     false): the OSD's own transparent buffer is what the
+//                     primary scans out, and the video already covers the
+//                     whole CRTC, so nothing is left to fill. On the bench
+//                     vop2 (every plane [0,7]) that is video 6 / osd 7.
+//   OSD absent     -- the pre-OSD arrangement: video on top of a black
+//                     backdrop on the primary (video vmax, backdrop pmin).
+//
+// The backdrop parameters survive because the middle case is real: if the
+// primary is not linear-ARGB but some other plane is, the OSD goes there
+// and the primary keeps its backdrop, giving backdrop < video < osd.
+//
+// Lives here rather than inside DrmPresenter's pimpl because it is pure
+// arithmetic over six integers with no ioctls in it -- and an untestable
+// version of exactly this shipped a feature that disabled itself at init on
+// the real vop2, where all planes advertise the SAME zpos range.
 struct ZposPlan {
   uint64_t backdrop = 0;  // meaningful only when have_backdrop
   uint64_t video = 0;     // meaningful only when have_video_prop
@@ -42,16 +56,18 @@ struct ZposPlan {
 
 // have_osd / have_backdrop / have_video_prop mean "the plane exists AND has
 // a mutable zpos property"; anything else disqualifies the OSD (there is
-// then no way to prove it lands above the video).
+// then no way to prove it lands above the video). have_backdrop is false
+// whenever the OSD occupies the primary -- there is no backdrop buffer at
+// all in that topology.
 //
 // Policy: the OSD takes the TOP of its own range and the video sits one
-// step below it, clamped into the video's range; the backdrop takes the
-// bottom of its own. When there is no OSD the video keeps the
-// hardware-validated top-of-range value untouched. If the resulting values
-// do not come out strictly ordered backdrop < video < osd, osd_ok is false
-// and the video/backdrop values revert to the no-OSD ones -- the OSD must
-// never perturb the video's stacking (a video/backdrop tie is the vop2
-// black screen this whole block exists to prevent).
+// step below it, clamped into the video's range; the backdrop, when there
+// is one, takes the bottom of its own. When there is no OSD the video keeps
+// the hardware-validated top-of-range value untouched. If the resulting
+// values do not come out strictly ordered (backdrop <) video < osd, osd_ok
+// is false and the video/backdrop values revert to the no-OSD ones -- the
+// OSD must never perturb the video's stacking (a video/backdrop tie is the
+// vop2 black screen this whole block exists to prevent).
 //
 // Only the range endpoints the policy actually consumes are parameters:
 // the backdrop's max and the OSD's min are never reachable choices (the

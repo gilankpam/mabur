@@ -48,7 +48,9 @@ ZposPlan plan_zpos(bool have_osd, bool have_video_prop, bool have_backdrop, uint
   ZposPlan p;
   // The no-OSD assignment, hardware-validated long before the OSD existed:
   // video at the top of its range, backdrop at the bottom of its own. It is
-  // also what we fall back to when the OSD cannot be stacked.
+  // also what we fall back to when the OSD cannot be stacked -- in which
+  // case the caller re-allocates the backdrop it had skipped and asks again
+  // with have_osd false.
   p.backdrop = have_backdrop ? pmin : 0;
   p.video = have_video_prop ? vmax : 0;
   if (!have_osd || !have_video_prop) return p;

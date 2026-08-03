@@ -15,9 +15,21 @@ struct Case {
 };
 
 static const Case kCases[] = {
-    // THE BENCH HARDWARE (rk3566 vop2, read off the live GS with modetest):
-    // Esmart0 video, Smart0 backdrop and Cluster0-win0 OSD all advertise the
-    // IDENTICAL range [0,7]. The scheme this replaced computed
+    // THE BENCH HARDWARE, as shipped: the OSD is on the CRTC's PRIMARY plane
+    // (Smart0-win0, id 56 -- the only linear-ARGB window besides the video's;
+    // Cluster0-win0 is AFBC-only and EINVAL'd every commit it appeared in),
+    // so there is NO backdrop buffer at all. Every vop2 plane advertises the
+    // range [0,7]; the required stacking is simply video 6 below OSD 7.
+    {"osd_on_primary_no_backdrop", true, true, false, 0, 7, 0, 7, true, 0, 6, 7},
+
+    // Same topology with a primary whose zpos range is narrower than the
+    // video's: the OSD still takes the top of its OWN range and the video
+    // clamps under it.
+    {"osd_on_primary_narrow_primary_range", true, true, false, 0, 7, 0, 1, true, 0, 0, 1},
+
+    // Three-plane form (OSD on a plane that is neither video nor primary, so
+    // the primary keeps its backdrop): all three advertise the IDENTICAL
+    // range [0,7]. The scheme this replaced computed
     // osd = clamp(video_max + 1, 0, 7) = 7 == video, failed its own
     // ordering assertion and disabled the OSD on every single run.
     {"all_planes_share_0_7", true, true, true, 0, 7, 0, 7, true, 0, 6, 7},
@@ -47,8 +59,10 @@ static const Case kCases[] = {
     // Video = vmax, backdrop = pmin, untouched.
     {"no_osd_plane_keeps_video_at_max", false, true, true, 0, 7, 0, 0, false, 0, 7, 0},
 
-    // No backdrop plane (the video plane IS the primary): nothing to be
-    // tied to, so the OSD only has to clear the video.
+    // The other way to end up with no backdrop: the video plane IS the
+    // primary, so the OSD is on some third plane and there was never
+    // anything to blank. Same arithmetic as osd_on_primary_no_backdrop --
+    // kept because the two reach it from opposite topologies.
     {"no_backdrop_plane", true, true, false, 0, 7, 0, 7, true, 0, 6, 7},
 
     // Video plane has no mutable zpos: nothing to layer above provably, so
