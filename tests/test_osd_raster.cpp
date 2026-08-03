@@ -166,6 +166,90 @@ TEST(clear_blanks_the_surface_and_invalidates_the_shadow) {
   CHECK(raster.draw(screen, c.s, &shadow) == screen.rows() * screen.cols());
 }
 
+// diff() is the burned-DVR path's change detector: same cell comparison as
+// draw(), but against ITS OWN shadow and reporting pixel rects instead of
+// painting. Its first call must report the whole surface (nothing is known
+// about the consumer's state yet).
+TEST(diff_reports_the_whole_surface_on_the_first_call) {
+  const std::string fp = write_font(2, 3);
+  OsdFont font;
+  REQUIRE(font.load(fp, nullptr));
+  OsdRaster raster(font, ScaleMode::kSharp);
+  mabur::MspParser parser;
+  mabur::MspScreen screen;
+  feed(parser, screen, snapshot(1, 2, "HELLO"));
+
+  Canvas c(100, 54);
+  ShadowGrid shadow;
+  std::vector<DirtyRect> rects;
+  const int cells = raster.diff(screen, c.s, &shadow, &rects);
+  CHECK(cells == screen.rows() * screen.cols());
+  REQUIRE(rects.size() == 1);
+  CHECK(rects[0].x == 0 && rects[0].y == 0);
+  CHECK(rects[0].w == 100 && rects[0].h == 54);
+  // Same screen again: nothing changed, nothing reported.
+  CHECK(raster.diff(screen, c.s, &shadow, &rects) == 0);
+  CHECK(rects.empty());
+  std::remove(fp.c_str());
+}
+
+TEST(diff_merges_a_run_of_changed_cells_into_one_rect) {
+  const std::string fp = write_font(2, 3);
+  OsdFont font;
+  REQUIRE(font.load(fp, nullptr));
+  OsdRaster raster(font, ScaleMode::kSharp);
+  mabur::MspParser parser;
+  mabur::MspScreen screen;
+  feed(parser, screen, snapshot(1, 2, "HELLO"));
+
+  Canvas c(100, 54);
+  ShadowGrid shadow;
+  std::vector<DirtyRect> rects;
+  raster.draw(screen, c.s, nullptr);          // real usage: draw, then diff
+  raster.diff(screen, c.s, &shadow, &rects);  // prime
+
+  feed(parser, screen, snapshot(1, 2, "ABCDE"));  // 5 adjacent cells, all differ
+  raster.draw(screen, c.s, nullptr);
+  const int cells = raster.diff(screen, c.s, &shadow, &rects);
+  CHECK(cells == 5);
+  REQUIRE(rects.size() == 1);  // one contiguous run -> one rect
+  const OsdLayout& l = raster.layout();
+  CHECK(rects[0].x == l.origin_x + 2 * l.draw_w);
+  CHECK(rects[0].y == l.origin_y + 1 * l.draw_h);
+  CHECK(rects[0].w == 5 * l.draw_w);
+  CHECK(rects[0].h == l.draw_h);
+  std::remove(fp.c_str());
+}
+
+// The lineage bug this method exists to avoid: a cell going X -> Y -> X is
+// invisible to a shadow that only sees every OTHER render, so a consumer
+// refreshed on EVERY render must keep its own.
+TEST(diff_sees_a_cell_that_flips_back_between_renders) {
+  const std::string fp = write_font(2, 3);
+  OsdFont font;
+  REQUIRE(font.load(fp, nullptr));
+  OsdRaster raster(font, ScaleMode::kSharp);
+  mabur::MspParser parser;
+  mabur::MspScreen screen;
+
+  Canvas c(100, 54);
+  ShadowGrid every_other, every_one;
+  std::vector<DirtyRect> rects;
+  feed(parser, screen, snapshot(0, 0, "X"));
+  raster.diff(screen, c.s, &every_other, &rects);  // prime both at "X"
+  raster.diff(screen, c.s, &every_one, &rects);
+
+  feed(parser, screen, snapshot(0, 0, "Y"));
+  CHECK(raster.diff(screen, c.s, &every_one, &rects) == 1);  // per-render: sees Y
+
+  feed(parser, screen, snapshot(0, 0, "X"));
+  CHECK(raster.diff(screen, c.s, &every_one, &rects) == 1);  // ...and back to X
+  // The every-other-render shadow saw X then X: it reports nothing, which is
+  // right for ITS buffer and wrong for anyone updated every render.
+  CHECK(raster.diff(screen, c.s, &every_other, &rects) == 0);
+  std::remove(fp.c_str());
+}
+
 TEST(null_surface_is_a_no_op) {
   const std::string fp = write_font(2, 3);
   OsdFont font;

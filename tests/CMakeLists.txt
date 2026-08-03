@@ -69,6 +69,15 @@ if(MABUR_BUILD_GS)
   add_mtest(test_osd_palette test_osd_palette.cpp LIBS mabur_player_core)
   target_compile_definitions(test_osd_palette PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
+  # Wall-clock measurement of the OSD quantizer, which runs INLINE on
+  # maburplay's 2 ms main loop. Deliberately NOT an add_test(): it is a
+  # timing bench, so neither fast nor deterministic. Build and run by hand
+  # (--target quantize_bench); see the file header.
+  add_executable(quantize_bench ${CMAKE_SOURCE_DIR}/tools/bench/quantize_bench.cpp)
+  target_link_libraries(quantize_bench PRIVATE mabur_common mabur_player_core)
+  target_include_directories(quantize_bench PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+  target_compile_definitions(quantize_bench PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_body_queue test_body_queue.cpp LIBS mabur_gs_core)
   add_mtest(test_aggregator test_aggregator.cpp LIBS mabur_gs_core)
   add_mtest(test_udp_sink test_udp_sink.cpp LIBS mabur_gs_core)

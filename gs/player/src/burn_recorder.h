@@ -1,12 +1,13 @@
 #ifndef MABUR_PLAYER_BURN_RECORDER_H_
 #define MABUR_PLAYER_BURN_RECORDER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 
 #include "osd_palette.h"    // OsdPalette
-#include "osd_raster.h"     // Surface
+#include "osd_raster.h"     // Surface, DirtyRect
 #include "video_backend.h"  // DmaFrame, VideoBackend
 
 namespace maburplay {
@@ -102,12 +103,24 @@ class BurnRecorder {
   void submit(const DmaFrame& f);
 
   // Main loop, whenever a fresh OSD screen has been rasterized. Quantizes
-  // `s` against the staged palette on the CALLER's thread and hands the
+  // `s` against the staged palette on the CALLER's thread and publishes the
   // index map to the recorder thread, which installs it into the encoder's
   // double-buffered OSD slot before its next frame. No-op without a palette.
-  // Note the cost: a full-screen quantize runs inline here, so call it at
-  // the OSD's update rate (~1 Hz), never per video frame.
-  void set_osd(const Surface& s);
+  //
+  // THIS RUNS ON THE 2 ms MAIN LOOP, so it keeps a PERSISTENT index map and
+  // re-quantizes only what changed -- the same bargain OsdRaster strikes
+  // with its ShadowGrid, for the same reason. Pass the rects
+  // OsdRaster::diff() produced for THIS map's own ShadowGrid; an empty list
+  // is a no-op. `rects == nullptr` (the default) re-quantizes the whole
+  // surface, which is what a blank or a first screen wants.
+  //
+  // Cost, measured at 1080p with the shipped font (tools/bench/
+  // quantize_bench.cpp, x86 host; the RK3566 A55 runs ~7.4x slower):
+  //   incremental, 5 cells   0.010 ms   <- the steady-state path, ~4 Hz
+  //   full, typical screen   0.66 ms    <- first screen / layout change
+  //   full, blank surface    0.42 ms    <- the stale-OSD blank
+  // The pre-fix implementation was 5.5 ms per call, unconditionally.
+  void set_osd(const Surface& s, const DirtyRect* rects = nullptr, size_t n_rects = 0);
 
   // Makes the recording's next encoded frame an IDR. Sets a flag consumed on
   // the recorder thread (MppEncoder is single-threaded), so it is safe from

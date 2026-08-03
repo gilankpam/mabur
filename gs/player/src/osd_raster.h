@@ -27,6 +27,13 @@ struct ShadowGrid {
   std::vector<uint16_t> cells;
 };
 
+// A rectangle of a Surface, in pixels. Produced by OsdRaster::diff() and
+// consumed by quantize_rects() (osd_palette.h): the burned-DVR path's
+// equivalent of the ShadowGrid cell diff.
+struct DirtyRect {
+  int x = 0, y = 0, w = 0, h = 0;
+};
+
 // Rasterizes an MspScreen onto a Surface. Every blit is 1:1 from an atlas
 // built at exactly the draw size (see OsdFont::atlas_at), so no filtering
 // happens here at all.
@@ -41,6 +48,21 @@ class OsdRaster {
 
   // Blanks the whole surface and invalidates the shadow (next draw is full).
   void clear(const Surface& s, ShadowGrid* shadow);
+
+  // draw()'s change detection WITHOUT touching the surface: appends to `out`
+  // the pixel rects whose cells differ from `shadow`, and updates `shadow` to
+  // match `screen`. Horizontally adjacent changed cells are merged into one
+  // rect. A full repaint (null/stale shadow, layout change) yields exactly
+  // one rect covering the whole surface. Returns the number of cells changed.
+  //
+  // This exists because the burned DVR's index-map quantizer is a SECOND
+  // consumer of the same raster and needs its OWN change lineage. draw()'s
+  // shadows are per DRM buffer, so they describe the change since two renders
+  // ago -- which is not a superset of the change since the last one (a cell
+  // going X -> Y -> X is invisible to them, and stale for anyone updated on
+  // every render). One extra ShadowGrid, owned by that consumer, is the fix.
+  int diff(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow,
+           std::vector<DirtyRect>* out);
 
   const OsdLayout& layout() const { return layout_; }
 

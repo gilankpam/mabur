@@ -43,6 +43,59 @@ void OsdRaster::clear(const Surface& s, ShadowGrid* shadow) {
   }
 }
 
+int OsdRaster::diff(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow,
+                    std::vector<DirtyRect>* out) {
+  if (out) out->clear();
+  if (!s.pixels) return 0;
+  const GlyphAtlas& nat = font_.native();
+  if (!nat.pixels) return 0;
+
+  // Layout recomputed rather than read from layout_: diff() must be callable
+  // independently of draw() and compute_layout() is pure arithmetic. layout_
+  // stays draw()'s to own.
+  const OsdLayout lay = compute_layout(s.width, s.height, screen.cols(), screen.rows(),
+                                       nat.glyph_w, nat.glyph_h, mode_);
+  if (lay.draw_w <= 0 || lay.draw_h <= 0) return 0;
+
+  const size_t n_cells = (size_t)screen.rows() * screen.cols();
+  const bool full = !shadow || shadow->layout != lay || shadow->cells.size() != n_cells;
+  if (full) {
+    if (shadow) {
+      shadow->layout = lay;
+      shadow->cells.resize(n_cells);
+      for (int r = 0; r < screen.rows(); ++r)
+        for (int c = 0; c < screen.cols(); ++c)
+          shadow->cells[(size_t)r * screen.cols() + c] = screen.cell(r, c);
+    }
+    if (out) out->push_back(DirtyRect{0, 0, s.width, s.height});
+    return (int)n_cells;
+  }
+
+  int changed = 0;
+  for (int r = 0; r < screen.rows(); ++r) {
+    int run_start = -1;  // first column of the current contiguous changed run
+    for (int c = 0; c <= screen.cols(); ++c) {
+      const bool dirty = c < screen.cols() &&
+                         shadow->cells[(size_t)r * screen.cols() + c] != screen.cell(r, c);
+      if (dirty) {
+        shadow->cells[(size_t)r * screen.cols() + c] = screen.cell(r, c);
+        ++changed;
+        if (run_start < 0) run_start = c;
+        continue;
+      }
+      if (run_start < 0) continue;
+      // Run ended: one rect for the whole span, which is what keeps the rect
+      // count near the number of updated FIELDS rather than characters.
+      if (out)
+        out->push_back(DirtyRect{lay.origin_x + run_start * lay.draw_w,
+                                 lay.origin_y + r * lay.draw_h, (c - run_start) * lay.draw_w,
+                                 lay.draw_h});
+      run_start = -1;
+    }
+  }
+  return changed;
+}
+
 int OsdRaster::draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow) {
   if (!s.pixels) return 0;
   const GlyphAtlas& nat = font_.native();

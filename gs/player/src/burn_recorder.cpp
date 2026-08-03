@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -80,6 +81,10 @@ constexpr uint64_t kMaxRunningFailures = 600;
 }  // namespace
 
 struct BurnRecorder::Impl {
+  // Dirty rects the recorder will copy one at a time; beyond this, taking
+  // the whole map is cheaper than the per-rect row loop.
+  static constexpr size_t kMaxDirtyRects = 128;
+
   BurnCfg cfg;
   std::string path;
 
@@ -103,11 +108,26 @@ struct BurnRecorder::Impl {
   Mail box;
   bool stopping = false;
 
-  // OSD handoff, under the same mutex. Three maps so nothing allocates after
-  // warm-up: stage (main loop quantizes into it), pending (published),
-  // work (recorder thread's own copy, handed to the encoder).
-  OsdIndexMap osd_stage, osd_pending, osd_work;
-  bool osd_pending_valid = false;
+  // OSD handoff, under the same mutex.
+  //
+  //   osd_map    the AUTHORITATIVE index map. Persistent across calls and
+  //              updated in place by the main loop, which is what lets a
+  //              steady-state OSD update cost the cells that changed
+  //              instead of 2.07 M pixels (see set_osd()).
+  //   osd_dirty  the parts of osd_map the recorder thread has not copied
+  //              out yet -- accumulated, because the main loop publishes at
+  //              the MSP rate and the recorder consumes at the frame rate,
+  //              and neither waits for the other.
+  //   osd_work   the recorder's own copy, brought up to date under the lock
+  //              and then handed to the encoder outside it.
+  //
+  // No swapping: a swapped-in buffer is a stale GENERATION, and an
+  // incremental update on top of one is silently wrong.
+  OsdIndexMap osd_map, osd_work;
+  std::vector<DirtyRect> osd_dirty;
+  bool osd_full_pending = false;   // osd_dirty is meaningless; copy it whole
+  bool osd_pending_valid = false;  // osd_map moved since the last take
+  QuantizeCache qcache;            // main loop only; palette-lifetime memo
 
   std::thread th;
   bool started = false;
@@ -179,10 +199,7 @@ struct BurnRecorder::Impl {
         m = box;
         box.buf = nullptr;
         if (osd_pending_valid) {
-          osd_work.px.swap(osd_pending.px);
-          osd_work.mb_w = osd_pending.mb_w;
-          osd_work.mb_h = osd_pending.mb_h;
-          osd_pending_valid = false;
+          take_osd_locked();
           have_osd = true;
         }
       }
@@ -229,6 +246,27 @@ struct BurnRecorder::Impl {
         dead.store(true);
       }
     }
+  }
+
+  // Recorder thread, mu HELD: brings osd_work up to date with osd_map,
+  // copying only the rows the main loop marked dirty. The full copy is the
+  // fallback for a resize, a blank, or a rect list that outgrew its cap --
+  // never the steady state.
+  void take_osd_locked() {
+    if (osd_full_pending || osd_work.mb_w != osd_map.mb_w || osd_work.mb_h != osd_map.mb_h ||
+        osd_work.px.size() != osd_map.px.size()) {
+      osd_work = osd_map;
+    } else {
+      const size_t stride = (size_t)osd_map.stride();
+      for (const DirtyRect& r : osd_dirty) {
+        for (int y = r.y; y < r.y + r.h; ++y)
+          std::memcpy(osd_work.px.data() + (size_t)y * stride + r.x,
+                      osd_map.px.data() + (size_t)y * stride + r.x, (size_t)r.w);
+      }
+    }
+    osd_dirty.clear();
+    osd_full_pending = false;
+    osd_pending_valid = false;
   }
 
   // Empties the mailbox, releasing the reference it holds. Callable from
@@ -382,21 +420,52 @@ void BurnRecorder::submit(const DmaFrame& f) {
   }
 }
 
-void BurnRecorder::set_osd(const Surface& s) {
+void BurnRecorder::set_osd(const Surface& s, const DirtyRect* rects, size_t n_rects) {
   Impl& im = *impl_;
   // No palette => the encoder has no OSD region at all, so quantizing would
   // be pure waste on the main loop. This is the osd.enable:false path.
   if (!im.started || !im.palette_live || im.dead.load()) return;
   if (!s.pixels || s.width <= 0 || s.height <= 0) return;
+  if (rects && n_rects == 0) return;  // nothing changed; do not even publish
 
-  quantize(s, im.palette, &im.osd_stage);
-  {
-    std::lock_guard<std::mutex> lk(im.mu);
-    im.osd_stage.px.swap(im.osd_pending.px);
-    im.osd_pending.mb_w = im.osd_stage.mb_w;
-    im.osd_pending.mb_h = im.osd_stage.mb_h;
-    im.osd_pending_valid = true;
+  // The lock spans the quantize deliberately: osd_map is the shared object
+  // being updated in place, and the alternative (a private map plus a
+  // publish copy) puts a 2 MB memcpy back on this loop, which is most of
+  // what the incremental path just removed. The recorder thread waits at
+  // most one quantize, and only the rare FULL one is longer than ~10 us.
+  std::lock_guard<std::mutex> lk(im.mu);
+
+  // Incremental first; a map that was never sized for this surface (first
+  // call, or a resized OSD) refuses and falls back to the full pass.
+  bool full = (rects == nullptr);
+  if (!full) full = !quantize_rects(s, im.palette, rects, n_rects, &im.osd_map, &im.qcache);
+  if (full) {
+    quantize(s, im.palette, &im.osd_map, &im.qcache);
+    im.osd_dirty.clear();
+    im.osd_full_pending = true;
+  } else if (!im.osd_full_pending) {
+    for (size_t i = 0; i < n_rects; ++i) {
+      // Clipped to the surface, because take_osd_locked() copies these
+      // straight into osd_work with no bounds check of its own.
+      DirtyRect r = rects[i];
+      const int x1 = r.x + r.w > s.width ? s.width : r.x + r.w;
+      const int y1 = r.y + r.h > s.height ? s.height : r.y + r.h;
+      if (r.x < 0) r.x = 0;
+      if (r.y < 0) r.y = 0;
+      r.w = x1 - r.x;
+      r.h = y1 - r.y;
+      if (r.w <= 0 || r.h <= 0) continue;
+      im.osd_dirty.push_back(r);
+      if (im.osd_dirty.size() > Impl::kMaxDirtyRects) {
+        // Past this the recorder's row-by-row copy stops being cheaper than
+        // taking the whole map.
+        im.osd_dirty.clear();
+        im.osd_full_pending = true;
+        break;
+      }
+    }
   }
+  im.osd_pending_valid = true;
   // Not notified: the map rides along with the next frame the recorder thread
   // picks up. An OSD update with no video to burn it into is a no-op anyway.
 }

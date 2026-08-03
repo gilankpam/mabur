@@ -360,6 +360,13 @@ int main(int argc, char** argv) {
   // other. Owned here because the presenter deliberately does not own them.
   maburplay::ShadowGrid osd_shadow[2];
   bool osd_blanked = false;
+  // A THIRD shadow, for the burned DVR's index map. It cannot share the two
+  // above: those track one DRM buffer each and so report the change since
+  // two renders ago, whereas the index map is refreshed on every render.
+  // Hoisted out of the loop with its rect list so neither allocates in
+  // steady state.
+  maburplay::ShadowGrid burn_shadow;
+  std::vector<maburplay::DirtyRect> burn_dirty;
 #endif
 
   // Display path: the DrmPresenter becomes the frame owner for the normal
@@ -792,18 +799,31 @@ int main(int argc, char** argv) {
       if (presenter && presenter->osd_available()) {
         if (ready) {
           const int idx = presenter->osd_back_index();
-          osd_raster->draw(osd_src->screen(), presenter->osd_back_surface(), &osd_shadow[idx]);
+          const maburplay::Surface surf = presenter->osd_back_surface();
+          osd_raster->draw(osd_src->screen(), surf, &osd_shadow[idx]);
           // Recording tracks the screen. BEFORE osd_publish(), which swaps
           // the pair -- afterwards osd_back_surface() is the OTHER buffer.
-          // ~1 Hz (the MSP snapshot rate), which is what set_osd()'s inline
-          // full-screen quantize is budgeted for; never per video frame.
-          if (burn) burn->set_osd(presenter->osd_back_surface());
+          if (burn) {
+            // burn_shadow, NOT osd_shadow[idx]: the draw shadows are per DRM
+            // buffer and describe the change since two renders ago, while
+            // the burn's index map is updated on every render. See
+            // OsdRaster::diff(). Without this the map goes silently stale on
+            // any cell that flips back within one render (X -> Y -> X).
+            osd_raster->diff(osd_src->screen(), surf, &burn_shadow, &burn_dirty);
+            // Empty => nothing changed => nothing to publish. A full
+            // re-quantize runs only when diff() says "whole surface".
+            if (!burn_dirty.empty()) burn->set_osd(surf, burn_dirty.data(), burn_dirty.size());
+          }
           presenter->osd_publish();
           osd_blanked = false;
         } else if (!osd_blanked && osd_src->stale(now_ms)) {
           const int idx = presenter->osd_back_index();
-          osd_raster->clear(presenter->osd_back_surface(), &osd_shadow[idx]);
-          if (burn) burn->set_osd(presenter->osd_back_surface());  // blank the burn too
+          const maburplay::Surface surf = presenter->osd_back_surface();
+          osd_raster->clear(surf, &osd_shadow[idx]);
+          if (burn) {
+            burn_shadow = maburplay::ShadowGrid{};  // next diff is a full one
+            burn->set_osd(surf);                    // blank the burn too (full)
+          }
           presenter->osd_publish();
           osd_blanked = true;
           std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",

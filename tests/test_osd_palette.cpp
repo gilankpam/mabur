@@ -116,6 +116,77 @@ TEST(padding_beyond_the_surface_is_transparent) {
   CHECK(m.px[(size_t)25 * m.stride() + 5] == 0);     // y=25, past height 20
 }
 
+// The incremental path exists so a full-screen quantize does not run on
+// maburplay's 2 ms main loop. It is only worth anything if it lands on the
+// same bytes a full pass would.
+TEST(incremental_quantize_matches_a_full_pass) {
+  const OsdPalette p = tiny_palette();
+  Canvas c(64, 48);
+  for (int x = 0; x < 30; ++x) c.set(x, 5, 0xFFFFFFFFu);
+  OsdIndexMap inc, full;
+  quantize(c.s, p, &inc);
+  quantize(c.s, p, &full);
+  REQUIRE(inc.px == full.px);
+
+  // Change one band; re-quantize only it, and compare against a from-
+  // scratch pass over the whole changed surface.
+  for (int x = 10; x < 20; ++x) {
+    c.set(x, 5, 0xFF000000u);
+    c.set(x, 6, 0xFFFFFFFFu);
+  }
+  const DirtyRect r{8, 4, 16, 4};
+  QuantizeCache cache;
+  CHECK(quantize_rects(c.s, p, &r, 1, &inc, &cache));
+  quantize(c.s, p, &full);
+  CHECK(inc.px == full.px);
+  CHECK(inc.mb_w == full.mb_w && inc.mb_h == full.mb_h);
+}
+
+TEST(incremental_quantize_clips_rects_to_the_surface) {
+  const OsdPalette p = tiny_palette();
+  Canvas c(20, 20);  // pads to 32x32
+  c.set(19, 19, 0xFFFFFFFFu);
+  OsdIndexMap m;
+  quantize(c.s, p, &m);
+  const DirtyRect r{-4, -4, 100, 100};  // overhangs on every side
+  CHECK(quantize_rects(c.s, p, &r, 1, &m, nullptr));
+  CHECK(m.px[(size_t)19 * m.stride() + 19] != 0);
+  CHECK(m.px[(size_t)25 * m.stride() + 25] == 0);  // padding untouched
+}
+
+// A map that was never sized for this surface must be refused, not written
+// through: that is the caller's signal to run a full quantize().
+TEST(incremental_quantize_refuses_an_unsized_map) {
+  const OsdPalette p = tiny_palette();
+  Canvas c(64, 48);
+  OsdIndexMap empty;
+  const DirtyRect r{0, 0, 64, 48};
+  CHECK(!quantize_rects(c.s, p, &r, 1, &empty, nullptr));
+  CHECK(empty.px.empty());
+
+  OsdIndexMap wrong;
+  Canvas other(32, 32);
+  quantize(other.s, p, &wrong);
+  CHECK(!quantize_rects(c.s, p, &r, 1, &wrong, nullptr));
+}
+
+// The cache is a pure memo: it must not change any answer.
+TEST(quantize_cache_reuse_does_not_change_the_result) {
+  const OsdPalette p = tiny_palette();
+  Canvas a(48, 32), b(48, 32);
+  a.set(3, 3, 0xFFFFFFFFu);
+  a.set(4, 3, 0xFF000000u);
+  b.set(9, 9, 0xFF000000u);
+  QuantizeCache cache;
+  OsdIndexMap ma, mb, ra, rb;
+  quantize(a.s, p, &ma, &cache);
+  quantize(b.s, p, &mb, &cache);  // second use: warm cache
+  quantize(a.s, p, &ra);
+  quantize(b.s, p, &rb);
+  CHECK(ma.px == ra.px);
+  CHECK(mb.px == rb.px);
+}
+
 TEST(real_atlas_quantizes_within_a_sane_error_bound) {
   OsdFont font;
   std::string err;
