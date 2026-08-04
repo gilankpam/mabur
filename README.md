@@ -146,6 +146,48 @@ Two deploy-time invariants, neither of which a daemon can check for itself:
   If the file is missing, maburplay logs `osd disabled -- cannot open ...`
   and runs video-only.
 
+## GS link-status OSD (player-side)
+
+A second, independent overlay drawn by maburplay from the maburgs stats
+sideport: rung/airtime, per-card RSSI+SNR, the pre/post-FEC loss pair,
+fps/jitter/bitrate and the DVR recording clock, hugging the four corners so
+the centre of frame stays clear. It shares the MSP overlay's plane and
+surface (MSP draws first, then the GS fields repaint over any collision, so
+GS pixels always win), and it is burned into the DVR alongside the MSP grid.
+
+Config lives in `maburplay.json` under `osd.gs`: `enable` (default false),
+`port` (the sideport fan-out destination maburgs sends to — see `stats.out`
+in `maburgs.json`), `font` (path to a `.gfont` atlas) and `stale_ms` (dim
+every link-derived field after this much silence; the player-measured fields
+ignore it, being current by construction).
+
+- **The `.gfont` atlas named by `osd.gs.font` must exist on the GS**, by
+  default `/usr/local/share/mabur/gs_osd.gfont`. It is committed as
+  `gs/player/bundle/gs_osd.gfont` and staged into `out/arm64/` by
+  `tools/build-arm64.sh`; push it alongside the binaries, exactly like the
+  `.mfont`. Both fonts are mmapped by a running maburplay, so stop the
+  player (`/etc/init.d/S97maburplay stop`) before overwriting either — an
+  in-place `scp` over a live mapping is how you get a SIGBUS instead of a
+  new font.
+- The asset bakes **30 pixel sizes**, the eight design sizes at ×⅔, ×1,
+  ×4/3 and ×2, so every type role lands on an exact atlas size at 720p,
+  1080p, 1440p and 2160p with no runtime scaling anywhere. That is what
+  makes it ~13 MB — a mask atlas, two bytes per pixel, at every size.
+  Regenerate it (JetBrains Mono is a dev-host dependency only; the asset is
+  committed so a deploy needs no font toolchain) with:
+
+  ```
+  nix-shell -p jetbrains-mono python3Packages.freetype-py --run \
+    "tools/msp/gen_gsfont.py \
+       <jetbrains-mono>/share/fonts/truetype/JetBrainsMono-Medium.ttf \
+       gs/player/bundle/gs_osd.gfont --sizes <the 30-value list>"
+  ```
+
+  The exact size list and expected byte count are in `gen_gsfont.py`'s
+  header; `tests/test_gs_asset.cpp` is the gate that the committed asset
+  still bakes exactly those sizes and that the layout holds against real
+  JetBrains Mono metrics at all four resolutions.
+
 ## Benchmarking
 
 On-target and PC-side bench tooling (loss/recovery measurement against

@@ -247,6 +247,15 @@ cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx txagcbench-
 # osd.font points at. Regenerate with tools/msp/gen_font.py (see its header).
 cp gs/player/bundle/font_btfl.mfont out/arm64/font_btfl.mfont
 
+# The GS link-status overlay's own atlas, staged the same way. Installs as
+# /usr/local/share/mabur/gs_osd.gfont -- the path maburplay.default.json's
+# osd.gs.font points at. Unlike the MSP .mfont (pre-coloured ARGB glyphs at
+# one size), this is a two-channel coverage+shadow MASK baked at all 30
+# sizes the responsive layout can ask for across 720p..2160p, which is why
+# it is the larger of the two files. Regenerate with tools/msp/gen_gsfont.py
+# (see its header for the exact command and the expected byte count).
+cp gs/player/bundle/gs_osd.gfont out/arm64/gs_osd.gfont
+
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then
   nix-build -E \
