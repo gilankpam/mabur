@@ -32,6 +32,23 @@ struct OsdCfg {
   // SINGLE dropped snapshot blanks the whole overlay and the next one
   // repaints it, which reads as a strobe rather than as staleness.
   int stale_ms = 5000;
+
+  // GS link-status overlay. Independent of the MSP OSD above: either may be
+  // enabled alone, and a GS-only configuration is the natural one for an
+  // aircraft with no MSP-capable FC.
+  //
+  // `port` must equal one of maburgs' stats.out ports -- separate daemons,
+  // separate config files, so this pairing is a deploy-time invariant
+  // neither binary can validate on its own, exactly like osd.port <->
+  // msp.out.port. The 10 s silence warning is the mitigation.
+  struct GsCfg {
+    bool enable = false;
+    int port = 8302;
+    std::string font = "/usr/local/share/mabur/gs_osd.gfont";
+    // Dim (never blank) after this much sideport silence. 3000 = 6 missed
+    // samples at the 500 ms sideport cadence.
+    int stale_ms = 3000;
+  } gs;
 };
 
 struct Config {

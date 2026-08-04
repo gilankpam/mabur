@@ -131,4 +131,94 @@ TEST(dvr_burned_bounds_are_enforced) {
   CHECK(threw == true);
 }
 
+TEST(gs_osd_defaults_are_off_on_8302) {
+  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  CHECK(c.osd.gs.enable == false);
+  CHECK(c.osd.gs.port == 8302);
+  // 3 s = 6 missed samples at the sideport's 500 ms cadence.
+  CHECK(c.osd.gs.stale_ms == 3000);
+  CHECK(c.osd.gs.font == "/usr/local/share/mabur/gs_osd.gfont");
+}
+
+// An empty osd block must leave the gs defaults alone: parsing "osd" and
+// parsing "osd.gs" are separate conditionals, and a regression that hung
+// the gs defaults off the presence of the outer block would only show here.
+TEST(gs_osd_defaults_survive_an_osd_block_without_gs) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"backend":"null","osd":{"enable":true,"port":15000}})"));
+  CHECK(c.osd.enable == true);
+  CHECK(c.osd.gs.enable == false);
+  CHECK(c.osd.gs.port == 8302);
+  CHECK(c.osd.gs.stale_ms == 3000);
+  CHECK(c.osd.gs.font == "/usr/local/share/mabur/gs_osd.gfont");
+}
+
+TEST(gs_osd_keys_parse) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"osd":{"gs":{"enable":true,"port":9000,"font":"/x.gfont",)"
+      R"("stale_ms":1500}}})"));
+  CHECK(c.osd.gs.enable == true);
+  CHECK(c.osd.gs.port == 9000);
+  CHECK(c.osd.gs.font == "/x.gfont");
+  CHECK(c.osd.gs.stale_ms == 1500);
+}
+
+// The GS-only topology -- no MSP-capable FC -- is a supported configuration
+// and the one this whole overlay exists for. Pinned because main.cpp's
+// want_osd is the OR of the two, and a config that cannot express this
+// would make that unreachable.
+TEST(gs_osd_alone_is_expressible) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"osd":{"enable":false,"gs":{"enable":true}}})"));
+  CHECK(c.osd.enable == false);
+  CHECK(c.osd.gs.enable == true);
+}
+
+// Strict config: an unknown key under osd.gs must refuse to boot rather
+// than silently ignore a typo'd port.
+TEST(unknown_gs_key_is_rejected) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"prot":8302}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
+TEST(gs_osd_bounds_and_types_are_enforced) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"port":0}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"port":70000}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"stale_ms":-1}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"enable":"yes"}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"font":7}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
+// The shipped bundle must parse, and must ship with the overlay off --
+// matching how the MSP OSD and maburgs' sideport itself ship.
+TEST(bundle_default_parses_with_gs_osd_off) {
+  auto c = maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+  CHECK(c.osd.gs.enable == false);
+  CHECK(c.osd.gs.port == 8302);
+  CHECK(c.osd.gs.stale_ms == 3000);
+  CHECK(c.osd.gs.font == "/usr/local/share/mabur/gs_osd.gfont");
+}
+
 MTEST_MAIN

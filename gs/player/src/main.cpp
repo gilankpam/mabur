@@ -1,7 +1,10 @@
 // maburplay -- GS native player: AU ring -> VideoBackend, with fMP4 DVR.
 // Host builds only ever link the null backend (this task); MppBackend /
 // DrmPresenter are cross-only (MABUR_PLAYER_HW, Task 7/8).
+#include <sys/statvfs.h>  // DVR free-space check behind the GS recording block
+
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -38,6 +41,16 @@ namespace {
 
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop.store(true); }
+
+// Monotonic milliseconds. Everything the GS overlay measures -- AU arrival
+// jitter, the 1 Hz video/recording marks, the recording clock -- is an
+// interval, so it must not be readable from a clock the RTC can step.
+uint64_t mono_ms() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
 
 void usage() {
   std::fprintf(stderr,
@@ -339,8 +352,7 @@ int main(int argc, char** argv) {
   }
   if (argc >= 2 && std::string(argv[1]) == "--gs-render") {
     std::string snap, out;
-    // Task 10 replaces this literal with Config().osd.gs.font.
-    std::string font = "/usr/local/share/mabur/gs_osd.gfont";
+    std::string font = maburplay::Config().osd.gs.font;
     int w = 1920, h = 1080;
     bool stale = false;
     maburplay::GsPlayerState ps;
@@ -453,32 +465,55 @@ int main(int argc, char** argv) {
   // consecutive no-op resets). Every capture below therefore goes through
   // the unique_ptr, never a cached raw pointer.
 
-  // MSP DisplayPort OSD: font load ONLY, done here -- BEFORE the presenter
-  // is constructed/initialised -- because DrmPresenter::init() needs to
-  // know up front whether an OSD is actually wanted. `want_osd` is that
-  // decision: cfg.osd.enable AND the font loaded successfully. Deciding
-  // this AFTER init() (deciding it too late is what F1 of the review that
-  // introduced this ordering fixed) left the presenter always claiming the
-  // primary plane and allocating two full-screen OSD buffers regardless of
-  // config -- with osd.enable:false, or a missing font, there was no way
-  // back to the pre-OSD plane layout (backdrop, no OSD buffers). Every
-  // failure here is non-fatal and logged exactly once: a missing font, a
-  // port already bound, or (on hardware) no spare ARGB plane all mean "run
-  // without OSD" -- the OSD must never cost video a session. --decode-only
-  // stays OSD-free: it has no presenter and is the hardware decode gate,
-  // not a display run.
+  // Both overlays: font load ONLY, done here -- BEFORE the presenter is
+  // constructed/initialised -- because DrmPresenter::init() needs to know up
+  // front whether ANY overlay is wanted. `want_osd` is that decision, and it
+  // is what decides whether the presenter claims the primary plane and
+  // allocates two full-screen ARGB buffers at all. Deciding this AFTER
+  // init() (deciding it too late is what F1 of the review that introduced
+  // this ordering fixed) left the presenter always claiming the plane
+  // regardless of config -- with everything off, or a missing font, there
+  // was no way back to the pre-OSD plane layout (backdrop, no OSD buffers).
+  // Every failure here is non-fatal and logged exactly once: a missing font,
+  // a port already bound, or (on hardware) no spare ARGB plane all mean "run
+  // without that overlay" -- an overlay must never cost video a session.
+  // --decode-only stays overlay-free: it has no presenter and is the
+  // hardware decode gate, not a display run.
   maburplay::OsdFont osd_font;
   std::unique_ptr<maburplay::OsdSource> osd_src;
   std::unique_ptr<maburplay::OsdRaster> osd_raster;
-  bool want_osd = false;
+  bool want_msp_osd = false;
   if (cfg.osd.enable && !decode_only) {
     std::string err;
     if (!osd_font.load(cfg.osd.font, &err)) {
-      std::fprintf(stderr, "maburplay: osd disabled -- %s\n", err.c_str());
+      std::fprintf(stderr, "maburplay: msp osd disabled -- %s\n", err.c_str());
     } else {
-      want_osd = true;
+      want_msp_osd = true;
     }
   }
+
+  // GS link-status overlay: same up-front font load, same reason.
+  maburplay::GsFont gs_font;
+  std::unique_ptr<maburplay::GsSource> gs_src;
+  std::unique_ptr<maburplay::GsOverlay> gs_overlay;
+  bool want_gs_osd = false;
+  if (cfg.osd.gs.enable && !decode_only) {
+    std::string err;
+    if (!gs_font.load(cfg.osd.gs.font, &err)) {
+      std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
+    } else {
+      want_gs_osd = true;
+    }
+  }
+
+  // EITHER overlay alone must bring the plane up: a GS-only configuration
+  // (osd.enable false, osd.gs.enable true) is supported and is the natural
+  // one for an aircraft with no MSP-capable FC. With both off, init() skips
+  // straight to the pre-OSD topology (video + black backdrop on the
+  // primary), which is the escape hatch back to the old plane layout.
+  // maybe_unused: its only consumer is DrmPresenter::init(), which exists
+  // only in the cross build.
+  [[maybe_unused]] const bool want_osd = want_msp_osd || want_gs_osd;
 #ifdef MABUR_PLAYER_HW
   // One ShadowGrid per OSD buffer, indexed by the presenter's back index:
   // the two buffers hold different pixels, so a shared shadow would suppress
@@ -522,16 +557,16 @@ int main(int argc, char** argv) {
   }
 #endif
 
-  // MSP DisplayPort OSD: network intake + raster, gated on want_osd (the
+  // MSP DisplayPort OSD: network intake + raster, gated on want_msp_osd (the
   // font already loaded above). presenter->osd_available() is re-checked
-  // per frame further down -- want_osd can be true here and the OSD still
+  // per frame further down -- this can be true here and the OSD still
   // end up unavailable (no qualifying plane, or the 3-strike runtime
   // disable), which is fine: osd_src/osd_raster just have nothing to feed.
-  if (want_osd) {
+  if (want_msp_osd) {
     std::string err;
     osd_src = std::make_unique<maburplay::OsdSource>();
     if (!osd_src->open(cfg.osd.port, &err)) {
-      std::fprintf(stderr, "maburplay: osd disabled -- %s\n", err.c_str());
+      std::fprintf(stderr, "maburplay: msp osd disabled -- %s\n", err.c_str());
       osd_src.reset();
     } else {
       osd_src->set_stale_ms(cfg.osd.stale_ms);
@@ -544,6 +579,46 @@ int main(int argc, char** argv) {
                    osd_font.native().glyph_h, cfg.osd.scale.c_str(), cfg.osd.stale_ms);
     }
   }
+
+  // GS link-status overlay: network intake + overlay object, gated on
+  // want_gs_osd. Same shape as the MSP intake above, and the same caveat:
+  // presenter->osd_available() is re-checked per iteration, so getting here
+  // does not guarantee anything is ever drawn.
+  if (want_gs_osd) {
+    std::string err;
+    gs_src = std::make_unique<maburplay::GsSource>();
+    if (!gs_src->open(cfg.osd.gs.port, &err)) {
+      // gs_src is the live gate from here on -- want_gs_osd has already
+      // been folded into want_osd and is never read again.
+      std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
+      gs_src.reset();
+    } else {
+      gs_src->set_stale_ms(cfg.osd.gs.stale_ms);
+      gs_overlay = std::make_unique<maburplay::GsOverlay>(gs_font);
+      std::fprintf(stderr,
+                   "maburplay: gs osd on udp 127.0.0.1:%d font=%s stale_ms=%d\n",
+                   gs_src->port(), cfg.osd.gs.font.c_str(), cfg.osd.gs.stale_ms);
+    }
+  }
+
+  // Player-measured half of the GS overlay's inputs, recomputed once a
+  // second in the main loop. maburgs cannot supply these: its fps counts AUs
+  // published to the ring and still reads 60 while a wedged decoder shows a
+  // frozen picture -- the exact failure the pilot has to be able to see.
+  maburplay::GsPlayerState gs_ps;
+  uint64_t gs_frames_at_mark = 0;   // frame_count at the last 1 Hz mark
+  uint64_t gs_bytes_at_mark = 0;    // gs_bytes_total at the last 1 Hz mark
+  uint64_t gs_bytes_total = 0;      // running AU byte total, summed at delivery
+  uint64_t gs_video_mark_ms = 0;    // 0 = no mark yet, so the first tick only seeds
+  uint64_t gs_last_au_ms = 0;
+  double gs_last_au_interval_ms = -1.0;
+  double gs_jitter_ms = 0.0;
+  // Recording state, recomputed at the same 1 Hz from the DVR's own counters.
+  uint64_t dvr_open_ms = 0;          // steady_clock ms when the file was opened
+  uint64_t rec_samples_at_check = 0;
+  uint64_t rec_feed_at_check = 0;  // AUs (raw) or decoded frames (burned)
+  uint64_t rec_stall_since_ms = 0;
+  bool statvfs_warned = false;
 
   // dvr.mode "burned": the recording is produced by re-encoding decoded
   // frames with the OSD composited in by the hardware encoder, so the
@@ -591,7 +666,13 @@ int main(int argc, char** argv) {
     bc.fragment_ms = cfg.dvr.fragment_ms;
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the
     // decode watchdog may destroy and recreate it mid-run.
-    if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
+    if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) {
+      burn = std::move(rec);
+      // The GS overlay's recording clock. Started here rather than at the
+      // first encoded frame because that is when the pilot armed it; the
+      // block still reads ARMED until frames actually appear.
+      dvr_open_ms = mono_ms();
+    }
   }
   if (burned_mode && !burn) {
     // Wrong backend, no presenter (--decode-only), or an encoder that would
@@ -649,6 +730,9 @@ int main(int argc, char** argv) {
   maburplay::HevcParams params;
   maburplay::DvrMux dvr;
   bool dvr_open = false;
+  // Latched so the GS overlay can tell "no file yet" (armed) from "the file
+  // could not be created" (fault). Nothing else needs the distinction.
+  bool dvr_open_failed = false;
   uint64_t backend_submits = 0;
 
   // Sync-point gate for the backend feed (and DVR's hvcC collection below):
@@ -688,6 +772,37 @@ int main(int argc, char** argv) {
     // backend_armed above).
     const bool is_key = ev.meta.sid == 0;
 
+    // GS overlay video figures, measured HERE -- at AU delivery -- and not
+    // at flip: the presenter is a mailbox on a 60 Hz vsync, so flip deltas
+    // are quantized to 16.67 ms multiples and a 3 ms arrival wobble is
+    // invisible in them. RingClient::pump(2) is a poll() on the doorbell fd
+    // with a 2 ms CEILING, not a 2 ms sample grid, so the doorbell wakes us
+    // promptly and steady_clock resolves sub-millisecond here.
+    {
+      const uint64_t now_ms = mono_ms();
+      if (gs_last_au_ms != 0) {
+        const double iv = (double)(now_ms - gs_last_au_ms);
+        if (iv > 1000.0) {
+          // A stall is a stall, not jitter: folding a link outage into the
+          // EMA would leave a huge number sitting on the OSD for the next
+          // ~16 AUs after video came back.
+          gs_last_au_interval_ms = -1.0;
+          gs_jitter_ms = 0.0;
+        } else if (gs_last_au_interval_ms >= 0.0) {
+          const double d = iv > gs_last_au_interval_ms ? iv - gs_last_au_interval_ms
+                                                       : gs_last_au_interval_ms - iv;
+          gs_jitter_ms += (d - gs_jitter_ms) / 16.0;
+          gs_last_au_interval_ms = iv;
+        } else {
+          gs_last_au_interval_ms = iv;  // first interval after a stall: no delta yet
+        }
+      }
+      gs_last_au_ms = now_ms;
+      // Delivered bitrate is what arrived, truncated AUs included: the
+      // figure answers "what is the link carrying", not "what decoded".
+      gs_bytes_total += ev.au.size();
+    }
+
     // !burned_mode: in burned mode the BurnRecorder owns the recording and
     // writes the encoder's output to its own DvrMux instead. Everything
     // inside is the raw path, byte-for-byte unchanged.
@@ -704,6 +819,10 @@ int main(int argc, char** argv) {
           dvr_open = dvr.open(path, params.hvcc(), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
           if (!dvr_open) {
             std::fprintf(stderr, "maburplay: dvr: cannot open %s\n", path.c_str());
+            dvr_open_failed = true;
+          } else {
+            dvr_open_failed = false;
+            dvr_open_ms = mono_ms();  // the GS overlay's recording clock
           }
         }
         if (dvr_open) {
@@ -898,6 +1017,38 @@ int main(int argc, char** argv) {
                                     std::chrono::steady_clock::now().time_since_epoch())
                                     .count();
   bool osd_silence_warned = false;
+  bool gs_silence_warned = false;
+  // Render gate. The overlay's inputs are exactly three -- the snapshot, the
+  // player-measured figures, and the staleness flag -- so re-running
+  // update() on every 2 ms iteration would re-format 33 fields ~500 times a
+  // second to discover nothing changed. Seeded true so the never-received
+  // dash state paints as soon as there is a surface, without waiting for a
+  // first datagram that may never come.
+  [[maybe_unused]] bool gs_needs_render = true;  // read only in the cross build
+  bool gs_stale_last = false;
+#ifdef MABUR_PLAYER_HW
+  // Layout is deferred to the first iteration that sees a real surface: its
+  // size is the DRM buffer's, which DrmPresenter may have allocated at a
+  // mode the connector offered rather than the one cfg.screen_mode asked
+  // for. Laying out against the config would misplace every field.
+  bool gs_laid_out = false;
+  std::vector<maburplay::DirtyRect> gs_dirty;
+  // The OSD is DOUBLE buffered and GsOverlay keeps ONE shadow, so a field
+  // redrawn into the buffer that is back right now is missing from the
+  // other one -- which becomes back again after the next commit, and would
+  // then show the value from two renders ago. gs_owed[i] is the set of
+  // boxes buffer i has not been given yet; they are repainted (at current
+  // values) the next time that buffer is drawn into. Invalidating on every
+  // swap instead would make every render a full repaint of every field.
+  //
+  // KNOWN RESIDUAL: this covers value changes, which is every render bar
+  // one. It does NOT cover a card DISAPPEARING -- GsOverlay clears the
+  // vacated row itself, inside the one update() that observes the new
+  // count, and repaint_intersecting cannot clear (it is gated on active
+  // fields), so the other buffer keeps that row lit. Closing it properly
+  // means giving GsOverlay a per-buffer shadow the way OsdRaster has one.
+  std::vector<maburplay::DirtyRect> gs_owed[2];
+#endif
   while (!g_stop.load()) {
     // 2 ms pump: flip events must be reaped at sub-vsync latency or the
     // mailbox frame waits for the NEXT AU burst before anyone submits it
@@ -971,6 +1122,171 @@ int main(int argc, char** argv) {
       }
 #else
       (void)ready;  // host build: no presenter, nothing to draw on
+#endif
+    }
+    // GS link-status overlay. Drained every iteration whether or not
+    // anything can be drawn -- the counters stay honest and an undrained
+    // socket would just fill -- then repainted when one of its three inputs
+    // moved.
+    if (gs_src) {
+      const uint64_t now_ms = mono_ms();
+      if (gs_src->poll(now_ms)) gs_needs_render = true;
+      const bool gs_stale = gs_src->stale(now_ms);
+      if (gs_stale != gs_stale_last) {
+        gs_stale_last = gs_stale;
+        gs_needs_render = true;
+      }
+
+      // Same one-shot diagnostic as the MSP intake's, and for the same
+      // reason: osd.gs.port must equal one of maburgs' stats.out ports, a
+      // pairing across two config files that neither daemon can validate.
+      if (!gs_silence_warned) {
+        if (gs_src->datagrams() > 0) {
+          gs_silence_warned = true;
+        } else if (now_ms - osd_start_ms >= 10000) {
+          std::fprintf(stderr,
+                       "maburplay: warning: no stats snapshot on udp 127.0.0.1:%d after 10 s -- "
+                       "maburgs must have stats.enable true and one of its stats.out ports MUST "
+                       "equal this player's osd.gs.port; the GS overlay stays empty until one "
+                       "arrives\n",
+                       gs_src->port());
+          gs_silence_warned = true;
+        }
+      }
+
+      // Video and recording figures at 1 Hz. The sideport itself runs at
+      // 2 Hz, but these are the player's own and recomputing them per
+      // iteration would only add noise to numbers read at a glance.
+      if (now_ms - gs_video_mark_ms >= 1000) {
+        // The gate guarantees dt >= 1.0, so there is nothing to divide by
+        // zero; gs_video_mark_ms == 0 is the first tick, which has no
+        // interval behind it and therefore only seeds the marks.
+        const double dt = (double)(now_ms - gs_video_mark_ms) / 1000.0;
+        if (gs_video_mark_ms != 0) {
+          // DECODED frames, not AUs: maburgs' own fps counts what it
+          // published to the ring and still reads 60 while a wedged decoder
+          // shows a frozen picture. This one falls to zero.
+          gs_ps.fps = (double)(frame_count - gs_frames_at_mark) / dt;
+          gs_ps.mbps = (double)(gs_bytes_total - gs_bytes_at_mark) * 8.0 / 1e6 / dt;
+        }
+        gs_frames_at_mark = frame_count;
+        gs_bytes_at_mark = gs_bytes_total;
+        gs_video_mark_ms = now_ms;
+        gs_ps.jitter_ms = gs_jitter_ms;
+        gs_needs_render = true;
+
+        // Recording state. `samples` and the thing that feeds them differ
+        // by mode: the raw path muxes AUs straight off the ring and does not
+        // care whether anything decodes, while burned mode encodes decoded
+        // frames.
+        uint64_t samples = dvr.samples();
+        uint64_t feed = ring.delivered();
+        bool open = dvr_open;
+        bool broken = dvr_open_failed;
+        if (burned_mode) {
+          feed = frame_count;
+#ifdef MABUR_PLAYER_HW
+          samples = burn ? burn->frames_encoded() : 0;
+          open = burn != nullptr;
+          broken = burn == nullptr;
+#else
+          samples = 0;
+          open = false;
+          broken = true;  // burned mode needs the hardware build; already logged
+#endif
+        }
+
+        if (!cfg.dvr.enabled) {
+          gs_ps.rec.kind = maburplay::RecState::Kind::kAbsent;
+          gs_ps.rec.elapsed_s = 0;
+        } else if (broken) {
+          // The recorder could not be brought up at all. Whichever path it
+          // was has already logged why; this is the pilot-visible half.
+          gs_ps.rec.kind = maburplay::RecState::Kind::kFault;
+        } else if (!open) {
+          gs_ps.rec.kind = maburplay::RecState::Kind::kArmed;
+        } else {
+          // Either progress or nothing to make progress FROM resets the
+          // stall clock. Without the second half a link outage -- no AUs,
+          // so no samples -- would read as a recording fault, which is a
+          // lie about the one subsystem still working.
+          if (samples != rec_samples_at_check || feed == rec_feed_at_check)
+            rec_stall_since_ms = now_ms;
+          rec_samples_at_check = samples;
+          rec_feed_at_check = feed;
+          const bool stalled = samples > 0 && now_ms - rec_stall_since_ms >= 3000;
+
+          bool low_space = false;
+          struct statvfs vfs {};
+          if (::statvfs(cfg.dvr.dir.c_str(), &vfs) == 0) {
+            const uint64_t free_bytes = (uint64_t)vfs.f_bavail * (uint64_t)vfs.f_frsize;
+            low_space = free_bytes < 64ull * 1024 * 1024;
+          } else if (!statvfs_warned) {
+            // A failed syscall is not evidence of a full disk, so the
+            // recording state is left alone. Said once; retried silently.
+            statvfs_warned = true;
+            std::fprintf(stderr,
+                         "maburplay: gs osd: statvfs(%s) failed (%s) -- recording free-space "
+                         "checks will be skipped whenever it keeps failing\n",
+                         cfg.dvr.dir.c_str(), std::strerror(errno));
+          }
+
+          if (stalled || low_space) {
+            gs_ps.rec.kind = maburplay::RecState::Kind::kFault;
+          } else if (samples == 0) {
+            // Open but nothing written yet. RECORDING must never show while
+            // no bytes are moving.
+            gs_ps.rec.kind = maburplay::RecState::Kind::kArmed;
+          } else {
+            gs_ps.rec.kind = maburplay::RecState::Kind::kRecording;
+            gs_ps.rec.elapsed_s = dvr_open_ms ? (int)((now_ms - dvr_open_ms) / 1000) : 0;
+          }
+        }
+      }
+
+#ifdef MABUR_PLAYER_HW
+      bool gs_disable = false;
+      // Re-checked every iteration, never cached: the presenter switches the
+      // OSD off mid-session after repeated commit failures, and from that
+      // point osd_back_surface() is a null Surface.
+      if (gs_overlay && presenter && presenter->osd_available()) {
+        const maburplay::Surface surf = presenter->osd_back_surface();
+        if (surf.pixels && !gs_laid_out) {
+          std::string err;
+          if (!gs_overlay->layout(surf.width, surf.height, &err)) {
+            std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
+            gs_overlay.reset();
+            gs_disable = true;
+          } else {
+            gs_laid_out = true;
+          }
+        }
+        if (gs_laid_out && gs_needs_render && surf.pixels) {
+          gs_needs_render = false;
+          const int idx = presenter->osd_back_index();
+          gs_dirty.clear();
+          gs_overlay->update(gs_src->snapshot(), gs_stale, gs_ps, surf, &gs_dirty);
+          // Bring this buffer forward over the renders it was not back for.
+          if (!gs_owed[idx].empty()) {
+            gs_overlay->repaint_intersecting(gs_owed[idx].data(), gs_owed[idx].size(), surf,
+                                             &gs_dirty);
+            gs_owed[idx].clear();
+          }
+          if (!gs_dirty.empty()) {
+            std::vector<maburplay::DirtyRect>& other = gs_owed[idx ^ 1];
+            other.insert(other.end(), gs_dirty.begin(), gs_dirty.end());
+            // Collapse instead of growing without bound when the other
+            // buffer never comes round -- no video means no commit, so no
+            // swap. One rect over every field box repaints all of them.
+            if ((int)other.size() > gs_overlay->field_count())
+              other.assign(1, gs_overlay->bounds());
+            if (burn) burn->set_osd(surf, gs_dirty.data(), gs_dirty.size());
+            presenter->osd_publish();
+          }
+        }
+      }
+      // Deferred to here so nothing above dereferences a reset gs_src.
+      if (gs_disable) gs_src.reset();
 #endif
     }
     {
