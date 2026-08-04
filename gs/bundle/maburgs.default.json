@@ -41,5 +41,13 @@
     "symbol_size": 1312,
     "window": 16
   },
+  "stats": {
+    "enable": false,
+    "interval_ms": 500,
+    "out": [
+      { "host": "127.0.0.1", "port": 8300 },
+      { "host": "127.0.0.1", "port": 8302 }
+    ]
+  },
   "au_ring": { "enable": true }
 }

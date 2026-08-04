@@ -32,11 +32,39 @@ void blit(const GlyphAtlas& a, int gi, const Surface& s, int ox, int oy) {
   }
 }
 
+// The pixel rect a layout's character grid occupies. A default-constructed
+// OsdLayout (draw_w/draw_h == 0) yields an empty rect, which every caller
+// below treats as "nothing to erase".
+DirtyRect grid_rect(const OsdLayout& l) {
+  if (l.draw_w <= 0 || l.draw_h <= 0) return DirtyRect{0, 0, 0, 0};
+  return DirtyRect{l.origin_x, l.origin_y, l.cols * l.draw_w, l.rows * l.draw_h};
+}
+
+// Smallest rect containing both. An empty input returns the other unchanged,
+// so the first-ever draw clears exactly the new grid rather than a rect
+// stretched back to the origin.
+DirtyRect union_rect(const DirtyRect& a, const DirtyRect& b) {
+  if (a.w <= 0 || a.h <= 0) return b;
+  if (b.w <= 0 || b.h <= 0) return a;
+  const int x0 = a.x < b.x ? a.x : b.x;
+  const int y0 = a.y < b.y ? a.y : b.y;
+  const int x1 = (a.x + a.w) > (b.x + b.w) ? (a.x + a.w) : (b.x + b.w);
+  const int y1 = (a.y + a.h) > (b.y + b.h) ? (a.y + a.h) : (b.y + b.h);
+  return DirtyRect{x0, y0, x1 - x0, y1 - y0};
+}
+
 }  // namespace
 
 void OsdRaster::clear(const Surface& s, ShadowGrid* shadow) {
   if (!s.pixels) return;
-  clear_rect(s, 0, 0, s.width, s.height);
+  // Scoped to the grid the shadow says is currently drawn: a second layer
+  // (the GS link-status overlay) shares this surface and must survive an
+  // MSP stale-blank. With no shadow there is no record of what was drawn,
+  // so fall back to the whole surface -- the pre-overlay behaviour, still
+  // correct for any caller that owns the surface outright.
+  const DirtyRect r = shadow ? grid_rect(shadow->layout)
+                             : DirtyRect{0, 0, s.width, s.height};
+  if (r.w > 0 && r.h > 0) clear_rect(s, r.x, r.y, r.w, r.h);
   if (shadow) {
     shadow->layout = OsdLayout{};
     shadow->cells.clear();
@@ -110,7 +138,13 @@ int OsdRaster::draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid
   const size_t n_cells = (size_t)screen.rows() * screen.cols();
   const bool full = !shadow || shadow->layout != layout_ || shadow->cells.size() != n_cells;
   if (full) {
-    clear_rect(s, 0, 0, s.width, s.height);
+    // Union of the grid we are about to draw and the one the shadow says
+    // was there before: a canvas change moves the grid, and pixels of the
+    // OLD one outside the NEW one would otherwise linger forever. Without
+    // a shadow there is no previous grid to account for.
+    const DirtyRect prev = shadow ? grid_rect(shadow->layout) : DirtyRect{0, 0, 0, 0};
+    const DirtyRect r = union_rect(prev, grid_rect(layout_));
+    if (r.w > 0 && r.h > 0) clear_rect(s, r.x, r.y, r.w, r.h);
     if (shadow) {
       shadow->layout = layout_;
       shadow->cells.assign(n_cells, 0u);

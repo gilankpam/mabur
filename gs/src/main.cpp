@@ -12,6 +12,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "aggregator.h"
 #include "au_doorbell.h"
@@ -138,20 +139,34 @@ static int run_radio(const maburgs::Config& cfg) {
   // so the FrameStream end_frame lambda can capture `stats` by reference; both
   // must also outlive every lambda that captures them.
   // session id: nonzero random u32 so consumers detect restarts.
-  std::optional<maburgs::UdpSink> stats_udp;
+  // UdpSink has a user-declared destructor and a deleted copy constructor
+  // with no declared move constructor, so it has neither -- std::vector
+  // growth (even reserve() on an empty vector) instantiates a copy/move
+  // path unconditionally and fails to compile against it. unique_ptr sidesteps
+  // that: the vector moves pointers, never UdpSink objects.
+  std::vector<std::unique_ptr<maburgs::UdpSink>> stats_udp;
   std::optional<maburgs::StatsExporter> stats;
   if (cfg.stats.enable) {
-    stats_udp.emplace(cfg.stats.host, cfg.stats.port);
+    stats_udp.reserve(cfg.stats.out.size());
+    for (const auto& o : cfg.stats.out)
+      stats_udp.push_back(std::make_unique<maburgs::UdpSink>(o.host, o.port));
     uint32_t session = 0;
     std::random_device rd;
     while (session == 0) session = rd();
     stats.emplace(session, cfg.stats.interval_ms,
-                  [&](const std::string& s) {
-                    return stats_udp->send(
-                        reinterpret_cast<const uint8_t*>(s.data()), s.size());
+                  [&stats_udp](const std::string& s) {
+                    // Every destination gets the same buffer. One failing
+                    // sink must not stop the others -- a dead consumer is
+                    // not a reason to blind the live ones.
+                    bool any = false;
+                    for (auto& u : stats_udp)
+                      if (u->send(reinterpret_cast<const uint8_t*>(s.data()), s.size()))
+                        any = true;
+                    return any;
                   });
-    std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
-                 cfg.stats.host.c_str(), cfg.stats.port, cfg.stats.interval_ms);
+    for (const auto& o : cfg.stats.out)
+      std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
+                   o.host.c_str(), o.port, cfg.stats.interval_ms);
   }
 
   // Drone telemetry (T_TELEM): display-only, not rendezvous traffic — held

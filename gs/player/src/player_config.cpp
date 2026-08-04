@@ -86,7 +86,7 @@ Config load_config(const std::string& path) {
 
   if (j.contains("osd")) {
     const json& o = j["osd"];
-    check_keys(o, "osd", {"enable", "port", "font", "scale", "stale_ms"});
+    check_keys(o, "osd", {"enable", "port", "font", "scale", "stale_ms", "gs"});
     if (o.contains("enable")) {
       if (!o["enable"].is_boolean()) fail("osd.enable", "not a boolean");
       c.osd.enable = o["enable"].get<bool>();
@@ -98,6 +98,20 @@ Config load_config(const std::string& path) {
       fail("osd.scale", "must be \"sharp\" or \"fill\"");
     // Default mirrors OsdCfg::stale_ms (see player_config.h for why 5000).
     c.osd.stale_ms = static_cast<int>(get_int(o, "stale_ms", 5000, 0, 60000, "osd"));
+
+    if (o.contains("gs")) {
+      const json& g = o["gs"];
+      check_keys(g, "osd.gs", {"enable", "port", "font", "stale_ms"});
+      if (g.contains("enable")) {
+        if (!g["enable"].is_boolean()) fail("osd.gs.enable", "not a boolean");
+        c.osd.gs.enable = g["enable"].get<bool>();
+      }
+      c.osd.gs.port = static_cast<int>(get_int(g, "port", c.osd.gs.port, 1, 65535, "osd.gs"));
+      c.osd.gs.font = get_str(g, "font", c.osd.gs.font, "osd.gs");
+      // Default mirrors OsdCfg::GsCfg::stale_ms (see player_config.h).
+      c.osd.gs.stale_ms =
+          static_cast<int>(get_int(g, "stale_ms", c.osd.gs.stale_ms, 0, 60000, "osd.gs"));
+    }
   }
 
   return c;

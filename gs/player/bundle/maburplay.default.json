@@ -16,6 +16,12 @@
         "port": 14560,
         "font": "/usr/local/share/mabur/font_btfl.mfont",
         "scale": "sharp",
-        "stale_ms": 5000
+        "stale_ms": 5000,
+        "gs": {
+            "enable": false,
+            "port": 8302,
+            "font": "/usr/local/share/mabur/gs_osd.gfont",
+            "stale_ms": 3000
+        }
     }
 }

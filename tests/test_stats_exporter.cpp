@@ -189,8 +189,33 @@ TEST(rssi_converted_to_dbm) {
   const json j = cap.last();
   CHECK(j["cards"][0]["classes"]["s1"]["rssi"].get<double>() > -50.2 &&
         j["cards"][0]["classes"]["s1"]["rssi"].get<double>() < -50.0);
-  CHECK(j["cards"][0]["classes"]["s1"]["snr"].get<double>() > 27.0 &&
-        j["cards"][0]["classes"]["s1"]["snr"].get<double>() < 27.2);  // snr NOT shifted
+  // snr_ema 27.1 is raw HALF-dB (devourer units) -> 13.55 dB exported.
+  CHECK(j["cards"][0]["classes"]["s1"]["snr"].get<double>() > 13.5 &&
+        j["cards"][0]["classes"]["s1"]["snr"].get<double>() < 13.6);
+}
+
+// devourer's RxAtrib.snr is HALF-dB (LinkHealth.h:49, and RxQuality divides
+// by 2). radio_frontend.cpp copies it through untouched, so the exporter is
+// the last place it can be corrected -- and the `snr` key already claims dB.
+TEST(snr_is_exported_in_dB_not_half_dB) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsClassIn& s0 = in.cards[0].classes[0];  // RfClass s0
+  s0.frames = 100;
+  s0.has_ema = true;
+  s0.rssi_ema = 52.0;   // raw PWDB byte (rssi = raw - 110 dBm) -> -58.0 dBm
+  s0.snr_ema = 70.0;    // raw half-dB -> 35.0 dB
+  s0.snr_a_ema = 68.0;  // -> 34.0 dB
+  s0.snr_b_ema = 72.0;  // -> 36.0 dB
+  ex.poll(1000, in);
+  const json j = cap.last();
+  const json& c = j["cards"][0]["classes"]["s0"];
+  CHECK(c["snr"].get<double>() > 34.99 && c["snr"].get<double>() < 35.01);
+  CHECK(c["snr_a"].get<double>() > 33.99 && c["snr_a"].get<double>() < 34.01);
+  CHECK(c["snr_b"].get<double>() > 35.99 && c["snr_b"].get<double>() < 36.01);
+  // RSSI is already dBm and must NOT be touched.
+  CHECK(c["rssi"].get<double>() > -58.01 && c["rssi"].get<double>() < -57.99);
 }
 
 TEST(send_failure_counted_never_thrown) {
@@ -484,5 +509,33 @@ TEST(uplink_nulled_when_both_chains_raw_zero) {
   CHECK(j["drone"]["uplink"]["rssi_b"].is_null());
   CHECK(j["drone"]["uplink"]["snr_a"].is_null());
   CHECK(j["drone"]["uplink"]["snr_b"].is_null());
+}
+
+// The drone's own receiver reads the uplink through the same devourer
+// RxAtrib.snr, and telemetry.cpp forwards it raw, so drone.uplink.snr_* had
+// the identical half-dB bug cards[].classes[].snr was fixed for. Until this
+// landed, ONE datagram carried true dB under one key name and half-dB under
+// a near-identical one.
+TEST(uplink_snr_is_exported_in_dB_not_half_dB) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  mabur::rc::Telem t;
+  t.up_rssi[0] = 52;  t.up_rssi[1] = 47;   // raw byte - 110 -> -58 / -63 dBm
+  t.up_snr[0] = 65;   t.up_snr[1] = 60;    // raw half-dB -> 32.5 / 30.0 dB
+  in.telem = t; in.telem_rx_ms = 900;
+  ex.poll(1000, in);
+  // last() returns by value; binding a reference to a SUBOBJECT of that
+  // temporary would not extend its lifetime, so hold the whole thing.
+  const json j = cap.last();
+  const json& u = j["drone"]["uplink"];
+  // 32.5 is the point of halving HERE rather than on the drone: the wire
+  // field is an int8_t the drone lround()s, so a drone-side halving could
+  // only ever yield whole dB.
+  CHECK(u["snr_a"].get<double>() > 32.49 && u["snr_a"].get<double>() < 32.51);
+  CHECK(u["snr_b"].get<double>() > 29.99 && u["snr_b"].get<double>() < 30.01);
+  // Uplink RSSI is already dBm and must NOT be touched.
+  CHECK(u["rssi_a"].get<double>() > -58.01 && u["rssi_a"].get<double>() < -57.99);
+  CHECK(u["rssi_b"].get<double>() > -63.01 && u["rssi_b"].get<double>() < -62.99);
 }
 MTEST_MAIN

@@ -1,0 +1,16 @@
+{
+  "v": 1, "seq": 100, "t_ms": 50000, "session": 12345,
+  "cards": [
+    {"id": 0, "up": true,
+     "classes": {"s0": {"rssi": -58.0, "snr": 18.0, "pps": 136.0}}},
+    {"id": 1, "up": true,
+     "classes": {"s0": {"rssi": -71.0, "snr": 9.0, "pps": 130.0}}}
+  ],
+  "link": {
+    "air_pct": 61.0,
+    "residual_loss": 0.0,
+    "ctl": {"rung": {"idx": 3, "mcs": 5, "ov": 0.25}, "pre_fec_loss": 0.021},
+    "video": {"fps": 60.0, "jitter_ms": 3.0, "mbps": 24.6}
+  },
+  "drone": null
+}

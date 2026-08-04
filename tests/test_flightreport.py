@@ -240,5 +240,111 @@ def test_flightreport_structure():
     print("\n✓ All assertions passed!")
 
 
+def test_old_scale_snr_warns_on_stderr():
+    """A recording with SNR > 60 predates the 2026-08-04 half-dB fix and
+    must be flagged, not silently misread as if it were already dB."""
+    fixture_dir = Path("tests/fixtures")
+    fixture_dir.mkdir(exist_ok=True)
+    flight_jsonl = fixture_dir / "flight-old-snr-scale-fixture.jsonl"
+    row = {
+        "v": 1, "t_ms": 0,
+        "link": {
+            "state": "linked", "residual_loss": None,
+            "ctl": {
+                "rung": {"idx": 0, "mcs": 5, "ov": 0.25}, "util": 0.1,
+                "pre_fec_loss": 0.01, "budget": 0.5, "probation_ms_left": 0,
+                "penalized": [],
+                "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
+                             "probation_fails": 0, "starved_drops": 0, "timeout_drops": 0},
+                "last_event": {"t_ms": 0, "from": 0, "to": 0, "reason": "none", "u": 0.0},
+            },
+        },
+        "cards": [{"frames": 1000, "classes": {"s1": {"rssi": -50.0, "snr": 70.0, "pps": 900}}}],
+    }
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"flightreport.py exited {result.returncode}: {result.stderr}"
+    assert "predates the 2026-08-04 half-dB fix" in result.stderr, (
+        f"Expected old-scale SNR warning on stderr, got: {result.stderr!r}"
+    )
+
+    # A same-shaped recording already on the dB scale must NOT warn.
+    row["cards"][0]["classes"]["s1"]["snr"] = 27.0
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "predates the 2026-08-04 half-dB fix" not in result.stderr, (
+        f"Unexpected old-scale warning for a dB-scale recording: {result.stderr!r}"
+    )
+    # ...and a recording with no drone telemetry must not claim anything
+    # about the uplink path either.
+    assert "drone.uplink" not in result.stderr, (
+        f"Unexpected uplink warning with no drone block: {result.stderr!r}"
+    )
+
+    # drone.uplink.snr_a/snr_b were fixed the same day and at the same place
+    # as cards[].classes[].snr, so they are now the same backstop with the
+    # same >60 threshold. An ordinary post-fix uplink reading 27 dB is a
+    # legitimate value and must NOT warn.
+    row["drone"] = {"state": "flying",
+                    "uplink": {"rssi_a": -55.0, "rssi_b": -58.0,
+                               "snr_a": 27.0, "snr_b": 24.0}}
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "drone.uplink" not in result.stderr, (
+        f"A post-fix 27 dB uplink must not warn, got: {result.stderr!r}"
+    )
+
+    # ...but an old-scale uplink (76 = 38 dB) still trips the backstop, and
+    # says so as its own line so a file that straddles only one of the two
+    # senders stays diagnosable.
+    row["drone"]["uplink"] = {"rssi_a": -55.0, "rssi_b": -58.0,
+                              "snr_a": 76.0, "snr_b": 74.0}
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "drone.uplink.snr_a/snr_b exceeds 60" in result.stderr, (
+        f"Expected uplink old-scale warning, got: {result.stderr!r}"
+    )
+    assert "38.0 dB" in result.stderr, (
+        f"Expected the converted figure in the warning, got: {result.stderr!r}"
+    )
+    # cards[] is on the dB scale in this row, so only the uplink line fires.
+    assert "cards[].classes[].snr exceeds 60" not in result.stderr, (
+        f"cards[] must not warn on a dB-scale row: {result.stderr!r}"
+    )
+
+    # A null uplink (deaf radio / pre-DISC: the exporter writes nulls) is not
+    # a reading, so it must not warn.
+    row["drone"]["uplink"] = {"rssi_a": None, "rssi_b": None,
+                              "snr_a": None, "snr_b": None}
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "drone.uplink" not in result.stderr, (
+        f"Unexpected uplink warning for a null uplink: {result.stderr!r}"
+    )
+
+    print("\n✓ Old-scale SNR warning test passed!")
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
+    test_old_scale_snr_warns_on_stderr()

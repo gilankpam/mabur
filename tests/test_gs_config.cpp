@@ -141,8 +141,9 @@ TEST(msp_udp_keys_still_parse) {
 TEST(stats_defaults_disabled) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   CHECK(!cfg.stats.enable);
-  CHECK(cfg.stats.host == "127.0.0.1");
-  CHECK(cfg.stats.port == 8300);
+  REQUIRE(cfg.stats.out.size() == 1);
+  CHECK(cfg.stats.out[0].host == "127.0.0.1");
+  CHECK(cfg.stats.out[0].port == 8300);
   CHECK(cfg.stats.interval_ms == 500);
 }
 
@@ -151,8 +152,9 @@ TEST(stats_section_parses_and_validates) {
       "{\"stats\": {\"enable\": true, \"host\": \"10.0.0.2\","
       " \"port\": 9000, \"interval_ms\": 250}}"));
   CHECK(cfg.stats.enable);
-  CHECK(cfg.stats.host == "10.0.0.2");
-  CHECK(cfg.stats.port == 9000);
+  REQUIRE(cfg.stats.out.size() == 1);
+  CHECK(cfg.stats.out[0].host == "10.0.0.2");
+  CHECK(cfg.stats.out[0].port == 9000);
   CHECK(cfg.stats.interval_ms == 250);
   bool threw = false;
   try { maburgs::load_config(write_tmp("{\"stats\": {\"interval_ms\": 50}}")); }
@@ -162,6 +164,67 @@ TEST(stats_section_parses_and_validates) {
   try { maburgs::load_config(write_tmp("{\"stats\": {\"prot\": 1}}")); }
   catch (const std::exception& e) { threw = std::string(e.what()).find("prot") != std::string::npos; }
   CHECK(threw);  // unknown key fail-fast, like every other section
+}
+
+TEST(stats_defaults_to_one_destination) {
+  const std::string p = write_tmp("{}");
+  const maburgs::Config c = maburgs::load_config(p);
+  REQUIRE(c.stats.out.size() == 1);
+  CHECK(c.stats.out[0].host == "127.0.0.1");
+  CHECK(c.stats.out[0].port == 8300);
+  std::remove(p.c_str());
+}
+
+TEST(legacy_host_port_still_works) {
+  const std::string p = write_tmp(
+      "{\"stats\":{\"enable\":true,\"host\":\"10.0.0.5\",\"port\":9999}}");
+  const maburgs::Config c = maburgs::load_config(p);
+  REQUIRE(c.stats.out.size() == 1);
+  CHECK(c.stats.out[0].host == "10.0.0.5");
+  CHECK(c.stats.out[0].port == 9999);
+  std::remove(p.c_str());
+}
+
+TEST(out_list_yields_every_destination_in_order) {
+  const std::string p = write_tmp(
+      "{\"stats\":{\"enable\":true,\"out\":["
+      "{\"host\":\"127.0.0.1\",\"port\":8300},"
+      "{\"host\":\"127.0.0.1\",\"port\":8302}]}}");
+  const maburgs::Config c = maburgs::load_config(p);
+  REQUIRE(c.stats.out.size() == 2);
+  CHECK(c.stats.out[0].port == 8300);
+  CHECK(c.stats.out[1].port == 8302);
+  std::remove(p.c_str());
+}
+
+// Strict config: `out` and `host`/`port` together is ambiguous, so it is a
+// boot failure rather than a silent precedence rule nobody can remember.
+TEST(out_together_with_host_or_port_is_rejected) {
+  for (const char* body : {
+           "{\"stats\":{\"out\":[{\"host\":\"127.0.0.1\",\"port\":8300}],\"host\":\"127.0.0.1\"}}",
+           "{\"stats\":{\"out\":[{\"host\":\"127.0.0.1\",\"port\":8300}],\"port\":8300}}"}) {
+    const std::string p = write_tmp(body);
+    bool threw = false;
+    try { maburgs::load_config(p); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+    std::remove(p.c_str());
+  }
+}
+
+TEST(empty_out_list_is_rejected) {
+  const std::string p = write_tmp("{\"stats\":{\"out\":[]}}");
+  bool threw = false;
+  try { maburgs::load_config(p); } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  std::remove(p.c_str());
+}
+
+TEST(out_entry_missing_a_port_is_rejected) {
+  const std::string p = write_tmp("{\"stats\":{\"out\":[{\"host\":\"127.0.0.1\"}]}}");
+  bool threw = false;
+  try { maburgs::load_config(p); } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  std::remove(p.c_str());
 }
 
 TEST(stale_video_out_key_throws) {

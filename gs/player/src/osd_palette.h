@@ -56,7 +56,22 @@ struct QuantizeCache {
 // index 0 reserved for fully transparent. One fixed palette for the whole
 // session is sufficient (measured: mean error 3.20 vs 1.73 for a per-screen
 // fit, visually indistinguishable), so this runs once at startup.
-OsdPalette build_palette(const GlyphAtlas& atlas);
+//
+// `extra` seeds colours the atlas does NOT contain, each counted with the
+// same weight as a moderately common atlas colour. The GS link-status
+// overlay needs this: its status green, amber and red are not the shipped
+// Betaflight atlas's hues, so unseeded they land on whatever foreign colour
+// the atlas happens to own (measured against font_btfl.mfont: green off by
+// 15 chroma units, red by 11 -- the recording's "ok" and "recording" would
+// not be the colours the screen shows). An EMPTY atlas is legal and means
+// exactly one thing -- a GS-only topology with no MSP font loaded -- and
+// yields a palette built from the seeds alone.
+OsdPalette build_palette(const GlyphAtlas& atlas, const uint32_t* extra,
+                         size_t n_extra);
+
+inline OsdPalette build_palette(const GlyphAtlas& atlas) {
+  return build_palette(atlas, nullptr, 0);
+}
 
 // Quantizes `s` against `pal`. Sizes `out` to ceil(w/16) x ceil(h/16)
 // macroblocks; pixels outside the surface become index 0.

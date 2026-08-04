@@ -86,13 +86,25 @@ struct MspCfg {
   int window = 16;
 };
 
-/// Stats sideport: periodic UDP JSON datagram with link/FEC/video stats
-/// (docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
-struct StatsCfg {
-  bool enable = false;
+/// One stats-sideport destination.
+struct StatsOut {
   std::string host = "127.0.0.1";
   int port = 8300;
+};
+
+/// Stats sideport: periodic UDP JSON datagram with link/FEC/video stats
+/// (docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
+///
+/// `out` is the destination list and is ALWAYS non-empty after load: with
+/// no `out` key it holds the single legacy host/port pair. It exists
+/// because UDP unicast delivers a datagram to exactly one socket
+/// (SO_REUSEPORT load-balances, it does not duplicate), so consumers
+/// cannot simply share a port -- which is why statsrec has to re-emit, and
+/// why maburplay's OSD would otherwise depend on statsrec staying alive.
+struct StatsCfg {
+  bool enable = false;
   int interval_ms = 500;  // clamped to [100, 10000] at load
+  std::vector<StatsOut> out{StatsOut{}};
 };
 
 /// Shared-memory AU ring for the native player / ausniff gate

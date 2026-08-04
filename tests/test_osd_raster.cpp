@@ -1,16 +1,30 @@
 #include "mtest.h"
 #include "osd_raster.h"
 #include "mabur/msp_dp.h"
+#include "scratch.h"
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 using namespace maburplay;
 
-// 2x2 glyphs, 1024 entries: glyph gi is fully opaque 0xFF000000|gi.
-static std::string write_font(int gw, int gh) {
-  std::string path = std::string(std::tmpnam(nullptr)) + ".mfont";
-  std::FILE* f = std::fopen(path.c_str(), "wb");
+// A gw x gh, 1024-entry .mfont: glyph gi is fully opaque 0xFF000000|gi.
+//
+// One file per shape, written on first use into the build tree's scratch
+// dir and unlinked when the process exits -- every TEST here wants one of
+// two shapes, so writing a fresh one per TEST was 13 identical files' worth
+// of churn for nothing. OsdFont mmaps the path, so a shape that has already
+// been loaded keeps working from the same file.
+static const std::string& write_font(int gw, int gh) {
+  static std::map<std::pair<int, int>, std::unique_ptr<ScratchFile>> cache;
+  std::unique_ptr<ScratchFile>& e = cache[std::make_pair(gw, gh)];
+  if (e) return e->path;
+  e.reset(new ScratchFile("osd_raster", ".mfont"));
+  std::FILE* f = std::fopen(e->c_str(), "wb");
+  REQUIRE(f != nullptr);
   uint32_t hdr[8] = {0x544E464DU, 1, (uint32_t)gw, (uint32_t)gh, 1024, 0, 0, 0};
   std::fwrite(hdr, sizeof(hdr), 1, f);
   std::vector<uint32_t> g((size_t)gw * gh);
@@ -19,7 +33,7 @@ static std::string write_font(int gw, int gh) {
     std::fwrite(g.data(), 4, g.size(), f);
   }
   std::fclose(f);
-  return path;
+  return e->path;
 }
 
 // One self-contained snapshot: CLEAR, DRAW_STRING(row,col,text), DRAW_SCREEN.
@@ -48,7 +62,7 @@ struct Canvas {
 };
 
 TEST(draws_glyphs_at_the_layout_position) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -68,11 +82,10 @@ TEST(draws_glyphs_at_the_layout_position) {
   CHECK(c.px[(size_t)(l.origin_y + 2) * 100 + l.origin_x + 1] == 0xFF000041u);
   // A blank neighbouring cell was cleared to transparent, not left as fill.
   CHECK(c.px[(size_t)l.origin_y * 100 + l.origin_x + 2] == 0x00000000u);
-  std::remove(fp.c_str());
 }
 
 TEST(second_draw_of_the_same_screen_touches_nothing) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -89,7 +102,7 @@ TEST(second_draw_of_the_same_screen_touches_nothing) {
 }
 
 TEST(diff_render_matches_full_render_pixel_for_pixel) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -123,11 +136,10 @@ TEST(diff_render_matches_full_render_pixel_for_pixel) {
   const OsdLayout& l = raster.layout();
   const size_t x = (size_t)(l.origin_x + 6 * l.draw_w), y = (size_t)(l.origin_y + 1 * l.draw_h);
   CHECK(diff.px[y * 100 + x] == 0x00000000u);
-  std::remove(fp.c_str());
 }
 
 TEST(canvas_change_forces_a_full_redraw) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -150,7 +162,7 @@ TEST(canvas_change_forces_a_full_redraw) {
 }
 
 TEST(clear_blanks_the_surface_and_invalidates_the_shadow) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -171,7 +183,7 @@ TEST(clear_blanks_the_surface_and_invalidates_the_shadow) {
 // painting. Its first call must report the whole surface (nothing is known
 // about the consumer's state yet).
 TEST(diff_reports_the_whole_surface_on_the_first_call) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -190,11 +202,10 @@ TEST(diff_reports_the_whole_surface_on_the_first_call) {
   // Same screen again: nothing changed, nothing reported.
   CHECK(raster.diff(screen, c.s, &shadow, &rects) == 0);
   CHECK(rects.empty());
-  std::remove(fp.c_str());
 }
 
 TEST(diff_merges_a_run_of_changed_cells_into_one_rect) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -218,14 +229,13 @@ TEST(diff_merges_a_run_of_changed_cells_into_one_rect) {
   CHECK(rects[0].y == l.origin_y + 1 * l.draw_h);
   CHECK(rects[0].w == 5 * l.draw_w);
   CHECK(rects[0].h == l.draw_h);
-  std::remove(fp.c_str());
 }
 
 // The lineage bug this method exists to avoid: a cell going X -> Y -> X is
 // invisible to a shadow that only sees every OTHER render, so a consumer
 // refreshed on EVERY render must keep its own.
 TEST(diff_sees_a_cell_that_flips_back_between_renders) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
@@ -247,18 +257,156 @@ TEST(diff_sees_a_cell_that_flips_back_between_renders) {
   // The every-other-render shadow saw X then X: it reports nothing, which is
   // right for ITS buffer and wrong for anyone updated every render.
   CHECK(raster.diff(screen, c.s, &every_other, &rects) == 0);
-  std::remove(fp.c_str());
 }
 
 TEST(null_surface_is_a_no_op) {
-  const std::string fp = write_font(2, 3);
+  const std::string& fp = write_font(2, 3);
   OsdFont font;
   REQUIRE(font.load(fp, nullptr));
   OsdRaster raster(font, ScaleMode::kSharp);
   mabur::MspScreen screen;
   Surface none{};
   CHECK(raster.draw(screen, none, nullptr) == 0);
-  std::remove(fp.c_str());
+}
+
+// --- Task 1: region-scoped clears -------------------------------------
+// A sentinel pixel OUTSIDE the MSP grid stands in for a second layer.
+// Nothing OsdRaster does may touch it.
+
+static constexpr uint32_t kSentinel = 0xFF00FF00u;
+
+// The 50x18 HD canvas (MspScreen's default -- snapshot() below never calls
+// SET_OPTIONS) on a 320x180 surface with 4x6 glyphs: the grid is 200x108 at
+// origin (60,36). (0,0) is well outside it.
+TEST(draw_full_redraw_does_not_clear_outside_the_grid) {
+  const std::string& fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+  c.s.pixels[0] = kSentinel;
+
+  mabur::MspParser p;
+  mabur::MspScreen scr;
+  feed(p, scr, snapshot(1, 2, "HI"));
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid sh;
+  r.draw(scr, c.s, &sh);  // first draw == full redraw
+
+  CHECK(c.s.pixels[0] == kSentinel);
+}
+
+// clear() is the stale-blank path. It must erase the grid and nothing else.
+TEST(clear_erases_only_the_previously_drawn_grid) {
+  const std::string& fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+
+  mabur::MspParser p;
+  mabur::MspScreen scr;
+  feed(p, scr, snapshot(1, 2, "HI"));
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid sh;
+  r.draw(scr, c.s, &sh);
+  const OsdLayout lay = r.layout();
+  REQUIRE(lay.draw_w > 0);
+
+  c.s.pixels[0] = kSentinel;
+  r.clear(c.s, &sh);
+
+  CHECK(c.s.pixels[0] == kSentinel);
+  // A pixel inside the grid is now transparent.
+  const size_t inside = (size_t)(lay.origin_y + 1) * c.s.stride_px + lay.origin_x + 1;
+  CHECK(c.s.pixels[inside] == 0u);
+}
+
+// clear() with a never-drawn shadow has no grid to erase and must be a no-op.
+TEST(clear_with_fresh_shadow_touches_nothing) {
+  const std::string& fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+  for (int i = 0; i < 320 * 180; ++i) c.s.pixels[i] = kSentinel;
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid fresh;
+  r.clear(c.s, &fresh);
+
+  int untouched = 0;
+  for (int i = 0; i < 320 * 180; ++i)
+    if (c.s.pixels[i] == kSentinel) ++untouched;
+  CHECK(untouched == 320 * 180);
+}
+
+// A canvas change moves the grid. Stale pixels from the OLD grid must go,
+// so the clear covers the union -- but still nothing beyond it.
+TEST(layout_change_clears_union_of_old_and_new_grids) {
+  const std::string& fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid sh;
+
+  // HD 50x18 first. Explicit SET_OPTIONS(hd_option=1) even though it's the
+  // default: relying on the implicit default was the F1 bug -- and it's
+  // not just belt-and-suspenders here, HD has to come FIRST. Both grids
+  // are centred on the same screen centre, so whichever grid is smaller in
+  // both dimensions is a strict subset of the other. SD (30x16) is smaller
+  // than HD (50x18) in both, so an SD -> HD transition leaves the old (SD)
+  // grid entirely inside the new (HD) one -- union_rect() would pass with
+  // the old-grid contribution deleted outright. HD -> SD is the shrink
+  // direction: the old HD grid has pixels the new SD grid does NOT cover,
+  // which is exactly the case union_rect() exists to handle.
+  mabur::MspParser p1;
+  mabur::MspScreen hd;
+  {
+    std::vector<uint8_t> s;
+    std::vector<uint8_t> clr = {2};
+    mabur::msp_append_message(s, 182, clr.data(), clr.size());
+    std::vector<uint8_t> opt = {5, 0, 1};
+    mabur::msp_append_message(s, 182, opt.data(), opt.size());
+    std::vector<uint8_t> ds = {3, 0, 0, 0, 'A', 'A', 'A', 'A'};
+    mabur::msp_append_message(s, 182, ds.data(), ds.size());
+    std::vector<uint8_t> scr1 = {4};
+    mabur::msp_append_message(s, 182, scr1.data(), scr1.size());
+    feed(p1, hd, s);
+  }
+  r.draw(hd, c.s, &sh);
+  const OsdLayout old_lay = r.layout();
+
+  // Mark a pixel inside the OLD (HD) grid that the NEW (SD) grid does not
+  // cover -- the pixel the union logic exists to reach.
+  const size_t old_px = (size_t)old_lay.origin_y * c.s.stride_px + old_lay.origin_x;
+  c.s.pixels[old_px] = kSentinel;
+  c.s.pixels[0] = kSentinel;  // outside both
+
+  // Now SD 30x16 (SET_OPTIONS payload {5, 0, 0}).
+  mabur::MspParser p2;
+  mabur::MspScreen sd;
+  {
+    std::vector<uint8_t> s;
+    std::vector<uint8_t> clr = {2};
+    mabur::msp_append_message(s, 182, clr.data(), clr.size());
+    std::vector<uint8_t> opt = {5, 0, 0};
+    mabur::msp_append_message(s, 182, opt.data(), opt.size());
+    std::vector<uint8_t> ds = {3, 0, 0, 0, 'B', 'B'};
+    mabur::msp_append_message(s, 182, ds.data(), ds.size());
+    std::vector<uint8_t> scr2 = {4};
+    mabur::msp_append_message(s, 182, scr2.data(), scr2.size());
+    feed(p2, sd, s);
+  }
+  r.draw(sd, c.s, &sh);
+
+  CHECK(c.s.pixels[old_px] != kSentinel);  // old grid was cleared
+  CHECK(c.s.pixels[0] == kSentinel);       // outside both: untouched
 }
 
 MTEST_MAIN

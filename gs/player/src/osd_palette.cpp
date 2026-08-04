@@ -91,26 +91,45 @@ int nearest_entry(const OsdPalette& pal, uint32_t yuva) {
 
 }  // namespace
 
-OsdPalette build_palette(const GlyphAtlas& atlas) {
+OsdPalette build_palette(const GlyphAtlas& atlas, const uint32_t* extra,
+                         size_t n_extra) {
   OsdPalette pal;
   pal.entry[0] = 0;  // always fully transparent
   pal.n = 1;
 
-  if (!atlas.pixels || atlas.glyph_w <= 0 || atlas.glyph_h <= 0 ||
-      atlas.n_glyphs <= 0) {
-    return pal;
-  }
+  const bool have_atlas = atlas.pixels && atlas.glyph_w > 0 &&
+                          atlas.glyph_h > 0 && atlas.n_glyphs > 0;
+  const size_t total_px =
+      have_atlas
+          ? (size_t)atlas.glyph_w * (size_t)atlas.glyph_h * (size_t)atlas.n_glyphs
+          : 0;
 
   // Histogram distinct converted colours by frequency. Fully transparent
-  // pixels all collapse to yuva==0 (handled above) and are dropped here --
-  // they belong to the reserved index 0, not a median-cut box.
+  // pixels all collapse to yuva==0 (handled by argb_to_yuva) and are dropped
+  // below -- they belong to the reserved index 0, not a median-cut box.
   std::unordered_map<uint32_t, uint64_t> hist;
-  const size_t total_px =
-      (size_t)atlas.glyph_w * (size_t)atlas.glyph_h * (size_t)atlas.n_glyphs;
-  hist.reserve(total_px / 4 + 1);
-  for (size_t i = 0; i < total_px; ++i) {
-    const uint32_t yuva = argb_to_yuva(atlas.pixels[i]);
-    hist[yuva]++;
+  if (have_atlas) {
+    hist.reserve(total_px / 4 + 1);
+    for (size_t i = 0; i < total_px; ++i) {
+      const uint32_t yuva = argb_to_yuva(atlas.pixels[i]);
+      hist[yuva]++;
+    }
+  }
+
+  // Extra seeds join the histogram as ordinary colours. The weight is a
+  // deliberate choice: too low and median cut discards them, too high and
+  // they steal boxes from the glyph body colours that dominate the screen.
+  // One per mille of the atlas pixel count puts a seed on par with a
+  // moderately common atlas colour. With no atlas at all the weight is 1
+  // and every seed is equally weighted, which is the right answer when the
+  // seeds are the only colours there are.
+  if (extra && n_extra) {
+    const uint64_t w = total_px / 1000 ? (uint64_t)(total_px / 1000) : 1u;
+    for (size_t i = 0; i < n_extra; ++i) {
+      const uint32_t yuva = argb_to_yuva(extra[i]);
+      if (yuva == 0) continue;  // transparent is always index 0
+      hist[yuva] += w;
+    }
   }
 
   std::vector<HistPoint> points;
