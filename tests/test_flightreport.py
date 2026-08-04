@@ -2,10 +2,14 @@
 """Test suite for flightreport.py post-flight analysis tool."""
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+import flightreport
 
 
 def synthesize_flight_jsonl():
@@ -345,6 +349,34 @@ def test_old_scale_snr_warns_on_stderr():
     print("\n✓ Old-scale SNR warning test passed!")
 
 
+CTL_LOG = """ctllog 1 ladder=0/100,2/50,4/25,5/25,6/25,7/10 down_util=0.35 up_util=0.15
+S 1000 3 0.0100 31.5 0.0000 0.0200 0.0000
+P 2000 4 pass 30.0 0.0500 2000
+P 9000 4 fail 24.5 0.9000 600
+N 9000 4 1 19000
+P 20000 4 fail 23.0 0.8000 550
+E 30000 3 2 s3_util 0.4000 26.0
+P 40000 4 fail 41.0 0.9500 500
+P 50000 4 pass 29.5 0.0400 2000
+"""
+
+
+def test_wall_report(tmp_path, capsys):
+    p = tmp_path / "ctl-0001_x.log"
+    p.write_text(CTL_LOG)
+    flightreport.main(str(p))
+    out = capsys.readouterr().out
+    assert "rung 4" in out
+    assert "pass" in out and "fail" in out
+    # fail cluster 23.0-24.5, passes 29.5-30.0 -> suggested wall between them
+    m = re.search(r"suggested wall[^0-9]*([0-9.]+)", out)
+    assert m and 24.5 < float(m.group(1)) < 29.5
+    # the 41.0 dB fail is an outlier (mcs6-hole signature), flagged not pooled:
+    assert "outlier" in out
+    assert "s3_util" in out          # event summary includes new reasons
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
+    # test_wall_report() needs pytest's tmp_path/capsys fixtures; run via pytest.
