@@ -1199,7 +1199,7 @@ int main(int argc, char** argv) {
           in.gs_dirty = gs_needs_render;
         }
         const int idx = presenter->osd_back_index();
-        if (composer.wants(idx, in)) {
+        if (composer.wants(in)) {
           const maburplay::OsdComposeOut out = composer.compose(idx, surf, in);
           gs_needs_render = false;
           // Unconditional whenever a composition ran, even if it drew

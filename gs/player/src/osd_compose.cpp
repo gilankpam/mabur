@@ -62,18 +62,23 @@ DirtyRect OsdComposer::debug_grid_rect(int idx) const {
   return grid_of(shadow_[idx & 1].layout);
 }
 
-bool OsdComposer::wants(int idx, const OsdComposeIn& in) const {
-  idx &= 1;
+bool OsdComposer::wants(const OsdComposeIn& in) const {
   if (gs_live() && in.snap && in.gs_dirty) return true;
   if (raster_ && in.screen) {
     if (in.msp_fresh) return true;
-    // Per BUFFER, not a single latch: the blank has to reach both, and the
-    // second one is reached on the composition after the first publish.
-    if (have_screen_ && in.msp_stale && !blanked_[idx]) return true;
+    // Until the blank has been PUBLISHED. Gating this on the back buffer's
+    // own blanked_ flag deadlocked: with one screen ever drawn and then
+    // silence, the back buffer has never held a grid, so it is already
+    // blank, so nothing is composed, so nothing is published, and the front
+    // buffer shows the frozen flight OSD past osd.stale_ms forever. Exactly
+    // the configuration shipping today (MSP-only, no second publisher).
+    // Settles after one composition: compose() sets screen_blank_.
+    if (have_screen_ && in.msp_stale && !screen_blank_) return true;
   }
-  // Deliberately NOT a trigger: "this buffer's MSP grid is a screen behind".
-  // A buffer that is behind is also a buffer nothing is publishing, so it is
-  // not on screen; the composition that does publish it brings it forward.
+  // Deliberately NOT a trigger: "the other buffer's MSP grid is a screen
+  // behind". A buffer that is behind is also a buffer nothing is publishing,
+  // so it is not on screen; the composition that does publish it brings it
+  // forward.
   return false;
 }
 
@@ -84,15 +89,20 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
 
   const bool gs_on = gs_live() && in.snap != nullptr;
   const bool msp_on = raster_ != nullptr && in.screen != nullptr;
+  if (msp_on && in.msp_fresh) have_screen_ = true;
+  // What the grid looks like on the composition this call produces -- a
+  // property of the picture, not of buffer idx, so it is what both the
+  // blank trigger and the burn feed are entitled to look at. Buffer idx may
+  // already agree with it (blanked_[idx]) and still need publishing, which
+  // is the case both N1 and N2 fell through.
+  const bool grid_blank = msp_on && have_screen_ && in.msp_stale;
 
   // ---------------- MSP layer ----------------
   // msp_write_ ends up holding what this composition wrote into buffer idx,
   // which is what the GS reclaim below needs. It is NOT the burn's rect set.
   msp_write_.clear();
-  bool blanked_now = false;
   bool msp_drew = false;  // the draw branch ran, so there is a grid on this buffer
   if (msp_on) {
-    if (in.msp_fresh) have_screen_ = true;
     if (have_screen_ && in.msp_stale) {
       if (!blanked_[idx]) {
         // The grid rect BEFORE clear(), which resets the shadow -- afterwards
@@ -100,14 +110,9 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
         const DirtyRect grid = grid_of(shadow_[idx].layout);
         raster_->clear(s, &shadow_[idx]);
         blanked_[idx] = true;
-        blanked_now = true;
         // clear() is scoped to the MSP GRID, not to MSP cells, so every GS
         // pixel inside that rect went with it.
         if (grid.w > 0 && grid.h > 0) msp_write_.push_back(grid);
-        if (!blank_announced_) {
-          blank_announced_ = true;
-          out.announce_blank = true;
-        }
       }
     } else if (have_screen_) {
       // Unconditional, not gated on msp_fresh. draw() is diffed against THIS
@@ -120,7 +125,9 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
       out.msp_cells = raster_->draw(*in.screen, s, &shadow_[idx]);
       msp_drew = true;
       blanked_[idx] = false;
-      blank_announced_ = false;
+      // Remembered because a later blank may find this buffer ALREADY clear
+      // and still owe the burn the rect the grid used to occupy.
+      last_grid_ = grid_of(shadow_[idx].layout);
       // Exactly the cells draw() wrote: diff() shares draw()'s change
       // detection and full-repaint condition, against the same layout.
       if (gs_on) raster_->diff(*in.screen, s, &pre_, &msp_write_);
@@ -133,9 +140,12 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
   if (gs_on) {
     // MSP drew second and clears a whole cell before blitting it, so any GS
     // pixel under a written cell is gone. The design says GS wins the
-    // collision. At 1920x1080 with the shipped fonts the MSP grid covers
-    // ~84% of the surface and every one of the 13 non-card GS fields
-    // intersects it, so this is the common path, not an edge case.
+    // collision. How often that bites depends on the canvas: an HD 50x18
+    // grid at 1080p in "sharp" covers ~84% of the surface and reaches every
+    // one of the 13 non-card GS fields, so there it is the common path
+    // rather than an edge case; an SD 30x16 grid is nearer 45% and may miss
+    // the corners entirely, in which case gs_reclaimed stays 0 and none of
+    // the work below runs.
     if (!msp_write_.empty())
       out.gs_reclaimed = gs_[idx]->repaint_intersecting(msp_write_.data(),
                                                         msp_write_.size(), s, nullptr);
@@ -179,14 +189,22 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
   if (burn_) {
     burn_rects_.clear();
     if (msp_on && have_screen_) {
-      if (blanked_now) {
-        burn_shadow_ = ShadowGrid{};  // the grid really is blank now
-        // Rect-scoped rather than the whole surface. This is NOT much of a
-        // saving -- the grid is ~84% of a 1080p surface in "sharp" and ~99%
-        // in "fill" -- the point is correctness: a whole-surface blank would
-        // record the GS overlay as erased, which it is not.
-        for (const DirtyRect& r : msp_write_) burn_rects_.push_back(r);
-      } else if (!in.msp_stale) {
+      if (grid_blank) {
+        // On the TRANSITION, not on "this buffer was cleared just now": the
+        // composition that finally publishes a blank may be one whose buffer
+        // was already clear (it never held this episode's grid), and the map
+        // would then keep a grid the screen has dropped for the whole stale
+        // episode. Keyed off screen_blank_ for that reason.
+        if (!screen_blank_) {
+          burn_shadow_ = ShadowGrid{};  // the grid really is blank now
+          // Rect-scoped rather than the whole surface. Not much of a saving
+          // where the grid is most of the screen -- 50x18 "sharp" at 1080p
+          // is ~84%, though a 30x16 SD grid is nearer 45% -- the point is
+          // correctness: a whole-surface blank would record the GS overlay
+          // as erased, which it is not.
+          if (last_grid_.w > 0 && last_grid_.h > 0) burn_rects_.push_back(last_grid_);
+        }
+      } else {
         raster_->diff(*in.screen, s, &burn_shadow_, &burn_rects_);
       }
     }
@@ -213,9 +231,22 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
       // rects reach the encoder as one batch.
       gs_[2]->update(*in.snap, in.gs_stale, in.gs_ps, Surface{}, &burn_rects_);
     }
+    // One call, one batch. Rect COUNT is worth a thought and not a worry:
+    // the worst card-count transition produces 106 rects against
+    // BurnRecorder's 128 cap, and exceeding the cap does not cost a
+    // quantize() on this loop -- it sets osd_full_pending, which moves a
+    // ~2 MB map copy onto the recorder thread. The 25 ms path needs
+    // rects == nullptr, which this never passes. Two things do accumulate
+    // toward the cap though: successive set_osd() calls before the recorder
+    // takes them, and OsdRaster::diff() on an adversarial screen (alternating
+    // columns is legal MSP and yields 483 rects on its own).
     if (!burn_rects_.empty()) burn_(s, burn_rects_.data(), burn_rects_.size());
   }
 
+  // One announcement per episode, on the transition rather than on a latch:
+  // the composition that reaches the screen is the one worth logging.
+  out.announce_blank = grid_blank && !screen_blank_;
+  screen_blank_ = grid_blank;
   out.published = true;
   return out;
 }

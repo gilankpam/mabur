@@ -85,9 +85,15 @@ class OsdComposer {
   bool gs_present() const { return gs_[0] != nullptr; }
   bool gs_live() const { return gs_[0] != nullptr && gs_laid_out_; }
   bool blanked(int idx) const { return blanked_[idx & 1]; }
+  bool screen_blank() const { return screen_blank_; }
 
-  // True when composing into `idx` would change what that buffer shows.
-  bool wants(int idx, const OsdComposeIn& in) const;
+  // True when a composition would change what the SCREEN shows. Takes no
+  // buffer index, deliberately: publishing is what reaches the screen, and
+  // it publishes whichever buffer is back, so the answer cannot depend on
+  // which one that is. Asking it per buffer is what made the stale blank
+  // unreachable whenever the back buffer was already blank and the front
+  // still carried a grid.
+  bool wants(const OsdComposeIn& in) const;
 
   // MSP draw-or-blank, GS collision reclaim, GS update, burn feeds. Leaves
   // buffer `idx` current in both layers.
@@ -103,9 +109,22 @@ class OsdComposer {
   BurnSink burn_;
 
   ShadowGrid shadow_[2], pre_, burn_shadow_;
+  // TWO DIFFERENT QUESTIONS, and conflating them is the single mistake this
+  // file has made twice:
+  //   blanked_[i]    does BUFFER i hold a grid? Per buffer, because clearing
+  //                  one says nothing about the other, and each is cleaned
+  //                  in its own composition.
+  //   screen_blank_  is the grid blank in the composition that was last
+  //                  PUBLISHED -- i.e. what the pilot sees, and what the
+  //                  burned DVR's index map was last told. Not per buffer:
+  //                  it is a property of the screen.
+  // wants() and the burn feed both need the second. Using the first made the
+  // blank unreachable in an MSP-only run (back already blank, front lit) and
+  // left the recording showing a grid the screen had dropped.
   bool blanked_[2] = {true, true};  // nothing drawn yet == already blank
-  bool have_screen_ = false;        // a complete MSP screen has ever arrived
-  bool blank_announced_ = false;
+  bool screen_blank_ = false;
+  DirtyRect last_grid_{0, 0, 0, 0};  // where the grid was, for the blank feed
+  bool have_screen_ = false;         // a complete MSP screen has ever arrived
   bool gs_laid_out_ = false;
   // Card count buffer i's overlay has reconciled, -1 == never. The card
   // block is the ONLY part of the GS layout that moves after layout(), and
