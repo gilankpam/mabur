@@ -219,15 +219,38 @@ Config load_config(const std::string& path) {
 
   if (j.contains("stats")) {
     const json& r = j["stats"];
-    check_keys(r, "stats", {"enable", "host", "port", "interval_ms"});
+    check_keys(r, "stats", {"enable", "host", "port", "interval_ms", "out"});
     if (r.contains("enable")) {
       if (!r["enable"].is_boolean()) fail("stats.enable", "not a boolean");
       c.stats.enable = r["enable"].get<bool>();
     }
-    c.stats.host = get_str(r, "host", "127.0.0.1", "stats");
-    c.stats.port = static_cast<int>(get_int(r, "port", 8300, 1, 65535, "stats"));
     c.stats.interval_ms =
         static_cast<int>(get_int(r, "interval_ms", 500, 100, 10000, "stats"));
+
+    const bool has_legacy = r.contains("host") || r.contains("port");
+    if (r.contains("out")) {
+      // Ambiguity is a boot failure, not a precedence rule: a config with
+      // both would silently ignore half of what its author wrote.
+      if (has_legacy)
+        fail("stats.out", "cannot be combined with stats.host / stats.port");
+      if (!r["out"].is_array()) fail("stats.out", "not an array");
+      if (r["out"].empty()) fail("stats.out", "must have at least one destination");
+      c.stats.out.clear();
+      for (const json& e : r["out"]) {
+        if (!e.is_object()) fail("stats.out[]", "not an object");
+        check_keys(e, "stats.out[]", {"host", "port"});
+        if (!e.contains("port")) fail("stats.out[].port", "missing");
+        StatsOut o;
+        o.host = get_str(e, "host", "127.0.0.1", "stats.out[]");
+        o.port = static_cast<int>(get_int(e, "port", 8300, 1, 65535, "stats.out[]"));
+        c.stats.out.push_back(o);
+      }
+    } else {
+      StatsOut o;
+      o.host = get_str(r, "host", "127.0.0.1", "stats");
+      o.port = static_cast<int>(get_int(r, "port", 8300, 1, 65535, "stats"));
+      c.stats.out = {o};
+    }
   }
 
   if (j.contains("au_ring")) {
