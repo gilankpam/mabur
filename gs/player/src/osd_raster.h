@@ -46,7 +46,11 @@ class OsdRaster {
   // every cell; otherwise redraws only cells that differ from the shadow.
   int draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow);
 
-  // Blanks the whole surface and invalidates the shadow (next draw is full).
+  // Blanks the grid the shadow records as drawn -- NOT the whole surface:
+  // the GS link-status overlay shares this surface and must survive an MSP
+  // stale-blank. Invalidates the shadow, so the next draw is a full one.
+  // With shadow == nullptr there is no record of what was drawn and the
+  // whole surface is blanked instead.
   void clear(const Surface& s, ShadowGrid* shadow);
 
   // draw()'s change detection WITHOUT touching the surface: appends to `out`

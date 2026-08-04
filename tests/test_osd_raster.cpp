@@ -261,4 +261,141 @@ TEST(null_surface_is_a_no_op) {
   std::remove(fp.c_str());
 }
 
+// --- Task 1: region-scoped clears -------------------------------------
+// A sentinel pixel OUTSIDE the MSP grid stands in for a second layer.
+// Nothing OsdRaster does may touch it.
+
+static constexpr uint32_t kSentinel = 0xFF00FF00u;
+
+// The 30x16 SD canvas on a 320x180 surface with 4x6 glyphs: the grid is
+// 120x96 at origin (100,42). (0,0) is well outside it.
+TEST(draw_full_redraw_does_not_clear_outside_the_grid) {
+  const std::string fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+  c.s.pixels[0] = kSentinel;
+
+  mabur::MspParser p;
+  mabur::MspScreen scr;
+  feed(p, scr, snapshot(1, 2, "HI"));
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid sh;
+  r.draw(scr, c.s, &sh);  // first draw == full redraw
+
+  CHECK(c.s.pixels[0] == kSentinel);
+  std::remove(fp.c_str());
+}
+
+// clear() is the stale-blank path. It must erase the grid and nothing else.
+TEST(clear_erases_only_the_previously_drawn_grid) {
+  const std::string fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+
+  mabur::MspParser p;
+  mabur::MspScreen scr;
+  feed(p, scr, snapshot(1, 2, "HI"));
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid sh;
+  r.draw(scr, c.s, &sh);
+  const OsdLayout lay = r.layout();
+  REQUIRE(lay.draw_w > 0);
+
+  c.s.pixels[0] = kSentinel;
+  r.clear(c.s, &sh);
+
+  CHECK(c.s.pixels[0] == kSentinel);
+  // A pixel inside the grid is now transparent.
+  const size_t inside = (size_t)(lay.origin_y + 1) * c.s.stride_px + lay.origin_x + 1;
+  CHECK(c.s.pixels[inside] == 0u);
+  std::remove(fp.c_str());
+}
+
+// clear() with a never-drawn shadow has no grid to erase and must be a no-op.
+TEST(clear_with_fresh_shadow_touches_nothing) {
+  const std::string fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+  for (int i = 0; i < 320 * 180; ++i) c.s.pixels[i] = kSentinel;
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid fresh;
+  r.clear(c.s, &fresh);
+
+  int untouched = 0;
+  for (int i = 0; i < 320 * 180; ++i)
+    if (c.s.pixels[i] == kSentinel) ++untouched;
+  CHECK(untouched == 320 * 180);
+  std::remove(fp.c_str());
+}
+
+// A canvas change moves the grid. Stale pixels from the OLD grid must go,
+// so the clear covers the union -- but still nothing beyond it.
+TEST(layout_change_clears_union_of_old_and_new_grids) {
+  const std::string fp = write_font(4, 6);
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(fp, &err));
+  Canvas c(320, 180);
+
+  OsdRaster r(font, ScaleMode::kSharp);
+  ShadowGrid sh;
+
+  // SD 30x16 first. Explicit SET_OPTIONS(hd_option=0): the default canvas
+  // is already HD 50x18 (see MspScreen's default in msp_dp.h), so relying
+  // on snapshot()'s implicit default here would make the second draw's
+  // canvas identical to the first -- no layout change, and this test would
+  // pass without ever exercising the union-clear path.
+  mabur::MspParser p1;
+  mabur::MspScreen sd;
+  {
+    std::vector<uint8_t> s;
+    std::vector<uint8_t> clr = {2};
+    mabur::msp_append_message(s, 182, clr.data(), clr.size());
+    std::vector<uint8_t> opt = {5, 0, 0};
+    mabur::msp_append_message(s, 182, opt.data(), opt.size());
+    std::vector<uint8_t> ds = {3, 0, 0, 0, 'A', 'A', 'A', 'A'};
+    mabur::msp_append_message(s, 182, ds.data(), ds.size());
+    std::vector<uint8_t> scr1 = {4};
+    mabur::msp_append_message(s, 182, scr1.data(), scr1.size());
+    feed(p1, sd, s);
+  }
+  r.draw(sd, c.s, &sh);
+  const OsdLayout old_lay = r.layout();
+
+  // Mark a pixel inside the OLD grid that the NEW grid will not cover.
+  const size_t old_px = (size_t)old_lay.origin_y * c.s.stride_px + old_lay.origin_x;
+  c.s.pixels[old_px] = kSentinel;
+  c.s.pixels[0] = kSentinel;  // outside both
+
+  // Now HD 50x18 (SET_OPTIONS payload {5, 0, 1}).
+  mabur::MspParser p2;
+  mabur::MspScreen hd;
+  {
+    std::vector<uint8_t> s;
+    std::vector<uint8_t> clr = {2};
+    mabur::msp_append_message(s, 182, clr.data(), clr.size());
+    std::vector<uint8_t> opt = {5, 0, 1};
+    mabur::msp_append_message(s, 182, opt.data(), opt.size());
+    std::vector<uint8_t> ds = {3, 0, 0, 0, 'B', 'B'};
+    mabur::msp_append_message(s, 182, ds.data(), ds.size());
+    std::vector<uint8_t> scr2 = {4};
+    mabur::msp_append_message(s, 182, scr2.data(), scr2.size());
+    feed(p2, hd, s);
+  }
+  r.draw(hd, c.s, &sh);
+
+  CHECK(c.s.pixels[old_px] != kSentinel);  // old grid was cleared
+  CHECK(c.s.pixels[0] == kSentinel);       // outside both: untouched
+  std::remove(fp.c_str());
+}
+
 MTEST_MAIN
