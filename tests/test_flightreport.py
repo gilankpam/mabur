@@ -283,6 +283,49 @@ def test_old_scale_snr_warns_on_stderr():
     assert "predates the 2026-08-04 half-dB fix" not in result.stderr, (
         f"Unexpected old-scale warning for a dB-scale recording: {result.stderr!r}"
     )
+    # ...and a recording with no drone telemetry must not claim anything
+    # about the uplink path either.
+    assert "drone.uplink" not in result.stderr, (
+        f"Unexpected uplink warning with no drone block: {result.stderr!r}"
+    )
+
+    # drone.uplink.snr_a/snr_b were never converted, so they are half-dB on
+    # a recording made today -- an ordinary 13.5 dB uplink reads 27 and must
+    # still be flagged. This is what the cards[] threshold cannot do and why
+    # the two warnings are separate.
+    row["drone"] = {"state": "flying",
+                    "uplink": {"rssi_a": -55.0, "rssi_b": -58.0,
+                               "snr_a": 27.0, "snr_b": 24.0}}
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "drone.uplink.snr_a/snr_b are HALF-dB" in result.stderr, (
+        f"Expected uplink half-dB warning, got: {result.stderr!r}"
+    )
+    assert "13.5 dB" in result.stderr, (
+        f"Expected the converted figure in the warning, got: {result.stderr!r}"
+    )
+    # The two cases stay distinguishable: this file is NOT an old recording.
+    assert "predates the 2026-08-04 half-dB fix" not in result.stderr, (
+        f"Uplink warning must not imply an old recording: {result.stderr!r}"
+    )
+
+    # A null uplink (deaf radio / pre-DISC: the exporter writes nulls) is not
+    # a reading, so it must not warn.
+    row["drone"]["uplink"] = {"rssi_a": None, "rssi_b": None,
+                              "snr_a": None, "snr_b": None}
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "drone.uplink" not in result.stderr, (
+        f"Unexpected uplink warning for a null uplink: {result.stderr!r}"
+    )
 
     print("\n✓ Old-scale SNR warning test passed!")
 

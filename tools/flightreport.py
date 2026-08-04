@@ -64,27 +64,48 @@ def merge_consecutive_residuals(residuals):
 def main(path):
     rows = load(path)
 
-    # SNR scale changed 2026-08-04 (half-dB -> dB). Recordings straddling
-    # that change are not comparable; flag it rather than quietly averaging
-    # two scales together.
+    # SNR scale. There are TWO half-dB problems in one datagram and they
+    # need saying separately, because only one of them is in the past.
     #
-    # ⚠ THIS CHECK IS A BACKSTOP, NOT A DETECTOR, and it must not be read as
-    # one. It fires only above 60, i.e. only when the old half-dB scale
-    # pushed a value somewhere no real dB reading goes. A normal link at
-    # 10-25 dB reads 20-50 on the old scale and sails straight through in
-    # silence. There is no fixing that by making the threshold smarter: a
-    # pre-fix file reading 48 (24 dB) and a post-fix file reading 48 (a
-    # perfectly ordinary strong bench link) are the SAME NUMBER, and nothing
-    # in the datagram distinguishes them -- the schema is additive-only
-    # under v:1 and carries no scale tag. Silence here means "not obviously
-    # old", never "confirmed dB". Date the recording instead.
+    # (1) cards[].classes[].snr changed 2026-08-04 (half-dB -> dB).
+    #     Recordings straddling that change are not comparable; flag it
+    #     rather than quietly averaging two scales together.
+    #
+    #     ⚠ THIS CHECK IS A BACKSTOP, NOT A DETECTOR, and it must not be
+    #     read as one. It fires only above 60, i.e. only when the old
+    #     half-dB scale pushed a value somewhere no real dB reading goes. A
+    #     normal link at 10-25 dB reads 20-50 on the old scale and sails
+    #     straight through in silence. There is no fixing that by making the
+    #     threshold smarter: a pre-fix file reading 48 (24 dB) and a
+    #     post-fix file reading 48 (a perfectly ordinary strong bench link)
+    #     are the SAME NUMBER, and nothing in the datagram distinguishes
+    #     them -- the schema is additive-only under v:1 and carries no scale
+    #     tag. Silence here means "not obviously old", never "confirmed dB".
+    #     Date the recording instead.
     snrs = [k["snr"] for r in rows for c in r.get("cards", [])
             for k in c.get("classes", {}).values()
             if isinstance(k.get("snr"), (int, float))]
     if snrs and max(snrs) > 60.0:
-        print("WARNING: SNR values exceed 60 dB -- this recording predates the "
-              "2026-08-04 half-dB fix; divide by 2 to compare with newer files.",
-              file=sys.stderr)
+        print("WARNING: cards[].classes[].snr exceeds 60 -- this recording predates "
+              "the 2026-08-04 half-dB fix; divide those values by 2 to compare with "
+              "newer files.", file=sys.stderr)
+
+    # (2) drone.uplink.snr_a/snr_b were NOT fixed. They are drone-sourced,
+    #     forwarded raw from devourer by the T_TELEM frame, and are half-dB
+    #     on every recording ever made, including one taken today. So this
+    #     one needs no threshold and gets none: presence of the key is the
+    #     proof, and a value-based guess would only be able to miss. Warning
+    #     unconditionally is the point -- the GS-side check above is a
+    #     backstop for a bug that is fixed, and this is a live one.
+    up_snr = [s for r in rows
+              for u in [((r.get("drone") or {}).get("uplink") or {})]
+              for key in ("snr_a", "snr_b")
+              for s in [u.get(key)] if isinstance(s, (int, float))]
+    if up_snr:
+        print("WARNING: drone.uplink.snr_a/snr_b are HALF-dB on every recording -- "
+              "that path was never converted, so unlike cards[].classes[].snr they "
+              "are wrong regardless of date; divide by 2. Saw max %.1f (= %.1f dB)."
+              % (max(up_snr), max(up_snr) / 2.0), file=sys.stderr)
 
     trans, in_rung, u_by_rung, residuals = [], {}, {}, []
     prev_ev_t, prev = None, None
