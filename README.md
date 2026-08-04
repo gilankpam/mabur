@@ -188,6 +188,26 @@ ignore it, being current by construction).
   still bakes exactly those sizes and that the layout holds against real
   JetBrains Mono metrics at all four resolutions.
 
+**When the overlay is on screen.** It appears with the first decoded frame
+and stays there for the rest of the session, including through video loss.
+The CRTC-active latch it is gated on (`drm_presenter.cpp`, set once on the
+first modeset and never cleared) is deliberately *not* the "video is
+healthy" flag: an AU-ring discontinuity, a decoder wedge, the decode
+watchdog dropping every queued frame and recreating the backend all re-arm a
+modeset without deactivating the CRTC, and the OSD keeps committing on its
+own throughout — which is exactly when on-screen link telemetry is worth
+having. The one dead window is between GS power-on and the first decoded
+frame, where the CRTC is not up and an OSD-only commit would have nothing to
+display on.
+
+**Adding verbose/debug/off levels.** Essential is one of four levels in the
+design handoff (essential / verbose / debug / off, operator-cycled), and the
+handoff's constraint on the other three is that **shared anchors keep
+identical pixel positions across levels**: switching level may add or remove
+blocks, but it must not move the four this branch ships. Recorded here
+because it constrains code that does not exist yet, and the handoff itself
+is not in the repository.
+
 ## Benchmarking
 
 On-target and PC-side bench tooling (loss/recovery measurement against
