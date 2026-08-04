@@ -538,8 +538,36 @@ TEST(unheard_card_renders_a_row_with_never_heard) {
   s.cards[1].heard = false;
   s.cards[1].rssi_dbm.reset();
   s.cards[1].snr_db.reset();
+  // The em-dash pair, not the words: it has to fit a box sized for the widest
+  // NUMERIC reading, or every heard row carries the unheard string's width as
+  // dead space between the value and "dBm".
   CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard1Rssi) ==
-        "never heard");
+        kEmDashPair);
+  // The rest of the row goes quiet, so the em-dash is unambiguous.
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard1Unit).empty());
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard1Snr).empty());
+}
+
+// The gap this closed: the RSSI box must be sized for the numeric, so a
+// normal row's "dBm" sits right after the value rather than ~160 px away.
+TEST(rssi_box_is_sized_for_the_numeric_not_the_unheard_text) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  const DirtyRect rssi = ov.debug_field_box(GsFieldId::kCard0Rssi);
+  const DirtyRect unit = ov.debug_field_box(GsFieldId::kCard0Unit);
+  const MaskAtlas* primary = f.atlas(38);
+  REQUIRE(primary != nullptr);
+  // Box width is the numeric's, plus the glyph cell's shadow pad.
+  const int numeric_w = text_width(*primary, "\xE2\x88\x92" "100");
+  CHECK(rssi.w <= numeric_w + primary->glyph_w);
+  // And the unheard rendering fits inside it, so nothing draws past the box.
+  CHECK(text_width(*primary, kEmDashPair) <= numeric_w);
+  // "dBm" follows within one design gap of the numeric's right edge.
+  CHECK(unit.x - (rssi.x + rssi.w) < 40);
 }
 
 // A changed card count re-lays the block out, so the next update is full --

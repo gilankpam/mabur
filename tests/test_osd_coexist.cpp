@@ -782,9 +782,14 @@ TEST(the_burn_restate_is_scoped_to_the_fields_the_collision_hit) {
 
   // The premise: this cell really did force a reclaim...
   CHECK(out.gs_reclaimed > 0);
-  // ...and the restate is a small fraction of what a full one costs. An
-  // order of magnitude is the claim; the measured ratio is far better.
-  CHECK(burn_px * 10 < all_active_px);
+  // ...and the restate is a small fraction of what a full one costs.
+  // Measured 12,946 of 115,493 px = 8.9x. The bar is 5x, which still fails
+  // hard on the mutation this guards (reverting to invalidate() makes the
+  // two equal, i.e. 1x). It was 10x when the RSSI boxes were sized for the
+  // 11-glyph unheard string; narrowing them to the numeric shrank the
+  // FULL-restate baseline, not the scoped restate, so the ratio tightened
+  // while the absolute cost of both went down.
+  CHECK(burn_px * 5 < all_active_px);
   // And the map is still exactly right -- the whole point is that scoping
   // the restate costs no correctness.
   CHECK(fb.wrong_against(r.buf[r.front].s) == 0);

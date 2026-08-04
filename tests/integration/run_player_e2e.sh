@@ -26,7 +26,15 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # and label translate up exactly 8 px and NOTHING else on the 1920x1080
 # surface changes (0 differing px outside the FPS cell band, 0 lit px left in
 # the vacated rows, lit-pixel total identical at 74690).
-GS_SHA_EXPECTED=6479dbb19f72279babbf4ea54afc1efc6bcfb30063e1b08fa2c13928bcddf4b3
+#
+# Re-blessed 2026-08-04 (was 6479dbb1...): the per-card RSSI box was sized for
+# the 11-glyph unheard string instead of the widest numeric, leaving ~160 px of
+# dead space between the value and "dBm" on every heard row (visible on the
+# bench screen). Pixel diff old->new: 14,344 px differ, bbox x 362..640
+# y 924..1022, ZERO differing px outside the card rows, lit total unchanged at
+# 74,690 -- i.e. a pure 116 px leftward translation of dBm/SNR in both rows,
+# with no glyph added, removed or recoloured.
+GS_SHA_EXPECTED=908affc994012eb4589293f72952d755d5627852e002f5dac0b1351c7cf57e1b
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

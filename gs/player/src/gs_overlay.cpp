@@ -418,12 +418,13 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     g.bar_block_w = 6 * (int)(kBarW * scale_ + 0.5) + 5 * (int)(kBarGap * scale_ + 0.5);
     g.bar_block_h = (int)(kBarHeights[5] * scale_ + 0.5);
     g.id_w = text_width(*cardid, "C9");
-    // "never heard" is wider than the widest RSSI -- size the box for it or
-    // an unheard row would draw past its own box and never be cleared.
-    g.rssi_worst =
-        text_width(*primary, "never heard") >= text_width(*primary, "\xE2\x88\x92" "100")
-            ? "never heard"
-            : "\xE2\x88\x92" "100";
+    // Sized to the widest NUMERIC reading, NOT to the unheard text. Sizing it
+    // for an 11-glyph string reserved ~160 px at 1080p that a 3-4 glyph value
+    // never uses, so every normal row showed a visible gulf between the value
+    // and "dBm". The unheard state renders the em-dash pair instead (case 2 in
+    // state_of_), which fits this box -- so nothing draws past it, and the
+    // most frequently changing field in the overlay now clears 2.8x less.
+    g.rssi_worst = "\xE2\x88\x92" "100";
     g.rssi_w = text_width(*primary, g.rssi_worst.c_str());
     g.unit_w = text_width(*label, "dBm");
     // Row PITCH uses line_pitch (unpadded), not glyph_h -- see line_pitch's
@@ -630,11 +631,16 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
           break;
         case 2:
           if (c.heard && c.rssi_dbm) {
-            // "never heard" / U+2212 100 -- see rssi_worst in layout().
             st.text = fmt_signed_int(std::clamp(*c.rssi_dbm, -999.0, 999.0));
             st.rgb = link_status_rgb(cs);
           } else {
-            st.text = "never heard";
+            // A card that has produced no packets renders the design's own
+            // never-received glyph rather than the words "never heard": it
+            // fits the numeric-sized box (see rssi_worst in layout()), where
+            // the words did not. The row still says "dead antenna" loudly --
+            // the bars beside it are all unlit, and the dBm/SNR that would
+            // follow a real reading are blank.
+            st.text = kEmDashPair;
             st.rgb = tok::kTextLabel;
           }
           break;
