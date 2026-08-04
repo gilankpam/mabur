@@ -7,6 +7,7 @@ add_library(mabur_player_core STATIC
   src/gs_font.cpp
   src/gs_draw.cpp
   src/gs_snapshot.cpp
+  src/gs_source.cpp
   src/osd_layout.cpp
   src/osd_raster.cpp
   src/osd_source.cpp

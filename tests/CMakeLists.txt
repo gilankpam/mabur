@@ -68,6 +68,7 @@ if(MABUR_BUILD_GS)
   target_compile_definitions(test_gs_draw PRIVATE
     GEN_GSFONT="${CMAKE_SOURCE_DIR}/tools/msp/gen_gsfont.py")
   add_mtest(test_gs_snapshot test_gs_snapshot.cpp LIBS mabur_player_core)
+  add_mtest(test_gs_source test_gs_source.cpp LIBS mabur_player_core)
   add_mtest(test_osd_layout test_osd_layout.cpp LIBS mabur_player_core)
   add_mtest(test_osd_raster test_osd_raster.cpp LIBS mabur_player_core)
   add_mtest(test_zpos_plan test_zpos_plan.cpp LIBS mabur_player_core)
