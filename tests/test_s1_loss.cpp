@@ -250,4 +250,13 @@ TEST(long_run_deque_pruning) {
   CHECK(approx_eq(sample.loss, 0.10, 1e-3));
 }
 
+TEST(expected_in_window_counts_window_only) {
+  maburgs::S1LossWindow w(500);
+  w.add(0, 0, 0.0);          // baseline
+  w.add(100, 90, 100.0);     // 100 expected in-window
+  w.add(250, 240, 400.0);    // 150 more
+  CHECK(w.expected_in_window(400.0) == 250);
+  CHECK(w.expected_in_window(2000.0) == 0);   // everything aged out
+}
+
 MTEST_MAIN
