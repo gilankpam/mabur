@@ -15,17 +15,55 @@ static std::string make_font(const char* sizes) {
   return path;
 }
 
+// Canvas carries GUARD sentinel-filled rows immediately before and after
+// its visible s.height rows, in the SAME allocation, so s.pixels is not
+// the allocation base. A right/bottom overflow of a few rows, or a
+// left/top underflow of a few rows, lands inside these guard bands rather
+// than truly outside the allocation -- so guard_intact() can catch it
+// deterministically by inspecting memory the test owns, with no sanitizer
+// needed. (An underflow that lands OUTSIDE the whole allocation -- e.g.
+// py landing before the guard band too -- is a bug an order of magnitude
+// worse than an off-by-one and is out of scope for this fixture; ASan
+// still catches that class.) A right-edge/bottom-edge overflow that lands
+// inside the visible width/height (the padding-column and off-by-one
+// cases the other assertions cover) is unaffected by the guard band.
 struct Canvas {
-  std::vector<uint32_t> px;
+  static constexpr int GUARD = 4;
+  static constexpr uint32_t SENTINEL = 0xDEADBEEFu;
+  std::vector<uint32_t> buf;  // width * (height + 2*GUARD); NOT what s.pixels points at
   Surface s;
-  Canvas(int w, int h) : px((size_t)w * h, 0u) {
-    s.pixels = px.data(); s.width = w; s.height = h; s.stride_px = w;
+  int width, height;
+  Canvas(int w, int h)
+      : buf((size_t)w * (h + 2 * GUARD), 0u), width(w), height(h) {
+    s.pixels = buf.data() + (size_t)GUARD * w;  // offset past the leading guard band
+    s.width = w; s.height = h; s.stride_px = w;
+    // Visible pixels start at 0 (matching every existing test's
+    // expectations); only the guard bands before/after get the sentinel.
+    const size_t lead = (size_t)GUARD * w;
+    const size_t trail = lead + (size_t)h * w;
+    for (size_t i = 0; i < lead; ++i) buf[i] = SENTINEL;
+    for (size_t i = trail; i < buf.size(); ++i) buf[i] = SENTINEL;
   }
-  uint32_t at(int x, int y) const { return px[(size_t)y * s.stride_px + x]; }
+  uint32_t at(int x, int y) const { return s.pixels[(size_t)y * s.stride_px + x]; }
   int nonzero() const {
     int n = 0;
-    for (uint32_t v : px) if (v) ++n;
+    for (int y = 0; y < height; ++y)
+      for (int x = 0; x < width; ++x)
+        if (at(x, y)) ++n;
     return n;
+  }
+  // True iff every guard-band pixel still holds SENTINEL -- an
+  // out-of-frame write that a canvas-pixel check can never observe
+  // (because it lands outside the visible width/height entirely, e.g. a
+  // negative-row underflow) corrupts one of these instead.
+  bool guard_intact() const {
+    const size_t lead = (size_t)GUARD * width;
+    for (size_t i = 0; i < lead; ++i)
+      if (buf[i] != SENTINEL) return false;
+    const size_t trail = lead + (size_t)height * width;
+    for (size_t i = trail; i < buf.size(); ++i)
+      if (buf[i] != SENTINEL) return false;
+    return true;
   }
 };
 
@@ -105,12 +143,15 @@ TEST(fill_rect_clips_to_the_surface) {
   Canvas c(8, 8);
   fill_rect(c.s, -4, -4, 8, 8, 0xFFFFFFu);   // top-left quadrant only
   CHECK(c.nonzero() == 4 * 4);
+  CHECK(c.guard_intact());
   Canvas d(8, 8);
   fill_rect(d.s, 6, 6, 8, 8, 0xFFFFFFu);     // bottom-right corner only
   CHECK(d.nonzero() == 2 * 2);
+  CHECK(d.guard_intact());
   Canvas e(8, 8);
   fill_rect(e.s, 100, 100, 4, 4, 0xFFFFFFu); // fully outside
   CHECK(e.nonzero() == 0);
+  CHECK(e.guard_intact());
 }
 
 TEST(clear_region_zeroes_only_its_rect) {
@@ -163,11 +204,14 @@ TEST(draw_text_colours_coverage_and_blackens_shadow) {
   // Fully covered pixels are the token colour at full alpha; shadow-only
   // pixels are opaque-ish black. Neither may be the other's colour.
   bool saw_token = false, saw_shadow = false;
-  for (uint32_t v : c.px) {
-    if (!v) continue;
-    const uint32_t rgb = v & 0x00FFFFFFu;
-    if (v == premul(0x3FC99Au, 255)) saw_token = true;
-    if (rgb == 0 && (v >> 24) > 0) saw_shadow = true;
+  for (int y = 0; y < c.height; ++y) {
+    for (int x = 0; x < c.width; ++x) {
+      const uint32_t v = c.at(x, y);
+      if (!v) continue;
+      const uint32_t rgb = v & 0x00FFFFFFu;
+      if (v == premul(0x3FC99Au, 255)) saw_token = true;
+      if (rgb == 0 && (v >> 24) > 0) saw_shadow = true;
+    }
   }
   CHECK(saw_token);
   CHECK(saw_shadow);
@@ -187,6 +231,7 @@ TEST(draw_text_clips_at_every_edge_without_crashing) {
   draw_text(c.s, *a, 10, -100, "000", 0xFFFFFFu);
   draw_text(c.s, *a, 10, 500, "000", 0xFFFFFFu);
   CHECK(true);  // survived
+  CHECK(c.guard_intact());
   std::remove(p.c_str());
 }
 
@@ -254,6 +299,7 @@ TEST(draw_text_straddles_right_edge_without_overflow) {
   const int pen_x = ox + (a->glyph_w - a->advance_x) / 2;
   draw_text(c.s, *a, pen_x, a->baseline, "0", 0xFFFFFFu);
   CHECK(c.nonzero() > 0);  // the in-bounds columns still drew
+  CHECK(c.guard_intact());
   std::remove(p.c_str());
 }
 
@@ -278,6 +324,7 @@ TEST(draw_text_straddles_left_edge_without_underflow) {
   const int pen_x = ox + (a->glyph_w - a->advance_x) / 2;
   draw_text(c.s, *a, pen_x, baseline_y, "0", 0xFFFFFFu);
   CHECK(c.nonzero() > 0);
+  CHECK(c.guard_intact());
   std::remove(p.c_str());
 }
 
@@ -299,6 +346,14 @@ TEST(draw_text_straddles_top_edge_without_underflow) {
   const int baseline_y = a->baseline + oy;
   draw_text(c.s, *a, 10, baseline_y, "0", 0xFFFFFFu);
   CHECK(c.nonzero() > 0);
+  // py == -1 computes `s.pixels + (size_t)(-1) * s.stride_px`: the
+  // unsigned cast makes the intermediate offset huge, but two's-complement
+  // wraparound means the resulting pointer is -- in practice, not by
+  // contract -- exactly one row before s.pixels. On a bare (non-guarded)
+  // buffer that lands before the allocation entirely: invisible to any
+  // canvas-pixel check, and only reliably caught by ASan/a sanitizer,
+  // which is exactly the gap this Canvas's guard band exists to close.
+  CHECK(c.guard_intact());
   std::remove(p.c_str());
 }
 
@@ -319,6 +374,7 @@ TEST(draw_text_straddles_bottom_edge_without_overflow) {
   const int pen_x = (a->glyph_w - a->advance_x) / 2;  // ox == 0
   draw_text(c.s, *a, pen_x, a->baseline, "0", 0xFFFFFFu);
   CHECK(c.nonzero() > 0);
+  CHECK(c.guard_intact());
   std::remove(p.c_str());
 }
 
