@@ -22,6 +22,15 @@ double rate(uint64_t cur, uint64_t prev, double elapsed_s) {
 // Index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.
 constexpr const char* kClassKeys[kNumStatsClasses] = {"s0", "s1", "s2", "s3", "msp", "ctrl"};
 
+// devourer reports SNR in HALF-dB units (third_party/devourer/src/
+// LinkHealth.h:49; its own RxQuality divides by 2). radio_frontend.cpp
+// copies RxAtrib.snr through untouched and aggregator.cpp EMAs the raw
+// value without correcting it, so this is where the wire value becomes
+// what the "snr"/"snr_a"/"snr_b" keys have always claimed to hold. NOTE:
+// .jsonl recorded before this change is on the old (2x) scale and is not
+// numerically comparable to recordings made after it.
+constexpr double kSnrRawToDb = 0.5;
+
 constexpr const char* kTelemStateNames[4] = {"boot", "rendezvous", "linked", "failsafe"};
 }  // namespace
 
@@ -142,9 +151,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
         kj["rssi"] = cls.rssi_ema - 110.0;
         kj["rssi_a"] = cls.rssi_a_ema - 110.0;
         kj["rssi_b"] = cls.rssi_b_ema - 110.0;
-        kj["snr"] = cls.snr_ema;
-        kj["snr_a"] = cls.snr_a_ema;
-        kj["snr_b"] = cls.snr_b_ema;
+        kj["snr"] = cls.snr_ema * kSnrRawToDb;
+        kj["snr_a"] = cls.snr_a_ema * kSnrRawToDb;
+        kj["snr_b"] = cls.snr_b_ema * kSnrRawToDb;
       } else {
         kj["rssi"] = nullptr; kj["rssi_a"] = nullptr; kj["rssi_b"] = nullptr;
         kj["snr"] = nullptr;  kj["snr_a"] = nullptr;  kj["snr_b"] = nullptr;

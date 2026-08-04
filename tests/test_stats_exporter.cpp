@@ -189,8 +189,33 @@ TEST(rssi_converted_to_dbm) {
   const json j = cap.last();
   CHECK(j["cards"][0]["classes"]["s1"]["rssi"].get<double>() > -50.2 &&
         j["cards"][0]["classes"]["s1"]["rssi"].get<double>() < -50.0);
-  CHECK(j["cards"][0]["classes"]["s1"]["snr"].get<double>() > 27.0 &&
-        j["cards"][0]["classes"]["s1"]["snr"].get<double>() < 27.2);  // snr NOT shifted
+  // snr_ema 27.1 is raw HALF-dB (devourer units) -> 13.55 dB exported.
+  CHECK(j["cards"][0]["classes"]["s1"]["snr"].get<double>() > 13.5 &&
+        j["cards"][0]["classes"]["s1"]["snr"].get<double>() < 13.6);
+}
+
+// devourer's RxAtrib.snr is HALF-dB (LinkHealth.h:49, and RxQuality divides
+// by 2). radio_frontend.cpp copies it through untouched, so the exporter is
+// the last place it can be corrected -- and the `snr` key already claims dB.
+TEST(snr_is_exported_in_dB_not_half_dB) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsClassIn& s0 = in.cards[0].classes[0];  // RfClass s0
+  s0.frames = 100;
+  s0.has_ema = true;
+  s0.rssi_ema = 52.0;   // raw PWDB byte (rssi = raw - 110 dBm) -> -58.0 dBm
+  s0.snr_ema = 70.0;    // raw half-dB -> 35.0 dB
+  s0.snr_a_ema = 68.0;  // -> 34.0 dB
+  s0.snr_b_ema = 72.0;  // -> 36.0 dB
+  ex.poll(1000, in);
+  const json j = cap.last();
+  const json& c = j["cards"][0]["classes"]["s0"];
+  CHECK(c["snr"].get<double>() > 34.99 && c["snr"].get<double>() < 35.01);
+  CHECK(c["snr_a"].get<double>() > 33.99 && c["snr_a"].get<double>() < 34.01);
+  CHECK(c["snr_b"].get<double>() > 35.99 && c["snr_b"].get<double>() < 36.01);
+  // RSSI is already dBm and must NOT be touched.
+  CHECK(c["rssi"].get<double>() > -58.01 && c["rssi"].get<double>() < -57.99);
 }
 
 TEST(send_failure_counted_never_thrown) {

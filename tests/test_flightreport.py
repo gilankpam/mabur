@@ -240,5 +240,53 @@ def test_flightreport_structure():
     print("\n✓ All assertions passed!")
 
 
+def test_old_scale_snr_warns_on_stderr():
+    """A recording with SNR > 60 predates the 2026-08-04 half-dB fix and
+    must be flagged, not silently misread as if it were already dB."""
+    fixture_dir = Path("tests/fixtures")
+    fixture_dir.mkdir(exist_ok=True)
+    flight_jsonl = fixture_dir / "flight-old-snr-scale-fixture.jsonl"
+    row = {
+        "v": 1, "t_ms": 0,
+        "link": {
+            "state": "linked", "residual_loss": None,
+            "ctl": {
+                "rung": {"idx": 0, "mcs": 5, "ov": 0.25}, "util": 0.1,
+                "pre_fec_loss": 0.01, "budget": 0.5, "probation_ms_left": 0,
+                "penalized": [],
+                "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
+                             "probation_fails": 0, "starved_drops": 0, "timeout_drops": 0},
+                "last_event": {"t_ms": 0, "from": 0, "to": 0, "reason": "none", "u": 0.0},
+            },
+        },
+        "cards": [{"frames": 1000, "classes": {"s1": {"rssi": -50.0, "snr": 70.0, "pps": 900}}}],
+    }
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"flightreport.py exited {result.returncode}: {result.stderr}"
+    assert "predates the 2026-08-04 half-dB fix" in result.stderr, (
+        f"Expected old-scale SNR warning on stderr, got: {result.stderr!r}"
+    )
+
+    # A same-shaped recording already on the dB scale must NOT warn.
+    row["cards"][0]["classes"]["s1"]["snr"] = 27.0
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "predates the 2026-08-04 half-dB fix" not in result.stderr, (
+        f"Unexpected old-scale warning for a dB-scale recording: {result.stderr!r}"
+    )
+
+    print("\n✓ Old-scale SNR warning test passed!")
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
+    test_old_scale_snr_warns_on_stderr()

@@ -63,6 +63,18 @@ def merge_consecutive_residuals(residuals):
 
 def main(path):
     rows = load(path)
+
+    # SNR scale changed 2026-08-04 (half-dB -> dB). Recordings straddling
+    # that change are not comparable; flag it rather than quietly averaging
+    # two scales together.
+    snrs = [k["snr"] for r in rows for c in r.get("cards", [])
+            for k in c.get("classes", {}).values()
+            if isinstance(k.get("snr"), (int, float))]
+    if snrs and max(snrs) > 60.0:
+        print("WARNING: SNR values exceed 60 dB -- this recording predates the "
+              "2026-08-04 half-dB fix; divide by 2 to compare with newer files.",
+              file=sys.stderr)
+
     trans, in_rung, u_by_rung, residuals = [], {}, {}, []
     prev_ev_t, prev = None, None
 
