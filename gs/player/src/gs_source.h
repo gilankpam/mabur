@@ -30,6 +30,11 @@ class GsSource {
   // Socket-free mode: accept bytes via feed() only (host --gs-render).
   bool feed_open();
   int port() const { return port_; }
+  // Test-only: lets a test poll(2) the raw socket for readability (to know
+  // datagrams are genuinely queued) without going through poll()'s own
+  // drain loop. Not part of the intake contract -- callers must never read
+  // or write through this fd themselves.
+  int debug_fd() const { return fd_; }
 
   // Drains every pending datagram, keeping the LAST one that decoded. A
   // backlog must collapse to the newest sample: the OSD shows now, not a
@@ -57,7 +62,6 @@ class GsSource {
  private:
   int fd_ = -1;
   int port_ = 0;
-  bool opened_ = false;
   GsSnapshot snap_;
   uint64_t last_ok_ms_ = 0;
   uint64_t datagrams_ = 0;

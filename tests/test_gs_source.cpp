@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cstring>
@@ -55,6 +56,35 @@ static bool poll_until_count(GsSource* src, uint64_t start_ms, uint64_t want) {
   return last;
 }
 
+// Waits (via ::poll(2) on the raw socket, which only checks readability and
+// never removes anything from the queue) until the socket has data pending,
+// or the timeout expires. This is the drain-free counterpart to the helpers
+// above: it lets a test synchronize on "the datagram(s) have genuinely
+// landed" and THEN make exactly one GsSource::poll() call, so that call is
+// what's actually under test -- not rescued by a retry loop that would mask
+// a poll() which only recv()s once per invocation instead of draining to
+// EAGAIN.
+static bool wait_readable(int fd, int timeout_ms) {
+  struct pollfd pfd {};
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+  const int r = ::poll(&pfd, 1, timeout_ms);
+  return r > 0 && (pfd.revents & POLLIN);
+}
+
+// Number of open descriptors held by this process. Counting /proc/self/fd is
+// what makes a leak observable rather than inferred: "still works
+// afterwards" would pass just as happily with a missing close() -- only the
+// fd count moves. Declared up top since more than one test below needs it.
+static int open_fd_count() {
+  DIR* d = ::opendir("/proc/self/fd");
+  if (!d) return -1;
+  int n = 0;
+  while (::readdir(d)) ++n;
+  ::closedir(d);
+  return n;  // includes . / .. / the dirfd itself: constant offsets, we diff
+}
+
 TEST(open_binds_an_ephemeral_port_and_reports_it) {
   GsSource src;
   std::string err;
@@ -77,18 +107,21 @@ TEST(poll_delivers_a_datagram_and_counts_it) {
 }
 
 // A backlog must collapse to the NEWEST sample: the OSD shows now, not a
-// queue replayed one frame at a time. Both datagrams are sent before any
-// poll(), but whether the kernel has both queued by the first poll() call
-// is a race; poll_until_count waits for BOTH to be counted (in-order,
-// since they share one socket) regardless of how they land across calls,
-// so this discriminates "keeps last" from "keeps first" either way.
+// queue replayed one frame at a time. This is the test for poll()'s "drains
+// every pending datagram" contract, so it must actually exercise a SINGLE
+// poll() call draining two -- a retry-loop helper here would let a poll()
+// that only recv()s once per call (and relies on being called again) pass
+// just as happily, silently losing the coverage. wait_readable() is the
+// drain-free synchronization: it confirms the kernel has data queued
+// without consuming it, so the ONE src.poll() below is the real subject.
 TEST(poll_drains_the_backlog_and_keeps_the_newest) {
   GsSource src;
   std::string err;
   REQUIRE(src.open(0, &err));
   send_to(src.port(), kA);
   send_to(src.port(), kB);
-  poll_until_count(&src, 1000, 2);
+  REQUIRE(wait_readable(src.debug_fd(), 2000));
+  CHECK(src.poll(1000));
   CHECK(src.datagrams() == 2);
   REQUIRE(src.snapshot().mcs.has_value());
   CHECK(*src.snapshot().mcs == 7);  // kB, the last one
@@ -169,23 +202,18 @@ TEST(binding_a_port_twice_fails_with_a_reason) {
   GsSource a;
   std::string err;
   REQUIRE(a.open(0, &err));
+  const int before = open_fd_count();
+  REQUIRE(before > 0);  // /proc must be mounted for this to mean anything
   GsSource b;
   std::string err2;
   CHECK(!b.open(a.port(), &err2));
   CHECK(!err2.empty());
-}
-
-// Number of open descriptors held by this process. Counting /proc/self/fd is
-// what makes a leak observable rather than inferred: "still works
-// afterwards" would pass just as happily with the destructor's close()
-// removed -- only the fd count moves.
-static int open_fd_count() {
-  DIR* d = ::opendir("/proc/self/fd");
-  if (!d) return -1;
-  int n = 0;
-  while (::readdir(d)) ++n;
-  ::closedir(d);
-  return n;  // includes . / .. / the dirfd itself: constant offsets, we diff
+  // A failed bind() must close the socket() it just opened right there in
+  // open()'s failure path, not defer it to b's eventual destructor: check
+  // the count with `b` still in scope (undestructed), which is the only
+  // moment that distinguishes "closed immediately" from "closed late".
+  const int after = open_fd_count();
+  CHECK(after - before == 0);
 }
 
 TEST(destroying_many_sources_does_not_leak_descriptors) {

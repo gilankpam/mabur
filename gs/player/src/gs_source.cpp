@@ -36,12 +36,10 @@ bool GsSource::open(int port, std::string* err) {
   }
   socklen_t len = sizeof(a);
   if (::getsockname(fd_, (sockaddr*)&a, &len) == 0) port_ = ntohs(a.sin_port);
-  opened_ = true;
   return true;
 }
 
 bool GsSource::feed_open() {
-  opened_ = true;
   port_ = 0;
   return true;
 }
