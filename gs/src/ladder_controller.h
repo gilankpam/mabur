@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -31,30 +32,91 @@ struct LadderCfg {
   // the floor. Transient starved samples still withhold all decisions and
   // never stamp feedback, so the blind-side timeout stays the backstop.
   int starved_confirm_ms = 300;
+
+  // --- s3 probe-before-promote ---
+  // Instead of stepping the whole link onto the candidate rung and hoping,
+  // the controller first runs the candidate MCS on the expendable s3
+  // enhancement stream for probe_ms and only commits if s3 measures clean.
+  int probe_ms = 2000;         // how long a probe runs before it commits
+  int probe_settle_ms = 150;   // ignore s3 loss this long after probe start
+  double probe_max_util = -1.0;  // <0 => down_util
+  int probe_s3_min_syms = 50;    // an s3 window below this is "no traffic"
+  int probe_s3_silence_ms = 500;  // no usable s3 for this long aborts a probe
+
+  // --- s3 steady-state demotes (consumed by the s3-demote logic) ---
+  bool s3_demote = true;
+  double s3_down_util = -1.0;   // <0 => down_util
+  int s3_residual_confirm_ms = 500;
+  // After any rung transition (or probe start/end) the drone re-keys its FEC
+  // streams; blank s3-derived decisions for this long so the re-key glitch
+  // does not read as loss.
+  int s3_settle_ms = 300;
 };
 
 // One feedback sample: measured pre-FEC and residual (post-FEC) loss for the
 // current rung's s1 stream, over the loss window the caller maintains.
+// Fields are APPEND-ONLY with defaults: existing positional brace-inits
+// (LinkHealth{true, 0.0, 0.0, false} in main.cpp / test_vrx_controller.cpp)
+// must keep compiling untouched, and a caller that fills only the s1 fields
+// gets the legacy direct-promote behaviour verbatim.
 struct LinkHealth {
   bool sample_valid = false;  // false when the s1 window saw 0 expected symbols
   double pre_fec_loss = 0.0;  // s1 missing/expected over the loss window
   double residual_loss = 0.0;
   bool video_starved = false;
+  bool s3_valid = false;          // s3 loss window had traffic
+  double s3_pre_fec_loss = 0.0;   // s3 missing/expected over the window
+  double s3_residual_loss = 0.0;  // abandoned/expected over the window
+  uint64_t s3_expected_syms = 0;  // expected s3 symbols in the window
+  // Label only: never a decision input, carried onto CtlEvent/ProbeEvent so
+  // the ctl log can say what the RF looked like when a decision fired. NaN
+  // is a legal value (no SNR known this window).
+  double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
+  bool probe_allowed = false;  // peer advertised CAP_S3_PROBE
 };
 
-enum class CtlReason { None, Residual, Util, Probation, Starved, Timeout, Promote };
+enum class CtlReason {
+  None, Residual, Util, Probation, Starved, Timeout, Promote,
+  S3Residual, S3Util
+};
 const char* to_string(CtlReason r);
+
+// Outcome of one s3 probe. None = no probe has finished yet.
+enum class ProbeOutcome { None, Pass, Fail, Abort };
+const char* to_string(ProbeOutcome o);
+
+struct ProbeEvent {
+  double t_ms = 0;
+  int rung = 0;  // the CANDIDATE rung the probe was testing
+  ProbeOutcome outcome = ProbeOutcome::None;
+  double snr_db = 0;
+  double u_pred = 0;  // s3-measured utilization predicted for the candidate
+  int dur_ms = 0;
+};
+
+// Stamped by penalize_rung() so the ctl log can report the escalating ledger
+// without reaching into penalized().
+struct PenaltyEvent {
+  double t_ms = 0;
+  int rung = 0;
+  int k = 0;  // consecutive-failure count that set this penalty
+  double until_ms = 0;
+};
 
 struct CtlEvent {
   double t_ms = 0;
   int from = 0, to = 0;
   CtlReason reason = CtlReason::None;
   double u = 0;
+  double snr_db = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct CtlCounters {
   uint64_t demotes_residual = 0, demotes_util = 0, promotes = 0,
            probation_fails = 0, starved_drops = 0, timeout_drops = 0;
+  uint64_t probes_started = 0, probes_ok = 0, probe_fails = 0,
+           probe_aborts = 0;
+  uint64_t demotes_s3_residual = 0, demotes_s3_util = 0;
 };
 
 // Measured-loss ladder controller: walks a fixed, pre-filtered list of rungs
@@ -88,15 +150,43 @@ class LadderController {
   int probation_ms_left(double now_ms) const;  // 0 when not probing
   std::vector<std::pair<int, int>> penalized(double now_ms) const;  // {rung, ms_left}
 
+  // --- s3 probe view ---
+  bool probing() const { return probe_active_; }
+  int probe_rung() const { return probe_rung_; }  // -1 when idle
+  // The MCS the drone must run on s3 while the probe is up; -1 when idle.
+  int probe_mcs() const {
+    return probe_active_
+               ? cfg_.ladder[static_cast<std::size_t>(probe_rung_)].mcs
+               : -1;
+  }
+  // Steady-state s3 utilization against the CURRENT rung's s3 budget. 0 while
+  // a probe is up (during a probe s3 is deliberately running a different MCS,
+  // so the steady-state reading is meaningless).
+  double util3() const { return u3_; }
+
   const CtlCounters& counters() const { return counters_; }
   const CtlEvent& last_event() const { return last_event_; }
+  const ProbeEvent& last_probe() const { return last_probe_; }
+  const PenaltyEvent& last_penalty() const { return last_penalty_; }
 
  private:
   void reset_windows();
   void check_probation_survival(double now_ms);
   void penalize_rung(int rung, double now_ms);
   bool is_penalized(int rung, double now_ms) const;
-  void set_event(double now_ms, int from, int to, CtlReason reason, double u);
+  void set_event(double now_ms, int from, int to, CtlReason reason, double u,
+                 double snr);
+
+  double budget_for(int rung) const;   // s1 budget of an arbitrary rung
+  double budget3_for(int rung) const;  // s3 budget of an arbitrary rung
+  double probe_util_threshold() const;
+  double s3_util_threshold() const;
+  bool s3_usable(const LinkHealth& h) const;
+  void start_probe(int rung, double now_ms);
+  void end_probe(ProbeOutcome oc, double u_pred, double now_ms);
+  // Every rung change and every probe start/end: blank s3-derived decisions
+  // over the drone's FEC re-key and drop any half-accumulated s3 window.
+  void mark_transition(double now_ms);
 
   LadderCfg cfg_;
   int idx_ = 0;
@@ -119,8 +209,19 @@ class LadderController {
   std::vector<int> fail_count_;        // per-rung consecutive probation-fail count k
   std::vector<double> penalty_until_;  // per-rung penalty expiry (ms); -1e18 = none
 
+  // --- s3 probe state ---
+  bool probe_active_ = false;
+  int probe_rung_ = -1;
+  double probe_start_ms_ = -1.0, probe_last_s3_ms_ = -1.0;
+  double u3_ = 0.0;
+  double s3_resid_start_ms_ = -1.0, s3_util_start_ms_ = -1.0;
+  double s3_blank_until_ms_ = -1e18;
+  double snr_now_ = std::numeric_limits<double>::quiet_NaN();
+
   CtlCounters counters_;
   CtlEvent last_event_;
+  ProbeEvent last_probe_;
+  PenaltyEvent last_penalty_;
 };
 
 }  // namespace maburgs
