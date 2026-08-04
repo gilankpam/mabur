@@ -15,6 +15,9 @@
 
 #include "au_ring.h"
 #include "dvr_mux.h"
+#include "gs_font.h"
+#include "gs_overlay.h"
+#include "gs_source.h"
 #include "hevc_params.h"
 #include "mabur/frame_wire.h"
 #include "osd_font.h"
@@ -56,6 +59,16 @@ void usage() {
                "            u32 width, u32 height, u32 stride_px} followed by\n"
                "            height*stride_px little-endian ARGB32 words. This\n"
                "            is the host e2e's OSD pixel-path gate.)\n"
+               "       maburplay --gs-render <snap.json> --out-gs <out.bin>\n"
+               "                 [--gsfont F] [--screen WxH] [--stale]\n"
+               "                 [--rec recording|armed|fault|absent] "
+               "[--rec-elapsed N]\n"
+               "                 [--fps N] [--jit N] [--mbps N]\n"
+               "           (test support: render one stats-sideport snapshot\n"
+               "            through the live GS overlay path and dump ARGB.\n"
+               "            No ring, no backend, no DRM. Same 16-byte dump\n"
+               "            header as --osd-render. This is the host e2e's GS\n"
+               "            pixel-path gate.)\n"
                "\n"
                "--decode-only --seconds N: drive the backend straight off\n"
                "  the ring for N seconds with no presenter, counting frames\n"
@@ -212,6 +225,56 @@ int run_osd_render(const std::string& snap_path, const std::string& out_path,
   return 0;
 }
 
+// Test support (see usage()): renders one sideport snapshot through the
+// exact GsFont/GsOverlay/gs_draw path the live overlay uses and dumps the
+// ARGB surface. No ring, no backend, no DRM -- the DRM half of the overlay
+// cannot run off-hardware, so this is the host-side gate for everything
+// below it (layout arithmetic, thresholds, formatting, the mask blitter).
+// Dump format is byte-identical to --osd-render's.
+int run_gs_render(const std::string& snap_path, const std::string& out_path,
+                  const std::string& font_path, int width, int height, bool stale,
+                  const maburplay::GsPlayerState& ps) {
+  const std::vector<uint8_t> snap = read_whole_file(snap_path);
+  if (snap.empty()) {
+    std::fprintf(stderr, "maburplay: --gs-render: cannot read %s\n", snap_path.c_str());
+    return 2;
+  }
+  maburplay::GsFont font;
+  std::string err;
+  if (!font.load(font_path, &err)) {
+    std::fprintf(stderr, "maburplay: --gs-render: %s\n", err.c_str());
+    return 2;
+  }
+  maburplay::GsSource src;
+  src.feed_open();
+  if (!src.feed(snap.data(), snap.size(), 1000)) {
+    std::fprintf(stderr, "maburplay: --gs-render: %s is not a sideport snapshot\n",
+                 snap_path.c_str());
+    return 2;
+  }
+  maburplay::GsOverlay ov(font);
+  if (!ov.layout(width, height, &err)) {
+    std::fprintf(stderr, "maburplay: --gs-render: %s\n", err.c_str());
+    return 2;
+  }
+  std::vector<uint32_t> px(static_cast<size_t>(width) * height, 0u);
+  const maburplay::Surface surf{px.data(), width, height, width};
+  std::vector<maburplay::DirtyRect> rects;
+  ov.update(src.snapshot(), stale, ps, surf, &rects);
+
+  std::FILE* f = std::fopen(out_path.c_str(), "wb");
+  if (!f) {
+    std::fprintf(stderr, "maburplay: --gs-render: cannot write %s\n", out_path.c_str());
+    return 2;
+  }
+  const uint32_t hdr[4] = {0x5244534FU, static_cast<uint32_t>(width),
+                           static_cast<uint32_t>(height), static_cast<uint32_t>(width)};
+  std::fwrite(hdr, sizeof(hdr), 1, f);
+  std::fwrite(px.data(), 4, px.size(), f);
+  std::fclose(f);
+  return 0;
+}
+
 // DVR filename convention: record_%Y-%m-%d_%H-%M-%S.mp4 under dvr.dir.
 std::string dvr_filename(const std::string& dir) {
   std::time_t t = std::time(nullptr);
@@ -273,6 +336,65 @@ int main(int argc, char** argv) {
       return 2;
     }
     return run_osd_render(snap, out, font, w, h, scale_mode(scale));
+  }
+  if (argc >= 2 && std::string(argv[1]) == "--gs-render") {
+    std::string snap, out;
+    // Task 10 replaces this literal with Config().osd.gs.font.
+    std::string font = "/usr/local/share/mabur/gs_osd.gfont";
+    int w = 1920, h = 1080;
+    bool stale = false;
+    maburplay::GsPlayerState ps;
+    for (int i = 2; i < argc; ++i) {
+      const std::string a = argv[i];
+      if (a == "--out-gs" && i + 1 < argc) {
+        out = argv[++i];
+      } else if (a == "--gsfont" && i + 1 < argc) {
+        font = argv[++i];
+      } else if (a == "--screen" && i + 1 < argc) {
+        if (std::sscanf(argv[++i], "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
+          usage();
+          return 2;
+        }
+      } else if (a == "--stale") {
+        stale = true;
+      } else if (a == "--fps" && i + 1 < argc) {
+        ps.fps = std::atof(argv[++i]);
+      } else if (a == "--jit" && i + 1 < argc) {
+        ps.jitter_ms = std::atof(argv[++i]);
+      } else if (a == "--mbps" && i + 1 < argc) {
+        ps.mbps = std::atof(argv[++i]);
+      } else if (a == "--rec-elapsed" && i + 1 < argc) {
+        ps.rec.elapsed_s = std::atoi(argv[++i]);
+      } else if (a == "--rec" && i + 1 < argc) {
+        // An unrecognised state is rejected rather than folded into
+        // kAbsent: kAbsent renders NOTHING, so a typo would silently
+        // produce a dump missing the whole recording field and still look
+        // like a successful render.
+        const std::string r = argv[++i];
+        if (r == "recording") {
+          ps.rec.kind = maburplay::RecState::Kind::kRecording;
+        } else if (r == "armed") {
+          ps.rec.kind = maburplay::RecState::Kind::kArmed;
+        } else if (r == "fault") {
+          ps.rec.kind = maburplay::RecState::Kind::kFault;
+        } else if (r == "absent") {
+          ps.rec.kind = maburplay::RecState::Kind::kAbsent;
+        } else {
+          usage();
+          return 2;
+        }
+      } else if (snap.empty() && !a.empty() && a[0] != '-') {
+        snap = a;
+      } else {
+        usage();
+        return 2;
+      }
+    }
+    if (snap.empty() || out.empty()) {
+      usage();
+      return 2;
+    }
+    return run_gs_render(snap, out, font, w, h, stale, ps);
   }
 
   std::string config_path = "/etc/maburplay.json";

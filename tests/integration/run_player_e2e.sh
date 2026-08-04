@@ -11,6 +11,12 @@ FIX=tests/fixtures/frame_stream.bin
 # change to the OSD sizing/blitting rules makes the old pixels wrong -- run
 # the --osd-render command below by hand and paste the printed hash.
 OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a83
+# Golden for PART D below. Same rule as OSD_SHA_EXPECTED: to re-bless after
+# an intentional visual change, run the --gs-render command below by hand
+# and paste the hash. Pinned against the SYNTHETIC font on purpose -- hashing
+# the 1.5 MB shipped .gfont would make a font bump look like a rendering
+# regression.
+GS_SHA_EXPECTED=c311690a311add5fe42a685a4ce21a6e28725794181e25b7f0f6a1443273376a
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -183,6 +189,99 @@ OSD_SHA=$(sha256sum "$TMP/osd.bin" | cut -d' ' -f1)
 echo "osd render sha256: $OSD_SHA"
 if [ "$OSD_SHA" != "$OSD_SHA_EXPECTED" ]; then
   echo "OSD render hash changed (expected $OSD_SHA_EXPECTED)" >&2
+  exit 1
+fi
+
+# --- PART D: GS link-status overlay render gate -----------------------
+# The DRM half of the GS overlay cannot run off-hardware, so this is the
+# host-side gate for everything below it: .gfont load, layout arithmetic,
+# thresholds, formatting and the mask blitter. Same dump format as the MSP
+# --osd-render gate above; the eight sizes are the 1080p design sizes, which
+# resolve exactly at this screen height.
+echo "== GS render gate =="
+python3 tools/msp/gen_gsfont.py --synthetic "$TMP/syn.gfont" \
+  --sizes 19,21,22,24,26,34,38,56
+
+"$MABURPLAY" --gs-render tests/fixtures/gs_snapshot_nominal.json \
+  --out-gs "$TMP/gs.bin" --gsfont "$TMP/syn.gfont" --screen 1920x1080 \
+  --rec recording --rec-elapsed 767 --fps 60 --jit 3 --mbps 24.6
+
+# Sanity floor before the hash: an all-transparent dump would match a stale
+# golden just as happily as a correct render. Beyond "pixels landed", each
+# block is checked to HUG the inset edge it is anchored to -- a mere ">0
+# pixels somewhere in this corner" test passes just as happily for a block
+# that has drifted a hundred px off its anchor, which is precisely the class
+# of bug the layout has already had once.
+python3 - "$TMP/gs.bin" <<'EOF'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+magic, w, h, stride = struct.unpack("<4I", d[:16])
+assert magic == 0x5244534F, hex(magic)
+assert (w, h, stride) == (1920, 1080, 1920), (w, h, stride)
+assert len(d) == 16 + h * stride * 4, len(d)
+px = struct.unpack("<%dI" % (h * stride), d[16:])
+
+def lit(x0, y0, x1, y1):
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if px[y * stride + x])
+
+def bbox(x0, y0, x1, y1):
+    on = [(x, y) for y in range(y0, y1) for x in range(x0, x1)
+          if px[y * stride + x]]
+    assert on, "region %s is empty" % ((x0, y0, x1, y1),)
+    return (min(p[0] for p in on), min(p[1] for p in on),
+            max(p[0] for p in on), max(p[1] for p in on))
+
+assert lit(0, 0, w, h) > 0, "nothing drawn at all"
+# Row 2: the central ~60% x 55% of frame is empty by design.
+assert lit(400, 300, 1520, 780) == 0, "OSD drew in the centre of frame"
+# Nothing outside the 5% title-safe inset (96 x 54 at 1080p).
+assert lit(0, 0, 96, h) == 0, "drew left of the safe inset"
+assert lit(w - 96, 0, w, h) == 0, "drew right of the safe inset"
+assert lit(0, 0, w, 54) == 0, "drew above the safe inset"
+assert lit(0, h - 54, w, h) == 0, "drew below the safe inset"
+# The design puts no block in the top-left corner; anything there is a
+# block that has escaped one of the other three.
+assert lit(0, 0, 960, 540) == 0, "drew in the unused top-left quadrant"
+
+# Per-block anchoring. The search windows are separated by the real gaps
+# between blocks, so a bbox reaching a window edge means two blocks have run
+# together (or one has moved into another's corner) -- checked before the
+# anchor itself, since a merged bbox would make the anchor test meaningless.
+TOL = 8
+RIGHT, BOTTOM = w - 96 - 1, h - 54 - 1
+for name, win, anchors in [
+    ("top-right",     (960, 0, w, 540),    ("right", "top")),
+    ("bottom-left",   (0, 540, 720, h),    ("left", "bottom")),
+    ("bottom-centre", (720, 540, 1300, h), ("hcentre", "bottom")),
+    ("bottom-right",  (1300, 540, w, h),   ("right", "bottom")),
+]:
+    x0, y0, x1, y1 = bbox(*win)
+    print("  %-14s bbox x %d..%d y %d..%d" % (name, x0, x1, y0, y1))
+    assert win[0] + 32 < x0 and x1 < win[2] - 32, "%s crowds its window" % name
+    assert win[1] + 32 < y0 and y1 < win[3] - 32, "%s crowds its window" % name
+    for a in anchors:
+        if a == "left":
+            assert abs(x0 - 96) <= TOL, "%s not flush left (x0=%d)" % (name, x0)
+        elif a == "right":
+            assert abs(x1 - RIGHT) <= TOL, "%s not flush right (x1=%d)" % (name, x1)
+        elif a == "top":
+            assert abs(y0 - 54) <= TOL, "%s not flush top (y0=%d)" % (name, y0)
+        elif a == "bottom":
+            assert abs(y1 - BOTTOM) <= TOL, "%s not flush bottom (y1=%d)" % (name, y1)
+        elif a == "hcentre":
+            # Loose deliberately: the loss row is centred on its WORST-CASE
+            # field widths, so short values ("2.1%" in a "100.0%" box) sit
+            # tens of px off centre legitimately. Still ~600 px from any
+            # edge anchor, which is what this has to discriminate against.
+            assert abs((x0 + x1) // 2 - w // 2) <= 48, "%s not centred" % name
+print("OK gs render: %dx%d lit=%d" % (w, h, lit(0, 0, w, h)))
+EOF
+
+GS_SHA=$(sha256sum "$TMP/gs.bin" | cut -d' ' -f1)
+echo "gs render sha256: $GS_SHA"
+if [ "$GS_SHA" != "$GS_SHA_EXPECTED" ]; then
+  echo "GS render hash changed (expected $GS_SHA_EXPECTED)" >&2
   exit 1
 fi
 
