@@ -41,10 +41,20 @@ bool fail(std::string* err, const char* why) {
 }  // namespace
 
 int MaskAtlas::index_of(uint32_t cp) const {
+  // codepoints sits at a glyph block's file offset, which is only ever
+  // 4-byte aligned by accident: the previous block's size is
+  // n_glyphs*glyph_w*glyph_h*2, and n_glyphs (99 for this subset) is odd,
+  // so any size with an odd glyph_w*glyph_h pushes the next block off a
+  // 4-byte boundary. Dereferencing `codepoints[mid]` directly would then be
+  // a misaligned load of a 4-byte-aligned type -- UB, and sanitizer-caught
+  // on this very fixture (px=16 in an 8,12,16 font lands at offset
+  // 112010 == 2 mod 4). Read through memcpy instead, same as every other
+  // multi-byte field in this file.
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(codepoints);
   int lo = 0, hi = n_glyphs - 1;
   while (lo <= hi) {
     const int mid = lo + (hi - lo) / 2;
-    const uint32_t v = codepoints[mid];
+    const uint32_t v = rd32(bytes + (size_t)mid * 4);
     if (v == cp) return mid;
     if (v < cp) lo = mid + 1;
     else hi = mid - 1;

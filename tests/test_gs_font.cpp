@@ -26,6 +26,22 @@ TEST(load_exposes_every_size_in_the_directory) {
   CHECK(f.atlas(12) != nullptr);
   CHECK(f.atlas(16) != nullptr);
   CHECK(f.atlas(10) == nullptr);  // absent size: nullptr, never a fallback
+
+  // Exercise a real lookup + glyph fetch on a NON-first atlas. The first
+  // atlas's codepoint block always lands 4-byte aligned (it starts right
+  // after the header + directory), which would hide a misaligned-read bug
+  // that only shows up once an odd-sized earlier glyph block pushes a later
+  // one off that boundary -- exactly what px=16 does in this fixture.
+  const MaskAtlas* a16 = f.atlas(16);
+  REQUIRE(a16 != nullptr);
+  const int gi = a16->index_of('0');
+  CHECK(gi >= 0);
+  const uint8_t* g = a16->glyph(gi);
+  REQUIRE(g != nullptr);
+  int cov = 0;
+  for (int i = 0; i < a16->glyph_w * a16->glyph_h; ++i) cov += g[i * 2];
+  CHECK(cov > 0);
+
   std::remove(p.c_str());
 }
 
