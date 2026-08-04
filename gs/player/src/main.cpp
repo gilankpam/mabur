@@ -21,6 +21,7 @@
 #include "gs_font.h"
 #include "gs_metrics.h"
 #include "gs_overlay.h"
+#include "osd_compose.h"
 #include "gs_source.h"
 #include "hevc_params.h"
 #include "mabur/frame_wire.h"
@@ -496,25 +497,12 @@ int main(int argc, char** argv) {
   // GS link-status overlay: same up-front font load, same reason.
   maburplay::GsFont gs_font;
   std::unique_ptr<maburplay::GsSource> gs_src;
-  // ONE GsOverlay PER CONSUMER OF ITS SHADOW, not one per session.
-  //
-  // A GsOverlay's per-field shadow describes ONE surface's contents, and
-  // there are three surfaces to describe: the two DRM OSD buffers, which
-  // alternate under the presenter, and the burned DVR's index map, which is
-  // refreshed on every render. [0] and [1] are indexed by
-  // osd_back_index(), so each render is "draw what differs from THIS
-  // buffer" -- the same contract OsdRaster's ShadowGrid[2] follows, and the
-  // only arrangement in which a vanished card row is cleared from BOTH
-  // buffers (the clear runs inside the update() that observes the new count,
-  // against that buffer's own boxes, so a buffer that was not back at the
-  // moment the count changed still gets its own clear when it next comes
-  // round). [2] never draws -- it is updated against a null Surface purely
-  // to produce the burn's rect list, because the burn's change lineage is
-  // "since the last render", which is neither a subset nor a superset of
-  // either buffer's "since the last render into ME" (see OsdRaster::diff()
-  // for the same argument on the MSP side).
-  std::unique_ptr<maburplay::GsOverlay> gs_overlay[3];
-  [[maybe_unused]] constexpr int kGsBurn = 2;  // read only in the cross build
+  // Both overlays share ONE surface pair, so who draws what onto which
+  // buffer, in which order, is a single problem and lives in a single unit
+  // -- osd_compose.{h,cpp}, which owns every per-buffer shadow and is
+  // tested directly (tests/test_osd_coexist.cpp). Everything below is
+  // wiring: sources, fonts, and the decision to invoke it.
+  maburplay::OsdComposer composer;
   bool want_gs_osd = false;
   if (cfg.osd.gs.enable && !decode_only) {
     std::string err;
@@ -533,30 +521,6 @@ int main(int argc, char** argv) {
   // maybe_unused: its only consumer is DrmPresenter::init(), which exists
   // only in the cross build.
   [[maybe_unused]] const bool want_osd = want_msp_osd || want_gs_osd;
-#ifdef MABUR_PLAYER_HW
-  // One ShadowGrid per OSD buffer, indexed by the presenter's back index:
-  // the two buffers hold different pixels, so a shared shadow would suppress
-  // the redraw of cells that are current in one buffer and stale in the
-  // other. Owned here because the presenter deliberately does not own them.
-  maburplay::ShadowGrid osd_shadow[2];
-  bool osd_blanked = false;
-  // A THIRD shadow, for the burned DVR's index map. It cannot share the two
-  // above: those track one DRM buffer each and so report the change since
-  // two renders ago, whereas the index map is refreshed on every render.
-  // Hoisted out of the loop with its rect list so neither allocates in
-  // steady state.
-  maburplay::ShadowGrid burn_shadow;
-  std::vector<maburplay::DirtyRect> burn_dirty;
-  // A FOURTH: a copy of osd_shadow[idx] taken just before draw(), so
-  // diff()ing it afterwards recovers exactly the cells draw() wrote into
-  // THIS buffer. That is the set that can have clobbered GS pixels, and it
-  // is not burn_dirty -- a cell going X -> Y -> Y is a write here and
-  // invisible there, and one going X -> Y -> X is the reverse. Hoisted so
-  // the vector assignment reuses its capacity instead of allocating per
-  // MSP screen.
-  maburplay::ShadowGrid msp_pre_shadow;
-  std::vector<maburplay::DirtyRect> msp_write;
-#endif
 
   // Display path: the DrmPresenter becomes the frame owner for the normal
   // (non-decode-only) run -- release_frame() is no longer called inline
@@ -600,6 +564,7 @@ int main(int argc, char** argv) {
       osd_src->set_stale_ms(cfg.osd.stale_ms);
       osd_raster =
           std::make_unique<maburplay::OsdRaster>(osd_font, scale_mode(cfg.osd.scale));
+      composer.set_raster(osd_raster.get());
       std::fprintf(stderr,
                    "maburplay: osd on udp 127.0.0.1:%d font=%s (%dx%d glyphs) scale=%s "
                    "stale_ms=%d\n",
@@ -622,7 +587,12 @@ int main(int argc, char** argv) {
       gs_src.reset();
     } else {
       gs_src->set_stale_ms(cfg.osd.gs.stale_ms);
-      for (auto& ov : gs_overlay) ov = std::make_unique<maburplay::GsOverlay>(gs_font);
+      // Three, not one: two DRM buffers plus the burned DVR's index map, all
+      // three needing their own record of what they already show. See
+      // osd_compose.h for why a shared shadow strobes.
+      composer.set_gs(std::make_unique<maburplay::GsOverlay>(gs_font),
+                      std::make_unique<maburplay::GsOverlay>(gs_font),
+                      std::make_unique<maburplay::GsOverlay>(gs_font));
       std::fprintf(stderr,
                    "maburplay: gs osd on udp 127.0.0.1:%d font=%s stale_ms=%d\n",
                    gs_src->port(), cfg.osd.gs.font.c_str(), cfg.osd.gs.stale_ms);
@@ -673,7 +643,7 @@ int main(int argc, char** argv) {
     // and set_osd() costs nothing, which IS the plain transcode.
     // MUST precede start(), which uploads it before the thread exists.
     const maburplay::Surface osd_surf = presenter->osd_back_surface();
-    if ((osd_raster || gs_overlay[0]) && osd_surf.pixels && osd_surf.width > 0 &&
+    if ((osd_raster || composer.gs_present()) && osd_surf.pixels && osd_surf.width > 0 &&
         osd_surf.height > 0) {
       // The region is sized from the SURFACE, not from screen_mode: the
       // connector may not have offered that mode, in which case
@@ -684,8 +654,9 @@ int main(int argc, char** argv) {
       bc.osd_width = osd_surf.width;
       bc.osd_height = osd_surf.height;
       size_t n_seeds = 0;
-      const uint32_t* seeds =
-          gs_overlay[0] ? maburplay::GsOverlay::palette_seeds(&n_seeds) : nullptr;
+      const uint32_t* seeds = composer.gs_present()
+                                  ? maburplay::GsOverlay::palette_seeds(&n_seeds)
+                                  : nullptr;
       // Seeds are needed even when the MSP atlas IS loaded: median cut over
       // the Betaflight atlas alone reproduces the atlas's own hues, and the
       // GS status colours are not among them -- they would be recorded as
@@ -707,6 +678,15 @@ int main(int argc, char** argv) {
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the
     // decode watchdog may destroy and recreate it mid-run.
     if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
+  }
+  if (burn) {
+    // Raw pointer, not a reference to the unique_ptr: `burn` is assigned
+    // exactly once, here, and never reset -- and the sink outlives nothing
+    // it does not outlive already (the composer is destroyed after the loop
+    // that is its only caller).
+    maburplay::BurnRecorder* b = burn.get();
+    composer.set_burn_sink([b](const maburplay::Surface& s, const maburplay::DirtyRect* r,
+                               size_t n) { b->set_osd(s, r, n); });
   }
   if (burned_mode && !burn) {
     // Wrong backend, no presenter (--decode-only), or an encoder that would
@@ -1040,14 +1020,17 @@ int main(int argc, char** argv) {
   // first datagram that may never come.
   [[maybe_unused]] bool gs_needs_render = true;  // read only in the cross build
   bool gs_stale_last = false;
+  // Both overlays' state for the composer, filled by the two intake blocks
+  // and consumed by the single composition block after them.
+  [[maybe_unused]] bool msp_ready = false;
+  [[maybe_unused]] bool msp_stale = false;
+  [[maybe_unused]] bool gs_stale = false;
 #ifdef MABUR_PLAYER_HW
   // Layout is deferred to the first iteration that sees a real surface: its
   // size is the DRM buffer's, which DrmPresenter may have allocated at a
   // mode the connector offered rather than the one cfg.screen_mode asked
   // for. Laying out against the config would misplace every field.
   bool gs_laid_out = false;
-  std::vector<maburplay::DirtyRect> gs_repaint;  // what a collision reclaimed
-  std::vector<maburplay::DirtyRect> gs_burn_dirty;
 #endif
   while (!g_stop.load()) {
     // 2 ms pump: flip events must be reaped at sub-vsync latency or the
@@ -1066,7 +1049,8 @@ int main(int argc, char** argv) {
       const uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::steady_clock::now().time_since_epoch())
                                   .count();
-      const bool ready = osd_src->poll(now_ms);
+      msp_ready = osd_src->poll(now_ms);
+      msp_stale = osd_src->stale(now_ms);
       // Fires at most once per process: either traffic arrived (nothing to
       // report, latch it shut) or 10 s passed with none (report, latch shut).
       if (!osd_silence_warned) {
@@ -1081,108 +1065,6 @@ int main(int argc, char** argv) {
           osd_silence_warned = true;
         }
       }
-#ifdef MABUR_PLAYER_HW
-      // Re-checked every iteration, never cached: the presenter switches the
-      // OSD off mid-session if a commit carrying it fails repeatedly, and
-      // from that point osd_back_surface() is a null Surface. (OsdRaster
-      // tolerates that too, but there is nothing to publish.)
-      if (presenter && presenter->osd_available()) {
-        if (ready) {
-          const int idx = presenter->osd_back_index();
-          const maburplay::Surface surf = presenter->osd_back_surface();
-          const bool gs_live = gs_laid_out && gs_overlay[idx] != nullptr;
-          // Taken BEFORE draw() mutates it; diff()ed on the copy afterwards
-          // to recover the cells draw() actually wrote. See msp_pre_shadow.
-          if (gs_live) msp_pre_shadow = osd_shadow[idx];
-          osd_raster->draw(osd_src->screen(), surf, &osd_shadow[idx]);
-
-          // The MSP grid overlaps the GS corner blocks, and draw() clears a
-          // whole cell before blitting it -- so any GS pixel under a redrawn
-          // cell is now MSP pixels (or nothing). MSP drew second; the design
-          // says GS wins the collision, so reclaim those fields. This is the
-          // reason repaint_intersecting() exists.
-          gs_repaint.clear();
-          int reclaimed = 0;
-          if (gs_live) {
-            osd_raster->diff(osd_src->screen(), surf, &msp_pre_shadow, &msp_write);
-            if (!msp_write.empty())
-              reclaimed = gs_overlay[idx]->repaint_intersecting(
-                  msp_write.data(), msp_write.size(), surf, &gs_repaint);
-          }
-
-          // Recording tracks the screen. AFTER the reclaim, so the rects
-          // below capture the finished surface rather than the instant when
-          // MSP pixels were still sitting on top of the overlay -- and
-          // BEFORE osd_publish(), which swaps the pair, after which
-          // osd_back_surface() is the OTHER buffer.
-          if (burn) {
-            // burn_shadow, NOT osd_shadow[idx]: the draw shadows are per DRM
-            // buffer and describe the change since two renders ago, while
-            // the burn's index map is updated on every render. See
-            // OsdRaster::diff(). Without this the map goes silently stale on
-            // any cell that flips back within one render (X -> Y -> X).
-            osd_raster->diff(osd_src->screen(), surf, &burn_shadow, &burn_dirty);
-            // Empty => nothing changed => nothing to publish. A full
-            // re-quantize runs only when diff() says "whole surface".
-            if (!burn_dirty.empty()) burn->set_osd(surf, burn_dirty.data(), burn_dirty.size());
-            if (reclaimed > 0) {
-              burn->set_osd(surf, gs_repaint.data(), gs_repaint.size());
-              // The reclaim wrote THIS BUFFER's last values, which are not
-              // the lineage gs_overlay[kGsBurn] tracks, so it would happily
-              // report "nothing changed" over a map that now disagrees with
-              // the screen. Force its next update to restate every field.
-              gs_overlay[kGsBurn]->invalidate();
-            }
-          }
-          presenter->osd_publish();
-          osd_blanked = false;
-          // This buffer is about to be scanned out and the GS block has not
-          // necessarily drawn into it since the last swap -- osd_back and
-          // osd_dirty are SHARED, so an MSP-only publish would put a buffer
-          // on screen whose GS region is a sample old. The reclaim above
-          // restores pixels, not freshness; only an update() into THIS
-          // buffer makes it current. The swap happens at COMMIT, not at
-          // publish, so the GS block later in this same iteration still sees
-          // this osd_back_index(). Costs one extra update() per MSP screen.
-          gs_needs_render = true;
-        } else if (!osd_blanked && osd_src->stale(now_ms)) {
-          const int idx = presenter->osd_back_index();
-          const maburplay::Surface surf = presenter->osd_back_surface();
-          // Read BEFORE clear(), which resets the shadow -- afterwards there
-          // is no record of where the grid was.
-          const maburplay::OsdLayout lay = osd_shadow[idx].layout;
-          const bool have_grid = lay.draw_w > 0 && lay.draw_h > 0;
-          const maburplay::DirtyRect grid{lay.origin_x, lay.origin_y,
-                                          lay.cols * lay.draw_w, lay.rows * lay.draw_h};
-          osd_raster->clear(surf, &osd_shadow[idx]);
-          // clear() is scoped to the MSP GRID, not to MSP cells: every GS
-          // pixel inside that rect went with it.
-          gs_repaint.clear();
-          int reclaimed = 0;
-          if (have_grid && gs_laid_out && gs_overlay[idx])
-            reclaimed = gs_overlay[idx]->repaint_intersecting(&grid, 1, surf, &gs_repaint);
-          if (burn) {
-            burn_shadow = maburplay::ShadowGrid{};  // next diff is a full one
-            // Rect-scoped, NOT the old whole-surface set_osd(): the surface
-            // is no longer blank -- the GS overlay is on it -- so a full
-            // re-quantize would cost the ~25 ms A55 pass AND record the
-            // overlay as blanked. Only the grid changed.
-            if (have_grid) burn->set_osd(surf, &grid, 1);
-            if (reclaimed > 0) {
-              burn->set_osd(surf, gs_repaint.data(), gs_repaint.size());
-              gs_overlay[kGsBurn]->invalidate();  // same reason as above
-            }
-          }
-          presenter->osd_publish();
-          osd_blanked = true;
-          gs_needs_render = true;  // same reason as the publish above
-          std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
-                       cfg.osd.stale_ms);
-        }
-      }
-#else
-      (void)ready;  // host build: no presenter, nothing to draw on
-#endif
     }
     // GS link-status overlay. Drained every iteration whether or not
     // anything can be drawn -- the counters stay honest and an undrained
@@ -1191,7 +1073,7 @@ int main(int argc, char** argv) {
     if (gs_src) {
       const uint64_t now_ms = mono_ms();
       if (gs_src->poll(now_ms)) gs_needs_render = true;
-      const bool gs_stale = gs_src->stale(now_ms);
+      gs_stale = gs_src->stale(now_ms);
       if (gs_stale != gs_stale_last) {
         gs_stale_last = gs_stale;
         gs_needs_render = true;
@@ -1278,63 +1160,63 @@ int main(int argc, char** argv) {
         }
         gs_ps.rec = gs_rec.update(rin, now_ms);
       }
-
+    }
+    // ONE composition, for both overlays, into the buffer that is back right
+    // now. Not two independent render blocks: they share the back index and
+    // the dirty flag, so whichever of them publishes decides what is scanned
+    // out -- and a per-buffer piece of state that only the OTHER one
+    // refreshes then strobes at that publish rate. osd_compose.{h,cpp} owns
+    // that whole problem and is tested directly; this is only the trigger.
 #ifdef MABUR_PLAYER_HW
-      bool gs_disable = false;
-      // Re-checked every iteration, never cached: the presenter switches the
-      // OSD off mid-session after repeated commit failures, and from that
-      // point osd_back_surface() is a null Surface.
-      if (gs_overlay[0] && presenter && presenter->osd_available()) {
-        const maburplay::Surface surf = presenter->osd_back_surface();
-        if (surf.pixels && !gs_laid_out) {
-          std::string err;
-          bool ok = true;
-          for (auto& ov : gs_overlay) ok = ok && ov->layout(surf.width, surf.height, &err);
-          if (!ok) {
-            std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
-            for (auto& ov : gs_overlay) ov.reset();
-            gs_disable = true;
-          } else {
-            gs_laid_out = true;
-          }
-        }
-        if (gs_laid_out && gs_needs_render && surf.pixels) {
-          gs_needs_render = false;
-          const int idx = presenter->osd_back_index();
-          // Diffed against THIS buffer, so afterwards this buffer's GS
-          // region IS the current state -- whether or not anything was
-          // drawn. Everything below leans on that. No rect list is wanted:
-          // what this drew is what THIS buffer was missing, which is not
-          // what the burn's index map is missing (see gs_overlay[kGsBurn]).
-          gs_overlay[idx]->update(gs_src->snapshot(), gs_stale, gs_ps, surf, nullptr);
-          if (burn) {
-            // A null Surface makes update() a pure state diff: gs_draw's
-            // primitives are all measure-only without pixels. The rects it
-            // yields are the burn's own lineage -- what changed since the
-            // last time the index map was fed -- and they are quantized off
-            // the surface above, which the update() just made current for
-            // every field, not only the ones in gs_dirty.
-            gs_burn_dirty.clear();
-            gs_overlay[kGsBurn]->update(gs_src->snapshot(), gs_stale, gs_ps,
-                                        maburplay::Surface{}, &gs_burn_dirty);
-            if (!gs_burn_dirty.empty())
-              burn->set_osd(surf, gs_burn_dirty.data(), gs_burn_dirty.size());
-          }
-          // UNCONDITIONAL, even when nothing was drawn. "Nothing differs
-          // from this buffer" does not mean the screen is right: the screen
-          // is the OTHER buffer. With values that alternate (fps 60/59/60,
-          // an RSSI wobbling by one) each buffer keeps matching its own last
-          // render, both updates draw nothing, and a publish gated on
-          // gs_dirty would freeze the front buffer on the wrong sample
-          // forever. osd_publish() only sets a flag; the flip it costs is
-          // one the MSP path already pays at a higher rate.
-          presenter->osd_publish();
+    // Re-checked every iteration, never cached: the presenter switches the
+    // OSD off mid-session after repeated commit failures, and from that point
+    // osd_back_surface() is a null Surface.
+    if (presenter && presenter->osd_available()) {
+      const maburplay::Surface surf = presenter->osd_back_surface();
+      if (surf.pixels && composer.gs_present() && !gs_laid_out) {
+        // Deferred to the first real surface: its size is the DRM buffer's,
+        // which DrmPresenter may have allocated at a mode the connector
+        // offered rather than the one cfg.screen_mode asked for.
+        std::string err;
+        if (!composer.gs_layout(surf.width, surf.height, &err)) {
+          std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
+          gs_src.reset();  // the live gate; the overlays are already dropped
+        } else {
+          gs_laid_out = true;
         }
       }
-      // Deferred to here so nothing above dereferences a reset gs_src.
-      if (gs_disable) gs_src.reset();
-#endif
+      if (surf.pixels) {
+        maburplay::OsdComposeIn in;
+        if (osd_src && osd_raster) {
+          in.screen = &osd_src->screen();
+          in.msp_fresh = msp_ready;
+          in.msp_stale = msp_stale;
+        }
+        if (gs_src) {
+          in.snap = &gs_src->snapshot();
+          in.gs_stale = gs_stale;
+          in.gs_ps = gs_ps;
+          in.gs_dirty = gs_needs_render;
+        }
+        const int idx = presenter->osd_back_index();
+        if (composer.wants(idx, in)) {
+          const maburplay::OsdComposeOut out = composer.compose(idx, surf, in);
+          gs_needs_render = false;
+          // Unconditional whenever a composition ran, even if it drew
+          // nothing: "nothing differs from this buffer" does not mean the
+          // screen is right -- the screen is the OTHER buffer. With a value
+          // that alternates (fps 60/59/60, an RSSI wobbling by one) each
+          // buffer keeps matching its own last composition, and a publish
+          // gated on "something changed" strands the front buffer on the
+          // wrong sample forever.
+          if (out.published) presenter->osd_publish();
+          if (out.announce_blank)
+            std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
+                         cfg.osd.stale_ms);
+        }
+      }
     }
+#endif
     {
       const auto now = std::chrono::steady_clock::now();
       if (frame_count != wd_frames) {

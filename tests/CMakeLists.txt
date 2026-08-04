@@ -81,6 +81,9 @@ if(MABUR_BUILD_GS)
   add_mtest(test_osd_palette test_osd_palette.cpp LIBS mabur_player_core)
   target_compile_definitions(test_osd_palette PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
+  add_mtest(test_osd_coexist test_osd_coexist.cpp LIBS mabur_player_core)
+  target_compile_definitions(test_osd_coexist PRIVATE
+    GEN_GSFONT="${CMAKE_SOURCE_DIR}/tools/msp/gen_gsfont.py")
   # Wall-clock measurement of the OSD quantizer, which runs INLINE on
   # maburplay's 2 ms main loop. Deliberately NOT an add_test(): it is a
   # timing bench, so neither fast nor deterministic. Build and run by hand

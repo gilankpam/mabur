@@ -357,6 +357,59 @@ TEST(empty_atlas_with_seeds_yields_a_seed_only_palette) {
   for (uint32_t t : toks) CHECK(nearest_err2(p, premul(t, 255)) < 64);
 }
 
+// Seeding is not uniformly effective and the exception is worth pinning
+// rather than hiding behind a loose bound. In the MSP+GS palette six of the
+// seven tokens land exactly; kTrack -- the dim meter rail, and the one token
+// the Betaflight atlas already had a near match for -- does not. Measured:
+// with seeds Y=77 U=130 V=126 A=247 against a target of Y=76 U=130 V=126
+// A=255, i.e. exact chroma, one unit of luma, and 8/255 short on ALPHA.
+// Unseeded it was the other way round: exact alpha, chroma off by two in
+// both axes. So the squared-YUVA figure gets WORSE (12 -> 65) while the
+// thing an eye can see gets better, which is why this test asserts the axes
+// separately. Making it land exactly needs a seed weight of total_px/300,
+// which raises the MSP atlas's own mean quantization error from 17.3 to
+// 23.2 -- a trade against the primary overlay, deliberately not taken.
+TEST(the_one_token_the_seeds_do_not_place_exactly_is_pinned_by_axis) {
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(MABUR_PLAY_BUNDLE_DIR "/font_btfl.mfont", &err));
+  size_t n = 0;
+  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  const OsdPalette with = build_palette(font.native(), seeds, n);
+  const OsdPalette without = build_palette(font.native());
+
+  const uint32_t argb = premul(tok::kTrack, 255);
+  // The exact conversion of the target, via the production converter.
+  std::vector<uint32_t> one = {argb};
+  GlyphAtlas single{1, 1, 1, one.data()};
+  const uint32_t want = build_palette(single).entry[1];
+
+  auto picked = [&](const OsdPalette& p) {
+    std::vector<uint32_t> px = {argb};
+    Surface s{px.data(), 1, 1, 1};
+    OsdIndexMap m;
+    quantize(s, p, &m);
+    return p.entry[m.px[0]];
+  };
+  const uint32_t got = picked(with);
+  CHECK(U(got) == U(want));            // chroma exact
+  CHECK(V(got) == V(want));
+  CHECK(Y(got) >= Y(want) - 2 && Y(got) <= Y(want) + 2);
+  CHECK(A(got) >= A(want) - 12);       // 8 short, measured
+  // Control: the unseeded palette is the one with a chroma error here, so
+  // this is not "the seeds made it worse" in any sense that shows.
+  const uint32_t old = picked(without);
+  CHECK(U(old) != U(want) || V(old) != V(want));
+
+  // ...and the GS-only palette, which has 121 entries for 128 seeds and no
+  // atlas to share with, places every token exactly.
+  const OsdPalette gs_only = build_palette(GlyphAtlas{}, seeds, n);
+  const uint32_t toks[] = {tok::kTextPrimary, tok::kTextSecondary, tok::kTextLabel,
+                           tok::kTrack,       tok::kStatusOk,      tok::kStatusCaution,
+                           tok::kStatusRec};
+  for (uint32_t t : toks) CHECK(nearest_err2(gs_only, premul(t, 255)) == 0);
+}
+
 // Half-covered glyph edges are most of what the overlay draws, so the seed
 // list carries an alpha ramp and the palette has to keep it: a partially
 // covered green pixel must not land on the OPAQUE green entry (alpha is a

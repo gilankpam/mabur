@@ -12,6 +12,7 @@ add_library(mabur_player_core STATIC
   src/gs_metrics.cpp
   src/osd_layout.cpp
   src/osd_raster.cpp
+  src/osd_compose.cpp
   src/osd_source.cpp
   src/osd_palette.cpp
   src/in_formats.cpp)
