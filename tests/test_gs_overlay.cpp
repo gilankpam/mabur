@@ -134,4 +134,445 @@ TEST(em_dash_pair_is_the_never_received_rendering) {
   CHECK(std::string(kEmDashPair) == "——");
 }
 
+// --- GsOverlay --------------------------------------------------------
+#include "gs_draw.h"
+#include "gs_font.h"
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
+
+// The overlay needs every size it asks for. --sizes must cover the design
+// set or layout() reports a missing size, which is itself a test below.
+static std::string make_gsfont(const char* sizes = "19,21,22,24,26,34,38,56") {
+  std::string path = std::string(std::tmpnam(nullptr)) + ".gfont";
+  const std::string cmd = std::string("python3 ") + GEN_GSFONT + " --synthetic " +
+                          path + " --sizes " + sizes + " >/dev/null 2>&1";
+  REQUIRE(std::system(cmd.c_str()) == 0);
+  return path;
+}
+
+struct OverlayCanvas {
+  std::vector<uint32_t> px;
+  Surface s;
+  OverlayCanvas(int w, int h) : px((size_t)w * h, 0u) {
+    s.pixels = px.data(); s.width = w; s.height = h; s.stride_px = w;
+  }
+  int nonzero() const {
+    int n = 0;
+    for (uint32_t v : px) if (v) ++n;
+    return n;
+  }
+};
+
+static GsSnapshot nominal() {
+  GsSnapshot s;
+  s.mcs = 5;
+  s.fec_pct = 25.0;
+  s.air_pct = 61.0;
+  s.pre_loss_pct = 2.1;
+  s.post_loss_pct = 0.0;
+  GsCard a; a.id = 0; a.heard = true; a.rssi_dbm = -58.0; a.snr_db = 18.0;
+  GsCard b; b.id = 1; b.heard = true; b.rssi_dbm = -71.0; b.snr_db = 9.0;
+  s.cards = {a, b};
+  return s;
+}
+
+static GsPlayerState player_nominal() {
+  GsPlayerState p;
+  p.fps = 60.0; p.jitter_ms = 3.0; p.mbps = 24.6;
+  p.rec.kind = RecState::Kind::kRecording;
+  p.rec.elapsed_s = 767;
+  return p;
+}
+
+TEST(layout_succeeds_at_the_design_resolution) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  CHECK(ov.layout(1920, 1080, &err));
+  CHECK(err.empty());
+  std::remove(fp.c_str());
+}
+
+TEST(layout_fails_with_a_reason_when_a_size_is_missing) {
+  const std::string fp = make_gsfont("19,24");  // most of the set absent
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  CHECK(!ov.layout(1920, 1080, &err));
+  CHECK(!err.empty());
+  std::remove(fp.c_str());
+}
+
+TEST(first_update_draws_and_emits_rects) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  const int n = ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  CHECK(n > 0);
+  CHECK(!rects.empty());
+  CHECK(c.nonzero() > 0);
+  std::remove(fp.c_str());
+}
+
+// The whole point of field-level tracking: an unchanged snapshot must cost
+// nothing. A full repaint every 500 ms would put ~2.8 ms of quantize on a
+// 2 ms loop.
+TEST(identical_update_redraws_nothing) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  // update() documents `out` as NOT cleared -- callers batch GS and MSP
+  // rects into one quantize_rects() call across an update. Testing "this
+  // call added nothing" therefore means clearing between calls, the same
+  // as any real caller does per pump-loop tick.
+  rects.clear();
+  const int n = ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  CHECK(n == 0);
+  CHECK(rects.empty());
+  std::remove(fp.c_str());
+}
+
+// One changed value must dirty ONE field, not the block and not the screen.
+TEST(one_changed_value_dirties_one_field) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  rects.clear();  // see identical_update_redraws_nothing
+
+  GsPlayerState p = player_nominal();
+  p.jitter_ms = 7.0;  // JIT only
+  const int n = ov.update(nominal(), false, p, c.s, &rects);
+  CHECK(n == 1);
+  CHECK(rects.size() == 1);
+  // And the rect is small -- a field, not a block.
+  CHECK(rects[0].w < 600);
+  CHECK(rects[0].h < 120);
+  std::remove(fp.c_str());
+}
+
+// The elapsed clock ticks once a second and must not drag anything with it.
+TEST(rec_clock_tick_dirties_only_the_recording_field) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  GsPlayerState p = player_nominal();
+  p.rec.elapsed_s = 768;
+  CHECK(ov.update(nominal(), false, p, c.s, &rects) == 1);
+  std::remove(fp.c_str());
+}
+
+// Staleness dims every LINK field but must leave the player-measured ones
+// alone -- they are current by construction.
+TEST(stale_dims_link_fields_and_leaves_player_fields_alone) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  const int n = ov.update(nominal(), true, player_nominal(), c.s, &rects);
+  CHECK(n > 0);                 // link fields recoloured
+  CHECK(n < ov.field_count());  // not everything
+  std::remove(fp.c_str());
+}
+
+// Never-received renders as an em-dash pair, NOT as zero. Substituting zero
+// would paint a dead link as a perfect one.
+TEST(absent_values_render_em_dashes_not_zero) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  GsSnapshot s;             // everything empty
+  s.cards.clear();
+  CHECK(ov.debug_field_text(s, false, GsPlayerState{}, GsFieldId::kLossPost) ==
+        kEmDashPair);
+  CHECK(ov.debug_field_text(s, false, GsPlayerState{}, GsFieldId::kAirValue) ==
+        kEmDashPair);
+  std::remove(fp.c_str());
+}
+
+TEST(zero_cards_draws_no_signal_block) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  GsSnapshot s = nominal();
+  s.cards.clear();
+  ov.update(s, false, player_nominal(), c.s, &rects);
+  // No pixel lands in the bottom-left region at all -- no empty shell.
+  int lit = 0;
+  for (int y = 900; y < 1030; ++y)
+    for (int x = 90; x < 560; ++x)
+      if (c.px[(size_t)y * 1920 + x]) ++lit;
+  CHECK(lit == 0);
+  std::remove(fp.c_str());
+}
+
+// A card that is present but silent still renders its row.
+TEST(unheard_card_renders_a_row_with_never_heard) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  s.cards[1].heard = false;
+  s.cards[1].rssi_dbm.reset();
+  s.cards[1].snr_db.reset();
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard1Rssi) ==
+        "never heard");
+  std::remove(fp.c_str());
+}
+
+// A changed card count re-lays the block out, so the next update is full.
+TEST(card_count_change_forces_a_full_repaint) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  GsSnapshot s = nominal();
+  s.cards.pop_back();
+  const int n = ov.update(s, false, player_nominal(), c.s, &rects);
+  CHECK(n > 1);  // not just the one vanished row
+  std::remove(fp.c_str());
+}
+
+TEST(recording_states_render_distinctly) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  const GsSnapshot s = nominal();
+  GsPlayerState p;
+  p.rec.kind = RecState::Kind::kRecording;
+  p.rec.elapsed_s = 767;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec) ==
+        std::string(kDotFilled) + " REC 12:47");
+  p.rec.kind = RecState::Kind::kArmed;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec) ==
+        std::string(kDotHollow) + " REC --:--");
+  p.rec.kind = RecState::Kind::kFault;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec) ==
+        std::string(kDotFilled) + " REC FAULT");
+  p.rec.kind = RecState::Kind::kAbsent;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec).empty());
+  std::remove(fp.c_str());
+}
+
+// The MSP grid overlaps the GS corners. After MSP repaints over a field,
+// that field must come back -- GS pixels always win a collision.
+TEST(repaint_intersecting_redraws_only_overlapped_fields) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+
+  // A rect covering the whole bottom-left corner.
+  const DirtyRect msp{0, 880, 600, 200};
+  std::vector<DirtyRect> out;
+  const int n = ov.repaint_intersecting(&msp, 1, c.s, &out);
+  CHECK(n > 0);
+  CHECK(n < ov.field_count());
+  CHECK(out.size() == (size_t)n);
+
+  // A rect touching nothing repaints nothing.
+  const DirtyRect middle{900, 500, 100, 100};
+  out.clear();
+  CHECK(ov.repaint_intersecting(&middle, 1, c.s, &out) == 0);
+  CHECK(out.empty());
+  std::remove(fp.c_str());
+}
+
+TEST(invalidate_forces_the_next_update_to_be_full) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  CHECK(ov.update(nominal(), false, player_nominal(), c.s, &rects) == 0);
+  ov.invalidate();
+  CHECK(ov.update(nominal(), false, player_nominal(), c.s, &rects) > 1);
+  std::remove(fp.c_str());
+}
+
+// Every field must sit inside the 5 % title-safe inset -- the handoff's
+// whole reason for the inset is that the outer band may be cropped.
+TEST(all_fields_stay_inside_the_safe_inset) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  const DirtyRect b = ov.bounds();
+  CHECK(b.x >= 96);
+  CHECK(b.y >= 54);
+  CHECK(b.x + b.w <= 1920 - 96);
+  CHECK(b.y + b.h <= 1080 - 54);
+  std::remove(fp.c_str());
+}
+
+// Row 2 is empty by design: the centre of frame carries no OSD.
+TEST(nothing_is_drawn_in_the_centre_of_frame) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);
+  int lit = 0;
+  for (int y = 300; y < 780; ++y)
+    for (int x = 400; x < 1520; ++x)
+      if (c.px[(size_t)y * 1920 + x]) ++lit;
+  CHECK(lit == 0);
+  std::remove(fp.c_str());
+}
+
+TEST(palette_seeds_cover_every_token) {
+  size_t n = 0;
+  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  REQUIRE(seeds != nullptr);
+  CHECK(n > 0);
+  // Each token must appear at full alpha somewhere in the seed set, or the
+  // burned DVR quantizes GS pixels to the nearest MSP-atlas colour.
+  const uint32_t want[] = {tok::kTextPrimary, tok::kTextSecondary, tok::kTextLabel,
+                           tok::kTrack, tok::kStatusOk, tok::kStatusCaution,
+                           tok::kStatusRec};
+  for (uint32_t w : want) {
+    bool found = false;
+    for (size_t i = 0; i < n; ++i)
+      if (seeds[i] == premul(w, 255)) { found = true; break; }
+    CHECK(found);
+  }
+}
+
+TEST(null_surface_update_is_safe) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  Surface null_s;
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), null_s, &rects);
+  CHECK(true);  // survived
+  std::remove(fp.c_str());
+}
+
+// Robustness gap closed in Task 8: gs_snapshot.cpp's JSON accessors reject
+// non-finite/non-numeric values but never bound a well-formed one's
+// magnitude, and the formatters (fmt_int et al.) have no width limit of
+// their own. draw_text clips only to the SURFACE, not to a field's box, and
+// clear_region only ever clears the box -- so an absurd value (a corrupt or
+// hostile datagram's air_pct: 1e300) would draw a ~300-character string
+// straight through neighbouring fields and off the edge of the screen, and
+// nothing would ever erase the overhang on a later frame. The chosen fix is
+// to clamp every value into its sensible display range in state_of_()
+// before formatting (see the comment above that switch), rather than
+// adding a clip rect to draw_text: it keeps the fixed-width invariant the
+// whole box-sizing scheme depends on exactly true instead of papering over
+// one symptom of violating it. This asserts the invariant end to end: every
+// lit pixel must fall inside SOME field's own declared box.
+TEST(absurd_values_never_draw_outside_their_field_boxes) {
+  const std::string fp = make_gsfont();
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+
+  GsSnapshot s = nominal();
+  s.mcs = 1000000000;
+  s.fec_pct = 1e300;
+  s.air_pct = 1e300;             // the brief's own example
+  s.pre_loss_pct = -1e300;
+  s.post_loss_pct = 1e300;
+  s.cards[0].id = 999999999;
+  s.cards[0].rssi_dbm = -1e300;
+  s.cards[0].snr_db = 1e300;
+
+  GsPlayerState p = player_nominal();
+  p.fps = 1e300;
+  p.jitter_ms = 1e300;
+  p.mbps = -1e300;
+
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(s, false, p, c.s, &rects);
+  CHECK(!rects.empty());  // the corruption didn't just silently draw nothing
+
+  std::vector<DirtyRect> boxes;
+  for (int i = 0; i < ov.field_count(); ++i)
+    boxes.push_back(ov.debug_field_box((GsFieldId)i));
+  auto covered = [&](int x, int y) {
+    for (const DirtyRect& b : boxes)
+      if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) return true;
+    return false;
+  };
+  int stray = 0;
+  for (int y = 0; y < c.s.height; ++y)
+    for (int x = 0; x < c.s.width; ++x)
+      if (c.px[(size_t)y * c.s.width + x] && !covered(x, y)) ++stray;
+  CHECK(stray == 0);
+  std::remove(fp.c_str());
+}
+
 MTEST_MAIN

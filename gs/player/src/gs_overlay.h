@@ -3,8 +3,10 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "gs_snapshot.h"
+#include "osd_raster.h"  // Surface, DirtyRect
 
 namespace maburplay {
 
@@ -79,6 +81,138 @@ std::string fmt_int(double v);         // nearest integer, never negative-zero
 std::string fmt_one_dp(double v);      // always one decimal place
 std::string fmt_signed_int(double v);  // U+2212 for negatives
 std::string fmt_clock(int seconds);    // mm:ss, saturating at 99:59
+
+// Field identity. The order here IS the draw order and the index into the
+// overlay's shadow vector, so entries may be appended but never reordered.
+// Cards are a fixed set of slots: kMaxCards bounds the block, and a slot
+// past the reported card count simply renders nothing.
+constexpr int kMaxCards = 4;
+
+enum class GsFieldId {
+  kRung = 0,
+  kAirLabel,
+  kAirValue,
+  kAirMeter,
+  kRec,
+  kLossLabel,
+  kLossPre,
+  kLossArrow,
+  kLossPost,
+  kFpsValue,
+  kFpsLabel,
+  kJit,
+  kMbps,
+  // Card slots: FIVE fields per card, contiguous per slot. Five and not
+  // four because the design colours every element of a row independently --
+  // the id and unit in kTextLabel, the RSSI by status, the SNR in
+  // kTextSecondary -- and one field can carry only one colour.
+  kCard0Id, kCard0Bars, kCard0Rssi, kCard0Unit, kCard0Snr,
+  kCard1Id, kCard1Bars, kCard1Rssi, kCard1Unit, kCard1Snr,
+  kCard2Id, kCard2Bars, kCard2Rssi, kCard2Unit, kCard2Snr,
+  kCard3Id, kCard3Bars, kCard3Rssi, kCard3Unit, kCard3Snr,
+  kCount,
+};
+
+class GsFont;
+struct MaskAtlas;
+
+// The GS link-status overlay. Draws into the SAME ARGB surface the MSP
+// rasterizer uses -- one plane, no compositing -- into four corner regions
+// the MSP grid mostly does not reach. Where they do collide the caller
+// draws MSP first and then calls repaint_intersecting(), so GS wins.
+//
+// Dirty tracking is per FIELD, not per block: each field has a box sized at
+// layout() from its worst-case string, so a value change never reflows a
+// row and a redraw touches ~40 k pixels rather than ~231 k. That margin is
+// what keeps quantize_rects() inside maburplay's 2 ms pump loop.
+class GsOverlay {
+ public:
+  explicit GsOverlay(GsFont& font) : font_(font) {}
+
+  // Computes every field box for this surface size. Type sizes scale by
+  // height/1080 and snap to an available atlas size; below an 18 px floor
+  // the two TOP blocks are dropped and only the bottom two render.
+  // Fails (with *err set) if a required atlas size is missing.
+  bool layout(int screen_w, int screen_h, std::string* err);
+
+  // Formats every field, redraws the ones whose rendered state changed, and
+  // appends one DirtyRect per redrawn field to *out (which is NOT cleared:
+  // the caller batches GS and MSP rects into one quantize_rects call).
+  // Returns the number of fields redrawn.
+  //
+  // `stale` dims every LINK field to kTextLabel and holds its last value.
+  // Player-measured fields ignore it -- they are current by construction.
+  int update(const GsSnapshot& snap, bool stale, const GsPlayerState& ps,
+             const Surface& s, std::vector<DirtyRect>* out);
+
+  // Redraws every field whose box intersects any of `rects`, regardless of
+  // whether its value changed. This is what makes GS pixels win a collision
+  // with the MSP grid.
+  int repaint_intersecting(const DirtyRect* rects, size_t n, const Surface& s,
+                           std::vector<DirtyRect>* out);
+
+  // Next update() is a full repaint. Call after anything that can have
+  // clobbered the surface behind the overlay's back (a buffer swap into a
+  // slot this overlay has never drawn, an MSP full-surface clear).
+  void invalidate();
+
+  // Union of every field box -- the region the overlay can ever touch.
+  DirtyRect bounds() const { return bounds_; }
+  int field_count() const { return (int)GsFieldId::kCount; }
+
+  // Every token colour at full alpha plus its shadow blend, for
+  // build_palette()'s extra seeds. Without these the burned DVR quantizes
+  // GS pixels against an MSP-only palette that has no green or amber in it.
+  static const uint32_t* palette_seeds(size_t* n);
+
+  // Test hook: the string a field would render for these inputs.
+  std::string debug_field_text(const GsSnapshot& snap, bool stale,
+                               const GsPlayerState& ps, GsFieldId id) const;
+
+  // Test hook: the box layout() computed for a field. Exists for the
+  // magnitude-clamp regression test -- asserting "nothing draws outside
+  // ITS box" needs to know what that box is, and bounds() only gives the
+  // union of all of them.
+  DirtyRect debug_field_box(GsFieldId id) const;
+
+ private:
+  struct FieldState {
+    std::string text;
+    uint32_t rgb = 0;
+    int aux = -1;  // bars lit / meter fill px; -1 when unused
+    bool operator==(const FieldState&) const = default;
+  };
+  struct Field {
+    DirtyRect box;
+    const MaskAtlas* atlas = nullptr;
+    int baseline_y = 0;  // absolute, within the surface
+    int pen_x = 0;       // absolute left edge of the pen
+    bool active = false; // false => this field never renders (dropped block,
+                         // or a card slot past the reported card count)
+    FieldState last;
+    bool valid = false;
+  };
+
+  FieldState state_of_(const GsSnapshot& snap, bool stale, const GsPlayerState& ps,
+                       GsFieldId id) const;
+  void draw_field_(GsFieldId id, const FieldState& st, const Surface& s);
+  Field& f_(GsFieldId id) { return fields_[(size_t)id]; }
+  const Field& f_(GsFieldId id) const { return fields_[(size_t)id]; }
+
+  GsFont& font_;
+  Field fields_[(size_t)GsFieldId::kCount];
+  DirtyRect bounds_{0, 0, 0, 0};
+  // -1, not 0: layout() leaves every card slot active (it doesn't know the
+  // card count yet), so a snapshot's first-ever report of ZERO cards must
+  // still be treated as a change that deactivates all of them. 0 as the
+  // sentinel would make that first update a no-op vs. an initial state
+  // that happens to also read 0, leaving the reserved slots' bars fields
+  // drawing unlit-track bars for cards that were never reported -- the
+  // "empty shell" the design doc says zero cards must never render.
+  int n_cards_ = -1;  // card slots currently active; -1 = never reconciled
+  bool laid_out_ = false;
+  double scale_ = 1.0;
+};
 
 }  // namespace maburplay
 
