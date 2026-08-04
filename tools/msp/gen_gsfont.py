@@ -16,7 +16,7 @@ blurred on maburplay's 2 ms main loop.
 
   header, 32 B: {u32 magic 'GFNT' = 0x544E4647, u32 version = 1,
                  u32 n_sizes, u32 reserved[5] = 0}
-  size directory, n_sizes x 32 B, ascending by px, right after the header:
+  size directory, n_sizes x 36 B, ascending by px, right after the header:
                 {u32 px, u32 glyph_w, u32 glyph_h, u32 advance_x,
                  u32 baseline, u32 n_glyphs, u32 pad = 0, u64 offset}
   glyph block at `offset`:
@@ -145,7 +145,9 @@ def synthetic(px):
 def build(sizes, render):
     """render(px) -> (gw, gh, advance, baseline, {cp: coverage})"""
     blocks, dirents = [], []
-    offset = 32 + 36 * len(sizes)
+    hdr_size = struct.calcsize("<3I5I")  # magic, version, n_sizes, reserved[5]
+    dirent_size = struct.calcsize("<7IQ")
+    offset = hdr_size + dirent_size * len(sizes)
     for px in sizes:
         gw, gh, advance, baseline, glyphs = render(px)
         cps = sorted(glyphs)
@@ -162,7 +164,8 @@ def build(sizes, render):
         blocks.append(bytes(body))
         offset += len(body)
     out = bytearray(struct.pack("<3I", MAGIC, VERSION, len(sizes)))
-    out += b"\x00" * 20                     # reserved[5]
+    reserved_size = hdr_size - struct.calcsize("<3I")
+    out += b"\x00" * reserved_size          # reserved[5]
     for d in dirents:
         out += d
     for b in blocks:

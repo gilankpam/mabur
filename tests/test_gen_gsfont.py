@@ -51,11 +51,14 @@ def main():
         assert s["gw"] > s["adv"] > 0, s
         assert 0 < s["base"] < s["gh"], s
 
-    # Synthetic glyphs must actually have coverage, or a golden hash would
-    # match an empty render just as happily.
+    # Both coverage and shadow channels must be populated. Without this,
+    # a golden hash would match an empty render just as happily, and a
+    # regression that kills shadow generation entirely would ship unnoticed.
     s = sizes[0]
     cov = sum(s["pix"][i] for i in range(0, len(s["pix"]), 2))
+    sha = sum(s["pix"][i] for i in range(1, len(s["pix"]), 2))
     assert cov > 0, "synthetic atlas has no coverage"
+    assert sha > 0, "synthetic atlas has no shadow"
 
     # Determinism: the same invocation twice is byte-identical, which is
     # what lets the committed asset and the e2e golden hash be stable.
