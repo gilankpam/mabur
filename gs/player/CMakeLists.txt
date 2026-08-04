@@ -4,6 +4,7 @@ add_library(mabur_player_core STATIC
   src/dvr_mux.cpp
   src/ring_client.cpp
   src/osd_font.cpp
+  src/gs_font.cpp
   src/osd_layout.cpp
   src/osd_raster.cpp
   src/osd_source.cpp

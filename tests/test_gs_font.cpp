@@ -1,0 +1,136 @@
+#include "mtest.h"
+#include "gs_font.h"
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+using namespace maburplay;
+
+// Builds a synthetic .gfont via the generator. GEN_GSFONT is the absolute
+// path, injected by tests/CMakeLists.txt.
+static std::string make_font(const char* sizes) {
+  std::string path = std::string(std::tmpnam(nullptr)) + ".gfont";
+  const std::string cmd = std::string("python3 ") + GEN_GSFONT + " --synthetic " +
+                          path + " --sizes " + sizes + " >/dev/null 2>&1";
+  REQUIRE(std::system(cmd.c_str()) == 0);
+  return path;
+}
+
+TEST(load_exposes_every_size_in_the_directory) {
+  const std::string p = make_font("8,12,16");
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(p, &err));
+  CHECK(f.ok());
+  CHECK(f.n_sizes() == 3);
+  CHECK(f.atlas(8) != nullptr);
+  CHECK(f.atlas(12) != nullptr);
+  CHECK(f.atlas(16) != nullptr);
+  CHECK(f.atlas(10) == nullptr);  // absent size: nullptr, never a fallback
+  std::remove(p.c_str());
+}
+
+TEST(atlas_geometry_matches_the_generator) {
+  const std::string p = make_font("20");
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(p, &err));
+  const MaskAtlas* a = f.atlas(20);
+  REQUIRE(a != nullptr);
+  CHECK(a->px == 20);
+  CHECK(a->advance_x == 12);            // max(2, 20*3/5)
+  CHECK(a->glyph_w == 12 + 8);          // advance + 2*PAD
+  CHECK(a->glyph_h == 20 + 5 + 8);      // ascender + descender + 2*PAD
+  CHECK(a->baseline == 4 + 20);         // PAD + ascender
+  CHECK(a->glyph_w > a->advance_x);
+  std::remove(p.c_str());
+}
+
+TEST(index_of_finds_ascii_and_the_four_extras) {
+  const std::string p = make_font("12");
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(p, &err));
+  const MaskAtlas* a = f.atlas(12);
+  REQUIRE(a != nullptr);
+  CHECK(a->index_of(' ') >= 0);
+  CHECK(a->index_of('0') >= 0);
+  CHECK(a->index_of('Z') >= 0);
+  CHECK(a->index_of('%') >= 0);
+  CHECK(a->index_of(0x2212) >= 0);  // MINUS SIGN
+  CHECK(a->index_of(0x2192) >= 0);  // RIGHTWARDS ARROW
+  CHECK(a->index_of(0x25CF) >= 0);  // BLACK CIRCLE
+  CHECK(a->index_of(0x25CB) >= 0);  // WHITE CIRCLE
+  CHECK(a->index_of(0x4E00) < 0);   // absent: negative, never index 0
+  std::remove(p.c_str());
+}
+
+TEST(glyph_pixels_carry_coverage_and_shadow) {
+  const std::string p = make_font("12");
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(p, &err));
+  const MaskAtlas* a = f.atlas(12);
+  REQUIRE(a != nullptr);
+  const int gi = a->index_of('0');
+  REQUIRE(gi >= 0);
+  const uint8_t* g = a->glyph(gi);
+  REQUIRE(g != nullptr);
+  int cov = 0, sha = 0;
+  for (int i = 0; i < a->glyph_w * a->glyph_h; ++i) {
+    cov += g[i * 2];
+    sha += g[i * 2 + 1];
+  }
+  CHECK(cov > 0);
+  CHECK(sha > 0);  // the shadow channel was baked, not left zero
+  std::remove(p.c_str());
+}
+
+// Failure is a reason, never a crash: the overlay disables itself on any
+// of these and the rest of the player runs on.
+TEST(bad_files_fail_with_a_reason) {
+  GsFont f;
+  std::string err;
+  CHECK(!f.load("/nonexistent/nope.gfont", &err));
+  CHECK(!err.empty());
+  CHECK(!f.ok());
+
+  std::string p = std::string(std::tmpnam(nullptr)) + ".gfont";
+  std::FILE* fp = std::fopen(p.c_str(), "wb");
+  REQUIRE(fp != nullptr);
+  const char junk[64] = {0};
+  std::fwrite(junk, 1, sizeof(junk), fp);
+  std::fclose(fp);
+  GsFont f2;
+  err.clear();
+  CHECK(!f2.load(p, &err));
+  CHECK(!err.empty());
+  std::remove(p.c_str());
+}
+
+// A truncated file must be rejected at load, not read past at draw time.
+TEST(truncated_file_is_rejected) {
+  const std::string p = make_font("12");
+  std::FILE* fp = std::fopen(p.c_str(), "rb");
+  REQUIRE(fp != nullptr);
+  std::fseek(fp, 0, SEEK_END);
+  const long n = std::ftell(fp);
+  std::fseek(fp, 0, SEEK_SET);
+  std::string buf((size_t)n, '\0');
+  REQUIRE(std::fread(&buf[0], 1, (size_t)n, fp) == (size_t)n);
+  std::fclose(fp);
+
+  std::string t = std::string(std::tmpnam(nullptr)) + ".gfont";
+  std::FILE* tf = std::fopen(t.c_str(), "wb");
+  REQUIRE(tf != nullptr);
+  std::fwrite(buf.data(), 1, (size_t)n / 2, tf);  // half the file
+  std::fclose(tf);
+
+  GsFont f;
+  std::string err;
+  CHECK(!f.load(t, &err));
+  CHECK(!err.empty());
+  std::remove(t.c_str());
+  std::remove(p.c_str());
+}
+
+MTEST_MAIN
