@@ -87,55 +87,23 @@ size_t area(const std::vector<DirtyRect>& v) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  std::string gsfont = MABUR_PLAY_BUNDLE_DIR "/gs_osd.gfont";
-  std::string mspfont = MABUR_PLAY_BUNDLE_DIR "/font_btfl.mfont";
-  int w = 1920, h = 1080;
-  for (int i = 1; i < argc; ++i) {
-    const std::string a = argv[i];
-    if (a == "--gs-font" && i + 1 < argc) gsfont = argv[++i];
-    else if (a == "--font" && i + 1 < argc) mspfont = argv[++i];
-    else if (a == "--screen" && i + 1 < argc) std::sscanf(argv[++i], "%dx%d", &w, &h);
-    else {
-      std::fprintf(stderr, "usage: gs_overlay_bench [--gs-font F] [--font F] [--screen WxH]\n");
-      return 2;
-    }
-  }
-
-  GsFont gf;
+int measure(GsFont& gf, const OsdPalette& pal, int w, int h, int msp_glyph_w,
+            int msp_glyph_h) {
   std::string err;
-  if (!gf.load(gsfont, &err)) {
-    std::fprintf(stderr, "gs_overlay_bench: %s\n", err.c_str());
-    return 2;
-  }
-
-  // The palette maburplay actually burns with: the MSP atlas's colours plus
-  // the GS token seeds. A GS-only palette would quantize differently and
-  // understate (or overstate) the per-pixel nearest-entry cost.
-  OsdFont mf;
-  GlyphAtlas empty;
-  size_t n_seeds = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n_seeds);
-  const bool have_msp = mf.load(mspfont, &err);
-  const OsdPalette pal =
-      build_palette(have_msp ? mf.native() : empty, seeds, n_seeds);
-
   std::vector<uint32_t> px((size_t)w * (size_t)h, 0u);
   Surface s{px.data(), w, h, w};
 
   GsOverlay ov(gf);
   if (!ov.layout(w, h, &err)) {
-    std::fprintf(stderr, "gs_overlay_bench: layout failed: %s\n", err.c_str());
+    std::fprintf(stderr, "gs_overlay_bench: layout failed at %dx%d: %s\n", w, h, err.c_str());
     return 2;
   }
 
   const DirtyRect b = ov.bounds();
   std::printf(
-      "gs_overlay_bench: %dx%d surface, %s, palette n=%d%s\n"
-      "  asset %s (%d sizes), overlay bounds %dx%d at (%d,%d) = %.2f%% of the surface\n",
-      w, h, "real JetBrains Mono asset", pal.n, have_msp ? "" : " (NO MSP atlas -- seeds only)",
-      gsfont.c_str(), gf.n_sizes(), b.w, b.h, b.x, b.y,
-      100.0 * ((double)b.w * b.h) / ((double)w * h));
+      "\n================ %dx%d ================\n"
+      "  overlay bounds %dx%d at (%d,%d) = %.2f%% of the surface\n",
+      w, h, b.w, b.h, b.x, b.y, 100.0 * ((double)b.w * b.h) / ((double)w * h));
 
   // First update: every field drawn. Also sizes the index map for
   // quantize_rects(), which refuses to run against an unsized map.
@@ -220,14 +188,91 @@ int main(int argc, char** argv) {
     });
   }
 
+  // --- Case 4: what the burn feed ACTUALLY pays per MSP tick, now that the
+  // restate is scoped to the reclaimed fields rather than invalidate()-ing
+  // the whole burn overlay. One changed MSP cell, landing on a GS box: with
+  // an HD 50x18 sharp grid ~15% of cells do, so this is the steady-state
+  // path whenever both overlays are on, not an edge case. Before scoping,
+  // ANY such cell cost the case-2 figure above.
+  {
+    const DirtyRect box = ov.debug_field_box(GsFieldId::kCard0Rssi);
+    const int cw = msp_glyph_w > 0 ? msp_glyph_w : 36;
+    const int ch = msp_glyph_h > 0 ? msp_glyph_h : 54;
+    const DirtyRect cell{box.x + 2, box.y + 2, cw, ch};
+    std::vector<DirtyRect> r;
+    const int nf = ov.repaint_intersecting(&cell, 1, s, &r);
+    std::printf("\nMSP one-cell collision (%dx%d cell, %d fields reclaimed, %zu px = %.3f%%):\n",
+                cw, ch, nf, area(r), 100.0 * area(r) / ((double)w * h));
+    ms_per_call("draw + quantize_rects  [per update]", 20000, [&] {
+      std::vector<DirtyRect> out;
+      ov.repaint_intersecting(&cell, 1, s, &out);
+      quantize_rects(s, pal, out.data(), out.size(), &map, &qcache);
+    });
+  }
+
   // --- Reference point: the full-screen quantize the overlay must never
   // trigger on this loop, for scale.
   std::printf("\nreference (NOT on the update path):\n");
   ms_per_call("full-surface quantize()", 20, [&] { quantize(s, pal, &map, &qcache); });
 
+  return 0;
+}
+
+int main(int argc, char** argv) {
+  std::string gsfont = MABUR_PLAY_BUNDLE_DIR "/gs_osd.gfont";
+  std::string mspfont = MABUR_PLAY_BUNDLE_DIR "/font_btfl.mfont";
+  int w = 0, h = 0;  // 0 == run the whole supported range
+  for (int i = 1; i < argc; ++i) {
+    const std::string a = argv[i];
+    if (a == "--gs-font" && i + 1 < argc) gsfont = argv[++i];
+    else if (a == "--font" && i + 1 < argc) mspfont = argv[++i];
+    else if (a == "--screen" && i + 1 < argc) std::sscanf(argv[++i], "%dx%d", &w, &h);
+    else {
+      std::fprintf(stderr, "usage: gs_overlay_bench [--gs-font F] [--font F] [--screen WxH]\n");
+      return 2;
+    }
+  }
+
+  GsFont gf;
+  std::string err;
+  if (!gf.load(gsfont, &err)) {
+    std::fprintf(stderr, "gs_overlay_bench: %s\n", err.c_str());
+    return 2;
+  }
+
+  // The palette maburplay actually burns with: the MSP atlas's colours plus
+  // the GS token seeds. A GS-only palette would quantize differently and
+  // understate (or overstate) the per-pixel nearest-entry cost.
+  OsdFont mf;
+  GlyphAtlas empty;
+  size_t n_seeds = 0;
+  const uint32_t* seeds = GsOverlay::palette_seeds(&n_seeds);
+  const bool have_msp = mf.load(mspfont, &err);
+  const OsdPalette pal = build_palette(have_msp ? mf.native() : empty, seeds, n_seeds);
+
+  const int gw = have_msp ? mf.native().glyph_w : 0;
+  const int gh = have_msp ? mf.native().glyph_h : 0;
+
+  std::printf("gs_overlay_bench: real JetBrains Mono asset %s (%d sizes), palette n=%d%s\n",
+              gsfont.c_str(), gf.n_sizes(), pal.n,
+              have_msp ? "" : " (NO MSP atlas -- seeds only)");
+
+  // 2160p is not a curiosity: screen_mode is config, layout() supports it,
+  // and everything here scales with PIXELS, so it is where the budget is
+  // actually decided. Benching 1080p alone was how the 2160p figure went
+  // unnoticed.
+  if (w > 0 && h > 0) {
+    if (measure(gf, pal, w, h, gw, gh) != 0) return 2;
+  } else {
+    if (measure(gf, pal, 1920, 1080, gw, gh) != 0) return 2;
+    if (measure(gf, pal, 3840, 2160, gw, gh) != 0) return 2;
+  }
+
   std::printf(
-      "\nA55 estimates use Phase 1's measured 7.4x host->target factor.\n"
+      "\nA55 estimates use Phase 1's measured 7.4x host->target factor -- an\n"
+      "estimate carried from a blitting workload, not a target measurement.\n"
       "Budget: maburplay's pump loop is 2 ms; anything past ~1.5 ms projected\n"
-      "is a finding, not a footnote.\n");
+      "is a finding, not a footnote. The quantize half is burned-DVR-only;\n"
+      "in raw or no-DVR mode the cost is the draw column alone.\n");
   return 0;
 }

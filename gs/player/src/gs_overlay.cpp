@@ -254,6 +254,25 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
   const int inset_y = (int)(kInsetY * scale_ + 0.5);
   const int left = inset_x, right = screen_w - inset_x;
   const int top = inset_y, bottom = screen_h - inset_y;
+  // THE HORIZONTAL CLEARANCE FLOOR, before you change any gapN below.
+  //
+  // A field's box spans the PADDED cell, so it is `(glyph_w - advance_x)`
+  // wider than its text -- 8 px, PAD 4 per side. That pad is baked into the
+  // atlas and is therefore scale-INVARIANT: it is 8 px at 720p and 8 px at
+  // 2160p. The design gaps here are not; they scale with height/1080. So
+  // the real clearance between two horizontally adjacent boxes is
+  //
+  //     round(gapN * scale) - 8
+  //
+  // which is MINIMISED at the smallest supported resolution. At 720p
+  // (scale 2/3) a gap12 yields exactly 8 - 8 = 0: kFpsValue and kFpsLabel
+  // ABUT with zero pixels between them. That is legal -- zero is not an
+  // overlap, and pick() refuses to lay out below 720p so it cannot go
+  // negative -- but the margin is gone, and the no-overlap tests assert only
+  // strict non-overlap, never a minimum clearance. Anything smaller than
+  // gap12 for a horizontal neighbour pair, or a new atlas with more pad,
+  // makes boxes overlap at 720p and the failure will appear as one field's
+  // clear erasing its neighbour's last column.
   const int gap6 = (int)(6 * scale_ + 0.5), gap8 = (int)(8 * scale_ + 0.5);
   const int gap10 = (int)(10 * scale_ + 0.5), gap12 = (int)(12 * scale_ + 0.5);
   const int gap14 = (int)(14 * scale_ + 0.5), gap16 = (int)(16 * scale_ + 0.5);

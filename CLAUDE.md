@@ -90,8 +90,20 @@ read the sideport. Reach for other tools only in these cases:**
   see the actual pixels without hardware: `maburplay --gs-render` dumps a
   rendered frame, `tests/test_gs_asset.cpp` gates the real asset's layout at
   720p/1080p/1440p/2160p, and `tools/bench/gs_overlay_bench.cpp` measures
-  draw+quantize per update (it runs on the 2 ms pump loop; treat anything
-  projecting past ~1.5 ms on the A55 as a defect, not a footnote).
+  draw+quantize per update at 1080p and 2160p. Read that bench before
+  changing anything on this path: it runs on the 2 ms pump loop, and the
+  rule of thumb is that anything projecting past ~1.5 ms on the A55 is a
+  defect. **The shipped code already reports 3.7 ms at 1080p and 9.9 ms at
+  2160p for a full repaint, and that is accepted, not overlooked** — a full
+  repaint is a startup/re-layout event, the quantize half of it is
+  burned-DVR-only (raw or no-DVR mode pays the draw column alone: 1.3 ms and
+  3.6 ms), and `ring.pump(2)` is a `poll()` ceiling over a slotted shm ring,
+  so the cost lands as one-vsync-late presentation rather than a lost AU.
+  What is NOT accepted is anything that puts a full repaint on a *cadence*:
+  the burn restate after an MSP collision is scoped to the fields the
+  collision actually hit for exactly that reason (`osd_compose.cpp`), and it
+  used to cost 179,392 px per changed cell instead of ~13,000. Steady state
+  is 0.13 ms.
 - **Radio/PHY bring-up below mabur → devourer's own tools** (`rxdemo` with
   `DEVOURER_RX_ALLPATHS=1`, `doctor`, etc. — see
   `third_party/devourer/CLAUDE.md`). Use these when the question is about
@@ -114,7 +126,14 @@ documented as dB, so every `classes.*.snr` (and the `snr_min`/`snr_max`
 derived from it) in any recording made BEFORE that date reads exactly
 2× the real figure. Recordings that span the change are not numerically
 comparable and must not be pooled — a "9 dB improvement" across it is an
-artifact. `flightreport.py` warns when it sees a file on the old scale.
+artifact. `flightreport.py` warns on the old scale — but that warning is a
+BACKSTOP, not a detector: it fires only at `max(snr) > 60`, where the old
+scale exceeds anything a real link produces. A normal 10–25 dB link reads
+20–50 on the old scale and never trips it, and no threshold can do better,
+because a pre-fix 48 (24 dB) and a post-fix 48 (an ordinary strong bench
+link) are the same number with nothing in the schema to tell them apart.
+**Silence from that warning means "not obviously old", never "confirmed
+dB".** Date the recording instead — anything before 2026-08-04 is half-dB.
 This is recorded here because it is the only committed, discoverable place:
 the schema doc lives under gitignored `docs/superpowers/`. ⚠ The SAME bug
 still lives in `drone.uplink.snr_a`/`snr_b`, which is drone-sourced and was

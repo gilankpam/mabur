@@ -472,7 +472,21 @@ void BurnRecorder::set_osd(const Surface& s, const DirtyRect* rects, size_t n_re
   // being updated in place, and the alternative (a private map plus a
   // publish copy) puts a 2 MB memcpy back on this loop, which is most of
   // what the incremental path just removed. The recorder thread waits at
-  // most one quantize, and only the rare FULL one is longer than ~10 us.
+  // most one quantize.
+  //
+  // How long that wait is, measured rather than assumed (the text here used
+  // to say "only the rare FULL one is longer than ~10 us", which was wrong
+  // by more than two orders of magnitude for the GS overlay):
+  //   MSP steady state, a few cells        ~10 us          -- as claimed
+  //   GS single field, 6,068 px            ~0.13 ms A55
+  //   GS all fields, 179,392 px @1080p     ~2.2 ms A55     -- the quantize
+  //   GS all fields, 649,429 px @2160p     ~6.1 ms A55        half alone
+  //   full pass, whole surface             ~5.1 ms A55 @1080p
+  // (tools/bench/gs_overlay_bench.cpp.) So an INCREMENTAL quantize can hold
+  // this mutex for milliseconds, and the encoder thread blocks on it for
+  // exactly that long. The all-fields cases are why osd_compose.cpp scopes
+  // its burn restate to the fields an MSP collision actually hit instead of
+  // invalidating the whole burn overlay -- see the comment there.
   std::lock_guard<std::mutex> lk(im.mu);
 
   // Incremental first; a map that was never sized for this surface (first

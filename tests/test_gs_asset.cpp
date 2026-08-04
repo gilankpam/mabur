@@ -113,9 +113,15 @@ TEST(asset_bakes_exactly_the_shared_size_set) {
     CHECK(a != nullptr);
     if (!a) std::printf("  missing atlas for %d px\n", px);
   }
-  // No extras: n_sizes matching and every wanted size present is only
-  // equivalent to set equality because sizes in a .gfont are unique and
-  // ascending (GsFont::load rejects anything else).
+  // No extras, by PIGEONHOLE -- not by trusting the loader. GsFont::load
+  // validates each entry's geometry and bounds but does NOT check that the
+  // px values are unique or ascending (gs_font.cpp:107-140), and atlas() is
+  // a linear first-match scan, so a duplicated size would resolve happily.
+  // The argument that survives that: there are exactly n_sizes entries, the
+  // 30 wanted sizes are pairwise distinct, and every one of them resolves.
+  // 30 distinct values found among 30 entries leaves no entry over for
+  // anything else, and no room for a duplicate either -- a duplicate would
+  // have to displace one of the 30, and the loop above would have caught it.
   std::printf("asset: %s, %d sizes\n", kAssetPath, f.n_sizes());
 }
 

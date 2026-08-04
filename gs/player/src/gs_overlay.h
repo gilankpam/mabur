@@ -123,8 +123,20 @@ struct MaskAtlas;
 //
 // Dirty tracking is per FIELD, not per block: each field has a box sized at
 // layout() from its worst-case string, so a value change never reflows a
-// row and a redraw touches ~40 k pixels rather than ~231 k. That margin is
-// what keeps quantize_rects() inside maburplay's 2 ms pump loop.
+// row -- and a TYPICAL update redraws one field, 6,068 px at 1080p with the
+// shipped asset, which is what keeps quantize_rects() inside maburplay's
+// 2 ms pump loop (measured 0.13 ms projected on the A55).
+//
+// The figure that used to sit here, "~40 k pixels", was a redraw of ALL
+// fields and was 4.5x low. Measured with the real asset and four cards
+// (tools/bench/gs_overlay_bench.cpp): a full repaint is 179,392 px at
+// 1080p, 304,717 at 1440p and 649,429 at 2160p -- 3.7 ms and 9.9 ms
+// projected on the A55 at 1080p and 2160p respectively, both PAST the 2 ms
+// pump period. So the per-field margin is not a nicety, it is the only
+// thing standing between the overlay and the loop; do not add a caller that
+// restates every field on a cadence. (What that costs when it happens is
+// flip-reap latency, not a dropped AU: ring.pump(2) is a poll() ceiling and
+// the shm ring is slotted. And the quantize half is burned-DVR-only.)
 class GsOverlay {
  public:
   explicit GsOverlay(GsFont& font) : font_(font) {}

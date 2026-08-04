@@ -67,6 +67,17 @@ def main(path):
     # SNR scale changed 2026-08-04 (half-dB -> dB). Recordings straddling
     # that change are not comparable; flag it rather than quietly averaging
     # two scales together.
+    #
+    # ⚠ THIS CHECK IS A BACKSTOP, NOT A DETECTOR, and it must not be read as
+    # one. It fires only above 60, i.e. only when the old half-dB scale
+    # pushed a value somewhere no real dB reading goes. A normal link at
+    # 10-25 dB reads 20-50 on the old scale and sails straight through in
+    # silence. There is no fixing that by making the threshold smarter: a
+    # pre-fix file reading 48 (24 dB) and a post-fix file reading 48 (a
+    # perfectly ordinary strong bench link) are the SAME NUMBER, and nothing
+    # in the datagram distinguishes them -- the schema is additive-only
+    # under v:1 and carries no scale tag. Silence here means "not obviously
+    # old", never "confirmed dB". Date the recording instead.
     snrs = [k["snr"] for r in rows for c in r.get("cards", [])
             for k in c.get("classes", {}).values()
             if isinstance(k.get("snr"), (int, float))]

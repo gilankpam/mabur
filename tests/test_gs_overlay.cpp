@@ -147,7 +147,7 @@ TEST(em_dash_pair_is_the_never_received_rendering) {
 // set or layout() reports a missing size, which is itself a test below.
 //
 // Cached by `sizes`: gen_gsfont.py is a real Python process (interpreter
-// startup plus a pure-Python box blur over up to 8 sizes x 99 glyphs), and
+// startup plus a pure-Python box blur over up to 8 sizes x 100 glyphs), and
 // nearly every TEST below asks for the identical default set. Generating
 // it fresh per TEST -- as originally written -- was ~1.8 s each, ~32 s
 // total for this file alone; caching by the (almost always identical)
