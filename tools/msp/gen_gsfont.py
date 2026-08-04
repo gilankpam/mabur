@@ -26,16 +26,31 @@ blurred on maburplay's 2 ms main loop.
 
 glyph_w/glyph_h INCLUDE a 4 px pad on every side so the shadow has room.
 
-Regenerating the SHIPPED asset (`gs/player/bundle/gs_osd.gfont`), from a
-JetBrains Mono checkout:
+Regenerating the SHIPPED asset (`gs/player/bundle/gs_osd.gfont`) --
+JetBrains Mono **Medium** (the design's weight 500), all 30 sizes:
 
-  nix-shell -p python3Packages.freetype-py --run \\
-    "tools/msp/gen_gsfont.py ~/fonts/JetBrainsMono-Medium.ttf \\
-       gs/player/bundle/gs_osd.gfont"
+  nix-shell -p jetbrains-mono python3Packages.freetype-py --run \\
+    "tools/msp/gen_gsfont.py \\
+       \\$(nix-build --no-out-link -E 'with import <nixpkgs> {}; jetbrains-mono'\\
+         )/share/fonts/truetype/JetBrainsMono-Medium.ttf \\
+       gs/player/bundle/gs_osd.gfont \\
+       --sizes 13,14,15,16,17,19,21,22,23,24,25,26,28,29,32,34,35,37,38,42,\\
+44,45,48,51,52,56,68,75,76,112"
 
-freetype is a DEV-HOST dependency only: the generated asset is committed,
-so a deploy needs no font toolchain. `--synthetic` needs stdlib alone and
-is what the C++ tests use.
+Expect **13,219,312 bytes** and ~5 minutes of pure-Python box blur (this is
+a build-time tool; it is not on any hot path). A materially different byte
+count means something changed -- a different weight or family, a different
+size list, a different subset -- and should be explained before committing.
+
+The 30 sizes are the eight design sizes at x2/3, x1, x4/3 and x2, which is
+what makes every type role land on an EXACT atlas size at 720p, 1080p,
+1440p and 2160p with no runtime scaling. The list is duplicated (with its
+derivation) in `tests/gs_scaled_sizes.h`, and `tests/test_gs_asset.cpp`
+asserts the committed asset bakes exactly it -- change one, change both.
+
+freetype and the font itself are DEV-HOST dependencies only: the generated
+asset is committed, so a deploy needs no font toolchain. `--synthetic`
+needs stdlib alone and is what the C++ tests use.
 """
 import struct, sys
 
@@ -46,10 +61,21 @@ SHADOW_ALPHA = 0.92
 SHADOW_DY = 1
 DEFAULT_SIZES = [19, 21, 22, 24, 26, 34, 38, 56]
 
-# Printable ASCII plus the four non-ASCII glyphs the design uses:
-# U+2212 MINUS SIGN (a true minus, not a hyphen), U+2192 RIGHTWARDS ARROW,
-# U+25CF BLACK CIRCLE and U+25CB WHITE CIRCLE (the recording dot).
-SUBSET = [c for c in range(0x20, 0x7F)] + [0x2212, 0x2192, 0x25CF, 0x25CB]
+# Printable ASCII plus the five non-ASCII glyphs the design uses:
+# U+2014 EM DASH (the "——" pair that renders a never-received value --
+# gs_overlay.h's kEmDashPair), U+2212 MINUS SIGN (a true minus, not a
+# hyphen), U+2192 RIGHTWARDS ARROW, U+25CF BLACK CIRCLE and U+25CB WHITE
+# CIRCLE (the recording dot).
+#
+# U+2014 was missing from this list until 2026-08-04 and the omission was
+# invisible: draw_text advances the pen for a codepoint the atlas lacks, so
+# "——" rendered as correctly-sized EMPTY SPACE. Every test passed, because
+# they assert the STRING a field formats, not the ink it puts down. A card
+# that had never been heard would have shown a blank where the design calls
+# for a dash pair -- absence reading as nothing rather than as absence,
+# which is precisely what the design's "never substitute zero" rule exists
+# to prevent. Any new glyph gs_overlay.h names must be added here too.
+SUBSET = [c for c in range(0x20, 0x7F)] + [0x2014, 0x2212, 0x2192, 0x25CF, 0x25CB]
 
 
 def box_blur(buf, w, h, radius):

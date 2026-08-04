@@ -72,6 +72,7 @@ TEST(index_of_finds_ascii_and_the_four_extras) {
   CHECK(a->index_of('0') >= 0);
   CHECK(a->index_of('Z') >= 0);
   CHECK(a->index_of('%') >= 0);
+  CHECK(a->index_of(0x2014) >= 0);  // EM DASH (kEmDashPair)
   CHECK(a->index_of(0x2212) >= 0);  // MINUS SIGN
   CHECK(a->index_of(0x2192) >= 0);  // RIGHTWARDS ARROW
   CHECK(a->index_of(0x25CF) >= 0);  // BLACK CIRCLE
