@@ -183,6 +183,12 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // (no SNR known this window) and never influences a decision.
   snr_now_ = h.s1_snr_db;
 
+  // No sample has measured s3 yet this tick, so nothing may be reported for
+  // it. Cleared here rather than in block 5a so the promise util3() makes —
+  // never a persisted stale value — also holds on the paths that early-return
+  // before 5a ever runs (starved, and !sample_valid).
+  u3_ = 0.0;
+
   // 1. Starvation forces the failsafe rung regardless of anything else.
   // Deliberately does NOT stamp last_feedback_ms_ (see the sample_valid gate
   // below): starvation already forces rung 0 directly, so it doesn't need
@@ -268,14 +274,36 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // blanking window (FEC re-key artifacts read as loss).
   //
   // The measurement is computed once here so BOTH s3 checks see the same
-  // number, and it is zeroed whenever s3 is not measurable this window: a
-  // persisted last-good value would make util3() (sideport link.ctl.u3) report
-  // a frozen stale reading after s3 goes quiet.
+  // number, and it is left at the 0 stamped at update() entry whenever s3 is
+  // not measurable this window: a persisted last-good value would make util3()
+  // (sideport link.ctl.u3) report a frozen stale reading after s3 goes quiet.
   const bool s3_live =
       !probe_active_ && s3_usable(h) && now_ms >= s3_blank_until_ms_;
+
+  // Continuity gate. Both confirm windows below are elapsed-time tests against
+  // a start stamp, which only means "sustained" while the measurement is
+  // unbroken. A stamp that survives a gap measures wall clock instead: one bad
+  // window, 800 ms of nothing, one more bad window would read as 800 ms of
+  // confirmed pressure and demote on two samples — the very instant demote the
+  // confirm window exists to prevent (review finding). Breaking the run on any
+  // discontinuity errs toward NOT demoting, which is the right way to be wrong
+  // for an early-warning signal on the expendable layer.
+  //
+  // This check is what covers the gaps the !s3_live branch below cannot see:
+  // update() early-returns above on a starved or invalid sample and never
+  // reaches this block at all.
+  if (now_ms - s3_last_live_ms_ > cfg_.s3_settle_ms) {
+    s3_resid_start_ms_ = -1.0;
+    s3_util_start_ms_ = -1.0;
+  }
+
   if (!s3_live) {
-    u3_ = 0.0;
+    // u3_ stays at the 0 stamped at entry, and an unmeasurable window is a
+    // discontinuity in its own right: break both runs.
+    s3_resid_start_ms_ = -1.0;
+    s3_util_start_ms_ = -1.0;
   } else {
+    s3_last_live_ms_ = now_ms;
     // A ladder entry whose layer-3 effective overhead is zero has no s3 budget
     // at all; any loss there is infinite utilization rather than a division by
     // zero. (budget_for() needs no such guard: layer 1's overhead is never

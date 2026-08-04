@@ -221,6 +221,10 @@ class LadderController {
   double probe_u_pred_last_ = 0.0;
   double u3_ = 0.0;
   double s3_resid_start_ms_ = -1.0, s3_util_start_ms_ = -1.0;
+  // Last sample that could actually measure s3. The confirm windows above are
+  // elapsed-time tests against a stamp, so they only mean "sustained" while
+  // measurement is CONTINUOUS: a gap invalidates the run (see update()).
+  double s3_last_live_ms_ = -1e18;
   double s3_blank_until_ms_ = -1e18;
   double snr_now_ = std::numeric_limits<double>::quiet_NaN();
 

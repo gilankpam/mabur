@@ -604,6 +604,69 @@ TEST(s3_residual_blip_does_not_demote) {
   CHECK(ctl.counters().demotes_s3_residual == 0);
 }
 
+// Review finding: the confirm windows are elapsed-time tests against a
+// stamp, so a stamp that SURVIVES a gap in usable s3 measures wall clock
+// rather than sustained evidence. One bad window, 800 ms of no measurement
+// (s3 unusable here; a run of sample_valid=false samples early-returns out of
+// update() for the same effect), then one more bad window would satisfy
+// "800 - 0 >= s3_residual_confirm_ms" and demote on two bad samples 800 ms
+// apart — exactly the instant demote the confirm window exists to prevent.
+// Continuity must break the run.
+TEST(s3_residual_confirm_window_resets_across_an_s3_gap) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.02, 0.01), t);   // one bad window stamps the run
+  t += 50;
+
+  LinkHealth gap = ok3(0.0, 0.02, 0.01);  // residual present but UNMEASURABLE
+  gap.s3_valid = false;
+  gap.s3_expected_syms = 0;
+  const double gap_end = t + 800;
+  for (; t < gap_end; t += 50) CHECK(!ctl.update(gap, t));
+
+  // First usable sample after the gap: 800 ms of wall clock since the stamp,
+  // but only ever one bad window of actual evidence.
+  CHECK(!ctl.update(ok3(0.0, 0.02, 0.01), t));
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+
+  // A genuinely sustained run still demotes, timed from the post-gap sample.
+  const double fresh = t;
+  t += 50;
+  for (; ctl.rung() == 2 && t - fresh < 2000; t += 50) {
+    ctl.update(ok3(0.0, 0.02, 0.01), t);
+  }
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().demotes_s3_residual == 1);
+  CHECK(ctl.last_event().t_ms - fresh >= cfg.s3_residual_confirm_ms);
+}
+
+// The other half of the same finding, and the only thing that exercises the
+// continuity gate itself: update() early-returns on an invalid sample long
+// before block 5a, so the "unmeasurable window breaks the run" branch inside
+// 5a never even runs during an s1 fade. The run must still break.
+TEST(s3_residual_confirm_window_resets_across_an_invalid_sample_gap) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.02, 0.01), t);   // one bad window stamps the run
+  t += 50;
+
+  LinkHealth invalid;                     // s1 window saw no symbols at all
+  invalid.sample_valid = false;
+  const double gap_end = t + 800;
+  for (; t < gap_end; t += 50) CHECK(!ctl.update(invalid, t));
+
+  CHECK(!ctl.update(ok3(0.0, 0.02, 0.01), t));
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+}
+
 TEST(s3_util_confirmed_demotes) {
   LadderCfg cfg = make_cfg();
   LadderController ctl(cfg);
