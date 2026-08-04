@@ -135,7 +135,11 @@ class OsdComposer {
   int gs_cards_[2] = {-1, -1};
 
   // Hoisted so a steady-state composition allocates nothing.
-  std::vector<DirtyRect> msp_write_, gs_rects_, burn_rects_;
+  // gs_reclaim_ holds the boxes the MSP collision actually forced GS to
+  // redraw. It is what the burn feed restates -- see the comment at its
+  // only use; the whole point is that it is a SUBSET of the active fields,
+  // usually a small one.
+  std::vector<DirtyRect> msp_write_, gs_rects_, burn_rects_, gs_reclaim_;
 };
 
 }  // namespace maburplay

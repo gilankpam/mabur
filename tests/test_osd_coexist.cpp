@@ -108,6 +108,28 @@ static mabur::MspScreen full_screen(char ch) {
   return screen;
 }
 
+// A full screen with ONE cell holding a different character, so the MSP
+// diff reports exactly one changed cell. This is the steady-state shape
+// that matters: a flight timer ticking once a second changes one cell, and
+// if that cell happens to sit on a GS field box it triggers the reclaim.
+static mabur::MspScreen full_screen_except(char ch, int row, int col, char other) {
+  std::vector<uint8_t> s;
+  std::vector<uint8_t> clr = {2};
+  mabur::msp_append_message(s, 182, clr.data(), clr.size());
+  for (int r = 0; r < 18; ++r) {
+    std::vector<uint8_t> ds = {3, (uint8_t)r, 0, 0};
+    for (int c = 0; c < 50; ++c)
+      ds.push_back((uint8_t)(r == row && c == col ? other : ch));
+    mabur::msp_append_message(s, 182, ds.data(), ds.size());
+  }
+  std::vector<uint8_t> scr = {4};
+  mabur::msp_append_message(s, 182, scr.data(), scr.size());
+  mabur::MspParser parser;
+  mabur::MspScreen screen;
+  for (const auto& m : parser.feed(s.data(), s.size())) screen.apply(m);
+  return screen;
+}
+
 // A pixel dead centre of the grid, which no GS field reaches.
 static constexpr int kProbeX = 979, kProbeY = 570;
 static uint32_t glyph_px(char ch) { return 0xFF000000u | (uint32_t)(uint8_t)ch; }
@@ -660,6 +682,118 @@ TEST(the_burn_map_survives_an_msp_collision_and_a_stale_blank) {
   for (int i = 0; i < 4; ++i)
     run(make_in(&scr, true, false, &sn, player(50.0 - i), true));
   CHECK(worst == 0);
+}
+
+// The burn restate after an MSP collision must be scoped to the fields the
+// collision ACTUALLY hit.
+//
+// It used to be `if (gs_reclaimed > 0) gs_[2]->invalidate()`, which restates
+// every ACTIVE field. The trigger is "any MSP-written cell touched any GS
+// field box" -- so one changed cell anywhere near a corner cost a full
+// restate, on the loop that reaps DRM flips, at the MSP screen rate, held
+// under the recorder's map mutex. This measures the difference and prints
+// both figures; the counterfactual is computed from a separately laid-out
+// overlay so it cannot drift with the composer.
+TEST(the_burn_restate_is_scoped_to_the_fields_the_collision_hit) {
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+
+  // What invalidate() used to restate: every active field box.
+  GsOverlay counter(gsfont());
+  std::string err;
+  REQUIRE(counter.layout(W, H, &err));
+  {
+    Buf b;
+    counter.update(sn, false, ps, b.s, nullptr);
+  }
+  long all_active_px = 0;
+  int all_active_boxes = 0;
+  for (int i = 0; i < counter.field_count(); ++i) {
+    const GsFieldId id = (GsFieldId)i;
+    if (!counter.debug_field_active(id)) continue;
+    const DirtyRect b = counter.debug_field_box(id);
+    all_active_px += (long)b.w * b.h;
+    ++all_active_boxes;
+  }
+
+  // How far the grid reaches, which is what makes the trigger so common:
+  // every cell of the 50x18 grid that lands on some active GS box.
+  int cells_on_a_box = 0, boxes_reached = 0;
+  {
+    std::vector<bool> hit((size_t)counter.field_count(), false);
+    for (int row = 0; row < 18; ++row)
+      for (int col = 0; col < 50; ++col) {
+        const DirtyRect c{col * 38, row * 60, 38, 60};
+        bool any = false;
+        for (int i = 0; i < counter.field_count(); ++i) {
+          const GsFieldId id = (GsFieldId)i;
+          if (!counter.debug_field_active(id)) continue;
+          const DirtyRect b = counter.debug_field_box(id);
+          if (c.x < b.x + b.w && b.x < c.x + c.w && c.y < b.y + b.h && b.y < c.y + c.h) {
+            any = true;
+            hit[(size_t)i] = true;
+          }
+        }
+        if (any) ++cells_on_a_box;
+      }
+    for (bool h : hit) if (h) ++boxes_reached;
+  }
+
+  // Steady state, then ONE cell changes -- and it is a cell that sits on a
+  // GS box, which is the whole premise.
+  const mabur::MspScreen base = full_screen('X');
+  Rig r;
+  FakeBurn fb;
+  fb.pal = seeded_palette();
+  long burn_px = 0;
+  size_t burn_rects = 0;
+  bool measuring = false;
+  r.comp.set_burn_sink([&](const Surface& s, const DirtyRect* p, size_t n) {
+    if (measuring) {
+      burn_rects += n;
+      for (size_t i = 0; i < n; ++i) burn_px += (long)p[i].w * p[i].h;
+    }
+    fb.feed(s, p, n);
+  });
+  // Both buffers current, on the same screen and the same GS sample.
+  for (int i = 0; i < 4; ++i) r.tick(make_in(&base, true, false, &sn, ps, true));
+
+  // Row 16, col 3: bottom-left, inside the card block. Assert it really
+  // does land on a GS box -- otherwise this measures nothing.
+  const int kRow = 16, kCol = 3;
+  {
+    const DirtyRect c{kCol * 38, kRow * 60, 38, 60};
+    bool on_box = false;
+    for (int i = 0; i < counter.field_count(); ++i) {
+      const GsFieldId id = (GsFieldId)i;
+      if (!counter.debug_field_active(id)) continue;
+      const DirtyRect b = counter.debug_field_box(id);
+      if (c.x < b.x + b.w && b.x < c.x + c.w && c.y < b.y + b.h && b.y < c.y + c.h)
+        on_box = true;
+    }
+    REQUIRE(on_box);
+  }
+  const mabur::MspScreen one = full_screen_except('X', kRow, kCol, 'Y');
+  measuring = true;
+  const OsdComposeOut out = r.comp.compose(r.back, r.buf[r.back].s, make_in(&one, true, false, &sn, ps, false));
+  r.commit();
+  measuring = false;
+
+  std::printf(
+      "  grid reach: %d/%d active GS boxes, %d/900 cells sit on one\n"
+      "  one changed cell -> %d fields reclaimed; burn restate %ld px in %zu rects\n"
+      "  (invalidate() would have restated %d boxes = %ld px)\n",
+      boxes_reached, all_active_boxes, cells_on_a_box, out.gs_reclaimed, burn_px, burn_rects,
+      all_active_boxes, all_active_px);
+
+  // The premise: this cell really did force a reclaim...
+  CHECK(out.gs_reclaimed > 0);
+  // ...and the restate is a small fraction of what a full one costs. An
+  // order of magnitude is the claim; the measured ratio is far better.
+  CHECK(burn_px * 10 < all_active_px);
+  // And the map is still exactly right -- the whole point is that scoping
+  // the restate costs no correctness.
+  CHECK(fb.wrong_against(r.buf[r.front].s) == 0);
 }
 
 // N2. The burn's index map is refreshed per COMPOSITION, and a composition

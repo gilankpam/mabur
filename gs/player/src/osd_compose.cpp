@@ -136,19 +136,29 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
 
   // ---------------- GS layer ----------------
   gs_rects_.clear();
+  gs_reclaim_.clear();
   bool geom_changed = false;
   if (gs_on) {
     // MSP drew second and clears a whole cell before blitting it, so any GS
     // pixel under a written cell is gone. The design says GS wins the
-    // collision. How often that bites depends on the canvas: an HD 50x18
-    // grid at 1080p in "sharp" covers ~84% of the surface and reaches every
-    // one of the 13 non-card GS fields, so there it is the common path
-    // rather than an edge case; an SD 30x16 grid is nearer 45% and may miss
-    // the corners entirely, in which case gs_reclaimed stays 0 and none of
-    // the work below runs.
+    // collision.
+    //
+    // How often that bites depends on the canvas, and on an HD grid the
+    // answer is "constantly": a 50x18 "sharp" grid at 1080p covers ~84% of
+    // the surface and reaches EVERY active GS box -- 33/33 with four cards,
+    // and 140 of its 900 cells (16%) sit on one. So this is not an edge
+    // case, it is the steady state: one changed cell -- a flight timer
+    // ticking once a second -- lands on a GS field roughly one time in six.
+    // Measured on the same fixture the coexist tests use: 137/900 cells,
+    // 28/28 boxes with three cards. An SD 30x16 grid is nearer 45% and may
+    // miss the corners entirely, in which case gs_reclaimed stays 0 and none
+    // of the work below runs.
+    // The reclaimed BOXES are collected, not just counted: the burn feed
+    // below restates exactly them, and "exactly them" is the difference
+    // between a few thousand pixels and every active field.
     if (!msp_write_.empty())
       out.gs_reclaimed = gs_[idx]->repaint_intersecting(msp_write_.data(),
-                                                        msp_write_.size(), s, nullptr);
+                                                        msp_write_.size(), s, &gs_reclaim_);
 
     const int cards = (int)std::min<size_t>(in.snap->cards.size(), (size_t)kMaxCards);
     geom_changed = cards != gs_cards_[idx];
@@ -181,7 +191,7 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
       raster_->diff(*in.screen, s, &pre_, &msp_write_);
       if (!msp_write_.empty())
         out.gs_reclaimed += gs_[idx]->repaint_intersecting(msp_write_.data(),
-                                                           msp_write_.size(), s, nullptr);
+                                                           msp_write_.size(), s, &gs_reclaim_);
     }
   }
 
@@ -211,10 +221,25 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
     if (gs_on) {
       // The reclaim wrote THIS BUFFER's last values, which are not the
       // lineage gs_[2] tracks -- it would report "nothing changed" over a
-      // map that now disagrees with the screen. Restating every field is the
-      // only granularity GsOverlay offers, and it is ~40 k px of
-      // quantize_rects; see the comment on the reclaim above for how often.
-      if (out.gs_reclaimed > 0) gs_[2]->invalidate();
+      // map that now disagrees with the screen. So the reclaimed region has
+      // to be restated to the burn regardless of what gs_[2] thinks changed.
+      //
+      // Restate exactly the boxes the reclaim redrew -- NOT every active
+      // field, which is what an invalidate() here used to do. The trigger is
+      // "any MSP-written cell touched any GS field box", and with an HD
+      // 50x18 sharp grid at 1080p 140 of the 900 cells (16%) sit on one, so
+      // a single changed corner cell -- a flight timer ticking once a second
+      // -- fired it. Restating all 33 active fields for that is 179,392 px
+      // of quantize_rects (2.2 ms projected on the A55) at the MSP screen
+      // rate, on the loop that reaps DRM flips, and it is held under the
+      // recorder's map mutex. The reclaimed subset for one cell is ~3 k.
+      //
+      // gs_[2]'s own shadow is left alone deliberately: update() below runs
+      // unconditionally and syncs it to the current state, so after this
+      // composition the map and the shadow both hold current values for
+      // these boxes. Restating them here without touching the shadow cannot
+      // leave the two disagreeing.
+      for (const DirtyRect& r : gs_reclaim_) burn_rects_.push_back(r);
       // invalidate() restates every ACTIVE field, which is not the same as
       // every field that MOVED: a vacated card row is inactive and would
       // never be restated, leaving the recording with the row the screen no
