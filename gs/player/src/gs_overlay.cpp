@@ -167,13 +167,19 @@ GsFieldId card_field(int slot, int which) {
 int pad_h(const MaskAtlas* a) { return (a->glyph_w - a->advance_x) / 2; }
 
 // Vertical analogue of advance_x: the unpadded line height (ascender +
-// descender). Stacking successive text lines by glyph_h (the padded cell
-// height, as a naive port of the horizontal "pen advances by the glyph's
-// width" logic might do) double-counts the shadow pad on every row --
-// small per row, but multiplied by kMaxCards it is enough to push the
-// card block's top edge up out of its corner and into the row-2 exclusion
-// band the handoff reserves for the centre of frame. A field's own box
-// still spans the full padded glyph_h; only the row-to-row PITCH uses this.
+// descender). Stacking rows by glyph_h (the padded cell height) double-
+// counts the shadow pad on every row -- small per row, but multiplied by
+// kMaxCards=4 it was enough to push the card block's top edge up out of
+// its corner and into the row-2 exclusion band the handoff reserves for
+// the centre of frame. Used ONLY for the card block's row-to-row pitch
+// (kMaxCards rows makes the double-count large enough to matter); the
+// single-to-single line spacing elsewhere (top-right block, FPS/JIT-MBPS)
+// uses plain glyph_h; there the safety we get by NOT skimping the gap --
+// no two boxes ever meet, never mind overlap -- is worth more than the
+// few px it costs, and line_pitch's shrink was in fact tight enough there
+// to make adjacent boxes overlap (see the comment at kRung's placement).
+// A field's own box still spans the full padded glyph_h always; only a
+// row-to-row PITCH may use this.
 int line_pitch(const MaskAtlas* a) { return a->glyph_h - (a->glyph_w - a->advance_x); }
 
 }  // namespace
@@ -182,6 +188,15 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
   laid_out_ = false;
   for (Field& f : fields_) f = Field{};
   bounds_ = DirtyRect{0, 0, 0, 0};
+  // A re-layout (mode change, surface recreate) must force the next
+  // update() to fully reconcile card activity again: place() above just
+  // reset every card slot to active=true (it doesn't know the card count
+  // yet), and n_cards_ sitting at whatever it was from BEFORE this layout()
+  // would make update() think nothing changed if the next snapshot happens
+  // to report the same count -- leaving the newly-reset slots beyond that
+  // count active, silently rendering the "empty shell" of unlit bars the
+  // design says zero/missing cards must never show.
+  n_cards_ = -1;
 
   if (screen_w <= 0 || screen_h <= 0) {
     if (err) *err = "gs osd: bad screen size";
@@ -250,7 +265,15 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     place(GsFieldId::kRung, standard, right - rung_w - pad_h(standard), y,
           "MCS 7 / FEC 100%");
 
-    y += line_pitch(standard) + gap6;
+    // NOT line_pitch here: unlike the card block's row-to-row pitch, these
+    // are single lines of the SAME size stacked close together, and
+    // line_pitch's whole point (avoid double-counting the pad across many
+    // rows) overshoots on just two -- it shrinks the gap enough that
+    // kRung's and kAirValue's padded boxes overlap (measured: 88x2 px),
+    // and a box overlap means one field's clear can erase pixels that
+    // belong to its neighbour. glyph_h keeps every box here fully
+    // separated at the cost of a few extra px of vertical margin.
+    y += standard->glyph_h + gap6;
     // AIR label | value | meter, laid out right to left off `right`.
     const int meter_w = (int)(kMeterW * scale_ + 0.5);
     const int meter_h = (int)(kMeterH * scale_ + 0.5);
@@ -272,7 +295,7 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
       bounds_ = union_of(bounds_, m.box);
     }
 
-    y += line_pitch(standard) + gap6;
+    y += standard->glyph_h + gap6;  // see the comment on the line above
     const int rec_w = text_width(*secondary, "● REC FAULT");
     place(GsFieldId::kRec, secondary, right - rec_w - pad_h(secondary), y,
           "● REC FAULT");
@@ -290,7 +313,7 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
           jit_x + text_width(*secondary, "JIT 999 ms") + gap26, sec_base,
           "999.9 MBIT/S");
 
-    const int fps_base = sec_base - line_pitch(secondary) - gap8;
+    const int fps_base = sec_base - secondary->glyph_h - gap8;  // see kRung's comment
     const int fps_lbl_w = text_width(*label, "FPS");
     const int fps_val_w = text_width(*hero, "999");
     const int fps_x = right - fps_lbl_w - gap12 - fps_val_w - pad_h(label);
@@ -317,56 +340,87 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
   }
 
   // --- bottom left: per-card signal ----------------------------------
-  // All kMaxCards slots get boxes; update() activates only as many as the
-  // snapshot reports. Boxes are stacked UPWARD from the bottom so the first
-  // card is the top row, matching the handoff's C0-above-C1 sample.
+  // All kMaxCards slots get boxes here, at the positions the block would
+  // use if all kMaxCards cards were reported -- this is what bounds()
+  // reflects before any update() ever runs. update() re-anchors the
+  // ACTIVE rows to `bottom` for however many cards are actually reported
+  // (see place_card_row_ and the reconciliation branch in update()): with
+  // fewer than kMaxCards cards the block must hug the bottom-left corner
+  // like the loss/video blocks do, not float above it reserving space for
+  // cards that were never there. Boxes are stacked UPWARD from the bottom
+  // so the first card is the top row, matching the handoff's C0-above-C1
+  // sample.
   {
-    const int bar_block_w = 6 * (int)(kBarW * scale_ + 0.5) + 5 * (int)(kBarGap * scale_ + 0.5);
-    const int bar_block_h = (int)(kBarHeights[5] * scale_ + 0.5);
-    const int id_w = text_width(*cardid, "C9");
+    CardGeom& g = card_geom_;
+    g.cardid = cardid;
+    g.primary = primary;
+    g.label = label;
+    g.secondary = secondary;
+    g.left = left;
+    g.bottom = bottom;
+    g.gap16 = gap16;
+    g.bar_block_w = 6 * (int)(kBarW * scale_ + 0.5) + 5 * (int)(kBarGap * scale_ + 0.5);
+    g.bar_block_h = (int)(kBarHeights[5] * scale_ + 0.5);
+    g.id_w = text_width(*cardid, "C9");
     // "never heard" is wider than the widest RSSI -- size the box for it or
     // an unheard row would draw past its own box and never be cleared.
-    const char* rssi_worst =
+    g.rssi_worst =
         text_width(*primary, "never heard") >= text_width(*primary, "\xE2\x88\x92" "100")
             ? "never heard"
             : "\xE2\x88\x92" "100";
-    const int rssi_w = text_width(*primary, rssi_worst);
-    const int unit_w = text_width(*label, "dBm");
+    g.rssi_w = text_width(*primary, g.rssi_worst.c_str());
+    g.unit_w = text_width(*label, "dBm");
     // Row PITCH uses line_pitch (unpadded), not glyph_h -- see line_pitch's
     // comment. The BOX height below still uses the full glyph_h/baseline
     // pair so clearing still erases the shadow.
-    const int row_h = std::max(line_pitch(primary), bar_block_h);
-    const int row_pitch = row_h + gap16;
+    const int row_h = std::max(line_pitch(primary), g.bar_block_h);
+    g.row_pitch = row_h + gap16;
 
-    // Rows are laid out from the bottom up: slot 0 ends highest.
-    for (int i = 0; i < kMaxCards; ++i) {
-      const int row_bottom = bottom - (kMaxCards - 1 - i) * row_pitch;
-      const int baseline = row_bottom - (primary->glyph_h - primary->baseline);
-      // Flush against `left`: reserve the id glyph's shadow pad, same
-      // reasoning as the right-edge fields above.
-      int x = left + pad_h(cardid);
-      place(card_field(i, 0), cardid, x, baseline, "C9");
-      x += id_w + gap16;
-      {
-        Field& b = f_(card_field(i, 1));
-        b.atlas = cardid;  // unused for bars, but never left null
-        b.pen_x = x;
-        b.baseline_y = row_bottom;
-        b.box = DirtyRect{x, row_bottom - bar_block_h, bar_block_w, bar_block_h};
-        b.active = true;
-        bounds_ = union_of(bounds_, b.box);
-      }
-      x += bar_block_w + gap16;
-      place(card_field(i, 2), primary, x, baseline, rssi_worst);
-      x += rssi_w + gap16;
-      place(card_field(i, 3), label, x, baseline, "dBm");
-      x += unit_w + gap16;
-      place(card_field(i, 4), secondary, x, baseline, "100 dB");
-    }
+    for (int i = 0; i < kMaxCards; ++i)
+      place_card_row_(i, bottom - (kMaxCards - 1 - i) * g.row_pitch);
   }
 
   laid_out_ = true;
   return true;
+}
+
+void GsOverlay::place_card_row_(int slot, int row_bottom) {
+  const CardGeom& g = card_geom_;
+  const int baseline = row_bottom - (g.primary->glyph_h - g.primary->baseline);
+
+  // Mirrors layout()'s place() lambda -- can't reuse it directly, it's a
+  // local closure over layout()'s stack frame, and this needs to run again
+  // from update() whenever the active card count changes.
+  auto place_text = [&](GsFieldId id, const MaskAtlas* a, int x, const char* worst) {
+    Field& f = f_(id);
+    f.atlas = a;
+    f.pen_x = x;
+    f.baseline_y = baseline;
+    const int w = text_width(*a, worst);
+    const int pad = a->glyph_w - a->advance_x;
+    f.box = DirtyRect{x - pad / 2, baseline - a->baseline, w + pad, a->glyph_h};
+    bounds_ = union_of(bounds_, f.box);
+  };
+
+  // Flush against `left`: reserve the id glyph's shadow pad, same
+  // reasoning as the right-edge fields in layout().
+  int x = g.left + pad_h(g.cardid);
+  place_text(card_field(slot, 0), g.cardid, x, "C9");
+  x += g.id_w + g.gap16;
+  {
+    Field& b = f_(card_field(slot, 1));
+    b.atlas = g.cardid;  // unused for bars, but never left null
+    b.pen_x = x;
+    b.baseline_y = row_bottom;
+    b.box = DirtyRect{x, row_bottom - g.bar_block_h, g.bar_block_w, g.bar_block_h};
+    bounds_ = union_of(bounds_, b.box);
+  }
+  x += g.bar_block_w + g.gap16;
+  place_text(card_field(slot, 2), g.primary, x, g.rssi_worst.c_str());
+  x += g.rssi_w + g.gap16;
+  place_text(card_field(slot, 3), g.label, x, "dBm");
+  x += g.unit_w + g.gap16;
+  place_text(card_field(slot, 4), g.secondary, x, "100 dB");
 }
 
 GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
@@ -507,7 +561,12 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       switch (which) {
         case 0:
           st.rgb = tok::kTextLabel;
-          st.text = "C" + fmt_int(std::clamp(c.id, 0, 9));  // "C9"
+          // "C?" for an id outside the single digit the box was sized for
+          // ("C9"), not a clamp: clamping ids 10 and 11 (or a negative
+          // one) both into range would silently relabel two different
+          // rows identically -- and possibly identically to a genuine C9
+          // -- which is a worse failure than an honestly-wrong "C?".
+          st.text = (c.id >= 0 && c.id <= 9) ? "C" + fmt_int(c.id) : "C?";
           break;
         case 1:
           st.rgb = link_status_rgb(cs);
@@ -529,8 +588,11 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
           break;
         case 4:
           st.rgb = link_secondary;
+          // fmt_signed_int, not fmt_int: a negative SNR on this row would
+          // otherwise print an ASCII '-' while RSSI two fields over prints
+          // U+2212 for the same sign, an inconsistency within one row.
           st.text = (c.heard && c.snr_db)  // "100 dB"
-                        ? fmt_int(std::clamp(*c.snr_db, -99.0, 999.0)) + " dB"
+                        ? fmt_signed_int(std::clamp(*c.snr_db, -99.0, 999.0)) + " dB"
                         : "";
           break;
       }
@@ -600,21 +662,45 @@ int GsOverlay::update(const GsSnapshot& snap, bool stale, const GsPlayerState& p
                       const Surface& s, std::vector<DirtyRect>* out) {
   if (!laid_out_) return 0;
 
-  // A changed card count changes which slots render at all, so every card
-  // field is invalidated -- a vanished row must be cleared, not left as the
-  // last thing drawn there.
+  int drawn = 0;
+
+  // A changed card count changes which slots render at all -- and, since
+  // active rows are anchored to `bottom` for however many are active (not
+  // reserved kMaxCards-deep), it also moves every row that stays active.
   const int n = std::min((int)snap.cards.size(), kMaxCards);
   if (n != n_cards_) {
-    n_cards_ = n;
+    // Clear every CURRENTLY-active slot's box before anything else moves.
+    // This covers both cases at once: a slot that's about to deactivate
+    // (its box is never touched again, so this is the only chance to
+    // erase it -- draw_field_'s active-gated `continue` means nothing
+    // else ever will) and a slot that stays active but is about to be
+    // repositioned by place_card_row_ below (its OLD box needs erasing
+    // just as much; only the field's own next draw clears its NEW one).
+    for (int slot = 0; slot < kMaxCards; ++slot)
+      for (int w = 0; w < 5; ++w) {
+        Field& f = f_(card_field(slot, w));
+        if (f.active) {
+          clear_region(s, f.box);
+          if (out) out->push_back(f.box);
+          ++drawn;
+        }
+      }
+    // Re-anchor the active rows to `bottom`, using `n` rather than the
+    // kMaxCards layout() seeded -- with fewer cards than the reserved
+    // maximum the block must hug the bottom-left corner like the loss and
+    // video blocks do, not float above it with the unfilled rows' worth of
+    // gap beneath it.
+    for (int i = 0; i < n; ++i)
+      place_card_row_(i, card_geom_.bottom - (n - 1 - i) * card_geom_.row_pitch);
     for (int slot = 0; slot < kMaxCards; ++slot)
       for (int w = 0; w < 5; ++w) {
         Field& f = f_(card_field(slot, w));
         f.active = slot < n;
         f.valid = false;
       }
+    n_cards_ = n;
   }
 
-  int drawn = 0;
   for (int i = 0; i < (int)GsFieldId::kCount; ++i) {
     const GsFieldId id = (GsFieldId)i;
     Field& f = f_(id);

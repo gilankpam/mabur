@@ -193,15 +193,37 @@ class GsOverlay {
     bool valid = false;
   };
 
+  // Per-row card geometry that doesn't depend on which slot or how many
+  // cards are active -- computed once in layout(), reused by both layout()
+  // itself (to seed the default kMaxCards-reserved positions) and by
+  // update() (to re-anchor the ACTIVE rows to `bottom` whenever the
+  // reported card count changes, so the block hugs the corner with 1-3
+  // cards instead of always floating at the kMaxCards-reservation height).
+  struct CardGeom {
+    const MaskAtlas* cardid = nullptr;
+    const MaskAtlas* primary = nullptr;
+    const MaskAtlas* label = nullptr;
+    const MaskAtlas* secondary = nullptr;
+    int left = 0, bottom = 0, gap16 = 0, row_pitch = 0;
+    int id_w = 0, bar_block_w = 0, bar_block_h = 0, rssi_w = 0, unit_w = 0;
+    std::string rssi_worst;
+  };
+
   FieldState state_of_(const GsSnapshot& snap, bool stale, const GsPlayerState& ps,
                        GsFieldId id) const;
   void draw_field_(GsFieldId id, const FieldState& st, const Surface& s);
+  // Places slot `slot`'s five fields with their row's bottom edge at
+  // `row_bottom`, using card_geom_. Shared by layout() (initial,
+  // kMaxCards-reserved positions) and update() (re-anchored to `bottom`
+  // for however many cards are actually active).
+  void place_card_row_(int slot, int row_bottom);
   Field& f_(GsFieldId id) { return fields_[(size_t)id]; }
   const Field& f_(GsFieldId id) const { return fields_[(size_t)id]; }
 
   GsFont& font_;
   Field fields_[(size_t)GsFieldId::kCount];
   DirtyRect bounds_{0, 0, 0, 0};
+  CardGeom card_geom_;
   // -1, not 0: layout() leaves every card slot active (it doesn't know the
   // card count yet), so a snapshot's first-ever report of ZERO cards must
   // still be treated as a change that deactivates all of them. 0 as the
