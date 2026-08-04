@@ -74,6 +74,24 @@ read the sideport. Reach for other tools only in these cases:**
   the UDP snapshot feed maburgs emits (maburgs no longer draws pixels); the
   OSD startup line and blanking notices land in `/tmp/maburplay.log`
   alongside the fps-log.
+- **The GS link-status OSD on the screen is a sideport consumer, not a
+  separate instrument.** maburplay draws it from the SAME datagram
+  `maburtop` reads: `stats.out` in `/etc/maburgs.json` is a list, and the
+  bench GS fans out to `:8300` (statsrec/maburtop) and `:8302` (maburplay's
+  `osd.gs.port`). So the screen and the recorder cannot disagree — if the
+  OSD shows something surprising, the answer is in that jsonl, and
+  `flightreport.py` will say the same thing with more precision. Config is
+  `osd.gs` in `/etc/maburplay.json` (`enable` default false, `stale_ms`
+  dims every link-derived field after silence; fps/jitter/bitrate/REC are
+  player-measured and never dim). The glyph atlas is
+  `/usr/local/share/mabur/gs_osd.gfont`, committed and staged by
+  `tools/build-arm64.sh` — if it is missing, maburplay logs the reason to
+  `/tmp/maburplay.log` and runs with the MSP overlay only. Host-side you can
+  see the actual pixels without hardware: `maburplay --gs-render` dumps a
+  rendered frame, `tests/test_gs_asset.cpp` gates the real asset's layout at
+  720p/1080p/1440p/2160p, and `tools/bench/gs_overlay_bench.cpp` measures
+  draw+quantize per update (it runs on the 2 ms pump loop; treat anything
+  projecting past ~1.5 ms on the A55 as a defect, not a footnote).
 - **Radio/PHY bring-up below mabur → devourer's own tools** (`rxdemo` with
   `DEVOURER_RX_ALLPATHS=1`, `doctor`, etc. — see
   `third_party/devourer/CLAUDE.md`). Use these when the question is about
@@ -89,3 +107,16 @@ Schema/design references (local, gitignored):
 is additive-only under `v: 1`; consumers must ignore unknown keys. The
 sideport config lives in `/etc/maburgs.json` under `stats`
 (default-off in the shipped bundle; enabled on the bench GS).
+
+**Scale break, 2026-08-04 — `classes.*.snr` is now dB, was half-dB.** The
+sideport had been exporting devourer's raw half-dB SNR under a key
+documented as dB, so every `classes.*.snr` (and the `snr_min`/`snr_max`
+derived from it) in any recording made BEFORE that date reads exactly
+2× the real figure. Recordings that span the change are not numerically
+comparable and must not be pooled — a "9 dB improvement" across it is an
+artifact. `flightreport.py` warns when it sees a file on the old scale.
+This is recorded here because it is the only committed, discoverable place:
+the schema doc lives under gitignored `docs/superpowers/`. ⚠ The SAME bug
+still lives in `drone.uplink.snr_a`/`snr_b`, which is drone-sourced and was
+not fixed — so one datagram now carries true dB under `classes.*.snr` and
+half-dB under `drone.uplink.snr_*`, under near-identical key names.

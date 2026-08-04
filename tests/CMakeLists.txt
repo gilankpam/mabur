@@ -101,6 +101,14 @@ if(MABUR_BUILD_GS)
   target_include_directories(quantize_bench PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
   target_compile_definitions(quantize_bench PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
+  # The same measurement for the GS link-status overlay: draw + quantize per
+  # update, against the REAL asset. Same reasoning for not being an
+  # add_test() -- wall-clock, so neither fast nor deterministic.
+  add_executable(gs_overlay_bench ${CMAKE_SOURCE_DIR}/tools/bench/gs_overlay_bench.cpp)
+  target_link_libraries(gs_overlay_bench PRIVATE mabur_common mabur_player_core)
+  target_include_directories(gs_overlay_bench PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+  target_compile_definitions(gs_overlay_bench PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_body_queue test_body_queue.cpp LIBS mabur_gs_core)
   add_mtest(test_aggregator test_aggregator.cpp LIBS mabur_gs_core)
   add_mtest(test_udp_sink test_udp_sink.cpp LIBS mabur_gs_core)
