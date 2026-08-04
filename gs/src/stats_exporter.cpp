@@ -6,6 +6,7 @@
 #include "json.hpp"
 #include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
+#include "snr_units.h"
 
 namespace maburgs {
 
@@ -21,15 +22,6 @@ double rate(uint64_t cur, uint64_t prev, double elapsed_s) {
 
 // Index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.
 constexpr const char* kClassKeys[kNumStatsClasses] = {"s0", "s1", "s2", "s3", "msp", "ctrl"};
-
-// devourer reports SNR in HALF-dB units (third_party/devourer/src/
-// LinkHealth.h:49; its own RxQuality divides by 2). radio_frontend.cpp
-// copies RxAtrib.snr through untouched and aggregator.cpp EMAs the raw
-// value without correcting it, so this is where the wire value becomes
-// what the "snr"/"snr_a"/"snr_b" keys have always claimed to hold. NOTE:
-// .jsonl recorded before this change is on the old (2x) scale and is not
-// numerically comparable to recordings made after it.
-constexpr double kSnrRawToDb = 0.5;
 
 constexpr const char* kTelemStateNames[4] = {"boot", "rendezvous", "linked", "failsafe"};
 }  // namespace

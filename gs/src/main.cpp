@@ -3,10 +3,12 @@
 // -> AU records; the original RTP output was deleted in PR C).
 // Plan 2 scope: real-radio mode (N-card front-ends, control loop, card failover).
 #include <atomic>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -29,6 +31,7 @@
 #include "msp_sink.h"
 #include "radio_frontend.h"
 #include "s1_loss.h"
+#include "snr_units.h"
 #include "stats_exporter.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
@@ -253,6 +256,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // residual below: this one is symbol-level and time-windowed
   // (S1LossWindow), that one is packet-level and RCF-period-windowed.
   maburgs::S1LossWindow s1_loss;
+  // s3 probe-before-promote feedback (same windowing machinery as s1_loss,
+  // stream 3): pre-FEC loss for probe/s3-demote decisions, plus a separate
+  // residual (abandoned/expected) window for the steady-state demote path.
+  maburgs::S1LossWindow s3_loss, s3_resid;
   // Change-detect on ctl().last_event(): initialize to the pre-any-event
   // default (t_ms 0) so boot doesn't print a phantom transition line.
   double last_ctl_event_ms = vrx.ctl().last_event().t_ms;
@@ -393,8 +400,36 @@ static int run_radio(const maburgs::Config& cfg) {
     s1_loss.add(s1.syms_delivered + s1.syms_recovered + s1.syms_abandoned,
                 s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
     const auto s1_sample = s1_loss.sample(now_ms);
-    const maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
-                                     residual.value_or(0.0), starved};
+
+    // s3 feedback for the probe-before-promote / s3-demote logic: pre-FEC
+    // loss (same shape as s1's window) plus a residual (abandoned/expected)
+    // window scored against the CURRENT rung's s3 budget.
+    const auto s3 = agg.decoder().stats(3);
+    const uint64_t s3_expected =
+        s3.syms_delivered + s3.syms_recovered + s3.syms_abandoned;
+    s3_loss.add(s3_expected, s3.syms_delivered + s3.syms_recovered_arrived, now_ms);
+    s3_resid.add(s3_expected, s3_expected - s3.syms_abandoned, now_ms);
+    const auto s3_sample = s3_loss.sample(now_ms);
+    const auto s3_rsample = s3_resid.sample(now_ms);
+
+    // Label-only: the strongest card's s1 SNR this window, converted from
+    // devourer's half-dB raw units (snr_units.h) — carried onto
+    // CtlEvent/ProbeEvent so the ctl log can say what the RF looked like,
+    // never a decision input.
+    double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
+    for (int i = 0; i < n_cards; ++i) {
+      const auto& ct = agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)];
+      const double db = ct.snr_ema * maburgs::kSnrRawToDb;
+      if (ct.has_ema && (std::isnan(s1_snr_db) || db > s1_snr_db)) s1_snr_db = db;
+    }
+
+    maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
+                               residual.value_or(0.0), starved};
+    health.s3_valid = s3_sample.valid;
+    health.s3_pre_fec_loss = s3_sample.loss;
+    health.s3_residual_loss = s3_rsample.valid ? s3_rsample.loss : 0.0;
+    health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
+    health.s1_snr_db = s1_snr_db;
 
     if (auto out = vrx.step(now_ms, ld, health)) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period

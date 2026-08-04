@@ -213,6 +213,67 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
 // separate holder before it ever reaches on_rc_frame (Task 3), but the
 // controller itself must not choke if it ever sees one. Spec 2026-07-26
 // drone-telemetry.
+// s3-capable healthy sample; probe_allowed is set by the CONTROLLER from
+// peer caps, not by callers, so the test must feed a DiscAck first.
+static LinkHealth healthy3() {
+  LinkHealth h = healthy();
+  h.s3_valid = true; h.s3_expected_syms = 500; h.s1_snr_db = 30.0;
+  return h;
+}
+
+// The controller must not encode a probe until the peer has advertised
+// CAP_S3_PROBE via a DiscAck: mirror disc_ack_feeds_rendezvous's flow, add
+// CAP_S3_PROBE to chip_caps.
+TEST(probe_encoded_in_rcf_when_peer_capable) {
+  auto vrx = make();
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  vrx.step(1500, ld, healthy3());  // silence -> BEACONING
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = 1;
+  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.chip_caps = mabur::rc::CAP_S3_PROBE;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
+  CHECK(vrx.peer_caps() & mabur::rc::CAP_S3_PROBE);
+
+  bool saw_probe = false;
+  double now = 1600;
+  for (int t = 0; t < 9000; t += 10) {
+    now = 1600 + t;
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(t / 10), now);
+    if (auto out = vrx.step(now, ld, healthy3())) {
+      if (out->is_disc) continue;
+      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+      REQUIRE(r.has_value());
+      if (r->probe3) {
+        saw_probe = true;
+        // base profile still rung 0 (mcs0), probe targets rung 1 (mcs2):
+        mabur::rc::PhyMode m; uint8_t mcs, bw;
+        mabur::rc::decode_profile(r->profile, m, mcs, bw);
+        CHECK(mcs == 0);
+        mabur::rc::decode_profile(r->probe_profile, m, mcs, bw);
+        CHECK(mcs == 2);
+        break;
+      }
+    }
+  }
+  CHECK(saw_probe);
+}
+
+TEST(no_probe_without_cap) {
+  auto vrx = make();      // no DiscAck: peer_caps == 0
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  for (int t = 0; t < 9000; t += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(t / 10), t);
+    if (auto out = vrx.step(t, ld, healthy3()); out && !out->is_disc) {
+      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+      if (r) CHECK(!r->probe3);
+    }
+  }
+  CHECK(vrx.ctl().counters().probes_started == 0);
+  CHECK(vrx.ctl().rung() >= 1);   // legacy promote happened instead
+}
+
 TEST(on_rc_frame_tolerates_unknown_type_telem) {
   auto vrx = make();
   std::array<uint8_t, 4> ld{100, 100, 100, 100};
