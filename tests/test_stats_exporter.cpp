@@ -1,3 +1,4 @@
+#include <cmath>
 #include <string>
 #include <vector>
 #include "json.hpp"
@@ -435,6 +436,13 @@ TEST(ctl_block_shape_and_values) {
   ci.probation_fails = 1; ci.starved_drops = 0; ci.timeout_drops = 1;
   ci.last_event_t_ms = 39243748; ci.last_event_from = 4; ci.last_event_to = 3;
   ci.last_event_reason = "util"; ci.last_event_u = 0.65;
+  ci.util3 = 0.07;
+  ci.probes_started = 3; ci.probes_ok = 2; ci.probe_fails = 1; ci.probe_aborts = 0;
+  ci.demotes_s3_residual = 1; ci.demotes_s3_util = 0;
+  ci.last_event_snr_db = 27.5;
+  ci.last_probe_t_ms = 1234; ci.last_probe_rung = 3;
+  ci.last_probe_outcome = "fail"; ci.last_probe_snr_db = 24.0;
+  ci.last_probe_u_pred = 0.9; ci.last_probe_dur_ms = 600;
   in.ctl = ci;
   ex.poll(1000, in);
   const json ctl = cap.last()["link"]["ctl"];
@@ -459,6 +467,77 @@ TEST(ctl_block_shape_and_values) {
   CHECK(ctl["last_event"]["to"] == 3);
   CHECK(ctl["last_event"]["reason"] == "util");
   CHECK(ctl["last_event"]["u"].get<double>() > 0.649 && ctl["last_event"]["u"].get<double>() < 0.651);
+  CHECK(ctl["last_event"]["snr"].get<double>() > 27.49 && ctl["last_event"]["snr"].get<double>() < 27.51);
+  CHECK(ctl["util3"].get<double>() > 0.069 && ctl["util3"].get<double>() < 0.071);
+  CHECK(ctl["counters"]["probes_started"] == 3);
+  CHECK(ctl["counters"]["probes_ok"] == 2);
+  CHECK(ctl["counters"]["probe_fails"] == 1);
+  CHECK(ctl["counters"]["probe_aborts"] == 0);
+  CHECK(ctl["counters"]["demotes_s3_residual"] == 1);
+  CHECK(ctl["counters"]["demotes_s3_util"] == 0);
+  REQUIRE(!ctl["last_probe"].is_null());
+  CHECK(ctl["last_probe"]["t_ms"] == 1234);
+  CHECK(ctl["last_probe"]["rung"] == 3);
+  CHECK(ctl["last_probe"]["outcome"] == "fail");
+  CHECK(ctl["last_probe"]["snr"].get<double>() > 23.99 && ctl["last_probe"]["snr"].get<double>() < 24.01);
+  CHECK(ctl["last_probe"]["u_pred"] == 0.9);
+  CHECK(ctl["last_probe"]["dur_ms"] == 600);
+}
+
+// last_probe_t_ms == 0 (never probed) must serialize as a null last_probe,
+// not an object with zeroed fields -- a consumer would otherwise mistake it
+// for a real probe that started at t=0.
+TEST(ctl_last_probe_null_when_never_probed) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsCtlIn ci;
+  ci.last_probe_t_ms = 0;
+  in.ctl = ci;
+  ex.poll(1000, in);
+  const json ctl = cap.last()["link"]["ctl"];
+  CHECK(ctl["last_probe"].is_null());
+}
+
+// NaN SNR (no reading known this window) must serialize as JSON null on both
+// last_event.snr and last_probe.snr -- never a bare `nan` token, which is not
+// valid JSON and breaks every jq-based consumer.
+TEST(ctl_snr_nan_is_json_null) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsCtlIn ci;
+  ci.last_event_snr_db = std::nan("");
+  ci.last_probe_t_ms = 500;  // non-zero so last_probe is emitted
+  ci.last_probe_snr_db = std::nan("");
+  in.ctl = ci;
+  ex.poll(1000, in);
+  const json ctl = cap.last()["link"]["ctl"];
+  CHECK(ctl["last_event"]["snr"].is_null());
+  REQUIRE(!ctl["last_probe"].is_null());
+  CHECK(ctl["last_probe"]["snr"].is_null());
+}
+
+// util3 and last_probe.u_pred (and last_event.u for s3 reasons) can carry a
+// 1e9 division-zero-guard sentinel from the controller (unreachable in
+// practice, see LadderController::update()). The exporter must clamp it to a
+// sane ceiling rather than putting a near-billion float on the wire.
+TEST(ctl_util_sentinel_is_clamped) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsCtlIn ci;
+  ci.util3 = 1e9;
+  ci.last_event_u = 1e9;
+  ci.last_probe_t_ms = 700;
+  ci.last_probe_u_pred = 1e9;
+  in.ctl = ci;
+  ex.poll(1000, in);
+  const json ctl = cap.last()["link"]["ctl"];
+  CHECK(ctl["util3"].get<double>() <= 1e3);
+  CHECK(ctl["last_event"]["u"].get<double>() <= 1e3);
+  REQUIRE(!ctl["last_probe"].is_null());
+  CHECK(ctl["last_probe"]["u_pred"].get<double>() <= 1e3);
 }
 
 TEST(ctl_default_event_is_none_with_zeros) {
@@ -474,6 +553,9 @@ TEST(ctl_default_event_is_none_with_zeros) {
   CHECK(ctl["last_event"]["to"] == 0);
   CHECK(ctl["last_event"]["u"].get<double>() == 0.0);
   CHECK(ctl["penalized"].empty());
+  CHECK(ctl["util3"].get<double>() == 0.0);
+  CHECK(ctl["last_probe"].is_null());
+  CHECK(ctl["counters"]["probes_started"] == 0);
 }
 
 TEST(ctl_ladder_and_thresholds) {

@@ -596,6 +596,21 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_event_to = e.to;
         ci.last_event_reason = maburgs::to_string(e.reason);
         ci.last_event_u = e.u;
+        ci.last_event_snr_db = e.snr_db;
+        ci.util3 = c.util3();
+        ci.probes_started = cnt.probes_started;
+        ci.probes_ok = cnt.probes_ok;
+        ci.probe_fails = cnt.probe_fails;
+        ci.probe_aborts = cnt.probe_aborts;
+        ci.demotes_s3_residual = cnt.demotes_s3_residual;
+        ci.demotes_s3_util = cnt.demotes_s3_util;
+        const auto& pr = c.last_probe();
+        ci.last_probe_t_ms = pr.t_ms;
+        ci.last_probe_rung = pr.rung;
+        ci.last_probe_outcome = maburgs::to_string(pr.outcome);
+        ci.last_probe_snr_db = pr.snr_db;
+        ci.last_probe_u_pred = pr.u_pred;
+        ci.last_probe_dur_ms = pr.dur_ms;
         sin.ctl = std::move(ci);
       }
       stats->poll(drained_ms, sin);

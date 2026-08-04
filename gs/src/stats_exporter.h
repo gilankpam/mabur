@@ -65,6 +65,21 @@ struct StatsCtlIn {
   // datagram so consumers stay stateless.
   std::vector<std::pair<int, double>> ladder;  // {mcs, ov}
   double down_util = 0.0, up_util = 0.0;
+
+  // --- s3 probe-before-promote / s3 steady-state (Tasks 4/5) ---
+  double util3 = 0.0;  // LadderController::util3(); may carry a 1e9
+                        // division-guard sentinel -> clamped at the exporter
+  uint64_t probes_started = 0, probes_ok = 0, probe_fails = 0,
+           probe_aborts = 0;
+  uint64_t demotes_s3_residual = 0, demotes_s3_util = 0;
+  double last_event_snr_db = 0.0;  // NaN -> JSON null
+  // Last completed probe; last_probe_t_ms == 0 means "never probed" -> null.
+  double last_probe_t_ms = 0;
+  int last_probe_rung = 0;
+  std::string last_probe_outcome = "none";
+  double last_probe_snr_db = 0.0;
+  double last_probe_u_pred = 0.0;  // may carry the 1e9 sentinel -> clamped
+  int last_probe_dur_ms = 0;
 };
 
 struct StatsInput {

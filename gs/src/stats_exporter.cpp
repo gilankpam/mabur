@@ -1,6 +1,7 @@
 #include "stats_exporter.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 #include "json.hpp"
@@ -18,6 +19,21 @@ namespace {
 // a negative rate.
 double rate(uint64_t cur, uint64_t prev, double elapsed_s) {
   return cur > prev ? static_cast<double>(cur - prev) / elapsed_s : 0.0;
+}
+
+// util3()/u_pred (and last_event.u for S3Residual/S3Util reasons, which
+// carries u3) are division-zero-guarded with a 1e9 sentinel that is
+// unreachable in practice but must never land in a datagram verbatim --
+// clamp to a ceiling that is still obviously "way over threshold" to any
+// consumer without smuggling a near-billion float onto the wire.
+double clamp_util(double u) { return std::min(u, 1e3); }
+
+// NaN is a legal "no SNR known this window" value on these fields; encode it
+// as JSON null explicitly rather than relying on the library default (which
+// varies by nlohmann version between a bare `nan` token and a thrown
+// exception) -- every jq-based consumer needs a real null.
+json snr_or_null(double snr_db) {
+  return std::isnan(snr_db) ? json(nullptr) : json(snr_db);
 }
 
 // Index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.
@@ -190,17 +206,38 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     ctl["ladder"] = std::move(lad);
     ctl["down_util"] = c.down_util;
     ctl["up_util"] = c.up_util;
+    ctl["util3"] = clamp_util(c.util3);
     ctl["counters"] = {{"demotes_residual", c.demotes_residual},
                        {"demotes_util", c.demotes_util},
                        {"promotes", c.promotes},
                        {"probation_fails", c.probation_fails},
                        {"starved_drops", c.starved_drops},
-                       {"timeout_drops", c.timeout_drops}};
+                       {"timeout_drops", c.timeout_drops},
+                       {"probes_started", c.probes_started},
+                       {"probes_ok", c.probes_ok},
+                       {"probe_fails", c.probe_fails},
+                       {"probe_aborts", c.probe_aborts},
+                       {"demotes_s3_residual", c.demotes_s3_residual},
+                       {"demotes_s3_util", c.demotes_s3_util}};
+    // last_event.u carries u3 (also sentinel-guardable) for S3Residual/
+    // S3Util reasons -- clamp unconditionally, it's a no-op for the s1
+    // reasons' ordinary [0,1]-ish values.
     ctl["last_event"] = {{"t_ms", c.last_event_t_ms},
                          {"from", c.last_event_from},
                          {"to", c.last_event_to},
                          {"reason", c.last_event_reason},
-                         {"u", c.last_event_u}};
+                         {"u", clamp_util(c.last_event_u)},
+                         {"snr", snr_or_null(c.last_event_snr_db)}};
+    if (c.last_probe_t_ms > 0) {
+      ctl["last_probe"] = {{"t_ms", c.last_probe_t_ms},
+                           {"rung", c.last_probe_rung},
+                           {"outcome", c.last_probe_outcome},
+                           {"snr", snr_or_null(c.last_probe_snr_db)},
+                           {"u_pred", clamp_util(c.last_probe_u_pred)},
+                           {"dur_ms", c.last_probe_dur_ms}};
+    } else {
+      ctl["last_probe"] = nullptr;
+    }
   } else {
     link["ctl"] = nullptr;
   }
