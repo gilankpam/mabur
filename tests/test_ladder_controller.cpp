@@ -572,4 +572,86 @@ TEST(event_carries_snr) {
   CHECK(ctl.last_event().snr_db == 30.0);
 }
 
+// --- s3 steady-state demotes ---------------------------------------------
+
+TEST(s3_residual_confirmed_demotes) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + 100;
+  ctl.update(ok3(0.0), t);                 // ends any blanking cleanly
+  t += cfg.s3_settle_ms + 100;
+  const double start = t;
+  // sustained s3 residual, s1 perfectly clean:
+  for (; ctl.rung() == 2 && t - start < 2000; t += 50) ctl.update(ok3(0.0, 0.02, 0.01), t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().demotes_s3_residual == 1);
+  CHECK(ctl.last_event().reason == CtlReason::S3Residual);
+  CHECK(t - start >= cfg.s3_residual_confirm_ms);   // not instant
+}
+
+TEST(s3_residual_blip_does_not_demote) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.02, 0.01), t);      // single bad window
+  ctl.update(ok3(0.0), t + 50);              // clean again resets the run
+  for (double e = t + 100; e < t + 2000; e += 50) ctl.update(ok3(0.0), e);
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+}
+
+TEST(s3_util_confirmed_demotes) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  const double start = t;
+  // s3 pre-FEC loss high enough that u3 > down_util but no residual, s1 clean:
+  for (; ctl.rung() == 2 && t - start < 2000; t += 50) ctl.update(ok3(0.0, 0.2), t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().demotes_s3_util == 1);
+  CHECK(ctl.last_event().reason == CtlReason::S3Util);
+}
+
+TEST(s3_demote_kill_switch) {
+  LadderCfg cfg = make_cfg();
+  cfg.s3_demote = false;
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  for (double e = t; e < t + 3000; e += 50) ctl.update(ok3(0.0, 0.2, 0.05), e);
+  CHECK(ctl.rung() == 2);                    // inert
+}
+
+TEST(s3_signals_suspended_while_probing) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  // Heavy s3 residual during the probe must FAIL THE PROBE, not book an
+  // s3_residual demote of the current rung:
+  for (int i = 0; i < 20 && ctl.probing(); ++i, t += 50) ctl.update(ok3(0.0, 0.9, 0.5), t);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+  CHECK(ctl.counters().probe_fails == 1);
+  CHECK(ctl.rung() == 0);
+}
+
+TEST(s3_demote_during_probation_books_fail) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);                     // rung 2 now on probation
+  t += cfg.s3_settle_ms + 100;
+  const double start = t;
+  for (; ctl.rung() == 2 && t - start < 3000; t += 50) ctl.update(ok3(0.0, 0.02, 0.01), t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().probation_fails == 1);
+  CHECK(penalty_ms_for(ctl, t, 2) > 0);
+}
+
 MTEST_MAIN

@@ -260,6 +260,70 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     return true;
   }
 
+  // 5a. s3 steady-state measurement and early warning: s3's smaller FEC
+  // budget exhausts before s1's, so confirmed s3 residual/util pressure
+  // demotes without waiting for the base layer to degrade (spec 2026-08-05
+  // section 1b). Suspended while probing (s3 is at the CANDIDATE MCS then, so
+  // the steady-state reading is meaningless) and inside the post-transition
+  // blanking window (FEC re-key artifacts read as loss).
+  //
+  // The measurement is computed once here so BOTH s3 checks see the same
+  // number, and it is zeroed whenever s3 is not measurable this window: a
+  // persisted last-good value would make util3() (sideport link.ctl.u3) report
+  // a frozen stale reading after s3 goes quiet.
+  const bool s3_live =
+      !probe_active_ && s3_usable(h) && now_ms >= s3_blank_until_ms_;
+  if (!s3_live) {
+    u3_ = 0.0;
+  } else {
+    // A ladder entry whose layer-3 effective overhead is zero has no s3 budget
+    // at all; any loss there is infinite utilization rather than a division by
+    // zero. (budget_for() needs no such guard: layer 1's overhead is never
+    // zero on a valid ladder.)
+    const double b3 = budget3_for(idx_);
+    u3_ = b3 > 0.0 ? h.s3_pre_fec_loss / b3
+                   : (h.s3_pre_fec_loss > 0.0 ? 1e9 : 0.0);
+  }
+
+  // Same bookkeeping as the s1 util/probation demotes above, deliberately —
+  // only the reason and the counter differ. set_event()'s u argument carries
+  // u3 for s3 events.
+  auto s3_demote_now = [&](CtlReason reason, uint64_t& counter) {
+    const int from = idx_;
+    if (probation_active_ && idx_ == probation_rung_) {
+      ++counters_.probation_fails;
+      penalize_rung(from, now_ms);
+      probation_active_ = false;
+    }
+    idx_ = from - 1;
+    last_down_ms_ = now_ms;
+    last_change_ms_ = now_ms;
+    reset_windows();
+    mark_transition(now_ms);
+    ++counter;
+    set_event(now_ms, from, idx_, reason, u3_, snr_now_);
+  };
+
+  // s3 residual (post-FEC abandonment) — confirmed, not instant like s1's:
+  // s3 is the expendable layer, so a single abandoned window is a normal
+  // shed/blip rather than proof the rung is unsustainable. Checked BEFORE the
+  // s1 util block so that when both ripen on the same tick the event reason
+  // attributes to s3 — "s3 led s1" is exactly the evidence this feature
+  // exists to collect.
+  if (cfg_.s3_demote && s3_live) {
+    if (h.s3_residual_loss > 0.0) {
+      if (s3_resid_start_ms_ < 0.0) s3_resid_start_ms_ = now_ms;
+      if (idx_ > 0 &&
+          now_ms - s3_resid_start_ms_ >= cfg_.s3_residual_confirm_ms &&
+          now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
+        s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
+        return true;
+      }
+    } else {
+      s3_resid_start_ms_ = -1.0;
+    }
+  }
+
   // 5. Utilization pressure: immediate demote during probation, otherwise a
   // confirm window that must stay above down_util continuously.
   if (u_ > cfg_.down_util) {
@@ -306,16 +370,21 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     confirm_start_ms_ = -1.0;
   }
 
-  // 5b. s3 steady-state utilization. Only the measurement is maintained here
-  // (so util3() and a Pass ProbeEvent report something real); the demote
-  // decisions that consume it, plus s3_resid_start_ms_/s3_util_start_ms_ and
-  // the s3_blank_until_ms_ gate, are the s3-steady-state-demote task's.
-  //
-  // ---- INSERTION POINT: s3 steady-state demotes (Task 5) ----
-  if (probe_active_) {
-    u3_ = 0.0;  // s3 is running the candidate MCS, not this rung's
-  } else if (s3_usable(h) && now_ms >= s3_blank_until_ms_) {
-    u3_ = h.s3_pre_fec_loss / budget3_for(idx_);
+  // 5b. s3 utilization pressure, on the same confirm_ms window as s1's. Ranked
+  // after the s1 util block (and, like it, uses u3_ computed in 5a above) so a
+  // tick where both layers are over threshold still attributes to s1's own
+  // reason; s3 leads only on the residual signal in 5a.
+  if (cfg_.s3_demote && s3_live) {
+    if (u3_ > s3_util_threshold()) {
+      if (s3_util_start_ms_ < 0.0) s3_util_start_ms_ = now_ms;
+      if (idx_ > 0 && now_ms - s3_util_start_ms_ >= cfg_.confirm_ms &&
+          now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
+        s3_demote_now(CtlReason::S3Util, counters_.demotes_s3_util);
+        return true;
+      }
+    } else {
+      s3_util_start_ms_ = -1.0;
+    }
   }
 
   // 6. Probe evaluation. While a probe is up the clean/promote logic is fully

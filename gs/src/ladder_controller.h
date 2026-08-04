@@ -159,9 +159,11 @@ class LadderController {
                ? cfg_.ladder[static_cast<std::size_t>(probe_rung_)].mcs
                : -1;
   }
-  // Steady-state s3 utilization against the CURRENT rung's s3 budget. 0 while
-  // a probe is up (during a probe s3 is deliberately running a different MCS,
-  // so the steady-state reading is meaningless).
+  // Steady-state s3 utilization against the CURRENT rung's s3 budget. 0
+  // whenever the last sample could not measure it: while a probe is up (s3 is
+  // deliberately running a different MCS then, so the reading is meaningless),
+  // inside the post-transition blanking window, or when s3 carried no usable
+  // traffic. Never a persisted stale value.
   double util3() const { return u3_; }
 
   const CtlCounters& counters() const { return counters_; }
