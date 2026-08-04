@@ -97,10 +97,11 @@ read the sideport. Reach for other tools only in these cases:**
 - **The GS link-status OSD on the screen is a sideport consumer, not a
   separate instrument.** maburplay draws it from the SAME datagram
   `maburtop` reads: `stats.out` in `/etc/maburgs.json` is a list, and the
-  bench GS fans out to `:8300` (statsrec/maburtop) and `:8302` (maburplay's
-  `osd.gs.port`). So the screen and the recorder cannot disagree — if the
-  OSD shows something surprising, the answer is in that jsonl, and
-  `flightreport.py` will say the same thing with more precision. Config is
+  bench GS fans out to `:8300` (maburtop / ad-hoc capture) and `:8302`
+  (maburplay's `osd.gs.port`). So the screen and the recorder cannot
+  disagree — if the OSD shows something surprising, the answer is in that
+  jsonl, and `flightreport.py` will say the same thing with more
+  precision. Config is
   `osd.gs` in `/etc/maburplay.json` (`enable` default false, `stale_ms`
   dims every link-derived field after silence; fps/jitter/bitrate/REC are
   player-measured and never dim). The glyph atlas is
