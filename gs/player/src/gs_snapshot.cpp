@@ -1,5 +1,7 @@
 #include "gs_snapshot.h"
 
+#include <cmath>
+#include <limits>
 #include <string>
 
 #include "json.hpp"
@@ -28,7 +30,17 @@ std::optional<double> num(const json& o, const char* key) {
 std::optional<int> integer(const json& o, const char* key) {
   const std::optional<double> v = num(o, key);
   if (!v) return std::nullopt;
-  return (int)*v;
+  // A finite double outside int's range is well-formed JSON but a
+  // double->int cast on it is UB (saturates to INT_MIN unsanitized on
+  // x86-64/aarch64 -- garbage rendered as a real value, not "dropped" as
+  // this parser's contract requires). Reject rather than clamp: a
+  // clamped mcs of INT_MAX is exactly as wrong on screen as INT_MIN, and
+  // "never received" is the honest rendering for a nonsense number.
+  if (!std::isfinite(*v)) return std::nullopt;
+  if (*v < static_cast<double>(std::numeric_limits<int>::min()) ||
+      *v > static_cast<double>(std::numeric_limits<int>::max()))
+    return std::nullopt;
+  return static_cast<int>(*v);
 }
 }  // namespace
 

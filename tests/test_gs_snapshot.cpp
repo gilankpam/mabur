@@ -174,6 +174,48 @@ TEST(card_id_zero_is_a_real_id_not_a_missing_one) {
   CHECK(s.cards[1].id == 5);
 }
 
+// A finite double outside int's range must drop the field, not become a
+// garbage int. A raw `(int)` cast on 1e20 is undefined behaviour and
+// saturates to INT_MIN unsanitized on x86-64/aarch64 -- silently painting
+// a nonsense MCS or card id on screen instead of the field vanishing as
+// "never received", which is this parser's contract for every other bad
+// field.
+TEST(out_of_range_numbers_drop_the_field_not_saturate) {
+  const char* j = R"({"v":1,"cards":[
+      {"id":1e20,"up":true,"classes":{}}],
+    "link":{"ctl":{"rung":{"mcs":1e20,"ov":0.1}}}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  CHECK(!s.mcs.has_value());
+  REQUIRE(s.cards.size() == 1);
+  CHECK(s.cards[0].id == 0);  // default-constructed: the id field dropped
+
+  const char* jneg = R"({"v":1,"cards":[],
+    "link":{"ctl":{"rung":{"mcs":-1e20,"ov":0.1}}}})";
+  GsSnapshot sneg;
+  REQUIRE(parse(jneg, &sneg));
+  CHECK(!sneg.mcs.has_value());
+
+  // A legitimate, large-but-in-range value must still come through.
+  const char* jbig = R"({"v":1,"cards":[{"id":2000000000,"up":true}],
+    "link":{"ctl":{"rung":{"mcs":2000000000,"ov":0.1}}}})";
+  GsSnapshot sbig;
+  REQUIRE(parse(jbig, &sbig));
+  REQUIRE(sbig.mcs.has_value());
+  CHECK(*sbig.mcs == 2000000000);
+  REQUIRE(sbig.cards.size() == 1);
+  CHECK(sbig.cards[0].id == 2000000000);
+}
+
+// "cards" as a JSON object rather than an array must not be mistaken for
+// the array shape -- the is_array() guard should simply leave cards empty.
+TEST(cards_as_object_is_ignored_not_crashed_on) {
+  const char* j = R"({"v":1,"cards":{"0":{"id":0}},"link":{}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  CHECK(s.cards.empty());
+}
+
 // A REAL recorded datagram (line 73 of flight-field-20260802.jsonl, an
 // active bench link on the mcs0 floor rung) fed through byte-for-byte.
 // Values below were independently read out of that same line with
