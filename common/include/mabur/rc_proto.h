@@ -107,7 +107,7 @@ struct DiscAck {
 struct Telem {
   uint16_t tlm_seq = 0;
   uint8_t state = 0;            // RcAgent::State numeric
-  uint8_t flags = 0;            // bit0 failsafe_shed, bit1 radio_rx_ok
+  uint8_t flags = 0;            // bit0 failsafe_shed, bit1 radio_rx_ok, bit2 probing
   uint32_t generation = 0;
   uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
   uint8_t applied_ov_x100 = 0;

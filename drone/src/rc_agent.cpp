@@ -32,6 +32,7 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
   auto ladder = rc::ladder_from(PhyMode::HT, 0, 20);
   commanded_offset_qdb_ = 0;  // full legal power
   thermal_derate_ = 0;
+  probe3_active_ = false;  // FAILSAFE/boot never probes
 
   // Forced shed while MAX_RANGE is the operating point (BOOT/RENDEZVOUS or a
   // LINKED->FAILSAFE entry) — held sticky in failsafe_shed_ until an
@@ -231,7 +232,9 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // wire (one legal value) so a GS can still refuse a peer that lacks it.
     // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
     // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
-    ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY;
+    // CAP_S3_PROBE: this drone accepts RCF_F_PROBE3 (spec 2026-08-05
+    // s3-probe-promote).
+    ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_S3_PROBE;
     ack.agreed_channel = cfg_.radio.channel;
     ack.agreed_width = cfg_.radio.width;
     ack.seq = d->seq;
@@ -283,6 +286,20 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     uint8_t mcs, bw;
     rc::decode_profile(r->profile, mode, mcs, bw);
     auto ladder = rc::ladder_from(mode, mcs, bw);
+
+    // s3 probe (spec 2026-08-05): when the RCF carries probe3, layer 3 (s3)
+    // transmits at probe_profile's MCS while mode/bw stay the base
+    // profile's — MCS-only probe, everything else (CRIT/T0/T1) rides the
+    // normal ladder. Recomputed on every accepted RCF, so a follow-up frame
+    // without the flag reverts s3 to the base profile's mcs.
+    probe3_active_ = false;
+    if (r->probe3) {
+      PhyMode pmode;
+      uint8_t pmcs, pbw;
+      rc::decode_profile(r->probe_profile, pmode, pmcs, pbw);
+      ladder[3].mcs = pmcs;
+      probe3_active_ = true;
+    }
 
     int offset_qdb = commanded_offset_qdb_;
     if (r->pwr_offset_biased != rc::PWR_NO_CHANGE) {

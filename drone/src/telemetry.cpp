@@ -54,7 +54,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   rc::Telem t;
   t.tlm_seq = tlm_seq;
   t.state = static_cast<uint8_t>(in.state);
-  t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) | (in.radio_rx_ok ? 0x02 : 0));
+  t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) | (in.radio_rx_ok ? 0x02 : 0) |
+                                  (in.probing ? 0x04 : 0));
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
   t.applied_ov_x100 = saturate<uint8_t>(std::lround(in.applied_ov * 100.0));

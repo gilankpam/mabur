@@ -87,6 +87,12 @@ class RcAgent {
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }
 
+  // True iff the last accepted RCF carried probe3 (an s3-only MCS probe) —
+  // cleared the moment a FAILSAFE/max-range apply takes over (a degraded or
+  // lost link must never report itself as still probing) or a follow-up RCF
+  // arrives without the flag. Spec 2026-08-05 s3-probe-promote.
+  bool probing() const { return probe3_active_; }
+
   // Latched on a BOOT/RENDEZVOUS -> LINKED transition — the process-(re)start
   // link-up, when frames encoded so far never reached the air and the GS may
   // hold a stale frame-id cursor. The caller consumes it to re-mark the frame
@@ -124,6 +130,11 @@ class RcAgent {
   // Telem.rcf_rx. Never reset (a session-boundary reset would make the GS's
   // rate computation, which is over a measured interval, ambiguous).
   uint64_t rcf_accepted_ = 0;
+
+  // Mirrors the last accepted RCF's probe3 bit — see probing(). Cleared in
+  // apply_max_range() (FAILSAFE/boot never probes) and recomputed at the top
+  // of every RCF apply.
+  bool probe3_active_ = false;
 
   // Bitrate policy state.
   int last_bitrate_kbps_ = 0;
