@@ -332,6 +332,7 @@ TEST(drone_section_null_then_rates) {
   t.tlm_seq = 1; t.state = 2; t.enc_frames = 1000; t.enc_kbytes = 1000;
   t.rcf_rx = 100; t.radio_sent = 5000; t.up_rssi[1] = 52; t.soc_temp_c = 61;
   t.idr_disagree = 1; t.enhance_disagree = 2;
+  t.flags = 0x04;  // probing set, failsafe_shed/radio_rx_ok clear
   in.telem = t; in.telem_rx_ms = 1400;
   ex.poll(1500, in);
   json j = cap.last();
@@ -342,8 +343,12 @@ TEST(drone_section_null_then_rates) {
   CHECK(j["drone"]["enc"]["enhance_disagree"] == 2);
   CHECK(j["drone"]["uplink"]["rssi_b"].get<double>() > -58.1 &&
         j["drone"]["uplink"]["rssi_b"].get<double>() < -57.9);
+  CHECK(j["drone"]["failsafe_shed"] == false);
+  CHECK(j["drone"]["radio_rx_ok"] == false);
+  CHECK(j["drone"]["probing"] == true);
   t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;
   t.rcf_rx = 120; t.radio_sent = 6460;
+  t.flags = 0;  // probe over -- bit clears
   in.telem = t; in.telem_rx_ms = 2400;               // 1000 ms later
   ex.poll(2500, in);
   j = cap.last();
@@ -351,6 +356,7 @@ TEST(drone_section_null_then_rates) {
   CHECK(j["drone"]["enc"]["mbps"].get<double>() > 9.1 && j["drone"]["enc"]["mbps"].get<double>() < 9.3);
   CHECK(j["drone"]["rcf"]["rx_pps"].get<double>() > 19.9 && j["drone"]["rcf"]["rx_pps"].get<double>() < 20.1);
   CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1459 && j["drone"]["radio"]["sent_pps"].get<double>() < 1461);
+  CHECK(j["drone"]["probing"] == false);
   // same tlm_seq again: rates keep the last computed window, age grows
   ex.poll(3000, in);
   CHECK(cap.last()["drone"]["tlm_age_ms"] == 600);

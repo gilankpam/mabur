@@ -104,6 +104,12 @@ def wall_fit(records):
 
     pass_snrs, fail_snrs = valid(passes), valid(fails)
     nan_n = sum(1 for r in records if math.isnan(r["snr_db"]))
+    # u_pred is a separate reading from snr_db -- a probe can be a clean
+    # pass/fail on SNR while its predicted util still saturated the 1e9
+    # zero-guard sentinel (clamped to <=1e3 at the write site). Counted for
+    # visibility only; the SNR-based pass/fail/outlier/wall logic above is
+    # unaffected.
+    u_pred_sat_n = sum(1 for r in records if is_sentinel(r["u_pred"]))
 
     max_pass = max(pass_snrs) if pass_snrs else None
     outlier_snrs = [s for s in fail_snrs if max_pass is not None and s > max_pass]
@@ -115,7 +121,7 @@ def wall_fit(records):
 
     return {
         "n_pass": len(passes), "n_fail": len(fails), "n_abort": len(aborts),
-        "nan_snr": nan_n,
+        "nan_snr": nan_n, "u_pred_sat": u_pred_sat_n,
         "pass_snrs": pass_snrs, "fail_snrs": fail_snrs,
         "outlier_snrs": outlier_snrs, "inlier_fail_snrs": inlier_fail_snrs,
         "wall": wall,
@@ -170,6 +176,7 @@ def print_wall_report(ctllog):
         line = f"  rung {rung}: pass={fit['n_pass']} fail={fit['n_fail']}"
         if fit["n_abort"]: line += f" abort={fit['n_abort']}"
         if fit["nan_snr"]: line += f" nan_snr={fit['nan_snr']}"
+        if fit["u_pred_sat"]: line += f" u_pred saturated: {fit['u_pred_sat']}"
         print(line)
         if fit["pass_snrs"]:
             print(f"    pass snr: {min(fit['pass_snrs']):.1f}..{max(fit['pass_snrs']):.1f} dB")

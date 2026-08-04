@@ -395,6 +395,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["gen"] = t.generation;
     d["failsafe_shed"] = (t.flags & 0x01) != 0;
     d["radio_rx_ok"] = (t.flags & 0x02) != 0;
+    d["probing"] = (t.flags & 0x04) != 0;
     d["applied"] = {{"mcs", mcs},
                     {"bw", bw},
                     {"vht", mode == mabur::rc::PhyMode::VHT},

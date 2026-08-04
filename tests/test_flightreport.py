@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Test suite for flightreport.py post-flight analysis tool."""
+import contextlib
+import io
 import json
 import os
 import re
@@ -361,11 +363,18 @@ P 50000 4 pass 29.5 0.0400 2000
 """
 
 
-def test_wall_report(tmp_path, capsys):
-    p = tmp_path / "ctl-0001_x.log"
-    p.write_text(CTL_LOG)
-    flightreport.main(str(p))
-    out = capsys.readouterr().out
+def test_wall_report():
+    """Direct-invocation pattern (matches the siblings above): write the
+    CTL_LOG fixture to a temp file, capture flightreport's stdout, and check
+    it against a ctl-log rather than a jsonl."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL_LOG)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+
     assert "rung 4" in out
     assert "pass" in out and "fail" in out
     # fail cluster 23.0-24.5, passes 29.5-30.0 -> suggested wall between them
@@ -375,8 +384,10 @@ def test_wall_report(tmp_path, capsys):
     assert "outlier" in out
     assert "s3_util" in out          # event summary includes new reasons
 
+    print("\n✓ Wall report test passed!")
+
 
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
-    # test_wall_report() needs pytest's tmp_path/capsys fixtures; run via pytest.
+    test_wall_report()

@@ -38,10 +38,18 @@ CtlLog::CtlLog(const std::string& dir, const std::string& header_info) {
   closedir(d);
 
   // Date suffix is cosmetic only (RTC is wrong at boot) -- matches the
-  // statsrec.py file-naming convention.
+  // statsrec.py file-naming convention. localtime_r failure (e.g. a
+  // corrupt/unset TZ) must not be fatal for a log whose header promises
+  // never to crash over logging -- fall back to a fixed placeholder date;
+  // the per-boot index in the filename is what actually matters.
   std::time_t now = std::time(nullptr);
+  std::tm tmv{};
   char date[16] = {};
-  std::strftime(date, sizeof(date), "%Y%m%d", std::localtime(&now));
+  if (::localtime_r(&now, &tmv)) {
+    std::strftime(date, sizeof(date), "%Y%m%d", &tmv);
+  } else {
+    std::snprintf(date, sizeof(date), "00000000");
+  }
 
   char fname[64];
   std::snprintf(fname, sizeof(fname), "ctl-%04d_%s.log", next_idx, date);

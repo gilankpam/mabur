@@ -541,6 +541,46 @@ TEST(no_probe_allowed_falls_back_to_legacy_promote) {
   CHECK(ctl.probation_ms_left(t) > 0);
 }
 
+// Review finding: a candidate rung that shares the current rung's MCS (an
+// overhead-only step) doesn't change the PHY rate, so there is nothing for
+// an s3 probe to measure -- phy_differs is false and the controller must
+// take the legacy direct-promote path, not spend probe_ms measuring a
+// no-op.
+TEST(equal_mcs_candidate_skips_probe) {
+  LadderCfg cfg;
+  cfg.ladder = {{0, 1.0}, {2, 0.5}, {2, 0.25}};  // rung 1 and rung 2 share mcs 2
+  LadderController ctl(cfg);
+  double t = 0;
+  // Reach rung 1 the legacy way (probe_allowed=false) so this test isolates
+  // the equal-mcs skip at the rung1->rung2 transition, same idiom as
+  // demote_signal_aborts_probe above.
+  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(ok(0.0), t);
+  REQUIRE(ctl.rung() == 1);
+  t += cfg.probation_ms + cfg.hold_after_down_ms;  // clear probation/hold gates
+  const double start = t;
+  for (; ctl.rung() == 1 && t - start < cfg.clean_ms + 1000; t += 50)
+    ctl.update(ok3(0.0), t);  // clean, probe-capable s3 samples
+  CHECK(ctl.rung() == 2);                        // promoted directly, no probe
+  CHECK(ctl.counters().probes_started == 0);
+  CHECK(ctl.probation_ms_left(t) > 0);
+}
+
+// Review finding: s3 unusable AT ENTRY (below the probe_s3_min_syms floor,
+// as opposed to going silent mid-probe -- see s3_silence_aborts_probe_without_penalty)
+// means s3_usable() is false before a probe is ever started, so the
+// clean-margin branch must fall through to the legacy direct promote rather
+// than attempting a probe with nothing to measure it against.
+TEST(s3_unusable_at_entry_falls_back_to_legacy_promote) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  LinkHealth h = ok3(0.0);
+  h.s3_expected_syms = 10;  // < probe_s3_min_syms (50): "no traffic" floor
+  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(h, t);
+  CHECK(ctl.rung() == 1);                        // promoted directly, no probe
+  CHECK(ctl.counters().probes_started == 0);
+  CHECK(ctl.probation_ms_left(t) > 0);
+}
+
 TEST(feedback_timeout_clears_probe) {
   LadderController ctl(make_cfg());
   double t = 0;
