@@ -14,9 +14,19 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # Golden for PART D below. Same rule as OSD_SHA_EXPECTED: to re-bless after
 # an intentional visual change, run the --gs-render command below by hand
 # and paste the hash. Pinned against the SYNTHETIC font on purpose -- hashing
-# the 1.5 MB shipped .gfont would make a font bump look like a rendering
-# regression.
-GS_SHA_EXPECTED=c311690a311add5fe42a685a4ce21a6e28725794181e25b7f0f6a1443273376a
+# the 13 MB shipped .gfont would make a font bump look like a rendering
+# regression. A re-bless needs a PIXEL DIFF against the old dump, not just a
+# hash swap: the geometry floor below cannot see a single-field blanking, a
+# pre/post value transposition, or a pure recolour.
+#
+# Re-blessed 2026-08-04 (was c311690a...): the FPS baseline was derived from
+# the WRONG atlas's cell height, which left the hero FPS box overlapping the
+# JIT/MBPS box -- by exactly 0 px with the synthetic font, and by 1..3 px
+# with the real one (tests/test_gs_asset.cpp). Diff verified: the FPS value
+# and label translate up exactly 8 px and NOTHING else on the 1920x1080
+# surface changes (0 differing px outside the FPS cell band, 0 lit px left in
+# the vacated rows, lit-pixel total identical at 74690).
+GS_SHA_EXPECTED=6479dbb19f72279babbf4ea54afc1efc6bcfb30063e1b08fa2c13928bcddf4b3
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

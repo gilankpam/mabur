@@ -72,6 +72,14 @@ if(MABUR_BUILD_GS)
   add_mtest(test_gs_overlay test_gs_overlay.cpp LIBS mabur_player_core)
   target_compile_definitions(test_gs_overlay PRIVATE
     GEN_GSFONT="${CMAKE_SOURCE_DIR}/tools/msp/gen_gsfont.py")
+  # The only test that loads the SHIPPED .gfont. Everything else stays on
+  # the synthetic generator on purpose, so regenerating the asset cannot
+  # read as a rendering regression -- but the layout invariants were all
+  # measured against synthetic metrics, so they need re-proving against the
+  # real ones exactly once, here.
+  add_mtest(test_gs_asset test_gs_asset.cpp LIBS mabur_player_core)
+  target_compile_definitions(test_gs_asset PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_gs_metrics test_gs_metrics.cpp LIBS mabur_player_core)
   add_mtest(test_osd_layout test_osd_layout.cpp LIBS mabur_player_core)
   add_mtest(test_osd_raster test_osd_raster.cpp LIBS mabur_player_core)

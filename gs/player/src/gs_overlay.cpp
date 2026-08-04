@@ -331,7 +331,26 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
           jit_x + text_width(*secondary, "JIT 999 ms") + gap26, sec_base,
           "999.9 MBIT/S");
 
-    const int fps_base = sec_base - secondary->glyph_h - gap8;  // see kRung's comment
+    // The FPS line stacks above the JIT/MBPS line, and unlike the top-right
+    // block these two lines use DIFFERENT atlases: hero above, secondary
+    // below. Stepping the baseline up by the SECONDARY's glyph_h -- what
+    // this did originally -- is wrong twice over: it measures the step in
+    // the wrong font, and it ignores how far the HERO cell descends below
+    // its own baseline, which is what actually decides where the hero's box
+    // ends. With the synthetic test font those two errors cancelled to
+    // exactly 0 px of clearance, so every test passed on zero margin; with
+    // real JetBrains Mono metrics they leave the two boxes OVERLAPPING by
+    // 1 px at 1080p and 3 px at 2160p (measured -- see
+    // asset_no_two_active_field_boxes_overlap_at_any_resolution, which is
+    // the test that caught it, and note that the synthetic-font version of
+    // the same test could not: it passed at exactly 0 px).
+    //
+    // Derive the baseline from the BOXES instead, which is what the
+    // no-overlap invariant is actually about: the hero box's bottom edge is
+    // fps_base + (glyph_h - baseline), the JIT/MBPS box's top edge is
+    // sec_base - baseline, and gap8 separates the two.
+    const int fps_base = sec_base - secondary->baseline -
+                         (hero->glyph_h - hero->baseline) - gap8;
     const int fps_lbl_w = text_width(*label, "FPS");
     const int fps_val_w = text_width(*hero, "999");
     const int fps_x = right - fps_lbl_w - gap12 - fps_val_w - pad_h(label);
