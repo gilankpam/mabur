@@ -138,9 +138,17 @@ constexpr int kMinRenderedPx = 18;  // the handoff's floor
 // the wrong type size") -- a naive nearest-of-whatever-is-loaded search
 // would reintroduce exactly that near-miss fallback one layer up, e.g.
 // silently substituting a 24 px atlas for a missing 56 px "hero" size
-// (32 px off) instead of failing. This bounds "close enough to snap" vs.
-// "actually absent".
-constexpr int kMaxSizeSnapPx = 2;
+// (32 px off, ~57%) instead of failing. Proportional, not a fixed pixel
+// count: a font baked across several resolutions (Task 14 bakes the eight
+// design sizes at x2/3, x1, x4/3, x2 -- 720p/1080p/1440p/2160p) rounds
+// `want` to a DIFFERENT nearby integer at each scale, and that rounding
+// slop grows with the design size itself (a couple of px on a 56 px hero
+// is a much smaller fraction than the same couple of px on a 19 px
+// label). A flat pixel bound that's loose enough for the 56 px case is
+// too loose to reject a bad substitute for the 19 px one, and one tight
+// enough for 19 px would reject legitimate scaled hits on 56 px. Percent
+// of the request scales with it either way.
+constexpr int kMaxSizeSnapPctNum = 15;  // integer arithmetic: no float compares
 
 bool intersects(const DirtyRect& a, const DirtyRect& b) {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -189,13 +197,14 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
   for (Field& f : fields_) f = Field{};
   bounds_ = DirtyRect{0, 0, 0, 0};
   // A re-layout (mode change, surface recreate) must force the next
-  // update() to fully reconcile card activity again: place() above just
-  // reset every card slot to active=true (it doesn't know the card count
-  // yet), and n_cards_ sitting at whatever it was from BEFORE this layout()
-  // would make update() think nothing changed if the next snapshot happens
-  // to report the same count -- leaving the newly-reset slots beyond that
-  // count active, silently rendering the "empty shell" of unlit bars the
-  // design says zero/missing cards must never show.
+  // update() to fully reconcile card activity again. Card fields start
+  // active=false here (the `fields_` reset above; layout() doesn't know
+  // the card count, so place_card_row_ below deliberately never sets
+  // active itself -- only update()'s reconciliation does) but n_cards_
+  // sitting at whatever it was from BEFORE this layout() would make that
+  // reconciliation a no-op if the next snapshot happens to report the same
+  // count, leaving every card field inactive even though the snapshot
+  // really does have cards to show.
   n_cards_ = -1;
 
   if (screen_w <= 0 || screen_h <= 0) {
@@ -214,7 +223,16 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
       const int d = px > want ? px - want : want - px;
       if (d < best_d) { best_d = d; best = a; }
     }
-    return best_d <= kMaxSizeSnapPx ? best : nullptr;
+    // Integer percent, deliberately: comparing a ratio in floating point
+    // here would need an epsilon anyway, and the tolerance only needs to
+    // separate "a couple of px of rounding slop" from "a wrong size" --
+    // it isn't a rendering measurement. want is always >= 1 in practice
+    // (the smallest design size, 19 px, scaled to nothing coarser than a
+    // 480p-ish surface still rounds well above 0), but max(1, ...) keeps
+    // the tolerance from collapsing to 0 if a caller ever passes a
+    // pathologically small design size.
+    const int tol = std::max(1, want * kMaxSizeSnapPctNum / 100);
+    return best_d <= tol ? best : nullptr;
   };
 
   const MaskAtlas* hero = pick(kSizeHero);
@@ -610,6 +628,15 @@ std::string GsOverlay::debug_field_text(const GsSnapshot& snap, bool stale,
 
 DirtyRect GsOverlay::debug_field_box(GsFieldId id) const {
   return f_(id).box;
+}
+
+bool GsOverlay::debug_field_active(GsFieldId id) const {
+  return f_(id).active;
+}
+
+int GsOverlay::debug_field_atlas_px(GsFieldId id) const {
+  const Field& f = f_(id);
+  return f.atlas ? f.atlas->px : 0;
 }
 
 void GsOverlay::draw_field_(GsFieldId id, const FieldState& st, const Surface& s) {

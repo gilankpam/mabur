@@ -175,6 +175,22 @@ class GsOverlay {
   // union of all of them.
   DirtyRect debug_field_box(GsFieldId id) const;
 
+  // Test hook: whether a field is currently active. Exists so a pairwise
+  // box-overlap test can be scoped to fields that actually draw -- an
+  // inactive card slot (past the active count, or deactivated by a
+  // shrinking count) keeps whatever box it was last assigned, and that
+  // stale box can coincide with an active field's without being a real
+  // collision: draw_field_ and repaint_intersecting are both gated on
+  // `active`, so nothing ever draws or clears through an inactive field's
+  // box again.
+  bool debug_field_active(GsFieldId id) const;
+
+  // Test hook: the atlas pixel size layout() resolved for a field, or 0
+  // if the field was never placed at all (a top block dropped below the
+  // readable floor gets no atlas -- see the drop_top responsive-floor
+  // test).
+  int debug_field_atlas_px(GsFieldId id) const;
+
  private:
   struct FieldState {
     std::string text;

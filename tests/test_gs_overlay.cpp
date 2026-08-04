@@ -168,6 +168,26 @@ static std::string make_gsfont(const char* sizes = "19,21,22,24,26,34,38,56") {
   return path;
 }
 
+// Stand-in for what Task 14 will actually bake: the union of the eight
+// design sizes (19,21,22,24,26,34,38,56) multiplied by the four scales
+// that give exact hits at 720p/1080p/1440p/2160p (x2/3, x1, x4/3, x2),
+// each rounded with the SAME "(int)(px*scale+0.5)" rule layout() itself
+// uses, deduplicated. This is NOT the real asset (Task 14's job, not
+// tested here) -- it exists only so pick()'s proportional-tolerance
+// snapping has real, resolution-scaled sizes to snap TO in these tests.
+// Verified by hand (see task-8-report.md) to give an exact d=0 hit for
+// every one of layout()'s 7 named sizes at all 4 resolutions, while still
+// genuinely snapping (non-zero, sub-15% distance) at 720p and 1440p for
+// at least one size each -- so the tolerance path is actually exercised,
+// not just trivially satisfied by exact hits everywhere.
+constexpr const char* kScaledSizes =
+    "13,14,15,16,17,19,21,22,24,25,26,28,29,32,34,35,38,42,44,45,48,51,52,56,"
+    "72,76,112";
+
+struct FourReso { int w, h; };
+constexpr FourReso kFourResolutions[] = {
+    {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+
 struct OverlayCanvas {
   std::vector<uint32_t> px;
   Surface s;
@@ -212,6 +232,14 @@ TEST(layout_succeeds_at_the_design_resolution) {
   CHECK(err.empty());
 }
 
+// "19,24" stays far enough away that pick()'s 15% proportional tolerance
+// (I3 in review) can't bridge it: at 1080p (scale 1.0, want == design_px)
+// hero wants 56 and the nearest available is 24 -- 32 px off, ~57% of the
+// request, versus a tolerance of floor(56*0.15)=8 px / 15%. Same shape of
+// margin for primary (38 vs 24, 14 px / ~37% against an 5 px tolerance)
+// and standard (34 vs 24, 10 px / ~29% against a 5 px tolerance). All
+// three needed sizes miss by more than double their tolerance, so this
+// fixture is not a boundary case that 15% could plausibly bridge later.
 TEST(layout_fails_with_a_reason_when_a_size_is_missing) {
   const std::string fp = make_gsfont("19,24");  // most of the set absent
   GsFont f;
@@ -220,6 +248,121 @@ TEST(layout_fails_with_a_reason_when_a_size_is_missing) {
   GsOverlay ov(f);
   CHECK(!ov.layout(1920, 1080, &err));
   CHECK(!err.empty());
+}
+
+// Task 14 will bake the font across several resolutions, not just 1080p
+// (the design doc: "at other resolutions the whole layer scales uniformly
+// by height/1080"). layout() must actually succeed at all of them, not
+// just the design resolution.
+TEST(layout_succeeds_at_every_scaled_resolution) {
+  const std::string fp = make_gsfont(kScaledSizes);
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  for (const FourReso& r : kFourResolutions) {
+    GsOverlay ov(f);
+    CHECK(ov.layout(r.w, r.h, &err));
+    CHECK(err.empty());
+  }
+}
+
+// At the design resolution, scale_ is exactly 1.0 and every one of the
+// eight design sizes is baked verbatim -- pick() must resolve each of
+// layout()'s 7 named roles to EXACTLY that value, not merely something
+// close to it. This is what "Exact at 1080p by construction" (the
+// comment on pick()) actually asserts, rather than just hoping the
+// tolerance happens to be tight enough.
+TEST(sizes_resolve_exactly_at_1080p_no_snapping) {
+  const std::string fp = make_gsfont(kScaledSizes);
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kFpsValue) == 56);   // hero
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kCard0Rssi) == 38);  // primary
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kRung) == 34);       // standard
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kLossArrow) == 26);  // arrow
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kJit) == 24);        // secondary
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kCard0Id) == 22);    // cardid
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kLossLabel) == 19);  // label
+}
+
+// Off the design resolution, exact hits are not guaranteed (the font
+// wasn't necessarily baked at exactly this scale) -- but the resolved
+// size must still land within pick()'s 15% tolerance of the scaled
+// request, not just "whatever was nearest, however far".
+TEST(sizes_stay_within_15pct_of_the_scaled_request_off_1080p) {
+  const std::string fp = make_gsfont(kScaledSizes);
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+
+  struct Role { int design_px; GsFieldId id; };
+  const Role roles[] = {
+      {56, GsFieldId::kFpsValue},   {38, GsFieldId::kCard0Rssi},
+      {26, GsFieldId::kLossArrow},  {24, GsFieldId::kJit},
+      {22, GsFieldId::kCard0Id},    {19, GsFieldId::kLossLabel},
+  };
+  for (const FourReso& r : {kFourResolutions[0], kFourResolutions[2]}) {  // 720p, 1440p
+    const int h = r.h;
+    GsOverlay ov(f);
+    REQUIRE(ov.layout(r.w, r.h, &err));
+    const double scale = h / 1080.0;
+    for (const Role& r : roles) {
+      const int want = (int)(r.design_px * scale + 0.5);
+      const int got = ov.debug_field_atlas_px(r.id);
+      REQUIRE(got > 0);
+      const int d = got > want ? got - want : want - got;
+      const int tol = std::max(1, want * 15 / 100);
+      CHECK(d <= tol);
+    }
+    // kRung (standard, 34 px design) is checked separately below, only at
+    // 1440p: at 720p drop_top fires (see drop_top_fires_below_the_floor_
+    // not_above) and kRung is never placed, so debug_field_atlas_px would
+    // read 0 -- an intentionally dropped block, not a tolerance failure.
+    if (h != 720) {
+      const int want = (int)(34 * scale + 0.5);
+      const int got = ov.debug_field_atlas_px(GsFieldId::kRung);
+      REQUIRE(got > 0);
+      const int d = got > want ? got - want : want - got;
+      const int tol = std::max(1, want * 15 / 100);
+      CHECK(d <= tol);
+    }
+  }
+}
+
+// The handoff's responsive floor: below an 18 px RENDERED label, the top
+// two blocks (rung/airtime/recording) are dropped and only the bottom two
+// render. Previously dead code -- the fixed +-2 px tolerance (round 2's
+// I3) meant no resolution in any plausible test font ever actually
+// resolved label below 18 px. The 15% proportional tolerance makes it
+// reachable: at 720p label wants (int)(19*2/3+0.5)=13 px, which IS baked
+// in kScaledSizes, so drop_top fires for a real, non-contrived reason.
+TEST(drop_top_fires_below_the_floor_not_above) {
+  const std::string fp = make_gsfont(kScaledSizes);
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+
+  GsOverlay ov720(f);
+  REQUIRE(ov720.layout(1280, 720, &err));
+  // Top blocks: never placed at all, not merely inactive.
+  CHECK(ov720.debug_field_atlas_px(GsFieldId::kRung) == 0);
+  CHECK(ov720.debug_field_atlas_px(GsFieldId::kAirValue) == 0);
+  CHECK(ov720.debug_field_atlas_px(GsFieldId::kRec) == 0);
+  // Bottom blocks: still render.
+  CHECK(ov720.debug_field_atlas_px(GsFieldId::kLossLabel) > 0);
+  CHECK(ov720.debug_field_atlas_px(GsFieldId::kCard0Id) > 0);
+  CHECK(ov720.debug_field_atlas_px(GsFieldId::kFpsValue) > 0);
+
+  GsOverlay ov1080(f);
+  REQUIRE(ov1080.layout(1920, 1080, &err));
+  CHECK(ov1080.debug_field_atlas_px(GsFieldId::kRung) > 0);
+
+  GsOverlay ov1440(f);
+  REQUIRE(ov1440.layout(2560, 1440, &err));
+  CHECK(ov1440.debug_field_atlas_px(GsFieldId::kRung) > 0);
 }
 
 TEST(first_update_draws_and_emits_rects) {
@@ -436,37 +579,53 @@ TEST(card_count_change_forces_a_full_repaint) {
 // caught a real violation (kRung x kAirValue, kFpsValue x kMbps, from an
 // earlier fix that shrank line spacing too aggressively) that no other
 // test in this file would have noticed, since each field-level test only
-// ever looks at ONE field at a time.
-TEST(no_two_field_boxes_overlap) {
-  const std::string fp = make_gsfont();
+// ever looks at ONE field at a time. Checked at all four resolutions: the
+// scaled gaps and pitches recompute independently at each one, so an
+// overlap introduced by a rounding edge case at, say, 1440p would not
+// show up at 1080p.
+//
+// Deliberately scoped to ACTIVE fields only. An inactive card slot (past
+// the reported count, or dropped by drop_top) keeps whatever box it was
+// last assigned rather than being reset -- draw_field_ and
+// repaint_intersecting are both gated on `active`, so nothing ever draws
+// or clears through that box again while inactive, and a stale inactive
+// box coinciding with an active one is inert, NOT a real collision. Do
+// not "fix" a flagged inactive/anything pair here; it isn't a bug.
+TEST(no_two_active_field_boxes_overlap_at_any_resolution) {
+  const std::string fp = make_gsfont(kScaledSizes);
   GsFont f;
   std::string err;
   REQUIRE(f.load(fp, &err));
-  GsOverlay ov(f);
-  REQUIRE(ov.layout(1920, 1080, &err));
-  OverlayCanvas c(1920, 1080);
-  std::vector<DirtyRect> rects;
-  // kMaxCards cards, so every one of the 33 fields is active at once (drop
-  // top is false at 1920x1080) -- one update covers the whole overlay,
-  // no separate bookkeeping needed for which fields are active.
-  GsSnapshot s = nominal();
-  s.cards.push_back(GsCard{2, true, -60.0, 15.0});
-  s.cards.push_back(GsCard{3, true, -65.0, 12.0});
-  REQUIRE((int)s.cards.size() == kMaxCards);
-  ov.update(s, false, player_nominal(), c.s, &rects);
-
-  std::vector<DirtyRect> boxes;
-  for (int i = 0; i < ov.field_count(); ++i)
-    boxes.push_back(ov.debug_field_box((GsFieldId)i));
 
   auto overlaps = [](const DirtyRect& a, const DirtyRect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
   };
-  int bad_pairs = 0;
-  for (size_t i = 0; i < boxes.size(); ++i)
-    for (size_t j = i + 1; j < boxes.size(); ++j)
-      if (overlaps(boxes[i], boxes[j])) ++bad_pairs;
-  CHECK(bad_pairs == 0);
+
+  for (const FourReso& r : kFourResolutions) {
+    GsOverlay ov(f);
+    REQUIRE(ov.layout(r.w, r.h, &err));
+    OverlayCanvas c(r.w, r.h);
+    std::vector<DirtyRect> rects;
+    // kMaxCards cards, so every card slot is active; drop_top may still
+    // leave the top block's fields inactive (720p), which is exactly what
+    // the active-only filter below exists to handle correctly.
+    GsSnapshot s = nominal();
+    s.cards.push_back(GsCard{2, true, -60.0, 15.0});
+    s.cards.push_back(GsCard{3, true, -65.0, 12.0});
+    REQUIRE((int)s.cards.size() == kMaxCards);
+    ov.update(s, false, player_nominal(), c.s, &rects);
+
+    std::vector<DirtyRect> boxes;
+    for (int i = 0; i < ov.field_count(); ++i) {
+      const GsFieldId id = (GsFieldId)i;
+      if (ov.debug_field_active(id)) boxes.push_back(ov.debug_field_box(id));
+    }
+    int bad_pairs = 0;
+    for (size_t i = 0; i < boxes.size(); ++i)
+      for (size_t j = i + 1; j < boxes.size(); ++j)
+        if (overlaps(boxes[i], boxes[j])) ++bad_pairs;
+    CHECK(bad_pairs == 0);
+  }
 }
 
 TEST(recording_states_render_distinctly) {
@@ -567,6 +726,51 @@ TEST(nothing_is_drawn_in_the_centre_of_frame) {
     for (int x = 400; x < 1520; ++x)
       if (c.px[(size_t)y * 1920 + x]) ++lit;
   CHECK(lit == 0);
+}
+
+// Same two assertions as the pair above, but at all four resolutions --
+// the inset and centre-of-frame band both scale by height/1080, and a
+// rounding mistake in that scaling (as opposed to the absolute-pixel
+// arithmetic the 1080p-only tests exercise) would only show up off the
+// design resolution.
+TEST(safe_inset_and_centre_of_frame_hold_at_every_resolution) {
+  const std::string fp = make_gsfont(kScaledSizes);
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+
+  for (const FourReso& r : kFourResolutions) {
+    GsOverlay ov(f);
+    REQUIRE(ov.layout(r.w, r.h, &err));
+
+    // Safe inset: layout()'s own scaling rule (96/54 px at 1080p, scaled
+    // by height/1080), not the hardcoded 1080p pixel pair -- bounds()
+    // must stay inside it at every resolution, not just the design one.
+    const double scale = r.h / 1080.0;
+    const int inset_x = (int)(96 * scale + 0.5);
+    const int inset_y = (int)(54 * scale + 0.5);
+    const DirtyRect b = ov.bounds();
+    CHECK(b.x >= inset_x);
+    CHECK(b.y >= inset_y);
+    CHECK(b.x + b.w <= r.w - inset_x);
+    CHECK(b.y + b.h <= r.h - inset_y);
+
+    // Centre of frame: the same fractional band as the 1080p-only test
+    // (x:400-1520, y:300-780 of a 1920x1080 canvas), scaled by the same
+    // proportion at this resolution.
+    OverlayCanvas c(r.w, r.h);
+    std::vector<DirtyRect> rects;
+    ov.update(nominal(), false, player_nominal(), c.s, &rects);
+    const int x0 = (int)(r.w * (400.0 / 1920.0));
+    const int x1 = (int)(r.w * (1520.0 / 1920.0));
+    const int y0 = (int)(r.h * (300.0 / 1080.0));
+    const int y1 = (int)(r.h * (780.0 / 1080.0));
+    int lit = 0;
+    for (int y = y0; y < y1; ++y)
+      for (int x = x0; x < x1; ++x)
+        if (c.px[(size_t)y * r.w + x]) ++lit;
+    CHECK(lit == 0);
+  }
 }
 
 TEST(palette_seeds_cover_every_token) {
