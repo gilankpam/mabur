@@ -1,0 +1,66 @@
+#include "ctl_log.h"
+#include "mtest.h"
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <limits>
+#include <sstream>
+#include <sys/stat.h>
+
+static std::string read_all(const std::string& p) {
+  std::ifstream f(p); std::stringstream ss; ss << f.rdbuf(); return ss.str();
+}
+
+// The index tests below assert exact ctl-NNNN values, which only holds for
+// a directory CtlLog has never scanned before. ctest working dirs persist
+// across separate invocations (no rebuild between runs), so start every
+// index-sensitive test from a directory wiped of any earlier run's files
+// rather than one merely present.
+static void reset_dir(const std::string& dir) {
+  (void)std::system(("rm -rf " + dir).c_str());
+  mkdir(dir.c_str(), 0755);
+}
+
+TEST(ctl_log_writes_header_and_records) {
+  std::string dir = "build_ctl_log_test";
+  reset_dir(dir);
+  maburgs::CtlLog log(dir, "ladder=0/100,2/50 down_util=0.35 up_util=0.15");
+  REQUIRE(log.ok());
+  log.sample(1000, 2, 0.05, 31.5, 0.0, 0.10, 0.0);
+  log.event(1500, 2, 1, "s3_util", 0.4, 30.0);
+  log.probe(2000, 3, "fail", 24.0, 0.9, 600);
+  log.penalty(2000, 3, 1, 12000);
+  std::string text = read_all(log.path());
+  CHECK(text.rfind("ctllog 1 ladder=0/100,2/50 down_util=0.35 up_util=0.15\n", 0) == 0);
+  CHECK(text.find("\nS 1000 2 0.0500 31.5 0.0000 0.1000 0.0000\n") != std::string::npos);
+  CHECK(text.find("\nE 1500 2 1 s3_util 0.4000 30.0\n") != std::string::npos);
+  CHECK(text.find("\nP 2000 3 fail 24.0 0.9000 600\n") != std::string::npos);
+  CHECK(text.find("\nN 2000 3 1 12000\n") != std::string::npos);
+}
+
+TEST(ctl_log_index_increments) {
+  std::string dir = "build_ctl_log_test2";
+  reset_dir(dir);
+  maburgs::CtlLog a(dir, "x");
+  maburgs::CtlLog b(dir, "x");
+  REQUIRE(a.ok()); REQUIRE(b.ok());
+  CHECK(a.path() != b.path());
+  CHECK(b.path().find("ctl-0001") != std::string::npos ||
+        b.path().find("ctl-0002") != std::string::npos);  // strictly after a
+}
+
+TEST(ctl_log_bad_dir_is_nonfatal) {
+  maburgs::CtlLog log("/nonexistent-dir-xyz", "x");
+  CHECK(!log.ok());
+  log.sample(0, 0, 0, 0, 0, 0, 0);   // must not crash
+}
+
+TEST(ctl_log_nan_snr_prints_nan) {
+  std::string dir = "build_ctl_log_test3";
+  reset_dir(dir);
+  maburgs::CtlLog log(dir, "x");
+  log.sample(1, 0, 0, std::numeric_limits<double>::quiet_NaN(), 0, 0, 0);
+  CHECK(read_all(log.path()).find(" nan ") != std::string::npos);
+}
+
+MTEST_MAIN
