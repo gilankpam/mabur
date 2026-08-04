@@ -30,7 +30,12 @@ health, TX/injection rates, airtime estimate, and drone telemetry (state,
 applied op, encoder, queues, uplink RF, temps — via the 1 Hz T_TELEM
 control frame); `link.ctl` carries the ladder controller's rung, util,
 probation/counters, and last-transition reason, and `tools/flightreport.py`
-is the post-flight analyzer over a recorded jsonl. Consume it with:
+is the post-flight analyzer over a recorded jsonl. Promotes now probe the
+candidate MCS on the s3 enhancement stream first when the drone advertises
+`CAP_S3_PROBE`, and s3 residual/util loss demotes in steady state (kill-switch
+`link.s3_demote`); spec
+`docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md`. Consume it
+with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,
   grouped by link; color thresholds carry the judgment.
@@ -40,12 +45,27 @@ is the post-flight analyzer over a recorded jsonl. Consume it with:
   the GS logs every metric at 2 Hz for post-flight analysis. The `jq -c` is
   REQUIRED: sideport datagrams carry no trailing newline, so bare socat
   appends concatenated JSON, not JSONL (recover such a file with
-  `jq -c . < file`). The GS also records automatically from boot:
-  `/etc/init.d/S97statsrec` runs `/usr/local/bin/statsrec.py`, writing one
-  DVR-style indexed file per boot to `/media/dvr/flight-NNNN_<date>.jsonl`
-  (SD card, survives reboot; the date suffix is cosmetic — the RTC is wrong
-  at boot) and re-emitting datagrams to :8301 so a live
-  `maburtop --port 8301` can watch alongside (statsrec holds :8300).
+  `jq -c . < file`). This ad-hoc capture is now the ONLY way to get FULL
+  sideport data on disk: `statsrec.py`/`/etc/init.d/S97statsrec` (the boot
+  recorder that auto-wrote `/media/dvr/flight-NNNN_<date>.jsonl` and fanned
+  out to :8301) were REMOVED from the GS on 2026-08-05 (device-only files,
+  never in this repo). The adaptive-link record survives separately and
+  automatically: maburgs writes its own compact ctl log whenever
+  `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
+  like `stats.enable` — the bench GS turns it on), one DVR-style indexed
+  file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
+  default `/media/dvr`), a `ctllog 1` header followed by compact S/E/P/N
+  lines (rung/state, ctl events, probe events, penalties). `flightreport.py`
+  auto-detects this format alongside the jsonl format, so no separate
+  invocation is needed. Tuning invariant: the controller's s3 loss/residual
+  windows are 500 ms wide, while the post-transition blanking
+  (`s3_settle_ms`, default 300) and probe settle (`probe_settle_ms`, 150)
+  are shorter — so up to ~200 ms of pre-transition symbols remain in view
+  after blanking expires. Shipped defaults are safe (stale weight decays
+  fast against the 250/500 ms confirm windows), but do NOT lower
+  `s3_settle_ms`/`s3_residual_confirm_ms` toward their floors together: a
+  rung transition's FEC re-key artifacts could then satisfy the s3-residual
+  confirm and self-demote on every promote.
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
