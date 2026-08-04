@@ -41,9 +41,15 @@ class OsdRaster {
  public:
   OsdRaster(OsdFont& font, ScaleMode mode) : font_(font), mode_(mode) {}
 
-  // Returns the number of cells redrawn. With shadow == nullptr, or when
-  // the layout or grid dimensions changed, clears the surface and redraws
-  // every cell; otherwise redraws only cells that differ from the shadow.
+  // Returns the number of cells redrawn. On a full redraw -- shadow ==
+  // nullptr, or the layout/grid dimensions changed -- clears the grid rect
+  // and redraws every cell; otherwise redraws only cells that differ from
+  // the shadow. The cleared rect is the union of the new grid and the
+  // previous one on record, so a layout change doesn't strand stale pixels
+  // outside the new grid. With shadow == nullptr there is no previous grid
+  // on record, so ONLY the new grid is cleared -- unlike clear(), draw()
+  // never paints outside its own grid in the first place, so with nothing
+  // to account for there is nothing else that could need erasing.
   int draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow);
 
   // Blanks the grid the shadow records as drawn -- NOT the whole surface:

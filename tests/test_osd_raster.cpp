@@ -267,8 +267,9 @@ TEST(null_surface_is_a_no_op) {
 
 static constexpr uint32_t kSentinel = 0xFF00FF00u;
 
-// The 30x16 SD canvas on a 320x180 surface with 4x6 glyphs: the grid is
-// 120x96 at origin (100,42). (0,0) is well outside it.
+// The 50x18 HD canvas (MspScreen's default -- snapshot() below never calls
+// SET_OPTIONS) on a 320x180 surface with 4x6 glyphs: the grid is 200x108 at
+// origin (60,36). (0,0) is well outside it.
 TEST(draw_full_redraw_does_not_clear_outside_the_grid) {
   const std::string fp = write_font(4, 6);
   OsdFont font;
@@ -349,35 +350,17 @@ TEST(layout_change_clears_union_of_old_and_new_grids) {
   OsdRaster r(font, ScaleMode::kSharp);
   ShadowGrid sh;
 
-  // SD 30x16 first. Explicit SET_OPTIONS(hd_option=0): the default canvas
-  // is already HD 50x18 (see MspScreen's default in msp_dp.h), so relying
-  // on snapshot()'s implicit default here would make the second draw's
-  // canvas identical to the first -- no layout change, and this test would
-  // pass without ever exercising the union-clear path.
+  // HD 50x18 first. Explicit SET_OPTIONS(hd_option=1) even though it's the
+  // default: relying on the implicit default was the F1 bug -- and it's
+  // not just belt-and-suspenders here, HD has to come FIRST. Both grids
+  // are centred on the same screen centre, so whichever grid is smaller in
+  // both dimensions is a strict subset of the other. SD (30x16) is smaller
+  // than HD (50x18) in both, so an SD -> HD transition leaves the old (SD)
+  // grid entirely inside the new (HD) one -- union_rect() would pass with
+  // the old-grid contribution deleted outright. HD -> SD is the shrink
+  // direction: the old HD grid has pixels the new SD grid does NOT cover,
+  // which is exactly the case union_rect() exists to handle.
   mabur::MspParser p1;
-  mabur::MspScreen sd;
-  {
-    std::vector<uint8_t> s;
-    std::vector<uint8_t> clr = {2};
-    mabur::msp_append_message(s, 182, clr.data(), clr.size());
-    std::vector<uint8_t> opt = {5, 0, 0};
-    mabur::msp_append_message(s, 182, opt.data(), opt.size());
-    std::vector<uint8_t> ds = {3, 0, 0, 0, 'A', 'A', 'A', 'A'};
-    mabur::msp_append_message(s, 182, ds.data(), ds.size());
-    std::vector<uint8_t> scr1 = {4};
-    mabur::msp_append_message(s, 182, scr1.data(), scr1.size());
-    feed(p1, sd, s);
-  }
-  r.draw(sd, c.s, &sh);
-  const OsdLayout old_lay = r.layout();
-
-  // Mark a pixel inside the OLD grid that the NEW grid will not cover.
-  const size_t old_px = (size_t)old_lay.origin_y * c.s.stride_px + old_lay.origin_x;
-  c.s.pixels[old_px] = kSentinel;
-  c.s.pixels[0] = kSentinel;  // outside both
-
-  // Now HD 50x18 (SET_OPTIONS payload {5, 0, 1}).
-  mabur::MspParser p2;
   mabur::MspScreen hd;
   {
     std::vector<uint8_t> s;
@@ -385,13 +368,37 @@ TEST(layout_change_clears_union_of_old_and_new_grids) {
     mabur::msp_append_message(s, 182, clr.data(), clr.size());
     std::vector<uint8_t> opt = {5, 0, 1};
     mabur::msp_append_message(s, 182, opt.data(), opt.size());
+    std::vector<uint8_t> ds = {3, 0, 0, 0, 'A', 'A', 'A', 'A'};
+    mabur::msp_append_message(s, 182, ds.data(), ds.size());
+    std::vector<uint8_t> scr1 = {4};
+    mabur::msp_append_message(s, 182, scr1.data(), scr1.size());
+    feed(p1, hd, s);
+  }
+  r.draw(hd, c.s, &sh);
+  const OsdLayout old_lay = r.layout();
+
+  // Mark a pixel inside the OLD (HD) grid that the NEW (SD) grid does not
+  // cover -- the pixel the union logic exists to reach.
+  const size_t old_px = (size_t)old_lay.origin_y * c.s.stride_px + old_lay.origin_x;
+  c.s.pixels[old_px] = kSentinel;
+  c.s.pixels[0] = kSentinel;  // outside both
+
+  // Now SD 30x16 (SET_OPTIONS payload {5, 0, 0}).
+  mabur::MspParser p2;
+  mabur::MspScreen sd;
+  {
+    std::vector<uint8_t> s;
+    std::vector<uint8_t> clr = {2};
+    mabur::msp_append_message(s, 182, clr.data(), clr.size());
+    std::vector<uint8_t> opt = {5, 0, 0};
+    mabur::msp_append_message(s, 182, opt.data(), opt.size());
     std::vector<uint8_t> ds = {3, 0, 0, 0, 'B', 'B'};
     mabur::msp_append_message(s, 182, ds.data(), ds.size());
     std::vector<uint8_t> scr2 = {4};
     mabur::msp_append_message(s, 182, scr2.data(), scr2.size());
-    feed(p2, hd, s);
+    feed(p2, sd, s);
   }
-  r.draw(hd, c.s, &sh);
+  r.draw(sd, c.s, &sh);
 
   CHECK(c.s.pixels[old_px] != kSentinel);  // old grid was cleared
   CHECK(c.s.pixels[0] == kSentinel);       // outside both: untouched
