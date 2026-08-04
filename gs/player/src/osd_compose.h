@@ -31,7 +31,6 @@ struct OsdComposeIn {
 struct OsdComposeOut {
   bool published = false;       // the caller should call osd_publish()
   bool announce_blank = false;  // first buffer of a stale episode: log it once
-  int msp_cells = 0;
   int gs_drawn = 0;
   int gs_reclaimed = 0;
 };
@@ -98,10 +97,6 @@ class OsdComposer {
   // MSP draw-or-blank, GS collision reclaim, GS update, burn feeds. Leaves
   // buffer `idx` current in both layers.
   OsdComposeOut compose(int idx, const Surface& s, const OsdComposeIn& in);
-
-  // Test hook: the pixel rect the MSP character grid occupies on the buffer
-  // this shadow describes, or a zero rect if nothing is drawn there.
-  DirtyRect debug_grid_rect(int idx) const;
 
  private:
   OsdRaster* raster_ = nullptr;

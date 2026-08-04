@@ -58,10 +58,6 @@ bool OsdComposer::gs_layout(int screen_w, int screen_h, std::string* err) {
   return true;
 }
 
-DirtyRect OsdComposer::debug_grid_rect(int idx) const {
-  return grid_of(shadow_[idx & 1].layout);
-}
-
 bool OsdComposer::wants(const OsdComposeIn& in) const {
   if (gs_live() && in.snap && in.gs_dirty) return true;
   if (raster_ && in.screen) {
@@ -122,7 +118,7 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
       // out a buffer whose MSP grid is one screen old, i.e. the flight OSD
       // stepping backwards at the GS publish rate.
       if (gs_on) pre_ = shadow_[idx];
-      out.msp_cells = raster_->draw(*in.screen, s, &shadow_[idx]);
+      raster_->draw(*in.screen, s, &shadow_[idx]);
       msp_drew = true;
       blanked_[idx] = false;
       // Remembered because a later blank may find this buffer ALREADY clear
