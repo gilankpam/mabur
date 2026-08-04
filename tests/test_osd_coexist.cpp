@@ -17,6 +17,7 @@
 #include "osd_compose.h"
 #include "osd_font.h"
 #include "osd_palette.h"
+#include "scratch.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -31,15 +32,19 @@ static constexpr int W = 1920, H = 1080;
 
 // --- fonts ------------------------------------------------------------
 
-static std::string gsfont_path() {
-  static std::string p;
-  if (!p.empty()) return p;
-  p = std::string(std::tmpnam(nullptr)) + ".gfont";
-  const std::string cmd = std::string("python3 ") + GEN_GSFONT + " --synthetic " + p +
-                          " --sizes 13,14,15,16,17,19,21,22,23,24,25,26,28,29,32,34,35,"
-                          "37,38,42,44,45,48,51,52,56,68,75,76,112 >/dev/null 2>&1";
-  REQUIRE(std::system(cmd.c_str()) == 0);
-  return p;
+// GSFONT_SCALED is the full 30-size synthetic .gfont, generated once by the
+// build (see tests/CMakeLists.txt) and shared with test_gs_overlay.cpp --
+// which is the point: both files want that exact set, and building it is
+// ~11 s of Python each time.
+static GsFont& gsfont() {
+  static GsFont f;
+  static bool once = false;
+  if (!once) {
+    std::string err;
+    REQUIRE(f.load(GSFONT_SCALED, &err));
+    once = true;
+  }
+  return f;
 }
 
 // 38x60 glyphs, so the 50x18 MSP grid is 1900x1080 -- 91% of a 1080p
@@ -47,40 +52,29 @@ static std::string gsfont_path() {
 // enough to reach every GS corner block, which is the point. Glyph gi is a
 // solid opaque colour carrying gi in its low bits, so a probe pixel says
 // WHICH screen a buffer is showing, not merely that it is showing one.
-static std::string mspfont_path() {
-  static std::string p;
-  if (!p.empty()) return p;
-  p = std::string(std::tmpnam(nullptr)) + ".mfont";
-  std::FILE* f = std::fopen(p.c_str(), "wb");
-  REQUIRE(f != nullptr);
-  const int gw = 38, gh = 60;
-  const uint32_t hdr[8] = {0x544E464DU, 1, (uint32_t)gw, (uint32_t)gh, 1024, 0, 0, 0};
-  std::fwrite(hdr, sizeof(hdr), 1, f);
-  std::vector<uint32_t> g((size_t)gw * gh);
-  for (int gi = 0; gi < 1024; ++gi) {
-    for (auto& px : g) px = 0xFF000000u | (uint32_t)gi;
-    std::fwrite(g.data(), 4, g.size(), f);
-  }
-  std::fclose(f);
-  return p;
-}
-
-static GsFont& gsfont() {
-  static GsFont f;
-  static bool once = false;
-  if (!once) {
-    std::string err;
-    REQUIRE(f.load(gsfont_path(), &err));
-    once = true;
-  }
-  return f;
-}
+//
+// Written rather than generated: 9 MB of flat colour is faster to emit here
+// than to ship as a fixture. OsdFont mmaps it, so the ScratchFile can go
+// out of scope and unlink it the moment the load returns -- the mapping
+// keeps the data alive and nothing is left on disk.
 static OsdFont& mspfont() {
   static OsdFont f;
   static bool once = false;
   if (!once) {
+    const ScratchFile sf("osd_coexist", ".mfont");
+    std::FILE* fp = std::fopen(sf.c_str(), "wb");
+    REQUIRE(fp != nullptr);
+    const int gw = 38, gh = 60;
+    const uint32_t hdr[8] = {0x544E464DU, 1, (uint32_t)gw, (uint32_t)gh, 1024, 0, 0, 0};
+    std::fwrite(hdr, sizeof(hdr), 1, fp);
+    std::vector<uint32_t> g((size_t)gw * gh);
+    for (int gi = 0; gi < 1024; ++gi) {
+      for (auto& px : g) px = 0xFF000000u | (uint32_t)gi;
+      std::fwrite(g.data(), 4, g.size(), fp);
+    }
+    std::fclose(fp);
     std::string err;
-    REQUIRE(f.load(mspfont_path(), &err));
+    REQUIRE(f.load(sf.path, &err));
     once = true;
   }
   return f;

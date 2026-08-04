@@ -7,13 +7,9 @@
 #include <vector>
 using namespace maburplay;
 
-static std::string make_font(const char* sizes) {
-  std::string path = std::string(std::tmpnam(nullptr)) + ".gfont";
-  const std::string cmd = std::string("python3 ") + GEN_GSFONT + " --synthetic " +
-                          path + " --sizes " + sizes + " >/dev/null 2>&1";
-  REQUIRE(std::system(cmd.c_str()) == 0);
-  return path;
-}
+// GSFONT_20 is an absolute path to a single-size (20 px) synthetic .gfont
+// the build generated once (see tests/CMakeLists.txt). Read-only: it is
+// shared with the other .gfont tests, so nothing here may remove it.
 
 // Canvas carries GUARD sentinel-filled rows immediately before and after
 // its visible s.height rows, in the SAME allocation, so s.pixels is not
@@ -164,7 +160,7 @@ TEST(clear_region_zeroes_only_its_rect) {
 }
 
 TEST(text_width_is_advance_times_glyph_count) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -176,11 +172,10 @@ TEST(text_width_is_advance_times_glyph_count) {
   // whole reason text_width decodes UTF-8 rather than counting chars.
   CHECK(text_width(*a, "\xE2\x88\x92") == a->advance_x);         // U+2212
   CHECK(text_width(*a, "\xE2\x88\x92" "58") == 3 * a->advance_x);
-  std::remove(p.c_str());
 }
 
 TEST(draw_text_lands_pixels_and_returns_advance) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -193,7 +188,7 @@ TEST(draw_text_lands_pixels_and_returns_advance) {
 }
 
 TEST(draw_text_colours_coverage_and_blackens_shadow) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -215,11 +210,10 @@ TEST(draw_text_colours_coverage_and_blackens_shadow) {
   }
   CHECK(saw_token);
   CHECK(saw_shadow);
-  std::remove(p.c_str());
 }
 
 TEST(draw_text_clips_at_every_edge_without_crashing) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -232,13 +226,12 @@ TEST(draw_text_clips_at_every_edge_without_crashing) {
   draw_text(c.s, *a, 10, 500, "000", 0xFFFFFFu);
   CHECK(true);  // survived
   CHECK(c.guard_intact());
-  std::remove(p.c_str());
 }
 
 // A codepoint the atlas lacks still advances the pen, so a missing glyph
 // leaves a gap rather than shifting the whole rest of the line.
 TEST(missing_glyph_advances_but_draws_nothing) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -248,11 +241,10 @@ TEST(missing_glyph_advances_but_draws_nothing) {
   const int adv = draw_text(c.s, *a, 10, a->baseline, "\xE4\xB8\x80", 0xFFFFFFu);  // U+4E00
   CHECK(adv == a->advance_x);
   CHECK(c.nonzero() == 0);
-  std::remove(p.c_str());
 }
 
 TEST(null_surface_is_a_safe_no_op) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -263,7 +255,6 @@ TEST(null_surface_is_a_safe_no_op) {
   fill_rect(null_s, 0, 0, 4, 4, 0xFFFFFFu);
   clear_region(null_s, DirtyRect{0, 0, 4, 4});
   CHECK(true);  // survived
-  std::remove(p.c_str());
 }
 
 // --- Review round F1: edge-straddle + stride-pitch + utf8_next coverage --
@@ -280,7 +271,7 @@ TEST(null_surface_is_a_safe_no_op) {
 // wrong (or never-attempted) pixel.
 
 TEST(draw_text_straddles_right_edge_without_overflow) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -300,11 +291,10 @@ TEST(draw_text_straddles_right_edge_without_overflow) {
   draw_text(c.s, *a, pen_x, a->baseline, "0", 0xFFFFFFu);
   CHECK(c.nonzero() > 0);  // the in-bounds columns still drew
   CHECK(c.guard_intact());
-  std::remove(p.c_str());
 }
 
 TEST(draw_text_straddles_left_edge_without_underflow) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -325,11 +315,10 @@ TEST(draw_text_straddles_left_edge_without_underflow) {
   draw_text(c.s, *a, pen_x, baseline_y, "0", 0xFFFFFFu);
   CHECK(c.nonzero() > 0);
   CHECK(c.guard_intact());
-  std::remove(p.c_str());
 }
 
 TEST(draw_text_straddles_top_edge_without_underflow) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -354,11 +343,10 @@ TEST(draw_text_straddles_top_edge_without_underflow) {
   // canvas-pixel check, and only reliably caught by ASan/a sanitizer,
   // which is exactly the gap this Canvas's guard band exists to close.
   CHECK(c.guard_intact());
-  std::remove(p.c_str());
 }
 
 TEST(draw_text_straddles_bottom_edge_without_overflow) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -375,7 +363,6 @@ TEST(draw_text_straddles_bottom_edge_without_overflow) {
   draw_text(c.s, *a, pen_x, a->baseline, "0", 0xFFFFFFu);
   CHECK(c.nonzero() > 0);
   CHECK(c.guard_intact());
-  std::remove(p.c_str());
 }
 
 // A Surface whose stride_px is wider than its width, like a real DRM dumb
@@ -419,7 +406,7 @@ TEST(clear_region_never_writes_the_row_padding) {
 }
 
 TEST(draw_text_never_writes_the_row_padding) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -436,7 +423,6 @@ TEST(draw_text_never_writes_the_row_padding) {
   const int pen_x = ox + (a->glyph_w - a->advance_x) / 2;
   draw_text(c.s, *a, pen_x, a->baseline, "0", 0xFFFFFFu);
   CHECK(c.padding_untouched());
-  std::remove(p.c_str());
 }
 
 // utf8_next is exposed "for testing" but had no direct test: draw_text and

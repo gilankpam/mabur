@@ -1,22 +1,18 @@
 #include "mtest.h"
 #include "gs_font.h"
+#include "scratch.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 using namespace maburplay;
 
-// Builds a synthetic .gfont via the generator. GEN_GSFONT is the absolute
-// path, injected by tests/CMakeLists.txt.
-static std::string make_font(const char* sizes) {
-  std::string path = std::string(std::tmpnam(nullptr)) + ".gfont";
-  const std::string cmd = std::string("python3 ") + GEN_GSFONT + " --synthetic " +
-                          path + " --sizes " + sizes + " >/dev/null 2>&1";
-  REQUIRE(std::system(cmd.c_str()) == 0);
-  return path;
-}
+// GSFONT_8_12_16 / GSFONT_12 / GSFONT_20 are absolute paths to synthetic
+// .gfont fixtures the build generated once (see tests/CMakeLists.txt).
+// Read-only: they are shared with the other .gfont tests, so nothing here
+// may remove or rewrite one.
 
 TEST(load_exposes_every_size_in_the_directory) {
-  const std::string p = make_font("8,12,16");
+  const std::string p = GSFONT_8_12_16;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -42,11 +38,10 @@ TEST(load_exposes_every_size_in_the_directory) {
   for (int i = 0; i < a16->glyph_w * a16->glyph_h; ++i) cov += g[i * 2];
   CHECK(cov > 0);
 
-  std::remove(p.c_str());
 }
 
 TEST(atlas_geometry_matches_the_generator) {
-  const std::string p = make_font("20");
+  const std::string p = GSFONT_20;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -58,11 +53,10 @@ TEST(atlas_geometry_matches_the_generator) {
   CHECK(a->glyph_h == 20 + 5 + 8);      // ascender + descender + 2*PAD
   CHECK(a->baseline == 4 + 20);         // PAD + ascender
   CHECK(a->glyph_w > a->advance_x);
-  std::remove(p.c_str());
 }
 
 TEST(index_of_finds_ascii_and_the_four_extras) {
-  const std::string p = make_font("12");
+  const std::string p = GSFONT_12;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -78,11 +72,10 @@ TEST(index_of_finds_ascii_and_the_four_extras) {
   CHECK(a->index_of(0x25CF) >= 0);  // BLACK CIRCLE
   CHECK(a->index_of(0x25CB) >= 0);  // WHITE CIRCLE
   CHECK(a->index_of(0x4E00) < 0);   // absent: negative, never index 0
-  std::remove(p.c_str());
 }
 
 TEST(glyph_pixels_carry_coverage_and_shadow) {
-  const std::string p = make_font("12");
+  const std::string p = GSFONT_12;
   GsFont f;
   std::string err;
   REQUIRE(f.load(p, &err));
@@ -99,7 +92,6 @@ TEST(glyph_pixels_carry_coverage_and_shadow) {
   }
   CHECK(cov > 0);
   CHECK(sha > 0);  // the shadow channel was baked, not left zero
-  std::remove(p.c_str());
 }
 
 // Failure is a reason, never a crash: the overlay disables itself on any
@@ -111,22 +103,21 @@ TEST(bad_files_fail_with_a_reason) {
   CHECK(!err.empty());
   CHECK(!f.ok());
 
-  std::string p = std::string(std::tmpnam(nullptr)) + ".gfont";
-  std::FILE* fp = std::fopen(p.c_str(), "wb");
+  const ScratchFile junk_file("gs_font", ".gfont");
+  std::FILE* fp = std::fopen(junk_file.c_str(), "wb");
   REQUIRE(fp != nullptr);
   const char junk[64] = {0};
   std::fwrite(junk, 1, sizeof(junk), fp);
   std::fclose(fp);
   GsFont f2;
   err.clear();
-  CHECK(!f2.load(p, &err));
+  CHECK(!f2.load(junk_file.path, &err));
   CHECK(!err.empty());
-  std::remove(p.c_str());
 }
 
 // A truncated file must be rejected at load, not read past at draw time.
 TEST(truncated_file_is_rejected) {
-  const std::string p = make_font("12");
+  const std::string p = GSFONT_12;
   std::FILE* fp = std::fopen(p.c_str(), "rb");
   REQUIRE(fp != nullptr);
   std::fseek(fp, 0, SEEK_END);
@@ -136,18 +127,16 @@ TEST(truncated_file_is_rejected) {
   REQUIRE(std::fread(&buf[0], 1, (size_t)n, fp) == (size_t)n);
   std::fclose(fp);
 
-  std::string t = std::string(std::tmpnam(nullptr)) + ".gfont";
-  std::FILE* tf = std::fopen(t.c_str(), "wb");
+  const ScratchFile half("gs_font", ".gfont");
+  std::FILE* tf = std::fopen(half.c_str(), "wb");
   REQUIRE(tf != nullptr);
   std::fwrite(buf.data(), 1, (size_t)n / 2, tf);  // half the file
   std::fclose(tf);
 
   GsFont f;
   std::string err;
-  CHECK(!f.load(t, &err));
+  CHECK(!f.load(half.path, &err));
   CHECK(!err.empty());
-  std::remove(t.c_str());
-  std::remove(p.c_str());
 }
 
 MTEST_MAIN
