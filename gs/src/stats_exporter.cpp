@@ -400,10 +400,17 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       d["uplink"] = {{"rssi_a", nullptr}, {"rssi_b", nullptr},
                      {"snr_a", nullptr}, {"snr_b", nullptr}};
     } else {
+      // up_snr is the DRONE's receiver reading the uplink, but it comes from
+      // the same devourer RxAtrib.snr and is the same raw half-dB, forwarded
+      // untouched by telemetry.cpp. Corrected here rather than on the drone
+      // for two reasons: the exporter is already where raw becomes dB (see
+      // kSnrRawToDb above), and the wire field is an int8_t the drone
+      // lround()s -- halving before that rounding would quantize to whole dB
+      // and throw away half the resolution this keeps.
       d["uplink"] = {{"rssi_a", t.up_rssi[0] - 110.0},
                      {"rssi_b", t.up_rssi[1] - 110.0},
-                     {"snr_a", t.up_snr[0]},
-                     {"snr_b", t.up_snr[1]}};
+                     {"snr_a", t.up_snr[0] * kSnrRawToDb},
+                     {"snr_b", t.up_snr[1] * kSnrRawToDb}};
     }
     d["sys"] = {{"soc_temp_c", t.soc_temp_c},
                 {"thermal_delta", t.thermal_delta},

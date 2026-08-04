@@ -135,7 +135,13 @@ link) are the same number with nothing in the schema to tell them apart.
 **Silence from that warning means "not obviously old", never "confirmed
 dB".** Date the recording instead — anything before 2026-08-04 is half-dB.
 This is recorded here because it is the only committed, discoverable place:
-the schema doc lives under gitignored `docs/superpowers/`. ⚠ The SAME bug
-still lives in `drone.uplink.snr_a`/`snr_b`, which is drone-sourced and was
-not fixed — so one datagram now carries true dB under `classes.*.snr` and
-half-dB under `drone.uplink.snr_*`, under near-identical key names.
+the schema doc lives under gitignored `docs/superpowers/`.
+
+`drone.uplink.snr_a`/`snr_b` had the SAME bug and were fixed the same day —
+the drone's own receiver reads the uplink through the same devourer
+`RxAtrib.snr`, and `telemetry.cpp` forwards it raw. Both are corrected at
+the exporter, not at the source: the uplink's wire field is an `int8_t` the
+drone `lround()`s, so halving before that rounding would quantize to whole
+dB and lose half the resolution. Everything above about pre-2026-08-04
+recordings applies to `drone.uplink.snr_*` too, and `flightreport.py` warns
+on both with the same backstop threshold and the same caveat.

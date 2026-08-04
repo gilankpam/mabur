@@ -90,21 +90,25 @@ def main(path):
               "the 2026-08-04 half-dB fix; divide those values by 2 to compare with "
               "newer files.", file=sys.stderr)
 
-    # (2) drone.uplink.snr_a/snr_b were NOT fixed. They are drone-sourced,
-    #     forwarded raw from devourer by the T_TELEM frame, and are half-dB
-    #     on every recording ever made, including one taken today. So this
-    #     one needs no threshold and gets none: presence of the key is the
-    #     proof, and a value-based guess would only be able to miss. Warning
-    #     unconditionally is the point -- the GS-side check above is a
-    #     backstop for a bug that is fixed, and this is a live one.
+    # (2) drone.uplink.snr_a/snr_b had the SAME bug and were fixed the same
+    #     day, at the same place (the exporter) -- the drone's own receiver
+    #     reads the uplink through the same devourer RxAtrib.snr and
+    #     telemetry.cpp forwards it raw. So this is now the same backstop as
+    #     (1), with the same limits, and not a live-bug warning.
+    #
+    #     It gets its own check rather than being folded into (1) because
+    #     the two came from different senders and a recording can in
+    #     principle straddle only one of them (a GS updated before its
+    #     drone's telemetry was being logged). Same >60 threshold, same
+    #     caveat: silence means "not obviously old", never "confirmed dB".
     up_snr = [s for r in rows
               for u in [((r.get("drone") or {}).get("uplink") or {})]
               for key in ("snr_a", "snr_b")
               for s in [u.get(key)] if isinstance(s, (int, float))]
-    if up_snr:
-        print("WARNING: drone.uplink.snr_a/snr_b are HALF-dB on every recording -- "
-              "that path was never converted, so unlike cards[].classes[].snr they "
-              "are wrong regardless of date; divide by 2. Saw max %.1f (= %.1f dB)."
+    if up_snr and max(up_snr) > 60.0:
+        print("WARNING: drone.uplink.snr_a/snr_b exceeds 60 -- this recording "
+              "predates the 2026-08-04 half-dB fix; divide those values by 2 to "
+              "compare with newer files. Saw max %.1f (= %.1f dB)."
               % (max(up_snr), max(up_snr) / 2.0), file=sys.stderr)
 
     trans, in_rung, u_by_rung, residuals = [], {}, {}, []

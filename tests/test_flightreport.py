@@ -289,10 +289,10 @@ def test_old_scale_snr_warns_on_stderr():
         f"Unexpected uplink warning with no drone block: {result.stderr!r}"
     )
 
-    # drone.uplink.snr_a/snr_b were never converted, so they are half-dB on
-    # a recording made today -- an ordinary 13.5 dB uplink reads 27 and must
-    # still be flagged. This is what the cards[] threshold cannot do and why
-    # the two warnings are separate.
+    # drone.uplink.snr_a/snr_b were fixed the same day and at the same place
+    # as cards[].classes[].snr, so they are now the same backstop with the
+    # same >60 threshold. An ordinary post-fix uplink reading 27 dB is a
+    # legitimate value and must NOT warn.
     row["drone"] = {"state": "flying",
                     "uplink": {"rssi_a": -55.0, "rssi_b": -58.0,
                                "snr_a": 27.0, "snr_b": 24.0}}
@@ -302,15 +302,30 @@ def test_old_scale_snr_warns_on_stderr():
         capture_output=True, text=True,
     )
     assert result.returncode == 0
-    assert "drone.uplink.snr_a/snr_b are HALF-dB" in result.stderr, (
-        f"Expected uplink half-dB warning, got: {result.stderr!r}"
+    assert "drone.uplink" not in result.stderr, (
+        f"A post-fix 27 dB uplink must not warn, got: {result.stderr!r}"
     )
-    assert "13.5 dB" in result.stderr, (
+
+    # ...but an old-scale uplink (76 = 38 dB) still trips the backstop, and
+    # says so as its own line so a file that straddles only one of the two
+    # senders stays diagnosable.
+    row["drone"]["uplink"] = {"rssi_a": -55.0, "rssi_b": -58.0,
+                              "snr_a": 76.0, "snr_b": 74.0}
+    flight_jsonl.write_text(json.dumps(row) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "drone.uplink.snr_a/snr_b exceeds 60" in result.stderr, (
+        f"Expected uplink old-scale warning, got: {result.stderr!r}"
+    )
+    assert "38.0 dB" in result.stderr, (
         f"Expected the converted figure in the warning, got: {result.stderr!r}"
     )
-    # The two cases stay distinguishable: this file is NOT an old recording.
-    assert "predates the 2026-08-04 half-dB fix" not in result.stderr, (
-        f"Uplink warning must not imply an old recording: {result.stderr!r}"
+    # cards[] is on the dB scale in this row, so only the uplink line fires.
+    assert "cards[].classes[].snr exceeds 60" not in result.stderr, (
+        f"cards[] must not warn on a dB-scale row: {result.stderr!r}"
     )
 
     # A null uplink (deaf radio / pre-DISC: the exporter writes nulls) is not
