@@ -19,6 +19,7 @@
 #include "au_ring.h"
 #include "dvr_mux.h"
 #include "gs_font.h"
+#include "gs_metrics.h"
 #include "gs_overlay.h"
 #include "gs_source.h"
 #include "hevc_params.h"
@@ -606,18 +607,18 @@ int main(int argc, char** argv) {
   // published to the ring and still reads 60 while a wedged decoder shows a
   // frozen picture -- the exact failure the pilot has to be able to see.
   maburplay::GsPlayerState gs_ps;
-  uint64_t gs_frames_at_mark = 0;   // frame_count at the last 1 Hz mark
-  uint64_t gs_bytes_at_mark = 0;    // gs_bytes_total at the last 1 Hz mark
-  uint64_t gs_bytes_total = 0;      // running AU byte total, summed at delivery
-  uint64_t gs_video_mark_ms = 0;    // 0 = no mark yet, so the first tick only seeds
-  uint64_t gs_last_au_ms = 0;
-  double gs_last_au_interval_ms = -1.0;
-  double gs_jitter_ms = 0.0;
-  // Recording state, recomputed at the same 1 Hz from the DVR's own counters.
-  uint64_t dvr_open_ms = 0;          // steady_clock ms when the file was opened
-  uint64_t rec_samples_at_check = 0;
-  uint64_t rec_feed_at_check = 0;  // AUs (raw) or decoded frames (burned)
-  uint64_t rec_stall_since_ms = 0;
+  uint64_t gs_frames_at_mark = 0;  // frame_count at the last 1 Hz mark
+  uint64_t gs_bytes_at_mark = 0;   // gs_bytes_total at the last 1 Hz mark
+  uint64_t gs_bytes_total = 0;     // running AU byte total, summed at delivery
+  uint64_t gs_video_mark_ms = 0;   // 0 = no mark yet, so the first tick only seeds
+  // COMPLETE AUs, not deliveries: this is what the raw DVR can actually
+  // write, and it is what tells a stalled writer apart from a link so bad
+  // that every AU arrives truncated (gs_metrics.h, RecTracker::Inputs::feed).
+  uint64_t gs_complete_aus = 0;
+  // Both split out of this loop so they can be tested on the host with no
+  // ring and no DRM -- see tests/test_gs_metrics.cpp.
+  maburplay::AuJitter gs_jitter;
+  maburplay::RecTracker gs_rec;
   bool statvfs_warned = false;
 
   // dvr.mode "burned": the recording is produced by re-encoding decoded
@@ -636,13 +637,21 @@ int main(int argc, char** argv) {
   if (burned_mode && presenter) {
     auto rec = std::make_unique<maburplay::BurnRecorder>();
     maburplay::BurnCfg bc;
-    // Palette (and with it the encoder's OSD region) ONLY when the OSD path
-    // is actually live -- osd_raster is non-null exactly when osd.enable is
-    // set, the font loaded AND the MSP socket opened -- AND the presenter
-    // really allocated an OSD surface. Otherwise no palette at all: a burned
-    // recording with no overlay is a legal configuration (a plain
-    // transcode), not an error, and set_osd() then costs nothing.
+    // Palette (and with it the encoder's OSD region) ONLY when the MSP
+    // raster path is live -- osd_raster is non-null exactly when osd.enable
+    // is set, the MSP font loaded AND the MSP socket opened -- AND the
+    // presenter really allocated an OSD surface. Otherwise no palette at
+    // all: a burned recording with no overlay is a legal configuration (a
+    // plain transcode), not an error, and set_osd() then costs nothing.
     // MUST precede start(), which uploads it before the thread exists.
+    //
+    // STALE FOR THE GS OVERLAY, and knowingly so: since the GS overlay
+    // landed, the OSD surface can carry pixels with osd_raster == nullptr
+    // (a GS-only topology), and even with both live this palette is cut
+    // from the MSP atlas alone, which has no green, amber or red in it.
+    // Task 11 owns the fix -- build_palette() gains extra seeds and this
+    // gate becomes (osd_raster || gs_overlay). Until then a burned
+    // recording carries no GS overlay, or a monochrome one.
     const maburplay::Surface osd_surf = presenter->osd_back_surface();
     if (osd_raster && osd_surf.pixels && osd_surf.width > 0 && osd_surf.height > 0) {
       // The region is sized from the SURFACE, not from screen_mode: the
@@ -666,13 +675,7 @@ int main(int argc, char** argv) {
     bc.fragment_ms = cfg.dvr.fragment_ms;
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the
     // decode watchdog may destroy and recreate it mid-run.
-    if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) {
-      burn = std::move(rec);
-      // The GS overlay's recording clock. Started here rather than at the
-      // first encoded frame because that is when the pilot armed it; the
-      // block still reads ARMED until frames actually appear.
-      dvr_open_ms = mono_ms();
-    }
+    if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
   }
   if (burned_mode && !burn) {
     // Wrong backend, no presenter (--decode-only), or an encoder that would
@@ -778,30 +781,11 @@ int main(int argc, char** argv) {
     // invisible in them. RingClient::pump(2) is a poll() on the doorbell fd
     // with a 2 ms CEILING, not a 2 ms sample grid, so the doorbell wakes us
     // promptly and steady_clock resolves sub-millisecond here.
-    {
-      const uint64_t now_ms = mono_ms();
-      if (gs_last_au_ms != 0) {
-        const double iv = (double)(now_ms - gs_last_au_ms);
-        if (iv > 1000.0) {
-          // A stall is a stall, not jitter: folding a link outage into the
-          // EMA would leave a huge number sitting on the OSD for the next
-          // ~16 AUs after video came back.
-          gs_last_au_interval_ms = -1.0;
-          gs_jitter_ms = 0.0;
-        } else if (gs_last_au_interval_ms >= 0.0) {
-          const double d = iv > gs_last_au_interval_ms ? iv - gs_last_au_interval_ms
-                                                       : gs_last_au_interval_ms - iv;
-          gs_jitter_ms += (d - gs_jitter_ms) / 16.0;
-          gs_last_au_interval_ms = iv;
-        } else {
-          gs_last_au_interval_ms = iv;  // first interval after a stall: no delta yet
-        }
-      }
-      gs_last_au_ms = now_ms;
-      // Delivered bitrate is what arrived, truncated AUs included: the
-      // figure answers "what is the link carrying", not "what decoded".
-      gs_bytes_total += ev.au.size();
-    }
+    gs_jitter.on_au(mono_ms());
+    // Delivered bitrate is what arrived, truncated AUs included: the figure
+    // answers "what is the link carrying", not "what decoded".
+    gs_bytes_total += ev.au.size();
+    if (complete) ++gs_complete_aus;
 
     // !burned_mode: in burned mode the BurnRecorder owns the recording and
     // writes the encoder's output to its own DvrMux instead. Everything
@@ -822,7 +806,6 @@ int main(int argc, char** argv) {
             dvr_open_failed = true;
           } else {
             dvr_open_failed = false;
-            dvr_open_ms = mono_ms();  // the GS overlay's recording clock
           }
         }
         if (dvr_open) {
@@ -1106,6 +1089,16 @@ int main(int argc, char** argv) {
           }
           presenter->osd_publish();
           osd_blanked = false;
+          // This buffer is about to be scanned out and the GS block has not
+          // necessarily drawn into it since the last swap -- osd_back and
+          // osd_dirty are SHARED, so an MSP-only publish would put a buffer
+          // on screen whose GS region is one sample old, or (right after a
+          // swap) has never been drawn at all. The swap happens at COMMIT,
+          // not at publish, so the GS block later in this same iteration
+          // still sees this osd_back_index() and its gs_owed[] catch-up
+          // brings the buffer fully current before the commit. Costs one
+          // extra update() per MSP screen, ~1 Hz.
+          gs_needs_render = true;
         } else if (!osd_blanked && osd_src->stale(now_ms)) {
           const int idx = presenter->osd_back_index();
           const maburplay::Surface surf = presenter->osd_back_surface();
@@ -1116,6 +1109,7 @@ int main(int argc, char** argv) {
           }
           presenter->osd_publish();
           osd_blanked = true;
+          gs_needs_render = true;  // same reason as the publish above
           std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
                        cfg.osd.stale_ms);
         }
@@ -1172,76 +1166,51 @@ int main(int argc, char** argv) {
         gs_frames_at_mark = frame_count;
         gs_bytes_at_mark = gs_bytes_total;
         gs_video_mark_ms = now_ms;
-        gs_ps.jitter_ms = gs_jitter_ms;
+        gs_jitter.on_tick(now_ms);  // an outage must not leave a stale figure
+        gs_ps.jitter_ms = gs_jitter.ms();
         gs_needs_render = true;
 
-        // Recording state. `samples` and the thing that feeds them differ
-        // by mode: the raw path muxes AUs straight off the ring and does not
-        // care whether anything decodes, while burned mode encodes decoded
-        // frames.
-        uint64_t samples = dvr.samples();
-        uint64_t feed = ring.delivered();
-        bool open = dvr_open;
-        bool broken = dvr_open_failed;
+        // Recording state. Both the samples and the thing that would make
+        // them advance differ by mode: the raw path muxes complete AUs
+        // straight off the ring and does not care whether anything decodes,
+        // while burned mode encodes decoded frames.
+        maburplay::RecTracker::Inputs rin;
+        rin.enabled = cfg.dvr.enabled;
+        rin.samples = dvr.samples();
+        rin.feed = gs_complete_aus;
+        rin.open = dvr_open;
+        rin.broken = dvr_open_failed;
         if (burned_mode) {
-          feed = frame_count;
+          rin.feed = frame_count;
 #ifdef MABUR_PLAYER_HW
-          samples = burn ? burn->frames_encoded() : 0;
-          open = burn != nullptr;
-          broken = burn == nullptr;
+          rin.samples = burn ? burn->frames_encoded() : 0;
+          rin.open = burn != nullptr;
+          rin.broken = burn == nullptr;
 #else
-          samples = 0;
-          open = false;
-          broken = true;  // burned mode needs the hardware build; already logged
+          rin.samples = 0;
+          rin.open = false;
+          rin.broken = true;  // burned mode needs the hardware build; already logged
 #endif
         }
-
-        if (!cfg.dvr.enabled) {
-          gs_ps.rec.kind = maburplay::RecState::Kind::kAbsent;
-          gs_ps.rec.elapsed_s = 0;
-        } else if (broken) {
-          // The recorder could not be brought up at all. Whichever path it
-          // was has already logged why; this is the pilot-visible half.
-          gs_ps.rec.kind = maburplay::RecState::Kind::kFault;
-        } else if (!open) {
-          gs_ps.rec.kind = maburplay::RecState::Kind::kArmed;
-        } else {
-          // Either progress or nothing to make progress FROM resets the
-          // stall clock. Without the second half a link outage -- no AUs,
-          // so no samples -- would read as a recording fault, which is a
-          // lie about the one subsystem still working.
-          if (samples != rec_samples_at_check || feed == rec_feed_at_check)
-            rec_stall_since_ms = now_ms;
-          rec_samples_at_check = samples;
-          rec_feed_at_check = feed;
-          const bool stalled = samples > 0 && now_ms - rec_stall_since_ms >= 3000;
-
-          bool low_space = false;
+        // Polled at this same 1 Hz, and BEFORE the file exists: a card that
+        // is already full must fault rather than sit at ARMED forever.
+        if (rin.enabled) {
           struct statvfs vfs {};
           if (::statvfs(cfg.dvr.dir.c_str(), &vfs) == 0) {
             const uint64_t free_bytes = (uint64_t)vfs.f_bavail * (uint64_t)vfs.f_frsize;
-            low_space = free_bytes < 64ull * 1024 * 1024;
+            rin.low_space = free_bytes < 64ull * 1024 * 1024;
           } else if (!statvfs_warned) {
-            // A failed syscall is not evidence of a full disk, so the
-            // recording state is left alone. Said once; retried silently.
+            // A failed syscall is not evidence of a full disk, so low_space
+            // stays false and the state is left alone. Said once; retried
+            // silently thereafter.
             statvfs_warned = true;
             std::fprintf(stderr,
                          "maburplay: gs osd: statvfs(%s) failed (%s) -- recording free-space "
                          "checks will be skipped whenever it keeps failing\n",
                          cfg.dvr.dir.c_str(), std::strerror(errno));
           }
-
-          if (stalled || low_space) {
-            gs_ps.rec.kind = maburplay::RecState::Kind::kFault;
-          } else if (samples == 0) {
-            // Open but nothing written yet. RECORDING must never show while
-            // no bytes are moving.
-            gs_ps.rec.kind = maburplay::RecState::Kind::kArmed;
-          } else {
-            gs_ps.rec.kind = maburplay::RecState::Kind::kRecording;
-            gs_ps.rec.elapsed_s = dvr_open_ms ? (int)((now_ms - dvr_open_ms) / 1000) : 0;
-          }
         }
+        gs_ps.rec = gs_rec.update(rin, now_ms);
       }
 
 #ifdef MABUR_PLAYER_HW
