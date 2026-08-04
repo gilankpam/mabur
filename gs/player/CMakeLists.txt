@@ -5,6 +5,7 @@ add_library(mabur_player_core STATIC
   src/ring_client.cpp
   src/osd_font.cpp
   src/gs_font.cpp
+  src/gs_draw.cpp
   src/osd_layout.cpp
   src/osd_raster.cpp
   src/osd_source.cpp
