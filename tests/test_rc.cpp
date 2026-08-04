@@ -274,4 +274,56 @@ TEST(telem_round_trip_and_golden) {
   CHECK(!mabur::rc::parse_telem(flip.data(), flip.size()).has_value());
 }
 
+TEST(rcf_probe_roundtrip) {
+  mabur::rc::Rcf r;
+  r.vtx_id = 7; r.seq = 42; r.profile = 5;
+  r.layer_delivery = {100, 90, 0, 80};
+  r.probe3 = true;
+  r.probe_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 6, 20);
+  auto buf = mabur::rc::pack_rcf(r);
+  auto p = mabur::rc::parse_rcf(buf.data(), buf.size());
+  REQUIRE(p.has_value());
+  CHECK(p->probe3);
+  CHECK(p->probe_profile == r.probe_profile);
+  CHECK(p->flags & mabur::rc::RCF_F_PROBE3);
+  CHECK(p->layer_delivery.size() == 4);
+}
+
+TEST(rcf_no_probe_unchanged_length) {
+  mabur::rc::Rcf r;
+  r.layer_delivery = {100, 100, 100, 100};
+  auto plain = mabur::rc::pack_rcf(r);
+  r.probe3 = true;
+  auto probed = mabur::rc::pack_rcf(r);
+  CHECK(probed.size() == plain.size() + 1);  // exactly one extra byte
+  auto p = mabur::rc::parse_rcf(plain.data(), plain.size());
+  REQUIRE(p.has_value());
+  CHECK(!p->probe3);
+}
+
+TEST(rcf_probe_truncated_rejected) {
+  mabur::rc::Rcf r;
+  r.layer_delivery = {100, 100, 100, 100};
+  r.probe3 = true;
+  auto buf = mabur::rc::pack_rcf(r);
+  // Drop the last byte (CRC tail) — must not parse.
+  CHECK(!mabur::rc::parse_rcf(buf.data(), buf.size() - 1).has_value());
+}
+
+TEST(rcf_probe_flag_masked_from_caller_flags) {
+  // If caller sets RCF_F_PROBE3 in flags directly without probe3=true,
+  // packer must mask it out (keep flags and probe3 consistent).
+  mabur::rc::Rcf r;
+  r.layer_delivery = {100, 100, 100, 100};
+  r.flags = mabur::rc::RCF_F_PROBE3;  // caller-supplied stray bit
+  r.probe3 = false;  // but probe3 is false
+  auto buf = mabur::rc::pack_rcf(r);
+  // Frame should have no probe byte (19-byte header + 4 layers + 2 CRC = 25).
+  CHECK(buf.size() == 25);
+  auto p = mabur::rc::parse_rcf(buf.data(), buf.size());
+  REQUIRE(p.has_value());
+  CHECK(!p->probe3);  // probe3 must be false (stray bit was masked)
+  CHECK(!(p->flags & mabur::rc::RCF_F_PROBE3));  // flag must be cleared
+}
+
 MTEST_MAIN

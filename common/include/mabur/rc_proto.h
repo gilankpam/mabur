@@ -23,6 +23,10 @@ constexpr uint8_t F_AUTH_ADVISORY = 0x01;
 constexpr uint8_t F_FAILSAFE = 0x02;
 constexpr uint8_t F_DISCOVERY = 0x04;
 
+// Rcf.flags bit: one probe_profile byte follows layer_delivery — layer 3
+// (s3) transmits at that MCS while everything else stays on Rcf.profile.
+constexpr uint8_t RCF_F_PROBE3 = 0x08;
+
 constexpr uint8_t PWR_NO_CHANGE = 0xFF;
 
 // DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
@@ -34,6 +38,10 @@ constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
 // Display-grade only (not a safety gate): a GS lacking this bit just never
 // sees a T_TELEM frame from an old drone. Spec 2026-07-26 drone-telemetry.
 constexpr uint16_t CAP_TELEMETRY = 0x0002;
+
+// DiscAck.chip_caps bit: drone accepts RCF_F_PROBE3 (s3-only MCS probe).
+// Spec 2026-08-05 s3-probe-promote.
+constexpr uint16_t CAP_S3_PROBE = 0x0004;
 
 // TX-power command. SEMANTIC DIVERGENCE from the frozen Python prototype
 // (devourer tools/precoder/rc_proto.py, which carries a TXAGC index):
@@ -62,6 +70,11 @@ struct Rcf {
   uint8_t fec_overhead_16ths = 4;
   uint8_t flags = 0;
   std::vector<uint8_t> layer_delivery;
+
+  // s3 probe (spec 2026-08-05): when true, pack appends probe_profile after
+  // the layer bytes (inside the CRC) and sets RCF_F_PROBE3 in flags.
+  bool probe3 = false;
+  uint8_t probe_profile = 0;
 
   double fec_overhead() const { return fec_overhead_16ths / 16.0; }
 };
