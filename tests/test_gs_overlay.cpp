@@ -172,17 +172,26 @@ static std::string make_gsfont(const char* sizes = "19,21,22,24,26,34,38,56") {
 // design sizes (19,21,22,24,26,34,38,56) multiplied by the four scales
 // that give exact hits at 720p/1080p/1440p/2160p (x2/3, x1, x4/3, x2),
 // each rounded with the SAME "(int)(px*scale+0.5)" rule layout() itself
-// uses, deduplicated. This is NOT the real asset (Task 14's job, not
-// tested here) -- it exists only so pick()'s proportional-tolerance
-// snapping has real, resolution-scaled sizes to snap TO in these tests.
-// Verified by hand (see task-8-report.md) to give an exact d=0 hit for
-// every one of layout()'s 7 named sizes at all 4 resolutions, while still
-// genuinely snapping (non-zero, sub-15% distance) at 720p and 1440p for
-// at least one size each -- so the tolerance path is actually exercised,
-// not just trivially satisfied by exact hits everywhere.
+// uses, deduplicated:
+//
+//   720p (x2/3):  13,14,15,16,17,23,25,37
+//   1080p (x1):   19,21,22,24,26,34,38,56
+//   1440p (x4/3): 25,28,29,32,35,45,51,75
+//   2160p (x2):   38,42,44,48,52,68,76,112
+//
+// This is NOT the real asset (Task 14's job, not tested here) -- but
+// Task 14 SHOULD bake this exact set (or a superset of it): every one of
+// layout()'s 7 named sizes resolves EXACTLY (d=0, no snapping at all) at
+// every one of the four resolutions with this list, verified by
+// sizes_resolve_exactly_at_every_resolution below. Two prior attempts at
+// deriving this union by hand were wrong in different ways (a flat +-2px
+// guess, then a "roughly" enumeration missing 23/37/68/75 and carrying a
+// stray 72) -- both happened to still pass every test because pick()'s
+// 15% tolerance quietly bridged the gaps, which is exactly the failure
+// mode this comment and the exact-match test below exist to rule out.
 constexpr const char* kScaledSizes =
-    "13,14,15,16,17,19,21,22,24,25,26,28,29,32,34,35,38,42,44,45,48,51,52,56,"
-    "72,76,112";
+    "13,14,15,16,17,19,21,22,23,24,25,26,28,29,32,34,35,37,38,42,44,45,48,51,"
+    "52,56,68,75,76,112";
 
 struct FourReso { int w, h; };
 constexpr FourReso kFourResolutions[] = {
@@ -266,33 +275,16 @@ TEST(layout_succeeds_at_every_scaled_resolution) {
   }
 }
 
-// At the design resolution, scale_ is exactly 1.0 and every one of the
-// eight design sizes is baked verbatim -- pick() must resolve each of
-// layout()'s 7 named roles to EXACTLY that value, not merely something
-// close to it. This is what "Exact at 1080p by construction" (the
-// comment on pick()) actually asserts, rather than just hoping the
-// tolerance happens to be tight enough.
-TEST(sizes_resolve_exactly_at_1080p_no_snapping) {
-  const std::string fp = make_gsfont(kScaledSizes);
-  GsFont f;
-  std::string err;
-  REQUIRE(f.load(fp, &err));
-  GsOverlay ov(f);
-  REQUIRE(ov.layout(1920, 1080, &err));
-  CHECK(ov.debug_field_atlas_px(GsFieldId::kFpsValue) == 56);   // hero
-  CHECK(ov.debug_field_atlas_px(GsFieldId::kCard0Rssi) == 38);  // primary
-  CHECK(ov.debug_field_atlas_px(GsFieldId::kRung) == 34);       // standard
-  CHECK(ov.debug_field_atlas_px(GsFieldId::kLossArrow) == 26);  // arrow
-  CHECK(ov.debug_field_atlas_px(GsFieldId::kJit) == 24);        // secondary
-  CHECK(ov.debug_field_atlas_px(GsFieldId::kCard0Id) == 22);    // cardid
-  CHECK(ov.debug_field_atlas_px(GsFieldId::kLossLabel) == 19);  // label
-}
-
-// Off the design resolution, exact hits are not guaranteed (the font
-// wasn't necessarily baked at exactly this scale) -- but the resolved
-// size must still land within pick()'s 15% tolerance of the scaled
-// request, not just "whatever was nearest, however far".
-TEST(sizes_stay_within_15pct_of_the_scaled_request_off_1080p) {
+// With the CORRECT bake set (kScaledSizes), pick() must resolve every one
+// of layout()'s 7 named roles EXACTLY (d==0) at every one of the four
+// resolutions -- not merely within pick()'s 15% tolerance. That tolerance
+// exists as slop insurance for an imperfect real-world asset; it must
+// never be load-bearing for the shipped configuration, and the ONLY way
+// to prove that is to assert exact equality here rather than a distance
+// bound that a wrong bake set could quietly satisfy anyway (which is
+// exactly what happened with this file's first two kScaledSizes attempts
+// -- see the comment on kScaledSizes above).
+TEST(sizes_resolve_exactly_at_every_resolution) {
   const std::string fp = make_gsfont(kScaledSizes);
   GsFont f;
   std::string err;
@@ -304,32 +296,52 @@ TEST(sizes_stay_within_15pct_of_the_scaled_request_off_1080p) {
       {26, GsFieldId::kLossArrow},  {24, GsFieldId::kJit},
       {22, GsFieldId::kCard0Id},    {19, GsFieldId::kLossLabel},
   };
-  for (const FourReso& r : {kFourResolutions[0], kFourResolutions[2]}) {  // 720p, 1440p
-    const int h = r.h;
+  for (const FourReso& r : kFourResolutions) {
     GsOverlay ov(f);
     REQUIRE(ov.layout(r.w, r.h, &err));
-    const double scale = h / 1080.0;
-    for (const Role& r : roles) {
-      const int want = (int)(r.design_px * scale + 0.5);
-      const int got = ov.debug_field_atlas_px(r.id);
+    const double scale = r.h / 1080.0;
+    for (const Role& role : roles) {
+      const int want = (int)(role.design_px * scale + 0.5);
+      const int got = ov.debug_field_atlas_px(role.id);
       REQUIRE(got > 0);
-      const int d = got > want ? got - want : want - got;
-      const int tol = std::max(1, want * 15 / 100);
-      CHECK(d <= tol);
+      CHECK(got == want);  // exact -- not "within tolerance"
     }
-    // kRung (standard, 34 px design) is checked separately below, only at
-    // 1440p: at 720p drop_top fires (see drop_top_fires_below_the_floor_
-    // not_above) and kRung is never placed, so debug_field_atlas_px would
-    // read 0 -- an intentionally dropped block, not a tolerance failure.
-    if (h != 720) {
+    // kRung (standard, 34 px design) is skipped at 720p: drop_top fires
+    // there (see drop_top_fires_below_the_floor_not_above) and kRung is
+    // never placed, so debug_field_atlas_px reads 0 -- an intentionally
+    // dropped block, not a resolution failure.
+    if (r.h != 720) {
       const int want = (int)(34 * scale + 0.5);
       const int got = ov.debug_field_atlas_px(GsFieldId::kRung);
       REQUIRE(got > 0);
-      const int d = got > want ? got - want : want - got;
-      const int tol = std::max(1, want * 15 / 100);
-      CHECK(d <= tol);
+      CHECK(got == want);
     }
   }
+}
+
+// A SEPARATE, deliberately-imprecise fixture -- every design size shifted
+// 1 px off its exact value, with no exact match possible anywhere -- so
+// pick() MUST rely on its 15% tolerance to succeed at all. This is what
+// actually exercises the tolerance path: with the correct kScaledSizes
+// above, every size resolves exactly and the tolerance branch in pick()
+// never has anything to do. Keeping the two fixtures separate is
+// deliberate -- a single fixture that's "sometimes exact, sometimes
+// within tolerance" can't tell a reader (or a future edit) which
+// property it's actually checking.
+TEST(pick_tolerance_bridges_a_deliberately_off_by_one_font) {
+  const std::string fp = make_gsfont("18,21,23,25,33,37,55");
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kFpsValue) == 55);   // hero: 56 -> 55
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kCard0Rssi) == 37);  // primary: 38 -> 37
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kRung) == 33);       // standard: 34 -> 33
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kLossArrow) == 25);  // arrow: 26 -> 25
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kJit) == 23);        // secondary: 24 -> 23
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kCard0Id) == 21);    // cardid: 22 -> 21
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kLossLabel) == 18);  // label: 19 -> 18
 }
 
 // The handoff's responsive floor: below an 18 px RENDERED label, the top
