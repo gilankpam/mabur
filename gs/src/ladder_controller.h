@@ -213,6 +213,10 @@ class LadderController {
   bool probe_active_ = false;
   int probe_rung_ = -1;
   double probe_start_ms_ = -1.0, probe_last_s3_ms_ = -1.0;
+  // Last post-settle u_pred scored during the current probe, so a Pass
+  // reports what it actually measured instead of 0. 0.0 means no post-settle
+  // sample was ever scored (probe committed on liveness alone).
+  double probe_u_pred_last_ = 0.0;
   double u3_ = 0.0;
   double s3_resid_start_ms_ = -1.0, s3_util_start_ms_ = -1.0;
   double s3_blank_until_ms_ = -1e18;

@@ -85,6 +85,7 @@ void LadderController::start_probe(int rung, double now_ms) {
   probe_rung_ = rung;
   probe_start_ms_ = now_ms;
   probe_last_s3_ms_ = now_ms;
+  probe_u_pred_last_ = 0.0;
   u3_ = 0.0;  // steady-state s3 is meaningless while s3 runs the candidate MCS
   ++counters_.probes_started;
   mark_transition(now_ms);
@@ -329,6 +330,11 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       // must not be scored against the candidate.
       if (now_ms - probe_start_ms_ > cfg_.probe_settle_ms) {
         const double u_pred = h.s3_pre_fec_loss / budget_for(probe_rung_);
+        // Stash every scored sample, pass or fail: a Pass that squeaked in at
+        // u_pred 0.42 must not be logged as a flawless 0.0, or the labeled
+        // dataset (sideport last_probe, ctl-log P lines) cannot tell a
+        // marginal candidate from a clean one.
+        probe_u_pred_last_ = u_pred;
         if (u_pred > probe_util_threshold()) {
           // The CANDIDATE rung earns the penalty (escalating ledger), and the
           // link never moved.
@@ -351,7 +357,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       ++counters_.promotes;
       ++counters_.probes_ok;
       set_event(now_ms, from, idx_, CtlReason::Promote, u_, snr_now_);
-      end_probe(ProbeOutcome::Pass, u3_, now_ms);
+      end_probe(ProbeOutcome::Pass, probe_u_pred_last_, now_ms);
       return true;
     }
     return false;  // probing: clean/promote logic suspended
