@@ -1120,6 +1120,16 @@ int run_real_mode(const Config& cfg) {
   std::fprintf(stderr, "maburd bringing up TX on channel %d\n", cfg.radio.channel);
   rtl_device->InitWrite(
       SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+  // Bring-up record for the non-standard MAC state requested via
+  // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
+  // at info, and the production cross-build compiles info out
+  // (DEVOURER_LOG_MAX_LEVEL=WARN), so without this the deployed daemon leaves no
+  // trace that it is transmitting without carrier sense. Unconditional: the flag
+  // is hardcoded true, so there is nothing to branch on. Wording is deliberate --
+  // this records what maburd REQUESTED of devourer, not a register readback.
+  std::fprintf(stderr,
+               "maburd radio: MAC carrier sense (CCA+EDCCA) requested OFF -- TX "
+               "will not defer to co-channel traffic\n");
 
   // power_mode == "offset": program the wall-equalized per-rate diff table
   // once at bring-up (RcAgent's per-op SetTxPowerOffsetQdb calls trim

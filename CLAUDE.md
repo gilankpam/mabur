@@ -143,7 +143,13 @@ this note). The practical consequence for anyone reading old data: in a
 congested environment a pre-2026-08-05 recording and a post- one are not the
 same experiment, because the drone's injection rate under interference changed.
 On a clean channel the gate never trips and the two are comparable. Nothing in
-the sideport reports the CCA state — date the recording against this line.
+the sideport reports the CCA state — date the recording against this line. To
+confirm it on a running device, grep the daemon log for `carrier sense`: both
+daemons print a one-line bring-up record (`maburd radio:` / `maburgs radio card
+N:`, once per card on the GS). devourer's own carrier-sense line is info-level
+and so is compiled out of the cross-builds' `DEVOURER_LOG_MAX_LEVEL=WARN` — its
+absence means nothing. Both lines record the state mabur *requested*, not a
+register readback.
 
 Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and

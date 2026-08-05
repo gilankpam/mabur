@@ -123,7 +123,7 @@ bool RadioFrontend::open_and_start() {
   // than it does on the drone; it is here so a demote command still lands while
   // the channel is busy, which is exactly when it matters. RadioFrontend is
   // constructed per card, so every card gets the flag and logs its own bring-up
-  // line -- inert on RX-only cards, since this gates TX only.
+  // line below -- inert on RX-only cards, since this gates TX only.
   dev_cfg.tuning.disable_cca = true;
   // (The 0x41e8 protect_pathb_agc knob was chased here too — exonerated:
   // the real path-B killer was the DPDT pin-mux, fixed by devourer's eFEM
@@ -132,6 +132,19 @@ bool RadioFrontend::open_and_start() {
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
   device_->InitWrite(SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
+  // Bring-up record for the non-standard MAC state requested via
+  // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line at
+  // info, and the production cross-build compiles info out
+  // (DEVOURER_LOG_MAX_LEVEL=WARN), so without this the deployed daemon leaves no
+  // trace that it is transmitting without carrier sense. Unconditional: the flag
+  // is hardcoded true, so there is nothing to branch on. Once per card, tagged
+  // with card_id, since RadioFrontend is constructed per card. Wording is
+  // deliberate -- this records what maburgs REQUESTED of devourer for this card,
+  // not a register readback.
+  std::fprintf(stderr,
+               "maburgs radio card %d: MAC carrier sense (CCA+EDCCA) requested "
+               "OFF -- TX will not defer to co-channel traffic\n",
+               static_cast<int>(cfg_.card_id));
   ready_.store(true, std::memory_order_release);
   alive_.store(true, std::memory_order_release);
   rx_thread_ = std::thread([this] {
