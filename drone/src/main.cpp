@@ -640,6 +640,15 @@ int run_real_mode(const Config& cfg) {
   // descriptor limit) into one bulk-OUT URB via send_packets — amortizes
   // the per-URB tax that capped inline per-frame injection at ~2500 fps.
   dev_cfg.tx.usb_agg_max = 3;
+  // MAC carrier sense OFF. The FPV downlink owns its channel, so CSMA backoff
+  // only stutters it: devourer measured injection deferring 41-45% to a
+  // co-channel 802.11 transmitter on this same Jaguar3 family, recovered ~1.5x
+  // by clearing primary CCA 0x520[14] (tests/dis_cca_tx_onair.sh). The frames
+  // are late, not lost, so the cost lands as TxQueue backpressure and aborted
+  // slice tails that the loss-driven ladder cannot see. This is the MAC TX gate
+  // only -- SetCcaMode deliberately skips the vendor BB CCA-off writes, which
+  // deafen the receiver (measured: delivery 6800 -> 10 frames).
+  dev_cfg.tuning.disable_cca = true;
 
   WiFiDriver wifi_driver{logger};
   auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);

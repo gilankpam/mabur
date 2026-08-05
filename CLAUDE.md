@@ -134,6 +134,17 @@ read the sideport. Reach for other tools only in these cases:**
   Note: the drone radio RX can wedge after a linkbench run — restart
   maburd.
 
+**Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
+`maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
+radios inject without the MAC CCA/EDCCA gate — no deferral to co-channel
+802.11, and no politeness toward it either. Rationale and the bench A/B are in
+`docs/superpowers/specs/2026-08-05-cca-disable-design.md` (gitignored, hence
+this note). The practical consequence for anyone reading old data: in a
+congested environment a pre-2026-08-05 recording and a post- one are not the
+same experiment, because the drone's injection rate under interference changed.
+On a clean channel the gate never trips and the two are comparable. Nothing in
+the sideport reports the CCA state — date the recording against this line.
+
 Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and
 `docs/superpowers/specs/2026-07-26-drone-telemetry-design.md`. The schema

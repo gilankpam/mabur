@@ -117,6 +117,14 @@ bool RadioFrontend::open_and_start() {
   // here explicitly. Inert unless the env vars are set.
   dev_cfg.debug.dump_canary = std::getenv("DEVOURER_DUMP_CANARY") != nullptr;
   dev_cfg.debug.bb_dump = std::getenv("DEVOURER_BB_DUMP") != nullptr;
+  // MAC carrier sense OFF -- same rationale as maburd (see drone/src/main.cpp):
+  // the link owns its channel and deferral costs 41-45% of injection against a
+  // co-channel transmitter. The GS uplink is low duty cycle, so this buys less
+  // than it does on the drone; it is here so a demote command still lands while
+  // the channel is busy, which is exactly when it matters. RadioFrontend is
+  // constructed per card, so every card gets the flag and logs its own bring-up
+  // line -- inert on RX-only cards, since this gates TX only.
+  dev_cfg.tuning.disable_cca = true;
   // (The 0x41e8 protect_pathb_agc knob was chased here too — exonerated:
   // the real path-B killer was the DPDT pin-mux, fixed by devourer's eFEM
   // pinmux port; see DEVOURER_DPDT_MODE in RtlJaguar3Device.)
