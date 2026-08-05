@@ -63,6 +63,11 @@ struct LinkCfg {
   // dead bodies — see docs/mcs6-bench-anomaly.md ov0.25 experiment.
   LadderCfg ladder_cfg{
       {{0, 1.0}, {2, 0.5}, {4, 0.25}, {5, 0.25}, {6, 0.25}, {7, 0.1}}};
+
+  // Dedicated adaptive-link log (spec 2026-08-05 section 5). Dir is
+  // overridable for host tests; the device default is the DVR SD card.
+  bool ctl_log = false;
+  std::string ctl_log_dir = "/media/dvr";
 };
 
 /// Video reassembly tuning (PR C: the RTP output destination is gone --

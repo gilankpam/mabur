@@ -3,10 +3,12 @@
 // -> AU records; the original RTP output was deleted in PR C).
 // Plan 2 scope: real-radio mode (N-card front-ends, control loop, card failover).
 #include <atomic>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -19,6 +21,7 @@
 #include "au_ring.h"
 #include "body_queue.h"
 #include "config.h"
+#include "ctl_log.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
 #include "mabur/profile.h"
@@ -29,6 +32,7 @@
 #include "msp_sink.h"
 #include "radio_frontend.h"
 #include "s1_loss.h"
+#include "snr_units.h"
 #include "stats_exporter.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
@@ -241,6 +245,34 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.pin_overhead = cfg.link.static_overhead;
   vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
   maburgs::VrxController vrx(vcfg);
+
+  // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
+  // section 5): maburgs' own compact S/E/P/N record of every rung decision,
+  // independent of the stats sideport so the learning dataset survives a
+  // dead/absent consumer (2026-08-04: statsrec wasn't running and the
+  // flight jsonl froze hours before the session). static_mcs >= 0 bypasses
+  // the adaptive controller entirely (LinkCfg::static_mcs) -- nothing to
+  // log in that mode.
+  std::optional<maburgs::CtlLog> ctl_log;
+  if (cfg.link.ctl_log && cfg.link.static_mcs < 0) {
+    std::string header = "ladder=";
+    for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
+      const maburgs::Rung& r = cfg.link.ladder_cfg.ladder[i];
+      if (i) header += ",";
+      header += std::to_string(r.mcs) + "/" +
+                std::to_string(static_cast<int>(std::lround(r.overhead * 100)));
+    }
+    char tail[64];
+    std::snprintf(tail, sizeof(tail), " down_util=%.2f up_util=%.2f",
+                  cfg.link.ladder_cfg.down_util, cfg.link.ladder_cfg.up_util);
+    header += tail;
+    ctl_log.emplace(cfg.link.ctl_log_dir, header);
+    if (ctl_log->ok())
+      std::fprintf(stderr, "ctl-log: %s\n", ctl_log->path().c_str());
+    // else: CtlLog's constructor already printed the ok()=false reason to
+    // stderr (opendir/fopen failure) -- non-fatal, logging just stays off.
+  }
+
   // Measured-loss ladder feedback: stream 1 (base layer)'s cumulative
   // (expected, arrived) symbol totals, pre-FEC-repair. expected = source
   // symbols ever seen by seq framing (delivered directly + recovered by FEC
@@ -253,9 +285,17 @@ static int run_radio(const maburgs::Config& cfg) {
   // residual below: this one is symbol-level and time-windowed
   // (S1LossWindow), that one is packet-level and RCF-period-windowed.
   maburgs::S1LossWindow s1_loss;
+  // s3 probe-before-promote feedback (same windowing machinery as s1_loss,
+  // stream 3): pre-FEC loss for probe/s3-demote decisions, plus a separate
+  // residual (abandoned/expected) window for the steady-state demote path.
+  maburgs::S1LossWindow s3_loss, s3_resid;
   // Change-detect on ctl().last_event(): initialize to the pre-any-event
   // default (t_ms 0) so boot doesn't print a phantom transition line.
   double last_ctl_event_ms = vrx.ctl().last_event().t_ms;
+  // Same change-detect pattern for the ctl log's probe/penalty records
+  // (initialized to the pre-any-event default so boot doesn't print one).
+  double last_probe_t_ms = vrx.ctl().last_probe().t_ms;
+  double last_penalty_t_ms = vrx.ctl().last_penalty().t_ms;
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
       // A CRC-clean frame can still fail to parse as a valid Telem (e.g. a
@@ -393,8 +433,36 @@ static int run_radio(const maburgs::Config& cfg) {
     s1_loss.add(s1.syms_delivered + s1.syms_recovered + s1.syms_abandoned,
                 s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
     const auto s1_sample = s1_loss.sample(now_ms);
-    const maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
-                                     residual.value_or(0.0), starved};
+
+    // s3 feedback for the probe-before-promote / s3-demote logic: pre-FEC
+    // loss (same shape as s1's window) plus a residual (abandoned/expected)
+    // window scored against the CURRENT rung's s3 budget.
+    const auto s3 = agg.decoder().stats(3);
+    const uint64_t s3_expected =
+        s3.syms_delivered + s3.syms_recovered + s3.syms_abandoned;
+    s3_loss.add(s3_expected, s3.syms_delivered + s3.syms_recovered_arrived, now_ms);
+    s3_resid.add(s3_expected, s3_expected - s3.syms_abandoned, now_ms);
+    const auto s3_sample = s3_loss.sample(now_ms);
+    const auto s3_rsample = s3_resid.sample(now_ms);
+
+    // Label-only: the strongest card's s1 SNR this window, converted from
+    // devourer's half-dB raw units (snr_units.h) — carried onto
+    // CtlEvent/ProbeEvent so the ctl log can say what the RF looked like,
+    // never a decision input.
+    double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
+    for (int i = 0; i < n_cards; ++i) {
+      const auto& ct = agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)];
+      const double db = ct.snr_ema * maburgs::kSnrRawToDb;
+      if (ct.has_ema && (std::isnan(s1_snr_db) || db > s1_snr_db)) s1_snr_db = db;
+    }
+
+    maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
+                               residual.value_or(0.0), starved};
+    health.s3_valid = s3_sample.valid;
+    health.s3_pre_fec_loss = s3_sample.loss;
+    health.s3_residual_loss = s3_rsample.valid ? s3_rsample.loss : 0.0;
+    health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
+    health.s1_snr_db = s1_snr_db;
 
     if (auto out = vrx.step(now_ms, ld, health)) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period
@@ -417,12 +485,33 @@ static int run_radio(const maburgs::Config& cfg) {
       std::fprintf(stderr, "ctl: rung %d->%d reason=%s u=%.2f pre=%.3f\n",
                    e.from, e.to, maburgs::to_string(e.reason), e.u,
                    health.pre_fec_loss);
+      if (ctl_log)
+        ctl_log->event(e.t_ms, e.from, e.to, maburgs::to_string(e.reason),
+                        e.u, e.snr_db);
+    }
+    // s3 probe-before-promote records: same t_ms-change detect pattern as
+    // the rung-transition line above.
+    if (const auto& p = vrx.ctl().last_probe(); p.t_ms != last_probe_t_ms) {
+      last_probe_t_ms = p.t_ms;
+      if (ctl_log)
+        ctl_log->probe(p.t_ms, p.rung, maburgs::to_string(p.outcome),
+                        p.snr_db, p.u_pred, p.dur_ms);
+    }
+    if (const auto& n = vrx.ctl().last_penalty(); n.t_ms != last_penalty_t_ms) {
+      last_penalty_t_ms = n.t_ms;
+      if (ctl_log) ctl_log->penalty(n.t_ms, n.rung, n.k, n.until_ms);
     }
 
     // 1 Hz stats line / SIGUSR1 dump.
     if (g_dump.exchange(false) || now_ms_u - last_stats_ms >= 1000) {
       last_stats_ms = now_ms_u;
       if (msp_sink) msp_sink->tick(now_ms_u);  // expire stale repair rows
+      if (ctl_log) {
+        const auto& c = vrx.ctl();
+        ctl_log->sample(now_ms, c.rung(), c.util(), health.s1_snr_db,
+                         residual.value_or(0.0), c.util3(),
+                         health.s3_residual_loss);
+      }
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
                    "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f/off%d "
@@ -561,6 +650,21 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_event_to = e.to;
         ci.last_event_reason = maburgs::to_string(e.reason);
         ci.last_event_u = e.u;
+        ci.last_event_snr_db = e.snr_db;
+        ci.util3 = c.util3();
+        ci.probes_started = cnt.probes_started;
+        ci.probes_ok = cnt.probes_ok;
+        ci.probe_fails = cnt.probe_fails;
+        ci.probe_aborts = cnt.probe_aborts;
+        ci.demotes_s3_residual = cnt.demotes_s3_residual;
+        ci.demotes_s3_util = cnt.demotes_s3_util;
+        const auto& pr = c.last_probe();
+        ci.last_probe_t_ms = pr.t_ms;
+        ci.last_probe_rung = pr.rung;
+        ci.last_probe_outcome = maburgs::to_string(pr.outcome);
+        ci.last_probe_snr_db = pr.snr_db;
+        ci.last_probe_u_pred = pr.u_pred;
+        ci.last_probe_dur_ms = pr.dur_ms;
         sin.ctl = std::move(ci);
       }
       stats->poll(drained_ms, sin);

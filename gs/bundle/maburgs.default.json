@@ -33,7 +33,8 @@
     "hold_after_down_ms": 4000,
     "min_between_changes_ms": 150,
     "starved_confirm_ms": 300,
-    "feedback_timeout_ms": 1000
+    "feedback_timeout_ms": 1000,
+    "ctl_log": false
   },
   "msp": {
     "enable": false,

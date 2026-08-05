@@ -642,6 +642,91 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
   CHECK(!agent.take_link_established());  // flap, not a (re)start
 }
 
+// 11. RCF with probe3=true overrides only s3 (ladder[3]) with probe_profile's
+// MCS while T0/T1/CRIT stay on the base profile's mcs; agent.probing()
+// reflects the last accepted RCF's probe3 bit and reverts (both op.ladder[3]
+// and probing()) the moment a follow-up RCF arrives without the flag.
+TEST(probe_rcf_overrides_layer3_mcs) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  uint8_t probe_byte = encode_profile(PhyMode::HT, 6, 20);
+  Rcf r;
+  r.vtx_id = cfg.link.vtx_id;
+  r.seq = 1;
+  r.profile = profile_byte;
+  r.pwr_offset_biased = PWR_NO_CHANGE;
+  r.fec_overhead_16ths = 8;
+  r.probe3 = true;
+  r.probe_profile = probe_byte;
+  auto wire = pack_rcf(r);
+  agent.on_rc_frame(wire.data(), wire.size(), 0);
+
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  const AppliedOp& op = agent.current();
+  CHECK(op.ladder[0].mcs == 5);
+  CHECK(op.ladder[1].mcs == 5);
+  CHECK(op.ladder[2].mcs == 5);
+  CHECK(op.ladder[3].mcs == 6);  // s3 at probe MCS
+  CHECK(agent.probing());
+
+  // A follow-up RCF without the flag reverts s3 to the base profile's mcs
+  // and clears probing().
+  r.probe3 = false;
+  r.seq = 2;
+  auto wire2 = pack_rcf(r);
+  agent.on_rc_frame(wire2.data(), wire2.size(), 100);
+  CHECK(agent.current().ladder[3].mcs == 5);
+  CHECK(!agent.probing());
+}
+
+// 11b. Failsafe entry (MAX_RANGE) clears probing() even if the last RCF
+// before the silence carried probe3=true — a degraded/lost link must never
+// report itself as still probing.
+TEST(probing_cleared_on_failsafe) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  Rcf r;
+  r.vtx_id = cfg.link.vtx_id;
+  r.seq = 1;
+  r.profile = encode_profile(PhyMode::HT, 5, 20);
+  r.pwr_offset_biased = PWR_NO_CHANGE;
+  r.fec_overhead_16ths = 8;
+  r.probe3 = true;
+  r.probe_profile = encode_profile(PhyMode::HT, 6, 20);
+  auto wire = pack_rcf(r);
+  agent.on_rc_frame(wire.data(), wire.size(), 0);
+  CHECK(agent.probing());
+
+  agent.tick(1000, RadioHealth{});  // silence -> FAILSAFE (MAX_RANGE reapplied)
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(!agent.probing());
+}
+
+// 2d. DiscAck.chip_caps advertises CAP_S3_PROBE alongside the existing
+// caps — this drone accepts RCF_F_PROBE3.
+TEST(disc_ack_advertises_s3_probe) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+                              /*op_width=*/40, 0, 2);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  REQUIRE(act.controls.size() == 1);
+  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->chip_caps & mabur::rc::CAP_S3_PROBE);
+}
+
 TEST(link_established_latches_on_disc_link_up) {
   Config cfg = make_cfg();
   MockActuator act;

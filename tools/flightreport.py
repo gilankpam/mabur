@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-"""Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl).
-Usage: flightreport.py flight.jsonl
+"""Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h). Format is
+auto-detected from the first line.
+Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
 inside one 500ms export window surface only as the LAST transition. Reported counts are
 a lower bound due to this schema limitation."""
-import json, sys
+import json, math, sys
+
+# Same clamp sentinel CtlLog writes at the source (mirrors StatsExporter's
+# clamp_util(): u3/u_pred/E's u carry a 1e9 zero-guard sentinel from
+# LadderController when the divisor budget is 0, clamped to <=1e3 at the
+# write site). Anything at or above this is "unmeasurable", not a reading.
+SENTINEL = 1000.0
+
+
+def is_sentinel(v):
+    return isinstance(v, float) and v >= SENTINEL
 
 
 def load(path):
@@ -18,6 +30,167 @@ def load(path):
             except ValueError: continue
     if not rows: sys.exit("no parseable datagrams")
     return rows
+
+
+def load_ctllog(path):
+    """Parse a maburgs ctl log (gs/src/ctl_log.cpp formats).
+
+    Returns {"header": {...}, "S": [...], "E": [...], "P": [...], "N": [...]}.
+    S lines are NOT strictly 1 Hz (SIGUSR1 emits off-cadence extras) -- callers
+    must key everything off t_ms, never assume uniform spacing. float() parses
+    "nan" natively, which the pre-session rung-0 warm-up samples rely on.
+    """
+    header = {}
+    S, E, P, N = [], [], [], []
+    with open(path) as f:
+        first = f.readline().strip()
+        # ctllog 1 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+        for tok in first.split()[2:]:
+            if "=" not in tok: continue
+            k, v = tok.split("=", 1)
+            header[k] = v
+
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            toks = line.split()
+            tag = toks[0]
+            try:
+                if tag == "S" and len(toks) >= 8:
+                    S.append({
+                        "t_ms": float(toks[1]), "rung": int(toks[2]),
+                        "u": float(toks[3]), "snr_db": float(toks[4]),
+                        "resid": float(toks[5]), "u3": float(toks[6]),
+                        "resid3": float(toks[7]),
+                    })
+                elif tag == "E" and len(toks) >= 7:
+                    E.append({
+                        "t_ms": float(toks[1]), "from": int(toks[2]),
+                        "to": int(toks[3]), "reason": toks[4],
+                        "u": float(toks[5]), "snr_db": float(toks[6]),
+                    })
+                elif tag == "P" and len(toks) >= 7:
+                    P.append({
+                        "t_ms": float(toks[1]), "rung": int(toks[2]),
+                        "outcome": toks[3], "snr_db": float(toks[4]),
+                        "u_pred": float(toks[5]), "dur_ms": float(toks[6]),
+                    })
+                elif tag == "N" and len(toks) >= 5:
+                    N.append({
+                        "t_ms": float(toks[1]), "rung": int(toks[2]),
+                        "k": int(toks[3]), "until_ms": float(toks[4]),
+                    })
+            except ValueError:
+                continue  # malformed record; skip rather than abort the report
+
+    return {"header": header, "S": S, "E": E, "P": P, "N": N}
+
+
+def wall_fit(records):
+    """Per-rung pass/fail SNR summary + outlier-aware wall estimate.
+
+    records: list of P dicts (one rung's worth). nan-snr probes are excluded
+    from every stat but still counted. A FAIL whose snr exceeds the max PASS
+    snr is an outlier (loss at high SNR is not an SNR wall -- see
+    docs/mcs6-bench-anomaly.md) and is excluded from the fit. Suggested wall
+    is the midpoint between the max inlier-fail snr and the min pass snr;
+    "insufficient data" when either side is empty.
+    """
+    passes = [r for r in records if r["outcome"] == "pass"]
+    fails = [r for r in records if r["outcome"] == "fail"]
+    aborts = [r for r in records if r["outcome"] == "abort"]
+
+    def valid(rs): return [r["snr_db"] for r in rs if not math.isnan(r["snr_db"])]
+
+    pass_snrs, fail_snrs = valid(passes), valid(fails)
+    nan_n = sum(1 for r in records if math.isnan(r["snr_db"]))
+    # u_pred is a separate reading from snr_db -- a probe can be a clean
+    # pass/fail on SNR while its predicted util still saturated the 1e9
+    # zero-guard sentinel (clamped to <=1e3 at the write site). Counted for
+    # visibility only; the SNR-based pass/fail/outlier/wall logic above is
+    # unaffected.
+    u_pred_sat_n = sum(1 for r in records if is_sentinel(r["u_pred"]))
+
+    max_pass = max(pass_snrs) if pass_snrs else None
+    outlier_snrs = [s for s in fail_snrs if max_pass is not None and s > max_pass]
+    inlier_fail_snrs = [s for s in fail_snrs if s not in outlier_snrs]
+
+    wall = None
+    if inlier_fail_snrs and pass_snrs:
+        wall = (max(inlier_fail_snrs) + min(pass_snrs)) / 2.0
+
+    return {
+        "n_pass": len(passes), "n_fail": len(fails), "n_abort": len(aborts),
+        "nan_snr": nan_n, "u_pred_sat": u_pred_sat_n,
+        "pass_snrs": pass_snrs, "fail_snrs": fail_snrs,
+        "outlier_snrs": outlier_snrs, "inlier_fail_snrs": inlier_fail_snrs,
+        "wall": wall,
+    }
+
+
+def print_wall_report(ctllog):
+    header, S, E, P, N = (ctllog[k] for k in ("header", "S", "E", "P", "N"))
+
+    print("CTL LOG HEADER")
+    for k, v in header.items():
+        print(f"  {k}={v}")
+
+    print("DWELL (S records)")
+    by_rung = {}
+    for s in S: by_rung.setdefault(s["rung"], []).append(s)
+    for rung in sorted(by_rung):
+        samples = by_rung[rung]
+        snrs = [s["snr_db"] for s in samples if not math.isnan(s["snr_db"])]
+        nan_n = len(samples) - len(snrs)
+        sentinel_n = sum(1 for s in samples if is_sentinel(s["u3"]))
+        snr_str = f"{min(snrs):.1f}..{max(snrs):.1f} dB" if snrs else "n/a"
+        extra = ""
+        if nan_n: extra += f" nan_snr={nan_n}"
+        if sentinel_n: extra += f" u3_sentinel={sentinel_n}"
+        print(f"  rung {rung}: n={len(samples)} snr={snr_str}{extra}")
+
+    print("EVENTS")
+    reason_counts = {}
+    for e in E:
+        reason_counts[e["reason"]] = reason_counts.get(e["reason"], 0) + 1
+        # u carries u3 (layer-3 util), not the s1 util, whenever reason
+        # starts with "s3_" -- label accordingly rather than mislabeling it.
+        label = "u3" if e["reason"].startswith("s3_") else "u"
+        u_str = "sentinel" if is_sentinel(e["u"]) else f"{e['u']:.4f}"
+        print(f"  t={e['t_ms']:.0f} rung {e['from']}->{e['to']} "
+              f"reason={e['reason']} {label}={u_str} snr={e['snr_db']:.1f}")
+
+    print("EVENT SUMMARY (count per reason)")
+    for reason in sorted(reason_counts):
+        print(f"  {reason}: {reason_counts[reason]}")
+
+    print("PENALTIES")
+    for n in N:
+        print(f"  t={n['t_ms']:.0f} rung {n['rung']} k={n['k']} until={n['until_ms']:.0f}")
+
+    print("WALL REPORT")
+    p_by_rung = {}
+    for p in P: p_by_rung.setdefault(p["rung"], []).append(p)
+    for rung in sorted(p_by_rung):
+        fit = wall_fit(p_by_rung[rung])
+        line = f"  rung {rung}: pass={fit['n_pass']} fail={fit['n_fail']}"
+        if fit["n_abort"]: line += f" abort={fit['n_abort']}"
+        if fit["nan_snr"]: line += f" nan_snr={fit['nan_snr']}"
+        if fit["u_pred_sat"]: line += f" u_pred saturated: {fit['u_pred_sat']}"
+        print(line)
+        if fit["pass_snrs"]:
+            print(f"    pass snr: {min(fit['pass_snrs']):.1f}..{max(fit['pass_snrs']):.1f} dB")
+        if fit["fail_snrs"]:
+            print(f"    fail snr: {min(fit['fail_snrs']):.1f}..{max(fit['fail_snrs']):.1f} dB")
+        for s in fit["outlier_snrs"]:
+            print(f"    outlier fail at snr={s:.1f} dB (loss at high SNR -- "
+                  f"not an SNR wall; see docs/mcs6-bench-anomaly.md)")
+        if fit["wall"] is not None:
+            print(f"    suggested wall: {fit['wall']:.1f} dB "
+                  f"(between fail@{max(fit['inlier_fail_snrs']):.1f} "
+                  f"and pass@{min(fit['pass_snrs']):.1f})")
+        else:
+            print("    suggested wall: insufficient data")
 
 
 def merge_consecutive_residuals(residuals):
@@ -61,7 +234,18 @@ def merge_consecutive_residuals(residuals):
     return merged
 
 
+def sniff_ctllog(path):
+    """True if `path` is a maburgs ctl log (first line starts 'ctllog ')."""
+    with open(path) as f:
+        first = f.readline()
+    return first.startswith("ctllog ")
+
+
 def main(path):
+    if sniff_ctllog(path):
+        print_wall_report(load_ctllog(path))
+        return
+
     rows = load(path)
 
     # SNR scale. There are TWO half-dB problems in one datagram and they

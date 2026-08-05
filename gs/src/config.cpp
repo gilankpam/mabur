@@ -128,7 +128,9 @@ Config load_config(const std::string& path) {
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
-                "starved_confirm_ms"});
+                "starved_confirm_ms", "probe_ms", "probe_settle_ms", "probe_max_util",
+                "probe_s3_min_syms", "probe_s3_silence_ms", "s3_demote", "s3_down_util",
+                "s3_residual_confirm_ms", "s3_settle_ms", "ctl_log", "ctl_log_dir"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
@@ -189,6 +191,42 @@ Config load_config(const std::string& path) {
         static_cast<int>(get_int(r, "feedback_timeout_ms", 1000, 0, 600000, "link"));
     c.link.ladder_cfg.starved_confirm_ms =
         static_cast<int>(get_int(r, "starved_confirm_ms", 300, 0, 600000, "link"));
+
+    // s3 probe-before-promote + s3 steady-state demote tuning (LadderCfg,
+    // spec docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md).
+    // probe_max_util/s3_down_util keep their struct default (-1 sentinel)
+    // when absent from JSON and are resolved to down_util below, AFTER
+    // down_util has parsed above.
+    auto& lc = c.link.ladder_cfg;
+    lc.probe_ms = static_cast<int>(get_int(r, "probe_ms", 2000, 200, 30000, "link"));
+    lc.probe_settle_ms = static_cast<int>(get_int(r, "probe_settle_ms", 150, 0, 2000, "link"));
+    if (r.contains("probe_max_util"))
+      lc.probe_max_util = get_num(r, "probe_max_util", 0.35, 0.01, 2.0, "link");
+    // probe_s3_min_syms must reject non-positive values loudly: a negative
+    // value cast to uint64_t in the controller would silently disable all
+    // probing (Task 4 review amendment). get_int's [1, 100000] bound already
+    // rejects 0 and negatives via its lo/hi range check (fails, does not
+    // clamp -- see get_int above).
+    lc.probe_s3_min_syms = static_cast<int>(get_int(r, "probe_s3_min_syms", 50, 1, 100000, "link"));
+    lc.probe_s3_silence_ms = static_cast<int>(get_int(r, "probe_s3_silence_ms", 500, 100, 10000, "link"));
+    if (r.contains("s3_demote")) {
+      if (!r["s3_demote"].is_boolean()) fail("link.s3_demote", "not a boolean");
+      lc.s3_demote = r["s3_demote"].get<bool>();
+    }
+    if (r.contains("s3_down_util"))
+      lc.s3_down_util = get_num(r, "s3_down_util", 0.35, 0.01, 2.0, "link");
+    lc.s3_residual_confirm_ms =
+        static_cast<int>(get_int(r, "s3_residual_confirm_ms", 500, 50, 10000, "link"));
+    lc.s3_settle_ms = static_cast<int>(get_int(r, "s3_settle_ms", 300, 0, 5000, "link"));
+    // Sentinel resolution: absent probe_max_util/s3_down_util track down_util.
+    if (lc.probe_max_util < 0) lc.probe_max_util = lc.down_util;
+    if (lc.s3_down_util < 0) lc.s3_down_util = lc.down_util;
+
+    if (r.contains("ctl_log")) {
+      if (!r["ctl_log"].is_boolean()) fail("link.ctl_log", "not a boolean");
+      c.link.ctl_log = r["ctl_log"].get<bool>();
+    }
+    c.link.ctl_log_dir = get_str(r, "ctl_log_dir", "/media/dvr", "link");
   }
 
   if (j.contains("video")) {

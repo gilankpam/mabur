@@ -68,8 +68,10 @@ std::optional<VrxController::Out> VrxController::step(
   if (now_ms - last_fb_ms_ < cfg_.feedback_ms) return std::nullopt;
   last_fb_ms_ = now_ms;
 
-  if (cfg_.pin_mcs < 0 && ctrl_.update(health, now_ms)) {
-    cur_op_ = op_from_rung(ctrl_.op());
+  if (cfg_.pin_mcs < 0) {
+    LinkHealth h = health;
+    h.probe_allowed = (peer_caps_ & mabur::rc::CAP_S3_PROBE) != 0;
+    if (ctrl_.update(h, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
   }
   seq_ = static_cast<uint16_t>(seq_ + 1);
 
@@ -84,6 +86,12 @@ std::optional<VrxController::Out> VrxController::step(
   r.pwr_offset_biased = mabur::rc::encode_pwr_offset_qdb(cur_op_.pwr_offset_qdb);
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
   r.layer_delivery.assign(layer_delivery.begin(), layer_delivery.end());
+  if (cfg_.pin_mcs < 0 && ctrl_.probing()) {
+    r.probe3 = true;
+    r.probe_profile = mabur::rc::encode_profile(
+        cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
+        static_cast<uint8_t>(ctrl_.probe_mcs()), static_cast<uint8_t>(cur_op_.bw));
+  }
   return Out{mabur::rc::pack_rcf(r), false};
 }
 

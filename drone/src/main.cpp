@@ -1029,6 +1029,7 @@ int run_real_mode(const Config& cfg) {
         TelemInputs ti;
         ti.state = static_cast<int>(agent.state());
         ti.failsafe_shed = agent.failsafe_shed();
+        ti.probing = agent.probing();
         // "advanced in the last 2 s" (spec) approximated as "advanced over
         // the last telemetry tick" (~1 s here) — the collector runs on this
         // same 1 Hz cadence, so a stricter 2 s window would just double-count

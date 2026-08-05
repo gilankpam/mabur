@@ -7,6 +7,7 @@ add_library(mabur_gs_core STATIC
   src/rendezvous.cpp
   src/vrx_controller.cpp
   src/ladder_controller.cpp
+  src/ctl_log.cpp
   src/tx_selector.cpp
   src/msp_sink.cpp
   src/frame_stream.cpp

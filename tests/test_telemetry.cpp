@@ -5,7 +5,7 @@
 
 TEST(make_telem_maps_and_saturates) {
   mabur::TelemInputs in;
-  in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true;
+  in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probing = true;
   in.generation = 7; in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
   in.applied_ov = 0.25; in.applied_off_qdb = -4; in.derate_qdb = 2;
   in.rcf_age_ms = 700000;            // saturates u16
@@ -21,7 +21,7 @@ TEST(make_telem_maps_and_saturates) {
   const auto t = mabur::make_telem(9, in);
   CHECK(t.tlm_seq == 9);
   CHECK(t.state == 2);
-  CHECK(t.flags == 0x03);
+  CHECK(t.flags == 0x07);  // failsafe_shed | radio_rx_ok | probing
   CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
   CHECK(t.applied_ov_x100 == 25);
   CHECK(t.applied_off_qdb == 60);    // bias-64

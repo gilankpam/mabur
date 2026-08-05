@@ -94,6 +94,18 @@ class S1LossWindow {
     return {true, loss_val};
   }
 
+  // Sum of d_expected over entries in [now_ms - window_ms, now_ms].
+  // Used for the s3 availability floor (probe_s3_min_syms).
+  uint64_t expected_in_window(double now_ms) const {
+    const double cutoff_time = now_ms - window_ms_;
+    uint64_t total = 0;
+    for (const auto& e : window_) {
+      if (e.t < cutoff_time || e.t > now_ms) continue;
+      total += e.d_expected;
+    }
+    return total;
+  }
+
   // Observer for testing: current number of entries in deque.
   int size() const { return static_cast<int>(window_.size()); }
 

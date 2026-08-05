@@ -48,6 +48,18 @@ void feed_for(LadderController& ctl, double& t, double dt_total,
   }
 }
 
+// Healthy sample WITH usable s3 and probe permission.
+LinkHealth ok3(double pre, double s3_pre = 0.0, double s3_resid = 0.0) {
+  LinkHealth h = ok(pre);
+  h.s3_valid = true;
+  h.s3_pre_fec_loss = s3_pre;
+  h.s3_residual_loss = s3_resid;
+  h.s3_expected_syms = 500;
+  h.probe_allowed = true;
+  h.s1_snr_db = 30.0;
+  return h;
+}
+
 int penalty_ms_for(const LadderController& ctl, double now_ms, int rung) {
   for (const auto& pr : ctl.penalized(now_ms)) {
     if (pr.first == rung) return pr.second;
@@ -415,6 +427,334 @@ TEST(hold_after_downgrade) {
   CHECK(promoted);
   CHECK(ctl.rung() == 1);
   CHECK(ctl.last_event().t_ms >= down_t + cfg.hold_after_down_ms - 1e-9);
+}
+
+// --- s3 probe-before-promote ---------------------------------------------
+
+TEST(clean_margin_starts_probe_not_promote) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  // Drive clean s3-capable samples past clean_ms: rung must NOT change,
+  // probe must be active on rung 1.
+  for (; t < 7000; t += 50) ctl.update(ok3(0.0), t);
+  CHECK(ctl.rung() == 0);
+  CHECK(ctl.probing());
+  CHECK(ctl.probe_rung() == 1);
+  CHECK(ctl.probe_mcs() == 2);
+  CHECK(ctl.counters().probes_started == 1);
+}
+
+TEST(probe_fail_penalizes_candidate_and_stays) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  // Candidate rung 1 budget = eff1(0.5)/(1+eff1(0.5)); drown it: u_pred >> threshold.
+  for (int i = 0; i < 20 && ctl.probing(); ++i, t += 50) ctl.update(ok3(0.0, 0.9), t);
+  CHECK(!ctl.probing());
+  CHECK(ctl.rung() == 0);                       // never moved
+  CHECK(ctl.counters().probe_fails == 1);
+  CHECK(penalty_ms_for(ctl, t, 1) > 0);          // candidate penalized
+  CHECK(ctl.last_probe().outcome == ProbeOutcome::Fail);
+  CHECK(ctl.last_probe().rung == 1);
+  CHECK(ctl.last_probe().snr_db == 30.0);
+}
+
+TEST(probe_pass_commits_with_probation) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  const double start = t;
+  for (; ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t - start < 5000); }
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().probes_ok == 1);
+  CHECK(ctl.counters().promotes == 1);
+  CHECK(ctl.probation_ms_left(t) > 0);           // probation still guards commit
+  CHECK(ctl.last_probe().outcome == ProbeOutcome::Pass);
+  CHECK(t - start >= 2000);                       // full probe_ms elapsed
+}
+
+// Review finding: a Pass used to report u_pred = u3_, and u3_ is pinned to 0
+// for the whole duration of a probe — so every passing probe logged
+// u_pred=0.000 and a candidate that squeaked in just under the threshold was
+// indistinguishable from a flawless one in last_probe() (and the ctl-log P
+// lines / sideport built on it). A Pass must report the last post-settle
+// u_pred it actually scored.
+TEST(probe_pass_reports_measured_u_pred) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  // Candidate rung 1 budget = eff1(0.5)/(1+eff1(0.5)) = 1.5/2.5 = 0.6, so an
+  // s3 pre-FEC loss of 0.12 is u_pred 0.2: nonzero, comfortably under the
+  // 0.6 threshold, so the probe still passes.
+  for (; ctl.probing(); t += 50) {
+    ctl.update(ok3(0.0, 0.12), t);
+    REQUIRE(t < 1e5);
+  }
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.last_probe().outcome == ProbeOutcome::Pass);
+  CHECK(ctl.last_probe().u_pred > 0.0);
+  CHECK(std::abs(ctl.last_probe().u_pred - 0.2) < 1e-9);
+}
+
+TEST(probe_settle_blackout_ignores_early_s3_loss) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  ctl.update(ok3(0.0, 0.9), t + 100);   // within probe_settle_ms 150
+  CHECK(ctl.probing());                  // not failed
+  CHECK(ctl.counters().probe_fails == 0);
+}
+
+TEST(demote_signal_aborts_probe) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  // reach rung 1 the legacy way (no probe_allowed), then probe toward 2:
+  promote_to(ctl, t, 1);
+  t += cfg.probation_ms + cfg.hold_after_down_ms;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e6); }
+  LinkHealth bad = ok3(0.0); bad.residual_loss = 0.05;   // s1 residual: instant demote
+  ctl.update(bad, t);
+  CHECK(!ctl.probing());
+  CHECK(ctl.rung() == 0);
+  CHECK(ctl.counters().probe_aborts == 1);
+  CHECK(ctl.last_probe().outcome == ProbeOutcome::Abort);
+}
+
+TEST(s3_silence_aborts_probe_without_penalty) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  LinkHealth h = ok3(0.0); h.s3_valid = false; h.s3_expected_syms = 0;
+  for (int i = 0; i < 15 && ctl.probing(); ++i, t += 50) { ctl.update(h, t); ctl.on_tick(t); }
+  CHECK(!ctl.probing());
+  CHECK(ctl.counters().probe_aborts == 1);
+  CHECK(penalty_ms_for(ctl, t, 1) == -1);        // inconclusive: no penalty
+}
+
+TEST(no_probe_allowed_falls_back_to_legacy_promote) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(ok(0.0), t);  // ok(): probe_allowed=false
+  CHECK(ctl.rung() == 1);                        // promoted directly, as today
+  CHECK(ctl.counters().probes_started == 0);
+  CHECK(ctl.probation_ms_left(t) > 0);
+}
+
+// Review finding: a candidate rung that shares the current rung's MCS (an
+// overhead-only step) doesn't change the PHY rate, so there is nothing for
+// an s3 probe to measure -- phy_differs is false and the controller must
+// take the legacy direct-promote path, not spend probe_ms measuring a
+// no-op.
+TEST(equal_mcs_candidate_skips_probe) {
+  LadderCfg cfg;
+  cfg.ladder = {{0, 1.0}, {2, 0.5}, {2, 0.25}};  // rung 1 and rung 2 share mcs 2
+  LadderController ctl(cfg);
+  double t = 0;
+  // Reach rung 1 the legacy way (probe_allowed=false) so this test isolates
+  // the equal-mcs skip at the rung1->rung2 transition, same idiom as
+  // demote_signal_aborts_probe above.
+  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(ok(0.0), t);
+  REQUIRE(ctl.rung() == 1);
+  t += cfg.probation_ms + cfg.hold_after_down_ms;  // clear probation/hold gates
+  const double start = t;
+  for (; ctl.rung() == 1 && t - start < cfg.clean_ms + 1000; t += 50)
+    ctl.update(ok3(0.0), t);  // clean, probe-capable s3 samples
+  CHECK(ctl.rung() == 2);                        // promoted directly, no probe
+  CHECK(ctl.counters().probes_started == 0);
+  CHECK(ctl.probation_ms_left(t) > 0);
+}
+
+// Review finding: s3 unusable AT ENTRY (below the probe_s3_min_syms floor,
+// as opposed to going silent mid-probe -- see s3_silence_aborts_probe_without_penalty)
+// means s3_usable() is false before a probe is ever started, so the
+// clean-margin branch must fall through to the legacy direct promote rather
+// than attempting a probe with nothing to measure it against.
+TEST(s3_unusable_at_entry_falls_back_to_legacy_promote) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  LinkHealth h = ok3(0.0);
+  h.s3_expected_syms = 10;  // < probe_s3_min_syms (50): "no traffic" floor
+  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(h, t);
+  CHECK(ctl.rung() == 1);                        // promoted directly, no probe
+  CHECK(ctl.counters().probes_started == 0);
+  CHECK(ctl.probation_ms_left(t) > 0);
+}
+
+TEST(feedback_timeout_clears_probe) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  // Probing from rung 0: the timeout branch (idx_ > 0) can't fire, but the
+  // probe's own s3-silence abort must clear it — no rung change to report.
+  CHECK(!ctl.on_tick(t + 1500));                 // > probe_s3_silence_ms
+  CHECK(ctl.rung() == 0);
+  CHECK(!ctl.probing());
+  CHECK(ctl.counters().probe_aborts == 1);
+  // From a higher rung the timeout branch itself must also clear a probe:
+  LadderController c2(make_cfg());
+  double t2 = 0;
+  promote_to(c2, t2, 1);
+  t2 += 4200;                                     // clear hold_after_down
+  for (; !c2.probing(); t2 += 50) { c2.update(ok3(0.0), t2); REQUIRE(t2 < 1e6); }
+  CHECK(c2.on_tick(t2 + 1500));                   // timeout: rung 1 -> 0
+  CHECK(c2.rung() == 0);
+  CHECK(!c2.probing());
+}
+
+TEST(event_carries_snr) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  LinkHealth bad = ok3(0.0); bad.residual_loss = 0.05;
+  promote_to(ctl, t, 1);
+  ctl.update(bad, t);
+  CHECK(ctl.last_event().reason == CtlReason::Residual);
+  CHECK(ctl.last_event().snr_db == 30.0);
+}
+
+// --- s3 steady-state demotes ---------------------------------------------
+
+TEST(s3_residual_confirmed_demotes) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + 100;
+  ctl.update(ok3(0.0), t);                 // ends any blanking cleanly
+  t += cfg.s3_settle_ms + 100;
+  const double start = t;
+  // sustained s3 residual, s1 perfectly clean:
+  for (; ctl.rung() == 2 && t - start < 2000; t += 50) ctl.update(ok3(0.0, 0.02, 0.01), t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().demotes_s3_residual == 1);
+  CHECK(ctl.last_event().reason == CtlReason::S3Residual);
+  CHECK(t - start >= cfg.s3_residual_confirm_ms);   // not instant
+}
+
+TEST(s3_residual_blip_does_not_demote) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.02, 0.01), t);      // single bad window
+  ctl.update(ok3(0.0), t + 50);              // clean again resets the run
+  for (double e = t + 100; e < t + 2000; e += 50) ctl.update(ok3(0.0), e);
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+}
+
+// Review finding: the confirm windows are elapsed-time tests against a
+// stamp, so a stamp that SURVIVES a gap in usable s3 measures wall clock
+// rather than sustained evidence. One bad window, 800 ms of no measurement
+// (s3 unusable here; a run of sample_valid=false samples early-returns out of
+// update() for the same effect), then one more bad window would satisfy
+// "800 - 0 >= s3_residual_confirm_ms" and demote on two bad samples 800 ms
+// apart — exactly the instant demote the confirm window exists to prevent.
+// Continuity must break the run.
+TEST(s3_residual_confirm_window_resets_across_an_s3_gap) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.02, 0.01), t);   // one bad window stamps the run
+  t += 50;
+
+  LinkHealth gap = ok3(0.0, 0.02, 0.01);  // residual present but UNMEASURABLE
+  gap.s3_valid = false;
+  gap.s3_expected_syms = 0;
+  const double gap_end = t + 800;
+  for (; t < gap_end; t += 50) CHECK(!ctl.update(gap, t));
+
+  // First usable sample after the gap: 800 ms of wall clock since the stamp,
+  // but only ever one bad window of actual evidence.
+  CHECK(!ctl.update(ok3(0.0, 0.02, 0.01), t));
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+
+  // A genuinely sustained run still demotes, timed from the post-gap sample.
+  const double fresh = t;
+  t += 50;
+  for (; ctl.rung() == 2 && t - fresh < 2000; t += 50) {
+    ctl.update(ok3(0.0, 0.02, 0.01), t);
+  }
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().demotes_s3_residual == 1);
+  CHECK(ctl.last_event().t_ms - fresh >= cfg.s3_residual_confirm_ms);
+}
+
+// The other half of the same finding, and the only thing that exercises the
+// continuity gate itself: update() early-returns on an invalid sample long
+// before block 5a, so the "unmeasurable window breaks the run" branch inside
+// 5a never even runs during an s1 fade. The run must still break.
+TEST(s3_residual_confirm_window_resets_across_an_invalid_sample_gap) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.02, 0.01), t);   // one bad window stamps the run
+  t += 50;
+
+  LinkHealth invalid;                     // s1 window saw no symbols at all
+  invalid.sample_valid = false;
+  const double gap_end = t + 800;
+  for (; t < gap_end; t += 50) CHECK(!ctl.update(invalid, t));
+
+  CHECK(!ctl.update(ok3(0.0, 0.02, 0.01), t));
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+}
+
+TEST(s3_util_confirmed_demotes) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  const double start = t;
+  // s3 pre-FEC loss high enough that u3 > down_util but no residual, s1 clean:
+  for (; ctl.rung() == 2 && t - start < 2000; t += 50) ctl.update(ok3(0.0, 0.2), t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().demotes_s3_util == 1);
+  CHECK(ctl.last_event().reason == CtlReason::S3Util);
+}
+
+TEST(s3_demote_kill_switch) {
+  LadderCfg cfg = make_cfg();
+  cfg.s3_demote = false;
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  for (double e = t; e < t + 3000; e += 50) ctl.update(ok3(0.0, 0.2, 0.05), e);
+  CHECK(ctl.rung() == 2);                    // inert
+}
+
+TEST(s3_signals_suspended_while_probing) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
+  // Heavy s3 residual during the probe must FAIL THE PROBE, not book an
+  // s3_residual demote of the current rung:
+  for (int i = 0; i < 20 && ctl.probing(); ++i, t += 50) ctl.update(ok3(0.0, 0.9, 0.5), t);
+  CHECK(ctl.counters().demotes_s3_residual == 0);
+  CHECK(ctl.counters().probe_fails == 1);
+  CHECK(ctl.rung() == 0);
+}
+
+TEST(s3_demote_during_probation_books_fail) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);                     // rung 2 now on probation
+  t += cfg.s3_settle_ms + 100;
+  const double start = t;
+  for (; ctl.rung() == 2 && t - start < 3000; t += 50) ctl.update(ok3(0.0, 0.02, 0.01), t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().probation_fails == 1);
+  CHECK(penalty_ms_for(ctl, t, 2) > 0);
 }
 
 MTEST_MAIN
