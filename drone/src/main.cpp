@@ -647,7 +647,11 @@ int run_real_mode(const Config& cfg) {
   // are late, not lost, so the cost lands as TxQueue backpressure and aborted
   // slice tails that the loss-driven ladder cannot see. This is the MAC TX gate
   // only -- SetCcaMode deliberately skips the vendor BB CCA-off writes, which
-  // deafen the receiver (measured: delivery 6800 -> 10 frames).
+  // deafen the receiver (measured: delivery 6800 -> 10 frames). Deliberate
+  // side effect: the same flag latches _cca_disabled, which suppresses
+  // phydm's periodic EDCCA re-tracking (RtlJaguar3Device.cpp) so it stops
+  // fighting the disable by rewriting the 0x84c energy-detect thresholds
+  // every ~2 s.
   dev_cfg.tuning.disable_cca = true;
 
   WiFiDriver wifi_driver{logger};
