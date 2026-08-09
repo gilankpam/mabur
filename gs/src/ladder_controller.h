@@ -73,6 +73,9 @@ struct LinkHealth {
   // is a legal value (no SNR known this window).
   double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
   bool probe_allowed = false;  // peer advertised CAP_S3_PROBE
+  // Label only, same contract as s1_snr_db: the s1 EVM (dB) of the card
+  // that supplied s1_snr_db. NaN when unsampled.
+  double s1_evm_db = std::numeric_limits<double>::quiet_NaN();
 };
 
 enum class CtlReason {
@@ -92,6 +95,7 @@ struct ProbeEvent {
   double snr_db = 0;
   double u_pred = 0;  // s3-measured utilization predicted for the candidate
   int dur_ms = 0;
+  double evm_db = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Stamped by penalize_rung() so the ctl log can report the escalating ledger
@@ -109,6 +113,7 @@ struct CtlEvent {
   CtlReason reason = CtlReason::None;
   double u = 0;
   double snr_db = std::numeric_limits<double>::quiet_NaN();
+  double evm_db = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct CtlCounters {
@@ -227,6 +232,7 @@ class LadderController {
   double s3_last_live_ms_ = -1e18;
   double s3_blank_until_ms_ = -1e18;
   double snr_now_ = std::numeric_limits<double>::quiet_NaN();
+  double evm_now_ = std::numeric_limits<double>::quiet_NaN();
 
   CtlCounters counters_;
   CtlEvent last_event_;
