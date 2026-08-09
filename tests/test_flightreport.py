@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -353,14 +354,30 @@ def test_old_scale_snr_warns_on_stderr():
 
 CTL_LOG = """ctllog 1 ladder=0/100,2/50,4/25,5/25,6/25,7/10 down_util=0.35 up_util=0.15
 S 1000 3 0.0100 31.5 0.0000 0.0200 0.0000
+S 2000 3 0.0100 31.4 0.0000 0.0200 0.0000 -24.5
 P 2000 4 pass 30.0 0.0500 2000
-P 9000 4 fail 24.5 0.9000 600
+P 9000 4 fail 24.5 0.9000 600 -21.0
 N 9000 4 1 19000
 P 20000 4 fail 23.0 0.8000 550
-E 30000 3 2 s3_util 0.4000 26.0
-P 40000 4 fail 41.0 0.9500 500
+E 30000 3 2 s3_util 0.4000 26.0 -20.5
+P 40000 4 fail 41.0 0.9500 500 -23.0
 P 50000 4 pass 29.5 0.0400 2000
 """
+
+
+def test_ctllog_evm_optional_trailing_token():
+    """Test that load_ctllog parses optional EVM trailing token and defaults
+    to nan for pre-EVM logs (backward compatibility)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL_LOG)
+        log = flightreport.load_ctllog(str(p))
+    s_old, s_new = log["S"][0], log["S"][1]
+    assert math.isnan(s_old["evm_db"])          # pre-EVM line -> nan, not KeyError
+    assert s_new["evm_db"] == -24.5
+    assert log["E"][0]["evm_db"] == -20.5
+    evms = [p["evm_db"] for p in log["P"]]
+    assert -21.0 in evms and sum(1 for v in evms if math.isnan(v)) == 3
 
 
 def test_wall_report():
@@ -383,6 +400,7 @@ def test_wall_report():
     # the 41.0 dB fail is an outlier (mcs6-hole signature), flagged not pooled:
     assert "outlier" in out
     assert "s3_util" in out          # event summary includes new reasons
+    assert "evm" in out              # DWELL and EVENTS now report EVM
 
     print("\n✓ Wall report test passed!")
 
@@ -390,4 +408,5 @@ def test_wall_report():
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
+    test_ctllog_evm_optional_trailing_token()
     test_wall_report()

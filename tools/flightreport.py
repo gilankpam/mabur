@@ -62,18 +62,24 @@ def load_ctllog(path):
                         "u": float(toks[3]), "snr_db": float(toks[4]),
                         "resid": float(toks[5]), "u3": float(toks[6]),
                         "resid3": float(toks[7]),
+                        # 2026-08-10 EVM label; absent on older logs.
+                        "evm_db": float(toks[8]) if len(toks) >= 9 else float("nan"),
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({
                         "t_ms": float(toks[1]), "from": int(toks[2]),
                         "to": int(toks[3]), "reason": toks[4],
                         "u": float(toks[5]), "snr_db": float(toks[6]),
+                        # 2026-08-10 EVM label; absent on older logs.
+                        "evm_db": float(toks[7]) if len(toks) >= 8 else float("nan"),
                     })
                 elif tag == "P" and len(toks) >= 7:
                     P.append({
                         "t_ms": float(toks[1]), "rung": int(toks[2]),
                         "outcome": toks[3], "snr_db": float(toks[4]),
                         "u_pred": float(toks[5]), "dur_ms": float(toks[6]),
+                        # 2026-08-10 EVM label; absent on older logs.
+                        "evm_db": float(toks[7]) if len(toks) >= 8 else float("nan"),
                     })
                 elif tag == "N" and len(toks) >= 5:
                     N.append({
@@ -144,10 +150,12 @@ def print_wall_report(ctllog):
         nan_n = len(samples) - len(snrs)
         sentinel_n = sum(1 for s in samples if is_sentinel(s["u3"]))
         snr_str = f"{min(snrs):.1f}..{max(snrs):.1f} dB" if snrs else "n/a"
+        evms = [s["evm_db"] for s in samples if not math.isnan(s["evm_db"])]
+        evm_str = f" evm={min(evms):.1f}..{max(evms):.1f} dB" if evms else ""
         extra = ""
         if nan_n: extra += f" nan_snr={nan_n}"
         if sentinel_n: extra += f" u3_sentinel={sentinel_n}"
-        print(f"  rung {rung}: n={len(samples)} snr={snr_str}{extra}")
+        print(f"  rung {rung}: n={len(samples)} snr={snr_str}{evm_str}{extra}")
 
     print("EVENTS")
     reason_counts = {}
@@ -157,8 +165,9 @@ def print_wall_report(ctllog):
         # starts with "s3_" -- label accordingly rather than mislabeling it.
         label = "u3" if e["reason"].startswith("s3_") else "u"
         u_str = "sentinel" if is_sentinel(e["u"]) else f"{e['u']:.4f}"
+        evm_str = f" evm={e['evm_db']:.1f}" if not math.isnan(e["evm_db"]) else ""
         print(f"  t={e['t_ms']:.0f} rung {e['from']}->{e['to']} "
-              f"reason={e['reason']} {label}={u_str} snr={e['snr_db']:.1f}")
+              f"reason={e['reason']} {label}={u_str} snr={e['snr_db']:.1f}{evm_str}")
 
     print("EVENT SUMMARY (count per reason)")
     for reason in sorted(reason_counts):
