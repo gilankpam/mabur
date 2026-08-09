@@ -594,6 +594,12 @@ static int run_radio(const maburgs::Config& cfg) {
           cls.snr_ema = tcls.snr_ema;
           cls.snr_a_ema = tcls.snr_a_ema;
           cls.snr_b_ema = tcls.snr_b_ema;
+          cls.evm_ema = tcls.evm_ema;
+          cls.evm_a_ema = tcls.evm_a_ema;
+          cls.evm_b_ema = tcls.evm_b_ema;
+          cls.evm_has = tcls.evm_has;
+          cls.evm_a_has = tcls.evm_a_has;
+          cls.evm_b_has = tcls.evm_b_has;
         }
         sin.cards.push_back(ci);
       }

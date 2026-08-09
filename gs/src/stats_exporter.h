@@ -18,6 +18,8 @@ struct StatsClassIn {  // copied from ClassTrack (gs/src/aggregator.h)
   bool has_ema = false;
   double rssi_ema = 0, rssi_a_ema = 0, rssi_b_ema = 0;
   double snr_ema = 0, snr_a_ema = 0, snr_b_ema = 0;
+  double evm_ema = 0, evm_a_ema = 0, evm_b_ema = 0;
+  bool evm_has = false, evm_a_has = false, evm_b_has = false;
 };
 
 // Class index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.

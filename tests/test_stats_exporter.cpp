@@ -27,6 +27,8 @@ StatsInput base_input() {
   c.classes[1].frames = 900; c.classes[1].has_ema = true;  // s1
   c.classes[1].rssi_ema = 59.9; c.classes[1].rssi_a_ema = 59.1; c.classes[1].rssi_b_ema = 57.7;
   c.classes[1].snr_ema = 27.1; c.classes[1].snr_a_ema = 26.0; c.classes[1].snr_b_ema = 24.5;
+  c.classes[1].evm_has = true; c.classes[1].evm_a_has = true; c.classes[1].evm_b_has = true;
+  c.classes[1].evm_ema = -48.0; c.classes[1].evm_a_ema = -48.0; c.classes[1].evm_b_ema = -44.2;
   c.classes[5].frames = 10; c.classes[5].has_ema = true;  // ctrl
   c.classes[5].rssi_ema = 62.8;
   c.classes[5].snr_ema = 25.0;
@@ -193,6 +195,32 @@ TEST(rssi_converted_to_dbm) {
   // snr_ema 27.1 is raw HALF-dB (devourer units) -> 13.55 dB exported.
   CHECK(j["cards"][0]["classes"]["s1"]["snr"].get<double>() > 13.5 &&
         j["cards"][0]["classes"]["s1"]["snr"].get<double>() < 13.6);
+}
+
+TEST(evm_exported_in_db_half_db_raw) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  ex.poll(1000, base_input());
+  // evm_ema -48 raw half-dB -> -24.0 dB; per-chain likewise.
+  const json j = cap.last();
+  CHECK(j["cards"][0]["classes"]["s1"]["evm"].get<double>() == -24.0);
+  CHECK(j["cards"][0]["classes"]["s1"]["evm_a"].get<double>() == -24.0);
+  CHECK(j["cards"][0]["classes"]["s1"]["evm_b"].get<double>() > -22.2 &&
+        j["cards"][0]["classes"]["s1"]["evm_b"].get<double>() < -22.0);
+}
+
+TEST(evm_null_until_sampled_independent_of_snr) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.cards[0].classes[1].evm_has = false;      // snr has_ema stays true
+  in.cards[0].classes[1].evm_b_has = false;
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(j["cards"][0]["classes"]["s1"]["evm"].is_null());
+  CHECK(j["cards"][0]["classes"]["s1"]["evm_b"].is_null());
+  CHECK(!j["cards"][0]["classes"]["s1"]["evm_a"].is_null());  // A sampled
+  CHECK(!j["cards"][0]["classes"]["s1"]["snr"].is_null());    // untouched
 }
 
 // devourer's RxAtrib.snr is HALF-dB (LinkHealth.h:49, and RxQuality divides

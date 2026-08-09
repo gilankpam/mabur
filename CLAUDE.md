@@ -192,3 +192,6 @@ drone `lround()`s, so halving before that rounding would quantize to whole
 dB and lose half the resolution. Everything above about pre-2026-08-04
 recordings applies to `drone.uplink.snr_*` too, and `flightreport.py` warns
 on both with the same backstop threshold and the same caveat.
+
+`classes.*.evm[_a|_b]` (added 2026-08-10) never had the bug: it is dB from
+day one (devourer raw is the same half-dB family, halved at the exporter).
