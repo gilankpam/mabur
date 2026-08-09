@@ -94,10 +94,45 @@ tables. Acceptance: `txq_drops = 0`, `freeze_ms = 0`, no fps sample below
 `/media/dvr/shedlag-base.jsonl` + `shedlag-campaign-baseline.log` on the
 GS.
 
+## Fix and A/B result (2026-08-09, same day)
+
+The fix is the synchronized shed (`f200f6d`): in
+`RcAgent::run_bitrate_policy`, a bitrate DECREASE vs the last sent value
+bypasses the v1 throttle/hysteresis and goes out on the same tick that
+applies the MCS; identical re-sends stay deduped and increases stay lazy.
+No flush, no self-IDR, no wire change — the campaign was to decide whether
+more was needed, and it wasn't. Identical 5-burst campaign against the
+fixed `maburd`:
+
+| burst | cascade→floor | shed lag | txq drops | fps min | freeze | s1 abn peak |
+|---|---|---|---|---|---|---|
+| 1 | 886 ms | 1.22 s | **0** | 50 | **0** | 312/s |
+| 2 | 360 ms | 1.04 s | **0** | 56 | **0** | 387/s |
+| 3 | 578 ms | 1.22 s | **0** | 56 | **0** | 589/s |
+| 4 | 767 ms | 1.69 s | **0** | 50 | **0** | 508/s |
+| 5 | 412 ms | 1.51 s | **0** | 54 | **0** | 357/s |
+
+Acceptance: PASS on all five bursts — zero TxQueue drops (was 1475–2080),
+zero freeze (was 1.0–2.0 s), fps floor 50 (was 4–10). The reported shed
+lag is measured from the FIRST demote and includes the cascade walk
+itself plus the 1 Hz telemetry sampling edge; per-burst
+`shed_lag − cascade` is 335–918 ms, i.e. within one telemetry period of
+the floor commit. The residual s1 abandonment (312–589/s) and the small
+trunc/drop counts occur DURING the 35 % injection burst — that is the
+injected trigger loss itself, present in both runs; the baseline's excess
+over it was the drone-side queue kill, now gone.
+
+The queue-drain lag tail the model predicted did not produce a visible
+symptom (fps never left the 50s); the deferred ideas (TxQueue flush,
+drone self-IDR, GS-side multi-rung demote, RCF IDR-request) stay
+deferred until a measured need appears.
+
 ## Deployment state (bench, as of 2026-08-09)
 
 - GS: master + loss-sim rig, started with `--loss-sim 8390` (rollbacks
   `/usr/local/bin/maburgs.pre-shedlag`, `/etc/init.d/S96maburgs.pre-shedlag`).
   Control port is 8390 — NOT the rig's old 8302 default, which maburplay's
   GS OSD now occupies.
-- Drone: untouched — the baseline measured the deployed pre-fix `maburd`.
+- Drone: runs the shed-sync fix build (`f200f6d`), rollback
+  `/usr/bin/maburd.pre-shedsync` (the pre-fix cca-disable build; the older
+  `.pre-discca` backup was pruned for rootfs space).
