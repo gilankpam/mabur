@@ -107,6 +107,7 @@ if(MABUR_BUILD_DRONE)
   add_mtest(test_tx_queue test_tx_queue.cpp LIBS mabur_drone_core)
   add_mtest(test_tx_pool test_tx_pool.cpp LIBS mabur_drone_core)
   add_mtest(test_agent test_agent.cpp LIBS mabur_drone_core)
+  add_mtest(sim_shed_lag sim_shed_lag.cpp LIBS mabur_drone_core)
   add_mtest(test_telemetry test_telemetry.cpp LIBS mabur_drone_core)
   add_mtest(test_power_plan test_power_plan.cpp LIBS mabur_drone_core)
 
