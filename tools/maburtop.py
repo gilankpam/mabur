@@ -35,15 +35,17 @@ CARD_COLS = [("st", 4), ("pps", 5), ("inj", 5), ("Mbps", 5), ("loss%", 5),
 # LNK blocks (compact renderer only): one block per link type (class), a
 # decode line for the FEC streams, then per-card signal rows sharing these
 # columns across all blocks (their titles live on the LNK rule line).
+# evm: combined best-chain RX EVM, dB (negative = clean; devourer's provisional dirty/clean marks are -23.5/-24.5 dB). Compact mode shows only the combined value; per-chain rides the wide radio panel + sideport.
 LNKSIG_COLS = [("card", 4), ("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6),
-               ("rssiB", 6), ("snr", 5), ("snrA", 5), ("snrB", 5)]
+               ("rssiB", 6), ("snr", 5), ("snrA", 5), ("snrB", 5), ("evm", 6)]
 
 # Per-card radio table inside a wide-mode LINKS block: same signal columns
 # as LNKSIG_COLS but without a "card" column — the card id is the row
 # label instead (see mockup in the brief).
 RADIO_LABEL_W = 10
 RADIO_COLS = [("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6), ("rssiB", 6),
-              ("snr", 5), ("snrA", 5), ("snrB", 5)]
+              ("snr", 5), ("snrA", 5), ("snrB", 5), ("evm", 6), ("evmA", 6),
+              ("evmB", 6)]
 
 # Sticky class rows render in this fixed order regardless of dict/arrival
 # order; "ctrl" gets the short display label "ctl" (cls column is 4 wide,
@@ -359,6 +361,7 @@ def render_rows_compact(model, wall, width):
                 _f(s.get("snr"), LNKSIG_COLS[6][1], 1),
                 _f(s.get("snr_a"), LNKSIG_COLS[7][1], 1),
                 _f(s.get("snr_b"), LNKSIG_COLS[8][1], 1),
+                _f(s.get("evm"), LNKSIG_COLS[9][1], 1),
             ]
             rows.append(_grid_row("", cells))
 
@@ -823,6 +826,9 @@ def _radio_row(cid, sig):
         _f(sig.get("snr"), RADIO_COLS[5][1], 1),
         _f(sig.get("snr_a"), RADIO_COLS[6][1], 1),
         _f(sig.get("snr_b"), RADIO_COLS[7][1], 1),
+        _f(sig.get("evm"), RADIO_COLS[8][1], 1),
+        _f(sig.get("evm_a"), RADIO_COLS[9][1], 1),
+        _f(sig.get("evm_b"), RADIO_COLS[10][1], 1),
     ]
     return _grid_row(f"       c{_s(cid)}", cells, label_w=RADIO_LABEL_W)
 
