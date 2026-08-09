@@ -105,12 +105,21 @@ void RcAgent::reapply_with_derate_and_shed() {
 }
 
 // Runs whenever a new op is applied. The formula is always recomputed, but
-// whether an actual set_bitrate_kbps() call happens depends on `force`:
+// whether an actual set_bitrate_kbps() call happens depends on `force` and
+// on the DIRECTION of the change:
 //
-//  - force=false (steady-state LINKED RCFs): the call is throttled to at
-//    most once per 1000ms *and* gated by +-10% hysteresis vs the last value
-//    actually sent, so repeated identical (or near-identical) RCFs within
-//    one second collapse to a single call (scenario: bitrate hysteresis).
+//  - a DECREASE vs the last value actually sent always goes out, on the
+//    same tick that applied the MCS. The radio capacity has already
+//    dropped when the RCF lands; deferring the shed lets the encoder flood
+//    a smaller pipe and TxQueue drop-oldest kills whole FEC bodies — a
+//    multi-rung demote cascade under a gated shed is the 2026-08-09
+//    freeze-crash (docs/shed-lag-findings-2026-08-09.md).
+//  - force=false, non-decrease (steady-state LINKED RCFs): the call is
+//    throttled to at most once per 1000ms *and* gated by +-10% hysteresis
+//    vs the last value actually sent, so repeated identical (or
+//    near-identical) RCFs within one second collapse to a single call
+//    (scenario: bitrate hysteresis), and a late quality INCREASE stays
+//    harmless and lazy.
 //  - force=true (BOOT's initial MAX_RANGE apply, every LINKED->FAILSAFE
 //    entry, and RCFs that transition into LINKED from RENDEZVOUS/FAILSAFE):
 //    the throttle and hysteresis gates are bypassed entirely — the new
@@ -127,11 +136,12 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
                      static_cast<double>(cfg_.waybeam.bitrate_max_kbps));
   int kbps_i = round_to_100(kbps);
 
+  bool decrease = have_last_bitrate_ && kbps_i < last_bitrate_kbps_;
   bool changed_enough =
       !have_last_bitrate_ || std::abs(kbps_i - last_bitrate_kbps_) > last_bitrate_kbps_ / 10;
   bool throttled =
       have_last_bitrate_eval_ && now_ms - last_bitrate_eval_ms_ < 1000;
-  if (force || (changed_enough && !throttled)) {
+  if (force || decrease || (changed_enough && !throttled)) {
     act_.set_bitrate_kbps(kbps_i);
     last_bitrate_kbps_ = kbps_i;
     have_last_bitrate_ = true;

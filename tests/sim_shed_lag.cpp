@@ -228,21 +228,22 @@ TEST(shed_lag_replay_and_model) {
     else enc.push_back({static_cast<double>(b.t) + 50.0, b.kbps});  // +waybeam
   }
 
-  // Hypothesis pins: the cascade's intermediate rungs never reach the
-  // encoder (hysteresis eats 19300, throttle eats 5100), and the rung-0
-  // floor value lands more than 1s after the cascade began.
+  // Fix pins (shed-sync design 2026-08-09): every decreased target goes
+  // out with the rung change — the floor value within one RCF+tick of the
+  // rung-0 commit, and the walk's intermediate sheds (19300, 14500, 5100)
+  // no longer swallowed by the throttle/hysteresis.
   uint64_t t_1400 = 0;
   int calls_in_cascade = 0;
   for (const auto& b : act.bitrates) {
     if (b.t >= 598900 && b.kbps == 1400 && !t_1400) t_1400 = b.t;
-    if (b.t >= 598900 && b.t < 600107) ++calls_in_cascade;
+    if (b.t >= 598900 && b.t <= 600300) ++calls_in_cascade;
   }
   REQUIRE(t_1400 != 0);
   std::printf("\nfloor shed (1400) landed at t=%.2fs: %+.0fms after cascade "
               "start, %+.0fms after rung-0 commit\n",
               t_1400 / 1000.0, t_1400 - 598931.0, t_1400 - 600107.0);
-  CHECK(t_1400 - 598931 > 1000);   // >1s of cascade with an unshed encoder
-  CHECK(calls_in_cascade <= 1);    // at most ONE shed during the whole walk
+  CHECK(t_1400 - 600107 <= 150);   // floor shed rides the rung-0 RCF
+  CHECK(calls_in_cascade >= 4);    // 19300, 14500, 5100, 1400 all applied
 
   // ---- part 2: queue/air model on the measured encoder timeline ------
   QueueVerdict real_v;
@@ -273,17 +274,16 @@ TEST(shed_lag_replay_and_model) {
   auto qf = run_queue_model(fix, 0.75, &fix_v);
   print_timeline("=== PART 3: counterfactual, shed forced on every decrease ===",
                  qf);
-  std::printf("\nverdict: body drops %.0f%% -> %.0f%%; queue drained at "
-              "t=%.1fs -> t=%.1fs (rung 0 reached 600.11s)\n",
+  std::printf("\nverdict: body drops %.0f%% (reference immediate-shed model "
+              "%.0f%%); queue drained at t=%.1fs / t=%.1fs (rung 0 reached "
+              "600.11s)\n",
               real_v.drop_frac * 100, fix_v.drop_frac * 100,
               real_v.drained_at_ms / 1000.0, fix_v.drained_at_ms / 1000.0);
-  // Immediate shed must eliminate the transport loss (the freeze
-  // ingredient). The queue-drain tail (the lag ingredient) is expected to
-  // survive: rung 0's own budget leaves only ~15% drain headroom, so a
-  // queue accumulated during the descent flushes slowly no matter when the
-  // encoder sheds — that part needs a queue flush or a deeper shed, not a
-  // faster one.
-  CHECK(fix_v.drop_frac < real_v.drop_frac / 3.0);
+  // With the synchronized shed, the replayed agent's own timeline must not
+  // overflow the TxQueue any more (the freeze ingredient). The remaining
+  // queue-drain tail after a full collapse is bounded and measured by the
+  // hardware campaign, not modeled here.
+  CHECK(real_v.drop_frac < 0.01);
 }
 
 MTEST_MAIN

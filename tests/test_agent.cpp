@@ -613,6 +613,83 @@ TEST(bitrate_policy_hysteresis_within_one_second) {
   CHECK(act.bitrates.size() == count_after_first);
 }
 
+// 10b. A demote cascade must shed the encoder on EVERY decreased target in
+// the same tick that applies the MCS. The radio capacity has already
+// dropped when the RCF lands; a swallowed shed means the encoder floods a
+// smaller pipe and TxQueue drop-oldest kills whole FEC bodies (the
+// 2026-08-09 freeze-crash — docs/shed-lag-findings-2026-08-09.md). The
+// v1 throttle/hysteresis exist to dedup repeated identical RCFs, never to
+// defer a decrease.
+TEST(demote_cascade_sheds_every_decrease_immediately) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  // Enter LINKED at the top rung: mcs7, ov 2/16 -> clamp to max = 20000.
+  auto top = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 7, 20), 40, 2);
+  agent.on_rc_frame(top.data(), top.size(), 0);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(!act.bitrates.empty());
+  CHECK(act.bitrates.back() == 20000);
+
+  // Steady top-rung RCFs for 3s: no further calls (dedup), stamp expires.
+  uint16_t seq = 2;
+  for (uint64_t t = 100; t <= 3000; t += 100) {
+    auto w = make_rcf_wire(cfg.link.vtx_id, seq++,
+                            encode_profile(PhyMode::HT, 7, 20), 40, 2);
+    agent.on_rc_frame(w.data(), w.size(), t);
+  }
+  size_t steady = act.bitrates.size();
+
+  // ctl-0020-shaped cascade at RCF cadence: each step's lower target must
+  // go out on the SAME on_rc_frame call, throttle stamp notwithstanding.
+  struct Step { uint8_t mcs, ov16; int kbps; };
+  const Step down[] = {{4, 4, 14500}, {2, 8, 5100}, {0, 16, 1400}};
+  uint64_t t = 3100;
+  for (const Step& d : down) {
+    auto w = make_rcf_wire(cfg.link.vtx_id, seq++,
+                            encode_profile(PhyMode::HT, d.mcs, 20), 40, d.ov16);
+    agent.on_rc_frame(w.data(), w.size(), t);
+    REQUIRE(!act.bitrates.empty());
+    CHECK(act.bitrates.back() == d.kbps);
+    t += 100;
+  }
+  CHECK(act.bitrates.size() == steady + 3);
+}
+
+// 10c. Increases stay lazy: a higher target inside the 1s throttle window
+// is deferred (a late quality bump is harmless; only decreases are
+// safety-critical). Guard for the 10b change.
+TEST(bitrate_increase_still_gated) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  // Enter LINKED at mcs2/ov0.5 -> 5100 (forced entry call, stamp t=0).
+  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 40, 8);
+  agent.on_rc_frame(w0.data(), w0.size(), 0);
+  REQUIRE(act.bitrates.back() == 5100);
+
+  // Promote to mcs4/ov0.25 (14500) once the stamp expired: call fires.
+  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 4, 20), 40, 4);
+  agent.on_rc_frame(w1.data(), w1.size(), 1100);
+  REQUIRE(act.bitrates.back() == 14500);
+  size_t n = act.bitrates.size();
+
+  // Further promote to mcs7 (20000) 100ms later: inside the throttle
+  // window -> deferred.
+  auto w2 = make_rcf_wire(cfg.link.vtx_id, 3, encode_profile(PhyMode::HT, 7, 20), 40, 2);
+  agent.on_rc_frame(w2.data(), w2.size(), 1200);
+  CHECK(act.bitrates.size() == n);
+
+  // Same op re-sent after the window: goes out.
+  auto w3 = make_rcf_wire(cfg.link.vtx_id, 4, encode_profile(PhyMode::HT, 7, 20), 40, 2);
+  agent.on_rc_frame(w3.data(), w3.size(), 2200);
+  CHECK(act.bitrates.back() == 20000);
+}
+
 TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) {
   // BOOT/RENDEZVOUS -> LINKED is the process-(re)start scenario: frames
   // encoded before the link is up never reach the air (rig 2026-07-25:
