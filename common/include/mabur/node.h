@@ -22,6 +22,10 @@ struct RxBody {
   uint64_t mono_us = 0;      // sender's monotonic clock, microseconds
   uint8_t rssi[2] = {0, 0};  // per-chain raw, dBm = value - 110 (both chains valid on 8822E)
   int8_t snr[2] = {0, 0};
+  // Per-chain RX EVM, raw half-dB from devourer (negative = clean, dB =
+  // raw / 2). 0 = not sampled (no phy status on this frame, e.g. non-first
+  // A-MPDU subframes) — consumers must skip zeros, never average them.
+  int8_t evm[2] = {0, 0};
   bool crc_ok = true;        // 802.11 FCS; corrupt frames still carry bodies
   uint16_t mac_seq = 0;      // 12-bit hw seq from the dot11 header
   std::vector<uint8_t> body; // frame body, dot11 header stripped

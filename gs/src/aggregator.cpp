@@ -10,6 +10,21 @@ namespace {
 // bounded-walk stance as common/src/uep_decoder.cpp's note_delivery()).
 constexpr uint16_t kMaxSeqGap = 512;
 constexpr double kEmaAlpha = 0.1;
+
+// EVM fold shared by CardTrack and ClassTrack (identical field names).
+// Unlike rssi/snr, zero samples are skipped per chain — devourer's own
+// RxQualityAccumulator does the same so mixed streams don't bias toward 0.
+template <typename Track>
+static void fold_evm(Track& t, int8_t a, int8_t b) {
+  auto fold = [](double& ema, bool& has, double v) {
+    if (!has) { ema = v; has = true; }
+    else ema = (1 - kEmaAlpha) * ema + kEmaAlpha * v;
+  };
+  if (a != 0) fold(t.evm_a_ema, t.evm_a_has, a);
+  if (b != 0) fold(t.evm_b_ema, t.evm_b_has, b);
+  const int8_t best = (a != 0 && b != 0) ? (a < b ? a : b) : (a != 0 ? a : b);
+  if (best != 0) fold(t.evm_ema, t.evm_has, best);
+}
 }  // namespace
 
 Aggregator::Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
@@ -107,6 +122,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       c.snr_a_ema = (1 - kEmaAlpha) * c.snr_a_ema + kEmaAlpha * m.snr[0];
       c.snr_b_ema = (1 - kEmaAlpha) * c.snr_b_ema + kEmaAlpha * m.snr[1];
     }
+    fold_evm(c, m.evm[0], m.evm[1]);
 
     // Per-RF-class EMA, mirroring the pooled block above exactly. Ctrl
     // (non-self rc frames, e.g. DISC_ACK) takes priority over stream id;
@@ -139,6 +155,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
         ct.snr_a_ema = (1 - kEmaAlpha) * ct.snr_a_ema + kEmaAlpha * m.snr[0];
         ct.snr_b_ema = (1 - kEmaAlpha) * ct.snr_b_ema + kEmaAlpha * m.snr[1];
       }
+      fold_evm(ct, m.evm[0], m.evm[1]);
     }
   }
 
