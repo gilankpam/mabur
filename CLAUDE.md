@@ -134,6 +134,32 @@ read the sideport. Reach for other tools only in these cases:**
   Note: the drone radio RX can wedge after a linkbench run — restart
   maburd.
 
+**Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
+`maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
+radios inject without the MAC CCA/EDCCA gate — no deferral to co-channel
+802.11, and no politeness toward it either. Rationale is in
+`docs/superpowers/specs/2026-08-05-cca-disable-design.md` (gitignored,
+hence this note) — that spec is a protocol with an expectations table, not
+results: the 41-45% injection-deferral figure it cites is devourer's own
+measurement, taken with its `txdemo` injector on an 8822EU (same chip
+family), not with maburd, and the mabur-side bench A/B has not run yet.
+Expected practical consequence for anyone reading old data: in a congested
+environment a pre-2026-08-05 recording and a post- one would not be the
+same experiment, since the drone's injection rate under interference is
+expected to change. On a clean channel the gate never trips and the two
+stay comparable. Bench harnesses (`linkbench`, `txagcbench`) are
+deliberately left building a plain `DeviceConfig` — carrier sense stays ON
+there, so don't assume they share the daemons' MAC config. Nothing in the
+sideport reports the CCA state — date the recording against this line. To
+confirm it on a running device, grep the daemon log for `carrier sense`:
+both daemons print a one-line bring-up record (`maburd radio:` / `maburgs
+radio card N:`, once per card bring-up — a recovered front-end reprints
+it, so more than one line per card on a multi-card GS is expected).
+devourer's own carrier-sense line is info-level and so is compiled out of
+the cross-builds' `DEVOURER_LOG_MAX_LEVEL=WARN` — its absence means
+nothing. Both lines record the state mabur *requested*, not a register
+readback.
+
 Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and
 `docs/superpowers/specs/2026-07-26-drone-telemetry-design.md`. The schema

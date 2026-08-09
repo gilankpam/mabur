@@ -640,6 +640,19 @@ int run_real_mode(const Config& cfg) {
   // descriptor limit) into one bulk-OUT URB via send_packets — amortizes
   // the per-URB tax that capped inline per-frame injection at ~2500 fps.
   dev_cfg.tx.usb_agg_max = 3;
+  // MAC carrier sense OFF. The FPV downlink owns its channel, so CSMA backoff
+  // only stutters it: devourer measured injection deferring 41-45% to a
+  // co-channel 802.11 transmitter on this same Jaguar3 family, recovered ~1.5x
+  // by clearing primary CCA 0x520[14] (tests/dis_cca_tx_onair.sh). The frames
+  // are late, not lost, so the cost lands as TxQueue backpressure and aborted
+  // slice tails that the loss-driven ladder cannot see. This is the MAC TX gate
+  // only -- SetCcaMode deliberately skips the vendor BB CCA-off writes, which
+  // deafen the receiver (measured: delivery 6800 -> 10 frames). Deliberate
+  // side effect: the same flag latches _cca_disabled, which suppresses
+  // phydm's periodic EDCCA re-tracking (RtlJaguar3Device.cpp) so it stops
+  // fighting the disable by rewriting the 0x84c energy-detect thresholds
+  // every ~2 s.
+  dev_cfg.tuning.disable_cca = true;
 
   WiFiDriver wifi_driver{logger};
   auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);
@@ -1111,6 +1124,16 @@ int run_real_mode(const Config& cfg) {
   std::fprintf(stderr, "maburd bringing up TX on channel %d\n", cfg.radio.channel);
   rtl_device->InitWrite(
       SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+  // Bring-up record for the non-standard MAC state requested via
+  // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
+  // at info, and the production cross-build compiles info out
+  // (DEVOURER_LOG_MAX_LEVEL=WARN), so without this the deployed daemon leaves no
+  // trace that it is transmitting without carrier sense. Unconditional: the flag
+  // is hardcoded true, so there is nothing to branch on. Wording is deliberate --
+  // this records what maburd REQUESTED of devourer, not a register readback.
+  std::fprintf(stderr,
+               "maburd radio: MAC carrier sense (CCA+EDCCA) requested OFF -- TX "
+               "will not defer to co-channel traffic\n");
 
   // power_mode == "offset": program the wall-equalized per-rate diff table
   // once at bring-up (RcAgent's per-op SetTxPowerOffsetQdb calls trim
