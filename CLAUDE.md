@@ -195,3 +195,10 @@ on both with the same backstop threshold and the same caveat.
 
 `classes.*.evm[_a|_b]` (added 2026-08-10) never had the bug: it is dB from
 day one (devourer raw is the same half-dB family, halved at the exporter).
+⚠ Raw EVM is op-point-dependent — the same clean bench link legitimately
+reads −16 dB at mcs0 and −30 dB at mcs7, because per-MCS TX power moves the
+PA between compression and linear regimes. Never compare EVM across rungs
+or threshold it globally; use deviation from the same rung's baseline. The
+sweep that established this (and the interpretation: walls stay
+delivery-defined; EVM's job is per-rung baselines + live PA-compression
+watchdog) is `docs/evm-sweep-findings-2026-08-10.md`.
