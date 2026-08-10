@@ -1106,7 +1106,14 @@ int main(int argc, char** argv) {
           presenter = std::move(p);
           std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
                        (now_ms - display_retry_t0_ms) / 1000.0);
-          show_splash(presenter.get());
+          // Startup-only, and this is where that invariant is enforced for the
+          // hotplug path: if this process has ever decoded a frame, the aircraft is
+          // flying and a still photo on the goggles would read as a live feed. The
+          // screen still lights (needs_modeset defaults true and was never cleared
+          // since splash_show() was skipped, so the first present() performs the
+          // full modeset that used to run before splash existed); it simply comes
+          // up on video, or on nothing until video returns.
+          if (!have_first_frame) show_splash(presenter.get());
           // The recorder is sized from the OSD surface, so it could not exist
           // before this moment.
           start_burn_if_needed();

@@ -242,6 +242,14 @@ struct DrmPresenter::Impl {
   uint32_t splash_zpos_prop = 0;
   uint64_t splash_zpos_val = 0;
   bool splash_active = false;   // a splash is on screen; present() must hand off
+  bool detach_warned = false;   // detach_splash_plane() has already logged once this episode
+  // Consecutive commit failures observed while splash_active is true (Fix 3
+  // in the splash-handoff review): if the driver keeps rejecting the
+  // non-modeset handoff commit, present() falls back to a full ALLOW_MODESET
+  // commit rather than spin forever on an identical rejected shape. Reset on
+  // any successful commit; see the fallback site in present().
+  int splash_fail_streak = 0;
+  bool splash_fallback_warned = false;  // the streak-triggered fallback logs once, not per frame
   // present() needs to know the video plane IS the primary (then the video
   // attach replaces the splash FB by itself). init()'s local plane_is_primary
   // does not outlive init().
@@ -1057,12 +1065,13 @@ void DrmPresenter::Impl::free_splash() {
   splash_active = false;
 }
 
-// Last-resort exit from a splash that cannot be handed off: the OSD owned the
-// primary, the OSD has since been given up, and there is no backdrop to swap
-// in. The splash FB is OPAQUE (XRGB8888 has no alpha to blank it to), so
-// leaving it attached above the video would cover the picture permanently.
-// Detaching a plane is the one commit shape a driver in this state will
-// still take.
+// Last-resort exit from a splash that cannot be handed off: nothing in this
+// commit re-points the primary away from the splash FB, and never will --
+// either there is no OSD at all, or the OSD lives on a plane other than the
+// primary (so its attach can't repoint the primary either). The splash FB is
+// OPAQUE (XRGB8888 has no alpha to blank it to), so leaving it attached
+// would cover the picture permanently. Detaching a plane is the one commit
+// shape a driver in this state will still take.
 //
 // Returns whether the commit was actually accepted. Deliberately deviates
 // from the plan here: the brief had this return void and free the splash
@@ -1081,10 +1090,18 @@ bool DrmPresenter::Impl::detach_splash_plane() {
   drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_id, 0);
   const int rc = drmModeAtomicCommit(fd, r, 0, this);
   drmModeAtomicFree(r);
-  std::fprintf(stderr,
-               "DrmPresenter: splash could not be handed off (OSD gone, no backdrop) -- "
-               "detaching plane %u: %s\n",
-               splash_plane_id, rc == 0 ? "ok" : std::strerror(rc < 0 ? -rc : errno));
+  // Log once. This is retried every frame until accepted (or until the
+  // caller frees the splash on success), so an unconditional fprintf here
+  // would write ~60 lines/second into /tmp/maburplay.log, which is tmpfs on
+  // the GS. State only what is true -- the primary has no replacement FB --
+  // not which of the two dead-end topologies caused it.
+  if (!detach_warned) {
+    detach_warned = true;
+    std::fprintf(stderr,
+                 "DrmPresenter: splash has no replacement framebuffer for the primary -- "
+                 "detaching plane %u: %s\n",
+                 splash_plane_id, rc == 0 ? "ok" : std::strerror(rc < 0 ? -rc : errno));
+  }
   return rc == 0;
 }
 
@@ -1365,12 +1382,38 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     std::fprintf(stderr, "DrmPresenter: drmModeAtomicCommit failed (modeset=%d): %s\n", do_modeset,
                  std::strerror(err));
     ++commit_errors;
+    // Bounded fallback out of a splash that a driver refuses to hand off
+    // non-modeset (e.g. a VOP2 that treats the video plane's first-ever
+    // attach as requiring a modeset, returning -EINVAL on this
+    // NONBLOCK|PAGE_FLIP_EVENT commit forever). Without this, needs_modeset
+    // and splash_active are never touched on this path, so every following
+    // frame rebuilds and re-rejects the identical shape: a frozen splash,
+    // commit_errors climbing at ~60 Hz, and video that never appears. This
+    // does not undo the branch's "no second modeset for the happy-path
+    // handoff" rule -- that rule governs the commit that WOULD have worked;
+    // this is the escape hatch for one the driver has proven it will not
+    // accept, so the next present() falls back to the full ALLOW_MODESET
+    // commit the player always used to do before splash existed.
+    if (splash_handoff) {
+      ++splash_fail_streak;
+      if (splash_fail_streak >= kOsdMaxFailStreak) {
+        needs_modeset = true;
+        if (!splash_fallback_warned) {
+          splash_fallback_warned = true;
+          std::fprintf(stderr,
+                       "DrmPresenter: splash handoff commit rejected %d times in a row -- "
+                       "falling back to a full modeset (costs one sink re-lock)\n",
+                       splash_fail_streak);
+        }
+      }
+    }
     drmModeRmFB(fd, fb_id);
     close_gem_handle(fd, handle);
     if (release) release(frame);
     return false;
   }
 
+  splash_fail_streak = 0;
   last_video_commit_ms = mono_ms();
   if (attach_osd) {
     if (osd_dirty) {
@@ -1403,22 +1446,32 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
 
   if (splash_handoff) {
     // Free ONLY if this commit actually re-pointed the primary away from the
-    // splash FB. `attach_osd` is cleared by the retry path above when a
-    // commit carrying the OSD was rejected and rebuilt video-only -- in the
-    // osd_on_primary topology that commit left the splash where it was, so
-    // freeing here would RmFB a buffer still being scanned out and strand the
-    // image on screen. Leaving splash_active set retries on the next frame.
-    if (video_on_primary || primary_fb_id != 0 || attach_osd) {
+    // splash FB. That happens when the video plane IS the primary
+    // (video_on_primary), when a backdrop's primary FB was swapped in
+    // (primary_fb_id != 0), or when the OSD rode this commit AND the OSD
+    // itself owns the primary (osd_on_primary) -- `attach_osd` alone is not
+    // enough: in the topology with video on an overlay, the OSD on a
+    // separate third plane, and no backdrop, `attach_osd` can be true while
+    // nothing in the commit touches the primary at all. `attach_osd` is also
+    // cleared by the retry path above when a commit carrying the OSD was
+    // rejected and rebuilt video-only -- in the osd_on_primary topology that
+    // commit left the splash where it was, so freeing here would RmFB a
+    // buffer still being scanned out and strand the image on screen. Leaving
+    // splash_active set retries on the next frame.
+    const bool primary_repointed =
+        video_on_primary || primary_fb_id != 0 || (attach_osd && osd_on_primary);
+    if (primary_repointed) {
       free_splash();
-    } else if (!(osd_plane_id != 0 && osd.ok())) {
-      // Dead end: the OSD owned the primary and has been given up, so no
-      // replacement FB will ever come. Detach rather than cover the video.
-      // Only free on a CONFIRMED detach -- freeing on a rejected commit would
-      // RmFB an FB the kernel may still be scanning out (the same hazard the
-      // branch above already refuses to run into, here with a worse ending:
-      // drm_framebuffer_remove() on an in-use primary-plane FB falls back to
-      // disabling the CRTC, and nothing re-arms needs_modeset to recover it).
-      // Leaving splash_active set on failure retries on a later frame.
+    } else if (!(osd_on_primary && osd_plane_id != 0 && osd.ok())) {
+      // Dead end: either there is no OSD to ever repoint the primary, or the
+      // OSD lives on a different plane than the primary and so never will.
+      // Detach rather than cover the video. Only free on a CONFIRMED detach
+      // -- freeing on a rejected commit would RmFB an FB the kernel may
+      // still be scanning out (the same hazard the branch above already
+      // refuses to run into, here with a worse ending: drm_framebuffer_remove()
+      // on an in-use primary-plane FB falls back to disabling the CRTC, and
+      // nothing re-arms needs_modeset to recover it). Leaving splash_active
+      // set on failure retries on a later frame.
       if (detach_splash_plane()) free_splash();
     }
   }
