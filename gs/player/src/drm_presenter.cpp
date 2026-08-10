@@ -332,7 +332,7 @@ struct DrmPresenter::Impl {
 
   bool splash_show();
   void free_splash();
-  void detach_splash_plane();
+  bool detach_splash_plane();
 
   void release_slot(Slot& s);
   void on_flip(bool real_event = true);
@@ -1063,9 +1063,20 @@ void DrmPresenter::Impl::free_splash() {
 // leaving it attached above the video would cover the picture permanently.
 // Detaching a plane is the one commit shape a driver in this state will
 // still take.
-void DrmPresenter::Impl::detach_splash_plane() {
+//
+// Returns whether the commit was actually accepted. Deliberately deviates
+// from the plan here: the brief had this return void and free the splash
+// buffer unconditionally at the call site, but that frees an FB the kernel
+// may still be scanning out on a REJECTED detach -- the exact hazard the
+// sibling branch two lines up at the call site already refuses to run into
+// ("freeing here would RmFB a buffer still being scanned out"), except
+// worse: drm_framebuffer_remove() on an in-use primary-plane FB falls back
+// to disabling the CRTC, and needs_modeset stays false, so nothing brings
+// the screen back afterward. The caller now only frees on success and
+// leaves splash_active set otherwise, so a later, quieter frame retries.
+bool DrmPresenter::Impl::detach_splash_plane() {
   drmModeAtomicReqPtr r = drmModeAtomicAlloc();
-  if (!r) return;
+  if (!r) return false;
   drmModeAtomicAddProperty(r, splash_plane_id, splash_props.fb_id, 0);
   drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_id, 0);
   const int rc = drmModeAtomicCommit(fd, r, 0, this);
@@ -1074,6 +1085,7 @@ void DrmPresenter::Impl::detach_splash_plane() {
                "DrmPresenter: splash could not be handed off (OSD gone, no backdrop) -- "
                "detaching plane %u: %s\n",
                splash_plane_id, rc == 0 ? "ok" : std::strerror(rc < 0 ? -rc : errno));
+  return rc == 0;
 }
 
 bool DrmPresenter::Impl::splash_show() {
@@ -1294,7 +1306,12 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
   // carrying the OSD is vsync-paced, AND the one-shot async probe must not
   // run on such a commit: an EINVAL there would latch "async rejected" for
   // the wrong reason and permanently demote video to vsync-paced flips.
-  const bool probing_async = !do_modeset && !async_probed && !attach_osd;
+  // Same reasoning applies to a splash handoff: it restates the primary's
+  // FB (or a zpos property on the video plane, topology 3) alongside the
+  // video attach, so it is multi-plane / multi-property too. Exclude it from
+  // the probe the same way `attach_osd` already is; the probe runs on the
+  // first ordinary frame after the handoff instead, ~16 ms later.
+  const bool probing_async = !do_modeset && !async_probed && !attach_osd && !splash_handoff;
   if (!do_modeset && !attach_osd && (probing_async || async_active))
     flags |= DRM_MODE_PAGE_FLIP_ASYNC;
 
@@ -1396,8 +1413,13 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     } else if (!(osd_plane_id != 0 && osd.ok())) {
       // Dead end: the OSD owned the primary and has been given up, so no
       // replacement FB will ever come. Detach rather than cover the video.
-      detach_splash_plane();
-      free_splash();
+      // Only free on a CONFIRMED detach -- freeing on a rejected commit would
+      // RmFB an FB the kernel may still be scanning out (the same hazard the
+      // branch above already refuses to run into, here with a worse ending:
+      // drm_framebuffer_remove() on an in-use primary-plane FB falls back to
+      // disabling the CRTC, and nothing re-arms needs_modeset to recover it).
+      // Leaving splash_active set on failure retries on a later frame.
+      if (detach_splash_plane()) free_splash();
     }
   }
 
@@ -1428,8 +1450,20 @@ void DrmPresenter::Impl::poll_events() {
   // freeze the OSD exactly when on-screen link telemetry matters most.
   // crtc_active still excludes the pre-first-frame case, where the CRTC is
   // not up yet and an OSD-only commit could not display anything.
+  //
+  // `!splash_active` on top: splash_show() also sets crtc_active, and both
+  // OSD sources (GS overlay, MSP) publish independently of video, so without
+  // this a standalone OSD commit fires within ~500 ms of the splash going up
+  // -- with no video commit yet to gate it, `last_video_commit_ms` is still
+  // 0 and the 100 ms quiet window passes trivially. In the osd_on_primary
+  // topology the OSD plane IS the splash plane, so that commit would
+  // re-point it at the OSD's own (transparent) buffer and wipe the splash
+  // off screen well before the first video frame arrives -- defeating the
+  // feature on exactly the topology it targets. In topologies 1 and 3 the
+  // OSD lives on a different plane above the splash, so this changes
+  // nothing there; it only holds off the plane the splash actually owns.
   const uint64_t now = mono_ms();
-  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active &&
+  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active && !splash_active &&
       now - last_video_commit_ms >= 100 && now - osd_last_commit_ms >= 100) {
     commit_osd_only();
   }
