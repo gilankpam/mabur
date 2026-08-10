@@ -650,7 +650,13 @@ int main(int argc, char** argv) {
   // unwind: stop() joins the encode thread and releases the decoder buffers
   // it still holds while the decoder that owns them is still alive.
   std::unique_ptr<maburplay::BurnRecorder> burn;
-  if (burned_mode && presenter) {
+  // Idempotent, and deliberately callable more than once: the display may be
+  // acquired late (see the hotplug retry in the run loop), and the recorder
+  // is sized from presenter->osd_back_surface(), so it cannot be built before
+  // a presenter exists. Leaving it unbuilt on that path would mean a lit
+  // screen, playing video, and nothing recorded.
+  auto start_burn_if_needed = [&]() {
+    if (burn || !burned_mode || !presenter) return;
     auto rec = std::make_unique<maburplay::BurnRecorder>();
     maburplay::BurnCfg bc;
     // Palette (and with it the encoder's OSD region) whenever EITHER overlay
@@ -697,23 +703,27 @@ int main(int argc, char** argv) {
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the
     // decode watchdog may destroy and recreate it mid-run.
     if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
-  }
-  if (burn) {
+    if (!burn) return;
     // Raw pointer, not a reference to the unique_ptr: `burn` is assigned
-    // exactly once, here, and never reset -- and the sink outlives nothing
-    // it does not outlive already (the composer is destroyed after the loop
-    // that is its only caller).
+    // exactly once (this lambda returns early once it is set) and never
+    // reset, and the sink outlives nothing it does not outlive already.
     maburplay::BurnRecorder* b = burn.get();
     composer.set_burn_sink([b](const maburplay::Surface& s, const maburplay::DirtyRect* r,
                                size_t n) { b->set_osd(s, r, n); });
-  }
+  };
+  start_burn_if_needed();
   if (burned_mode && !burn) {
-    // Wrong backend, no presenter (--decode-only), or an encoder that would
-    // not init. BurnRecorder::start() already logged the specific reason.
-    std::fprintf(stderr,
-                 "maburplay: dvr.mode \"burned\" requested but the recorder is not "
-                 "running -- NOTHING is being recorded (no raw fallback: it would look "
-                 "like a burned file)\n");
+    if (presenter) {
+      // A real recorder failure: BurnRecorder::start() already logged why.
+      std::fprintf(stderr,
+                   "maburplay: dvr.mode \"burned\" requested but the recorder is not "
+                   "running -- NOTHING is being recorded (no raw fallback: it would look "
+                   "like a burned file)\n");
+    } else {
+      std::fprintf(stderr,
+                   "maburplay: dvr.mode \"burned\" requested but there is no display yet -- "
+                   "NOTHING is being recorded; recording starts if a display is acquired\n");
+    }
   }
 #else
   if (burned_mode) {
@@ -1097,6 +1107,13 @@ int main(int argc, char** argv) {
           std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
                        (now_ms - display_retry_t0_ms) / 1000.0);
           show_splash(presenter.get());
+          // The recorder is sized from the OSD surface, so it could not exist
+          // before this moment.
+          start_burn_if_needed();
+          if (burned_mode && !burn)
+            std::fprintf(stderr,
+                         "maburplay: display acquired but the burned recorder did not start -- "
+                         "NOTHING is being recorded\n");
         }
       }
     }
