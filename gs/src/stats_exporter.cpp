@@ -166,6 +166,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
         kj["rssi"] = nullptr; kj["rssi_a"] = nullptr; kj["rssi_b"] = nullptr;
         kj["snr"] = nullptr;  kj["snr_a"] = nullptr;  kj["snr_b"] = nullptr;
       }
+      kj["evm"] = cls.evm_has ? json(cls.evm_ema * kEvmRawToDb) : json(nullptr);
+      kj["evm_a"] = cls.evm_a_has ? json(cls.evm_a_ema * kEvmRawToDb) : json(nullptr);
+      kj["evm_b"] = cls.evm_b_has ? json(cls.evm_b_ema * kEvmRawToDb) : json(nullptr);
       classes[kClassKeys[k]] = std::move(kj);
     }
     cj["classes"] = std::move(classes);
@@ -227,12 +230,14 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                          {"to", c.last_event_to},
                          {"reason", c.last_event_reason},
                          {"u", clamp_util(c.last_event_u)},
-                         {"snr", snr_or_null(c.last_event_snr_db)}};
+                         {"snr", snr_or_null(c.last_event_snr_db)},
+                         {"evm", snr_or_null(c.last_event_evm_db)}};
     if (c.last_probe_t_ms > 0) {
       ctl["last_probe"] = {{"t_ms", c.last_probe_t_ms},
                            {"rung", c.last_probe_rung},
                            {"outcome", c.last_probe_outcome},
                            {"snr", snr_or_null(c.last_probe_snr_db)},
+                           {"evm", snr_or_null(c.last_probe_evm_db)},
                            {"u_pred", clamp_util(c.last_probe_u_pred)},
                            {"dur_ms", c.last_probe_dur_ms}};
     } else {

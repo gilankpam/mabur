@@ -22,6 +22,7 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
   m.card_id = card; m.mac_seq = seq; m.crc_ok = crc_ok;
   m.rssi[0] = 38; m.rssi[1] = 40;   // both chains sane (see docs/chain-a-rssi-validation-handoff.md)
   m.snr[0] = 10; m.snr[1] = 25;
+  m.evm[0] = -48; m.evm[1] = -44;  // raw half-dB, negative = clean, 0 = not sampled
   m.mono_us = 1000u * seq;
   m.body = std::move(body);
   return m;
@@ -43,6 +44,11 @@ static std::vector<std::vector<uint8_t>> encode_fixture_bodies() {
   }
   for (auto& b : enc.flush_all()) bodies.push_back(std::move(b.body));
   return bodies;
+}
+
+static std::vector<uint8_t> video_body() {
+  static auto bodies = encode_fixture_bodies();
+  return bodies.empty() ? std::vector<uint8_t>() : bodies[0];
 }
 
 TEST(routes_video_to_decoder_and_rc_to_control) {
@@ -170,6 +176,67 @@ TEST(card_rssi_ema_tracks_per_frame_chain_max) {
   m3.rssi[0] = 0; m3.rssi[1] = 0;
   agg.on_rx_body(m3);
   CHECK(agg.card(0).rssi_ema > 58.9 && agg.card(0).rssi_ema < 59.1);
+}
+
+TEST(evm_ema_best_chain_min_and_per_chain) {
+  Aggregator agg(vec_layers(), 50, 1024, 1);
+  agg.on_rx_body(msg(0, 1, true, video_body()));
+  const auto& c = agg.card(0);
+  CHECK(c.evm_has); CHECK(c.evm_a_has); CHECK(c.evm_b_has);
+  CHECK(c.evm_ema == -48.0);    // min(-48, -44): more negative = better chain
+  CHECK(c.evm_a_ema == -48.0);
+  CHECK(c.evm_b_ema == -44.0);
+}
+
+TEST(evm_zero_samples_are_skipped_not_folded) {
+  Aggregator agg(vec_layers(), 50, 1024, 1);
+  agg.on_rx_body(msg(0, 1, true, video_body()));
+  auto m2 = msg(0, 2, true, video_body());
+  m2.evm[0] = 0; m2.evm[1] = 0;    // no phy status: must not drag EMAs to 0
+  agg.on_rx_body(m2);
+  const auto& c = agg.card(0);
+  CHECK(c.evm_ema == -48.0);
+  CHECK(c.evm_a_ema == -48.0);
+  CHECK(c.evm_b_ema == -44.0);
+  auto m3 = msg(0, 3, true, video_body());
+  m3.evm[0] = 0; m3.evm[1] = -40;  // single-chain sample: only B and combined fold
+  agg.on_rx_body(m3);
+  CHECK(c.evm_a_ema == -48.0);                       // A untouched
+  CHECK(c.evm_b_ema == 0.9 * -44.0 + 0.1 * -40.0);   // kEmaAlpha = 0.1
+  CHECK(c.evm_ema == 0.9 * -48.0 + 0.1 * -40.0);     // best = the only nonzero chain
+}
+
+// -128 (int8 min) is the chip's "not measured" sentinel for an absent
+// spatial stream — measured on the bench 2026-08-10: every 1SS non-STBC
+// frame carries evm[1] = -128 (txagcbench sweep, all three MCS). Folding it
+// would peg the stream-B EMA at -64 dB and, via best-chain min(), the
+// combined EVM too.
+TEST(evm_int8_min_sentinel_is_skipped_like_zero) {
+  Aggregator agg(vec_layers(), 50, 1024, 1);
+  auto m = msg(0, 1, true, video_body());
+  m.evm[0] = -48; m.evm[1] = -128;   // 1SS frame: stream B not measured
+  agg.on_rx_body(m);
+  const auto& c = agg.card(0);
+  CHECK(c.evm_a_ema == -48.0);
+  CHECK(!c.evm_b_has);               // sentinel never folds
+  CHECK(c.evm_ema == -48.0);         // combined = the real stream, not min(-48,-128)
+  auto m2 = msg(0, 2, true, video_body());
+  m2.evm[0] = -128; m2.evm[1] = -128;
+  agg.on_rx_body(m2);
+  CHECK(c.evm_a_ema == -48.0);       // all-sentinel frame folds nothing
+  CHECK(c.evm_ema == -48.0);
+}
+
+TEST(evm_absent_until_first_sample_and_class_scoped) {
+  Aggregator agg(vec_layers(), 50, 1024, 1);
+  auto m = msg(0, 1, true, video_body());
+  m.evm[0] = 0; m.evm[1] = 0;
+  agg.on_rx_body(m);
+  CHECK(!agg.card(0).evm_has);   // snr/rssi EMAs exist, EVM stays absent
+  agg.on_rx_body(msg(0, 2, true, video_body()));
+  const auto& ct = agg.card(0).cls[int(RfClass::S0)];  // video_body() is s0
+  CHECK(ct.evm_has);
+  CHECK(ct.evm_ema == -48.0);
 }
 
 TEST(class_split_video_msp_ctrl) {

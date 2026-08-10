@@ -171,6 +171,8 @@ void RadioFrontend::on_packet(const Packet& pkt) {
   m.rssi[1] = pkt.RxAtrib.rssi[1];
   m.snr[0] = pkt.RxAtrib.snr[0];
   m.snr[1] = pkt.RxAtrib.snr[1];
+  m.evm[0] = pkt.RxAtrib.evm[0];
+  m.evm[1] = pkt.RxAtrib.evm[1];
   m.crc_ok = !pkt.RxAtrib.crc_err;
   m.mac_seq = static_cast<uint16_t>(
       (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);

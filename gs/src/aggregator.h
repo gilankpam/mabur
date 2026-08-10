@@ -22,6 +22,13 @@ struct ClassTrack {
   uint64_t frames = 0, bytes = 0;
   double rssi_ema = 0, rssi_a_ema = 0, rssi_b_ema = 0;
   double snr_ema = 0, snr_a_ema = 0, snr_b_ema = 0;
+  // Per-chain RX EVM EMAs (raw half-dB; dB at the exporter). Folded only
+  // from nonzero samples — 0 means "no phy status", not 0 dB — so each has
+  // its own validity flag instead of sharing has_ema. evm_ema tracks the
+  // per-frame best (most negative) sampled chain, mirroring snr_ema's
+  // max-of-chains.
+  double evm_ema = 0, evm_a_ema = 0, evm_b_ema = 0;
+  bool evm_has = false, evm_a_has = false, evm_b_has = false;
   bool has_ema = false;
 };
 
@@ -38,6 +45,13 @@ struct CardTrack {
   // Per-RX-chain SNR EMAs (path A / path B). A dead path B = no MRC
   // diversity, worth real dB in NLOS multipath (2026-07-12 perf-gap triage).
   double snr_a_ema = 0.0, snr_b_ema = 0.0;
+  // Per-chain RX EVM EMAs (raw half-dB; dB at the exporter). Folded only
+  // from nonzero samples — 0 means "no phy status", not 0 dB — so each has
+  // its own validity flag instead of sharing has_ema. evm_ema tracks the
+  // per-frame best (most negative) sampled chain, mirroring snr_ema's
+  // max-of-chains.
+  double evm_ema = 0, evm_a_ema = 0, evm_b_ema = 0;
+  bool evm_has = false, evm_a_has = false, evm_b_has = false;
   bool has_ema = false, has_seq = false;
   uint16_t last_seq = 0;
   uint64_t last_frame_us = 0;

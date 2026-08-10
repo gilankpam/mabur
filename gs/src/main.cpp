@@ -450,10 +450,22 @@ static int run_radio(const maburgs::Config& cfg) {
     // CtlEvent/ProbeEvent so the ctl log can say what the RF looked like,
     // never a decision input.
     double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
+    double s1_evm_db = std::numeric_limits<double>::quiet_NaN();
+    int s1_best_card = -1;
     for (int i = 0; i < n_cards; ++i) {
       const auto& ct = agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)];
       const double db = ct.snr_ema * maburgs::kSnrRawToDb;
-      if (ct.has_ema && (std::isnan(s1_snr_db) || db > s1_snr_db)) s1_snr_db = db;
+      if (ct.has_ema && (std::isnan(s1_snr_db) || db > s1_snr_db)) {
+        s1_snr_db = db;
+        s1_best_card = i;
+      }
+    }
+    // EVM from the SAME card that supplied the SNR label (coherent
+    // single-card snapshot, not independently-best across cards).
+    if (s1_best_card >= 0) {
+      const auto& ct =
+          agg.card(s1_best_card).cls[static_cast<size_t>(maburgs::RfClass::S1)];
+      if (ct.evm_has) s1_evm_db = ct.evm_ema * maburgs::kEvmRawToDb;
     }
 
     maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
@@ -463,6 +475,7 @@ static int run_radio(const maburgs::Config& cfg) {
     health.s3_residual_loss = s3_rsample.valid ? s3_rsample.loss : 0.0;
     health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
     health.s1_snr_db = s1_snr_db;
+    health.s1_evm_db = s1_evm_db;
 
     if (auto out = vrx.step(now_ms, ld, health)) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period
@@ -487,7 +500,7 @@ static int run_radio(const maburgs::Config& cfg) {
                    health.pre_fec_loss);
       if (ctl_log)
         ctl_log->event(e.t_ms, e.from, e.to, maburgs::to_string(e.reason),
-                        e.u, e.snr_db);
+                        e.u, e.snr_db, e.evm_db);
     }
     // s3 probe-before-promote records: same t_ms-change detect pattern as
     // the rung-transition line above.
@@ -495,7 +508,7 @@ static int run_radio(const maburgs::Config& cfg) {
       last_probe_t_ms = p.t_ms;
       if (ctl_log)
         ctl_log->probe(p.t_ms, p.rung, maburgs::to_string(p.outcome),
-                        p.snr_db, p.u_pred, p.dur_ms);
+                        p.snr_db, p.u_pred, p.dur_ms, p.evm_db);
     }
     if (const auto& n = vrx.ctl().last_penalty(); n.t_ms != last_penalty_t_ms) {
       last_penalty_t_ms = n.t_ms;
@@ -510,7 +523,7 @@ static int run_radio(const maburgs::Config& cfg) {
         const auto& c = vrx.ctl();
         ctl_log->sample(now_ms, c.rung(), c.util(), health.s1_snr_db,
                          residual.value_or(0.0), c.util3(),
-                         health.s3_residual_loss);
+                         health.s3_residual_loss, health.s1_evm_db);
       }
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
@@ -594,6 +607,12 @@ static int run_radio(const maburgs::Config& cfg) {
           cls.snr_ema = tcls.snr_ema;
           cls.snr_a_ema = tcls.snr_a_ema;
           cls.snr_b_ema = tcls.snr_b_ema;
+          cls.evm_ema = tcls.evm_ema;
+          cls.evm_a_ema = tcls.evm_a_ema;
+          cls.evm_b_ema = tcls.evm_b_ema;
+          cls.evm_has = tcls.evm_has;
+          cls.evm_a_has = tcls.evm_a_has;
+          cls.evm_b_has = tcls.evm_b_has;
         }
         sin.cards.push_back(ci);
       }
@@ -651,6 +670,7 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_event_reason = maburgs::to_string(e.reason);
         ci.last_event_u = e.u;
         ci.last_event_snr_db = e.snr_db;
+        ci.last_event_evm_db = e.evm_db;
         ci.util3 = c.util3();
         ci.probes_started = cnt.probes_started;
         ci.probes_ok = cnt.probes_ok;
@@ -663,6 +683,7 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_probe_rung = pr.rung;
         ci.last_probe_outcome = maburgs::to_string(pr.outcome);
         ci.last_probe_snr_db = pr.snr_db;
+        ci.last_probe_evm_db = pr.evm_db;
         ci.last_probe_u_pred = pr.u_pred;
         ci.last_probe_dur_ms = pr.dur_ms;
         sin.ctl = std::move(ci);

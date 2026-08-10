@@ -4,6 +4,7 @@
 // judgment lives in analyze_sweep.py on the host. Corrupt frames are never
 // attributed (their payload can't be trusted to name an index) — only
 // counted, as a rig-health signal. rssi_* are raw pwdb (dBm ~= raw - 110);
+// evm_* are raw half-dB (dB = raw / 2, negative = clean, 0 = not sampled);
 // chain A is off-scale on the 8822E, the analyzer defaults to chain B.
 // Spec: docs/superpowers/specs/2026-07-16-txagcbench-design.md.
 #include <chrono>
@@ -128,9 +129,10 @@ int main(int argc, char** argv) {
       ++bench;
       std::fprintf(out,
                    "{\"idx\":%u,\"pass\":%u,\"seq\":%u,\"rssi_a\":%u,"
-                   "\"rssi_b\":%u,\"snr_a\":%d,\"snr_b\":%d}\n",
+                   "\"rssi_b\":%u,\"snr_a\":%d,\"snr_b\":%d,"
+                   "\"evm_a\":%d,\"evm_b\":%d}\n",
                    si.idx, si.pass, si.seq, m.rssi[0], m.rssi[1],
-                   m.snr[0], m.snr[1]);
+                   m.snr[0], m.snr[1], m.evm[0], m.evm[1]);
     }
     if (now >= next_stats) {
       next_stats += 1'000'000;

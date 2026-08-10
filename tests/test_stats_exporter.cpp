@@ -27,6 +27,8 @@ StatsInput base_input() {
   c.classes[1].frames = 900; c.classes[1].has_ema = true;  // s1
   c.classes[1].rssi_ema = 59.9; c.classes[1].rssi_a_ema = 59.1; c.classes[1].rssi_b_ema = 57.7;
   c.classes[1].snr_ema = 27.1; c.classes[1].snr_a_ema = 26.0; c.classes[1].snr_b_ema = 24.5;
+  c.classes[1].evm_has = true; c.classes[1].evm_a_has = true; c.classes[1].evm_b_has = true;
+  c.classes[1].evm_ema = -48.0; c.classes[1].evm_a_ema = -48.0; c.classes[1].evm_b_ema = -44.2;
   c.classes[5].frames = 10; c.classes[5].has_ema = true;  // ctrl
   c.classes[5].rssi_ema = 62.8;
   c.classes[5].snr_ema = 25.0;
@@ -193,6 +195,32 @@ TEST(rssi_converted_to_dbm) {
   // snr_ema 27.1 is raw HALF-dB (devourer units) -> 13.55 dB exported.
   CHECK(j["cards"][0]["classes"]["s1"]["snr"].get<double>() > 13.5 &&
         j["cards"][0]["classes"]["s1"]["snr"].get<double>() < 13.6);
+}
+
+TEST(evm_exported_in_db_half_db_raw) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  ex.poll(1000, base_input());
+  // evm_ema -48 raw half-dB -> -24.0 dB; per-chain likewise.
+  const json j = cap.last();
+  CHECK(j["cards"][0]["classes"]["s1"]["evm"].get<double>() == -24.0);
+  CHECK(j["cards"][0]["classes"]["s1"]["evm_a"].get<double>() == -24.0);
+  CHECK(j["cards"][0]["classes"]["s1"]["evm_b"].get<double>() > -22.2 &&
+        j["cards"][0]["classes"]["s1"]["evm_b"].get<double>() < -22.0);
+}
+
+TEST(evm_null_until_sampled_independent_of_snr) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.cards[0].classes[1].evm_has = false;      // snr has_ema stays true
+  in.cards[0].classes[1].evm_b_has = false;
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(j["cards"][0]["classes"]["s1"]["evm"].is_null());
+  CHECK(j["cards"][0]["classes"]["s1"]["evm_b"].is_null());
+  CHECK(!j["cards"][0]["classes"]["s1"]["evm_a"].is_null());  // A sampled
+  CHECK(!j["cards"][0]["classes"]["s1"]["snr"].is_null());    // untouched
 }
 
 // devourer's RxAtrib.snr is HALF-dB (LinkHealth.h:49, and RxQuality divides
@@ -446,8 +474,10 @@ TEST(ctl_block_shape_and_values) {
   ci.probes_started = 3; ci.probes_ok = 2; ci.probe_fails = 1; ci.probe_aborts = 0;
   ci.demotes_s3_residual = 1; ci.demotes_s3_util = 0;
   ci.last_event_snr_db = 27.5;
+  ci.last_event_evm_db = -20.5;
   ci.last_probe_t_ms = 1234; ci.last_probe_rung = 3;
   ci.last_probe_outcome = "fail"; ci.last_probe_snr_db = 24.0;
+  ci.last_probe_evm_db = -21.0;
   ci.last_probe_u_pred = 0.9; ci.last_probe_dur_ms = 600;
   in.ctl = ci;
   ex.poll(1000, in);
@@ -474,6 +504,7 @@ TEST(ctl_block_shape_and_values) {
   CHECK(ctl["last_event"]["reason"] == "util");
   CHECK(ctl["last_event"]["u"].get<double>() > 0.649 && ctl["last_event"]["u"].get<double>() < 0.651);
   CHECK(ctl["last_event"]["snr"].get<double>() > 27.49 && ctl["last_event"]["snr"].get<double>() < 27.51);
+  CHECK(ctl["last_event"]["evm"].get<double>() > -20.51 && ctl["last_event"]["evm"].get<double>() < -20.49);
   CHECK(ctl["util3"].get<double>() > 0.069 && ctl["util3"].get<double>() < 0.071);
   CHECK(ctl["counters"]["probes_started"] == 3);
   CHECK(ctl["counters"]["probes_ok"] == 2);
@@ -486,6 +517,7 @@ TEST(ctl_block_shape_and_values) {
   CHECK(ctl["last_probe"]["rung"] == 3);
   CHECK(ctl["last_probe"]["outcome"] == "fail");
   CHECK(ctl["last_probe"]["snr"].get<double>() > 23.99 && ctl["last_probe"]["snr"].get<double>() < 24.01);
+  CHECK(ctl["last_probe"]["evm"].get<double>() > -21.01 && ctl["last_probe"]["evm"].get<double>() < -20.99);
   CHECK(ctl["last_probe"]["u_pred"] == 0.9);
   CHECK(ctl["last_probe"]["dur_ms"] == 600);
 }
@@ -514,14 +546,18 @@ TEST(ctl_snr_nan_is_json_null) {
   StatsInput in = base_input();
   StatsCtlIn ci;
   ci.last_event_snr_db = std::nan("");
+  ci.last_event_evm_db = std::nan("");
   ci.last_probe_t_ms = 500;  // non-zero so last_probe is emitted
   ci.last_probe_snr_db = std::nan("");
+  ci.last_probe_evm_db = std::nan("");
   in.ctl = ci;
   ex.poll(1000, in);
   const json ctl = cap.last()["link"]["ctl"];
   CHECK(ctl["last_event"]["snr"].is_null());
+  CHECK(ctl["last_event"]["evm"].is_null());
   REQUIRE(!ctl["last_probe"].is_null());
   CHECK(ctl["last_probe"]["snr"].is_null());
+  CHECK(ctl["last_probe"]["evm"].is_null());
 }
 
 // util3 and last_probe.u_pred (and last_event.u for s3 reasons) can carry a

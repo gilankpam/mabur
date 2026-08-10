@@ -97,6 +97,7 @@ void LadderController::end_probe(ProbeOutcome oc, double u_pred,
   last_probe_.rung = probe_rung_;
   last_probe_.outcome = oc;
   last_probe_.snr_db = snr_now_;
+  last_probe_.evm_db = evm_now_;
   last_probe_.u_pred = u_pred;
   last_probe_.dur_ms = static_cast<int>(now_ms - probe_start_ms_);
   probe_active_ = false;
@@ -117,6 +118,7 @@ void LadderController::set_event(double now_ms, int from, int to,
   last_event_.reason = reason;
   last_event_.u = u;
   last_event_.snr_db = snr;
+  last_event_.evm_db = evm_now_;
 }
 
 // A rung's probation is "survived" once the clock crosses probation_until_ms_
@@ -182,6 +184,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // Label only, stashed for every set_event()/end_probe() below. NaN is legal
   // (no SNR known this window) and never influences a decision.
   snr_now_ = h.s1_snr_db;
+  evm_now_ = h.s1_evm_db;
 
   // No sample has measured s3 yet this tick, so nothing may be reported for
   // it. Cleared here rather than in block 5a so the promise util3() makes —

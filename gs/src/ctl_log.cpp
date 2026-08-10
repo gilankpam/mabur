@@ -71,27 +71,27 @@ CtlLog::~CtlLog() {
 }
 
 void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
-                     double resid, double u3, double resid3) {
+                     double resid, double u3, double resid3, double evm_db) {
   if (!f_) return;
-  std::fprintf(f_, "S %.0f %d %.4f %.1f %.4f %.4f %.4f\n", t_ms, rung, u,
-               snr_db, resid, clamp_util(u3), resid3);
+  std::fprintf(f_, "S %.0f %d %.4f %.1f %.4f %.4f %.4f %.1f\n", t_ms, rung, u,
+               snr_db, resid, clamp_util(u3), resid3, evm_db);
 }
 
 void CtlLog::event(double t_ms, int from, int to, const char* reason,
-                    double u, double snr_db) {
+                    double u, double snr_db, double evm_db) {
   if (!f_) return;
   // u is u3 (not the s1 util) whenever reason is one of the s3_* reasons --
   // clamp unconditionally since that's the only case the raw value can run
   // away, and clamping the ordinary s1 util (already bounded) is a no-op.
-  std::fprintf(f_, "E %.0f %d %d %s %.4f %.1f\n", t_ms, from, to, reason,
-               clamp_util(u), snr_db);
+  std::fprintf(f_, "E %.0f %d %d %s %.4f %.1f %.1f\n", t_ms, from, to, reason,
+               clamp_util(u), snr_db, evm_db);
 }
 
 void CtlLog::probe(double t_ms, int rung, const char* outcome, double snr_db,
-                    double u_pred, int dur_ms) {
+                    double u_pred, int dur_ms, double evm_db) {
   if (!f_) return;
-  std::fprintf(f_, "P %.0f %d %s %.1f %.4f %d\n", t_ms, rung, outcome,
-               snr_db, clamp_util(u_pred), dur_ms);
+  std::fprintf(f_, "P %.0f %d %s %.1f %.4f %d %.1f\n", t_ms, rung, outcome,
+               snr_db, clamp_util(u_pred), dur_ms, evm_db);
 }
 
 void CtlLog::penalty(double t_ms, int rung, int k, double until_ms) {

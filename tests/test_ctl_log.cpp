@@ -26,15 +26,15 @@ TEST(ctl_log_writes_header_and_records) {
   reset_dir(dir);
   maburgs::CtlLog log(dir, "ladder=0/100,2/50 down_util=0.35 up_util=0.15");
   REQUIRE(log.ok());
-  log.sample(1000, 2, 0.05, 31.5, 0.0, 0.10, 0.0);
-  log.event(1500, 2, 1, "s3_util", 0.4, 30.0);
-  log.probe(2000, 3, "fail", 24.0, 0.9, 600);
+  log.sample(1000, 2, 0.05, 31.5, 0.0, 0.10, 0.0, -24.5);
+  log.event(1500, 2, 1, "s3_util", 0.4, 30.0, -23.0);
+  log.probe(2000, 3, "fail", 24.0, 0.9, 600, -22.5);
   log.penalty(2000, 3, 1, 12000);
   std::string text = read_all(log.path());
   CHECK(text.rfind("ctllog 1 ladder=0/100,2/50 down_util=0.35 up_util=0.15\n", 0) == 0);
-  CHECK(text.find("\nS 1000 2 0.0500 31.5 0.0000 0.1000 0.0000\n") != std::string::npos);
-  CHECK(text.find("\nE 1500 2 1 s3_util 0.4000 30.0\n") != std::string::npos);
-  CHECK(text.find("\nP 2000 3 fail 24.0 0.9000 600\n") != std::string::npos);
+  CHECK(text.find("\nS 1000 2 0.0500 31.5 0.0000 0.1000 0.0000 -24.5\n") != std::string::npos);
+  CHECK(text.find("\nE 1500 2 1 s3_util 0.4000 30.0 -23.0\n") != std::string::npos);
+  CHECK(text.find("\nP 2000 3 fail 24.0 0.9000 600 -22.5\n") != std::string::npos);
   CHECK(text.find("\nN 2000 3 1 12000\n") != std::string::npos);
 }
 
@@ -52,15 +52,17 @@ TEST(ctl_log_index_increments) {
 TEST(ctl_log_bad_dir_is_nonfatal) {
   maburgs::CtlLog log("/nonexistent-dir-xyz", "x");
   CHECK(!log.ok());
-  log.sample(0, 0, 0, 0, 0, 0, 0);   // must not crash
+  log.sample(0, 0, 0, 0, 0, 0, 0, 0);   // must not crash
 }
 
 TEST(ctl_log_nan_snr_prints_nan) {
   std::string dir = "build_ctl_log_test3";
   reset_dir(dir);
   maburgs::CtlLog log(dir, "x");
-  log.sample(1, 0, 0, std::numeric_limits<double>::quiet_NaN(), 0, 0, 0);
+  log.sample(1, 0, 0, std::numeric_limits<double>::quiet_NaN(), 0, 0, 0,
+             std::numeric_limits<double>::quiet_NaN());
   CHECK(read_all(log.path()).find(" nan ") != std::string::npos);
+  CHECK(read_all(log.path()).find("nan\n") != std::string::npos);  // trailing evm prints nan
 }
 
 MTEST_MAIN
