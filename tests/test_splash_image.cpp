@@ -189,4 +189,27 @@ TEST(a_missing_file_is_rejected) {
   CHECK(all_opaque_black(d));
 }
 
+// The only test that reads the SHIPPED asset. Everything above stays on
+// synthetic images on purpose, so regenerating splash.bin cannot read as a
+// resampler regression -- but the file the player actually loads has to be
+// proven loadable exactly once, here.
+TEST(the_shipped_asset_loads_and_has_content) {
+  const std::string path = std::string(MABUR_PLAY_BUNDLE_DIR) + "/splash.bin";
+  Buf d(1280, 720);
+  std::string err;
+  REQUIRE(paint_splash(path, d.s, &err));
+  CHECK(err.empty());
+  // A real photograph, not a black or uniform placeholder.
+  bool nonblack = false, varied = false;
+  const uint32_t first = d.at(0, 0);
+  for (int y = 0; y < 720 && !(nonblack && varied); ++y)
+    for (int x = 0; x < 1280; ++x) {
+      const uint32_t p = d.at(x, y);
+      if ((p & 0x00ffffffu) != 0) nonblack = true;
+      if (p != first) varied = true;
+    }
+  CHECK(nonblack);
+  CHECK(varied);
+}
+
 MTEST_MAIN

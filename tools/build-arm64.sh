@@ -256,6 +256,13 @@ cp gs/player/bundle/font_btfl.mfont out/arm64/font_btfl.mfont
 # (see its header for the exact command and the expected byte count).
 cp gs/player/bundle/gs_osd.gfont out/arm64/gs_osd.gfont
 
+# maburplay's startup splash, staged the same way. Installs as
+# /usr/local/share/mabur/splash.bin -- the path splash_image.h hardcodes
+# (there is deliberately no config key for it). Raw XRGB8888 with a 16-byte
+# header, so the player needs no image decoder; regenerate with
+# tools/gen_splash.py (see its header for the exact command).
+cp gs/player/bundle/splash.bin out/arm64/splash.bin
+
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then
   nix-build -E \
