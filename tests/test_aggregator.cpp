@@ -206,6 +206,27 @@ TEST(evm_zero_samples_are_skipped_not_folded) {
   CHECK(c.evm_ema == 0.9 * -48.0 + 0.1 * -40.0);     // best = the only nonzero chain
 }
 
+// -128 (int8 min) is the chip's "not measured" sentinel for an absent
+// spatial stream — measured on the bench 2026-08-10: every 1SS non-STBC
+// frame carries evm[1] = -128 (txagcbench sweep, all three MCS). Folding it
+// would peg the stream-B EMA at -64 dB and, via best-chain min(), the
+// combined EVM too.
+TEST(evm_int8_min_sentinel_is_skipped_like_zero) {
+  Aggregator agg(vec_layers(), 50, 1024, 1);
+  auto m = msg(0, 1, true, video_body());
+  m.evm[0] = -48; m.evm[1] = -128;   // 1SS frame: stream B not measured
+  agg.on_rx_body(m);
+  const auto& c = agg.card(0);
+  CHECK(c.evm_a_ema == -48.0);
+  CHECK(!c.evm_b_has);               // sentinel never folds
+  CHECK(c.evm_ema == -48.0);         // combined = the real stream, not min(-48,-128)
+  auto m2 = msg(0, 2, true, video_body());
+  m2.evm[0] = -128; m2.evm[1] = -128;
+  agg.on_rx_body(m2);
+  CHECK(c.evm_a_ema == -48.0);       // all-sentinel frame folds nothing
+  CHECK(c.evm_ema == -48.0);
+}
+
 TEST(evm_absent_until_first_sample_and_class_scoped) {
   Aggregator agg(vec_layers(), 50, 1024, 1);
   auto m = msg(0, 1, true, video_body());

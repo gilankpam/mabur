@@ -16,14 +16,21 @@ constexpr double kEmaAlpha = 0.1;
 // RxQualityAccumulator does the same so mixed streams don't bias toward 0.
 template <typename Track>
 static void fold_evm(Track& t, int8_t a, int8_t b) {
+  // 0 = no phy status on this frame; -128 (int8 min) = the chip's
+  // "not measured" sentinel for an absent spatial stream (every 1SS
+  // non-STBC frame carries evm[1] = -128 — bench-measured 2026-08-10,
+  // txagcbench sweep). Neither is a sample; folding -128 would peg the
+  // EMA (and the best-of min below) at an impossible -64 dB.
+  auto sampled = [](int8_t v) { return v != 0 && v != INT8_MIN; };
   auto fold = [](double& ema, bool& has, double v) {
     if (!has) { ema = v; has = true; }
     else ema = (1 - kEmaAlpha) * ema + kEmaAlpha * v;
   };
-  if (a != 0) fold(t.evm_a_ema, t.evm_a_has, a);
-  if (b != 0) fold(t.evm_b_ema, t.evm_b_has, b);
-  const int8_t best = (a != 0 && b != 0) ? (a < b ? a : b) : (a != 0 ? a : b);
-  if (best != 0) fold(t.evm_ema, t.evm_has, best);
+  if (sampled(a)) fold(t.evm_a_ema, t.evm_a_has, a);
+  if (sampled(b)) fold(t.evm_b_ema, t.evm_b_has, b);
+  const int8_t best = (sampled(a) && sampled(b)) ? (a < b ? a : b)
+                                                 : (sampled(a) ? a : b);
+  if (sampled(best)) fold(t.evm_ema, t.evm_has, best);
 }
 }  // namespace
 
