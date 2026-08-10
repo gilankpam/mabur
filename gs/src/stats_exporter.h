@@ -75,11 +75,13 @@ struct StatsCtlIn {
            probe_aborts = 0;
   uint64_t demotes_s3_residual = 0, demotes_s3_util = 0;
   double last_event_snr_db = 0.0;  // NaN -> JSON null
+  double last_event_evm_db = 0.0;  // NaN -> JSON null (label-only, like snr)
   // Last completed probe; last_probe_t_ms == 0 means "never probed" -> null.
   double last_probe_t_ms = 0;
   int last_probe_rung = 0;
   std::string last_probe_outcome = "none";
   double last_probe_snr_db = 0.0;
+  double last_probe_evm_db = 0.0;  // NaN -> JSON null
   double last_probe_u_pred = 0.0;  // may carry the 1e9 sentinel -> clamped
   int last_probe_dur_ms = 0;
 };

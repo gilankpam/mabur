@@ -670,6 +670,7 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_event_reason = maburgs::to_string(e.reason);
         ci.last_event_u = e.u;
         ci.last_event_snr_db = e.snr_db;
+        ci.last_event_evm_db = e.evm_db;
         ci.util3 = c.util3();
         ci.probes_started = cnt.probes_started;
         ci.probes_ok = cnt.probes_ok;
@@ -682,6 +683,7 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_probe_rung = pr.rung;
         ci.last_probe_outcome = maburgs::to_string(pr.outcome);
         ci.last_probe_snr_db = pr.snr_db;
+        ci.last_probe_evm_db = pr.evm_db;
         ci.last_probe_u_pred = pr.u_pred;
         ci.last_probe_dur_ms = pr.dur_ms;
         sin.ctl = std::move(ci);
