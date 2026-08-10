@@ -59,7 +59,14 @@ class DrmPresenter {
   // -- not a primary plane permanently claimed by two unused ARGB buffers.
   // The caller must decide this BEFORE calling init(); DrmPresenter cannot
   // load the font itself (main.cpp owns that) and must not guess.
-  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn release);
+  // `log_failures` false silences the per-failure diagnostics on this path.
+  // The hotplug retry in main.cpp calls init() once a second while there is
+  // no display; at that rate the "no connected connector found" line is
+  // ~86,000 lines a day into /tmp/maburplay.log, which is tmpfs on the GS.
+  // The caller reports the episode instead: one line when retrying starts,
+  // one when a display is acquired.
+  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn release,
+            bool log_failures = true);
 
   // Takes ownership of `frame` unconditionally (see class comment) and
   // returns whether it was actually queued for scanout (false = dropped,
@@ -78,6 +85,23 @@ class DrmPresenter {
   // shows again until the next present(). See the flush-ordering contract
   // in the class comment.
   void drop_all();
+
+  // Startup splash. splash_surface() hands back the CPU mapping of a
+  // dedicated full-mode XRGB8888 dumb buffer that init() allocated on the
+  // primary plane; a null Surface means no splash is possible on this
+  // topology (no usable primary plane, or the allocation failed) and the
+  // caller simply skips it. splash_show() then modesets IMMEDIATELY with
+  // that buffer, so the sink locks a mode before any video exists -- the
+  // whole point: without it nothing drives the CRTC until the first decoded
+  // frame.
+  //
+  // There is deliberately no teardown call. The first present() after a
+  // splash re-points the primary at its normal FB in the same commit that
+  // shows the frame, then frees the splash buffer. A second modeset is NOT
+  // used for the handoff: it risks the sink re-locking (a second of black)
+  // at exactly the moment video starts.
+  Surface splash_surface();
+  bool splash_show();
 
   // --- MSP OSD overlay -------------------------------------------------
   // Allocated during init() -- only when the caller passed want_osd=true --

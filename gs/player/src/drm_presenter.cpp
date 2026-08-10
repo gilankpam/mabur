@@ -227,6 +227,27 @@ struct DrmPresenter::Impl {
   uint32_t primary_gem_handle = 0;
   PlaneProps primary_props;
 
+  // Startup splash: its own plane props and FB on the primary, independent of
+  // the backdrop's. Deliberately not sharing primary_props/primary_plane_id:
+  // in the osd_on_primary topology there IS no backdrop, and reusing those
+  // fields would make `primary_fb_id != 0` mean two different things in
+  // present(). A handful of extra ioctls at init buys total isolation.
+  uint32_t splash_plane_id = 0;
+  PlaneProps splash_props;
+  uint32_t splash_fb_id = 0;
+  uint32_t splash_gem_handle = 0;
+  void* splash_map = nullptr;
+  uint64_t splash_map_bytes = 0;
+  uint32_t splash_pitch_px = 0;
+  uint32_t splash_zpos_prop = 0;
+  uint64_t splash_zpos_val = 0;
+  bool splash_active = false;   // a splash is on screen; present() must hand off
+  // present() needs to know the video plane IS the primary (then the video
+  // attach replaces the splash FB by itself). init()'s local plane_is_primary
+  // does not outlive init().
+  bool video_on_primary = false;
+  bool log_init_failures = true;
+
   uint32_t prop_connector_crtc_id = 0;
   uint32_t prop_crtc_mode_id = 0;
   uint32_t prop_crtc_active = 0;
@@ -304,10 +325,14 @@ struct DrmPresenter::Impl {
 
   ~Impl();
 
-  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn rel);
+  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn rel, bool log_failures);
   bool present(const DmaFrame& frame);
   void poll_events();
   void drop_all();
+
+  bool splash_show();
+  void free_splash();
+  void detach_splash_plane();
 
   void release_slot(Slot& s);
   void on_flip(bool real_event = true);
@@ -482,25 +507,30 @@ void DrmPresenter::Impl::commit_osd_only() {
   osd_back ^= 1;
 }
 
-bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, ReleaseFn rel) {
+bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, ReleaseFn rel,
+                              bool log_failures) {
   release = std::move(rel);
+  log_init_failures = log_failures;
 
   fd = open(kCardPath, O_RDWR | O_CLOEXEC);
   if (fd < 0) {
-    std::fprintf(stderr, "DrmPresenter: open(%s) failed: %s\n", kCardPath, std::strerror(errno));
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: open(%s) failed: %s\n", kCardPath, std::strerror(errno));
     return false;
   }
 
   if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) != 0 ||
       drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1) != 0) {
-    std::fprintf(stderr, "DrmPresenter: drmSetClientCap(ATOMIC/UNIVERSAL_PLANES) failed: %s\n",
-                 std::strerror(errno));
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: drmSetClientCap(ATOMIC/UNIVERSAL_PLANES) failed: %s\n",
+                   std::strerror(errno));
     return false;
   }
 
   drmModeResPtr res = drmModeGetResources(fd);
   if (!res) {
-    std::fprintf(stderr, "DrmPresenter: drmModeGetResources failed: %s\n", std::strerror(errno));
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: drmModeGetResources failed: %s\n", std::strerror(errno));
     return false;
   }
 
@@ -526,7 +556,7 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
     }
   }
   if (!chosen) {
-    std::fprintf(stderr, "DrmPresenter: no connected connector found\n");
+    if (log_init_failures) std::fprintf(stderr, "DrmPresenter: no connected connector found\n");
     drmModeFreeResources(res);
     return false;
   }
@@ -573,7 +603,8 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
     }
   }
   if (!selected) {
-    std::fprintf(stderr, "DrmPresenter: connector %u has no modes\n", connector_id);
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: connector %u has no modes\n", connector_id);
     drmModeFreeConnector(chosen);
     drmModeFreeResources(res);
     return false;
@@ -597,7 +628,8 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
   drmModeFreeConnector(chosen);
   drmModeFreeResources(res);
   if (crtc_id == 0) {
-    std::fprintf(stderr, "DrmPresenter: no usable CRTC for connector %u\n", connector_id);
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: no usable CRTC for connector %u\n", connector_id);
     return false;
   }
 
@@ -605,7 +637,8 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
   prop_crtc_mode_id = find_property(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
   prop_crtc_active = find_property(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
   if (!prop_connector_crtc_id || !prop_crtc_mode_id || !prop_crtc_active) {
-    std::fprintf(stderr, "DrmPresenter: missing connector/crtc CRTC_ID|MODE_ID|ACTIVE property\n");
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: missing connector/crtc CRTC_ID|MODE_ID|ACTIVE property\n");
     return false;
   }
 
@@ -614,8 +647,9 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
   // that does (RK3566: the Esmart planes take NV12, per the brief).
   drmModePlaneResPtr pres = drmModeGetPlaneResources(fd);
   if (!pres) {
-    std::fprintf(stderr, "DrmPresenter: drmModeGetPlaneResources failed: %s\n",
-                 std::strerror(errno));
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: drmModeGetPlaneResources failed: %s\n",
+                   std::strerror(errno));
     return false;
   }
   uint32_t overlay_candidate = 0;
@@ -652,12 +686,15 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
     plane_id = overlay_candidate;
     plane_is_primary = false;
   }
+  video_on_primary = plane_is_primary;
   if (!plane_id) {
-    std::fprintf(stderr, "DrmPresenter: no NV12-capable plane on CRTC %u\n", crtc_id);
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: no NV12-capable plane on CRTC %u\n", crtc_id);
     return false;
   }
   if (!video_props.resolve(fd, plane_id)) {
-    std::fprintf(stderr, "DrmPresenter: missing standard property on plane %u\n", plane_id);
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: missing standard property on plane %u\n", plane_id);
     return false;
   }
 
@@ -889,9 +926,73 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
                    plane_id);
   }
 
+  // Startup splash buffer on the primary plane. Allocated here, after the
+  // zpos plan, because the splash must scan out at whatever zpos the primary
+  // is going to hold anyway -- the backdrop's when there is one, the OSD's
+  // when the OSD took the primary, the video's when video IS the primary.
+  // Best-effort throughout: no splash is never a failed init.
+  if (!primary_id) {
+    std::fprintf(stderr,
+                 "DrmPresenter: no primary plane on CRTC %u -- no startup splash; the display "
+                 "comes up at the first video frame\n",
+                 crtc_id);
+  } else if (!splash_props.resolve(fd, primary_id)) {
+    std::fprintf(stderr,
+                 "DrmPresenter: primary plane %u is missing a standard property -- no startup "
+                 "splash\n",
+                 primary_id);
+  } else {
+    splash_plane_id = primary_id;
+    uint32_t handle = 0, pitch = 0;
+    uint64_t size = 0;
+    if (drmModeCreateDumbBuffer(fd, mode.hdisplay, mode.vdisplay, 32, 0, &handle, &pitch, &size) !=
+        0) {
+      std::fprintf(stderr, "DrmPresenter: warning: splash dumb buffer create failed: %s\n",
+                   std::strerror(errno));
+    } else {
+      uint64_t map_offset = 0;
+      void* map = MAP_FAILED;
+      if (drmModeMapDumbBuffer(fd, handle, &map_offset) == 0)
+        // PROT_READ as well as PROT_WRITE: the splash painter only writes,
+        // but a write-only mapping is a landmine for any future reader on a
+        // buffer this one hands out as a plain Surface.
+        map = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+                   static_cast<off_t>(map_offset));
+      uint32_t handles4[4] = {handle, 0, 0, 0};
+      uint32_t pitches4[4] = {pitch, 0, 0, 0};
+      uint32_t offsets4[4] = {0, 0, 0, 0};
+      uint32_t fbid = 0;
+      if (map == MAP_FAILED) {
+        std::fprintf(stderr, "DrmPresenter: warning: mmap splash buffer failed: %s\n",
+                     std::strerror(errno));
+        drmModeDestroyDumbBuffer(fd, handle);
+      } else if (drmModeAddFB2(fd, mode.hdisplay, mode.vdisplay, DRM_FORMAT_XRGB8888, handles4,
+                               pitches4, offsets4, &fbid, 0) != 0) {
+        std::fprintf(stderr, "DrmPresenter: warning: splash AddFB2 failed: %s\n",
+                     std::strerror(errno));
+        munmap(map, size);
+        drmModeDestroyDumbBuffer(fd, handle);
+      } else {
+        splash_fb_id = fbid;
+        splash_gem_handle = handle;
+        splash_map = map;
+        splash_map_bytes = size;
+        splash_pitch_px = pitch / 4u;
+        uint64_t smin = 0, smax = 0;
+        splash_zpos_prop = find_zpos_range(fd, splash_plane_id, &smin, &smax);
+        // Whatever the primary is going to hold for real, the splash holds
+        // first at the same height in the stack.
+        splash_zpos_val = osd_on_primary ? zpos_osd_val
+                          : primary_fb_id ? zpos_primary_val
+                                          : zpos_video_val;
+      }
+    }
+  }
+
   if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob_id) != 0) {
-    std::fprintf(stderr, "DrmPresenter: drmModeCreatePropertyBlob(mode) failed: %s\n",
-                 std::strerror(errno));
+    if (log_init_failures)
+      std::fprintf(stderr, "DrmPresenter: drmModeCreatePropertyBlob(mode) failed: %s\n",
+                   std::strerror(errno));
     return false;
   }
 
@@ -936,6 +1037,85 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
   }
 
   inited = true;
+  return true;
+}
+
+void DrmPresenter::Impl::free_splash() {
+  if (splash_map) {
+    munmap(splash_map, static_cast<size_t>(splash_map_bytes));
+    splash_map = nullptr;
+    splash_map_bytes = 0;
+  }
+  if (splash_fb_id) {
+    drmModeRmFB(fd, splash_fb_id);
+    splash_fb_id = 0;
+  }
+  if (splash_gem_handle) {
+    drmModeDestroyDumbBuffer(fd, splash_gem_handle);
+    splash_gem_handle = 0;
+  }
+  splash_active = false;
+}
+
+// Last-resort exit from a splash that cannot be handed off: the OSD owned the
+// primary, the OSD has since been given up, and there is no backdrop to swap
+// in. The splash FB is OPAQUE (XRGB8888 has no alpha to blank it to), so
+// leaving it attached above the video would cover the picture permanently.
+// Detaching a plane is the one commit shape a driver in this state will
+// still take.
+void DrmPresenter::Impl::detach_splash_plane() {
+  drmModeAtomicReqPtr r = drmModeAtomicAlloc();
+  if (!r) return;
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.fb_id, 0);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_id, 0);
+  const int rc = drmModeAtomicCommit(fd, r, 0, this);
+  drmModeAtomicFree(r);
+  std::fprintf(stderr,
+               "DrmPresenter: splash could not be handed off (OSD gone, no backdrop) -- "
+               "detaching plane %u: %s\n",
+               splash_plane_id, rc == 0 ? "ok" : std::strerror(rc < 0 ? -rc : errno));
+}
+
+bool DrmPresenter::Impl::splash_show() {
+  if (!inited || fd < 0 || !splash_fb_id) return false;
+  drmModeAtomicReqPtr r = drmModeAtomicAlloc();
+  if (!r) return false;
+  drmModeAtomicAddProperty(r, connector_id, prop_connector_crtc_id, crtc_id);
+  drmModeAtomicAddProperty(r, crtc_id, prop_crtc_mode_id, mode_blob_id);
+  drmModeAtomicAddProperty(r, crtc_id, prop_crtc_active, 1);
+  if (splash_zpos_prop)
+    drmModeAtomicAddProperty(r, splash_plane_id, splash_zpos_prop, splash_zpos_val);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.fb_id, splash_fb_id);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_id, crtc_id);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.src_x, 0);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.src_y, 0);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.src_w,
+                           static_cast<uint64_t>(mode.hdisplay) << 16);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.src_h,
+                           static_cast<uint64_t>(mode.vdisplay) << 16);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_x, 0);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_y, 0);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_w, mode.hdisplay);
+  drmModeAtomicAddProperty(r, splash_plane_id, splash_props.crtc_h, mode.vdisplay);
+
+  // Blocking, ALLOW_MODESET, and never PAGE_FLIP_EVENT (the video path would
+  // mistake the event for its own flip) or PAGE_FLIP_ASYNC -- the same rules
+  // commit_osd_only() documents.
+  const int rc = drmModeAtomicCommit(fd, r, DRM_MODE_ATOMIC_ALLOW_MODESET, this);
+  drmModeAtomicFree(r);
+  if (rc != 0) {
+    std::fprintf(stderr,
+                 "DrmPresenter: splash modeset failed: %s -- no splash; the display comes up at "
+                 "the first video frame as before\n",
+                 std::strerror(rc < 0 ? -rc : errno));
+    free_splash();
+    return false;
+  }
+  crtc_active = true;
+  needs_modeset = false;
+  splash_active = true;
+  std::fprintf(stderr, "DrmPresenter: splash up on plane %u at %ux%u -- display live before video\n",
+               splash_plane_id, mode.hdisplay, mode.vdisplay);
   return true;
 }
 
@@ -1017,6 +1197,15 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
 
   const bool do_modeset = needs_modeset;
 
+  // Splash handoff. splash_show() already consumed the modeset, so this is a
+  // NON-modeset commit and the primary-attach block below would not run --
+  // leaving the splash FB attached to the primary. When the OSD lives on the
+  // primary the replacement FB is the OSD's, so its attach must be forced
+  // too, overriding the async-probe suppression: without that the splash sits
+  // on a plane stacked ABOVE the video (plan.osd > plan.video) and an opaque
+  // photo covers the picture for the rest of the session.
+  const bool splash_handoff = splash_active;
+
   // Ride the OSD along on this commit when it has something new to show,
   // and re-state it on any modeset (a modeset re-runs the whole CRTC state;
   // don't assume the plane keeps its FB across one).
@@ -1028,7 +1217,8 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
   // transparent premultiplied 0x00000000 at allocation, so attaching it
   // early shows nothing.
   const bool osd_ready = osd_plane_id != 0 && osd.ok();
-  bool attach_osd = osd_ready && (osd_dirty || (do_modeset && (osd_on_plane || osd_on_primary)));
+  bool attach_osd = osd_ready && (osd_dirty || ((do_modeset || splash_handoff) &&
+                                                (osd_on_plane || osd_on_primary)));
   // ...but never on the commit that would otherwise be the one-shot async
   // probe. An OSD publishing at or above the video frame rate would keep
   // `attach_osd` true forever, `probing_async` never true, and video would
@@ -1036,7 +1226,7 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
   // in the fps-log. Don't depend on the caller's publish cadence: skip the
   // attach on the first non-modeset commit. The OSD stays dirty and rides
   // the next one, at most ~16 ms later.
-  if (!async_probed && !do_modeset) attach_osd = false;
+  if (!async_probed && !do_modeset && !splash_handoff) attach_osd = false;
   const int osd_idx = osd_dirty ? osd_back : (osd_back ^ 1);
 
   // Factored so that a commit the kernel rejects WITH the OSD attached can
@@ -1058,11 +1248,13 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     drmModeAtomicAddProperty(r, plane_id, video_props.crtc_w, mode.hdisplay);
     drmModeAtomicAddProperty(r, plane_id, video_props.crtc_h, mode.vdisplay);
 
-    if (do_modeset) {
+    if (do_modeset || splash_handoff) {
       if (zpos_video_prop) drmModeAtomicAddProperty(r, plane_id, zpos_video_prop, zpos_video_val);
-      drmModeAtomicAddProperty(r, connector_id, prop_connector_crtc_id, crtc_id);
-      drmModeAtomicAddProperty(r, crtc_id, prop_crtc_mode_id, mode_blob_id);
-      drmModeAtomicAddProperty(r, crtc_id, prop_crtc_active, 1);
+      if (do_modeset) {
+        drmModeAtomicAddProperty(r, connector_id, prop_connector_crtc_id, crtc_id);
+        drmModeAtomicAddProperty(r, crtc_id, prop_crtc_mode_id, mode_blob_id);
+        drmModeAtomicAddProperty(r, crtc_id, prop_crtc_active, 1);
+      }
       if (primary_fb_id) {
         if (zpos_primary_prop)
           drmModeAtomicAddProperty(r, primary_plane_id, zpos_primary_prop, zpos_primary_val);
@@ -1081,7 +1273,7 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
       }
     }
 
-    if (with_osd) add_osd_props(r, osd_idx, !osd_on_plane || do_modeset);
+    if (with_osd) add_osd_props(r, osd_idx, !osd_on_plane || do_modeset || splash_handoff);
     return r;
   };
 
@@ -1191,6 +1383,24 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     flip_pending = true;
     flip_since_ms = mono_ms();
   }
+
+  if (splash_handoff) {
+    // Free ONLY if this commit actually re-pointed the primary away from the
+    // splash FB. `attach_osd` is cleared by the retry path above when a
+    // commit carrying the OSD was rejected and rebuilt video-only -- in the
+    // osd_on_primary topology that commit left the splash where it was, so
+    // freeing here would RmFB a buffer still being scanned out and strand the
+    // image on screen. Leaving splash_active set retries on the next frame.
+    if (video_on_primary || primary_fb_id != 0 || attach_osd) {
+      free_splash();
+    } else if (!(osd_plane_id != 0 && osd.ok())) {
+      // Dead end: the OSD owned the primary and has been given up, so no
+      // replacement FB will ever come. Detach rather than cover the video.
+      detach_splash_plane();
+      free_splash();
+    }
+  }
+
   return true;
 }
 
@@ -1258,6 +1468,7 @@ DrmPresenter::Impl::~Impl() {
   if (fd >= 0) {
     if (primary_fb_id) drmModeRmFB(fd, primary_fb_id);
     if (primary_gem_handle) drmModeDestroyDumbBuffer(fd, primary_gem_handle);
+    free_splash();
     if (mode_blob_id) drmModeDestroyPropertyBlob(fd, mode_blob_id);
     close(fd);
   }
@@ -1266,9 +1477,22 @@ DrmPresenter::Impl::~Impl() {
 DrmPresenter::DrmPresenter() : impl_(std::make_unique<Impl>()) {}
 DrmPresenter::~DrmPresenter() = default;
 
-bool DrmPresenter::init(const std::string& screen_mode, bool want_osd, ReleaseFn release) {
-  return impl_->init(screen_mode, want_osd, std::move(release));
+bool DrmPresenter::init(const std::string& screen_mode, bool want_osd, ReleaseFn release,
+                        bool log_failures) {
+  return impl_->init(screen_mode, want_osd, std::move(release), log_failures);
 }
+
+Surface DrmPresenter::splash_surface() {
+  Surface s;
+  if (!impl_->splash_map) return s;
+  s.pixels = static_cast<uint32_t*>(impl_->splash_map);
+  s.width = impl_->mode.hdisplay;
+  s.height = impl_->mode.vdisplay;
+  s.stride_px = static_cast<int>(impl_->splash_pitch_px);
+  return s;
+}
+
+bool DrmPresenter::splash_show() { return impl_->splash_show(); }
 
 bool DrmPresenter::present(const DmaFrame& frame) { return impl_->present(frame); }
 
