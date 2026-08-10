@@ -1050,6 +1050,13 @@ int main(int argc, char** argv) {
   // mode the connector offered rather than the one cfg.screen_mode asked
   // for. Laying out against the config would misplace every field.
   bool gs_laid_out = false;
+  // Display hotplug recovery state. init() only accepts an already-CONNECTED
+  // connector, so before this a display plugged in or powered on after
+  // startup stayed invisible for the life of the process -- the screen was
+  // black until someone restarted maburplay by hand.
+  const uint64_t display_retry_t0_ms = mono_ms();
+  uint64_t display_retry_next_ms = 0;
+  bool display_retry_announced = false;
 #endif
   while (!g_stop.load()) {
     // 2 ms pump: flip events must be reaped at sub-vsync latency or the
@@ -1060,6 +1067,39 @@ int main(int argc, char** argv) {
     backend->poll();
 #ifdef MABUR_PLAYER_HW
     if (presenter) presenter->poll_events();
+    // Retry acquisition once a second while there is no display. A FRESH
+    // presenter every time, never a re-init of the failed one: a display that
+    // appears late supplies its own EDID and mode list, and every
+    // connector/mode/plane/zpos decision has to be re-derived from it.
+    // Constructing only when `presenter` is null means no frames are ever
+    // held across a recreation, so drm_presenter.h's ownership contract is
+    // untouched.
+    if (!presenter && !decode_only) {
+      const uint64_t now_ms = mono_ms();
+      if (!display_retry_announced) {
+        display_retry_announced = true;
+        display_retry_next_ms = now_ms;
+        std::fprintf(stderr,
+                     "maburplay: no display at startup -- retrying every 1 s; frames are decoded "
+                     "and dropped until one appears\n");
+      }
+      if (now_ms >= display_retry_next_ms) {
+        display_retry_next_ms = now_ms + 1000;
+        auto p = std::make_unique<maburplay::DrmPresenter>();
+        // log_failures=false: this runs 86,400 times a day on a GS with no
+        // screen, and /tmp is tmpfs.
+        if (p->init(cfg.screen_mode, want_osd,
+                    [&backend](const maburplay::DmaFrame& f) {
+                      if (backend) backend->release_frame(f);
+                    },
+                    /*log_failures=*/false)) {
+          presenter = std::move(p);
+          std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
+                       (now_ms - display_retry_t0_ms) / 1000.0);
+          show_splash(presenter.get());
+        }
+      }
+    }
 #endif
     // OSD: drain the UDP intake every iteration whether or not anything can
     // be drawn (the counters stay honest, and an undrained socket would just
