@@ -31,6 +31,7 @@
 #include "player_config.h"
 #include "ring_client.h"
 #include "video_backend.h"
+#include "splash_image.h"  // startup splash asset + cover-fit painter
 
 #ifdef MABUR_PLAYER_HW
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
@@ -547,6 +548,24 @@ int main(int argc, char** argv) {
       presenter.reset();
     }
   }
+
+  // Startup splash. Painted and shown the moment a presenter exists, so the
+  // sink locks a mode NOW rather than at the first decoded frame -- a display
+  // powered up in between would otherwise see no signal at all. Defined as a
+  // lambda because the hotplug retry below runs the identical sequence on a
+  // late acquire.
+  auto show_splash = [](maburplay::DrmPresenter* p) {
+    const maburplay::Surface s = p->splash_surface();
+    if (!s.pixels) return;  // no usable primary plane; DrmPresenter said why
+    std::string err;
+    if (!maburplay::paint_splash(maburplay::kSplashPath, s, &err))
+      std::fprintf(stderr,
+                   "maburplay: splash image unavailable (%s) -- showing black; the display still "
+                   "comes up now\n",
+                   err.c_str());
+    p->splash_show();
+  };
+  if (presenter) show_splash(presenter.get());
 #endif
 
   // MSP DisplayPort OSD: network intake + raster, gated on want_msp_osd (the
