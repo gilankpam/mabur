@@ -428,12 +428,14 @@ def render_rows_compact(model, wall, width):
                 f"   air ~{_f(air, 4, 1)}% of ladder")
 
     # --- VIDEO ---
+    idr = video.get("idr_req") or {}
     rows.append(
         f"VIDEO  {_f(fps, 6, 1)} fps  {_f(mbps, 6, 2)} Mbps   "
         f"jit {_f(video.get('jitter_ms'), 5, 1)} ms   "
         f"clean {_f(video.get('clean'), 7)}   "
         f"trunc {_f(video.get('truncated'), 4)}   "
-        f"drop {_f(video.get('dropped'), 4)}"
+        f"drop {_f(video.get('dropped'), 4)}   "
+        f"idrq {_f(idr.get('episodes'), 3)}{'*' if idr.get('pending') else ' '}"
     )
 
     # --- AU ring (PR C: replaced the RTP row -- video leaves maburgs via

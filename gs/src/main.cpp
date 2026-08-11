@@ -24,6 +24,7 @@
 #include "ctl_log.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
+#include "idr_requester.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
@@ -203,6 +204,14 @@ static int run_radio(const maburgs::Config& cfg) {
                  "reassembled and discarded)\n");
   }
 
+  // GS-initiated IDR request (spec 2026-08-11 idr-request): latch from
+  // FrameStream loss events, carried on RCFs via vrx.step below, cleared
+  // when the granted IDR arrives. cur_frame_flags bridges begin_frame
+  // (which sees FrameHdr.flags) to end_frame (which sees completeness).
+  maburgs::IdrRequester idr_req;
+  uint64_t last_idr_log_ms = 0;
+  uint8_t cur_frame_flags = 0;
+
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits; whole access units leave maburgs through
   // the shm AU ring (PR C: the RTP packetizer/UDP path is gone — maburplay
@@ -211,6 +220,7 @@ static int run_radio(const maburgs::Config& cfg) {
       {static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms),
        cfg.video.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
+         cur_frame_flags = h.flags;
          if (au_on) au_ring.begin(h, sid);
        },
        [&](const uint8_t* d, size_t n) {
@@ -222,6 +232,20 @@ static int run_radio(const maburgs::Config& cfg) {
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          if (stats) stats->on_frame(mono_ms());
+         if (idr_req.on_frame_emitted(
+                 c, (cur_frame_flags & mabur::framewire::kFlagIdr) != 0, mono_ms()))
+           std::fprintf(stderr, "idr-req: cleared after %llu ms\n",
+                        static_cast<unsigned long long>(idr_req.last_wait_ms()));
+       },
+       [&](uint8_t sid, bool truncated) {
+         const uint64_t now = mono_ms();
+         // Edge-triggered log, additionally rate-limited to one line/s so a
+         // flapping link can't spam /tmp/maburgs.log.
+         if (idr_req.on_frame_lost(sid, now) && now - last_idr_log_ms >= 1000) {
+           last_idr_log_ms = now;
+           std::fprintf(stderr, "idr-req: set (sid=%u truncated=%d)\n", sid,
+                        truncated ? 1 : 0);
+         }
        }});
   // Only fragments from a peer that advertised the frame wire format may reach
   // FrameStream: an older drone's bodies carry a mutually unparseable frag
@@ -477,7 +501,8 @@ static int run_radio(const maburgs::Config& cfg) {
     health.s1_snr_db = s1_snr_db;
     health.s1_evm_db = s1_evm_db;
 
-    if (auto out = vrx.step(now_ms, ld, health)) {
+    if (auto out = vrx.step(now_ms, ld, health,
+                            cfg.link.idr_req && idr_req.want())) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period
       std::vector<maburgs::CardSnapshot> snaps;
       for (int i = 0; i < n_cards; ++i) {
@@ -633,6 +658,10 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.frames_truncated = fstream.frames_truncated();
       sin.frames_dropped = fstream.frames_dropped();
       sin.stall_resets = fstream.stall_resets();
+      sin.idr_pending = idr_req.want();
+      sin.idr_episodes = idr_req.episodes();
+      if (idr_req.want())
+        sin.idr_wait_ms = idr_req.wait_ms(now_ms_u);
       sin.ring_published = au_ring.published();
       sin.ring_dropped_oversize = au_ring.dropped_oversize();
       sin.ring_bytes = au_ring.bytes_published();
