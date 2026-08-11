@@ -35,7 +35,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 19;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 63;
+constexpr size_t TELEM_LEN = 65;
 
 }  // namespace
 
@@ -213,6 +213,7 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put16(body, t.load_x100);
   put16(body, t.idr_disagree);
   put16(body, t.enhance_disagree);
+  put16(body, t.idr_grants);
 
   put_crc(body);
   return body;
@@ -259,6 +260,7 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.load_x100 = get16(buf, 57);
   t.idr_disagree = get16(buf, 59);
   t.enhance_disagree = get16(buf, 61);
+  t.idr_grants = get16(buf, 63);
   return t;
 }
 

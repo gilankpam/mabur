@@ -244,6 +244,7 @@ TEST(telem_round_trip_and_golden) {
   t.up_rssi[0] = 51; t.up_rssi[1] = 52; t.up_snr[0] = 21; t.up_snr[1] = 22;
   t.soc_temp_c = 61; t.thermal_delta = 3; t.load_x100 = 72;
   t.idr_disagree = 4; t.enhance_disagree = 5;
+  t.idr_grants = 6;
   auto wire = mabur::rc::pack_telem(t);
   CHECK(mabur::rc::frame_type(wire.data(), wire.size()) == mabur::rc::T_TELEM);
   auto back = mabur::rc::parse_telem(wire.data(), wire.size());
@@ -259,13 +260,14 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->load_x100 == 72);
   CHECK(back->idr_disagree == 4);
   CHECK(back->enhance_disagree == 5);
+  CHECK(back->idr_grants == 6);
   // Golden pin: byte-exact wire so the format can never drift silently.
   // Print-once, then hardcode: std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
       "435201040302010207060504051940022d00a0860100400d0300e09304002823080100"
-      "034007000000801a0600090000000200333415163d034800040005004ce1";
+      "034007000000801a0600090000000200333415163d0348000400050006006d00";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -324,6 +326,27 @@ TEST(rcf_probe_flag_masked_from_caller_flags) {
   REQUIRE(p.has_value());
   CHECK(!p->probe3);  // probe3 must be false (stray bit was masked)
   CHECK(!(p->flags & mabur::rc::RCF_F_PROBE3));  // flag must be cleared
+}
+
+// RCF_F_IDR_REQ (0x10) rides the existing flags byte: pack_rcf already
+// passes r.flags through (masking only RCF_F_PROBE3), so this pins that
+// the new bit survives a round trip and coexists with an empty layer list.
+// REVERT CHECK: fails to compile if the constant is removed; fails if
+// pack_rcf ever starts masking unknown flag bits.
+TEST(rcf_idr_req_flag_round_trips) {
+  mabur::rc::Rcf r;
+  r.vtx_id = 7;
+  r.seq = 3;
+  r.layer_delivery = {100, 100, 100, 100};
+  r.flags = mabur::rc::RCF_F_IDR_REQ;
+  auto wire = mabur::rc::pack_rcf(r);
+  auto back = mabur::rc::parse_rcf(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK((back->flags & mabur::rc::RCF_F_IDR_REQ) != 0);
+  CHECK(!back->probe3);
+  // Pin the values: wire constants must never drift.
+  CHECK(mabur::rc::RCF_F_IDR_REQ == 0x10);
+  CHECK(mabur::rc::CAP_IDR_REQ == 0x0008);
 }
 
 MTEST_MAIN

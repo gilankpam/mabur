@@ -27,6 +27,12 @@ constexpr uint8_t F_DISCOVERY = 0x04;
 // (s3) transmits at that MCS while everything else stays on Rcf.profile.
 constexpr uint8_t RCF_F_PROBE3 = 0x08;
 
+// Rcf.flags bit: GS holds a latched IDR request (reference-layer frame was
+// truncated or dropped; the decoder's prediction chain is broken). A LEVEL,
+// not an edge: set on every RCF while the GS latch is set; the drone's
+// grant cooldown is the dedup. Spec 2026-08-11 idr-request.
+constexpr uint8_t RCF_F_IDR_REQ = 0x10;
+
 constexpr uint8_t PWR_NO_CHANGE = 0xFF;
 
 // DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
@@ -42,6 +48,11 @@ constexpr uint16_t CAP_TELEMETRY = 0x0002;
 // DiscAck.chip_caps bit: drone accepts RCF_F_PROBE3 (s3-only MCS probe).
 // Spec 2026-08-05 s3-probe-promote.
 constexpr uint16_t CAP_S3_PROBE = 0x0004;
+
+// DiscAck.chip_caps bit: drone honors RCF_F_IDR_REQ (grants a waybeam IDR,
+// cooldown-limited). GS never sets the flag toward a peer without this bit.
+// Spec 2026-08-11 idr-request.
+constexpr uint16_t CAP_IDR_REQ = 0x0008;
 
 // TX-power command. SEMANTIC DIVERGENCE from the frozen Python prototype
 // (devourer tools/precoder/rc_proto.py, which carries a TXAGC index):
@@ -132,6 +143,7 @@ struct Telem {
   uint16_t load_x100 = 0;
   uint16_t idr_disagree = 0;      // saturating; spec 2026-07-26 svct-enable
   uint16_t enhance_disagree = 0;  // saturating
+  uint16_t idr_grants = 0;        // saturating; spec 2026-08-11 idr-request
 };
 
 std::vector<uint8_t> pack_rcf(const Rcf& r);
