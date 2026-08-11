@@ -93,7 +93,24 @@ read the sideport. Reach for other tools only in these cases:**
   feed is ephemeral. The MSP OSD is now rendered by maburplay itself, from
   the UDP snapshot feed maburgs emits (maburgs no longer draws pixels); the
   OSD startup line and blanking notices land in `/tmp/maburplay.log`
-  alongside the fps-log.
+  alongside the fps-log. Since 2026-08-11 maburplay also drives the display
+  at startup rather than at the first decoded frame: it modesets immediately
+  with a splash image (`/usr/local/share/mabur/splash.bin`, raw XRGB8888,
+  regenerate with `tools/gen_splash.py`) so the sink locks a mode before video
+  exists, and it retries display acquisition once a second while none is
+  connected — a display plugged in or powered on after the player started is
+  picked up without a restart, which it never was before. That only holds if
+  a display was NEVER acquired: one that disconnects after a successful
+  acquire is still unrecoverable, deliberately (a stated non-goal — KMS
+  retains CRTC state and a replug normally re-lights it on its own). Neither
+  has a config key. The splash shows from process start, or from a late
+  display acquire only when no frame has been decoded yet, until the first
+  decoded frame — deliberately, because the image is an aerial photo that
+  would read as a live feed if it ever appeared mid-flight, so a mid-flight
+  replug comes up on video rather than on the photo. Two log lines cover a
+  no-display episode (`no display at startup -- retrying`, `display acquired
+  after N.N s`); the per-attempt DRM failures are silenced on purpose, since
+  /tmp is tmpfs.
 - **The GS link-status OSD on the screen is a sideport consumer, not a
   separate instrument.** maburplay draws it from the SAME datagram
   `maburtop` reads: `stats.out` in `/etc/maburgs.json` is a list, and the

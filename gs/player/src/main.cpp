@@ -31,6 +31,7 @@
 #include "player_config.h"
 #include "ring_client.h"
 #include "video_backend.h"
+#include "splash_image.h"  // startup splash asset + cover-fit painter
 
 #ifdef MABUR_PLAYER_HW
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
@@ -547,6 +548,24 @@ int main(int argc, char** argv) {
       presenter.reset();
     }
   }
+
+  // Startup splash. Painted and shown the moment a presenter exists, so the
+  // sink locks a mode NOW rather than at the first decoded frame -- a display
+  // powered up in between would otherwise see no signal at all. Defined as a
+  // lambda because the hotplug retry below runs the identical sequence on a
+  // late acquire.
+  auto show_splash = [](maburplay::DrmPresenter* p) {
+    const maburplay::Surface s = p->splash_surface();
+    if (!s.pixels) return;  // no usable primary plane; DrmPresenter said why
+    std::string err;
+    if (!maburplay::paint_splash(maburplay::kSplashPath, s, &err))
+      std::fprintf(stderr,
+                   "maburplay: splash image unavailable (%s) -- showing black; the display still "
+                   "comes up now\n",
+                   err.c_str());
+    p->splash_show();
+  };
+  if (presenter) show_splash(presenter.get());
 #endif
 
   // MSP DisplayPort OSD: network intake + raster, gated on want_msp_osd (the
@@ -631,7 +650,13 @@ int main(int argc, char** argv) {
   // unwind: stop() joins the encode thread and releases the decoder buffers
   // it still holds while the decoder that owns them is still alive.
   std::unique_ptr<maburplay::BurnRecorder> burn;
-  if (burned_mode && presenter) {
+  // Idempotent, and deliberately callable more than once: the display may be
+  // acquired late (see the hotplug retry in the run loop), and the recorder
+  // is sized from presenter->osd_back_surface(), so it cannot be built before
+  // a presenter exists. Leaving it unbuilt on that path would mean a lit
+  // screen, playing video, and nothing recorded.
+  auto start_burn_if_needed = [&]() {
+    if (burn || !burned_mode || !presenter) return;
     auto rec = std::make_unique<maburplay::BurnRecorder>();
     maburplay::BurnCfg bc;
     // Palette (and with it the encoder's OSD region) whenever EITHER overlay
@@ -678,23 +703,27 @@ int main(int argc, char** argv) {
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the
     // decode watchdog may destroy and recreate it mid-run.
     if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
-  }
-  if (burn) {
+    if (!burn) return;
     // Raw pointer, not a reference to the unique_ptr: `burn` is assigned
-    // exactly once, here, and never reset -- and the sink outlives nothing
-    // it does not outlive already (the composer is destroyed after the loop
-    // that is its only caller).
+    // exactly once (this lambda returns early once it is set) and never
+    // reset, and the sink outlives nothing it does not outlive already.
     maburplay::BurnRecorder* b = burn.get();
     composer.set_burn_sink([b](const maburplay::Surface& s, const maburplay::DirtyRect* r,
                                size_t n) { b->set_osd(s, r, n); });
-  }
+  };
+  start_burn_if_needed();
   if (burned_mode && !burn) {
-    // Wrong backend, no presenter (--decode-only), or an encoder that would
-    // not init. BurnRecorder::start() already logged the specific reason.
-    std::fprintf(stderr,
-                 "maburplay: dvr.mode \"burned\" requested but the recorder is not "
-                 "running -- NOTHING is being recorded (no raw fallback: it would look "
-                 "like a burned file)\n");
+    if (presenter) {
+      // A real recorder failure: BurnRecorder::start() already logged why.
+      std::fprintf(stderr,
+                   "maburplay: dvr.mode \"burned\" requested but the recorder is not "
+                   "running -- NOTHING is being recorded (no raw fallback: it would look "
+                   "like a burned file)\n");
+    } else {
+      std::fprintf(stderr,
+                   "maburplay: dvr.mode \"burned\" requested but there is no display yet -- "
+                   "NOTHING is being recorded; recording starts if a display is acquired\n");
+    }
   }
 #else
   if (burned_mode) {
@@ -1031,6 +1060,13 @@ int main(int argc, char** argv) {
   // mode the connector offered rather than the one cfg.screen_mode asked
   // for. Laying out against the config would misplace every field.
   bool gs_laid_out = false;
+  // Display hotplug recovery state. init() only accepts an already-CONNECTED
+  // connector, so before this a display plugged in or powered on after
+  // startup stayed invisible for the life of the process -- the screen was
+  // black until someone restarted maburplay by hand.
+  const uint64_t display_retry_t0_ms = mono_ms();
+  uint64_t display_retry_next_ms = 0;
+  bool display_retry_announced = false;
 #endif
   while (!g_stop.load()) {
     // 2 ms pump: flip events must be reaped at sub-vsync latency or the
@@ -1041,6 +1077,53 @@ int main(int argc, char** argv) {
     backend->poll();
 #ifdef MABUR_PLAYER_HW
     if (presenter) presenter->poll_events();
+    // Retry acquisition once a second while there is no display. A FRESH
+    // presenter every time, never a re-init of the failed one: a display that
+    // appears late supplies its own EDID and mode list, and every
+    // connector/mode/plane/zpos decision has to be re-derived from it.
+    // Constructing only when `presenter` is null means no frames are ever
+    // held across a recreation, so drm_presenter.h's ownership contract is
+    // untouched.
+    if (!presenter && !decode_only) {
+      const uint64_t now_ms = mono_ms();
+      if (!display_retry_announced) {
+        display_retry_announced = true;
+        display_retry_next_ms = now_ms;
+        std::fprintf(stderr,
+                     "maburplay: no display at startup -- retrying every 1 s; frames are decoded "
+                     "and dropped until one appears\n");
+      }
+      if (now_ms >= display_retry_next_ms) {
+        display_retry_next_ms = now_ms + 1000;
+        auto p = std::make_unique<maburplay::DrmPresenter>();
+        // log_failures=false: this runs 86,400 times a day on a GS with no
+        // screen, and /tmp is tmpfs.
+        if (p->init(cfg.screen_mode, want_osd,
+                    [&backend](const maburplay::DmaFrame& f) {
+                      if (backend) backend->release_frame(f);
+                    },
+                    /*log_failures=*/false)) {
+          presenter = std::move(p);
+          std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
+                       (now_ms - display_retry_t0_ms) / 1000.0);
+          // Startup-only, and this is where that invariant is enforced for the
+          // hotplug path: if this process has ever decoded a frame, the aircraft is
+          // flying and a still photo on the goggles would read as a live feed. The
+          // screen still lights (needs_modeset defaults true and was never cleared
+          // since splash_show() was skipped, so the first present() performs the
+          // full modeset that used to run before splash existed); it simply comes
+          // up on video, or on nothing until video returns.
+          if (!have_first_frame) show_splash(presenter.get());
+          // The recorder is sized from the OSD surface, so it could not exist
+          // before this moment.
+          start_burn_if_needed();
+          if (burned_mode && !burn)
+            std::fprintf(stderr,
+                         "maburplay: display acquired but the burned recorder did not start -- "
+                         "NOTHING is being recorded\n");
+        }
+      }
+    }
 #endif
     // OSD: drain the UDP intake every iteration whether or not anything can
     // be drawn (the counters stay honest, and an undrained socket would just

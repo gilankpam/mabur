@@ -158,6 +158,9 @@ if(MABUR_BUILD_GS)
   add_mtest(test_osd_palette test_osd_palette.cpp LIBS mabur_player_core)
   target_compile_definitions(test_osd_palette PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
+  add_mtest(test_splash_image test_splash_image.cpp LIBS mabur_player_core)
+  target_compile_definitions(test_splash_image PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_osd_coexist test_osd_coexist.cpp LIBS mabur_player_core)
   add_dependencies(test_osd_coexist gsfont_fixtures)
   target_compile_definitions(test_osd_coexist PRIVATE GSFONT_SCALED="${GSFONT_SCALED}")
