@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "json.hpp"
+#include "mabur/player_fb.h"
 #include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
 #include "snr_units.h"
@@ -338,6 +339,18 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   v["idr_req"] = {{"pending", in.idr_pending}, {"episodes", in.idr_episodes}};
   if (in.idr_wait_ms) v["idr_req"]["wait_ms"] = *in.idr_wait_ms;
   else v["idr_req"]["wait_ms"] = nullptr;
+  v["idr_req"]["episodes_player"] = in.idr_episodes_player;
+  if (in.player_fb_have) {
+    v["player"] = {{"idr", in.player_fb_idr},
+                   {"reason", mabur::playerfb::reason_name(in.player_fb_reason)},
+                   {"age_ms", in.player_fb_age_ms},
+                   {"flushes", in.player_fb_flushes},
+                   {"joins", in.player_fb_joins},
+                   {"watchdogs", in.player_fb_watchdogs},
+                   {"malformed", in.player_fb_malformed}};
+  } else {
+    v["player"] = nullptr;
+  }
 
   if (in.telem) {
     const mabur::rc::Telem& t = *in.telem;

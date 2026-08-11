@@ -690,4 +690,39 @@ TEST(idr_req_block_exported) {
   CHECK(idr["pending"] == false);
   CHECK(idr["wait_ms"].is_null());
 }
+TEST(player_feedback_is_exported) {
+  Capture cap;
+  StatsExporter ex(0xDEADBEEF, 500, cap.fn());
+  StatsInput in = base_input();
+  in.idr_episodes_player = 4;
+  in.player_fb_have = true;
+  in.player_fb_idr = true;
+  in.player_fb_reason = 2;  // join
+  in.player_fb_age_ms = 250;
+  in.player_fb_flushes = 1;
+  in.player_fb_joins = 2;
+  in.player_fb_watchdogs = 3;
+  in.player_fb_malformed = 0;
+  REQUIRE(ex.poll(1000, in));
+  const json v = cap.last()["link"]["video"];
+  CHECK(v["idr_req"]["episodes_player"] == 4);
+  CHECK(v["player"]["idr"] == true);
+  CHECK(v["player"]["reason"] == "join");
+  CHECK(v["player"]["age_ms"] == 250);
+  CHECK(v["player"]["joins"] == 2);
+  CHECK(v["player"]["watchdogs"] == 3);
+}
+
+TEST(player_is_null_when_nothing_ever_arrived) {
+  Capture cap;
+  StatsExporter ex(0xDEADBEEF, 500, cap.fn());
+  StatsInput in = base_input();
+  in.player_fb_have = false;
+  REQUIRE(ex.poll(1000, in));
+  const json v = cap.last()["link"]["video"];
+  CHECK(v["player"].is_null());
+  // The counter is always present, so a consumer never has to branch.
+  CHECK(v["idr_req"]["episodes_player"] == 0);
+}
+
 MTEST_MAIN

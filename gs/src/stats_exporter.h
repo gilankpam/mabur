@@ -111,6 +111,20 @@ struct StatsInput {
   uint64_t idr_episodes = 0;
   std::optional<uint64_t> idr_wait_ms;
 
+  // Player-reported reference breaks (spec 2026-08-12
+  // decoder-idr-backchannel). `player_fb_have` false => nothing ever
+  // arrived, exported as null so "feature off", "player dead" and "port
+  // mismatch" are all one visible state.
+  uint64_t idr_episodes_player = 0;
+  bool player_fb_have = false;
+  bool player_fb_idr = false;
+  uint8_t player_fb_reason = 0;
+  uint64_t player_fb_age_ms = 0;
+  uint64_t player_fb_flushes = 0;
+  uint64_t player_fb_joins = 0;
+  uint64_t player_fb_watchdogs = 0;
+  uint64_t player_fb_malformed = 0;
+
   // Latest drone telemetry, if any this session: wire struct + GS arrival clock.
   std::optional<mabur::rc::Telem> telem;
   uint64_t telem_rx_ms = 0;   // GS monotonic arrival stamp

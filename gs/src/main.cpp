@@ -25,12 +25,14 @@
 #include "frame_file_source.h"
 #include "frame_stream.h"
 #include "idr_requester.h"
+#include "mabur/player_fb.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
+#include "player_feedback.h"
 #include "radio_frontend.h"
 #include "s1_loss.h"
 #include "snr_units.h"
@@ -211,6 +213,20 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::IdrRequester idr_req;
   uint64_t last_idr_log_ms = 0;
   uint8_t cur_frame_flags = 0;
+
+  // maburplay's own reference-break reports (spec 2026-08-12). Non-fatal if
+  // the port is unusable -- the daemon runs without the input, exactly like
+  // the loss-sim control socket.
+  maburgs::PlayerFeedback player_fb;
+  if (cfg.link.player_fb_port > 0) {
+    std::string fb_err;
+    if (player_fb.open(cfg.link.player_fb_port, &fb_err))
+      std::fprintf(stderr, "maburgs: player feedback on udp 127.0.0.1:%d\n",
+                   player_fb.port());
+    else
+      std::fprintf(stderr, "warning: player feedback port %d unusable (%s)\n",
+                   cfg.link.player_fb_port, fb_err.c_str());
+  }
 
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits; whole access units leave maburgs through
@@ -434,6 +450,14 @@ static int run_radio(const maburgs::Config& cfg) {
     }
     if (frame_wire) fstream.poll(drained_ms);
     if (au_on) au_bell.poll();
+
+    if (player_fb.ok()) {
+      const uint64_t fb_now = mono_ms();
+      if (player_fb.poll(fb_now) && idr_req.on_player_break(fb_now))
+        std::fprintf(stderr, "idr-req: set (player %s)\n",
+                     mabur::playerfb::reason_name(player_fb.msg().reason));
+      player_fb.expire(fb_now, cfg.link.player_fb_stale_ms);
+    }
 
     // Control step: layer delivery + residual from the decode window, plus
     // stream 1's cumulative symbol totals feeding the measured-loss window.
@@ -662,6 +686,17 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.idr_episodes = idr_req.episodes();
       if (idr_req.want())
         sin.idr_wait_ms = idr_req.wait_ms(now_ms_u);
+      sin.idr_episodes_player = idr_req.episodes_player();
+      sin.player_fb_have = player_fb.have_any();
+      if (sin.player_fb_have) {
+        sin.player_fb_idr = player_fb.want();
+        sin.player_fb_reason = player_fb.msg().reason;
+        sin.player_fb_age_ms = player_fb.age_ms(now_ms_u);
+        sin.player_fb_flushes = player_fb.msg().flushes;
+        sin.player_fb_joins = player_fb.msg().joins;
+        sin.player_fb_watchdogs = player_fb.msg().watchdogs;
+        sin.player_fb_malformed = player_fb.malformed();
+      }
       sin.ring_published = au_ring.published();
       sin.ring_dropped_oversize = au_ring.dropped_oversize();
       sin.ring_bytes = au_ring.bytes_published();
