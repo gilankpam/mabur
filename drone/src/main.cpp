@@ -1088,6 +1088,7 @@ int run_real_mode(const Config& cfg) {
         ti.load1 = read_load1();
         ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
         ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
+        ti.idr_grants = agent.idr_grants();
 
         auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
 

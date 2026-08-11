@@ -53,6 +53,7 @@ struct TelemInputs {
   int thermal_delta = 0;
   double load1 = 0.0;
   uint64_t idr_disagree = 0, enhance_disagree = 0;
+  uint64_t idr_grants = 0;  // RcAgent::idr_grants() — spec 2026-08-11 idr-request
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

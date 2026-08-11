@@ -90,6 +90,7 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.load_x100 = saturate<uint16_t>(std::lround(in.load1 * 100.0));
   t.idr_disagree = saturate<uint16_t>(in.idr_disagree);
   t.enhance_disagree = saturate<uint16_t>(in.enhance_disagree);
+  t.idr_grants = saturate<uint16_t>(in.idr_grants);
   return t;
 }
 

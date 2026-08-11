@@ -70,4 +70,18 @@ TEST(soc_temp_formats) {
     CHECK(mabur::read_soc_temp_c_sigmastar("/tmp/mabur_test_thermal") == -128);
   }
 }
+
+TEST(idr_grants_saturates_and_round_trips) {
+  mabur::TelemInputs in;
+  in.idr_grants = 70000;
+  auto t = mabur::make_telem(1, in);
+  CHECK(t.idr_grants == 65535);
+
+  in.idr_grants = 4;
+  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK(back->idr_grants == 4);
+}
+
 MTEST_MAIN
