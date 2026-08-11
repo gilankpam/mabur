@@ -544,10 +544,6 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       break;
     case GsFieldId::kRec:
       switch (ps.rec.kind) {
-        case RecState::Kind::kAbsent:
-          st.text.clear();
-          st.rgb = tok::kTextLabel;
-          break;
         case RecState::Kind::kArmed:
           st.text = std::string(kDotHollow) + " REC --:--";
           st.rgb = tok::kTextLabel;

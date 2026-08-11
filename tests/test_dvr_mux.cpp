@@ -322,4 +322,76 @@ TEST(dvr_mux_pts_wrap_tfdt_strictly_increasing) {
   CHECK(durs2[0] == 21u);  // lone-sample fragment: carried, never 0
 }
 
+// A second recording on the SAME DvrMux must be an independent file. The
+// toggle re-opens the mux on every press, and before the per-file reset
+// the first file's queued samples flushed into the second one's first
+// fragment and its PTS origin came along with them.
+TEST(reopen_starts_a_clean_file) {
+  const std::string p1 = scratch_path("dvr_reopen_1.mp4");
+  const std::string p2 = scratch_path("dvr_reopen_2.mp4");
+  std::vector<uint8_t> hvcc(23, 0xCD);
+
+  DvrMux m;
+  REQUIRE(m.open(p1, hvcc, 1920, 1080, 1000));
+  // Three samples, none of which cuts a fragment: key only on the first,
+  // and 3 x 16.7 ms is far short of fragment_ms. Two therefore sit in
+  // pending_ when close() flushes.
+  std::vector<uint8_t> a1 = fake_au(0xA1);
+  std::vector<uint8_t> a2 = fake_au(0xA2);
+  std::vector<uint8_t> a3 = fake_au(0xA3);
+  m.write_sample(a1.data(), a1.size(), 0, true);
+  m.write_sample(a2.data(), a2.size(), 16667, false);
+  m.write_sample(a3.data(), a3.size(), 33334, false);
+  m.close();
+  CHECK(m.samples() == 3);
+
+  // Second file: one sample, key, with a pts that CONTINUES the session
+  // rather than restarting at 0. That is what production feeds: the raw
+  // DVR gets ev.meta.pts_us straight off the ring (gs/player/src/main.cpp),
+  // which is encoder-session-relative and keeps climbing across a button
+  // stop/start -- a fresh file does NOT get a fresh clock. A file-2 pts of
+  // 0 would make the unwrap's delta 0 either way and hide the origin half
+  // of the reset entirely.
+  REQUIRE(m.open(p2, hvcc, 1920, 1080, 1000));
+  CHECK(m.samples() == 0);      // counters are per file
+  CHECK(m.fragments() == 0);
+  std::vector<uint8_t> b1 = fake_au(0xB1);
+  m.write_sample(b1.data(), b1.size(), 5000000, true);
+  m.close();
+  CHECK(m.samples() == 1);
+
+  // File 2 must contain exactly ONE sample's worth of mdat payload. With
+  // the leak it carried file 1's two pending samples as well.
+  const std::vector<uint8_t> f2 = read_whole_file(p2);
+  std::vector<Box> top2 = parse_boxes(f2, 0, f2.size());
+  size_t mdat_bytes = 0;
+  for (const Box& b : top2)
+    if (b.type == "mdat") mdat_bytes += b.payload_size();
+  CHECK(mdat_bytes == fake_au_mdat_bytes());
+
+  // And none of file 1's payload tags may appear anywhere in file 2.
+  bool leaked = false;
+  for (size_t i = 0; i < f2.size(); ++i)
+    if (f2[i] == 0xA1 || f2[i] == 0xA2 || f2[i] == 0xA3) leaked = true;
+  CHECK(!leaked);
+
+  // File 2's timeline must be REBASED to zero, exactly as file 1's was.
+  // have_pts_/last_pts_raw_/last_pts64_ are what do that; without them
+  // resetting in open(), the unwrap carries file 1's origin forward and
+  // file 2's tfdt becomes the absolute session timestamp -- the seekbar
+  // front-pad this mux already fixed once (see unwrap_pts in dvr_mux.cpp).
+  const Box* moof2 = find(top2, "moof");
+  REQUIRE(moof2 != nullptr);
+  std::vector<Box> moof2_kids = parse_boxes(f2, moof2->payload_off(), moof2->off + moof2->size);
+  const Box* traf2 = find(moof2_kids, "traf");
+  REQUIRE(traf2 != nullptr);
+  std::vector<Box> traf2_kids = parse_boxes(f2, traf2->payload_off(), traf2->off + traf2->size);
+  const Box* tfdt2 = find(traf2_kids, "tfdt");
+  REQUIRE(tfdt2 != nullptr);
+  CHECK(read_u64(f2, tfdt2->payload_off() + 4) == 0ull);
+
+  std::remove(p1.c_str());
+  std::remove(p2.c_str());
+}
+
 MTEST_MAIN

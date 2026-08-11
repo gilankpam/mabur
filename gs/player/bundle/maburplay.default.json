@@ -2,7 +2,7 @@
     "backend": "mpp",
     "screen_mode": "1920x1080@60",
     "dvr": {
-        "enabled": true,
+        "autostart": true,
         "dir": "/media/dvr",
         "fragment_ms": 1000,
         "mode": "burned",

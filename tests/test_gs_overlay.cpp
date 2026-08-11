@@ -685,8 +685,6 @@ TEST(recording_states_render_distinctly) {
   p.rec.kind = RecState::Kind::kFault;
   CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec) ==
         std::string(kDotFilled) + " REC FAULT");
-  p.rec.kind = RecState::Kind::kAbsent;
-  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec).empty());
 }
 
 // The MSP grid overlaps the GS corners. After MSP repaints over a field,

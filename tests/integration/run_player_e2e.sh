@@ -63,7 +63,7 @@ cfg = {
     "ring_path": sys.argv[1].rsplit("/", 1)[0] + "/au-ring",
     "socket": sys.argv[1].rsplit("/", 1)[0] + "/none.sock",
     "backend": "null",
-    "dvr": {"enabled": True, "dir": sys.argv[1].rsplit("/", 1)[0]},
+    "dvr": {"autostart": True, "dir": sys.argv[1].rsplit("/", 1)[0]},
 }
 json.dump(cfg, open(sys.argv[1], "w"))
 EOF

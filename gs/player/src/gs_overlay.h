@@ -58,12 +58,11 @@ Status post_loss_status(double pct);   // ok only at exactly 0
 // wedged decoder shows a frozen picture.
 struct RecState {
   enum class Kind {
-    kAbsent,     // dvr disabled in config: the block does not render
-    kArmed,      // enabled, nothing written yet
+    kArmed,      // nothing written yet
     kRecording,  // file open and samples advancing
     kFault,      // open failed / samples stalled / disk nearly full
   };
-  Kind kind = Kind::kAbsent;
+  Kind kind = Kind::kArmed;
   int elapsed_s = 0;
 };
 

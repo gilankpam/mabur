@@ -52,7 +52,6 @@ class RecTracker {
   static constexpr uint64_t kStallMs = 3000;
 
   struct Inputs {
-    bool enabled = false;    // dvr.enabled: false renders no block at all
     bool broken = false;     // the recorder could not be brought up at all
     bool open = false;       // a file exists / the recorder thread is running
     bool low_space = false;  // free space below the floor. NOT "statvfs failed":
@@ -67,6 +66,12 @@ class RecTracker {
   };
 
   RecState update(const Inputs& in, uint64_t now_ms);
+
+  // Forget everything about the recording just ended. Called when the
+  // record button starts a NEW file: the elapsed clock must count that
+  // file, and the stall detector must not carry the old file's sample
+  // count across the gap.
+  void reset();
 
  private:
   uint64_t samples_ = 0, feed_ = 0;

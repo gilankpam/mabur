@@ -49,7 +49,7 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd"});
+  check_keys(j, "", {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd", "input"});
   Config c;
 
   c.ring_path = get_str(j, "ring_path", "/dev/shm/mabur-au", "");
@@ -64,10 +64,10 @@ Config load_config(const std::string& path) {
 
   if (j.contains("dvr")) {
     const json& r = j["dvr"];
-    check_keys(r, "dvr", {"enabled", "dir", "fragment_ms", "mode", "burned"});
-    if (r.contains("enabled")) {
-      if (!r["enabled"].is_boolean()) fail("dvr.enabled", "not a boolean");
-      c.dvr.enabled = r["enabled"].get<bool>();
+    check_keys(r, "dvr", {"autostart", "dir", "fragment_ms", "mode", "burned"});
+    if (r.contains("autostart")) {
+      if (!r["autostart"].is_boolean()) fail("dvr.autostart", "not a boolean");
+      c.dvr.autostart = r["autostart"].get<bool>();
     }
     c.dvr.dir = get_str(r, "dir", "/media/dvr", "dvr");
     c.dvr.fragment_ms = static_cast<int>(get_int(r, "fragment_ms", 1000, 100, 10000, "dvr"));
@@ -111,6 +111,31 @@ Config load_config(const std::string& path) {
       // Default mirrors OsdCfg::GsCfg::stale_ms (see player_config.h).
       c.osd.gs.stale_ms =
           static_cast<int>(get_int(g, "stale_ms", c.osd.gs.stale_ms, 0, 60000, "osd.gs"));
+    }
+  }
+
+  if (j.contains("input")) {
+    const json& in = j["input"];
+    check_keys(in, "input", {"rec"});
+    if (in.contains("rec")) {
+      const json& rc = in["rec"];
+      check_keys(rc, "input.rec", {"pin", "active_low", "bias"});
+      // Required, not defaulted: a rec block with no pin is a typo, and
+      // defaulting it would silently claim some unrelated line.
+      if (!rc.contains("pin")) fail("input.rec.pin", "required");
+      // Upper bound is generous on purpose: header pins run to 40 on this
+      // board, but a GPIO<n>-naming kernel can go far higher.
+      c.input.rec.pin = static_cast<int>(get_int(rc, "pin", 0, 1, 512, "input.rec"));
+      if (rc.contains("active_low")) {
+        if (!rc["active_low"].is_boolean()) fail("input.rec.active_low", "not a boolean");
+        c.input.rec.active_low = rc["active_low"].get<bool>();
+      }
+      c.input.rec.bias = get_str(rc, "bias", "pull-up", "input.rec");
+      if (c.input.rec.bias != "pull-up" && c.input.rec.bias != "pull-down" &&
+          c.input.rec.bias != "none") {
+        fail("input.rec.bias", "must be \"pull-up\", \"pull-down\" or \"none\"");
+      }
+      c.input.rec.configured = true;
     }
   }
 

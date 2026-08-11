@@ -75,7 +75,15 @@ class OsdComposer {
   // All three or none: buffer 0, buffer 1, and the burn's lineage.
   void set_gs(std::unique_ptr<GsOverlay> b0, std::unique_ptr<GsOverlay> b1,
               std::unique_ptr<GsOverlay> burn);
-  void set_burn_sink(BurnSink s) { burn_ = std::move(s); }
+  // Installing a sink resets the burn's OWN lineage -- burn_shadow_ (the
+  // MSP grid) and gs_[2] (the GS twin) -- because a newly started
+  // BurnRecorder's index map is sized and blank, so a diff against the
+  // DEAD recorder's state would leave most of the new recording's overlay
+  // unpainted. The next composition therefore restates everything: 3.7 ms
+  // at 1080p, 9.9 ms at 2160p. That is the accepted startup-event cost of
+  // a deliberate button press, not a cadence -- see CLAUDE.md on the
+  // 2 ms pump budget.
+  void set_burn_sink(BurnSink s);
 
   // Lays out all three GS overlays at the same size. On failure drops all
   // three (so gs_present() goes false) and sets *err.

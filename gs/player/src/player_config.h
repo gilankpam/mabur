@@ -6,7 +6,12 @@
 namespace maburplay {
 
 struct DvrCfg {
-  bool enabled = true;
+  // Begin recording as soon as parameters arrive. NOT "the DVR exists":
+  // the DVR is always available, and autostart:false is a live, armed
+  // player waiting for a press on the input.rec button. There is
+  // deliberately no config kill switch -- autostart:false with no button
+  // configured is a player that never records, by a simpler route.
+  bool autostart = true;
   std::string dir = "/media/dvr";
   int fragment_ms = 1000;
   // "raw"    — remux the received AUs untouched (byte-exact, the default).
@@ -51,6 +56,26 @@ struct OsdCfg {
   } gs;
 };
 
+// GPIO buttons. One button, one job: toggle the DVR.
+struct InputCfg {
+  struct RecCfg {
+    // False when the config has no input.rec block at all, which is the
+    // shipped default -- a ground station with no button wired.
+    bool configured = false;
+    // Header pin number, resolved to a gpiochip + line offset at startup
+    // by matching the kernel's line names (PIN_<n> / GPIO<n> / <n>). The
+    // Radxa ZERO 3 names its 40-pin header lines PIN_7..PIN_40 across
+    // gpiochip1/3/4.
+    int pin = 0;
+    // Defaults describe a button between the pin and GND with the kernel's
+    // internal pull-up: the line is requested ACTIVE_LOW so "pressed"
+    // reads 1. Overridable because goggle builds differ and a silently
+    // inverted button is a miserable bug to chase.
+    bool active_low = true;
+    std::string bias = "pull-up";  // "pull-up" | "pull-down" | "none"
+  } rec;
+};
+
 struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
   std::string socket = "/run/mabur-au.sock";
@@ -58,6 +83,7 @@ struct Config {
   std::string screen_mode = "1920x1080@60";
   DvrCfg dvr;
   OsdCfg osd;
+  InputCfg input;
 };
 
 Config load_config(const std::string& path);  // strict; throws like maburgs

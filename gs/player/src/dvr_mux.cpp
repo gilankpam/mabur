@@ -65,8 +65,33 @@ void put_unity_matrix(BoxWriter& b) {
 
 bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int width,
                    int height, int fragment_ms) {
+  // The handle is per-file state too. Unreachable today (every caller
+  // guards on its own dvr_open flag and close() nulls f_), but this
+  // function's contract is "safe on a live object", and overwriting f_
+  // would leak the descriptor and leave the previous file unflushed.
+  if (f_) {
+    std::fclose(f_);
+    f_ = nullptr;
+  }
   f_ = std::fopen(path.c_str(), "wb");
   if (!f_) return false;
+
+  // Per-FILE state, reset on every open: the record button re-opens this
+  // mux for each new recording. Without this, pending_ carries the
+  // previous file's queued samples into the new file's first fragment and
+  // the PTS unwrap keeps the old origin. samples()/fragments() therefore
+  // mean "this file" -- which is what both consumers want: --oneshot only
+  // ever sees one file, and RecTracker reads a count returning to 0 as
+  // ARMED-again. They are NOT cleared in close(), so rec_stop() can still
+  // report the sample count of the file it just sealed.
+  pending_.clear();
+  samples_ = 0;
+  fragments_ = 0;
+  have_pts_ = false;
+  last_pts_raw_ = 0;
+  last_pts64_ = 0;
+  fragment_start_pts_ = 0;
+  last_dur_us_ = 16667;
 
   width_ = width;
   height_ = height;

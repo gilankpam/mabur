@@ -32,10 +32,6 @@ void AuJitter::on_tick(uint64_t now_ms) {
 
 RecState RecTracker::update(const Inputs& in, uint64_t now_ms) {
   RecState out;
-  if (!in.enabled) {
-    out.kind = RecState::Kind::kAbsent;
-    return out;
-  }
   // low_space is judged BEFORE `open`, so a card that is already full when
   // the session starts reads FAULT rather than sitting at ARMED forever
   // waiting for a file that will never be written.
@@ -75,6 +71,14 @@ RecState RecTracker::update(const Inputs& in, uint64_t now_ms) {
   out.kind = RecState::Kind::kRecording;
   out.elapsed_s = (int)((now_ms - start_ms_) / 1000);
   return out;
+}
+
+void RecTracker::reset() {
+  samples_ = 0;
+  feed_ = 0;
+  stall_since_ms_ = 0;
+  start_ms_ = 0;
+  started_ = false;
 }
 
 }  // namespace maburplay
