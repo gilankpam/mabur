@@ -58,7 +58,7 @@ uint64_t mono_ms() {
 void usage() {
   std::fprintf(stderr,
                "usage: maburplay [-c <config.json>] [--oneshot] "
-               "[--backend null|mpp] [--no-dvr]\n"
+               "[--backend null|mpp]\n"
                "                 [--decode-only --seconds N] [--fps-log]\n"
                "       maburplay --mux-annexb <in.265> <out.mp4>\n"
                "           (test support: mux a raw Annex-B HEVC elementary\n"
@@ -77,7 +77,7 @@ void usage() {
                "            is the host e2e's OSD pixel-path gate.)\n"
                "       maburplay --gs-render <snap.json> --out-gs <out.bin>\n"
                "                 [--gsfont F] [--screen WxH] [--stale]\n"
-               "                 [--rec recording|armed|fault|absent] "
+               "                 [--rec recording|armed|fault] "
                "[--rec-elapsed N]\n"
                "                 [--fps N] [--jit N] [--mbps N]\n"
                "           (test support: render one stats-sideport snapshot\n"
@@ -95,7 +95,6 @@ void usage() {
                "  decoded frame only (excludes the cold-attach/sid0-join\n"
                "  wait). This is the hardware decode gate (see\n"
                "  .superpowers/sdd/2026-08-02-pr-b-maburplay/task-8-brief.md).\n"
-               "  --no-dvr is respected as usual.\n"
                "\n"
                "--fps-log: normal (non-decode-only) run only -- once per\n"
                "  second, prints \"fps-log: fps=X flips/s=X repl=N frames=N "
@@ -381,10 +380,9 @@ int main(int argc, char** argv) {
       } else if (a == "--rec-elapsed" && i + 1 < argc) {
         ps.rec.elapsed_s = std::atoi(argv[++i]);
       } else if (a == "--rec" && i + 1 < argc) {
-        // An unrecognised state is rejected rather than folded into
-        // kAbsent: kAbsent renders NOTHING, so a typo would silently
-        // produce a dump missing the whole recording field and still look
-        // like a successful render.
+        // An unrecognised state is rejected rather than silently defaulted:
+        // a typo would otherwise produce a dump that still looks like a
+        // successful render.
         const std::string r = argv[++i];
         if (r == "recording") {
           ps.rec.kind = maburplay::RecState::Kind::kRecording;
@@ -392,8 +390,6 @@ int main(int argc, char** argv) {
           ps.rec.kind = maburplay::RecState::Kind::kArmed;
         } else if (r == "fault") {
           ps.rec.kind = maburplay::RecState::Kind::kFault;
-        } else if (r == "absent") {
-          ps.rec.kind = maburplay::RecState::Kind::kAbsent;
         } else {
           usage();
           return 2;
@@ -414,7 +410,6 @@ int main(int argc, char** argv) {
 
   std::string config_path = "/etc/maburplay.json";
   bool oneshot = false;
-  bool no_dvr = false;
   bool decode_only = false;
   double decode_only_seconds = 30.0;
   bool fps_log = false;
@@ -428,8 +423,6 @@ int main(int argc, char** argv) {
       oneshot = true;
     } else if (a == "--backend" && i + 1 < argc) {
       backend_override = argv[++i];
-    } else if (a == "--no-dvr") {
-      no_dvr = true;
     } else if (a == "--decode-only") {
       decode_only = true;
     } else if (a == "--seconds" && i + 1 < argc) {
@@ -450,7 +443,6 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (!backend_override.empty()) cfg.backend = backend_override;
-  if (no_dvr) cfg.dvr.enabled = false;
 
   std::unique_ptr<maburplay::VideoBackend> backend = maburplay::make_backend(cfg.backend);
   if (!backend) {
@@ -1206,7 +1198,6 @@ int main(int argc, char** argv) {
         // straight off the ring and does not care whether anything decodes,
         // while burned mode encodes decoded frames.
         maburplay::RecTracker::Inputs rin;
-        rin.enabled = cfg.dvr.enabled;
         rin.samples = dvr.samples();
         rin.feed = gs_complete_aus;
         rin.open = dvr_open;
@@ -1225,7 +1216,7 @@ int main(int argc, char** argv) {
         }
         // Polled at this same 1 Hz, and BEFORE the file exists: a card that
         // is already full must fault rather than sit at ARMED forever.
-        if (rin.enabled) {
+        {
           struct statvfs vfs {};
           if (::statvfs(cfg.dvr.dir.c_str(), &vfs) == 0) {
             const uint64_t free_bytes = (uint64_t)vfs.f_bavail * (uint64_t)vfs.f_frsize;

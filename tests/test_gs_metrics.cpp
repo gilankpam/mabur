@@ -20,7 +20,6 @@ constexpr uint64_t kFrameMs = 17;
 
 RecTracker::Inputs healthy(uint64_t samples, uint64_t feed) {
   RecTracker::Inputs in;
-  in.enabled = true;
   in.open = true;
   in.samples = samples;
   in.feed = feed;
@@ -31,10 +30,10 @@ RecTracker::Inputs healthy(uint64_t samples, uint64_t feed) {
 
 // --- RecTracker ------------------------------------------------------
 
-TEST(rec_disabled_renders_nothing) {
+TEST(rec_default_inputs_render_armed) {
   RecTracker t;
-  RecTracker::Inputs in;  // enabled defaults false
-  CHECK(t.update(in, 1000).kind == RecState::Kind::kAbsent);
+  RecTracker::Inputs in;  // nothing open, nothing written
+  CHECK(t.update(in, 1000).kind == RecState::Kind::kArmed);
 }
 
 // The invariant the whole state machine exists to guarantee: the pilot must
@@ -56,7 +55,6 @@ TEST(recording_implies_samples_written) {
 TEST(recorder_that_never_started_is_a_fault_not_armed) {
   RecTracker t;
   RecTracker::Inputs in;
-  in.enabled = true;
   in.broken = true;
   CHECK(t.update(in, 1000).kind == RecState::Kind::kFault);
 }
@@ -66,7 +64,6 @@ TEST(recorder_that_never_started_is_a_fault_not_armed) {
 TEST(low_space_faults_before_the_file_is_ever_open) {
   RecTracker t;
   RecTracker::Inputs in;
-  in.enabled = true;
   in.open = false;
   in.low_space = true;
   CHECK(t.update(in, 1000).kind == RecState::Kind::kFault);

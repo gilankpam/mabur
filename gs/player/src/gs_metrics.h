@@ -52,7 +52,6 @@ class RecTracker {
   static constexpr uint64_t kStallMs = 3000;
 
   struct Inputs {
-    bool enabled = false;    // dvr.enabled: false renders no block at all
     bool broken = false;     // the recorder could not be brought up at all
     bool open = false;       // a file exists / the recorder thread is running
     bool low_space = false;  // free space below the floor. NOT "statvfs failed":

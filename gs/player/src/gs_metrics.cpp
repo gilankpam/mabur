@@ -32,10 +32,6 @@ void AuJitter::on_tick(uint64_t now_ms) {
 
 RecState RecTracker::update(const Inputs& in, uint64_t now_ms) {
   RecState out;
-  if (!in.enabled) {
-    out.kind = RecState::Kind::kAbsent;
-    return out;
-  }
   // low_space is judged BEFORE `open`, so a card that is already full when
   // the session starts reads FAULT rather than sitting at ARMED forever
   // waiting for a file that will never be written.
