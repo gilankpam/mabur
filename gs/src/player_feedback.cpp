@@ -69,6 +69,11 @@ bool PlayerFeedback::poll(uint64_t now_ms) {
 
 void PlayerFeedback::expire(uint64_t now_ms, int stale_ms) {
   if (stale_ms <= 0 || !msgs_) return;
+  // Same clamp as age_ms(): a caller clock that lags the receive stamp must
+  // not underflow into a huge age and expire a level that just arrived. Today
+  // the core loop passes one stamp to poll() and expire(), but that coupling
+  // is not a property of this class (cf. IdrRequester::wait_ms, f9c898b).
+  if (now_ms <= last_rx_ms_) return;
   if (now_ms - last_rx_ms_ >= static_cast<uint64_t>(stale_ms)) want_ = false;
 }
 

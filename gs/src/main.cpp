@@ -453,10 +453,13 @@ static int run_radio(const maburgs::Config& cfg) {
 
     if (player_fb.ok()) {
       const uint64_t fb_now = mono_ms();
-      if (player_fb.poll(fb_now) && idr_req.on_player_break(fb_now))
+      // Level-driven reconcile (drain -> expire -> raise-if-asserting); see
+      // reconcile_player_idr() for why acting on the received edge is a
+      // permanently-broken-picture bug.
+      if (maburgs::reconcile_player_idr(player_fb, idr_req, fb_now,
+                                        cfg.link.player_fb_stale_ms))
         std::fprintf(stderr, "idr-req: set (player %s)\n",
                      mabur::playerfb::reason_name(player_fb.msg().reason));
-      player_fb.expire(fb_now, cfg.link.player_fb_stale_ms);
     }
 
     // Control step: layer delivery + residual from the decode window, plus

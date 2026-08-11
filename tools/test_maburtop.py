@@ -251,6 +251,59 @@ class VideoPanelTest(unittest.TestCase):
         text, spans = next((t, s) for t, s in rows if t.startswith("out"))
         self.assertTrue(any(style == "warn" for _, _, style in spans))
 
+    # --- IDR back-channel row. The spec names link.video.player.age_ms as the
+    # ONLY mitigation for a feedback.gs_port <-> link.player_fb_port mismatch
+    # (neither binary can validate the pairing), which is real only if it is
+    # actually rendered somewhere an operator looks.
+    def _idr_row(self, player, idr_req=None):
+        v = dict(DGRAM["link"]["video"])
+        v["idr_req"] = idr_req or {"pending": False, "episodes": 2,
+                                   "episodes_player": 1, "wait_ms": 0}
+        v["player"] = player
+        d = dict(DGRAM, link=dict(DGRAM["link"], video=v))
+        rows = panel_video(_fresh(d), 100.2)
+        return next((t, s) for t, s in rows if t.startswith("idr"))
+
+    def test_idr_row_carries_both_episode_counters_and_age(self):
+        text, _ = self._idr_row({"idr": False, "reason": "none",
+                                 "age_ms": 480})
+        self.assertIn("2/", text)   # wire-loss episodes
+        self.assertIn("1", text)    # player-break episodes, kept separate
+        self.assertIn("player", text)
+        self.assertIn("480ms", text)
+
+    def test_idr_pending_marker(self):
+        text, _ = self._idr_row({"idr": True, "reason": "flush", "age_ms": 10},
+                                idr_req={"pending": True, "episodes": 2,
+                                         "episodes_player": 1})
+        self.assertIn("*", text)
+
+    def test_player_asserting_is_bad(self):
+        text, spans = self._idr_row({"idr": True, "reason": "join",
+                                     "age_ms": 100})
+        self.assertIn("BREAK", text)
+        self.assertIn("join", text)
+        self.assertTrue(any(style == "bad" for _, _, style in spans))
+
+    def test_player_absent_is_warn(self):
+        # null player == feature off, dead since boot, or a port mismatch.
+        text, spans = self._idr_row(None)
+        self.assertIn("none", text)
+        self.assertTrue(any(style == "warn" for _, _, style in spans))
+
+    def test_player_stale_level_is_bad(self):
+        # Past link.player_fb_stale_ms the GS drops the level outright: the
+        # channel was alive and stopped, which is worse than never present.
+        text, spans = self._idr_row({"idr": False, "reason": "none",
+                                     "age_ms": 9000})
+        self.assertIn("STALE", text)
+        self.assertTrue(any(style == "bad" for _, _, style in spans))
+
+    def test_player_healthy_is_good(self):
+        text, spans = self._idr_row({"idr": False, "reason": "none",
+                                     "age_ms": 500})
+        self.assertTrue(any(style == "good" for _, _, style in spans))
+
 
 class LinksPanelTest(unittest.TestCase):
     def _block(self, rows, prefix):
@@ -508,6 +561,17 @@ class RenderRowsCompactTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         for cell in ("session", "mcs5", "59.9", "9.31"):
             self.assertIn(cell, rows[0])
+
+    def test_compact_row_surfaces_the_player_channel(self):
+        v = dict(DGRAM["link"]["video"])
+        v["idr_req"] = {"pending": False, "episodes": 2, "episodes_player": 1}
+        v["player"] = {"idr": True, "reason": "join", "age_ms": 100}
+        d = dict(DGRAM, link=dict(DGRAM["link"], video=v))
+        rows = render_rows_compact(_fresh(d), wall=100.2, width=120)
+        joined = "\n".join(rows)
+        self.assertIn("idrq", joined)
+        self.assertIn("plyr", joined)
+        self.assertIn("BREAK", joined)
 
     def test_w90_below_grid_width_uses_single_line(self):
         # Documents why render_screen's w=90 and w=50 cases exercise the

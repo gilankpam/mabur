@@ -160,6 +160,33 @@ def _age_cell(age_ms, w=6):
     return s[:w].rjust(w) if len(s) > w else s.rjust(w)
 
 
+# maburgs' shipped link.player_fb_stale_ms: past this the GS DROPS the
+# player's level, so the back-channel is no longer able to ask for anything.
+PLAYER_STALE_MS = 3000
+
+
+def _player_cell(player, w=5):
+    """maburplay's IDR back-channel state as a fixed-width cell + style.
+
+    `player` is link.video.player. null means nothing has EVER been received:
+    the feature is off, the player is dead, or -- the case neither binary can
+    self-detect -- feedback.gs_port and link.player_fb_port disagree. That is
+    a warning, never an all-clear, because the GS-requested IDR is the ONLY
+    deterministic repair in the system and a silent channel cannot ask for it.
+    A level older than the GS's own stale window is worse (bad): the channel
+    was demonstrably alive and stopped. `idr` set is the player telling us the
+    picture is broken right now."""
+    if player is None:
+        s, style = "none", "warn"
+    elif (player.get("age_ms") or 0) >= PLAYER_STALE_MS:
+        s, style = "STALE", "bad"
+    elif player.get("idr"):
+        s, style = "BREAK", "bad"
+    else:
+        s, style = "ok", "good"
+    return (s[:w].rjust(w) if len(s) > w else s.rjust(w)), style
+
+
 GRID_WIDTH = max(_grid_width(CARD_COLS), _grid_width(LNKSIG_COLS),
                  len(_dec_line("s0", {}, None)))  # widest compact grid row
 
@@ -435,7 +462,9 @@ def render_rows_compact(model, wall, width):
         f"clean {_f(video.get('clean'), 7)}   "
         f"trunc {_f(video.get('truncated'), 4)}   "
         f"drop {_f(video.get('dropped'), 4)}   "
-        f"idrq {_f(idr.get('episodes'), 3)}{'*' if idr.get('pending') else ' '}"
+        f"idrq {_f(idr.get('episodes'), 3)}/{_f(idr.get('episodes_player'), 3)}"
+        f"{'*' if idr.get('pending') else ' '}   "
+        f"plyr {_player_cell(video.get('player'))[0]}"
     )
 
     # --- AU ring (PR C: replaced the RTP row -- video leaves maburgs via
@@ -744,6 +773,21 @@ def panel_video(model, wall):
     residual = link.get("residual_loss")
     residual_pct = None if residual is None else residual * 100.0
     body.append((f"fec       residual {_f(residual_pct, 4, 1)} %", []))
+
+    # IDR back-channel: GS-observed wire-loss episodes / player-reported
+    # decoder-break episodes, plus maburplay's live level. The player cell is
+    # the ONLY place a gs_port <-> player_fb_port mismatch is visible, so it
+    # carries the judgement (see _player_cell).
+    idr = video.get("idr_req") or {}
+    player = video.get("player")
+    pl_s, pl_style = _player_cell(player)
+    pl_seg = f"player {pl_s}"
+    line4 = (f"idr       ep {_f(idr.get('episodes'), 3)}"
+             f"/{_f(idr.get('episodes_player'), 3)}"
+             f"{'*' if idr.get('pending') else ' '}   {pl_seg}"
+             f" {_f((player or {}).get('reason'), 8)}"
+             f"   age {_age_cell((player or {}).get('age_ms'))}")
+    body.append((line4, [(line4.index(pl_seg), len(pl_seg), pl_style)]))
 
     drone = d.get("drone")
     if drone is not None:

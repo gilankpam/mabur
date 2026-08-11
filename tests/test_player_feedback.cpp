@@ -116,4 +116,117 @@ TEST(zero_length_datagram_does_not_stall_the_drain) {
   CHECK(fb.datagrams() == 2);
 }
 
+// --------------------------------------------------------------------------
+// reconcile_player_idr(): the GS-side level reconciliation. This is the ONLY
+// retry mechanism in the whole feature -- the stream carries no IRAP after
+// session start and GDR never repaints, so a request that is never re-made
+// means a permanently broken picture. All four shapes below are asserted
+// against the LEVEL, not the received edge.
+// --------------------------------------------------------------------------
+
+// C2: the GS emitted the granted IDR (its latch cleared) but the player never
+// received it -- ring lap, oversize drop. The player keeps asserting the same
+// level, so there is no clear->set edge ever again. The request must still be
+// re-raised, which is what the spec's failure table promises ("latch stays
+// set, request repeats, bounded by the drone's 1 s cooldown").
+// REVERT CHECK: fails if the raise is gated on poll()'s edge return.
+TEST(held_level_re_raises_after_the_latch_clears) {
+  maburgs::PlayerFeedback fb;
+  maburgs::IdrRequester q;
+  std::string err;
+  REQUIRE(fb.open(0, &err));
+  REQUIRE(send_to(fb.port(), dgram(true, "flush", 0)));
+  CHECK(maburgs::reconcile_player_idr(fb, q, 1000, 3000));
+  CHECK(q.want());
+  CHECK(q.episodes_player() == 1);
+
+  // The IDR is emitted on the wire; our latch clears. The player did not see
+  // it, so no new datagram arrives -- only the held level remains.
+  CHECK(q.on_frame_emitted(true, true, 1100));
+  CHECK(!q.want());
+  CHECK(fb.want());  // player still asserting
+
+  CHECK(maburgs::reconcile_player_idr(fb, q, 1200, 3000));  // re-raised
+  CHECK(q.want());
+  CHECK(q.episodes_player() == 2);
+}
+
+// C1: the player dies (watchdog exit, crash) and the init wrapper respawns it
+// in ~1 s -- inside player_fb_stale_ms. Our shadow level is still set from the
+// dead instance, so the fresh instance's first idr=1 is NOT an edge, while our
+// latch may already have cleared. Without level reconciliation the new
+// player's non-IRAP join is never repaired.
+// REVERT CHECK: fails if the raise is gated on poll()'s edge return.
+TEST(respawned_player_inside_the_stale_window_re_raises) {
+  maburgs::PlayerFeedback fb;
+  maburgs::IdrRequester q;
+  std::string err;
+  REQUIRE(fb.open(0, &err));
+  REQUIRE(send_to(fb.port(), dgram(true, "watchdog", 0)));
+  CHECK(maburgs::reconcile_player_idr(fb, q, 1000, 3000));
+  CHECK(q.on_frame_emitted(true, true, 1100));  // repaired that instance
+  CHECK(!q.want());
+
+  // Respawned instance, 1 s later: joins at a non-IRAP sid0 and asserts. Its
+  // counters restart from 0, and the level never went clear in between.
+  REQUIRE(send_to(fb.port(), dgram(true, "join", 1)));
+  CHECK(!fb.poll(2000));  // no edge: the shadow level was already set
+  CHECK(fb.want());
+  CHECK(maburgs::reconcile_player_idr(fb, q, 2000, 3000));
+  CHECK(q.episodes_player() == 2);
+}
+
+// Ordering guard: expire() must run BEFORE the level is consulted, or a dead
+// player's stale assertion raises a request nobody is asking for. REVERT
+// CHECK: fails if expire() is moved after the want() check.
+TEST(stale_expired_level_does_not_raise) {
+  maburgs::PlayerFeedback fb;
+  maburgs::IdrRequester q;
+  std::string err;
+  REQUIRE(fb.open(0, &err));
+  REQUIRE(send_to(fb.port(), dgram(true, "flush", 0)));
+  CHECK(maburgs::reconcile_player_idr(fb, q, 1000, 3000));
+  CHECK(q.on_frame_emitted(true, true, 1100));
+  CHECK(!q.want());
+  // 4 s of silence with the level still notionally set: the player is gone.
+  CHECK(!maburgs::reconcile_player_idr(fb, q, 5000, 3000));
+  CHECK(!q.want());
+  CHECK(q.episodes_player() == 1);
+  CHECK(!fb.want());
+}
+
+// Runaway bound: on a healthy link the player's level is 0, so reconciling
+// every core-loop iteration raises nothing at all. The only way to re-raise is
+// for the latch to clear, which requires an IDR to have been emitted -- which
+// the drone rate-limits to one per waybeam.idr_cooldown_ms.
+TEST(healthy_level_never_raises_however_often_reconciled) {
+  maburgs::PlayerFeedback fb;
+  maburgs::IdrRequester q;
+  std::string err;
+  REQUIRE(fb.open(0, &err));
+  REQUIRE(send_to(fb.port(), dgram(false, "none", 0)));
+  for (uint64_t t = 1000; t < 1100; ++t)
+    CHECK(!maburgs::reconcile_player_idr(fb, q, t, 3000));
+  CHECK(!q.want());
+  CHECK(q.episodes_player() == 0);
+}
+
+// expire() must clamp like age_ms(): a caller clock behind the receive stamp
+// must not underflow into a huge age and drop a level that just arrived.
+// REVERT CHECK: fails (level wrongly expired) if the now_ms <= last_rx_ms_
+// guard is removed from expire(). Same hazard class as commit f9c898b.
+TEST(expire_clamps_when_caller_clock_lags_the_receive_stamp) {
+  maburgs::PlayerFeedback fb;
+  std::string err;
+  REQUIRE(fb.open(0, &err));
+  REQUIRE(send_to(fb.port(), dgram(true, "flush", 0)));
+  CHECK(fb.poll(5000));
+  fb.expire(4990, 3000);  // caller clock behind the stamp
+  CHECK(fb.want());
+  fb.expire(5000, 3000);  // equal: age 0, nothing to expire
+  CHECK(fb.want());
+  fb.expire(9000, 3000);  // genuinely stale
+  CHECK(!fb.want());
+}
+
 MTEST_MAIN

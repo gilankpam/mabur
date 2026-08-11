@@ -936,7 +936,21 @@ int main(int argc, char** argv) {
   // decoder. No decoder introspection: concealed() is measured dead.
   maburplay::PlayerIdrLatch idr_latch;
   std::unique_ptr<maburgs::UdpSink> fb_sink;
-  if (cfg.feedback.enable) {
+  // The datagram carries no instance identity and the GS keeps the NEWEST it
+  // received, so a second maburplay on the box does not add to the channel --
+  // it OVERWRITES it. --decode-only (the hardware decode gate) and --oneshot
+  // are run on the LIVE GS, where their startup join would fire a spurious IDR
+  // request and their idr=0 heartbeats would mask the real player's assertion.
+  // These modes exist to measure, never to drive the link, so the sender is
+  // off in them regardless of config -- config discipline is not a mechanism.
+  const bool fb_suppressed = decode_only || oneshot;
+  if (cfg.feedback.enable && fb_suppressed) {
+    std::fprintf(stderr,
+                 "maburplay: feedback suppressed (%s is measurement-only and "
+                 "must not drive the live link)\n",
+                 decode_only ? "--decode-only" : "--oneshot");
+  }
+  if (cfg.feedback.enable && !fb_suppressed) {
     fb_sink = std::make_unique<maburgs::UdpSink>(cfg.feedback.gs_host,
                                                  cfg.feedback.gs_port);
     if (!fb_sink->ok()) {
