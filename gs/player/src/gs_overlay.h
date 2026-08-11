@@ -33,7 +33,6 @@ constexpr const char* kEmDashPair = "——";  // never received
 constexpr const char* kMinus = "−";             // NOT a hyphen
 constexpr const char* kArrow = "→";
 constexpr const char* kDotFilled = "●";
-constexpr const char* kDotHollow = "○";
 
 enum class Status { kOk, kCaution, kCritical };
 
