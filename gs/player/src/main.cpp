@@ -292,13 +292,35 @@ int run_gs_render(const std::string& snap_path, const std::string& out_path,
 }
 
 // DVR filename convention: record_%Y-%m-%d_%H-%M-%S.mp4 under dvr.dir.
+//
+// The stamp has ONE-SECOND resolution and both writers open "wb", so two
+// recordings started inside the same second would silently truncate the
+// first. That was unreachable while a run produced exactly one file; the
+// record button makes it a double-tap away (kDebounceMs is 50, and the raw
+// path re-opens on the very next AU, ~16 ms later). So the last stem this
+// process emitted is remembered and a repeat gets "-1", "-2", ... The
+// FIRST recording of any second is spelled exactly as before -- the
+// /media/dvr naming is a user-facing convention -- and the disambiguation
+// is driven only by string equality with the previous name, never by an
+// elapsed-time threshold, so it cannot decide differently on a faster host.
 std::string dvr_filename(const std::string& dir) {
   std::time_t t = std::time(nullptr);
   std::tm tmv{};
   ::localtime_r(&t, &tmv);
   char buf[64];
-  std::strftime(buf, sizeof(buf), "record_%Y-%m-%d_%H-%M-%S.mp4", &tmv);
-  return dir + "/" + buf;
+  std::strftime(buf, sizeof(buf), "record_%Y-%m-%d_%H-%M-%S", &tmv);
+  // Main-loop-thread only (the ring sink and rec_start's
+  // start_burn_if_needed), so plain statics need no synchronisation.
+  static std::string last_stem;
+  static unsigned dup_n = 0;
+  std::string stem(buf);
+  if (stem == last_stem) {
+    stem += "-" + std::to_string(++dup_n);
+  } else {
+    last_stem = stem;
+    dup_n = 0;
+  }
+  return dir + "/" + stem + ".mp4";
 }
 
 // Parses player_config's "WIDTHxHEIGHT@FPS" screen_mode convention; falls
@@ -911,7 +933,15 @@ int main(int argc, char** argv) {
         // decode gap is sealed off automatically the next time one arrives.
       } else {
         if (is_key) params.feed(ev.au.data(), ev.au.size());
-        if (!dvr_open && params.complete()) {
+        // `&& is_key`: a file must BEGIN at a sync point. params.complete()
+        // is sticky and params is never reset, so on the SECOND and later
+        // recordings of a run it is already true when the button re-arms
+        // this path -- without this clause the file would open on whatever
+        // AU arrived next and record it with key=false, i.e. start with P
+        // slices whose references are not in the file. A no-op for the
+        // first recording: params.feed() only runs on is_key, so
+        // complete() cannot first become true anywhere but a key AU.
+        if (!dvr_open && params.complete() && is_key) {
           const std::string path = dvr_filename(cfg.dvr.dir);
           dvr_open = dvr.open(path, params.hvcc(), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
           if (!dvr_open) {
@@ -1296,7 +1326,11 @@ int main(int argc, char** argv) {
         rin.samples = rec_on ? dvr.samples() : 0;
         rin.feed = gs_complete_aus;
         rin.open = dvr_open;
-        rin.broken = dvr_open_failed;
+        // rec_on, for the same reason as the burned branch below: a failed
+        // open is only a FAULT while we are supposed to be recording. Once
+        // the user has stopped, a stale latch would keep the OSD red until
+        // the next start (rec_start is what clears it).
+        rin.broken = rec_on && dvr_open_failed;
         if (burned_mode) {
           rin.feed = frame_count;
 #ifdef MABUR_PLAYER_HW
