@@ -33,7 +33,13 @@ class IdrRequester {
 
   bool want() const { return want_; }
   uint64_t episodes() const { return episodes_; }
-  uint64_t wait_ms(uint64_t now_ms) const { return want_ ? now_ms - since_ms_ : 0; }
+  // Clamped elapsed time since latch. The sin fill passes a loop-top clock
+  // that can lag the latch stamp taken mid-drain by a fresh mono_ms() —
+  // clamp guards against uint64 underflow when caller clock lags behind the
+  // latch mark.
+  uint64_t wait_ms(uint64_t now_ms) const {
+    return want_ && now_ms > since_ms_ ? now_ms - since_ms_ : 0;
+  }
   uint64_t last_wait_ms() const { return last_wait_ms_; }
 
  private:

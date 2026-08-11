@@ -43,4 +43,16 @@ TEST(idr_without_latch_is_noop) {
   CHECK(q.episodes() == 0);
 }
 
+// The sin fill passes a loop-top clock that can lag the latch stamp taken
+// mid-drain by a fresh mono_ms() — wait_ms must clamp, not underflow.
+// REVERT CHECK: fails (huge uint64) if the now_ms > since_ms_ clamp is
+// removed from wait_ms.
+TEST(wait_ms_clamps_when_caller_clock_lags_latch_stamp) {
+  IdrRequester q;
+  CHECK(q.on_frame_lost(0, 1000));
+  CHECK(q.wait_ms(990) == 0);   // caller clock behind the stamp: clamp to 0
+  CHECK(q.wait_ms(1000) == 0);  // equal: still 0, no underflow
+  CHECK(q.wait_ms(1500) == 500);
+}
+
 MTEST_MAIN
