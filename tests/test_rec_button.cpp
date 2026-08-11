@@ -1,6 +1,8 @@
 // The two pieces of the record button that have no device in them. The
 // ioctl shell around them (RecButton) is deliberately thin and is covered
 // by hardware acceptance instead.
+#include <string>
+
 #include "mtest.h"
 #include "rec_button.h"
 
@@ -79,6 +81,28 @@ TEST(a_release_inside_the_window_is_not_accepted) {
   // line returning high is not a new press.
   CHECK(!d.feed(true, 140));
   CHECK(!d.feed(true, 300));
+}
+
+// The ioctl shell has no host mock -- enumerate, match, request is all it
+// does, and hardware acceptance covers the positive path. What IS worth
+// pinning on the host is that a pin nothing can satisfy fails cleanly and
+// says so, rather than throwing, hanging, or half-opening. Pin 99999
+// cannot exist on any board: it is outside every header numbering, so
+// this is deterministic whether or not the dev box has /dev/gpiochip*.
+TEST(an_unresolvable_pin_fails_with_a_message) {
+  std::string chip, err;
+  unsigned offset = 12345;
+  CHECK(!maburplay::RecButton::resolve_pin(99999, &chip, &offset, &err));
+  CHECK(!err.empty());
+
+  maburplay::RecButtonCfg cfg;
+  cfg.pin = 99999;
+  maburplay::RecButton b;
+  std::string err2;
+  CHECK(!b.open(cfg, &err2));
+  CHECK(!b.is_open());
+  CHECK(!err2.empty());
+  CHECK(!b.poll(0));   // polling an unopened button is a no-op, not a crash
 }
 
 MTEST_MAIN
