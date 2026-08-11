@@ -662,4 +662,32 @@ TEST(uplink_snr_is_exported_in_dB_not_half_dB) {
   CHECK(u["rssi_a"].get<double>() > -58.01 && u["rssi_a"].get<double>() < -57.99);
   CHECK(u["rssi_b"].get<double>() > -63.01 && u["rssi_b"].get<double>() < -62.99);
 }
+
+// link.video.idr_req: the IdrRequester latch on the sideport (additive
+// under v:1). wait_ms is null when the latch is clear.
+// REVERT CHECK: fails if the block is dropped or wait_ms stops nulling.
+TEST(idr_req_block_exported) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.idr_pending = true;
+  in.idr_episodes = 3;
+  in.idr_wait_ms = 250;
+  mabur::rc::Telem t;
+  t.idr_grants = 4;
+  in.telem = t;
+  ex.poll(1000, in);
+  auto idr = cap.last()["link"]["video"]["idr_req"];
+  CHECK(idr["pending"] == true);
+  CHECK(idr["episodes"] == 3);
+  CHECK(idr["wait_ms"] == 250);
+  CHECK(cap.last()["drone"]["enc"]["idr_grants"] == 4);
+
+  in.idr_pending = false;
+  in.idr_wait_ms.reset();
+  ex.poll(1600, in);
+  idr = cap.last()["link"]["video"]["idr_req"];
+  CHECK(idr["pending"] == false);
+  CHECK(idr["wait_ms"].is_null());
+}
 MTEST_MAIN

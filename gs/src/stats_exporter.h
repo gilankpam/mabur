@@ -106,6 +106,11 @@ struct StatsInput {
   uint64_t ring_published = 0, ring_dropped_oversize = 0, ring_bytes = 0;
   uint64_t q_drop = 0;
 
+  // IdrRequester latch (spec 2026-08-11 idr-request). wait_ms set iff pending.
+  bool idr_pending = false;
+  uint64_t idr_episodes = 0;
+  std::optional<uint64_t> idr_wait_ms;
+
   // Latest drone telemetry, if any this session: wire struct + GS arrival clock.
   std::optional<mabur::rc::Telem> telem;
   uint64_t telem_rx_ms = 0;   // GS monotonic arrival stamp

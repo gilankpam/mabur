@@ -333,6 +333,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
 
   v["q_drop"] = in.q_drop;
 
+  // GS-initiated IDR request state (spec 2026-08-11 idr-request; additive
+  // under v:1 — consumers ignore unknown keys).
+  v["idr_req"] = {{"pending", in.idr_pending}, {"episodes", in.idr_episodes}};
+  if (in.idr_wait_ms) v["idr_req"]["wait_ms"] = *in.idr_wait_ms;
+  else v["idr_req"]["wait_ms"] = nullptr;
+
   if (in.telem) {
     const mabur::rc::Telem& t = *in.telem;
     // A new distinct snapshot (tlm_seq changed since the last one we kept)
@@ -418,6 +424,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     enc["ring_drops"] = t.ring_drops;
     enc["idr_disagree"] = t.idr_disagree;
     enc["enhance_disagree"] = t.enhance_disagree;
+    enc["idr_grants"] = t.idr_grants;
     json& txq = d["txq"];
     txq["depth"] = t.txq_depth;
     txq["cap"] = t.txq_cap;  // wire value as-is (256 saturates to 255 on the wire)
