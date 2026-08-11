@@ -84,12 +84,22 @@ class RecButton {
  private:
   static constexpr int kMaxIoErrors = 10;
 
+  // Test-only seam (defined in rec_button.cpp): lets a host test seed
+  // line_fd_ with an arbitrary already-open fd, so open()'s
+  // close-the-old-line guard can be exercised and its actual ::close()
+  // observed without a real gpiochip. Not part of the public API -- do
+  // not call this outside tests.
+  friend void RecButtonSetLineFdForTest(RecButton& b, int fd);
+
   int line_fd_ = -1;
   std::string chip_path_;
   unsigned offset_ = 0;
   int io_errors_ = 0;
   ButtonDebounce deb_;
 };
+
+// See the friend declaration above: test-only, not for production callers.
+void RecButtonSetLineFdForTest(RecButton& b, int fd);
 
 }  // namespace maburplay
 

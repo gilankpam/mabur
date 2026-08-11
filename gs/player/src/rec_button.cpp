@@ -90,6 +90,13 @@ bool RecButton::resolve_pin(int pin, std::string* chip_path, unsigned* offset,
 }
 
 bool RecButton::open(const RecButtonCfg& cfg, std::string* err) {
+  // A repeat open() on an already-open object must not leak the previous
+  // line fd: close it before re-resolving and re-requesting.
+  if (line_fd_ >= 0) {
+    ::close(line_fd_);
+    line_fd_ = -1;
+  }
+
   if (!resolve_pin(cfg.pin, &chip_path_, &offset_, err)) return false;
 
   const int chip_fd = ::open(chip_path_.c_str(), O_RDONLY | O_CLOEXEC);
@@ -152,5 +159,7 @@ bool RecButton::poll(uint64_t now_ms) {
   io_errors_ = 0;
   return deb_.feed((v.bits & 1u) != 0, now_ms);
 }
+
+void RecButtonSetLineFdForTest(RecButton& b, int fd) { b.line_fd_ = fd; }
 
 }  // namespace maburplay

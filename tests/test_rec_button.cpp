@@ -1,6 +1,10 @@
 // The two pieces of the record button that have no device in them. The
 // ioctl shell around them (RecButton) is deliberately thin and is covered
 // by hardware acceptance instead.
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <cerrno>
 #include <string>
 
 #include "mtest.h"
@@ -103,6 +107,46 @@ TEST(an_unresolvable_pin_fails_with_a_message) {
   CHECK(!b.is_open());
   CHECK(!err2.empty());
   CHECK(!b.poll(0));   // polling an unopened button is a no-op, not a crash
+}
+
+// open() must close a PREVIOUSLY held line fd before re-resolving, or a
+// repeat call leaks it for the process lifetime. There is no real
+// gpiochip to open twice on a host box, so this seeds line_fd_ directly
+// (RecButtonSetLineFdForTest is a friend-only test seam, not part of the
+// public API) with a real fd and then checks, at the OS level, that the
+// guard's ::close() actually ran -- not just that internal bookkeeping
+// says so, which a leak could also produce.
+//
+// The seeded fd is moved to a high number via F_DUPFD first. open()'s
+// subsequent resolve_pin() scan may transiently open a couple of
+// low-numbered fds of its own (existing GPIO chips, if any, refused by
+// permissions); parking our fd far above that range means the kernel
+// cannot hand our just-closed number back out to resolve_pin and produce
+// a false pass.
+TEST(reopening_an_already_open_button_closes_the_old_line_fd) {
+  int fds[2];
+  CHECK(::pipe(fds) == 0);
+  const int fd = ::fcntl(fds[0], F_DUPFD, 500);
+  CHECK(fd >= 500);
+  ::close(fds[0]);
+
+  maburplay::RecButton b;
+  maburplay::RecButtonSetLineFdForTest(b, fd);
+  CHECK(b.is_open());
+
+  maburplay::RecButtonCfg cfg;
+  cfg.pin = 99999;  // unresolvable -- open() fails right after the guard runs
+  std::string err;
+  CHECK(!b.open(cfg, &err));
+  CHECK(!b.is_open());
+
+  // A dangling (never-closed) fd still answers F_GETFD; only an actually
+  // closed one reports EBADF.
+  errno = 0;
+  CHECK(::fcntl(fd, F_GETFD) == -1);
+  CHECK(errno == EBADF);
+
+  ::close(fds[1]);
 }
 
 MTEST_MAIN
