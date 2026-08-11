@@ -22,6 +22,13 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 
 RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {}
 
+void RcAgent::grant_idr(uint64_t now_ms) {
+  have_idr_grant_ = true;
+  last_idr_grant_ms_ = now_ms;
+  ++idr_grants_;
+  act_.request_idr();
+}
+
 // Applies the MAX_RANGE operating point (profile_table()[MAX_RANGE_PROFILE]
 // via ladder_from). This is a state-transition apply (BOOT's initial op, or
 // a LINKED->FAILSAFE entry), so it forces the bitrate policy to the robust
@@ -244,7 +251,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
     // CAP_S3_PROBE: this drone accepts RCF_F_PROBE3 (spec 2026-08-05
     // s3-probe-promote).
-    ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_S3_PROBE;
+    // CAP_IDR_REQ: honors RCF_F_IDR_REQ (spec 2026-08-11 idr-request).
+    ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_S3_PROBE | rc::CAP_IDR_REQ;
     ack.agreed_channel = cfg_.radio.channel;
     ack.agreed_width = cfg_.radio.width;
     ack.seq = d->seq;
@@ -328,7 +336,17 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
 
     bool entering_linked = prev_state == State::FAILSAFE || prev_state == State::RENDEZVOUS;
     if (entering_linked) {
-      act_.request_idr();
+      grant_idr(now_ms);
+    }
+
+    // GS latched an IDR request (level, 10 Hz): grant unless inside the
+    // cooldown. The entering-LINKED grant above shares the stamp, so a
+    // re-link IDR and a glitch IDR never stack inside one window.
+    if ((r->flags & rc::RCF_F_IDR_REQ) != 0 &&
+        (!have_idr_grant_ ||
+         now_ms - last_idr_grant_ms_ >=
+             static_cast<uint64_t>(cfg_.waybeam.idr_cooldown_ms))) {
+      grant_idr(now_ms);
     }
 
     // RCFs that transition into LINKED (from RENDEZVOUS or FAILSAFE) force

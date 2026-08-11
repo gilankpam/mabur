@@ -49,13 +49,15 @@ Config make_cfg() {
 // pwr_offset_biased is the RCF wire byte as-is (PWR_NO_CHANGE or
 // encode_pwr_offset_qdb(qdb)) — callers pass the biased byte directly.
 std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
-                                    uint8_t pwr_offset_biased, uint8_t fec_overhead_16ths) {
+                                    uint8_t pwr_offset_biased, uint8_t fec_overhead_16ths,
+                                    uint8_t flags = 0) {
   Rcf r;
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
   r.pwr_offset_biased = pwr_offset_biased;
   r.fec_overhead_16ths = fec_overhead_16ths;
+  r.flags = flags;
   return pack_rcf(r);
 }
 
@@ -159,6 +161,7 @@ TEST(disc_ack_advertises_frame_wire_cap) {
   auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
   REQUIRE(parsed.has_value());
   CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
+  CHECK(parsed->chip_caps & rc::CAP_IDR_REQ);
 }
 
 // 2b. Keep-alive DISC while LINKED is ignored end-to-end — Python parity
@@ -379,6 +382,40 @@ TEST(rcf_after_failsafe_requests_idr) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(act.idr_calls == idr_before + 1);
+}
+
+// The RCF_F_IDR_REQ level at 10 Hz is deduped purely by the grant cooldown
+// (waybeam.idr_cooldown_ms, default 1000), and the entering-LINKED IDR
+// stamps the SAME clock so a re-link IDR and a glitch IDR cannot stack
+// inside one window.
+// REVERT CHECKS: remove the entering-LINKED stamp -> the t=500 RCF grants
+// and idr_calls reads 2 too early; remove the cooldown check -> t=500
+// grants; remove the flag check -> t=1100 never grants. Each fails a CHECK.
+TEST(idr_req_flag_grants_once_per_cooldown_shared_with_relink) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  uint8_t profile = encode_profile(PhyMode::HT, 2, 20);
+  auto w1 = make_rcf_wire(cfg.link.vtx_id, 1, profile, 40, 8, rc::RCF_F_IDR_REQ);
+  agent.on_rc_frame(w1.data(), w1.size(), 0);   // entering LINKED: grants (existing path)
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(act.idr_calls == 1);
+  CHECK(agent.idr_grants() == 1);
+
+  auto w2 = make_rcf_wire(cfg.link.vtx_id, 2, profile, 40, 8, rc::RCF_F_IDR_REQ);
+  agent.on_rc_frame(w2.data(), w2.size(), 500);  // inside cooldown: suppressed
+  CHECK(act.idr_calls == 1);
+
+  auto w3 = make_rcf_wire(cfg.link.vtx_id, 3, profile, 40, 8, rc::RCF_F_IDR_REQ);
+  agent.on_rc_frame(w3.data(), w3.size(), 1100);  // past cooldown: grants
+  CHECK(act.idr_calls == 2);
+  CHECK(agent.idr_grants() == 2);
+
+  auto w4 = make_rcf_wire(cfg.link.vtx_id, 4, profile, 40, 8);
+  agent.on_rc_frame(w4.data(), w4.size(), 3000);  // no flag: never grants
+  CHECK(act.idr_calls == 2);
 }
 
 // 8. Thermal 30 (>25) for 3 ticks -> offset drops 12 qdB below commanded

@@ -87,6 +87,10 @@ class RcAgent {
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }
 
+  // Cumulative IDR grants (entering-LINKED + RCF_F_IDR_REQ), never reset —
+  // feeds Telem.idr_grants. Spec 2026-08-11 idr-request.
+  uint64_t idr_grants() const { return idr_grants_; }
+
   // True iff the last accepted RCF carried probe3 (an s3-only MCS probe) —
   // cleared the moment a FAILSAFE/max-range apply takes over (a degraded or
   // lost link must never report itself as still probing) or a follow-up RCF
@@ -161,6 +165,14 @@ class RcAgent {
   // reapply (which recomputes shed from shed_level_ alone) can never
   // silently drop the MAX_RANGE-forced shed — most importantly, FAILSAFE's.
   bool failsafe_shed_ = false;
+
+  // GS-requested IDR grant state (spec 2026-08-11 idr-request): one shared
+  // cooldown clock for BOTH grant paths (entering-LINKED and RCF flag).
+  uint64_t last_idr_grant_ms_ = 0;
+  bool have_idr_grant_ = false;
+  uint64_t idr_grants_ = 0;
+
+  void grant_idr(uint64_t now_ms);
 
   void apply_max_range(uint64_t now_ms);
   void apply_ladder_op(const std::array<rc::LayerTxSpec, 4>& ladder, int pwr_offset_qdb,
