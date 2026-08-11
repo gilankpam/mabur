@@ -155,6 +155,83 @@ that nothing observes:
 So the failure is silent, permanent, and looks exactly like a healthy link
 in every instrument the GS exports.
 
+## Follow-up, 2026-08-12: why nothing heals, and which stream breaks it
+
+### The encoder's intra refresh is on — and does not repaint pixels
+
+`waybeam` runs a GDR sweep, correctly configured and applied at the
+hardware level (`/api/v1/resilience/status`):
+
+```json
+"preset":"rally",
+"intra":{"mode":"fast","active":true,"mi_supported":true,"apply_ok":true,
+         "effective_lines":4,"effective_qp":36},
+"refPred":{"active":true,"apply_ok":true,"base":1,"enhance":1,"pred":true},
+"gop":{"effective_sec":2.000,"auto":false}
+```
+
+So the premise behind `MPP_DEC_SET_DISABLE_ERROR` in `mpp_backend.cpp`
+("the intra sweep genuinely heals the picture") is *configured* to hold.
+An A/B with `link.idr_req` disabled shows it does not, and separates two
+things that were being conflated:
+
+| after a 3 s / 35 % s1 burst | outcome |
+|---|---|
+| reference **list** (`missing ref` lines) | recovers — a short flurry, then silent for 160 s |
+| reference **pixels** (what is on screen) | **never recovers** — smear persists indefinitely |
+
+The GDR sweep re-establishes the DPB but does not repaint. That comment was
+inherited from PixelPilot's decoder setup, not measured on this link.
+
+### The recovery that does work is content overwrite, not refresh
+
+Operator observation: covering the lens with a finger and releasing clears
+the smear. Measured against the ring, a cover/release produces **0 IRAP
+NALs in 90 s** — no IDR is generated (consistent with
+`video0.sceneThreshold: 0`, which the config validator treats as disabled).
+
+So nothing in the drone decides "this picture needs refreshing". Corruption
+is overwritten only where scene content changes, which makes corruption
+lifetime a function of scene motion: immortal on a static bench scene,
+washed out quickly in flight. That is why this has never presented as a
+permanent smear in the air, and why the bench is the worst case rather than
+a representative one. It is also a weak guarantee precisely when it matters
+— a hover, a slow approach, a static horizon.
+
+### s1 causes the smear; s3 cannot
+
+Two 5 s bursts at eff=35, one stream each, `idr_req` off so nothing repairs
+the picture between them, each phase starting from an explicit IDR:
+
+| stream | injected | missing-ref | trunc | drop | s1 abn | s3 abn | episodes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **s3** | 1793 | **0** | 43 | 83 | 0 | 947 | 0 |
+| **s1** | 1395 | **15** | 6 | 25 | 104 | 0 | 2 |
+
+s3 took *more* injected loss and abandoned 947 bodies, costing 43 truncated
+and 83 dropped frames — and did **zero** reference damage. s1 took less
+loss, dropped a quarter as many frames, and broke the chain 15 times. This
+is exactly what the NAL types predict (sid 1 = `TRAIL_R` reference, sid 3 =
+`TRAIL_N` non-reference): **enhance-layer loss costs smoothness, never
+smear.**
+
+This is the companion to the validation campaign. That run proved s3 loss
+does not *falsely* fire the latch; this one proves it *should not*, because
+s3 loss cannot break the reference chain at all. The `sid > 2` guard in
+`IdrRequester` is now measured, not assumed. Note also that the latch fired
+in exactly the phase that caused reference damage (episodes 2 vs 0) — the
+trigger is aimed correctly; its problem is only that it cannot see breaks
+the GS did not itself observe.
+
+### Kill-switch semantics worth knowing
+
+`link.idr_req: false` gates *transmission* of `RCF_F_IDR_REQ`, not the
+latch: `IdrRequester` still latches and still counts episodes (main.cpp
+gates on `cfg.link.idr_req && idr_req.want()` at the send site only). So
+`link.video.idr_req.episodes` keeps counting with the feature disabled, and
+`episodes > 0` with `grants == 0` means "switched off here", not "the drone
+is refusing".
+
 ## Observability gaps found along the way
 
 - **`--fps-log` is off in production** (`S97maburplay`), so none of the
@@ -164,5 +241,9 @@ in every instrument the GS exports.
   chatty there would have been no signal at all.
 - **The drone counts grants, not requests** — a request refused by the
   cooldown is counted nowhere (also noted in the validation doc).
+- **Only one process can bind the sideport port**, so an ad-hoc capture
+  fails with `EADDRINUSE` whenever maburtop is open. `tools/bench/sidesnap.py`
+  (added 2026-08-12) sniffs the datagrams off `lo` via AF_PACKET instead of
+  binding, so it composes with a running maburtop rather than displacing it.
 - Nothing exports decoder health to the sideport, so `maburtop` and the GS
   OSD both showed a green link while the picture was unwatchable.
