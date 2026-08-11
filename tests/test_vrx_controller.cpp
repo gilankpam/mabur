@@ -432,3 +432,39 @@ TEST(static_pin_overrides_controller) {
   CHECK(r->pwr_offset_biased == mabur::rc::encode_pwr_offset_qdb(-12));
   CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(0.25));
 }
+
+// The controller must not put RCF_F_IDR_REQ on the wire until the peer has
+// advertised CAP_IDR_REQ — an old drone never sees the bit. And the flag
+// is a live level: it follows the caller's bool on every RCF.
+// REVERT CHECKS: removing the peer_caps_ gate makes the pre-DiscAck check
+// fail; removing the flag set makes the post-DiscAck check fail; latching
+// instead of following the level makes the final (false) check fail.
+TEST(idr_req_flag_gated_on_peer_cap) {
+  auto vrx = make();
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  double now = 0;
+  auto next_rcf = [&](bool req) {
+    std::optional<VrxController::Out> out;
+    while (!out || out->is_disc) {
+      now += 10;
+      vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+      out = vrx.step(now, ld, healthy(), req);
+    }
+    auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+    REQUIRE(r.has_value());
+    return *r;
+  };
+
+  CHECK((next_rcf(true).flags & mabur::rc::RCF_F_IDR_REQ) == 0);  // no cap yet
+
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = 1;
+  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.chip_caps = mabur::rc::CAP_IDR_REQ;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), now);
+  CHECK(vrx.peer_caps() & mabur::rc::CAP_IDR_REQ);
+
+  CHECK((next_rcf(true).flags & mabur::rc::RCF_F_IDR_REQ) != 0);
+  CHECK((next_rcf(false).flags & mabur::rc::RCF_F_IDR_REQ) == 0);  // level, not latch
+}

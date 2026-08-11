@@ -43,7 +43,7 @@ void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
 
 std::optional<VrxController::Out> VrxController::step(
     double now_ms, const std::array<uint8_t, 4>& layer_delivery,
-    const LinkHealth& health) {
+    const LinkHealth& health, bool idr_request) {
   // Blind-side failsafe: with no feedback the ladder's own on_tick() forces
   // rung 0 after feedback_timeout_ms, so the first RCF after recovery
   // commands the conservative floor, not the last aggressive point.
@@ -92,6 +92,12 @@ std::optional<VrxController::Out> VrxController::step(
         cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
         static_cast<uint8_t>(ctrl_.probe_mcs()), static_cast<uint8_t>(cur_op_.bw));
   }
+  // GS-latched IDR request (spec 2026-08-11 idr-request): a level the
+  // caller re-asserts every RCF; only toward a peer that advertised the
+  // cap, so an old drone never sees the bit. Orthogonal to the ladder —
+  // static-pin mode carries it identically.
+  if (idr_request && (peer_caps_ & mabur::rc::CAP_IDR_REQ) != 0)
+    r.flags |= mabur::rc::RCF_F_IDR_REQ;
   return Out{mabur::rc::pack_rcf(r), false};
 }
 

@@ -44,7 +44,8 @@ class VrxController {
   // here — see ladder_controller.cpp update().
   std::optional<Out> step(double now_ms,
                           const std::array<uint8_t, 4>& layer_delivery,
-                          const LinkHealth& health);
+                          const LinkHealth& health,
+                          bool idr_request = false);
   const OpPoint& cur_op() const;
   // The ladder controller itself, for Task 6's sideport link.ctl block and
   // the "ctl: rung a->b" transition line in main.cpp. Exists even in pin
