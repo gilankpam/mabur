@@ -223,6 +223,41 @@ in exactly the phase that caused reference damage (episodes 2 vs 0) — the
 trigger is aimed correctly; its problem is only that it cannot see breaks
 the GS did not itself observe.
 
+### `MppBackend::concealed()` is dead under the shipped decoder config
+
+The obvious sensor for "the decoder is showing a damaged picture" is
+`concealed()` (errinfo frames). It does not work. Two `--decode-only` runs
+against the live ring, 30 s each:
+
+| run | frames | `concealed` | `errors` | decoder log |
+|---|---:|---:|---:|---|
+| control, clean link | 1746 | **0** | 0 | `missing ref poc 1198` |
+| during a 3 s / 35 % s1 burst | 1745 | **0** | 0 | `missing ref poc 284, 312, …` |
+
+`concealed` stays 0 *while h265d is logging reference misses in the same
+run*. So the counter cannot distinguish a healthy picture from a broken
+one, and the `"concealed"` field of the `--decode-only` hardware decode
+gate can never report anything — a gate that silently cannot fail.
+
+The comment at `mpp_backend.cpp:1124` ("rare under DISABLE_ERROR by
+construction") is therefore correct, and the one at line 94 ("after a loss
+gap EVERY subsequent frame carries errinfo") is not — the two contradict
+each other and the measurement settles it. Reading the MPP source alone was
+misleading: the force-clear at `mpp_dec.c:345` needs BOTH `disable_error`
+and `dis_err_clr_mark`, and maburplay never calls
+`MPP_DEC_SET_DIS_ERR_CLR_MARK`, so "errinfo is not cleared" is true but
+irrelevant — nothing sets it in the first place on this path (the
+non-fast-mode HAL routes hardware errors through `dec_cb`, and maburplay
+never sets `MPP_DEC_SET_PARSER_FAST_MODE`, leaving the HAL's
+errinfo-propagation path inactive).
+
+Consequence for any decoder-health feedback design: the sensor has to come
+from somewhere else. Two public MPP APIs are candidates, neither yet
+verified — `mpp_frame_get_poc()` (a gap in the decoded POC sequence means a
+picture never reached the decoder) and `mpp_set_log_callback()` (intercept
+h265d's own `missing ref` events, precise but text-parsing and
+version-fragile).
+
 ### Kill-switch semantics worth knowing
 
 `link.idr_req: false` gates *transmission* of `RCF_F_IDR_REQ`, not the
