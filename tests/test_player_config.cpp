@@ -232,4 +232,61 @@ TEST(bundle_default_parses_with_gs_osd_off) {
   CHECK(c.osd.gs.font == "/usr/local/share/mabur/gs_osd.gfont");
 }
 
+TEST(input_rec_defaults_to_absent) {
+  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  CHECK(c.input.rec.configured == false);
+}
+
+TEST(input_rec_is_parsed_with_button_to_ground_defaults) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"backend":"null","input":{"rec":{"pin":32}}})"));
+  CHECK(c.input.rec.configured == true);
+  CHECK(c.input.rec.pin == 32);
+  // The assumed wiring: button between the pin and GND, kernel pull-up,
+  // line requested active-low so "pressed" reads 1.
+  CHECK(c.input.rec.active_low == true);
+  CHECK(c.input.rec.bias == "pull-up");
+}
+
+TEST(input_rec_honours_explicit_wiring) {
+  auto c = maburplay::load_config(write_tmp_play(
+      R"({"backend":"null","input":{"rec":{"pin":11,"active_low":false,)"
+      R"("bias":"pull-down"}}})"));
+  CHECK(c.input.rec.pin == 11);
+  CHECK(c.input.rec.active_low == false);
+  CHECK(c.input.rec.bias == "pull-down");
+}
+
+TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(
+      R"({"input":{"rec":{"active_low":true}}})")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("pin") != std::string::npos;
+  }
+  CHECK(threw);  // pin is required inside input.rec
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(
+      R"({"input":{"rec":{"pin":32,"bias":"floating"}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // bias must be pull-up|pull-down|none
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(
+      R"({"input":{"rec":{"pin":32,"debounce_ms":50}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // debounce is a constant, not a key
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"input":{"menu":{"pin":11}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // one button, one job
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"input":{"rec":{"pin":0}}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // pin range floor
+}
+
 MTEST_MAIN
