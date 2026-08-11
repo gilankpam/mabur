@@ -49,7 +49,7 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd", "input"});
+  check_keys(j, "", {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd", "input", "feedback"});
   Config c;
 
   c.ring_path = get_str(j, "ring_path", "/dev/shm/mabur-au", "");
@@ -137,6 +137,20 @@ Config load_config(const std::string& path) {
       }
       c.input.rec.configured = true;
     }
+  }
+
+  if (j.contains("feedback")) {
+    const json& fb = j["feedback"];
+    check_keys(fb, "feedback", {"enable", "gs_host", "gs_port", "report_ms"});
+    if (fb.contains("enable")) {
+      if (!fb["enable"].is_boolean()) fail("feedback.enable", "not a boolean");
+      c.feedback.enable = fb["enable"].get<bool>();
+    }
+    c.feedback.gs_host = get_str(fb, "gs_host", c.feedback.gs_host, "feedback");
+    c.feedback.gs_port =
+        static_cast<int>(get_int(fb, "gs_port", c.feedback.gs_port, 1, 65535, "feedback"));
+    c.feedback.report_ms =
+        static_cast<int>(get_int(fb, "report_ms", c.feedback.report_ms, 50, 5000, "feedback"));
   }
 
   return c;

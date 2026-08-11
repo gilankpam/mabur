@@ -76,6 +76,20 @@ struct InputCfg {
   } rec;
 };
 
+// Player -> GS feedback (spec 2026-08-12 decoder-idr-backchannel). Tells
+// maburgs when the player has broken its own decoder reference chain, so the
+// GS can request an IDR -- the only deterministic repair in the system, since
+// this stream carries no IRAP and the encoder's GDR sweep does not repaint.
+// `gs_port` must equal maburgs' link.player_fb_port; as with osd.port <->
+// msp.out.port, neither binary can validate the pairing on its own, and the
+// sideport's player.age_ms is the mitigation.
+struct FeedbackCfg {
+  bool enable = true;
+  std::string gs_host = "127.0.0.1";
+  int gs_port = 8303;   // mabur::playerfb::kDefaultPort
+  int report_ms = 500;  // heartbeat; set edges are sent immediately anyway
+};
+
 struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
   std::string socket = "/run/mabur-au.sock";
@@ -84,6 +98,7 @@ struct Config {
   DvrCfg dvr;
   OsdCfg osd;
   InputCfg input;
+  FeedbackCfg feedback;
 };
 
 Config load_config(const std::string& path);  // strict; throws like maburgs
