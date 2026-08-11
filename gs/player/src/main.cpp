@@ -29,6 +29,7 @@
 #include "osd_raster.h"
 #include "osd_source.h"
 #include "player_config.h"
+#include "rec_button.h"
 #include "ring_client.h"
 #include "video_backend.h"
 #include "splash_image.h"  // startup splash asset + cover-fit painter
@@ -444,6 +445,26 @@ int main(int argc, char** argv) {
   }
   if (!backend_override.empty()) cfg.backend = backend_override;
 
+  // Record button. An accessory: every failure here is non-fatal and said
+  // exactly once. A player that refuses to show video because a pin is
+  // missing is worse than one that shows video without a button -- same
+  // rule the .gfont atlas follows.
+  maburplay::RecButton rec_button;
+  if (cfg.input.rec.configured) {
+    maburplay::RecButtonCfg rbc;
+    rbc.pin = cfg.input.rec.pin;
+    rbc.active_low = cfg.input.rec.active_low;
+    rbc.bias = cfg.input.rec.bias;
+    std::string rberr;
+    if (rec_button.open(rbc, &rberr)) {
+      std::fprintf(stderr, "maburplay: rec button: PIN_%d -> %s line %u, %s, %s\n", rbc.pin,
+                   rec_button.chip_path().c_str(), rec_button.offset(),
+                   rbc.active_low ? "active_low" : "active_high", rbc.bias.c_str());
+    } else {
+      std::fprintf(stderr, "maburplay: rec button: %s -- running without it\n", rberr.c_str());
+    }
+  }
+
   std::unique_ptr<maburplay::VideoBackend> backend = maburplay::make_backend(cfg.backend);
   if (!backend) {
     std::fprintf(stderr,
@@ -636,6 +657,10 @@ int main(int argc, char** argv) {
   // gates that skip: a burned run whose encoder refused to come up must
   // record nothing and say so, never quietly leave a raw file behind that
   // the user would mistake for a burned one.
+  // Whether a recording is running RIGHT NOW. Seeded from dvr.autostart;
+  // the record button flips it. Declared here because start_burn_if_needed
+  // below reads it.
+  bool rec_on = cfg.dvr.autostart;
   const bool burned_mode = cfg.dvr.mode == "burned";
 #ifdef MABUR_PLAYER_HW
   // Declared AFTER `presenter` and `backend` so it is destroyed FIRST on
@@ -648,7 +673,7 @@ int main(int argc, char** argv) {
   // a presenter exists. Leaving it unbuilt on that path would mean a lit
   // screen, playing video, and nothing recorded.
   auto start_burn_if_needed = [&]() {
-    if (burn || !burned_mode || !cfg.dvr.autostart || !presenter) return;
+    if (burn || !burned_mode || !rec_on || !presenter) return;
     auto rec = std::make_unique<maburplay::BurnRecorder>();
     maburplay::BurnCfg bc;
     // Palette (and with it the encoder's OSD region) whenever EITHER overlay
@@ -696,15 +721,19 @@ int main(int argc, char** argv) {
     // decode watchdog may destroy and recreate it mid-run.
     if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
     if (!burn) return;
-    // Raw pointer, not a reference to the unique_ptr: `burn` is assigned
-    // exactly once (this lambda returns early once it is set) and never
-    // reset, and the sink outlives nothing it does not outlive already.
+    // Raw pointer, not a reference to the unique_ptr. `burn` IS reset --
+    // rec_stop() tears the recorder down on a button press -- so the
+    // safety comes from ordering instead: rec_stop() clears the sink
+    // BEFORE it destroys the recorder, so the composer can never call
+    // through a dangling pointer. Both happen on the main loop thread,
+    // and MppBackend has no threads (frame_sink runs inside
+    // backend->poll()), so there is nothing to synchronise against.
     maburplay::BurnRecorder* b = burn.get();
     composer.set_burn_sink([b](const maburplay::Surface& s, const maburplay::DirtyRect* r,
                                size_t n) { b->set_osd(s, r, n); });
   };
   start_burn_if_needed();
-  if (cfg.dvr.autostart && burned_mode && !burn) {
+  if (rec_on && burned_mode && !burn) {
     if (presenter) {
       // A real recorder failure: BurnRecorder::start() already logged why.
       std::fprintf(stderr,
@@ -718,7 +747,7 @@ int main(int argc, char** argv) {
     }
   }
 #else
-  if (cfg.dvr.autostart && burned_mode) {
+  if (rec_on && burned_mode) {
     std::fprintf(stderr,
                  "maburplay: dvr.mode \"burned\" needs the hardware build (mpp encoder); "
                  "NOTHING is being recorded\n");
@@ -768,6 +797,58 @@ int main(int argc, char** argv) {
   // Latched so the GS overlay can tell "no file yet" (armed) from "the file
   // could not be created" (fault). Nothing else needs the distinction.
   bool dvr_open_failed = false;
+
+  // The button's two actions. Both modes are handled here so the press
+  // handler stays one line; the raw path is a flag plus a close, the
+  // burned path tears the recorder down and builds a fresh one.
+  auto rec_start = [&]() {
+    if (rec_on) return;
+    rec_on = true;
+    gs_rec.reset();  // the OSD clock counts THIS file
+    dvr_open_failed = false;
+#ifdef MABUR_PLAYER_HW
+    if (burned_mode) {
+      start_burn_if_needed();
+      if (!burn) {
+        std::fprintf(stderr,
+                     "maburplay: rec: START deferred -- no display yet; recording begins "
+                     "when one is acquired\n");
+        return;
+      }
+    }
+#endif
+    std::fprintf(stderr, "maburplay: rec: START (%s)\n", cfg.dvr.mode.c_str());
+  };
+
+  auto rec_stop = [&]() {
+    if (!rec_on) return;
+    rec_on = false;
+    if (!burned_mode) {
+      if (dvr_open) {
+        dvr.close();
+        dvr_open = false;
+      }
+      // samples() survives close() and is only cleared by the next open(),
+      // so this reports the file just sealed.
+      std::fprintf(stderr, "maburplay: rec: STOP (%llu samples)\n",
+                   static_cast<unsigned long long>(dvr.samples()));
+      return;
+    }
+#ifdef MABUR_PLAYER_HW
+    if (burn) {
+      const uint64_t n = burn->frames_encoded();
+      burn->stop();
+      // MUST precede burn.reset(): the composer holds a RAW pointer to the
+      // recorder (see start_burn_if_needed), so the sink has to be dropped
+      // while the object it points at is still alive.
+      composer.set_burn_sink({});
+      burn.reset();
+      std::fprintf(stderr, "maburplay: rec: STOP (%llu frames)\n",
+                   static_cast<unsigned long long>(n));
+    }
+#endif
+  };
+
   uint64_t backend_submits = 0;
 
   // Sync-point gate for the backend feed (and DVR's hvcC collection below):
@@ -822,7 +903,7 @@ int main(int argc, char** argv) {
     // !burned_mode: in burned mode the BurnRecorder owns the recording and
     // writes the encoder's output to its own DvrMux instead. Everything
     // inside is the raw path, byte-for-byte unchanged.
-    if (cfg.dvr.autostart && !burned_mode) {
+    if (rec_on && !burned_mode) {
       if (!complete) {
         // Truncated base AU: DVR records complete AUs only, so this one is
         // skipped whole. No explicit fragment cut needed here: DvrMux
@@ -1067,6 +1148,15 @@ int main(int argc, char** argv) {
     // 100 ms pump -- the doorbell was the only wakeup source).
     ring.pump(2);
     backend->poll();
+    // One ioctl per iteration (~500/s, microseconds each) -- far under the
+    // ~1.5 ms budget tools/bench/gs_overlay_bench.cpp polices for this loop.
+    if (rec_button.is_open() && rec_button.poll(mono_ms())) {
+      if (rec_on) {
+        rec_stop();
+      } else {
+        rec_start();
+      }
+    }
 #ifdef MABUR_PLAYER_HW
     if (presenter) presenter->poll_events();
     // Retry acquisition once a second while there is no display. A FRESH
@@ -1109,7 +1199,10 @@ int main(int argc, char** argv) {
           // The recorder is sized from the OSD surface, so it could not exist
           // before this moment.
           start_burn_if_needed();
-          if (burned_mode && !burn)
+          // rec_on, not burned_mode alone: a player deliberately stopped (or
+          // never started -- autostart:false) has nothing to report here, and
+          // saying otherwise would be a false alarm on every late display.
+          if (rec_on && burned_mode && !burn)
             std::fprintf(stderr,
                          "maburplay: display acquired but the burned recorder did not start -- "
                          "NOTHING is being recorded\n");
@@ -1198,7 +1291,9 @@ int main(int argc, char** argv) {
         // straight off the ring and does not care whether anything decodes,
         // while burned mode encodes decoded frames.
         maburplay::RecTracker::Inputs rin;
-        rin.samples = dvr.samples();
+        // dvr.samples() still holds the SEALED file's count until the next
+        // open(), so a stopped raw recorder would keep the OSD at REC.
+        rin.samples = rec_on ? dvr.samples() : 0;
         rin.feed = gs_complete_aus;
         rin.open = dvr_open;
         rin.broken = dvr_open_failed;
@@ -1207,11 +1302,13 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
           rin.samples = burn ? burn->frames_encoded() : 0;
           rin.open = burn != nullptr;
-          rin.broken = burn == nullptr;
+          // Only a MISSING recorder we are supposed to have is broken. A
+          // deliberately stopped one is ARMED, not FAULT.
+          rin.broken = rec_on && burn == nullptr;
 #else
           rin.samples = 0;
           rin.open = false;
-          rin.broken = true;  // burned mode needs the hardware build; already logged
+          rin.broken = rec_on;  // burned mode needs the hardware build; already logged
 #endif
         }
         // Polled at this same 1 Hz, and BEFORE the file exists: a card that
