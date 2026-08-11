@@ -22,6 +22,23 @@ class IdrRequester {
     return true;
   }
 
+  // maburplay reported that IT broke the decoder's reference chain (flush,
+  // join at a non-IRAP sid0, watchdog) -- a class of break the GS cannot
+  // observe, because nothing was lost on the wire. Same latch, but its own
+  // counter so the two causes stay distinguishable on the sideport. Spec
+  // 2026-08-12 decoder-idr-backchannel.
+  //
+  // The shared latch means whichever trigger fires first owns the episode;
+  // the other does not open a second one while the latch is up. That is
+  // intended -- one broken chain needs one IDR, not two.
+  bool on_player_break(uint64_t now_ms) {
+    if (want_) return false;
+    want_ = true;
+    since_ms_ = now_ms;
+    ++episodes_player_;
+    return true;
+  }
+
   // Emitted-frame observation (idr = FrameHdr flags carried kFlagIdr).
   // Returns true when this call cleared the latch.
   bool on_frame_emitted(bool complete, bool idr, uint64_t now_ms) {
@@ -33,6 +50,7 @@ class IdrRequester {
 
   bool want() const { return want_; }
   uint64_t episodes() const { return episodes_; }
+  uint64_t episodes_player() const { return episodes_player_; }
   // Clamped elapsed time since latch. The sin fill passes a loop-top clock
   // that can lag the latch stamp taken mid-drain by a fresh mono_ms() —
   // clamp guards against uint64 underflow when caller clock lags behind the
@@ -46,6 +64,7 @@ class IdrRequester {
   bool want_ = false;
   uint64_t since_ms_ = 0;
   uint64_t episodes_ = 0;
+  uint64_t episodes_player_ = 0;
   uint64_t last_wait_ms_ = 0;
 };
 

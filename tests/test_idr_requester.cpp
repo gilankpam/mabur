@@ -55,4 +55,39 @@ TEST(wait_ms_clamps_when_caller_clock_lags_latch_stamp) {
   CHECK(q.wait_ms(1500) == 500);
 }
 
+TEST(player_break_latches_with_its_own_counter) {
+  maburgs::IdrRequester r;
+  CHECK(r.on_player_break(1000));
+  CHECK(r.want());
+  CHECK(r.episodes_player() == 1);
+  CHECK(r.episodes() == 0);  // wire-loss counter untouched
+}
+
+TEST(player_break_does_not_relatch_while_set) {
+  maburgs::IdrRequester r;
+  CHECK(r.on_player_break(1000));
+  CHECK(!r.on_player_break(1100));
+  CHECK(r.episodes_player() == 1);
+}
+
+TEST(player_break_is_cleared_by_the_same_idr_path) {
+  maburgs::IdrRequester r;
+  r.on_player_break(1000);
+  CHECK(!r.on_frame_emitted(true, false, 1100));  // not an IDR
+  CHECK(r.want());
+  CHECK(r.on_frame_emitted(true, true, 1300));
+  CHECK(!r.want());
+  CHECK(r.last_wait_ms() == 300);
+}
+
+TEST(the_two_triggers_share_one_latch) {
+  // Documented consequence: whichever fires first owns the episode; the
+  // other does not open a second one while the latch is up.
+  maburgs::IdrRequester r;
+  CHECK(r.on_frame_lost(1, 1000));
+  CHECK(!r.on_player_break(1010));
+  CHECK(r.episodes() == 1);
+  CHECK(r.episodes_player() == 0);
+}
+
 MTEST_MAIN
