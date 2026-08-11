@@ -177,12 +177,13 @@ void parse_fec(const json& j, FecCfg& f) {
 
 void parse_waybeam(const json& j, WaybeamCfg& w) {
   check_known_keys(j,
-                    {"host", "port", "idr_path", "bitrate_min_kbps", "bitrate_max_kbps",
+                    {"host", "port", "idr_path", "idr_cooldown_ms", "bitrate_min_kbps", "bitrate_max_kbps",
                      "airtime_budget", "roi_threshold_kbps", "roi_qp_low", "roi_qp_normal"},
                     "waybeam");
   assign_if_present(j, "host", w.host, "waybeam");
   assign_if_present(j, "port", w.port, "waybeam");
   assign_if_present(j, "idr_path", w.idr_path, "waybeam");
+  assign_if_present(j, "idr_cooldown_ms", w.idr_cooldown_ms, "waybeam");
   assign_if_present(j, "bitrate_min_kbps", w.bitrate_min_kbps, "waybeam");
   assign_if_present(j, "bitrate_max_kbps", w.bitrate_max_kbps, "waybeam");
   assign_if_present(j, "airtime_budget", w.airtime_budget, "waybeam");
@@ -191,6 +192,8 @@ void parse_waybeam(const json& j, WaybeamCfg& w) {
   assign_if_present(j, "roi_qp_normal", w.roi_qp_normal, "waybeam");
 
   if (w.port < 1 || w.port > 65535) fail("waybeam.port", "must be in [1,65535]");
+  if (w.idr_cooldown_ms < 200 || w.idr_cooldown_ms > 60000)
+    fail("waybeam.idr_cooldown_ms", "must be in [200,60000]");
   if (w.bitrate_min_kbps < 100) fail("waybeam.bitrate_min_kbps", "must be >= 100");
   if (w.bitrate_min_kbps >= w.bitrate_max_kbps)
     fail("waybeam.bitrate_min_kbps", "must be < waybeam.bitrate_max_kbps");

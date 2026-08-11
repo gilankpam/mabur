@@ -86,6 +86,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.waybeam.roi_threshold_kbps == def.waybeam.roi_threshold_kbps);
   CHECK(cfg.waybeam.roi_qp_low == def.waybeam.roi_qp_low);
   CHECK(cfg.waybeam.roi_qp_normal == def.waybeam.roi_qp_normal);
+  CHECK(cfg.waybeam.idr_cooldown_ms == 1000);
 
   CHECK(cfg.link.vtx_id == def.link.vtx_id);
   CHECK(cfg.link.failsafe_ms == def.link.failsafe_ms);
@@ -196,6 +197,22 @@ TEST(load_config_waybeam_roi_threshold_negative_throws_naming_field) {
   CHECK(!msg.empty());
   CHECK(msg.find("waybeam.roi_threshold_kbps") != std::string::npos);
   std::filesystem::remove(path);
+}
+
+// REVERT CHECK: fails if the key is missing from parse_waybeam's
+// check_known_keys list (unknown-key boot failure surfaces as a throw with
+// "idr_cooldown_ms" in the message on the VALID json too), and fails if
+// the [200,60000] range check is dropped (the 100 case stops throwing).
+TEST(waybeam_idr_cooldown_parses_and_range_checks) {
+  auto p = write_temp_json(R"({"waybeam":{"idr_cooldown_ms":500}})");
+  Config cfg = load_config(p.string());
+  CHECK(cfg.waybeam.idr_cooldown_ms == 500);
+  std::filesystem::remove(p);
+
+  auto bad = write_temp_json(R"({"waybeam":{"idr_cooldown_ms":100}})");
+  auto msg = what_of([&] { load_config(bad.string()); });
+  CHECK(msg.find("idr_cooldown_ms") != std::string::npos);
+  std::filesystem::remove(bad);
 }
 
 TEST(uep_layers_overhead_ladder_at_base_0_25) {

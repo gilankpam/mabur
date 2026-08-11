@@ -75,6 +75,7 @@ struct WaybeamCfg {
   std::string host = "127.0.0.1";
   int port = 80;
   std::string idr_path = "/request/idr";  // waybeam IDR route (bench-confirmed: GET -> {"ok":true,"data":{"idr":true}})
+  int idr_cooldown_ms = 1000;  // min ms between granted GS IDR requests (spec 2026-08-11 idr-request)
   int bitrate_min_kbps = 1000, bitrate_max_kbps = 20000;
   double airtime_budget = 0.65;
   int roi_threshold_kbps = 3000;
