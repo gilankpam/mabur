@@ -65,6 +65,14 @@ void put_unity_matrix(BoxWriter& b) {
 
 bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int width,
                    int height, int fragment_ms) {
+  // The handle is per-file state too. Unreachable today (every caller
+  // guards on its own dvr_open flag and close() nulls f_), but this
+  // function's contract is "safe on a live object", and overwriting f_
+  // would leak the descriptor and leave the previous file unflushed.
+  if (f_) {
+    std::fclose(f_);
+    f_ = nullptr;
+  }
   f_ = std::fopen(path.c_str(), "wb");
   if (!f_) return false;
 

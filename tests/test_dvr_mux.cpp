@@ -345,13 +345,18 @@ TEST(reopen_starts_a_clean_file) {
   m.close();
   CHECK(m.samples() == 3);
 
-  // Second file: one sample, key, pts restarting from 0 as a fresh
-  // session's would.
+  // Second file: one sample, key, with a pts that CONTINUES the session
+  // rather than restarting at 0. That is what production feeds: the raw
+  // DVR gets ev.meta.pts_us straight off the ring (gs/player/src/main.cpp),
+  // which is encoder-session-relative and keeps climbing across a button
+  // stop/start -- a fresh file does NOT get a fresh clock. A file-2 pts of
+  // 0 would make the unwrap's delta 0 either way and hide the origin half
+  // of the reset entirely.
   REQUIRE(m.open(p2, hvcc, 1920, 1080, 1000));
   CHECK(m.samples() == 0);      // counters are per file
   CHECK(m.fragments() == 0);
   std::vector<uint8_t> b1 = fake_au(0xB1);
-  m.write_sample(b1.data(), b1.size(), 0, true);
+  m.write_sample(b1.data(), b1.size(), 5000000, true);
   m.close();
   CHECK(m.samples() == 1);
 
@@ -369,6 +374,21 @@ TEST(reopen_starts_a_clean_file) {
   for (size_t i = 0; i < f2.size(); ++i)
     if (f2[i] == 0xA1 || f2[i] == 0xA2 || f2[i] == 0xA3) leaked = true;
   CHECK(!leaked);
+
+  // File 2's timeline must be REBASED to zero, exactly as file 1's was.
+  // have_pts_/last_pts_raw_/last_pts64_ are what do that; without them
+  // resetting in open(), the unwrap carries file 1's origin forward and
+  // file 2's tfdt becomes the absolute session timestamp -- the seekbar
+  // front-pad this mux already fixed once (see unwrap_pts in dvr_mux.cpp).
+  const Box* moof2 = find(top2, "moof");
+  REQUIRE(moof2 != nullptr);
+  std::vector<Box> moof2_kids = parse_boxes(f2, moof2->payload_off(), moof2->off + moof2->size);
+  const Box* traf2 = find(moof2_kids, "traf");
+  REQUIRE(traf2 != nullptr);
+  std::vector<Box> traf2_kids = parse_boxes(f2, traf2->payload_off(), traf2->off + traf2->size);
+  const Box* tfdt2 = find(traf2_kids, "tfdt");
+  REQUIRE(tfdt2 != nullptr);
+  CHECK(read_u64(f2, tfdt2->payload_off() + 4) == 0ull);
 
   std::remove(p1.c_str());
   std::remove(p2.c_str());

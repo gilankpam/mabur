@@ -157,7 +157,10 @@ read the sideport. Reach for other tools only in these cases:**
   (renamed from `dvr.enabled` on 2026-08-11 — the old key now FAILS boot,
   by design) picks whether the player boots recording or armed. There is
   no config kill switch and no `--no-dvr` flag: `autostart: false` with no
-  button is a player that never records. Startup logs the resolved mapping
+  button is a player that never records. That also means a `--decode-only`
+  measurement run has no CLI way to opt out of the DVR any more, so give it
+  a config with `"autostart": false` — otherwise the hardware decode gate
+  writes a raw file and charges SD-card I/O to the fps number. Startup logs the resolved mapping
   and every toggle logs START/STOP to `/tmp/maburplay.log`; the OSD REC
   field is the live indicator. GPIO failures (pin not found, line held by
   another consumer) are non-fatal and logged once — the player runs
