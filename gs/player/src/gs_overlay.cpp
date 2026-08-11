@@ -545,8 +545,10 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
     case GsFieldId::kRec:
       switch (ps.rec.kind) {
         case RecState::Kind::kArmed:
-          st.text = std::string(kDotHollow) + " REC --:--";
-          st.rgb = tok::kTextLabel;
+          // Armed draws nothing at all -- an idle placeholder clock is
+          // permanent clutter, and "no REC field" already reads as "not
+          // recording". draw_field_ clears the box before it bails on the
+          // empty text, so a stopped recording's clock is erased.
           break;
         case RecState::Kind::kRecording:
           // fmt_clock saturates internally (mm:ss, cap 99:59) -- already

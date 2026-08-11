@@ -64,8 +64,10 @@ DEFAULT_SIZES = [19, 21, 22, 24, 26, 34, 38, 56]
 # Printable ASCII plus the five non-ASCII glyphs the design uses:
 # U+2014 EM DASH (the "——" pair that renders a never-received value --
 # gs_overlay.h's kEmDashPair), U+2212 MINUS SIGN (a true minus, not a
-# hyphen), U+2192 RIGHTWARDS ARROW, U+25CF BLACK CIRCLE and U+25CB WHITE
-# CIRCLE (the recording dot).
+# hyphen), U+2192 RIGHTWARDS ARROW, U+25CF BLACK CIRCLE (the recording dot)
+# and U+25CB WHITE CIRCLE -- the latter no longer drawn by anything since
+# the armed REC field went blank, but kept baked so the committed asset
+# needn't be regenerated for a glyph that costs a few hundred bytes.
 #
 # U+2014 was missing from this list until 2026-08-04 and the omission was
 # invisible: draw_text advances the pen for a codepoint the atlas lacks, so

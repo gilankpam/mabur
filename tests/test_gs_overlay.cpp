@@ -679,12 +679,45 @@ TEST(recording_states_render_distinctly) {
   p.rec.elapsed_s = 767;
   CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec) ==
         std::string(kDotFilled) + " REC 12:47");
+  // Armed draws NOTHING: an idle placeholder clock is noise on a flying
+  // aircraft's screen, and the absent indicator already means "not
+  // recording".
   p.rec.kind = RecState::Kind::kArmed;
-  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec) ==
-        std::string(kDotHollow) + " REC --:--");
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec).empty());
   p.rec.kind = RecState::Kind::kFault;
   CHECK(ov.debug_field_text(s, false, p, GsFieldId::kRec) ==
         std::string(kDotFilled) + " REC FAULT");
+}
+
+// Text alone doesn't prove the pixels go away: the recording clock is
+// already painted when the button stops it, and only draw_field_'s clear
+// erases it. Without that, "REC 12:47" freezes on screen forever.
+TEST(stopping_recording_leaves_no_ink_in_the_rec_box) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+  ov.update(nominal(), false, player_nominal(), c.s, &rects);  // recording
+
+  const DirtyRect b = ov.debug_field_box(GsFieldId::kRec);
+  auto lit_in_rec = [&]() {
+    int n = 0;
+    for (int y = b.y; y < b.y + b.h; ++y)
+      for (int x = b.x; x < b.x + b.w; ++x)
+        if (c.px[(size_t)y * 1920 + x]) ++n;
+    return n;
+  };
+  CHECK(lit_in_rec() > 0);
+
+  GsPlayerState p = player_nominal();
+  p.rec.kind = RecState::Kind::kArmed;
+  rects.clear();
+  ov.update(nominal(), false, p, c.s, &rects);
+  CHECK(lit_in_rec() == 0);
 }
 
 // The MSP grid overlaps the GS corners. After MSP repaints over a field,

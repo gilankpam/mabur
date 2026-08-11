@@ -365,7 +365,7 @@ TEST(asset_renders_ink_for_every_non_ascii_field) {
   std::vector<DirtyRect> rects;
 
   // Everything absent: kRung, kAirValue, kLossPre and kLossPost all fall to
-  // the em-dash pair. kRec is armed, which is the hollow dot.
+  // the em-dash pair. kRec is armed, which draws nothing at all.
   GsSnapshot empty;
   empty.cards = {GsCard{0, false, 0.0, 0.0}};
   GsPlayerState p = player_nominal();
@@ -387,13 +387,15 @@ TEST(asset_renders_ink_for_every_non_ascii_field) {
       {GsFieldId::kLossPre, "pre-loss em-dash pair"},
       {GsFieldId::kLossPost, "post-loss em-dash pair"},
       {GsFieldId::kLossArrow, "U+2192 arrow"},
-      {GsFieldId::kRec, "U+25CB hollow REC dot"},
   };
   for (const Case& cs : cases) {
     const size_t lit = ink_in(cs.id);
     CHECK(lit > 0);
     std::printf("  %-24s %zu lit px\n", cs.what, lit);
   }
+
+  // ...and the armed REC field is the one that must stay blank.
+  CHECK(ink_in(GsFieldId::kRec) == 0);
 
   // And the filled dot, which only the recording state draws.
   GsOverlay ov2(f);
