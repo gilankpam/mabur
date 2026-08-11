@@ -30,7 +30,15 @@ health, TX/injection rates, airtime estimate, and drone telemetry (state,
 applied op, encoder, queues, uplink RF, temps — via the 1 Hz T_TELEM
 control frame); `link.ctl` carries the ladder controller's rung, util,
 probation/counters, and last-transition reason, and `tools/flightreport.py`
-is the post-flight analyzer over a recorded jsonl. Promotes now probe the
+is the post-flight analyzer over a recorded jsonl. Since 2026-08-11 the GS
+also requests IDRs itself: reference-layer (sid ≤ 2) truncated/dropped
+frames latch `RCF_F_IDR_REQ` onto the RCF uplink until an IDR-flagged frame
+arrives; the drone grants at most one per `waybeam.idr_cooldown_ms` (default
+1000). Kill switch `link.idr_req` (GS, default true); observability
+`link.video.idr_req` {pending,episodes,wait_ms} + `drone.enc.idr_grants` on
+the sideport, `idrq` cell in maburtop, `idr-req: set/cleared` lines in
+/tmp/maburgs.log. Spec
+`docs/superpowers/specs/2026-08-11-idr-request-design.md`. Promotes now probe the
 candidate MCS on the s3 enhancement stream first when the drone advertises
 `CAP_S3_PROBE`, and s3 residual/util loss demotes in steady state (kill-switch
 `link.s3_demote`); spec
