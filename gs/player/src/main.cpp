@@ -25,12 +25,15 @@
 #include "gs_source.h"
 #include "hevc_params.h"
 #include "mabur/frame_wire.h"
+#include "mabur/player_fb.h"
 #include "osd_font.h"
 #include "osd_raster.h"
 #include "osd_source.h"
 #include "player_config.h"
+#include "player_idr_latch.h"
 #include "rec_button.h"
 #include "ring_client.h"
+#include "udp_sink.h"
 #include "video_backend.h"
 #include "splash_image.h"  // startup splash asset + cover-fit painter
 
@@ -927,6 +930,45 @@ int main(int argc, char** argv) {
   std::chrono::steady_clock::time_point t_sync;
   uint64_t truncated_skipped = 0;
 
+  // Player -> GS IDR feedback (spec 2026-08-12 decoder-idr-backchannel).
+  // The latch is set by the player's OWN bookkeeping -- flush, join at a
+  // non-IRAP sid0, watchdog -- and cleared when a complete IDR reaches the
+  // decoder. No decoder introspection: concealed() is measured dead.
+  maburplay::PlayerIdrLatch idr_latch;
+  std::unique_ptr<maburgs::UdpSink> fb_sink;
+  if (cfg.feedback.enable) {
+    fb_sink = std::make_unique<maburgs::UdpSink>(cfg.feedback.gs_host,
+                                                 cfg.feedback.gs_port);
+    if (!fb_sink->ok()) {
+      // Non-fatal, logged once: the same policy as the GPIO button. A player
+      // that cannot reach the GS still plays video.
+      std::fprintf(stderr,
+                   "maburplay: feedback: cannot open %s:%d -- running without "
+                   "IDR feedback\n",
+                   cfg.feedback.gs_host.c_str(), cfg.feedback.gs_port);
+      fb_sink.reset();
+    } else {
+      std::fprintf(stderr, "maburplay: feedback -> %s:%d every %d ms\n",
+                   cfg.feedback.gs_host.c_str(), cfg.feedback.gs_port,
+                   cfg.feedback.report_ms);
+    }
+  }
+  uint64_t fb_last_send_ms = 0;
+  auto send_feedback = [&](uint64_t now_ms) {
+    if (!fb_sink) return;
+    mabur::playerfb::Msg m;
+    m.idr = idr_latch.want();
+    m.reason = static_cast<uint8_t>(idr_latch.reason());
+    m.flushes = idr_latch.count(maburplay::PlayerIdrLatch::Reason::kFlush);
+    m.joins = idr_latch.count(maburplay::PlayerIdrLatch::Reason::kJoin);
+    m.watchdogs = idr_latch.count(maburplay::PlayerIdrLatch::Reason::kWatchdog);
+    m.episodes = idr_latch.episodes();
+    char buf[192];
+    const size_t n = mabur::playerfb::format(m, buf, sizeof(buf));
+    if (n) fb_sink->send(reinterpret_cast<const uint8_t*>(buf), n);
+    fb_last_send_ms = now_ms;
+  };
+
   // RingClient sink: (a) DVR write (must not depend on decode health, so it
   // happens before the backend ever sees the AU), then (b) backend submit.
   auto sink = [&](maburplay::AuEvent&& ev) {
@@ -1002,6 +1044,10 @@ int main(int argc, char** argv) {
 #endif
       backend->flush();
       backend_armed = false;
+      if (idr_latch.on_break(maburplay::PlayerIdrLatch::Reason::kFlush, mono_ms())) {
+        std::fprintf(stderr, "maburplay: idr-fb: set (flush)\n");
+        send_feedback(mono_ms());
+      }
     }
     // Never feed a truncated AU to the decoder. The spec's original policy
     // (submit truncated base, let MPP conceal) HANGS rkvdec2 on this
@@ -1022,6 +1068,13 @@ int main(int argc, char** argv) {
     if (!backend_armed) {
       if (ev.meta.sid != 0) return;
       backend_armed = true;
+      // sid0 is a join/cut point, NOT an IRAP (measured: zero IRAP NALs in
+      // normal operation), so the decoder resumes predicting from pictures it
+      // never saw. Ask for a real one.
+      if (idr_latch.on_break(maburplay::PlayerIdrLatch::Reason::kJoin, mono_ms())) {
+        std::fprintf(stderr, "maburplay: idr-fb: set (join)\n");
+        send_feedback(mono_ms());
+      }
       if (!t_sync_seen) {
         t_sync_seen = true;
         t_sync = std::chrono::steady_clock::now();
@@ -1029,6 +1082,14 @@ int main(int argc, char** argv) {
     }
     backend->submit_au(ev.au.data(), ev.au.size(), ev.meta.pts_us);
     ++backend_submits;
+    // Reached only for complete AUs (truncated ones returned above), so
+    // `complete` is true by construction here.
+    if (idr_latch.on_au_submitted(
+            true, (ev.meta.flags & mabur::framewire::kFlagIdr) != 0, mono_ms())) {
+      std::fprintf(stderr, "maburplay: idr-fb: cleared after %llu ms\n",
+                   static_cast<unsigned long long>(idr_latch.last_wait_ms()));
+      send_feedback(mono_ms());
+    }
   };
 
   maburplay::RingClient ring({cfg.ring_path, cfg.socket}, sink);
@@ -1204,6 +1265,11 @@ int main(int argc, char** argv) {
     // (observed live as juddery ~2-3-vsync-late presentation with a
     // 100 ms pump -- the doorbell was the only wakeup source).
     ring.pump(2);
+    {
+      const uint64_t now_fb = mono_ms();
+      if (now_fb - fb_last_send_ms >= static_cast<uint64_t>(cfg.feedback.report_ms))
+        send_feedback(now_fb);
+    }
     backend->poll();
     // One ioctl per iteration (~500/s, microseconds each) -- far under the
     // ~1.5 ms budget tools/bench/gs_overlay_bench.cpp polices for this loop.
@@ -1506,6 +1572,11 @@ int main(int argc, char** argv) {
           return 1;
         }
         backend_armed = false;  // resync at the next sid0 AU
+        if (idr_latch.on_break(maburplay::PlayerIdrLatch::Reason::kWatchdog,
+                               mono_ms())) {
+          std::fprintf(stderr, "maburplay: idr-fb: set (watchdog)\n");
+          send_feedback(mono_ms());
+        }
         wd_submits = backend_submits;
         wd_last_progress = now;
       }
