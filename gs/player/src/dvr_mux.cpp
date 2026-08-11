@@ -68,6 +68,23 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
   f_ = std::fopen(path.c_str(), "wb");
   if (!f_) return false;
 
+  // Per-FILE state, reset on every open: the record button re-opens this
+  // mux for each new recording. Without this, pending_ carries the
+  // previous file's queued samples into the new file's first fragment and
+  // the PTS unwrap keeps the old origin. samples()/fragments() therefore
+  // mean "this file" -- which is what both consumers want: --oneshot only
+  // ever sees one file, and RecTracker reads a count returning to 0 as
+  // ARMED-again. They are NOT cleared in close(), so rec_stop() can still
+  // report the sample count of the file it just sealed.
+  pending_.clear();
+  samples_ = 0;
+  fragments_ = 0;
+  have_pts_ = false;
+  last_pts_raw_ = 0;
+  last_pts64_ = 0;
+  fragment_start_pts_ = 0;
+  last_dur_us_ = 16667;
+
   width_ = width;
   height_ = height;
   hvcc_ = hvcc;

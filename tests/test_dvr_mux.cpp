@@ -322,4 +322,56 @@ TEST(dvr_mux_pts_wrap_tfdt_strictly_increasing) {
   CHECK(durs2[0] == 21u);  // lone-sample fragment: carried, never 0
 }
 
+// A second recording on the SAME DvrMux must be an independent file. The
+// toggle re-opens the mux on every press, and before the per-file reset
+// the first file's queued samples flushed into the second one's first
+// fragment and its PTS origin came along with them.
+TEST(reopen_starts_a_clean_file) {
+  const std::string p1 = scratch_path("dvr_reopen_1.mp4");
+  const std::string p2 = scratch_path("dvr_reopen_2.mp4");
+  std::vector<uint8_t> hvcc(23, 0xCD);
+
+  DvrMux m;
+  REQUIRE(m.open(p1, hvcc, 1920, 1080, 1000));
+  // Three samples, none of which cuts a fragment: key only on the first,
+  // and 3 x 16.7 ms is far short of fragment_ms. Two therefore sit in
+  // pending_ when close() flushes.
+  std::vector<uint8_t> a1 = fake_au(0xA1);
+  std::vector<uint8_t> a2 = fake_au(0xA2);
+  std::vector<uint8_t> a3 = fake_au(0xA3);
+  m.write_sample(a1.data(), a1.size(), 0, true);
+  m.write_sample(a2.data(), a2.size(), 16667, false);
+  m.write_sample(a3.data(), a3.size(), 33334, false);
+  m.close();
+  CHECK(m.samples() == 3);
+
+  // Second file: one sample, key, pts restarting from 0 as a fresh
+  // session's would.
+  REQUIRE(m.open(p2, hvcc, 1920, 1080, 1000));
+  CHECK(m.samples() == 0);      // counters are per file
+  CHECK(m.fragments() == 0);
+  std::vector<uint8_t> b1 = fake_au(0xB1);
+  m.write_sample(b1.data(), b1.size(), 0, true);
+  m.close();
+  CHECK(m.samples() == 1);
+
+  // File 2 must contain exactly ONE sample's worth of mdat payload. With
+  // the leak it carried file 1's two pending samples as well.
+  const std::vector<uint8_t> f2 = read_whole_file(p2);
+  std::vector<Box> top2 = parse_boxes(f2, 0, f2.size());
+  size_t mdat_bytes = 0;
+  for (const Box& b : top2)
+    if (b.type == "mdat") mdat_bytes += b.payload_size();
+  CHECK(mdat_bytes == fake_au_mdat_bytes());
+
+  // And none of file 1's payload tags may appear anywhere in file 2.
+  bool leaked = false;
+  for (size_t i = 0; i < f2.size(); ++i)
+    if (f2[i] == 0xA1 || f2[i] == 0xA2 || f2[i] == 0xA3) leaked = true;
+  CHECK(!leaked);
+
+  std::remove(p1.c_str());
+  std::remove(p2.c_str());
+}
+
 MTEST_MAIN
