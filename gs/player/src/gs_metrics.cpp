@@ -73,4 +73,12 @@ RecState RecTracker::update(const Inputs& in, uint64_t now_ms) {
   return out;
 }
 
+void RecTracker::reset() {
+  samples_ = 0;
+  feed_ = 0;
+  stall_since_ms_ = 0;
+  start_ms_ = 0;
+  started_ = false;
+}
+
 }  // namespace maburplay

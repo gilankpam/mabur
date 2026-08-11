@@ -229,4 +229,50 @@ TEST(on_tick_clears_the_ema_once_aus_stop) {
   CHECK(j.ms() == 0.0);
 }
 
+// The record button starts a NEW file on each press, and the OSD clock
+// must count that file, not the session. Without reset() the second
+// recording opens showing the first one's elapsed time.
+TEST(rec_tracker_reset_restarts_the_clock_for_a_second_recording) {
+  RecTracker t;
+  RecTracker::Inputs in;
+  in.open = true;
+  in.samples = 1;
+  in.feed = 1;
+  CHECK(t.update(in, 10000).kind == RecState::Kind::kRecording);
+  in.samples = 300;
+  in.feed = 300;
+  RecState s = t.update(in, 15000);
+  CHECK(s.kind == RecState::Kind::kRecording);
+  CHECK(s.elapsed_s == 5);
+
+  // Stop: nothing open, nothing written -- and the DvrMux counters are
+  // per file, so they return to 0 (see DvrMux::open's reset).
+  t.reset();
+  in.open = false;
+  in.samples = 0;
+  CHECK(t.update(in, 20000).kind == RecState::Kind::kArmed);
+
+  // Second recording: start with the same sample count as the first file ended.
+  // This creates a discriminator: the stall detector compares in.samples to the
+  // OLD samples_, so if samples_ wasn't cleared to 0, the second file's opening
+  // sample will match the first file's final sample, making the condition
+  // `in.samples != samples_` false. When we then stall (feed advances but
+  // samples don't), the condition `in.feed == feed_` is also false, so
+  // stall_since_ms_ is NOT refreshed. If stall_since_ms_ still holds 15000
+  // from the first file, the check `now_ms - stall_since_ms_ >= kStallMs`
+  // would incorrectly fault at t=32000 (17000 ms > 3000). With reset(), the
+  // check uses stall_since_ms_=30000, so (32000-30000)=2000 < 3000, stays OK.
+  in.open = true;
+  in.samples = 300;  // Same as first file's final count
+  in.feed = 400;
+  CHECK(t.update(in, 30000).kind == RecState::Kind::kRecording);
+
+  // Stall: feed advances but samples stay locked at 300
+  in.samples = 300;  // No change
+  in.feed = 520;
+  s = t.update(in, 32000);
+  CHECK(s.kind == RecState::Kind::kRecording);  // Fails if stall_since_ms_ not reset
+  CHECK(s.elapsed_s == 2);  // Fails if start_ms_ not reset (would be 22 if latched at 10000)
+}
+
 MTEST_MAIN
