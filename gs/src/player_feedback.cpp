@@ -45,10 +45,12 @@ bool PlayerFeedback::poll(uint64_t now_ms) {
   mabur::playerfb::Msg newest;
   for (;;) {
     const ssize_t n = recv(fd_, buf, sizeof(buf), 0);
-    if (n <= 0) break;  // EAGAIN -- drained
+    if (n < 0) break;  // EAGAIN -- genuinely drained
     ++datagrams_;
+    // recv() == 0 is an empty datagram for UDP, not EOF: it cannot parse,
+    // but it must not end the drain or the datagrams behind it are stranded.
     mabur::playerfb::Msg m;
-    if (mabur::playerfb::parse(buf, static_cast<size_t>(n), &m)) {
+    if (n > 0 && mabur::playerfb::parse(buf, static_cast<size_t>(n), &m)) {
       newest = m;
       got = true;
     } else {

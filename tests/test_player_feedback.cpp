@@ -103,4 +103,17 @@ TEST(silence_expires_the_level_without_a_new_edge) {
   CHECK(fb.age_ms(5000) == 4000);
 }
 
+TEST(zero_length_datagram_does_not_stall_the_drain) {
+  maburgs::PlayerFeedback fb;
+  std::string err;
+  REQUIRE(fb.open(0, &err));
+  REQUIRE(send_to(fb.port(), ""));  // zero-length datagram, arrives first
+  REQUIRE(send_to(fb.port(), dgram(true, "join", 1)));
+  CHECK(fb.poll(1000));  // the valid datagram behind it must still be seen
+  CHECK(fb.want());
+  CHECK(fb.msg().joins == 1);
+  CHECK(fb.malformed() == 1);
+  CHECK(fb.datagrams() == 2);
+}
+
 MTEST_MAIN
