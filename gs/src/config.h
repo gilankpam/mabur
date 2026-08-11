@@ -69,6 +69,13 @@ struct LinkCfg {
   bool ctl_log = false;
   std::string ctl_log_dir = "/media/dvr";
   bool idr_req = true;  // master enable for RCF_F_IDR_REQ (spec 2026-08-11 idr-request)
+
+  // maburplay -> maburgs IDR feedback (spec 2026-08-12
+  // decoder-idr-backchannel). 0 disables the listener. Must match
+  // maburplay's feedback.gs_port; neither binary can validate the pairing,
+  // so link.video.player.age_ms on the sideport is the mitigation.
+  int player_fb_port = 8303;
+  int player_fb_stale_ms = 3000;
 };
 
 /// Video reassembly tuning (PR C: the RTP output destination is gone --
