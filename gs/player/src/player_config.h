@@ -6,7 +6,12 @@
 namespace maburplay {
 
 struct DvrCfg {
-  bool enabled = true;
+  // Begin recording as soon as parameters arrive. NOT "the DVR exists":
+  // the DVR is always available, and autostart:false is a live, armed
+  // player waiting for a press on the input.rec button. There is
+  // deliberately no config kill switch -- autostart:false with no button
+  // configured is a player that never records, by a simpler route.
+  bool autostart = true;
   std::string dir = "/media/dvr";
   int fragment_ms = 1000;
   // "raw"    — remux the received AUs untouched (byte-exact, the default).

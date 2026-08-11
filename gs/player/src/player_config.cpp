@@ -64,10 +64,10 @@ Config load_config(const std::string& path) {
 
   if (j.contains("dvr")) {
     const json& r = j["dvr"];
-    check_keys(r, "dvr", {"enabled", "dir", "fragment_ms", "mode", "burned"});
-    if (r.contains("enabled")) {
-      if (!r["enabled"].is_boolean()) fail("dvr.enabled", "not a boolean");
-      c.dvr.enabled = r["enabled"].get<bool>();
+    check_keys(r, "dvr", {"autostart", "dir", "fragment_ms", "mode", "burned"});
+    if (r.contains("autostart")) {
+      if (!r["autostart"].is_boolean()) fail("dvr.autostart", "not a boolean");
+      c.dvr.autostart = r["autostart"].get<bool>();
     }
     c.dvr.dir = get_str(r, "dir", "/media/dvr", "dvr");
     c.dvr.fragment_ms = static_cast<int>(get_int(r, "fragment_ms", 1000, 100, 10000, "dvr"));

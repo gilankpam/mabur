@@ -636,7 +636,7 @@ int main(int argc, char** argv) {
   // gates that skip: a burned run whose encoder refused to come up must
   // record nothing and say so, never quietly leave a raw file behind that
   // the user would mistake for a burned one.
-  const bool burned_mode = cfg.dvr.enabled && cfg.dvr.mode == "burned";
+  const bool burned_mode = cfg.dvr.mode == "burned";
 #ifdef MABUR_PLAYER_HW
   // Declared AFTER `presenter` and `backend` so it is destroyed FIRST on
   // unwind: stop() joins the encode thread and releases the decoder buffers
@@ -648,7 +648,7 @@ int main(int argc, char** argv) {
   // a presenter exists. Leaving it unbuilt on that path would mean a lit
   // screen, playing video, and nothing recorded.
   auto start_burn_if_needed = [&]() {
-    if (burn || !burned_mode || !presenter) return;
+    if (burn || !burned_mode || !cfg.dvr.autostart || !presenter) return;
     auto rec = std::make_unique<maburplay::BurnRecorder>();
     maburplay::BurnCfg bc;
     // Palette (and with it the encoder's OSD region) whenever EITHER overlay
@@ -704,7 +704,7 @@ int main(int argc, char** argv) {
                                size_t n) { b->set_osd(s, r, n); });
   };
   start_burn_if_needed();
-  if (burned_mode && !burn) {
+  if (cfg.dvr.autostart && burned_mode && !burn) {
     if (presenter) {
       // A real recorder failure: BurnRecorder::start() already logged why.
       std::fprintf(stderr,
@@ -718,7 +718,7 @@ int main(int argc, char** argv) {
     }
   }
 #else
-  if (burned_mode) {
+  if (cfg.dvr.autostart && burned_mode) {
     std::fprintf(stderr,
                  "maburplay: dvr.mode \"burned\" needs the hardware build (mpp encoder); "
                  "NOTHING is being recorded\n");
@@ -822,7 +822,7 @@ int main(int argc, char** argv) {
     // !burned_mode: in burned mode the BurnRecorder owns the recording and
     // writes the encoder's output to its own DvrMux instead. Everything
     // inside is the raw path, byte-for-byte unchanged.
-    if (cfg.dvr.enabled && !burned_mode) {
+    if (cfg.dvr.autostart && !burned_mode) {
       if (!complete) {
         // Truncated base AU: DVR records complete AUs only, so this one is
         // skipped whole. No explicit fragment cut needed here: DvrMux

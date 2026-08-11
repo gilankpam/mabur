@@ -16,7 +16,7 @@ TEST(defaults_from_bundle) {
   CHECK(c.socket == "/run/mabur-au.sock");
   CHECK(c.backend == "mpp");
   CHECK(c.screen_mode == "1920x1080@60");
-  CHECK(c.dvr.enabled);
+  CHECK(c.dvr.autostart);
   CHECK(c.dvr.dir == "/media/dvr");
   CHECK(c.dvr.fragment_ms == 1000);
   // The shipped bundle records with the OSD burned in. Pinned here because
@@ -29,9 +29,9 @@ TEST(defaults_from_bundle) {
 
 TEST(values_and_strictness) {
   auto c = maburplay::load_config(write_tmp_play(
-      "{\"backend\": \"null\", \"dvr\": {\"enabled\": false, \"fragment_ms\": 500}}"));
+      "{\"backend\": \"null\", \"dvr\": {\"autostart\": false, \"fragment_ms\": 500}}"));
   CHECK(c.backend == "null");
-  CHECK(!c.dvr.enabled);
+  CHECK(!c.dvr.autostart);
   CHECK(c.dvr.fragment_ms == 500);
   bool threw = false;
   try { maburplay::load_config(write_tmp_play("{\"bogus\": 1}")); }
@@ -47,6 +47,17 @@ TEST(values_and_strictness) {
   try { maburplay::load_config(write_tmp_play("{\"dvr\": {\"fragment_ms\": 50}}")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // floor 100
+}
+
+TEST(the_old_dvr_enabled_key_is_rejected) {
+  // The rename is breaking on purpose: an un-updated /etc/maburplay.json
+  // must fail boot loudly rather than silently reverting to the default.
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"enabled":true}})")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("enabled") != std::string::npos;
+  }
+  CHECK(threw);
 }
 
 TEST(osd_defaults_are_off_and_conventional) {
