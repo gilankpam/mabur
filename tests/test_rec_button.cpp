@@ -13,6 +13,15 @@
 using maburplay::ButtonDebounce;
 using maburplay::match_pin_name;
 
+// Definition of the friend-only test seam declared in rec_button.h. This
+// is the ONLY translation unit that calls it, so it is defined here
+// rather than in rec_button.cpp -- that keeps the mutator (it overwrites
+// line_fd_ directly, bypassing resolve_pin()/open() validation) out of
+// the shipped maburplay binary entirely.
+namespace maburplay {
+void RecButtonSetLineFdForTest(RecButton& b, int fd) { b.line_fd_ = fd; }
+}  // namespace maburplay
+
 // --- pin name matching -------------------------------------------------
 // The Radxa ZERO 3's device tree names header lines "PIN_7".."PIN_40".
 // Other boards use "GPIO<n>" or a bare number. The whole string must be

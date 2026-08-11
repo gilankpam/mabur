@@ -160,6 +160,9 @@ bool RecButton::poll(uint64_t now_ms) {
   return deb_.feed((v.bits & 1u) != 0, now_ms);
 }
 
-void RecButtonSetLineFdForTest(RecButton& b, int fd) { b.line_fd_ = fd; }
+// RecButtonSetLineFdForTest is declared in rec_button.h (required for the
+// friend declaration above) but defined only in tests/test_rec_button.cpp,
+// the sole translation unit that calls it -- so the mutator never links
+// into the shipped maburplay binary.
 
 }  // namespace maburplay
