@@ -43,6 +43,12 @@ void OsdComposer::set_gs(std::unique_ptr<GsOverlay> b0, std::unique_ptr<GsOverla
   gs_laid_out_ = false;
 }
 
+void OsdComposer::set_burn_sink(BurnSink s) {
+  burn_ = std::move(s);
+  burn_shadow_ = ShadowGrid{};
+  if (gs_[2]) gs_[2]->invalidate();
+}
+
 bool OsdComposer::gs_layout(int screen_w, int screen_h, std::string* err) {
   if (!gs_[0]) return false;
   for (auto& ov : gs_) {

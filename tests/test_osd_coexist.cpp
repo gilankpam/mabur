@@ -981,4 +981,86 @@ TEST(a_committed_buffer_always_matches_a_from_scratch_composition) {
   CHECK(total_checked > 300);
 }
 
+// The record button stops the recorder and starts a FRESH one, which
+// installs a new burn sink mid-run. That recorder's index map is sized
+// and blank, so quantize_rects succeeds and only the fed rects land --
+// everything the composer considers unchanged stays blank in the
+// recording. Installing a sink must therefore restate the whole overlay.
+TEST(a_new_burn_sink_gets_a_full_restate_not_a_diff) {
+  const GsSnapshot sn = snap_cards(3);
+  Rig r(false, true);
+
+  FakeBurn first;
+  first.pal = seeded_palette();
+  r.comp.set_burn_sink(
+      [&first](const Surface& s, const DirtyRect* p, size_t n) { first.feed(s, p, n); });
+  for (int i = 0; i < 4; ++i) {
+    r.step(make_in(nullptr, false, false, &sn, player(i % 2 ? 59.0 : 60.0), true));
+    r.commit();
+  }
+  CHECK(first.wrong_against(r.buf[r.front].s) == 0);  // steady state, as before
+
+  // A fresh recorder: map sized to the OSD region and blank, exactly as
+  // BurnRecorder::start() leaves it. Priming from a blank surface is what
+  // makes this faithful -- a virgin FakeBurn would self-heal on its first
+  // feed because quantize_rects fails on an unsized map.
+  FakeBurn second;
+  second.pal = seeded_palette();
+  Buf blank;
+  second.feed(blank.s, nullptr, 0);
+  CHECK(second.wrong_against(r.buf[r.front].s) > 0);  // it starts wrong
+
+  r.comp.set_burn_sink(
+      [&second](const Surface& s, const DirtyRect* p, size_t n) { second.feed(s, p, n); });
+
+  // One composition with a single field moving. Before the fix only that
+  // field's rect reaches the new sink.
+  r.step(make_in(nullptr, false, false, &sn, player(58.0), true));
+  r.commit();
+  CHECK(second.wrong_against(r.buf[r.front].s) == 0);
+}
+
+// The test above uses a rig with NO MSP layer at all, so gs_[2] is the only
+// thing that can make it pass -- it never discriminates the burn_shadow_
+// reset, because with raster_ == nullptr the MSP half of set_burn_sink's
+// fix is a no-op in that rig regardless of whether the line is there. This
+// is the mirror image: an MSP-only rig (no GS layer at all, so gs_[2] never
+// exists and cannot be the thing making it pass) isolates burn_shadow_ the
+// same way. Without `burn_shadow_ = ShadowGrid{}`, raster_->diff() still
+// believes it matches the (unchanged) screen after the sink swap, reports
+// zero changed cells, and the grid never reaches the new sink -- it stays
+// exactly as blank as priming left it.
+TEST(a_new_burn_sink_gets_a_full_msp_restate_too) {
+  const mabur::MspScreen scr = full_screen('X');
+  Rig r(true, false);  // MSP only: gs_[2] does not exist in this rig
+
+  FakeBurn first;
+  first.pal = seeded_palette();
+  r.comp.set_burn_sink(
+      [&first](const Surface& s, const DirtyRect* p, size_t n) { first.feed(s, p, n); });
+  for (int i = 0; i < 4; ++i) {
+    r.step(make_in(&scr, true, false, nullptr, GsPlayerState{}, false));
+    r.commit();
+  }
+  CHECK(first.wrong_against(r.buf[r.front].s) == 0);  // steady state, as before
+
+  // Same priming idiom as above: a fresh recorder's map is sized to the OSD
+  // region and blank, exactly as BurnRecorder::start() leaves it.
+  FakeBurn second;
+  second.pal = seeded_palette();
+  Buf blank;
+  second.feed(blank.s, nullptr, 0);
+  CHECK(second.wrong_against(r.buf[r.front].s) > 0);  // it starts wrong
+
+  r.comp.set_burn_sink(
+      [&second](const Surface& s, const DirtyRect* p, size_t n) { second.feed(s, p, n); });
+
+  // The SAME screen again -- no MSP change at all. Before the fix
+  // burn_shadow_ still believes it matches this exact screen, so diff()
+  // reports zero changed cells and second's map never receives the grid.
+  r.step(make_in(&scr, true, false, nullptr, GsPlayerState{}, false));
+  r.commit();
+  CHECK(second.wrong_against(r.buf[r.front].s) == 0);
+}
+
 MTEST_MAIN
