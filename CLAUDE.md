@@ -142,6 +142,26 @@ read the sideport. Reach for other tools only in these cases:**
   collision actually hit for exactly that reason (`osd_compose.cpp`), and it
   used to cost 179,392 px per changed cell instead of ~13,000. Steady state
   is 0.13 ms.
+- **Record button (GPIO).** `maburplay` can toggle the DVR from a button on
+  the GS header: `input.rec` in `/etc/maburplay.json` (`pin` is the header
+  pin number, resolved at startup by matching the kernel's line names —
+  the Radxa ZERO 3 names its header `PIN_7`…`PIN_40` across gpiochip1/3/4;
+  `active_low`/`bias` default to a button between the pin and GND with the
+  internal pull-up). Short press, 50 ms debounce, edge-triggered: each
+  press-pair produces one file, in whichever `dvr.mode` is configured — raw
+  mode waits for the next sync point (up to ~2 s) before the new file
+  opens, so the OSD REC indicator visibly lags the press, while burned mode
+  resumes at the next decoded frame; two presses inside the same
+  wall-clock second get a `-1`, `-2`… filename suffix (one-second
+  timestamp resolution). No `input` block means no button. `dvr.autostart`
+  (renamed from `dvr.enabled` on 2026-08-11 — the old key now FAILS boot,
+  by design) picks whether the player boots recording or armed. There is
+  no config kill switch and no `--no-dvr` flag: `autostart: false` with no
+  button is a player that never records. Startup logs the resolved mapping
+  and every toggle logs START/STOP to `/tmp/maburplay.log`; the OSD REC
+  field is the live indicator. GPIO failures (pin not found, line held by
+  another consumer) are non-fatal and logged once — the player runs
+  without the button.
 - **Radio/PHY bring-up below mabur → devourer's own tools** (`rxdemo` with
   `DEVOURER_RX_ALLPATHS=1`, `doctor`, etc. — see
   `third_party/devourer/CLAUDE.md`). Use these when the question is about
