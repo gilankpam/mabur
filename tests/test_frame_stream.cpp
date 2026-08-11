@@ -13,11 +13,13 @@ struct Capture {
   struct Ev { char kind; FrameHdr hdr; std::vector<uint8_t> bytes; bool complete; uint8_t sid = 0; };
   std::vector<Ev> evs;
   std::vector<uint8_t> cur;
+  std::vector<std::pair<int, bool>> lost;  // (sid, truncated)
   FrameStream::Callbacks cbs() {
     return {
         [this](const FrameHdr& h, uint8_t sid) { evs.push_back({'B', h, {}, false, sid}); cur.clear(); },
         [this](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
-        [this](bool c) { evs.push_back({'E', {}, cur, c}); cur.clear(); }};
+        [this](bool c) { evs.push_back({'E', {}, cur, c}); cur.clear(); },
+        [this](uint8_t sid, bool tr) { lost.push_back({sid, tr}); }};
   }
 };
 
@@ -260,6 +262,85 @@ TEST(lost_discont_restart_recovers_via_stall_watchdog) {
     for (auto& p : frag_frame(frag, id, pay)) fs.push_fragment(1, p.data(), p.size(), t);
   CHECK(fs.stall_resets() == 1);
   CHECK(fs.frames_clean() > 13);   // emission resumed and kept going
+}
+
+// Loss events with a KNOWN sid must fire frame_lost — the IdrRequester
+// (spec 2026-08-11) keys reference-layer loss off it. Truncated emit first.
+// REVERT CHECK: fails if the finish(complete=false) fire site is removed.
+TEST(truncated_emit_fires_frame_lost_with_sid) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(2000, 0xCD);
+  auto fr = frag_frame(frag, 0, pay);
+  REQUIRE(fr.size() >= 3);
+  for (size_t i = 0; i < fr.size(); ++i)
+    if (i != 1) fs.push_fragment(1, fr[i].data(), fr[i].size(), 10);  // idx 1 lost
+  CHECK(cap.lost.empty());          // repair window still open
+  fs.poll(61);                      // last_progress 10 + gap_timeout 50 exceeded
+  REQUIRE(cap.lost.size() == 1);
+  CHECK(cap.lost[0].first == 1);
+  CHECK(cap.lost[0].second == true);
+  CHECK(fs.frames_truncated() == 1);
+}
+
+// Whole-frame losses with a known sid: late-arrival eviction (slot behind
+// the cursor, never began) and headerless age-out (fragment 0 never came,
+// but the slot key still carries sid).
+// REVERT CHECK: fails if either fire site is removed.
+TEST(late_eviction_and_headerless_ageout_fire_frame_lost) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter fa, fb;
+  std::vector<uint8_t> pay(500, 0x33);
+  for (auto& p : frag_frame(fa, 1, pay)) fs.push_fragment(2, p.data(), p.size(), 10);
+  REQUIRE(cap.evs.size() == 2);     // cold start: frame 1 emitted clean
+  auto f0 = frag_frame(fb, 0, pay);
+  fs.push_fragment(2, f0[0].data(), f0[0].size(), 12);  // frame 0 late -> evicted
+  REQUIRE(cap.lost.size() == 1);
+  CHECK(cap.lost[0].first == 2);
+  CHECK(cap.lost[0].second == false);
+
+  auto f2 = frag_frame(fa, 2, pay);
+  REQUIRE(f2.size() >= 2);
+  fs.push_fragment(1, f2[1].data(), f2[1].size(), 20);  // no fragment 0: headerless
+  fs.poll(71);                                          // first_ms 20 + 50 exceeded
+  REQUIRE(cap.lost.size() == 2);
+  CHECK(cap.lost[1].first == 1);
+  CHECK(cap.lost[1].second == false);
+}
+
+// Pure id64 gap skips must stay SILENT: those frames never arrived at all,
+// so their sid is unknown — firing would let sustained s3-only loss
+// spuriously trigger IDRs (spec: accepted limitation, deliberate).
+// REVERT CHECK: fails if the gap-skip path in try_emit starts firing.
+TEST(pure_gap_skip_does_not_fire_frame_lost) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter fa, fb;
+  std::vector<uint8_t> pay(500, 0x44);
+  for (auto& p : frag_frame(fa, 0, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
+  for (auto& p : frag_frame(fb, 9, pay)) fs.push_fragment(1, p.data(), p.size(), 20);
+  CHECK(fs.frames_dropped() >= 8);  // frames 1..8 booked as dropped (lookahead)
+  CHECK(fs.frames_clean() == 2);
+  CHECK(cap.lost.empty());
+}
+
+// reset() closes in-flight frames with end_frame(false) for the packetizer's
+// benefit — that is session teardown, not a glitch, and must not fire
+// frame_lost (re-link already IDRs via the drone's entering-LINKED path).
+// REVERT CHECK: fails if reset() is routed through finish() or fires directly.
+TEST(reset_does_not_fire_frame_lost) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(2000, 0x55);
+  auto fr = frag_frame(frag, 0, pay);
+  REQUIRE(fr.size() >= 4);
+  for (size_t i = 0; i < fr.size(); ++i)
+    if (i != 2) fs.push_fragment(1, fr[i].data(), fr[i].size(), 10);  // began, incomplete
+  fs.reset();
+  CHECK(cap.lost.empty());
 }
 
 MTEST_MAIN

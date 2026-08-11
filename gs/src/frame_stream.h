@@ -25,6 +25,11 @@ class FrameStream {
     std::function<void(const mabur::framewire::FrameHdr&, uint8_t sid)> begin_frame;
     std::function<void(const uint8_t*, size_t)> frame_data;  // Annex-B bytes, in order
     std::function<void(bool complete)> end_frame;
+    // Optional (may be null): a frame was lost with a KNOWN sid — truncated
+    // emit (truncated=true), late-arrival eviction, or headerless age-out
+    // (truncated=false). Pure id64 gap skips and reset() teardown do NOT
+    // fire (sid unknown / not a glitch). Spec 2026-08-11 idr-request.
+    std::function<void(uint8_t sid, bool truncated)> frame_lost;
   };
 
   FrameStream(FrameStreamCfg cfg, Callbacks cb) : cfg_(cfg), cb_(std::move(cb)) {}

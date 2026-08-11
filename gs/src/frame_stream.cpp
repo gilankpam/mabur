@@ -86,6 +86,7 @@ void FrameStream::try_emit(uint64_t now_ms) {
       if (it->second.have_hdr && have_next_emit_ &&
           it->second.id64 < next_emit_id64_ && !it->second.began) {
         ++dropped_;
+        if (cb_.frame_lost) cb_.frame_lost(it->second.sid, false);
         it = slots_.erase(it);
       } else {
         ++it;
@@ -141,6 +142,7 @@ void FrameStream::try_emit(uint64_t now_ms) {
 void FrameStream::finish(Slot& s, bool complete) {
   cb_.end_frame(complete);
   complete ? ++clean_ : ++truncated_;
+  if (!complete && cb_.frame_lost) cb_.frame_lost(s.sid, true);
   next_emit_id64_ = s.id64 + 1;
   stall_armed_ = false;
   discont_seen_since_emit_ = false;
@@ -153,6 +155,7 @@ void FrameStream::poll(uint64_t now_ms) {
     if (!it->second.have_hdr &&
         now_ms >= it->second.first_ms + cfg_.gap_timeout_ms) {
       ++dropped_;
+      if (cb_.frame_lost) cb_.frame_lost(it->second.sid, false);
       it = slots_.erase(it);
     } else {
       ++it;
