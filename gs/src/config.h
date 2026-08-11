@@ -68,6 +68,7 @@ struct LinkCfg {
   // overridable for host tests; the device default is the DVR SD card.
   bool ctl_log = false;
   std::string ctl_log_dir = "/media/dvr";
+  bool idr_req = true;  // master enable for RCF_F_IDR_REQ (spec 2026-08-11 idr-request)
 };
 
 /// Video reassembly tuning (PR C: the RTP output destination is gone --

@@ -554,3 +554,24 @@ TEST(au_ring_strictness) {
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // below the 4-slot floor
 }
+
+// link.idr_req: master enable for RCF_F_IDR_REQ (spec 2026-08-11
+// idr-request). Default TRUE — inert until a glitch, caps-gated against
+// old drones; false is the kill switch.
+// REVERT CHECK: fails if the key is dropped from check_keys (the false
+// case throws unknown-key) or the boolean type check is removed (the
+// idr_req:1 case stops throwing).
+TEST(link_idr_req_parses_defaults_true_and_rejects_non_bool) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.idr_req);
+
+  cfg = maburgs::load_config(write_tmp("{\"link\":{\"idr_req\":false}}"));
+  CHECK(!cfg.link.idr_req);
+
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\":{\"idr_req\":1}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("idr_req") != std::string::npos;
+  }
+  CHECK(threw);
+}
