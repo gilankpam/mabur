@@ -243,7 +243,6 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
   vcfg.pin_overhead = cfg.link.static_overhead;
-  vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
   maburgs::VrxController vrx(vcfg);
 
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
@@ -333,6 +332,10 @@ static int run_radio(const maburgs::Config& cfg) {
 
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   uint64_t last_stats_ms = 0;
+  // Foreign-RC_VERSION warning throttle. Separate `logged` flag rather than a
+  // 0 sentinel: mono_ms() is small but not guaranteed non-zero at startup.
+  uint64_t last_foreign_rc_ms = 0;
+  bool foreign_rc_logged = false;
   std::vector<mabur::node::RxBody> batch;
 
   while (!g_stop.load()) {
@@ -355,6 +358,35 @@ static int run_radio(const maburgs::Config& cfg) {
     queue.drain(batch, 10);
     for (const auto& m : batch) {
       agg.on_rx_body(m);
+      // A drone at a different RC_VERSION is invisible to every RC path here:
+      // frame_type() returns -1 for it, which is this loop's affirmative "this
+      // is video" signal, so its T_TELEM/DISC_ACK is counted into the card
+      // totals AND fed to vrx.on_video() below, contaminating
+      // ScoreWindow::seq_gap_loss() with seqs the decoder never sees. The
+      // visible end state is no video at all, indistinguishable from the
+      // stale-caps restart deadlock. Log it (rate-limited to 1/5s: a
+      // mismatched peer transmits continuously and /tmp is tmpfs) and change
+      // nothing else -- the frame is still handled exactly as before.
+      //
+      // Gated on crc_ok because RC_MAGIC is only two bytes: roughly 1 in 65536
+      // corrupt video bodies matches it by chance, and a corrupt frame must
+      // not raise a version-mismatch alarm.
+      if (m.crc_ok &&
+          mabur::rc::is_foreign_rc_version(m.body.data(), m.body.size()) &&
+          (!foreign_rc_logged || now_ms_u - last_foreign_rc_ms >= 5000)) {
+        foreign_rc_logged = true;
+        last_foreign_rc_ms = now_ms_u;
+        std::fprintf(stderr,
+                     "maburgs: heard an RC frame at RC_VERSION %u but this "
+                     "build speaks %u, so no RC path can read it and it is "
+                     "being miscounted as video (rate-limited to 1/5s). "
+                     "The pair is half-deployed: no control link and, because "
+                     "DISC_ACK carries CAP_FRAME_WIRE, no video either. "
+                     "Finish the deploy on BOTH ends; restarting maburd will "
+                     "not help.\n",
+                     static_cast<unsigned>(m.body[2]),
+                     static_cast<unsigned>(mabur::rc::RC_VERSION));
+      }
       // Exclude RC frames AND MSP frames (SBI stream_id == kMspStreamId) from
       // the score window, mirroring Task 6's aggregator routing: MSP bodies
       // carry their own independent 802.11 seq, and letting them through here
@@ -527,10 +559,10 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
-                   "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f/off%d "
+                   "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f "
                    "ring=%llu ring_drop=%llu q_drop=%llu",
                    static_cast<int>(vrx.link_state()), sel.selected(), op.mcs,
-                   op.bw, op.overhead, op.pwr_offset_qdb,
+                   op.bw, op.overhead,
                    static_cast<unsigned long long>(au_ring.published()),
                    static_cast<unsigned long long>(au_ring.dropped_oversize()),
                    static_cast<unsigned long long>(queue.dropped()));

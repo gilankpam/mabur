@@ -6,12 +6,10 @@
 namespace maburgs {
 
 namespace {
-// Rebuild an OpPoint from the ladder's current rung. PHY offset is always 0
-// in ladder mode (see step()); bw/sgi/snr_req are dead fields the
-// model-driven resolver used to populate — stats_exporter still reads
-// mcs/bw/overhead/offset/vht, so they keep emitting benign 0s here.
+// Rebuild an OpPoint from the ladder's current rung. Power is constant and
+// is not part of the operating point (spec 2026-08-12-constant-txpower).
 OpPoint op_from_rung(const Rung& r) {
-  return OpPoint{false, r.mcs, 20, false, 0, r.overhead, 0.0};
+  return OpPoint{false, r.mcs, 20, false, r.overhead, 0.0};
 }
 }  // namespace
 
@@ -50,8 +48,7 @@ std::optional<VrxController::Out> VrxController::step(
   if (cfg_.pin_mcs >= 0) {
     // Static-link mode: fixed op, ladder fully out of the loop (never
     // ticked/updated — health is ignored entirely).
-    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_offset_qdb,
-                      cfg_.pin_overhead, 0.0};
+    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_overhead, 0.0};
   } else if (ctrl_.on_tick(now_ms)) {
     cur_op_ = op_from_rung(ctrl_.op());
   }
@@ -83,7 +80,6 @@ std::optional<VrxController::Out> VrxController::step(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
   r.score = static_cast<uint16_t>(win_.score(health.residual_loss));
-  r.pwr_offset_biased = mabur::rc::encode_pwr_offset_qdb(cur_op_.pwr_offset_qdb);
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
   r.layer_delivery.assign(layer_delivery.begin(), layer_delivery.end());
   if (cfg_.pin_mcs < 0 && ctrl_.probing()) {

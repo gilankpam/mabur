@@ -343,32 +343,27 @@
   {
    "bw": 20,
    "ladder": "CRIT=MCS0/20/LDPC;T0=MCS0/20/LDPC;T1=MCS0/20;T2=MCS0/20",
-   "ov": 1.0,
-   "pwr_offset_qdb": 0
+   "ov": 1.0
   },
   {
    "bw": 20,
    "ladder": "CRIT=MCS0/20/LDPC;T0=MCS1/20;T1=MCS2/20;T2=MCS2/20",
-   "ov": 0.75,
-   "pwr_offset_qdb": -4
+   "ov": 0.75
   },
   {
    "bw": 20,
    "ladder": "CRIT=MCS1/20/LDPC;T0=MCS2/20;T1=MCS4/20;T2=MCS4/20",
-   "ov": 0.5,
-   "pwr_offset_qdb": -8
+   "ov": 0.5
   },
   {
    "bw": 20,
    "ladder": "CRIT=MCS2/20;T0=MCS4/20;T1=MCS5/20;T2=MCS7/20/SGI",
-   "ov": 0.25,
-   "pwr_offset_qdb": -12
+   "ov": 0.25
   },
   {
    "bw": 20,
    "ladder": "CRIT=MCS4/20;T0=MCS5/20;T1=MCS7/20;T2=MCS7/40/SGI",
-   "ov": 0.1,
-   "pwr_offset_qdb": -16
+   "ov": 0.1
   }
  ]
 }

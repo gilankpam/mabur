@@ -32,10 +32,10 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-constexpr size_t RCF_HEAD_LEN = 19;
+constexpr size_t RCF_HEAD_LEN = 18;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 63;
+constexpr size_t TELEM_LEN = 61;
 
 }  // namespace
 
@@ -56,7 +56,6 @@ std::vector<uint8_t> pack_rcf(const Rcf& r) {
   put16(body, r.ack_seq);
   body.push_back(r.profile);
   put16(body, r.score);
-  body.push_back(r.pwr_offset_biased);
   body.push_back(r.fec_overhead_16ths);
   body.push_back(static_cast<uint8_t>(layers.size()));
   body.insert(body.end(), layers.begin(), layers.end());
@@ -74,7 +73,7 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   if (magic != RC_MAGIC || ver != RC_VERSION || type != T_RCF) return std::nullopt;
 
   uint8_t flags = buf[4];
-  uint8_t n_layers = buf[18];
+  uint8_t n_layers = buf[17];
   size_t body_len = RCF_HEAD_LEN + n_layers + ((flags & RCF_F_PROBE3) ? 1 : 0);
   if (len < body_len + 2) return std::nullopt;
   uint16_t crc = get16(buf, body_len);
@@ -87,8 +86,7 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.ack_seq = get16(buf, 11);
   r.profile = buf[13];
   r.score = get16(buf, 14);
-  r.pwr_offset_biased = buf[16];
-  r.fec_overhead_16ths = buf[17];
+  r.fec_overhead_16ths = buf[16];
   r.layer_delivery.assign(buf + RCF_HEAD_LEN, buf + RCF_HEAD_LEN + n_layers);
   if (flags & RCF_F_PROBE3) {
     r.probe3 = true;
@@ -189,8 +187,6 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put32(body, t.generation);
   body.push_back(t.applied_profile);
   body.push_back(t.applied_ov_x100);
-  body.push_back(t.applied_off_qdb);
-  body.push_back(t.derate_qdb);
   put16(body, t.rcf_age_ms);
   put32(body, t.rcf_rx);
   put32(body, t.enc_frames);
@@ -235,30 +231,28 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.generation = get32(buf, 8);
   t.applied_profile = buf[12];
   t.applied_ov_x100 = buf[13];
-  t.applied_off_qdb = buf[14];
-  t.derate_qdb = buf[15];
-  t.rcf_age_ms = get16(buf, 16);
-  t.rcf_rx = get32(buf, 18);
-  t.enc_frames = get32(buf, 22);
-  t.enc_kbytes = get32(buf, 26);
-  t.cmd_kbps = get16(buf, 30);
-  t.qp = buf[32];
-  t.ring_drops = get16(buf, 33);
-  t.txq_depth = buf[35];
-  t.txq_cap = buf[36];
-  t.txq_drops = get32(buf, 37);
-  t.radio_sent = get32(buf, 41);
-  t.radio_drops = get32(buf, 45);
-  t.usb_fail = get16(buf, 49);
-  t.up_rssi[0] = buf[51];
-  t.up_rssi[1] = buf[52];
-  t.up_snr[0] = static_cast<int8_t>(buf[53]);
-  t.up_snr[1] = static_cast<int8_t>(buf[54]);
-  t.soc_temp_c = static_cast<int8_t>(buf[55]);
-  t.thermal_delta = static_cast<int8_t>(buf[56]);
-  t.load_x100 = get16(buf, 57);
-  t.idr_disagree = get16(buf, 59);
-  t.enhance_disagree = get16(buf, 61);
+  t.rcf_age_ms = get16(buf, 14);
+  t.rcf_rx = get32(buf, 16);
+  t.enc_frames = get32(buf, 20);
+  t.enc_kbytes = get32(buf, 24);
+  t.cmd_kbps = get16(buf, 28);
+  t.qp = buf[30];
+  t.ring_drops = get16(buf, 31);
+  t.txq_depth = buf[33];
+  t.txq_cap = buf[34];
+  t.txq_drops = get32(buf, 35);
+  t.radio_sent = get32(buf, 39);
+  t.radio_drops = get32(buf, 43);
+  t.usb_fail = get16(buf, 47);
+  t.up_rssi[0] = buf[49];
+  t.up_rssi[1] = buf[50];
+  t.up_snr[0] = static_cast<int8_t>(buf[51]);
+  t.up_snr[1] = static_cast<int8_t>(buf[52]);
+  t.soc_temp_c = static_cast<int8_t>(buf[53]);
+  t.thermal_delta = static_cast<int8_t>(buf[54]);
+  t.load_x100 = get16(buf, 55);
+  t.idr_disagree = get16(buf, 57);
+  t.enhance_disagree = get16(buf, 59);
   return t;
 }
 
@@ -268,6 +262,13 @@ int frame_type(const uint8_t* buf, size_t len) {
   uint8_t ver = buf[2];
   if (magic != RC_MAGIC || ver != RC_VERSION) return -1;
   return buf[3];
+}
+
+bool is_foreign_rc_version(const uint8_t* buf, size_t len) {
+  // Same 4-byte minimum as frame_type(): below it there is no frame to talk
+  // about, so a truncated body is never reported as a version mismatch.
+  if (len < 4) return false;
+  return get16(buf, 0) == RC_MAGIC && buf[2] != RC_VERSION;
 }
 
 uint8_t overhead_to_16ths(double ov) {

@@ -662,4 +662,34 @@ TEST(uplink_snr_is_exported_in_dB_not_half_dB) {
   CHECK(u["rssi_a"].get<double>() > -58.01 && u["rssi_a"].get<double>() < -57.99);
   CHECK(u["rssi_b"].get<double>() > -63.01 && u["rssi_b"].get<double>() < -62.99);
 }
+// Runtime TX power control was deleted on 2026-08-12, and with it three
+// sideport keys. Nothing else pins their absence: every other assertion here
+// checks a key that IS emitted, so re-adding `offset_qdb` to link.op or
+// drone.applied would sail through the suite while silently un-doing a
+// documented schema removal (CLAUDE.md records it as the one exception to
+// the additive-only v:1 rule). Checked against the exporter's real output,
+// with a telem snapshot present so drone.applied/drone.sys actually exist —
+// against a null drone section these `contains` checks would pass vacuously.
+// sys.thermal_delta is asserted PRESENT in the same breath: the sensor and
+// its telemetry deliberately survived; only the actuator died.
+TEST(removed_power_keys_absent_thermal_delta_kept) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  mabur::rc::Telem t;
+  t.tlm_seq = 1; t.state = 2; t.thermal_delta = 3;
+  in.telem = t; in.telem_rx_ms = 900;
+  ex.poll(1000, in);
+  const json j = cap.last();
+  REQUIRE(j["link"]["op"].is_object());
+  CHECK(!j["link"]["op"].contains("offset_qdb"));
+  CHECK(j["link"]["op"]["mcs"] == 5);          // the object is still populated
+  REQUIRE(j["drone"].is_object());
+  REQUIRE(j["drone"]["applied"].is_object());
+  CHECK(!j["drone"]["applied"].contains("offset_qdb"));
+  CHECK(!j["drone"]["applied"].contains("derate_qdb"));
+  REQUIRE(j["drone"]["sys"].is_object());
+  CHECK(j["drone"]["sys"]["thermal_delta"] == 3);
+}
+
 MTEST_MAIN

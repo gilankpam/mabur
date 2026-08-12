@@ -66,6 +66,33 @@ namespace {
 
 using namespace mabur;
 
+// A GS at a different RC_VERSION is refused by rc::frame_type(), so its RCFs
+// never reach the agent -- and, because the uplink RSSI/SNR EMAs are fed
+// inside that same accepted-frame branch, drone.uplink.snr_* goes stale too.
+// From the drone's side that is indistinguishable from "no GS is talking",
+// and from the GS's side it looks like the stale-caps restart deadlock, which
+// sends the operator to `restart maburd` -- which cannot help. So say it out
+// loud, but rarely: a mismatched peer transmits continuously and /tmp is
+// tmpfs. Same once-per-5 s idiom as waybeam_client.cpp's log_rate_limited().
+// Not thread-safe; only rx_callback (the RX thread) calls it.
+void log_foreign_rc_version(uint8_t peer_ver) {
+  using clock = std::chrono::steady_clock;
+  static clock::time_point last{};
+  const auto now = clock::now();
+  if (last.time_since_epoch().count() != 0 &&
+      now - last < std::chrono::seconds(5))
+    return;
+  last = now;
+  std::fprintf(stderr,
+               "maburd: heard an RC frame at RC_VERSION %u but this build "
+               "speaks %u -- ignoring it (rate-limited to 1/5s). The pair is "
+               "half-deployed: there is no control link and no video in "
+               "either direction. Finish the deploy on BOTH ends; restarting "
+               "maburd will not help.\n",
+               static_cast<unsigned>(peer_ver),
+               static_cast<unsigned>(rc::RC_VERSION));
+}
+
 // ---------------------------------------------------------------------------
 // Sinks
 // ---------------------------------------------------------------------------
@@ -199,8 +226,13 @@ devourer::TxMode control_tx_mode() {
 
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
 // FrameSink), the hot-thread-owned UepEncoder (via the shared_op handoff),
-// the waybeam VTX control API, and (real mode only) the devourer device's
-// TX-power knob.
+// and the waybeam VTX control API.
+//
+// It deliberately has NO TX-power knob. Power is constant: bring-up programs
+// the wall-equalized per-rate diff table and zeroes the global offset once
+// (the `power_mode == "offset"` block in run_real_mode()), and nothing
+// touches power again for the life of the process. Spec
+// 2026-08-12-constant-txpower-design.md.
 //
 // Threading: apply_op()/send_control()/set_bitrate_kbps()/set_roi_qp()/
 // request_idr() are all called from the agent thread only (RcAgent's
@@ -214,7 +246,6 @@ struct RealActuator : mabur::Actuator {
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
-  std::string power_mode = "override";  // radio.power_mode (see config.h)
 
   std::vector<uint8_t> control_radiotap;  // built once; control channel is fixed
   uint16_t control_seq = 0;
@@ -228,15 +259,11 @@ struct RealActuator : mabur::Actuator {
 
   void apply_op(const AppliedOp& op) override {
     tx->set_ladder(op.ladder);
-    if (dev) {
-      if (power_mode == "offset")
-        dev->SetTxPowerOffsetQdb(op.pwr_offset_qdb);
-      // "override": bench-diagnostic, ignores RCF-commanded power entirely
-      // (see config.h's power_mode comment) — applies nothing per-op.
-      // "none": leave the efuse per-rate table untouched.
-    } else if (dry_run) {
-      std::fprintf(stderr, "[dry-run] pwr_offset_qdb=%d fec_overhead=%.3f gen=%llu\n",
-                   op.pwr_offset_qdb, op.fec_overhead,
+    // Applying an op is a ladder + FEC + shed change and nothing else — see
+    // the struct comment: there is no per-op power step to do in real mode.
+    if (!dev && dry_run) {
+      std::fprintf(stderr, "[dry-run] fec_overhead=%.3f gen=%llu\n",
+                   op.fec_overhead,
                    static_cast<unsigned long long>(op.generation));
     }
     shared_op->store(std::make_shared<const AppliedOp>(op));
@@ -418,14 +445,14 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   agent.tick(now_steady_ms(), RadioHealth{});
 
   // Detects "a new AppliedOp was published" by shared_ptr IDENTITY, not by
-  // generation: reapply_with_derate_and_shed() (thermal/congestion) publishes
-  // a fresh AppliedOp via apply_op() WITHOUT bumping generation (by design —
-  // generation tracks new operating points, not power/shed adjustments to
-  // the current one), but every apply_op() call, including reapplies, always
-  // stores a brand-new shared_ptr<const AppliedOp>. Comparing against
-  // generation alone would silently miss local congestion/thermal
-  // shed-and-derate changes whenever no new RCF/DISC/failsafe op happened in
-  // between — the exact bug this identity-compare fixes.
+  // generation: reapply_with_shed() (congestion) publishes a fresh AppliedOp
+  // via apply_op() WITHOUT bumping generation (by design — generation
+  // tracks new operating points, not shed adjustments to the current one),
+  // but every apply_op() call, including reapplies, always stores a
+  // brand-new shared_ptr<const AppliedOp>. Comparing against generation
+  // alone would silently miss local congestion shed changes whenever no new
+  // RCF/DISC/failsafe op happened in between — the exact bug this
+  // identity-compare fixes.
   auto pump_op_change = [&]() {
     auto op = shared_op.load();
     if (op && op != last_applied_op) {
@@ -721,7 +748,6 @@ int run_real_mode(const Config& cfg) {
   actuator.shared_op = &shared_op;
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
-  actuator.power_mode = cfg.radio.power_mode;
   // Encoder starts at the "normal" ROI QP (RcAgent only calls set_roi_qp on
   // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
   // so the telemetry collector needs this seeded to reflect what's actually
@@ -773,6 +799,13 @@ int run_real_mode(const Config& cfg) {
       // attrib (rssi/snr) is not a trustworthy sample.
       if (!pkt.RxAtrib.crc_err)
         uplink_track.on_rc_frame(pkt.RxAtrib.rssi, pkt.RxAtrib.snr);
+    } else if (!pkt.RxAtrib.crc_err &&
+               rc::is_foreign_rc_version(body, body_len)) {
+      // Same crc gate as the EMAs, and for the same class of reason:
+      // RC_MAGIC is two bytes, so ~1 in 65536 corrupt bodies matches it by
+      // chance and must not print a version-mismatch scare. Log only —
+      // the frame is still dropped exactly as it was before.
+      log_foreign_rc_version(body[2]);
     }
   };
 
@@ -851,12 +884,12 @@ int run_real_mode(const Config& cfg) {
       uint64_t now = now_steady_ms();
 
       // Identity-compare, not generation-compare: see the matching comment
-      // in run_dry_run's pump_op_change lambda above. reapply_with_derate_
-      // and_shed() (thermal/congestion) never bumps generation, so gating on
-      // generation here would silently drop local shed/derate changes that
-      // arrive between two RCF-driven generation bumps — including the
-      // congestion-triggered shed this loop is specifically responsible for
-      // applying to the UepEncoder (op.shed) independent of the GS.
+      // in run_dry_run's pump_op_change lambda above. reapply_with_shed()
+      // (congestion) never bumps generation, so gating on generation here
+      // would silently drop local shed changes that arrive between two
+      // RCF-driven generation bumps — including the congestion-triggered
+      // shed this loop is specifically responsible for applying to the
+      // UepEncoder (op.shed) independent of the GS.
       auto op = shared_op.load();
       if (op && op != last_applied_op) {
         apply_op_to_uep(*op, uep);
@@ -1059,8 +1092,6 @@ int run_real_mode(const Config& cfg) {
         ti.mcs = agent.current().ladder[1].mcs;
         ti.bw = agent.current().ladder[1].bw;
         ti.applied_ov = agent.current().fec_overhead;
-        ti.applied_off_qdb = agent.current().pwr_offset_qdb;
-        ti.derate_qdb = agent.thermal_derate_qdb();
         // have_feedback() false means no RCF has EVER been accepted (still
         // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
         // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
@@ -1136,12 +1167,12 @@ int run_real_mode(const Config& cfg) {
                "will not defer to co-channel traffic\n");
 
   // power_mode == "offset": program the wall-equalized per-rate diff table
-  // once at bring-up (RcAgent's per-op SetTxPowerOffsetQdb calls trim
-  // *around* this table; they don't replace it). SetTxPowerRateDiffs
-  // returns false on non-8822E boards (8822E-only in v1, TxPower.h) — warn
-  // and continue rather than aborting bring-up, so "offset" configured on
-  // an unsupported chip degrades to the untrimmed efuse table instead of
-  // failing to fly.
+  // once at bring-up, then zero the global offset once (see below) — power
+  // is constant for the life of the process, no per-op trim.
+  // SetTxPowerRateDiffs returns false on non-8822E boards (8822E-only in
+  // v1, TxPower.h) — warn and continue rather than aborting bring-up, so
+  // "offset" configured on an unsupported chip degrades to the untrimmed
+  // efuse table instead of failing to fly.
   if (cfg.radio.power_mode == "offset") {
     auto plan = make_power_plan(cfg.radio.rate_walls_idx, cfg.radio.legacy_wall_idx,
                                  cfg.radio.base_ref_idx, cfg.radio.wall_margin_db);
@@ -1154,12 +1185,10 @@ int run_real_mode(const Config& cfg) {
                    "warning: SetTxPowerRateDiffs failed (non-8822E board?); "
                    "power_mode=offset will trim the untrimmed efuse table\n");
     }
-    // Boot offset: the last commanded/config offset until the first
-    // RCF/DISC op supersedes it, clamped the same way RcAgent clamps every
-    // commanded offset.
-    int boot_offset =
-        std::clamp(cfg.radio.power_offset_qdb, cfg.radio.min_offset_qdb, 0);
-    rtl_device->SetTxPowerOffsetQdb(boot_offset);
+    // Power is constant from here on. devourer documents the offset as
+    // sticky across retunes, so zero it explicitly rather than assuming
+    // whatever a prior process or bench tool left in the chip.
+    rtl_device->SetTxPowerOffsetQdb(0);
   }
 
   device_ready.store(true, std::memory_order_release);

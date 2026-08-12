@@ -3,9 +3,8 @@
 Deterministic (no randomness, no time). Re-run + git diff must be clean.
 
 energy.json's power-model cases (gain/pa-index) diverge from the prototype
-since 2026-07-17 — see tools/pyref/offset_power.py. The airtime/rate/
-baseline-power dimensions are unchanged and still ride devourer's frozen
-energy_model.py."""
+since 2026-07-17. The airtime/rate/baseline-power dimensions are unchanged
+and still ride devourer's frozen energy_model.py."""
 import json, os, struct, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +36,7 @@ dump("crc16.json", {"cases": [
 
 # --- sliding-window fec (mabur-native; reference = tools/pyref/sw_fec.py) --
 sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
-import sw_fec, offset_power  # noqa: E402
+import sw_fec  # noqa: E402
 
 SW_PKT_SIZES = [10, 50, 62, 1, 30, 62, 44, 62, 20, 62, 62, 5, 61, 33, 62, 62]
 sw_cases = []
@@ -159,31 +158,33 @@ dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
 
 # --- rc ----------------------------------------------------------------
 rcfs = [rc_proto.Rcf(vtx_id=0xDEADBEEF, seq=7, ack_seq=3800, profile=0x24,
-                     score=1543, pwr_idx=40, fec_overhead_16ths=8, flags=0,
+                     score=1543, fec_overhead_16ths=8, flags=0,
                      layer_delivery=(100, 98, 80, 10)),
         rc_proto.Rcf(vtx_id=1, seq=65535, ack_seq=0, profile=0x00, score=1000,
-                     pwr_idx=rc_proto.PWR_NO_CHANGE, fec_overhead_16ths=16,
-                     flags=rc_proto.F_FAILSAFE, layer_delivery=())]
+                     fec_overhead_16ths=16, flags=rc_proto.F_FAILSAFE,
+                     layer_delivery=())]
 discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
                          agreed_channel=149, agreed_width=20, seq=1)]
+# mabur owns its RC wire bytes as of 2026-08-12. devourer's frozen
+# tools/precoder/rc_proto.py is pinned at RC_VERSION 1 and still packs a
+# pwr_idx byte, so it can no longer serve as a wire oracle across mabur's
+# RC_VERSION 2 change. The field cases below stay Python-generated; the
+# expected bytes are hardcoded goldens in tests/test_rc.cpp.
 dump("rc.json", {
   "rcf": [{"fields": {"vtx_id": r.vtx_id, "seq": r.seq, "ack_seq": r.ack_seq,
-                      "profile": r.profile, "score": r.score, "pwr_idx": r.pwr_idx,
+                      "profile": r.profile, "score": r.score,
                       "fec_overhead_16ths": r.fec_overhead_16ths, "flags": r.flags,
-                      "layer_delivery": list(r.layer_delivery)},
-           "wire": hx(rc_proto.pack_rcf(r))} for r in rcfs],
+                      "layer_delivery": list(r.layer_delivery)}} for r in rcfs],
   "disc": [{"fields": {"vtx_id": d.vtx_id, "vrx_nonce": d.vrx_nonce,
                        "op_channel": d.op_channel, "op_width": d.op_width,
                        "table_ver": d.table_ver, "init_profile": d.init_profile,
-                       "cap_bits": d.cap_bits, "seq": d.seq},
-            "wire": hx(rc_proto.pack_disc(d))} for d in discs],
+                       "cap_bits": d.cap_bits, "seq": d.seq}} for d in discs],
   "disc_ack": [{"fields": {"vtx_id": a.vtx_id, "vrx_nonce": a.vrx_nonce,
                            "chip_caps": a.chip_caps,
                            "agreed_channel": a.agreed_channel,
-                           "agreed_width": a.agreed_width, "seq": a.seq},
-                "wire": hx(rc_proto.pack_disc_ack(a))} for a in acks]})
+                           "agreed_width": a.agreed_width, "seq": a.seq}} for a in acks]})
 
 # --- profile / ladder / phy rate -----------------------------------------
 # The per-seq bandwidth-probe-schedule vectors were removed 2026-07-27 (SDD
@@ -201,15 +202,19 @@ rate_cases = [{"mode": m, "mcs": mc, "bw": bw, "sgi": sgi,
               for m, mc, bw, sgi in [("ht", 0, 20, False), ("ht", 4, 20, False),
                                      ("ht", 7, 40, True), ("vht", 8, 80, False),
                                      ("vht", 4, 40, True)]]
+# NOTE: committed profile.json's profiles[].ladder values are mabur's own
+# flat ladder (common/src/profile.cpp ladder_spec_str(), flat by the
+# 2026-07-26 hw ruling documented there), NOT a fresh mirror of devourer's
+# adaptive_link.ladder_spec() below, which now emits escalating T1/T2 MCS.
+# Re-running this generator therefore reproduces a profiles[].ladder diff
+# that is PRE-EXISTING drift, not a regression you introduced — devourer is
+# frozen/off-limits, so reconciling it is a separate decision, not a side
+# effect of regenerating vectors.
 dump("profile.json", {"profiles": prof_cases,
                       "rates": rate_cases,
-                      # pwr_offset_qdb DIVERGES from devourer's frozen
-                      # DEFAULT_PROFILE_TABLE.pwr_idx (TXAGC index) since
-                      # 2026-07-17 — see tools/pyref/offset_power.py.
                       "table": [{"ladder": p.svc_ladder,
-                                 "pwr_offset_qdb": offset_power.PROFILE_TABLE_PWR_OFFSET_QDB[i],
                                  "ov": p.fec_overhead, "bw": p.bw}
-                                for i, p in enumerate(rc_proto.DEFAULT_PROFILE_TABLE)]})
+                                for p in rc_proto.DEFAULT_PROFILE_TABLE]})
 
 # --- sbi unpack ----------------------------------------------------------
 su_cases = []

@@ -200,10 +200,74 @@ the cross-builds' `DEVOURER_LOG_MAX_LEVEL=WARN` — its absence means
 nothing. Both lines record the state mabur *requested*, not a register
 readback.
 
+**TX power is constant since 2026-08-12.** There is no runtime power
+control anywhere in mabur: no GS-commanded offset, no thermal derate, no
+per-profile offset. `maburd` programs the wall-equalized per-rate diff
+table and zeroes the global offset once at bring-up — both steps live
+inside the `radio.power_mode: "offset"` branch — and never calls a power
+API again: for the life of the process each rate `r` sits at effective
+TXAGC index `rate_walls_idx[r] - round(wall_margin_db * 4)`. Note the
+`* 4`: the chip's index step is 0.25 dB, so `wall_margin_db` is a dB
+figure converted to index steps, and a 1 dB margin is 4 steps
+(`make_power_plan()` in `drone/src/power_plan.h`). The config keys
+`radio.thermal_max_delta`,
+`radio.min_offset_qdb`, `radio.power_offset_qdb` and
+`link.static_offset_qdb` were REMOVED and now FAIL BOOT, as does
+`radio.power_mode: "override"` (it had become identical to `"none"`).
+Sideport keys `link.op.offset_qdb`, `drone.applied.offset_qdb` and
+`drone.applied.derate_qdb` are gone; `thermal_delta` REMAINS and is the
+only surviving signal that a PA is running hot — nothing acts on it, so
+acting on it is a human decision (most likely an airframe cooling fix,
+not a power one). `bench/txagcbench` still drives `SetTxPowerOffsetQdb`
+directly and is still how the walls are measured; it was deliberately
+left alone. Date any recording against this line, the same way the
+2026-08-04 SNR scale break is dated.
+
+This change bumped `RC_VERSION` 1 -> 2, the first bump the protocol has
+ever had, and mabur's RC wire goldens are now owned by
+`tests/test_rc.cpp` rather than mirrored from devourer's frozen
+`tools/precoder/rc_proto.py` (which is pinned at version 1 and cannot
+follow). **A drone and GS at different versions reject each other's
+frames in BOTH directions**, and because DISC_ACK is what carries
+`CAP_FRAME_WIRE`, the symptom is NO VIDEO AT ALL — visually identical to
+the stale-caps restart deadlock, which will send you to `restart
+maburd`. That will not help. Recovery is to finish the deploy. Deploy
+order is config-before-binary on both devices: a stale or removed key
+makes `maburd`/`maburgs` fail to start (a config-load error exits **1** in
+`maburd` and **2** in `maburgs` — both in the `load_config` try/catch in
+their respective `main()`; the two daemons do NOT agree, so do not key a
+script off either number), and unlike `maburplay`'s
+`S97maburplay` — which stops respawning on exit
+2 or 143 — neither daemon's wrapper (`S96mabur`, `S96maburgs`,
+`maburgs.service` under systemd) checks the exit code at all, so it
+crash-loops the daemon forever at the unconditional 2 s respawn delay.
+The visible symptom is a repeating `unknown key` line in `/tmp/mabur.log`
+/ `/tmp/maburgs.log` every 2 seconds, not a daemon that exits and stays
+down. The clean sequence is still: stop both daemons, edit both configs,
+swap both binaries (`df` and prune first — the drone rootfs fits max 2
+maburd), start both. Rollback is PAIRED: an old binary needs its old
+config restored alongside it. **The repo's install scripts will not do
+this for you and will produce exactly the crash-loop above if you let
+them:** `bundle/install.sh` and `gs/bundle/install.sh` scp the binary
+(`:32` in both), then copy the shipped default config ONLY if the device
+has none (`bundle/install.sh:33`, `gs/bundle/install.sh:38-39` — "never
+clobber a tuned one"), then start the service immediately
+(`bundle/install.sh:36-40`, `gs/bundle/install.sh:44-48`). Neither
+migrates an existing config, so on a device that has ever been tuned the
+four removed keys must be deleted from `/etc/mabur.json` and
+`/etc/maburgs.json` BY HAND before the new binaries start.
+
 Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and
 `docs/superpowers/specs/2026-07-26-drone-telemetry-design.md`. The schema
-is additive-only under `v: 1`; consumers must ignore unknown keys. The
+is additive-only under `v: 1`; consumers must ignore unknown keys — with
+one recorded exception, 2026-08-12, when `link.op.offset_qdb`,
+`drone.applied.offset_qdb` and `drone.applied.derate_qdb` were REMOVED
+rather than deprecated (constant-TX-power note above) without bumping
+`v`. Those three keys are simply absent now — not null — so a consumer
+that required them sees a missing key; `tools/maburtop.py` was updated in
+the same wave. Additive-only is still the rule for everything else, and
+the next removal would need the same kind of dated note here. The
 sideport config lives in `/etc/maburgs.json` under `stats`
 (default-off in the shipped bundle; enabled on the bench GS).
 

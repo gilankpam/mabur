@@ -7,19 +7,23 @@
 namespace mabur {
 
 // Wall-equalized power plan: derives per-rate qdB diffs from measured
-// clean-air TXAGC ceilings ("walls") so that, at offset 0, every rate's
-// effective TXAGC index (base_ref_idx + diff[r]) equals walls[r] - margin —
-// every rate parked at wall-minus-margin, level-continuous with today's
-// baseline. diff[r] = walls[r] - m - base_ref_idx, where m = round(margin_db
-// * 4) is the margin in qdB steps. max_offset_qdb is always 0 in this
-// formulation: offset 0 already sits every rate at its equalized ceiling, so
-// the controller only ever backs off (offset <= 0), scaling every rate down
-// uniformly by the commanded amount.
+// clean-air TXAGC ceilings ("walls") so that every rate's effective TXAGC
+// index (base_ref_idx + diff[r]) equals walls[r] - margin — every rate parked
+// at wall-minus-margin, level-continuous with the power_mode "none" baseline.
+// diff[r] = walls[r] - m - base_ref_idx, where m = round(margin_db * 4) is
+// the margin converted from dB to the chip's 0.25 dB (qdB) index steps.
+//
+// This plan is the WHOLE of mabur's power policy. It is programmed once at
+// bring-up and the global offset is zeroed once beside it; there is no
+// runtime power control left to interact with (no GS-commanded offset, no
+// thermal derate — deleted 2026-08-12, spec
+// 2026-08-12-constant-txpower-design.md). So the park below is the operating
+// power for the life of the process: raising a wall or lowering the margin
+// radiates more, permanently, with nothing downstream to pull it back.
 struct PowerPlan {
   int8_t cck;
   int8_t legacy;
   int8_t mcs[8];
-  int max_offset_qdb;
 };
 
 namespace detail {
@@ -38,8 +42,8 @@ inline int8_t clamp_i8(int v) {
 
 // walls_idx: per-MCS max clean TXAGC index (measured); legacy_wall_idx same
 // for the OFDM control rate; base_ref_idx: this unit's efuse reference
-// index (the anchor rate's index at offset 0); margin_db: uniform safety
-// margin applied to every rate's wall.
+// index (the anchor rate's index the diffs are relative to); margin_db:
+// uniform safety margin in dB applied to every rate's wall.
 inline PowerPlan make_power_plan(const std::array<int, 8>& walls_idx,
                                   int legacy_wall_idx, int base_ref_idx,
                                   double margin_db) {
@@ -50,7 +54,6 @@ inline PowerPlan make_power_plan(const std::array<int, 8>& walls_idx,
   }
   p.legacy = detail::clamp_i8(legacy_wall_idx - m - base_ref_idx);
   p.cck = p.legacy;  // v1: cck rides the legacy wall
-  p.max_offset_qdb = 0;
   return p;
 }
 

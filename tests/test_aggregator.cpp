@@ -1,10 +1,10 @@
 #include "mtest.h"
 #include "frame_fixture.h"
-#include "vectors.h"
 #include "aggregator.h"
 #include "mabur/uep_encoder.h"
 #include "mabur/msp_source.h"
 #include "mabur/msp_dp.h"
+#include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
 
 using namespace maburgs;
@@ -26,6 +26,25 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
   m.mono_us = 1000u * seq;
   m.body = std::move(body);
   return m;
+}
+
+// RC frame wires built directly in C++ from the same values as
+// gen_vectors.py's rcfs[0]/acks[0] -- mabur owns the RC wire bytes (see
+// test_rc.cpp), so this file packs a real frame instead of reading a
+// "wire" key out of rc.json.
+static std::vector<uint8_t> rcf_fixture_wire() {
+  mabur::rc::Rcf r;
+  r.vtx_id = 0xDEADBEEF; r.seq = 7; r.ack_seq = 3800; r.profile = 0x24;
+  r.score = 1543; r.fec_overhead_16ths = 8;
+  r.flags = 0; r.layer_delivery = {100, 98, 80, 10};
+  return mabur::rc::pack_rcf(r);
+}
+
+static std::vector<uint8_t> disc_ack_fixture_wire() {
+  mabur::rc::DiscAck a;
+  a.vtx_id = 1; a.vrx_nonce = 0xCAFE0001; a.chip_caps = 0x0003;
+  a.agreed_channel = 149; a.agreed_width = 20; a.seq = 1;
+  return mabur::rc::pack_disc_ack(a);
 }
 
 // Video bodies come from a real UepEncoder over frame_stream.bin — the
@@ -52,7 +71,6 @@ static std::vector<uint8_t> video_body() {
 }
 
 TEST(routes_video_to_decoder_and_rc_to_control) {
-  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   auto bodies = encode_fixture_bodies();
   Aggregator agg(vec_layers(), 200, 512, 2);
   int rcs = 0;
@@ -63,7 +81,7 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
   });
   uint16_t seq = 0;
   for (auto& b : bodies) agg.on_rx_body(msg(0, seq++, true, b));
-  auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
+  auto ack = disc_ack_fixture_wire();
   agg.on_rx_body(msg(1, seq++, true, ack));
   // Every fixture frame reassembles from the fragments the sink emitted.
   CHECK(frames.completed().size() == 13);
@@ -241,11 +259,10 @@ TEST(evm_absent_until_first_sample_and_class_scoped) {
 
 TEST(class_split_video_msp_ctrl) {
   auto bodies = encode_fixture_bodies();     // stream-tagged video bodies
-  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   Aggregator agg(vec_layers(), 200, 512, 1);
   uint16_t seq = 0;
   for (auto& b : bodies) agg.on_rx_body(msg(0, seq++, true, b));
-  auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
+  auto ack = disc_ack_fixture_wire();
   agg.on_rx_body(msg(0, seq++, true, ack));
   const CardTrack& c = agg.card(0);
   uint64_t stream_frames = 0;
@@ -264,11 +281,10 @@ TEST(class_split_video_msp_ctrl) {
 }
 
 TEST(self_rc_frames_counted_but_never_tracked) {
-  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   Aggregator agg(vec_layers(), 200, 512, 1);
   int rc_routed = 0;
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
-  auto rcf = mtest::unhex(rc["rcf"][0]["wire"].get<std::string>());
+  auto rcf = rcf_fixture_wire();
   agg.on_rx_body(msg(0, 100, true, rcf));          // GS-originated type
   const CardTrack& c = agg.card(0);
   CHECK(c.self_frames == 1);
@@ -294,11 +310,10 @@ TEST(crc_fail_stays_out_of_classes) {
 // owes ordinary frame/crc_fail/rx_bytes accounting, and — being CRC-fail —
 // no class movement.
 TEST(crc_fail_rcf_lookalike_not_diverted_as_self) {
-  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   Aggregator agg(vec_layers(), 200, 512, 1);
   int rc_routed = 0;
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
-  auto rcf = mtest::unhex(rc["rcf"][0]["wire"].get<std::string>());
+  auto rcf = rcf_fixture_wire();
   agg.on_rx_body(msg(0, 100, false, rcf));   // crc fail but byte-matches RCF wire
   const CardTrack& c = agg.card(0);
   CHECK(c.frames == 1);
@@ -335,8 +350,7 @@ TEST(msp_body_classified_into_msp_class) {
 // not perturb the video seq-gap walk (seq_expected/seq_received/
 // last_video_seq), only the RC-frame routing/class accounting.
 TEST(rc_frame_with_wild_seq_does_not_perturb_video_seq_accounting) {
-  auto rc = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto ack = mtest::unhex(rc["disc_ack"][0]["wire"].get<std::string>());
+  auto ack = disc_ack_fixture_wire();
   Aggregator agg(vec_layers(), 200, 512, 1);
   std::vector<uint8_t> junk(20, 0);  // not SBI, not RC -> misroutes as "video"
   agg.on_rx_body(msg(0, 10, true, junk));    // video-ish body, seq 10

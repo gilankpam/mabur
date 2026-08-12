@@ -59,8 +59,6 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
   t.applied_ov_x100 = saturate<uint8_t>(std::lround(in.applied_ov * 100.0));
-  t.applied_off_qdb = rc::encode_pwr_offset_qdb(in.applied_off_qdb);
-  t.derate_qdb = saturate<uint8_t>(in.derate_qdb);
   t.rcf_age_ms = saturate<uint16_t>(in.rcf_age_ms);
   t.rcf_rx = saturate<uint32_t>(in.rcf_rx);
   t.enc_frames = saturate<uint32_t>(in.enc_frames);

@@ -12,7 +12,6 @@ static Rcf rcf_from_json(const nlohmann::json& f) {
   r.ack_seq = f["ack_seq"].get<uint16_t>();
   r.profile = f["profile"].get<uint8_t>();
   r.score = f["score"].get<uint16_t>();
-  r.pwr_offset_biased = f["pwr_idx"].get<uint8_t>();
   r.fec_overhead_16ths = f["fec_overhead_16ths"].get<uint8_t>();
   r.flags = f["flags"].get<uint8_t>();
   for (auto& v : f["layer_delivery"]) r.layer_delivery.push_back(v.get<uint8_t>());
@@ -43,14 +42,25 @@ static DiscAck disc_ack_from_json(const nlohmann::json& f) {
   return a;
 }
 
-TEST(rcf_matches_python_vectors) {
+TEST(rcf_matches_golden_wire) {
+  // Golden pin: mabur owns these bytes (devourer's frozen Python is stuck
+  // at RC_VERSION 1). Print-once, then hardcode:
+  //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
+  // Reverting any pack_rcf() layout change without updating these fails
+  // here, which is the point -- the format cannot drift silently.
+  const std::vector<std::string> GOLDEN = {
+      "4352020100efbeadde0700d80e24070608046462500ad8c2",
+      "435202010201000000ffff000000e8031000cbe7",
+  };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  REQUIRE(j["rcf"].size() == GOLDEN.size());
+  size_t i = 0;
   for (auto& c : j["rcf"]) {
     auto r = rcf_from_json(c["fields"]);
     auto wire = pack_rcf(r);
-    CHECK(mtest::hex(wire) == c["wire"].get<std::string>());
+    CHECK(mtest::hex(wire) == GOLDEN[i]);
 
-    auto raw = mtest::unhex(c["wire"].get<std::string>());
+    auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_rcf(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
     CHECK(parsed->vtx_id == r.vtx_id);
@@ -58,23 +68,32 @@ TEST(rcf_matches_python_vectors) {
     CHECK(parsed->ack_seq == r.ack_seq);
     CHECK(parsed->profile == r.profile);
     CHECK(parsed->score == r.score);
-    CHECK(parsed->pwr_offset_biased == r.pwr_offset_biased);
     CHECK(parsed->fec_overhead_16ths == r.fec_overhead_16ths);
     CHECK(parsed->flags == r.flags);
     CHECK(parsed->layer_delivery == r.layer_delivery);
-
     CHECK(frame_type(raw.data(), raw.size()) == T_RCF);
+    ++i;
   }
 }
 
-TEST(disc_matches_python_vectors) {
+TEST(disc_matches_golden_wire) {
+  // Golden pin: mabur owns these bytes (devourer's frozen Python is stuck
+  // at RC_VERSION 1). Print-once, then hardcode:
+  //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
+  // Reverting any pack_disc() layout change without updating this fails
+  // here, which is the point -- the format cannot drift silently.
+  const std::vector<std::string> GOLDEN = {
+      "4352020204010000000100feca95140100000002000f1b",
+  };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  REQUIRE(j["disc"].size() == GOLDEN.size());
+  size_t i = 0;
   for (auto& c : j["disc"]) {
     auto d = disc_from_json(c["fields"]);
     auto wire = pack_disc(d);
-    CHECK(mtest::hex(wire) == c["wire"].get<std::string>());
+    CHECK(mtest::hex(wire) == GOLDEN[i]);
 
-    auto raw = mtest::unhex(c["wire"].get<std::string>());
+    auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_disc(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
     CHECK(parsed->vtx_id == d.vtx_id);
@@ -85,19 +104,29 @@ TEST(disc_matches_python_vectors) {
     CHECK(parsed->init_profile == d.init_profile);
     CHECK(parsed->cap_bits == d.cap_bits);
     CHECK(parsed->seq == d.seq);
-
     CHECK(frame_type(raw.data(), raw.size()) == T_DISC);
+    ++i;
   }
 }
 
-TEST(disc_ack_matches_python_vectors) {
+TEST(disc_ack_matches_golden_wire) {
+  // Golden pin: mabur owns these bytes (devourer's frozen Python is stuck
+  // at RC_VERSION 1). Print-once, then hardcode:
+  //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
+  // Reverting any pack_disc_ack() layout change without updating this
+  // fails here, which is the point -- the format cannot drift silently.
+  const std::vector<std::string> GOLDEN = {
+      "4352020304010000000100feca03009514010046f1",
+  };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  REQUIRE(j["disc_ack"].size() == GOLDEN.size());
+  size_t i = 0;
   for (auto& c : j["disc_ack"]) {
     auto a = disc_ack_from_json(c["fields"]);
     auto wire = pack_disc_ack(a);
-    CHECK(mtest::hex(wire) == c["wire"].get<std::string>());
+    CHECK(mtest::hex(wire) == GOLDEN[i]);
 
-    auto raw = mtest::unhex(c["wire"].get<std::string>());
+    auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_disc_ack(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
     CHECK(parsed->vtx_id == a.vtx_id);
@@ -106,14 +135,14 @@ TEST(disc_ack_matches_python_vectors) {
     CHECK(parsed->agreed_channel == a.agreed_channel);
     CHECK(parsed->agreed_width == a.agreed_width);
     CHECK(parsed->seq == a.seq);
-
     CHECK(frame_type(raw.data(), raw.size()) == T_DISC_ACK);
+    ++i;
   }
 }
 
 TEST(rcf_truncation_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto raw = mtest::unhex(j["rcf"][0]["wire"].get<std::string>());
+  auto raw = pack_rcf(rcf_from_json(j["rcf"][0]["fields"]));
   for (size_t len = 0; len < raw.size(); ++len) {
     auto parsed = parse_rcf(raw.data(), len);
     CHECK(!parsed.has_value());
@@ -122,7 +151,7 @@ TEST(rcf_truncation_fails) {
 
 TEST(disc_truncation_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto raw = mtest::unhex(j["disc"][0]["wire"].get<std::string>());
+  auto raw = pack_disc(disc_from_json(j["disc"][0]["fields"]));
   for (size_t len = 0; len < raw.size(); ++len) {
     auto parsed = parse_disc(raw.data(), len);
     CHECK(!parsed.has_value());
@@ -131,7 +160,7 @@ TEST(disc_truncation_fails) {
 
 TEST(disc_ack_truncation_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto raw = mtest::unhex(j["disc_ack"][0]["wire"].get<std::string>());
+  auto raw = pack_disc_ack(disc_ack_from_json(j["disc_ack"][0]["fields"]));
   for (size_t len = 0; len < raw.size(); ++len) {
     auto parsed = parse_disc_ack(raw.data(), len);
     CHECK(!parsed.has_value());
@@ -144,8 +173,7 @@ TEST(disc_ack_truncation_fails) {
 // covered either by header validation or by the CRC.
 TEST(rcf_single_byte_flip_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto orig_hex = j["rcf"][0]["wire"].get<std::string>();
-  auto orig = mtest::unhex(orig_hex);
+  auto orig = pack_rcf(rcf_from_json(j["rcf"][0]["fields"]));
   auto orig_parsed = parse_rcf(orig.data(), orig.size());
   REQUIRE(orig_parsed.has_value());
 
@@ -164,7 +192,6 @@ TEST(rcf_single_byte_flip_fails) {
         CHECK(parsed->ack_seq == orig_parsed->ack_seq);
         CHECK(parsed->profile == orig_parsed->profile);
         CHECK(parsed->score == orig_parsed->score);
-        CHECK(parsed->pwr_offset_biased == orig_parsed->pwr_offset_biased);
         CHECK(parsed->fec_overhead_16ths == orig_parsed->fec_overhead_16ths);
         CHECK(parsed->flags == orig_parsed->flags);
         CHECK(parsed->layer_delivery == orig_parsed->layer_delivery);
@@ -186,9 +213,9 @@ TEST(layer_delivery_clamps_on_pack) {
 
 TEST(frame_type_peek) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto rcf_wire = mtest::unhex(j["rcf"][0]["wire"].get<std::string>());
-  auto disc_wire = mtest::unhex(j["disc"][0]["wire"].get<std::string>());
-  auto ack_wire = mtest::unhex(j["disc_ack"][0]["wire"].get<std::string>());
+  auto rcf_wire = pack_rcf(rcf_from_json(j["rcf"][0]["fields"]));
+  auto disc_wire = pack_disc(disc_from_json(j["disc"][0]["fields"]));
+  auto ack_wire = pack_disc_ack(disc_ack_from_json(j["disc_ack"][0]["fields"]));
   CHECK(frame_type(rcf_wire.data(), rcf_wire.size()) == T_RCF);
   CHECK(frame_type(disc_wire.data(), disc_wire.size()) == T_DISC);
   CHECK(frame_type(ack_wire.data(), ack_wire.size()) == T_DISC_ACK);
@@ -213,30 +240,11 @@ TEST(overhead_to_16ths_cases) {
   CHECK(overhead_to_16ths(0.10) == 2);  // round(1.6) == 2
 }
 
-TEST(pwr_offset_bias_encoding) {
-  CHECK(encode_pwr_offset_qdb(0) == 64);
-  CHECK(encode_pwr_offset_qdb(-12) == 52);
-  CHECK(encode_pwr_offset_qdb(16) == 80);
-  CHECK(encode_pwr_offset_qdb(-100) == 0);    // clamped
-  CHECK(encode_pwr_offset_qdb(100) == 127);   // clamped, never 0xFF
-  CHECK(decode_pwr_offset_qdb(52) == -12);
-  CHECK(decode_pwr_offset_qdb(64) == 0);
-}
-
-TEST(rcf_carries_biased_offset) {
-  Rcf r;
-  r.pwr_offset_biased = encode_pwr_offset_qdb(-8);
-  auto b = pack_rcf(r);
-  auto p = parse_rcf(b.data(), b.size());
-  CHECK(p.has_value());
-  CHECK(decode_pwr_offset_qdb(p->pwr_offset_biased) == -8);
-}
-
 TEST(telem_round_trip_and_golden) {
   mabur::rc::Telem t;
   t.tlm_seq = 0x0102; t.state = 2; t.flags = 0x03; t.generation = 0x04050607;
   t.applied_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20);
-  t.applied_ov_x100 = 25; t.applied_off_qdb = 64; t.derate_qdb = 2;
+  t.applied_ov_x100 = 25;
   t.rcf_age_ms = 45; t.rcf_rx = 100000; t.enc_frames = 200000;
   t.enc_kbytes = 300000; t.cmd_kbps = 9000; t.qp = 8; t.ring_drops = 1;
   t.txq_depth = 3; t.txq_cap = 64; t.txq_drops = 7; t.radio_sent = 400000;
@@ -264,8 +272,8 @@ TEST(telem_round_trip_and_golden) {
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
-      "435201040302010207060504051940022d00a0860100400d0300e09304002823080100"
-      "034007000000801a0600090000000200333415163d034800040005004ce1";
+      "43520204030201020706050405192d00a0860100400d0300e09304002823080100"
+      "034007000000801a0600090000000200333415163d034800040005004a81";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -318,12 +326,104 @@ TEST(rcf_probe_flag_masked_from_caller_flags) {
   r.flags = mabur::rc::RCF_F_PROBE3;  // caller-supplied stray bit
   r.probe3 = false;  // but probe3 is false
   auto buf = mabur::rc::pack_rcf(r);
-  // Frame should have no probe byte (19-byte header + 4 layers + 2 CRC = 25).
-  CHECK(buf.size() == 25);
+  // Frame should have no probe byte (18-byte header + 4 layers + 2 CRC = 24).
+  CHECK(buf.size() == 24);
   auto p = mabur::rc::parse_rcf(buf.data(), buf.size());
   REQUIRE(p.has_value());
   CHECK(!p->probe3);  // probe3 must be false (stray bit was masked)
   CHECK(!(p->flags & mabur::rc::RCF_F_PROBE3));  // flag must be cleared
+}
+
+TEST(version_mismatch_rejected_both_directions) {
+  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored v1 frame
+  // become current-version, so it parses and the first CHECK fails.
+  mabur::rc::Rcf r;
+  r.vtx_id = 7;
+  r.seq = 1;
+  r.profile = 0;
+  r.fec_overhead_16ths = 4;
+  r.layer_delivery = {100, 100, 100, 100};
+  auto body = mabur::rc::pack_rcf(r);
+
+  // Sanity: as packed, it parses.
+  CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
+
+  // Byte 2 is the version. Any other version must be refused outright.
+  auto v1 = body;
+  v1[2] = 1;
+  CHECK(!mabur::rc::parse_rcf(v1.data(), v1.size()).has_value());
+
+  auto v3 = body;
+  v3[2] = 3;
+  CHECK(!mabur::rc::parse_rcf(v3.data(), v3.size()).has_value());
+
+  // The same guard must hold for telemetry, which travels the opposite
+  // direction (drone -> GS). A half-deployed pair must fail BOTH ways.
+  mabur::rc::Telem t;
+  t.tlm_seq = 9;
+  auto tb = mabur::rc::pack_telem(t);
+  CHECK(mabur::rc::parse_telem(tb.data(), tb.size()).has_value());
+  auto tv1 = tb;
+  tv1[2] = 1;
+  CHECK(!mabur::rc::parse_telem(tv1.data(), tv1.size()).has_value());
+}
+
+TEST(rcf_head_is_eighteen_bytes) {
+  // Pins the removed power byte. Reverting the deletion from pack_rcf()
+  // makes the packed body one byte longer and this fails.
+  mabur::rc::Rcf r;
+  r.vtx_id = 1;
+  r.fec_overhead_16ths = 9;
+  r.layer_delivery = {0, 0, 0, 0};
+  auto body = mabur::rc::pack_rcf(r);
+  // 18-byte head + 4 layer bytes + 2 CRC bytes.
+  CHECK(body.size() == 18 + 4 + 2);
+  // fec_overhead_16ths now lives at byte 16, n_layers at 17.
+  CHECK(body[16] == 9);
+  CHECK(body[17] == 4);
+}
+
+// The version check drops a foreign frame with no trace anywhere -- on a
+// half-deployed pair that presents as no-video, which sends the operator to
+// `restart maburd`, which cannot help. Both ingest points now log on this
+// predicate, so it must be exact: RC magic + a version that is not ours, and
+// nothing else. Deleting the buf[2] != RC_VERSION term (making it "is this an
+// RC frame at all") makes the own-version case fail; deleting the magic term
+// makes the non-RC case fail.
+TEST(foreign_rc_version_predicate) {
+  mabur::rc::Rcf r;
+  r.vtx_id = 7;
+  r.seq = 1;
+  r.fec_overhead_16ths = 4;
+  r.layer_delivery = {100, 100, 100, 100};
+  const auto body = mabur::rc::pack_rcf(r);
+
+  // Our own version: not foreign, and still a normal RC frame.
+  CHECK(!mabur::rc::is_foreign_rc_version(body.data(), body.size()));
+  CHECK(mabur::rc::frame_type(body.data(), body.size()) == mabur::rc::T_RCF);
+
+  // Byte 2 doctored to another version: foreign. frame_type() must NOT change
+  // its answer -- gs/src/main.cpp routes video on that -1.
+  for (uint8_t ver : {uint8_t{1}, uint8_t{3}, uint8_t{255}}) {
+    auto foreign = body;
+    foreign[2] = ver;
+    CHECK(mabur::rc::is_foreign_rc_version(foreign.data(), foreign.size()));
+    CHECK(mabur::rc::frame_type(foreign.data(), foreign.size()) == -1);
+  }
+
+  // A non-RC body (wrong magic) is not a version mismatch, whatever byte 2
+  // happens to hold -- this is the ~1-in-65536 false-positive class the RX
+  // paths additionally gate on crc_ok for.
+  const std::vector<uint8_t> video = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+  CHECK(!mabur::rc::is_foreign_rc_version(video.data(), video.size()));
+
+  // Too short to hold magic+version+type: never reported as a mismatch, at
+  // any length, including empty.
+  auto truncated = body;
+  truncated[2] = 1;  // would be foreign if it were long enough
+  for (size_t n = 0; n < 4; ++n)
+    CHECK(!mabur::rc::is_foreign_rc_version(truncated.data(), n));
+  CHECK(!mabur::rc::is_foreign_rc_version(nullptr, 0));
 }
 
 MTEST_MAIN

@@ -92,7 +92,6 @@ Config make_cfg() {
   cfg.link.failsafe_ms = 1000;
   cfg.link.rendezvous_ms = 30000;
   cfg.link.tick_ms = 100;
-  cfg.radio.thermal_max_delta = 25;
   cfg.waybeam.airtime_budget = 0.65;
   cfg.waybeam.bitrate_min_kbps = 1000;
   cfg.waybeam.bitrate_max_kbps = 20000;
@@ -107,7 +106,6 @@ std::vector<uint8_t> rcf_wire(uint32_t vtx_id, uint16_t seq, int rung) {
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = encode_profile(PhyMode::HT, static_cast<uint8_t>(kLadder[rung].mcs), 20);
-  r.pwr_offset_biased = PWR_NO_CHANGE;
   r.fec_overhead_16ths = overhead_to_16ths(kLadder[rung].ov);
   return pack_rcf(r);
 }

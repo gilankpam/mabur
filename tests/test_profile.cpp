@@ -115,7 +115,6 @@ TEST(profile_table_matches_vectors_verbatim) {
   REQUIRE(table.size() == expect_rows.size());
   for (size_t i = 0; i < table.size(); ++i) {
     CHECK(std::string(table[i].svc_ladder) == expect_rows[i]["ladder"].get<std::string>());
-    CHECK(table[i].pwr_offset_qdb == expect_rows[i]["pwr_offset_qdb"].get<int>());
     double ov = table[i].fec_overhead;
     double expect_ov = expect_rows[i]["ov"].get<double>();
     CHECK(ov > expect_ov - 1e-9 && ov < expect_ov + 1e-9);

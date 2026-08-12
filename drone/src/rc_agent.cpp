@@ -30,20 +30,17 @@ RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {}
 // a degraded radio link must never keep flooding at the last LINKED rate.
 void RcAgent::apply_max_range(uint64_t now_ms) {
   auto ladder = rc::ladder_from(PhyMode::HT, 0, 20);
-  commanded_offset_qdb_ = 0;  // full legal power
-  thermal_derate_ = 0;
   probe3_active_ = false;  // FAILSAFE/boot never probes
 
   // Forced shed while MAX_RANGE is the operating point (BOOT/RENDEZVOUS or a
   // LINKED->FAILSAFE entry) — held sticky in failsafe_shed_ until an
   // RCF/DISC takes the agent back to LINKED (see apply_ladder_op), so a
-  // later thermal/congestion reapply's recompute of shed[2]/[3] (which is
+  // later congestion reapply's recompute of shed[2]/[3] (which is
   // otherwise driven by shed_level_ alone) can't silently clobber it.
   failsafe_shed_ = true;
 
   applied_.ladder = ladder;
   applied_.fec_overhead = 1.0;
-  applied_.pwr_offset_qdb = commanded_offset_qdb_;
   applied_.shed[0] = false;
   applied_.shed[1] = false;
   applied_.shed[2] = true;  // reserved layer shed in MAX_RANGE, per spec (already covers shed_level_>=2)
@@ -53,14 +50,11 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
   run_bitrate_policy(now_ms, /*force=*/true);
 }
 
-// Applies a resolved (DISC row or RCF-decoded) ladder/power/FEC operating
-// point. Does NOT run the bitrate policy itself — callers on the RCF path
-// invoke run_bitrate_policy() explicitly afterwards, per the spec.
-void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder, int pwr_offset_qdb,
+// Applies a resolved (DISC row or RCF-decoded) ladder/FEC operating point.
+// Does NOT run the bitrate policy itself — callers on the RCF path invoke
+// run_bitrate_policy() explicitly afterwards, per the spec.
+void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder,
                               double fec_overhead) {
-  commanded_offset_qdb_ = pwr_offset_qdb;
-  thermal_derate_ = 0;
-
   // A resolved DISC/RCF op is only ever applied on a path that (re)enters
   // LINKED (see on_rc_frame), so the sticky MAX_RANGE forced-shed from a
   // prior RENDEZVOUS/FAILSAFE no longer applies — clear it here rather than
@@ -69,7 +63,6 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder, int pwr_
 
   applied_.ladder = ladder;
   applied_.fec_overhead = fec_overhead;
-  applied_.pwr_offset_qdb = commanded_offset_qdb_;
   applied_.shed[0] = false;
   applied_.shed[1] = false;
   applied_.shed[2] = shed_level_ >= 2;
@@ -79,26 +72,23 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder, int pwr_
 }
 
 // Reapplies the current commanded op (ladder/fec unchanged) with the
-// current thermal derate and congestion-shed levels folded in. Used by the
-// thermal guard and congestion guard, neither of which changes the ladder
-// or bumps generation on their own — generation tracks *new operating
-// points* (BOOT/DISC/RCF/failsafe entry), not power/shed adjustments to the
-// current one, so this function publishes via act_.apply_op() WITHOUT
-// touching applied_.generation. Consumers (the hot-thread loops in
-// main.cpp) must therefore detect "a new AppliedOp was published" by
-// identity-comparing the shared_ptr they last applied against the one the
-// atomic handoff currently holds, NOT by checking whether generation
-// changed — otherwise congestion shed / thermal derate would be computed
-// here but silently never reach the encoder.
+// current congestion-shed level folded in. Used by the congestion guard,
+// which doesn't change the ladder or bump generation on its own —
+// generation tracks *new operating points* (BOOT/DISC/RCF/failsafe entry),
+// not shed adjustments to the current one, so this function publishes via
+// act_.apply_op() WITHOUT touching applied_.generation. Consumers (the
+// hot-thread loops in main.cpp) must therefore detect "a new AppliedOp was
+// published" by identity-comparing the shared_ptr they last applied against
+// the one the atomic handoff currently holds, NOT by checking whether
+// generation changed — otherwise a congestion shed would be computed here
+// but silently never reach the encoder.
 //
 // shed[2]/[3] OR together every independent reason a layer must be shed:
 // failsafe_shed_ (sticky for as long as MAX_RANGE is the operating point —
 // see apply_max_range/apply_ladder_op) and the local congestion-shed level.
 // Without the OR, this recompute-from-shed_level_-alone would clobber a
 // forced failsafe shed the moment a congestion tick runs while in FAILSAFE.
-void RcAgent::reapply_with_derate_and_shed() {
-  applied_.pwr_offset_qdb =
-      std::max(cfg_.radio.min_offset_qdb, commanded_offset_qdb_ - thermal_derate_);
+void RcAgent::reapply_with_shed() {
   applied_.shed[2] = failsafe_shed_ || (shed_level_ >= 2);
   applied_.shed[3] = failsafe_shed_ || (shed_level_ >= 1);
   act_.apply_op(applied_);
@@ -156,23 +146,6 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   }
 }
 
-void RcAgent::run_thermal_guard(const RadioHealth& health) {
-  if (health.thermal_delta > cfg_.radio.thermal_max_delta) {
-    // Cap the escalating derate at the span between commanded and the floor
-    // — beyond that, further escalation is a no-op (reapply already floors
-    // the result at min_offset_qdb), so there's no reason to let the
-    // internal counter grow without bound while the radio stays hot.
-    int max_derate = commanded_offset_qdb_ - cfg_.radio.min_offset_qdb;
-    thermal_derate_ = std::min(max_derate, thermal_derate_ + 4);
-    reapply_with_derate_and_shed();
-  } else if (health.thermal_delta <= cfg_.radio.thermal_max_delta - 2) {
-    if (thermal_derate_ != 0) {
-      thermal_derate_ = 0;
-      reapply_with_derate_and_shed();
-    }
-  }
-}
-
 // Escalates shed_level_ (0..3) by one step the instant tx_drops rises since
 // the last tick (congestion is assumed the moment drops increase — no
 // debounce on the way up), and decays it by exactly one step down per 2s
@@ -181,8 +154,8 @@ void RcAgent::run_thermal_guard(const RadioHealth& health) {
 // 2s clean windows in a row, not one. shed_level_ >= 1 sheds sid 3 (SVC-T
 // enhance, droppable), >= 2 also sheds sid 2 (reserved), and reaching level
 // 3 additionally cuts the encoder bitrate by 30% once. Any level change
-// reapplies the current op (derate+shed folded
-// in) so the change reaches the actuator immediately.
+// reapplies the current op (shed folded in) so the change reaches the
+// actuator immediately.
 void RcAgent::run_congestion_guard(uint64_t now_ms, const RadioHealth& health) {
   bool drops_rose = have_last_tx_drops_ && health.tx_drops > last_tx_drops_;
   if (!have_last_tx_drops_) drops_rose = health.tx_drops > 0;
@@ -210,7 +183,7 @@ void RcAgent::run_congestion_guard(uint64_t now_ms, const RadioHealth& health) {
     }
   }
 
-  if (changed) reapply_with_derate_and_shed();
+  if (changed) reapply_with_shed();
 }
 
 void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
@@ -254,8 +227,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
                                    static_cast<int>(rc::profile_table().size()) - 1);
     auto ladder = rc::ladder_for_row(row_idx);
     const auto& row = rc::profile_table()[static_cast<size_t>(row_idx)];
-    int offset_qdb = std::clamp<int>(row.pwr_offset_qdb, cfg_.radio.min_offset_qdb, 0);
-    apply_ladder_op(ladder, offset_qdb, row.fec_overhead);
+    apply_ladder_op(ladder, row.fec_overhead);
 
     if (state_ != State::FAILSAFE) link_established_ = true;
     state_ = State::LINKED;
@@ -311,14 +283,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       probe3_active_ = true;
     }
 
-    int offset_qdb = commanded_offset_qdb_;
-    if (r->pwr_offset_biased != rc::PWR_NO_CHANGE) {
-      offset_qdb = std::clamp(rc::decode_pwr_offset_qdb(r->pwr_offset_biased),
-                               cfg_.radio.min_offset_qdb, 0);
-    }
-
     State prev_state = state_;
-    apply_ladder_op(ladder, offset_qdb, r->fec_overhead());
+    apply_ladder_op(ladder, r->fec_overhead());
 
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;
@@ -373,7 +339,6 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     }
   }
 
-  run_thermal_guard(health);
   run_congestion_guard(now_ms, health);
 }
 
