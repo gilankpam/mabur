@@ -200,6 +200,14 @@ rate_cases = [{"mode": m, "mcs": mc, "bw": bw, "sgi": sgi,
               for m, mc, bw, sgi in [("ht", 0, 20, False), ("ht", 4, 20, False),
                                      ("ht", 7, 40, True), ("vht", 8, 80, False),
                                      ("vht", 4, 40, True)]]
+# NOTE: committed profile.json's profiles[].ladder values are mabur's own
+# flat ladder (common/src/profile.cpp ladder_spec_str(), flat by the
+# 2026-07-26 hw ruling documented there), NOT a fresh mirror of devourer's
+# adaptive_link.ladder_spec() below, which now emits escalating T1/T2 MCS.
+# Re-running this generator therefore reproduces a profiles[].ladder diff
+# that is PRE-EXISTING drift, not a regression you introduced — devourer is
+# frozen/off-limits, so reconciling it is a separate decision, not a side
+# effect of regenerating vectors.
 dump("profile.json", {"profiles": prof_cases,
                       "rates": rate_cases,
                       "table": [{"ladder": p.svc_ladder,
