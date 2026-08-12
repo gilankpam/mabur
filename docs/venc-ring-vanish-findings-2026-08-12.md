@@ -104,12 +104,15 @@ smeared — the delivered bitstream references pictures it never contains.
    **The re-seed caveat above was prophetic — see the storm section
    below.** The detection/export half is unconditionally valuable; the
    self-IDR half needs redesign.
-2. **Enlarge the venc ring** 8→32 slots (533 ms of buffer) — attacks the
-   stall margin itself; needs a waybeam rebuild (openipc-builder, see
-   waybeam-venc-build notes). After the storm below, this is promoted from
-   "structural option" to **the** fix.
-3. Optionally: find maburd's transient drain stall (suspect: the FEC+
-   inject burst of an IDR frame on the hot path) and bound it.
+2. **Enlarge the venc ring** 8→32 slots — ~~promoted to "the" fix after
+   the storm~~ **RETIRED same evening by direct measurement** (see the
+   bottleneck section below): when the CPU isn't starved, an IDR burst
+   never pushes the ring past 2/8 slots, and when the CPU *is* starved a
+   deeper ring is pure bufferbloat (the operator called this). Keep only
+   the `full_drops` export from the planned rebuild.
+3. Optionally: find maburd's transient drain stall — **RESOLVED below**:
+   there is no maburd-local stall to find; the hot thread simply stops
+   getting scheduled when the SoC is over its CPU envelope.
 
 ## Live confirmation — and the self-IDR storm (2026-08-12 evening)
 
@@ -156,6 +159,66 @@ Same evening, distinct bug, same symptom neighborhood:
 `docs/waybeam-bitrate-wedge-2026-08-12.md` — the encoder can be left at
 maburd's 1400 kbps boot-floor bitrate after link-up (<1 Mbps video while
 everything reads healthy).
+
+## The bottleneck, measured — it's CPU famine, not ring depth
+
+Attribution experiment, same evening: a read-only 1 kHz sampler on the
+ring header's `write_idx`/`read_idx` (third process, mmap PROT_READ —
+occupancy = the index difference), run for identical 75 s windows with 4
+deliberate IDR bursts, at two bitrate caps:
+
+| | cap 16000 | cap 12000 |
+|---|---|---|
+| ring empty (0/8) | 22% of samples | 94% |
+| ring ≥5 slots | 49% (15% pinned FULL) | 0.0% — never above 2/8 |
+| writes into ring | 56.2/s (encoder starved too) | 59.5/s (full rate) |
+| pressure episodes | 200+, up to 6.4 s at FULL | zero |
+| `enc.vanished` delta | +281 | +1 |
+
+Two readings force the conclusion:
+
+- During full episodes, occupancy sat pinned at exactly 8 while
+  `write_idx` froze for up to 1.5 s cumulative — which arithmetically
+  means `read_idx` was frozen too. maburd's hot thread was not draining
+  for hundreds of ms at a stretch. That is not the ~130 ms IDR-burst
+  arithmetic; that is a thread not being scheduled. Box state at the
+  time: 16.6% idle, maburd >1 core across its FEC/hot threads, kernel
+  video threads eating the rest. (Load average ~14 is MEANINGLESS on this
+  SoC — vpe/vif/venc kernel threads idle in D-state and inflate it; read
+  idle%.)
+- At the 12k cap the four IDR bursts — the worst-case stressor — never
+  pushed occupancy past **2 of 8 slots**. With CPU available, maburd
+  drains a whole IDR burst in under two frame-times. The 8-slot ring is
+  *generous*; depth was never the problem, and a deeper ring under
+  sustained overload would only add standing latency before dropping
+  anyway.
+
+So the venc-ring vanish class is **drain-bound via CPU famine**: above
+~12 Mbps at this op point (mcs5, FEC ov 0.25, rally, 2×A7) the SoC runs
+out — encoder, TRAIL_N rewrite, FEC, USB all scale with video bytes
+together — and the first victim is the hot thread's scheduling, whose
+backlog lands on the 133 ms ring, whose overflow is the silent base-frame
+drop. Everything in this doc downstream of "IDR burst fills the ring" is
+that mechanism; the burst is just the moment demand peaks.
+
+Hand-wave at the 12k cap: zero smear (operator-confirmed), +14 vanished
+during the peak vs +281 — the residual transient class (motion peak
+coinciding with an IDR) survives at 12k and would be addressed by
+`maxIBytes` (live-settable, caps the I-frame burst at the source) if it
+ever matters at the chosen operating point.
+
+## Where this landed (end of 2026-08-12)
+
+The operator stepped the bench back to **master (`6086880`) on both ends
+with `bitrate_max_kbps: 10000`** — a CPU-honest operating point (verified:
+encoder 9.8 Mbps at the cap, 60.3 fps, 0 gaps/incomplete/resyncs). The
+`idr-request` branch (all detection/self-IDR/back-channel machinery, 35
+commits) is parked locally, unpushed; master has NO vanish observability
+and NO IDR request paths, so any residual vanish heals via rally's
+natural 2 s GOP only. Revised follow-up queue: self-IDR redesign (kill
+switch + GOP-aware suppression + rate-based guard) before the branch
+redeploys; waybeam trip reduced to `full_drops` export (+ optional
+`maxIBytes`); maburd bitrate-collapse watchdog for the sibling wedge bug.
 
 ## Related documents
 

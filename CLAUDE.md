@@ -78,17 +78,22 @@ with:
 ⚠ **"Wire clean" does not mean "no frame loss"** (2026-08-12): encoded
 frames can vanish inside the drone's venc frame ring BEFORE maburd assigns
 a frame_id — the wire sequence closes seamlessly, and a vanished base
-frame silently corrupts the decoder until an IDR. Since the same-day
-pts-jump detection (`65c94fd`), the ONE place this loss class is counted
-is `drone.enc.{vanished_base,vanished_enh}` on the sideport (mirrored in
-maburd's 5 s `frame_ring:` stderr line); everything else still reads
-clean. A smeared picture over an otherwise-green sideport is this, not a
-telemetry bug. ⚠ The companion self-IDR path can amplify an overload into
-an IDR storm (rolling smear + stutter, bitrate inflated by I-frame
-density; `air_pct` stays LOW because the bottleneck is the drone's ring
-drain, not RF) — mitigated by `waybeam.idr_cooldown_ms: 5000` in the
-drone config; check `drone.enc.idr_grants`' RATE when smear churns.
-Evidence and fix directions:
+frame silently corrupts the decoder until an IDR. Root cause is CPU
+famine, not ring depth: above ~12 Mbps at the mcs5 bench op point the
+2×A7 SoC runs out (measured: hot thread unscheduled for 100s of ms, ring
+pinned full 15% of the time at a 16 Mbps cap vs never past 2/8 at 12
+Mbps), so the honest knob is `waybeam.bitrate_max_kbps` — the bench runs
+10000 since 2026-08-12 and master (`6086880`) on BOTH ends. The pts-jump
+detection that counts this class (`drone.enc.{vanished_base,vanished_enh}`
++ the 5 s `frame_ring:` stderr line, commit `65c94fd`) lives on the
+PARKED `idr-request` branch — the deployed master is blind to it again; a
+smeared picture over an all-green sideport is this class, healed only by
+rally's natural 2 s GOP. If the branch redeploys, know that its self-IDR
+path amplified an overload into an IDR storm (rolling smear + stutter,
+bitrate inflated by I-frame density, `air_pct` LOW throughout — the
+bottleneck is drone CPU, not RF) and needs its queued redesign first;
+`waybeam.idr_cooldown_ms: 5000` was the stopgap (key REJECTED by master's
+config parser — strip it before any master deploy). Evidence:
 `docs/venc-ring-vanish-findings-2026-08-12.md`. Sibling same-day bug with
 opposite signature (video <1 Mbps, everything green, encoder stuck at the
 1400 boot floor): `docs/waybeam-bitrate-wedge-2026-08-12.md` — cure is
