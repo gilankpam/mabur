@@ -243,7 +243,6 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
   vcfg.pin_overhead = cfg.link.static_overhead;
-  vcfg.pin_offset_qdb = cfg.link.static_offset_qdb;
   maburgs::VrxController vrx(vcfg);
 
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
@@ -527,10 +526,10 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
-                   "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f/off%d "
+                   "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f "
                    "ring=%llu ring_drop=%llu q_drop=%llu",
                    static_cast<int>(vrx.link_state()), sel.selected(), op.mcs,
-                   op.bw, op.overhead, op.pwr_offset_qdb,
+                   op.bw, op.overhead,
                    static_cast<unsigned long long>(au_ring.published()),
                    static_cast<unsigned long long>(au_ring.dropped_oversize()),
                    static_cast<unsigned long long>(queue.dropped()));

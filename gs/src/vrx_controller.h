@@ -20,10 +20,9 @@ struct VrxCfg {
   // config.h). Consulted every tick unless pinned.
   LadderCfg ladder;
   // Static-link pin: mcs >= 0 bypasses the adaptive controller (see
-  // LinkCfg::static_mcs). overhead/offset used only when pinned.
+  // LinkCfg::static_mcs). overhead used only when pinned.
   int pin_mcs = -1;
   double pin_overhead = 0.25;
-  int pin_offset_qdb = 0;
   ScoreConfig score;
 };
 

@@ -59,33 +59,8 @@ TEST(rcf_fields_are_correct) {
   CHECK(r->ack_seq >= 500);
   REQUIRE(r->layer_delivery.size() == 4);
   CHECK(r->layer_delivery[2] == 80);
-  CHECK(r->pwr_offset_biased ==
-        mabur::rc::encode_pwr_offset_qdb(vrx.cur_op().pwr_offset_qdb));
   CHECK(r->fec_overhead_16ths ==
         mabur::rc::overhead_to_16ths(vrx.cur_op().overhead));
-}
-
-// (a) Non-pin RCFs always carry offset 0, regardless of health — the ladder
-// differentiates rungs by MCS + FEC overhead only; RCF power offset is
-// fixed at the calibrated baseline (offset 0) in ladder mode.
-TEST(non_pin_rcf_offset_always_zero) {
-  auto vrx = make();
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
-  std::optional<VrxController::Out> out;
-  double now = 0;
-  // Deliberately hostile health: if an offset loop were still wired in this
-  // path it would move the offset away from 0. It must not.
-  LinkHealth hostile{true, 0.9, 0.9, false};
-  for (int i = 0; i < 60 && (!out || out->is_disc); ++i) {
-    now += 10;
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    out = vrx.step(now, ld, hostile);
-  }
-  REQUIRE(out.has_value());
-  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-  REQUIRE(r.has_value());
-  CHECK(r->pwr_offset_biased == mabur::rc::encode_pwr_offset_qdb(0));
-  CHECK(vrx.cur_op().pwr_offset_qdb == 0);
 }
 
 // (b) Profile/overhead in the RCF track ctl().op() after a forced demote:
@@ -146,7 +121,6 @@ TEST(silence_beacons_fast_and_recovers) {
   CHECK(discs >= 45);                       // ~50 in 1 s at 20 ms pacing
   // Failsafe op point while blind:
   CHECK(vrx.cur_op().mcs == 0);
-  CHECK(vrx.cur_op().pwr_offset_qdb == 0);
   // Video returns -> SESSION and RCFs resume.
   vrx.on_video(-55.0, 25.0, false, 900, 2500.0);
   CHECK(vrx.link_state() == VrxState::SESSION);
@@ -410,7 +384,6 @@ TEST(static_pin_overrides_controller) {
   cfg.vtx_id = 1;
   cfg.pin_mcs = 5;
   cfg.pin_overhead = 0.25;
-  cfg.pin_offset_qdb = -12;
   cfg.ladder.ladder = {{0, 1.0}};  // must never be consulted while pinned
   VrxController vrx(cfg);
   std::array<uint8_t, 4> ld{100, 100, 100, 100};
@@ -425,10 +398,8 @@ TEST(static_pin_overrides_controller) {
     if (o && !o->is_disc) out = o;
   }
   CHECK(vrx.cur_op().mcs == 5);
-  CHECK(vrx.cur_op().pwr_offset_qdb == -12);
   REQUIRE(out.has_value());
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
-  CHECK(r->pwr_offset_biased == mabur::rc::encode_pwr_offset_qdb(-12));
   CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(0.25));
 }

@@ -182,8 +182,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   link["tx_card"] = in.tx_card;
   link["op"] = {{"mcs", in.op.mcs},           {"bw", in.op.bw},
                 {"sgi", in.op.sgi},           {"vht", in.op.vht},
-                {"overhead", in.op.overhead}, {"offset_qdb", in.op.pwr_offset_qdb},
-                {"snr_req", in.op.snr_req}};
+                {"overhead", in.op.overhead}, {"snr_req", in.op.snr_req}};
   link["deadline_ms"] = in.deadline_ms;
   if (in.residual_loss) link["residual_loss"] = *in.residual_loss;
   else link["residual_loss"] = nullptr;
@@ -404,9 +403,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["applied"] = {{"mcs", mcs},
                     {"bw", bw},
                     {"vht", mode == mabur::rc::PhyMode::VHT},
-                    {"overhead", t.applied_ov_x100 / 100.0},
-                    {"offset_qdb", mabur::rc::decode_pwr_offset_qdb(t.applied_off_qdb)},
-                    {"derate_qdb", t.derate_qdb}};
+                    {"overhead", t.applied_ov_x100 / 100.0}};
     json& rcf = d["rcf"];
     rcf["age_ms"] = t.rcf_age_ms;
     rcf["rx_pps"] = have_telem_rates_ ? json(telem_rcf_rx_pps_) : json(nullptr);

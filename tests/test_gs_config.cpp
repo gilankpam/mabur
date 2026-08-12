@@ -238,20 +238,16 @@ TEST(stale_video_out_key_throws) {
 
 MTEST_MAIN
 
-// static_txagc was renamed to static_offset_qdb (USER-FACING, qdB offset
-// semantics since 2026-07-17).
-TEST(static_offset_qdb_key_parses_and_defaults) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
-  CHECK(cfg.link.static_offset_qdb == 0);
-
-  cfg = maburgs::load_config(write_tmp(R"({"link":{"static_offset_qdb":-12}})"));
-  CHECK(cfg.link.static_offset_qdb == -12);
-
-  // Old key name is now unknown -> rejected.
+TEST(gs_config_rejects_static_offset_qdb) {
+  // Reverting the removal of "static_offset_qdb" from the link known-keys
+  // list in gs/src/config.cpp makes this load successfully and the test
+  // fails.
   bool threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"static_txagc":63}})")); }
-  catch (const std::exception& e) {
-    threw = std::string(e.what()).find("static_txagc") != std::string::npos;
+  try {
+    maburgs::load_config(write_tmp("{\"link\":{\"static_offset_qdb\":0}}"));
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    CHECK(std::string(e.what()).find("unknown key") != std::string::npos);
   }
   CHECK(threw);
 }

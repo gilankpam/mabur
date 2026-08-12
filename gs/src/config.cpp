@@ -124,7 +124,7 @@ Config load_config(const std::string& path) {
     const json& r = j["link"];
     check_keys(r, "link",
                {"vtx_id", "feedback_ms", "beacon_keepalive_ms",
-                "static_mcs", "static_overhead", "static_offset_qdb",
+                "static_mcs", "static_overhead",
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
@@ -136,7 +136,6 @@ Config load_config(const std::string& path) {
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
     c.link.static_mcs = static_cast<int>(get_int(r, "static_mcs", -1, -1, 7, "link"));
     c.link.static_overhead = get_num(r, "static_overhead", 0.25, 0.10, 1.0, "link");
-    c.link.static_offset_qdb = static_cast<int>(get_int(r, "static_offset_qdb", 0, -64, 63, "link"));
 
     // Measured-loss ladder: rungs (c.link.ladder_cfg.ladder already holds the
     // struct default 6-rung ladder; an explicit "ladder" array replaces it

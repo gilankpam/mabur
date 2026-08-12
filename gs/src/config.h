@@ -44,14 +44,11 @@ struct LinkCfg {
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
   // Static-link mode: when static_mcs >= 0 the adaptive controller is
-  // bypassed entirely and every RCF commands exactly this op (HT, 20 MHz).
-  // Rendezvous/keep-alive/failsafe machinery is unaffected. For bench
-  // debugging with a fixed operating point (2026-07-12).
+  // bypassed entirely and every RCF commands exactly this MCS/FEC overhead
+  // (HT, 20 MHz). Rendezvous/keep-alive/failsafe machinery is unaffected.
+  // For bench debugging with a fixed operating point (2026-07-12).
   int static_mcs = -1;
   double static_overhead = 0.25;
-  // qdB power offset from the calibrated baseline (RCF wire semantics,
-  // rc_proto bias-64); used only when static_mcs >= 0.
-  int static_offset_qdb = 0;
 
   // Measured-loss ladder controller config (spec
   // docs/superpowers/specs/2026-07-27-ladder-controller-design.md): rungs
