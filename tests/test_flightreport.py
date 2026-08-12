@@ -405,8 +405,38 @@ def test_wall_report():
     print("\n✓ Wall report test passed!")
 
 
+def test_ctllog_r_lines_and_inversion():
+    text = (
+        "ctllog 1 ladder=0/100 down_util=0.35 up_util=0.15\n"
+        "S 1000 0 0.0100 30.0 0.0000 0.0000 0.0000 -20.0\n"
+        "R 10000 0 0.0100 0.0000 0.0200 0.0000 -20.0 0.50 400 0.0 0.0000 0\n"
+        "R 10000 1 0.0500 0.0500 0.0400 0.0000 -24.0 0.80 350 5.0 0.1000 3\n"
+        "R 20000 0 0.0110 0.0000 0.0200 0.0000 -20.1 0.50 600 0.0 0.0000 0\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
+        f.write(text)
+        path = f.name
+    try:
+        log = flightreport.load_ctllog(path)
+        assert len(log["R"]) == 3
+        assert log["R"][1]["rung"] == 1
+        assert log["R"][1]["n"] == 350
+        assert log["R"][1]["evm_sd_db"] == 0.80
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            flightreport.print_wall_report(log)
+        s = out.getvalue()
+        assert "RUNG STORE" in s
+        # Final snapshots: rung0 resid 0.0 (n=600), rung1 resid 0.05 (n=350)
+        # -> 0.05 >= max(2*0.0, 0.0+0.02): resid inversion, both n >= 300.
+        assert "INVERSION" in s and "rung 1" in s
+    finally:
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_ctllog_evm_optional_trailing_token()
     test_wall_report()
+    test_ctllog_r_lines_and_inversion()
