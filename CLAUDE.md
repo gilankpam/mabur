@@ -209,7 +209,8 @@ API again: for the life of the process each rate `r` sits at effective
 TXAGC index `rate_walls_idx[r] - round(wall_margin_db * 4)`. Note the
 `* 4`: the chip's index step is 0.25 dB, so `wall_margin_db` is a dB
 figure converted to index steps, and a 1 dB margin is 4 steps
-(`drone/src/power_plan.h:43-55`). The config keys `radio.thermal_max_delta`,
+(`make_power_plan()` in `drone/src/power_plan.h`). The config keys
+`radio.thermal_max_delta`,
 `radio.min_offset_qdb`, `radio.power_offset_qdb` and
 `link.static_offset_qdb` were REMOVED and now FAIL BOOT, as does
 `radio.power_mode: "override"` (it had become identical to `"none"`).
@@ -232,10 +233,10 @@ frames in BOTH directions**, and because DISC_ACK is what carries
 the stale-caps restart deadlock, which will send you to `restart
 maburd`. That will not help. Recovery is to finish the deploy. Deploy
 order is config-before-binary on both devices: a stale or removed key
-makes `maburd`/`maburgs` fail to start (a config-load error exits 1 in
-`maburd`, `drone/src/main.cpp:1236`, and 2 in `maburgs`,
-`gs/src/main.cpp:723`/`:740` — the two daemons do NOT agree, so do not
-key a script off either number), and unlike `maburplay`'s
+makes `maburd`/`maburgs` fail to start (a config-load error exits **1** in
+`maburd` and **2** in `maburgs` — both in the `load_config` try/catch in
+their respective `main()`; the two daemons do NOT agree, so do not key a
+script off either number), and unlike `maburplay`'s
 `S97maburplay` — which stops respawning on exit
 2 or 143 — neither daemon's wrapper (`S96mabur`, `S96maburgs`,
 `maburgs.service` under systemd) checks the exit code at all, so it
