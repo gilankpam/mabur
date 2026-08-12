@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 #include "mabur/uep_encoder.h"
 
@@ -35,7 +36,8 @@ const char* to_string(ProbeOutcome o) {
   return "unknown";
 }
 
-LadderController::LadderController(LadderCfg cfg) : cfg_(std::move(cfg)) {
+LadderController::LadderController(LadderCfg cfg)
+    : cfg_(std::move(cfg)), store_(cfg_.ladder.size(), cfg_.rung_stats) {
   assert(!cfg_.ladder.empty());
   fail_count_.assign(cfg_.ladder.size(), 0);
   penalty_until_.assign(cfg_.ladder.size(), -1e18);
@@ -112,6 +114,7 @@ void LadderController::reset_windows() {
 
 void LadderController::set_event(double now_ms, int from, int to,
                                   CtlReason reason, double u, double snr) {
+  store_.on_transition(from, to, reason, now_ms);
   last_event_.t_ms = now_ms;
   last_event_.from = from;
   last_event_.to = to;
@@ -243,6 +246,18 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   pre_fec_loss_ = h.pre_fec_loss;
   u_ = h.pre_fec_loss / budget();
 
+  // Observe-only rung statistics (spec 2026-08-13): gated on the same
+  // post-transition blank as s3 decisions — FEC re-key artifacts must not
+  // be attributed to the new rung (up to ~200 ms of pre-transition symbols
+  // can outlive the blanking; see CLAUDE.md tuning invariant). Fed BEFORE
+  // the decision blocks so the sample that triggers a demote still lands
+  // on the rung it actually measured.
+  if (now_ms >= s3_blank_until_ms_) {
+    store_.observe_s1(idx_, u_, h.residual_loss > 0.0, now_ms);
+    if (!std::isnan(h.s1_evm_db))
+      store_.observe_evm(idx_, h.s1_evm_db, now_ms);
+  }
+
   // 4. Residual (post-FEC) loss demotes immediately, exempt from
   // min_between_changes_ms. If the current rung was on probation, this also
   // books a probation failure and penalizes the rung.
@@ -314,6 +329,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     const double b3 = budget3_for(idx_);
     u3_ = b3 > 0.0 ? h.s3_pre_fec_loss / b3
                    : (h.s3_pre_fec_loss > 0.0 ? 1e9 : 0.0);
+    store_.observe_s3(idx_, u3_, h.s3_residual_loss > 0.0, now_ms);
   }
 
   // Same bookkeeping as the s1 util/probation demotes above, deliberately —
@@ -435,6 +451,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
         // dataset (sideport last_probe, ctl-log P lines) cannot tell a
         // marginal candidate from a clean one.
         probe_u_pred_last_ = u_pred;
+        store_.observe_probe(probe_rung_, u_pred, now_ms);
         if (u_pred > probe_util_threshold()) {
           // The CANDIDATE rung earns the penalty (escalating ledger), and the
           // link never moved.
