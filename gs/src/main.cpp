@@ -378,7 +378,8 @@ static int run_radio(const maburgs::Config& cfg) {
         last_foreign_rc_ms = now_ms_u;
         std::fprintf(stderr,
                      "maburgs: heard an RC frame at RC_VERSION %u but this "
-                     "build speaks %u -- ignoring it (rate-limited to 1/5s). "
+                     "build speaks %u, so no RC path can read it and it is "
+                     "being miscounted as video (rate-limited to 1/5s). "
                      "The pair is half-deployed: no control link and, because "
                      "DISC_ACK carries CAP_FRAME_WIRE, no video either. "
                      "Finish the deploy on BOTH ends; restarting maburd will "
