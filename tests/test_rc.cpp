@@ -383,4 +383,47 @@ TEST(rcf_head_is_eighteen_bytes) {
   CHECK(body[17] == 4);
 }
 
+// The version check drops a foreign frame with no trace anywhere -- on a
+// half-deployed pair that presents as no-video, which sends the operator to
+// `restart maburd`, which cannot help. Both ingest points now log on this
+// predicate, so it must be exact: RC magic + a version that is not ours, and
+// nothing else. Deleting the buf[2] != RC_VERSION term (making it "is this an
+// RC frame at all") makes the own-version case fail; deleting the magic term
+// makes the non-RC case fail.
+TEST(foreign_rc_version_predicate) {
+  mabur::rc::Rcf r;
+  r.vtx_id = 7;
+  r.seq = 1;
+  r.fec_overhead_16ths = 4;
+  r.layer_delivery = {100, 100, 100, 100};
+  const auto body = mabur::rc::pack_rcf(r);
+
+  // Our own version: not foreign, and still a normal RC frame.
+  CHECK(!mabur::rc::is_foreign_rc_version(body.data(), body.size()));
+  CHECK(mabur::rc::frame_type(body.data(), body.size()) == mabur::rc::T_RCF);
+
+  // Byte 2 doctored to another version: foreign. frame_type() must NOT change
+  // its answer -- gs/src/main.cpp routes video on that -1.
+  for (uint8_t ver : {uint8_t{1}, uint8_t{3}, uint8_t{255}}) {
+    auto foreign = body;
+    foreign[2] = ver;
+    CHECK(mabur::rc::is_foreign_rc_version(foreign.data(), foreign.size()));
+    CHECK(mabur::rc::frame_type(foreign.data(), foreign.size()) == -1);
+  }
+
+  // A non-RC body (wrong magic) is not a version mismatch, whatever byte 2
+  // happens to hold -- this is the ~1-in-65536 false-positive class the RX
+  // paths additionally gate on crc_ok for.
+  const std::vector<uint8_t> video = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+  CHECK(!mabur::rc::is_foreign_rc_version(video.data(), video.size()));
+
+  // Too short to hold magic+version+type: never reported as a mismatch, at
+  // any length, including empty.
+  auto truncated = body;
+  truncated[2] = 1;  // would be foreign if it were long enough
+  for (size_t n = 0; n < 4; ++n)
+    CHECK(!mabur::rc::is_foreign_rc_version(truncated.data(), n));
+  CHECK(!mabur::rc::is_foreign_rc_version(nullptr, 0));
+}
+
 MTEST_MAIN

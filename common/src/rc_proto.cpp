@@ -264,6 +264,13 @@ int frame_type(const uint8_t* buf, size_t len) {
   return buf[3];
 }
 
+bool is_foreign_rc_version(const uint8_t* buf, size_t len) {
+  // Same 4-byte minimum as frame_type(): below it there is no frame to talk
+  // about, so a truncated body is never reported as a version mismatch.
+  if (len < 4) return false;
+  return get16(buf, 0) == RC_MAGIC && buf[2] != RC_VERSION;
+}
+
 uint8_t overhead_to_16ths(double ov) {
   double n = std::round(ov * 16.0);
   if (n < 1.0) n = 1.0;

@@ -139,6 +139,23 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len);
 // the buffer is too short or doesn't carry the RC magic/version.
 int frame_type(const uint8_t* buf, size_t len);
 
+// True iff these bytes carry the RC magic but NOT our RC_VERSION -- i.e. a
+// peer at a different protocol version. Total and side-effect-free: false for
+// a buffer shorter than 4 bytes, false for a non-RC body, false for our own
+// version.
+//
+// Deliberately additive rather than a change to frame_type()'s contract:
+// frame_type() returning -1 is the affirmative "this is video" signal on the
+// GS ingest path (gs/src/main.cpp), so distinguishing the version case there
+// would silently reroute video accounting. This predicate exists so the two
+// ingest points can LOG a version mismatch while still dropping/handling the
+// frame exactly as before -- a half-deployed pair otherwise fails completely
+// silently, presenting as no-video that looks like the stale-caps deadlock.
+//
+// NOT a CRC check. RC_MAGIC is two bytes, so ~1 in 65536 corrupt bodies match
+// it by chance: RX-path callers must gate on their own crc_ok.
+bool is_foreign_rc_version(const uint8_t* buf, size_t len);
+
 // Converts a fractional FEC overhead (e.g. 0.25) to the wire's 1/16ths unit,
 // rounded to nearest and clamped to [1, 16].
 uint8_t overhead_to_16ths(double ov);

@@ -66,6 +66,33 @@ namespace {
 
 using namespace mabur;
 
+// A GS at a different RC_VERSION is refused by rc::frame_type(), so its RCFs
+// never reach the agent -- and, because the uplink RSSI/SNR EMAs are fed
+// inside that same accepted-frame branch, drone.uplink.snr_* goes stale too.
+// From the drone's side that is indistinguishable from "no GS is talking",
+// and from the GS's side it looks like the stale-caps restart deadlock, which
+// sends the operator to `restart maburd` -- which cannot help. So say it out
+// loud, but rarely: a mismatched peer transmits continuously and /tmp is
+// tmpfs. Same once-per-5 s idiom as waybeam_client.cpp's log_rate_limited().
+// Not thread-safe; only rx_callback (the RX thread) calls it.
+void log_foreign_rc_version(uint8_t peer_ver) {
+  using clock = std::chrono::steady_clock;
+  static clock::time_point last{};
+  const auto now = clock::now();
+  if (last.time_since_epoch().count() != 0 &&
+      now - last < std::chrono::seconds(5))
+    return;
+  last = now;
+  std::fprintf(stderr,
+               "maburd: heard an RC frame at RC_VERSION %u but this build "
+               "speaks %u -- ignoring it (rate-limited to 1/5s). The pair is "
+               "half-deployed: there is no control link and no video in "
+               "either direction. Finish the deploy on BOTH ends; restarting "
+               "maburd will not help.\n",
+               static_cast<unsigned>(peer_ver),
+               static_cast<unsigned>(rc::RC_VERSION));
+}
+
 // ---------------------------------------------------------------------------
 // Sinks
 // ---------------------------------------------------------------------------
@@ -772,6 +799,13 @@ int run_real_mode(const Config& cfg) {
       // attrib (rssi/snr) is not a trustworthy sample.
       if (!pkt.RxAtrib.crc_err)
         uplink_track.on_rc_frame(pkt.RxAtrib.rssi, pkt.RxAtrib.snr);
+    } else if (!pkt.RxAtrib.crc_err &&
+               rc::is_foreign_rc_version(body, body_len)) {
+      // Same crc gate as the EMAs, and for the same class of reason:
+      // RC_MAGIC is two bytes, so ~1 in 65536 corrupt bodies matches it by
+      // chance and must not print a version-mismatch scare. Log only —
+      // the frame is still dropped exactly as it was before.
+      log_foreign_rc_version(body[2]);
     }
   };
 
