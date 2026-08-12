@@ -255,6 +255,24 @@ static int run_radio(const maburgs::Config& cfg) {
        },
        [&](uint8_t sid, bool truncated) {
          const uint64_t now = mono_ms();
+         // Forensic (2026-08-12 smear hunt): EVERY loss event, capped at
+         // 5/s with a suppressed count -- the gap-skip sid inference is on
+         // trial, and only these lines show what class it assigned to a
+         // wholly-lost frame. Remove once the inference has a clean soak.
+         static uint64_t fl_log_ms = 0;
+         static uint64_t fl_suppressed = 0;
+         if (now - fl_log_ms >= 200) {
+           char sup[48] = "";
+           if (fl_suppressed)
+             std::snprintf(sup, sizeof(sup), " (+%llu suppressed)",
+                           static_cast<unsigned long long>(fl_suppressed));
+           std::fprintf(stderr, "frame-lost: sid=%u trunc=%d%s\n", sid,
+                        truncated ? 1 : 0, sup);
+           fl_log_ms = now;
+           fl_suppressed = 0;
+         } else {
+           ++fl_suppressed;
+         }
          // Edge-triggered log, additionally rate-limited to one line/s so a
          // flapping link can't spam /tmp/maburgs.log.
          if (idr_req.on_frame_lost(sid, now) && now - last_idr_log_ms >= 1000) {
