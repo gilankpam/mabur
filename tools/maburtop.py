@@ -285,13 +285,12 @@ def render_rows_compact(model, wall, width):
         vtx_id = link.get("vtx_id")
         bw = op.get("bw")
         overhead = op.get("overhead")
-        offset_qdb = op.get("offset_qdb")
         deadline_ms = link.get("deadline_ms")
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
             f"maburgs   {state_s}   vtx {_s(vtx_id)}   tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   ov {_s(overhead, 2)}   "
-            f"off {_s(offset_qdb)} qdB   deadline {_s(deadline_ms)} ms"
+            f"deadline {_s(deadline_ms)} ms"
         ).ljust(width)
     rows.append(header)
 
@@ -383,9 +382,7 @@ def render_rows_compact(model, wall, width):
         rows.append(
             f"DRONE   {_f(state_ds, 8)}  gen {_f(drone.get('gen'), 6)}   "
             f"applied {_applied_mcsbw_cell(applied.get('mcs'), applied.get('bw'))}"
-            f" ov {_f(applied.get('overhead'), 4, 2)}"
-            f" off {_f(applied.get('offset_qdb'), 3)}"
-            f" der {_f(applied.get('derate_qdb'), 3)}  "
+            f" ov {_f(applied.get('overhead'), 4, 2)}  "
             f"rcf age {_age_cell(rcf.get('age_ms'))}  "
             f"tlm {_age_cell(drone.get('tlm_age_ms'))}"
         )
@@ -511,7 +508,7 @@ def panel_topbar(model, wall):
     state_s = state.upper() if isinstance(state, str) else "--"
     vtx_id = link.get("vtx_id")
     mcs, bw = op.get("mcs"), op.get("bw")
-    overhead, offset = op.get("overhead"), op.get("offset_qdb")
+    overhead = op.get("overhead")
     deadline, air = link.get("deadline_ms"), link.get("air_pct")
     session = model.session
     session_s = "--" if session is None else f"0x{session:08x}"
@@ -526,8 +523,8 @@ def panel_topbar(model, wall):
     dot = "●"
     text = (
         f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   "
-        f"cmd MCS {_s(mcs)}/{_s(bw)}  ov {_s(overhead, 2)}  "
-        f"off {_s(offset)} qdB   deadline {_s(deadline)} ms   "
+        f"cmd MCS {_s(mcs)}/{_s(bw)}  ov {_s(overhead, 2)}   "
+        f"deadline {_s(deadline)} ms   "
         f"air ~{_s(air, 0)}%      session {session_s}   "
         f"restarts {model.restarts}   rx {hz:.1f} Hz"
     )
@@ -587,11 +584,8 @@ def panel_drone(model, wall):
     applied = drone.get("applied") or {}
     mcsbw = _applied_mcsbw_cell(applied.get("mcs"), applied.get("bw"))
     ov_s = _f(applied.get("overhead"), 4, 2)
-    off_s = _f(applied.get("offset_qdb"), 3)
-    der_s = _f(applied.get("derate_qdb"), 3)
     ov_cell = f"ov {ov_s}"
-    off_cell = f"off {off_s}"
-    line2 = f"applied   {mcsbw}   {ov_cell}   {off_cell}   derate {der_s}"
+    line2 = f"applied   {mcsbw}   {ov_cell}"
     spans2 = []
     a_mcs, a_bw = applied.get("mcs"), applied.get("bw")
     if a_mcs != op.get("mcs") or a_bw != op.get("bw"):
@@ -601,10 +595,6 @@ def panel_drone(model, wall):
     if a_ov is not None and op_ov is not None and abs(a_ov - op_ov) > 0.005:
         idx = line2.index(ov_cell)
         spans2.append((idx, len(ov_cell), "bad"))
-    a_off, op_off = applied.get("offset_qdb"), op.get("offset_qdb")
-    if a_off != op_off:
-        idx = line2.index(off_cell)
-        spans2.append((idx, len(off_cell), "bad"))
     body.append((line2, spans2))
 
     # encoder

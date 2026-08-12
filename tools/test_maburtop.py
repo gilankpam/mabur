@@ -11,7 +11,7 @@ DGRAM = {
     "link": {
         "vtx_id": 1, "state": "session", "tx_card": 0,
         "op": {"mcs": 5, "bw": 20, "sgi": False, "vht": False,
-               "overhead": 0.25, "offset_qdb": 0, "snr_req": 18.5},
+               "overhead": 0.25, "snr_req": 18.5},
         "deadline_ms": 60, "residual_loss": 0.012,
         "layer_delivery_pct": [100, 100, 97, 91],
         "streams": [
@@ -36,8 +36,7 @@ DGRAM = {
     "drone": {
         "tlm_age_ms": 800, "tlm_seq": 4211, "state": "linked",
         "gen": 7, "failsafe_shed": False, "radio_rx_ok": True,
-        "applied": {"mcs": 5, "bw": 20, "vht": False, "overhead": 0.25,
-                    "offset_qdb": 0, "derate_qdb": 0},
+        "applied": {"mcs": 5, "bw": 20, "vht": False, "overhead": 0.25},
         "rcf": {"age_ms": 45, "rx_pps": 19.4},
         "enc": {"fps": 59.9, "mbps": 9.21, "cmd_kbps": 9000, "qp": 8,
                 "ring_drops": 0},
