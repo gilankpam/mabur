@@ -228,10 +228,16 @@ frames in BOTH directions**, and because DISC_ACK is what carries
 `CAP_FRAME_WIRE`, the symptom is NO VIDEO AT ALL — visually identical to
 the stale-caps restart deadlock, which will send you to `restart
 maburd`. That will not help. Recovery is to finish the deploy. Deploy
-order is config-before-binary on both devices (unknown keys exit 2 and
-kill the respawn loop, exactly like `dvr.enabled` -> `dvr.autostart`),
-and the clean sequence is: stop both daemons, edit both configs, swap
-both binaries (`df` and prune first — the drone rootfs fits max 2
+order is config-before-binary on both devices: a stale or removed key
+makes `maburd`/`maburgs` fail to start (a config-load error returns 1),
+and unlike `maburplay`'s `S97maburplay` — which stops respawning on exit
+2 or 143 — neither daemon's wrapper (`S96mabur`, `S96maburgs`,
+`maburgs.service` under systemd) checks the exit code at all, so it
+crash-loops the daemon forever at the unconditional 2 s respawn delay.
+The visible symptom is a repeating `unknown key` line in `/tmp/mabur.log`
+/ `/tmp/maburgs.log` every 2 seconds, not a daemon that exits and stays
+down. The clean sequence is still: stop both daemons, edit both configs,
+swap both binaries (`df` and prune first — the drone rootfs fits max 2
 maburd), start both. Rollback is PAIRED: an old binary needs its old
 config restored alongside it.
 
