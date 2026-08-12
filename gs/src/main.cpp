@@ -740,6 +740,34 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_probe_evm_db = pr.evm_db;
         ci.last_probe_u_pred = pr.u_pred;
         ci.last_probe_dur_ms = pr.dur_ms;
+        const maburgs::RungStore& rstore = c.rungs();
+        for (std::size_t ri = 0; ri < rstore.size(); ++ri) {
+          const maburgs::RungStat& rs = rstore.stat(static_cast<int>(ri));
+          maburgs::StatsRungIn rg;
+          rg.mcs = cfg.link.ladder_cfg.ladder[ri].mcs;
+          rg.ov = cfg.link.ladder_cfg.ladder[ri].overhead;
+          rg.u = rs.u.v;
+          rg.resid = rs.resid.v;
+          rg.u3 = rs.u3.v;
+          rg.resid3 = rs.s3_resid.v;
+          rg.evm_db = rs.evm_db;
+          rg.evm_sd_db = rs.evm_n
+                              ? std::sqrt(rs.evm_var_db2)
+                              : std::numeric_limits<double>::quiet_NaN();
+          rg.n = rs.u.n;
+          rg.probe_n = rs.probe_u.n;
+          rg.age_s = rs.last_sample_ms < 0
+                          ? -1.0
+                          : (now_ms - rs.last_sample_ms) / 1000.0;
+          rg.probe_age_s = rs.last_probe_ms < 0
+                                ? -1.0
+                                : (now_ms - rs.last_probe_ms) / 1000.0;
+          rg.dwell_s = rstore.dwell_ms(static_cast<int>(ri), now_ms) / 1000.0;
+          rg.visits = rs.visits;
+          rg.exits_bad = rs.exits_bad;
+          rg.probe_u = rs.probe_u.v;
+          ci.rungs.push_back(rg);
+        }
         sin.ctl = std::move(ci);
       }
       stats->poll(drained_ms, sin);
