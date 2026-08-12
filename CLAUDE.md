@@ -200,6 +200,41 @@ the cross-builds' `DEVOURER_LOG_MAX_LEVEL=WARN` — its absence means
 nothing. Both lines record the state mabur *requested*, not a register
 readback.
 
+**TX power is constant since 2026-08-12.** There is no runtime power
+control anywhere in mabur: no GS-commanded offset, no thermal derate, no
+per-profile offset. `maburd` programs the wall-equalized per-rate diff
+table and zeroes the global offset once at bring-up — both steps live
+inside the `radio.power_mode: "offset"` branch — and never calls a power
+API again: every rate transmits at `rate_walls_idx[r] - wall_margin_db`
+for the life of the process. The config keys `radio.thermal_max_delta`,
+`radio.min_offset_qdb`, `radio.power_offset_qdb` and
+`link.static_offset_qdb` were REMOVED and now FAIL BOOT, as does
+`radio.power_mode: "override"` (it had become identical to `"none"`).
+Sideport keys `link.op.offset_qdb`, `drone.applied.offset_qdb` and
+`drone.applied.derate_qdb` are gone; `thermal_delta` REMAINS and is the
+only surviving signal that a PA is running hot — nothing acts on it, so
+acting on it is a human decision (most likely an airframe cooling fix,
+not a power one). `bench/txagcbench` still drives `SetTxPowerOffsetQdb`
+directly and is still how the walls are measured; it was deliberately
+left alone. Date any recording against this line, the same way the
+2026-08-04 SNR scale break is dated.
+
+This change bumped `RC_VERSION` 1 -> 2, the first bump the protocol has
+ever had, and mabur's RC wire goldens are now owned by
+`tests/test_rc.cpp` rather than mirrored from devourer's frozen
+`tools/precoder/rc_proto.py` (which is pinned at version 1 and cannot
+follow). **A drone and GS at different versions reject each other's
+frames in BOTH directions**, and because DISC_ACK is what carries
+`CAP_FRAME_WIRE`, the symptom is NO VIDEO AT ALL — visually identical to
+the stale-caps restart deadlock, which will send you to `restart
+maburd`. That will not help. Recovery is to finish the deploy. Deploy
+order is config-before-binary on both devices (unknown keys exit 2 and
+kill the respawn loop, exactly like `dvr.enabled` -> `dvr.autostart`),
+and the clean sequence is: stop both daemons, edit both configs, swap
+both binaries (`df` and prune first — the drone rootfs fits max 2
+maburd), start both. Rollback is PAIRED: an old binary needs its old
+config restored alongside it.
+
 Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and
 `docs/superpowers/specs/2026-07-26-drone-telemetry-design.md`. The schema
