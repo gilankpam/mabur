@@ -21,7 +21,7 @@ interpolated, head/tail gaps extended flat (warned).
 --measured-only skips the reference-table load and the table-comparison
 columns/verdict entirely: prints per-idx medians/n/drift and the health
 warnings only, exit 0 always (mabur's power model moved to a linear
-offset-qdB gain, see tools/pyref/offset_power.py — kTxagcGainDb no longer
+offset-qdB gain, see docs/txagc-calibration.md — kTxagcGainDb no longer
 ships anywhere in-tree, so this is the mode to use post-move).
 
 --selftest needs no hardware and does NOT read kTxagcGainDb (or any file):
@@ -71,7 +71,7 @@ def parse_gain_table(path):
     m = re.search(r"kTxagcGainDb\[\]\s*=\s*\{([^}]*)\}", text)
     if not m:
         die(f"kTxagcGainDb not found in {path} — mabur's power model moved "
-            f"to a linear offset-qdB gain (tools/pyref/offset_power.py) "
+            f"to a linear offset-qdB gain (docs/txagc-calibration.md) "
             f"and the table was deleted; use --measured-only for "
             f"shape-only analysis with no reference table, or pass "
             f"--table <path> pointing at a file that still has "

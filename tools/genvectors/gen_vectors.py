@@ -3,9 +3,8 @@
 Deterministic (no randomness, no time). Re-run + git diff must be clean.
 
 energy.json's power-model cases (gain/pa-index) diverge from the prototype
-since 2026-07-17 — see tools/pyref/offset_power.py. The airtime/rate/
-baseline-power dimensions are unchanged and still ride devourer's frozen
-energy_model.py."""
+since 2026-07-17. The airtime/rate/baseline-power dimensions are unchanged
+and still ride devourer's frozen energy_model.py."""
 import json, os, struct, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +36,7 @@ dump("crc16.json", {"cases": [
 
 # --- sliding-window fec (mabur-native; reference = tools/pyref/sw_fec.py) --
 sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
-import sw_fec, offset_power  # noqa: E402
+import sw_fec  # noqa: E402
 
 SW_PKT_SIZES = [10, 50, 62, 1, 30, 62, 44, 62, 20, 62, 62, 5, 61, 33, 62, 62]
 sw_cases = []
@@ -203,13 +202,9 @@ rate_cases = [{"mode": m, "mcs": mc, "bw": bw, "sgi": sgi,
                                      ("vht", 4, 40, True)]]
 dump("profile.json", {"profiles": prof_cases,
                       "rates": rate_cases,
-                      # pwr_offset_qdb DIVERGES from devourer's frozen
-                      # DEFAULT_PROFILE_TABLE.pwr_idx (TXAGC index) since
-                      # 2026-07-17 — see tools/pyref/offset_power.py.
                       "table": [{"ladder": p.svc_ladder,
-                                 "pwr_offset_qdb": offset_power.PROFILE_TABLE_PWR_OFFSET_QDB[i],
                                  "ov": p.fec_overhead, "bw": p.bw}
-                                for i, p in enumerate(rc_proto.DEFAULT_PROFILE_TABLE)]})
+                                for p in rc_proto.DEFAULT_PROFILE_TABLE]})
 
 # --- sbi unpack ----------------------------------------------------------
 su_cases = []

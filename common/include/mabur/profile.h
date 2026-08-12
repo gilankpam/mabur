@@ -46,11 +46,6 @@ std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw);
 
 struct ProfileRow {
   const char* svc_ladder;
-  // qdB power offset from the calibrated baseline (RCF wire semantics,
-  // rc_proto bias-64). Bench-tunable; 0 = full legal power — every rate
-  // parks at wall - margin under the wall-equalized diffs (max legal
-  // offset is ZERO, docs/txagc-calibration.md).
-  int8_t pwr_offset_qdb;
   double fec_overhead;
   uint8_t bw;
 };
