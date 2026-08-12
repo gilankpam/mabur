@@ -1,6 +1,5 @@
 #include "mtest.h"
 #include "frame_fixture.h"
-#include "vectors.h"
 #include "aggregator.h"
 #include "mabur/uep_encoder.h"
 #include "mabur/msp_source.h"
