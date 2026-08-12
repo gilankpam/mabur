@@ -36,6 +36,7 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
   Slot& s = slots_[key];
   if (s.chunks.empty()) { s.sid = sid; s.fseq = fseq; s.first_ms = now_ms;
                           s.last_progress_ms = now_ms; s.count = count; }
+  if (sid == 3) saw_enhance_ = true;
   s.chunks[idx].assign(pkt + 6, pkt + len);
   if (idx == 0 && !s.have_hdr) {
     auto h = mabur::framewire::parse_frame_hdr(s.chunks[0].data(), s.chunks[0].size());
@@ -112,6 +113,30 @@ void FrameStream::try_emit(uint64_t now_ms) {
         bool stale = now_ms >= head->first_ms + cfg_.gap_timeout_ms;
         bool ahead = max_known >= next_emit_id64_ + static_cast<uint64_t>(cfg_.lookahead);
         if (!stale && !ahead) return;
+        // These frames never arrived AT ALL -- no slot, no sid. This path
+        // used to stay silent (original 2026-08-11 spec: "accepted
+        // limitation, deliberate", protecting s3-only loss from spuriously
+        // firing IDRs), and the 2026-08-12 smear investigation measured what
+        // that silence costs: a wholly-lost BASE frame leaves the decoder's
+        // reference CONTENT diverged while its reference list stays intact,
+        // so the picture smears forever with every counter flat and only an
+        // IDR as repair. Infer each missing frame's class from SVC-T's
+        // strict base/enhance alternation relative to the surviving head
+        // (capture-proven structure: sid1/sid0 carry even POCs, sid3 odd) --
+        // the original concern stays protected because an inferred-enhance
+        // hole fires sid 3, which IdrRequester's sid>2 guard ignores. sid0
+        // collapses into base: the latch treats all sid<=2 identically.
+        if (cb_.frame_lost) {
+          const bool head_enh = head->sid == 3;
+          for (uint64_t id = next_emit_id64_; id < head->id64; ++id) {
+            uint8_t inferred = 1;
+            if (saw_enhance_) {
+              const bool same_class = ((head->id64 - id) % 2) == 0;
+              inferred = (same_class == head_enh) ? 3 : 1;
+            }
+            cb_.frame_lost(inferred, false);
+          }
+        }
         dropped_ += head->id64 - next_emit_id64_;
         next_emit_id64_ = head->id64;
       }

@@ -70,6 +70,10 @@ class FrameStream {
   uint64_t last_id64_ = 0;           // unwrap reference
   uint64_t next_emit_id64_ = 0;      // head-of-line
   bool have_next_emit_ = false;
+  // Sticky "this stream carries an SVC-T enhance layer": gates the gap-skip
+  // sid inference (see try_emit). A stream that never showed sid 3 has no
+  // base/enhance alternation to key off, so every hole is base-class.
+  bool saw_enhance_ = false;
   bool in_discont_run_ = false;      // last unwrapped frame carried kFlagDiscont
   bool stall_armed_ = false;         // a frame arrived with nothing emitted since
   uint64_t stall_arm_ms_ = 0;        // when that first post-emit frame arrived

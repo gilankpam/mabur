@@ -310,20 +310,65 @@ TEST(late_eviction_and_headerless_ageout_fire_frame_lost) {
   CHECK(cap.lost[1].second == false);
 }
 
-// Pure id64 gap skips must stay SILENT: those frames never arrived at all,
-// so their sid is unknown — firing would let sustained s3-only loss
-// spuriously trigger IDRs (spec: accepted limitation, deliberate).
-// REVERT CHECK: fails if the gap-skip path in try_emit starts firing.
-TEST(pure_gap_skip_does_not_fire_frame_lost) {
+// Pure id64 gap skips: those frames never arrived at all, so their sid is
+// unknowable directly. The ORIGINAL spec kept this path silent ("accepted
+// limitation, deliberate") to protect s3-only loss from spuriously firing
+// IDRs — and the 2026-08-12 smear investigation measured the cost: a
+// wholly-lost BASE frame seeds reference-content drift the decoder renders
+// forever, with every counter flat and only an IDR as repair (POC 22332,
+// docs/idr-backchannel-acceptance-2026-08-12.md). The path now INFERS each
+// missing frame's class from SVC-T's strict base/enhance alternation
+// (capture-proven: sid1/sid0 = even POCs, sid3 = odd) relative to the head
+// frame that survived. The spec's original concern is preserved: an
+// inferred-enhance hole fires sid 3, which the IdrRequester guard ignores.
+// REVERT CHECK (each case): fails if the gap-skip path stops firing, fires
+// the wrong class, or fires when inference says enhance-only.
+TEST(gap_skip_infers_base_from_alternation) {
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
   mabur::Fragmenter fa, fb;
   std::vector<uint8_t> pay(500, 0x44);
+  // enhance, [hole], enhance: the (3, gap, 3) shape measured live -- the
+  // missing frame between two sid3s can only be base.
+  for (auto& p : frag_frame(fa, 0, pay)) fs.push_fragment(3, p.data(), p.size(), 10);
+  for (auto& p : frag_frame(fb, 2, pay)) fs.push_fragment(3, p.data(), p.size(), 20);
+  CHECK(cap.lost.empty());  // gap frame still inside its repair window
+  fs.poll(71);              // head first_ms 20 + gap_timeout 50 exceeded
+  REQUIRE(cap.lost.size() == 1);
+  CHECK(cap.lost[0].first == 1);       // inferred BASE -> latches upstream
+  CHECK(cap.lost[0].second == false);  // whole loss, not a truncation
+  CHECK(fs.frames_dropped() == 1);
+}
+
+TEST(gap_skip_infers_enhance_and_stays_latch_silent) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter fa, fb, fc;
+  std::vector<uint8_t> pay(500, 0x45);
+  // base, enhance (marks the stream as SVC-T), [hole], base: the hole sits
+  // at an enhance position -> inferred sid 3, which the sid>2 guard eats.
+  for (auto& p : frag_frame(fa, 0, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
+  for (auto& p : frag_frame(fb, 1, pay)) fs.push_fragment(3, p.data(), p.size(), 12);
+  for (auto& p : frag_frame(fc, 3, pay)) fs.push_fragment(1, p.data(), p.size(), 20);
+  fs.poll(71);
+  REQUIRE(cap.lost.size() == 1);
+  CHECK(cap.lost[0].first == 3);   // inferred ENHANCE -> no IDR upstream
+  CHECK(cap.lost[0].second == false);
+}
+
+TEST(gap_skip_without_enhance_traffic_infers_all_base) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter fa, fb;
+  std::vector<uint8_t> pay(500, 0x46);
+  // A stream that has never shown sid3 has no alternation to key off:
+  // every hole is base-class. Frames 1..8 all vanish (lookahead advance).
   for (auto& p : frag_frame(fa, 0, pay)) fs.push_fragment(1, p.data(), p.size(), 10);
   for (auto& p : frag_frame(fb, 9, pay)) fs.push_fragment(1, p.data(), p.size(), 20);
-  CHECK(fs.frames_dropped() >= 8);  // frames 1..8 booked as dropped (lookahead)
+  CHECK(fs.frames_dropped() >= 8);
   CHECK(fs.frames_clean() == 2);
-  CHECK(cap.lost.empty());
+  REQUIRE(cap.lost.size() == 8);
+  for (auto& [sid, tr] : cap.lost) { CHECK(sid == 1); CHECK(tr == false); }
 }
 
 // reset() closes in-flight frames with end_frame(false) for the packetizer's
