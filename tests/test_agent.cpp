@@ -418,6 +418,45 @@ TEST(idr_req_flag_grants_once_per_cooldown_shared_with_relink) {
   CHECK(act.idr_calls == 2);
 }
 
+// Drone-local self-IDR requests (venc-ring vanish detection,
+// docs/venc-ring-vanish-findings-2026-08-12.md) ride the SAME grant cooldown
+// as the GS paths, so a GS-requested and a self-requested IDR dedupe against
+// each other instead of stacking two bursts inside one window.
+// REVERT CHECKS: remove the LINKED gate -> the t=5000 pre-link request grants
+// and idr_calls reads 1 too early; remove the cooldown check -> t=10400
+// grants; stamp a separate clock -> the t=12200 RCF grants. Each fails a
+// CHECK.
+TEST(request_self_idr_requires_linked_and_shares_the_grant_cooldown) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  // Not LINKED: nothing to heal on the GS side, never grants.
+  CHECK(!agent.request_self_idr(5000));
+  CHECK(act.idr_calls == 0);
+
+  uint8_t profile = encode_profile(PhyMode::HT, 2, 20);
+  auto w1 = make_rcf_wire(cfg.link.vtx_id, 1, profile, 40, 8);
+  agent.on_rc_frame(w1.data(), w1.size(), 10000);  // entering LINKED grants
+  CHECK(act.idr_calls == 1);
+
+  // Inside the cooldown stamped by the entering-LINKED grant: refused.
+  CHECK(!agent.request_self_idr(10400));
+  CHECK(act.idr_calls == 1);
+
+  // Past the cooldown: grants, counted in the shared idr_grants total.
+  CHECK(agent.request_self_idr(11500));
+  CHECK(act.idr_calls == 2);
+  CHECK(agent.idr_grants() == 2);
+
+  // A GS RCF_F_IDR_REQ inside the SELF grant's window: suppressed — one
+  // shared clock in both directions.
+  auto w2 = make_rcf_wire(cfg.link.vtx_id, 2, profile, 40, 8, rc::RCF_F_IDR_REQ);
+  agent.on_rc_frame(w2.data(), w2.size(), 12200);
+  CHECK(act.idr_calls == 2);
+}
+
 // 8. Thermal 30 (>25) for 3 ticks -> offset drops 12 qdB below commanded
 // (4 qdB/escalation, floored at min_offset_qdb); thermal 20 -> restored.
 // Mirrors the old pwr_idx-derate test, now acting in qdB (thermal derate is

@@ -29,6 +29,16 @@ void RcAgent::grant_idr(uint64_t now_ms) {
   act_.request_idr();
 }
 
+bool RcAgent::request_self_idr(uint64_t now_ms) {
+  if (state_ != State::LINKED) return false;
+  if (have_idr_grant_ &&
+      now_ms - last_idr_grant_ms_ <
+          static_cast<uint64_t>(cfg_.waybeam.idr_cooldown_ms))
+    return false;
+  grant_idr(now_ms);
+  return true;
+}
+
 // Applies the MAX_RANGE operating point (profile_table()[MAX_RANGE_PROFILE]
 // via ladder_from). This is a state-transition apply (BOOT's initial op, or
 // a LINKED->FAILSAFE entry), so it forces the bitrate policy to the robust

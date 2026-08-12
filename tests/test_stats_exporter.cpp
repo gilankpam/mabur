@@ -690,6 +690,26 @@ TEST(idr_req_block_exported) {
   CHECK(idr["pending"] == false);
   CHECK(idr["wait_ms"].is_null());
 }
+// drone.enc.{vanished_base,vanished_enh,self_idr_refused}: the venc-ring
+// vanish counters (docs/venc-ring-vanish-findings-2026-08-12.md), additive
+// under v:1.
+// REVERT CHECK: fails if any of the three keys is dropped from the enc block.
+TEST(vanish_counters_exported) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  mabur::rc::Telem t;
+  t.vanished_base = 2;
+  t.vanished_enh = 5;
+  t.self_idr_refused = 1;
+  in.telem = t;
+  ex.poll(1000, in);
+  const json enc = cap.last()["drone"]["enc"];
+  CHECK(enc["vanished_base"] == 2);
+  CHECK(enc["vanished_enh"] == 5);
+  CHECK(enc["self_idr_refused"] == 1);
+}
+
 TEST(player_feedback_is_exported) {
   Capture cap;
   StatsExporter ex(0xDEADBEEF, 500, cap.fn());

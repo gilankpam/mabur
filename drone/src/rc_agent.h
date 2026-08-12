@@ -87,9 +87,17 @@ class RcAgent {
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }
 
-  // Cumulative IDR grants (entering-LINKED + RCF_F_IDR_REQ), never reset —
-  // feeds Telem.idr_grants. Spec 2026-08-11 idr-request.
+  // Cumulative IDR grants (entering-LINKED + RCF_F_IDR_REQ + self), never
+  // reset — feeds Telem.idr_grants. Spec 2026-08-11 idr-request.
   uint64_t idr_grants() const { return idr_grants_; }
+
+  // Drone-local IDR request (venc-ring vanish detection,
+  // docs/venc-ring-vanish-findings-2026-08-12.md): grants through the SAME
+  // cooldown clock as the GS paths, so self- and GS-requested IDRs dedupe
+  // against each other. Only in LINKED — with no GS watching there is no
+  // decoder to heal, and entering LINKED grants unconditionally anyway.
+  // Returns whether the grant fired.
+  bool request_self_idr(uint64_t now_ms);
 
   // True iff the last accepted RCF carried probe3 (an s3-only MCS probe) —
   // cleared the moment a FAILSAFE/max-range apply takes over (a degraded or

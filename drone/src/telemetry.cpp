@@ -91,6 +91,9 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.idr_disagree = saturate<uint16_t>(in.idr_disagree);
   t.enhance_disagree = saturate<uint16_t>(in.enhance_disagree);
   t.idr_grants = saturate<uint16_t>(in.idr_grants);
+  t.vanished_base = saturate<uint16_t>(in.vanished_base);
+  t.vanished_enh = saturate<uint16_t>(in.vanished_enh);
+  t.self_idr_refused = saturate<uint16_t>(in.self_idr_refused);
   return t;
 }
 

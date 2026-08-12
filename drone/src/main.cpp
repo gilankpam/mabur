@@ -753,6 +753,17 @@ int run_real_mode(const Config& cfg) {
   std::atomic<uint64_t> idr_disagree_total{0};
   std::atomic<uint64_t> enhance_disagree_total{0};
   std::atomic<uint64_t> ring_drops_total{0};
+  // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):
+  // relaxed-published mirrors of FramePipeline's counters (the
+  // idr_disagree_total pattern), plus the self-IDR request LEVEL. Level, not
+  // edge, deliberately: the pipeline holds the latch up until an IDR actually
+  // rides the ring past it, so the agent thread reconciles it against the
+  // shared grant cooldown every tick and a grant lost to a waybeam hiccup
+  // retries a cooldown later instead of vanishing.
+  std::atomic<uint64_t> vanished_base_total{0};
+  std::atomic<uint64_t> vanished_enh_total{0};
+  std::atomic<uint64_t> self_idr_refused_total{0};
+  std::atomic<bool> self_idr_pending{false};
   // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
   // frame encoded so far died before the air — re-mark the discontinuity
   // window so the GS gets the re-base signal on frames that can actually
@@ -884,6 +895,11 @@ int run_real_mode(const Config& cfg) {
                                  std::memory_order_relaxed);
         enhance_disagree_total.store(pipe.enhance_disagreements(),
                                      std::memory_order_relaxed);
+        vanished_base_total.store(pipe.vanished_base(), std::memory_order_relaxed);
+        vanished_enh_total.store(pipe.vanished_enhance(), std::memory_order_relaxed);
+        self_idr_refused_total.store(pipe.self_idr_refused(),
+                                     std::memory_order_relaxed);
+        self_idr_pending.store(pipe.self_idr_pending(), std::memory_order_relaxed);
       }
       // Ring-pressure observability (spec: the drain-feedback policy's
       // future input): one stderr line every 5 s.
@@ -907,13 +923,17 @@ int run_real_mode(const Config& cfg) {
               std::memory_order_relaxed);
           std::fprintf(stderr,
               "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
-              "bad_slot=%llu idr_disagree=%llu enhance_disagree=%llu\n",
+              "bad_slot=%llu idr_disagree=%llu enhance_disagree=%llu "
+              "vanished=%llu/%llu self_idr_refused=%llu\n",
               f.fill_pct, f.used_slots, f.slot_count,
               (unsigned long long)f.reads,
               (unsigned long long)f.oversize_drops,
               (unsigned long long)f.bad_slot_drops,
               (unsigned long long)pipe.idr_disagreements(),
-              (unsigned long long)pipe.enhance_disagreements());
+              (unsigned long long)pipe.enhance_disagreements(),
+              (unsigned long long)pipe.vanished_base(),
+              (unsigned long long)pipe.vanished_enhance(),
+              (unsigned long long)pipe.self_idr_refused());
         }
       }
 
@@ -978,6 +998,14 @@ int run_real_mode(const Config& cfg) {
       agent.tick(now, health);
       if (agent.take_link_established())
         link_up_discont.store(true, std::memory_order_relaxed);
+
+      // venc-ring vanish self-heal: reconcile the pipeline's pending level
+      // into the shared IDR-grant cooldown (see the atomics' declaration
+      // comment). request_self_idr no-ops outside LINKED and inside the
+      // cooldown, so calling it every tick while the level is up is the
+      // dedupe, not a burst.
+      if (self_idr_pending.load(std::memory_order_relaxed))
+        agent.request_self_idr(now);
 
       // Watchdog: after an initial grace period, a heartbeat going stale for
       // > stale_ms means the corresponding loop is wedged — EXCEPT rx_beat,
@@ -1089,6 +1117,9 @@ int run_real_mode(const Config& cfg) {
         ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
         ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
         ti.idr_grants = agent.idr_grants();
+        ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);
+        ti.vanished_enh = vanished_enh_total.load(std::memory_order_relaxed);
+        ti.self_idr_refused = self_idr_refused_total.load(std::memory_order_relaxed);
 
         auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
 

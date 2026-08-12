@@ -245,6 +245,7 @@ TEST(telem_round_trip_and_golden) {
   t.soc_temp_c = 61; t.thermal_delta = 3; t.load_x100 = 72;
   t.idr_disagree = 4; t.enhance_disagree = 5;
   t.idr_grants = 6;
+  t.vanished_base = 7; t.vanished_enh = 8; t.self_idr_refused = 9;
   auto wire = mabur::rc::pack_telem(t);
   CHECK(mabur::rc::frame_type(wire.data(), wire.size()) == mabur::rc::T_TELEM);
   auto back = mabur::rc::parse_telem(wire.data(), wire.size());
@@ -261,13 +262,17 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->idr_disagree == 4);
   CHECK(back->enhance_disagree == 5);
   CHECK(back->idr_grants == 6);
+  CHECK(back->vanished_base == 7);
+  CHECK(back->vanished_enh == 8);
+  CHECK(back->self_idr_refused == 9);
   // Golden pin: byte-exact wire so the format can never drift silently.
   // Print-once, then hardcode: std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
       "435201040302010207060504051940022d00a0860100400d0300e09304002823080100"
-      "034007000000801a0600090000000200333415163d0348000400050006006d00";
+      "034007000000801a0600090000000200333415163d0348000400050006000700080009"
+      "00bccf";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();

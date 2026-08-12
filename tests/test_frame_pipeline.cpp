@@ -234,4 +234,179 @@ TEST(frame_pipeline_shed_frames_consume_no_frame_id) {
   CHECK((h->flags & framewire::kFlagDiscont) != 0);
 }
 
+// ── venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md)
+//
+// Encoded frames can vanish between waybeam's encoder and maburd's ring read
+// with no counter anywhere: the wire sequence closes seamlessly over the hole.
+// The only read-side evidence is the pts step: consecutive ring reads step one
+// frame period; a ~2x jump means a frame vanished upstream. FramePipeline
+// derives the period from observed deltas (never hardcodes 60 fps), classifies
+// the vanished frame from the NEIGHBOURS' producer ENHANCE flags (strict
+// base/enhance alternation, capture-proven), and on a base-class vanish
+// latches a self-IDR request — guarded against the re-seed loop (the IDR
+// burst itself is the likely vanish trigger).
+
+namespace {
+
+constexpr uint32_t kStepUs = 16667;  // 60 fps
+
+struct VanishFeeder {
+  UepEncoder enc{layers(), 15};
+  FramePipeline pipe;
+
+  // flags select the frame kind: IDR -> type 19, ENHANCE -> TRAIL_N (scan and
+  // producer flag agree, so no disagreement side effects), else TRAIL_R base.
+  void feed(uint32_t pts, uint8_t flags, uint64_t now_ms) {
+    const bool idr = (flags & VENC_FRAME_FLAG_IDR) != 0;
+    const bool enh = (flags & VENC_FRAME_FLAG_ENHANCE) != 0;
+    auto buf = ring_buf(idr ? 19 : (enh ? 0 : 1), 0, 400);
+    pipe.encode(enc, buf.data(), payload_len(buf), meta_flags(pts, flags), now_ms);
+  }
+
+  // Even slots base, odd slots enhance — the capture-proven alternation.
+  void warm_up(uint32_t n = 6, uint32_t pts0 = 0) {
+    for (uint32_t i = 0; i < n; ++i)
+      feed(pts0 + i * kStepUs, (i % 2) ? VENC_FRAME_FLAG_ENHANCE : 0, 1000 + i * 17);
+  }
+};
+
+}  // namespace
+
+TEST(frame_pipeline_pts_hole_books_vanished_base_and_latches_self_idr) {
+  VanishFeeder f;
+  f.warm_up();
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(!f.pipe.self_idr_pending());
+
+  // Slot 6 (base) vanishes in the ring; the next read is slot 7 (enhance).
+  // prev (slot 5) and cur are both enhance -> the vanished one was base.
+  f.feed(7 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1200);
+  CHECK(f.pipe.vanished_base() == 1);
+  CHECK(f.pipe.vanished_enhance() == 0);
+  CHECK(f.pipe.self_idr_pending());
+  CHECK(f.pipe.self_idr_refused() == 0);
+
+  // A double hole: slots 8 (base) and 9 (enhance) both vanish; next read is
+  // slot 10 (base). Classes alternate out from the previous frame's flag.
+  f.feed(10 * kStepUs, 0, 1260);
+  CHECK(f.pipe.vanished_base() == 2);
+  CHECK(f.pipe.vanished_enhance() == 1);
+}
+
+TEST(frame_pipeline_enhance_vanish_is_counted_but_requests_nothing) {
+  VanishFeeder f;
+  f.warm_up(7);
+  // Slot 7 (enhance) vanishes; next read is slot 8 (base). Harmless
+  // (TRAIL_N, nothing references it): counted, but no self-IDR latched.
+  f.feed(8 * kStepUs, 0, 1200);
+  CHECK(f.pipe.vanished_enhance() == 1);
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(!f.pipe.self_idr_pending());
+  CHECK(f.pipe.self_idr_refused() == 0);
+}
+
+TEST(frame_pipeline_pts_wrap_is_not_a_hole_and_holes_across_wrap_fire) {
+  // pts is a 32-bit µs counter (wraps every ~71.6 min). Unsigned deltas make
+  // the wrap itself invisible, and a real hole spanning the wrap still fires.
+  VanishFeeder f;
+  const uint32_t pts0 = 0xFFFFFFF0u - 3 * kStepUs;  // wraps mid-warm-up
+  f.warm_up(6, pts0);
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(f.pipe.vanished_enhance() == 0);
+
+  f.feed(pts0 + 7 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1200);  // slot 6 vanished
+  CHECK(f.pipe.vanished_base() == 1);
+}
+
+TEST(frame_pipeline_shed_leaves_no_pts_hole) {
+  // Shed happens in maburd AFTER the ring read: encode() observes every
+  // frame's meta (pts) before drop_if_shed, so read-side pts stays continuous
+  // across shed drops and shedding must never book a vanish.
+  VanishFeeder f;
+  f.enc.set_shed(3, true);
+  for (uint32_t i = 0; i < 12; ++i)
+    f.feed(i * kStepUs, (i % 2) ? VENC_FRAME_FLAG_ENHANCE : 0, 1000 + i * 17);
+  CHECK(f.enc.dropped(3) > 0);  // sheds actually happened
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(f.pipe.vanished_enhance() == 0);
+}
+
+TEST(frame_pipeline_vanish_right_after_idr_is_refused_not_requested) {
+  // Re-seed loop guard: the IDR's own ~10x frame-size burst is the likely
+  // vanish trigger, so a base vanish detected within kSelfIdrGuardMs of the
+  // last IDR read must NOT self-request (it would re-seed at cooldown rate,
+  // forever) — it is counted as refused so the loop stays visible.
+  VanishFeeder f;
+  f.warm_up();
+  f.feed(6 * kStepUs, VENC_FRAME_FLAG_IDR, 1102);            // IDR in a base slot
+  f.feed(7 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1119);
+  // Slot 8 (base) vanishes, detected 48 ms after the IDR read: refused.
+  f.feed(9 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1150);
+  CHECK(f.pipe.vanished_base() == 1);
+  CHECK(f.pipe.self_idr_refused() == 1);
+  CHECK(!f.pipe.self_idr_pending());
+
+  // Same shape well past the guard window: latches the request.
+  f.feed(10 * kStepUs, 0, 1700);
+  f.feed(11 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1717);
+  f.feed(13 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1750);  // slot 12 (base) vanished
+  CHECK(f.pipe.vanished_base() == 2);
+  CHECK(f.pipe.self_idr_pending());
+  CHECK(f.pipe.self_idr_refused() == 1);
+}
+
+TEST(frame_pipeline_idr_arrival_clears_self_idr_pending) {
+  // The pending latch is a LEVEL reconciled by the healing event itself: any
+  // IDR passing through (granted, or a natural one) resets the decoder's DPB
+  // downstream, so the request is moot the moment one ships.
+  VanishFeeder f;
+  f.warm_up();
+  f.feed(7 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1200);  // slot 6 (base) vanished
+  CHECK(f.pipe.self_idr_pending());
+  f.feed(8 * kStepUs, VENC_FRAME_FLAG_IDR, 1220);      // the granted IDR arrives
+  CHECK(!f.pipe.self_idr_pending());
+}
+
+TEST(frame_pipeline_discontinuity_resets_vanish_tracking) {
+  // mark_discontinuity (producer restart / link-up) means the pts stream may
+  // re-base: the tracker must re-anchor and re-confirm its period instead of
+  // booking phantom vanishes against the old epoch.
+  VanishFeeder f;
+  f.warm_up();
+  f.pipe.mark_discontinuity();
+  f.feed(0x40000000u, 0, 3000);  // new epoch: seeds, never counts
+  // Hole-shaped delta, but the period is unconfirmed after the reset.
+  f.feed(0x40000000u + 2 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 3020);
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(f.pipe.vanished_enhance() == 0);
+  CHECK(!f.pipe.self_idr_pending());
+}
+
+TEST(frame_pipeline_no_vanish_before_period_confirmed) {
+  VanishFeeder f;
+  f.feed(0, 0, 1000);
+  f.feed(2 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1017);  // hole-shaped 1st delta
+  f.feed(3 * kStepUs, 0, 1034);
+  f.feed(4 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1051);
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(f.pipe.vanished_enhance() == 0);
+}
+
+TEST(frame_pipeline_pts_resync_jump_is_not_counted_as_vanish) {
+  // A giant forward jump (>= 1 s) is an encoder clock discontinuity, not a
+  // plausible ring vanish (the ring holds ~133 ms): re-anchor, count nothing.
+  VanishFeeder f;
+  f.warm_up();
+  f.feed(5 * kStepUs + 5000000u, 0, 1200);  // +5 s jump
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(f.pipe.vanished_enhance() == 0);
+  // The stream after the jump re-confirms and detection works again.
+  for (uint32_t i = 1; i < 7; ++i)
+    f.feed(5 * kStepUs + 5000000u + i * kStepUs,
+           (i % 2) ? VENC_FRAME_FLAG_ENHANCE : 0, 1200 + i * 17);
+  f.feed(5 * kStepUs + 5000000u + 8 * kStepUs, 0,
+         1400);  // slot 7 (enhance) vanished post-resync
+  CHECK(f.pipe.vanished_base() + f.pipe.vanished_enhance() == 1);
+}
+
 MTEST_MAIN

@@ -84,4 +84,28 @@ TEST(idr_grants_saturates_and_round_trips) {
   CHECK(back->idr_grants == 4);
 }
 
+TEST(vanish_counters_saturate_and_round_trip) {
+  // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):
+  // the pipeline's u64 counters ride the wire as saturating u16, the
+  // idr_grants pattern.
+  mabur::TelemInputs in;
+  in.vanished_base = 70000;
+  in.vanished_enh = 80000;
+  in.self_idr_refused = 90000;
+  auto t = mabur::make_telem(1, in);
+  CHECK(t.vanished_base == 65535);
+  CHECK(t.vanished_enh == 65535);
+  CHECK(t.self_idr_refused == 65535);
+
+  in.vanished_base = 3;
+  in.vanished_enh = 5;
+  in.self_idr_refused = 2;
+  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK(back->vanished_base == 3);
+  CHECK(back->vanished_enh == 5);
+  CHECK(back->self_idr_refused == 2);
+}
+
 MTEST_MAIN

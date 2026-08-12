@@ -438,6 +438,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     enc["idr_disagree"] = t.idr_disagree;
     enc["enhance_disagree"] = t.enhance_disagree;
     enc["idr_grants"] = t.idr_grants;
+    // venc-ring vanish counters (docs/venc-ring-vanish-findings-2026-08-12.md):
+    // frames lost inside the drone before frame_id assignment — invisible to
+    // every FEC/wire counter by construction, so this is their ONLY export.
+    enc["vanished_base"] = t.vanished_base;
+    enc["vanished_enh"] = t.vanished_enh;
+    enc["self_idr_refused"] = t.self_idr_refused;
     json& txq = d["txq"];
     txq["depth"] = t.txq_depth;
     txq["cap"] = t.txq_cap;  // wire value as-is (256 saturates to 255 on the wire)

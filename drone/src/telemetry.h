@@ -54,6 +54,9 @@ struct TelemInputs {
   double load1 = 0.0;
   uint64_t idr_disagree = 0, enhance_disagree = 0;
   uint64_t idr_grants = 0;  // RcAgent::idr_grants() — spec 2026-08-11 idr-request
+  // FramePipeline vanish counters (venc-ring vanish detection,
+  // docs/venc-ring-vanish-findings-2026-08-12.md).
+  uint64_t vanished_base = 0, vanished_enh = 0, self_idr_refused = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);
