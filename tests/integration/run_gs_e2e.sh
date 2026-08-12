@@ -15,9 +15,16 @@ python3 - "$TMP/rc.bin" <<'EOF'
 import struct, sys, os
 sys.path.insert(0, os.path.abspath(os.path.join("..", "devourer", "tools", "precoder")))
 import rc_proto
-r = rc_proto.Rcf(vtx_id=1, seq=1, ack_seq=0, profile=rc_proto.encode_profile("ht", 4, 20),
-                 score=1500, pwr_idx=32, fec_overhead_16ths=4, layer_delivery=(100,))
-w = rc_proto.pack_rcf(r)
+# mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
+# rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
+# byte, so its pack_rcf() output is rejected outright by maburd. Pack the
+# 18-byte v2 head here instead; encode_profile and the CRC are unversioned.
+layers = bytes((100,))
+head = struct.pack("<HBBBIHHBHBB", rc_proto.RC_MAGIC, 2, rc_proto.T_RCF, 0,
+                   1, 1, 0, rc_proto.encode_profile("ht", 4, 20), 1500,
+                   4, len(layers))
+body = head + layers
+w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)
 EOF

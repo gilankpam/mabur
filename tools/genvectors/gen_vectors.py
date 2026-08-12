@@ -158,11 +158,11 @@ dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
 
 # --- rc ----------------------------------------------------------------
 rcfs = [rc_proto.Rcf(vtx_id=0xDEADBEEF, seq=7, ack_seq=3800, profile=0x24,
-                     score=1543, pwr_idx=40, fec_overhead_16ths=8, flags=0,
+                     score=1543, fec_overhead_16ths=8, flags=0,
                      layer_delivery=(100, 98, 80, 10)),
         rc_proto.Rcf(vtx_id=1, seq=65535, ack_seq=0, profile=0x00, score=1000,
-                     pwr_idx=rc_proto.PWR_NO_CHANGE, fec_overhead_16ths=16,
-                     flags=rc_proto.F_FAILSAFE, layer_delivery=())]
+                     fec_overhead_16ths=16, flags=rc_proto.F_FAILSAFE,
+                     layer_delivery=())]
 discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
@@ -174,7 +174,7 @@ acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
 # expected bytes are hardcoded goldens in tests/test_rc.cpp.
 dump("rc.json", {
   "rcf": [{"fields": {"vtx_id": r.vtx_id, "seq": r.seq, "ack_seq": r.ack_seq,
-                      "profile": r.profile, "score": r.score, "pwr_idx": r.pwr_idx,
+                      "profile": r.profile, "score": r.score,
                       "fec_overhead_16ths": r.fec_overhead_16ths, "flags": r.flags,
                       "layer_delivery": list(r.layer_delivery)}} for r in rcfs],
   "disc": [{"fields": {"vtx_id": d.vtx_id, "vrx_nonce": d.vrx_nonce,

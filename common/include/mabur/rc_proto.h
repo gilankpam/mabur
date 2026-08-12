@@ -5,14 +5,23 @@
 #include <vector>
 namespace mabur::rc {
 
-// RC control-plane framing (adaptive-link feedback + rendezvous). Byte-exact
-// port of devourer's tools/precoder/rc_proto.py: RCF (VRX->VTX feedback),
-// DISC (VRX->VTX discovery beacon), DISC_ACK (VTX->VRX rendezvous reply).
+// RC control-plane framing (adaptive-link feedback + rendezvous): RCF
+// (VRX->VTX feedback), DISC (VRX->VTX discovery beacon), DISC_ACK (VTX->VRX
+// rendezvous reply), T_TELEM (VTX->VRX drone telemetry). Originally a
+// byte-exact port of devourer's tools/precoder/rc_proto.py; that Python is
+// frozen at RC_VERSION 1 and is NO LONGER a wire oracle -- mabur owns these
+// bytes as of RC_VERSION 2, pinned by the goldens in tests/test_rc.cpp.
 // All multi-byte fields are little-endian; every frame ends with a u16
 // CRC16-CCITT (mabur::crc16_ccitt) over every byte before it.
 
 constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
-constexpr uint8_t RC_VERSION = 1;
+// Bumped 1 -> 2 on 2026-08-12: the RCF power byte and the T_TELEM
+// applied_off_qdb/derate_qdb fields were removed when runtime TX-power
+// control was deleted. Old and new peers reject each other in BOTH
+// directions -- a half-deployed pair has no control link and, because
+// DISC_ACK carries CAP_FRAME_WIRE, no video either. Recovery is to finish
+// the deploy. Spec 2026-08-12-constant-txpower-design.md.
+constexpr uint8_t RC_VERSION = 2;
 
 constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
@@ -26,8 +35,6 @@ constexpr uint8_t F_DISCOVERY = 0x04;
 // Rcf.flags bit: one probe_profile byte follows layer_delivery — layer 3
 // (s3) transmits at that MCS while everything else stays on Rcf.profile.
 constexpr uint8_t RCF_F_PROBE3 = 0x08;
-
-constexpr uint8_t PWR_NO_CHANGE = 0xFF;
 
 // DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
 // (8-byte FrameHdr units + 6-byte wide FRAG headers) instead of pre-built
@@ -43,30 +50,14 @@ constexpr uint16_t CAP_TELEMETRY = 0x0002;
 // Spec 2026-08-05 s3-probe-promote.
 constexpr uint16_t CAP_S3_PROBE = 0x0004;
 
-// TX-power command. SEMANTIC DIVERGENCE from the frozen Python prototype
-// (devourer tools/precoder/rc_proto.py, which carries a TXAGC index):
-// since 2026-07-17 this byte is a BIASED SIGNED OFFSET in qdB —
-// value = offset_qdb + 64 (so 64 = calibrated baseline, 52 = -3 dB),
-// clamped to 0..127 on encode. 0xFF (PWR_NO_CHANGE) is unchanged.
-// Rationale + measurements: docs/txagc-calibration.md.
-inline uint8_t encode_pwr_offset_qdb(int qdb) {
-  int clamped = qdb < -64 ? -64 : (qdb > 63 ? 63 : qdb);
-  return static_cast<uint8_t>(clamped + 64);
-}
-
-inline int decode_pwr_offset_qdb(uint8_t b) {
-  return static_cast<int>(b) - 64;
-}
-
 // VRX -> VTX feedback: GS-authoritative profile + alink-style score +
-// explicit power/FEC + per-layer delivery stats.
+// explicit FEC + per-layer delivery stats.
 struct Rcf {
   uint32_t vtx_id = 0;
   uint16_t seq = 0;
   uint16_t ack_seq = 0;
   uint8_t profile = 0;
   uint16_t score = 1000;
-  uint8_t pwr_offset_biased = PWR_NO_CHANGE;
   uint8_t fec_overhead_16ths = 4;
   uint8_t flags = 0;
   std::vector<uint8_t> layer_delivery;
@@ -111,8 +102,6 @@ struct Telem {
   uint32_t generation = 0;
   uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
   uint8_t applied_ov_x100 = 0;
-  uint8_t applied_off_qdb = 64;  // bias-64, rc wire convention
-  uint8_t derate_qdb = 0;
   uint16_t rcf_age_ms = 0;  // saturating
   uint32_t rcf_rx = 0;
   uint32_t enc_frames = 0;

@@ -106,7 +106,6 @@ std::vector<uint8_t> rcf_wire(uint32_t vtx_id, uint16_t seq, int rung) {
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = encode_profile(PhyMode::HT, static_cast<uint8_t>(kLadder[rung].mcs), 20);
-  r.pwr_offset_biased = PWR_NO_CHANGE;
   r.fec_overhead_16ths = overhead_to_16ths(kLadder[rung].ov);
   return pack_rcf(r);
 }

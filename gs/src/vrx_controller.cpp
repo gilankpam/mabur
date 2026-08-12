@@ -80,9 +80,6 @@ std::optional<VrxController::Out> VrxController::step(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
   r.score = static_cast<uint16_t>(win_.score(health.residual_loss));
-  // Power is constant; this wire field is vestigial and is removed in the
-  // RC_VERSION 2 wire change.
-  r.pwr_offset_biased = mabur::rc::PWR_NO_CHANGE;
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
   r.layer_delivery.assign(layer_delivery.begin(), layer_delivery.end());
   if (cfg_.pin_mcs < 0 && ctrl_.probing()) {

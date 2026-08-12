@@ -61,7 +61,6 @@ TEST(rcf_fields_are_correct) {
   CHECK(r->layer_delivery[2] == 80);
   CHECK(r->fec_overhead_16ths ==
         mabur::rc::overhead_to_16ths(vrx.cur_op().overhead));
-  CHECK(r->pwr_offset_biased == mabur::rc::PWR_NO_CHANGE);
 }
 
 // (b) Profile/overhead in the RCF track ctl().op() after a forced demote:

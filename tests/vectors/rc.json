@@ -38,7 +38,6 @@
      10
     ],
     "profile": 36,
-    "pwr_idx": 40,
     "score": 1543,
     "seq": 7,
     "vtx_id": 3735928559
@@ -51,7 +50,6 @@
     "flags": 2,
     "layer_delivery": [],
     "profile": 0,
-    "pwr_idx": 255,
     "score": 1000,
     "seq": 65535,
     "vtx_id": 1

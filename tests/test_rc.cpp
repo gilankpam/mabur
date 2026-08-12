@@ -12,7 +12,6 @@ static Rcf rcf_from_json(const nlohmann::json& f) {
   r.ack_seq = f["ack_seq"].get<uint16_t>();
   r.profile = f["profile"].get<uint8_t>();
   r.score = f["score"].get<uint16_t>();
-  r.pwr_offset_biased = f["pwr_idx"].get<uint8_t>();
   r.fec_overhead_16ths = f["fec_overhead_16ths"].get<uint8_t>();
   r.flags = f["flags"].get<uint8_t>();
   for (auto& v : f["layer_delivery"]) r.layer_delivery.push_back(v.get<uint8_t>());
@@ -50,8 +49,8 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352010100efbeadde0700d80e2407062808046462500a9eff",
-      "435201010201000000ffff000000e803ff10009cf8",
+      "4352020100efbeadde0700d80e24070608046462500ad8c2",
+      "435202010201000000ffff000000e8031000cbe7",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -69,7 +68,6 @@ TEST(rcf_matches_golden_wire) {
     CHECK(parsed->ack_seq == r.ack_seq);
     CHECK(parsed->profile == r.profile);
     CHECK(parsed->score == r.score);
-    CHECK(parsed->pwr_offset_biased == r.pwr_offset_biased);
     CHECK(parsed->fec_overhead_16ths == r.fec_overhead_16ths);
     CHECK(parsed->flags == r.flags);
     CHECK(parsed->layer_delivery == r.layer_delivery);
@@ -85,7 +83,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352010204010000000100feca95140100000002000f69",
+      "4352020204010000000100feca95140100000002000f1b",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -118,7 +116,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352010304010000000100feca03009514010060c0",
+      "4352020304010000000100feca03009514010046f1",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -194,7 +192,6 @@ TEST(rcf_single_byte_flip_fails) {
         CHECK(parsed->ack_seq == orig_parsed->ack_seq);
         CHECK(parsed->profile == orig_parsed->profile);
         CHECK(parsed->score == orig_parsed->score);
-        CHECK(parsed->pwr_offset_biased == orig_parsed->pwr_offset_biased);
         CHECK(parsed->fec_overhead_16ths == orig_parsed->fec_overhead_16ths);
         CHECK(parsed->flags == orig_parsed->flags);
         CHECK(parsed->layer_delivery == orig_parsed->layer_delivery);
@@ -243,30 +240,11 @@ TEST(overhead_to_16ths_cases) {
   CHECK(overhead_to_16ths(0.10) == 2);  // round(1.6) == 2
 }
 
-TEST(pwr_offset_bias_encoding) {
-  CHECK(encode_pwr_offset_qdb(0) == 64);
-  CHECK(encode_pwr_offset_qdb(-12) == 52);
-  CHECK(encode_pwr_offset_qdb(16) == 80);
-  CHECK(encode_pwr_offset_qdb(-100) == 0);    // clamped
-  CHECK(encode_pwr_offset_qdb(100) == 127);   // clamped, never 0xFF
-  CHECK(decode_pwr_offset_qdb(52) == -12);
-  CHECK(decode_pwr_offset_qdb(64) == 0);
-}
-
-TEST(rcf_carries_biased_offset) {
-  Rcf r;
-  r.pwr_offset_biased = encode_pwr_offset_qdb(-8);
-  auto b = pack_rcf(r);
-  auto p = parse_rcf(b.data(), b.size());
-  CHECK(p.has_value());
-  CHECK(decode_pwr_offset_qdb(p->pwr_offset_biased) == -8);
-}
-
 TEST(telem_round_trip_and_golden) {
   mabur::rc::Telem t;
   t.tlm_seq = 0x0102; t.state = 2; t.flags = 0x03; t.generation = 0x04050607;
   t.applied_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20);
-  t.applied_ov_x100 = 25; t.applied_off_qdb = 64; t.derate_qdb = 2;
+  t.applied_ov_x100 = 25;
   t.rcf_age_ms = 45; t.rcf_rx = 100000; t.enc_frames = 200000;
   t.enc_kbytes = 300000; t.cmd_kbps = 9000; t.qp = 8; t.ring_drops = 1;
   t.txq_depth = 3; t.txq_cap = 64; t.txq_drops = 7; t.radio_sent = 400000;
@@ -294,8 +272,8 @@ TEST(telem_round_trip_and_golden) {
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
-      "435201040302010207060504051940022d00a0860100400d0300e09304002823080100"
-      "034007000000801a0600090000000200333415163d034800040005004ce1";
+      "43520204030201020706050405192d00a0860100400d0300e09304002823080100"
+      "034007000000801a0600090000000200333415163d034800040005004a81";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -348,12 +326,61 @@ TEST(rcf_probe_flag_masked_from_caller_flags) {
   r.flags = mabur::rc::RCF_F_PROBE3;  // caller-supplied stray bit
   r.probe3 = false;  // but probe3 is false
   auto buf = mabur::rc::pack_rcf(r);
-  // Frame should have no probe byte (19-byte header + 4 layers + 2 CRC = 25).
-  CHECK(buf.size() == 25);
+  // Frame should have no probe byte (18-byte header + 4 layers + 2 CRC = 24).
+  CHECK(buf.size() == 24);
   auto p = mabur::rc::parse_rcf(buf.data(), buf.size());
   REQUIRE(p.has_value());
   CHECK(!p->probe3);  // probe3 must be false (stray bit was masked)
   CHECK(!(p->flags & mabur::rc::RCF_F_PROBE3));  // flag must be cleared
+}
+
+TEST(version_mismatch_rejected_both_directions) {
+  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored v1 frame
+  // become current-version, so it parses and the first CHECK fails.
+  mabur::rc::Rcf r;
+  r.vtx_id = 7;
+  r.seq = 1;
+  r.profile = 0;
+  r.fec_overhead_16ths = 4;
+  r.layer_delivery = {100, 100, 100, 100};
+  auto body = mabur::rc::pack_rcf(r);
+
+  // Sanity: as packed, it parses.
+  CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
+
+  // Byte 2 is the version. Any other version must be refused outright.
+  auto v1 = body;
+  v1[2] = 1;
+  CHECK(!mabur::rc::parse_rcf(v1.data(), v1.size()).has_value());
+
+  auto v3 = body;
+  v3[2] = 3;
+  CHECK(!mabur::rc::parse_rcf(v3.data(), v3.size()).has_value());
+
+  // The same guard must hold for telemetry, which travels the opposite
+  // direction (drone -> GS). A half-deployed pair must fail BOTH ways.
+  mabur::rc::Telem t;
+  t.tlm_seq = 9;
+  auto tb = mabur::rc::pack_telem(t);
+  CHECK(mabur::rc::parse_telem(tb.data(), tb.size()).has_value());
+  auto tv1 = tb;
+  tv1[2] = 1;
+  CHECK(!mabur::rc::parse_telem(tv1.data(), tv1.size()).has_value());
+}
+
+TEST(rcf_head_is_eighteen_bytes) {
+  // Pins the removed power byte. Reverting the deletion from pack_rcf()
+  // makes the packed body one byte longer and this fails.
+  mabur::rc::Rcf r;
+  r.vtx_id = 1;
+  r.fec_overhead_16ths = 9;
+  r.layer_delivery = {0, 0, 0, 0};
+  auto body = mabur::rc::pack_rcf(r);
+  // 18-byte head + 4 layer bytes + 2 CRC bytes.
+  CHECK(body.size() == 18 + 4 + 2);
+  // fec_overhead_16ths now lives at byte 16, n_layers at 17.
+  CHECK(body[16] == 9);
+  CHECK(body[17] == 4);
 }
 
 MTEST_MAIN
