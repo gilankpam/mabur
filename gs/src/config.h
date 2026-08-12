@@ -65,6 +65,11 @@ struct LinkCfg {
   // overridable for host tests; the device default is the DVR SD card.
   bool ctl_log = false;
   std::string ctl_log_dir = "/media/dvr";
+
+  // R-line emission cadence for the per-rung EWMA store (spec 2026-08-13).
+  // The store's own tuning (half_life_samples) lives in
+  // ladder_cfg.rung_stats; this is main.cpp's log cadence only.
+  int rung_log_period_s = 10;
 };
 
 /// Video reassembly tuning (PR C: the RTP output destination is gone --

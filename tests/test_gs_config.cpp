@@ -550,3 +550,25 @@ TEST(au_ring_strictness) {
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // below the 4-slot floor
 }
+
+TEST(rung_stats_defaults) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.ladder_cfg.rung_stats.half_life_samples == 600);
+  CHECK(cfg.link.rung_log_period_s == 10);
+}
+
+TEST(rung_stats_parses_and_validates) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"rung_stats":{"half_life_samples":100,"rung_log_period_s":5}}})"));
+  CHECK(cfg.link.ladder_cfg.rung_stats.half_life_samples == 100);
+  CHECK(cfg.link.rung_log_period_s == 5);
+  try {  // out-of-range fails boot (strict config)
+    maburgs::load_config(
+        write_tmp(R"({"link":{"rung_stats":{"half_life_samples":0}}})"));
+    CHECK(false);
+  } catch (const std::exception&) {}
+  try {  // unknown nested key fails boot
+    maburgs::load_config(write_tmp(R"({"link":{"rung_stats":{"bogus":1}}})"));
+    CHECK(false);
+  } catch (const std::exception&) {}
+}
