@@ -43,14 +43,25 @@ static DiscAck disc_ack_from_json(const nlohmann::json& f) {
   return a;
 }
 
-TEST(rcf_matches_python_vectors) {
+TEST(rcf_matches_golden_wire) {
+  // Golden pin: mabur owns these bytes (devourer's frozen Python is stuck
+  // at RC_VERSION 1). Print-once, then hardcode:
+  //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
+  // Reverting any pack_rcf() layout change without updating these fails
+  // here, which is the point -- the format cannot drift silently.
+  const std::vector<std::string> GOLDEN = {
+      "4352010100efbeadde0700d80e2407062808046462500a9eff",
+      "435201010201000000ffff000000e803ff10009cf8",
+  };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  REQUIRE(j["rcf"].size() == GOLDEN.size());
+  size_t i = 0;
   for (auto& c : j["rcf"]) {
     auto r = rcf_from_json(c["fields"]);
     auto wire = pack_rcf(r);
-    CHECK(mtest::hex(wire) == c["wire"].get<std::string>());
+    CHECK(mtest::hex(wire) == GOLDEN[i]);
 
-    auto raw = mtest::unhex(c["wire"].get<std::string>());
+    auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_rcf(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
     CHECK(parsed->vtx_id == r.vtx_id);
@@ -62,19 +73,29 @@ TEST(rcf_matches_python_vectors) {
     CHECK(parsed->fec_overhead_16ths == r.fec_overhead_16ths);
     CHECK(parsed->flags == r.flags);
     CHECK(parsed->layer_delivery == r.layer_delivery);
-
     CHECK(frame_type(raw.data(), raw.size()) == T_RCF);
+    ++i;
   }
 }
 
-TEST(disc_matches_python_vectors) {
+TEST(disc_matches_golden_wire) {
+  // Golden pin: mabur owns these bytes (devourer's frozen Python is stuck
+  // at RC_VERSION 1). Print-once, then hardcode:
+  //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
+  // Reverting any pack_disc() layout change without updating this fails
+  // here, which is the point -- the format cannot drift silently.
+  const std::vector<std::string> GOLDEN = {
+      "4352010204010000000100feca95140100000002000f69",
+  };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  REQUIRE(j["disc"].size() == GOLDEN.size());
+  size_t i = 0;
   for (auto& c : j["disc"]) {
     auto d = disc_from_json(c["fields"]);
     auto wire = pack_disc(d);
-    CHECK(mtest::hex(wire) == c["wire"].get<std::string>());
+    CHECK(mtest::hex(wire) == GOLDEN[i]);
 
-    auto raw = mtest::unhex(c["wire"].get<std::string>());
+    auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_disc(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
     CHECK(parsed->vtx_id == d.vtx_id);
@@ -85,19 +106,29 @@ TEST(disc_matches_python_vectors) {
     CHECK(parsed->init_profile == d.init_profile);
     CHECK(parsed->cap_bits == d.cap_bits);
     CHECK(parsed->seq == d.seq);
-
     CHECK(frame_type(raw.data(), raw.size()) == T_DISC);
+    ++i;
   }
 }
 
-TEST(disc_ack_matches_python_vectors) {
+TEST(disc_ack_matches_golden_wire) {
+  // Golden pin: mabur owns these bytes (devourer's frozen Python is stuck
+  // at RC_VERSION 1). Print-once, then hardcode:
+  //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
+  // Reverting any pack_disc_ack() layout change without updating this
+  // fails here, which is the point -- the format cannot drift silently.
+  const std::vector<std::string> GOLDEN = {
+      "4352010304010000000100feca03009514010060c0",
+  };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
+  REQUIRE(j["disc_ack"].size() == GOLDEN.size());
+  size_t i = 0;
   for (auto& c : j["disc_ack"]) {
     auto a = disc_ack_from_json(c["fields"]);
     auto wire = pack_disc_ack(a);
-    CHECK(mtest::hex(wire) == c["wire"].get<std::string>());
+    CHECK(mtest::hex(wire) == GOLDEN[i]);
 
-    auto raw = mtest::unhex(c["wire"].get<std::string>());
+    auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_disc_ack(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
     CHECK(parsed->vtx_id == a.vtx_id);
@@ -106,14 +137,14 @@ TEST(disc_ack_matches_python_vectors) {
     CHECK(parsed->agreed_channel == a.agreed_channel);
     CHECK(parsed->agreed_width == a.agreed_width);
     CHECK(parsed->seq == a.seq);
-
     CHECK(frame_type(raw.data(), raw.size()) == T_DISC_ACK);
+    ++i;
   }
 }
 
 TEST(rcf_truncation_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto raw = mtest::unhex(j["rcf"][0]["wire"].get<std::string>());
+  auto raw = pack_rcf(rcf_from_json(j["rcf"][0]["fields"]));
   for (size_t len = 0; len < raw.size(); ++len) {
     auto parsed = parse_rcf(raw.data(), len);
     CHECK(!parsed.has_value());
@@ -122,7 +153,7 @@ TEST(rcf_truncation_fails) {
 
 TEST(disc_truncation_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto raw = mtest::unhex(j["disc"][0]["wire"].get<std::string>());
+  auto raw = pack_disc(disc_from_json(j["disc"][0]["fields"]));
   for (size_t len = 0; len < raw.size(); ++len) {
     auto parsed = parse_disc(raw.data(), len);
     CHECK(!parsed.has_value());
@@ -131,7 +162,7 @@ TEST(disc_truncation_fails) {
 
 TEST(disc_ack_truncation_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto raw = mtest::unhex(j["disc_ack"][0]["wire"].get<std::string>());
+  auto raw = pack_disc_ack(disc_ack_from_json(j["disc_ack"][0]["fields"]));
   for (size_t len = 0; len < raw.size(); ++len) {
     auto parsed = parse_disc_ack(raw.data(), len);
     CHECK(!parsed.has_value());
@@ -144,8 +175,7 @@ TEST(disc_ack_truncation_fails) {
 // covered either by header validation or by the CRC.
 TEST(rcf_single_byte_flip_fails) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto orig_hex = j["rcf"][0]["wire"].get<std::string>();
-  auto orig = mtest::unhex(orig_hex);
+  auto orig = pack_rcf(rcf_from_json(j["rcf"][0]["fields"]));
   auto orig_parsed = parse_rcf(orig.data(), orig.size());
   REQUIRE(orig_parsed.has_value());
 
@@ -186,9 +216,9 @@ TEST(layer_delivery_clamps_on_pack) {
 
 TEST(frame_type_peek) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
-  auto rcf_wire = mtest::unhex(j["rcf"][0]["wire"].get<std::string>());
-  auto disc_wire = mtest::unhex(j["disc"][0]["wire"].get<std::string>());
-  auto ack_wire = mtest::unhex(j["disc_ack"][0]["wire"].get<std::string>());
+  auto rcf_wire = pack_rcf(rcf_from_json(j["rcf"][0]["fields"]));
+  auto disc_wire = pack_disc(disc_from_json(j["disc"][0]["fields"]));
+  auto ack_wire = pack_disc_ack(disc_ack_from_json(j["disc_ack"][0]["fields"]));
   CHECK(frame_type(rcf_wire.data(), rcf_wire.size()) == T_RCF);
   CHECK(frame_type(disc_wire.data(), disc_wire.size()) == T_DISC);
   CHECK(frame_type(ack_wire.data(), ack_wire.size()) == T_DISC_ACK);

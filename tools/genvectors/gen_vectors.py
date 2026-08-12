@@ -167,22 +167,24 @@ discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
                          agreed_channel=149, agreed_width=20, seq=1)]
+# mabur owns its RC wire bytes as of 2026-08-12. devourer's frozen
+# tools/precoder/rc_proto.py is pinned at RC_VERSION 1 and still packs a
+# pwr_idx byte, so it can no longer serve as a wire oracle across mabur's
+# RC_VERSION 2 change. The field cases below stay Python-generated; the
+# expected bytes are hardcoded goldens in tests/test_rc.cpp.
 dump("rc.json", {
   "rcf": [{"fields": {"vtx_id": r.vtx_id, "seq": r.seq, "ack_seq": r.ack_seq,
                       "profile": r.profile, "score": r.score, "pwr_idx": r.pwr_idx,
                       "fec_overhead_16ths": r.fec_overhead_16ths, "flags": r.flags,
-                      "layer_delivery": list(r.layer_delivery)},
-           "wire": hx(rc_proto.pack_rcf(r))} for r in rcfs],
+                      "layer_delivery": list(r.layer_delivery)}} for r in rcfs],
   "disc": [{"fields": {"vtx_id": d.vtx_id, "vrx_nonce": d.vrx_nonce,
                        "op_channel": d.op_channel, "op_width": d.op_width,
                        "table_ver": d.table_ver, "init_profile": d.init_profile,
-                       "cap_bits": d.cap_bits, "seq": d.seq},
-            "wire": hx(rc_proto.pack_disc(d))} for d in discs],
+                       "cap_bits": d.cap_bits, "seq": d.seq}} for d in discs],
   "disc_ack": [{"fields": {"vtx_id": a.vtx_id, "vrx_nonce": a.vrx_nonce,
                            "chip_caps": a.chip_caps,
                            "agreed_channel": a.agreed_channel,
-                           "agreed_width": a.agreed_width, "seq": a.seq},
-                "wire": hx(rc_proto.pack_disc_ack(a))} for a in acks]})
+                           "agreed_width": a.agreed_width, "seq": a.seq}} for a in acks]})
 
 # --- profile / ladder / phy rate -----------------------------------------
 # The per-seq bandwidth-probe-schedule vectors were removed 2026-07-27 (SDD
