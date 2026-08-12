@@ -132,13 +132,45 @@ The gap is downstream: a large IDR AU is exactly the payload least likely
 to survive the transport, so the only deterministic repair in the system is
 least reliable when it is most needed.
 
-Next steps (not this work):
+**Same-day correction — the transport hypothesis above is DISPROVEN.** A
+second-decoder experiment settled it: 40 s of ring AUs dumped during a
+smear-era session (`ausniff --dump-annexb`, 2394 AUs, 0 incomplete, 0 gaps,
+an IDR fired mid-dump) decode **pristine end-to-end in ffmpeg on the host**
+— no smear, no artifacts, at the IDR and 10 s and 30 s after it. Same
+bytes, two decoders: ffmpeg clean, rkvdec on the GS smeared. Meanwhile a
+smear observed live persisted through a 5-minute window with `missing ref`
+FLAT, wire at 0 truncated / 0 dropped, and every drone counter static.
 
-1. Instrument which sid 0 AUs truncate and why — deadline vs FEC vs size.
-   `video.frame_gap_timeout_ms` (50 ms) is the first suspect for a large AU.
-2. Consider whether the player can use a partially-delivered IDR at all, or
-   whether the drone should split/pace an IDR so it survives the transport.
-3. Re-run §2's visual and this section once (1) is understood.
+So the corruption is **inside the player's decoder state**: rkvdec's
+reference *pictures* diverge in content from the encoder's (the reference
+*list* stays intact, so nothing logs under `DISABLE_ERROR`), and only an
+IDR — a forced DPB reset — repairs it. This is the same silent-drift
+mechanism class the blindspot doc measured as "GDR restores the list but
+not the pixels".
+
+Confounder worth recording: at the time of the recurring smear the GS was
+running an operator-experiment 8-rung ladder (mcs1/mcs3 rungs, mcs6 at
+ov 0.15 — the documented mcs6-bleed trap, `docs/mcs6-bench-anomaly.md`)
+whose promote↔demote limit cycle (34 promotes / 19 demotes / ~1 h,
+`cmd_kbps` flapping 16000↔13400) kept re-damaging the picture. Pinning
+`static_mcs 5` did NOT stop the smear recurring, which is what forced the
+second-decoder experiment and the player-side conclusion.
+
+Prime suspect for the silent input-side loss: `MppBackend::submit_au`'s
+`BUFFER_FULL` path — the live player shares its 24-buffer pool with the
+presenter (unlike `--decode-only`), and a terminally failed `put_packet`
+discards the AU with only the invisible-on-live `errors()` counter moving.
+A decode-health tracer now logs `errors/concealed/info_changes` deltas on
+the live player (change-only, ≥2 s apart), with the log persisted to
+`/media/dvr/maburplay-trace.log` across respawns. Waiting for the next
+operator-observed smear to correlate.
+
+Next steps:
+
+1. On the next smear sighting: read the tracer. `errors` jump at that
+   moment → wire the player's IDR latch to that counter (a fourth trigger).
+   Silent → source the trigger from POC-gap tracking instead.
+2. Then re-run §2's visual with the mechanism understood.
 
 ## Deployment state
 
