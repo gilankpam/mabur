@@ -54,8 +54,8 @@ with:
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
   file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 1` header followed by compact S/E/P/N
-  lines (rung/state, ctl events, probe events, penalties). `flightreport.py`
+  default `/media/dvr`), a `ctllog 1` header followed by compact S/E/P/N/R
+  lines (rung/state, ctl events, probe events, penalties, per-rung EWMA store snapshots). `flightreport.py`
   auto-detects this format alongside the jsonl format, so no separate
   invocation is needed. Tuning invariant: the controller's s3 loss/residual
   windows are 500 ms wide, while the post-transition blanking

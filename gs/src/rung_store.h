@@ -69,7 +69,7 @@ class RungStore {
   }
   std::size_t size() const { return stats_.size(); }
   // Cumulative parked time; includes the live interval when `rung` is the
-  // current rung. Dwell accrues from the first observe_s1() after start.
+  // current rung. Dwell accrues from the first observe_s1() after start; after any transition it accrues from the transition itself (even before the next sample).
   double dwell_ms(int rung, double now_ms) const;
   double alpha() const { return alpha_; }
 
