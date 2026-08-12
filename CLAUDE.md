@@ -75,6 +75,14 @@ with:
   rung transition's FEC re-key artifacts could then satisfy the s3-residual
   confirm and self-demote on every promote.
 
+⚠ **"Wire clean" does not mean "no frame loss"** (2026-08-12): encoded
+frames can vanish inside the drone's venc frame ring BEFORE maburd assigns
+a frame_id — no counter anywhere moves (the ring's drop counter lives in
+waybeam's process, unexported), the wire sequence closes seamlessly, and a
+vanished base frame silently corrupts the decoder until an IDR. A smeared
+picture over an all-green sideport is this, not a telemetry bug. Evidence
+and fix directions: `docs/venc-ring-vanish-findings-2026-08-12.md`.
+
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
 
