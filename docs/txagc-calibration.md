@@ -5,6 +5,25 @@ deployed drone hardware, 2026-07-16. Written to be reproducible from a fresh
 session. Paths relative to the mabur repo root; tool source under
 `bench/txagcbench/`.
 
+> **Partly superseded 2026-08-12 — runtime TX-power control no longer
+> exists.** The *measurement* half of this document is current: the wall
+> table, the transfer curve, the methodology and `bench/txagcbench` (which
+> still drives `SetTxPowerOffsetQdb` directly, deliberately) are still how a
+> unit's walls get characterized, and the walls are still consumed as config.
+> The *control* half is not. mabur has no runtime power actuator: no
+> GS-commanded qdB offset, no thermal derate, no per-profile offset column.
+> `maburd` programs the wall-equalized per-rate diff table once at bring-up
+> under `radio.power_mode: "offset"`, zeroes the global offset once, and never
+> calls a power API again. The config keys `radio.min_offset_qdb`,
+> `radio.power_offset_qdb`, `radio.thermal_max_delta` and
+> `link.static_offset_qdb` were REMOVED and now FAIL BOOT (strict-key config),
+> as did `radio.power_mode: "override"`; the RCF power byte and the
+> `drone.applied.offset_qdb`/`derate_qdb` sideport keys are gone too, and
+> `gs/src/energy.h` (`gain_db()`, `min_txagc_for_gain()`) was deleted with the
+> old energy-minimizing controller. Read every "the controller commands an
+> offset" statement below as history. See the constant-TX-power note in
+> `CLAUDE.md`.
+
 **TL;DR:** the adaptive controller's original power model (`kTxagcGainDb`,
 since deleted from `gs/src/gen/gen_tables.h`) bore no resemblance to the
 hardware. The real curve is a flat floor below idx ~29, a ~0.3 dB/step ramp,
@@ -133,7 +152,7 @@ never derived from hardware.
 | devourer read | reads base + PA-bias trim | works — the 53 is applied |
 | devourer apply | 8822E per-rate diff registers | zeroed **only under flat-override** — `set_tx_power_ref(idx, zero_diffs=true)`: "every rate emits at idx" (`RadioManagementJaguar3.h:85-91`); the 8822E **default path applies the phy_reg_pg per-rate diffs**, and `SetTxPowerOffsetQdb` preserves them (light ref-only writes) — see 2026-07-16/17 correction below |
 | per-packet TXAGC | TX-descriptor power field | inert on Jaguar3 (devourer docs) — per-frame power is impossible |
-| maburd deployed | `radio.power_mode` | `"none"` → fixed at 53, phy_reg_pg diffs live; `"offset"` → wall-equalized custom diffs, adaptive offsets (see "Consuming the walls" below); commanded `pwr_idx` under `"none"` is ignored |
+| maburd deployed | `radio.power_mode` | `"none"` → fixed at 53, phy_reg_pg diffs live; `"offset"` → wall-equalized custom diffs programmed once at bring-up, global offset zeroed once (see "Consuming the walls" below). Since 2026-08-12 there is no runtime power command at all, in either mode |
 
 Consequences at the factory-default 53, **under flat-override** (the mode
 active during the original sweep — devourer's per-rate diffs zeroed, every
@@ -172,7 +191,12 @@ rate forced to emit at raw idx 53):
   (`halrf.c:5004`) — squarely inside our measured ramp, ending at our
   measured wall region. Realtek never intended the bottom quarter to be used.
 
-## Implications for the adaptive controller
+## Implications for the adaptive controller (historical — 2026-07-16)
+
+This section was written against the energy-minimizing controller that
+commanded TX power at runtime. That controller, and every runtime power
+actuator with it, was deleted on 2026-08-12 (see the note at the top), so
+items 1–4 are a record of why the old model was wrong, not work to do.
 
 1. `gain_db()` and `min_txagc_for_gain()` operate on fiction: path-loss
    normalization can be off by up to ~19 dB, and "add 10 dB" commands can buy
@@ -187,16 +211,19 @@ rate forced to emit at raw idx 53):
 4. Extending the command range past idx 63 is not worth it (+4 dB at MCS0,
    nothing at MCS4+); remapping onto idx 28..91 is actively dangerous for
    MCS5+ ladders. The wall-aware clamp is the correct shape of the fix.
-5. **Model validity range**: `gs/src/energy.h`'s `gain_db()` linear 0.25
-   dB/qdB model is bench-valid only over the PA ramp region (idx ~29..91).
-   Below effective index ~29 output floors and the model overstates
-   back-off. For this unit's wall-equalized diffs, that floor lands at
-   offset_qdb ~= -16 on the fastest rungs (MCS7 sits at effective idx 45 at
-   offset 0 with the default 1 dB margin, and 45-16=29). The pre-flight
-   bench campaign for any unit must either raise `min_offset_qdb` to this
-   floor-aware value or re-measure the ramp/floor boundary for that unit's
-   card; an MCS7 offset sweep down to the floor belongs in the acceptance
-   list before flight.
+5. **Model validity range** (historical — `gs/src/energy.h` and its
+   `gain_db()` were deleted with the energy-minimizing controller): the
+   linear 0.25 dB/qdB model was bench-valid only over the PA ramp region
+   (idx ~29..91). Below effective index ~29 output floors and the model
+   overstated back-off. For this unit's wall-equalized diffs, that floor
+   landed ~16 qdB below the fastest rungs (MCS7 sits at effective idx 45
+   with the default 1 dB margin, and 45−16=29). **This no longer constrains
+   anything to configure**: nothing backs power off at runtime any more, and
+   `min_offset_qdb` was removed — setting it now fails boot. What survives
+   is the acceptance-list item: a new unit's card gets a fresh wall sweep
+   (`bench/txagcbench/`, "Reproduction" below) so `rate_walls_idx` and
+   `wall_margin_db` park every rate below its own measured first dip, since
+   that park is now the only power decision made.
 
 ## Consuming the walls
 
@@ -204,14 +231,15 @@ The measured wall table above is now live config, not just findings. It's
 read at `radio.rate_walls_idx` in `bundle/mabur.default.json`, set to this
 unit's measured ceilings (with `legacy_wall_idx` for the OFDM control rate),
 alongside `wall_margin_db` and `base_ref_idx`. `radio.power_mode: "offset"`
-switches the drone from the deployed `"none"` baseline to the adaptive path:
-`drone/src/power_plan.h` derives per-rate qdB diffs from the walls so that,
-at offset 0, every rate's effective TXAGC index sits at `wall − margin`
-(`wall_margin_db`, in qdB steps) — every rate parked at wall-minus-margin,
-level-continuous with the `"none"` baseline measured above. `max_offset_qdb`
-is always 0 under this formulation: offset 0 already equalizes every rate to
-its wall, so the controller only ever backs off (`offset ≤ 0`), scaling
-every rate down uniformly by the commanded amount. A different unit's card
+switches the drone from the deployed `"none"` baseline to the wall-equalized
+table: `drone/src/power_plan.h` derives per-rate qdB diffs from the walls so
+that every rate's effective TXAGC index sits at `wall − margin` —
+`diff[r] = walls[r] − round(wall_margin_db × 4) − base_ref_idx`, the margin
+being converted from dB to the chip's 0.25 dB (qdB) index steps. Every rate
+is parked at wall-minus-margin, level-continuous with the `"none"` baseline
+measured above. Bring-up programs that table once and zeroes the global
+offset once; nothing moves power afterwards, so this park **is** the
+operating power for the life of the process. A different unit's card
 gets its own walls by re-running the sweep (`bench/txagcbench/`) and
 updating `rate_walls_idx` — the walls do not transfer unit-to-unit (see
 Caveats below).
