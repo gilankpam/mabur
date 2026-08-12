@@ -295,6 +295,23 @@ static int run_radio(const maburgs::Config& cfg) {
   // (initialized to the pre-any-event default so boot doesn't print one).
   double last_probe_t_ms = vrx.ctl().last_probe().t_ms;
   double last_penalty_t_ms = vrx.ctl().last_penalty().t_ms;
+  double last_rung_log_ms = 0;
+  // R-line snapshot of every rung with any data (spec 2026-08-13).
+  auto emit_rung_lines = [&](double t_ms) {
+    if (!ctl_log) return;
+    const maburgs::RungStore& st = vrx.ctl().rungs();
+    for (int i = 0; i < static_cast<int>(st.size()); ++i) {
+      const maburgs::RungStat& rs = st.stat(i);
+      if (rs.u.n == 0 && rs.probe_u.n == 0) continue;
+      const double age_s =
+          rs.last_sample_ms < 0 ? -1.0 : (t_ms - rs.last_sample_ms) / 1000.0;
+      const double sd = rs.evm_n ? std::sqrt(rs.evm_var_db2)
+                                 : std::numeric_limits<double>::quiet_NaN();
+      ctl_log->rung(t_ms, i, rs.u.v, rs.resid.v, rs.u3.v, rs.s3_resid.v,
+                     rs.evm_db, sd, rs.u.n, age_s, rs.probe_u.v,
+                     rs.probe_u.n);
+    }
+  };
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
       // A CRC-clean frame can still fail to parse as a valid Telem (e.g. a
@@ -533,6 +550,7 @@ static int run_radio(const maburgs::Config& cfg) {
       if (ctl_log)
         ctl_log->event(e.t_ms, e.from, e.to, maburgs::to_string(e.reason),
                         e.u, e.snr_db, e.evm_db);
+      if (ctl_log) emit_rung_lines(now_ms);  // store state at the decision
     }
     // s3 probe-before-promote records: same t_ms-change detect pattern as
     // the rung-transition line above.
@@ -556,6 +574,10 @@ static int run_radio(const maburgs::Config& cfg) {
         ctl_log->sample(now_ms, c.rung(), c.util(), health.s1_snr_db,
                          residual.value_or(0.0), c.util3(),
                          health.s3_residual_loss, health.s1_evm_db);
+        if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
+          last_rung_log_ms = now_ms;
+          emit_rung_lines(now_ms);
+        }
       }
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
