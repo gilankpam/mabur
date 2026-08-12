@@ -226,8 +226,13 @@ devourer::TxMode control_tx_mode() {
 
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
 // FrameSink), the hot-thread-owned UepEncoder (via the shared_op handoff),
-// the waybeam VTX control API, and (real mode only) the devourer device's
-// TX-power knob.
+// and the waybeam VTX control API.
+//
+// It deliberately has NO TX-power knob. Power is constant: bring-up programs
+// the wall-equalized per-rate diff table and zeroes the global offset once
+// (the `power_mode == "offset"` block in run_real_mode()), and nothing
+// touches power again for the life of the process. Spec
+// 2026-08-12-constant-txpower-design.md.
 //
 // Threading: apply_op()/send_control()/set_bitrate_kbps()/set_roi_qp()/
 // request_idr() are all called from the agent thread only (RcAgent's
@@ -241,7 +246,6 @@ struct RealActuator : mabur::Actuator {
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
-  std::string power_mode = "none";  // radio.power_mode (see config.h)
 
   std::vector<uint8_t> control_radiotap;  // built once; control channel is fixed
   uint16_t control_seq = 0;
@@ -255,12 +259,9 @@ struct RealActuator : mabur::Actuator {
 
   void apply_op(const AppliedOp& op) override {
     tx->set_ladder(op.ladder);
-    if (dev) {
-      // Power is constant: programmed once at bring-up (see the
-      // power_mode == "offset" block below), never per-op.
-      // Spec 2026-08-12-constant-txpower-design.md.
-      (void)power_mode;
-    } else if (dry_run) {
+    // Applying an op is a ladder + FEC + shed change and nothing else — see
+    // the struct comment: there is no per-op power step to do in real mode.
+    if (!dev && dry_run) {
       std::fprintf(stderr, "[dry-run] fec_overhead=%.3f gen=%llu\n",
                    op.fec_overhead,
                    static_cast<unsigned long long>(op.generation));
@@ -747,7 +748,6 @@ int run_real_mode(const Config& cfg) {
   actuator.shared_op = &shared_op;
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
-  actuator.power_mode = cfg.radio.power_mode;
   // Encoder starts at the "normal" ROI QP (RcAgent only calls set_roi_qp on
   // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
   // so the telemetry collector needs this seeded to reflect what's actually
