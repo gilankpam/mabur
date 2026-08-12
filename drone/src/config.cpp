@@ -48,18 +48,15 @@ void assign_if_present(const json& j, const char* key, T& out,
 
 void parse_radio(const json& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width",
-                        "thermal_max_delta", "power_mode",
-                        "power_offset_qdb", "tx_threads", "rate_walls_idx",
+                        "power_mode", "tx_threads", "rate_walls_idx",
                         "legacy_wall_idx", "wall_margin_db",
-                        "min_offset_qdb", "base_ref_idx"},
+                        "base_ref_idx"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
   assign_if_present(j, "channel", r.channel, "radio");
   assign_if_present(j, "width", r.width, "radio");
-  assign_if_present(j, "thermal_max_delta", r.thermal_max_delta, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
-  assign_if_present(j, "power_offset_qdb", r.power_offset_qdb, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
 
   bool rate_walls_idx_present = j.contains("rate_walls_idx");
@@ -76,17 +73,13 @@ void parse_radio(const json& j, RadioCfg& r) {
   }
   assign_if_present(j, "legacy_wall_idx", r.legacy_wall_idx, "radio");
   assign_if_present(j, "wall_margin_db", r.wall_margin_db, "radio");
-  assign_if_present(j, "min_offset_qdb", r.min_offset_qdb, "radio");
   assign_if_present(j, "base_ref_idx", r.base_ref_idx, "radio");
 
   if (r.channel < 1 || r.channel > 177) fail("radio.channel", "must be in [1,177]");
   if (r.tx_threads < 1 || r.tx_threads > 8)
     fail("radio.tx_threads", "must be in [1,8]");
-  if (r.power_mode != "override" && r.power_mode != "offset" &&
-      r.power_mode != "none")
-    fail("radio.power_mode", "must be \"override\", \"offset\" or \"none\"");
-  if (r.power_offset_qdb < -128 || r.power_offset_qdb > 128)
-    fail("radio.power_offset_qdb", "must be in [-128,128]");
+  if (r.power_mode != "offset" && r.power_mode != "none")
+    fail("radio.power_mode", "must be \"offset\" or \"none\"");
 
   if (r.power_mode == "offset" && !rate_walls_idx_present)
     fail("radio.rate_walls_idx", "required when radio.power_mode is \"offset\"");
@@ -96,8 +89,6 @@ void parse_radio(const json& j, RadioCfg& r) {
     fail("radio.legacy_wall_idx", "must be in [0,127]");
   if (r.wall_margin_db < 0.0 || r.wall_margin_db > 6.0)
     fail("radio.wall_margin_db", "must be in [0,6]");
-  if (r.min_offset_qdb < -64 || r.min_offset_qdb > 0)
-    fail("radio.min_offset_qdb", "must be in [-64,0]");
   if (r.base_ref_idx < 0 || r.base_ref_idx > 127)
     fail("radio.base_ref_idx", "must be in [0,127]");
 

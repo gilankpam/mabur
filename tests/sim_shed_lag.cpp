@@ -92,7 +92,6 @@ Config make_cfg() {
   cfg.link.failsafe_ms = 1000;
   cfg.link.rendezvous_ms = 30000;
   cfg.link.tick_ms = 100;
-  cfg.radio.thermal_max_delta = 25;
   cfg.waybeam.airtime_budget = 0.65;
   cfg.waybeam.bitrate_min_kbps = 1000;
   cfg.waybeam.bitrate_max_kbps = 20000;

@@ -9,14 +9,13 @@
 
 namespace mabur {
 
-// One fully-resolved operating point ready to hand to the radio/encoder:
-// the 4-rung PHY ladder, the FEC overhead scalar (fed to
-// uep_layer_overhead), the commanded TX power offset, per-layer shed flags
-// (failsafe-forced OR local congestion-directed), and a generation counter
-// bumped only when a *new* operating point (ladder/FEC) is applied
-// (BOOT/DISC/RCF/failsafe entry) — NOT on every publish. Thermal derate and
-// congestion shed re-apply the *current* op (same ladder/FEC) with updated
-// pwr_offset_qdb/shed and publish a fresh AppliedOp WITHOUT bumping
+// The resolved operating point: the 4-rung ladder, the commanded FEC
+// overhead (the base scale that stream 1's uep_layer_overhead rescales),
+// per-layer shed flags (failsafe-forced OR local congestion-directed), and
+// a generation counter bumped only when a *new* operating point
+// (ladder/FEC) is applied (BOOT/DISC/RCF/failsafe entry) — NOT on every
+// publish. Congestion shed re-applies the *current* op (same ladder/FEC)
+// with updated shed flags and publishes a fresh AppliedOp WITHOUT bumping
 // generation, so consumers MUST NOT use generation to detect "did a new
 // AppliedOp get published" — every apply_op() call (via Actuator::apply_op)
 // constructs and stores a brand new object, so callers that need "did the
@@ -25,10 +24,6 @@ namespace mabur {
 struct AppliedOp {
   std::array<rc::LayerTxSpec, 4> ladder;
   double fec_overhead = 1.0;
-  // Commanded TX power expressed as a qdB offset from the calibrated
-  // wall-equalized baseline; 0 = full legal power, negative = backed off.
-  // Never positive (a plan's max legal offset is always 0).
-  int pwr_offset_qdb = 0;
   std::array<bool, 4> shed = {false, false, false, false};
   uint64_t generation = 0;
 };
@@ -39,15 +34,16 @@ struct AppliedOp {
 class Actuator {
  public:
   virtual ~Actuator() = default;
-  virtual void apply_op(const AppliedOp&) = 0;                     // ladder+power+FEC+shed
+  virtual void apply_op(const AppliedOp&) = 0;                     // ladder+FEC+shed
   virtual void send_control(const std::vector<uint8_t>& body) = 0;  // DISC_ACK
   virtual void set_bitrate_kbps(int) = 0;
   virtual void set_roi_qp(int) = 0;
   virtual void request_idr() = 0;
 };
 
-// Radio-side health signals sampled once per tick and fed to RcAgent's
-// thermal guard / congestion-shed policies.
+// Radio-side health signals sampled once per tick. thermal_delta is
+// telemetry-only (nothing acts on it); tx_drops feeds the congestion-shed
+// policy.
 struct RadioHealth {
   int thermal_delta = 0;
   uint64_t tx_drops = 0;
@@ -55,8 +51,8 @@ struct RadioHealth {
 
 // Control-plane state machine: BOOT -> RENDEZVOUS -> LINKED <-> FAILSAFE.
 // Consumes inbound RC frames (RCF feedback, DISC discovery beacons) and a
-// periodic tick (which also carries radio health for the thermal/congestion
-// guards), and drives an Actuator with the resolved operating point. All
+// periodic tick (which also carries radio health for the congestion
+// guard), and drives an Actuator with the resolved operating point. All
 // timing is driven by the `now_ms` parameters callers pass in — RcAgent
 // makes no real-time calls of its own, so tests can simulate any clock.
 class RcAgent {
@@ -69,9 +65,9 @@ class RcAgent {
   // failing CRC/vtx_id match, is silently ignored) and applies its effect.
   void on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms);
 
-  // Advances the failsafe/rendezvous timers and re-evaluates the thermal
-  // and congestion guards against the given health sample. On BOOT, the
-  // first call applies the MAX_RANGE op and transitions to RENDEZVOUS.
+  // Advances the failsafe/rendezvous timers and re-evaluates the
+  // congestion guard against the given health sample. On BOOT, the first
+  // call applies the MAX_RANGE op and transitions to RENDEZVOUS.
   void tick(uint64_t now_ms, const RadioHealth& health);
 
   State state() const { return state_; }
@@ -82,7 +78,6 @@ class RcAgent {
   // that isn't otherwise exposed. All same-thread reads (the agent thread
   // owns both RcAgent and the telemetry collector call site in main.cpp).
   bool failsafe_shed() const { return failsafe_shed_; }
-  int thermal_derate_qdb() const { return thermal_derate_; }
   bool have_feedback() const { return have_last_fb_; }
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }
@@ -112,13 +107,6 @@ class RcAgent {
   bool link_established_ = false;  // see take_link_established()
 
   AppliedOp applied_;
-  // Last GS-commanded qdB power offset (pre-thermal-derate). MAX_RANGE
-  // (apply_max_range) always sets this to 0 (full legal power); an RCF with
-  // a real (non-PWR_NO_CHANGE) offset byte sets it to
-  // clamp(decode_pwr_offset_qdb(byte), cfg_.radio.min_offset_qdb, 0); a DISC
-  // row's pwr_offset_qdb goes through the same clamp. PWR_NO_CHANGE leaves
-  // it untouched.
-  int commanded_offset_qdb_ = 0;
 
   uint64_t last_fb_ms_ = 0;
   bool have_last_fb_ = false;
@@ -143,9 +131,6 @@ class RcAgent {
   bool have_last_bitrate_eval_ = false;
   bool roi_low_ = false;
 
-  // Thermal guard state.
-  int thermal_derate_ = 0;
-
   // Congestion-shed state.
   int shed_level_ = 0;
   uint64_t last_drop_rise_ms_ = 0;
@@ -163,11 +148,10 @@ class RcAgent {
   bool failsafe_shed_ = false;
 
   void apply_max_range(uint64_t now_ms);
-  void apply_ladder_op(const std::array<rc::LayerTxSpec, 4>& ladder, int pwr_offset_qdb,
+  void apply_ladder_op(const std::array<rc::LayerTxSpec, 4>& ladder,
                         double fec_overhead);
-  void reapply_with_derate_and_shed();
+  void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
-  void run_thermal_guard(const RadioHealth& health);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);
 };
 

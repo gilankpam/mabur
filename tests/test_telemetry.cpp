@@ -7,7 +7,7 @@ TEST(make_telem_maps_and_saturates) {
   mabur::TelemInputs in;
   in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probing = true;
   in.generation = 7; in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
-  in.applied_ov = 0.25; in.applied_off_qdb = -4; in.derate_qdb = 2;
+  in.applied_ov = 0.25;
   in.rcf_age_ms = 700000;            // saturates u16
   in.enc_bytes = 5ull << 30;         // 5 GiB -> kbytes fits u32
   in.ring_drops = 1 << 20;           // saturates u16
@@ -24,7 +24,11 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.flags == 0x07);  // failsafe_shed | radio_rx_ok | probing
   CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
   CHECK(t.applied_ov_x100 == 25);
-  CHECK(t.applied_off_qdb == 60);    // bias-64
+  // Power is constant now: make_telem always emits the neutral encoding
+  // (offset 0 -> bias 64) regardless of TelemInputs, since the wire fields
+  // are vestigial until the RC_VERSION 2 change removes them (Task 5).
+  CHECK(t.applied_off_qdb == 64);
+  CHECK(t.derate_qdb == 0);
   CHECK(t.rcf_age_ms == 65535);
   CHECK(t.enc_kbytes == (5ull << 30) / 1024);
   CHECK(t.ring_drops == 65535);

@@ -49,19 +49,16 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.radio.usb_pid == def.radio.usb_pid);
   CHECK(cfg.radio.channel == def.radio.channel);
   CHECK(cfg.radio.width == def.radio.width);
-  CHECK(cfg.radio.thermal_max_delta == def.radio.thermal_max_delta);
   CHECK(cfg.radio.power_mode == "none");
-  CHECK(cfg.radio.power_offset_qdb == 0);
 
   // Default bundle ships power-inert ("none" = efuse/kernel per-rate table
-  // untouched). "offset" is the adaptive opt-in at deploy time; "override"
-  // is bench-diagnostic only. Bundle carries unit's measured wall-equalization
-  // values (Task 9) alongside the inert power mode.
+  // untouched). "offset" is the adaptive opt-in at deploy time. Bundle
+  // carries unit's measured wall-equalization values (Task 9) alongside
+  // the inert power mode.
   CHECK((cfg.radio.rate_walls_idx ==
          std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
   CHECK(cfg.radio.legacy_wall_idx == 91);
   CHECK(cfg.radio.wall_margin_db == 1.0);
-  CHECK(cfg.radio.min_offset_qdb == -40);
   CHECK(cfg.radio.base_ref_idx == 53);
 
   // The bundle intentionally diverges from struct defaults for fec, so check
@@ -344,13 +341,12 @@ TEST(radio_wall_equalization_keys_parse) {
       R"({"radio":{"power_mode":"offset",)"
       R"("rate_walls_idx":[91,91,91,91,73,56,51,49],)"
       R"("legacy_wall_idx":91,"wall_margin_db":2.0,)"
-      R"("min_offset_qdb":-32,"base_ref_idx":50}})");
+      R"("base_ref_idx":50}})");
   Config cfg = load_config(path.string());
   CHECK((cfg.radio.rate_walls_idx ==
          std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
   CHECK(cfg.radio.legacy_wall_idx == 91);
   CHECK(cfg.radio.wall_margin_db == 2.0);
-  CHECK(cfg.radio.min_offset_qdb == -32);
   CHECK(cfg.radio.base_ref_idx == 50);
   std::filesystem::remove(path);
 }
@@ -384,7 +380,7 @@ TEST(radio_offset_diff_out_of_range_rejected) {
       R"({"radio":{"power_mode":"offset",)"
       R"("rate_walls_idx":[127,127,127,127,127,127,127,127],)"
       R"("legacy_wall_idx":91,"wall_margin_db":0.0,)"
-      R"("min_offset_qdb":-32,"base_ref_idx":0}})");
+      R"("base_ref_idx":0}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
   CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
@@ -465,6 +461,41 @@ TEST(stale_power_offset_db_key_throws) {
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(msg.find("power_offset_db") != std::string::npos);
   CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(config_rejects_removed_power_keys) {
+  // Each removed key must fail boot loudly. Reverting the deletion from
+  // check_known_keys() in drone/src/config.cpp makes these keys parse again
+  // and this test fails.
+  for (const char* key : {"thermal_max_delta", "min_offset_qdb",
+                          "power_offset_qdb"}) {
+    std::string js = std::string("{\"radio\":{\"") + key + "\":1}}";
+    auto path = write_temp_json(js);
+    bool threw = false;
+    try {
+      load_config(path.string());
+    } catch (const std::runtime_error& e) {
+      threw = true;
+      CHECK(std::string(e.what()).find("unknown key") != std::string::npos);
+    }
+    CHECK(threw);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(config_rejects_power_mode_override) {
+  // Reverting the removal of "override" from the accepted set in
+  // parse_radio() makes this load successfully and the test fails.
+  auto path = write_temp_json(R"({"radio":{"power_mode":"override"}})");
+  bool threw = false;
+  try {
+    load_config(path.string());
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    CHECK(std::string(e.what()).find("power_mode") != std::string::npos);
+  }
+  CHECK(threw);
   std::filesystem::remove(path);
 }
 

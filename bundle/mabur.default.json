@@ -4,12 +4,10 @@
     "usb_pid": 0,
     "channel": 149,
     "width": 20,
-    "thermal_max_delta": 25,
     "power_mode": "none",
     "rate_walls_idx": [91, 91, 91, 91, 73, 56, 51, 49],
     "legacy_wall_idx": 91,
     "wall_margin_db": 1.0,
-    "min_offset_qdb": -40,
     "base_ref_idx": 53
   },
   "fec": {
