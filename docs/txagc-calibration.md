@@ -235,7 +235,7 @@ switches the drone from the deployed `"none"` baseline to the wall-equalized
 table: `drone/src/power_plan.h` derives per-rate qdB diffs from the walls so
 that every rate's effective TXAGC index sits at `wall − margin` —
 `diff[r] = walls[r] − round(wall_margin_db × 4) − base_ref_idx`, the margin
-being converted from dB to the chip's 0.25 dB (qdB) index steps. Every rate
+being converted from dB to the chip's 0.25 dB index steps. Every rate
 is parked at wall-minus-margin, level-continuous with the `"none"` baseline
 measured above. Bring-up programs that table once and zeroes the global
 offset once; nothing moves power afterwards, so this park **is** the
