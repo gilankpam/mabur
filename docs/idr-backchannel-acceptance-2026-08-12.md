@@ -165,12 +165,45 @@ the live player (change-only, ≥2 s apart), with the log persisted to
 `/media/dvr/maburplay-trace.log` across respawns. Waiting for the next
 operator-observed smear to correlate.
 
+**Resolved same evening — the frames vanish ON THE DRONE, before the wire
+protocol exists.** The decode-health tracer came back clean during a live
+smear (`errors=0, concealed=0`): rkvdec discards nothing. The kill shot was
+a ring capture recording the wire `frame_id` alongside sid: in 25 s on a
+quiet pinned link, **zero fid holes** (no air loss at all) but one
+`(sid3, sid3)` adjacency with CONTIGUOUS fids at 85075/85076 — a base
+frame that was encoded (later frames reference it) but **never received a
+frame_id**, i.e. never read by maburd. Two `(1,1)` adjacencies showed
+enhance frames vanishing the same way. Rate ≈ 2–3/min quiet-link.
+
+This class is invisible BY CONSTRUCTION: `VencFrameMeta` carries no
+sequence number, the venc ring's `full_drops` counter lives in the
+producer's process (`drone/src/main.cpp` documents "waybeam's own drop
+count has to come from waybeam"), waybeam's binary exposes no such metric
+and has no ring-full log string. maburd assigns `frame_id` only to frames
+it reads, so the wire sequence closes seamlessly over the hole — no GS
+instrument, including the new gap-skip inference (which is correct but
+covers only AIR loss), can ever see it. The likely trigger is a transient
+maburd consumer stall filling the 8-slot (133 ms) ring — an IDR's ~10×
+frame-size burst is the obvious suspect, which would mean **each granted
+IDR can seed the next smear**, matching both the "clears then re-smears"
+loop and the fact that the finger trick (scene change: ordinary-sized
+frames, no burst) heals where IDRs seemed not to stick.
+
 Next steps:
 
-1. On the next smear sighting: read the tracer. `errors` jump at that
-   moment → wire the player's IDR latch to that counter (a fourth trigger).
-   Silent → source the trigger from POC-gap tracking instead.
-2. Then re-run §2's visual with the mechanism understood.
+1. maburd-side detection: the ring meta DOES carry `pts` — a ~33 ms jump
+   between consecutively-read frames means a frame vanished upstream.
+   Count it, export it (`enc.ring_drops` currently structurally cannot
+   move for this), infer the vanished frame's class from neighbours'
+   `VENC_FRAME_FLAG_ENHANCE` flags (real flags, not parity guesswork),
+   and self-request an IDR on base-class vanishes — cooldown-limited, and
+   mindful that the IDR burst may itself be the trigger (avoid a re-seed
+   loop; consider draining before requesting).
+2. Structural: enlarge the venc ring (8→32 slots buys 533 ms) — needs a
+   waybeam rebuild (openipc-builder) — and/or find and fix maburd's
+   transient drain stall.
+3. The GS-side gap-skip inference (e32ce99) stays: it covers the air-loss
+   class the original spec left silent, with the s3-immunity preserved.
 
 ## Deployment state
 
