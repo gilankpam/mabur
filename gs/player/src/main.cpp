@@ -1595,6 +1595,38 @@ int main(int argc, char** argv) {
         wd_last_progress = now;
       }
     }
+#ifdef MABUR_PLAYER_HW
+    // Decode-health tracer (2026-08-12 smear investigation): the live player
+    // had NO way to see MppBackend's error/concealed counters -- they are
+    // exported only in --decode-only -- yet a silently discarded AU at the
+    // decoder input (e.g. the submit_au BUFFER_FULL path exhausting the
+    // buffer group the presenter shares) is exactly the event that would
+    // desynchronize rkvdec's reference content from the stream with every
+    // other instrument reading clean. Change-only, >=2 s apart, so a healthy
+    // run logs nothing and /tmp stays small.
+    {
+      static uint64_t dh_errs = 0, dh_conc = 0, dh_info = 0;
+      static auto dh_last = std::chrono::steady_clock::now();
+      const auto dh_now = std::chrono::steady_clock::now();
+      if (dh_now - dh_last >= std::chrono::seconds(2)) {
+        dh_last = dh_now;
+        if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get())) {
+          const uint64_t e = mpp->errors(), c = mpp->concealed(), i = mpp->info_changes();
+          if (e != dh_errs || c != dh_conc || i != dh_info) {
+            std::fprintf(stderr,
+                         "maburplay: decode-health: errors=%llu (was %llu) "
+                         "concealed=%llu (was %llu) info_changes=%llu\n",
+                         static_cast<unsigned long long>(e),
+                         static_cast<unsigned long long>(dh_errs),
+                         static_cast<unsigned long long>(c),
+                         static_cast<unsigned long long>(dh_conc),
+                         static_cast<unsigned long long>(i));
+            dh_errs = e; dh_conc = c; dh_info = i;
+          }
+        }
+      }
+    }
+#endif
     if (fps_log) {
       const auto now = std::chrono::steady_clock::now();
       const double dt = std::chrono::duration<double>(now - t_last_fps_log).count();
