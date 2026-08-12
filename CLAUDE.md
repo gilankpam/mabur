@@ -77,11 +77,23 @@ with:
 
 ⚠ **"Wire clean" does not mean "no frame loss"** (2026-08-12): encoded
 frames can vanish inside the drone's venc frame ring BEFORE maburd assigns
-a frame_id — no counter anywhere moves (the ring's drop counter lives in
-waybeam's process, unexported), the wire sequence closes seamlessly, and a
-vanished base frame silently corrupts the decoder until an IDR. A smeared
-picture over an all-green sideport is this, not a telemetry bug. Evidence
-and fix directions: `docs/venc-ring-vanish-findings-2026-08-12.md`.
+a frame_id — the wire sequence closes seamlessly, and a vanished base
+frame silently corrupts the decoder until an IDR. Since the same-day
+pts-jump detection (`65c94fd`), the ONE place this loss class is counted
+is `drone.enc.{vanished_base,vanished_enh}` on the sideport (mirrored in
+maburd's 5 s `frame_ring:` stderr line); everything else still reads
+clean. A smeared picture over an otherwise-green sideport is this, not a
+telemetry bug. ⚠ The companion self-IDR path can amplify an overload into
+an IDR storm (rolling smear + stutter, bitrate inflated by I-frame
+density; `air_pct` stays LOW because the bottleneck is the drone's ring
+drain, not RF) — mitigated by `waybeam.idr_cooldown_ms: 5000` in the
+drone config; check `drone.enc.idr_grants`' RATE when smear churns.
+Evidence and fix directions:
+`docs/venc-ring-vanish-findings-2026-08-12.md`. Sibling same-day bug with
+opposite signature (video <1 Mbps, everything green, encoder stuck at the
+1400 boot floor): `docs/waybeam-bitrate-wedge-2026-08-12.md` — cure is
+re-applying `video0.bitrate`; when reading ausniff output, ALWAYS check
+the bytes-derived bitrate, not just fps/gaps.
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
