@@ -29,6 +29,12 @@ struct RxBody {
   bool crc_ok = true;        // 802.11 FCS; corrupt frames still carry bodies
   uint16_t mac_seq = 0;      // 12-bit hw seq from the dot11 header
   std::vector<uint8_t> body; // frame body, dot11 header stripped
+  // RX HT MCS from the radio's RX descriptor (devourer rx_pkt_attrib
+  // .data_rate: HT codes are 0x80 + mcs). 255 = unknown — legacy/VHT rate,
+  // or a source that carries no rate (frame-file replay). Descriptor
+  // metadata, valid independent of the body CRC. Consumed by the
+  // transition-attribution boundary (UepDecoder::add_body).
+  uint8_t mcs = 255;
 };
 
 struct CardStatus {

@@ -174,6 +174,12 @@ void RadioFrontend::on_packet(const Packet& pkt) {
   m.evm[0] = pkt.RxAtrib.evm[0];
   m.evm[1] = pkt.RxAtrib.evm[1];
   m.crc_ok = !pkt.RxAtrib.crc_err;
+  // HT rate code -> MCS index; anything else (legacy 802.11a/b/g codes
+  // < 0x80, VHT/HE >= 0x100) is "unknown" for attribution purposes -- the
+  // drone injects HT-only.
+  m.mcs = (pkt.RxAtrib.data_rate >= 0x80 && pkt.RxAtrib.data_rate < 0x100)
+              ? static_cast<uint8_t>(pkt.RxAtrib.data_rate - 0x80)
+              : 255;
   m.mac_seq = static_cast<uint16_t>(
       (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);
   m.body.assign(pkt.Data.begin() + kDot11, pkt.Data.end());
