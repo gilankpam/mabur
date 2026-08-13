@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -22,6 +23,8 @@ namespace maburgs {
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
 //   P <t_ms> <rung> <pass|fail|abort> <snr_db> <u_pred> <dur_ms> <evm_db>
 //   N <t_ms> <rung> <k> <until_ms>                           # penalty booked
+//   R <t_ms> <rung> <u> <resid> <u3> <resid3> <evm> <evm_sd> <n> <age_s> <probe_u> <probe_n>
+//                                                            # per-rung EWMA store snapshot
 //
 // evm_db is the s1 EVM label in dB, nan when unsampled -- label-only, like
 // snr_db (see LinkHealth::s1_evm_db).
@@ -39,6 +42,11 @@ namespace maburgs {
 // (mirrors the Task 8 sideport's clamp_util()) so a degenerate config never
 // puts a nonsense magnitude in the log. The clamp also applies to E's u for
 // s3_* reasons, since that field is u3 under the hood.
+//  - R lines (spec 2026-08-13) are the per-rung EWMA store: one line per
+//    rung with any data, every link.rung_stats.rung_log_period_s AND a
+//    full snapshot right after every E line. u/u3/probe_u get the same
+//    <= 1e3 clamp; evm/evm_sd are nan until the rung has an EVM sample;
+//    age_s is -1 when the rung was never parked-sampled.
 //
 // Every failure mode (dir missing/unwritable, index scan failure, fopen
 // failure, ...) is non-fatal: ok() reads false, the constructor prints the
@@ -62,6 +70,9 @@ class CtlLog {
   void probe(double t_ms, int rung, const char* outcome, double snr_db,
              double u_pred, int dur_ms, double evm_db);
   void penalty(double t_ms, int rung, int k, double until_ms);
+  void rung(double t_ms, int rung, double u, double resid, double u3,
+            double resid3, double evm_db, double evm_sd_db, uint64_t n,
+            double age_s, double probe_u, uint64_t probe_n);
 
  private:
   std::FILE* f_ = nullptr;

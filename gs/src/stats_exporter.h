@@ -44,6 +44,21 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
            symbols_stale = 0, symbols_bad_cfg = 0, rows_in_flight = 0;
 };
 
+// One rung of the per-rung EWMA store (spec 2026-08-13), copied plain from
+// RungStore::stat() by main — same no-controller-reference pattern as
+// StatsCtlIn. evm/evm_sd NaN -> JSON null; ages -1 = never sampled.
+struct StatsRungIn {
+  int mcs = 0;
+  double ov = 0.0;
+  double u = 0.0, resid = 0.0, u3 = 0.0, resid3 = 0.0;
+  double evm_db = 0.0, evm_sd_db = 0.0;
+  uint64_t n = 0, probe_n = 0;
+  double age_s = -1.0, probe_age_s = -1.0;
+  double dwell_s = 0.0;
+  uint32_t visits = 0, exits_bad = 0;
+  double probe_u = 0.0;
+};
+
 // Copied from LadderController's accessors (gs/src/ladder_controller.h) —
 // plain values only, no controller reference: main fills this from
 // vrx.ctl() each poll, matching the exporter's existing pattern for `op`.
@@ -84,6 +99,9 @@ struct StatsCtlIn {
   double last_probe_evm_db = 0.0;  // NaN -> JSON null
   double last_probe_u_pred = 0.0;  // may carry the 1e9 sentinel -> clamped
   int last_probe_dur_ms = 0;
+
+  // Per-rung EWMA store snapshot, index = rung index (spec 2026-08-13).
+  std::vector<StatsRungIn> rungs;
 };
 
 struct StatsInput {

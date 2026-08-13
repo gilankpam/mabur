@@ -757,4 +757,92 @@ TEST(s3_demote_during_probation_books_fail) {
   CHECK(penalty_ms_for(ctl, t, 2) > 0);
 }
 
+TEST(rung_store_feeds_parked_samples) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  ctl.update(ok(0.0), t);
+  CHECK(ctl.rungs().stat(0).u.n == 1);
+  t += 50;
+  ctl.update(ok(0.0), t);
+  CHECK(ctl.rungs().stat(0).u.n == 2);
+  CHECK(ctl.rungs().stat(1).u.n == 0);
+}
+
+TEST(rung_store_blanks_post_transition_samples) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  promote_to(ctl, t, 1);
+  const uint64_t n_before = ctl.rungs().stat(1).u.n;
+  ctl.update(ok(0.0), t + 10);   // inside s3_settle_ms (300) blank: no feed
+  CHECK(ctl.rungs().stat(1).u.n == n_before);
+  ctl.update(ok(0.0), t + 400);  // past the blank: feeding resumes
+  CHECK(ctl.rungs().stat(1).u.n == n_before + 1);
+}
+
+TEST(rung_store_residual_demote_sample_feeds_measured_rung) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  promote_to(ctl, t, 2);
+  feed_for(ctl, t, 400, 0.5);    // clears the post-promote blank
+  const uint64_t n_before = ctl.rungs().stat(2).u.n;
+  LinkHealth bad = ok(0.0);
+  bad.residual_loss = 0.01;
+  ctl.update(bad, t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.rungs().stat(2).u.n == n_before + 1);  // fed BEFORE the demote
+  CHECK(ctl.rungs().stat(2).resid.v > 0.0);
+  CHECK(ctl.rungs().stat(2).exits_bad == 1);
+  CHECK(ctl.rungs().stat(1).visits >= 1);
+}
+
+TEST(rung_store_util_demote_not_a_bad_exit) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  promote_to(ctl, t, 1);
+  feed_for(ctl, t, 4000, 0.5);   // survive probation (3000 ms)
+  const uint32_t bad_before = ctl.rungs().stat(1).exits_bad;
+  for (int i = 0; i < 20 && ctl.rung() == 1; ++i) {
+    ctl.update(ok(0.9 * ctl.budget()), t);
+    t += 50;
+  }
+  CHECK(ctl.rung() == 0);
+  CHECK(ctl.rungs().stat(1).exits_bad == bad_before);
+}
+
+TEST(rung_store_probe_feeds_candidate) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  while (!ctl.probing() && t < 60000) {
+    ctl.update(ok3(0.0), t);
+    t += 50;
+  }
+  REQUIRE(ctl.probing());
+  CHECK(ctl.probe_rung() == 1);
+  const uint64_t before = ctl.rungs().stat(1).probe_u.n;
+  t += 200;                       // strictly past probe_settle_ms (150)
+  ctl.update(ok3(0.0, 0.01), t);
+  CHECK(ctl.rungs().stat(1).probe_u.n == before + 1);
+  CHECK(ctl.rungs().stat(1).u.n == 0);  // parked column untouched by probes
+}
+
+TEST(rung_store_evm_feeds_only_when_sampled) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  LinkHealth h = ok(0.0);
+  h.s1_evm_db = -20.0;
+  ctl.update(h, t);
+  CHECK(ctl.rungs().stat(0).evm_n == 1);
+  CHECK(std::abs(ctl.rungs().stat(0).evm_db - -20.0) < 1e-9);
+  t += 50;
+  ctl.update(ok(0.0), t);         // NaN EVM (ok() default): no feed
+  CHECK(ctl.rungs().stat(0).evm_n == 1);
+}
+
+TEST(rung_store_s3_steady_state_feeds_current_rung) {
+  LadderController ctl(make_cfg());
+  double t = 0;
+  ctl.update(ok3(0.0), t);        // first sample; s3_live at rung 0
+  CHECK(ctl.rungs().stat(0).u3.n >= 1);
+}
+
 MTEST_MAIN

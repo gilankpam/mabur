@@ -65,4 +65,18 @@ TEST(ctl_log_nan_snr_prints_nan) {
   CHECK(read_all(log.path()).find("nan\n") != std::string::npos);  // trailing evm prints nan
 }
 
+TEST(ctl_log_rung_record_layout) {
+  std::string dir = "build_ctl_log_test_rung";
+  reset_dir(dir);
+  maburgs::CtlLog log(dir, "x");
+  REQUIRE(log.ok());
+  log.rung(5000, 3, 0.0625, 0.25, 0.125, 0.0, -24.5, 0.75, 1234, 12.5, 0.25, 7);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  // Sentinel clamp on u/u3/probe_u; nan evm legal; never-sampled age -1.
+  log.rung(6000, 4, 1e9, 0.0, 1e9, 0.0, nan, nan, 0, -1.0, 1e9, 2);
+  std::string text = read_all(log.path());
+  CHECK(text.find("\nR 5000 3 0.0625 0.2500 0.1250 0.0000 -24.5 0.75 1234 12.5 0.2500 7\n") != std::string::npos);
+  CHECK(text.find("\nR 6000 4 1000.0000 0.0000 1000.0000 0.0000 nan nan 0 -1.0 1000.0000 2\n") != std::string::npos);
+}
+
 MTEST_MAIN

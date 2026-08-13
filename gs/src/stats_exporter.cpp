@@ -242,6 +242,30 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     } else {
       ctl["last_probe"] = nullptr;
     }
+
+    // Per-rung EWMA store (spec 2026-08-13): additive, self-describing.
+    json rungs = json::array();
+    for (std::size_t i = 0; i < c.rungs.size(); ++i) {
+      const StatsRungIn& rg = c.rungs[i];
+      rungs.push_back({{"i", static_cast<int>(i)},
+                       {"mcs", rg.mcs},
+                       {"ov", rg.ov},
+                       {"u", clamp_util(rg.u)},
+                       {"resid", rg.resid},
+                       {"u3", clamp_util(rg.u3)},
+                       {"resid3", rg.resid3},
+                       {"evm", snr_or_null(rg.evm_db)},
+                       {"evm_sd", snr_or_null(rg.evm_sd_db)},
+                       {"n", rg.n},
+                       {"age_s", rg.age_s},
+                       {"dwell_s", rg.dwell_s},
+                       {"visits", rg.visits},
+                       {"exits_bad", rg.exits_bad},
+                       {"probe_u", clamp_util(rg.probe_u)},
+                       {"probe_n", rg.probe_n},
+                       {"probe_age_s", rg.probe_age_s}});
+    }
+    link["rungs"] = std::move(rungs);
   } else {
     link["ctl"] = nullptr;
   }

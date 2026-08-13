@@ -1,4 +1,5 @@
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 #include "json.hpp"
@@ -690,6 +691,50 @@ TEST(removed_power_keys_absent_thermal_delta_kept) {
   CHECK(!j["drone"]["applied"].contains("derate_qdb"));
   REQUIRE(j["drone"]["sys"].is_object());
   CHECK(j["drone"]["sys"]["thermal_delta"] == 3);
+}
+
+TEST(exporter_link_rungs_array) {
+  std::string sent;
+  maburgs::StatsExporter ex(1, 500,
+                             [&](const std::string& s) { sent = s; return true; });
+  maburgs::StatsInput in;
+  in.ctl.emplace();
+  maburgs::StatsRungIn rg;
+  rg.mcs = 5;
+  rg.ov = 0.25;
+  rg.u = 0.0625;
+  rg.n = 42;
+  rg.age_s = 3.5;
+  rg.dwell_s = 120.0;
+  rg.visits = 2;
+  rg.exits_bad = 1;
+  rg.probe_u = 1e9;  // sentinel -> clamped to 1e3 in JSON
+  rg.probe_n = 3;
+  rg.probe_age_s = -1.0;
+  rg.evm_db = std::numeric_limits<double>::quiet_NaN();     // -> null
+  rg.evm_sd_db = std::numeric_limits<double>::quiet_NaN();  // -> null
+  in.ctl->rungs.push_back(rg);
+  ex.poll(500, in);
+  ex.poll(1100, in);  // first poll is gated; second emits
+  REQUIRE(!sent.empty());
+  auto j = nlohmann::json::parse(sent);
+  const auto& rungs = j["link"]["rungs"];
+  REQUIRE(rungs.is_array());
+  REQUIRE(rungs.size() == 1);
+  CHECK(rungs[0]["i"] == 0);
+  CHECK(rungs[0]["mcs"] == 5);
+  CHECK(rungs[0]["n"] == 42);
+  CHECK(rungs[0]["evm"].is_null());
+  CHECK(rungs[0]["evm_sd"].is_null());
+  CHECK(rungs[0]["probe_u"] == 1e3);
+  CHECK(rungs[0]["probe_age_s"] == -1.0);
+  CHECK(rungs[0]["exits_bad"] == 1);
+
+  // Pin mode (ctl nullopt): no rungs key at all.
+  maburgs::StatsInput pin;
+  ex.poll(1700, pin);
+  auto jp = nlohmann::json::parse(sent);
+  CHECK(!jp["link"].contains("rungs"));
 }
 
 MTEST_MAIN

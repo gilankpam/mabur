@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "rung_store.h"
+
 namespace maburgs {
 
 // One rung of the measured-loss ladder: a radio MCS plus the FEC command
@@ -51,6 +53,9 @@ struct LadderCfg {
   // streams; blank s3-derived decisions for this long so the re-key glitch
   // does not read as loss.
   int s3_settle_ms = 300;
+
+  // --- per-rung EWMA store (spec 2026-08-13, observe-only) ---
+  RungStoreCfg rung_stats;
 };
 
 // One feedback sample: measured pre-FEC and residual (post-FEC) loss for the
@@ -171,6 +176,10 @@ class LadderController {
   // traffic. Never a persisted stale value.
   double util3() const { return u3_; }
 
+  // Observe-only per-rung statistics (spec 2026-08-13). NEVER read by any
+  // decision path in this class — exporter/ctl-log surface only.
+  const RungStore& rungs() const { return store_; }
+
   const CtlCounters& counters() const { return counters_; }
   const CtlEvent& last_event() const { return last_event_; }
   const ProbeEvent& last_probe() const { return last_probe_; }
@@ -196,6 +205,7 @@ class LadderController {
   void mark_transition(double now_ms);
 
   LadderCfg cfg_;
+  RungStore store_{1, RungStoreCfg{}};  // re-initialized in the constructor
   int idx_ = 0;
 
   double u_ = 0.0;

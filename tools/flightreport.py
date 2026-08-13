@@ -35,13 +35,13 @@ def load(path):
 def load_ctllog(path):
     """Parse a maburgs ctl log (gs/src/ctl_log.cpp formats).
 
-    Returns {"header": {...}, "S": [...], "E": [...], "P": [...], "N": [...]}.
+    Returns {"header": {...}, "S": [...], "E": [...], "P": [...], "N": [...], "R": [...]}.
     S lines are NOT strictly 1 Hz (SIGUSR1 emits off-cadence extras) -- callers
     must key everything off t_ms, never assume uniform spacing. float() parses
     "nan" natively, which the pre-session rung-0 warm-up samples rely on.
     """
     header = {}
-    S, E, P, N = [], [], [], []
+    S, E, P, N, R = [], [], [], [], []
     with open(path) as f:
         first = f.readline().strip()
         # ctllog 1 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
@@ -86,10 +86,19 @@ def load_ctllog(path):
                         "t_ms": float(toks[1]), "rung": int(toks[2]),
                         "k": int(toks[3]), "until_ms": float(toks[4]),
                     })
+                elif tag == "R" and len(toks) >= 13:
+                    R.append({
+                        "t_ms": float(toks[1]), "rung": int(toks[2]),
+                        "u": float(toks[3]), "resid": float(toks[4]),
+                        "u3": float(toks[5]), "resid3": float(toks[6]),
+                        "evm_db": float(toks[7]), "evm_sd_db": float(toks[8]),
+                        "n": int(toks[9]), "age_s": float(toks[10]),
+                        "probe_u": float(toks[11]), "probe_n": int(toks[12]),
+                    })
             except ValueError:
                 continue  # malformed record; skip rather than abort the report
 
-    return {"header": header, "S": S, "E": E, "P": P, "N": N}
+    return {"header": header, "S": S, "E": E, "P": P, "N": N, "R": R}
 
 
 def wall_fit(records):
@@ -132,6 +141,41 @@ def wall_fit(records):
         "outlier_snrs": outlier_snrs, "inlier_fail_snrs": inlier_fail_snrs,
         "wall": wall,
     }
+
+
+def print_rung_store_report(R):
+    """Per-rung EWMA store summary from the FINAL R snapshot per rung, plus
+    a report-only inversion callout (spec 2026-08-13: analyzer prototype of
+    rung auto-skip — thresholds are defaults to be tuned on recordings)."""
+    if not R:
+        return
+    last = {}
+    for r in R:          # file order is time order; last line per rung wins
+        last[r["rung"]] = r
+    print("RUNG STORE (final R snapshot per rung)")
+    print("  rung      u  resid     u3 resid3    evm evm_sd      n  age_s"
+          "  probe_u probe_n")
+    for i in sorted(last):
+        r = last[i]
+        print(f"  {i:4d} {r['u']:6.3f} {r['resid']:6.3f} {r['u3']:6.3f}"
+              f" {r['resid3']:6.3f} {r['evm_db']:6.1f} {r['evm_sd_db']:6.2f}"
+              f" {r['n']:6d} {r['age_s']:6.1f} {r['probe_u']:8.3f}"
+              f" {r['probe_n']:7d}")
+    MIN_N = 300
+    for lo_i in sorted(last):
+        for hi_i in sorted(last):
+            if hi_i <= lo_i:
+                continue
+            lo, hi = last[lo_i], last[hi_i]
+            if lo["n"] < MIN_N or hi["n"] < MIN_N:
+                continue
+            resid_inv = hi["resid"] >= max(2 * lo["resid"], lo["resid"] + 0.02)
+            util_inv = lo["u"] > 0 and hi["u"] >= 1.5 * lo["u"]
+            if resid_inv or util_inv:
+                key = "resid" if resid_inv else "u"
+                print(f"  !! INVERSION rung {hi_i} worse than rung {lo_i}"
+                      f" ({key}: {hi[key]:.3f} vs {lo[key]:.3f},"
+                      f" n {hi['n']}/{lo['n']})")
 
 
 def print_wall_report(ctllog):
@@ -200,6 +244,8 @@ def print_wall_report(ctllog):
                   f"and pass@{min(fit['pass_snrs']):.1f})")
         else:
             print("    suggested wall: insufficient data")
+
+    print_rung_store_report(ctllog.get("R", []))
 
 
 def merge_consecutive_residuals(residuals):

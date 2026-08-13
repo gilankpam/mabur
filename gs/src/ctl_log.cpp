@@ -99,4 +99,15 @@ void CtlLog::penalty(double t_ms, int rung, int k, double until_ms) {
   std::fprintf(f_, "N %.0f %d %d %.0f\n", t_ms, rung, k, until_ms);
 }
 
+void CtlLog::rung(double t_ms, int rung, double u, double resid, double u3,
+                   double resid3, double evm_db, double evm_sd_db, uint64_t n,
+                   double age_s, double probe_u, uint64_t probe_n) {
+  if (!f_) return;
+  std::fprintf(
+      f_, "R %.0f %d %.4f %.4f %.4f %.4f %.1f %.2f %llu %.1f %.4f %llu\n",
+      t_ms, rung, clamp_util(u), resid, clamp_util(u3), resid3, evm_db,
+      evm_sd_db, static_cast<unsigned long long>(n), age_s,
+      clamp_util(probe_u), static_cast<unsigned long long>(probe_n));
+}
+
 }  // namespace maburgs
