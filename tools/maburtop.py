@@ -986,6 +986,10 @@ def panel_ladder(model, wall):
     body = _ladder_rung_rows(ctl)
     body.append(("", []))
     body.extend(_ladder_footer_rows(ctl, d.get("t_ms")))
+    at = (d.get("link") or {}).get("attrib")
+    if at:
+        state = "on" if at.get("on") else "OFF"
+        body.append((f" attrib:{state} sup{_s(at.get('suppressed'))}", []))
     return _panel("LADDER", body, min_width=34)
 
 

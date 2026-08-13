@@ -757,4 +757,32 @@ TEST(vanish_counters_exported) {
   CHECK(enc["self_idr_refused"] == 1);
 }
 
+TEST(exporter_attrib_block_and_stream_stale) {
+  std::string sent;
+  StatsExporter ex(/*session_id=*/1, /*interval_ms=*/0,
+                   [&](const std::string& s) { sent = s; return true; });
+  StatsInput in;
+  in.attrib_on = true;
+  in.attrib_suppressed = 3;
+  in.residual_cur = 0.0;
+  in.attrib_close_ms = 12.0;
+  in.streams[1].bodies = 10;
+  in.streams[1].syms_abandoned = 7;
+  in.streams[1].syms_abandoned_stale = 5;
+  ex.poll(1000, in);
+  REQUIRE(!sent.empty());
+  auto j = nlohmann::json::parse(sent);
+  CHECK(j["link"]["attrib"]["on"] == true);
+  CHECK(j["link"]["attrib"]["suppressed"] == 3);
+  CHECK(j["link"]["attrib"]["residual_cur"] == 0.0);
+  CHECK(j["link"]["attrib"]["close_ms"] == 12.0);
+  bool found = false;
+  for (const auto& s : j["link"]["streams"])
+    if (s["stream"] == 1) {
+      found = true;
+      CHECK(s["abandoned_stale"] == 5);
+    }
+  CHECK(found);
+}
+
 MTEST_MAIN

@@ -712,6 +712,11 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.op = vrx.cur_op();
       sin.deadline_ms = cfg.fec.decode_deadline_ms;
       sin.residual_loss = residual;
+      sin.attrib_on = cfg.link.attrib;
+      sin.attrib_suppressed = attrib_suppressed;
+      sin.residual_cur = residual_cur;
+      if (const double cms = agg.decoder().last_boundary_close_ms(1); cms >= 0)
+        sin.attrib_close_ms = cms;
       for (int s = 0; s < 4; ++s)
         sin.layer_delivery_pct[static_cast<size_t>(s)] = ld[static_cast<size_t>(s)];
       for (int i = 0; i < n_cards; ++i) {
@@ -759,6 +764,7 @@ static int run_radio(const maburgs::Config& cfg) {
         o.syms_recovered = st.syms_recovered;
         o.syms_recovered_arrived = st.syms_recovered_arrived;
         o.syms_abandoned = st.syms_abandoned;
+        o.syms_abandoned_stale = st.syms_abandoned_stale;
         o.symbols_in = st.symbols_in;
         o.symbols_stale = st.symbols_stale;
         o.symbols_bad_cfg = st.symbols_bad_cfg;

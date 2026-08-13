@@ -42,6 +42,7 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
   uint64_t bodies = 0, subblocks_failed = 0, syms_recovered = 0,
            syms_recovered_arrived = 0, syms_abandoned = 0, symbols_in = 0,
            symbols_stale = 0, symbols_bad_cfg = 0, rows_in_flight = 0;
+  uint64_t syms_abandoned_stale = 0;
 };
 
 // One rung of the per-rung EWMA store (spec 2026-08-13), copied plain from
@@ -111,6 +112,13 @@ struct StatsInput {
   OpPoint op;
   int deadline_ms = 0;
   std::optional<double> residual_loss;  // nullopt -> JSON null
+  // Transition attribution (spec 2026-08-14). residual_cur = the
+  // attributed (current-rung-only) sibling of residual_loss; close_ms =
+  // s1's last boundary open->close latency, nullopt = never closed.
+  bool attrib_on = false;
+  uint64_t attrib_suppressed = 0;
+  std::optional<double> residual_cur;
+  std::optional<double> attrib_close_ms;
   std::array<int, 4> layer_delivery_pct{};
   std::vector<StatsCardIn> cards;
   std::array<StatsStreamIn, 4> streams;

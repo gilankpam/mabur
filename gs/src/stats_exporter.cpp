@@ -186,6 +186,13 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   link["deadline_ms"] = in.deadline_ms;
   if (in.residual_loss) link["residual_loss"] = *in.residual_loss;
   else link["residual_loss"] = nullptr;
+  json& at = link["attrib"];
+  at["on"] = in.attrib_on;
+  at["suppressed"] = in.attrib_suppressed;
+  if (in.residual_cur) at["residual_cur"] = *in.residual_cur;
+  else at["residual_cur"] = nullptr;
+  if (in.attrib_close_ms) at["close_ms"] = *in.attrib_close_ms;
+  else at["close_ms"] = nullptr;
   link["layer_delivery_pct"] = in.layer_delivery_pct;
 
   // Measured-loss ladder controller snapshot; static-pin mode never ticks
@@ -320,6 +327,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     fj["recovered"] = st.syms_recovered;
     fj["recovered_arrived"] = st.syms_recovered_arrived;
     fj["abandoned"] = st.syms_abandoned;
+    fj["abandoned_stale"] = st.syms_abandoned_stale;
     fj["stale"] = st.symbols_stale;
     fj["bad_cfg"] = st.symbols_bad_cfg;
     fj["sub_fail"] = st.subblocks_failed;
