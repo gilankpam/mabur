@@ -59,7 +59,7 @@ with:
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
   file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 1` header followed by compact S/E/P/N/R
+  default `/media/dvr`), a `ctllog 2` header (v1 before 2026-08-14) followed by compact S/E/P/N/R
   lines (rung/state, ctl events, probe events, penalties, per-rung EWMA store snapshots). `flightreport.py`
   auto-detects this format alongside the jsonl format, so no separate
   invocation is needed. Tuning invariant: the controller's s3 loss/residual
@@ -71,6 +71,21 @@ with:
   `s3_settle_ms`/`s3_residual_confirm_ms` toward their floors together: a
   rung transition's FEC re-key artifacts could then satisfy the s3-residual
   confirm and self-demote on every promote.
+
+Since 2026-08-14 the ladder's demote inputs are transition-attributed
+(kill switch `link.attrib`, default true): per-stream watermarks — with
+the RX PHY rate as the generation boundary — split every loss counter
+into current-rung vs pre-transition debris, and all four demote inputs
+(instant s1 residual, s3 residual, both utils) read the current-only
+side, so a rung change's own FEC debris can no longer fire a follow-up
+demote. The sideport reports `link.attrib.suppressed` (windows where the
+legacy instant demote would have fired on pure debris — the live artifact
+rate) and `link.streams[].abandoned_stale`; the ctl log is `ctllog 2`
+(S line gained `resid_cur`; `resid` stays the total). `flightreport.py`
+parses both versions. Date recordings against this line: pre-2026-08-14
+residual/util figures include transition debris that later recordings
+attribute away. `link.attrib: false` reverts the decisions (not the
+bookkeeping) to the old totals.
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
