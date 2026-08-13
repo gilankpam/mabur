@@ -41,15 +41,20 @@ with:
   grouped by link; color thresholds carry the judgment.
 - Ad-hoc capture: any UDP listener on :8300, or passively via AF_PACKET on
   `lo` when a consumer already holds the port.
-- Flight recorder: `socat -u udp-recv:8300 - | jq -c . >> flight.jsonl` on
-  the GS logs every metric at 2 Hz for post-flight analysis. The `jq -c` is
-  REQUIRED: sideport datagrams carry no trailing newline, so bare socat
-  appends concatenated JSON, not JSONL (recover such a file with
-  `jq -c . < file`). This ad-hoc capture is now the ONLY way to get FULL
-  sideport data on disk: `statsrec.py`/`/etc/init.d/S97statsrec` (the boot
-  recorder that auto-wrote `/media/dvr/flight-NNNN_<date>.jsonl` and fanned
-  out to :8301) were REMOVED from the GS on 2026-08-05 (device-only files,
-  never in this repo). The adaptive-link record survives separately and
+- Flight recorder: since 2026-08-13 the GS boot-starts
+  `/etc/init.d/S97flightrec` (device-only file, like the ctl log's
+  siblings), which appends every sideport datagram to a per-boot indexed
+  `/media/dvr/flight-NNNN.jsonl` via `/root/rec8300.py` (a python UDP
+  binder; keeps the newest 30 files, ~1 MB/min). It exists because three
+  incidents in a row (ctl-0030 crash, the 2026-08-13 lag crash, the bench
+  false alarm) had no recording — reinstated as a minimal successor to the
+  `S97statsrec` that was removed 2026-08-05. ⚠ UDP unicast means ONE
+  consumer per port: `/etc/init.d/S97flightrec stop` before running
+  maburtop against :8300 on the GS, then `start` after. The old ad-hoc
+  recipe (`socat -u udp-recv:8300 - | jq -c . >> flight.jsonl`) still
+  works ATTENDED, but dies on ssh detach even under nohup (jq buffering +
+  SIGHUP — measured 2026-08-13); don't use it for anything that must
+  survive the session. The adaptive-link record survives separately and
   automatically: maburgs writes its own compact ctl log whenever
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
