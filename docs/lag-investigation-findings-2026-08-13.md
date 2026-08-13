@@ -140,8 +140,9 @@ redesign's rate-based guard.
 
 ## Follow-ups
 
-1. Zero/snapshot vanish counters at link-establish (rides the
-   detection PR).
+1. ~~Zero/snapshot vanish counters at link-establish~~ DONE (same PR):
+   `FramePipeline::reset_vanish_counters()` at the FIRST link-establish
+   only — counters now read "vanishes since first link".
 2. Bench repro of the promote → IDR-burst chain: promote cycling while
    watching `vanished_*` + wire residuals (loss-sim rig + detection now
    see both sides); evaluate `maxIBytes`.

@@ -879,6 +879,7 @@ int run_real_mode(const Config& cfg) {
     std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
     uint64_t last_reattach = 0;
     uint64_t last_ring_stats_ms = 0;
+    bool vanish_boot_zeroed = false;  // first link-establish zeroes counters
 
     // Async FEC worker (spec 2026-07-17, promoted after hardware
     // acceptance): always on, unpinned (the worker sleeps when idle, so the
@@ -916,8 +917,17 @@ int run_real_mode(const Config& cfg) {
           last_reattach = fsrc.reattach_count();
           pipe.mark_discontinuity();  // joined a new ring mid-GOP
         }
-        if (link_up_discont.exchange(false, std::memory_order_relaxed))
+        if (link_up_discont.exchange(false, std::memory_order_relaxed)) {
           pipe.mark_discontinuity();  // link just came up: pre-link frames died
+          // FIRST establish only: drop the boot-window vanish counts
+          // (encoder bring-up churn, ~8-9/boot — 2026-08-13 flight finding)
+          // so telemetry reports in-flight vanishes. A mid-flight
+          // re-establish must NOT erase in-flight counts.
+          if (!vanish_boot_zeroed) {
+            vanish_boot_zeroed = true;
+            pipe.reset_vanish_counters();
+          }
+        }
         for (auto& b : pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now))
           txq.push(std::move(b));
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);

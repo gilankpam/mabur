@@ -410,3 +410,41 @@ TEST(frame_pipeline_pts_resync_jump_is_not_counted_as_vanish) {
 }
 
 MTEST_MAIN
+
+TEST(frame_pipeline_reset_vanish_counters_zeros_all_counters) {
+  // Boot-window churn books counts before the link exists (flight finding
+  // 2026-08-13: ~8-9 pre-link counts per boot); main zeroes at the FIRST
+  // link-establish so telemetry reports in-flight vanishes only.
+  VanishFeeder f;
+  f.warm_up(6);
+  f.feed(6 * kStepUs, VENC_FRAME_FLAG_IDR, 1102);   // IDR read: arms the guard
+  f.feed(7 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1119);
+  // Slot 8 (base) vanishes inside the guard window -> refused, not latched.
+  f.feed(9 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1136);
+  // Slots 10 (base) + 11 (enhance) vanish outside the guard.
+  f.feed(12 * kStepUs, 0, 1700);
+  CHECK(f.pipe.vanished_base() == 2);
+  CHECK(f.pipe.vanished_enhance() == 1);
+  CHECK(f.pipe.self_idr_refused() == 1);
+
+  f.pipe.reset_vanish_counters();
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(f.pipe.vanished_enhance() == 0);
+  CHECK(f.pipe.self_idr_refused() == 0);
+}
+
+TEST(frame_pipeline_reset_vanish_counters_preserves_detection) {
+  // Reset must touch COUNTERS only — not the period tracker or prev-pts
+  // anchor (unlike mark_discontinuity). A hole on the very next read still
+  // books, so an implementation that resets by re-anchoring fails here.
+  VanishFeeder f;
+  f.warm_up(6);
+  f.feed(7 * kStepUs, VENC_FRAME_FLAG_ENHANCE, 1200);  // slot 6 base vanished
+  CHECK(f.pipe.vanished_base() == 1);
+
+  f.pipe.reset_vanish_counters();
+  f.feed(8 * kStepUs, 0, 1260);   // slot 8 (base), contiguous — no hole
+  f.feed(10 * kStepUs, 0, 1277);  // slot 9 (enhance) vanished post-reset
+  CHECK(f.pipe.vanished_enhance() == 1);
+  CHECK(f.pipe.vanished_base() == 0);
+}

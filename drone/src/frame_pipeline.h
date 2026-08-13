@@ -83,6 +83,19 @@ class FramePipeline {
   // forever) — it is counted here instead so the loop stays visible.
   uint64_t self_idr_refused() const { return self_idr_refused_; }
 
+  // Zero the vanish counters WITHOUT touching the period tracker, prev-pts
+  // anchor, or the self-IDR latch (contrast mark_discontinuity, which
+  // re-anchors). Called by main at the FIRST link-establish only: encoder
+  // bring-up churn books ~8-9 counts before a link exists (flight finding
+  // 2026-08-13), and zeroing there makes telemetry report in-flight
+  // vanishes without an analyzer-side boot baseline. First establish ONLY —
+  // a mid-flight re-establish must not erase in-flight counts.
+  void reset_vanish_counters() {
+    vanished_base_ = 0;
+    vanished_enh_ = 0;
+    self_idr_refused_ = 0;
+  }
+
   static constexpr uint64_t kDiscontStickyMs = 1000;
   static constexpr uint64_t kSelfIdrGuardMs = 500;
 

@@ -126,7 +126,10 @@ struct Telem {
   // (pts-jump-detected, classified base/enhance from neighbour flags), and
   // base vanishes suppressed by the IDR-adjacency re-seed guard (counted for
   // loop visibility; the self-IDR consumer itself is NOT wired on this
-  // build — detection-only port of 65c94fd). All saturating.
+  // build — detection-only port of 65c94fd). All saturating. Counters are
+  // zeroed at the FIRST link-establish (encoder bring-up books ~8-9 boot
+  // counts that would otherwise need analyzer-side baselining; a mid-flight
+  // re-establish does NOT zero), so they read "vanishes since first link".
   uint16_t vanished_base = 0;
   uint16_t vanished_enh = 0;
   uint16_t self_idr_refused = 0;
