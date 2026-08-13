@@ -134,9 +134,9 @@ redesign's rate-based guard.
 
 - Bench recordings: `transient3.jsonl` (+ scratch copies), ringwatch
   logs — GS `/media/dvr` + session scratch.
-- Flights: `docs/flightlogs/ctl-0011_2026-08-13-instrumented-1.log`,
-  `ctl-0012_2026-08-13-instrumented-2.log`, `flight-0004.jsonl`,
-  `flight-0005.jsonl` (local, untracked — jsonl too large to commit).
+- Flights: ctl-0011/ctl-0012 (2026-08-13) + flight-0004/0005.jsonl —
+  kept OUT of the repo (size); local copies under gitignored
+  `docs/superpowers/flightlogs/`, originals on the DVR SD card.
 
 ## Follow-ups
 
