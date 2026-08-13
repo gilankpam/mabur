@@ -1,5 +1,7 @@
 #include "mabur/sw_decoder.h"
 
+#include <algorithm>
+
 #include "mabur/gf256.h"
 #include "mabur/sw_wire.h"
 
@@ -29,6 +31,19 @@ void SwDecoder::reset_state(uint64_t v) {
   newest_v_ = v;
   base_ = v;
   ++resets_;
+  wm_open_ = false;
+  wm_valid_ = false;
+}
+
+void SwDecoder::mark_transition() {
+  if (!have_seq_) {  // no traffic yet: nothing to attribute
+    wm_open_ = false;
+    wm_valid_ = false;
+    return;
+  }
+  wm_ = newest_v_;
+  wm_valid_ = true;
+  wm_open_ = true;
 }
 
 // The floor below which a seq is genuinely unrecoverable (older than the
@@ -55,11 +70,21 @@ void SwDecoder::advance(uint64_t newest_candidate) {
   // reordered-earlier than the join anchor, via live_floor()) were never in
   // the [base_, nb) accounting span, so counting them would underflow it.
   uint64_t known_in_range = 0;
+  uint64_t known_stale = 0;
+  // Stale span: [base_, stale_end). Open boundary => the whole eviction
+  // range is stale; closed+valid => seqs <= wm_; inactive => empty span.
+  const uint64_t stale_end =
+      wm_open_ ? nb : (wm_valid_ ? std::min(nb, wm_ + 1) : base_);
   for (auto it = known_.begin(); it != known_.end() && it->first < nb;) {
-    if (it->first >= base_) ++known_in_range;
+    if (it->first >= base_) {
+      ++known_in_range;
+      if (it->first < stale_end) ++known_stale;
+    }
     it = known_.erase(it);
   }
   syms_abandoned_ += (nb - base_) - known_in_range;
+  if (stale_end > base_)
+    syms_abandoned_stale_ += (stale_end - base_) - known_stale;
   // A recovered seq evicted before its direct copy showed stays "recovered"
   // for good: within the horizon the channel never delivered it.
   recovered_await_src_.erase(recovered_await_src_.begin(),
@@ -164,7 +189,7 @@ void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
 }
 
 std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size_t len,
-                                                        uint64_t now_ms) {
+                                                        uint64_t now_ms, SwBoundary b) {
   std::vector<std::vector<uint8_t>> out;
   sw::SwHeader h;
   if (!sw::parse_header(env, len, &h)) return out;
@@ -188,6 +213,11 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
         v + static_cast<uint64_t>(kResetSpan) < newest_v_) {
       reset_state(kAnchor + h.seq);
       v = newest_v_;
+    }
+    if (b == SwBoundary::kPre && wm_valid_ && v > wm_) wm_ = v;
+    if (b == SwBoundary::kPost && wm_open_) {
+      wm_open_ = false;
+      if (wm_valid_ && v > 0 && v - 1 > wm_) wm_ = v - 1;
     }
     if (v < live_floor() || known_.count(v)) {
       // First direct copy of a repair-recovered symbol: the channel did
@@ -217,6 +247,7 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
     ++symbols_dropped_stale_;  // pre-reset stragglers after an encoder restart
     return out;
   }
+  if (b == SwBoundary::kPre && wm_valid_ && wend - 1 > wm_) wm_ = wend - 1;
   advance(wend - 1);  // a repair implies its whole window was sent
   if (ws < live_floor()) {
     // References a seq older than the horizon — unsolvable, and (if any

@@ -280,4 +280,109 @@ TEST(bad_cfg_and_garbage_counted_dropped) {
   CHECK(d.add_symbol(junk, sizeof junk, 1000).empty());
 }
 
+TEST(watermark_pre_transition_abandonment_books_stale) {
+  // 62-byte packets, one per symbol at symbol_size 64: pkt index == seq.
+  SwConfig cfg{64, 8, 1.0};
+  std::vector<std::vector<uint8_t>> pkts;
+  auto envs = encode_stream(cfg, 40, &pkts);
+  SwDecoder d(cfg);
+  // Feed the first half, dropping sources for seqs 4..6 AND all repairs
+  // (so the hole can never be recovered and must be abandoned).
+  size_t src_i = 0;
+  std::vector<std::vector<uint8_t>> fed_tail;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (h.repair) continue;
+    if (src_i >= 20) { fed_tail.push_back(env); ++src_i; continue; }
+    const bool drop = src_i >= 4 && src_i <= 6;
+    if (!drop) d.add_symbol(env.data(), env.size(), 1000);
+    ++src_i;
+  }
+  CHECK(d.syms_abandoned() == 0);  // hole still inside horizon (8*4=32)
+  // Transition: everything so far is pre-transition.
+  d.mark_transition();
+  CHECK(d.boundary_open());
+  // Feed the tail as kPost sources: first one closes the boundary; their
+  // seq advance pushes the hole past the horizon -> abandonment.
+  for (auto& env : fed_tail) d.add_symbol(env.data(), env.size(), 1001, SwBoundary::kPost);
+  CHECK(!d.boundary_open());
+  CHECK(d.syms_abandoned() == 3);
+  CHECK(d.syms_abandoned_stale() == 3);  // all three below the watermark
+}
+
+TEST(watermark_post_transition_abandonment_books_current) {
+  // 60 sources so the hole at 12..14 falls past the horizon (8*4=32) by the
+  // end: floor = 59 - 32 = 27 > 14.
+  SwConfig cfg{64, 8, 1.0};
+  std::vector<std::vector<uint8_t>> pkts;
+  auto envs = encode_stream(cfg, 60, &pkts);
+  SwDecoder d(cfg);
+  std::vector<std::vector<uint8_t>> sources;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair) sources.push_back(env);
+  }
+  REQUIRE(sources.size() == 60);
+  // Clean pre-transition run: seqs 0..9.
+  for (size_t i = 0; i < 10; ++i) d.add_symbol(sources[i].data(), sources[i].size(), 1000);
+  d.mark_transition();
+  // Post-transition: seq 10 closes the boundary (wm = 9); then drop 12..14
+  // and feed the rest — a CURRENT-rung hole.
+  for (size_t i = 10; i < 60; ++i) {
+    if (i >= 12 && i <= 14) continue;
+    d.add_symbol(sources[i].data(), sources[i].size(), 1001, SwBoundary::kPost);
+  }
+  CHECK(d.syms_abandoned() == 3);
+  CHECK(d.syms_abandoned_stale() == 0);  // above the watermark = current
+}
+
+TEST(watermark_open_boundary_books_stale_and_pre_advances) {
+  SwConfig cfg{64, 8, 1.0};
+  std::vector<std::vector<uint8_t>> pkts;
+  auto envs = encode_stream(cfg, 60, &pkts);
+  SwDecoder d(cfg);
+  std::vector<std::vector<uint8_t>> sources;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair) sources.push_back(env);
+  }
+  REQUIRE(sources.size() == 60);
+  for (size_t i = 0; i < 5; ++i) d.add_symbol(sources[i].data(), sources[i].size(), 1000);
+  d.mark_transition();  // wm = 4, open
+  // In-flight old-op stragglers arrive AFTER the transition with kPre:
+  // 5..7 heard, 8..9 lost (killed in flight). Boundary never closes here
+  // (no kPost source ever arrives — e.g. the new-op stream is not heard
+  // yet). Advance far with unhinted (kNone) sources 10..59 so the hole
+  // 8..9 falls past the horizon (floor = 59 - 32 = 27).
+  for (size_t i = 5; i < 8; ++i) d.add_symbol(sources[i].data(), sources[i].size(), 1001, SwBoundary::kPre);
+  for (size_t i = 10; i < 60; ++i) d.add_symbol(sources[i].data(), sources[i].size(), 1002);
+  CHECK(d.boundary_open());
+  CHECK(d.syms_abandoned() == 2);  // exactly the killed-in-flight 8..9
+  CHECK(d.syms_abandoned_stale() == d.syms_abandoned());  // open => all stale
+  d.close_boundary();
+  CHECK(!d.boundary_open());
+}
+
+TEST(watermark_inactive_decoder_books_all_current) {
+  // No mark_transition() ever: stale counter must stay 0 (legacy behavior).
+  SwConfig cfg{64, 8, 1.0};
+  std::vector<std::vector<uint8_t>> pkts;
+  auto envs = encode_stream(cfg, 40, &pkts);
+  SwDecoder d(cfg);
+  size_t src_i = 0;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (h.repair) continue;
+    const bool drop = src_i >= 4 && src_i <= 6;
+    if (!drop) d.add_symbol(env.data(), env.size(), 1000);
+    ++src_i;
+  }
+  CHECK(d.syms_abandoned() == 3);
+  CHECK(d.syms_abandoned_stale() == 0);
+}
+
 MTEST_MAIN
