@@ -395,8 +395,6 @@ def test_s_line_resid_cur_parsed_and_absent_is_nan():
     assert log["S"][0]["resid_cur"] == 0.0011
     assert math.isnan(log["S"][1]["resid_cur"])
 
-    print("\n✓ resid_cur parse test passed!")
-
 
 def test_wall_report():
     """Direct-invocation pattern (matches the siblings above): write the

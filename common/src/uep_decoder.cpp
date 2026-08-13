@@ -40,7 +40,7 @@ void UepDecoder::mark_transition(int sid, uint8_t new_mcs, uint64_t now_ms) {
   if (!L.bnd_open) L.sw.close_boundary();
 }
 
-void UepDecoder::note_delivery(Layer& l, uint16_t seq, SwBoundary b) {
+void UepDecoder::note_delivery(Layer& l, uint16_t seq) {
   // Delivery window: forward FRAG-seq gap = packets that will never
   // complete; backward/duplicate (gap 0 or > 0x8000) = reorder, count
   // delivered only. Monster gaps are an outage, not per-packet info —
@@ -49,7 +49,6 @@ void UepDecoder::note_delivery(Layer& l, uint16_t seq, SwBoundary b) {
   // A unit is pre-transition debris iff the boundary is still open (the
   // new-op stream hasn't been heard yet, so nothing can be the new rung's
   // fault) or it sits at/below the packet watermark.
-  (void)b;
   auto is_stale = [&](uint16_t u) {
     if (l.bnd_open) return true;
     if (!l.bnd_armed) return false;
@@ -114,7 +113,7 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
   ++L.bodies;
   SwBoundary hint = SwBoundary::kNone;
   if (L.bnd_armed) {
-    if (now_ms - L.bnd_arm_ms > kBoundaryExpiryMs) {
+    if (now_ms > L.bnd_arm_ms && now_ms - L.bnd_arm_ms > kBoundaryExpiryMs) {
       L.bnd_armed = false;
       L.bnd_open = false;
       L.pkt_wm_valid = false;
@@ -160,7 +159,7 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
             L.pkt_wm_valid = true;
           }
         }
-        note_delivery(L, fseq, hint);
+        note_delivery(L, fseq);
       }
       out.push_back(DecodedFrag{static_cast<uint8_t>(sid), pkt});
     }

@@ -326,4 +326,37 @@ TEST(uep_attrib_current_loss_first_booking_never_suppressed) {
   CHECK(attrib.wc_total == legacy.wc_total);  // (b) totals unchanged
 }
 
+// Final-review fix (2026-08-14): the boundary-expiry check in add_body must
+// not underflow when now_ms lands BEFORE bnd_arm_ms (a body stamped
+// microseconds before the marking iteration's clock capture can drain in
+// the next iteration with an earlier-rounding ms stamp). Without the
+// `now_ms > bnd_arm_ms` guard, `now_ms - bnd_arm_ms` wraps to a huge value,
+// exceeds kBoundaryExpiryMs, and force-disarms a fresh boundary at exactly
+// the wrong moment.
+TEST(uep_attrib_expiry_guard_no_underflow) {
+  auto layers = layers_for(64, 1, 8);
+  UepEncoder enc(layers, 15);
+  UepDecoder dec(layers, 200);
+  std::mt19937 rng(42);
+  uint64_t now = 500;
+  dec.mark_transition(1, 5, now);   // establish a known prev mcs (5)
+  now = 2000;
+  dec.mark_transition(1, 4, now);   // opens boundary (5 -> 4), bnd_arm_ms = 2000
+
+  auto feed = [&](int i, uint8_t mcs, uint64_t add_body_ms) {
+    auto unit = make_unit(1, static_cast<uint32_t>(i), 300, rng);
+    auto bodies = enc.add_frame(1, unit.data(), unit.size(), now);
+    for (auto& b : bodies) dec.add_body(b.body.data(), b.body.size(), add_body_ms, mcs);
+    now += 5;
+    for (auto& b : enc.poll(now)) dec.add_body(b.body.data(), b.body.size(), add_body_ms, mcs);
+  };
+  // 1 ms BEFORE the arm stamp (now_ms=1999 < bnd_arm_ms=2000), old MCS ->
+  // kPre-classifiable. Must NOT disarm the boundary.
+  feed(0, 5, 1999);
+  // A subsequent new-MCS body must still be able to close the boundary --
+  // it can only do so if the boundary is still armed/open.
+  feed(1, 4, now);
+  CHECK(dec.last_boundary_close_ms(1) >= 0.0);
+}
+
 MTEST_MAIN

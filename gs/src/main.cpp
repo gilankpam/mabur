@@ -295,7 +295,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // Windows where total residual was positive but attributed residual was
   // zero at a rung > 0 — i.e. windows where the legacy instant demote
   // would have fired on pure debris. THE headline artifact-rate number.
+  // Counted per contiguous suppressed episode, edge-detected — the loop
+  // runs per drained batch, far faster than the RCF window cadence, so a
+  // level-triggered increment here would count one episode tens of times.
   uint64_t attrib_suppressed = 0;
+  bool attrib_suppressed_latched = false;
   // Commanded-MCS edge detect for boundary marking. -1 forces a first mark
   // (which finds cur_mcs unknown -> closed plain-fallback boundary).
   int last_marked_op_mcs = -1;
@@ -602,10 +606,14 @@ static int run_radio(const maburgs::Config& cfg) {
     // Artifact-rate meter: a window the legacy instant demote would have
     // acted on (total residual > 0, rung > 0) that the attributed view
     // reads clean. Counted regardless of the switch so an attrib=false
-    // run still measures what attribution WOULD have suppressed.
-    if (vrx.ctl().rung() > 0 && residual.value_or(0.0) > 0.0 &&
-        residual_cur.value_or(0.0) <= 0.0)
-      ++attrib_suppressed;
+    // run still measures what attribution WOULD have suppressed. Edge-
+    // detected on the latch above: one increment per contiguous suppressed
+    // episode, not once per main-loop pass.
+    const bool attrib_suppressed_now = vrx.ctl().rung() > 0 &&
+                                        residual.value_or(0.0) > 0.0 &&
+                                        residual_cur.value_or(0.0) <= 0.0;
+    if (attrib_suppressed_now && !attrib_suppressed_latched) ++attrib_suppressed;
+    attrib_suppressed_latched = attrib_suppressed_now;
 
     if (auto out = vrx.step(now_ms, ld, health)) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period

@@ -41,7 +41,13 @@ class UepDecoder {
   // candidate's for s3 while a probe runs). Arms per-layer watermarks in
   // both seq spaces; add_body()'s rx_mcs then classifies arrivals as
   // pre/post-boundary until the boundary closes (first frame heard at
-  // new_mcs) or expires (kBoundaryExpiryMs).
+  // new_mcs) or expires (kBoundaryExpiryMs). The forced first mark (prior
+  // cur_mcs unknown) arms with a known cur_mcs but cannot open a boundary
+  // (there is no "prev" to have been wrong), so up to ~1 s of session-start
+  // loss below the first-completed unit books stale and is excluded from
+  // demote inputs — deliberate, since session-start warm-up loss is exactly
+  // the debris class this mechanism exists to exclude; early-session
+  // abandoned_stale > 0 on the bench is expected, not a bug.
   void mark_transition(int sid, uint8_t new_mcs, uint64_t now_ms);
 
   std::vector<DecodedFrag> add_body(const uint8_t* body, size_t len,
@@ -124,7 +130,7 @@ class UepDecoder {
     uint16_t win_hwm = 0;
   };
   // Delivery-window accounting, called on each unit's last-fragment arrival.
-  void note_delivery(Layer& l, uint16_t seq, SwBoundary b);
+  void note_delivery(Layer& l, uint16_t seq);
 
   std::array<Layer, 4> layers_;
   uint64_t decode_deadline_ms_;
