@@ -654,7 +654,8 @@ static int run_radio(const maburgs::Config& cfg) {
         const auto& c = vrx.ctl();
         ctl_log->sample(now_ms, c.rung(), c.util(), health.s1_snr_db,
                          residual.value_or(0.0), c.util3(),
-                         health.s3_residual_loss, health.s1_evm_db);
+                         health.s3_residual_loss, health.s1_evm_db,
+                         residual_cur.value_or(0.0));
         if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
           last_rung_log_ms = now_ms;
           emit_rung_lines(now_ms);

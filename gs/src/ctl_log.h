@@ -18,8 +18,9 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 1 <header_info>                                  # once, first line
-//   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db>  # 1 Hz dwell sample
+//   ctllog 2 <header_info>                                  # once, first line
+//   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
+//                                                            # 1 Hz dwell sample
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
 //   P <t_ms> <rung> <pass|fail|abort> <snr_db> <u_pred> <dur_ms> <evm_db>
 //   N <t_ms> <rung> <k> <until_ms>                           # penalty booked
@@ -28,6 +29,11 @@ namespace maburgs {
 //
 // evm_db is the s1 EVM label in dB, nan when unsampled -- label-only, like
 // snr_db (see LinkHealth::s1_evm_db).
+//
+// resid stays the TOTAL residual (abandoned/expected over the whole decode
+// window); resid_cur is its attributed sibling -- the same ratio scored only
+// against symbols the ladder could still have acted on (excludes stale
+// abandons attributable to a transition already past), added 2026-08-14.
 //
 // Two encoding notes callers must know:
 //  - S's u3 reads 0 while a probe is active (steady-state s3 utilization is
@@ -64,7 +70,7 @@ class CtlLog {
   const std::string& path() const { return path_; }
 
   void sample(double t_ms, int rung, double u, double snr_db, double resid,
-              double u3, double resid3, double evm_db);
+              double u3, double resid3, double evm_db, double resid_cur);
   void event(double t_ms, int from, int to, const char* reason, double u,
              double snr_db, double evm_db);
   void probe(double t_ms, int rung, const char* outcome, double snr_db,
