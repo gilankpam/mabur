@@ -572,3 +572,26 @@ TEST(rung_stats_parses_and_validates) {
     CHECK(false);
   } catch (const std::exception&) {}
 }
+
+// link.attrib: transition-attribution kill switch (spec 2026-08-14).
+// Default true (attribution on); explicit false = legacy totals; must be
+// boolean-typed like ctl_log/s3_demote.
+TEST(link_attrib_defaults_true) {
+  auto cfg = maburgs::load_config(write_tmp(R"({"link": {}})"));
+  CHECK(cfg.link.attrib);
+}
+
+TEST(link_attrib_explicit_false) {
+  auto cfg = maburgs::load_config(write_tmp(R"({"link": {"attrib": false}})"));
+  CHECK(!cfg.link.attrib);
+}
+
+TEST(link_attrib_rejects_non_boolean) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link": {"attrib": 1}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("link.attrib") != std::string::npos;
+  }
+  CHECK(threw);
+}
