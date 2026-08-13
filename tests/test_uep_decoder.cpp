@@ -301,4 +301,29 @@ TEST(uep_attrib_expiry_disarms) {
   CHECK(st.syms_abandoned_stale == 0);
 }
 
+// Fix-round addition (code review, 2026-08-14): pins the win_hwm fallback's
+// safety property under a repair-cascade reorder entirely ON THE NEW RUNG,
+// well after the boundary has closed (transition_at=10, drop starts at
+// frame 47 — 37 frames and >180ms into the still-armed window, all bodies
+// at mcs_new). This same window/drop-size combination is known (from the
+// pre-transition test above) to make the underlying sliding-window FEC
+// recover one of the three dropped units OUT OF ORDER — completing after a
+// later unit and regressing last_seq — which is exactly the shape win_hwm
+// exists to handle. Two properties must hold:
+//  (a) the two units that never recover (permanently lost, all on the new
+//      rung) must NOT be hidden by the stale split: expected_cur must
+//      exceed delivered_cur.
+//  (b) attribution must not perturb the preserved win_expected/win_delivered
+//      arithmetic at all: totals identical to the same run with no
+//      mark_transition/rx_mcs (use_attrib=false).
+TEST(uep_attrib_current_loss_first_booking_never_suppressed) {
+  const std::set<int> drop{47, 48, 49};
+  auto attrib = run_transition_sim(drop, /*transition_at=*/10, /*use_attrib=*/true);
+  auto legacy = run_transition_sim(drop, 10, /*use_attrib=*/false);
+  CHECK(attrib.abandoned > 0);  // sanity: this scenario does lose symbols
+  const auto [dc, ec] = attrib.wc_cur;
+  CHECK(ec > dc);  // (a) genuine current-rung loss is visible, not hidden
+  CHECK(attrib.wc_total == legacy.wc_total);  // (b) totals unchanged
+}
+
 MTEST_MAIN

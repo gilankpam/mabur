@@ -89,6 +89,13 @@ void UepDecoder::note_delivery(Layer& l, uint16_t seq, SwBoundary b) {
   l.last_seq = seq;
   // (keep the original last_seq update semantics exactly: the two lines
   //  above replace the originals, nothing else moves)
+  // win_hwm is updated unconditionally on every completion, armed or not —
+  // never gated behind bnd_armed/bnd_open. That means it is already
+  // correct (covers full history) at the moment a boundary next arms, and
+  // it always tracks the recent head going forward, so it can never carry
+  // a value stale enough for the u16 wrap-aware compare to misfire. Only
+  // the is_stale() *comparison* above is gated on l.bnd_armed — an unarmed
+  // layer never consults win_hwm at all, so this update is a no-op for it.
   if (!l.win_hwm_valid || seq16_gt(seq, l.win_hwm)) {
     l.win_hwm = seq;
     l.win_hwm_valid = true;

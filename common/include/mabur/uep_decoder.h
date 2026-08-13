@@ -48,9 +48,12 @@ class UepDecoder {
                                     uint64_t now_ms,
                                     uint8_t rx_mcs = kMcsUnknown);
 
-  // Current-rung-only view of the delivery window: total minus the units
-  // attributed to pre-transition debris. Same reset cadence as
-  // window_counts() (reset_window()).
+  // Current-rung-only view of the delivery window: total minus units
+  // attributed to pre-transition debris, plus — while a boundary is armed —
+  // re-bookings and late deliveries of a unit already booked once (reorder
+  // double-count artifacts that a repair-cascade recovery can produce; the
+  // totals from window_counts() deliberately keep these, this view strips
+  // them). Same reset cadence as window_counts() (reset_window()).
   std::pair<uint64_t, uint64_t> window_counts_cur(int sid) const;
 
   // Open->close latency (ms) of layer sid's last CLOSED boundary; -1 if a
