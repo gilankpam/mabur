@@ -306,3 +306,27 @@ or threshold it globally; use deviation from the same rung's baseline. The
 sweep that established this (and the interpretation: walls stay
 delivery-defined; EVM's job is per-rung baselines + live PA-compression
 watchdog) is `docs/evm-sweep-findings-2026-08-10.md`.
+
+**"Wire clean" does NOT mean "no frame loss" — venc-ring vanish class,
+detected since 2026-08-13.** Frames can vanish INSIDE the drone (between
+waybeam's encoder and maburd's ring read) and never get a `frame_id`: the
+wire sequence closes seamlessly over the hole, every FEC/loss counter reads
+zero, and a vanished BASE frame silently smears the decoder until an IDR
+(rally's natural 2 s GOP is the only healer on this build). Root cause is
+CPU famine, not ring depth: above ~12 Mbps at the mcs5 bench op point the
+2×A7 SoC starves maburd's hot thread (ring pinned full for 100s of ms),
+so the honest knob is `waybeam.bitrate_max_kbps` — the bench runs 10000.
+Full findings: `docs/venc-ring-vanish-findings-2026-08-12.md` (committed
+with the detection port). The detection (pts-jump, EMA-period,
+shed-immune) ships in maburd and exports as
+`drone.enc.{vanished_base,vanished_enh,self_idr_refused}` on the sideport
+(Telem wire grew 61→67 — a version-mismatched pair just drops T_TELEM on
+CRC, so telemetry reads absent until both ends run the same build; video
+is unaffected) plus a 5 s `frame_ring:` stderr line in `/tmp/mabur.log`.
+`self_idr_refused` counts base vanishes suppressed by the IDR-adjacency
+guard — the self-IDR CONSUMER is deliberately not wired: on the parked
+`idr-request` branch it amplified CPU overload into an IDR storm (rolling
+smear, I-frame-inflated bitrate, `air_pct` low throughout) and needs its
+queued redesign (kill switch, GOP-aware suppression, rate-based guard)
+before it returns. `tools/bench/ringwatch.c` (branch `bench/loss-sim-v2`)
+samples the ring live when attribution is needed.

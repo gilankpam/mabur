@@ -23,6 +23,11 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
   }
 
   const bool meta_enhance = (meta.flags & VENC_FRAME_FLAG_ENHANCE) != 0;
+  // Vanish detection runs on EVERY ring read — before the shed check below,
+  // because a shed drop happens downstream of the read and must never look
+  // like an upstream hole (read-side pts stays continuous across sheds).
+  track_vanish(meta, meta_idr, meta_enhance, now_ms);
+
   const bool scan_enhance = frame_is_trail_n(payload, payload_len);
   // SVC-T enhance (sid 3, droppable): producer flag and TRAIL_N scan must
   // AGREE. Shedding a referenced frame corrupts decode, so a single signal
@@ -56,6 +61,61 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
   framewire::pack_frame_hdr(h, buf);
 
   return uep.add_frame(sid, buf, framewire::kFrameHdrLen + payload_len, now_ms);
+}
+
+void FramePipeline::track_vanish(const VencFrameMeta& meta, bool meta_idr,
+                                 bool meta_enhance, uint64_t now_ms) {
+  if (have_prev_pts_) {
+    // Unsigned subtraction: the 32-bit pts wrap (~71.6 min) is invisible.
+    const uint32_t delta = meta.pts - prev_pts_;
+    if (delta >= kResyncUs) {
+      // Encoder clock discontinuity: re-anchor, re-confirm, count nothing.
+      period_samples_ = 0;
+      period_us_ = 0.0;
+    } else if (delta > 0) {
+      if (period_samples_ >= kMinPeriodSamples &&
+          static_cast<double>(delta) > kVanishFactor * period_us_) {
+        int k = static_cast<int>(delta / period_us_ + 0.5) - 1;
+        if (k < 1) k = 1;
+        if (k > kMaxVanishPerEvent) k = kMaxVanishPerEvent;
+        int base = 0;
+        for (int i = 1; i <= k; ++i) {
+          // Strict base/enhance alternation out from the previous frame's
+          // producer flag: odd offsets flip, even offsets match.
+          const bool enh = (i % 2) ? !prev_enhance_ : prev_enhance_;
+          if (!enh) ++base;
+        }
+        vanished_base_ += static_cast<uint64_t>(base);
+        vanished_enh_ += static_cast<uint64_t>(k - base);
+        if (base > 0) {
+          if (have_last_idr_ && now_ms - last_idr_ms_ < kSelfIdrGuardMs)
+            ++self_idr_refused_;  // likely IDR-burst-caused: see header
+          else
+            self_idr_pending_ = true;
+        }
+      } else {
+        // Normal-looking step: feed the period EMA (alpha 1/8). Before the
+        // first sample this seeds directly — if that first delta was itself a
+        // hole, later real deltas still pass the < 1.5x gate and pull the
+        // estimate down, which is why detection waits for kMinPeriodSamples.
+        period_us_ = period_samples_ == 0
+                         ? static_cast<double>(delta)
+                         : period_us_ + (static_cast<double>(delta) - period_us_) / 8.0;
+        if (period_samples_ < kMinPeriodSamples) ++period_samples_;
+      }
+    }
+  }
+  prev_pts_ = meta.pts;
+  prev_enhance_ = meta_enhance;
+  have_prev_pts_ = true;
+  // AFTER detection, deliberately: an IDR arriving right behind a hole heals
+  // that hole, so it clears the latch the same call — and its timestamp
+  // guards the NEXT event, not this one.
+  if (meta_idr) {
+    self_idr_pending_ = false;
+    have_last_idr_ = true;
+    last_idr_ms_ = now_ms;
+  }
 }
 
 }  // namespace mabur
