@@ -121,6 +121,18 @@ struct Telem {
   uint16_t load_x100 = 0;
   uint16_t idr_disagree = 0;      // saturating; spec 2026-07-26 svct-enable
   uint16_t enhance_disagree = 0;  // saturating
+  // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):
+  // frames that vanished between waybeam's encoder and maburd's ring read
+  // (pts-jump-detected, classified base/enhance from neighbour flags), and
+  // base vanishes suppressed by the IDR-adjacency re-seed guard (counted for
+  // loop visibility; the self-IDR consumer itself is NOT wired on this
+  // build — detection-only port of 65c94fd). All saturating. Counters are
+  // zeroed at the FIRST link-establish (encoder bring-up books ~8-9 boot
+  // counts that would otherwise need analyzer-side baselining; a mid-flight
+  // re-establish does NOT zero), so they read "vanishes since first link".
+  uint16_t vanished_base = 0;
+  uint16_t vanished_enh = 0;
+  uint16_t self_idr_refused = 0;
 };
 
 std::vector<uint8_t> pack_rcf(const Rcf& r);

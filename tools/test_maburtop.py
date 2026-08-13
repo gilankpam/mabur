@@ -611,5 +611,42 @@ class ModelInvariantsTest(unittest.TestCase):
         self.assertTrue(len(rows) > 0)
 
 
+
+class VanishDisplayTest(unittest.TestCase):
+    # venc-ring vanish counters (docs/venc-ring-vanish-findings-2026-08-12.md):
+    # drone.enc.{vanished_base,vanished_enh,self_idr_refused}, zeroed at first
+    # link-establish — nonzero base = silent decoder corruption, must be visible.
+    def test_panel_drone_shows_vanish_counters(self):
+        import copy
+        d = copy.deepcopy(DGRAM)
+        d["drone"]["enc"]["vanished_base"] = 2
+        d["drone"]["enc"]["vanished_enh"] = 5
+        d["drone"]["enc"]["self_idr_refused"] = 1
+        m = _fresh(d)
+        text = "\n".join(r[0] if isinstance(r, tuple) else r
+                          for r in panel_drone(m, 100.2))
+        self.assertRegex(text, r"van\s+2/\s*5")
+        self.assertRegex(text, r"ref\s+1")
+
+    def test_compact_enc_row_shows_vanish_counters(self):
+        import copy
+        d = copy.deepcopy(DGRAM)
+        d["drone"]["enc"]["vanished_base"] = 3
+        d["drone"]["enc"]["vanished_enh"] = 7
+        m = _fresh(d)
+        text = "\n".join(r[0] if isinstance(r, tuple) else r
+                          for r in render_rows_compact(m, 100.2, 200))
+        self.assertRegex(text, r"van\s+3/\s*7")
+
+    def test_vanish_keys_absent_renders_dashes(self):
+        # Old-daemon datagram (pre-detection): keys missing entirely — panel
+        # must render placeholders, never crash.
+        m = _fresh(DGRAM)  # fixture has no vanished_* keys
+        text = "\n".join(r[0] if isinstance(r, tuple) else r
+                          for r in panel_drone(m, 100.2))
+        self.assertRegex(text, r"van\s+--/\s*--")
+
+
+
 if __name__ == "__main__":
     unittest.main()

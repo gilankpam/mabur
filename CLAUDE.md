@@ -41,15 +41,20 @@ with:
   grouped by link; color thresholds carry the judgment.
 - Ad-hoc capture: any UDP listener on :8300, or passively via AF_PACKET on
   `lo` when a consumer already holds the port.
-- Flight recorder: `socat -u udp-recv:8300 - | jq -c . >> flight.jsonl` on
-  the GS logs every metric at 2 Hz for post-flight analysis. The `jq -c` is
-  REQUIRED: sideport datagrams carry no trailing newline, so bare socat
-  appends concatenated JSON, not JSONL (recover such a file with
-  `jq -c . < file`). This ad-hoc capture is now the ONLY way to get FULL
-  sideport data on disk: `statsrec.py`/`/etc/init.d/S97statsrec` (the boot
-  recorder that auto-wrote `/media/dvr/flight-NNNN_<date>.jsonl` and fanned
-  out to :8301) were REMOVED from the GS on 2026-08-05 (device-only files,
-  never in this repo). The adaptive-link record survives separately and
+- Flight recorder: since 2026-08-13 the GS boot-starts
+  `/etc/init.d/S97flightrec` (device-only file, like the ctl log's
+  siblings), which appends every sideport datagram to a per-boot indexed
+  `/media/dvr/flight-NNNN.jsonl` via `/root/rec8300.py` (a python UDP
+  binder; keeps the newest 30 files, ~1 MB/min). It exists because three
+  incidents in a row (ctl-0030 crash, the 2026-08-13 lag crash, the bench
+  false alarm) had no recording — reinstated as a minimal successor to the
+  `S97statsrec` that was removed 2026-08-05. ⚠ UDP unicast means ONE
+  consumer per port: `/etc/init.d/S97flightrec stop` before running
+  maburtop against :8300 on the GS, then `start` after. The old ad-hoc
+  recipe (`socat -u udp-recv:8300 - | jq -c . >> flight.jsonl`) still
+  works ATTENDED, but dies on ssh detach even under nohup (jq buffering +
+  SIGHUP — measured 2026-08-13); don't use it for anything that must
+  survive the session. The adaptive-link record survives separately and
   automatically: maburgs writes its own compact ctl log whenever
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
@@ -306,3 +311,27 @@ or threshold it globally; use deviation from the same rung's baseline. The
 sweep that established this (and the interpretation: walls stay
 delivery-defined; EVM's job is per-rung baselines + live PA-compression
 watchdog) is `docs/evm-sweep-findings-2026-08-10.md`.
+
+**"Wire clean" does NOT mean "no frame loss" — venc-ring vanish class,
+detected since 2026-08-13.** Frames can vanish INSIDE the drone (between
+waybeam's encoder and maburd's ring read) and never get a `frame_id`: the
+wire sequence closes seamlessly over the hole, every FEC/loss counter reads
+zero, and a vanished BASE frame silently smears the decoder until an IDR
+(rally's natural 2 s GOP is the only healer on this build). Root cause is
+CPU famine, not ring depth: above ~12 Mbps at the mcs5 bench op point the
+2×A7 SoC starves maburd's hot thread (ring pinned full for 100s of ms),
+so the honest knob is `waybeam.bitrate_max_kbps` — the bench runs 10000.
+Full findings: `docs/venc-ring-vanish-findings-2026-08-12.md` (committed
+with the detection port). The detection (pts-jump, EMA-period,
+shed-immune) ships in maburd and exports as
+`drone.enc.{vanished_base,vanished_enh,self_idr_refused}` on the sideport
+(Telem wire grew 61→67 — a version-mismatched pair just drops T_TELEM on
+CRC, so telemetry reads absent until both ends run the same build; video
+is unaffected) plus a 5 s `frame_ring:` stderr line in `/tmp/mabur.log`.
+`self_idr_refused` counts base vanishes suppressed by the IDR-adjacency
+guard — the self-IDR CONSUMER is deliberately not wired: on the parked
+`idr-request` branch it amplified CPU overload into an IDR storm (rolling
+smear, I-frame-inflated bitrate, `air_pct` low throughout) and needs its
+queued redesign (kill switch, GOP-aware suppression, rate-based guard)
+before it returns. `tools/bench/ringwatch.c` (branch `bench/loss-sim-v2`)
+samples the ring live when attribution is needed.

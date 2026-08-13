@@ -779,6 +779,15 @@ int run_real_mode(const Config& cfg) {
   std::atomic<uint64_t> idr_disagree_total{0};
   std::atomic<uint64_t> enhance_disagree_total{0};
   std::atomic<uint64_t> ring_drops_total{0};
+  // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):
+  // relaxed-published mirrors of FramePipeline's counters (the
+  // idr_disagree_total pattern). Detection-only port of 65c94fd: the
+  // pipeline's self-IDR latch level is deliberately NOT consumed here — the
+  // self-IDR mechanism needs the redesign queued in that doc (kill switch,
+  // GOP-aware suppression, rate-based guard) before it returns.
+  std::atomic<uint64_t> vanished_base_total{0};
+  std::atomic<uint64_t> vanished_enh_total{0};
+  std::atomic<uint64_t> self_idr_refused_total{0};
   // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
   // frame encoded so far died before the air — re-mark the discontinuity
   // window so the GS gets the re-base signal on frames that can actually
@@ -870,6 +879,7 @@ int run_real_mode(const Config& cfg) {
     std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
     uint64_t last_reattach = 0;
     uint64_t last_ring_stats_ms = 0;
+    bool vanish_boot_zeroed = false;  // first link-establish zeroes counters
 
     // Async FEC worker (spec 2026-07-17, promoted after hardware
     // acceptance): always on, unpinned (the worker sleeps when idle, so the
@@ -907,8 +917,17 @@ int run_real_mode(const Config& cfg) {
           last_reattach = fsrc.reattach_count();
           pipe.mark_discontinuity();  // joined a new ring mid-GOP
         }
-        if (link_up_discont.exchange(false, std::memory_order_relaxed))
+        if (link_up_discont.exchange(false, std::memory_order_relaxed)) {
           pipe.mark_discontinuity();  // link just came up: pre-link frames died
+          // FIRST establish only: drop the boot-window vanish counts
+          // (encoder bring-up churn, ~8-9/boot — 2026-08-13 flight finding)
+          // so telemetry reports in-flight vanishes. A mid-flight
+          // re-establish must NOT erase in-flight counts.
+          if (!vanish_boot_zeroed) {
+            vanish_boot_zeroed = true;
+            pipe.reset_vanish_counters();
+          }
+        }
         for (auto& b : pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now))
           txq.push(std::move(b));
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
@@ -916,6 +935,10 @@ int run_real_mode(const Config& cfg) {
         idr_disagree_total.store(pipe.idr_disagreements(),
                                  std::memory_order_relaxed);
         enhance_disagree_total.store(pipe.enhance_disagreements(),
+                                     std::memory_order_relaxed);
+        vanished_base_total.store(pipe.vanished_base(), std::memory_order_relaxed);
+        vanished_enh_total.store(pipe.vanished_enhance(), std::memory_order_relaxed);
+        self_idr_refused_total.store(pipe.self_idr_refused(),
                                      std::memory_order_relaxed);
       }
       // Ring-pressure observability (spec: the drain-feedback policy's
@@ -940,13 +963,17 @@ int run_real_mode(const Config& cfg) {
               std::memory_order_relaxed);
           std::fprintf(stderr,
               "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
-              "bad_slot=%llu idr_disagree=%llu enhance_disagree=%llu\n",
+              "bad_slot=%llu idr_disagree=%llu enhance_disagree=%llu "
+              "vanished=%llu/%llu self_idr_refused=%llu\n",
               f.fill_pct, f.used_slots, f.slot_count,
               (unsigned long long)f.reads,
               (unsigned long long)f.oversize_drops,
               (unsigned long long)f.bad_slot_drops,
               (unsigned long long)pipe.idr_disagreements(),
-              (unsigned long long)pipe.enhance_disagreements());
+              (unsigned long long)pipe.enhance_disagreements(),
+              (unsigned long long)pipe.vanished_base(),
+              (unsigned long long)pipe.vanished_enhance(),
+              (unsigned long long)pipe.self_idr_refused());
         }
       }
 
@@ -1119,6 +1146,9 @@ int run_real_mode(const Config& cfg) {
         ti.load1 = read_load1();
         ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
         ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
+        ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);
+        ti.vanished_enh = vanished_enh_total.load(std::memory_order_relaxed);
+        ti.self_idr_refused = self_idr_refused_total.load(std::memory_order_relaxed);
 
         auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
 

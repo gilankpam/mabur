@@ -51,6 +51,9 @@ struct TelemInputs {
   int thermal_delta = 0;
   double load1 = 0.0;
   uint64_t idr_disagree = 0, enhance_disagree = 0;
+  // FramePipeline vanish counters (venc-ring vanish detection,
+  // docs/venc-ring-vanish-findings-2026-08-12.md).
+  uint64_t vanished_base = 0, vanished_enh = 0, self_idr_refused = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

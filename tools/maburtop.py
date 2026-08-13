@@ -392,7 +392,8 @@ def render_rows_compact(model, wall, width):
             f"cmd {_f(enc.get('cmd_kbps'), 5)}k   "
             f"qp {_f(enc.get('qp'), 2)}   "
             f"ring {_f(enc.get('ring_drops'), 5)}   "
-            f"dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}"
+            f"dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}   "
+            f"van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}"
         )
         rows.append(
             f"TXQ     depth {_f(txq.get('depth'), 3)}/{_f(txq.get('cap'), 3)}   "
@@ -603,7 +604,9 @@ def panel_drone(model, wall):
              f"{_f(enc.get('mbps'), 5, 2)} Mbps    "
              f"cmd {_f(enc.get('cmd_kbps'), 5)}k   qp {_f(enc.get('qp'), 2)}"
              f"   ring {_f(enc.get('ring_drops'), 5)}"
-             f"   dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}")
+             f"   dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}"
+             f"   van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}"
+             f" ref {_f(enc.get('self_idr_refused'), 2)}")
     ring = enc.get("ring_drops")
     spans3 = []
     dis_idx = line3.rindex("   dis ")  # anchor to cap ring span
