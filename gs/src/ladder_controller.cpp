@@ -437,6 +437,12 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // (sw_decoder.h), exact and permanent, not a settling heuristic. Checked
   // BEFORE the s1 util block so that when both ripen on the same tick the
   // event reason attributes to s3.
+  //
+  // Deliberately still lives in block 5a rather than beside the s1 residual
+  // block (block 4) above: this check needs s3_live, computed in the 5a
+  // preamble, so hoisting it means hoisting that whole preamble too, and
+  // staying here keeps this check's position relative to the 4b fade
+  // trigger unchanged from before the branch. Do not "fix" this into 4.
   if (cfg_.s3_demote && s3_live && h.s3_residual_loss > 0.0 && idx_ > 0) {
     s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
     return true;
