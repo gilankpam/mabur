@@ -288,11 +288,13 @@ static int run_radio(const maburgs::Config& cfg) {
   // (S1LossWindow), that one is packet-level and RCF-period-windowed.
   maburgs::S1LossWindow s1_loss;
   // s3 probe-before-promote feedback (same windowing machinery as s1_loss,
-  // stream 3): pre-FEC loss for probe/s3-demote decisions, plus a separate
-  // residual (abandoned/expected) window for the steady-state demote path.
-  maburgs::S1LossWindow s3_loss, s3_resid;
+  // stream 3): pre-FEC loss for probe/s3-demote decisions. The steady-state
+  // demote path's residual (abandoned/expected) window is s3_resid_cur
+  // below -- attribution is unconditional, so there is no total-based
+  // sibling left to keep here.
+  maburgs::S1LossWindow s3_loss;
   // Current-rung-only siblings (transition attribution, spec 2026-08-14):
-  // same machinery, fed from the attributed counters. The originals stay
+  // same machinery, fed from the attributed counters. s1_loss/s3_loss stay
   // as the observability totals (residual_loss, the artifact-rate meter).
   maburgs::S1LossWindow s1_loss_cur, s3_loss_cur, s3_resid_cur;
   // Fade-trigger staleness gate (spec 2026-08-14 §3): per-card s1-class
@@ -555,15 +557,13 @@ static int run_radio(const maburgs::Config& cfg) {
     const auto s1_cur_sample = s1_loss_cur.sample(now_ms);
 
     // s3 feedback for the probe-before-promote / s3-demote logic: pre-FEC
-    // loss (same shape as s1's window) plus a residual (abandoned/expected)
-    // window scored against the CURRENT rung's s3 budget.
+    // loss (same shape as s1's window), scored against the CURRENT rung's
+    // s3 budget.
     const auto s3 = agg.decoder().stats(3);
     const uint64_t s3_expected =
         s3.syms_delivered + s3.syms_recovered + s3.syms_abandoned;
     s3_loss.add(s3_expected, s3.syms_delivered + s3.syms_recovered_arrived, now_ms);
-    s3_resid.add(s3_expected, s3_expected - s3.syms_abandoned, now_ms);
     const auto s3_sample = s3_loss.sample(now_ms);
-    const auto s3_rsample = s3_resid.sample(now_ms);
 
     const uint64_t s3_ab_cur = s3.syms_abandoned - s3.syms_abandoned_stale;
     const uint64_t s3_exp_cur = s3.syms_delivered + s3.syms_recovered + s3_ab_cur;
