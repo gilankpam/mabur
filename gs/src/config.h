@@ -43,6 +43,13 @@ struct LinkCfg {
   uint32_t vtx_id = 1;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
+  // RCF repeat burst (rcf-uplink-loss findings 2026-08-14): after an RCF
+  // whose commanded op changed, re-send it copies times at rcf_repeat_ms
+  // spacing so a 30-50% per-attempt uplink loss (drone half-duplex TX)
+  // doesn't cost a feedback_ms quantum per loss. 0 disables. The burst
+  // must fit inside one feedback period (validated at load).
+  int rcf_repeat_copies = 3;
+  int rcf_repeat_ms = 10;
   // Static-link mode: when static_mcs >= 0 the adaptive controller is
   // bypassed entirely and every RCF commands exactly this MCS/FEC overhead
   // (HT, 20 MHz). Rendezvous/keep-alive/failsafe machinery is unaffected.

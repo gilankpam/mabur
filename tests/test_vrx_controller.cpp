@@ -403,3 +403,132 @@ TEST(static_pin_overrides_controller) {
   REQUIRE(r.has_value());
   CHECK(r->fec_overhead_16ths == mabur::rc::overhead_to_16ths(0.25));
 }
+
+// --- RCF repeat burst (rcf-uplink-loss findings 2026-08-14 §4 item 3) -------
+// An op-changing RCF has a 30-50% chance of dying in the drone's TX airtime,
+// and the next chance is a full feedback_ms away. After any emission whose
+// commanded content changed, the controller exposes `copies` repeat frames at
+// `rcf_repeat_ms` spacing via poll_repeat(): fresh seq each (the drone's
+// freshness gate drops non-advancing seqs), same commanded op.
+
+// Drive to the first ladder promote and return the committing RCF's parse.
+static std::optional<mabur::rc::Rcf> drive_to_promote(VrxController& vrx,
+                                                      double& now) {
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  std::optional<VrxController::Out> out;
+  for (; now < 5000; now += 10) {
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    auto o = vrx.step(now, ld, healthy());
+    if (o && !o->is_disc && vrx.ctl().rung() == 1) { out = o; break; }
+  }
+  if (!out) return std::nullopt;
+  return mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+}
+
+static LadderCfg fast_promote_ladder() {
+  LadderCfg lcfg = default_ladder();
+  lcfg.ladder = {{0, 1.0}, {4, 0.25}};
+  lcfg.up_util = 0.1;
+  lcfg.confirm_ms = 10;
+  lcfg.clean_ms = 10;
+  lcfg.probation_ms = 10;
+  lcfg.hold_after_down_ms = 0;
+  lcfg.min_between_changes_ms = 0;
+  lcfg.feedback_timeout_ms = 100000;
+  return lcfg;
+}
+
+TEST(rcf_repeat_burst_after_op_change) {
+  auto vrx = make(fast_promote_ladder());
+  double now = 0;
+  auto commit = drive_to_promote(vrx, now);
+  REQUIRE(commit.has_value());
+
+  // Not due yet at +5 ms.
+  CHECK(!vrx.poll_repeat(now + 5).has_value());
+
+  uint16_t prev_seq = commit->seq;
+  for (int k = 1; k <= 3; ++k) {
+    auto f = vrx.poll_repeat(now + 10.0 * k);
+    REQUIRE(f.has_value());
+    auto r = mabur::rc::parse_rcf(f->data(), f->size());
+    REQUIRE(r.has_value());
+    CHECK(r->profile == commit->profile);
+    CHECK(r->fec_overhead_16ths == commit->fec_overhead_16ths);
+    CHECK(r->seq == static_cast<uint16_t>(prev_seq + 1));
+    prev_seq = r->seq;
+  }
+  // Burst exhausted.
+  CHECK(!vrx.poll_repeat(now + 40).has_value());
+}
+
+TEST(rcf_repeat_none_when_op_unchanged) {
+  auto vrx = make(fast_promote_ladder());
+  double now = 0;
+  REQUIRE(drive_to_promote(vrx, now).has_value());
+  // Drain the promote's own burst.
+  while (vrx.poll_repeat(now + 1000)) now += 1000;
+
+  // Steady state: emit several more RCFs with the op parked; none arm.
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  int emitted = 0;
+  for (int i = 0; i < 50; ++i) {
+    now += 110;  // past feedback_ms every iteration
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    auto o = vrx.step(now, ld, healthy());
+    if (o && !o->is_disc) {
+      ++emitted;
+      CHECK(!vrx.poll_repeat(now + 500).has_value());
+    }
+  }
+  CHECK(emitted >= 10);
+}
+
+TEST(rcf_repeat_copies_zero_disables) {
+  VrxCfg cfg;
+  cfg.vtx_id = 1;
+  cfg.ladder = fast_promote_ladder();
+  cfg.rcf_repeat_copies = 0;
+  VrxController vrx(cfg);
+  double now = 0;
+  REQUIRE(drive_to_promote(vrx, now).has_value());
+  CHECK(!vrx.poll_repeat(now + 1000).has_value());
+}
+
+// A second op change mid-burst supersedes the first burst: exactly `copies`
+// fresh repeats, all carrying the NEW command.
+TEST(rcf_repeat_restart_on_new_change_mid_burst) {
+  auto vrx = make(fast_promote_ladder());
+  double now = 0;
+  auto promote = drive_to_promote(vrx, now);
+  REQUIRE(promote.has_value());
+  // Drain one repeat of the promote burst.
+  REQUIRE(vrx.poll_repeat(now + 10).has_value());
+
+  // Force a demote back to rung 0; its committing RCF re-arms the burst.
+  std::array<uint8_t, 4> ld{100, 100, 100, 100};
+  LinkHealth lossy{true, 0.0, 0.2, false};
+  std::optional<VrxController::Out> out;
+  for (int i = 0; i < 60 && vrx.ctl().rung() != 0; ++i) {
+    now += 110;
+    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    auto o = vrx.step(now, ld, lossy);
+    if (o && !o->is_disc) out = o;
+  }
+  REQUIRE(vrx.ctl().rung() == 0);
+  REQUIRE(out.has_value());
+  auto commit = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+  REQUIRE(commit.has_value());
+  CHECK(commit->profile != promote->profile);
+
+  int drained = 0;
+  for (int k = 1; k <= 10; ++k) {
+    auto f = vrx.poll_repeat(now + 10.0 * k);
+    if (!f) break;
+    auto r = mabur::rc::parse_rcf(f->data(), f->size());
+    REQUIRE(r.has_value());
+    CHECK(r->profile == commit->profile);  // new command, not the stale promote
+    ++drained;
+  }
+  CHECK(drained == 3);
+}

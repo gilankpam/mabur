@@ -244,6 +244,8 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
   vcfg.pin_overhead = cfg.link.static_overhead;
+  vcfg.rcf_repeat_copies = cfg.link.rcf_repeat_copies;
+  vcfg.rcf_repeat_ms = cfg.link.rcf_repeat_ms;
   maburgs::VrxController vrx(vcfg);
 
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
@@ -318,6 +320,9 @@ static int run_radio(const maburgs::Config& cfg) {
   int last_marked_op_mcs = -1;
   double last_marked_op_ov = -1.0;
   int last_marked_s3_mcs = -1;
+  // Card the last real RCF/DISC emission went out on; repeat-burst copies
+  // reuse it instead of re-running the selector between emissions.
+  int last_tx_card = 0;
   // Change-detect on ctl().last_event(): initialize to the pre-any-event
   // default (t_ms 0) so boot doesn't print a phantom transition line.
   double last_ctl_event_ms = vrx.ctl().last_event().t_ms;
@@ -659,8 +664,19 @@ static int run_radio(const maburgs::Config& cfg) {
             t.last_frame_us});
       }
       const int tx = sel.update(snaps, now_ms_u * 1000);
+      last_tx_card = tx;
       fronts[static_cast<size_t>(tx)]->send_control(out->frame);
     }
+    // RCF repeat burst drain (rcf-uplink-loss findings 2026-08-14): extra
+    // copies of an op-CHANGING RCF, spaced rcf_repeat_ms, so the drone's
+    // 30-50% half-duplex uplink loss doesn't cost a feedback_ms quantum
+    // per lost command. Deliberately OUTSIDE the step() block above:
+    // repeats are re-sends, not feedback boundaries, so they must not
+    // reset the decoder window ("window == RCF period" holds for step()
+    // emissions only) and they reuse the card the last real emission
+    // selected rather than re-running the selector.
+    while (auto rf = vrx.poll_repeat(now_ms))
+      fronts[static_cast<size_t>(last_tx_card)]->send_control(*rf);
     // ctl: rung transition line — load-bearing for post-mortems (Task 6
     // adds the sideport link.ctl block; this stderr line is independent of
     // it and persists in /tmp/maburgs.log even when no sideport consumer is

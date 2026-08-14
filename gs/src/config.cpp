@@ -131,9 +131,19 @@ Config load_config(const std::string& path) {
                 "starved_confirm_ms", "probe_ms", "probe_settle_ms", "probe_max_util",
                 "probe_s3_min_syms", "probe_s3_silence_ms", "s3_demote", "s3_down_util",
                 "s3_residual_confirm_ms", "s3_settle_ms", "ctl_log", "ctl_log_dir",
-                "attrib", "rung_stats", "fade"});
+                "attrib", "rung_stats", "fade",
+                "rcf_repeat_copies", "rcf_repeat_ms"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
+    c.link.rcf_repeat_copies = static_cast<int>(get_int(r, "rcf_repeat_copies", 3, 0, 16, "link"));
+    c.link.rcf_repeat_ms = static_cast<int>(get_int(r, "rcf_repeat_ms", 10, 1, 1000, "link"));
+    // The repeat burst must fit inside one feedback period, or repeats
+    // overlap the next regular RCF slot and silently raise the steady-state
+    // control rate (same stance as the drone's rc_drain_ms <= tick_ms).
+    if (c.link.rcf_repeat_copies > 0 &&
+        c.link.rcf_repeat_copies * c.link.rcf_repeat_ms >= c.link.feedback_ms)
+      fail("link.rcf_repeat_ms",
+           "rcf_repeat_copies * rcf_repeat_ms must be < feedback_ms");
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
     c.link.static_mcs = static_cast<int>(get_int(r, "static_mcs", -1, -1, 7, "link"));
     c.link.static_overhead = get_num(r, "static_overhead", 0.25, 0.10, 1.0, "link");
