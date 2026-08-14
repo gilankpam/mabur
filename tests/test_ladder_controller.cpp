@@ -60,6 +60,28 @@ LinkHealth ok3(double pre, double s3_pre = 0.0, double s3_resid = 0.0) {
   return h;
 }
 
+// Healthy sample with RF labels for the fade trigger.
+LinkHealth rf(double pre, double snr_db, double rssi_dbm) {
+  LinkHealth h = ok(pre);
+  h.s1_snr_db = snr_db;
+  h.s1_rssi_dbm = rssi_dbm;
+  return h;
+}
+
+// Feeds dt_total ms of steady RF at a 50 ms cadence so the fade EWMAs settle
+// on a baseline. Utilization is neutral (0.3 — above up_util, below down_util)
+// so the window itself provokes neither a promote nor a demote: a baseline fed
+// at u == 0 accrues a clean window and promotes out from under the test
+// clean_ms after it starts. Feed at least probation_ms to also retire the
+// preceding promote's probation.
+void fade_baseline(LadderController& ctl, double& t, double dt_total,
+                   double snr_db, double rssi_dbm) {
+  const double end = t + dt_total;
+  for (; t < end; t += 50) {
+    ctl.update(rf(0.3 * ctl.budget(), snr_db, rssi_dbm), t);
+  }
+}
+
 int penalty_ms_for(const LadderController& ctl, double now_ms, int rung) {
   for (const auto& pr : ctl.penalized(now_ms)) {
     if (pr.first == rung) return pr.second;
@@ -962,4 +984,147 @@ TEST(fade_cascade_kill_switch_is_legacy) {
   // label stays truthful about what the link is doing.
   CHECK(ctl.fade_active(d2));
   CHECK(!ctl.fade_active(d2 + cfg.fade.hold_ms));
+}
+
+// --- Part B: predictive fade trigger (spec 2026-08-14 section 3) ---
+
+TEST(fade_predict_fires_on_joint_ramp) {
+  LadderCfg cfg = make_cfg();
+  // Keep rung 3's probation open across the whole test so the "no penalty
+  // path" assertions below are load-bearing: a fade demote booked like the
+  // residual/util ones would charge a probation failure and penalize the rung.
+  cfg.probation_ms = 8000;
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  // Establish baselines: 3 s of steady RF.
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.probation_ms_left(t) > 0);
+  const auto before = ctl.counters();
+  // Joint fade: RSSI -12 dB, SNR -6 dB — over both thresholds (8/4) once the
+  // fast EWMA (tau 300 ms) catches up; must fire with reason fade.
+  bool fired = false;
+  double fire_t = -1;
+  const double fade_start = t;
+  for (double end = t + 2000; t < end && !fired; t += 50)
+    if (ctl.update(rf(0.0, 27.0, -67.0), t)) { fired = true; fire_t = t; }
+  REQUIRE(fired);
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.last_event().reason == CtlReason::Fade);
+  CHECK(ctl.counters().demotes_fade == before.demotes_fade + 1);
+  CHECK(ctl.counters().probation_fails == before.probation_fails);  // no penalty path
+  CHECK(ctl.penalized(t).empty());
+  // Sustain requirement: cannot fire before trigger_ms (300) of sustained
+  // over-threshold, and the fast EWMA needs ~2-3 taus to cross — so the
+  // fire lands well after fade_start + trigger_ms.
+  CHECK(fire_t - fade_start >= cfg.fade.trigger_ms);
+  // Regime armed by the fade demote:
+  CHECK(ctl.fade_active(t));
+}
+
+TEST(fade_predict_requires_both_signals) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // RSSI-only drop: never fires.
+  for (double end = t + 2000; t < end; t += 50)
+    CHECK(!ctl.update(rf(0.0, 33.0, -70.0), t));
+  CHECK(ctl.rung() == 3);
+  // SNR-only drop: never fires.
+  for (double end = t + 2000; t < end; t += 50)
+    CHECK(!ctl.update(rf(0.0, 25.0, -55.0), t));
+  CHECK(ctl.rung() == 3);
+}
+
+TEST(fade_predict_nan_breaks_sustain_run) {
+  LadderCfg cfg = make_cfg();
+  cfg.fade.trigger_ms = 300;
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // Joint fade but a NaN window every 200 ms: the 300 ms sustain can never
+  // complete, so it never fires.
+  int i = 0;
+  for (double end = t + 3000; t < end; t += 50, ++i) {
+    LinkHealth h = (i % 4 == 3) ? ok(0.0)  // NaN RF fields (ok() leaves them NaN)
+                                 : rf(0.0, 27.0, -67.0);
+    CHECK(!ctl.update(h, t));
+  }
+  CHECK(ctl.rung() == 3);
+}
+
+TEST(fade_predict_gates_min_rung_and_kill_switch) {
+  LadderCfg cfg = make_cfg();
+  cfg.fade.min_rung = 3;
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);  // below min_rung
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  for (double end = t + 2000; t < end; t += 50)
+    CHECK(!ctl.update(rf(0.0, 27.0, -67.0), t));
+  CHECK(ctl.rung() == 2);
+
+  LadderCfg cfg2 = make_cfg();
+  cfg2.fade.predict = false;
+  LadderController ctl2(cfg2);
+  double t2 = 0;
+  promote_to(ctl2, t2, 3);
+  fade_baseline(ctl2, t2, 3200, 33.0, -55.0);
+  REQUIRE(ctl2.probation_ms_left(t2) == 0);
+  for (double end = t2 + 2000; t2 < end; t2 += 50)
+    CHECK(!ctl2.update(rf(0.0, 27.0, -67.0), t2));
+  CHECK(ctl2.rung() == 3);
+}
+
+TEST(fade_demote_aborts_running_probe) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  // Establish RF baselines while ALSO feeding s3/probe-capable health, then
+  // ride the clean path until a probe starts (the promote gate probes when
+  // probe_allowed && s3 usable && candidate PHY differs — same recipe the
+  // file's existing probe tests use; reuse ok3() and set the RF fields).
+  // The util here is deliberately clean (unlike fade_baseline's neutral 0.3):
+  // this test NEEDS the clean window that arms the probe.
+  auto rf3 = [&](double snr, double rssi) {
+    LinkHealth h = ok3(0.0);
+    h.s1_snr_db = snr;
+    h.s1_rssi_dbm = rssi;
+    return h;
+  };
+  for (double end = t + 3000; t < end; t += 50) ctl.update(rf3(33.0, -55.0), t);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  while (!ctl.probing()) { ctl.update(rf3(33.0, -55.0), t); t += 50; REQUIRE(t < 1e6); }
+  const auto before = ctl.counters();
+  // Joint fade while the probe is up: the fade demote must win and abort it.
+  bool fired = false;
+  for (double end = t + 2000; t < end && !fired; t += 50)
+    if (ctl.update(rf3(27.0, -67.0), t)) fired = true;
+  REQUIRE(fired);
+  CHECK(ctl.last_event().reason == CtlReason::Fade);
+  CHECK(!ctl.probing());
+  CHECK(ctl.counters().probe_aborts == before.probe_aborts + 1);
+  CHECK(ctl.counters().probe_fails == before.probe_fails);  // abort, not fail
+}
+
+TEST(fade_baseline_asymmetry_survives_3s_fade) {
+  LadderCfg cfg = make_cfg();
+  cfg.fade.min_rung = 99;  // block firing; test the EWMAs only
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  fade_baseline(ctl, t, 5000, 33.0, -55.0);
+  // 3 s deep fade: baseline (fall tau 20 s) must NOT erode below threshold —
+  // delta stays >= rssi_db the whole time after the fast EWMA settles.
+  t += 50;
+  for (double end = t + 3000; t < end; t += 50) ctl.update(rf(0.0, 27.0, -67.0), t);
+  CHECK(ctl.fade_drssi() >= cfg.fade.rssi_db);
+  CHECK(ctl.fade_dsnr() >= cfg.fade.snr_db);
 }

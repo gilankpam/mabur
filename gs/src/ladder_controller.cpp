@@ -22,6 +22,7 @@ const char* to_string(CtlReason r) {
     case CtlReason::Promote: return "promote";
     case CtlReason::S3Residual: return "s3_residual";
     case CtlReason::S3Util: return "s3_util";
+    case CtlReason::Fade: return "fade";
   }
   return "unknown";
 }
@@ -283,6 +284,50 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     fade_until_ms_ = now_ms + cfg_.fade.hold_ms;
     set_event(now_ms, from, idx_, CtlReason::Residual, u_, snr_now_);
     return true;
+  }
+
+  // 4b. Part B: predictive fade demote. Both signals must drop together,
+  // sustained continuously — a window where either condition fails OR either
+  // signal is NaN breaks the run (errs toward not demoting). Fires at most
+  // one rung; the regime (Part A) carries the cascade from there on
+  // measured pressure. Never books probation-fail or penalty: this is
+  // rung-independent RF evidence, not proof the rung was marginal.
+  // Ordering is a spec contract: after block 4 (residual wins the tick) and
+  // before 5a (fade beats the confirm-window tiers).
+  if (!std::isnan(h.s1_rssi_dbm)) fade_rssi_.feed(h.s1_rssi_dbm, now_ms);
+  if (!std::isnan(h.s1_snr_db)) fade_snr_.feed(h.s1_snr_db, now_ms);
+  if (cfg_.fade.predict) {
+    const bool measurable =
+        !std::isnan(h.s1_rssi_dbm) && !std::isnan(h.s1_snr_db) &&
+        fade_rssi_.has && fade_snr_.has;
+    const bool over = measurable && fade_rssi_.delta() >= cfg_.fade.rssi_db &&
+                      fade_snr_.delta() >= cfg_.fade.snr_db;
+    if (!over) {
+      fade_trig_start_ms_ = -1.0;
+    } else {
+      if (fade_trig_start_ms_ < 0.0) fade_trig_start_ms_ = now_ms;
+      if (idx_ > 0 && idx_ >= cfg_.fade.min_rung &&
+          now_ms - fade_trig_start_ms_ >= cfg_.fade.trigger_ms &&
+          now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
+        // Demotes always win over a probe.
+        if (probe_active_) {
+          ++counters_.probe_aborts;
+          end_probe(ProbeOutcome::Abort, 0.0, now_ms);
+        }
+        const int from = idx_;
+        probation_active_ = false;  // cleared, but NO probation-fail booked
+        idx_ = from - 1;
+        last_down_ms_ = now_ms;
+        last_change_ms_ = now_ms;
+        reset_windows();
+        mark_transition(now_ms);
+        fade_until_ms_ = now_ms + cfg_.fade.hold_ms;  // enter the regime
+        ++counters_.demotes_fade;
+        set_event(now_ms, from, idx_, CtlReason::Fade, u_, snr_now_);
+        fade_trig_start_ms_ = -1.0;
+        return true;
+      }
+    }
   }
 
   // 5a. s3 steady-state measurement and early warning: s3's smaller FEC

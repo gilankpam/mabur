@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -69,8 +71,8 @@ struct LadderCfg {
   // --- per-rung EWMA store (spec 2026-08-13, observe-only) ---
   RungStoreCfg rung_stats;
 
-  // --- fade-aware demotes (spec 2026-08-14). cascade/hold_ms/confirm_ms are
-  // live (Part A); the predictive-trigger keys are still config-only. ---
+  // --- fade-aware demotes (spec 2026-08-14): cascade/hold_ms/confirm_ms
+  // (Part A) and the predictive trigger (Part B) are all live. ---
   FadeCfg fade;
 };
 
@@ -89,19 +91,24 @@ struct LinkHealth {
   double s3_pre_fec_loss = 0.0;   // s3 missing/expected over the window
   double s3_residual_loss = 0.0;  // abandoned/expected over the window
   uint64_t s3_expected_syms = 0;  // expected s3 symbols in the window
-  // Label only: never a decision input, carried onto CtlEvent/ProbeEvent so
-  // the ctl log can say what the RF looked like when a decision fired. NaN
-  // is a legal value (no SNR known this window).
+  // Carried onto CtlEvent/ProbeEvent so the ctl log can say what the RF
+  // looked like when a decision fired, AND — since the Part B predictive fade
+  // trigger (spec 2026-08-14) — a decision input in its own right. NaN is a
+  // legal value (no SNR known this window) and leaves the trigger inert.
   double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
   bool probe_allowed = false;  // peer advertised CAP_S3_PROBE
-  // Label only, same contract as s1_snr_db: the s1 EVM (dB) of the card
-  // that supplied s1_snr_db. NaN when unsampled.
+  // Label only: the s1 EVM (dB) of the card that supplied s1_snr_db. NaN when
+  // unsampled. Deliberately NOT a decision input — raw EVM is
+  // op-point-dependent (docs/evm-sweep-findings-2026-08-10.md).
   double s1_evm_db = std::numeric_limits<double>::quiet_NaN();
+  // s1 RSSI (dBm) of the same card, the second half of the Part B fade
+  // trigger's joint condition. NaN = unsampled, which leaves it inert.
+  double s1_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
 };
 
 enum class CtlReason {
   None, Residual, Util, Probation, Starved, Timeout, Promote,
-  S3Residual, S3Util
+  S3Residual, S3Util, Fade
 };
 const char* to_string(CtlReason r);
 
@@ -143,6 +150,7 @@ struct CtlCounters {
   uint64_t probes_started = 0, probes_ok = 0, probe_fails = 0,
            probe_aborts = 0;
   uint64_t demotes_s3_residual = 0, demotes_s3_util = 0;
+  uint64_t demotes_fade = 0;
 };
 
 // Measured-loss ladder controller: walks a fixed, pre-filtered list of rungs
@@ -202,6 +210,11 @@ class LadderController {
   // what the link is doing even when the cascade effect is killed.
   bool fade_active(double now_ms) const { return now_ms < fade_until_ms_; }
 
+  // Fade-trigger deltas (baseline - fast; the threshold-tuning surface for
+  // the sideport). NaN until the corresponding signal has ever been sampled.
+  double fade_drssi() const { return fade_rssi_.delta(); }
+  double fade_dsnr() const { return fade_snr_.delta(); }
+
   const CtlCounters& counters() const { return counters_; }
   const CtlEvent& last_event() const { return last_event_; }
   const ProbeEvent& last_probe() const { return last_probe_; }
@@ -237,6 +250,29 @@ class LadderController {
     return in_fade_regime(now_ms) ? cfg_.fade.confirm_ms
                                   : cfg_.s3_residual_confirm_ms;
   }
+
+  // --- Part B predictive fade trigger (spec 2026-08-14 §3) ---
+  // Dual-timescale EWMA per RF signal. Time-constant form (per-sample alpha
+  // from dt) so 50 ms and 100 ms feedback configs behave identically. The
+  // baseline is asymmetric: rises fast (tau 2 s), falls slowly (tau 20 s) —
+  // a 3 s fade must not drag its own baseline down and erase the delta.
+  // Taus are structural constants, not config.
+  struct FadeEwma {
+    double fast = 0.0, slow = 0.0, last_ms = 0.0;
+    bool has = false;
+    void feed(double v, double now_ms) {
+      if (!has) { fast = slow = v; last_ms = now_ms; has = true; return; }
+      const double dt = std::max(1.0, now_ms - last_ms);
+      last_ms = now_ms;
+      fast += (1.0 - std::exp(-dt / 300.0)) * (v - fast);
+      const double tau = v >= slow ? 2000.0 : 20000.0;
+      slow += (1.0 - std::exp(-dt / tau)) * (v - slow);
+    }
+    double delta() const {  // baseline - current level; NaN before first sample
+      return has ? slow - fast : std::numeric_limits<double>::quiet_NaN();
+    }
+  };
+
   void start_probe(int rung, double now_ms);
   void end_probe(ProbeOutcome oc, double u_pred, double now_ms);
   // Every rung change and every probe start/end: blank s3-derived decisions
@@ -259,8 +295,12 @@ class LadderController {
   double clean_start_ms_ = -1.0;    // -1 = no active under-up_util window
 
   // Fade regime expiry: armed to now + fade.hold_ms by every loss-driven
-  // demote (residual / util / s3_residual / s3_util). -1e18 = never armed.
+  // demote (residual / util / s3_residual / s3_util) and by the predictive
+  // fade demote itself. -1e18 = never armed.
   double fade_until_ms_ = -1e18;
+
+  FadeEwma fade_rssi_, fade_snr_;
+  double fade_trig_start_ms_ = -1.0;  // -1 = no sustained run
 
   bool probation_active_ = false;
   double probation_until_ms_ = -1e18;
