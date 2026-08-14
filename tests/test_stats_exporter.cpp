@@ -801,6 +801,11 @@ TEST(exporter_ctl_fade_block_and_counter) {
   CHECK(j["link"]["ctl"]["counters"]["demotes_fade"] == 4);
   CHECK(j["link"]["ctl"]["fade"]["active"] == true);
   CHECK(j["link"]["ctl"]["fade"]["drssi"] == 9.5);
+  // is_null() alone is non-discriminating here: non-const operator[] on a
+  // missing key auto-vivifies it to null and returns it, so a dropped
+  // emit line would read back the same as an emitted null. contains()
+  // pins that the key was actually put on the wire.
+  CHECK(j["link"]["ctl"]["fade"].contains("dsnr"));
   CHECK(j["link"]["ctl"]["fade"]["dsnr"].is_null());
 }
 
