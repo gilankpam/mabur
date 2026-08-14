@@ -103,6 +103,16 @@ struct StatsCtlIn {
 
   // Per-rung EWMA store snapshot, index = rung index (spec 2026-08-13).
   std::vector<StatsRungIn> rungs;
+
+  // --- fade-aware demotes (spec 2026-08-14) ---
+  // demotes_fade counts fade EVENTS that produced a step, not rungs lost to
+  // fade: the predictive trigger latches to exactly one demote per fade
+  // event and re-arms only on an observed recovery (both deltas measurably
+  // back under threshold).
+  uint64_t demotes_fade = 0;
+  bool fade_active = false;          // regime state (raw, cascade-independent)
+  double fade_drssi = 0.0;           // baseline-minus-fast deltas; NaN -> null
+  double fade_dsnr = 0.0;
 };
 
 struct StatsInput {

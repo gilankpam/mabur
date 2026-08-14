@@ -970,6 +970,7 @@ def _ladder_footer_rows(ctl, t_ms):
     c = ctl.get("counters") or {}
     line3 = (f" ↑{_s(c.get('promotes'))} ↓res{_s(c.get('demotes_residual'))}"
              f" ↓util{_s(c.get('demotes_util'))}"
+             f" ↓fade{_s(c.get('demotes_fade'))}"
              f" prob✗{_s(c.get('probation_fails'))}"
              f" stv{_s(c.get('starved_drops'))} to{_s(c.get('timeout_drops'))}")
     return [(line1, spans1), (line2, spans2), (line3, [])]
@@ -990,6 +991,10 @@ def panel_ladder(model, wall):
     if at:
         state = "on" if at.get("on") else "OFF"
         body.append((f" attrib:{state} sup{_s(at.get('suppressed'))}", []))
+    fade = (ctl or {}).get("fade") or {}
+    if fade.get("active"):
+        body.append((" fade:ACTIVE"
+                     f" drssi{_s(fade.get('drssi'), 1)} dsnr{_s(fade.get('dsnr'), 1)}", []))
     return _panel("LADDER", body, min_width=34)
 
 
