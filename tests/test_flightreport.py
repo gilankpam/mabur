@@ -469,9 +469,51 @@ def test_ctllog_r_lines_and_inversion():
         os.unlink(path)
 
 
+def _mk_e(t, frm, to, reason):
+    return {"t_ms": float(t), "from": frm, "to": to, "reason": reason,
+            "u": 0.0, "snr_db": 30.0, "evm_db": float("nan")}
+
+
+def test_find_episodes_clusters_and_first_reason():
+    E = [
+        _mk_e(1000, 5, 4, "fade"),
+        _mk_e(1200, 4, 3, "util"),
+        _mk_e(1400, 3, 2, "residual"),
+        _mk_e(9000, 2, 3, "promote"),
+        _mk_e(20000, 3, 2, "residual"),
+    ]
+    eps = flightreport.find_episodes(E)
+    assert len(eps) == 2
+    assert eps[0]["first_reason"] == "fade"
+    assert eps[0]["steps"] == 3
+    assert eps[0]["path"] == (5, 2)
+    assert eps[0]["fade_lead_ms"] == 200.0  # 1200 - 1000
+    assert eps[1]["first_reason"] == "residual"
+    assert eps[1]["fade_lead_ms"] is None
+
+
+def test_false_fade_and_attribution_miss():
+    E = [
+        _mk_e(1000, 5, 4, "fade"),          # false fade (episode is fade-only)
+        _mk_e(8000, 4, 5, "promote"),
+        _mk_e(20000, 5, 4, "util"),
+        _mk_e(20150, 4, 3, "residual"),      # within 200 ms of previous E -> canary
+        _mk_e(30000, 3, 2, "residual"),      # isolated -> not a canary hit
+    ]
+    eps = flightreport.find_episodes(E)
+    false_fades = [e for e in eps if e["false_fade"]]
+    assert len(false_fades) == 1
+    assert false_fades[0]["repromote_ms"] == 7000.0
+    misses = flightreport.attribution_misses(E)
+    assert len(misses) == 1
+    assert misses[0]["t_ms"] == 20150.0
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_ctllog_evm_optional_trailing_token()
     test_wall_report()
     test_ctllog_r_lines_and_inversion()
+    test_find_episodes_clusters_and_first_reason()
+    test_false_fade_and_attribution_miss()
