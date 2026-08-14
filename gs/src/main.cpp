@@ -292,6 +292,12 @@ static int run_radio(const maburgs::Config& cfg) {
   // same machinery, fed from the attributed counters. The originals stay
   // as the observability totals and the link.attrib=false decision path.
   maburgs::S1LossWindow s1_loss_cur, s3_loss_cur, s3_resid_cur;
+  // Fade-trigger staleness gate (spec 2026-08-14 §3): per-card s1-class
+  // frame counts snapshotted once per feedback window (same cadence as
+  // reset_window()), so "zero s1 frames this window" can NaN the RF labels
+  // before they reach the controller. A frozen EMA must never read as a
+  // live signal.
+  std::vector<uint64_t> prev_s1_cls_frames(static_cast<size_t>(n_cards), 0);
   // Windows where total residual was positive but attributed residual was
   // zero at a rung > 0 — i.e. windows where the legacy instant demote
   // would have fired on pure debris. THE headline artifact-rate number.
@@ -578,6 +584,26 @@ static int run_radio(const maburgs::Config& cfg) {
       if (ct.evm_has) s1_evm_db = ct.evm_ema * maburgs::kEvmRawToDb;
     }
 
+    double s1_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
+    if (s1_best_card >= 0) {
+      const auto& ct =
+          agg.card(s1_best_card).cls[static_cast<size_t>(maburgs::RfClass::S1)];
+      const bool fresh =
+          ct.frames > prev_s1_cls_frames[static_cast<size_t>(s1_best_card)];
+      if (!fresh) {
+        // Zero s1 frames since the last feedback window: every s1 RF label
+        // is a frozen EMA, not a measurement. NaN all three (snr/evm were
+        // filled by the existing code above).
+        s1_snr_db = std::numeric_limits<double>::quiet_NaN();
+        s1_evm_db = std::numeric_limits<double>::quiet_NaN();
+      } else {
+        // dBm from the same card that supplied the SNR label (coherent
+        // single-card snapshot); raw - 110 is the exporter's own conversion
+        // (stats_exporter.cpp rssi keys).
+        s1_rssi_dbm = ct.rssi_ema - 110.0;
+      }
+    }
+
     // link.attrib=true: the controller judges the rung it is on — every
     // demote input reads the CURRENT-rung (attributed) value; stale
     // transition debris can no longer fire any demote. false: the legacy
@@ -603,6 +629,7 @@ static int run_radio(const maburgs::Config& cfg) {
     health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
     health.s1_snr_db = s1_snr_db;
     health.s1_evm_db = s1_evm_db;
+    health.s1_rssi_dbm = s1_rssi_dbm;
     // Artifact-rate meter: a window the legacy instant demote would have
     // acted on (total residual > 0, rung > 0) that the attributed view
     // reads clean. Counted regardless of the switch so an attrib=false
@@ -616,7 +643,14 @@ static int run_radio(const maburgs::Config& cfg) {
     attrib_suppressed_latched = attrib_suppressed_now;
 
     if (auto out = vrx.step(now_ms, ld, health)) {
-      if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period
+      if (!out->is_disc) {
+        agg.decoder().reset_window();  // window == RCF period
+        // The RF staleness window and the loss window MUST share this
+        // boundary: both are "since the last health the controller acted on".
+        for (int i = 0; i < n_cards; ++i)
+          prev_s1_cls_frames[static_cast<size_t>(i)] =
+              agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)].frames;
+      }
       std::vector<maburgs::CardSnapshot> snaps;
       for (int i = 0; i < n_cards; ++i) {
         const auto& t = agg.card(i);
