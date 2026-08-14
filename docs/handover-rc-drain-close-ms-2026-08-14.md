@@ -3,12 +3,15 @@
 2026-08-14, end of session. Branch `fade-demote`, PR #29 (open, not merged).
 Both daemons deployed to the bench and left running on the new binaries.
 
-**Status: OPEN. The feature is deployed, harmless, and unproven.** Part C's
-entire justification is a latency reduction that did not appear in the one
-measurement taken. Nothing is broken — video is clean, the hot thread is
-fine — but the claim in the PR description and in CLAUDE.md is currently
-unsupported by hardware data, and should not be repeated as fact until
-someone closes this out.
+**Status: RESOLVED 2026-08-14 (same day, follow-up session) — see
+`docs/rcf-uplink-loss-findings-2026-08-14.md`.** The drain was verified
+running at 5 ms on the device (check #1 below, done via /proc, no
+instrumentation needed), and the missing improvement is real but not
+Part C's fault: 30–50% of uplink RCFs are lost to the drone's own
+half-duplex TX airtime (CCA is off), so actuation waits in 50 ms
+`feedback_ms` quanta for a retransmitted RCF. close_ms at n=24 shows the
+fast path at 11–28 ms — Part C working — plus a geometric +50 ms ladder
+on top. The original text below is preserved as written.
 
 ## The claim
 
