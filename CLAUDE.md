@@ -59,7 +59,8 @@ with:
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
   file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 2` header (v1 before 2026-08-14) followed by compact S/E/P/N/R
+  default `/media/dvr`), a `ctllog 3` header (v1 before 2026-08-14, v2 for that day's
+first wave) followed by compact S/E/P/N/R
   lines (rung/state, ctl events, probe events, penalties, per-rung EWMA store snapshots). `flightreport.py`
   auto-detects this format alongside the jsonl format, so no separate
   invocation is needed. Tuning invariant: the controller's s3 loss/residual
@@ -80,12 +81,80 @@ into current-rung vs pre-transition debris, and all four demote inputs
 side, so a rung change's own FEC debris can no longer fire a follow-up
 demote. The sideport reports `link.attrib.suppressed` (windows where the
 legacy instant demote would have fired on pure debris — the live artifact
-rate) and `link.streams[].abandoned_stale`; the ctl log is `ctllog 2`
-(S line gained `resid_cur`; `resid` stays the total). `flightreport.py`
-parses both versions. Date recordings against this line: pre-2026-08-14
+rate) and `link.streams[].abandoned_stale`; the ctl log went `ctllog 1` →
+`ctllog 2` (S line gained `resid_cur`; `resid` stays the total).
+`flightreport.py` parses every version. Date recordings against this
+line: pre-2026-08-14
 residual/util figures include transition debris that later recordings
 attribute away. `link.attrib: false` reverts the decisions (not the
 bookkeeping) to the old totals.
+
+**Since 2026-08-14 (same day, second wave) demotes are fade-aware.** Two
+independent pieces, both default-on, both killable, and the whole
+`link.fade` block is optional with working defaults. `link.fade.cascade`
+arms a 2.5 s fade regime (`hold_ms`) on every loss-driven demote —
+residual, s3 residual, s3 util, confirmed util, and a fade demote itself,
+but NOT probation, starved or timeout — inside which the demote confirm
+windows drop 250/500 ms to 100 ms (`confirm_ms`), so a real fade steps
+down at fade speed rather than at steady-state speed.
+`link.fade.predict` adds an RF trigger ahead of any loss: both −8 dB RSSI
+(`rssi_db`) AND −4 dB SNR (`snr_db`) below their slow baselines, sustained
+`trigger_ms` (300 ms), demotes one rung with reason `fade`. Those
+baselines are a dual-timescale EWMA — fast tau 300 ms, slow tau
+asymmetric at 2 s rising / 20 s falling; structural constants, not config
+— so a multi-second fade cannot drag its own baseline down and erase its
+own delta. Three things to know before reading any of it: (i) the
+predictive trigger is LATCHED — exactly ONE predictive demote per fade
+EVENT, and the latch releases only on an *observed* recovery, a tick where
+both deltas are measurably back under threshold. A NaN window (absent
+evidence) deliberately does NOT release it, so further steps during a
+continuing fade are the cascade's job, on measured loss at the shortened
+in-regime confirms; `link.ctl.counters.demotes_fade` therefore counts fade
+events that produced a step, not rungs lost to fade. (ii)
+`link.fade.min_rung` (default 2) is the lowest rung the trigger fires
+FROM, not a floor — the effective floor is `min_rung - 1`, so the shipped
+default can land the link on rung 1. (iii) fade demotes are RF evidence,
+not rung evidence: they never book a probation failure or a penalty and
+never count in the RungStore's `exits_bad`.
+
+Observability for that wave: the sideport adds `link.ctl.fade` = {active,
+drssi, dsnr} plus `counters.demotes_fade` (additive under `v: 1`;
+drssi/dsnr serialize as `null` when NaN). `fade.active` is the RAW regime
+state and is deliberately NOT gated on `cascade`, so the regime stays
+visible with the cascade killed. The ctl log went `ctllog 2` → `ctllog 3`,
+the S line gaining `drssi dsnr` after `resid_cur`; `flightreport.py`
+parses v1, v2 and v3 and gained an episode analyzer (`find_episodes()`,
+`print_episode_report()`): first-demote reason per episode, fade lead
+times, false fades with time-to-repromote, plus an attribution-miss canary
+(`attribution_misses()` — a `residual` demote within 200 ms of any
+previous transition, which should be ~zero with `link.attrib` on). The
+jsonl branch also prints the flight-wide `link.attrib.suppressed` delta.
+⚠ The s1 RF labels are now freshness-gated per card
+(`gs/src/s1_labels.h`, `select_s1_label_card()`, unit-tested in
+`tests/test_s1_labels.cpp`): the best-card argmax only considers cards
+whose s1 frame count advanced in the current feedback window, so
+`s1_snr_db`, `s1_evm_db` and `s1_rssi_dbm` read NaN — and the ctl log
+prints `nan` — whenever no card measured s1 that window, where a frozen
+EMA previously printed a stale-but-present number. Because `s1_evm_db`
+now NaNs on stale windows, per-rung EVM sample counts in the RungStore
+drop on a marginal link: that is a deliberate honesty improvement, but it
+means EVM sample counts are NOT comparable across this date.
+
+On the drone, RCF drain is decoupled from the agent tick
+(`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop
+wakes every `rc_drain_ms` to drain queued RC frames, with ALL per-tick
+housekeeping (USB health polls, `RcAgent::tick()`, watchdog, 1 Hz
+stats/telem) behind a `TickGate` deadline so its cadence is bit-for-bit
+unchanged, and `rc_drain_ms >= tick_ms` reproduces the legacy loop
+exactly. Op actuation used to be U(0, `tick_ms` = 100) ms, and
+`link.attrib.close_ms` measured a ~110 ms median with tails at 295 and
+971 ms. Re-measure `close_ms` after deploying maburd — a median ≤30 ms is
+the expectation to verify, not a result: nothing in this wave has been
+validated on hardware. Deploy is migration-free in both directions
+because `link.fade` and `link.rc_drain_ms` are optional with live
+defaults, and `bundle/mabur.default.json` deliberately does NOT list
+`rc_drain_ms` and must not — adding it would make new-config/old-binary
+an `unknown key`, i.e. the 2 s crash-loop described further down.
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
