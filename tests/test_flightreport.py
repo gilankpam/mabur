@@ -396,6 +396,25 @@ def test_s_line_resid_cur_parsed_and_absent_is_nan():
     assert math.isnan(log["S"][1]["resid_cur"])
 
 
+def test_s_line_fade_deltas_parsed_and_absent_nan():
+    """drssi/dsnr (ctllog 3, 2026-08-14 fade-trigger deltas) parse on a
+    v3-shaped S line and default to nan on a v2-shaped one (backward
+    compatibility)."""
+    text = (
+        "ctllog 3 ladder=5/25 down_util=0.60 up_util=0.15\n"
+        "S 1000 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011 9.5 4.2\n"
+        "S 2000 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011\n"  # v2 line
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_20260814.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert log["S"][0]["drssi"] == 9.5
+    assert log["S"][0]["dsnr"] == 4.2
+    assert math.isnan(log["S"][1]["drssi"])
+    assert math.isnan(log["S"][1]["dsnr"])
+
+
 def test_wall_report():
     """Direct-invocation pattern (matches the siblings above): write the
     CTL_LOG fixture to a temp file, capture flightreport's stdout, and check

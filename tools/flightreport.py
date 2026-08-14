@@ -66,6 +66,9 @@ def load_ctllog(path):
                         "evm_db": float(toks[8]) if len(toks) >= 9 else float("nan"),
                         # 2026-08-14 attribution (ctllog 2); absent on older logs.
                         "resid_cur": float(toks[9]) if len(toks) >= 10 else float("nan"),
+                        # 2026-08-14 fade deltas (ctllog 3); absent on older logs.
+                        "drssi": float(toks[10]) if len(toks) >= 12 else float("nan"),
+                        "dsnr": float(toks[11]) if len(toks) >= 12 else float("nan"),
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({
