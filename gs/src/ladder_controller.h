@@ -18,6 +18,18 @@ struct Rung {
   double overhead = 1.0;
 };
 
+// --- fade-aware demotes (spec 2026-08-14 fade-demote) ---
+struct FadeCfg {
+  bool cascade = true;   // regime cascade (Part A)
+  bool predict = true;   // predictive RSSI+SNR trigger (Part B)
+  int hold_ms = 2500;    // regime duration after a loss-driven demote
+  int confirm_ms = 100;  // in-regime replacement for confirm_ms / s3_residual_confirm_ms
+  double rssi_db = 8.0;  // baseline-minus-fast RSSI drop to trigger
+  double snr_db = 4.0;   // baseline-minus-fast SNR drop to trigger
+  int trigger_ms = 300;  // sustain requirement
+  int min_rung = 2;      // no predictive fires below this rung
+};
+
 struct LadderCfg {
   std::vector<Rung> ladder;  // effective (post-filter), size >= 1; [0] = failsafe
   double down_util = 0.6, up_util = 0.15;
@@ -56,6 +68,10 @@ struct LadderCfg {
 
   // --- per-rung EWMA store (spec 2026-08-13, observe-only) ---
   RungStoreCfg rung_stats;
+
+  // --- fade-aware demotes (spec 2026-08-14, config surface only in this
+  // task; nothing reads it until Tasks 2/3) ---
+  FadeCfg fade;
 };
 
 // One feedback sample: measured pre-FEC and residual (post-FEC) loss for the

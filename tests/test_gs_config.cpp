@@ -595,3 +595,51 @@ TEST(link_attrib_rejects_non_boolean) {
   }
   CHECK(threw);
 }
+
+// link.fade: config surface for fade-aware demotes (spec 2026-08-14
+// fade-demote). This task adds ONLY the config block; nothing consumes
+// cfg_.fade yet.
+TEST(link_fade_defaults) {
+  auto cfg = maburgs::load_config(write_tmp(R"({"link": {}})"));
+  CHECK(cfg.link.ladder_cfg.fade.cascade == true);
+  CHECK(cfg.link.ladder_cfg.fade.predict == true);
+  CHECK(cfg.link.ladder_cfg.fade.hold_ms == 2500);
+  CHECK(cfg.link.ladder_cfg.fade.confirm_ms == 100);
+  CHECK(cfg.link.ladder_cfg.fade.rssi_db == 8.0);
+  CHECK(cfg.link.ladder_cfg.fade.snr_db == 4.0);
+  CHECK(cfg.link.ladder_cfg.fade.trigger_ms == 300);
+  CHECK(cfg.link.ladder_cfg.fade.min_rung == 2);
+}
+
+TEST(link_fade_explicit_values_and_kill_switches) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link": {"fade": {"cascade": false, "predict": false,
+      "hold_ms": 1000, "confirm_ms": 50, "rssi_db": 6.0, "snr_db": 3.0,
+      "trigger_ms": 200, "min_rung": 1}}})"));
+  CHECK(cfg.link.ladder_cfg.fade.cascade == false);
+  CHECK(cfg.link.ladder_cfg.fade.predict == false);
+  CHECK(cfg.link.ladder_cfg.fade.hold_ms == 1000);
+  CHECK(cfg.link.ladder_cfg.fade.confirm_ms == 50);
+  CHECK(cfg.link.ladder_cfg.fade.rssi_db == 6.0);
+  CHECK(cfg.link.ladder_cfg.fade.snr_db == 3.0);
+  CHECK(cfg.link.ladder_cfg.fade.trigger_ms == 200);
+  CHECK(cfg.link.ladder_cfg.fade.min_rung == 1);
+}
+
+TEST(link_fade_rejects_unknown_key_and_bad_ranges) {
+  // strict keys inside the block
+  try {
+    maburgs::load_config(write_tmp(R"({"link": {"fade": {"bogus": 1}}})"));
+    CHECK(false);
+  } catch (const std::exception&) {}
+  // bounds: confirm_ms 20-1000, trigger_ms 50-5000, hold_ms 0-60000,
+  // min_rung 0-15, rssi_db/snr_db 0.5-40
+  try {
+    maburgs::load_config(write_tmp(R"({"link": {"fade": {"confirm_ms": 5}}})"));
+    CHECK(false);
+  } catch (const std::exception&) {}
+  try {
+    maburgs::load_config(write_tmp(R"({"link": {"fade": {"rssi_db": 0.1}}})"));
+    CHECK(false);
+  } catch (const std::exception&) {}
+}
