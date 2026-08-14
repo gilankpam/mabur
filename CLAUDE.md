@@ -91,15 +91,19 @@ bookkeeping) to the old totals.
 
 **Since 2026-08-14 (same day, second wave) demotes are fade-aware.** Two
 independent pieces, both default-on, both killable, and the whole
-`link.fade` block is optional with working defaults. `link.fade.cascade`
-arms a 2.5 s fade regime (`hold_ms`) on every loss-driven demote —
-residual, s3 residual, s3 util, confirmed util, and a fade demote itself,
-but NOT probation, starved or timeout — inside which the demote confirm
+`link.fade` block is optional with working defaults. Every loss-driven
+demote — residual, s3 residual, s3 util, confirmed util, and a fade
+demote itself, but NOT probation, starved or timeout — arms a 2.5 s fade
+regime (`hold_ms`), and arms it UNCONDITIONALLY so that the exported
+regime state stays truthful. `link.fade.cascade` gates only the effect:
+while the regime is open and the cascade is on, the demote confirm
 windows drop 250/500 ms to 100 ms (`confirm_ms`), so a real fade steps
-down at fade speed rather than at steady-state speed.
-`link.fade.predict` adds an RF trigger ahead of any loss: both −8 dB RSSI
-(`rssi_db`) AND −4 dB SNR (`snr_db`) below their slow baselines, sustained
-`trigger_ms` (300 ms), demotes one rung with reason `fade`. Those
+down at fade speed rather than at steady-state speed. Kill the cascade
+and the regime is still armed and still reported — it just stops
+shortening anything. `link.fade.predict` adds an RF trigger ahead of any
+loss: both −8 dB RSSI (`rssi_db`) AND −4 dB SNR (`snr_db`) below their
+slow baselines, sustained `trigger_ms` (300 ms), demotes one rung with
+reason `fade`. Those
 baselines are a dual-timescale EWMA — fast tau 300 ms, slow tau
 asymmetric at 2 s rising / 20 s falling; structural constants, not config
 — so a multi-second fade cannot drag its own baseline down and erase its
@@ -150,11 +154,17 @@ exactly. Op actuation used to be U(0, `tick_ms` = 100) ms, and
 `link.attrib.close_ms` measured a ~110 ms median with tails at 295 and
 971 ms. Re-measure `close_ms` after deploying maburd — a median ≤30 ms is
 the expectation to verify, not a result: nothing in this wave has been
-validated on hardware. Deploy is migration-free in both directions
-because `link.fade` and `link.rc_drain_ms` are optional with live
-defaults, and `bundle/mabur.default.json` deliberately does NOT list
-`rc_drain_ms` and must not — adding it would make new-config/old-binary
-an `unknown key`, i.e. the 2 s crash-loop described further down.
+validated on hardware. Deploy is migration-free — new binary against an
+untouched config, on either device — only for as long as nobody WRITES
+either key: `link.fade` and `link.rc_drain_ms` are optional with live
+defaults, so a device config that never mentions them works under both
+the old and the new binary. The moment one is spelled out in
+`/etc/maburgs.json` or `/etc/mabur.json` — and the bench GS is exactly
+the machine that will hand-tune `link.fade.rssi_db` — rollback is PAIRED
+like everything else here, because the old binary sees an `unknown key`
+and enters the 2 s crash-loop described further down. Same reason
+`bundle/mabur.default.json` deliberately does NOT list `rc_drain_ms` and
+must not.
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
