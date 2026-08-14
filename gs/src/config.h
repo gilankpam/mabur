@@ -66,6 +66,12 @@ struct LinkCfg {
   bool ctl_log = false;
   std::string ctl_log_dir = "/media/dvr";
 
+  // Transition-attribution kill switch (spec 2026-08-14): true = the
+  // ladder's demote inputs read current-rung-only loss (stale transition
+  // debris excluded); false = legacy totals, byte-for-byte pre-attribution
+  // behavior. Bookkeeping/export runs either way.
+  bool attrib = true;
+
   // R-line emission cadence for the per-rung EWMA store (spec 2026-08-13).
   // The store's own tuning (half_life_samples) lives in
   // ladder_cfg.rung_stats; this is main.cpp's log cadence only.

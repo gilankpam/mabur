@@ -177,7 +177,8 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   }
   ++c.video_bodies;
   last_video_us_ = m.mono_us;
-  for (const auto& r : dec_.add_body(m.body.data(), m.body.size(), m.mono_us / 1000))
+  for (const auto& r :
+       dec_.add_body(m.body.data(), m.body.size(), m.mono_us / 1000, m.mcs))
     if (frag_sink_) frag_sink_(r);
 }
 

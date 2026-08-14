@@ -288,6 +288,23 @@ static int run_radio(const maburgs::Config& cfg) {
   // stream 3): pre-FEC loss for probe/s3-demote decisions, plus a separate
   // residual (abandoned/expected) window for the steady-state demote path.
   maburgs::S1LossWindow s3_loss, s3_resid;
+  // Current-rung-only siblings (transition attribution, spec 2026-08-14):
+  // same machinery, fed from the attributed counters. The originals stay
+  // as the observability totals and the link.attrib=false decision path.
+  maburgs::S1LossWindow s1_loss_cur, s3_loss_cur, s3_resid_cur;
+  // Windows where total residual was positive but attributed residual was
+  // zero at a rung > 0 — i.e. windows where the legacy instant demote
+  // would have fired on pure debris. THE headline artifact-rate number.
+  // Counted per contiguous suppressed episode, edge-detected — the loop
+  // runs per drained batch, far faster than the RCF window cadence, so a
+  // level-triggered increment here would count one episode tens of times.
+  uint64_t attrib_suppressed = 0;
+  bool attrib_suppressed_latched = false;
+  // Commanded-MCS edge detect for boundary marking. -1 forces a first mark
+  // (which finds cur_mcs unknown -> closed plain-fallback boundary).
+  int last_marked_op_mcs = -1;
+  double last_marked_op_ov = -1.0;
+  int last_marked_s3_mcs = -1;
   // Change-detect on ctl().last_event(): initialize to the pre-any-event
   // default (t_ms 0) so boot doesn't print a phantom transition line.
   double last_ctl_event_ms = vrx.ctl().last_event().t_ms;
@@ -460,6 +477,31 @@ static int run_radio(const maburgs::Config& cfg) {
     if (frame_wire) fstream.poll(drained_ms);
     if (au_on) au_bell.poll();
 
+    // Transition boundaries for loss attribution: edge-detect the COMMANDED
+    // per-stream MCS. Streams 0-2 follow the op; s3 runs the probe
+    // candidate while a probe is up. Overhead-only steps mark too (FEC
+    // re-key debris exists without a PHY change; the decoder then uses the
+    // plain same-MCS fallback). Static-pin mode: the op never changes, so
+    // nothing ever arms.
+    {
+      const auto& op_now = vrx.cur_op();
+      if (op_now.mcs != last_marked_op_mcs ||
+          op_now.overhead != last_marked_op_ov) {
+        for (int s = 0; s <= 2; ++s)
+          agg.decoder().mark_transition(s, static_cast<uint8_t>(op_now.mcs),
+                                        now_ms_u);
+        last_marked_op_mcs = op_now.mcs;
+        last_marked_op_ov = op_now.overhead;
+      }
+      const int s3_mcs_now =
+          vrx.ctl().probing() ? vrx.ctl().probe_mcs() : op_now.mcs;
+      if (s3_mcs_now != last_marked_s3_mcs) {
+        agg.decoder().mark_transition(3, static_cast<uint8_t>(s3_mcs_now),
+                                      now_ms_u);
+        last_marked_s3_mcs = s3_mcs_now;
+      }
+    }
+
     // Control step: layer delivery + residual from the decode window, plus
     // stream 1's cumulative symbol totals feeding the measured-loss window.
     std::array<uint8_t, 4> ld{};
@@ -471,6 +513,12 @@ static int run_radio(const maburgs::Config& cfg) {
     std::optional<double> residual;
     if (e0 + e1 > 0)
       residual = 1.0 - static_cast<double>(d0 + d1) / static_cast<double>(e0 + e1);
+    auto [d0c, e0c] = agg.decoder().window_counts_cur(0);
+    auto [d1c, e1c] = agg.decoder().window_counts_cur(1);
+    std::optional<double> residual_cur;
+    if (e0c + e1c > 0)
+      residual_cur =
+          1.0 - static_cast<double>(d0c + d1c) / static_cast<double>(e0c + e1c);
     // Zero completed base-layer packets while video frames still arrive =
     // decode collapse; the ladder's video_starved path forces the failsafe
     // rung then rather than trusting this window's (survivor-biased) loss
@@ -483,6 +531,11 @@ static int run_radio(const maburgs::Config& cfg) {
                 s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
     const auto s1_sample = s1_loss.sample(now_ms);
 
+    const uint64_t s1_ab_cur = s1.syms_abandoned - s1.syms_abandoned_stale;
+    s1_loss_cur.add(s1.syms_delivered + s1.syms_recovered + s1_ab_cur,
+                    s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
+    const auto s1_cur_sample = s1_loss_cur.sample(now_ms);
+
     // s3 feedback for the probe-before-promote / s3-demote logic: pre-FEC
     // loss (same shape as s1's window) plus a residual (abandoned/expected)
     // window scored against the CURRENT rung's s3 budget.
@@ -493,6 +546,14 @@ static int run_radio(const maburgs::Config& cfg) {
     s3_resid.add(s3_expected, s3_expected - s3.syms_abandoned, now_ms);
     const auto s3_sample = s3_loss.sample(now_ms);
     const auto s3_rsample = s3_resid.sample(now_ms);
+
+    const uint64_t s3_ab_cur = s3.syms_abandoned - s3.syms_abandoned_stale;
+    const uint64_t s3_exp_cur = s3.syms_delivered + s3.syms_recovered + s3_ab_cur;
+    s3_loss_cur.add(s3_exp_cur, s3.syms_delivered + s3.syms_recovered_arrived,
+                    now_ms);
+    s3_resid_cur.add(s3_exp_cur, s3_exp_cur - s3_ab_cur, now_ms);
+    const auto s3_cur_sample = s3_loss_cur.sample(now_ms);
+    const auto s3_rcur_sample = s3_resid_cur.sample(now_ms);
 
     // Label-only: the strongest card's s1 SNR this window, converted from
     // devourer's half-dB raw units (snr_units.h) — carried onto
@@ -517,14 +578,42 @@ static int run_radio(const maburgs::Config& cfg) {
       if (ct.evm_has) s1_evm_db = ct.evm_ema * maburgs::kEvmRawToDb;
     }
 
-    maburgs::LinkHealth health{s1_sample.valid, s1_sample.loss,
-                               residual.value_or(0.0), starved};
+    // link.attrib=true: the controller judges the rung it is on — every
+    // demote input reads the CURRENT-rung (attributed) value; stale
+    // transition debris can no longer fire any demote. false: the legacy
+    // totals, verbatim. sample_valid / s3_valid / s3_expected_syms stay
+    // total-based on purpose: they gate "was there traffic at all", and an
+    // all-stale window must still count as feedback (a cur-based valid
+    // would un-stamp last_feedback_ms_ and could walk into the blind-side
+    // timeout during a long boundary).
+    const bool attrib = cfg.link.attrib;
+    maburgs::LinkHealth health{
+        s1_sample.valid,
+        attrib ? (s1_cur_sample.valid ? s1_cur_sample.loss : 0.0)
+               : s1_sample.loss,
+        attrib ? residual_cur.value_or(0.0) : residual.value_or(0.0),
+        starved};
     health.s3_valid = s3_sample.valid;
-    health.s3_pre_fec_loss = s3_sample.loss;
-    health.s3_residual_loss = s3_rsample.valid ? s3_rsample.loss : 0.0;
+    health.s3_pre_fec_loss = attrib
+                                 ? (s3_cur_sample.valid ? s3_cur_sample.loss : 0.0)
+                                 : s3_sample.loss;
+    health.s3_residual_loss =
+        attrib ? (s3_rcur_sample.valid ? s3_rcur_sample.loss : 0.0)
+               : (s3_rsample.valid ? s3_rsample.loss : 0.0);
     health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
     health.s1_snr_db = s1_snr_db;
     health.s1_evm_db = s1_evm_db;
+    // Artifact-rate meter: a window the legacy instant demote would have
+    // acted on (total residual > 0, rung > 0) that the attributed view
+    // reads clean. Counted regardless of the switch so an attrib=false
+    // run still measures what attribution WOULD have suppressed. Edge-
+    // detected on the latch above: one increment per contiguous suppressed
+    // episode, not once per main-loop pass.
+    const bool attrib_suppressed_now = vrx.ctl().rung() > 0 &&
+                                        residual.value_or(0.0) > 0.0 &&
+                                        residual_cur.value_or(0.0) <= 0.0;
+    if (attrib_suppressed_now && !attrib_suppressed_latched) ++attrib_suppressed;
+    attrib_suppressed_latched = attrib_suppressed_now;
 
     if (auto out = vrx.step(now_ms, ld, health)) {
       if (!out->is_disc) agg.decoder().reset_window();  // window == RCF period
@@ -573,7 +662,8 @@ static int run_radio(const maburgs::Config& cfg) {
         const auto& c = vrx.ctl();
         ctl_log->sample(now_ms, c.rung(), c.util(), health.s1_snr_db,
                          residual.value_or(0.0), c.util3(),
-                         health.s3_residual_loss, health.s1_evm_db);
+                         health.s3_residual_loss, health.s1_evm_db,
+                         residual_cur.value_or(0.0));
         if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
           last_rung_log_ms = now_ms;
           emit_rung_lines(now_ms);
@@ -631,6 +721,11 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.op = vrx.cur_op();
       sin.deadline_ms = cfg.fec.decode_deadline_ms;
       sin.residual_loss = residual;
+      sin.attrib_on = cfg.link.attrib;
+      sin.attrib_suppressed = attrib_suppressed;
+      sin.residual_cur = residual_cur;
+      if (const double cms = agg.decoder().last_boundary_close_ms(1); cms >= 0)
+        sin.attrib_close_ms = cms;
       for (int s = 0; s < 4; ++s)
         sin.layer_delivery_pct[static_cast<size_t>(s)] = ld[static_cast<size_t>(s)];
       for (int i = 0; i < n_cards; ++i) {
@@ -678,6 +773,7 @@ static int run_radio(const maburgs::Config& cfg) {
         o.syms_recovered = st.syms_recovered;
         o.syms_recovered_arrived = st.syms_recovered_arrived;
         o.syms_abandoned = st.syms_abandoned;
+        o.syms_abandoned_stale = st.syms_abandoned_stale;
         o.symbols_in = st.symbols_in;
         o.symbols_stale = st.symbols_stale;
         o.symbols_bad_cfg = st.symbols_bad_cfg;

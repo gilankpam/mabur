@@ -9,6 +9,13 @@
 
 namespace mabur {
 
+// Per-envelope transition-boundary hint for loss attribution (spec
+// 2026-08-14-fec-generation-attribution-design.md). kPre = the air frame
+// carrying this envelope was heard at a pre-transition PHY rate (provably
+// old-op, however late it arrived); kPost = heard at the expected
+// post-transition rate; kNone = no boundary armed or rate unknown.
+enum class SwBoundary : uint8_t { kNone = 0, kPre, kPost };
+
 // Streaming decoder for SwEncoder envelopes. Sources deliver IMMEDIATELY
 // and register as known; repairs reduce against known symbols, then join an
 // incremental Gaussian elimination over the missing seqs — a row down to one
@@ -36,7 +43,8 @@ class SwDecoder {
   // symbol that became known (source first, cascades after). Malformed or
   // config-mismatched envelopes are counted and dropped, never applied.
   std::vector<std::vector<uint8_t>> add_symbol(const uint8_t* env, size_t len,
-                                               uint64_t now_ms);
+                                               uint64_t now_ms,
+                                               SwBoundary b = SwBoundary::kNone);
 
   // Drops repair rows first seen more than deadline_ms ago. Call ~1 Hz.
   // Precondition: now_ms monotonic non-decreasing.
@@ -51,6 +59,17 @@ class SwDecoder {
   // phantom pre-FEC loss on a clean bench, 2026-07-27).
   uint64_t syms_recovered_arrived() const { return syms_recovered_arrived_; }
   uint64_t syms_abandoned() const { return syms_abandoned_; }
+  // Symbol-space transition watermark (loss attribution). mark_transition()
+  // snapshots the newest seq; while the boundary is open every abandonment
+  // books stale, kPre envelopes advance the watermark, and the first kPost
+  // SOURCE closes it at (its seq - 1). Owner (UepDecoder) drives hints and
+  // force-closes on expiry. Vseqs are monotonic u64: no wrap, no decay —
+  // seqs at or below the watermark book stale forever, which is exactly
+  // right (they cannot recur).
+  void mark_transition();
+  void close_boundary() { wm_open_ = false; }
+  bool boundary_open() const { return wm_open_; }
+  uint64_t syms_abandoned_stale() const { return syms_abandoned_stale_; }
   uint64_t symbols_in() const { return symbols_in_; }
   uint64_t symbols_dropped_bad_cfg() const { return symbols_dropped_bad_cfg_; }
   uint64_t symbols_dropped_stale() const { return symbols_dropped_stale_; }
@@ -93,6 +112,10 @@ class SwDecoder {
   uint64_t syms_recovered_arrived_ = 0;
   uint64_t symbols_in_ = 0, symbols_dropped_bad_cfg_ = 0;
   uint64_t symbols_dropped_stale_ = 0, packets_out_ = 0, resets_ = 0;
+
+  bool wm_open_ = false, wm_valid_ = false;
+  uint64_t wm_ = 0;
+  uint64_t syms_abandoned_stale_ = 0;
 };
 
 }  // namespace mabur

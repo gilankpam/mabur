@@ -372,4 +372,32 @@ TEST(crc_clean_unparseable_body_gets_no_class) {
   CHECK(c.frames == 1);
   for (int i = 0; i < kNumRfClasses; ++i) CHECK(c.cls[i].frames == 0);
 }
+
+// RxBody.mcs must flow through on_rx_body -> UepDecoder::add_body so the
+// transition-attribution boundary can classify arrivals. No helper in this
+// file builds a stream-1 body (video_body() above is s0, see
+// evm_absent_until_first_sample_and_class_scoped), so build one directly
+// via UepEncoder, same pattern as run_transition_sim in test_uep_decoder.cpp.
+TEST(rx_mcs_reaches_decoder_boundary) {
+  Aggregator agg(vec_layers(), /*decode_deadline_ms=*/200, /*seq_horizon=*/512,
+                 /*n_cards=*/1);
+  // mark_transition establishes expected mcs 4 after a first mark at 5
+  // (prev known -> boundary opens). A body heard at mcs 4 must CLOSE the
+  // boundary -- proving RxBody.mcs flows through on_rx_body into
+  // UepDecoder::add_body.
+  agg.decoder().mark_transition(1, 5, 1000);
+  agg.decoder().mark_transition(1, 4, 1000);
+  CHECK(agg.decoder().last_boundary_close_ms(1) < 0);
+
+  mabur::UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
+  std::vector<uint8_t> unit(10, 0xAB);  // payload content is irrelevant here
+  auto bodies = enc.add_frame(/*stream_id=*/1, unit.data(), unit.size(), 1000);
+  REQUIRE(!bodies.empty());
+
+  auto m = msg(0, 1, true, bodies[0].body);
+  m.mcs = 4;
+  m.mono_us = 2000 * 1000;  // now_ms = 2000, within kBoundaryExpiryMs of 1000
+  agg.on_rx_body(m);
+  CHECK(agg.decoder().last_boundary_close_ms(1) >= 0);  // closed by mcs 4 body
+}
 MTEST_MAIN

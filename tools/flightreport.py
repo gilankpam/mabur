@@ -44,7 +44,7 @@ def load_ctllog(path):
     S, E, P, N, R = [], [], [], [], []
     with open(path) as f:
         first = f.readline().strip()
-        # ctllog 1 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+        # ctllog 2 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
         for tok in first.split()[2:]:
             if "=" not in tok: continue
             k, v = tok.split("=", 1)
@@ -64,6 +64,8 @@ def load_ctllog(path):
                         "resid3": float(toks[7]),
                         # 2026-08-10 EVM label; absent on older logs.
                         "evm_db": float(toks[8]) if len(toks) >= 9 else float("nan"),
+                        # 2026-08-14 attribution (ctllog 2); absent on older logs.
+                        "resid_cur": float(toks[9]) if len(toks) >= 10 else float("nan"),
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({

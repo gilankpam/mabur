@@ -380,6 +380,22 @@ def test_ctllog_evm_optional_trailing_token():
     assert -21.0 in evms and sum(1 for v in evms if math.isnan(v)) == 3
 
 
+def test_s_line_resid_cur_parsed_and_absent_is_nan():
+    """resid_cur (ctllog 2, 2026-08-14 attribution) parses on a v2-shaped S
+    line and defaults to nan on a v1-shaped one (backward compatibility)."""
+    text = (
+        "ctllog 2 ladder=5/25 down_util=0.60 up_util=0.15\n"
+        "S 1000 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011\n"
+        "S 2000 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0\n"  # v1-shaped line
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_20260814.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert log["S"][0]["resid_cur"] == 0.0011
+    assert math.isnan(log["S"][1]["resid_cur"])
+
+
 def test_wall_report():
     """Direct-invocation pattern (matches the siblings above): write the
     CTL_LOG fixture to a temp file, capture flightreport's stdout, and check

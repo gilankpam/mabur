@@ -33,8 +33,38 @@ class UepDecoder {
   UepDecoder(const std::array<UepLayerCfg, 4>& layers,
              uint64_t decode_deadline_ms = 200, uint32_t seq_horizon = 0);
 
+  static constexpr uint8_t kMcsUnknown = 255;
+
+  // Transition-attribution boundary (spec 2026-08-14). Call when the GS
+  // commands stream sid onto a new op: new_mcs is the PHY rate the stream
+  // is expected at from now on (the op MCS for s0-s2, the probe
+  // candidate's for s3 while a probe runs). Arms per-layer watermarks in
+  // both seq spaces; add_body()'s rx_mcs then classifies arrivals as
+  // pre/post-boundary until the boundary closes (first frame heard at
+  // new_mcs) or expires (kBoundaryExpiryMs). The forced first mark (prior
+  // cur_mcs unknown) arms with a known cur_mcs but cannot open a boundary
+  // (there is no "prev" to have been wrong), so up to ~1 s of session-start
+  // loss below the first-completed unit books stale and is excluded from
+  // demote inputs — deliberate, since session-start warm-up loss is exactly
+  // the debris class this mechanism exists to exclude; early-session
+  // abandoned_stale > 0 on the bench is expected, not a bug.
+  void mark_transition(int sid, uint8_t new_mcs, uint64_t now_ms);
+
   std::vector<DecodedFrag> add_body(const uint8_t* body, size_t len,
-                                    uint64_t now_ms);
+                                    uint64_t now_ms,
+                                    uint8_t rx_mcs = kMcsUnknown);
+
+  // Current-rung-only view of the delivery window: total minus units
+  // attributed to pre-transition debris, plus — while a boundary is armed —
+  // re-bookings and late deliveries of a unit already booked once (reorder
+  // double-count artifacts that a repair-cascade recovery can produce; the
+  // totals from window_counts() deliberately keep these, this view strips
+  // them). Same reset cadence as window_counts() (reset_window()).
+  std::pair<uint64_t, uint64_t> window_counts_cur(int sid) const;
+
+  // Open->close latency (ms) of layer sid's last CLOSED boundary; -1 if a
+  // boundary never closed on this layer. Observability only.
+  double last_boundary_close_ms(int sid) const;
 
   // Expires stale sliding-window rows on every layer. Call ~1 Hz.
   void poll(uint64_t now_ms);
@@ -50,6 +80,7 @@ class UepDecoder {
     // diagnostic depth (SwDecoder internals)
     uint64_t symbols_in = 0, symbols_stale = 0, symbols_bad_cfg = 0;
     size_t rows_in_flight = 0;
+    uint64_t syms_abandoned_stale = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }
@@ -78,6 +109,25 @@ class UepDecoder {
     bool has_last_seq = false;
     uint16_t last_seq = 0;
     uint64_t win_delivered = 0, win_expected = 0;
+    // --- transition-attribution boundary (spec 2026-08-14) ---
+    uint8_t cur_mcs = kMcsUnknown;  // expected PHY rate; kMcsUnknown = never set
+    bool bnd_armed = false;         // watermark comparisons live
+    bool bnd_open = false;          // boundary not yet closed by a kPost body
+    bool bnd_post_floor_set = false;  // first kPost completion consumed
+    uint64_t bnd_arm_ms = 0;
+    double bnd_close_ms = -1.0;     // last open->close latency
+    bool pkt_wm_valid = false;
+    uint16_t pkt_wm = 0;            // FRAG-seq watermark (u16, wrap-aware)
+    uint64_t win_delivered_stale = 0, win_expected_stale = 0;
+    // Monotonic high-water mark of every fseq ever passed to note_delivery
+    // (unlike last_seq, never regresses). A late FEC recovery can complete
+    // an OLDER unit after a newer one already completed, regressing
+    // last_seq; the next forward gap would then re-count the
+    // already-delivered newer unit as a fresh expectation. Once a boundary
+    // is armed, that re-ask is folded into the stale side rather than
+    // inflating the current-rung bucket with a phantom miss.
+    bool win_hwm_valid = false;
+    uint16_t win_hwm = 0;
   };
   // Delivery-window accounting, called on each unit's last-fragment arrival.
   void note_delivery(Layer& l, uint16_t seq);
