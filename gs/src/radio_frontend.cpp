@@ -174,12 +174,22 @@ void RadioFrontend::on_packet(const Packet& pkt) {
   m.evm[0] = pkt.RxAtrib.evm[0];
   m.evm[1] = pkt.RxAtrib.evm[1];
   m.crc_ok = !pkt.RxAtrib.crc_err;
-  // HT rate code -> MCS index; anything else (legacy 802.11a/b/g codes
-  // < 0x80, VHT/HE >= 0x100) is "unknown" for attribution purposes -- the
-  // drone injects HT-only.
-  m.mcs = (pkt.RxAtrib.data_rate >= 0x80 && pkt.RxAtrib.data_rate < 0x100)
-              ? static_cast<uint8_t>(pkt.RxAtrib.data_rate - 0x80)
-              : 255;
+  // RX rate code -> HT MCS index. devourer's RxAtrib.data_rate carries TWO
+  // encodings depending on chip family, and both HT-1SS ranges are mapped
+  // here (they cannot collide):
+  //  - jaguar1/2/3 (8812/8822B/8822E...): the raw Realtek DESC_RATE index --
+  //    HT MCS0..7 = 0x0C..0x13 (DESC_RATEMCS0, ieee80211_radiotap.h). This
+  //    is what the GS's 8822E cards produce; verified 2026-08-14 on the
+  //    bench when the original 0x80-only mapping left every attribution
+  //    boundary unclosed (link.attrib.close_ms null through 5 promotes).
+  //  - kestrel (8852B/C): the AX 9-bit code, HT = 0x80 + mcs (the encoding
+  //    RxPacket.h's comment describes; it does NOT apply to jaguar chips).
+  // Everything else (legacy CCK/OFDM, VHT, HE, 2SS) is "unknown" for
+  // attribution purposes -- the drone injects HT-1SS only.
+  const uint16_t dr = pkt.RxAtrib.data_rate;
+  m.mcs = (dr >= 0x0C && dr <= 0x13) ? static_cast<uint8_t>(dr - 0x0C)
+          : (dr >= 0x80 && dr <= 0x87) ? static_cast<uint8_t>(dr - 0x80)
+                                       : 255;
   m.mac_seq = static_cast<uint16_t>(
       (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);
   m.body.assign(pkt.Data.begin() + kDot11, pkt.Data.end());
