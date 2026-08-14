@@ -132,9 +132,17 @@ never reach `rssi_db` 8 however deep they eventually get. `trigger_ms` is
 not the binding constraint either: the delta needs ~0.8–1.3 s to climb to
 its peak, so the 300 ms fast tau sets the reaction time. Those are
 harness/model figures (they reproduce the review's measured deltas
-exactly), NOT flight results — and the defaults are deliberately
-unchanged, since tightening them without bench data is what the spec's
-tuning invariant forbids. Three things to know before reading any of it: (i) the
+exactly) — and the defaults are deliberately unchanged, since tightening
+them without bench data is what the spec's tuning invariant forbids.
+**First flight validation, 2026-08-14 (flight-0017/0018 + ctl-0054/0055,
+two ~6 min flights):** exactly the predicted behavior. 26 loss-driven
+demote episodes, all ramp-type range fades; the predictive trigger
+correctly never fired (deepest deltas drssi −7.8 / dsnr −4.4, never
+jointly over threshold — slope-blind on ramps as the transfer function
+says), zero false fades, zero attribution-miss canary hits, in-regime
+cascades stepping multi-rung episodes at ~410–440 ms, and zero
+mid-flight video-damage windows. A genuine FAST fade (obstruction,
+multipath null) has still never been recorded against this trigger. Three things to know before reading any of it: (i) the
 predictive trigger is LATCHED — exactly ONE predictive demote per fade
 EVENT, and the latch releases only on an *observed* recovery, a tick where
 both deltas are measurably back under threshold. A NaN window (absent

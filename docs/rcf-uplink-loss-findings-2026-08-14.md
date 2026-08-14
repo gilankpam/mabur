@@ -211,7 +211,39 @@ Incidental observations: →1 boundaries exported close_ms samples in
 both CCA-on arms but never under CCA-off (§5) — unexplained;
 climb-transient residual spikes (~0.23 max) appear equally in all arms.
 
-## 7. Repro / method
+## 7. In-flight confirmation (2026-08-14, flight-0017/0018 + ctl-0054/0055)
+
+Two ~6 min flights on the stock CCA-off PR #29 binaries confirm the
+bench mechanism at range. RCF delivery vs the drone's airtime, pooled
+per `link.air_pct` bin (both flights agree within a few points):
+
+| air_pct | delivery (0017) | delivery (0018) |
+|---------|------------------|------------------|
+| 20–30% | 70% | 68% |
+| 30–40% | 62% | 63% |
+| 40–50% | 57% | 55% |
+| 50–60% | 52% | 53% |
+| 60–70% | 54% | 56% |
+
+In-flight `close_ms`: n=53 median 97 / p95 289 / max 348 (0017);
+n=56 median 76 / p95 258 / max 266 (0018) — the same fast-path +
+50 ms-quantum geometric ladder, now with ~50% per-attempt loss at the
+airtimes a flying link actually runs. Actuation latency in flight is
+uplink-delivery-bound, full stop. (The <10% air bin shows ~35–38%
+"delivery" — that bin is boot/landing windows where the drone is in
+rendezvous and accepts nothing; ignore it.)
+
+Same flights, for the record (fade wave, not this doc's subject): 26
+loss-driven demote episodes across both flights, zero `fade`-reason
+demotes — correctly, because these were ramp-type range fades whose
+dual-EWMA deltas peaked at drssi −7.8 dB / dsnr −4.4 dB without ever
+jointly crossing the −8/−4 thresholds; zero false fades, zero
+attribution-miss canary hits, `link.attrib.suppressed` +3 (0017),
+multi-rung cascades stepping at ~410–440 ms, and zero video-damage
+windows (`residual_loss` never exceeded 5% mid-flight; fps continuous
+59.5 outside boot/landing).
+
+## 8. Repro / method
 
 - close_ms sampler + forced climb: handover §"Repro recipe" (stop
   `S97flightrec` first; it was restarted after — recording resumed at
