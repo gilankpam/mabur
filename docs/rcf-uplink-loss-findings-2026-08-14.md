@@ -111,14 +111,17 @@ against high-airtime rungs.
   control path sees the same loss: probe RCFs, the keepalive DISC, IDR
   requests, and any future GS→drone command. Design accordingly — a
   single-shot uplink command has a 30–50% chance of waiting ≥50 ms.
-- **Remediation candidates (none implemented, none validated):**
-  1. Repeat the RCF a few times back-to-back (or at ~10 ms) after an op
+- **Remediation candidates:**
+  1. ~~Enable CCA at the GS so injection defers into the drone's
+     inter-burst gaps.~~ **TESTED SAME DAY — MAKES IT WORSE. See §6.**
+  2. Repeat the RCF a few times back-to-back (or at ~10 ms) after an op
      change until the drone's telemetry echoes the new op
      (`drone.applied` generation) — cheapest, bounded extra airtime.
-  2. Time RCF injection into the gap right after a received video frame
+  3. Time RCF injection into the gap right after a received video frame
      burst (the drone has just stopped transmitting) — bigger win,
-     more machinery.
-  3. Accept it: the ladder already tolerates the latency; close_ms just
+     more machinery, and §6 suggests naive burst-end timing has the
+     same aligned-collision failure mode as CCA.
+  4. Accept it: the ladder already tolerates the latency; close_ms just
      measures it now. Document and move on.
 - Anyone tuning `feedback_ms` should know it is also the uplink retry
   quantum — halving it roughly halves the loss-induced actuation delay
@@ -144,7 +147,44 @@ against high-airtime rungs.
   is attributed to telem/MSP TX airtime above, but that attribution is
   an inference, not a measurement.
 
-## 6. Repro / method
+## 6. A/B: GS carrier sense ON — tested and REFUTED as a fix (2026-08-14)
+
+The obvious counter-move — flip `dev_cfg.tuning.disable_cca` to false at
+the GS (`gs/src/radio_frontend.cpp:127`) so control injection defers
+around the drone's bursts — was built (GS-only, one-line, test binary
+`maburgs.cca-test` left on the GS), deployed, and measured with the
+identical 6-climb protocol, then rolled back. It made everything worse:
+
+| rung | delivery CCA-off | delivery CCA-on |
+|------|------------------|-----------------|
+| 0 | 59% | 56% |
+| 1 | 55% | 46% |
+| 2 | 56% | 31% |
+| 3 | 51% | 23% |
+| 4 | 59% | 39% |
+| 5 (park) | 69% | 59% |
+
+close_ms (n=26): median **169.5** ms, mean 180, max 365 — vs 64.5/72.5/163
+with CCA off. GS `tx_pps` unchanged (~20.5/s) and `tx_fail` = 0 in both
+arms, so every frame aired; the extra loss is at the drone's receiver.
+
+Interpretation (mechanism-consistent, not separately proven): deferral
+does not randomize collisions, it ALIGNS them. The GS now waits out each
+drone burst and transmits the moment the medium goes idle — but the
+drone is still CCA-off with a backlog at high airtime, so its next MPDU
+launches right into the GS's now-synchronized RCF. Random-phase loss
+(p ≈ airtime) became aligned loss at burst boundaries, worst exactly at
+the densest-traffic rungs (rung 3: 51% → 23%). One-sided politeness is
+worse than none. Any timing-based fix must target the middle of a
+verified gap, not the edge of a burst.
+
+Two incidental observations from the CCA-on runs, recorded for
+completeness: →1 boundaries exported close_ms samples under CCA-on
+(they never have under CCA-off, §5) — unexplained; and video/downlink
+stayed clean throughout (ausniff 60.5 fps, 0 gaps), as expected since
+the drone side was untouched.
+
+## 7. Repro / method
 
 - close_ms sampler + forced climb: handover §"Repro recipe" (stop
   `S97flightrec` first; it was restarted after — recording resumed at
