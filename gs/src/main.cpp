@@ -31,6 +31,7 @@
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
 #include "radio_frontend.h"
+#include "s1_labels.h"
 #include "s1_loss.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
@@ -296,8 +297,14 @@ static int run_radio(const maburgs::Config& cfg) {
   // frame counts snapshotted once per feedback window (same cadence as
   // reset_window()), so "zero s1 frames this window" can NaN the RF labels
   // before they reach the controller. A frozen EMA must never read as a
-  // live signal.
+  // live signal. Snapshotted for EVERY card, not just the chosen one: the
+  // choice itself is freshness-gated, so which card is chosen can change
+  // between windows and each needs its own baseline.
   std::vector<uint64_t> prev_s1_cls_frames(static_cast<size_t>(n_cards), 0);
+  // Scratch for select_s1_label_card(), hoisted so the per-window refill
+  // allocates nothing after the first pass.
+  std::vector<maburgs::S1CardLabelInput> s1_label_cards(
+      static_cast<size_t>(n_cards));
   // Windows where total residual was positive but attributed residual was
   // zero at a rung > 0 — i.e. windows where the legacy instant demote
   // would have fired on pure debris. THE headline artifact-rate number.
@@ -561,47 +568,33 @@ static int run_radio(const maburgs::Config& cfg) {
     const auto s3_cur_sample = s3_loss_cur.sample(now_ms);
     const auto s3_rcur_sample = s3_resid_cur.sample(now_ms);
 
-    // Label-only: the strongest card's s1 SNR this window, converted from
-    // devourer's half-dB raw units (snr_units.h) — carried onto
-    // CtlEvent/ProbeEvent so the ctl log can say what the RF looked like,
-    // never a decision input.
-    double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
-    double s1_evm_db = std::numeric_limits<double>::quiet_NaN();
-    int s1_best_card = -1;
+    // The strongest card that ACTUALLY RECEIVED s1 this feedback window
+    // supplies all three s1 RF labels. Freshness is part of the argmax, not a
+    // filter after it (select_s1_label_card, s1_labels.h): a card whose
+    // front-end wedged keeps a frozen-high EMA and would otherwise outrank a
+    // live sibling forever. -1 = nothing measured s1 this window, so all
+    // three labels stay NaN — inert for the fade trigger, null on the wire.
     for (int i = 0; i < n_cards; ++i) {
       const auto& ct = agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)];
-      const double db = ct.snr_ema * maburgs::kSnrRawToDb;
-      if (ct.has_ema && (std::isnan(s1_snr_db) || db > s1_snr_db)) {
-        s1_snr_db = db;
-        s1_best_card = i;
-      }
+      s1_label_cards[static_cast<size_t>(i)] = maburgs::S1CardLabelInput{
+          ct.has_ema, ct.frames, prev_s1_cls_frames[static_cast<size_t>(i)],
+          ct.snr_ema};
     }
-    // EVM from the SAME card that supplied the SNR label (coherent
-    // single-card snapshot, not independently-best across cards).
-    if (s1_best_card >= 0) {
-      const auto& ct =
-          agg.card(s1_best_card).cls[static_cast<size_t>(maburgs::RfClass::S1)];
-      if (ct.evm_has) s1_evm_db = ct.evm_ema * maburgs::kEvmRawToDb;
-    }
-
+    const int s1_best_card = maburgs::select_s1_label_card(s1_label_cards);
+    // SNR (label + fade input) and EVM (label only) come from that ONE card,
+    // never independently-best across cards, so the three are a coherent
+    // single-card snapshot of the same radio at the same instant.
+    double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
+    double s1_evm_db = std::numeric_limits<double>::quiet_NaN();
     double s1_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
     if (s1_best_card >= 0) {
       const auto& ct =
           agg.card(s1_best_card).cls[static_cast<size_t>(maburgs::RfClass::S1)];
-      const bool fresh =
-          ct.frames > prev_s1_cls_frames[static_cast<size_t>(s1_best_card)];
-      if (!fresh) {
-        // Zero s1 frames since the last feedback window: every s1 RF label
-        // is a frozen EMA, not a measurement. NaN all three (snr/evm were
-        // filled by the existing code above).
-        s1_snr_db = std::numeric_limits<double>::quiet_NaN();
-        s1_evm_db = std::numeric_limits<double>::quiet_NaN();
-      } else {
-        // dBm from the same card that supplied the SNR label (coherent
-        // single-card snapshot); raw - 110 is the exporter's own conversion
-        // (stats_exporter.cpp rssi keys).
-        s1_rssi_dbm = ct.rssi_ema - 110.0;
-      }
+      // Raw units are devourer's half-dB (snr_units.h); raw - 110 is the
+      // exporter's own dBm conversion (stats_exporter.cpp rssi keys).
+      s1_snr_db = ct.snr_ema * maburgs::kSnrRawToDb;
+      if (ct.evm_has) s1_evm_db = ct.evm_ema * maburgs::kEvmRawToDb;
+      s1_rssi_dbm = ct.rssi_ema - 110.0;
     }
 
     // link.attrib=true: the controller judges the rung it is on — every
