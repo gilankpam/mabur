@@ -70,12 +70,17 @@ struct LinkCfg {
   uint32_t vtx_id = 1;
   int failsafe_ms = 1000;
   int rendezvous_ms = 30000;
+  // Housekeeping cadence for the agent loop's TickGate. Bounded [1,1000]
+  // at load: behind the gate a non-positive value stops every per-tick job
+  // silently (see parse_link in config.cpp).
   int tick_ms = 100;
   // Agent-loop wake period for draining queued RCFs (spec 2026-08-14
   // fade-demote §3b). Decoupled from tick_ms: op actuation latency is
   // U(0, rc_drain_ms) while ALL per-tick housekeeping (USB health polls,
   // state timers, congestion guard, watchdog, stats/telem) stays on
-  // tick_ms. >= tick_ms reproduces the legacy single-cadence loop.
+  // tick_ms. Bounded [1,1000] AND required to be <= tick_ms, since a drain
+  // slower than the tick would silently retime the housekeeping to the
+  // drain period; == tick_ms reproduces the legacy single-cadence loop.
   int rc_drain_ms = 5;
 };
 

@@ -26,13 +26,30 @@ TEST(tick_gate_first_call_fires_immediately) {
 }
 
 TEST(tick_gate_wake_geq_period_is_legacy) {
-  // rc_drain_ms >= tick_ms degenerates to firing on every wake — the
-  // legacy loop shape (body every iteration).
+  // A wake interval >= the period degenerates to firing on every wake —
+  // the legacy loop shape (body every iteration). config.cpp now rejects
+  // rc_drain_ms > tick_ms, so equality is the reachable case; the class
+  // property is pinned here regardless of who constructs it.
   TickGate g(0, 100);
   int fires = 0;
   for (uint64_t now = 0; now <= 1000; now += 100)
     if (g.due(now)) ++fires;
   CHECK(fires == 11);
+}
+
+TEST(tick_gate_hardens_a_non_positive_period) {
+  // config.cpp bounds link.tick_ms to [1,1000], so this is belt-and-braces —
+  // but the failure mode it guards is silent and total: a negative period
+  // casts to ~1.8e19 ms, the gate fires once and never again, and every
+  // per-tick job (failsafe, watchdog, telemetry) stops with nothing logged.
+  // Degenerate to "fire every wake" instead, which is loud and harmless.
+  for (int period : {0, -1}) {
+    TickGate g(0, period);
+    int fires = 0;
+    for (uint64_t now = 0; now <= 10; ++now)
+      if (g.due(now)) ++fires;
+    CHECK(fires == 11);
+  }
 }
 
 MTEST_MAIN
