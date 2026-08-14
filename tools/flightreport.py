@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h). Format is
-auto-detected from the first line.
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v4,
+warns on pre-v4). Format is auto-detected from the first line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
@@ -44,7 +44,9 @@ def load_ctllog(path):
     S, E, P, N, R = [], [], [], [], []
     with open(path) as f:
         first = f.readline().strip()
-        # ctllog 2 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+        toks0 = first.split()
+        header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
+        # ctllog 4 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
         for tok in first.split()[2:]:
             if "=" not in tok: continue
             k, v = tok.split("=", 1)
@@ -187,7 +189,13 @@ def print_wall_report(ctllog):
     header, S, E, P, N = (ctllog[k] for k in ("header", "S", "E", "P", "N"))
 
     print("CTL LOG HEADER")
+    ver = header.get("_version", 0)
+    if ver and ver < 4:
+        print("  NOTE: ctllog v%d -- snr_db/evm_db are s1-class only, and "
+              "drssi/dsnr were zeroed on ~25%% of ticks by the card-hop "
+              "re-baseline. Not comparable with v4+ recordings." % ver)
     for k, v in header.items():
+        if k.startswith("_"): continue  # internal, e.g. _version -- not a header field
         print(f"  {k}={v}")
 
     print("DWELL (S records)")

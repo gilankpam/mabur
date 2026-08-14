@@ -18,7 +18,7 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 3 <header_info>                                  # once, first line
+//   ctllog 4 <header_info>                                  # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr>                                        # 1 Hz dwell sample
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
@@ -27,8 +27,9 @@ namespace maburgs {
 //   R <t_ms> <rung> <u> <resid> <u3> <resid3> <evm> <evm_sd> <n> <age_s> <probe_u> <probe_n>
 //                                                            # per-rung EWMA store snapshot
 //
-// evm_db is the s1 EVM label in dB, nan when unsampled -- label-only, like
-// snr_db (see LinkHealth::rf_evm_db).
+// evm_db is the RF EVM label in dB (s1+s3 pooled since ctllog 4, s1-class
+// before it -- see the ctllog 4 note below), nan when unsampled --
+// label-only, like snr_db (see LinkHealth::rf_evm_db).
 //
 // resid stays the TOTAL residual (abandoned/expected over the whole decode
 // window); resid_cur is its attributed sibling -- the same ratio scored only
@@ -38,7 +39,15 @@ namespace maburgs {
 // drssi/dsnr are the fade-trigger deltas (baseline-minus-fast, raw dB;
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
-// a normal steady-state value on a GS whose s1 labels are stale, not a bug.
+// a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 4 (2026-08-15): line formats are UNCHANGED from v3, but snr_db,
+// evm_db, drssi and dsnr all change MEANING -- the label source is the
+// s1+s3 pooled track rather than the s1 class, and the fade deltas are no
+// longer periodically zeroed by the card-hop re-baseline. The bump exists
+// so a recording identifies its own semantics; this repo has twice been
+// bitten by recordings that could not (the 2026-08-04 SNR scale break, the
+// 2026-08-14 EVM freshness gate).
 //
 // Two encoding notes callers must know:
 //  - S's u3 reads 0 while a probe is active (steady-state s3 utilization is

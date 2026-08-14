@@ -297,13 +297,14 @@ static int run_radio(const maburgs::Config& cfg) {
   // same machinery, fed from the attributed counters. s1_loss/s3_loss stay
   // as the observability totals (residual_loss, the artifact-rate meter).
   maburgs::S1LossWindow s1_loss_cur, s3_loss_cur, s3_resid_cur;
-  // Fade-trigger staleness gate (spec 2026-08-14 §3): per-card s1-class
-  // frame counts snapshotted once per feedback window (same cadence as
-  // reset_window()), so "zero s1 frames this window" can NaN the RF labels
-  // before they reach the controller. A frozen EMA must never read as a
-  // live signal. Snapshotted for EVERY card, not just the chosen one: the
-  // choice itself is freshness-gated, so which card is chosen can change
-  // between windows and each needs its own baseline.
+  // Fade-trigger staleness gate (spec 2026-08-14 §3, source repointed to
+  // the s1+s3 pool 2026-08-15): per-card pooled frame counts snapshotted
+  // once per feedback window (same cadence as reset_window()), so "zero
+  // s1+s3 frames this window" can NaN the RF labels before they reach the
+  // controller. A frozen EMA must never read as a live signal. Snapshotted
+  // for EVERY card, not just the chosen one: the choice itself is
+  // freshness-gated, so which card is chosen can change between windows
+  // and each needs its own baseline.
   std::vector<uint64_t> prev_pool_frames(static_cast<size_t>(n_cards), 0);
   // Scratch for select_label_card(), hoisted so the per-window refill
   // allocates nothing after the first pass.

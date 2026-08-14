@@ -169,8 +169,8 @@ times, false fades with time-to-repromote, plus an attribution-miss canary
 previous transition, which should be ~zero with `link.attrib` on). The
 jsonl branch also prints the flight-wide `link.attrib.suppressed` delta.
 ⚠ The s1 RF labels are now freshness-gated per card
-(`gs/src/s1_labels.h`, `select_s1_label_card()`, unit-tested in
-`tests/test_s1_labels.cpp`): the best-card argmax only considers cards
+(`gs/src/rf_labels.h`, `select_label_card()`, unit-tested in
+`tests/test_rf_labels.cpp`): the best-card argmax only considers cards
 whose s1 frame count advanced in the current feedback window, so
 `s1_snr_db`, `s1_evm_db` and `s1_rssi_dbm` read NaN — and the ctl log
 prints `nan` — whenever no card measured s1 that window, where a frozen
@@ -194,6 +194,45 @@ deliberately NOT released by a hop. If a false fade shows up anyway,
 correlate the ctl log's `drssi`/`dsnr` step against per-card
 `classes.s1.*` in the sideport: a hop moves both by the card GAP in one
 window, a real fade moves them along the transfer function above.
+
+**Since 2026-08-15 the RF labels are s1+s3 pooled, the card-hop
+re-baseline is gone, attribution is unconditional, and s3 residual
+demotes instantly.** Four coupled changes, spec
+`docs/superpowers/specs/2026-08-15-pooled-rf-and-instant-s3-design.md`.
+(i) `s1_snr_db`/`s1_evm_db`/`s1_rssi_dbm` became `rf_*` and are sourced
+from a new per-card s1+s3 pooled track (97% of frames at one PHY rate);
+`msp`/`ctrl` are excluded because per-rate TX power makes their
+contribution depend on a mix ratio that drifts with rung and shed state.
+⚠ This is a second discontinuity in RungStore's per-rung EVM baselines,
+on top of the 2026-08-14 freshness gate — EVM sample populations are NOT
+comparable across either date. (ii) The card-hop EWMA re-baseline is
+deleted: it was zeroing `drssi`/`dsnr` on 25% of ticks (372 of 1483
+across flight-0017/0018), so **every fade delta recorded before this date
+is suppressed and must not be pooled with later ones** — the trigger
+could not fire regardless of fade depth, which is a second explanation
+for its silence alongside ramp slope-blindness. Its premise was also
+wrong: the argmax runs on SNR, so the SNR label is `max(snr)` over live
+cards and is continuous across a hop; only RSSI stepped, and measured hop
+steps were indistinguishable from ordinary variation. (iii) `link.attrib`
+is REMOVED and now FAILS BOOT; attribution is unconditional and there is
+no config rollback, only a binary one. `link.attrib.suppressed` /
+`residual_cur` / `close_ms` remain on the sideport, but `link.attrib.on`
+is REMOVED — a `v: 1` schema removal in the same class as the 2026-08-12
+`offset_qdb` removals, with `maburtop.py` updated in the same wave.
+(iv) `link.s3_residual_confirm_ms` is REMOVED and FAILS BOOT: s3 residual
+now demotes on the first window, exempt from `min_between_changes_ms`,
+like s1's. That is safe only because attribution is EXACT rather than
+fast — the watermark is in symbol-sequence space, so debris is absent
+from the input rather than outrun — and `s3_settle_ms` blanking is
+retained. Predicted cost ~4× that path's demote rate (~19 events per two
+6-minute flights vs the 5 observed); materially above that on the first
+flight means the estimate's 500 ms sampling hid back-to-back firing and
+the confirm window should return in reduced form. The ctl log went
+`ctllog 3` → `4` (formats byte-identical, meanings changed);
+`flightreport.py` parses v1–v4 and warns on pre-v4. Deploy is GS-only and
+config-before-binary: `grep -nE '"(attrib|s3_residual_confirm_ms)"'
+/etc/maburgs.json` and delete any hit before starting the new binary,
+or maburgs crash-loops at 2 s.
 
 On the drone, RCF drain is decoupled from the agent tick
 (`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop

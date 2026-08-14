@@ -117,12 +117,13 @@ struct LinkHealth {
   // legal value (no SNR known this window) and leaves the trigger inert.
   double rf_snr_db = std::numeric_limits<double>::quiet_NaN();
   bool probe_allowed = false;  // peer advertised CAP_S3_PROBE
-  // Label only: the s1 EVM (dB) of the card that supplied rf_snr_db. NaN when
-  // unsampled. Deliberately NOT a decision input — raw EVM is
-  // op-point-dependent (docs/evm-sweep-findings-2026-08-10.md).
+  // Label only: the RF EVM (dB, s1+s3 pooled) of the card that supplied
+  // rf_snr_db. NaN when unsampled. Deliberately NOT a decision input — raw
+  // EVM is op-point-dependent (docs/evm-sweep-findings-2026-08-10.md).
   double rf_evm_db = std::numeric_limits<double>::quiet_NaN();
-  // s1 RSSI (dBm) of the same card, the second half of the Part B fade
-  // trigger's joint condition. NaN = unsampled, which leaves it inert.
+  // RF RSSI (dBm, s1+s3 pooled) of the same card, the second half of the
+  // Part B fade trigger's joint condition. NaN = unsampled, which leaves it
+  // inert.
   double rf_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
 };
 

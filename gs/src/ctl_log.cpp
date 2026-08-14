@@ -63,7 +63,7 @@ CtlLog::CtlLog(const std::string& dir, const std::string& header_info) {
   }
   // Line-buffered: a power cut loses at most the current line.
   std::setvbuf(f_, nullptr, _IOLBF, 0);
-  std::fprintf(f_, "ctllog 3 %s\n", header_info.c_str());
+  std::fprintf(f_, "ctllog 4 %s\n", header_info.c_str());
 }
 
 CtlLog::~CtlLog() {
