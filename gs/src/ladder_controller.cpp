@@ -244,6 +244,43 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 
   last_feedback_ms_ = now_ms;
 
+  // Part B EWMA feed. Kept HERE, above every decision block, and not next to
+  // the trigger in 4b: the residual demote in block 4 returns early, which is
+  // exactly the loss phase of a fade, and a feed that only happens on ticks
+  // that reach 4b freezes fade_drssi/fade_dsnr (sideport link.ctl.fade, the
+  // ctl-log S line) through the episodes this feature will be tuned from —
+  // then applies the whole multi-second gap as one dt step (review finding
+  // 2026-08-14). Nothing between here and 4b reads the EWMAs, so the decision
+  // ordering contract in 4b is untouched.
+  //
+  // The starved and !sample_valid paths above still do not feed. Both withhold
+  // every decision, both usually carry NaN labels anyway (the per-window RF
+  // staleness gate NaNs them when no card measured s1), and feed()'s alphas
+  // are dt-derived, so skipping a run of ticks and applying the next sample
+  // with the larger dt is the same continuous-time EWMA answer.
+  //
+  // A label-source card hop re-baselines instead of feeding: both labels step
+  // together to the new card's level, which is indistinguishable from a fade
+  // (review finding 2026-08-14). Dropping the history costs a fade in
+  // progress its accumulated delta, which errs toward NOT demoting — the same
+  // direction every other conservatism in this block points. It deliberately
+  // does not touch fade_latched_: a hop is not evidence of recovery.
+  //
+  // Only a tick that actually CARRIES a label can change the label source: a
+  // window where no card measured s1 reports card -1 with NaN labels, and
+  // treating that as a hop would re-baseline on every stale window — on a
+  // marginal link, often enough to disable the trigger outright.
+  const bool has_rf =
+      !std::isnan(h.s1_rssi_dbm) || !std::isnan(h.s1_snr_db);
+  if (has_rf && h.s1_label_card != fade_card_) {
+    fade_card_ = h.s1_label_card;
+    fade_rssi_ = FadeEwma{};
+    fade_snr_ = FadeEwma{};
+    fade_trig_start_ms_ = -1.0;
+  }
+  if (!std::isnan(h.s1_rssi_dbm)) fade_rssi_.feed(h.s1_rssi_dbm, now_ms);
+  if (!std::isnan(h.s1_snr_db)) fade_snr_.feed(h.s1_snr_db, now_ms);
+
   pre_fec_loss_ = h.pre_fec_loss;
   u_ = h.pre_fec_loss / budget();
 
@@ -294,9 +331,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // Never books probation-fail or penalty: this is rung-independent RF
   // evidence, not proof the rung was marginal.
   // Ordering is a spec contract: after block 4 (residual wins the tick) and
-  // before 5a (fade beats the confirm-window tiers).
-  if (!std::isnan(h.s1_rssi_dbm)) fade_rssi_.feed(h.s1_rssi_dbm, now_ms);
-  if (!std::isnan(h.s1_snr_db)) fade_snr_.feed(h.s1_snr_db, now_ms);
+  // before 5a (fade beats the confirm-window tiers). The EWMA feed itself
+  // lives above block 4 — see the comment there.
   if (cfg_.fade.predict) {
     const bool measurable =
         !std::isnan(h.s1_rssi_dbm) && !std::isnan(h.s1_snr_db) &&
@@ -486,7 +522,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   if (cfg_.s3_demote && s3_live) {
     if (u3_ > s3_util_threshold()) {
       if (s3_util_start_ms_ < 0.0) s3_util_start_ms_ = now_ms;
-      if (idx_ > 0 && now_ms - s3_util_start_ms_ >= eff_confirm_ms(now_ms) &&
+      if (idx_ > 0 &&
+          now_ms - s3_util_start_ms_ >= eff_s3_util_confirm_ms(now_ms) &&
           now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
         s3_demote_now(CtlReason::S3Util, counters_.demotes_s3_util);
         return true;

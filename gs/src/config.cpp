@@ -254,7 +254,7 @@ Config load_config(const std::string& path) {
 
     if (r.contains("attrib")) {
       if (!r["attrib"].is_boolean()) fail("link.attrib", "not a boolean");
-      c.link.attrib = r["attrib"].get<bool>();
+      lc.attrib = r["attrib"].get<bool>();
     }
 
     if (r.contains("rung_stats")) {

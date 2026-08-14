@@ -605,7 +605,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // all-stale window must still count as feedback (a cur-based valid
     // would un-stamp last_feedback_ms_ and could walk into the blind-side
     // timeout during a long boundary).
-    const bool attrib = cfg.link.attrib;
+    const bool attrib = cfg.link.ladder_cfg.attrib;
     maburgs::LinkHealth health{
         s1_sample.valid,
         attrib ? (s1_cur_sample.valid ? s1_cur_sample.loss : 0.0)
@@ -623,6 +623,13 @@ static int run_radio(const maburgs::Config& cfg) {
     health.s1_snr_db = s1_snr_db;
     health.s1_evm_db = s1_evm_db;
     health.s1_rssi_dbm = s1_rssi_dbm;
+    // WHICH card those three came from: the argmax above re-runs every window
+    // and does not stick, so the source can hop to a weaker sibling and step
+    // both labels down together — the fade trigger's joint condition exactly.
+    // The controller re-baselines its EWMAs on a change (review finding
+    // 2026-08-14). -1 (no card measured s1) rides along with the NaN labels
+    // and is deliberately NOT treated as a hop.
+    health.s1_label_card = s1_best_card;
     // Artifact-rate meter: a window the legacy instant demote would have
     // acted on (total residual > 0, rung > 0) that the attributed view
     // reads clean. Counted regardless of the switch so an attrib=false
@@ -749,7 +756,7 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.op = vrx.cur_op();
       sin.deadline_ms = cfg.fec.decode_deadline_ms;
       sin.residual_loss = residual;
-      sin.attrib_on = cfg.link.attrib;
+      sin.attrib_on = cfg.link.ladder_cfg.attrib;
       sin.attrib_suppressed = attrib_suppressed;
       sin.residual_cur = residual_cur;
       if (const double cms = agg.decoder().last_boundary_close_ms(1); cms >= 0)

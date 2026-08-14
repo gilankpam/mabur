@@ -66,11 +66,11 @@ struct LinkCfg {
   bool ctl_log = false;
   std::string ctl_log_dir = "/media/dvr";
 
-  // Transition-attribution kill switch (spec 2026-08-14): true = the
-  // ladder's demote inputs read current-rung-only loss (stale transition
-  // debris excluded); false = legacy totals, byte-for-byte pre-attribution
-  // behavior. Bookkeeping/export runs either way.
-  bool attrib = true;
+  // NOTE: the transition-attribution kill switch (`link.attrib`, spec
+  // 2026-08-14) lives in ladder_cfg.attrib, not here. main.cpp picks the
+  // loss numbers it feeds the controller from it, and the controller itself
+  // reads it to decide whether the fade regime may shorten the s3-residual
+  // confirm — one home, so the two can never disagree.
 
   // R-line emission cadence for the per-rung EWMA store (spec 2026-08-13).
   // The store's own tuning (half_life_samples) lives in

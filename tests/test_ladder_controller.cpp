@@ -1208,3 +1208,143 @@ TEST(fade_predict_latch_survives_nan_blip) {
   CHECK(ctl.counters().demotes_fade == 1);
   CHECK(ctl.rung() == after_first);
 }
+
+// --- final whole-branch review, 2026-08-14 ---
+
+// Finding 1. With transition attribution OFF (`link.attrib: false`, a shipped
+// one-line revert) the demote inputs carry pre-transition FEC debris again,
+// and CLAUDE.md's standing tuning invariant applies: s3_settle_ms (300) and
+// s3_residual_confirm_ms (500) must not both sit near their floors, or a rung
+// transition's own re-key artifacts satisfy the confirm and self-demote. The
+// fade regime shortens the confirm to 100 ms, which is exactly that
+// configuration — measured: one genuine demote cascaded 4 -> 0 in 1.6 s on
+// pure debris. The regime must therefore keep the FULL confirm whenever
+// attribution is off; the debris it relies on is not being attributed away.
+TEST(attrib_off_keeps_full_s3_resid_confirm_in_fade_regime) {
+  // Debris model: every rung transition leaves s3 residual positive for the
+  // width of the 500 ms residual window (the ~200 ms that outlives the 300 ms
+  // s3_settle_ms blank is what the confirm window then sees). Returns how
+  // many FOLLOW-ON demotes the debris alone produced after one genuine
+  // confirmed util demote.
+  auto follow_on_demotes = [](bool attrib) {
+    LadderCfg cfg = make_cfg();
+    cfg.attrib = attrib;
+    LadderController ctl(cfg);
+    double t = 0;
+    promote_to(ctl, t, 4);
+    feed_for(ctl, t, cfg.probation_ms + 200, 0.3);  // retire probation
+    REQUIRE(ctl.probation_ms_left(t) == 0);
+    const double bad = 0.9 * ctl.budget();  // u = 0.9 > down_util
+    double last_change = -1;
+    for (int i = 0; i < 40 && last_change < 0; ++i, t += 50)
+      if (ctl.update(ok(bad), t)) last_change = t;
+    REQUIRE(last_change > 0);
+    REQUIRE(ctl.fade_active(last_change));  // the regime really did arm
+    int follow_on = 0;
+    for (double end = t + 4000; t < end; t += 50) {
+      // s1 perfectly clean throughout; only transition debris on s3.
+      const double debris = (t - last_change < 500.0) ? 0.02 : 0.0;
+      if (ctl.update(ok3(0.0, 0.0, debris), t)) {
+        ++follow_on;
+        last_change = t;
+      }
+    }
+    return follow_on;
+  };
+  // The stimulus really is capable of cascading: with attribution on (the
+  // premise that makes the shortened confirm safe) main.cpp would never
+  // present this debris, but the controller acts on whatever it is handed.
+  CHECK(follow_on_demotes(true) > 0);
+  // ... and with attribution off it must not, however open the regime is.
+  CHECK(follow_on_demotes(false) == 0);
+}
+
+// Finding 3. select_s1_label_card() re-runs its argmax every window and
+// deliberately does not stick, so a front-end that wedges for ~1 s hands the
+// s1 labels to a weaker sibling card. Both labels then step down together —
+// bit for bit the joint condition the trigger looks for. The card id carried
+// in LinkHealth re-baselines the EWMAs on a change, so a hop reads as a new
+// reference rather than as a fade.
+TEST(fade_label_card_hop_rebaselines_instead_of_firing) {
+  auto fires_after_step = [](int post_card) {
+    LadderCfg cfg = make_cfg();
+    LadderController ctl(cfg);
+    double t = 0;
+    promote_to(ctl, t, 5);
+    auto sample = [&](double snr, double rssi, int card) {
+      LinkHealth h = rf(0.3 * ctl.budget(), snr, rssi);
+      h.s1_label_card = card;
+      return h;
+    };
+    for (double end = t + 3200; t < end; t += 50)
+      ctl.update(sample(33.0, -55.0, 0), t);
+    int fires = 0;
+    for (double end = t + 3000; t < end; t += 50)
+      if (ctl.update(sample(27.0, -67.0, post_card), t)) ++fires;
+    return fires;
+  };
+  CHECK(fires_after_step(0) == 1);  // same card: a genuine 12/6 dB fade fires
+  CHECK(fires_after_step(1) == 0);  // identical step across a card hop: inert
+}
+
+// Finding 5. The EWMA feed used to sit below block 4's residual-demote
+// return, so it was skipped during exactly the loss phase of a fade and
+// fade_drssi/fade_dsnr (sideport link.ctl.fade, ctl-log S line) froze at
+// stale values through the episodes the feature will be tuned from.
+TEST(fade_ewmas_feed_on_a_residual_demote_tick) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  for (double end = t + 3200; t < end; t += 50)
+    ctl.update(rf(0.3 * ctl.budget(), 33.0, -55.0), t);
+  const double before = ctl.fade_drssi();
+  REQUIRE(before < 1.0);
+  LinkHealth h = rf(0.0, 25.0, -70.0);
+  h.residual_loss = 0.01;  // instant residual demote: returns before block 4b
+  REQUIRE(ctl.update(h, t));
+  CHECK(ctl.last_event().reason == CtlReason::Residual);
+  CHECK(ctl.fade_drssi() > before + 1.0);
+  CHECK(ctl.fade_dsnr() > 0.0);
+}
+
+// Same finding, swept to its sibling: the s3 UTIL confirm sits behind the
+// same s3_settle_ms blank as the s3 residual one, so the debris it can see is
+// truncated to the same ~200 ms — which lands between the in-regime confirm
+// (100 ms) and the legacy one (confirm_ms, 250). u3 is scored against s3's
+// small budget, so post-transition debris clears s3_down_util easily. The
+// regime must therefore keep the legacy window here too when attribution is
+// off. (The s1 util path in the same block is NOT guarded: it has no blanking
+// at all, so its legacy 250 ms window already sits inside the 500 ms debris
+// residency and amplitude, not duration, decides it.)
+TEST(attrib_off_keeps_full_s3_util_confirm_in_fade_regime) {
+  auto follow_on_demotes = [](bool attrib) {
+    LadderCfg cfg = make_cfg();
+    cfg.attrib = attrib;
+    cfg.s3_demote = true;
+    LadderController ctl(cfg);
+    double t = 0;
+    promote_to(ctl, t, 4);
+    feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
+    REQUIRE(ctl.probation_ms_left(t) == 0);
+    const double bad = 0.9 * ctl.budget();
+    double last_change = -1;
+    for (int i = 0; i < 40 && last_change < 0; ++i, t += 50)
+      if (ctl.update(ok(bad), t)) last_change = t;
+    REQUIRE(last_change > 0);
+    REQUIRE(ctl.fade_active(last_change));
+    int follow_on = 0;
+    for (double end = t + 4000; t < end; t += 50) {
+      // Pre-FEC s3 debris only — no residual, so this exercises the util
+      // path in 5b rather than the residual path in 5a. s1 stays clean.
+      const double debris = (t - last_change < 500.0) ? 0.2 : 0.0;
+      if (ctl.update(ok3(0.0, debris), t)) {
+        ++follow_on;
+        last_change = t;
+      }
+    }
+    return follow_on;
+  };
+  CHECK(follow_on_demotes(true) > 0);
+  CHECK(follow_on_demotes(false) == 0);
+}

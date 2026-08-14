@@ -575,15 +575,17 @@ TEST(rung_stats_parses_and_validates) {
 
 // link.attrib: transition-attribution kill switch (spec 2026-08-14).
 // Default true (attribution on); explicit false = legacy totals; must be
-// boolean-typed like ctl_log/s3_demote.
+// boolean-typed like ctl_log/s3_demote. It parses into ladder_cfg (the
+// controller reads it too — see eff_s3_resid_confirm_ms), not into a
+// separate LinkCfg field that could drift from it.
 TEST(link_attrib_defaults_true) {
   auto cfg = maburgs::load_config(write_tmp(R"({"link": {}})"));
-  CHECK(cfg.link.attrib);
+  CHECK(cfg.link.ladder_cfg.attrib);
 }
 
 TEST(link_attrib_explicit_false) {
   auto cfg = maburgs::load_config(write_tmp(R"({"link": {"attrib": false}})"));
-  CHECK(!cfg.link.attrib);
+  CHECK(!cfg.link.ladder_cfg.attrib);
 }
 
 TEST(link_attrib_rejects_non_boolean) {
