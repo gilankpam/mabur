@@ -1259,34 +1259,6 @@ TEST(attrib_off_keeps_full_s3_resid_confirm_in_fade_regime) {
   CHECK(follow_on_demotes(false) == 0);
 }
 
-// Finding 3. select_label_card() re-runs its argmax every window and
-// deliberately does not stick, so a front-end that wedges for ~1 s hands the
-// s1 labels to a weaker sibling card. Both labels then step down together —
-// bit for bit the joint condition the trigger looks for. The card id carried
-// in LinkHealth re-baselines the EWMAs on a change, so a hop reads as a new
-// reference rather than as a fade.
-TEST(fade_label_card_hop_rebaselines_instead_of_firing) {
-  auto fires_after_step = [](int post_card) {
-    LadderCfg cfg = make_cfg();
-    LadderController ctl(cfg);
-    double t = 0;
-    promote_to(ctl, t, 5);
-    auto sample = [&](double snr, double rssi, int card) {
-      LinkHealth h = rf(0.3 * ctl.budget(), snr, rssi);
-      h.s1_label_card = card;
-      return h;
-    };
-    for (double end = t + 3200; t < end; t += 50)
-      ctl.update(sample(33.0, -55.0, 0), t);
-    int fires = 0;
-    for (double end = t + 3000; t < end; t += 50)
-      if (ctl.update(sample(27.0, -67.0, post_card), t)) ++fires;
-    return fires;
-  };
-  CHECK(fires_after_step(0) == 1);  // same card: a genuine 12/6 dB fade fires
-  CHECK(fires_after_step(1) == 0);  // identical step across a card hop: inert
-}
-
 // Finding 5. The EWMA feed used to sit below block 4's residual-demote
 // return, so it was skipped during exactly the loss phase of a fade and
 // fade_drssi/fade_dsnr (sideport link.ctl.fade, ctl-log S line) froze at

@@ -134,15 +134,6 @@ struct LinkHealth {
   // s1 RSSI (dBm) of the same card, the second half of the Part B fade
   // trigger's joint condition. NaN = unsampled, which leaves it inert.
   double rf_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
-  // WHICH card supplied the three labels above (index, or -1 for "none/not
-  // tracked"). select_label_card() re-runs its argmax every window and
-  // deliberately does not stick, so the label source can hop to a weaker
-  // sibling card mid-flight — both labels then step down together, which is
-  // bit for bit the fade trigger's joint condition (review finding
-  // 2026-08-14). A change here re-baselines the fade EWMAs; a caller that
-  // never sets it (every legacy positional brace-init) leaves it at -1 and
-  // sees the pre-existing behaviour verbatim.
-  int s1_label_card = -1;
 };
 
 enum class CtlReason {
@@ -374,11 +365,6 @@ class LadderController {
   double fade_until_ms_ = -1e18;
 
   FadeEwma fade_rssi_, fade_snr_;
-  // Label source the EWMAs above were last fed from (LinkHealth::
-  // s1_label_card). A change re-baselines them: a card hop steps both labels
-  // together and would otherwise read as a fade. -1 matches the LinkHealth
-  // default, so a caller that never sets the field never re-baselines.
-  int fade_card_ = -1;
   double fade_trig_start_ms_ = -1.0;  // -1 = no sustained run
   // One predictive fire per fade EVENT. The slow baseline falls at tau 20 s,
   // so delta() stays over threshold for many seconds after a fade demote and

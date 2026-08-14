@@ -259,25 +259,6 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // are dt-derived, so skipping a run of ticks and applying the next sample
   // with the larger dt is the same continuous-time EWMA answer.
   //
-  // A label-source card hop re-baselines instead of feeding: both labels step
-  // together to the new card's level, which is indistinguishable from a fade
-  // (review finding 2026-08-14). Dropping the history costs a fade in
-  // progress its accumulated delta, which errs toward NOT demoting — the same
-  // direction every other conservatism in this block points. It deliberately
-  // does not touch fade_latched_: a hop is not evidence of recovery.
-  //
-  // Only a tick that actually CARRIES a label can change the label source: a
-  // window where no card measured s1 reports card -1 with NaN labels, and
-  // treating that as a hop would re-baseline on every stale window — on a
-  // marginal link, often enough to disable the trigger outright.
-  const bool has_rf =
-      !std::isnan(h.rf_rssi_dbm) || !std::isnan(h.rf_snr_db);
-  if (has_rf && h.s1_label_card != fade_card_) {
-    fade_card_ = h.s1_label_card;
-    fade_rssi_ = FadeEwma{};
-    fade_snr_ = FadeEwma{};
-    fade_trig_start_ms_ = -1.0;
-  }
   if (!std::isnan(h.rf_rssi_dbm)) fade_rssi_.feed(h.rf_rssi_dbm, now_ms);
   if (!std::isnan(h.rf_snr_db)) fade_snr_.feed(h.rf_snr_db, now_ms);
 

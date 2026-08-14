@@ -627,13 +627,6 @@ static int run_radio(const maburgs::Config& cfg) {
     health.rf_snr_db = rf_snr_db;
     health.rf_evm_db = rf_evm_db;
     health.rf_rssi_dbm = rf_rssi_dbm;
-    // WHICH card those three came from: the argmax above re-runs every window
-    // and does not stick, so the source can hop to a weaker sibling and step
-    // both labels down together — the fade trigger's joint condition exactly.
-    // The controller re-baselines its EWMAs on a change (review finding
-    // 2026-08-14). -1 (no card measured s1) rides along with the NaN labels
-    // and is deliberately NOT treated as a hop.
-    health.s1_label_card = best_card;
     // Artifact-rate meter: a window the legacy instant demote would have
     // acted on (total residual > 0, rung > 0) that the attributed view
     // reads clean. Counted regardless of the switch so an attrib=false
