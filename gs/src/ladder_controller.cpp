@@ -303,11 +303,20 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
         fade_rssi_.has && fade_snr_.has;
     const bool over = measurable && fade_rssi_.delta() >= cfg_.fade.rssi_db &&
                       fade_snr_.delta() >= cfg_.fade.snr_db;
-    if (!over) {
-      // Recovery: the condition falling back under threshold both breaks the
-      // sustain run and re-arms the latch for the NEXT fade event.
-      fade_trig_start_ms_ = -1.0;
+    // OBSERVED recovery — both deltas measurably back under threshold — is the
+    // only thing that re-arms the latch, and it is deliberately NOT the !over
+    // branch below. !over is also true on a NaN tick, and absence of evidence
+    // is not evidence of recovery: one telemetry gap mid-fade (Task 4's
+    // staleness gate NaNs these labels on purpose) would release the brake and
+    // let the same ongoing fade fire a second demote trigger_ms later.
+    // Breaking the pre-fire sustain run on !over errs toward NOT demoting;
+    // clearing the post-fire latch there would invert that conservatism.
+    if (measurable && fade_rssi_.delta() < cfg_.fade.rssi_db &&
+        fade_snr_.delta() < cfg_.fade.snr_db) {
       fade_latched_ = false;
+    }
+    if (!over) {
+      fade_trig_start_ms_ = -1.0;
     } else {
       if (fade_trig_start_ms_ < 0.0) fade_trig_start_ms_ = now_ms;
       if (!fade_latched_ && idx_ > 0 && idx_ >= cfg_.fade.min_rung &&

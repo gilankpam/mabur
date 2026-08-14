@@ -1179,3 +1179,32 @@ TEST(fade_predict_rearms_after_recovery) {
   CHECK(ctl.counters().demotes_fade == 2);
   CHECK(ctl.rung() == after_first - 1);
 }
+
+TEST(fade_predict_latch_survives_nan_blip) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 5);
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // Fade event fires once.
+  for (double end = t + 2000; t < end; t += 50)
+    ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t);
+  REQUIRE(ctl.counters().demotes_fade == 1);
+  const int after_first = ctl.rung();
+  // A NaN telemetry blip mid-fade is absence of evidence, not evidence of
+  // recovery — the RF condition is still genuinely over threshold either side
+  // of it (Task 4's staleness gate NaNs these labels deliberately). Breaking
+  // the sustain run on it is conservative; releasing the latch would not be.
+  CHECK(!ctl.update(ok(0.3 * ctl.budget()), t));  // ok() leaves the RF labels NaN
+  t += 50;
+  REQUIRE(ctl.fade_drssi() >= cfg.fade.rssi_db);
+  REQUIRE(ctl.fade_dsnr() >= cfg.fade.snr_db);
+  // The same fade continues: the latch must still hold.
+  int fires = 0;
+  for (double end = t + 2000; t < end; t += 50)
+    if (ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t)) ++fires;
+  CHECK(fires == 0);
+  CHECK(ctl.counters().demotes_fade == 1);
+  CHECK(ctl.rung() == after_first);
+}

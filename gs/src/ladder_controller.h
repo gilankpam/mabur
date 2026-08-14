@@ -304,8 +304,9 @@ class LadderController {
   // One predictive fire per fade EVENT. The slow baseline falls at tau 20 s,
   // so delta() stays over threshold for many seconds after a fade demote and
   // the sustain run would otherwise re-accrue every trigger_ms (300) —
-  // min_between_changes_ms (150) is no spacing gate. Cleared only when the
-  // condition falls back under threshold, i.e. by recovery.
+  // min_between_changes_ms (150) is no spacing gate. Cleared ONLY by an
+  // observed recovery — a measurable tick with both deltas back under
+  // threshold — never by a NaN tick, which says nothing either way.
   bool fade_latched_ = false;
 
   bool probation_active_ = false;
