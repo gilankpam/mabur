@@ -357,8 +357,13 @@ def find_episodes(E, gap_ms=3000):
 
 def attribution_misses(E, window_ms=200):
     """Residual demotes firing within window_ms of ANY earlier E line.
-    With link.attrib on this should be ~zero; hits mean the transition
-    watermark missed a debris class (spec 2026-08-14 fade-demote §5)."""
+    Attribution is unconditional since 2026-08-15 (link.attrib was removed
+    and now fails boot; before that date it was a default-on kill switch),
+    so on any recording this should be ~zero; hits mean the transition
+    watermark missed a debris class (spec 2026-08-14 fade-demote §5). This
+    canary only scores `reason == "residual"` (s1); it does not cover the
+    s3-residual sliding-window mechanism described in the 2026-08-15 spec
+    §9 / CLAUDE.md — see find_episodes() for that split instead."""
     out = []
     for i, ev in enumerate(E):
         if ev["reason"] != "residual" or ev["to"] >= ev["from"]:
