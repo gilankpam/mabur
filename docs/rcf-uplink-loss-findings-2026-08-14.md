@@ -112,16 +112,21 @@ against high-airtime rungs.
   requests, and any future GS→drone command. Design accordingly — a
   single-shot uplink command has a 30–50% chance of waiting ≥50 ms.
 - **Remediation candidates:**
-  1. ~~Enable CCA at the GS so injection defers into the drone's
-     inter-burst gaps.~~ **TESTED SAME DAY — MAKES IT WORSE. See §6.**
-  2. Repeat the RCF a few times back-to-back (or at ~10 ms) after an op
+  1. ~~Enable CCA at the GS only.~~ **TESTED — WORSE than nothing
+     (aligned collisions). See §6.**
+  2. Enable CCA on BOTH sides — **TESTED, works partially: +15–22
+     delivery points, close_ms median 49.5, zero video cost on the
+     clean bench. But it re-exposes the video downlink to co-channel
+     deferral (the 2026-08-05 CCA-off rationale), so it needs the
+     congested-channel A/B before becoming the default. See §6.**
+  3. Repeat the RCF a few times back-to-back (or at ~10 ms) after an op
      change until the drone's telemetry echoes the new op
-     (`drone.applied` generation) — cheapest, bounded extra airtime.
-  3. Time RCF injection into the gap right after a received video frame
-     burst (the drone has just stopped transmitting) — bigger win,
-     more machinery, and §6 suggests naive burst-end timing has the
-     same aligned-collision failure mode as CCA.
-  4. Accept it: the ladder already tolerates the latency; close_ms just
+     (`drone.applied` generation) — cheapest, bounded extra airtime,
+     orthogonal to (and composable with) the CCA decision.
+  4. Time RCF injection into the gap right after a received video frame
+     burst — §6's GS-only arm shows naive burst-edge timing has the
+     aligned-collision failure mode; aim mid-gap if ever built.
+  5. Accept it: the ladder already tolerates the latency; close_ms just
      measures it now. Document and move on.
 - Anyone tuning `feedback_ms` should know it is also the uplink retry
   quantum — halving it roughly halves the loss-induced actuation delay
@@ -147,42 +152,64 @@ against high-airtime rungs.
   is attributed to telem/MSP TX airtime above, but that attribution is
   an inference, not a measurement.
 
-## 6. A/B: GS carrier sense ON — tested and REFUTED as a fix (2026-08-14)
+## 6. A/B: carrier sense re-enabled — GS-only REFUTED, both-sides helps
 
-The obvious counter-move — flip `dev_cfg.tuning.disable_cca` to false at
-the GS (`gs/src/radio_frontend.cpp:127`) so control injection defers
-around the drone's bursts — was built (GS-only, one-line, test binary
-`maburgs.cca-test` left on the GS), deployed, and measured with the
-identical 6-climb protocol, then rolled back. It made everything worse:
+Both arms used the identical 6-climb protocol and were rolled back to
+stock afterwards. One-line flips of `dev_cfg.tuning.disable_cca`
+(`gs/src/radio_frontend.cpp:127`, `drone/src/main.cpp:683`); test
+binaries kept: `maburgs.cca-test` on the GS, `maburd.cca-test` in the
+drone's tmpfs `/tmp` (lost on reboot; rebuildable from the one-line
+flip).
 
-| rung | delivery CCA-off | delivery CCA-on |
-|------|------------------|-----------------|
-| 0 | 59% | 56% |
-| 1 | 55% | 46% |
-| 2 | 56% | 31% |
-| 3 | 51% | 23% |
-| 4 | 59% | 39% |
-| 5 (park) | 69% | 59% |
+| rung | delivery CCA-off | GS-only CCA | both-sides CCA |
+|------|------------------|-------------|----------------|
+| 0 | 59% | 56% | **82%** |
+| 1 | 55% | 46% | **76%** |
+| 2 | 56% | 31% | **69%** |
+| 3 | 51% | 23% | **66%** |
+| 4 | 59% | 39% | **73%** |
+| 5 (park) | 69% | 59% | **81%** |
 
-close_ms (n=26): median **169.5** ms, mean 180, max 365 — vs 64.5/72.5/163
-with CCA off. GS `tx_pps` unchanged (~20.5/s) and `tx_fail` = 0 in both
-arms, so every frame aired; the extra loss is at the drone's receiver.
+close_ms: CCA-off n=24 median 64.5 / mean 72.5 / max 163; GS-only n=26
+median **169.5** / 180 / 365; both-sides n=24 median **49.5** / 67.2 /
+215 — with →5 boundaries collapsing to a tight 12–29 ms fast-path
+cluster (12, 12, 19, 23, 26, 29). GS `tx_pps` ~20.5/s and `tx_fail` = 0
+in every arm: every frame aired; all loss differences are at the drone's
+receiver.
 
-Interpretation (mechanism-consistent, not separately proven): deferral
-does not randomize collisions, it ALIGNS them. The GS now waits out each
-drone burst and transmits the moment the medium goes idle — but the
-drone is still CCA-off with a backlog at high airtime, so its next MPDU
-launches right into the GS's now-synchronized RCF. Random-phase loss
-(p ≈ airtime) became aligned loss at burst boundaries, worst exactly at
-the densest-traffic rungs (rung 3: 51% → 23%). One-sided politeness is
-worse than none. Any timing-based fix must target the middle of a
-verified gap, not the edge of a burst.
+**GS-only is worse than nothing.** Deferral does not randomize
+collisions, it ALIGNS them: the GS waits out each drone burst and
+transmits the moment the medium goes idle, but a CCA-off drone with a
+backlog launches its next MPDU right into the now-synchronized RCF.
+Random-phase loss (p ≈ airtime) became aligned loss at burst
+boundaries, worst at the densest rungs (rung 3: 51% → 23%). Any future
+timing-based fix must target the middle of a verified gap, not the edge
+of a burst.
 
-Two incidental observations from the CCA-on runs, recorded for
-completeness: →1 boundaries exported close_ms samples under CCA-on
-(they never have under CCA-off, §5) — unexplained; and video/downlink
-stayed clean throughout (ausniff 60.5 fps, 0 gaps), as expected since
-the drone side was untouched.
+**Both-sides is a real but partial fix**: +15–22 delivery points at
+every rung and the →5 fast path restored, because the drone now defers
+its next burst start while an RCF is on air — closing exactly the
+aligned-collision mode. Residual 20–35% loss at climb rungs remains
+(slot-aligned starts CSMA cannot arbitrate, plus mid-burst arrivals).
+**Video cost on the clean bench: none measurable** — fps mean 59.5 /
+min ~55 (climb transients), residual mean 0.0013→0.0016, RX pps
+identical, ausniff clean throughout.
+
+⚠ Decision caveat: this does NOT simply overturn the 2026-08-05 CCA-off
+decision. The bench is a clean channel; the original rationale was
+41–45% injection deferral against CO-CHANNEL 802.11, and both-sides CCA
+re-exposes the video downlink to exactly that in congested
+environments. What this measures is the OTHER side of that trade: on a
+clean channel, CCA-off costs ~15–22 points of uplink control delivery
+to self-collision. A congested-channel A/B (the mabur-side bench test
+the 2026-08-05 spec still lists as not-run) is the missing piece before
+changing the shipped default; a per-daemon split (CCA on for the GS's
+20 pps control, off for the drone's video) is NOT viable — that is
+precisely the GS-only arm refuted above.
+
+Incidental observations: →1 boundaries exported close_ms samples in
+both CCA-on arms but never under CCA-off (§5) — unexplained;
+climb-transient residual spikes (~0.23 max) appear equally in all arms.
 
 ## 7. Repro / method
 
