@@ -1201,19 +1201,15 @@ TEST(fade_ewmas_feed_on_a_residual_demote_tick) {
   CHECK(ctl.fade_dsnr() > 0.0);
 }
 
-// Same finding, swept to its sibling: the s3 UTIL confirm sits behind the
-// same s3_settle_ms blank as the s3 residual one, so the debris it can see is
-// truncated to the same ~200 ms — which lands between the in-regime confirm
-// (100 ms) and the legacy one (confirm_ms, 250). u3 is scored against s3's
-// small budget, so post-transition debris clears s3_down_util easily. The
-// regime must therefore keep the legacy window here too when attribution is
-// off. (The s1 util path in the same block is NOT guarded: it has no blanking
-// at all, so its legacy 250 ms window already sits inside the 500 ms debris
-// residency and amplitude, not duration, decides it.)
-TEST(attrib_off_keeps_full_s3_util_confirm_in_fade_regime) {
-  auto follow_on_demotes = [](bool attrib) {
+// Until 2026-08-15 the fade regime's shortened s3-util confirm was gated on
+// link.attrib: with attribution off, the ~200 ms of debris that outlives
+// s3_settle_ms lands between the in-regime 100 ms confirm and the legacy
+// window, and u3 is scored against s3's much smaller budget so debris
+// clears s3_down_util easily. Attribution is unconditional now, so the
+// guard went with the switch and only the shortening remains.
+TEST(fade_regime_shortens_the_s3_util_confirm) {
+  auto follow_on_demotes = []() {
     LadderCfg cfg = make_cfg();
-    cfg.attrib = attrib;
     cfg.s3_demote = true;
     LadderController ctl(cfg);
     double t = 0;
@@ -1238,6 +1234,5 @@ TEST(attrib_off_keeps_full_s3_util_confirm_in_fade_regime) {
     }
     return follow_on;
   };
-  CHECK(follow_on_demotes(true) > 0);
-  CHECK(follow_on_demotes(false) == 0);
+  CHECK(follow_on_demotes() > 0);
 }

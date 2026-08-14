@@ -88,16 +88,6 @@ struct LadderCfg {
   // does not read as loss.
   int s3_settle_ms = 300;
 
-  // Transition-attribution kill switch (link.attrib, spec 2026-08-14, merged
-  // 148f5a6). The controller does not do the attribution itself — the caller
-  // decides which loss numbers land in LinkHealth — but it must KNOW, because
-  // the fade regime's shortened s3 util confirm is only safe while the
-  // debris of the transition it just made is being attributed away. Lives
-  // here, not in LinkCfg, so the safety is carried by the code rather than by
-  // a documented tuning invariant, and so the two can never disagree. See
-  // eff_s3_util_confirm_ms().
-  bool attrib = true;
-
   // --- per-rung EWMA store (spec 2026-08-13, observe-only) ---
   RungStoreCfg rung_stats;
 
@@ -273,32 +263,23 @@ class LadderController {
   // In-regime replacement for the confirmed-demote window on the s1 util
   // path. The instant s1-residual path, the instant s3-residual path, the
   // s3_settle_ms blanking and min_between_changes_ms are deliberately
-  // untouched. Only this one is unconditional — the s3 util window needs
-  // transition attribution first, see below.
+  // untouched.
   //
-  // This is deliberately NOT guarded the same way as eff_s3_util_confirm_ms()
-  // below: the s1 util path demotes on an AMPLITUDE threshold (u > down_util,
-  // i.e. >10% of raw symbols missing over the loss window) and has no
-  // blanking at all, so debris either clears that bar — in which case the
-  // legacy 250 ms confirm, which sits entirely inside the 500 ms window the
-  // debris occupies, fires too — or it does not, and neither window fires.
+  // The s1 util path demotes on an AMPLITUDE threshold (u > down_util, i.e.
+  // >10% of raw symbols missing over the loss window) and has no blanking at
+  // all, so debris either clears that bar — in which case the legacy 250 ms
+  // confirm, which sits entirely inside the 500 ms window the debris
+  // occupies, fires too — or it does not, and neither window fires.
   // Shortening opens no new duration band there.
   double eff_confirm_ms(double now_ms) const {
     return in_fade_regime(now_ms) ? cfg_.fade.confirm_ms : cfg_.confirm_ms;
   }
-  // The s3 UTIL confirm is a window the regime may NOT shorten without
-  // transition attribution (the s3-residual demote had the same problem
-  // until 2026-08-15, when it became instant and attribution-exact rather
-  // than confirm-guarded — see the s3 residual block in the .cpp). It sits
-  // behind the same s3_settle_ms blank, so the debris it can see is
-  // truncated to the same ~200 ms, which again lands between the in-regime
-  // 100 ms and the legacy window — and u3 is scored against s3's much
-  // smaller budget, so debris clears s3_down_util far more easily than it
-  // clears s1's down_util. Reverts to cfg_.confirm_ms, which is what this
-  // path used before the regime existed.
+  // The s3 util confirm shortens inside the fade regime. The link.attrib
+  // guard this used to carry went away with the switch on 2026-08-15:
+  // attribution is unconditional, so post-transition debris is never in the
+  // input this reads.
   double eff_s3_util_confirm_ms(double now_ms) const {
-    return (in_fade_regime(now_ms) && cfg_.attrib) ? cfg_.fade.confirm_ms
-                                                   : cfg_.confirm_ms;
+    return in_fade_regime(now_ms) ? cfg_.fade.confirm_ms : cfg_.confirm_ms;
   }
 
   // --- Part B predictive fade trigger (spec 2026-08-14 §3) ---

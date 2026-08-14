@@ -989,8 +989,7 @@ def panel_ladder(model, wall):
     body.extend(_ladder_footer_rows(ctl, d.get("t_ms")))
     at = (d.get("link") or {}).get("attrib")
     if at:
-        state = "on" if at.get("on") else "OFF"
-        body.append((f" attrib:{state} sup{_s(at.get('suppressed'))}", []))
+        body.append((f" attrib sup{_s(at.get('suppressed'))}", []))
     fade = (ctl or {}).get("fade") or {}
     if fade.get("active"):
         body.append((" fade:ACTIVE"

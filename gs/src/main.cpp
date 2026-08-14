@@ -293,7 +293,7 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::S1LossWindow s3_loss, s3_resid;
   // Current-rung-only siblings (transition attribution, spec 2026-08-14):
   // same machinery, fed from the attributed counters. The originals stay
-  // as the observability totals and the link.attrib=false decision path.
+  // as the observability totals (residual_loss, the artifact-rate meter).
   maburgs::S1LossWindow s1_loss_cur, s3_loss_cur, s3_resid_cur;
   // Fade-trigger staleness gate (spec 2026-08-14 §3): per-card s1-class
   // frame counts snapshotted once per feedback window (same cadence as
@@ -601,38 +601,30 @@ static int run_radio(const maburgs::Config& cfg) {
       rf_rssi_dbm = ct.rssi_ema - 110.0;
     }
 
-    // link.attrib=true: the controller judges the rung it is on — every
-    // demote input reads the CURRENT-rung (attributed) value; stale
-    // transition debris can no longer fire any demote. false: the legacy
-    // totals, verbatim. sample_valid / s3_valid / s3_expected_syms stay
+    // Every demote input reads the CURRENT-rung (attributed) value; stale
+    // transition debris can no longer fire any demote. Unconditional since
+    // 2026-08-15. sample_valid / s3_valid / s3_expected_syms stay
     // total-based on purpose: they gate "was there traffic at all", and an
     // all-stale window must still count as feedback (a cur-based valid
     // would un-stamp last_feedback_ms_ and could walk into the blind-side
     // timeout during a long boundary).
-    const bool attrib = cfg.link.ladder_cfg.attrib;
     maburgs::LinkHealth health{
         s1_sample.valid,
-        attrib ? (s1_cur_sample.valid ? s1_cur_sample.loss : 0.0)
-               : s1_sample.loss,
-        attrib ? residual_cur.value_or(0.0) : residual.value_or(0.0),
+        s1_cur_sample.valid ? s1_cur_sample.loss : 0.0,
+        residual_cur.value_or(0.0),
         starved};
     health.s3_valid = s3_sample.valid;
-    health.s3_pre_fec_loss = attrib
-                                 ? (s3_cur_sample.valid ? s3_cur_sample.loss : 0.0)
-                                 : s3_sample.loss;
+    health.s3_pre_fec_loss = s3_cur_sample.valid ? s3_cur_sample.loss : 0.0;
     health.s3_residual_loss =
-        attrib ? (s3_rcur_sample.valid ? s3_rcur_sample.loss : 0.0)
-               : (s3_rsample.valid ? s3_rsample.loss : 0.0);
+        s3_rcur_sample.valid ? s3_rcur_sample.loss : 0.0;
     health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
     health.rf_snr_db = rf_snr_db;
     health.rf_evm_db = rf_evm_db;
     health.rf_rssi_dbm = rf_rssi_dbm;
     // Artifact-rate meter: a window the legacy instant demote would have
     // acted on (total residual > 0, rung > 0) that the attributed view
-    // reads clean. Counted regardless of the switch so an attrib=false
-    // run still measures what attribution WOULD have suppressed. Edge-
-    // detected on the latch above: one increment per contiguous suppressed
-    // episode, not once per main-loop pass.
+    // reads clean. Edge-detected on the latch above: one increment per
+    // contiguous suppressed episode, not once per main-loop pass.
     const bool attrib_suppressed_now = vrx.ctl().rung() > 0 &&
                                         residual.value_or(0.0) > 0.0 &&
                                         residual_cur.value_or(0.0) <= 0.0;
@@ -763,7 +755,6 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.op = vrx.cur_op();
       sin.deadline_ms = cfg.fec.decode_deadline_ms;
       sin.residual_loss = residual;
-      sin.attrib_on = cfg.link.ladder_cfg.attrib;
       sin.attrib_suppressed = attrib_suppressed;
       sin.residual_cur = residual_cur;
       if (const double cms = agg.decoder().last_boundary_close_ms(1); cms >= 0)

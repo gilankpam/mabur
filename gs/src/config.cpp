@@ -131,7 +131,7 @@ Config load_config(const std::string& path) {
                 "starved_confirm_ms", "probe_ms", "probe_settle_ms", "probe_max_util",
                 "probe_s3_min_syms", "probe_s3_silence_ms", "s3_demote", "s3_down_util",
                 "s3_settle_ms", "ctl_log", "ctl_log_dir",
-                "attrib", "rung_stats", "fade",
+                "rung_stats", "fade",
                 "rcf_repeat_copies", "rcf_repeat_ms"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
@@ -259,11 +259,6 @@ Config load_config(const std::string& path) {
       c.link.ctl_log = r["ctl_log"].get<bool>();
     }
     c.link.ctl_log_dir = get_str(r, "ctl_log_dir", "/media/dvr", "link");
-
-    if (r.contains("attrib")) {
-      if (!r["attrib"].is_boolean()) fail("link.attrib", "not a boolean");
-      lc.attrib = r["attrib"].get<bool>();
-    }
 
     if (r.contains("rung_stats")) {
       const json& rs = r["rung_stats"];

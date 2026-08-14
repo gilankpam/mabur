@@ -585,27 +585,14 @@ TEST(rung_stats_parses_and_validates) {
   } catch (const std::exception&) {}
 }
 
-// link.attrib: transition-attribution kill switch (spec 2026-08-14).
-// Default true (attribution on); explicit false = legacy totals; must be
-// boolean-typed like ctl_log/s3_demote. It parses into ladder_cfg (the
-// controller reads it too — see eff_s3_util_confirm_ms), not into a
-// separate LinkCfg field that could drift from it.
-TEST(link_attrib_defaults_true) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"link": {}})"));
-  CHECK(cfg.link.ladder_cfg.attrib);
-}
-
-TEST(link_attrib_explicit_false) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"link": {"attrib": false}})"));
-  CHECK(!cfg.link.ladder_cfg.attrib);
-}
-
-TEST(link_attrib_rejects_non_boolean) {
+// Removed 2026-08-15: attribution is unconditional. The switch's remaining
+// value was reproducing pre-attribution numbers, and the instant s3
+// residual demote makes attrib=false unsafe rather than merely different.
+TEST(stale_link_attrib_key_throws) {
   bool threw = false;
-  try {
-    maburgs::load_config(write_tmp(R"({"link": {"attrib": 1}})"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("link.attrib") != std::string::npos;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"attrib\": true}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("attrib") != std::string::npos;
   }
   CHECK(threw);
 }
