@@ -345,6 +345,82 @@ TEST(msp_body_classified_into_msp_class) {
   CHECK(c.cls[int(RfClass::Msp)].has_ema);
 }
 
+// --- s1+s3 pooled RF track (spec 2026-08-15) ---
+// The RF label source and the predictive fade trigger read this instead of
+// cls[S1]: s1+s3 is 97% of frames at the same PHY rate (one-rate ladder,
+// overhead-only differentiation), so the two are statistically homogeneous,
+// while msp/ctrl may carry a different per-rate TX power.
+
+// Minimal SBI body carrying a chosen stream_id. blocks_per_body = 1 so one
+// add() yields exactly one body.
+static std::vector<uint8_t> sbi_body(uint8_t stream_id) {
+  const int block_payload = 32;
+  mabur::SbiPacker packer(block_payload, 1, stream_id);
+  std::vector<uint8_t> env(static_cast<size_t>(block_payload), 0xAB);
+  auto out = packer.add(env.data(), env.size());
+  REQUIRE(out.size() == 1);
+  return out[0];
+}
+
+TEST(rf_pool_folds_s1_and_s3) {
+  Aggregator agg(vec_layers(), 200, 4096, 1);
+  agg.on_rx_body(msg(0, 1, true, sbi_body(1)));
+  agg.on_rx_body(msg(0, 2, true, sbi_body(3)));
+  const auto& c = agg.card(0);
+  CHECK(c.rf_pool.frames == 2);
+  CHECK(c.cls[int(RfClass::S1)].frames == 1);
+  CHECK(c.cls[int(RfClass::S3)].frames == 1);
+  CHECK(c.rf_pool.has_ema);
+  // msg() feeds snr {10,25} and rssi {38,40} on every frame; the tracks fold
+  // the per-frame best chain, so a constant input leaves the EMA exact.
+  CHECK(c.rf_pool.snr_ema == 25.0);
+  CHECK(c.rf_pool.rssi_ema == 40.0);
+  // EVM keeps ClassTrack's per-chain validity semantics: msg() feeds
+  // {-48,-44}, both sampled, best-of = most negative.
+  CHECK(c.rf_pool.evm_has);
+  CHECK(c.rf_pool.evm_a_has);
+  CHECK(c.rf_pool.evm_b_has);
+  CHECK(c.rf_pool.evm_ema == -48.0);
+}
+
+TEST(rf_pool_evm_skips_unsampled_chains) {
+  // 0 and INT8_MIN are "not a sample" (fold_evm); folding them would peg the
+  // EMA at an impossible value. Pool must inherit that, not average zeros.
+  Aggregator agg(vec_layers(), 200, 4096, 1);
+  auto m = msg(0, 1, true, sbi_body(1));
+  m.evm[0] = -30;
+  m.evm[1] = 0;  // not sampled
+  agg.on_rx_body(m);
+  const auto& c = agg.card(0);
+  CHECK(c.rf_pool.evm_a_has);
+  CHECK(!c.rf_pool.evm_b_has);
+  CHECK(c.rf_pool.evm_ema == -30.0);
+}
+
+TEST(rf_pool_excludes_s0_msp_and_ctrl) {
+  Aggregator agg(vec_layers(), 200, 4096, 1);
+  agg.on_rx_body(msg(0, 1, true, sbi_body(0)));                  // s0
+  agg.on_rx_body(msg(0, 2, true, sbi_body(mabur::kMspStreamId)));  // msp
+  agg.on_rx_body(msg(0, 3, true, disc_ack_fixture_wire()));      // ctrl
+  const auto& c = agg.card(0);
+  CHECK(c.rf_pool.frames == 0);
+  CHECK(!c.rf_pool.has_ema);
+  CHECK(c.cls[int(RfClass::S0)].frames == 1);
+  CHECK(c.cls[int(RfClass::Msp)].frames == 1);
+  CHECK(c.cls[int(RfClass::Ctrl)].frames == 1);
+}
+
+TEST(rf_pool_with_no_s3_equals_the_s1_series) {
+  // "s3 unavailable -> s1 only" needs no fallback branch: with no s3 frames
+  // the pool simply contains the s1 samples.
+  Aggregator agg(vec_layers(), 200, 4096, 1);
+  for (uint16_t i = 1; i <= 5; ++i) agg.on_rx_body(msg(0, i, true, sbi_body(1)));
+  const auto& c = agg.card(0);
+  CHECK(c.rf_pool.frames == c.cls[int(RfClass::S1)].frames);
+  CHECK(c.rf_pool.snr_ema == c.cls[int(RfClass::S1)].snr_ema);
+  CHECK(c.rf_pool.rssi_ema == c.cls[int(RfClass::S1)].rssi_ema);
+}
+
 // RC frames (DISC_ACK here) carry their own independent 802.11 seq counter
 // on the drone — a wildly different mac_seq on an interleaved RC frame must
 // not perturb the video seq-gap walk (seq_expected/seq_received/

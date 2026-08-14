@@ -58,6 +58,15 @@ struct CardTrack {
   // Per-RF-class signal tracks (video streams, MSP, ctrl) — pooled EMAs
   // above REMAIN untouched (TxSelector + stderr consume them).
   std::array<ClassTrack, kNumRfClasses> cls{};
+  // s1+s3 pooled RF track (spec 2026-08-15). The RF label source and the
+  // predictive fade trigger read THIS, not cls[S1]. s1+s3 is 97% of frames
+  // and both ride the same PHY rate (one-rate ladder, overhead-only
+  // differentiation), so they are statistically homogeneous; msp/ctrl may
+  // carry a different per-rate TX power and their mix ratio drifts with
+  // rung and shed state. Folded at frame time, NOT blended from
+  // cls[S1]/cls[S3] -- those have different sample rates, so no weighted
+  // average of them is the EMA of the union.
+  ClassTrack rf_pool{};
   // GS-originated RC frames (RCF/DISC, sent to the drone): the GS's own
   // monitor-mode capture hears its own transmission, so these show up on
   // on_rx_body too. Counted here, excluded from every other total
