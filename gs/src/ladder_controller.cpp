@@ -187,8 +187,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 
   // Label only, stashed for every set_event()/end_probe() below. NaN is legal
   // (no SNR known this window) and never influences a decision.
-  snr_now_ = h.s1_snr_db;
-  evm_now_ = h.s1_evm_db;
+  snr_now_ = h.rf_snr_db;
+  evm_now_ = h.rf_evm_db;
 
   // No sample has measured s3 yet this tick, so nothing may be reported for
   // it. Cleared here rather than in block 5a so the promise util3() makes —
@@ -271,15 +271,15 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // treating that as a hop would re-baseline on every stale window — on a
   // marginal link, often enough to disable the trigger outright.
   const bool has_rf =
-      !std::isnan(h.s1_rssi_dbm) || !std::isnan(h.s1_snr_db);
+      !std::isnan(h.rf_rssi_dbm) || !std::isnan(h.rf_snr_db);
   if (has_rf && h.s1_label_card != fade_card_) {
     fade_card_ = h.s1_label_card;
     fade_rssi_ = FadeEwma{};
     fade_snr_ = FadeEwma{};
     fade_trig_start_ms_ = -1.0;
   }
-  if (!std::isnan(h.s1_rssi_dbm)) fade_rssi_.feed(h.s1_rssi_dbm, now_ms);
-  if (!std::isnan(h.s1_snr_db)) fade_snr_.feed(h.s1_snr_db, now_ms);
+  if (!std::isnan(h.rf_rssi_dbm)) fade_rssi_.feed(h.rf_rssi_dbm, now_ms);
+  if (!std::isnan(h.rf_snr_db)) fade_snr_.feed(h.rf_snr_db, now_ms);
 
   pre_fec_loss_ = h.pre_fec_loss;
   u_ = h.pre_fec_loss / budget();
@@ -292,8 +292,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // on the rung it actually measured.
   if (now_ms >= s3_blank_until_ms_) {
     store_.observe_s1(idx_, u_, h.residual_loss > 0.0, now_ms);
-    if (!std::isnan(h.s1_evm_db))
-      store_.observe_evm(idx_, h.s1_evm_db, now_ms);
+    if (!std::isnan(h.rf_evm_db))
+      store_.observe_evm(idx_, h.rf_evm_db, now_ms);
   }
 
   // 4. Residual (post-FEC) loss demotes immediately, exempt from
@@ -335,7 +335,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // lives above block 4 — see the comment there.
   if (cfg_.fade.predict) {
     const bool measurable =
-        !std::isnan(h.s1_rssi_dbm) && !std::isnan(h.s1_snr_db) &&
+        !std::isnan(h.rf_rssi_dbm) && !std::isnan(h.rf_snr_db) &&
         fade_rssi_.has && fade_snr_.has;
     const bool over = measurable && fade_rssi_.delta() >= cfg_.fade.rssi_db &&
                       fade_snr_.delta() >= cfg_.fade.snr_db;

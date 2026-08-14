@@ -5,7 +5,7 @@ namespace maburgs {
 // copies RxAtrib.snr through untouched and aggregator.cpp EMAs the raw
 // value without correcting it, so this is where the wire value becomes
 // what the "snr"/"snr_a"/"snr_b" keys (and any dB-labeled SNR elsewhere,
-// e.g. LinkHealth::s1_snr_db) have always claimed to hold. NOTE: .jsonl
+// e.g. LinkHealth::rf_snr_db) have always claimed to hold. NOTE: .jsonl
 // recorded before this change is on the old (2x) scale and is not
 // numerically comparable to recordings made after it. Multiply by this
 // before showing/logging/deciding anything in dB. Single definition — the

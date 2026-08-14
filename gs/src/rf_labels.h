@@ -8,7 +8,7 @@ namespace maburgs {
 // fields of Aggregator's ClassTrack that the choice depends on, so the choice
 // itself stays pure (no clock, no IO, no Aggregator) and is unit-testable —
 // the main loop is otherwise unreachable from the host suite.
-struct S1CardLabelInput {
+struct CardLabelInput {
   bool has_ema = false;      // card has folded at least one s1 frame ever
   uint64_t frames = 0;       // cumulative s1-class frame count
   uint64_t prev_frames = 0;  // same counter at the previous feedback window
@@ -27,10 +27,10 @@ struct S1CardLabelInput {
 // front-end whose EMA froze high would otherwise outrank a live sibling card
 // forever, blanking the labels on a multi-card GS for as long as it stayed
 // wedged.
-inline int select_s1_label_card(const std::vector<S1CardLabelInput>& cards) {
+inline int select_label_card(const std::vector<CardLabelInput>& cards) {
   int best = -1;
   for (size_t i = 0; i < cards.size(); ++i) {
-    const S1CardLabelInput& c = cards[i];
+    const CardLabelInput& c = cards[i];
     if (!c.has_ema) continue;                 // snr_ema not meaningful yet
     if (c.frames <= c.prev_frames) continue;  // frozen EMA, not a measurement
     if (best < 0 || c.snr_ema > cards[static_cast<size_t>(best)].snr_ema)

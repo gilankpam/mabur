@@ -28,7 +28,7 @@ namespace maburgs {
 //                                                            # per-rung EWMA store snapshot
 //
 // evm_db is the s1 EVM label in dB, nan when unsampled -- label-only, like
-// snr_db (see LinkHealth::s1_evm_db).
+// snr_db (see LinkHealth::rf_evm_db).
 //
 // resid stays the TOTAL residual (abandoned/expected over the whole decode
 // window); resid_cur is its attributed sibling -- the same ratio scored only

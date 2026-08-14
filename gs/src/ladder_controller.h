@@ -125,17 +125,17 @@ struct LinkHealth {
   // looked like when a decision fired, AND — since the Part B predictive fade
   // trigger (spec 2026-08-14) — a decision input in its own right. NaN is a
   // legal value (no SNR known this window) and leaves the trigger inert.
-  double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
+  double rf_snr_db = std::numeric_limits<double>::quiet_NaN();
   bool probe_allowed = false;  // peer advertised CAP_S3_PROBE
-  // Label only: the s1 EVM (dB) of the card that supplied s1_snr_db. NaN when
+  // Label only: the s1 EVM (dB) of the card that supplied rf_snr_db. NaN when
   // unsampled. Deliberately NOT a decision input — raw EVM is
   // op-point-dependent (docs/evm-sweep-findings-2026-08-10.md).
-  double s1_evm_db = std::numeric_limits<double>::quiet_NaN();
+  double rf_evm_db = std::numeric_limits<double>::quiet_NaN();
   // s1 RSSI (dBm) of the same card, the second half of the Part B fade
   // trigger's joint condition. NaN = unsampled, which leaves it inert.
-  double s1_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
+  double rf_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
   // WHICH card supplied the three labels above (index, or -1 for "none/not
-  // tracked"). select_s1_label_card() re-runs its argmax every window and
+  // tracked"). select_label_card() re-runs its argmax every window and
   // deliberately does not stick, so the label source can hop to a weaker
   // sibling card mid-flight — both labels then step down together, which is
   // bit for bit the fade trigger's joint condition (review finding

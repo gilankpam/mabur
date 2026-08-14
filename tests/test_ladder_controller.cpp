@@ -56,15 +56,15 @@ LinkHealth ok3(double pre, double s3_pre = 0.0, double s3_resid = 0.0) {
   h.s3_residual_loss = s3_resid;
   h.s3_expected_syms = 500;
   h.probe_allowed = true;
-  h.s1_snr_db = 30.0;
+  h.rf_snr_db = 30.0;
   return h;
 }
 
 // Healthy sample with RF labels for the fade trigger.
 LinkHealth rf(double pre, double snr_db, double rssi_dbm) {
   LinkHealth h = ok(pre);
-  h.s1_snr_db = snr_db;
-  h.s1_rssi_dbm = rssi_dbm;
+  h.rf_snr_db = snr_db;
+  h.rf_rssi_dbm = rssi_dbm;
   return h;
 }
 
@@ -851,7 +851,7 @@ TEST(rung_store_evm_feeds_only_when_sampled) {
   LadderController ctl(make_cfg());
   double t = 0;
   LinkHealth h = ok(0.0);
-  h.s1_evm_db = -20.0;
+  h.rf_evm_db = -20.0;
   ctl.update(h, t);
   CHECK(ctl.rungs().stat(0).evm_n == 1);
   CHECK(std::abs(ctl.rungs().stat(0).evm_db - -20.0) < 1e-9);
@@ -1095,8 +1095,8 @@ TEST(fade_demote_aborts_running_probe) {
   // this test NEEDS the clean window that arms the probe.
   auto rf3 = [&](double snr, double rssi) {
     LinkHealth h = ok3(0.0);
-    h.s1_snr_db = snr;
-    h.s1_rssi_dbm = rssi;
+    h.rf_snr_db = snr;
+    h.rf_rssi_dbm = rssi;
     return h;
   };
   for (double end = t + 3000; t < end; t += 50) ctl.update(rf3(33.0, -55.0), t);
@@ -1259,7 +1259,7 @@ TEST(attrib_off_keeps_full_s3_resid_confirm_in_fade_regime) {
   CHECK(follow_on_demotes(false) == 0);
 }
 
-// Finding 3. select_s1_label_card() re-runs its argmax every window and
+// Finding 3. select_label_card() re-runs its argmax every window and
 // deliberately does not stick, so a front-end that wedges for ~1 s hands the
 // s1 labels to a weaker sibling card. Both labels then step down together —
 // bit for bit the joint condition the trigger looks for. The card id carried
