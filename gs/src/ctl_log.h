@@ -18,9 +18,9 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 2 <header_info>                                  # once, first line
+//   ctllog 3 <header_info>                                  # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
-//                                                            # 1 Hz dwell sample
+//     <drssi> <dsnr>                                        # 1 Hz dwell sample
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
 //   P <t_ms> <rung> <pass|fail|abort> <snr_db> <u_pred> <dur_ms> <evm_db>
 //   N <t_ms> <rung> <k> <until_ms>                           # penalty booked
@@ -34,6 +34,11 @@ namespace maburgs {
 // window); resid_cur is its attributed sibling -- the same ratio scored only
 // against symbols the ladder could still have acted on (excludes stale
 // abandons attributable to a transition already past), added 2026-08-14.
+//
+// drssi/dsnr are the fade-trigger deltas (baseline-minus-fast, raw dB;
+// LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
+// Each reads nan until its underlying signal has ever been sampled -- nan is
+// a normal steady-state value on a GS whose s1 labels are stale, not a bug.
 //
 // Two encoding notes callers must know:
 //  - S's u3 reads 0 while a probe is active (steady-state s3 utilization is
@@ -70,7 +75,8 @@ class CtlLog {
   const std::string& path() const { return path_; }
 
   void sample(double t_ms, int rung, double u, double snr_db, double resid,
-              double u3, double resid3, double evm_db, double resid_cur);
+              double u3, double resid3, double evm_db, double resid_cur,
+              double drssi, double dsnr);
   void event(double t_ms, int from, int to, const char* reason, double u,
              double snr_db, double evm_db);
   void probe(double t_ms, int rung, const char* outcome, double snr_db,

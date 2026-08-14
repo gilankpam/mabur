@@ -22,6 +22,7 @@ const char* to_string(CtlReason r) {
     case CtlReason::Promote: return "promote";
     case CtlReason::S3Residual: return "s3_residual";
     case CtlReason::S3Util: return "s3_util";
+    case CtlReason::Fade: return "fade";
   }
   return "unknown";
 }
@@ -243,6 +244,43 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 
   last_feedback_ms_ = now_ms;
 
+  // Part B EWMA feed. Kept HERE, above every decision block, and not next to
+  // the trigger in 4b: the residual demote in block 4 returns early, which is
+  // exactly the loss phase of a fade, and a feed that only happens on ticks
+  // that reach 4b freezes fade_drssi/fade_dsnr (sideport link.ctl.fade, the
+  // ctl-log S line) through the episodes this feature will be tuned from —
+  // then applies the whole multi-second gap as one dt step (review finding
+  // 2026-08-14). Nothing between here and 4b reads the EWMAs, so the decision
+  // ordering contract in 4b is untouched.
+  //
+  // The starved and !sample_valid paths above still do not feed. Both withhold
+  // every decision, both usually carry NaN labels anyway (the per-window RF
+  // staleness gate NaNs them when no card measured s1), and feed()'s alphas
+  // are dt-derived, so skipping a run of ticks and applying the next sample
+  // with the larger dt is the same continuous-time EWMA answer.
+  //
+  // A label-source card hop re-baselines instead of feeding: both labels step
+  // together to the new card's level, which is indistinguishable from a fade
+  // (review finding 2026-08-14). Dropping the history costs a fade in
+  // progress its accumulated delta, which errs toward NOT demoting — the same
+  // direction every other conservatism in this block points. It deliberately
+  // does not touch fade_latched_: a hop is not evidence of recovery.
+  //
+  // Only a tick that actually CARRIES a label can change the label source: a
+  // window where no card measured s1 reports card -1 with NaN labels, and
+  // treating that as a hop would re-baseline on every stale window — on a
+  // marginal link, often enough to disable the trigger outright.
+  const bool has_rf =
+      !std::isnan(h.s1_rssi_dbm) || !std::isnan(h.s1_snr_db);
+  if (has_rf && h.s1_label_card != fade_card_) {
+    fade_card_ = h.s1_label_card;
+    fade_rssi_ = FadeEwma{};
+    fade_snr_ = FadeEwma{};
+    fade_trig_start_ms_ = -1.0;
+  }
+  if (!std::isnan(h.s1_rssi_dbm)) fade_rssi_.feed(h.s1_rssi_dbm, now_ms);
+  if (!std::isnan(h.s1_snr_db)) fade_snr_.feed(h.s1_snr_db, now_ms);
+
   pre_fec_loss_ = h.pre_fec_loss;
   u_ = h.pre_fec_loss / budget();
 
@@ -280,8 +318,66 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     reset_windows();
     mark_transition(now_ms);
     ++counters_.demotes_residual;
+    fade_until_ms_ = now_ms + cfg_.fade.hold_ms;
     set_event(now_ms, from, idx_, CtlReason::Residual, u_, snr_now_);
     return true;
+  }
+
+  // 4b. Part B: predictive fade demote. Both signals must drop together,
+  // sustained continuously — a window where either condition fails OR either
+  // signal is NaN breaks the run (errs toward not demoting). Latched to
+  // exactly one rung per fade EVENT; the regime (Part A) carries the cascade
+  // from there on measured pressure, at the shortened in-regime confirms.
+  // Never books probation-fail or penalty: this is rung-independent RF
+  // evidence, not proof the rung was marginal.
+  // Ordering is a spec contract: after block 4 (residual wins the tick) and
+  // before 5a (fade beats the confirm-window tiers). The EWMA feed itself
+  // lives above block 4 — see the comment there.
+  if (cfg_.fade.predict) {
+    const bool measurable =
+        !std::isnan(h.s1_rssi_dbm) && !std::isnan(h.s1_snr_db) &&
+        fade_rssi_.has && fade_snr_.has;
+    const bool over = measurable && fade_rssi_.delta() >= cfg_.fade.rssi_db &&
+                      fade_snr_.delta() >= cfg_.fade.snr_db;
+    // OBSERVED recovery — both deltas measurably back under threshold — is the
+    // only thing that re-arms the latch, and it is deliberately NOT the !over
+    // branch below. !over is also true on a NaN tick, and absence of evidence
+    // is not evidence of recovery: one telemetry gap mid-fade (Task 4's
+    // staleness gate NaNs these labels on purpose) would release the brake and
+    // let the same ongoing fade fire a second demote trigger_ms later.
+    // Breaking the pre-fire sustain run on !over errs toward NOT demoting;
+    // clearing the post-fire latch there would invert that conservatism.
+    if (measurable && fade_rssi_.delta() < cfg_.fade.rssi_db &&
+        fade_snr_.delta() < cfg_.fade.snr_db) {
+      fade_latched_ = false;
+    }
+    if (!over) {
+      fade_trig_start_ms_ = -1.0;
+    } else {
+      if (fade_trig_start_ms_ < 0.0) fade_trig_start_ms_ = now_ms;
+      if (!fade_latched_ && idx_ > 0 && idx_ >= cfg_.fade.min_rung &&
+          now_ms - fade_trig_start_ms_ >= cfg_.fade.trigger_ms &&
+          now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
+        // Demotes always win over a probe.
+        if (probe_active_) {
+          ++counters_.probe_aborts;
+          end_probe(ProbeOutcome::Abort, 0.0, now_ms);
+        }
+        const int from = idx_;
+        probation_active_ = false;  // cleared, but NO probation-fail booked
+        idx_ = from - 1;
+        last_down_ms_ = now_ms;
+        last_change_ms_ = now_ms;
+        reset_windows();
+        mark_transition(now_ms);
+        fade_until_ms_ = now_ms + cfg_.fade.hold_ms;  // enter the regime
+        ++counters_.demotes_fade;
+        set_event(now_ms, from, idx_, CtlReason::Fade, u_, snr_now_);
+        fade_trig_start_ms_ = -1.0;
+        fade_latched_ = true;  // one fire per fade event
+        return true;
+      }
+    }
   }
 
   // 5a. s3 steady-state measurement and early warning: s3's smaller FEC
@@ -348,6 +444,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     reset_windows();
     mark_transition(now_ms);
     ++counter;
+    fade_until_ms_ = now_ms + cfg_.fade.hold_ms;
     set_event(now_ms, from, idx_, reason, u3_, snr_now_);
   };
 
@@ -361,7 +458,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     if (h.s3_residual_loss > 0.0) {
       if (s3_resid_start_ms_ < 0.0) s3_resid_start_ms_ = now_ms;
       if (idx_ > 0 &&
-          now_ms - s3_resid_start_ms_ >= cfg_.s3_residual_confirm_ms &&
+          now_ms - s3_resid_start_ms_ >= eff_s3_resid_confirm_ms(now_ms) &&
           now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
         s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
         return true;
@@ -396,7 +493,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       return true;
     }
 
-    if (idx_ > 0 && now_ms - confirm_start_ms_ >= cfg_.confirm_ms &&
+    if (idx_ > 0 && now_ms - confirm_start_ms_ >= eff_confirm_ms(now_ms) &&
         now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
       // Demotes always win over a probe.
       if (probe_active_) {
@@ -410,6 +507,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       reset_windows();
       mark_transition(now_ms);
       ++counters_.demotes_util;
+      fade_until_ms_ = now_ms + cfg_.fade.hold_ms;
       set_event(now_ms, from, idx_, CtlReason::Util, u_, snr_now_);
       return true;
     }
@@ -424,7 +522,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   if (cfg_.s3_demote && s3_live) {
     if (u3_ > s3_util_threshold()) {
       if (s3_util_start_ms_ < 0.0) s3_util_start_ms_ = now_ms;
-      if (idx_ > 0 && now_ms - s3_util_start_ms_ >= cfg_.confirm_ms &&
+      if (idx_ > 0 &&
+          now_ms - s3_util_start_ms_ >= eff_s3_util_confirm_ms(now_ms) &&
           now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
         s3_demote_now(CtlReason::S3Util, counters_.demotes_s3_util);
         return true;

@@ -785,4 +785,28 @@ TEST(exporter_attrib_block_and_stream_stale) {
   CHECK(found);
 }
 
+TEST(exporter_ctl_fade_block_and_counter) {
+  std::string sent;
+  StatsExporter ex(1, 0, [&](const std::string& s) { sent = s; return true; });
+  StatsInput in;
+  StatsCtlIn ci;
+  ci.demotes_fade = 4;
+  ci.fade_active = true;
+  ci.fade_drssi = 9.5;
+  ci.fade_dsnr = std::numeric_limits<double>::quiet_NaN();  // -> null
+  in.ctl = ci;
+  ex.poll(1000, in);
+  REQUIRE(!sent.empty());
+  auto j = nlohmann::json::parse(sent);
+  CHECK(j["link"]["ctl"]["counters"]["demotes_fade"] == 4);
+  CHECK(j["link"]["ctl"]["fade"]["active"] == true);
+  CHECK(j["link"]["ctl"]["fade"]["drssi"] == 9.5);
+  // is_null() alone is non-discriminating here: non-const operator[] on a
+  // missing key auto-vivifies it to null and returns it, so a dropped
+  // emit line would read back the same as an emitted null. contains()
+  // pins that the key was actually put on the wire.
+  CHECK(j["link"]["ctl"]["fade"].contains("dsnr"));
+  CHECK(j["link"]["ctl"]["fade"]["dsnr"].is_null());
+}
+
 MTEST_MAIN

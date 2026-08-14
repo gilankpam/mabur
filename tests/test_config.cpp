@@ -499,4 +499,88 @@ TEST(config_rejects_power_mode_override) {
   std::filesystem::remove(path);
 }
 
+TEST(link_rc_drain_ms_default_and_bounds) {
+  // Absent: the agent loop wakes every 5 ms to drain RCFs (spec 2026-08-14
+  // fade-demote §3b). This is an optional key on a strict-keys config, so a
+  // deployed drone with no `link.rc_drain_ms` must still boot.
+  {
+    auto path = write_temp_json("{}");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.link.rc_drain_ms == 5);
+    std::filesystem::remove(path);
+  }
+  // Explicit value inside the range is taken verbatim (50 <= the default
+  // 100 ms tick_ms, so the cross-check below is satisfied).
+  {
+    auto path = write_temp_json(R"({"link":{"rc_drain_ms":50}})");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.link.rc_drain_ms == 50);
+    std::filesystem::remove(path);
+  }
+  // Out of range fails boot, naming the field. 0 would spin the agent
+  // thread; > 1000 would make actuation slower than the legacy loop.
+  for (int bad : {0, 1001}) {
+    auto path = write_temp_json(std::string(R"({"link":{"rc_drain_ms":)") +
+                                std::to_string(bad) + "}}");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("link.rc_drain_ms") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
+// Review finding 2026-08-14 (final whole-branch review, finding 4): tick_ms
+// was unvalidated, and the TickGate the agent loop now runs its housekeeping
+// behind turns a bad value from "spins hot" into "silently loses the
+// failsafe" — TickGate(now, -1) casts to a ~1.8e19 ms period, so the gate
+// fires once at startup and never again: no failsafe transition, no
+// rendezvous fallback, no watchdog, no telemetry, and nothing in the log to
+// say it stopped.
+TEST(link_tick_ms_bounds) {
+  // Absent: the historical 100 ms housekeeping cadence.
+  {
+    auto path = write_temp_json("{}");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.link.tick_ms == 100);
+    std::filesystem::remove(path);
+  }
+  // In range, taken verbatim.
+  {
+    auto path = write_temp_json(R"({"link":{"tick_ms":20}})");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.link.tick_ms == 20);
+    std::filesystem::remove(path);
+  }
+  // Out of range fails boot, naming the field.
+  for (int bad : {-1, 0, 1001}) {
+    auto path = write_temp_json(std::string(R"({"link":{"tick_ms":)") +
+                                std::to_string(bad) + R"(,"rc_drain_ms":1}})");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("link.tick_ms") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(link_rc_drain_ms_must_not_exceed_tick_ms) {
+  // rc_drain_ms is the loop's WAKE period and tick_ms the housekeeping
+  // deadline behind it; a drain slower than the tick silently retimes every
+  // per-tick job to rc_drain_ms instead (TickGate degenerates to firing on
+  // every wake). Equality is legal — that is exactly the legacy loop.
+  {
+    auto path = write_temp_json(R"({"link":{"tick_ms":50,"rc_drain_ms":50}})");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.link.rc_drain_ms == 50);
+    CHECK(cfg.link.tick_ms == 50);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_json(R"({"link":{"tick_ms":50,"rc_drain_ms":51}})");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("link.rc_drain_ms") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
 MTEST_MAIN

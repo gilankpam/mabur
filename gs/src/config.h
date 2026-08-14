@@ -43,6 +43,13 @@ struct LinkCfg {
   uint32_t vtx_id = 1;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
+  // RCF repeat burst (rcf-uplink-loss findings 2026-08-14): after an RCF
+  // whose commanded op changed, re-send it copies times at rcf_repeat_ms
+  // spacing so a 30-50% per-attempt uplink loss (drone half-duplex TX)
+  // doesn't cost a feedback_ms quantum per loss. 0 disables. The burst
+  // must fit inside one feedback period (validated at load).
+  int rcf_repeat_copies = 3;
+  int rcf_repeat_ms = 10;
   // Static-link mode: when static_mcs >= 0 the adaptive controller is
   // bypassed entirely and every RCF commands exactly this MCS/FEC overhead
   // (HT, 20 MHz). Rendezvous/keep-alive/failsafe machinery is unaffected.
@@ -66,11 +73,11 @@ struct LinkCfg {
   bool ctl_log = false;
   std::string ctl_log_dir = "/media/dvr";
 
-  // Transition-attribution kill switch (spec 2026-08-14): true = the
-  // ladder's demote inputs read current-rung-only loss (stale transition
-  // debris excluded); false = legacy totals, byte-for-byte pre-attribution
-  // behavior. Bookkeeping/export runs either way.
-  bool attrib = true;
+  // NOTE: the transition-attribution kill switch (`link.attrib`, spec
+  // 2026-08-14) lives in ladder_cfg.attrib, not here. main.cpp picks the
+  // loss numbers it feeds the controller from it, and the controller itself
+  // reads it to decide whether the fade regime may shorten the s3-residual
+  // confirm — one home, so the two can never disagree.
 
   // R-line emission cadence for the per-rung EWMA store (spec 2026-08-13).
   // The store's own tuning (half_life_samples) lives in

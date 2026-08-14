@@ -191,13 +191,31 @@ void parse_waybeam(const json& j, WaybeamCfg& w) {
 }
 
 void parse_link(const json& j, LinkCfg& l) {
-  check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms"}, "link");
+  check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms",
+                       "rc_drain_ms"}, "link");
   assign_if_present(j, "vtx_id", l.vtx_id, "link");
   assign_if_present(j, "failsafe_ms", l.failsafe_ms, "link");
   assign_if_present(j, "rendezvous_ms", l.rendezvous_ms, "link");
   assign_if_present(j, "tick_ms", l.tick_ms, "link");
+  assign_if_present(j, "rc_drain_ms", l.rc_drain_ms, "link");
 
   if (l.vtx_id == 0) fail("link.vtx_id", "must be non-zero");
+  // tick_ms is the agent loop's housekeeping deadline (TickGate). Unbounded
+  // it was merely a hot spin at 0; behind the gate a non-positive value casts
+  // to a ~1.8e19 ms period and the gate fires once at startup and never
+  // again — no failsafe transition, no rendezvous fallback, no congestion
+  // guard, no watchdog, no telemetry, and nothing logged to say so (review
+  // finding 2026-08-14). Same [1,1000] idiom as rc_drain_ms below.
+  if (l.tick_ms < 1 || l.tick_ms > 1000)
+    fail("link.tick_ms", "must be in [1,1000]");
+  if (l.rc_drain_ms < 1 || l.rc_drain_ms > 1000)
+    fail("link.rc_drain_ms", "must be in [1,1000]");
+  // The drain period is the loop's WAKE interval and tick_ms the deadline
+  // behind it, so a drain slower than the tick silently retimes every per-tick
+  // job to rc_drain_ms (TickGate then fires on every wake). Equality is the
+  // legacy single-cadence loop and stays legal.
+  if (l.rc_drain_ms > l.tick_ms)
+    fail("link.rc_drain_ms", "must be <= link.tick_ms");
 }
 
 void parse_msp(const json& j, MspCfg& m) {

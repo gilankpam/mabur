@@ -396,6 +396,25 @@ def test_s_line_resid_cur_parsed_and_absent_is_nan():
     assert math.isnan(log["S"][1]["resid_cur"])
 
 
+def test_s_line_fade_deltas_parsed_and_absent_nan():
+    """drssi/dsnr (ctllog 3, 2026-08-14 fade-trigger deltas) parse on a
+    v3-shaped S line and default to nan on a v2-shaped one (backward
+    compatibility)."""
+    text = (
+        "ctllog 3 ladder=5/25 down_util=0.60 up_util=0.15\n"
+        "S 1000 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011 9.5 4.2\n"
+        "S 2000 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011\n"  # v2 line
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_20260814.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert log["S"][0]["drssi"] == 9.5
+    assert log["S"][0]["dsnr"] == 4.2
+    assert math.isnan(log["S"][1]["drssi"])
+    assert math.isnan(log["S"][1]["dsnr"])
+
+
 def test_wall_report():
     """Direct-invocation pattern (matches the siblings above): write the
     CTL_LOG fixture to a temp file, capture flightreport's stdout, and check
@@ -450,9 +469,80 @@ def test_ctllog_r_lines_and_inversion():
         os.unlink(path)
 
 
+def _mk_e(t, frm, to, reason):
+    return {"t_ms": float(t), "from": frm, "to": to, "reason": reason,
+            "u": 0.0, "snr_db": 30.0, "evm_db": float("nan")}
+
+
+def test_find_episodes_clusters_and_first_reason():
+    E = [
+        _mk_e(1000, 5, 4, "fade"),
+        _mk_e(1200, 4, 3, "util"),
+        _mk_e(1400, 3, 2, "residual"),
+        _mk_e(9000, 2, 3, "promote"),
+        _mk_e(20000, 3, 2, "residual"),
+    ]
+    eps = flightreport.find_episodes(E)
+    assert len(eps) == 2
+    assert eps[0]["first_reason"] == "fade"
+    assert eps[0]["steps"] == 3
+    assert eps[0]["path"] == (5, 2)
+    assert eps[0]["fade_lead_ms"] == 200.0  # 1200 - 1000
+    assert eps[1]["first_reason"] == "residual"
+    assert eps[1]["fade_lead_ms"] is None
+
+
+def test_false_fade_and_attribution_miss():
+    E = [
+        _mk_e(1000, 5, 4, "fade"),          # false fade (episode is fade-only)
+        _mk_e(8000, 4, 5, "promote"),
+        _mk_e(20000, 5, 4, "util"),
+        _mk_e(20150, 4, 3, "residual"),      # within 200 ms of previous E -> canary
+        _mk_e(30000, 3, 2, "residual"),      # isolated -> not a canary hit
+    ]
+    eps = flightreport.find_episodes(E)
+    false_fades = [e for e in eps if e["false_fade"]]
+    assert len(false_fades) == 1
+    assert false_fades[0]["repromote_ms"] == 7000.0
+    misses = flightreport.attribution_misses(E)
+    assert len(misses) == 1
+    assert misses[0]["t_ms"] == 20150.0
+
+
+def test_find_episodes_gap_boundary_closes_run():
+    """The episode definition is 'consecutive demotes <= gap_ms apart';
+    a gap of exactly gap_ms (default 3000) must NOT close the episode, and
+    gap_ms + 1 must. This pins the half of find_episodes's contract that
+    test_find_episodes_clusters_and_first_reason (closes via a promote) and
+    test_false_fade_and_attribution_miss (its 9850ms gap is never asserted
+    on) leave uncovered -- a > gap_ms mutation must fail this test."""
+    E_at = [
+        _mk_e(0, 5, 4, "util"),
+        _mk_e(3000, 4, 3, "residual"),  # exactly gap_ms after the previous demote
+    ]
+    eps_at = flightreport.find_episodes(E_at)
+    assert len(eps_at) == 1
+    assert eps_at[0]["path"] == (5, 3)
+    assert eps_at[0]["steps"] == 2
+
+    E_over = [
+        _mk_e(0, 5, 4, "util"),
+        _mk_e(3001, 4, 3, "residual"),  # gap_ms + 1: must split
+    ]
+    eps_over = flightreport.find_episodes(E_over)
+    assert len(eps_over) == 2
+    assert eps_over[0]["path"] == (5, 4)
+    assert eps_over[0]["steps"] == 1
+    assert eps_over[1]["path"] == (4, 3)
+    assert eps_over[1]["steps"] == 1
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_ctllog_evm_optional_trailing_token()
     test_wall_report()
     test_ctllog_r_lines_and_inversion()
+    test_find_episodes_clusters_and_first_reason()
+    test_false_fade_and_attribution_miss()
+    test_find_episodes_gap_boundary_closes_run()

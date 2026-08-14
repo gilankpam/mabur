@@ -66,6 +66,9 @@ def load_ctllog(path):
                         "evm_db": float(toks[8]) if len(toks) >= 9 else float("nan"),
                         # 2026-08-14 attribution (ctllog 2); absent on older logs.
                         "resid_cur": float(toks[9]) if len(toks) >= 10 else float("nan"),
+                        # 2026-08-14 fade deltas (ctllog 3); absent on older logs.
+                        "drssi": float(toks[10]) if len(toks) >= 12 else float("nan"),
+                        "dsnr": float(toks[11]) if len(toks) >= 12 else float("nan"),
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({
@@ -291,6 +294,92 @@ def merge_consecutive_residuals(residuals):
     return merged
 
 
+def find_episodes(E, gap_ms=3000):
+    """Cluster demote E-lines (to < from) into episodes. A promote or a
+    gap > gap_ms between consecutive demotes closes the episode. Returns
+    dicts: t0, first_reason, path (from0, toN), steps, duration_ms,
+    fade_lead_ms (leading-fade episodes only), false_fade, repromote_ms
+    (false fades: delay to the next promote, None if log ends first)."""
+    eps, cur = [], None
+
+    def close(after_idx):
+        nonlocal cur
+        if cur is None:
+            return
+        e = cur
+        e["duration_ms"] = e["_last_t"] - e["t0"]
+        e["false_fade"] = all(r == "fade" for r in e["_reasons"])
+        lead = None
+        if e["_reasons"][0] == "fade":
+            for t, r in zip(e["_ts"][1:], e["_reasons"][1:]):
+                if r != "fade":
+                    lead = t - e["_ts"][0]
+                    break
+        e["fade_lead_ms"] = lead
+        e["repromote_ms"] = None
+        if e["false_fade"]:
+            for later in E[after_idx:]:
+                if later["to"] > later["from"]:
+                    e["repromote_ms"] = later["t_ms"] - e["_last_t"]
+                    break
+        for k in ("_reasons", "_ts", "_last_t"):
+            del e[k]
+        eps.append(e)
+        cur = None
+
+    for i, ev in enumerate(E):
+        demote = ev["to"] < ev["from"]
+        if not demote:
+            close(i)
+            continue
+        if cur is not None and ev["t_ms"] - cur["_last_t"] > gap_ms:
+            close(i)
+        if cur is None:
+            cur = {"t0": ev["t_ms"], "first_reason": ev["reason"],
+                   "path": (ev["from"], ev["to"]), "steps": 0,
+                   "_reasons": [], "_ts": [], "_last_t": ev["t_ms"]}
+        cur["steps"] += 1
+        cur["path"] = (cur["path"][0], ev["to"])
+        cur["_reasons"].append(ev["reason"])
+        cur["_ts"].append(ev["t_ms"])
+        cur["_last_t"] = ev["t_ms"]
+    close(len(E))
+    return eps
+
+
+def attribution_misses(E, window_ms=200):
+    """Residual demotes firing within window_ms of ANY earlier E line.
+    With link.attrib on this should be ~zero; hits mean the transition
+    watermark missed a debris class (spec 2026-08-14 fade-demote §5)."""
+    out = []
+    for i, ev in enumerate(E):
+        if ev["reason"] != "residual" or ev["to"] >= ev["from"]:
+            continue
+        if any(0 < ev["t_ms"] - p["t_ms"] <= window_ms for p in E[:i]):
+            out.append(ev)
+    return out
+
+
+def print_episode_report(ctllog):
+    E = ctllog.get("E", [])
+    eps = find_episodes(E)
+    if not eps:
+        print("\nepisodes: none")
+        return
+    print(f"\nepisodes ({len(eps)}):")
+    for e in eps:
+        lead = "-" if e["fade_lead_ms"] is None else f"{e['fade_lead_ms']:.0f}ms"
+        tag = " FALSE-FADE" if e["false_fade"] else ""
+        rp = ("" if e["repromote_ms"] is None
+              else f" repromote+{e['repromote_ms']/1000:.1f}s")
+        print(f"  t={e['t0']/1000:.1f}s {e['path'][0]}->{e['path'][1]}"
+              f" steps={e['steps']} dur={e['duration_ms']:.0f}ms"
+              f" first={e['first_reason']} fade_lead={lead}{tag}{rp}")
+    misses = attribution_misses(E)
+    print(f"  attribution-miss canary (residual <=200ms after a transition): "
+          f"{len(misses)}" + ("" if not misses else " ⚠"))
+
+
 def sniff_ctllog(path):
     """True if `path` is a maburgs ctl log (first line starts 'ctllog ')."""
     with open(path) as f:
@@ -300,7 +389,9 @@ def sniff_ctllog(path):
 
 def main(path):
     if sniff_ctllog(path):
-        print_wall_report(load_ctllog(path))
+        ctllog = load_ctllog(path)
+        print_wall_report(ctllog)
+        print_episode_report(ctllog)
         return
 
     rows = load(path)
@@ -424,6 +515,12 @@ def main(path):
         # Flatten list of trajectory lists
         flat_traj = [u for traj in trajs for u in traj]
         print(f"  t={t} residual={rl:.4f} u[-5s..]={flat_traj} drone_state={drone_state}{rssi_str}{snr_str}")
+
+    sup = [((r.get("link") or {}).get("attrib") or {}).get("suppressed")
+           for r in rows]
+    sup = [s for s in sup if isinstance(s, (int, float))]
+    if sup:
+        print(f"attrib suppressed delta over flight: {int(sup[-1] - sup[0])}")
 
 
 if __name__ == "__main__":

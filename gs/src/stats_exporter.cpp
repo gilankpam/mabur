@@ -216,6 +216,14 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     ctl["down_util"] = c.down_util;
     ctl["up_util"] = c.up_util;
     ctl["util3"] = clamp_util(c.util3);
+    // Fade regime snapshot (spec 2026-08-14): raw regime state, deliberately
+    // not gated on the cascade kill switch, so this stays visible even with
+    // the cascade disabled. Deltas are NaN until the corresponding signal
+    // has ever been sampled -- serialize as JSON null, never bare NaN.
+    json& fd = ctl["fade"];
+    fd["active"] = c.fade_active;
+    if (std::isnan(c.fade_drssi)) fd["drssi"] = nullptr; else fd["drssi"] = c.fade_drssi;
+    if (std::isnan(c.fade_dsnr)) fd["dsnr"] = nullptr; else fd["dsnr"] = c.fade_dsnr;
     ctl["counters"] = {{"demotes_residual", c.demotes_residual},
                        {"demotes_util", c.demotes_util},
                        {"promotes", c.promotes},
@@ -227,7 +235,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                        {"probe_fails", c.probe_fails},
                        {"probe_aborts", c.probe_aborts},
                        {"demotes_s3_residual", c.demotes_s3_residual},
-                       {"demotes_s3_util", c.demotes_s3_util}};
+                       {"demotes_s3_util", c.demotes_s3_util},
+                       {"demotes_fade", c.demotes_fade}};
     // last_event.u carries u3 (also sentinel-guardable) for S3Residual/
     // S3Util reasons -- clamp unconditionally, it's a no-op for the s1
     // reasons' ordinary [0,1]-ish values.

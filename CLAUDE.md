@@ -59,7 +59,8 @@ with:
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
   file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 2` header (v1 before 2026-08-14) followed by compact S/E/P/N/R
+  default `/media/dvr`), a `ctllog 3` header (v1 before 2026-08-14, v2 for that day's
+first wave) followed by compact S/E/P/N/R
   lines (rung/state, ctl events, probe events, penalties, per-rung EWMA store snapshots). `flightreport.py`
   auto-detects this format alongside the jsonl format, so no separate
   invocation is needed. Tuning invariant: the controller's s3 loss/residual
@@ -80,12 +81,160 @@ into current-rung vs pre-transition debris, and all four demote inputs
 side, so a rung change's own FEC debris can no longer fire a follow-up
 demote. The sideport reports `link.attrib.suppressed` (windows where the
 legacy instant demote would have fired on pure debris — the live artifact
-rate) and `link.streams[].abandoned_stale`; the ctl log is `ctllog 2`
-(S line gained `resid_cur`; `resid` stays the total). `flightreport.py`
-parses both versions. Date recordings against this line: pre-2026-08-14
+rate) and `link.streams[].abandoned_stale`; the ctl log went `ctllog 1` →
+`ctllog 2` (S line gained `resid_cur`; `resid` stays the total).
+`flightreport.py` parses every version. Date recordings against this
+line: pre-2026-08-14
 residual/util figures include transition debris that later recordings
 attribute away. `link.attrib: false` reverts the decisions (not the
 bookkeeping) to the old totals.
+
+**Since 2026-08-14 (same day, second wave) demotes are fade-aware.** Two
+independent pieces, both default-on, both killable, and the whole
+`link.fade` block is optional with working defaults. Every loss-driven
+demote — residual, s3 residual, s3 util, confirmed util, and a fade
+demote itself, but NOT probation, starved or timeout — arms a 2.5 s fade
+regime (`hold_ms`), and arms it UNCONDITIONALLY so that the exported
+regime state stays truthful. `link.fade.cascade` gates only the effect:
+while the regime is open and the cascade is on, the demote confirm
+windows drop 250/500 ms to 100 ms (`confirm_ms`), so a real fade steps
+down at fade speed rather than at steady-state speed. Kill the cascade
+and the regime is still armed and still reported — it just stops
+shortening anything. Both s3 confirms are additionally gated on
+`link.attrib`: with attribution OFF the regime keeps the full
+`s3_residual_confirm_ms` / `confirm_ms` there, because a 100 ms confirm
+behind the unshortened 300 ms `s3_settle_ms` is exactly the
+floors-together configuration the tuning invariant above forbids — the
+~200 ms of debris that outlives the blank satisfies 100 ms and not the
+legacy window. Measured in review, a single genuine demote then cascaded
+rung 4 → 0 in 1.6 s on nothing but its own FEC debris. So `attrib: false`
+reverts Part A's s3 paths along with everything else. (The s1 util
+confirm is NOT gated: it has no blanking at all, so its legacy 250 ms
+window already sits inside the same 500 ms loss window the debris
+occupies — amplitude decides it there, not duration.)
+
+`link.fade.predict` adds an RF trigger ahead of any loss: both `rssi_db`
+(8 dB) AND `snr_db` (4 dB) below their slow baselines, sustained
+`trigger_ms` (300 ms), demotes one rung with reason `fade`. Those
+baselines are a dual-timescale EWMA — fast tau 300 ms, slow tau
+asymmetric at 2 s rising / 20 s falling; structural constants, not config
+— so a multi-second fade cannot drag its own baseline down and erase its
+own delta. ⚠ **Those two numbers are thresholds on a high-pass response,
+not fade depths, so they are NOT trip points.** A step of depth D reaches
+`delta = D·(e^−t/20000 − e^−t/300)`, which peaks at 0.92·D at 1.28 s and
+is down to 0.74·D by 6 s, so the smallest step that fires is ≈1.08× the
+configured number: `rssi_db: 8.0` trips on a ≈8.7 dB fade, `snr_db: 4.0`
+on a ≈4.3 dB one, and a fade of exactly 8/4 dB never fires. A fade that
+stops descending falls back under threshold as the baseline catches up
+(this detects fading, not faded), and on a steady ramp the response is
+slope-driven — ~19.7 dB of delta per dB/s — so ramps under ~0.45 dB/s
+never reach `rssi_db` 8 however deep they eventually get. `trigger_ms` is
+not the binding constraint either: the delta needs ~0.8–1.3 s to climb to
+its peak, so the 300 ms fast tau sets the reaction time. Those are
+harness/model figures (they reproduce the review's measured deltas
+exactly) — and the defaults are deliberately unchanged, since tightening
+them without bench data is what the spec's tuning invariant forbids.
+**First flight validation, 2026-08-14 (flight-0017/0018 + ctl-0054/0055,
+two ~6 min flights):** exactly the predicted behavior. 26 loss-driven
+demote episodes, all ramp-type range fades; the predictive trigger
+correctly never fired (deepest deltas drssi −7.8 / dsnr −4.4, never
+jointly over threshold — slope-blind on ramps as the transfer function
+says), zero false fades, zero attribution-miss canary hits, in-regime
+cascades stepping multi-rung episodes at ~410–440 ms, and zero
+mid-flight video-damage windows. A genuine FAST fade (obstruction,
+multipath null) has still never been recorded against this trigger. Three things to know before reading any of it: (i) the
+predictive trigger is LATCHED — exactly ONE predictive demote per fade
+EVENT, and the latch releases only on an *observed* recovery, a tick where
+both deltas are measurably back under threshold. A NaN window (absent
+evidence) deliberately does NOT release it, so further steps during a
+continuing fade are the cascade's job, on measured loss at the shortened
+in-regime confirms; `link.ctl.counters.demotes_fade` therefore counts fade
+events that produced a step, not rungs lost to fade. (ii)
+`link.fade.min_rung` (default 2) is the lowest rung the trigger fires
+FROM, not a floor — the effective floor is `min_rung - 1`, so the shipped
+default can land the link on rung 1. (iii) fade demotes are RF evidence,
+not rung evidence: they never book a probation failure or a penalty and
+never count in the RungStore's `exits_bad`.
+
+Observability for that wave: the sideport adds `link.ctl.fade` = {active,
+drssi, dsnr} plus `counters.demotes_fade` (additive under `v: 1`;
+drssi/dsnr serialize as `null` when NaN). `fade.active` is the RAW regime
+state and is deliberately NOT gated on `cascade`, so the regime stays
+visible with the cascade killed. The ctl log went `ctllog 2` → `ctllog 3`,
+the S line gaining `drssi dsnr` after `resid_cur`; `flightreport.py`
+parses v1, v2 and v3 and gained an episode analyzer (`find_episodes()`,
+`print_episode_report()`): first-demote reason per episode, fade lead
+times, false fades with time-to-repromote, plus an attribution-miss canary
+(`attribution_misses()` — a `residual` demote within 200 ms of any
+previous transition, which should be ~zero with `link.attrib` on). The
+jsonl branch also prints the flight-wide `link.attrib.suppressed` delta.
+⚠ The s1 RF labels are now freshness-gated per card
+(`gs/src/s1_labels.h`, `select_s1_label_card()`, unit-tested in
+`tests/test_s1_labels.cpp`): the best-card argmax only considers cards
+whose s1 frame count advanced in the current feedback window, so
+`s1_snr_db`, `s1_evm_db` and `s1_rssi_dbm` read NaN — and the ctl log
+prints `nan` — whenever no card measured s1 that window, where a frozen
+EMA previously printed a stale-but-present number. Because `s1_evm_db`
+now NaNs on stale windows, per-rung EVM sample counts in the RungStore
+drop on a marginal link: that is a deliberate honesty improvement, but it
+means EVM sample counts are NOT comparable across this date.
+
+**The expected false-fade source is a label-source card hop, and it is
+what to look for when a `fade` demote has no fade behind it.** That
+argmax does not stick: a front-end that wedges for ~1 s (a documented,
+recovering failure mode on the two-card bench GS) hands the labels to a
+weaker sibling, and `s1_rssi_dbm`/`s1_snr_db` then step down TOGETHER —
+bit for bit the trigger's joint condition, so a ≥9 dB RSSI / ≥4.3 dB SNR
+gap between cards is a spurious `fade`. The controller defends itself: the
+selected card index rides along in `LinkHealth` and a change re-baselines
+both EWMAs (so a hop reads as a new reference, not a fade), at the cost of
+making a fade already in progress re-accumulate its delta on the new card
+— conservative in the direction everything else here is. The latch is
+deliberately NOT released by a hop. If a false fade shows up anyway,
+correlate the ctl log's `drssi`/`dsnr` step against per-card
+`classes.s1.*` in the sideport: a hop moves both by the card GAP in one
+window, a real fade moves them along the transfer function above.
+
+On the drone, RCF drain is decoupled from the agent tick
+(`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop
+wakes every `rc_drain_ms` to drain queued RC frames, with ALL per-tick
+housekeeping (USB health polls, `RcAgent::tick()`, watchdog, 1 Hz
+stats/telem) behind a `TickGate` deadline so its cadence is bit-for-bit
+unchanged, and `rc_drain_ms == tick_ms` reproduces the legacy loop
+exactly. `link.tick_ms` is now bounded 1–1000 as well, and
+`rc_drain_ms > tick_ms` FAILS BOOT (it would silently retime every
+per-tick job to the drain period): the gate turned a bad `tick_ms` from
+the old "spins at 100% CPU but works" into a ~1.8e19 ms period that fires
+once at startup and never again — no failsafe, no rendezvous fallback, no
+watchdog, no telemetry, nothing logged. Both bounds are new on
+2026-08-14; a config that sets `tick_ms` under 5 without also setting
+`rc_drain_ms` is the only shape that boots on the old binary and not the
+new one (nothing deployed does). Op actuation used to be U(0, `tick_ms` = 100) ms, and
+`link.attrib.close_ms` measured a ~110 ms median with tails at 295 and
+971 ms. **Measured 2026-08-14 (follow-up session): the drain runs at 5 ms
+on the device (verified via /proc thread wake rates), but close_ms median
+is ~65 ms at n=24, not ≤30 — because 30–50% of uplink RCFs are lost to
+the drone's own half-duplex TX airtime (CCA off, GS injects blind into
+the drone's bursts; loss tracks `link.air_pct`, 51–59% delivery at climb
+rungs 0–4, 69% parked). A lost commit-RCF costs one `feedback_ms` (50 ms)
+quantum, so close_ms = an 11–28 ms fast path (Part C working, target met)
+plus a geometric +50 ms ladder that Part C cannot touch. The ≤30 ms
+acceptance criterion is unreachable without an uplink-delivery fix
+(candidates, none built: repeat the RCF after an op change until
+`drone.applied` echoes it; time injection into post-frame-burst gaps).
+The same loss applies to ALL uplink control — probe RCFs, keepalive DISC,
+IDR requests — and `feedback_ms` is effectively the uplink retry quantum.
+Full analysis: `docs/rcf-uplink-loss-findings-2026-08-14.md`.** Deploy is migration-free — new binary against an
+untouched config, on either device — only for as long as nobody WRITES
+either key: `link.fade` and `link.rc_drain_ms` are optional with live
+defaults, so a device config that never mentions them works under both
+the old and the new binary. The moment one is spelled out in
+`/etc/maburgs.json` or `/etc/mabur.json` — and the bench GS is exactly
+the machine that will hand-tune `link.fade.rssi_db` — rollback is PAIRED
+like everything else here, because the old binary sees an `unknown key`
+and enters the 2 s crash-loop described further down. Same reason
+`bundle/mabur.default.json` deliberately does NOT list `rc_drain_ms` and
+must not.
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**

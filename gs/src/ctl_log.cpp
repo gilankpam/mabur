@@ -63,7 +63,7 @@ CtlLog::CtlLog(const std::string& dir, const std::string& header_info) {
   }
   // Line-buffered: a power cut loses at most the current line.
   std::setvbuf(f_, nullptr, _IOLBF, 0);
-  std::fprintf(f_, "ctllog 2 %s\n", header_info.c_str());
+  std::fprintf(f_, "ctllog 3 %s\n", header_info.c_str());
 }
 
 CtlLog::~CtlLog() {
@@ -72,11 +72,11 @@ CtlLog::~CtlLog() {
 
 void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
                      double resid, double u3, double resid3, double evm_db,
-                     double resid_cur) {
+                     double resid_cur, double drssi, double dsnr) {
   if (!f_) return;
-  std::fprintf(f_, "S %.0f %d %.4f %.1f %.4f %.4f %.4f %.1f %.4f\n", t_ms,
-               rung, u, snr_db, resid, clamp_util(u3), resid3, evm_db,
-               resid_cur);
+  std::fprintf(f_, "S %.0f %d %.4f %.1f %.4f %.4f %.4f %.1f %.4f %.1f %.1f\n",
+               t_ms, rung, u, snr_db, resid, clamp_util(u3), resid3, evm_db,
+               resid_cur, drssi, dsnr);
 }
 
 void CtlLog::event(double t_ms, int from, int to, const char* reason,
