@@ -885,15 +885,22 @@ TEST(fade_regime_expires_back_to_full_confirm) {
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 3);
+  // Clear rung 3's probation so the demote below is a confirmed Util one,
+  // which ARMS the regime — a Probation demote does not, and would leave
+  // this test measuring legacy timing and asserting nothing about expiry.
+  feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
   const double bad = 0.9 * ctl.budget();
   double d1 = -1;
   for (int i = 0; i < 40 && d1 < 0; ++i, t += 50)
     if (ctl.update(ok(bad), t)) d1 = t;
   REQUIRE(d1 > 0);
+  REQUIRE(ctl.fade_active(d1));  // the regime really did arm
   // Go clean past the regime expiry, then re-apply pressure: the demote
   // must pay the FULL confirm_ms again (>= 250 from pressure onset).
   for (double end = t + 800; t < end; t += 50) ctl.update(ok(0.0), t);
   const double pressure_start = t;
+  REQUIRE(!ctl.fade_active(pressure_start));  // regime expired before re-load
   double d2 = -1;
   for (int i = 0; i < 40 && d2 < 0; ++i, t += 50)
     if (ctl.update(ok(bad), t)) d2 = t;
@@ -936,6 +943,12 @@ TEST(fade_cascade_kill_switch_is_legacy) {
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 3);
+  // Clear rung 3's probation so BOTH demotes below run the confirm-window
+  // Util path. Without this the first is an immediate Probation demote that
+  // never arms the regime, and the assertion below would hold identically
+  // with cascade=true — i.e. it would not test the kill switch at all.
+  feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
   const double bad = 0.9 * ctl.budget();
   double d1 = -1, d2 = -1;
   for (int i = 0; i < 40 && d1 < 0; ++i, t += 50)
