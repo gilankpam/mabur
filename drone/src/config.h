@@ -71,6 +71,12 @@ struct LinkCfg {
   int failsafe_ms = 1000;
   int rendezvous_ms = 30000;
   int tick_ms = 100;
+  // Agent-loop wake period for draining queued RCFs (spec 2026-08-14
+  // fade-demote §3b). Decoupled from tick_ms: op actuation latency is
+  // U(0, rc_drain_ms) while ALL per-tick housekeeping (USB health polls,
+  // state timers, congestion guard, watchdog, stats/telem) stays on
+  // tick_ms. >= tick_ms reproduces the legacy single-cadence loop.
+  int rc_drain_ms = 5;
 };
 
 struct MspCfg {

@@ -499,4 +499,34 @@ TEST(config_rejects_power_mode_override) {
   std::filesystem::remove(path);
 }
 
+TEST(link_rc_drain_ms_default_and_bounds) {
+  // Absent: the agent loop wakes every 5 ms to drain RCFs (spec 2026-08-14
+  // fade-demote §3b). This is an optional key on a strict-keys config, so a
+  // deployed drone with no `link.rc_drain_ms` must still boot.
+  {
+    auto path = write_temp_json("{}");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.link.rc_drain_ms == 5);
+    std::filesystem::remove(path);
+  }
+  // Explicit value inside the range is taken verbatim. 50 >= the 100 ms
+  // tick_ms is not required; any in-range value parses.
+  {
+    auto path = write_temp_json(R"({"link":{"rc_drain_ms":50}})");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.link.rc_drain_ms == 50);
+    std::filesystem::remove(path);
+  }
+  // Out of range fails boot, naming the field. 0 would spin the agent
+  // thread; > 1000 would make actuation slower than the legacy loop.
+  for (int bad : {0, 1001}) {
+    auto path = write_temp_json(std::string(R"({"link":{"rc_drain_ms":)") +
+                                std::to_string(bad) + "}}");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("link.rc_drain_ms") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
 MTEST_MAIN

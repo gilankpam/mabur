@@ -43,6 +43,7 @@
 #include "radio_tx.h"
 #include "rc_agent.h"
 #include "telemetry.h"
+#include "tick_gate.h"
 #include "tx_queue.h"
 #include "usb_tx_pool.h"
 #include "waybeam_client.h"
@@ -999,8 +1000,9 @@ int run_real_mode(const Config& cfg) {
     }
   });
 
-  // Agent thread: drains the RC queue, ticks RcAgent on cfg.link.tick_ms,
-  // runs the watchdog, and handles SIGUSR1 stats dumps.
+  // Agent thread: drains the RC queue every cfg.link.rc_drain_ms, ticks
+  // RcAgent on cfg.link.tick_ms, runs the watchdog, and handles SIGUSR1
+  // stats dumps.
   std::thread agent_thread([&]() {
     const uint64_t grace_ms = 10000;
     const uint64_t stale_ms = 3000;
@@ -1022,147 +1024,154 @@ int run_real_mode(const Config& cfg) {
     uint16_t telem_dot11_seq = 0;
     std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
 
+    mabur::TickGate tick_gate(now_steady_ms(), cfg.link.tick_ms);
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
 
+      // Every wake (rc_drain_ms): drain and apply queued RCFs. This is the
+      // whole point of the split — op actuation no longer waits for the
+      // housekeeping tick (spec 2026-08-14 §3b; measured U(0, tick_ms=100)
+      // before, close_ms median ~110 ms).
       std::vector<uint8_t> rc_body;
       while (rc_queue.pop(rc_body)) {
         agent.on_rc_frame(rc_body.data(), rc_body.size(), now);
       }
 
-      devourer::ThermalStatus thermal = rtl_device->GetThermalStatus();
-      devourer::TxStats txstats = rtl_device->GetTxStats();
-      RadioHealth health;
-      health.thermal_delta = thermal.valid ? thermal.delta : 0;
-      health.tx_drops = txstats.failed;
-      agent.tick(now, health);
-      if (agent.take_link_established())
-        link_up_discont.store(true, std::memory_order_relaxed);
+      if (tick_gate.due(now)) {
+        devourer::ThermalStatus thermal = rtl_device->GetThermalStatus();
+        devourer::TxStats txstats = rtl_device->GetTxStats();
+        RadioHealth health;
+        health.thermal_delta = thermal.valid ? thermal.delta : 0;
+        health.tx_drops = txstats.failed;
+        agent.tick(now, health);
+        if (agent.take_link_established())
+          link_up_discont.store(true, std::memory_order_relaxed);
 
-      // Watchdog: after an initial grace period, a heartbeat going stale for
-      // > stale_ms means the corresponding loop is wedged — EXCEPT rx_beat,
-      // which only bumps when a frame is actually received off the air.
-      // Silence on the RX side is the expected steady state whenever the
-      // agent isn't LINKED (RENDEZVOUS: waiting for a DISC beacon; FAILSAFE:
-      // GS has gone quiet, which is exactly the scenario failsafe exists
-      // for) — gating rx-stale detection on agent.state() == LINKED tells
-      // "the receive path is stuck" apart from "the ground station turned
-      // off," which used to abort()/respawn-loop maburd forever on a merely
-      // quiet channel. The hot-thread check stays unconditional: hot_beat
-      // bumps every ring-read iteration regardless of RF activity, so its
-      // staleness always means the pipeline thread itself is wedged. This
-      // check runs on the agent thread, which already owns `agent`
-      // (RcAgent::tick() above is called from here), so reading
-      // agent.state() here is the same-thread access it already is
-      // elsewhere in this loop — no cross-thread synchronization needed.
-      uint64_t hb = hot_beat.load(std::memory_order_relaxed);
-      uint64_t rb = rx_beat.load(std::memory_order_relaxed);
-      if (hb != last_hot_beat) {
-        last_hot_beat = hb;
-        last_hot_change_ms = now;
-      }
-      if (rb != last_rx_beat) {
-        last_rx_beat = rb;
-        last_rx_change_ms = now;
-      }
-      if (now - start > grace_ms) {
-        if (now - last_hot_change_ms > stale_ms) {
-          std::fprintf(stderr, "watchdog: hot thread stalled (no beat for >%llums)\n",
-                       static_cast<unsigned long long>(stale_ms));
-          std::abort();
+        // Watchdog: after an initial grace period, a heartbeat going stale for
+        // > stale_ms means the corresponding loop is wedged — EXCEPT rx_beat,
+        // which only bumps when a frame is actually received off the air.
+        // Silence on the RX side is the expected steady state whenever the
+        // agent isn't LINKED (RENDEZVOUS: waiting for a DISC beacon; FAILSAFE:
+        // GS has gone quiet, which is exactly the scenario failsafe exists
+        // for) — gating rx-stale detection on agent.state() == LINKED tells
+        // "the receive path is stuck" apart from "the ground station turned
+        // off," which used to abort()/respawn-loop maburd forever on a merely
+        // quiet channel. The hot-thread check stays unconditional: hot_beat
+        // bumps every ring-read iteration regardless of RF activity, so its
+        // staleness always means the pipeline thread itself is wedged. This
+        // check runs on the agent thread, which already owns `agent`
+        // (RcAgent::tick() above is called from here), so reading
+        // agent.state() here is the same-thread access it already is
+        // elsewhere in this loop — no cross-thread synchronization needed.
+        uint64_t hb = hot_beat.load(std::memory_order_relaxed);
+        uint64_t rb = rx_beat.load(std::memory_order_relaxed);
+        if (hb != last_hot_beat) {
+          last_hot_beat = hb;
+          last_hot_change_ms = now;
         }
-        if (agent.state() == RcAgent::State::LINKED && now - last_rx_change_ms > stale_ms) {
+        if (rb != last_rx_beat) {
+          last_rx_beat = rb;
+          last_rx_change_ms = now;
+        }
+        if (now - start > grace_ms) {
+          if (now - last_hot_change_ms > stale_ms) {
+            std::fprintf(stderr, "watchdog: hot thread stalled (no beat for >%llums)\n",
+                         static_cast<unsigned long long>(stale_ms));
+            std::abort();
+          }
+          if (agent.state() == RcAgent::State::LINKED && now - last_rx_change_ms > stale_ms) {
+            std::fprintf(stderr,
+                         "watchdog: rx loop stalled while LINKED (no beat for >%llums)\n",
+                         static_cast<unsigned long long>(stale_ms));
+            std::abort();
+          }
+        }
+
+        bool want_stats = g_sigusr1_flag.exchange(false);
+        if (want_stats || now - last_stats_ms >= 1000) {
+          last_stats_ms = now;
           std::fprintf(stderr,
-                       "watchdog: rx loop stalled while LINKED (no beat for >%llums)\n",
-                       static_cast<unsigned long long>(stale_ms));
-          std::abort();
+                       "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
+                       "txq=%zu txq_drop=%llu "
+                       "thermal_delta=%d tx_failed=%llu waybeam_failures=%llu\n",
+                       static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
+                       static_cast<unsigned long long>(rb), tx.seq(),
+                       static_cast<unsigned long long>(tx.sent()),
+                       static_cast<unsigned long long>(tx.drops()),
+                       txq.depth(), static_cast<unsigned long long>(txq.dropped()),
+                       health.thermal_delta,
+                       static_cast<unsigned long long>(txstats.failed),
+                       static_cast<unsigned long long>(waybeam.failures()));
+        }
+
+        if (now - last_telem_ms >= 1000) {
+          last_telem_ms = now;
+
+          TelemInputs ti;
+          ti.state = static_cast<int>(agent.state());
+          ti.failsafe_shed = agent.failsafe_shed();
+          ti.probing = agent.probing();
+          // "advanced in the last 2 s" (spec) approximated as "advanced over
+          // the last telemetry tick" (~1 s here) — the collector runs on this
+          // same 1 Hz cadence, so a stricter 2 s window would just double-count
+          // the same beat across two ticks.
+          ti.radio_rx_ok = rb > rx_beat_at_last_telem;
+          rx_beat_at_last_telem = rb;
+          ti.generation = agent.current().generation;
+          // T0 rung: the same layer run_bitrate_policy() treats as "the"
+          // reference operating point for cmd_kbps. CRIT and T0 share
+          // mode/mcs/bw for every RCF/MAX_RANGE-driven op (ladder_from); they
+          // only (harmlessly) diverge for a few hundred ms right after a DISC
+          // rendezvous row is applied (ladder_for_row).
+          ti.mode = agent.current().ladder[1].mode;
+          ti.mcs = agent.current().ladder[1].mcs;
+          ti.bw = agent.current().ladder[1].bw;
+          ti.applied_ov = agent.current().fec_overhead;
+          // have_feedback() false means no RCF has EVER been accepted (still
+          // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
+          // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
+          // 65535 ("never"), matching the wire field's documented sentinel.
+          ti.rcf_age_ms = agent.have_feedback()
+                              ? (now - agent.last_feedback_ms())
+                              : static_cast<uint64_t>(UINT16_MAX) + 1;
+          ti.rcf_rx = agent.rcf_accepted();
+          ti.enc_frames = enc_frames_total.load(std::memory_order_relaxed);
+          ti.enc_bytes = enc_bytes_total.load(std::memory_order_relaxed);
+          ti.cmd_kbps = actuator.last_bitrate_kbps;
+          ti.qp = actuator.last_roi_qp;
+          ti.ring_drops = ring_drops_total.load(std::memory_order_relaxed);
+          ti.txq_depth = txq.depth();
+          ti.txq_cap = kTxQueueCap;
+          ti.txq_drops = txq.dropped();
+          ti.radio_sent = tx.sent();
+          ti.radio_drops = tx.drops();
+          ti.usb_fail = txstats.failed;
+          ti.uplink = uplink_track.snap();
+          ti.soc_temp_c = read_soc_temp_c();
+          if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
+            ti.soc_temp_c = read_soc_temp_c_sigmastar();
+          ti.thermal_delta = health.thermal_delta;
+          ti.load1 = read_load1();
+          ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
+          ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
+          ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);
+          ti.vanished_enh = vanished_enh_total.load(std::memory_order_relaxed);
+          ti.self_idr_refused = self_idr_refused_total.load(std::memory_order_relaxed);
+
+          auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
+
+          std::vector<uint8_t> frame;
+          frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
+          frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
+          auto hdr = build_dot11_header(telem_dot11_seq);
+          telem_dot11_seq = static_cast<uint16_t>((telem_dot11_seq + 1) & 0xFFF);
+          frame.insert(frame.end(), hdr.begin(), hdr.end());
+          frame.insert(frame.end(), telem.begin(), telem.end());
+          dev_sink.send(frame.data(), frame.size());
         }
       }
 
-      bool want_stats = g_sigusr1_flag.exchange(false);
-      if (want_stats || now - last_stats_ms >= 1000) {
-        last_stats_ms = now;
-        std::fprintf(stderr,
-                     "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
-                     "txq=%zu txq_drop=%llu "
-                     "thermal_delta=%d tx_failed=%llu waybeam_failures=%llu\n",
-                     static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
-                     static_cast<unsigned long long>(rb), tx.seq(),
-                     static_cast<unsigned long long>(tx.sent()),
-                     static_cast<unsigned long long>(tx.drops()),
-                     txq.depth(), static_cast<unsigned long long>(txq.dropped()),
-                     health.thermal_delta,
-                     static_cast<unsigned long long>(txstats.failed),
-                     static_cast<unsigned long long>(waybeam.failures()));
-      }
-
-      if (now - last_telem_ms >= 1000) {
-        last_telem_ms = now;
-
-        TelemInputs ti;
-        ti.state = static_cast<int>(agent.state());
-        ti.failsafe_shed = agent.failsafe_shed();
-        ti.probing = agent.probing();
-        // "advanced in the last 2 s" (spec) approximated as "advanced over
-        // the last telemetry tick" (~1 s here) — the collector runs on this
-        // same 1 Hz cadence, so a stricter 2 s window would just double-count
-        // the same beat across two ticks.
-        ti.radio_rx_ok = rb > rx_beat_at_last_telem;
-        rx_beat_at_last_telem = rb;
-        ti.generation = agent.current().generation;
-        // T0 rung: the same layer run_bitrate_policy() treats as "the"
-        // reference operating point for cmd_kbps. CRIT and T0 share
-        // mode/mcs/bw for every RCF/MAX_RANGE-driven op (ladder_from); they
-        // only (harmlessly) diverge for a few hundred ms right after a DISC
-        // rendezvous row is applied (ladder_for_row).
-        ti.mode = agent.current().ladder[1].mode;
-        ti.mcs = agent.current().ladder[1].mcs;
-        ti.bw = agent.current().ladder[1].bw;
-        ti.applied_ov = agent.current().fec_overhead;
-        // have_feedback() false means no RCF has EVER been accepted (still
-        // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
-        // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
-        // 65535 ("never"), matching the wire field's documented sentinel.
-        ti.rcf_age_ms = agent.have_feedback()
-                            ? (now - agent.last_feedback_ms())
-                            : static_cast<uint64_t>(UINT16_MAX) + 1;
-        ti.rcf_rx = agent.rcf_accepted();
-        ti.enc_frames = enc_frames_total.load(std::memory_order_relaxed);
-        ti.enc_bytes = enc_bytes_total.load(std::memory_order_relaxed);
-        ti.cmd_kbps = actuator.last_bitrate_kbps;
-        ti.qp = actuator.last_roi_qp;
-        ti.ring_drops = ring_drops_total.load(std::memory_order_relaxed);
-        ti.txq_depth = txq.depth();
-        ti.txq_cap = kTxQueueCap;
-        ti.txq_drops = txq.dropped();
-        ti.radio_sent = tx.sent();
-        ti.radio_drops = tx.drops();
-        ti.usb_fail = txstats.failed;
-        ti.uplink = uplink_track.snap();
-        ti.soc_temp_c = read_soc_temp_c();
-        if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
-          ti.soc_temp_c = read_soc_temp_c_sigmastar();
-        ti.thermal_delta = health.thermal_delta;
-        ti.load1 = read_load1();
-        ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
-        ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
-        ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);
-        ti.vanished_enh = vanished_enh_total.load(std::memory_order_relaxed);
-        ti.self_idr_refused = self_idr_refused_total.load(std::memory_order_relaxed);
-
-        auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
-
-        std::vector<uint8_t> frame;
-        frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
-        frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
-        auto hdr = build_dot11_header(telem_dot11_seq);
-        telem_dot11_seq = static_cast<uint16_t>((telem_dot11_seq + 1) & 0xFFF);
-        frame.insert(frame.end(), hdr.begin(), hdr.end());
-        frame.insert(frame.end(), telem.begin(), telem.end());
-        dev_sink.send(frame.data(), frame.size());
-      }
-
-      std::this_thread::sleep_for(std::chrono::milliseconds(cfg.link.tick_ms));
+      std::this_thread::sleep_for(std::chrono::milliseconds(cfg.link.rc_drain_ms));
     }
   });
 

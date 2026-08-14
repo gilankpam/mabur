@@ -191,13 +191,17 @@ void parse_waybeam(const json& j, WaybeamCfg& w) {
 }
 
 void parse_link(const json& j, LinkCfg& l) {
-  check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms"}, "link");
+  check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms",
+                       "rc_drain_ms"}, "link");
   assign_if_present(j, "vtx_id", l.vtx_id, "link");
   assign_if_present(j, "failsafe_ms", l.failsafe_ms, "link");
   assign_if_present(j, "rendezvous_ms", l.rendezvous_ms, "link");
   assign_if_present(j, "tick_ms", l.tick_ms, "link");
+  assign_if_present(j, "rc_drain_ms", l.rc_drain_ms, "link");
 
   if (l.vtx_id == 0) fail("link.vtx_id", "must be non-zero");
+  if (l.rc_drain_ms < 1 || l.rc_drain_ms > 1000)
+    fail("link.rc_drain_ms", "must be in [1,1000]");
 }
 
 void parse_msp(const json& j, MspCfg& m) {
