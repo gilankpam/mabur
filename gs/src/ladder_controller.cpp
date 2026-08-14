@@ -79,7 +79,6 @@ bool LadderController::s3_usable(const LinkHealth& h) const {
 
 void LadderController::mark_transition(double now_ms) {
   s3_blank_until_ms_ = now_ms + cfg_.s3_settle_ms;
-  s3_resid_start_ms_ = -1.0;
   s3_util_start_ms_ = -1.0;
 }
 
@@ -375,27 +374,26 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   const bool s3_live =
       !probe_active_ && s3_usable(h) && now_ms >= s3_blank_until_ms_;
 
-  // Continuity gate. Both confirm windows below are elapsed-time tests against
-  // a start stamp, which only means "sustained" while the measurement is
-  // unbroken. A stamp that survives a gap measures wall clock instead: one bad
-  // window, 800 ms of nothing, one more bad window would read as 800 ms of
-  // confirmed pressure and demote on two samples — the very instant demote the
-  // confirm window exists to prevent (review finding). Breaking the run on any
-  // discontinuity errs toward NOT demoting, which is the right way to be wrong
-  // for an early-warning signal on the expendable layer.
+  // Continuity gate. The s3 util confirm window below is an elapsed-time test
+  // against a start stamp, which only means "sustained" while the
+  // measurement is unbroken. A stamp that survives a gap measures wall clock
+  // instead: one bad window, 800 ms of nothing, one more bad window would
+  // read as 800 ms of confirmed pressure and demote on two samples — the
+  // very instant demote the confirm window exists to prevent (review
+  // finding). Breaking the run on any discontinuity errs toward NOT
+  // demoting, which is the right way to be wrong for an early-warning signal
+  // on the expendable layer.
   //
   // This check is what covers the gaps the !s3_live branch below cannot see:
   // update() early-returns above on a starved or invalid sample and never
   // reaches this block at all.
   if (now_ms - s3_last_live_ms_ > cfg_.s3_settle_ms) {
-    s3_resid_start_ms_ = -1.0;
     s3_util_start_ms_ = -1.0;
   }
 
   if (!s3_live) {
     // u3_ stays at the 0 stamped at entry, and an unmeasurable window is a
-    // discontinuity in its own right: break both runs.
-    s3_resid_start_ms_ = -1.0;
+    // discontinuity in its own right: break the run.
     s3_util_start_ms_ = -1.0;
   } else {
     s3_last_live_ms_ = now_ms;
@@ -429,24 +427,19 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     set_event(now_ms, from, idx_, reason, u3_, snr_now_);
   };
 
-  // s3 residual (post-FEC abandonment) — confirmed, not instant like s1's:
-  // s3 is the expendable layer, so a single abandoned window is a normal
-  // shed/blip rather than proof the rung is unsustainable. Checked BEFORE the
-  // s1 util block so that when both ripen on the same tick the event reason
-  // attributes to s3 — "s3 led s1" is exactly the evidence this feature
-  // exists to collect.
-  if (cfg_.s3_demote && s3_live) {
-    if (h.s3_residual_loss > 0.0) {
-      if (s3_resid_start_ms_ < 0.0) s3_resid_start_ms_ = now_ms;
-      if (idx_ > 0 &&
-          now_ms - s3_resid_start_ms_ >= eff_s3_resid_confirm_ms(now_ms) &&
-          now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
-        s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
-        return true;
-      }
-    } else {
-      s3_resid_start_ms_ = -1.0;
-    }
+  // s3 residual (post-FEC abandonment) demotes IMMEDIATELY, like s1's, and
+  // like it is exempt from min_between_changes_ms. It was a confirmed
+  // window until 2026-08-15 because a single abandoned window reads as a
+  // normal shed/blip -- but a shed window carries no s3 traffic at all, so
+  // s3_live is false and no s3 decision runs. What actually needed the
+  // window was transition debris, and attribution removes that from the
+  // input outright: the watermark is in symbol-sequence space
+  // (sw_decoder.h), exact and permanent, not a settling heuristic. Checked
+  // BEFORE the s1 util block so that when both ripen on the same tick the
+  // event reason attributes to s3.
+  if (cfg_.s3_demote && s3_live && h.s3_residual_loss > 0.0 && idx_ > 0) {
+    s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
+    return true;
   }
 
   // 5. Utilization pressure: immediate demote during probation, otherwise a

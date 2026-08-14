@@ -636,97 +636,65 @@ TEST(event_carries_snr) {
 
 // --- s3 steady-state demotes ---------------------------------------------
 
-TEST(s3_residual_confirmed_demotes) {
+// s3 residual demotes on the FIRST window now (spec 2026-08-15), matching
+// the s1 residual path. What makes a 0 ms confirm safe is that attribution
+// is EXACT, not fast: the watermark lives in symbol-sequence space
+// (sw_decoder.h), so pre-transition debris is absent from the input rather
+// than outrun by a shorter window.
+TEST(s3_residual_demotes_on_the_first_window) {
   LadderCfg cfg = make_cfg();
   LadderController ctl(cfg);
   double t = 0;
-  promote_to(ctl, t, 2);
-  t += cfg.probation_ms + 100;
-  ctl.update(ok3(0.0), t);                 // ends any blanking cleanly
-  t += cfg.s3_settle_ms + 100;
-  const double start = t;
-  // sustained s3 residual, s1 perfectly clean:
-  for (; ctl.rung() == 2 && t - start < 2000; t += 50) ctl.update(ok3(0.0, 0.02, 0.01), t);
-  CHECK(ctl.rung() == 1);
+  promote_to(ctl, t, 4);
+  feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);  // retire probation
+  const int before = ctl.rung();
+  const bool changed = ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t);
+  CHECK(changed);
+  CHECK(ctl.rung() == before - 1);
   CHECK(ctl.counters().demotes_s3_residual == 1);
   CHECK(ctl.last_event().reason == CtlReason::S3Residual);
-  CHECK(t - start >= cfg.s3_residual_confirm_ms);   // not instant
 }
 
-TEST(s3_residual_blip_does_not_demote) {
+TEST(s3_residual_demote_is_exempt_from_min_between_changes) {
+  // s1's instant residual path is exempt from min_between_changes_ms; s3's
+  // now is too. s3_settle_ms (300) is longer than min_between_changes_ms
+  // (150), so the blank would mask the spacing gate entirely — zero it to
+  // isolate what this test is actually about.
+  LadderCfg cfg = make_cfg();
+  cfg.s3_settle_ms = 0;
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 4);
+  feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  const int before = ctl.rung();
+  REQUIRE(ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+  t += 50;  // well inside min_between_changes_ms (150)
+  CHECK(ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+  CHECK(ctl.rung() == before - 2);
+}
+
+// THE safety test (spec §8). With the confirm window gone, s3_settle_ms
+// blanking is the only guard the CONTROLLER still owns between a rung
+// transition and a cascade on that transition's own FEC re-key debris.
+// Attribution removes the debris upstream in main.cpp and the controller
+// cannot tell the difference, so this pins the half the controller can
+// defend on its own.
+TEST(instant_s3_residual_still_respects_the_settle_blank) {
   LadderCfg cfg = make_cfg();
   LadderController ctl(cfg);
   double t = 0;
-  promote_to(ctl, t, 2);
-  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
-  ctl.update(ok3(0.0, 0.02, 0.01), t);      // single bad window
-  ctl.update(ok3(0.0), t + 50);              // clean again resets the run
-  for (double e = t + 100; e < t + 2000; e += 50) ctl.update(ok3(0.0), e);
-  CHECK(ctl.rung() == 2);
-  CHECK(ctl.counters().demotes_s3_residual == 0);
-}
-
-// Review finding: the confirm windows are elapsed-time tests against a
-// stamp, so a stamp that SURVIVES a gap in usable s3 measures wall clock
-// rather than sustained evidence. One bad window, 800 ms of no measurement
-// (s3 unusable here; a run of sample_valid=false samples early-returns out of
-// update() for the same effect), then one more bad window would satisfy
-// "800 - 0 >= s3_residual_confirm_ms" and demote on two bad samples 800 ms
-// apart — exactly the instant demote the confirm window exists to prevent.
-// Continuity must break the run.
-TEST(s3_residual_confirm_window_resets_across_an_s3_gap) {
-  LadderCfg cfg = make_cfg();
-  LadderController ctl(cfg);
-  double t = 0;
-  promote_to(ctl, t, 2);
-  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
-  ctl.update(ok3(0.0, 0.02, 0.01), t);   // one bad window stamps the run
-  t += 50;
-
-  LinkHealth gap = ok3(0.0, 0.02, 0.01);  // residual present but UNMEASURABLE
-  gap.s3_valid = false;
-  gap.s3_expected_syms = 0;
-  const double gap_end = t + 800;
-  for (; t < gap_end; t += 50) CHECK(!ctl.update(gap, t));
-
-  // First usable sample after the gap: 800 ms of wall clock since the stamp,
-  // but only ever one bad window of actual evidence.
-  CHECK(!ctl.update(ok3(0.0, 0.02, 0.01), t));
-  CHECK(ctl.rung() == 2);
-  CHECK(ctl.counters().demotes_s3_residual == 0);
-
-  // A genuinely sustained run still demotes, timed from the post-gap sample.
-  const double fresh = t;
-  t += 50;
-  for (; ctl.rung() == 2 && t - fresh < 2000; t += 50) {
-    ctl.update(ok3(0.0, 0.02, 0.01), t);
-  }
-  CHECK(ctl.rung() == 1);
-  CHECK(ctl.counters().demotes_s3_residual == 1);
-  CHECK(ctl.last_event().t_ms - fresh >= cfg.s3_residual_confirm_ms);
-}
-
-// The other half of the same finding, and the only thing that exercises the
-// continuity gate itself: update() early-returns on an invalid sample long
-// before block 5a, so the "unmeasurable window breaks the run" branch inside
-// 5a never even runs during an s1 fade. The run must still break.
-TEST(s3_residual_confirm_window_resets_across_an_invalid_sample_gap) {
-  LadderCfg cfg = make_cfg();
-  LadderController ctl(cfg);
-  double t = 0;
-  promote_to(ctl, t, 2);
-  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
-  ctl.update(ok3(0.0, 0.02, 0.01), t);   // one bad window stamps the run
-  t += 50;
-
-  LinkHealth invalid;                     // s1 window saw no symbols at all
-  invalid.sample_valid = false;
-  const double gap_end = t + 800;
-  for (; t < gap_end; t += 50) CHECK(!ctl.update(invalid, t));
-
-  CHECK(!ctl.update(ok3(0.0, 0.02, 0.01), t));
-  CHECK(ctl.rung() == 2);
-  CHECK(ctl.counters().demotes_s3_residual == 0);
+  promote_to(ctl, t, 4);
+  feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // First demote opens the blank via mark_transition().
+  REQUIRE(ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+  const int after_first = ctl.rung();
+  const double transition_t = t;
+  // Debris keeps arriving for the whole blank. Nothing may fire.
+  for (t += 50; t < transition_t + cfg.s3_settle_ms; t += 50)
+    CHECK(!ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+  CHECK(ctl.rung() == after_first);
 }
 
 TEST(s3_util_confirmed_demotes) {
@@ -931,8 +899,10 @@ TEST(fade_regime_expires_back_to_full_confirm) {
 }
 
 TEST(fade_regime_s3_blanking_invariant_holds) {
-  // Spec §6 test 7: in-regime s3-driven steps still respect s3_settle_ms —
-  // the re-key blank is NOT shortened by the regime, only the confirm is.
+  // Spec §6 test 7 (updated 2026-08-15): in-regime s3-residual steps still
+  // respect s3_settle_ms — the re-key blank is NOT shortened by the regime.
+  // There is no separate confirm to shorten any more: the demote fires on
+  // the first live sample after the blank, in or out of the regime.
   LadderCfg cfg = make_cfg();
   LadderController ctl(cfg);
   double t = 0;
@@ -947,16 +917,15 @@ TEST(fade_regime_s3_blanking_invariant_holds) {
     if (ctl.update(ok(bad), t)) demote_t = t;
   REQUIRE(demote_t > 0);
   // Immediately feed continuous s3 residual pressure (clean s1). The s3
-  // demote may not fire before s3_settle_ms (300, blanks s3_live) plus the
-  // in-regime confirm (fade.confirm_ms 100) have both elapsed.
+  // demote may not fire before s3_settle_ms (300, blanks s3_live) has
+  // elapsed, but fires instantly on the first live sample after that.
   double s3_demote_t = -1;
   for (int i = 0; i < 40 && s3_demote_t < 0; ++i, t += 50)
     if (ctl.update(ok3(0.0, 0.0, /*s3_resid=*/0.02), t)) s3_demote_t = t;
   REQUIRE(s3_demote_t > 0);
   CHECK(ctl.last_event().reason == CtlReason::S3Residual);
-  CHECK(s3_demote_t - demote_t >=
-        cfg.s3_settle_ms + cfg.fade.confirm_ms);  // 300 + 100
-  CHECK(s3_demote_t - demote_t < cfg.s3_settle_ms + cfg.s3_residual_confirm_ms);
+  CHECK(s3_demote_t - demote_t >= cfg.s3_settle_ms);        // blank fully honored
+  CHECK(s3_demote_t - demote_t < cfg.s3_settle_ms + 50.0);  // fires on the very next sample
 }
 
 TEST(fade_cascade_kill_switch_is_legacy) {
@@ -1210,54 +1179,6 @@ TEST(fade_predict_latch_survives_nan_blip) {
 }
 
 // --- final whole-branch review, 2026-08-14 ---
-
-// Finding 1. With transition attribution OFF (`link.attrib: false`, a shipped
-// one-line revert) the demote inputs carry pre-transition FEC debris again,
-// and CLAUDE.md's standing tuning invariant applies: s3_settle_ms (300) and
-// s3_residual_confirm_ms (500) must not both sit near their floors, or a rung
-// transition's own re-key artifacts satisfy the confirm and self-demote. The
-// fade regime shortens the confirm to 100 ms, which is exactly that
-// configuration — measured: one genuine demote cascaded 4 -> 0 in 1.6 s on
-// pure debris. The regime must therefore keep the FULL confirm whenever
-// attribution is off; the debris it relies on is not being attributed away.
-TEST(attrib_off_keeps_full_s3_resid_confirm_in_fade_regime) {
-  // Debris model: every rung transition leaves s3 residual positive for the
-  // width of the 500 ms residual window (the ~200 ms that outlives the 300 ms
-  // s3_settle_ms blank is what the confirm window then sees). Returns how
-  // many FOLLOW-ON demotes the debris alone produced after one genuine
-  // confirmed util demote.
-  auto follow_on_demotes = [](bool attrib) {
-    LadderCfg cfg = make_cfg();
-    cfg.attrib = attrib;
-    LadderController ctl(cfg);
-    double t = 0;
-    promote_to(ctl, t, 4);
-    feed_for(ctl, t, cfg.probation_ms + 200, 0.3);  // retire probation
-    REQUIRE(ctl.probation_ms_left(t) == 0);
-    const double bad = 0.9 * ctl.budget();  // u = 0.9 > down_util
-    double last_change = -1;
-    for (int i = 0; i < 40 && last_change < 0; ++i, t += 50)
-      if (ctl.update(ok(bad), t)) last_change = t;
-    REQUIRE(last_change > 0);
-    REQUIRE(ctl.fade_active(last_change));  // the regime really did arm
-    int follow_on = 0;
-    for (double end = t + 4000; t < end; t += 50) {
-      // s1 perfectly clean throughout; only transition debris on s3.
-      const double debris = (t - last_change < 500.0) ? 0.02 : 0.0;
-      if (ctl.update(ok3(0.0, 0.0, debris), t)) {
-        ++follow_on;
-        last_change = t;
-      }
-    }
-    return follow_on;
-  };
-  // The stimulus really is capable of cascading: with attribution on (the
-  // premise that makes the shortened confirm safe) main.cpp would never
-  // present this debris, but the controller acts on whatever it is handed.
-  CHECK(follow_on_demotes(true) > 0);
-  // ... and with attribution off it must not, however open the regime is.
-  CHECK(follow_on_demotes(false) == 0);
-}
 
 // Finding 5. The EWMA feed used to sit below block 4's residual-demote
 // return, so it was skipped during exactly the loss phase of a fade and

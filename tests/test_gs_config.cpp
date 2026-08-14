@@ -44,6 +44,19 @@ TEST(stale_video_silence_ms_key_throws) {
   CHECK(threw);
 }
 
+// Removed 2026-08-15 when the s3 residual demote became instant: with
+// attribution unconditional, the confirm window had nothing left to guard
+// against. Strict keys mean a tuned device config naming it must be edited
+// by hand BEFORE the new binary starts, or maburgs crash-loops at 2 s.
+TEST(stale_s3_residual_confirm_ms_key_throws) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"s3_residual_confirm_ms\": 500}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("s3_residual_confirm_ms") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
 TEST(errors_are_fail_fast) {
   bool threw = false;
   try { maburgs::load_config("/nonexistent/x.json"); } catch (const std::exception&) { threw = true; }
@@ -503,7 +516,6 @@ TEST(probe_defaults_and_sentinel_resolution) {
   CHECK(lc.probe_max_util > 0.349 && lc.probe_max_util < 0.351);  // resolved to down_util
   CHECK(lc.s3_down_util > 0.349 && lc.s3_down_util < 0.351);
   CHECK(lc.s3_demote);
-  CHECK(lc.s3_residual_confirm_ms == 500);
   CHECK(lc.s3_settle_ms == 300);
   CHECK(lc.probe_s3_min_syms == 50);
   CHECK(lc.probe_s3_silence_ms == 500);
@@ -576,7 +588,7 @@ TEST(rung_stats_parses_and_validates) {
 // link.attrib: transition-attribution kill switch (spec 2026-08-14).
 // Default true (attribution on); explicit false = legacy totals; must be
 // boolean-typed like ctl_log/s3_demote. It parses into ladder_cfg (the
-// controller reads it too — see eff_s3_resid_confirm_ms), not into a
+// controller reads it too — see eff_s3_util_confirm_ms), not into a
 // separate LinkCfg field that could drift from it.
 TEST(link_attrib_defaults_true) {
   auto cfg = maburgs::load_config(write_tmp(R"({"link": {}})"));

@@ -25,7 +25,8 @@ struct FadeCfg {
   bool cascade = true;   // regime cascade (Part A)
   bool predict = true;   // predictive RSSI+SNR trigger (Part B)
   int hold_ms = 2500;    // regime duration after a loss-driven demote
-  int confirm_ms = 100;  // in-regime replacement for confirm_ms / s3_residual_confirm_ms
+  int confirm_ms = 100;  // in-regime replacement for confirm_ms (s1 util)
+                          // and the s3 util confirm
   // Trigger thresholds on delta = slow - fast (see FadeEwma below). These are
   // thresholds on a HIGH-PASS RESPONSE, not on the fade depth, so they are
   // NOT the trip points — read them with the transfer function:
@@ -82,7 +83,6 @@ struct LadderCfg {
   // --- s3 steady-state demotes (consumed by the s3-demote logic) ---
   bool s3_demote = true;
   double s3_down_util = -1.0;   // <0 => down_util
-  int s3_residual_confirm_ms = 500;
   // After any rung transition (or probe start/end) the drone re-keys its FEC
   // streams; blank s3-derived decisions for this long so the re-key glitch
   // does not read as loss.
@@ -91,11 +91,11 @@ struct LadderCfg {
   // Transition-attribution kill switch (link.attrib, spec 2026-08-14, merged
   // 148f5a6). The controller does not do the attribution itself — the caller
   // decides which loss numbers land in LinkHealth — but it must KNOW, because
-  // the fade regime's shortened s3 confirms are only safe while the debris of
-  // the transition it just made is being attributed away. Lives here, not in
-  // LinkCfg, so the safety is carried by the code rather than by a documented
-  // tuning invariant, and so the two can never disagree. See
-  // eff_s3_resid_confirm_ms() / eff_s3_util_confirm_ms().
+  // the fade regime's shortened s3 util confirm is only safe while the
+  // debris of the transition it just made is being attributed away. Lives
+  // here, not in LinkCfg, so the safety is carried by the code rather than by
+  // a documented tuning invariant, and so the two can never disagree. See
+  // eff_s3_util_confirm_ms().
   bool attrib = true;
 
   // --- per-rung EWMA store (spec 2026-08-13, observe-only) ---
@@ -270,47 +270,32 @@ class LadderController {
   bool in_fade_regime(double now_ms) const {
     return cfg_.fade.cascade && now_ms < fade_until_ms_;
   }
-  // In-regime replacements for the three confirmed-demote windows (s1 util
-  // here, s3 residual and s3 util below). The instant s1-residual path, the
+  // In-regime replacement for the confirmed-demote window on the s1 util
+  // path. The instant s1-residual path, the instant s3-residual path, the
   // s3_settle_ms blanking and min_between_changes_ms are deliberately
-  // untouched. Only this one is unconditional — the two s3 windows need
+  // untouched. Only this one is unconditional — the s3 util window needs
   // transition attribution first, see below.
+  //
+  // This is deliberately NOT guarded the same way as eff_s3_util_confirm_ms()
+  // below: the s1 util path demotes on an AMPLITUDE threshold (u > down_util,
+  // i.e. >10% of raw symbols missing over the loss window) and has no
+  // blanking at all, so debris either clears that bar — in which case the
+  // legacy 250 ms confirm, which sits entirely inside the 500 ms window the
+  // debris occupies, fires too — or it does not, and neither window fires.
+  // Shortening opens no new duration band there.
   double eff_confirm_ms(double now_ms) const {
     return in_fade_regime(now_ms) ? cfg_.fade.confirm_ms : cfg_.confirm_ms;
   }
-  // The s3-residual confirm is a window the regime may NOT shorten
-  // without transition attribution. It fires on residual > 0 — a positivity
-  // test, not an amplitude one — and its s3_settle_ms (300) blank truncates
-  // post-transition debris to the ~200 ms that outlives it, which lands
-  // between the in-regime confirm (100) and the steady-state one (500). With
-  // attribution off, that debris is back in the input and a single genuine
-  // demote cascades to the failsafe rung on its own artifacts (measured
-  // 4 -> 0 in 1.6 s, review finding 2026-08-14) — precisely the collapse
-  // CLAUDE.md's "do not lower s3_settle_ms/s3_residual_confirm_ms toward
-  // their floors together" invariant describes. So attribution, not a doc
-  // line, is the precondition for the shortened window.
-  //
-  // eff_confirm_ms() above is deliberately NOT guarded the same way (its s1
-  // util call site, that is — the s3 util one moved to the guarded accessor
-  // below): the s1 util path demotes on an AMPLITUDE threshold (u > down_util, i.e. >10% of
-  // raw symbols missing over the loss window) and has no blanking at all, so
-  // debris either clears that bar — in which case the legacy 250 ms confirm,
-  // which sits entirely inside the 500 ms window the debris occupies, fires
-  // too — or it does not, and neither window fires. Shortening opens no new
-  // duration band there.
-  double eff_s3_resid_confirm_ms(double now_ms) const {
-    return (in_fade_regime(now_ms) && cfg_.attrib)
-               ? cfg_.fade.confirm_ms
-               : cfg_.s3_residual_confirm_ms;
-  }
-  // The s3 UTIL confirm needs the same guard for the same reason (found by
-  // sweeping the finding above, not reported): it sits behind the same
-  // s3_settle_ms blank, so the debris it can see is truncated to the same
-  // ~200 ms, which again lands between the in-regime 100 ms and the legacy
-  // window — and u3 is scored against s3's much smaller budget, so debris
-  // clears s3_down_util far more easily than it clears s1's down_util.
-  // Reverts to cfg_.confirm_ms, which is what this path used before the
-  // regime existed.
+  // The s3 UTIL confirm is a window the regime may NOT shorten without
+  // transition attribution (the s3-residual demote had the same problem
+  // until 2026-08-15, when it became instant and attribution-exact rather
+  // than confirm-guarded — see the s3 residual block in the .cpp). It sits
+  // behind the same s3_settle_ms blank, so the debris it can see is
+  // truncated to the same ~200 ms, which again lands between the in-regime
+  // 100 ms and the legacy window — and u3 is scored against s3's much
+  // smaller budget, so debris clears s3_down_util far more easily than it
+  // clears s1's down_util. Reverts to cfg_.confirm_ms, which is what this
+  // path used before the regime existed.
   double eff_s3_util_confirm_ms(double now_ms) const {
     return (in_fade_regime(now_ms) && cfg_.attrib) ? cfg_.fade.confirm_ms
                                                    : cfg_.confirm_ms;
@@ -390,9 +375,9 @@ class LadderController {
   // sample was ever scored (probe committed on liveness alone).
   double probe_u_pred_last_ = 0.0;
   double u3_ = 0.0;
-  double s3_resid_start_ms_ = -1.0, s3_util_start_ms_ = -1.0;
-  // Last sample that could actually measure s3. The confirm windows above are
-  // elapsed-time tests against a stamp, so they only mean "sustained" while
+  double s3_util_start_ms_ = -1.0;
+  // Last sample that could actually measure s3. The confirm window above is
+  // an elapsed-time test against a stamp, so it only means "sustained" while
   // measurement is CONTINUOUS: a gap invalidates the run (see update()).
   double s3_last_live_ms_ = -1e18;
   double s3_blank_until_ms_ = -1e18;
