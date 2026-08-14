@@ -100,14 +100,41 @@ while the regime is open and the cascade is on, the demote confirm
 windows drop 250/500 ms to 100 ms (`confirm_ms`), so a real fade steps
 down at fade speed rather than at steady-state speed. Kill the cascade
 and the regime is still armed and still reported — it just stops
-shortening anything. `link.fade.predict` adds an RF trigger ahead of any
-loss: both −8 dB RSSI (`rssi_db`) AND −4 dB SNR (`snr_db`) below their
-slow baselines, sustained `trigger_ms` (300 ms), demotes one rung with
-reason `fade`. Those
+shortening anything. Both s3 confirms are additionally gated on
+`link.attrib`: with attribution OFF the regime keeps the full
+`s3_residual_confirm_ms` / `confirm_ms` there, because a 100 ms confirm
+behind the unshortened 300 ms `s3_settle_ms` is exactly the
+floors-together configuration the tuning invariant above forbids — the
+~200 ms of debris that outlives the blank satisfies 100 ms and not the
+legacy window. Measured in review, a single genuine demote then cascaded
+rung 4 → 0 in 1.6 s on nothing but its own FEC debris. So `attrib: false`
+reverts Part A's s3 paths along with everything else. (The s1 util
+confirm is NOT gated: it has no blanking at all, so its legacy 250 ms
+window already sits inside the same 500 ms loss window the debris
+occupies — amplitude decides it there, not duration.)
+
+`link.fade.predict` adds an RF trigger ahead of any loss: both `rssi_db`
+(8 dB) AND `snr_db` (4 dB) below their slow baselines, sustained
+`trigger_ms` (300 ms), demotes one rung with reason `fade`. Those
 baselines are a dual-timescale EWMA — fast tau 300 ms, slow tau
 asymmetric at 2 s rising / 20 s falling; structural constants, not config
 — so a multi-second fade cannot drag its own baseline down and erase its
-own delta. Three things to know before reading any of it: (i) the
+own delta. ⚠ **Those two numbers are thresholds on a high-pass response,
+not fade depths, so they are NOT trip points.** A step of depth D reaches
+`delta = D·(e^−t/20000 − e^−t/300)`, which peaks at 0.92·D at 1.28 s and
+is down to 0.74·D by 6 s, so the smallest step that fires is ≈1.08× the
+configured number: `rssi_db: 8.0` trips on a ≈8.7 dB fade, `snr_db: 4.0`
+on a ≈4.3 dB one, and a fade of exactly 8/4 dB never fires. A fade that
+stops descending falls back under threshold as the baseline catches up
+(this detects fading, not faded), and on a steady ramp the response is
+slope-driven — ~19.7 dB of delta per dB/s — so ramps under ~0.45 dB/s
+never reach `rssi_db` 8 however deep they eventually get. `trigger_ms` is
+not the binding constraint either: the delta needs ~0.8–1.3 s to climb to
+its peak, so the 300 ms fast tau sets the reaction time. Those are
+harness/model figures (they reproduce the review's measured deltas
+exactly), NOT flight results — and the defaults are deliberately
+unchanged, since tightening them without bench data is what the spec's
+tuning invariant forbids. Three things to know before reading any of it: (i) the
 predictive trigger is LATCHED — exactly ONE predictive demote per fade
 EVENT, and the latch releases only on an *observed* recovery, a tick where
 both deltas are measurably back under threshold. A NaN window (absent
@@ -144,13 +171,37 @@ now NaNs on stale windows, per-rung EVM sample counts in the RungStore
 drop on a marginal link: that is a deliberate honesty improvement, but it
 means EVM sample counts are NOT comparable across this date.
 
+**The expected false-fade source is a label-source card hop, and it is
+what to look for when a `fade` demote has no fade behind it.** That
+argmax does not stick: a front-end that wedges for ~1 s (a documented,
+recovering failure mode on the two-card bench GS) hands the labels to a
+weaker sibling, and `s1_rssi_dbm`/`s1_snr_db` then step down TOGETHER —
+bit for bit the trigger's joint condition, so a ≥9 dB RSSI / ≥4.3 dB SNR
+gap between cards is a spurious `fade`. The controller defends itself: the
+selected card index rides along in `LinkHealth` and a change re-baselines
+both EWMAs (so a hop reads as a new reference, not a fade), at the cost of
+making a fade already in progress re-accumulate its delta on the new card
+— conservative in the direction everything else here is. The latch is
+deliberately NOT released by a hop. If a false fade shows up anyway,
+correlate the ctl log's `drssi`/`dsnr` step against per-card
+`classes.s1.*` in the sideport: a hop moves both by the card GAP in one
+window, a real fade moves them along the transfer function above.
+
 On the drone, RCF drain is decoupled from the agent tick
 (`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop
 wakes every `rc_drain_ms` to drain queued RC frames, with ALL per-tick
 housekeeping (USB health polls, `RcAgent::tick()`, watchdog, 1 Hz
 stats/telem) behind a `TickGate` deadline so its cadence is bit-for-bit
-unchanged, and `rc_drain_ms >= tick_ms` reproduces the legacy loop
-exactly. Op actuation used to be U(0, `tick_ms` = 100) ms, and
+unchanged, and `rc_drain_ms == tick_ms` reproduces the legacy loop
+exactly. `link.tick_ms` is now bounded 1–1000 as well, and
+`rc_drain_ms > tick_ms` FAILS BOOT (it would silently retime every
+per-tick job to the drain period): the gate turned a bad `tick_ms` from
+the old "spins at 100% CPU but works" into a ~1.8e19 ms period that fires
+once at startup and never again — no failsafe, no rendezvous fallback, no
+watchdog, no telemetry, nothing logged. Both bounds are new on
+2026-08-14; a config that sets `tick_ms` under 5 without also setting
+`rc_drain_ms` is the only shape that boots on the old binary and not the
+new one (nothing deployed does). Op actuation used to be U(0, `tick_ms` = 100) ms, and
 `link.attrib.close_ms` measured a ~110 ms median with tails at 295 and
 971 ms. Re-measure `close_ms` after deploying maburd — a median ≤30 ms is
 the expectation to verify, not a result: nothing in this wave has been
