@@ -711,6 +711,79 @@ TEST(s3_util_confirmed_demotes) {
   CHECK(ctl.last_event().reason == CtlReason::S3Util);
 }
 
+// Coverage regression (whole-branch review, I-3): the s3 residual path went
+// instant on 2026-08-15 and took its two confirm-window gap tests with it
+// (`s3_residual_confirm_window_resets_across_an_s3_gap` /
+// `..._an_invalid_sample_gap`), but the continuity gate they drove
+// (ladder_controller.cpp, just above the s3_live/!s3_live split) also guards
+// the s3 UTIL confirm window, which is still elapsed-time and still live.
+// Nothing left in the suite drove a real s3_valid=false or sample_valid=false
+// gap through it. One bad window, ~800 ms of no measurement, one more bad
+// window would satisfy "800 - 0 >= confirm_ms" and demote on two samples
+// 800 ms apart -- exactly the two-sample demote the confirm window exists to
+// prevent. Breaking the run on any discontinuity errs toward NOT demoting.
+// (Verified: this variant, with sample_valid staying true through the gap,
+// still passes if the continuity gate is deleted -- the redundant `!s3_live`
+// reset a few lines below covers it. It is the invalid-sample sibling right
+// below that actually pins the gate; kept here anyway as the s3-side
+// documentation half of the same finding, mirroring the pair that was
+// deleted.)
+TEST(s3_util_confirm_window_resets_across_an_s3_gap) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.2), t);   // one bad window stamps s3_util_start_ms_
+  t += 50;
+
+  LinkHealth gap = ok3(0.0, 0.2);  // s3 util pressure present but UNMEASURABLE
+  gap.s3_valid = false;
+  gap.s3_expected_syms = 0;
+  const double gap_end = t + 800;
+  for (; t < gap_end; t += 50) CHECK(!ctl.update(gap, t));
+
+  // First usable sample after the gap: 800 ms of wall clock since the stamp,
+  // but only ever one bad window of actual evidence.
+  CHECK(!ctl.update(ok3(0.0, 0.2), t));
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_util == 0);
+
+  // A genuinely sustained run still demotes, timed from the post-gap sample.
+  const double fresh = t;
+  t += 50;
+  for (; ctl.rung() == 2 && t - fresh < 2000; t += 50)
+    ctl.update(ok3(0.0, 0.2), t);
+  CHECK(ctl.rung() == 1);
+  CHECK(ctl.counters().demotes_s3_util == 1);
+  CHECK(ctl.last_event().t_ms - fresh >= cfg.confirm_ms);
+}
+
+// The sibling half, and the only thing that exercises the continuity gate
+// itself: update() early-returns on !sample_valid long before block 5a, so
+// the "unmeasurable window breaks the run" branch inside 5a (the one the
+// test above relies on) never runs at all during an s1 fade -- only the
+// continuity gate, comparing against the stale s3_last_live_ms_, catches it
+// on the far side of the gap. The run must still break.
+TEST(s3_util_confirm_window_resets_across_an_invalid_sample_gap) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  t += cfg.probation_ms + cfg.s3_settle_ms + 200;
+  ctl.update(ok3(0.0, 0.2), t);   // one bad window stamps s3_util_start_ms_
+  t += 50;
+
+  LinkHealth invalid;              // s1 window saw no symbols at all
+  invalid.sample_valid = false;
+  const double gap_end = t + 800;
+  for (; t < gap_end; t += 50) CHECK(!ctl.update(invalid, t));
+
+  CHECK(!ctl.update(ok3(0.0, 0.2), t));
+  CHECK(ctl.rung() == 2);
+  CHECK(ctl.counters().demotes_s3_util == 0);
+}
+
 TEST(s3_demote_kill_switch) {
   LadderCfg cfg = make_cfg();
   cfg.s3_demote = false;
