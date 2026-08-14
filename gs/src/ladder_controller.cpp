@@ -280,6 +280,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     reset_windows();
     mark_transition(now_ms);
     ++counters_.demotes_residual;
+    fade_until_ms_ = now_ms + cfg_.fade.hold_ms;
     set_event(now_ms, from, idx_, CtlReason::Residual, u_, snr_now_);
     return true;
   }
@@ -348,6 +349,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     reset_windows();
     mark_transition(now_ms);
     ++counter;
+    fade_until_ms_ = now_ms + cfg_.fade.hold_ms;
     set_event(now_ms, from, idx_, reason, u3_, snr_now_);
   };
 
@@ -361,7 +363,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     if (h.s3_residual_loss > 0.0) {
       if (s3_resid_start_ms_ < 0.0) s3_resid_start_ms_ = now_ms;
       if (idx_ > 0 &&
-          now_ms - s3_resid_start_ms_ >= cfg_.s3_residual_confirm_ms &&
+          now_ms - s3_resid_start_ms_ >= eff_s3_resid_confirm_ms(now_ms) &&
           now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
         s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
         return true;
@@ -396,7 +398,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       return true;
     }
 
-    if (idx_ > 0 && now_ms - confirm_start_ms_ >= cfg_.confirm_ms &&
+    if (idx_ > 0 && now_ms - confirm_start_ms_ >= eff_confirm_ms(now_ms) &&
         now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
       // Demotes always win over a probe.
       if (probe_active_) {
@@ -410,6 +412,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       reset_windows();
       mark_transition(now_ms);
       ++counters_.demotes_util;
+      fade_until_ms_ = now_ms + cfg_.fade.hold_ms;
       set_event(now_ms, from, idx_, CtlReason::Util, u_, snr_now_);
       return true;
     }
@@ -424,7 +427,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   if (cfg_.s3_demote && s3_live) {
     if (u3_ > s3_util_threshold()) {
       if (s3_util_start_ms_ < 0.0) s3_util_start_ms_ = now_ms;
-      if (idx_ > 0 && now_ms - s3_util_start_ms_ >= cfg_.confirm_ms &&
+      if (idx_ > 0 && now_ms - s3_util_start_ms_ >= eff_confirm_ms(now_ms) &&
           now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
         s3_demote_now(CtlReason::S3Util, counters_.demotes_s3_util);
         return true;

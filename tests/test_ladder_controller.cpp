@@ -846,3 +846,107 @@ TEST(rung_store_s3_steady_state_feeds_current_rung) {
 }
 
 MTEST_MAIN
+
+// --- fade-aware demotes: regime cascade (Part A) --------------------------
+
+TEST(fade_regime_cascade_shortens_util_confirm) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  // Clear rung 3's probation with neutral health, so the first demote below
+  // is a genuine confirm-window Util demote (which arms the regime) rather
+  // than an immediate Probation one (which deliberately does not).
+  feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // First demote: sustained over-down_util pressure pays the FULL confirm.
+  const double bad = 0.9 * ctl.budget();  // u = 0.9 > down_util 0.6
+  double first_demote_t = -1;
+  for (int i = 0; i < 40 && first_demote_t < 0; ++i, t += 50)
+    if (ctl.update(ok(bad), t)) first_demote_t = t;
+  REQUIRE(first_demote_t > 0);
+  CHECK(ctl.rung() == 2);
+  // Regime armed: the NEXT demote confirms in fade.confirm_ms (100) +
+  // min_between_changes (150) instead of confirm_ms (250).
+  double second_demote_t = -1;
+  for (int i = 0; i < 40 && second_demote_t < 0; ++i, t += 50)
+    if (ctl.update(ok(bad), t)) second_demote_t = t;
+  REQUIRE(second_demote_t > 0);
+  CHECK(ctl.rung() == 1);
+  // In-regime step latency: >= 150 (min_between floor), < 250 (old confirm).
+  const double step = second_demote_t - first_demote_t;
+  CHECK(step >= 150.0);
+  CHECK(step < 250.0);
+}
+
+TEST(fade_regime_expires_back_to_full_confirm) {
+  LadderCfg cfg = make_cfg();
+  cfg.fade.hold_ms = 500;  // short regime for the test
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  const double bad = 0.9 * ctl.budget();
+  double d1 = -1;
+  for (int i = 0; i < 40 && d1 < 0; ++i, t += 50)
+    if (ctl.update(ok(bad), t)) d1 = t;
+  REQUIRE(d1 > 0);
+  // Go clean past the regime expiry, then re-apply pressure: the demote
+  // must pay the FULL confirm_ms again (>= 250 from pressure onset).
+  for (double end = t + 800; t < end; t += 50) ctl.update(ok(0.0), t);
+  const double pressure_start = t;
+  double d2 = -1;
+  for (int i = 0; i < 40 && d2 < 0; ++i, t += 50)
+    if (ctl.update(ok(bad), t)) d2 = t;
+  REQUIRE(d2 > 0);
+  CHECK(d2 - pressure_start >= 250.0);
+}
+
+TEST(fade_regime_s3_blanking_invariant_holds) {
+  // Spec §6 test 7: in-regime s3-driven steps still respect s3_settle_ms —
+  // the re-key blank is NOT shortened by the regime, only the confirm is.
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  // Clear rung 3's probation so the demote below is a confirmed Util one.
+  feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // Enter the regime via a confirmed s1 util demote.
+  const double bad = 0.9 * ctl.budget();
+  double demote_t = -1;
+  for (int i = 0; i < 40 && demote_t < 0; ++i, t += 50)
+    if (ctl.update(ok(bad), t)) demote_t = t;
+  REQUIRE(demote_t > 0);
+  // Immediately feed continuous s3 residual pressure (clean s1). The s3
+  // demote may not fire before s3_settle_ms (300, blanks s3_live) plus the
+  // in-regime confirm (fade.confirm_ms 100) have both elapsed.
+  double s3_demote_t = -1;
+  for (int i = 0; i < 40 && s3_demote_t < 0; ++i, t += 50)
+    if (ctl.update(ok3(0.0, 0.0, /*s3_resid=*/0.02), t)) s3_demote_t = t;
+  REQUIRE(s3_demote_t > 0);
+  CHECK(ctl.last_event().reason == CtlReason::S3Residual);
+  CHECK(s3_demote_t - demote_t >=
+        cfg.s3_settle_ms + cfg.fade.confirm_ms);  // 300 + 100
+  CHECK(s3_demote_t - demote_t < cfg.s3_settle_ms + cfg.s3_residual_confirm_ms);
+}
+
+TEST(fade_cascade_kill_switch_is_legacy) {
+  LadderCfg cfg = make_cfg();
+  cfg.fade.cascade = false;
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  const double bad = 0.9 * ctl.budget();
+  double d1 = -1, d2 = -1;
+  for (int i = 0; i < 40 && d1 < 0; ++i, t += 50)
+    if (ctl.update(ok(bad), t)) d1 = t;
+  for (int i = 0; i < 40 && d2 < 0; ++i, t += 50)
+    if (ctl.update(ok(bad), t)) d2 = t;
+  REQUIRE(d1 > 0); REQUIRE(d2 > 0);
+  CHECK(d2 - d1 >= 250.0);  // full confirm both times = today's behavior
+  // The regime is still ARMED (and still observable) with the cascade killed
+  // — only its effect on the confirm windows is suppressed, so the exported
+  // label stays truthful about what the link is doing.
+  CHECK(ctl.fade_active(d2));
+  CHECK(!ctl.fade_active(d2 + cfg.fade.hold_ms));
+}

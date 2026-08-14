@@ -69,8 +69,8 @@ struct LadderCfg {
   // --- per-rung EWMA store (spec 2026-08-13, observe-only) ---
   RungStoreCfg rung_stats;
 
-  // --- fade-aware demotes (spec 2026-08-14, config surface only in this
-  // task; nothing reads it until Tasks 2/3) ---
+  // --- fade-aware demotes (spec 2026-08-14). cascade/hold_ms/confirm_ms are
+  // live (Part A); the predictive-trigger keys are still config-only. ---
   FadeCfg fade;
 };
 
@@ -196,6 +196,12 @@ class LadderController {
   // decision path in this class — exporter/ctl-log surface only.
   const RungStore& rungs() const { return store_; }
 
+  // Raw fade-regime state (spec 2026-08-14): true while the post-demote
+  // regime window is open. Deliberately NOT gated on cfg_.fade.cascade — the
+  // regime is armed either way so the exported label stays truthful about
+  // what the link is doing even when the cascade effect is killed.
+  bool fade_active(double now_ms) const { return now_ms < fade_until_ms_; }
+
   const CtlCounters& counters() const { return counters_; }
   const CtlEvent& last_event() const { return last_event_; }
   const ProbeEvent& last_probe() const { return last_probe_; }
@@ -214,6 +220,23 @@ class LadderController {
   double probe_util_threshold() const;
   double s3_util_threshold() const;
   bool s3_usable(const LinkHealth& h) const;
+
+  // --- fade regime (spec 2026-08-14 Part A) ---
+  // Whether the cascade EFFECT applies right now: the regime is open and the
+  // kill switch is on.
+  bool in_fade_regime(double now_ms) const {
+    return cfg_.fade.cascade && now_ms < fade_until_ms_;
+  }
+  // In-regime replacements for the two confirmed-demote windows. The instant
+  // s1-residual path, the s3_settle_ms blanking and min_between_changes_ms
+  // are deliberately untouched.
+  double eff_confirm_ms(double now_ms) const {
+    return in_fade_regime(now_ms) ? cfg_.fade.confirm_ms : cfg_.confirm_ms;
+  }
+  double eff_s3_resid_confirm_ms(double now_ms) const {
+    return in_fade_regime(now_ms) ? cfg_.fade.confirm_ms
+                                  : cfg_.s3_residual_confirm_ms;
+  }
   void start_probe(int rung, double now_ms);
   void end_probe(ProbeOutcome oc, double u_pred, double now_ms);
   // Every rung change and every probe start/end: blank s3-derived decisions
@@ -234,6 +257,10 @@ class LadderController {
 
   double confirm_start_ms_ = -1.0;  // -1 = no active over-down_util window
   double clean_start_ms_ = -1.0;    // -1 = no active under-up_util window
+
+  // Fade regime expiry: armed to now + fade.hold_ms by every loss-driven
+  // demote (residual / util / s3_residual / s3_util). -1e18 = never armed.
+  double fade_until_ms_ = -1e18;
 
   bool probation_active_ = false;
   double probation_until_ms_ = -1e18;
