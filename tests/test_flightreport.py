@@ -509,6 +509,34 @@ def test_false_fade_and_attribution_miss():
     assert misses[0]["t_ms"] == 20150.0
 
 
+def test_find_episodes_gap_boundary_closes_run():
+    """The episode definition is 'consecutive demotes <= gap_ms apart';
+    a gap of exactly gap_ms (default 3000) must NOT close the episode, and
+    gap_ms + 1 must. This pins the half of find_episodes's contract that
+    test_find_episodes_clusters_and_first_reason (closes via a promote) and
+    test_false_fade_and_attribution_miss (its 9850ms gap is never asserted
+    on) leave uncovered -- a > gap_ms mutation must fail this test."""
+    E_at = [
+        _mk_e(0, 5, 4, "util"),
+        _mk_e(3000, 4, 3, "residual"),  # exactly gap_ms after the previous demote
+    ]
+    eps_at = flightreport.find_episodes(E_at)
+    assert len(eps_at) == 1
+    assert eps_at[0]["path"] == (5, 3)
+    assert eps_at[0]["steps"] == 2
+
+    E_over = [
+        _mk_e(0, 5, 4, "util"),
+        _mk_e(3001, 4, 3, "residual"),  # gap_ms + 1: must split
+    ]
+    eps_over = flightreport.find_episodes(E_over)
+    assert len(eps_over) == 2
+    assert eps_over[0]["path"] == (5, 4)
+    assert eps_over[0]["steps"] == 1
+    assert eps_over[1]["path"] == (4, 3)
+    assert eps_over[1]["steps"] == 1
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
@@ -517,3 +545,4 @@ if __name__ == "__main__":
     test_ctllog_r_lines_and_inversion()
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()
+    test_find_episodes_gap_boundary_closes_run()
