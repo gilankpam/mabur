@@ -288,10 +288,11 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 
   // 4b. Part B: predictive fade demote. Both signals must drop together,
   // sustained continuously — a window where either condition fails OR either
-  // signal is NaN breaks the run (errs toward not demoting). Fires at most
-  // one rung; the regime (Part A) carries the cascade from there on
-  // measured pressure. Never books probation-fail or penalty: this is
-  // rung-independent RF evidence, not proof the rung was marginal.
+  // signal is NaN breaks the run (errs toward not demoting). Latched to
+  // exactly one rung per fade EVENT; the regime (Part A) carries the cascade
+  // from there on measured pressure, at the shortened in-regime confirms.
+  // Never books probation-fail or penalty: this is rung-independent RF
+  // evidence, not proof the rung was marginal.
   // Ordering is a spec contract: after block 4 (residual wins the tick) and
   // before 5a (fade beats the confirm-window tiers).
   if (!std::isnan(h.s1_rssi_dbm)) fade_rssi_.feed(h.s1_rssi_dbm, now_ms);
@@ -303,10 +304,13 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     const bool over = measurable && fade_rssi_.delta() >= cfg_.fade.rssi_db &&
                       fade_snr_.delta() >= cfg_.fade.snr_db;
     if (!over) {
+      // Recovery: the condition falling back under threshold both breaks the
+      // sustain run and re-arms the latch for the NEXT fade event.
       fade_trig_start_ms_ = -1.0;
+      fade_latched_ = false;
     } else {
       if (fade_trig_start_ms_ < 0.0) fade_trig_start_ms_ = now_ms;
-      if (idx_ > 0 && idx_ >= cfg_.fade.min_rung &&
+      if (!fade_latched_ && idx_ > 0 && idx_ >= cfg_.fade.min_rung &&
           now_ms - fade_trig_start_ms_ >= cfg_.fade.trigger_ms &&
           now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
         // Demotes always win over a probe.
@@ -325,6 +329,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
         ++counters_.demotes_fade;
         set_event(now_ms, from, idx_, CtlReason::Fade, u_, snr_now_);
         fade_trig_start_ms_ = -1.0;
+        fade_latched_ = true;  // one fire per fade event
         return true;
       }
     }

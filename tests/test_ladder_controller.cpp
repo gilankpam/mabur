@@ -1128,3 +1128,54 @@ TEST(fade_baseline_asymmetry_survives_3s_fade) {
   CHECK(ctl.fade_drssi() >= cfg.fade.rssi_db);
   CHECK(ctl.fade_dsnr() >= cfg.fade.snr_db);
 }
+
+TEST(fade_predict_fires_once_per_fade_event) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 5);
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // 6 s of ONE sustained joint fade. The slow baseline falls at tau 20 s, so
+  // delta() stays over threshold for the whole run; without a latch the
+  // sustain run simply re-accrues and steps down again every trigger_ms
+  // (300) — min_between_changes_ms (150) is no spacing gate at all. One fade
+  // event must cost exactly one rung; anything further is Part A's job, on
+  // MEASURED loss.
+  // Utilization is neutral (0.3) rather than 0 so no clean window accrues:
+  // a promote partway through would confound the rung count.
+  int fires = 0;
+  for (double end = t + 6000; t < end; t += 50)
+    if (ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t)) ++fires;
+  CHECK(fires == 1);
+  CHECK(ctl.counters().demotes_fade == 1);
+  CHECK(ctl.rung() == 4);
+  CHECK(ctl.last_event().reason == CtlReason::Fade);
+}
+
+TEST(fade_predict_rearms_after_recovery) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 5);
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.probation_ms_left(t) == 0);
+  // Fade event 1.
+  for (double end = t + 2000; t < end; t += 50)
+    ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t);
+  CHECK(ctl.counters().demotes_fade == 1);
+  const int after_first = ctl.rung();
+  // Recovery: RF back to baseline. delta() dropping back under threshold is
+  // what re-arms the latch — a latch that never re-armed would be a worse bug
+  // than the repeated firing it fixes.
+  fade_baseline(ctl, t, 3200, 33.0, -55.0);
+  REQUIRE(ctl.fade_drssi() < cfg.fade.rssi_db);
+  REQUIRE(ctl.fade_dsnr() < cfg.fade.snr_db);
+  // Fade event 2: a genuinely new event fires again, once.
+  int fires = 0;
+  for (double end = t + 2000; t < end; t += 50)
+    if (ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t)) ++fires;
+  CHECK(fires == 1);
+  CHECK(ctl.counters().demotes_fade == 2);
+  CHECK(ctl.rung() == after_first - 1);
+}

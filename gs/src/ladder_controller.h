@@ -301,6 +301,12 @@ class LadderController {
 
   FadeEwma fade_rssi_, fade_snr_;
   double fade_trig_start_ms_ = -1.0;  // -1 = no sustained run
+  // One predictive fire per fade EVENT. The slow baseline falls at tau 20 s,
+  // so delta() stays over threshold for many seconds after a fade demote and
+  // the sustain run would otherwise re-accrue every trigger_ms (300) —
+  // min_between_changes_ms (150) is no spacing gate. Cleared only when the
+  // condition falls back under threshold, i.e. by recovery.
+  bool fade_latched_ = false;
 
   bool probation_active_ = false;
   double probation_until_ms_ = -1e18;
