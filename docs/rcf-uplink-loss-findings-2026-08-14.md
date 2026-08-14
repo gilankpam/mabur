@@ -119,10 +119,17 @@ against high-airtime rungs.
      clean bench. But it re-exposes the video downlink to co-channel
      deferral (the 2026-08-05 CCA-off rationale), so it needs the
      congested-channel A/B before becoming the default. See §6.**
-  3. Repeat the RCF a few times back-to-back (or at ~10 ms) after an op
-     change until the drone's telemetry echoes the new op
-     (`drone.applied` generation) — cheapest, bounded extra airtime,
-     orthogonal to (and composable with) the CCA decision.
+  3. Repeat the RCF a few times after an op change — **BUILT AND
+     HW-ACCEPTED SAME DAY (branch `rcf-repeat`): close_ms n=25 median 50 /
+     mean 51.3 / max 80 vs baseline 64.5 / 72.5 / 163 — the +50 ms retry
+     ladder is eliminated (zero samples >80; baseline had 4 >100).**
+     `link.rcf_repeat_copies` (default 3) × `rcf_repeat_ms` (default 10),
+     op-changing RCFs only, fresh seq per copy, burst must fit inside
+     one feedback period (fail-fast), copies 0 disables. Steady-state
+     control rate unchanged (repeats fire on op changes only); remaining
+     per-rung floors (→2 ≈71 ms, →5 ≈26 ms) are the 30 fps T0
+     frame-cadence at low-rung bitrates, not an uplink term. Orthogonal
+     to (and composable with) the CCA decision.
   4. Time RCF injection into the gap right after a received video frame
      burst — §6's GS-only arm shows naive burst-edge timing has the
      aligned-collision failure mode; aim mid-gap if ever built.
