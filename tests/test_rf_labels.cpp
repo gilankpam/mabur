@@ -90,4 +90,18 @@ TEST(card_without_ema_is_never_selected) {
   CHECK(select_label_card(cards) == 1);
 }
 
+TEST(selection_is_unchanged_by_the_pooled_input) {
+  // The selector is pure and input-shaped: moving the caller from cls[S1]
+  // to rf_pool changes what fills CardLabelInput, not how it chooses. This
+  // pins that contract so a future change to the pool cannot silently
+  // alter selection semantics.
+  const std::vector<CardLabelInput> cards{{true, 40, 10, 22.0},   // fresh, weaker
+                                          {true, 90, 60, 31.0}};  // fresh, stronger
+  CHECK(select_label_card(cards) == 1);
+  // Same SNR ordering, but the stronger card went silent this window.
+  const std::vector<CardLabelInput> stale{{true, 40, 10, 22.0},
+                                          {true, 90, 90, 31.0}};
+  CHECK(select_label_card(stale) == 0);
+}
+
 MTEST_MAIN

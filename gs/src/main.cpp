@@ -573,14 +573,14 @@ static int run_radio(const maburgs::Config& cfg) {
     const auto s3_cur_sample = s3_loss_cur.sample(now_ms);
     const auto s3_rcur_sample = s3_resid_cur.sample(now_ms);
 
-    // The strongest card that ACTUALLY RECEIVED s1 this feedback window
-    // supplies all three s1 RF labels. Freshness is part of the argmax, not a
-    // filter after it (select_label_card, rf_labels.h): a card whose
-    // front-end wedged keeps a frozen-high EMA and would otherwise outrank a
-    // live sibling forever. -1 = nothing measured s1 this window, so all
-    // three labels stay NaN — inert for the fade trigger, null on the wire.
+    // The strongest card that ACTUALLY RECEIVED s1-or-s3 this feedback
+    // window supplies all three RF labels. Freshness is part of the argmax,
+    // not a filter after it (select_label_card, rf_labels.h): a card whose
+    // front-end wedged keeps a frozen-high EMA and would otherwise outrank
+    // a live sibling forever. -1 = nothing measured this window, so all
+    // three labels stay NaN -- inert for the fade trigger, null on the wire.
     for (int i = 0; i < n_cards; ++i) {
-      const auto& ct = agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)];
+      const auto& ct = agg.card(i).rf_pool;
       label_card_inputs[static_cast<size_t>(i)] = maburgs::CardLabelInput{
           ct.has_ema, ct.frames, prev_pool_frames[static_cast<size_t>(i)],
           ct.snr_ema};
@@ -593,8 +593,7 @@ static int run_radio(const maburgs::Config& cfg) {
     double rf_evm_db = std::numeric_limits<double>::quiet_NaN();
     double rf_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
     if (best_card >= 0) {
-      const auto& ct =
-          agg.card(best_card).cls[static_cast<size_t>(maburgs::RfClass::S1)];
+      const auto& ct = agg.card(best_card).rf_pool;
       // Raw units are devourer's half-dB (snr_units.h); raw - 110 is the
       // exporter's own dBm conversion (stats_exporter.cpp rssi keys).
       rf_snr_db = ct.snr_ema * maburgs::kSnrRawToDb;
@@ -653,8 +652,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // The RF staleness window and the loss window MUST share this
         // boundary: both are "since the last health the controller acted on".
         for (int i = 0; i < n_cards; ++i)
-          prev_pool_frames[static_cast<size_t>(i)] =
-              agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)].frames;
+          prev_pool_frames[static_cast<size_t>(i)] = agg.card(i).rf_pool.frames;
       }
       std::vector<maburgs::CardSnapshot> snaps;
       for (int i = 0; i < n_cards; ++i) {
