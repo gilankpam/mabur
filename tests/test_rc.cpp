@@ -9,12 +9,8 @@ static Rcf rcf_from_json(const nlohmann::json& f) {
   Rcf r;
   r.vtx_id = f["vtx_id"].get<uint32_t>();
   r.seq = f["seq"].get<uint16_t>();
-  r.ack_seq = f["ack_seq"].get<uint16_t>();
   r.profile = f["profile"].get<uint8_t>();
-  r.score = f["score"].get<uint16_t>();
   r.fec_overhead_16ths = f["fec_overhead_16ths"].get<uint8_t>();
-  r.flags = f["flags"].get<uint8_t>();
-  for (auto& v : f["layer_delivery"]) r.layer_delivery.push_back(v.get<uint8_t>());
   return r;
 }
 
@@ -49,8 +45,8 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352020100efbeadde0700d80e24070608046462500ad8c2",
-      "435202010201000000ffff000000e8031000cbe7",
+      "4352030100efbeadde070024081d62",
+      "435203010001000000ffff00101e97",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -65,12 +61,8 @@ TEST(rcf_matches_golden_wire) {
     REQUIRE(parsed.has_value());
     CHECK(parsed->vtx_id == r.vtx_id);
     CHECK(parsed->seq == r.seq);
-    CHECK(parsed->ack_seq == r.ack_seq);
     CHECK(parsed->profile == r.profile);
-    CHECK(parsed->score == r.score);
     CHECK(parsed->fec_overhead_16ths == r.fec_overhead_16ths);
-    CHECK(parsed->flags == r.flags);
-    CHECK(parsed->layer_delivery == r.layer_delivery);
     CHECK(frame_type(raw.data(), raw.size()) == T_RCF);
     ++i;
   }
@@ -83,7 +75,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352020204010000000100feca95140100000002000f1b",
+      "4352030204010000000100feca951401000000020010c5",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -116,7 +108,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352020304010000000100feca03009514010046f1",
+      "4352030304010000000100feca030095140100a4e1",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -189,26 +181,11 @@ TEST(rcf_single_byte_flip_fails) {
         // everything before it).
         CHECK(parsed->vtx_id == orig_parsed->vtx_id);
         CHECK(parsed->seq == orig_parsed->seq);
-        CHECK(parsed->ack_seq == orig_parsed->ack_seq);
         CHECK(parsed->profile == orig_parsed->profile);
-        CHECK(parsed->score == orig_parsed->score);
         CHECK(parsed->fec_overhead_16ths == orig_parsed->fec_overhead_16ths);
-        CHECK(parsed->flags == orig_parsed->flags);
-        CHECK(parsed->layer_delivery == orig_parsed->layer_delivery);
       }
     }
   }
-}
-
-TEST(layer_delivery_clamps_on_pack) {
-  Rcf r;
-  r.vtx_id = 1;
-  r.layer_delivery = {0, 100, 255, 150, 1};
-  auto wire = pack_rcf(r);
-  auto parsed = parse_rcf(wire.data(), wire.size());
-  REQUIRE(parsed.has_value());
-  std::vector<uint8_t> expect = {0, 100, 100, 100, 1};
-  CHECK(parsed->layer_delivery == expect);
 }
 
 TEST(frame_type_peek) {
@@ -276,9 +253,9 @@ TEST(telem_round_trip_and_golden) {
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
-      "43520204030201020706050405192d00a0860100400d0300e09304002823080100"
+      "43520304030201020706050405192d00a0860100400d0300e09304002823080100"
       "034007000000801a0600090000000200333415163d0348000400050007000800"
-      "09005c31";
+      "0900ef49";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -290,7 +267,6 @@ TEST(telem_round_trip_and_golden) {
 TEST(rcf_probe_roundtrip) {
   mabur::rc::Rcf r;
   r.vtx_id = 7; r.seq = 42; r.profile = 5;
-  r.layer_delivery = {100, 90, 0, 80};
   r.probe3 = true;
   r.probe_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 6, 20);
   auto buf = mabur::rc::pack_rcf(r);
@@ -298,14 +274,16 @@ TEST(rcf_probe_roundtrip) {
   REQUIRE(p.has_value());
   CHECK(p->probe3);
   CHECK(p->probe_profile == r.probe_profile);
-  CHECK(p->flags & mabur::rc::RCF_F_PROBE3);
-  CHECK(p->layer_delivery.size() == 4);
+  // probe3 is the ONLY thing the flags byte carries now, so pin the byte
+  // itself: dropping the flag from pack_rcf() would still round-trip through
+  // the struct if parse read the probe byte unconditionally.
+  CHECK(buf[4] == mabur::rc::RCF_F_PROBE3);
 }
 
 TEST(rcf_no_probe_unchanged_length) {
   mabur::rc::Rcf r;
-  r.layer_delivery = {100, 100, 100, 100};
   auto plain = mabur::rc::pack_rcf(r);
+  CHECK(plain[4] == 0);  // flags byte is zero when not probing
   r.probe3 = true;
   auto probed = mabur::rc::pack_rcf(r);
   CHECK(probed.size() == plain.size() + 1);  // exactly one extra byte
@@ -316,51 +294,34 @@ TEST(rcf_no_probe_unchanged_length) {
 
 TEST(rcf_probe_truncated_rejected) {
   mabur::rc::Rcf r;
-  r.layer_delivery = {100, 100, 100, 100};
   r.probe3 = true;
   auto buf = mabur::rc::pack_rcf(r);
   // Drop the last byte (CRC tail) — must not parse.
   CHECK(!mabur::rc::parse_rcf(buf.data(), buf.size() - 1).has_value());
 }
 
-TEST(rcf_probe_flag_masked_from_caller_flags) {
-  // If caller sets RCF_F_PROBE3 in flags directly without probe3=true,
-  // packer must mask it out (keep flags and probe3 consistent).
-  mabur::rc::Rcf r;
-  r.layer_delivery = {100, 100, 100, 100};
-  r.flags = mabur::rc::RCF_F_PROBE3;  // caller-supplied stray bit
-  r.probe3 = false;  // but probe3 is false
-  auto buf = mabur::rc::pack_rcf(r);
-  // Frame should have no probe byte (18-byte header + 4 layers + 2 CRC = 24).
-  CHECK(buf.size() == 24);
-  auto p = mabur::rc::parse_rcf(buf.data(), buf.size());
-  REQUIRE(p.has_value());
-  CHECK(!p->probe3);  // probe3 must be false (stray bit was masked)
-  CHECK(!(p->flags & mabur::rc::RCF_F_PROBE3));  // flag must be cleared
-}
-
 TEST(version_mismatch_rejected_both_directions) {
-  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored v1 frame
+  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored v2 frame
   // become current-version, so it parses and the first CHECK fails.
   mabur::rc::Rcf r;
   r.vtx_id = 7;
   r.seq = 1;
   r.profile = 0;
   r.fec_overhead_16ths = 4;
-  r.layer_delivery = {100, 100, 100, 100};
   auto body = mabur::rc::pack_rcf(r);
 
   // Sanity: as packed, it parses.
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
-  // Byte 2 is the version. Any other version must be refused outright.
-  auto v1 = body;
-  v1[2] = 1;
-  CHECK(!mabur::rc::parse_rcf(v1.data(), v1.size()).has_value());
+  // Byte 2 is the version. Any other version must be refused outright —
+  // including 2, the version whose RCF this build shrank away from.
+  auto v2 = body;
+  v2[2] = 2;
+  CHECK(!mabur::rc::parse_rcf(v2.data(), v2.size()).has_value());
 
-  auto v3 = body;
-  v3[2] = 3;
-  CHECK(!mabur::rc::parse_rcf(v3.data(), v3.size()).has_value());
+  auto v4 = body;
+  v4[2] = 4;
+  CHECK(!mabur::rc::parse_rcf(v4.data(), v4.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
   // direction (drone -> GS). A half-deployed pair must fail BOTH ways.
@@ -373,19 +334,18 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(!mabur::rc::parse_telem(tv1.data(), tv1.size()).has_value());
 }
 
-TEST(rcf_head_is_eighteen_bytes) {
-  // Pins the removed power byte. Reverting the deletion from pack_rcf()
-  // makes the packed body one byte longer and this fails.
+TEST(rcf_head_is_thirteen_bytes) {
+  // Pins the removed power byte AND the removed ack_seq/score/layer_delivery
+  // fields: the RCF head is fixed-length now, so restoring any of them makes
+  // the packed body longer and this fails.
   mabur::rc::Rcf r;
   r.vtx_id = 1;
   r.fec_overhead_16ths = 9;
-  r.layer_delivery = {0, 0, 0, 0};
   auto body = mabur::rc::pack_rcf(r);
-  // 18-byte head + 4 layer bytes + 2 CRC bytes.
-  CHECK(body.size() == 18 + 4 + 2);
-  // fec_overhead_16ths now lives at byte 16, n_layers at 17.
-  CHECK(body[16] == 9);
-  CHECK(body[17] == 4);
+  // 13-byte head + 2 CRC bytes, with no variable-length tail at all.
+  CHECK(body.size() == 13 + 2);
+  // fec_overhead_16ths is the last head byte, at offset 12.
+  CHECK(body[12] == 9);
 }
 
 // The version check drops a foreign frame with no trace anywhere -- on a
@@ -400,7 +360,6 @@ TEST(foreign_rc_version_predicate) {
   r.vtx_id = 7;
   r.seq = 1;
   r.fec_overhead_16ths = 4;
-  r.layer_delivery = {100, 100, 100, 100};
   const auto body = mabur::rc::pack_rcf(r);
 
   // Our own version: not foreign, and still a normal RC frame.
@@ -409,7 +368,7 @@ TEST(foreign_rc_version_predicate) {
 
   // Byte 2 doctored to another version: foreign. frame_type() must NOT change
   // its answer -- gs/src/main.cpp routes video on that -1.
-  for (uint8_t ver : {uint8_t{1}, uint8_t{3}, uint8_t{255}}) {
+  for (uint8_t ver : {uint8_t{1}, uint8_t{2}, uint8_t{255}}) {
     auto foreign = body;
     foreign[2] = ver;
     CHECK(mabur::rc::is_foreign_rc_version(foreign.data(), foreign.size()));

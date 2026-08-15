@@ -419,8 +419,8 @@ static int run_radio(const maburgs::Config& cfg) {
       // A drone at a different RC_VERSION is invisible to every RC path here:
       // frame_type() returns -1 for it, which is this loop's affirmative "this
       // is video" signal, so its T_TELEM/DISC_ACK is counted into the card
-      // totals AND fed to vrx.on_video() below, contaminating
-      // ScoreWindow::seq_gap_loss() with seqs the decoder never sees. The
+      // totals AND fed to vrx.on_video() below, holding off the rendezvous
+      // video-silence fallback on traffic the decoder never sees. The
       // visible end state is no video at all, indistinguishable from the
       // stale-caps restart deadlock. Log it (rate-limited to 1/5s: a
       // mismatched peer transmits continuously and /tmp is tmpfs) and change
@@ -445,21 +445,16 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned>(m.body[2]),
                      static_cast<unsigned>(mabur::rc::RC_VERSION));
       }
-      // Exclude RC frames AND MSP frames (SBI stream_id == kMspStreamId) from
-      // the score window, mirroring Task 6's aggregator routing: MSP bodies
-      // carry their own independent 802.11 seq, and letting them through here
-      // would contaminate ScoreWindow::seq_gap_loss() with a gap sequence the
-      // video decoder never sees. This keeps MSP traffic invisible to the
-      // adaptive-link controller end-to-end (decoder residual + score window).
+      // Exclude RC frames AND MSP frames (SBI stream_id == kMspStreamId),
+      // mirroring Task 6's aggregator routing: only real video may refresh
+      // the rendezvous video-silence timer, or a link carrying nothing but
+      // MSP telemetry would never fall back to BEACONING. This keeps MSP
+      // traffic invisible to the adaptive-link controller end-to-end.
       if (m.crc_ok &&
           mabur::rc::frame_type(m.body.data(), m.body.size()) < 0 &&
           mabur::sbi_peek_stream_id(m.body.data(), m.body.size()) !=
               mabur::kMspStreamId) {
-        // Video frame meta -> score window (max-chain values, Python parity).
-        const double rssi = static_cast<double>(std::max(m.rssi[0], m.rssi[1]));
-        const double snr = static_cast<double>(std::max(m.snr[0], m.snr[1]));
-        vrx.on_video(rssi, snr, false, m.mac_seq,
-                     static_cast<double>(m.mono_us) / 1000.0);
+        vrx.on_video(static_cast<double>(m.mono_us) / 1000.0);
       }
     }
     // Re-read the clock: the drain above blocked up to 10 ms, and bodies
@@ -526,8 +521,10 @@ static int run_radio(const maburgs::Config& cfg) {
       }
     }
 
-    // Control step: layer delivery + residual from the decode window, plus
-    // stream 1's cumulative symbol totals feeding the measured-loss window.
+    // Control step: residual from the decode window, plus stream 1's
+    // cumulative symbol totals feeding the measured-loss window. Per-layer
+    // delivery is operator-facing only — it rides the stats sideport below,
+    // never the RCF (RC_VERSION 3 dropped it; maburd never read it).
     std::array<uint8_t, 4> ld{};
     for (int s = 0; s < 4; ++s)
       ld[static_cast<size_t>(s)] =
@@ -635,7 +632,7 @@ static int run_radio(const maburgs::Config& cfg) {
     if (attrib_suppressed_now && !attrib_suppressed_latched) ++attrib_suppressed;
     attrib_suppressed_latched = attrib_suppressed_now;
 
-    if (auto out = vrx.step(now_ms, ld, health)) {
+    if (auto out = vrx.step(now_ms, health)) {
       if (!out->is_disc) {
         agg.decoder().reset_window();  // window == RCF period
         // The RF staleness window and the loss window MUST share this

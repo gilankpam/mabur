@@ -7,7 +7,6 @@
 #include "ladder_controller.h"
 #include "op_point.h"
 #include "rendezvous.h"
-#include "score.h"
 
 namespace maburgs {
 
@@ -28,14 +27,15 @@ struct VrxCfg {
   // rcf_repeat_ms spacing (fresh seq each). 0 disables.
   int rcf_repeat_copies = 3;
   int rcf_repeat_ms = 10;
-  ScoreConfig score;
 };
 
 class VrxController {
  public:
   explicit VrxController(VrxCfg cfg);
-  void on_video(double rssi, double snr, bool crc_err, uint16_t seq,
-                double now_ms);
+  // A video body arrived: feeds the rendezvous video-silence timer only. The
+  // RSSI/SNR/seq the old ScoreWindow consumed here went nowhere but the RCF
+  // score/ack_seq fields, both deleted from the wire in RC_VERSION 3.
+  void on_video(double now_ms);
   void on_rc_frame(const uint8_t* buf, size_t len, double now_ms);
   struct Out {
     std::vector<uint8_t> frame;
@@ -46,9 +46,7 @@ class VrxController {
   // internal checks (video_starved forces the failsafe rung; sample_valid
   // gates everything else) replace the old SNR-survivor-bias special case
   // here — see ladder_controller.cpp update().
-  std::optional<Out> step(double now_ms,
-                          const std::array<uint8_t, 4>& layer_delivery,
-                          const LinkHealth& health);
+  std::optional<Out> step(double now_ms, const LinkHealth& health);
   // Repeat-burst drain: returns the next repeat RCF when one is due at
   // now_ms, rebuilt from CURRENT controller state with a fresh seq. Callers
   // send it like any control frame but must NOT treat it as a feedback
@@ -73,12 +71,11 @@ class VrxController {
   bool peer_acked() const { return peer_acked_; }
 
  private:
-  mabur::rc::Rcf build_rcf(const std::array<uint8_t, 4>& ld, double residual);
+  mabur::rc::Rcf build_rcf();
   void note_cmd(const mabur::rc::Rcf& r);
 
   VrxCfg cfg_;
   LadderController ctrl_;
-  ScoreWindow win_;
   VrxRendezvous rz_;
   double last_fb_ms_ = -1e18;
   double last_keepalive_ms_ = -1e18;
@@ -94,8 +91,6 @@ class VrxController {
   uint8_t last_cmd_ov16_ = 0;
   bool last_cmd_probe3_ = false;
   uint8_t last_cmd_probe_profile_ = 0;
-  std::array<uint8_t, 4> last_ld_{};
-  double last_residual_ = 0.0;
 };
 
 }  // namespace maburgs

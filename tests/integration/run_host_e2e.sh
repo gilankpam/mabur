@@ -36,15 +36,15 @@ python3 - "$TMP/rc.bin" <<'EOF'
 import struct, sys, os
 sys.path.insert(0, os.path.abspath(os.path.join("..", "devourer", "tools", "precoder")))
 import rc_proto
-# mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
-# rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
-# byte, so its pack_rcf() output is rejected outright by maburd. Pack the
-# 18-byte v2 head here instead; encode_profile and the CRC are unversioned.
-layers = bytes((100,))
-head = struct.pack("<HBBBIHHBHBB", rc_proto.RC_MAGIC, 2, rc_proto.T_RCF, 0,
-                   1, 1, 0, rc_proto.encode_profile("ht", 4, 20), 1500,
-                   4, len(layers))
-body = head + layers
+# mabur owns the RC wire as of RC_VERSION 2 (2026-08-12), and RC_VERSION 3
+# (2026-08-15) shrank the RCF again: devourer's frozen rc_proto.py is pinned
+# at RC_VERSION 1 and still packs the deleted pwr_idx byte plus the deleted
+# ack_seq/score/layer_delivery fields, so its pack_rcf() output is rejected
+# outright by maburd. Pack the 13-byte v3 head here instead (magic, ver,
+# type, flags, vtx_id, seq, profile, fec_overhead_16ths); encode_profile and
+# the CRC are unversioned.
+body = struct.pack("<HBBBIHBB", rc_proto.RC_MAGIC, 3, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 4)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)

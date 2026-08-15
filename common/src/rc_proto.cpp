@@ -1,5 +1,4 @@
 #include "mabur/rc_proto.h"
-#include <algorithm>
 #include <cmath>
 #include "mabur/crc16.h"
 
@@ -32,7 +31,7 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-constexpr size_t RCF_HEAD_LEN = 18;
+constexpr size_t RCF_HEAD_LEN = 13;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
 constexpr size_t TELEM_LEN = 67;
@@ -40,25 +39,16 @@ constexpr size_t TELEM_LEN = 67;
 }  // namespace
 
 std::vector<uint8_t> pack_rcf(const Rcf& r) {
-  std::vector<uint8_t> layers;
-  layers.reserve(r.layer_delivery.size());
-  for (uint8_t x : r.layer_delivery)
-    layers.push_back(static_cast<uint8_t>(std::min<int>(100, std::max<int>(0, x))));
-
   std::vector<uint8_t> body;
-  body.reserve(RCF_HEAD_LEN + layers.size() + 2);
+  body.reserve(RCF_HEAD_LEN + 3);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_RCF);
-  body.push_back(static_cast<uint8_t>((r.flags & ~RCF_F_PROBE3) | (r.probe3 ? RCF_F_PROBE3 : 0)));
+  body.push_back(static_cast<uint8_t>(r.probe3 ? RCF_F_PROBE3 : 0));
   put32(body, r.vtx_id);
   put16(body, r.seq);
-  put16(body, r.ack_seq);
   body.push_back(r.profile);
-  put16(body, r.score);
   body.push_back(r.fec_overhead_16ths);
-  body.push_back(static_cast<uint8_t>(layers.size()));
-  body.insert(body.end(), layers.begin(), layers.end());
   if (r.probe3) body.push_back(r.probe_profile);
 
   put_crc(body);
@@ -73,24 +63,19 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   if (magic != RC_MAGIC || ver != RC_VERSION || type != T_RCF) return std::nullopt;
 
   uint8_t flags = buf[4];
-  uint8_t n_layers = buf[17];
-  size_t body_len = RCF_HEAD_LEN + n_layers + ((flags & RCF_F_PROBE3) ? 1 : 0);
+  size_t body_len = RCF_HEAD_LEN + ((flags & RCF_F_PROBE3) ? 1 : 0);
   if (len < body_len + 2) return std::nullopt;
   uint16_t crc = get16(buf, body_len);
   if (crc != crc16_ccitt(buf, body_len)) return std::nullopt;
 
   Rcf r;
-  r.flags = flags;
   r.vtx_id = get32(buf, 5);
   r.seq = get16(buf, 9);
-  r.ack_seq = get16(buf, 11);
-  r.profile = buf[13];
-  r.score = get16(buf, 14);
-  r.fec_overhead_16ths = buf[16];
-  r.layer_delivery.assign(buf + RCF_HEAD_LEN, buf + RCF_HEAD_LEN + n_layers);
+  r.profile = buf[11];
+  r.fec_overhead_16ths = buf[12];
   if (flags & RCF_F_PROBE3) {
     r.probe3 = true;
-    r.probe_profile = buf[RCF_HEAD_LEN + n_layers];
+    r.probe_profile = buf[RCF_HEAD_LEN];
   }
   return r;
 }

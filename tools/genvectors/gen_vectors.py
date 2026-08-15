@@ -157,12 +157,13 @@ dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
                   "classify": [classify_frame(d) for _, d in frames]})
 
 # --- rc ----------------------------------------------------------------
-rcfs = [rc_proto.Rcf(vtx_id=0xDEADBEEF, seq=7, ack_seq=3800, profile=0x24,
-                     score=1543, fec_overhead_16ths=8, flags=0,
-                     layer_delivery=(100, 98, 80, 10)),
-        rc_proto.Rcf(vtx_id=1, seq=65535, ack_seq=0, profile=0x00, score=1000,
-                     fec_overhead_16ths=16, flags=rc_proto.F_FAILSAFE,
-                     layer_delivery=())]
+# Plain dicts, not rc_proto.Rcf: the frozen Python dataclass still carries the
+# ack_seq/score/layer_delivery/flags fields mabur deleted from the wire in
+# RC_VERSION 3, and constructing it here would only invite them back.
+rcfs = [{"vtx_id": 0xDEADBEEF, "seq": 7, "profile": 0x24,
+         "fec_overhead_16ths": 8},
+        {"vtx_id": 1, "seq": 65535, "profile": 0x00,
+         "fec_overhead_16ths": 16}]
 discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
@@ -170,13 +171,11 @@ acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
 # mabur owns its RC wire bytes as of 2026-08-12. devourer's frozen
 # tools/precoder/rc_proto.py is pinned at RC_VERSION 1 and still packs a
 # pwr_idx byte, so it can no longer serve as a wire oracle across mabur's
-# RC_VERSION 2 change. The field cases below stay Python-generated; the
-# expected bytes are hardcoded goldens in tests/test_rc.cpp.
+# RC_VERSION 2 change (nor the RC_VERSION 3 RCF shrink after it). The field
+# cases below stay Python-generated; the expected bytes are hardcoded goldens
+# in tests/test_rc.cpp.
 dump("rc.json", {
-  "rcf": [{"fields": {"vtx_id": r.vtx_id, "seq": r.seq, "ack_seq": r.ack_seq,
-                      "profile": r.profile, "score": r.score,
-                      "fec_overhead_16ths": r.fec_overhead_16ths, "flags": r.flags,
-                      "layer_delivery": list(r.layer_delivery)}} for r in rcfs],
+  "rcf": [{"fields": r} for r in rcfs],
   "disc": [{"fields": {"vtx_id": d.vtx_id, "vrx_nonce": d.vrx_nonce,
                        "op_channel": d.op_channel, "op_width": d.op_width,
                        "table_ver": d.table_ver, "init_profile": d.init_profile,

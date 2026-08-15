@@ -34,9 +34,8 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
 // "wire" key out of rc.json.
 static std::vector<uint8_t> rcf_fixture_wire() {
   mabur::rc::Rcf r;
-  r.vtx_id = 0xDEADBEEF; r.seq = 7; r.ack_seq = 3800; r.profile = 0x24;
-  r.score = 1543; r.fec_overhead_16ths = 8;
-  r.flags = 0; r.layer_delivery = {100, 98, 80, 10};
+  r.vtx_id = 0xDEADBEEF; r.seq = 7; r.profile = 0x24;
+  r.fec_overhead_16ths = 8;
   return mabur::rc::pack_rcf(r);
 }
 

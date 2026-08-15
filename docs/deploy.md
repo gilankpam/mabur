@@ -5,8 +5,10 @@ but a deploy still touches two devices and is never atomic. That window,
 and the config-load behaviour below, are what actually bite.
 
 The 2026-08-12 constant-TX-power change (`docs/data-provenance.md`)
-bumped `RC_VERSION` 1 -> 2, the first bump the protocol has ever had.
-mabur owns the RC wire outright now: the goldens live in
+bumped `RC_VERSION` 1 -> 2, the first bump the protocol has ever had; the
+2026-08-15 RCF shrink (dropping the write-only `ack_seq`, `score` and
+`layer_delivery` fields, none of which `maburd` ever read) bumped it
+2 -> 3. mabur owns the RC wire outright now: the goldens live in
 `tests/test_rc.cpp` rather than mirrored from devourer's frozen
 `tools/precoder/rc_proto.py` (pinned at version 1, no longer an oracle),
 so further bumps are cheap and need no deprecation path — the deploy
