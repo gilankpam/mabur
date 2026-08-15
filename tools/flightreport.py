@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v5,
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v6,
 warns on pre-v4). Format is auto-detected from the first line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
@@ -46,7 +46,7 @@ def load_ctllog(path):
         first = f.readline().strip()
         toks0 = first.split()
         header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
-        # ctllog 5 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+        # ctllog 6 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
         for tok in first.split()[2:]:
             if "=" not in tok: continue
             k, v = tok.split("=", 1)
@@ -192,6 +192,10 @@ def print_wall_report(ctllog):
 
     print("CTL LOG HEADER")
     ver = header.get("_version", 0)
+    if ver and ver < 6:
+        print("  NOTE: ctllog v%d -- the S line's rung is the LIVE rung, so any "
+              "sample with loss that coincides with a demote is filed against "
+              "the rung the link demoted TO, not the one that caused it." % ver)
     if ver and ver < 4:
         print("  NOTE: ctllog v%d -- snr_db/evm_db are s1-class only, and "
               "drssi/dsnr were zeroed on ~25%% of ticks by the card-hop "

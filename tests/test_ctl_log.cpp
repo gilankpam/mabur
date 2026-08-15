@@ -31,7 +31,7 @@ TEST(ctl_log_writes_header_and_records) {
   log.probe(2000, 3, "fail", 24.0, 0.9, 600, -22.5);
   log.penalty(2000, 3, 1, 12000);
   std::string text = read_all(log.path());
-  CHECK(text.rfind("ctllog 5 ladder=0/100,2/50 down_util=0.35 up_util=0.15\n", 0) == 0);
+  CHECK(text.rfind("ctllog 6 ladder=0/100,2/50 down_util=0.35 up_util=0.15\n", 0) == 0);
   CHECK(text.find("\nS 1000 2 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4\n") != std::string::npos);
   CHECK(text.find("\nE 1500 2 1 s3_util 0.4000 30.0 -23.0\n") != std::string::npos);
   CHECK(text.find("\nP 2000 3 fail 24.0 0.9000 600 -22.5\n") != std::string::npos);
@@ -79,7 +79,7 @@ TEST(ctl_log_v2_sample_carries_resid_cur) {
   log.sample(1234, 3, 0.0123, 31.5, 0.0456, 0.0, 0.0, -21.0, 0.0011, 9.5,
              4.2, -63.4);
   std::string text = read_all(log.path());
-  CHECK(text.rfind("ctllog 5 ladder=5/25 down_util=0.60 up_util=0.15\n", 0) == 0);
+  CHECK(text.rfind("ctllog 6 ladder=5/25 down_util=0.60 up_util=0.15\n", 0) == 0);
   CHECK(text.find("\nS 1234 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011 9.5 4.2 -63.4\n") != std::string::npos);
 }
 
@@ -91,7 +91,7 @@ TEST(ctl_log_v3_sample_carries_fade_deltas) {
   log.sample(1234, 3, 0.0123, 31.5, 0.0456, 0.0, 0.0, -21.0, 0.0011, 9.5,
              4.2, -63.4);
   std::string text = read_all(log.path());
-  CHECK(text.rfind("ctllog 5 ladder=5/25 down_util=0.60 up_util=0.15\n", 0) == 0);
+  CHECK(text.rfind("ctllog 6 ladder=5/25 down_util=0.60 up_util=0.15\n", 0) == 0);
   CHECK(text.find("\nS 1234 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011 9.5 4.2 -63.4\n") != std::string::npos);
 }
 

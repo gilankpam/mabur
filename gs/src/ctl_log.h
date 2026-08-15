@@ -18,7 +18,7 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 5 <header_info>                                  # once, first line
+//   ctllog 6 <header_info>                                  # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr> <rssi_dbm>                # dwell sample, link.ctl_log_period_ms
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
@@ -40,6 +40,16 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 6 (2026-08-15): the S line's <rung> is now the rung the sample was
+// MEASURED on (LadderController::measured_rung()), not the live rung. They
+// differ on exactly the rows that matter: a demote steps the live rung down
+// before the row is written, so v5 and earlier filed post-FEC loss against
+// the rung the link demoted TO, hiding the rung that caused it. Measured on
+// flights 2026-08-15: 15/16 and 13/13 loss samples landed within 200 ms of a
+// demote, which made per-rung tables name the wrong culprit every time. Rows
+// with no transition are unchanged. The R lines were always correct
+// (RungStore observes before the decision blocks).
 //
 // ctllog 4 (2026-08-15): line formats are UNCHANGED from v3, but snr_db,
 // evm_db, drssi and dsnr all change MEANING -- the label source is the

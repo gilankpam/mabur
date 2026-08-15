@@ -706,7 +706,10 @@ static int run_radio(const maburgs::Config& cfg) {
                                                           cfg.link.ctl_log_period_ms))) {
       last_ctl_sample_ms = now_ms_u;
       const auto& c = vrx.ctl();
-      ctl_log->sample(now_ms, c.rung(), c.util(), health.rf_snr_db,
+      // measured_rung(), not rung(): every other field in this row is a
+      // window measurement, and a demote has already stepped the live rung
+      // down by the time we get here (see LadderController::measured_rung()).
+      ctl_log->sample(now_ms, c.measured_rung(), c.util(), health.rf_snr_db,
                        residual.value_or(0.0), c.util3(),
                        health.s3_residual_loss, health.rf_evm_db,
                        residual_cur.value_or(0.0), c.fade_drssi(),

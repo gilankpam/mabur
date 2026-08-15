@@ -193,6 +193,15 @@ class LadderController {
   bool on_tick(double now_ms);
 
   int rung() const { return idx_; }
+  // The rung the last VALID feedback sample was measured on, stamped before
+  // any decision block runs. rung() is live and has already stepped down by
+  // the time a demote returns, so anything that pairs a rung with the loss
+  // numbers from that window (the ctl log's S line) must use this instead —
+  // otherwise the loss is filed against the rung the link demoted TO, and the
+  // rung that actually caused it never appears. Measured on flights
+  // 2026-08-15: 15/16 and 13/13 post-FEC loss samples landed within 200 ms of
+  // a demote.
+  int measured_rung() const { return measured_rung_; }
   const Rung& op() const { return cfg_.ladder[static_cast<std::size_t>(idx_)]; }
 
   double util() const { return u_; }              // last computed u (0 before first valid sample)
@@ -319,6 +328,8 @@ class LadderController {
   double pre_fec_loss_ = 0.0;
 
   double last_feedback_ms_ = -1e18;
+  // See measured_rung(). Stamped on every valid sample, before any decision.
+  int measured_rung_ = 0;
   double starved_since_ms_ = -1.0;  // <0 = not currently in a starved run
   double last_change_ms_ = -1e18;
   double last_down_ms_ = -1e18;

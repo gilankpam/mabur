@@ -242,6 +242,9 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   if (!h.sample_valid) return false;
 
   last_feedback_ms_ = now_ms;
+  // Before ANY decision block: this sample's loss numbers belong to the rung
+  // the link is on right now, not to whatever a demote below steps us to.
+  measured_rung_ = idx_;
 
   // Part B EWMA feed. Kept HERE, above every decision block, and not next to
   // the trigger in 4b: the residual demote in block 4 returns early, which is

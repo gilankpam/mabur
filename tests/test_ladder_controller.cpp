@@ -655,6 +655,41 @@ TEST(s3_residual_demotes_on_the_first_window) {
   CHECK(ctl.last_event().reason == CtlReason::S3Residual);
 }
 
+// The ctl log's S line pairs a rung with window-derived loss numbers, so the
+// rung must be the one the loss was MEASURED on. rung() is the live value and
+// has already stepped down by the time a demote returns, so a row built from
+// it files the loss against the rung the link demoted TO. Measured on real
+// flights 2026-08-15: 15/16 and 13/13 smear samples landed within 200 ms of a
+// demote, which made the true culprit rung invisible in every per-rung table.
+// measured_rung() is stamped before any decision block and is what the log
+// must record.
+TEST(measured_rung_is_the_rung_the_loss_was_measured_on) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 4);
+  feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);  // retire probation
+  const int before = ctl.rung();
+  // A residual demote: the loss happened while the link was on `before`.
+  LinkHealth h = ok(0.3 * ctl.budget());
+  h.residual_loss = 0.02;
+  REQUIRE(ctl.update(h, t));
+  CHECK(ctl.rung() == before - 1);        // live rung has stepped down
+  CHECK(ctl.measured_rung() == before);   // ...but the loss belongs to `before`
+}
+
+// On a tick with no transition the two must agree, or every quiet row in the
+// log would disagree with itself.
+TEST(measured_rung_equals_rung_when_no_demote) {
+  LadderCfg cfg = make_cfg();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 3);
+  feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);
+  REQUIRE(!ctl.update(ok(0.3 * ctl.budget()), t));
+  CHECK(ctl.measured_rung() == ctl.rung());
+}
+
 TEST(s3_residual_demote_is_exempt_from_min_between_changes) {
   // s1's instant residual path is exempt from min_between_changes_ms; s3's
   // now is too. s3_settle_ms (300) is longer than min_between_changes_ms
