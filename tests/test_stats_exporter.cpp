@@ -762,7 +762,6 @@ TEST(exporter_attrib_block_and_stream_stale) {
   StatsExporter ex(/*session_id=*/1, /*interval_ms=*/0,
                    [&](const std::string& s) { sent = s; return true; });
   StatsInput in;
-  in.attrib_on = true;
   in.attrib_suppressed = 3;
   in.residual_cur = 0.0;
   in.attrib_close_ms = 12.0;
@@ -772,7 +771,6 @@ TEST(exporter_attrib_block_and_stream_stale) {
   ex.poll(1000, in);
   REQUIRE(!sent.empty());
   auto j = nlohmann::json::parse(sent);
-  CHECK(j["link"]["attrib"]["on"] == true);
   CHECK(j["link"]["attrib"]["suppressed"] == 3);
   CHECK(j["link"]["attrib"]["residual_cur"] == 0.0);
   CHECK(j["link"]["attrib"]["close_ms"] == 12.0);

@@ -44,6 +44,19 @@ TEST(stale_video_silence_ms_key_throws) {
   CHECK(threw);
 }
 
+// Removed 2026-08-15 when the s3 residual demote became instant: with
+// attribution unconditional, the confirm window had nothing left to guard
+// against. Strict keys mean a tuned device config naming it must be edited
+// by hand BEFORE the new binary starts, or maburgs crash-loops at 2 s.
+TEST(stale_s3_residual_confirm_ms_key_throws) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"s3_residual_confirm_ms\": 500}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("s3_residual_confirm_ms") != std::string::npos;
+  }
+  CHECK(threw);
+}
+
 TEST(errors_are_fail_fast) {
   bool threw = false;
   try { maburgs::load_config("/nonexistent/x.json"); } catch (const std::exception&) { threw = true; }
@@ -503,7 +516,6 @@ TEST(probe_defaults_and_sentinel_resolution) {
   CHECK(lc.probe_max_util > 0.349 && lc.probe_max_util < 0.351);  // resolved to down_util
   CHECK(lc.s3_down_util > 0.349 && lc.s3_down_util < 0.351);
   CHECK(lc.s3_demote);
-  CHECK(lc.s3_residual_confirm_ms == 500);
   CHECK(lc.s3_settle_ms == 300);
   CHECK(lc.probe_s3_min_syms == 50);
   CHECK(lc.probe_s3_silence_ms == 500);
@@ -573,27 +585,29 @@ TEST(rung_stats_parses_and_validates) {
   } catch (const std::exception&) {}
 }
 
-// link.attrib: transition-attribution kill switch (spec 2026-08-14).
-// Default true (attribution on); explicit false = legacy totals; must be
-// boolean-typed like ctl_log/s3_demote. It parses into ladder_cfg (the
-// controller reads it too — see eff_s3_resid_confirm_ms), not into a
-// separate LinkCfg field that could drift from it.
-TEST(link_attrib_defaults_true) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"link": {}})"));
-  CHECK(cfg.link.ladder_cfg.attrib);
-}
-
-TEST(link_attrib_explicit_false) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"link": {"attrib": false}})"));
-  CHECK(!cfg.link.ladder_cfg.attrib);
-}
-
-TEST(link_attrib_rejects_non_boolean) {
+// Removed 2026-08-15: attribution is unconditional. The switch's remaining
+// value was reproducing pre-attribution numbers, and the instant s3
+// residual demote makes attrib=false unsafe rather than merely different.
+// link.ctl_log_period_ms (2026-08-15): the S-line cadence became configurable
+// so the ctl log can run fast enough to resolve the fade trigger's 300 ms
+// sustain, which a 1 Hz record cannot. Optional with a live default, so a
+// config that never names it is unaffected.
+TEST(ctl_log_period_ms_defaults_and_bounds) {
+  auto c = maburgs::load_config(write_tmp("{}"));
+  CHECK(c.link.ctl_log_period_ms == 1000);
+  auto c2 = maburgs::load_config(write_tmp("{\"link\": {\"ctl_log_period_ms\": 50}}"));
+  CHECK(c2.link.ctl_log_period_ms == 50);
   bool threw = false;
-  try {
-    maburgs::load_config(write_tmp(R"({"link": {"attrib": 1}})"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("link.attrib") != std::string::npos;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"ctl_log_period_ms\": 49}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // below the 50 ms floor
+}
+
+TEST(stale_link_attrib_key_throws) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"attrib\": true}}")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("attrib") != std::string::npos;
   }
   CHECK(threw);
 }

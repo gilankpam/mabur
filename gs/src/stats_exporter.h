@@ -122,10 +122,10 @@ struct StatsInput {
   OpPoint op;
   int deadline_ms = 0;
   std::optional<double> residual_loss;  // nullopt -> JSON null
-  // Transition attribution (spec 2026-08-14). residual_cur = the
-  // attributed (current-rung-only) sibling of residual_loss; close_ms =
-  // s1's last boundary open->close latency, nullopt = never closed.
-  bool attrib_on = false;
+  // Transition attribution (spec 2026-08-14, unconditional since
+  // 2026-08-15). residual_cur = the attributed (current-rung-only) sibling
+  // of residual_loss; close_ms = s1's last boundary open->close latency,
+  // nullopt = never closed.
   uint64_t attrib_suppressed = 0;
   std::optional<double> residual_cur;
   std::optional<double> attrib_close_ms;

@@ -191,7 +191,7 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
 // peer caps, not by callers, so the test must feed a DiscAck first.
 static LinkHealth healthy3() {
   LinkHealth h = healthy();
-  h.s3_valid = true; h.s3_expected_syms = 500; h.s1_snr_db = 30.0;
+  h.s3_valid = true; h.s3_expected_syms = 500; h.rf_snr_db = 30.0;
   return h;
 }
 

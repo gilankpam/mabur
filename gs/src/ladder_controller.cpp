@@ -79,7 +79,6 @@ bool LadderController::s3_usable(const LinkHealth& h) const {
 
 void LadderController::mark_transition(double now_ms) {
   s3_blank_until_ms_ = now_ms + cfg_.s3_settle_ms;
-  s3_resid_start_ms_ = -1.0;
   s3_util_start_ms_ = -1.0;
 }
 
@@ -187,8 +186,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 
   // Label only, stashed for every set_event()/end_probe() below. NaN is legal
   // (no SNR known this window) and never influences a decision.
-  snr_now_ = h.s1_snr_db;
-  evm_now_ = h.s1_evm_db;
+  snr_now_ = h.rf_snr_db;
+  evm_now_ = h.rf_evm_db;
 
   // No sample has measured s3 yet this tick, so nothing may be reported for
   // it. Cleared here rather than in block 5a so the promise util3() makes —
@@ -243,6 +242,9 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   if (!h.sample_valid) return false;
 
   last_feedback_ms_ = now_ms;
+  // Before ANY decision block: this sample's loss numbers belong to the rung
+  // the link is on right now, not to whatever a demote below steps us to.
+  measured_rung_ = idx_;
 
   // Part B EWMA feed. Kept HERE, above every decision block, and not next to
   // the trigger in 4b: the residual demote in block 4 returns early, which is
@@ -259,27 +261,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // are dt-derived, so skipping a run of ticks and applying the next sample
   // with the larger dt is the same continuous-time EWMA answer.
   //
-  // A label-source card hop re-baselines instead of feeding: both labels step
-  // together to the new card's level, which is indistinguishable from a fade
-  // (review finding 2026-08-14). Dropping the history costs a fade in
-  // progress its accumulated delta, which errs toward NOT demoting — the same
-  // direction every other conservatism in this block points. It deliberately
-  // does not touch fade_latched_: a hop is not evidence of recovery.
-  //
-  // Only a tick that actually CARRIES a label can change the label source: a
-  // window where no card measured s1 reports card -1 with NaN labels, and
-  // treating that as a hop would re-baseline on every stale window — on a
-  // marginal link, often enough to disable the trigger outright.
-  const bool has_rf =
-      !std::isnan(h.s1_rssi_dbm) || !std::isnan(h.s1_snr_db);
-  if (has_rf && h.s1_label_card != fade_card_) {
-    fade_card_ = h.s1_label_card;
-    fade_rssi_ = FadeEwma{};
-    fade_snr_ = FadeEwma{};
-    fade_trig_start_ms_ = -1.0;
-  }
-  if (!std::isnan(h.s1_rssi_dbm)) fade_rssi_.feed(h.s1_rssi_dbm, now_ms);
-  if (!std::isnan(h.s1_snr_db)) fade_snr_.feed(h.s1_snr_db, now_ms);
+  if (!std::isnan(h.rf_rssi_dbm)) fade_rssi_.feed(h.rf_rssi_dbm, now_ms);
+  if (!std::isnan(h.rf_snr_db)) fade_snr_.feed(h.rf_snr_db, now_ms);
 
   pre_fec_loss_ = h.pre_fec_loss;
   u_ = h.pre_fec_loss / budget();
@@ -292,8 +275,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // on the rung it actually measured.
   if (now_ms >= s3_blank_until_ms_) {
     store_.observe_s1(idx_, u_, h.residual_loss > 0.0, now_ms);
-    if (!std::isnan(h.s1_evm_db))
-      store_.observe_evm(idx_, h.s1_evm_db, now_ms);
+    if (!std::isnan(h.rf_evm_db))
+      store_.observe_evm(idx_, h.rf_evm_db, now_ms);
   }
 
   // 4. Residual (post-FEC) loss demotes immediately, exempt from
@@ -335,7 +318,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // lives above block 4 — see the comment there.
   if (cfg_.fade.predict) {
     const bool measurable =
-        !std::isnan(h.s1_rssi_dbm) && !std::isnan(h.s1_snr_db) &&
+        !std::isnan(h.rf_rssi_dbm) && !std::isnan(h.rf_snr_db) &&
         fade_rssi_.has && fade_snr_.has;
     const bool over = measurable && fade_rssi_.delta() >= cfg_.fade.rssi_db &&
                       fade_snr_.delta() >= cfg_.fade.snr_db;
@@ -394,27 +377,26 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   const bool s3_live =
       !probe_active_ && s3_usable(h) && now_ms >= s3_blank_until_ms_;
 
-  // Continuity gate. Both confirm windows below are elapsed-time tests against
-  // a start stamp, which only means "sustained" while the measurement is
-  // unbroken. A stamp that survives a gap measures wall clock instead: one bad
-  // window, 800 ms of nothing, one more bad window would read as 800 ms of
-  // confirmed pressure and demote on two samples — the very instant demote the
-  // confirm window exists to prevent (review finding). Breaking the run on any
-  // discontinuity errs toward NOT demoting, which is the right way to be wrong
-  // for an early-warning signal on the expendable layer.
+  // Continuity gate. The s3 util confirm window below is an elapsed-time test
+  // against a start stamp, which only means "sustained" while the
+  // measurement is unbroken. A stamp that survives a gap measures wall clock
+  // instead: one bad window, 800 ms of nothing, one more bad window would
+  // read as 800 ms of confirmed pressure and demote on two samples — the
+  // very instant demote the confirm window exists to prevent (review
+  // finding). Breaking the run on any discontinuity errs toward NOT
+  // demoting, which is the right way to be wrong for an early-warning signal
+  // on the expendable layer.
   //
   // This check is what covers the gaps the !s3_live branch below cannot see:
   // update() early-returns above on a starved or invalid sample and never
   // reaches this block at all.
   if (now_ms - s3_last_live_ms_ > cfg_.s3_settle_ms) {
-    s3_resid_start_ms_ = -1.0;
     s3_util_start_ms_ = -1.0;
   }
 
   if (!s3_live) {
     // u3_ stays at the 0 stamped at entry, and an unmeasurable window is a
-    // discontinuity in its own right: break both runs.
-    s3_resid_start_ms_ = -1.0;
+    // discontinuity in its own right: break the run.
     s3_util_start_ms_ = -1.0;
   } else {
     s3_last_live_ms_ = now_ms;
@@ -448,24 +430,25 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     set_event(now_ms, from, idx_, reason, u3_, snr_now_);
   };
 
-  // s3 residual (post-FEC abandonment) — confirmed, not instant like s1's:
-  // s3 is the expendable layer, so a single abandoned window is a normal
-  // shed/blip rather than proof the rung is unsustainable. Checked BEFORE the
-  // s1 util block so that when both ripen on the same tick the event reason
-  // attributes to s3 — "s3 led s1" is exactly the evidence this feature
-  // exists to collect.
-  if (cfg_.s3_demote && s3_live) {
-    if (h.s3_residual_loss > 0.0) {
-      if (s3_resid_start_ms_ < 0.0) s3_resid_start_ms_ = now_ms;
-      if (idx_ > 0 &&
-          now_ms - s3_resid_start_ms_ >= eff_s3_resid_confirm_ms(now_ms) &&
-          now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
-        s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
-        return true;
-      }
-    } else {
-      s3_resid_start_ms_ = -1.0;
-    }
+  // s3 residual (post-FEC abandonment) demotes IMMEDIATELY, like s1's, and
+  // like it is exempt from min_between_changes_ms. It was a confirmed
+  // window until 2026-08-15 because a single abandoned window reads as a
+  // normal shed/blip -- but a shed window carries no s3 traffic at all, so
+  // s3_live is false and no s3 decision runs. What actually needed the
+  // window was transition debris, and attribution removes that from the
+  // input outright: the watermark is in symbol-sequence space
+  // (sw_decoder.h), exact and permanent, not a settling heuristic. Checked
+  // BEFORE the s1 util block so that when both ripen on the same tick the
+  // event reason attributes to s3.
+  //
+  // Deliberately still lives in block 5a rather than beside the s1 residual
+  // block (block 4) above: this check needs s3_live, computed in the 5a
+  // preamble, so hoisting it means hoisting that whole preamble too, and
+  // staying here keeps this check's position relative to the 4b fade
+  // trigger unchanged from before the branch. Do not "fix" this into 4.
+  if (cfg_.s3_demote && s3_live && h.s3_residual_loss > 0.0 && idx_ > 0) {
+    s3_demote_now(CtlReason::S3Residual, counters_.demotes_s3_residual);
+    return true;
   }
 
   // 5. Utilization pressure: immediate demote during probation, otherwise a

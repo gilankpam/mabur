@@ -73,11 +73,17 @@ struct LinkCfg {
   bool ctl_log = false;
   std::string ctl_log_dir = "/media/dvr";
 
-  // NOTE: the transition-attribution kill switch (`link.attrib`, spec
-  // 2026-08-14) lives in ladder_cfg.attrib, not here. main.cpp picks the
-  // loss numbers it feeds the controller from it, and the controller itself
-  // reads it to decide whether the fade regime may shorten the s3-residual
-  // confirm — one home, so the two can never disagree.
+  // S-line cadence, ms (2026-08-15). Was hardcoded at 1000 and shared with
+  // main.cpp's stderr stats line; the two are now separate timers, because
+  // the ctl log is the adaptive-link instrument and wants to run FASTER than
+  // a human-readable log should. The floor exists for fade-trigger tuning:
+  // the predictive trigger decides every feedback_ms (50) against a 300 ms
+  // fast tau and a trigger_ms (300) sustain, so a 1 Hz record cannot tell a
+  // sustained fade from a sub-second transient — the exact question the
+  // 2026-08-15 sweep of 41 flights could not answer. 100 ms or finer
+  // resolves it. Cost is linear: ~80 B per S line, so 50 ms ~= 1.6 MB per
+  // 6-minute flight against a 58 GB DVR card.
+  int ctl_log_period_ms = 1000;
 
   // R-line emission cadence for the per-rung EWMA store (spec 2026-08-13).
   // The store's own tuning (half_life_samples) lives in

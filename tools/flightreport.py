@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h). Format is
-auto-detected from the first line.
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v6,
+warns on pre-v4). Format is auto-detected from the first line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
@@ -44,7 +44,9 @@ def load_ctllog(path):
     S, E, P, N, R = [], [], [], [], []
     with open(path) as f:
         first = f.readline().strip()
-        # ctllog 2 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+        toks0 = first.split()
+        header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
+        # ctllog 6 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
         for tok in first.split()[2:]:
             if "=" not in tok: continue
             k, v = tok.split("=", 1)
@@ -69,6 +71,8 @@ def load_ctllog(path):
                         # 2026-08-14 fade deltas (ctllog 3); absent on older logs.
                         "drssi": float(toks[10]) if len(toks) >= 12 else float("nan"),
                         "dsnr": float(toks[11]) if len(toks) >= 12 else float("nan"),
+                        # 2026-08-15 label RSSI (ctllog 5); absent on older logs.
+                        "rssi": float(toks[12]) if len(toks) >= 13 else float("nan"),
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({
@@ -187,7 +191,17 @@ def print_wall_report(ctllog):
     header, S, E, P, N = (ctllog[k] for k in ("header", "S", "E", "P", "N"))
 
     print("CTL LOG HEADER")
+    ver = header.get("_version", 0)
+    if ver and ver < 6:
+        print("  NOTE: ctllog v%d -- the S line's rung is the LIVE rung, so any "
+              "sample with loss that coincides with a demote is filed against "
+              "the rung the link demoted TO, not the one that caused it." % ver)
+    if ver and ver < 4:
+        print("  NOTE: ctllog v%d -- snr_db/evm_db are s1-class only, and "
+              "drssi/dsnr were zeroed on ~25%% of ticks by the card-hop "
+              "re-baseline. Not comparable with v4+ recordings." % ver)
     for k, v in header.items():
+        if k.startswith("_"): continue  # internal, e.g. _version -- not a header field
         print(f"  {k}={v}")
 
     print("DWELL (S records)")
@@ -349,8 +363,13 @@ def find_episodes(E, gap_ms=3000):
 
 def attribution_misses(E, window_ms=200):
     """Residual demotes firing within window_ms of ANY earlier E line.
-    With link.attrib on this should be ~zero; hits mean the transition
-    watermark missed a debris class (spec 2026-08-14 fade-demote §5)."""
+    Attribution is unconditional since 2026-08-15 (link.attrib was removed
+    and now fails boot; before that date it was a default-on kill switch),
+    so on any recording this should be ~zero; hits mean the transition
+    watermark missed a debris class (spec 2026-08-14 fade-demote §5). This
+    canary only scores `reason == "residual"` (s1); it does not cover the
+    s3-residual sliding-window mechanism described in the 2026-08-15 spec
+    §9 / CLAUDE.md — see find_episodes() for that split instead."""
     out = []
     for i, ev in enumerate(E):
         if ev["reason"] != "residual" or ev["to"] >= ev["from"]:

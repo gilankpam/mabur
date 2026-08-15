@@ -59,8 +59,9 @@ with:
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
   file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 3` header (v1 before 2026-08-14, v2 for that day's
-first wave) followed by compact S/E/P/N/R
+  default `/media/dvr`), a `ctllog 4` header (v1 before 2026-08-14, v2 for that day's
+first wave, v3 for that day's second wave, v4 since 2026-08-15 — see the
+  pooled-RF note below) followed by compact S/E/P/N/R
   lines (rung/state, ctl events, probe events, penalties, per-rung EWMA store snapshots). `flightreport.py`
   auto-detects this format alongside the jsonl format, so no separate
   invocation is needed. Tuning invariant: the controller's s3 loss/residual
@@ -71,10 +72,22 @@ first wave) followed by compact S/E/P/N/R
   fast against the 250/500 ms confirm windows), but do NOT lower
   `s3_settle_ms`/`s3_residual_confirm_ms` toward their floors together: a
   rung transition's FEC re-key artifacts could then satisfy the s3-residual
-  confirm and self-demote on every promote.
+  confirm and self-demote on every promote. ⚠ SUPERSEDED 2026-08-15 — see
+  the pooled-RF note below: `s3_residual_confirm_ms` is REMOVED and FAILS
+  BOOT, so there is no longer a config knob to lower — the s3-residual
+  confirm window this paragraph warns about is now permanently at 0 ms
+  (its floor), unconditionally, for every deployment. That is deliberately
+  NOT the unsafe floors-together configuration described here: it is safe
+  only because attribution is exact rather than fast (the watermark is in
+  symbol-sequence space, so debris is absent from the input rather than
+  outrun by a shorter window) — see the 2026-08-15 note for the residual
+  risk that distinction does not cover.
 
 Since 2026-08-14 the ladder's demote inputs are transition-attributed
-(kill switch `link.attrib`, default true): per-stream watermarks — with
+(kill switch `link.attrib`, default true. ⚠ SUPERSEDED 2026-08-15 — see
+the pooled-RF note below: `link.attrib` is REMOVED and now FAILS BOOT,
+attribution is unconditional, and this is no longer a kill switch):
+per-stream watermarks — with
 the RX PHY rate as the generation boundary — split every loss counter
 into current-rung vs pre-transition debris, and all four demote inputs
 (instant s1 residual, s3 residual, both utils) read the current-only
@@ -87,7 +100,10 @@ rate) and `link.streams[].abandoned_stale`; the ctl log went `ctllog 1` →
 line: pre-2026-08-14
 residual/util figures include transition debris that later recordings
 attribute away. `link.attrib: false` reverts the decisions (not the
-bookkeeping) to the old totals.
+bookkeeping) to the old totals. ⚠ SUPERSEDED 2026-08-15 — see the
+pooled-RF note below: `link.attrib` no longer exists, so this revert path
+is gone too — the config key FAILS BOOT and the only way back to
+pre-attribution decisions is a binary rollback.
 
 **Since 2026-08-14 (same day, second wave) demotes are fade-aware.** Two
 independent pieces, both default-on, both killable, and the whole
@@ -100,15 +116,21 @@ while the regime is open and the cascade is on, the demote confirm
 windows drop 250/500 ms to 100 ms (`confirm_ms`), so a real fade steps
 down at fade speed rather than at steady-state speed. Kill the cascade
 and the regime is still armed and still reported — it just stops
-shortening anything. Both s3 confirms are additionally gated on
-`link.attrib`: with attribution OFF the regime keeps the full
+shortening anything. ⚠ SUPERSEDED 2026-08-15 — see the pooled-RF note
+below: `link.attrib` is gone and so is this gate. The paragraph below
+describes 2026-08-14 second-wave behaviour only; since 2026-08-15 the s3
+residual path has no confirm window to gate at all (it demotes instantly,
+unconditionally), and the s3 util confirm — the only one left — always
+runs at `in_fade_regime(now_ms) ? fade.confirm_ms : confirm_ms`, with no
+attrib-off branch. Both s3 confirms were additionally gated on
+`link.attrib`: with attribution OFF the regime kept the full
 `s3_residual_confirm_ms` / `confirm_ms` there, because a 100 ms confirm
 behind the unshortened 300 ms `s3_settle_ms` is exactly the
 floors-together configuration the tuning invariant above forbids — the
 ~200 ms of debris that outlives the blank satisfies 100 ms and not the
 legacy window. Measured in review, a single genuine demote then cascaded
 rung 4 → 0 in 1.6 s on nothing but its own FEC debris. So `attrib: false`
-reverts Part A's s3 paths along with everything else. (The s1 util
+used to revert Part A's s3 paths along with everything else. (The s1 util
 confirm is NOT gated: it has no blanking at all, so its legacy 250 ms
 window already sits inside the same 500 ms loss window the debris
 occupies — amplitude decides it there, not duration.)
@@ -169,8 +191,8 @@ times, false fades with time-to-repromote, plus an attribution-miss canary
 previous transition, which should be ~zero with `link.attrib` on). The
 jsonl branch also prints the flight-wide `link.attrib.suppressed` delta.
 ⚠ The s1 RF labels are now freshness-gated per card
-(`gs/src/s1_labels.h`, `select_s1_label_card()`, unit-tested in
-`tests/test_s1_labels.cpp`): the best-card argmax only considers cards
+(`gs/src/rf_labels.h`, `select_label_card()`, unit-tested in
+`tests/test_rf_labels.cpp`): the best-card argmax only considers cards
 whose s1 frame count advanced in the current feedback window, so
 `s1_snr_db`, `s1_evm_db` and `s1_rssi_dbm` read NaN — and the ctl log
 prints `nan` — whenever no card measured s1 that window, where a frozen
@@ -185,15 +207,90 @@ argmax does not stick: a front-end that wedges for ~1 s (a documented,
 recovering failure mode on the two-card bench GS) hands the labels to a
 weaker sibling, and `s1_rssi_dbm`/`s1_snr_db` then step down TOGETHER —
 bit for bit the trigger's joint condition, so a ≥9 dB RSSI / ≥4.3 dB SNR
-gap between cards is a spurious `fade`. The controller defends itself: the
-selected card index rides along in `LinkHealth` and a change re-baselines
-both EWMAs (so a hop reads as a new reference, not a fade), at the cost of
-making a fade already in progress re-accumulate its delta on the new card
-— conservative in the direction everything else here is. The latch is
+gap between cards is a spurious `fade`. ⚠ SUPERSEDED 2026-08-15 — see the
+pooled-RF note below: the defence described in the rest of this paragraph
+is DELETED, not merely inactive. The operational guidance (how to
+recognise and correlate a card-hop false fade) below is unchanged and, if
+anything, matters more now, because this branch makes a hop-driven false
+fade possible for the first time — read it as "what to look for", not
+"why it can't happen". ~~The controller defends itself: the selected card
+index rides along in `LinkHealth` and a change re-baselines both EWMAs
+(so a hop reads as a new reference, not a fade), at the cost of making a
+fade already in progress re-accumulate its delta on the new card —
+conservative in the direction everything else here is.~~ The latch is
 deliberately NOT released by a hop. If a false fade shows up anyway,
 correlate the ctl log's `drssi`/`dsnr` step against per-card
 `classes.s1.*` in the sideport: a hop moves both by the card GAP in one
 window, a real fade moves them along the transfer function above.
+
+**Since 2026-08-15 the RF labels are s1+s3 pooled, the card-hop
+re-baseline is gone, attribution is unconditional, and s3 residual
+demotes instantly.** Four coupled changes, spec
+`docs/superpowers/specs/2026-08-15-pooled-rf-and-instant-s3-design.md`.
+(i) `s1_snr_db`/`s1_evm_db`/`s1_rssi_dbm` became `rf_*` and are sourced
+from a new per-card s1+s3 pooled track (97% of frames at one PHY rate);
+`msp`/`ctrl` are excluded because per-rate TX power makes their
+contribution depend on a mix ratio that drifts with rung and shed state.
+⚠ This is a second discontinuity in RungStore's per-rung EVM baselines,
+on top of the 2026-08-14 freshness gate — EVM sample populations are NOT
+comparable across either date. ⚠ The jsonl sideport carries no version
+marker at all (the ctl log's header bump doesn't reach it): the same
+pooled-track change silently flips the meaning of
+`link.ctl.last_event.snr`/`.evm` and `link.ctl.last_probe.snr`/`.evm` from
+s1-only to s1+s3 pooled, with nothing in the jsonl itself to say so — date
+any jsonl recording against 2026-08-15 the same way you would a ctl log's
+`ctllog` header. (ii) The card-hop EWMA re-baseline is
+deleted: it was zeroing `drssi`/`dsnr` on 25% of ticks (372 of 1483
+across flight-0017/0018), so **every fade delta recorded before this date
+is suppressed and must not be pooled with later ones** — the trigger
+could not fire regardless of fade depth, which is a second explanation
+for its silence alongside ramp slope-blindness. Its premise was also
+wrong: the argmax runs on SNR, so the SNR label is `max(snr)` over live
+cards and is continuous across a hop; only RSSI stepped, and measured hop
+steps were indistinguishable from ordinary variation. (iii) `link.attrib`
+is REMOVED and now FAILS BOOT; attribution is unconditional and there is
+no config rollback, only a binary one. `link.attrib.suppressed` /
+`residual_cur` / `close_ms` remain on the sideport, but `link.attrib.on`
+is REMOVED — a `v: 1` schema removal in the same class as the 2026-08-12
+`offset_qdb` removals, with `maburtop.py` updated in the same wave.
+(iv) `link.s3_residual_confirm_ms` is REMOVED and FAILS BOOT: s3 residual
+now demotes on the first window, exempt from `min_between_changes_ms`,
+like s1's. That is safe only because attribution is EXACT rather than
+fast for debris the transition watermark actually classifies as stale —
+the watermark is in symbol-sequence space, so that debris is absent from
+the input rather than outrun — and `s3_settle_ms` blanking is retained.
+⚠ That does NOT cover every pre-transition case: genuine current-rung s3
+abandonment that was correctly attributed to the OLD rung can still sit
+inside `s3_residual_loss`'s underlying 500 ms sliding window (never
+cleared at a transition, only blanked from the decision) and fire a
+follow-up instant demote at the tick `s3_settle_ms` expires — pre-existing
+behaviour, bounded to ~2 firings, not something this branch changed but
+worth knowing when reading `demotes_s3_residual`. Predicted cost ~4× that
+path's demote rate (~19 events per two 6-minute flights vs the 5
+observed); materially above that on the first flight has two candidate
+causes that want different responses — the estimate's 500 ms sampling
+hiding back-to-back firing (confirm window returns in reduced form), or
+the sliding-window mechanism just described (bound/blank the window at a
+transition instead). Count s3-residual demotes landing within roughly
+`s3_settle_ms` + one tick of a PREVIOUS transition separately to tell
+them apart; `flightreport.py`'s `find_episodes()` already has the
+machinery. The ctl log went
+`ctllog 3` → `4` (formats byte-identical, meanings changed);
+`flightreport.py` parses v1–v4 and warns on pre-v4. Deploy is GS-only and
+config-before-binary: `grep -nE '"(attrib|s3_residual_confirm_ms)"'
+/etc/maburgs.json` and delete any hit before starting the new binary,
+or maburgs crash-loops at 2 s. **Also swap `tools/maburtop.py` in the same
+step, not as an afterthought:** an old maburtop against a new maburgs
+renders the now-absent `link.attrib.on` as `attrib:OFF` — indistinguishable
+from a real problem, and exactly the kind of thing that sends someone
+hunting for a switch (`link.attrib`) that no longer exists and would fail
+boot if they tried to set it. Deploy maburtop alongside the binary, not
+after. ⚠ Rollback for THIS wave is looser than "paired" elsewhere in this
+file (compare the RC_VERSION bump, or `link.fade`/`link.rc_drain_ms`
+below): both `attrib` and `s3_residual_confirm_ms` were optional with
+live defaults on the OLD binary too, so the post-deploy config (both keys
+already stripped per the grep above) boots correctly on either binary —
+rollback needs only the binary swap, no config to restore alongside it.
 
 On the drone, RCF drain is decoupled from the agent tick
 (`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop

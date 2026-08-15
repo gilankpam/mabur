@@ -32,6 +32,30 @@ static void fold_evm(Track& t, int8_t a, int8_t b) {
                                                  : (sampled(a) ? a : b);
   if (sampled(best)) fold(t.evm_ema, t.evm_has, best);
 }
+
+// RSSI/SNR fold shared by CardTrack, ClassTrack and the s1+s3 pool
+// (identical field names). Mirrors fold_evm's shape; unlike EVM every frame
+// carries a usable rssi/snr sample, so there is no per-chain validity gate.
+template <typename Track>
+static void fold_rf(Track& t, double rssi, double snr, const uint8_t* rssi_ab,
+                    const int8_t* snr_ab) {
+  if (!t.has_ema) {
+    t.rssi_ema = rssi;
+    t.rssi_a_ema = rssi_ab[0];
+    t.rssi_b_ema = rssi_ab[1];
+    t.snr_ema = snr;
+    t.snr_a_ema = snr_ab[0];
+    t.snr_b_ema = snr_ab[1];
+    t.has_ema = true;
+    return;
+  }
+  t.rssi_ema = (1 - kEmaAlpha) * t.rssi_ema + kEmaAlpha * rssi;
+  t.rssi_a_ema = (1 - kEmaAlpha) * t.rssi_a_ema + kEmaAlpha * rssi_ab[0];
+  t.rssi_b_ema = (1 - kEmaAlpha) * t.rssi_b_ema + kEmaAlpha * rssi_ab[1];
+  t.snr_ema = (1 - kEmaAlpha) * t.snr_ema + kEmaAlpha * snr;
+  t.snr_a_ema = (1 - kEmaAlpha) * t.snr_a_ema + kEmaAlpha * snr_ab[0];
+  t.snr_b_ema = (1 - kEmaAlpha) * t.snr_b_ema + kEmaAlpha * snr_ab[1];
+}
 }  // namespace
 
 Aggregator::Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
@@ -113,22 +137,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
 
     const double rssi = static_cast<double>(m.rssi[0] > m.rssi[1] ? m.rssi[0] : m.rssi[1]);
     const double snr = static_cast<double>(m.snr[0] > m.snr[1] ? m.snr[0] : m.snr[1]);
-    if (!c.has_ema) {
-      c.rssi_ema = rssi;
-      c.rssi_a_ema = m.rssi[0];
-      c.rssi_b_ema = m.rssi[1];
-      c.snr_ema = snr;
-      c.snr_a_ema = m.snr[0];
-      c.snr_b_ema = m.snr[1];
-      c.has_ema = true;
-    } else {
-      c.rssi_ema = (1 - kEmaAlpha) * c.rssi_ema + kEmaAlpha * rssi;
-      c.rssi_a_ema = (1 - kEmaAlpha) * c.rssi_a_ema + kEmaAlpha * m.rssi[0];
-      c.rssi_b_ema = (1 - kEmaAlpha) * c.rssi_b_ema + kEmaAlpha * m.rssi[1];
-      c.snr_ema = (1 - kEmaAlpha) * c.snr_ema + kEmaAlpha * snr;
-      c.snr_a_ema = (1 - kEmaAlpha) * c.snr_a_ema + kEmaAlpha * m.snr[0];
-      c.snr_b_ema = (1 - kEmaAlpha) * c.snr_b_ema + kEmaAlpha * m.snr[1];
-    }
+    fold_rf(c, rssi, snr, m.rssi, m.snr);
     fold_evm(c, m.evm[0], m.evm[1]);
 
     // Per-RF-class EMA, mirroring the pooled block above exactly. Ctrl
@@ -146,23 +155,19 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       ClassTrack& ct = c.cls[static_cast<size_t>(class_idx)];
       ++ct.frames;
       ct.bytes += m.body.size();
-      if (!ct.has_ema) {
-        ct.rssi_ema = rssi;
-        ct.rssi_a_ema = m.rssi[0];
-        ct.rssi_b_ema = m.rssi[1];
-        ct.snr_ema = snr;
-        ct.snr_a_ema = m.snr[0];
-        ct.snr_b_ema = m.snr[1];
-        ct.has_ema = true;
-      } else {
-        ct.rssi_ema = (1 - kEmaAlpha) * ct.rssi_ema + kEmaAlpha * rssi;
-        ct.rssi_a_ema = (1 - kEmaAlpha) * ct.rssi_a_ema + kEmaAlpha * m.rssi[0];
-        ct.rssi_b_ema = (1 - kEmaAlpha) * ct.rssi_b_ema + kEmaAlpha * m.rssi[1];
-        ct.snr_ema = (1 - kEmaAlpha) * ct.snr_ema + kEmaAlpha * snr;
-        ct.snr_a_ema = (1 - kEmaAlpha) * ct.snr_a_ema + kEmaAlpha * m.snr[0];
-        ct.snr_b_ema = (1 - kEmaAlpha) * ct.snr_b_ema + kEmaAlpha * m.snr[1];
-      }
+      fold_rf(ct, rssi, snr, m.rssi, m.snr);
       fold_evm(ct, m.evm[0], m.evm[1]);
+
+      // s1+s3 pooled track (spec 2026-08-15): the RF label source and the
+      // fade trigger read this. Deliberately excludes s0, msp and ctrl.
+      if (class_idx == static_cast<int>(RfClass::S1) ||
+          class_idx == static_cast<int>(RfClass::S3)) {
+        ClassTrack& pt = c.rf_pool;
+        ++pt.frames;
+        pt.bytes += m.body.size();
+        fold_rf(pt, rssi, snr, m.rssi, m.snr);
+        fold_evm(pt, m.evm[0], m.evm[1]);
+      }
     }
   }
 

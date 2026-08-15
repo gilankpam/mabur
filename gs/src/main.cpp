@@ -31,7 +31,7 @@
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
 #include "radio_frontend.h"
-#include "s1_labels.h"
+#include "rf_labels.h"
 #include "s1_loss.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
@@ -288,24 +288,27 @@ static int run_radio(const maburgs::Config& cfg) {
   // (S1LossWindow), that one is packet-level and RCF-period-windowed.
   maburgs::S1LossWindow s1_loss;
   // s3 probe-before-promote feedback (same windowing machinery as s1_loss,
-  // stream 3): pre-FEC loss for probe/s3-demote decisions, plus a separate
-  // residual (abandoned/expected) window for the steady-state demote path.
-  maburgs::S1LossWindow s3_loss, s3_resid;
+  // stream 3): pre-FEC loss for probe/s3-demote decisions. The steady-state
+  // demote path's residual (abandoned/expected) window is s3_resid_cur
+  // below -- attribution is unconditional, so there is no total-based
+  // sibling left to keep here.
+  maburgs::S1LossWindow s3_loss;
   // Current-rung-only siblings (transition attribution, spec 2026-08-14):
-  // same machinery, fed from the attributed counters. The originals stay
-  // as the observability totals and the link.attrib=false decision path.
+  // same machinery, fed from the attributed counters. s1_loss/s3_loss stay
+  // as the observability totals (residual_loss, the artifact-rate meter).
   maburgs::S1LossWindow s1_loss_cur, s3_loss_cur, s3_resid_cur;
-  // Fade-trigger staleness gate (spec 2026-08-14 §3): per-card s1-class
-  // frame counts snapshotted once per feedback window (same cadence as
-  // reset_window()), so "zero s1 frames this window" can NaN the RF labels
-  // before they reach the controller. A frozen EMA must never read as a
-  // live signal. Snapshotted for EVERY card, not just the chosen one: the
-  // choice itself is freshness-gated, so which card is chosen can change
-  // between windows and each needs its own baseline.
-  std::vector<uint64_t> prev_s1_cls_frames(static_cast<size_t>(n_cards), 0);
-  // Scratch for select_s1_label_card(), hoisted so the per-window refill
+  // Fade-trigger staleness gate (spec 2026-08-14 §3, source repointed to
+  // the s1+s3 pool 2026-08-15): per-card pooled frame counts snapshotted
+  // once per feedback window (same cadence as reset_window()), so "zero
+  // s1+s3 frames this window" can NaN the RF labels before they reach the
+  // controller. A frozen EMA must never read as a live signal. Snapshotted
+  // for EVERY card, not just the chosen one: the choice itself is
+  // freshness-gated, so which card is chosen can change between windows
+  // and each needs its own baseline.
+  std::vector<uint64_t> prev_pool_frames(static_cast<size_t>(n_cards), 0);
+  // Scratch for select_label_card(), hoisted so the per-window refill
   // allocates nothing after the first pass.
-  std::vector<maburgs::S1CardLabelInput> s1_label_cards(
+  std::vector<maburgs::CardLabelInput> label_card_inputs(
       static_cast<size_t>(n_cards));
   // Windows where total residual was positive but attributed residual was
   // zero at a rung > 0 — i.e. windows where the legacy instant demote
@@ -384,6 +387,9 @@ static int run_radio(const maburgs::Config& cfg) {
 
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   uint64_t last_stats_ms = 0;
+  // Separate from last_stats_ms since 2026-08-15: the ctl log runs on
+  // link.ctl_log_period_ms, the stderr line stays at 1 Hz.
+  uint64_t last_ctl_sample_ms = 0;
   // Foreign-RC_VERSION warning throttle. Separate `logged` flag rather than a
   // 0 sentinel: mono_ms() is small but not guaranteed non-zero at startup.
   uint64_t last_foreign_rc_ms = 0;
@@ -555,15 +561,13 @@ static int run_radio(const maburgs::Config& cfg) {
     const auto s1_cur_sample = s1_loss_cur.sample(now_ms);
 
     // s3 feedback for the probe-before-promote / s3-demote logic: pre-FEC
-    // loss (same shape as s1's window) plus a residual (abandoned/expected)
-    // window scored against the CURRENT rung's s3 budget.
+    // loss (same shape as s1's window), scored against the CURRENT rung's
+    // s3 budget.
     const auto s3 = agg.decoder().stats(3);
     const uint64_t s3_expected =
         s3.syms_delivered + s3.syms_recovered + s3.syms_abandoned;
     s3_loss.add(s3_expected, s3.syms_delivered + s3.syms_recovered_arrived, now_ms);
-    s3_resid.add(s3_expected, s3_expected - s3.syms_abandoned, now_ms);
     const auto s3_sample = s3_loss.sample(now_ms);
-    const auto s3_rsample = s3_resid.sample(now_ms);
 
     const uint64_t s3_ab_cur = s3.syms_abandoned - s3.syms_abandoned_stale;
     const uint64_t s3_exp_cur = s3.syms_delivered + s3.syms_recovered + s3_ab_cur;
@@ -573,74 +577,58 @@ static int run_radio(const maburgs::Config& cfg) {
     const auto s3_cur_sample = s3_loss_cur.sample(now_ms);
     const auto s3_rcur_sample = s3_resid_cur.sample(now_ms);
 
-    // The strongest card that ACTUALLY RECEIVED s1 this feedback window
-    // supplies all three s1 RF labels. Freshness is part of the argmax, not a
-    // filter after it (select_s1_label_card, s1_labels.h): a card whose
-    // front-end wedged keeps a frozen-high EMA and would otherwise outrank a
-    // live sibling forever. -1 = nothing measured s1 this window, so all
-    // three labels stay NaN — inert for the fade trigger, null on the wire.
+    // The strongest card that ACTUALLY RECEIVED s1-or-s3 this feedback
+    // window supplies all three RF labels. Freshness is part of the argmax,
+    // not a filter after it (select_label_card, rf_labels.h): a card whose
+    // front-end wedged keeps a frozen-high EMA and would otherwise outrank
+    // a live sibling forever. -1 = nothing measured this window, so all
+    // three labels stay NaN -- inert for the fade trigger, null on the wire.
     for (int i = 0; i < n_cards; ++i) {
-      const auto& ct = agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)];
-      s1_label_cards[static_cast<size_t>(i)] = maburgs::S1CardLabelInput{
-          ct.has_ema, ct.frames, prev_s1_cls_frames[static_cast<size_t>(i)],
+      const auto& ct = agg.card(i).rf_pool;
+      label_card_inputs[static_cast<size_t>(i)] = maburgs::CardLabelInput{
+          ct.has_ema, ct.frames, prev_pool_frames[static_cast<size_t>(i)],
           ct.snr_ema};
     }
-    const int s1_best_card = maburgs::select_s1_label_card(s1_label_cards);
+    const int best_card = maburgs::select_label_card(label_card_inputs);
     // SNR (label + fade input) and EVM (label only) come from that ONE card,
     // never independently-best across cards, so the three are a coherent
     // single-card snapshot of the same radio at the same instant.
-    double s1_snr_db = std::numeric_limits<double>::quiet_NaN();
-    double s1_evm_db = std::numeric_limits<double>::quiet_NaN();
-    double s1_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
-    if (s1_best_card >= 0) {
-      const auto& ct =
-          agg.card(s1_best_card).cls[static_cast<size_t>(maburgs::RfClass::S1)];
+    double rf_snr_db = std::numeric_limits<double>::quiet_NaN();
+    double rf_evm_db = std::numeric_limits<double>::quiet_NaN();
+    double rf_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
+    if (best_card >= 0) {
+      const auto& ct = agg.card(best_card).rf_pool;
       // Raw units are devourer's half-dB (snr_units.h); raw - 110 is the
       // exporter's own dBm conversion (stats_exporter.cpp rssi keys).
-      s1_snr_db = ct.snr_ema * maburgs::kSnrRawToDb;
-      if (ct.evm_has) s1_evm_db = ct.evm_ema * maburgs::kEvmRawToDb;
-      s1_rssi_dbm = ct.rssi_ema - 110.0;
+      rf_snr_db = ct.snr_ema * maburgs::kSnrRawToDb;
+      if (ct.evm_has) rf_evm_db = ct.evm_ema * maburgs::kEvmRawToDb;
+      rf_rssi_dbm = ct.rssi_ema - 110.0;
     }
 
-    // link.attrib=true: the controller judges the rung it is on — every
-    // demote input reads the CURRENT-rung (attributed) value; stale
-    // transition debris can no longer fire any demote. false: the legacy
-    // totals, verbatim. sample_valid / s3_valid / s3_expected_syms stay
+    // Every demote input reads the CURRENT-rung (attributed) value; stale
+    // transition debris can no longer fire any demote. Unconditional since
+    // 2026-08-15. sample_valid / s3_valid / s3_expected_syms stay
     // total-based on purpose: they gate "was there traffic at all", and an
     // all-stale window must still count as feedback (a cur-based valid
     // would un-stamp last_feedback_ms_ and could walk into the blind-side
     // timeout during a long boundary).
-    const bool attrib = cfg.link.ladder_cfg.attrib;
     maburgs::LinkHealth health{
         s1_sample.valid,
-        attrib ? (s1_cur_sample.valid ? s1_cur_sample.loss : 0.0)
-               : s1_sample.loss,
-        attrib ? residual_cur.value_or(0.0) : residual.value_or(0.0),
+        s1_cur_sample.valid ? s1_cur_sample.loss : 0.0,
+        residual_cur.value_or(0.0),
         starved};
     health.s3_valid = s3_sample.valid;
-    health.s3_pre_fec_loss = attrib
-                                 ? (s3_cur_sample.valid ? s3_cur_sample.loss : 0.0)
-                                 : s3_sample.loss;
+    health.s3_pre_fec_loss = s3_cur_sample.valid ? s3_cur_sample.loss : 0.0;
     health.s3_residual_loss =
-        attrib ? (s3_rcur_sample.valid ? s3_rcur_sample.loss : 0.0)
-               : (s3_rsample.valid ? s3_rsample.loss : 0.0);
+        s3_rcur_sample.valid ? s3_rcur_sample.loss : 0.0;
     health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
-    health.s1_snr_db = s1_snr_db;
-    health.s1_evm_db = s1_evm_db;
-    health.s1_rssi_dbm = s1_rssi_dbm;
-    // WHICH card those three came from: the argmax above re-runs every window
-    // and does not stick, so the source can hop to a weaker sibling and step
-    // both labels down together — the fade trigger's joint condition exactly.
-    // The controller re-baselines its EWMAs on a change (review finding
-    // 2026-08-14). -1 (no card measured s1) rides along with the NaN labels
-    // and is deliberately NOT treated as a hop.
-    health.s1_label_card = s1_best_card;
+    health.rf_snr_db = rf_snr_db;
+    health.rf_evm_db = rf_evm_db;
+    health.rf_rssi_dbm = rf_rssi_dbm;
     // Artifact-rate meter: a window the legacy instant demote would have
     // acted on (total residual > 0, rung > 0) that the attributed view
-    // reads clean. Counted regardless of the switch so an attrib=false
-    // run still measures what attribution WOULD have suppressed. Edge-
-    // detected on the latch above: one increment per contiguous suppressed
-    // episode, not once per main-loop pass.
+    // reads clean. Edge-detected on the latch above: one increment per
+    // contiguous suppressed episode, not once per main-loop pass.
     const bool attrib_suppressed_now = vrx.ctl().rung() > 0 &&
                                         residual.value_or(0.0) > 0.0 &&
                                         residual_cur.value_or(0.0) <= 0.0;
@@ -653,8 +641,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // The RF staleness window and the loss window MUST share this
         // boundary: both are "since the last health the controller acted on".
         for (int i = 0; i < n_cards; ++i)
-          prev_s1_cls_frames[static_cast<size_t>(i)] =
-              agg.card(i).cls[static_cast<size_t>(maburgs::RfClass::S1)].frames;
+          prev_pool_frames[static_cast<size_t>(i)] = agg.card(i).rf_pool.frames;
       }
       std::vector<maburgs::CardSnapshot> snaps;
       for (int i = 0; i < n_cards; ++i) {
@@ -704,22 +691,41 @@ static int run_radio(const maburgs::Config& cfg) {
       if (ctl_log) ctl_log->penalty(n.t_ms, n.rung, n.k, n.until_ms);
     }
 
+    // SIGUSR1 is consumed ONCE and shared: both blocks below honour it, so a
+    // dump still produces an off-cadence S line AND a stderr line the way it
+    // did when the two were one block.
+    const bool dump_now = g_dump.exchange(false);
+
+    // Adaptive-link log, on its OWN cadence (link.ctl_log_period_ms, default
+    // 1000). Split from the stderr block below on 2026-08-15: the ctl log is
+    // the instrument the ladder is tuned from and wants to run as fast as
+    // 50 ms, while the stderr line is human-readable and lands in /tmp, which
+    // is tmpfs — running that at 20 Hz would fill RAM for no one's benefit.
+    if (ctl_log &&
+        (dump_now || now_ms_u - last_ctl_sample_ms >= static_cast<uint64_t>(
+                                                          cfg.link.ctl_log_period_ms))) {
+      last_ctl_sample_ms = now_ms_u;
+      const auto& c = vrx.ctl();
+      // measured_rung(), not rung(): every other field in this row is a
+      // window measurement, and a demote has already stepped the live rung
+      // down by the time we get here (see LadderController::measured_rung()).
+      ctl_log->sample(now_ms, c.measured_rung(), c.util(), health.rf_snr_db,
+                       residual.value_or(0.0), c.util3(),
+                       health.s3_residual_loss, health.rf_evm_db,
+                       residual_cur.value_or(0.0), c.fade_drssi(),
+                       c.fade_dsnr(), health.rf_rssi_dbm);
+      // R lines keep their own, much slower period — they are a store
+      // snapshot, not a dwell sample, and must not follow the S cadence.
+      if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
+        last_rung_log_ms = now_ms;
+        emit_rung_lines(now_ms);
+      }
+    }
+
     // 1 Hz stats line / SIGUSR1 dump.
-    if (g_dump.exchange(false) || now_ms_u - last_stats_ms >= 1000) {
+    if (dump_now || now_ms_u - last_stats_ms >= 1000) {
       last_stats_ms = now_ms_u;
       if (msp_sink) msp_sink->tick(now_ms_u);  // expire stale repair rows
-      if (ctl_log) {
-        const auto& c = vrx.ctl();
-        ctl_log->sample(now_ms, c.rung(), c.util(), health.s1_snr_db,
-                         residual.value_or(0.0), c.util3(),
-                         health.s3_residual_loss, health.s1_evm_db,
-                         residual_cur.value_or(0.0), c.fade_drssi(),
-                         c.fade_dsnr());
-        if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
-          last_rung_log_ms = now_ms;
-          emit_rung_lines(now_ms);
-        }
-      }
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
                    "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f "
@@ -772,7 +778,6 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.op = vrx.cur_op();
       sin.deadline_ms = cfg.fec.decode_deadline_ms;
       sin.residual_loss = residual;
-      sin.attrib_on = cfg.link.ladder_cfg.attrib;
       sin.attrib_suppressed = attrib_suppressed;
       sin.residual_cur = residual_cur;
       if (const double cms = agg.decoder().last_boundary_close_ms(1); cms >= 0)
