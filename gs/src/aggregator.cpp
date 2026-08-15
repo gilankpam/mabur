@@ -111,8 +111,8 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     // their OWN independent 802.11 seq counters on the drone, so walking them
     // against the video high-water mark can book up to kMaxSeqGap phantom
     // expected seqs per such frame — a periodic phantom loss_pct spike.
-    // Mirrors main.cpp's score-window filter, which excludes RC+MSP from
-    // ScoreWindow::seq_gap_loss() for exactly this reason.
+    // Mirrors main.cpp's on_video() filter, which excludes RC+MSP from the
+    // rendezvous video-silence timer for exactly this reason.
     const bool decoder_bound_seq =
         rc_t < 0 && stream_id != mabur::kMspStreamId;
     if (decoder_bound_seq) {

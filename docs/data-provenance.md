@@ -1,0 +1,112 @@
+# Data provenance — date every recording
+
+Several link-wide behaviours and metric scales changed on known dates.
+Recordings that span one of these are not the same experiment and must
+not be pooled. Nothing in the sideport reports most of them, so the only
+reliable method is to date the recording against this page.
+
+Quick index: carrier sense off 2026-08-05 · TX power constant 2026-08-12 ·
+sideport key removals 2026-08-12 and 2026-08-15 · SNR half-dB scale break
+2026-08-04 · EVM op-point dependence 2026-08-10 · RF labels pooled and
+fade deltas unsuppressed 2026-08-15 (see `docs/link-adaptation.md`).
+
+**Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
+`maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
+radios inject without the MAC CCA/EDCCA gate — no deferral to co-channel
+802.11, and no politeness toward it either. Rationale is in
+`docs/superpowers/specs/2026-08-05-cca-disable-design.md` (gitignored,
+hence this note) — that spec is a protocol with an expectations table, not
+results: the 41-45% injection-deferral figure it cites is devourer's own
+measurement, taken with its `txdemo` injector on an 8822EU (same chip
+family), not with maburd, and the mabur-side bench A/B has not run yet.
+Expected practical consequence for anyone reading old data: in a congested
+environment a pre-2026-08-05 recording and a post- one would not be the
+same experiment, since the drone's injection rate under interference is
+expected to change. On a clean channel the gate never trips and the two
+stay comparable. Bench harnesses (`linkbench`, `txagcbench`) are
+deliberately left building a plain `DeviceConfig` — carrier sense stays ON
+there, so don't assume they share the daemons' MAC config. Nothing in the
+sideport reports the CCA state — date the recording against this line. To
+confirm it on a running device, grep the daemon log for `carrier sense`:
+both daemons print a one-line bring-up record (`maburd radio:` / `maburgs
+radio card N:`, once per card bring-up — a recovered front-end reprints
+it, so more than one line per card on a multi-card GS is expected).
+devourer's own carrier-sense line is info-level and so is compiled out of
+the cross-builds' `DEVOURER_LOG_MAX_LEVEL=WARN` — its absence means
+nothing. Both lines record the state mabur *requested*, not a register
+readback.
+
+**TX power is constant since 2026-08-12.** There is no runtime power
+control anywhere in mabur: no GS-commanded offset, no thermal derate, no
+per-profile offset. `maburd` programs the wall-equalized per-rate diff
+table and zeroes the global offset once at bring-up — both steps live
+inside the `radio.power_mode: "offset"` branch — and never calls a power
+API again: for the life of the process each rate `r` sits at effective
+TXAGC index `rate_walls_idx[r] - round(wall_margin_db * 4)`. Note the
+`* 4`: the chip's index step is 0.25 dB, so `wall_margin_db` is a dB
+figure converted to index steps, and a 1 dB margin is 4 steps
+(`make_power_plan()` in `drone/src/power_plan.h`). The config keys
+`radio.thermal_max_delta`,
+`radio.min_offset_qdb`, `radio.power_offset_qdb` and
+`link.static_offset_qdb` were REMOVED and now FAIL BOOT, as does
+`radio.power_mode: "override"` (it had become identical to `"none"`).
+Sideport keys `link.op.offset_qdb`, `drone.applied.offset_qdb` and
+`drone.applied.derate_qdb` are gone; `thermal_delta` REMAINS and is the
+only surviving signal that a PA is running hot — nothing acts on it, so
+acting on it is a human decision (most likely an airframe cooling fix,
+not a power one). `bench/txagcbench` still drives `SetTxPowerOffsetQdb`
+directly and is still how the walls are measured; it was deliberately
+left alone. Date any recording against this line, the same way the
+2026-08-04 SNR scale break is dated.
+
+Schema/design references (local, gitignored):
+`docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and
+`docs/superpowers/specs/2026-07-26-drone-telemetry-design.md`. The schema
+is NOT additive-only — per the compatibility policy in CLAUDE.md, keys get
+removed and re-typed under `v: 1` without bumping `v`, and the rule is to
+update `tools/maburtop.py` and `tools/flightreport.py` in the same commit.
+Removals so far: 2026-08-12 `link.op.offset_qdb`,
+`drone.applied.offset_qdb`, `drone.applied.derate_qdb` (constant-TX-power
+note above); 2026-08-15 `link.attrib.on` (pooled-RF note in
+`docs/link-adaptation.md`). Removed keys are absent, not null. Keep appending to that list — not to protect
+consumers, but because a recording made before a removal still carries the
+key and `flightreport.py` still reads old recordings. The
+sideport config lives in `/etc/maburgs.json` under `stats`
+(default-off in the shipped bundle; enabled on the bench GS).
+
+**Scale break, 2026-08-04 — `classes.*.snr` is now dB, was half-dB.** The
+sideport had been exporting devourer's raw half-dB SNR under a key
+documented as dB, so every `classes.*.snr` (and the `snr_min`/`snr_max`
+derived from it) in any recording made BEFORE that date reads exactly
+2× the real figure. Recordings that span the change are not numerically
+comparable and must not be pooled — a "9 dB improvement" across it is an
+artifact. `flightreport.py` warns on the old scale — but that warning is a
+BACKSTOP, not a detector: it fires only at `max(snr) > 60`, where the old
+scale exceeds anything a real link produces. A normal 10–25 dB link reads
+20–50 on the old scale and never trips it, and no threshold can do better,
+because a pre-fix 48 (24 dB) and a post-fix 48 (an ordinary strong bench
+link) are the same number with nothing in the schema to tell them apart.
+**Silence from that warning means "not obviously old", never "confirmed
+dB".** Date the recording instead — anything before 2026-08-04 is half-dB.
+This is recorded here because it is the only committed, discoverable place:
+the schema doc lives under gitignored `docs/superpowers/`.
+
+`drone.uplink.snr_a`/`snr_b` had the SAME bug and were fixed the same day —
+the drone's own receiver reads the uplink through the same devourer
+`RxAtrib.snr`, and `telemetry.cpp` forwards it raw. Both are corrected at
+the exporter, not at the source: the uplink's wire field is an `int8_t` the
+drone `lround()`s, so halving before that rounding would quantize to whole
+dB and lose half the resolution. Everything above about pre-2026-08-04
+recordings applies to `drone.uplink.snr_*` too, and `flightreport.py` warns
+on both with the same backstop threshold and the same caveat.
+
+`classes.*.evm[_a|_b]` (added 2026-08-10) never had the bug: it is dB from
+day one (devourer raw is the same half-dB family, halved at the exporter).
+⚠ Raw EVM is op-point-dependent — the same clean bench link legitimately
+reads −16 dB at mcs0 and −30 dB at mcs7, because per-MCS TX power moves the
+PA between compression and linear regimes. Never compare EVM across rungs
+or threshold it globally; use deviation from the same rung's baseline. The
+sweep that established this (and the interpretation: walls stay
+delivery-defined; EVM's job is per-rung baselines + live PA-compression
+watchdog) is `docs/evm-sweep-findings-2026-08-10.md`.
+

@@ -17,23 +17,26 @@ namespace mabur::rc {
 constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 1 -> 2 on 2026-08-12: the RCF power byte and the T_TELEM
 // applied_off_qdb/derate_qdb fields were removed when runtime TX-power
-// control was deleted. Old and new peers reject each other in BOTH
-// directions -- a half-deployed pair has no control link and, because
-// DISC_ACK carries CAP_FRAME_WIRE, no video either. Recovery is to finish
-// the deploy. Spec 2026-08-12-constant-txpower-design.md.
-constexpr uint8_t RC_VERSION = 2;
+// control was deleted. Spec 2026-08-12-constant-txpower-design.md.
+// Bumped 2 -> 3 on 2026-08-15: RCF lost ack_seq, score and the
+// n_layers + layer_delivery tail. maburd read none of the three (rc_agent.cpp
+// uses vtx_id/seq/profile/fec_overhead/probe and nothing else), so they were
+// write-only ballast; the RCF head is fixed-length now.
+// Old and new peers reject each other in BOTH directions -- a half-deployed
+// pair has no control link and, because DISC_ACK carries CAP_FRAME_WIRE, no
+// video either. Recovery is to finish the deploy.
+constexpr uint8_t RC_VERSION = 3;
 
 constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
 constexpr uint8_t T_DISC_ACK = 3;
 constexpr uint8_t T_TELEM = 4;
 
-constexpr uint8_t F_AUTH_ADVISORY = 0x01;
-constexpr uint8_t F_FAILSAFE = 0x02;
 constexpr uint8_t F_DISCOVERY = 0x04;
 
-// Rcf.flags bit: one probe_profile byte follows layer_delivery — layer 3
-// (s3) transmits at that MCS while everything else stays on Rcf.profile.
+// RCF flags bit: one probe_profile byte follows the head — layer 3 (s3)
+// transmits at that MCS while everything else stays on Rcf.profile. This is
+// the only bit an RCF ever sets; the flags byte carries nothing else.
 constexpr uint8_t RCF_F_PROBE3 = 0x08;
 
 // DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
@@ -50,20 +53,19 @@ constexpr uint16_t CAP_TELEMETRY = 0x0002;
 // Spec 2026-08-05 s3-probe-promote.
 constexpr uint16_t CAP_S3_PROBE = 0x0004;
 
-// VRX -> VTX feedback: GS-authoritative profile + alink-style score +
-// explicit FEC + per-layer delivery stats.
+// VRX -> VTX feedback: the GS-authoritative operating point. Every field
+// here is one maburd acts on. It used to also carry ack_seq, an alink-style
+// score and per-layer delivery percentages; RC_VERSION 3 dropped all three
+// because no consumer ever read them off the wire (the GS reports layer
+// delivery to operators over its own stats sideport instead).
 struct Rcf {
   uint32_t vtx_id = 0;
   uint16_t seq = 0;
-  uint16_t ack_seq = 0;
   uint8_t profile = 0;
-  uint16_t score = 1000;
   uint8_t fec_overhead_16ths = 4;
-  uint8_t flags = 0;
-  std::vector<uint8_t> layer_delivery;
 
   // s3 probe (spec 2026-08-05): when true, pack appends probe_profile after
-  // the layer bytes (inside the CRC) and sets RCF_F_PROBE3 in flags.
+  // the head (inside the CRC) and sets RCF_F_PROBE3 in the flags byte.
   bool probe3 = false;
   uint8_t probe_profile = 0;
 

@@ -16,7 +16,6 @@ OpPoint op_from_rung(const Rung& r) {
 VrxController::VrxController(VrxCfg cfg)
     : cfg_(cfg),
       ctrl_(cfg.ladder),
-      win_(cfg.score),
       // link_lost_ms 1000 / beacon_period_ms 20 are deliberately fixed, not
       // config: every hw validation ran with these, and a slower fallback to
       // BEACONING after video loss only delays re-rendezvous. The removed
@@ -24,11 +23,7 @@ VrxController::VrxController(VrxCfg cfg)
       rz_(VrxRzConfig{cfg.vtx_id, 1000, 20, cfg.op_channel}),
       cur_op_(op_from_rung(ctrl_.op())) {}
 
-void VrxController::on_video(double rssi, double snr, bool crc_err,
-                             uint16_t seq, double now_ms) {
-  win_.add_frame(rssi, snr, crc_err, seq, now_ms / 1000.0);
-  rz_.feed_video(now_ms);
-}
+void VrxController::on_video(double now_ms) { rz_.feed_video(now_ms); }
 
 void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
   if (mabur::rc::frame_type(buf, len) != mabur::rc::T_DISC_ACK) return;
@@ -39,9 +34,8 @@ void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
   }
 }
 
-std::optional<VrxController::Out> VrxController::step(
-    double now_ms, const std::array<uint8_t, 4>& layer_delivery,
-    const LinkHealth& health) {
+std::optional<VrxController::Out> VrxController::step(double now_ms,
+                                                      const LinkHealth& health) {
   // Blind-side failsafe: with no feedback the ladder's own on_tick() forces
   // rung 0 after feedback_timeout_ms, so the first RCF after recovery
   // commands the conservative floor, not the last aggressive point.
@@ -70,12 +64,7 @@ std::optional<VrxController::Out> VrxController::step(
     h.probe_allowed = (peer_caps_ & mabur::rc::CAP_S3_PROBE) != 0;
     if (ctrl_.update(h, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
   }
-  // Snapshot the rebuild inputs BEFORE building: a repeat re-issues the
-  // same command against the freshest controller state, but layer_delivery
-  // and residual only arrive with step(), so repeats reuse this emission's.
-  last_ld_ = layer_delivery;
-  last_residual_ = health.residual_loss;
-  mabur::rc::Rcf r = build_rcf(layer_delivery, health.residual_loss);
+  mabur::rc::Rcf r = build_rcf();
 
   // RCF repeat burst (rcf-uplink-loss findings 2026-08-14): the drone's
   // half-duplex TX kills 30-50% of uplink control frames, and a lost
@@ -95,19 +84,15 @@ std::optional<VrxController::Out> VrxController::step(
   return Out{mabur::rc::pack_rcf(r), false};
 }
 
-mabur::rc::Rcf VrxController::build_rcf(const std::array<uint8_t, 4>& ld,
-                                        double residual) {
+mabur::rc::Rcf VrxController::build_rcf() {
   seq_ = static_cast<uint16_t>(seq_ + 1);
   mabur::rc::Rcf r;
   r.vtx_id = cfg_.vtx_id;
   r.seq = seq_;
-  r.ack_seq = win_.ack_seq();
   r.profile = mabur::rc::encode_profile(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
-  r.score = static_cast<uint16_t>(win_.score(residual));
   r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
-  r.layer_delivery.assign(ld.begin(), ld.end());
   if (cfg_.pin_mcs < 0 && ctrl_.probing()) {
     r.probe3 = true;
     r.probe_profile = mabur::rc::encode_profile(
@@ -132,7 +117,7 @@ std::optional<std::vector<uint8_t>> VrxController::poll_repeat(double now_ms) {
   // Rebuild from CURRENT state, not a stashed frame: if the op moved again
   // between arm and drain, the repeat carries the newest command (and the
   // next step() emission compares against what actually went out).
-  mabur::rc::Rcf r = build_rcf(last_ld_, last_residual_);
+  mabur::rc::Rcf r = build_rcf();
   note_cmd(r);
   return mabur::rc::pack_rcf(r);
 }

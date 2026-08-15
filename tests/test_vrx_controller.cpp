@@ -27,11 +27,10 @@ static LinkHealth no_data() { return LinkHealth{false, 0.0, 0.0, false}; }
 TEST(rcf_pacing_and_keepalive_disc) {
   auto vrx = make();
   int rcf = 0, disc = 0;
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
   for (int t = 0; t < 5000; t += 10) {
     const double now = t;
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(t / 10), now);
-    if (auto out = vrx.step(now, ld, healthy())) {
+    vrx.on_video(now);
+    if (auto out = vrx.step(now, healthy())) {
       const int ft = mabur::rc::frame_type(out->frame.data(), out->frame.size());
       if (ft == mabur::rc::T_RCF) { CHECK(!out->is_disc); ++rcf; }
       else if (ft == mabur::rc::T_DISC) { CHECK(out->is_disc); ++disc; }
@@ -43,22 +42,23 @@ TEST(rcf_pacing_and_keepalive_disc) {
 
 TEST(rcf_fields_are_correct) {
   auto vrx = make();
-  std::array<uint8_t, 4> ld{100, 98, 80, 10};
-  vrx.on_video(-55.0, 25.0, false, 500, 0.0);
+  vrx.on_video(0.0);
   std::optional<VrxController::Out> out;
   double now = 0;
   LinkHealth h{true, 0.0, 0.05, false};
   while (!out || out->is_disc) {         // skip a leading keepalive DISC
     now += 10;
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(500 + now / 10), now);
-    out = vrx.step(now, ld, h);
+    vrx.on_video(now);
+    out = vrx.step(now, h);
   }
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
   CHECK(r->vtx_id == 1);
-  CHECK(r->ack_seq >= 500);
-  REQUIRE(r->layer_delivery.size() == 4);
-  CHECK(r->layer_delivery[2] == 80);
+  CHECK(r->seq > 0);
+  CHECK(r->profile == mabur::rc::encode_profile(
+                          mabur::rc::PhyMode::HT,
+                          static_cast<uint8_t>(vrx.cur_op().mcs),
+                          static_cast<uint8_t>(vrx.cur_op().bw)));
   CHECK(r->fec_overhead_16ths ==
         mabur::rc::overhead_to_16ths(vrx.cur_op().overhead));
 }
@@ -77,12 +77,11 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   lcfg.min_between_changes_ms = 0;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
 
   double now = 0;
   for (; now < 1000 && vrx.ctl().rung() == 0; now += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    vrx.step(now, ld, healthy());
+    vrx.on_video(now);
+    vrx.step(now, healthy());
   }
   REQUIRE(vrx.ctl().rung() == 1);
   CHECK(vrx.cur_op().mcs == 4);
@@ -91,8 +90,8 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   LinkHealth lossy{true, 0.0, 0.2, false};  // residual_loss > 0 -> demote
   for (int i = 0; i < 40 && vrx.ctl().rung() != 0; ++i) {
     now += 10;
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    out = vrx.step(now, ld, lossy);
+    vrx.on_video(now);
+    out = vrx.step(now, lossy);
   }
   REQUIRE(vrx.ctl().rung() == 0);
   CHECK(vrx.cur_op().mcs == 0);
@@ -108,12 +107,11 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
 
 TEST(silence_beacons_fast_and_recovers) {
   auto vrx = make();
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
-  vrx.on_video(-55.0, 25.0, false, 1, 0.0);
+  vrx.on_video(0.0);
   // 2 s of silence: BEACONING at the 20 ms cadence.
   int discs = 0;
   for (double now = 1200; now < 2200; now += 10)
-    if (auto out = vrx.step(now, ld, no_data())) {
+    if (auto out = vrx.step(now, no_data())) {
       CHECK(out->is_disc);
       ++discs;
     }
@@ -122,14 +120,13 @@ TEST(silence_beacons_fast_and_recovers) {
   // Failsafe op point while blind:
   CHECK(vrx.cur_op().mcs == 0);
   // Video returns -> SESSION and RCFs resume.
-  vrx.on_video(-55.0, 25.0, false, 900, 2500.0);
+  vrx.on_video(2500.0);
   CHECK(vrx.link_state() == VrxState::SESSION);
 }
 
 TEST(disc_ack_feeds_rendezvous) {
   auto vrx = make();
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
-  vrx.step(1500, ld, no_data());          // silence -> BEACONING
+  vrx.step(1500, no_data());          // silence -> BEACONING
   CHECK(vrx.link_state() == VrxState::BEACONING);
   mabur::rc::DiscAck ack;
   ack.vtx_id = 1;
@@ -145,8 +142,7 @@ TEST(disc_ack_feeds_rendezvous) {
 TEST(peer_caps_captured_from_disc_ack) {
   auto vrx = make();
   CHECK(vrx.peer_caps() == 0);
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
-  vrx.step(1500, ld, no_data());          // silence -> BEACONING
+  vrx.step(1500, no_data());          // silence -> BEACONING
   mabur::rc::DiscAck ack;
   ack.vtx_id = 1;
   ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
@@ -168,8 +164,7 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   CHECK(vrx.peer_caps() == 0);
   CHECK(vrx.link_state() == VrxState::SESSION);  // initial state, no peer yet
 
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
-  vrx.step(1500, ld, no_data());              // silence -> BEACONING
+  vrx.step(1500, no_data());              // silence -> BEACONING
   CHECK(!vrx.peer_acked());
 
   mabur::rc::DiscAck ack;
@@ -200,8 +195,7 @@ static LinkHealth healthy3() {
 // CAP_S3_PROBE to chip_caps.
 TEST(probe_encoded_in_rcf_when_peer_capable) {
   auto vrx = make();
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
-  vrx.step(1500, ld, healthy3());  // silence -> BEACONING
+  vrx.step(1500, healthy3());  // silence -> BEACONING
   mabur::rc::DiscAck ack;
   ack.vtx_id = 1;
   ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
@@ -214,8 +208,8 @@ TEST(probe_encoded_in_rcf_when_peer_capable) {
   double now = 1600;
   for (int t = 0; t < 9000; t += 10) {
     now = 1600 + t;
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(t / 10), now);
-    if (auto out = vrx.step(now, ld, healthy3())) {
+    vrx.on_video(now);
+    if (auto out = vrx.step(now, healthy3())) {
       if (out->is_disc) continue;
       auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
       REQUIRE(r.has_value());
@@ -236,10 +230,9 @@ TEST(probe_encoded_in_rcf_when_peer_capable) {
 
 TEST(no_probe_without_cap) {
   auto vrx = make();      // no DiscAck: peer_caps == 0
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
   for (int t = 0; t < 9000; t += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(t / 10), t);
-    if (auto out = vrx.step(t, ld, healthy3()); out && !out->is_disc) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy3()); out && !out->is_disc) {
       auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
       if (r) CHECK(!r->probe3);
     }
@@ -250,8 +243,7 @@ TEST(no_probe_without_cap) {
 
 TEST(on_rc_frame_tolerates_unknown_type_telem) {
   auto vrx = make();
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
-  vrx.step(1500, ld, no_data());  // silence -> BEACONING, seq_ advances
+  vrx.step(1500, no_data());  // silence -> BEACONING, seq_ advances
 
   const auto state_before = vrx.link_state();
   const auto op_before = vrx.cur_op();
@@ -287,13 +279,12 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   // feedback_timeout_ms left at its default (1000 ms) -- exactly what this
   // test is guarding.
   auto vrx = make(lcfg);
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
 
   // Promote off rung 0 on real, healthy feedback samples.
   double now = 0;
   for (; now < 1000 && vrx.ctl().rung() == 0; now += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    vrx.step(now, ld, healthy());
+    vrx.on_video(now);
+    vrx.step(now, healthy());
   }
   REQUIRE(vrx.ctl().rung() == 1);
   CHECK(vrx.cur_op().mcs == 4);
@@ -304,8 +295,8 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   std::optional<VrxController::Out> out;
   const double blind_until = now + 1500;  // > default feedback_timeout_ms
   for (; now < blind_until; now += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    if (auto o = vrx.step(now, ld, no_data()); o && !o->is_disc) out = o;
+    vrx.on_video(now);
+    if (auto o = vrx.step(now, no_data()); o && !o->is_disc) out = o;
   }
   REQUIRE(vrx.ctl().rung() == 0);
   CHECK(vrx.cur_op().mcs == 0);
@@ -337,13 +328,12 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   lcfg.min_between_changes_ms = 0;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
 
   // Healthy phase: clean margin walks the ladder off rung 0.
   double now = 0;
   for (; now < 1000 && vrx.ctl().rung() == 0; now += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    vrx.step(now, ld, healthy());
+    vrx.on_video(now);
+    vrx.step(now, healthy());
   }
   REQUIRE(vrx.ctl().rung() > 0);
 
@@ -354,8 +344,8 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   LinkHealth starved{true, 0.0, 0.0, /*video_starved=*/true};
   for (int i = 0; i < 45 && vrx.ctl().rung() != 0; ++i) {
     now += 10;
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    out = vrx.step(now, ld, starved);
+    vrx.on_video(now);
+    out = vrx.step(now, starved);
   }
   REQUIRE(vrx.ctl().rung() == 0);
   CHECK(vrx.cur_op().mcs == 0);
@@ -369,8 +359,8 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   // Traffic returns -> clean health lets it walk back up.
   const double until = now + 1000;
   for (; now < until && vrx.ctl().rung() == 0; now += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    vrx.step(now, ld, healthy());
+    vrx.on_video(now);
+    vrx.step(now, healthy());
   }
   CHECK(vrx.ctl().rung() > 0);
 }
@@ -386,15 +376,14 @@ TEST(static_pin_overrides_controller) {
   cfg.pin_overhead = 0.25;
   cfg.ladder.ladder = {{0, 1.0}};  // must never be consulted while pinned
   VrxController vrx(cfg);
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
   std::optional<VrxController::Out> out;
   double now = 0;
   for (int i = 0; i < 800; ++i, now += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
+    vrx.on_video(now);
     // Garbage/hostile health that would force a real ladder to rung 0 (or
     // demote hard) — pin mode must ignore all of it.
     LinkHealth garbage{true, 0.95, 0.95, (i % 3) == 0};
-    auto o = vrx.step(now, ld, garbage);
+    auto o = vrx.step(now, garbage);
     if (o && !o->is_disc) out = o;
   }
   CHECK(vrx.cur_op().mcs == 5);
@@ -414,11 +403,10 @@ TEST(static_pin_overrides_controller) {
 // Drive to the first ladder promote and return the committing RCF's parse.
 static std::optional<mabur::rc::Rcf> drive_to_promote(VrxController& vrx,
                                                       double& now) {
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
   std::optional<VrxController::Out> out;
   for (; now < 5000; now += 10) {
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    auto o = vrx.step(now, ld, healthy());
+    vrx.on_video(now);
+    auto o = vrx.step(now, healthy());
     if (o && !o->is_disc && vrx.ctl().rung() == 1) { out = o; break; }
   }
   if (!out) return std::nullopt;
@@ -470,12 +458,11 @@ TEST(rcf_repeat_none_when_op_unchanged) {
   while (vrx.poll_repeat(now + 1000)) now += 1000;
 
   // Steady state: emit several more RCFs with the op parked; none arm.
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
   int emitted = 0;
   for (int i = 0; i < 50; ++i) {
     now += 110;  // past feedback_ms every iteration
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    auto o = vrx.step(now, ld, healthy());
+    vrx.on_video(now);
+    auto o = vrx.step(now, healthy());
     if (o && !o->is_disc) {
       ++emitted;
       CHECK(!vrx.poll_repeat(now + 500).has_value());
@@ -506,13 +493,12 @@ TEST(rcf_repeat_restart_on_new_change_mid_burst) {
   REQUIRE(vrx.poll_repeat(now + 10).has_value());
 
   // Force a demote back to rung 0; its committing RCF re-arms the burst.
-  std::array<uint8_t, 4> ld{100, 100, 100, 100};
   LinkHealth lossy{true, 0.0, 0.2, false};
   std::optional<VrxController::Out> out;
   for (int i = 0; i < 60 && vrx.ctl().rung() != 0; ++i) {
     now += 110;
-    vrx.on_video(-55.0, 25.0, false, static_cast<uint16_t>(now / 10), now);
-    auto o = vrx.step(now, ld, lossy);
+    vrx.on_video(now);
+    auto o = vrx.step(now, lossy);
     if (o && !o->is_disc) out = o;
   }
   REQUIRE(vrx.ctl().rung() == 0);
