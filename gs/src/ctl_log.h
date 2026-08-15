@@ -18,9 +18,9 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 4 <header_info>                                  # once, first line
+//   ctllog 5 <header_info>                                  # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
-//     <drssi> <dsnr>                                        # 1 Hz dwell sample
+//     <drssi> <dsnr> <rssi_dbm>                # dwell sample, link.ctl_log_period_ms
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
 //   P <t_ms> <rung> <pass|fail|abort> <snr_db> <u_pred> <dur_ms> <evm_db>
 //   N <t_ms> <rung> <k> <until_ms>                           # penalty booked
@@ -85,7 +85,7 @@ class CtlLog {
 
   void sample(double t_ms, int rung, double u, double snr_db, double resid,
               double u3, double resid3, double evm_db, double resid_cur,
-              double drssi, double dsnr);
+              double drssi, double dsnr, double rssi_dbm);
   void event(double t_ms, int from, int to, const char* reason, double u,
              double snr_db, double evm_db);
   void probe(double t_ms, int rung, const char* outcome, double snr_db,

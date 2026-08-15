@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v4,
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v5,
 warns on pre-v4). Format is auto-detected from the first line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
@@ -46,7 +46,7 @@ def load_ctllog(path):
         first = f.readline().strip()
         toks0 = first.split()
         header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
-        # ctllog 4 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+        # ctllog 5 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
         for tok in first.split()[2:]:
             if "=" not in tok: continue
             k, v = tok.split("=", 1)
@@ -71,6 +71,8 @@ def load_ctllog(path):
                         # 2026-08-14 fade deltas (ctllog 3); absent on older logs.
                         "drssi": float(toks[10]) if len(toks) >= 12 else float("nan"),
                         "dsnr": float(toks[11]) if len(toks) >= 12 else float("nan"),
+                        # 2026-08-15 label RSSI (ctllog 5); absent on older logs.
+                        "rssi": float(toks[12]) if len(toks) >= 13 else float("nan"),
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({

@@ -387,6 +387,9 @@ static int run_radio(const maburgs::Config& cfg) {
 
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   uint64_t last_stats_ms = 0;
+  // Separate from last_stats_ms since 2026-08-15: the ctl log runs on
+  // link.ctl_log_period_ms, the stderr line stays at 1 Hz.
+  uint64_t last_ctl_sample_ms = 0;
   // Foreign-RC_VERSION warning throttle. Separate `logged` flag rather than a
   // 0 sentinel: mono_ms() is small but not guaranteed non-zero at startup.
   uint64_t last_foreign_rc_ms = 0;
@@ -688,22 +691,38 @@ static int run_radio(const maburgs::Config& cfg) {
       if (ctl_log) ctl_log->penalty(n.t_ms, n.rung, n.k, n.until_ms);
     }
 
+    // SIGUSR1 is consumed ONCE and shared: both blocks below honour it, so a
+    // dump still produces an off-cadence S line AND a stderr line the way it
+    // did when the two were one block.
+    const bool dump_now = g_dump.exchange(false);
+
+    // Adaptive-link log, on its OWN cadence (link.ctl_log_period_ms, default
+    // 1000). Split from the stderr block below on 2026-08-15: the ctl log is
+    // the instrument the ladder is tuned from and wants to run as fast as
+    // 50 ms, while the stderr line is human-readable and lands in /tmp, which
+    // is tmpfs — running that at 20 Hz would fill RAM for no one's benefit.
+    if (ctl_log &&
+        (dump_now || now_ms_u - last_ctl_sample_ms >= static_cast<uint64_t>(
+                                                          cfg.link.ctl_log_period_ms))) {
+      last_ctl_sample_ms = now_ms_u;
+      const auto& c = vrx.ctl();
+      ctl_log->sample(now_ms, c.rung(), c.util(), health.rf_snr_db,
+                       residual.value_or(0.0), c.util3(),
+                       health.s3_residual_loss, health.rf_evm_db,
+                       residual_cur.value_or(0.0), c.fade_drssi(),
+                       c.fade_dsnr(), health.rf_rssi_dbm);
+      // R lines keep their own, much slower period — they are a store
+      // snapshot, not a dwell sample, and must not follow the S cadence.
+      if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
+        last_rung_log_ms = now_ms;
+        emit_rung_lines(now_ms);
+      }
+    }
+
     // 1 Hz stats line / SIGUSR1 dump.
-    if (g_dump.exchange(false) || now_ms_u - last_stats_ms >= 1000) {
+    if (dump_now || now_ms_u - last_stats_ms >= 1000) {
       last_stats_ms = now_ms_u;
       if (msp_sink) msp_sink->tick(now_ms_u);  // expire stale repair rows
-      if (ctl_log) {
-        const auto& c = vrx.ctl();
-        ctl_log->sample(now_ms, c.rung(), c.util(), health.rf_snr_db,
-                         residual.value_or(0.0), c.util3(),
-                         health.s3_residual_loss, health.rf_evm_db,
-                         residual_cur.value_or(0.0), c.fade_drssi(),
-                         c.fade_dsnr());
-        if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
-          last_rung_log_ms = now_ms;
-          emit_rung_lines(now_ms);
-        }
-      }
       const auto& op = vrx.cur_op();
       std::fprintf(stderr,
                    "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f "

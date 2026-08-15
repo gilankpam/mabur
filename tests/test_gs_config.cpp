@@ -588,6 +588,21 @@ TEST(rung_stats_parses_and_validates) {
 // Removed 2026-08-15: attribution is unconditional. The switch's remaining
 // value was reproducing pre-attribution numbers, and the instant s3
 // residual demote makes attrib=false unsafe rather than merely different.
+// link.ctl_log_period_ms (2026-08-15): the S-line cadence became configurable
+// so the ctl log can run fast enough to resolve the fade trigger's 300 ms
+// sustain, which a 1 Hz record cannot. Optional with a live default, so a
+// config that never names it is unaffected.
+TEST(ctl_log_period_ms_defaults_and_bounds) {
+  auto c = maburgs::load_config(write_tmp("{}"));
+  CHECK(c.link.ctl_log_period_ms == 1000);
+  auto c2 = maburgs::load_config(write_tmp("{\"link\": {\"ctl_log_period_ms\": 50}}"));
+  CHECK(c2.link.ctl_log_period_ms == 50);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"ctl_log_period_ms\": 49}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);  // below the 50 ms floor
+}
+
 TEST(stale_link_attrib_key_throws) {
   bool threw = false;
   try { maburgs::load_config(write_tmp("{\"link\": {\"attrib\": true}}")); }
