@@ -10,7 +10,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
 #include <memory>
 #include <string>
 #include <utility>
@@ -18,6 +17,7 @@
 
 #include "au_ring.h"
 #include "dvr_mux.h"
+#include "dvr_name.h"
 #include "gs_font.h"
 #include "gs_metrics.h"
 #include "gs_overlay.h"
@@ -291,41 +291,15 @@ int run_gs_render(const std::string& snap_path, const std::string& out_path,
   return 0;
 }
 
-// DVR filename convention: record_%Y-%m-%d_%H-%M-%S.mp4 under dvr.dir.
-//
-// The stamp has ONE-SECOND resolution and both writers open "wb", so two
-// recordings started inside the same second would silently truncate the
-// first. That was unreachable while a run produced exactly one file; the
-// record button makes it a double-tap away (kDebounceMs is 50). The
-// realistic collider is BURNED mode, where this function is called
-// synchronously from rec_start(), so the second name is minted within
-// milliseconds of the first. The raw path is far harder to collide with --
-// it only opens on the next sid-0 sync point, up to ~2 s later -- but it
-// shares the same convention and the same "wb", so it gets the same
-// protection. So the last stem this process emitted is remembered and a
-// repeat gets "-1", "-2", ... The
-// FIRST recording of any second is spelled exactly as before -- the
-// /media/dvr naming is a user-facing convention -- and the disambiguation
-// is driven only by string equality with the previous name, never by an
-// elapsed-time threshold, so it cannot decide differently on a faster host.
+// DVR recording paths come from DvrNamer (dvr_name.h): dir/record-NNNN.mp4,
+// indexed off the card rather than stamped with a clock the GS does not
+// have. Function-local so both call sites -- the raw path's sync-point open
+// and rec_start()'s burned start() -- share one high-water mark.
 std::string dvr_filename(const std::string& dir) {
-  std::time_t t = std::time(nullptr);
-  std::tm tmv{};
-  ::localtime_r(&t, &tmv);
-  char buf[64];
-  std::strftime(buf, sizeof(buf), "record_%Y-%m-%d_%H-%M-%S", &tmv);
   // Main-loop-thread only (the ring sink and rec_start's
-  // start_burn_if_needed), so plain statics need no synchronisation.
-  static std::string last_stem;
-  static unsigned dup_n = 0;
-  std::string stem(buf);
-  if (stem == last_stem) {
-    stem += "-" + std::to_string(++dup_n);
-  } else {
-    last_stem = stem;
-    dup_n = 0;
-  }
-  return dir + "/" + stem + ".mp4";
+  // start_burn_if_needed), so a plain static needs no synchronisation.
+  static maburplay::DvrNamer namer;
+  return namer.next(dir);
 }
 
 // Parses player_config's "WIDTHxHEIGHT@FPS" screen_mode convention; falls
