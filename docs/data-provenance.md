@@ -8,7 +8,8 @@ reliable method is to date the recording against this page.
 Quick index: carrier sense off 2026-08-05 · TX power constant 2026-08-12 ·
 sideport key removals 2026-08-12 and 2026-08-15 · SNR half-dB scale break
 2026-08-04 · EVM op-point dependence 2026-08-10 · RF labels pooled and
-fade deltas unsuppressed 2026-08-15 (see `docs/link-adaptation.md`).
+fade deltas unsuppressed 2026-08-15 (see `docs/link-adaptation.md`) ·
+DVR filenames un-dated 2026-08-26.
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -58,6 +59,18 @@ not a power one). `bench/txagcbench` still drives `SetTxPowerOffsetQdb`
 directly and is still how the walls are measured; it was deliberately
 left alone. Date any recording against this line, the same way the
 2026-08-04 SNR scale break is dated.
+
+**DVR filenames carry no date since 2026-08-26.** `maburplay` writes
+`record-NNNN.mp4` (index one past the highest already on the card), where it
+used to write `record_%Y-%m-%d_%H-%M-%S.mp4` with a `-1`/`-2` suffix for
+collisions inside the same second. The date came from the GS RTC, which is
+wrong at boot, so it never dated anything reliably — but it did sort, and
+files written before this date still sort chronologically among themselves
+while the new ones sort by index. A card holds both: the two families never
+collide (the scan ignores `record_`-prefixed names) and old files keep their
+names, so pair an old recording with its jsonl/ctl neighbours by mtime, not
+by the stem. Same reasoning as `ctl-NNNN` and `flight-NNNN`, which were
+index-first all along.
 
 Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and

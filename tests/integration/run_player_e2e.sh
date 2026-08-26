@@ -105,7 +105,7 @@ EOF
 echo "== ffprobe gate A (container-level, fixture-chain DVR file) =="
 set +e
 OUT_A=$(nix-shell -p ffmpeg --run \
-  "ffprobe -v error -count_packets -select_streams v -show_entries stream=codec_name,nb_read_packets -of csv=p=0 $TMP/record_*.mp4" \
+  "ffprobe -v error -count_packets -select_streams v -show_entries stream=codec_name,nb_read_packets -of csv=p=0 $TMP/record-*.mp4" \
   2> "$TMP/ffprobeA.stderr")
 RC_A=$?
 set -e

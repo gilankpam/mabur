@@ -128,9 +128,14 @@ read the sideport. Reach for other tools only in these cases:**
   press-pair produces one file, in whichever `dvr.mode` is configured — raw
   mode waits for the next sync point (up to ~2 s) before the new file
   opens, so the OSD REC indicator visibly lags the press, while burned mode
-  resumes at the next decoded frame; two presses inside the same
-  wall-clock second get a `-1`, `-2`… filename suffix (one-second
-  timestamp resolution). No `input` block means no button. `dvr.autostart`
+  resumes at the next decoded frame. Files are `record-NNNN.mp4` under
+  `dvr.dir`, indexed one past the highest `record-NNNN` already on the card
+  — no timestamp, since the GS RTC is wrong at boot (same reasoning as
+  `ctl-NNNN` and `flight-NNNN`). The index therefore climbs across boots and
+  never overwrites an earlier flight; date-stamped `record_<date>.mp4` files
+  from before 2026-08-26 do not match the pattern, so they are ignored by
+  the scan and keep their names. No `input` block means no button.
+  `dvr.autostart`
   (renamed from `dvr.enabled` on 2026-08-11 — the old key now FAILS boot,
   by design) picks whether the player boots recording or armed. There is
   no config kill switch and no `--no-dvr` flag: `autostart: false` with no

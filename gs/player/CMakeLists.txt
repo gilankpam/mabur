@@ -2,6 +2,7 @@ add_library(mabur_player_core STATIC
   src/player_config.cpp
   src/hevc_params.cpp
   src/dvr_mux.cpp
+  src/dvr_name.cpp
   src/rec_button.cpp
   src/ring_client.cpp
   src/osd_font.cpp
