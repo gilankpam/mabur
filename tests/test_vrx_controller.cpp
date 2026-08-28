@@ -30,6 +30,18 @@ TEST(rcf_pacing_and_keepalive_disc) {
   for (int t = 0; t < 5000; t += 10) {
     const double now = t;
     vrx.on_video(now);
+
+    // Link early via DiscAck at t=500ms to measure steady-state cadence
+    if (t == 500) {
+      mabur::rc::DiscAck ack;
+      ack.vtx_id = 1;
+      ack.vrx_nonce = vrx.rz_nonce();
+      ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+      ack.seq = 1;
+      auto wire = mabur::rc::pack_disc_ack(ack);
+      vrx.on_rc_frame(wire.data(), wire.size(), now);
+    }
+
     if (auto out = vrx.step(now, healthy())) {
       const int ft = mabur::rc::frame_type(out->frame.data(), out->frame.size());
       if (ft == mabur::rc::T_RCF) { CHECK(!out->is_disc); ++rcf; }
@@ -37,7 +49,7 @@ TEST(rcf_pacing_and_keepalive_disc) {
     }
   }
   CHECK(rcf >= 40 && rcf <= 50);   // ~10 Hz for 5 s, minus keepalive slots
-  CHECK(disc >= 4 && disc <= 6);   // keep-alive ~1 Hz (fix a)
+  CHECK(disc >= 5 && disc <= 8);   // ~1 DISC from fast cadence, ~4 from slow cadence post-ack (fix a)
 }
 
 TEST(rcf_fields_are_correct) {
@@ -239,6 +251,45 @@ TEST(no_probe_without_cap) {
   }
   CHECK(vrx.ctl().counters().probes_started == 0);
   CHECK(vrx.ctl().rung() >= 1);   // legacy promote happened instead
+}
+
+// While no DiscAck has ever been accepted, the SESSION keep-alive DISC runs
+// at unacked_keepalive_ms (250 ms) so a rebooted GS re-learns peer caps in
+// well under a second even with 30-50% uplink loss; after the first accept
+// it relaxes to beacon_keepalive_ms (1000 ms). Stale-caps fix, Part A.
+TEST(keepalive_disc_fast_until_peer_acked) {
+  VrxCfg cfg;
+  cfg.vtx_id = 1;
+  cfg.ladder = default_ladder();
+  VrxController vrx(cfg);
+
+  // Keep the rendezvous in SESSION by feeding video continuously.
+  int discs_first_second = 0;
+  for (int t = 0; t <= 1000; t += 10) {
+    vrx.on_video(t);
+    auto out = vrx.step(t, healthy());
+    if (out && out->is_disc) ++discs_first_second;
+  }
+  CHECK(!vrx.peer_acked());
+  CHECK(discs_first_second >= 3);  // ~4 at 250 ms cadence; >=3 tolerates phase
+
+  // Accept a DiscAck -> cadence must relax to ~1 Hz.
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = cfg.vtx_id;
+  ack.vrx_nonce = vrx.rz_nonce();
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  ack.seq = 1;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), 1000);
+  CHECK(vrx.peer_acked());
+
+  int discs_second_second = 0;
+  for (int t = 1010; t <= 2000; t += 10) {
+    vrx.on_video(t);
+    auto out = vrx.step(t, healthy());
+    if (out && out->is_disc) ++discs_second_second;
+  }
+  CHECK(discs_second_second <= 1);
 }
 
 TEST(on_rc_frame_tolerates_unknown_type_telem) {

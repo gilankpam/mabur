@@ -52,7 +52,10 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   if (act != VrxAction::TxFeedback) return std::nullopt;
 
   // Fix (a): SESSION keep-alive DISC, replacing this tick's RCF slot.
-  if (now_ms - last_keepalive_ms_ >= cfg_.beacon_keepalive_ms) {
+  // Fast cadence until the peer's caps are known (stale-caps fix).
+  const int keepalive_ms =
+      peer_acked_ ? cfg_.beacon_keepalive_ms : cfg_.unacked_keepalive_ms;
+  if (now_ms - last_keepalive_ms_ >= keepalive_ms) {
     last_keepalive_ms_ = now_ms;
     return Out{mabur::rc::pack_disc(rz_.beacon()), true};
   }
