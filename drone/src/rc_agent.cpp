@@ -163,10 +163,29 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 // clean window (2000ms with no further drop-rise); each step-down restarts
 // the 2s window, so recovering from level 3 to level 0 takes three separate
 // 2s clean windows in a row, not one. shed_level_ >= 1 sheds sid 3 (SVC-T
-// enhance, droppable), >= 2 also sheds sid 2 (reserved), and reaching level
-// 3 additionally cuts the encoder bitrate by 30% once. Any level change
+// enhance, droppable) and >= 2 also sheds sid 2 (reserved). Any level change
 // reapplies the current op (shed folded in) so the change reaches the
 // actuator immediately.
+//
+// Reaching level 3 also cut the encoder bitrate by 30% until 2026-08-28.
+// That cut was removed: it wrote act_.set_bitrate_kbps(last * 0.7) straight
+// to the actuator, bypassing run_bitrate_policy's
+// clamp(bitrate_min_kbps, bitrate_max_kbps), and it compounded because it
+// overwrote last_bitrate_kbps_ with its own output -- so each re-entry into
+// level 3 multiplied the already-cut value (1300 -> 910 -> 637 -> 446 ->
+// 312). An RCF repairs that within ~1s in LINKED, but tick() never calls
+// run_bitrate_policy, so in FAILSAFE/RENDEZVOUS -- where the op is
+// MAX_RANGE = mcs0 -- nothing restored it and the ratchet ran unopposed
+// under the configured floor. run_bitrate_policy is now the ONLY writer of
+// the encoder bitrate, so bitrate_min_kbps is a structural minimum
+// (test 10e). Shedding layers remains the guard's whole job: bounded 0..3,
+// self-decaying, no ratchet.
+//
+// NOTE the trigger is health.tx_drops = TxStats::failed (main.cpp), which
+// counts USB bulk-OUT submission/completion FAILURES, not queue
+// backpressure -- TxQueue drop-oldest (txq.drops) and RadioTx::drops() are
+// separate counters and neither feeds this. So the guard responds to a sick
+// dongle, not to over-driving the air. Known mis-wiring, left as-is.
 void RcAgent::run_congestion_guard(uint64_t now_ms, const RadioHealth& health) {
   bool drops_rose = have_last_tx_drops_ && health.tx_drops > last_tx_drops_;
   if (!have_last_tx_drops_) drops_rose = health.tx_drops > 0;
@@ -180,11 +199,6 @@ void RcAgent::run_congestion_guard(uint64_t now_ms, const RadioHealth& health) {
     if (shed_level_ < 3) {
       ++shed_level_;
       changed = true;
-      if (shed_level_ == 3) {
-        int reduced = static_cast<int>(std::lround(last_bitrate_kbps_ * 0.7));
-        act_.set_bitrate_kbps(reduced);
-        last_bitrate_kbps_ = reduced;
-      }
     }
   } else if (have_last_drop_rise_ && now_ms - last_drop_rise_ms_ >= 2000) {
     if (shed_level_ > 0) {
