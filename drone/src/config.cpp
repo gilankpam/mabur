@@ -237,9 +237,11 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     v.core.fps = static_cast<uint16_t>(fps);
   }
 
-  assign_if_present(j, "gop_s", v.core.gop_s, "venc");
-  if (v.core.gop_s < 0.5 || v.core.gop_s > 10.0)
-    fail("venc.gop_s", "must be in [0.5,10]");
+  if (j.contains("gop_s")) {
+    assign_if_present(j, "gop_s", v.core.gop_s, "venc");
+    if (v.core.gop_s < 0.5 || v.core.gop_s > 10.0)
+      fail("venc.gop_s", "must be in [0.5,10]");
+  }
 
   if (j.contains("qp_delta")) {
     int qp = 0;
@@ -268,9 +270,11 @@ void parse_venc(const json& j, VencSectionCfg& v) {
       if (steps < 1 || steps > 4) fail("venc.roi.steps", "must be in [1,4]");
       v.core.roi_steps = static_cast<uint8_t>(steps);
     }
-    assign_if_present(r, "center", v.core.roi_center, "venc.roi");
-    if (v.core.roi_center < 0.0 || v.core.roi_center > 1.0)
-      fail("venc.roi.center", "must be in [0,1]");
+    if (r.contains("center")) {
+      assign_if_present(r, "center", v.core.roi_center, "venc.roi");
+      if (v.core.roi_center < 0.0 || v.core.roi_center > 1.0)
+        fail("venc.roi.center", "must be in [0,1]");
+    }
   }
 
   if (j.contains("ae_fps")) {
@@ -291,9 +295,11 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     v.core.snapshot_quality = static_cast<uint8_t>(q);
   }
 
-  assign_if_present(j, "debug_port", v.debug_port, "venc");
-  if (v.debug_port < 1024 || v.debug_port > 65535)
-    fail("venc.debug_port", "must be in [1024,65535]");
+  if (j.contains("debug_port")) {
+    assign_if_present(j, "debug_port", v.debug_port, "venc");
+    if (v.debug_port < 1024 || v.debug_port > 65535)
+      fail("venc.debug_port", "must be in [1024,65535]");
+  }
 }
 
 void parse_link(const json& j, LinkCfg& l) {

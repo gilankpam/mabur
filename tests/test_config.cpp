@@ -287,26 +287,32 @@ TEST(venc_size_malformed_throws) {
 }
 
 TEST(venc_range_checks) {
-  for (const char* bad : {
-           R"({"venc":{"fps":0}})",
-           R"({"venc":{"fps":121}})",
-           R"({"venc":{"gop_s":0.1}})",
-           R"({"venc":{"gop_s":11}})",
-           R"({"venc":{"qp_delta":-13}})",
-           R"({"venc":{"qp_delta":13}})",
-           R"({"venc":{"snapshot_quality":0}})",
-           R"({"venc":{"snapshot_quality":101}})",
-           R"({"venc":{"debug_port":1023}})",
-           R"({"venc":{"debug_port":65536}})",
-           R"({"venc":{"roi":{"steps":0}}})",
-           R"({"venc":{"roi":{"steps":5}}})",
-           R"({"venc":{"roi":{"center":-0.1}}})",
-           R"({"venc":{"roi":{"center":1.1}}})",
+  // Each case names the field its own out-of-range value should be
+  // reported against (review finding 2026-08-29: a loose "venc." find()
+  // let 10/14 cases silently pass on a DIFFERENT field's error message
+  // — the venc.gop_s-validated-unconditionally bug masked here because
+  // every case happened to also fail gop_s's range check first).
+  struct Case { const char* json; const char* field; };
+  for (const Case& c : {
+           Case{R"({"venc":{"fps":0}})", "venc.fps"},
+           Case{R"({"venc":{"fps":121}})", "venc.fps"},
+           Case{R"({"venc":{"gop_s":0.1}})", "venc.gop_s"},
+           Case{R"({"venc":{"gop_s":11}})", "venc.gop_s"},
+           Case{R"({"venc":{"qp_delta":-13}})", "venc.qp_delta"},
+           Case{R"({"venc":{"qp_delta":13}})", "venc.qp_delta"},
+           Case{R"({"venc":{"snapshot_quality":0}})", "venc.snapshot_quality"},
+           Case{R"({"venc":{"snapshot_quality":101}})", "venc.snapshot_quality"},
+           Case{R"({"venc":{"debug_port":1023}})", "venc.debug_port"},
+           Case{R"({"venc":{"debug_port":65536}})", "venc.debug_port"},
+           Case{R"({"venc":{"roi":{"steps":0}}})", "venc.roi.steps"},
+           Case{R"({"venc":{"roi":{"steps":5}}})", "venc.roi.steps"},
+           Case{R"({"venc":{"roi":{"center":-0.1}}})", "venc.roi.center"},
+           Case{R"({"venc":{"roi":{"center":1.1}}})", "venc.roi.center"},
        }) {
-    auto path = write_temp_json(bad);
+    auto path = write_temp_json(c.json);
     std::string msg = what_of([&] { (void)load_config(path.string()); });
     CHECK(!msg.empty());
-    CHECK(msg.find("venc.") != std::string::npos);
+    CHECK(msg.find(c.field) != std::string::npos);
     std::filesystem::remove(path);
   }
 }
