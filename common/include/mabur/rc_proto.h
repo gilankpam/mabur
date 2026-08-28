@@ -135,6 +135,16 @@ struct Telem {
   uint16_t vanished_base = 0;
   uint16_t vanished_enh = 0;
   uint16_t self_idr_refused = 0;
+  // venc encoder ring (spec 2026-08-28 venc-foldin, Task B6): the PRODUCER
+  // side of the same shm ring `ring_drops` reports the consumer side of.
+  // full_drops counts whole access units the encoder threw away because
+  // maburd had not drained the ring — the loss that breaks the decode chain
+  // and drives RcAgent's chain-break IDR — and fill_pct is the ring
+  // occupancy at the telemetry tick. Together they are the only view a
+  // ground operator has into an encoder that is running but outpacing its
+  // reader; a *stalled* encoder shows instead as enc_frames not advancing.
+  uint16_t venc_full_drops = 0;     // saturating
+  uint8_t venc_ring_fill_pct = 0;   // 0..100
 };
 
 std::vector<uint8_t> pack_rcf(const Rcf& r);

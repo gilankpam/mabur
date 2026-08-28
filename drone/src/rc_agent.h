@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -66,6 +67,15 @@ class RcAgent {
   // failing CRC/vtx_id match, is silently ignored) and applies its effect.
   void on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms);
 
+  // The encoder lost a reference frame (a ring-full drop ate it), so the
+  // decode chain downstream is broken until an IDR re-seeds it. Called from
+  // the venc encoder thread (venc_core.h's on_chain_break) — the ONLY
+  // cross-thread entry point on RcAgent, which is why it is a bare atomic
+  // set and nothing else. The request is consumed on the next tick(), on the
+  // agent thread, where it goes through the same IDR pacer as every other
+  // producer.
+  void note_chain_break();
+
   // Advances the failsafe/rendezvous timers and re-evaluates the
   // congestion guard against the given health sample. On BOOT, the first
   // call applies the MAX_RANGE op and transitions to RENDEZVOUS.
@@ -124,6 +134,16 @@ class RcAgent {
   // apply_max_range() (FAILSAFE/boot never probes) and recomputed at the top
   // of every RCF apply.
   bool probe3_active_ = false;
+
+  // IDR policy state (spec 2026-08-28 venc-foldin §4). Every IDR producer
+  // — the GS-driven RCF-after-failsafe path and the encoder's chain-break
+  // signal — funnels through idr_due(); nothing else may call
+  // act_.request_idr(). chain_break_pending_ is the venc thread's handoff
+  // (see note_chain_break); the two timestamps are agent-thread-only.
+  std::atomic<bool> chain_break_pending_{false};
+  uint64_t last_idr_ms_ = 0;        // 0 = none yet
+  uint64_t last_chain_idr_ms_ = 0;  // 0 = none yet
+  bool idr_due(uint64_t now_ms, bool chain);
 
   // Bitrate policy state.
   int last_bitrate_kbps_ = 0;

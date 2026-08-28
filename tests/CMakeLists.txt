@@ -100,7 +100,6 @@ if(MABUR_BUILD_DRONE)
   add_mtest(test_config test_config.cpp LIBS mabur_drone_core)
   target_compile_definitions(test_config PRIVATE
     MABUR_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/bundle")
-  add_mtest(test_waybeam_client test_waybeam_client.cpp LIBS mabur_drone_core)
   add_mtest(test_frame_source test_frame_source.cpp LIBS mabur_drone_core)
   add_mtest(test_frame_pipeline test_frame_pipeline.cpp LIBS mabur_drone_core)
   add_mtest(test_radio_tx test_radio_tx.cpp LIBS mabur_drone_core)

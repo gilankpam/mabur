@@ -169,9 +169,22 @@ Full findings: `docs/venc-ring-vanish-findings-2026-08-12.md` (committed
 with the detection port). The detection (pts-jump, EMA-period,
 shed-immune) ships in maburd and exports as
 `drone.enc.{vanished_base,vanished_enh,self_idr_refused}` on the sideport
-(Telem wire grew 61→67 — a version-mismatched pair just drops T_TELEM on
-CRC, so telemetry reads absent until both ends run the same build; video
-is unaffected) plus a 5 s `frame_ring:` stderr line in `/tmp/mabur.log`.
+(Telem wire grew 61→67, then 67→70 for the venc ring stats below — a
+version-mismatched pair just drops T_TELEM on CRC, so telemetry reads
+absent until both ends run the same build; video is unaffected) plus a 5 s
+`frame_ring:` stderr line in `/tmp/mabur.log`.
+
+Since the venc fold-in (spec 2026-08-28) the drone also reports the
+PRODUCER side of that ring, straight from `venc_get_stats()`:
+`drone.enc.venc_ring_fill_pct` (0–100 occupancy at the telemetry tick) and
+`drone.enc.venc_full_drops` (lifetime access units the encoder discarded
+because maburd had not drained the ring). maburtop shows them as
+`vring NN% drop N` on the encoder row. Read them against
+`drone.enc.ring_drops`, which is the CONSUMER side of the same ring: fill
+climbing with `venc_full_drops` rising means the encoder is outrunning
+maburd, while `ring_drops` rising means maburd rejected slots it did read.
+A *stalled* encoder shows as neither — `drone.enc.fps`/`enc_frames` simply
+stop advancing.
 `self_idr_refused` counts base vanishes suppressed by the IDR-adjacency
 guard — the self-IDR CONSUMER is deliberately not wired: on the parked
 `idr-request` branch it amplified CPU overload into an IDR storm (rolling

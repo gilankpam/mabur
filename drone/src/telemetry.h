@@ -54,6 +54,10 @@ struct TelemInputs {
   // FramePipeline vanish counters (venc-ring vanish detection,
   // docs/venc-ring-vanish-findings-2026-08-12.md).
   uint64_t vanished_base = 0, vanished_enh = 0, self_idr_refused = 0;
+  // venc_get_stats() (venc_core.h), zero on host builds where the encoder
+  // isn't compiled in. See rc::Telem for what they mean.
+  uint64_t venc_full_drops = 0;
+  int venc_ring_fill_pct = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

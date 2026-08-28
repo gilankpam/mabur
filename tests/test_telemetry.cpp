@@ -94,4 +94,29 @@ TEST(vanish_counters_saturate_and_round_trip) {
   CHECK(back->self_idr_refused == 2);
 }
 
+TEST(venc_ring_stats_clamp_and_round_trip) {
+  // venc_get_stats() -> wire (spec 2026-08-28 venc-foldin, Task B6):
+  // full_drops is a lifetime u64 riding as a saturating u16; fill_pct is
+  // CLAMPED to the documented 0..100, not merely saturated to u8.
+  // REVERT CHECK: drop the std::clamp in make_telem and the 100/0 cases below
+  // report 200 and 255 respectively.
+  mabur::TelemInputs in;
+  in.venc_full_drops = 70000;
+  in.venc_ring_fill_pct = 200;
+  auto t = mabur::make_telem(1, in);
+  CHECK(t.venc_full_drops == 65535);
+  CHECK(t.venc_ring_fill_pct == 100);
+
+  in.venc_ring_fill_pct = -5;
+  CHECK(mabur::make_telem(1, in).venc_ring_fill_pct == 0);
+
+  in.venc_full_drops = 12;
+  in.venc_ring_fill_pct = 73;
+  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK(back->venc_full_drops == 12);
+  CHECK(back->venc_ring_fill_pct == 73);
+}
+
 MTEST_MAIN

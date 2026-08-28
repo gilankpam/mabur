@@ -821,3 +821,36 @@ TEST(gs_restart_low_seq_accepted_after_failsafe) {
   agent.on_rc_frame(new_sess.data(), new_sess.size(), 1400);
   CHECK(agent.current().generation == gen);
 }
+
+// 14. Spec 2026-08-28 venc-foldin §4: ONE IDR pacer in RcAgent. 100 ms min
+// spacing overall; a chain-break request additionally holds off 1 s from the
+// previous chain-break-triggered IDR. GS-requested IDRs (the
+// RCF-after-failsafe path) share the same 100 ms floor.
+//
+// The chain-break intake runs BEFORE the failsafe/rendezvous timers in
+// tick(), which is what the t=1300 leg pins: last feedback was the RCF at
+// t=100 and failsafe_ms is 1000, so that same tick also drops the agent into
+// FAILSAFE. The break happened while the link was up and one IDR is what
+// heals it, so it must still go out.
+TEST(idr_pacer_min_spacing_and_chain_break_holdoff) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  agent.on_rc_frame(rcf.data(), rcf.size(), 100);  // LINKED
+  const int base = act.idr_calls;
+
+  agent.note_chain_break();
+  agent.tick(200, RadioHealth{});          // first chain-break IDR fires
+  CHECK(act.idr_calls == base + 1);
+
+  agent.note_chain_break();
+  agent.tick(300, RadioHealth{});          // inside 1 s holdoff: suppressed
+  CHECK(act.idr_calls == base + 1);
+
+  agent.note_chain_break();
+  agent.tick(1300, RadioHealth{});         // past holdoff: fires
+  CHECK(act.idr_calls == base + 2);
+}

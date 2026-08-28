@@ -461,6 +461,11 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     enc["vanished_base"] = t.vanished_base;
     enc["vanished_enh"] = t.vanished_enh;
     enc["self_idr_refused"] = t.self_idr_refused;
+    // Producer-side venc ring (spec 2026-08-28 venc-foldin): full_drops are
+    // AUs the encoder discarded because maburd fell behind draining the shm
+    // ring — distinct from enc.ring_drops, which is the consumer side.
+    enc["venc_full_drops"] = t.venc_full_drops;
+    enc["venc_ring_fill_pct"] = t.venc_ring_fill_pct;
     json& txq = d["txq"];
     txq["depth"] = t.txq_depth;
     txq["cap"] = t.txq_cap;  // wire value as-is (256 saturates to 255 on the wire)

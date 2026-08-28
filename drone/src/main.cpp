@@ -1,7 +1,7 @@
-// maburd — drone-side daemon: reads whole encoded frames off the waybeam venc
-// frame-shm ring (or, in --dry-run, a fixture file), runs them through the
-// UEP/FEC pipeline, and hands radio-bound bodies to the adaptive-link-
-// controlled RadioTx. A parallel agent thread runs RcAgent against inbound RC
+// maburd — drone-side daemon: reads whole encoded frames off the in-process
+// venc core's frame-shm ring (or, in --dry-run, a fixture file), runs them
+// through the UEP/FEC pipeline, and hands radio-bound bodies to the
+// adaptive-link-controlled RadioTx. A parallel agent thread runs RcAgent against inbound RC
 // frames + periodic radio-health ticks, publishing AppliedOp changes the hot
 // path picks up via a lock-free shared_ptr handoff.
 //
@@ -46,7 +46,9 @@
 #include "tick_gate.h"
 #include "tx_queue.h"
 #include "usb_tx_pool.h"
-#include "waybeam_client.h"
+#ifdef MABUR_HAVE_VENC
+#include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
+#endif
 
 #if defined(MABUR_DRY_RUN_ONLY)
 // Not used; real mode is always compiled in, guarded at runtime by --dry-run
@@ -74,7 +76,7 @@ using namespace mabur;
 // and from the GS's side it looks like the stale-caps restart deadlock, which
 // sends the operator to `restart maburd` -- which cannot help. So say it out
 // loud, but rarely: a mismatched peer transmits continuously and /tmp is
-// tmpfs. Same once-per-5 s idiom as waybeam_client.cpp's log_rate_limited().
+// tmpfs, hence the once-per-5 s gate.
 // Not thread-safe; only rx_callback (the RX thread) calls it.
 void log_foreign_rc_version(uint8_t peer_ver) {
   using clock = std::chrono::steady_clock;
@@ -185,7 +187,7 @@ struct DevourerSink : mabur::FrameSink {
 };
 
 // ---------------------------------------------------------------------------
-// RealActuator — bridges RcAgent to the radio/UEP/waybeam world.
+// RealActuator — bridges RcAgent to the radio/UEP/encoder world.
 // ---------------------------------------------------------------------------
 
 constexpr uint8_t kCanonicalSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
@@ -227,7 +229,9 @@ devourer::TxMode control_tx_mode() {
 
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
 // FrameSink), the hot-thread-owned UepEncoder (via the shared_op handoff),
-// and the waybeam VTX control API.
+// and the in-process encoder (venc_core.h's verbs, called directly — the
+// HTTP control plane and its WaybeamClient went away with the fold-in,
+// spec 2026-08-28 venc-foldin).
 //
 // It deliberately has NO TX-power knob. Power is constant: bring-up programs
 // the wall-equalized per-rate diff table and zeroes the global offset once
@@ -242,7 +246,6 @@ devourer::TxMode control_tx_mode() {
 // atomic load, so there is no lock and no torn read.
 struct RealActuator : mabur::Actuator {
   mabur::RadioTx* tx = nullptr;
-  mabur::WaybeamClient* wb = nullptr;
   mabur::FrameSink* sink = nullptr;
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
@@ -284,13 +287,22 @@ struct RealActuator : mabur::Actuator {
     sink->send(frame.data(), frame.size());
   }
 
+  // A failed verb is logged and dropped, never retried here: RcAgent
+  // re-derives the bitrate/ROI target on its next policy tick and IDR
+  // requests are re-raised by whatever produced them, so a retry loop on
+  // the agent thread would only stall the control plane. On host builds
+  // (no MABUR_HAVE_VENC) these are no-ops past the dry-run branch — the
+  // tests drive MockActuator, not this one.
   void set_bitrate_kbps(int k) override {
     last_bitrate_kbps = k;
     if (dry_run) {
       std::fprintf(stderr, "[dry-run] set_bitrate_kbps(%d)\n", k);
       return;
     }
-    wb->set_param("video0.bitrate", std::to_string(k));
+#ifdef MABUR_HAVE_VENC
+    if (venc_set_bitrate_kbps(k) != 0)
+      std::fprintf(stderr, "venc: set_bitrate(%d) FAILED\n", k);
+#endif
   }
 
   void set_roi_qp(int q) override {
@@ -299,7 +311,10 @@ struct RealActuator : mabur::Actuator {
       std::fprintf(stderr, "[dry-run] set_roi_qp(%d)\n", q);
       return;
     }
-    wb->set_param("fpv.roiQp", std::to_string(q));
+#ifdef MABUR_HAVE_VENC
+    if (venc_set_roi_qp(q) != 0)
+      std::fprintf(stderr, "venc: set_roi_qp(%d) FAILED\n", q);
+#endif
   }
 
   void request_idr() override {
@@ -307,7 +322,10 @@ struct RealActuator : mabur::Actuator {
       std::fprintf(stderr, "[dry-run] request_idr()\n");
       return;
     }
-    wb->request_idr();
+#ifdef MABUR_HAVE_VENC
+    if (venc_request_idr() != 0)
+      std::fprintf(stderr, "venc: request_idr FAILED\n");
+#endif
   }
 };
 
@@ -421,7 +439,6 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
 
   RealActuator actuator;
   actuator.tx = &tx;
-  actuator.wb = nullptr;
   actuator.sink = &file_sink;
   actuator.shared_op = &shared_op;
   actuator.dev = nullptr;
@@ -717,38 +734,8 @@ int run_real_mode(const Config& cfg) {
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
 
-  // B6 deletes this: Config::waybeam is gone (Task B5 dropped the waybeam
-  // section), so there is no cfg-driven host/port/idr_path left to pass —
-  // hardcoded defaults (WaybeamCfg{}) keep WaybeamClient constructible
-  // until B6 deletes WaybeamClient itself.
-  WaybeamClient waybeam(WaybeamCfg{});
-
-  // One-shot transport cross-check (spec 2026-07-22): ingest only works if
-  // waybeam is actually publishing whole frames over the frame-shm ring. A
-  // mismatch is a misconfiguration, not a transient fault, so this logs loudly
-  // and keeps running rather than aborting: FrameSource keeps retrying attach
-  // on its own, matching the spec's "absent but screaming" failure mode
-  // instead of a hard crash-loop.
-  {
-    std::string body;
-    if (!waybeam.get_param("outgoing.server", body) || body.empty()) {
-      // Unreadable is NOT a mismatch: waybeam may simply not be up yet. Saying
-      // FATAL here would cry wolf on a correctly configured drone and teach
-      // the operator to ignore the line that matters.
-      std::fprintf(stderr,
-          "maburd: could not read waybeam outgoing.server — skipping the "
-          "frame-shm transport cross-check.\n");
-    } else if (body.find("frame-shm://") == std::string::npos) {
-      std::fprintf(stderr,
-          "maburd: FATAL MISMATCH: waybeam outgoing.server is not frame-shm:// "
-          "(got: %s). Video will not flow until waybeam is reconfigured + "
-          "restarted.\n", body.c_str());
-    }
-  }
-
   RealActuator actuator;
   actuator.tx = &tx;
-  actuator.wb = &waybeam;
   actuator.sink = &dev_sink;
   actuator.shared_op = &shared_op;
   actuator.dev = rtl_device.get();
@@ -760,6 +747,40 @@ int run_real_mode(const Config& cfg) {
   actuator.last_roi_qp = cfg.encoder.roi_qp_normal;
 
   RcAgent agent(cfg, actuator);
+
+#ifdef MABUR_HAVE_VENC
+  // Boot the encoder BEFORE the radio and before any thread starts: it
+  // creates the frame-shm ring the hot thread reads, and RcAgent's very
+  // first tick (BOOT -> MAX_RANGE) commands a bitrate through the verbs
+  // above, which no-op until the core is up. `agent` is constructed on the
+  // line above and outlives every venc thread (venc_core_stop() joins them
+  // before this scope ends), so handing its address to the callbacks is
+  // safe without a file-scope indirection.
+  VencCallbacks vcb{};
+  vcb.on_chain_break = [](void* u) {
+    static_cast<RcAgent*>(u)->note_chain_break();  // atomic set; acted on at tick
+  };
+  // Fault policy: log and exit(3) for the wrapper to respawn. Deliberately
+  // NOT venc_core_stop() — this runs ON the encoder thread and stop() joins
+  // that same thread (venc_core.c's contract), so calling it here would
+  // self-deadlock the very failure it is meant to escape.
+  vcb.on_fault = [](void*, const char* what) {
+    std::fprintf(stderr, "venc FATAL: %s — exiting for wrapper respawn\n", what);
+    std::exit(3);
+  };
+  vcb.user = &agent;
+  if (venc_core_start(&cfg.venc.core, &vcb) != 0) {
+    // Boot failure, not a transient: the wrapper's 2 s respawn is the retry.
+    // Release the USB device on the way out (same shape as the
+    // CreateRtlDevice failure path above) — the radio is not up yet, so
+    // there is nothing else to unwind.
+    std::fprintf(stderr, "venc_core_start failed — exiting\n");
+    libusb_release_interface(handle, 0);
+    libusb_close(handle);
+    libusb_exit(usb_ctx);
+    return 3;
+  }
+#endif
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};
@@ -1102,15 +1123,14 @@ int run_real_mode(const Config& cfg) {
           std::fprintf(stderr,
                        "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
                        "txq=%zu txq_drop=%llu "
-                       "thermal_delta=%d tx_failed=%llu waybeam_failures=%llu\n",
+                       "thermal_delta=%d tx_failed=%llu\n",
                        static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
                        static_cast<unsigned long long>(rb), tx.seq(),
                        static_cast<unsigned long long>(tx.sent()),
                        static_cast<unsigned long long>(tx.drops()),
                        txq.depth(), static_cast<unsigned long long>(txq.dropped()),
                        health.thermal_delta,
-                       static_cast<unsigned long long>(txstats.failed),
-                       static_cast<unsigned long long>(waybeam.failures()));
+                       static_cast<unsigned long long>(txstats.failed));
         }
 
         if (now - last_telem_ms >= 1000) {
@@ -1166,6 +1186,18 @@ int run_real_mode(const Config& cfg) {
           ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);
           ti.vanished_enh = vanished_enh_total.load(std::memory_order_relaxed);
           ti.self_idr_refused = self_idr_refused_total.load(std::memory_order_relaxed);
+#ifdef MABUR_HAVE_VENC
+          // Producer side of the frame ring, straight from the encoder
+          // (venc_get_stats is thread-safe and reads the shm header, not a
+          // cached copy). ring_drops above is the CONSUMER side — the two
+          // count different losses and both are needed to tell "encoder
+          // outran maburd" from "maburd rejected a slot". A silently
+          // stalled encoder has neither: it shows as ti.enc_frames flat.
+          VencStats vs{};
+          venc_get_stats(&vs);
+          ti.venc_full_drops = vs.full_drops;
+          ti.venc_ring_fill_pct = static_cast<int>(vs.ring_fill_pct);
+#endif
 
           auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
 
@@ -1253,6 +1285,12 @@ int run_real_mode(const Config& cfg) {
   if (agent_thread.joinable()) agent_thread.join();
   if (msp_thread.joinable()) msp_thread.join();
   tx_pool.stop();  // drain + join senders before device teardown
+
+#ifdef MABUR_HAVE_VENC
+  // After the thread joins above: the hot thread reads the frame ring that
+  // stop() tears down.
+  venc_core_stop();
+#endif
 
   rtl_device->Stop();
   libusb_release_interface(handle, 0);

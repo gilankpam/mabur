@@ -22,6 +22,26 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 
 RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {}
 
+void RcAgent::note_chain_break() {
+  chain_break_pending_.store(true, std::memory_order_relaxed);
+}
+
+// One pacer for every IDR producer (spec 2026-08-28 venc-foldin §4). 100 ms
+// floor for all of them — an IDR is the most expensive frame on the link and
+// two of them back to back buy nothing; chain-break requests also respect a
+// 1 s holdoff from the previous chain IDR, because one IDR heals a break and
+// a ring that has no consumer needs none at all (upstream measurement,
+// waybeam f956a52 venc_frame_ring.h). A refused request is DROPPED, not
+// queued: the next real break re-raises it.
+bool RcAgent::idr_due(uint64_t now_ms, bool chain) {
+  if (last_idr_ms_ != 0 && now_ms - last_idr_ms_ < 100) return false;
+  if (chain && last_chain_idr_ms_ != 0 && now_ms - last_chain_idr_ms_ < 1000)
+    return false;
+  last_idr_ms_ = now_ms;
+  if (chain) last_chain_idr_ms_ = now_ms;
+  return true;
+}
+
 // Applies the MAX_RANGE operating point (profile_table()[MAX_RANGE_PROFILE]
 // via ladder_from). This is a state-transition apply (BOOT's initial op, or
 // a LINKED->FAILSAFE entry), so it forces the bitrate policy to the robust
@@ -134,6 +154,10 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   double mbps = rc::phy_rate_mbps(applied_.ladder[1]);  // T0
   double overhead = uep_layer_overhead(1, applied_.fec_overhead);
   double kbps = mbps * 1000.0 * cfg_.encoder.airtime_budget / (1.0 + overhead);
+  // NOTE the encoder has its own floor below this one: venc's apply_bitrate
+  // rails at VENC_BITRATE_MIN_KBPS (1000), so a configured bitrate_min_kbps
+  // under 1000 is silently re-clamped there and this policy's "structural
+  // minimum" would not be the one in force.
   kbps = std::clamp(kbps, static_cast<double>(cfg_.encoder.bitrate_min_kbps),
                      static_cast<double>(cfg_.encoder.bitrate_max_kbps));
   int kbps_i = round_to_100(kbps);
@@ -307,7 +331,12 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     have_last_fb_ = true;
 
     bool entering_linked = prev_state == State::FAILSAFE || prev_state == State::RENDEZVOUS;
-    if (entering_linked) {
+    // Through the shared pacer (§4) like every other IDR producer. The
+    // 100 ms floor cannot suppress this in practice — re-entering LINKED
+    // requires having spent at least failsafe_ms (>= 1 s) outside it — but
+    // routing it here is what makes "RcAgent is the only IDR authority"
+    // true rather than aspirational.
+    if (entering_linked && idr_due(now_ms, /*chain=*/false)) {
       act_.request_idr();
     }
 
@@ -326,6 +355,19 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;
     return;
+  }
+
+  // Chain-break intake, evaluated against the state as of this tick's ENTRY
+  // — deliberately ahead of the failsafe/rendezvous timers below. The
+  // encoder broke its reference chain while the link was up, and the tick
+  // that notices a missed feedback deadline is the tick most likely to be
+  // carrying that break; deferring the heal until after the state machine
+  // has moved us to FAILSAFE would silently discard exactly the IDR that
+  // matters. The LINKED gate stays, so a break raised while genuinely
+  // unlinked is consumed and dropped rather than queued.
+  if (chain_break_pending_.exchange(false, std::memory_order_relaxed) &&
+      state_ == State::LINKED && idr_due(now_ms, /*chain=*/true)) {
+    act_.request_idr();
   }
 
   if (state_ == State::LINKED) {

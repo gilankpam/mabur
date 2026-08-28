@@ -757,6 +757,23 @@ TEST(vanish_counters_exported) {
   CHECK(enc["self_idr_refused"] == 1);
 }
 
+// drone.enc.{venc_full_drops,venc_ring_fill_pct}: the PRODUCER side of the
+// venc shm ring (spec 2026-08-28 venc-foldin, Task B6), additive under v:1.
+// REVERT CHECK: fails if either key is dropped from the enc block.
+TEST(venc_ring_stats_exported) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  mabur::rc::Telem t;
+  t.venc_full_drops = 4;
+  t.venc_ring_fill_pct = 62;
+  in.telem = t;
+  ex.poll(1000, in);
+  const json enc = cap.last()["drone"]["enc"];
+  CHECK(enc["venc_full_drops"] == 4);
+  CHECK(enc["venc_ring_fill_pct"] == 62);
+}
+
 TEST(exporter_attrib_block_and_stream_stale) {
   std::string sent;
   StatsExporter ex(/*session_id=*/1, /*interval_ms=*/0,

@@ -91,6 +91,11 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.vanished_base = saturate<uint16_t>(in.vanished_base);
   t.vanished_enh = saturate<uint16_t>(in.vanished_enh);
   t.self_idr_refused = saturate<uint16_t>(in.self_idr_refused);
+  t.venc_full_drops = saturate<uint16_t>(in.venc_full_drops);
+  // Clamped, not just saturated: the wire field is documented 0..100 and a
+  // garbage percentage would read as a plausible occupancy.
+  t.venc_ring_fill_pct =
+      saturate<uint8_t>(std::clamp(in.venc_ring_fill_pct, 0, 100));
   return t;
 }
 

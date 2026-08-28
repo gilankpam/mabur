@@ -638,6 +638,22 @@ class VanishDisplayTest(unittest.TestCase):
                           for r in render_rows_compact(m, 100.2, 200))
         self.assertRegex(text, r"van\s+3/\s*7")
 
+    def test_panel_and_compact_show_venc_ring_stats(self):
+        # Producer-side venc ring (spec 2026-08-28 venc-foldin): fill % and
+        # lifetime full-drops, the only view of an encoder outrunning maburd.
+        import copy
+        d = copy.deepcopy(DGRAM)
+        d["drone"]["enc"]["venc_ring_fill_pct"] = 62
+        d["drone"]["enc"]["venc_full_drops"] = 4
+        m = _fresh(d)
+        panel = "\n".join(r[0] if isinstance(r, tuple) else r
+                           for r in panel_drone(m, 100.2))
+        self.assertRegex(panel, r"vring\s+62%")
+        self.assertRegex(panel, r"drop\s+4")
+        compact = "\n".join(r[0] if isinstance(r, tuple) else r
+                             for r in render_rows_compact(m, 100.2, 240))
+        self.assertRegex(compact, r"vring\s+62%")
+
     def test_vanish_keys_absent_renders_dashes(self):
         # Old-daemon datagram (pre-detection): keys missing entirely — panel
         # must render placeholders, never crash.
