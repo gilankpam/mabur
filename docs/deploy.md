@@ -16,8 +16,8 @@ window is their entire cost, and that cost is real.
 **A drone and GS at different versions reject each other's
 frames in BOTH directions**, and because DISC_ACK is what carries
 `CAP_FRAME_WIRE`, the symptom is NO VIDEO AT ALL — visually identical to
-the stale-caps restart deadlock, which will send you to `restart
-maburd`. That will not help. Recovery is to finish the deploy. Deploy
+the stale-caps restart deadlock (below). Restarting either daemon will
+not fix a version mismatch; recovery is to finish the deploy. Deploy
 order is config-before-binary on both devices: a stale or removed key
 makes `maburd`/`maburgs` fail to start (a config-load error exits **1** in
 `maburd` and **2** in `maburgs` — both in the `load_config` try/catch in
@@ -44,4 +44,40 @@ clobber a tuned one"), then start the service immediately
 migrates an existing config, so on a device that has ever been tuned the
 four removed keys must be deleted from `/etc/mabur.json` and
 `/etc/maburgs.json` BY HAND before the new binaries start.
+
+## Stale-caps restart deadlock — retired
+
+The old failure mode: either daemon restarting (drone reboot, `maburgs`
+restart, GS reboot — anything that resets one side's session state while
+the other side keeps running) left a rebooted GS stuck at
+`peer_caps_ == 0`, refusing video forever (`REFUSING video: peer session
+did not advertise CAP_FRAME_WIRE`) because it had no fast path back to
+re-learning the live drone's caps, and a rebooted drone likewise had no
+way to re-teach a GS that was still nominally LINKED. The only known
+recovery was the manual dance: `waybeam stop` on the drone, wait for the
+GS log to print `video tail -> frame wire`, then `waybeam start`.
+
+The caps-reteach pair retires this dance for same-version pairs:
+- the drone acks a keep-alive DISC while already LINKED, instead of
+  ignoring it, so a GS that forgot its caps gets them re-taught without
+  needing to re-enter rendezvous;
+- the GS sends its keep-alive DISC on a fast cadence
+  (`unacked_keepalive_ms`, default-only, no config key) whenever its
+  peer's caps are unknown, instead of the slow steady-state
+  `beacon_keepalive_ms`, so the re-teach happens in seconds rather than
+  however long the next slow beacon would take.
+
+Gate-verified on hardware 2026-08-28: 5x drone `maburd` restart and 5x GS
+`maburgs` restart, each under a live peer, all 10 recovered unaided
+(`fps` back to ~60, `frame_id_gaps` flat, no `REFUSING`/`chip_caps=0x0000`
+in the GS log) within the standard ~25 s post-restart wait — no
+`waybeam stop`/`start`, no manual restart of either daemon.
+
+**Both binaries must carry the fix for it to self-heal.** An old-GS +
+new-drone pair (or new-GS + old-drone) is *safe* — same `RC_VERSION`, no
+crash-loop, no frame rejection — but **un-healed**: the side still
+running the old binary lacks its half of the re-teach, so a restart on a
+half-deployed pair still needs the manual `waybeam stop` -> wait for
+`video tail -> frame wire` -> `waybeam start` dance until the deploy is
+finished on both ends.
 
