@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "config.h"
+#include "debug_http.h"
 #include "frame_pipeline.h"
 #include "frame_source.h"
 #include "mabur/frame_wire.h"
@@ -471,6 +472,10 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   actuator.dry_run = true;
 
   RcAgent agent(cfg, actuator);
+  // Debug endpoint is startable here too (no MABUR_HAVE_VENC on a host
+  // build, so every route just answers "disabled") -- keeps host/dry-run
+  // and real mode on one code path instead of special-casing it out.
+  debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality);
   // Deterministic replay output: the async FEC worker is never attached in
   // dry-run mode (repair emission order would depend on thread timing).
   UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms);
@@ -807,6 +812,11 @@ int run_real_mode(const Config& cfg) {
     return 3;
   }
 #endif
+  // After venc_core_start: RcAgent's first tick (below) already commands a
+  // bitrate through the verbs, so the ring/stats the debug endpoint reads
+  // are live from here on. localhost-only, always on -- bind failure logs
+  // and disables itself, never fatal (see debug_http.h).
+  debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality);
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};

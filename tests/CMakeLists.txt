@@ -110,6 +110,7 @@ if(MABUR_BUILD_DRONE)
   add_mtest(sim_shed_lag sim_shed_lag.cpp LIBS mabur_drone_core)
   add_mtest(test_telemetry test_telemetry.cpp LIBS mabur_drone_core)
   add_mtest(test_power_plan test_power_plan.cpp LIBS mabur_drone_core)
+  add_mtest(test_debug_http test_debug_http.cpp LIBS mabur_drone_core)
 
   add_test(NAME host_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_host_e2e.sh)
   set_tests_properties(host_e2e PROPERTIES

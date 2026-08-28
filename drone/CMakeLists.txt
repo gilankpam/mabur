@@ -1,5 +1,6 @@
 add_library(mabur_drone_core STATIC
   src/config.cpp
+  src/debug_http.cpp
   src/frame_source.cpp
   src/frame_pipeline.cpp
   src/radio_tx.cpp
