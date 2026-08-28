@@ -66,8 +66,8 @@ static uint32_t rc_compensate_kbps(uint32_t kbps, uint32_t delivered_fps)
  * encoder is a pure mechanism and does not decide to spend the largest
  * frame in the stream on a rate step.  The rate controller absorbs
  * between-IDR changes; RcAgent asks for an IDR explicitly when it wants
- * one (venc_request_idr).  The frame-shm ring-fill throttle that used to
- * scale this value is deleted too — rate policy lives in RcAgent. */
+ * one (venc_request_idr).  The frame-shm ring-fill throttle that used
+ * to scale this value is deleted too — rate policy lives in RcAgent. */
 static int apply_bitrate(uint32_t kbps)
 {
 	MI_VENC_ChnAttr_t attr = {0};
@@ -95,7 +95,7 @@ static int apply_bitrate(uint32_t kbps)
 	return 0;
 }
 
-int venc_request_idr(void)
+int star6e_controls_request_idr(void)
 {
 	int chn = g_star6e_control_ctx.venc_chn;
 
@@ -117,7 +117,7 @@ static int apply_qp_delta(int delta)
 		return -1;
 	if (MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
 		return -1;
-	if (venc_request_idr() != 0)
+	if (star6e_controls_request_idr() != 0)
 		return -1;
 	printf("> qpDelta changed to %d\n", delta);
 	return 0;

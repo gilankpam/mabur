@@ -31,7 +31,13 @@ int star6e_runtime_init(Star6eRunnerContext *ctx);
 
 /** Encoder thread body: drains the VENC channel into the frame-shm ring
  *  until star6e_runtime_request_stop().  `opaque` is the
- *  Star6eRunnerContext.  Always returns NULL. */
+ *  Star6eRunnerContext.
+ *
+ *  Returns NULL when the loop exited because a stop was requested, or a
+ *  `const char *` describing the MI failure that killed it (valid until the
+ *  next star6e_runtime_prepare()).  venc_core turns the non-NULL case into
+ *  the VencCallbacks.on_fault callback — maburd keeps flying with a dead encoder,
+ *  so "stopped" and "died" must not look alike. */
 void *star6e_runtime_encoder_loop(void *opaque);
 
 /** Ask the encoder loop to return.  Safe from any thread / a signal

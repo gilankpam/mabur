@@ -22,6 +22,18 @@
 static SdkQuietState g_sdk_quiet = SDK_QUIET_STATE_INIT;
 static volatile sig_atomic_t g_running = 1;
 
+/* mabur addition: the encoder loop's exit reason.
+ *
+ * waybeam's loop broke on a process_stream failure and returned, which is
+ * indistinguishable from a requested stop — the process then exited and the
+ * init script's respawn was the recovery.  maburd keeps running (radio, RC,
+ * telemetry) when the encoder dies, so the facade has to be able to tell
+ * "operator asked us to stop" from "the MI stack failed under us".  The
+ * failure sites fill this buffer; star6e_runtime_encoder_loop returns it
+ * (non-NULL) on a fault and NULL on a clean stop.  Written and read on the
+ * encoder thread only, plus the joiner after pthread_join. */
+static char g_fault_what[96];
+
 static MI_VENC_Pack_t *ensure_packs(MI_VENC_Pack_t **buf,
 	uint32_t *cap, uint32_t need)
 {
@@ -188,6 +200,9 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 		&ps->stream_packs_cap, stat.curPacks);
 	if (!stream.packet) {
 		fprintf(stderr, "ERROR: Unable to allocate stream packets\n");
+		snprintf(g_fault_what, sizeof(g_fault_what),
+			"stream pack alloc failed (%u packs)",
+			(unsigned)stat.curPacks);
 		return -1;
 	}
 
@@ -198,6 +213,9 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 			return 0;
 		}
 		fprintf(stderr, "ERROR: MI_VENC_GetStream failed %d\n", ret);
+		snprintf(g_fault_what, sizeof(g_fault_what),
+			"MI_VENC_GetStream(chn %d) failed %d",
+			(int)ps->venc_channel, ret);
 		return ret;
 	}
 	if (star6e_output_reject_incomplete_access_unit(&ps->output,
@@ -259,6 +277,7 @@ void *star6e_runtime_encoder_loop(void *opaque)
 	struct timespec run_start;
 	int cold_boot_fps_kick_done = 0;
 	unsigned int idle_counter = 0;
+	int faulted = 0;
 
 	if (!ctx)
 		return NULL;
@@ -307,8 +326,13 @@ void *star6e_runtime_encoder_loop(void *opaque)
 
 	while (g_running) {
 		if (star6e_runtime_process_stream(ctx, &cus3a_ts_last,
-		    &idle_counter) != 0)
+		    &idle_counter) != 0) {
+			/* A stop racing the failure is a stop, not a fault:
+			 * MI calls legitimately start failing the moment the
+			 * pipeline goes down. */
+			faulted = g_running ? 1 : 0;
 			break;
+		}
 
 		/* One-shot cold-boot fps re-kick ~1.5s after start, once the ISP
 		 * bin load + AE have settled (the init-time kick fires too early
@@ -324,7 +348,12 @@ void *star6e_runtime_encoder_loop(void *opaque)
 		}
 	}
 
-	return NULL;
+	if (!faulted)
+		return NULL;
+	if (!g_fault_what[0])
+		snprintf(g_fault_what, sizeof(g_fault_what),
+			"encoder loop aborted");
+	return (void *)g_fault_what;
 }
 
 /* ── Lifecycle ────────────────────────────────────────────────────────── */
@@ -332,6 +361,7 @@ void *star6e_runtime_encoder_loop(void *opaque)
 int star6e_runtime_prepare(void)
 {
 	g_running = 1;
+	g_fault_what[0] = '\0';
 	sdk_quiet_state_init(&g_sdk_quiet);
 	star6e_controls_reset();
 	star6e_pipeline_cus3a_reset();

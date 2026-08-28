@@ -32,4 +32,15 @@ if(CMAKE_CROSSCOMPILING)
   target_compile_definitions(venc_core PRIVATE
     PLATFORM_STAR6E HAVE_BACKEND_STAR6E=1 _GNU_SOURCE)
   target_link_libraries(venc_core PUBLIC dl pthread rt m)
+  # maburd calls the venc_core.h facade directly on ARM. MABUR_HAVE_VENC
+  # guards those call sites so the host build (which compiles none of
+  # drone/venc) still builds and tests.
+  target_link_libraries(mabur_drone_core PUBLIC venc_core)
+  # Declared cycle, on purpose: venc_core's star6e_output.c calls
+  # venc_frame_ring_{create,destroy,...}, which mabur_drone_core compiles
+  # from drone/vendor. CMake repeats archives in a static-library cycle, so
+  # the link does not depend on frame_source.cpp happening to pull that
+  # object in first.
+  target_link_libraries(venc_core PUBLIC mabur_drone_core)
+  target_compile_definitions(mabur_drone_core PUBLIC MABUR_HAVE_VENC)
 endif()

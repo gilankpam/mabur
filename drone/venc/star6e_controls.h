@@ -30,7 +30,12 @@ int star6e_controls_apply_qp_delta(int delta);
 /** Explicit IDR request.  Goes through the shared per-channel 100 ms
  *  rate limiter (idr_rate_limit.h); a coalesced request returns 0, not an
  *  error.  This is the only place in venc_core that calls
- *  MI_VENC_RequestIdr on behalf of a caller. */
-int venc_request_idr(void);
+ *  MI_VENC_RequestIdr on behalf of a caller.
+ *
+ *  Unguarded: it dereferences the dlopen'd MI vtable, so it is only legal
+ *  between pipeline start and stop.  The public verb venc_request_idr()
+ *  (venc_core.h) is this call plus the started guard — external callers
+ *  want that one. */
+int star6e_controls_request_idr(void);
 
 #endif /* STAR6E_CONTROLS_H */
