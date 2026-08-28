@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -229,9 +230,22 @@ void serve(int port, int snapshot_quality) {
   }
 
   std::fprintf(stderr, "debug_http: listening on 127.0.0.1:%d\n", port);
+  // Single-threaded accept loop by design (thin debug endpoint, not a real
+  // server): one client at a time is fine for an operator poking curl at
+  // it, but that also means one client that connects and never sends
+  // (aborted nc, half-open probe) would otherwise wedge recv() forever and
+  // starve every other client indefinitely. A couple of seconds of
+  // SO_RCVTIMEO/SO_SNDTIMEO on the accepted fd bounds that: a stalled
+  // reader or a stalled peer on the response write both fail fast and
+  // return control to accept() instead of hanging the whole endpoint.
   for (;;) {
     int cfd = ::accept(fd, nullptr, nullptr);
     if (cfd < 0) continue;  // EINTR or a transient accept error; keep serving
+    timeval tv{};
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     handle_conn(cfd, snapshot_quality);
     ::close(cfd);
   }

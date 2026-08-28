@@ -22,11 +22,12 @@ DebugReq debug_http_parse(const std::string& request_line);
 
 // Starts the debug endpoint on a detached thread, bound to
 // 127.0.0.1:port. Bind/listen failure logs to stderr and returns without
-// starting a serving loop -- never fatal, matches the "keep it simple"
-// brief. snapshot_quality is cfg.venc.core.snapshot_quality, forwarded
-// unmodified into the SNAPSHOT route so it can tell "subsystem disabled"
-// (quality == 0) apart from a capture failure (quality > 0, verb still
-// returns -1). Safe to call on host/dry-run builds too: without
+// starting a serving loop -- never fatal, always started unconditionally
+// rather than gated behind its own enable flag (simplest option; see
+// main.cpp call sites). snapshot_quality is cfg.venc.core.snapshot_quality,
+// forwarded unmodified into the SNAPSHOT route so it can tell "subsystem
+// disabled" (quality == 0) apart from a capture failure (quality > 0, verb
+// still returns -1). Safe to call on host/dry-run builds too: without
 // MABUR_HAVE_VENC every route just answers "disabled".
 //
 // Shutdown: the thread is detached and never joined. main() never waits
