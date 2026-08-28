@@ -34,11 +34,15 @@ void RcAgent::note_chain_break() {
 // waybeam f956a52 venc_frame_ring.h). A refused request is DROPPED, not
 // queued: the next real break re-raises it.
 bool RcAgent::idr_due(uint64_t now_ms, bool chain) {
-  if (last_idr_ms_ != 0 && now_ms - last_idr_ms_ < 100) return false;
-  if (chain && last_chain_idr_ms_ != 0 && now_ms - last_chain_idr_ms_ < 1000)
+  if (have_last_idr_ && now_ms - last_idr_ms_ < 100) return false;
+  if (chain && have_last_chain_idr_ && now_ms - last_chain_idr_ms_ < 1000)
     return false;
   last_idr_ms_ = now_ms;
-  if (chain) last_chain_idr_ms_ = now_ms;
+  have_last_idr_ = true;
+  if (chain) {
+    last_chain_idr_ms_ = now_ms;
+    have_last_chain_idr_ = true;
+  }
   return true;
 }
 
@@ -166,18 +170,31 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   bool changed = !have_last_bitrate_ || kbps_i != last_bitrate_kbps_;
   bool throttled =
       have_last_bitrate_eval_ && now_ms - last_bitrate_eval_ms_ < 1000;
+  // Every piece of "what the encoder is currently running" state is latched
+  // ONLY when the verb reports success — including the throttle timestamp,
+  // so a failed apply is not merely remembered as pending but is retried at
+  // the first opportunity rather than one second later. A failed call
+  // therefore leaves the agent exactly as it was, and the ordinary
+  // changed/decrease logic re-issues the same value on the next policy
+  // tick (i.e. the next RCF). Latching unconditionally would recreate the
+  // waybeam wedge in-process: one dropped MI call and the encoder stays on
+  // the old rate for the rest of the flight, because `changed` reads false
+  // forever after.
   if (force || decrease || (changed && !throttled)) {
-    act_.set_bitrate_kbps(kbps_i);
-    last_bitrate_kbps_ = kbps_i;
-    have_last_bitrate_ = true;
-    last_bitrate_eval_ms_ = now_ms;
-    have_last_bitrate_eval_ = true;
+    if (act_.set_bitrate_kbps(kbps_i)) {
+      last_bitrate_kbps_ = kbps_i;
+      have_last_bitrate_ = true;
+      last_bitrate_eval_ms_ = now_ms;
+      have_last_bitrate_eval_ = true;
+    }
   }
 
   bool now_low = kbps_i < cfg_.encoder.roi_threshold_kbps;
   if (now_low != roi_low_) {
-    roi_low_ = now_low;
-    act_.set_roi_qp(now_low ? cfg_.encoder.roi_qp_low : cfg_.encoder.roi_qp_normal);
+    // Same rule, same reason: flipping roi_low_ before knowing the encoder
+    // took the QP would make the transition un-repeatable.
+    if (act_.set_roi_qp(now_low ? cfg_.encoder.roi_qp_low : cfg_.encoder.roi_qp_normal))
+      roi_low_ = now_low;
   }
 }
 
@@ -364,7 +381,11 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
   // carrying that break; deferring the heal until after the state machine
   // has moved us to FAILSAFE would silently discard exactly the IDR that
   // matters. The LINKED gate stays, so a break raised while genuinely
-  // unlinked is consumed and dropped rather than queued.
+  // unlinked is consumed and dropped rather than queued — affordable only
+  // because the encoder's own GOP is the backstop: at the shipped
+  // venc.gop_s = 2.0 an unhealed chain break self-clears within ~2 s. Raise
+  // gop_s and that safety net stretches with it, at which point dropping
+  // refused requests instead of deferring them needs re-arguing.
   if (chain_break_pending_.exchange(false, std::memory_order_relaxed) &&
       state_ == State::LINKED && idr_due(now_ms, /*chain=*/true)) {
     act_.request_idr();

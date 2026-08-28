@@ -260,6 +260,12 @@ struct RealActuator : mabur::Actuator {
   // ints are safe with no lock).
   int last_bitrate_kbps = 0;
   int last_roi_qp = 0;
+  // Lifetime count of encoder verbs the venc core refused. Replaces the
+  // deleted waybeam_failures on the 1 Hz stats line: without it a drone
+  // whose encoder silently rejects every set_bitrate looks identical from
+  // the ground to one tracking the ladder perfectly. Same agent-thread-only
+  // access as the two above, so a plain counter is safe.
+  uint64_t venc_verb_failures = 0;
 
   void apply_op(const AppliedOp& op) override {
     tx->set_ladder(op.ladder);
@@ -287,34 +293,52 @@ struct RealActuator : mabur::Actuator {
     sink->send(frame.data(), frame.size());
   }
 
-  // A failed verb is logged and dropped, never retried here: RcAgent
-  // re-derives the bitrate/ROI target on its next policy tick and IDR
-  // requests are re-raised by whatever produced them, so a retry loop on
-  // the agent thread would only stall the control plane. On host builds
-  // (no MABUR_HAVE_VENC) these are no-ops past the dry-run branch — the
-  // tests drive MockActuator, not this one.
-  void set_bitrate_kbps(int k) override {
+  // No retry loop lives here. A failed bitrate/ROI verb is reported UP (the
+  // bool return): RcAgent declines to latch it and re-issues the same value
+  // on its next policy tick, which is the only place that knows what the
+  // current operating point should be. Retrying inside the actuator would
+  // block the agent thread on a sick MI layer instead. A failed IDR is not
+  // reported — nothing latches on it, and the next chain break or LINKED
+  // re-entry raises another.
+  //
+  // last_bitrate_kbps/last_roi_qp record the last value ATTEMPTED, not the
+  // last one accepted, because they exist to answer "what did the ladder
+  // ask for" on the telemetry row; venc_verb_failures next to them is what
+  // says whether the encoder is actually keeping up with those asks.
+  //
+  // On host builds (no MABUR_HAVE_VENC) both verbs report success without
+  // doing anything: there is no encoder to diverge from, and reporting
+  // failure would make RcAgent retry forever. Tests drive MockActuator.
+  bool set_bitrate_kbps(int k) override {
     last_bitrate_kbps = k;
     if (dry_run) {
       std::fprintf(stderr, "[dry-run] set_bitrate_kbps(%d)\n", k);
-      return;
+      return true;
     }
 #ifdef MABUR_HAVE_VENC
-    if (venc_set_bitrate_kbps(k) != 0)
-      std::fprintf(stderr, "venc: set_bitrate(%d) FAILED\n", k);
+    if (venc_set_bitrate_kbps(k) != 0) {
+      ++venc_verb_failures;
+      std::fprintf(stderr, "venc: set_bitrate(%d) FAILED (retry next tick)\n", k);
+      return false;
+    }
 #endif
+    return true;
   }
 
-  void set_roi_qp(int q) override {
+  bool set_roi_qp(int q) override {
     last_roi_qp = q;
     if (dry_run) {
       std::fprintf(stderr, "[dry-run] set_roi_qp(%d)\n", q);
-      return;
+      return true;
     }
 #ifdef MABUR_HAVE_VENC
-    if (venc_set_roi_qp(q) != 0)
-      std::fprintf(stderr, "venc: set_roi_qp(%d) FAILED\n", q);
+    if (venc_set_roi_qp(q) != 0) {
+      ++venc_verb_failures;
+      std::fprintf(stderr, "venc: set_roi_qp(%d) FAILED (retry next tick)\n", q);
+      return false;
+    }
 #endif
+    return true;
   }
 
   void request_idr() override {
@@ -323,8 +347,10 @@ struct RealActuator : mabur::Actuator {
       return;
     }
 #ifdef MABUR_HAVE_VENC
-    if (venc_request_idr() != 0)
+    if (venc_request_idr() != 0) {
+      ++venc_verb_failures;
       std::fprintf(stderr, "venc: request_idr FAILED\n");
+    }
 #endif
   }
 };
@@ -1123,14 +1149,15 @@ int run_real_mode(const Config& cfg) {
           std::fprintf(stderr,
                        "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
                        "txq=%zu txq_drop=%llu "
-                       "thermal_delta=%d tx_failed=%llu\n",
+                       "thermal_delta=%d tx_failed=%llu venc_verb_fail=%llu\n",
                        static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
                        static_cast<unsigned long long>(rb), tx.seq(),
                        static_cast<unsigned long long>(tx.sent()),
                        static_cast<unsigned long long>(tx.drops()),
                        txq.depth(), static_cast<unsigned long long>(txq.dropped()),
                        health.thermal_delta,
-                       static_cast<unsigned long long>(txstats.failed));
+                       static_cast<unsigned long long>(txstats.failed),
+                       static_cast<unsigned long long>(actuator.venc_verb_failures));
         }
 
         if (now - last_telem_ms >= 1000) {

@@ -14,18 +14,29 @@ using namespace mabur::rc;
 
 namespace {
 
-// Records every Actuator call for inspection by the tests.
+// Records every Actuator call for inspection by the tests. bitrate_ok /
+// roi_ok simulate an encoder that refuses a verb (a transient MI failure on
+// the real drone): the ATTEMPT is still recorded, so a test can tell "not
+// called" from "called and refused".
 struct MockActuator : Actuator {
   std::vector<AppliedOp> applied;
   std::vector<std::vector<uint8_t>> controls;
   std::vector<int> bitrates;
   std::vector<int> roi_qps;
   int idr_calls = 0;
+  bool bitrate_ok = true;
+  bool roi_ok = true;
 
   void apply_op(const AppliedOp& op) override { applied.push_back(op); }
   void send_control(const std::vector<uint8_t>& body) override { controls.push_back(body); }
-  void set_bitrate_kbps(int kbps) override { bitrates.push_back(kbps); }
-  void set_roi_qp(int qp) override { roi_qps.push_back(qp); }
+  bool set_bitrate_kbps(int kbps) override {
+    bitrates.push_back(kbps);
+    return bitrate_ok;
+  }
+  bool set_roi_qp(int qp) override {
+    roi_qps.push_back(qp);
+    return roi_ok;
+  }
   void request_idr() override { ++idr_calls; }
 };
 
@@ -853,4 +864,98 @@ TEST(idr_pacer_min_spacing_and_chain_break_holdoff) {
   agent.note_chain_break();
   agent.tick(1300, RadioHealth{});         // past holdoff: fires
   CHECK(act.idr_calls == base + 2);
+}
+
+// 15. A refused encoder verb must not be latched as applied. Before this,
+// run_bitrate_policy() recorded last_bitrate_kbps_ straight after the (void)
+// actuator call, so one dropped MI call left `changed` false forever and the
+// encoder ran the old rate for the rest of the flight — the waybeam bitrate
+// wedge, recreated in-process.
+// REVERT CHECK: latch last_bitrate_kbps_ unconditionally and the third leg
+// below sees no re-send (bitrates.size() stays 2).
+TEST(refused_bitrate_is_retried_next_policy_tick_then_latched) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+
+  act.bitrate_ok = false;
+  agent.tick(0, RadioHealth{});               // BOOT -> MAX_RANGE, forced apply
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  agent.on_rc_frame(r1.data(), r1.size(), 100);   // -> LINKED, forced apply
+  REQUIRE(act.bitrates.size() == 2);
+  const int wanted = act.bitrates.back();
+
+  // Steady-state RCF, same operating point: with the refusal not latched the
+  // target still counts as changed, and the throttle window never opened
+  // (its timestamp is latched on success too), so the retry goes out at once.
+  act.bitrate_ok = true;
+  auto r2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  agent.on_rc_frame(r2.data(), r2.size(), 200);
+  REQUIRE(act.bitrates.size() == 3);
+  CHECK(act.bitrates.back() == wanted);
+
+  // Now it IS latched: an unchanged target past the throttle window is not
+  // re-sent, i.e. the success path still dedups exactly as before.
+  auto r3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  agent.on_rc_frame(r3.data(), r3.size(), 1400);
+  CHECK(act.bitrates.size() == 3);
+}
+
+// 16. Same rule for the ROI QP: roi_low_ flips only once the encoder has
+// taken the value, so a refused transition is re-attempted.
+// REVERT CHECK: flip roi_low_ before the call and the second leg sees no
+// retry (roi_qps.size() stays 1).
+TEST(refused_roi_qp_is_retried_next_policy_tick) {
+  Config cfg = make_cfg();
+  cfg.encoder.airtime_budget = 0.60;
+  cfg.encoder.bitrate_max_kbps = 10000;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+
+  // MAX_RANGE (mcs0/ov1.00) = 1300 kbps, under roi_threshold_kbps (3000), so
+  // the BOOT apply is a normal->low ROI transition.
+  act.roi_ok = false;
+  agent.tick(0, RadioHealth{});
+  REQUIRE(act.roi_qps.size() == 1);
+  CHECK(act.roi_qps.back() == cfg.encoder.roi_qp_low);
+
+  // Still "normal" as far as the agent knows, so the next policy run at the
+  // same low bitrate re-attempts the same transition.
+  act.roi_ok = true;
+  uint8_t mcs0 = encode_profile(PhyMode::HT, 0, 20);
+  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, mcs0, 16);  // ov 1.00, same op
+  agent.on_rc_frame(r1.data(), r1.size(), 100);
+  REQUIRE(act.roi_qps.size() == 2);
+  CHECK(act.roi_qps.back() == cfg.encoder.roi_qp_low);
+
+  // Latched now: no further transition at the same operating point.
+  auto r2 = make_rcf_wire(cfg.link.vtx_id, 2, mcs0, 16);
+  agent.on_rc_frame(r2.data(), r2.size(), 1400);
+  CHECK(act.roi_qps.size() == 2);
+}
+
+// 17. The pacer's "have I ever fired" state is a companion flag, not a
+// 0-millisecond sentinel: callers supply their own clock and maburd's starts
+// wherever steady_clock does, so t=0 is a legal first IDR and must arm the
+// 100 ms floor like any other.
+// REVERT CHECK: replace have_last_idr_ with `last_idr_ms_ != 0` and the
+// t=50 chain break is no longer suppressed.
+TEST(idr_at_time_zero_arms_the_floor) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  agent.on_rc_frame(rcf.data(), rcf.size(), 0);  // -> LINKED, IDR at t=0
+  REQUIRE(act.idr_calls == 1);
+
+  agent.note_chain_break();
+  agent.tick(50, RadioHealth{});   // inside the 100 ms floor from t=0
+  CHECK(act.idr_calls == 1);
+
+  agent.note_chain_break();
+  agent.tick(150, RadioHealth{});  // clear of it
+  CHECK(act.idr_calls == 2);
 }

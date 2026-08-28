@@ -38,8 +38,18 @@ class Actuator {
   virtual ~Actuator() = default;
   virtual void apply_op(const AppliedOp&) = 0;                     // ladder+FEC+shed
   virtual void send_control(const std::vector<uint8_t>& body) = 0;  // DISC_ACK
-  virtual void set_bitrate_kbps(int) = 0;
-  virtual void set_roi_qp(int) = 0;
+  // The two encoder-parameter verbs report whether the encoder actually
+  // took the value. RcAgent latches its "last commanded" state ONLY on
+  // true, so a transient failure is re-sent on the next policy tick
+  // instead of leaving the encoder silently diverged from the ladder for
+  // the rest of the flight (the waybeam-wedge failure mode, in-process
+  // edition — memory: waybeam-bitrate-wedge).
+  virtual bool set_bitrate_kbps(int) = 0;
+  virtual bool set_roi_qp(int) = 0;
+  // No return: an IDR is a one-shot request with no latched state to keep
+  // consistent, and the pacer has already spent its budget. A failed one is
+  // re-raised by whatever produced it (the next chain break, or the next
+  // RCF that re-enters LINKED).
   virtual void request_idr() = 0;
 };
 
@@ -141,8 +151,14 @@ class RcAgent {
   // act_.request_idr(). chain_break_pending_ is the venc thread's handoff
   // (see note_chain_break); the two timestamps are agent-thread-only.
   std::atomic<bool> chain_break_pending_{false};
-  uint64_t last_idr_ms_ = 0;        // 0 = none yet
-  uint64_t last_chain_idr_ms_ = 0;  // 0 = none yet
+  // have_* companions rather than a 0 sentinel (the file's own idiom, cf.
+  // have_last_fb_/have_last_bitrate_eval_): now_ms is a caller-supplied
+  // clock that legitimately starts at 0, and a first IDR at t=0 must still
+  // arm the 100 ms floor.
+  uint64_t last_idr_ms_ = 0;
+  bool have_last_idr_ = false;
+  uint64_t last_chain_idr_ms_ = 0;
+  bool have_last_chain_idr_ = false;
   bool idr_due(uint64_t now_ms, bool chain);
 
   // Bitrate policy state.

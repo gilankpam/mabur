@@ -81,8 +81,8 @@ struct TimedActuator : Actuator {
     }
   }
   void send_control(const std::vector<uint8_t>&) override {}
-  void set_bitrate_kbps(int kbps) override { bitrates.push_back({now, kbps}); }
-  void set_roi_qp(int) override {}
+  bool set_bitrate_kbps(int kbps) override { bitrates.push_back({now, kbps}); return true; }
+  bool set_roi_qp(int) override { return true; }
   void request_idr() override { ++idr_calls; }
 };
 
