@@ -74,22 +74,41 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == 25);
 
-  CHECK(cfg.waybeam.host == def.waybeam.host);
-  CHECK(cfg.waybeam.port == def.waybeam.port);
-  CHECK(cfg.waybeam.idr_path == def.waybeam.idr_path);
-  CHECK(cfg.waybeam.bitrate_min_kbps == def.waybeam.bitrate_min_kbps);
-  CHECK(cfg.waybeam.bitrate_max_kbps == def.waybeam.bitrate_max_kbps);
-  CHECK(cfg.waybeam.airtime_budget == def.waybeam.airtime_budget);
-  CHECK(cfg.waybeam.roi_threshold_kbps == def.waybeam.roi_threshold_kbps);
-  CHECK(cfg.waybeam.roi_qp_low == def.waybeam.roi_qp_low);
-  CHECK(cfg.waybeam.roi_qp_normal == def.waybeam.roi_qp_normal);
+  // waybeam is retired (Task B5): the bundle keeps the pre-fold-in
+  // production encoder tuning (1000/20000/0.65) under Config::encoder,
+  // which predates and differs from EncoderCfg's compiled defaults
+  // (2000/10000/0.60) — same "bundle diverges from struct defaults on
+  // purpose" pattern as fec above.
+  CHECK(cfg.encoder.bitrate_min_kbps == 1000);
+  CHECK(cfg.encoder.bitrate_max_kbps == 20000);
+  CHECK(cfg.encoder.airtime_budget == 0.65);
+  CHECK(cfg.encoder.roi_threshold_kbps == 3000);
+  CHECK(cfg.encoder.roi_qp_low == 8);
+  CHECK(cfg.encoder.roi_qp_normal == 0);
+
+  // venc: boot-time encoder pipeline config (Task B5), also bundle-pinned
+  // rather than struct-default (struct defaults are all-zero/empty, not a
+  // bootable encoder configuration).
+  CHECK(cfg.venc.core.sensor_bin ==
+        std::string("/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"));
+  CHECK(cfg.venc.core.width == 1920);
+  CHECK(cfg.venc.core.height == 1080);
+  CHECK(cfg.venc.core.fps == 60);
+  CHECK(cfg.venc.core.gop_s == 2.0);
+  CHECK(cfg.venc.core.qp_delta == -4);
+  CHECK(std::string(cfg.venc.core.resilience) == "rally");
+  CHECK(cfg.venc.core.roi_enabled == true);
+  CHECK(cfg.venc.core.roi_steps == 2);
+  CHECK(cfg.venc.core.roi_center == 0.4);
+  CHECK(cfg.venc.core.ae_fps == 15);
+  CHECK(cfg.venc.core.awb_fps == 15);
+  CHECK(cfg.venc.core.snapshot_quality == 80);
+  CHECK(cfg.venc.debug_port == 8301);
 
   CHECK(cfg.link.vtx_id == def.link.vtx_id);
   CHECK(cfg.link.failsafe_ms == def.link.failsafe_ms);
   CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
-
-  CHECK(cfg.frame_ring_name == def.frame_ring_name);
 
   auto layers = cfg.uep_layers();
   CHECK(layers[0].fec.overhead == 1.0);  // base_overhead 0.25 -> sid0 ref 1.00
@@ -155,44 +174,141 @@ TEST(load_config_unknown_radio_bw_set_key_throws) {
   std::filesystem::remove(path);
 }
 
-TEST(load_config_waybeam_port_out_of_range_throws_naming_field) {
-  auto path = write_temp_json(R"({"waybeam":{"port":70000}})");
+// waybeam is retired (spec 2026-08-28 venc-foldin, Task B5): the section
+// and its host/port/idr_path keys are gone entirely, strict keys reject any
+// config that still carries it. See waybeam_section_is_now_unknown below.
+// The surviving bitrate/ROI policy fields moved to Config::encoder.
+
+TEST(load_config_encoder_bitrate_min_not_less_than_max_throws_naming_field) {
+  auto path = write_temp_json(R"({"encoder":{"bitrate_min_kbps":5000,"bitrate_max_kbps":5000}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
-  CHECK(msg.find("waybeam.port") != std::string::npos);
+  CHECK(msg.find("encoder.bitrate_min_kbps") != std::string::npos);
   std::filesystem::remove(path);
 }
 
-TEST(load_config_waybeam_bitrate_min_not_less_than_max_throws_naming_field) {
-  auto path = write_temp_json(R"({"waybeam":{"bitrate_min_kbps":5000,"bitrate_max_kbps":5000}})");
+TEST(load_config_encoder_bitrate_min_below_floor_throws_naming_field) {
+  auto path = write_temp_json(R"({"encoder":{"bitrate_min_kbps":50}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
-  CHECK(msg.find("waybeam.bitrate_min_kbps") != std::string::npos);
+  CHECK(msg.find("encoder.bitrate_min_kbps") != std::string::npos);
   std::filesystem::remove(path);
 }
 
-TEST(load_config_waybeam_bitrate_min_below_floor_throws_naming_field) {
-  auto path = write_temp_json(R"({"waybeam":{"bitrate_min_kbps":50}})");
+TEST(load_config_encoder_airtime_budget_out_of_range_throws_naming_field) {
+  auto path = write_temp_json(R"({"encoder":{"airtime_budget":1.5}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
-  CHECK(msg.find("waybeam.bitrate_min_kbps") != std::string::npos);
+  CHECK(msg.find("encoder.airtime_budget") != std::string::npos);
   std::filesystem::remove(path);
 }
 
-TEST(load_config_waybeam_airtime_budget_out_of_range_throws_naming_field) {
-  auto path = write_temp_json(R"({"waybeam":{"airtime_budget":1.5}})");
+TEST(load_config_encoder_roi_threshold_negative_throws_naming_field) {
+  auto path = write_temp_json(R"({"encoder":{"roi_threshold_kbps":-1}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
-  CHECK(msg.find("waybeam.airtime_budget") != std::string::npos);
+  CHECK(msg.find("encoder.roi_threshold_kbps") != std::string::npos);
   std::filesystem::remove(path);
 }
 
-TEST(load_config_waybeam_roi_threshold_negative_throws_naming_field) {
-  auto path = write_temp_json(R"({"waybeam":{"roi_threshold_kbps":-1}})");
+// ---- Task B5: venc section / waybeam retirement -------------------------
+
+// A full, valid venc block matching the brief's fixture (spec 2026-08-28
+// venc-foldin Task B5 Step 1), reused across the tests below.
+std::string valid_venc_block() {
+  return R"("venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+         R"("size":"1920x1080","fps":60,"gop_s":2.0,"qp_delta":-4,)"
+         R"("resilience":"rally",)"
+         R"("roi":{"enabled":true,"steps":2,"center":0.4},)"
+         R"("ae_fps":15,"awb_fps":15,"snapshot_quality":80,)"
+         R"("debug_port":8301})";
+}
+
+TEST(venc_section_parses_and_validates) {
+  auto path = write_temp_json(
+      "{" + valid_venc_block() +
+      R"(,"encoder":{"bitrate_min_kbps":1000,"bitrate_max_kbps":20000,)"
+      R"("airtime_budget":0.65,"roi_threshold_kbps":3000,)"
+      R"("roi_qp_low":8,"roi_qp_normal":0}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.width == 1920);
+  CHECK(c.venc.core.height == 1080);
+  CHECK(std::string(c.venc.core.resilience) == "rally");
+  CHECK(c.encoder.airtime_budget == 0.65);
+  std::filesystem::remove(path);
+}
+
+TEST(waybeam_section_is_now_unknown) {
+  auto path = write_temp_json(R"({"waybeam":{"host":"127.0.0.1"}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(!msg.empty());
-  CHECK(msg.find("waybeam.roi_threshold_kbps") != std::string::npos);
+  CHECK(msg.find("waybeam") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
   std::filesystem::remove(path);
+}
+
+TEST(venc_rejects_bitrate_key) {
+  // spec 2026-08-28 venc-foldin §3: no venc.bitrate key ever exists. It
+  // simply isn't in venc's known-key set, so this hits the same unknown-key
+  // path as any other stale key.
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("size":"1920x1080","fps":60,"gop_s":2.0,"qp_delta":-4,)"
+      R"("resilience":"rally","bitrate":8000,)"
+      R"("roi":{"enabled":true,"steps":2,"center":0.4},)"
+      R"("ae_fps":15,"awb_fps":15,"snapshot_quality":80,)"
+      R"("debug_port":8301}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.bitrate") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(venc_rejects_unknown_resilience) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("size":"1920x1080","fps":60,"gop_s":2.0,"qp_delta":-4,)"
+      R"("resilience":"yolo",)"
+      R"("roi":{"enabled":true,"steps":2,"center":0.4},)"
+      R"("ae_fps":15,"awb_fps":15,"snapshot_quality":80,)"
+      R"("debug_port":8301}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.resilience") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(venc_size_malformed_throws) {
+  auto path = write_temp_json(R"({"venc":{"size":"1920"}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.size") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(venc_range_checks) {
+  for (const char* bad : {
+           R"({"venc":{"fps":0}})",
+           R"({"venc":{"fps":121}})",
+           R"({"venc":{"gop_s":0.1}})",
+           R"({"venc":{"gop_s":11}})",
+           R"({"venc":{"qp_delta":-13}})",
+           R"({"venc":{"qp_delta":13}})",
+           R"({"venc":{"snapshot_quality":0}})",
+           R"({"venc":{"snapshot_quality":101}})",
+           R"({"venc":{"debug_port":1023}})",
+           R"({"venc":{"debug_port":65536}})",
+           R"({"venc":{"roi":{"steps":0}}})",
+           R"({"venc":{"roi":{"steps":5}}})",
+           R"({"venc":{"roi":{"center":-0.1}}})",
+           R"({"venc":{"roi":{"center":1.1}}})",
+       }) {
+    auto path = write_temp_json(bad);
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("venc.") != std::string::npos);
+    std::filesystem::remove(path);
+  }
 }
 
 TEST(uep_layers_overhead_ladder_at_base_0_25) {
@@ -398,17 +514,19 @@ TEST(fec_stale_async_worker_key_throws) {
   std::filesystem::remove(p);
 }
 
-// Video ingest is frame-shm only: the frame ring is named by frame_ring_name
-// and there is no mode to select.
-TEST(frame_ring_name_default) {
-  auto path = write_temp_json("{}");
-  auto cfg = load_config(path.string());
-  CHECK(cfg.frame_ring_name == "mabur_f");
+// frame_ring_name was deleted (spec 2026-08-28 venc-foldin, controller
+// ruling on Task B5): the ring name's single authority is now the
+// compile-time VENC_RING_NAME in drone/venc/venc_cfg.h. A config that still
+// carries the key hits the ordinary unknown-key path — see
+// stale_video_input_and_ring_name_keys_throw below for the sibling
+// pre-frame-shm keys that already went through this.
+TEST(stale_frame_ring_name_key_throws) {
+  auto path = write_temp_json(R"({"frame_ring_name": "mabur_f"})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("frame_ring_name") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
   std::filesystem::remove(path);
-
-  auto path2 = write_temp_json(R"({"frame_ring_name": "other"})");
-  CHECK(load_config(path2.string()).frame_ring_name == "other");
-  std::filesystem::remove(path2);
 }
 
 // video_input/ring_name selected and named the pre-frame-shm RTP-packet ring.

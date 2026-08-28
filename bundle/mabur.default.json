@@ -17,10 +17,7 @@
     "base_overhead": 0.25,
     "flush_ms": 25
   },
-  "waybeam": {
-    "host": "127.0.0.1",
-    "port": 80,
-    "idr_path": "/request/idr",
+  "encoder": {
     "bitrate_min_kbps": 1000,
     "bitrate_max_kbps": 20000,
     "airtime_budget": 0.65,
@@ -28,13 +25,29 @@
     "roi_qp_low": 8,
     "roi_qp_normal": 0
   },
+  "venc": {
+    "sensor_bin": "/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",
+    "size": "1920x1080",
+    "fps": 60,
+    "gop_s": 2.0,
+    "qp_delta": -4,
+    "resilience": "rally",
+    "roi": {
+      "enabled": true,
+      "steps": 2,
+      "center": 0.4
+    },
+    "ae_fps": 15,
+    "awb_fps": 15,
+    "snapshot_quality": 80,
+    "debug_port": 8301
+  },
   "link": {
     "vtx_id": 1,
     "failsafe_ms": 1000,
     "rendezvous_ms": 30000,
     "tick_ms": 100
   },
-  "frame_ring_name": "mabur_f",
   "msp": {
     "enable": false,
     "serial": "/dev/ttyS2",

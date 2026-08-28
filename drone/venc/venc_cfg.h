@@ -69,6 +69,14 @@ extern "C" {
  * parameters. Returns 0, or -1 on unknown preset name (boot failure). */
 int venc_cfg_expand_preset(const VencCfg *cfg, VencPresetOut *out);
 
+/* Preset-name validation authority for the config loader (drone/src/
+ * config.cpp parse_venc, host build). Returns nonzero iff `name` is a
+ * resilience preset venc_cfg_expand_preset() accepts (including "off",
+ * NULL/empty defaulting to "off", and the "ltr"/"ltr:<N>" family) — it is
+ * simply venc_cfg_expand_preset() with the output discarded, so there is
+ * exactly ONE authority for "is this a known preset". */
+int venc_cfg_preset_known(const char *name);
+
 #ifdef __cplusplus
 }
 #endif

@@ -167,3 +167,18 @@ int venc_cfg_expand_preset(const VencCfg *cfg, VencPresetOut *out)
 	}
 	return -1;
 }
+
+/* See venc_cfg.h: the config loader's sole authority for "is this a known
+ * resilience preset". Delegates to venc_cfg_expand_preset() itself rather
+ * than re-walking the table, so there is exactly one place that knows the
+ * preset names (the table above, plus the "ltr"/"ltr:<N>" special case). */
+int venc_cfg_preset_known(const char *name)
+{
+	VencCfg cfg;
+	VencPresetOut out;
+
+	memset(&cfg, 0, sizeof(cfg));
+	if (name)
+		preset_strcpy(cfg.resilience, sizeof(cfg.resilience), name);
+	return venc_cfg_expand_preset(&cfg, &out) == 0;
+}

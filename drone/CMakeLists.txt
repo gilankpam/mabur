@@ -7,7 +7,13 @@ add_library(mabur_drone_core STATIC
   src/rc_agent.cpp
   src/msp_serial.cpp
   src/telemetry.cpp
-  vendor/venc_frame_ring.c)
+  vendor/venc_frame_ring.c
+  # venc_cfg.c is dependency-free C99 (errno/stdlib/string only), so it
+  # compiles on host too — config.cpp's parse_venc() needs
+  # venc_cfg_preset_known() at host-test time, not just on the ARM
+  # cross-build. Excluded from venc_core's glob below to avoid compiling it
+  # twice into the same link.
+  venc/venc_cfg.c)
 target_include_directories(mabur_drone_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/vendor
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
@@ -26,6 +32,9 @@ target_link_libraries(maburd PRIVATE mabur_drone_core mabur_common devourer pthr
 # drives SigmaStar MI via dlopen and has no host-runnable pipeline.
 if(CMAKE_CROSSCOMPILING)
   file(GLOB VENC_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/venc/*.c)
+  # venc_cfg.c is already a source of mabur_drone_core (unconditionally,
+  # for host builds) — don't compile it a second time into venc_core.
+  list(REMOVE_ITEM VENC_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/venc/venc_cfg.c)
   add_library(venc_core STATIC ${VENC_CORE_SRC})
   target_include_directories(venc_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/venc ${CMAKE_CURRENT_SOURCE_DIR}/vendor)

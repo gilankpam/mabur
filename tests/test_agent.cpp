@@ -35,12 +35,12 @@ Config make_cfg() {
   cfg.link.failsafe_ms = 1000;
   cfg.link.rendezvous_ms = 30000;
   cfg.link.tick_ms = 100;
-  cfg.waybeam.airtime_budget = 0.65;
-  cfg.waybeam.bitrate_min_kbps = 1000;
-  cfg.waybeam.bitrate_max_kbps = 20000;
-  cfg.waybeam.roi_threshold_kbps = 3000;
-  cfg.waybeam.roi_qp_low = 8;
-  cfg.waybeam.roi_qp_normal = 0;
+  cfg.encoder.airtime_budget = 0.65;
+  cfg.encoder.bitrate_min_kbps = 1000;
+  cfg.encoder.bitrate_max_kbps = 20000;
+  cfg.encoder.roi_threshold_kbps = 3000;
+  cfg.encoder.roi_qp_low = 8;
+  cfg.encoder.roi_qp_normal = 0;
   return cfg;
 }
 
@@ -595,8 +595,8 @@ TEST(bitrate_increase_still_gated) {
 // genuinely CHANGED target is never discarded for being too small a step.
 TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   Config cfg = make_cfg();
-  cfg.waybeam.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
-  cfg.waybeam.bitrate_max_kbps = 10000; // prod value; this clamp is the trap
+  cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
+  cfg.encoder.bitrate_max_kbps = 10000; // prod value; this clamp is the trap
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
@@ -628,8 +628,8 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
 // restored it and the ratchet ran unopposed toward ~0.4 Mbps.
 TEST(congestion_shed_never_commands_below_bitrate_min) {
   Config cfg = make_cfg();
-  cfg.waybeam.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
-  cfg.waybeam.bitrate_max_kbps = 10000; // prod value
+  cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
+  cfg.encoder.bitrate_max_kbps = 10000; // prod value
   MockActuator act;
   RcAgent agent(cfg, act);
 
@@ -661,7 +661,7 @@ TEST(congestion_shed_never_commands_below_bitrate_min) {
   int lowest = act.bitrates[0];
   for (int b : act.bitrates)
     if (b < lowest) lowest = b;
-  CHECK(lowest >= cfg.waybeam.bitrate_min_kbps);
+  CHECK(lowest >= cfg.encoder.bitrate_min_kbps);
 }
 
 TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) {

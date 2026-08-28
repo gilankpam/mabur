@@ -92,12 +92,12 @@ Config make_cfg() {
   cfg.link.failsafe_ms = 1000;
   cfg.link.rendezvous_ms = 30000;
   cfg.link.tick_ms = 100;
-  cfg.waybeam.airtime_budget = 0.65;
-  cfg.waybeam.bitrate_min_kbps = 1000;
-  cfg.waybeam.bitrate_max_kbps = 20000;
-  cfg.waybeam.roi_threshold_kbps = 3000;
-  cfg.waybeam.roi_qp_low = 8;
-  cfg.waybeam.roi_qp_normal = 0;
+  cfg.encoder.airtime_budget = 0.65;
+  cfg.encoder.bitrate_min_kbps = 1000;
+  cfg.encoder.bitrate_max_kbps = 20000;
+  cfg.encoder.roi_threshold_kbps = 3000;
+  cfg.encoder.roi_qp_low = 8;
+  cfg.encoder.roi_qp_normal = 0;
   return cfg;
 }
 

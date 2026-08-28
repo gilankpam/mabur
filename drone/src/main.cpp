@@ -717,7 +717,11 @@ int run_real_mode(const Config& cfg) {
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
 
-  WaybeamClient waybeam(cfg.waybeam);
+  // B6 deletes this: Config::waybeam is gone (Task B5 dropped the waybeam
+  // section), so there is no cfg-driven host/port/idr_path left to pass —
+  // hardcoded defaults (WaybeamCfg{}) keep WaybeamClient constructible
+  // until B6 deletes WaybeamClient itself.
+  WaybeamClient waybeam(WaybeamCfg{});
 
   // One-shot transport cross-check (spec 2026-07-22): ingest only works if
   // waybeam is actually publishing whole frames over the frame-shm ring. A
@@ -753,7 +757,7 @@ int run_real_mode(const Config& cfg) {
   // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
   // so the telemetry collector needs this seeded to reflect what's actually
   // commanded before the first transition ever happens.
-  actuator.last_roi_qp = cfg.waybeam.roi_qp_normal;
+  actuator.last_roi_qp = cfg.encoder.roi_qp_normal;
 
   RcAgent agent(cfg, actuator);
 
@@ -875,7 +879,12 @@ int run_real_mode(const Config& cfg) {
   // the UEP pipeline, queues bodies for the TX writer. Owns the UepEncoder
   // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
-    FrameSource fsrc(cfg.frame_ring_name);
+    // Ring name's single authority is now the compile-time VENC_RING_NAME
+    // (drone/venc/venc_cfg.h "/mabur_f"); frame_ring_name config key
+    // deleted (spec 2026-08-28 venc-foldin, Task B5 controller ruling).
+    // venc_frame_ring_attach() normalises the leading '/' itself, so this
+    // is behaviourally identical to the old default "mabur_f".
+    FrameSource fsrc(VENC_RING_NAME);
     FramePipeline pipe;
     std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
     uint64_t last_reattach = 0;

@@ -5,6 +5,7 @@
 
 #include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
+#include "venc_cfg.h"  // VencCfg, VENC_RING_NAME — plain C99, host-safe
 
 namespace mabur {
 
@@ -56,14 +57,25 @@ struct FecCfg {
   int flush_ms = 15;
 };
 
-struct WaybeamCfg {
-  std::string host = "127.0.0.1";
-  int port = 80;
-  std::string idr_path = "/request/idr";  // waybeam IDR route (bench-confirmed: GET -> {"ok":true,"data":{"idr":true}})
-  int bitrate_min_kbps = 1000, bitrate_max_kbps = 20000;
-  double airtime_budget = 0.65;
+// RcAgent's bitrate/ROI policy knobs (ex-WaybeamCfg; the HTTP fields
+// host/port/idr_path went with the waybeam section they lived in — venc is
+// in-process now, no control-plane HTTP left to address).
+struct EncoderCfg {
+  int bitrate_min_kbps = 2000;
+  int bitrate_max_kbps = 10000;
+  double airtime_budget = 0.60;
   int roi_threshold_kbps = 3000;
-  int roi_qp_low = 8, roi_qp_normal = 0;
+  int roi_qp_low = 8;
+  int roi_qp_normal = 0;
+};
+
+// Boot-time encoder pipeline config, handed to venc_core_start() as a
+// VencCfg (spec 2026-08-28 venc-foldin §3). `core` is the pure-mechanism
+// struct venc_cfg.h defines (B3); `debug_port` is mabur-side (B7's thin
+// debug endpoint), not part of the vendored VencCfg surface.
+struct VencSectionCfg {
+  VencCfg core{};
+  int debug_port = 8301;
 };
 
 struct LinkCfg {
@@ -97,12 +109,10 @@ struct MspCfg {
 struct Config {
   RadioCfg radio;
   FecCfg fec;
-  WaybeamCfg waybeam;
+  EncoderCfg encoder;
+  VencSectionCfg venc;
   LinkCfg link;
   MspCfg msp;
-  // Name of waybeam's frame-shm ring (its outgoing.server =
-  // frame-shm://<name>), the one and only video ingest.
-  std::string frame_ring_name = "mabur_f";
   std::array<UepLayerCfg, 4> uep_layers() const;
 };
 

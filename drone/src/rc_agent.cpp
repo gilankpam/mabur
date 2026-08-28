@@ -133,9 +133,9 @@ void RcAgent::reapply_with_shed() {
 void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   double mbps = rc::phy_rate_mbps(applied_.ladder[1]);  // T0
   double overhead = uep_layer_overhead(1, applied_.fec_overhead);
-  double kbps = mbps * 1000.0 * cfg_.waybeam.airtime_budget / (1.0 + overhead);
-  kbps = std::clamp(kbps, static_cast<double>(cfg_.waybeam.bitrate_min_kbps),
-                     static_cast<double>(cfg_.waybeam.bitrate_max_kbps));
+  double kbps = mbps * 1000.0 * cfg_.encoder.airtime_budget / (1.0 + overhead);
+  kbps = std::clamp(kbps, static_cast<double>(cfg_.encoder.bitrate_min_kbps),
+                     static_cast<double>(cfg_.encoder.bitrate_max_kbps));
   int kbps_i = round_to_100(kbps);
 
   bool decrease = have_last_bitrate_ && kbps_i < last_bitrate_kbps_;
@@ -150,10 +150,10 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
     have_last_bitrate_eval_ = true;
   }
 
-  bool now_low = kbps_i < cfg_.waybeam.roi_threshold_kbps;
+  bool now_low = kbps_i < cfg_.encoder.roi_threshold_kbps;
   if (now_low != roi_low_) {
     roi_low_ = now_low;
-    act_.set_roi_qp(now_low ? cfg_.waybeam.roi_qp_low : cfg_.waybeam.roi_qp_normal);
+    act_.set_roi_qp(now_low ? cfg_.encoder.roi_qp_low : cfg_.encoder.roi_qp_normal);
   }
 }
 

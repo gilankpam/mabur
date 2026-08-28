@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -166,28 +168,132 @@ void parse_fec(const json& j, FecCfg& f) {
   if (f.base_overhead < 0.05 || f.base_overhead > 2.0) fail("fec.base_overhead", "must be in [0.05,2.0]");
 }
 
-void parse_waybeam(const json& j, WaybeamCfg& w) {
+void parse_encoder(const json& j, EncoderCfg& e) {
   check_known_keys(j,
-                    {"host", "port", "idr_path", "bitrate_min_kbps", "bitrate_max_kbps",
-                     "airtime_budget", "roi_threshold_kbps", "roi_qp_low", "roi_qp_normal"},
-                    "waybeam");
-  assign_if_present(j, "host", w.host, "waybeam");
-  assign_if_present(j, "port", w.port, "waybeam");
-  assign_if_present(j, "idr_path", w.idr_path, "waybeam");
-  assign_if_present(j, "bitrate_min_kbps", w.bitrate_min_kbps, "waybeam");
-  assign_if_present(j, "bitrate_max_kbps", w.bitrate_max_kbps, "waybeam");
-  assign_if_present(j, "airtime_budget", w.airtime_budget, "waybeam");
-  assign_if_present(j, "roi_threshold_kbps", w.roi_threshold_kbps, "waybeam");
-  assign_if_present(j, "roi_qp_low", w.roi_qp_low, "waybeam");
-  assign_if_present(j, "roi_qp_normal", w.roi_qp_normal, "waybeam");
+                    {"bitrate_min_kbps", "bitrate_max_kbps", "airtime_budget",
+                     "roi_threshold_kbps", "roi_qp_low", "roi_qp_normal"},
+                    "encoder");
+  assign_if_present(j, "bitrate_min_kbps", e.bitrate_min_kbps, "encoder");
+  assign_if_present(j, "bitrate_max_kbps", e.bitrate_max_kbps, "encoder");
+  assign_if_present(j, "airtime_budget", e.airtime_budget, "encoder");
+  assign_if_present(j, "roi_threshold_kbps", e.roi_threshold_kbps, "encoder");
+  assign_if_present(j, "roi_qp_low", e.roi_qp_low, "encoder");
+  assign_if_present(j, "roi_qp_normal", e.roi_qp_normal, "encoder");
 
-  if (w.port < 1 || w.port > 65535) fail("waybeam.port", "must be in [1,65535]");
-  if (w.bitrate_min_kbps < 100) fail("waybeam.bitrate_min_kbps", "must be >= 100");
-  if (w.bitrate_min_kbps >= w.bitrate_max_kbps)
-    fail("waybeam.bitrate_min_kbps", "must be < waybeam.bitrate_max_kbps");
-  if (w.airtime_budget <= 0.0 || w.airtime_budget > 1.0)
-    fail("waybeam.airtime_budget", "must be in (0,1]");
-  if (w.roi_threshold_kbps < 0) fail("waybeam.roi_threshold_kbps", "must be >= 0");
+  if (e.bitrate_min_kbps < 100) fail("encoder.bitrate_min_kbps", "must be >= 100");
+  if (e.bitrate_min_kbps >= e.bitrate_max_kbps)
+    fail("encoder.bitrate_min_kbps", "must be < encoder.bitrate_max_kbps");
+  if (e.airtime_budget <= 0.0 || e.airtime_budget > 1.0)
+    fail("encoder.airtime_budget", "must be in (0,1]");
+  if (e.roi_threshold_kbps < 0) fail("encoder.roi_threshold_kbps", "must be >= 0");
+}
+
+// venc: boot-time encoder pipeline config -> VencCfg (spec 2026-08-28
+// venc-foldin §3). The venc core is a pure mechanism with zero policy, so
+// there is intentionally NO "bitrate" key here — it's simply absent from
+// the known-key set below, so one lands on the ordinary unknown-key path
+// like any other stale key (global constraint: no venc.bitrate ever).
+void parse_venc(const json& j, VencSectionCfg& v) {
+  check_known_keys(j,
+                    {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
+                     "resilience", "roi", "ae_fps", "awb_fps",
+                     "snapshot_quality", "debug_port"},
+                    "venc");
+
+  if (j.contains("sensor_bin")) {
+    std::string s;
+    assign_if_present(j, "sensor_bin", s, "venc");
+    if (s.size() >= sizeof(v.core.sensor_bin))
+      fail("venc.sensor_bin", "too long");
+    std::snprintf(v.core.sensor_bin, sizeof(v.core.sensor_bin), "%s", s.c_str());
+  }
+
+  if (j.contains("size")) {
+    std::string s;
+    assign_if_present(j, "size", s, "venc");
+    auto x = s.find('x');
+    int w = 0, h = 0;
+    bool ok = x != std::string::npos && x > 0 && x + 1 < s.size();
+    if (ok) {
+      try {
+        size_t wend = 0, hend = 0;
+        w = std::stoi(s.substr(0, x), &wend);
+        h = std::stoi(s.substr(x + 1), &hend);
+        ok = wend == x && hend == s.size() - x - 1;
+      } catch (const std::exception&) {
+        ok = false;
+      }
+    }
+    if (!ok || w <= 0 || h <= 0)
+      fail("venc.size", "malformed, expected WIDTHxHEIGHT (e.g. \"1920x1080\")");
+    v.core.width = static_cast<uint16_t>(w);
+    v.core.height = static_cast<uint16_t>(h);
+  }
+
+  if (j.contains("fps")) {
+    int fps = 0;
+    assign_if_present(j, "fps", fps, "venc");
+    if (fps < 1 || fps > 120) fail("venc.fps", "must be in [1,120]");
+    v.core.fps = static_cast<uint16_t>(fps);
+  }
+
+  assign_if_present(j, "gop_s", v.core.gop_s, "venc");
+  if (v.core.gop_s < 0.5 || v.core.gop_s > 10.0)
+    fail("venc.gop_s", "must be in [0.5,10]");
+
+  if (j.contains("qp_delta")) {
+    int qp = 0;
+    assign_if_present(j, "qp_delta", qp, "venc");
+    if (qp < -12 || qp > 12) fail("venc.qp_delta", "must be in [-12,12]");
+    v.core.qp_delta = static_cast<int8_t>(qp);
+  }
+
+  if (j.contains("resilience")) {
+    std::string s;
+    assign_if_present(j, "resilience", s, "venc");
+    if (s.size() >= sizeof(v.core.resilience))
+      fail("venc.resilience", "too long");
+    if (!venc_cfg_preset_known(s.c_str()))
+      fail("venc.resilience", "unknown preset");
+    std::snprintf(v.core.resilience, sizeof(v.core.resilience), "%s", s.c_str());
+  }
+
+  if (j.contains("roi")) {
+    const json& r = j.at("roi");
+    check_known_keys(r, {"enabled", "steps", "center"}, "venc.roi");
+    assign_if_present(r, "enabled", v.core.roi_enabled, "venc.roi");
+    if (r.contains("steps")) {
+      int steps = 0;
+      assign_if_present(r, "steps", steps, "venc.roi");
+      if (steps < 1 || steps > 4) fail("venc.roi.steps", "must be in [1,4]");
+      v.core.roi_steps = static_cast<uint8_t>(steps);
+    }
+    assign_if_present(r, "center", v.core.roi_center, "venc.roi");
+    if (v.core.roi_center < 0.0 || v.core.roi_center > 1.0)
+      fail("venc.roi.center", "must be in [0,1]");
+  }
+
+  if (j.contains("ae_fps")) {
+    int v_ae = 0;
+    assign_if_present(j, "ae_fps", v_ae, "venc");
+    v.core.ae_fps = static_cast<uint16_t>(v_ae);
+  }
+  if (j.contains("awb_fps")) {
+    int v_awb = 0;
+    assign_if_present(j, "awb_fps", v_awb, "venc");
+    v.core.awb_fps = static_cast<uint16_t>(v_awb);
+  }
+
+  if (j.contains("snapshot_quality")) {
+    int q = 0;
+    assign_if_present(j, "snapshot_quality", q, "venc");
+    if (q < 1 || q > 100) fail("venc.snapshot_quality", "must be in [1,100]");
+    v.core.snapshot_quality = static_cast<uint8_t>(q);
+  }
+
+  assign_if_present(j, "debug_port", v.debug_port, "venc");
+  if (v.debug_port < 1024 || v.debug_port > 65535)
+    fail("venc.debug_port", "must be in [1024,65535]");
 }
 
 void parse_link(const json& j, LinkCfg& l) {
@@ -263,18 +369,15 @@ Config load_config(const std::string& path) {
 
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
-  check_known_keys(j,
-                    {"radio", "fec", "waybeam", "link", "msp",
-                     "frame_ring_name"},
-                    "");
+  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp"}, "");
 
   Config cfg;
   if (j.contains("radio")) parse_radio(j.at("radio"), cfg.radio);
   if (j.contains("fec")) parse_fec(j.at("fec"), cfg.fec);
-  if (j.contains("waybeam")) parse_waybeam(j.at("waybeam"), cfg.waybeam);
+  if (j.contains("encoder")) parse_encoder(j.at("encoder"), cfg.encoder);
+  if (j.contains("venc")) parse_venc(j.at("venc"), cfg.venc);
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
-  assign_if_present(j, "frame_ring_name", cfg.frame_ring_name, "");
 
   return cfg;
 }

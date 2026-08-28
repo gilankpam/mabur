@@ -2,9 +2,19 @@
 #include <cstdint>
 #include <string>
 
-#include "config.h"
-
 namespace mabur {
+
+// B6 deletes this: WaybeamClient is going away with the rest of the HTTP
+// control-plane (venc is in-process now). This trimmed shim replaces the
+// WaybeamCfg that used to live in Config — Task B5 dropped the "waybeam"
+// config section entirely (host/port/idr_path are no longer JSON-parsed
+// anywhere), so main.cpp constructs one of these with hardcoded defaults
+// purely to keep this class's constructor callable until B6 removes it.
+struct WaybeamCfg {
+  std::string host = "127.0.0.1";
+  int port = 80;
+  std::string idr_path = "/request/idr";  // waybeam IDR route (bench-confirmed: GET -> {"ok":true,"data":{"idr":true}})
+};
 
 // Minimal blocking HTTP/1.0 client for talking to the Waybeam VTX's local
 // control API. Each call's individual phases (connect, send, recv) are bounded
