@@ -604,6 +604,55 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   CHECK(act.bitrates.back() == 10000);
 }
 
+// 10e. The congestion guard must never command the encoder below
+// waybeam.bitrate_min_kbps. run_bitrate_policy fences its own write with
+// clamp(kbps, bitrate_min_kbps, bitrate_max_kbps), but the shed-level-3 cut
+// wrote act_.set_bitrate_kbps(last * 0.7) straight to the actuator with no
+// clamp -- the only path in maburd that could go under the configured
+// floor. It also compounded, because it overwrote last_bitrate_kbps_ with
+// its own output, so each re-entry into level 3 multiplied the
+// already-cut value: 1300 -> 910 -> 637 -> 446. In LINKED an incoming RCF
+// repairs that within ~1s, but tick() never calls run_bitrate_policy, so
+// in FAILSAFE/RENDEZVOUS (where the op is MAX_RANGE = mcs0) nothing
+// restored it and the ratchet ran unopposed toward ~0.4 Mbps.
+TEST(congestion_shed_never_commands_below_bitrate_min) {
+  Config cfg = make_cfg();
+  cfg.waybeam.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
+  cfg.waybeam.bitrate_max_kbps = 10000; // prod value
+  MockActuator act;
+  RcAgent agent(cfg, act);
+
+  // BOOT tick applies MAX_RANGE (mcs0/ov1.00) -> 6500*0.60/3 = 1300, and
+  // returns before the guard runs. State stays RENDEZVOUS: no RCF ever
+  // arrives, so run_bitrate_policy is never called again.
+  agent.tick(0, RadioHealth{});
+  REQUIRE(!act.bitrates.empty());
+  REQUIRE(act.bitrates.back() == 1300);
+
+  uint64_t drops = 0;
+  auto rise = [&](uint64_t at) {
+    RadioHealth h; h.tx_drops = ++drops; agent.tick(at, h);
+  };
+  auto quiet = [&](uint64_t at) {
+    RadioHealth h; h.tx_drops = drops; agent.tick(at, h);
+  };
+
+  rise(100); rise(200); rise(300);  // shed 0->1->2->3, first cut on the edge
+
+  // Three more decay->re-entry cycles: 2s quiet drops 3->2, the next rise
+  // climbs back to 3 and cuts again from the already-reduced value.
+  uint64_t t = 300;
+  for (int i = 0; i < 3; ++i) {
+    t += 2100; quiet(t);
+    t += 100;  rise(t);
+  }
+
+  int lowest = act.bitrates[0];
+  for (int b : act.bitrates)
+    if (b < lowest) lowest = b;
+  CHECK(lowest >= cfg.waybeam.bitrate_min_kbps);
+}
+
 TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) {
   // BOOT/RENDEZVOUS -> LINKED is the process-(re)start scenario: frames
   // encoded before the link is up never reach the air (rig 2026-07-25:
