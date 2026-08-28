@@ -217,14 +217,16 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     auto d = rc::parse_disc(body, len);
     if (!d.has_value() || d->vtx_id != cfg_.link.vtx_id) return;
 
-    // Python parity (rendezvous.feed_disc: `if self.state not in (RC_LOST,
-    // DISCOVERY): return None`): a DISC only re-establishes a lost link. The
-    // GS's SESSION keep-alive DISC (~1 Hz) exists for a drone that silently
-    // fell back to rendezvous; a LINKED drone must ignore it outright — no
-    // DISC_ACK, no init-profile apply, no watchdog refresh. Without this
-    // guard every heard keep-alive yanked the op to the MAX_RANGE row and
-    // floor bitrate once a second (bench-observed op thrash, 2026-07-12).
-    if (state_ == State::LINKED) return;
+    if (state_ == State::LINKED) {
+      // Ack-only: a rebooted GS starts in SESSION with peer_caps_=0 and
+      // its video tail gated off; its ~1 Hz keep-alive DISC is the only
+      // way it can re-learn chip_caps (stale-caps deadlock, 2026-08-12).
+      // Reply, but change NOTHING else — the init-profile apply, state
+      // transition and watchdog refresh stay LINKED-entry-only (op-thrash
+      // fix, 2026-07-12).
+      act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq)));
+      return;
+    }
 
     // Echo the drone's ACTUAL operating channel/width, not the GS-requested
     // d->op_channel/op_width — the drone doesn't retune in v1 (its channel
@@ -233,20 +235,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // two disagree. Reporting the true op point lets the GS detect and
     // handle a mismatch instead of being told (incorrectly) that its
     // request was honored.
-    DiscAck ack;
-    ack.vtx_id = cfg_.link.vtx_id;
-    ack.vrx_nonce = d->vrx_nonce;
-    // Frame wire is the only video format maburd speaks; the bit stays on the
-    // wire (one legal value) so a GS can still refuse a peer that lacks it.
-    // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
-    // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
-    // CAP_S3_PROBE: this drone accepts RCF_F_PROBE3 (spec 2026-08-05
-    // s3-probe-promote).
-    ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_S3_PROBE;
-    ack.agreed_channel = cfg_.radio.channel;
-    ack.agreed_width = cfg_.radio.width;
-    ack.seq = d->seq;
-    act_.send_control(rc::pack_disc_ack(ack));
+    act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq)));
 
     int row_idx = std::clamp<int>(d->init_profile, 0,
                                    static_cast<int>(rc::profile_table().size()) - 1);
@@ -365,6 +354,23 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
   }
 
   run_congestion_guard(now_ms, health);
+}
+
+rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq) const {
+  DiscAck ack;
+  ack.vtx_id = cfg_.link.vtx_id;
+  ack.vrx_nonce = nonce;
+  // Frame wire is the only video format maburd speaks; the bit stays on the
+  // wire (one legal value) so a GS can still refuse a peer that lacks it.
+  // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
+  // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
+  // CAP_S3_PROBE: this drone accepts RCF_F_PROBE3 (spec 2026-08-05
+  // s3-probe-promote).
+  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_S3_PROBE;
+  ack.agreed_channel = cfg_.radio.channel;
+  ack.agreed_width = cfg_.radio.width;
+  ack.seq = seq;
+  return ack;
 }
 
 }  // namespace mabur

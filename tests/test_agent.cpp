@@ -156,14 +156,12 @@ TEST(disc_ack_advertises_frame_wire_cap) {
   CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
 }
 
-// 2b. Keep-alive DISC while LINKED is ignored end-to-end — Python parity
-// (rendezvous.feed_disc: `if self.state not in (RC_LOST, DISCOVERY): return
-// None`). The GS sends a SESSION keep-alive DISC (~1 Hz, init_profile 0 =
-// MAX_RANGE row) so a drone that silently fell back re-links immediately; a
-// healthy LINKED drone must not ACK it, must not apply the init profile
-// (which would yank the op to MAX_RANGE/floor every second — bench-observed
-// op thrash, 2026-07-12), and must not refresh the failsafe watchdog.
-TEST(keepalive_disc_while_linked_is_ignored) {
+// 2b. Keep-alive DISC while LINKED: ACK-ONLY. The drone must reply with a
+// DiscAck (so a rebooted GS re-learns chip_caps — the stale-caps deadlock,
+// 2026-08-12/2026-08-28) but must otherwise treat the DISC as noise: no
+// init-profile apply (the 2026-07-12 op-thrash fix stands), no state
+// change, no failsafe-watchdog refresh, no bitrate re-force.
+TEST(keepalive_disc_while_linked_acks_without_op_change) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -182,15 +180,28 @@ TEST(keepalive_disc_while_linked_is_ignored) {
                              /*init_profile=*/0, /*seq=*/7);
   agent.on_rc_frame(disc.data(), disc.size(), 600);
 
+  // Exactly one new control frame: a well-formed DiscAck echoing our real
+  // caps and channel, and the DISC's nonce/seq.
+  REQUIRE(act.controls.size() == n_controls + 1);
+  auto parsed = parse_disc_ack(act.controls.back().data(),
+                               act.controls.back().size());
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->vtx_id == cfg.link.vtx_id);
+  CHECK(parsed->vrx_nonce == 0xCAFEF00D);
+  CHECK(parsed->seq == 7);
+  CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
+  CHECK(parsed->agreed_channel == cfg.radio.channel);
+  CHECK(parsed->agreed_width == cfg.radio.width);
+
+  // Everything else about the DISC is still ignored.
   CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.current().generation == gen);   // op untouched (no MAX_RANGE yank)
   CHECK(agent.current().ladder[1].mcs == 2);  // still the RCF rung
-  CHECK(agent.current().ladder[2].mcs == 2);  // T1 rides the same base mcs
-  CHECK(act.controls.size() == n_controls);   // no DISC_ACK
+  CHECK(agent.current().ladder[2].mcs == 2);
   CHECK(act.bitrates.size() == n_bitrates);   // bitrate policy not re-forced
 
-  // The ignored DISC must not have refreshed the failsafe watchdog: last
-  // real feedback was the RCF at t=100, so failsafe_ms=1000 fires at t=1100.
+  // Watchdog untouched: last real feedback was the RCF at t=100, so
+  // failsafe_ms=1000 fires at t=1100 despite the DISC at t=600.
   agent.tick(1099, RadioHealth{});
   CHECK(agent.state() == RcAgent::State::LINKED);
   agent.tick(1100, RadioHealth{});

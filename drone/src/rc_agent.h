@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "mabur/profile.h"
+#include "mabur/rc_proto.h"
 
 namespace mabur {
 
@@ -153,6 +154,7 @@ class RcAgent {
   void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);
+  rc::DiscAck make_disc_ack(uint32_t nonce, uint16_t seq) const;
 };
 
 }  // namespace mabur
