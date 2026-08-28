@@ -49,7 +49,7 @@ TEST(rcf_pacing_and_keepalive_disc) {
     }
   }
   CHECK(rcf >= 40 && rcf <= 50);   // ~10 Hz for 5 s, minus keepalive slots
-  CHECK(disc >= 5 && disc <= 8);   // ~1 DISC from fast cadence, ~4 from slow cadence post-ack (fix a)
+  CHECK(disc >= 6 && disc <= 7);   // 2 fast DISCs at 250ms (t=0,250), ack at t~500, 4 slow at 1000ms (t=1250,2250,3250,4250) (fix a)
 }
 
 TEST(rcf_fields_are_correct) {
