@@ -105,14 +105,26 @@ void RcAgent::reapply_with_shed() {
 //    multi-rung demote cascade under a gated shed is the 2026-08-09
 //    freeze-crash (docs/shed-lag-findings-2026-08-09.md).
 //  - force=false, non-decrease (steady-state LINKED RCFs): the call is
-//    throttled to at most once per 1000ms *and* gated by +-10% hysteresis
-//    vs the last value actually sent, so repeated identical (or
-//    near-identical) RCFs within one second collapse to a single call
-//    (scenario: bitrate hysteresis), and a late quality INCREASE stays
-//    harmless and lazy.
+//    throttled to at most once per 1000ms, so repeated RCFs within one
+//    second collapse to a single call (scenario: bitrate hysteresis) and a
+//    late quality INCREASE stays harmless and lazy. The dedup test is an
+//    exact inequality vs the last value actually sent: a target that
+//    differs at all is a real operating-point change and must eventually
+//    reach the encoder. It was a +-10% magnitude deadband until
+//    2026-08-28, which measured as a permanent undershoot — the deadband
+//    filtered an ABSOLUTE target with no accumulator, so an error smaller
+//    than the band could never grow into it and the last applied value
+//    became a fixed point. Prod (airtime_budget 0.60, bitrate_max_kbps
+//    10000) hit it at the top of the ladder: rung4 commands 9400, rung5's
+//    12480 clamps to 10000, and |10000-9400| = 600 < 940 meant the promote
+//    was discarded forever — the link ran mcs5 while the encoder stayed on
+//    the mcs4 bitrate, 6% low, on the rung the link occupies almost all
+//    the time. Note it takes the CLAMP to create the trap: unclamped, the
+//    rung gap is far wider than 10%. Decreases were always exempt, so the
+//    error only ever accumulated downward.
 //  - force=true (BOOT's initial MAX_RANGE apply, every LINKED->FAILSAFE
 //    entry, and RCFs that transition into LINKED from RENDEZVOUS/FAILSAFE):
-//    the throttle and hysteresis gates are bypassed entirely — the new
+//    the throttle and dedup gates are bypassed entirely — the new
 //    operating point's bitrate (e.g. the MCS0 floor on failsafe entry)
 //    takes effect immediately, every time. The value is still clamped and
 //    rounded to 100 as usual. The throttle timestamp is updated afterwards
@@ -127,11 +139,10 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   int kbps_i = round_to_100(kbps);
 
   bool decrease = have_last_bitrate_ && kbps_i < last_bitrate_kbps_;
-  bool changed_enough =
-      !have_last_bitrate_ || std::abs(kbps_i - last_bitrate_kbps_) > last_bitrate_kbps_ / 10;
+  bool changed = !have_last_bitrate_ || kbps_i != last_bitrate_kbps_;
   bool throttled =
       have_last_bitrate_eval_ && now_ms - last_bitrate_eval_ms_ < 1000;
-  if (force || decrease || (changed_enough && !throttled)) {
+  if (force || decrease || (changed && !throttled)) {
     act_.set_bitrate_kbps(kbps_i);
     last_bitrate_kbps_ = kbps_i;
     have_last_bitrate_ = true;

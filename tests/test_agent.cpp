@@ -569,6 +569,41 @@ TEST(bitrate_increase_still_gated) {
   CHECK(act.bitrates.back() == 20000);
 }
 
+// 10d. A promote must reach the encoder even when bitrate_max_kbps clamps
+// the new target to within 10% of the last applied value. Measured on the
+// bench 2026-08-28: prod runs airtime_budget 0.60 / bitrate_max 10000, so
+// rung4 (mcs4/ov0.50) commands 39000*0.60/2.5 = 9360 -> 9400, and rung5's
+// 52000*0.60/2.5 = 12480 clamps to 10000. |10000-9400| = 600 is inside the
+// v1 `changed_enough` deadband (last/10 = 940), so the promote was
+// swallowed and the encoder stayed on the mcs4 bitrate forever while the
+// link ran mcs5 -- a permanent 6% undershoot at the rung the link sits on
+// nearly all the time. The deadband is a filter on an absolute target with
+// no accumulator, so the error can never grow into the band: 9400 is a
+// fixed point. Dedup of repeated identical RCFs is the 1s throttle's job
+// (test 10 and 10b's steady window pin that); this test pins that a
+// genuinely CHANGED target is never discarded for being too small a step.
+TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
+  Config cfg = make_cfg();
+  cfg.waybeam.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
+  cfg.waybeam.bitrate_max_kbps = 10000; // prod value; this clamp is the trap
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  // Enter LINKED at rung 4: mcs4/ov0.50 -> 39000*0.60/2.5 = 9360 -> 9400.
+  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 8);
+  agent.on_rc_frame(w0.data(), w0.size(), 0);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(!act.bitrates.empty());
+  REQUIRE(act.bitrates.back() == 9400);
+
+  // Promote to rung 5 well after the 1s throttle window: mcs5/ov0.50 ->
+  // 12480, clamped to 10000. Only 600 above the last applied value.
+  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 5, 20), 8);
+  agent.on_rc_frame(w1.data(), w1.size(), 1100);
+  CHECK(act.bitrates.back() == 10000);
+}
+
 TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) {
   // BOOT/RENDEZVOUS -> LINKED is the process-(re)start scenario: frames
   // encoded before the link is up never reach the air (rig 2026-07-25:
