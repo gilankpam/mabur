@@ -112,6 +112,29 @@ if(MABUR_BUILD_DRONE)
   add_mtest(test_power_plan test_power_plan.cpp LIBS mabur_drone_core)
   add_mtest(test_debug_http test_debug_http.cpp LIBS mabur_drone_core)
 
+  # Host coverage for the carried waybeam venc pure modules (Task B8).
+  # These four drone/venc/*.c files are ARM-only in venc_core (drone/
+  # CMakeLists.txt only globs venc/*.c under CMAKE_CROSSCOMPILING), so each
+  # test target compiles its own module source directly rather than
+  # linking mabur_drone_core/venc_core. venc_cfg.c is the one module
+  # already compiled into mabur_drone_core unconditionally (host+ARM) —
+  # test_venc_preset links that instead of recompiling it, to avoid
+  # defining venc_cfg_expand_preset() twice in one link.
+  set(MABUR_VENC_DIR ${CMAKE_SOURCE_DIR}/drone/venc)
+  add_mtest(test_venc_idr_rate_limit test_venc_idr_rate_limit.cpp
+    ${MABUR_VENC_DIR}/idr_rate_limit.c ${MABUR_VENC_DIR}/timing.c)
+  target_include_directories(test_venc_idr_rate_limit PRIVATE ${MABUR_VENC_DIR})
+  add_mtest(test_venc_intra_refresh test_venc_intra_refresh.cpp
+    ${MABUR_VENC_DIR}/intra_refresh.c)
+  target_include_directories(test_venc_intra_refresh PRIVATE ${MABUR_VENC_DIR})
+  add_mtest(test_venc_h26x_util test_venc_h26x_util.cpp
+    ${MABUR_VENC_DIR}/h26x_util.c)
+  target_include_directories(test_venc_h26x_util PRIVATE ${MABUR_VENC_DIR})
+  add_mtest(test_venc_h26x_param_sets test_venc_h26x_param_sets.cpp
+    ${MABUR_VENC_DIR}/h26x_param_sets.c)
+  target_include_directories(test_venc_h26x_param_sets PRIVATE ${MABUR_VENC_DIR})
+  add_mtest(test_venc_preset test_venc_preset.cpp LIBS mabur_drone_core)
+
   add_test(NAME host_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_host_e2e.sh)
   set_tests_properties(host_e2e PROPERTIES
     ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
