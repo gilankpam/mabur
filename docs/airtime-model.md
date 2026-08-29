@@ -1,0 +1,144 @@
+# The airtime model — how frame bytes become latency and jitter
+
+Written 2026-08-29 after the AU-completion-jitter investigation (EMA
+21 → 5–8 ms). Everything here is bench-measured on the prod pair at
+mcs5 / 10 Mbit/s unless marked otherwise. This page is the standing
+reference for the serialization model, the current (flat) UEP overhead
+policy, and the constraints anyone evolving either must not re-discover
+the hard way.
+
+## 1. The model
+
+The wire is a serial pipe only ~2.4× faster than the video it carries.
+An AU is *complete* at the GS when its last needed symbol (data + FEC)
+has arrived and decoded, so:
+
+    completion(frame) ≈ capture + encode + air_bytes / drain_rate
+    air_bytes         = payload_bytes × (1 + eff_overhead(sid)) (+ ~6% pkt hdrs)
+
+Measured calibration: completion delay ≈ **4.2 ms + 0.85 µs per payload
+byte** (≈ 9.4 Mbit/s effective payload drain at this op point). The
+encoder contributes almost nothing: maburd publishes into the frame ring
+at a flat 16.7 ms cadence, publish jitter EMA 0.3–0.5 ms, pts→publish
+< 1 ms for every frame type and preset (including refPred — the old
+"SigmaStar VENC alternating latency" claim from July 2026 is refuted).
+
+**Jitter is the second difference of air sizes.** Inter-completion
+interval = 16.7 ms + (air_this − air_prev)/rate, and the player's
+`video.jitter` metric is an EMA of |Δ interval| — an alternation
+detector. Any pattern that makes consecutive frames occupy different
+air time shows up multiplied by ~2. Two such patterns were found and
+killed:
+
+| era | mechanism | EMA |
+|---|---|---|
+| ltr:1, old UEP refs | payload sizes alternate 1.8:1 (TRAIL_R vs TRAIL_N) | ~21 ms |
+| rally, old UEP refs | payloads equal, but per-stream FEC overhead made base fly 2.5× air vs enhance 1.5× | ~10–15 ms |
+| rally, flat refs (now) | air sizes equal per class | **5–8 ms** |
+
+The remaining 5–8 ms is the floor: ~2–5 ms of transport noise
+(FEC-generation close timing, USB/radio batching, scheduling) plus
+scene-driven within-class size variance under CBR. The only lever below
+it is more air-rate headroom — running at lower utilization or a higher
+MCS margin halves the 0.85 µs/B slope — which is a ladder-policy trade,
+not a config knob.
+
+## 2. Current overhead policy — flat
+
+`kUepRefOverhead` (common/include/mabur/uep_encoder.h) is
+**{0.50, 0.50, 0.50, 0.50}**, scaled by `cmd_overhead/0.25` and clamped
+[0.125, 2.0]. At the mcs5 rung (cmd 0.5) every stream carries 1.0×
+overhead → equal air per byte on every class; at rung 0 (cmd 1.0)
+everything clamps to 2.0× uniformly. It was {1.00, 0.75, 0.50, 0.25}
+(devourer heritage) until 2026-08-29; the flatten happened in two
+reviewed steps (s1–s3, then s0) because frame→stream routing is
+whole-frame (`classify_frame`: IDR/param-sets → s0, TRAIL_R tid0 → s1,
+TRAIL_N and tid≥2 → s3; s2 is unused by current 1:1 SVC-T structures),
+so unequal refs = unequal air for equal frames.
+
+Resilience was re-proven at the reduced protection with the loss-sim
+rig, not assumed: 5% injected s1 loss → 0.03–0.10% post-FEC residual
+(the OLD refs demoted two ladder rungs at just 2%); 5% injected s0 loss
+→ zero video gaps and no IDR-request even fired, because rally's intra
+stripes heal without IDRs. That last fact is *why* s0 could join the
+flat ladder: the belt-and-braces 2.0× on IDRs was sized for a preset
+world (ltr) where a lost IDR froze the picture.
+
+**The RcAgent airtime estimator is now exact, not conservative.** It
+budgets video air as `bitrate × (1 + eff1)`; under the old refs eff1
+(1.5) overstated the true pair-average (~1.0) by ~25%, a hidden margin.
+With flat refs the estimate matches reality, so the same 75% airtime cap
+admits more commanded bitrate at a given rung, and the ladder's
+utilization/`u` readings sit on a new scale (thresholds deliberately NOT
+retuned — see the dated scale-break entry in data-provenance.md).
+
+## 3. Encoder-side size shaping — what works on this SoC
+
+The encoder decides payload sizes; the transport faithfully converts
+their variance into jitter. Knobs, in order of proven usefulness:
+
+- **Preset choice is the big lever.** `rally` (refPred) equalizes
+  base/enhance payloads and spreads intra cost (2 s GOP + 150 ms
+  stripes → IDRs only ~1.7× a P frame). `ltr:1` is structurally 1.8:1
+  (TRAIL_R references 2-back; windowed CBR won't equalize) and measures
+  ~11–12 ms EMA even on flat refs — don't run it if jitter matters.
+- **`venc.max_ipprop`** (config, 0=off; also volatile via
+  `:8301 /venc/set?max_ipprop=N`) programs `u32MaxIPProp` — the ONE RC
+  size cap star6e actually enforces (dose-response measured). It bounds
+  the I:P *ratio*: prod runs 2, which clips the IDR size distribution
+  flat at 2× the P average (worst-case ratio 1.65, IDR completion
+  +5.5 ms over base). Achieved-ratio floor ≈ 1.4 (I-QP rails); below
+  that the encoder refuses. It's worst-case insurance — inert while the
+  natural ratio is under the cap.
+- **`venc.qp_delta`** (s32IPQPDelta) is a weak bias: ~2% IDR size per
+  QP step (±12 range ≈ ±25% total). Average-shifter, not a bound.
+- **`u32MaxISize` / `u32MaxPSize` are DEAD on star6e** — SetRcParam
+  accepts them, `SetRcPriority(FRAMEBITS_FIRST)` succeeds, output is
+  bit-identical even at absurd caps (verified at 13× overshoot). The
+  star6e.h comment promising hard ceilings describes maruko, not this
+  chip. Do not rebuild that feature.
+- **GOP is not a free knob**: SigmaStar CBR converges over the GOP
+  window, so every bitrate step (= every ladder rung transition) becomes
+  an overshoot/undershoot sawtooth as long as the GOP. gop_s 10 made
+  every promote fail probation (TxQueue pinned, fabricated 13–41%
+  "loss" on a clean channel). Keep GOP ≤ ~2 s while the ladder
+  re-commands bitrate per rung.
+
+## 4. Measuring it — rigs and gotchas
+
+- **Drone side** (encoder cadence): poll `write_idx` on
+  `/dev/shm/mabur_f` (static armv7 sniffer; recipe = 8-byte-aligned
+  slot stride `(4+slot_data_size+7)&~7`, header 192 B). Lines:
+  `mono_us pts len flags nal0`. ⚠ Under rally the periodic refreshes
+  are VPS-led AUs whose slice NAL is not IDR type 19/20, so the ring
+  meta IDR flag misses them — count IDRs **GS-side** (`nal0==32`), and
+  don't trust drone-side class buckets under rally.
+- **GS side** (the truth for jitter): poll the AU ring
+  `/dev/shm/mabur-au` (ausniff layout), per-AU
+  `t_us pts sid fid len flags nal0`. Jitter EMA formula matches the
+  player: `ema += (|iv − prev_iv| − ema)/16`. Per-class completion
+  offset: min-normalized `(t_us − pts) & 0xFFFFFFFF`.
+- **Decomposition trick**: predict intervals purely from sizes
+  (`16.7 ms + 0.85 µs/B × Δlen`) and compare EMAs — whatever the size
+  model explains is encoder/policy-fixable; the residual is the floor.
+- **Loss injection**: build maburgs with `-DMABUR_LOSS_SIM=ON`
+  (bench-only; prod builds contain zero rig code). ⚠ The control
+  socket's default port 8302 collides with the GS's secondary sideport
+  fan-out — pass another port. ⚠ The ON build for the GS must be
+  cross-compiled arm64; a naive host cmake of the ON config yields an
+  x86 binary that will not run on the GS.
+
+## 5. Where the model could go next
+
+- **Below the floor**: headroom. At 2× the air-rate margin the
+  serialization slope halves; that's a ladder policy question
+  (utilization target per rung), not an encoder or FEC change.
+- **Per-rung overhead shape**: the flat ladder is uniform per *stream*;
+  the rung's `cmd_overhead` still scales all streams together and the
+  clamp at 2.0 flattens rung 0 fully. If a future rung wants
+  differentiated protection back, it must pay the jitter price knowingly
+  — the arithmetic in §1 prices it (Δair × 0.85 µs/B, ×2 in the EMA).
+- **The IDR budget**: with `max_ipprop` bounding the ratio and s0 flat,
+  the remaining IDR cost is pure payload (~1.7×P). The only further
+  reductions are quality trades (`qp_delta`, tighter ipprop toward the
+  1.4 floor) — measured, available, currently not worth it.
