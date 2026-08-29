@@ -176,9 +176,13 @@ re-deploy, not a file swap: rebuild waybeam in `../openipc-builder`
 `/etc/waybeam.json` from the archived copy
 (`out/drone-waybeam-config-final-2026-08-29.json` on the dev host), and
 recreate `S95waybeam` from the openipc-builder package's `init.d/`. The
-`maburd.pre-foldin`/`mabur.json.pre-foldin` pair on the drone is
-**incomplete without that** — the old maburd has no encoder of its own.
-After the pieces are back in place, the sequence below still applies:
+same cleanup also removed **every** `maburd.pre-*`/`mabur.json.pre-*`
+rollback from the drone and the `*.pre-*` binaries from the GS (archived
+on the dev host as `out/drone-rollback-archive-2026-08-29.tar.gz` and
+`out/gs-rollback-archive-2026-08-29.tar.gz`) — rollback of anything now
+means rebuild-from-git (or unpack the archive) + redeploy, per the
+roll-forward policy. After the pieces are back in place, the sequence
+below still applies:
 
 ```sh
 ssh root@<drone> '
