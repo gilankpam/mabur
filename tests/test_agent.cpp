@@ -83,8 +83,8 @@ std::vector<uint8_t> make_disc_wire(uint32_t vtx_id, uint32_t nonce, uint8_t op_
 
 }  // namespace
 
-// 1. BOOT->RENDEZVOUS on first tick; op is MAX_RANGE (mcs0 ladder, shed
-// T1+T2, ov 1.0).
+// 1. BOOT->RENDEZVOUS on first tick; op is MAX_RANGE (both slots mcs0, enh
+// shed, ov 2.0).
 TEST(boot_first_tick_applies_max_range_and_moves_to_rendezvous) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -97,20 +97,21 @@ TEST(boot_first_tick_applies_max_range_and_moves_to_rendezvous) {
   REQUIRE(!act.applied.empty());
   const AppliedOp& op = act.applied.back();
   auto expect_ladder = ladder_from(PhyMode::HT, 0, 20);
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 2; ++i) {
     CHECK(op.ladder[static_cast<size_t>(i)].mode == expect_ladder[static_cast<size_t>(i)].mode);
     CHECK(op.ladder[static_cast<size_t>(i)].mcs == expect_ladder[static_cast<size_t>(i)].mcs);
     CHECK(op.ladder[static_cast<size_t>(i)].bw == expect_ladder[static_cast<size_t>(i)].bw);
   }
-  CHECK(op.fec_overhead > 0.999 && op.fec_overhead < 1.001);
+  // 2.0, not the wire-literal 1.0: apply_max_range's hardcoded constant
+  // carries the old pre-Task-1 ×2 translation itself (see its comment).
+  CHECK(op.fec_overhead > 1.999 && op.fec_overhead < 2.001);
   CHECK(op.shed[0] == false);
-  CHECK(op.shed[1] == false);
-  CHECK(op.shed[2] == true);
-  CHECK(op.shed[3] == true);
+  CHECK(op.shed[1] == true);
 
   // BOOT's initial MAX_RANGE apply forces the bitrate policy to the robust
-  // MCS0 floor immediately (T0=6.5Mbps, ov=uep_layer_overhead(1,1.0)=2.0
-  // clamped -> 6500*0.65/3.0 = 1408.33 -> rounds to 1400).
+  // MCS0 floor immediately. Both slots are mcs0 (base clamps at 0), so the
+  // blend collapses to the single-rate case: denom = (1+ov)/rate =
+  // 3.0/6.5 = 0.46154, kbps = 1000*0.65/0.46154 = 1408.33 -> rounds to 1400.
   REQUIRE(!act.bitrates.empty());
   CHECK(act.bitrates.back() == 1400);
 }
@@ -210,8 +211,7 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   // Everything else about the DISC is still ignored.
   CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.current().generation == gen);   // op untouched (no MAX_RANGE yank)
-  CHECK(agent.current().ladder[1].mcs == 2);  // still the RCF rung
-  CHECK(agent.current().ladder[2].mcs == 2);
+  CHECK(agent.current().ladder[1].mcs == 2);  // enh still at the RCF's mcs
   CHECK(act.bitrates.size() == n_bitrates);   // bitrate policy not re-forced
 
   // Watchdog untouched: last real feedback was the RCF at t=100, so
@@ -222,10 +222,12 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
 }
 
-// 3. RCF profile HT mcs2/20, fec16=8 (ov=0.5) -> op ladder all four rungs at
-// mcs2 (base rate; FEC overhead is the sole per-layer differentiator), ov
-// 0.5; set_bitrate_kbps called with ~6300 (uep_layer_overhead(1, 0.5) =
-// 0.50*2 = 1.0 since the 2026-08-29 flatten, was 1.5 -> ~5100).
+// 3. RCF profile HT mcs2/20, fec16=8 (ov=0.5) -> op ladder is BASE=mcs1,
+// ENH=mcs2 (the mcs-1 rule, spec 2026-08-29-airtime-balance-uep §2), ov
+// 0.5; set_bitrate_kbps called with the blended target: rate_b=13.0
+// (mcs1), rate_e=19.5 (mcs2), fb=fe=0.5 (no feed), denom =
+// 0.5*1.5/13 + 0.5*1.5/19.5 = 0.096154, kbps = 1000*0.65/0.096154 =
+// 6760.0 -> rounds to 6800.
 TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -238,14 +240,52 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   const AppliedOp& op = agent.current();
-  CHECK(op.ladder[0].mcs == 2);  // CRIT
-  CHECK(op.ladder[1].mcs == 2);  // T0
-  CHECK(op.ladder[2].mcs == 2);  // T1 — same base mcs
-  CHECK(op.ladder[3].mcs == 2);  // T2 — same base mcs
+  CHECK(op.ladder[0].mcs == 1);  // BASE = mcs - 1
+  CHECK(op.ladder[1].mcs == 2);  // ENH = mcs
   CHECK(op.fec_overhead > 0.499 && op.fec_overhead < 0.501);
 
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 6300);
+  CHECK(act.bitrates.back() == 6800);
+}
+
+// 3b. The blend itself, isolated from the mcs2 case above: profile mcs5 ->
+// BASE=mcs4 (39 Mbps), ENH=mcs5 (52 Mbps). cfg: airtime_budget 0.60, ov
+// (RCF literal) 0.50, shares default 50/50 (no feed), excess 0. denom =
+// 0.5*1.5/39 + 0.5*1.5/52 = 0.033654, kbps = 1000*0.60/0.033654 = 17829 ->
+// round100 = 17800. bitrate_max_kbps is raised to 20000 here (the prod
+// default 10000 would clamp the result and hide the blend).
+TEST(bitrate_policy_blends_base_and_enh_rates) {
+  Config cfg = make_cfg();
+  cfg.encoder.airtime_budget = 0.60;
+  cfg.encoder.bitrate_max_kbps = 20000;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);  // ov16=8 -> 0.5
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(!act.bitrates.empty());
+  CHECK(act.bitrates.back() == 17800);
+}
+
+// 3c. MAX_RANGE degenerate case: both ladder slots are mcs0 (base clamps at
+// 0), so the blend collapses to the old single-rate formula and the
+// failsafe floor bitrate must be unchanged by the Task 5 policy rewrite.
+// denom = (1+2.0)/6.5 = 0.46154, kbps = 1000*0.60/0.46154 = 1300.0.
+TEST(bitrate_policy_failsafe_degenerates_to_single_rate) {
+  Config cfg = make_cfg();
+  cfg.encoder.airtime_budget = 0.60;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS, MAX_RANGE applied
+
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  REQUIRE(!act.bitrates.empty());
+  CHECK(act.bitrates.back() == 1300);
 }
 
 // 4. Stale seq (same seq again, then seq-1) -> no new apply_op (generation
@@ -310,11 +350,11 @@ TEST(failsafe_and_rendezvous_timers_fire_exactly) {
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   const AppliedOp& op = agent.current();
   CHECK(op.ladder[0].mcs == 0);
-  CHECK(op.fec_overhead > 0.999 && op.fec_overhead < 1.001);
+  CHECK(op.fec_overhead > 1.999 && op.fec_overhead < 2.001);
 
   // LINKED->FAILSAFE entry forces the bitrate policy to the MCS0 floor
   // (1400 kbps) immediately, bypassing the steady-state throttle/hysteresis
-  // — the encoder must not keep flooding at the last LINKED bitrate (6300)
+  // — the encoder must not keep flooding at the last LINKED bitrate (6800)
   // once the radio has dropped to the robust MAX_RANGE profile.
   REQUIRE(!act.bitrates.empty());
   CHECK(act.bitrates.back() == 1400);
@@ -347,13 +387,17 @@ TEST(rcf_after_failsafe_requests_idr) {
   CHECK(act.idr_calls == idr_before + 1);
 }
 
-// 9. tx_drops rising 2 ticks -> shed[3] then shed[2] true; 2s clean -> back
-// off. Refreshed with a periodic RCF (every <failsafe_ms=1000ms) throughout
-// so the agent stays LINKED for the whole scenario — without it, the last
-// two ticks (2300/4400ms with no RCF since t=0) land past failsafe_ms and
-// silently transition LINKED->FAILSAFE, which forces shed[2]/shed[3] true
-// via failsafe_shed_ (see C2(b)) and would make this congestion-only
-// decay test spuriously fail/pass for the wrong reason.
+// 9. tx_drops rising 2 ticks -> shed_level_ 1 then 2, both sheding the enh
+// layer (shed[1] — the sole droppable layer left, the old reserved layer
+// and its shed[2] slot are gone; shed_level_ still counts 0..3, so level 2
+// is not visible as a SEPARATE flag anymore, only as one more step the
+// 2s-per-level decay has to climb down); 2s clean -> back off. Refreshed
+// with a periodic RCF (every <failsafe_ms=1000ms) throughout so the agent
+// stays LINKED for the whole scenario — without it, the last two ticks
+// (2300/4400ms with no RCF since t=0) land past failsafe_ms and silently
+// transition LINKED->FAILSAFE, which forces shed[1] true via failsafe_shed_
+// (see C2(b)) and would make this congestion-only decay test spuriously
+// fail/pass for the wrong reason.
 TEST(congestion_shed_escalates_and_recovers) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -363,16 +407,13 @@ TEST(congestion_shed_escalates_and_recovers) {
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
   auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
-  CHECK(agent.current().shed[3] == false);
-  CHECK(agent.current().shed[2] == false);
+  CHECK(agent.current().shed[1] == false);
 
-  agent.tick(100, RadioHealth{0, 5});  // drops rose 0->5: level 1 (shed T2)
-  CHECK(agent.current().shed[3] == true);
-  CHECK(agent.current().shed[2] == false);
+  agent.tick(100, RadioHealth{0, 5});  // drops rose 0->5: level 1 (shed enh)
+  CHECK(agent.current().shed[1] == true);
 
-  agent.tick(200, RadioHealth{0, 10});  // drops rose 5->10: level 2 (shed T1 too)
-  CHECK(agent.current().shed[3] == true);
-  CHECK(agent.current().shed[2] == true);
+  agent.tick(200, RadioHealth{0, 10});  // drops rose 5->10: level 2 (still sheds enh — no 2nd layer left to differentiate)
+  CHECK(agent.current().shed[1] == true);
 
   // Keep LINKED alive with fresh RCFs (seq increasing) before the failsafe
   // window (1000ms since last feedback) would otherwise elapse.
@@ -381,57 +422,54 @@ TEST(congestion_shed_escalates_and_recovers) {
   auto wire3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
   agent.on_rc_frame(wire3.data(), wire3.size(), 1800);
 
-  // 2000ms clean (no new drops) -> level decrements back off.
+  // 2000ms clean (no new drops) -> level decrements 2->1, still sheding enh.
   agent.tick(2300, RadioHealth{0, 10});
   CHECK(agent.state() == RcAgent::State::LINKED);
-  CHECK(agent.current().shed[2] == false);
-  CHECK(agent.current().shed[3] == true);
+  CHECK(agent.current().shed[1] == true);
 
   auto wire4 = make_rcf_wire(cfg.link.vtx_id, 4, profile_byte, 8);
   agent.on_rc_frame(wire4.data(), wire4.size(), 2700);
   auto wire5 = make_rcf_wire(cfg.link.vtx_id, 5, profile_byte, 8);
   agent.on_rc_frame(wire5.data(), wire5.size(), 3600);
 
+  // A second 2000ms clean window: level decrements 1->0, shed lifts.
   agent.tick(4400, RadioHealth{0, 10});
   CHECK(agent.state() == RcAgent::State::LINKED);
-  CHECK(agent.current().shed[3] == false);
+  CHECK(agent.current().shed[1] == false);
 }
 
-// 9b. FAILSAFE entry forces shed[2]/shed[3]; a subsequent congestion-guard
-// reapply (which recomputes shed[2]/shed[3] from shed_level_ alone) must not
-// clobber the failsafe-forced shed — it has to OR failsafe_shed_ in. Also
-// covers: reapply_with_shed() must publish (act.apply_op called again) even
-// though it never bumps generation.
+// 9b. FAILSAFE entry forces shed[1]; a subsequent congestion-guard reapply
+// (which recomputes shed[1] from shed_level_ alone) must not clobber the
+// failsafe-forced shed — it has to OR failsafe_shed_ in. Also covers:
+// reapply_with_shed() must publish (act.apply_op called again) even though
+// it never bumps generation.
 TEST(failsafe_shed_survives_congestion_reapply) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS, MAX_RANGE: shed[2]=shed[3]=true
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS, MAX_RANGE: shed[1]=true
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
   auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
-  agent.on_rc_frame(wire.data(), wire.size(), 0);  // -> LINKED, shed[2]=shed[3]=false
+  agent.on_rc_frame(wire.data(), wire.size(), 0);  // -> LINKED, shed[1]=false
   CHECK(agent.state() == RcAgent::State::LINKED);
-  CHECK(agent.current().shed[2] == false);
-  CHECK(agent.current().shed[3] == false);
+  CHECK(agent.current().shed[1] == false);
 
   agent.tick(1000, RadioHealth{});  // silence -> FAILSAFE, MAX_RANGE reapplied
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
-  CHECK(agent.current().shed[2] == true);
-  CHECK(agent.current().shed[3] == true);
+  CHECK(agent.current().shed[1] == true);
   uint64_t gen_at_failsafe = agent.current().generation;
   size_t applies_at_failsafe = act.applied.size();
 
   // Congestion guard reapply while still in FAILSAFE: generation must NOT
   // bump (reapply_with_shed never touches it), but the actuator must see a
   // fresh apply_op (a new object every time, per the AppliedOp::generation
-  // doc comment) and shed[2]/shed[3] must remain forced true — NOT
-  // recomputed down to shed_level_'s (0) sheds.
+  // doc comment) and shed[1] must remain forced true — NOT recomputed down
+  // to shed_level_'s (0) sheds.
   agent.tick(1100, RadioHealth{0, 5});  // tx_drops rose 0->5
   CHECK(agent.current().generation == gen_at_failsafe);
   CHECK(act.applied.size() > applies_at_failsafe);
-  CHECK(agent.current().shed[2] == true);
-  CHECK(agent.current().shed[3] == true);
+  CHECK(agent.current().shed[1] == true);
 }
 
 // 9c. Proves the main.cpp hot-loop seam directly: an identity-compare pump
@@ -449,8 +487,7 @@ TEST(identity_compare_seam_catches_shed_only_republish_generation_compare_misses
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
   auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);  // -> LINKED, shed all false
-  CHECK(agent.current().shed[2] == false);
-  CHECK(agent.current().shed[3] == false);
+  CHECK(agent.current().shed[1] == false);
 
   // Simulate the atomic shared_ptr handoff main.cpp uses: MockActuator
   // doesn't publish shared_ptrs, so build the same sequence of AppliedOp
@@ -483,8 +520,8 @@ TEST(identity_compare_seam_catches_shed_only_republish_generation_compare_misses
 
   // Now drive a congestion-only shed change (no new generation) and append
   // its published op to both replay sequences.
-  agent.tick(100, RadioHealth{0, 5});  // tx_drops rose 0->5 -> shed[3]=true, no gen bump
-  CHECK(agent.current().shed[3] == true);
+  agent.tick(100, RadioHealth{0, 5});  // tx_drops rose 0->5 -> shed[1]=true, no gen bump
+  CHECK(agent.current().shed[1] == true);
   auto congestion_op = std::make_shared<const AppliedOp>(act.applied.back());
 
   if (!have_gen || congestion_op->generation != last_gen) ++gen_compare_applies;
@@ -550,11 +587,18 @@ TEST(demote_cascade_sheds_every_decrease_immediately) {
   // ctl-0020-shaped cascade at RCF cadence: each step's lower target must
   // go out on the SAME on_rc_frame call, throttle stamp notwithstanding.
   struct Step { uint8_t mcs, ov16; int kbps; };
-  // 16900/6300 re-derived for the 2026-08-29 flatten (uep_layer_overhead(1,
-  // .) drops from .75x to .50x scale); 1400 is the ov16=16 clamp-to-2.0
-  // case and is unchanged by the flatten (ref[1] doesn't move it off the
-  // ceiling).
-  const Step down[] = {{4, 4, 16900}, {2, 8, 6300}, {0, 16, 1400}};
+  // Re-derived for the Task 5 blended-rate policy (BASE=mcs-1/ENH=mcs,
+  // fb=0.5, budget 0.65, no feed):
+  //  mcs4/ov0.25: rate_b=26(mcs3)/rate_e=39(mcs4), denom=0.625*(1/26+1/39)
+  //    =0.0400641, kbps=650/0.0400641=16224.0 -> 16200.
+  //  mcs2/ov0.5: rate_b=13(mcs1)/rate_e=19.5(mcs2), denom=0.75*(1/13+1/19.5)
+  //    =0.0961538, kbps=650/0.0961538=6760.0 -> 6800.
+  //  mcs0/ov1.0: both slots clamp to mcs0 (6.5), denom=(1+1.0)/6.5=0.30769,
+  //    kbps=650/0.30769=2112.5 -> 2100. (No longer collides with the
+  //    MAX_RANGE floor's 1400: that is ov=2.0, not this RCF's literal 1.0
+  //    — the old uep_layer_overhead clamp-to-2.0 translation that made them
+  //    coincide is gone since Task 1/RC_VERSION 4.)
+  const Step down[] = {{4, 4, 16200}, {2, 8, 6800}, {0, 16, 2100}};
   uint64_t t = 3100;
   for (const Step& d : down) {
     auto w = make_rcf_wire(cfg.link.vtx_id, seq++,
@@ -576,17 +620,17 @@ TEST(bitrate_increase_still_gated) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
-  // Enter LINKED at mcs2/ov0.5 -> 6300 (forced entry call, stamp t=0;
-  // re-derived for the 2026-08-29 flatten, was 5100).
+  // Enter LINKED at mcs2/ov0.5 -> 6800 (forced entry call, stamp t=0; see
+  // test 3/10b's blended-formula derivation for this mcs/ov combo).
   auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
-  REQUIRE(act.bitrates.back() == 6300);
+  REQUIRE(act.bitrates.back() == 6800);
 
-  // Promote to mcs4/ov0.25 (16900, was 14500) once the stamp expired: call
-  // fires.
+  // Promote to mcs4/ov0.25 (16200, see 10b's derivation) once the stamp
+  // expired: call fires.
   auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 4, 20), 4);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
-  REQUIRE(act.bitrates.back() == 16900);
+  REQUIRE(act.bitrates.back() == 16200);
   size_t n = act.bitrates.size();
 
   // Further promote to mcs7 (20000) 100ms later: inside the throttle
@@ -603,23 +647,25 @@ TEST(bitrate_increase_still_gated) {
 
 // 10d. A promote must reach the encoder even when bitrate_max_kbps clamps
 // the new target to within 10% of the last applied value. Measured on the
-// bench 2026-08-28: prod runs airtime_budget 0.60 / bitrate_max 10000, so
-// rung4 (mcs4/ov0.75) commands 39000*0.60/2.5 = 9360 -> 9400, and rung5's
-// 52000*0.60/2.5 = 12480 clamps to 10000. |10000-9400| = 600 is inside the
-// v1 `changed_enough` deadband (last/10 = 940), so the promote was
-// swallowed and the encoder stayed on the mcs4 bitrate forever while the
-// link ran mcs5 -- a permanent 6% undershoot at the rung the link sits on
-// nearly all the time. The deadband is a filter on an absolute target with
-// no accumulator, so the error can never grow into the band: 9400 is a
-// fixed point. Dedup of repeated identical RCFs is the 1s throttle's job
-// (test 10 and 10b's steady window pin that); this test pins that a
-// genuinely CHANGED target is never discarded for being too small a step.
-// ov16=12 (cmd_overhead 0.75), not the bench's original 8 (0.5): the
-// 2026-08-29 UEP flatten dropped ref[1] from .75 to .50, so it now takes
-// cmd_overhead 0.75 (uep_layer_overhead(1, .75) = .50*3 = 1.5) to land on
-// the same effective 1.5x overhead the bench actually measured this trap
-// at — reusing cmd_overhead 0.5 here would give effective overhead 1.0 and
-// both rungs would clamp to the identical 10000, testing nothing.
+// bench 2026-08-28: prod runs airtime_budget 0.60 / bitrate_max 10000.
+// Re-derived for the Task 5 blended-rate policy (BASE=mcs-1/ENH=mcs,
+// fb=0.5, ov literal 1.0 — ov16=16, not the pre-blend 12/0.75; at 0.75 both
+// rungs' unclamped values exceed 10000 and clamp identically, testing
+// nothing):
+//   rung4 (mcs4): rate_b=26(mcs3)/rate_e=39(mcs4), denom = 0.5*2.0*
+//     (1/26+1/39) = 1.0*(5/78) = 0.064103, kbps = 600/0.064103 = 9360.0
+//     -> 9400.
+//   rung5 (mcs5): rate_b=39(mcs4)/rate_e=52(mcs5), denom = 1.0*(1/39+1/52)
+//     = 7/156 = 0.044872, kbps = 600/0.044872 = 13371.4, clamps to 10000.
+// |10000-9400| = 600 is inside the v1 `changed_enough` deadband (last/10 =
+// 940) that existed until 2026-08-28, so the promote was swallowed and the
+// encoder stayed on the mcs4 bitrate forever while the link ran mcs5 -- a
+// permanent 6% undershoot at the rung the link sits on nearly all the
+// time. The deadband is a filter on an absolute target with no
+// accumulator, so the error can never grow into the band: 9400 is a fixed
+// point. Dedup of repeated identical RCFs is the 1s throttle's job (test
+// 10 and 10b's steady window pin that); this test pins that a genuinely
+// CHANGED target is never discarded for being too small a step.
 TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   Config cfg = make_cfg();
   cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
@@ -628,16 +674,17 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
-  // Enter LINKED at rung 4: mcs4/ov0.75 -> 39000*0.60/2.5 = 9360 -> 9400.
-  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 12);
+  // Enter LINKED at rung 4: mcs4/ov1.0 -> 9360.0 -> 9400 (see the
+  // derivation above).
+  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 16);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
   REQUIRE(act.bitrates.back() == 9400);
 
-  // Promote to rung 5 well after the 1s throttle window: mcs5/ov0.75 ->
-  // 12480, clamped to 10000. Only 600 above the last applied value.
-  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 5, 20), 12);
+  // Promote to rung 5 well after the 1s throttle window: mcs5/ov1.0 ->
+  // 13371.4, clamped to 10000. Only 600 above the last applied value.
+  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 5, 20), 16);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
   CHECK(act.bitrates.back() == 10000);
 }
@@ -660,7 +707,8 @@ TEST(congestion_shed_never_commands_below_bitrate_min) {
   MockActuator act;
   RcAgent agent(cfg, act);
 
-  // BOOT tick applies MAX_RANGE (mcs0/ov1.00) -> 6500*0.60/3 = 1300, and
+  // BOOT tick applies MAX_RANGE (both slots mcs0, ov=2.0) -> the blend
+  // collapses to the single-rate case: 1000*0.60*6.5/(1+2.0) = 1300, and
   // returns before the guard runs. State stays RENDEZVOUS: no RCF ever
   // arrives, so run_bitrate_policy is never called again.
   agent.tick(0, RadioHealth{});
@@ -720,10 +768,11 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
   CHECK(!agent.take_link_established());  // flap, not a (re)start
 }
 
-// 11. RCF with probe3=true overrides only s3 (ladder[3]) with probe_profile's
-// MCS while T0/T1/CRIT stay on the base profile's mcs; agent.probing()
-// reflects the last accepted RCF's probe3 bit and reverts (both op.ladder[3]
-// and probing()) the moment a follow-up RCF arrives without the flag.
+// 11. RCF with probe3=true overrides only the enh layer (ladder[1], the old
+// s3) with probe_profile's MCS while the base layer (ladder[0]) stays on
+// the base profile's mcs-1; agent.probing() reflects the last accepted
+// RCF's probe3 bit and reverts (both op.ladder[1] and probing()) the moment
+// a follow-up RCF arrives without the flag.
 TEST(probe_rcf_overrides_layer3_mcs) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -744,19 +793,17 @@ TEST(probe_rcf_overrides_layer3_mcs) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   const AppliedOp& op = agent.current();
-  CHECK(op.ladder[0].mcs == 5);
-  CHECK(op.ladder[1].mcs == 5);
-  CHECK(op.ladder[2].mcs == 5);
-  CHECK(op.ladder[3].mcs == 6);  // s3 at probe MCS
+  CHECK(op.ladder[0].mcs == 4);  // BASE = mcs - 1, unaffected by the probe
+  CHECK(op.ladder[1].mcs == 6);  // ENH at the probe MCS
   CHECK(agent.probing());
 
-  // A follow-up RCF without the flag reverts s3 to the base profile's mcs
-  // and clears probing().
+  // A follow-up RCF without the flag reverts the enh layer to the base
+  // profile's mcs and clears probing().
   r.probe3 = false;
   r.seq = 2;
   auto wire2 = pack_rcf(r);
   agent.on_rc_frame(wire2.data(), wire2.size(), 100);
-  CHECK(agent.current().ladder[3].mcs == 5);
+  CHECK(agent.current().ladder[1].mcs == 5);
   CHECK(!agent.probing());
 }
 

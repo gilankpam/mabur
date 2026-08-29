@@ -20,7 +20,8 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 
 }  // namespace
 
-RcAgent::RcAgent(const Config& cfg, Actuator& act) : cfg_(cfg), act_(act) {}
+RcAgent::RcAgent(const Config& cfg, Actuator& act, BalancerFeed* feed)
+    : cfg_(cfg), act_(act), feed_(feed) {}
 
 void RcAgent::note_chain_break() {
   chain_break_pending_.store(true, std::memory_order_relaxed);
@@ -59,16 +60,21 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
   // Forced shed while MAX_RANGE is the operating point (BOOT/RENDEZVOUS or a
   // LINKED->FAILSAFE entry) — held sticky in failsafe_shed_ until an
   // RCF/DISC takes the agent back to LINKED (see apply_ladder_op), so a
-  // later congestion reapply's recompute of shed[2]/[3] (which is
-  // otherwise driven by shed_level_ alone) can't silently clobber it.
+  // later congestion reapply's recompute of shed[1] (which is otherwise
+  // driven by shed_level_ alone) can't silently clobber it.
   failsafe_shed_ = true;
 
   applied_.ladder = ladder;
-  applied_.fec_overhead = 1.0;
+  // 2.0, not 1.0: the pre-Task-1 wire scale doubled every commanded
+  // overhead on its way into the budget formula (uep_layer_overhead's ref
+  // scale); RC_VERSION 4 made fec_overhead a literal actual-overhead value
+  // with no translation left to apply it, so this hardcoded MAX_RANGE
+  // constant — the one caller with no wire value to carry the doubling for
+  // it — must apply the old ×2 itself to keep the MCS0 floor bitrate
+  // unchanged (carried review finding, Task 3 review).
+  applied_.fec_overhead = 2.0;
   applied_.shed[0] = false;
-  applied_.shed[1] = false;
-  applied_.shed[2] = true;  // reserved layer shed in MAX_RANGE, per spec (already covers shed_level_>=2)
-  applied_.shed[3] = true;  // enhance layer shed in MAX_RANGE, per spec (already covers shed_level_>=1)
+  applied_.shed[1] = true;  // enh layer shed in MAX_RANGE, per spec
   ++applied_.generation;
   act_.apply_op(applied_);
   run_bitrate_policy(now_ms, /*force=*/true);
@@ -77,7 +83,7 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
 // Applies a resolved (DISC row or RCF-decoded) ladder/FEC operating point.
 // Does NOT run the bitrate policy itself — callers on the RCF path invoke
 // run_bitrate_policy() explicitly afterwards, per the spec.
-void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder,
+void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
                               double fec_overhead) {
   // A resolved DISC/RCF op is only ever applied on a path that (re)enters
   // LINKED (see on_rc_frame), so the sticky MAX_RANGE forced-shed from a
@@ -88,9 +94,11 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder,
   applied_.ladder = ladder;
   applied_.fec_overhead = fec_overhead;
   applied_.shed[0] = false;
-  applied_.shed[1] = false;
-  applied_.shed[2] = shed_level_ >= 2;
-  applied_.shed[3] = shed_level_ >= 1;
+  // shed_level_ still counts 0..3 (congestion semantics untouched — see
+  // run_congestion_guard), but with the reserved layer gone there is only
+  // one droppable layer left, so any level >= 1 sheds it; there is no
+  // second layer for level >= 2 to additionally shed.
+  applied_.shed[1] = shed_level_ >= 1;
   ++applied_.generation;
   act_.apply_op(applied_);
 }
@@ -107,14 +115,14 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 4>& ladder,
 // generation changed — otherwise a congestion shed would be computed here
 // but silently never reach the encoder.
 //
-// shed[2]/[3] OR together every independent reason a layer must be shed:
-// failsafe_shed_ (sticky for as long as MAX_RANGE is the operating point —
-// see apply_max_range/apply_ladder_op) and the local congestion-shed level.
-// Without the OR, this recompute-from-shed_level_-alone would clobber a
-// forced failsafe shed the moment a congestion tick runs while in FAILSAFE.
+// shed[1] ORs together every independent reason the enh layer must be
+// shed: failsafe_shed_ (sticky for as long as MAX_RANGE is the operating
+// point — see apply_max_range/apply_ladder_op) and the local congestion-
+// shed level. Without the OR, this recompute-from-shed_level_-alone would
+// clobber a forced failsafe shed the moment a congestion tick runs while in
+// FAILSAFE.
 void RcAgent::reapply_with_shed() {
-  applied_.shed[2] = failsafe_shed_ || (shed_level_ >= 2);
-  applied_.shed[3] = failsafe_shed_ || (shed_level_ >= 1);
+  applied_.shed[1] = failsafe_shed_ || (shed_level_ >= 1);
   act_.apply_op(applied_);
 }
 
@@ -154,16 +162,35 @@ void RcAgent::reapply_with_shed() {
 //    rounded to 100 as usual. The throttle timestamp is updated afterwards
 //    either way, so a steady-state RCF arriving shortly after a forced call
 //    is throttled normally.
+//
+// The blend (spec 2026-08-29-airtime-balance-uep §2 bitrate): with two
+// streams at different PHY rates, a single-rate budget target (T0's rate
+// alone) is wrong the moment the balancer isn't splitting the video 50/50
+// across them, so the target is built from both rates weighted by the
+// balancer's live share. fb/exb/exe default to 0.5/0/0 (an even split, no
+// measured framing excess) whenever feed_ is null (tests, or before Task 7
+// wires the balancer up) — see run_bitrate_policy's core comment below.
 void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
-  double mbps = rc::phy_rate_mbps(applied_.ladder[1]);  // T0
-  // fec_overhead is literal air overhead since Task 1 (RC_VERSION 4) — no
-  // uep_layer_overhead ladder translation left to apply. Full per-stream
-  // blended bitrate policy is Task 5's; this keeps the existing single-rung
-  // budget math compiling against the deleted scaling function.
-  double overhead = applied_.fec_overhead;
-  double kbps = mbps * 1000.0 * cfg_.encoder.airtime_budget / (1.0 + overhead);
+  const double rate_b = rc::phy_rate_mbps(applied_.ladder[0]);
+  const double rate_e = rc::phy_rate_mbps(applied_.ladder[1]);
+  const double ov = applied_.fec_overhead;
+  double fb = 0.5, exb = 0.0, exe = 0.0;
+  if (feed_) {
+    fb = std::clamp<double>(feed_->share_base.load(std::memory_order_relaxed), 0.05, 0.95);
+    exb = feed_->excess_base.load(std::memory_order_relaxed);
+    exe = feed_->excess_enh.load(std::memory_order_relaxed);
+  }
+  // Blended airtime: V * [fb*mult_b/rate_b + (1-fb)*mult_e/rate_e] = budget.
+  // mult uses COMMANDED redundancy (ov, the RCF's literal fec_overhead) plus
+  // MEASURED framing excess (exb/exe), never the balancer's live per-stream
+  // ov (BalancerFeed::ov_base/ov_enh, telemetry-only) — the balancer is
+  // repair-byte-neutral and must not feed back into this target (spec §2
+  // bitrate).
+  const double denom = fb * (1.0 + ov + exb) / rate_b +
+                       (1.0 - fb) * (1.0 + ov + exe) / rate_e;
+  double kbps = 1000.0 * cfg_.encoder.airtime_budget / denom;
   // NOTE the encoder has its own floor below this one: venc's apply_bitrate
   // rails at VENC_BITRATE_MIN_KBPS (1000), so a configured bitrate_min_kbps
   // under 1000 is silently re-clamped there and this policy's "structural
@@ -339,17 +366,18 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     rc::decode_profile(r->profile, mode, mcs, bw);
     auto ladder = rc::ladder_from(mode, mcs, bw);
 
-    // s3 probe (spec 2026-08-05): when the RCF carries probe3, layer 3 (s3)
-    // transmits at probe_profile's MCS while mode/bw stay the base
-    // profile's — MCS-only probe, everything else (CRIT/T0/T1) rides the
-    // normal ladder. Recomputed on every accepted RCF, so a follow-up frame
-    // without the flag reverts s3 to the base profile's mcs.
+    // s3 probe (spec 2026-08-05): when the RCF carries probe3, the enh
+    // layer (ladder[1], the old s3) transmits at probe_profile's MCS while
+    // mode/bw stay the base profile's — MCS-only probe, the base layer
+    // (ladder[0]) rides the normal ladder. Recomputed on every accepted
+    // RCF, so a follow-up frame without the flag reverts the enh layer to
+    // the base profile's mcs.
     probe3_active_ = false;
     if (r->probe3) {
       PhyMode pmode;
       uint8_t pmcs, pbw;
       rc::decode_profile(r->probe_profile, pmode, pmcs, pbw);
-      ladder[3].mcs = pmcs;
+      ladder[1].mcs = pmcs;
       probe3_active_ = true;
     }
 
