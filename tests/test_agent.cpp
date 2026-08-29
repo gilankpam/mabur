@@ -288,6 +288,72 @@ TEST(bitrate_policy_failsafe_degenerates_to_single_rate) {
   CHECK(act.bitrates.back() == 1300);
 }
 
+// 3d. Non-null BalancerFeed drives the blend: asymmetric share (0.7/0.3)
+// plus DISTINCT excess_base/excess_enh, chosen so a swapped exb/exe or an
+// inverted fb/(1-fb) weighting would both change the result (verified by
+// hand below the derivation). profile mcs5 -> BASE=mcs4 (39 Mbps),
+// ENH=mcs5 (52 Mbps), ov (RCF literal) 0.5, budget 0.60, max 20000 (avoid
+// the clamp).
+//   denom = 0.7*(1+0.5+0.10)/39 + 0.3*(1+0.5+0.05)/52
+//         = 0.7*1.60/39 + 0.3*1.55/52 = 1.12/39 + 0.465/52
+//         = 0.0287179 + 0.0089423 = 0.0376603
+//   kbps  = 1000*0.60/0.0376603 = 15931.9 -> round100 = 15900.
+// (For contrast, swapping exb/exe gives 16200; inverting fb/(1-fb) i.e.
+// using 0.3 as the base weight gives 18100 -- both different from 15900,
+// so either bug would fail this test.)
+TEST(bitrate_policy_blend_uses_live_feed_share_and_excess) {
+  Config cfg = make_cfg();
+  cfg.encoder.airtime_budget = 0.60;
+  cfg.encoder.bitrate_max_kbps = 20000;
+  MockActuator act;
+  BalancerFeed feed;
+  feed.share_base.store(0.7f, std::memory_order_relaxed);
+  feed.excess_base.store(0.10f, std::memory_order_relaxed);
+  feed.excess_enh.store(0.05f, std::memory_order_relaxed);
+  RcAgent agent(cfg, act, &feed);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);  // ov16=8 -> 0.5
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(!act.bitrates.empty());
+  CHECK(act.bitrates.back() == 15900);
+}
+
+// 3e. feed_->share_base is clamped to [0.05, 0.95] before it reaches the
+// blend -- a share of 0.0 (e.g. the balancer transiently reporting "all
+// air to enh") must not zero out the base term entirely. profile mcs3 ->
+// BASE=mcs2 (19.5 Mbps), ENH=mcs3 (26 Mbps), ov (RCF literal) 0.25, budget
+// 0.60, max 20000, no excess.
+//   fb clamps 0.0 -> 0.05.
+//   denom = 0.05*1.25/19.5 + 0.95*1.25/26 = 0.0625/19.5 + 1.1875/26
+//         = 0.0032051 + 0.0456731 = 0.0488782
+//   kbps  = 1000*0.60/0.0488782 = 12275.4 -> round100 = 12300.
+// (Without the clamp, fb=0.0 would drop the base term entirely: denom =
+// 1.25/26 = 0.0480769, kbps = 600/0.0480769 = 12480.0 -> 12500, a
+// different value from the clamped 12300 pinned below -- so a missing or
+// wrong clamp fails this test.)
+TEST(bitrate_policy_blend_clamps_feed_share_to_valid_range) {
+  Config cfg = make_cfg();
+  cfg.encoder.airtime_budget = 0.60;
+  cfg.encoder.bitrate_max_kbps = 20000;
+  MockActuator act;
+  BalancerFeed feed;
+  feed.share_base.store(0.0f, std::memory_order_relaxed);
+  RcAgent agent(cfg, act, &feed);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 3, 20);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 4);  // ov16=4 -> 0.25
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(!act.bitrates.empty());
+  CHECK(act.bitrates.back() == 12300);
+}
+
 // 4. Stale seq (same seq again, then seq-1) -> no new apply_op (generation
 // unchanged).
 TEST(stale_seq_is_ignored) {
