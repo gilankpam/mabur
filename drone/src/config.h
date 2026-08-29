@@ -50,7 +50,9 @@ struct FecCfg {
   std::array<int, 4> symbol_size = {64, 64, 64, 64};
   // Sliding-window burst budget: a layer at overhead ov survives a hole of
   // up to L <= window*ov/(1+ov) consecutive lost symbols. 128 lets the
-  // ov-0.25 layer survive one full bpb-16 body loss.
+  // ov-0.50 layer (since the 2026-08-29 UEP flatten, was ov-0.25) survive
+  // one full bpb-16 body loss with room to spare (L=128*0.50/1.50≈42.7 vs
+  // 16 lost symbols; was ≈25.6 at the pre-flatten ov-0.25).
   int window = 128;
   std::array<int, 4> blocks_per_body = {4, 8, 16, 16};
   double base_overhead = 0.25;

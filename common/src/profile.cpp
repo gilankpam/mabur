@@ -113,7 +113,8 @@ std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw) {
 // T0's ldpc/stbc — flags-off T1/T2 measured 2-3 dB weaker on air at the
 // same MCS (single-chain TX, no coding gain), with the weaker GS card
 // losing 3-5x more of stream 3's frames. Per-layer differentiation is
-// exclusively the FEC overhead ladder (1.00/0.75/0.50/0.25 x scale).
+// exclusively the FEC overhead ladder (1.00/0.50/0.50/0.50 x scale,
+// flattened 2026-08-29 -- was 1.00/0.75/0.50/0.25).
 std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
   int top = (mode == PhyMode::VHT) ? 8 : 7;
   int m = std::clamp(static_cast<int>(mcs), 0, top);

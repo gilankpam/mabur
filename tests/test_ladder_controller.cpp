@@ -93,7 +93,8 @@ int penalty_ms_for(const LadderController& ctl, double now_ms, int rung) {
 
 TEST(budget_uses_s1_effective) {
   LadderController ctl(make_cfg());
-  // rung 0: overhead 1.0 -> eff1 = 0.75 * (1.0/0.25) = 3.0, clamped to 2.0.
+  // rung 0: overhead 1.0 -> eff1 = 0.50 * (1.0/0.25) = 2.0, still clamped
+  // to 2.0 (was 0.75 * (1.0/0.25) = 3.0 before the 2026-08-29 UEP flatten).
   CHECK(std::abs(ctl.budget() - (2.0 / 3.0)) < 1e-9);
 
   double t = 0;

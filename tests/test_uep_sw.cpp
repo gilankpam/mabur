@@ -207,14 +207,16 @@ TEST(survives_heavier_random_loss) {
 
 TEST(survives_burst_loss) {
   // 1% loss events x 4-body bursts (T0: 32 consecutive symbols lost;
-  // window 128 at overhead 0.75 tolerates bursts up to ~54).
+  // window 128 at overhead 0.50 tolerates bursts up to ~42, since the
+  // 2026-08-29 UEP flatten -- was overhead 0.75 / ~54).
   auto r = run_sim(164, 8, 128, 20000, 1.0, 4);
   CHECK(pct(r) >= 99.0);
 }
 
 TEST(wider_window_survives_longer_bursts) {
   // 6-body bursts = 48 consecutive T0 symbols: window 32 cannot span the
-  // hole (budget ~13), window 128 can (~54).
+  // hole (budget ~10), window 128 can (~42) -- re-derived for overhead 0.50
+  // (was ~13 / ~54 at the pre-flatten overhead 0.75).
   auto w32 = run_sim(164, 8, 32, 20000, 1.0, 6);
   auto w128 = run_sim(164, 8, 128, 20000, 1.0, 6);
   CHECK(pct(w128) >= 99.0);
@@ -239,8 +241,9 @@ TEST(mixed_symbol_sizes_burst_within_budget) {
   // 1..3 means those bodies interleave source/repair envelopes for whichever
   // layer they land on, so 8 consecutive bodies costs a given layer well
   // under its worst-case symbol loss. Layer 3 (sym 1312/bpb1/window 64,
-  // overhead 0.25) has the tightest guarantee band: burst_sim.cpp's
-  // self-check gate proves this exact geometry lossless up to B<=14
+  // overhead 0.50 since the 2026-08-29 UEP flatten, was 0.25) has the
+  // tightest guarantee band: burst_sim.cpp's self-check gate proves this
+  // exact geometry lossless up to B<=30 (was B<=14 pre-flatten)
   // consecutive bodies on single-layer stream-3 traffic, so 8 is comfortably
   // within budget for every layer here (layer 0's bpb 4 gives it an even
   // wider margin per body). Deterministic, fixed start index (not seeded
