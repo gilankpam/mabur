@@ -43,9 +43,19 @@ OvSplit AirBalancer::solve(double rate_b, double rate_e, double ov_cmd) {
     const double denom = kb + ke * Lb / Le;
     double ov_b = (ke * (m_e + B / Le - ae) - kb * (m_b - ab)) / denom;
     double ov_e = (B - Lb * ov_b) / Le;
-    // 2% deadband: if already balanced at current anchors, keep them.
+    // 2% deadband: keep the current anchors only if they are BOTH (a)
+    // already balanced and (b) still consistent with the CURRENT budget
+    // B. Balance alone is not enough: after ov_cmd changes (promote/
+    // demote), both streams' measured air can shift near-proportionally
+    // and stay balanced within 2% while still flying the stale total
+    // repair budget from before the change (finding: deadband holds
+    // stale anchors across an ov_cmd change). Gate on the budget too so
+    // a genuine ov_cmd change always falls through to the solver.
     const double air_b0 = kb * m_b, air_e0 = ke * m_e;
-    if (std::abs(air_b0 - air_e0) < 0.02 * std::max(air_b0, air_e0)) {
+    const bool balanced = std::abs(air_b0 - air_e0) < 0.02 * std::max(air_b0, air_e0);
+    const double budget_now = Lb * ab + Le * ae;
+    const bool budget_ok = std::abs(budget_now - B) < 0.02 * B;
+    if (balanced && budget_ok) {
       ov_b = ab; ov_e = ae;
     }
     // Rails: clamp one side, re-solve the other from the budget, clamp it.

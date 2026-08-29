@@ -72,4 +72,30 @@ TEST(publishes_feed) {
   CHECK(std::abs(f.ov_base.load() - s.ov_base) < 1e-3);
 }
 
+TEST(deadband_holds_across_identical_ov_cmd) {
+  AirBalancer b(nullptr);
+  // symmetric streams: already balanced under any anchors == ov_cmd.
+  feed_frames(b, 2000, 1.5, 2000, 1.5);
+  auto s1 = b.solve(52.0, 52.0, 0.5);
+  feed_frames(b, 2000, 1.5, 2000, 1.5);   // more identical frames, still balanced
+  auto s2 = b.solve(52.0, 52.0, 0.5);     // same ov_cmd -> deadband holds anchors
+  CHECK(std::abs(s2.ov_base - s1.ov_base) < 1e-9);
+  CHECK(std::abs(s2.ov_enh - s1.ov_enh) < 1e-9);
+}
+
+TEST(deadband_falls_through_on_ov_cmd_change) {
+  AirBalancer b(nullptr);
+  feed_frames(b, 2000, 1.5, 2000, 1.5);
+  auto s1 = b.solve(52.0, 52.0, 0.5);     // anchors at ov_cmd A = 0.5
+  (void)s1;
+  feed_frames(b, 2000, 1.5, 2000, 1.5);   // more identical frames, still balanced
+  auto s2 = b.solve(52.0, 52.0, 0.3);     // ov_cmd B = 0.3 (promote-like change)
+  // The returned split's budget must track the NEW commanded budget B,
+  // not the stale one anchored under A -- i.e. the deadband must NOT
+  // freeze the old total repair budget across an ov_cmd change.
+  double budget = 2000.0 * s2.ov_base + 2000.0 * s2.ov_enh;
+  CHECK(std::abs(budget - 4000.0 * 0.3) < 1.0);
+  CHECK(std::abs(budget - 4000.0 * 0.5) > 100.0);
+}
+
 MTEST_MAIN
