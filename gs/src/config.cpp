@@ -49,13 +49,17 @@ std::string get_str(const json& o, const char* key, const std::string& dflt,
 }
 }  // namespace
 
-std::array<mabur::UepLayerCfg, 4> Config::uep_layers() const {
-  std::array<mabur::UepLayerCfg, 4> out{};
-  for (int s = 0; s < 4; ++s) {
+std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
+  std::array<mabur::UepLayerCfg, 2> out{};
+  for (int s = 0; s < 2; ++s) {
     // window is TX-side; 128 here only feeds SwDecoder's auto-horizon
-    // default, which the explicit seq_horizon (below) overrides.
+    // default, which the explicit seq_horizon (below) overrides. overhead
+    // is decode-inert (SwDecoder never reads SwConfig::overhead -- see
+    // common/include/mabur/uep_decoder.h), so 0.5 is a placeholder, not a
+    // tuning knob; the real (literal, actual-air) overhead lives on the
+    // drone's encoder side and on link.ladder_cfg for RC accounting.
     out[static_cast<size_t>(s)].fec = mabur::SwConfig{
-        fec.symbol_size[static_cast<size_t>(s)], 128, mabur::kUepRefOverhead[s]};
+        fec.symbol_size[static_cast<size_t>(s)], 128, 0.5};
     out[static_cast<size_t>(s)].blocks_per_body = 4;  // unused on decode
   }
   return out;
@@ -105,8 +109,8 @@ Config load_config(const std::string& path) {
     if (r.contains("symbol_size")) {
       auto& s = r.at("symbol_size");
       if (s.is_array()) {
-        if (s.size() != 4) fail("fec.symbol_size", "array must have 4 ints");
-        for (size_t i = 0; i < 4; ++i)
+        if (s.size() != 2) fail("fec.symbol_size", "array must have 2 ints");
+        for (size_t i = 0; i < 2; ++i)
           c.fec.symbol_size[i] = static_cast<int>(s.at(i).get<int64_t>());
       } else if (s.is_number_integer()) {
         c.fec.symbol_size.fill(static_cast<int>(s.get<int64_t>()));
@@ -146,7 +150,9 @@ Config load_config(const std::string& path) {
            "rcf_repeat_copies * rcf_repeat_ms must be < feedback_ms");
     c.link.beacon_keepalive_ms = static_cast<int>(get_int(r, "beacon_keepalive_ms", 1000, 100, 60000, "link"));
     c.link.static_mcs = static_cast<int>(get_int(r, "static_mcs", -1, -1, 7, "link"));
-    c.link.static_overhead = get_num(r, "static_overhead", 0.25, 0.10, 1.0, "link");
+    // Actual-air overhead (airtime-balance-uep): literal, not a scaled cmd
+    // value -- old cmd default/range 0.25 [0.10, 1.0] x2 everywhere.
+    c.link.static_overhead = get_num(r, "static_overhead", 0.5, 0.1, 2.0, "link");
 
     // Measured-loss ladder: rungs (c.link.ladder_cfg.ladder already holds the
     // struct default 6-rung ladder; an explicit "ladder" array replaces it
@@ -164,7 +170,9 @@ Config load_config(const std::string& path) {
         check_keys(rj, where, {"mcs", "overhead"});
         Rung rung;
         rung.mcs = static_cast<int>(get_int(rj, "mcs", 0, 0, 7, where));
-        rung.overhead = get_num(rj, "overhead", 1.0, 0.05, 1.0, where);
+        // Actual-air overhead (airtime-balance-uep): literal, not a scaled
+        // cmd value -- old cmd default/range 1.0 [0.05, 1.0] x2 everywhere.
+        rung.overhead = get_num(rj, "overhead", 2.0, 0.1, 2.0, where);
         parsed.push_back(rung);
       }
       c.link.ladder_cfg.ladder = parsed;

@@ -21,13 +21,37 @@ TEST(default_bundle_config_loads) {
   CHECK(cfg.video.frame_gap_timeout_ms == 50);
   auto L = cfg.uep_layers();
   CHECK(L[0].fec.overhead == 0.50);
-  CHECK(L[3].fec.overhead == 0.50);
+  CHECK(L[1].fec.overhead == 0.50);
 }
 
 TEST(missing_keys_fall_back_to_defaults) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   CHECK(cfg.radio.channel == 149);
   CHECK(cfg.video.frame_lookahead == 8);
+}
+
+// Actual-overhead ranges (airtime-balance-uep): static_overhead's default
+// and validation range are doubled from cmd-value semantics ([0.10, 1.0]
+// default 0.25) to actual-air semantics ([0.1, 2.0] default 0.5).
+TEST(static_overhead_default_and_range) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.static_overhead > 0.499 && cfg.link.static_overhead < 0.501);
+  auto cfg2 = maburgs::load_config(write_tmp(R"({"link":{}})"));
+  CHECK(cfg2.link.static_overhead > 0.499 && cfg2.link.static_overhead < 0.501);
+
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"static_overhead":2.1}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"static_overhead":0.05}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+
+  auto cfg3 = maburgs::load_config(write_tmp(R"({"link":{"static_overhead":2.0}})"));
+  CHECK(cfg3.link.static_overhead > 1.999 && cfg3.link.static_overhead < 2.001);
 }
 
 // link.video_silence_ms claimed to tune the video-silence escape valve, but
@@ -77,25 +101,39 @@ TEST(errors_are_fail_fast) {
 
 TEST(fec_symbol_size_array_per_layer) {
   auto cfg = maburgs::load_config(
-      write_tmp(R"({"fec":{"symbol_size":[164,1312,1312,1312]}})"));
+      write_tmp(R"({"fec":{"symbol_size":[164,1312]}})"));
   auto layers = cfg.uep_layers();
   CHECK(layers[0].fec.symbol_size == 164);
-  CHECK(layers[3].fec.symbol_size == 1312);
+  CHECK(layers[1].fec.symbol_size == 1312);
 }
 
 TEST(fec_symbol_size_scalar_fans_out) {
   auto cfg = maburgs::load_config(write_tmp(R"({"fec":{"symbol_size":328}})"));
   auto layers = cfg.uep_layers();
-  for (int s = 0; s < 4; ++s) CHECK(layers[(size_t)s].fec.symbol_size == 328);
+  for (int s = 0; s < 2; ++s) CHECK(layers[(size_t)s].fec.symbol_size == 328);
 }
 
 TEST(fec_symbol_size_bounds) {
   bool threw = false;
   try {
     maburgs::load_config(
-        write_tmp(R"({"fec":{"symbol_size":[164,1312,1312,1600]}})"));
+        write_tmp(R"({"fec":{"symbol_size":[164,1600]}})"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);  // 1600 > 1500 upper bound
+}
+
+// 2-stream config (airtime-balance-uep): a 4-entry symbol_size array is no
+// longer a valid shape and must fail parse with a specific message, not
+// silently truncate or index out of bounds.
+TEST(fec_symbol_size_wrong_length_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(
+        write_tmp(R"({"fec":{"symbol_size":[164,1312,1312,1312]}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("array must have 2 ints") != std::string::npos;
+  }
+  CHECK(threw);
 }
 
 TEST(tx_card_validates_against_effective_card_list) {
@@ -347,6 +385,8 @@ TEST(ladder_rung_mcs_out_of_range_rejected) {
 }
 
 TEST(ladder_rung_overhead_out_of_range_rejected) {
+  // Actual-overhead ranges (airtime-balance-uep): rung overhead accepts
+  // [0.1, 2.0], not the old cmd-value [0.05, 1.0].
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":0.01}]}})"));
@@ -354,18 +394,19 @@ TEST(ladder_rung_overhead_out_of_range_rejected) {
   CHECK(threw);
   threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":1.5}]}})"));
+    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":2.1}]}})"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
 
 TEST(ladder_rung_overhead_boundary_values_accepted) {
-  // overhead exactly at the [0.05, 1.0] boundary must load, not throw.
+  // overhead exactly at the [0.1, 2.0] boundary must load, not throw.
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[{"mcs":0,"overhead":0.05},{"mcs":7,"overhead":1.0}]}})"));
-  CHECK(cfg.link.ladder_cfg.ladder.size() == 2);
-  CHECK(cfg.link.ladder_cfg.ladder[0].overhead > 0.0499 && cfg.link.ladder_cfg.ladder[0].overhead < 0.0501);
-  CHECK(cfg.link.ladder_cfg.ladder[1].overhead > 0.999 && cfg.link.ladder_cfg.ladder[1].overhead < 1.001);
+      R"({"link":{"ladder":[{"mcs":0,"overhead":0.1},{"mcs":7,"overhead":1.9},{"mcs":6,"overhead":2.0}]}})"));
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 3);
+  CHECK(cfg.link.ladder_cfg.ladder[0].overhead > 0.0999 && cfg.link.ladder_cfg.ladder[0].overhead < 0.1001);
+  CHECK(cfg.link.ladder_cfg.ladder[1].overhead > 1.899 && cfg.link.ladder_cfg.ladder[1].overhead < 1.901);
+  CHECK(cfg.link.ladder_cfg.ladder[2].overhead > 1.999 && cfg.link.ladder_cfg.ladder[2].overhead < 2.001);
 }
 
 TEST(ladder_empty_array_rejected) {
@@ -464,6 +505,26 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
   CHECK(cfg2.link.ladder_cfg.down_util > 0.499 && cfg2.link.ladder_cfg.down_util < 0.501);
   CHECK(cfg2.link.ladder_cfg.clean_ms == 4000);
   CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
+}
+
+// Default bundle ladder rewritten to actual-air overhead (airtime-balance-
+// uep): old cmd values x2, with mcs6/mcs7 landing on genuinely different
+// bytes now (0.3 vs 0.2) instead of the 16ths grid collapsing 0.15/0.10
+// to the same repair-symbol count.
+TEST(default_bundle_ladder_is_actual_overhead) {
+  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
+  auto& L = c.link.ladder_cfg.ladder;
+  CHECK(L.size() == 6);
+  CHECK(L[0].mcs == 0); CHECK(L[0].overhead > 1.999 && L[0].overhead < 2.001);
+  CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.999 && L[1].overhead < 1.001);
+  CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.499 && L[2].overhead < 0.501);
+  CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.499 && L[3].overhead < 0.501);
+  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.299 && L[4].overhead < 0.301);
+  CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.199 && L[5].overhead < 0.201);
+  CHECK(c.link.static_overhead > 0.499 && c.link.static_overhead < 0.501);
+  auto layers = c.uep_layers();
+  CHECK(layers[0].fec.symbol_size == 332);
+  CHECK(layers[1].fec.symbol_size == 332);
 }
 
 TEST(au_ring_defaults) {

@@ -26,14 +26,14 @@ struct RadioCfg {
 
 /// FEC configuration: sliding-window decoder parameters.
 struct FecCfg {
-  // Per-layer symbol size (stream 0..3); must match the drone's fec config
+  // Per-layer symbol size (stream 0..1); must match the drone's fec config
   // layer-for-layer or that layer's SBI framing misparses on the receive
   // side: subblocks_failed (sbf) climbs for that layer, or — if the
   // mismatched stride exceeds the body region — bodies increments while
   // symbols_in (si) stays frozen at 0. Not silent, but not bad_cfg either;
   // symbols never reach the sliding-window decoder to be flagged there.
-  // JSON: scalar fans out, or 4-array.
-  std::array<int, 4> symbol_size = {64, 64, 64, 64};
+  // JSON: scalar fans out, or 2-array.
+  std::array<int, 2> symbol_size = {64, 64};
   int decode_deadline_ms = 200;
   int seq_horizon = 512;
 };
@@ -55,7 +55,10 @@ struct LinkCfg {
   // (HT, 20 MHz). Rendezvous/keep-alive/failsafe machinery is unaffected.
   // For bench debugging with a fixed operating point (2026-07-12).
   int static_mcs = -1;
-  double static_overhead = 0.25;
+  // Actual-air overhead (airtime-balance-uep): literal, not a scaled cmd
+  // value. Default 0.5 is the old cmd-value default (0.25) x2 -- see the
+  // rule note in gs/src/config.cpp's load_config.
+  double static_overhead = 0.5;
 
   // Measured-loss ladder controller config (spec
   // docs/superpowers/specs/2026-07-27-ladder-controller-design.md): rungs
@@ -153,8 +156,9 @@ struct Config {
   StatsCfg stats;
   AuRingOutCfg au_ring;
 
-  /// Builds decoder configuration with per-stream RS and UEP overhead.
-  std::array<mabur::UepLayerCfg, 4> uep_layers() const;
+  /// Builds decoder configuration with per-stream RS and UEP overhead
+  /// (2 streams since the airtime-balance-uep fold-in).
+  std::array<mabur::UepLayerCfg, 2> uep_layers() const;
 };
 
 /// Loads configuration from a JSON file (MABUR_GS_BUNDLE_DIR/maburgs.default.json).
