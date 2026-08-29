@@ -52,7 +52,7 @@ size_t RingClient::drain_ring_() {
     // in which case flush carries forward exactly as for kResync.
     const bool complete = (m.flags & maburgs::kRecFlagComplete) != 0;
     if (m.flags & mabur::framewire::kFlagDiscont) pending_flush_ = true;
-    if (m.sid == 3 && !complete) {
+    if (m.sid == 1 && !complete) {  // sid 1 = enhance (2-stream space)
       ++dropped_enhance_incomplete_;
       continue;
     }

@@ -74,10 +74,10 @@ cat "$TMP/stats.json"
 python3 - "$TMP/stats.json" <<'EOF'
 import json, sys
 s = json.load(open(sys.argv[1]))
-assert s["delivered"] == 5, s
+assert s["delivered"] == 13, s
 assert s["dropped_enhance_incomplete"] == 0, s
 assert s["resyncs"] == 0, s
-assert s["dvr_samples"] == 5, s
+assert s["dvr_samples"] == 13, s
 assert s["dvr_fragments"] >= 1, s
 print(f"OK stats: {s}")
 EOF
@@ -115,8 +115,8 @@ if [ "$RC_A" -ne 0 ]; then
   cat "$TMP/ffprobeA.stderr" >&2
   exit 1
 fi
-if [ "$OUT_A" != "hevc,5" ]; then
-  echo "unexpected ffprobe A output: $OUT_A (want hevc,5)" >&2
+if [ "$OUT_A" != "hevc,13" ]; then
+  echo "unexpected ffprobe A output: $OUT_A (want hevc,13)" >&2
   exit 1
 fi
 FILTERED_A=$(grep -iv 'vps\|sps\|pps\|nal\|hevc\|last message repeated' "$TMP/ffprobeA.stderr" || true)

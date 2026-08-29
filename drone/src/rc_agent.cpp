@@ -245,8 +245,11 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 // debounce on the way up), and decays it by exactly one step down per 2s
 // clean window (2000ms with no further drop-rise); each step-down restarts
 // the 2s window, so recovering from level 3 to level 0 takes three separate
-// 2s clean windows in a row, not one. shed_level_ >= 1 sheds sid 3 (SVC-T
-// enhance, droppable) and >= 2 also sheds sid 2 (reserved). Any level change
+// 2s clean windows in a row, not one. shed_level_ still ranges 0..3 for its
+// own escalate/decay cadence, but the 2-stream space (spec
+// 2026-08-29-airtime-balance-uep) leaves only one droppable layer (sid 1,
+// enh) -- any level >= 1 sheds it and there is no second layer for level
+// >= 2 to additionally shed (see reapply_with_shed()). Any level change
 // reapplies the current op (shed folded in) so the change reaches the
 // actuator immediately.
 //

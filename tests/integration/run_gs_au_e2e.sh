@@ -32,8 +32,11 @@ python3 tools/bench/ausniff.py --ring "$TMP/au-ring" --oneshot \
   --dump-annexb "$TMP/ring-aus.bin" --json > "$TMP/sniff.json"
 
 # Reachable ceiling: no --rc-in, so the drone agent stays at its BOOT
-# MAX_RANGE op point and only CRIT (s0) + T0 (s1) transmit — same ceiling
-# tests/integration/run_host_e2e.sh encodes with --max-stream 1.
+# MAX_RANGE op point and only sid 0 (base) transmits, sid 1 (enh) shed —
+# same ceiling tests/integration/run_host_e2e.sh encodes with
+# --max-stream 1. This fixture carries no TRAIL_N/enhance NALs (2-stream
+# space, spec 2026-08-29-airtime-balance-uep), so the ceiling is all 13
+# fixture frames regardless of the shed.
 python3 - "$FIX" "$TMP/ring-aus.bin" "$TMP/sniff.json" <<'EOF'
 import json, sys, os
 sys.path.insert(0, "tools/bench")

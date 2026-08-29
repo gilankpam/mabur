@@ -58,8 +58,10 @@ class RingClient {
 
  private:
   // POLICY (the point of the native player, spec §maburplay):
-  //  - meta.sid == 3 && !(flags & kRecFlagComplete)  -> drop whole, count.
-  //  - base AU (sid != 3) delivered always; truncated base counted.
+  //  - meta.sid == 1 && !(flags & kRecFlagComplete)  -> drop whole, count.
+  //  - base AU (sid != 1, i.e. sid == 0) delivered always; truncated base
+  //    counted. 2-stream space (spec 2026-08-29-airtime-balance-uep):
+  //    sid 0 = base, sid 1 = enhance — was sid 3 pre-fold, {0,1,2,3}.
   //  - flags & kFlagDiscont, or reader returned kResync -> next delivered
   //    AU carries flush_before = true.
   size_t drain_ring_();

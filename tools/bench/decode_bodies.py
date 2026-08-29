@@ -20,15 +20,16 @@ FLAG_DISCONT = 0x02
 FLAG_ENHANCE = 0x04
 
 def parse_symbol_size(text):
-    """Accepts a single int (shared by all 4 streams) or a comma-separated
-    4-list, one per UEP stream (e.g. "164,1312,1312,1312"), mirroring the
-    GS/drone bundle's scalar-or-array fec.symbol_size."""
+    """Accepts a single int (shared by both streams) or a comma-separated
+    2-list, one per UEP stream (e.g. "164,1312"), mirroring the GS/drone
+    bundle's scalar-or-array fec.symbol_size (2-stream space, spec
+    2026-08-29-airtime-balance-uep)."""
     parts = [p.strip() for p in text.split(",")]
     if len(parts) == 1:
-        return [int(parts[0])] * 4
-    if len(parts) != 4:
+        return [int(parts[0])] * 2
+    if len(parts) != 2:
         raise argparse.ArgumentTypeError(
-            "--symbol-size must be a single int or a comma-separated 4-list")
+            "--symbol-size must be a single int or a comma-separated 2-list")
     return [int(p) for p in parts]
 
 def read_frames(path):
@@ -63,9 +64,11 @@ def read_fixture(path):
 def classify_frame(annexb):
     """Mirror of mabur classify_frame (common/src/nal.cpp), extended to also
     report TRAIL_N-ness (mabur's frame_is_trail_n): returns (sid, trail_n).
-    trail_n is only meaningful when sid == 3, since only TRAIL_N (not the
-    other route to sid 3, TRAIL_R with tid >= 2) participates in the
-    producer-flag agreement check maburd runs (spec 2026-07-26 svct-enable)."""
+    2-stream space (spec 2026-08-29-airtime-balance-uep): critical NALs
+    (VPS/SPS/PPS 32-34, IRAP 16-23) and any non-TRAIL_N VCL -> sid 0 (base);
+    TRAIL_N (type 0) -> sid 1 (enh). trail_n is only meaningful when
+    sid == 1, since sid 1 is reached exclusively via TRAIL_N under this
+    rule (tid no longer participates in routing)."""
     if len(annexb) < 5: return 0, False
     sid, trail_n, i = None, False, 0
     while i + 4 < len(annexb):
@@ -73,10 +76,9 @@ def classify_frame(annexb):
             i += 1
             continue
         t = (annexb[i + 3] >> 1) & 0x3F
-        tid = max((annexb[i + 4] & 0x07) - 1, 0)
         if (16 <= t <= 23) or (32 <= t <= 34): return 0, False
         if sid is None and t < 16:
-            sid = 3 if t == 0 else 1 + min(tid, 2)
+            sid = 1 if t == 0 else 0
             trail_n = t == 0
         i += 3
     return (0, False) if sid is None else (sid, trail_n)
@@ -97,26 +99,27 @@ def mask_discont(unit):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", required=True); ap.add_argument("--fixture", required=True)
-    ap.add_argument("--symbol-size", type=parse_symbol_size, default=[64, 64, 64, 64])
+    ap.add_argument("--symbol-size", type=parse_symbol_size, default=[64, 64])
     ap.add_argument("--drop-pct", type=float, default=0.0); ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--min-critical", type=float, default=1.0)  # delivery floor under loss
     ap.add_argument("--expect-mcs", type=int); ap.add_argument("--after", type=int, default=0)
     ap.add_argument("--stream", type=int, help="restrict --expect-mcs to this SBI stream_id")
-    ap.add_argument("--max-stream", type=int, default=3,
+    ap.add_argument("--max-stream", type=int, default=1,
                      help="only require fixture frames whose UEP stream "
                           "classification is <= this value to round-trip; "
-                          "frames on higher (shed) streams are ignored when "
-                          "computing 'want'. Defaults to 3 (no restriction). "
-                          "Use 1 when no RCF/DISC was sent, since maburd's "
-                          "MAX_RANGE boot default sheds streams 2/3 (T1/T2) "
-                          "until an RC frame lands.")
+                          "frames on the enh stream are ignored when "
+                          "computing 'want' if it is shed. Defaults to 1 "
+                          "(no restriction: the 2-stream space tops out at "
+                          "sid 1). Use 0 when no RCF/DISC was sent, since "
+                          "maburd's MAX_RANGE boot default sheds the enh "
+                          "layer (sid 1) until an RC frame lands.")
     a = ap.parse_args()
 
     frames = read_frames(a.frames)
     rng = random.Random(a.seed)
-    decs = {s: sw_fec.SwDecoder(symbol_size=a.symbol_size[s]) for s in range(4)}
-    env_size = {s: sw_fec.SW_HDR_LEN + a.symbol_size[s] for s in range(4)}
-    reasm, reasm_n, recovered, per_stream_in = {}, {}, [], {s: 0 for s in range(4)}
+    decs = {s: sw_fec.SwDecoder(symbol_size=a.symbol_size[s]) for s in range(2)}
+    env_size = {s: sw_fec.SW_HDR_LEN + a.symbol_size[s] for s in range(2)}
+    reasm, reasm_n, recovered, per_stream_in = {}, {}, [], {s: 0 for s in range(2)}
 
     if a.expect_mcs is not None:  # RCF-application check: HT radiotap MCS byte is
         bad = checked = 0          # the last byte of the 13-byte header.
@@ -135,7 +138,7 @@ def main():
     for fr in frames:
         _, body = strip_to_body(fr)
         sid = fec_subblock.peek_stream_id(body)
-        if sid is None or sid > 3: continue
+        if sid is None or sid > 1: continue
         per_stream_in[sid] += 1
         if a.drop_pct and rng.random() * 100 < a.drop_pct: continue
         for env in fec_subblock.unpack(body, env_size[sid]).survivors:
@@ -164,20 +167,20 @@ def main():
         got[fid] = mask_discont(unit)
     # --max-stream restricts "want" to streams that are actually reachable
     # under the exercised link state: maburd's MAX_RANGE boot default sheds
-    # streams 2/3 (T1/T2) until an RCF/DISC lands (drone/src/rc_agent.cpp),
+    # the enh layer (sid 1) until an RCF/DISC lands (drone/src/rc_agent.cpp),
     # so a run with no --rc-in can never deliver those frames. stream_of
     # mirrors FramePipeline::encode's full routing: classify_frame's raw sid,
     # then the same producer-flag/TRAIL_N agreement demotion (disagreement
-    # protects sid > 1 down to 1) before shedding is considered.
+    # protects any sid down to 0, base) before shedding is considered.
     def stream_of(i):
         rec = fixture[i]
         if rec["flags"] & FLAG_IDR: return 0
         sid, trail_n = classify_frame(rec["annexb"])
-        if trail_n != bool(rec["flags"] & FLAG_ENHANCE) and sid > 1:
-            sid = 1
+        if trail_n != bool(rec["flags"] & FLAG_ENHANCE):
+            sid = 0
         return sid
     # enumerate(reach)'s k is fid only if the actual shed boundary matches
-    # --max-stream exactly (MAX_RANGE default sheds >1, or --max-stream 3
+    # --max-stream exactly (MAX_RANGE default sheds sid 1, or --max-stream 1
     # sheds nothing); other --max-stream values would mis-key against got.
     reach = [i for i in range(len(fixture)) if stream_of(i) <= a.max_stream]
     want = {k: expected_unit(fixture[i], k) for k, i in enumerate(reach)}

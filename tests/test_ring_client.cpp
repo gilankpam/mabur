@@ -32,8 +32,10 @@ std::vector<uint8_t> au_bytes(size_t n, uint8_t seed) {
   return v;
 }
 
-// Publishes one AU. sid==3 records rely on maburgs::AuRingWriter's own
-// contract: finish(complete) ORs kRecFlagComplete into flags iff complete.
+// Publishes one AU. 2-stream space (spec 2026-08-29-airtime-balance-uep):
+// sid 0 = base, sid 1 = enhance. sid==1 records rely on
+// maburgs::AuRingWriter's own contract: finish(complete) ORs
+// kRecFlagComplete into flags iff complete.
 void publish(maburgs::AuRingWriter& w, uint8_t sid, bool complete, size_t bytes,
              uint8_t seed, uint8_t extra_flags = 0, uint32_t pts_us = 0) {
   FrameHdr h;
@@ -55,11 +57,11 @@ struct Collector {
 
 }  // namespace
 
-TEST(incomplete_sid3_dropped_whole_and_counted) {
+TEST(incomplete_sid1_dropped_whole_and_counted) {
   const std::string ring = tmp_path("ring1");
   maburgs::AuRingWriter w;
   REQUIRE(w.open(ring, {4096, 8}));
-  publish(w, /*sid=*/3, /*complete=*/false, 100, 1);
+  publish(w, /*sid=*/1, /*complete=*/false, 100, 1);
 
   Collector c;
   RingClient rc({ring, tmp_path("nosock1")}, c.sink());
@@ -72,18 +74,18 @@ TEST(incomplete_sid3_dropped_whole_and_counted) {
   unlink(ring.c_str());
 }
 
-TEST(incomplete_sid1_delivered_and_counted_truncated) {
+TEST(incomplete_sid0_delivered_and_counted_truncated) {
   const std::string ring = tmp_path("ring2");
   maburgs::AuRingWriter w;
   REQUIRE(w.open(ring, {4096, 8}));
-  publish(w, /*sid=*/1, /*complete=*/false, 120, 2);
+  publish(w, /*sid=*/0, /*complete=*/false, 120, 2);
 
   Collector c;
   RingClient rc({ring, tmp_path("nosock2")}, c.sink());
   REQUIRE(rc.open());
   CHECK(rc.pump(5) == 1);
   REQUIRE(c.events.size() == 1);
-  CHECK(c.events[0].meta.sid == 1);
+  CHECK(c.events[0].meta.sid == 0);
   CHECK((c.events[0].meta.flags & maburgs::kRecFlagComplete) == 0);
   CHECK(c.events[0].au == au_bytes(120, 2));
   CHECK(rc.delivered() == 1);
@@ -96,8 +98,8 @@ TEST(discont_flag_sets_flush_before_once) {
   const std::string ring = tmp_path("ring3");
   maburgs::AuRingWriter w;
   REQUIRE(w.open(ring, {4096, 8}));
-  publish(w, /*sid=*/1, /*complete=*/true, 50, 3, kFlagDiscont);
-  publish(w, /*sid=*/1, /*complete=*/true, 60, 4, /*extra_flags=*/0);
+  publish(w, /*sid=*/0, /*complete=*/true, 50, 3, kFlagDiscont);
+  publish(w, /*sid=*/0, /*complete=*/true, 60, 4, /*extra_flags=*/0);
 
   Collector c;
   RingClient rc({ring, tmp_path("nosock3")}, c.sink());
@@ -115,7 +117,7 @@ TEST(writer_restart_sets_flush_before_and_counts_resync) {
   {
     maburgs::AuRingWriter w1;
     REQUIRE(w1.open(ring, {4096, 4}));
-    for (int i = 0; i < 3; ++i) publish(w1, 1, true, 40, static_cast<uint8_t>(i));
+    for (int i = 0; i < 3; ++i) publish(w1, 0, true, 40, static_cast<uint8_t>(i));
   }  // w1 closed
 
   Collector c;
@@ -127,7 +129,7 @@ TEST(writer_restart_sets_flush_before_and_counts_resync) {
 
   maburgs::AuRingWriter w2;
   REQUIRE(w2.open(ring, {4096, 4}));  // epoch change: new writer, same geometry
-  publish(w2, 2, true, 30, 9);
+  publish(w2, 1, true, 30, 9);  // distinct sid confirms this record, not a leftover, arrived
 
   size_t got = 0;
   for (int attempt = 0; attempt < 50 && got == 0; ++attempt) got = rc.pump(5);
@@ -135,7 +137,7 @@ TEST(writer_restart_sets_flush_before_and_counts_resync) {
   REQUIRE(c.events.size() > before);
   CHECK(rc.resyncs() >= 1);
   CHECK(c.events[before].flush_before == true);
-  CHECK(c.events[before].meta.sid == 2);
+  CHECK(c.events[before].meta.sid == 1);
   unlink(ring.c_str());
 }
 
@@ -143,27 +145,27 @@ TEST(oneshot_drain_applies_policy_on_quiescent_ring) {
   const std::string ring = tmp_path("ring5");
   maburgs::AuRingWriter w;
   REQUIRE(w.open(ring, {4096, 8}));
-  publish(w, 1, true, 30, 1);                 // delivered, complete
-  publish(w, 1, false, 30, 2);                // delivered, truncated_base++
-  publish(w, 3, true, 30, 3);                 // delivered (complete enhance)
-  publish(w, 3, false, 30, 4);                // dropped, dropped_enhance_incomplete++
-  publish(w, 1, true, 30, 5, kFlagDiscont);   // delivered, itself carries flush_before
+  publish(w, 0, true, 30, 1);                 // delivered, complete
+  publish(w, 0, false, 30, 2);                // delivered, truncated_base++
+  publish(w, 1, true, 30, 3);                 // delivered (complete enhance)
+  publish(w, 1, false, 30, 4);                // dropped, dropped_enhance_incomplete++
+  publish(w, 0, true, 30, 5, kFlagDiscont);   // delivered, itself carries flush_before
 
   Collector c;
   RingClient rc({ring, tmp_path("nosock5")}, c.sink());
   REQUIRE(rc.open());
   CHECK(rc.oneshot_drain() == true);
   CHECK(!rc.dead());
-  // 5 published, 1 dropped whole (incomplete sid3) -> 4 delivered.
+  // 5 published, 1 dropped whole (incomplete sid1) -> 4 delivered.
   CHECK(rc.delivered() == 4);
   CHECK(rc.truncated_base() == 1);
   CHECK(rc.dropped_enhance_incomplete() == 1);
   REQUIRE(c.events.size() == 4);
-  CHECK(c.events[0].meta.sid == 1);
-  CHECK(c.events[1].meta.sid == 1);
+  CHECK(c.events[0].meta.sid == 0);
+  CHECK(c.events[1].meta.sid == 0);
   CHECK((c.events[1].meta.flags & maburgs::kRecFlagComplete) == 0);
-  CHECK(c.events[2].meta.sid == 3);
-  CHECK(c.events[3].meta.sid == 1);
+  CHECK(c.events[2].meta.sid == 1);
+  CHECK(c.events[3].meta.sid == 0);
   CHECK((c.events[3].meta.flags & kFlagDiscont) != 0);
   // The kFlagDiscont AU itself is the rebase point: it carries
   // flush_before, not whatever AU would come after it.
@@ -177,9 +179,9 @@ TEST(doorbell_less_pump_uses_timeout_path) {
   const std::string ring = tmp_path("ring6");
   maburgs::AuRingWriter w;
   REQUIRE(w.open(ring, {4096, 8}));
-  publish(w, 3, false, 20, 1);   // dropped
-  publish(w, 1, false, 20, 2);   // delivered, truncated
-  publish(w, 1, true, 20, 3, kFlagDiscont);
+  publish(w, 1, false, 20, 1);   // dropped
+  publish(w, 0, false, 20, 2);   // delivered, truncated
+  publish(w, 0, true, 20, 3, kFlagDiscont);
 
   const std::string nosock = tmp_path("nosock6");
   unlink(nosock.c_str());  // guarantee it never existed
@@ -226,7 +228,7 @@ TEST(doorbell_hello_validates_and_notify_wakes_pump_early) {
   // Give the hello a moment to land, then let the client consume it.
   rc.pump(5);
 
-  publish(w, 1, true, 40, 7);
+  publish(w, 0, true, 40, 7);
   db.notify(0);
   // A large per-call timeout: if the notify wakeup were NOT working, this
   // single call would have to sit out the full poll(2) timeout before
@@ -239,7 +241,7 @@ TEST(doorbell_hello_validates_and_notify_wakes_pump_early) {
   REQUIRE(got == 1);
   CHECK(elapsed < std::chrono::milliseconds(300));
   REQUIRE(c.events.size() == 1);
-  CHECK(c.events[0].meta.sid == 1);
+  CHECK(c.events[0].meta.sid == 0);
   unlink(ring.c_str());
   unlink(sock.c_str());
 }
@@ -282,10 +284,10 @@ TEST(doorbell_hello_mismatch_closes_without_breaking_ring_reads) {
   // of the socket) without disturbing ring reads at all — doorbell is
   // wakeup-only. Publish AFTER the mismatch exchange so this call's
   // delivery count unambiguously proves the ring path still works.
-  publish(w, 1, true, 25, 5);
+  publish(w, 0, true, 25, 5);
   CHECK(rc.pump(5) == 1);
   REQUIRE(c.events.size() == 1);
-  CHECK(c.events[0].meta.sid == 1);
+  CHECK(c.events[0].meta.sid == 0);
   CHECK(!rc.dead());
 
   close(client_fd);
@@ -301,8 +303,8 @@ TEST(flush_flag_survives_intervening_dropped_enhance_au) {
   const std::string ring = tmp_path("ring9");
   auto w1 = std::make_unique<maburgs::AuRingWriter>();
   REQUIRE(w1->open(ring, {4096, 8}));
-  publish(*w1, 1, true, 30, 1);                // (a) clean base
-  publish(*w1, 1, true, 30, 2, kFlagDiscont);  // (b) discont base
+  publish(*w1, 0, true, 30, 1);                // (a) clean base
+  publish(*w1, 0, true, 30, 2, kFlagDiscont);  // (b) discont base
 
   Collector c;
   RingClient rc({ring, tmp_path("nosock9")}, c.sink());
@@ -316,14 +318,14 @@ TEST(flush_flag_survives_intervening_dropped_enhance_au) {
 
   // Re-signal via a writer restart (epoch change): the reader reports
   // kResync with NO AU delivered, so the flag has nothing to attach to
-  // yet. The very next record is an incomplete sid-3 AU that policy drops
-  // whole. The flag must survive THAT drop too, landing on the first AU
-  // that actually reaches the sink afterward.
+  // yet. The very next record is an incomplete sid-1 (enhance) AU that
+  // policy drops whole. The flag must survive THAT drop too, landing on
+  // the first AU that actually reaches the sink afterward.
   w1.reset();
   auto w2 = std::make_unique<maburgs::AuRingWriter>();
   REQUIRE(w2->open(ring, {4096, 8}));
-  publish(*w2, 3, false, 25, 9);   // dropped whole; must NOT eat the flag
-  publish(*w2, 1, true, 25, 10);   // first AU to actually reach the sink
+  publish(*w2, 1, false, 25, 9);   // dropped whole; must NOT eat the flag
+  publish(*w2, 0, true, 25, 10);   // first AU to actually reach the sink
 
   size_t got = 0;
   for (int attempt = 0; attempt < 50 && got == 0; ++attempt) got = rc.pump(5);
@@ -331,34 +333,34 @@ TEST(flush_flag_survives_intervening_dropped_enhance_au) {
   CHECK(rc.resyncs() >= 1);
   CHECK(rc.dropped_enhance_incomplete() == 1);
   REQUIRE(c.events.size() == 3);  // (a), (b), and the post-restart clean base
-  CHECK(c.events[2].meta.sid == 1);
+  CHECK(c.events[2].meta.sid == 0);
   CHECK(c.events[2].au == au_bytes(25, 10));
   CHECK(c.events[2].flush_before == true);
-  for (const auto& ev : c.events) CHECK(ev.meta.sid != 3);  // dropped AU never sank
+  for (const auto& ev : c.events) CHECK(ev.meta.sid != 1);  // dropped AU never sank
   unlink(ring.c_str());
 }
 
-TEST(incomplete_sid3_with_discont_flag_still_flushes_next_base) {
+TEST(incomplete_sid1_with_discont_flag_still_flushes_next_base) {
   const std::string ring = tmp_path("ring10");
   maburgs::AuRingWriter w;
   REQUIRE(w.open(ring, {4096, 8}));
-  publish(w, 1, true, 20, 1);                        // clean base
-  publish(w, 3, false, 20, 2, kFlagDiscont);          // drop + discont, SAME record
-  publish(w, 1, true, 20, 3);                         // clean base after
+  publish(w, 0, true, 20, 1);                        // clean base
+  publish(w, 1, false, 20, 2, kFlagDiscont);          // drop + discont, SAME record
+  publish(w, 0, true, 20, 3);                         // clean base after
 
   Collector c;
   RingClient rc({ring, tmp_path("nosock10")}, c.sink());
   REQUIRE(rc.open());
   CHECK(rc.pump(5) == 2);
   REQUIRE(c.events.size() == 2);
-  CHECK(c.events[0].meta.sid == 1);
+  CHECK(c.events[0].meta.sid == 0);
   CHECK(c.events[0].flush_before == false);
-  CHECK(c.events[1].meta.sid == 1);
+  CHECK(c.events[1].meta.sid == 0);
   CHECK(c.events[1].au == au_bytes(20, 3));
   CHECK(c.events[1].flush_before == true);
   CHECK(rc.dropped_enhance_incomplete() == 1);
   CHECK(rc.truncated_base() == 0);  // the drop is on the enhance path, not base-truncation
-  for (const auto& ev : c.events) CHECK(ev.meta.sid != 3);
+  for (const auto& ev : c.events) CHECK(ev.meta.sid != 1);
   unlink(ring.c_str());
 }
 
