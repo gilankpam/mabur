@@ -3,301 +3,301 @@
   {
    "bw": 20,
    "byte": 0,
-   "ladder": "CRIT=MCS0/20;T0=MCS0/20;T1=MCS0/20;T2=MCS0/20",
+   "ladder": "BASE=MCS0/20;ENH=MCS0/20",
    "mcs": 0,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 16,
-   "ladder": "CRIT=MCS0/40;T0=MCS0/40;T1=MCS0/40;T2=MCS0/40",
+   "ladder": "BASE=MCS0/40;ENH=MCS0/40",
    "mcs": 0,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 1,
-   "ladder": "CRIT=MCS1/20;T0=MCS1/20;T1=MCS1/20;T2=MCS1/20",
+   "ladder": "BASE=MCS0/20;ENH=MCS1/20",
    "mcs": 1,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 17,
-   "ladder": "CRIT=MCS1/40;T0=MCS1/40;T1=MCS1/40;T2=MCS1/40",
+   "ladder": "BASE=MCS0/40;ENH=MCS1/40",
    "mcs": 1,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 2,
-   "ladder": "CRIT=MCS2/20;T0=MCS2/20;T1=MCS2/20;T2=MCS2/20",
+   "ladder": "BASE=MCS1/20;ENH=MCS2/20",
    "mcs": 2,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 18,
-   "ladder": "CRIT=MCS2/40;T0=MCS2/40;T1=MCS2/40;T2=MCS2/40",
+   "ladder": "BASE=MCS1/40;ENH=MCS2/40",
    "mcs": 2,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 3,
-   "ladder": "CRIT=MCS3/20;T0=MCS3/20;T1=MCS3/20;T2=MCS3/20",
+   "ladder": "BASE=MCS2/20;ENH=MCS3/20",
    "mcs": 3,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 19,
-   "ladder": "CRIT=MCS3/40;T0=MCS3/40;T1=MCS3/40;T2=MCS3/40",
+   "ladder": "BASE=MCS2/40;ENH=MCS3/40",
    "mcs": 3,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 4,
-   "ladder": "CRIT=MCS4/20;T0=MCS4/20;T1=MCS4/20;T2=MCS4/20",
+   "ladder": "BASE=MCS3/20;ENH=MCS4/20",
    "mcs": 4,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 20,
-   "ladder": "CRIT=MCS4/40;T0=MCS4/40;T1=MCS4/40;T2=MCS4/40",
+   "ladder": "BASE=MCS3/40;ENH=MCS4/40",
    "mcs": 4,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 5,
-   "ladder": "CRIT=MCS5/20;T0=MCS5/20;T1=MCS5/20;T2=MCS5/20",
+   "ladder": "BASE=MCS4/20;ENH=MCS5/20",
    "mcs": 5,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 21,
-   "ladder": "CRIT=MCS5/40;T0=MCS5/40;T1=MCS5/40;T2=MCS5/40",
+   "ladder": "BASE=MCS4/40;ENH=MCS5/40",
    "mcs": 5,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 6,
-   "ladder": "CRIT=MCS6/20;T0=MCS6/20;T1=MCS6/20;T2=MCS6/20",
+   "ladder": "BASE=MCS5/20;ENH=MCS6/20",
    "mcs": 6,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 22,
-   "ladder": "CRIT=MCS6/40;T0=MCS6/40;T1=MCS6/40;T2=MCS6/40",
+   "ladder": "BASE=MCS5/40;ENH=MCS6/40",
    "mcs": 6,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 7,
-   "ladder": "CRIT=MCS7/20;T0=MCS7/20;T1=MCS7/20;T2=MCS7/20",
+   "ladder": "BASE=MCS6/20;ENH=MCS7/20",
    "mcs": 7,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 23,
-   "ladder": "CRIT=MCS7/40;T0=MCS7/40;T1=MCS7/40;T2=MCS7/40",
+   "ladder": "BASE=MCS6/40;ENH=MCS7/40",
    "mcs": 7,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 64,
-   "ladder": "CRIT=VHT1SS_MCS0/20;T0=VHT1SS_MCS0/20;T1=VHT1SS_MCS0/20;T2=VHT1SS_MCS0/20",
+   "ladder": "BASE=VHT1SS_MCS0/20;ENH=VHT1SS_MCS0/20",
    "mcs": 0,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 80,
-   "ladder": "CRIT=VHT1SS_MCS0/40;T0=VHT1SS_MCS0/40;T1=VHT1SS_MCS0/40;T2=VHT1SS_MCS0/40",
+   "ladder": "BASE=VHT1SS_MCS0/40;ENH=VHT1SS_MCS0/40",
    "mcs": 0,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 96,
-   "ladder": "CRIT=VHT1SS_MCS0/80;T0=VHT1SS_MCS0/80;T1=VHT1SS_MCS0/80;T2=VHT1SS_MCS0/80",
+   "ladder": "BASE=VHT1SS_MCS0/80;ENH=VHT1SS_MCS0/80",
    "mcs": 0,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 65,
-   "ladder": "CRIT=VHT1SS_MCS1/20;T0=VHT1SS_MCS1/20;T1=VHT1SS_MCS1/20;T2=VHT1SS_MCS1/20",
+   "ladder": "BASE=VHT1SS_MCS0/20;ENH=VHT1SS_MCS1/20",
    "mcs": 1,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 81,
-   "ladder": "CRIT=VHT1SS_MCS1/40;T0=VHT1SS_MCS1/40;T1=VHT1SS_MCS1/40;T2=VHT1SS_MCS1/40",
+   "ladder": "BASE=VHT1SS_MCS0/40;ENH=VHT1SS_MCS1/40",
    "mcs": 1,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 97,
-   "ladder": "CRIT=VHT1SS_MCS1/80;T0=VHT1SS_MCS1/80;T1=VHT1SS_MCS1/80;T2=VHT1SS_MCS1/80",
+   "ladder": "BASE=VHT1SS_MCS0/80;ENH=VHT1SS_MCS1/80",
    "mcs": 1,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 66,
-   "ladder": "CRIT=VHT1SS_MCS2/20;T0=VHT1SS_MCS2/20;T1=VHT1SS_MCS2/20;T2=VHT1SS_MCS2/20",
+   "ladder": "BASE=VHT1SS_MCS1/20;ENH=VHT1SS_MCS2/20",
    "mcs": 2,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 82,
-   "ladder": "CRIT=VHT1SS_MCS2/40;T0=VHT1SS_MCS2/40;T1=VHT1SS_MCS2/40;T2=VHT1SS_MCS2/40",
+   "ladder": "BASE=VHT1SS_MCS1/40;ENH=VHT1SS_MCS2/40",
    "mcs": 2,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 98,
-   "ladder": "CRIT=VHT1SS_MCS2/80;T0=VHT1SS_MCS2/80;T1=VHT1SS_MCS2/80;T2=VHT1SS_MCS2/80",
+   "ladder": "BASE=VHT1SS_MCS1/80;ENH=VHT1SS_MCS2/80",
    "mcs": 2,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 67,
-   "ladder": "CRIT=VHT1SS_MCS3/20;T0=VHT1SS_MCS3/20;T1=VHT1SS_MCS3/20;T2=VHT1SS_MCS3/20",
+   "ladder": "BASE=VHT1SS_MCS2/20;ENH=VHT1SS_MCS3/20",
    "mcs": 3,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 83,
-   "ladder": "CRIT=VHT1SS_MCS3/40;T0=VHT1SS_MCS3/40;T1=VHT1SS_MCS3/40;T2=VHT1SS_MCS3/40",
+   "ladder": "BASE=VHT1SS_MCS2/40;ENH=VHT1SS_MCS3/40",
    "mcs": 3,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 99,
-   "ladder": "CRIT=VHT1SS_MCS3/80;T0=VHT1SS_MCS3/80;T1=VHT1SS_MCS3/80;T2=VHT1SS_MCS3/80",
+   "ladder": "BASE=VHT1SS_MCS2/80;ENH=VHT1SS_MCS3/80",
    "mcs": 3,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 68,
-   "ladder": "CRIT=VHT1SS_MCS4/20;T0=VHT1SS_MCS4/20;T1=VHT1SS_MCS4/20;T2=VHT1SS_MCS4/20",
+   "ladder": "BASE=VHT1SS_MCS3/20;ENH=VHT1SS_MCS4/20",
    "mcs": 4,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 84,
-   "ladder": "CRIT=VHT1SS_MCS4/40;T0=VHT1SS_MCS4/40;T1=VHT1SS_MCS4/40;T2=VHT1SS_MCS4/40",
+   "ladder": "BASE=VHT1SS_MCS3/40;ENH=VHT1SS_MCS4/40",
    "mcs": 4,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 100,
-   "ladder": "CRIT=VHT1SS_MCS4/80;T0=VHT1SS_MCS4/80;T1=VHT1SS_MCS4/80;T2=VHT1SS_MCS4/80",
+   "ladder": "BASE=VHT1SS_MCS3/80;ENH=VHT1SS_MCS4/80",
    "mcs": 4,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 69,
-   "ladder": "CRIT=VHT1SS_MCS5/20;T0=VHT1SS_MCS5/20;T1=VHT1SS_MCS5/20;T2=VHT1SS_MCS5/20",
+   "ladder": "BASE=VHT1SS_MCS4/20;ENH=VHT1SS_MCS5/20",
    "mcs": 5,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 85,
-   "ladder": "CRIT=VHT1SS_MCS5/40;T0=VHT1SS_MCS5/40;T1=VHT1SS_MCS5/40;T2=VHT1SS_MCS5/40",
+   "ladder": "BASE=VHT1SS_MCS4/40;ENH=VHT1SS_MCS5/40",
    "mcs": 5,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 101,
-   "ladder": "CRIT=VHT1SS_MCS5/80;T0=VHT1SS_MCS5/80;T1=VHT1SS_MCS5/80;T2=VHT1SS_MCS5/80",
+   "ladder": "BASE=VHT1SS_MCS4/80;ENH=VHT1SS_MCS5/80",
    "mcs": 5,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 70,
-   "ladder": "CRIT=VHT1SS_MCS6/20;T0=VHT1SS_MCS6/20;T1=VHT1SS_MCS6/20;T2=VHT1SS_MCS6/20",
+   "ladder": "BASE=VHT1SS_MCS5/20;ENH=VHT1SS_MCS6/20",
    "mcs": 6,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 86,
-   "ladder": "CRIT=VHT1SS_MCS6/40;T0=VHT1SS_MCS6/40;T1=VHT1SS_MCS6/40;T2=VHT1SS_MCS6/40",
+   "ladder": "BASE=VHT1SS_MCS5/40;ENH=VHT1SS_MCS6/40",
    "mcs": 6,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 102,
-   "ladder": "CRIT=VHT1SS_MCS6/80;T0=VHT1SS_MCS6/80;T1=VHT1SS_MCS6/80;T2=VHT1SS_MCS6/80",
+   "ladder": "BASE=VHT1SS_MCS5/80;ENH=VHT1SS_MCS6/80",
    "mcs": 6,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 71,
-   "ladder": "CRIT=VHT1SS_MCS7/20;T0=VHT1SS_MCS7/20;T1=VHT1SS_MCS7/20;T2=VHT1SS_MCS7/20",
+   "ladder": "BASE=VHT1SS_MCS6/20;ENH=VHT1SS_MCS7/20",
    "mcs": 7,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 87,
-   "ladder": "CRIT=VHT1SS_MCS7/40;T0=VHT1SS_MCS7/40;T1=VHT1SS_MCS7/40;T2=VHT1SS_MCS7/40",
+   "ladder": "BASE=VHT1SS_MCS6/40;ENH=VHT1SS_MCS7/40",
    "mcs": 7,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 103,
-   "ladder": "CRIT=VHT1SS_MCS7/80;T0=VHT1SS_MCS7/80;T1=VHT1SS_MCS7/80;T2=VHT1SS_MCS7/80",
+   "ladder": "BASE=VHT1SS_MCS6/80;ENH=VHT1SS_MCS7/80",
    "mcs": 7,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 72,
-   "ladder": "CRIT=VHT1SS_MCS8/20;T0=VHT1SS_MCS8/20;T1=VHT1SS_MCS8/20;T2=VHT1SS_MCS8/20",
+   "ladder": "BASE=VHT1SS_MCS7/20;ENH=VHT1SS_MCS8/20",
    "mcs": 8,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 88,
-   "ladder": "CRIT=VHT1SS_MCS8/40;T0=VHT1SS_MCS8/40;T1=VHT1SS_MCS8/40;T2=VHT1SS_MCS8/40",
+   "ladder": "BASE=VHT1SS_MCS7/40;ENH=VHT1SS_MCS8/40",
    "mcs": 8,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 104,
-   "ladder": "CRIT=VHT1SS_MCS8/80;T0=VHT1SS_MCS8/80;T1=VHT1SS_MCS8/80;T2=VHT1SS_MCS8/80",
+   "ladder": "BASE=VHT1SS_MCS7/80;ENH=VHT1SS_MCS8/80",
    "mcs": 8,
    "mode": "vht"
   }
@@ -342,28 +342,28 @@
  "table": [
   {
    "bw": 20,
-   "ladder": "CRIT=MCS0/20/LDPC;T0=MCS0/20/LDPC;T1=MCS0/20;T2=MCS0/20",
+   "mcs": 0,
+   "ov": 2.0
+  },
+  {
+   "bw": 20,
+   "mcs": 1,
+   "ov": 1.5
+  },
+  {
+   "bw": 20,
+   "mcs": 2,
    "ov": 1.0
   },
   {
    "bw": 20,
-   "ladder": "CRIT=MCS0/20/LDPC;T0=MCS1/20;T1=MCS2/20;T2=MCS2/20",
-   "ov": 0.75
-  },
-  {
-   "bw": 20,
-   "ladder": "CRIT=MCS1/20/LDPC;T0=MCS2/20;T1=MCS4/20;T2=MCS4/20",
+   "mcs": 4,
    "ov": 0.5
   },
   {
    "bw": 20,
-   "ladder": "CRIT=MCS2/20;T0=MCS4/20;T1=MCS5/20;T2=MCS7/20/SGI",
-   "ov": 0.25
-  },
-  {
-   "bw": 20,
-   "ladder": "CRIT=MCS4/20;T0=MCS5/20;T1=MCS7/20;T2=MCS7/40/SGI",
-   "ov": 0.1
+   "mcs": 5,
+   "ov": 0.2
   }
  ]
 }

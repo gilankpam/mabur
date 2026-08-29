@@ -31,21 +31,21 @@ uint8_t encode_profile(PhyMode mode, uint8_t mcs, uint8_t bw);
 // Wire PROFILE byte -> (mode, mcs, bw). mcs is clamped to 7 (HT) / 8 (VHT).
 void decode_profile(uint8_t p, PhyMode& mode, uint8_t& mcs, uint8_t& bw);
 
-// Builds the 4-rung ladder (CRIT, T0, T1, T2) for a (mode, base mcs, bw)
-// operating point. All four rungs ride the same base mcs with LDPC+STBC
+// Builds the 2-slot ladder (BASE, ENH) for a (mode, scored mcs, bw)
+// operating point. BASE rides max(mcs-1, 0), ENH rides mcs — UEP via rate,
+// always on (RC_VERSION 4, mirrored by the GS). Both slots carry LDPC+STBC
 // unconditionally on (the config policy was removed 2026-07-26 — all-true
-// was the only shape ever flown, and flags-off T1/T2 measured 2-3 dB
-// weaker at the same MCS); per-layer differentiation is exclusively FEC
-// overhead.
-std::array<LayerTxSpec, 4> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw);
+// was the only shape ever flown, and flags-off measured 2-3 dB weaker at
+// the same MCS).
+std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw);
 
-// DEVOURER_SVC_LADDER-style spec string, Python adaptive_link.ladder_spec
-// identical: "CRIT={name}{m}/{bw};T0=...;T1=...;T2=..." with
+// DEVOURER_SVC_LADDER-style spec string, 2-slot since the 2026-08-29
+// mcs-1 UEP-via-rate rule: "BASE={name}{m-1}/{bw};ENH={name}{m}/{bw}" with
 // name = "VHT1SS_MCS" (VHT) or "MCS" (HT).
 std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw);
 
 struct ProfileRow {
-  const char* svc_ladder;
+  uint8_t mcs;
   double fec_overhead;
   uint8_t bw;
 };
@@ -55,11 +55,10 @@ struct ProfileRow {
 const std::array<ProfileRow, 5>& profile_table();
 constexpr int MAX_RANGE_PROFILE = 0;
 
-// Builds the 4-rung ladder for profile_table()[idx] by parsing its committed
-// svc_ladder spec string (tokens "MCSn"/"VHT1SS_MCSn", "/20|/40|/80",
-// optional "/LDPC" "/STBC" "/SGI" in any order). LDPC+STBC are then forced
-// on for CRIT/T0 (supersedes whatever the string sets; T1/T2 copy T0).
-std::array<LayerTxSpec, 4> ladder_for_row(int idx);
+// Builds the 2-slot ladder for profile_table()[idx] — equivalent to
+// ladder_from(mode, row.mcs, row.bw) (HT mode; the vendored table is
+// HT-only).
+std::array<LayerTxSpec, 2> ladder_for_row(int idx);
 
 // On-air PHY data rate (Mbps) for a LayerTxSpec.
 double phy_rate_mbps(const LayerTxSpec& s);
