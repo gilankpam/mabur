@@ -29,14 +29,13 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
   track_vanish(meta, meta_idr, meta_enhance, now_ms);
 
   const bool scan_enhance = frame_is_trail_n(payload, payload_len);
-  // SVC-T enhance (sid 3, droppable): producer flag and TRAIL_N scan must
+  // SVC-T enhance (sid 1, droppable): producer flag and TRAIL_N scan must
   // AGREE. Shedding a referenced frame corrupts decode, so a single signal
   // protects up to base (critical stays 0) and is surfaced, never silent.
-  // Uses frame_is_trail_n rather than sid == 3: classify_frame also routes
-  // TRAIL_R tid >= 2 to sid 3 (devourer-tid routing), which is not enhance
-  // and must not be flagged as a disagreement.
+  // Uses frame_is_trail_n rather than sid == 1: the scan side pinpoints
+  // real TRAIL_N frames only and feeds the agreement check directly.
   if (scan_enhance != meta_enhance) {
-    if (sid > 1) sid = 1;
+    sid = 0;
     ++enhance_disagree_;
   }
 

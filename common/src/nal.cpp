@@ -29,7 +29,7 @@ int classify_frame(const uint8_t* annexb, size_t len) {
     // guard above. TRAIL_N (type 0) therefore always means a real
     // enhance slice, never a default-constructed NalInfo.
     if (sid < 0 && n.type < 16)
-      sid = n.type == 0 ? 3 : 1 + (n.tid < 2 ? n.tid : 2);
+      sid = n.type == 0 ? 1 : 0;
     i += 2;  // skip past the start code; loop ++i lands on the NAL header
   }
   return sid < 0 ? 0 : sid;

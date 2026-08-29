@@ -19,15 +19,15 @@ struct NalInfo {
 // malformed input is treated as base layer, never as critical.
 NalInfo parse_hevc_nal(const uint8_t* nal, size_t len);
 
-// Classifies a whole encoded Annex-B frame (as delivered by waybeam's
-// frame-shm ring) into a stream id in [0, 3] for the layered link. Walks
-// 00 00 01 start codes (a 4-byte 00 00 00 01 code contains one): any critical
-// NAL (VPS/SPS/PPS 32-34, IRAP 16-23) -> 0 immediately; otherwise the first
+// Classifies a whole encoded Annex-B frame (as delivered by maburd's venc
+// ring) into a stream id in {0, 1} for the 2-stream link. Walks 00 00 01
+// start codes (a 4-byte 00 00 00 01 code contains one): any critical NAL
+// (VPS/SPS/PPS 32-34, IRAP 16-23) -> 0 immediately; otherwise the first
 // VCL NAL (type < 16) picks the layer — TRAIL_N (type 0, non-referenced;
-// waybeam's SVC-T enhance marker) -> 3, else 1 + min(tid, 2). No parseable
-// VCL NAL -> 0.
+// maburd's SVC-T enhance marker) -> 1, all others (TRAIL_R, etc.) -> 0.
+// No parseable VCL NAL -> 0.
 //
-// The unparseable -> 0 fallback is a deliberate protect-up policy: waybeam is
+// The unparseable -> 0 fallback is a deliberate protect-up policy: maburd is
 // a trusted producer, so misclassifying a non-critical frame as critical only
 // costs extra airtime, while misclassifying a critical frame (e.g. an IDR) as
 // non-critical risks losing it under adverse link conditions.

@@ -47,19 +47,17 @@ std::vector<uint8_t> cat(std::initializer_list<std::vector<uint8_t>> parts) {
 
 TEST(classify_frame_replays_nal_vectors_as_single_nal_frames) {
   // Every nal.json case as a one-NAL Annex-B frame: critical -> stream 0,
-  // otherwise 1 + min(tid, 2). Keeps the layer mapping pinned to the Python
-  // reference now that the RTP classifier it also covered is gone.
+  // TRAIL_N (type 0) -> stream 1, everything else -> 0.
+  // Keeps the layer mapping pinned to the Python reference for critical cases.
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/nal.json");
   for (auto& c : j["cases"]) {
     auto nal = mtest::unhex(c["in"].get<std::string>());
     const bool critical = c["critical"].get<bool>();
     const int type = c["type"].get<int>();
-    const int tid = c["tid"].get<int>();
     // Non-VCL, non-critical NALs (e.g. SEI 39, type 63) pick no layer on
     // their own; classify_frame's no-parseable-VCL fallback is stream 0.
-    const int expect =
-        critical ? 0
-                 : (type == 0 ? 3 : (type < 16 ? 1 + std::min(tid, 2) : 0));
+    // TRAIL_N (type 0) -> stream 1 (enhance).
+    const int expect = critical ? 0 : (type == 0 ? 1 : 0);
 
     std::vector<uint8_t> frame = {0x00, 0x00, 0x00, 0x01};
     frame.insert(frame.end(), nal.begin(), nal.end());
@@ -74,22 +72,24 @@ TEST(classify_frame_idr_with_param_sets_is_critical) {
 }
 
 TEST(classify_frame_p_frame_by_tid) {
-  CHECK(classify_frame(mk_nal(1, 0, 2000).data(), mk_nal(1, 0, 2000).size()) == 1);
-  CHECK(classify_frame(mk_nal(1, 1, 2000).data(), mk_nal(1, 1, 2000).size()) == 2);
-  CHECK(classify_frame(mk_nal(1, 2, 2000).data(), mk_nal(1, 2, 2000).size()) == 3);
-  CHECK(classify_frame(mk_nal(1, 5, 2000).data(), mk_nal(1, 5, 2000).size()) == 3);  // tid clamp
+  // TRAIL_R (type 1) routes to base (sid 0) regardless of tid in 2-stream space
+  CHECK(classify_frame(mk_nal(1, 0, 2000).data(), mk_nal(1, 0, 2000).size()) == 0);
+  CHECK(classify_frame(mk_nal(1, 1, 2000).data(), mk_nal(1, 1, 2000).size()) == 0);
+  CHECK(classify_frame(mk_nal(1, 2, 2000).data(), mk_nal(1, 2, 2000).size()) == 0);
+  CHECK(classify_frame(mk_nal(1, 5, 2000).data(), mk_nal(1, 5, 2000).size()) == 0);
 }
 
 TEST(classify_frame_sei_then_slice_uses_slice_tid) {
   // Prefix SEI (39, non-VCL, non-critical) must not pick the layer.
+  // TRAIL_R (type 1) -> base (sid 0)
   auto f = cat({mk_nal(39, 0), mk_nal(1, 2, 2000)});
-  CHECK(classify_frame(f.data(), f.size()) == 3);
+  CHECK(classify_frame(f.data(), f.size()) == 0);
 }
 
 TEST(classify_frame_three_byte_start_code) {
   std::vector<uint8_t> f = {0x00, 0x00, 0x01, static_cast<uint8_t>(1 << 1), 0x02};
   f.resize(f.size() + 100, 0x55);
-  CHECK(classify_frame(f.data(), f.size()) == 2);  // tid 1
+  CHECK(classify_frame(f.data(), f.size()) == 0);  // TRAIL_R -> base
 }
 
 TEST(classify_frame_garbage_protects_up) {
@@ -98,14 +98,14 @@ TEST(classify_frame_garbage_protects_up) {
   CHECK(classify_frame(nullptr, 0) == 0);
 }
 
-TEST(classify_frame_trail_n_is_enhance_sid3) {
-  // waybeam SVC-T marks enhance frames by rewriting TRAIL_R -> TRAIL_N
-  // (type 0) and leaves tid at 0; TRAIL_N is non-referenced -> sid 3.
+TEST(classify_frame_trail_n_is_enhance_sid1) {
+  // maburd SVC-T marks enhance frames by rewriting TRAIL_R -> TRAIL_N
+  // (type 0) and leaves tid at 0; TRAIL_N is non-referenced -> sid 1 (enhance).
   auto f = mk_nal(0, 0, 2000);
-  CHECK(classify_frame(f.data(), f.size()) == 3);
+  CHECK(classify_frame(f.data(), f.size()) == 1);
   // Prefix SEI must not mask the TRAIL_N slice.
   auto g = cat({mk_nal(39, 0), mk_nal(0, 0, 2000)});
-  CHECK(classify_frame(g.data(), g.size()) == 3);
+  CHECK(classify_frame(g.data(), g.size()) == 1);
 }
 
 TEST(classify_frame_trail_n_after_critical_stays_critical) {
@@ -135,6 +135,27 @@ TEST(frame_is_trail_n_only_for_type_zero_first_vcl) {
   CHECK(!frame_is_trail_n(idr.data(), idr.size()));
   std::vector<uint8_t> junk(64, 0xFF);
   CHECK(!frame_is_trail_n(junk.data(), junk.size()));
+}
+
+namespace {
+static int classify_from_nal_type(int type, int tid) {
+  uint8_t b[] = {0, 0, 1,
+                 static_cast<uint8_t>(type << 1),
+                 static_cast<uint8_t>(tid + 1), 0, 0};
+  return mabur::classify_frame(b, sizeof(b));
+}
+}  // namespace
+
+TEST(classify_two_stream_space) {
+  // TRAIL_N (type 0) -> enh sid 1
+  CHECK(classify_from_nal_type(/*type=*/0, /*tid=*/1) == 1);
+  // TRAIL_R (type 1), any tid -> base sid 0 (old tid routing to 2/3 is gone)
+  CHECK(classify_from_nal_type(1, 0) == 0);
+  CHECK(classify_from_nal_type(1, 1) == 0);
+  CHECK(classify_from_nal_type(1, 2) == 0);
+  // IRAP (type 19) / parameter sets (32..34) -> 0
+  CHECK(classify_from_nal_type(19, 0) == 0);
+  CHECK(classify_from_nal_type(33, 0) == 0);
 }
 
 MTEST_MAIN
