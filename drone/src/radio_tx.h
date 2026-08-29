@@ -37,7 +37,7 @@ class FrameSink {
 };
 
 // Builds `radiotap(layer.bw) | 24-byte 802.11 header | body` frames for the
-// 4-rung adaptive-link ladder and hands them to a FrameSink. Every frame
+// 2-slot adaptive-link ladder and hands them to a FrameSink. Every frame
 // transmits at the ladder's configured width — there is no per-seq
 // bandwidth-probe schedule (removed 2026-07-27, SDD ladder-controller
 // Task 5: the ladder controller never varies bw independently of the
@@ -67,13 +67,14 @@ class RadioTx {
   // header per layer, at that layer's bw. Safe to call concurrently with
   // send_body() (agent thread vs hot thread) — the cache is swapped in
   // atomically once fully built.
-  void set_ladder(const std::array<rc::LayerTxSpec, 4>& ladder);
+  void set_ladder(const std::array<rc::LayerTxSpec, 2>& ladder);
 
-  // Builds and sends one frame for `stream_id` (an index 0..3 into the
-  // current ladder, clamped) carrying `body`. Returns whatever sink.send()
-  // returned. The sequence counter is consumed (incremented, mod 4096)
-  // regardless of the sink's return value, so a ground-station gap detector
-  // sees the loss represented as a skipped sequence number.
+  // Builds and sends one frame for `stream_id` mapped to a ladder slot:
+  // stream 0→slot0, 1→slot1, anything else→slot0 (MSP OSD + side-channels
+  // ride the robust base rate). Returns whatever sink.send() returned. The
+  // sequence counter is consumed (incremented, mod 4096) regardless of the
+  // sink's return value, so a ground-station gap detector sees the loss
+  // represented as a skipped sequence number.
   // NOTE: send_body() before set_ladder() drops frames (missing radiotap cache).
   bool send_body(uint8_t stream_id, const uint8_t* body, size_t len);
 
@@ -97,7 +98,7 @@ class RadioTx {
     std::vector<uint8_t> radiotap;
   };
   struct Cache {
-    std::array<LayerCache, 4> layers;
+    std::array<LayerCache, 2> layers;
   };
 
   // Builds `radiotap | dot11(seq_) | body` into out, consuming seq_. False

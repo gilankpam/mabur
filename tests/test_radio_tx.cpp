@@ -217,4 +217,37 @@ TEST(send_bodies_submits_one_batch) {
   CHECK(tx.sent() == 5);
 }
 
+TEST(send_body_maps_msp_to_base_slot) {
+  // MSP OSD (stream_id=4) should ride the base rate (slot 0, mcs-1).
+  // Set up a ladder with base mcs4, enh mcs5, verify stream_id 4 uses slot 0.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  auto ladder = ladder_from(PhyMode::HT, 5, 20);  // base mcs4, enh mcs5
+  tx.set_ladder(ladder);
+
+  const uint8_t body[] = {0xaa, 0xbb};
+  CHECK(tx.send_body(4, body, sizeof(body)));  // MSP stream_id
+
+  REQUIRE(sink.frames_.size() == 1);
+  const auto& f = sink.frames_[0];
+
+  // Extract radiotap length to find where the frame body starts
+  REQUIRE(f.size() > 4);
+  uint16_t rl = read_le16(&f[2]);
+  REQUIRE(f.size() >= static_cast<size_t>(rl) + 24 + sizeof(body));
+
+  // Build the expected radiotap from the base slot (slot 0)
+  const auto expected_radiotap = devourer::build_stream_radiotap(
+      to_tx_mode(ladder[0], ladder[0].bw));
+
+  // Verify the radiotap in the captured frame matches the base slot
+  REQUIRE(rl == expected_radiotap.size());
+  for (size_t i = 0; i < expected_radiotap.size(); ++i) {
+    CHECK(f[i] == expected_radiotap[i]);
+  }
+
+  CHECK(tx.sent() == 1);
+  CHECK(tx.drops() == 0);
+}
+
 MTEST_MAIN

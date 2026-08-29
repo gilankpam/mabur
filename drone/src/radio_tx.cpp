@@ -53,7 +53,7 @@ RadioTx::RadioTx(FrameSink& sink) : sink_(sink) {
   cache_.store(std::make_shared<Cache>());
 }
 
-void RadioTx::set_ladder(const std::array<rc::LayerTxSpec, 4>& ladder) {
+void RadioTx::set_ladder(const std::array<rc::LayerTxSpec, 2>& ladder) {
   auto next = std::make_shared<Cache>();
   for (size_t i = 0; i < ladder.size(); ++i) {
     const rc::LayerTxSpec& layer = ladder[i];
@@ -69,7 +69,7 @@ void RadioTx::set_ladder(const std::array<rc::LayerTxSpec, 4>& ladder) {
 bool RadioTx::build_frame(const Cache& cache, uint8_t stream_id,
                           const uint8_t* body, size_t len,
                           std::vector<uint8_t>& out) {
-  size_t idx = stream_id < cache.layers.size() ? stream_id : cache.layers.size() - 1;
+  size_t idx = stream_id >= 2 ? 0 : stream_id;
   const LayerCache& lc = cache.layers[idx];
 
   // Missing radiotap cache entry (e.g. called before set_ladder). Sequence

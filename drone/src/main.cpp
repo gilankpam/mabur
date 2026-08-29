@@ -1206,14 +1206,12 @@ int run_real_mode(const Config& cfg) {
           ti.radio_rx_ok = rb > rx_beat_at_last_telem;
           rx_beat_at_last_telem = rb;
           ti.generation = agent.current().generation;
-          // T0 rung: the same layer run_bitrate_policy() treats as "the"
-          // reference operating point for cmd_kbps. CRIT and T0 share
-          // mode/mcs/bw for every RCF/MAX_RANGE-driven op (ladder_from); they
-          // only (harmlessly) diverge for a few hundred ms right after a DISC
-          // rendezvous row is applied (ladder_for_row).
-          ti.mode = agent.current().ladder[1].mode;
-          ti.mcs = agent.current().ladder[1].mcs;
-          ti.bw = agent.current().ladder[1].bw;
+          // Telemetry rides the robust base rate (slot 0, mcs-1) to ensure
+          // control packets are reliably delivered even at the edge of coverage.
+          // The ladder is 2-slot: slot 0 (base, mcs-1) and slot 1 (enh, mcs).
+          ti.mode = agent.current().ladder[0].mode;
+          ti.mcs = agent.current().ladder[0].mcs;
+          ti.bw = agent.current().ladder[0].bw;
           ti.applied_ov = agent.current().fec_overhead;
           // have_feedback() false means no RCF has EVER been accepted (still
           // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
