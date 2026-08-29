@@ -350,7 +350,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     }
 
     State prev_state = state_;
-    apply_ladder_op(ladder, r->fec_overhead());
+    apply_ladder_op(ladder, r->fec_overhead);
 
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;
@@ -478,9 +478,9 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq) const {
   // wire (one legal value) so a GS can still refuse a peer that lacks it.
   // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
   // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
-  // CAP_S3_PROBE: this drone accepts RCF_F_PROBE3 (spec 2026-08-05
+  // CAP_ENH_PROBE: this drone accepts RCF_F_PROBE_ENH (spec 2026-08-05
   // s3-probe-promote).
-  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_S3_PROBE;
+  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_ENH_PROBE;
   ack.agreed_channel = cfg_.radio.channel;
   ack.agreed_width = cfg_.radio.width;
   ack.seq = seq;

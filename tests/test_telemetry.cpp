@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdio>
 #include "mtest.h"
 #include "telemetry.h"
@@ -23,7 +24,10 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.state == 2);
   CHECK(t.flags == 0x07);  // failsafe_shed | radio_rx_ok | probing
   CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
-  CHECK(t.applied_ov_x100 == 25);
+  // telemetry.cpp sets BOTH split fields from in.applied_ov for now (the
+  // balancer feeds real per-stream values in Task 8).
+  CHECK(std::abs(t.applied_ov_base - 0.25) < 1e-9);
+  CHECK(std::abs(t.applied_ov_enh - 0.25) < 1e-9);
   CHECK(t.rcf_age_ms == 65535);
   CHECK(t.enc_kbytes == (5ull << 30) / 1024);
   CHECK(t.ring_drops == 65535);

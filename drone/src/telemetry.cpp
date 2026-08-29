@@ -58,7 +58,10 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
                                   (in.probing ? 0x04 : 0));
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
-  t.applied_ov_x100 = saturate<uint8_t>(std::lround(in.applied_ov * 100.0));
+  // Both fields carry the same value for now — the balancer feeds real
+  // per-stream applied overhead in Task 8.
+  t.applied_ov_base = in.applied_ov;
+  t.applied_ov_enh = in.applied_ov;
   t.rcf_age_ms = saturate<uint16_t>(in.rcf_age_ms);
   t.rcf_rx = saturate<uint32_t>(in.rcf_rx);
   t.enc_frames = saturate<uint32_t>(in.enc_frames);

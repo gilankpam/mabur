@@ -161,9 +161,9 @@ dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
 # ack_seq/score/layer_delivery/flags fields mabur deleted from the wire in
 # RC_VERSION 3, and constructing it here would only invite them back.
 rcfs = [{"vtx_id": 0xDEADBEEF, "seq": 7, "profile": 0x24,
-         "fec_overhead_16ths": 8},
+         "fec_overhead": 0.5},
         {"vtx_id": 1, "seq": 65535, "profile": 0x00,
-         "fec_overhead_16ths": 16}]
+         "fec_overhead": 1.0}]
 discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,

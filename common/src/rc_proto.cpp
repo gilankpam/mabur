@@ -1,9 +1,20 @@
 #include "mabur/rc_proto.h"
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include "mabur/crc16.h"
 
 namespace mabur::rc {
 namespace {
+
+template <typename T, typename V>
+T saturate(V v) {
+  constexpr V lo = static_cast<V>(std::numeric_limits<T>::min());
+  constexpr V hi = static_cast<V>(std::numeric_limits<T>::max());
+  if (v < lo) return std::numeric_limits<T>::min();
+  if (v > hi) return std::numeric_limits<T>::max();
+  return static_cast<T>(v);
+}
 
 void put16(std::vector<uint8_t>& out, uint16_t v) {
   out.push_back(static_cast<uint8_t>(v & 0xFF));
@@ -34,7 +45,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 13;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 70;
+constexpr size_t TELEM_LEN = 71;  // grew by 1: applied_ov split base+enh
 
 }  // namespace
 
@@ -44,11 +55,11 @@ std::vector<uint8_t> pack_rcf(const Rcf& r) {
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_RCF);
-  body.push_back(static_cast<uint8_t>(r.probe3 ? RCF_F_PROBE3 : 0));
+  body.push_back(static_cast<uint8_t>(r.probe3 ? RCF_F_PROBE_ENH : 0));
   put32(body, r.vtx_id);
   put16(body, r.seq);
   body.push_back(r.profile);
-  body.push_back(r.fec_overhead_16ths);
+  body.push_back(overhead_to_x100(r.fec_overhead));
   if (r.probe3) body.push_back(r.probe_profile);
 
   put_crc(body);
@@ -63,7 +74,7 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   if (magic != RC_MAGIC || ver != RC_VERSION || type != T_RCF) return std::nullopt;
 
   uint8_t flags = buf[4];
-  size_t body_len = RCF_HEAD_LEN + ((flags & RCF_F_PROBE3) ? 1 : 0);
+  size_t body_len = RCF_HEAD_LEN + ((flags & RCF_F_PROBE_ENH) ? 1 : 0);
   if (len < body_len + 2) return std::nullopt;
   uint16_t crc = get16(buf, body_len);
   if (crc != crc16_ccitt(buf, body_len)) return std::nullopt;
@@ -72,8 +83,8 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.vtx_id = get32(buf, 5);
   r.seq = get16(buf, 9);
   r.profile = buf[11];
-  r.fec_overhead_16ths = buf[12];
-  if (flags & RCF_F_PROBE3) {
+  r.fec_overhead = buf[12] / 100.0;
+  if (flags & RCF_F_PROBE_ENH) {
     r.probe3 = true;
     r.probe_profile = buf[RCF_HEAD_LEN];
   }
@@ -171,7 +182,8 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(t.state);
   put32(body, t.generation);
   body.push_back(t.applied_profile);
-  body.push_back(t.applied_ov_x100);
+  body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_base * 100.0)));
+  body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_enh * 100.0)));
   put16(body, t.rcf_age_ms);
   put32(body, t.rcf_rx);
   put32(body, t.enc_frames);
@@ -220,34 +232,35 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.state = buf[7];
   t.generation = get32(buf, 8);
   t.applied_profile = buf[12];
-  t.applied_ov_x100 = buf[13];
-  t.rcf_age_ms = get16(buf, 14);
-  t.rcf_rx = get32(buf, 16);
-  t.enc_frames = get32(buf, 20);
-  t.enc_kbytes = get32(buf, 24);
-  t.cmd_kbps = get16(buf, 28);
-  t.qp = buf[30];
-  t.ring_drops = get16(buf, 31);
-  t.txq_depth = buf[33];
-  t.txq_cap = buf[34];
-  t.txq_drops = get32(buf, 35);
-  t.radio_sent = get32(buf, 39);
-  t.radio_drops = get32(buf, 43);
-  t.usb_fail = get16(buf, 47);
-  t.up_rssi[0] = buf[49];
-  t.up_rssi[1] = buf[50];
-  t.up_snr[0] = static_cast<int8_t>(buf[51]);
-  t.up_snr[1] = static_cast<int8_t>(buf[52]);
-  t.soc_temp_c = static_cast<int8_t>(buf[53]);
-  t.thermal_delta = static_cast<int8_t>(buf[54]);
-  t.load_x100 = get16(buf, 55);
-  t.idr_disagree = get16(buf, 57);
-  t.enhance_disagree = get16(buf, 59);
-  t.vanished_base = get16(buf, 61);
-  t.vanished_enh = get16(buf, 63);
-  t.self_idr_refused = get16(buf, 65);
-  t.venc_full_drops = get16(buf, 67);
-  t.venc_ring_fill_pct = buf[69];
+  t.applied_ov_base = buf[13] / 100.0;
+  t.applied_ov_enh = buf[14] / 100.0;
+  t.rcf_age_ms = get16(buf, 15);
+  t.rcf_rx = get32(buf, 17);
+  t.enc_frames = get32(buf, 21);
+  t.enc_kbytes = get32(buf, 25);
+  t.cmd_kbps = get16(buf, 29);
+  t.qp = buf[31];
+  t.ring_drops = get16(buf, 32);
+  t.txq_depth = buf[34];
+  t.txq_cap = buf[35];
+  t.txq_drops = get32(buf, 36);
+  t.radio_sent = get32(buf, 40);
+  t.radio_drops = get32(buf, 44);
+  t.usb_fail = get16(buf, 48);
+  t.up_rssi[0] = buf[50];
+  t.up_rssi[1] = buf[51];
+  t.up_snr[0] = static_cast<int8_t>(buf[52]);
+  t.up_snr[1] = static_cast<int8_t>(buf[53]);
+  t.soc_temp_c = static_cast<int8_t>(buf[54]);
+  t.thermal_delta = static_cast<int8_t>(buf[55]);
+  t.load_x100 = get16(buf, 56);
+  t.idr_disagree = get16(buf, 58);
+  t.enhance_disagree = get16(buf, 60);
+  t.vanished_base = get16(buf, 62);
+  t.vanished_enh = get16(buf, 64);
+  t.self_idr_refused = get16(buf, 66);
+  t.venc_full_drops = get16(buf, 68);
+  t.venc_ring_fill_pct = buf[70];
   return t;
 }
 
@@ -266,10 +279,8 @@ bool is_foreign_rc_version(const uint8_t* buf, size_t len) {
   return get16(buf, 0) == RC_MAGIC && buf[2] != RC_VERSION;
 }
 
-uint8_t overhead_to_16ths(double ov) {
-  double n = std::round(ov * 16.0);
-  if (n < 1.0) n = 1.0;
-  if (n > 16.0) n = 16.0;
+uint8_t overhead_to_x100(double ov) {
+  double n = std::round(std::clamp(ov, 0.05, 2.0) * 100.0);
   return static_cast<uint8_t>(n);
 }
 

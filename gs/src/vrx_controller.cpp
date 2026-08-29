@@ -64,7 +64,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
 
   if (cfg_.pin_mcs < 0) {
     LinkHealth h = health;
-    h.probe_allowed = (peer_caps_ & mabur::rc::CAP_S3_PROBE) != 0;
+    h.probe_allowed = (peer_caps_ & mabur::rc::CAP_ENH_PROBE) != 0;
     if (ctrl_.update(h, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
   }
   mabur::rc::Rcf r = build_rcf();
@@ -76,7 +76,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   // previously sent frame; steady-state re-sends of an unchanged command
   // are already their own retries and arm nothing.
   const bool changed = !have_last_cmd_ || r.profile != last_cmd_profile_ ||
-                       r.fec_overhead_16ths != last_cmd_ov16_ ||
+                       mabur::rc::overhead_to_x100(r.fec_overhead) != last_cmd_ovx100_ ||
                        r.probe3 != last_cmd_probe3_ ||
                        (r.probe3 && r.probe_profile != last_cmd_probe_profile_);
   note_cmd(r);
@@ -95,7 +95,7 @@ mabur::rc::Rcf VrxController::build_rcf() {
   r.profile = mabur::rc::encode_profile(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
-  r.fec_overhead_16ths = mabur::rc::overhead_to_16ths(cur_op_.overhead);
+  r.fec_overhead = cur_op_.overhead;
   if (cfg_.pin_mcs < 0 && ctrl_.probing()) {
     r.probe3 = true;
     r.probe_profile = mabur::rc::encode_profile(
@@ -108,7 +108,7 @@ mabur::rc::Rcf VrxController::build_rcf() {
 void VrxController::note_cmd(const mabur::rc::Rcf& r) {
   have_last_cmd_ = true;
   last_cmd_profile_ = r.profile;
-  last_cmd_ov16_ = r.fec_overhead_16ths;
+  last_cmd_ovx100_ = mabur::rc::overhead_to_x100(r.fec_overhead);
   last_cmd_probe3_ = r.probe3;
   last_cmd_probe_profile_ = r.probe_profile;
 }

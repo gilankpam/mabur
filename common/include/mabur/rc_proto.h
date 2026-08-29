@@ -22,10 +22,15 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // n_layers + layer_delivery tail. maburd read none of the three (rc_agent.cpp
 // uses vtx_id/seq/profile/fec_overhead/probe and nothing else), so they were
 // write-only ballast; the RCF head is fixed-length now.
+// Bumped 3 -> 4 on 2026-08-29: fec_overhead is now the literal air overhead
+// in x100 encoding (was a x16 'cmd' scalar the drone scaled 2x); Telem
+// applied_ov split per stream; probe flag renamed — the fixed base=mcs−1
+// rule means both ends of v4 agree on the split with no extra bytes. Spec
+// 2026-08-29-airtime-balance-uep.
 // Old and new peers reject each other in BOTH directions -- a half-deployed
 // pair has no control link and, because DISC_ACK carries CAP_FRAME_WIRE, no
 // video either. Recovery is to finish the deploy.
-constexpr uint8_t RC_VERSION = 3;
+constexpr uint8_t RC_VERSION = 4;
 
 constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
@@ -37,7 +42,7 @@ constexpr uint8_t F_DISCOVERY = 0x04;
 // RCF flags bit: one probe_profile byte follows the head — layer 3 (s3)
 // transmits at that MCS while everything else stays on Rcf.profile. This is
 // the only bit an RCF ever sets; the flags byte carries nothing else.
-constexpr uint8_t RCF_F_PROBE3 = 0x08;
+constexpr uint8_t RCF_F_PROBE_ENH = 0x08;
 
 // DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
 // (8-byte FrameHdr units + 6-byte wide FRAG headers) instead of pre-built
@@ -49,9 +54,9 @@ constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
 // sees a T_TELEM frame from an old drone. Spec 2026-07-26 drone-telemetry.
 constexpr uint16_t CAP_TELEMETRY = 0x0002;
 
-// DiscAck.chip_caps bit: drone accepts RCF_F_PROBE3 (s3-only MCS probe).
+// DiscAck.chip_caps bit: drone accepts RCF_F_PROBE_ENH (s3-only MCS probe).
 // Spec 2026-08-05 s3-probe-promote.
-constexpr uint16_t CAP_S3_PROBE = 0x0004;
+constexpr uint16_t CAP_ENH_PROBE = 0x0004;
 
 // VRX -> VTX feedback: the GS-authoritative operating point. Every field
 // here is one maburd acts on. It used to also carry ack_seq, an alink-style
@@ -62,14 +67,12 @@ struct Rcf {
   uint32_t vtx_id = 0;
   uint16_t seq = 0;
   uint8_t profile = 0;
-  uint8_t fec_overhead_16ths = 4;
+  double fec_overhead = 0.5;
 
   // s3 probe (spec 2026-08-05): when true, pack appends probe_profile after
-  // the head (inside the CRC) and sets RCF_F_PROBE3 in the flags byte.
+  // the head (inside the CRC) and sets RCF_F_PROBE_ENH in the flags byte.
   bool probe3 = false;
   uint8_t probe_profile = 0;
-
-  double fec_overhead() const { return fec_overhead_16ths / 16.0; }
 };
 
 // VRX -> VTX discovery beacon (rendezvous), addressed to a VTX_ID.
@@ -103,7 +106,8 @@ struct Telem {
   uint8_t flags = 0;            // bit0 failsafe_shed, bit1 radio_rx_ok, bit2 probing
   uint32_t generation = 0;
   uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
-  uint8_t applied_ov_x100 = 0;
+  double applied_ov_base = 0.0;
+  double applied_ov_enh = 0.0;
   uint16_t rcf_age_ms = 0;  // saturating
   uint32_t rcf_rx = 0;
   uint32_t enc_frames = 0;
@@ -180,8 +184,8 @@ int frame_type(const uint8_t* buf, size_t len);
 // it by chance: RX-path callers must gate on their own crc_ok.
 bool is_foreign_rc_version(const uint8_t* buf, size_t len);
 
-// Converts a fractional FEC overhead (e.g. 0.25) to the wire's 1/16ths unit,
-// rounded to nearest and clamped to [1, 16].
-uint8_t overhead_to_16ths(double ov);
+// Converts a fractional FEC overhead (e.g. 0.25) to the wire's literal x100
+// byte encoding, rounded to nearest and clamped to [0.05, 2.0] (5..200).
+uint8_t overhead_to_x100(double ov);
 
 }  // namespace mabur::rc

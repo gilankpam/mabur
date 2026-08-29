@@ -443,7 +443,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["applied"] = {{"mcs", mcs},
                     {"bw", bw},
                     {"vht", mode == mabur::rc::PhyMode::VHT},
-                    {"overhead", t.applied_ov_x100 / 100.0}};
+                    {"overhead_base", t.applied_ov_base},
+                    {"overhead_enh", t.applied_ov_enh}};
     json& rcf = d["rcf"];
     rcf["age_ms"] = t.rcf_age_ms;
     rcf["rx_pps"] = have_telem_rates_ ? json(telem_rcf_rx_pps_) : json(nullptr);

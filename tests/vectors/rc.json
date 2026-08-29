@@ -28,7 +28,7 @@
  "rcf": [
   {
    "fields": {
-    "fec_overhead_16ths": 8,
+    "fec_overhead": 0.5,
     "profile": 36,
     "seq": 7,
     "vtx_id": 3735928559
@@ -36,7 +36,7 @@
   },
   {
    "fields": {
-    "fec_overhead_16ths": 16,
+    "fec_overhead": 1.0,
     "profile": 0,
     "seq": 65535,
     "vtx_id": 1

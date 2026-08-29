@@ -56,13 +56,16 @@ Config make_cfg() {
 }
 
 // Builds a CRC-valid RCF wire frame for vtx_id/seq/profile/fec_overhead.
+// ov_16ths keeps the callers' existing sixteenths-based literals (8 == 0.5,
+// 16 == 1.0, ...) so this helper's ~40 call sites don't need touching for
+// the RC_VERSION 4 literal-fec_overhead wire change.
 std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
-                                    uint8_t fec_overhead_16ths) {
+                                    uint8_t ov_16ths) {
   Rcf r;
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
-  r.fec_overhead_16ths = fec_overhead_16ths;
+  r.fec_overhead = ov_16ths / 16.0;
   return pack_rcf(r);
 }
 
@@ -733,7 +736,7 @@ TEST(probe_rcf_overrides_layer3_mcs) {
   r.vtx_id = cfg.link.vtx_id;
   r.seq = 1;
   r.profile = profile_byte;
-  r.fec_overhead_16ths = 8;
+  r.fec_overhead = 0.5;
   r.probe3 = true;
   r.probe_profile = probe_byte;
   auto wire = pack_rcf(r);
@@ -770,7 +773,7 @@ TEST(probing_cleared_on_failsafe) {
   r.vtx_id = cfg.link.vtx_id;
   r.seq = 1;
   r.profile = encode_profile(PhyMode::HT, 5, 20);
-  r.fec_overhead_16ths = 8;
+  r.fec_overhead = 0.5;
   r.probe3 = true;
   r.probe_profile = encode_profile(PhyMode::HT, 6, 20);
   auto wire = pack_rcf(r);
@@ -782,8 +785,8 @@ TEST(probing_cleared_on_failsafe) {
   CHECK(!agent.probing());
 }
 
-// 2d. DiscAck.chip_caps advertises CAP_S3_PROBE alongside the existing
-// caps — this drone accepts RCF_F_PROBE3.
+// 2d. DiscAck.chip_caps advertises CAP_ENH_PROBE alongside the existing
+// caps — this drone accepts RCF_F_PROBE_ENH.
 TEST(disc_ack_advertises_s3_probe) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -797,7 +800,7 @@ TEST(disc_ack_advertises_s3_probe) {
   REQUIRE(act.controls.size() == 1);
   auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
   REQUIRE(parsed.has_value());
-  CHECK(parsed->chip_caps & mabur::rc::CAP_S3_PROBE);
+  CHECK(parsed->chip_caps & mabur::rc::CAP_ENH_PROBE);
 }
 
 TEST(link_established_latches_on_disc_link_up) {

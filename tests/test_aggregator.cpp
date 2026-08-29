@@ -35,7 +35,7 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
 static std::vector<uint8_t> rcf_fixture_wire() {
   mabur::rc::Rcf r;
   r.vtx_id = 0xDEADBEEF; r.seq = 7; r.profile = 0x24;
-  r.fec_overhead_16ths = 8;
+  r.fec_overhead = 0.5;
   return mabur::rc::pack_rcf(r);
 }
 

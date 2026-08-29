@@ -95,7 +95,7 @@ class VrxController {
   double next_repeat_ms_ = 0;
   bool have_last_cmd_ = false;
   uint8_t last_cmd_profile_ = 0;
-  uint8_t last_cmd_ov16_ = 0;
+  uint8_t last_cmd_ovx100_ = 0;
   bool last_cmd_probe3_ = false;
   uint8_t last_cmd_probe_profile_ = 0;
 };
