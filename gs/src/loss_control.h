@@ -230,7 +230,7 @@ class LossControl {
 
   // One stream's rates, both of them, labelled. Format is a contract: the
   // Python driver greps it and the operator's sweep log preserves it, so it
-  // must stay stable for the life of the branch.
+  // must stay stable for as long as tools/bench/losssim.py parses it.
   //   ok s3 percard=14.14 eff=2.000 burst=3.0 ncards=2 note=eff-nominal
   static std::string fmt(int sid, const LossSim& sim, int n_cards) {
     char b[160];

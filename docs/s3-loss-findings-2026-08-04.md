@@ -3,8 +3,7 @@
 ## What this is, and a warning about the recordings
 
 These numbers come from **synthetic loss injected at the ground station**, not
-from a degraded radio link. The rig is branch `bench/s3-loss-sim` (never
-merged): `maburgs` drops received radio bodies for a chosen stream inside
+from a degraded radio link. The rig is mainlined (2026-08-29 behind MABUR_LOSS_SIM): `maburgs` drops received radio bodies for a chosen stream inside
 `Aggregator::on_rx_body`, between the SBI `stream_id` peek and any accounting,
 so a dropped body is indistinguishable from one the air ate — no counters, no
 EMAs, no per-class tracks, never reaches the FEC decoder, and the 12-bit
