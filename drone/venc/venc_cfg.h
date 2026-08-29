@@ -10,6 +10,14 @@ typedef struct {
   uint16_t fps;              /* venc.fps */
   double gop_s;              /* venc.gop_s */
   int8_t qp_delta;           /* venc.qp_delta */
+  uint8_t max_ipprop;        /* venc.max_ipprop: 0 (default) = leave the
+                              * firmware default (0 = unbounded); 1..100 =
+                              * program u32MaxIPProp at boot. 2026-08-29
+                              * probe findings: enforced on star6e
+                              * (dose-response measured), achieved-ratio
+                              * floor ~1.4 at small values (I-QP rails);
+                              * useful range 2..4 under rally where IDRs
+                              * are already ~1.7x P. */
   char resilience[16];       /* venc.resilience ("rally", ...) — preset table */
   bool roi_enabled;          /* venc.roi.enabled */
   uint8_t roi_steps;         /* venc.roi.steps */

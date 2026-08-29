@@ -101,6 +101,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.venc.core.fps == 60);
   CHECK(cfg.venc.core.gop_s == 2.0);
   CHECK(cfg.venc.core.qp_delta == -4);
+  CHECK(cfg.venc.core.max_ipprop == 0);
   CHECK(std::string(cfg.venc.core.resilience) == "rally");
   CHECK(cfg.venc.core.roi_enabled == true);
   CHECK(cfg.venc.core.roi_steps == 2);
@@ -299,6 +300,7 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.height == 1080);
   CHECK(c.venc.core.gop_s == 2.0);
   CHECK(c.venc.core.qp_delta == -4);
+  CHECK(c.venc.core.max_ipprop == 0);
   CHECK(std::string(c.venc.core.resilience) == "rally");
   CHECK(c.venc.core.roi_enabled == true);
   CHECK(c.venc.core.roi_steps == 2);
@@ -310,6 +312,17 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   // The default resilience must survive the preset authority, or the
   // fallback would boot-fail on a config that named nothing wrong.
   CHECK(venc_cfg_preset_known(c.venc.core.resilience) != 0);
+  std::filesystem::remove(path);
+}
+
+// max_ipprop is optional: absent -> 0 (spec default, tested above), a
+// legal in-range value lands verbatim in VencCfg.
+TEST(venc_max_ipprop_parses) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("max_ipprop":2}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.max_ipprop == 2);
   std::filesystem::remove(path);
 }
 
@@ -348,6 +361,8 @@ TEST(venc_range_checks) {
            Case{R"({"venc":{"gop_s":11}})", "venc.gop_s"},
            Case{R"({"venc":{"qp_delta":-13}})", "venc.qp_delta"},
            Case{R"({"venc":{"qp_delta":13}})", "venc.qp_delta"},
+           Case{R"({"venc":{"max_ipprop":-1}})", "venc.max_ipprop"},
+           Case{R"({"venc":{"max_ipprop":101}})", "venc.max_ipprop"},
            Case{R"({"venc":{"snapshot_quality":0}})", "venc.snapshot_quality"},
            Case{R"({"venc":{"snapshot_quality":101}})", "venc.snapshot_quality"},
            Case{R"({"venc":{"debug_port":1023}})", "venc.debug_port"},

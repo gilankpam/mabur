@@ -384,6 +384,21 @@ int venc_set_qp_delta(int qp_delta)
 	return rc == 0 ? 0 : -1;
 }
 
+int venc_set_max_ipprop(int prop)
+{
+	int rc;
+
+	if (!venc_core_running())
+		return -1;
+	if (prop < 1 || prop > 100)
+		return -1;
+
+	pthread_mutex_lock(&g_verb_lock);
+	rc = star6e_controls_set_max_ipprop((uint32_t)prop);
+	pthread_mutex_unlock(&g_verb_lock);
+	return rc == 0 ? 0 : -1;
+}
+
 /* ── Signals ──────────────────────────────────────────────────────────── */
 
 void venc_get_stats(VencStats *out)

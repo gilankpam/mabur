@@ -42,6 +42,7 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->fps = 60;
 	cfg->gop_s = 2.0;
 	cfg->qp_delta = -4;
+	cfg->max_ipprop = 0; /* leave the firmware default (unbounded) */
 	preset_strcpy(cfg->resilience, sizeof(cfg->resilience), "rally");
 	cfg->roi_enabled = true;
 	cfg->roi_steps = 2;

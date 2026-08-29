@@ -9,4 +9,10 @@ TEST(debug_http_routes) {
   CHECK(debug_http_parse("GET /api/v1/set?video0.bitrate=1 HTTP/1.0").kind == DebugReq::BAD);
   CHECK(debug_http_parse("POST /venc/set?bitrate=nope HTTP/1.0").kind == DebugReq::BAD);
 }
+TEST(max_ipprop_key_whitelisted) {
+  auto p = debug_http_parse("POST /venc/set?max_ipprop=2 HTTP/1.0");
+  CHECK(p.kind == DebugReq::SET);
+  CHECK(p.key == "max_ipprop");
+  CHECK(p.val == 2);
+}
 MTEST_MAIN

@@ -38,7 +38,8 @@ bool parse_long_strict(const std::string& s, long* out) {
 }
 
 bool key_whitelisted(const std::string& k) {
-  return k == "bitrate" || k == "qp_delta" || k == "roi_qp";
+  return k == "bitrate" || k == "qp_delta" || k == "roi_qp" ||
+         k == "max_ipprop";
 }
 
 }  // namespace
@@ -175,6 +176,8 @@ void handle_set(int fd, const DebugReq& req) {
     ok = venc_set_qp_delta(v) == 0;
   } else if (req.key == "roi_qp") {
     ok = venc_set_roi_qp(v) == 0;
+  } else if (req.key == "max_ipprop") {
+    ok = venc_set_max_ipprop(v) == 0;
   }
   send_json(fd, "200 OK", ok ? "{\"ok\":true}\n" : "{\"ok\":false}\n");
 #else

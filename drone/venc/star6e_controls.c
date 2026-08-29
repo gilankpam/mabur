@@ -123,6 +123,42 @@ static int apply_qp_delta(int delta)
 	return 0;
 }
 
+/* Set u32MaxIPProp directly on the CBR RC params.  Legal range 1..100
+ * (max I-frame size as a multiple of P-frame size).  Get->modify->Set
+ * like apply_qp_delta, so every other live RcParam field (s32IPQPDelta
+ * included) is preserved.  Prints the CURRENT value before overwriting
+ * it, which on the first call is the firmware's compiled-in default —
+ * the 2026-08-29 probe found this proportion IS enforced under H265 CBR,
+ * unlike u32MaxISize/u32MaxPSize, which were proven dead on hardware. */
+static int apply_max_ipprop(uint32_t prop)
+{
+	MI_VENC_ChnAttr_t attr = {0};
+	MI_VENC_RcParam_t param = {0};
+
+	if (prop < 1 || prop > 100)
+		return -1;
+
+	if (MI_VENC_GetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0)
+		return -1;
+	if (attr.rate.mode != I6_VENC_RATEMODE_H265CBR)
+		return -1;
+	if (MI_VENC_GetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
+		return -1;
+	printf("> max_ipprop: current (firmware default or last-set) = %u\n",
+		(unsigned)param.stParamH265Cbr.u32MaxIPProp);
+	/* stdout is fully buffered once the wrapper redirects it into
+	 * /tmp/mabur.log (not a tty) -- unlike the stats: line (main.cpp,
+	 * stderr, unbuffered), a lone control-verb printf can sit unflushed
+	 * for the life of the process.  Force it out now. */
+	fflush(stdout);
+	param.stParamH265Cbr.u32MaxIPProp = prop;
+	if (MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
+		return -1;
+	printf("> max_ipprop: applied = %u\n", (unsigned)prop);
+	fflush(stdout);
+	return 0;
+}
+
 /* Compute one horizontal ROI band for step index of steps.
  * Full-height bands centered horizontally, tapered QP toward edges.
  * Returns 0 if valid, -1 if region should be skipped. */
@@ -260,4 +296,9 @@ int star6e_controls_apply_roi_qp(int qp)
 int star6e_controls_apply_qp_delta(int delta)
 {
 	return apply_qp_delta(delta);
+}
+
+int star6e_controls_set_max_ipprop(uint32_t prop)
+{
+	return apply_max_ipprop(prop);
 }

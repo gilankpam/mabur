@@ -161,6 +161,16 @@ static int star6e_runtime_apply_startup_controls(Star6eRunnerContext *ctx)
 	if (cfg->qp_delta != 0)
 		star6e_controls_apply_qp_delta(cfg->qp_delta);
 
+	/* 0 = leave the firmware default (unbounded); non-fatal on failure,
+	 * like every other startup control here — log and keep booting
+	 * rather than kill the encoder over an RC size-cap knob. */
+	if (cfg->max_ipprop > 0) {
+		if (star6e_controls_set_max_ipprop(cfg->max_ipprop) != 0)
+			fprintf(stderr,
+				"WARN: max_ipprop %u not applied\n",
+				(unsigned)cfg->max_ipprop);
+	}
+
 	return 0;
 }
 

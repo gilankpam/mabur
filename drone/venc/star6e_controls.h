@@ -27,6 +27,13 @@ int star6e_controls_apply_roi_qp(int qp);
 /** Apply relative I/P QP delta to the running encoder (boot-time). */
 int star6e_controls_apply_qp_delta(int delta);
 
+/** Set u32MaxIPProp directly on the CBR RC params (boot startup control
+ *  and debug endpoint).  Prints the CURRENT value before overwriting it,
+ *  which on the first call is the firmware's compiled-in default.
+ *  Rejects prop outside [1,100].  Get->modify->Set like apply_qp_delta,
+ *  so every other live RcParam field is preserved. */
+int star6e_controls_set_max_ipprop(uint32_t prop);
+
 /** Explicit IDR request.  Goes through the shared per-channel 100 ms
  *  rate limiter (idr_rate_limit.h); a coalesced request returns 0, not an
  *  error.  This is the only place in venc_core that calls
