@@ -150,11 +150,23 @@ static inline int venc_frame_ring_get_fill(const venc_frame_ring_t *r,
 	out->fill_pct = slot_count
 		? (uint8_t)((uint64_t)used * 100u / slot_count)
 		: 0u;
-	out->writes = r->stats.writes;
-	out->reads = r->stats.reads;
-	out->full_drops = r->stats.full_drops;
-	out->oversize_drops = r->stats.oversize_drops;
-	out->bad_slot_drops = r->stats.bad_slot_drops;
+	/* Relaxed ATOMIC loads, not plain reads. These uint64_t counters are
+	 * written by the producer thread (the encoder) and read here by a
+	 * different one — the RcAgent/telemetry thread via venc_get_stats(),
+	 * and the debug endpoint. maburd is a 32-bit armv7 binary, where a
+	 * plain 64-bit load is two instructions and can straddle a
+	 * concurrent increment's carry, yielding a value that was never in
+	 * the counter (a full_drops that momentarily reads ~4 billion, which
+	 * saturates straight into Telem and the sideport). Relaxed is
+	 * sufficient: these are independent counters, nothing orders on
+	 * them, and the paired stores are __atomic_fetch_add below. */
+	out->writes = __atomic_load_n(&r->stats.writes, __ATOMIC_RELAXED);
+	out->reads = __atomic_load_n(&r->stats.reads, __ATOMIC_RELAXED);
+	out->full_drops = __atomic_load_n(&r->stats.full_drops, __ATOMIC_RELAXED);
+	out->oversize_drops =
+		__atomic_load_n(&r->stats.oversize_drops, __ATOMIC_RELAXED);
+	out->bad_slot_drops =
+		__atomic_load_n(&r->stats.bad_slot_drops, __ATOMIC_RELAXED);
 	return 0;
 }
 
@@ -192,12 +204,12 @@ static inline int venc_frame_ring_begin_write(venc_frame_ring_t *r,
 	rd = __atomic_load_n(&r->hdr->read_idx, __ATOMIC_ACQUIRE);
 
 	if (w - rd >= r->hdr->slot_count) {
-		r->stats.full_drops++;
+		__atomic_fetch_add(&r->stats.full_drops, 1, __ATOMIC_RELAXED);
 		return -1;
 	}
 
 	if (VENC_FRAME_META_SIZE > r->slot_data_size) {
-		r->stats.oversize_drops++;
+		__atomic_fetch_add(&r->stats.oversize_drops, 1, __ATOMIC_RELAXED);
 		return -1;
 	}
 
@@ -221,7 +233,7 @@ static inline int venc_frame_ring_append(venc_frame_ring_t *r,
 		return -1;
 
 	if ((uint64_t)r->write_offset + len > r->slot_data_size) {
-		r->stats.oversize_drops++;
+		__atomic_fetch_add(&r->stats.oversize_drops, 1, __ATOMIC_RELAXED);
 		return -1;
 	}
 
@@ -248,7 +260,7 @@ static inline void venc_frame_ring_commit_write(venc_frame_ring_t *r)
 	slot->length = r->write_offset;
 
 	__atomic_store_n(&r->hdr->write_idx, w + 1, __ATOMIC_RELEASE);
-	r->stats.writes++;
+	__atomic_fetch_add(&r->stats.writes, 1, __ATOMIC_RELAXED);
 	r->write_active = 0;
 	r->write_offset = 0;
 
@@ -306,13 +318,13 @@ static inline int venc_frame_ring_read(venc_frame_ring_t *r,
 	len = slot->length;
 
 	if (len > r->slot_data_size) {
-		r->stats.bad_slot_drops++;
+		__atomic_fetch_add(&r->stats.bad_slot_drops, 1, __ATOMIC_RELAXED);
 		__atomic_store_n(&r->hdr->read_idx, rd + 1, __ATOMIC_RELEASE);
 		return -1;
 	}
 
 	if (len > buf_size) {
-		r->stats.oversize_drops++;
+		__atomic_fetch_add(&r->stats.oversize_drops, 1, __ATOMIC_RELAXED);
 		__atomic_store_n(&r->hdr->read_idx, rd + 1, __ATOMIC_RELEASE);
 		return -1;
 	}
@@ -321,7 +333,7 @@ static inline int venc_frame_ring_read(venc_frame_ring_t *r,
 	if (out_len) *out_len = len;
 
 	__atomic_store_n(&r->hdr->read_idx, rd + 1, __ATOMIC_RELEASE);
-	r->stats.reads++;
+	__atomic_fetch_add(&r->stats.reads, 1, __ATOMIC_RELAXED);
 	return 0;
 }
 

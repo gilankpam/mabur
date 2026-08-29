@@ -28,6 +28,8 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>  // _exit() — see the venc on_fault handler
+
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -791,13 +793,26 @@ int run_real_mode(const Config& cfg) {
   vcb.on_chain_break = [](void* u) {
     static_cast<RcAgent*>(u)->note_chain_break();  // atomic set; acted on at tick
   };
-  // Fault policy: log and exit(3) for the wrapper to respawn. Deliberately
+  // Fault policy: log and _exit(3) for the wrapper to respawn. Deliberately
   // NOT venc_core_stop() — this runs ON the encoder thread and stop() joins
   // that same thread (venc_core.c's contract), so calling it here would
   // self-deadlock the very failure it is meant to escape.
+  //
+  // _exit(), not std::exit(): this fires on the ENCODER thread of a live
+  // multi-threaded process whose other threads (agent, hot TX, debug HTTP,
+  // MSP) keep running through the teardown. std::exit() runs atexit
+  // handlers and static destructors on that thread while the rest of the
+  // process still touches the same objects — a hang there (a destructor
+  // blocking on a lock another thread holds, or on the same MI call that
+  // just faulted) leaves a wedged, video-less maburd that the wrapper never
+  // gets to respawn, which is the exact outcome this policy exists to
+  // avoid. stderr is unbuffered, and the explicit fflush covers the case
+  // where something upstream has set a buffer on it, so skipping _exit()'s
+  // omitted flush-at-exit costs no diagnostics.
   vcb.on_fault = [](void*, const char* what) {
     std::fprintf(stderr, "venc FATAL: %s — exiting for wrapper respawn\n", what);
-    std::exit(3);
+    std::fflush(stderr);
+    _exit(3);
   };
   vcb.user = &agent;
   if (venc_core_start(&cfg.venc.core, &vcb) != 0) {
@@ -1011,13 +1026,19 @@ int run_real_mode(const Config& cfg) {
       // Ring-pressure observability (spec: the drain-feedback policy's
       // future input): one stderr line every 5 s.
       //
-      // Only counters this process can actually move. venc_frame_ring_fill_t
-      // snapshots the *local handle*, and writes/full_drops are incremented
-      // solely by the write path — they are structurally 0 for a consumer, and
-      // the shm header carries write_idx/read_idx but no counters, so the
-      // producer's copies cannot cross. fill_pct is the real cross-process
-      // signal (write_idx - read_idx); waybeam's own drop count has to come
-      // from waybeam. See tests/test_frame_source.cpp
+      // Only counters this process's CONSUMER handle can actually move.
+      // venc_frame_ring_fill_t snapshots the local handle, and
+      // writes/full_drops are incremented solely by the write path — they
+      // are structurally 0 here, and the shm header carries
+      // write_idx/read_idx but no counters, so the producer handle's copies
+      // cannot cross into this one. fill_pct is the ring-wide signal
+      // (write_idx - read_idx). Since the venc fold-in the producer is a
+      // thread of THIS process, so its drop count is no longer unreachable:
+      // it comes from venc_get_stats() (VencStats.full_drops), which reads
+      // the encoder's own handle — see the T_TELEM collector below, which
+      // publishes it as Telem.venc_full_drops. This line stays
+      // consumer-side-only on purpose, so the two provenances never blur.
+      // See tests/test_frame_source.cpp
       // (consumer_fill_reports_only_consumer_side_counters).
       if (now - last_ring_stats_ms >= 5000) {
         last_ring_stats_ms = now;

@@ -155,6 +155,8 @@ void RcAgent::reapply_with_shed() {
 //    either way, so a steady-state RCF arriving shortly after a forced call
 //    is throttled normally.
 void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
+  last_policy_ms_ = now_ms;
+  have_last_policy_ = true;
   double mbps = rc::phy_rate_mbps(applied_.ladder[1]);  // T0
   double overhead = uep_layer_overhead(1, applied_.fec_overhead);
   double kbps = mbps * 1000.0 * cfg_.encoder.airtime_budget / (1.0 + overhead);
@@ -180,12 +182,15 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   // waybeam wedge in-process: one dropped MI call and the encoder stays on
   // the old rate for the rest of the flight, because `changed` reads false
   // forever after.
+  bool failed = false;
   if (force || decrease || (changed && !throttled)) {
     if (act_.set_bitrate_kbps(kbps_i)) {
       last_bitrate_kbps_ = kbps_i;
       have_last_bitrate_ = true;
       last_bitrate_eval_ms_ = now_ms;
       have_last_bitrate_eval_ = true;
+    } else {
+      failed = true;
     }
   }
 
@@ -195,7 +200,13 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
     // took the QP would make the transition un-repeatable.
     if (act_.set_roi_qp(now_low ? cfg_.encoder.roi_qp_low : cfg_.encoder.roi_qp_normal))
       roi_low_ = now_low;
+    else
+      failed = true;
   }
+  // Latched for tick()'s retry path. Cleared, not merely left alone, on a
+  // clean run: the re-assert must go back to its 5 s cadence once the
+  // encoder is taking values again, not retry on every tick forever.
+  verb_apply_failed_ = failed;
 }
 
 // Escalates shed_level_ (0..3) by one step the instant tx_drops rises since
@@ -414,6 +425,46 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
         now_ms - last_fb_ms_ >= static_cast<uint64_t>(cfg_.link.rendezvous_ms)) {
       state_ = State::RENDEZVOUS;
     }
+  }
+
+  // Periodic re-assert of the encoder verbs (kReassertMs). run_bitrate_policy
+  // otherwise runs ONLY on an RCF, a DISC, or a max-range entry, which makes
+  // "retry on the next policy tick" a promise the agent cannot keep in the
+  // states where it matters most: in FAILSAFE there are no RCFs by
+  // definition, so a verb that failed on the failsafe entry itself stayed
+  // failed for up to rendezvous_ms (30 s) with the encoder flooding a
+  // mcs0-sized pipe at the previous rung's rate. The same gap let anything
+  // that wrote the encoder behind RcAgent's back — the debug endpoint's
+  // POST /venc/set?bitrate= above all — persist until the ladder happened to
+  // change rung.
+  //
+  // force=true is required, not incidental: with force=false an unchanged
+  // computed target is a deliberate no-op (the changed/decrease gate), so a
+  // re-assert would send nothing at all — which is the entire bug. force
+  // re-applies the CURRENT computed target, including FAILSAFE's floor
+  // (applied_ is the max-range op while in FAILSAFE, so the value stamped
+  // over is the correct one for the state, never a stale LINKED rate).
+  //
+  // Cadence: kReassertMs since the last bitrate the encoder actually ACCEPTED
+  // (last_bitrate_eval_ms_ is latched only inside the success branch), so a
+  // busy LINKED link that keeps genuinely changing rung never adds a
+  // re-assert on top, while a parked one gets exactly one every 5 s. A failed
+  // verb short-circuits to the next tick.
+  //
+  // RENDEZVOUS is excluded: it is the pre-link state where no GS has been
+  // heard from, MAX_RANGE was applied once on the BOOT tick, and there is
+  // nothing to defend the value against.
+  //
+  // ran_this_tick keeps it to at most one policy run per distinct now_ms: a
+  // tick that has ALREADY run the policy (the failsafe entry a few lines up,
+  // or an RCF the agent loop drained at the same millisecond) must not
+  // immediately run it again — most visibly when that run FAILED, where the
+  // retry belongs on the next tick, not back-to-back on this one.
+  bool ran_this_tick = have_last_policy_ && last_policy_ms_ == now_ms;
+  if (!ran_this_tick && (state_ == State::LINKED || state_ == State::FAILSAFE)) {
+    bool reassert_due = verb_apply_failed_ || !have_last_bitrate_eval_ ||
+                        now_ms - last_bitrate_eval_ms_ >= kReassertMs;
+    if (reassert_due) run_bitrate_policy(now_ms, /*force=*/true);
   }
 
   run_congestion_guard(now_ms, health);

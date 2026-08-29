@@ -5,11 +5,16 @@
 # venc fold-in flag day (was tools/build-arm-glibc.sh; the musl script and
 # cmake/arm-musl.cmake are deleted).
 #
-# Why glibc-dynamic, not musl-static any more: maburd now links the
-# SigmaStar MI vendor libraries (drone/vendor) to run the encoder
-# in-process. Those are prebuilt glibc shared objects, so the process must
-# be a glibc dynamic executable — there is no static option and no second
-# ABI to keep alive. The OpenIPC rootfs the drone runs supplies every
+# Why glibc-dynamic, not musl-static any more: maburd now runs the encoder
+# in-process, and the SigmaStar MI libraries it drives (libmi_venc.so and
+# friends, shipped in the OpenIPC rootfs) are dlopen'd at RUNTIME by
+# drone/venc/star6e_*.c — they are never linked here. dlopen against
+# prebuilt glibc shared objects requires a glibc DYNAMIC executable; a
+# static binary has no loader to do it with, so musl-static is simply not
+# an option any more and there is no second ABI to keep alive. Note
+# drone/vendor is NOT those libraries: it is the frame-shm ring
+# (venc_frame_ring.[ch]), ordinary C compiled into maburd like any other
+# source. The OpenIPC rootfs the drone runs supplies every
 # NEEDED library (libstdc++.so.6 lives in /usr/lib, not /lib — the loader
 # finds it, but remember that when auditing a stripped rootfs).
 #
@@ -75,8 +80,8 @@ cmake -S . -B build-arm-glibc -DCMAKE_TOOLCHAIN_FILE=cmake/arm-openipc.cmake \
   -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
 # linkbench-tx / txagcbench-tx are the drone-side halves of the two bench
 # harnesses (bench/txagcbench/run_sweep.sh expects out/arm/txagcbench-tx).
-# They carry over from the musl script unchanged; they do not link the venc
-# vendor libs, but they ship to the same rootfs, so one toolchain is enough.
+# They carry over from the musl script unchanged; they build none of
+# drone/venc, but they ship to the same rootfs, so one toolchain is enough.
 cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx txagcbench-tx
 STRIP="$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-strip"
 "$STRIP" build-arm-glibc/drone/maburd                     -o out/arm/maburd

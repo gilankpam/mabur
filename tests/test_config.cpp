@@ -283,6 +283,49 @@ TEST(venc_rejects_unknown_resilience) {
   std::filesystem::remove(path);
 }
 
+// Absent venc keys fall back to the spec §3 values (venc_cfg_defaults(),
+// drone/venc/venc_cfg.c), NOT to the all-zero a plain `VencCfg core{}`
+// would give: a zeroed VencCfg is fps 0 / 0x0 / gop 0.0 / resilience "",
+// which is a malformed pipeline dressed up as a default.
+// REVERT CHECK: delete the VencSectionCfg() constructor in config.h (or the
+// body of venc_cfg_defaults) and every CHECK below reads 0/"".
+TEST(venc_absent_keys_fall_back_to_spec_defaults) {
+  // Only the one REQUIRED key present; everything else omitted.
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.fps == 60);
+  CHECK(c.venc.core.width == 1920);
+  CHECK(c.venc.core.height == 1080);
+  CHECK(c.venc.core.gop_s == 2.0);
+  CHECK(c.venc.core.qp_delta == -4);
+  CHECK(std::string(c.venc.core.resilience) == "rally");
+  CHECK(c.venc.core.roi_enabled == true);
+  CHECK(c.venc.core.roi_steps == 2);
+  CHECK(c.venc.core.roi_center == 0.4);
+  CHECK(c.venc.core.ae_fps == 15);
+  CHECK(c.venc.core.awb_fps == 15);
+  CHECK(c.venc.core.snapshot_quality == 80);
+  CHECK(c.venc.debug_port == 8301);
+  // The default resilience must survive the preset authority, or the
+  // fallback would boot-fail on a config that named nothing wrong.
+  CHECK(venc_cfg_preset_known(c.venc.core.resilience) != 0);
+  std::filesystem::remove(path);
+}
+
+// sensor_bin is the ONE venc key with no default: it names a device-specific
+// ISP calibration blob, and there is no value that is right for an unknown
+// camera. Absent => boot failure, per the project's config-strict policy.
+// REVERT CHECK: remove the sensor_bin[0] check at the end of parse_venc and
+// this load succeeds with an empty sensor_bin.
+TEST(venc_sensor_bin_is_required) {
+  auto path = write_temp_json(R"({"venc":{"fps":60}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.sensor_bin") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
 TEST(venc_size_malformed_throws) {
   auto path = write_temp_json(R"({"venc":{"size":"1920"}})");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
@@ -313,6 +356,19 @@ TEST(venc_range_checks) {
            Case{R"({"venc":{"roi":{"steps":5}}})", "venc.roi.steps"},
            Case{R"({"venc":{"roi":{"center":-0.1}}})", "venc.roi.center"},
            Case{R"({"venc":{"roi":{"center":1.1}}})", "venc.roi.center"},
+           // ae_fps/awb_fps are range-checked BEFORE the uint16 cast: -1
+           // used to wrap to 65535 and 0 used to sail through as "run the
+           // ISP loop at no rate at all", both of which reach the MI ISP
+           // looking legal and misbehave on hardware instead of failing
+           // boot.
+           // REVERT CHECK: drop the `< 1` half of either range check and the
+           // -1 and 0 cases stop throwing (the load succeeds).
+           Case{R"({"venc":{"ae_fps":-1}})", "venc.ae_fps"},
+           Case{R"({"venc":{"ae_fps":0}})", "venc.ae_fps"},
+           Case{R"({"venc":{"ae_fps":61}})", "venc.ae_fps"},
+           Case{R"({"venc":{"awb_fps":-1}})", "venc.awb_fps"},
+           Case{R"({"venc":{"awb_fps":0}})", "venc.awb_fps"},
+           Case{R"({"venc":{"awb_fps":61}})", "venc.awb_fps"},
        }) {
     auto path = write_temp_json(c.json);
     std::string msg = what_of([&] { (void)load_config(path.string()); });

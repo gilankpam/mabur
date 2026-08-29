@@ -72,6 +72,31 @@ void venc_core_signal_chain_break(void)
 
 /* ── Stale MI kernel worker guard ─────────────────────────────────────── */
 
+/* PPid from /proc/PID/status, or -1 if it cannot be read (process gone,
+ * or a /proc without the field).  Parsed line-wise rather than with a
+ * scanf format over the whole file because the field order in
+ * /proc/PID/status is not a stable ABI. */
+static long venc_proc_ppid(long pid)
+{
+	char path[64];
+	char line[128];
+	FILE *f;
+	long ppid = -1;
+
+	snprintf(path, sizeof(path), "/proc/%ld/status", pid);
+	f = fopen(path, "r");
+	if (!f)
+		return -1;
+	while (fgets(line, sizeof(line), f)) {
+		if (strncmp(line, "PPid:", 5) == 0) {
+			ppid = strtol(line + 5, NULL, 10);
+			break;
+		}
+	}
+	fclose(f);
+	return ppid;
+}
+
 /* ported from waybeam_venc f956a52:src/main.c (is_another_waybeam_running),
  * inverted to the case mabur actually cares about.
  *
@@ -80,9 +105,27 @@ void venc_core_signal_chain_break(void)
  * SIGKILLed / OOM-killed / panic out of MI_SYS_Exit, and that leaves a
  * "[maburd]" MI_VENC kernel worker behind holding the VENC hardware.  The
  * next pipeline_start then fails deep in the SDK with an unhelpful error.
- * Kernel threads have an EMPTY /proc/PID/cmdline; that is how we tell one
- * from a real process.  Nothing in userspace clears it — say so and refuse
- * to boot rather than burn a flight discovering it. */
+ * Kernel threads have an EMPTY /proc/PID/cmdline; that is the first
+ * filter.  Nothing in userspace clears such a worker — say so and refuse to
+ * boot rather than burn a flight discovering it.
+ *
+ * But an empty cmdline is NOT unique to kernel threads: a ZOMBIE or an
+ * exiting process has one too, and the wrapper respawns maburd at 2 s, so
+ * the overwhelmingly common "empty cmdline + comm == maburd" hit is our own
+ * dying predecessor still being reaped — a condition that resolves itself
+ * in milliseconds.  Refusing boot on that would turn every ordinary restart
+ * into a "REBOOT the drone" instruction, which is worse than the bug.
+ *
+ * Discriminator: /proc/PID/status PPid.  Kernel threads are children of
+ * kthreadd (PPid 2), or PPid 0 for the few spawned before it; every
+ * userspace process — zombie included, since the parent has not reaped it
+ * yet, which is precisely why it is still a zombie — has PPid > 2.  So
+ * refuse boot only for PPid <= 2 and log-and-skip everything else.
+ * (readlink /proc/PID/exe was considered and rejected: it fails with ENOENT
+ * for BOTH a kernel thread and a zombie, so it cannot tell them apart.)
+ *
+ * The scan continues after a skip rather than stopping, so a real kernel
+ * worker sitting behind a zombie in readdir order is still found. */
 static int venc_stale_kernel_thread_check(void)
 {
 	DIR *proc = opendir("/proc");
@@ -123,12 +166,30 @@ static int venc_stale_kernel_thread_check(void)
 			if (len > 0 && comm[len - 1] == '\n')
 				comm[len - 1] = '\0';
 			if (strcmp(comm, "maburd") == 0) {
-				fprintf(stderr,
-					"ERROR: stale [maburd] MI kernel worker"
-					" (pid %ld) still holds the encoder;"
-					" no userspace action clears it —"
-					" REBOOT the drone\n", pid);
-				found = 1;
+				long ppid = venc_proc_ppid(pid);
+
+				/* ppid < 0 = /proc/PID/status vanished
+				 * mid-scan, i.e. the process exited while we
+				 * looked at it: by definition not a stale
+				 * kernel worker. */
+				if (ppid >= 0 && ppid <= 2) {
+					fprintf(stderr,
+						"ERROR: stale [maburd] MI kernel"
+						" worker (pid %ld, ppid %ld)"
+						" still holds the encoder;"
+						" no userspace action clears"
+						" it — REBOOT the drone\n",
+						pid, ppid);
+					found = 1;
+				} else {
+					fprintf(stderr,
+						"venc: ignoring pid %ld"
+						" (comm maburd, empty cmdline,"
+						" ppid %ld) — a zombie/exiting"
+						" userspace predecessor, not a"
+						" kernel worker\n",
+						pid, ppid);
+				}
 			}
 		}
 		fclose(f);
@@ -338,8 +399,11 @@ void venc_get_stats(VencStats *out)
 	if (!venc_core_running())
 		return;
 
-	/* Producer-side counter, bumped once per published access unit on
-	 * the encoder thread (star6e_video_send_frame). */
+	/* Producer-side counter, bumped on the encoder thread
+	 * (star6e_video_send_frame). It counts encoded AUs INCLUDING ones
+	 * the full ring then drops: the increment happens pre-publish, so
+	 * frames_encoded is "what the encoder produced", not "what reached
+	 * the ring". full_drops below is the difference. */
 	out->frames_encoded = (uint32_t)__atomic_load_n(
 		&g_ctx.ps.video.frame_counter, __ATOMIC_RELAXED);
 

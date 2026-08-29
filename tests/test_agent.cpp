@@ -959,3 +959,97 @@ TEST(idr_at_time_zero_arms_the_floor) {
   agent.tick(150, RadioHealth{});  // clear of it
   CHECK(act.idr_calls == 2);
 }
+
+// 18. Periodic re-assert, half one: a verb refused on a FAILSAFE ENTRY is
+// retried without any inbound RC frame. Before the re-assert, tick() never
+// called run_bitrate_policy(), so "retried on the next policy tick" meant
+// "on the next RCF/DISC/max-range entry" — and FAILSAFE is by definition the
+// state with no RCFs, so a refusal there went unrepaired for up to
+// rendezvous_ms (30 s) with the encoder still flooding at the previous
+// rung's rate.
+// REVERT CHECK: delete the re-assert block at the bottom of RcAgent::tick()
+// and the t=1200/t=1300 ticks issue no set_bitrate_kbps at all — bitrates
+// stays at 3 entries to the end of the test.
+TEST(refused_apply_on_failsafe_entry_is_retried_by_the_periodic_reassert) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+
+  agent.tick(0, RadioHealth{});                    // BOOT -> MAX_RANGE, forced
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 4);
+  agent.on_rc_frame(r1.data(), r1.size(), 100);    // -> LINKED, forced apply
+  REQUIRE(act.bitrates.size() == 2);
+
+  // The encoder starts refusing, then the link goes quiet past failsafe_ms.
+  act.bitrate_ok = false;
+  agent.tick(1100, RadioHealth{});                 // LINKED -> FAILSAFE, forced
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  REQUIRE(act.bitrates.size() == 3);               // the entry's own attempt
+  const int floor_kbps = act.bitrates.back();
+
+  // No RCF, no DISC — only ticks. The failed apply short-circuits the
+  // re-assert interval, so the very next tick retries.
+  agent.tick(1200, RadioHealth{});
+  REQUIRE(act.bitrates.size() == 4);
+  CHECK(act.bitrates.back() == floor_kbps);
+
+  // Encoder recovers: the next tick's retry lands and latches.
+  act.bitrate_ok = true;
+  agent.tick(1300, RadioHealth{});
+  REQUIRE(act.bitrates.size() == 5);
+  CHECK(act.bitrates.back() == floor_kbps);
+
+  // And having landed, the retry stops: back to the 5 s cadence.
+  agent.tick(1400, RadioHealth{});
+  agent.tick(1500, RadioHealth{});
+  CHECK(act.bitrates.size() == 5);
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+}
+
+// 19. Periodic re-assert, half two: with a HEALTHY actuator the re-assert is
+// a 5 s cadence, not a per-tick one. Ticks inside the interval must issue no
+// set_bitrate_kbps at all, and crossing the interval must issue exactly one.
+// The force=true is load-bearing: the re-assert restates an UNCHANGED target,
+// which is precisely what run_bitrate_policy's changed/decrease gate exists
+// to suppress.
+// REVERT CHECK, two ways: (a) pass force=false in the re-assert call and the
+// count never leaves 2 — the gate swallows every re-apply; (b) drop the
+// `now_ms - last_bitrate_eval_ms_ >= kReassertMs` term (retry on every tick)
+// and the first leg's 48 ticks each add a call.
+TEST(reassert_is_a_five_second_cadence_not_a_per_tick_spam) {
+  Config cfg = make_cfg();
+  // Long enough that LINKED never times out during the window under test —
+  // a failsafe entry would force a policy run of its own and confuse the
+  // call count with something that is not the re-assert.
+  cfg.link.failsafe_ms = 600000;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+
+  agent.tick(0, RadioHealth{});                    // BOOT apply  -> call 1
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 4);
+  agent.on_rc_frame(r1.data(), r1.size(), 100);    // LINKED apply -> call 2
+  REQUIRE(act.bitrates.size() == 2);
+  const int target = act.bitrates.back();
+
+  // t=200..5000 at tick_ms=100: 4900 ms since the last accepted apply (t=100),
+  // still inside the interval. Not one call.
+  for (uint64_t t = 200; t <= 5000; t += 100) agent.tick(t, RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(act.bitrates.size() == 2);
+
+  // t=5100 is 5000 ms since t=100 — the interval elapses, exactly one
+  // re-apply lands, and it restates the same target.
+  agent.tick(5100, RadioHealth{});
+  REQUIRE(act.bitrates.size() == 3);
+  CHECK(act.bitrates.back() == target);
+
+  // The clock restarts from the accepted apply, so the next window is quiet
+  // again and then fires exactly once more.
+  for (uint64_t t = 5200; t <= 10000; t += 100) agent.tick(t, RadioHealth{});
+  CHECK(act.bitrates.size() == 3);
+  agent.tick(10100, RadioHealth{});
+  CHECK(act.bitrates.size() == 4);
+  CHECK(act.bitrates.back() == target);
+}

@@ -277,14 +277,20 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     }
   }
 
+  // Range-checked BEFORE the uint16 cast: unchecked, ae_fps -1 wrapped to
+  // 65535 and 0 sailed through as "run the ISP loop at no rate at all",
+  // both of which reach the MI ISP as a legal-looking value and misbehave
+  // on hardware rather than failing boot.
   if (j.contains("ae_fps")) {
     int v_ae = 0;
     assign_if_present(j, "ae_fps", v_ae, "venc");
+    if (v_ae < 1 || v_ae > 60) fail("venc.ae_fps", "must be in [1,60]");
     v.core.ae_fps = static_cast<uint16_t>(v_ae);
   }
   if (j.contains("awb_fps")) {
     int v_awb = 0;
     assign_if_present(j, "awb_fps", v_awb, "venc");
+    if (v_awb < 1 || v_awb > 60) fail("venc.awb_fps", "must be in [1,60]");
     v.core.awb_fps = static_cast<uint16_t>(v_awb);
   }
 
@@ -300,6 +306,14 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     if (v.debug_port < 1024 || v.debug_port > 65535)
       fail("venc.debug_port", "must be in [1024,65535]");
   }
+
+  // sensor_bin is the ONE venc key with no default (venc_cfg_defaults()
+  // seeds every other field, see venc_cfg.c): it names a device-specific
+  // ISP calibration blob, and guessing one gets you a booted encoder
+  // producing garbage colour rather than an honest boot failure. Checked
+  // LAST so a config that is wrong in several ways still reports the more
+  // specific key first.
+  if (v.core.sensor_bin[0] == '\0') fail("venc.sensor_bin", "is required");
 }
 
 void parse_link(const json& j, LinkCfg& l) {

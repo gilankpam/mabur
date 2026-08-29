@@ -65,6 +65,18 @@ typedef struct {
 extern "C" {
 #endif
 
+/* Seeds *cfg with the spec §3 defaults — the values an absent config key
+ * falls back to. Every field EXCEPT sensor_bin gets a sane value; sensor_bin
+ * is zeroed and stays REQUIRED, because it names a device-specific ISP
+ * calibration blob that no default can guess (the config loader fails boot
+ * when it is absent, see drone/src/config.cpp parse_venc).
+ *
+ * This exists so "absent key" and "explicit key" go through one table of
+ * truth. Before it, VencCfg was default-initialised to all-zero, so a
+ * config omitting e.g. venc.fps handed the encoder fps 0 / 0x0 / gop 0.0 —
+ * not a fallback, a malformed pipeline. */
+void venc_cfg_defaults(VencCfg *cfg);
+
 /* Expands cfg->resilience into the pipeline's intra-refresh + SVC-T
  * parameters. Returns 0, or -1 on unknown preset name (boot failure). */
 int venc_cfg_expand_preset(const VencCfg *cfg, VencPresetOut *out);

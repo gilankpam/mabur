@@ -167,6 +167,18 @@ class RcAgent {
   uint64_t last_bitrate_eval_ms_ = 0;
   bool have_last_bitrate_eval_ = false;
   bool roi_low_ = false;
+  // Set by run_bitrate_policy() whenever set_bitrate_kbps()/set_roi_qp()
+  // returns false, cleared when both verbs are in the state the policy
+  // wants. Drives the per-tick retry half of the periodic re-assert (see
+  // kReassertMs / tick()).
+  bool verb_apply_failed_ = false;
+  // "run_bitrate_policy() already ran at this now_ms" — the tick-level
+  // re-assert below consults it so a tick that has ALREADY run the policy
+  // (a max-range/failsafe entry on this very tick, or an RCF the agent loop
+  // drained at the same millisecond) does not immediately run it a second
+  // time. At most one policy run per distinct now_ms.
+  uint64_t last_policy_ms_ = 0;
+  bool have_last_policy_ = false;
 
   // Congestion-shed state.
   int shed_level_ = 0;
@@ -183,6 +195,18 @@ class RcAgent {
   // reapply (which recomputes shed from shed_level_ alone) can never
   // silently drop the MAX_RANGE-forced shed — most importantly, FAILSAFE's.
   bool failsafe_shed_ = false;
+
+  // Periodic re-assert interval, ms. run_bitrate_policy() only pushes on
+  // CHANGE, so without this nothing ever restates the commanded rate: a
+  // verb that failed during a FAILSAFE entry stayed unrepaired until the
+  // next RCF or rendezvous (up to rendezvous_ms, 30 s), and anything that
+  // moved the encoder behind RcAgent's back — the debug endpoint's
+  // POST /venc/set, an in-process re-init — won until the ladder happened
+  // to change rung. 5 s is chosen against those two: short enough that a
+  // stuck bitrate costs at most one GOP-ish window of wrong rate rather
+  // than a flight, long enough that the re-apply is ~1/50 of the tick rate
+  // (tick_ms 100) and cannot itself become a source of MI-call churn.
+  static constexpr uint64_t kReassertMs = 5000;
 
   void apply_max_range(uint64_t now_ms);
   void apply_ladder_op(const std::array<rc::LayerTxSpec, 4>& ladder,

@@ -151,15 +151,18 @@ void handle_stats(int fd) {
 #endif
 }
 
-// POST /venc/set?k=v. Nothing here is persisted to config, but an override
-// is NOT transient: RcAgent only calls set_bitrate_kbps()/set_roi_qp() when
-// its computed value CHANGES (run_bitrate_policy's changed/decrease gate),
-// so on a parked link an override survives until the next commanded-rate
-// change -- a rung transition, a failsafe/LINKED entry, or an ROI threshold
-// crossing. Measured on hardware 2026-08-29 (B9 gate 5): a bitrate set here
-// held for 20 s+ with the ladder parked. That is exactly what makes the
-// endpoint useful for bench experiments, and exactly why it must not be
-// left set: nothing re-asserts the policy value on a timer.
+// POST /venc/set?k=v. Nothing here is persisted to config, and an override
+// is BOUNDED: RcAgent re-asserts its computed bitrate/ROI-QP on a timer
+// (RcAgent::kReassertMs, 5000 ms — rc_agent.h), on top of the ordinary
+// pushes at every rung transition, failsafe/LINKED entry and ROI threshold
+// crossing. So an override lasts at most ~5 s on a parked link, and less if
+// the ladder moves in the meantime.
+//
+// It used to be unbounded: run_bitrate_policy() pushed on CHANGE only, and
+// hardware 2026-08-29 (B9 gate 5) measured a bitrate set here holding for
+// 20 s+ with the ladder parked. Bench procedures written against that
+// behaviour need re-POSTing inside the re-assert window now, or the ladder
+// parked at a rung whose computed target IS the value you want.
 // Controller carry: report {"ok":false} on a failed verb rather than a
 // blind {"ok":true} -- B6 made the three verbs return real status.
 void handle_set(int fd, const DebugReq& req) {

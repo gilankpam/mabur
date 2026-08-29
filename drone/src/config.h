@@ -65,7 +65,13 @@ struct EncoderCfg {
   int bitrate_max_kbps = 10000;
   double airtime_budget = 0.60;
   int roi_threshold_kbps = 3000;
-  int roi_qp_low = 8;
+  // NEGATIVE, and that is the point: the ROI delta-QP is applied to the
+  // centre region, and a LOWER QP means MORE bits there. -24 is the
+  // hardware-validated value the shipped bundle carries (configs/, and
+  // test_config's bundle assertions); the +8 that used to sit here was a
+  // sign-flipped placeholder that would have spent fewer bits on the
+  // centre of frame exactly when the link is poorest.
+  int roi_qp_low = -24;
   int roi_qp_normal = 0;
 };
 
@@ -76,6 +82,13 @@ struct EncoderCfg {
 struct VencSectionCfg {
   VencCfg core{};
   int debug_port = 8301;
+  // Not aggregate-initialised on purpose: VencCfg is a plain C struct, so
+  // `VencCfg core{}` alone would zero every field and an absent venc key
+  // would hand the encoder fps 0 / 0x0 / gop 0.0 rather than a fallback.
+  // venc_cfg_defaults() (drone/venc/venc_cfg.c) is the one table of truth
+  // for those values; it leaves sensor_bin empty, which parse_venc treats
+  // as a boot failure.
+  VencSectionCfg() { venc_cfg_defaults(&core); }
 };
 
 struct LinkCfg {

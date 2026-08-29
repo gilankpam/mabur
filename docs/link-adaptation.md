@@ -318,18 +318,38 @@ What the fold-in did change:
   discarding AUs because maburd had not drained), against the existing
   consumer-side `drone.enc.ring_drops`. See `docs/observability.md`.
 
-### The bitrate policy pushes on CHANGE only
+### The bitrate policy pushes on CHANGE, plus a 5 s re-assert
 
 `run_bitrate_policy()` only calls the encoder when its computed target
 differs from the last value actually applied (decreases always go out
 immediately; non-decreases are throttled to 1 Hz; state transitions force).
-There is no periodic re-assert. **So anything that moves the encoder rate
-behind RcAgent's back wins until the ladder happens to change rung** — the
-debug endpoint's `POST /venc/set?bitrate=` held for 20 s+ on a parked link in
-the 2026-08-29 bench run, and the same gap is the root of the historical
-waybeam-restart wedge (`docs/deploy.md`, rollback runbook). Useful for bench
-experiments, a trap for anything else. A periodic re-assert is the obvious
-fix and is not built.
+
+On top of that, `RcAgent::tick()` **re-asserts** the current computed target
+every `RcAgent::kReassertMs` = **5000 ms**, with `force=true` (a `force=false`
+re-assert would be a no-op by construction — an unchanged target is exactly
+what the change gate suppresses). The clock runs from the last bitrate the
+encoder actually *accepted*, so a link that keeps genuinely changing rung
+never adds a re-assert on top of its own pushes; a parked one gets one every
+5 s. The re-assert is gated to LINKED and FAILSAFE — RENDEZVOUS is the
+pre-link state with nothing to defend the value against.
+
+This closes two holes:
+
+- **A failed verb in FAILSAFE is now retried.** `run_bitrate_policy()` latches
+  its "last commanded" state only on a `true` return, so a failed apply is
+  retried on the next policy run — but the only policy runs are on RCF, DISC
+  and max-range entry. In FAILSAFE there are no RCFs by definition, so a verb
+  that failed *on the failsafe entry itself* went unrepaired for up to
+  `rendezvous_ms` (30 s) with the encoder flooding an mcs0-sized pipe at the
+  previous rung's rate. A failed apply now short-circuits the interval and
+  retries on the next tick.
+- **Overrides are bounded.** Anything that moves the encoder rate behind
+  RcAgent's back used to win until the ladder happened to change rung — the
+  debug endpoint's `POST /venc/set?bitrate=` held for 20 s+ on a parked link
+  in the 2026-08-29 bench run, and the same gap is the root of the historical
+  waybeam-restart wedge (`docs/deploy.md`, rollback runbook). Such an override
+  now survives **at most one re-assert interval (5 s)**. Bench procedures that
+  relied on an override sticking need to re-POST inside that window.
 
 ### Encoder faults are process faults — there is no in-process rebuild
 

@@ -20,6 +20,37 @@ static void preset_strcpy(char *dst, size_t dst_sz, const char *src)
 	dst[dst_sz - 1] = '\0';
 }
 
+/* Absent-key defaults (spec 2026-08-28 venc-foldin §3).  See venc_cfg.h.
+ *
+ * These are the values the shipped bundle carries, so a config that omits
+ * a venc key gets the flown configuration rather than a zero.  sensor_bin
+ * is deliberately left EMPTY: it is the one device-specific field (the ISP
+ * calibration blob path), and the config loader treats an empty sensor_bin
+ * as a boot failure.
+ *
+ * Kept in venc_cfg.c, next to the preset table, rather than as C++ member
+ * initialisers in config.h, so the vendored C struct owns its own defaults
+ * and any future non-mabur caller of venc_core_start() gets them too. */
+void venc_cfg_defaults(VencCfg *cfg)
+{
+	if (!cfg)
+		return;
+	memset(cfg, 0, sizeof(*cfg));
+	/* sensor_bin: intentionally left "" — required, no default. */
+	cfg->width = 1920;
+	cfg->height = 1080;
+	cfg->fps = 60;
+	cfg->gop_s = 2.0;
+	cfg->qp_delta = -4;
+	preset_strcpy(cfg->resilience, sizeof(cfg->resilience), "rally");
+	cfg->roi_enabled = true;
+	cfg->roi_steps = 2;
+	cfg->roi_center = 0.4;
+	cfg->ae_fps = 15;
+	cfg->awb_fps = 15;
+	cfg->snapshot_quality = 80;
+}
+
 /* Resilience preset expansion.
  *
  * The 2x2 matrix is:                                              .

@@ -200,9 +200,12 @@ at `mcs1`, `txq_drop` climbs into six figures, the GS sees ~48 fps with 1019
 1. A `set?video0.bitrate=` issued while waybeam's HTTP server is still
    initialising returns `Connection refused` and is silently lost. Poll until
    it answers.
-2. `maburd`'s RcAgent only pushes a bitrate when its computed value CHANGES,
-   so on a parked link it will not re-assert over whatever waybeam came up
-   with. The restart forces the stamp on entering LINKED.
+2. The **pre-fold-in** `maburd`'s RcAgent only pushes a bitrate when its
+   computed value CHANGES, so on a parked link it will not re-assert over
+   whatever waybeam came up with. The restart forces the stamp on entering
+   LINKED. (Current `maburd` also re-asserts every 5 s —
+   `RcAgent::kReassertMs`, `docs/link-adaptation.md` — but that is exactly
+   the binary this runbook is rolling BACK from, so step 2 stands.)
 
 Restore the GS's `maburgs.pre-foldin` at the same time, for the telemetry
 reason above.

@@ -31,7 +31,12 @@ target_link_libraries(maburd PRIVATE mabur_drone_core mabur_common devourer pthr
 # docs/superpowers/specs/2026-08-28-venc-foldin-design.md). ARM-only: it
 # drives SigmaStar MI via dlopen and has no host-runnable pipeline.
 if(CMAKE_CROSSCOMPILING)
-  file(GLOB VENC_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/venc/*.c)
+  # CONFIGURE_DEPENDS: without it the glob is evaluated once at configure
+  # time, so adding or deleting a drone/venc/*.c between builds silently
+  # keeps the stale file list until someone re-runs cmake by hand — on a
+  # cross-build that surfaces as a link error (or worse, a quietly missing
+  # translation unit) far from its cause.
+  file(GLOB VENC_CORE_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/venc/*.c)
   # venc_cfg.c is already a source of mabur_drone_core (unconditionally,
   # for host builds) — don't compile it a second time into venc_core.
   list(REMOVE_ITEM VENC_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/venc/venc_cfg.c)
