@@ -352,6 +352,61 @@ def test_old_scale_snr_warns_on_stderr():
     print("\n✓ Old-scale SNR warning test passed!")
 
 
+def _mk_stream_row(t, n_streams, overhead=0.25):
+    """One sideport-shaped jsonl row with an n_streams-entry link.streams
+    array -- 4 is the pre-2026-08-29 shape (kept as the one old-shape
+    fixture the data-provenance policy requires), 2 is current."""
+    return {
+        "v": 1, "t_ms": t,
+        "link": {
+            "state": "linked", "residual_loss": None,
+            "op": {"mcs": 5, "bw": 20, "overhead": overhead},
+            "streams": [{"stream": s, "ov": overhead} for s in range(n_streams)],
+        },
+    }
+
+
+def test_overhead_scale_break_warns_on_stderr():
+    """A recording whose link.streams array has 4 entries predates the
+    2026-08-29 overhead scale break (4-layer UEP, RC_VERSION <4): every
+    overhead-shaped field in it is cmd-scale (half the actual air overhead
+    on the post-break scale). The report must DETECT and LABEL this, never
+    convert the values (data-provenance policy, CLAUDE.md) -- this is the
+    one old-shape (4-stream) fixture kept to prove the label path."""
+    fixture_dir = Path("tests/fixtures")
+    fixture_dir.mkdir(exist_ok=True)
+    flight_jsonl = fixture_dir / "flight-old-overhead-scale-fixture.jsonl"
+
+    # Old shape: 4 streams -> must warn, and the warning must carry the
+    # exact "cmd-scale (x0.5 air)" label the provenance policy requires.
+    flight_jsonl.write_text(json.dumps(_mk_stream_row(0, 4)) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"flightreport.py exited {result.returncode}: {result.stderr}"
+    assert "link.streams has 4 entries" in result.stderr, (
+        f"Expected old-shape streams warning, got: {result.stderr!r}"
+    )
+    assert "cmd-scale (x0.5 air)" in result.stderr, (
+        f"Expected the cmd-scale label, got: {result.stderr!r}"
+    )
+    assert "2026-08-29" in result.stderr
+
+    # Current shape: 2 streams -> must NOT warn.
+    flight_jsonl.write_text(json.dumps(_mk_stream_row(0, 2)) + "\n")
+    result = subprocess.run(
+        [sys.executable, "tools/flightreport.py", str(flight_jsonl)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "link.streams has 4 entries" not in result.stderr, (
+        f"Unexpected old-shape warning for a 2-stream recording: {result.stderr!r}"
+    )
+
+    print("\n✓ Overhead scale-break warning test passed!")
+
+
 CTL_LOG = """ctllog 1 ladder=0/100,2/50,4/25,5/25,6/25,7/10 down_util=0.35 up_util=0.15
 S 1000 3 0.0100 31.5 0.0000 0.0200 0.0000
 S 2000 3 0.0100 31.4 0.0000 0.0200 0.0000 -24.5
@@ -438,6 +493,34 @@ def test_wall_report():
     assert "evm" in out              # DWELL and EVENTS now report EVM
 
     print("\n✓ Wall report test passed!")
+
+
+def test_ctllog_pre_v7_note():
+    """A ctllog older than v7 predates the airtime-balance-uep 4->2 stream
+    collapse: s3_residual/s3_util and u3/resid3/evm_db read the OLD 4-stream
+    layout there, not sid1/ENH -- the report must say so."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL_LOG)  # ctllog 1
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+    assert "airtime-balance-uep" in out
+    assert "sid1" in out
+
+    # A v7 log must NOT print the pre-v7 note.
+    text = "ctllog 7 ladder=0/100 down_util=0.35 up_util=0.15\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0002_x.log"
+        p.write_text(text)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+    assert "airtime-balance-uep" not in out
+
+    print("\n✓ ctllog pre-v7 note test passed!")
 
 
 def test_ctllog_r_lines_and_inversion():
@@ -540,8 +623,10 @@ def test_find_episodes_gap_boundary_closes_run():
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
+    test_overhead_scale_break_warns_on_stderr()
     test_ctllog_evm_optional_trailing_token()
     test_wall_report()
+    test_ctllog_pre_v7_note()
     test_ctllog_r_lines_and_inversion()
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()

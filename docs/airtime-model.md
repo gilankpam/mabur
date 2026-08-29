@@ -16,6 +16,45 @@ has arrived and decoded, so:
     completion(frame) ≈ capture + encode + air_bytes / drain_rate
     air_bytes         = payload_bytes × (1 + eff_overhead(sid)) (+ ~6% pkt hdrs)
 
+**Later the same day (airtime-balance-uep), the link collapsed to 2
+streams (BASE sid0 at `mcs−1`, ENH sid1) and the single `air_bytes`
+formula above became per-stream and measurement-anchored rather than
+nominal, because the naive `len·(1+ov)` model measured a reproducible
+~2× gain error at large frames (SBI/frag framing + repair quantization
+it doesn't account for — spike 2,
+`docs/airtime-balance-spike-findings-2026-08-29.md`). The drone's
+`AirBalancer` tracks the true per-stream multiplier from what actually
+got serialized, `m_s = emit_s / len_s` (`emit_s`/`len_s` are α=1/16
+EWMAs of emitted body bytes and frame-unit bytes, IDR frames excluded as
+2–10× outliers), and solves the per-stream air split around that
+measured anchor:
+
+    air_s(ov) = len_s · (m_s + (ov − ov_s_applied)) / rate_s
+
+subject to `air_b = air_e` (balanced) and the budget invariant
+`len_b·ov_b + len_e·ov_e = (len_b + len_e)·ov_cmd` (repair-byte-neutral:
+the split redistributes, it does not add or remove overall FEC bytes).
+`rate_b`/`rate_e` are `phy_rate(base_mcs)`/`phy_rate(profile_mcs)` from
+the applied ladder, so an active ENH probe's rate flows in automatically.
+
+The encoder's commanded bitrate is blended the same way — a single-rate
+`kbps = rate(ladder[1]) · budget / (1 + ov)` is wrong in both directions
+once base and enh fly at different MCS (over-commanding at `rate(profile)`
+risks the shed-lag-freeze family; under-commanding at `rate(base)` just
+wastes ENH headroom):
+
+    kbps = airtime_budget / [ f_b·mult_b/rate_b + f_e·mult_e/rate_e ]
+
+with byte shares `f_s = len_s/(len_b+len_e)` (50/50 until the balancer's
+EWMAs seed) and `mult_s = (1 + ov_cmd) + excess_s`, where
+`excess_s = m_s − (1 + ov_s_applied)` is the same measured framing excess
+the balancer anchors on — deliberately the *commanded* redundancy plus
+measured excess, not the balancer's live `ov_s`, so the bitrate policy
+stays decoupled from the balancer's redistribution and the two loops
+cannot feed back into each other. Full derivation:
+`docs/superpowers/specs/2026-08-29-airtime-balance-uep-design.md` §2;
+GS-side ladder/attribution consequences: `docs/link-adaptation.md`.
+
 Measured calibration: completion delay ≈ **4.2 ms + 0.85 µs per payload
 byte** (≈ 9.4 Mbit/s effective payload drain at this op point). The
 encoder contributes almost nothing: maburd publishes into the frame ring
@@ -71,6 +110,18 @@ With flat refs the estimate matches reality, so the same 75% airtime cap
 admits more commanded bitrate at a given rung, and the ladder's
 utilization/`u` readings sit on a new scale (thresholds deliberately NOT
 retuned — see the dated scale-break entry in data-provenance.md).
+
+⚠ **Superseded later the same day.** The 4-stream flat-refs policy above
+was itself replaced within the day by the 2-stream (BASE sid0/ENH sid1)
+literal-overhead policy + `AirBalancer` described in §1 — `kUepRefOverhead`
+and the s0..s3 routing this section describes no longer exist.
+`link.streams` shrank from 4 entries to 2; every overhead-shaped sideport
+value from before this second change is cmd-scale (half the actual air
+overhead the same nominal number means after it) — see the dated
+"overhead literal + 4→2 stream collapse" entry in data-provenance.md. This
+section stays as the record of the flatten investigation that made the
+collapse safe (it's what proved base/enh could carry equal, then reduced,
+protection without a resilience regression).
 
 ## 3. Encoder-side size shaping — what works on this SoC
 

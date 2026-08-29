@@ -10,6 +10,36 @@ place. Specs (local, gitignored):
 `docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md`,
 `docs/superpowers/specs/2026-08-15-pooled-rf-and-instant-s3-design.md`.
 
+## 2-stream UEP + air balancer (2026-08-29)
+
+The video link collapsed from 4 UEP streams (CRIT/T0/T1/T2, wire sids
+0-3) to 2: BASE (sid 0) and ENH (sid 1). BASE always rides `mcs−1` of the
+ladder's scored rung — an always-on, fixed UEP-via-rate rule mirrored
+identically on drone and GS (RC_VERSION 4) — while ENH rides the scored
+mcs itself; nothing flies above the scored mcs (2026-07-26 rule, still in
+force). FEC overhead is now LITERAL: the config/wire `overhead` value
+*is* the command overhead (`repair/data`), not a per-layer scaling
+(the old `uep_layer_overhead`) of it — `budget()` and `budget_for(rung)`
+both derive directly as `overhead / (1 + overhead)`, the identical
+formula for both sids; `budget3_for()` is gone; `budget_for()` alone now
+covers what it used to do (the enh/probe rung's budget).
+
+The drone's `AirBalancer` redistributes that one commanded overhead
+between BASE and ENH every frame, anchored on ACTUAL emitted bytes
+rather than the nominal `len*(1+ov)/rate` model (which measured a
+reproducible ~2x gain error at large frames). See
+`docs/airtime-balance-spike-findings-2026-08-29.md` for the bench spikes
+behind that design.
+
+Everywhere below that still says "s1" or "s3" is pre-2026-08-29
+vocabulary for what is now sid0 (BASE) and sid1 (ENH — still the
+probe/canary layer the ladder attributes demotes to). The demote-input
+names, the surviving config key `s3_settle_ms`, and ctl-log reason
+strings (`s3_residual`, `s3_util`) were kept as-is rather than renamed
+(see `gs/src/ctl_log.h`'s ctllog 7 note) — read every s1/s3 mention past
+this point as sid0/sid1. (`s3_residual_confirm_ms` itself is gone, but
+that removal predates this change — see the pooled-RF note below.)
+
 ## Tuning invariant
 
 Tuning invariant: the controller's s3 loss/residual

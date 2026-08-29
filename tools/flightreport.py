@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v6,
-warns on pre-v4). Format is auto-detected from the first line.
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v7,
+warns on pre-v4 and pre-v7). Format is auto-detected from the first line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
@@ -192,6 +192,15 @@ def print_wall_report(ctllog):
 
     print("CTL LOG HEADER")
     ver = header.get("_version", 0)
+    if ver and ver < 7:
+        print("  NOTE: ctllog v%d -- predates the 2026-08-29 airtime-balance-uep "
+              "collapse from 4 UEP streams to 2 (BASE sid0 + ENH sid1). "
+              "s3_residual/s3_util and the S/R lines' u3/resid3/evm_db read "
+              "the OLD 4-stream layout (stream 3 = the T2 canary layer) here; "
+              "on v7+ the SAME reason strings/fields read sid1 (ENH) instead, "
+              "and the ordinary s1 quantities (u, resid) read sid0 (BASE) "
+              "instead of the old stream 1. Not directly comparable with "
+              "v7+ recordings." % ver)
     if ver and ver < 6:
         print("  NOTE: ctllog v%d -- the S line's rung is the LIVE rung, so any "
               "sample with loss that coincides with a demote is filed against "
@@ -461,6 +470,32 @@ def main(path):
               "predates the 2026-08-04 half-dB fix; divide those values by 2 to "
               "compare with newer files. Saw max %.1f (= %.1f dB)."
               % (max(up_snr), max(up_snr) / 2.0), file=sys.stderr)
+
+    # (3) link.streams changed shape 2026-08-29 (4 UEP layers -> 2: BASE
+    #     sid0 + ENH sid1), in the SAME commit that changed the meaning of
+    #     the wire's overhead field itself (RC_VERSION 4): the old field was
+    #     a per-layer uep_layer_overhead fraction, the new one is the LITERAL
+    #     FEC command overhead, and an old cmd value reads HALF of what the
+    #     same nominal air overhead reads as post-break (old cmd x2 = new
+    #     actual). This is a DETECTOR, not a converter (data-provenance
+    #     policy, CLAUDE.md): a 4-entry streams array is the signature of a
+    #     pre-break recording, and every overhead-shaped field in one --
+    #     link.op.overhead, link.ctl.rung.ov, link.ctl.ladder[].ov,
+    #     link.streams[].ov, drone.applied.overhead (renamed
+    #     overhead_base/overhead_enh post-break) -- is cmd-scale (x0.5 air)
+    #     there. Flag it and let the analyst read the numbers as what they
+    #     are; never silently rescale historical data.
+    old_shape = any(len((r.get("link") or {}).get("streams") or []) == 4
+                     for r in rows)
+    if old_shape:
+        print("WARNING: link.streams has 4 entries -- this recording predates "
+              "the 2026-08-29 overhead scale break (4-layer UEP, RC_VERSION <4). "
+              "Every overhead value in this file (op.overhead, ctl.rung.ov, "
+              "ctl.ladder[].ov, streams[].ov, drone.applied.overhead) is "
+              "cmd-scale (x0.5 air) -- HALF the actual air overhead on the "
+              "post-2026-08-29 scale. Read them as cmd-scale (x0.5 air); do "
+              "not compare directly with a post-break recording.",
+              file=sys.stderr)
 
     trans, in_rung, u_by_rung, residuals = [], {}, {}, []
     prev_ev_t, prev = None, None

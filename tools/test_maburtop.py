@@ -13,7 +13,7 @@ DGRAM = {
         "op": {"mcs": 5, "bw": 20, "sgi": False, "vht": False,
                "overhead": 0.25, "snr_req": 18.5},
         "deadline_ms": 60, "residual_loss": 0.012,
-        "layer_delivery_pct": [100, 100, 97, 91],
+        "layer_delivery_pct": [100, 100],
         "streams": [
             {"stream": 0, "ov": 1.0, "rung_mcs": 5, "rung_ldpc": True,
              "rung_stbc": True, "phy_mbps": 52.0, "inj_kbps": 650.0,
@@ -36,7 +36,8 @@ DGRAM = {
     "drone": {
         "tlm_age_ms": 800, "tlm_seq": 4211, "state": "linked",
         "gen": 7, "failsafe_shed": False, "radio_rx_ok": True,
-        "applied": {"mcs": 5, "bw": 20, "vht": False, "overhead": 0.25},
+        "applied": {"mcs": 5, "bw": 20, "vht": False,
+                    "overhead_base": 0.25, "overhead_enh": 0.25},
         "rcf": {"age_ms": 45, "rx_pps": 19.4},
         "enc": {"fps": 59.9, "mbps": 9.21, "cmd_kbps": 9000, "qp": 8,
                 "ring_drops": 0},
@@ -126,7 +127,7 @@ class DronePanelTest(unittest.TestCase):
         rows = panel_drone(_fresh(), 100.2)
         self.assertTrue(rows[0][0].startswith("──"))
         joined = "\n".join(texts(rows))
-        for cell in ("LINKED", "gen", "7", "mcs5/20", "ov 0.25", "800ms",
+        for cell in ("LINKED", "gen", "7", "mcs5/20", "ov b0.25/e0.25", "800ms",
                      "59.9 fps", "9.21 Mbps", "9000k", "qp  8", "1461",
                      "-58.9", "-58.0", "19.4", " 61", "0.72"):
             self.assertIn(cell, joined)
@@ -151,16 +152,19 @@ class DronePanelTest(unittest.TestCase):
         st, ln, _ = bad[0]
         self.assertIn("mcs6/20", text[st:st + ln])
 
-    def test_ov_mismatch_beyond_tolerance_bad_span(self):
+    def test_ov_split_renders_base_and_enh_no_mismatch_span(self):
+        # The balancer diverging base/enh from the commanded op scalar is
+        # normal operation (that's its job), not a staleness signal the
+        # way an mcs/bw mismatch is — no bad span for it (2026-08-29
+        # airtime-balance-uep).
         d = dict(DGRAM)
         d["drone"] = dict(DGRAM["drone"],
-                           applied=dict(DGRAM["drone"]["applied"], overhead=0.5))
+                           applied=dict(DGRAM["drone"]["applied"],
+                                        overhead_base=0.5, overhead_enh=1.0))
         rows = panel_drone(_fresh(d), 100.2)
         text, spans = next((t, s) for t, s in rows if t.startswith("applied"))
-        bad = [sp for sp in spans if sp[2] == "bad"]
-        self.assertTrue(bad)
-        st, ln, _ = bad[0]
-        self.assertIn("ov 0.50", text[st:st + ln])
+        self.assertIn("ov b0.50/e1.00", text)
+        self.assertFalse(any(style == "bad" for _, _, style in spans))
 
     def test_deaf_cell_bad_span(self):
         d = dict(DGRAM)
@@ -330,7 +334,7 @@ class LinksPanelTest(unittest.TestCase):
 
     def test_dlv_bad_and_warn_thresholds(self):
         d = dict(DGRAM)
-        d["link"] = dict(DGRAM["link"], layer_delivery_pct=[100, 85, 97, 91])
+        d["link"] = dict(DGRAM["link"], layer_delivery_pct=[100, 85])
         rows = panel_links(_fresh(d), 100.2)
         block = self._block(rows, "s1 ·")
         text, spans = block[0]

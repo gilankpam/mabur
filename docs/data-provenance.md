@@ -6,10 +6,12 @@ not be pooled. Nothing in the sideport reports most of them, so the only
 reliable method is to date the recording against this page.
 
 Quick index: carrier sense off 2026-08-05 · TX power constant 2026-08-12 ·
-sideport key removals 2026-08-12 and 2026-08-15 · SNR half-dB scale break
-2026-08-04 · EVM op-point dependence 2026-08-10 · RF labels pooled and
-fade deltas unsuppressed 2026-08-15 (see `docs/link-adaptation.md`) ·
-DVR filenames un-dated 2026-08-26 · UEP overhead flatten 2026-08-29.
+sideport key removals 2026-08-12, 2026-08-15 and 2026-08-29 · SNR half-dB
+scale break 2026-08-04 · EVM op-point dependence 2026-08-10 · RF labels
+pooled and fade deltas unsuppressed 2026-08-15 (see
+`docs/link-adaptation.md`) · DVR filenames un-dated 2026-08-26 · UEP
+overhead flatten 2026-08-29 · overhead literal + 4→2 stream collapse
+2026-08-29 (airtime-balance-uep).
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -81,7 +83,10 @@ update `tools/maburtop.py` and `tools/flightreport.py` in the same commit.
 Removals so far: 2026-08-12 `link.op.offset_qdb`,
 `drone.applied.offset_qdb`, `drone.applied.derate_qdb` (constant-TX-power
 note above); 2026-08-15 `link.attrib.on` (pooled-RF note in
-`docs/link-adaptation.md`). Removed keys are absent, not null. Keep appending to that list — not to protect
+`docs/link-adaptation.md`); 2026-08-29 `drone.applied.overhead` (singular)
+→ `drone.applied.overhead_base`/`drone.applied.overhead_enh`, and
+`link.streams` shrank from 4 entries to 2 (overhead scale break note
+below). Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
 sideport config lives in `/etc/maburgs.json` under `stats`
@@ -133,4 +138,37 @@ equalize; base/enh size split in older recordings is a preset artifact,
 not a regression). Later the same day, s0 joined the flat ladder too
 ({0.50, 0.50, 0.50, 0.50}) — sideport s0 `ov` values change scale again.
 See `docs/superpowers/specs/2026-08-29-uep-flatten-rally-design.md`.
+
+**Scale break, 2026-08-29 — overhead goes literal, streams collapse 4→2
+(airtime-balance-uep, RC_VERSION 4).** LATER THE SAME DAY as the flatten
+above, the wire's `fec_overhead` field changed meaning from a per-layer
+`uep_layer_overhead`-scaled fraction to the LITERAL FEC command overhead
+(`repair/data`) — old cmd × 2 = new actual. Every overhead-shaped value
+in a recording from before this date is cmd-scale: **HALF the actual air
+overhead a post-break recording of the same nominal number would carry.**
+That covers `link.op.overhead`, `link.ctl.rung.ov`,
+`link.ctl.ladder[].ov`, `link.streams[].ov`, `link.rungs[].ov` and the old
+singular `drone.applied.overhead` (see the removal note above). The video
+link collapsed from 4 UEP streams to 2 in the same change (BASE sid0 +
+ENH sid1, `docs/link-adaptation.md`), so **a 4-entry `link.streams` array
+is the shape signature of a pre-break recording** — `flightreport.py`
+detects it (`streams` length) and LABELS the overhead values "cmd-scale
+(x0.5 air)" rather than converting them, per the provenance policy in
+CLAUDE.md: recordings outlive the code that wrote them, so a historical
+number is read as what it was, never silently rescaled to match today's
+meaning. A 2-entry array is post-break and needs no label.
+
+⚠ The ×2 rescale is not the only wrinkle: the old ladder's config
+overhead values were ALSO coarser than they looked. mcs6/mcs7 used to
+read 0.15/0.10 — two visibly different numbers — but both collapsed to
+the *same* repair-symbol count on the FEC's quantization grid, so their
+actual on-air overhead was identically ~0.125 in every pre-break
+recording (**0.10 ≡ 0.15 ≡ 0.125 on air**). The 2026-08-29 config bump
+that doubled the nominal values (0.15→0.3, 0.10→0.2 — see
+`gs/bundle/maburgs.default.json`) was not "just x2": it also resolved
+that collision, so mcs6 and mcs7 now carry genuinely different overhead.
+Do not back-compute a pre-break "real" overhead by simply halving a
+post-break number for mcs6/mcs7 specifically — the halved figure lands
+on the wrong side of the quantization collision. Every other rung is a
+clean ×0.5.
 

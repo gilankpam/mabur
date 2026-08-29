@@ -50,15 +50,18 @@ RADIO_COLS = [("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6), ("rssiB", 6),
 # Sticky class rows render in this fixed order regardless of dict/arrival
 # order; "ctrl" gets the short display label "ctl" (cls column is 4 wide,
 # compact renderer only).
-CLASS_ORDER = ["s0", "s1", "s2", "s3", "msp", "ctrl"]
+# 2-stream video (2026-08-29 airtime-balance-uep): s0 = BASE (mirrors the
+# ladder rung's mcs-1), s1 = ENH (canary attribution). s2/s3 are gone from
+# the wire — class_seen_ never lights them up GS-side — but the string
+# space stays sparse-safe: an unrecognized class key from an old recording
+# would just never match here, not crash.
+CLASS_ORDER = ["s0", "s1", "msp", "ctrl"]
 CLASS_LABELS = {"ctrl": "ctl"}
 
-# Wide-mode LINKS panel block labels (brief mockup: "s0 · video CRIT" etc).
+# Wide-mode LINKS panel block labels.
 LINK_CLASS_LABELS = {
-    "s0": "s0 · video CRIT",
-    "s1": "s1 · video T0",
-    "s2": "s2 · video T1",
-    "s3": "s3 · video T2",
+    "s0": "s0 · video BASE",
+    "s1": "s1 · video ENH",
     "msp": "msp · osd",
     "ctrl": "ctl · control",
 }
@@ -115,7 +118,7 @@ def _rung_cell(strm, w=7):
 def _dec_line(label, strm, dlv):
     """Per-stream decode line (compact renderer): TX config (rung, PHY
     rate, injection estimate) then RX decode health. Inline-labeled, fixed
-    cell widths so the s0..s3 lines align vertically. strm = the sticky
+    cell widths so the s0/s1 lines align vertically. strm = the sticky
     link.streams row."""
     inj_kbps = strm.get("inj_kbps")
     inj_m = None if inj_kbps is None else inj_kbps / 1000.0
@@ -173,6 +176,25 @@ def _applied_mcsbw_cell(mcs, bw, w=7):
     bw_s = "--" if bw is None else str(bw)
     s = f"mcs{mcs_s}/{bw_s}"
     return s[:w].ljust(w) if len(s) > w else s.ljust(w)
+
+
+def _ov_cmd_cell(total, ov_base, ov_enh):
+    """Prose-style (top bar / compact header) overhead cell: `total` is the
+    single scalar the GS ladder currently commands (link.op.overhead, the
+    pre-balancer fallback both streams share); ov_base/ov_enh are the
+    drone's actual balancer-applied per-stream split from telemetry —
+    '--' before the first T_TELEM snapshot. The two need not match: the
+    balancer is expected to diverge from the commanded scalar, that is its
+    job, not a staleness bug (see 2026-08-29 airtime-balance-uep)."""
+    return f"ov {_s(total, 2)} (b {_s(ov_base, 2)}/e {_s(ov_enh, 2)})"
+
+
+def _ov_applied_cell(ov_base, ov_enh, w=4):
+    """Fixed-width grid cell for the drone's actual applied per-stream
+    overhead (compact DRONE row / wide 'applied' line) — no comparison
+    against the commanded op scalar; divergence is the balancer working,
+    not staleness (see _ov_cmd_cell)."""
+    return f"ov b{_f(ov_base, w, 2)}/e{_f(ov_enh, w, 2)}"
 
 
 def _increased(cur, prev):
@@ -285,11 +307,13 @@ def render_rows_compact(model, wall, width):
         vtx_id = link.get("vtx_id")
         bw = op.get("bw")
         overhead = op.get("overhead")
+        drone_applied = (d.get("drone") or {}).get("applied") or {}
         deadline_ms = link.get("deadline_ms")
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
             f"maburgs   {state_s}   vtx {_s(vtx_id)}   tx c{_s(tx_card)}   "
-            f"MCS {_s(mcs)}/{_s(bw)}   ov {_s(overhead, 2)}   "
+            f"MCS {_s(mcs)}/{_s(bw)}   "
+            f"{_ov_cmd_cell(overhead, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
             f"deadline {_s(deadline_ms)} ms"
         ).ljust(width)
     rows.append(header)
@@ -382,7 +406,7 @@ def render_rows_compact(model, wall, width):
         rows.append(
             f"DRONE   {_f(state_ds, 8)}  gen {_f(drone.get('gen'), 6)}   "
             f"applied {_applied_mcsbw_cell(applied.get('mcs'), applied.get('bw'))}"
-            f" ov {_f(applied.get('overhead'), 4, 2)}  "
+            f" {_ov_applied_cell(applied.get('overhead_base'), applied.get('overhead_enh'))}  "
             f"rcf age {_age_cell(rcf.get('age_ms'))}  "
             f"tlm {_age_cell(drone.get('tlm_age_ms'))}"
         )
@@ -512,6 +536,7 @@ def panel_topbar(model, wall):
     vtx_id = link.get("vtx_id")
     mcs, bw = op.get("mcs"), op.get("bw")
     overhead = op.get("overhead")
+    drone_applied = (d.get("drone") or {}).get("applied") or {}
     deadline, air = link.get("deadline_ms"), link.get("air_pct")
     session = model.session
     session_s = "--" if session is None else f"0x{session:08x}"
@@ -526,7 +551,8 @@ def panel_topbar(model, wall):
     dot = "●"
     text = (
         f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   "
-        f"cmd MCS {_s(mcs)}/{_s(bw)}  ov {_s(overhead, 2)}   "
+        f"cmd MCS {_s(mcs)}/{_s(bw)}  "
+        f"{_ov_cmd_cell(overhead, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
         f"deadline {_s(deadline)} ms   "
         f"air ~{_s(air, 0)}%      session {session_s}   "
         f"restarts {model.restarts}   rx {hz:.1f} Hz"
@@ -583,21 +609,20 @@ def panel_drone(model, wall):
     spans.append((tlm_idx, len(tlm_age), "dim"))
     body.append((line, spans))
 
-    # applied vs commanded op
+    # applied vs commanded op. Overhead is NOT compared against op.overhead
+    # here: the balancer is expected to split base/enh away from the
+    # commanded scalar (that is its job), so a numeric diff there is not a
+    # staleness signal the way an mcs/bw mismatch is (2026-08-29
+    # airtime-balance-uep).
     applied = drone.get("applied") or {}
     mcsbw = _applied_mcsbw_cell(applied.get("mcs"), applied.get("bw"))
-    ov_s = _f(applied.get("overhead"), 4, 2)
-    ov_cell = f"ov {ov_s}"
+    ov_cell = _ov_applied_cell(applied.get("overhead_base"), applied.get("overhead_enh"))
     line2 = f"applied   {mcsbw}   {ov_cell}"
     spans2 = []
     a_mcs, a_bw = applied.get("mcs"), applied.get("bw")
     if a_mcs != op.get("mcs") or a_bw != op.get("bw"):
         idx = line2.index(mcsbw)
         spans2.append((idx, len(mcsbw), "bad"))
-    a_ov, op_ov = applied.get("overhead"), op.get("overhead")
-    if a_ov is not None and op_ov is not None and abs(a_ov - op_ov) > 0.005:
-        idx = line2.index(ov_cell)
-        spans2.append((idx, len(ov_cell), "bad"))
     body.append((line2, spans2))
 
     # encoder
