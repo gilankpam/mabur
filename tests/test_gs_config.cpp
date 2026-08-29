@@ -341,18 +341,26 @@ TEST(video_frame_keys) {
 
 // link.ladder: measured-loss ladder controller rungs + max_mcs filter +
 // thresholds (SDD 2026-07-27 ladder-controller Task 2).
+// Pins the C++ struct default (no "link.ladder" key at all -- config.cpp
+// never touches c.link.ladder_cfg.ladder in that case, so this is the
+// literal member-initializer in gs/src/config.h). Actual-air overhead
+// (airtime-balance-uep): old cmd-value defaults x2, same global rule as
+// the bundle json's ladder -- a regression back to half-scale values here
+// would parse and validate silently (all in-range), so this test exists
+// to catch exactly that.
 TEST(ladder_defaults_to_spec_six_rung_ladder) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   auto& L = cfg.link.ladder_cfg.ladder;
   CHECK(L.size() == 6);
-  CHECK(L[0].mcs == 0); CHECK(L[0].overhead > 0.999 && L[0].overhead < 1.001);
-  CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.499 && L[1].overhead < 0.501);
-  CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.249 && L[2].overhead < 0.251);
-  CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.249 && L[3].overhead < 0.251);
-  // mcs6 rung at 0.25 (not the spec's 0.15) since 2026-07-29 — see the
-  // ladder_cfg comment in gs/src/config.h and docs/mcs6-bench-anomaly.md.
-  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.249 && L[4].overhead < 0.251);
-  CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.099 && L[5].overhead < 0.101);
+  CHECK(L[0].mcs == 0); CHECK(L[0].overhead > 1.999 && L[0].overhead < 2.001);
+  CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.999 && L[1].overhead < 1.001);
+  CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.499 && L[2].overhead < 0.501);
+  CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.499 && L[3].overhead < 0.501);
+  // mcs6 rung at 0.5 (cmd-value 0.25, not the spec's cmd-value 0.15) since
+  // 2026-07-29 — see the ladder_cfg comment in gs/src/config.h and
+  // docs/mcs6-bench-anomaly.md.
+  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.499 && L[4].overhead < 0.501);
+  CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.199 && L[5].overhead < 0.201);
 }
 
 TEST(ladder_parses_explicit_array_in_order) {
