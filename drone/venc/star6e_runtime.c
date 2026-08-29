@@ -6,6 +6,7 @@
 #include "star6e.h"
 #include "star6e_controls.h"
 #include "star6e_cus3a.h"
+#include "star6e_ipu.h"
 #include "star6e_pipeline.h"
 
 #include <errno.h>
@@ -389,6 +390,25 @@ int star6e_runtime_init(Star6eRunnerContext *ctx)
 		return ret;
 	}
 	ctx->system_initialized = 1;
+
+	/* Always, before any VIF/VPE/ISP bring-up: reconcile NPU driver state a
+	 * predecessor may have poisoned.  A process that ran the i6e IPU
+	 * detector can leave kernel-side state that permanently wedges the NEXT
+	 * process's ISP CMDQ — the successor then never sees an ISP channel
+	 * ("ISP channel readiness timeout" -> "MI_ISP_*CmdLoadBinFile failed -1"
+	 * -> "layout type 2, bindmode 4 not sync err" -> zero frames).  A bare
+	 * MI_IPU_CreateDevice+DestroyDevice cycle resets it, and nothing short
+	 * of it reliably does; a scrub AFTER the ISP has wedged does not
+	 * recover it, hence the placement here.  Unconditional by design — the
+	 * poison survives process exit and fd release, so no flag carried from
+	 * the previous instance can be trusted to know whether it is needed,
+	 * and mabur's predecessor on this SoC is whatever ran before us
+	 * (waybeam, an older maburd), not something we control.  No-op when
+	 * /dev/mi_ipu is absent.  waybeam ran this on every start; the fold-in
+	 * dropped it with the detector and lost the pipeline with it.
+	 * (waybeam_venc f956a52:src/star6e_runtime.c star6e_runner_init,
+	 * HISTORY 0.53.0/0.54.0.) */
+	(void)star6e_ipu_scrub();
 
 	ret = star6e_pipeline_start(&ctx->ps, &ctx->cfg, &g_sdk_quiet);
 	if (ret != 0)

@@ -109,30 +109,19 @@ int venc_jpeg_set_quality(uint32_t q)
  * not ported; see task-B2-brief.md). Callers used venc_jpeg_capture()
  * directly instead. */
 
-/* Default fallback for builds that don't link a backend (e.g. host-native
- * test runner).  Per-backend files override these with strong symbols.  */
-__attribute__((weak)) void venc_jpeg_set_source(const void *vpe_port_opaque)
-{
-	(void)vpe_port_opaque;
-}
-
-__attribute__((weak)) int venc_jpeg_backend_init(const VencJpegConfig *cfg)
-{
-	(void)cfg;
-	return -ENOSYS;
-}
-
-__attribute__((weak)) int venc_jpeg_backend_capture(uint8_t **out_buf,
-	size_t *out_len, uint32_t timeout_ms)
-{
-	(void)out_buf; (void)out_len; (void)timeout_ms;
-	return -ENOSYS;
-}
-
-__attribute__((weak)) void venc_jpeg_backend_shutdown(void) { }
-
-__attribute__((weak)) int venc_jpeg_backend_set_quality(uint32_t q)
-{
-	(void)q;
-	return -ENOSYS;
-}
+/* mabur edit: the five __attribute__((weak)) -ENOSYS fallbacks that lived
+ * here are DELETED, and their deletion is load-bearing.
+ *
+ * Upstream links a flat list of .o files, so star6e_jpeg.c's strong
+ * definitions always override these weak ones.  mabur puts drone/venc/*.c
+ * into a static archive (libvenc_core.a), and an archive member is only
+ * pulled in to satisfy an UNDEFINED symbol — a weak definition already
+ * present in venc_jpeg.o satisfies the reference, so star6e_jpeg.c.o was
+ * never pulled and the weak stubs won.  That is exactly the
+ * "[jpeg] backend_init failed -38" (-ENOSYS) seen on the first bench run.
+ *
+ * With no definition here the references are undefined, the linker pulls
+ * star6e_jpeg.c.o, and a build that forgets a backend fails at link time
+ * instead of at 3000 ft.  Nothing on the host side needs the stubs: the
+ * host build compiles no drone/venc/*.c that references them (drone/
+ * CMakeLists.txt globs venc/*.c only under CMAKE_CROSSCOMPILING). */
