@@ -279,26 +279,32 @@ int self_check() {
     for (int s = 0; s < 4; ++s)
       expect(residual_pct(o.layer[(size_t)s]) == 0.0, "B=1 zero loss");
   }
-  // Gate 2: guarantee-region budget edge, single-layer stream 3 (ov 0.25),
-  // sym1312/bpb1/w64. L <= W*ov/(1+ov) = 12.8 lost SOURCES is a one-sided
-  // sufficiency bound: with bpb=1 the emitted-body stream interleaves
-  // repairs at the SSSSR cadence, so a burst of B bodies kills ~0.8B
-  // sources (and ~0.2B of the repairs meant to cover them). 12.8 sources
-  // ≈ 15 bodies at that mix, minus 1 body alignment margin -> every
-  // B <= 14 must be lossless. Recovery beyond the bound (GE
-  // suffix-chaining) is allowed, so the first lossy B may land past it —
-  // assert it exists in [15, 24] (measured edge: B=21 under whole-frame
-  // traffic, was B=20 under the pre-frame-shm 1200 B packet stream: a
-  // 18200 B frame is ~14 sources, so the one tail repair add_frame emits per
-  // frame end adds only ~7% redundancy on top of the layer's overhead).
+  // Gate 2: guarantee-region budget edge, single-layer stream 3 (ov 0.50
+  // since the 2026-08-29 UEP flatten, was 0.25), sym1312/bpb1/w64.
+  // L <= W*ov/(1+ov) = 64*0.50/1.50 = 21.33 lost SOURCES is a one-sided
+  // sufficiency bound, same as before. The body mix changed with ov: the
+  // emitted-body stream interleaves one repair per 1/ov sources, i.e. the
+  // source fraction of a burst is 1/(1+ov) — at ov=0.25 that was the 0.8
+  // ("SSSSR") this gate used to spell out; at ov=0.50 it is 1/1.5 = 0.667
+  // ("SSRSR"-ish), so a burst of B bodies now kills ~0.667B sources (and
+  // ~0.333B repairs). Converting sources back to bodies divides by that
+  // same fraction, so the (1+ov) terms cancel exactly and the guaranteed
+  // body budget is just W*ov = 64*0.50 = 32 — no longer a coincidence that
+  // the old 12.8/0.8 = 16 matched W*ov = 64*0.25 = 16 too. 32 bodies ≈ 31
+  // at that mix, minus 1 body alignment margin -> every B <= 30 must be
+  // lossless. Recovery beyond the bound (GE suffix-chaining) is allowed,
+  // so the first lossy B may land past it — assert it exists in [31, 51]
+  // (measured edge: B=48 under whole-frame traffic with the flattened
+  // ladder, lossless confirmed through B=47; was B=21 under the pre-flatten
+  // ov=0.25 ladder — see the 2026-08-29 UEP-flatten commit for that history).
   int first_lossy = -1;
-  for (int B = 2; B <= 24; B += 1) {
+  for (int B = 2; B <= 51; B += 1) {
     auto o = run(layers_for(big), PeriodicBurst{B}, 60000, /*single_layer=*/3);
     double r = residual_pct(o.layer[3]);
-    if (B <= 14) expect(r == 0.0, "B<=14 lossless");
+    if (B <= 30) expect(r == 0.0, "B<=30 lossless");
     if (r > 0.0) { first_lossy = B; break; }
   }
-  expect(first_lossy >= 15 && first_lossy <= 24, "budget edge in [15,24]");
+  expect(first_lossy >= 31 && first_lossy <= 51, "budget edge in [31,51]");
   // Gate 3: monotonic-ish degradation for the current config, B in {2,8,16}.
   double prev = -1.0;
   for (int B : {2, 8, 16}) {
