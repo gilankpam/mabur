@@ -154,13 +154,17 @@ TEST(frame_pipeline_idr_frame_is_critical_and_flagged) {
 TEST(frame_pipeline_producer_idr_flag_protects_up_and_counts_disagreement) {
   // Producer says IDR, the Annex-B scan says TRAIL_N enhance (type 0):
   // trust the union (stream 0) and count the disagreement as the bug signal it is.
+  // Both IDR and ENHANCE flags set together keeps the enhance_disagree counter
+  // zero (scan_enhance and meta_enhance both true), isolating the IDR-disagreement path.
   UepEncoder enc(layers(), 15);
   FramePipeline pipe;
   auto buf = ring_buf(/*nal_type=*/0, /*tid=*/0, 800);
-  auto bodies = pipe.encode(enc, buf.data(), payload_len(buf), meta_of(0, true), 1);
+  auto bodies = pipe.encode(enc, buf.data(), payload_len(buf),
+                            meta_flags(0, VENC_FRAME_FLAG_IDR | VENC_FRAME_FLAG_ENHANCE), 1);
   REQUIRE(!bodies.empty());
   CHECK(bodies[0].stream_id == 0);
   CHECK(pipe.idr_disagreements() == 1);
+  CHECK(pipe.enhance_disagreements() == 0);  // isolated: enhance flags agree
 }
 
 TEST(frame_pipeline_enhance_needs_flag_and_scan_agreement) {

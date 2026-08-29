@@ -129,7 +129,7 @@ TEST(frame_is_trail_n_only_for_type_zero_first_vcl) {
   CHECK(frame_is_trail_n(tn.data(), tn.size()));
   auto sei_tn = cat({mk_nal(39, 0), mk_nal(0, 0, 900)});
   CHECK(frame_is_trail_n(sei_tn.data(), sei_tn.size()));
-  auto tr2 = mk_nal(1, 2, 900);                 // TRAIL_R tid 2: sid 3 but NOT enhance
+  auto tr2 = mk_nal(1, 2, 900);                 // TRAIL_R tid 2: sid 0 (base), NOT enhance
   CHECK(!frame_is_trail_n(tr2.data(), tr2.size()));
   auto idr = mk_nal(19, 0, 900);
   CHECK(!frame_is_trail_n(idr.data(), idr.size()));
