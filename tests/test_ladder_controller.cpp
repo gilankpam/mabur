@@ -8,8 +8,13 @@ using namespace maburgs;
 namespace {
 
 // Ladder from the task brief: {mcs, overhead} per rung, [0] = failsafe.
-const std::vector<Rung> kLadder = {{0, 1.0}, {2, 0.5},  {4, 0.25},
-                                    {5, 0.25}, {6, 0.15}, {7, 0.1}};
+// Overhead values are 2x the pre-2026-08-29-airtime-balance-uep fixture:
+// budget() used to scale via uep_layer_overhead(1, ov) = 2*ov (post-flatten
+// kUepRefOverhead=0.5, cmd_overhead/0.25 baseline), and now reads the
+// literal overhead directly -- doubling every value here keeps every
+// numeric expectation in this file unchanged.
+const std::vector<Rung> kLadder = {{0, 2.0}, {2, 1.0},  {4, 0.5},
+                                    {5, 0.5}, {6, 0.3}, {7, 0.2}};
 
 LadderCfg make_cfg() {
   LadderCfg cfg;
@@ -91,17 +96,25 @@ int penalty_ms_for(const LadderController& ctl, double now_ms, int rung) {
 
 }  // namespace
 
-TEST(budget_uses_s1_effective) {
+TEST(budget_is_literal_overhead_fraction) {
+  // rung overhead 0.3 -> budget 0.3/1.3: budget() is the rung's literal FEC
+  // command overhead directly since task-10-airtime-balance-uep deleted the
+  // uep_layer_overhead scaling call (a no-op since the 2026-08-29 flatten).
+  LadderCfg cfg;
+  cfg.ladder = {{7, 0.3}};
+  LadderController c(cfg);
+  CHECK(std::abs(c.budget_for(0) - 0.3 / 1.3) < 1e-9);
+}
+
+TEST(budget_uses_literal_overhead) {
   LadderController ctl(make_cfg());
-  // rung 0: overhead 1.0 -> eff1 = 0.50 * (1.0/0.25) = 2.0, still clamped
-  // to 2.0 (was 0.75 * (1.0/0.25) = 3.0 before the 2026-08-29 UEP flatten).
+  // rung 0: overhead 2.0 (doubled fixture, see kLadder) -> budget = 2.0/3.0.
   CHECK(std::abs(ctl.budget() - (2.0 / 3.0)) < 1e-9);
 
   double t = 0;
-  promote_to(ctl, t, 5);  // walk all the way to the top rung {7, 0.1}
+  promote_to(ctl, t, 5);  // walk all the way to the top rung {7, 0.2}
   CHECK(ctl.rung() == 5);
-  // top rung: overhead 0.1 -> eff1 = 0.50 * (0.1/0.25) = 0.2 (was 0.75 *
-  // (0.1/0.25) = 0.3 before the 2026-08-29 UEP flatten).
+  // top rung: overhead 0.2 -> budget = 0.2/1.2.
   CHECK(std::abs(ctl.budget() - (0.2 / 1.2)) < 1e-9);
 }
 
@@ -472,7 +485,7 @@ TEST(probe_fail_penalizes_candidate_and_stays) {
   LadderController ctl(make_cfg());
   double t = 0;
   for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  // Candidate rung 1 budget = eff1(0.5)/(1+eff1(0.5)); drown it: u_pred >> threshold.
+  // Candidate rung 1 budget = ov(1.0)/(1+ov(1.0)) = 0.5; drown it: u_pred >> threshold.
   for (int i = 0; i < 20 && ctl.probing(); ++i, t += 50) ctl.update(ok3(0.0, 0.9), t);
   CHECK(!ctl.probing());
   CHECK(ctl.rung() == 0);                       // never moved
@@ -507,11 +520,11 @@ TEST(probe_pass_reports_measured_u_pred) {
   LadderController ctl(make_cfg());
   double t = 0;
   for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  // Candidate rung 1 budget = eff1(0.5)/(1+eff1(0.5)), eff1(0.5) =
-  // 0.50*(0.5/0.25) = 1.0 (was 0.75*(0.5/0.25) = 1.5 before the 2026-08-29
-  // UEP flatten) -> budget = 1.0/2.0 = 0.5, so an s3 pre-FEC loss of 0.12
-  // is u_pred 0.24: nonzero, comfortably under the probe util threshold,
-  // so the probe still passes.
+  // Candidate rung 1 budget = ov(1.0)/(1+ov(1.0)) = 0.5 (the literal FEC
+  // overhead directly, since the 2026-08-29 flatten made the old
+  // uep_layer_overhead scaling a no-op and task-10-airtime-balance-uep
+  // deleted it), so an s3 pre-FEC loss of 0.12 is u_pred 0.24: nonzero,
+  // comfortably under the probe util threshold, so the probe still passes.
   for (; ctl.probing(); t += 50) {
     ctl.update(ok3(0.0, 0.12), t);
     REQUIRE(t < 1e5);

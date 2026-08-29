@@ -126,9 +126,8 @@ static int run_radio(const maburgs::Config& cfg, int loss_sim_port) {
 static int run_radio(const maburgs::Config& cfg) {
 #endif
   std::fprintf(stderr,
-               "fec: symbol_size=[%d,%d,%d,%d] decode_deadline_ms=%d seq_horizon=%d\n",
+               "fec: symbol_size=[%d,%d] decode_deadline_ms=%d seq_horizon=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
-               cfg.fec.symbol_size[2], cfg.fec.symbol_size[3],
                cfg.fec.decode_deadline_ms, cfg.fec.seq_horizon);
 
   // Ladder feasibility log: one line per effective (post-max_mcs-filter)
@@ -137,14 +136,15 @@ static int run_radio(const maburgs::Config& cfg) {
   for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
     const maburgs::Rung& rung = cfg.link.ladder_cfg.ladder[i];
     const auto spec = mabur::rc::ladder_from(mabur::rc::PhyMode::HT,
-                                              static_cast<uint8_t>(rung.mcs), 20)[1];
-    const double eff1 = mabur::uep_layer_overhead(1, rung.overhead);
-    const double budget = eff1 / (1 + eff1);
-    const double src_mbps =
-        mabur::rc::phy_rate_mbps(spec) * 0.65 / (1 + eff1);
+                                              static_cast<uint8_t>(rung.mcs), 20);
+    const double ov = rung.overhead;
+    const double budget = ov / (1 + ov);
+    const double denom = 0.5 * (1 + ov) / mabur::rc::phy_rate_mbps(spec[0]) +
+                         0.5 * (1 + ov) / mabur::rc::phy_rate_mbps(spec[1]);
+    const double src_mbps = 0.65 / denom;
     std::fprintf(stderr,
-                 "ladder[%zu]: mcs%d ov%.2f eff1=%.2f budget=%.0f%% ~%.1f Mbps src\n",
-                 i, rung.mcs, rung.overhead, eff1, budget * 100.0, src_mbps);
+                 "ladder[%zu]: mcs%d(base %d) ov%.2f budget=%.0f%% ~%.1f Mbps src\n",
+                 i, rung.mcs, spec[0].mcs, ov, budget * 100.0, src_mbps);
   }
 
   std::signal(SIGINT, on_signal);
@@ -373,7 +373,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // (which finds cur_mcs unknown -> closed plain-fallback boundary).
   int last_marked_op_mcs = -1;
   double last_marked_op_ov = -1.0;
-  int last_marked_s3_mcs = -1;
+  int last_marked_enh_mcs = -1;
   // Card the last real RCF/DISC emission went out on; repeat-burst copies
   // reuse it instead of re-running the selector between emissions.
   int last_tx_card = 0;
@@ -551,36 +551,39 @@ static int run_radio(const maburgs::Config& cfg) {
     if (au_on) au_bell.poll();
 
     // Transition boundaries for loss attribution: edge-detect the COMMANDED
-    // per-stream MCS. Streams 0-2 follow the op; s3 runs the probe
-    // candidate while a probe is up. Overhead-only steps mark too (FEC
-    // re-key debris exists without a PHY change; the decoder then uses the
-    // plain same-MCS fallback). Static-pin mode: the op never changes, so
-    // nothing ever arms.
+    // per-sid MCS. sid 0 (base) mirrors the drone's mcs-1 rule
+    // (rc::ladder_from(...)[0].mcs) and always tracks the op; sid 1 (enh)
+    // runs the profile mcs, or the probe candidate while a probe is up.
+    // Overhead-only steps mark sid 0 too (FEC re-key debris exists without a
+    // PHY change; the decoder then uses the plain same-MCS fallback).
+    // Static-pin mode: the op never changes, so nothing ever arms.
     {
       const auto& op_now = vrx.cur_op();
       if (op_now.mcs != last_marked_op_mcs ||
           op_now.overhead != last_marked_op_ov) {
-        for (int s = 0; s <= 2; ++s)
-          agg.decoder().mark_transition(s, static_cast<uint8_t>(op_now.mcs),
-                                        now_ms_u);
+        const auto base_spec = mabur::rc::ladder_from(
+            op_now.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
+            static_cast<uint8_t>(op_now.mcs), static_cast<uint8_t>(op_now.bw))[0];
+        agg.decoder().mark_transition(0, static_cast<uint8_t>(base_spec.mcs),
+                                      now_ms_u);
         last_marked_op_mcs = op_now.mcs;
         last_marked_op_ov = op_now.overhead;
       }
-      const int s3_mcs_now =
+      const int enh_mcs_now =
           vrx.ctl().probing() ? vrx.ctl().probe_mcs() : op_now.mcs;
-      if (s3_mcs_now != last_marked_s3_mcs) {
-        agg.decoder().mark_transition(3, static_cast<uint8_t>(s3_mcs_now),
+      if (enh_mcs_now != last_marked_enh_mcs) {
+        agg.decoder().mark_transition(1, static_cast<uint8_t>(enh_mcs_now),
                                       now_ms_u);
-        last_marked_s3_mcs = s3_mcs_now;
+        last_marked_enh_mcs = enh_mcs_now;
       }
     }
 
-    // Control step: residual from the decode window, plus stream 1's
+    // Control step: residual from the decode window, plus the base sid's
     // cumulative symbol totals feeding the measured-loss window. Per-layer
     // delivery is operator-facing only — it rides the stats sideport below,
     // never the RCF (RC_VERSION 3 dropped it; maburd never read it).
-    std::array<uint8_t, 4> ld{};
-    for (int s = 0; s < 4; ++s)
+    std::array<uint8_t, 2> ld{};
+    for (int s = 0; s < 2; ++s)
       ld[static_cast<size_t>(s)] =
           static_cast<uint8_t>(agg.decoder().window_delivery_pct(s));
     auto [d0, e0] = agg.decoder().window_counts(0);
@@ -601,7 +604,10 @@ static int run_radio(const maburgs::Config& cfg) {
     // doesn't count as starvation.
     const bool starved = (e0 + e1 == 0) && agg.last_video_us() != 0;
 
-    const auto s1 = agg.decoder().stats(1);
+    // s1_* names are historical (predate the 2-stream flatten): this is the
+    // BASE sid's (0) window, the critical always-decode layer that drives
+    // the ladder's ordinary demote/promote decisions.
+    const auto s1 = agg.decoder().stats(0);
     s1_loss.add(s1.syms_delivered + s1.syms_recovered + s1.syms_abandoned,
                 s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
     const auto s1_sample = s1_loss.sample(now_ms);
@@ -613,8 +619,9 @@ static int run_radio(const maburgs::Config& cfg) {
 
     // s3 feedback for the probe-before-promote / s3-demote logic: pre-FEC
     // loss (same shape as s1's window), scored against the CURRENT rung's
-    // s3 budget.
-    const auto s3 = agg.decoder().stats(3);
+    // budget. s3_* names are historical too: this is the ENH sid's (1)
+    // window — the shed-able layer the probe candidate rides.
+    const auto s3 = agg.decoder().stats(1);
     const uint64_t s3_expected =
         s3.syms_delivered + s3.syms_recovered + s3.syms_abandoned;
     s3_loss.add(s3_expected, s3.syms_delivered + s3.syms_recovered_arrived, now_ms);
@@ -794,7 +801,7 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned long long>(t.crc_fail), t.snr_ema,
                      t.snr_a_ema, t.snr_b_ema);
       }
-      for (int s = 0; s < 4; ++s) {
+      for (int s = 0; s < 2; ++s) {
         const auto st = agg.decoder().stats(s);
         if (st.bodies == 0) continue;  // idle streams: keep the line short
         std::fprintf(stderr,
@@ -839,9 +846,9 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.residual_loss = residual;
       sin.attrib_suppressed = attrib_suppressed;
       sin.residual_cur = residual_cur;
-      if (const double cms = agg.decoder().last_boundary_close_ms(1); cms >= 0)
+      if (const double cms = agg.decoder().last_boundary_close_ms(0); cms >= 0)
         sin.attrib_close_ms = cms;
-      for (int s = 0; s < 4; ++s)
+      for (int s = 0; s < 2; ++s)
         sin.layer_delivery_pct[static_cast<size_t>(s)] = ld[static_cast<size_t>(s)];
       for (int i = 0; i < n_cards; ++i) {
         const auto& t = agg.card(i);
@@ -880,7 +887,7 @@ static int run_radio(const maburgs::Config& cfg) {
         }
         sin.cards.push_back(ci);
       }
-      for (int s = 0; s < 4; ++s) {
+      for (int s = 0; s < 2; ++s) {
         const auto st = agg.decoder().stats(s);
         auto& o = sin.streams[static_cast<size_t>(s)];
         o.bodies = st.bodies;
@@ -1157,7 +1164,7 @@ int main(int argc, char** argv) {
                  static_cast<unsigned long long>(t.seq_expected), t.rssi_a_ema,
                  t.rssi_b_ema, t.snr_ema);
   }
-  for (int s = 0; s < 4; ++s) {
+  for (int s = 0; s < 2; ++s) {
     const auto st = agg.decoder().stats(s);
     std::fprintf(stderr,
                  "stream %d: bodies=%llu sub_fail=%llu rec=%llu abn=%llu "

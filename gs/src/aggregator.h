@@ -61,14 +61,17 @@ struct CardTrack {
   // Per-RF-class signal tracks (video streams, MSP, ctrl) — pooled EMAs
   // above REMAIN untouched (TxSelector + stderr consume them).
   std::array<ClassTrack, kNumRfClasses> cls{};
-  // s1+s3 pooled RF track (spec 2026-08-15). The RF label source and the
-  // predictive fade trigger read THIS, not cls[S1]. s1+s3 is 97% of frames
-  // and both ride the same PHY rate (one-rate ladder, overhead-only
-  // differentiation), so they are statistically homogeneous; msp/ctrl may
-  // carry a different per-rate TX power and their mix ratio drifts with
-  // rung and shed state. Folded at frame time, NOT blended from
-  // cls[S1]/cls[S3] -- those have different sample rates, so no weighted
-  // average of them is the EMA of the union.
+  // base+enh pooled RF track (spec 2026-08-15, re-scoped for the airtime-
+  // balance-uep split-rate ladder). The RF label source and the predictive
+  // fade trigger read THIS, not cls[S0]/cls[S1] alone. base and enh no
+  // longer share a PHY rate (base mirrors mcs-1, enh runs the profile mcs),
+  // but RSSI/SNR/EVM are channel properties, not rate-dependent ones, and TX
+  // power is constant across MCS (spec 2026-08-12-constant-txpower) — so the
+  // two streams stay statistically homogeneous and pooling both still beats
+  // a single stream's sample count; msp/ctrl are excluded because their mix
+  // ratio drifts with rung and shed state. Folded at frame time, NOT
+  // blended from cls[S0]/cls[S1] -- those have different sample rates, so
+  // no weighted average of them is the EMA of the union.
   ClassTrack rf_pool{};
   // GS-originated RC frames (RCF/DISC, sent to the drone): the GS's own
   // monitor-mode capture hears its own transmission, so these show up on
@@ -92,7 +95,7 @@ class Aggregator {
   using MspSink = std::function<void(const uint8_t* body, size_t len,
                                      uint64_t mono_us)>;
 
-  Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
+  Aggregator(const std::array<mabur::UepLayerCfg, 2>& layers,
              uint64_t decode_deadline_ms, uint32_t seq_horizon, int n_cards);
 
   void set_frag_sink(FragSink s) { frag_sink_ = std::move(s); }

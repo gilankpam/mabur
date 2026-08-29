@@ -33,7 +33,7 @@ static void fold_evm(Track& t, int8_t a, int8_t b) {
   if (sampled(best)) fold(t.evm_ema, t.evm_has, best);
 }
 
-// RSSI/SNR fold shared by CardTrack, ClassTrack and the s1+s3 pool
+// RSSI/SNR fold shared by CardTrack, ClassTrack and the base+enh pool
 // (identical field names). Mirrors fold_evm's shape; unlike EVM every frame
 // carries a usable rssi/snr sample, so there is no per-chain validity gate.
 template <typename Track>
@@ -58,7 +58,7 @@ static void fold_rf(Track& t, double rssi, double snr, const uint8_t* rssi_ab,
 }
 }  // namespace
 
-Aggregator::Aggregator(const std::array<mabur::UepLayerCfg, 4>& layers,
+Aggregator::Aggregator(const std::array<mabur::UepLayerCfg, 2>& layers,
                        uint64_t decode_deadline_ms, uint32_t seq_horizon,
                        int n_cards)
     : dec_(layers, decode_deadline_ms, seq_horizon),
@@ -170,10 +170,11 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       fold_rf(ct, rssi, snr, m.rssi, m.snr);
       fold_evm(ct, m.evm[0], m.evm[1]);
 
-      // s1+s3 pooled track (spec 2026-08-15): the RF label source and the
-      // fade trigger read this. Deliberately excludes s0, msp and ctrl.
-      if (class_idx == static_cast<int>(RfClass::S1) ||
-          class_idx == static_cast<int>(RfClass::S3)) {
+      // base+enh pooled track (spec 2026-08-15, re-scoped for the 2-stream
+      // split-rate ladder): the RF label source and the fade trigger read
+      // this. Deliberately excludes msp and ctrl.
+      if (class_idx == static_cast<int>(RfClass::S0) ||
+          class_idx == static_cast<int>(RfClass::S1)) {
         ClassTrack& pt = c.rf_pool;
         ++pt.frames;
         pt.bytes += m.body.size();

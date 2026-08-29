@@ -27,9 +27,10 @@ namespace maburgs {
 //   R <t_ms> <rung> <u> <resid> <u3> <resid3> <evm> <evm_sd> <n> <age_s> <probe_u> <probe_n>
 //                                                            # per-rung EWMA store snapshot
 //
-// evm_db is the RF EVM label in dB (s1+s3 pooled since ctllog 4, s1-class
-// before it -- see the ctllog 4 note below), nan when unsampled --
-// label-only, like snr_db (see LinkHealth::rf_evm_db).
+// evm_db is the RF EVM label in dB (base+enh pooled since ctllog 4 -- s1-
+// class before it, re-scoped from s1+s3 to sid0+sid1 by ctllog 7 -- see the
+// ctllog 4/7 notes below), nan when unsampled -- label-only, like snr_db
+// (see LinkHealth::rf_evm_db).
 //
 // resid stays the TOTAL residual (abandoned/expected over the whole decode
 // window); resid_cur is its attributed sibling -- the same ratio scored only
@@ -40,6 +41,18 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 7 (2026-08-30, airtime-balance-uep): line formats are UNCHANGED
+// from v6, but the u3/resid3/evm_db/drssi/dsnr MEANING shifts again: the
+// link collapsed from 4 UEP streams to 2 (BASE sid 0, ENH sid 1), and every
+// quantity that used to read "stream 3" (the probe/enhancement layer) now
+// reads sid 1, while the ordinary s1 quantities (u, resid) that used to read
+// "stream 1" now read sid 0 (BASE, the mirror of the drone's mcs-1 rule).
+// The pooled RF label source moved with it: base+enh (sid0+sid1), not
+// s1+s3. budget()/util3() are also now the LITERAL FEC command overhead
+// (overhead / (1 + overhead)) rather than a per-layer uep_layer_overhead
+// scaling -- the two were numerically identical since the 2026-08-29 UEP
+// flatten, so no logged value actually moved, only what it is computed from.
 //
 // ctllog 6 (2026-08-15): the S line's <rung> is now the rung the sample was
 // MEASURED on (LadderController::measured_rung()), not the live rung. They
@@ -60,12 +73,13 @@ namespace maburgs {
 // 2026-08-14 EVM freshness gate).
 //
 // Two encoding notes callers must know:
-//  - S's u3 reads 0 while a probe is active (steady-state s3 utilization is
-//    meaningless then -- s3 is deliberately running the probe candidate's
-//    MCS, not the current rung's -- see LadderController::util3()).
-//  - E's u is u3, not the s1 util, whenever reason is one of the s3_*
-//    reasons (S3Residual/S3Util); the reason string is what disambiguates
-//    which quantity `u` holds.
+//  - S's u3 reads 0 while a probe is active (steady-state ENH/sid1
+//    utilization is meaningless then -- sid 1 is deliberately running the
+//    probe candidate's MCS, not the current rung's -- see
+//    LadderController::util3()).
+//  - E's u is u3, not the ordinary (BASE/sid0) util, whenever reason is one
+//    of the s3_* reasons (S3Residual/S3Util); the reason string is what
+//    disambiguates which quantity `u` holds.
 // u3 (S) and u_pred (P) both come from LadderController ratios that carry a
 // 1e9 zero-guard sentinel when the divisor budget is 0 (see
 // ladder_controller.cpp); CtlLog clamps both to <= 1e3 at the write site

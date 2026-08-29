@@ -4,8 +4,6 @@
 #include <cassert>
 #include <cmath>
 
-#include "mabur/uep_encoder.h"
-
 namespace maburgs {
 
 const char* to_string(CtlReason r) {
@@ -45,20 +43,13 @@ LadderController::LadderController(LadderCfg cfg)
 }
 
 double LadderController::budget() const {
-  const double eff1 = mabur::uep_layer_overhead(1, op().overhead);
-  return eff1 / (1.0 + eff1);
+  const double ov = op().overhead;
+  return ov / (1.0 + ov);
 }
 
 double LadderController::budget_for(int rung) const {
-  const double eff1 = mabur::uep_layer_overhead(
-      1, cfg_.ladder[static_cast<std::size_t>(rung)].overhead);
-  return eff1 / (1.0 + eff1);
-}
-
-double LadderController::budget3_for(int rung) const {
-  const double eff3 = mabur::uep_layer_overhead(
-      3, cfg_.ladder[static_cast<std::size_t>(rung)].overhead);
-  return eff3 / (1.0 + eff3);
+  const double ov = cfg_.ladder[static_cast<std::size_t>(rung)].overhead;
+  return ov / (1.0 + ov);
 }
 
 double LadderController::probe_util_threshold() const {
@@ -400,11 +391,11 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     s3_util_start_ms_ = -1.0;
   } else {
     s3_last_live_ms_ = now_ms;
-    // A ladder entry whose layer-3 effective overhead is zero has no s3 budget
-    // at all; any loss there is infinite utilization rather than a division by
-    // zero. (budget_for() needs no such guard: layer 1's overhead is never
-    // zero on a valid ladder.)
-    const double b3 = budget3_for(idx_);
+    // A ladder entry whose overhead is zero has no s3 budget at all; any loss
+    // there is infinite utilization rather than a division by zero. Since the
+    // flatten, s3's budget is the same literal-overhead fraction as s1's —
+    // budget3_for() is gone, this is budget_for() directly.
+    const double b3 = budget_for(idx_);
     u3_ = b3 > 0.0 ? h.s3_pre_fec_loss / b3
                    : (h.s3_pre_fec_loss > 0.0 ? 1e9 : 0.0);
     store_.observe_s3(idx_, u3_, h.s3_residual_loss > 0.0, now_ms);

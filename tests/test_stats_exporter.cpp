@@ -4,7 +4,6 @@
 #include <vector>
 #include "json.hpp"
 #include "mabur/profile.h"
-#include "mabur/uep_encoder.h"
 #include "mtest.h"
 #include "stats_exporter.h"
 using namespace maburgs;
@@ -19,7 +18,7 @@ StatsInput base_input() {
   in.op.mcs = 5; in.op.bw = 20; in.op.overhead = 0.25; in.op.snr_req = 18.5;
   in.deadline_ms = 60;
   in.residual_loss = 0.012;
-  in.layer_delivery_pct = {100, 100, 97, 91};
+  in.layer_delivery_pct = {100, 97};
   StatsCardIn c;
   c.up = true; c.frames = 1000; c.crc_fail = 12;
   c.seq_expected = 1000; c.seq_received = 996; c.rx_bytes = 1'000'000;
@@ -163,10 +162,10 @@ TEST(fec_rows_sticky_and_idle_omitted) {
   json j = cap.last();
   REQUIRE(j["link"]["streams"].size() == 1);
   CHECK(j["link"]["streams"][0]["stream"] == 0);
-  in.streams[2].bodies = 5;         // stream 2 wakes up
+  in.streams[1].bodies = 5;         // stream 1 (enh) wakes up
   ex.poll(1500, in);
   CHECK(cap.last()["link"]["streams"].size() == 2);
-  in.streams[2].bodies = 5;         // no new bodies, but sticky
+  in.streams[1].bodies = 5;         // no new bodies, but sticky
   ex.poll(2000, in);
   CHECK(cap.last()["link"]["streams"].size() == 2);
 }
@@ -340,16 +339,36 @@ TEST(class_entries_sticky_and_rates) {
   CHECK(cap.last()["cards"][0]["classes"].contains("s1"));  // sticky
 }
 
-TEST(stream_rows_carry_effective_overhead) {
+TEST(stream_rows_fall_back_to_op_overhead_without_telem) {
+  // No telem snapshot yet: both streams' "ov" fall back to the commanded op
+  // overhead verbatim -- no per-layer scaling since the literal-overhead
+  // flatten (budget_for()/uep_layer_overhead's old job collapsed to a no-op).
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
   StatsInput in = base_input();                      // op.overhead = 0.25
+  in.streams[1].bodies = 100;                        // activate the enh row
   ex.poll(1000, in);
   const json j = cap.last();
-  const double ov0 = j["link"]["streams"][0]["ov"].get<double>();
-  const double want = mabur::uep_layer_overhead(0, 0.25);
-  CHECK(ov0 > want - 1e-9 && ov0 < want + 1e-9);
+  CHECK(std::abs(j["link"]["streams"][0]["ov"].get<double>() - 0.25) < 1e-9);
+  CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.25) < 1e-9);
   CHECK(j["link"]["vtx_id"] == 1);
+}
+
+TEST(stream_rows_carry_balancer_applied_overhead_from_telem) {
+  // Telem present: base -> applied_ov_base, enh -> applied_ov_enh (the
+  // balancer's actual per-stream split), not the commanded op overhead.
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.streams[1].bodies = 100;
+  mabur::rc::Telem t;
+  t.applied_ov_base = 0.40;
+  t.applied_ov_enh = 0.60;
+  in.telem = t; in.telem_rx_ms = 900;
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(std::abs(j["link"]["streams"][0]["ov"].get<double>() - 0.40) < 1e-9);
+  CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.60) < 1e-9);
 }
 TEST(drone_section_null_then_rates) {
   Capture cap;

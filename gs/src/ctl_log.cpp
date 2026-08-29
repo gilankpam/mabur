@@ -63,7 +63,7 @@ CtlLog::CtlLog(const std::string& dir, const std::string& header_info) {
   }
   // Line-buffered: a power cut loses at most the current line.
   std::setvbuf(f_, nullptr, _IOLBF, 0);
-  std::fprintf(f_, "ctllog 6 %s\n", header_info.c_str());
+  std::fprintf(f_, "ctllog 7 %s\n", header_info.c_str());
 }
 
 CtlLog::~CtlLog() {
@@ -83,9 +83,10 @@ void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
 void CtlLog::event(double t_ms, int from, int to, const char* reason,
                     double u, double snr_db, double evm_db) {
   if (!f_) return;
-  // u is u3 (not the s1 util) whenever reason is one of the s3_* reasons --
-  // clamp unconditionally since that's the only case the raw value can run
-  // away, and clamping the ordinary s1 util (already bounded) is a no-op.
+  // u is u3 (not the ordinary BASE/sid0 util) whenever reason is one of the
+  // s3_* reasons -- clamp unconditionally since that's the only case the raw
+  // value can run away, and clamping the ordinary util (already bounded) is
+  // a no-op.
   std::fprintf(f_, "E %.0f %d %d %s %.4f %.1f %.1f\n", t_ms, from, to, reason,
                clamp_util(u), snr_db, evm_db);
 }

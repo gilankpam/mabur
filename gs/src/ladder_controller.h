@@ -12,9 +12,12 @@
 
 namespace maburgs {
 
-// One rung of the measured-loss ladder: a radio MCS plus the FEC command
-// overhead (0.25 = baseline) that stream_id 1's uep_layer_overhead scaling
-// uses to derive budget().
+// One rung of the measured-loss ladder: a radio MCS plus the literal FEC
+// command overhead that budget()/budget_for() derive from directly (budget =
+// overhead / (1 + overhead) — no per-layer scaling since the flatten). The
+// same scalar overhead now scores BOTH sids' util identically (base via
+// budget(), enh/probe via budget_for()) — there is no more per-layer split
+// at the Rung level, only at the drone's balancer.
 struct Rung {
   int mcs = 0;
   double overhead = 1.0;
@@ -207,9 +210,16 @@ class LadderController {
   double util() const { return u_; }              // last computed u (0 before first valid sample)
   double pre_fec_loss() const { return pre_fec_loss_; }
 
-  // s1 budget of the CURRENT rung: eff1 / (1 + eff1), eff1 =
-  // mabur::uep_layer_overhead(1, op().overhead).
+  // Budget of the CURRENT rung: overhead / (1 + overhead), the literal FEC
+  // command overhead — no per-layer scaling since the flatten. Used to score
+  // the BASE (sid 0) util (update()'s u_ = pre_fec_loss / budget()); the
+  // identical formula for sid 1 (enh/probe) is budget_for(), since the
+  // flatten made the two numerically the same.
   double budget() const;
+  // Budget of an ARBITRARY rung (same formula as budget(), any index) —
+  // public so probe/promote candidate math and tests can score a rung the
+  // controller isn't currently on.
+  double budget_for(int rung) const;
 
   int probation_ms_left(double now_ms) const;  // 0 when not probing
   std::vector<std::pair<int, int>> penalized(double now_ms) const;  // {rung, ms_left}
@@ -258,8 +268,6 @@ class LadderController {
   void set_event(double now_ms, int from, int to, CtlReason reason, double u,
                  double snr);
 
-  double budget_for(int rung) const;   // s1 budget of an arbitrary rung
-  double budget3_for(int rung) const;  // s3 budget of an arbitrary rung
   double probe_util_threshold() const;
   double s3_util_threshold() const;
   bool s3_usable(const LinkHealth& h) const;

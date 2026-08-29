@@ -129,9 +129,9 @@ struct StatsInput {
   uint64_t attrib_suppressed = 0;
   std::optional<double> residual_cur;
   std::optional<double> attrib_close_ms;
-  std::array<int, 4> layer_delivery_pct{};
+  std::array<int, 2> layer_delivery_pct{};
   std::vector<StatsCardIn> cards;
-  std::array<StatsStreamIn, 4> streams;
+  std::array<StatsStreamIn, 2> streams;
   // LadderController snapshot; nullopt in static-pin mode -> JSON "ctl": null
   // (the ladder is never ticked there — see VrxController::ctl() comment).
   std::optional<StatsCtlIn> ctl;
@@ -176,9 +176,9 @@ class StatsExporter {
   std::vector<std::array<uint64_t, kNumStatsClasses>> prev_class_frames_;
   std::vector<std::array<uint64_t, kNumStatsClasses>> prev_class_bytes_;
   std::vector<std::array<bool, kNumStatsClasses>> class_seen_;
-  std::array<StreamPrev, 4> prev_streams_{};
+  std::array<StreamPrev, 2> prev_streams_{};
   uint64_t prev_ring_bytes_ = 0;
-  std::array<bool, 4> stream_seen_{};   // sticky link.streams[] rows
+  std::array<bool, 2> stream_seen_{};   // sticky link.streams[] rows
   // frame-emit tracking (fps + RFC3550 jitter)
   uint64_t frames_in_window_ = 0;
   uint64_t last_frame_ms_ = 0;

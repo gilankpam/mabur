@@ -6,7 +6,6 @@
 
 #include "json.hpp"
 #include "mabur/profile.h"
-#include "mabur/uep_encoder.h"
 #include "snr_units.h"
 
 namespace maburgs {
@@ -88,8 +87,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   j["cards"] = json::array();
   // Per-card window rates collected for the stream-level TX estimates below:
   // received Mbps per stream class and the card's delivery fraction.
-  std::vector<std::array<double, 4>> stream_mbps(in.cards.size(),
-                                                 std::array<double, 4>{});
+  std::vector<std::array<double, 2>> stream_mbps(in.cards.size(),
+                                                 std::array<double, 2>{});
   std::vector<double> delivery(in.cards.size(), 1.0);
   for (size_t i = 0; i < in.cards.size(); ++i) {
     const StatsCardIn& c = in.cards[i];
@@ -150,7 +149,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
         const double mbps_c =
             rate(cls.bytes, prev_class_bytes_[i][ku], elapsed_s) * 8.0 / 1e6;
         kj["mbps"] = mbps_c;
-        if (k < 4) stream_mbps[i][ku] = mbps_c;
+        if (k < 2) stream_mbps[i][ku] = mbps_c;
       } else {
         kj["pps"] = nullptr;
         kj["mbps"] = nullptr;
@@ -294,7 +293,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       static_cast<uint8_t>(in.op.mcs), static_cast<uint8_t>(in.op.bw));
   double air_pct_sum = 0.0;
   link["streams"] = json::array();
-  for (int s = 0; s < 4; ++s) {
+  for (int s = 0; s < 2; ++s) {
     const StatsStreamIn& st = in.streams[static_cast<size_t>(s)];
     if (st.bodies > 0) stream_seen_[static_cast<size_t>(s)] = true;
     if (!stream_seen_[static_cast<size_t>(s)]) continue;
@@ -303,7 +302,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     const double phy = mabur::rc::phy_rate_mbps(rung);
     json fj;
     fj["stream"] = s;
-    fj["ov"] = mabur::uep_layer_overhead(s, in.op.overhead);
+    // The balancer-applied overhead from telemetry when available (s==0 ->
+    // base, s==1 -> enh); falls back to the commanded op overhead (both
+    // streams alike) before the first telemetry snapshot arrives.
+    if (in.telem) fj["ov"] = s == 0 ? in.telem->applied_ov_base
+                                    : in.telem->applied_ov_enh;
+    else fj["ov"] = in.op.overhead;
     fj["rung_mcs"] = rung.mcs;
     fj["rung_ldpc"] = rung.ldpc;
     fj["rung_stbc"] = rung.stbc;
@@ -515,7 +519,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       prev_class_bytes_[i][static_cast<size_t>(k)] = in.cards[i].classes[static_cast<size_t>(k)].bytes;
     }
   }
-  for (size_t s = 0; s < 4; ++s)
+  for (size_t s = 0; s < 2; ++s)
     prev_streams_[s] = {in.streams[s].syms_recovered,
                         in.streams[s].syms_recovered_arrived,
                         in.streams[s].syms_abandoned, in.streams[s].symbols_in};

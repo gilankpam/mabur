@@ -78,18 +78,20 @@ def split_annexb(data):
     return nals
 
 
-def classify(nals):  # mirror of mabur classify_frame
-    sid = None
+def classify(nals):  # mirror of mabur classify_frame (2-stream since
+    # task-2-2-stream-classify-frame / common/src/nal.cpp: critical NALs
+    # (IDR/CRA/BLA 16-23, VPS/SPS/PPS 32-34) and everything else route to
+    # BASE (sid 0); the first TRAIL_N (type 0) NAL routes the frame to ENH
+    # (sid 1). tid-based routing to sid 1-3 is gone.
     for n in nals:
         if len(n) < 2:
             continue
         t = (n[0] >> 1) & 0x3F
-        tid = max((n[1] & 0x07) - 1, 0)
         if (16 <= t <= 23) or (32 <= t <= 34):
             return 0
-        if sid is None and t < 16:
-            sid = 1 + min(tid, 2)
-    return 0 if sid is None else sid
+        if t < 16:
+            return 1 if t == 0 else 0
+    return 0
 
 
 def main():

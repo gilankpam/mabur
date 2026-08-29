@@ -9,10 +9,10 @@
 
 using namespace maburgs;
 
-static std::array<mabur::UepLayerCfg, 4> vec_layers() {
-  std::array<mabur::UepLayerCfg, 4> L{};
-  const double ov[4] = {1.00, 0.75, 0.50, 0.25};
-  for (int s = 0; s < 4; ++s) L[s] = mabur::UepLayerCfg{mabur::SwConfig{64, 128, ov[s]}, 4};
+static std::array<mabur::UepLayerCfg, 2> vec_layers() {
+  std::array<mabur::UepLayerCfg, 2> L{};
+  const double ov[2] = {1.00, 0.75};
+  for (int s = 0; s < 2; ++s) L[s] = mabur::UepLayerCfg{mabur::SwConfig{64, 128, ov[s]}, 4};
   return L;
 }
 
@@ -344,11 +344,14 @@ TEST(msp_body_classified_into_msp_class) {
   CHECK(c.cls[int(RfClass::Msp)].has_ema);
 }
 
-// --- s1+s3 pooled RF track (spec 2026-08-15) ---
+// --- base+enh pooled RF track (spec 2026-08-15, re-scoped for the 2-stream
+// split-rate ladder by task-10-airtime-balance-uep) ---
 // The RF label source and the predictive fade trigger read this instead of
-// cls[S1]: s1+s3 is 97% of frames at the same PHY rate (one-rate ladder,
-// overhead-only differentiation), so the two are statistically homogeneous,
-// while msp/ctrl may carry a different per-rate TX power.
+// cls[S0]/cls[S1] alone: base and enh no longer share a PHY rate (base
+// mirrors mcs-1, enh runs the profile mcs), but RSSI/SNR/EVM are channel
+// properties and TX power is constant across MCS, so the two stay
+// statistically homogeneous and pooling both beats either stream alone,
+// while msp/ctrl are excluded (their mix ratio drifts with rung/shed state).
 
 // Minimal SBI body carrying a chosen stream_id. blocks_per_body = 1 so one
 // add() yields exactly one body.
@@ -361,14 +364,14 @@ static std::vector<uint8_t> sbi_body(uint8_t stream_id) {
   return out[0];
 }
 
-TEST(rf_pool_folds_s1_and_s3) {
+TEST(rf_pool_folds_base_and_enh) {
   Aggregator agg(vec_layers(), 200, 4096, 1);
-  agg.on_rx_body(msg(0, 1, true, sbi_body(1)));
-  agg.on_rx_body(msg(0, 2, true, sbi_body(3)));
+  agg.on_rx_body(msg(0, 1, true, sbi_body(0)));
+  agg.on_rx_body(msg(0, 2, true, sbi_body(1)));
   const auto& c = agg.card(0);
   CHECK(c.rf_pool.frames == 2);
+  CHECK(c.cls[int(RfClass::S0)].frames == 1);
   CHECK(c.cls[int(RfClass::S1)].frames == 1);
-  CHECK(c.cls[int(RfClass::S3)].frames == 1);
   CHECK(c.rf_pool.has_ema);
   // msg() feeds snr {10,25} and rssi {38,40} on every frame; the tracks fold
   // the per-frame best chain, so a constant input leaves the EMA exact.
@@ -396,28 +399,28 @@ TEST(rf_pool_evm_skips_unsampled_chains) {
   CHECK(c.rf_pool.evm_ema == -30.0);
 }
 
-TEST(rf_pool_excludes_s0_msp_and_ctrl) {
+TEST(rf_pool_excludes_msp_and_ctrl) {
   Aggregator agg(vec_layers(), 200, 4096, 1);
-  agg.on_rx_body(msg(0, 1, true, sbi_body(0)));                  // s0
+  agg.on_rx_body(msg(0, 1, true, sbi_body(0)));                  // base: counts
   agg.on_rx_body(msg(0, 2, true, sbi_body(mabur::kMspStreamId)));  // msp
   agg.on_rx_body(msg(0, 3, true, disc_ack_fixture_wire()));      // ctrl
   const auto& c = agg.card(0);
-  CHECK(c.rf_pool.frames == 0);
-  CHECK(!c.rf_pool.has_ema);
+  CHECK(c.rf_pool.frames == 1);
+  CHECK(c.rf_pool.has_ema);
   CHECK(c.cls[int(RfClass::S0)].frames == 1);
   CHECK(c.cls[int(RfClass::Msp)].frames == 1);
   CHECK(c.cls[int(RfClass::Ctrl)].frames == 1);
 }
 
-TEST(rf_pool_with_no_s3_equals_the_s1_series) {
-  // "s3 unavailable -> s1 only" needs no fallback branch: with no s3 frames
-  // the pool simply contains the s1 samples.
+TEST(rf_pool_with_no_enh_equals_the_base_series) {
+  // "enh unavailable -> base only" needs no fallback branch: with no enh
+  // frames the pool simply contains the base samples.
   Aggregator agg(vec_layers(), 200, 4096, 1);
-  for (uint16_t i = 1; i <= 5; ++i) agg.on_rx_body(msg(0, i, true, sbi_body(1)));
+  for (uint16_t i = 1; i <= 5; ++i) agg.on_rx_body(msg(0, i, true, sbi_body(0)));
   const auto& c = agg.card(0);
-  CHECK(c.rf_pool.frames == c.cls[int(RfClass::S1)].frames);
-  CHECK(c.rf_pool.snr_ema == c.cls[int(RfClass::S1)].snr_ema);
-  CHECK(c.rf_pool.rssi_ema == c.cls[int(RfClass::S1)].rssi_ema);
+  CHECK(c.rf_pool.frames == c.cls[int(RfClass::S0)].frames);
+  CHECK(c.rf_pool.snr_ema == c.cls[int(RfClass::S0)].snr_ema);
+  CHECK(c.rf_pool.rssi_ema == c.cls[int(RfClass::S0)].rssi_ema);
 }
 
 // RC frames (DISC_ACK here) carry their own independent 802.11 seq counter
