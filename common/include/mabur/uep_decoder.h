@@ -30,7 +30,7 @@ struct DecodedFrag {
 // still play its head).
 class UepDecoder {
  public:
-  UepDecoder(const std::array<UepLayerCfg, 4>& layers,
+  UepDecoder(const std::array<UepLayerCfg, 2>& layers,
              uint64_t decode_deadline_ms = 200, uint32_t seq_horizon = 0);
 
   static constexpr uint8_t kMcsUnknown = 255;
@@ -132,7 +132,7 @@ class UepDecoder {
   // Delivery-window accounting, called on each unit's last-fragment arrival.
   void note_delivery(Layer& l, uint16_t seq);
 
-  std::array<Layer, 4> layers_;
+  std::array<Layer, 2> layers_;
   uint64_t decode_deadline_ms_;
   uint64_t bodies_misrouted_ = 0;
 };

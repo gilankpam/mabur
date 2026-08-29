@@ -29,9 +29,9 @@ struct SimResult {
   uint64_t bodies = 0, bodies_dropped = 0;
 };
 
-// One frame unit for `stream`: FrameHdr + one Annex-B NAL whose type/tid match
+// One frame unit for `stream`: FrameHdr + one Annex-B NAL whose type matches
 // the layer (type 32 = VPS -> critical/stream 0; type 1 = TRAIL_R with
-// nuh_temporal_id_plus1 = stream for streams 1..3), then random payload.
+// nuh_temporal_id_plus1 = stream for stream 1), then random payload.
 std::vector<uint8_t> make_unit(int stream, uint32_t frame_id, size_t paylen,
                                std::mt19937& rng) {
   std::vector<uint8_t> unit(framewire::kFrameHdrLen);
@@ -53,12 +53,11 @@ std::vector<uint8_t> make_unit(int stream, uint32_t frame_id, size_t paylen,
   return unit;
 }
 
-std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base, int window) {
-  std::array<UepLayerCfg, 4> layers{};
-  const int bpb[4] = {bpb_base, bpb_base, bpb_base * 2, bpb_base * 2};
-  for (int s = 0; s < 4; ++s) {
-    layers[static_cast<size_t>(s)].fec =
-        SwConfig{symbol_size, window, kUepRefOverhead[s]};
+std::array<UepLayerCfg, 2> layers_for(int symbol_size, int bpb_base, int window) {
+  std::array<UepLayerCfg, 2> layers{};
+  const int bpb[2] = {bpb_base, bpb_base * 2};
+  for (int s = 0; s < 2; ++s) {
+    layers[static_cast<size_t>(s)].fec = SwConfig{symbol_size, window, 0.5};
     layers[static_cast<size_t>(s)].blocks_per_body = bpb[s];
   }
   return layers;
@@ -120,14 +119,14 @@ double pct(const SimResult& r) {
 }
 
 // Mixed per-layer geometry: stream 0 is the bench's critical-NAL config
-// (sym 164/bpb 4), streams 1..3 share the "global" 1312-symbol config at
+// (sym 164/bpb 4), stream 1 uses the "global" 1312-symbol config at
 // bpb 1 — the matrix burst_sim.cpp sweeps as "mixed-164/1312".
-std::array<UepLayerCfg, 4> mixed_layers() {
-  std::array<UepLayerCfg, 4> layers{};
-  const int sym[4] = {164, 1312, 1312, 1312};
-  const int bpb[4] = {4, 1, 1, 1};
-  for (int s = 0; s < 4; ++s) {
-    layers[static_cast<size_t>(s)].fec = SwConfig{sym[s], 64, kUepRefOverhead[s]};
+std::array<UepLayerCfg, 2> mixed_layers() {
+  std::array<UepLayerCfg, 2> layers{};
+  const int sym[2] = {164, 1312};
+  const int bpb[2] = {4, 1};
+  for (int s = 0; s < 2; ++s) {
+    layers[static_cast<size_t>(s)].fec = SwConfig{sym[s], 64, 0.5};
     layers[static_cast<size_t>(s)].blocks_per_body = bpb[s];
   }
   return layers;
@@ -137,11 +136,11 @@ std::array<UepLayerCfg, 4> mixed_layers() {
 // (across all layers) so a caller can drop a fixed, deterministic run of
 // consecutive bodies mid-stream.
 struct MixedResult {
-  uint64_t sent[4] = {0, 0, 0, 0};
-  uint64_t delivered[4] = {0, 0, 0, 0};
+  uint64_t sent[2] = {0, 0};
+  uint64_t delivered[2] = {0, 0};
 };
 
-// Feeds n_pkts round-robined across all 4 layers through the real
+// Feeds n_pkts round-robined across both layers through the real
 // UepEncoder -> (optional drop window) -> UepDecoder pipeline, following the
 // same feed/poll/flush/drain cadence as run_sim(). drop_start/drop_count
 // name a single deterministic window of consecutive *bodies* (not packets)
@@ -167,7 +166,7 @@ MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) 
   std::mt19937 rng(42);
   uint64_t now = 1000;
   for (int i = 0; i < n_pkts; ++i) {
-    int stream = i % 4;
+    int stream = i % 2;
     auto unit = make_unit(stream, static_cast<uint32_t>(i), 1388, rng);
     ++r.sent[stream];
     auto bodies = enc.add_frame(stream, unit.data(), unit.size(), now);
@@ -229,27 +228,27 @@ TEST(alternate_geometry) {
 }
 
 TEST(mixed_symbol_sizes_lossfree_delivery) {
-  // ~2000 packets round-robined across all 4 layers of the mixed geometry
-  // (sym 164/1312/1312/1312, bpb 4/1/1/1, window 64), zero loss -> every
-  // layer must deliver exactly what it sent.
+  // ~2000 packets round-robined across both layers of the mixed geometry
+  // (sym 164/1312, bpb 4/1, window 64), zero loss -> every layer must
+  // deliver exactly what it sent.
   auto r = run_mixed_sim(2000, /*drop_start=*/0, /*drop_count=*/0);
-  for (int s = 0; s < 4; ++s) CHECK(r.delivered[s] == r.sent[s]);
+  for (int s = 0; s < 2; ++s) CHECK(r.delivered[s] == r.sent[s]);
 }
 
 TEST(mixed_symbol_sizes_burst_within_budget) {
-  // Same traffic; drop 8 consecutive bodies once, mid-run. bpb 1 on layers
-  // 1..3 means those bodies interleave source/repair envelopes for whichever
+  // Same traffic; drop 8 consecutive bodies once, mid-run. bpb 1 on layer 1
+  // means those bodies interleave source/repair envelopes for whichever
   // layer they land on, so 8 consecutive bodies costs a given layer well
-  // under its worst-case symbol loss. Layer 3 (sym 1312/bpb1/window 64,
+  // under its worst-case symbol loss. Layer 1 (sym 1312/bpb1/window 64,
   // overhead 0.50 since the 2026-08-29 UEP flatten, was 0.25) has the
   // tightest guarantee band: burst_sim.cpp's self-check gate proves this
   // exact geometry lossless up to B<=30 (was B<=14 pre-flatten)
-  // consecutive bodies on single-layer stream-3 traffic, so 8 is comfortably
+  // consecutive bodies on single-layer stream-1 traffic, so 8 is comfortably
   // within budget for every layer here (layer 0's bpb 4 gives it an even
   // wider margin per body). Deterministic, fixed start index (not seeded
   // random).
   auto r = run_mixed_sim(2000, /*drop_start=*/500, /*drop_count=*/8);
-  for (int s = 0; s < 4; ++s) CHECK(r.delivered[s] == r.sent[s]);
+  for (int s = 0; s < 2; ++s) CHECK(r.delivered[s] == r.sent[s]);
 }
 
 // Single stream-1 pipeline (sym 1312 / bpb 1 / window 64) exposing the

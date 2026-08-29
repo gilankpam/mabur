@@ -9,8 +9,8 @@
 using namespace mabur;
 
 namespace {
-std::array<UepLayerCfg, 4> frame_layers() {
-  std::array<UepLayerCfg, 4> l{};
+std::array<UepLayerCfg, 2> frame_layers() {
+  std::array<UepLayerCfg, 2> l{};
   for (auto& c : l) {
     c.fec.symbol_size = 164;
     c.fec.window = 128;
@@ -72,7 +72,7 @@ TEST(add_frame_frame_end_flush_seals_tail) {
   for (int fi = 0; fi < 2; ++fi) {
     UepDecoder dec(frame_layers(), 200);
     auto unit = mk_frame_unit(static_cast<uint16_t>(fi), 1000 * fi, 5000 + 37 * fi, 0x20);
-    auto bodies = enc.add_frame(2, unit.data(), unit.size(), 1);
+    auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1);
     size_t bytes = 0;
     std::map<uint16_t, std::vector<uint8_t>> chunks;
     for (auto& b : bodies)
@@ -86,14 +86,14 @@ TEST(add_frame_frame_end_flush_seals_tail) {
 
 TEST(add_frame_shed_layer_drops) {
   UepEncoder enc(frame_layers(), 15);
-  enc.set_shed(3, true);
+  enc.set_shed(1, true);
   auto unit = mk_frame_unit(1, 0, 1000, 0);
-  CHECK(enc.add_frame(3, unit.data(), unit.size(), 1).empty());
-  CHECK(enc.dropped(3) == 1);
+  CHECK(enc.add_frame(1, unit.data(), unit.size(), 1).empty());
+  CHECK(enc.dropped(1) == 1);
 }
 
 TEST(uep_drop_if_shed_books_drop_without_encoding) {
-  std::array<UepLayerCfg, 4> l{};
+  std::array<UepLayerCfg, 2> l{};
   for (auto& c : l) {
     c.fec.symbol_size = 164;
     c.fec.window = 32;
@@ -102,18 +102,18 @@ TEST(uep_drop_if_shed_books_drop_without_encoding) {
   }
   UepEncoder enc(l, 15);
 
-  CHECK(!enc.drop_if_shed(3));            // not shed: no-op
-  CHECK(enc.dropped(3) == 0);
-
-  enc.set_shed(3, true);
-  CHECK(enc.drop_if_shed(3));             // shed: true + booked
-  CHECK(enc.dropped(3) == 1);
-  CHECK(!enc.drop_if_shed(1));            // other layers unaffected
+  CHECK(!enc.drop_if_shed(1));            // not shed: no-op
   CHECK(enc.dropped(1) == 0);
 
-  enc.set_shed(3, false);
-  CHECK(!enc.drop_if_shed(3));
-  CHECK(enc.dropped(3) == 1);             // count sticks
+  enc.set_shed(1, true);
+  CHECK(enc.drop_if_shed(1));             // shed: true + booked
+  CHECK(enc.dropped(1) == 1);
+  CHECK(!enc.drop_if_shed(0));            // other layers unaffected
+  CHECK(enc.dropped(0) == 0);
+
+  enc.set_shed(1, false);
+  CHECK(!enc.drop_if_shed(1));
+  CHECK(enc.dropped(1) == 1);             // count sticks
 }
 
 MTEST_MAIN

@@ -367,11 +367,12 @@ uint64_t now_steady_ms() {
 
 // Applies a freshly-published AppliedOp (detected via shared_ptr identity,
 // not generation — see the callers' pump-loop comments) to the
-// hot-thread-owned UepEncoder (set_overhead_scale + per-layer shed). Called
-// from the hot thread only.
+// hot-thread-owned UepEncoder (set_overhead + per-layer shed). Called
+// from the hot thread only. AppliedOp is still 4-wide until Task 5
+// (2-slot AppliedOp); only indices [0]/[1] map to the 2-stream UepEncoder.
 void apply_op_to_uep(const AppliedOp& op, UepEncoder& uep) {
-  uep.set_overhead_scale(op.fec_overhead);
-  for (int i = 0; i < 4; ++i) uep.set_shed(i, op.shed[static_cast<size_t>(i)]);
+  uep.set_overhead(op.fec_overhead);
+  for (int i = 0; i < 2; ++i) uep.set_shed(i, op.shed[static_cast<size_t>(i)]);
 }
 
 // ---------------------------------------------------------------------------

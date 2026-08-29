@@ -68,9 +68,9 @@ TEST(load_config_default_file_matches_struct_defaults) {
   // shifted +4 because 328x4 = 1396 B air frames sit exactly in the
   // mcs6+STBC PHY hole (docs/mcs6-bench-anomaly.md — air MPDUs 1392-1400 B
   // vanish whole at RX). Any new size needs the all-8-MCS hole-scan.
-  CHECK((cfg.fec.symbol_size == std::array<int, 4>{332, 332, 332, 332}));
+  CHECK((cfg.fec.symbol_size == std::array<int, 2>{332, 332}));
   CHECK(cfg.fec.window == 32);
-  CHECK((cfg.fec.blocks_per_body == std::array<int, 4>{4, 4, 4, 4}));
+  CHECK((cfg.fec.blocks_per_body == std::array<int, 2>{4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == 25);
 
@@ -117,7 +117,10 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
   auto layers = cfg.uep_layers();
-  CHECK(layers[0].fec.overhead == 0.5);  // base_overhead 0.25 -> sid0 ref 0.50
+  // Literal passthrough (Task 3): no uep_layer_overhead ladder translation
+  // left — every layer's overhead is exactly fec.base_overhead.
+  CHECK(layers[0].fec.overhead == cfg.fec.base_overhead);
+  CHECK(layers[1].fec.overhead == cfg.fec.base_overhead);
 }
 
 TEST(load_config_missing_file_throws) {
@@ -393,45 +396,41 @@ TEST(venc_range_checks) {
   }
 }
 
-TEST(uep_layers_overhead_ladder_at_base_0_25) {
-  Config cfg;  // defaults: base_overhead = 0.25
+TEST(uep_layers_overhead_is_literal_base_overhead) {
+  Config cfg;  // defaults: base_overhead = 0.5, literal (Task 3)
   auto layers = cfg.uep_layers();
-  CHECK(layers[0].fec.overhead == 0.5);
-  CHECK(layers[1].fec.overhead == 0.5);
-  CHECK(layers[2].fec.overhead == 0.5);
-  CHECK(layers[3].fec.overhead == 0.5);
+  CHECK(layers[0].fec.overhead == cfg.fec.base_overhead);
+  CHECK(layers[1].fec.overhead == cfg.fec.base_overhead);
   CHECK(layers[0].fec.window == cfg.fec.window);
   CHECK(layers[0].fec.symbol_size == cfg.fec.symbol_size[0]);
   CHECK(layers[0].blocks_per_body == cfg.fec.blocks_per_body[0]);
-  CHECK(layers[3].blocks_per_body == cfg.fec.blocks_per_body[3]);
+  CHECK(layers[1].blocks_per_body == cfg.fec.blocks_per_body[1]);
 }
 
 TEST(fec_symbol_size_scalar_fans_out) {
-  // 164 (not an arbitrary probe value): with the default blocks_per_body
-  // {4,8,16,16}, this is the largest symbol_size that keeps every layer's
-  // body (bpb*(hdr+symbol_size)) within kMaxBodyBytes (16*(14+164)=2848 <
-  // 2900) — a bigger scalar here would trip the oversize-body guard before
-  // fan-out could even be observed.
+  // 164 keeps every layer's body (bpb*(hdr+symbol_size)) within
+  // kMaxBodyBytes at the default blocks_per_body {4,8}: 8*(14+164)=1424 <
+  // 2900.
   auto path = write_temp_json(R"({"fec":{"symbol_size":164}})");
   Config cfg = load_config(path.string());
-  for (int s = 0; s < 4; ++s) CHECK(cfg.fec.symbol_size[s] == 164);
+  for (int s = 0; s < 2; ++s) CHECK(cfg.fec.symbol_size[s] == 164);
   std::filesystem::remove(path);
 }
 
 TEST(fec_symbol_size_array_per_layer) {
   auto path = write_temp_json(
-      R"({"fec":{"symbol_size":[164,1312,1312,1312],"blocks_per_body":[4,1,1,1]}})");
+      R"({"fec":{"symbol_size":[164,1312],"blocks_per_body":[4,1]}})");
   Config cfg = load_config(path.string());
   CHECK(cfg.fec.symbol_size[0] == 164);
-  CHECK(cfg.fec.symbol_size[3] == 1312);
+  CHECK(cfg.fec.symbol_size[1] == 1312);
   auto layers = cfg.uep_layers();
   CHECK(layers[0].fec.symbol_size == 164);
-  CHECK(layers[3].fec.symbol_size == 1312);
+  CHECK(layers[1].fec.symbol_size == 1312);
   std::filesystem::remove(path);
 }
 
 TEST(fec_symbol_size_rejects_wrong_len_array) {
-  auto path = write_temp_json(R"({"fec":{"symbol_size":[164,1312]}})");
+  auto path = write_temp_json(R"({"fec":{"symbol_size":[164,1312,164]}})");
   bool threw = false;
   try {
     (void)load_config(path.string());
@@ -445,7 +444,7 @@ TEST(fec_symbol_size_rejects_wrong_len_array) {
 TEST(fec_symbol_size_rejects_oversize_body) {
   // 1312B symbols at bpb 8 -> 8*(14+1312) = 10608 > kMaxBodyBytes 2900
   auto path = write_temp_json(
-      R"({"fec":{"symbol_size":1312,"blocks_per_body":[8,8,8,8]}})");
+      R"({"fec":{"symbol_size":1312,"blocks_per_body":[8,8]}})");
   bool threw = false;
   try {
     (void)load_config(path.string());

@@ -15,8 +15,10 @@
 // and the tables are for the human reading the output.
 //
 // Model assumptions (coarse, stated so the output can be judged):
-//  - air bytes = video * (1 + eff1) with eff1 = uep_layer_overhead(1, ov)
-//    of the APPLIED op; the s3 enhancement stream is ignored (it is shed by
+//  - air bytes = video * (1 + eff1) with eff1 = ov (literal air overhead —
+//    Task 3 airtime-balance-uep deleted the uep_layer_overhead ladder
+//    translation, so eff1 is the identity now, not a per-layer rescale)
+//    of the APPLIED op; the enhancement stream is ignored (it is shed by
 //    the congestion guard early in a real overload), so offered load here
 //    is an UNDERESTIMATE.
 //  - channel service rate = phy_rate_mbps(mcs) * ETA, ETA = 0.75 MAC
@@ -45,9 +47,12 @@ namespace {
 // ---- episode B ground truth (ms, ctl-0020 timebase) ------------------
 
 struct RungDef { int mcs; double ov; };
-// ctl-0020 header: ladder=0/100,2/50,4/25,5/25,6/25,7/10
-const RungDef kLadder[6] = {{0, 1.00}, {2, 0.50}, {4, 0.25},
-                            {5, 0.25}, {6, 0.25}, {7, 0.10}};
+// ctl-0020 header: ladder=0/100,2/50,4/25,5/25,6/25,7/10 — those were
+// cmd-overhead values (pre-Task-3 uep_layer_overhead ladder scaling);
+// doubled here to the literal air overhead the ×2 rule says they meant
+// (fec_overhead is a plain literal value on the wire since Task 1).
+const RungDef kLadder[6] = {{0, 2.00}, {2, 1.00}, {4, 0.50},
+                            {5, 0.50}, {6, 0.50}, {7, 0.20}};
 
 struct Transition { double t_ms; int to; };
 // E lines, episode B (5->4->3->2->1->0), plus observed rung-0 u decay.
@@ -148,7 +153,7 @@ double phy_mbps(int mcs) {
   static const double t[8] = {6.5, 13, 19.5, 26, 39, 52, 58.5, 65};
   return t[mcs];
 }
-double eff1(double ov) { return uep_layer_overhead(1, ov); }
+double eff1(double ov) { return ov; }  // literal now, no ladder rescale
 
 struct QueueSample { double t, video_kbps, offered_kbps, cap_kbps, queue_ms, drop_frac; };
 

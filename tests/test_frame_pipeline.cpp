@@ -12,8 +12,8 @@ using namespace mabur;
 
 namespace {
 
-std::array<UepLayerCfg, 4> layers() {
-  std::array<UepLayerCfg, 4> l{};
+std::array<UepLayerCfg, 2> layers() {
+  std::array<UepLayerCfg, 2> l{};
   for (auto& c : l) {
     c.fec.symbol_size = 164;
     c.fec.window = 32;

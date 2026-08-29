@@ -13,8 +13,8 @@
   "fec": {
     "symbol_size": 332,
     "window": 32,
-    "blocks_per_body": [4, 4, 4, 4],
-    "base_overhead": 0.25,
+    "blocks_per_body": [4, 4],
+    "base_overhead": 0.5,
     "flush_ms": 25
   },
   "encoder": {

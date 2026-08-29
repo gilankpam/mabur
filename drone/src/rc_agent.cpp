@@ -158,7 +158,11 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
   double mbps = rc::phy_rate_mbps(applied_.ladder[1]);  // T0
-  double overhead = uep_layer_overhead(1, applied_.fec_overhead);
+  // fec_overhead is literal air overhead since Task 1 (RC_VERSION 4) — no
+  // uep_layer_overhead ladder translation left to apply. Full per-stream
+  // blended bitrate policy is Task 5's; this keeps the existing single-rung
+  // budget math compiling against the deleted scaling function.
+  double overhead = applied_.fec_overhead;
   double kbps = mbps * 1000.0 * cfg_.encoder.airtime_budget / (1.0 + overhead);
   // NOTE the encoder has its own floor below this one: venc's apply_bitrate
   // rails at VENC_BITRATE_MIN_KBPS (1000), so a configured bitrate_min_kbps

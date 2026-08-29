@@ -12,9 +12,9 @@ using namespace mabur;
 // --- helpers copied verbatim from tests/test_uep_sw.cpp (self-contained) ---
 namespace {
 
-// One frame unit for `stream`: FrameHdr + one Annex-B NAL whose type/tid match
+// One frame unit for `stream`: FrameHdr + one Annex-B NAL whose type matches
 // the layer (type 32 = VPS -> critical/stream 0; type 1 = TRAIL_R with
-// nuh_temporal_id_plus1 = stream for streams 1..3), then random payload.
+// nuh_temporal_id_plus1 = stream for stream 1), then random payload.
 std::vector<uint8_t> make_unit(int stream, uint32_t frame_id, size_t paylen,
                                std::mt19937& rng) {
   std::vector<uint8_t> unit(framewire::kFrameHdrLen);
@@ -36,12 +36,11 @@ std::vector<uint8_t> make_unit(int stream, uint32_t frame_id, size_t paylen,
   return unit;
 }
 
-std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base, int window) {
-  std::array<UepLayerCfg, 4> layers{};
-  const int bpb[4] = {bpb_base, bpb_base, bpb_base * 2, bpb_base * 2};
-  for (int s = 0; s < 4; ++s) {
-    layers[static_cast<size_t>(s)].fec =
-        SwConfig{symbol_size, window, kUepRefOverhead[s]};
+std::array<UepLayerCfg, 2> layers_for(int symbol_size, int bpb_base, int window) {
+  std::array<UepLayerCfg, 2> layers{};
+  const int bpb[2] = {bpb_base, bpb_base * 2};
+  for (int s = 0; s < 2; ++s) {
+    layers[static_cast<size_t>(s)].fec = SwConfig{symbol_size, window, 0.5};
     layers[static_cast<size_t>(s)].blocks_per_body = bpb[s];
   }
   return layers;
@@ -50,11 +49,11 @@ std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base, int window)
 }  // namespace
 
 // symbol_size=64, blocks_per_body=4 on every stream, per-stream overheads =
-// the reference ladder (decoder ignores overhead; window is TX-side only).
-static std::array<UepLayerCfg, 4> vec_layers() {
-  std::array<UepLayerCfg, 4> L{};
-  const double ov[4] = {0.50, 0.50, 0.50, 0.50};
-  for (int s = 0; s < 4; ++s) L[s] = UepLayerCfg{SwConfig{64, 128, ov[s]}, 4};
+// the flat literal 0.5 (decoder ignores overhead; window is TX-side only).
+static std::array<UepLayerCfg, 2> vec_layers() {
+  std::array<UepLayerCfg, 2> L{};
+  const double ov[2] = {0.50, 0.50};
+  for (int s = 0; s < 2; ++s) L[s] = UepLayerCfg{SwConfig{64, 128, ov[s]}, 4};
   return L;
 }
 
@@ -124,16 +123,30 @@ TEST(window_delivery_full_on_clean_stream) {
   auto bodies = encode_fixture_bodies();
   UepDecoder dec(vec_layers());
   for (auto& b : bodies) dec.add_body(b.body.data(), b.body.size(), 0);
-  for (int s = 0; s < 4; ++s) CHECK(dec.window_delivery_pct(s) == 100);
+  for (int s = 0; s < 2; ++s) CHECK(dec.window_delivery_pct(s) == 100);
   dec.reset_window();
-  for (int s = 0; s < 4; ++s) CHECK(dec.window_delivery_pct(s) == 100);  // empty = 100
+  for (int s = 0; s < 2; ++s) CHECK(dec.window_delivery_pct(s) == 100);  // empty = 100
 }
 
 TEST(layer_stats_expose_recovered_arrived) {
   // Hold back one stream-1 body: later repairs recover its source symbols;
   // feeding it afterwards is the direct-copy-lost-the-race case and must
   // surface in LayerStats.syms_recovered_arrived for the s1 health feed.
-  auto bodies = encode_fixture_bodies();
+  // Routes every fixture frame onto stream 1 directly rather than via
+  // encode_fixture_bodies()'s natural classify_frame routing: the fixture
+  // carries no TRAIL_N/enhance NALs, so under the 2-stream classify_frame
+  // (Task 2) natural routing produces sid-0-only bodies and this test needs
+  // sid-1 material to hold back.
+  UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
+  std::vector<UepBody> bodies;
+  auto frames = fixture_frames();
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
+    for (auto& b : enc.add_frame(1, unit.data(), unit.size(), 0))
+      bodies.push_back(std::move(b));
+  }
+  for (auto& b : enc.flush_all()) bodies.push_back(std::move(b));
+
   UepDecoder dec(vec_layers());
   std::vector<uint8_t> held;
   for (auto& b : bodies) {

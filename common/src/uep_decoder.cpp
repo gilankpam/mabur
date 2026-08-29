@@ -16,14 +16,13 @@ bool seq16_le(uint16_t a, uint16_t b) {
 bool seq16_gt(uint16_t a, uint16_t b) { return !seq16_le(a, b); }
 }  // namespace
 
-UepDecoder::UepDecoder(const std::array<UepLayerCfg, 4>& layers,
+UepDecoder::UepDecoder(const std::array<UepLayerCfg, 2>& layers,
                        uint64_t decode_deadline_ms, uint32_t seq_horizon)
-    : layers_{Layer(layers[0], seq_horizon), Layer(layers[1], seq_horizon),
-              Layer(layers[2], seq_horizon), Layer(layers[3], seq_horizon)},
+    : layers_{Layer(layers[0], seq_horizon), Layer(layers[1], seq_horizon)},
       decode_deadline_ms_(decode_deadline_ms) {}
 
 void UepDecoder::mark_transition(int sid, uint8_t new_mcs, uint64_t now_ms) {
-  if (sid < 0 || sid > 3) return;
+  if (sid < 0 || sid > 1) return;
   Layer& L = layers_[static_cast<size_t>(sid)];
   const uint8_t prev = L.cur_mcs;
   L.cur_mcs = new_mcs;
@@ -105,7 +104,7 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
                                               uint64_t now_ms,
                                               uint8_t rx_mcs) {
   const int sid = sbi_peek_stream_id(body, len);
-  if (sid < 0 || sid > 3) {
+  if (sid < 0 || sid > 1) {
     ++bodies_misrouted_;
     return {};
   }

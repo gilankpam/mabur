@@ -8,7 +8,11 @@
 // seq-invisible slice-tail aborts no transport counter sees.
 //
 //   encbench sweep [sim_seconds]              # overhead + bitrate sweep (default)
-//   encbench <scalar|perlayer> [cmd_ov] [kb_per_frame_x1400] [sim_seconds]
+//   encbench <scalar|perlayer> [ov] [kb_per_frame_x1400] [sim_seconds]
+//
+// ov is the literal air overhead (source:repair ratio actually put on air),
+// not a scaled command value — Task 3 (airtime-balance-uep) deleted the
+// uep_layer_overhead ladder translation this tool used to route through.
 //
 // The sweep answers one question: is the drone drain ceiling a fixed AIR-BYTE
 // rate, or a FEC-parity-work rate that scales with overhead? If sustainable
@@ -57,19 +61,19 @@ struct Metrics {
 // Annex-B each) through a fresh UepEncoder at the given geometry, flat out.
 // A scalar geometry (all layers identical) may override symbol size, window
 // and blocks_per_body via ss/win/bpb_n; pass 0s for the 164/64/8 default.
-static Metrics run_point(bool perlayer, double cmd_ov, int ppf, int sim_seconds,
+static Metrics run_point(bool perlayer, double ov, int ppf, int sim_seconds,
                          int ss = 0, int win = 0, int bpb_n = 0) {
-  std::array<UepLayerCfg, 4> layers;
+  std::array<UepLayerCfg, 2> layers;
   const int s0 = ss ? ss : 164;
   const int w0 = win ? win : 64;
   const int b0 = bpb_n ? bpb_n : 8;
-  const int syms[4] = {perlayer ? 164 : s0, perlayer ? 1312 : s0,
-                       perlayer ? 1312 : s0, perlayer ? 1312 : s0};
-  const int bpb[4] = {perlayer ? 4 : b0, perlayer ? 1 : b0, perlayer ? 1 : b0,
-                      perlayer ? 1 : b0};
-  for (int s = 0; s < 4; ++s) {
+  const int syms[2] = {perlayer ? 164 : s0, perlayer ? 1312 : s0};
+  const int bpb[2] = {perlayer ? 4 : b0, perlayer ? 1 : b0};
+  for (int s = 0; s < 2; ++s) {
+    // ov is the literal air overhead now (no uep_layer_overhead ladder
+    // scaling): both layers run at exactly the --overhead value passed in.
     layers[static_cast<size_t>(s)].fec =
-        SwConfig{syms[s], perlayer ? 64 : w0, uep_layer_overhead(s, cmd_ov)};
+        SwConfig{syms[s], perlayer ? 64 : w0, ov};
     layers[static_cast<size_t>(s)].blocks_per_body = bpb[s];
   }
   UepEncoder uep(layers, 25);
@@ -139,16 +143,19 @@ int main(int argc, char** argv) {
 
     std::printf("## Overhead axis (fixed ~8.7 Mbps video feed, ppf=13):\n");
     header();
-    for (double ov : {0.05, 0.10, 0.175, 0.25, 0.375, 0.50}) {
+    // Literal air overhead now (no uep_layer_overhead ladder scaling) — the
+    // ×2 rule this migration applies everywhere: same axis coverage as the
+    // pre-literal {0.05..0.50} cmd-overhead sweep.
+    for (double ov : {0.10, 0.20, 0.35, 0.50, 0.75, 1.00}) {
       Metrics m = run_point(false, ov, 13, sim);
       print_row(ov, 13, m);
     }
 
-    std::printf("\n## Bitrate axis (fixed ov=0.10, vary video feed):\n");
+    std::printf("\n## Bitrate axis (fixed ov=0.20, vary video feed):\n");
     header();
     for (int ppf : {8, 13, 16, 20, 24}) {
-      Metrics m = run_point(false, 0.10, ppf, sim);
-      print_row(0.10, ppf, m);
+      Metrics m = run_point(false, 0.20, ppf, sim);
+      print_row(0.20, ppf, m);
       (void)feed_video_mbps;
     }
     return 0;
@@ -162,7 +169,7 @@ int main(int argc, char** argv) {
     //    protection span" (MAC work per src byte = ov * window_rows).
     //  - same-ROWS: w64 at every size -> isolates per-call kernel efficiency
     //    (span grows with ss; MAC work per src byte identical in theory).
-    const double ov = argc > 2 ? std::atof(argv[2]) : 0.25;
+    const double ov = argc > 2 ? std::atof(argv[2]) : 0.5;  // literal (was cmd 0.25)
     const int ppf = argc > 3 ? std::atoi(argv[3]) : 13;
     const int sim = argc > 4 ? std::atoi(argv[4]) : 8;
     struct Geo { int ss, win, bpb; };
@@ -191,13 +198,14 @@ int main(int argc, char** argv) {
 
   // single-point mode (back-compat + targeted probes)
   const bool perlayer = mode != "scalar";
-  const double cmd_ov = argc > 2 ? std::atof(argv[2]) : 0.38;
+  // ov is the literal air overhead now (was cmd 0.38 pre-literal).
+  const double ov = argc > 2 ? std::atof(argv[2]) : 0.76;
   const int ppf = argc > 3 ? std::atoi(argv[3]) : 13;
   const int sim = argc > 4 ? std::atoi(argv[4]) : 10;
-  Metrics m = run_point(perlayer, cmd_ov, ppf, sim);
+  Metrics m = run_point(perlayer, ov, ppf, sim);
   std::printf("mode=%s gf=%s ov=%.3f ppf=%d sim=%ds wall=%.2fs\n", mode.c_str(),
-              gf::backend(), cmd_ov, ppf, sim, m.wall);
+              gf::backend(), ov, ppf, sim, m.wall);
   header();
-  print_row(cmd_ov, ppf, m);
+  print_row(ov, ppf, m);
   return 0;
 }

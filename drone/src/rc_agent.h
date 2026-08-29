@@ -11,9 +11,10 @@
 
 namespace mabur {
 
-// The resolved operating point: the 4-rung ladder, the commanded FEC
-// overhead (the base scale that stream 1's uep_layer_overhead rescales),
-// per-layer shed flags (failsafe-forced OR local congestion-directed), and
+// The resolved operating point: the 4-rung ladder, the literal FEC air
+// overhead (Task 1: RC_VERSION 4 made this a plain value, no ladder
+// translation left as of Task 3), per-layer shed flags (failsafe-forced OR
+// local congestion-directed), and
 // a generation counter bumped only when a *new* operating point
 // (ladder/FEC) is applied (BOOT/DISC/RCF/failsafe entry) — NOT on every
 // publish. Congestion shed re-applies the *current* op (same ladder/FEC)

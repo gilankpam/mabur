@@ -13,29 +13,6 @@
 
 namespace mabur {
 
-// Reference overhead ladder per stream_id (0=critical .. 3=lightest).
-// Flattened 2026-08-29 (was {1.00, 0.75, 0.50, 0.25}, mirroring devourer's
-// default_uep_policy): with whole-frame stream routing, unequal per-stream
-// overhead made equal-payload base/enhance frames occupy unequal AIR time,
-// which the GS measures as ~5-8 ms of alternating AU-completion offset —
-// the dominant jitter term under the rally preset. s1..s3 matched that day;
-// s0 (IDR-led AUs + parameter sets) kept 1.00 a while longer, at a 3.0x air
-// multiplier vs 2.0x everywhere else — making every IDR a ~2.6x-air outlier
-// (a ~15-18 ms completion bump, visible as stutter on a GS IDR request).
-// Under the rally preset IDR loss is cheap (150 ms intra-refresh stripes
-// repair without one; the GS IDR-request path exists on top), so the extra
-// protection wasn't paying for its jitter. s0 joined the flat ladder the
-// same day (2026-08-29, operator-ruled). Air-neutral per frame pair.
-// See docs/superpowers/specs/2026-08-29-uep-flatten-rally-design.md.
-inline constexpr double kUepRefOverhead[4] = {0.50, 0.50, 0.50, 0.50};
-
-// Scales stream_id's reference FEC overhead by cmd_overhead/0.25 (0.25 is the
-// "baseline" command value), clamped to [0.125, 2.0]. Byte-exact port of the
-// per-layer FEC-rate scaling devourer's rate-control uses to trade outer-code
-// redundancy for goodput under a single scalar "how much overhead can we
-// afford" signal from the link's RC channel.
-double uep_layer_overhead(int stream_id, double cmd_overhead);
-
 // Per-layer configuration: the sliding-window scheme knobs plus how many FEC
 // envelopes SbiPacker groups into one radio body for this layer.
 struct UepLayerCfg {
@@ -50,7 +27,7 @@ struct UepBody {
 };
 
 // Composes Fragmenter + SwEncoder + SbiPacker into one independent pipeline
-// per SVC temporal layer (stream_id 0..3), giving each layer its own
+// per SVC temporal layer (stream_id 0..1), giving each layer its own
 // fragmentation sequence, sliding-window FEC redundancy, and SBI sub-block
 // framing.
 //
@@ -66,10 +43,12 @@ struct UepBody {
 // not change any wire byte for a given seq.
 class UepEncoder {
  public:
+  static constexpr int kNumStreams = 2;
+
   // worker: optional shared async FEC worker handed to every layer's
   // SwEncoder (see sw_encoder.h). nullptr = fully synchronous, today's
   // exact behavior.
-  UepEncoder(const std::array<UepLayerCfg, 4>& layers, int flush_ms = 15,
+  UepEncoder(const std::array<UepLayerCfg, 2>& layers, int flush_ms = 15,
              FecWorker* worker = nullptr);
 
   // Frame-unit ingest: data = FrameHdr + Annex-B frame, stream_id already
@@ -90,8 +69,12 @@ class UepEncoder {
   // feed each resulting envelope to the SBI packer, then SBI flush.
   std::vector<UepBody> flush_all();
 
-  // Rescales every layer's FEC overhead via uep_layer_overhead(sid, cmd_overhead).
-  void set_overhead_scale(double cmd_overhead);
+  // Sets both layers' FEC overhead to ov, literal — no scaling, no clamp
+  // beyond SwEncoder's own.
+  void set_overhead(double ov);
+
+  // Sets one layer's FEC overhead to ov, literal (the air-balancer's knob).
+  void set_layer_overhead(int stream_id, double ov);
 
   void set_shed(int stream_id, bool shed);
 
@@ -133,7 +116,7 @@ class UepEncoder {
   // Flush tail: sliding-window flush then the SBI packer flush.
   void drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out);
 
-  std::array<Layer, 4> layers_;
+  std::array<Layer, 2> layers_;
   int flush_ms_;
 };
 

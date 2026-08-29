@@ -237,14 +237,14 @@ static std::vector<uint8_t> make_frame(int nal_type, size_t paylen, uint16_t id)
   return p;
 }
 
-static std::array<UepLayerCfg, 4> make_layers(bool perlayer, double cmd_ov) {
-  std::array<UepLayerCfg, 4> layers;
-  const int syms[4] = {164, perlayer ? 1312 : 164, perlayer ? 1312 : 164,
-                       perlayer ? 1312 : 164};
-  const int bpb[4] = {perlayer ? 4 : 8, perlayer ? 1 : 8, perlayer ? 1 : 8,
-                      perlayer ? 1 : 8};
-  for (int s = 0; s < 4; ++s) {
-    layers[(size_t)s].fec = SwConfig{syms[s], 64, uep_layer_overhead(s, cmd_ov)};
+// ov is now the literal air overhead (no uep_layer_overhead ladder
+// scaling): both layers run at exactly the ov value passed in.
+static std::array<UepLayerCfg, 2> make_layers(bool perlayer, double ov) {
+  std::array<UepLayerCfg, 2> layers;
+  const int syms[2] = {164, perlayer ? 1312 : 164};
+  const int bpb[2] = {perlayer ? 4 : 8, perlayer ? 1 : 8};
+  for (int s = 0; s < 2; ++s) {
+    layers[(size_t)s].fec = SwConfig{syms[s], 64, ov};
     layers[(size_t)s].blocks_per_body = bpb[s];
   }
   return layers;

@@ -14,10 +14,10 @@
 using namespace mabur;
 
 namespace {
-std::array<UepLayerCfg, 4> make_layers(int symbol_size, int blocks_per_body,
+std::array<UepLayerCfg, 2> make_layers(int symbol_size, int blocks_per_body,
                                         const std::vector<double>& overheads) {
-  std::array<UepLayerCfg, 4> layers;
-  for (int sid = 0; sid < 4; ++sid) {
+  std::array<UepLayerCfg, 2> layers;
+  for (int sid = 0; sid < 2; ++sid) {
     layers[static_cast<size_t>(sid)].fec =
         SwConfig{symbol_size, 128, overheads[static_cast<size_t>(sid)]};
     layers[static_cast<size_t>(sid)].blocks_per_body = blocks_per_body;
@@ -69,38 +69,45 @@ TEST(uep_encoder_round_trips_fixture_through_decoder) {
   }
 }
 
-TEST(uep_layer_overhead_math_and_clamps) {
-  CHECK(uep_layer_overhead(0, 0.25) == 0.5);
-  CHECK(uep_layer_overhead(3, 0.25) == 0.5);
-  // sid 3 (REF 0.50, flattened 2026-08-29) * cmd 1.0/0.25=4x -> 2.0, clamped.
-  CHECK(uep_layer_overhead(3, 1.0) == 2.0);
-  // Clamp low: sid 3 (REF 0.50) * cmd tiny -> below 0.125 clamps to 0.125.
-  CHECK(uep_layer_overhead(3, 0.001) == 0.125);
-  // Clamp high: sid 0 (REF 0.50, flattened 2026-08-29) * cmd huge -> above
-  // 2.0 clamps to 2.0.
-  CHECK(uep_layer_overhead(0, 100.0) == 2.0);
+TEST(set_overhead_is_literal_per_layer) {
+  std::array<UepLayerCfg, 2> layers{};
+  for (auto& l : layers) l.fec = SwConfig{332, 32, 0.5};
+  UepEncoder uep(layers, 15);
+  uep.set_layer_overhead(0, 0.28);
+  uep.set_layer_overhead(1, 0.80);
+  uep.set_overhead(0.5);  // resets both
+  // behavioral proof: encode one identical frame per layer and compare
+  // emitted byte counts — equal overhead => equal emitted bytes.
+  std::vector<uint8_t> frame(4000, 0xAB);
+  auto b0 = uep.add_frame(0, frame.data(), frame.size(), 1000);
+  auto b1 = uep.add_frame(1, frame.data(), frame.size(), 1000);
+  size_t n0 = 0, n1 = 0;
+  for (auto& b : b0) n0 += b.body.size();
+  for (auto& b : b1) n1 += b.body.size();
+  CHECK(n0 == n1);
 }
 
 TEST(uep_set_shed_drops_stream_and_counts) {
-  std::vector<double> overheads = {1.0, 0.75, 0.5, 0.25};
+  std::vector<double> overheads = {1.0, 0.75};
   auto layers = make_layers(64, 4, overheads);
   UepEncoder enc(layers, /*flush_ms=*/1'000'000'000ULL);
-  enc.set_shed(3, true);
+  enc.set_shed(1, true);
 
-  // One frame unit routed to the shed layer: FrameHdr + a tid-2 slice NAL.
+  // One frame unit routed to the shed (enhance) layer: FrameHdr + a TRAIL_N
+  // slice NAL (type 0 -> classify_frame's enh sid 1 in the 2-stream space).
   std::vector<uint8_t> unit(framewire::kFrameHdrLen, 0);
   framewire::pack_frame_hdr(framewire::FrameHdr{}, unit.data());
-  for (uint8_t b : {0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0xAA, 0xBB, 0xCC})
+  for (uint8_t b : {0x00, 0x00, 0x00, 0x01, 0x00, 0x03, 0xAA, 0xBB, 0xCC})
     unit.push_back(b);
   CHECK(classify_frame(unit.data() + framewire::kFrameHdrLen,
-                       unit.size() - framewire::kFrameHdrLen) == 3);
+                       unit.size() - framewire::kFrameHdrLen) == 1);
 
-  CHECK(enc.dropped(3) == 0);
-  CHECK(enc.add_frame(3, unit.data(), unit.size(), 0).empty());
-  CHECK(enc.dropped(3) == 1);
+  CHECK(enc.dropped(1) == 0);
+  CHECK(enc.add_frame(1, unit.data(), unit.size(), 0).empty());
+  CHECK(enc.dropped(1) == 1);
 
-  CHECK(enc.add_frame(3, unit.data(), unit.size(), 1).empty());
-  CHECK(enc.dropped(3) == 2);
+  CHECK(enc.add_frame(1, unit.data(), unit.size(), 1).empty());
+  CHECK(enc.dropped(1) == 2);
 }
 
 TEST(uep_poll_has_nothing_to_seal_after_a_frame) {
@@ -110,7 +117,7 @@ TEST(uep_poll_has_nothing_to_seal_after_a_frame) {
   // tail would surface here (one flush_ms later) instead of on the wire
   // immediately. poll() itself stays live for the async FEC worker, whose
   // repair envelopes surface at a later drain (see test_uep_sw).
-  std::vector<double> overheads = {1.0, 0.75, 0.5, 0.25};
+  std::vector<double> overheads = {1.0, 0.75};
   auto layers = make_layers(64, 4, overheads);
   const int flush_ms = 15;
   UepEncoder enc(layers, flush_ms);

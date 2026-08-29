@@ -42,20 +42,27 @@ struct RadioCfg {
 };
 
 struct FecCfg {
-  // Per-layer symbol size (stream 0..3). JSON accepts a scalar (fans out)
-  // or a 4-array. Big symbols suit the bulk video layers (1..3): fewer
+  // Per-layer symbol size (stream 0..1). JSON accepts a scalar (fans out)
+  // or a 2-array. Big symbols suit the bulk enhance layer (1): fewer
   // symbols lost per body, window spans more airtime, cheaper GF per byte
   // (burst_sim table, spec 2026-07-15). Layer 0 (critical NALs) stays
   // small so VPS/SPS/PPS seal without padding/latency.
-  std::array<int, 4> symbol_size = {64, 64, 64, 64};
+  std::array<int, 2> symbol_size = {64, 64};
   // Sliding-window burst budget: a layer at overhead ov survives a hole of
   // up to L <= window*ov/(1+ov) consecutive lost symbols. 128 lets the
   // ov-0.50 layer (since the 2026-08-29 UEP flatten, was ov-0.25) survive
   // one full bpb-16 body loss with room to spare (L=128*0.50/1.50≈42.7 vs
   // 16 lost symbols; was ≈25.6 at the pre-flatten ov-0.25).
   int window = 128;
-  std::array<int, 4> blocks_per_body = {4, 8, 16, 16};
-  double base_overhead = 0.25;
+  std::array<int, 2> blocks_per_body = {4, 8};
+  // Literal air overhead (Task 3, airtime-balance-uep): the fraction of
+  // repair bytes over source bytes actually put on air, not a scaled
+  // command value — no uep_layer_overhead ladder translation anymore.
+  // Default 0.5 is the old effective value at the flattened reference
+  // ladder (was 0.25 pre-literal, doubled by the ×2 rule this migration
+  // applies everywhere a cmd-overhead default crosses into actual-overhead
+  // space).
+  double base_overhead = 0.5;
   int flush_ms = 15;
 };
 
@@ -128,7 +135,7 @@ struct Config {
   VencSectionCfg venc;
   LinkCfg link;
   MspCfg msp;
-  std::array<UepLayerCfg, 4> uep_layers() const;
+  std::array<UepLayerCfg, 2> uep_layers() const;
 };
 
 // Loads and validates a mabur.json config file. Missing keys fall back to
