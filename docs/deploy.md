@@ -168,8 +168,17 @@ park.
 
 ### Rollback — the trio, and the two steps that bite
 
-Rolling back the fold-in means restoring **three** things together (binary,
-config, waybeam) and then un-wedging the encoder rate:
+⚠ **2026-08-29 cleanup: waybeam no longer exists on the drone at all** —
+binary (incl. every rollback copy), `/etc/waybeam.json`, and `S95waybeam`
+were deleted after the fold-in soaked. Rolling back the fold-in is now a
+re-deploy, not a file swap: rebuild waybeam in `../openipc-builder`
+(waybeam-venc pkg, pinned f956a52), scp it to `/usr/bin/waybeam`, restore
+`/etc/waybeam.json` from the archived copy
+(`out/drone-waybeam-config-final-2026-08-29.json` on the dev host), and
+recreate `S95waybeam` from the openipc-builder package's `init.d/`. The
+`maburd.pre-foldin`/`mabur.json.pre-foldin` pair on the drone is
+**incomplete without that** — the old maburd has no encoder of its own.
+After the pieces are back in place, the sequence below still applies:
 
 ```sh
 ssh root@<drone> '
@@ -178,7 +187,7 @@ ssh root@<drone> '
   mv /usr/bin/maburd.pre-foldin /usr/bin/maburd
   mv /etc/mabur.json /etc/mabur.json.foldin
   mv /etc/mabur.json.pre-foldin /etc/mabur.json
-  mv /usr/bin/waybeam.retired /usr/bin/waybeam && chmod 755 /etc/init.d/S95waybeam
+  chmod 755 /etc/init.d/S95waybeam
   /etc/init.d/S95waybeam start
   # 1. WAIT for waybeam HTTP to answer -- do not sleep a fixed interval
   for i in $(seq 60); do
