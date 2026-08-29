@@ -1,16 +1,19 @@
 # mabur
 
 `mabur` turns an SSC338Q (SigmaStar Infinity6E) FPV camera into an adaptive
-video transmitter. It bridges **waybeam** (H.265/SVC-T encoder, unmodified,
-`../waybeam_venc`) and **devourer** (RTL8812EU raw-injection driver, used as a
-library): `maburd` reads whole encoded frames off waybeam's frame-shm ring,
-classifies each frame by temporal layer, applies per-layer sliding-window UEP
-FEC with SBI framing (the window sealed at every frame boundary), injects the
-bodies with per-layer modulation/power, consumes the ground-station
-adaptive-link feedback (RC/RCF), and drives waybeam's encoder knobs (bitrate,
-ROI QP, IDR) in response. The ground station publishes reassembled access
-units to a shm ring consumed by maburplay (MPP hardware decode to DRM/KMS,
-plus the fMP4 DVR); there is no RTP anywhere in the system.
+video transmitter. `maburd` owns the whole drone side in one process: it
+drives the SigmaStar MI encoder pipeline directly (H.265/SVC-T, the venc
+core ported from **waybeam** at `../waybeam_venc` f956a52 and folded in on
+2026-08-29 — waybeam itself is retired), classifies each frame by temporal
+layer, applies per-layer sliding-window UEP FEC with SBI framing (the
+window sealed at every frame boundary), injects the bodies with per-layer
+modulation/power through **devourer** (RTL8812EU raw-injection driver, used
+as a library), consumes the ground-station adaptive-link feedback (RC/RCF),
+and actuates the encoder knobs (bitrate, ROI QP, IDR) in response — as
+in-process function calls now, not HTTP to a second daemon. The ground
+station publishes reassembled access units to a shm ring consumed by
+maburplay (MPP hardware decode to DRM/KMS, plus the fMP4 DVR); there is no
+RTP anywhere in the system.
 
 The full design — architecture, wire formats, protocol, and the testing
 strategy — is in
@@ -57,23 +60,27 @@ and re-test to confirm the generated vectors still round-trip.
 
 ## Cross build (ARM target)
 
-`tools/build-arm.sh` produces a fully static `armv7l-unknown-linux-musleabihf`
-`maburd` binary at `out/arm/maburd`, ready to copy onto the camera. It is
-self-contained: it stages its own cross compiler, `pkg-config`, static
-`libusb1`, and `file`, all via Nix (`pkgsCross.armv7l-hf-multiplatform.pkgsStatic`),
-independent of whatever toolchain is or isn't on `PATH`. No `nix-shell`
-wrapper is needed — just run it directly:
+`tools/build-arm.sh` produces the drone-side binaries with the OpenIPC
+Buildroot toolchain: `maburd` at `out/arm/maburd`, plus the bench TX
+harnesses `out/arm/linkbench-tx` and `out/arm/txagcbench-tx`. `maburd` is a
+DYNAMIC glibc `armv7-a` hard-float executable (`libstdc++`, `libm`,
+`libgcc_s`, `libc`, `ld-linux-armhf` — all present on the OpenIPC rootfs,
+with `libstdc++.so.6` under `/usr/lib`). It stopped being a static musl
+binary on 2026-08-29, when the venc fold-in put the SigmaStar MI vendor
+libraries — prebuilt glibc shared objects — inside the process; the musl
+script and `cmake/arm-musl.cmake` were deleted in the same commit. `libusb`
+is still linked statically, since the drone rootfs does not ship it.
 
 ```sh
 bash tools/build-arm.sh
 ```
 
-First run fetches/builds the toolchain and caches it under `toolchain/`
-(gitignored, but pinned as a Nix GC root so it survives
-`nix-collect-garbage`); subsequent runs are fast incremental rebuilds. See the
-comments at the top of the script for why this diverges from the original
-Bootlin-toolchain plan (NixOS doesn't have `/lib64/ld-linux-x86-64.so.2`, so
-prebuilt dynamically-linked toolchains can't execute here).
+Prerequisite: the OpenIPC Buildroot toolchain at
+`../openipc-builder/openipc/output/host/bin` (override with
+`OPENIPC_HOST_BIN`). The script stages `pkg-config` and a static ARM
+`libusb` itself, caching them under `toolchain/` (gitignored, pinned as a
+Nix GC root so they survive `nix-collect-garbage`); subsequent runs are
+fast incremental rebuilds. No `nix-shell` wrapper is needed.
 
 ## Deploy to a camera
 
@@ -84,14 +91,13 @@ bash bundle/install.sh root@<camera-ip>
 This copies `out/arm/maburd` to `/usr/bin/maburd`, seeds `/etc/mabur.json`
 from `bundle/mabur.default.json` if one isn't already present, installs
 `bundle/S96mabur` (a BusyBox-compatible init script with a respawn loop) to
-`/etc/init.d/S96mabur`, configures waybeam's `frame-shm://` output via
-`json_cli`, and (re)starts both `S95waybeam` and `S96mabur`.
+`/etc/init.d/S96mabur`, and (re)starts `S96mabur`. There is no waybeam step
+any more: since 2026-08-29 `maburd` owns the encoder itself, and a camera
+that still runs waybeam must have it retired first — see `docs/deploy.md`.
 
 Prerequisites: `bash tools/build-arm.sh` has been run so `out/arm/maburd`
-exists, and the target is an OpenIPC-based SSC338Q already running waybeam
-with `json_cli` available. The `json_cli` flag names in `install.sh` are
-unverified against a live device — confirm them against `../waybeam_venc/tools`
-on the first real deploy.
+exists, and the target is an OpenIPC-based SSC338Q with the SigmaStar MI
+libraries in its rootfs.
 
 Logs: `ssh root@<camera-ip> 'cat /tmp/mabur.log'` (or via serial console if
 networking is down).

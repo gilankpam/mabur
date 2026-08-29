@@ -278,3 +278,75 @@ is a rollback cost, and rolling forward is the answer. The former rule
 that `bundle/mabur.default.json` must NOT list `rc_drain_ms` was purely an
 old-binary concession and no longer applies.
 
+
+
+## RcAgent owns the encoder (venc fold-in, 2026-08-29)
+
+The drone-side actuator used to be an HTTP client against `waybeam`. Since the
+fold-in the encoder runs inside `maburd`, so `RcAgent`'s three verbs
+(`set_bitrate_kbps`, `set_roi_qp`, `request_idr`) are direct calls into
+`venc_core` on the agent thread. Nothing about the *policy* moved: the venc
+core is a pure mechanism with zero encoder-local policy, and there is no
+`venc.bitrate` config key — the commanded rate is only ever the output of
+`run_bitrate_policy()`, i.e. `phy_rate(T0) × encoder.airtime_budget /
+(1 + overhead)`, clamped to `encoder.bitrate_min_kbps`/`bitrate_max_kbps`.
+
+What the fold-in did change:
+
+- **Failed verbs are now visible and retried.** Each verb returns real status
+  and RcAgent latches "what the encoder is running" only on success, so one
+  dropped MI call is re-issued on the next policy tick instead of wedging the
+  rate for the rest of the flight (that wedge was the old waybeam failure
+  mode, and it is why the latch is conditional).
+- **RcAgent is the only IDR authority, and it paces.** Every producer —
+  GS-requested IDRs, the entering-LINKED heal, and the encoder's own
+  chain-break signal — goes through one pacer: a 100 ms floor between any two
+  IDRs, plus a 1 s holdoff between chain-break IDRs specifically. A refused
+  request is DROPPED, not queued; the next real break re-raises it. The
+  chain-break path is an atomic flag set from the venc callback and consumed
+  at the top of `tick()`, evaluated against the state as of tick entry so a
+  break that arrives on the same tick as a missed feedback deadline still
+  heals. Dropping rather than deferring is affordable only because the
+  encoder's GOP is the backstop: at the shipped `venc.gop_s = 2.0` an
+  unhealed break self-clears within ~2 s, so raising `gop_s` stretches that
+  safety net and the drop-vs-defer choice needs re-arguing. Measured on
+  hardware 2026-08-29 under a deliberate ring-full storm (~24 drops/s): 0.596
+  IDR/s, minimum observed spacing 919 ms — an unpaced path would have emitted
+  roughly one IDR per drop.
+- **The ring is now visible from both ends.** `drone.enc.venc_ring_fill_pct`
+  and `drone.enc.venc_full_drops` report the PRODUCER side (the encoder
+  discarding AUs because maburd had not drained), against the existing
+  consumer-side `drone.enc.ring_drops`. See `docs/observability.md`.
+
+### The bitrate policy pushes on CHANGE only
+
+`run_bitrate_policy()` only calls the encoder when its computed target
+differs from the last value actually applied (decreases always go out
+immediately; non-decreases are throttled to 1 Hz; state transitions force).
+There is no periodic re-assert. **So anything that moves the encoder rate
+behind RcAgent's back wins until the ladder happens to change rung** — the
+debug endpoint's `POST /venc/set?bitrate=` held for 20 s+ on a parked link in
+the 2026-08-29 bench run, and the same gap is the root of the historical
+waybeam-restart wedge (`docs/deploy.md`, rollback runbook). Useful for bench
+experiments, a trap for anything else. A periodic re-assert is the obvious
+fix and is not built.
+
+### Encoder faults are process faults — there is no in-process rebuild
+
+If the MI pipeline dies or has to be rebuilt (a resolution/sensor-mode change,
+a wedged ISP), `maburd` must **exit and let `S96mabur` respawn it**.
+`venc_core_stop()` + `venc_core_start()` in the same PID can never recover it,
+and no amount of care in mabur's code changes that. Upstream implemented and
+bench-tested every in-process reset lever on this SoC — disabling userspace
+3A before VPE destroy, `MI_SYS_Exit`/`MI_SYS_Init` in-PID, closing the
+`/dev/mi_vif` and `/dev/mi_vpe` fds, even `dlclose`/`dlopen` of the whole MI
+vendor library set — and each one either wedges or comes back with a dead
+stream (`ISP channel readiness timeout after 2000 ms` → `CmdLoadBinFile
+failed -1` → `not sync err` floods → no frames). The residual state the
+rebuild needs is per-task VIF/VPE/ISP channel state in the kernel driver,
+released only by `execv`; userspace cannot reach it. Closed as a negative
+result 2026-06-07 in `../waybeam_venc/documentation/STAR6E_SINGLE_PID_REINIT_FINDINGS.md`
+— do not re-attempt without new SigmaStar SDK/kernel insight. In mabur this
+is why fold-in bring-up failure is fatal-by-design (exit, respawn, cold
+bring-up ~14–17 s measured, 5/5 unaided) rather than something the daemon
+tries to heal in place.

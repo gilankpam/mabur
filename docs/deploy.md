@@ -45,6 +45,22 @@ migrates an existing config, so on a device that has ever been tuned the
 four removed keys must be deleted from `/etc/mabur.json` and
 `/etc/maburgs.json` BY HAND before the new binaries start.
 
+**Restarting the drone daemon over ssh: use `setsid`.** `S96mabur`'s respawn
+loop is a background subshell of the shell that started it, so a plain
+`ssh root@drone '/etc/init.d/S96mabur start'` gives you a `maburd` that dies
+with the ssh session — the daemon comes up, ssh returns, and the link drops
+seconds later for no visible reason. Detach it:
+`setsid /etc/init.d/S96mabur start </dev/null >/dev/null 2>&1 &`. (Measured
+during the 2026-08-28 Part A gate; it applies to any wrapper started from a
+non-interactive ssh command, not just this one.) The mirror image also happens: on
+2026-08-29 an `ssh root@drone '...; /etc/init.d/S96mabur stop; mv ...'`
+one-liner died at the `stop` and never ran the rest — the daemons stopped,
+the ssh command silently returned, and the swap that was supposed to follow
+it had not happened. `S96mabur stop` kills a PID read from
+`/var/run/mabur-loop.pid`, and after hours of uptime that PID can name
+something else. **Never chain work after a `stop` in the same ssh command:
+stop in one invocation, verify with `ps`, then swap in the next.**
+
 ## Stale-caps restart deadlock — retired
 
 The old failure mode: either daemon restarting (drone reboot, `maburgs`
@@ -79,5 +95,114 @@ crash-loop, no frame rejection — but **un-healed**: the side still
 running the old binary lacks its half of the re-teach, so a restart on a
 half-deployed pair still needs the manual `waybeam stop` -> wait for
 `video tail -> frame wire` -> `waybeam start` dance until the deploy is
-finished on both ends.
+finished on both ends. ⚠ Since the 2026-08-29 venc fold-in that
+escape hatch no longer exists on the drone at all — there is no `waybeam` to
+stop — so the equivalent is `S96mabur stop` / `start`, which restarts the
+encoder along with the link. Keeping both ends on the same build is what
+makes that never necessary.
 
+
+## The venc fold-in — what a drone deploy is now (2026-08-29)
+
+`maburd` runs the encoder itself. The SigmaStar MI pipeline (VIF/VPE/ISP/VENC
++ the JPEG channel) is brought up inside the daemon from the `venc` config
+section, frames are handed to the FEC path in-process, and the encoder knobs
+are direct function calls — no `waybeam` process, no HTTP control plane, no
+frame-shm ring between two processes. Consequences for a deploy:
+
+- **The drone binary is a DYNAMIC glibc executable**, not the old static musl
+  one (`tools/build-arm.sh` builds it with the OpenIPC Buildroot toolchain;
+  `tools/build-arm-glibc.sh` and `cmake/arm-musl.cmake` are gone). NEEDED:
+  `libstdc++.so.6` (in `/usr/lib`, not `/lib`), `libm`, `libgcc_s`, `libc`,
+  `ld-linux-armhf.so.3` — all present on the OpenIPC rootfs. It is ~950 KB
+  stripped, roughly half the musl binary, which is why the rootfs fits the
+  rollback rotation at all.
+- **`waybeam` must be inert before `maburd` starts.** Two processes cannot
+  own the MI pipeline; the loser gets no camera. The flag day therefore stops
+  `S95waybeam`, clears its execute bits so it never runs at boot again, and
+  moves `/usr/bin/waybeam` to `/usr/bin/waybeam.retired`. ⚠ It must be
+  `chmod a-x`, not `chmod -x`: with no class specified, `chmod` applies the
+  umask, so under the drone's 0022 umask `chmod -x` clears only the OWNER's
+  x bit and leaves `-rw-r-xr-x` — which root can still execute, and which
+  BusyBox `rcS`'s `[ -x ]` test still accepts. Hit and fixed during the
+  2026-08-29 flag day; verify with
+  `[ -x /etc/init.d/S95waybeam ] && echo STILL EXECUTABLE`.
+- **The config gains `venc` (pipeline bring-up) and `encoder` (RcAgent's
+  bitrate/ROI policy), and loses `waybeam` and `frame_ring_name`.** Strict
+  keys mean the old config fails boot against the new binary and vice versa,
+  so this is a paired swap like any other. `bundle/mabur.default.json` carries
+  the shipped shape; the bench's tuned values live in `/etc/mabur.json`.
+- **There is no `venc.bitrate` key and never will be.** The encoder rate comes
+  only from `RcAgent::run_bitrate_policy()` — see `docs/link-adaptation.md`.
+- **The GS deploys with the drone.** The `Telem` struct widened to 70 bytes for
+  the venc ring stats, so a mismatched pair drops `T_TELEM` on CRC and the
+  sideport's `drone.*` block reads `null` until both ends run the same build.
+  Video itself is unaffected by that particular mismatch, but "no drone rows in
+  maburtop" after a half-finished deploy is this, not a dead uplink.
+
+### Flag-day sequence (drone)
+
+```sh
+ssh root@<drone> 'df -h /; ls -la /usr/bin/waybeam* /usr/bin/maburd*'   # prune first
+tools/build-arm.sh                                # -> out/arm/maburd
+scp -O out/arm/maburd  root@<drone>:/tmp/maburd.new
+scp -O <new-config>    root@<drone>:/tmp/mabur.json.new
+ssh root@<drone> '
+  /etc/init.d/S95waybeam stop; /etc/init.d/S96mabur stop; sleep 1
+  mv /usr/bin/waybeam /usr/bin/waybeam.retired && chmod a-x /etc/init.d/S95waybeam
+  mv /usr/bin/maburd /usr/bin/maburd.pre-foldin
+  mv /etc/mabur.json /etc/mabur.json.pre-foldin
+  mv /tmp/maburd.new /usr/bin/maburd && chmod 755 /usr/bin/maburd
+  mv /tmp/mabur.json.new /etc/mabur.json
+  reboot'
+```
+
+Reboot rather than a restart, deliberately: it is the only thing that proves
+the boot order (`S95waybeam` inert, `S96mabur` bringing the camera up from
+cold) instead of leaving it to the next unplanned power cycle.
+
+Post-boot gates: `ausniff` ~60 fps / 0 `frame_id_gaps`; `curl 127.0.0.1:8301/venc`
+on the drone answers with advancing `frames`; the GS sideport shows the
+`drone.*` telemetry rows again; the GS ctl log shows a normal cold climb and
+park.
+
+### Rollback — the trio, and the two steps that bite
+
+Rolling back the fold-in means restoring **three** things together (binary,
+config, waybeam) and then un-wedging the encoder rate:
+
+```sh
+ssh root@<drone> '
+  /etc/init.d/S96mabur stop; killall maburd; sleep 1
+  mv /usr/bin/maburd /usr/bin/maburd.foldin
+  mv /usr/bin/maburd.pre-foldin /usr/bin/maburd
+  mv /etc/mabur.json /etc/mabur.json.foldin
+  mv /etc/mabur.json.pre-foldin /etc/mabur.json
+  mv /usr/bin/waybeam.retired /usr/bin/waybeam && chmod 755 /etc/init.d/S95waybeam
+  /etc/init.d/S95waybeam start
+  # 1. WAIT for waybeam HTTP to answer -- do not sleep a fixed interval
+  for i in $(seq 60); do
+    wget -q -O - "http://127.0.0.1/api/v1/get?video0.bitrate" && break
+    sleep 1
+  done
+  # 2. re-apply the bitrate AND restart maburd, always as a pair
+  wget -q -O - "http://127.0.0.1/api/v1/set?video0.bitrate=3000"
+  setsid /etc/init.d/S96mabur start </dev/null >/dev/null 2>&1 &'
+```
+
+Both numbered steps are load-bearing, and skipping either reproduces the
+waybeam bitrate wedge (`docs/`-recorded 2026-08-28; hit again during the
+2026-08-29 bench restore). The failure is loud and looks like a radio problem:
+the encoder floods at its last rate into a rung-0 link, the ladder is trapped
+at `mcs1`, `txq_drop` climbs into six figures, the GS sees ~48 fps with 1019
+`frame_id_gaps`, and the SoC hits 70 °C. Why each step:
+
+1. A `set?video0.bitrate=` issued while waybeam's HTTP server is still
+   initialising returns `Connection refused` and is silently lost. Poll until
+   it answers.
+2. `maburd`'s RcAgent only pushes a bitrate when its computed value CHANGES,
+   so on a parked link it will not re-assert over whatever waybeam came up
+   with. The restart forces the stamp on entering LINKED.
+
+Restore the GS's `maburgs.pre-foldin` at the same time, for the telemetry
+reason above.

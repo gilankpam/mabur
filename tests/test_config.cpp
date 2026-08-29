@@ -74,16 +74,21 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
   CHECK(cfg.fec.flush_ms == 25);
 
-  // waybeam is retired (Task B5): the bundle keeps the pre-fold-in
-  // production encoder tuning (1000/20000/0.65) under Config::encoder,
-  // which predates and differs from EncoderCfg's compiled defaults
-  // (2000/10000/0.60) — same "bundle diverges from struct defaults on
-  // purpose" pattern as fec above.
+  // waybeam is retired (Task B5). Since the 2026-08-29 flag day the bundle
+  // carries the config that was actually validated on hardware and deployed
+  // (1000/10000/0.70, roi_qp_low -24) rather than the pre-fold-in waybeam-era
+  // tuning it was seeded with — same "bundle diverges from struct defaults on
+  // purpose" pattern as fec above (EncoderCfg compiles 2000/10000/0.60/+8).
+  // NOTE the sign: apply_roi_qp() takes a QP OFFSET for the centre region, so
+  // the useful low-bitrate value is NEGATIVE (better centre quality). The
+  // struct default +8 has the opposite sign and is left alone deliberately —
+  // nothing deployed relies on it, and changing a compiled default is not a
+  // flag-day concern.
   CHECK(cfg.encoder.bitrate_min_kbps == 1000);
-  CHECK(cfg.encoder.bitrate_max_kbps == 20000);
-  CHECK(cfg.encoder.airtime_budget == 0.65);
+  CHECK(cfg.encoder.bitrate_max_kbps == 10000);
+  CHECK(cfg.encoder.airtime_budget == 0.70);
   CHECK(cfg.encoder.roi_threshold_kbps == 3000);
-  CHECK(cfg.encoder.roi_qp_low == 8);
+  CHECK(cfg.encoder.roi_qp_low == -24);
   CHECK(cfg.encoder.roi_qp_normal == 0);
 
   // venc: boot-time encoder pipeline config (Task B5), also bundle-pinned

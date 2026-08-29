@@ -19,10 +19,10 @@
   },
   "encoder": {
     "bitrate_min_kbps": 1000,
-    "bitrate_max_kbps": 20000,
-    "airtime_budget": 0.65,
+    "bitrate_max_kbps": 10000,
+    "airtime_budget": 0.7,
     "roi_threshold_kbps": 3000,
-    "roi_qp_low": 8,
+    "roi_qp_low": -24,
     "roi_qp_normal": 0
   },
   "venc": {

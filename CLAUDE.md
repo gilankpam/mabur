@@ -3,7 +3,10 @@
 Guidance for Claude Code when working in this repository.
 
 mabur is an RTP-free FPV video link: `maburd` (drone, OpenIPC/SigmaStar,
-armv7) encodes and injects; `maburgs` (ground station, aarch64) receives,
+armv7) drives the SigmaStar MI encoder in-process and injects — one daemon,
+no waybeam, since the 2026-08-29 venc fold-in (`drone/venc/`, ported from
+`../waybeam_venc` f956a52; the binary is glibc-dynamic now, not musl-static);
+`maburgs` (ground station, aarch64) receives,
 FEC-decodes, and publishes whole access units to a shm AU ring; `maburplay`
 (gs/player/, same GS binary family) consumes the ring — MPP hardware decode
 straight to DRM/KMS, plus the fMP4 DVR on /media/dvr. `common/` holds the
@@ -18,7 +21,7 @@ page the task needs rather than carrying all of it.
 
 | If the task touches… | Read |
 |---|---|
-| ladder rungs, promote/demote, s3 probes, fade, attribution, RCF drain | `docs/link-adaptation.md` |
+| ladder rungs, promote/demote, s3 probes, fade, attribution, RCF drain, RcAgent's encoder verbs + IDR pacing | `docs/link-adaptation.md` |
 | the stats sideport, maburtop, recorders, ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
 | shipping a binary or config to a device | `docs/deploy.md` |
@@ -72,7 +75,9 @@ NixOS host: wrap every cmake/ctest invocation in
 `-DDEVOURER_DIR=$PWD/../devourer` when the default `../devourer` doesn't
 resolve. Host suite: `ctest --test-dir build -R 'test_|host_e2e'`.
 Cross-builds: `tools/build-arm64.sh` (maburgs), `tools/build-arm.sh`
-(maburd). Devices: drone `root@192.168.10.152`, GS `root@10.18.0.1`.
+(maburd + the bench TX tools, OpenIPC glibc toolchain at
+`../openipc-builder`). Devices: drone `root@192.168.10.152`, GS
+`root@10.18.0.1`.
 Never load the 8812eu kernel module on the GS cards.
 
 **The standing regression gate for any maburgs change is

@@ -147,6 +147,34 @@ read the sideport. Reach for other tools only in these cases:**
   field is the live indicator. GPIO failures (pin not found, line held by
   another consumer) are non-fatal and logged once — the player runs
   without the button.
+- **The drone's encoder, up close → the localhost debug endpoint.** Since the
+  2026-08-29 venc fold-in `maburd` serves three routes on
+  `127.0.0.1:<venc.debug_port>` (shipped 8301), localhost-only, always on, no
+  enable flag — a bind failure logs and disables itself rather than being
+  fatal. It is reachable only from the drone, so `ssh root@<drone> 'wget -qO-
+  http://127.0.0.1:8301/venc'`:
+  - `GET /venc` → `{"req_bitrate_kbps", "ring_fill_pct", "full_drops",
+    "frames"}`. `req_bitrate_kbps` is the REQUESTED rate — what RcAgent last
+    successfully commanded — not a readback of what the encoder programmed;
+    the key name says `req_` for that reason. `frames` advancing is the
+    cheapest possible "is the camera alive" check, and the one that
+    distinguishes a stalled encoder (fps flat, ring empty) from a starved link.
+  - `GET /snapshot.jpg` → a JPEG straight off the encoder's snapshot channel
+    at `venc.snapshot_quality`. Answers 503 on a build without the venc core,
+    500 on a capture failure — the two are deliberately distinguishable.
+  - `POST /venc/set?k=v`, whitelist `bitrate` / `qp_delta` / `roi_qp`. **An
+    override is not self-clearing.** RcAgent pushes a bitrate only when its
+    computed value changes, so on a parked link whatever you set here holds
+    until the next rung change or failsafe entry (measured: 20 s+ with no
+    sign of reverting). That is what makes it a usable bench knob, and it is
+    also how you wedge a flight if you forget to put it back — see
+    `docs/link-adaptation.md`.
+
+  It is a debug surface, not an instrument: nothing records it, and the same
+  encoder numbers reach the GS sideport as `drone.enc.*` once per second.
+  Reach for it when the GS cannot see the drone at all (`drone` is `null`, a
+  half-finished deploy, no video) and you need to know whether the encoder is
+  running.
 - **Radio/PHY bring-up below mabur → devourer's own tools** (`rxdemo` with
   `DEVOURER_RX_ALLPATHS=1`, `doctor`, etc. — see
   `third_party/devourer/CLAUDE.md`). Use these when the question is about
@@ -158,13 +186,16 @@ read the sideport. Reach for other tools only in these cases:**
 
 **"Wire clean" does NOT mean "no frame loss" — venc-ring vanish class,
 detected since 2026-08-13.** Frames can vanish INSIDE the drone (between
-waybeam's encoder and maburd's ring read) and never get a `frame_id`: the
+the encoder and maburd's ring read — a separate waybeam process when this was
+found, the in-process venc ring since the 2026-08-29 fold-in) and never get a
+`frame_id`: the
 wire sequence closes seamlessly over the hole, every FEC/loss counter reads
 zero, and a vanished BASE frame silently smears the decoder until an IDR
 (rally's natural 2 s GOP is the only healer on this build). Root cause is
 CPU famine, not ring depth: above ~12 Mbps at the mcs5 bench op point the
 2×A7 SoC starves maburd's hot thread (ring pinned full for 100s of ms),
-so the honest knob is `waybeam.bitrate_max_kbps` — the bench runs 10000.
+so the honest knob is `encoder.bitrate_max_kbps` (`waybeam.bitrate_max_kbps`
+before the fold-in renamed the section) — the bench runs 10000.
 Full findings: `docs/venc-ring-vanish-findings-2026-08-12.md` (committed
 with the detection port). The detection (pts-jump, EMA-period,
 shed-immune) ships in maburd and exports as

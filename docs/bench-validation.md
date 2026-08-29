@@ -27,8 +27,9 @@ Everything below the RF boundary is verified in software:
   reference decoders: byte-exact 4-stream recovery, 100% critical delivery at
   20% loss, RCF-commanded MCS changes on the wire
   (`tests/integration/run_host_e2e.sh`).
-- Fully static ARM binary builds (`tools/build-arm.sh` → `out/arm/maburd`,
-  musl, ~1.8 MB, zero runtime deps).
+- ARM binary builds (`tools/build-arm.sh` → `out/arm/maburd`; musl-static
+  ~1.8 MB when this was written, glibc-dynamic ~950 KB since the 2026-08-29
+  venc fold-in).
 - Firmware image builds: openipc-builder branch `feat/devourer` produces an
   `ssc338q_fpv_openipc-urllc-aio` image with waybeam + mabur wired to
   `shm://mabur` and booting via `S95waybeam` → `S96mabur`. Verified artifact:
@@ -615,12 +616,14 @@ Pick one:
    `/etc/waybeam.json` already points `outgoing` at `shm://mabur`).
 
 2. **Side-load onto a running OpenIPC camera (faster iteration).** Build the
-   static binary and scp it over an existing image that already runs waybeam:
+   binary and scp it over an existing image:
    ```
-   bash tools/build-arm.sh            # → out/arm/maburd (static)
-   bundle/install.sh root@<camera-ip> # scp binary + S96mabur + mabur.json,
-                                      # and json_cli-wires waybeam to shm://mabur
+   bash tools/build-arm.sh            # → out/arm/maburd
+   bundle/install.sh root@<camera-ip> # scp binary + S96mabur + mabur.json
    ```
+   ⚠ Written for the waybeam era, when install.sh also json_cli-wired
+   waybeam's output. Since the 2026-08-29 fold-in maburd owns the encoder and
+   waybeam must be retired first — see `docs/deploy.md`.
    Note `bundle/install.sh` is manual-deploy convenience; it uses `json_cli`
    flag spelling that is UNVERIFIED (see bench item B4).
 

@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Build + deploy maburd + its init script + default config to a camera running
-# waybeam, then restart the service. maburd is a fully static ARM binary (see
-# tools/build-arm.sh) so no shared libs (e.g. libusb) need to be copied.
+# Build + deploy maburd + its init script + default config to a camera, then
+# restart the service. maburd is a DYNAMIC glibc ARM binary since the
+# 2026-08-29 venc fold-in (see tools/build-arm.sh); every library it NEEDs is
+# already on the OpenIPC rootfs, and libusb is still linked statically, so
+# nothing extra is copied.
 # Usage: bundle/install.sh root@<camera-ip> [path/to/maburd]
 #
-# waybeam's frame-shm output (waybeam.json .outgoing.server =
-# frame-shm://mabur_f, waybeam >= v0.42.0) is a one-time, out-of-band setup on
-# the camera — this script does not touch it. maburd cross-checks it at startup
-# and logs FATAL MISMATCH if it is still the pre-frame-shm shm:// RTP ring.
+# maburd now runs the encoder itself, so there is no waybeam to configure and
+# no frame-shm ring to cross-check. On a camera that still runs waybeam this
+# script is NOT enough: waybeam must be retired first (stop it, chmod a-x
+# /etc/init.d/S95waybeam -- plain `chmod -x` leaves the group/other bits and
+# root still runs it -- and move the binary aside) or two processes will fight
+# over the MI pipeline and neither will encode. Full sequence in
+# docs/deploy.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

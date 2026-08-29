@@ -151,8 +151,15 @@ void handle_stats(int fd) {
 #endif
 }
 
-// POST /venc/set?k=v. Volatile by construction: nothing persists, the next
-// RcAgent tick overrides bitrate/roi_qp regardless of what this sets.
+// POST /venc/set?k=v. Nothing here is persisted to config, but an override
+// is NOT transient: RcAgent only calls set_bitrate_kbps()/set_roi_qp() when
+// its computed value CHANGES (run_bitrate_policy's changed/decrease gate),
+// so on a parked link an override survives until the next commanded-rate
+// change -- a rung transition, a failsafe/LINKED entry, or an ROI threshold
+// crossing. Measured on hardware 2026-08-29 (B9 gate 5): a bitrate set here
+// held for 20 s+ with the ladder parked. That is exactly what makes the
+// endpoint useful for bench experiments, and exactly why it must not be
+// left set: nothing re-asserts the policy value on a timer.
 // Controller carry: report {"ok":false} on a failed verb rather than a
 // blind {"ok":true} -- B6 made the three verbs return real status.
 void handle_set(int fd, const DebugReq& req) {

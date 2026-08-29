@@ -1,52 +1,36 @@
 #!/usr/bin/env bash
-# Cross-build maburd for ARM (armv7-a hard-float) / musl, fully static.
+# Cross-build the drone-side ARM binaries with the OpenIPC Buildroot
+# toolchain: maburd (DYNAMIC glibc, armv7-a hard-float) plus the two bench
+# TX harnesses. This replaced the musl/static build on 2026-08-29 with the
+# venc fold-in flag day (was tools/build-arm-glibc.sh; the musl script and
+# cmake/arm-musl.cmake are deleted).
 #
-# Deviations from the original Bootlin-based plan (see
-# .superpowers/sdd/task-16-brief.md and task-16-report.md for the full
-# rationale): this host is NixOS, where prebuilt toolchains like Bootlin's
-# are dynamically linked against /lib64/ld-linux-x86-64.so.2 — a path that
-# does not exist on NixOS, so the downloaded compiler cannot even execute.
-# Instead this script uses Nix's own cross stdenv
-# (pkgsCross.armv7l-hf-multiplatform.pkgsStatic), which targets
-# armv7l-unknown-linux-musleabihf and works natively on NixOS. It also
-# provides a prebuilt *static* libusb1 for that target, so — unlike the
-# draft — this script does NOT configure/build libusb from source; it just
-# resolves the Nix package and points pkg-config at it.
+# Why glibc-dynamic, not musl-static any more: maburd now links the
+# SigmaStar MI vendor libraries (drone/vendor) to run the encoder
+# in-process. Those are prebuilt glibc shared objects, so the process must
+# be a glibc dynamic executable — there is no static option and no second
+# ABI to keep alive. The OpenIPC rootfs the drone runs supplies every
+# NEEDED library (libstdc++.so.6 lives in /usr/lib, not /lib — the loader
+# finds it, but remember that when auditing a stripped rootfs).
 #
-# Both the compiler and libusb are realized via `nix-build` with an output
-# symlink under toolchain/ (gitignored). That symlink is a GC root, so the
-# store paths survive `nix-collect-garbage` between runs and re-running this
-# script is a fast no-op (nix-build short-circuits, cmake/make do incremental
-# rebuilds).
+# Deviation from the brief: `pkg-config` is not on this NixOS host's bare
+# PATH. devourer's CMakeLists calls find_package(PkgConfig REQUIRED)
+# unconditionally, so this script stages pkg-config via
+# `nix-build -o toolchain/pkg-config`, a GC root under toolchain/
+# (gitignored) so re-running this script is a fast no-op.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-mkdir -p toolchain out/arm
+OPENIPC_HOST_BIN="${OPENIPC_HOST_BIN:-$PWD/../openipc-builder/openipc/output/host/bin}"
+export OPENIPC_HOST_BIN
+[ -x "$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-gcc" ] || {
+  echo "error: OpenIPC toolchain not found at $OPENIPC_HOST_BIN" >&2; exit 1; }
 
-TARGET_TRIPLE=armv7l-unknown-linux-musleabihf
+mkdir -p toolchain/glibc-staging out/arm
+export MABUR_GLIBC_STAGING="$PWD/toolchain/glibc-staging"
 
-# --- 1. Cross compiler (Nix's musl-static ARMv7 hard-float stdenv) ---------
-if [ ! -e toolchain/cc ]; then
-  nix-build -E \
-    'with import <nixpkgs> {}; pkgsCross.armv7l-hf-multiplatform.pkgsStatic.stdenv.cc' \
-    -o toolchain/cc
-fi
-CC_BINDIR="$(readlink -f toolchain/cc)/bin"
-export MABUR_CROSS_CC="$CC_BINDIR/${TARGET_TRIPLE}-gcc"
-export MABUR_CROSS_CXX="$CC_BINDIR/${TARGET_TRIPLE}-g++"
-export PATH="$CC_BINDIR:$PATH"
-
-if [ ! -x "$MABUR_CROSS_CC" ]; then
-  echo "error: expected cross gcc at $MABUR_CROSS_CC — tuple prefix may have" >&2
-  echo "changed upstream; check $CC_BINDIR for the actual *-gcc name and fix" >&2
-  echo "TARGET_TRIPLE above." >&2
-  exit 1
-fi
-
-# --- 1b. pkg-config itself. Not present on a bare NixOS PATH outside a
-#         nix-shell (mirrors why the host build needs
-#         `nix-shell -p pkg-config libusb1`); staged the same way as the
-#         cross compiler above so this script is self-contained.
+# --- pkg-config itself (see deviation note above). Staged identically to
+#     the musl build used to stage it (deleted with that script).
 if [ ! -e toolchain/pkg-config ]; then
   nix-build -E \
     'with import <nixpkgs> {}; pkg-config' \
@@ -55,80 +39,47 @@ fi
 PKG_CONFIG_BINDIR="$(readlink -f toolchain/pkg-config)/bin"
 export PATH="$PKG_CONFIG_BINDIR:$PATH"
 
-# --- 2. Static libusb for the same target (prebuilt by Nix, not built from
-#        source: pkgsCross...pkgsStatic.libusb1 already ships a static
-#        libusb-1.0.a + libusb-1.0.pc for armv7l-unknown-linux-musleabihf).
-# NB: `nix-build -o toolchain/libusb-out` on a multi-output derivation's
-# `.dev` output always *appends* "-dev" to whatever symlink name is given
-# (so "-o toolchain/libusb-out" for the .dev output actually creates
-# toolchain/libusb-out-dev, not toolchain/libusb-out) — hence reading back
-# "toolchain/libusb-out-dev" below rather than the name passed to -o.
-if [ ! -e toolchain/libusb-out ]; then
-  nix-build -E \
-    'with import <nixpkgs> {}; pkgsCross.armv7l-hf-multiplatform.pkgsStatic.libusb1' \
-    -o toolchain/libusb-out
+# --- static libusb for the glibc target (once) -----------------------------
+LIBUSB_VER=1.0.27
+if [ ! -e "$MABUR_GLIBC_STAGING/lib/libusb-1.0.a" ]; then
+  mkdir -p toolchain/libusb-src && cd toolchain/libusb-src
+  [ -d "libusb-$LIBUSB_VER" ] || {
+    curl -LO "https://github.com/libusb/libusb/releases/download/v$LIBUSB_VER/libusb-$LIBUSB_VER.tar.bz2"
+    tar xf "libusb-$LIBUSB_VER.tar.bz2"; }
+  cd "libusb-$LIBUSB_VER"
+  ./configure --host=arm-openipc-linux-gnueabihf --prefix="$MABUR_GLIBC_STAGING" \
+    --enable-static --disable-shared --disable-udev \
+    CC="$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-gcc"
+  make -j"$(nproc)" && make install
+  cd ../../..
 fi
-if [ ! -e toolchain/libusb-out-dev ]; then
-  nix-build -E \
-    'with import <nixpkgs> {}; pkgsCross.armv7l-hf-multiplatform.pkgsStatic.libusb1.dev' \
-    -o toolchain/libusb-out
-fi
-
-# CMAKE_FIND_ROOT_PATH staging dir: a minimal fake sysroot with lib/ and
-# include/ symlinked straight at the two Nix libusb outputs. Also see
-# cmake/arm-musl.cmake for why CMAKE_FIND_ROOT_PATH_MODE_{LIBRARY,INCLUDE}
-# is BOTH, not the original plan's ONLY: pkg-config resolves libusb's
-# location to its real (out-of-root) /nix/store path, and ONLY mode drops
-# any find_library()/find_path() candidate outside CMAKE_FIND_ROOT_PATH
-# instead of falling back to it verbatim — silently losing the -L flag.
-export MABUR_STAGING="$PWD/toolchain/staging"
-mkdir -p "$MABUR_STAGING"
-ln -sfn "$(readlink -f toolchain/libusb-out)/lib" "$MABUR_STAGING/lib"
-ln -sfn "$(readlink -f toolchain/libusb-out-dev)/include" "$MABUR_STAGING/include"
-
-# Unset any host PKG_CONFIG_LIBDIR/PATH from the environment so devourer's
-# pkg_check_modules(libusb REQUIRED IMPORTED_TARGET libusb-1.0) cannot
-# resolve against the host's libusb (e.g. from `nix-shell -p libusb1` used
-# for the host build) instead of the staged ARM static one.
+# Unset any host PKG_CONFIG_PATH so devourer's pkg_check_modules resolves
+# against the staged ARM static libusb, not a host one (libusb is the one
+# dependency still linked statically — the drone rootfs has no libusb).
 unset PKG_CONFIG_PATH || true
-PKG_CONFIG_LIBDIR="$(readlink -f toolchain/libusb-out-dev)/lib/pkgconfig"
-export PKG_CONFIG_LIBDIR
+export PKG_CONFIG_LIBDIR="$MABUR_GLIBC_STAGING/lib/pkgconfig"
 export PKG_CONFIG_SYSROOT_DIR=""
 
 # devourer's UsbOpen.cpp/UsbDeviceLock.cpp do
-# `#include <libusb-1.0/libusb.h>` on Linux, which needs the *parent*
-# include/ dir on the search path — not include/libusb-1.0, which is what
-# libusb-1.0.pc's `Cflags:` alone provides (-I.../include/libusb-1.0, so a
-# plain `#include <libusb.h>` resolves but the versioned-subdir spelling
-# doesn't). On the host build this second path comes for free: Nix's
-# cc-wrapper auto-injects `-isystem <pkg>/include` for every package pulled
-# in via `nix-shell -p libusb1` (see its NIX_CFLAGS_COMPILE). We're driving
-# the cross gcc directly via `nix-build` instead of `nix-shell -p`, so that
-# auto-injection doesn't happen — CPATH below reproduces it explicitly.
-CPATH="$(readlink -f toolchain/libusb-out-dev)/include${CPATH:+:$CPATH}"
+# `#include <libusb-1.0/libusb.h>`, which needs the *parent* include/ dir on
+# the search path, not include/libusb-1.0 (what libusb-1.0.pc's Cflags:
+# alone gives).
+CPATH="$MABUR_GLIBC_STAGING/include${CPATH:+:$CPATH}"
 export CPATH
 
-# --- 3. Configure + build. Only the maburd target: devourer's example
-#        binaries (rxdemo, txdemo, ...) are not needed on the drone and some
-#        pull in extra libusb example plumbing not worth static-linking here.
-#        MABUR_BUILD_TESTS=OFF: the host test suite needs a host-runnable
-#        libusb + GoogleTest et al; irrelevant for a cross artifact.
-cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-musl.cmake \
+cmake -S . -B build-arm-glibc -DCMAKE_TOOLCHAIN_FILE=cmake/arm-openipc.cmake \
   -DCMAKE_BUILD_TYPE=Release -DMABUR_BUILD_TESTS=OFF \
   -DDEVOURER_JAGUAR1=OFF -DDEVOURER_8814=OFF -DDEVOURER_JAGUAR2_8822B=OFF \
   -DDEVOURER_JAGUAR2_8821C=OFF -DDEVOURER_JAGUAR3_8822C=OFF \
-  -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_KESTREL_8852B=OFF -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
-
-cmake --build build-arm -j"$(nproc)" --target maburd linkbench-tx txagcbench-tx
-
-"${TARGET_TRIPLE}-strip" build-arm/drone/maburd -o out/arm/maburd
-"${TARGET_TRIPLE}-strip" build-arm/bench/linkbench/linkbench-tx -o out/arm/linkbench-tx
-"${TARGET_TRIPLE}-strip" build-arm/bench/txagcbench/txagcbench-tx -o out/arm/txagcbench-tx
-
-# `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
-if [ ! -e toolchain/file ]; then
-  nix-build -E \
-    'with import <nixpkgs> {}; file' \
-    -o toolchain/file
-fi
-"$(readlink -f toolchain/file)/bin/file" out/arm/maburd out/arm/linkbench-tx out/arm/txagcbench-tx
+  -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_KESTREL_8852B=OFF \
+  -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
+# linkbench-tx / txagcbench-tx are the drone-side halves of the two bench
+# harnesses (bench/txagcbench/run_sweep.sh expects out/arm/txagcbench-tx).
+# They carry over from the musl script unchanged; they do not link the venc
+# vendor libs, but they ship to the same rootfs, so one toolchain is enough.
+cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx txagcbench-tx
+STRIP="$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-strip"
+"$STRIP" build-arm-glibc/drone/maburd                     -o out/arm/maburd
+"$STRIP" build-arm-glibc/bench/linkbench/linkbench-tx     -o out/arm/linkbench-tx
+"$STRIP" build-arm-glibc/bench/txagcbench/txagcbench-tx   -o out/arm/txagcbench-tx
+"$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-readelf" -d out/arm/maburd | head -12
