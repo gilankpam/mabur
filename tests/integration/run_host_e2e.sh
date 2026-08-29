@@ -13,29 +13,29 @@ trap 'rm -rf "$TMP"' EXIT
 # 2-stream space (spec 2026-08-29-airtime-balance-uep): classify_frame
 # (common/src/nal.cpp) routes critical NALs and any non-TRAIL_N VCL to sid 0
 # (base); only TRAIL_N (mabur's SVC-T enhance marker) reaches sid 1 (enh).
-# This fixture carries no TRAIL_N NALs (tools/genvectors/gen_vectors.py's
-# frame_stream.bin generator only emits TRAIL_R), so EVERY fixture frame,
-# IDR included, classifies to sid 0 and is never shed -- the reconstructable
-# ceiling is genuinely all 13 frames, not a CRIT+T0 subset as it was pre-fold
-# (see tests/test_uep_decoder.cpp's decodes_uep_encoder_bodies_to_fixture
-# comment for the same fixture property from the encoder side). --max-stream
-# 1 is passed anyway for symmetry with the RCF check below and because it is
-# the space's natural upper bound (a no-op here since no frame is ever > 0).
+# The fixture alternates TRAIL_R/TRAIL_N on its 12 P frames (tools/genvectors/
+# gen_vectors.py), so 6 of them ARE genuine sid-1 material and are shed for
+# good under MAX_RANGE -- the reconstructable ceiling here is the IDR plus
+# the 6 base P frames (7 total), not all 13 (see tests/test_uep_decoder.cpp's
+# decodes_uep_encoder_bodies_to_fixture comment for the same fixture property
+# from the encoder side). --max-stream 0 restricts the expected set to that
+# ceiling: maburd never allocates a frame_id for a shed frame, so leaving the
+# default (1) would misalign every "want" key past the first shed frame.
 echo "== clean pipe: all reachable frames must reconstruct byte-exact =="
 "$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f0.bin"
 python3 tools/bench/decode_bodies.py --frames "$TMP/f0.bin" --fixture "$FIX" \
-  --symbol-size 332,332 --max-stream 1
+  --symbol-size 332,332 --max-stream 0
 
 echo "== 20% body loss: critical stream must still fully deliver =="
 "$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f1.bin"
 # Seed pinned to 1: the sliding-window bundle geometry (scalar-332/window-32/
-# blocks_per_body-4) packs this short fixture's whole 13-frame stream (all on
-# sid 0 now -- see above) into a modest body count, so a 20%-drop LCG roll
-# can correlate onto the same body's sources+repairs and rank-deficient the
-# GF(256) solve for a run of frames. That is a genuine capacity edge, not a
-# decoder bug. Seed 1 clears it.
+# blocks_per_body-4) packs this short fixture's reachable 7-frame stream (all
+# on sid 0 under MAX_RANGE -- see above) into a modest body count, so a
+# 20%-drop LCG roll can correlate onto the same body's sources+repairs and
+# rank-deficient the GF(256) solve for a run of frames. That is a genuine
+# capacity edge, not a decoder bug. Seed 1 clears it.
 python3 tools/bench/decode_bodies.py --frames "$TMP/f1.bin" --fixture "$FIX" \
-  --symbol-size 332,332 --drop-pct 20 --seed 1 --min-critical 1.0 --max-stream 1
+  --symbol-size 332,332 --drop-pct 20 --seed 1 --min-critical 1.0 --max-stream 0
 
 echo "== RCF application: profile HT mcs4 after frame 1 changes BASE radiotap MCS =="
 python3 - "$TMP/rc.bin" <<'EOF'
@@ -58,19 +58,20 @@ with open(sys.argv[1], "wb") as f:
 EOF
 "$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f2.bin" \
   --rc-in "$TMP/rc.bin"
-# 2-stream space (spec 2026-08-29-airtime-balance-uep): the fixture carries
-# no TRAIL_N/enhance NALs (see the classify_frame comment above), so EVERY
-# fixture frame -- including the IDR -- classifies to sid 0 (base), unlike
-# the pre-fold-in world where CRIT/T0/T1/T2 gave the IDR a stream of its
-# own. The IDR's own bodies are sent before the RCF lands (delivered once 1
-# frame has been consumed) and still ride the boot MAX_RANGE mcs (0); only
-# the bodies for frames 1-12 (P slices) postdate the RCF and ride the new
-# BASE mcs (scored mcs 4 - 1 = 3, the mcs-1 rule). --after 8 skips exactly
-# the IDR's bodies: this fixture's ~3 kB IDR access unit packs into 8
-# bodies under the bundle's scalar-332/window-32/bpb-4/overhead-0.5 geometry
-# in force before the RCF lands (verified empirically against this exact
+# 2-stream space (spec 2026-08-29-airtime-balance-uep): the fixture's IDR
+# always classifies to sid 0 (base) regardless of the P-frame alternation
+# (see the classify_frame comment above). The IDR's own bodies are sent
+# before the RCF lands (delivered once 1 frame has been consumed) and still
+# ride the boot MAX_RANGE mcs (0); only the bodies for frames 1-12 postdate
+# the RCF -- their sid-0 (base) share rides the new BASE mcs (scored mcs 4 -
+# 1 = 3, the mcs-1 rule), while the sid-1 (enh) share, now unshed once the
+# RCF lands, rides alongside on its own stream. --after 8 skips exactly the
+# IDR's bodies: this fixture's ~3 kB IDR access unit packs into 8 bodies
+# under the bundle's scalar-332/window-32/bpb-4/overhead-0.5 geometry in
+# force before the RCF lands (verified empirically against this exact
 # fixture+config; a bundle FEC geometry change would need to re-derive this
-# count).
+# count). --stream 0 keeps the mcs check scoped to BASE, since ENH rides a
+# different mcs derivation entirely.
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
   --symbol-size 332,332 --expect-mcs 3 --stream 0 --after 8
 

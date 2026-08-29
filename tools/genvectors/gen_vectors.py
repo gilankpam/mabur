@@ -113,6 +113,9 @@ dump("nal.json", {"cases": nal_cases})
 # only the framing is.
 VENC_FRAME_CODEC_H265 = 0x01
 VENC_FRAME_FLAG_IDR = 0x01
+VENC_FRAME_FLAG_ENHANCE = 0x04  # SVC-T enhance layer (droppable); must AGREE
+                                 # with the payload's TRAIL_N-ness (frame_pipeline.cpp
+                                 # protect-up demotion) or the frame lands on BASE.
 START_CODE = b"\x00\x00\x00\x01"
 
 def hevc_hdr(t, tid): return bytes([(t << 1) & 0xFF, (tid + 1) & 0x07])
@@ -124,8 +127,17 @@ frames = [(VENC_FRAME_FLAG_IDR,
                   hevc_hdr(33, 0) + pat(40, 2),      # SPS
                   hevc_hdr(34, 0) + pat(12, 3),      # PPS
                   hevc_hdr(19, 0) + pat(3000, 4)))]  # IDR_W_RADL slice
-for f in range(12):                                  # P frames, tids 0,1,2
-    frames.append((0, annexb(hevc_hdr(1, f % 3) + pat(900 + 37 * f, 5 + f))))
+# P frames, tids 0,1,2, alternating BASE (TRAIL_R, type 1) and ENH (TRAIL_N,
+# type 0) so the standing e2e fixture exercises both UEP streams (spec
+# 2026-08-29-airtime-balance-uep; classify_frame routes TRAIL_N -> sid 1).
+# Odd f -> enhance: the VENC_FRAME_FLAG_ENHANCE producer flag must be set
+# alongside the TRAIL_N payload, or maburd's scan/flag agreement check
+# demotes the frame back to sid 0.
+for f in range(12):
+    enhance = f % 2 == 1
+    nal_type = 0 if enhance else 1
+    flags = VENC_FRAME_FLAG_ENHANCE if enhance else 0
+    frames.append((flags, annexb(hevc_hdr(nal_type, f % 3) + pat(900 + 37 * f, 5 + f))))
 
 with open(os.path.join(FIX, "frame_stream.bin"), "wb") as f:
     for i, (flags, data) in enumerate(frames):
@@ -135,7 +147,7 @@ with open(os.path.join(FIX, "frame_stream.bin"), "wb") as f:
         f.write(meta + data)
 print("wrote frame_stream.bin,", len(frames), "frames")
 
-def classify_frame(data):  # mirror of mabur classify_frame (nal.cpp)
+def classify_frame(data):  # mirror of mabur classify_frame (nal.cpp), 2-stream
     if len(data) < 5: return 0
     sid, i = None, 0
     while i + 4 < len(data):
@@ -144,16 +156,18 @@ def classify_frame(data):  # mirror of mabur classify_frame (nal.cpp)
             continue
         info = svc_uep_fec.parse_hevc_nal(data[i + 3:])
         if info.critical: return 0
-        if sid is None and info.type < 16: sid = 1 + min(info.tid, 2)
+        if sid is None and info.type < 16: sid = 1 if info.type == 0 else 0
         i += 3
     return 0 if sid is None else sid
 
 # test_uep.cpp reads symbol_size/blocks_per_body/overheads/classify: body
 # content is round-tripped live through UepEncoder/UepDecoder rather than
 # pinned byte-wise (sliding-window envelopes have no Python reference), while
-# classify stays pinned against this mirror of the C++ classifier.
+# classify stays pinned against this mirror of the C++ classifier. 2-stream
+# since the airtime-balance-uep fold-in: sid 0 = BASE (critical NALs + any
+# VCL NAL type != 0), sid 1 = ENH (VCL NAL type 0, i.e. TRAIL_N).
 dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
-                  "overheads": [1.00, 0.75, 0.50, 0.25],
+                  "overheads": [1.00, 0.50],
                   "classify": [classify_frame(d) for _, d in frames]})
 
 # --- rc ----------------------------------------------------------------

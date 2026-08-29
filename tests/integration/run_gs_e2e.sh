@@ -10,12 +10,12 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # RCF delivered after frame 1 (same trick as run_host_e2e.sh). 2-stream
-# space (spec 2026-08-29-airtime-balance-uep): this fixture carries no
-# TRAIL_N/enhance NALs, so classify_frame routes every frame to sid 0
-# (base) regardless -- the RCF here isn't needed for reachability (MAX_RANGE
-# only sheds sid 1, which this fixture never uses), just to exercise the
-# RCF path and drop the FEC overhead from the boot default (0.5) to 0.25
-# partway through, same as run_host_e2e.sh's RCF check.
+# space (spec 2026-08-29-airtime-balance-uep): the fixture alternates
+# TRAIL_R/TRAIL_N on its 12 P frames, so classify_frame routes 6 of them to
+# sid 1 (enh) -- and the RCF IS needed for reachability here (MAX_RANGE
+# sheds sid 1 until it lands), on top of exercising the RCF path and
+# dropping the FEC overhead from the boot default (0.5) to 0.25 partway
+# through, same as run_host_e2e.sh's RCF check.
 python3 - "$TMP/rc.bin" <<'EOF'
 import struct, sys, os
 sys.path.insert(0, os.path.abspath(os.path.join("..", "devourer", "tools", "precoder")))
@@ -39,24 +39,29 @@ EOF
 
 # maburgs captures each reassembled AU via --out-aus (PR C: the RTP output
 # is gone), so verify_aus.py compares NAL lists against the fixture frames.
-echo "== clean: all 13 frames recovered NAL-exact =="
+# --require-all iterates every sid present in the fixture (both 0 and 1
+# here), so this is already a both-streams-present assertion; --min-stream1
+# is added anyway for symmetry with --min-stream0 and to be explicit about
+# what's being gated.
+echo "== clean: all 13 frames recovered NAL-exact, both streams =="
 "$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" --out-aus "$TMP/aus0.bin"
-python3 tests/integration/verify_aus.py "$TMP/aus0.bin" "$FIX" --require-all
+python3 tests/integration/verify_aus.py "$TMP/aus0.bin" "$FIX" --require-all \
+  --min-stream0 1.0 --min-stream1 1.0
 
-echo "== 15% single-card loss: stream 0 (the only stream now) must fully deliver =="
-# Seed pinned to 3: with only one UEP stream in the 2-stream space (this
-# fixture is all-base -- see the RCF-injection comment above), 15% loss
-# lands across the WHOLE 31-body population (IDR at 0.5x overhead + P
-# frames at 0.25x post-RCF) instead of just the old dedicated CRIT stream,
-# so a bad LCG roll can now rank-deficient the GF(256) solve for a frame --
-# a genuine FEC-capacity edge, not a decoder bug. Swept seeds 1-60: seed 3
-# clears (39 of 60 seeds do; the loss floor is a property of this fixture's
-# geometry, not a promise every seed holds).
+echo "== 15% single-card loss: both streams must fully deliver =="
+# Seed pinned to 3: 15% loss lands across the WHOLE 30-body population (IDR
+# at 0.5x overhead + P frames at 0.25x post-RCF, split across sid 0 base and
+# sid 1 enh), so a bad LCG roll can rank-deficient the GF(256) solve for a
+# frame on either stream -- a genuine FEC-capacity edge, not a decoder bug.
+# Verified empirically against this exact fixture+seed: both streams clear
+# (stream 0 7/7, stream 1 6/6); the loss floor is a property of this
+# fixture's geometry, not a promise every seed holds.
 "$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" \
   --drop-pct 15 --seed 3 --out-aus "$TMP/aus1.bin"
-python3 tests/integration/verify_aus.py "$TMP/aus1.bin" "$FIX" --min-stream0 1.0
+python3 tests/integration/verify_aus.py "$TMP/aus1.bin" "$FIX" \
+  --min-stream0 1.0 --min-stream1 1.0
 
-echo "== 2 cards, 20% independent loss each: union recovers everything =="
+echo "== 2 cards, 20% independent loss each: union recovers everything, both streams =="
 # Seed pinned to 2: --cards N round-robins *frames* across cards rather than
 # duplicating them, so each body lands on exactly one card's independent
 # per-card LCG drop roll, and a short fixture can correlate that roll onto the
@@ -65,9 +70,10 @@ echo "== 2 cards, 20% independent loss each: union recovers everything =="
 # sharper than the pre-frame-shm packet stream did: ONE unrecoverable body
 # can cost a whole frame. Swept seeds 1-60 at the unchanged 20% drop-pct
 # under the current bundle geometry (scalar-332/window-32/bpb-4); seed 2
-# clears the (now single) stream.
+# clears both streams.
 "$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" \
   --cards 2 --drop-pct 20 --seed 2 --out-aus "$TMP/aus2.bin"
-python3 tests/integration/verify_aus.py "$TMP/aus2.bin" "$FIX" --require-all
+python3 tests/integration/verify_aus.py "$TMP/aus2.bin" "$FIX" --require-all \
+  --min-stream0 1.0 --min-stream1 1.0
 
 echo "== all GS E2E checks passed =="

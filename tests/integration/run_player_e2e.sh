@@ -38,8 +38,34 @@ GS_SHA_EXPECTED=908affc994012eb4589293f72952d755d5627852e002f5dac0b1351c7cf57e1b
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# RCF delivered after frame 1 (same trick as run_gs_au_e2e.sh): the fixture
+# alternates TRAIL_R/TRAIL_N on its 12 P frames (2-stream space, spec
+# 2026-08-29-airtime-balance-uep), so without an RCF the boot MAX_RANGE op
+# point (drone/src/rc_agent.cpp:apply_max_range) would shed the 6 genuine
+# sid-1 (enh) frames for good and this chain would never exercise ENH
+# through the player/DVR path.
+python3 - "$TMP/rc.bin" <<'EOF'
+import struct, sys, os
+sys.path.insert(0, os.path.abspath(os.path.join("..", "devourer", "tools", "precoder")))
+import rc_proto
+# mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
+# rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
+# byte plus the deleted ack_seq/score/layer_delivery fields, so its
+# pack_rcf() output is rejected outright by maburd. Pack the 13-byte v4 head
+# here instead (magic, ver, type, flags, vtx_id, seq, profile,
+# fec_overhead_x100 -- RC_VERSION 4, 2026-08-30, made this byte a literal
+# overhead*100 rather than a sixteenths encoding); encode_profile and the
+# CRC are unversioned.
+body = struct.pack("<HBBBIHBB", rc_proto.RC_MAGIC, 4, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25)
+w = body + struct.pack("<H", rc_proto._crc(body))
+with open(sys.argv[1], "wb") as f:
+    f.write(struct.pack("<II", 1, len(w))); f.write(w)
+EOF
+
 echo "== fixture -> maburd bodies -> maburgs -> AU ring (same chain as gs_au_e2e) =="
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/bodies.bin"
+"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
+  --rc-in "$TMP/rc.bin"
 
 # Same symbol_size 332 pin as run_gs_au_e2e.sh: now redundant with PR #11's
 # encode-time default, but it documents the encode geometry contract this

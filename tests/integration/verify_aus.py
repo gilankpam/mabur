@@ -102,6 +102,14 @@ def main():
                     help="every fixture frame must be recovered")
     ap.add_argument("--min-stream0", type=float,
                     help="required stream-0 delivery fraction (e.g. 1.0)")
+    ap.add_argument("--min-stream1", type=float,
+                    help="required stream-1 delivery fraction (e.g. 1.0). "
+                         "Also fails if the fixture has stream-1 frames but "
+                         "none were classified into by_sid[1] at all -- a "
+                         "regression confined to the enh stream (e.g. "
+                         "classify_frame or the decoder silently dropping "
+                         "sid 1) must not pass a gate that only ever checked "
+                         "stream 0.")
     a = ap.parse_args()
 
     got = read_aus(a.recovered)
@@ -140,6 +148,9 @@ def main():
             ok = False
         if sid == 0 and a.min_stream0 is not None and recovered_n < a.min_stream0 * tot:
             print("FAIL: stream 0 below floor")
+            ok = False
+        if sid == 1 and a.min_stream1 is not None and recovered_n < a.min_stream1 * tot:
+            print("FAIL: stream 1 below floor")
             ok = False
 
     fix_keys = {k for keys in by_sid.values() for k in keys}

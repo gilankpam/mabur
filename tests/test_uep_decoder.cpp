@@ -133,10 +133,10 @@ TEST(layer_stats_expose_recovered_arrived) {
   // feeding it afterwards is the direct-copy-lost-the-race case and must
   // surface in LayerStats.syms_recovered_arrived for the s1 health feed.
   // Routes every fixture frame onto stream 1 directly rather than via
-  // encode_fixture_bodies()'s natural classify_frame routing: the fixture
-  // carries no TRAIL_N/enhance NALs, so under the 2-stream classify_frame
-  // (Task 2) natural routing produces sid-0-only bodies and this test needs
-  // sid-1 material to hold back.
+  // encode_fixture_bodies()'s natural classify_frame routing: forcing it
+  // keeps this test deterministic and independent of the fixture's own
+  // TRAIL_R/TRAIL_N mix (which does now include genuine sid-1 material,
+  // see tests/fixtures/frame_stream.bin / gen_vectors.py).
   UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
   std::vector<UepBody> bodies;
   auto frames = fixture_frames();
