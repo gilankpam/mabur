@@ -18,10 +18,16 @@ namespace mabur {
 // default_uep_policy): with whole-frame stream routing, unequal per-stream
 // overhead made equal-payload base/enhance frames occupy unequal AIR time,
 // which the GS measures as ~5-8 ms of alternating AU-completion offset —
-// the dominant jitter term under the rally preset. s1..s3 now match; s0
-// (IDR/param sets) keeps maximum protection. Air-neutral per frame pair.
+// the dominant jitter term under the rally preset. s1..s3 matched that day;
+// s0 (IDR-led AUs + parameter sets) kept 1.00 a while longer, at a 3.0x air
+// multiplier vs 2.0x everywhere else — making every IDR a ~2.6x-air outlier
+// (a ~15-18 ms completion bump, visible as stutter on a GS IDR request).
+// Under the rally preset IDR loss is cheap (150 ms intra-refresh stripes
+// repair without one; the GS IDR-request path exists on top), so the extra
+// protection wasn't paying for its jitter. s0 joined the flat ladder the
+// same day (2026-08-29, operator-ruled). Air-neutral per frame pair.
 // See docs/superpowers/specs/2026-08-29-uep-flatten-rally-design.md.
-inline constexpr double kUepRefOverhead[4] = {1.00, 0.50, 0.50, 0.50};
+inline constexpr double kUepRefOverhead[4] = {0.50, 0.50, 0.50, 0.50};
 
 // Scales stream_id's reference FEC overhead by cmd_overhead/0.25 (0.25 is the
 // "baseline" command value), clamped to [0.125, 2.0]. Byte-exact port of the

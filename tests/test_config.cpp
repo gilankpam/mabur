@@ -116,7 +116,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
   auto layers = cfg.uep_layers();
-  CHECK(layers[0].fec.overhead == 1.0);  // base_overhead 0.25 -> sid0 ref 1.00
+  CHECK(layers[0].fec.overhead == 0.5);  // base_overhead 0.25 -> sid0 ref 0.50
 }
 
 TEST(load_config_missing_file_throws) {
@@ -381,7 +381,7 @@ TEST(venc_range_checks) {
 TEST(uep_layers_overhead_ladder_at_base_0_25) {
   Config cfg;  // defaults: base_overhead = 0.25
   auto layers = cfg.uep_layers();
-  CHECK(layers[0].fec.overhead == 1.0);
+  CHECK(layers[0].fec.overhead == 0.5);
   CHECK(layers[1].fec.overhead == 0.5);
   CHECK(layers[2].fec.overhead == 0.5);
   CHECK(layers[3].fec.overhead == 0.5);

@@ -53,7 +53,7 @@ std::array<UepLayerCfg, 4> layers_for(int symbol_size, int bpb_base, int window)
 // the reference ladder (decoder ignores overhead; window is TX-side only).
 static std::array<UepLayerCfg, 4> vec_layers() {
   std::array<UepLayerCfg, 4> L{};
-  const double ov[4] = {1.00, 0.50, 0.50, 0.50};
+  const double ov[4] = {0.50, 0.50, 0.50, 0.50};
   for (int s = 0; s < 4; ++s) L[s] = UepLayerCfg{SwConfig{64, 128, ov[s]}, 4};
   return L;
 }

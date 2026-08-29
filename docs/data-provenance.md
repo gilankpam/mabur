@@ -130,6 +130,7 @@ new scale from this date; per-stream ov in recordings before/after the
 flag day is not comparable. Ladder thresholds (down_util etc.) were NOT
 retuned. Same day: drone venc.resilience ltr:1 → rally (frame sizes
 equalize; base/enh size split in older recordings is a preset artifact,
-not a regression). See
-`docs/superpowers/specs/2026-08-29-uep-flatten-rally-design.md`.
+not a regression). Later the same day, s0 joined the flat ladder too
+({0.50, 0.50, 0.50, 0.50}) — sideport s0 `ov` values change scale again.
+See `docs/superpowers/specs/2026-08-29-uep-flatten-rally-design.md`.
 
