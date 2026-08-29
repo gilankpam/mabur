@@ -99,8 +99,9 @@ TEST(budget_uses_s1_effective) {
   double t = 0;
   promote_to(ctl, t, 5);  // walk all the way to the top rung {7, 0.1}
   CHECK(ctl.rung() == 5);
-  // top rung: overhead 0.1 -> eff1 = 0.75 * (0.1/0.25) = 0.3.
-  CHECK(std::abs(ctl.budget() - (0.3 / 1.3)) < 1e-9);
+  // top rung: overhead 0.1 -> eff1 = 0.50 * (0.1/0.25) = 0.2 (was 0.75 *
+  // (0.1/0.25) = 0.3 before the 2026-08-29 UEP flatten).
+  CHECK(std::abs(ctl.budget() - (0.2 / 1.2)) < 1e-9);
 }
 
 TEST(starts_at_failsafe) {
@@ -505,9 +506,11 @@ TEST(probe_pass_reports_measured_u_pred) {
   LadderController ctl(make_cfg());
   double t = 0;
   for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  // Candidate rung 1 budget = eff1(0.5)/(1+eff1(0.5)) = 1.5/2.5 = 0.6, so an
-  // s3 pre-FEC loss of 0.12 is u_pred 0.2: nonzero, comfortably under the
-  // 0.6 threshold, so the probe still passes.
+  // Candidate rung 1 budget = eff1(0.5)/(1+eff1(0.5)), eff1(0.5) =
+  // 0.50*(0.5/0.25) = 1.0 (was 0.75*(0.5/0.25) = 1.5 before the 2026-08-29
+  // UEP flatten) -> budget = 1.0/2.0 = 0.5, so an s3 pre-FEC loss of 0.12
+  // is u_pred 0.24: nonzero, comfortably under the probe util threshold,
+  // so the probe still passes.
   for (; ctl.probing(); t += 50) {
     ctl.update(ok3(0.0, 0.12), t);
     REQUIRE(t < 1e5);
@@ -515,7 +518,7 @@ TEST(probe_pass_reports_measured_u_pred) {
   CHECK(ctl.rung() == 1);
   CHECK(ctl.last_probe().outcome == ProbeOutcome::Pass);
   CHECK(ctl.last_probe().u_pred > 0.0);
-  CHECK(std::abs(ctl.last_probe().u_pred - 0.2) < 1e-9);
+  CHECK(std::abs(ctl.last_probe().u_pred - 0.24) < 1e-9);
 }
 
 TEST(probe_settle_blackout_ignores_early_s3_loss) {

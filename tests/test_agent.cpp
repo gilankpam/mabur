@@ -221,7 +221,8 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
 
 // 3. RCF profile HT mcs2/20, fec16=8 (ov=0.5) -> op ladder all four rungs at
 // mcs2 (base rate; FEC overhead is the sole per-layer differentiator), ov
-// 0.5; set_bitrate_kbps called with ~5100.
+// 0.5; set_bitrate_kbps called with ~6300 (uep_layer_overhead(1, 0.5) =
+// 0.50*2 = 1.0 since the 2026-08-29 flatten, was 1.5 -> ~5100).
 TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -241,7 +242,7 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   CHECK(op.fec_overhead > 0.499 && op.fec_overhead < 0.501);
 
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 5100);
+  CHECK(act.bitrates.back() == 6300);
 }
 
 // 4. Stale seq (same seq again, then seq-1) -> no new apply_op (generation
@@ -310,7 +311,7 @@ TEST(failsafe_and_rendezvous_timers_fire_exactly) {
 
   // LINKED->FAILSAFE entry forces the bitrate policy to the MCS0 floor
   // (1400 kbps) immediately, bypassing the steady-state throttle/hysteresis
-  // — the encoder must not keep flooding at the last LINKED bitrate (5100)
+  // — the encoder must not keep flooding at the last LINKED bitrate (6300)
   // once the radio has dropped to the robust MAX_RANGE profile.
   REQUIRE(!act.bitrates.empty());
   CHECK(act.bitrates.back() == 1400);
@@ -546,7 +547,11 @@ TEST(demote_cascade_sheds_every_decrease_immediately) {
   // ctl-0020-shaped cascade at RCF cadence: each step's lower target must
   // go out on the SAME on_rc_frame call, throttle stamp notwithstanding.
   struct Step { uint8_t mcs, ov16; int kbps; };
-  const Step down[] = {{4, 4, 14500}, {2, 8, 5100}, {0, 16, 1400}};
+  // 16900/6300 re-derived for the 2026-08-29 flatten (uep_layer_overhead(1,
+  // .) drops from .75x to .50x scale); 1400 is the ov16=16 clamp-to-2.0
+  // case and is unchanged by the flatten (ref[1] doesn't move it off the
+  // ceiling).
+  const Step down[] = {{4, 4, 16900}, {2, 8, 6300}, {0, 16, 1400}};
   uint64_t t = 3100;
   for (const Step& d : down) {
     auto w = make_rcf_wire(cfg.link.vtx_id, seq++,
@@ -568,15 +573,17 @@ TEST(bitrate_increase_still_gated) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
-  // Enter LINKED at mcs2/ov0.5 -> 5100 (forced entry call, stamp t=0).
+  // Enter LINKED at mcs2/ov0.5 -> 6300 (forced entry call, stamp t=0;
+  // re-derived for the 2026-08-29 flatten, was 5100).
   auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
-  REQUIRE(act.bitrates.back() == 5100);
+  REQUIRE(act.bitrates.back() == 6300);
 
-  // Promote to mcs4/ov0.25 (14500) once the stamp expired: call fires.
+  // Promote to mcs4/ov0.25 (16900, was 14500) once the stamp expired: call
+  // fires.
   auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 4, 20), 4);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
-  REQUIRE(act.bitrates.back() == 14500);
+  REQUIRE(act.bitrates.back() == 16900);
   size_t n = act.bitrates.size();
 
   // Further promote to mcs7 (20000) 100ms later: inside the throttle
@@ -594,7 +601,7 @@ TEST(bitrate_increase_still_gated) {
 // 10d. A promote must reach the encoder even when bitrate_max_kbps clamps
 // the new target to within 10% of the last applied value. Measured on the
 // bench 2026-08-28: prod runs airtime_budget 0.60 / bitrate_max 10000, so
-// rung4 (mcs4/ov0.50) commands 39000*0.60/2.5 = 9360 -> 9400, and rung5's
+// rung4 (mcs4/ov0.75) commands 39000*0.60/2.5 = 9360 -> 9400, and rung5's
 // 52000*0.60/2.5 = 12480 clamps to 10000. |10000-9400| = 600 is inside the
 // v1 `changed_enough` deadband (last/10 = 940), so the promote was
 // swallowed and the encoder stayed on the mcs4 bitrate forever while the
@@ -604,6 +611,12 @@ TEST(bitrate_increase_still_gated) {
 // fixed point. Dedup of repeated identical RCFs is the 1s throttle's job
 // (test 10 and 10b's steady window pin that); this test pins that a
 // genuinely CHANGED target is never discarded for being too small a step.
+// ov16=12 (cmd_overhead 0.75), not the bench's original 8 (0.5): the
+// 2026-08-29 UEP flatten dropped ref[1] from .75 to .50, so it now takes
+// cmd_overhead 0.75 (uep_layer_overhead(1, .75) = .50*3 = 1.5) to land on
+// the same effective 1.5x overhead the bench actually measured this trap
+// at — reusing cmd_overhead 0.5 here would give effective overhead 1.0 and
+// both rungs would clamp to the identical 10000, testing nothing.
 TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   Config cfg = make_cfg();
   cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
@@ -612,16 +625,16 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
-  // Enter LINKED at rung 4: mcs4/ov0.50 -> 39000*0.60/2.5 = 9360 -> 9400.
-  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 8);
+  // Enter LINKED at rung 4: mcs4/ov0.75 -> 39000*0.60/2.5 = 9360 -> 9400.
+  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 12);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
   REQUIRE(act.bitrates.back() == 9400);
 
-  // Promote to rung 5 well after the 1s throttle window: mcs5/ov0.50 ->
+  // Promote to rung 5 well after the 1s throttle window: mcs5/ov0.75 ->
   // 12480, clamped to 10000. Only 600 above the last applied value.
-  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 5, 20), 8);
+  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 5, 20), 12);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
   CHECK(act.bitrates.back() == 10000);
 }

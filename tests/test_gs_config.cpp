@@ -21,7 +21,7 @@ TEST(default_bundle_config_loads) {
   CHECK(cfg.video.frame_gap_timeout_ms == 50);
   auto L = cfg.uep_layers();
   CHECK(L[0].fec.overhead == 1.00);
-  CHECK(L[3].fec.overhead == 0.25);
+  CHECK(L[3].fec.overhead == 0.50);
 }
 
 TEST(missing_keys_fall_back_to_defaults) {

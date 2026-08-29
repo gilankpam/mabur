@@ -71,9 +71,10 @@ TEST(uep_encoder_round_trips_fixture_through_decoder) {
 
 TEST(uep_layer_overhead_math_and_clamps) {
   CHECK(uep_layer_overhead(0, 0.25) == 1.0);
-  CHECK(uep_layer_overhead(3, 0.25) == 0.25);
-  CHECK(uep_layer_overhead(3, 1.0) == 1.0);
-  // Clamp low: sid 3 (REF 0.25) * cmd tiny -> below 0.125 clamps to 0.125.
+  CHECK(uep_layer_overhead(3, 0.25) == 0.5);
+  // sid 3 (REF 0.50, flattened 2026-08-29) * cmd 1.0/0.25=4x -> 2.0, clamped.
+  CHECK(uep_layer_overhead(3, 1.0) == 2.0);
+  // Clamp low: sid 3 (REF 0.50) * cmd tiny -> below 0.125 clamps to 0.125.
   CHECK(uep_layer_overhead(3, 0.001) == 0.125);
   // Clamp high: sid 0 (REF 1.00) * cmd huge -> above 2.0 clamps to 2.0.
   CHECK(uep_layer_overhead(0, 100.0) == 2.0);

@@ -9,7 +9,7 @@ Quick index: carrier sense off 2026-08-05 · TX power constant 2026-08-12 ·
 sideport key removals 2026-08-12 and 2026-08-15 · SNR half-dB scale break
 2026-08-04 · EVM op-point dependence 2026-08-10 · RF labels pooled and
 fade deltas unsuppressed 2026-08-15 (see `docs/link-adaptation.md`) ·
-DVR filenames un-dated 2026-08-26.
+DVR filenames un-dated 2026-08-26 · UEP overhead flatten 2026-08-29.
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -122,4 +122,14 @@ or threshold it globally; use deviation from the same rung's baseline. The
 sweep that established this (and the interpretation: walls stay
 delivery-defined; EVM's job is per-rung baselines + live PA-compression
 watchdog) is `docs/evm-sweep-findings-2026-08-10.md`.
+
+**Scale break, 2026-08-29 — UEP overhead flatten.** `kUepRefOverhead`
+changed {1.00, 0.75, 0.50, 0.25} → {1.00, 0.50, 0.50, 0.50}. Sideport
+`streams[].ov` values and the ladder's utilization/`u` readings are on a
+new scale from this date; per-stream ov in recordings before/after the
+flag day is not comparable. Ladder thresholds (down_util etc.) were NOT
+retuned. Same day: drone venc.resilience ltr:1 → rally (frame sizes
+equalize; base/enh size split in older recordings is a preset artifact,
+not a regression). See
+`docs/superpowers/specs/2026-08-29-uep-flatten-rally-design.md`.
 

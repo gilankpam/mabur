@@ -382,9 +382,9 @@ TEST(uep_layers_overhead_ladder_at_base_0_25) {
   Config cfg;  // defaults: base_overhead = 0.25
   auto layers = cfg.uep_layers();
   CHECK(layers[0].fec.overhead == 1.0);
-  CHECK(layers[1].fec.overhead == 0.75);
+  CHECK(layers[1].fec.overhead == 0.5);
   CHECK(layers[2].fec.overhead == 0.5);
-  CHECK(layers[3].fec.overhead == 0.25);
+  CHECK(layers[3].fec.overhead == 0.5);
   CHECK(layers[0].fec.window == cfg.fec.window);
   CHECK(layers[0].fec.symbol_size == cfg.fec.symbol_size[0]);
   CHECK(layers[0].blocks_per_body == cfg.fec.blocks_per_body[0]);

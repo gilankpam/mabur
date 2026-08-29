@@ -13,9 +13,15 @@
 
 namespace mabur {
 
-// Reference overhead ladder per stream_id (0=critical .. 3=lightest),
-// mirrors devourer's svc_uep_fec.default_uep_policy overhead assignments.
-inline constexpr double kUepRefOverhead[4] = {1.00, 0.75, 0.50, 0.25};
+// Reference overhead ladder per stream_id (0=critical .. 3=lightest).
+// Flattened 2026-08-29 (was {1.00, 0.75, 0.50, 0.25}, mirroring devourer's
+// default_uep_policy): with whole-frame stream routing, unequal per-stream
+// overhead made equal-payload base/enhance frames occupy unequal AIR time,
+// which the GS measures as ~5-8 ms of alternating AU-completion offset —
+// the dominant jitter term under the rally preset. s1..s3 now match; s0
+// (IDR/param sets) keeps maximum protection. Air-neutral per frame pair.
+// See docs/superpowers/specs/2026-08-29-uep-flatten-rally-design.md.
+inline constexpr double kUepRefOverhead[4] = {1.00, 0.50, 0.50, 0.50};
 
 // Scales stream_id's reference FEC overhead by cmd_overhead/0.25 (0.25 is the
 // "baseline" command value), clamped to [0.125, 2.0]. Byte-exact port of the
