@@ -24,6 +24,9 @@
 #include "ctl_log.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
+#ifdef MABUR_LOSS_SIM
+#include "loss_control.h"
+#endif
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
@@ -55,7 +58,28 @@ uint64_t mono_ms() {
 void usage() {
   std::fprintf(stderr,
                "usage: maburgs -c <config.json> --dry-run --in <frames.bin>\n"
-               "               [--cards N] [--drop-pct P] [--seed S] [--out-aus <file>]\n");
+               "               [--cards N] [--drop-pct P] [--seed S] [--out-aus <file>]\n"
+#ifdef MABUR_LOSS_SIM
+               "       maburgs -c <config.json> [--loss-sim [port]]\n"
+               "\n"
+               "  --loss-sim [port]  BENCH ONLY: bind a loopback UDP command\n"
+               "                     socket (default port 8302) for injecting\n"
+               "                     per-stream loss. Starts at zero; see\n"
+               "                     tools/bench/losssim.py.\n"
+               "                     Injection is INDEPENDENT PER CARD, so a\n"
+               "                     body only reaches the decoder as lost when\n"
+               "                     every card drops it: `sN loss=X` sets the\n"
+               "                     per-card rate, `sN eff=X` sets the nominal\n"
+               "                     union rate (percard^ncards) and solves for\n"
+               "                     per-card. Replies always state both.\n"
+               "                     `eff` is NOMINAL -- it assumes every card\n"
+               "                     heard every body, which only holds on a\n"
+               "                     clean link; on a link already losing\n"
+               "                     bodies the true injected loss is higher.\n"
+               "                     Record real loss from the stats sideport's\n"
+               "                     per-stream counters, never from the dial.\n"
+#endif
+               );
 }
 
 // Dry-run AU capture for the e2e: one LP record per reassembled AU --
@@ -96,7 +120,11 @@ struct AuFileOut {
   }
 };
 
+#ifdef MABUR_LOSS_SIM
+static int run_radio(const maburgs::Config& cfg, int loss_sim_port) {
+#else
 static int run_radio(const maburgs::Config& cfg) {
+#endif
   std::fprintf(stderr,
                "fec: symbol_size=[%d,%d,%d,%d] decode_deadline_ms=%d seq_horizon=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
@@ -139,6 +167,29 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::Aggregator agg(cfg.uep_layers(),
                           static_cast<uint64_t>(cfg.fec.decode_deadline_ms),
                           static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
+
+#ifdef MABUR_LOSS_SIM
+  // BENCH RIG (MABUR_LOSS_SIM). Off unless --loss-sim was given; rates
+  // always start at zero and are set live, so no config file can carry an
+  // injection rate across a reboot.
+  maburgs::LossControl loss_ctl;
+  if (loss_sim_port > 0) {
+    // n_cards is what converts the per-card injection rate into the effective
+    // (union) rate the decoder actually sees, so the control socket needs it.
+    if (loss_ctl.open(loss_sim_port, agg.n_cards())) {
+      std::fprintf(stderr,
+                   "maburgs: LOSS-SIM control on udp 127.0.0.1:%d "
+                   "(all streams zero, ncards=%d; `loss=` is PER-CARD, `eff=` "
+                   "is the NOMINAL union rate = percard^ncards -- nominal "
+                   "because it assumes every card heard every body, so record "
+                   "real loss from the stats sideport, not from the dial)\n",
+                   loss_sim_port, agg.n_cards());
+    } else {
+      std::fprintf(stderr, "warning: loss-sim port %d unusable; disabled\n",
+                   loss_sim_port);
+    }
+  }
+#endif
   // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
   // Declared here (ahead of the FrameStream construction below)
   // so the FrameStream end_frame lambda can capture `stats` by reference; both
@@ -463,6 +514,9 @@ static int run_radio(const maburgs::Config& cfg) {
     // reorder buffer also guard against stale clocks internally).
     const uint64_t drained_ms = mono_ms();
     agg.poll(drained_ms);
+#ifdef MABUR_LOSS_SIM
+    if (loss_ctl.ok()) loss_ctl.poll(agg.loss_sim());
+#endif
 
     // Session capability gate: the peer must be in an active SESSION (not
     // beaconing/pre-rendezvous) AND have advertised CAP_FRAME_WIRE in its
@@ -764,6 +818,14 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(fstream.frames_dropped()),
                    static_cast<unsigned long long>(fstream.bad_fragments()),
                    static_cast<unsigned long long>(fstream.stall_resets()));
+#ifdef MABUR_LOSS_SIM
+      if (agg.loss_sim().enabled())
+        std::fprintf(stderr, " LOSS-SIM[s0/s1/s2/s3]=%llu/%llu/%llu/%llu",
+                     static_cast<unsigned long long>(agg.loss_sim().dropped(0)),
+                     static_cast<unsigned long long>(agg.loss_sim().dropped(1)),
+                     static_cast<unsigned long long>(agg.loss_sim().dropped(2)),
+                     static_cast<unsigned long long>(agg.loss_sim().dropped(3)));
+#endif
       std::fprintf(stderr, "\n");
     }
 
@@ -937,6 +999,9 @@ int main(int argc, char** argv) {
   std::string config_path = "/etc/maburgs.json";
   std::string in_path, out_aus_path;
   bool dry_run = false;
+#ifdef MABUR_LOSS_SIM
+  int loss_sim_port = 0;
+#endif
   maburgs::FrameFileSource::Options src_opt;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -947,6 +1012,15 @@ int main(int argc, char** argv) {
     else if (a == "--drop-pct" && i + 1 < argc) src_opt.drop_pct = std::atoi(argv[++i]);
     else if (a == "--seed" && i + 1 < argc) src_opt.seed = static_cast<uint32_t>(std::atol(argv[++i]));
     else if (a == "--out-aus" && i + 1 < argc) out_aus_path = argv[++i];
+#ifdef MABUR_LOSS_SIM
+    else if (a == "--loss-sim") {
+      loss_sim_port = 8302;
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const int p = std::atoi(argv[i + 1]);
+        if (p > 0 && p < 65536) { loss_sim_port = p; ++i; }
+      }
+    }
+#endif
     else if (a == "-h" || a == "--help") { usage(); return 0; }
     else { std::fprintf(stderr, "error: unknown arg %s\n", a.c_str()); usage(); return 2; }
   }
@@ -957,7 +1031,11 @@ int main(int argc, char** argv) {
     maburgs::Config cfg;
     try { cfg = maburgs::load_config(config_path); }
     catch (const std::exception& e) { std::fprintf(stderr, "error: %s\n", e.what()); return 2; }
+#ifdef MABUR_LOSS_SIM
+    return run_radio(cfg, loss_sim_port);
+#else
     return run_radio(cfg);
+#endif
   }
 
   // ---- dry-run path: MUST be byte-identical to Plan 1 ----

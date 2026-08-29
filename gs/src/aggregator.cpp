@@ -90,6 +90,18 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
 
   const int stream_id = mabur::sbi_peek_stream_id(m.body.data(), m.body.size());
 
+#ifdef MABUR_LOSS_SIM
+  // BENCH RIG (MABUR_LOSS_SIM): injected loss, --loss-sim.
+  // Placed BEFORE any accounting so a dropped body is indistinguishable from
+  // one the air ate — no frames/rx_bytes/seq credit, no EMA, no class track,
+  // never reaches the decoder. The seq gap appears on its own: last_seq is a
+  // high-water mark, so the next surviving body advances it by more than one
+  // and books the loss exactly as real loss would.
+  // crc_ok gate: a corrupt body's peeked stream_id is untrustworthy, and
+  // injecting on it would drop a randomly-misidentified stream.
+  if (m.crc_ok && loss_sim_.should_drop(m.card_id, stream_id)) return;
+#endif
+
   ++c.frames;
   c.rx_bytes += m.body.size();
   c.last_frame_us = m.mono_us;

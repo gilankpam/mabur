@@ -6,6 +6,9 @@
 
 #include "mabur/node.h"
 #include "mabur/uep_decoder.h"
+#ifdef MABUR_LOSS_SIM
+#include "loss_sim.h"
+#endif
 
 namespace maburgs {
 
@@ -106,8 +109,17 @@ class Aggregator {
   uint64_t last_video_us() const { return last_video_us_; }
   uint64_t bad_card_msgs() const { return bad_card_msgs_; }
 
+#ifdef MABUR_LOSS_SIM
+  // BENCH RIG (MABUR_LOSS_SIM): injected per-stream loss. Inert unless
+  // configure() has been called with a nonzero rate.
+  LossSim& loss_sim() { return loss_sim_; }
+#endif
+
  private:
   mabur::UepDecoder dec_;
+#ifdef MABUR_LOSS_SIM
+  LossSim loss_sim_;
+#endif
   std::vector<CardTrack> cards_;
   FragSink frag_sink_;
   RcSink rc_sink_;

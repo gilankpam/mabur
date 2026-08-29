@@ -36,3 +36,17 @@ target_link_libraries(mabur_gs_radio PUBLIC mabur_gs_core mabur_common devourer)
 add_executable(maburgs src/main.cpp)
 target_include_directories(maburgs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(maburgs PRIVATE mabur_gs_core mabur_gs_radio mabur_common pthread)
+
+# Bench per-stream Gilbert-Elliott loss injector (gs/src/loss_sim.h,
+# loss_control.h), mainlined 2026-08-29 behind this flag instead of living on
+# an unmerged branch. Default OFF: prod maburgs contains none of it. main.cpp
+# compiles as part of the maburgs target itself, but aggregator.cpp (the
+# other hook site) lives in mabur_gs_core, so the definition goes on that
+# library PUBLIC -- every consumer (maburgs, and any test linking
+# mabur_gs_core, e.g. test_loss_sim) must see the same macro state as
+# aggregator.h/.cpp were compiled with, or Aggregator's layout disagrees
+# across translation units.
+option(MABUR_LOSS_SIM "Compile the bench per-stream loss injector into maburgs (never for prod)" OFF)
+if(MABUR_LOSS_SIM)
+  target_compile_definitions(mabur_gs_core PUBLIC MABUR_LOSS_SIM)
+endif()
