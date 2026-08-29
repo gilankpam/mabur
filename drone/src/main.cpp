@@ -30,6 +30,7 @@
 
 #include <unistd.h>  // _exit() — see the venc on_fault handler
 
+#include "air_balancer.h"
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -768,6 +769,13 @@ int run_real_mode(const Config& cfg) {
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
 
+  // Cross-thread feed from the hot thread's AirBalancer to the agent
+  // thread (bitrate policy input + telemetry snapshot) — see BalancerFeed's
+  // doc comment in rc_agent.h. Must outlive both hot_thread and
+  // agent_thread, so it lives in this outer scope beside shared_op, not
+  // inside either thread's lambda.
+  BalancerFeed balancer_feed;
+
   RealActuator actuator;
   actuator.tx = &tx;
   actuator.sink = &dev_sink;
@@ -780,7 +788,7 @@ int run_real_mode(const Config& cfg) {
   // commanded before the first transition ever happens.
   actuator.last_roi_qp = cfg.encoder.roi_qp_normal;
 
-  RcAgent agent(cfg, actuator);
+  RcAgent agent(cfg, actuator, &balancer_feed);
 
 #ifdef MABUR_HAVE_VENC
   // Boot the encoder BEFORE the radio and before any thread starts: it
@@ -970,6 +978,9 @@ int run_real_mode(const Config& cfg) {
     // engine dtors join their jobs first.
     FecWorker fec_worker;
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
+    // Hot-thread-owned, same exclusivity contract as uep above: writes the
+    // shared balancer_feed, never read back by this thread.
+    AirBalancer balancer(&balancer_feed);
 
     std::shared_ptr<const AppliedOp> last_applied_op;
 
@@ -1011,8 +1022,24 @@ int run_real_mode(const Config& cfg) {
             pipe.reset_vanish_counters();
           }
         }
-        for (auto& b : pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now))
-          txq.push(std::move(b));
+        auto bodies = pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now);
+        // Air-time balancer (spec §2): feed actual emitted bytes, excluding
+        // IDR outliers, then re-solve and apply the split. Runs after
+        // apply_op_to_uep on op changes, so the split always wins the tick.
+        if (op && !(meta.flags & VENC_FRAME_FLAG_IDR)) {
+          size_t emitted = 0;
+          int sid = -1;
+          for (auto& b : bodies) { emitted += b.body.size(); sid = b.stream_id; }
+          if (sid >= 0) balancer.on_frame(sid, static_cast<size_t>(n), emitted);
+        }
+        if (op && !op->shed[1]) {
+          auto split = balancer.solve(rc::phy_rate_mbps(op->ladder[0]),
+                                      rc::phy_rate_mbps(op->ladder[1]),
+                                      op->fec_overhead);
+          uep.set_layer_overhead(0, split.ov_base);
+          uep.set_layer_overhead(1, split.ov_enh);
+        }
+        for (auto& b : bodies) txq.push(std::move(b));
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
         idr_disagree_total.store(pipe.idr_disagreements(),
@@ -1212,7 +1239,15 @@ int run_real_mode(const Config& cfg) {
           ti.mode = agent.current().ladder[0].mode;
           ti.mcs = agent.current().ladder[0].mcs;
           ti.bw = agent.current().ladder[0].bw;
-          ti.applied_ov = agent.current().fec_overhead;
+          // Feed reads 0 until the hot thread's balancer has solved at least
+          // once (pre-first-solve) — fall back to the commanded overhead so
+          // telemetry never reports a bogus 0.0 during that window.
+          ti.applied_ov_base = balancer_feed.ov_base.load(std::memory_order_relaxed);
+          ti.applied_ov_enh = balancer_feed.ov_enh.load(std::memory_order_relaxed);
+          if (ti.applied_ov_base == 0.0 && ti.applied_ov_enh == 0.0) {
+            ti.applied_ov_base = agent.current().fec_overhead;
+            ti.applied_ov_enh = agent.current().fec_overhead;
+          }
           // have_feedback() false means no RCF has EVER been accepted (still
           // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
           // the truth. Pass a value make_telem's saturate<uint16_t> clamps to

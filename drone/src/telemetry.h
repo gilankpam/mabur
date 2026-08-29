@@ -38,7 +38,8 @@ struct TelemInputs {
   uint64_t generation = 0;
   rc::PhyMode mode = rc::PhyMode::HT;
   uint8_t mcs = 0, bw = 20;
-  double applied_ov = 0.0;
+  double applied_ov_base = 0.0;
+  double applied_ov_enh = 0.0;
   uint64_t rcf_age_ms = 0, rcf_rx = 0;
   uint64_t enc_frames = 0, enc_bytes = 0;
   int cmd_kbps = 0, qp = 0;

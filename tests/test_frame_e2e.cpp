@@ -22,10 +22,10 @@
 using namespace mabur;
 
 namespace {
-std::array<UepLayerCfg, 4> layers() {
-  std::array<UepLayerCfg, 4> l{};
-  const double ov[4] = {1.0, 0.75, 0.5, 0.5};
-  for (int i = 0; i < 4; ++i) {
+std::array<UepLayerCfg, 2> layers() {
+  std::array<UepLayerCfg, 2> l{};
+  const double ov[2] = {1.0, 0.75};
+  for (int i = 0; i < 2; ++i) {
     l[i].fec.symbol_size = 164;
     l[i].fec.window = 128;
     l[i].fec.overhead = ov[i];
@@ -119,7 +119,7 @@ TEST(frame_e2e_clean_and_lossy) {
 TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
   std::mt19937 rng(99);
   UepEncoder enc(layers(), 15);
-  enc.set_shed(3, true);                  // congestion: enhance layer shed
+  enc.set_shed(1, true);                  // congestion: enhance layer shed
   UepDecoder dec(layers(), 200);
   FramePipeline pipe;
 
@@ -159,7 +159,7 @@ TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
   CHECK(clean == static_cast<uint64_t>(sent));
   CHECK(truncated == 0);
   CHECK(fs.frames_dropped() == 0);
-  CHECK(enc.dropped(3) == 30);
+  CHECK(enc.dropped(1) == 30);
 }
 #endif  // MABUR_TEST_HAVE_DRONE_CORE
 
