@@ -142,3 +142,20 @@ their variance into jitter. Knobs, in order of proven usefulness:
   the remaining IDR cost is pure payload (~1.7×P). The only further
   reductions are quality trades (`qp_delta`, tighter ipprop toward the
   1.4 floor) — measured, available, currently not worth it.
+- **Explored and parked (2026-08-29): a 90 fps canary layer.** Base
+  60 fps guaranteed + 30 fps disposable TRAIL_N on s3 (`ltr:2`-style
+  period at 90 fps) would raise the shed floor from 30 to 60 fps, and
+  a lighter-FEC canary is the one legitimate future use of asymmetric
+  overhead (pair it with source-priority TX scheduling — the decoder's
+  systematic fast path already delivers sources immediately; only the
+  TX-side source/repair interleaving couples parity to completion time).
+  Parked because the GS display is 60 Hz: the visible 90 fps vanishes,
+  and the permanent cost (≈1/3 less bits per displayed frame at equal
+  rate, or ~1.3–1.5× the air) buys only a rarely-entered shed mode plus
+  ~4 ms freshness. Revisit on a >60 Hz display, or if flight data shows
+  the 30 fps shed floor actually hurting. Per-stream higher MCS for the
+  canary was hardware-refuted as general policy (July uniform-PHY
+  ruling: s3 at +1/+2 rungs saw 42% RF loss) — canary-tolerable, but
+  the wall is sharp. Any alternating bitrate ratio r:1 prices as
+  EMA ≈ 2·Δair/wire-rate; 1-in-N droppable patterns cost ~2/N of the
+  every-other-frame damage.
