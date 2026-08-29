@@ -65,12 +65,17 @@ int main() {
   }
 
   // end-to-end encoder frames/s at bench geometry (symbol 164, bpb 8,
-  // window 128, overhead ladder at cmd 0.375 equivalent: ref ladder x1.5).
+  // window 128, overhead 0.75 literal — Task 3 deleted the kUepRefOverhead
+  // ladder; 0.75 reproduces the exact pre-Task-3 value byte-for-byte
+  // (kUepRefOverhead was flat 0.50 at every index post-2026-08-29-flatten,
+  // and this file already fed the *1.5-scaled result straight into
+  // SwConfig as the actually-applied overhead, so no x2 rule applies here
+  // — it was never a cmd value routed through uep_layer_overhead).
   // 14000 B frames at 60 fps ~ 6.7 Mbps of video, the shape maburd ingests.
   {
-    std::array<UepLayerCfg, 4> layers{};
-    for (int s = 0; s < 4; ++s) {
-      layers[s].fec = SwConfig{164, 128, kUepRefOverhead[s] * 1.5};
+    std::array<UepLayerCfg, 2> layers{};
+    for (int s = 0; s < 2; ++s) {
+      layers[s].fec = SwConfig{164, 128, 0.75};
       layers[s].blocks_per_body = 8;
     }
     UepEncoder enc(layers, 15);
