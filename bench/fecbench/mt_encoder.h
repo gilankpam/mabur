@@ -32,7 +32,7 @@
 #include "mabur/sbi.h"
 #include "mabur/sw_encoder.h"
 #include "mabur/sw_wire.h"
-#include "mabur/uep_encoder.h"  // UepLayerCfg, UepBody, uep_layer_overhead
+#include "mabur/uep_encoder.h"  // UepLayerCfg, UepBody
 
 namespace fecbench {
 
@@ -545,13 +545,13 @@ class SwStock {
 template <class Sw>
 class UepEncoderT {
  public:
-  UepEncoderT(const std::array<mabur::UepLayerCfg, 4>& layers, int flush_ms,
-              const std::array<uint32_t, 4>& seqs,
+  static constexpr int kNumStreams = 2;
+
+  UepEncoderT(const std::array<mabur::UepLayerCfg, 2>& layers, int flush_ms,
+              const std::array<uint32_t, 2>& seqs,
               typename Sw::Worker* worker)
       : layers_{Layer(layers[0], 0, seqs[0], worker),
-                Layer(layers[1], 1, seqs[1], worker),
-                Layer(layers[2], 2, seqs[2], worker),
-                Layer(layers[3], 3, seqs[3], worker)},
+                Layer(layers[1], 1, seqs[1], worker)},
         flush_ms_(flush_ms) {}
 
   // Mirrors mabur UepEncoder::add_frame, including the frame-end seal (window
@@ -560,7 +560,7 @@ class UepEncoderT {
   std::vector<mabur::UepBody> add_frame(int stream_id, const uint8_t* data,
                                         size_t len, uint64_t now_ms) {
     std::vector<mabur::UepBody> out;
-    const int sid = stream_id < 0 ? 0 : (stream_id > 3 ? 3 : stream_id);
+    const int sid = stream_id < 0 ? 0 : (stream_id > kNumStreams - 1 ? kNumStreams - 1 : stream_id);
     Layer& layer = layers_[(size_t)sid];
     auto frags = layer.frag.fragment(data, len, layer.usable);
     for (auto& f : frags)
@@ -575,7 +575,7 @@ class UepEncoderT {
 
   std::vector<mabur::UepBody> poll(uint64_t now_ms) {
     std::vector<mabur::UepBody> out;
-    for (int sid = 0; sid < 4; ++sid) {
+    for (int sid = 0; sid < kNumStreams; ++sid) {
       Layer& layer = layers_[(size_t)sid];
       if (!layer.has_activity) continue;
       if (now_ms - layer.last_activity_ms < (uint64_t)flush_ms_) continue;
@@ -616,7 +616,7 @@ class UepEncoderT {
       out.push_back(mabur::UepBody{sid, std::move(b)});
   }
 
-  std::array<Layer, 4> layers_;
+  std::array<Layer, 2> layers_;
   int flush_ms_;
 };
 

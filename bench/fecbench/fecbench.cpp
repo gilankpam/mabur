@@ -290,7 +290,7 @@ static void feed_stream(Enc& uep, int ppf, int sim_seconds, double* wall,
 // bench replica with pinned seqs; the replica's own faithfulness is covered
 // by the copy-vs-base perf row.
 static int verify_encoder() {
-  static const std::array<uint32_t, 4> kSeqs = {11, 2222, 333333, 44444444};
+  static const std::array<uint32_t, 2> kSeqs = {11, 2222};
   int failures = 0;
   for (int perlayer = 0; perlayer < 2; ++perlayer) {
     for (double ov : {0.10, 0.375}) {
@@ -365,7 +365,7 @@ static void print_enc_row(const char* eng, const char* mode, double ov,
 }
 
 static void run_encoder_bench(int sim) {
-  static const std::array<uint32_t, 4> kSeqs = {11, 2222, 333333, 44444444};
+  static const std::array<uint32_t, 2> kSeqs = {11, 2222};
   std::printf("\n## encoder: end-to-end base vs copy vs mt2 (%ds/point, ppf=13)\n",
               sim);
   std::printf("%-5s %-8s %5s %7s %7s %8s %10s %9s\n", "eng", "mode", "ov",
