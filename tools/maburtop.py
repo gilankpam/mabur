@@ -660,7 +660,8 @@ def panel_drone(model, wall):
     depth, cap = txq.get("depth"), txq.get("cap")
     depth_s, cap_s = _f(depth, 3), _f(cap, 3)
     drops_s = _f(txq.get("drops"), 5)
-    line4 = f"queue     {depth_s} / {cap_s}      drops {drops_s}"
+    wait_s = _f(drone.get("txq_wait_ms"), 5)
+    line4 = f"queue     {depth_s} / {cap_s}   txw {wait_s} ms   drops {drops_s}"
     spans4 = []
     if depth is not None and cap is not None and depth > cap / 2:
         idx = line4.index(depth_s)

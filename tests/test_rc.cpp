@@ -253,7 +253,8 @@ TEST(telem_round_trip_and_golden) {
   t.applied_ov_base = 0.25; t.applied_ov_enh = 0.30;
   t.rcf_age_ms = 45; t.rcf_rx = 100000; t.enc_frames = 200000;
   t.enc_kbytes = 300000; t.cmd_kbps = 9000; t.qp = 8; t.ring_drops = 1;
-  t.txq_depth = 3; t.txq_cap = 64; t.txq_drops = 7; t.radio_sent = 400000;
+  t.txq_depth = 3; t.txq_cap = 64; t.txq_drops = 7; t.txq_wait_max_ms = 1234;
+  t.radio_sent = 400000;
   t.radio_drops = 9; t.usb_fail = 2;
   t.up_rssi[0] = 51; t.up_rssi[1] = 52; t.up_snr[0] = 21; t.up_snr[1] = 22;
   t.soc_temp_c = 61; t.thermal_delta = 3; t.load_x100 = 72;
@@ -271,6 +272,7 @@ TEST(telem_round_trip_and_golden) {
   CHECK(std::abs(back->applied_ov_enh - 0.30) < 0.005);
   CHECK(back->rcf_rx == t.rcf_rx);
   CHECK(back->enc_kbytes == t.enc_kbytes);
+  CHECK(back->txq_wait_max_ms == 1234);
   CHECK(back->radio_sent == t.radio_sent);
   CHECK(back->up_snr[1] == 22);
   CHECK(back->soc_temp_c == 61);
@@ -288,8 +290,8 @@ TEST(telem_round_trip_and_golden) {
   // not pass with an empty golden)
   const std::string GOLDEN =
       "43520504030201020706050405191e2d00a0860100400d0300e0930400282308010"
-      "0034007000000801a0600090000000200333415163d034800040005000700080009"
-      "000a003eb13d";
+      "0034007000000d204801a0600090000000200333415163d034800040005000700080"
+      "009000a003eb263";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();

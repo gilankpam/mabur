@@ -452,6 +452,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
 
     json& d = j["drone"];
     d["tlm_age_ms"] = now_ms > in.telem_rx_ms ? now_ms - in.telem_rx_ms : 0;
+    // Task 4/5 latency accounting: per-telemetry-window max TxQueue wait,
+    // saturating on the wire (see rc::Telem::txq_wait_max_ms).
+    d["txq_wait_ms"] = t.txq_wait_max_ms;
     d["tlm_seq"] = t.tlm_seq;
     d["state"] = t.state < 4 ? kTelemStateNames[t.state] : "unknown";
     d["gen"] = t.generation;

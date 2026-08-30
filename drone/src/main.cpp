@@ -1350,6 +1350,7 @@ int run_real_mode(const Config& cfg) {
           ti.txq_depth = txq.depth();
           ti.txq_cap = kTxQueueCap;
           ti.txq_drops = txq.dropped();
+          ti.txq_wait_max_ms = txq_wait_max_ms.exchange(0, std::memory_order_relaxed);
           ti.radio_sent = tx.sent();
           ti.radio_drops = tx.drops();
           ti.usb_fail = txstats.failed;
