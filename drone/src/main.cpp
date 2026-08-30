@@ -276,8 +276,8 @@ struct RealActuator : mabur::Actuator {
     // Applying an op is a ladder + FEC + shed change and nothing else — see
     // the struct comment: there is no per-op power step to do in real mode.
     if (!dev && dry_run) {
-      std::fprintf(stderr, "[dry-run] fec_overhead=%.3f gen=%llu\n",
-                   op.fec_overhead,
+      std::fprintf(stderr, "[dry-run] fec_ov_base=%.3f fec_ov_enh=%.3f gen=%llu\n",
+                   op.fec_ov_base, op.fec_ov_enh,
                    static_cast<unsigned long long>(op.generation));
     }
     shared_op->store(std::make_shared<const AppliedOp>(op));
@@ -368,11 +368,13 @@ uint64_t now_steady_ms() {
 
 // Applies a freshly-published AppliedOp (detected via shared_ptr identity,
 // not generation — see the callers' pump-loop comments) to the
-// hot-thread-owned UepEncoder (set_overhead + per-layer shed). Called
-// from the hot thread only. AppliedOp is still 4-wide until Task 5
-// (2-slot AppliedOp); only indices [0]/[1] map to the 2-stream UepEncoder.
+// hot-thread-owned UepEncoder: the commanded overhead PAIR applied directly
+// per layer (Task 6, RC_VERSION 5 — no ladder/scale translation) plus
+// per-layer shed. Called from the hot thread only. The 2-slot AppliedOp's
+// indices [0]/[1] map 1:1 onto the 2-stream UepEncoder's sids.
 void apply_op_to_uep(const AppliedOp& op, UepEncoder& uep) {
-  uep.set_overhead(op.fec_overhead);
+  uep.set_layer_overhead(0, op.fec_ov_base);
+  uep.set_layer_overhead(1, op.fec_ov_enh);
   for (int i = 0; i < 2; ++i) uep.set_shed(i, op.shed[static_cast<size_t>(i)]);
 }
 
@@ -1034,9 +1036,15 @@ int run_real_mode(const Config& cfg) {
           if (sid >= 0) balancer.on_frame(sid, static_cast<size_t>(n), emitted);
         }
         if (op && !op->shed[1]) {
+          // Transitional (Task 6 -> Task 7 deletes the solver entirely, spec
+          // 2026-08-30-same-rate-fixed-pairs): AirBalancer::solve still
+          // takes one ov_cmd, but AppliedOp now carries a base/enh PAIR.
+          // fec_ov_base anchors it — same choice apply_op_to_uep's direct
+          // per-layer set already made moot the instant this solve()
+          // overrides it below, and the solver is gone next task regardless.
           auto split = balancer.solve(rc::phy_rate_mbps(op->ladder[0]),
                                       rc::phy_rate_mbps(op->ladder[1]),
-                                      op->fec_overhead);
+                                      op->fec_ov_base);
           uep.set_layer_overhead(0, split.ov_base);
           uep.set_layer_overhead(1, split.ov_enh);
         }
@@ -1240,14 +1248,22 @@ int run_real_mode(const Config& cfg) {
           ti.mode = agent.current().ladder[0].mode;
           ti.mcs = agent.current().ladder[0].mcs;
           ti.bw = agent.current().ladder[0].bw;
-          // Feed reads 0 until the hot thread's balancer has solved at least
-          // once (pre-first-solve) — fall back to the commanded overhead so
-          // telemetry never reports a bogus 0.0 during that window.
-          ti.applied_ov_base = balancer_feed.ov_base.load(std::memory_order_relaxed);
-          ti.applied_ov_enh = balancer_feed.ov_enh.load(std::memory_order_relaxed);
-          if (ti.applied_ov_base == 0.0 && ti.applied_ov_enh == 0.0) {
-            ti.applied_ov_base = agent.current().fec_overhead;
-            ti.applied_ov_enh = agent.current().fec_overhead;
+          // applied_ov_base/enh report the commanded op PAIR (Task 6,
+          // RC_VERSION 5 — the fixed per-rung values RcAgent applies
+          // directly to the UEP layers), or the debug-HTTP per-layer
+          // override when armed (the same two atomics run_bitrate_policy's
+          // override check reads) — not the hot-thread balancer's live
+          // per-frame solve, which is transitional and gone in Task 7.
+          {
+            const int ob = balancer_feed.ovr_base_pct.load(std::memory_order_relaxed);
+            const int oe = balancer_feed.ovr_enh_pct.load(std::memory_order_relaxed);
+            if (ob >= 0 && oe >= 0) {
+              ti.applied_ov_base = ob / 100.0;
+              ti.applied_ov_enh = oe / 100.0;
+            } else {
+              ti.applied_ov_base = agent.current().fec_ov_base;
+              ti.applied_ov_enh = agent.current().fec_ov_enh;
+            }
           }
           // have_feedback() false means no RCF has EVER been accepted (still
           // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of

@@ -71,8 +71,11 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
   // with no translation left to apply it, so this hardcoded MAX_RANGE
   // constant — the one caller with no wire value to carry the doubling for
   // it — must apply the old ×2 itself to keep the MCS0 floor bitrate
-  // unchanged (carried review finding, Task 3 review).
-  applied_.fec_overhead = 2.0;
+  // unchanged (carried review finding, Task 3 review). Both layers get the
+  // same 2.0: MAX_RANGE has no per-stream pair to carry (Task 6), and enh
+  // is shed here anyway.
+  applied_.fec_ov_base = 2.0;
+  applied_.fec_ov_enh = 2.0;
   applied_.shed[0] = false;
   applied_.shed[1] = true;  // enh layer shed in MAX_RANGE, per spec
   ++applied_.generation;
@@ -81,10 +84,12 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
 }
 
 // Applies a resolved (DISC row or RCF-decoded) ladder/FEC operating point.
-// Does NOT run the bitrate policy itself — callers on the RCF path invoke
+// ov_base/ov_enh are the per-stream pair as-is (Task 6, RC_VERSION 5) — no
+// translation, applied directly to the UEP layers by apply_op_to_uep. Does
+// NOT run the bitrate policy itself — callers on the RCF path invoke
 // run_bitrate_policy() explicitly afterwards, per the spec.
 void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
-                              double fec_overhead) {
+                              double ov_base, double ov_enh) {
   // A resolved DISC/RCF op is only ever applied on a path that (re)enters
   // LINKED (see on_rc_frame), so the sticky MAX_RANGE forced-shed from a
   // prior RENDEZVOUS/FAILSAFE no longer applies — clear it here rather than
@@ -92,7 +97,8 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
   failsafe_shed_ = false;
 
   applied_.ladder = ladder;
-  applied_.fec_overhead = fec_overhead;
+  applied_.fec_ov_base = ov_base;
+  applied_.fec_ov_enh = ov_enh;
   applied_.shed[0] = false;
   // shed_level_ still counts 0..3 (congestion semantics untouched — see
   // run_congestion_guard), but with the reserved layer gone there is only
@@ -175,25 +181,28 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   have_last_policy_ = true;
   const double rate_b = rc::phy_rate_mbps(applied_.ladder[0]);
   const double rate_e = rc::phy_rate_mbps(applied_.ladder[1]);
-  const double ov = applied_.fec_overhead;
+  // The commanded pair (Task 6, RC_VERSION 5) IS the source now — no single
+  // ov to fan out to both terms.
+  double ovb = applied_.fec_ov_base, ove = applied_.fec_ov_enh;
   double fb = 0.5, exb = 0.0, exe = 0.0;
-  double ovb = ov, ove = ov;
   if (feed_) {
     fb = std::clamp<double>(feed_->share_base.load(std::memory_order_relaxed), 0.05, 0.95);
     exb = feed_->excess_base.load(std::memory_order_relaxed);
     exe = feed_->excess_enh.load(std::memory_order_relaxed);
-    // Debug-HTTP per-layer override active: the layers fly THESE overheads
-    // (not the RCF's ov), so the budget target must be built from them.
-    const int ob = feed_->ovr_base_pct.load(std::memory_order_relaxed);
-    const int oe = feed_->ovr_enh_pct.load(std::memory_order_relaxed);
-    if (ob >= 0 && oe >= 0) { ovb = ob / 100.0; ove = oe / 100.0; }
   }
+  // Debug-HTTP per-layer override active: the layers fly THESE overheads
+  // (not the commanded pair), so the budget target must be built from them.
+  // Still gated by feed_ (tests construct RcAgent with none): the ternary's
+  // -1 short-circuits the `>= 0` check exactly as a null feed_ did before.
+  const int ob = feed_ ? feed_->ovr_base_pct.load(std::memory_order_relaxed) : -1;
+  const int oe = feed_ ? feed_->ovr_enh_pct.load(std::memory_order_relaxed) : -1;
+  if (ob >= 0 && oe >= 0) { ovb = ob / 100.0; ove = oe / 100.0; }
   // Blended airtime: V * [fb*mult_b/rate_b + (1-fb)*mult_e/rate_e] = budget.
-  // mult uses COMMANDED redundancy (ov, the RCF's literal fec_overhead) plus
-  // MEASURED framing excess (exb/exe), never the balancer's live per-stream
-  // ov (BalancerFeed::ov_base/ov_enh, telemetry-only) — the balancer is
-  // repair-byte-neutral and must not feed back into this target (spec §2
-  // bitrate).
+  // mult uses the COMMANDED pair (ovb/ove, the RCF's literal
+  // fec_overhead_base/enh) plus MEASURED framing excess (exb/exe), never the
+  // balancer's live per-stream ov (BalancerFeed::ov_base/ov_enh,
+  // telemetry-only) — the balancer is repair-byte-neutral and must not feed
+  // back into this target (spec §2 bitrate).
   const double denom = fb * (1.0 + ovb + exb) / rate_b +
                        (1.0 - fb) * (1.0 + ove + exe) / rate_e;
   double kbps = 1000.0 * cfg_.encoder.airtime_budget / denom;
@@ -333,7 +342,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
                                    static_cast<int>(rc::profile_table().size()) - 1);
     auto ladder = rc::ladder_for_row(row_idx);
     const auto& row = rc::profile_table()[static_cast<size_t>(row_idx)];
-    apply_ladder_op(ladder, row.ov_base);
+    apply_ladder_op(ladder, row.ov_base, row.ov_enh);
 
     if (state_ != State::FAILSAFE) link_established_ = true;
     state_ = State::LINKED;
@@ -391,7 +400,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     }
 
     State prev_state = state_;
-    apply_ladder_op(ladder, r->fec_overhead_base);
+    apply_ladder_op(ladder, r->fec_overhead_base, r->fec_overhead_enh);
 
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;

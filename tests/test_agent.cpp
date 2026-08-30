@@ -55,21 +55,33 @@ Config make_cfg() {
   return cfg;
 }
 
-// Builds a CRC-valid RCF wire frame for vtx_id/seq/profile/fec_overhead.
-// ov_16ths keeps the callers' existing sixteenths-based literals (8 == 0.5,
-// 16 == 1.0, ...) so this helper's ~40 call sites don't need touching for
-// the RC_VERSION 4 literal-fec_overhead wire change. RC_VERSION 5 split the
-// wire field into base/enh; this helper still commands one value for both,
-// same as every caller expects.
+// Builds a CRC-valid RCF wire frame for vtx_id/seq/profile/fec_overhead,
+// with DISTINCT base/enh overheads (ov_16ths keeps the callers' existing
+// sixteenths-based literals: 8 == 0.5, 16 == 1.0, ...). This is the widened
+// form (controller ruling, Task 6): the 4-arg overload below still packs one
+// value into both wire fields for the ~40 call sites that don't care about
+// the split, but a test that means to exercise the base/enh PAIR (the
+// bitrate-blend fb-share-clamp tests, and the AppliedOp-pair test) must call
+// this 5-arg form directly, or the two wire fields collapse to the same
+// value and the blend math can't tell base from enh apart (see the
+// weakened-test comments this replaced, Task 2 finding).
 std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
-                                    uint8_t ov_16ths) {
+                                    uint8_t ov_base_16ths, uint8_t ov_enh_16ths) {
   Rcf r;
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
-  r.fec_overhead_base = ov_16ths / 16.0;
-  r.fec_overhead_enh = ov_16ths / 16.0;
+  r.fec_overhead_base = ov_base_16ths / 16.0;
+  r.fec_overhead_enh = ov_enh_16ths / 16.0;
   return pack_rcf(r);
+}
+
+// Convenience overload: the common case where a test wants the same
+// overhead commanded on both wire fields (RC_VERSION 4 behavior). Kept so
+// the ~40 existing call sites don't need touching.
+std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
+                                    uint8_t ov_16ths) {
+  return make_rcf_wire(vtx_id, seq, profile, ov_16ths, ov_16ths);
 }
 
 std::vector<uint8_t> make_disc_wire(uint32_t vtx_id, uint32_t nonce, uint8_t op_channel,
@@ -107,7 +119,8 @@ TEST(boot_first_tick_applies_max_range_and_moves_to_rendezvous) {
   }
   // 2.0, not the wire-literal 1.0: apply_max_range's hardcoded constant
   // carries the old pre-Task-1 ×2 translation itself (see its comment).
-  CHECK(op.fec_overhead > 1.999 && op.fec_overhead < 2.001);
+  CHECK(op.fec_ov_base > 1.999 && op.fec_ov_base < 2.001);
+  CHECK(op.fec_ov_enh > 1.999 && op.fec_ov_enh < 2.001);
   CHECK(op.shed[0] == false);
   CHECK(op.shed[1] == true);
 
@@ -245,10 +258,32 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   const AppliedOp& op = agent.current();
   CHECK(op.ladder[0].mcs == 2);  // BASE = mcs (same-rate)
   CHECK(op.ladder[1].mcs == 2);  // ENH = mcs
-  CHECK(op.fec_overhead > 0.499 && op.fec_overhead < 0.501);
+  CHECK(op.fec_ov_base > 0.499 && op.fec_ov_base < 0.501);
+  CHECK(op.fec_ov_enh > 0.499 && op.fec_ov_enh < 0.501);
 
   REQUIRE(!act.bitrates.empty());
   CHECK(act.bitrates.back() == 8500);
+}
+
+// 3a. AppliedOp carries the RCF's base/enh overheads as a genuine PAIR, not
+// folded into one value (Task 6, RC_VERSION 5): base=1.0, enh=0.5 must
+// survive on_rc_frame -> apply_ladder_op -> AppliedOp distinctly.
+TEST(applied_op_carries_distinct_base_enh_overhead_pair) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
+  // ov_base=1.0 (16/16), ov_enh=0.5 (8/16) -- distinct on the wire.
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 16, 8);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(!act.applied.empty());
+  const AppliedOp& op = act.applied.back();
+  CHECK(op.fec_ov_base > 0.999 && op.fec_ov_base < 1.001);
+  CHECK(op.fec_ov_enh > 0.499 && op.fec_ov_enh < 0.501);
 }
 
 // 3b. The blend itself, isolated from the mcs2 case above: profile mcs5 ->
@@ -295,20 +330,22 @@ TEST(bitrate_policy_failsafe_degenerates_to_single_rate) {
 }
 
 // 3d. Non-null BalancerFeed drives the blend: asymmetric share (0.7/0.3)
-// plus DISTINCT excess_base/excess_enh. Same-rate ruling means BASE and
-// ENH now share one PHY rate (mcs5, 52 Mbps both slots), so the two
-// hypothetical bugs this test was built to separate (a swapped exb/exe vs.
-// an inverted fb/(1-fb) weighting) collapse to the same wrong value —
-// ovb==ove factors 1.5/rate out of the weighted term, leaving only
-// fb*exb+(1-fb)*exe, which is symmetric under simultaneously swapping
-// (fb,exb,exe)->(1-fb,exe,exb) — but the test still catches either one
-// (both land on 19900, not the correct 19700).
-//   denom = 0.7*(1+0.5+0.10)/52 + 0.3*(1+0.5+0.05)/52
-//         = [0.7*1.60 + 0.3*1.55]/52 = 1.585/52 = 0.0304808
-//   kbps  = 1000*0.60/0.0304808 = 19684.5 -> round100 = 19700.
-// (For contrast, swapping exb/exe or inverting fb/(1-fb) each give
-// 19936.1 -> 19900, different from 19700, so either bug still fails this
-// test — it just can no longer tell you which one.)
+// plus DISTINCT excess_base/excess_enh, AND (controller ruling, Task 6) a
+// DISTINCT RCF base/enh overhead pair (ov_base=0.5, ov_enh=1.0) — same-rate
+// ruling means BASE and ENH share one PHY rate (mcs5, 52 Mbps both slots),
+// so with ovb==ove (the old make_rcf_wire single-value form) the ov term
+// factors out of the weighted sum and only the exb/exe half of the blend
+// stayed observable (Task 2 finding). With ovb != ove restored, a bug that
+// mixes up which ov/excess goes with which fb weight moves the result away
+// from the correct answer in every direction tried below.
+//   denom = fb*(1+ovb+exb)/rate + (1-fb)*(1+ove+exe)/rate
+//         = [0.7*(1+0.5+0.10) + 0.3*(1+1.0+0.05)]/52
+//         = [0.7*1.60 + 0.3*2.05]/52 = 1.735/52 = 0.0333654
+//   kbps  = 1000*0.60/0.0333654 = 17982.7 -> round100 = 18000.
+// Contrast wrong wirings, all of which land elsewhere:
+//   - swap ovb/ove (keep fb/exb/exe correct): 1.935/52 -> 16100.
+//   - invert fb/(1-fb) only (ov/excess pairing kept): 1.915/52 -> 16300.
+//   - swap exb/exe only (fb/ov pairing kept): 1.715/52 -> 18200.
 TEST(bitrate_policy_blend_uses_live_feed_share_and_excess) {
   Config cfg = make_cfg();
   cfg.encoder.airtime_budget = 0.60;
@@ -322,27 +359,33 @@ TEST(bitrate_policy_blend_uses_live_feed_share_and_excess) {
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);  // ov16=8 -> 0.5
+  // ov_base=0.5 (8/16), ov_enh=1.0 (16/16) -- distinct, so ovb/ove stay
+  // observable in the blended target instead of factoring out.
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8, 16);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 19700);
+  CHECK(act.bitrates.back() == 18000);
 }
 
 // 3e. feed_->share_base is clamped to [0.05, 0.95] before it reaches the
 // blend -- a share of 0.0 (e.g. the balancer transiently reporting "all
 // air to enh") must not zero out the base term entirely. profile mcs3 ->
-// BASE=mcs3, ENH=mcs3 (26 Mbps, both slots — same-rate ruling), ov (RCF
-// literal) 0.25, budget 0.60, max 20000, no excess. NOTE: with BASE and
-// ENH sharing one rate and one ov, fb*(X)/rate + (1-fb)*(X)/rate == X/rate
-// for ANY fb, clamped or not -- the fb clamp this test was built to pin is
-// no longer observable in the bitrate output under same-rate. The number
-// below is still the correct blended target; the clamp itself needs a
-// different probe now that same-rate has collapsed this one (flagged for
-// follow-up, not fixed here).
-//   denom = (1+0.25)/26 = 0.0480769, kbps = 1000*0.60/0.0480769 = 12480.0
-//   -> round100 = 12500 (identical whether fb is 0.0 or clamped to 0.05).
+// BASE=mcs3, ENH=mcs3 (26 Mbps, both slots — same-rate ruling); base/enh ov
+// DISTINCT (ov_base=1.0, ov_enh=0.25 -- controller ruling, Task 6) so the
+// clamp is observable again: with ovb==ove (the old single-value wire),
+// fb*(X)/rate + (1-fb)*(X)/rate == X/rate for ANY fb, so the clamp from 0.0
+// to 0.05 was invisible in the output (Task 2 finding). With distinct
+// values, an unclamped fb=0.0 gives ALL the weight to the ove term (a
+// different, wrong, answer) while the correctly-clamped fb=0.05 blends in a
+// sliver of the ovb term too.
+//   clamped (fb=0.05):   [0.05*(1+1.0) + 0.95*(1+0.25)]/26 = 1.2875/26
+//                        = 0.0495192, kbps = 600/0.0495192 = 12117.0
+//                        -> round100 = 12100.
+//   unclamped bug (fb=0.0, i.e. the clamp dropped): (1+0.25)/26 = 0.0480769,
+//                        kbps = 600/0.0480769 = 12480.0 -> round100 = 12500.
+// 12100 != 12500, so a dropped clamp now fails this test.
 TEST(bitrate_policy_blend_clamps_feed_share_to_valid_range) {
   Config cfg = make_cfg();
   cfg.encoder.airtime_budget = 0.60;
@@ -354,12 +397,14 @@ TEST(bitrate_policy_blend_clamps_feed_share_to_valid_range) {
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 3, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 4);  // ov16=4 -> 0.25
+  // ov_base=1.0 (16/16), ov_enh=0.25 (4/16) -- distinct, so the fb clamp
+  // (0.0 -> 0.05) actually moves the blended target.
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 16, 4);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 12500);
+  CHECK(act.bitrates.back() == 12100);
 }
 
 // 4. Stale seq (same seq again, then seq-1) -> no new apply_op (generation
@@ -424,7 +469,8 @@ TEST(failsafe_and_rendezvous_timers_fire_exactly) {
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   const AppliedOp& op = agent.current();
   CHECK(op.ladder[0].mcs == 0);
-  CHECK(op.fec_overhead > 1.999 && op.fec_overhead < 2.001);
+  CHECK(op.fec_ov_base > 1.999 && op.fec_ov_base < 2.001);
+  CHECK(op.fec_ov_enh > 1.999 && op.fec_ov_enh < 2.001);
 
   // LINKED->FAILSAFE entry forces the bitrate policy to the MCS0 floor
   // (1400 kbps) immediately, bypassing the steady-state throttle/hysteresis

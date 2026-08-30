@@ -13,11 +13,13 @@ namespace mabur {
 
 // The resolved operating point: the 2-slot ladder ([0]=BASE at profile_mcs
 // -1, [1]=ENH at profile_mcs — spec 2026-08-29-airtime-balance-uep §2), the
-// literal FEC air overhead (Task 1: RC_VERSION 4 made this a plain value,
-// no ladder translation left as of Task 3), per-layer shed flags
-// (failsafe-forced OR local congestion-directed; shed[1] is the enh shed,
-// the old shed[3] — the old reserved layer and its shed[2] slot are gone),
-// and
+// per-stream literal FEC air overhead PAIR (Task 6, RC_VERSION 5: the
+// single fec_overhead scalar split into fec_ov_base/fec_ov_enh — fixed
+// per-rung pairs, spec 2026-08-30-same-rate-fixed-pairs; applied directly
+// to the UEP layers via apply_op_to_uep, no ladder translation), per-layer
+// shed flags (failsafe-forced OR local congestion-directed; shed[1] is the
+// enh shed, the old shed[3] — the old reserved layer and its shed[2] slot
+// are gone), and
 // a generation counter bumped only when a *new* operating point
 // (ladder/FEC) is applied (BOOT/DISC/RCF/failsafe entry) — NOT on every
 // publish. Congestion shed re-applies the *current* op (same ladder/FEC)
@@ -29,7 +31,8 @@ namespace mabur {
 // observed against the newly loaded one instead.
 struct AppliedOp {
   std::array<rc::LayerTxSpec, 2> ladder;
-  double fec_overhead = 2.0;
+  double fec_ov_base = 2.0;
+  double fec_ov_enh = 2.0;
   std::array<bool, 2> shed = {false, false};
   uint64_t generation = 0;
 };
@@ -247,7 +250,7 @@ class RcAgent {
 
   void apply_max_range(uint64_t now_ms);
   void apply_ladder_op(const std::array<rc::LayerTxSpec, 2>& ladder,
-                        double fec_overhead);
+                        double ov_base, double ov_enh);
   void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);
