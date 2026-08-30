@@ -167,6 +167,23 @@ flat/asym configs as above. Jitter EMA (Δ vs own clean baseline):
   win (~2–3 ms) must be weighed against worsening the +4–8 ms column —
   measure deferral under THIS rig before believing in it.
 
+## Adopted + deployed (same day)
+
+The same-rate + fixed-pairs architecture was specced
+(`docs/superpowers/specs/2026-08-30-same-rate-fixed-pairs-design.md`),
+implemented (RC_VERSION 5 pair RCF, per-rung config pairs, per-sid GS
+budgets, balancer solver deleted -> AirFeed), merged into `venc-foldin`
+(91ddc00, PR #34 Part C) and flag-day deployed to the bench the same
+day. Hardware acceptance 4/4: ausniff 59.8 fps / 0 gaps; pinned-mcs2
+asym smoke (config 1.0/0.5 == applied 1.0/0.5); 10-min adaptive soak
+(parked mcs5, zero ladder-counter churn, jitter 7.3 ms, 0 drops);
+aucadence re-baselined per rung on flat 0.5/0.5 pairs:
+mcs1 +1.36 ms, mcs2 +0.18, mcs3 +1.26, mcs4 -3.83 (encoder size-drift,
+the accepted no-solver trade), mcs5 -0.18 — gate future work against
+these, not the balancer-era numbers. Rollback pair: `*.pre-pairs` both
+devices + `/etc/maburgs.json.pre-pairs` (PAIRED — v4 wire needs the old
+config).
+
 ## State / rollback
 
 Bench runs the `uep-same-rate-sweep` binaries on BOTH ends (same-rate
