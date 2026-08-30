@@ -34,7 +34,17 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # y 924..1022, ZERO differing px outside the card rows, lit total unchanged at
 # 74,690 -- i.e. a pure 116 px leftward translation of dBm/SNR in both rows,
 # with no glyph added, removed or recoloured.
-GS_SHA_EXPECTED=908affc994012eb4589293f72952d755d5627852e002f5dac0b1351c7cf57e1b
+#
+# Re-blessed 2026-08-31 (was 908affc9...): Task 12 (spec
+# 2026-08-30-latency-accounting) added the OSD LAT row, a new field this
+# harness's --gs-render invocation has no CLI flag to populate, so it always
+# renders "LAT --" here. Pixel diff old->new: 3,224 px differ, ALL of them
+# NEW ink (lit total 74,690 -> 77,914, delta == diff count exactly, so
+# nothing existing moved, changed colour, or was erased), bbox x 1007..1096
+# y 858..893 -- a small isolated region above the FPS block (LAT stacks
+# above FPS in the video-figures column, see gs_overlay.cpp), matching
+# nothing but the new field's own box. No other block's pixels differ.
+GS_SHA_EXPECTED=91170ab2f7aa2e0a3ce7233e44568734e431605a33bb47e3cae69710f22b0575
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

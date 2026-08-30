@@ -142,6 +142,17 @@ typedef struct {
  * MI_SYS  (system binding / channel port)
  * ==================================================================== */
 
+/* Current time in the MI pts timebase. ONE-argument form on star6e —
+ * verified by disassembly of libmi_sys.so (r0 is the out-pointer, embedded
+ * into the ioctl payload; r1 is clobbered before any read, so no SocId).
+ * The maruko/i6C SDK's two-arg (SocId, pts) form does NOT apply here.
+ *
+ * Declared with plain stdint types, not MI_S32/MI_U64: this header is
+ * included by star6e.h *before* those typedefs exist (self-contained,
+ * per the file banner above), and MI_S32/MI_U64 are themselves typedefs
+ * of int32_t/uint64_t, so the ABI is identical either way. */
+int32_t MI_SYS_GetCurPts(uint64_t *pu64CurPts);
+
 typedef enum {
     I6_SYS_LINK_FRAMEBASE = 0x1,
     I6_SYS_LINK_LOWLATENCY = 0x2,

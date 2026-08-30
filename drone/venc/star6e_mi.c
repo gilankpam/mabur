@@ -67,6 +67,9 @@ static int i6e_sys_load(star6e_sys_impl *sys)
 	LOAD_SYM(sys, "libmi_sys.so", fnSetChnOutputPortDepth,
 		int (*)(const void *, uint32_t, uint32_t),
 		"MI_SYS_SetChnOutputPortDepth");
+	/* Optional — see the field comment in star6e_mi.h. */
+	LOAD_SYM(sys, "libmi_sys.so", fnGetCurPts,
+		int (*)(uint64_t *), "MI_SYS_GetCurPts");
 
 	if (!sys->fnInit || !sys->fnExit || !sys->fnBindChnPort ||
 	    !sys->fnUnBindChnPort || !sys->fnBindChnPort2 ||

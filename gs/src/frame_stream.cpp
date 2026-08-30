@@ -5,7 +5,7 @@
 namespace maburgs {
 
 void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
-                                uint64_t now_ms) {
+                                uint64_t now_ms, const FragArrival& arr) {
   if (!pkt || len < 6) { ++bad_frags_; return; }
   // Stall watchdog: frames have been arriving for stall_reset_ms with nothing
   // emitted — the emit cursor is wedged above the incoming id64 space (e.g. a
@@ -37,10 +37,15 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
   if (s.chunks.empty()) { s.sid = sid; s.fseq = fseq; s.first_ms = now_ms;
                           s.last_progress_ms = now_ms; s.count = count; }
   s.chunks[idx].assign(pkt + 6, pkt + len);
+  if (arr.body_mono_us &&
+      (s.lat.t_first_us == 0 || arr.body_mono_us < s.lat.t_first_us))
+    s.lat.t_first_us = arr.body_mono_us;
   if (idx == 0 && !s.have_hdr) {
     auto h = mabur::framewire::parse_frame_hdr(s.chunks[0].data(), s.chunks[0].size());
     if (!h) { ++bad_frags_; slots_.erase(key); return; }
     s.have_hdr = true;
+    s.lat.drone_q_ms = arr.q_ms;
+    s.lat.enc_us = arr.enc_us;
     s.hdr = *h;
     bool rebased = false;
     s.id64 = unwrap_id(h->frame_id, h->flags, &rebased);
@@ -140,7 +145,7 @@ void FrameStream::try_emit(uint64_t now_ms) {
 }
 
 void FrameStream::finish(Slot& s, bool complete) {
-  cb_.end_frame(complete);
+  cb_.end_frame(complete, s.lat);
   complete ? ++clean_ : ++truncated_;
   next_emit_id64_ = s.id64 + 1;
   stall_armed_ = false;
@@ -166,7 +171,7 @@ void FrameStream::reset() {
   // Close any in-flight frame at the packetizer with a truncated end so its
   // in-flight FU doesn't dangle across the session/format-flip boundary.
   for (auto& [k, s] : slots_)
-    if (s.began) cb_.end_frame(false);
+    if (s.began) cb_.end_frame(false, s.lat);
   slots_.clear();
   have_id_base_ = false;
   last_id64_ = 0;

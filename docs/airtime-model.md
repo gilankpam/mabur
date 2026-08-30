@@ -88,6 +88,10 @@ encoder contributes almost nothing: maburd publishes into the frame ring
 at a flat 16.7 ms cadence, publish jitter EMA 0.3–0.5 ms, pts→publish
 < 1 ms for every frame type and preset (including refPred — the old
 "SigmaStar VENC alternating latency" claim from July 2026 is refuted).
+That pts→publish figure was a cross-timebase measurement (vendor pts leads
+CLOCK_MONOTONIC), so it proved flatness, not absolute encode latency; the
+wire `enc_us` (MI_SYS_GetCurPts basis, 2026-08-31, SBI/SlotHdr v2) is the
+true per-frame figure.
 
 **Jitter is the second difference of air sizes.** Inter-completion
 interval = 16.7 ms + (air_this − air_prev)/rate, and the player's

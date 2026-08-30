@@ -45,7 +45,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 14;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 71;  // grew by 1: applied_ov split base+enh
+constexpr size_t TELEM_LEN = 73;  // grew by 2: txq_wait_max_ms (u16)
 
 }  // namespace
 
@@ -196,6 +196,7 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(t.txq_depth);
   body.push_back(t.txq_cap);
   put32(body, t.txq_drops);
+  put16(body, t.txq_wait_max_ms);
   put32(body, t.radio_sent);
   put32(body, t.radio_drops);
   put16(body, t.usb_fail);
@@ -246,23 +247,24 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.txq_depth = buf[34];
   t.txq_cap = buf[35];
   t.txq_drops = get32(buf, 36);
-  t.radio_sent = get32(buf, 40);
-  t.radio_drops = get32(buf, 44);
-  t.usb_fail = get16(buf, 48);
-  t.up_rssi[0] = buf[50];
-  t.up_rssi[1] = buf[51];
-  t.up_snr[0] = static_cast<int8_t>(buf[52]);
-  t.up_snr[1] = static_cast<int8_t>(buf[53]);
-  t.soc_temp_c = static_cast<int8_t>(buf[54]);
-  t.thermal_delta = static_cast<int8_t>(buf[55]);
-  t.load_x100 = get16(buf, 56);
-  t.idr_disagree = get16(buf, 58);
-  t.enhance_disagree = get16(buf, 60);
-  t.vanished_base = get16(buf, 62);
-  t.vanished_enh = get16(buf, 64);
-  t.self_idr_refused = get16(buf, 66);
-  t.venc_full_drops = get16(buf, 68);
-  t.venc_ring_fill_pct = buf[70];
+  t.txq_wait_max_ms = get16(buf, 40);
+  t.radio_sent = get32(buf, 42);
+  t.radio_drops = get32(buf, 46);
+  t.usb_fail = get16(buf, 50);
+  t.up_rssi[0] = buf[52];
+  t.up_rssi[1] = buf[53];
+  t.up_snr[0] = static_cast<int8_t>(buf[54]);
+  t.up_snr[1] = static_cast<int8_t>(buf[55]);
+  t.soc_temp_c = static_cast<int8_t>(buf[56]);
+  t.thermal_delta = static_cast<int8_t>(buf[57]);
+  t.load_x100 = get16(buf, 58);
+  t.idr_disagree = get16(buf, 60);
+  t.enhance_disagree = get16(buf, 62);
+  t.vanished_base = get16(buf, 64);
+  t.vanished_enh = get16(buf, 66);
+  t.self_idr_refused = get16(buf, 68);
+  t.venc_full_drops = get16(buf, 70);
+  t.venc_ring_fill_pct = buf[72];
   return t;
 }
 

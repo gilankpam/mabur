@@ -24,6 +24,10 @@ struct UepLayerCfg {
 struct UepBody {
   uint8_t stream_id;
   std::vector<uint8_t> body;
+  // Steady-clock ms at TxQueue push; the tx thread turns it into the SBI
+  // q_ms duration at pop. 0 = never stamped (dry-run, tests) → q_ms 0 =
+  // unknown on the wire. Drone-local, never serialized itself.
+  uint32_t enqueued_ms = 0;
 };
 
 // Composes Fragmenter + SwEncoder + SbiPacker into one independent pipeline

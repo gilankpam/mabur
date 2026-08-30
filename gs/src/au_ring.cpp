@@ -19,6 +19,9 @@ constexpr size_t kOffMagic = 0, kOffVersion = 4, kOffSlotBytes = 8,
 constexpr size_t kSOffLock = 0, kSOffLen = 4, kSOffRecNo = 8,
                  kSOffFrameId = 16, kSOffPts = 24, kSOffSid = 28,
                  kSOffFlags = 29, kSOffCodec = 30;
+// SlotHdr v2 additions (kAuRingVersion 2).
+constexpr size_t kSOffTFirst = 32, kSOffTComplete = 40, kSOffDroneQ = 48,
+                 kSOffEncUs = 50;
 
 uint32_t load32(const uint8_t* p) {
   return __atomic_load_n(reinterpret_cast<const uint32_t*>(p), __ATOMIC_ACQUIRE);
@@ -38,8 +41,10 @@ void store32_relaxed(uint8_t* p, uint32_t v) {
 void store64(uint8_t* p, uint64_t v) {
   __atomic_store_n(reinterpret_cast<uint64_t*>(p), v, __ATOMIC_RELEASE);
 }
+void put16(uint8_t* p, uint16_t v) { std::memcpy(p, &v, 2); }
 void put32(uint8_t* p, uint32_t v) { std::memcpy(p, &v, 4); }
 void put64(uint8_t* p, uint64_t v) { std::memcpy(p, &v, 8); }
+uint16_t get16(const uint8_t* p) { uint16_t v; std::memcpy(&v, p, 2); return v; }
 uint32_t get32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
 uint64_t get64(const uint8_t* p) { uint64_t v; std::memcpy(&v, p, 8); return v; }
 
@@ -61,6 +66,7 @@ uint64_t now_monotonic_ns() {
 }
 
 uint64_t now_monotonic_ms() { return now_monotonic_ns() / 1000000ull; }
+uint64_t now_monotonic_us() { return now_monotonic_ns() / 1000ull; }
 
 // Budget for a reader to keep retrying a failed reopen (unreadable/torn
 // header) before giving up. Ring re-creation is non-atomic — ftruncate,
@@ -148,7 +154,7 @@ void AuRingWriter::append(const uint8_t* p, size_t n) {
   au_.insert(au_.end(), p, p + n);
 }
 
-uint64_t AuRingWriter::finish(bool complete) {
+uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
   if (!map_ || !in_au_) return UINT64_MAX;
   in_au_ = false;
   if (au_.size() > geom_.slot_bytes) {
@@ -179,6 +185,12 @@ uint64_t AuRingWriter::finish(bool complete) {
   slot[kSOffFlags] =
       static_cast<uint8_t>(hdr_.flags | (complete ? kRecFlagComplete : 0));
   slot[kSOffCodec] = hdr_.codec;
+  AuLatMeta l = lat;
+  if (l.t_complete_us == 0) l.t_complete_us = now_monotonic_us();
+  put64(slot + kSOffTFirst, l.t_first_us);
+  put64(slot + kSOffTComplete, l.t_complete_us);
+  put16(slot + kSOffDroneQ, l.drone_q_ms);
+  put16(slot + kSOffEncUs, l.enc_us);
   store32(slot + kSOffLock, lock + 2);  // even: stable, release
   ++published_;
   bytes_published_ += au_.size();
@@ -313,6 +325,10 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
   m.sid = slot[kSOffSid];
   m.flags = slot[kSOffFlags];
   m.codec = slot[kSOffCodec];
+  m.t_first_us = get64(slot + kSOffTFirst);
+  m.t_complete_us = get64(slot + kSOffTComplete);
+  m.drone_q_ms = get16(slot + kSOffDroneQ);
+  m.enc_us = get16(slot + kSOffEncUs);
   if (m.len > geom_.slot_bytes) {  // torn beyond repair
     ++resyncs_;
     cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;

@@ -14,9 +14,23 @@
 #                 convergence sawtooth) — needs the jsonl
 #   size          the late frame is proportionally big: implied slope
 #                 (iv-per)/Δlen sits in a physical band (scene/encoder burst)
+#   fec-wait      direct evidence on the stutter frame itself: its own
+#                 t_complete − t_first (SlotHdr v2) exceeds 20 ms — the AU
+#                 sat waiting on FEC repair inside the ring, not in transit.
+#                 Checked BEFORE loss-recovery so direct per-frame evidence
+#                 wins over the jsonl-inferred class below.
 #   loss-recovery sizes flat but the sideport recorded pre-FEC loss that
 #                 second (FEC repair wait) — needs the jsonl
 #   transport     none of the above (USB batching, scheduling, queueing)
+#
+# Row format: v1 (7 columns, no header marker) or v2 (11 columns, behind a
+# "# aulog 2" marker line — SlotHdr v2's t_first/t_complete/enc_us/dq_ms
+# appended, 2026-08-31 latency-accounting task 13). load_au_log keys its
+# parsing on the marker; v1 rows get t_first=t_complete=0 (arrival/jitter
+# math falls back to the read-time t_us column, as before). When t_complete
+# is nonzero it is the arrival-time basis for inter-AU intervals (writer-
+# stamped ring completion time, not flightrec's read-poll stamp) — same
+# fix as aucadence.py's t_complete switch, see docs/data-provenance.md.
 #
 # Usage: flightjitter.py au-0001.log [flight-0001.jsonl]
 import bisect
@@ -33,6 +47,7 @@ LOSS_WINDOW_MS = 1500
 LOSS_MIN = 0.005
 SLOPE_BAND = (0.2, 3.0)  # plausible µs/byte serialization slopes
 MIN_DLEN = 500           # bytes; below this a frame can't "explain" a stall
+FEC_WAIT_US = 20_000     # t_complete-t_first threshold for the fec-wait class
 
 
 def _ema_series(vals):
@@ -49,6 +64,13 @@ def _ema_series(vals):
 def _median_after_warmup(series):
     tail = series[WARMUP:] if len(series) > WARMUP else series
     return statistics.median(tail) if tail else 0.0
+
+
+def _arr_us(r):
+    """Arrival-time basis for interval math: SlotHdr v2's writer-stamped
+    t_complete when present (nonzero), else the row's read-time t_us
+    (v1 rows, or a v2 slot whose caller never passed AuLatMeta)."""
+    return r.get("t_complete") or r["t_us"]
 
 
 def _fit_slope(dlens, excesses):
@@ -123,7 +145,7 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
             # neither an interval nor a gap — break the chain here.
             disconts += 1
             continue
-        iv = b["t_us"] - a["t_us"]
+        iv = _arr_us(b) - _arr_us(a)
         dlen = b["len"] - a["len"]
         ivs.append(iv)
         dlens.append(dlen)
@@ -148,6 +170,9 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
             kind = "rung-change"
         elif dlen > MIN_DLEN and SLOPE_BAND[0] <= excess / dlen <= SLOPE_BAND[1]:
             kind = "size"
+        elif b.get("t_complete") and b.get("t_first") and \
+                b["t_complete"] - b["t_first"] > FEC_WAIT_US:
+            kind = "fec-wait"
         elif lossy_second(ev_ms):
             kind = "loss-recovery"
         else:
@@ -220,20 +245,35 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
 
 
 def load_au_log(path):
+    """Parses au-NNNN.log. Row format is keyed off a "# aulog N" marker line
+    (absent = v1, 7 columns; N>=2 = v2, 11 columns — SlotHdr v2's
+    t_first/t_complete/enc_us/dq_ms appended). v1 rows get
+    t_first=t_complete=enc_us=dq_ms=0 so downstream code (_arr_us, the
+    fec-wait class) can treat "present" as "nonzero" uniformly."""
     rows, resyncs, syncs = [], 0, []
+    version = 1
     with open(path) as f:
         for line in f:
             if line.startswith("#"):
                 parts = line.split()
-                if parts[:2] == ["#", "sync"] and len(parts) >= 4:
+                if parts[:2] == ["#", "aulog"] and len(parts) >= 3:
+                    version = int(parts[2])
+                elif parts[:2] == ["#", "sync"] and len(parts) >= 4:
                     syncs.append((int(parts[2]), int(parts[3])))
                 elif parts[:2] == ["#", "resync"]:
                     resyncs += 1
                 continue
-            t, pts, sid, fid, ln, flags, nal0 = line.split()
+            fields = line.split()
+            t, pts, sid, fid, ln, flags, nal0 = fields[:7]
+            if version >= 2 and len(fields) >= 11:
+                t_first, t_complete, enc_us, dq_ms = fields[7:11]
+            else:
+                t_first = t_complete = enc_us = dq_ms = 0
             rows.append(dict(t_us=int(t), pts=int(pts), sid=int(sid),
                              fid=int(fid), len=int(ln), flags=int(flags, 0),
-                             nal0=int(nal0)))
+                             nal0=int(nal0), t_first=int(t_first),
+                             t_complete=int(t_complete), enc_us=int(enc_us),
+                             dq_ms=int(dq_ms)))
     offset = 0
     if syncs:
         offset = int(statistics.median(t_us - t_ms * 1000

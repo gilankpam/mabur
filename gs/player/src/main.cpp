@@ -38,6 +38,7 @@
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
+#include "lat_tracker.h"    // tail latency segments + 1 Hz lat line (Task 11)
 #include "mpp_backend.h"    // MppBackend::info_changes()/errors() for --decode-only
 #include "osd_palette.h"    // build_palette() for the encoder-side OSD
 #endif
@@ -555,6 +556,10 @@ int main(int argc, char** argv) {
   // presenter-free per its own brief ("no presenter"): frames are counted
   // and released immediately, same as before Task 9.
 #ifdef MABUR_PLAYER_HW
+  // Tail latency segments + 1 Hz lat line (Task 11). Declared ahead of the
+  // presenter (whose flip sink feeds it) and the regulator (whose release
+  // feeds it too) so both are in scope by the time either is wired below.
+  maburplay::LatTracker lat;
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
@@ -571,6 +576,9 @@ int main(int argc, char** argv) {
                    "maburplay: DrmPresenter init failed -- no display; frames will be "
                    "decoded and released immediately\n");
       presenter.reset();
+    } else {
+      presenter->set_flip_sink(
+          [&lat](uint32_t p, uint64_t t, bool ex) { lat.on_flip(p, t, ex); });
     }
   }
 
@@ -799,10 +807,14 @@ int main(int argc, char** argv) {
       prev_present_iv = iv;
     }
     last_present_us = t;
+    lat.on_present(f.pts_us, t);  // t_release
     presenter->present(f);
   };
 #endif
   const maburplay::VideoBackend::FrameSink frame_sink = [&](const maburplay::DmaFrame& f) {
+#ifdef MABUR_PLAYER_HW
+    lat.on_decoded(f.pts_us, mono_us());
+#endif
     ++frame_count;
     const auto now = std::chrono::steady_clock::now();
     if (!have_first_frame) {
@@ -823,7 +835,10 @@ int main(int argc, char** argv) {
       bool did_displace = false;
       if (regulator.offer(f, mono_us(), &displaced, &did_displace))
         present_now(f);
-      if (did_displace) backend->release_frame(displaced);
+      if (did_displace) {
+        lat.on_drop(displaced.pts_us);
+        backend->release_frame(displaced);
+      }
       return;
     }
 #endif
@@ -1022,6 +1037,7 @@ int main(int argc, char** argv) {
         burn->drop_pending();
         burn->request_idr();
       }
+      lat.flush_all();  // discont: the old session's pts space is dead
 #endif
       backend->flush();
       backend_armed = false;
@@ -1050,6 +1066,9 @@ int main(int argc, char** argv) {
         t_sync = std::chrono::steady_clock::now();
       }
     }
+#ifdef MABUR_PLAYER_HW
+    lat.on_submit(ev.meta, mono_us());
+#endif
     backend->submit_au(ev.au.data(), ev.au.size(), ev.meta.pts_us);
     ++backend_submits;
   };
@@ -1270,6 +1289,8 @@ int main(int argc, char** argv) {
                     },
                     /*log_failures=*/false)) {
           presenter = std::move(p);
+          presenter->set_flip_sink(
+              [&lat](uint32_t pts, uint64_t t, bool ex) { lat.on_flip(pts, t, ex); });
           std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
                        (now_ms - display_retry_t0_ms) / 1000.0);
           // Startup-only, and this is where that invariant is enforced for the
@@ -1418,6 +1439,50 @@ int main(int argc, char** argv) {
           }
         }
         gs_ps.rec = gs_rec.update(rin, now_ms);
+
+#ifdef MABUR_PLAYER_HW
+        const auto L = lat.flush_line();
+        // OSD LAT row (Task 12): p99_frame() returns the REAL p99-by-e2e
+        // frame's own segment breakdown, computed as a side effect inside
+        // flush_line() above from the window it is about to clear -- it is
+        // a member that persists across flush_line() calls, not derived
+        // from `completed_` at call time, so calling it after flush_line()
+        // here is safe and gets THIS window's frame (see lat_tracker.h and
+        // lat_tracker.cpp's flush_line()/p99_frame()). A window with zero
+        // completed frames leaves it holding the last valid frame rather
+        // than clearing it -- an idle 1 Hz tick between two spiky ones
+        // still shows the most recent real spike instead of flickering to
+        // "LAT --" and back.
+        const auto bd = lat.p99_frame();
+        // `bd.valid` alone is NOT enough: p99_frame_ is a member that
+        // survives flush_all() (lat_tracker.cpp only clears map_/anchor_/
+        // completed_/the chk+dsp accumulators there, not p99_frame_), so
+        // after any decoder/session reset it keeps reporting the LAST
+        // pre-reset frame as if it were current. `L.anchor_ok`, from this
+        // SAME flush_line() call, is what actually reflects whether the
+        // window just flushed has a usable anchor -- gate on both, or a
+        // reset shows a stale breakdown labeled current for ~1s+ instead
+        // of "LAT --".
+        gs_ps.lat_valid = bd.valid && L.anchor_ok;
+        // Gated on gs_ps.lat_valid (the AND), not bd.valid alone -- same
+        // reasoning as above: a stale post-reset bd would otherwise still
+        // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
+        // about to ignore them, leaving gs_ps holding phantom numbers.
+        if (gs_ps.lat_valid) {
+          gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
+          for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
+        }
+        if (L.n > 0)
+          std::fprintf(stderr,
+              "lat: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "
+              "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s\n",
+              L.n, L.p50[7]/1000, L.p99[7]/1000, L.p50[0]/1000, L.p99[0]/1000,
+              L.p50[1]/1000, L.p99[1]/1000, L.p50[2]/1000, L.p99[2]/1000,
+              L.p50[3]/1000, L.p99[3]/1000, L.p50[4]/1000, L.p99[4]/1000,
+              L.p50[5]/1000, L.p99[5]/1000, L.dsp_exact ? "" : "~",
+              L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
+              L.anchor_ok ? "ok" : "warm");
+#endif
       }
     }
     // ONE composition, for both overlays, into the buffer that is back right
@@ -1511,6 +1576,7 @@ int main(int argc, char** argv) {
           burn->drop_pending();
           burn->request_idr();
         }
+        lat.flush_all();  // decoder reset: inflight frames will never complete
 #endif
         if (wd_consecutive < 3) {
           backend->flush();
@@ -1619,6 +1685,19 @@ int main(int argc, char** argv) {
   } else {
     std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
                  present_jitter_ema_ms);
+  }
+  {
+    const auto L = lat.flush_line();
+    if (L.n > 0)
+      std::fprintf(stderr,
+          "lat-final: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "
+          "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s\n",
+          L.n, L.p50[7]/1000, L.p99[7]/1000, L.p50[0]/1000, L.p99[0]/1000,
+          L.p50[1]/1000, L.p99[1]/1000, L.p50[2]/1000, L.p99[2]/1000,
+          L.p50[3]/1000, L.p99[3]/1000, L.p50[4]/1000, L.p99[4]/1000,
+          L.p50[5]/1000, L.p99[5]/1000, L.dsp_exact ? "" : "~",
+          L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
+          L.anchor_ok ? "ok" : "warm");
   }
 #endif
   if (dvr_open) dvr.close();

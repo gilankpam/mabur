@@ -143,6 +143,14 @@ int star6e_output_init(Star6eOutput *output, const char *ring_name)
 			ring_name);
 		return -1;
 	}
+
+	{
+		MI_U64 probe = 0;
+		printf("venc: enc-latency measurement %s\n",
+			(MI_SYS_GetCurPts(&probe) == 0 && probe != 0)
+				? "live (MI_SYS_GetCurPts)" : "UNAVAILABLE (enc_us=0)");
+	}
+
 	return 0;
 }
 
@@ -214,12 +222,22 @@ static size_t star6e_output_send_frame_ring(Star6eOutput *output,
 	memset(&meta, 0, sizeof(meta));
 	meta.pts = (stream->count > 0 && stream->packet)
 		? (uint32_t)stream->packet[0].timestamp : 0;
+	meta.enc_us = 0;
+	if (meta.pts != 0) {
+		MI_U64 cur = 0;
+		if (MI_SYS_GetCurPts(&cur) == 0 && cur != 0) {
+			uint64_t d = (uint64_t)cur -
+				(uint64_t)stream->packet[0].timestamp;
+			/* Same timebase, no bridge. A negative/huge delta means
+			 * the SDK re-based pts (restart): report unknown. */
+			meta.enc_us = (d < 1000000ull)
+				? (uint16_t)(d > 65535 ? 65535 : d) : 0;
+		}
+	}
 	meta.codec = VENC_FRAME_CODEC_H265;
 	meta.flags = is_idr ? VENC_FRAME_FLAG_IDR : 0;
 	if (!is_idr && output->gdr_active) {
 		meta.flags |= VENC_FRAME_FLAG_GDR;
-		meta.gdr_pos = output->gdr_counter;
-		meta.gdr_len = output->gdr_cycle_len;
 		output->gdr_counter++;
 		if (output->gdr_counter >= output->gdr_cycle_len)
 			output->gdr_counter = 0;

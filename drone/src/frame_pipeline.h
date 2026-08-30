@@ -54,6 +54,14 @@ class FramePipeline {
   // silent choice.
   uint64_t idr_disagreements() const { return idr_disagree_; }
 
+  // The just-encoded frame's producer-reported encoder latency (µs, 0 =
+  // unknown), latched by encode() right after the shed check — a shed frame
+  // returns before it, so this stays at the prior non-shed value. The
+  // hot-thread push site (drone/src/main.cpp) reads this back to patch
+  // sbi_set_enc_us into every body encode() just returned, since the SBI
+  // header sits outside the FEC envelope and can only be patched post-pack.
+  uint16_t last_enc_us() const { return last_enc_us_; }
+
   // Frames where the producer ENHANCE flag and the TRAIL_N scan disagreed.
   // Same contract as idr_disagreements(): a bug signal, never a silent
   // choice — the frame protects up to base (spec 2026-07-26 svct-enable).
@@ -105,6 +113,7 @@ class FramePipeline {
   uint64_t discont_until_ms_ = 0;  // flag rides on frames until this deadline
   uint64_t idr_disagree_ = 0;
   uint64_t enhance_disagree_ = 0;
+  uint16_t last_enc_us_ = 0;
 
   // Vanish tracker state (see accessors above). The period is an EMA over
   // "normal" deltas only — never hardcoded, so any encoder frame rate works —

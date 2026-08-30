@@ -13,19 +13,31 @@ namespace mabur {
 //
 // NOTE: the config-load guard that enforces this (drone/src/config.cpp)
 // measures only bpb*(kSwHeaderLen + symbol_size) — the per-block SW-header
-// envelope — NOT the real air body. It excludes the 7B SBI header and the
+// envelope — NOT the real air body. It excludes the 11B SBI header and the
 // 2B per-block CRC that SbiPacker actually adds on top, so the true body
-// size is 7 + bpb*(16 + symbol_size) — 7 + 2*bpb bytes more than what the
-// guard computes (39B at bpb 16). The 2900 constant carries slack for exactly
+// size is 11 + bpb*(16 + symbol_size) — 11 + 2*bpb bytes more than what the
+// guard computes (43B at bpb 16). The 2900 constant carries slack for exactly
 // this gap: proven bodies on air measured 2887B actual against a
-// 2848B-by-the-guard-formula config, comfortably under 2900 either way.
+// 2848B-by-the-guard-formula config, comfortably under 2900 either way (deployed
+// geometry: 11 + 4*(16+332) = 1403 B).
 inline constexpr int kMaxBodyBytes = 2900;
 
 // Sub-Block Integrity (SBI) framing constants. Byte-exact port of devourer's
 // tools/precoder/fec_subblock.py (SBI_MAGIC, SBI_HDR_LEN, SBI_HDR_STRUCT
-// "<HBBHB" = MAGIC, VER, STREAM_ID, BLOCK_PAYLOAD, N_BLOCKS).
+// "<HBBHBHH" = MAGIC, VER, STREAM_ID, BLOCK_PAYLOAD, N_BLOCKS, Q_MS, ENC_US).
 constexpr uint16_t SBI_MAGIC = 0xF5B0;
-constexpr int SBI_HDR_LEN = 7;
+constexpr int SBI_HDR_LEN = 11;
+constexpr uint8_t SBI_VER = 1;  // ver 0 (7-byte header) is hard-rejected:
+// parsing a ver-0 body with the 11-byte stride would silently mis-partition
+// every sub-block, so there is no compat path (flag-day deploy).
+constexpr int SBI_Q_MS_OFF = 7;   // u16 LE: TxQueue wait, ms, saturating
+constexpr int SBI_ENC_US_OFF = 9; // u16 LE: encoder latency, µs, saturating
+// Post-hoc patchers for the two duration fields. The header sits OUTSIDE
+// the FEC envelopes and per-block CRCs — that is the only reason a
+// submit-time measurement can exist on this wire; everything inside the
+// envelope is frozen at encode time.
+void sbi_set_q_ms(uint8_t* body, size_t len, uint16_t ms);
+void sbi_set_enc_us(uint8_t* body, size_t len, uint16_t us);
 
 // Reserved SBI stream_id for the MSP DisplayPort OSD side-channel (video uses
 // 0..3). Bodies tagged with this id route to the GS MspSink, not the video
@@ -38,8 +50,8 @@ constexpr uint8_t kMspStreamId = 4;
 // devourer/tools/precoder/fec_subblock.py's SubBlockPacker (crc_bytes fixed
 // at 2, matching the default used throughout the precoder toolchain).
 //
-// Wire body: header <u16 MAGIC LE, u8 ver=0, u8 stream_id, u16 block_payload
-// LE, u8 n_blocks> followed by, per accumulated envelope,
+// Wire body: header <u16 MAGIC LE, u8 ver, u8 stream_id, u16 block_payload
+// LE, u8 n_blocks, u16 q_ms LE, u16 enc_us LE> followed by, per accumulated envelope,
 // <u16 crc16_ccitt(payload) LE, payload>.
 class SbiPacker {
  public:
@@ -79,10 +91,12 @@ struct SbiUnpackResult {
   int n_failed = 0;                             // CRC-mismatched (erasures)
   bool header_ok = false;
   uint8_t stream_id = 0;                        // 0 when the header is short
+  uint16_t q_ms = 0;                            // TxQueue wait, ms; 0 = unknown
+  uint16_t enc_us = 0;                          // encoder latency, µs; 0 = unknown
 };
 SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload);
 
-// SBI STREAM_ID peek for routing (fixed 7-byte header, independent of
+// SBI STREAM_ID peek for routing (fixed 11-byte header, independent of
 // block_payload), or -1 on a short/bad-magic/bad-version header. A corrupt
 // header may misroute a body, but the wrong stream's decoder then rejects
 // the mismatched sub-blocks — a dropped body, never a mis-decode.

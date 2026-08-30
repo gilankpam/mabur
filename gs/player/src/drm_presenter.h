@@ -137,6 +137,20 @@ class DrmPresenter {
   bool async_flip_active() const;   // true once ASYNC has been confirmed working
   bool async_probed() const;        // true once the one-shot ASYNC probe has run
 
+  // Vsync timestamp sink for LatTracker (Task 11): called at the pending ->
+  // on_screen promotion inside on_flip() with the frame's pts and the
+  // kernel-reported (or, absent DRM_CAP_TIMESTAMP_MONOTONIC, mono_us()
+  // fallback) flip time. Watchdog force-completes (on_flip(false), no real
+  // kernel event) do NOT call this -- those frames simply age out of
+  // LatTracker's bounded map, same as any other frame that never flips.
+  using FlipSink = std::function<void(uint32_t pts_us, uint64_t flip_mono_us, bool exact)>;
+  void set_flip_sink(FlipSink sink);
+  // True once init() has confirmed the kernel reports real
+  // CLOCK_MONOTONIC page-flip timestamps (DRM_CAP_TIMESTAMP_MONOTONIC).
+  // False means on_flip's timestamp is a mono_us()-at-receipt approximation
+  // -- LatTracker's dsp segment is then only as exact as poll() latency.
+  bool vsync_ts_exact() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

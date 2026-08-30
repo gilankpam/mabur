@@ -122,6 +122,7 @@ struct Telem {
   uint16_t ring_drops = 0;  // saturating
   uint8_t txq_depth = 0, txq_cap = 0;
   uint32_t txq_drops = 0;
+  uint16_t txq_wait_max_ms = 0;  // per-telemetry-window max TxQueue wait (saturating)
   uint32_t radio_sent = 0;
   uint32_t radio_drops = 0;
   uint16_t usb_fail = 0;  // saturating

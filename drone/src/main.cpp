@@ -39,6 +39,7 @@
 #include "mabur/msp_source.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
+#include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
 #include "mabur/fec_worker.h"
 #include "mabur/uep_encoder.h"
@@ -877,6 +878,11 @@ int run_real_mode(const Config& cfg) {
   std::atomic<uint64_t> vanished_base_total{0};
   std::atomic<uint64_t> vanished_enh_total{0};
   std::atomic<uint64_t> self_idr_refused_total{0};
+  // TxQueue wait window max (spec 2026-08-30 latency-accounting, Task 4):
+  // tx thread publishes the largest push→pop delay it saw since the last
+  // 1 Hz telemetry read; the agent thread's collector (Task 5) exchanges it
+  // back to 0 so each tick reports its own window, not a running max.
+  std::atomic<uint32_t> txq_wait_max_ms{0};
   // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
   // frame encoded so far died before the air — re-mark the discontinuity
   // window so the GS gets the re-base signal on frames that can actually
@@ -1078,7 +1084,15 @@ int run_real_mode(const Config& cfg) {
           for (auto& b : bodies) { emitted += b.body.size(); sid = b.stream_id; }
           if (sid >= 0) feed.on_frame(sid, static_cast<size_t>(n), emitted);
         }
-        for (auto& b : bodies) txq.push(std::move(b));
+        // Patch this frame's encoder latency into every body it produced —
+        // the SBI header sits outside the FEC envelope, so this is the only
+        // place a post-pack field can be stamped without breaking a CRC
+        // (docs/superpowers/specs/2026-08-30-latency-accounting; Task 3).
+        for (auto& b : bodies) {
+          mabur::sbi_set_enc_us(b.body.data(), b.body.size(), pipe.last_enc_us());
+          b.enqueued_ms = static_cast<uint32_t>(now);
+          txq.push(std::move(b));
+        }
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
         idr_disagree_total.store(pipe.idr_disagreements(),
@@ -1132,8 +1146,17 @@ int run_real_mode(const Config& cfg) {
         }
       }
 
+      // Idle-tail flush: no single source frame owns these bodies (poll can
+      // combine leftovers across several frames' worth of idle time), so
+      // they carry no patched enc_us — left at the packer's zero placeholder
+      // (0 = unknown on the wire, per spec).
       auto polled = uep.poll(now);
-      for (auto& b : polled) txq.push(std::move(b));
+      for (auto& b : polled) {
+        // Idle-tail bodies carry no per-frame enc_us, but the queue wait is
+        // still real once they reach the tx thread — stamp it here too.
+        b.enqueued_ms = static_cast<uint32_t>(now);
+        txq.push(std::move(b));
+      }
 
       hot_beat.fetch_add(1, std::memory_order_relaxed);
     }
@@ -1150,6 +1173,22 @@ int run_real_mode(const Config& cfg) {
     while (!g_devourer_should_stop) {
       batch.clear();
       if (txq.pop_batch(batch, 3, 5) == 0) continue;
+      // Patch each body's SBI q_ms with its TxQueue wait (push→pop), and
+      // fold the batch's worst case into the window-max gauge (spec
+      // 2026-08-30 latency-accounting, Task 4). enqueued_ms == 0 means the
+      // producer never stamped it (shouldn't happen post-Task-3/4, but
+      // dry-run/test paths may still push bare bodies) -> leave q_ms at the
+      // packer's zero placeholder rather than reporting a bogus wait.
+      const uint32_t pop_ms = static_cast<uint32_t>(now_steady_ms());
+      for (auto& b : batch) {
+        uint32_t w = (b.enqueued_ms && pop_ms > b.enqueued_ms)
+                         ? pop_ms - b.enqueued_ms : 0;
+        if (w > 65535) w = 65535;
+        mabur::sbi_set_q_ms(b.body.data(), b.body.size(),
+                            static_cast<uint16_t>(w));
+        uint32_t prev = txq_wait_max_ms.load(std::memory_order_relaxed);
+        while (w > prev && !txq_wait_max_ms.compare_exchange_weak(prev, w)) {}
+      }
       tx.send_bodies(batch);
     }
   });
@@ -1311,6 +1350,7 @@ int run_real_mode(const Config& cfg) {
           ti.txq_depth = txq.depth();
           ti.txq_cap = kTxQueueCap;
           ti.txq_drops = txq.dropped();
+          ti.txq_wait_max_ms = txq_wait_max_ms.exchange(0, std::memory_order_relaxed);
           ti.radio_sent = tx.sent();
           ti.radio_drops = tx.drops();
           ti.usb_fail = txstats.failed;

@@ -69,7 +69,7 @@ TEST(frame_e2e_clean_and_lossy) {
       {50, 8},
       {[&](const framewire::FrameHdr& h, uint8_t) { cur_pts = h.pts_us; cur.clear(); },
        [&](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
-       [&](bool c) {
+       [&](bool c, const maburgs::AuLatMeta&) {
          if (c) { ++clean; emitted_frames.push_back(cur);
                   pts_per_frame.push_back(cur_pts); }
          else ++truncated; }});
@@ -128,7 +128,7 @@ TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
       {50, 8},
       {[&](const framewire::FrameHdr&, uint8_t) {},
        [&](const uint8_t*, size_t) {},
-       [&](bool c) { c ? ++clean : ++truncated; }});
+       [&](bool c, const maburgs::AuLatMeta&) { c ? ++clean : ++truncated; }});
 
   uint64_t now = 1;
   int sent = 0;

@@ -660,7 +660,8 @@ def panel_drone(model, wall):
     depth, cap = txq.get("depth"), txq.get("cap")
     depth_s, cap_s = _f(depth, 3), _f(cap, 3)
     drops_s = _f(txq.get("drops"), 5)
-    line4 = f"queue     {depth_s} / {cap_s}      drops {drops_s}"
+    wait_s = _f(drone.get("txq_wait_ms"), 5)
+    line4 = f"queue     {depth_s} / {cap_s}   txw {wait_s} ms   drops {drops_s}"
     spans4 = []
     if depth is not None and cap is not None and depth > cap / 2:
         idx = line4.index(depth_s)
@@ -770,6 +771,21 @@ def panel_video(model, wall):
     residual = link.get("residual_loss")
     residual_pct = None if residual is None else residual * 100.0
     body.append((f"fec       residual {_f(residual_pct, 4, 1)} %", []))
+
+    # lat: head-segment latency aggregates (link.video.lat), omitted
+    # entirely upstream while the pts anchor isn't usable or the window is
+    # empty -- absent key here reads the same as "--" everywhere below.
+    lat = video.get("lat")
+    if lat is not None:
+        def _lat(seg):
+            v = lat.get(seg)
+            if not v:
+                return "--/--"
+            return f"{v[0] / 1000.0:.0f}/{v[1] / 1000.0:.0f}"
+
+        line_lat = (f"lat ms p50/p99  enc {_lat('enc'):>7}  dq {_lat('dq'):>7}  "
+                    f"air+ {_lat('air'):>7}  fec {_lat('fec'):>7}")
+        body.append((line_lat, []))
 
     drone = d.get("drone")
     if drone is not None:

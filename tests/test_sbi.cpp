@@ -62,7 +62,7 @@ TEST(sbi_layout_and_crc_isolation) {
   uint8_t n_blocks = body[6];
 
   CHECK(magic == SBI_MAGIC);
-  CHECK(ver == 0);
+  CHECK(ver == SBI_VER);
   CHECK(sid == stream_id);
   CHECK(bp == block_payload);
   CHECK(n_blocks == blocks_per_body);
@@ -102,6 +102,47 @@ TEST(sbi_wrong_length_add_returns_empty) {
   std::vector<uint8_t> wrong(5, 0xAB);
   auto out = packer.add(wrong.data(), wrong.size());
   CHECK(out.empty());
+}
+
+TEST(sbi_ver1_header_and_patch) {
+  mabur::SbiPacker p(8, 2, 0);
+  std::vector<std::vector<uint8_t>> bodies;
+  const uint8_t env[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  for (int i = 0; i < 2; ++i)
+    for (auto& b : p.add(env, sizeof(env))) bodies.push_back(std::move(b));
+  CHECK(bodies.size() == 1);
+  auto& b = bodies[0];
+  CHECK(b.size() == static_cast<size_t>(mabur::SBI_HDR_LEN + 2 * (2 + 8)));
+  CHECK(b[2] == mabur::SBI_VER);          // ver byte is 1 now
+  CHECK(b[7] == 0 && b[8] == 0);          // q_ms placeholder zeroed
+  CHECK(b[9] == 0 && b[10] == 0);         // enc_us placeholder zeroed
+  mabur::sbi_set_q_ms(b.data(), b.size(), 0x1234);
+  mabur::sbi_set_enc_us(b.data(), b.size(), 0xBEEF);
+  auto r = mabur::sbi_unpack(b.data(), b.size(), 8);
+  CHECK(r.header_ok);
+  CHECK(r.q_ms == 0x1234);
+  CHECK(r.enc_us == 0xBEEF);
+  CHECK(static_cast<int>(r.survivors.size()) == 2);  // patch broke no CRC
+  CHECK(mabur::sbi_peek_stream_id(b.data(), b.size()) == 0);
+}
+
+TEST(sbi_ver0_rejected) {
+  mabur::SbiPacker p(8, 1, 3);
+  const uint8_t env[8] = {9, 9, 9, 9, 9, 9, 9, 9};
+  auto bodies = p.add(env, sizeof(env));
+  CHECK(bodies.size() == 1);
+  auto b = bodies[0];
+  b[2] = 0;  // forge a ver-0 header
+  CHECK(!mabur::sbi_unpack(b.data(), b.size(), 8).header_ok);
+  CHECK(mabur::sbi_peek_stream_id(b.data(), b.size()) == -1);
+}
+
+TEST(sbi_q_ms_saturates) {
+  mabur::SbiPacker p(8, 1, 0);
+  const uint8_t env[8] = {0};
+  auto b = p.add(env, sizeof(env))[0];
+  mabur::sbi_set_q_ms(b.data(), b.size(), 65535);
+  CHECK(mabur::sbi_unpack(b.data(), b.size(), 8).q_ms == 65535);
 }
 
 MTEST_MAIN

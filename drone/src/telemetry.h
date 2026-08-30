@@ -46,6 +46,9 @@ struct TelemInputs {
   uint64_t ring_drops = 0;
   size_t txq_depth = 0, txq_cap = 0;
   uint64_t txq_drops = 0;
+  // Per-telemetry-window max TxQueue wait (Task 4's txq_wait_max_ms atomic,
+  // consumed via .exchange(0) at the 1 Hz tick) — saturating.
+  uint64_t txq_wait_max_ms = 0;
   uint64_t radio_sent = 0, radio_drops = 0, usb_fail = 0;
   UplinkTrack::Snap uplink;
   int soc_temp_c = -128;

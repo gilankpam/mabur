@@ -73,6 +73,7 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.txq_depth = saturate<uint8_t>(in.txq_depth);
   t.txq_cap = saturate<uint8_t>(in.txq_cap);
   t.txq_drops = saturate<uint32_t>(in.txq_drops);
+  t.txq_wait_max_ms = saturate<uint16_t>(in.txq_wait_max_ms);
   t.radio_sent = saturate<uint32_t>(in.radio_sent);
   t.radio_drops = saturate<uint32_t>(in.radio_drops);
   t.usb_fail = saturate<uint16_t>(in.usb_fail);

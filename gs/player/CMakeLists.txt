@@ -19,6 +19,7 @@ add_library(mabur_player_core STATIC
   src/osd_palette.cpp
   src/in_formats.cpp
   src/frame_regulator.cpp
+  src/lat_tracker.cpp
   src/splash_image.cpp)
 target_include_directories(mabur_player_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src

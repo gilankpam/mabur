@@ -94,6 +94,12 @@ GsPlayerState player_nominal() {
   p.fps = 60.0; p.jitter_ms = 3.0; p.mbps = 24.6;
   p.rec.kind = RecState::Kind::kRecording;
   p.rec.elapsed_s = 767;
+  // Task 12's LAT row, valid -- the brief's own worked example (headline +
+  // that frame's own 7-segment breakdown).
+  p.lat_valid = true;
+  p.lat_e2e_ms = 34;
+  const int seg[7] = {7, 0, 9, 3, 5, 10, 8};  // enc,dq,air,fec,dec,reg,dsp
+  for (int i = 0; i < 7; ++i) p.lat_ms[i] = seg[i];
   return p;
 }
 
@@ -189,6 +195,7 @@ TEST(asset_sizes_resolve_exactly_at_every_resolution) {
       {56, GsFieldId::kFpsValue},   {38, GsFieldId::kCard0Rssi},
       {26, GsFieldId::kLossArrow},  {24, GsFieldId::kJit},
       {22, GsFieldId::kCard0Id},    {19, GsFieldId::kLossLabel},
+      {24, GsFieldId::kLatHead},    {24, GsFieldId::kLatBreakdown},
   };
   for (const FourReso& r : kFourResolutions) {
     GsOverlay ov(f);
@@ -409,6 +416,66 @@ TEST(asset_renders_ink_for_every_non_ascii_field) {
     for (int x = rb.x; x < rb.x + rb.w; ++x)
       if (c2.px[(size_t)y * 1920 + x]) ++lit;
   CHECK(lit > 0);
+}
+
+// Task 12's LAT row against the real asset: pinned content at all four
+// resolutions (valid and the anchor-not-usable case), plus real ink so a
+// blank-glyph asset regression would still be caught here the same way
+// asset_renders_ink_for_every_non_ascii_field catches it for the em dash.
+TEST(asset_lat_row_layout_and_content_at_every_resolution) {
+  GsFont& f = asset();
+  REQUIRE(f.ok());
+  std::string err;
+  for (const FourReso& r : kFourResolutions) {
+    GsOverlay ov(f);
+    REQUIRE(ov.layout(r.w, r.h, &err));
+
+    // Valid: headline is "LAT <e2e> |", breakdown is that SAME frame's own
+    // seven segments -- exactly the brief's worked example, never a mix of
+    // independently-ranked per-segment percentiles.
+    const std::string head =
+        ov.debug_field_text(nominal(), false, player_nominal(), GsFieldId::kLatHead);
+    const std::string bd =
+        ov.debug_field_text(nominal(), false, player_nominal(), GsFieldId::kLatBreakdown);
+    CHECK(head == "LAT 34 |");
+    CHECK(bd == "enc7 dq0 air+9 fec3 dec5 reg10 dsp8");
+
+    // Invalid (anchor not usable yet): headline collapses to "LAT --" with
+    // no trailing separator, breakdown is blank -- there is no real
+    // per-segment breakdown to show, and showing stale/fabricated numbers
+    // would be worse than showing nothing.
+    GsPlayerState cold = player_nominal();
+    cold.lat_valid = false;
+    const std::string head_cold =
+        ov.debug_field_text(nominal(), false, cold, GsFieldId::kLatHead);
+    const std::string bd_cold =
+        ov.debug_field_text(nominal(), false, cold, GsFieldId::kLatBreakdown);
+    CHECK(head_cold == "LAT --");
+    CHECK(bd_cold.empty());
+
+    // Player-measured: `stale` must not touch either field (grep how
+    // fps/jitter/mbps opt out -- same rule here).
+    const std::string head_stale =
+        ov.debug_field_text(nominal(), true, player_nominal(), GsFieldId::kLatHead);
+    CHECK(head_stale == head);
+
+    // Real ink for the valid row, at this resolution's real asset.
+    Canvas c(r.w, r.h);
+    std::vector<DirtyRect> rects;
+    ov.update(nominal(), false, player_nominal(), c.s, &rects);
+    auto lit_in = [&](GsFieldId id) {
+      const DirtyRect b = ov.debug_field_box(id);
+      size_t lit = 0;
+      for (int y = b.y; y < b.y + b.h; ++y)
+        for (int x = b.x; x < b.x + b.w; ++x)
+          if (c.px[(size_t)y * r.w + x]) ++lit;
+      return lit;
+    };
+    CHECK(lit_in(GsFieldId::kLatHead) > 0);
+    CHECK(lit_in(GsFieldId::kLatBreakdown) > 0);
+    std::printf("  %dx%d: head=%zu bd=%zu lit px\n", r.w, r.h, lit_in(GsFieldId::kLatHead),
+                lit_in(GsFieldId::kLatBreakdown));
+  }
 }
 
 MTEST_MAIN

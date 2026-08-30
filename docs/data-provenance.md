@@ -12,7 +12,9 @@ RF labels pooled and fade deltas unsuppressed 2026-08-15 (see
 `docs/link-adaptation.md`) · DVR filenames un-dated 2026-08-26 · UEP
 overhead flatten 2026-08-29 · overhead literal + 4→2 stream collapse
 2026-08-29 (airtime-balance-uep) · overhead splits into base/enh pairs +
-ctllog 8 2026-08-30 (same-rate-fixed-pairs).
+ctllog 8 2026-08-30 (same-rate-fixed-pairs) · SlotHdr v2 (`# aulog 2`) +
+aucadence completion clock switched to ring `t_complete_us` 2026-08-31
+(latency-accounting).
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -212,3 +214,45 @@ changed shape, from `<mcs>/<ov>,...` (one value per rung, ×100) to
 reads ctllog v1–v8: a pre-v8 log's single per-rung value is read as both
 base and enh (that rung had no split to lose), and the tool prints a
 NOTE on any log older than v8 saying so.
+
+**2026-08-31: aucadence completion clock changed read-time → ring
+`t_complete_us`; offsets recorded before this date fold in reader poll
+latency (~0–0.5 ms one-sided).** `tools/bench/aucadence.py`'s per-AU
+completion delay used to be `arrival_mono_us − pts`, where `arrival_mono_us`
+was stamped by the ~0.5 ms poll loop that reads the ring's write index —
+not the writer's own completion time, which SlotHdr v2 (2026-08-30) now
+carries as `t_complete_us`. The tool switched to the ring-stamped clock the
+same day the latency-accounting tools landed; the JSON output's `"clock"`
+key records which basis produced a given capture (`"t_complete"` post-
+switch, and a slot whose `t_complete_us` is 0 — pre-epoch writer, or a
+caller that never passed `AuLatMeta` — still falls back to the old poll-time
+basis, counted in `fallback_rows`). `tools/flightjitter.py`'s jitter-EMA
+reproduction made the same switch: it now uses a row's `t_complete` (when
+nonzero) as the inter-AU arrival basis instead of `au-NNNN.log`'s `t_us`
+column, which is flightrec's own read-time stamp, same imprecision as the
+old aucadence poll. Pre-2026-08-31 `--gate-ms` baselines and `flightjitter`
+`jitter_ema_ms`/`residual_jitter_ms` numbers are not directly comparable to
+post-switch ones for this reason — expect the poll-time noise floor (~0.5
+ms) to shrink, not the underlying transport behavior to have changed.
+
+**2026-08-31 (same day, later): the `air` segment's basis changed —
+enc-excess fix.** The first deployed build computed `air` by clamping
+`enc`/`dq` against the span above a capture-anchored floor, which
+double-counted encode time (the floor already contained the floor frame's
+encode) and pinned `air` at 0 in every clean capture from that build. The
+fix anchors on the encode/queue-corrected arrival: `enc`/`dq` now report
+their full wire values (previously clamped to the span) and `air` is real
+transit excess. `e2e` (and the anchored floor) therefore shifted lower by
+roughly the floor frame's `enc` (~2–4 ms) between the two same-day builds;
+`link.video.lat` and player `lat:` numbers from the few hours in between
+under-report `enc`/`dq`/`air` accordingly and show `air` ≈ 0 by
+construction. Corrupt-body protection also landed with the fix: wire
+`enc`/`dq` from FCS-failed bodies read as 0 = unknown from this point on.
+
+au-NNNN.log rows grew 4 columns (`t_first t_complete enc dq`, SlotHdr v2's
+latency fields) behind a `# aulog 2` marker line, written once at session
+start by `flightrec.py`. A log without the marker is the old 7-column v1
+format; `flightjitter.load_au_log` keys its row parsing on the marker's
+presence, and a v1 row is padded with `t_first=t_complete=enc_us=dq_ms=0`
+so the fec-wait class and the t_complete arrival-basis fallback both treat
+"absent" the same as "present but zero".

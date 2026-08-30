@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#include "pts_anchor.h"
 #include "video_backend.h"
 
 namespace maburplay {
@@ -59,20 +60,11 @@ class FrameRegulator {
   double hold_ema_ms() const { return hold_ema_ms_; }
 
  private:
-  // A pts step beyond this is an encoder restart, not cadence (matches the
-  // drone-side vanish detector's resync threshold family).
-  static constexpr int64_t kResyncUs = 2'000'000;
-  static constexpr int64_t kLeakPpm = 60;  // floor creep, µs per second
-
   void displace_into(DmaFrame* replaced, bool* did_replace);
 
   const int64_t d_us_;
 
-  bool have_pts_ = false;
-  uint32_t last_pts32_ = 0;
-  uint64_t pts64_ = 0;
-  bool base_valid_ = false;
-  int64_t base_us_ = 0;  // min(mono − pts64), leaks upward
+  maburgs::PtsAnchor anchor_;
 
   bool holding_ = false;
   DmaFrame held_{};

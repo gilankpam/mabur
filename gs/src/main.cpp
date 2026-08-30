@@ -2,6 +2,7 @@
 // Plan 1 scope: the dry-run datapath (frame file -> aggregator -> frame tail
 // -> AU records; the original RTP output was deleted in PR C).
 // Plan 2 scope: real-radio mode (N-card front-ends, control loop, card failover).
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <csignal>
@@ -25,6 +26,7 @@
 #include "frame_file_source.h"
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
+#include "lat_window.h"
 #ifdef MABUR_LOSS_SIM
 #include "loss_control.h"
 #endif
@@ -34,6 +36,7 @@
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
+#include "pts_anchor.h"
 #include "radio_frontend.h"
 #include "rf_labels.h"
 #include "s1_loss.h"
@@ -53,6 +56,17 @@ void on_usr1(int) { g_dump.store(true); }
 uint64_t mono_ms() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// Same clock the au ring writer stamps t_first_us/t_complete_us with
+// (clock_gettime CLOCK_MONOTONIC) -- steady_clock == CLOCK_MONOTONIC on
+// this glibc/Linux target, so this µs value and the ring's µs stamps share
+// one timebase and are directly subtractable (see the fec-segment comment
+// in run_radio's end_frame lambda).
+uint64_t mono_us() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
@@ -258,6 +272,16 @@ static int run_radio(const maburgs::Config& cfg) {
                  "reassembled and discarded)\n");
   }
 
+  // Head-segment latency aggregates (sideport link.video.lat, spec
+  // 2026-08-30-latency-accounting Task 10): pts->mono anchor + rolling
+  // percentile window, both core-loop-owned like everything else here.
+  // cur_au_pts is set in begin_frame and read back in end_frame -- legal
+  // because FrameStream's contract pairs begin/end for the SAME AU with no
+  // other AU's begin in between (single-threaded core loop).
+  maburgs::PtsAnchor lat_anchor;
+  maburgs::LatWindow lat_win;
+  uint32_t cur_au_pts = 0;
+
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits; whole access units leave maburgs through
   // the shm AU ring (PR C: the RTP packetizer/UDP path is gone — maburplay
@@ -266,17 +290,53 @@ static int run_radio(const maburgs::Config& cfg) {
       {static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms),
        cfg.video.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
+         cur_au_pts = h.pts_us;
          if (au_on) au_ring.begin(h, sid);
        },
        [&](const uint8_t* d, size_t n) {
          if (au_on) au_ring.append(d, n);
        },
-       [&](bool c) {
+       [&](bool c, const maburgs::AuLatMeta& lat) {
          if (au_on) {
-           const uint64_t rec = au_ring.finish(c);
+           const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          if (stats) stats->on_frame(mono_ms());
+         // Head-segment latency: t_first_us is the radio's mono stamp on
+         // the AU's first body and t_complete_us (via mono_us() below,
+         // the "now" at this closure) shares its timebase -- steady_clock
+         // == CLOCK_MONOTONIC on this glibc/Linux target, so the two are
+         // directly subtractable with no clock-domain conversion.
+         if (lat.t_first_us) {
+           // Enc-excess air fix (2026-08-31), mirrored in the player's
+           // LatTracker::on_submit: the anchor consumes the encode/queue-
+           // corrected arrival so its floor means "best post-encoder,
+           // post-queue transit"; enc/dq report their full wire values and
+           // air is the transit excess. enc + dq + air == t_first - map(pts)
+           // exactly (additive invariant unchanged). Corrections come only
+           // from FCS-clean bodies and are plausibility-capped; an
+           // implausible one withholds the sample rather than dragging the
+           // snap-down floor.
+           const int64_t adjust = static_cast<int64_t>(lat.enc_us) +
+                                  static_cast<int64_t>(lat.drone_q_ms) * 1000;
+           if (adjust <= maburgs::PtsAnchor::kMaxAnchorAdjustUs &&
+               static_cast<int64_t>(lat.t_first_us) > adjust) {
+             const uint64_t adj_arrival =
+                 lat.t_first_us - static_cast<uint64_t>(adjust);
+             const auto obs = lat_anchor.observe(cur_au_pts, adj_arrival);
+             if (!obs.discont && lat_anchor.usable()) {
+               const int64_t excess =
+                   static_cast<int64_t>(adj_arrival) -
+                   static_cast<int64_t>(lat_anchor.map_us(obs.pts64));
+               const uint64_t t_done = mono_us();
+               const uint32_t fec = static_cast<uint32_t>(
+                   t_done > lat.t_first_us ? t_done - lat.t_first_us : 0);
+               lat_win.add(lat.enc_us,
+                           static_cast<uint32_t>(lat.drone_q_ms) * 1000,
+                           static_cast<uint32_t>(excess > 0 ? excess : 0), fec);
+             }
+           }
+         }
        }});
   // Only fragments from a peer that advertised the frame wire format may reach
   // FrameStream: an older drone's bodies carry a mutually unparseable frag
@@ -287,7 +347,8 @@ static int run_radio(const maburgs::Config& cfg) {
 
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {
     if (frame_wire)
-      fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), mono_ms());
+      fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), mono_ms(),
+                            {f.body_mono_us, f.q_ms, f.enc_us});
   });
 
   maburgs::VrxCfg vcfg;
@@ -551,6 +612,12 @@ static int run_radio(const maburgs::Config& cfg) {
       frame_wire = fw;
       agg.decoder().reset_continuity();
       fstream.reset();
+      lat_anchor.reset();  // new session's pts space is unrelated to the old one's
+      // Drop any pre-reset samples too: without this, the anchor re-warms
+      // (kWarmFrames) before the next flush, but the window itself still
+      // holds up to kCap stale pre-reset samples that would silently mix
+      // into that first post-reset flush -- worst right after a reconnect.
+      lat_win.clear();
       std::fprintf(stderr, "maburgs: video tail -> %s\n",
                    fw ? "frame wire" : "off (no session)");
     }
@@ -932,6 +999,15 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.q_drop = queue.dropped();
       sin.telem = latest_telem.t;
       sin.telem_rx_ms = latest_telem.rx_ms;
+      // lat_win.flush() is destructive (reads AND clears): only pay for it
+      // on a poll that stats->due() says will actually emit. This loop
+      // iterates roughly every 10ms (the drain() cadence above) while
+      // interval_ms is >= 100ms, so an unconditional flush() here would
+      // clear the window ~10x more often than it is ever read, reporting
+      // only the last loop tick's handful of samples instead of a real
+      // rolling window.
+      if (lat_anchor.usable() && stats->due(drained_ms))
+        sin.video_lat = lat_win.flush();
       // Ladder controller snapshot: absent in static-pin mode, where the
       // controller exists but is never ticked (see VrxController::ctl()).
       if (cfg.link.static_mcs < 0) {
@@ -1130,9 +1206,9 @@ int main(int argc, char** argv) {
          if (au_on) au_ring.append(d, n);
          file_out.append(d, n);
        },
-       [&](bool c) {
+       [&](bool c, const maburgs::AuLatMeta& lat) {
          if (au_on) {
-           const uint64_t rec = au_ring.finish(c);
+           const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          file_out.finish(c);

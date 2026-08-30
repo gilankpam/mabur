@@ -43,7 +43,7 @@ TEST(roundtrip_single_au) {
   w.begin(h, 1);
   w.append(au.data(), 600);
   w.append(au.data() + 600, 400);
-  CHECK(w.finish(true) == 0);
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == 0);
   CHECK(w.published() == 1);
 
   maburgs::AuRingReader r;
@@ -74,7 +74,7 @@ TEST(ordering_and_truncated_flag) {
     const auto au = au_bytes(100 + static_cast<size_t>(i), static_cast<uint8_t>(i));
     w.begin(h, i == 2 ? 3 : 1);
     w.append(au.data(), au.size());
-    w.finish(i != 2);  // last one truncated
+    w.finish(i != 2, maburgs::AuLatMeta{});  // last one truncated
   }
   maburgs::AuRingReader r;
   REQUIRE(r.open(path));
@@ -102,7 +102,7 @@ TEST(slot_bytes_alignment) {
   const auto au = au_bytes(500, 7);
   w.begin(h, 2);
   w.append(au.data(), au.size());
-  CHECK(w.finish(true) == 0);
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == 0);
 
   maburgs::AuRingReader r;
   REQUIRE(r.open(path));
@@ -132,7 +132,7 @@ TEST(writer_restart_detection) {
       const auto au = au_bytes(200, static_cast<uint8_t>(i));
       w1.begin(h, 1);
       w1.append(au.data(), au.size());
-      w1.finish(true);
+      w1.finish(true, maburgs::AuLatMeta{});
     }
   }  // w1 goes out of scope, writer is closed
 
@@ -160,7 +160,7 @@ TEST(writer_restart_detection) {
     h.pts_us = 9999;
     w2.begin(h, 2);
     w2.append(expected_au.data(), expected_au.size());
-    w2.finish(true);
+    w2.finish(true, maburgs::AuLatMeta{});
   }  // w2 goes out of scope, writer is closed
 
   // Reader cursor is at 4, but wseq is now 1 (from the new writer).
@@ -187,7 +187,7 @@ void write_n(maburgs::AuRingWriter& w, int n, size_t bytes, uint8_t sid = 1) {
     const auto au = au_bytes(bytes, static_cast<uint8_t>(w.published()));
     w.begin(h, sid);
     w.append(au.data(), au.size());
-    w.finish(true);
+    w.finish(true, maburgs::AuLatMeta{});
   }
 }
 }  // namespace
@@ -224,7 +224,7 @@ TEST(oversize_au_dropped_whole) {
   const auto big = au_bytes(2000, 5);
   w.begin(h, 1);
   w.append(big.data(), big.size());
-  CHECK(w.finish(true) == UINT64_MAX);
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == UINT64_MAX);
   CHECK(w.dropped_oversize() == 1);
   CHECK(w.published() == 0);
   write_n(w, 1, 100);  // ring still functional after a drop
@@ -254,7 +254,7 @@ TEST(finish_without_begin_is_noop) {
   const std::string path = tmp_ring();
   maburgs::AuRingWriter w;
   REQUIRE(w.open(path, {1024, 4}));
-  CHECK(w.finish(true) == UINT64_MAX);
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == UINT64_MAX);
   CHECK(w.published() == 0);
   unlink(path.c_str());
 }
@@ -374,7 +374,7 @@ TEST(hammer_writer_reader_integrity) {
       FrameHdr h; h.frame_id = static_cast<uint16_t>(w.published());
       const auto au = au_bytes(64 + (w.published() % 128),
                                static_cast<uint8_t>(w.published() % 251));
-      w.begin(h, 1); w.append(au.data(), au.size()); w.finish(true);
+      w.begin(h, 1); w.append(au.data(), au.size()); w.finish(true, maburgs::AuLatMeta{});
     }
   });
   maburgs::AuRingReader r;
@@ -392,6 +392,56 @@ TEST(hammer_writer_reader_integrity) {
   CHECK(corrupt == 0);
   CHECK(ok > 1000);
   CHECK(r.resyncs() > 0);
+  unlink(path.c_str());
+}
+
+TEST(au_ring_v2_lat_meta_roundtrip) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {4096, 4}));
+  FrameHdr h;
+  h.frame_id = 1;
+  h.pts_us = 500;
+  w.begin(h, 0);
+  const uint8_t payload[4] = {1, 2, 3, 4};
+  w.append(payload, sizeof(payload));
+  maburgs::AuLatMeta lat;
+  lat.t_first_us = 111111;
+  lat.t_complete_us = 222222;
+  lat.drone_q_ms = 7;
+  lat.enc_us = 9001;
+  CHECK(w.finish(true, lat) == 0);
+
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> au;
+  CHECK(r.next(&m, &au) == maburgs::AuRingReader::Res::kOk);
+  CHECK(m.t_first_us == 111111);
+  CHECK(m.t_complete_us == 222222);
+  CHECK(m.drone_q_ms == 7);
+  CHECK(m.enc_us == 9001);
+  unlink(path.c_str());
+}
+
+TEST(au_ring_v1_refused_by_reader) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {4096, 4}));
+  write_n(w, 1, 64);
+
+  // Flip the on-disk version dword (RingHdr offset 4) from kAuRingVersion
+  // (2) down to 1, simulating a pre-SlotHdr-v2 ring: the reader must refuse
+  // to open it rather than silently misreading the new fields.
+  FILE* f = fopen(path.c_str(), "rb+");
+  REQUIRE(f != nullptr);
+  REQUIRE(fseek(f, 4, SEEK_SET) == 0);
+  const uint32_t v1 = 1;
+  REQUIRE(fwrite(&v1, sizeof(v1), 1, f) == 1);
+  fclose(f);
+
+  maburgs::AuRingReader r;
+  CHECK(!r.open(path));
   unlink(path.c_str());
 }
 

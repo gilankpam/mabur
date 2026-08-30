@@ -100,6 +100,20 @@ TEST(interval_gate_and_seq) {
   CHECK(cap.last()["seq"] == 1);
 }
 
+// due() must mirror poll()'s own interval gate so a caller (main.cpp's
+// LatWindow::flush() guard) can check it without poll()'s side effects.
+// Not exercised by the other tests here since they all use interval_ms=0
+// (always due).
+TEST(due_mirrors_poll_interval_gate) {
+  StatsExporter ex(1, 500, [](const std::string&) { return true; });
+  CHECK(ex.due(1000));                 // never emitted -> always due
+  CHECK(ex.poll(1000, base_input()));  // first emit
+  CHECK(!ex.due(1400));                // 400 ms < interval: not yet due
+  CHECK(!ex.poll(1400, base_input()));
+  CHECK(ex.due(1500));                 // 500 ms >= interval: due
+  CHECK(ex.poll(1500, base_input()));
+}
+
 TEST(rates_use_measured_window) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
@@ -873,6 +887,58 @@ TEST(exporter_ctl_fade_block_and_counter) {
   // pins that the key was actually put on the wire.
   CHECK(j["link"]["ctl"]["fade"].contains("dsnr"));
   CHECK(j["link"]["ctl"]["fade"]["dsnr"].is_null());
+}
+
+// Head-segment latency aggregates (Task 10, spec 2026-08-30-latency-
+// accounting): the "lat" key is OMITTED, not null, while video_lat is
+// nullopt (anchor not usable / window empty upstream). contains() pins
+// that -- same auto-vivification trap noted above for fade.dsnr.
+TEST(video_lat_omitted_when_absent) {
+  Capture cap;
+  StatsExporter ex(1, 0, cap.fn());
+  StatsInput in = base_input();
+  in.video_lat = std::nullopt;
+  ex.poll(1000, in);
+  CHECK(!cap.last()["link"]["video"].contains("lat"));
+}
+
+// video_lat present with n==0 must still be omitted -- the exporter, not
+// just the core-loop fill site, enforces "n==0 -> no lat key".
+TEST(video_lat_omitted_when_n_zero) {
+  Capture cap;
+  StatsExporter ex(1, 0, cap.fn());
+  StatsInput in = base_input();
+  LatWindow::Out out;
+  out.n = 0;
+  in.video_lat = out;
+  ex.poll(1000, in);
+  CHECK(!cap.last()["link"]["video"].contains("lat"));
+}
+
+// REVERT CHECK: fails if any segment lands in the wrong array slot or the
+// n count is dropped.
+TEST(video_lat_present_when_set) {
+  Capture cap;
+  StatsExporter ex(1, 0, cap.fn());
+  StatsInput in = base_input();
+  LatWindow::Out out;
+  out.n = 42;
+  out.p50[0] = 1000; out.p99[0] = 2000;   // enc
+  out.p50[1] = 3000; out.p99[1] = 4000;   // dq
+  out.p50[2] = 5000; out.p99[2] = 6000;   // air
+  out.p50[3] = 7000; out.p99[3] = 8000;   // fec
+  in.video_lat = out;
+  ex.poll(1000, in);
+  const json lat = cap.last()["link"]["video"]["lat"];
+  CHECK(lat["n"] == 42);
+  CHECK(lat["enc"][0] == 1000);
+  CHECK(lat["enc"][1] == 2000);
+  CHECK(lat["dq"][0] == 3000);
+  CHECK(lat["dq"][1] == 4000);
+  CHECK(lat["air"][0] == 5000);
+  CHECK(lat["air"][1] == 6000);
+  CHECK(lat["fec"][0] == 7000);
+  CHECK(lat["fec"][1] == 8000);
 }
 
 MTEST_MAIN

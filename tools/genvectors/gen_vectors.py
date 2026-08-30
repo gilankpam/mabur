@@ -37,6 +37,7 @@ dump("crc16.json", {"cases": [
 # --- sliding-window fec (mabur-native; reference = tools/pyref/sw_fec.py) --
 sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
 import sw_fec  # noqa: E402
+import sbi  # noqa: E402
 
 SW_PKT_SIZES = [10, 50, 62, 1, 30, 62, 44, 62, 20, 62, 62, 5, 61, 33, 62, 62]
 sw_cases = []
@@ -72,8 +73,8 @@ dump("sw.json", {"cases": sw_cases})
 # consumers (the model-driven controller and link table) were deleted,
 # superseded by the measured-loss ladder controller.
 
-# --- sbi ---------------------------------------------------------------
-pk = fec_subblock.SubBlockPacker(75, 4, stream_id=2)
+# --- sbi (ver 1 with q_ms, enc_us latency fields; reference = tools/pyref/sbi.py) --
+pk = sbi.SubBlockPacker(75, 4, stream_id=2)
 sbi_stream, envs = [], [pat(75, i + 40) for i in range(9)]
 for e in envs:
     sbi_stream += [hx(b) for b in pk.add(e)]
@@ -242,16 +243,16 @@ su_cases = []
 for bh in sbi_stream + sbi_flush:
     body = bytes.fromhex(bh)
     variants = [("clean", body)]
-    c1 = bytearray(body); c1[fec_subblock.SBI_HDR_LEN + 2 + 3] ^= 0xFF  # 1st sub-blk payload
+    c1 = bytearray(body); c1[sbi.SBI_HDR_LEN + 2 + 3] ^= 0xFF  # 1st sub-blk payload
     variants.append(("one_subblock_corrupt", bytes(c1)))
-    c2 = bytearray(body); c2[0] ^= 0xFF                                  # header magic
+    c2 = bytearray(body); c2[0] ^= 0xFF                        # header magic
     variants.append(("header_corrupt", bytes(c2)))
     for name, b in variants:
-        r = fec_subblock.unpack(b, 75)
+        r = sbi.unpack(b, 75)
         su_cases.append({"name": name, "body": hx(b), "block_payload": 75,
-                         "survivors": [hx(s) for s in r.survivors],
-                         "n_blocks": r.n_blocks, "n_failed": r.n_failed,
-                         "header_ok": r.header_ok, "stream_id": r.stream_id})
+                         "survivors": [hx(s) for s in r["survivors"]],
+                         "n_blocks": r["n_blocks"], "n_failed": r["n_failed"],
+                         "header_ok": r["header_ok"], "stream_id": r["stream_id"]})
 su_cases.append({"name": "short", "body": hx(b"\xb0\xf5\x00"), "block_payload": 75,
                  "survivors": [], "n_blocks": 0, "n_failed": 0,
                  "header_ok": False, "stream_id": 0})

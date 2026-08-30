@@ -4,9 +4,20 @@
 #include <functional>
 #include <map>
 #include <vector>
+#include "au_ring.h"
 #include "mabur/frame_wire.h"
 
 namespace maburgs {
+
+// FRAG fragment arrival metadata (Task 7's DecodedFrag mirror at the
+// FrameStream boundary). Fields default to 0/unknown so call sites that
+// don't have real values (tests, the dry-run replay's synthetic feed) can
+// rely on push_fragment's default argument.
+struct FragArrival {
+  uint64_t body_mono_us = 0;  // RX stamp of the completing body (0 = unknown)
+  uint16_t q_ms = 0;          // SBI q_ms of that body (0 = unknown)
+  uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
+};
 
 struct FrameStreamCfg {
   uint64_t gap_timeout_ms = 50;  // unfilled gap older than this => truncate
@@ -25,14 +36,17 @@ class FrameStream {
   struct Callbacks {
     std::function<void(const mabur::framewire::FrameHdr&, uint8_t sid)> begin_frame;
     std::function<void(const uint8_t*, size_t)> frame_data;  // Annex-B bytes, in order
-    std::function<void(bool complete)> end_frame;
+    // lat.t_complete_us is always 0 here — the ring writer stamps finish
+    // time (Task 6). See Slot::lat below for the other fields' latch rules.
+    std::function<void(bool complete, const AuLatMeta& lat)> end_frame;
   };
 
   FrameStream(FrameStreamCfg cfg, Callbacks cb) : cfg_(cfg), cb_(std::move(cb)) {
     gap_ms_[0] = gap_ms_[1] = cfg_.gap_timeout_ms;
   }
 
-  void push_fragment(uint8_t stream_id, const uint8_t* pkt, size_t len, uint64_t now_ms);
+  void push_fragment(uint8_t stream_id, const uint8_t* pkt, size_t len, uint64_t now_ms,
+                     const FragArrival& arr = {});
   void poll(uint64_t now_ms);  // drives timeouts; call every loop tick
   void reset();                // session change
 
@@ -64,6 +78,17 @@ class FrameStream {
     uint16_t emitted_upto = 0;      // next chunk idx to emit
     bool began = false;
     bool discont = false;           // this frame re-based the id64 space
+    // Per-AU latency latch (Task 8), passed to end_frame at finish():
+    //  - t_first_us: min over every stored fragment's nonzero body_mono_us
+    //    (repair-completed heads carry the completing body's time —
+    //    documented approximation, biased small on exactly the frames
+    //    repaired at the wall).
+    //  - drone_q_ms / enc_us: latched from the fragment that sets have_hdr
+    //    (chunk idx 0, the AU's first data fragment); never overwritten
+    //    after that; stays 0 if the frame was force-advanced without its
+    //    idx-0 chunk.
+    //  - t_complete_us: left 0 here — the ring writer stamps finish time.
+    AuLatMeta lat;
   };
   void try_emit(uint64_t now_ms);
   void finish(Slot& s, bool complete);

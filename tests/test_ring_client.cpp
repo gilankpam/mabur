@@ -34,7 +34,7 @@ std::vector<uint8_t> au_bytes(size_t n, uint8_t seed) {
 
 // Publishes one AU. 2-stream space (spec 2026-08-29-airtime-balance-uep):
 // sid 0 = base, sid 1 = enhance. sid==1 records rely on
-// maburgs::AuRingWriter's own contract: finish(complete) ORs
+// maburgs::AuRingWriter's own contract: finish(complete, lat) ORs
 // kRecFlagComplete into flags iff complete.
 void publish(maburgs::AuRingWriter& w, uint8_t sid, bool complete, size_t bytes,
              uint8_t seed, uint8_t extra_flags = 0, uint32_t pts_us = 0) {
@@ -44,7 +44,7 @@ void publish(maburgs::AuRingWriter& w, uint8_t sid, bool complete, size_t bytes,
   const auto au = au_bytes(bytes, seed);
   w.begin(h, sid);
   w.append(au.data(), au.size());
-  w.finish(complete);
+  w.finish(complete, maburgs::AuLatMeta{});
 }
 
 // Collects delivered events into a vector via the Sink callback.

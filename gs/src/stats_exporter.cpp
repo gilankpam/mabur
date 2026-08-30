@@ -390,6 +390,19 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
 
   v["q_drop"] = in.q_drop;
 
+  // Head-segment latency aggregates (Task 10, spec 2026-08-30-latency-
+  // accounting): the whole key is OMITTED -- not null -- while the anchor
+  // isn't usable() or the window is empty, so consumers can treat presence
+  // of "lat" itself as "this build/session has real numbers here".
+  if (in.video_lat && in.video_lat->n > 0) {
+    const LatWindow::Out& lat = *in.video_lat;
+    v["lat"] = {{"n", lat.n},
+                {"enc", {lat.p50[0], lat.p99[0]}},
+                {"dq", {lat.p50[1], lat.p99[1]}},
+                {"air", {lat.p50[2], lat.p99[2]}},
+                {"fec", {lat.p50[3], lat.p99[3]}}};
+  }
+
   if (in.telem) {
     const mabur::rc::Telem& t = *in.telem;
     // A new distinct snapshot (tlm_seq changed since the last one we kept)
@@ -452,6 +465,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
 
     json& d = j["drone"];
     d["tlm_age_ms"] = now_ms > in.telem_rx_ms ? now_ms - in.telem_rx_ms : 0;
+    // Task 4/5 latency accounting: per-telemetry-window max TxQueue wait,
+    // saturating on the wire (see rc::Telem::txq_wait_max_ms).
+    d["txq_wait_ms"] = t.txq_wait_max_ms;
     d["tlm_seq"] = t.tlm_seq;
     d["state"] = t.state < 4 ? kTelemStateNames[t.state] : "unknown";
     d["gen"] = t.generation;

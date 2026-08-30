@@ -70,6 +70,18 @@ struct GsPlayerState {
   double jitter_ms = 0.0;
   double mbps = 0.0;
   RecState rec;
+
+  // Tail-latency OSD row (Task 12, spec 2026-08-30-latency-accounting).
+  // Player-measured, same as fps/jitter/mbps above -- current by
+  // construction, never dimmed by `stale`. Sourced from
+  // maburplay::LatTracker::p99_frame() at 1 Hz: the REAL p99-by-e2e frame's
+  // own segment breakdown, not independently-ranked per-segment
+  // percentiles (see lat_tracker.h). `lat_valid` false means the anchor
+  // isn't usable yet (cold/discontinuous) -- the row renders "LAT --" and
+  // no breakdown rather than stale or fabricated numbers.
+  bool lat_valid = false;
+  int lat_e2e_ms = 0;
+  int lat_ms[7] = {0};  // enc,dq,air,fec,dec,reg,dsp -- the p99 frame's own
 };
 
 // Formatting. Every value is fixed-width by construction so a field box
@@ -108,6 +120,10 @@ enum class GsFieldId {
   kCard1Id, kCard1Bars, kCard1Rssi, kCard1Unit, kCard1Snr,
   kCard2Id, kCard2Bars, kCard2Rssi, kCard2Unit, kCard2Snr,
   kCard3Id, kCard3Bars, kCard3Rssi, kCard3Unit, kCard3Snr,
+  // Tail-latency row (Task 12): headline p99 e2e + that frame's own
+  // 7-segment breakdown. Appended, never inserted -- see the comment atop
+  // this enum.
+  kLatHead, kLatBreakdown,
   kCount,
 };
 

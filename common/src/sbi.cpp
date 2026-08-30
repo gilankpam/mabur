@@ -37,14 +37,20 @@ std::vector<uint8_t> SbiPacker::build_body(
   std::vector<uint8_t> out;
   out.reserve(SBI_HDR_LEN + batch.size() * block_stride());
 
-  // Header: <u16 MAGIC LE, u8 ver=0, u8 stream_id, u16 block_payload LE, u8 n_blocks>
+  // Header: <u16 MAGIC LE, u8 ver, u8 stream_id, u16 block_payload LE, u8 n_blocks, u16 q_ms LE, u16 enc_us LE>
   out.push_back(static_cast<uint8_t>(SBI_MAGIC & 0xFF));
   out.push_back(static_cast<uint8_t>((SBI_MAGIC >> 8) & 0xFF));
-  out.push_back(0);  // ver
+  out.push_back(SBI_VER);
   out.push_back(stream_id_);
   out.push_back(static_cast<uint8_t>(block_payload_ & 0xFF));
   out.push_back(static_cast<uint8_t>((block_payload_ >> 8) & 0xFF));
   out.push_back(static_cast<uint8_t>(batch.size()));
+  // q_ms placeholder (bytes 7-8)
+  out.push_back(0);
+  out.push_back(0);
+  // enc_us placeholder (bytes 9-10)
+  out.push_back(0);
+  out.push_back(0);
 
   for (auto& env : batch) {
     uint16_t crc = crc16_ccitt(env.data(), env.size());
@@ -72,7 +78,11 @@ SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload) {
     const uint8_t ver = body[2];
     r.stream_id = body[3];
     const uint16_t hdr_bp = sbi_rd_u16(body + 4);
-    r.header_ok = magic == SBI_MAGIC && ver == 0 && hdr_bp == block_payload;
+    r.header_ok = magic == SBI_MAGIC && ver == SBI_VER && hdr_bp == block_payload;
+    if (r.header_ok) {
+      r.q_ms = sbi_rd_u16(body + SBI_Q_MS_OFF);
+      r.enc_us = sbi_rd_u16(body + SBI_ENC_US_OFF);
+    }
   } else {
     return r;  // Python: empty region -> zero blocks, header_ok false
   }
@@ -92,8 +102,20 @@ SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload) {
 
 int sbi_peek_stream_id(const uint8_t* body, size_t len) {
   if (len < static_cast<size_t>(SBI_HDR_LEN)) return -1;
-  if (sbi_rd_u16(body) != SBI_MAGIC || body[2] != 0) return -1;
+  if (sbi_rd_u16(body) != SBI_MAGIC || body[2] != SBI_VER) return -1;
   return body[3];
+}
+
+void sbi_set_q_ms(uint8_t* body, size_t len, uint16_t ms) {
+  if (len < static_cast<size_t>(SBI_HDR_LEN)) return;
+  body[SBI_Q_MS_OFF] = static_cast<uint8_t>(ms & 0xFF);
+  body[SBI_Q_MS_OFF + 1] = static_cast<uint8_t>(ms >> 8);
+}
+
+void sbi_set_enc_us(uint8_t* body, size_t len, uint16_t us) {
+  if (len < static_cast<size_t>(SBI_HDR_LEN)) return;
+  body[SBI_ENC_US_OFF] = static_cast<uint8_t>(us & 0xFF);
+  body[SBI_ENC_US_OFF + 1] = static_cast<uint8_t>(us >> 8);
 }
 
 }  // namespace mabur

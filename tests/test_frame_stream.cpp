@@ -10,14 +10,14 @@ using mabur::framewire::FrameHdr;
 
 namespace {
 struct Capture {
-  struct Ev { char kind; FrameHdr hdr; std::vector<uint8_t> bytes; bool complete; uint8_t sid = 0; };
+  struct Ev { char kind; FrameHdr hdr; std::vector<uint8_t> bytes; bool complete; uint8_t sid = 0; AuLatMeta lat; };
   std::vector<Ev> evs;
   std::vector<uint8_t> cur;
   FrameStream::Callbacks cbs() {
     return {
-        [this](const FrameHdr& h, uint8_t sid) { evs.push_back({'B', h, {}, false, sid}); cur.clear(); },
+        [this](const FrameHdr& h, uint8_t sid) { evs.push_back({'B', h, {}, false, sid, {}}); cur.clear(); },
         [this](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
-        [this](bool c) { evs.push_back({'E', {}, cur, c}); cur.clear(); }};
+        [this](bool c, const AuLatMeta& lat) { evs.push_back({'E', {}, cur, c, 0, lat}); cur.clear(); }};
   }
 };
 
@@ -293,6 +293,74 @@ TEST(whole_frame_gap_waits_for_the_max_sid_timeout) {
   fs.poll(180);  // 20 + 150ms passed
   CHECK(fs.frames_dropped() == 1);
   CHECK(fs.frames_clean() == 2);
+}
+
+// --- Task 8: per-AU latency latch (t_first/drone_q_ms/enc_us on end_frame) ---
+
+TEST(lat_t_first_is_min_body_time_q_enc_latched_from_idx0) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(200, 0x55);  // 208-byte unit -> 2 fragments (idx0, idx1)
+  auto frags = frag_frame(frag, 0, pay);
+  REQUIRE(frags.size() == 2);
+  // idx1 arrives FIRST with a LARGER body time (would wrongly latch as
+  // t_first under a "first write wins"/no-min bug); idx0 arrives SECOND
+  // with a SMALLER body time plus the q/enc payload that only idx0 carries.
+  fs.push_fragment(1, frags[1].data(), frags[1].size(), 10, {2000, 0, 0});
+  REQUIRE(cap.evs.empty());  // idx0 (the header) hasn't arrived yet
+  fs.push_fragment(1, frags[0].data(), frags[0].size(), 11, {1000, 5, 6});
+  REQUIRE(cap.evs.size() == 2);  // B E: frame completes once both chunks are in
+  CHECK(cap.evs[1].kind == 'E');
+  CHECK(cap.evs[1].complete);
+  CHECK(cap.evs[1].lat.t_first_us == 1000);  // min(2000, 1000), not last-write
+  CHECK(cap.evs[1].lat.drone_q_ms == 5);
+  CHECK(cap.evs[1].lat.enc_us == 6);
+  CHECK(cap.evs[1].lat.t_complete_us == 0);  // ring writer stamps this, not us
+}
+
+TEST(lat_truncated_finish_still_carries_latched_values) {
+  // Same shape as gap_timeout_truncates_prefix: fragment 2 of a 4+-fragment
+  // frame never arrives, so the gap timeout force-finishes it truncated —
+  // the latch must survive that path too, not just the clean-finish one.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(2000, 0xCD);
+  auto frags = frag_frame(frag, 0, pay);
+  REQUIRE(frags.size() >= 4);
+  for (size_t i = 0; i < frags.size(); ++i) {
+    if (i == 2) continue;
+    FragArrival arr{1000 + static_cast<uint64_t>(i) * 100,
+                    i == 0 ? static_cast<uint16_t>(9) : static_cast<uint16_t>(0),
+                    i == 0 ? static_cast<uint16_t>(11) : static_cast<uint16_t>(0)};
+    fs.push_fragment(1, frags[i].data(), frags[i].size(), 10, arr);
+  }
+  fs.poll(70);  // 10 + 50ms timeout passed, as gap_timeout_truncates_prefix does
+  REQUIRE(cap.evs.size() == 2);
+  CHECK(cap.evs[1].kind == 'E');
+  CHECK(!cap.evs[1].complete);
+  CHECK(cap.evs[1].lat.t_first_us == 1000);  // idx0's body time is the min
+  CHECK(cap.evs[1].lat.drone_q_ms == 9);
+  CHECK(cap.evs[1].lat.enc_us == 11);
+}
+
+TEST(lat_headerless_slot_drop_never_reaches_end_frame) {
+  // idx0 (the header fragment) never arrives: existing behavior is that the
+  // slot ages out via poll()'s headerless-slot sweep and end_frame is never
+  // called at all (not even truncated) -- unchanged by the lat latch.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(2000, 0xCD);
+  auto frags = frag_frame(frag, 0, pay);
+  REQUIRE(frags.size() >= 4);
+  fs.push_fragment(1, frags[1].data(), frags[1].size(), 10, {500, 3, 4});
+  fs.poll(70);  // past the gap timeout with idx0 never having arrived
+  CHECK(cap.evs.empty());  // no begin_frame, no end_frame
+  CHECK(fs.frames_clean() == 0);
+  CHECK(fs.frames_truncated() == 0);
+  CHECK(fs.frames_dropped() >= 1);
 }
 
 MTEST_MAIN

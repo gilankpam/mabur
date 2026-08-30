@@ -6,6 +6,8 @@
 
 #include "frame_pipeline.h"
 #include "mabur/frame_wire.h"
+#include "mabur/sbi.h"
+#include "mabur/sw_wire.h"
 #include "mtest.h"
 
 using namespace mabur;
@@ -434,6 +436,57 @@ TEST(frame_pipeline_reset_vanish_counters_zeros_all_counters) {
   CHECK(f.pipe.vanished_base() == 0);
   CHECK(f.pipe.vanished_enhance() == 0);
   CHECK(f.pipe.self_idr_refused() == 0);
+}
+
+// ── enc_us passthrough + SBI patch round-trip (2026-08-30 latency accounting)
+//
+// encode() latches the producer meta's enc_us so the hot-thread push site
+// can patch it into every body it just got back (main.cpp does this outside
+// FramePipeline, since the patch happens post-SBI-pack); a shed frame
+// returns before that latch and must leave the previous value untouched.
+
+TEST(frame_pipeline_last_enc_us_passthrough_and_sbi_patch_round_trips) {
+  UepEncoder enc(layers(), 15);
+  FramePipeline pipe;
+  auto buf = ring_buf(/*nal_type=*/1, /*tid=*/0, 900);
+  VencFrameMeta m = meta_of(100000, false);
+  m.enc_us = 7777;
+
+  auto bodies = pipe.encode(enc, buf.data(), payload_len(buf), m, 1);
+  CHECK(pipe.last_enc_us() == 7777);
+  REQUIRE(!bodies.empty());
+
+  // layers()'s symbol_size is 164; block_payload = sw::kSwHeaderLen + 164,
+  // exactly what sbi_unpack needs to re-partition the body (test_sbi.cpp /
+  // uep_encoder.h's Layer ctor compute it the same way).
+  const int env_size = static_cast<int>(sw::kSwHeaderLen) + 164;
+  for (auto& b : bodies) {
+    sbi_set_enc_us(b.body.data(), b.body.size(), pipe.last_enc_us());
+    auto r = sbi_unpack(b.body.data(), b.body.size(), env_size);
+    CHECK(r.enc_us == 7777);
+  }
+}
+
+TEST(frame_pipeline_shed_frame_does_not_update_last_enc_us) {
+  UepEncoder enc(layers(), 15);
+  enc.set_shed(1, true);  // shed enhance stream (sid 1)
+  FramePipeline pipe;
+
+  auto buf1 = ring_buf(/*nal_type=*/1, /*tid=*/0, 500);
+  VencFrameMeta m1 = meta_of(0, false);
+  m1.enc_us = 4242;
+  auto out1 = pipe.encode(enc, buf1.data(), payload_len(buf1), m1, 1);
+  REQUIRE(!out1.empty());
+  CHECK(pipe.last_enc_us() == 4242);
+
+  // Shed enhance frame with a different enc_us: dropped before the latch,
+  // so last_enc_us() must stay at the prior non-shed value.
+  auto buf2 = ring_buf(/*nal_type=*/0, /*tid=*/0, 500);
+  VencFrameMeta m2 = meta_flags(1000, VENC_FRAME_FLAG_ENHANCE);
+  m2.enc_us = 9999;
+  auto out2 = pipe.encode(enc, buf2.data(), payload_len(buf2), m2, 2);
+  CHECK(out2.empty());
+  CHECK(pipe.last_enc_us() == 4242);
 }
 
 TEST(frame_pipeline_reset_vanish_counters_preserves_detection) {
