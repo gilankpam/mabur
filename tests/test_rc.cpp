@@ -50,6 +50,9 @@ TEST(rcf_matches_golden_wire) {
   const std::vector<std::string> GOLDEN = {
       "4352050100efbeadde070024323295a6",
       "435205010001000000ffff006464df0e",
+      // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
+      // literal overhead than BASE here, not a duplicated equal-pair scalar.
+      "4352050100443322112a00086432d635",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());

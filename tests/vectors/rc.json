@@ -43,6 +43,15 @@
     "seq": 65535,
     "vtx_id": 1
    }
+  },
+  {
+   "fields": {
+    "fec_overhead_base": 1.0,
+    "fec_overhead_enh": 0.5,
+    "profile": 8,
+    "seq": 42,
+    "vtx_id": 287454020
+   }
   }
  ]
 }
