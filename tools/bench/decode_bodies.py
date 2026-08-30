@@ -8,10 +8,8 @@ assembly maburgs' FrameStream does on air."""
 import argparse, os, random, struct, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-sys.path.insert(0, os.path.abspath(os.path.join(ROOT, "..", "devourer", "tools", "precoder")))
-import fec_subblock  # noqa: E402
 sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
-import sw_fec  # noqa: E402
+import sbi, sw_fec  # noqa: E402
 
 FRAG_HDR = struct.Struct("<HHH")     # seq, idx, count
 FRAME_HDR = struct.Struct("<HBBI")   # frame_id, flags, codec, pts_us
@@ -128,7 +126,7 @@ def main():
             (rl,) = struct.unpack_from("<H", fr, 2)
             if rl != 13: continue                       # HT frames only
             if a.stream is not None:
-                sid = fec_subblock.peek_stream_id(fr[rl + 24:])
+                sid = sbi.peek_stream_id(fr[rl + 24:])
                 if sid != a.stream: continue
             checked += 1
             if fr[12] != a.expect_mcs: bad += 1
@@ -137,11 +135,12 @@ def main():
 
     for fr in frames:
         _, body = strip_to_body(fr)
-        sid = fec_subblock.peek_stream_id(body)
-        if sid is None or sid > 1: continue
+        sid = sbi.peek_stream_id(body)
+        if sid is None or sid < 0 or sid > 1: continue
         per_stream_in[sid] += 1
         if a.drop_pct and rng.random() * 100 < a.drop_pct: continue
-        for env in fec_subblock.unpack(body, env_size[sid]).survivors:
+        r = sbi.unpack(body, env_size[sid])
+        for env in r["survivors"]:
             for frag in decs[sid].add_symbol(env):
                 if len(frag) < FRAG_HDR.size: continue
                 seq, idx, n = FRAG_HDR.unpack_from(frag)

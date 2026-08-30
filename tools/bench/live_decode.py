@@ -10,7 +10,8 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.abspath(os.path.join(ROOT, "..", "devourer", "tools", "precoder")))
-import fec_subblock, stream_fec  # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
+import sbi, stream_fec  # noqa: E402
 
 K, SYMBOL = 8, 64
 ENV_SIZE = 11 + SYMBOL
@@ -36,14 +37,14 @@ recovered = []  # (sid, frag_seq, rtp_packet)
 n_sbi = n_other = 0
 
 for body in frames:
-    sid = fec_subblock.peek_stream_id(body)
-    if sid is None or sid > 3:
+    sid = sbi.peek_stream_id(body)
+    if sid is None or sid < 0 or sid > 3:
         n_other += 1
         continue
     n_sbi += 1
-    res = fec_subblock.unpack(body, ENV_SIZE)
-    per_stream_env[sid] += len(res.survivors)
-    for env in res.survivors:
+    res = sbi.unpack(body, ENV_SIZE)
+    per_stream_env[sid] += len(res["survivors"])
+    for env in res["survivors"]:
         for pkt in decs[sid].add_symbol(env):
             if len(pkt) < FRAG_HDR.size:
                 continue
