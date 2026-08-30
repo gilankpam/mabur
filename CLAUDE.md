@@ -85,5 +85,7 @@ Never load the 8812eu kernel module on the GS cards.
 `tools/bench/ausniff.py`**, which reads the AU ring from outside the
 daemon — the sideport is maburgs self-reporting, so gating a maburgs
 change on the sideport is circular. Host-side the equivalent is
-`ctest -R 'gs_e2e|gs_au_e2e|player_e2e'`. Details in
-`docs/observability.md`.
+`ctest -R 'gs_e2e|gs_au_e2e|player_e2e'`. Any change touching the
+AirBalancer, venc, UEP overhead, or the bitrate policy additionally
+gates on `tools/bench/aucadence.py` (base−enh completion offset vs the
+recorded per-rung baseline). Details in `docs/observability.md`.

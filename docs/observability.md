@@ -58,6 +58,27 @@ read the sideport. Reach for other tools only in these cases:**
   mode is best-effort — Python cannot fence.) Host-side, the same
   invariant is `ctest -R 'gs_e2e|gs_au_e2e|player_e2e'` (byte-exact
   fixture-to-ring/AU comparisons via `verify_aus.py`/`--out-aus`).
+- **Verifying AU-completion cadence → `tools/bench/aucadence.py`** (on the
+  GS: `python3 aucadence.py --ring /dev/shm/mabur-au --seconds 25 --json`).
+  Same outside-the-daemon ring posture as ausniff; reports the base−enh
+  completion offset (p50 of `arrival_mono − pts` per class, IDR-excluded —
+  metric provenance in `docs/airtime-balance-spike-findings-2026-08-29.md`).
+  This is the **standing acceptance number for any change touching the
+  AirBalancer, the venc pipeline, UEP overhead, or the bitrate policy** —
+  the sideport `jitter_ms` EMA is the symptom of this offset and is noisier
+  (±1.4 ms vs ±0.5 ms), so judge on the offset. Baselines recorded at the
+  2026-08-30 v4 flag-day acceptance, mcs5 park: **−1.1 to −3.0 ms
+  enh-late depending on scene/frame size** (21–33 KB frames, ~9.5 Mbps;
+  balancer verified at its equal-air optimum 0.71/1.29 throughout, so the
+  residual is encoder-side per-class completion latency — SVC-T
+  alternation, scene-dependent) and **+1.1 ms at a pinned-mcs2** run
+  (partly the 0.5×cmd rail). Regression criterion at the mcs5 park:
+  **`--gate-ms 4.0`** — inside the known encoder envelope anything passes;
+  a transport regression (lost balance, one-sided overhead, rate misroute)
+  shows as the offset leaving that envelope. The design target ≤0.5 ms
+  becomes the gate once the open venc-class-latency work lands. A capture whose
+  per-class count is under `--min-samples` (default 100) is refused, not
+  scored — enh silence (shed, loss-sim kill) is not a cadence sample.
 - **Packet-level forensics → capture tools** (`tools/bench/seqdump.py`,
   `decode_bodies.py`, `live_decode.py`/`live_play.py`). The sideport is
   aggregates; when a summary number looks wrong, these record raw bodies
