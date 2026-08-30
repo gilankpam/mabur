@@ -39,6 +39,7 @@
 #include "mabur/msp_source.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
+#include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
 #include "mabur/fec_worker.h"
 #include "mabur/uep_encoder.h"
@@ -1078,7 +1079,14 @@ int run_real_mode(const Config& cfg) {
           for (auto& b : bodies) { emitted += b.body.size(); sid = b.stream_id; }
           if (sid >= 0) feed.on_frame(sid, static_cast<size_t>(n), emitted);
         }
-        for (auto& b : bodies) txq.push(std::move(b));
+        // Patch this frame's encoder latency into every body it produced —
+        // the SBI header sits outside the FEC envelope, so this is the only
+        // place a post-pack field can be stamped without breaking a CRC
+        // (docs/superpowers/specs/2026-08-30-latency-accounting; Task 3).
+        for (auto& b : bodies) {
+          mabur::sbi_set_enc_us(b.body.data(), b.body.size(), pipe.last_enc_us());
+          txq.push(std::move(b));
+        }
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
         idr_disagree_total.store(pipe.idr_disagreements(),
@@ -1132,6 +1140,10 @@ int run_real_mode(const Config& cfg) {
         }
       }
 
+      // Idle-tail flush: no single source frame owns these bodies (poll can
+      // combine leftovers across several frames' worth of idle time), so
+      // they carry no patched enc_us — left at the packer's zero placeholder
+      // (0 = unknown on the wire, per spec).
       auto polled = uep.poll(now);
       for (auto& b : polled) txq.push(std::move(b));
 

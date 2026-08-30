@@ -45,6 +45,10 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
   // stays pending so the window anchors on a frame that actually ships.
   if (uep.drop_if_shed(sid)) return {};
 
+  // Latches AFTER the shed return so a shed frame's enc_us never overwrites
+  // the last shipped frame's value — see last_enc_us()'s doc comment.
+  last_enc_us_ = meta.enc_us;
+
   if (discont_pending_) {
     discont_pending_ = false;
     discont_until_ms_ = now_ms + kDiscontStickyMs;
