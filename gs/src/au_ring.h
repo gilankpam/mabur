@@ -44,9 +44,16 @@ namespace maburgs {
 //   28 u8  sid
 //   29 u8  flags             — idr|discont|complete (kRecFlagComplete)
 //   30 u8  codec
+//   32 u64 t_first_us        — SlotHdr v2 (kAuRingVersion 2): mono µs at the
+//                              first body of the AU (0 = unknown)
+//   40 u64 t_complete_us     — mono µs at finish(); writer stamps now() if
+//                              the caller passed 0
+//   48 u16 drone_q_ms        — from SBI q_ms via the AU's first fragment
+//   50 u16 enc_us            — from SBI enc_us, same latch
+// (52..63 unused padding; SlotHdr stays 64 B)
 // followed by slot_bytes of Annex-B AU payload.
 inline constexpr uint32_t kAuRingMagic = 0x4D425541;  // "AUBM" LE
-inline constexpr uint32_t kAuRingVersion = 1;
+inline constexpr uint32_t kAuRingVersion = 2;
 inline constexpr size_t kAuRingHdrBytes = 4096;
 inline constexpr size_t kAuSlotHdrBytes = 64;
 // ORed into the record flags byte next to framewire kFlagIdr/kFlagDiscont.
@@ -68,6 +75,21 @@ struct AuRecordMeta {
   uint8_t sid = 0;
   uint8_t flags = 0;
   uint8_t codec = 0;
+  uint64_t t_first_us = 0;
+  uint64_t t_complete_us = 0;
+  uint16_t drone_q_ms = 0;
+  uint16_t enc_us = 0;
+};
+
+// GS-side per-AU latency stamps (SlotHdr v2). Passed to finish() so the
+// writer stamps them inside the same seqlock window as the rest of the
+// slot header; Task 8 (FrameStream) is the real producer, Task 9
+// (PtsAnchor) and Task 10 (sideport) the consumers.
+struct AuLatMeta {
+  uint64_t t_first_us = 0;    // mono µs, first body of the AU (0 = unknown)
+  uint64_t t_complete_us = 0; // mono µs at finish (writer stamps if 0)
+  uint16_t drone_q_ms = 0;    // from SBI q_ms via the AU's first fragment
+  uint16_t enc_us = 0;        // from SBI enc_us, same latch
 };
 
 // Creates/truncates the ring file and publishes AUs accumulated between
@@ -85,7 +107,9 @@ class AuRingWriter {
   AuRingGeom geom() const { return geom_; }  // effective (post-alignment) geometry — the header/hello contract
   void begin(const mabur::framewire::FrameHdr& h, uint8_t sid);
   void append(const uint8_t* p, size_t n);
-  uint64_t finish(bool complete);  // rec_no, or UINT64_MAX if dropped/no-op
+  // rec_no, or UINT64_MAX if dropped/no-op. No default AuLatMeta: every
+  // caller must decide (pass AuLatMeta{} to stamp nothing but t_complete_us).
+  uint64_t finish(bool complete, const AuLatMeta& lat);
   bool ok() const { return map_ != nullptr; }
   uint64_t published() const { return published_; }
   uint64_t dropped_oversize() const { return dropped_oversize_; }

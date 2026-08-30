@@ -16,7 +16,12 @@ import argparse, json, mmap, struct, sys, time
 HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
-VERSION = 1
+# SlotHdr v2 (kAuRingVersion 2, 2026-08-30 latency-accounting task 6): the
+# reader's version gate just needs to accept the new ring so gs_au_e2e keeps
+# passing; the v2 fields themselves (t_first_us/t_complete_us/drone_q_ms/
+# enc_us at slot offsets 32/40/48/50) aren't parsed here yet -- that's a
+# later task's full mirror update.
+VERSION = 2
 FLAG_IDR, FLAG_DISCONT, FLAG_COMPLETE = 0x01, 0x02, 0x80
 
 

@@ -273,7 +273,8 @@ static int run_radio(const maburgs::Config& cfg) {
        },
        [&](bool c) {
          if (au_on) {
-           const uint64_t rec = au_ring.finish(c);
+           // Task 8 wires real lat values
+           const uint64_t rec = au_ring.finish(c, maburgs::AuLatMeta{});
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          if (stats) stats->on_frame(mono_ms());
@@ -1132,7 +1133,8 @@ int main(int argc, char** argv) {
        },
        [&](bool c) {
          if (au_on) {
-           const uint64_t rec = au_ring.finish(c);
+           // Task 8 wires real lat values
+           const uint64_t rec = au_ring.finish(c, maburgs::AuLatMeta{});
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          file_out.finish(c);
