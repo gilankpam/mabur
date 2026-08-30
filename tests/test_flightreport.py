@@ -523,6 +523,58 @@ def test_ctllog_pre_v7_note():
     print("\n✓ ctllog pre-v7 note test passed!")
 
 
+def test_ctllog_v8_pair_ladder_token_parsed():
+    """v8 (same-rate-fixed-pairs) splits each ladder rung's overhead into a
+    base/enh pair (mcs/ovb:ove); load_ctllog exposes it structured under
+    header["_ladder"], not just the raw string."""
+    text = "ctllog 8 ladder=0/100:100,5/25:50 down_util=0.35 up_util=0.15\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert log["header"]["_version"] == 8
+    rungs = log["header"]["_ladder"]
+    assert rungs == [
+        {"mcs": 0, "ov_base": 1.0, "ov_enh": 1.0},
+        {"mcs": 5, "ov_base": 0.25, "ov_enh": 0.5},
+    ]
+
+
+def test_ctllog_pre_v8_ladder_token_treated_as_both():
+    """A pre-v8 single-value ladder token (mcs/ov) parses as base == enh --
+    that rung never had a split to lose."""
+    text = "ctllog 7 ladder=5/25 down_util=0.60 up_util=0.15\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert log["header"]["_ladder"] == [{"mcs": 5, "ov_base": 0.25, "ov_enh": 0.25}]
+
+
+def test_ctllog_pre_v8_note():
+    """A ctllog older than v8 predates the same-rate-fixed-pairs base/enh
+    ladder split -- the report must say so; a v8 log must not."""
+    text = "ctllog 7 ladder=0/100 down_util=0.35 up_util=0.15\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+    assert "same-rate-fixed-pairs" in out
+
+    text8 = "ctllog 8 ladder=0/100:100 down_util=0.35 up_util=0.15\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0002_x.log"
+        p.write_text(text8)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+    assert "same-rate-fixed-pairs" not in out
+
+
 def test_ctllog_r_lines_and_inversion():
     text = (
         "ctllog 1 ladder=0/100 down_util=0.35 up_util=0.15\n"
@@ -627,6 +679,9 @@ if __name__ == "__main__":
     test_ctllog_evm_optional_trailing_token()
     test_wall_report()
     test_ctllog_pre_v7_note()
+    test_ctllog_v8_pair_ladder_token_parsed()
+    test_ctllog_pre_v8_ladder_token_treated_as_both()
+    test_ctllog_pre_v8_note()
     test_ctllog_r_lines_and_inversion()
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()

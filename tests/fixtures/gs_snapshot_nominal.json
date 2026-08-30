@@ -9,7 +9,7 @@
   "link": {
     "air_pct": 61.0,
     "residual_loss": 0.0,
-    "ctl": {"rung": {"idx": 3, "mcs": 5, "ov": 0.25}, "pre_fec_loss": 0.021},
+    "ctl": {"rung": {"idx": 3, "mcs": 5, "ov_base": 0.25}, "pre_fec_loss": 0.021},
     "video": {"fps": 60.0, "jitter_ms": 3.0, "mbps": 24.6}
   },
   "drone": null

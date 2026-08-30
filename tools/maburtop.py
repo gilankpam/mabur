@@ -178,15 +178,17 @@ def _applied_mcsbw_cell(mcs, bw, w=7):
     return s[:w].ljust(w) if len(s) > w else s.ljust(w)
 
 
-def _ov_cmd_cell(total, ov_base, ov_enh):
-    """Prose-style (top bar / compact header) overhead cell: `total` is the
-    single scalar the GS ladder currently commands (link.op.overhead, the
-    pre-balancer fallback both streams share); ov_base/ov_enh are the
-    drone's actual balancer-applied per-stream split from telemetry —
-    '--' before the first T_TELEM snapshot. The two need not match: the
-    balancer is expected to diverge from the commanded scalar, that is its
-    job, not a staleness bug (see 2026-08-29 airtime-balance-uep)."""
-    return f"ov {_s(total, 2)} (b {_s(ov_base, 2)}/e {_s(ov_enh, 2)})"
+def _ov_cmd_cell(cmd_base, cmd_enh, ov_base, ov_enh):
+    """Prose-style (top bar / compact header) overhead cell: cmd_base/
+    cmd_enh are the GS-commanded pair the ladder currently sends
+    (link.op.overhead_base/overhead_enh — same-rate-fixed-pairs, Task 5);
+    ov_base/ov_enh are the drone's actual balancer-applied per-stream split
+    from telemetry — '--' before the first T_TELEM snapshot. The two pairs
+    need not match: the balancer is expected to diverge from the commanded
+    pair, that is its job, not a staleness bug (see 2026-08-29
+    airtime-balance-uep)."""
+    return (f"ov cmd b{_s(cmd_base, 2)}/e{_s(cmd_enh, 2)} "
+            f"(b {_s(ov_base, 2)}/e {_s(ov_enh, 2)})")
 
 
 def _ov_applied_cell(ov_base, ov_enh, w=4):
@@ -306,14 +308,15 @@ def render_rows_compact(model, wall, width):
         tx_card = link.get("tx_card")
         vtx_id = link.get("vtx_id")
         bw = op.get("bw")
-        overhead = op.get("overhead")
+        cmd_ov_base = op.get("overhead_base")
+        cmd_ov_enh = op.get("overhead_enh")
         drone_applied = (d.get("drone") or {}).get("applied") or {}
         deadline_ms = link.get("deadline_ms")
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
             f"maburgs   {state_s}   vtx {_s(vtx_id)}   tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
-            f"{_ov_cmd_cell(overhead, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
+            f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
             f"deadline {_s(deadline_ms)} ms"
         ).ljust(width)
     rows.append(header)
@@ -535,7 +538,8 @@ def panel_topbar(model, wall):
     state_s = state.upper() if isinstance(state, str) else "--"
     vtx_id = link.get("vtx_id")
     mcs, bw = op.get("mcs"), op.get("bw")
-    overhead = op.get("overhead")
+    cmd_ov_base = op.get("overhead_base")
+    cmd_ov_enh = op.get("overhead_enh")
     drone_applied = (d.get("drone") or {}).get("applied") or {}
     deadline, air = link.get("deadline_ms"), link.get("air_pct")
     session = model.session
@@ -552,7 +556,7 @@ def panel_topbar(model, wall):
     text = (
         f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
-        f"{_ov_cmd_cell(overhead, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
+        f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
         f"deadline {_s(deadline)} ms   "
         f"air ~{_s(air, 0)}%      session {session_s}   "
         f"restarts {model.restarts}   rx {hz:.1f} Hz"
