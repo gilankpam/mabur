@@ -9,9 +9,7 @@ namespace {
 // Rebuild an OpPoint from the ladder's current rung. Power is constant and
 // is not part of the operating point (spec 2026-08-12-constant-txpower).
 OpPoint op_from_rung(const Rung& r) {
-  // OpPoint.overhead is not yet a pair (Task 4); use overhead_base
-  // mechanically, matching pre-pair behavior.
-  return OpPoint{false, r.mcs, 20, false, r.overhead_base, 0.0};
+  return OpPoint{false, r.mcs, 20, false, r.overhead_base, r.overhead_enh, 0.0};
 }
 }  // namespace
 
@@ -44,7 +42,8 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   if (cfg_.pin_mcs >= 0) {
     // Static-link mode: fixed op, ladder fully out of the loop (never
     // ticked/updated — health is ignored entirely).
-    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false, cfg_.pin_overhead, 0.0};
+    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false,
+                     cfg_.pin_overhead_base, cfg_.pin_overhead_enh, 0.0};
   } else if (ctrl_.on_tick(now_ms)) {
     cur_op_ = op_from_rung(ctrl_.op());
   }
@@ -78,7 +77,8 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   // previously sent frame; steady-state re-sends of an unchanged command
   // are already their own retries and arm nothing.
   const bool changed = !have_last_cmd_ || r.profile != last_cmd_profile_ ||
-                       mabur::rc::overhead_to_x100(r.fec_overhead_base) != last_cmd_ovx100_ ||
+                       mabur::rc::overhead_to_x100(r.fec_overhead_base) != last_cmd_ovx100_b_ ||
+                       mabur::rc::overhead_to_x100(r.fec_overhead_enh) != last_cmd_ovx100_e_ ||
                        r.probe3 != last_cmd_probe3_ ||
                        (r.probe3 && r.probe_profile != last_cmd_probe_profile_);
   note_cmd(r);
@@ -97,8 +97,8 @@ mabur::rc::Rcf VrxController::build_rcf() {
   r.profile = mabur::rc::encode_profile(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
-  r.fec_overhead_base = cur_op_.overhead;
-  r.fec_overhead_enh = cur_op_.overhead;
+  r.fec_overhead_base = cur_op_.overhead_base;
+  r.fec_overhead_enh = cur_op_.overhead_enh;
   if (cfg_.pin_mcs < 0 && ctrl_.probing()) {
     r.probe3 = true;
     r.probe_profile = mabur::rc::encode_profile(
@@ -111,7 +111,8 @@ mabur::rc::Rcf VrxController::build_rcf() {
 void VrxController::note_cmd(const mabur::rc::Rcf& r) {
   have_last_cmd_ = true;
   last_cmd_profile_ = r.profile;
-  last_cmd_ovx100_ = mabur::rc::overhead_to_x100(r.fec_overhead_base);
+  last_cmd_ovx100_b_ = mabur::rc::overhead_to_x100(r.fec_overhead_base);
+  last_cmd_ovx100_e_ = mabur::rc::overhead_to_x100(r.fec_overhead_enh);
   last_cmd_probe3_ = r.probe3;
   last_cmd_probe_profile_ = r.probe_profile;
 }

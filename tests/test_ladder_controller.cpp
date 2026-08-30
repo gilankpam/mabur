@@ -13,8 +13,11 @@ namespace {
 // kUepRefOverhead=0.5, cmd_overhead/0.25 baseline), and now reads the
 // literal overhead directly -- doubling every value here keeps every
 // numeric expectation in this file unchanged.
-const std::vector<Rung> kLadder = {{0, 2.0}, {2, 1.0},  {4, 0.5},
-                                    {5, 0.5}, {6, 0.3}, {7, 0.2}};
+// same-rate-fixed-pairs (Task 4): overhead_enh is set explicitly here (equal
+// to overhead_base) rather than left at the struct default, since
+// budget_enh_for()/s3-probe scoring now reads it directly.
+const std::vector<Rung> kLadder = {{0, 2.0, 2.0}, {2, 1.0, 1.0}, {4, 0.5, 0.5},
+                                    {5, 0.5, 0.5}, {6, 0.3, 0.3}, {7, 0.2, 0.2}};
 
 LadderCfg make_cfg() {
   LadderCfg cfg;
@@ -49,7 +52,7 @@ void feed_for(LadderController& ctl, double& t, double dt_total,
               double util_fraction) {
   const double end = t + dt_total;
   for (; t <= end; t += 50) {
-    ctl.update(ok(util_fraction * ctl.budget()), t);
+    ctl.update(ok(util_fraction * ctl.budget_base()), t);
   }
 }
 
@@ -83,7 +86,7 @@ void fade_baseline(LadderController& ctl, double& t, double dt_total,
                    double snr_db, double rssi_dbm) {
   const double end = t + dt_total;
   for (; t < end; t += 50) {
-    ctl.update(rf(0.3 * ctl.budget(), snr_db, rssi_dbm), t);
+    ctl.update(rf(0.3 * ctl.budget_base(), snr_db, rssi_dbm), t);
   }
 }
 
@@ -97,25 +100,36 @@ int penalty_ms_for(const LadderController& ctl, double now_ms, int rung) {
 }  // namespace
 
 TEST(budget_is_literal_overhead_fraction) {
-  // rung overhead 0.3 -> budget 0.3/1.3: budget() is the rung's literal FEC
-  // command overhead directly since task-10-airtime-balance-uep deleted the
-  // uep_layer_overhead scaling call (a no-op since the 2026-08-29 flatten).
+  // rung overhead_base 0.3 -> budget 0.3/1.3: budget_base_for() is the
+  // rung's literal FEC command overhead directly since
+  // task-10-airtime-balance-uep deleted the uep_layer_overhead scaling call
+  // (a no-op since the 2026-08-29 flatten).
   LadderCfg cfg;
-  cfg.ladder = {{7, 0.3}};
+  cfg.ladder = {{7, 0.3, 0.3}};
   LadderController c(cfg);
-  CHECK(std::abs(c.budget_for(0) - 0.3 / 1.3) < 1e-9);
+  CHECK(std::abs(c.budget_base_for(0) - 0.3 / 1.3) < 1e-9);
+}
+
+// same-rate-fixed-pairs (Task 4): budget_base()/budget_enh_for() score each
+// sid off its OWN overhead now, not a shared value.
+TEST(per_sid_budgets) {
+  LadderCfg cfg;
+  cfg.ladder = {{1, 1.0, 0.5}};
+  LadderController ctl(cfg);
+  CHECK(std::abs(ctl.budget_base() - 1.0 / 2.0) < 1e-9);
+  CHECK(std::abs(ctl.budget_enh_for(0) - 0.5 / 1.5) < 1e-9);
 }
 
 TEST(budget_uses_literal_overhead) {
   LadderController ctl(make_cfg());
   // rung 0: overhead 2.0 (doubled fixture, see kLadder) -> budget = 2.0/3.0.
-  CHECK(std::abs(ctl.budget() - (2.0 / 3.0)) < 1e-9);
+  CHECK(std::abs(ctl.budget_base() - (2.0 / 3.0)) < 1e-9);
 
   double t = 0;
   promote_to(ctl, t, 5);  // walk all the way to the top rung {7, 0.2}
   CHECK(ctl.rung() == 5);
   // top rung: overhead 0.2 -> budget = 0.2/1.2.
-  CHECK(std::abs(ctl.budget() - (0.2 / 1.2)) < 1e-9);
+  CHECK(std::abs(ctl.budget_base() - (0.2 / 1.2)) < 1e-9);
 }
 
 TEST(starts_at_failsafe) {
@@ -178,7 +192,7 @@ TEST(util_demote_needs_confirm) {
   REQUIRE(ctl.probation_ms_left(t) == 0);
   REQUIRE(ctl.rung() == 2);
 
-  const double b = ctl.budget();
+  const double b = ctl.budget_base();
   const LinkHealth high = ok(0.7 * b);
   const LinkHealth low = ok(0.0);
 
@@ -225,7 +239,7 @@ TEST(probation_fail_penalizes_and_doubles) {
   REQUIRE(ctl.rung() == 1);
   REQUIRE(ctl.probation_ms_left(t) > 0);
   double fail1_t = t;
-  CHECK(ctl.update(ok(0.7 * ctl.budget()), fail1_t));
+  CHECK(ctl.update(ok(0.7 * ctl.budget_base()), fail1_t));
   CHECK(ctl.rung() == 0);
   CHECK(ctl.last_event().reason == CtlReason::Probation);
   CHECK(ctl.counters().probation_fails == 1);
@@ -241,7 +255,7 @@ TEST(probation_fail_penalizes_and_doubles) {
 
   // --- Fail again during the 2nd probation: the penalty doubles. ---
   double fail2_t = t;
-  CHECK(ctl.update(ok(0.7 * ctl.budget()), fail2_t));
+  CHECK(ctl.update(ok(0.7 * ctl.budget_base()), fail2_t));
   CHECK(ctl.rung() == 0);
   CHECK(ctl.counters().probation_fails == 2);
   CHECK(penalty_ms_for(ctl, fail2_t, 1) == 2 * cfg.penalty_base_ms);
@@ -268,7 +282,7 @@ TEST(probation_fail_penalizes_and_doubles) {
   promote_to(ctl, t, 1);
   REQUIRE(ctl.rung() == 1);
   double fail3_t = t;
-  CHECK(ctl.update(ok(0.7 * ctl.budget()), fail3_t));
+  CHECK(ctl.update(ok(0.7 * ctl.budget_base()), fail3_t));
   CHECK(ctl.rung() == 0);
   CHECK(penalty_ms_for(ctl, fail3_t, 1) == cfg.penalty_base_ms);
 }
@@ -302,7 +316,7 @@ TEST(penalty_duration_caps_after_many_consecutive_failures) {
     REQUIRE(ctl.rung() == 1);
     REQUIRE(ctl.probation_ms_left(t) > 0);
     last_fail_t = t;
-    CHECK(ctl.update(ok(0.7 * ctl.budget()), last_fail_t));
+    CHECK(ctl.update(ok(0.7 * ctl.budget_base()), last_fail_t));
     CHECK(ctl.rung() == 0);
     t = last_fail_t + 50;
   }
@@ -438,7 +452,7 @@ TEST(hold_after_downgrade) {
   feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
   REQUIRE(ctl.probation_ms_left(t) == 0);
 
-  const double b = ctl.budget();
+  const double b = ctl.budget_base();
   bool demoted = false;
   for (int i = 0; i < 20 && !demoted; ++i) {
     demoted = ctl.update(ok(0.7 * b), t);
@@ -665,7 +679,7 @@ TEST(s3_residual_demotes_on_the_first_window) {
   promote_to(ctl, t, 4);
   feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);  // retire probation
   const int before = ctl.rung();
-  const bool changed = ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t);
+  const bool changed = ctl.update(ok3(0.3 * ctl.budget_base(), 0.0, 0.02), t);
   CHECK(changed);
   CHECK(ctl.rung() == before - 1);
   CHECK(ctl.counters().demotes_s3_residual == 1);
@@ -688,7 +702,7 @@ TEST(measured_rung_is_the_rung_the_loss_was_measured_on) {
   feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);  // retire probation
   const int before = ctl.rung();
   // A residual demote: the loss happened while the link was on `before`.
-  LinkHealth h = ok(0.3 * ctl.budget());
+  LinkHealth h = ok(0.3 * ctl.budget_base());
   h.residual_loss = 0.02;
   REQUIRE(ctl.update(h, t));
   CHECK(ctl.rung() == before - 1);        // live rung has stepped down
@@ -703,7 +717,7 @@ TEST(measured_rung_equals_rung_when_no_demote) {
   double t = 0;
   promote_to(ctl, t, 3);
   feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);
-  REQUIRE(!ctl.update(ok(0.3 * ctl.budget()), t));
+  REQUIRE(!ctl.update(ok(0.3 * ctl.budget_base()), t));
   CHECK(ctl.measured_rung() == ctl.rung());
 }
 
@@ -720,9 +734,9 @@ TEST(s3_residual_demote_is_exempt_from_min_between_changes) {
   feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);
   REQUIRE(ctl.probation_ms_left(t) == 0);
   const int before = ctl.rung();
-  REQUIRE(ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+  REQUIRE(ctl.update(ok3(0.3 * ctl.budget_base(), 0.0, 0.02), t));
   t += 50;  // well inside min_between_changes_ms (150)
-  CHECK(ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+  CHECK(ctl.update(ok3(0.3 * ctl.budget_base(), 0.0, 0.02), t));
   CHECK(ctl.rung() == before - 2);
 }
 
@@ -740,12 +754,12 @@ TEST(instant_s3_residual_still_respects_the_settle_blank) {
   feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);
   REQUIRE(ctl.probation_ms_left(t) == 0);
   // First demote opens the blank via mark_transition().
-  REQUIRE(ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+  REQUIRE(ctl.update(ok3(0.3 * ctl.budget_base(), 0.0, 0.02), t));
   const int after_first = ctl.rung();
   const double transition_t = t;
   // Debris keeps arriving for the whole blank. Nothing may fire.
   for (t += 50; t < transition_t + cfg.s3_settle_ms; t += 50)
-    CHECK(!ctl.update(ok3(0.3 * ctl.budget(), 0.0, 0.02), t));
+    CHECK(!ctl.update(ok3(0.3 * ctl.budget_base(), 0.0, 0.02), t));
   CHECK(ctl.rung() == after_first);
 }
 
@@ -917,7 +931,7 @@ TEST(rung_store_util_demote_not_a_bad_exit) {
   feed_for(ctl, t, 4000, 0.5);   // survive probation (3000 ms)
   const uint32_t bad_before = ctl.rungs().stat(1).exits_bad;
   for (int i = 0; i < 20 && ctl.rung() == 1; ++i) {
-    ctl.update(ok(0.9 * ctl.budget()), t);
+    ctl.update(ok(0.9 * ctl.budget_base()), t);
     t += 50;
   }
   CHECK(ctl.rung() == 0);
@@ -975,7 +989,7 @@ TEST(fade_regime_cascade_shortens_util_confirm) {
   feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
   REQUIRE(ctl.probation_ms_left(t) == 0);
   // First demote: sustained over-down_util pressure pays the FULL confirm.
-  const double bad = 0.9 * ctl.budget();  // u = 0.9 > down_util 0.6
+  const double bad = 0.9 * ctl.budget_base();  // u = 0.9 > down_util 0.6
   double first_demote_t = -1;
   for (int i = 0; i < 40 && first_demote_t < 0; ++i, t += 50)
     if (ctl.update(ok(bad), t)) first_demote_t = t;
@@ -1005,7 +1019,7 @@ TEST(fade_regime_expires_back_to_full_confirm) {
   // this test measuring legacy timing and asserting nothing about expiry.
   feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
   REQUIRE(ctl.probation_ms_left(t) == 0);
-  const double bad = 0.9 * ctl.budget();
+  const double bad = 0.9 * ctl.budget_base();
   double d1 = -1;
   for (int i = 0; i < 40 && d1 < 0; ++i, t += 50)
     if (ctl.update(ok(bad), t)) d1 = t;
@@ -1036,7 +1050,7 @@ TEST(fade_regime_s3_blanking_invariant_holds) {
   feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
   REQUIRE(ctl.probation_ms_left(t) == 0);
   // Enter the regime via a confirmed s1 util demote.
-  const double bad = 0.9 * ctl.budget();
+  const double bad = 0.9 * ctl.budget_base();
   double demote_t = -1;
   for (int i = 0; i < 40 && demote_t < 0; ++i, t += 50)
     if (ctl.update(ok(bad), t)) demote_t = t;
@@ -1065,7 +1079,7 @@ TEST(fade_cascade_kill_switch_is_legacy) {
   // with cascade=true — i.e. it would not test the kill switch at all.
   feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
   REQUIRE(ctl.probation_ms_left(t) == 0);
-  const double bad = 0.9 * ctl.budget();
+  const double bad = 0.9 * ctl.budget_base();
   double d1 = -1, d2 = -1;
   for (int i = 0; i < 40 && d1 < 0; ++i, t += 50)
     if (ctl.update(ok(bad), t)) d1 = t;
@@ -1240,7 +1254,7 @@ TEST(fade_predict_fires_once_per_fade_event) {
   // a promote partway through would confound the rung count.
   int fires = 0;
   for (double end = t + 6000; t < end; t += 50)
-    if (ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t)) ++fires;
+    if (ctl.update(rf(0.3 * ctl.budget_base(), 27.0, -67.0), t)) ++fires;
   CHECK(fires == 1);
   CHECK(ctl.counters().demotes_fade == 1);
   CHECK(ctl.rung() == 4);
@@ -1256,7 +1270,7 @@ TEST(fade_predict_rearms_after_recovery) {
   REQUIRE(ctl.probation_ms_left(t) == 0);
   // Fade event 1.
   for (double end = t + 2000; t < end; t += 50)
-    ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t);
+    ctl.update(rf(0.3 * ctl.budget_base(), 27.0, -67.0), t);
   CHECK(ctl.counters().demotes_fade == 1);
   const int after_first = ctl.rung();
   // Recovery: RF back to baseline. delta() dropping back under threshold is
@@ -1268,7 +1282,7 @@ TEST(fade_predict_rearms_after_recovery) {
   // Fade event 2: a genuinely new event fires again, once.
   int fires = 0;
   for (double end = t + 2000; t < end; t += 50)
-    if (ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t)) ++fires;
+    if (ctl.update(rf(0.3 * ctl.budget_base(), 27.0, -67.0), t)) ++fires;
   CHECK(fires == 1);
   CHECK(ctl.counters().demotes_fade == 2);
   CHECK(ctl.rung() == after_first - 1);
@@ -1283,21 +1297,21 @@ TEST(fade_predict_latch_survives_nan_blip) {
   REQUIRE(ctl.probation_ms_left(t) == 0);
   // Fade event fires once.
   for (double end = t + 2000; t < end; t += 50)
-    ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t);
+    ctl.update(rf(0.3 * ctl.budget_base(), 27.0, -67.0), t);
   REQUIRE(ctl.counters().demotes_fade == 1);
   const int after_first = ctl.rung();
   // A NaN telemetry blip mid-fade is absence of evidence, not evidence of
   // recovery — the RF condition is still genuinely over threshold either side
   // of it (Task 4's staleness gate NaNs these labels deliberately). Breaking
   // the sustain run on it is conservative; releasing the latch would not be.
-  CHECK(!ctl.update(ok(0.3 * ctl.budget()), t));  // ok() leaves the RF labels NaN
+  CHECK(!ctl.update(ok(0.3 * ctl.budget_base()), t));  // ok() leaves the RF labels NaN
   t += 50;
   REQUIRE(ctl.fade_drssi() >= cfg.fade.rssi_db);
   REQUIRE(ctl.fade_dsnr() >= cfg.fade.snr_db);
   // The same fade continues: the latch must still hold.
   int fires = 0;
   for (double end = t + 2000; t < end; t += 50)
-    if (ctl.update(rf(0.3 * ctl.budget(), 27.0, -67.0), t)) ++fires;
+    if (ctl.update(rf(0.3 * ctl.budget_base(), 27.0, -67.0), t)) ++fires;
   CHECK(fires == 0);
   CHECK(ctl.counters().demotes_fade == 1);
   CHECK(ctl.rung() == after_first);
@@ -1315,7 +1329,7 @@ TEST(fade_ewmas_feed_on_a_residual_demote_tick) {
   double t = 0;
   promote_to(ctl, t, 3);
   for (double end = t + 3200; t < end; t += 50)
-    ctl.update(rf(0.3 * ctl.budget(), 33.0, -55.0), t);
+    ctl.update(rf(0.3 * ctl.budget_base(), 33.0, -55.0), t);
   const double before = ctl.fade_drssi();
   REQUIRE(before < 1.0);
   LinkHealth h = rf(0.0, 25.0, -70.0);
@@ -1341,7 +1355,7 @@ TEST(fade_regime_shortens_the_s3_util_confirm) {
     promote_to(ctl, t, 4);
     feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
     REQUIRE(ctl.probation_ms_left(t) == 0);
-    const double bad = 0.9 * ctl.budget();
+    const double bad = 0.9 * ctl.budget_base();
     double last_change = -1;
     for (int i = 0; i < 40 && last_change < 0; ++i, t += 50)
       if (ctl.update(ok(bad), t)) last_change = t;

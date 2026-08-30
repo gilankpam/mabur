@@ -15,7 +15,9 @@ StatsInput base_input() {
   in.vtx_id = 1;
   in.in_session = true;
   in.tx_card = 0;
-  in.op.mcs = 5; in.op.bw = 20; in.op.overhead = 0.25; in.op.snr_req = 18.5;
+  in.op.mcs = 5; in.op.bw = 20;
+  in.op.overhead_base = 0.25; in.op.overhead_enh = 0.25;
+  in.op.snr_req = 18.5;
   in.deadline_ms = 60;
   in.residual_loss = 0.012;
   in.layer_delivery_pct = {100, 97};

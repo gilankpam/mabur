@@ -24,9 +24,11 @@ struct VrxCfg {
   // config.h). Consulted every tick unless pinned.
   LadderCfg ladder;
   // Static-link pin: mcs >= 0 bypasses the adaptive controller (see
-  // LinkCfg::static_mcs). overhead used only when pinned.
+  // LinkCfg::static_mcs). overhead pair used only when pinned (from
+  // LinkCfg::static_overhead_base/enh).
   int pin_mcs = -1;
-  double pin_overhead = 0.25;
+  double pin_overhead_base = 0.25;
+  double pin_overhead_enh = 0.25;
   // RCF repeat burst (rcf-uplink-loss findings 2026-08-14): after an RCF
   // whose commanded content changed, re-send it copies times at
   // rcf_repeat_ms spacing (fresh seq each). 0 disables.
@@ -95,7 +97,8 @@ class VrxController {
   double next_repeat_ms_ = 0;
   bool have_last_cmd_ = false;
   uint8_t last_cmd_profile_ = 0;
-  uint8_t last_cmd_ovx100_ = 0;
+  uint8_t last_cmd_ovx100_b_ = 0;
+  uint8_t last_cmd_ovx100_e_ = 0;
   bool last_cmd_probe3_ = false;
   uint8_t last_cmd_probe_profile_ = 0;
 };

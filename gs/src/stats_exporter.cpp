@@ -179,9 +179,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   link["vtx_id"] = in.vtx_id;
   link["state"] = in.in_session ? "session" : "beaconing";
   link["tx_card"] = in.tx_card;
-  link["op"] = {{"mcs", in.op.mcs},           {"bw", in.op.bw},
-                {"sgi", in.op.sgi},           {"vht", in.op.vht},
-                {"overhead", in.op.overhead}, {"snr_req", in.op.snr_req}};
+  // OpPoint.overhead is now a base/enh pair (Task 4); this snapshot still
+  // exports the single "overhead" key with overhead_base, matching pre-pair
+  // behavior -- the real per-sid export is Task 5's.
+  link["op"] = {{"mcs", in.op.mcs},                {"bw", in.op.bw},
+                {"sgi", in.op.sgi},                {"vht", in.op.vht},
+                {"overhead", in.op.overhead_base}, {"snr_req", in.op.snr_req}};
   link["deadline_ms"] = in.deadline_ms;
   if (in.residual_loss) link["residual_loss"] = *in.residual_loss;
   else link["residual_loss"] = nullptr;
@@ -307,7 +310,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // streams alike) before the first telemetry snapshot arrives.
     if (in.telem) fj["ov"] = s == 0 ? in.telem->applied_ov_base
                                     : in.telem->applied_ov_enh;
-    else fj["ov"] = in.op.overhead;
+    else fj["ov"] = in.op.overhead_base;
     fj["rung_mcs"] = rung.mcs;
     fj["rung_ldpc"] = rung.ldpc;
     fj["rung_stbc"] = rung.stbc;
