@@ -11,8 +11,13 @@ is the post-flight analyzer over a recorded jsonl. Promotes now probe the
 candidate MCS on the s3 enhancement stream first when the drone advertises
 `CAP_S3_PROBE`, and s3 residual/util loss demotes in steady state (kill-switch
 `link.s3_demote`); spec
-`docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md`. Consume it
-with:
+`docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md`. Since
+2026-08-31 (latency-accounting) `link.video.lat` carries the end-to-end
+head-segment latency breakdown (`n`, and p50/p99 pairs for `enc`/`dq`/`air`/
+`fec`) once the AU ring's SlotHdr v2 stamps are flowing — omitted, not
+null, until then — and `maburplay`'s OSD grows a matching `LAT <e2e> |`
+row above the fps line, reading `--` while its own e2e-latency tracker is
+cold or discontinuous. Consume it with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,
   grouped by link; color thresholds carry the judgment.
@@ -28,19 +33,32 @@ with:
     from 2026-08-13 silently vanished — probably clobbered by a later
     S97* deploy — which is how the 2026-08-2x flights went unrecorded, the
     recorder gap's 4th bite; the recorder is in-repo now for that reason).
-  - `au-NNNN.log` — per-AU meta rows (`t_us pts sid fid len flags nal0`)
-    read from the `/dev/shm/mabur-au` ring exactly like `ausniff.py`
-    (seqlock copy, epoch resync ⇒ `# resync` marker; attaches at the write
-    head so pre-attach history can't be stamped with attach time), plus
-    `# sync <t_us> <t_ms>` clock anchors every 10 s pairing wall time with
-    the datagram's **top-level** `t_ms` (nested `last_event.t_ms` is
-    frozen — a first-match regex records a dead clock; parse the JSON).
+  - `au-NNNN.log` — per-AU meta rows, SlotHdr v2 since 2026-08-31 behind a
+    `# aulog 2` marker line written once at session start (`t_us pts sid
+    fid len flags nal0 t_first t_complete enc dq`; a log without the
+    marker is the pre-2026-08-31 7-column v1 format — `t_us pts sid fid
+    len flags nal0` only), read from the `/dev/shm/mabur-au` ring exactly
+    like `ausniff.py` (seqlock copy, epoch resync ⇒ `# resync` marker;
+    attaches at the write head so pre-attach history can't be stamped with
+    attach time), plus `# sync <t_us> <t_ms>` clock anchors every 10 s
+    pairing wall time with the datagram's **top-level** `t_ms` (nested
+    `last_event.t_ms` is frozen — a first-match regex records a dead
+    clock; parse the JSON). `t_first`/`t_complete` are the AU's SlotHdr v2
+    mono-µs latency stamps (first body / finish()); `enc`/`dq` are the
+    drone's SBI-latched `enc_us`/`drone_q_ms` (venc encode time, TX queue
+    wait) carried through on the AU's first fragment.
   `tools/flightjitter.py` is the analyzer: reproduces the player's jitter
-  EMA from the AU rows, splits it into size-explained vs residual
-  (airtime-model §4 decomposition), and classifies each stutter event —
-  `gap` / `rung-change` / `size` / `loss-recovery` / `transport` — using
-  the jsonl for ladder and loss context (clock offset from the sync
-  anchors). Tests: `ctest -R 'test_flightrec|test_flightjitter'`.
+  EMA from the AU rows — using each row's `t_complete` as the arrival
+  basis when present (the writer-stamped ring completion time, sharper
+  than `t_us`'s reader-poll stamp), falling back to `t_us` for v1 rows —
+  splits it into size-explained vs residual (airtime-model §4
+  decomposition), and classifies each stutter event — `gap` /
+  `rung-change` / `size` / `fec-wait` / `loss-recovery` / `transport` —
+  using the jsonl for ladder and loss context (clock offset from the sync
+  anchors). `fec-wait` is direct per-frame evidence (the stutter AU's own
+  `t_complete − t_first > 20 ms`), checked before the jsonl-inferred
+  `loss-recovery` class so it wins when both apply. Tests:
+  `ctest -R 'test_flightrec|test_flightjitter'`.
   ⚠ UDP unicast means ONE consumer per port:
   `/etc/init.d/S95flightrec stop` before running maburtop against :8300
   on the GS, then `start` after. The old ad-hoc recipe

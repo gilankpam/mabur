@@ -117,6 +117,50 @@ def test_rung_change_wins_over_size():
     assert kinds == ["rung-change"], kinds
 
 
+def test_fec_wait_attributed():
+    """Direct per-frame evidence (SlotHdr v2's own t_complete-t_first > 20 ms
+    on the stutter frame) attributes fec-wait even with no jsonl at all."""
+    rows = make_rows()
+    apply_transport_stall(rows, 300, 30_000)
+    b = rows[300]
+    b["t_complete"] = b["t_us"]
+    b["t_first"] = b["t_us"] - 25_000
+    rep = flightjitter.analyze(rows)
+    kinds = [e["kind"] for e in rep["events"]]
+    assert kinds == ["fec-wait"], kinds
+
+
+def test_fec_wait_wins_over_loss_recovery():
+    """fec-wait is checked BEFORE the loss-correlation classes: direct
+    per-frame evidence must win even when the jsonl also shows pre-FEC
+    loss that second (which alone would read as loss-recovery)."""
+    rows = make_rows()
+    apply_transport_stall(rows, 300, 30_000)
+    b = rows[300]
+    b["t_complete"] = b["t_us"]
+    b["t_first"] = b["t_us"] - 25_000
+    t_event_ms = rows[300]["t_us"] // 1000
+    js = [jsonl_second(t_event_ms - 1000, pre_fec=0.04),
+          jsonl_second(t_event_ms, pre_fec=0.06),
+          jsonl_second(t_event_ms + 1000, pre_fec=0.0)]
+    rep = flightjitter.analyze(rows, jsonl=js)
+    kinds = [e["kind"] for e in rep["events"]]
+    assert kinds == ["fec-wait"], kinds
+
+
+def test_jitter_uses_t_complete_when_present():
+    """The jitter EMA reproduction must use the writer-stamped t_complete
+    (SlotHdr v2) as the arrival basis, not flightrec's noisier read-time
+    t_us, whenever t_complete is present — same fix as aucadence.py."""
+    rows = make_rows()
+    for i, r in enumerate(rows):
+        r["t_complete"] = r["t_us"]           # true, model-exact arrival
+        r["t_us"] += 3000 if i % 2 == 0 else -3000  # noisy read-time stamp
+    rep = flightjitter.analyze(rows)
+    assert rep["events"] == []
+    assert rep["summary"]["jitter_ema_ms"] < 1.0
+
+
 def test_loss_recovery_attribution():
     rows = make_rows()
     apply_transport_stall(rows, 300, 30_000)
@@ -241,6 +285,29 @@ def test_load_au_log_sync_offset(tmp_path=None):
         assert len(loaded) == 10
         assert resyncs == 1
         assert abs(offset - 5_000_000) < 1000, offset
+        # No "# aulog N" marker -> v1 parse: the 4 SlotHdr v2 columns are
+        # absent from the row text, so they default to 0.
+        assert all(r["t_first"] == 0 and r["t_complete"] == 0
+                  for r in loaded)
+
+
+def test_load_au_log_v2_marker():
+    import tempfile, os
+    rows = make_rows(n=5)
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "au-0001.log")
+        with open(p, "w") as f:
+            f.write("# aulog 2\n")
+            for r in rows:
+                f.write(f"{r['t_us']} {r['pts']} {r['sid']} {r['fid']} "
+                        f"{r['len']} 0x{r['flags']:02x} {r['nal0']} "
+                        f"{r['t_us'] - 1000} {r['t_us']} 1800 4\n")
+        loaded, offset, resyncs = flightjitter.load_au_log(p)
+        assert len(loaded) == 5
+        assert loaded[0]["t_first"] == rows[0]["t_us"] - 1000
+        assert loaded[0]["t_complete"] == rows[0]["t_us"]
+        assert loaded[0]["enc_us"] == 1800
+        assert loaded[0]["dq_ms"] == 4
 
 
 def main():

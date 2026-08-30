@@ -4,23 +4,27 @@
 # throwaway aucadence.py, mainlined 2026-08-30 after the airtime-balance-uep
 # flag day made this a standing acceptance number).
 #
-# Per-AU completion delay = arrival_mono_us − pts. Only relative delays are
-# meaningful (drone pts and GS monotonic clocks share no epoch), so the
-# reported OFFSET is p50(base delays) − p50(enh delays): the clock offset
-# cancels in the difference, leaving the systematic, class-dependent part of
-# delivery delay. Because base/enh strictly alternate at frame cadence, a
-# nonzero offset is a long/short sawtooth in AU inter-arrival — the CAUSE of
-# which the sideport jitter_ms EMA is the SYMPTOM. Judge balance/transport
-# work on this offset, not the EMA (the EMA also swallows encoder frame-size
-# variance; measured repeatability: offset ±0.5 ms, EMA ±1.4 ms).
+# Per-AU completion delay = t_complete_us − pts (SlotHdr v2's writer-stamped
+# finish() time; 2026-08-31, was arrival_mono_us from a ~0.5 ms poll of the
+# ring writer index before that — see docs/data-provenance.md). Only relative
+# delays are meaningful (drone pts and GS monotonic clocks share no epoch),
+# so the reported OFFSET is p50(base delays) − p50(enh delays): the clock
+# offset cancels in the difference, leaving the systematic, class-dependent
+# part of delivery delay. Because base/enh strictly alternate at frame
+# cadence, a nonzero offset is a long/short sawtooth in AU inter-arrival —
+# the CAUSE of which the sideport jitter_ms EMA is the SYMPTOM. Judge
+# balance/transport work on this offset, not the EMA (the EMA also swallows
+# encoder frame-size variance; measured repeatability: offset ±0.5 ms, EMA
+# ±1.4 ms — pre-t_complete numbers, not yet re-baselined).
 #
 # IDR-flagged AUs are excluded: they are 2–10x size outliers that belong to
 # the IDR pacer / venc size caps, not to the per-class balance (same ruling
 # as the drone-side AirBalancer's EWMAs).
 #
-# Arrival is stamped by a ~0.5 ms poll of the ring writer index; the noise is
-# symmetric across classes, so the p50 difference is unbiased and converges
-# well below the ±0.5 ms repeatability floor over a normal capture.
+# A slot with t_complete_us == 0 (pre-epoch writer, or a caller that never
+# passed AuLatMeta) falls back to a ~0.5 ms poll of the ring writer index,
+# same as before; fallback_rows in the JSON counts how many delays used it,
+# and "clock" records which basis produced the reported offset.
 #
 # Ring layout mirrors gs/src/au_ring.h byte-for-byte, same contract as
 # tools/bench/ausniff.py — change all three together. Live-mode caveat also
@@ -36,7 +40,9 @@ import argparse, json, mmap, statistics, struct, sys, time
 HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
-VERSION = 1
+# SlotHdr v2 (kAuRingVersion 2, 2026-08-30 latency-accounting task 6): meta()
+# below reads t_complete_us (offset 40) as the completion clock (task 13).
+VERSION = 2
 FLAG_IDR = 0x01
 
 
@@ -76,16 +82,18 @@ def main():
             return None
         ln, rec, fid, pts, sid, flags, codec = struct.unpack_from(
             "<IQQIBBB", mm, base + 4)
+        t_complete = struct.unpack_from("<Q", mm, base + 40)[0]
         l2 = struct.unpack_from("<I", mm, base)[0]
         if l1 != l2:
             return None
-        return ln, pts, sid, flags
+        return ln, pts, sid, flags, t_complete
 
     cursor = wseq()
     delays = {0: [], 1: []}
     lens = {0: [], 1: []}
     idr_excluded = 0
     resyncs = 0
+    fallback_rows = 0
     deadline = time.time() + a.seconds
     while time.time() < deadline:
         w = wseq()
@@ -100,18 +108,23 @@ def main():
             m = meta(slot_base(rec))
             if m is None:
                 continue
-            ln, pts, sid, flags = m
+            ln, pts, sid, flags, t_complete = m
             if sid not in (0, 1):
                 continue
             if flags & FLAG_IDR:
                 idr_excluded += 1
                 continue
-            delays[sid].append(now_us - pts)
+            if t_complete:
+                delays[sid].append(t_complete - pts)
+            else:
+                delays[sid].append(now_us - pts)
+                fallback_rows += 1
             lens[sid].append(ln)
         cursor = w
 
     out = {"n_base": len(delays[0]), "n_enh": len(delays[1]),
            "idr_excluded": idr_excluded, "resyncs": resyncs,
+           "fallback_rows": fallback_rows, "clock": "t_complete",
            "offset_ms": None,
            "len_p50": {s: statistics.median(lens[s])
                        for s in (0, 1) if lens[s]}}
