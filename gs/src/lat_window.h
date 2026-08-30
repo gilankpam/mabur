@@ -46,6 +46,13 @@ class LatWindow {
     return out;
   }
 
+  // Discards every sample accumulated so far without computing anything --
+  // call at a session/discont reset (alongside PtsAnchor::reset()) so a
+  // stale pre-reset sample never mixes into the first post-reset flush().
+  void clear() {
+    for (auto& s : seg_) s.clear();
+  }
+
   static constexpr std::size_t kCap = 4096;
 
  private:

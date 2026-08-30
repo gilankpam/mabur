@@ -602,6 +602,11 @@ static int run_radio(const maburgs::Config& cfg) {
       agg.decoder().reset_continuity();
       fstream.reset();
       lat_anchor.reset();  // new session's pts space is unrelated to the old one's
+      // Drop any pre-reset samples too: without this, the anchor re-warms
+      // (kWarmFrames) before the next flush, but the window itself still
+      // holds up to kCap stale pre-reset samples that would silently mix
+      // into that first post-reset flush -- worst right after a reconnect.
+      lat_win.clear();
       std::fprintf(stderr, "maburgs: video tail -> %s\n",
                    fw ? "frame wire" : "off (no session)");
     }

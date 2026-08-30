@@ -100,6 +100,20 @@ TEST(interval_gate_and_seq) {
   CHECK(cap.last()["seq"] == 1);
 }
 
+// due() must mirror poll()'s own interval gate so a caller (main.cpp's
+// LatWindow::flush() guard) can check it without poll()'s side effects.
+// Not exercised by the other tests here since they all use interval_ms=0
+// (always due).
+TEST(due_mirrors_poll_interval_gate) {
+  StatsExporter ex(1, 500, [](const std::string&) { return true; });
+  CHECK(ex.due(1000));                 // never emitted -> always due
+  CHECK(ex.poll(1000, base_input()));  // first emit
+  CHECK(!ex.due(1400));                // 400 ms < interval: not yet due
+  CHECK(!ex.poll(1400, base_input()));
+  CHECK(ex.due(1500));                 // 500 ms >= interval: due
+  CHECK(ex.poll(1500, base_input()));
+}
+
 TEST(rates_use_measured_window) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());

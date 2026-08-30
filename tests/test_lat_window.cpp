@@ -56,6 +56,25 @@ TEST(flush_clears_window) {
   }
 }
 
+// (b2) clear() discards accumulated samples without computing anything --
+// the session-reset path (main.cpp, alongside PtsAnchor::reset()) relies on
+// this so stale pre-reset samples never mix into the first post-reset
+// flush(). No intervening add() after clear(): flush() reports n==0.
+TEST(clear_discards_without_flush) {
+  LatWindow w;
+  for (int i = 0; i < kN; ++i)
+    w.add(static_cast<uint32_t>(i), static_cast<uint32_t>(i), static_cast<uint32_t>(i),
+          static_cast<uint32_t>(i));
+  w.clear();
+
+  const auto out = w.flush();
+  CHECK(out.n == 0);
+  for (int i = 0; i < 4; ++i) {
+    CHECK(out.p50[i] == 0);
+    CHECK(out.p99[i] == 0);
+  }
+}
+
 // (c) revert-check target: a shuffled arrival order must still produce the
 // same order statistics as (a) -- nth_element, not insertion order, decides
 // the percentile.
