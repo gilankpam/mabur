@@ -62,9 +62,12 @@ def _jsonl_walk(jsonl):
     out = []
     for o in jsonl or []:
         try:
+            # "drone" (and its members) serialize as null until drone
+            # telemetry arrives — `or {}` covers key-present-but-null.
+            enc = (o.get("drone") or {}).get("enc") or {}
             out.append((o["t_ms"],
                         o["link"]["ctl"]["rung"]["idx"],
-                        o.get("drone", {}).get("enc", {}).get("cmd_kbps"),
+                        enc.get("cmd_kbps"),
                         o["link"]["ctl"].get("pre_fec_loss") or 0.0))
         except (KeyError, TypeError):
             continue

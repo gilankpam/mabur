@@ -150,6 +150,17 @@ def test_explained_fraction_high_when_size_driven():
     assert s["residual_jitter_ms"] < 2.0, s
 
 
+def test_jsonl_null_drone_tolerated():
+    """Live sideport rows carry "drone": null until drone telemetry arrives
+    (seen on session 0026): the walker must not crash on them."""
+    rows = make_rows(n=100)
+    js = [jsonl_second(rows[0]["t_us"] // 1000)]
+    js[0]["drone"] = None
+    js.append(jsonl_second(rows[50]["t_us"] // 1000))
+    rep = flightjitter.analyze(rows, jsonl=js)
+    assert rep["events"] == []
+
+
 def test_load_au_log_sync_offset(tmp_path=None):
     import tempfile, os
     rows = make_rows(n=10)
