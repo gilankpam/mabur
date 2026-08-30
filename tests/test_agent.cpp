@@ -329,7 +329,7 @@ TEST(bitrate_policy_failsafe_degenerates_to_single_rate) {
   CHECK(act.bitrates.back() == 1300);
 }
 
-// 3d. Non-null BalancerFeed drives the blend: asymmetric share (0.7/0.3)
+// 3d. Non-null AirFeedOut drives the blend: asymmetric share (0.7/0.3)
 // plus DISTINCT excess_base/excess_enh, AND (controller ruling, Task 6) a
 // DISTINCT RCF base/enh overhead pair (ov_base=0.5, ov_enh=1.0) — same-rate
 // ruling means BASE and ENH share one PHY rate (mcs5, 52 Mbps both slots),
@@ -351,7 +351,7 @@ TEST(bitrate_policy_blend_uses_live_feed_share_and_excess) {
   cfg.encoder.airtime_budget = 0.60;
   cfg.encoder.bitrate_max_kbps = 20000;
   MockActuator act;
-  BalancerFeed feed;
+  AirFeedOut feed;
   feed.share_base.store(0.7f, std::memory_order_relaxed);
   feed.excess_base.store(0.10f, std::memory_order_relaxed);
   feed.excess_enh.store(0.05f, std::memory_order_relaxed);
@@ -370,7 +370,7 @@ TEST(bitrate_policy_blend_uses_live_feed_share_and_excess) {
 }
 
 // 3e. feed_->share_base is clamped to [0.05, 0.95] before it reaches the
-// blend -- a share of 0.0 (e.g. the balancer transiently reporting "all
+// blend -- a share of 0.0 (e.g. AirFeed transiently reporting "all
 // air to enh") must not zero out the base term entirely. profile mcs3 ->
 // BASE=mcs3, ENH=mcs3 (26 Mbps, both slots — same-rate ruling); base/enh ov
 // DISTINCT (ov_base=1.0, ov_enh=0.25 -- controller ruling, Task 6) so the
@@ -391,7 +391,7 @@ TEST(bitrate_policy_blend_clamps_feed_share_to_valid_range) {
   cfg.encoder.airtime_budget = 0.60;
   cfg.encoder.bitrate_max_kbps = 20000;
   MockActuator act;
-  BalancerFeed feed;
+  AirFeedOut feed;
   feed.share_base.store(0.0f, std::memory_order_relaxed);
   RcAgent agent(cfg, act, &feed);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS

@@ -315,7 +315,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     const double phy = mabur::rc::phy_rate_mbps(rung);
     json fj;
     fj["stream"] = s;
-    // The balancer-applied overhead from telemetry when available (s==0 ->
+    // The actually-applied overhead from telemetry when available (s==0 ->
     // base, s==1 -> enh); falls back to that sid's op pair value (base for
     // sid0, enh for sid1 -- Task 5) before the first telemetry snapshot
     // arrives.

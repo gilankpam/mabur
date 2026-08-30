@@ -73,7 +73,8 @@ class UepEncoder {
   // beyond SwEncoder's own.
   void set_overhead(double ov);
 
-  // Sets one layer's FEC overhead to ov, literal (the air-balancer's knob).
+  // Sets one layer's FEC overhead to ov, literal (apply_op_to_uep's and the
+  // debug-HTTP override's knob).
   void set_layer_overhead(int stream_id, double ov);
 
   void set_shed(int stream_id, bool shed);

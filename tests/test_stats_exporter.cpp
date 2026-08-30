@@ -376,9 +376,10 @@ TEST(stream_rows_fall_back_to_op_overhead_without_telem) {
   CHECK(j["link"]["vtx_id"] == 1);
 }
 
-TEST(stream_rows_carry_balancer_applied_overhead_from_telem) {
+TEST(stream_rows_carry_applied_overhead_from_telem) {
   // Telem present: base -> applied_ov_base, enh -> applied_ov_enh (the
-  // balancer's actual per-stream split), not the commanded op overhead.
+  // pair actually flying -- the op pair, or the debug-HTTP override when
+  // armed; Task 7 deleted the solver that used to compute this).
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
   StatsInput in = base_input();

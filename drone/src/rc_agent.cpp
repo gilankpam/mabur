@@ -20,7 +20,7 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 
 }  // namespace
 
-RcAgent::RcAgent(const Config& cfg, Actuator& act, BalancerFeed* feed)
+RcAgent::RcAgent(const Config& cfg, Actuator& act, AirFeedOut* feed)
     : cfg_(cfg), act_(act), feed_(feed) {}
 
 void RcAgent::note_chain_break() {
@@ -171,11 +171,11 @@ void RcAgent::reapply_with_shed() {
 //
 // The blend (spec 2026-08-29-airtime-balance-uep §2 bitrate): with two
 // streams at different PHY rates, a single-rate budget target (T0's rate
-// alone) is wrong the moment the balancer isn't splitting the video 50/50
+// alone) is wrong the moment the encoder isn't splitting the video 50/50
 // across them, so the target is built from both rates weighted by the
-// balancer's live share. fb/exb/exe default to 0.5/0/0 (an even split, no
+// live measured share. fb/exb/exe default to 0.5/0/0 (an even split, no
 // measured framing excess) whenever feed_ is null (tests, or before Task 7
-// wires the balancer up) — see run_bitrate_policy's core comment below.
+// wires the feed up) — see run_bitrate_policy's core comment below.
 void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
@@ -199,9 +199,9 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   if (ob >= 0 && oe >= 0) { ovb = ob / 100.0; ove = oe / 100.0; }
   // Blended airtime: V * [fb*mult_b/rate_b + (1-fb)*mult_e/rate_e] = budget.
   // mult uses the COMMANDED pair (ovb/ove, the RCF's literal
-  // fec_overhead_base/enh) plus MEASURED framing excess (exb/exe), never the
-  // balancer's live per-stream ov (BalancerFeed::ov_base/ov_enh,
-  // telemetry-only) — the balancer is repair-byte-neutral and must not feed
+  // fec_overhead_base/enh) plus MEASURED framing excess (exb/exe), never
+  // AirFeed's live per-stream ov (AirFeedOut::ov_base/ov_enh,
+  // telemetry-only) — that value is repair-byte-neutral and must not feed
   // back into this target (spec §2 bitrate).
   const double denom = fb * (1.0 + ovb + exb) / rate_b +
                        (1.0 - fb) * (1.0 + ove + exe) / rate_e;

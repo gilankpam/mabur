@@ -167,7 +167,7 @@ void handle_stats(int fd) {
 // parked at a rung whose computed target IS the value you want.
 // Controller carry: report {"ok":false} on a failed verb rather than a
 // blind {"ok":true} -- B6 made the three verbs return real status.
-void handle_set(int fd, const DebugReq& req, mabur::BalancerFeed* feed) {
+void handle_set(int fd, const DebugReq& req, mabur::AirFeedOut* feed) {
   // Per-layer overhead override: feed-backed, works without MABUR_HAVE_VENC.
   // Accepts -1 (clear) or 0..300 (percent).
   if (req.key == "ov_base_pct" || req.key == "ov_enh_pct") {
@@ -200,7 +200,7 @@ void handle_set(int fd, const DebugReq& req, mabur::BalancerFeed* feed) {
 #endif
 }
 
-void handle_conn(int fd, int snapshot_quality, mabur::BalancerFeed* feed) {
+void handle_conn(int fd, int snapshot_quality, mabur::AirFeedOut* feed) {
   char buf[512];
   ssize_t n = ::recv(fd, buf, sizeof(buf) - 1, 0);
   if (n <= 0) return;
@@ -228,7 +228,7 @@ void handle_conn(int fd, int snapshot_quality, mabur::BalancerFeed* feed) {
   }
 }
 
-void serve(int port, int snapshot_quality, mabur::BalancerFeed* feed) {
+void serve(int port, int snapshot_quality, mabur::AirFeedOut* feed) {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
     std::fprintf(stderr, "debug_http: socket() failed: %s -- endpoint disabled\n",
@@ -281,7 +281,7 @@ void serve(int port, int snapshot_quality, mabur::BalancerFeed* feed) {
 }  // namespace
 
 void debug_http_start(int port, int snapshot_quality,
-                      mabur::BalancerFeed* feed) {
+                      mabur::AirFeedOut* feed) {
   // Detached, never joined -- see debug_http.h for why that is the whole
   // shutdown design. bind/listen failures are handled inside serve() (log
   // + return), so the detached thread just exits quietly in that case.
