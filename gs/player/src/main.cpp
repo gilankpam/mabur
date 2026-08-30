@@ -1454,8 +1454,21 @@ int main(int argc, char** argv) {
         // still shows the most recent real spike instead of flickering to
         // "LAT --" and back.
         const auto bd = lat.p99_frame();
-        gs_ps.lat_valid = bd.valid;
-        if (bd.valid) {
+        // `bd.valid` alone is NOT enough: p99_frame_ is a member that
+        // survives flush_all() (lat_tracker.cpp only clears map_/anchor_/
+        // completed_/the chk+dsp accumulators there, not p99_frame_), so
+        // after any decoder/session reset it keeps reporting the LAST
+        // pre-reset frame as if it were current. `L.anchor_ok`, from this
+        // SAME flush_line() call, is what actually reflects whether the
+        // window just flushed has a usable anchor -- gate on both, or a
+        // reset shows a stale breakdown labeled current for ~1s+ instead
+        // of "LAT --".
+        gs_ps.lat_valid = bd.valid && L.anchor_ok;
+        // Gated on gs_ps.lat_valid (the AND), not bd.valid alone -- same
+        // reasoning as above: a stale post-reset bd would otherwise still
+        // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
+        // about to ignore them, leaving gs_ps holding phantom numbers.
+        if (gs_ps.lat_valid) {
           gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
           for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
         }

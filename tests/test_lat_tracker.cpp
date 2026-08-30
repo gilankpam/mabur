@@ -277,4 +277,47 @@ TEST(flush_all_resets_anchor_warmup) {
   CHECK(L.p50[3] == 3000);  // fec
 }
 
+// Pins the exact ingredients an OSD caller (maburplay/src/main.cpp's 1 Hz
+// fill, Task 12 fix round 1) MUST AND together: p99_frame() alone is not
+// enough to tell a fresh frame from a stale one, because p99_frame_ is a
+// member that survives flush_all() -- flush_all() only clears map_/
+// anchor_/completed_/the chk+dsp accumulators, not p99_frame_ itself (see
+// its own comment). So immediately after a reset, p99_frame().valid can
+// still read true from BEFORE the reset while flush_line().anchor_ok
+// (same call) correctly reads false. A caller that reads bd.valid alone
+// would keep showing the pre-reset breakdown as current.
+TEST(p99_frame_stays_stale_after_reset_while_anchor_ok_goes_false) {
+  LatTracker lat;
+  warm(lat);
+
+  AuRecordMeta m;
+  m.pts_us = 1000;
+  m.t_first_us = 106'000;                 // span = 5000
+  m.t_complete_us = m.t_first_us + 3000;  // fec = 3000
+  m.drone_q_ms = 2;                       // dq_us = 2000
+  m.enc_us = 1500;                        // enc_us = 1500
+  lat.on_submit(m, 0);
+  lat.on_decoded(1000, 111'000);
+  lat.on_present(1000, 112'000);
+  lat.on_flip(1000, 116'000, true);
+
+  const auto L1 = lat.flush_line();
+  REQUIRE(L1.n == 1);
+  REQUIRE(L1.anchor_ok);
+  const auto B1 = lat.p99_frame();
+  REQUIRE(B1.valid);  // the real ingredient the next flush_all() leaves behind
+
+  lat.flush_all();  // discont/session reset: anchor goes cold, window clears
+
+  // Nothing submitted since the reset, so this window is empty -- but the
+  // point under test is anchor_ok, not n.
+  const auto L2 = lat.flush_line();
+  CHECK(L2.n == 0);
+  CHECK(!L2.anchor_ok);  // the ingredient a caller must gate on
+
+  const auto B2 = lat.p99_frame();
+  CHECK(B2.valid);              // ...still true: p99_frame_ was NOT reset
+  CHECK(B2.ms[7] == B1.ms[7]);  // ...and it's the SAME stale frame, unchanged
+}
+
 MTEST_MAIN
