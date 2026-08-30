@@ -320,4 +320,33 @@ TEST(p99_frame_stays_stale_after_reset_while_anchor_ok_goes_false) {
   CHECK(B2.ms[7] == B1.ms[7]);  // ...and it's the SAME stale frame, unchanged
 }
 
+// t_first_us == 0 is an unknown stamp, not a real timestamp of zero (same
+// convention as gs/src/main.cpp's own `if (lat.t_first_us)` gate). on_submit
+// must skip anchor_.observe() entirely for such frames -- feeding a run of
+// increasing pts with mono_us pinned at 0 into the anchor would otherwise
+// warm it up (PtsAnchor::usable() only needs kWarmFrames samples, however
+// bogus) after exactly this many frames, so this count is chosen deliberately
+// to catch that regression.
+TEST(zero_t_first_us_does_not_warm_anchor_or_join_window) {
+  LatTracker lat;
+  lat.flush_all();
+
+  for (int i = 0; i < kWarmFrames; ++i) {
+    AuRecordMeta m;
+    m.pts_us = static_cast<uint32_t>(i * kFrameStep);
+    m.t_first_us = 0;  // unknown stamp
+    m.t_complete_us = 1000;
+    m.drone_q_ms = 2;
+    m.enc_us = 1500;
+    lat.on_submit(m, /*mono_us=*/0);
+    lat.on_decoded(m.pts_us, m.t_complete_us + 2000);
+    lat.on_present(m.pts_us, m.t_complete_us + 3000);
+    lat.on_flip(m.pts_us, m.t_complete_us + 4000, /*exact=*/true);
+  }
+
+  const auto L = lat.flush_line();
+  CHECK(L.n == 0);          // none of the 33 frames joined the window
+  CHECK(!L.anchor_ok);      // the anchor never warmed up on bogus stamps
+}
+
 MTEST_MAIN

@@ -24,7 +24,7 @@ inline constexpr int kMaxBodyBytes = 2900;
 
 // Sub-Block Integrity (SBI) framing constants. Byte-exact port of devourer's
 // tools/precoder/fec_subblock.py (SBI_MAGIC, SBI_HDR_LEN, SBI_HDR_STRUCT
-// "<HBBHBHHB" = MAGIC, VER, STREAM_ID, BLOCK_PAYLOAD, N_BLOCKS, Q_MS, ENC_US).
+// "<HBBHBHH" = MAGIC, VER, STREAM_ID, BLOCK_PAYLOAD, N_BLOCKS, Q_MS, ENC_US).
 constexpr uint16_t SBI_MAGIC = 0xF5B0;
 constexpr int SBI_HDR_LEN = 11;
 constexpr uint8_t SBI_VER = 1;  // ver 0 (7-byte header) is hard-rejected:

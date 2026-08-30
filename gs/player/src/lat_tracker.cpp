@@ -54,30 +54,38 @@ void LatTracker::on_submit(const maburgs::AuRecordMeta& m, uint64_t mono_us) {
   e.t_submit_us = mono_us;
   e.seq = next_seq_++;
 
-  const auto obs = anchor_.observe(m.pts_us, m.t_first_us);
-  e.pts64 = obs.pts64;
+  // Same gate as gs/src/main.cpp: a zero t_first_us is an unknown stamp,
+  // not a real timestamp of zero -- feeding it to the anchor would warm
+  // (or discontinuity-reset) the anchor off a bogus value. Skip the
+  // anchor observe and the head-segment computation entirely; the frame
+  // still entered the in-flight map above and tail stamps will retire it,
+  // it just never contributes head segments or joins the window.
+  if (m.t_first_us) {
+    const auto obs = anchor_.observe(m.pts_us, m.t_first_us);
+    e.pts64 = obs.pts64;
 
-  // Same clamp-order math as gs/src/main.cpp's head-segment accounting:
-  // enc first, then dq, against the anchored span; the remainder is air.
-  // Only meaningful once the anchor is warm and this sample did not itself
-  // re-seed it (a discontinuity's span is against a floor that no longer
-  // means anything) -- in that case the segments stay 0 rather than lie.
-  if (!obs.discont && anchor_.usable()) {
-    e.anchor_ok_at_submit = true;
-    const int64_t span = static_cast<int64_t>(m.t_first_us) -
-                          static_cast<int64_t>(anchor_.map_us(obs.pts64));
-    int64_t rem = span > 0 ? span : 0;
-    const uint32_t enc = static_cast<uint32_t>(std::min<int64_t>(m.enc_us, rem));
-    rem -= enc;
-    const uint32_t dq = static_cast<uint32_t>(
-        std::min<int64_t>(static_cast<int64_t>(m.drone_q_ms) * 1000, rem));
-    rem -= dq;
-    const uint32_t fec = static_cast<uint32_t>(
-        m.t_complete_us > m.t_first_us ? m.t_complete_us - m.t_first_us : 0);
-    e.seg[0] = enc;
-    e.seg[1] = dq;
-    e.seg[2] = static_cast<uint32_t>(rem);
-    e.seg[3] = fec;
+    // Same clamp-order math as gs/src/main.cpp's head-segment accounting:
+    // enc first, then dq, against the anchored span; the remainder is air.
+    // Only meaningful once the anchor is warm and this sample did not itself
+    // re-seed it (a discontinuity's span is against a floor that no longer
+    // means anything) -- in that case the segments stay 0 rather than lie.
+    if (!obs.discont && anchor_.usable()) {
+      e.anchor_ok_at_submit = true;
+      const int64_t span = static_cast<int64_t>(m.t_first_us) -
+                            static_cast<int64_t>(anchor_.map_us(obs.pts64));
+      int64_t rem = span > 0 ? span : 0;
+      const uint32_t enc = static_cast<uint32_t>(std::min<int64_t>(m.enc_us, rem));
+      rem -= enc;
+      const uint32_t dq = static_cast<uint32_t>(
+          std::min<int64_t>(static_cast<int64_t>(m.drone_q_ms) * 1000, rem));
+      rem -= dq;
+      const uint32_t fec = static_cast<uint32_t>(
+          m.t_complete_us > m.t_first_us ? m.t_complete_us - m.t_first_us : 0);
+      e.seg[0] = enc;
+      e.seg[1] = dq;
+      e.seg[2] = static_cast<uint32_t>(rem);
+      e.seg[3] = fec;
+    }
   }
 }
 
