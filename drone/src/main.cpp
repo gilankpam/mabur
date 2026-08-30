@@ -986,6 +986,17 @@ int run_real_mode(const Config& cfg) {
     AirFeed feed(&air_feed_out);
 
     std::shared_ptr<const AppliedOp> last_applied_op;
+    // Debug-HTTP per-layer overhead override transition tracking (fix
+    // round 1, review finding): true while the last tick saw both
+    // ovr_base_pct/ovr_enh_pct armed. Needed because clearing the override
+    // has NO bounded re-assert to fall back on -- run_bitrate_policy's 5 s
+    // reassert (kReassertMs) only re-sends the bitrate/roi_qp verbs, never
+    // touches the UEP layers' overhead, so without this the encoder would
+    // stay pinned at the last override value indefinitely (until the next
+    // genuine op change) while AirFeed's on_frame fallback snapped back to
+    // the stale op-pair anchor immediately -- exactly the encoder/anchor
+    // disagreement the finding flagged.
+    bool ov_override_was_armed = false;
 
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
@@ -1005,6 +1016,32 @@ int run_real_mode(const Config& cfg) {
         // per-rung pair, no solver left to re-derive it).
         feed.set_applied(op->fec_ov_base, op->fec_ov_enh);
         last_applied_op = op;
+      }
+
+      // Debug-HTTP per-layer overhead override (bench sweeps, :8301 POST
+      // /venc/set?ov_base_pct=N&ov_enh_pct=N): armed (both >= 0) wins over
+      // the op pair on the UEP layers every tick. Checked BEFORE this
+      // tick's frame is read/encoded (not after, and not gated on a frame
+      // having arrived) so that by the time pipe.encode() and feed.on_frame()
+      // run below, the UEP layers and AirFeed's anchor already agree on
+      // whichever value is in effect this tick -- an armed->cleared
+      // transition re-applies the op pair to BOTH in one shot, exactly
+      // once (not per-frame): the encoder stops flying the stale override
+      // and AirFeed's excess_*/ov_* stop misreporting against it in the
+      // same tick, instead of a one-tick-later correction.
+      if (op) {
+        const int ob = feed.out().ovr_base_pct.load(std::memory_order_relaxed);
+        const int oe = feed.out().ovr_enh_pct.load(std::memory_order_relaxed);
+        const bool armed = ob >= 0 && oe >= 0;
+        if (armed) {
+          uep.set_layer_overhead(0, ob / 100.0);
+          uep.set_layer_overhead(1, oe / 100.0);
+          ov_override_was_armed = true;
+        } else if (ov_override_was_armed) {
+          apply_op_to_uep(*op, uep);
+          feed.set_applied(op->fec_ov_base, op->fec_ov_enh);
+          ov_override_was_armed = false;
+        }
       }
 
       // One whole Annex-B frame per iteration: a frame is already the atomic
@@ -1040,14 +1077,6 @@ int run_real_mode(const Config& cfg) {
           int sid = -1;
           for (auto& b : bodies) { emitted += b.body.size(); sid = b.stream_id; }
           if (sid >= 0) feed.on_frame(sid, static_cast<size_t>(n), emitted);
-        }
-        if (op) {
-          const int ob = feed.out().ovr_base_pct.load(std::memory_order_relaxed);
-          const int oe = feed.out().ovr_enh_pct.load(std::memory_order_relaxed);
-          if (ob >= 0 && oe >= 0) {           // bench override wins over the op pair
-            uep.set_layer_overhead(0, ob / 100.0);
-            uep.set_layer_overhead(1, oe / 100.0);
-          }
         }
         for (auto& b : bodies) txq.push(std::move(b));
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
