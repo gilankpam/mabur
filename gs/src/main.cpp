@@ -271,10 +271,9 @@ static int run_radio(const maburgs::Config& cfg) {
        [&](const uint8_t* d, size_t n) {
          if (au_on) au_ring.append(d, n);
        },
-       [&](bool c) {
+       [&](bool c, const maburgs::AuLatMeta& lat) {
          if (au_on) {
-           // Task 8 wires real lat values
-           const uint64_t rec = au_ring.finish(c, maburgs::AuLatMeta{});
+           const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          if (stats) stats->on_frame(mono_ms());
@@ -288,7 +287,8 @@ static int run_radio(const maburgs::Config& cfg) {
 
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {
     if (frame_wire)
-      fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), mono_ms());
+      fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), mono_ms(),
+                            {f.body_mono_us, f.q_ms, f.enc_us});
   });
 
   maburgs::VrxCfg vcfg;
@@ -1131,10 +1131,9 @@ int main(int argc, char** argv) {
          if (au_on) au_ring.append(d, n);
          file_out.append(d, n);
        },
-       [&](bool c) {
+       [&](bool c, const maburgs::AuLatMeta& lat) {
          if (au_on) {
-           // Task 8 wires real lat values
-           const uint64_t rec = au_ring.finish(c, maburgs::AuLatMeta{});
+           const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          file_out.finish(c);
