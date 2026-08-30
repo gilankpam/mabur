@@ -2,6 +2,12 @@
 
 Guidance for Claude Code when working in this repository.
 
+**Never create git worktrees** (no `.claude/worktrees/*`, no
+`git worktree add`), even when a skill or plan-execution flow suggests one.
+Branch in the main checkout instead. Split checkouts drift here — a PR
+merges on GitHub while the main checkout sits behind, and merged work looks
+missing.
+
 mabur is an RTP-free FPV video link: `maburd` (drone, OpenIPC/SigmaStar,
 armv7) drives the SigmaStar MI encoder in-process and injects — one daemon,
 no waybeam, since the 2026-08-29 venc fold-in (`drone/venc/`, ported from
