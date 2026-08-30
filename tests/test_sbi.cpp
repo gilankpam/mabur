@@ -137,4 +137,12 @@ TEST(sbi_ver0_rejected) {
   CHECK(mabur::sbi_peek_stream_id(b.data(), b.size()) == -1);
 }
 
+TEST(sbi_q_ms_saturates) {
+  mabur::SbiPacker p(8, 1, 0);
+  const uint8_t env[8] = {0};
+  auto b = p.add(env, sizeof(env))[0];
+  mabur::sbi_set_q_ms(b.data(), b.size(), 65535);
+  CHECK(mabur::sbi_unpack(b.data(), b.size(), 8).q_ms == 65535);
+}
+
 MTEST_MAIN
