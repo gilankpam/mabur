@@ -231,40 +231,50 @@ TEST(dropped_frame_is_excluded_and_forgotten) {
 TEST(flush_all_resets_anchor_warmup) {
   LatTracker lat;
   warm(lat);
+  lat.flush_all();  // discont/flush point: anchor goes cold, window clears
 
-  AuRecordMeta m;
-  m.pts_us = 1000;
-  m.t_first_us = 106'000;
-  m.t_complete_us = m.t_first_us + 3000;
-  m.drone_q_ms = 2;
-  m.enc_us = 1500;
-  lat.on_submit(m, 0);
-  lat.on_decoded(1000, 111'000);
-  lat.on_present(1000, 112'000);
-  lat.on_flip(1000, 116'000, true);
+  // Anchor is cold immediately after the reset: this frame's on_submit
+  // cannot compute a real span (anchor_ok_at_submit stays false), so
+  // on_flip must exclude it from the window ENTIRELY -- not count it with
+  // fabricated zero head-segments blended into the aggregates.
+  AuRecordMeta cold;
+  cold.pts_us = 1000;
+  cold.t_first_us = 106'000;
+  cold.t_complete_us = cold.t_first_us + 3000;
+  cold.drone_q_ms = 2;
+  cold.enc_us = 1500;
+  lat.on_submit(cold, 0);
+  lat.on_decoded(cold.pts_us, cold.t_complete_us + 2000);
+  lat.on_present(cold.pts_us, cold.t_complete_us + 3000);
+  lat.on_flip(cold.pts_us, cold.t_complete_us + 4000, true);
 
-  lat.flush_all();  // discont/flush point
+  auto L = lat.flush_line();
+  CHECK(L.n == 0);  // the cold frame contributed nothing, not zeros
 
-  // Anchor is cold again: the next submit cannot compute a span, so its
-  // segments are exactly 0, and the window is empty (the prior completed
-  // frame was dropped by the reset too).
+  // Re-warm the anchor post-reset (kWarmFrames samples, same pinned-floor
+  // construction as warm()'s own comment), then submit one real frame:
+  // the window must report it with its actual, non-zero segments.
+  warm(lat);
+
+  const uint32_t base_pts = 32 * kFrameStep;
   AuRecordMeta m2;
-  m2.pts_us = 2000;
-  m2.t_first_us = 200'000;
-  m2.t_complete_us = m2.t_first_us + 1000;
-  m2.drone_q_ms = 5;
-  m2.enc_us = 900;
+  m2.pts_us = base_pts + 2000;             // small step past warm()'s last pts
+  m2.t_first_us = kC + m2.pts_us + 4000;   // span = 4000
+  m2.t_complete_us = m2.t_first_us + 3000; // fec = 3000
+  m2.drone_q_ms = 1;                       // dq_us = 1000
+  m2.enc_us = 500;                         // enc_us = 500
   lat.on_submit(m2, 0);
-  lat.on_decoded(2000, m2.t_complete_us + 10);
-  lat.on_present(2000, m2.t_complete_us + 20);
-  lat.on_flip(2000, m2.t_complete_us + 30, true);
+  lat.on_decoded(m2.pts_us, m2.t_complete_us + 2000);   // dec = 2000
+  lat.on_present(m2.pts_us, m2.t_complete_us + 3000);   // reg = 1000
+  lat.on_flip(m2.pts_us, m2.t_complete_us + 4000, true);  // dsp = 1000
 
-  const auto L = lat.flush_line();
+  L = lat.flush_line();
   CHECK(L.n == 1);
-  CHECK(!L.anchor_ok);  // fewer than kWarmFrames samples since the reset
-  CHECK(L.p50[0] == 0);
-  CHECK(L.p50[1] == 0);
-  CHECK(L.p50[2] == 0);
+  CHECK(L.anchor_ok);
+  CHECK(L.p50[0] == 500);   // enc
+  CHECK(L.p50[1] == 1000);  // dq
+  CHECK(L.p50[2] == 2500);  // air (span 4000 - enc 500 - dq 1000)
+  CHECK(L.p50[3] == 3000);  // fec
 }
 
 MTEST_MAIN

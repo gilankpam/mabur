@@ -116,17 +116,24 @@ void LatTracker::on_flip(uint32_t pts_us, uint64_t flip_mono_us, bool exact) {
   for (int i = 0; i < 7; ++i) e2e += e.seg[i];
   e.seg[7] = e2e;
 
+  // A cold/discontinuous anchor at submit time means on_submit left
+  // enc/dq/air/fec at 0 rather than computing real values (see there) --
+  // the WHOLE frame is excluded from the window here, not just chk, so a
+  // post-flush_all() warm-up run never blends fabricated zero head-segments
+  // into the aggregates. Matches gs/src/main.cpp's own head-segment gate
+  // (Task 10's !obs.discont && lat_anchor.usable() condition). The frame
+  // still retires from the in-flight map below either way.
   if (e.anchor_ok_at_submit) {
     const int64_t ideal =
         static_cast<int64_t>(flip_mono_us) - static_cast<int64_t>(anchor_.map_us(e.pts64));
     chk_sum_us_ += static_cast<double>(ideal - static_cast<int64_t>(e2e));
     ++chk_n_;
-  }
-  dsp_exact_window_ = dsp_exact_window_ && exact;
+    dsp_exact_window_ = dsp_exact_window_ && exact;
 
-  std::array<uint32_t, 8> snap{};
-  for (int i = 0; i < 8; ++i) snap[static_cast<std::size_t>(i)] = e.seg[i];
-  completed_.push_back(snap);
+    std::array<uint32_t, 8> snap{};
+    for (int i = 0; i < 8; ++i) snap[static_cast<std::size_t>(i)] = e.seg[i];
+    completed_.push_back(snap);
+  }
 
   invalidate_(idx);
 }
