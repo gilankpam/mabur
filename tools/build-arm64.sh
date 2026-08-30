@@ -121,7 +121,7 @@ fi
 if [ ! -e toolchain/libdrm-arm64-out-dev ]; then
   nix-build -E \
     'with import <nixpkgs> {}; pkgsCross.aarch64-multiplatform.pkgsStatic.libdrm.dev' \
-    -o toolchain/libdrm-arm64-out-dev
+    -o toolchain/libdrm-arm64-out
 fi
 # Merge the two Nix outputs into one MABUR_DRM_ROOT-shaped dir (lib/ + include/
 # symlinks), the same convenience-staging trick as MABUR_STAGING above, so
