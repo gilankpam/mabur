@@ -391,7 +391,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     }
 
     State prev_state = state_;
-    apply_ladder_op(ladder, r->fec_overhead);
+    apply_ladder_op(ladder, r->fec_overhead_base);
 
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;

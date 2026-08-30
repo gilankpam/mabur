@@ -72,7 +72,7 @@ TEST(rcf_fields_are_correct) {
                           mabur::rc::PhyMode::HT,
                           static_cast<uint8_t>(vrx.cur_op().mcs),
                           static_cast<uint8_t>(vrx.cur_op().bw)));
-  CHECK(std::abs(r->fec_overhead - vrx.cur_op().overhead) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - vrx.cur_op().overhead) < 1e-9);
 }
 
 // (b) Profile/overhead in the RCF track ctl().op() after a forced demote:
@@ -112,7 +112,7 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
   CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
-  CHECK(std::abs(r->fec_overhead - 1.0) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
   CHECK(vrx.cur_op().mcs == vrx.ctl().op().mcs);
   CHECK(vrx.cur_op().overhead == vrx.ctl().op().overhead);
 }
@@ -355,7 +355,7 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
   CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
-  CHECK(std::abs(r->fec_overhead - 1.0) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
 }
 
 MTEST_MAIN
@@ -405,7 +405,7 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
   CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
-  CHECK(std::abs(r->fec_overhead - 1.0) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
 
   // Traffic returns -> clean health lets it walk back up.
   const double until = now + 1000;
@@ -441,7 +441,7 @@ TEST(static_pin_overrides_controller) {
   REQUIRE(out.has_value());
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
-  CHECK(std::abs(r->fec_overhead - 0.25) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 0.25) < 1e-9);
 }
 
 // --- RCF repeat burst (rcf-uplink-loss findings 2026-08-14 §4 item 3) -------
@@ -493,7 +493,7 @@ TEST(rcf_repeat_burst_after_op_change) {
     auto r = mabur::rc::parse_rcf(f->data(), f->size());
     REQUIRE(r.has_value());
     CHECK(r->profile == commit->profile);
-    CHECK(std::abs(r->fec_overhead - commit->fec_overhead) < 1e-9);
+    CHECK(std::abs(r->fec_overhead_base - commit->fec_overhead_base) < 1e-9);
     CHECK(r->seq == static_cast<uint16_t>(prev_seq + 1));
     prev_seq = r->seq;
   }

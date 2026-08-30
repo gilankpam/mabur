@@ -42,7 +42,7 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-constexpr size_t RCF_HEAD_LEN = 13;
+constexpr size_t RCF_HEAD_LEN = 14;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
 constexpr size_t TELEM_LEN = 71;  // grew by 1: applied_ov split base+enh
@@ -59,7 +59,8 @@ std::vector<uint8_t> pack_rcf(const Rcf& r) {
   put32(body, r.vtx_id);
   put16(body, r.seq);
   body.push_back(r.profile);
-  body.push_back(overhead_to_x100(r.fec_overhead));
+  body.push_back(overhead_to_x100(r.fec_overhead_base));
+  body.push_back(overhead_to_x100(r.fec_overhead_enh));
   if (r.probe3) body.push_back(r.probe_profile);
 
   put_crc(body);
@@ -83,10 +84,11 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.vtx_id = get32(buf, 5);
   r.seq = get16(buf, 9);
   r.profile = buf[11];
-  r.fec_overhead = buf[12] / 100.0;
+  r.fec_overhead_base = buf[12] / 100.0;
+  r.fec_overhead_enh = buf[13] / 100.0;
   if (flags & RCF_F_PROBE_ENH) {
     r.probe3 = true;
-    r.probe_profile = buf[RCF_HEAD_LEN];
+    r.probe_profile = buf[RCF_HEAD_LEN];   // now offset 14
   }
   return r;
 }

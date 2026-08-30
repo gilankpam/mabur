@@ -111,7 +111,8 @@ std::vector<uint8_t> rcf_wire(uint32_t vtx_id, uint16_t seq, int rung) {
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = encode_profile(PhyMode::HT, static_cast<uint8_t>(kLadder[rung].mcs), 20);
-  r.fec_overhead = kLadder[rung].ov;
+  r.fec_overhead_base = kLadder[rung].ov;
+  r.fec_overhead_enh = kLadder[rung].ov;
   return pack_rcf(r);
 }
 

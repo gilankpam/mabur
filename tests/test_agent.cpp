@@ -58,14 +58,17 @@ Config make_cfg() {
 // Builds a CRC-valid RCF wire frame for vtx_id/seq/profile/fec_overhead.
 // ov_16ths keeps the callers' existing sixteenths-based literals (8 == 0.5,
 // 16 == 1.0, ...) so this helper's ~40 call sites don't need touching for
-// the RC_VERSION 4 literal-fec_overhead wire change.
+// the RC_VERSION 4 literal-fec_overhead wire change. RC_VERSION 5 split the
+// wire field into base/enh; this helper still commands one value for both,
+// same as every caller expects.
 std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
                                     uint8_t ov_16ths) {
   Rcf r;
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
-  r.fec_overhead = ov_16ths / 16.0;
+  r.fec_overhead_base = ov_16ths / 16.0;
+  r.fec_overhead_enh = ov_16ths / 16.0;
   return pack_rcf(r);
 }
 
@@ -851,7 +854,8 @@ TEST(probe_rcf_overrides_layer3_mcs) {
   r.vtx_id = cfg.link.vtx_id;
   r.seq = 1;
   r.profile = profile_byte;
-  r.fec_overhead = 0.5;
+  r.fec_overhead_base = 0.5;
+  r.fec_overhead_enh = 0.5;
   r.probe3 = true;
   r.probe_profile = probe_byte;
   auto wire = pack_rcf(r);
@@ -886,7 +890,8 @@ TEST(probing_cleared_on_failsafe) {
   r.vtx_id = cfg.link.vtx_id;
   r.seq = 1;
   r.profile = encode_profile(PhyMode::HT, 5, 20);
-  r.fec_overhead = 0.5;
+  r.fec_overhead_base = 0.5;
+  r.fec_overhead_enh = 0.5;
   r.probe3 = true;
   r.probe_profile = encode_profile(PhyMode::HT, 6, 20);
   auto wire = pack_rcf(r);

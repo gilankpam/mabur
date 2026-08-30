@@ -27,10 +27,14 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // applied_ov split per stream; probe flag renamed — the fixed base=mcs−1
 // rule means both ends of v4 agree on the split with no extra bytes. Spec
 // 2026-08-29-airtime-balance-uep.
+// Bumped 4 -> 5 on 2026-08-30: fec_overhead split into per-stream
+// fec_overhead_base/fec_overhead_enh (fixed per-rung pairs replace the
+// balancer; base rides the scored mcs — same-rate). Spec
+// 2026-08-30-same-rate-fixed-pairs-design.md.
 // Old and new peers reject each other in BOTH directions -- a half-deployed
 // pair has no control link and, because DISC_ACK carries CAP_FRAME_WIRE, no
 // video either. Recovery is to finish the deploy.
-constexpr uint8_t RC_VERSION = 4;
+constexpr uint8_t RC_VERSION = 5;
 
 constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
@@ -67,7 +71,8 @@ struct Rcf {
   uint32_t vtx_id = 0;
   uint16_t seq = 0;
   uint8_t profile = 0;
-  double fec_overhead = 0.5;
+  double fec_overhead_base = 0.5;
+  double fec_overhead_enh = 0.5;
 
   // s3 probe (spec 2026-08-05): when true, pack appends probe_profile after
   // the head (inside the CRC) and sets RCF_F_PROBE_ENH in the flags byte.
