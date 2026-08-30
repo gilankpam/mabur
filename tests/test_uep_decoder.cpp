@@ -5,6 +5,7 @@
 #include "frame_fixture.h"
 #include "vectors.h"
 #include "mabur/frame_wire.h"
+#include "mabur/sbi.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 using namespace mabur;
@@ -158,6 +159,28 @@ TEST(layer_stats_expose_recovered_arrived) {
   CHECK(dec.stats(1).syms_recovered_arrived == 0);
   dec.add_body(held.data(), held.size(), 0);
   CHECK(dec.stats(1).syms_recovered_arrived >= 1);
+}
+
+// Task 7: DecodedFrag carries the completing body's RX stamp + SBI
+// durations. Patch a real encoder body's q_ms/enc_us post-hoc (as the drone
+// TX thread does) and feed it with an explicit body_mono_us; every fragment
+// that body's arrival emits must carry those exact values.
+TEST(decoded_frag_carries_body_time_and_sbi_durations) {
+  auto bodies = encode_fixture_bodies();
+  REQUIRE(!bodies.empty());
+  auto& b = bodies.front();
+  sbi_set_q_ms(b.body.data(), b.body.size(), 33);
+  sbi_set_enc_us(b.body.data(), b.body.size(), 44);
+
+  UepDecoder dec(vec_layers());
+  auto frags = dec.add_body(b.body.data(), b.body.size(), /*now_ms=*/0,
+                            UepDecoder::kMcsUnknown, /*body_mono_us=*/424242);
+  REQUIRE(!frags.empty());
+  for (auto& f : frags) {
+    CHECK(f.body_mono_us == 424242);
+    CHECK(f.q_ms == 33);
+    CHECK(f.enc_us == 44);
+  }
 }
 
 TEST(window_counts_accessor) {

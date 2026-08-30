@@ -16,6 +16,12 @@ namespace mabur {
 struct DecodedFrag {
   uint8_t stream_id = 0;
   std::vector<uint8_t> frag;
+  uint64_t body_mono_us = 0;  // RX stamp of the body whose arrival emitted
+                              // this fragment (repair-recovered fragments
+                              // carry the COMPLETING body's stamp — spec'd
+                              // approximation). 0 = unknown (tests).
+  uint16_t q_ms = 0;          // SBI q_ms of that body (0 = unknown)
+  uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
 };
 
 // Receiver mirror of UepEncoder: route a body by its SBI stream_id to that
@@ -52,7 +58,8 @@ class UepDecoder {
 
   std::vector<DecodedFrag> add_body(const uint8_t* body, size_t len,
                                     uint64_t now_ms,
-                                    uint8_t rx_mcs = kMcsUnknown);
+                                    uint8_t rx_mcs = kMcsUnknown,
+                                    uint64_t body_mono_us = 0);
 
   // Current-rung-only view of the delivery window: total minus units
   // attributed to pre-transition debris, plus — while a boundary is armed —
