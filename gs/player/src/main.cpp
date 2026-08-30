@@ -1442,6 +1442,23 @@ int main(int argc, char** argv) {
 
 #ifdef MABUR_PLAYER_HW
         const auto L = lat.flush_line();
+        // OSD LAT row (Task 12): p99_frame() returns the REAL p99-by-e2e
+        // frame's own segment breakdown, computed as a side effect inside
+        // flush_line() above from the window it is about to clear -- it is
+        // a member that persists across flush_line() calls, not derived
+        // from `completed_` at call time, so calling it after flush_line()
+        // here is safe and gets THIS window's frame (see lat_tracker.h and
+        // lat_tracker.cpp's flush_line()/p99_frame()). A window with zero
+        // completed frames leaves it holding the last valid frame rather
+        // than clearing it -- an idle 1 Hz tick between two spiky ones
+        // still shows the most recent real spike instead of flickering to
+        // "LAT --" and back.
+        const auto bd = lat.p99_frame();
+        gs_ps.lat_valid = bd.valid;
+        if (bd.valid) {
+          gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
+          for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
+        }
         if (L.n > 0)
           std::fprintf(stderr,
               "lat: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "

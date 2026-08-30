@@ -375,6 +375,48 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     const int fps_x = right - fps_lbl_w - gap12 - fps_val_w - pad_h(label);
     place(GsFieldId::kFpsValue, hero, fps_x, fps_base, "999");
     place(GsFieldId::kFpsLabel, label, fps_x + fps_val_w + gap12, fps_base, "FPS");
+
+    // The LAT row (Task 12) stacks ABOVE fps, one row further up in the
+    // same right-flush column -- not below JIT/MBPS, which already sits
+    // flush against `bottom` with no room to spare underneath it there.
+    // (An earlier cut reserved a whole extra row at `bottom` for every
+    // bottom-anchored block -- loss and cards included -- to make room
+    // below JIT/MBPS; with the real asset's metrics that ate the card
+    // block's already-thin clearance to the centre-of-frame band at 1440p
+    // and 2160p, caught by asset_safe_inset_and_centre_of_frame_hold. The
+    // FPS block's OWN top edge, by contrast, sits ~150 px clear of that
+    // band even at 1440p, so growing this column upward by one more
+    // secondary-sized line costs nothing anyone else needs.) Derived from
+    // the FPS box's top edge with the same box-edges-not-glyph_h care as
+    // fps_base itself, for the same reason: naively stepping by a glyph_h
+    // ignores how far each atlas's cell extends past its own baseline and
+    // silently overlaps at the extreme resolutions (see the comment above).
+    const int fps_box_top = fps_base - hero->baseline;
+    const int lat_base =
+        fps_box_top - gap8 - (secondary->glyph_h - secondary->baseline);
+
+    char worst_bd[80];
+    std::snprintf(worst_bd, sizeof(worst_bd),
+                  "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d", 999, 999, 999,
+                  999, 999, 999, 999);
+    const int head_w = text_width(*secondary, "LAT 999 |");
+    const int bd_w = text_width(*secondary, worst_bd);
+    // gap12, not gap10: per the horizontal clearance floor comment above
+    // (kFpsValue/kFpsLabel's), anything smaller yields negative clearance
+    // at 720p once the atlas's 8 px shadow pad is subtracted -- measured
+    // as a genuine 1 px box overlap with gap10 here.
+    const int lat_x = right - head_w - gap12 - bd_w - pad_h(secondary);
+    // Headline reads "LAT <e2e> |" (or "LAT --" with no breakdown while the
+    // anchor isn't usable yet); the breakdown is that SAME p99-by-e2e
+    // frame's own seven segments -- never a mix of independently-ranked
+    // per-segment percentiles, which would not sum to anything meaningful
+    // (see lat_tracker.h's Breakdown comment). Player-measured, so both
+    // fields use the plain tokens directly rather than the stale-aware
+    // `link_*` helpers -- this row is current by construction and never
+    // dims.
+    place(GsFieldId::kLatHead, secondary, lat_x, lat_base, "LAT 999 |");
+    place(GsFieldId::kLatBreakdown, secondary, lat_x + head_w + gap12, lat_base,
+          worst_bd);
   }
 
   // --- bottom centre: loss -------------------------------------------
@@ -605,6 +647,31 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       st.rgb = tok::kTextPrimary;
       st.text = fmt_one_dp(std::clamp(ps.mbps, 0.0, 999.9)) + " MBIT/S";
       break;
+    case GsFieldId::kLatHead:
+      st.rgb = tok::kTextPrimary;
+      // The trailing "|" is the breakdown's only separator -- there is no
+      // third field to draw it in. It appears only when there is a
+      // breakdown to introduce; the invalid case is just "LAT --" alone.
+      st.text = ps.lat_valid
+                    ? "LAT " + fmt_int(std::clamp((double)ps.lat_e2e_ms, 0.0, 999.0)) + " |"
+                    : "LAT --";
+      break;
+    case GsFieldId::kLatBreakdown:
+      // Blank (and cleared -- draw_field_ clears the box before bailing on
+      // empty text, same as the armed kRec case) while the anchor is cold:
+      // there is no real per-segment breakdown to show yet, and showing
+      // stale or fabricated numbers would be worse than showing nothing.
+      if (ps.lat_valid) {
+        char buf[80];
+        auto seg = [&](int i) {
+          return (int)std::clamp((double)ps.lat_ms[i], 0.0, 999.0);
+        };
+        std::snprintf(buf, sizeof(buf), "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d",
+                      seg(0), seg(1), seg(2), seg(3), seg(4), seg(5), seg(6));
+        st.text = buf;
+      }
+      st.rgb = tok::kTextSecondary;
+      break;
     default: {
       // Card slots.
       const int base = (int)GsFieldId::kCard0Id;
@@ -701,7 +768,17 @@ void GsOverlay::draw_field_(GsFieldId id, const FieldState& st, const Surface& s
   }
 
   const int base = (int)GsFieldId::kCard0Id;
-  if ((int)id >= base && ((int)id - base) % 5 == 1) {  // a bars field
+  // Bounded above by the card block's own extent (kMaxCards * 5 fields), not
+  // just below by `base`: an unbounded "id >= base && (id-base)%5==1" test
+  // silently recaptures whichever LATER-appended field happens to alias the
+  // same residue -- Task 12's kLatBreakdown (index base+21) does, mod 5 ==
+  // 1, and would otherwise be drawn as an unlit card-bars block (tok::kTrack
+  // rects sized to kBarHeights) sitting well outside its own text box,
+  // tripping absurd_values_never_draw_outside_their_field_boxes. Appending
+  // fields after the card block is supposed to be safe (the enum's own
+  // comment says so); this bound is what actually makes it so.
+  if ((int)id >= base && (int)id < base + kMaxCards * 5 && ((int)id - base) % 5 == 1) {
+    // a bars field
     const int bw = (int)(kBarW * scale_ + 0.5);
     const int bg = (int)(kBarGap * scale_ + 0.5);
     for (int i = 0; i < 6; ++i) {
