@@ -76,6 +76,13 @@ struct InputCfg {
   } rec;
 };
 
+struct DisplayCfg {
+  // Phase-aware release delay for decoded frames (frame_regulator.h):
+  // present at floor(pts) + regulate_ms instead of on arrival. 0 = off
+  // (present the instant decode finishes, the pre-regulator behavior).
+  int regulate_ms = 12;
+};
+
 struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
   std::string socket = "/run/mabur-au.sock";
@@ -84,6 +91,7 @@ struct Config {
   DvrCfg dvr;
   OsdCfg osd;
   InputCfg input;
+  DisplayCfg display;
 };
 
 Config load_config(const std::string& path);  // strict; throws like maburgs

@@ -148,6 +148,7 @@ if(MABUR_BUILD_GS)
   target_compile_definitions(test_player_config PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_hevc_params test_hevc_params.cpp LIBS mabur_player_core)
+  add_mtest(test_frame_regulator test_frame_regulator.cpp LIBS mabur_player_core)
   add_mtest(test_dvr_mux test_dvr_mux.cpp LIBS mabur_player_core)
   add_mtest(test_dvr_name test_dvr_name.cpp LIBS mabur_player_core)
   add_mtest(test_rec_button test_rec_button.cpp LIBS mabur_player_core)

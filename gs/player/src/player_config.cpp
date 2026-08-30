@@ -49,7 +49,9 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd", "input"});
+  check_keys(j, "",
+             {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd",
+              "input", "display"});
   Config c;
 
   c.ring_path = get_str(j, "ring_path", "/dev/shm/mabur-au", "");
@@ -137,6 +139,13 @@ Config load_config(const std::string& path) {
       }
       c.input.rec.configured = true;
     }
+  }
+
+  if (j.contains("display")) {
+    const json& d = j["display"];
+    check_keys(d, "display", {"regulate_ms"});
+    c.display.regulate_ms =
+        static_cast<int>(get_int(d, "regulate_ms", 12, 0, 100, "display"));
   }
 
   return c;

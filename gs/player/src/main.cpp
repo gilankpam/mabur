@@ -37,6 +37,7 @@
 #ifdef MABUR_PLAYER_HW
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
+#include "frame_regulator.h"  // phase-aware pts+D display release
 #include "mpp_backend.h"    // MppBackend::info_changes()/errors() for --decode-only
 #include "osd_palette.h"    // build_palette() for the encoder-side OSD
 #endif
@@ -52,6 +53,16 @@ void on_signal(int) { g_stop.store(true); }
 uint64_t mono_ms() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+// Microsecond twin for the frame regulator's release math: a 2 ms main-loop
+// tick already quantizes release, so ms resolution would stack a second
+// quantizer on top.
+uint64_t mono_us() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count());
 }
@@ -763,6 +774,34 @@ int main(int argc, char** argv) {
   std::chrono::steady_clock::time_point t_first_frame, t_last_frame;
   // Named so the watchdog's backend-recreation path can re-wire the same
   // sink into the fresh decoder instance.
+#ifdef MABUR_PLAYER_HW
+  // Phase-aware display release (display.regulate_ms; frame_regulator.h).
+  // The regulator is a THIRD holder of decoder buffers next to the
+  // presenter and the burn recorder, so every drop_all() flush point below
+  // flushes it too.
+  maburplay::FrameRegulator regulator(cfg.display.regulate_ms);
+  // Present-submission jitter, |Δ interval| EMA in ms — the player-side
+  // smoothness number the regulator A/B compares. Submission clock, not
+  // vsync, but a straddle shows up in it either way.
+  uint64_t last_present_us = 0;
+  int64_t prev_present_iv = -1;
+  double present_jitter_ema_ms = 0.0;
+  const auto present_now = [&](const maburplay::DmaFrame& f) {
+    const uint64_t t = mono_us();
+    if (last_present_us != 0) {
+      const int64_t iv = static_cast<int64_t>(t - last_present_us);
+      if (prev_present_iv >= 0) {
+        const int64_t dj = iv > prev_present_iv ? iv - prev_present_iv
+                                                : prev_present_iv - iv;
+        present_jitter_ema_ms +=
+            (static_cast<double>(dj) / 1000.0 - present_jitter_ema_ms) / 16.0;
+      }
+      prev_present_iv = iv;
+    }
+    last_present_us = t;
+    presenter->present(f);
+  };
+#endif
   const maburplay::VideoBackend::FrameSink frame_sink = [&](const maburplay::DmaFrame& f) {
     ++frame_count;
     const auto now = std::chrono::steady_clock::now();
@@ -780,7 +819,11 @@ int main(int argc, char** argv) {
       // obvious. The two holders are decoupled by MPP's own refcount; the
       // presenter's ownership contract is unchanged.
       if (burn) burn->submit(f);
-      presenter->present(f);
+      maburplay::DmaFrame displaced;
+      bool did_displace = false;
+      if (regulator.offer(f, mono_us(), &displaced, &did_displace))
+        present_now(f);
+      if (did_displace) backend->release_frame(displaced);
       return;
     }
 #endif
@@ -966,6 +1009,12 @@ int main(int argc, char** argv) {
       // new frame arrives -- BEFORE flush() runs.
 #ifdef MABUR_PLAYER_HW
       if (presenter) presenter->drop_all();
+      {
+        // The regulator is the THIRD holder — force-release its held frame
+        // into the backend before flush(), same contract as drop_all().
+        maburplay::DmaFrame held;
+        if (regulator.release_due(~0ull, &held)) backend->release_frame(held);
+      }
       if (burn) {
         // The recorder is the SECOND holder of decoder buffers, so it has
         // to let go here too -- same reason, same place. Then reseal the
@@ -1189,7 +1238,11 @@ int main(int argc, char** argv) {
       }
     }
 #ifdef MABUR_PLAYER_HW
-    if (presenter) presenter->poll_events();
+    if (presenter) {
+      presenter->poll_events();
+      maburplay::DmaFrame due;
+      if (regulator.release_due(mono_us(), &due)) present_now(due);
+    }
     // Retry acquisition once a second while there is no display. A FRESH
     // presenter every time, never a re-init of the failed one: a display that
     // appears late supplies its own EDID and mode list, and every
@@ -1443,6 +1496,12 @@ int main(int argc, char** argv) {
                      wd_consecutive);
 #ifdef MABUR_PLAYER_HW
         if (presenter) presenter->drop_all();
+        {
+          // Regulator flush, same contract as the flush_before site: the
+          // held frame must go back to the OLD backend before reset/teardown.
+          maburplay::DmaFrame held;
+          if (regulator.release_due(~0ull, &held)) backend->release_frame(held);
+        }
         if (burn) {
           // Same pairing as flush_before: release the buffer the recorder is
           // holding before the decoder is reset or torn down, and reseal the
@@ -1547,6 +1606,21 @@ int main(int argc, char** argv) {
     }
   }
 
+#ifdef MABUR_PLAYER_HW
+  if (regulator.enabled()) {
+    std::fprintf(stderr,
+                 "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
+                 "hold_ema=%.1fms present_jitter=%.2fms\n",
+                 static_cast<unsigned long long>(regulator.held_count()),
+                 static_cast<unsigned long long>(regulator.late_count()),
+                 static_cast<unsigned long long>(regulator.replaced_count()),
+                 static_cast<unsigned long long>(regulator.discont_count()),
+                 regulator.hold_ema_ms(), present_jitter_ema_ms);
+  } else {
+    std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
+                 present_jitter_ema_ms);
+  }
+#endif
   if (dvr_open) dvr.close();
   return 0;
 }
