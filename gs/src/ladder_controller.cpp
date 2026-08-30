@@ -43,12 +43,14 @@ LadderController::LadderController(LadderCfg cfg)
 }
 
 double LadderController::budget() const {
-  const double ov = op().overhead;
+  // TODO(Task 4): per-sid budgets (overhead_base vs overhead_enh); until
+  // then both sids score off overhead_base, matching pre-pair behavior.
+  const double ov = op().overhead_base;
   return ov / (1.0 + ov);
 }
 
 double LadderController::budget_for(int rung) const {
-  const double ov = cfg_.ladder[static_cast<std::size_t>(rung)].overhead;
+  const double ov = cfg_.ladder[static_cast<std::size_t>(rung)].overhead_base;
   return ov / (1.0 + ov);
 }
 

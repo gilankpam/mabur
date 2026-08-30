@@ -128,7 +128,7 @@ Config load_config(const std::string& path) {
     const json& r = j["link"];
     check_keys(r, "link",
                {"vtx_id", "feedback_ms", "beacon_keepalive_ms",
-                "static_mcs", "static_overhead",
+                "static_mcs", "static_overhead_base", "static_overhead_enh",
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
@@ -152,7 +152,11 @@ Config load_config(const std::string& path) {
     c.link.static_mcs = static_cast<int>(get_int(r, "static_mcs", -1, -1, 7, "link"));
     // Actual-air overhead (airtime-balance-uep): literal, not a scaled cmd
     // value -- old cmd default/range 0.25 [0.10, 1.0] x2 everywhere.
-    c.link.static_overhead = get_num(r, "static_overhead", 0.5, 0.1, 2.0, "link");
+    // Same-rate-fixed-pairs (Task 3): base/enh pair, same default/range.
+    c.link.static_overhead_base =
+        get_num(r, "static_overhead_base", 0.5, 0.1, 2.0, "link");
+    c.link.static_overhead_enh =
+        get_num(r, "static_overhead_enh", 0.5, 0.1, 2.0, "link");
 
     // Measured-loss ladder: rungs (c.link.ladder_cfg.ladder already holds the
     // struct default 6-rung ladder; an explicit "ladder" array replaces it
@@ -167,12 +171,14 @@ Config load_config(const std::string& path) {
       int i = 0;
       for (const json& rj : r["ladder"]) {
         const std::string where = "link.ladder[" + std::to_string(i++) + "]";
-        check_keys(rj, where, {"mcs", "overhead"});
+        check_keys(rj, where, {"mcs", "overhead_base", "overhead_enh"});
         Rung rung;
         rung.mcs = static_cast<int>(get_int(rj, "mcs", 0, 0, 7, where));
         // Actual-air overhead (airtime-balance-uep): literal, not a scaled
         // cmd value -- old cmd default/range 1.0 [0.05, 1.0] x2 everywhere.
-        rung.overhead = get_num(rj, "overhead", 2.0, 0.1, 2.0, where);
+        // Same-rate-fixed-pairs (Task 3): base/enh pair, same default/range.
+        rung.overhead_base = get_num(rj, "overhead_base", 2.0, 0.1, 2.0, where);
+        rung.overhead_enh = get_num(rj, "overhead_enh", 2.0, 0.1, 2.0, where);
         parsed.push_back(rung);
       }
       c.link.ladder_cfg.ladder = parsed;

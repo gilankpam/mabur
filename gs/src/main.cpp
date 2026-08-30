@@ -137,7 +137,7 @@ static int run_radio(const maburgs::Config& cfg) {
     const maburgs::Rung& rung = cfg.link.ladder_cfg.ladder[i];
     const auto spec = mabur::rc::ladder_from(mabur::rc::PhyMode::HT,
                                               static_cast<uint8_t>(rung.mcs), 20);
-    const double ov = rung.overhead;
+    const double ov = rung.overhead_base;
     const double budget = ov / (1 + ov);
     const double denom = 0.5 * (1 + ov) / mabur::rc::phy_rate_mbps(spec[0]) +
                          0.5 * (1 + ov) / mabur::rc::phy_rate_mbps(spec[1]);
@@ -294,7 +294,9 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
   vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
-  vcfg.pin_overhead = cfg.link.static_overhead;
+  // VrxCfg.pin_overhead is not yet a pair (Task 4); use static_overhead_base
+  // mechanically, matching pre-pair behavior.
+  vcfg.pin_overhead = cfg.link.static_overhead_base;
   vcfg.rcf_repeat_copies = cfg.link.rcf_repeat_copies;
   vcfg.rcf_repeat_ms = cfg.link.rcf_repeat_ms;
   maburgs::VrxController vrx(vcfg);
@@ -313,7 +315,7 @@ static int run_radio(const maburgs::Config& cfg) {
       const maburgs::Rung& r = cfg.link.ladder_cfg.ladder[i];
       if (i) header += ",";
       header += std::to_string(r.mcs) + "/" +
-                std::to_string(static_cast<int>(std::lround(r.overhead * 100)));
+                std::to_string(static_cast<int>(std::lround(r.overhead_base * 100)));
     }
     char tail[64];
     std::snprintf(tail, sizeof(tail), " down_util=%.2f up_util=%.2f",
@@ -918,14 +920,14 @@ static int run_radio(const maburgs::Config& cfg) {
         maburgs::StatsCtlIn ci;
         ci.rung_idx = c.rung();
         ci.rung_mcs = c.op().mcs;
-        ci.rung_ov = c.op().overhead;
+        ci.rung_ov = c.op().overhead_base;
         ci.util = c.util();
         ci.pre_fec_loss = c.pre_fec_loss();
         ci.budget = c.budget();
         ci.probation_ms_left = c.probation_ms_left(now_ms);
         for (const auto& p : c.penalized(now_ms)) ci.penalized.push_back(p);
         for (const auto& r : cfg.link.ladder_cfg.ladder)
-          ci.ladder.emplace_back(r.mcs, r.overhead);
+          ci.ladder.emplace_back(r.mcs, r.overhead_base);
         ci.down_util = cfg.link.ladder_cfg.down_util;
         ci.up_util = cfg.link.ladder_cfg.up_util;
         const auto& cnt = c.counters();
@@ -967,7 +969,7 @@ static int run_radio(const maburgs::Config& cfg) {
           const maburgs::RungStat& rs = rstore.stat(static_cast<int>(ri));
           maburgs::StatsRungIn rg;
           rg.mcs = cfg.link.ladder_cfg.ladder[ri].mcs;
-          rg.ov = cfg.link.ladder_cfg.ladder[ri].overhead;
+          rg.ov = cfg.link.ladder_cfg.ladder[ri].overhead_base;
           rg.u = rs.u.v;
           rg.resid = rs.resid.v;
           rg.u3 = rs.u3.v;

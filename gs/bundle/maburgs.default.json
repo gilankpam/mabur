@@ -15,14 +15,15 @@
     "feedback_ms": 100,
     "beacon_keepalive_ms": 1000,
     "ladder": [
-      {"mcs": 0, "overhead": 2.0},
-      {"mcs": 2, "overhead": 1.0},
-      {"mcs": 4, "overhead": 0.5},
-      {"mcs": 5, "overhead": 0.5},
-      {"mcs": 6, "overhead": 0.3},
-      {"mcs": 7, "overhead": 0.2}
+      {"mcs": 0, "overhead_base": 2.0, "overhead_enh": 2.0},
+      {"mcs": 2, "overhead_base": 1.0, "overhead_enh": 1.0},
+      {"mcs": 4, "overhead_base": 0.5, "overhead_enh": 0.5},
+      {"mcs": 5, "overhead_base": 0.5, "overhead_enh": 0.5},
+      {"mcs": 6, "overhead_base": 0.3, "overhead_enh": 0.3},
+      {"mcs": 7, "overhead_base": 0.2, "overhead_enh": 0.2}
     ],
-    "static_overhead": 0.5,
+    "static_overhead_base": 0.5,
+    "static_overhead_enh": 0.5,
     "max_mcs": 7,
     "down_util": 0.6,
     "up_util": 0.15,

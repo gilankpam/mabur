@@ -13,14 +13,15 @@
 namespace maburgs {
 
 // One rung of the measured-loss ladder: a radio MCS plus the literal FEC
-// command overhead that budget()/budget_for() derive from directly (budget =
-// overhead / (1 + overhead) — no per-layer scaling since the flatten). The
-// same scalar overhead now scores BOTH sids' util identically (base via
-// budget(), enh/probe via budget_for()) — there is no more per-layer split
-// at the Rung level, only at the drone's balancer.
+// command overhead per sid that budget()/budget_for() derive from directly
+// (budget = overhead / (1 + overhead)). Same-rate-fixed-pairs (Task 3):
+// overhead is now a base/enh pair carried alongside the RCF wire and
+// ProfileRow pairs from Tasks 1-2; this task duplicates one value into both
+// fields everywhere mechanically -- real per-sid budgeting is Task 4.
 struct Rung {
   int mcs = 0;
-  double overhead = 1.0;
+  double overhead_base = 1.0;
+  double overhead_enh = 1.0;
 };
 
 // --- fade-aware demotes (spec 2026-08-14 fade-demote) ---

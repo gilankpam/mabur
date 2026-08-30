@@ -114,7 +114,7 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
   CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
   CHECK(vrx.cur_op().mcs == vrx.ctl().op().mcs);
-  CHECK(vrx.cur_op().overhead == vrx.ctl().op().overhead);
+  CHECK(vrx.cur_op().overhead == vrx.ctl().op().overhead_base);
 }
 
 TEST(silence_beacons_fast_and_recovers) {

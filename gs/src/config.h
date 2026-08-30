@@ -57,8 +57,11 @@ struct LinkCfg {
   int static_mcs = -1;
   // Actual-air overhead (airtime-balance-uep): literal, not a scaled cmd
   // value. Default 0.5 is the old cmd-value default (0.25) x2 -- see the
-  // rule note in gs/src/config.cpp's load_config.
-  double static_overhead = 0.5;
+  // rule note in gs/src/config.cpp's load_config. Same-rate-fixed-pairs
+  // (Task 3): split into a base/enh pair, both defaulting to the old
+  // scalar's value -- Task 4 gives them independent semantics.
+  double static_overhead_base = 0.5;
+  double static_overhead_enh = 0.5;
 
   // Measured-loss ladder controller config (spec
   // docs/superpowers/specs/2026-07-27-ladder-controller-design.md): rungs
@@ -72,8 +75,14 @@ struct LinkCfg {
   // overhead (airtime-balance-uep, global rule: every cmd-value default
   // this migration touches x2) — {0,1.0}->{0,2.0}, {2,0.5}->{2,1.0},
   // {4,0.25}->{4,0.5}, {5,0.25}->{5,0.5}, {6,0.25}->{6,0.5}, {7,0.1}->{7,0.2}.
-  LadderCfg ladder_cfg{
-      {{0, 2.0}, {2, 1.0}, {4, 0.5}, {5, 0.5}, {6, 0.5}, {7, 0.2}}};
+  // Same-rate-fixed-pairs (Task 3): overhead is now a base/enh pair; the
+  // struct default duplicates each rung's value into both fields.
+  LadderCfg ladder_cfg{{{0, 2.0, 2.0},
+                        {2, 1.0, 1.0},
+                        {4, 0.5, 0.5},
+                        {5, 0.5, 0.5},
+                        {6, 0.5, 0.5},
+                        {7, 0.2, 0.2}}};
 
   // Dedicated adaptive-link log (spec 2026-08-05 section 5). Dir is
   // overridable for host tests; the device default is the DVR SD card.

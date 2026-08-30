@@ -9,7 +9,9 @@ namespace {
 // Rebuild an OpPoint from the ladder's current rung. Power is constant and
 // is not part of the operating point (spec 2026-08-12-constant-txpower).
 OpPoint op_from_rung(const Rung& r) {
-  return OpPoint{false, r.mcs, 20, false, r.overhead, 0.0};
+  // OpPoint.overhead is not yet a pair (Task 4); use overhead_base
+  // mechanically, matching pre-pair behavior.
+  return OpPoint{false, r.mcs, 20, false, r.overhead_base, 0.0};
 }
 }  // namespace
 
