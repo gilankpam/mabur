@@ -262,4 +262,37 @@ TEST(lost_discont_restart_recovers_via_stall_watchdog) {
   CHECK(fs.frames_clean() > 13);   // emission resumed and kept going
 }
 
+TEST(per_sid_gap_timeout_mid_frame) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  fs.set_gap_timeout(1, 100);  // rate-aware stretch on the enh stream only
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(2000, 0xCD);
+  auto frags = frag_frame(frag, 0, pay);
+  REQUIRE(frags.size() >= 4);
+  for (size_t i = 0; i < frags.size(); ++i)
+    if (i != 2) fs.push_fragment(1, frags[i].data(), frags[i].size(), 10);
+  fs.poll(70);   // past the old 50ms — must still be waiting
+  CHECK(fs.frames_truncated() == 0);
+  fs.poll(115);  // past 10 + 100ms
+  CHECK(fs.frames_truncated() == 1);
+}
+
+TEST(whole_frame_gap_waits_for_the_max_sid_timeout) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  fs.set_gap_timeout(1, 150);  // the MISSING frame's sid is unknown — the
+                               // gap must wait for the slowest stream
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(400, 0x77);
+  for (auto& p : frag_frame(frag, 0, pay)) fs.push_fragment(0, p.data(), p.size(), 10);
+  // Frame 1 never arrives; frame 2 arrives complete on sid 0 (timeout 50).
+  for (auto& p : frag_frame(frag, 2, pay)) fs.push_fragment(0, p.data(), p.size(), 20);
+  fs.poll(90);   // 20 + 50ms passed, but max(sid timeouts) = 150
+  CHECK(fs.frames_dropped() == 0);
+  fs.poll(180);  // 20 + 150ms passed
+  CHECK(fs.frames_dropped() == 1);
+  CHECK(fs.frames_clean() == 2);
+}
+
 MTEST_MAIN

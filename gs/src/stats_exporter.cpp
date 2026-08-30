@@ -375,6 +375,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   }
   if (have_jitter_) v["jitter_ms"] = jitter_ms_;
   else v["jitter_ms"] = nullptr;
+  v["gap_ms"] = {in.gap_timeout_ms[0], in.gap_timeout_ms[1]};
   v["clean"] = in.frames_clean;
   v["truncated"] = in.frames_truncated;
   v["dropped"] = in.frames_dropped;

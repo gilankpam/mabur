@@ -107,8 +107,9 @@ void FrameStream::try_emit(uint64_t now_ms) {
         next_emit_id64_ = head->id64;
       } else {
         // Gap of whole frames before head. Skip only when the gap frame is
-        // stale (timeout) or the pipeline has run ahead (lookahead).
-        bool stale = now_ms >= head->first_ms + cfg_.gap_timeout_ms;
+        // stale (timeout) or the pipeline has run ahead (lookahead). The
+        // missing frame's sid is unknowable, so wait the slower stream out.
+        bool stale = now_ms >= head->first_ms + gap_ms_max();
         bool ahead = max_known >= next_emit_id64_ + static_cast<uint64_t>(cfg_.lookahead);
         if (!stale && !ahead) return;
         dropped_ += head->id64 - next_emit_id64_;
@@ -131,7 +132,7 @@ void FrameStream::try_emit(uint64_t now_ms) {
     if (head->emitted_upto == head->count) { finish(*head, true); continue; }
     // Mid-frame gap: give repairs gap_timeout_ms to fill it; force-advance
     // if the stream has run lookahead frames ahead.
-    bool stale = now_ms >= head->last_progress_ms + cfg_.gap_timeout_ms;
+    bool stale = now_ms >= head->last_progress_ms + gap_ms(head->sid);
     bool ahead = max_known >= head->id64 + static_cast<uint64_t>(cfg_.lookahead);
     if (stale || ahead) { finish(*head, false); continue; }
     return;
@@ -151,7 +152,7 @@ void FrameStream::poll(uint64_t now_ms) {
   // Age out slots that never got fragment 0 (can't be ordered or begun).
   for (auto it = slots_.begin(); it != slots_.end();) {
     if (!it->second.have_hdr &&
-        now_ms >= it->second.first_ms + cfg_.gap_timeout_ms) {
+        now_ms >= it->second.first_ms + gap_ms(it->second.sid)) {
       ++dropped_;
       it = slots_.erase(it);
     } else {

@@ -122,6 +122,7 @@ struct StatsInput {
   bool in_session = false;  // VrxState::SESSION
   int tx_card = 0;
   OpPoint op;
+  int gap_timeout_ms[2] = {0, 0};  // FrameStream's live per-sid gap timeout
   std::optional<double> residual_loss;  // nullopt -> JSON null
   // Transition attribution (spec 2026-08-14, unconditional since
   // 2026-08-15). residual_cur = the attributed (current-rung-only) sibling

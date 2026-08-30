@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -27,11 +28,21 @@ class FrameStream {
     std::function<void(bool complete)> end_frame;
   };
 
-  FrameStream(FrameStreamCfg cfg, Callbacks cb) : cfg_(cfg), cb_(std::move(cb)) {}
+  FrameStream(FrameStreamCfg cfg, Callbacks cb) : cfg_(cfg), cb_(std::move(cb)) {
+    gap_ms_[0] = gap_ms_[1] = cfg_.gap_timeout_ms;
+  }
 
   void push_fragment(uint8_t stream_id, const uint8_t* pkt, size_t len, uint64_t now_ms);
   void poll(uint64_t now_ms);  // drives timeouts; call every loop tick
   void reset();                // session change
+
+  // Rate-aware per-stream gap timeout (GapTimeoutPolicy): mid-frame gaps
+  // and headerless slots wait their own sid's value; a WHOLE-frame gap
+  // waits the max of both, because the missing frame's sid is unknowable.
+  // Both default to cfg.gap_timeout_ms.
+  void set_gap_timeout(int sid, uint64_t ms) {
+    if (sid >= 0 && sid <= 1) gap_ms_[sid] = ms;
+  }
 
   uint64_t frames_clean() const { return clean_; }
   uint64_t frames_truncated() const { return truncated_; }
@@ -58,7 +69,13 @@ class FrameStream {
   void finish(Slot& s, bool complete);
   uint64_t unwrap_id(uint16_t id, uint8_t flags, bool* rebased);
 
+  uint64_t gap_ms(uint8_t sid) const {
+    return gap_ms_[sid <= 1 ? sid : 0];
+  }
+  uint64_t gap_ms_max() const { return std::max(gap_ms_[0], gap_ms_[1]); }
+
   FrameStreamCfg cfg_;
+  uint64_t gap_ms_[2] = {0, 0};  // seeded from cfg in the ctor
   Callbacks cb_;
   std::map<uint32_t, Slot> slots_;   // key = (sid << 16) | fseq
   bool have_id_base_ = false;

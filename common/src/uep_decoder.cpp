@@ -165,6 +165,16 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
   return out;
 }
 
+uint64_t UepDecoder::newest_seq(int sid) const {
+  if (sid < 0 || sid > 1) return 0;
+  return layers_[static_cast<size_t>(sid)].sw.newest_seq();
+}
+
+int UepDecoder::repair_window(int sid) const {
+  if (sid < 0 || sid > 1) return 0;
+  return layers_[static_cast<size_t>(sid)].sw.repair_window();
+}
+
 void UepDecoder::reset_continuity() {
   for (auto& l : layers_) {
     l.has_last_seq = false;

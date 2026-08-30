@@ -241,6 +241,7 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
   }
   const uint64_t ws = unwrap(h.seq);
   const int wl = h.window_len;
+  if (wl > repair_window_hwm_) repair_window_hwm_ = wl;
   const uint64_t wend = ws + static_cast<uint64_t>(wl);  // one past last covered
   if (wend > newest_v_ + static_cast<uint64_t>(kResetSpan) ||
       wend + static_cast<uint64_t>(kResetSpan) < newest_v_) {

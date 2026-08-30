@@ -112,6 +112,12 @@ struct LinkCfg {
 /// frames ahead of head-of-line before it is force-advanced.
 struct VideoCfg {
   int frame_gap_timeout_ms = 50;
+  // Rate-aware ceiling for the gap timeout (gap_timeout_policy.h): at low
+  // rungs the TX window's repair lifetime outlives the fixed floor, so the
+  // timeout stretches toward the window's time-span, clamped here. 0
+  // disables the stretch (fixed floor). Must stay below FrameStream's
+  // 500 ms stall-reset backstop; the config range enforces that.
+  int frame_gap_timeout_max_ms = 150;
   int frame_lookahead = 8;
 };
 

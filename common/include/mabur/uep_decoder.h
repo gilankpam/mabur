@@ -66,6 +66,13 @@ class UepDecoder {
   // boundary never closed on this layer. Observability only.
   double last_boundary_close_ms(int sid) const;
 
+  // Layer sid's newest virtual seq (SwDecoder::newest_seq passthrough) —
+  // the send-rate signal GapTimeoutPolicy differentiates. 0 on bad sid.
+  uint64_t newest_seq(int sid) const;
+  // Layer sid's observed TX window (SwDecoder::repair_window). 0 on bad sid
+  // or before the first repair.
+  int repair_window(int sid) const;
+
   // Drops delivery-window seq continuity — call on a session change, where the
   // peer's FRAG seqs restart from an unrelated value.
   void reset_continuity();

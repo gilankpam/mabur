@@ -71,6 +71,14 @@ class SwDecoder {
   bool boundary_open() const { return wm_open_; }
   uint64_t syms_abandoned_stale() const { return syms_abandoned_stale_; }
   uint64_t symbols_in() const { return symbols_in_; }
+  // Highest virtual seq seen or implied — its ADVANCE rate is the stream's
+  // send rate (loss-robust; any arriving symbol moves it). 0 before the
+  // first source anchors the seq space. Feeds GapTimeoutPolicy.
+  uint64_t newest_seq() const { return have_seq_ ? newest_v_ : 0; }
+  // Largest repair window_len observed — the TX sliding window as actually
+  // flown, self-calibrating (the GS config does not know the drone's
+  // fec.window). 0 until the first repair. Feeds GapTimeoutPolicy.
+  int repair_window() const { return repair_window_hwm_; }
   uint64_t symbols_dropped_bad_cfg() const { return symbols_dropped_bad_cfg_; }
   uint64_t symbols_dropped_stale() const { return symbols_dropped_stale_; }
   uint64_t packets_out() const { return packets_out_; }
@@ -112,6 +120,7 @@ class SwDecoder {
   uint64_t syms_recovered_arrived_ = 0;
   uint64_t symbols_in_ = 0, symbols_dropped_bad_cfg_ = 0;
   uint64_t symbols_dropped_stale_ = 0, packets_out_ = 0, resets_ = 0;
+  int repair_window_hwm_ = 0;
 
   bool wm_open_ = false, wm_valid_ = false;
   uint64_t wm_ = 0;

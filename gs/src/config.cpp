@@ -288,9 +288,15 @@ Config load_config(const std::string& path) {
 
   if (j.contains("video")) {
     const json& r = j["video"];
-    check_keys(r, "video", {"frame_gap_timeout_ms", "frame_lookahead"});
+    check_keys(r, "video",
+               {"frame_gap_timeout_ms", "frame_gap_timeout_max_ms",
+                "frame_lookahead"});
     c.video.frame_gap_timeout_ms = static_cast<int>(
         get_int(r, "frame_gap_timeout_ms", 50, 10, 1000, "video"));
+    // Range top 400 keeps the ceiling under FrameStream's 500 ms
+    // stall-reset backstop by construction.
+    c.video.frame_gap_timeout_max_ms = static_cast<int>(
+        get_int(r, "frame_gap_timeout_max_ms", 150, 0, 400, "video"));
     c.video.frame_lookahead = static_cast<int>(
         get_int(r, "frame_lookahead", 8, 2, 64, "video"));
   }

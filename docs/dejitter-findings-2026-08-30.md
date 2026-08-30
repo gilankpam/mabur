@@ -87,3 +87,37 @@ needs a 2-deep release queue first, not a bigger number in the config.
 Encoder-side class-size equalization (making base/enh payloads
 comparable at the source) would shrink the needed D further; parked —
 star6e RC size knobs are mostly dead (`airtime-model.md` §3).
+
+## Follow-up shipped: rate-aware `frame_gap_timeout` (same day)
+
+The 50 ms FrameStream wall was clipping the sliding window's reach-back
+below ~3.4 Mb/s pair (`w_useful ≈ gap_timeout · stream_rate / (8·332)`)
+— repairs still inbound for frames already truncated.
+`GapTimeoutPolicy` (`gs/src/gap_timeout_policy.h`) stretches the
+per-stream timeout to the window's time-span,
+`clamp(w/seq_rate + 15ms, floor, video.frame_gap_timeout_max_ms)`
+(default cap 150, 0 = old fixed behavior). `seq_rate` is the per-sid
+seq-advance rate from the decoder (send rate, loss-robust, 2 s
+half-life EWMA); `w` self-calibrates from the observed repair
+`window_len` hwm (the GS config never knew the drone's `fec.window` —
+and `sw::kMaxWindow` is 255, the u8 wire ceiling, NOT the window; a
+first draft tripped on exactly that). Whole-frame gaps wait
+`max(sid timeouts)` since the missing frame's sid is unknowable;
+mid-frame gaps and headerless slots use their own sid's. During a fade
+the rate decays and the timeout rides the cap — deliberate, the
+post-fade repair burst can still heal. Live values exported as
+`link.video.gap_ms` [base, enh].
+
+Bench A/B (pinned mcs1, 20% union injected loss, burst 3, 106 s/leg):
+
+| | cap 0 (fixed 50) | cap 150 |
+|---|---|---|
+| holes/min | 645.9 | **580.8 (−10%)** |
+| delivered fps | 49.4 | 50.8 |
+| stalls 50–80 / 80–150 / >150 per min | 307 / 56 / 7.9 | 321 / 96 / 7.9 |
+| iv p99 / max | 102 / 221 ms | 107 / 219 ms |
+
+~65 holes/min became 80–150 ms stalls, one-for-one — the intended
+trade: under rally a hole smears until the refresh repaints, a stall is
+a clean hitch. `>150/min` and iv max unchanged — the cap bounds the
+worst case. Final judgment is perceptual, on a real flight.

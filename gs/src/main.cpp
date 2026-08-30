@@ -24,6 +24,7 @@
 #include "ctl_log.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
+#include "gap_timeout_policy.h"
 #ifdef MABUR_LOSS_SIM
 #include "loss_control.h"
 #endif
@@ -452,6 +453,12 @@ static int run_radio(const maburgs::Config& cfg) {
   bool foreign_rc_logged = false;
   std::vector<mabur::node::RxBody> batch;
 
+  // Rate-aware gap timeout: updated 1 Hz from the per-stream seq-advance
+  // rate, pushed into FrameStream (gap_timeout_policy.h).
+  maburgs::GapTimeoutPolicy gap_policy(cfg.video.frame_gap_timeout_ms,
+                                       cfg.video.frame_gap_timeout_max_ms);
+  uint64_t gap_update_ms = 0;
+
   while (!g_stop.load()) {
     const uint64_t now_ms_u = mono_ms();
     const double now_ms = static_cast<double>(now_ms_u);
@@ -518,6 +525,15 @@ static int run_radio(const maburgs::Config& cfg) {
     // must run on a clock >= every stamp it has seen (the decoder and
     // reorder buffer also guard against stale clocks internally).
     const uint64_t drained_ms = mono_ms();
+    if (drained_ms >= gap_update_ms + 1000) {
+      gap_update_ms = drained_ms;
+      for (int s = 0; s < 2; ++s) {
+        gap_policy.update(s, agg.decoder().newest_seq(s),
+                          agg.decoder().repair_window(s), drained_ms);
+        fstream.set_gap_timeout(
+            s, static_cast<uint64_t>(gap_policy.timeout_ms(s)));
+      }
+    }
 #ifdef MABUR_LOSS_SIM
     if (loss_ctl.ok()) loss_ctl.poll(agg.loss_sim());
 #endif
@@ -846,6 +862,8 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.in_session = in_session;
       sin.tx_card = sel.selected();
       sin.op = vrx.cur_op();
+      for (int s = 0; s < 2; ++s)
+        sin.gap_timeout_ms[s] = gap_policy.timeout_ms(s);
       sin.residual_loss = residual;
       sin.attrib_suppressed = attrib_suppressed;
       sin.residual_cur = residual_cur;
