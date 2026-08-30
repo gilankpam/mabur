@@ -840,7 +840,8 @@ int run_real_mode(const Config& cfg) {
   // bitrate through the verbs, so the ring/stats the debug endpoint reads
   // are live from here on. localhost-only, always on -- bind failure logs
   // and disables itself, never fatal (see debug_http.h).
-  debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality);
+  debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality,
+                   &balancer_feed);
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};

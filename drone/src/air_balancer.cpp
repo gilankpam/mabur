@@ -27,7 +27,19 @@ OvSplit AirBalancer::solve(double rate_b, double rate_e, double ov_cmd) {
   // motivated it).
   const double ab = applied_[0] >= 0.0 ? applied_[0] : ov_cmd;
   const double ae = applied_[1] >= 0.0 ? applied_[1] : ov_cmd;
-  if (!seeded() || rate_b <= 0.0 || rate_e <= 0.0) { /* publish + return */ }
+  // Debug-HTTP override (BalancerFeed::ovr_*_pct, bench sweeps): both set
+  // -> the split IS the forced pair, rails and solver bypassed. applied_
+  // still tracks it so the excess anchors and a later un-forced solve stay
+  // coherent. The feed-publish block below runs as usual.
+  const int fb_pct = feed_ ? feed_->ovr_base_pct.load(std::memory_order_relaxed) : -1;
+  const int fe_pct = feed_ ? feed_->ovr_enh_pct.load(std::memory_order_relaxed) : -1;
+  if (fb_pct >= 0 && fe_pct >= 0) {
+    out.ov_base = fb_pct / 100.0;
+    out.ov_enh = fe_pct / 100.0;
+    applied_[0] = out.ov_base;
+    applied_[1] = out.ov_enh;
+  }
+  else if (!seeded() || rate_b <= 0.0 || rate_e <= 0.0) { /* publish + return */ }
   else {
     // Measured multiplier m_s = emit/len; anchor at the ov each stream was
     // last told to fly (first solve anchors at ov_cmd — the encoder is

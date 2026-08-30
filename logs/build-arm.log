@@ -1,0 +1,63 @@
+Using udevCheckHook
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/gilankpam/Projects/drone/mabur/build-arm-glibc
+[  3%] Building CXX object common/CMakeFiles/mabur_common.dir/src/uep_encoder.cpp.o
+[  3%] Building CXX object common/CMakeFiles/mabur_common.dir/src/uep_decoder.cpp.o
+[  3%] Building CXX object common/CMakeFiles/mabur_common.dir/src/profile.cpp.o
+[ 37%] Built target devourer
+[ 37%] Linking CXX static library libmabur_common.a
+[ 53%] Built target mabur_common
+[ 84%] Built target venc_core
+[ 87%] Building CXX object drone/CMakeFiles/mabur_drone_core.dir/src/config.cpp.o
+[ 87%] Building CXX object drone/CMakeFiles/mabur_drone_core.dir/src/radio_tx.cpp.o
+[ 90%] Building CXX object drone/CMakeFiles/mabur_drone_core.dir/src/frame_pipeline.cpp.o
+[ 90%] Building CXX object drone/CMakeFiles/mabur_drone_core.dir/src/rc_agent.cpp.o
+In file included from /home/gilankpam/Projects/drone/openipc-builder/openipc/output/host/opt/ext-toolchain/arm-openipc-linux-gnueabihf/include/c++/13.3.0/map:62,
+                 from /home/gilankpam/Projects/drone/mabur/third_party/json.hpp:164,
+                 from /home/gilankpam/Projects/drone/mabur/drone/src/config.cpp:11:
+/home/gilankpam/Projects/drone/openipc-builder/openipc/output/host/opt/ext-toolchain/arm-openipc-linux-gnueabihf/include/c++/13.3.0/bits/stl_tree.h: In function ‘std::_Rb_tree<_Key, _Val, _KeyOfValue, _Compare, _Alloc>::iterator std::_Rb_tree<_Key, _Val, _KeyOfValue, _Compare, _Alloc>::_M_emplace_hint_unique(const_iterator, _Args&& ...) [with _Args = {const std::piecewise_construct_t&, std::tuple<const std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&>, std::tuple<>}; _Key = std::__cxx11::basic_string<char>; _Val = std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> >; _KeyOfValue = std::_Select1st<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > >; _Compare = std::less<void>; _Alloc = std::allocator<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > >]’:
+/home/gilankpam/Projects/drone/openipc-builder/openipc/output/host/opt/ext-toolchain/arm-openipc-linux-gnueabihf/include/c++/13.3.0/bits/stl_tree.h:2458:7: note: parameter passing for argument of type ‘std::_Rb_tree<std::__cxx11::basic_string<char>, std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> >, std::_Select1st<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > >, std::less<void>, std::allocator<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > > >::const_iterator’ changed in GCC 7.1
+ 2458 |       _Rb_tree<_Key, _Val, _KeyOfValue, _Compare, _Alloc>::
+      |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/gilankpam/Projects/drone/openipc-builder/openipc/output/host/opt/ext-toolchain/arm-openipc-linux-gnueabihf/include/c++/13.3.0/map:63:
+/home/gilankpam/Projects/drone/openipc-builder/openipc/output/host/opt/ext-toolchain/arm-openipc-linux-gnueabihf/include/c++/13.3.0/bits/stl_map.h: In member function ‘std::map<_Key, _Tp, _Compare, _Alloc>::mapped_type& std::map<_Key, _Tp, _Compare, _Alloc>::operator[](const key_type&) [with _Key = std::__cxx11::basic_string<char>; _Tp = nlohmann::json_abi_v3_11_3::basic_json<>; _Compare = std::less<void>; _Alloc = std::allocator<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > >]’:
+/home/gilankpam/Projects/drone/openipc-builder/openipc/output/host/opt/ext-toolchain/arm-openipc-linux-gnueabihf/include/c++/13.3.0/bits/stl_map.h:513:44: note: parameter passing for argument of type ‘std::_Rb_tree<std::__cxx11::basic_string<char>, std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> >, std::_Select1st<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > >, std::less<void>, std::allocator<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > > >::const_iterator’ changed in GCC 7.1
+  513 |           __i = _M_t._M_emplace_hint_unique(__i, std::piecewise_construct,
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  514 |                                             std::tuple<const key_type&>(__k),
+      |                                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  515 |                                             std::tuple<>());
+      |                                             ~~~~~~~~~~~~~~~
+In member function ‘std::map<_Key, _Tp, _Compare, _Alloc>::mapped_type& std::map<_Key, _Tp, _Compare, _Alloc>::operator[](const key_type&) [with _Key = std::__cxx11::basic_string<char>; _Tp = nlohmann::json_abi_v3_11_3::basic_json<>; _Compare = std::less<void>; _Alloc = std::allocator<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > >]’,
+    inlined from ‘bool nlohmann::json_abi_v3_11_3::detail::json_sax_dom_callback_parser<BasicJsonType>::key(string_t&) [with BasicJsonType = nlohmann::json_abi_v3_11_3::basic_json<>]’ at /home/gilankpam/Projects/drone/mabur/third_party/json.hpp:7079:83:
+/home/gilankpam/Projects/drone/openipc-builder/openipc/output/host/opt/ext-toolchain/arm-openipc-linux-gnueabihf/include/c++/13.3.0/bits/stl_map.h:513:44: note: parameter passing for argument of type ‘std::_Rb_tree<std::__cxx11::basic_string<char>, std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> >, std::_Select1st<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > >, std::less<void>, std::allocator<std::pair<const std::__cxx11::basic_string<char>, nlohmann::json_abi_v3_11_3::basic_json<> > > >::const_iterator’ changed in GCC 7.1
+  513 |           __i = _M_t._M_emplace_hint_unique(__i, std::piecewise_construct,
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  514 |                                             std::tuple<const key_type&>(__k),
+      |                                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  515 |                                             std::tuple<>());
+      |                                             ~~~~~~~~~~~~~~~
+[ 90%] Linking CXX static library libmabur_drone_core.a
+[ 96%] Built target mabur_drone_core
+[100%] Building CXX object drone/CMakeFiles/maburd.dir/src/main.cpp.o
+[100%] Linking CXX executable maburd
+[100%] Built target maburd
+[ 61%] Built target devourer
+[ 94%] Built target mabur_common
+[100%] Linking CXX executable linkbench-tx
+[100%] Built target linkbench-tx
+[ 91%] Built target devourer
+[100%] Built target txagcbench-tx
+
+Dynamic section at offset 0xebee8 contains 31 entries:
+  Tag        Type                         Name/Value
+ 0x00000001 (NEEDED)                     Shared library: [libstdc++.so.6]
+ 0x00000001 (NEEDED)                     Shared library: [libm.so.6]
+ 0x00000001 (NEEDED)                     Shared library: [libgcc_s.so.1]
+ 0x00000001 (NEEDED)                     Shared library: [libc.so.6]
+ 0x00000001 (NEEDED)                     Shared library: [ld-linux-armhf.so.3]
+ 0x0000000c (INIT)                       0x4cfc
+ 0x0000000d (FINI)                       0x7a944
+ 0x00000019 (INIT_ARRAY)                 0xeb6b0
+ 0x0000001b (INIT_ARRAYSZ)               4 (bytes)

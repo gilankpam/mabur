@@ -177,10 +177,16 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   const double rate_e = rc::phy_rate_mbps(applied_.ladder[1]);
   const double ov = applied_.fec_overhead;
   double fb = 0.5, exb = 0.0, exe = 0.0;
+  double ovb = ov, ove = ov;
   if (feed_) {
     fb = std::clamp<double>(feed_->share_base.load(std::memory_order_relaxed), 0.05, 0.95);
     exb = feed_->excess_base.load(std::memory_order_relaxed);
     exe = feed_->excess_enh.load(std::memory_order_relaxed);
+    // Debug-HTTP per-layer override active: the layers fly THESE overheads
+    // (not the RCF's ov), so the budget target must be built from them.
+    const int ob = feed_->ovr_base_pct.load(std::memory_order_relaxed);
+    const int oe = feed_->ovr_enh_pct.load(std::memory_order_relaxed);
+    if (ob >= 0 && oe >= 0) { ovb = ob / 100.0; ove = oe / 100.0; }
   }
   // Blended airtime: V * [fb*mult_b/rate_b + (1-fb)*mult_e/rate_e] = budget.
   // mult uses COMMANDED redundancy (ov, the RCF's literal fec_overhead) plus
@@ -188,8 +194,8 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   // ov (BalancerFeed::ov_base/ov_enh, telemetry-only) — the balancer is
   // repair-byte-neutral and must not feed back into this target (spec §2
   // bitrate).
-  const double denom = fb * (1.0 + ov + exb) / rate_b +
-                       (1.0 - fb) * (1.0 + ov + exe) / rate_e;
+  const double denom = fb * (1.0 + ovb + exb) / rate_b +
+                       (1.0 - fb) * (1.0 + ove + exe) / rate_e;
   double kbps = 1000.0 * cfg_.encoder.airtime_budget / denom;
   // NOTE the encoder has its own floor below this one: venc's apply_bitrate
   // rails at VENC_BITRATE_MIN_KBPS (1000), so a configured bitrate_min_kbps

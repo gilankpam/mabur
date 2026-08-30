@@ -51,6 +51,14 @@ struct BalancerFeed {
   std::atomic<float> excess_enh{0.0f};
   std::atomic<float> ov_base{0.0f};
   std::atomic<float> ov_enh{0.0f};
+  // Volatile per-layer overhead override (bench sweeps, set via the debug
+  // HTTP :8301 POST /venc/set?ov_base_pct=N / ov_enh_pct=N; -1 = off, both
+  // must be >= 0 to take effect). AirBalancer::solve returns the forced
+  // split verbatim (rails bypassed) and run_bitrate_policy blends the
+  // per-layer values into the budget target so the air budget still holds.
+  // Not persisted; a daemon restart clears it.
+  std::atomic<int> ovr_base_pct{-1};
+  std::atomic<int> ovr_enh_pct{-1};
 };
 
 // Everything RcAgent does to the outside world funnels through this

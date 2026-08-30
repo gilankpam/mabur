@@ -4,6 +4,7 @@
 // the brief asks for, with every venc call gated on MABUR_HAVE_VENC so the
 // host build still compiles and serves (uniformly "disabled") responses.
 #include "debug_http.h"
+#include "rc_agent.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -39,7 +40,7 @@ bool parse_long_strict(const std::string& s, long* out) {
 
 bool key_whitelisted(const std::string& k) {
   return k == "bitrate" || k == "qp_delta" || k == "roi_qp" ||
-         k == "max_ipprop";
+         k == "max_ipprop" || k == "ov_base_pct" || k == "ov_enh_pct";
 }
 
 }  // namespace
@@ -166,7 +167,20 @@ void handle_stats(int fd) {
 // parked at a rung whose computed target IS the value you want.
 // Controller carry: report {"ok":false} on a failed verb rather than a
 // blind {"ok":true} -- B6 made the three verbs return real status.
-void handle_set(int fd, const DebugReq& req) {
+void handle_set(int fd, const DebugReq& req, mabur::BalancerFeed* feed) {
+  // Per-layer overhead override: feed-backed, works without MABUR_HAVE_VENC.
+  // Accepts -1 (clear) or 0..300 (percent).
+  if (req.key == "ov_base_pct" || req.key == "ov_enh_pct") {
+    int v = static_cast<int>(req.val);
+    bool ok = feed != nullptr && v >= -1 && v <= 300;
+    if (ok) {
+      auto& slot = req.key == "ov_base_pct" ? feed->ovr_base_pct
+                                            : feed->ovr_enh_pct;
+      slot.store(v, std::memory_order_relaxed);
+    }
+    send_json(fd, "200 OK", ok ? "{\"ok\":true}\n" : "{\"ok\":false}\n");
+    return;
+  }
 #ifdef MABUR_HAVE_VENC
   bool ok = false;
   int v = static_cast<int>(req.val);
@@ -186,7 +200,7 @@ void handle_set(int fd, const DebugReq& req) {
 #endif
 }
 
-void handle_conn(int fd, int snapshot_quality) {
+void handle_conn(int fd, int snapshot_quality, mabur::BalancerFeed* feed) {
   char buf[512];
   ssize_t n = ::recv(fd, buf, sizeof(buf) - 1, 0);
   if (n <= 0) return;
@@ -205,7 +219,7 @@ void handle_conn(int fd, int snapshot_quality) {
       handle_stats(fd);
       break;
     case DebugReq::SET:
-      handle_set(fd, req);
+      handle_set(fd, req, feed);
       break;
     case DebugReq::BAD:
     default:
@@ -214,7 +228,7 @@ void handle_conn(int fd, int snapshot_quality) {
   }
 }
 
-void serve(int port, int snapshot_quality) {
+void serve(int port, int snapshot_quality, mabur::BalancerFeed* feed) {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
     std::fprintf(stderr, "debug_http: socket() failed: %s -- endpoint disabled\n",
@@ -259,16 +273,17 @@ void serve(int port, int snapshot_quality) {
     tv.tv_usec = 0;
     ::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     ::setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    handle_conn(cfd, snapshot_quality);
+    handle_conn(cfd, snapshot_quality, feed);
     ::close(cfd);
   }
 }
 
 }  // namespace
 
-void debug_http_start(int port, int snapshot_quality) {
+void debug_http_start(int port, int snapshot_quality,
+                      mabur::BalancerFeed* feed) {
   // Detached, never joined -- see debug_http.h for why that is the whole
   // shutdown design. bind/listen failures are handled inside serve() (log
   // + return), so the detached thread just exits quietly in that case.
-  std::thread(serve, port, snapshot_quality).detach();
+  std::thread(serve, port, snapshot_quality, feed).detach();
 }

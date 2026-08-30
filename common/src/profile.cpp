@@ -73,6 +73,11 @@ std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw) {
 // always on (fixed rule mirrored by the GS, RC_VERSION 4). The 2026-07-26
 // rule "nothing flies ABOVE the scored mcs" still holds; base below extends
 // margin downward. Spec 2026-08-29-airtime-balance-uep.
+//
+// 2026-08-30 EXPERIMENT (branch uep-same-rate-sweep): base rides the scored
+// mcs too — same-rate both streams, UEP via per-layer FEC overhead only
+// (the drone's :8301 ov_base_pct/ov_enh_pct override). Both ends must run
+// this branch or the GS's air/phy display lies about the base stream.
 std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
   int top = (mode == PhyMode::VHT) ? 8 : 7;
   int m = std::clamp(static_cast<int>(mcs), 0, top);
@@ -80,7 +85,7 @@ std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
   std::array<LayerTxSpec, 2> ladder;
   // BASE
   ladder[0].mode = mode;
-  ladder[0].mcs = static_cast<uint8_t>(std::max(m - 1, 0));
+  ladder[0].mcs = static_cast<uint8_t>(m);  // EXPERIMENT: same-rate (was max(m-1,0))
   ladder[0].bw = bw;
   ladder[0].ldpc = true;
   ladder[0].stbc = true;

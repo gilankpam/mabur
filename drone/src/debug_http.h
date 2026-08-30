@@ -7,6 +7,8 @@
 #pragma once
 #include <string>
 
+namespace mabur { struct BalancerFeed; }
+
 // Parsed request line. Deliberately dumb: no method beyond the three
 // routes below is understood, and everything else collapses to BAD so the
 // caller can 404 it without special-casing.
@@ -34,4 +36,7 @@ DebugReq debug_http_parse(const std::string& request_line);
 // on it, so a stuck accept() cannot block process exit; the OS reclaims
 // the socket and thread at process teardown. No stop flag is needed
 // because nothing ever needs to observe "has it stopped yet".
-void debug_http_start(int port, int snapshot_quality);
+// feed, when non-null, enables the ov_base_pct/ov_enh_pct SET keys (bench
+// per-layer overhead override -- BalancerFeed::ovr_*_pct; -1 clears).
+void debug_http_start(int port, int snapshot_quality,
+                      mabur::BalancerFeed* feed = nullptr);
