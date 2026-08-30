@@ -87,8 +87,8 @@ TEST(txpipe_body_forms_when_bpb_envelopes_accumulate) {
   }
   REQUIRE(out.size() == 1);
   CHECK(tx.sources_sent() == 12);
-  // 7-byte SBI header + 12 × (2-byte crc + envelope_len bytes)
-  CHECK(out[0].size() == 7u + 12u * (2u + static_cast<size_t>(p.envelope_len())));
+  // 11-byte SBI header + 12 × (2-byte crc + envelope_len bytes)
+  CHECK(out[0].size() == 11u + 12u * (2u + static_cast<size_t>(p.envelope_len())));
   CHECK(mabur::sbi_peek_stream_id(out[0].data(), out[0].size()) == kBenchStreamId);
 }
 
