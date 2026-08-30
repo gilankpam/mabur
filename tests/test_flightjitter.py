@@ -196,6 +196,23 @@ def test_per_rung_breakdown():
     assert per[5]["djit_p50_ms"] < 1.0
 
 
+def test_perceptual_metrics():
+    """The summary carries what eyes notice — hole rate (missing frames:
+    enh->enh... i.e. sid seams and fid gaps) and stall rates — not just
+    the EMA (session 0029: EMA +32% but holes/min +117%, which is what
+    'much worse' actually was)."""
+    rows = make_rows(n=600)  # 10 s @ 60 fps, sid alternating 0/1
+    del rows[300]            # one fid gap
+    del rows[100]            # a second hole: now sid 0 follows sid 0
+    apply_transport_stall(rows, 400, 60_000)
+    rep = flightjitter.analyze(rows)
+    s = rep["summary"]
+    assert s["holes_per_min"] > 0
+    assert abs(s["holes_per_min"] - 2 / (s["duration_s"] / 60.0)) < 0.5, s
+    assert s["stalls50_per_min"] > 0
+    assert s["iv_p99_ms"] > 16.0
+
+
 def test_jsonl_null_drone_tolerated():
     """Live sideport rows carry "drone": null until drone telemetry arrives
     (seen on session 0026): the walker must not crash on them."""

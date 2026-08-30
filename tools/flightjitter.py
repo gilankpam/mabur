@@ -105,7 +105,7 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
 
     events = []
     ivs, dlens, iv_rungs = [], [], []
-    disconts = damaged = 0
+    disconts = damaged = holes = 0
     if rows and not rows[0]["flags"] & FLAG_COMPLETE:
         damaged += 1
         events.append({"t_us": rows[0]["t_us"], "fid": rows[0]["fid"],
@@ -129,6 +129,13 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
         dlens.append(dlen)
         iv_rungs.append(rung_mcs_at(ev_ms))
         fid_jump = b["fid"] - a["fid"] - 1
+        # Holes: frames that never reached display — fid gaps (burned an id,
+        # vanished) plus same-sid seams without one (shed enh burns no fid).
+        # A gap explains its own seam, so count one or the other per boundary.
+        if fid_jump > 0:
+            holes += fid_jump
+        elif a["sid"] == b["sid"]:
+            holes += 1
         if fid_jump > 0:
             events.append({"t_us": b["t_us"], "fid": a["fid"] + 1,
                            "kind": "gap", "missing": fid_jump,
@@ -173,6 +180,18 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
         "disconts": disconts,
         "damaged": damaged,
     }
+    # Perceptual metrics — what eyes notice, which the EMA underweights
+    # (0029 A/B: EMA +32% read as "much worse" because holes/min +117%).
+    dur_min = summary["duration_s"] / 60.0
+    if dur_min > 0 and ivs:
+        s_iv = sorted(ivs)
+        summary["holes_per_min"] = round(holes / dur_min, 1)
+        summary["stalls50_per_min"] = round(
+            sum(1 for v in ivs if v > 50_000) / dur_min, 1)
+        summary["stalls80_per_min"] = round(
+            sum(1 for v in ivs if v > 80_000) / dur_min, 1)
+        summary["iv_p99_ms"] = round(s_iv[int(0.99 * (len(s_iv) - 1))] / 1000.0, 1)
+        summary["iv_max_ms"] = round(s_iv[-1] / 1000.0, 1)
     # Per-rung breakdown ("where does the jitter live"): |Δinterval| samples
     # bucketed by the rung mcs active that second. A plain percentile, not
     # the player EMA — segments interleave, an EMA would smear across rungs.

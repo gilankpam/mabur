@@ -56,6 +56,25 @@ djit p50 4.85 → 10.9 ms), NOT transport degradation. All 9 damaged AUs
 in 0028 landed 40–300 ms *before* a demote — fade damage during
 detection latency; the demote machinery itself reacted correctly.
 
+## Perceptual: why asym *felt* much worse than +4 ms
+
+The EMA averages every frame; eyes track holes and stalls, and those
+doubled (operator report "much worse" — the metrics agree, on the
+*cleaner* channel):
+
+| | 0028 flat | 0029 asym |
+|---|---|---|
+| frame holes/min (missing frame → 33 ms display hold) | 14.0 (1 per 4.1 s) | **29.3 (1 per 1.9 s)** |
+| stalls >50 ms /min | 18.5 | 25.3 |
+| stalls >80 ms /min | 5.7 | 8.0 |
+| interval p99 / max | 43 / 116 ms | 45 / 152 ms |
+
+The dominant term is missing-enh holes (the airtime-pressure regression
+below): a 33 ms hole every ~2 s barely moves an α=1/16 EMA but is
+plainly visible. `flightjitter.py` reports `holes_per_min` /
+`stalls50_per_min` / `stalls80_per_min` / `iv_p99_ms` in the summary
+since this study — judge configs on those, EMA second.
+
 ## Protection: no visible win, and an enh regression
 
 - Damaged AUs (post-FEC incomplete): 9 → 5 (base 3→1, enh 6→4). Right
