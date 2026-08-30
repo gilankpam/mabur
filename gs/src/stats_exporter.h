@@ -9,6 +9,7 @@
 #include <tuple>
 #include <vector>
 
+#include "lat_window.h"
 #include "mabur/rc_proto.h"
 #include "op_point.h"
 
@@ -147,6 +148,14 @@ struct StatsInput {
   // Latest drone telemetry, if any this session: wire struct + GS arrival clock.
   std::optional<mabur::rc::Telem> telem;
   uint64_t telem_rx_ms = 0;   // GS monotonic arrival stamp
+
+  // Head-segment latency aggregates (Task 10, spec 2026-08-30-latency-
+  // accounting): nullopt while the pts anchor isn't usable() yet, or while
+  // it's usable but due() said this poll() won't actually emit -- the core
+  // loop only pays LatWindow::flush()'s destructive read+clear on a poll
+  // that is about to emit (see main.cpp), so this is deliberately absent
+  // far more often than video_lat's would-be n==0 case suggests.
+  std::optional<LatWindow::Out> video_lat;
 };
 
 class StatsExporter {
@@ -155,6 +164,13 @@ class StatsExporter {
   StatsExporter(uint32_t session_id, int interval_ms, SendFn send);
   void on_frame(uint64_t now_ms);                      // per emitted video frame
   bool poll(uint64_t now_ms, const StatsInput& in);    // true when a datagram went out
+  // Mirrors poll()'s own interval gate without the side effects: lets a
+  // caller decide whether to pay for a destructive read (LatWindow::flush())
+  // BEFORE calling poll(), since poll() only consumes StatsInput when it is
+  // about to actually emit.
+  bool due(uint64_t now_ms) const {
+    return !emitted_ || now_ms - last_emit_ms_ >= static_cast<uint64_t>(interval_ms_);
+  }
   uint64_t send_failed() const;
 
  private:

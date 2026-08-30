@@ -144,6 +144,7 @@ if(MABUR_BUILD_GS)
   add_mtest(test_gs_config test_gs_config.cpp LIBS mabur_gs_core)
   add_mtest(test_gap_timeout_policy test_gap_timeout_policy.cpp LIBS mabur_gs_core)
   add_mtest(test_pts_anchor test_pts_anchor.cpp LIBS mabur_gs_core)
+  add_mtest(test_lat_window test_lat_window.cpp LIBS mabur_gs_core)
   target_compile_definitions(test_gs_config PRIVATE
     MABUR_GS_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/bundle")
   add_mtest(test_player_config test_player_config.cpp LIBS mabur_player_core)
