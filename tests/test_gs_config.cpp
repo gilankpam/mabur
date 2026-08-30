@@ -16,7 +16,6 @@ TEST(default_bundle_config_loads) {
   CHECK(cfg.radio.channel == 149);
   CHECK(cfg.radio.cards.size() == 1);
   CHECK(cfg.radio.tx_card == -1);
-  CHECK(cfg.fec.decode_deadline_ms == 200);
   CHECK(cfg.fec.seq_horizon == 512);
   CHECK(cfg.link.vtx_id == 1);
   CHECK(cfg.video.frame_gap_timeout_ms == 50);

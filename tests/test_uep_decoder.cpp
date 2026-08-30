@@ -185,7 +185,7 @@ AttribRun run_transition_sim(const std::set<int>& drop_frames, int transition_at
                              bool use_attrib) {
   auto layers = layers_for(/*symbol_size=*/64, /*bpb_base=*/1, /*window=*/8);
   UepEncoder enc(layers, /*flush_ms=*/15);
-  UepDecoder dec(layers, /*decode_deadline_ms=*/200);
+  UepDecoder dec(layers);
   const uint8_t mcs_old = 5, mcs_new = 4;
   std::mt19937 rng(42);
   AttribRun r;
@@ -215,7 +215,6 @@ AttribRun run_transition_sim(const std::set<int>& drop_frames, int transition_at
         r.frag_bytes.push_back(f.frag);
     }
   }
-  dec.poll(now + 5000);
   const auto st = dec.stats(1);
   r.abandoned = st.syms_abandoned;
   r.abandoned_stale = st.syms_abandoned_stale;
@@ -264,7 +263,7 @@ TEST(uep_attrib_same_mcs_transition_plain_fallback) {
   // snapshot still books stale.
   auto layers = layers_for(64, 1, 8);
   UepEncoder enc(layers, 15);
-  UepDecoder dec(layers, 200);
+  UepDecoder dec(layers);
   std::mt19937 rng(42);
   uint64_t now = 1000;
   auto feed = [&](int i, bool drop, uint8_t mcs) {
@@ -280,7 +279,6 @@ TEST(uep_attrib_same_mcs_transition_plain_fallback) {
   for (int i = 0; i < 40; ++i) feed(i, i >= 35 && i <= 36, 5);
   dec.mark_transition(1, 5, now);            // same-MCS: overhead-only rung step
   for (int i = 40; i < 100; ++i) feed(i, false, 5);
-  dec.poll(now + 5000);
   const auto st = dec.stats(1);
   CHECK(st.syms_abandoned > 0);
   CHECK(st.syms_abandoned_stale == st.syms_abandoned);  // below snapshot => stale
@@ -289,7 +287,7 @@ TEST(uep_attrib_same_mcs_transition_plain_fallback) {
 TEST(uep_attrib_expiry_disarms) {
   auto layers = layers_for(64, 1, 8);
   UepEncoder enc(layers, 15);
-  UepDecoder dec(layers, 200);
+  UepDecoder dec(layers);
   std::mt19937 rng(42);
   uint64_t now = 1000;
   dec.mark_transition(1, 5, now);
@@ -308,7 +306,6 @@ TEST(uep_attrib_expiry_disarms) {
       if (!(i >= 40 && i <= 42))
         dec.add_body(b.body.data(), b.body.size(), now, 5);
   }
-  dec.poll(now + 5000);
   const auto st = dec.stats(1);
   CHECK(st.syms_abandoned > 0);
   CHECK(st.syms_abandoned_stale == 0);
@@ -349,7 +346,7 @@ TEST(uep_attrib_current_loss_first_booking_never_suppressed) {
 TEST(uep_attrib_expiry_guard_no_underflow) {
   auto layers = layers_for(64, 1, 8);
   UepEncoder enc(layers, 15);
-  UepDecoder dec(layers, 200);
+  UepDecoder dec(layers);
   std::mt19937 rng(42);
   uint64_t now = 500;
   dec.mark_transition(1, 5, now);   // establish a known prev mcs (5)

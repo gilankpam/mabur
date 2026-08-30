@@ -7,7 +7,6 @@
   },
   "fec": {
     "symbol_size": 332,
-    "decode_deadline_ms": 200,
     "seq_horizon": 512
   },
   "link": {

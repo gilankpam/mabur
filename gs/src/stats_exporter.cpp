@@ -189,7 +189,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                 {"overhead_base", in.op.overhead_base},
                 {"overhead_enh", in.op.overhead_enh},
                 {"snr_req", in.op.snr_req}};
-  link["deadline_ms"] = in.deadline_ms;
   if (in.residual_loss) link["residual_loss"] = *in.residual_loss;
   else link["residual_loss"] = nullptr;
   json& at = link["attrib"];

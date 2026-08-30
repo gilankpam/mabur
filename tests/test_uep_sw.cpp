@@ -67,7 +67,7 @@ SimResult run_sim(int symbol_size, int bpb_base, int window, int n_pkts,
                   double drop_pct, int burst_len, FecWorker* worker = nullptr) {
   auto layers = layers_for(symbol_size, bpb_base, window);
   UepEncoder enc(layers, /*flush_ms=*/15, worker);
-  UepDecoder dec(layers, /*decode_deadline_ms=*/200);
+  UepDecoder dec(layers);
 
   std::mt19937 drop_rng(7);
   std::uniform_real_distribution<double> u(0.0, 1.0);
@@ -107,7 +107,6 @@ SimResult run_sim(int symbol_size, int bpb_base, int window, int n_pkts,
   now += 100;
   auto tail = enc.flush_all();
   consume(tail);
-  dec.poll(now + 5000);
   r.delivered = got.completed().size();
   return r;
 }
@@ -149,7 +148,7 @@ struct MixedResult {
 MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) {
   auto layers = mixed_layers();
   UepEncoder enc(layers, /*flush_ms=*/15);
-  UepDecoder dec(layers, /*decode_deadline_ms=*/200);
+  UepDecoder dec(layers);
 
   MixedResult r;
   uint64_t body_idx = 0;
@@ -180,7 +179,6 @@ MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) 
   now += 100;
   auto tail = enc.flush_all();
   consume(tail, now);
-  dec.poll(now + 5000);
   for (auto& [sid, unit] : got.completed()) ++r.delivered[sid];
   return r;
 }
@@ -262,7 +260,7 @@ struct AcctResult {
 AcctResult run_stream1_acct(int n_pkts, uint64_t drop_start, uint64_t drop_count) {
   auto layers = mixed_layers();
   UepEncoder enc(layers, /*flush_ms=*/15);
-  UepDecoder dec(layers, /*decode_deadline_ms=*/200);
+  UepDecoder dec(layers);
 
   AcctResult r;
   uint64_t body_idx = 0;
@@ -288,7 +286,6 @@ AcctResult run_stream1_acct(int n_pkts, uint64_t drop_start, uint64_t drop_count
   now += 100;
   auto tail = enc.flush_all();
   consume(tail);
-  dec.poll(now + 5000);
 
   for (auto& [sid, unit] : got.completed())
     if (sid == 1) ++r.delivered;

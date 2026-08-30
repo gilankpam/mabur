@@ -72,7 +72,7 @@ static std::vector<uint8_t> video_body() {
 
 TEST(routes_video_to_decoder_and_rc_to_control) {
   auto bodies = encode_fixture_bodies();
-  Aggregator agg(vec_layers(), 200, 512, 2);
+  Aggregator agg(vec_layers(), 512, 2);
   int rcs = 0;
   mtest::FragCollector frames;
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) { frames.add(f); });
@@ -98,7 +98,7 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
 }
 
 TEST(seq_gap_tracking_crc_ok_only) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);   // not SBI, not RC -> misroutes, still counted
   agg.on_rx_body(msg(0, 10, true, junk));
   agg.on_rx_body(msg(0, 13, true, junk));      // gap of 3: 2 lost
@@ -117,7 +117,7 @@ TEST(seq_gap_tracking_crc_ok_only) {
 // book an outage AND re-count the gap (the old last_seq walk did both —
 // one swap inflated seq_expected by ~6).
 TEST(seq_urb_batch_swap_is_not_loss) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);
   const uint16_t order[] = {0, 1, 2, 6, 7, 8, 3, 4, 5, 9};
   for (uint16_t s : order) agg.on_rx_body(msg(0, s, true, junk));
@@ -127,7 +127,7 @@ TEST(seq_urb_batch_swap_is_not_loss) {
 }
 
 TEST(ema_tracks_both_rssi_chains_and_max_snr) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);
   agg.on_rx_body(msg(0, 1, true, junk));
   CHECK(agg.card(0).rssi_a_ema == 38.0);       // seeded from first frame
@@ -139,7 +139,7 @@ TEST(ema_tracks_both_rssi_chains_and_max_snr) {
 }
 
 TEST(unknown_card_dropped) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);
   agg.on_rx_body(msg(7, 1, true, junk));
   CHECK(agg.bad_card_msgs() == 1);
@@ -161,7 +161,7 @@ TEST(msp_stream_body_routes_to_msp_sink_not_video) {
   src.on_serial_bytes(blob.data(), blob.size(), 1000);
   REQUIRE(!bodies.empty());
 
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   int msp_hits = 0, video_hits = 0;
   agg.set_msp_sink([&](const uint8_t*, size_t, uint64_t){ ++msp_hits; });
   agg.set_frag_sink([&](const mabur::DecodedFrag&){ ++video_hits; });
@@ -173,14 +173,14 @@ TEST(msp_stream_body_routes_to_msp_sink_not_video) {
 }
 
 TEST(card_rx_bytes_counts_all_frames) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   agg.on_rx_body(msg(0, 1, true, {1, 2, 3}));         // 3 bytes, crc ok
   agg.on_rx_body(msg(0, 2, false, {1, 2, 3, 4, 5}));  // 5 bytes, crc fail
   CHECK(agg.card(0).rx_bytes == 8);  // air bytes: CRC-fail bodies count too
 }
 
 TEST(card_rssi_ema_tracks_per_frame_chain_max) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   auto m1 = msg(0, 1, true, {1});
   m1.rssi[0] = 60; m1.rssi[1] = 40;  // chain A wins this frame
   agg.on_rx_body(m1);
@@ -197,7 +197,7 @@ TEST(card_rssi_ema_tracks_per_frame_chain_max) {
 }
 
 TEST(evm_ema_best_chain_min_and_per_chain) {
-  Aggregator agg(vec_layers(), 50, 1024, 1);
+  Aggregator agg(vec_layers(), 1024, 1);
   agg.on_rx_body(msg(0, 1, true, video_body()));
   const auto& c = agg.card(0);
   CHECK(c.evm_has); CHECK(c.evm_a_has); CHECK(c.evm_b_has);
@@ -207,7 +207,7 @@ TEST(evm_ema_best_chain_min_and_per_chain) {
 }
 
 TEST(evm_zero_samples_are_skipped_not_folded) {
-  Aggregator agg(vec_layers(), 50, 1024, 1);
+  Aggregator agg(vec_layers(), 1024, 1);
   agg.on_rx_body(msg(0, 1, true, video_body()));
   auto m2 = msg(0, 2, true, video_body());
   m2.evm[0] = 0; m2.evm[1] = 0;    // no phy status: must not drag EMAs to 0
@@ -230,7 +230,7 @@ TEST(evm_zero_samples_are_skipped_not_folded) {
 // would peg the stream-B EMA at -64 dB and, via best-chain min(), the
 // combined EVM too.
 TEST(evm_int8_min_sentinel_is_skipped_like_zero) {
-  Aggregator agg(vec_layers(), 50, 1024, 1);
+  Aggregator agg(vec_layers(), 1024, 1);
   auto m = msg(0, 1, true, video_body());
   m.evm[0] = -48; m.evm[1] = -128;   // 1SS frame: stream B not measured
   agg.on_rx_body(m);
@@ -246,7 +246,7 @@ TEST(evm_int8_min_sentinel_is_skipped_like_zero) {
 }
 
 TEST(evm_absent_until_first_sample_and_class_scoped) {
-  Aggregator agg(vec_layers(), 50, 1024, 1);
+  Aggregator agg(vec_layers(), 1024, 1);
   auto m = msg(0, 1, true, video_body());
   m.evm[0] = 0; m.evm[1] = 0;
   agg.on_rx_body(m);
@@ -259,7 +259,7 @@ TEST(evm_absent_until_first_sample_and_class_scoped) {
 
 TEST(class_split_video_msp_ctrl) {
   auto bodies = encode_fixture_bodies();     // stream-tagged video bodies
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   uint16_t seq = 0;
   for (auto& b : bodies) agg.on_rx_body(msg(0, seq++, true, b));
   auto ack = disc_ack_fixture_wire();
@@ -281,7 +281,7 @@ TEST(class_split_video_msp_ctrl) {
 }
 
 TEST(self_rc_frames_counted_but_never_tracked) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   int rc_routed = 0;
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
   auto rcf = rcf_fixture_wire();
@@ -296,7 +296,7 @@ TEST(self_rc_frames_counted_but_never_tracked) {
 }
 
 TEST(crc_fail_stays_out_of_classes) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);
   agg.on_rx_body(msg(0, 1, false, junk));
   const CardTrack& c = agg.card(0);
@@ -310,7 +310,7 @@ TEST(crc_fail_stays_out_of_classes) {
 // owes ordinary frame/crc_fail/rx_bytes accounting, and — being CRC-fail —
 // no class movement.
 TEST(crc_fail_rcf_lookalike_not_diverted_as_self) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   int rc_routed = 0;
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
   auto rcf = rcf_fixture_wire();
@@ -338,7 +338,7 @@ TEST(msp_body_classified_into_msp_class) {
   src.on_serial_bytes(blob.data(), blob.size(), 1000);
   REQUIRE(!bodies.empty());
 
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   agg.on_rx_body(msg(0, 1, true, bodies[0]));
   const CardTrack& c = agg.card(0);
   CHECK(c.cls[int(RfClass::Msp)].frames == 1);
@@ -366,7 +366,7 @@ static std::vector<uint8_t> sbi_body(uint8_t stream_id) {
 }
 
 TEST(rf_pool_folds_base_and_enh) {
-  Aggregator agg(vec_layers(), 200, 4096, 1);
+  Aggregator agg(vec_layers(), 4096, 1);
   agg.on_rx_body(msg(0, 1, true, sbi_body(0)));
   agg.on_rx_body(msg(0, 2, true, sbi_body(1)));
   const auto& c = agg.card(0);
@@ -389,7 +389,7 @@ TEST(rf_pool_folds_base_and_enh) {
 TEST(rf_pool_evm_skips_unsampled_chains) {
   // 0 and INT8_MIN are "not a sample" (fold_evm); folding them would peg the
   // EMA at an impossible value. Pool must inherit that, not average zeros.
-  Aggregator agg(vec_layers(), 200, 4096, 1);
+  Aggregator agg(vec_layers(), 4096, 1);
   auto m = msg(0, 1, true, sbi_body(1));
   m.evm[0] = -30;
   m.evm[1] = 0;  // not sampled
@@ -401,7 +401,7 @@ TEST(rf_pool_evm_skips_unsampled_chains) {
 }
 
 TEST(rf_pool_excludes_msp_and_ctrl) {
-  Aggregator agg(vec_layers(), 200, 4096, 1);
+  Aggregator agg(vec_layers(), 4096, 1);
   agg.on_rx_body(msg(0, 1, true, sbi_body(0)));                  // base: counts
   agg.on_rx_body(msg(0, 2, true, sbi_body(mabur::kMspStreamId)));  // msp
   agg.on_rx_body(msg(0, 3, true, disc_ack_fixture_wire()));      // ctrl
@@ -416,7 +416,7 @@ TEST(rf_pool_excludes_msp_and_ctrl) {
 TEST(rf_pool_with_no_enh_equals_the_base_series) {
   // "enh unavailable -> base only" needs no fallback branch: with no enh
   // frames the pool simply contains the base samples.
-  Aggregator agg(vec_layers(), 200, 4096, 1);
+  Aggregator agg(vec_layers(), 4096, 1);
   for (uint16_t i = 1; i <= 5; ++i) agg.on_rx_body(msg(0, i, true, sbi_body(0)));
   const auto& c = agg.card(0);
   CHECK(c.rf_pool.frames == c.cls[int(RfClass::S0)].frames);
@@ -430,7 +430,7 @@ TEST(rf_pool_with_no_enh_equals_the_base_series) {
 // last_video_seq), only the RC-frame routing/class accounting.
 TEST(rc_frame_with_wild_seq_does_not_perturb_video_seq_accounting) {
   auto ack = disc_ack_fixture_wire();
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);  // not SBI, not RC -> misroutes as "video"
   agg.on_rx_body(msg(0, 10, true, junk));    // video-ish body, seq 10
   agg.on_rx_body(msg(0, 4000, true, ack));   // RC frame, wildly different seq
@@ -444,7 +444,7 @@ TEST(rc_frame_with_wild_seq_does_not_perturb_video_seq_accounting) {
 }
 
 TEST(crc_clean_unparseable_body_gets_no_class) {
-  Aggregator agg(vec_layers(), 200, 512, 1);
+  Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);   // not SBI, not RC -> misroutes, still counted
   agg.on_rx_body(msg(0, 1, true, junk));
   const CardTrack& c = agg.card(0);
@@ -458,7 +458,7 @@ TEST(crc_clean_unparseable_body_gets_no_class) {
 // evm_absent_until_first_sample_and_class_scoped), so build one directly
 // via UepEncoder, same pattern as run_transition_sim in test_uep_decoder.cpp.
 TEST(rx_mcs_reaches_decoder_boundary) {
-  Aggregator agg(vec_layers(), /*decode_deadline_ms=*/200, /*seq_horizon=*/512,
+  Aggregator agg(vec_layers(), /*seq_horizon=*/512,
                  /*n_cards=*/1);
   // mark_transition establishes expected mcs 4 after a first mark at 5
   // (prev known -> boundary opens). A body heard at mcs 4 must CLOSE the

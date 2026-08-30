@@ -92,7 +92,12 @@ below); 2026-08-30 `link.op.overhead` → `link.op.overhead_base`/
 `link.ctl.rung.ov_enh`, `link.ctl.ladder[].ov` →
 `link.ctl.ladder[].ov_base`/`link.ctl.ladder[].ov_enh`, `link.rungs[].ov`
 → `link.rungs[].ov_base`/`link.rungs[].ov_enh` (same-rate-fixed-pairs
-scale-break note below). Removed keys are absent, not null. Keep appending to that list — not to protect
+scale-break note below); 2026-08-30 `link.deadline_ms` (the
+`fec.decode_deadline_ms` row-expiry knob it mirrored was deleted after
+the wall-2 bench measurement,
+`docs/wall2-deadline-findings-2026-08-30.md` addendum — the video
+decoders now rely on the seq horizon alone; MSP's SwDecoder keeps its
+own 2 s expiry). Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
 sideport config lives in `/etc/maburgs.json` under `stats`

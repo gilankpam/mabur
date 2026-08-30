@@ -54,7 +54,7 @@ std::vector<uint8_t> mk_annexb_frame(std::mt19937& rng, bool idr, uint8_t tid,
 TEST(frame_e2e_clean_and_lossy) {
   std::mt19937 rng(1234);
   UepEncoder enc(layers(), 15);
-  UepDecoder dec(layers(), 200);
+  UepDecoder dec(layers());
 
   std::vector<std::vector<uint8_t>> emitted_frames;
   std::vector<uint8_t> cur;
@@ -120,7 +120,7 @@ TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
   std::mt19937 rng(99);
   UepEncoder enc(layers(), 15);
   enc.set_shed(1, true);                  // congestion: enhance layer shed
-  UepDecoder dec(layers(), 200);
+  UepDecoder dec(layers());
   FramePipeline pipe;
 
   uint64_t clean = 0, truncated = 0;

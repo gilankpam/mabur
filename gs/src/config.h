@@ -34,7 +34,6 @@ struct FecCfg {
   // symbols never reach the sliding-window decoder to be flagged there.
   // JSON: scalar fans out, or 2-array.
   std::array<int, 2> symbol_size = {64, 64};
-  int decode_deadline_ms = 200;
   int seq_horizon = 512;
 };
 

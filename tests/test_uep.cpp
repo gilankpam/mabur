@@ -39,7 +39,7 @@ TEST(uep_encoder_round_trips_fixture_through_decoder) {
 
   auto layers = make_layers(symbol_size, blocks_per_body, overheads);
   UepEncoder enc(layers, /*flush_ms=*/1'000'000'000ULL);
-  UepDecoder dec(layers, /*decode_deadline_ms=*/1'000'000'000ULL);
+  UepDecoder dec(layers);
 
   auto frames = mtest::load_frame_fixture(std::string(MABUR_FIXTURE_DIR) +
                                           "/frame_stream.bin");

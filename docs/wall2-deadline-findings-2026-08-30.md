@@ -1,4 +1,20 @@
-# decode_deadline_ms bench measurement — KEEP the row expiry
+# decode_deadline_ms bench measurement — row expiry (verdict superseded: DELETED)
+
+**Addendum, same day:** the measurement below stands, but the KEEP
+verdict was overruled by the operator on headroom grounds — +7–8 points
+of ONE core on a 4-core GS whose daemon peaks ~69% is affordable, and
+the project policy is to delete dead weight. `fec.decode_deadline_ms`,
+`UepDecoder::poll()`, and the video decoders' row expiry were deleted
+the same day (`link.deadline_ms` left the sideport with them — see
+data-provenance). The video decoders now rely on the seq horizon alone;
+**MSP's SwDecoder keeps its own 2 s `expire_rows_older_than`** (a
+genuinely low-rate layer where the horizon barely advances), so the
+mechanism survives in `sw_decoder.{h,cpp}` with linkbench as the other
+user. Deploy verified: config-before-binary, ausniff 60.0 fps / 0 gaps
+/ 1800 complete, and a 45% loss-sim confirm run reproduced the
+deadline-5000 leg (rows p95 146/147 max 160, CPU 67.0%, fps 33.9).
+Rollback pair on GS: `maburgs.pre-nodeadline` +
+`/etc/maburgs.json.pre-nodeadline` (must be restored together).
 
 2026-08-30, bench pair (drone prod maburd, GS `maburgs.losssim` built from
 this branch with `-DMABUR_LOSS_SIM=ON`, control port 8305). Question:

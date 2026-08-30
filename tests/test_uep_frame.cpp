@@ -35,7 +35,7 @@ std::vector<uint8_t> mk_frame_unit(uint16_t frame_id, uint32_t pts,
 
 TEST(add_frame_roundtrips_through_decoder) {
   UepEncoder enc(frame_layers(), 15);
-  UepDecoder dec(frame_layers(), 200);
+  UepDecoder dec(frame_layers());
 
   // 60 KB frame on layer 1 — >255 fragments, impossible in the u8-idx FRAG
   // format the frame path replaced.
@@ -70,7 +70,7 @@ TEST(add_frame_frame_end_flush_seals_tail) {
   // arrives. With it, each add_frame's bodies alone reconstruct the frame.
   UepEncoder enc(frame_layers(), 15);
   for (int fi = 0; fi < 2; ++fi) {
-    UepDecoder dec(frame_layers(), 200);
+    UepDecoder dec(frame_layers());
     auto unit = mk_frame_unit(static_cast<uint16_t>(fi), 1000 * fi, 5000 + 37 * fi, 0x20);
     auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1);
     size_t bytes = 0;

@@ -169,7 +169,7 @@ template <typename Loss>
 SimOut run(const std::array<UepLayerCfg, 2>& layers, Loss loss,
            uint64_t dur_ms, int single_layer = -1) {
   UepEncoder enc(layers, /*flush_ms=*/15);
-  UepDecoder dec(layers, /*decode_deadline_ms=*/200, /*seq_horizon=*/512);
+  UepDecoder dec(layers, /*seq_horizon=*/512);
   SimOut out{};
   UnitAssembler asm_;
   std::map<std::pair<int, uint32_t>, uint64_t> sent_at;
@@ -238,10 +238,9 @@ SimOut run(const std::array<UepLayerCfg, 2>& layers, Loss loss,
     if (now % 100 == 0) {
       auto polled = enc.poll(now);
       sink(polled, now);
-      dec.poll(now);
     }
   }
-  // Drain: flush encoder, let deadlines expire, final poll. The flush_all()
+  // Drain: flush the encoder. The flush_all()
   // tail is the encoder's teardown flush, not live traffic the burst/GE
   // channel is mid-cycle on — running it through loss.drop() re-applies a
   // channel event that's "due" from the live phase to a one-off drain body,
@@ -260,7 +259,6 @@ SimOut run(const std::array<UepLayerCfg, 2>& layers, Loss loss,
         ++out.layer[(size_t)ds].delivered;
     }
   }
-  dec.poll(now + 500);
   return out;
 }
 

@@ -105,7 +105,7 @@ Config load_config(const std::string& path) {
 
   if (j.contains("fec")) {
     const json& r = j["fec"];
-    check_keys(r, "fec", {"symbol_size", "decode_deadline_ms", "seq_horizon"});
+    check_keys(r, "fec", {"symbol_size", "seq_horizon"});
     if (r.contains("symbol_size")) {
       auto& s = r.at("symbol_size");
       if (s.is_array()) {
@@ -120,7 +120,6 @@ Config load_config(const std::string& path) {
       for (int v : c.fec.symbol_size)
         if (v < 32 || v > 1500) fail("fec.symbol_size", "must be in [32,1500]");
     }
-    c.fec.decode_deadline_ms = static_cast<int>(get_int(r, "decode_deadline_ms", 200, 20, 5000, "fec"));
     c.fec.seq_horizon = static_cast<int>(get_int(r, "seq_horizon", 512, 16, 65536, "fec"));
   }
 

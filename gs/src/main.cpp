@@ -125,10 +125,9 @@ static int run_radio(const maburgs::Config& cfg, int loss_sim_port) {
 #else
 static int run_radio(const maburgs::Config& cfg) {
 #endif
-  std::fprintf(stderr,
-               "fec: symbol_size=[%d,%d] decode_deadline_ms=%d seq_horizon=%d\n",
+  std::fprintf(stderr, "fec: symbol_size=[%d,%d] seq_horizon=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
-               cfg.fec.decode_deadline_ms, cfg.fec.seq_horizon);
+               cfg.fec.seq_horizon);
 
   // Ladder feasibility log: one line per effective (post-max_mcs-filter)
   // rung, so a boot log alone tells you whether the configured ladder can
@@ -169,7 +168,6 @@ static int run_radio(const maburgs::Config& cfg) {
   }
 
   maburgs::Aggregator agg(cfg.uep_layers(),
-                          static_cast<uint64_t>(cfg.fec.decode_deadline_ms),
                           static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
 
 #ifdef MABUR_LOSS_SIM
@@ -516,11 +514,10 @@ static int run_radio(const maburgs::Config& cfg) {
       }
     }
     // Re-read the clock: the drain above blocked up to 10 ms, and bodies
-    // processed in it carry stamps newer than now_ms_u. Expiry/hold math
+    // processed in it carry stamps newer than now_ms_u. Timeout/hold math
     // must run on a clock >= every stamp it has seen (the decoder and
     // reorder buffer also guard against stale clocks internally).
     const uint64_t drained_ms = mono_ms();
-    agg.poll(drained_ms);
 #ifdef MABUR_LOSS_SIM
     if (loss_ctl.ok()) loss_ctl.poll(agg.loss_sim());
 #endif
@@ -849,7 +846,6 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.in_session = in_session;
       sin.tx_card = sel.selected();
       sin.op = vrx.cur_op();
-      sin.deadline_ms = cfg.fec.decode_deadline_ms;
       sin.residual_loss = residual;
       sin.attrib_suppressed = attrib_suppressed;
       sin.residual_cur = residual_cur;
@@ -1078,7 +1074,6 @@ int main(int argc, char** argv) {
 
   const int n_cards = src_opt.cards;
   maburgs::Aggregator agg(cfg.uep_layers(),
-                          static_cast<uint64_t>(cfg.fec.decode_deadline_ms),
                           static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
   AuFileOut file_out;
   if (!out_aus_path.empty() && !file_out.open(out_aus_path.c_str())) {
@@ -1138,17 +1133,12 @@ int main(int argc, char** argv) {
     const uint64_t now_ms = m->mono_us / 1000;
     fstream.poll(now_ms);
     if (au_on) au_bell.poll();
-    if (now_ms >= last_ms + 1000) {
-      agg.poll(now_ms);
-      last_ms = now_ms;
-    }
+    last_ms = now_ms;
   }
-  // Final expiry so abandoned symbols are accounted before the report, then
-  // let FrameStream time out whatever is still half-assembled (its gap timeout
+  // Let FrameStream time out whatever is still half-assembled (its gap timeout
   // is what turns an unrecoverable hole into a truncated frame).
-  agg.poll(last_ms + static_cast<uint64_t>(cfg.fec.decode_deadline_ms) + 1);
-  fstream.poll(last_ms + static_cast<uint64_t>(cfg.fec.decode_deadline_ms) +
-               static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms) + 1);
+  fstream.poll(last_ms + static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms) +
+               1);
 
   if (au_on)
     std::fprintf(stderr, "au_ring: published=%llu dropped_oversize=%llu\n",

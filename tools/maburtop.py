@@ -314,13 +314,11 @@ def render_rows_compact(model, wall, width):
         cmd_ov_base = op.get("overhead_base")
         cmd_ov_enh = op.get("overhead_enh")
         drone_applied = (d.get("drone") or {}).get("applied") or {}
-        deadline_ms = link.get("deadline_ms")
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
             f"maburgs   {state_s}   vtx {_s(vtx_id)}   tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
-            f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
-            f"deadline {_s(deadline_ms)} ms"
+            f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}"
         ).ljust(width)
     rows.append(header)
 
@@ -544,7 +542,7 @@ def panel_topbar(model, wall):
     cmd_ov_base = op.get("overhead_base")
     cmd_ov_enh = op.get("overhead_enh")
     drone_applied = (d.get("drone") or {}).get("applied") or {}
-    deadline, air = link.get("deadline_ms"), link.get("air_pct")
+    air = link.get("air_pct")
     session = model.session
     session_s = "--" if session is None else f"0x{session:08x}"
 
@@ -560,7 +558,6 @@ def panel_topbar(model, wall):
         f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
         f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
-        f"deadline {_s(deadline)} ms   "
         f"air ~{_s(air, 0)}%      session {session_s}   "
         f"restarts {model.restarts}   rx {hz:.1f} Hz"
     )

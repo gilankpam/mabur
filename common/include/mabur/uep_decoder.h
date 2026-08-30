@@ -30,8 +30,8 @@ struct DecodedFrag {
 // still play its head).
 class UepDecoder {
  public:
-  UepDecoder(const std::array<UepLayerCfg, 2>& layers,
-             uint64_t decode_deadline_ms = 200, uint32_t seq_horizon = 0);
+  explicit UepDecoder(const std::array<UepLayerCfg, 2>& layers,
+                      uint32_t seq_horizon = 0);
 
   static constexpr uint8_t kMcsUnknown = 255;
 
@@ -65,9 +65,6 @@ class UepDecoder {
   // Open->close latency (ms) of layer sid's last CLOSED boundary; -1 if a
   // boundary never closed on this layer. Observability only.
   double last_boundary_close_ms(int sid) const;
-
-  // Expires stale sliding-window rows on every layer. Call ~1 Hz.
-  void poll(uint64_t now_ms);
 
   // Drops delivery-window seq continuity — call on a session change, where the
   // peer's FRAG seqs restart from an unrelated value.
@@ -133,7 +130,6 @@ class UepDecoder {
   void note_delivery(Layer& l, uint16_t seq);
 
   std::array<Layer, 2> layers_;
-  uint64_t decode_deadline_ms_;
   uint64_t bodies_misrouted_ = 0;
 };
 

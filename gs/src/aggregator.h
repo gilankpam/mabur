@@ -96,14 +96,13 @@ class Aggregator {
                                      uint64_t mono_us)>;
 
   Aggregator(const std::array<mabur::UepLayerCfg, 2>& layers,
-             uint64_t decode_deadline_ms, uint32_t seq_horizon, int n_cards);
+             uint32_t seq_horizon, int n_cards);
 
   void set_frag_sink(FragSink s) { frag_sink_ = std::move(s); }
   void set_rc_sink(RcSink s) { rc_sink_ = std::move(s); }
   void set_msp_sink(MspSink s) { msp_sink_ = std::move(s); }
 
   void on_rx_body(const mabur::node::RxBody& m);
-  void poll(uint64_t now_ms) { dec_.poll(now_ms); }
 
   const CardTrack& card(int id) const { return cards_[static_cast<size_t>(id)]; }
   int n_cards() const { return static_cast<int>(cards_.size()); }

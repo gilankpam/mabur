@@ -18,7 +18,6 @@ StatsInput base_input() {
   in.op.mcs = 5; in.op.bw = 20;
   in.op.overhead_base = 0.25; in.op.overhead_enh = 0.25;
   in.op.snr_req = 18.5;
-  in.deadline_ms = 60;
   in.residual_loss = 0.012;
   in.layer_delivery_pct = {100, 97};
   StatsCardIn c;
@@ -72,7 +71,6 @@ TEST(first_emission_immediate_with_null_rates) {
   CHECK(j["link"]["vtx_id"] == 1);
   CHECK(j["link"]["state"] == "session");
   CHECK(j["link"]["op"]["mcs"] == 5);
-  CHECK(j["link"]["deadline_ms"] == 60);
   CHECK(j["cards"][0]["frames"] == 1000);
 }
 
