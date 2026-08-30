@@ -97,16 +97,35 @@ every hole falls in exactly two windows: the startup ladder climb
 the fade→residual→rung-0→s3-cascade thrash in ctl-0090). The last hole
 coincides with the final recovery to rung 3–4; zero holes after.
 
-Mechanism, sharpened from "airtime pressure": base's doubled repair
-bytes lengthen every pair's serialization, so enh's completion lands
-later — closer to the stale deadline. Under loss, when enh needs
-repair-wait, that lost margin is the difference between *recovered*
-and *abandoned-stale*. The asym pair did protect base (mid-stream base
-losses: 0), but the protection was **transferred, not added**: enh —
-the stream displayed 30×/s — paid it as one 33 ms hole per ~2 s. The
-loss-sweep insight ("recovery-wait dwarfs clean alternation") cuts both
-ways: asym halves base's recovery-wait and stretches enh's past the
-deadline.
+Mechanism (corrected after reading the decoder — there is NO time
+deadline): `abandoned_stale` is the sliding-window decoder
+(`sw_decoder.cpp` advance()) evicting generations that never
+accumulated enough symbols before the window slid past the horizon,
+with the *stale* label from the PR-#28 attribution machinery booking
+them to the pre-transition seq space (old-op debris, excluded from
+demote inputs — which is why fade-storm losses land in this counter:
+the fades ARE the transitions). Drone-side counters are zero across
+the board in both sessions (`txq.drops`, `radio.drops`, `usb_fail`,
+`failsafe_shed`, venc ring) — every frame left the drone; the loss is
+RF, resolved at the GS FEC.
+
+Why enh specifically — the per-stream symbol-abandonment deltas:
+
+| syms abandoned | 0028 flat | 0029 asym |
+|---|---|---|
+| base (sid 0) | 135 | **8** |
+| enh (sid 1) | 132 | **175** |
+
+Flat: deep-fade loss kills both streams about equally. Asym: base's
+abandonment collapses 17× (ov 1.0 works exactly as designed) while
+enh's grows a third on a *cleaner* channel — placing fade loss in the
+**33–50% per-window band** (enh at ov 0.5 tolerates ~33%, base at 1.0
+~50%). The pair moved base above the FEC wall and left enh below it:
+protection **transferred, not added**, and the stream below the wall
+is the one displayed 30×/s. Full chain: fade → symbol loss in the
+33–50% band → enh generation undecodable → window advances → abandoned
+(booked stale at the transition boundary) → frame never reaches the AU
+ring → 33 ms display hole.
 
 Also note: rung transitions do NOT fire IDRs (the waybeam bitrate-change
 IDR was deleted in the venc fold-in — `star6e_controls.c` apply_bitrate
