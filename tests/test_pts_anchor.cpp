@@ -74,6 +74,29 @@ TEST(leak_exact_integer_arithmetic) {
       static_cast<int64_t>(kT0) + (d * PtsAnchor::kLeakPpm / 1'000'000);
   CHECK(expect_base == static_cast<int64_t>(kT0) + 60);
   CHECK(a.base_us() == expect_base);
+
+  // Ordering pin: a third sample whose `off` lands STRICTLY BETWEEN the
+  // pre-leak base (kT0+60) and the post-leak base (kT0+60+60=kT0+120).
+  // This is the case the previous two assertions cannot distinguish --
+  // both "leak then min" and "min then leak" pass them, because in both
+  // those samples `off` was either below both candidate bases or above
+  // both. Here the two orderings diverge:
+  //   correct (leak BEFORE min-check): base becomes kT0+120 first, then
+  //     off(kT0+90) < kT0+120 is true -> snaps DOWN to off: base=kT0+90.
+  //   swapped (min-check BEFORE leak): off(kT0+90) < kT0+60 is false (no
+  //     snap), THEN leak applies: base = kT0+60+60 = kT0+120.
+  // The two orders disagree (kT0+90 vs kT0+120), so this sample alone
+  // pins the order. Verified by mutation: swapping the leak/min-check
+  // statements in pts_anchor.h makes only this assertion fail.
+  const int64_t off3 = static_cast<int64_t>(kT0) + 90;
+  const uint64_t pts64_before3 = static_cast<uint64_t>(d);  // 1'000'000
+  const uint32_t pts32_3 =
+      static_cast<uint32_t>(pts64_before3 + static_cast<uint64_t>(d));
+  const uint64_t mono3 =
+      static_cast<uint64_t>(off3) + pts64_before3 + static_cast<uint64_t>(d);
+  const auto o2 = a.observe(pts32_3, mono3);
+  CHECK(!o2.discont);
+  CHECK(a.base_us() == off3);
 }
 
 // (d) discont: delta-pts of 3s -> discont=true, base_valid()==false, usable()
