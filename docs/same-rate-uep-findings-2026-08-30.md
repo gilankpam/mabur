@@ -131,6 +131,11 @@ Both streams share one wall; in an SNR fade nothing degrades to a base
 floor, and at a pinned bottom rung there is no demote below. The bench
 sits at 33 dB SNR and cannot test this. That trade, not jitter, is the
 open question before same-rate goes near a range flight.
+**Follow-up the same day**: the flat-vs-asym *pair* half of that
+question got its first real-dynamics answer — flat 50:50 won (asym
+100:50 cost +4 ms EMA with no visible protection gain), see
+`docs/pair-ab-field-findings-2026-08-30.md`. The shared-wall PHY
+question above remains open.
 
 ## Loss-jitter sweep (same day, pinned mcs2, MABUR_LOSS_SIM)
 
