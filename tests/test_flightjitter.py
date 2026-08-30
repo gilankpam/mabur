@@ -150,6 +150,52 @@ def test_explained_fraction_high_when_size_driven():
     assert s["residual_jitter_ms"] < 2.0, s
 
 
+def test_discont_breaks_chain_not_gap():
+    """A DISCONT-flagged AU (0x02, maburgs-marked: drone restart / fid
+    namespace jump — live session 0028: fid 115 -> 65646) must break the
+    interval/fid chain: no gap event, no stutter across the seam, and the
+    fid delta must not pollute the gap count."""
+    rows = make_rows(n=200)
+    for r in rows[100:]:
+        r["fid"] += 65531
+        r["t_us"] += 40_000  # re-establish pause would read as a stutter
+    rows[100]["flags"] |= 0x02
+    rep = flightjitter.analyze(rows)
+    assert rep["events"] == [], rep["events"]
+    assert rep["summary"]["gaps"] == 0
+    assert rep["summary"]["disconts"] == 1
+
+
+def test_incomplete_au_reported_damaged():
+    """AUs without FLAG_COMPLETE (0x80) arrived broken (post-FEC damage):
+    report them as 'damaged' events even when timing is unremarkable."""
+    rows = make_rows(n=200)
+    rows[100]["flags"] = 0x00
+    rep = flightjitter.analyze(rows)
+    kinds = [e["kind"] for e in rep["events"]]
+    assert kinds == ["damaged"], kinds
+    assert rep["events"][0]["fid"] == 100
+    assert rep["summary"]["damaged"] == 1
+
+
+def test_per_rung_breakdown():
+    """With a jsonl rung timeline, the summary carries per-rung dwell and
+    a |Δinterval| jitter proxy so 'where does the jitter live' is answered
+    per rung, not as one global number."""
+    rows = make_rows(n=600)  # 10 s
+    t0_ms = rows[0]["t_us"] // 1000
+    js = []
+    for s in range(11):
+        rung = 5 if s < 5 else 3
+        js.append(jsonl_second(t0_ms + s * 1000, rung_idx=rung))
+        js[-1]["link"]["ctl"]["rung"]["mcs"] = rung
+    rep = flightjitter.analyze(rows, jsonl=js)
+    per = rep["summary"]["per_rung"]
+    assert set(per) == {5, 3}, per
+    assert per[5]["dwell_s"] > 3 and per[3]["dwell_s"] > 3
+    assert per[5]["djit_p50_ms"] < 1.0
+
+
 def test_jsonl_null_drone_tolerated():
     """Live sideport rows carry "drone": null until drone telemetry arrives
     (seen on session 0026): the walker must not crash on them."""

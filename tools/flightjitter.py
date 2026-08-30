@@ -19,10 +19,12 @@
 #   transport     none of the above (USB batching, scheduling, queueing)
 #
 # Usage: flightjitter.py au-0001.log [flight-0001.jsonl]
+import bisect
 import json
 import statistics
 import sys
 
+FLAG_IDR, FLAG_DISCONT, FLAG_COMPLETE = 0x01, 0x02, 0x80
 FRAME_US_DEFAULT = 1_000_000.0 / 60.0
 EMA_SHIFT = 16          # player's jitter EMA constant
 WARMUP = 64             # EMA samples ignored before summarizing
@@ -65,10 +67,12 @@ def _jsonl_walk(jsonl):
             # "drone" (and its members) serialize as null until drone
             # telemetry arrives — `or {}` covers key-present-but-null.
             enc = (o.get("drone") or {}).get("enc") or {}
+            rung = o["link"]["ctl"]["rung"]
             out.append((o["t_ms"],
-                        o["link"]["ctl"]["rung"]["idx"],
+                        rung["idx"],
                         enc.get("cmd_kbps"),
-                        o["link"]["ctl"].get("pre_fec_loss") or 0.0))
+                        o["link"]["ctl"].get("pre_fec_loss") or 0.0,
+                        rung.get("mcs")))
         except (KeyError, TypeError):
             continue
     out.sort()
@@ -89,17 +93,41 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
 
     def lossy_second(ev_ms):
         return any(abs(ev_ms - t) <= LOSS_WINDOW_MS and pre > LOSS_MIN
-                   for t, _, _, pre in js)
+                   for t, _, _, pre, _ in js)
+
+    js_times = [e[0] for e in js]
+
+    def rung_mcs_at(ev_ms):
+        i = bisect.bisect_right(js_times, ev_ms) - 1
+        if 0 <= i < len(js) and ev_ms - js_times[i] <= 2500:
+            return js[i][4]
+        return None
 
     events = []
-    ivs, dlens = [], []
+    ivs, dlens, iv_rungs = [], [], []
+    disconts = damaged = 0
+    if rows and not rows[0]["flags"] & FLAG_COMPLETE:
+        damaged += 1
+        events.append({"t_us": rows[0]["t_us"], "fid": rows[0]["fid"],
+                       "kind": "damaged", "excess_ms": 0.0, "dlen": 0})
     for i in range(1, len(rows)):
         a, b = rows[i - 1], rows[i]
+        ev_ms = (b["t_us"] - offset_us) // 1000
+        if not b["flags"] & FLAG_COMPLETE:
+            damaged += 1
+            events.append({"t_us": b["t_us"], "fid": b["fid"],
+                           "kind": "damaged", "excess_ms": 0.0,
+                           "dlen": b["len"] - a["len"]})
+        if b["flags"] & FLAG_DISCONT:
+            # maburgs-marked seam (drone restart, fid namespace jump):
+            # neither an interval nor a gap — break the chain here.
+            disconts += 1
+            continue
         iv = b["t_us"] - a["t_us"]
         dlen = b["len"] - a["len"]
         ivs.append(iv)
         dlens.append(dlen)
-        ev_ms = (b["t_us"] - offset_us) // 1000
+        iv_rungs.append(rung_mcs_at(ev_ms))
         fid_jump = b["fid"] - a["fid"] - 1
         if fid_jump > 0:
             events.append({"t_us": b["t_us"], "fid": a["fid"] + 1,
@@ -140,8 +168,35 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
         "size_explained_frac": round(frac, 3),
         "slope_us_per_byte": round(slope, 3),
         "gaps": sum(e.get("missing", 0) for e in events if e["kind"] == "gap"),
-        "stutters": sum(1 for e in events if e["kind"] != "gap"),
+        "stutters": sum(1 for e in events
+                        if e["kind"] not in ("gap", "damaged")),
+        "disconts": disconts,
+        "damaged": damaged,
     }
+    # Per-rung breakdown ("where does the jitter live"): |Δinterval| samples
+    # bucketed by the rung mcs active that second. A plain percentile, not
+    # the player EMA — segments interleave, an EMA would smear across rungs.
+    per_rung = {}
+    for i in range(1, len(ivs)):
+        r = iv_rungs[i]
+        if r is None:
+            continue
+        per_rung.setdefault(r, {"djit": [], "dwell_us": 0})
+        per_rung[r]["djit"].append(abs(ivs[i] - ivs[i - 1]) / 1000.0)
+        per_rung[r]["dwell_us"] += ivs[i]
+    ev_rungs = {}
+    for e in events:
+        r = rung_mcs_at((e["t_us"] - offset_us) // 1000)
+        if r is not None and e["kind"] not in ("gap", "damaged"):
+            ev_rungs.setdefault(r, 0)
+            ev_rungs[r] += 1
+    summary["per_rung"] = {
+        r: {"dwell_s": round(d["dwell_us"] / 1e6, 1),
+            "n": len(d["djit"]),
+            "djit_p50_ms": round(statistics.median(d["djit"]), 2),
+            "djit_p90_ms": round(sorted(d["djit"])[int(0.9 * (len(d["djit"]) - 1))], 2),
+            "stutters": ev_rungs.get(r, 0)}
+        for r, d in sorted(per_rung.items()) if d["djit"]}
     return {"summary": summary, "events": events}
 
 
