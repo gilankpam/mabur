@@ -22,24 +22,42 @@ formula above became per-stream and measurement-anchored rather than
 nominal, because the naive `len·(1+ov)` model measured a reproducible
 ~2× gain error at large frames (SBI/frag framing + repair quantization
 it doesn't account for — spike 2,
-`docs/airtime-balance-spike-findings-2026-08-29.md`). Note the split's
-own limit: at 2:1 rate ratios (the mcs1 rung) the balancer's rails
-can't reach air balance — 3.3 ms/pair structural residual; a same-rate
-counter-study swept flat vs asymmetric overhead per rung, static and
-under motion (`docs/same-rate-uep-findings-2026-08-30.md`). The drone's
-`AirBalancer` tracks the true per-stream multiplier from what actually
-got serialized, `m_s = emit_s / len_s` (`emit_s`/`len_s` are α=1/16
-EWMAs of emitted body bytes and frame-unit bytes, IDR frames excluded as
-2–10× outliers), and solves the per-stream air split around that
-measured anchor:
+`docs/airtime-balance-spike-findings-2026-08-29.md`). The split had a
+structural limit: at 2:1 rate ratios (the mcs1 rung) the balancer's
+rails could not reach air balance — 3.3 ms/pair structural residual —
+which motivated a same-rate counter-study (flat vs asymmetric overhead
+per rung, static and under motion,
+`docs/same-rate-uep-findings-2026-08-30.md`). The drone's `AirBalancer`
+tracked the true per-stream multiplier from what actually got
+serialized, `m_s = emit_s / len_s` (`emit_s`/`len_s` are α=1/16 EWMAs of
+emitted body bytes and frame-unit bytes, IDR frames excluded as 2–10×
+outliers), and solved the per-stream air split around that measured
+anchor:
 
     air_s(ov) = len_s · (m_s + (ov − ov_s_applied)) / rate_s
 
 subject to `air_b = air_e` (balanced) and the budget invariant
 `len_b·ov_b + len_e·ov_e = (len_b + len_e)·ov_cmd` (repair-byte-neutral:
-the split redistributes, it does not add or remove overall FEC bytes).
-`rate_b`/`rate_e` are `phy_rate(base_mcs)`/`phy_rate(profile_mcs)` from
-the applied ladder, so an active ENH probe's rate flows in automatically.
+the split redistributed, it did not add or remove overall FEC bytes).
+`rate_b`/`rate_e` were `phy_rate(base_mcs)`/`phy_rate(profile_mcs)` from
+the applied ladder, so an active ENH probe's rate flowed in
+automatically.
+
+⚠ **Superseded the next day (2026-08-30, same-rate-fixed-pairs).** Both
+streams now ride the SAME scored mcs — the `mcs−1` base rate and the
+`AirBalancer` solver described just above are both gone. UEP is
+expressed only through FEC overhead, and that overhead is a fixed
+**per-rung config pair** (`overhead_base`/`overhead_enh`, carried in the
+v5 RCF, RC_VERSION 5) applied directly to UEP with no per-frame
+redistribution. `AirFeed` (`drone/src/air_feed.{h,cpp}`) is the
+deleted solver's measurement-only successor: it keeps the same
+per-stream EWMAs but only to publish `share_base`/`excess_base`/
+`excess_enh` (consumed by the bitrate blend below) and `ov_base`/
+`ov_enh` (observability only) — none of it feeds back into what
+overhead is actually applied. GS-side, a single `budget()`/
+`budget_for(rung)` no longer exists: `budget_base()`/
+`budget_base_for(rung)` score sid 0 and `budget_enh_for(rung)` scores
+sid 1 — see `docs/link-adaptation.md`.
 
 The encoder's commanded bitrate is blended the same way — a single-rate
 `kbps = rate(ladder[1]) · budget / (1 + ov)` is wrong in both directions
@@ -49,15 +67,20 @@ wastes ENH headroom):
 
     kbps = airtime_budget / [ f_b·mult_b/rate_b + f_e·mult_e/rate_e ]
 
-with byte shares `f_s = len_s/(len_b+len_e)` (50/50 until the balancer's
-EWMAs seed) and `mult_s = (1 + ov_cmd) + excess_s`, where
-`excess_s = m_s − (1 + ov_s_applied)` is the same measured framing excess
-the balancer anchors on — deliberately the *commanded* redundancy plus
-measured excess, not the balancer's live `ov_s`, so the bitrate policy
-stays decoupled from the balancer's redistribution and the two loops
-cannot feed back into each other. Full derivation:
+with byte shares `f_s = len_s/(len_b+len_e)` (50/50 until AirFeed's
+EWMAs seed) and `mult_s = (1 + ov_s_cmd) + excess_s`, where `ov_s_cmd`
+is sid s's own commanded pair member (`overhead_base`/`overhead_enh`
+off the v5 RCF — a per-sid pair since 2026-08-30, not a shared scalar)
+and `excess_s = m_s − (1 + ov_s_applied)` is the same measured framing
+excess the deleted balancer used to anchor on — deliberately the
+*commanded* redundancy plus measured excess, not AirFeed's live `ov_s`,
+so the bitrate policy stays decoupled from whatever overhead is
+actually flying and the two cannot feed back into each other. Full
+derivation of the deleted solver:
 `docs/superpowers/specs/2026-08-29-airtime-balance-uep-design.md` §2;
-GS-side ladder/attribution consequences: `docs/link-adaptation.md`.
+current architecture and GS-side ladder/attribution consequences:
+`docs/link-adaptation.md`; same-rate measurement basis:
+`docs/same-rate-uep-findings-2026-08-30.md`.
 
 Measured calibration: completion delay ≈ **4.2 ms + 0.85 µs per payload
 byte** (≈ 9.4 Mbit/s effective payload drain at this op point). The
