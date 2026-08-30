@@ -132,6 +132,41 @@ floor, and at a pinned bottom rung there is no demote below. The bench
 sits at 33 dB SNR and cannot test this. That trade, not jitter, is the
 open question before same-rate goes near a range flight.
 
+## Loss-jitter sweep (same day, pinned mcs2, MABUR_LOSS_SIM)
+
+GS restarted under `S96maburgs.losssim` (control udp :8390, `sN eff=<pct>
+burst=<n>`), loss injected on BOTH streams, 30 s/point, static scene.
+`eff` is the union dial; decoder-visible loss confirmed ≈ dialed via the
+per-card sideport counters (per-card ≈ √eff at 2 cards). Same forced
+flat/asym configs as above. Jitter EMA (Δ vs own clean baseline):
+
+| eff loss | flat jit (Δ) | asym jit (Δ) | flat p99 ia | asym p99 ia |
+|---|---|---|---|---|
+| 0% | 7.8 (—) | 8.7 (—) | 34 ms | 39 ms |
+| 2% | 9.3 (+1.5) | 9.0 (+0.3) | 39 | 41 |
+| 5% | 12.0 (+4.2) | 10.9 (+2.2) | 45 | 50 |
+| 10% | 15.8 (+8.0) | 14.3 (+5.6) | 50 | 54 |
+| 5% burst4 | 13.9 (+6.1), pk 26 | 12.3 (+3.6), pk 22 | 58 | 57 |
+
+- **Loss-jitter is recovery-wait**, and it dwarfs the clean-channel
+  alternation question: +4 ms at 5%, +6–8 ms at 10%/bursty, vs the
+  ~1–3 ms flat-vs-asym gap when clean.
+- **The flat-vs-asym verdict flips under loss**: asym's extra base
+  repair density roughly HALVES the jitter growth at every loss point
+  (crossover ~3–4%). UEP protects cadence, not just delivery.
+- Bursty 5% (B=4) ≈ Bernoulli 10% in severity; p99 inter-arrival
+  reached 58 ms against the 75 ms decode deadline — margin thins fast.
+- Caveats: 30 s single-shot points (drop/abandon counter cells are
+  noisy); baselines here (7.8/8.7) sit above the morning static sweep's
+  (4.4/6.9) — scene drifted between sessions; judge Δ columns, not
+  absolute rows. Per findings-rig rule, loss quoted from sideport
+  counters, not the dial.
+- **Implication for deferred-repair scheduling**: deferral moves repair
+  later, i.e. spends exactly the currency (recovery wait) this table
+  shows is already the dominant jitter term at ≥5% loss. Its clean-air
+  win (~2–3 ms) must be weighed against worsening the +4–8 ms column —
+  measure deferral under THIS rig before believing in it.
+
 ## State / rollback
 
 Bench runs the `uep-same-rate-sweep` binaries on BOTH ends (same-rate
