@@ -45,13 +45,14 @@ import rc_proto
 # mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
 # rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
 # byte plus the deleted ack_seq/score/layer_delivery fields, so its
-# pack_rcf() output is rejected outright by maburd. Pack the 13-byte v4 head
+# pack_rcf() output is rejected outright by maburd. Pack the 14-byte v5 head
 # here instead (magic, ver, type, flags, vtx_id, seq, profile,
-# fec_overhead_x100 -- RC_VERSION 4, 2026-08-30, made this byte a literal
-# overhead*100 rather than a sixteenths encoding); encode_profile and the
-# CRC are unversioned.
-body = struct.pack("<HBBBIHBB", rc_proto.RC_MAGIC, 4, rc_proto.T_RCF, 0,
-                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25)
+# fec_overhead_base_x100, fec_overhead_enh_x100 -- RC_VERSION 5, 2026-08-30,
+# split the single literal-overhead byte into a per-stream pair, spec
+# 2026-08-30-same-rate-fixed-pairs); encode_profile and the CRC are
+# unversioned.
+body = struct.pack("<HBBBIHBBB", rc_proto.RC_MAGIC, 5, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)
@@ -63,9 +64,10 @@ EOF
 # (see the classify_frame comment above). The IDR's own bodies are sent
 # before the RCF lands (delivered once 1 frame has been consumed) and still
 # ride the boot MAX_RANGE mcs (0); only the bodies for frames 1-12 postdate
-# the RCF -- their sid-0 (base) share rides the new BASE mcs (scored mcs 4 -
-# 1 = 3, the mcs-1 rule), while the sid-1 (enh) share, now unshed once the
-# RCF lands, rides alongside on its own stream. --after 8 skips exactly the
+# the RCF -- their sid-0 (base) share rides the new BASE mcs (scored mcs 4,
+# same-rate ruling 2026-08-30 -- both slots ride the scored mcs, no rate
+# split), while the sid-1 (enh) share, now unshed once the RCF lands, rides
+# alongside on its own stream at the same mcs. --after 8 skips exactly the
 # IDR's bodies: this fixture's ~3 kB IDR access unit packs into 8 bodies
 # under the bundle's scalar-332/window-32/bpb-4/overhead-0.5 geometry in
 # force before the RCF lands (verified empirically against this exact
@@ -73,7 +75,7 @@ EOF
 # count). --stream 0 keeps the mcs check scoped to BASE, since ENH rides a
 # different mcs derivation entirely.
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
-  --symbol-size 332,332 --expect-mcs 3 --stream 0 --after 8
+  --symbol-size 332,332 --expect-mcs 4 --stream 0 --after 8
 
 echo "== full 2-stream recovery: all 13 frames byte-exact post-RCF =="
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \

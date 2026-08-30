@@ -51,13 +51,14 @@ import rc_proto
 # mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
 # rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
 # byte plus the deleted ack_seq/score/layer_delivery fields, so its
-# pack_rcf() output is rejected outright by maburd. Pack the 13-byte v4 head
+# pack_rcf() output is rejected outright by maburd. Pack the 14-byte v5 head
 # here instead (magic, ver, type, flags, vtx_id, seq, profile,
-# fec_overhead_x100 -- RC_VERSION 4, 2026-08-30, made this byte a literal
-# overhead*100 rather than a sixteenths encoding); encode_profile and the
-# CRC are unversioned.
-body = struct.pack("<HBBBIHBB", rc_proto.RC_MAGIC, 4, rc_proto.T_RCF, 0,
-                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25)
+# fec_overhead_base_x100, fec_overhead_enh_x100 -- RC_VERSION 5, 2026-08-30,
+# split the single literal-overhead byte into a per-stream pair, spec
+# 2026-08-30-same-rate-fixed-pairs); encode_profile and the CRC are
+# unversioned.
+body = struct.pack("<HBBBIHBBB", rc_proto.RC_MAGIC, 5, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)

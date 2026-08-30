@@ -20,7 +20,7 @@ static const char* kLive = R"({
   "link": {
     "air_pct": 61.5,
     "residual_loss": 0.0,
-    "ctl": {"rung": {"idx": 3, "mcs": 5, "ov": 0.25}, "pre_fec_loss": 0.021},
+    "ctl": {"rung": {"idx": 3, "mcs": 5, "ov_base": 0.25}, "pre_fec_loss": 0.021},
     "video": {"fps": 60.0, "jitter_ms": 3.1, "mbps": 24.6}
   },
   "drone": null
@@ -52,7 +52,7 @@ TEST(parses_a_live_datagram) {
 TEST(nulls_stay_empty_and_never_become_zero) {
   const char* j = R"({"v":1,"cards":[],
     "link":{"air_pct":null,"residual_loss":null,
-            "ctl":{"rung":{"mcs":0,"ov":1.0},"pre_fec_loss":0.0}}})";
+            "ctl":{"rung":{"mcs":0,"ov_base":1.0},"pre_fec_loss":0.0}}})";
   GsSnapshot s;
   REQUIRE(parse(j, &s));
   CHECK(!s.air_pct.has_value());
@@ -65,7 +65,7 @@ TEST(nulls_stay_empty_and_never_become_zero) {
 // A card with no s0 class is present but unheard: the row still renders.
 TEST(card_without_s0_is_present_but_unheard) {
   const char* j = R"({"v":1,"cards":[{"id":0,"up":true,"classes":{}}],
-    "link":{"ctl":{"rung":{"mcs":1,"ov":0.5}}}})";
+    "link":{"ctl":{"rung":{"mcs":1,"ov_base":0.5}}}})";
   GsSnapshot s;
   REQUIRE(parse(j, &s));
   REQUIRE(s.cards.size() == 1);
@@ -92,7 +92,7 @@ TEST(unknown_keys_are_ignored) {
       {"id":0,"up":true,"brand_new":7,
        "classes":{"s0":{"rssi":-40.0,"snr":20.0,"tomorrow":1}}}],
     "link":{"air_pct":10.0,"new_thing":[1,2,3],
-            "ctl":{"rung":{"mcs":7,"ov":0.1},"pre_fec_loss":0.0}}})";
+            "ctl":{"rung":{"mcs":7,"ov_base":0.1},"pre_fec_loss":0.0}}})";
   GsSnapshot s;
   REQUIRE(parse(j, &s));
   CHECK(*s.mcs == 7);
@@ -137,7 +137,7 @@ TEST(malformed_input_returns_false_without_throwing) {
 TEST(wrong_types_drop_only_their_own_field) {
   const char* j = R"({"v":1,"cards":[
       {"id":0,"up":true,"classes":{"s0":{"rssi":"loud","snr":18.0}}}],
-    "link":{"air_pct":"lots","ctl":{"rung":{"mcs":5,"ov":0.25}}}})";
+    "link":{"air_pct":"lots","ctl":{"rung":{"mcs":5,"ov_base":0.25}}}})";
   GsSnapshot s;
   REQUIRE(parse(j, &s));
   CHECK(*s.mcs == 5);
@@ -183,7 +183,7 @@ TEST(card_id_zero_is_a_real_id_not_a_missing_one) {
 TEST(out_of_range_numbers_drop_the_field_not_saturate) {
   const char* j = R"({"v":1,"cards":[
       {"id":1e20,"up":true,"classes":{}}],
-    "link":{"ctl":{"rung":{"mcs":1e20,"ov":0.1}}}})";
+    "link":{"ctl":{"rung":{"mcs":1e20,"ov_base":0.1}}}})";
   GsSnapshot s;
   REQUIRE(parse(j, &s));
   CHECK(!s.mcs.has_value());
@@ -191,14 +191,14 @@ TEST(out_of_range_numbers_drop_the_field_not_saturate) {
   CHECK(s.cards[0].id == 0);  // default-constructed: the id field dropped
 
   const char* jneg = R"({"v":1,"cards":[],
-    "link":{"ctl":{"rung":{"mcs":-1e20,"ov":0.1}}}})";
+    "link":{"ctl":{"rung":{"mcs":-1e20,"ov_base":0.1}}}})";
   GsSnapshot sneg;
   REQUIRE(parse(jneg, &sneg));
   CHECK(!sneg.mcs.has_value());
 
   // A legitimate, large-but-in-range value must still come through.
   const char* jbig = R"({"v":1,"cards":[{"id":2000000000,"up":true}],
-    "link":{"ctl":{"rung":{"mcs":2000000000,"ov":0.1}}}})";
+    "link":{"ctl":{"rung":{"mcs":2000000000,"ov_base":0.1}}}})";
   GsSnapshot sbig;
   REQUIRE(parse(jbig, &sbig));
   REQUIRE(sbig.mcs.has_value());
@@ -229,8 +229,11 @@ TEST(parses_a_real_recorded_datagram) {
 
   REQUIRE(s.mcs.has_value());
   CHECK(*s.mcs == 0);                                  // link.ctl.rung.mcs
-  REQUIRE(s.fec_pct.has_value());
-  CHECK(*s.fec_pct > 99.9 && *s.fec_pct < 100.1);       // rung.ov 1.0 -> 100%
+  // This real capture predates the Task 5 (same-rate-fixed-pairs) ov ->
+  // ov_base rename: it wrote rung.ov, not rung.ov_base, so fec_pct is
+  // absent -- the honest "never received" rendering, not a crash or a
+  // stale/wrong number.
+  CHECK(!s.fec_pct.has_value());
   REQUIRE(s.air_pct.has_value());
   CHECK(*s.air_pct > 78.50 && *s.air_pct < 78.51);      // link.air_pct passthrough
   REQUIRE(s.pre_loss_pct.has_value());

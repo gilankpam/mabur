@@ -173,11 +173,19 @@ dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
 # --- rc ----------------------------------------------------------------
 # Plain dicts, not rc_proto.Rcf: the frozen Python dataclass still carries the
 # ack_seq/score/layer_delivery/flags fields mabur deleted from the wire in
-# RC_VERSION 3, and constructing it here would only invite them back.
+# RC_VERSION 3, and constructing it here would only invite them back. RCF
+# v5 (2026-08-30, same-rate-fixed-pairs) split the single literal-overhead
+# byte into a per-stream pair (fec_overhead_base/fec_overhead_enh); the
+# first two cases are equal pairs (prod's default shape, one value
+# duplicated into both fields) and the third is a genuine asym pair
+# (base 1.0 / enh 0.5) so classify/pack/parse actually exercise ENH riding
+# a different overhead than BASE, not just a duplicated scalar.
 rcfs = [{"vtx_id": 0xDEADBEEF, "seq": 7, "profile": 0x24,
-         "fec_overhead": 0.5},
+         "fec_overhead_base": 0.5, "fec_overhead_enh": 0.5},
         {"vtx_id": 1, "seq": 65535, "profile": 0x00,
-         "fec_overhead": 1.0}]
+         "fec_overhead_base": 1.0, "fec_overhead_enh": 1.0},
+        {"vtx_id": 0x11223344, "seq": 42, "profile": 0x08,
+         "fec_overhead_base": 1.0, "fec_overhead_enh": 0.5}]
 discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,

@@ -42,13 +42,18 @@ LadderController::LadderController(LadderCfg cfg)
   penalty_until_.assign(cfg_.ladder.size(), -1e18);
 }
 
-double LadderController::budget() const {
-  const double ov = op().overhead;
+double LadderController::budget_base() const {
+  const double ov = op().overhead_base;
   return ov / (1.0 + ov);
 }
 
-double LadderController::budget_for(int rung) const {
-  const double ov = cfg_.ladder[static_cast<std::size_t>(rung)].overhead;
+double LadderController::budget_base_for(int rung) const {
+  const double ov = cfg_.ladder[static_cast<std::size_t>(rung)].overhead_base;
+  return ov / (1.0 + ov);
+}
+
+double LadderController::budget_enh_for(int rung) const {
+  const double ov = cfg_.ladder[static_cast<std::size_t>(rung)].overhead_enh;
   return ov / (1.0 + ov);
 }
 
@@ -256,7 +261,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   if (!std::isnan(h.rf_snr_db)) fade_snr_.feed(h.rf_snr_db, now_ms);
 
   pre_fec_loss_ = h.pre_fec_loss;
-  u_ = h.pre_fec_loss / budget();
+  u_ = h.pre_fec_loss / budget_base();
 
   // Observe-only rung statistics (spec 2026-08-13): gated on the same
   // post-transition blank as s3 decisions — FEC re-key artifacts must not
@@ -391,11 +396,12 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     s3_util_start_ms_ = -1.0;
   } else {
     s3_last_live_ms_ = now_ms;
-    // A ladder entry whose overhead is zero has no s3 budget at all; any loss
-    // there is infinite utilization rather than a division by zero. Since the
-    // flatten, s3's budget is the same literal-overhead fraction as s1's —
-    // budget3_for() is gone, this is budget_for() directly.
-    const double b3 = budget_for(idx_);
+    // A ladder entry whose enh overhead is zero has no s3 budget at all; any
+    // loss there is infinite utilization rather than a division by zero.
+    // Since same-rate-fixed-pairs (Task 4), s3 rides sid 1's own literal
+    // overhead_enh, not sid 0's — budget3_for() is gone, this is
+    // budget_enh_for() directly.
+    const double b3 = budget_enh_for(idx_);
     u3_ = b3 > 0.0 ? h.s3_pre_fec_loss / b3
                    : (h.s3_pre_fec_loss > 0.0 ? 1e9 : 0.0);
     store_.observe_s3(idx_, u3_, h.s3_residual_loss > 0.0, now_ms);
@@ -518,7 +524,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       // s3 onto the candidate MCS, and the transition's own re-key glitch
       // must not be scored against the candidate.
       if (now_ms - probe_start_ms_ > cfg_.probe_settle_ms) {
-        const double u_pred = h.s3_pre_fec_loss / budget_for(probe_rung_);
+        const double u_pred = h.s3_pre_fec_loss / budget_enh_for(probe_rung_);
         // Stash every scored sample, pass or fail: a Pass that squeaked in at
         // u_pred 0.42 must not be logged as a flawless 0.0, or the labeled
         // dataset (sideport last_probe, ctl-log P lines) cannot tell a

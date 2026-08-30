@@ -32,11 +32,11 @@ uint8_t encode_profile(PhyMode mode, uint8_t mcs, uint8_t bw);
 void decode_profile(uint8_t p, PhyMode& mode, uint8_t& mcs, uint8_t& bw);
 
 // Builds the 2-slot ladder (BASE, ENH) for a (mode, scored mcs, bw)
-// operating point. BASE rides max(mcs-1, 0), ENH rides mcs — UEP via rate,
-// always on (RC_VERSION 4, mirrored by the GS). Both slots carry LDPC+STBC
-// unconditionally on (the config policy was removed 2026-07-26 — all-true
-// was the only shape ever flown, and flags-off measured 2-3 dB weaker at
-// the same MCS).
+// operating point. Both slots ride the scored mcs — same-rate, UEP is
+// per-layer FEC overhead only (2026-08-30 ruling, see the comment on the
+// definition). Both slots carry LDPC+STBC unconditionally on (the config
+// policy was removed 2026-07-26 — all-true was the only shape ever flown,
+// and flags-off measured 2-3 dB weaker at the same MCS).
 std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw);
 
 // DEVOURER_SVC_LADDER-style spec string, 2-slot since the 2026-08-29
@@ -46,7 +46,8 @@ std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw);
 
 struct ProfileRow {
   uint8_t mcs;
-  double fec_overhead;
+  double ov_base;
+  double ov_enh;
   uint8_t bw;
 };
 

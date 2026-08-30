@@ -8,7 +8,11 @@ using namespace maburgs;
 
 static LadderCfg default_ladder() {
   LadderCfg lcfg;
-  lcfg.ladder = {{0, 1.0}, {2, 0.5}, {4, 0.25}, {5, 0.25}, {6, 0.15}, {7, 0.1}};
+  // Same-rate-fixed-pairs (Task 4): overhead_enh set explicitly (equal to
+  // overhead_base) rather than left at the struct default, since
+  // op_from_rung() now feeds it straight into the RCF's enh field.
+  lcfg.ladder = {{0, 1.0, 1.0}, {2, 0.5, 0.5},  {4, 0.25, 0.25},
+                {5, 0.25, 0.25}, {6, 0.15, 0.15}, {7, 0.1, 0.1}};
   return lcfg;
 }
 
@@ -72,7 +76,7 @@ TEST(rcf_fields_are_correct) {
                           mabur::rc::PhyMode::HT,
                           static_cast<uint8_t>(vrx.cur_op().mcs),
                           static_cast<uint8_t>(vrx.cur_op().bw)));
-  CHECK(std::abs(r->fec_overhead - vrx.cur_op().overhead) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - vrx.cur_op().overhead_base) < 1e-9);
 }
 
 // (b) Profile/overhead in the RCF track ctl().op() after a forced demote:
@@ -80,7 +84,7 @@ TEST(rcf_fields_are_correct) {
 // the very next RCF already reflects the demoted rung, not the stale one.
 TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   LadderCfg lcfg = default_ladder();
-  lcfg.ladder = {{0, 1.0}, {4, 0.25}};
+  lcfg.ladder = {{0, 1.0, 1.0}, {4, 0.25, 0.25}};
   lcfg.up_util = 0.1;
   lcfg.confirm_ms = 10;
   lcfg.clean_ms = 10;
@@ -112,9 +116,9 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
   CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
-  CHECK(std::abs(r->fec_overhead - 1.0) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
   CHECK(vrx.cur_op().mcs == vrx.ctl().op().mcs);
-  CHECK(vrx.cur_op().overhead == vrx.ctl().op().overhead);
+  CHECK(vrx.cur_op().overhead_base == vrx.ctl().op().overhead_base);
 }
 
 TEST(silence_beacons_fast_and_recovers) {
@@ -320,7 +324,7 @@ TEST(on_rc_frame_tolerates_unknown_type_telem) {
 // aggressive op on stale wire content through and after the blind period.
 TEST(blind_side_timeout_demotes_rcf_profile) {
   LadderCfg lcfg = default_ladder();
-  lcfg.ladder = {{0, 1.0}, {4, 0.25}};
+  lcfg.ladder = {{0, 1.0, 1.0}, {4, 0.25, 0.25}};
   lcfg.up_util = 0.1;
   lcfg.confirm_ms = 10;
   lcfg.clean_ms = 10;
@@ -355,7 +359,7 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
   CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
-  CHECK(std::abs(r->fec_overhead - 1.0) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
 }
 
 MTEST_MAIN
@@ -370,7 +374,7 @@ MTEST_MAIN
 // health afterward lets it walk back up.
 TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   LadderCfg lcfg = default_ladder();
-  lcfg.ladder = {{0, 1.0}, {2, 0.5}, {4, 0.25}};
+  lcfg.ladder = {{0, 1.0, 1.0}, {2, 0.5, 0.5}, {4, 0.25, 0.25}};
   lcfg.up_util = 0.1;
   lcfg.confirm_ms = 10;
   lcfg.clean_ms = 10;
@@ -405,7 +409,7 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
   CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
-  CHECK(std::abs(r->fec_overhead - 1.0) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
 
   // Traffic returns -> clean health lets it walk back up.
   const double until = now + 1000;
@@ -424,7 +428,8 @@ TEST(static_pin_overrides_controller) {
   VrxCfg cfg;
   cfg.vtx_id = 1;
   cfg.pin_mcs = 5;
-  cfg.pin_overhead = 0.25;
+  cfg.pin_overhead_base = 0.25;
+  cfg.pin_overhead_enh = 0.4;  // distinct from base: proves the pin is a real pair
   cfg.ladder.ladder = {{0, 1.0}};  // must never be consulted while pinned
   VrxController vrx(cfg);
   std::optional<VrxController::Out> out;
@@ -441,7 +446,8 @@ TEST(static_pin_overrides_controller) {
   REQUIRE(out.has_value());
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
-  CHECK(std::abs(r->fec_overhead - 0.25) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_base - 0.25) < 1e-9);
+  CHECK(std::abs(r->fec_overhead_enh - 0.4) < 1e-9);
 }
 
 // --- RCF repeat burst (rcf-uplink-loss findings 2026-08-14 §4 item 3) -------
@@ -466,7 +472,7 @@ static std::optional<mabur::rc::Rcf> drive_to_promote(VrxController& vrx,
 
 static LadderCfg fast_promote_ladder() {
   LadderCfg lcfg = default_ladder();
-  lcfg.ladder = {{0, 1.0}, {4, 0.25}};
+  lcfg.ladder = {{0, 1.0, 1.0}, {4, 0.25, 0.25}};
   lcfg.up_util = 0.1;
   lcfg.confirm_ms = 10;
   lcfg.clean_ms = 10;
@@ -493,7 +499,7 @@ TEST(rcf_repeat_burst_after_op_change) {
     auto r = mabur::rc::parse_rcf(f->data(), f->size());
     REQUIRE(r.has_value());
     CHECK(r->profile == commit->profile);
-    CHECK(std::abs(r->fec_overhead - commit->fec_overhead) < 1e-9);
+    CHECK(std::abs(r->fec_overhead_base - commit->fec_overhead_base) < 1e-9);
     CHECK(r->seq == static_cast<uint16_t>(prev_seq + 1));
     prev_seq = r->seq;
   }

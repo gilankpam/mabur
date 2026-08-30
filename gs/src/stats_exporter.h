@@ -6,6 +6,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "mabur/rc_proto.h"
@@ -50,7 +51,7 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
 // StatsCtlIn. evm/evm_sd NaN -> JSON null; ages -1 = never sampled.
 struct StatsRungIn {
   int mcs = 0;
-  double ov = 0.0;
+  double ov_base = 0.0, ov_enh = 0.0;
   double u = 0.0, resid = 0.0, u3 = 0.0, resid3 = 0.0;
   double evm_db = 0.0, evm_sd_db = 0.0;
   uint64_t n = 0, probe_n = 0;
@@ -66,7 +67,8 @@ struct StatsRungIn {
 struct StatsCtlIn {
   int rung_idx = 0;
   int rung_mcs = 0;
-  double rung_ov = 0.0;
+  double rung_ov_base = 0.0;
+  double rung_ov_enh = 0.0;
   double util = 0.0;
   double pre_fec_loss = 0.0;
   double budget = 0.0;
@@ -78,10 +80,10 @@ struct StatsCtlIn {
   int last_event_from = 0, last_event_to = 0;
   std::string last_event_reason = "none";  // to_string(CtlReason), lowercase
   double last_event_u = 0.0;
-  // Effective ladder ({mcs, overhead} per rung, index = rung index) and the
-  // util thresholds, copied from LadderCfg — static per-run but re-sent every
-  // datagram so consumers stay stateless.
-  std::vector<std::pair<int, double>> ladder;  // {mcs, ov}
+  // Effective ladder ({mcs, overhead_base, overhead_enh} per rung, index =
+  // rung index) and the util thresholds, copied from LadderCfg — static
+  // per-run but re-sent every datagram so consumers stay stateless.
+  std::vector<std::tuple<int, double, double>> ladder;  // {mcs, ov_base, ov_enh}
   double down_util = 0.0, up_util = 0.0;
 
   // --- s3 probe-before-promote / s3 steady-state (Tasks 4/5) ---

@@ -28,7 +28,8 @@
  "rcf": [
   {
    "fields": {
-    "fec_overhead": 0.5,
+    "fec_overhead_base": 0.5,
+    "fec_overhead_enh": 0.5,
     "profile": 36,
     "seq": 7,
     "vtx_id": 3735928559
@@ -36,10 +37,20 @@
   },
   {
    "fields": {
-    "fec_overhead": 1.0,
+    "fec_overhead_base": 1.0,
+    "fec_overhead_enh": 1.0,
     "profile": 0,
     "seq": 65535,
     "vtx_id": 1
+   }
+  },
+  {
+   "fields": {
+    "fec_overhead_base": 1.0,
+    "fec_overhead_enh": 0.5,
+    "profile": 8,
+    "seq": 42,
+    "vtx_id": 287454020
    }
   }
  ]

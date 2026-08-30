@@ -4,3 +4,6 @@ toolchain/
 __pycache__/
 docs/superpowers/
 tests/fixtures/*-fixture.jsonl
+
+# bench artifacts, never repo material
+logs/

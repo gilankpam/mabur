@@ -58,9 +58,9 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
                                   (in.probing ? 0x04 : 0));
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
-  // Per-stream applied overhead, fed by the hot-thread AirBalancer via
-  // BalancerFeed (main.cpp's telemetry collector), with a fallback to the
-  // commanded fec_overhead pre-first-solve — see TelemInputs.applied_ov_*.
+  // Per-stream applied overhead: the commanded op pair (Task 6, RC_VERSION
+  // 5), or the debug-HTTP per-layer override when armed — see main.cpp's
+  // telemetry collector and TelemInputs.applied_ov_*.
   t.applied_ov_base = in.applied_ov_base;
   t.applied_ov_enh = in.applied_ov_enh;
   t.rcf_age_ms = saturate<uint16_t>(in.rcf_age_ms);

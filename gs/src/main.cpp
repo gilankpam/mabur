@@ -137,14 +137,18 @@ static int run_radio(const maburgs::Config& cfg) {
     const maburgs::Rung& rung = cfg.link.ladder_cfg.ladder[i];
     const auto spec = mabur::rc::ladder_from(mabur::rc::PhyMode::HT,
                                               static_cast<uint8_t>(rung.mcs), 20);
-    const double ov = rung.overhead;
-    const double budget = ov / (1 + ov);
-    const double denom = 0.5 * (1 + ov) / mabur::rc::phy_rate_mbps(spec[0]) +
-                         0.5 * (1 + ov) / mabur::rc::phy_rate_mbps(spec[1]);
+    // Same-rate-fixed-pairs (Task 4): both sids run the same PHY rate now,
+    // so one `rate` covers the whole rung; only the per-sid overhead
+    // (hence per-sid budget) still differs.
+    const double rate = mabur::rc::phy_rate_mbps(spec[0]);
+    const double denom = 0.5 * (1 + rung.overhead_base) / rate +
+                         0.5 * (1 + rung.overhead_enh) / rate;
     const double src_mbps = 0.65 / denom;
     std::fprintf(stderr,
-                 "ladder[%zu]: mcs%d(base %d) ov%.2f budget=%.0f%% ~%.1f Mbps src\n",
-                 i, rung.mcs, spec[0].mcs, ov, budget * 100.0, src_mbps);
+                 "ladder[%zu]: mcs%d ov %.2f/%.2f budgets=%.0f%%/%.0f%% ~%.1f Mbps src\n",
+                 i, rung.mcs, rung.overhead_base, rung.overhead_enh,
+                 100.0 * rung.overhead_base / (1 + rung.overhead_base),
+                 100.0 * rung.overhead_enh / (1 + rung.overhead_enh), src_mbps);
   }
 
   std::signal(SIGINT, on_signal);
@@ -294,7 +298,8 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
   vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
-  vcfg.pin_overhead = cfg.link.static_overhead;
+  vcfg.pin_overhead_base = cfg.link.static_overhead_base;
+  vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
   vcfg.rcf_repeat_copies = cfg.link.rcf_repeat_copies;
   vcfg.rcf_repeat_ms = cfg.link.rcf_repeat_ms;
   maburgs::VrxController vrx(vcfg);
@@ -313,7 +318,9 @@ static int run_radio(const maburgs::Config& cfg) {
       const maburgs::Rung& r = cfg.link.ladder_cfg.ladder[i];
       if (i) header += ",";
       header += std::to_string(r.mcs) + "/" +
-                std::to_string(static_cast<int>(std::lround(r.overhead * 100)));
+                std::to_string(static_cast<int>(std::lround(r.overhead_base * 100))) +
+                ":" +
+                std::to_string(static_cast<int>(std::lround(r.overhead_enh * 100)));
     }
     char tail[64];
     std::snprintf(tail, sizeof(tail), " down_util=%.2f up_util=%.2f",
@@ -560,14 +567,14 @@ static int run_radio(const maburgs::Config& cfg) {
     {
       const auto& op_now = vrx.cur_op();
       if (op_now.mcs != last_marked_op_mcs ||
-          op_now.overhead != last_marked_op_ov) {
+          op_now.overhead_base != last_marked_op_ov) {
         const auto base_spec = mabur::rc::ladder_from(
             op_now.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
             static_cast<uint8_t>(op_now.mcs), static_cast<uint8_t>(op_now.bw))[0];
         agg.decoder().mark_transition(0, static_cast<uint8_t>(base_spec.mcs),
                                       now_ms_u);
         last_marked_op_mcs = op_now.mcs;
-        last_marked_op_ov = op_now.overhead;
+        last_marked_op_ov = op_now.overhead_base;
       }
       const int enh_mcs_now =
           vrx.ctl().probing() ? vrx.ctl().probe_mcs() : op_now.mcs;
@@ -789,7 +796,7 @@ static int run_radio(const maburgs::Config& cfg) {
                    "stats: state=%d tx_card=%d op=mcs%d/%d/ov%.2f "
                    "ring=%llu ring_drop=%llu q_drop=%llu",
                    static_cast<int>(vrx.link_state()), sel.selected(), op.mcs,
-                   op.bw, op.overhead,
+                   op.bw, op.overhead_base,
                    static_cast<unsigned long long>(au_ring.published()),
                    static_cast<unsigned long long>(au_ring.dropped_oversize()),
                    static_cast<unsigned long long>(queue.dropped()));
@@ -918,14 +925,15 @@ static int run_radio(const maburgs::Config& cfg) {
         maburgs::StatsCtlIn ci;
         ci.rung_idx = c.rung();
         ci.rung_mcs = c.op().mcs;
-        ci.rung_ov = c.op().overhead;
+        ci.rung_ov_base = c.op().overhead_base;
+        ci.rung_ov_enh = c.op().overhead_enh;
         ci.util = c.util();
         ci.pre_fec_loss = c.pre_fec_loss();
-        ci.budget = c.budget();
+        ci.budget = c.budget_base();
         ci.probation_ms_left = c.probation_ms_left(now_ms);
         for (const auto& p : c.penalized(now_ms)) ci.penalized.push_back(p);
         for (const auto& r : cfg.link.ladder_cfg.ladder)
-          ci.ladder.emplace_back(r.mcs, r.overhead);
+          ci.ladder.emplace_back(r.mcs, r.overhead_base, r.overhead_enh);
         ci.down_util = cfg.link.ladder_cfg.down_util;
         ci.up_util = cfg.link.ladder_cfg.up_util;
         const auto& cnt = c.counters();
@@ -967,7 +975,8 @@ static int run_radio(const maburgs::Config& cfg) {
           const maburgs::RungStat& rs = rstore.stat(static_cast<int>(ri));
           maburgs::StatsRungIn rg;
           rg.mcs = cfg.link.ladder_cfg.ladder[ri].mcs;
-          rg.ov = cfg.link.ladder_cfg.ladder[ri].overhead;
+          rg.ov_base = cfg.link.ladder_cfg.ladder[ri].overhead_base;
+          rg.ov_enh = cfg.link.ladder_cfg.ladder[ri].overhead_enh;
           rg.u = rs.u.v;
           rg.resid = rs.resid.v;
           rg.u3 = rs.u3.v;

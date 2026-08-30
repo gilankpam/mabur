@@ -179,9 +179,16 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   link["vtx_id"] = in.vtx_id;
   link["state"] = in.in_session ? "session" : "beaconing";
   link["tx_card"] = in.tx_card;
-  link["op"] = {{"mcs", in.op.mcs},           {"bw", in.op.bw},
-                {"sgi", in.op.sgi},           {"vht", in.op.vht},
-                {"overhead", in.op.overhead}, {"snr_req", in.op.snr_req}};
+  // OpPoint.overhead is a base/enh pair (Task 4, same-rate-fixed-pairs):
+  // export both GS-commanded values under their own keys -- the single
+  // "overhead" key (Task 4's overhead_base-only placeholder) is gone.
+  link["op"] = {{"mcs", in.op.mcs},
+                {"bw", in.op.bw},
+                {"sgi", in.op.sgi},
+                {"vht", in.op.vht},
+                {"overhead_base", in.op.overhead_base},
+                {"overhead_enh", in.op.overhead_enh},
+                {"snr_req", in.op.snr_req}};
   link["deadline_ms"] = in.deadline_ms;
   if (in.residual_loss) link["residual_loss"] = *in.residual_loss;
   else link["residual_loss"] = nullptr;
@@ -198,7 +205,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   if (in.ctl) {
     const StatsCtlIn& c = *in.ctl;
     json& ctl = link["ctl"];
-    ctl["rung"] = {{"idx", c.rung_idx}, {"mcs", c.rung_mcs}, {"ov", c.rung_ov}};
+    ctl["rung"] = {{"idx", c.rung_idx},
+                   {"mcs", c.rung_mcs},
+                   {"ov_base", c.rung_ov_base},
+                   {"ov_enh", c.rung_ov_enh}};
     ctl["util"] = c.util;
     ctl["pre_fec_loss"] = c.pre_fec_loss;
     ctl["budget"] = c.budget;
@@ -209,7 +219,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     ctl["penalized"] = std::move(pen);
     json lad = json::array();
     for (const auto& r : c.ladder)
-      lad.push_back({{"mcs", r.first}, {"ov", r.second}});
+      lad.push_back({{"mcs", std::get<0>(r)},
+                     {"ov_base", std::get<1>(r)},
+                     {"ov_enh", std::get<2>(r)}});
     ctl["ladder"] = std::move(lad);
     ctl["down_util"] = c.down_util;
     ctl["up_util"] = c.up_util;
@@ -263,7 +275,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       const StatsRungIn& rg = c.rungs[i];
       rungs.push_back({{"i", static_cast<int>(i)},
                        {"mcs", rg.mcs},
-                       {"ov", rg.ov},
+                       {"ov_base", rg.ov_base},
+                       {"ov_enh", rg.ov_enh},
                        {"u", clamp_util(rg.u)},
                        {"resid", rg.resid},
                        {"u3", clamp_util(rg.u3)},
@@ -302,12 +315,13 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     const double phy = mabur::rc::phy_rate_mbps(rung);
     json fj;
     fj["stream"] = s;
-    // The balancer-applied overhead from telemetry when available (s==0 ->
-    // base, s==1 -> enh); falls back to the commanded op overhead (both
-    // streams alike) before the first telemetry snapshot arrives.
+    // The actually-applied overhead from telemetry when available (s==0 ->
+    // base, s==1 -> enh); falls back to that sid's op pair value (base for
+    // sid0, enh for sid1 -- Task 5) before the first telemetry snapshot
+    // arrives.
     if (in.telem) fj["ov"] = s == 0 ? in.telem->applied_ov_base
                                     : in.telem->applied_ov_enh;
-    else fj["ov"] = in.op.overhead;
+    else fj["ov"] = s == 0 ? in.op.overhead_base : in.op.overhead_enh;
     fj["rung_mcs"] = rung.mcs;
     fj["rung_ldpc"] = rung.ldpc;
     fj["rung_stbc"] = rung.stbc;

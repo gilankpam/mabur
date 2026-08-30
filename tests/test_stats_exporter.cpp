@@ -15,7 +15,9 @@ StatsInput base_input() {
   in.vtx_id = 1;
   in.in_session = true;
   in.tx_card = 0;
-  in.op.mcs = 5; in.op.bw = 20; in.op.overhead = 0.25; in.op.snr_req = 18.5;
+  in.op.mcs = 5; in.op.bw = 20;
+  in.op.overhead_base = 0.25; in.op.overhead_enh = 0.25;
+  in.op.snr_req = 18.5;
   in.deadline_ms = 60;
   in.residual_loss = 0.012;
   in.layer_delivery_pct = {100, 97};
@@ -72,6 +74,22 @@ TEST(first_emission_immediate_with_null_rates) {
   CHECK(j["link"]["op"]["mcs"] == 5);
   CHECK(j["link"]["deadline_ms"] == 60);
   CHECK(j["cards"][0]["frames"] == 1000);
+}
+
+// Task 5 (same-rate-fixed-pairs): link.op exports the base/enh overhead PAIR
+// -- the single "overhead" key (Task 4's placeholder, overhead_base only) is
+// gone.
+TEST(op_exports_overhead_pair_not_scalar) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.op.overhead_base = 0.25;
+  in.op.overhead_enh = 0.5;
+  ex.poll(1000, in);
+  const json op = cap.last()["link"]["op"];
+  CHECK(!op.contains("overhead"));
+  CHECK(op["overhead_base"].get<double>() > 0.249 && op["overhead_base"].get<double>() < 0.251);
+  CHECK(op["overhead_enh"].get<double>() > 0.499 && op["overhead_enh"].get<double>() < 0.501);
 }
 
 TEST(interval_gate_and_seq) {
@@ -340,23 +358,28 @@ TEST(class_entries_sticky_and_rates) {
 }
 
 TEST(stream_rows_fall_back_to_op_overhead_without_telem) {
-  // No telem snapshot yet: both streams' "ov" fall back to the commanded op
-  // overhead verbatim -- no per-layer scaling since the literal-overhead
-  // flatten (budget_for()/uep_layer_overhead's old job collapsed to a no-op).
+  // No telem snapshot yet: sid0's "ov" falls back to the commanded op's
+  // overhead_base and sid1's to overhead_enh -- that sid's op pair value,
+  // not a shared scalar (Task 5: base/enh are scored independently, so a
+  // fallback that used overhead_base for both would silently hide a
+  // divergent enh rung).
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
-  StatsInput in = base_input();                      // op.overhead = 0.25
+  StatsInput in = base_input();
+  in.op.overhead_base = 0.25;
+  in.op.overhead_enh = 0.5;                          // distinct from base
   in.streams[1].bodies = 100;                        // activate the enh row
   ex.poll(1000, in);
   const json j = cap.last();
   CHECK(std::abs(j["link"]["streams"][0]["ov"].get<double>() - 0.25) < 1e-9);
-  CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.25) < 1e-9);
+  CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.5) < 1e-9);
   CHECK(j["link"]["vtx_id"] == 1);
 }
 
-TEST(stream_rows_carry_balancer_applied_overhead_from_telem) {
+TEST(stream_rows_carry_applied_overhead_from_telem) {
   // Telem present: base -> applied_ov_base, enh -> applied_ov_enh (the
-  // balancer's actual per-stream split), not the commanded op overhead.
+  // pair actually flying -- the op pair, or the debug-HTTP override when
+  // armed; Task 7 deleted the solver that used to compute this).
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
   StatsInput in = base_input();
@@ -482,7 +505,7 @@ TEST(ctl_block_shape_and_values) {
   StatsExporter ex(1, 500, cap.fn());
   StatsInput in = base_input();
   StatsCtlIn ci;
-  ci.rung_idx = 3; ci.rung_mcs = 5; ci.rung_ov = 0.25;
+  ci.rung_idx = 3; ci.rung_mcs = 5; ci.rung_ov_base = 0.25; ci.rung_ov_enh = 0.5;
   ci.util = 0.08; ci.pre_fec_loss = 0.035; ci.budget = 0.43;
   ci.probation_ms_left = 0;
   ci.penalized = {{5, 8200}};
@@ -504,7 +527,9 @@ TEST(ctl_block_shape_and_values) {
   const json ctl = cap.last()["link"]["ctl"];
   CHECK(ctl["rung"]["idx"] == 3);
   CHECK(ctl["rung"]["mcs"] == 5);
-  CHECK(ctl["rung"]["ov"].get<double>() > 0.249 && ctl["rung"]["ov"].get<double>() < 0.251);
+  CHECK(!ctl["rung"].contains("ov"));
+  CHECK(ctl["rung"]["ov_base"].get<double>() > 0.249 && ctl["rung"]["ov_base"].get<double>() < 0.251);
+  CHECK(ctl["rung"]["ov_enh"].get<double>() > 0.499 && ctl["rung"]["ov_enh"].get<double>() < 0.501);
   CHECK(ctl["util"].get<double>() > 0.079 && ctl["util"].get<double>() < 0.081);
   CHECK(ctl["pre_fec_loss"].get<double>() > 0.034 && ctl["pre_fec_loss"].get<double>() < 0.036);
   CHECK(ctl["budget"].get<double>() > 0.429 && ctl["budget"].get<double>() < 0.431);
@@ -625,7 +650,7 @@ TEST(ctl_ladder_and_thresholds) {
   StatsExporter ex(1, 500, cap.fn());
   StatsInput in = base_input();
   StatsCtlIn ci;
-  ci.ladder = {{0, 1.0}, {2, 0.5}, {7, 0.1}};
+  ci.ladder = {{0, 1.0, 1.0}, {2, 0.5, 0.75}, {7, 0.1, 0.2}};
   ci.down_util = 0.6;
   ci.up_util = 0.15;
   in.ctl = ci;
@@ -633,10 +658,15 @@ TEST(ctl_ladder_and_thresholds) {
   const json ctl = cap.last()["link"]["ctl"];
   REQUIRE(ctl["ladder"].size() == 3);
   CHECK(ctl["ladder"][0]["mcs"] == 0);
-  CHECK(ctl["ladder"][0]["ov"].get<double>() > 0.999 && ctl["ladder"][0]["ov"].get<double>() < 1.001);
+  CHECK(!ctl["ladder"][0].contains("ov"));
+  CHECK(ctl["ladder"][0]["ov_base"].get<double>() > 0.999 && ctl["ladder"][0]["ov_base"].get<double>() < 1.001);
+  CHECK(ctl["ladder"][0]["ov_enh"].get<double>() > 0.999 && ctl["ladder"][0]["ov_enh"].get<double>() < 1.001);
   CHECK(ctl["ladder"][1]["mcs"] == 2);
+  CHECK(ctl["ladder"][1]["ov_base"].get<double>() > 0.499 && ctl["ladder"][1]["ov_base"].get<double>() < 0.501);
+  CHECK(ctl["ladder"][1]["ov_enh"].get<double>() > 0.749 && ctl["ladder"][1]["ov_enh"].get<double>() < 0.751);
   CHECK(ctl["ladder"][2]["mcs"] == 7);
-  CHECK(ctl["ladder"][2]["ov"].get<double>() > 0.099 && ctl["ladder"][2]["ov"].get<double>() < 0.101);
+  CHECK(ctl["ladder"][2]["ov_base"].get<double>() > 0.099 && ctl["ladder"][2]["ov_base"].get<double>() < 0.101);
+  CHECK(ctl["ladder"][2]["ov_enh"].get<double>() > 0.199 && ctl["ladder"][2]["ov_enh"].get<double>() < 0.201);
   CHECK(ctl["down_util"].get<double>() > 0.599 && ctl["down_util"].get<double>() < 0.601);
   CHECK(ctl["up_util"].get<double>() > 0.149 && ctl["up_util"].get<double>() < 0.151);
 }
@@ -720,7 +750,8 @@ TEST(exporter_link_rungs_array) {
   in.ctl.emplace();
   maburgs::StatsRungIn rg;
   rg.mcs = 5;
-  rg.ov = 0.25;
+  rg.ov_base = 0.25;
+  rg.ov_enh = 0.5;
   rg.u = 0.0625;
   rg.n = 42;
   rg.age_s = 3.5;
@@ -742,6 +773,9 @@ TEST(exporter_link_rungs_array) {
   REQUIRE(rungs.size() == 1);
   CHECK(rungs[0]["i"] == 0);
   CHECK(rungs[0]["mcs"] == 5);
+  CHECK(!rungs[0].contains("ov"));
+  CHECK(rungs[0]["ov_base"].get<double>() > 0.249 && rungs[0]["ov_base"].get<double>() < 0.251);
+  CHECK(rungs[0]["ov_enh"].get<double>() > 0.499 && rungs[0]["ov_enh"].get<double>() < 0.501);
   CHECK(rungs[0]["n"] == 42);
   CHECK(rungs[0]["evm"].is_null());
   CHECK(rungs[0]["evm_sd"].is_null());

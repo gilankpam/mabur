@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include "mtest.h"
@@ -33,25 +34,43 @@ TEST(missing_keys_fall_back_to_defaults) {
 // Actual-overhead ranges (airtime-balance-uep): static_overhead's default
 // and validation range are doubled from cmd-value semantics ([0.10, 1.0]
 // default 0.25) to actual-air semantics ([0.1, 2.0] default 0.5).
+// Same-rate-fixed-pairs (Task 3): static_overhead split into a base/enh
+// pair, both keeping the old scalar's default/range.
 TEST(static_overhead_default_and_range) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
-  CHECK(cfg.link.static_overhead > 0.499 && cfg.link.static_overhead < 0.501);
+  CHECK(cfg.link.static_overhead_base > 0.499 && cfg.link.static_overhead_base < 0.501);
+  CHECK(cfg.link.static_overhead_enh > 0.499 && cfg.link.static_overhead_enh < 0.501);
   auto cfg2 = maburgs::load_config(write_tmp(R"({"link":{}})"));
-  CHECK(cfg2.link.static_overhead > 0.499 && cfg2.link.static_overhead < 0.501);
+  CHECK(cfg2.link.static_overhead_base > 0.499 && cfg2.link.static_overhead_base < 0.501);
+  CHECK(cfg2.link.static_overhead_enh > 0.499 && cfg2.link.static_overhead_enh < 0.501);
 
   bool threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"static_overhead":2.1}})"));
+    maburgs::load_config(write_tmp(R"({"link":{"static_overhead_base":2.1}})"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"static_overhead":0.05}})"));
+    maburgs::load_config(write_tmp(R"({"link":{"static_overhead_enh":0.05}})"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 
-  auto cfg3 = maburgs::load_config(write_tmp(R"({"link":{"static_overhead":2.0}})"));
-  CHECK(cfg3.link.static_overhead > 1.999 && cfg3.link.static_overhead < 2.001);
+  auto cfg3 = maburgs::load_config(write_tmp(
+      R"({"link":{"static_overhead_base":2.0,"static_overhead_enh":0.1}})"));
+  CHECK(cfg3.link.static_overhead_base > 1.999 && cfg3.link.static_overhead_base < 2.001);
+  CHECK(cfg3.link.static_overhead_enh > 0.0999 && cfg3.link.static_overhead_enh < 0.1001);
+}
+
+// Old scalar key is gone: a config carrying it fails boot (intended forcing
+// function, no compat shim -- CLAUDE.md compatibility policy).
+TEST(stale_static_overhead_key_throws) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(R"({"link":{"static_overhead":0.5}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("unknown key") != std::string::npos;
+  }
+  CHECK(threw);
 }
 
 // link.video_silence_ms claimed to tune the video-silence escape valve, but
@@ -352,32 +371,60 @@ TEST(ladder_defaults_to_spec_six_rung_ladder) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   auto& L = cfg.link.ladder_cfg.ladder;
   CHECK(L.size() == 6);
-  CHECK(L[0].mcs == 0); CHECK(L[0].overhead > 1.999 && L[0].overhead < 2.001);
-  CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.999 && L[1].overhead < 1.001);
-  CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.499 && L[2].overhead < 0.501);
-  CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.499 && L[3].overhead < 0.501);
+  CHECK(L[0].mcs == 0); CHECK(L[0].overhead_base > 1.999 && L[0].overhead_base < 2.001);
+  CHECK(L[1].mcs == 2); CHECK(L[1].overhead_base > 0.999 && L[1].overhead_base < 1.001);
+  CHECK(L[2].mcs == 4); CHECK(L[2].overhead_base > 0.499 && L[2].overhead_base < 0.501);
+  CHECK(L[3].mcs == 5); CHECK(L[3].overhead_base > 0.499 && L[3].overhead_base < 0.501);
   // mcs6 rung at 0.5 (cmd-value 0.25, not the spec's cmd-value 0.15) since
   // 2026-07-29 — see the ladder_cfg comment in gs/src/config.h and
   // docs/mcs6-bench-anomaly.md.
-  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.499 && L[4].overhead < 0.501);
-  CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.199 && L[5].overhead < 0.201);
+  CHECK(L[4].mcs == 6); CHECK(L[4].overhead_base > 0.499 && L[4].overhead_base < 0.501);
+  CHECK(L[5].mcs == 7); CHECK(L[5].overhead_base > 0.199 && L[5].overhead_base < 0.201);
+  // Same-rate-fixed-pairs (Task 3): the struct default duplicates each
+  // rung's value into overhead_enh too.
+  for (auto& r : L) CHECK(std::abs(r.overhead_enh - r.overhead_base) < 1e-9);
+}
+
+// Same-rate-fixed-pairs (Task 3): rung overhead is now a base/enh pair.
+TEST(rung_overhead_pair_parses) {
+  auto cfg = maburgs::load_config(write_tmp(
+      R"({"link":{"ladder":[{"mcs":1,"overhead_base":1.0,"overhead_enh":0.5}]}})"));
+  auto& L = cfg.link.ladder_cfg.ladder;
+  CHECK(L.size() == 1);
+  CHECK(L[0].mcs == 1);
+  CHECK(std::abs(L[0].overhead_base - 1.0) < 1e-9);
+  CHECK(std::abs(L[0].overhead_enh - 0.5) < 1e-9);
+}
+
+// Old scalar "overhead" key is gone: a config carrying it fails boot
+// (intended forcing function, no compat shim -- CLAUDE.md compat policy).
+TEST(rung_old_overhead_key_fails_boot) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":1,"overhead":1.0}]}})"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("unknown key") != std::string::npos;
+  }
+  CHECK(threw);
 }
 
 TEST(ladder_parses_explicit_array_in_order) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[{"mcs":0,"overhead":1.0},{"mcs":3,"overhead":0.4}]}})"));
+      R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":1.0},)"
+      R"({"mcs":3,"overhead_base":0.4,"overhead_enh":0.4}]}})"));
   auto& L = cfg.link.ladder_cfg.ladder;
   CHECK(L.size() == 2);
   CHECK(L[0].mcs == 0);
   CHECK(L[1].mcs == 3);
-  CHECK(L[1].overhead > 0.399 && L[1].overhead < 0.401);
+  CHECK(L[1].overhead_base > 0.399 && L[1].overhead_base < 0.401);
 }
 
 TEST(ladder_rung_unknown_key_rejected) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":0,"overhead":1.0,"bogus":1}]}})"));
+        R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":1.0,"bogus":1}]}})"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("bogus") != std::string::npos;
   }
@@ -387,22 +434,38 @@ TEST(ladder_rung_unknown_key_rejected) {
 TEST(ladder_rung_mcs_out_of_range_rejected) {
   bool threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":8,"overhead":0.5}]}})"));
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":8,"overhead_base":0.5,"overhead_enh":0.5}]}})"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
 
 TEST(ladder_rung_overhead_out_of_range_rejected) {
   // Actual-overhead ranges (airtime-balance-uep): rung overhead accepts
-  // [0.1, 2.0], not the old cmd-value [0.05, 1.0].
+  // [0.1, 2.0], not the old cmd-value [0.05, 1.0]. Same-rate-fixed-pairs
+  // (Task 3): both overhead_base and overhead_enh are validated.
   bool threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":0.01}]}})"));
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":0,"overhead_base":0.01,"overhead_enh":1.0}]}})"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"ladder":[{"mcs":0,"overhead":2.1}]}})"));
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":0,"overhead_base":2.1,"overhead_enh":1.0}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":0.01}]}})"));
+  } catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":2.1}]}})"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
@@ -410,11 +473,14 @@ TEST(ladder_rung_overhead_out_of_range_rejected) {
 TEST(ladder_rung_overhead_boundary_values_accepted) {
   // overhead exactly at the [0.1, 2.0] boundary must load, not throw.
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[{"mcs":0,"overhead":0.1},{"mcs":7,"overhead":1.9},{"mcs":6,"overhead":2.0}]}})"));
+      R"({"link":{"ladder":[)"
+      R"({"mcs":0,"overhead_base":0.1,"overhead_enh":0.1},)"
+      R"({"mcs":7,"overhead_base":1.9,"overhead_enh":1.9},)"
+      R"({"mcs":6,"overhead_base":2.0,"overhead_enh":2.0}]}})"));
   CHECK(cfg.link.ladder_cfg.ladder.size() == 3);
-  CHECK(cfg.link.ladder_cfg.ladder[0].overhead > 0.0999 && cfg.link.ladder_cfg.ladder[0].overhead < 0.1001);
-  CHECK(cfg.link.ladder_cfg.ladder[1].overhead > 1.899 && cfg.link.ladder_cfg.ladder[1].overhead < 1.901);
-  CHECK(cfg.link.ladder_cfg.ladder[2].overhead > 1.999 && cfg.link.ladder_cfg.ladder[2].overhead < 2.001);
+  CHECK(cfg.link.ladder_cfg.ladder[0].overhead_base > 0.0999 && cfg.link.ladder_cfg.ladder[0].overhead_base < 0.1001);
+  CHECK(cfg.link.ladder_cfg.ladder[1].overhead_base > 1.899 && cfg.link.ladder_cfg.ladder[1].overhead_base < 1.901);
+  CHECK(cfg.link.ladder_cfg.ladder[2].overhead_base > 1.999 && cfg.link.ladder_cfg.ladder[2].overhead_base < 2.001);
 }
 
 TEST(ladder_empty_array_rejected) {
@@ -430,7 +496,8 @@ TEST(ladder_over_eight_entries_rejected) {
   std::string json = R"({"link":{"ladder":[)";
   for (int i = 0; i < 9; ++i) {
     if (i) json += ",";
-    json += "{\"mcs\":" + std::to_string(i % 8) + ",\"overhead\":0.25}";
+    json += "{\"mcs\":" + std::to_string(i % 8) +
+            ",\"overhead_base\":0.25,\"overhead_enh\":0.25}";
   }
   json += "]}}";
   bool threw = false;
@@ -450,7 +517,8 @@ TEST(max_mcs_filters_effective_ladder) {
 
 TEST(max_mcs_zero_keeps_single_mcs0_rung) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[{"mcs":0,"overhead":1.0},{"mcs":4,"overhead":0.25}],)"
+      R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":1.0},)"
+      R"({"mcs":4,"overhead_base":0.25,"overhead_enh":0.25}],)"
       R"("max_mcs":0}})"));
   CHECK(cfg.link.ladder_cfg.ladder.size() == 1);
   CHECK(cfg.link.ladder_cfg.ladder[0].mcs == 0);
@@ -460,7 +528,8 @@ TEST(max_mcs_filter_leaving_no_rungs_throws) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":4,"overhead":0.25},{"mcs":6,"overhead":0.15}],)"
+        R"({"link":{"ladder":[{"mcs":4,"overhead_base":0.25,"overhead_enh":0.25},)"
+        R"({"mcs":6,"overhead_base":0.15,"overhead_enh":0.15}],)"
         R"("max_mcs":2}})"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("empty after max_mcs filter") != std::string::npos;
@@ -523,13 +592,17 @@ TEST(default_bundle_ladder_is_actual_overhead) {
   auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
   auto& L = c.link.ladder_cfg.ladder;
   CHECK(L.size() == 6);
-  CHECK(L[0].mcs == 0); CHECK(L[0].overhead > 1.999 && L[0].overhead < 2.001);
-  CHECK(L[1].mcs == 2); CHECK(L[1].overhead > 0.999 && L[1].overhead < 1.001);
-  CHECK(L[2].mcs == 4); CHECK(L[2].overhead > 0.499 && L[2].overhead < 0.501);
-  CHECK(L[3].mcs == 5); CHECK(L[3].overhead > 0.499 && L[3].overhead < 0.501);
-  CHECK(L[4].mcs == 6); CHECK(L[4].overhead > 0.299 && L[4].overhead < 0.301);
-  CHECK(L[5].mcs == 7); CHECK(L[5].overhead > 0.199 && L[5].overhead < 0.201);
-  CHECK(c.link.static_overhead > 0.499 && c.link.static_overhead < 0.501);
+  CHECK(L[0].mcs == 0); CHECK(L[0].overhead_base > 1.999 && L[0].overhead_base < 2.001);
+  CHECK(L[1].mcs == 2); CHECK(L[1].overhead_base > 0.999 && L[1].overhead_base < 1.001);
+  CHECK(L[2].mcs == 4); CHECK(L[2].overhead_base > 0.499 && L[2].overhead_base < 0.501);
+  CHECK(L[3].mcs == 5); CHECK(L[3].overhead_base > 0.499 && L[3].overhead_base < 0.501);
+  CHECK(L[4].mcs == 6); CHECK(L[4].overhead_base > 0.299 && L[4].overhead_base < 0.301);
+  CHECK(L[5].mcs == 7); CHECK(L[5].overhead_base > 0.199 && L[5].overhead_base < 0.201);
+  // Same-rate-fixed-pairs (Task 3): the bundle's ladder duplicates base
+  // into enh for every rung.
+  for (auto& r : L) CHECK(std::abs(r.overhead_enh - r.overhead_base) < 1e-9);
+  CHECK(c.link.static_overhead_base > 0.499 && c.link.static_overhead_base < 0.501);
+  CHECK(c.link.static_overhead_enh > 0.499 && c.link.static_overhead_enh < 0.501);
   auto layers = c.uep_layers();
   CHECK(layers[0].fec.symbol_size == 332);
   CHECK(layers[1].fec.symbol_size == 332);

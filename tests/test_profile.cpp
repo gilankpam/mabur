@@ -73,17 +73,22 @@ TEST(profile_table_matches_vectors_verbatim) {
   REQUIRE(table.size() == expect_rows.size());
   for (size_t i = 0; i < table.size(); ++i) {
     CHECK(table[i].mcs == expect_rows[i]["mcs"].get<uint8_t>());
-    double ov = table[i].fec_overhead;
     double expect_ov = expect_rows[i]["ov"].get<double>();
-    CHECK(ov > expect_ov - 1e-9 && ov < expect_ov + 1e-9);
+    // Both slots duplicate the same overhead value (same-rate ruling,
+    // 2026-08-30): no rate split, ov_base == ov_enh for every rung.
+    double ov_base = table[i].ov_base;
+    double ov_enh = table[i].ov_enh;
+    CHECK(ov_base > expect_ov - 1e-9 && ov_base < expect_ov + 1e-9);
+    CHECK(ov_enh > expect_ov - 1e-9 && ov_enh < expect_ov + 1e-9);
     CHECK(table[i].bw == expect_rows[i]["bw"].get<uint8_t>());
   }
   CHECK(MAX_RANGE_PROFILE == 0);
 }
 
-TEST(ladder_from_applies_base_mcs_minus_one) {
+TEST(ladder_from_applies_same_rate) {
+  // 2026-08-30 ruling: both slots ride the scored mcs (no rate split).
   auto l5 = rc::ladder_from(rc::PhyMode::HT, 5, 20);
-  CHECK(l5[0].mcs == 4);   // base
+  CHECK(l5[0].mcs == 5);   // base
   CHECK(l5[1].mcs == 5);   // enh
   CHECK(l5[0].ldpc && l5[0].stbc && l5[1].ldpc && l5[1].stbc);
   auto l0 = rc::ladder_from(rc::PhyMode::HT, 0, 20);
@@ -97,7 +102,7 @@ TEST(ladder_from_sets_ldpc_stbc_on_all_rungs) {
   auto ladder = ladder_from(PhyMode::HT, 2, 20);
   // BASE
   CHECK(ladder[0].mode == PhyMode::HT);
-  CHECK(ladder[0].mcs == 1);
+  CHECK(ladder[0].mcs == 2);  // same-rate ruling, 2026-08-30
   CHECK(ladder[0].bw == 20);
   CHECK(ladder[0].ldpc == true);
   CHECK(ladder[0].stbc == true);
@@ -110,14 +115,15 @@ TEST(ladder_from_sets_ldpc_stbc_on_all_rungs) {
 }
 
 TEST(ladder_from_clamps_at_top) {
-  // HT top = 7: an out-of-range base mcs clamps to 7; base then rides 6.
+  // HT top = 7: an out-of-range mcs clamps to 7; both slots ride it
+  // (same-rate ruling, 2026-08-30).
   auto ladder = ladder_from(PhyMode::HT, 9, 20);
-  CHECK(ladder[0].mcs == 6);
+  CHECK(ladder[0].mcs == 7);
   CHECK(ladder[1].mcs == 7);
 
-  // VHT top = 8: mcs=10 clamps to 8; base rides 7.
+  // VHT top = 8: mcs=10 clamps to 8; both slots ride it.
   auto vladder = ladder_from(PhyMode::VHT, 10, 40);
-  CHECK(vladder[0].mcs == 7);
+  CHECK(vladder[0].mcs == 8);
   CHECK(vladder[1].mcs == 8);
 }
 
@@ -143,10 +149,11 @@ TEST(ladder_for_row_matches_table_ladder_from) {
   }
 }
 
-TEST(ladder_for_row_applies_mcs_minus_one_rule) {
-  // Row 3 carries T0 mcs 4 (see profile_table): base must ride 3, enh 4.
+TEST(ladder_for_row_applies_same_rate_rule) {
+  // Row 3 carries T0 mcs 4 (see profile_table): both slots ride 4
+  // (same-rate ruling, 2026-08-30).
   auto ladder = ladder_for_row(3);
-  CHECK(ladder[0].mcs == 3);
+  CHECK(ladder[0].mcs == 4);
   CHECK(ladder[1].mcs == 4);
   CHECK(ladder[0].ldpc == true);
   CHECK(ladder[0].stbc == true);

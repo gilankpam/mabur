@@ -66,14 +66,14 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
         out->pre_loss_pct = *p * 100.0;
       if (const json* rung = obj(*ctl, "rung")) {
         out->mcs = integer(*rung, "mcs");
-        // link.ctl.rung.ov: value semantics only, no parsing change needed
-        // here. Since 2026-08-29 (airtime-balance-uep) this is the LITERAL
-        // FEC command overhead for the ladder's current rung -- the config
-        // table's own values doubled (old cmd x2 = new actual) in the same
-        // change, so the *100 below still lands on the right on-screen
-        // percentage; this parser just forwards whatever number the
-        // sideport sends, raw, like every other field here.
-        if (const std::optional<double> ov = num(*rung, "ov"))
+        // link.ctl.rung.ov_base (Task 5, same-rate-fixed-pairs): the rung's
+        // overhead split into a base/enh pair; the OSD shows the base
+        // figure (the pilot-facing budget number -- base is the layer that
+        // must survive). Key renamed from "ov"; value semantics unchanged
+        // -- since 2026-08-29 (airtime-balance-uep) this is the LITERAL FEC
+        // command overhead for the ladder's current rung, so the *100 below
+        // still lands on the right on-screen percentage.
+        if (const std::optional<double> ov = num(*rung, "ov_base"))
           out->fec_pct = *ov * 100.0;
       }
     }

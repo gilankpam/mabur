@@ -13,11 +13,13 @@ namespace mabur {
 
 // The resolved operating point: the 2-slot ladder ([0]=BASE at profile_mcs
 // -1, [1]=ENH at profile_mcs — spec 2026-08-29-airtime-balance-uep §2), the
-// literal FEC air overhead (Task 1: RC_VERSION 4 made this a plain value,
-// no ladder translation left as of Task 3), per-layer shed flags
-// (failsafe-forced OR local congestion-directed; shed[1] is the enh shed,
-// the old shed[3] — the old reserved layer and its shed[2] slot are gone),
-// and
+// per-stream literal FEC air overhead PAIR (Task 6, RC_VERSION 5: the
+// single fec_overhead scalar split into fec_ov_base/fec_ov_enh — fixed
+// per-rung pairs, spec 2026-08-30-same-rate-fixed-pairs; applied directly
+// to the UEP layers via apply_op_to_uep, no ladder translation), per-layer
+// shed flags (failsafe-forced OR local congestion-directed; shed[1] is the
+// enh shed, the old shed[3] — the old reserved layer and its shed[2] slot
+// are gone), and
 // a generation counter bumped only when a *new* operating point
 // (ladder/FEC) is applied (BOOT/DISC/RCF/failsafe entry) — NOT on every
 // publish. Congestion shed re-applies the *current* op (same ladder/FEC)
@@ -29,28 +31,39 @@ namespace mabur {
 // observed against the newly loaded one instead.
 struct AppliedOp {
   std::array<rc::LayerTxSpec, 2> ladder;
-  double fec_overhead = 2.0;
+  double fec_ov_base = 2.0;
+  double fec_ov_enh = 2.0;
   std::array<bool, 2> shed = {false, false};
   uint64_t generation = 0;
 };
 
-// Cross-thread feed from the hot-loop AirBalancer (Task 7) to the agent
-// thread's bitrate policy: the balancer's live measured share/excess feed
-// the blended-rate target (run_bitrate_policy), while ov_base/ov_enh are
-// telemetry-only snapshots of the balancer's live per-stream overhead (NOT
-// consumed by the bitrate policy — see run_bitrate_policy's comment on why
-// the policy target must stay repair-byte-neutral). Plain atomics, no lock:
-// the hot loop writes every tick, the agent thread reads at policy time:
-// torn reads are impossible (each field loaded independently) and a stale
-// value by at most one hot-loop tick is harmless for a rate target. May be
-// null (tests, and any Actuator wiring that predates Task 7's balancer),
-// in which case the policy uses the 0.5/0/0 defaults.
-struct BalancerFeed {
+// Cross-thread feed from the hot-loop AirFeed (Task 7; was the AirBalancer
+// solver's measurement half before the solver itself was deleted) to the
+// agent thread's bitrate policy: the feed's live measured share/excess
+// feed the blended-rate target (run_bitrate_policy), while ov_base/ov_enh
+// are telemetry-only snapshots of the per-stream overhead actually flying
+// (NOT consumed by the bitrate policy — see run_bitrate_policy's comment
+// on why the policy target must stay repair-byte-neutral). Plain atomics,
+// no lock: the hot loop writes every tick, the agent thread reads at
+// policy time: torn reads are impossible (each field loaded independently)
+// and a stale value by at most one hot-loop tick is harmless for a rate
+// target. May be null (tests, and any Actuator wiring that predates Task
+// 7's feed), in which case the policy uses the 0.5/0/0 defaults.
+struct AirFeedOut {
   std::atomic<float> share_base{0.5f};
   std::atomic<float> excess_base{0.0f};
   std::atomic<float> excess_enh{0.0f};
   std::atomic<float> ov_base{0.0f};
   std::atomic<float> ov_enh{0.0f};
+  // Volatile per-layer overhead override (bench sweeps, set via the debug
+  // HTTP :8301 POST /venc/set?ov_base_pct=N / ov_enh_pct=N; -1 = off, both
+  // must be >= 0 to take effect). main.cpp's hot loop applies the forced
+  // pair to the UEP layers directly (the op pair loses) and AirFeed
+  // publishes the same forced pair as the anchor, so run_bitrate_policy's
+  // per-layer blend and the telemetry snapshot both track what's ACTUALLY
+  // flying. Not persisted; a daemon restart clears it.
+  std::atomic<int> ovr_base_pct{-1};
+  std::atomic<int> ovr_enh_pct{-1};
 };
 
 // Everything RcAgent does to the outside world funnels through this
@@ -94,10 +107,10 @@ class RcAgent {
  public:
   enum class State { BOOT, RENDEZVOUS, LINKED, FAILSAFE };
 
-  // feed is the hot-loop AirBalancer's cross-thread readback (Task 7); may
-  // be null (tests, or before the balancer is wired up), in which case the
+  // feed is the hot-loop AirFeed's cross-thread readback (Task 7); may
+  // be null (tests, or before the feed is wired up), in which case the
   // bitrate policy uses its 0.5/0/0 defaults.
-  RcAgent(const Config& cfg, Actuator& act, BalancerFeed* feed = nullptr);
+  RcAgent(const Config& cfg, Actuator& act, AirFeedOut* feed = nullptr);
 
   // Parses `body` as an RC frame (RCF or DISC; anything else, or a frame
   // failing CRC/vtx_id match, is silently ignored) and applies its effect.
@@ -150,7 +163,7 @@ class RcAgent {
  private:
   const Config& cfg_;
   Actuator& act_;
-  BalancerFeed* feed_;  // may be null — see the constructor comment
+  AirFeedOut* feed_;  // may be null — see the constructor comment
   State state_ = State::BOOT;
   bool link_established_ = false;  // see take_link_established()
 
@@ -239,7 +252,7 @@ class RcAgent {
 
   void apply_max_range(uint64_t now_ms);
   void apply_ladder_op(const std::array<rc::LayerTxSpec, 2>& ladder,
-                        double fec_overhead);
+                        double ov_base, double ov_enh);
   void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);

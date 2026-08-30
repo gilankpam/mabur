@@ -6,12 +6,13 @@ not be pooled. Nothing in the sideport reports most of them, so the only
 reliable method is to date the recording against this page.
 
 Quick index: carrier sense off 2026-08-05 · TX power constant 2026-08-12 ·
-sideport key removals 2026-08-12, 2026-08-15 and 2026-08-29 · SNR half-dB
-scale break 2026-08-04 · EVM op-point dependence 2026-08-10 · RF labels
-pooled and fade deltas unsuppressed 2026-08-15 (see
+sideport key removals 2026-08-12, 2026-08-15, 2026-08-29 and 2026-08-30 ·
+SNR half-dB scale break 2026-08-04 · EVM op-point dependence 2026-08-10 ·
+RF labels pooled and fade deltas unsuppressed 2026-08-15 (see
 `docs/link-adaptation.md`) · DVR filenames un-dated 2026-08-26 · UEP
 overhead flatten 2026-08-29 · overhead literal + 4→2 stream collapse
-2026-08-29 (airtime-balance-uep).
+2026-08-29 (airtime-balance-uep) · overhead splits into base/enh pairs +
+ctllog 8 2026-08-30 (same-rate-fixed-pairs).
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -86,7 +87,12 @@ note above); 2026-08-15 `link.attrib.on` (pooled-RF note in
 `docs/link-adaptation.md`); 2026-08-29 `drone.applied.overhead` (singular)
 → `drone.applied.overhead_base`/`drone.applied.overhead_enh`, and
 `link.streams` shrank from 4 entries to 2 (overhead scale break note
-below). Removed keys are absent, not null. Keep appending to that list — not to protect
+below); 2026-08-30 `link.op.overhead` → `link.op.overhead_base`/
+`link.op.overhead_enh`, `link.ctl.rung.ov` → `link.ctl.rung.ov_base`/
+`link.ctl.rung.ov_enh`, `link.ctl.ladder[].ov` →
+`link.ctl.ladder[].ov_base`/`link.ctl.ladder[].ov_enh`, `link.rungs[].ov`
+→ `link.rungs[].ov_base`/`link.rungs[].ov_enh` (same-rate-fixed-pairs
+scale-break note below). Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
 sideport config lives in `/etc/maburgs.json` under `stats`
@@ -172,3 +178,32 @@ post-break number for mcs6/mcs7 specifically — the halved figure lands
 on the wrong side of the quantization collision. Every other rung is a
 clean ×0.5.
 
+**Scale break, 2026-08-30 — overhead splits into base/enh pairs
+(same-rate-fixed-pairs); ctllog 8.** Every overhead-shaped sideport key
+that used to carry ONE value per rung/op now carries a base/enh PAIR,
+mirroring the RCF wire and per-rung config split landed the same day
+(RC_VERSION 5, `gs/src/op_point.h`, `Rung::overhead_base/overhead_enh`):
+`link.op.overhead` → `link.op.overhead_base`/`link.op.overhead_enh`;
+`link.ctl.rung.ov` → `link.ctl.rung.ov_base`/`link.ctl.rung.ov_enh`;
+`link.ctl.ladder[].ov` → `link.ctl.ladder[].ov_base`/
+`link.ctl.ladder[].ov_enh`; `link.rungs[].ov` → `link.rungs[].ov_base`/
+`link.rungs[].ov_enh`. A recording from before this date has ONE `ov`/
+`overhead` number per rung where a post-break one has two — that is the
+shape signature, the same detection idiom as the 2026-08-29 4→2 streams
+collapse above. `link.streams[].ov` keeps its key (not renamed) — sid0
+already read `overhead_base`-equivalent and sid1 `overhead_enh`-
+equivalent before this date whenever telemetry was live, so only its
+pre-telemetry fallback value changed (sid1 now falls back to
+`overhead_enh` instead of `overhead_base`; a divergent enh rung was
+silently masked as the base value until telemetry arrived, on any
+recording from before this date with a gap at session start).
+
+The maburgs ctl log's header line bumped `ctllog 7` → `ctllog 8` the
+same day (`gs/src/ctl_log.h`): a HEADER-ONLY change — no S/E/P/N/R
+per-tick line carries an overhead field at all, so nothing about a
+recording's per-tick rows moved. Only the header's `ladder=` token
+changed shape, from `<mcs>/<ov>,...` (one value per rung, ×100) to
+`<mcs>/<ovb>:<ove>,...` (a base/enh pair, both ×100). `flightreport.py`
+reads ctllog v1–v8: a pre-v8 log's single per-rung value is read as both
+base and enh (that rung had no split to lose), and the tool prints a
+NOTE on any log older than v8 saying so.

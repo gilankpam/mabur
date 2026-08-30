@@ -13,14 +13,16 @@
 namespace maburgs {
 
 // One rung of the measured-loss ladder: a radio MCS plus the literal FEC
-// command overhead that budget()/budget_for() derive from directly (budget =
-// overhead / (1 + overhead) — no per-layer scaling since the flatten). The
-// same scalar overhead now scores BOTH sids' util identically (base via
-// budget(), enh/probe via budget_for()) — there is no more per-layer split
-// at the Rung level, only at the drone's balancer.
+// command overhead per sid that budget_base()/budget_base_for()/
+// budget_enh_for() derive from directly (budget = overhead / (1 +
+// overhead)). Same-rate-fixed-pairs (Task 4): overhead_base/overhead_enh
+// are scored independently now -- sid 0 (base) against overhead_base, sid 1
+// (enh/probe/s3) against overhead_enh -- carried alongside the RCF wire and
+// ProfileRow pairs from Tasks 1-2.
 struct Rung {
   int mcs = 0;
-  double overhead = 1.0;
+  double overhead_base = 1.0;
+  double overhead_enh = 1.0;
 };
 
 // --- fade-aware demotes (spec 2026-08-14 fade-demote) ---
@@ -210,16 +212,20 @@ class LadderController {
   double util() const { return u_; }              // last computed u (0 before first valid sample)
   double pre_fec_loss() const { return pre_fec_loss_; }
 
-  // Budget of the CURRENT rung: overhead / (1 + overhead), the literal FEC
-  // command overhead — no per-layer scaling since the flatten. Used to score
-  // the BASE (sid 0) util (update()'s u_ = pre_fec_loss / budget()); the
-  // identical formula for sid 1 (enh/probe) is budget_for(), since the
-  // flatten made the two numerically the same.
-  double budget() const;
-  // Budget of an ARBITRARY rung (same formula as budget(), any index) —
-  // public so probe/promote candidate math and tests can score a rung the
-  // controller isn't currently on.
-  double budget_for(int rung) const;
+  // Budget of the CURRENT rung's BASE (sid 0) overhead: overhead_base /
+  // (1 + overhead_base), the literal FEC command overhead — no per-layer
+  // scaling since the flatten. Used to score sid 0's util (update()'s
+  // u_ = pre_fec_loss / budget_base()).
+  double budget_base() const;
+  // Budget of an ARBITRARY rung's BASE overhead (same formula as
+  // budget_base(), any index) — public so promote candidate math and tests
+  // can score a rung the controller isn't currently on.
+  double budget_base_for(int rung) const;
+  // Budget of an ARBITRARY rung's ENH overhead (same formula, the sid 1 /
+  // probe / s3 side of the pair) — used to score enh/probe/s3 quantities,
+  // which since same-rate-fixed-pairs run on their own literal overhead
+  // rather than mirroring sid 0's.
+  double budget_enh_for(int rung) const;
 
   int probation_ms_left(double now_ms) const;  // 0 when not probing
   std::vector<std::pair<int, int>> penalized(double now_ms) const;  // {rung, ms_left}

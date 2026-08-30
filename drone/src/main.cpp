@@ -30,7 +30,7 @@
 
 #include <unistd.h>  // _exit() — see the venc on_fault handler
 
-#include "air_balancer.h"
+#include "air_feed.h"
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -276,8 +276,8 @@ struct RealActuator : mabur::Actuator {
     // Applying an op is a ladder + FEC + shed change and nothing else — see
     // the struct comment: there is no per-op power step to do in real mode.
     if (!dev && dry_run) {
-      std::fprintf(stderr, "[dry-run] fec_overhead=%.3f gen=%llu\n",
-                   op.fec_overhead,
+      std::fprintf(stderr, "[dry-run] fec_ov_base=%.3f fec_ov_enh=%.3f gen=%llu\n",
+                   op.fec_ov_base, op.fec_ov_enh,
                    static_cast<unsigned long long>(op.generation));
     }
     shared_op->store(std::make_shared<const AppliedOp>(op));
@@ -368,11 +368,13 @@ uint64_t now_steady_ms() {
 
 // Applies a freshly-published AppliedOp (detected via shared_ptr identity,
 // not generation — see the callers' pump-loop comments) to the
-// hot-thread-owned UepEncoder (set_overhead + per-layer shed). Called
-// from the hot thread only. AppliedOp is still 4-wide until Task 5
-// (2-slot AppliedOp); only indices [0]/[1] map to the 2-stream UepEncoder.
+// hot-thread-owned UepEncoder: the commanded overhead PAIR applied directly
+// per layer (Task 6, RC_VERSION 5 — no ladder/scale translation) plus
+// per-layer shed. Called from the hot thread only. The 2-slot AppliedOp's
+// indices [0]/[1] map 1:1 onto the 2-stream UepEncoder's sids.
 void apply_op_to_uep(const AppliedOp& op, UepEncoder& uep) {
-  uep.set_overhead(op.fec_overhead);
+  uep.set_layer_overhead(0, op.fec_ov_base);
+  uep.set_layer_overhead(1, op.fec_ov_enh);
   for (int i = 0; i < 2; ++i) uep.set_shed(i, op.shed[static_cast<size_t>(i)]);
 }
 
@@ -769,12 +771,12 @@ int run_real_mode(const Config& cfg) {
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
 
-  // Cross-thread feed from the hot thread's AirBalancer to the agent
-  // thread (bitrate policy input + telemetry snapshot) — see BalancerFeed's
-  // doc comment in rc_agent.h. Must outlive both hot_thread and
-  // agent_thread, so it lives in this outer scope beside shared_op, not
-  // inside either thread's lambda.
-  BalancerFeed balancer_feed;
+  // Cross-thread feed from the hot thread's AirFeed to the agent thread
+  // (bitrate policy input + telemetry snapshot) — see AirFeedOut's doc
+  // comment in rc_agent.h. Must outlive both hot_thread and agent_thread,
+  // so it lives in this outer scope beside shared_op, not inside either
+  // thread's lambda.
+  AirFeedOut air_feed_out;
 
   RealActuator actuator;
   actuator.tx = &tx;
@@ -788,7 +790,7 @@ int run_real_mode(const Config& cfg) {
   // commanded before the first transition ever happens.
   actuator.last_roi_qp = cfg.encoder.roi_qp_normal;
 
-  RcAgent agent(cfg, actuator, &balancer_feed);
+  RcAgent agent(cfg, actuator, &air_feed_out);
 
 #ifdef MABUR_HAVE_VENC
   // Boot the encoder BEFORE the radio and before any thread starts: it
@@ -840,7 +842,8 @@ int run_real_mode(const Config& cfg) {
   // bitrate through the verbs, so the ring/stats the debug endpoint reads
   // are live from here on. localhost-only, always on -- bind failure logs
   // and disables itself, never fatal (see debug_http.h).
-  debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality);
+  debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality,
+                   &air_feed_out);
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};
@@ -979,10 +982,21 @@ int run_real_mode(const Config& cfg) {
     FecWorker fec_worker;
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
     // Hot-thread-owned, same exclusivity contract as uep above: writes the
-    // shared balancer_feed, never read back by this thread.
-    AirBalancer balancer(&balancer_feed);
+    // shared air_feed_out, never read back by this thread.
+    AirFeed feed(&air_feed_out);
 
     std::shared_ptr<const AppliedOp> last_applied_op;
+    // Debug-HTTP per-layer overhead override transition tracking (fix
+    // round 1, review finding): true while the last tick saw both
+    // ovr_base_pct/ovr_enh_pct armed. Needed because clearing the override
+    // has NO bounded re-assert to fall back on -- run_bitrate_policy's 5 s
+    // reassert (kReassertMs) only re-sends the bitrate/roi_qp verbs, never
+    // touches the UEP layers' overhead, so without this the encoder would
+    // stay pinned at the last override value indefinitely (until the next
+    // genuine op change) while AirFeed's on_frame fallback snapped back to
+    // the stale op-pair anchor immediately -- exactly the encoder/anchor
+    // disagreement the finding flagged.
+    bool ov_override_was_armed = false;
 
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
@@ -997,7 +1011,37 @@ int run_real_mode(const Config& cfg) {
       auto op = shared_op.load();
       if (op && op != last_applied_op) {
         apply_op_to_uep(*op, uep);
+        // Anchors AirFeed's excess_base/enh + telemetry-only ov_base/enh
+        // against the pair actually applied above (Task 7: the fixed
+        // per-rung pair, no solver left to re-derive it).
+        feed.set_applied(op->fec_ov_base, op->fec_ov_enh);
         last_applied_op = op;
+      }
+
+      // Debug-HTTP per-layer overhead override (bench sweeps, :8301 POST
+      // /venc/set?ov_base_pct=N&ov_enh_pct=N): armed (both >= 0) wins over
+      // the op pair on the UEP layers every tick. Checked BEFORE this
+      // tick's frame is read/encoded (not after, and not gated on a frame
+      // having arrived) so that by the time pipe.encode() and feed.on_frame()
+      // run below, the UEP layers and AirFeed's anchor already agree on
+      // whichever value is in effect this tick -- an armed->cleared
+      // transition re-applies the op pair to BOTH in one shot, exactly
+      // once (not per-frame): the encoder stops flying the stale override
+      // and AirFeed's excess_*/ov_* stop misreporting against it in the
+      // same tick, instead of a one-tick-later correction.
+      if (op) {
+        const int ob = feed.out().ovr_base_pct.load(std::memory_order_relaxed);
+        const int oe = feed.out().ovr_enh_pct.load(std::memory_order_relaxed);
+        const bool armed = ob >= 0 && oe >= 0;
+        if (armed) {
+          uep.set_layer_overhead(0, ob / 100.0);
+          uep.set_layer_overhead(1, oe / 100.0);
+          ov_override_was_armed = true;
+        } else if (ov_override_was_armed) {
+          apply_op_to_uep(*op, uep);
+          feed.set_applied(op->fec_ov_base, op->fec_ov_enh);
+          ov_override_was_armed = false;
+        }
       }
 
       // One whole Annex-B frame per iteration: a frame is already the atomic
@@ -1023,21 +1067,16 @@ int run_real_mode(const Config& cfg) {
           }
         }
         auto bodies = pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now);
-        // Air-time balancer (spec §2): feed actual emitted bytes, excluding
-        // IDR outliers, then re-solve and apply the split. Runs after
-        // apply_op_to_uep on op changes, so the split always wins the tick.
+        // AirFeed (spec §2, Task 7 — the solver that used to redistribute
+        // overhead here is gone; the per-rung pair is fixed and applied
+        // directly by apply_op_to_uep above): feed actual emitted bytes,
+        // excluding IDR outliers, for the EWMAs run_bitrate_policy's blend
+        // consumes plus the excess_base/enh + ov_base/enh telemetry.
         if (op && !(meta.flags & VENC_FRAME_FLAG_IDR)) {
           size_t emitted = 0;
           int sid = -1;
           for (auto& b : bodies) { emitted += b.body.size(); sid = b.stream_id; }
-          if (sid >= 0) balancer.on_frame(sid, static_cast<size_t>(n), emitted);
-        }
-        if (op && !op->shed[1]) {
-          auto split = balancer.solve(rc::phy_rate_mbps(op->ladder[0]),
-                                      rc::phy_rate_mbps(op->ladder[1]),
-                                      op->fec_overhead);
-          uep.set_layer_overhead(0, split.ov_base);
-          uep.set_layer_overhead(1, split.ov_enh);
+          if (sid >= 0) feed.on_frame(sid, static_cast<size_t>(n), emitted);
         }
         for (auto& b : bodies) txq.push(std::move(b));
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
@@ -1239,14 +1278,22 @@ int run_real_mode(const Config& cfg) {
           ti.mode = agent.current().ladder[0].mode;
           ti.mcs = agent.current().ladder[0].mcs;
           ti.bw = agent.current().ladder[0].bw;
-          // Feed reads 0 until the hot thread's balancer has solved at least
-          // once (pre-first-solve) — fall back to the commanded overhead so
-          // telemetry never reports a bogus 0.0 during that window.
-          ti.applied_ov_base = balancer_feed.ov_base.load(std::memory_order_relaxed);
-          ti.applied_ov_enh = balancer_feed.ov_enh.load(std::memory_order_relaxed);
-          if (ti.applied_ov_base == 0.0 && ti.applied_ov_enh == 0.0) {
-            ti.applied_ov_base = agent.current().fec_overhead;
-            ti.applied_ov_enh = agent.current().fec_overhead;
+          // applied_ov_base/enh report the commanded op PAIR (Task 6,
+          // RC_VERSION 5 — the fixed per-rung values RcAgent applies
+          // directly to the UEP layers), or the debug-HTTP per-layer
+          // override when armed (the same two atomics run_bitrate_policy's
+          // override check reads) — the AirFeed solver this used to report
+          // instead is gone (Task 7).
+          {
+            const int ob = air_feed_out.ovr_base_pct.load(std::memory_order_relaxed);
+            const int oe = air_feed_out.ovr_enh_pct.load(std::memory_order_relaxed);
+            if (ob >= 0 && oe >= 0) {
+              ti.applied_ov_base = ob / 100.0;
+              ti.applied_ov_enh = oe / 100.0;
+            } else {
+              ti.applied_ov_base = agent.current().fec_ov_base;
+              ti.applied_ov_enh = agent.current().fec_ov_enh;
+            }
           }
           // have_feedback() false means no RCF has EVER been accepted (still
           // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of

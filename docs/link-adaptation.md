@@ -10,26 +10,62 @@ place. Specs (local, gitignored):
 `docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md`,
 `docs/superpowers/specs/2026-08-15-pooled-rf-and-instant-s3-design.md`.
 
-## 2-stream UEP + air balancer (2026-08-29)
+## 2-stream UEP + air balancer (2026-08-29, superseded 2026-08-30 — see below)
 
 The video link collapsed from 4 UEP streams (CRIT/T0/T1/T2, wire sids
-0-3) to 2: BASE (sid 0) and ENH (sid 1). BASE always rides `mcs−1` of the
+0-3) to 2: BASE (sid 0) and ENH (sid 1). BASE rode `mcs−1` of the
 ladder's scored rung — an always-on, fixed UEP-via-rate rule mirrored
-identically on drone and GS (RC_VERSION 4) — while ENH rides the scored
-mcs itself; nothing flies above the scored mcs (2026-07-26 rule, still in
-force). FEC overhead is now LITERAL: the config/wire `overhead` value
-*is* the command overhead (`repair/data`), not a per-layer scaling
-(the old `uep_layer_overhead`) of it — `budget()` and `budget_for(rung)`
-both derive directly as `overhead / (1 + overhead)`, the identical
-formula for both sids; `budget3_for()` is gone; `budget_for()` alone now
-covers what it used to do (the enh/probe rung's budget).
+identically on drone and GS (RC_VERSION 4) — while ENH rode the scored
+mcs itself; nothing flew above the scored mcs (2026-07-26 rule, still in
+force). FEC overhead was LITERAL: the config/wire `overhead` value
+*was* the command overhead (`repair/data`), not a per-layer scaling
+(the old `uep_layer_overhead`) of it — a single `budget()`/`budget_for(rung)`
+pair derived directly as `overhead / (1 + overhead)`, the identical
+formula for both sids; `budget3_for()` was gone, `budget_for()` alone
+covered what it used to do (the enh/probe rung's budget).
 
-The drone's `AirBalancer` redistributes that one commanded overhead
+The drone's `AirBalancer` redistributed that one commanded overhead
 between BASE and ENH every frame, anchored on ACTUAL emitted bytes
 rather than the nominal `len*(1+ov)/rate` model (which measured a
 reproducible ~2x gain error at large frames). See
 `docs/airtime-balance-spike-findings-2026-08-29.md` for the bench spikes
-behind that design.
+behind that design. The rate split had a structural floor, though: at
+the mcs1 rung's 2:1 base/enh rate ratio the balancer's rails could not
+reach air balance (3.3 ms/pair residual alternation) — the motivation
+for the same-rate counter-study below.
+
+## Same-rate fixed pairs (2026-08-30) — current architecture
+
+Both streams now ride the SAME scored mcs; the mcs−1 base-rate split
+above is gone (`ladder_from` in `common/src/profile.cpp`, 2026-08-30
+RULING). UEP is expressed only through FEC overhead, and that overhead
+is a fixed **per-rung config pair** — `overhead_base`/`overhead_enh` —
+carried in the v5 RCF (RC_VERSION 5), not a single scalar the drone
+reallocates at runtime. `LadderController` scores each sid against its
+own budget: `budget_base()`/`budget_base_for(rung)` for sid 0 (base),
+`budget_enh_for(rung)` for sid 1 (enh/probe/s3) — see
+`gs/src/ladder_controller.h`. There is no shared `budget()`/
+`budget_for()` anymore.
+
+**The runtime `AirBalancer` solver is deleted.** The drone applies the
+commanded overhead pair directly to UEP; there is no per-frame
+redistribution or solve. `AirFeed` (`drone/src/air_feed.{h,cpp}`, the
+solver's measurement-only successor) keeps per-stream EWMAs of
+frame-unit bytes vs. emitted body bytes, publishing `share_base`/
+`excess_base`/`excess_enh` for `run_bitrate_policy`'s blended-rate
+target (see `docs/airtime-model.md` §1) and `ov_base`/`ov_enh` purely
+for observability — none of it feeds back into what overhead is
+actually applied.
+
+The drone's `:8301` `ov_base_pct`/`ov_enh_pct` HTTP override (bench
+tooling, not a production control) is now the ONLY source of
+commanded-vs-applied divergence: with no override armed, applied always
+equals commanded. `tools/maburtop.py`'s DRONE and LADDER panels reflect
+this (`_ov_cmd_cell`/`_ov_applied_cell`) — a mismatch there means an
+armed override or a stale/old-daemon snapshot, not a balancer at work.
+
+Measurement basis for the same-rate decision: ten static operating
+points plus a motion sweep, `docs/same-rate-uep-findings-2026-08-30.md`.
 
 Everywhere below that still says "s1" or "s3" is pre-2026-08-29
 vocabulary for what is now sid0 (BASE) and sid1 (ENH — still the

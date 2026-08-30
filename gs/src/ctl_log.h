@@ -18,7 +18,7 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 6 <header_info>                                  # once, first line
+//   ctllog 8 <header_info>                                  # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr> <rssi_dbm>                # dwell sample, link.ctl_log_period_ms
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
@@ -41,6 +41,16 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 8 (2026-08-30, same-rate-fixed-pairs): a HEADER-ONLY change -- the
+// S/E/P/N/R line formats carry no overhead field at all (rung overhead only
+// ever appeared in the header's `ladder=` token), so nothing in the per-tick
+// records moved. The header's `ladder=<mcs>/<ov>,...` token becomes
+// `ladder=<mcs>/<ovb>*100:<ove>*100,...` -- each rung's overhead splits into
+// a base/enh pair (GS::config's per-rung overhead_base/overhead_enh, see
+// gs/src/config.h) instead of the single scalar v7 and earlier wrote.
+// v1-v7 logs keep their single value per rung; a parser reading an old log
+// treats it as both base and enh (they were the same rung table entry).
 //
 // ctllog 7 (2026-08-30, airtime-balance-uep): line formats are UNCHANGED
 // from v6, but the u3/resid3/evm_db/drssi/dsnr MEANING shifts again: the

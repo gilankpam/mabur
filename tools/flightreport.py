@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v7,
-warns on pre-v4 and pre-v7). Format is auto-detected from the first line.
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v8,
+warns on pre-v4, pre-v7 and pre-v8). Format is auto-detected from the first
+line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
@@ -32,6 +33,37 @@ def load(path):
     return rows
 
 
+def _parse_ladder_token(raw):
+    """Parse the ctllog header's `ladder=` value into a list of
+    {"mcs": int, "ov_base": float, "ov_enh": float} rungs.
+
+    v1-v7 wrote a single per-rung overhead x100 (`mcs/ov`, e.g. "5/25");
+    v8 (Task 5, same-rate-fixed-pairs) splits it into a base/enh pair
+    (`mcs/ovb:ove`, e.g. "5/25:50"). A single (pre-v8) value is treated as
+    both base and enh -- that rung had no split to lose."""
+    rungs = []
+    if not raw:
+        return rungs
+    for entry in raw.split(","):
+        if "/" not in entry:
+            continue
+        mcs_s, ov_s = entry.split("/", 1)
+        try:
+            mcs = int(mcs_s)
+        except ValueError:
+            continue
+        if ":" in ov_s:
+            ovb_s, ove_s = ov_s.split(":", 1)
+        else:
+            ovb_s = ove_s = ov_s
+        try:
+            ov_base, ov_enh = float(ovb_s) / 100.0, float(ove_s) / 100.0
+        except ValueError:
+            continue
+        rungs.append({"mcs": mcs, "ov_base": ov_base, "ov_enh": ov_enh})
+    return rungs
+
+
 def load_ctllog(path):
     """Parse a maburgs ctl log (gs/src/ctl_log.cpp formats).
 
@@ -47,10 +79,18 @@ def load_ctllog(path):
         toks0 = first.split()
         header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
         # ctllog 6 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+        # ctllog 8 ladder=0/100:100,2/50:50,... down_util=0.35 up_util=0.15
         for tok in first.split()[2:]:
             if "=" not in tok: continue
             k, v = tok.split("=", 1)
             header[k] = v
+        # Structured ladder rungs (Task 5, same-rate-fixed-pairs): v8 splits
+        # each rung's overhead into a base/enh pair (mcs/ovb:ove); v1-v7
+        # wrote a single value per rung (mcs/ov) -- treated as both, since a
+        # pre-split rung had no base/enh distinction to lose. Stored under
+        # a "_"-prefixed key like _version so the raw header-field print
+        # loop (which skips "_"-prefixed keys) doesn't also print this.
+        header["_ladder"] = _parse_ladder_token(header.get("ladder", ""))
 
         for line in f:
             line = line.strip()
@@ -192,6 +232,12 @@ def print_wall_report(ctllog):
 
     print("CTL LOG HEADER")
     ver = header.get("_version", 0)
+    if ver and ver < 8:
+        print("  NOTE: ctllog v%d -- ladder rungs are single-overhead; pair "
+              "semantics from v8 (same-rate-fixed-pairs, 2026-08-30) split "
+              "each rung's overhead into a base/enh pair. The header's "
+              "`ladder=` token here carries one value per rung, parsed as "
+              "both base and enh." % ver)
     if ver and ver < 7:
         print("  NOTE: ctllog v%d -- predates the 2026-08-29 airtime-balance-uep "
               "collapse from 4 UEP streams to 2 (BASE sid0 + ENH sid1). "

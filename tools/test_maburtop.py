@@ -3,6 +3,7 @@ import unittest
 from maburtop import (
     Model, render_screen, render_rows_compact, hstack,
     panel_topbar, panel_drone, panel_video, panel_links, panel_gs_radios,
+    panel_ladder,
     CARD_COLS, RADIO_COLS, GRID_WIDTH,
 )
 
@@ -11,7 +12,7 @@ DGRAM = {
     "link": {
         "vtx_id": 1, "state": "session", "tx_card": 0,
         "op": {"mcs": 5, "bw": 20, "sgi": False, "vht": False,
-               "overhead": 0.25, "snr_req": 18.5},
+               "overhead_base": 0.25, "overhead_enh": 0.25, "snr_req": 18.5},
         "deadline_ms": 60, "residual_loss": 0.012,
         "layer_delivery_pct": [100, 100],
         "streams": [
@@ -153,10 +154,11 @@ class DronePanelTest(unittest.TestCase):
         self.assertIn("mcs6/20", text[st:st + ln])
 
     def test_ov_split_renders_base_and_enh_no_mismatch_span(self):
-        # The balancer diverging base/enh from the commanded op scalar is
-        # normal operation (that's its job), not a staleness signal the
-        # way an mcs/bw mismatch is — no bad span for it (2026-08-29
-        # airtime-balance-uep).
+        # applied.overhead_{base,enh} is not diffed against op's pair the
+        # way mcs/bw are: the runtime balancer that used to explain a split
+        # is deleted (2026-08-30 same-rate-fixed-pairs), so applied ≡
+        # commanded except under an armed :8301 override — no bad span
+        # here either way, this panel just doesn't render that comparison.
         d = dict(DGRAM)
         d["drone"] = dict(DGRAM["drone"],
                            applied=dict(DGRAM["drone"]["applied"],
@@ -378,7 +380,7 @@ class LinksPanelTest(unittest.TestCase):
     def test_ctl_row_content_and_good_span(self):
         d = dict(DGRAM)
         d["link"] = dict(DGRAM["link"], ctl={
-            "rung": {"idx": 3, "mcs": 5, "ov": 0.25},
+            "rung": {"idx": 3, "mcs": 5, "ov_base": 0.25, "ov_enh": 0.10},
             "util": 0.08, "pre_fec_loss": 0.035, "budget": 0.43,
             "probation_ms_left": 0, "penalized": [],
             "counters": {"demotes_residual": 0, "demotes_util": 3, "promotes": 4,
@@ -388,7 +390,7 @@ class LinksPanelTest(unittest.TestCase):
         })
         rows = panel_links(_fresh(d), 100.2)
         text, spans = next((t, s) for t, s in rows if "of budget" in t)
-        self.assertIn("rung 3 (mcs5/ov0.25)", text)
+        self.assertIn("rung 3 (mcs5 ov b0.25/e0.10)", text)
         self.assertIn("u=0.08", text)
         self.assertIn("of budget 43%", text)
         self.assertIn("[util@0.65]", text)
@@ -396,7 +398,7 @@ class LinksPanelTest(unittest.TestCase):
 
     def test_ctl_row_warn_and_bad_util_thresholds(self):
         base_ctl = {
-            "rung": {"idx": 3, "mcs": 5, "ov": 0.25},
+            "rung": {"idx": 3, "mcs": 5, "ov_base": 0.25, "ov_enh": 0.10},
             "pre_fec_loss": 0.1, "budget": 0.43,
             "probation_ms_left": 0, "penalized": [],
             "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
@@ -414,6 +416,29 @@ class LinksPanelTest(unittest.TestCase):
         rows = panel_links(_fresh(d_bad), 100.2)
         _text, spans = next((t, s) for t, s in rows if "of budget" in t)
         self.assertTrue(any(style == "bad" for _, _, style in spans))
+
+    def test_ladder_rung_rows_render_overhead_pair(self):
+        # Per-rung overhead is a base/enh pair (same-rate-fixed-pairs); the
+        # removed scalar 'ov' key must not resurface as '--'.
+        d = dict(DGRAM)
+        d["link"] = dict(DGRAM["link"], ctl={
+            "rung": {"idx": 1, "mcs": 3, "ov_base": 0.5, "ov_enh": 0.25},
+            "util": 0.1, "down_util": 0.05, "up_util": 0.5,
+            "pre_fec_loss": 0.01, "budget": 0.4,
+            "probation_ms_left": 0, "penalized": [],
+            "ladder": [
+                {"mcs": 1, "ov_base": 1.0, "ov_enh": 1.0},
+                {"mcs": 3, "ov_base": 0.5, "ov_enh": 0.25},
+            ],
+            "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
+                         "probation_fails": 0, "starved_drops": 0, "timeout_drops": 0},
+            "last_event": {"t_ms": 0, "from": 0, "to": 0, "reason": "none", "u": 0.0},
+        })
+        rows = panel_ladder(_fresh(d), 100.2)
+        joined = "\n".join(t for t, _ in rows)
+        self.assertIn("1 mcs3/ov0.50:0.25", joined)
+        self.assertIn("0 mcs1/ov1.00:1.00", joined)
+        self.assertNotIn("--", joined.split("\n")[1])  # current rung row
 
 
 class GsRadiosPanelTest(unittest.TestCase):
