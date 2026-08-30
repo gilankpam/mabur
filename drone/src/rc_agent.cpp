@@ -333,7 +333,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
                                    static_cast<int>(rc::profile_table().size()) - 1);
     auto ladder = rc::ladder_for_row(row_idx);
     const auto& row = rc::profile_table()[static_cast<size_t>(row_idx)];
-    apply_ladder_op(ladder, row.fec_overhead);
+    apply_ladder_op(ladder, row.ov_base);
 
     if (state_ != State::FAILSAFE) link_established_ = true;
     state_ = State::LINKED;

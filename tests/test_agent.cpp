@@ -225,12 +225,12 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
 }
 
-// 3. RCF profile HT mcs2/20, fec16=8 (ov=0.5) -> op ladder is BASE=mcs1,
-// ENH=mcs2 (the mcs-1 rule, spec 2026-08-29-airtime-balance-uep §2), ov
-// 0.5; set_bitrate_kbps called with the blended target: rate_b=13.0
-// (mcs1), rate_e=19.5 (mcs2), fb=fe=0.5 (no feed), denom =
-// 0.5*1.5/13 + 0.5*1.5/19.5 = 0.096154, kbps = 1000*0.65/0.096154 =
-// 6760.0 -> rounds to 6800.
+// 3. RCF profile HT mcs2/20, fec16=8 (ov=0.5) -> op ladder is BASE=mcs2,
+// ENH=mcs2 (same-rate ruling, 2026-08-30 spec same-rate-fixed-pairs), ov
+// 0.5; set_bitrate_kbps called with the blended target: rate_b=rate_e=19.5
+// (mcs2, both slots), fb=fe=0.5 (no feed), denom =
+// 0.5*1.5/19.5 + 0.5*1.5/19.5 = 0.076923, kbps = 1000*0.65/0.076923 =
+// 8450.0 -> rounds to 8500.
 TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -243,20 +243,23 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   const AppliedOp& op = agent.current();
-  CHECK(op.ladder[0].mcs == 1);  // BASE = mcs - 1
+  CHECK(op.ladder[0].mcs == 2);  // BASE = mcs (same-rate)
   CHECK(op.ladder[1].mcs == 2);  // ENH = mcs
   CHECK(op.fec_overhead > 0.499 && op.fec_overhead < 0.501);
 
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 6800);
+  CHECK(act.bitrates.back() == 8500);
 }
 
 // 3b. The blend itself, isolated from the mcs2 case above: profile mcs5 ->
-// BASE=mcs4 (39 Mbps), ENH=mcs5 (52 Mbps). cfg: airtime_budget 0.60, ov
-// (RCF literal) 0.50, shares default 50/50 (no feed), excess 0. denom =
-// 0.5*1.5/39 + 0.5*1.5/52 = 0.033654, kbps = 1000*0.60/0.033654 = 17829 ->
-// round100 = 17800. bitrate_max_kbps is raised to 20000 here (the prod
-// default 10000 would clamp the result and hide the blend).
+// BASE=mcs5, ENH=mcs5 (52 Mbps, both slots — same-rate ruling). cfg:
+// airtime_budget 0.60, ov (RCF literal) 0.50, shares default 50/50 (no
+// feed), excess 0. denom = 0.5*1.5/52 + 0.5*1.5/52 = 0.028846, kbps =
+// 1000*0.60/0.028846 = 20800 -> clamps to bitrate_max_kbps (20000, raised
+// here from the prod default 10000). Same-rate collapses the two-rate
+// blend this test used to exercise (both slots now share one PHY rate),
+// so this case now only proves the clamp; 3d/3e still exercise fb/excess
+// weighting via distinct excess terms.
 TEST(bitrate_policy_blends_base_and_enh_rates) {
   Config cfg = make_cfg();
   cfg.encoder.airtime_budget = 0.60;
@@ -271,7 +274,7 @@ TEST(bitrate_policy_blends_base_and_enh_rates) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 17800);
+  CHECK(act.bitrates.back() == 20000);
 }
 
 // 3c. MAX_RANGE degenerate case: both ladder slots are mcs0 (base clamps at
@@ -292,18 +295,20 @@ TEST(bitrate_policy_failsafe_degenerates_to_single_rate) {
 }
 
 // 3d. Non-null BalancerFeed drives the blend: asymmetric share (0.7/0.3)
-// plus DISTINCT excess_base/excess_enh, chosen so a swapped exb/exe or an
-// inverted fb/(1-fb) weighting would both change the result (verified by
-// hand below the derivation). profile mcs5 -> BASE=mcs4 (39 Mbps),
-// ENH=mcs5 (52 Mbps), ov (RCF literal) 0.5, budget 0.60, max 20000 (avoid
-// the clamp).
-//   denom = 0.7*(1+0.5+0.10)/39 + 0.3*(1+0.5+0.05)/52
-//         = 0.7*1.60/39 + 0.3*1.55/52 = 1.12/39 + 0.465/52
-//         = 0.0287179 + 0.0089423 = 0.0376603
-//   kbps  = 1000*0.60/0.0376603 = 15931.9 -> round100 = 15900.
-// (For contrast, swapping exb/exe gives 16200; inverting fb/(1-fb) i.e.
-// using 0.3 as the base weight gives 18100 -- both different from 15900,
-// so either bug would fail this test.)
+// plus DISTINCT excess_base/excess_enh. Same-rate ruling means BASE and
+// ENH now share one PHY rate (mcs5, 52 Mbps both slots), so the two
+// hypothetical bugs this test was built to separate (a swapped exb/exe vs.
+// an inverted fb/(1-fb) weighting) collapse to the same wrong value —
+// ovb==ove factors 1.5/rate out of the weighted term, leaving only
+// fb*exb+(1-fb)*exe, which is symmetric under simultaneously swapping
+// (fb,exb,exe)->(1-fb,exe,exb) — but the test still catches either one
+// (both land on 19900, not the correct 19700).
+//   denom = 0.7*(1+0.5+0.10)/52 + 0.3*(1+0.5+0.05)/52
+//         = [0.7*1.60 + 0.3*1.55]/52 = 1.585/52 = 0.0304808
+//   kbps  = 1000*0.60/0.0304808 = 19684.5 -> round100 = 19700.
+// (For contrast, swapping exb/exe or inverting fb/(1-fb) each give
+// 19936.1 -> 19900, different from 19700, so either bug still fails this
+// test — it just can no longer tell you which one.)
 TEST(bitrate_policy_blend_uses_live_feed_share_and_excess) {
   Config cfg = make_cfg();
   cfg.encoder.airtime_budget = 0.60;
@@ -322,22 +327,22 @@ TEST(bitrate_policy_blend_uses_live_feed_share_and_excess) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 15900);
+  CHECK(act.bitrates.back() == 19700);
 }
 
 // 3e. feed_->share_base is clamped to [0.05, 0.95] before it reaches the
 // blend -- a share of 0.0 (e.g. the balancer transiently reporting "all
 // air to enh") must not zero out the base term entirely. profile mcs3 ->
-// BASE=mcs2 (19.5 Mbps), ENH=mcs3 (26 Mbps), ov (RCF literal) 0.25, budget
-// 0.60, max 20000, no excess.
-//   fb clamps 0.0 -> 0.05.
-//   denom = 0.05*1.25/19.5 + 0.95*1.25/26 = 0.0625/19.5 + 1.1875/26
-//         = 0.0032051 + 0.0456731 = 0.0488782
-//   kbps  = 1000*0.60/0.0488782 = 12275.4 -> round100 = 12300.
-// (Without the clamp, fb=0.0 would drop the base term entirely: denom =
-// 1.25/26 = 0.0480769, kbps = 600/0.0480769 = 12480.0 -> 12500, a
-// different value from the clamped 12300 pinned below -- so a missing or
-// wrong clamp fails this test.)
+// BASE=mcs3, ENH=mcs3 (26 Mbps, both slots — same-rate ruling), ov (RCF
+// literal) 0.25, budget 0.60, max 20000, no excess. NOTE: with BASE and
+// ENH sharing one rate and one ov, fb*(X)/rate + (1-fb)*(X)/rate == X/rate
+// for ANY fb, clamped or not -- the fb clamp this test was built to pin is
+// no longer observable in the bitrate output under same-rate. The number
+// below is still the correct blended target; the clamp itself needs a
+// different probe now that same-rate has collapsed this one (flagged for
+// follow-up, not fixed here).
+//   denom = (1+0.25)/26 = 0.0480769, kbps = 1000*0.60/0.0480769 = 12480.0
+//   -> round100 = 12500 (identical whether fb is 0.0 or clamped to 0.05).
 TEST(bitrate_policy_blend_clamps_feed_share_to_valid_range) {
   Config cfg = make_cfg();
   cfg.encoder.airtime_budget = 0.60;
@@ -354,7 +359,7 @@ TEST(bitrate_policy_blend_clamps_feed_share_to_valid_range) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 12300);
+  CHECK(act.bitrates.back() == 12500);
 }
 
 // 4. Stale seq (same seq again, then seq-1) -> no new apply_op (generation
@@ -423,7 +428,7 @@ TEST(failsafe_and_rendezvous_timers_fire_exactly) {
 
   // LINKED->FAILSAFE entry forces the bitrate policy to the MCS0 floor
   // (1400 kbps) immediately, bypassing the steady-state throttle/hysteresis
-  // — the encoder must not keep flooding at the last LINKED bitrate (6800)
+  // — the encoder must not keep flooding at the last LINKED bitrate (8500)
   // once the radio has dropped to the robust MAX_RANGE profile.
   REQUIRE(!act.bitrates.empty());
   CHECK(act.bitrates.back() == 1400);
@@ -656,18 +661,23 @@ TEST(demote_cascade_sheds_every_decrease_immediately) {
   // ctl-0020-shaped cascade at RCF cadence: each step's lower target must
   // go out on the SAME on_rc_frame call, throttle stamp notwithstanding.
   struct Step { uint8_t mcs, ov16; int kbps; };
-  // Re-derived for the Task 5 blended-rate policy (BASE=mcs-1/ENH=mcs,
-  // fb=0.5, budget 0.65, no feed):
-  //  mcs4/ov0.25: rate_b=26(mcs3)/rate_e=39(mcs4), denom=0.625*(1/26+1/39)
-  //    =0.0400641, kbps=650/0.0400641=16224.0 -> 16200.
-  //  mcs2/ov0.5: rate_b=13(mcs1)/rate_e=19.5(mcs2), denom=0.75*(1/13+1/19.5)
-  //    =0.0961538, kbps=650/0.0961538=6760.0 -> 6800.
+  // Re-derived for the same-rate ruling (both slots ride the scored mcs,
+  // fb=0.5, budget 0.65, no feed). mcs4/ov0.25 (the old step 1) now
+  // computes to 20280 -> clamps to 20000, identical to the top rung above
+  // it, so it can't prove a swallowed decrease; ov0.5 is used instead to
+  // keep this step's target strictly below the top rung's clamp:
+  //  mcs4/ov0.5: rate=39 (both slots), denom=(1+0.5)/39=0.0384615,
+  //    kbps=650/0.0384615=16900.0 -> 16900.
+  //  mcs2/ov0.5: rate=19.5 (both slots), denom=(1+0.5)/19.5=0.0769231,
+  //    kbps=650/0.0769231=8450.0 -> 8500.
   //  mcs0/ov1.0: both slots clamp to mcs0 (6.5), denom=(1+1.0)/6.5=0.30769,
-  //    kbps=650/0.30769=2112.5 -> 2100. (No longer collides with the
-  //    MAX_RANGE floor's 1400: that is ov=2.0, not this RCF's literal 1.0
-  //    — the old uep_layer_overhead clamp-to-2.0 translation that made them
-  //    coincide is gone since Task 1/RC_VERSION 4.)
-  const Step down[] = {{4, 4, 16200}, {2, 8, 6800}, {0, 16, 2100}};
+  //    kbps=650/0.30769=2112.5 -> 2100. (Unaffected by the ruling: mcs0
+  //    already clamped both slots to the floor under the old mcs-1 rule
+  //    too. No longer collides with the MAX_RANGE floor's 1400: that is
+  //    ov=2.0, not this RCF's literal 1.0 — the old uep_layer_overhead
+  //    clamp-to-2.0 translation that made them coincide is gone since
+  //    Task 1/RC_VERSION 4.)
+  const Step down[] = {{4, 8, 16900}, {2, 8, 8500}, {0, 16, 2100}};
   uint64_t t = 3100;
   for (const Step& d : down) {
     auto w = make_rcf_wire(cfg.link.vtx_id, seq++,
@@ -689,17 +699,19 @@ TEST(bitrate_increase_still_gated) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
-  // Enter LINKED at mcs2/ov0.5 -> 6800 (forced entry call, stamp t=0; see
+  // Enter LINKED at mcs2/ov0.5 -> 8500 (forced entry call, stamp t=0; see
   // test 3/10b's blended-formula derivation for this mcs/ov combo).
   auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
-  REQUIRE(act.bitrates.back() == 6800);
+  REQUIRE(act.bitrates.back() == 8500);
 
-  // Promote to mcs4/ov0.25 (16200, see 10b's derivation) once the stamp
-  // expired: call fires.
-  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 4, 20), 4);
+  // Promote to mcs4/ov0.5 (16900, see 10b's derivation) once the stamp
+  // expired: call fires. (ov0.5, not the old ov0.25 -- that combo now
+  // clamps to 20000 under same-rate, same as the mcs7 step below, and
+  // couldn't show a genuine further increase.)
+  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 4, 20), 8);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
-  REQUIRE(act.bitrates.back() == 16200);
+  REQUIRE(act.bitrates.back() == 16900);
   size_t n = act.bitrates.size();
 
   // Further promote to mcs7 (20000) 100ms later: inside the throttle
@@ -717,15 +729,15 @@ TEST(bitrate_increase_still_gated) {
 // 10d. A promote must reach the encoder even when bitrate_max_kbps clamps
 // the new target to within 10% of the last applied value. Measured on the
 // bench 2026-08-28: prod runs airtime_budget 0.60 / bitrate_max 10000.
-// Re-derived for the Task 5 blended-rate policy (BASE=mcs-1/ENH=mcs,
-// fb=0.5, ov literal 1.0 — ov16=16, not the pre-blend 12/0.75; at 0.75 both
-// rungs' unclamped values exceed 10000 and clamp identically, testing
-// nothing):
-//   rung4 (mcs4): rate_b=26(mcs3)/rate_e=39(mcs4), denom = 0.5*2.0*
-//     (1/26+1/39) = 1.0*(5/78) = 0.064103, kbps = 600/0.064103 = 9360.0
+// Re-derived for the same-rate ruling (both slots ride the scored mcs,
+// ov literal per rung, budget 0.60):
+//   rung4 (mcs4/ov1.5 -- ov16=24, not the two-rate-era 16/1.0, which now
+//     computes unclamped to 11700 and can't demonstrate the trap): rate=39
+//     (both slots), denom=(1+1.5)/39=0.064103, kbps=600/0.064103=9360.0
 //     -> 9400.
-//   rung5 (mcs5): rate_b=39(mcs4)/rate_e=52(mcs5), denom = 1.0*(1/39+1/52)
-//     = 7/156 = 0.044872, kbps = 600/0.044872 = 13371.4, clamps to 10000.
+//   rung5 (mcs5/ov1.0 -- ov16=16, unchanged): rate=52 (both slots),
+//     denom=(1+1.0)/52=0.038462, kbps=600/0.038462=15600.0, clamps to
+//     10000.
 // |10000-9400| = 600 is inside the v1 `changed_enough` deadband (last/10 =
 // 940) that existed until 2026-08-28, so the promote was swallowed and the
 // encoder stayed on the mcs4 bitrate forever while the link ran mcs5 -- a
@@ -743,16 +755,16 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
-  // Enter LINKED at rung 4: mcs4/ov1.0 -> 9360.0 -> 9400 (see the
+  // Enter LINKED at rung 4: mcs4/ov1.5 -> 9360.0 -> 9400 (see the
   // derivation above).
-  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 16);
+  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 24);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
   REQUIRE(act.bitrates.back() == 9400);
 
   // Promote to rung 5 well after the 1s throttle window: mcs5/ov1.0 ->
-  // 13371.4, clamped to 10000. Only 600 above the last applied value.
+  // 15600.0, clamped to 10000. Only 600 above the last applied value.
   auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 5, 20), 16);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
   CHECK(act.bitrates.back() == 10000);
@@ -839,9 +851,10 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
 
 // 11. RCF with probe3=true overrides only the enh layer (ladder[1], the old
 // s3) with probe_profile's MCS while the base layer (ladder[0]) stays on
-// the base profile's mcs-1; agent.probing() reflects the last accepted
-// RCF's probe3 bit and reverts (both op.ladder[1] and probing()) the moment
-// a follow-up RCF arrives without the flag.
+// the base profile's scored mcs (same-rate ruling); agent.probing()
+// reflects the last accepted RCF's probe3 bit and reverts (both
+// op.ladder[1] and probing()) the moment a follow-up RCF arrives without
+// the flag.
 TEST(probe_rcf_overrides_layer3_mcs) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -863,7 +876,7 @@ TEST(probe_rcf_overrides_layer3_mcs) {
 
   CHECK(agent.state() == RcAgent::State::LINKED);
   const AppliedOp& op = agent.current();
-  CHECK(op.ladder[0].mcs == 4);  // BASE = mcs - 1, unaffected by the probe
+  CHECK(op.ladder[0].mcs == 5);  // BASE = scored mcs, unaffected by the probe
   CHECK(op.ladder[1].mcs == 6);  // ENH at the probe MCS
   CHECK(agent.probing());
 

@@ -74,10 +74,10 @@ std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw) {
 // rule "nothing flies ABOVE the scored mcs" still holds; base below extends
 // margin downward. Spec 2026-08-29-airtime-balance-uep.
 //
-// 2026-08-30 EXPERIMENT (branch uep-same-rate-sweep): base rides the scored
-// mcs too — same-rate both streams, UEP via per-layer FEC overhead only
-// (the drone's :8301 ov_base_pct/ov_enh_pct override). Both ends must run
-// this branch or the GS's air/phy display lies about the base stream.
+// 2026-08-30 RULING (spec 2026-08-30-same-rate-fixed-pairs): both streams
+// ride the scored mcs. UEP is per-rung FEC overhead pairs carried in the
+// v5 RCF — no rate split, no runtime redistribution. Measurement basis:
+// docs/same-rate-uep-findings-2026-08-30.md (static/motion/loss sweeps).
 std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
   int top = (mode == PhyMode::VHT) ? 8 : 7;
   int m = std::clamp(static_cast<int>(mcs), 0, top);
@@ -100,11 +100,11 @@ std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
 
 const std::array<ProfileRow, 5>& profile_table() {
   static const std::array<ProfileRow, 5> table = {{
-      {0, 2.00, 20},
-      {1, 1.50, 20},
-      {2, 1.00, 20},
-      {4, 0.50, 20},
-      {5, 0.20, 20},
+      {0, 2.00, 2.00, 20},
+      {1, 1.50, 1.50, 20},
+      {2, 1.00, 1.00, 20},
+      {4, 0.50, 0.50, 20},
+      {5, 0.20, 0.20, 20},
   }};
   return table;
 }
