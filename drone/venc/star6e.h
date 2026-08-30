@@ -186,6 +186,12 @@ typedef int MI_VENC_DEV;
   g_mi_sys.fnBindChnPort2((src), (dst), (sf), (df), (lt), (lp))
 #define MI_SYS_SetChnOutputPortDepth(p, u, b) \
   g_mi_sys.fnSetChnOutputPortDepth((p), (u), (b))
+/* fnGetCurPts is optional (may be unresolved on some libmi_sys.so builds);
+ * guard against the NULL function pointer instead of crashing. */
+static inline int _s6e_sys_get_cur_pts(uint64_t *pts) {
+  return g_mi_sys.fnGetCurPts ? g_mi_sys.fnGetCurPts(pts) : -1;
+}
+#define MI_SYS_GetCurPts(cur) _s6e_sys_get_cur_pts(cur)
 #else
 MI_S32 MI_SYS_Init(void);
 MI_S32 MI_SYS_Exit(void);

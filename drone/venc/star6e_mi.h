@@ -27,6 +27,9 @@ typedef struct {
 		uint32_t link_type, uint32_t link_param);
 	int (*fnSetChnOutputPortDepth)(const void *port,
 		uint32_t user_depth, uint32_t buf_depth);
+	/* Optional — not every libmi_sys.so build exports this (probed once
+	 * at star6e_output_init, see star6e_output.c). */
+	int (*fnGetCurPts)(uint64_t *pu64CurPts);
 } star6e_sys_impl;
 
 typedef struct {

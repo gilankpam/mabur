@@ -44,8 +44,10 @@ typedef struct {
 	uint32_t pts;        /* capture timestamp (µs, truncated to 32 bits) */
 	uint8_t  codec;      /* VENC_FRAME_CODEC_H265 */
 	uint8_t  flags;      /* VENC_FRAME_FLAG_{IDR,GDR,ENHANCE} */
-	uint8_t  gdr_pos;    /* 0-based position in GDR cycle (0 when inactive) */
-	uint8_t  gdr_len;    /* GDR cycle length in frames (0 when inactive) */
+	uint16_t enc_us;     /* capture→GetStream in the MI pts timebase, µs,
+	                        saturating at 65535; 0 = measurement unavailable.
+	                        Replaced write-only gdr_pos/gdr_len 2026-08-30
+	                        (latency accounting); VENC_FRAME_FLAG_GDR remains. */
 } VencFrameMeta;
 
 /* ── Ring header (3 cache lines, 192 bytes) ──────────────────────────── */
