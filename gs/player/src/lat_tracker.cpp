@@ -60,30 +60,36 @@ void LatTracker::on_submit(const maburgs::AuRecordMeta& m, uint64_t mono_us) {
   // anchor observe and the head-segment computation entirely; the frame
   // still entered the in-flight map above and tail stamps will retire it,
   // it just never contributes head segments or joins the window.
-  if (m.t_first_us) {
-    const auto obs = anchor_.observe(m.pts_us, m.t_first_us);
+  // Enc-excess air fix (2026-08-31): the anchor consumes the encode/queue-
+  // CORRECTED arrival, so its floor means "best post-encoder, post-queue
+  // transit" and per-frame enc/dq are no longer double-counted against a
+  // floor that already contained the floor frame's encode time (which
+  // clamped air to 0 at the park). enc + dq + air == t_first - map(pts)
+  // exactly, so the additive invariant and chk are untouched. The adj
+  // subtraction uses only FCS-clean wire values (UepDecoder zeroes them
+  // from corrupt bodies) and is plausibility-capped: an implausible
+  // correction, like an unknown t_first, withholds the sample entirely
+  // rather than poisoning the snap-down floor.
+  const int64_t adjust = static_cast<int64_t>(m.enc_us) +
+                         static_cast<int64_t>(m.drone_q_ms) * 1000;
+  if (m.t_first_us && adjust <= maburgs::PtsAnchor::kMaxAnchorAdjustUs &&
+      static_cast<int64_t>(m.t_first_us) > adjust) {
+    const uint64_t adj_arrival = m.t_first_us - static_cast<uint64_t>(adjust);
+    const auto obs = anchor_.observe(m.pts_us, adj_arrival);
     e.pts64 = obs.pts64;
 
-    // Same clamp-order math as gs/src/main.cpp's head-segment accounting:
-    // enc first, then dq, against the anchored span; the remainder is air.
     // Only meaningful once the anchor is warm and this sample did not itself
     // re-seed it (a discontinuity's span is against a floor that no longer
     // means anything) -- in that case the segments stay 0 rather than lie.
     if (!obs.discont && anchor_.usable()) {
       e.anchor_ok_at_submit = true;
-      const int64_t span = static_cast<int64_t>(m.t_first_us) -
-                            static_cast<int64_t>(anchor_.map_us(obs.pts64));
-      int64_t rem = span > 0 ? span : 0;
-      const uint32_t enc = static_cast<uint32_t>(std::min<int64_t>(m.enc_us, rem));
-      rem -= enc;
-      const uint32_t dq = static_cast<uint32_t>(
-          std::min<int64_t>(static_cast<int64_t>(m.drone_q_ms) * 1000, rem));
-      rem -= dq;
+      const int64_t excess = static_cast<int64_t>(adj_arrival) -
+                             static_cast<int64_t>(anchor_.map_us(obs.pts64));
       const uint32_t fec = static_cast<uint32_t>(
           m.t_complete_us > m.t_first_us ? m.t_complete_us - m.t_first_us : 0);
-      e.seg[0] = enc;
-      e.seg[1] = dq;
-      e.seg[2] = static_cast<uint32_t>(rem);
+      e.seg[0] = m.enc_us;
+      e.seg[1] = static_cast<uint32_t>(m.drone_q_ms) * 1000;
+      e.seg[2] = static_cast<uint32_t>(excess > 0 ? excess : 0);
       e.seg[3] = fec;
     }
   }

@@ -235,6 +235,20 @@ old aucadence poll. Pre-2026-08-31 `--gate-ms` baselines and `flightjitter`
 post-switch ones for this reason — expect the poll-time noise floor (~0.5
 ms) to shrink, not the underlying transport behavior to have changed.
 
+**2026-08-31 (same day, later): the `air` segment's basis changed —
+enc-excess fix.** The first deployed build computed `air` by clamping
+`enc`/`dq` against the span above a capture-anchored floor, which
+double-counted encode time (the floor already contained the floor frame's
+encode) and pinned `air` at 0 in every clean capture from that build. The
+fix anchors on the encode/queue-corrected arrival: `enc`/`dq` now report
+their full wire values (previously clamped to the span) and `air` is real
+transit excess. `e2e` (and the anchored floor) therefore shifted lower by
+roughly the floor frame's `enc` (~2–4 ms) between the two same-day builds;
+`link.video.lat` and player `lat:` numbers from the few hours in between
+under-report `enc`/`dq`/`air` accordingly and show `air` ≈ 0 by
+construction. Corrupt-body protection also landed with the fix: wire
+`enc`/`dq` from FCS-failed bodies read as 0 = unknown from this point on.
+
 au-NNNN.log rows grew 4 columns (`t_first t_complete enc dq`, SlotHdr v2's
 latency fields) behind a `# aulog 2` marker line, written once at session
 start by `flightrec.py`. A log without the marker is the old 7-column v1

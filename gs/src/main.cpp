@@ -308,22 +308,33 @@ static int run_radio(const maburgs::Config& cfg) {
          // == CLOCK_MONOTONIC on this glibc/Linux target, so the two are
          // directly subtractable with no clock-domain conversion.
          if (lat.t_first_us) {
-           const auto obs = lat_anchor.observe(cur_au_pts, lat.t_first_us);
-           if (!obs.discont && lat_anchor.usable()) {
-             const int64_t span = static_cast<int64_t>(lat.t_first_us) -
-                                   static_cast<int64_t>(lat_anchor.map_us(obs.pts64));
-             int64_t rem = span > 0 ? span : 0;
-             // Clamp order is enc FIRST, then dq -- global constraint.
-             const uint32_t enc =
-                 static_cast<uint32_t>(std::min<int64_t>(lat.enc_us, rem));
-             rem -= enc;
-             const uint32_t dq = static_cast<uint32_t>(std::min<int64_t>(
-                 static_cast<int64_t>(lat.drone_q_ms) * 1000, rem));
-             rem -= dq;
-             const uint64_t t_done = mono_us();
-             const uint32_t fec = static_cast<uint32_t>(
-                 t_done > lat.t_first_us ? t_done - lat.t_first_us : 0);
-             lat_win.add(enc, dq, static_cast<uint32_t>(rem), fec);
+           // Enc-excess air fix (2026-08-31), mirrored in the player's
+           // LatTracker::on_submit: the anchor consumes the encode/queue-
+           // corrected arrival so its floor means "best post-encoder,
+           // post-queue transit"; enc/dq report their full wire values and
+           // air is the transit excess. enc + dq + air == t_first - map(pts)
+           // exactly (additive invariant unchanged). Corrections come only
+           // from FCS-clean bodies and are plausibility-capped; an
+           // implausible one withholds the sample rather than dragging the
+           // snap-down floor.
+           const int64_t adjust = static_cast<int64_t>(lat.enc_us) +
+                                  static_cast<int64_t>(lat.drone_q_ms) * 1000;
+           if (adjust <= maburgs::PtsAnchor::kMaxAnchorAdjustUs &&
+               static_cast<int64_t>(lat.t_first_us) > adjust) {
+             const uint64_t adj_arrival =
+                 lat.t_first_us - static_cast<uint64_t>(adjust);
+             const auto obs = lat_anchor.observe(cur_au_pts, adj_arrival);
+             if (!obs.discont && lat_anchor.usable()) {
+               const int64_t excess =
+                   static_cast<int64_t>(adj_arrival) -
+                   static_cast<int64_t>(lat_anchor.map_us(obs.pts64));
+               const uint64_t t_done = mono_us();
+               const uint32_t fec = static_cast<uint32_t>(
+                   t_done > lat.t_first_us ? t_done - lat.t_first_us : 0);
+               lat_win.add(lat.enc_us,
+                           static_cast<uint32_t>(lat.drone_q_ms) * 1000,
+                           static_cast<uint32_t>(excess > 0 ? excess : 0), fec);
+             }
            }
          }
        }});

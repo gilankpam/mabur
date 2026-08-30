@@ -73,16 +73,23 @@ TEST(full_chain_segments_and_e2e) {
   for (int i = 0; i < 8; ++i) CHECK(L.p99[i] == L.p50[i]);
 }
 
-TEST(enc_larger_than_span_clamps_to_span) {
+TEST(slow_encode_fast_transit_attributes_to_enc_not_air) {
+  // Enc-excess semantics: the anchor consumes the encode/queue-CORRECTED
+  // arrival (t_first - enc - dq), so a frame that spent 8 ms in the encoder
+  // and queue yet arrived only 1 ms past the old floor proves its TRANSIT
+  // was faster than the floor holder's -- it reports its full enc/dq, reads
+  // air 0, and legitimately snaps the transit floor down. The old clamped
+  // formula would have laundered the 8 ms into a truncated enc and pinned
+  // every later frame's air at 0.
   LatTracker lat;
   warm(lat);
 
   AuRecordMeta m;
   m.pts_us = 1000;
-  m.t_first_us = 102'000;  // span = 102000 - 101000 = 1000
+  m.t_first_us = 102'000;  // adj = 102000 - 5000 - 3000 = 94000
   m.t_complete_us = m.t_first_us + 500;
-  m.drone_q_ms = 3;    // would want dq_us = 3000, but nothing is left
-  m.enc_us = 5000;     // larger than the whole span
+  m.drone_q_ms = 3;
+  m.enc_us = 5000;
 
   lat.on_submit(m, /*mono_us=*/0);
   lat.on_decoded(1000, m.t_complete_us + 100);
@@ -91,9 +98,60 @@ TEST(enc_larger_than_span_clamps_to_span) {
 
   const auto L = lat.flush_line();
   CHECK(L.n == 1);
-  CHECK(L.p50[0] == 1000);  // enc clamped to the full span
-  CHECK(L.p50[1] == 0);     // dq: nothing left
-  CHECK(L.p50[2] == 0);     // air: nothing left, never negative
+  CHECK(L.p50[0] == 5000);  // enc: full wire value, never clamped away
+  CHECK(L.p50[1] == 3000);  // dq: full wire value
+  CHECK(L.p50[2] == 0);     // air: this frame IS the new transit floor
+  // enc + dq + air still equals t_first - map(pts) -- additive invariant:
+  CHECK(L.p50[0] + L.p50[1] + L.p50[2] == 102'000 - 94'000);
+
+  // A follow-up plain frame (enc/dq unknown) arriving at the ORIGINAL
+  // cadence now reads its transit excess against the corrected floor.
+  AuRecordMeta f;
+  f.pts_us = 2000;
+  f.t_first_us = 102'000 + 1000;  // adj = 103000; map(2000) = 93000+2000
+  f.t_complete_us = f.t_first_us + 400;
+  lat.on_submit(f, /*mono_us=*/0);
+  lat.on_decoded(2000, f.t_complete_us + 100);
+  lat.on_present(2000, f.t_complete_us + 200);
+  lat.on_flip(2000, f.t_complete_us + 300, /*exact=*/true);
+  const auto L2 = lat.flush_line();
+  CHECK(L2.n == 1);
+  CHECK(L2.p50[2] == 8000);  // air = 103000 - 95000: the counterfactual floor
+}
+
+TEST(implausible_wire_durations_do_not_feed_anchor_or_window) {
+  // A dq beyond the TxQueue's own drop-oldest bound cannot be real (the
+  // wire bytes are outside the sub-block CRCs and FCS-corrupt bodies are
+  // processed by design) -- such a frame must neither drag the snap-down
+  // floor nor join the window. kMaxAnchorAdjustUs is the plausibility cap.
+  LatTracker lat;
+  warm(lat);
+
+  AuRecordMeta g;
+  g.pts_us = 1000;
+  g.t_first_us = 106'000;
+  g.t_complete_us = g.t_first_us + 500;
+  g.drone_q_ms = 400;  // 400 ms "queue wait": impossible, cap is ~150 ms
+  g.enc_us = 0;
+  lat.on_submit(g, /*mono_us=*/0);
+  lat.on_decoded(1000, g.t_complete_us + 100);
+  lat.on_present(1000, g.t_complete_us + 200);
+  lat.on_flip(1000, g.t_complete_us + 300, /*exact=*/true);
+  const auto Lg = lat.flush_line();
+  CHECK(Lg.n == 0);  // excluded, exactly like an unknown t_first
+
+  // Floor unmoved: a plain frame still reads its honest span.
+  AuRecordMeta f;
+  f.pts_us = 2000;
+  f.t_first_us = 104'500;  // adj = 104500; map(2000) = 100000+2000
+  f.t_complete_us = f.t_first_us + 400;
+  lat.on_submit(f, /*mono_us=*/0);
+  lat.on_decoded(2000, f.t_complete_us + 100);
+  lat.on_present(2000, f.t_complete_us + 200);
+  lat.on_flip(2000, f.t_complete_us + 300, /*exact=*/true);
+  const auto L2 = lat.flush_line();
+  CHECK(L2.n == 1);
+  CHECK(L2.p50[2] == 2500);  // 104500 - 102000, against the UNPOISONED floor
 }
 
 TEST(unknown_wire_values_subtract_nothing) {

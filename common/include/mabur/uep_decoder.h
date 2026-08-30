@@ -56,10 +56,17 @@ class UepDecoder {
   // abandoned_stale > 0 on the bench is expected, not a bug.
   void mark_transition(int sid, uint8_t new_mcs, uint64_t now_ms);
 
+  // body_crc_ok: the 802.11 FCS verdict for this body. Corrupt bodies are
+  // still decoded (per-sub-block CRC salvage is the whole point), but the
+  // SBI header's q_ms/enc_us bytes sit OUTSIDE those CRCs, so from a
+  // corrupt body they are untrustworthy and degrade to 0 = unknown — the
+  // latency accounting's snap-down anchor consumes them and one corrupt
+  // duration must never drag its floor.
   std::vector<DecodedFrag> add_body(const uint8_t* body, size_t len,
                                     uint64_t now_ms,
                                     uint8_t rx_mcs = kMcsUnknown,
-                                    uint64_t body_mono_us = 0);
+                                    uint64_t body_mono_us = 0,
+                                    bool body_crc_ok = true);
 
   // Current-rung-only view of the delivery window: total minus units
   // attributed to pre-transition debris, plus — while a boundary is armed —

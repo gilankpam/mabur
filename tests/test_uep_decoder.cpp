@@ -183,6 +183,29 @@ TEST(decoded_frag_carries_body_time_and_sbi_durations) {
   }
 }
 
+TEST(fcs_corrupt_body_zeroes_wire_durations) {
+  // q_ms/enc_us sit OUTSIDE the per-block CRCs, and FCS-corrupt bodies are
+  // processed by design (sub-block salvage) -- so a corrupt body's duration
+  // fields are untrustworthy and must degrade to 0 = unknown. body_mono_us
+  // is the GS's own stamp and stays valid regardless.
+  auto bodies = encode_fixture_bodies();
+  REQUIRE(!bodies.empty());
+  auto& b = bodies.front();
+  sbi_set_q_ms(b.body.data(), b.body.size(), 33);
+  sbi_set_enc_us(b.body.data(), b.body.size(), 44);
+
+  UepDecoder dec(vec_layers());
+  auto frags = dec.add_body(b.body.data(), b.body.size(), /*now_ms=*/0,
+                            UepDecoder::kMcsUnknown, /*body_mono_us=*/424242,
+                            /*body_crc_ok=*/false);
+  REQUIRE(!frags.empty());
+  for (auto& f : frags) {
+    CHECK(f.body_mono_us == 424242);
+    CHECK(f.q_ms == 0);
+    CHECK(f.enc_us == 0);
+  }
+}
+
 TEST(window_counts_accessor) {
   UepDecoder dec(vec_layers());
   auto [d, e] = dec.window_counts(0);

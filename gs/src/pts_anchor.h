@@ -86,6 +86,13 @@ class PtsAnchor {
   static constexpr int64_t kResyncUs = 2'000'000;
   static constexpr int64_t kLeakPpm = 60;  // floor creep, µs per second
   static constexpr uint32_t kWarmFrames = 32;
+  // Plausibility cap on the enc+dq correction subtracted from an arrival
+  // before it feeds observe() (the "enc-excess" air fix): the TxQueue
+  // drop-oldest bound is ~150 ms, so a claimed correction beyond this is
+  // wire garbage — the caller must SKIP the sample (segments withheld,
+  // like an unknown t_first) rather than let it drag the snap-down floor,
+  // which the 60 ppm leak would take effectively forever to recover.
+  static constexpr int64_t kMaxAnchorAdjustUs = 300'000;
 
  private:
   bool have_pts_ = false;

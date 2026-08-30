@@ -102,7 +102,8 @@ void UepDecoder::note_delivery(Layer& l, uint16_t seq) {
 std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
                                               uint64_t now_ms,
                                               uint8_t rx_mcs,
-                                              uint64_t body_mono_us) {
+                                              uint64_t body_mono_us,
+                                              bool body_crc_ok) {
   const int sid = sbi_peek_stream_id(body, len);
   if (sid < 0 || sid > 1) {
     ++bodies_misrouted_;
@@ -160,8 +161,11 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
         }
         note_delivery(L, fseq);
       }
-      out.push_back(DecodedFrag{static_cast<uint8_t>(sid), pkt,
-                                body_mono_us, r.q_ms, r.enc_us});
+      // q_ms/enc_us are outside the per-block CRCs: only an FCS-clean body
+      // may vouch for them (0 = unknown downstream, header comment).
+      out.push_back(DecodedFrag{static_cast<uint8_t>(sid), pkt, body_mono_us,
+                                body_crc_ok ? r.q_ms : static_cast<uint16_t>(0),
+                                body_crc_ok ? r.enc_us : static_cast<uint16_t>(0)});
     }
   }
   return out;
