@@ -22,7 +22,11 @@ formula above became per-stream and measurement-anchored rather than
 nominal, because the naive `len·(1+ov)` model measured a reproducible
 ~2× gain error at large frames (SBI/frag framing + repair quantization
 it doesn't account for — spike 2,
-`docs/airtime-balance-spike-findings-2026-08-29.md`). The drone's
+`docs/airtime-balance-spike-findings-2026-08-29.md`). Note the split's
+own limit: at 2:1 rate ratios (the mcs1 rung) the balancer's rails
+can't reach air balance — 3.3 ms/pair structural residual; a same-rate
+counter-study swept flat vs asymmetric overhead per rung, static and
+under motion (`docs/same-rate-uep-findings-2026-08-30.md`). The drone's
 `AirBalancer` tracks the true per-stream multiplier from what actually
 got serialized, `m_s = emit_s / len_s` (`emit_s`/`len_s` are α=1/16
 EWMAs of emitted body bytes and frame-unit bytes, IDR frames excluded as
