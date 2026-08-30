@@ -171,6 +171,16 @@ uint64_t mono_ms() {
   return static_cast<uint64_t>(ts.tv_sec) * 1000u + static_cast<uint64_t>(ts.tv_nsec) / 1000000u;
 }
 
+// Microsecond twin, for LatTracker's vsync-fallback timestamp (Task 11):
+// when the kernel does not report DRM_CAP_TIMESTAMP_MONOTONIC, on_flip's
+// timestamp is this called at event receipt instead of the flip event's
+// own (nonexistent) kernel stamp.
+uint64_t mono_us() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000ull + static_cast<uint64_t>(ts.tv_nsec) / 1000u;
+}
+
 void close_gem_handle(int fd, uint32_t handle) {
   if (fd < 0 || !handle) return;
   struct drm_gem_close req {};
@@ -318,6 +328,14 @@ struct DrmPresenter::Impl {
   uint64_t frames_dropped_busy = 0;
   uint64_t flips_total = 0;
 
+  // Vsync timestamp capture (Task 11 -- LatTracker's dsp segment).
+  // ts_exact is latched once at init() from DRM_CAP_TIMESTAMP_MONOTONIC;
+  // last_flip_us is the most recent flip event's timestamp (kernel-exact
+  // when ts_exact, else a mono_us()-at-receipt approximation).
+  bool ts_exact = false;
+  uint64_t last_flip_us = 0;
+  FlipSink flip_sink;
+
   struct Slot {
     bool valid = false;
     uint32_t fb_id = 0;
@@ -374,6 +392,13 @@ void DrmPresenter::Impl::on_flip(bool real_event) {
     if (on_screen.valid) release_slot(on_screen);
     on_screen = pending;
     pending = Slot{};
+    // LatTracker vsync capture (Task 11): only for a REAL kernel flip --
+    // the watchdog's force-complete path (real_event=false) promotes a
+    // frame that never actually reached the screen, and a fabricated
+    // vsync stamp on it would corrupt the dsp segment. Excluded frames
+    // just age out of LatTracker's bounded map, same as any other frame
+    // that never flips.
+    if (real_event && flip_sink) flip_sink(on_screen.frame.pts_us, last_flip_us, ts_exact);
   }
   // Submit the mailbox frame now that the pipe has a free slot. Bounded
   // re-entrancy: present() -> poll_events() -> on_flip() -> present() --
@@ -387,10 +412,14 @@ void DrmPresenter::Impl::on_flip(bool real_event) {
 }
 
 void DrmPresenter::Impl::on_flip_static(int /*fd*/, unsigned int /*sequence*/,
-                                         unsigned int /*tv_sec*/, unsigned int /*tv_usec*/,
+                                         unsigned int tv_sec, unsigned int tv_usec,
                                          unsigned int /*crtc_id*/, void* user_data) {
   auto* self = static_cast<Impl*>(user_data);
-  if (self) self->on_flip();
+  if (!self) return;
+  self->last_flip_us = self->ts_exact
+                           ? static_cast<uint64_t>(tv_sec) * 1000000ull + tv_usec
+                           : mono_us();
+  self->on_flip(true);
 }
 
 // Full property set for the OSD plane at buffer `idx`. `one_time` adds the
@@ -533,6 +562,16 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
       std::fprintf(stderr, "DrmPresenter: drmSetClientCap(ATOMIC/UNIVERSAL_PLANES) failed: %s\n",
                    std::strerror(errno));
     return false;
+  }
+
+  // LatTracker's dsp segment (Task 11): whether page-flip events carry a
+  // real CLOCK_MONOTONIC kernel timestamp. Absent, on_flip_static() falls
+  // back to mono_us() at event receipt and the tracker marks dsp
+  // approximate ("dsp~" in the 1 Hz lat line) -- never a hard failure,
+  // this driver capability is not load-bearing for video itself.
+  {
+    uint64_t cap = 0;
+    ts_exact = drmGetCap(fd, DRM_CAP_TIMESTAMP_MONOTONIC, &cap) == 0 && cap != 0;
   }
 
   drmModeResPtr res = drmModeGetResources(fd);
@@ -1596,6 +1635,10 @@ uint64_t DrmPresenter::busy_replaced() const { return impl_->frames_dropped_busy
 bool DrmPresenter::async_flip_active() const { return impl_->async_active; }
 
 bool DrmPresenter::async_probed() const { return impl_->async_probed; }
+
+void DrmPresenter::set_flip_sink(FlipSink sink) { impl_->flip_sink = std::move(sink); }
+
+bool DrmPresenter::vsync_ts_exact() const { return impl_->ts_exact; }
 
 bool DrmPresenter::osd_available() const {
   return impl_->osd_plane_id != 0 && impl_->osd.ok();
