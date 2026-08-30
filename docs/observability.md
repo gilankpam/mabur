@@ -18,18 +18,34 @@ with:
   grouped by link; color thresholds carry the judgment.
 - Ad-hoc capture: any UDP listener on :8300, or passively via AF_PACKET on
   `lo` when a consumer already holds the port.
-- Flight recorder: since 2026-08-13 the GS boot-starts
-  `/etc/init.d/S97flightrec` (device-only file, like the ctl log's
-  siblings), which appends every sideport datagram to a per-boot indexed
-  `/media/dvr/flight-NNNN.jsonl` via `/root/rec8300.py` (a python UDP
-  binder; keeps the newest 30 files, ~1 MB/min). It exists because three
-  incidents in a row (ctl-0030 crash, the 2026-08-13 lag crash, the bench
-  false alarm) had no recording — reinstated as a minimal successor to the
-  `S97statsrec` that was removed 2026-08-05. ⚠ UDP unicast means ONE
-  consumer per port: `/etc/init.d/S97flightrec stop` before running
-  maburtop against :8300 on the GS, then `start` after. The old ad-hoc
-  recipe (`socat -u udp-recv:8300 - | jq -c . >> flight.jsonl`) still
-  works ATTENDED, but dies on ssh detach even under nohup (jq buffering +
+- Flight instrument: since 2026-08-30 the GS boot-starts
+  `/etc/init.d/S95flightrec` running `/root/flightrec.py` (both checked in
+  under `tools/gs/`, scp'd as-is), one always-on daemon writing a session
+  pair into `/media/dvr/log/` per boot (shared index NNNN = max+1, no
+  auto-pruning — recordings outlive the code, prune by hand):
+  - `flight-NNNN.jsonl` — every sideport datagram off UDP :8300 (absorbs
+    the old `/root/rec8300.py`, whose device-only `S97flightrec` wrapper
+    from 2026-08-13 silently vanished — probably clobbered by a later
+    S97* deploy — which is how the 2026-08-2x flights went unrecorded, the
+    recorder gap's 4th bite; the recorder is in-repo now for that reason).
+  - `au-NNNN.log` — per-AU meta rows (`t_us pts sid fid len flags nal0`)
+    read from the `/dev/shm/mabur-au` ring exactly like `ausniff.py`
+    (seqlock copy, epoch resync ⇒ `# resync` marker; attaches at the write
+    head so pre-attach history can't be stamped with attach time), plus
+    `# sync <t_us> <t_ms>` clock anchors every 10 s pairing wall time with
+    the datagram's **top-level** `t_ms` (nested `last_event.t_ms` is
+    frozen — a first-match regex records a dead clock; parse the JSON).
+  `tools/flightjitter.py` is the analyzer: reproduces the player's jitter
+  EMA from the AU rows, splits it into size-explained vs residual
+  (airtime-model §4 decomposition), and classifies each stutter event —
+  `gap` / `rung-change` / `size` / `loss-recovery` / `transport` — using
+  the jsonl for ladder and loss context (clock offset from the sync
+  anchors). Tests: `ctest -R 'test_flightrec|test_flightjitter'`.
+  ⚠ UDP unicast means ONE consumer per port:
+  `/etc/init.d/S95flightrec stop` before running maburtop against :8300
+  on the GS, then `start` after. The old ad-hoc recipe
+  (`socat -u udp-recv:8300 - | jq -c . >> flight.jsonl`) still works
+  ATTENDED, but dies on ssh detach even under nohup (jq buffering +
   SIGHUP — measured 2026-08-13); don't use it for anything that must
   survive the session. The adaptive-link record survives separately and
   automatically: maburgs writes its own compact ctl log whenever

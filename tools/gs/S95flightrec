@@ -1,0 +1,42 @@
+#!/bin/sh
+# flightrec respawn loop for the BusyBox-init GS. Always-on flight
+# instrument: per-AU rows + 1 Hz sideport jsonl into /media/dvr/log
+# (analyzer: tools/flightjitter.py). Replaces the never-wired
+# /root/rec8300.py — flightrec owns UDP :8300 now, so nothing else may
+# bind it (the sideport is unicast, ONE consumer: docs/observability.md).
+DAEMON=/root/flightrec.py
+PIDFILE=/var/run/flightrec-loop.pid
+
+loop() {
+  while true; do
+    # Truncate on every (re)start: /tmp is RAM-backed, an ever-growing log
+    # across a long respawn loop can exhaust it.
+    python3 "$DAEMON" > /tmp/flightrec.log 2>&1
+    echo "flightrec exited ($?) - respawn in 2s" >&2
+    sleep 2
+  done
+}
+
+case "$1" in
+  start)
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && exit 0
+    loop &
+    echo $! > "$PIDFILE"
+    ;;
+  stop)
+    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE"
+    # The PID kill only stops the respawn-loop subshell; the running
+    # recorder survives without this.
+    pkill -f 'python3 /root/flightrec.py' 2>/dev/null
+    ;;
+  restart)
+    "$0" stop
+    sleep 1
+    "$0" start
+    ;;
+  *)
+    echo "usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
