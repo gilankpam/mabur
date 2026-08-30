@@ -85,7 +85,7 @@ std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
   std::array<LayerTxSpec, 2> ladder;
   // BASE
   ladder[0].mode = mode;
-  ladder[0].mcs = static_cast<uint8_t>(m);  // EXPERIMENT: same-rate (was max(m-1,0))
+  ladder[0].mcs = static_cast<uint8_t>(m);
   ladder[0].bw = bw;
   ladder[0].ldpc = true;
   ladder[0].stbc = true;

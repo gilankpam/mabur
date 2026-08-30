@@ -182,11 +182,13 @@ def _ov_cmd_cell(cmd_base, cmd_enh, ov_base, ov_enh):
     """Prose-style (top bar / compact header) overhead cell: cmd_base/
     cmd_enh are the GS-commanded pair the ladder currently sends
     (link.op.overhead_base/overhead_enh — same-rate-fixed-pairs, Task 5);
-    ov_base/ov_enh are the drone's actual balancer-applied per-stream split
-    from telemetry — '--' before the first T_TELEM snapshot. The two pairs
-    need not match: the balancer is expected to diverge from the commanded
-    pair, that is its job, not a staleness bug (see 2026-08-29
-    airtime-balance-uep)."""
+    ov_base/ov_enh are the drone's actual applied per-stream pair from
+    telemetry — '--' before the first T_TELEM snapshot. The runtime
+    AirBalancer solver that used to explain a commanded-vs-applied split is
+    deleted (2026-08-30 same-rate-fixed-pairs); applied now equals commanded
+    except while a bench :8301 ov_base_pct/ov_enh_pct override is armed, so
+    a divergence here means an armed override or a stale/old-daemon
+    snapshot, not a balancer doing its job."""
     return (f"ov cmd b{_s(cmd_base, 2)}/e{_s(cmd_enh, 2)} "
             f"(b {_s(ov_base, 2)}/e {_s(ov_enh, 2)})")
 
@@ -194,8 +196,9 @@ def _ov_cmd_cell(cmd_base, cmd_enh, ov_base, ov_enh):
 def _ov_applied_cell(ov_base, ov_enh, w=4):
     """Fixed-width grid cell for the drone's actual applied per-stream
     overhead (compact DRONE row / wide 'applied' line) — no comparison
-    against the commanded op scalar; divergence is the balancer working,
-    not staleness (see _ov_cmd_cell)."""
+    against the commanded op scalar; divergence means an armed :8301
+    override or staleness, not a balancer (see _ov_cmd_cell; the solver is
+    deleted as of 2026-08-30 same-rate-fixed-pairs)."""
     return f"ov b{_f(ov_base, w, 2)}/e{_f(ov_enh, w, 2)}"
 
 
@@ -613,11 +616,13 @@ def panel_drone(model, wall):
     spans.append((tlm_idx, len(tlm_age), "dim"))
     body.append((line, spans))
 
-    # applied vs commanded op. Overhead is NOT compared against op.overhead
-    # here: the balancer is expected to split base/enh away from the
-    # commanded scalar (that is its job), so a numeric diff there is not a
-    # staleness signal the way an mcs/bw mismatch is (2026-08-29
-    # airtime-balance-uep).
+    # applied vs commanded op. Overhead is NOT compared against
+    # op.overhead_base/overhead_enh here: the runtime AirBalancer solver
+    # that used to explain a commanded-vs-applied split is deleted
+    # (2026-08-30 same-rate-fixed-pairs) — applied now equals commanded
+    # except while a bench :8301 override is armed, so a numeric diff here
+    # means an armed override or staleness, not the expected behavior an
+    # mcs/bw mismatch would flag.
     applied = drone.get("applied") or {}
     mcsbw = _applied_mcsbw_cell(applied.get("mcs"), applied.get("bw"))
     ov_cell = _ov_applied_cell(applied.get("overhead_base"), applied.get("overhead_enh"))
@@ -912,7 +917,9 @@ def _build_block(model, wall, d, link, cls):
 def _ctl_row(ctl):
     """Ladder-controller summary row: current rung, this window's
     loss-pressure u against budget, and the most recent transition (or
-    'none@0.00' before the first one ever fires)."""
+    'none@0.00' before the first one ever fires). Rung overhead is a
+    base/enh pair now (same-rate-fixed-pairs) — rendered in the
+    _ov_applied_cell house style, not the removed scalar 'ov' key."""
     rung = ctl.get("rung") or {}
     util = ctl.get("util")
     budget = ctl.get("budget")
@@ -923,7 +930,8 @@ def _ctl_row(ctl):
     budget_s = "--" if budget is None else f"{budget:.0%}"
     text = (
         f"  rung {_s(rung.get('idx'))} (mcs{_s(rung.get('mcs'))}"
-        f"/ov{_s(rung.get('ov'), 2)})  {util_cell} of budget {budget_s}"
+        f" ov b{_s(rung.get('ov_base'), 2)}/e{_s(rung.get('ov_enh'), 2)})"
+        f"  {util_cell} of budget {budget_s}"
         f"  [{reason}@{u_s}]"
     )
     spans = []
@@ -937,7 +945,10 @@ def _ctl_row(ctl):
 def _ladder_rung_rows(ctl):
     """One row per rung, top = highest index. Current rung gets the marker +
     good style; annotations: PROB countdown (current rung on probation),
-    pen countdown (penalized), failsafe (rung 0)."""
+    pen countdown (penalized), failsafe (rung 0). Per-rung overhead is a
+    base/enh pair now (same-rate-fixed-pairs); the removed scalar 'ov' key
+    is gone from the wire, so this renders the compact 'ov base:enh' form
+    to keep the row narrow."""
     ladder = ctl.get("ladder") or []
     cur = (ctl.get("rung") or {}).get("idx")
     prob_ms = ctl.get("probation_ms_left")
@@ -948,7 +959,8 @@ def _ladder_rung_rows(ctl):
     rows = []
     for idx in range(len(ladder) - 1, -1, -1):
         r = ladder[idx] if isinstance(ladder[idx], dict) else {}
-        cell = f"{idx} mcs{_s(r.get('mcs'))}/ov{_s(r.get('ov'), 2)}"
+        cell = (f"{idx} mcs{_s(r.get('mcs'))}"
+                f"/ov{_s(r.get('ov_base'), 2)}:{_s(r.get('ov_enh'), 2)}")
         marker = "▶" if idx == cur else " "
         note, note_style = "", None
         if idx == cur and prob_ms > 0:
@@ -957,7 +969,7 @@ def _ladder_rung_rows(ctl):
             note, note_style = f"pen {max(pen[idx], 0) // 1000}s", "dim"
         elif idx == 0:
             note, note_style = "failsafe", "dim"
-        text = f" {marker}{cell:<16} {note}".rstrip()
+        text = f" {marker}{cell:<20} {note}".rstrip()
         spans = []
         if idx == cur:
             spans.append((1, 1 + len(cell), "good"))
