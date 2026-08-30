@@ -83,10 +83,36 @@ since this study — judge configs on those, EMA second.
 - Mid-stream base losses (sid 1→1 seams): 1 → 0. n=1, no signal.
 - **Enh losses doubled**: missing-enh seams (sid 0→0) 31 → 64, fid gaps
   3 → 14 — despite enh's own overhead being unchanged (0.5 both
-  configs) and the cleaner RF. Suspected mechanism: the larger total
-  overhead squeezes the air budget (median lens −7% confirm the lower
-  commanded rate) and enh pays the congestion. Plausible, unproven —
-  worth a targeted look if asym is ever revisited.
+  configs) and the cleaner RF.
+
+**Measured cause of the 0029 holes (the stutter/freeze the operator
+felt): enh FEC generations abandoned STALE at the GS.** The enh
+stream's `abandoned_stale` counter rose **+137** over the session while
+the drone's `vanished_enh` stayed **0** — nothing was dropped at the
+encoder or ring; enh generations failed to complete decode before the
+stale deadline and the GS abandoned them. 60 of 65 holes sit in seconds
+with pre-FEC loss >0.5%, and on the ctl clock (video t0 = ctl 52.5 s)
+every hole falls in exactly two windows: the startup ladder climb
+(video 0.9–14 s) and the fade storm (video 58–129 s = ctl 110–181 s,
+the fade→residual→rung-0→s3-cascade thrash in ctl-0090). The last hole
+coincides with the final recovery to rung 3–4; zero holes after.
+
+Mechanism, sharpened from "airtime pressure": base's doubled repair
+bytes lengthen every pair's serialization, so enh's completion lands
+later — closer to the stale deadline. Under loss, when enh needs
+repair-wait, that lost margin is the difference between *recovered*
+and *abandoned-stale*. The asym pair did protect base (mid-stream base
+losses: 0), but the protection was **transferred, not added**: enh —
+the stream displayed 30×/s — paid it as one 33 ms hole per ~2 s. The
+loss-sweep insight ("recovery-wait dwarfs clean alternation") cuts both
+ways: asym halves base's recovery-wait and stretches enh's past the
+deadline.
+
+Also note: rung transitions do NOT fire IDRs (the waybeam bitrate-change
+IDR was deleted in the venc fold-in — `star6e_controls.c` apply_bitrate
+comment; RcAgent requests IDRs only on entering-LINKED and chain-break
+heal, both paced). The rung-change stutters here are pure CBR
+re-command sawtooth + transition mechanics, no IDR component.
 
 ## Verdict
 
