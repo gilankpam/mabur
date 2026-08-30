@@ -43,10 +43,19 @@ the floor, not absolutely. Follow-up #7 pins the absolutes once.
 
 - **The asym pair costs ~7–8 ms of the p50 + most of the jitter.** Base
   `fec` 12.6 vs enh 6.2 (base flies 2× air on equal payloads) and the
-  standing `dq` both trace to the pair: the stream (~28 Mb/s at the mcs5
-  park) rides the ~26 Mb/s USB bulk-out ceiling, which the bitrate blend
-  does not model. `jitter_ms` median 14.9 in flight vs 5–8 on the flat
-  pair. aucadence (t_complete clock) reads **+4.73 ms base-late** on this
+  standing `dq` both trace to the pair: the asym stream at the mcs5 park
+  is ~15 Mb/s of air bytes (30 fps/class × (17.1 KB×2.0 + 16.3 KB×1.5)
+  × 1.06 hdrs), and the MEASURED drain during a frame burst is ~15 Mb/s
+  too (the airtime model's 0.85 µs/payload-byte slope) — bursts drain at
+  near-unity utilization, so a standing queue is expected. ⚠ Provenance
+  care with the "~26 Mb/s" figure that floats around this topic: it is
+  (a) the SINGLE-sender USB bulk-OUT cap from the 2026-07-14 linkbench
+  bisect (`usb_tx_pool.h` comment) — lifted by the 4-thread pool, NOT
+  today's ceiling — and (b) July's mcs5 effective-AIR estimate that sized
+  the original 9M op. Neither is shown to bind today; what limits the
+  ~15 Mb/s effective burst drain (USB round-trips vs airtime vs tx-thread
+  pacing) is unmeasured and is follow-up #3's first question. `jitter_ms`
+  median 14.9 in flight vs 5–8 on the flat pair. aucadence (t_complete clock) reads **+4.73 ms base-late** on this
   config — sign-flipped vs the flat-pair baseline (−1.1..−3.0); the gate
   number is config-dependent, record the pair next to it.
 - **`dq` has a standing ~7 ms p50 even at the park** — invisible before
@@ -70,12 +79,16 @@ the floor, not absolutely. Follow-up #7 pins the absolutes once.
    flat 0.5/0.5 A/B against the asym pair's fade protection — the fade
    A/B that motivated asym is still open; now both sides of the trade are
    measurable (`fec` per class, `dq`, jitter, fade damage windows).
-3. **Model the USB ceiling in the bitrate blend** (removes the standing
-   `dq`): the budget is airtime-based and happily commands past the
-   ~26 Mb/s bulk-out cap. Same error family as the open
-   `mcs1-budget-overshoot`. Alternative cheap mitigation: trim
-   `airtime_budget` until `dq` p50 ≈ 0 and measure what video rate that
-   actually costs.
+3. **Find and model the real drain ceiling** (removes the standing `dq`):
+   first MEASURE what limits the ~15 Mb/s effective burst drain — sweep
+   `radio.tx_threads` / usb_agg and watch `dq` (USB round-trips?), pin a
+   lower MCS at fixed stream rate (airtime?), instrument the tx-thread
+   pop-to-send gap (pacing?) — then teach the bitrate blend that number
+   instead of nominal `phy_rate_mbps`. The blend currently budgets
+   against the 52 Mb/s LGI table entry; the mcs1-budget-overshoot is the
+   same nominal-vs-effective error at the other end of the ladder.
+   Cheap interim mitigation: trim `airtime_budget` until `dq` p50 ≈ 0
+   and record what video rate that costs.
 4. **Persist the player tail segments** (observability, tiny): `lat:`
    lines die in tmpfs; have flightrec (or the player itself) append them
    to `/media/dvr/log/` per session so the next flight records all seven
