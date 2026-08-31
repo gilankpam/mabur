@@ -118,6 +118,46 @@ read the sideport. Reach for other tools only in these cases:**
   aggregates; when a summary number looks wrong, these record raw bodies
   for offline dissection. (The RTP-era FU tools — `fu_probe.py`,
   `fu_chain_analyze.py` — survive for reading OLD recordings only.)
+- **Player tail-latency persistence → `lat-NNNN.log`** (since 2026-08-31,
+  vsync-locked-regulator). The player's 1 Hz `lat:` stderr line used to
+  die in tmpfs with the power-off (`/tmp/maburplay.log`, gone on
+  reboot — this is how the flight-0035 tail segments were lost, see
+  `docs/latency-budget-findings-2026-08-31.md`). It is now additionally
+  appended to `<display.lat_log_dir>/lat-NNNN.log` (default
+  `/media/dvr/log`, `""` disables). Format: `# latlog 1` then
+  `# sync <mono_us> <wall_us>` (written once, at the first successful
+  open — the clock bridge that lets a lat log's rows line up against the
+  flight jsonl's `t_ms`), then one `<mono_us> <lat-payload>` line per
+  second, line-buffered. Index is next-free `lat-NNNN` in the directory
+  (same scan idiom as `ctl_log.cpp`) — **deliberately no date suffix**,
+  unlike the old `ctl-NNNN_<date>.log` naming: the GS RTC is bogus at
+  boot, and `ctl`'s date suffix plus its index-reuse history has already
+  caused session-identification confusion once (see the
+  `data-provenance.md` DVR-filename note); sessions are matched by the
+  `# sync` bridge against the flight jsonl's `t_ms`, not by filename. A
+  failed open (DVR not mounted yet) is retried every 30 s and never
+  blocks or spams; it never blocks the stderr line either, which keeps
+  going regardless. `tools/bench/latab.py latA.log latB.log` reads a pair
+  of these logs and prints the vsync A/B verdict (four log-derived gates:
+  `e2e` p50 B≤A−8, `dsp` p50 B≤6 and flat, `dsp` p99 B≤A−8, `dsp` p50
+  4 s-bucket sweep ≤3 — `anchor=warm` windows are excluded from all four,
+  with a printed count); see `docs/bench-protocols-latency-2026-08-31.md`
+  protocol 1 for the full arm procedure and the manual gates it doesn't
+  cover.
+- **Regulator line → vsync servo state** (since 2026-08-31). The 1 Hz
+  `regulator:` stderr line in `/tmp/maburplay.log` gained
+  `vsync=locked|fallback skips=<n> fallback=<n> pend=<n>`: `vsync=` is
+  whether the vblank estimator is currently locked (servo release) or
+  has fallen back to the old `anchor_floor(pts) + regulate_ms` rule;
+  `skips=` counts freshest-wins drops in servo mode (expected ≈ 0 in
+  flight — the 59.939 Hz sensor is slower than the 60.000 Hz panel, so
+  the ~16.4 s beat wrap produces one panel repeat, not a frame drop;
+  repeats show in `--fps-log`, not here); `fallback=` counts frames
+  released via the fallback rule while `display.vsync_lock` is on (climbs
+  during a cold start or a stale estimator, then stops once 8 exact flips
+  re-warm it); `pend=` is the presenter's present()-while-flip-in-flight
+  mailbox engagement count — a superset of the displaced-frame subset,
+  0 with no presenter (decode-only or init failed).
 - **Post-mortem when no consumer was listening → the 1 Hz stderr stats
   line** in `/tmp/maburgs.log` (maburd's in `/tmp/mabur.log`, maburplay's
   fps-log + respawn history in `/tmp/maburplay.log`). It is

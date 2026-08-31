@@ -9,7 +9,11 @@ aggregates, 1240 warm windows) + `au-0035.log` (aulog 2: exact per-AU
 and died with the power-off (follow-up #4) — bench values fill those rows.
 Config context: **asymmetric overhead pair (base 1.0 / enh 0.5) at every
 rung** (fade-A/B leftover, deliberately kept), ~half the flight below
-mcs5 (rung dwell s: mcs1 66, mcs2 31, mcs3 47, mcs4 54, mcs5 87).
+mcs5 (rung dwell s: mcs1 66, mcs2 31, mcs3 47, mcs4 54, mcs5 87). This
+session's ctl log is `ctl-0104` at the DVR **root** (`/media/dvr`), not
+`ctl-0035` in `log/` — ctl and flight/au indexes are independent counters
+and never correspond; match a ctl log to a flight session by its S-line
+timestamp range against the jsonl's `t_ms`, never by filename number.
 
 ## The budget (typical flight frame, p50)
 
@@ -96,8 +100,12 @@ the floor, not absolutely. Follow-up #7 pins the absolutes once.
 5. **Absolute glass-to-glass calibration, once** (turns floor-referenced
    numbers absolute): LED-in-frame + high-fps phone camera, one bench
    session; pins the sensor and scanout bookends and the anchor floor.
-6. **Sideport `lat` window undercount** (`n`=12 per 500 ms vs ~30
-   expected) — harmless to correctness, unexplained, worth a look.
+6. ~~**Sideport `lat` window undercount**~~ — **RESOLVED, not a bug.**
+   The "~30 expected" premise assumed the repo-default 500 ms sideport
+   export interval; this flight's GS actually exported at 200 ms
+   (measured median inter-datagram gap 201 ms over the full jsonl). At
+   60 AU/s × 0.2 s, `n`=12 is exactly one complete window — no undercount,
+   nothing to explain.
 7. `enc` 7 ms: encoder-side; star6e RC knobs mostly dead
    (`airtime-model.md` §3) — park unless something new appears.
 
