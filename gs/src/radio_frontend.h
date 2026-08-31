@@ -31,6 +31,14 @@ std::vector<uint8_t> build_control_frame(uint16_t seq, const uint8_t* body, size
 // mabur SA. Frames too short to carry an SA are not canonical.
 bool sa_canonical(const uint8_t* dot11, size_t len);
 
+// Pure: byte offset of the mabur body inside a dot11 frame, keyed on the
+// frame-control type. QoS-Data (0x88, the post-A-MPDU drone wire) carries a
+// 26-byte header; everything else (the legacy probe-req 0x40 wire, and any
+// frame the SA filter passes) parses at the legacy 24-byte offset. Returns
+// 0 when len cannot hold the header plus at least one body byte. seq_ctl
+// sits at bytes 22-23 in BOTH layouts, so mac_seq extraction is unchanged.
+size_t dot11_body_offset(const uint8_t* dot11, size_t len);
+
 class RadioFrontend {
  public:
   struct Cfg {

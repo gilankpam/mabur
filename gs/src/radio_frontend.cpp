@@ -68,6 +68,11 @@ bool sa_canonical(const uint8_t* dot11, size_t len) {
   return len >= 16 && std::memcmp(dot11 + 10, kSa, 6) == 0;
 }
 
+size_t dot11_body_offset(const uint8_t* dot11, size_t len) {
+  const size_t off = (len >= 1 && dot11[0] == 0x88) ? 26 : 24;
+  return len >= off + 1 ? off : 0;
+}
+
 // --- device management (mirrors drone/src/main.cpp bring-up) ----------------
 
 RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out) : cfg_(cfg), out_(out) {}
@@ -156,7 +161,8 @@ bool RadioFrontend::open_and_start() {
 
 void RadioFrontend::on_packet(const Packet& pkt) {
   rx_frames_.fetch_add(1, std::memory_order_relaxed);
-  if (pkt.Data.size() < kDot11 + 1) return;
+  const size_t body_off = dot11_body_offset(pkt.Data.data(), pkt.Data.size());
+  if (body_off == 0) return;
   // Foreign traffic never reaches the queue: it polluted per-card EMAs and
   // the seq-loss walk (spec revision 2). CRC-failed frames pass — a corrupt
   // SA proves nothing, and they never fed EMAs/seq anyway.
@@ -192,7 +198,7 @@ void RadioFrontend::on_packet(const Packet& pkt) {
                                        : 255;
   m.mac_seq = static_cast<uint16_t>(
       (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);
-  m.body.assign(pkt.Data.begin() + kDot11, pkt.Data.end());
+  m.body.assign(pkt.Data.begin() + static_cast<long>(body_off), pkt.Data.end());
   out_.push(std::move(m));
 }
 
