@@ -37,10 +37,10 @@ excluded count):
 
 | metric (from lat lines) | arm A expected | arm B gate |
 |---|---|---|
-| `dsp` p50 | ~15 ms, sweeping 10–25 over 16 s | **≤ 6 ms and flat** (no beat sweep) |
+| `dsp` p50 | ~15 ms, sweeping 10–25 over 16 s | **≤ 6 ms** (level) |
 | `dsp` p99 | ~25–30 ms | **≤ A − 8 ms** |
 | `e2e` p50 (player) | baseline | **≤ A − 8 ms** |
-| `dsp` p50, 4 s-bucket sweep | — | **≤ 3 ms** (beat-signature check) |
+| `dsp` p50, 4 s-bucket sweep (max−min) | — | **≤ 3 ms** (flatness — the beat-sweep signature; separate from the level row above) |
 
 `latab.py` prints PASS/FAIL per row and an overall verdict; it wants
 ≥300 windows per arm (≥5 min at 1 Hz).

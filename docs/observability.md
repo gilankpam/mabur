@@ -139,8 +139,9 @@ read the sideport. Reach for other tools only in these cases:**
   blocks or spams; it never blocks the stderr line either, which keeps
   going regardless. `tools/bench/latab.py latA.log latB.log` reads a pair
   of these logs and prints the vsync A/B verdict (four log-derived gates:
-  `e2e` p50 B≤A−8, `dsp` p50 B≤6 and flat, `dsp` p99 B≤A−8, `dsp` p50
-  4 s-bucket sweep ≤3 — `anchor=warm` windows are excluded from all four,
+  `e2e` p50 B≤A−8, `dsp` p50 B≤6 (level), `dsp` p99 B≤A−8, `dsp` p50
+  4 s-bucket sweep ≤3 (flatness, separate from the p50 level gate) —
+  `anchor=warm` windows are excluded from all four,
   with a printed count); see `docs/bench-protocols-latency-2026-08-31.md`
   protocol 1 for the full arm procedure and the manual gates it doesn't
   cover.

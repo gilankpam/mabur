@@ -222,3 +222,29 @@ at `mcs1`, `txq_drop` climbs into six figures, the GS sees ~48 fps with 1019
 
 Restore the GS's `maburgs.pre-foldin` at the same time, for the telemetry
 reason above.
+
+## `maburplay` — the vsync-locked regulator (2026-08-31)
+
+The three new player config keys — `display.vsync_lock`,
+`display.vsync_lead_ms`, `display.lat_log_dir` — are **additive, with
+in-code defaults**. Strict keys only rejects a key that is UNPRESENT in
+the binary but PRESENT in the file; it says nothing about a key that is
+merely absent from the file, which just takes the compiled-in default.
+So this swap, unlike the RC-version and venc flag days above, needs
+**no config edit before the binary swap**: drop in the new `maburplay`
+against the existing `/etc/maburplay.json` and it boots with
+`vsync_lock: true`, `vsync_lead_ms: 3`, `lat_log_dir: "/media/dvr/log"`
+without either key ever having been written to the file.
+
+**Rollback gotcha, the other direction.** Strict keys still cuts the
+other way once the file HAS been touched: if `/etc/maburplay.json` picks
+up any `display.vsync_*` key or `lat_log_dir` — which the vsync A/B
+protocol does, by design, since it toggles `vsync_lock` in the file
+between arms (`docs/bench-protocols-latency-2026-08-31.md`) — a
+pre-vsync `maburplay.pre-vsync` binary will reject the file at boot and
+`S97maburplay` stops respawning on that exit code, same failure shape as
+the drone/GS mismatch above but silent (no crash-loop to notice; the
+player just doesn't come back). **Strip the `display.vsync_*` /
+`lat_log_dir` keys from the file BEFORE dropping back to
+`maburplay.pre-vsync`** — config-before-binary applies rolling back too,
+not only rolling forward.
