@@ -288,6 +288,92 @@ TEST(servo_safety_clamp_uses_fallback_rule) {
   CHECK(reg.release_due(t_dec + kD, &out));
 }
 
+TEST(both_slots_full_evicts_oldest_on_third_distinct_target) {
+  // Reaches `if (count_ == 2) displace(0, out)` -- the only path that
+  // evicts out of a FULL 2-deep queue -- via the mixed fallback/servo
+  // construction: start stale (fallback frame held, target_v==0), re-warm
+  // to a fresh grid, hold a servo frame at a distinct target (both held,
+  // count_==2), then offer a THIRD frame whose target matches neither
+  // held slot.
+  FrameRegulator reg(12, /*vsync_lock=*/true, /*vsync_lead_ms=*/3);
+  warm(reg);
+  const uint64_t phase0 = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+
+  // 1) Stale offer: estimator hasn't flipped in 40 periods -> fallback
+  // rule, held with target_v == 0.
+  const uint64_t t_dec1 = phase0 + 40 * kVb;
+  CHECK(!reg.offer(frame(0), t_dec1, &disp));
+  CHECK(!reg.servo_locked());
+  CHECK(reg.fallback_frames() == 1);
+
+  // 2) Re-warm on a fresh grid (one exact flip actually revalidates --
+  // finding 3 -- 8 mirrors the other re-warm test's cadence).
+  const uint64_t phase1 = t_dec1 + 20'000 + 7 * kVb;
+  for (int i = 0; i < 8; ++i) reg.on_flip(t_dec1 + 20'000 + i * kVb, true);
+
+  // 3) Servo frame targeting vblank phase1+kVb: distinct from the held
+  // fallback target (0) -> both held, count_ == 2.
+  const uint64_t t_dec2 = phase1 + kVb - 9'000;
+  CHECK(!reg.offer(frame(kFrame), t_dec2, &disp));
+  CHECK(reg.servo_locked());
+  CHECK(disp.n == 0);
+  CHECK(reg.holding());
+
+  // 4) Second servo frame decoded inside the FIRST target's lead window
+  // (only 1 ms of margin, < the 3 ms lead): rolls to the next vblank
+  // (phase1+2*kVb), matching neither held target (0 or phase1+kVb) ->
+  // full queue, third target matches nothing -> eviction.
+  const uint64_t t_dec3 = phase1 + kVb - 1'000;
+  CHECK(!reg.offer(frame(2 * kFrame), t_dec3, &disp));
+  CHECK(disp.n == 1);
+  CHECK(disp.f[0].opaque == frame(0).opaque);  // oldest (fallback) evicted
+  CHECK(reg.replaced_count() == 1);
+  // Eviction is a separate branch from the same-slot sweep above it --
+  // it must not also count as a vsync skip.
+  CHECK(reg.vsync_skips() == 0);
+  CHECK(reg.holding());
+
+  // The two SURVIVING frames (servo target phase1+kVb, then phase1+2*kVb)
+  // still release at their own vblanks -- the eviction only cost the
+  // stale fallback frame.
+  DmaFrame o1, o2;
+  CHECK(reg.release_due(phase1 + kVb - kLead, &o1));
+  CHECK(o1.opaque == frame(kFrame).opaque);
+  CHECK(reg.release_due(phase1 + 2 * kVb - kLead, &o2));
+  CHECK(o2.opaque == frame(2 * kFrame).opaque);
+}
+
+TEST(discont_flushes_both_held_slots) {
+  // Same mixed fallback/servo construction to reach count_==2, then a
+  // pts jump > PtsAnchor::kResyncUs (2 s): the discont path must flush
+  // BOTH held frames regardless of which path (fallback vs servo) put
+  // them there.
+  FrameRegulator reg(12, /*vsync_lock=*/true, /*vsync_lead_ms=*/3);
+  warm(reg);
+  const uint64_t phase0 = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+
+  const uint64_t t_dec1 = phase0 + 40 * kVb;
+  CHECK(!reg.offer(frame(0), t_dec1, &disp));  // fallback frame held
+
+  const uint64_t phase1 = t_dec1 + 20'000 + 7 * kVb;
+  for (int i = 0; i < 8; ++i) reg.on_flip(t_dec1 + 20'000 + i * kVb, true);
+
+  const uint64_t t_dec2 = phase1 + kVb - 9'000;
+  CHECK(!reg.offer(frame(kFrame), t_dec2, &disp));  // servo frame held
+  CHECK(reg.holding());
+
+  const uint64_t t_dec3 = t_dec2 + 1'000;
+  const uint32_t pts_jump = kFrame + 3'000'000u;  // > kResyncUs past last pts
+  CHECK(reg.offer(frame(pts_jump), t_dec3, &disp));  // present now
+  CHECK(disp.n == 2);
+  CHECK(disp.f[0].opaque == frame(0).opaque);       // oldest (fallback) first
+  CHECK(disp.f[1].opaque == frame(kFrame).opaque);  // then the servo frame
+  CHECK(reg.discont_count() == 1);
+  CHECK(!reg.holding());
+}
+
 namespace {
 // One simulated minute of decode stream vs 60.000 Hz panel flips.
 // Event-driven — exact times, no tick quantization. The estimator is
