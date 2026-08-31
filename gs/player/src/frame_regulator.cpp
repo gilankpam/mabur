@@ -46,10 +46,24 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
     if (vsync_lock_) ++fallback_frames_;
   }
 
+  // Same-slot test: servo targets are recomputed from a phase that
+  // re-bases on every flip, so two frames aiming at the same physical
+  // vblank can differ by ~1 µs of rounding -- exact equality would miss
+  // the contention and present both frames back-to-back. Anything within
+  // half a period is the same slot; adjacent vblanks are a full period
+  // apart. Fallback entries (target 0) still match only each other.
+  const uint64_t half_period =
+      servo_now_ ? static_cast<uint64_t>(est_.period_us() / 2.0) : 0;
+  const auto same_slot = [&](uint64_t held_v) {
+    if (target_v == 0 || held_v == 0) return held_v == target_v;
+    const uint64_t d =
+        held_v > target_v ? held_v - target_v : target_v - held_v;
+    return d < half_period;
+  };
   // Freshest-wins displacement: same target (fallback: 0 == 0, i.e. the
   // classic mailbox), else oldest-out when full.
   for (int i = 0; i < count_;) {
-    if (held_[i].target_v == target_v) {
+    if (same_slot(held_[i].target_v)) {
       if (target_v != 0) ++vsync_skips_;
       displace(i, out);
     } else {
