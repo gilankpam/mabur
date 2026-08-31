@@ -46,7 +46,11 @@ cold or discontinuous. Consume it with:
     clock; parse the JSON). `t_first`/`t_complete` are the AU's SlotHdr v2
     mono-µs latency stamps (first body / finish()); `enc`/`dq` are the
     drone's SBI-latched `enc_us`/`drone_q_ms` (venc encode time, TX queue
-    wait) carried through on the AU's first fragment.
+    wait) carried through on the AU's first fragment. Since 2026-08-31
+    (streaming push) `q_ms` is stamped at the body's actual TxQueue push
+    and is the TRUE queue wait, ~0 when healthy — before that it also
+    swallowed the venc-ring wait and the FEC/SBI CPU (~6 ms standing; see
+    the scale-break note in `docs/data-provenance.md`).
   `tools/flightjitter.py` is the analyzer: reproduces the player's jitter
   EMA from the AU rows — using each row's `t_complete` as the arrival
   basis when present (the writer-stamped ring completion time, sharper

@@ -273,3 +273,19 @@ this date — see `docs/observability.md` for its format. `lat:` lines from
 before this date lived only in tmpfs (`/tmp/maburplay.log`) and are gone;
 there is no way to recover the player tail segments for any flight
 recorded before 2026-08-31.
+
+**2026-08-31 (later, streaming push): `dq` changed meaning and scale —
+~6 ms → ~0.** Before this date the drone stamped every body's
+`enqueued_ms` at the TOP of the hot-loop iteration, so the wire `q_ms`
+(→ player/flightrec `dq`, sideport `drone.txq_wait_ms`) spanned venc-ring
+wait (~2.6 ms, fictitious — the frame did not exist yet) + FEC/SBI-pack
+CPU (~3.4 ms) + true queue wait (~40 µs) — see
+`docs/dq-spike-findings-2026-08-31.md`. After it, bodies stream to the
+TxQueue as each seals, stamped at the actual push: `dq` is the true
+TxQueue wait and reads ~0 in a healthy link; the pre-push CPU overlaps
+the radio drain instead of preceding it, which also moved real latency —
+same-config A/B on the bench: `e2e` p50 55.9 → 45.3 ms, `air` 2–3 → 0–1,
+`reg` mean −2.6 (shallower vsync hold). A `dq` from before this date
+cannot be compared to one after it at any scale; a healthy pre-change
+recording shows `dq`≈6–7 where a healthy post-change one shows 0.
+`dq` > a few ms now genuinely means TxQueue backlog.
