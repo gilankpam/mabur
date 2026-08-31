@@ -471,7 +471,79 @@ against the burst-tail, and the end-to-end gates (fecdump drain slope,
 ausniff, aucadence, RCF close_ms). Spike rig + analyzer:
 `tools/bench/ampdu_e_spike.sh`, `tools/bench/ampdu_e_analyze.py`.
 
-## 12. Open questions
+## 12. A-MPDU deployed — and the premise refuted on maburd's own feed
+## (2026-09-01, bench)
+
+The §11 spike led to the full integration (branch `ampdu`, spec
+2026-09-01-ampdu-design.md): QoS-Data wire on the video path, FC-keyed GS
+parser (order-free deploy — a mixed pair ran 59.9 fps/0 gaps live),
+`SetAmpduMode` at bring-up behind `ampdu.max_num` (default 6). Deployed
+GS-first then drone, rollbacks `*.pre-ampdu` both ends, drone rootfs
+pruned to one rollback. Three hardware findings, in discovery order:
+
+**1. A-MPDU subframes carry no PHY status → RF telemetry poisoned
+(fixed).** ~94% of aggregated frames have no PHY report; devourer zeroes
+their rssi/snr and the GS folded those zeros (plus rare garbage, rssi 241)
+into every EMA. On-screen effect: RSSI/SNR "jumping", SNR 32 → 15
+artifact, and pollution-driven mcs4 demotes. Two-part fix, both reviewed:
+`RxBody.phy_valid` gating all `fold_rf` sites (mabur, commit bca7a42 —
+EVM already had the skip-unsampled convention; rssi/snr did not), and
+devourer `jgr3-physt` branch (f18bf1b, local): jaguar3 never set
+`RxAtrib.physt` on ANY frame — `parse_phy_sts_jgr3` now returns whether
+it parsed a page it understands, and devourer's own internal rx EMAs gate
+on it too. Post-fix: s0 RSSI −29…−47 dBm / SNR 28–34 dB (sane), ladder
+parked at mcs5 350/350 windows. ⚠ GS builds now require devourer
+`jgr3-physt` until it merges to devourer master.
+
+**2. Aggregation does NOT move maburd's drain pace — the §9 "DIFS+
+backoff" attribution was wrong.** Depth sweep at 14 Mb/s saturation,
+90/60 s fecdump each:
+
+| config | fec p50 | p90 | p99 |
+|---|---|---|---|
+| pre-ampdu (0x40 mgmt singles) | 16.41 | 24.05 | 34.25 |
+| agg OFF (QoS mgmt singles) | 16.16 | 24.36 | 32.82 |
+| agg 6 / 0x20 (default) | 16.36 | 24.71 | 34.12 |
+| agg 31 / 0x70 (max depth) | 15.47 | 23.40 | 34.76 |
+
+Flat. Aggregates demonstrably form (finding 1's subframes are the proof),
+yet fec and the saturated throughput ceiling (~20 Mb/s effective) don't
+move. Together with §10 (EDCA null) and the rung A/B ("dq tracks byte
+rate, not airtime"), the ~151 µs per-body tax is **host/USB-side**
+(the ~0.4 ms bulk-OUT acceptance handshake ÷ 3-frame URBs ≈ 133 µs/body
+matches), not medium access — the §11 spike's +32% came from txdemo's
+flood regime, which doesn't reproduce maburd's feed. A-MPDU on air is
+harmless here (all gates clean) but buys no fec latency until the USB
+feed itself is reworked.
+
+**3. The operator's high on-screen Lat = saturation queueing, and it
+predates A-MPDU.** With the encoder at its 14 Mb/s cap × 1.5 FEC overhead
+≈ 19.5–21 Mb/s offered against the ~20 Mb/s ceiling, the `air` segment
+holds a ~100 ms standing queue (measured p50 98.7–117 ms, pre AND post).
+Channel change 161 → 136 (operator, same symptom) had already ruled out
+interference. Capping `bitrate_max_kbps` at 11000: **air p50 98.7 →
+1.1 ms**, fec p50 12.7 ms — ~95 ms off glass latency. The bench keeps the
+11 M cap; the real fix is the airtime-budget policy (`airtime_budget`
+0.60 is not being honored at the cap — the known open-loop overshoot).
+
+**Gate record (agg 6 default, 14 M cap era):** ausniff 59.8 fps/0 gaps/0
+incomplete; fec A/B flat (gate target ≤ 8 ms unmet — premise refuted, no
+regression); aucadence +0.37 ms (baseline +2.5/+3.1 — improved); close_ms
+5 → 11 ms constant (both far under the 50 ms bar); seq walk clean
+(fid_gaps 0 throughout — host seqs survive aggregation live, closing
+§11's renumbering caveat).
+
+**End state:** both ends on the `ampdu` builds, aggregation at default
+max_num 6 (no `ampdu` block in the deployed config), 11 M bitrate cap,
+ch136. Setting `ampdu.max_num 0` (config-only) returns to singles with
+full-rate RF sampling if the sparser (~6%-of-frames) RF feed proves
+annoying. Follow-ups: USB feed rework is the real fec lever now
+(overlapped/async bulk-OUT, bigger URB batches — the HalMAC 3-desc cap
+is per *transfer*, so this means multiple transfers in flight, which
+tx_threads already does… measure why acceptance serializes); devourer
+`jgr3-physt` upstreaming; airtime-budget honoring at the cap.
+
+## 13. Open questions
 
 1. ~~What is the true split of the 7 ms `dq`?~~ Answered in §7.
 2. ~~Is 1341 bodies/s a real ceiling?~~ Refuted in §8 — offered load.
