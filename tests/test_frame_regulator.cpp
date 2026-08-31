@@ -460,3 +460,41 @@ TEST(beat_simulation_fast_source_drops_bounded_by_wraps) {
 }
 
 MTEST_MAIN
+
+TEST(heal_slip_shifts_pending_releases_one_slot) {
+  // Chain-break heal: when the main loop sees the presenter's in-flight
+  // mailbox engaging continuously (a one-vsync-late present chain), it
+  // calls heal_slip() -- every pending servo release slips one slot so a
+  // vblank goes unfilled and the flip pipeline drains.
+  FrameRegulator reg(12, true, 3);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  // Burst pair -> held at v and v+p.
+  const uint64_t t1 = phase + kVb - 12'000;
+  CHECK(!reg.offer(frame(0), t1, &disp));
+  CHECK(!reg.offer(frame(kFrame), t1 + 1'000, &disp));
+  reg.heal_slip();
+  CHECK(reg.heals() == 1);
+  // Both slipped: first now releases for v+2p's predecessor... i.e. at
+  // (v+p)-lead, second at (v+2p)-lead. Nothing due at the original slot.
+  CHECK(!reg.release_due(phase + kVb - kLead, &out));
+  CHECK(reg.release_due(phase + 2 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(0).opaque);
+  CHECK(reg.release_due(phase + 3 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(kFrame).opaque);
+}
+
+TEST(heal_slip_noop_in_fallback_or_empty) {
+  FrameRegulator reg(12, true, 3);
+  reg.heal_slip();               // empty queue: no-op
+  CHECK(reg.heals() == 0);
+  FrameRegulator::Displaced disp;
+  // Fallback-held frame (estimator cold): target 0, heal must not touch.
+  CHECK(!reg.offer(frame(0), kT0, &disp));
+  reg.heal_slip();
+  CHECK(reg.heals() == 0);
+  DmaFrame out;
+  CHECK(reg.release_due(kT0 + kD, &out));  // fallback release unchanged
+}

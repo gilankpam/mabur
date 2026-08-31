@@ -623,6 +623,11 @@ int main(int argc, char** argv) {
   uint64_t last_present_us = 0;
   int64_t prev_present_iv = -1;
   double present_jitter_ema_ms = 0.0;
+  // Chain-break detector state (frame_regulator.h heal_slip): engagement
+  // count at the previous 1 Hz tick; a delta above the threshold means
+  // presents are continuously colliding with in-flight flips -- the
+  // stable one-vsync-late mode -- and one slot-slip re-aligns it.
+  uint64_t pend_prev = 0;
   // Regulator stderr line: printed both at 1 Hz from the main loop's stats
   // block (below) and once more at exit as the final tally -- same format
   // either way, factored here so the two call sites can't drift. pend= is
@@ -635,7 +640,7 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
                    "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
-                   "fallback=%llu pend=%llu\n",
+                   "fallback=%llu pend=%llu heals=%llu\n",
                    static_cast<unsigned long long>(regulator.held_count()),
                    static_cast<unsigned long long>(regulator.late_count()),
                    static_cast<unsigned long long>(regulator.replaced_count()),
@@ -644,7 +649,8 @@ int main(int argc, char** argv) {
                    regulator.servo_locked() ? "locked" : "fallback",
                    static_cast<unsigned long long>(regulator.vsync_skips()),
                    static_cast<unsigned long long>(regulator.fallback_frames()),
-                   static_cast<unsigned long long>(pend));
+                   static_cast<unsigned long long>(pend),
+                   static_cast<unsigned long long>(regulator.heals()));
     } else {
       std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
                    present_jitter_ema_ms);
@@ -1539,6 +1545,19 @@ int main(int argc, char** argv) {
         // gate ("fallback= climbs then stops after re-warm") has a periodic
         // line to watch live -- not just the final tally at exit.
         log_regulator_line();
+        // Chain-break heal: >20 mailbox engagements in one second means
+        // essentially every present is colliding with an in-flight flip --
+        // the stable one-vsync-late mode (hw 2026-08-31, dsp pinned at
+        // lead+period for seconds at a time). One slot-slip repeats a
+        // single frame and drains the flip pipeline. Threshold is far
+        // above the aligned-mode rate (~0-7/s) and the 1 Hz reaction
+        // keeps heals rare; heals= in the line above tracks firings.
+        {
+          const uint64_t pend_now =
+              presenter ? presenter->mailbox_engagements() : 0;
+          if (pend_now - pend_prev > 20) regulator.heal_slip();
+          pend_prev = pend_now;
+        }
 #endif
       }
     }

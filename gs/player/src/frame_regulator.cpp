@@ -124,6 +124,18 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
   return false;
 }
 
+void FrameRegulator::heal_slip() {
+  bool any = false;
+  const uint64_t per = static_cast<uint64_t>(est_.period_us());
+  for (int i = 0; i < count_; ++i) {
+    if (held_[i].target_v == 0) continue;  // fallback frames keep their rule
+    held_[i].target_v += per;
+    held_[i].release_us += per;
+    any = true;
+  }
+  if (any) ++heals_;
+}
+
 bool FrameRegulator::release_due(uint64_t mono_us, DmaFrame* out) {
   if (count_ == 0 || mono_us < held_[0].release_us) return false;
   *out = held_[0].f;

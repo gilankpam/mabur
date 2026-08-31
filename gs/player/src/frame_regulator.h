@@ -80,6 +80,18 @@ class FrameRegulator {
   uint64_t fallback_frames() const { return fallback_frames_; }
   bool servo_locked() const { return servo_now_; }
 
+  // Chain-break heal (hw 2026-08-31): a single missed latch puts the
+  // display into a stable one-vsync-late mode -- every present then
+  // arrives while the previous flip is in flight, parks in the
+  // presenter's mailbox, and latches a period late, indefinitely. The
+  // main loop detects the chain from the presenter's engagement-counter
+  // rate and calls this: every pending servo release slips one slot, so
+  // one vblank goes unfilled (a single repeated frame), the flip
+  // pipeline drains, and the phase re-aligns. No-op when the queue is
+  // empty or holds only fallback (untargeted) frames.
+  void heal_slip();
+  uint64_t heals() const { return heals_; }
+
  private:
   struct Held {
     DmaFrame f{};
@@ -104,6 +116,7 @@ class FrameRegulator {
   uint64_t discont_count_ = 0;
   double hold_ema_ms_ = 0.0;
   uint64_t vsync_skips_ = 0;
+  uint64_t heals_ = 0;
   uint64_t fallback_frames_ = 0;
 };
 
