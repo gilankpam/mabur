@@ -25,16 +25,36 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
     return true;
   }
 
-  // Task 2: fallback rule only. Task 3 adds the servo branch here.
-  const uint64_t release =
-      anchor_.map_us(obs.pts64) + static_cast<uint64_t>(d_us_);
-  const uint64_t target_v = 0;
+  uint64_t release;
+  uint64_t target_v = 0;
+  servo_now_ = vsync_lock_ && est_.valid(mono_us);
+  if (servo_now_) {
+    const auto r = est_.next_release(mono_us, lead_us_);
+    const uint64_t clamp =
+        static_cast<uint64_t>(2.0 * est_.period_us()) + lead_us_;
+    if (r.release_us > mono_us + clamp) {
+      // Implausible hold (corrupted phase): don't trust the grid for
+      // this frame; the estimator self-heals on the next real flips.
+      servo_now_ = false;
+    } else {
+      release = r.release_us;
+      target_v = r.vblank_us;
+    }
+  }
+  if (!servo_now_) {
+    release = anchor_.map_us(obs.pts64) + static_cast<uint64_t>(d_us_);
+    if (vsync_lock_) ++fallback_frames_;
+  }
 
   // Freshest-wins displacement: same target (fallback: 0 == 0, i.e. the
   // classic mailbox), else oldest-out when full.
   for (int i = 0; i < count_;) {
-    if (held_[i].target_v == target_v) displace(i, out);
-    else ++i;
+    if (held_[i].target_v == target_v) {
+      if (target_v != 0) ++vsync_skips_;
+      displace(i, out);
+    } else {
+      ++i;
+    }
   }
   if (count_ == 2) displace(0, out);
 

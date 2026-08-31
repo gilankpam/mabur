@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "pts_anchor.h"
+#include "vblank_estimator.h"
 #include "video_backend.h"
 
 namespace maburplay {
@@ -67,6 +68,9 @@ class FrameRegulator {
 
   bool holding() const { return count_ > 0; }
 
+  // Forwarded from the presenter's FlipSink (main thread, no locking).
+  void on_flip(uint64_t flip_us, bool exact) { est_.on_flip(flip_us, exact); }
+
   uint64_t held_count() const { return held_count_; }
   uint64_t late_count() const { return late_count_; }
   uint64_t replaced_count() const { return replaced_count_; }
@@ -74,7 +78,7 @@ class FrameRegulator {
   double hold_ema_ms() const { return hold_ema_ms_; }
   uint64_t vsync_skips() const { return vsync_skips_; }
   uint64_t fallback_frames() const { return fallback_frames_; }
-  bool servo_locked() const { return false; }  // real in Task 3
+  bool servo_locked() const { return servo_now_; }
 
  private:
   struct Held {
@@ -89,8 +93,10 @@ class FrameRegulator {
   const uint64_t lead_us_;
 
   maburgs::PtsAnchor anchor_;
+  VblankEstimator est_;
   Held held_[2];   // held_[0] releases first (sorted by release_us)
   int count_ = 0;
+  bool servo_now_ = false;
 
   uint64_t held_count_ = 0;
   uint64_t late_count_ = 0;
