@@ -338,7 +338,42 @@ in any A/B); A-MPDU would fold preamble + DIFS across an aggregate but
 is unverified in injection; bigger bodies halve how often the whole
 151 µs is paid. Chip-side work is refuted — nothing to win there.
 
-## 10. Open questions
+## 10. EDCA A/B abandoned — the injected queue can't use the lever
+
+Set-up for the CW/EDCA A/B in `../devourer` (jaguar3, the drone's
+RTL8812EU) found the premise doesn't hold, so no register was changed:
+
+- **Injection rides the MGMT queue** (`QSEL 0x12`, hardcoded in
+  `FrameParserJaguar3.h` `fill_data_tx_desc_8822c`; the monitor-inject
+  default). The `REG_EDCA_BE_PARAM` CWmin=15 that the §9 backoff estimate
+  assumed governs a queue mabur never touches. Realtek's most-aggressive
+  AC is already VO (AIFS 38 / **CWmin 3**), so even the tunable ceiling is
+  ~3-slot backoff, not 15 — little headroom to win by lowering CW.
+- **The real per-MPDU remedy is aggregation, and the MGMT queue cannot
+  aggregate** — `../devourer/docs/aggregation.md`: "the MGMT queue (0x12)
+  never aggregates — AGG_EN there wedges the queue." Folding preamble +
+  access across N frames needs migrating injection onto a data queue
+  (QoS-Data TID0 + AGG_EN + no_ack retry-limit-0) plus the aggregation
+  pacing stack — a real project devourer already has A/B rigs for
+  (`tests/ampdu_onair_ab.sh`), not a one-register poke.
+- **USB feed is already maxed** for the current queue: `usb_agg_max=3`
+  (`main.cpp:735`) = the HalMAC 3-descriptor cap; mabur pops 3/batch.
+
+**Starvation ruled out (mabur-side A/B, binaries already on device):**
+streaming-push (dc3bdb4) vs batch-all-at-once (`maburd.pre-dqsplit`) at
+identical config drain at the **same slope** — 412 vs 420 ms/MB (noise),
+fec p50 11.7 vs 11.3, differing only in a +0.7 ms fixed intercept for
+streaming. Handing the tx thread all ~22 bodies at once vs trickling
+them as they seal makes no difference to the per-body air cadence, so
+the drain pace is genuinely air-side, not URB gapping. Third independent
+confirmation (with §8's tx_send 20 µs and TxQueue wait 40 µs).
+
+**Net:** the §9 dead time is real air-side per-MPDU overhead, but it is
+not CW-tunable on mabur's queue — the lever is A-MPDU (queue migration,
+a devourer project) or bigger bodies (656-symbol, the hole-sweep gate),
+not EDCA. Config + both devices restored; devourer untouched.
+
+## 11. Open questions
 
 1. ~~What is the true split of the 7 ms `dq`?~~ Answered in §7.
 2. ~~Is 1341 bodies/s a real ceiling?~~ Refuted in §8 — offered load.
