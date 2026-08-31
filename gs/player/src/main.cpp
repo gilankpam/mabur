@@ -623,11 +623,12 @@ int main(int argc, char** argv) {
   uint64_t last_present_us = 0;
   int64_t prev_present_iv = -1;
   double present_jitter_ema_ms = 0.0;
-  // Chain-break detector state (frame_regulator.h heal_slip): engagement
-  // count at the previous 1 Hz tick; a delta above the threshold means
-  // presents are continuously colliding with in-flight flips -- the
-  // stable one-vsync-late mode -- and one slot-slip re-aligns it.
+  // Chain-break detector state (frame_regulator.h heal_slip; the per-tick
+  // block next to the release poll below): engagement count last seen,
+  // the time of the last unpaired engagement, and the last heal firing.
   uint64_t pend_prev = 0;
+  uint64_t last_engage_ms = 0;
+  uint64_t last_heal_ms = 0;
   // Regulator stderr line: printed both at 1 Hz from the main loop's stats
   // block (below) and once more at exit as the final tally -- same format
   // either way, factored here so the two call sites can't drift. pend= is
@@ -1308,6 +1309,30 @@ int main(int argc, char** argv) {
       presenter->poll_events();
       maburplay::DmaFrame due;
       while (regulator.release_due(mono_us(), &due)) present_now(due);
+      // Chain-break heal, per-tick (hw 2026-08-31): a loop stall past the
+      // lead window (the 1 Hz OSD/stats work) makes one release miss its
+      // latch, and the miss self-sustains -- each parked resubmit lands
+      // exactly on a vblank and misses the next latch, so every frame
+      // after it runs one vsync late. In a chain the presenter mailbox
+      // engages ~every frame; aligned mode produces rare singletons. Two
+      // engagements within 100 ms is therefore unambiguous -- slip the
+      // pending releases one slot (a single repeated frame) so the flip
+      // pipeline drains. Rate-limited so a persisting chain gets one heal
+      // per 150 ms, enough for the slip to take effect before re-judging.
+      {
+        const uint64_t p = presenter->mailbox_engagements();
+        const uint64_t now = mono_ms();
+        if (p > pend_prev) {
+          if (now - last_engage_ms <= 100 && now - last_heal_ms >= 150) {
+            regulator.heal_slip();
+            last_heal_ms = now;
+            last_engage_ms = 0;  // require a fresh pair before re-healing
+          } else {
+            last_engage_ms = now;
+          }
+          pend_prev = p;
+        }
+      }
     }
     // Retry acquisition once a second while there is no display. A FRESH
     // presenter every time, never a re-init of the failed one: a display that
@@ -1545,19 +1570,6 @@ int main(int argc, char** argv) {
         // gate ("fallback= climbs then stops after re-warm") has a periodic
         // line to watch live -- not just the final tally at exit.
         log_regulator_line();
-        // Chain-break heal: >20 mailbox engagements in one second means
-        // essentially every present is colliding with an in-flight flip --
-        // the stable one-vsync-late mode (hw 2026-08-31, dsp pinned at
-        // lead+period for seconds at a time). One slot-slip repeats a
-        // single frame and drains the flip pipeline. Threshold is far
-        // above the aligned-mode rate (~0-7/s) and the 1 Hz reaction
-        // keeps heals rare; heals= in the line above tracks firings.
-        {
-          const uint64_t pend_now =
-              presenter ? presenter->mailbox_engagements() : 0;
-          if (pend_now - pend_prev > 20) regulator.heal_slip();
-          pend_prev = pend_now;
-        }
 #endif
       }
     }
