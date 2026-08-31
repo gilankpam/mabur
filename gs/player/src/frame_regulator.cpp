@@ -39,6 +39,39 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
     } else {
       release = r.release_us;
       target_v = r.vblank_us;
+      // Sequential-slot assignment (hw 2026-08-31): base+enh of a
+      // capture pair complete together (FEC generation close), so their
+      // decodes land within ~1 ms while their pts sit a full frame
+      // apart. Arrival-time targeting alone aims both at the same vblank
+      // and freshest-wins then drops the earlier of nearly every pair
+      // (bench: ~14 skips/s, 1-in-4 frames). pts order is decode order,
+      // so a frame whose natural slot is occupied by a held predecessor
+      // takes the NEXT slot instead. Deliberately relative to the
+      // frame's OWN natural slot, never chained off the queue's furthest
+      // target -- natural advances with the clock, so targets are
+      // bounded at natural+period and holds at ~2 periods by
+      // construction (chaining would creep unboundedly under a
+      // faster-than-panel source). If the next slot is occupied too
+      // (deep burst), the newest frame claims it -- freshest wins.
+      const uint64_t per = static_cast<uint64_t>(est_.period_us());
+      const uint64_t hp = per / 2;
+      const auto occupant = [&](uint64_t slot) {
+        for (int i = 0; i < count_; ++i) {
+          const uint64_t hv = held_[i].target_v;
+          if (hv != 0 && (hv > slot ? hv - slot : slot - hv) < hp) return i;
+        }
+        return -1;
+      };
+      if (occupant(target_v) >= 0) {
+        const uint64_t seq = target_v + per;
+        const int later = occupant(seq);
+        if (later >= 0) {
+          ++vsync_skips_;
+          displace(later, out);
+        }
+        target_v = seq;
+        release = seq - lead_us_;
+      }
     }
   }
   if (!servo_now_) {

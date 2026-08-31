@@ -215,7 +215,13 @@ TEST(servo_inside_lead_window_targets_next_vblank) {
   CHECK(reg.release_due(phase + 2 * kVb - kLead, &out)); // the next
 }
 
-TEST(servo_same_target_keeps_freshest) {
+TEST(servo_burst_pair_takes_sequential_vblanks) {
+  // base+enh of one capture pair complete together (FEC generation
+  // close), so their decodes land ~1 ms apart with pts a full frame
+  // apart. Arrival-time targeting alone would aim both at the same
+  // vblank and drop the earlier frame (hw 2026-08-31: ~14 skips/s,
+  // 1-in-4 frames). Sequential-slot assignment must instead push the
+  // later-pts frame to the next grid slot: both display, in order.
   FrameRegulator reg(12, true, 3);
   warm(reg);
   const uint64_t phase = kT0 + 7 * kVb;
@@ -223,13 +229,14 @@ TEST(servo_same_target_keeps_freshest) {
   DmaFrame out;
   const uint64_t t1 = phase + kVb - 12'000;
   CHECK(!reg.offer(frame(0), t1, &disp));
-  // Second frame decodes 5 ms later, same catchable vblank: contention.
-  CHECK(!reg.offer(frame(kFrame), t1 + 5'000, &disp));
-  CHECK(disp.n == 1);
-  CHECK(disp.f[0].opaque == frame(0).opaque);  // older dropped
-  CHECK(reg.vsync_skips() == 1);
+  CHECK(!reg.offer(frame(kFrame), t1 + 1'000, &disp));
+  CHECK(disp.n == 0);              // NOT displaced
+  CHECK(reg.vsync_skips() == 0);
   CHECK(reg.release_due(phase + kVb - kLead, &out));
-  CHECK(out.opaque == frame(kFrame).opaque);   // freshest shown
+  CHECK(out.opaque == frame(0).opaque);          // first pair member
+  CHECK(!reg.release_due(phase + 2 * kVb - kLead - 100, &out));
+  CHECK(reg.release_due(phase + 2 * kVb - kLead + 100, &out));
+  CHECK(out.opaque == frame(kFrame).opaque);     // second, next vblank
 }
 
 TEST(servo_distinct_targets_hold_both) {
@@ -381,7 +388,7 @@ namespace {
 // offer; the two arms differ only in source period, i.e. beat direction.
 struct BeatSim {
   uint64_t offered = 0, released = 0, drained = 0;
-  uint64_t skips = 0, fallback = 0, late = 0;
+  uint64_t skips = 0, replaced = 0, fallback = 0, late = 0;
 };
 
 BeatSim run_beat_sim(double src_period_us) {
@@ -415,6 +422,7 @@ BeatSim run_beat_sim(double src_period_us) {
   }
   while (reg.release_due(~0ull, &out)) ++s.drained;
   s.skips = reg.vsync_skips();
+  s.replaced = reg.replaced_count();
   s.fallback = reg.fallback_frames();
   s.late = reg.late_count();
   return s;
@@ -429,19 +437,26 @@ TEST(beat_simulation_slow_source_never_skips) {
   const BeatSim s = run_beat_sim(1e6 / 59.939);
   CHECK(s.fallback == 0);  // servo never disengaged
   CHECK(s.skips == 0);     // no contention, deterministically
-  CHECK(s.offered == s.released + s.skips + s.late + s.drained);
+  CHECK(s.replaced == 0);  // and no evictions either
+  CHECK(s.offered == s.released + s.replaced + s.late + s.drained);
 }
 
-TEST(beat_simulation_fast_source_one_skip_per_wrap) {
-  // Inverted beat (source faster than panel): each wrap makes two
-  // consecutive frames target the same vblank — exactly one freshest-wins
-  // drop per wrap. Beat 60.061-60.000 = 0.061 Hz -> 16.4 s -> 3-4 wraps
-  // per simulated minute.
+TEST(beat_simulation_fast_source_drops_bounded_by_wraps) {
+  // Inverted beat (source faster than panel): the source gains one frame
+  // on the vblank grid per ~16.4 s wrap. Sequential-slot assignment
+  // absorbs each wrap into the 2-deep queue instead of a same-slot
+  // displacement, so drops surface as oldest-out EVICTIONS once the
+  // backlog wants a third slot -- bounded by the wrap count (3-4 per
+  // simulated minute), never via vsync_skips.
   const BeatSim s = run_beat_sim(1e6 / 60.061);
   CHECK(s.fallback == 0);
-  CHECK(s.skips >= 3);
-  CHECK(s.skips <= 4);
-  CHECK(s.offered == s.released + s.skips + s.late + s.drained);
+  // Depending on wrap phase a drop surfaces either as a both-slots-
+  // occupied claim (vsync_skips) or as an oldest-out eviction; both
+  // increment replaced_count, which is the total-drops figure.
+  CHECK(s.skips <= s.replaced);
+  CHECK(s.replaced >= 1);
+  CHECK(s.replaced <= 4);
+  CHECK(s.offered == s.released + s.replaced + s.late + s.drained);
 }
 
 MTEST_MAIN
