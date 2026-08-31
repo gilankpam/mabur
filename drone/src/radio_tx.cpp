@@ -9,8 +9,9 @@ namespace mabur {
 
 namespace {
 
-// Canonical SA devourer's build_dot11_probe_req() uses
-// (../devourer/examples/streamtx/main.cpp).
+// Canonical SA: the mabur SA both ends filter on. Historically devourer's
+// probe-req canonical SA; still used in QoS-Data (A-MPDU wire) and the GS's
+// uplink 0x40 control frames.
 constexpr uint8_t kCanonicalSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
 constexpr size_t kDot11HeaderLen = 26;  // QoS-Data: 24 + 2-byte QoS control
 

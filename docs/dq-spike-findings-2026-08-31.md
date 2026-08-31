@@ -445,6 +445,13 @@ Second-order findings that shape the integration:
 - GS parser flag day is small: `sa_canonical` (addr2) and seq_ctl keep
   their byte offsets in a QoS-Data header; only the body start moves
   24 → 26 (`radio_frontend.cpp` `kDot11`), keyed on FC type.
+- **Only the video path (RadioTx) switches to QoS-Data.** The drone's
+  control-plane TX (DISC_ACK, telemetry, MSP — main.cpp's local
+  `build_dot11_header`) intentionally stays 0x40 mgmt-queue singles:
+  DISC_ACK teaches caps and must never wait in an aggregate fill timer
+  (its loss mode mimics the old stale-caps deadlock), and the GS keys
+  header parsing on FC type, so both layouts coexist. Decided at the
+  ampdu branch's final review, 2026-09-01.
 
 **Projection for `fec`** (28 bodies/AU at mcs5): today ≈ 27 × (213 µs
 air + 151 µs dead) ≈ 9.8 ms of serialization; aggregated ≈ 27 × 216 µs

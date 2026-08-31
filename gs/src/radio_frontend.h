@@ -24,7 +24,9 @@ class UsbDeviceLock;
 namespace maburgs {
 
 // Pure: MAX_RANGE radiotap + 24-byte dot11 probe-req header (canonical SA
-// 57:42:75:05:d6:00, broadcast DA, seq<<4) + body. Mirrors drone radio_tx.cpp.
+// 57:42:75:05:d6:00, broadcast DA, seq<<4) + body. Builds the GS's own
+// uplink 0x40 control frame. The drone's video downlink switched to QoS-Data
+// (A-MPDU), but the uplink RCF remains probe-req (unchanged by the wire change).
 std::vector<uint8_t> build_control_frame(uint16_t seq, const uint8_t* body, size_t len);
 
 // Pure: true when the dot11 header's SA (bytes 10..15) is the canonical

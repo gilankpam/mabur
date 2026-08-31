@@ -42,8 +42,8 @@ def read_frames(path):
 
 def strip_to_body(frame):
     (rl,) = struct.unpack_from("<H", frame, 2)   # radiotap it_len
-    fc = frame[rl]  # frame control byte
-    header_len = 26 if fc == 0x88 else 24  # QoS-Data vs legacy probe-req
+    fc = frame[rl:rl + 1]  # frame control byte (slice for truncation safety)
+    header_len = 26 if fc == b"\x88" else 24  # QoS-Data vs legacy probe-req
     return frame[rl:rl + 2], frame[rl + header_len:]  # (fc bytes, body)
 
 def read_fixture(path):
@@ -128,8 +128,8 @@ def main():
             (rl,) = struct.unpack_from("<H", fr, 2)
             if rl != 13: continue                       # HT frames only
             if a.stream is not None:
-                fc = fr[rl]  # frame control byte
-                header_len = 26 if fc == 0x88 else 24  # QoS-Data vs legacy probe-req
+                fc = fr[rl:rl + 1]  # frame control byte (slice for truncation safety)
+                header_len = 26 if fc == b"\x88" else 24  # QoS-Data vs legacy probe-req
                 sid = sbi.peek_stream_id(fr[rl + header_len:])
                 if sid != a.stream: continue
             checked += 1
