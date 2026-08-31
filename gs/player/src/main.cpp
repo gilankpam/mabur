@@ -629,6 +629,9 @@ int main(int argc, char** argv) {
   uint64_t pend_prev = 0;
   uint64_t last_engage_ms = 0;
   uint64_t last_heal_ms = 0;
+  // 1 Hz mark for the lat/regulator observability block in the main loop
+  // (independent of the GS-OSD block since 2026-08-31).
+  uint64_t lat_mark_ms = 0;
   // Regulator stderr line: printed both at 1 Hz from the main loop's stats
   // block (below) and once more at exit as the final tally -- same format
   // either way, factored here so the two call sites can't drift. pend= is
@@ -1304,11 +1307,20 @@ int main(int argc, char** argv) {
         rec_start();
       }
     }
+    // Idle window: true when no release is due within the next 8 ms, so
+    // the heavy 1 Hz blocks below (stats/statvfs, lat flush, OSD compose)
+    // can run without risking a missed latch. The post-release gap is
+    // ~10.7 ms at 60 fps, so deferred work runs within a frame period.
+    bool idle_ok = true;
 #ifdef MABUR_PLAYER_HW
     if (presenter) {
       presenter->poll_events();
       maburplay::DmaFrame due;
       while (regulator.release_due(mono_us(), &due)) present_now(due);
+      {
+        const uint64_t nr = regulator.next_release_us();
+        idle_ok = nr == 0 || nr > mono_us() + 8'000;
+      }
       // Chain-break heal, per-tick (hw 2026-08-31): a loop stall past the
       // lead window (the 1 Hz OSD/stats work) makes one release miss its
       // latch, and the miss self-sustains -- each parked resubmit lands
@@ -1447,7 +1459,7 @@ int main(int argc, char** argv) {
       // Video and recording figures at 1 Hz. The sideport itself runs at
       // 2 Hz, but these are the player's own and recomputing them per
       // iteration would only add noise to numbers read at a glance.
-      if (now_ms - gs_video_mark_ms >= 1000) {
+      if (idle_ok && now_ms - gs_video_mark_ms >= 1000) {
         // The gate guarantees dt >= 1.0, so there is nothing to divide by
         // zero; gs_video_mark_ms == 0 is the first tick, which has no
         // interval behind it and therefore only seeds the marks.
@@ -1515,64 +1527,72 @@ int main(int argc, char** argv) {
         }
         gs_ps.rec = gs_rec.update(rin, now_ms);
 
-#ifdef MABUR_PLAYER_HW
-        const auto L = lat.flush_line();
-        // OSD LAT row (Task 12): p99_frame() returns the REAL p99-by-e2e
-        // frame's own segment breakdown, computed as a side effect inside
-        // flush_line() above from the window it is about to clear -- it is
-        // a member that persists across flush_line() calls, not derived
-        // from `completed_` at call time, so calling it after flush_line()
-        // here is safe and gets THIS window's frame (see lat_tracker.h and
-        // lat_tracker.cpp's flush_line()/p99_frame()). A window with zero
-        // completed frames leaves it holding the last valid frame rather
-        // than clearing it -- an idle 1 Hz tick between two spiky ones
-        // still shows the most recent real spike instead of flickering to
-        // "LAT --" and back.
-        const auto bd = lat.p99_frame();
-        // `bd.valid` alone is NOT enough: p99_frame_ is a member that
-        // survives flush_all() (lat_tracker.cpp only clears map_/anchor_/
-        // completed_/the chk+dsp accumulators there, not p99_frame_), so
-        // after any decoder/session reset it keeps reporting the LAST
-        // pre-reset frame as if it were current. `L.anchor_ok`, from this
-        // SAME flush_line() call, is what actually reflects whether the
-        // window just flushed has a usable anchor -- gate on both, or a
-        // reset shows a stale breakdown labeled current for ~1s+ instead
-        // of "LAT --".
-        gs_ps.lat_valid = bd.valid && L.anchor_ok;
-        // Gated on gs_ps.lat_valid (the AND), not bd.valid alone -- same
-        // reasoning as above: a stale post-reset bd would otherwise still
-        // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
-        // about to ignore them, leaving gs_ps holding phantom numbers.
-        if (gs_ps.lat_valid) {
-          gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
-          for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
-        }
-        if (L.n > 0) {
-          char lat_buf[256];
-          std::snprintf(lat_buf, sizeof(lat_buf),
-              "lat: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "
-              "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s",
-              L.n, L.p50[7]/1000, L.p99[7]/1000, L.p50[0]/1000, L.p99[0]/1000,
-              L.p50[1]/1000, L.p99[1]/1000, L.p50[2]/1000, L.p99[2]/1000,
-              L.p50[3]/1000, L.p99[3]/1000, L.p50[4]/1000, L.p99[4]/1000,
-              L.p50[5]/1000, L.p99[5]/1000, L.dsp_exact ? "" : "~",
-              L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
-              L.anchor_ok ? "ok" : "warm");
-          std::fprintf(stderr, "%s\n", lat_buf);
-          lat_log.write(mono_us(),
-                        static_cast<uint64_t>(std::chrono::duration_cast<
-                            std::chrono::microseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count()),
-                        lat_buf);
-        }
-        // Same 1 Hz tick as the lat: line above, so the bench fallback-drill
-        // gate ("fallback= climbs then stops after re-warm") has a periodic
-        // line to watch live -- not just the final tally at exit.
-        log_regulator_line();
-#endif
       }
     }
+#ifdef MABUR_PLAYER_HW
+    // Player tail-latency aggregates + regulator line, 1 Hz. Deliberately
+    // OUTSIDE the gs_src gate (2026-08-31: originally nested in the GS-OSD
+    // block, so disabling the OSD silently killed the lat:/regulator:
+    // lines and the DVR lat log) and behind the idle-window gate so this
+    // block's own cost can never stall a release past its latch deadline.
+    if (idle_ok && mono_ms() - lat_mark_ms >= 1000) {
+      lat_mark_ms = mono_ms();
+      const auto L = lat.flush_line();
+      // OSD LAT row (Task 12): p99_frame() returns the REAL p99-by-e2e
+      // frame's own segment breakdown, computed as a side effect inside
+      // flush_line() above from the window it is about to clear -- it is
+      // a member that persists across flush_line() calls, not derived
+      // from `completed_` at call time, so calling it after flush_line()
+      // here is safe and gets THIS window's frame (see lat_tracker.h and
+      // lat_tracker.cpp's flush_line()/p99_frame()). A window with zero
+      // completed frames leaves it holding the last valid frame rather
+      // than clearing it -- an idle 1 Hz tick between two spiky ones
+      // still shows the most recent real spike instead of flickering to
+      // "LAT --" and back.
+      const auto bd = lat.p99_frame();
+      // `bd.valid` alone is NOT enough: p99_frame_ is a member that
+      // survives flush_all() (lat_tracker.cpp only clears map_/anchor_/
+      // completed_/the chk+dsp accumulators there, not p99_frame_), so
+      // after any decoder/session reset it keeps reporting the LAST
+      // pre-reset frame as if it were current. `L.anchor_ok`, from this
+      // SAME flush_line() call, is what actually reflects whether the
+      // window just flushed has a usable anchor -- gate on both, or a
+      // reset shows a stale breakdown labeled current for ~1s+ instead
+      // of "LAT --".
+      gs_ps.lat_valid = bd.valid && L.anchor_ok;
+      // Gated on gs_ps.lat_valid (the AND), not bd.valid alone -- same
+      // reasoning as above: a stale post-reset bd would otherwise still
+      // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
+      // about to ignore them, leaving gs_ps holding phantom numbers.
+      if (gs_ps.lat_valid) {
+        gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
+        for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
+      }
+      if (L.n > 0) {
+        char lat_buf[256];
+        std::snprintf(lat_buf, sizeof(lat_buf),
+            "lat: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "
+            "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s",
+            L.n, L.p50[7]/1000, L.p99[7]/1000, L.p50[0]/1000, L.p99[0]/1000,
+            L.p50[1]/1000, L.p99[1]/1000, L.p50[2]/1000, L.p99[2]/1000,
+            L.p50[3]/1000, L.p99[3]/1000, L.p50[4]/1000, L.p99[4]/1000,
+            L.p50[5]/1000, L.p99[5]/1000, L.dsp_exact ? "" : "~",
+            L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
+            L.anchor_ok ? "ok" : "warm");
+        std::fprintf(stderr, "%s\n", lat_buf);
+        lat_log.write(mono_us(),
+                      static_cast<uint64_t>(std::chrono::duration_cast<
+                          std::chrono::microseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count()),
+                      lat_buf);
+      }
+      // Same 1 Hz tick as the lat: line above, so the bench fallback-drill
+      // gate ("fallback= climbs then stops after re-warm") has a periodic
+      // line to watch live -- not just the final tally at exit.
+      log_regulator_line();
+    }
+#endif
     // ONE composition, for both overlays, into the buffer that is back right
     // now. Not two independent render blocks: they share the back index and
     // the dirty flag, so whichever of them publishes decides what is scanned
@@ -1582,8 +1602,10 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
     // Re-checked every iteration, never cached: the presenter switches the
     // OSD off mid-session after repeated commit failures, and from that point
-    // osd_back_surface() is a null Surface.
-    if (presenter && presenter->osd_available()) {
+    // osd_back_surface() is a null Surface. idle_ok: composition is the
+    // heaviest per-iteration work (full-width blits) -- deferring it out of
+    // a release's lead window is what keeps the servo's latches safe.
+    if (idle_ok && presenter && presenter->osd_available()) {
       const maburplay::Surface surf = presenter->osd_back_surface();
       if (surf.pixels && composer.gs_present() && !gs_laid_out) {
         // Deferred to the first real surface: its size is the DRM buffer's,

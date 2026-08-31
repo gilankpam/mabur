@@ -92,6 +92,15 @@ class FrameRegulator {
   void heal_slip();
   uint64_t heals() const { return heals_; }
 
+  // Earliest pending release (0 = nothing held). The main loop uses this
+  // to schedule its heavy 1 Hz work (OSD compose, stats, statvfs) into
+  // the gap between releases: a stall that overlaps a release deadline
+  // makes the frame miss its latch and start a one-vsync-late chain
+  // (hw 2026-08-31), so heavy work defers when a release is imminent.
+  uint64_t next_release_us() const {
+    return count_ ? held_[0].release_us : 0;
+  }
+
  private:
   struct Held {
     DmaFrame f{};
