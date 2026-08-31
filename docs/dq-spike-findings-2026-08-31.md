@@ -316,12 +316,33 @@ devourer — shared-channel risk, RCF uplink lives there too; (c) bitrate,
 which is just the quality trade. Host-side work (URB batching, tx
 threads, pool depth) is refuted — do not spend there.
 
-## 9. Open questions
+## 9. Rate sweep: the per-body dead time is CSMA, not silicon
+
+`link.max_mcs` 1 / 3 / 5 (GS config-only, 60 s + 3568 AUs per point,
+per-sid regression through each class's overhead multiplier — mcs1-3
+rungs run the asym pair). Fit across all six (rung, sid) points:
+
+    pace_us = 11105 bits / phy_rate + 150.6 µs     (residuals ±50 µs)
+
+The rate term back-computes to 1388 B = exactly one body; the intercept
+is **constant across a 4× rate swing** — the dead time is a fixed
+per-MPDU cost, not a duty-cycle effect and not per-byte. Against known
+802.11 constants (5 GHz): DIFS 34 + mean backoff ~67 (CWmin 15, 9 µs
+slots) + HT-mixed preamble ~36 ≈ 137 of the 151 µs → **~⅔ is DIFS +
+backoff, ~¼ preamble, chip/descriptor ≲ 15 µs**.
+
+Consequences for the §8 levers: CW/EDCA tuning in devourer attacks the
+~100 µs CSMA share directly (fec p50 −~25% at mcs5 if eliminated;
+⚠ drone TX aggression trades against RCF uplink loss — watch close_ms
+in any A/B); A-MPDU would fold preamble + DIFS across an aggregate but
+is unverified in injection; bigger bodies halve how often the whole
+151 µs is paid. Chip-side work is refuted — nothing to win there.
+
+## 10. Open questions
 
 1. ~~What is the true split of the 7 ms `dq`?~~ Answered in §7.
 2. ~~Is 1341 bodies/s a real ceiling?~~ Refuted in §8 — offered load.
-   The real invariant is the burst pace: 0.385 ms/body at mcs5, split
-   ~0.22 airtime + ~0.16 chip/medium-access, the latter unsplit.
+   The burst-pace invariant is fully modeled in §9.
 3. ~~What does the fragmentation + GF256 + SBI-pack stage cost per
    frame?~~ Measured in §7: mean 3.4 ms, max 16.6 ms (IDR) — and now
    overlapped with the drain, visible continuously in the dq_split line.
