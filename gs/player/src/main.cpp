@@ -831,13 +831,12 @@ int main(int argc, char** argv) {
       // obvious. The two holders are decoupled by MPP's own refcount; the
       // presenter's ownership contract is unchanged.
       if (burn) burn->submit(f);
-      maburplay::DmaFrame displaced;
-      bool did_displace = false;
-      if (regulator.offer(f, mono_us(), &displaced, &did_displace))
+      maburplay::FrameRegulator::Displaced disp;
+      if (regulator.offer(f, mono_us(), &disp))
         present_now(f);
-      if (did_displace) {
-        lat.on_drop(displaced.pts_us);
-        backend->release_frame(displaced);
+      for (int i = 0; i < disp.n; ++i) {
+        lat.on_drop(disp.f[i].pts_us);
+        backend->release_frame(disp.f[i]);
       }
       return;
     }
@@ -1025,10 +1024,10 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
       if (presenter) presenter->drop_all();
       {
-        // The regulator is the THIRD holder — force-release its held frame
+        // The regulator is the THIRD holder — force-release its held frames
         // into the backend before flush(), same contract as drop_all().
         maburplay::DmaFrame held;
-        if (regulator.release_due(~0ull, &held)) backend->release_frame(held);
+        while (regulator.release_due(~0ull, &held)) backend->release_frame(held);
       }
       if (burn) {
         // The recorder is the SECOND holder of decoder buffers, so it has
@@ -1260,7 +1259,7 @@ int main(int argc, char** argv) {
     if (presenter) {
       presenter->poll_events();
       maburplay::DmaFrame due;
-      if (regulator.release_due(mono_us(), &due)) present_now(due);
+      while (regulator.release_due(mono_us(), &due)) present_now(due);
     }
     // Retry acquisition once a second while there is no display. A FRESH
     // presenter every time, never a re-init of the failed one: a display that
@@ -1563,9 +1562,9 @@ int main(int argc, char** argv) {
         if (presenter) presenter->drop_all();
         {
           // Regulator flush, same contract as the flush_before site: the
-          // held frame must go back to the OLD backend before reset/teardown.
+          // held frames must go back to the OLD backend before reset/teardown.
           maburplay::DmaFrame held;
-          if (regulator.release_due(~0ull, &held)) backend->release_frame(held);
+          while (regulator.release_due(~0ull, &held)) backend->release_frame(held);
         }
         if (burn) {
           // Same pairing as flush_before: release the buffer the recorder is

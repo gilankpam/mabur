@@ -24,57 +24,81 @@ namespace maburplay {
 //
 // Ownership: offer() either passes the frame through (present it NOW —
 // regulator disabled, frame already past its release, or a pts
-// discontinuity re-seed) or holds exactly one frame, mailbox-style. A
-// held frame displaced by a newer one, or orphaned by a discontinuity,
-// comes back via *replaced and MUST be returned to the backend by the
-// caller. release_due() surfaces the held frame once its time arrives.
+// discontinuity re-seed) or holds it in a 2-deep queue. A held frame
+// displaced by a newer one, or orphaned by a discontinuity, comes back
+// via *out (up to 2 at once) and MUST be returned to the backend by the
+// caller. release_due() surfaces held frames once their time arrives —
+// call it in a loop, since more than one can be due in the same tick.
 //
-// ⚠ Single-slot consequence (bench A/B 2026-08-30): once D approaches
-// the spacing to the next burst-decoded frame, displacement rate climbs
-// and the dropped frames judder more than the smoothing helps — 12 ms
-// measured 2.94 ms present-jitter with 5 replacements, 16 ms measured
-// 5.32 ms with 804. Do not raise D past ~14 without first giving this a
-// 2-deep release queue.
+// 2-deep queue (bench A/B 2026-08-30): the old single-slot mailbox meant
+// that once D approached the spacing to the next burst-decoded frame,
+// displacement rate climbed and the dropped frames judder more than the
+// smoothing helps — 12 ms measured 2.94 ms present-jitter with 5
+// replacements, 16 ms measured 5.32 ms with 804. Two slots let the queue
+// hold one frame per vsync target instead of collapsing every arrival
+// onto a single held frame; in fallback mode (no vsync lock) all entries
+// share target_v == 0, so the same-target displacement rule below
+// reproduces the old single-slot mailbox exactly. Vsync-servo mode
+// (Task 3) is what actually reaches the second slot.
 class FrameRegulator {
  public:
-  explicit FrameRegulator(int regulate_ms)
-      : d_us_(static_cast<int64_t>(regulate_ms) * 1000) {}
+  FrameRegulator(int regulate_ms, bool vsync_lock = false,
+                 int vsync_lead_ms = 3)
+      : d_us_(static_cast<int64_t>(regulate_ms) * 1000),
+        vsync_lock_(vsync_lock),
+        lead_us_(static_cast<uint64_t>(vsync_lead_ms) * 1000) {}
 
   bool enabled() const { return d_us_ > 0; }
 
-  // Returns true when f should be presented immediately. Returns false
-  // when the regulator holds it. Either way, if *did_replace is set the
-  // frame in *replaced was displaced and must be released by the caller.
-  bool offer(const DmaFrame& f, uint64_t mono_us, DmaFrame* replaced,
-             bool* did_replace);
+  struct Displaced {
+    DmaFrame f[2];
+    int n = 0;
+  };
 
-  // True (and fills *out) once the held frame's release time has arrived.
+  // Returns true when f should be presented immediately. Returns false
+  // when the regulator holds it. Either way, any frame(s) displaced from
+  // the queue are returned in *out and must be released by the caller.
+  bool offer(const DmaFrame& f, uint64_t mono_us, Displaced* out);
+
+  // True (and fills *out) once the earliest held frame's release time has
+  // arrived. Call in a loop to drain — more than one entry can be due in
+  // the same tick.
   bool release_due(uint64_t mono_us, DmaFrame* out);
 
-  bool holding() const { return holding_; }
+  bool holding() const { return count_ > 0; }
 
   uint64_t held_count() const { return held_count_; }
   uint64_t late_count() const { return late_count_; }
   uint64_t replaced_count() const { return replaced_count_; }
   uint64_t discont_count() const { return discont_count_; }
   double hold_ema_ms() const { return hold_ema_ms_; }
+  uint64_t vsync_skips() const { return vsync_skips_; }
+  uint64_t fallback_frames() const { return fallback_frames_; }
+  bool servo_locked() const { return false; }  // real in Task 3
 
  private:
-  void displace_into(DmaFrame* replaced, bool* did_replace);
+  struct Held {
+    DmaFrame f{};
+    uint64_t release_us = 0;
+    uint64_t target_v = 0;  // 0 = untargeted (fallback rule)
+  };
+  void displace(int idx, Displaced* out);
 
   const int64_t d_us_;
+  const bool vsync_lock_;
+  const uint64_t lead_us_;
 
   maburgs::PtsAnchor anchor_;
-
-  bool holding_ = false;
-  DmaFrame held_{};
-  uint64_t release_us_ = 0;
+  Held held_[2];   // held_[0] releases first (sorted by release_us)
+  int count_ = 0;
 
   uint64_t held_count_ = 0;
   uint64_t late_count_ = 0;
   uint64_t replaced_count_ = 0;
   uint64_t discont_count_ = 0;
   double hold_ema_ms_ = 0.0;
+  uint64_t vsync_skips_ = 0;
+  uint64_t fallback_frames_ = 0;
 };
 
 }  // namespace maburplay
