@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <thread>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -1298,7 +1299,41 @@ int main(int argc, char** argv) {
     // mailbox frame waits for the NEXT AU burst before anyone submits it
     // (observed live as juddery ~2-3-vsync-late presentation with a
     // 100 ms pump -- the doorbell was the only wakeup source).
-    ring.pump(2);
+    int pump_ms = 2;
+#ifdef MABUR_PLAYER_HW
+    // Wake for the next scheduled release, not just the AU doorbell
+    // (hw 2026-08-31): the fixed ceiling plus the decode work below put
+    // the release->submit path ~4 ms behind schedule, forcing
+    // vsync_lead_ms up to ~9 -- and the lead sits inside every frame's
+    // glass latency. Bound the pump by the release deadline, then
+    // micro-sleep the exact remainder and submit BEFORE the decode work,
+    // so the submit lands ~0.2 ms after schedule and the lead only has
+    // to cover the commit itself.
+    if (presenter) {
+      const uint64_t nr0 = regulator.next_release_us();
+      if (nr0 != 0) {
+        const uint64_t now0 = mono_us();
+        pump_ms = nr0 <= now0 ? 0
+                              : (nr0 - now0 >= 2'000 ? 2
+                                                     : static_cast<int>(
+                                                           (nr0 - now0) / 1000));
+      }
+    }
+#endif
+    ring.pump(pump_ms);
+#ifdef MABUR_PLAYER_HW
+    if (presenter) {
+      const uint64_t nr1 = regulator.next_release_us();
+      if (nr1 != 0) {
+        const uint64_t now1 = mono_us();
+        if (nr1 > now1 && nr1 - now1 <= 2'500)
+          std::this_thread::sleep_for(std::chrono::microseconds(nr1 - now1));
+        presenter->poll_events();
+        maburplay::DmaFrame due;
+        while (regulator.release_due(mono_us(), &due)) present_now(due);
+      }
+    }
+#endif
     backend->poll();
     // One ioctl per iteration (~500/s, microseconds each) -- far under the
     // ~1.5 ms budget tools/bench/gs_overlay_bench.cpp polices for this loop.
