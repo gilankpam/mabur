@@ -39,6 +39,7 @@
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
 #include "lat_tracker.h"    // tail latency segments + 1 Hz lat line (Task 11)
+#include "lat_log.h"        // persist 1 Hz lat line to <dvr>/log/lat-NNNN.log (Task 7)
 #include "mpp_backend.h"    // MppBackend::info_changes()/errors() for --decode-only
 #include "osd_palette.h"    // build_palette() for the encoder-side OSD
 #endif
@@ -569,6 +570,7 @@ int main(int argc, char** argv) {
   maburplay::FrameRegulator regulator(cfg.display.regulate_ms,
                                       cfg.display.vsync_lock,
                                       cfg.display.vsync_lead_ms);
+  maburplay::LatLog lat_log(cfg.display.lat_log_dir);
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
@@ -1483,16 +1485,25 @@ int main(int argc, char** argv) {
           gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
           for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
         }
-        if (L.n > 0)
-          std::fprintf(stderr,
+        if (L.n > 0) {
+          char lat_buf[256];
+          std::snprintf(lat_buf, sizeof(lat_buf),
               "lat: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "
-              "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s\n",
+              "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s",
               L.n, L.p50[7]/1000, L.p99[7]/1000, L.p50[0]/1000, L.p99[0]/1000,
               L.p50[1]/1000, L.p99[1]/1000, L.p50[2]/1000, L.p99[2]/1000,
               L.p50[3]/1000, L.p99[3]/1000, L.p50[4]/1000, L.p99[4]/1000,
               L.p50[5]/1000, L.p99[5]/1000, L.dsp_exact ? "" : "~",
               L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
               L.anchor_ok ? "ok" : "warm");
+          std::fprintf(stderr, "%s\n", lat_buf);
+          lat_log.write(mono_us(),
+                        static_cast<uint64_t>(std::chrono::duration_cast<
+                            std::chrono::microseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count()),
+                        lat_buf);
+        }
 #endif
       }
     }
