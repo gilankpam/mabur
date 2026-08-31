@@ -44,8 +44,12 @@ class VblankEstimator {
 
   bool valid(uint64_t now_us) const {
     if (exact_flips_ < kWarmFlips) return false;
-    return static_cast<double>(now_us - last_exact_us_) <=
-           kStalePeriods * period_us_;
+    // Signed: a last flip "in the future" relative to now (pathological
+    // phase) is trivially recent -- validity must not underflow away.
+    // The regulator's safety clamp is what actually guards that state.
+    const double age =
+        static_cast<double>(static_cast<int64_t>(now_us - last_exact_us_));
+    return age <= kStalePeriods * period_us_;
   }
 
   struct Release {

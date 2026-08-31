@@ -25,7 +25,7 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
     return true;
   }
 
-  uint64_t release;
+  uint64_t release = 0;
   uint64_t target_v = 0;
   servo_now_ = vsync_lock_ && est_.valid(mono_us);
   if (servo_now_) {
