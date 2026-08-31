@@ -1245,6 +1245,11 @@ int run_real_mode(const Config& cfg) {
     // reported every 5 s.
     uint64_t qw_n = 0, qw_sum_us = 0, qw_max_us = 0;
     uint64_t qf_n = 0, qf_sum_us = 0, qf_max_us = 0;
+    // tx_send gauge (burst-drain follow-up 2026-08-31): wall time of each
+    // tx.send_bodies call and its body count, to split the measured
+    // ~0.385 ms/body burst pace into USB round-trip vs airtime. A blocking
+    // ~1.1 ms per 3-body batch here = the URB round-trip IS the pace.
+    uint64_t sb_calls = 0, sb_bodies = 0, sb_sum_us = 0, sb_max_us = 0;
     uint32_t last_qw_report_ms = static_cast<uint32_t>(now_steady_ms());
     while (!g_devourer_should_stop) {
       batch.clear();
@@ -1290,8 +1295,25 @@ int run_real_mode(const Config& cfg) {
         }
         qw_n = qw_sum_us = qw_max_us = 0;
         qf_n = qf_sum_us = qf_max_us = 0;
+        if (sb_calls > 0) {
+          std::fprintf(stderr,
+              "maburd tx_send: calls=%llu bodies=%llu us/call mean=%llu "
+              "max=%llu us/body=%llu\n",
+              (unsigned long long)sb_calls,
+              (unsigned long long)sb_bodies,
+              (unsigned long long)(sb_sum_us / sb_calls),
+              (unsigned long long)sb_max_us,
+              (unsigned long long)(sb_bodies ? sb_sum_us / sb_bodies : 0));
+        }
+        sb_calls = sb_bodies = sb_sum_us = sb_max_us = 0;
       }
+      const uint64_t sb_t0 = now_steady_us();
       tx.send_bodies(batch);
+      const uint64_t sb_dt = now_steady_us() - sb_t0;
+      ++sb_calls;
+      sb_bodies += batch.size();
+      sb_sum_us += sb_dt;
+      if (sb_dt > sb_max_us) sb_max_us = sb_dt;
     }
   });
 

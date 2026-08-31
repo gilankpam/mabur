@@ -280,13 +280,48 @@ behind it at today's operating point.
 Rollback: `maburd.pre-dqsplit` on the drone (prod build; config
 untouched, wire unchanged — GS binary not involved).
 
-## 8. Open questions
+## 8. `fec` follow-up (same day, evening): serialization pace measured,
+## host-side pacing refuted, 1341 ceiling refuted
 
-1. ~~What is the true split of the 7 ms `dq`?~~ Answered above.
-2. Is 1341 bodies/s a real acceptance ceiling, or just today's offered
-   load? Unresolved — §4. Everything upstream of the radio (CPU, USB
-   threading, USB round-trips) has been eliminated, so if a ceiling
-   exists it is in devourer/HalMAC/the chip FIFO.
+Operator raised `bitrate_max_kbps` 8000→14000 and flattened the
+mcs4/5 pairs to 0.5/0.5; `fec` then read 10–30 ms. Per-AU regression
+over 60 s / 3568 AUs from the AU ring (scratchpad `fecdump.py`, headers
+only):
+
+    fec = 1.2 ms + 0.41 ms/KB payload      (residual sd 2.7 ms)
+
+- ~90% of the fluctuation is **frame-size variance** (GDR stream, no
+  IDRs; frames 15–49 KB → 7–21 ms of pure serialization). Repair/loss
+  tail: 1.3% of AUs with residual > 8 ms (worst +26 ms).
+- Burst drain pace is **0.385 ms/body (~29 Mb/s air) — identical at
+  8 and 14 Mb/s offered**, and identical to the §5-era burst pace. It is
+  the invariant.
+- The link sustains ~1826 bodies/s average at the new bitrate →
+  **the "1341 bodies/s ceiling" of §4 was offered load, not a wall.**
+  Open question 2 is closed.
+- The pace is **not host-side**: TxQueue wait ~40 µs, and the new
+  `tx_send` gauge shows `tx.send_bodies` returns in ~20 µs at every
+  `tx_threads` setting including 1 — devourer's send path is async
+  libusb submission all the way down
+  (`third_party/devourer/src/UsbTransport.cpp`), so maburd never blocks
+  and never paces. The 0.385 ms/body is set below libusb: per-MPDU
+  ~0.16 ms of chip/medium-access overhead (descriptor processing, DIFS +
+  backoff — injection still does CSMA) on top of ~0.22 ms mcs5 airtime.
+  Splitting those two needs devourer/PHY instrumentation, not maburd's.
+
+Levers, in order: (a) bigger bodies — the 656-symbol/w16 candidate
+halves the per-MPDU tax per byte (~20–25% off `fec`), gated on the
+all-MCS hole sweep; (b) PHY medium-access tuning (backoff/CW) in
+devourer — shared-channel risk, RCF uplink lives there too; (c) bitrate,
+which is just the quality trade. Host-side work (URB batching, tx
+threads, pool depth) is refuted — do not spend there.
+
+## 9. Open questions
+
+1. ~~What is the true split of the 7 ms `dq`?~~ Answered in §7.
+2. ~~Is 1341 bodies/s a real ceiling?~~ Refuted in §8 — offered load.
+   The real invariant is the burst pace: 0.385 ms/body at mcs5, split
+   ~0.22 airtime + ~0.16 chip/medium-access, the latter unsplit.
 3. ~~What does the fragmentation + GF256 + SBI-pack stage cost per
    frame?~~ Measured in §7: mean 3.4 ms, max 16.6 ms (IDR) — and now
    overlapped with the drain, visible continuously in the dq_split line.
