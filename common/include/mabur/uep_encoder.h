@@ -28,6 +28,15 @@ struct UepBody {
   // q_ms duration at pop. 0 = never stamped (dry-run, tests) → q_ms 0 =
   // unknown on the wire. Drone-local, never serialized itself.
   uint32_t enqueued_ms = 0;
+  // Steady-clock µs sampled immediately before the push (unlike enqueued_ms,
+  // which inherits the hot loop's top-of-iteration stamp and therefore spans
+  // the venc-ring wait + FEC CPU too — dq-spike finding 2026-08-31). Feeds
+  // the drone-local dq_split gauge only; 0 = never stamped.
+  uint64_t pushed_us = 0;
+  // True only for the body carrying fragment index 0 of its AU — the one
+  // whose q_ms the GS latches as the frame's dq. Lets the tx thread report
+  // a queue-wait figure directly comparable to the GS dq segment.
+  bool au_first = false;
 };
 
 // Composes Fragmenter + SwEncoder + SbiPacker into one independent pipeline

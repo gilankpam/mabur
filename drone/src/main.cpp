@@ -367,6 +367,16 @@ uint64_t now_steady_ms() {
           .count());
 }
 
+// µs sibling for the dq_split gauge: the intervals it separates (venc-ring
+// wait 0–5 ms, FEC/SBI CPU, queue wait) are each of the same order as
+// now_steady_ms()'s 1 ms quantum, so a ms clock cannot split them.
+uint64_t now_steady_us() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
 // Applies a freshly-published AppliedOp (detected via shared_ptr identity,
 // not generation — see the callers' pump-loop comments) to the
 // hot-thread-owned UepEncoder: the commanded overhead PAIR applied directly
@@ -1004,8 +1014,17 @@ int run_real_mode(const Config& cfg) {
     // disagreement the finding flagged.
     bool ov_override_was_armed = false;
 
+    // dq_split gauge (dq-spike follow-up 2026-08-31): per-frame split of the
+    // interval the wire's q_ms currently lumps together — venc-ring wait
+    // (loop-top → read return) and FEC/SBI-pack CPU (read return → push).
+    // Hot-thread-owned, reported on the 5 s ring-stats cadence.
+    uint64_t split_n = 0;
+    uint64_t split_ring_sum_us = 0, split_ring_max_us = 0;
+    uint64_t split_cpu_sum_us = 0, split_cpu_max_us = 0;
+
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
+      const uint64_t t0_us = now_steady_us();
 
       // Identity-compare, not generation-compare: see the matching comment
       // in run_dry_run's pump_op_change lambda above. reapply_with_shed()
@@ -1056,6 +1075,7 @@ int run_real_mode(const Config& cfg) {
       // buffer.
       VencFrameMeta meta{};
       int n = fsrc.read(fbuf.data(), fbuf.size(), 5, &meta);
+      const uint64_t t_read_us = now_steady_us();
       if (n > 0) {
         if (fsrc.reattach_count() != last_reattach) {
           last_reattach = fsrc.reattach_count();
@@ -1088,9 +1108,28 @@ int run_real_mode(const Config& cfg) {
         // the SBI header sits outside the FEC envelope, so this is the only
         // place a post-pack field can be stamped without breaking a CRC
         // (docs/superpowers/specs/2026-08-30-latency-accounting; Task 3).
+        // dq_split accounting: ring wait is loop-top → read return (the
+        // interval during which this frame did not yet exist for us), CPU is
+        // read return → here (fragmentation + GF256 + SBI pack + AirFeed).
+        // enqueued_ms deliberately stays the stale loop-top stamp so the
+        // wire q_ms is unchanged while the split is being validated.
+        const uint64_t t_push_us = now_steady_us();
+        if (!bodies.empty()) {
+          const uint64_t ring_us = t_read_us - t0_us;
+          const uint64_t cpu_us = t_push_us - t_read_us;
+          ++split_n;
+          split_ring_sum_us += ring_us;
+          if (ring_us > split_ring_max_us) split_ring_max_us = ring_us;
+          split_cpu_sum_us += cpu_us;
+          if (cpu_us > split_cpu_max_us) split_cpu_max_us = cpu_us;
+        }
+        bool first = true;
         for (auto& b : bodies) {
           mabur::sbi_set_enc_us(b.body.data(), b.body.size(), pipe.last_enc_us());
           b.enqueued_ms = static_cast<uint32_t>(now);
+          b.pushed_us = t_push_us;
+          b.au_first = first;
+          first = false;
           txq.push(std::move(b));
         }
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
@@ -1144,6 +1183,22 @@ int run_real_mode(const Config& cfg) {
               (unsigned long long)pipe.vanished_enhance(),
               (unsigned long long)pipe.self_idr_refused());
         }
+        // dq_split window report (dq-spike follow-up): the pre-push half of
+        // the interval the wire q_ms spans. The post-push half (true queue
+        // wait) is the tx thread's dq_queue line on the same cadence.
+        if (split_n > 0) {
+          std::fprintf(stderr,
+              "maburd dq_split: n=%llu ring_us mean=%llu max=%llu "
+              "cpu_us mean=%llu max=%llu\n",
+              (unsigned long long)split_n,
+              (unsigned long long)(split_ring_sum_us / split_n),
+              (unsigned long long)split_ring_max_us,
+              (unsigned long long)(split_cpu_sum_us / split_n),
+              (unsigned long long)split_cpu_max_us);
+        }
+        split_n = 0;
+        split_ring_sum_us = split_ring_max_us = 0;
+        split_cpu_sum_us = split_cpu_max_us = 0;
       }
 
       // Idle-tail flush: no single source frame owns these bodies (poll can
@@ -1151,11 +1206,17 @@ int run_real_mode(const Config& cfg) {
       // they carry no patched enc_us — left at the packer's zero placeholder
       // (0 = unknown on the wire, per spec).
       auto polled = uep.poll(now);
-      for (auto& b : polled) {
-        // Idle-tail bodies carry no per-frame enc_us, but the queue wait is
-        // still real once they reach the tx thread — stamp it here too.
-        b.enqueued_ms = static_cast<uint32_t>(now);
-        txq.push(std::move(b));
+      if (!polled.empty()) {
+        // Fresh sample, not t0_us: by here the loop top is up to a full
+        // read-timeout + encode stale, and these bodies never waited on it.
+        const uint64_t t_poll_us = now_steady_us();
+        for (auto& b : polled) {
+          // Idle-tail bodies carry no per-frame enc_us, but the queue wait is
+          // still real once they reach the tx thread — stamp it here too.
+          b.enqueued_ms = static_cast<uint32_t>(now);
+          b.pushed_us = t_poll_us;
+          txq.push(std::move(b));
+        }
       }
 
       hot_beat.fetch_add(1, std::memory_order_relaxed);
@@ -1170,6 +1231,13 @@ int run_real_mode(const Config& cfg) {
   // capped the old inline path at ~2500 fps.
   std::thread tx_thread([&]() {
     std::vector<UepBody> batch;
+    // dq_queue gauge (dq-spike follow-up 2026-08-31): TRUE push→pop queue
+    // wait from the pre-push pushed_us stamp, per body and for the AU-first
+    // body alone (the one whose q_ms the GS latches as dq). Thread-owned,
+    // reported every 5 s.
+    uint64_t qw_n = 0, qw_sum_us = 0, qw_max_us = 0;
+    uint64_t qf_n = 0, qf_sum_us = 0, qf_max_us = 0;
+    uint32_t last_qw_report_ms = static_cast<uint32_t>(now_steady_ms());
     while (!g_devourer_should_stop) {
       batch.clear();
       if (txq.pop_batch(batch, 3, 5) == 0) continue;
@@ -1180,6 +1248,7 @@ int run_real_mode(const Config& cfg) {
       // dry-run/test paths may still push bare bodies) -> leave q_ms at the
       // packer's zero placeholder rather than reporting a bogus wait.
       const uint32_t pop_ms = static_cast<uint32_t>(now_steady_ms());
+      const uint64_t pop_us = now_steady_us();
       for (auto& b : batch) {
         uint32_t w = (b.enqueued_ms && pop_ms > b.enqueued_ms)
                          ? pop_ms - b.enqueued_ms : 0;
@@ -1188,6 +1257,31 @@ int run_real_mode(const Config& cfg) {
                             static_cast<uint16_t>(w));
         uint32_t prev = txq_wait_max_ms.load(std::memory_order_relaxed);
         while (w > prev && !txq_wait_max_ms.compare_exchange_weak(prev, w)) {}
+        if (b.pushed_us && pop_us > b.pushed_us) {
+          const uint64_t tw = pop_us - b.pushed_us;
+          ++qw_n; qw_sum_us += tw;
+          if (tw > qw_max_us) qw_max_us = tw;
+          if (b.au_first) {
+            ++qf_n; qf_sum_us += tw;
+            if (tw > qf_max_us) qf_max_us = tw;
+          }
+        }
+      }
+      if (pop_ms - last_qw_report_ms >= 5000) {
+        last_qw_report_ms = pop_ms;
+        if (qw_n > 0) {
+          std::fprintf(stderr,
+              "maburd dq_queue: bodies=%llu wait_us mean=%llu max=%llu "
+              "au_first n=%llu mean=%llu max=%llu\n",
+              (unsigned long long)qw_n,
+              (unsigned long long)(qw_sum_us / qw_n),
+              (unsigned long long)qw_max_us,
+              (unsigned long long)qf_n,
+              (unsigned long long)(qf_n ? qf_sum_us / qf_n : 0),
+              (unsigned long long)qf_max_us);
+        }
+        qw_n = qw_sum_us = qw_max_us = 0;
+        qf_n = qf_sum_us = qf_max_us = 0;
       }
       tx.send_bodies(batch);
     }
