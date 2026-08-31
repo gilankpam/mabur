@@ -138,6 +138,51 @@ TEST(ema_tracks_both_rssi_chains_and_max_snr) {
   CHECK(agg.card(0).rssi_b_ema == 40.0);
 }
 
+// A-MPDU aggregated subframes (all but the first) carry no PHY status:
+// devourer zeroes/garbles their rssi/snr and clears rx_pkt_attrib.physt.
+// phy_valid == false must gate them out of the rssi/snr EMA fold entirely
+// (fold_rf), whether or not they are the frame that would have seeded it.
+TEST(phy_invalid_frames_do_not_fold_rssi_snr) {
+  Aggregator agg(vec_layers(), 512, 1);
+  std::vector<uint8_t> junk(20, 0);
+  agg.on_rx_body(msg(0, 1, true, junk));  // valid: seeds the EMAs
+  const auto& c = agg.card(0);
+  const double rssi_a = c.rssi_a_ema, rssi_b = c.rssi_b_ema;
+  const double snr_a = c.snr_a_ema, snr_b = c.snr_b_ema, snr = c.snr_ema;
+  const double rssi = c.rssi_ema;
+  for (uint16_t seq = 2; seq <= 5; ++seq) {
+    auto m = msg(0, seq, true, junk);
+    m.phy_valid = false;
+    m.rssi[0] = 120; m.rssi[1] = 127;   // wild values that would blow up the EMA
+    m.snr[0] = 100; m.snr[1] = 100;
+    agg.on_rx_body(m);
+  }
+  CHECK(c.rssi_a_ema == rssi_a);
+  CHECK(c.rssi_b_ema == rssi_b);
+  CHECK(c.rssi_ema == rssi);
+  CHECK(c.snr_a_ema == snr_a);
+  CHECK(c.snr_b_ema == snr_b);
+  CHECK(c.snr_ema == snr);
+  // A phy_valid frame after the invalid run must still fold as before.
+  auto m2 = msg(0, 6, true, junk);
+  m2.rssi[0] = 50;  // deliberately different from msg()'s constant 38
+  agg.on_rx_body(m2);
+  CHECK(c.rssi_a_ema != rssi_a);  // the valid frame did move the EMA
+}
+
+// phy_valid == false as the very FIRST frame for a card must not seed the
+// EMAs either -- has_ema must stay false until a valid sample arrives.
+TEST(phy_invalid_first_frame_does_not_seed_rssi_snr_ema) {
+  Aggregator agg(vec_layers(), 512, 1);
+  std::vector<uint8_t> junk(20, 0);
+  auto m = msg(0, 1, true, junk);
+  m.phy_valid = false;
+  agg.on_rx_body(m);
+  CHECK(!agg.card(0).has_ema);
+  agg.on_rx_body(msg(0, 2, true, junk));  // first valid frame seeds it
+  CHECK(agg.card(0).has_ema);
+}
+
 TEST(unknown_card_dropped) {
   Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);

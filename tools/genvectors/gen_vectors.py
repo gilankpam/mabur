@@ -259,10 +259,11 @@ su_cases.append({"name": "short", "body": hx(b"\xb0\xf5\x00"), "block_payload": 
 dump("sbi_unpack.json", {"cases": su_cases})
 
 # --- node (RxBody / CardStatus, NEW mabur wire format v0) -----------------
-def pack_rx_body(card_id, mono_us, rssi, snr, crc_ok, mac_seq, body):
+def pack_rx_body(card_id, mono_us, rssi, snr, crc_ok, mac_seq, body, phy_valid=True):
+    flags = (1 if crc_ok else 0) | (2 if phy_valid else 0)
     hdr = struct.pack("<HBBQBBbbBHH", 0xF5A0, 0, card_id, mono_us,
                       rssi[0], rssi[1], snr[0], snr[1],
-                      1 if crc_ok else 0, mac_seq, len(body))
+                      flags, mac_seq, len(body))
     buf = hdr + body
     return buf + struct.pack("<H", fec_subblock.crc16_ccitt(buf))
 

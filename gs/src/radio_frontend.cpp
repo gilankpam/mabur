@@ -179,6 +179,7 @@ void RadioFrontend::on_packet(const Packet& pkt) {
   m.snr[1] = pkt.RxAtrib.snr[1];
   m.evm[0] = pkt.RxAtrib.evm[0];
   m.evm[1] = pkt.RxAtrib.evm[1];
+  m.phy_valid = pkt.RxAtrib.physt;
   m.crc_ok = !pkt.RxAtrib.crc_err;
   // RX rate code -> HT MCS index. devourer's RxAtrib.data_rate carries TWO
   // encodings depending on chip family, and both HT-1SS ranges are mapped

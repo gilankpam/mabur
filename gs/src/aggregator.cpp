@@ -34,8 +34,12 @@ static void fold_evm(Track& t, int8_t a, int8_t b) {
 }
 
 // RSSI/SNR fold shared by CardTrack, ClassTrack and the base+enh pool
-// (identical field names). Mirrors fold_evm's shape; unlike EVM every frame
-// carries a usable rssi/snr sample, so there is no per-chain validity gate.
+// (identical field names). Mirrors fold_evm's shape, but the validity gate
+// is frame-level, not per-chain: under A-MPDU, non-first aggregated
+// subframes carry no PHY status at all (rx_pkt_attrib.physt false) and
+// their rssi/snr read 0/garbage on both chains, not just one. Callers must
+// check RxBody.phy_valid before calling fold_rf — this function itself
+// trusts its caller and always folds.
 template <typename Track>
 static void fold_rf(Track& t, double rssi, double snr, const uint8_t* rssi_ab,
                     const int8_t* snr_ab) {
@@ -147,7 +151,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
 
     const double rssi = static_cast<double>(m.rssi[0] > m.rssi[1] ? m.rssi[0] : m.rssi[1]);
     const double snr = static_cast<double>(m.snr[0] > m.snr[1] ? m.snr[0] : m.snr[1]);
-    fold_rf(c, rssi, snr, m.rssi, m.snr);
+    if (m.phy_valid) fold_rf(c, rssi, snr, m.rssi, m.snr);
     fold_evm(c, m.evm[0], m.evm[1]);
 
     // Per-RF-class EMA, mirroring the pooled block above exactly. Ctrl
@@ -165,7 +169,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       ClassTrack& ct = c.cls[static_cast<size_t>(class_idx)];
       ++ct.frames;
       ct.bytes += m.body.size();
-      fold_rf(ct, rssi, snr, m.rssi, m.snr);
+      if (m.phy_valid) fold_rf(ct, rssi, snr, m.rssi, m.snr);
       fold_evm(ct, m.evm[0], m.evm[1]);
 
       // base+enh pooled track (spec 2026-08-15, re-scoped for the 2-stream
@@ -176,7 +180,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
         ClassTrack& pt = c.rf_pool;
         ++pt.frames;
         pt.bytes += m.body.size();
-        fold_rf(pt, rssi, snr, m.rssi, m.snr);
+        if (m.phy_valid) fold_rf(pt, rssi, snr, m.rssi, m.snr);
         fold_evm(pt, m.evm[0], m.evm[1]);
       }
     }
