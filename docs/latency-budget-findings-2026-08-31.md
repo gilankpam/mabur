@@ -83,7 +83,13 @@ the floor, not absolutely. Follow-up #7 pins the absolutes once.
    flat 0.5/0.5 A/B against the asym pair's fade protection — the fade
    A/B that motivated asym is still open; now both sides of the trade are
    measurable (`fec` per class, `dq`, jitter, fade damage windows).
-3. **Find and model the real drain ceiling** (removes the standing `dq`):
+3. **RESOLVED 2026-08-31 another way — the standing `dq` was never drain.**
+   `docs/dq-spike-findings-2026-08-31.md` §7: it was ring wait + FEC CPU
+   ahead of an idle radio; streaming push removed it (`e2e` p50 −10.6 ms
+   on the bench A/B) and `dq` now reads true queue wait ≈ 0. The
+   drain-ceiling question itself stays open but no longer carries
+   latency. Original framing kept below for the record.
+   ~~**Find and model the real drain ceiling** (removes the standing `dq`):~~
    first MEASURE what limits the ~15 Mb/s effective burst drain — sweep
    `radio.tx_threads` / usb_agg and watch `dq` (USB round-trips?), pin a
    lower MCS at fixed stream rate (airtime?), instrument the tx-thread

@@ -134,4 +134,45 @@ TEST(uep_poll_has_nothing_to_seal_after_a_frame) {
   CHECK(enc.poll(flush_ms + 1).empty());
 }
 
+TEST(uep_add_frame_sink_streams_bodies_incrementally) {
+  // The sink overload must deliver the same bodies, in the same order, as
+  // the vector overload — just one at a time, so the hot loop can hand each
+  // to the TxQueue while later FEC blocks are still being packed (dq-spike
+  // 2026-08-31: the accumulate-then-push shape serialized ~3.4 ms of
+  // FEC/SBI CPU in front of an idle radio). Two encoder instances differ in
+  // their random initial seq, so equivalence is pinned on count, stream_id
+  // and size per body, plus a full decoder round-trip of the sink output.
+  std::vector<double> overheads = {1.0, 0.75};
+  auto layers = make_layers(64, 4, overheads);
+  UepEncoder enc_vec(layers, /*flush_ms=*/1'000'000'000ULL);
+  UepEncoder enc_sink(layers, /*flush_ms=*/1'000'000'000ULL);
+  UepDecoder dec(layers);
+
+  std::vector<uint8_t> unit(framewire::kFrameHdrLen + 5000, 0x5A);
+  framewire::pack_frame_hdr(framewire::FrameHdr{}, unit.data());
+
+  auto want = enc_vec.add_frame(0, unit.data(), unit.size(), 0);
+  REQUIRE(want.size() >= 2);
+
+  std::vector<UepBody> got;
+  size_t seen_during_call = 0;
+  enc_sink.add_frame(0, unit.data(), unit.size(), 0,
+                     [&](UepBody&& b) {
+                       ++seen_during_call;
+                       got.push_back(std::move(b));
+                     });
+  CHECK(seen_during_call == want.size());
+  REQUIRE(got.size() == want.size());
+  for (size_t i = 0; i < want.size(); ++i) {
+    CHECK(got[i].stream_id == want[i].stream_id);
+    CHECK(got[i].body.size() == want[i].body.size());
+  }
+
+  // The streamed bodies are a valid wire sequence end to end.
+  size_t decoded = 0;
+  for (auto& b : got)
+    decoded += dec.add_body(b.body.data(), b.body.size(), 0).size();
+  CHECK(decoded >= 1);
+}
+
 MTEST_MAIN
