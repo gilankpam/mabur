@@ -152,7 +152,7 @@ Config load_config(const std::string& path) {
       c.display.vsync_lock = d["vsync_lock"].get<bool>();
     }
     c.display.vsync_lead_ms =
-        static_cast<int>(get_int(d, "vsync_lead_ms", 3, 1, 10, "display"));
+        static_cast<int>(get_int(d, "vsync_lead_ms", 6, 1, 10, "display"));
     c.display.lat_log_dir = get_str(d, "lat_log_dir", "/media/dvr/log", "display");
   }
 

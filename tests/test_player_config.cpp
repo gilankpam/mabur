@@ -294,7 +294,7 @@ TEST(display_vsync_defaults) {
   const auto cfg = maburplay::load_config(
       std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
   CHECK(cfg.display.vsync_lock == true);
-  CHECK(cfg.display.vsync_lead_ms == 3);
+  CHECK(cfg.display.vsync_lead_ms == 6);
   CHECK(cfg.display.lat_log_dir == "/media/dvr/log");
 }
 
