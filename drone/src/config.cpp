@@ -370,6 +370,20 @@ void parse_msp(const json& j, MspCfg& m) {
   if (m.baud <= 0) fail("msp.baud", "must be > 0");
 }
 
+void parse_ampdu(const json& j, AmpduCfg& a) {
+  check_known_keys(j, {"max_num", "max_time"}, "ampdu");
+  assign_if_present(j, "max_num", a.max_num, "ampdu");
+  assign_if_present(j, "max_time", a.max_time, "ampdu");
+  if (a.max_num < 0 || a.max_num > 31)
+    fail("ampdu.max_num", "must be in [0,31] (5-bit MAX_AGG_NUM; 0 = off)");
+  if (a.max_time < 0 || a.max_time > 255)
+    fail("ampdu.max_time", "must be in [0,255] (raw 0x455 register value)");
+  if (a.max_time >= 1 && a.max_time <= 8)
+    fail("ampdu.max_time",
+         "1..8 is the 0x455 register cliff (silently disables aggregation); "
+         "use 0 for the chip default or >= 9");
+}
+
 }  // namespace
 
 std::array<UepLayerCfg, 2> Config::uep_layers() const {
@@ -396,7 +410,7 @@ Config load_config(const std::string& path) {
 
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
-  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp"}, "");
+  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu"}, "");
 
   Config cfg;
   if (j.contains("radio")) parse_radio(j.at("radio"), cfg.radio);
@@ -405,6 +419,7 @@ Config load_config(const std::string& path) {
   if (j.contains("venc")) parse_venc(j.at("venc"), cfg.venc);
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
+  if (j.contains("ampdu")) parse_ampdu(j.at("ampdu"), cfg.ampdu);
 
   return cfg;
 }

@@ -128,6 +128,18 @@ struct MspCfg {
   double overhead = 1.0;
 };
 
+// A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md). Shallow global
+// depth cap in v1; per-rung depth is a data-driven follow-up. The QoS-Data
+// wire header does NOT depend on this block — max_num 0 turns off only the
+// aggregation (frames become QoS-Data singles, the spike's control cell).
+struct AmpduCfg {
+  int max_num = 6;    // MAX_AGG_NUM cap, 0 = aggregation off, max 31 (5-bit)
+  int max_time = 32;  // raw 0x455 fill-timer value (0x20 ~= 0.8 ms);
+                      // 1..8 is a hardware cliff (disables aggregation) and
+                      // is rejected at load; 0 keeps the chip bring-up
+                      // default (0x70 ~= 3 ms — too slow, but valid for A/B)
+};
+
 struct Config {
   RadioCfg radio;
   FecCfg fec;
@@ -135,6 +147,7 @@ struct Config {
   VencSectionCfg venc;
   LinkCfg link;
   MspCfg msp;
+  AmpduCfg ampdu;
   std::array<UepLayerCfg, 2> uep_layers() const;
 };
 
