@@ -613,6 +613,16 @@ int main(int argc, char** argv) {
     p->splash_show();
   };
   if (presenter) show_splash(presenter.get());
+  // Present-submission jitter, |Δ interval| EMA in ms — the player-side
+  // smoothness number the regulator A/B compares. Submission clock, not
+  // vsync, but a straddle shows up in it either way. Hoisted above
+  // log_regulator_line (which captures present_jitter_ema_ms by reference)
+  // rather than left at present_now's declaration site further down --
+  // present_now itself stays there, it only WRITES these, and that's later
+  // in the same scope so it still sees them.
+  uint64_t last_present_us = 0;
+  int64_t prev_present_iv = -1;
+  double present_jitter_ema_ms = 0.0;
   // Regulator stderr line: printed both at 1 Hz from the main loop's stats
   // block (below) and once more at exit as the final tally -- same format
   // either way, factored here so the two call sites can't drift. pend= is
@@ -826,12 +836,6 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
   // regulator is declared earlier (next to `lat`, above the presenter
   // block) so both set_flip_sink closures can capture it by reference.
-  // Present-submission jitter, |Δ interval| EMA in ms — the player-side
-  // smoothness number the regulator A/B compares. Submission clock, not
-  // vsync, but a straddle shows up in it either way.
-  uint64_t last_present_us = 0;
-  int64_t prev_present_iv = -1;
-  double present_jitter_ema_ms = 0.0;
   const auto present_now = [&](const maburplay::DmaFrame& f) {
     const uint64_t t = mono_us();
     if (last_present_us != 0) {
