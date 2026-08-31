@@ -288,4 +288,74 @@ TEST(servo_safety_clamp_uses_fallback_rule) {
   CHECK(reg.release_due(t_dec + kD, &out));
 }
 
+namespace {
+// One simulated minute of decode stream vs 60.000 Hz panel flips.
+// Event-driven — exact times, no tick quantization. The estimator is
+// warmed (8 exact flips) before the first decode so the servo owns every
+// offer; the two arms differ only in source period, i.e. beat direction.
+struct BeatSim {
+  uint64_t offered = 0, released = 0, drained = 0;
+  uint64_t skips = 0, fallback = 0, late = 0;
+};
+
+BeatSim run_beat_sim(double src_period_us) {
+  FrameRegulator reg(12, true, 3);
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  const double kPanel = 1e6 / 60.0;
+  BeatSim s;
+  double flip_t = static_cast<double>(kT0);
+  for (int i = 0; i < 8; ++i) {
+    reg.on_flip(static_cast<uint64_t>(flip_t), true);
+    flip_t += kPanel;
+  }
+  double dec_t = flip_t + 8'000.0;  // arbitrary phase into the warm grid
+  uint32_t pts = 0;
+  const double t_end = static_cast<double>(kT0) + 60e6;
+  while (dec_t < t_end || flip_t < t_end) {
+    const double t = flip_t <= dec_t ? flip_t : dec_t;
+    while (reg.release_due(static_cast<uint64_t>(t), &out)) ++s.released;
+    if (flip_t <= dec_t) {
+      reg.on_flip(static_cast<uint64_t>(flip_t), true);
+      flip_t += kPanel;
+    } else {
+      pts += static_cast<uint32_t>(src_period_us);
+      if (reg.offer(frame(pts), static_cast<uint64_t>(dec_t), &disp)) {
+        // late passthrough: presented immediately, counted via late_count()
+      }
+      ++s.offered;
+      dec_t += src_period_us;
+    }
+  }
+  while (reg.release_due(~0ull, &out)) ++s.drained;
+  s.skips = reg.vsync_skips();
+  s.fallback = reg.fallback_frames();
+  s.late = reg.late_count();
+  return s;
+}
+}  // namespace
+
+TEST(beat_simulation_slow_source_never_skips) {
+  // Real hardware direction: 59.939 fps sensor vs 60.000 Hz panel. Decode
+  // spacing (16683.6) exceeds the panel period (16666.7), so two decodes
+  // can never share a target vblank — wraps repeat a frame on the panel,
+  // they never drop one. Freshest-wins must stay silent.
+  const BeatSim s = run_beat_sim(1e6 / 59.939);
+  CHECK(s.fallback == 0);  // servo never disengaged
+  CHECK(s.skips == 0);     // no contention, deterministically
+  CHECK(s.offered == s.released + s.skips + s.late + s.drained);
+}
+
+TEST(beat_simulation_fast_source_one_skip_per_wrap) {
+  // Inverted beat (source faster than panel): each wrap makes two
+  // consecutive frames target the same vblank — exactly one freshest-wins
+  // drop per wrap. Beat 60.061-60.000 = 0.061 Hz -> 16.4 s -> 3-4 wraps
+  // per simulated minute.
+  const BeatSim s = run_beat_sim(1e6 / 60.061);
+  CHECK(s.fallback == 0);
+  CHECK(s.skips >= 3);
+  CHECK(s.skips <= 4);
+  CHECK(s.offered == s.released + s.skips + s.late + s.drained);
+}
+
 MTEST_MAIN
