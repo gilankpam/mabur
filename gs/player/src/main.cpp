@@ -560,6 +560,15 @@ int main(int argc, char** argv) {
   // presenter (whose flip sink feeds it) and the regulator (whose release
   // feeds it too) so both are in scope by the time either is wired below.
   maburplay::LatTracker lat;
+  // Phase-aware display release (display.regulate_ms; frame_regulator.h).
+  // The regulator is a THIRD holder of decoder buffers next to the
+  // presenter and the burn recorder, so every drop_all() flush point below
+  // flushes it too. Declared here (ahead of the presenter) so both
+  // set_flip_sink closures below -- startup and hotplug reacquire -- can
+  // capture it by reference.
+  maburplay::FrameRegulator regulator(cfg.display.regulate_ms,
+                                      cfg.display.vsync_lock,
+                                      cfg.display.vsync_lead_ms);
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
@@ -578,7 +587,10 @@ int main(int argc, char** argv) {
       presenter.reset();
     } else {
       presenter->set_flip_sink(
-          [&lat](uint32_t p, uint64_t t, bool ex) { lat.on_flip(p, t, ex); });
+          [&lat, &regulator](uint32_t p, uint64_t t, bool ex) {
+            lat.on_flip(p, t, ex);
+            regulator.on_flip(t, ex);
+          });
     }
   }
 
@@ -783,11 +795,8 @@ int main(int argc, char** argv) {
   // Named so the watchdog's backend-recreation path can re-wire the same
   // sink into the fresh decoder instance.
 #ifdef MABUR_PLAYER_HW
-  // Phase-aware display release (display.regulate_ms; frame_regulator.h).
-  // The regulator is a THIRD holder of decoder buffers next to the
-  // presenter and the burn recorder, so every drop_all() flush point below
-  // flushes it too.
-  maburplay::FrameRegulator regulator(cfg.display.regulate_ms);
+  // regulator is declared earlier (next to `lat`, above the presenter
+  // block) so both set_flip_sink closures can capture it by reference.
   // Present-submission jitter, |Δ interval| EMA in ms — the player-side
   // smoothness number the regulator A/B compares. Submission clock, not
   // vsync, but a straddle shows up in it either way.
@@ -1289,7 +1298,10 @@ int main(int argc, char** argv) {
                     /*log_failures=*/false)) {
           presenter = std::move(p);
           presenter->set_flip_sink(
-              [&lat](uint32_t pts, uint64_t t, bool ex) { lat.on_flip(pts, t, ex); });
+              [&lat, &regulator](uint32_t pts, uint64_t t, bool ex) {
+                lat.on_flip(pts, t, ex);
+                regulator.on_flip(t, ex);
+              });
           std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
                        (now_ms - display_retry_t0_ms) / 1000.0);
           // Startup-only, and this is where that invariant is enforced for the
@@ -1673,14 +1685,24 @@ int main(int argc, char** argv) {
 
 #ifdef MABUR_PLAYER_HW
   if (regulator.enabled()) {
+    // pend= is the DrmPresenter's mailbox engagement count (frame parked,
+    // or displacing one already parked, because a flip was in flight) --
+    // 0 when there is no presenter (decode-only, or init failed).
+    const uint64_t pend =
+        presenter ? presenter->mailbox_engagements() : 0;
     std::fprintf(stderr,
                  "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
-                 "hold_ema=%.1fms present_jitter=%.2fms\n",
+                 "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
+                 "fallback=%llu pend=%llu\n",
                  static_cast<unsigned long long>(regulator.held_count()),
                  static_cast<unsigned long long>(regulator.late_count()),
                  static_cast<unsigned long long>(regulator.replaced_count()),
                  static_cast<unsigned long long>(regulator.discont_count()),
-                 regulator.hold_ema_ms(), present_jitter_ema_ms);
+                 regulator.hold_ema_ms(), present_jitter_ema_ms,
+                 regulator.servo_locked() ? "locked" : "fallback",
+                 static_cast<unsigned long long>(regulator.vsync_skips()),
+                 static_cast<unsigned long long>(regulator.fallback_frames()),
+                 static_cast<unsigned long long>(pend));
   } else {
     std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
                  present_jitter_ema_ms);

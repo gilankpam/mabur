@@ -136,6 +136,12 @@ class DrmPresenter {
   uint64_t busy_replaced() const;   // mailbox frames replaced before display
   bool async_flip_active() const;   // true once ASYNC has been confirmed working
   bool async_probed() const;        // true once the one-shot ASYNC probe has run
+  // Mailbox engagements (vsync servo observability, Task 6): count of
+  // present() calls that landed while a flip was outstanding, whether the
+  // frame just waited in the single-slot mailbox or displaced one already
+  // parked there. Superset of busy_replaced(), which counts only the
+  // displacement case.
+  uint64_t mailbox_engagements() const;
 
   // Vsync timestamp sink for LatTracker (Task 11): called at the pending ->
   // on_screen promotion inside on_flip() with the frame's pts and the

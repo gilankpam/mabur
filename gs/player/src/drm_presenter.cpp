@@ -327,6 +327,12 @@ struct DrmPresenter::Impl {
   uint64_t commit_errors = 0;
   uint64_t frames_dropped_busy = 0;
   uint64_t flips_total = 0;
+  // Mailbox engagements (vsync-lock observability, Task 6): every present()
+  // call that arrives while a flip is outstanding and has to park in
+  // `mailbox` -- whether the slot was empty (frame waits) or already held
+  // an unshown frame (this one displaces it). Superset of
+  // frames_dropped_busy, which counts only the displacement case.
+  uint64_t mailbox_engagements = 0;
 
   // Vsync timestamp capture (Task 11 -- LatTracker's dsp segment).
   // ts_exact is latched once at init() from DRM_CAP_TIMESTAMP_MONOTONIC;
@@ -1228,6 +1234,7 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     // in `mailbox`; on_flip() submits it the instant the outstanding flip
     // lands, and a newer arrival meanwhile replaces (releases) the parked
     // one. Displayed rate stays at vsync, always with the freshest frame.
+    ++mailbox_engagements;  // this frame waits, or displaces one that was
     if (mailbox.valid) {
       ++frames_dropped_busy;  // the replaced frame is the true "drop"
       release_slot(mailbox);
@@ -1631,6 +1638,8 @@ uint64_t DrmPresenter::commit_errors() const { return impl_->commit_errors; }
 uint64_t DrmPresenter::flips() const { return impl_->flips_total; }
 
 uint64_t DrmPresenter::busy_replaced() const { return impl_->frames_dropped_busy; }
+
+uint64_t DrmPresenter::mailbox_engagements() const { return impl_->mailbox_engagements; }
 
 bool DrmPresenter::async_flip_active() const { return impl_->async_active; }
 
