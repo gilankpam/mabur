@@ -81,6 +81,19 @@ aggregation is even *validated on 8822e* (all the aggregation docs are
 jaguar3 tree for ampdu/aggregation status — **inconclusive, not yet
 answered.** Resume there.
 
+> **ANSWERED 2026-09-01 — the 8822E aggregates.** Steps 1 *and* an
+> SDR-free variant of step 2 are done: docs verdict (wired
+> generation-wide, jaguar3-TX proven on the C die, E-die TX was the
+> gap) + a drone→GS on-air A/B with txdemo/rxdemo cross-built from
+> this repo's build trees. 93% of aggregated arrivals at pure MPDU
+> airtime (216 µs at MCS5/1396 B, vs 309 µs mgmt singles / 429 µs
+> un-aggregated BE), +32% delivered fps, clean delivery, no queue
+> wedge, host seqs preserved. Full numbers, integration caveats and
+> the step-3 shape: `docs/dq-spike-findings-2026-08-31.md` §11. The
+> B210 SDR A/B is downgraded to confirmatory. Next: step 3 (the wire
+> flag day), gated on fecdump drain slope + ausniff + aucadence +
+> RCF `close_ms`.
+
 ### Recommended probe sequence (cheapest → most committal)
 
 1. **Docs/code feasibility (zero risk, ~15 min).** Confirm in

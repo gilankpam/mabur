@@ -373,7 +373,98 @@ not CW-tunable on mabur's queue — the lever is A-MPDU (queue migration,
 a devourer project) or bigger bodies (656-symbol, the hole-sweep gate),
 not EDCA. Config + both devices restored; devourer untouched.
 
-## 11. Open questions
+## 11. A-MPDU feasibility answered: the 8822E aggregates (2026-09-01)
+
+The handover's open question — is devourer's aggregation validated on
+8822E, or only on 8822BU/jaguar2? — closed in two halves.
+
+**Docs/history half.** Aggregation is wired generation-wide (devourer
+PR #239): jaguar3's `SetAmpduMode` programs the full recipe —
+descriptor half (data QSEL + AGG_EN + MAX_AGG_NUM + density +
+retry-limit, `RtlJaguar3Device.cpp:2053`) plus the `0x455`
+aggregate-fill timer (`0x4bc` burst-mode is a no-op on this family; no
+bring-up write exists to undo). On-air validation existed for jaguar3
+TX **on the C die only** (`ampdu_ba_check.sh` defaults to an 8822CU TX;
+devourer PR #373 ran its BA arm on an 8812CU). A-MPDU **RX** through an
+8812EU was already demonstrated (PR #373's DUT). The E die as
+*aggregating TX* — the drone's exact chip — had never been aired.
+PR #373's "−8% at the ARQ shape, don't enable on the FPV link" verdict
+is about the ACKed/BlockAck flavor at MCS3/512 B; mabur's shape is
+broadcast + QoS No-Ack + retry 0 + FEC, and the goal is latency, not
+goodput — different regime, but it is the reason to measure our own
+shape.
+
+**Hardware half — first on-air A-MPDU TX from the E die, this bench.**
+txdemo (armv7) and rxdemo (aarch64) built straight from the mabur
+cross-build trees (`--target txdemo`/`rxdemo`; devourer is
+EXCLUDE_FROM_ALL but the targets resolve). Drone RTL8812EU TX →
+GS 8812EU RX, ch161, MCS5, 1396 B QoS-Data — mabur's body size and
+park rate — 8 s per cell, cells mirroring
+`../devourer/tests/ampdu_spike.sh`:
+
+| cell | recipe | uniq fps | paggr | inter-frame tsfl Δ |
+|---|---|---|---|---|
+| control | mgmt queue, singles | 2346 | 0% | median 309 µs (74% in 300–349) |
+| qsel0 | BE data queue, no AGG | 1671 | 0% | median 429 µs (spread 350–499) |
+| ampdu_rty0 | BE + AGG_EN 16/7/rty0, single URBs | **3094** | 99% | **median 216 µs, 93% in 200–249** |
+| ampdu_rty0_urb | + batch-16/USB-agg | 3090 | 99% | same |
+| mode | `SetAmpduMode 0/16` (0x455=0x20) | 2580 | 99% | median 232 µs, 74% in 200–249 |
+| mode_thr4 | + 4 sender threads | 2594 | 99% | same |
+| ampdu_mgmt | mgmt queue + AGG_EN | 2341 | 0% | = control |
+
+1396 B at MCS5 is ~216 µs of pure MPDU airtime, so **93% of aggregated
+arrivals at 200–249 µs means subframes back-to-back on air — the
+per-MPDU dead time inside an aggregate is ~0**. That is the entire §9
+lever, confirmed on the drone's own silicon. Delivery stayed clean in
+every cell (unique == received, ~99.7% of offered, `retry_flagged` 0%,
+no BA re-air storm — retry-limit-0 works). The equal-`tsfl` burst
+marker from the 8822BU-era spike does NOT fire on an 8812EU RX (tsfl
+stamps per-MPDU here); use the Δ-histogram instead.
+
+Second-order findings that shape the integration:
+
+- **The un-aggregated BE data queue is *slower* than mgmt** (429 vs
+  309 µs — BE AIFS/CWmin 15 vs the near-VO mgmt queue). Migrating
+  injection to a data queue only pays *with* AGG_EN on. Corollary: on
+  the data queue the §10 EDCA lever (REG_EDCA_BE_PARAM) becomes usable
+  as a second-order tune.
+- **AGG_EN on the MGMT queue neither aggregates nor wedges on the E**
+  (identical to control; milder than the 8822BU "wedges the queue"
+  finding — but still useless).
+- **The 0x455 fill timer trades depth for launch latency**: raw AGG_EN
+  cells (bring-up 0x70 ≈ 3 ms fill window) formed ~20-deep aggregates
+  (boundary deltas ~4% of arrivals); `SetAmpduMode`'s 0x20 (~0.8 ms)
+  launched at ~4-deep (26% boundaries) and still delivered +10% over
+  control. For mabur's bursty per-frame feed, the timer bounds the
+  *tail* body's wait — a knob to sweep in step 3, not a fixed choice.
+- **Host-stamped seq_ctl survives**: no renumbering observed (all seqs
+  arrived exactly as stamped; devourer never sets EN_HWSEQ). The GS
+  gap detector's seq walk should keep working unchanged — re-verify in
+  the integration A/B since a constant-0 stamp can't distinguish
+  "preserved" from "zeroed".
+- GS parser flag day is small: `sa_canonical` (addr2) and seq_ctl keep
+  their byte offsets in a QoS-Data header; only the body start moves
+  24 → 26 (`radio_frontend.cpp` `kDot11`), keyed on FC type.
+
+**Projection for `fec`** (28 bodies/AU at mcs5): today ≈ 27 × (213 µs
+air + 151 µs dead) ≈ 9.8 ms of serialization; aggregated ≈ 27 × 216 µs
++ a few boundary taxes ≈ 6.1 ms → the handover's ~−40% projection
+stands, now with the enabling fact proven. Aggregation also *shrinks*
+drone TX occupancy for the same payload (fewer preamble+backoff
+periods), which is the RCF-uplink direction we want; gate step 3 on
+`close_ms` as planned.
+
+**What remains before wiring mabur:** the SDR duty A/B
+(`ampdu_onair_ab.sh`, needs the bench B210) is now confirmatory —
+occupancy/efficiency ground truth per bench discipline — rather than
+the go/no-go it was when the E die was unproven. The real remaining
+work is step 3: QoS-Data header in `radio_tx.cpp`, `SetAmpduMode` in
+maburd bring-up, the GS body-offset change, 0x455/MAX_AGG_NUM tuning
+against the burst-tail, and the end-to-end gates (fecdump drain slope,
+ausniff, aucadence, RCF close_ms). Spike rig + analyzer:
+`tools/bench/ampdu_e_spike.sh`, `tools/bench/ampdu_e_analyze.py`.
+
+## 12. Open questions
 
 1. ~~What is the true split of the 7 ms `dq`?~~ Answered in §7.
 2. ~~Is 1341 bodies/s a real ceiling?~~ Refuted in §8 — offered load.
