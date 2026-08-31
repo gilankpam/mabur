@@ -613,6 +613,33 @@ int main(int argc, char** argv) {
     p->splash_show();
   };
   if (presenter) show_splash(presenter.get());
+  // Regulator stderr line: printed both at 1 Hz from the main loop's stats
+  // block (below) and once more at exit as the final tally -- same format
+  // either way, factored here so the two call sites can't drift. pend= is
+  // the DrmPresenter's mailbox engagement count (frame parked, or displacing
+  // one already parked because a flip was in flight) -- 0 when there is no
+  // presenter (decode-only, or init failed).
+  auto log_regulator_line = [&regulator, &presenter, &present_jitter_ema_ms]() {
+    if (regulator.enabled()) {
+      const uint64_t pend = presenter ? presenter->mailbox_engagements() : 0;
+      std::fprintf(stderr,
+                   "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
+                   "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
+                   "fallback=%llu pend=%llu\n",
+                   static_cast<unsigned long long>(regulator.held_count()),
+                   static_cast<unsigned long long>(regulator.late_count()),
+                   static_cast<unsigned long long>(regulator.replaced_count()),
+                   static_cast<unsigned long long>(regulator.discont_count()),
+                   regulator.hold_ema_ms(), present_jitter_ema_ms,
+                   regulator.servo_locked() ? "locked" : "fallback",
+                   static_cast<unsigned long long>(regulator.vsync_skips()),
+                   static_cast<unsigned long long>(regulator.fallback_frames()),
+                   static_cast<unsigned long long>(pend));
+    } else {
+      std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
+                   present_jitter_ema_ms);
+    }
+  };
 #endif
 
   // MSP DisplayPort OSD: network intake + raster, gated on want_msp_osd (the
@@ -1504,6 +1531,10 @@ int main(int argc, char** argv) {
                             .count()),
                         lat_buf);
         }
+        // Same 1 Hz tick as the lat: line above, so the bench fallback-drill
+        // gate ("fallback= climbs then stops after re-warm") has a periodic
+        // line to watch live -- not just the final tally at exit.
+        log_regulator_line();
 #endif
       }
     }
@@ -1695,29 +1726,9 @@ int main(int argc, char** argv) {
   }
 
 #ifdef MABUR_PLAYER_HW
-  if (regulator.enabled()) {
-    // pend= is the DrmPresenter's mailbox engagement count (frame parked,
-    // or displacing one already parked, because a flip was in flight) --
-    // 0 when there is no presenter (decode-only, or init failed).
-    const uint64_t pend =
-        presenter ? presenter->mailbox_engagements() : 0;
-    std::fprintf(stderr,
-                 "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
-                 "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
-                 "fallback=%llu pend=%llu\n",
-                 static_cast<unsigned long long>(regulator.held_count()),
-                 static_cast<unsigned long long>(regulator.late_count()),
-                 static_cast<unsigned long long>(regulator.replaced_count()),
-                 static_cast<unsigned long long>(regulator.discont_count()),
-                 regulator.hold_ema_ms(), present_jitter_ema_ms,
-                 regulator.servo_locked() ? "locked" : "fallback",
-                 static_cast<unsigned long long>(regulator.vsync_skips()),
-                 static_cast<unsigned long long>(regulator.fallback_frames()),
-                 static_cast<unsigned long long>(pend));
-  } else {
-    std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
-                 present_jitter_ema_ms);
-  }
+  // Final tally -- same line the 1 Hz stats block above already printed all
+  // session long (log_regulator_line(), declared near the presenter).
+  log_regulator_line();
   {
     const auto L = lat.flush_line();
     if (L.n > 0)
