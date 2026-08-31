@@ -179,6 +179,13 @@ their variance into jitter. Knobs, in order of proven usefulness:
   bit-identical even at absurd caps (verified at 13× overshoot). The
   star6e.h comment promising hard ceilings describes maruko, not this
   chip. Do not rebuild that feature.
+- **`I6_SYS_LINK_LOWLATENCY` on the VPE→VENC bind is REJECTED** —
+  hardware-tried 2026-08-31: `MI_SYS_BindChnPort2` fails with
+  `-1610014712` (0xa00a8008) and venc init dies (respawn loop, no
+  video). It would have overlapped encode with sensor readout (~4-6 ms
+  of the `enc` segment); on this SDK encode start stays gated on the
+  last readout line. FRAMEBASE is the only accepted mode for this hop
+  (comment at the bind site, `drone/venc/star6e_pipeline.c`).
 - **GOP is not a free knob**: SigmaStar CBR converges over the GOP
   window, so every bitrate step (= every ladder rung transition) becomes
   an overshoot/undershoot sawtooth as long as the GOP. gop_s 10 made
