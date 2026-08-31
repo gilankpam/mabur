@@ -143,6 +143,16 @@ class DrmPresenter {
   // displacement case.
   uint64_t mailbox_engagements() const;
 
+  // Paced mode (vsync servo active): a parked mailbox frame is a release
+  // that missed its latch -- resubmitting it at flip completion can only
+  // latch a period late and self-sustains a one-vsync-late chain (hw
+  // 2026-08-31), so in paced mode it is dropped instead; the regulator's
+  // next on-grid release realigns immediately. The main loop refreshes
+  // this each tick from the regulator's servo state; unpaced (false)
+  // keeps the original park-and-resubmit behavior.
+  void set_paced(bool paced);
+  uint64_t mailbox_dropped_paced() const;
+
   // Vsync timestamp sink for LatTracker (Task 11): called at the pending ->
   // on_screen promotion inside on_flip() with the frame's pts and the
   // kernel-reported (or, absent DRM_CAP_TIMESTAMP_MONOTONIC, mono_us()

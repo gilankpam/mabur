@@ -333,6 +333,10 @@ struct DrmPresenter::Impl {
   // an unshown frame (this one displaces it). Superset of
   // frames_dropped_busy, which counts only the displacement case.
   uint64_t mailbox_engagements = 0;
+  // Paced mode (vsync servo): parked mailbox frames are DROPPED at flip
+  // completion instead of resubmitted -- see the on_flip mailbox block.
+  bool paced = false;
+  uint64_t mailbox_dropped_paced = 0;
 
   // Vsync timestamp capture (Task 11 -- LatTracker's dsp segment).
   // ts_exact is latched once at init() from DRM_CAP_TIMESTAMP_MONOTONIC;
@@ -406,14 +410,31 @@ void DrmPresenter::Impl::on_flip(bool real_event) {
     // that never flips.
     if (real_event && flip_sink) flip_sink(on_screen.frame.pts_us, last_flip_us, ts_exact);
   }
-  // Submit the mailbox frame now that the pipe has a free slot. Bounded
-  // re-entrancy: present() -> poll_events() -> on_flip() -> present() --
-  // the inner present() sees flip_pending == false and commits without
-  // recursing further (its own poll_events guard is behind flip_pending).
+  // The parked mailbox frame, now that the pipe has a free slot:
+  //
+  // - UNPACED (pre-vsync-servo behavior): submit it immediately. Bounded
+  //   re-entrancy: present() -> poll_events() -> on_flip() -> present() --
+  //   the inner present() sees flip_pending == false and commits without
+  //   recursing further (its own poll_events guard is behind flip_pending).
+  // - PACED (vsync servo active, hw 2026-08-31): DROP it. A parked frame
+  //   is a release that missed its latch; resubmitting it here can only
+  //   latch a full period late, and that flip is then still in flight
+  //   when the next on-grid release arrives -- which parks too, and the
+  //   one-vsync-late chain self-sustains indefinitely (bench trace:
+  //   SUB late by 1.5 ms -> every subsequent frame late until an
+  //   accidental gap). The regulator already has the next frame scheduled
+  //   ~10 ms out on the grid, so dropping the missed frame costs one
+  //   33 ms content step (freshest-wins policy) and realigns immediately.
   if (mailbox.valid) {
-    const DmaFrame f = mailbox.frame;
-    mailbox = Slot{};  // hand ownership to present(); do NOT release
-    present(f);
+    if (paced) {
+      ++mailbox_dropped_paced;
+      release_slot(mailbox);
+      mailbox = Slot{};
+    } else {
+      const DmaFrame f = mailbox.frame;
+      mailbox = Slot{};  // hand ownership to present(); do NOT release
+      present(f);
+    }
   }
 }
 
@@ -1640,6 +1661,12 @@ uint64_t DrmPresenter::flips() const { return impl_->flips_total; }
 uint64_t DrmPresenter::busy_replaced() const { return impl_->frames_dropped_busy; }
 
 uint64_t DrmPresenter::mailbox_engagements() const { return impl_->mailbox_engagements; }
+
+void DrmPresenter::set_paced(bool paced) { impl_->paced = paced; }
+
+uint64_t DrmPresenter::mailbox_dropped_paced() const {
+  return impl_->mailbox_dropped_paced;
+}
 
 bool DrmPresenter::async_flip_active() const { return impl_->async_active; }
 

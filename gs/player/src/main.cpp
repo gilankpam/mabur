@@ -644,7 +644,7 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
                    "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
-                   "fallback=%llu pend=%llu heals=%llu\n",
+                   "fallback=%llu pend=%llu heals=%llu pdrop=%llu\n",
                    static_cast<unsigned long long>(regulator.held_count()),
                    static_cast<unsigned long long>(regulator.late_count()),
                    static_cast<unsigned long long>(regulator.replaced_count()),
@@ -654,7 +654,9 @@ int main(int argc, char** argv) {
                    static_cast<unsigned long long>(regulator.vsync_skips()),
                    static_cast<unsigned long long>(regulator.fallback_frames()),
                    static_cast<unsigned long long>(pend),
-                   static_cast<unsigned long long>(regulator.heals()));
+                   static_cast<unsigned long long>(regulator.heals()),
+                   static_cast<unsigned long long>(
+                       presenter ? presenter->mailbox_dropped_paced() : 0));
     } else {
       std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
                    present_jitter_ema_ms);
@@ -1321,6 +1323,10 @@ int main(int argc, char** argv) {
         const uint64_t nr = regulator.next_release_us();
         idle_ok = nr == 0 || nr > mono_us() + 8'000;
       }
+      // Paced-mode switch for the presenter's mailbox policy (drop missed
+      // frames instead of resubmitting them a period late) -- follows the
+      // servo state so the fallback path keeps the original behavior.
+      presenter->set_paced(regulator.servo_locked());
       // Chain-break heal, per-tick (hw 2026-08-31): a loop stall past the
       // lead window (the 1 Hz OSD/stats work) makes one release miss its
       // latch, and the miss self-sustains -- each parked resubmit lands
