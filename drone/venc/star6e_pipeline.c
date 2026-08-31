@@ -1151,6 +1151,13 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	 * the encoder actually outputs it.  The RC fpsNum is separately capped
 	 * to STAR6E_VENC_INPUT_FPS_MAX — see venc_fps in pipeline_start. */
 
+	/* FRAMEBASE is the only link mode this hop accepts.
+	 * I6_SYS_LINK_LOWLATENCY was tried on hardware 2026-08-31 (it would
+	 * overlap encode with sensor readout, worth ~4-6 ms of the `enc`
+	 * segment): MI_SYS_BindChnPort2 rejects it outright with
+	 * -1610014712 (0xa00a8008) and venc init fails — encode start
+	 * stays gated on the last line of readout.  Do not retry on this
+	 * SDK; a sub-frame encode start needs a different mechanism. */
 	ret = MI_SYS_BindChnPort2(&state->vpe_port, &state->venc_port,
 		bind_src_fps, bind_dst_fps, I6_SYS_LINK_FRAMEBASE, 0);
 	if (ret != 0) {
