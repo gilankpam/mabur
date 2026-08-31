@@ -80,7 +80,21 @@ struct DisplayCfg {
   // Phase-aware release delay for decoded frames (frame_regulator.h):
   // present at floor(pts) + regulate_ms instead of on arrival. 0 = off
   // (present the instant decode finishes, the pre-regulator behavior).
+  // With vsync_lock this is the FALLBACK rule, used while the vblank
+  // estimator is cold or stale.
   int regulate_ms = 12;
+  // Servo release to next_vblank - vsync_lead_ms instead of the fixed
+  // hold (spec 2026-08-31-vsync-locked-regulator-design.md). lead covers
+  // the present-path submission cost incl. the ~2 ms main-loop tick.
+  bool vsync_lock = true;
+  // Default 6 (bench-measured 2026-08-31): with release-deadline wakeups
+  // the submit lands ~0.2 ms after schedule, but decode work can still
+  // block the drain for a few ms -- 6 keeps misses at ~0.2/s where 4
+  // measured ~12/s and 9 wastes 3 ms of glass latency per frame.
+  int vsync_lead_ms = 6;
+  // Where the 1 Hz lat: line is persisted (lat-NNNN.log, latlog 1).
+  // "" disables; stderr always keeps the line either way.
+  std::string lat_log_dir = "/media/dvr/log";
 };
 
 struct Config {

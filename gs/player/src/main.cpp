@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,6 +40,7 @@
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
 #include "lat_tracker.h"    // tail latency segments + 1 Hz lat line (Task 11)
+#include "lat_log.h"        // persist 1 Hz lat line to <dvr>/log/lat-NNNN.log (Task 7)
 #include "mpp_backend.h"    // MppBackend::info_changes()/errors() for --decode-only
 #include "osd_palette.h"    // build_palette() for the encoder-side OSD
 #endif
@@ -560,6 +562,16 @@ int main(int argc, char** argv) {
   // presenter (whose flip sink feeds it) and the regulator (whose release
   // feeds it too) so both are in scope by the time either is wired below.
   maburplay::LatTracker lat;
+  // Phase-aware display release (display.regulate_ms; frame_regulator.h).
+  // The regulator is a THIRD holder of decoder buffers next to the
+  // presenter and the burn recorder, so every drop_all() flush point below
+  // flushes it too. Declared here (ahead of the presenter) so both
+  // set_flip_sink closures below -- startup and hotplug reacquire -- can
+  // capture it by reference.
+  maburplay::FrameRegulator regulator(cfg.display.regulate_ms,
+                                      cfg.display.vsync_lock,
+                                      cfg.display.vsync_lead_ms);
+  maburplay::LatLog lat_log(cfg.display.lat_log_dir);
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
@@ -578,7 +590,10 @@ int main(int argc, char** argv) {
       presenter.reset();
     } else {
       presenter->set_flip_sink(
-          [&lat](uint32_t p, uint64_t t, bool ex) { lat.on_flip(p, t, ex); });
+          [&lat, &regulator](uint32_t p, uint64_t t, bool ex) {
+            lat.on_flip(p, t, ex);
+            regulator.on_flip(t, ex);
+          });
     }
   }
 
@@ -599,6 +614,55 @@ int main(int argc, char** argv) {
     p->splash_show();
   };
   if (presenter) show_splash(presenter.get());
+  // Present-submission jitter, |Δ interval| EMA in ms — the player-side
+  // smoothness number the regulator A/B compares. Submission clock, not
+  // vsync, but a straddle shows up in it either way. Hoisted above
+  // log_regulator_line (which captures present_jitter_ema_ms by reference)
+  // rather than left at present_now's declaration site further down --
+  // present_now itself stays there, it only WRITES these, and that's later
+  // in the same scope so it still sees them.
+  uint64_t last_present_us = 0;
+  int64_t prev_present_iv = -1;
+  double present_jitter_ema_ms = 0.0;
+  // Chain-break detector state (frame_regulator.h heal_slip; the per-tick
+  // block next to the release poll below): engagement count last seen,
+  // the time of the last unpaired engagement, and the last heal firing.
+  uint64_t pend_prev = 0;
+  uint64_t last_engage_ms = 0;
+  uint64_t last_heal_ms = 0;
+  // 1 Hz mark for the lat/regulator observability block in the main loop
+  // (independent of the GS-OSD block since 2026-08-31).
+  uint64_t lat_mark_ms = 0;
+  // Regulator stderr line: printed both at 1 Hz from the main loop's stats
+  // block (below) and once more at exit as the final tally -- same format
+  // either way, factored here so the two call sites can't drift. pend= is
+  // the DrmPresenter's mailbox engagement count (frame parked, or displacing
+  // one already parked because a flip was in flight) -- 0 when there is no
+  // presenter (decode-only, or init failed).
+  auto log_regulator_line = [&regulator, &presenter, &present_jitter_ema_ms]() {
+    if (regulator.enabled()) {
+      const uint64_t pend = presenter ? presenter->mailbox_engagements() : 0;
+      std::fprintf(stderr,
+                   "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
+                   "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
+                   "fallback=%llu pend=%llu heals=%llu pdrop=%llu\n",
+                   static_cast<unsigned long long>(regulator.held_count()),
+                   static_cast<unsigned long long>(regulator.late_count()),
+                   static_cast<unsigned long long>(regulator.replaced_count()),
+                   static_cast<unsigned long long>(regulator.discont_count()),
+                   regulator.hold_ema_ms(), present_jitter_ema_ms,
+                   regulator.servo_locked() ? "locked" : "fallback",
+                   static_cast<unsigned long long>(regulator.vsync_skips()),
+                   static_cast<unsigned long long>(regulator.fallback_frames()),
+                   static_cast<unsigned long long>(pend),
+                   static_cast<unsigned long long>(regulator.heals()),
+                   static_cast<unsigned long long>(
+                       presenter ? presenter->mailbox_dropped_paced() : 0));
+    } else {
+      std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
+                   present_jitter_ema_ms);
+    }
+  };
 #endif
 
   // MSP DisplayPort OSD: network intake + raster, gated on want_msp_osd (the
@@ -783,17 +847,8 @@ int main(int argc, char** argv) {
   // Named so the watchdog's backend-recreation path can re-wire the same
   // sink into the fresh decoder instance.
 #ifdef MABUR_PLAYER_HW
-  // Phase-aware display release (display.regulate_ms; frame_regulator.h).
-  // The regulator is a THIRD holder of decoder buffers next to the
-  // presenter and the burn recorder, so every drop_all() flush point below
-  // flushes it too.
-  maburplay::FrameRegulator regulator(cfg.display.regulate_ms);
-  // Present-submission jitter, |Δ interval| EMA in ms — the player-side
-  // smoothness number the regulator A/B compares. Submission clock, not
-  // vsync, but a straddle shows up in it either way.
-  uint64_t last_present_us = 0;
-  int64_t prev_present_iv = -1;
-  double present_jitter_ema_ms = 0.0;
+  // regulator is declared earlier (next to `lat`, above the presenter
+  // block) so both set_flip_sink closures can capture it by reference.
   const auto present_now = [&](const maburplay::DmaFrame& f) {
     const uint64_t t = mono_us();
     if (last_present_us != 0) {
@@ -831,13 +886,12 @@ int main(int argc, char** argv) {
       // obvious. The two holders are decoupled by MPP's own refcount; the
       // presenter's ownership contract is unchanged.
       if (burn) burn->submit(f);
-      maburplay::DmaFrame displaced;
-      bool did_displace = false;
-      if (regulator.offer(f, mono_us(), &displaced, &did_displace))
+      maburplay::FrameRegulator::Displaced disp;
+      if (regulator.offer(f, mono_us(), &disp))
         present_now(f);
-      if (did_displace) {
-        lat.on_drop(displaced.pts_us);
-        backend->release_frame(displaced);
+      for (int i = 0; i < disp.n; ++i) {
+        lat.on_drop(disp.f[i].pts_us);
+        backend->release_frame(disp.f[i]);
       }
       return;
     }
@@ -1025,10 +1079,10 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
       if (presenter) presenter->drop_all();
       {
-        // The regulator is the THIRD holder — force-release its held frame
+        // The regulator is the THIRD holder — force-release its held frames
         // into the backend before flush(), same contract as drop_all().
         maburplay::DmaFrame held;
-        if (regulator.release_due(~0ull, &held)) backend->release_frame(held);
+        while (regulator.release_due(~0ull, &held)) backend->release_frame(held);
       }
       if (burn) {
         // The recorder is the SECOND holder of decoder buffers, so it has
@@ -1245,7 +1299,41 @@ int main(int argc, char** argv) {
     // mailbox frame waits for the NEXT AU burst before anyone submits it
     // (observed live as juddery ~2-3-vsync-late presentation with a
     // 100 ms pump -- the doorbell was the only wakeup source).
-    ring.pump(2);
+    int pump_ms = 2;
+#ifdef MABUR_PLAYER_HW
+    // Wake for the next scheduled release, not just the AU doorbell
+    // (hw 2026-08-31): the fixed ceiling plus the decode work below put
+    // the release->submit path ~4 ms behind schedule, forcing
+    // vsync_lead_ms up to ~9 -- and the lead sits inside every frame's
+    // glass latency. Bound the pump by the release deadline, then
+    // micro-sleep the exact remainder and submit BEFORE the decode work,
+    // so the submit lands ~0.2 ms after schedule and the lead only has
+    // to cover the commit itself.
+    if (presenter) {
+      const uint64_t nr0 = regulator.next_release_us();
+      if (nr0 != 0) {
+        const uint64_t now0 = mono_us();
+        pump_ms = nr0 <= now0 ? 0
+                              : (nr0 - now0 >= 2'000 ? 2
+                                                     : static_cast<int>(
+                                                           (nr0 - now0) / 1000));
+      }
+    }
+#endif
+    ring.pump(pump_ms);
+#ifdef MABUR_PLAYER_HW
+    if (presenter) {
+      const uint64_t nr1 = regulator.next_release_us();
+      if (nr1 != 0) {
+        const uint64_t now1 = mono_us();
+        if (nr1 > now1 && nr1 - now1 <= 2'500)
+          std::this_thread::sleep_for(std::chrono::microseconds(nr1 - now1));
+        presenter->poll_events();
+        maburplay::DmaFrame due;
+        while (regulator.release_due(mono_us(), &due)) present_now(due);
+      }
+    }
+#endif
     backend->poll();
     // One ioctl per iteration (~500/s, microseconds each) -- far under the
     // ~1.5 ms budget tools/bench/gs_overlay_bench.cpp polices for this loop.
@@ -1256,11 +1344,55 @@ int main(int argc, char** argv) {
         rec_start();
       }
     }
+    // Idle window: true when no release is due within the next 8 ms, so
+    // the heavy 1 Hz blocks below (stats/statvfs, lat flush, OSD compose)
+    // run clear of a release deadline. This REDUCES misses, it does not
+    // bound them -- statvfs on a degraded SD or a lat-log write can block
+    // past any window; the paced-mode mailbox drop and the chain-break
+    // heal are the backstops that keep an overrun at one lost frame. The
+    // post-release gap is ~10.7 ms at 60 fps, so deferred work runs
+    // within a frame period.
+    bool idle_ok = true;
 #ifdef MABUR_PLAYER_HW
     if (presenter) {
       presenter->poll_events();
       maburplay::DmaFrame due;
-      if (regulator.release_due(mono_us(), &due)) present_now(due);
+      while (regulator.release_due(mono_us(), &due)) present_now(due);
+      {
+        const uint64_t nr = regulator.next_release_us();
+        idle_ok = nr == 0 || nr > mono_us() + 8'000;
+      }
+      // Paced-mode switch for the presenter's mailbox policy (drop missed
+      // frames instead of resubmitting them a period late) -- follows the
+      // servo state so the fallback path keeps the original behavior.
+      presenter->set_paced(regulator.servo_locked());
+      // Chain-break heal, per-tick (hw 2026-08-31): a loop stall past the
+      // lead window (the 1 Hz OSD/stats work) makes one release miss its
+      // latch, and the miss self-sustains -- each parked resubmit lands
+      // exactly on a vblank and misses the next latch, so every frame
+      // after it runs one vsync late. In a chain the presenter mailbox
+      // engages ~every frame; aligned mode produces rare singletons. Two
+      // engagements within 100 ms is therefore unambiguous -- slip the
+      // pending releases one slot (a single repeated frame) so the flip
+      // pipeline drains. Rate-limited so a persisting chain gets one heal
+      // per 150 ms, enough for the slip to take effect before re-judging.
+      {
+        const uint64_t p = presenter->mailbox_engagements();
+        const uint64_t now = mono_ms();
+        // A fresh presenter (hotplug reacquire) restarts the counter at
+        // 0; re-baseline or the detector goes silent for the session.
+        if (p < pend_prev) pend_prev = p;
+        if (p > pend_prev) {
+          if (now - last_engage_ms <= 100 && now - last_heal_ms >= 150) {
+            regulator.heal_slip();
+            last_heal_ms = now;
+            last_engage_ms = 0;  // require a fresh pair before re-healing
+          } else {
+            last_engage_ms = now;
+          }
+          pend_prev = p;
+        }
+      }
     }
     // Retry acquisition once a second while there is no display. A FRESH
     // presenter every time, never a re-init of the failed one: a display that
@@ -1290,7 +1422,10 @@ int main(int argc, char** argv) {
                     /*log_failures=*/false)) {
           presenter = std::move(p);
           presenter->set_flip_sink(
-              [&lat](uint32_t pts, uint64_t t, bool ex) { lat.on_flip(pts, t, ex); });
+              [&lat, &regulator](uint32_t pts, uint64_t t, bool ex) {
+                lat.on_flip(pts, t, ex);
+                regulator.on_flip(t, ex);
+              });
           std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
                        (now_ms - display_retry_t0_ms) / 1000.0);
           // Startup-only, and this is where that invariant is enforced for the
@@ -1372,7 +1507,7 @@ int main(int argc, char** argv) {
       // Video and recording figures at 1 Hz. The sideport itself runs at
       // 2 Hz, but these are the player's own and recomputing them per
       // iteration would only add noise to numbers read at a glance.
-      if (now_ms - gs_video_mark_ms >= 1000) {
+      if (idle_ok && now_ms - gs_video_mark_ms >= 1000) {
         // The gate guarantees dt >= 1.0, so there is nothing to divide by
         // zero; gs_video_mark_ms == 0 is the first tick, which has no
         // interval behind it and therefore only seeds the marks.
@@ -1440,51 +1575,72 @@ int main(int argc, char** argv) {
         }
         gs_ps.rec = gs_rec.update(rin, now_ms);
 
-#ifdef MABUR_PLAYER_HW
-        const auto L = lat.flush_line();
-        // OSD LAT row (Task 12): p99_frame() returns the REAL p99-by-e2e
-        // frame's own segment breakdown, computed as a side effect inside
-        // flush_line() above from the window it is about to clear -- it is
-        // a member that persists across flush_line() calls, not derived
-        // from `completed_` at call time, so calling it after flush_line()
-        // here is safe and gets THIS window's frame (see lat_tracker.h and
-        // lat_tracker.cpp's flush_line()/p99_frame()). A window with zero
-        // completed frames leaves it holding the last valid frame rather
-        // than clearing it -- an idle 1 Hz tick between two spiky ones
-        // still shows the most recent real spike instead of flickering to
-        // "LAT --" and back.
-        const auto bd = lat.p99_frame();
-        // `bd.valid` alone is NOT enough: p99_frame_ is a member that
-        // survives flush_all() (lat_tracker.cpp only clears map_/anchor_/
-        // completed_/the chk+dsp accumulators there, not p99_frame_), so
-        // after any decoder/session reset it keeps reporting the LAST
-        // pre-reset frame as if it were current. `L.anchor_ok`, from this
-        // SAME flush_line() call, is what actually reflects whether the
-        // window just flushed has a usable anchor -- gate on both, or a
-        // reset shows a stale breakdown labeled current for ~1s+ instead
-        // of "LAT --".
-        gs_ps.lat_valid = bd.valid && L.anchor_ok;
-        // Gated on gs_ps.lat_valid (the AND), not bd.valid alone -- same
-        // reasoning as above: a stale post-reset bd would otherwise still
-        // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
-        // about to ignore them, leaving gs_ps holding phantom numbers.
-        if (gs_ps.lat_valid) {
-          gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
-          for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
-        }
-        if (L.n > 0)
-          std::fprintf(stderr,
-              "lat: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "
-              "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s\n",
-              L.n, L.p50[7]/1000, L.p99[7]/1000, L.p50[0]/1000, L.p99[0]/1000,
-              L.p50[1]/1000, L.p99[1]/1000, L.p50[2]/1000, L.p99[2]/1000,
-              L.p50[3]/1000, L.p99[3]/1000, L.p50[4]/1000, L.p99[4]/1000,
-              L.p50[5]/1000, L.p99[5]/1000, L.dsp_exact ? "" : "~",
-              L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
-              L.anchor_ok ? "ok" : "warm");
-#endif
       }
     }
+#ifdef MABUR_PLAYER_HW
+    // Player tail-latency aggregates + regulator line, 1 Hz. Deliberately
+    // OUTSIDE the gs_src gate (2026-08-31: originally nested in the GS-OSD
+    // block, so disabling the OSD silently killed the lat:/regulator:
+    // lines and the DVR lat log) and behind the idle-window gate so this
+    // block's own cost can never stall a release past its latch deadline.
+    if (idle_ok && mono_ms() - lat_mark_ms >= 1000) {
+      lat_mark_ms = mono_ms();
+      const auto L = lat.flush_line();
+      // OSD LAT row (Task 12): p99_frame() returns the REAL p99-by-e2e
+      // frame's own segment breakdown, computed as a side effect inside
+      // flush_line() above from the window it is about to clear -- it is
+      // a member that persists across flush_line() calls, not derived
+      // from `completed_` at call time, so calling it after flush_line()
+      // here is safe and gets THIS window's frame (see lat_tracker.h and
+      // lat_tracker.cpp's flush_line()/p99_frame()). A window with zero
+      // completed frames leaves it holding the last valid frame rather
+      // than clearing it -- an idle 1 Hz tick between two spiky ones
+      // still shows the most recent real spike instead of flickering to
+      // "LAT --" and back.
+      const auto bd = lat.p99_frame();
+      // `bd.valid` alone is NOT enough: p99_frame_ is a member that
+      // survives flush_all() (lat_tracker.cpp only clears map_/anchor_/
+      // completed_/the chk+dsp accumulators there, not p99_frame_), so
+      // after any decoder/session reset it keeps reporting the LAST
+      // pre-reset frame as if it were current. `L.anchor_ok`, from this
+      // SAME flush_line() call, is what actually reflects whether the
+      // window just flushed has a usable anchor -- gate on both, or a
+      // reset shows a stale breakdown labeled current for ~1s+ instead
+      // of "LAT --".
+      gs_ps.lat_valid = bd.valid && L.anchor_ok;
+      // Gated on gs_ps.lat_valid (the AND), not bd.valid alone -- same
+      // reasoning as above: a stale post-reset bd would otherwise still
+      // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
+      // about to ignore them, leaving gs_ps holding phantom numbers.
+      if (gs_ps.lat_valid) {
+        gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
+        for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
+      }
+      if (L.n > 0) {
+        char lat_buf[256];
+        std::snprintf(lat_buf, sizeof(lat_buf),
+            "lat: n=%d e2e=%u/%u enc=%u/%u dq=%u/%u air=%u/%u fec=%u/%u "
+            "dec=%u/%u reg=%u/%u dsp%s=%u/%u chk=%.1f anchor=%s",
+            L.n, L.p50[7]/1000, L.p99[7]/1000, L.p50[0]/1000, L.p99[0]/1000,
+            L.p50[1]/1000, L.p99[1]/1000, L.p50[2]/1000, L.p99[2]/1000,
+            L.p50[3]/1000, L.p99[3]/1000, L.p50[4]/1000, L.p99[4]/1000,
+            L.p50[5]/1000, L.p99[5]/1000, L.dsp_exact ? "" : "~",
+            L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
+            L.anchor_ok ? "ok" : "warm");
+        std::fprintf(stderr, "%s\n", lat_buf);
+        lat_log.write(mono_us(),
+                      static_cast<uint64_t>(std::chrono::duration_cast<
+                          std::chrono::microseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count()),
+                      lat_buf);
+      }
+      // Same 1 Hz tick as the lat: line above, so the bench fallback-drill
+      // gate ("fallback= climbs then stops after re-warm") has a periodic
+      // line to watch live -- not just the final tally at exit.
+      log_regulator_line();
+    }
+#endif
     // ONE composition, for both overlays, into the buffer that is back right
     // now. Not two independent render blocks: they share the back index and
     // the dirty flag, so whichever of them publishes decides what is scanned
@@ -1494,8 +1650,10 @@ int main(int argc, char** argv) {
 #ifdef MABUR_PLAYER_HW
     // Re-checked every iteration, never cached: the presenter switches the
     // OSD off mid-session after repeated commit failures, and from that point
-    // osd_back_surface() is a null Surface.
-    if (presenter && presenter->osd_available()) {
+    // osd_back_surface() is a null Surface. idle_ok: composition is the
+    // heaviest per-iteration work (full-width blits) -- deferring it out of
+    // a release's lead window is what keeps the servo's latches safe.
+    if (idle_ok && presenter && presenter->osd_available()) {
       const maburplay::Surface surf = presenter->osd_back_surface();
       if (surf.pixels && composer.gs_present() && !gs_laid_out) {
         // Deferred to the first real surface: its size is the DRM buffer's,
@@ -1563,9 +1721,9 @@ int main(int argc, char** argv) {
         if (presenter) presenter->drop_all();
         {
           // Regulator flush, same contract as the flush_before site: the
-          // held frame must go back to the OLD backend before reset/teardown.
+          // held frames must go back to the OLD backend before reset/teardown.
           maburplay::DmaFrame held;
-          if (regulator.release_due(~0ull, &held)) backend->release_frame(held);
+          while (regulator.release_due(~0ull, &held)) backend->release_frame(held);
         }
         if (burn) {
           // Same pairing as flush_before: release the buffer the recorder is
@@ -1673,19 +1831,9 @@ int main(int argc, char** argv) {
   }
 
 #ifdef MABUR_PLAYER_HW
-  if (regulator.enabled()) {
-    std::fprintf(stderr,
-                 "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
-                 "hold_ema=%.1fms present_jitter=%.2fms\n",
-                 static_cast<unsigned long long>(regulator.held_count()),
-                 static_cast<unsigned long long>(regulator.late_count()),
-                 static_cast<unsigned long long>(regulator.replaced_count()),
-                 static_cast<unsigned long long>(regulator.discont_count()),
-                 regulator.hold_ema_ms(), present_jitter_ema_ms);
-  } else {
-    std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
-                 present_jitter_ema_ms);
-  }
+  // Final tally -- same line the 1 Hz stats block above already printed all
+  // session long (log_regulator_line(), declared near the presenter).
+  log_regulator_line();
   {
     const auto L = lat.flush_line();
     if (L.n > 0)

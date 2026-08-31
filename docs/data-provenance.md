@@ -14,7 +14,8 @@ overhead flatten 2026-08-29 · overhead literal + 4→2 stream collapse
 2026-08-29 (airtime-balance-uep) · overhead splits into base/enh pairs +
 ctllog 8 2026-08-30 (same-rate-fixed-pairs) · SlotHdr v2 (`# aulog 2`) +
 aucadence completion clock switched to ring `t_complete_us` 2026-08-31
-(latency-accounting).
+(latency-accounting) · `reg`/`dsp` split redistributed by the vsync
+servo 2026-08-31 (sum still comparable, split is not).
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -256,3 +257,19 @@ format; `flightjitter.load_au_log` keys its row parsing on the marker's
 presence, and a v1 row is padded with `t_first=t_complete=enc_us=dq_ms=0`
 so the fec-wait class and the t_complete arrival-basis fallback both treat
 "absent" the same as "present but zero".
+
+**2026-08-31 (vsync servo): `reg`/`dsp` semantics change when
+`display.vsync_lock` is on.** `reg` becomes hold-to-vblank (grows to
+~½ panel period mean, up from the old D=12 dejitter hold); `dsp`
+collapses to ≈ lead (`display.vsync_lead_ms`, default 6 ms) + flip
+completion, down from the old 10–25 ms beat sweep. Their SUM is
+comparable across the change — total release→latched time moves the way
+the vsync-locked-regulator spec predicts — but the SPLIT between the two
+segments is not: a `reg`/`dsp` pair from before this date and one from
+after cannot be compared segment-by-segment, only as a sum, and only when
+both recordings agree on `vsync_lock`. `lat-NNNN.log` (`# latlog 1`,
+under `display.lat_log_dir`, default `/media/dvr/log`) starts existing at
+this date — see `docs/observability.md` for its format. `lat:` lines from
+before this date lived only in tmpfs (`/tmp/maburplay.log`) and are gone;
+there is no way to recover the player tail segments for any flight
+recorded before 2026-08-31.
