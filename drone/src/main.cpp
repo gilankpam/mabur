@@ -60,6 +60,7 @@
 // so the same binary runs (in dry-run) on a machine with no dongle attached.
 #endif
 
+#include "AmpduMode.h"
 #include "RadiotapBuilder.h"
 #include "RxPacket.h"
 #include "SignalStop.h"
@@ -1572,6 +1573,40 @@ int run_real_mode(const Config& cfg) {
     // sticky across retunes, so zero it explicitly rather than assuming
     // whatever a prior process or bench tool left in the chip.
     rtl_device->SetTxPowerOffsetQdb(0);
+  }
+
+  // A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md): one devourer
+  // call marks every data frame aggregatable (data QSEL 0 + AGG_EN +
+  // MAX_AGG_NUM + density) with per-frame retry limit 0 (no_ack — no
+  // BlockAck peer exists; FEC covers loss, and without retry0 the MAC
+  // re-airs each aggregate to the retry limit: 92% wasted airtime), and
+  // programs the 0x455 aggregate-fill timer. Frames are already QoS-Data
+  // (radio_tx.cpp) whether or not this call runs — max_num 0 leaves
+  // aggregation off with the wire unchanged (the measured-identical
+  // singles path, dq-spike-findings §11). Must run after InitWrite (live
+  // register write) and before device_ready opens the TX gate.
+  if (cfg.ampdu.max_num > 0) {
+    devourer::AmpduMode am;
+    am.enabled = true;
+    am.tid = 0;
+    am.max_num = static_cast<uint8_t>(cfg.ampdu.max_num);
+    am.density = 7;
+    am.no_ack = true;
+    am.max_time = static_cast<uint8_t>(cfg.ampdu.max_time);
+    if (!rtl_device->SetAmpduMode(am)) {
+      std::fprintf(stderr,
+                   "warning: SetAmpduMode failed — running un-aggregated "
+                   "(QoS-Data singles)\n");
+    } else {
+      std::fprintf(stderr,
+                   "maburd radio: A-MPDU ON (max_num=%d density=7 no-ack "
+                   "max_time=0x%02x)\n",
+                   cfg.ampdu.max_num, cfg.ampdu.max_time);
+    }
+  } else {
+    std::fprintf(stderr,
+                 "maburd radio: A-MPDU OFF (ampdu.max_num=0) — QoS-Data "
+                 "singles\n");
   }
 
   device_ready.store(true, std::memory_order_release);
