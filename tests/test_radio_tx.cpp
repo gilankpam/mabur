@@ -77,10 +77,10 @@ TEST(send_body_second_frame_has_ht_radiotap_and_dot11_header) {
   uint16_t rl = read_le16(&f[2]);
   CHECK(rl == 13);  // HT path radiotap length
 
-  REQUIRE(f.size() >= static_cast<size_t>(rl) + 24 + sizeof(body1));
+  REQUIRE(f.size() >= static_cast<size_t>(rl) + 26 + sizeof(body1));
   const uint8_t* hdr = &f[rl];
-  CHECK(hdr[0] == 0x40);
-  CHECK(hdr[1] == 0x00);
+  CHECK(hdr[0] == 0x88);  // QoS-Data
+  CHECK(hdr[1] == 0x00);  // no To/FromDS
   CHECK(hdr[2] == 0x00);
   CHECK(hdr[3] == 0x00);
   for (int i = 0; i < 6; ++i) CHECK(hdr[4 + i] == 0xff);
@@ -88,8 +88,10 @@ TEST(send_body_second_frame_has_ht_radiotap_and_dot11_header) {
   for (int i = 0; i < 6; ++i) CHECK(hdr[16 + i] == kCanonicalSa[i]);
   uint16_t seq_ctl = read_le16(&hdr[22]);
   CHECK(seq_ctl == (1 << 4));
+  CHECK(hdr[24] == 0x20);  // QoS ctl: TID 0, ack-policy No-Ack
+  CHECK(hdr[25] == 0x00);
 
-  const uint8_t* body_out = &f[static_cast<size_t>(rl) + 24];
+  const uint8_t* body_out = &f[static_cast<size_t>(rl) + 26];
   CHECK(std::memcmp(body_out, body1, sizeof(body1)) == 0);
 
   CHECK(tx.sent() == 2);
@@ -234,7 +236,7 @@ TEST(send_body_maps_msp_to_base_slot) {
   // Extract radiotap length to find where the frame body starts
   REQUIRE(f.size() > 4);
   uint16_t rl = read_le16(&f[2]);
-  REQUIRE(f.size() >= static_cast<size_t>(rl) + 24 + sizeof(body));
+  REQUIRE(f.size() >= static_cast<size_t>(rl) + 26 + sizeof(body));
 
   // Build the expected radiotap from the base slot (slot 0)
   const auto expected_radiotap = devourer::build_stream_radiotap(

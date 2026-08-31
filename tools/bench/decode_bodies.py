@@ -42,7 +42,9 @@ def read_frames(path):
 
 def strip_to_body(frame):
     (rl,) = struct.unpack_from("<H", frame, 2)   # radiotap it_len
-    return frame[rl:rl + 2], frame[rl + 24:]     # (fc bytes, body)
+    fc = frame[rl]  # frame control byte
+    header_len = 26 if fc == 0x88 else 24  # QoS-Data vs legacy probe-req
+    return frame[rl:rl + 2], frame[rl + header_len:]  # (fc bytes, body)
 
 def read_fixture(path):
     """tests/fixtures/frame_stream.bin: u32-LE len | VencFrameMeta | Annex-B."""
@@ -126,7 +128,9 @@ def main():
             (rl,) = struct.unpack_from("<H", fr, 2)
             if rl != 13: continue                       # HT frames only
             if a.stream is not None:
-                sid = sbi.peek_stream_id(fr[rl + 24:])
+                fc = fr[rl]  # frame control byte
+                header_len = 26 if fc == 0x88 else 24  # QoS-Data vs legacy probe-req
+                sid = sbi.peek_stream_id(fr[rl + header_len:])
                 if sid != a.stream: continue
             checked += 1
             if fr[12] != a.expect_mcs: bad += 1

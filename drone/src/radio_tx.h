@@ -36,7 +36,7 @@ class FrameSink {
   }
 };
 
-// Builds `radiotap(layer.bw) | 24-byte 802.11 header | body` frames for the
+// Builds `radiotap(layer.bw) | 26-byte 802.11 QoS-Data header | body` frames for the
 // 2-slot adaptive-link ladder and hands them to a FrameSink. Every frame
 // transmits at the ladder's configured width — there is no per-seq
 // bandwidth-probe schedule (removed 2026-07-27, SDD ladder-controller
