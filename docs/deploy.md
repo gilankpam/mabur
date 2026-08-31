@@ -233,7 +233,7 @@ merely absent from the file, which just takes the compiled-in default.
 So this swap, unlike the RC-version and venc flag days above, needs
 **no config edit before the binary swap**: drop in the new `maburplay`
 against the existing `/etc/maburplay.json` and it boots with
-`vsync_lock: true`, `vsync_lead_ms: 3`, `lat_log_dir: "/media/dvr/log"`
+`vsync_lock: true`, `vsync_lead_ms: 6`, `lat_log_dir: "/media/dvr/log"`
 without either key ever having been written to the file.
 
 **Rollback gotcha, the other direction.** Strict keys still cuts the

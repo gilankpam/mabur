@@ -161,7 +161,17 @@ read the sideport. Reach for other tools only in these cases:**
   count saturates at 8 and never resets, it's only `last_exact_us_` that
   goes stale); `pend=` is the presenter's present()-while-flip-in-flight
   mailbox engagement count — a superset of the displaced-frame subset,
-  0 with no presenter (decode-only or init failed).
+  0 with no presenter (decode-only or init failed). Since the bench
+  session later the same day the line also carries `heals=` (chain-break
+  slips: pending releases pushed one slot after two mailbox engagements
+  within 100 ms — a backstop that fires ~only at startup now) and
+  `pdrop=` (paced-mode mailbox drops: with the servo locked, a parked
+  frame is a missed latch and is dropped at flip completion instead of
+  resubmitted a period late — the mechanism that keeps a single miss
+  from becoming a one-vsync-late chain; steady state ~0.2/s at
+  `vsync_lead_ms` 6). Each `pend` increment in servo mode therefore
+  costs one dropped frame, not a chain — `pend`, `pdrop`, and the
+  regulator line's own `replaced=` are the drop accounting to watch.
 - **Post-mortem when no consumer was listening → the 1 Hz stderr stats
   line** in `/tmp/maburgs.log` (maburd's in `/tmp/mabur.log`, maburplay's
   fps-log + respawn history in `/tmp/maburplay.log`). It is
