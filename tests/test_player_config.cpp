@@ -289,4 +289,28 @@ TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
   CHECK(threw);  // pin range floor
 }
 
+TEST(display_vsync_defaults) {
+  // Bundle default json must carry the new keys with spec defaults.
+  const auto cfg = maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+  CHECK(cfg.display.vsync_lock == true);
+  CHECK(cfg.display.vsync_lead_ms == 3);
+  CHECK(cfg.display.lat_log_dir == "/media/dvr/log");
+}
+
+TEST(display_vsync_lead_range_enforced) {
+  // vsync_lead_ms 0 must fail load (range [1,10]) -- write a minimal
+  // config with display.vsync_lead_ms: 0 via the tmp-file helper and
+  // CHECK the load throws, matching the file's existing bad-value tests.
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"display":{"vsync_lead_ms":0}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+
+  threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"display":{"vsync_lead_ms":11}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}
+
 MTEST_MAIN

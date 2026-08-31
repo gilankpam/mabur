@@ -143,9 +143,17 @@ Config load_config(const std::string& path) {
 
   if (j.contains("display")) {
     const json& d = j["display"];
-    check_keys(d, "display", {"regulate_ms"});
+    check_keys(d, "display",
+               {"regulate_ms", "vsync_lock", "vsync_lead_ms", "lat_log_dir"});
     c.display.regulate_ms =
         static_cast<int>(get_int(d, "regulate_ms", 12, 0, 100, "display"));
+    if (d.contains("vsync_lock")) {
+      if (!d["vsync_lock"].is_boolean()) fail("display.vsync_lock", "not a boolean");
+      c.display.vsync_lock = d["vsync_lock"].get<bool>();
+    }
+    c.display.vsync_lead_ms =
+        static_cast<int>(get_int(d, "vsync_lead_ms", 3, 1, 10, "display"));
+    c.display.lat_log_dir = get_str(d, "lat_log_dir", "/media/dvr/log", "display");
   }
 
   return c;
