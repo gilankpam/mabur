@@ -67,8 +67,11 @@ Plus, in **arm B only**:
    expected contention-per-wrap regime, not a regression; a count well
    above that bound is a real fault.
 3. Fallback drill: kill/restart video mid-session — `fallback=` on the
-   `regulator:` line climbs then stops after the estimator re-warms
-   (8 exact flips); no stall, no regression vs arm A behavior during the
+   `regulator:` line climbs then stops within ~one flip (~16 ms) of flips
+   resuming. (The 8-exact-flips warm-up is cold-start only: the warm
+   count saturates at 8 and never resets, so validity is purely
+   recency-based — one fresh exact flip after the stall revalidates it,
+   not another 8.) No stall, no regression vs arm A behavior during the
    cold window.
 4. `--fps-log async=` check — sizes what flip serialization remains.
 5. `lat-NNNN.log` sync headers (`# sync <mono_us> <wall_us>`) present and

@@ -155,8 +155,11 @@ read the sideport. Reach for other tools only in these cases:**
   the ~16.4 s beat wrap produces one panel repeat, not a frame drop;
   repeats show in `--fps-log`, not here); `fallback=` counts frames
   released via the fallback rule while `display.vsync_lock` is on (climbs
-  during a cold start or a stale estimator, then stops once 8 exact flips
-  re-warm it); `pend=` is the presenter's present()-while-flip-in-flight
+  during a cold start or a stale estimator; cold start needs 8 exact flips
+  to first warm, but validity is recency-based, so after a stall the
+  counter stops within one fresh exact flip of flips resuming — the warm
+  count saturates at 8 and never resets, it's only `last_exact_us_` that
+  goes stale); `pend=` is the presenter's present()-while-flip-in-flight
   mailbox engagement count — a superset of the displaced-frame subset,
   0 with no presenter (decode-only or init failed).
 - **Post-mortem when no consumer was listening → the 1 Hz stderr stats
