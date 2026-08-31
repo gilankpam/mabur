@@ -30,42 +30,49 @@ UepEncoder::UepEncoder(const std::array<UepLayerCfg, 2>& layers, int flush_ms,
 
 void UepEncoder::pack_envs(Layer& layer, uint8_t sid,
                            std::vector<std::vector<uint8_t>> envs,
-                           std::vector<UepBody>& out) {
+                           const UepBodySink& sink) {
   for (auto& env : envs)
     for (auto& b : layer.packer.add(env.data(), env.size()))
-      out.push_back(UepBody{sid, std::move(b)});
+      sink(UepBody{sid, std::move(b)});
 }
 
 void UepEncoder::drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out) {
-  pack_envs(layer, sid, layer.sw.flush(), out);
+  pack_envs(layer, sid, layer.sw.flush(),
+            [&](UepBody&& b) { out.push_back(std::move(b)); });
   for (auto& b : layer.packer.flush())
     out.push_back(UepBody{sid, std::move(b)});
 }
 
-std::vector<UepBody> UepEncoder::add_frame(int stream_id, const uint8_t* data,
-                                           size_t len, uint64_t now_ms) {
-  std::vector<UepBody> out;
+void UepEncoder::add_frame(int stream_id, const uint8_t* data, size_t len,
+                           uint64_t now_ms, const UepBodySink& sink) {
   int sid = std::clamp(stream_id, 0, kNumStreams - 1);
   Layer& layer = layers_[static_cast<size_t>(sid)];
   if (layer.shed) {
     ++layer.dropped_count;
-    return out;
+    return;
   }
   auto frags = layer.frag.fragment(data, len, layer.usable);
   for (auto& f : frags)
     pack_envs(layer, static_cast<uint8_t>(sid),
-              layer.sw.add_packet(f.data(), f.size()), out);
+              layer.sw.add_packet(f.data(), f.size()), sink);
   // Frame-end seal: flush() seals the partial tail symbol and emits one
   // tail repair; idle re-flush is a no-op so back-to-back empty frames
   // cannot spam repairs. Also flush the SBI packer's pending group as a
   // short final body — otherwise the tail envelope(s) just sealed above sit
   // buffered until a future frame's envelopes happen to fill the group,
   // defeating the "ship now" point of the frame-end seal.
-  pack_envs(layer, static_cast<uint8_t>(sid), layer.sw.flush(), out);
+  pack_envs(layer, static_cast<uint8_t>(sid), layer.sw.flush(), sink);
   for (auto& b : layer.packer.flush())
-    out.push_back(UepBody{static_cast<uint8_t>(sid), std::move(b)});
+    sink(UepBody{static_cast<uint8_t>(sid), std::move(b)});
   layer.last_activity_ms = now_ms;
   layer.has_activity = true;
+}
+
+std::vector<UepBody> UepEncoder::add_frame(int stream_id, const uint8_t* data,
+                                           size_t len, uint64_t now_ms) {
+  std::vector<UepBody> out;
+  add_frame(stream_id, data, len, now_ms,
+            [&](UepBody&& b) { out.push_back(std::move(b)); });
   return out;
 }
 

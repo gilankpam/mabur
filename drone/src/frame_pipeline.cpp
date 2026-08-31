@@ -13,6 +13,15 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
                                           size_t payload_len,
                                           const VencFrameMeta& meta,
                                           uint64_t now_ms) {
+  std::vector<UepBody> out;
+  encode(uep, buf, payload_len, meta, now_ms,
+         [&](UepBody&& b) { out.push_back(std::move(b)); });
+  return out;
+}
+
+void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
+                           const VencFrameMeta& meta, uint64_t now_ms,
+                           const UepBodySink& sink) {
   const uint8_t* payload = buf + VENC_FRAME_META_SIZE;
   const bool meta_idr = (meta.flags & VENC_FRAME_FLAG_IDR) != 0;
 
@@ -43,7 +52,7 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
   // id gap into the GS FrameStream (each gap stalls emit for gap_timeout /
   // lookahead). The drop is still booked in dropped(sid); the discont latch
   // stays pending so the window anchors on a frame that actually ships.
-  if (uep.drop_if_shed(sid)) return {};
+  if (uep.drop_if_shed(sid)) return;
 
   // Latches AFTER the shed return so a shed frame's enc_us never overwrites
   // the last shipped frame's value — see last_enc_us()'s doc comment.
@@ -63,7 +72,7 @@ std::vector<UepBody> FramePipeline::encode(UepEncoder& uep, uint8_t* buf,
   h.pts_us = meta.pts;
   framewire::pack_frame_hdr(h, buf);
 
-  return uep.add_frame(sid, buf, framewire::kFrameHdrLen + payload_len, now_ms);
+  uep.add_frame(sid, buf, framewire::kFrameHdrLen + payload_len, now_ms, sink);
 }
 
 void FramePipeline::track_vanish(const VencFrameMeta& meta, bool meta_idr,

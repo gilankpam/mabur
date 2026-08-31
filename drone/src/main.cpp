@@ -1092,46 +1092,54 @@ int run_real_mode(const Config& cfg) {
             pipe.reset_vanish_counters();
           }
         }
-        auto bodies = pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now);
-        // AirFeed (spec §2, Task 7 — the solver that used to redistribute
-        // overhead here is gone; the per-rung pair is fixed and applied
-        // directly by apply_op_to_uep above): feed actual emitted bytes,
-        // excluding IDR outliers, for the EWMAs run_bitrate_policy's blend
-        // consumes plus the excess_base/enh + ov_base/enh telemetry.
-        if (op && !(meta.flags & VENC_FRAME_FLAG_IDR)) {
-          size_t emitted = 0;
-          int sid = -1;
-          for (auto& b : bodies) { emitted += b.body.size(); sid = b.stream_id; }
-          if (sid >= 0) feed.on_frame(sid, static_cast<size_t>(n), emitted);
-        }
-        // Patch this frame's encoder latency into every body it produced —
-        // the SBI header sits outside the FEC envelope, so this is the only
-        // place a post-pack field can be stamped without breaking a CRC
-        // (docs/superpowers/specs/2026-08-30-latency-accounting; Task 3).
+        // Streaming push (dq-spike follow-up 2026-08-31): each body goes to
+        // the TxQueue the moment its SBI group seals, so the radio drains
+        // this frame's early bodies in parallel with the remaining GF256/SBI
+        // packing — the old accumulate-then-push shape serialized ~3.4 ms of
+        // that CPU in front of an idle radio (au_first queue wait measured
+        // ~40 µs). enqueued_ms/pushed_us are per-body actual-push stamps
+        // now, so the wire q_ms is the true TxQueue wait, and the enc_us
+        // patch rides inside the sink (last_enc_us() latches before the
+        // first sink call — see FramePipeline::encode's sink contract; the
+        // SBI header sits outside the FEC envelope, so post-pack patching
+        // stays CRC-safe).
+        size_t emitted = 0;
+        int emit_sid = -1;
+        bool first = true;
+        pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now,
+                    [&](UepBody&& b) {
+                      mabur::sbi_set_enc_us(b.body.data(), b.body.size(),
+                                            pipe.last_enc_us());
+                      const uint64_t p_us = now_steady_us();
+                      b.enqueued_ms = static_cast<uint32_t>(p_us / 1000);
+                      b.pushed_us = p_us;
+                      b.au_first = first;
+                      first = false;
+                      emitted += b.body.size();
+                      emit_sid = b.stream_id;
+                      txq.push(std::move(b));
+                    });
         // dq_split accounting: ring wait is loop-top → read return (the
         // interval during which this frame did not yet exist for us), CPU is
-        // read return → here (fragmentation + GF256 + SBI pack + AirFeed).
-        // enqueued_ms deliberately stays the stale loop-top stamp so the
-        // wire q_ms is unchanged while the split is being validated.
-        const uint64_t t_push_us = now_steady_us();
-        if (!bodies.empty()) {
+        // read return → all bodies pushed (fragmentation + GF256 + SBI pack,
+        // now overlapped with the radio drain rather than in front of it).
+        if (!first) {
+          const uint64_t t_done_us = now_steady_us();
           const uint64_t ring_us = t_read_us - t0_us;
-          const uint64_t cpu_us = t_push_us - t_read_us;
+          const uint64_t cpu_us = t_done_us - t_read_us;
           ++split_n;
           split_ring_sum_us += ring_us;
           if (ring_us > split_ring_max_us) split_ring_max_us = ring_us;
           split_cpu_sum_us += cpu_us;
           if (cpu_us > split_cpu_max_us) split_cpu_max_us = cpu_us;
         }
-        bool first = true;
-        for (auto& b : bodies) {
-          mabur::sbi_set_enc_us(b.body.data(), b.body.size(), pipe.last_enc_us());
-          b.enqueued_ms = static_cast<uint32_t>(now);
-          b.pushed_us = t_push_us;
-          b.au_first = first;
-          first = false;
-          txq.push(std::move(b));
-        }
+        // AirFeed (spec §2, Task 7 — the solver that used to redistribute
+        // overhead here is gone; the per-rung pair is fixed and applied
+        // directly by apply_op_to_uep above): feed actual emitted bytes,
+        // excluding IDR outliers, for the EWMAs run_bitrate_policy's blend
+        // consumes plus the excess_base/enh + ov_base/enh telemetry.
+        if (op && !(meta.flags & VENC_FRAME_FLAG_IDR) && emit_sid >= 0)
+          feed.on_frame(emit_sid, static_cast<size_t>(n), emitted);
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
         idr_disagree_total.store(pipe.idr_disagreements(),
@@ -1213,7 +1221,7 @@ int run_real_mode(const Config& cfg) {
         for (auto& b : polled) {
           // Idle-tail bodies carry no per-frame enc_us, but the queue wait is
           // still real once they reach the tx thread — stamp it here too.
-          b.enqueued_ms = static_cast<uint32_t>(now);
+          b.enqueued_ms = static_cast<uint32_t>(t_poll_us / 1000);
           b.pushed_us = t_poll_us;
           txq.push(std::move(b));
         }

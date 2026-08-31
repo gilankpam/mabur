@@ -30,6 +30,15 @@ class FramePipeline {
   std::vector<UepBody> encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
                               const VencFrameMeta& meta, uint64_t now_ms);
 
+  // Streaming variant: same classification/vanish/shed/FrameHdr work, but
+  // bodies flow through sink as each seals (UepBodySink), so the hot loop
+  // can hand them to the TxQueue while later FEC blocks are still packing.
+  // last_enc_us() is latched before the first sink call, so the sink may
+  // read it to patch sbi_set_enc_us. The vector overload wraps this one.
+  void encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
+              const VencFrameMeta& meta, uint64_t now_ms,
+              const UepBodySink& sink);
+
   // Marks a pts/frame_id re-base point: start of stream, or a reattach that
   // joined a new producer's ring mid-GOP. kFlagDiscont then rides on EVERY
   // frame for the next kDiscontStickyMs — a one-shot flag is sent right at

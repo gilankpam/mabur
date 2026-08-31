@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <random>
 #include <vector>
 
@@ -39,6 +40,13 @@ struct UepBody {
   bool au_first = false;
 };
 
+// Receives each body the instant its SBI group seals, while later FEC blocks
+// of the same frame are still being packed. The hot loop's sink hands the
+// body straight to the TxQueue so the radio drains in parallel with the
+// remaining GF256/SBI CPU (dq-spike 2026-08-31: the accumulate-then-push
+// shape serialized ~3.4 ms of that CPU in front of an idle radio).
+using UepBodySink = std::function<void(UepBody&&)>;
+
 // Composes Fragmenter + SwEncoder + SbiPacker into one independent pipeline
 // per SVC temporal layer (stream_id 0..1), giving each layer its own
 // fragmentation sequence, sliding-window FEC redundancy, and SBI sub-block
@@ -73,6 +81,13 @@ class UepEncoder {
   // repair ship now instead of at next-frame arrival (spec 2026-07-22).
   std::vector<UepBody> add_frame(int stream_id, const uint8_t* data, size_t len,
                                  uint64_t now_ms);
+
+  // Streaming variant of the above: identical bodies in identical order,
+  // delivered through sink as each one seals instead of accumulated into a
+  // vector (see UepBodySink). The vector overload is this one plus a
+  // push_back sink.
+  void add_frame(int stream_id, const uint8_t* data, size_t len,
+                 uint64_t now_ms, const UepBodySink& sink);
 
   // Flushes any layer that has pending (unflushed) data and has been idle
   // (no add_frame activity) for >= flush_ms.
@@ -126,7 +141,7 @@ class UepEncoder {
   // Feeds a batch of sliding-window envelopes toward layer's SBI packer.
   void pack_envs(Layer& layer, uint8_t sid,
                  std::vector<std::vector<uint8_t>> envs,
-                 std::vector<UepBody>& out);
+                 const UepBodySink& sink);
   // Flush tail: sliding-window flush then the SBI packer flush.
   void drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out);
 
