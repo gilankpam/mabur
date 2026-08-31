@@ -427,6 +427,9 @@ void DrmPresenter::Impl::on_flip(bool real_event) {
   //   33 ms content step (freshest-wins policy) and realigns immediately.
   if (mailbox.valid) {
     if (paced) {
+      // No LatTracker notification here (unlike the regulator's
+      // displacements): the tracker's bounded map simply ages the entry
+      // out, same as busy_replaced frames always have.
       ++mailbox_dropped_paced;
       release_slot(mailbox);
       mailbox = Slot{};

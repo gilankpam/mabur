@@ -443,11 +443,13 @@ TEST(beat_simulation_slow_source_never_skips) {
 
 TEST(beat_simulation_fast_source_drops_bounded_by_wraps) {
   // Inverted beat (source faster than panel): the source gains one frame
-  // on the vblank grid per ~16.4 s wrap. Sequential-slot assignment
-  // absorbs each wrap into the 2-deep queue instead of a same-slot
-  // displacement, so drops surface as oldest-out EVICTIONS once the
-  // backlog wants a third slot -- bounded by the wrap count (3-4 per
-  // simulated minute), never via vsync_skips.
+  // on the vblank grid per ~16.4 s wrap. Depending on the wrap's phase a
+  // drop surfaces either as a deep-burst slot claim (vsync_skips: both
+  // the natural and next slot occupied, newest takes the later one) or
+  // as an oldest-out eviction once the backlog wants a third slot; both
+  // increment replaced_count, the total-drops figure, bounded by the
+  // wrap count (instrumented run: skips=2 replaced=2 -- claims, no
+  // evictions -- so assert the total, not the mechanism).
   const BeatSim s = run_beat_sim(1e6 / 60.061);
   CHECK(s.fallback == 0);
   // Depending on wrap phase a drop surfaces either as a both-slots-
@@ -497,4 +499,70 @@ TEST(heal_slip_noop_in_fallback_or_empty) {
   CHECK(reg.heals() == 0);
   DmaFrame out;
   CHECK(reg.release_due(kT0 + kD, &out));  // fallback release unchanged
+}
+
+TEST(next_release_us_reports_earliest_pending) {
+  FrameRegulator reg(12);
+  CHECK(reg.next_release_us() == 0);          // empty
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  CHECK(!reg.offer(frame(0), kT0, &disp));    // fallback hold at kT0 + D
+  CHECK(reg.next_release_us() == kT0 + kD);
+  CHECK(reg.release_due(kT0 + kD, &out));
+  CHECK(reg.next_release_us() == 0);          // drained
+}
+
+TEST(servo_triple_burst_claims_the_second_slot) {
+  // Three decodes 1 ms apart (a deep fec-batch burst): first takes its
+  // natural slot, second the next slot, and the THIRD -- both slots
+  // occupied -- claims the later slot from the middle frame
+  // (freshest-wins, vsync_skips). Survivors release on consecutive
+  // vblanks.
+  FrameRegulator reg(12, true, 3);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  const uint64_t t1 = phase + kVb - 12'000;
+  CHECK(!reg.offer(frame(0), t1, &disp));
+  CHECK(!reg.offer(frame(kFrame), t1 + 1'000, &disp));
+  CHECK(disp.n == 0);
+  CHECK(!reg.offer(frame(2 * kFrame), t1 + 2'000, &disp));
+  CHECK(disp.n == 1);
+  CHECK(disp.f[0].opaque == frame(kFrame).opaque);  // middle frame dropped
+  CHECK(reg.vsync_skips() == 1);
+  CHECK(reg.replaced_count() == 1);
+  CHECK(reg.release_due(phase + kVb - kLead, &out));
+  CHECK(out.opaque == frame(0).opaque);
+  CHECK(reg.release_due(phase + 2 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(2 * kFrame).opaque);
+  CHECK(!reg.holding());
+}
+
+TEST(heal_slip_preserves_release_order_with_a_mixed_queue) {
+  // Review finding 2026-08-31: heal_slip() moves only servo entries, so
+  // a mixed queue [servo, fallback] could invert the sorted-by-release
+  // invariant that release_due()/next_release_us() head-inspect --
+  // releasing the fallback frame late and out of pts order. Construct:
+  // fallback frame held first (cold estimator), then warm the grid so a
+  // servo frame lands with an EARLIER release, then heal.
+  FrameRegulator reg(12, true, 3);
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  CHECK(!reg.offer(frame(0), kT0, &disp));           // fallback @ kT0+12ms
+  // Warm with flips whose next grid slot is kT0+8000.
+  for (int i = 8; i >= 1; --i) reg.on_flip(kT0 + 8'000 - i * kVb, true);
+  CHECK(!reg.offer(frame(kFrame), kT0 + 2'000, &disp));  // servo @ kT0+5000
+  CHECK(disp.n == 0);
+  CHECK(reg.next_release_us() == kT0 + 5'000);           // servo heads
+  reg.heal_slip();
+  CHECK(reg.heals() == 1);
+  // Servo slipped past the fallback frame: head must be the fallback
+  // release (kT0+12ms), not a stale claim of the slipped servo slot.
+  CHECK(reg.next_release_us() == kT0 + kD);
+  CHECK(reg.release_due(kT0 + kD, &out));
+  CHECK(out.opaque == frame(0).opaque);                  // fallback first
+  CHECK(reg.release_due(kT0 + 5'000 + kVb, &out));
+  CHECK(out.opaque == frame(kFrame).opaque);             // slipped servo
+  CHECK(!reg.holding());
 }

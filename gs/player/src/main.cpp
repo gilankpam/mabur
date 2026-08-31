@@ -6,12 +6,12 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <thread>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1346,8 +1346,12 @@ int main(int argc, char** argv) {
     }
     // Idle window: true when no release is due within the next 8 ms, so
     // the heavy 1 Hz blocks below (stats/statvfs, lat flush, OSD compose)
-    // can run without risking a missed latch. The post-release gap is
-    // ~10.7 ms at 60 fps, so deferred work runs within a frame period.
+    // run clear of a release deadline. This REDUCES misses, it does not
+    // bound them -- statvfs on a degraded SD or a lat-log write can block
+    // past any window; the paced-mode mailbox drop and the chain-break
+    // heal are the backstops that keep an overrun at one lost frame. The
+    // post-release gap is ~10.7 ms at 60 fps, so deferred work runs
+    // within a frame period.
     bool idle_ok = true;
 #ifdef MABUR_PLAYER_HW
     if (presenter) {
@@ -1375,6 +1379,9 @@ int main(int argc, char** argv) {
       {
         const uint64_t p = presenter->mailbox_engagements();
         const uint64_t now = mono_ms();
+        // A fresh presenter (hotplug reacquire) restarts the counter at
+        // 0; re-baseline or the detector goes silent for the session.
+        if (p < pend_prev) pend_prev = p;
         if (p > pend_prev) {
           if (now - last_engage_ms <= 100 && now - last_heal_ms >= 150) {
             regulator.heal_slip();

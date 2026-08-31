@@ -150,10 +150,14 @@ read the sideport. Reach for other tools only in these cases:**
   `vsync=locked|fallback skips=<n> fallback=<n> pend=<n>`: `vsync=` is
   whether the vblank estimator is currently locked (servo release) or
   has fallen back to the old `anchor_floor(pts) + regulate_ms` rule;
-  `skips=` counts freshest-wins drops in servo mode (expected ≈ 0 in
-  flight — the 59.939 Hz sensor is slower than the 60.000 Hz panel, so
-  the ~16.4 s beat wrap produces one panel repeat, not a frame drop;
-  repeats show in `--fps-log`, not here); `fallback=` counts frames
+  `skips=` counts deep-burst slot claims in servo mode — a frame whose
+  natural vblank slot AND the next slot are both occupied claims the
+  later one and the older occupant is dropped (bench steady state
+  ~1–1.4/s at the mcs5 park, from fec-batch 4-frame bursts; ordinary
+  servo drops surface as `replaced=` evictions instead). The beat wrap
+  itself never drops: the 59.939 Hz sensor is slower than the 60.000 Hz
+  panel, so the ~16.4 s wrap produces one panel repeat, visible in
+  `--fps-log`, not here; `fallback=` counts frames
   released via the fallback rule while `display.vsync_lock` is on (climbs
   during a cold start or a stale estimator; cold start needs 8 exact flips
   to first warm, but validity is recency-based, so after a stall the
@@ -169,9 +173,12 @@ read the sideport. Reach for other tools only in these cases:**
   frame is a missed latch and is dropped at flip completion instead of
   resubmitted a period late — the mechanism that keeps a single miss
   from becoming a one-vsync-late chain; steady state ~0.2/s at
-  `vsync_lead_ms` 6). Each `pend` increment in servo mode therefore
-  costs one dropped frame, not a chain — `pend`, `pdrop`, and the
-  regulator line's own `replaced=` are the drop accounting to watch.
+  `vsync_lead_ms` 6). A `pend` increment in servo mode therefore costs
+  one dropped frame in the common case (two when the mailbox was already
+  occupied — the replaced parked frame counts in `--fps-log`'s `repl=`,
+  not on this line), never a chain. `pend`, `pdrop`, the regulator
+  line's `replaced=`, and `--fps-log`'s `repl=` together are the full
+  drop accounting.
 - **Post-mortem when no consumer was listening → the 1 Hz stderr stats
   line** in `/tmp/maburgs.log` (maburd's in `/tmp/mabur.log`, maburplay's
   fps-log + respawn history in `/tmp/maburplay.log`). It is

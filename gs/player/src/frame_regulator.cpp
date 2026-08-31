@@ -1,5 +1,7 @@
 #include "frame_regulator.h"
 
+#include <utility>
+
 namespace maburplay {
 
 void FrameRegulator::displace(int idx, Displaced* out) {
@@ -79,28 +81,19 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
     if (vsync_lock_) ++fallback_frames_;
   }
 
-  // Same-slot test: servo targets are recomputed from a phase that
-  // re-bases on every flip, so two frames aiming at the same physical
-  // vblank can differ by ~1 µs of rounding -- exact equality would miss
-  // the contention and present both frames back-to-back. Anything within
-  // half a period is the same slot; adjacent vblanks are a full period
-  // apart. Fallback entries (target 0) still match only each other.
-  const uint64_t half_period =
-      servo_now_ ? static_cast<uint64_t>(est_.period_us() / 2.0) : 0;
-  const auto same_slot = [&](uint64_t held_v) {
-    if (target_v == 0 || held_v == 0) return held_v == target_v;
-    const uint64_t d =
-        held_v > target_v ? held_v - target_v : target_v - held_v;
-    return d < half_period;
-  };
-  // Freshest-wins displacement: same target (fallback: 0 == 0, i.e. the
-  // classic mailbox), else oldest-out when full.
-  for (int i = 0; i < count_;) {
-    if (same_slot(held_[i].target_v)) {
-      if (target_v != 0) ++vsync_skips_;
-      displace(i, out);
-    } else {
-      ++i;
+  // Fallback mailbox semantics: an untargeted (fallback) frame always
+  // displaces an untargeted held one -- the classic single-slot rule.
+  // Servo frames never match anything here: the sequential-slot block
+  // above either found the natural slot free or already moved this frame
+  // past (and displaced) the claimed one, so with count_ <= 2 no held
+  // entry can remain within half a period of the final target. The
+  // rounding tolerance that used to live in a same_slot matcher is now
+  // occupant()'s < hp window. vsync_skips_ increments only on the
+  // deep-burst claim above.
+  if (target_v == 0) {
+    for (int i = 0; i < count_;) {
+      if (held_[i].target_v == 0) displace(i, out);
+      else ++i;
     }
   }
   if (count_ == 2) displace(0, out);
@@ -133,6 +126,13 @@ void FrameRegulator::heal_slip() {
     held_[i].release_us += per;
     any = true;
   }
+  // Only servo entries moved, so a mixed servo/fallback queue can come
+  // out inverted -- restore the sorted-by-release invariant that
+  // release_due() and next_release_us() depend on (found in review: an
+  // inverted head released the fallback frame ~7 ms late, out of pts
+  // order, and made next_release_us() misreport to the pump/idle logic).
+  if (count_ == 2 && held_[0].release_us > held_[1].release_us)
+    std::swap(held_[0], held_[1]);
   if (any) ++heals_;
 }
 
