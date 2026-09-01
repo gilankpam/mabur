@@ -122,4 +122,9 @@ uint64_t UepEncoder::dropped(int stream_id) const {
   return layers_[static_cast<size_t>(stream_id)].dropped_count;
 }
 
+SwEncoder::SwFecGauge UepEncoder::take_fec_gauge(int stream_id) {
+  int sid = std::clamp(stream_id, 0, kNumStreams - 1);
+  return layers_[static_cast<size_t>(sid)].sw.take_fec_gauge();
+}
+
 }  // namespace mabur

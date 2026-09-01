@@ -46,6 +46,13 @@ class FecWorker {
   // repair inline (graceful degradation, never blocks, never drops).
   bool try_enqueue(const FecRepairJob& job);
 
+  // Approximate queue occupancy (racy snapshot, gauge-only). Exact when the
+  // producer thread calls it between its own enqueues.
+  uint32_t depth() const {
+    return tail_.load(std::memory_order_relaxed) -
+           head_.load(std::memory_order_relaxed);
+  }
+
  private:
   static constexpr long kSpinIters = 16384;  // ~50-100 us @ 800 MHz A7
 

@@ -78,6 +78,25 @@ class SwEncoder {
   uint64_t sources_out() const { return sources_out_; }
   uint64_t repairs_out() const { return repairs_out_; }
 
+  // Async-path gauge (fec-compute handover 2026-09-01): splits the hot
+  // thread's per-AU wall into wait-on-worker vs its own work, and exposes
+  // the worker's per-repair build cost + queue depth. Sums/counts are
+  // cumulative — the reader diffs across report windows; the *_max fields
+  // are window maxima, reset by take_fec_gauge(). All fields are zero in
+  // sync mode (no worker).
+  struct SwFecGauge {
+    uint64_t jobs = 0;             // repairs built via execute_repair_job
+    uint64_t build_us = 0;         // wall µs inside those builds
+    uint64_t inline_full = 0;      // queue-full inline fallbacks (hot thread)
+    uint64_t join_waits = 0;       // join() calls that actually spun
+    uint64_t join_wait_us = 0;     // hot-thread µs spent spinning in join()
+    uint64_t join_wait_max_us = 0; // window max (reset on take)
+    uint64_t enq_depth_max = 0;    // window max worker-queue depth at enqueue
+  };
+  // Producer-thread-only, like add_packet/flush (it resets the window-max
+  // fields in place).
+  SwFecGauge take_fec_gauge();
+
  private:
   // Sealed symbols live in one contiguous 16 B-aligned fixed-stride ring of
   // window + kSlackRows rows (not a deque of vectors). The slack keeps a
@@ -97,6 +116,9 @@ class SwEncoder {
     std::atomic<int> outstanding{0};
     std::mutex done_m;
     std::vector<std::vector<uint8_t>> done;
+    // Gauge sums the WORKER thread increments (the hot thread only reads);
+    // heap-held with the rest so the encoder stays movable.
+    std::atomic<uint64_t> gauge_jobs{0}, gauge_build_us{0};
   };
 
   // Sync mode: builds and returns the repair inline (today's exact
@@ -124,6 +146,12 @@ class SwEncoder {
   FecWorker* worker_ = nullptr;
   std::unique_ptr<AsyncState> async_;  // null in sync mode
   long seals_since_join_ = 0;          // slack-bound backstop counter
+
+  // Hot-thread-owned halves of SwFecGauge (see above for field semantics).
+  uint64_t gauge_inline_full_ = 0;
+  uint64_t gauge_join_waits_ = 0, gauge_join_wait_us_ = 0;
+  uint64_t gauge_join_wait_max_us_ = 0;  // window max
+  uint64_t gauge_enq_depth_max_ = 0;     // window max
 };
 
 }  // namespace mabur

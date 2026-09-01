@@ -1023,6 +1023,13 @@ int run_real_mode(const Config& cfg) {
     uint64_t split_ring_sum_us = 0, split_ring_max_us = 0;
     uint64_t split_cpu_sum_us = 0, split_cpu_max_us = 0;
 
+    // fec_worker gauge (fec-compute handover 2026-09-01): per-layer split of
+    // dq_split's cpu_us into wait-on-worker (join spins) vs the hot thread's
+    // own work, plus the worker's per-repair build cost and queue depth.
+    // take_fec_gauge's sums are cumulative — keep last-window copies and
+    // diff here; the maxima reset inside the take.
+    SwEncoder::SwFecGauge fec_gauge_prev[UepEncoder::kNumStreams]{};
+
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
       const uint64_t t0_us = now_steady_us();
@@ -1208,6 +1215,29 @@ int run_real_mode(const Config& cfg) {
         split_n = 0;
         split_ring_sum_us = split_ring_max_us = 0;
         split_cpu_sum_us = split_cpu_max_us = 0;
+        for (int sid = 0; sid < UepEncoder::kNumStreams; ++sid) {
+          const auto g = uep.take_fec_gauge(sid);
+          const auto& p = fec_gauge_prev[sid];
+          const uint64_t jobs = g.jobs - p.jobs;
+          const uint64_t build_us = g.build_us - p.build_us;
+          const uint64_t joins = g.join_waits - p.join_waits;
+          const uint64_t wait_us = g.join_wait_us - p.join_wait_us;
+          if (jobs > 0 || joins > 0) {
+            std::fprintf(stderr,
+                "maburd fec_worker sid=%d: jobs=%llu build_us/job=%llu "
+                "inline=%llu joins=%llu join_wait_us mean=%llu max=%llu "
+                "qdepth_max=%llu\n",
+                sid,
+                (unsigned long long)jobs,
+                (unsigned long long)(jobs ? build_us / jobs : 0),
+                (unsigned long long)(g.inline_full - p.inline_full),
+                (unsigned long long)joins,
+                (unsigned long long)(joins ? wait_us / joins : 0),
+                (unsigned long long)g.join_wait_max_us,
+                (unsigned long long)g.enq_depth_max);
+          }
+          fec_gauge_prev[sid] = g;
+        }
       }
 
       // Idle-tail flush: no single source frame owns these bodies (poll can
