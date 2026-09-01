@@ -32,6 +32,7 @@
 
 #if defined(__linux__)
 #include <pthread.h>
+#include <sched.h>  // cpu_set_t — see the core-placement policy below
 #endif
 
 #include "air_feed.h"
@@ -384,6 +385,45 @@ void name_thread(const char* n) {
 #endif
 }
 
+// Core-placement policy (findings §19, 2026-09-01). The SSC338Q has two
+// A7s and the frame producer is the pacer for the whole link: dq_split
+// cpu_us is ~9 ms/frame unpinned but ~6.3 ms with the producer alone on a
+// core, because every txq.push notify lets the TX writer preempt it
+// mid-frame and the FEC worker migrates onto it (sink_us 1.9 -> 0.15 ms,
+// GS arrival span 8.6 -> 7.9 ms, air spacing 382 -> 346 us).
+//
+// Applied as: process affinity -> core 0 BEFORE any thread exists (radio,
+// venc SDK, USB pool, FEC worker all inherit it), then the hot thread
+// moves itself to core 1. Cost: the FEC worker shares core 0 and slows to
+// ~120 us/repair, so the producer's flush-join rises ~1 ms — a net win at
+// today's geometry, NOT a free one. Revisit if per-frame repair count grows.
+//
+// Guarded on exactly-2 online CPUs: that is the deployment target, and it
+// keeps a dev host (where this same binary builds and runs) from cramming
+// every thread onto CPU 0.
+constexpr int kHotCore = 1;
+constexpr int kRestCore = 0;
+
+bool two_core_target() {
+#if defined(__linux__)
+  return sysconf(_SC_NPROCESSORS_ONLN) == 2;
+#else
+  return false;
+#endif
+}
+
+void pin_self_to(int cpu) {
+#if defined(__linux__)
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  CPU_SET(cpu, &set);
+  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0)
+    std::fprintf(stderr, "maburd: affinity pin to cpu%d failed\n", cpu);
+#else
+  (void)cpu;
+#endif
+}
+
 // µs sibling for the dq_split gauge: the intervals it separates (venc-ring
 // wait 0–5 ms, FEC/SBI CPU, queue wait) are each of the same order as
 // now_steady_ms()'s 1 ms quantum, so a ms clock cannot split them.
@@ -698,6 +738,13 @@ uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
 }
 
 int run_real_mode(const Config& cfg) {
+  // Before libusb_init and the venc bring-up, so every thread either
+  // library spawns inherits core 0; the hot thread claims core 1 itself.
+  if (two_core_target()) {
+    pin_self_to(kRestCore);
+    std::fprintf(stderr, "maburd: core policy = producer on cpu%d, rest on cpu%d\n",
+                 kHotCore, kRestCore);
+  }
   std::signal(SIGUSR1, handle_sigusr1);
   // Installs the SIGINT/SIGTERM handlers that set g_devourer_should_stop —
   // the flag IRtlDevice::Init()'s blocking RX loop actually watches.
@@ -998,6 +1045,7 @@ int run_real_mode(const Config& cfg) {
   // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
     name_thread("mbr-hot");
+    if (two_core_target()) pin_self_to(kHotCore);
     // Ring name's single authority is now the compile-time VENC_RING_NAME
     // (drone/venc/venc_cfg.h "/mabur_f"); frame_ring_name config key
     // deleted (spec 2026-08-28 venc-foldin, Task B5 controller ruling).
@@ -1011,10 +1059,16 @@ int run_real_mode(const Config& cfg) {
     bool vanish_boot_zeroed = false;  // first link-establish zeroes counters
 
     // Async FEC worker (spec 2026-07-17, promoted after hardware
-    // acceptance): always on, unpinned (the worker sleeps when idle, so the
-    // scheduler places it correctly). Declared before the UepEncoder so
-    // engine dtors join their jobs first.
-    FecWorker fec_worker;
+    // acceptance): always on. Declared before the UepEncoder so engine
+    // dtors join their jobs first.
+    //
+    // The explicit pin is load-bearing, not tidiness: this thread is
+    // spawned BY the hot thread, so it INHERITS the hot thread's core-1
+    // affinity and lands on the producer's core — the one placement that
+    // is strictly worse than no policy at all (measured 2026-09-01:
+    // cpu_us 11.5 ms and flush-join 3.2-3.7 ms, vs 9 ms / 0.4 ms
+    // unpinned). Sending it to kRestCore is what makes the policy a win.
+    FecWorker fec_worker(two_core_target() ? kRestCore : -1);
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
     // Hot-thread-owned, same exclusivity contract as uep above: writes the
     // shared air_feed_out, never read back by this thread.
