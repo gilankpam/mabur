@@ -1042,6 +1042,31 @@ Note the span moved 1.8 ms but fec only 0.6 ms: the GS publish tail
 what's left. Lever #1 (feed-own ~4.7 ms) is still the big one, and
 §19's ranking is otherwise unchanged.
 
+**⚠ Every number in this section is a MEDIAN, and the median is not
+what the operator sees.** The player's OSD LAT row shows the **p99
+frame** — the worst frame by e2e in each 1 s window, refreshed at 1 Hz
+(`gs_overlay.h:77`, `LatTracker::p99_frame()`). Measured on the bench
+after this change: **fec p99 median 15.6 ms, ranging 12–39 ms**, and
+the au_tail per-window span max sat at ~33 ms both BEFORE and AFTER
+the policy. So this change improved the typical frame and did
+essentially nothing for the tail — which is the number on screen.
+Do not quote §20's table as "the OSD will read 9.7".
+
+The tail is therefore a separate, still-unattacked problem, and
+arguably the one that matters for perceived latency. Candidates from
+this session's data, none yet tested: IDR frames (much larger → more
+bodies → wider span), repair-heavy AUs (§17 already saw ~20 ms
+publish-tail spikes), and the drone-side flush-join spikes the new
+gauge shows (mean 1.5 ms but max 9–12 ms). A tail attack wants a
+per-frame distribution, not the 5 s window maxima the current gauges
+report.
+
+Also scene-dependent, which makes cross-session comparison a trap:
+in a busier scene the same build read fec p50 11.6 ms at 35.5 KB
+frames vs 9.7 ms at 24.0 KB (same rung, same overhead, gate clean,
+inside the 16 Mb/s cap). Always record frame size next to a fec
+number.
+
 ⚠ Flight-unvalidated: bench only, and it deliberately crowds the venc
 SDK threads onto one core. No harm observed across ~15 min at 60 fps,
 but the first flight with this build should watch `vanished` and
