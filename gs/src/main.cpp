@@ -26,6 +26,7 @@
 #include "frame_file_source.h"
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
+#include "ladder_residual.h"
 #include "lat_window.h"
 #ifdef MABUR_LOSS_SIM
 #include "loss_control.h"
@@ -446,7 +447,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // Current-rung-only siblings (transition attribution, spec 2026-08-14):
   // same machinery, fed from the attributed counters. s1_loss/s3_loss stay
   // as the observability totals (residual_loss, the artifact-rate meter).
-  maburgs::S1LossWindow s1_loss_cur, s3_loss_cur, s3_resid_cur;
+  maburgs::S1LossWindow s1_loss_cur, s1_resid_cur, s3_loss_cur, s3_resid_cur;
   // Fade-trigger staleness gate (spec 2026-08-14 §3, source repointed to
   // the s1+s3 pool 2026-08-15): per-card pooled frame counts snapshotted
   // once per feedback window (same cadence as reset_window()), so "zero
@@ -736,6 +737,14 @@ static int run_radio(const maburgs::Config& cfg) {
                     s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
     const auto s1_cur_sample = s1_loss_cur.sample(now_ms);
 
+    // Block 4's instant-demote input: BASE post-FEC loss from the FEC
+    // decoder's own abandonment count, mirroring s3_resid_cur below. See
+    // gs/src/ladder_residual.cpp for why this replaced the packet-level
+    // delivery window on 2026-09-02.
+    const auto s1_rc = maburgs::ladder_residual_counts(agg.decoder());
+    s1_resid_cur.add(s1_rc.expected, s1_rc.arrived, now_ms);
+    const auto s1_rcur_sample = s1_resid_cur.sample(now_ms);
+
     // s3 feedback for the probe-before-promote / s3-demote logic: pre-FEC
     // loss (same shape as s1's window), scored against the CURRENT rung's
     // budget. s3_* names are historical too: this is the ENH sid's (1)
@@ -792,7 +801,7 @@ static int run_radio(const maburgs::Config& cfg) {
     maburgs::LinkHealth health{
         s1_sample.valid,
         s1_cur_sample.valid ? s1_cur_sample.loss : 0.0,
-        residual_cur.value_or(0.0),
+        s1_rcur_sample.valid ? s1_rcur_sample.loss : 0.0,
         starved};
     health.s3_valid = s3_sample.valid;
     health.s3_pre_fec_loss = s3_cur_sample.valid ? s3_cur_sample.loss : 0.0;
