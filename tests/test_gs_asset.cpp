@@ -100,6 +100,12 @@ GsPlayerState player_nominal() {
   p.lat_e2e_ms = 34;
   const int seg[7] = {7, 0, 9, 3, 5, 10, 8};  // enc,dq,air,fec,dec,reg,dsp
   for (int i = 0; i < 7; ++i) p.lat_ms[i] = seg[i];
+  // Median row: a typical frame, deliberately DIFFERENT from the p99 one so
+  // a row that silently rendered the wrong breakdown would fail rather than
+  // pass on identical numbers.
+  p.lat_p50_e2e_ms = 21;
+  const int seg50[7] = {7, 0, 1, 2, 4, 4, 3};
+  for (int i = 0; i < 7; ++i) p.lat_p50_ms[i] = seg50[i];
   return p;
 }
 
@@ -196,6 +202,7 @@ TEST(asset_sizes_resolve_exactly_at_every_resolution) {
       {26, GsFieldId::kLossArrow},  {24, GsFieldId::kJit},
       {22, GsFieldId::kCard0Id},    {19, GsFieldId::kLossLabel},
       {24, GsFieldId::kLatHead},    {24, GsFieldId::kLatBreakdown},
+      {24, GsFieldId::kLatP50Head}, {24, GsFieldId::kLatP50Breakdown},
   };
   for (const FourReso& r : kFourResolutions) {
     GsOverlay ov(f);
@@ -437,8 +444,22 @@ TEST(asset_lat_row_layout_and_content_at_every_resolution) {
         ov.debug_field_text(nominal(), false, player_nominal(), GsFieldId::kLatHead);
     const std::string bd =
         ov.debug_field_text(nominal(), false, player_nominal(), GsFieldId::kLatBreakdown);
-    CHECK(head == "LAT 34 |");
+    CHECK(head == "P99 34 |");
     CHECK(bd == "enc7 dq0 air+9 fec3 dec5 reg10 dsp8");
+
+    // The median row is the same shape one line up, and must carry the P50
+    // frame's OWN numbers -- not a copy of the p99 row's.
+    const std::string head50 = ov.debug_field_text(nominal(), false, player_nominal(),
+                                                  GsFieldId::kLatP50Head);
+    const std::string bd50 = ov.debug_field_text(nominal(), false, player_nominal(),
+                                                GsFieldId::kLatP50Breakdown);
+    CHECK(head50 == "P50 21 |");
+    CHECK(bd50 == "enc7 dq0 air+1 fec2 dec4 reg4 dsp3");
+    // Median row sits ABOVE the p99 row, left edges flush.
+    CHECK(ov.debug_field_box(GsFieldId::kLatP50Head).y <
+          ov.debug_field_box(GsFieldId::kLatHead).y);
+    CHECK(ov.debug_field_box(GsFieldId::kLatP50Head).x ==
+          ov.debug_field_box(GsFieldId::kLatHead).x);
 
     // Invalid (anchor not usable yet): headline collapses to "LAT --" with
     // no trailing separator, breakdown is blank -- there is no real
@@ -450,8 +471,13 @@ TEST(asset_lat_row_layout_and_content_at_every_resolution) {
         ov.debug_field_text(nominal(), false, cold, GsFieldId::kLatHead);
     const std::string bd_cold =
         ov.debug_field_text(nominal(), false, cold, GsFieldId::kLatBreakdown);
-    CHECK(head_cold == "LAT --");
+    CHECK(head_cold == "P99 --");
     CHECK(bd_cold.empty());
+    // The median row shares lat_valid, so it collapses in lockstep.
+    CHECK(ov.debug_field_text(nominal(), false, cold, GsFieldId::kLatP50Head) ==
+          "P50 --");
+    CHECK(ov.debug_field_text(nominal(), false, cold, GsFieldId::kLatP50Breakdown)
+              .empty());
 
     // Player-measured: `stale` must not touch either field (grep how
     // fps/jitter/mbps opt out -- same rule here).
@@ -473,6 +499,8 @@ TEST(asset_lat_row_layout_and_content_at_every_resolution) {
     };
     CHECK(lit_in(GsFieldId::kLatHead) > 0);
     CHECK(lit_in(GsFieldId::kLatBreakdown) > 0);
+    CHECK(lit_in(GsFieldId::kLatP50Head) > 0);
+    CHECK(lit_in(GsFieldId::kLatP50Breakdown) > 0);
     std::printf("  %dx%d: head=%zu bd=%zu lit px\n", r.w, r.h, lit_in(GsFieldId::kLatHead),
                 lit_in(GsFieldId::kLatBreakdown));
   }

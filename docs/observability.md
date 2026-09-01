@@ -15,9 +15,21 @@ candidate MCS on the s3 enhancement stream first when the drone advertises
 2026-08-31 (latency-accounting) `link.video.lat` carries the end-to-end
 head-segment latency breakdown (`n`, and p50/p99 pairs for `enc`/`dq`/`air`/
 `fec`) once the AU ring's SlotHdr v2 stamps are flowing — omitted, not
-null, until then — and `maburplay`'s OSD grows a matching `LAT <e2e> |`
-row above the fps line, reading `--` while its own e2e-latency tracker is
-cold or discontinuous. Consume it with:
+null, until then — and `maburplay`'s OSD grows a matching latency block
+above the fps line, reading `--` while its own e2e-latency tracker is
+cold or discontinuous.
+
+Since 2026-09-01 that block is **two rows, `P50` and `P99`** (the label
+was `LAT` when there was only the tail row — renamed because with two
+rows present it has to say which statistic it is). Each row is ONE REAL
+FRAME from the last 1 s window, ranked by e2e, showing that frame's own
+seven segments — never independently-ranked per-segment percentiles,
+so each row's segments sum to its own headline. Read them together:
+`P99` alone is a tail statistic sitting among averages (fps/jit/mbps)
+and gets misread as typical — an operator reporting "fec is 10–30 ms"
+while the median was ~10 ms is what prompted the second row
+(`docs/dq-spike-findings-2026-08-31.md` §20). Consume the same numbers
+programmatically with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,
   grouped by link; color thresholds carry the judgment.

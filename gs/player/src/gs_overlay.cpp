@@ -399,7 +399,10 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     std::snprintf(worst_bd, sizeof(worst_bd),
                   "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d", 999, 999, 999,
                   999, 999, 999, 999);
-    const int head_w = text_width(*secondary, "LAT 999 |");
+    // "P99"/"P50" rather than the old "LAT": with two rows present the
+    // label has to say WHICH statistic it is. Same glyph count as "LAT",
+    // so every width below is unchanged by the rename.
+    const int head_w = text_width(*secondary, "P99 999 |");
     const int bd_w = text_width(*secondary, worst_bd);
     // gap12, not gap10: per the horizontal clearance floor comment above
     // (kFpsValue/kFpsLabel's), anything smaller yields negative clearance
@@ -414,9 +417,20 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     // fields use the plain tokens directly rather than the stale-aware
     // `link_*` helpers -- this row is current by construction and never
     // dims.
-    place(GsFieldId::kLatHead, secondary, lat_x, lat_base, "LAT 999 |");
+    place(GsFieldId::kLatHead, secondary, lat_x, lat_base, "P99 999 |");
     place(GsFieldId::kLatBreakdown, secondary, lat_x + head_w + gap12, lat_base,
           worst_bd);
+    // Median row, one secondary line further up, same left edge and same
+    // box widths -- derived from kLatHead's box top the same box-edges-not-
+    // glyph_h way lat_base itself is derived from the FPS box, for the same
+    // overlap reason. Guarded by asset_safe_inset_and_centre_of_frame_hold:
+    // this column now grows two rows above FPS, not one.
+    const int lat_box_top = lat_base - secondary->baseline;
+    const int med_base =
+        lat_box_top - gap8 - (secondary->glyph_h - secondary->baseline);
+    place(GsFieldId::kLatP50Head, secondary, lat_x, med_base, "P50 999 |");
+    place(GsFieldId::kLatP50Breakdown, secondary, lat_x + head_w + gap12,
+          med_base, worst_bd);
   }
 
   // --- bottom centre: loss -------------------------------------------
@@ -653,8 +667,8 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       // third field to draw it in. It appears only when there is a
       // breakdown to introduce; the invalid case is just "LAT --" alone.
       st.text = ps.lat_valid
-                    ? "LAT " + fmt_int(std::clamp((double)ps.lat_e2e_ms, 0.0, 999.0)) + " |"
-                    : "LAT --";
+                    ? "P99 " + fmt_int(std::clamp((double)ps.lat_e2e_ms, 0.0, 999.0)) + " |"
+                    : "P99 --";
       break;
     case GsFieldId::kLatBreakdown:
       // Blank (and cleared -- draw_field_ clears the box before bailing on
@@ -665,6 +679,27 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
         char buf[80];
         auto seg = [&](int i) {
           return (int)std::clamp((double)ps.lat_ms[i], 0.0, 999.0);
+        };
+        std::snprintf(buf, sizeof(buf), "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d",
+                      seg(0), seg(1), seg(2), seg(3), seg(4), seg(5), seg(6));
+        st.text = buf;
+      }
+      st.rgb = tok::kTextSecondary;
+      break;
+    case GsFieldId::kLatP50Head:
+      st.text = ps.lat_valid
+                    ? "P50 " +
+                          fmt_int(std::clamp((double)ps.lat_p50_e2e_ms, 0.0, 999.0)) +
+                          " |"
+                    : "P50 --";
+      st.rgb = tok::kTextSecondary;
+      break;
+    case GsFieldId::kLatP50Breakdown:
+      // Same cold-anchor rule as kLatBreakdown: blank rather than stale.
+      if (ps.lat_valid) {
+        char buf[80];
+        auto seg = [&](int i) {
+          return (int)std::clamp((double)ps.lat_p50_ms[i], 0.0, 999.0);
         };
         std::snprintf(buf, sizeof(buf), "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d",
                       seg(0), seg(1), seg(2), seg(3), seg(4), seg(5), seg(6));
