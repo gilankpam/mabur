@@ -908,6 +908,16 @@ trusting lossy rungs. Rollback is one config restore per end.
 Bench stays on 656/w16. Code defaults untouched (configs govern);
 flip defaults only after flight acceptance.
 
+**Postscript (same day): ROLLED BACK to 332/w32 by operator decision.**
+The −1.0 ms fec did not justify the +2.9 ms arrival-jitter trade plus
+the two open validation debts (flight dsp watch, w16 loss-granularity
+sim). Rollback was the two `/tmp/*.pre-656` restores + restarts;
+verified back at the exact 332 signature (rx_pace 387 µs/7760 bodies,
+au_tail 8.8/1.9, ausniff 60.0/0). The hole-sweep PASS and this section's
+measurements stand — 656 can be re-flagged any time the jitter and
+loss-granularity questions are answered, or revisited as
+656-only-at-high-rungs if per-rung FEC geometry ever becomes a thing.
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc
