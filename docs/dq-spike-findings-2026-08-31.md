@@ -918,6 +918,84 @@ measurements stand — 656 can be re-flagged any time the jitter and
 loss-granularity questions are answered, or revisited as
 656-only-at-high-rungs if per-rung FEC geometry ever becomes a thing.
 
+## 19. The production pace dissected: worker exonerated, the hot
+## thread's own feed is the per-byte term, and core-sharing is the
+## multiplier (2026-09-01, session 4)
+
+Handover-fec-compute's step 1 asked why the span slope matches the
+single-core GF256 repair rate when repairs are off-thread. New drone
+gauge (`fec_worker` line, 5 s cadence, in the deployed maburd): per-sid
+repair jobs + build µs (worker-side), inline queue-full fallbacks,
+`join()` spin-wait count/mean/max (hot-side), worker queue depth max.
+Plus `sink_us` in dq_split (time inside the streaming sink), and all
+mabur threads now carry comm names (`mbr-hot`, `mbr-txw`, `mbr-fecw`,
+`mbr-usb`×4, `mbr-agent`, `mbr-msp`, `mbr-http`) — the forensics below
+initially pinned/reniced the WRONG thread because the hot loop is a
+spawned thread, not the main thread.
+
+**The structural read first**: `SwEncoder::flush()` runs at every frame
+end and spin-joins ALL outstanding repairs, and repair envelopes only
+drain back at the next `add_packet` — so emission CAN serialize behind
+the worker. Measured at 11 M/mcs5/332 (unpinned baseline, ~298
+frames/5 s):
+
+- **Worker exonerated as steady-state limiter**: ~90 µs/repair
+  (~10.5 k repairs/5 s across both sids), queue depth ≤31 of 256,
+  0 inline fallbacks, join wait mean only **0.35–0.5 ms/frame**
+  (max spikes 2–10 ms — the burst tail is real but thin).
+- **dq_split cpu_us ≈ 8.4–9.5 ms/frame**, of which sink_us (SBI patch +
+  stamps + txq.push/notify) reads **1.5–4 ms**.
+
+**The affinity experiments** (runtime taskset, no deploy): isolating
+`mbr-hot` alone on core 1 with everything else on core 0 gives
+**cpu_us 9.0 → 6.3 ms and sink_us 1.9 → 0.15 ms**; GS au_tail span
+8.6 → **7.9 ms**, rx_pace tsfl 382 → 346 µs, ausniff 60.0/0 gaps
+(gate clean). Forcing hot + worker onto ONE core gives cpu_us
+**14.4 ms** — the §17 equilibrium's "single-core GF256 slope" is what
+you get whenever hot and worker time-share a core, which the scheduler
+does intermittently in the unpinned baseline.
+
+**The isolated split closes the budget**: cpu 6.3 ≈ **feed-own ~4.7**
+(pure hot-thread frag→SwEncoder→SbiPacker compute for a ~23 KB AU —
+far above the ≤1 ms the handover hoped) **+ join ~1.4** (worker slower
+on the crowded core: 120 µs/job) **+ sink 0.15**. The baseline's extra
+~2.7 ms is interleave: same-core wake-preemption (every txq.push
+notify lets mbr-txw/mbr-usb preempt the producer) plus worker
+migration. §16's "cpu_us is ~half interleave" — confirmed and now
+separable at will.
+
+Meanwhile the drain side idles: dq_queue wait ~140 µs, usb_urb
+mean_inflight 0.29 (writer 29 % busy, URBs serialized ~350 µs
+round-trip, never >2 deep). Nobody is saturated; production pace is
+the pacer, and production pace = hot-thread wall.
+
+**Levers, re-ranked by this section:**
+
+1. **Feed-own diet (~4.7 ms, biggest single term)**: profile the
+   source path — per-envelope/body vector allocs (~130/frame),
+   the 4 copies (frag → current_symbol → ring → SBI body), CRC16
+   passes. Host-profileable; fecbench only ever measured the repair
+   path.
+2. **Affinity policy in maburd** (validated today, −2.7 ms cpu / −0.65 ms
+   span / −36 µs air spacing, gate-clean): pin mbr-hot alone, rest +
+   SDK on the other core. Costs join (+1 ms, worker slower) — net win
+   regardless. Needs an operator call because it also crowds the venc
+   SDK threads (no observed harm in 10+ min: ring fill 0 %, no vanish).
+3. **Flush-join relaxation**: joins exist to ship the tail repair with
+   its own frame; shipping it one frame late (SwDecoder has no ordering
+   contract) deletes the 0.4–1.5 ms join term at a small
+   protection-latency cost. Not measured yet.
+4. **mt2-row/spin demoted**: with the worker keeping pace and both
+   cores busy, folding one repair on two cores steals the hot core —
+   wrong direction at current geometry. Re-rank only if overheads grow.
+5. A-MPDU/656 unchanged (§17 #2, §18) — the air half still stands,
+   still blocked/rolled-back respectively.
+
+Bench end state: pins REVERTED (prod shape = unpinned), both ends on
+gauge builds — drone maburd = fecgauge+names (rollback
+`maburd.pre-fecgauge`; pre-urbgauge/pre-ampdu pruned per handover), GS
+unchanged (rx_pace+au_tail build). Configs untouched all session.
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc

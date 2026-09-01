@@ -1,5 +1,16 @@
 # Handover — the fec span is production-paced; attack the per-byte term
 
+> **⚠ SESSION 4 UPDATE (2026-09-01, same day): the contradiction below
+> is RESOLVED — see §19 of the findings doc.** The worker is exonerated
+> (90 µs/repair, joins 0.35–0.5 ms mean); the per-byte term is the hot
+> thread's OWN feed compute (~4.7 ms/AU isolated) plus ~2.7 ms of
+> core-sharing interleave (removable via affinity, validated live:
+> cpu 9.0→6.3 ms, span 8.6→7.9 ms, gate clean). mt2-row/spin is
+> DEMOTED (would steal the hot core). New rank: (1) feed-own
+> alloc/copy diet, (2) affinity policy in maburd, (3) flush-join
+> relaxation, then the unchanged air half (A-MPDU/656). The probe
+> sequence below is kept for provenance; read §19 first.
+
 2026-09-01, bench (drone `192.168.10.152`, GS `10.18.0.1`), branch
 `ampdu`. Continues `docs/dq-spike-findings-2026-08-31.md` §14–§18 (the
 lab notebook — §17 is the model, §18 the 656 trial; this page is the map
@@ -109,10 +120,10 @@ or raw dq_split cpu_us (both instruments lie under feed-shape changes).
 ## Bench state (end of 2026-09-01)
 
 332/w32 everywhere (656 rollback verified), adaptive ladder, 11 M cap,
-ch136, agg 0. Deployed instrumented builds: drone maburd = urbgauge
-(rollback `maburd.pre-urbgauge`; `maburd.pre-ampdu` also on rootfs —
-prune at next deploy), GS maburgs = rx_pace+au_tail (rollback
-`maburgs.pre-rxpace`), fixed maburplay (rollback
+ch136, agg 0. Deployed instrumented builds: drone maburd =
+**fecgauge+thread-names** (session 4; rollback `maburd.pre-fecgauge`;
+pre-urbgauge and pre-ampdu PRUNED), GS maburgs = rx_pace+au_tail
+(rollback `maburgs.pre-rxpace`), fixed maburplay (rollback
 `maburplay.pre-healslip`). Config backups `/tmp/*.pre-656` (now equal
 to live), `/tmp/*.pre-sat`, `/tmp/maburgs.json.pre-pin` on the devices.
 Closing gate 60.0 fps / 0 gaps. ⚠ GS 2.4 GHz AP (AIC8800) drops its
