@@ -9,10 +9,11 @@ namespace mabur {
 
 namespace {
 
-// Canonical SA devourer's build_dot11_probe_req() uses
-// (../devourer/examples/streamtx/main.cpp).
+// Canonical SA: the mabur SA both ends filter on. Historically devourer's
+// probe-req canonical SA; still used in QoS-Data (A-MPDU wire) and the GS's
+// uplink 0x40 control frames.
 constexpr uint8_t kCanonicalSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
-constexpr size_t kDot11HeaderLen = 24;
+constexpr size_t kDot11HeaderLen = 26;  // QoS-Data: 24 + 2-byte QoS control
 
 devourer::TxMode to_tx_mode(const rc::LayerTxSpec& s, uint8_t bw) {
   devourer::TxMode m;
@@ -31,11 +32,17 @@ devourer::TxMode to_tx_mode(const rc::LayerTxSpec& s, uint8_t bw) {
   return m;
 }
 
-// Writes the 24-byte 802.11 header (frame control | duration | DA | SA | BSSID
-// | seq_ctl) at `out`, matching devourer's build_dot11_probe_req() layout with
-// seq_ctl carrying `seq` in the sequence-number subfield (fragment 0).
+// Writes the 26-byte 802.11 QoS-Data header (frame control | duration | DA |
+// SA | BSSID | seq_ctl | QoS ctl) at `out`. QoS-Data (not the old probe-req)
+// because the MAC's A-MPDU engine aggregates ONLY QoS-Data on a data queue
+// (docs/dq-spike-findings-2026-08-31.md §11); the wire is QoS-Data
+// unconditionally — aggregation on/off never changes the frame layout. QoS
+// ctl = TID 0, ack-policy No-Ack (no BlockAck peer exists; FEC covers loss).
+// seq_ctl carries `seq` in the sequence-number subfield (fragment 0) at the
+// same bytes 22-23 as the old layout — the GS gap detector reads it
+// unchanged.
 void write_dot11_header(uint8_t* out, uint16_t seq) {
-  out[0] = 0x40;
+  out[0] = 0x88;
   out[1] = 0x00;
   out[2] = 0x00;
   out[3] = 0x00;
@@ -45,6 +52,8 @@ void write_dot11_header(uint8_t* out, uint16_t seq) {
   uint16_t seq_ctl = static_cast<uint16_t>(seq << 4);
   out[22] = static_cast<uint8_t>(seq_ctl & 0xff);
   out[23] = static_cast<uint8_t>((seq_ctl >> 8) & 0xff);
+  out[24] = 0x20;  // QoS ctl low: TID 0, ack-policy [6:5] = 01 (No Ack)
+  out[25] = 0x00;  // QoS ctl high
 }
 
 }  // namespace

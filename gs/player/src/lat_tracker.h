@@ -49,14 +49,18 @@ class LatTracker {
   };
   Line flush_line();
 
-  // OSD row: the REAL frame at p99-by-e2e rank from the last window --
-  // never a mix of per-segment percentiles (those can each come from a
-  // different frame and would not sum to anything meaningful).
+  // OSD rows: the REAL frame at p99- and p50-by-e2e rank from the last
+  // window -- never a mix of per-segment percentiles (those can each come
+  // from a different frame and would not sum to anything meaningful).
+  // Both are ranked the SAME way for the same reason, so the two rows are
+  // directly comparable segment by segment: p50 is the typical frame, p99
+  // the tail, and each row's own segments sum to its own headline.
   struct Breakdown {
     bool valid = false;
     uint32_t ms[8] = {0, 0, 0, 0, 0, 0, 0, 0};  // rounded ms, same order
   };
   Breakdown p99_frame() const;
+  Breakdown p50_frame() const;
 
   static constexpr std::size_t kMaxInflight = 64;
 
@@ -92,7 +96,7 @@ class LatTracker {
   int chk_n_ = 0;
   bool dsp_exact_window_ = true;
 
-  Breakdown p99_frame_;
+  Breakdown p99_frame_, p50_frame_;
 };
 
 }  // namespace maburplay

@@ -782,4 +782,74 @@ TEST(link_rc_drain_ms_must_not_exceed_tick_ms) {
   }
 }
 
+// ---- Task 3: ampdu block (spec 2026-09-01-ampdu-design.md) --------------
+
+TEST(ampdu_defaults_when_absent) {
+  // A config with no "ampdu" block gets the shipped defaults — aggregation
+  // OFF since the 2026-09-01 bench verdict (no fec win, RF-report damage).
+  auto path = write_temp_json("{}");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.ampdu.max_num == 0);
+  CHECK(cfg.ampdu.max_time == 32);
+  std::filesystem::remove(path);
+}
+
+TEST(ampdu_block_parses) {
+  auto path = write_temp_json(
+      R"({"ampdu": {"max_num": 4, "max_time": 48}})");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.ampdu.max_num == 4);
+  CHECK(cfg.ampdu.max_time == 48);
+  std::filesystem::remove(path);
+}
+
+TEST(ampdu_zero_disables) {
+  auto path = write_temp_json(R"({"ampdu": {"max_num": 0}})");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.ampdu.max_num == 0);
+  std::filesystem::remove(path);
+}
+
+TEST(ampdu_rejects_bad_values) {
+  // max_num out of the 5-bit MAX_AGG_NUM field.
+  {
+    auto path = write_temp_json(R"({"ampdu": {"max_num": 32}})");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("ampdu.max_num") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_json(R"({"ampdu": {"max_num": -1}})");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("ampdu.max_num") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+  // max_time 1..8 is the register cliff (aggregation silently disabled).
+  {
+    auto path = write_temp_json(R"({"ampdu": {"max_time": 8}})");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("ampdu.max_time") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_json(R"({"ampdu": {"max_time": 256}})");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("ampdu.max_time") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+  // Unknown key inside the block fails boot (config-strict).
+  {
+    auto path = write_temp_json(R"({"ampdu": {"depth": 4}})");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("ampdu.depth") != std::string::npos);
+    CHECK(msg.find("unknown key") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
 MTEST_MAIN

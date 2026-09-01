@@ -12,7 +12,8 @@ namespace mabur::node {
 // every other mabur wire format. Little-endian, CRC16-CCITT tail over all
 // preceding bytes. RxBody header is 21 bytes:
 //   <HBBQBBbbBHH> magic, ver, card_id, mono_us, rssi_a, rssi_b, snr_a,
-//   snr_b, flags(bit0=crc_ok), mac_seq, body_len — then body, then crc16.
+//   snr_b, flags(bit0=crc_ok, bit1=phy_valid), mac_seq, body_len — then
+//   body, then crc16.
 constexpr uint16_t RXBODY_MAGIC = 0xF5A0;
 constexpr uint16_t CARDSTATUS_MAGIC = 0xF5A5;
 constexpr uint8_t NODE_VERSION = 0;
@@ -20,12 +21,21 @@ constexpr uint8_t NODE_VERSION = 0;
 struct RxBody {
   uint8_t card_id = 0;
   uint64_t mono_us = 0;      // sender's monotonic clock, microseconds
-  uint8_t rssi[2] = {0, 0};  // per-chain raw, dBm = value - 110 (both chains valid on 8822E)
+  // per-chain raw, dBm = value - 110 (both chains valid on 8822E) — only
+  // meaningful when phy_valid is true; non-first A-MPDU subframes carry no
+  // PHY status and this reads 0/garbage (see phy_valid below).
+  uint8_t rssi[2] = {0, 0};
   int8_t snr[2] = {0, 0};
   // Per-chain RX EVM, raw half-dB from devourer (negative = clean, dB =
   // raw / 2). 0 = not sampled (no phy status on this frame, e.g. non-first
   // A-MPDU subframes) — consumers must skip zeros, never average them.
   int8_t evm[2] = {0, 0};
+  // PHY status present on this frame's RX descriptor (devourer
+  // rx_pkt_attrib.physt). False for non-first A-MPDU subframes, whose
+  // rssi/snr/evm read 0/garbage — consumers must not fold RF stats from
+  // frames with phy_valid == false. Default true keeps frame-file replay
+  // and old captures meaningful.
+  bool phy_valid = true;
   bool crc_ok = true;        // 802.11 FCS; corrupt frames still carry bodies
   uint16_t mac_seq = 0;      // 12-bit hw seq from the dot11 header
   std::vector<uint8_t> body; // frame body, dot11 header stripped

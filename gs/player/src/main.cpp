@@ -1615,6 +1615,15 @@ int main(int argc, char** argv) {
       if (gs_ps.lat_valid) {
         gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
         for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
+        // Median row: same window, same anchor gate, same staleness
+        // reasoning as the p99 pair above -- p50_frame_ likewise survives
+        // flush_all(), so it is gated on the AND, not on bd50.valid alone.
+        const auto bd50 = lat.p50_frame();
+        if (bd50.valid) {
+          gs_ps.lat_p50_e2e_ms = static_cast<int>(bd50.ms[7]);
+          for (int i = 0; i < 7; ++i)
+            gs_ps.lat_p50_ms[i] = static_cast<int>(bd50.ms[i]);
+        }
       }
       if (L.n > 0) {
         char lat_buf[256];

@@ -68,6 +68,11 @@ bool sa_canonical(const uint8_t* dot11, size_t len) {
   return len >= 16 && std::memcmp(dot11 + 10, kSa, 6) == 0;
 }
 
+size_t dot11_body_offset(const uint8_t* dot11, size_t len) {
+  const size_t off = (len >= 1 && dot11[0] == 0x88) ? 26 : 24;
+  return len >= off + 1 ? off : 0;
+}
+
 // --- device management (mirrors drone/src/main.cpp bring-up) ----------------
 
 RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out) : cfg_(cfg), out_(out) {}
@@ -156,7 +161,8 @@ bool RadioFrontend::open_and_start() {
 
 void RadioFrontend::on_packet(const Packet& pkt) {
   rx_frames_.fetch_add(1, std::memory_order_relaxed);
-  if (pkt.Data.size() < kDot11 + 1) return;
+  const size_t body_off = dot11_body_offset(pkt.Data.data(), pkt.Data.size());
+  if (body_off == 0) return;
   // Foreign traffic never reaches the queue: it polluted per-card EMAs and
   // the seq-loss walk (spec revision 2). CRC-failed frames pass — a corrupt
   // SA proves nothing, and they never fed EMAs/seq anyway.
@@ -173,6 +179,7 @@ void RadioFrontend::on_packet(const Packet& pkt) {
   m.snr[1] = pkt.RxAtrib.snr[1];
   m.evm[0] = pkt.RxAtrib.evm[0];
   m.evm[1] = pkt.RxAtrib.evm[1];
+  m.phy_valid = pkt.RxAtrib.physt;
   m.crc_ok = !pkt.RxAtrib.crc_err;
   // RX rate code -> HT MCS index. devourer's RxAtrib.data_rate carries TWO
   // encodings depending on chip family, and both HT-1SS ranges are mapped
@@ -192,8 +199,62 @@ void RadioFrontend::on_packet(const Packet& pkt) {
                                        : 255;
   m.mac_seq = static_cast<uint16_t>(
       (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);
-  m.body.assign(pkt.Data.begin() + kDot11, pkt.Data.end());
+  m.body.assign(pkt.Data.begin() + static_cast<long>(body_off), pkt.Data.end());
+  const uint64_t mono = m.mono_us;
+  const uint32_t tsfl = pkt.RxAtrib.tsfl;
   out_.push(std::move(m));
+
+  // rx_pace gauge (see header). uint32 subtraction handles the ~71 min TSF
+  // wrap; the first body after start (last==0) only seeds.
+  if (rp_last_mono_ != 0) {
+    const uint64_t hd = mono - rp_last_mono_;
+    const uint32_t td = tsfl - rp_last_tsfl_;
+    if (hd < 5000 && td < 5000) {
+      static constexpr uint32_t kEdge[kPaceBuckets - 1] = {
+          100, 150, 200, 250, 300, 400, 600, 1200};
+      ++rp_n_;
+      rp_host_sum_ += hd;
+      rp_tsfl_sum_ += td;
+      int hb = kPaceBuckets - 1, tb = kPaceBuckets - 1;
+      for (int i = 0; i < kPaceBuckets - 1; ++i) {
+        if (hb == kPaceBuckets - 1 && hd <= kEdge[i]) hb = i;
+        if (tb == kPaceBuckets - 1 && td <= kEdge[i]) tb = i;
+      }
+      ++rp_host_hist_[hb];
+      ++rp_tsfl_hist_[tb];
+    } else {
+      ++rp_gaps_;
+    }
+  }
+  rp_last_mono_ = mono;
+  rp_last_tsfl_ = tsfl;
+  if (rp_last_report_us_ == 0) rp_last_report_us_ = mono;
+  if (mono - rp_last_report_us_ >= 5000000) {
+    rp_last_report_us_ = mono;
+    if (rp_n_ > 0) {
+      char th[128], hh[128];
+      int tp = 0, hp = 0;
+      for (int i = 0; i < kPaceBuckets; ++i) {
+        tp += std::snprintf(th + tp, sizeof(th) - static_cast<size_t>(tp),
+                            "%s%llu", i ? "/" : "",
+                            (unsigned long long)rp_tsfl_hist_[i]);
+        hp += std::snprintf(hh + hp, sizeof(hh) - static_cast<size_t>(hp),
+                            "%s%llu", i ? "/" : "",
+                            (unsigned long long)rp_host_hist_[i]);
+      }
+      std::fprintf(stderr,
+                   "maburgs rx_pace card %d: n=%llu gaps=%llu "
+                   "tsfl_d mean=%llu hist<=100/150/200/250/300/400/600/1200/"
+                   "inf=%s host_d mean=%llu hist=%s\n",
+                   static_cast<int>(cfg_.card_id), (unsigned long long)rp_n_,
+                   (unsigned long long)rp_gaps_,
+                   (unsigned long long)(rp_tsfl_sum_ / rp_n_), th,
+                   (unsigned long long)(rp_host_sum_ / rp_n_), hh);
+    }
+    rp_n_ = rp_gaps_ = rp_tsfl_sum_ = rp_host_sum_ = 0;
+    for (int i = 0; i < kPaceBuckets; ++i)
+      rp_tsfl_hist_[i] = rp_host_hist_[i] = 0;
+  }
 }
 
 bool RadioFrontend::send_control(const std::vector<uint8_t>& body) {

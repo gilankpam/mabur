@@ -38,4 +38,36 @@ TEST(sa_canonical_filters_by_source_address) {
   const size_t rt = frame.size() - 24 - sizeof(body);  // radiotap length
   CHECK(maburgs::sa_canonical(frame.data() + rt, frame.size() - rt));
 }
+
+TEST(dot11_body_offset_keys_on_frame_control) {
+  uint8_t probe[25] = {0};  // 24-byte header + 1 body byte
+  probe[0] = 0x40;
+  CHECK(maburgs::dot11_body_offset(probe, sizeof(probe)) == 24);
+
+  uint8_t qos[27] = {0};    // 26-byte header + 1 body byte
+  qos[0] = 0x88;
+  CHECK(maburgs::dot11_body_offset(qos, sizeof(qos)) == 26);
+
+  // Too short to hold header + 1 body byte -> 0 (reject).
+  CHECK(maburgs::dot11_body_offset(probe, 24) == 0);  // probe hdr, no body
+  CHECK(maburgs::dot11_body_offset(qos, 26) == 0);    // qos hdr, no body
+  CHECK(maburgs::dot11_body_offset(qos, 10) == 0);    // truncated garbage
+
+  // Unknown FC types parse at the legacy 24-byte offset (today's behavior
+  // for anything the SA filter passes).
+  uint8_t other[25] = {0};
+  other[0] = 0x08;  // plain Data, non-QoS
+  CHECK(maburgs::dot11_body_offset(other, sizeof(other)) == 24);
+}
+
+TEST(dot11_body_offset_seq_position_shared_by_both_layouts) {
+  // seq_ctl lives at bytes 22-23 in BOTH layouts — the parser reads it
+  // unconditionally, so pin that assumption here.
+  uint8_t qos[28] = {0};
+  qos[0] = 0x88;
+  qos[22] = 0x30; qos[23] = 0x12;  // seq_ctl = 0x1230 -> seq 0x123
+  const uint16_t seq_ctl = static_cast<uint16_t>(qos[22] | (qos[23] << 8));
+  CHECK((seq_ctl >> 4) == 0x123);
+  CHECK(maburgs::dot11_body_offset(qos, sizeof(qos)) == 26);
+}
 MTEST_MAIN

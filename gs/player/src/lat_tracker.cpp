@@ -186,21 +186,26 @@ LatTracker::Line LatTracker::flush_line() {
     }
     L.chk_ms = chk_n_ > 0 ? (chk_sum_us_ / chk_n_) / 1000.0 : 0.0;
 
-    // p99-by-e2e frame: rank on e2e (seg 7), then report THAT frame's own
-    // full breakdown -- never a mix of independently-ranked per-segment
-    // percentiles, which would not sum to anything meaningful.
-    std::vector<uint32_t> e2es(completed_.size());
-    for (std::size_t i = 0; i < completed_.size(); ++i) e2es[i] = completed_[i][7];
-    const uint32_t target = percentile_(e2es, 99);
-    for (const auto& c : completed_) {
-      if (c[7] == target) {
-        p99_frame_.valid = true;
-        for (int i = 0; i < 8; ++i)
-          p99_frame_.ms[i] =
-              static_cast<uint32_t>((c[static_cast<std::size_t>(i)] + 500) / 1000);
-        break;
+    // Rank on e2e (seg 7), then report THAT frame's own full breakdown --
+    // never a mix of independently-ranked per-segment percentiles, which
+    // would not sum to anything meaningful. Done identically for both ranks
+    // so the OSD's two rows stay comparable segment by segment.
+    auto rank_frame = [&](int pct, Breakdown& out) {
+      std::vector<uint32_t> e2es(completed_.size());
+      for (std::size_t i = 0; i < completed_.size(); ++i) e2es[i] = completed_[i][7];
+      const uint32_t target = percentile_(e2es, pct);
+      for (const auto& c : completed_) {
+        if (c[7] == target) {
+          out.valid = true;
+          for (int i = 0; i < 8; ++i)
+            out.ms[i] =
+                static_cast<uint32_t>((c[static_cast<std::size_t>(i)] + 500) / 1000);
+          return;
+        }
       }
-    }
+    };
+    rank_frame(99, p99_frame_);
+    rank_frame(50, p50_frame_);
   }
 
   completed_.clear();
@@ -211,5 +216,6 @@ LatTracker::Line LatTracker::flush_line() {
 }
 
 LatTracker::Breakdown LatTracker::p99_frame() const { return p99_frame_; }
+LatTracker::Breakdown LatTracker::p50_frame() const { return p50_frame_; }
 
 }  // namespace maburplay

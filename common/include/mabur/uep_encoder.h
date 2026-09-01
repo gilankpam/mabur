@@ -116,6 +116,11 @@ class UepEncoder {
 
   uint64_t dropped(int stream_id) const;
 
+  // Per-layer async-FEC gauge passthrough (fec-compute handover 2026-09-01);
+  // see SwEncoder::SwFecGauge for field semantics + the window-max reset.
+  // Same sid clamping as add_frame; hot-thread-only like the rest.
+  SwEncoder::SwFecGauge take_fec_gauge(int stream_id);
+
  private:
   struct Layer {
     SwConfig fec;

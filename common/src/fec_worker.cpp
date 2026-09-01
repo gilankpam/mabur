@@ -47,6 +47,7 @@ bool FecWorker::try_enqueue(const FecRepairJob& job) {
 
 void FecWorker::loop() {
 #if defined(__linux__)
+  pthread_setname_np(pthread_self(), "mbr-fecw");
   if (cpu_ >= 0) {
     cpu_set_t set;
     CPU_ZERO(&set);

@@ -42,7 +42,7 @@ std::vector<uint8_t> pack_rx_body(const RxBody& m) {
   v.push_back(m.rssi[1]);
   v.push_back(static_cast<uint8_t>(m.snr[0]));
   v.push_back(static_cast<uint8_t>(m.snr[1]));
-  v.push_back(m.crc_ok ? 1 : 0);
+  v.push_back(static_cast<uint8_t>((m.crc_ok ? 1 : 0) | (m.phy_valid ? 2 : 0)));
   put_u16(v, m.mac_seq);
   put_u16(v, static_cast<uint16_t>(m.body.size()));
   v.insert(v.end(), m.body.begin(), m.body.end());
@@ -64,6 +64,7 @@ std::optional<RxBody> parse_rx_body(const uint8_t* buf, size_t len) {
   m.snr[0] = static_cast<int8_t>(buf[14]);
   m.snr[1] = static_cast<int8_t>(buf[15]);
   m.crc_ok = (buf[16] & 1) != 0;
+  m.phy_valid = (buf[16] & 2) != 0;
   m.mac_seq = rd_u16(buf + 17);
   m.body.assign(buf + kRxBodyHdr, buf + kRxBodyHdr + body_len);
   return m;

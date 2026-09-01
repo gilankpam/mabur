@@ -64,6 +64,50 @@ TEST(async_sustained_load_no_stale_rows) {
   set_equality(164, 128, 2.0, 6000, 0, 256);
 }
 
+// Gauge contract (fec-compute handover 2026-09-01): in async mode every
+// repair passes through execute_repair_job (worker or inline fallback), so
+// after a joining flush the cumulative job count equals repairs_out. The
+// tiny queue forces inline fallbacks, which must be counted too.
+TEST(async_gauge_jobs_equals_repairs_out) {
+  SwConfig cfg{164, 16, 1.0};
+  FecWorker worker(-1, 1);
+  SwEncoder enc(cfg, 42, &worker);
+  std::mt19937 rng(7);
+  for (int i = 0; i < 800; ++i) {
+    std::vector<uint8_t> p(1 + rng() % static_cast<size_t>(cfg.max_packet_size()));
+    for (auto& v : p) v = static_cast<uint8_t>(rng());
+    enc.add_packet(p.data(), p.size());
+  }
+  enc.flush();  // joins: nothing outstanding when we read the gauge
+  const auto g = enc.take_fec_gauge();
+  CHECK(enc.repairs_out() > 0);
+  CHECK(g.jobs == enc.repairs_out());
+  CHECK(g.inline_full <= g.jobs);
+  // Window maxima reset on take; cumulative fields don't.
+  const auto g2 = enc.take_fec_gauge();
+  CHECK(g2.jobs == g.jobs);
+  CHECK(g2.join_wait_max_us == 0);
+  CHECK(g2.enq_depth_max == 0);
+}
+
+TEST(sync_gauge_stays_zero) {
+  SwConfig cfg{64, 8, 1.0};
+  SwEncoder enc(cfg, 5);
+  std::mt19937 rng(11);
+  for (int i = 0; i < 200; ++i) {
+    std::vector<uint8_t> p(40);
+    for (auto& v : p) v = static_cast<uint8_t>(rng());
+    enc.add_packet(p.data(), p.size());
+  }
+  enc.flush();
+  CHECK(enc.repairs_out() > 0);
+  const auto g = enc.take_fec_gauge();
+  CHECK(g.jobs == 0);
+  CHECK(g.build_us == 0);
+  CHECK(g.inline_full == 0);
+  CHECK(g.join_waits == 0);
+}
+
 TEST(sync_mode_unaffected_by_worker_param_default) {
   // worker == nullptr must be today's exact behavior: repairs inline, in
   // order — ORDER-sensitive equality between the 2-arg and 3-arg forms.

@@ -4,10 +4,15 @@
 
 namespace maburgs {
 namespace {
-constexpr size_t kDot11Len = 24;
 uint16_t rd_u16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
+// Mirrors gs/src/radio_frontend.cpp's dot11_body_offset(): QoS-Data (FC
+// 0x88, the post-A-MPDU drone wire) carries a 26-byte header; everything
+// else (the legacy probe-req 0x40 wire) parses at 24. Duplicated rather
+// than shared to avoid a mabur_gs_core <-> mabur_gs_radio link cycle
+// (frame_file_source.cpp lives in gs_core, which gs_radio depends on).
+size_t dot11_len(const uint8_t* dot11) { return dot11[0] == 0x88 ? 26 : 24; }
 }  // namespace
 
 FrameFileSource::FrameFileSource(const std::string& path, Options opt)
@@ -31,10 +36,12 @@ bool FrameFileSource::load(const std::string& path) {
     ++frames_read_;
     if (len < 4) { ++malformed_; continue; }
     const size_t rl = rd_u16(frame.data() + 2);   // radiotap it_len
-    if (rl + kDot11Len > len) { ++malformed_; continue; }
+    if (rl + 1 > len) { ++malformed_; continue; }
+    const size_t dot11_hdr = dot11_len(frame.data() + rl);
+    if (rl + dot11_hdr > len) { ++malformed_; continue; }
     Frame out;
     out.mac_seq = static_cast<uint16_t>(rd_u16(frame.data() + rl + 22) >> 4);
-    out.body.assign(frame.begin() + static_cast<long>(rl + kDot11Len), frame.end());
+    out.body.assign(frame.begin() + static_cast<long>(rl + dot11_hdr), frame.end());
     frames_.push_back(std::move(out));
   }
   fclose(f);

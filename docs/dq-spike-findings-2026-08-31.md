@@ -304,7 +304,11 @@ only):
   `tx_threads` setting including 1 — devourer's send path is async
   libusb submission all the way down
   (`third_party/devourer/src/UsbTransport.cpp`), so maburd never blocks
-  and never paces. The 0.385 ms/body is set below libusb: per-MPDU
+  and never paces. **⚠ The mechanism in that sentence is wrong — see
+  §14: the 20 µs is UsbTxPool enqueue (tx_threads>1) or an
+  unblocked *synchronous* bulk (tx_threads=1); jaguar3 never uses the
+  async libusb path. The conclusion (maburd's writer thread doesn't
+  pace) stands.** The 0.385 ms/body is set below libusb: per-MPDU
   ~0.16 ms of chip/medium-access overhead (descriptor processing, DIFS +
   backoff — injection still does CSMA) on top of ~0.22 ms mcs5 airtime.
   Splitting those two needs devourer/PHY instrumentation, not maburd's.
@@ -445,6 +449,13 @@ Second-order findings that shape the integration:
 - GS parser flag day is small: `sa_canonical` (addr2) and seq_ctl keep
   their byte offsets in a QoS-Data header; only the body start moves
   24 → 26 (`radio_frontend.cpp` `kDot11`), keyed on FC type.
+- **Only the video path (RadioTx) switches to QoS-Data.** The drone's
+  control-plane TX (DISC_ACK, telemetry, MSP — main.cpp's local
+  `build_dot11_header`) intentionally stays 0x40 mgmt-queue singles:
+  DISC_ACK teaches caps and must never wait in an aggregate fill timer
+  (its loss mode mimics the old stale-caps deadlock), and the GS keys
+  header parsing on FC type, so both layouts coexist. Decided at the
+  ampdu branch's final review, 2026-09-01.
 
 **Projection for `fec`** (28 bodies/AU at mcs5): today ≈ 27 × (213 µs
 air + 151 µs dead) ≈ 9.8 ms of serialization; aggregated ≈ 27 × 216 µs
@@ -464,7 +475,89 @@ against the burst-tail, and the end-to-end gates (fecdump drain slope,
 ausniff, aucadence, RCF close_ms). Spike rig + analyzer:
 `tools/bench/ampdu_e_spike.sh`, `tools/bench/ampdu_e_analyze.py`.
 
-## 12. Open questions
+## 12. A-MPDU deployed — and the premise refuted on maburd's own feed
+## (2026-09-01, bench)
+
+The §11 spike led to the full integration (branch `ampdu`, spec
+2026-09-01-ampdu-design.md): QoS-Data wire on the video path, FC-keyed GS
+parser (order-free deploy — a mixed pair ran 59.9 fps/0 gaps live),
+`SetAmpduMode` at bring-up behind `ampdu.max_num` (default 6). Deployed
+GS-first then drone, rollbacks `*.pre-ampdu` both ends, drone rootfs
+pruned to one rollback. Three hardware findings, in discovery order:
+
+**1. A-MPDU subframes carry no PHY status → RF telemetry poisoned
+(fixed).** ~94% of aggregated frames have no PHY report; devourer zeroes
+their rssi/snr and the GS folded those zeros (plus rare garbage, rssi 241)
+into every EMA. On-screen effect: RSSI/SNR "jumping", SNR 32 → 15
+artifact, and pollution-driven mcs4 demotes. Two-part fix, both reviewed:
+`RxBody.phy_valid` gating all `fold_rf` sites (mabur, commit bca7a42 —
+EVM already had the skip-unsampled convention; rssi/snr did not), and
+devourer `jgr3-physt` branch (f18bf1b, local): jaguar3 never set
+`RxAtrib.physt` on ANY frame — `parse_phy_sts_jgr3` now returns whether
+it parsed a page it understands, and devourer's own internal rx EMAs gate
+on it too. Post-fix: s0 RSSI −29…−47 dBm / SNR 28–34 dB (sane), ladder
+parked at mcs5 350/350 windows. ⚠ GS builds now require devourer
+`jgr3-physt` until it merges to devourer master.
+
+**2. Aggregation does NOT move maburd's drain pace — the §9 "DIFS+
+backoff" attribution was wrong.** Depth sweep at 14 Mb/s saturation,
+90/60 s fecdump each:
+
+| config | fec p50 | p90 | p99 |
+|---|---|---|---|
+| pre-ampdu (0x40 mgmt singles) | 16.41 | 24.05 | 34.25 |
+| agg OFF (QoS mgmt singles) | 16.16 | 24.36 | 32.82 |
+| agg 6 / 0x20 (default) | 16.36 | 24.71 | 34.12 |
+| agg 31 / 0x70 (max depth) | 15.47 | 23.40 | 34.76 |
+
+Flat. Aggregates demonstrably form (finding 1's subframes are the proof),
+yet fec and the saturated throughput ceiling (~20 Mb/s effective) don't
+move. Together with §10 (EDCA null) and the rung A/B ("dq tracks byte
+rate, not airtime"), the ~151 µs per-body tax is **host/USB-side**
+(the ~0.4 ms bulk-OUT acceptance handshake ÷ 3-frame URBs ≈ 133 µs/body
+matches), not medium access — the §11 spike's +32% came from txdemo's
+flood regime, which doesn't reproduce maburd's feed. A-MPDU on air is
+harmless here (all gates clean) but buys no fec latency until the USB
+feed itself is reworked.
+
+**3. The operator's high on-screen Lat = saturation queueing, and it
+predates A-MPDU.** With the encoder at its 14 Mb/s cap × 1.5 FEC overhead
+≈ 19.5–21 Mb/s offered against the ~20 Mb/s ceiling, the `air` segment
+holds a ~100 ms standing queue (measured p50 98.7–117 ms, pre AND post).
+Channel change 161 → 136 (operator, same symptom) had already ruled out
+interference. Capping `bitrate_max_kbps` at 11000: **air p50 98.7 →
+1.1 ms**, fec p50 12.7 ms — ~95 ms off glass latency. The bench keeps the
+11 M cap; the real fix is the airtime-budget policy (`airtime_budget`
+0.60 is not being honored at the cap — the known open-loop overshoot).
+
+**Gate record (agg 6 default, 14 M cap era):** ausniff 59.8 fps/0 gaps/0
+incomplete; fec A/B flat (gate target ≤ 8 ms unmet — premise refuted, no
+regression); aucadence +0.37 ms (baseline +2.5/+3.1 — improved); close_ms
+5 → 11 ms constant (both far under the 50 ms bar); seq walk clean
+(fid_gaps 0 throughout — host seqs survive aggregation live, closing
+§11's renumbering caveat).
+
+**Addendum (same day): even the physt-passing aggregate reports are
+untrustworthy.** On the static bench the operator still saw RSSI/SNR
+jumping; spike-log analysis of the ~6% physt-passing aggregated frames
+shows contaminated tails (rssiA 17…73 raw vs 52–54 sd 0.3 on singles,
+rssiB up to 225, snr excursions to 0) — the page-number check cannot
+reject garbled reports that alias page 0/1. With the fec benefit already
+measured null, **aggregation is now OFF by default** (`AmpduCfg.max_num`
+6 → 0 in config.h): every frame carries a pristine PHY report again
+(bench: s0 RSSI −52.0 sd 0.25 dB, SNR 32.4 sd 0.6 — flat). The wire,
+config block, `SetAmpduMode` path and phy_valid filtering all stay —
+re-enable via config for USB-feed-rework experiments only.
+
+**End state:** both ends on the `ampdu` builds, aggregation OFF
+(config `ampdu.max_num 0`, now also the compiled default), 11 M bitrate
+cap, ch136, air p50 1.1 ms. Follow-ups: USB feed rework is the real fec lever now
+(overlapped/async bulk-OUT, bigger URB batches — the HalMAC 3-desc cap
+is per *transfer*, so this means multiple transfers in flight, which
+tx_threads already does… measure why acceptance serializes); devourer
+`jgr3-physt` upstreaming; airtime-budget honoring at the cap.
+
+## 13. Open questions
 
 1. ~~What is the true split of the 7 ms `dq`?~~ Answered in §7.
 2. ~~Is 1341 bodies/s a real ceiling?~~ Refuted in §8 — offered load.
@@ -477,6 +570,514 @@ ausniff, aucadence, RCF close_ms). Spike rig + analyzer:
    sign is also possible (`reg` mean fell 2.6 ms alongside the upstream
    saving). Segment savings and `e2e` savings remain non-1:1 in both
    directions.
+
+## 14. TX submission model pinned — the handover's sync/async
+## contradiction resolved (2026-09-01, code read)
+
+`docs/handover-usb-feed-2026-09-01.md` probe 1. The two "contradictory"
+statements described different layers, and §8's mechanism was
+misattributed:
+
+**The actual path** (tx_threads > 1, the deployed shape):
+
+1. TX writer thread: `tx.send_bodies` → `DevourerSink::send_many` →
+   `UsbTxPool::submit()` per frame — a **memcpy + deque push**
+   (`drone/src/usb_tx_pool.h`). No libusb anywhere. This is the ~20 µs
+   the `tx_send` gauge measured; §8's "async libusb all the way down"
+   was wrong about what sat under the gauge.
+2. UsbTxPool worker (×tx_threads): pops ≤3 frames →
+   `RtlJaguar3Device::send_packets` → packs one ≤3-descriptor URB
+   (`TxAggPlan`) → `bulk_send_sync_ep` → `UsbTransport::tx_sync` →
+   **`libusb_bulk_transfer`, synchronous blocking bulk-OUT**
+   (50 ms timeout; single-frame path 20 ms). aggregation.md's "each
+   sender thread blocks on its own transfer" is correct for J2/J3.
+3. The async path (`RtlAdapter::send_packet` → `tx_async`,
+   UsbTransport.cpp) **exists but jaguar3 never calls it** — its
+   `send_packet` overrides with the sync path because nothing pumps
+   libusb events on the J3 TX loop (comment at
+   `RtlJaguar3Device.cpp:1703`); the async machinery is jaguar1's.
+
+**The blocking is flow control, not a fixed handshake.** A bulk-OUT URB
+completes in tens of µs when the chip FIFO has room — which is why §8
+measured ~20 µs even at tx_threads=1, where the pool is bypassed
+(`main.cpp:780` only wires the pool for tx_threads>1) and the writer
+thread itself sat in `libusb_bulk_transfer`. The link was unsaturated
+(1341 bodies/s offered), so the FIFO always had room. The "~0.4 ms
+acceptance handshake" (linkbench 2026-07-14) is the *saturated* case:
+the chip NAKs until its FIFO drains, so URB completion pace becomes the
+FIFO drain pace. aggregation.md line 41 says exactly this
+("flow-controlled by the chip, ~ms scale between URB completions").
+
+**What this sharpens probe 2 into.** The open question is not "does
+acceptance cost 0.4 ms" — unsaturated it costs ~nothing. It is: **under
+saturation, do N workers' blocked URBs complete at N× the rate of one
+(pipelined FIFO fill: kernel queues all N, chip drains continuously) or
+at ~1× (serialized acceptance)?** tx_threads 1→8 flat (§8) was measured
+*unsaturated*, so it never tested this. Two corollaries worth
+falsifying while instrumented:
+
+- txdemo's 2346 singles/s = 2346 URBs/s accepted — far above maburd's
+  ~609 URBs/s (1826 bodies/s ÷ 3) — so raw URB acceptance is not the
+  ceiling; the difference is in *what the chip does with* maburd's
+  3-desc aggregated URBs vs txdemo's singles, or in FIFO drain pace at
+  maburd's frame sizes (1396 B vs txdemo's same 1396 B… the shapes
+  differ in URB packing, QSEL and cadence, not MPDU size).
+- If the saturated drain pace is the chip FIFO's air-drain being
+  reflected back through NAKs, then the ~151 µs/body intercept should
+  have moved with A-MPDU (it compresses air) — it didn't (§12). So
+  either the FIFO drain is *not* air-limited (internal DMA/parse pace),
+  or the intercept lives elsewhere host-side (URB turnaround gaps
+  between a worker's completion and its next submit).
+
+The per-URB gauge (probe 2) measures all of this drone-side: per-call
+wall-time distribution in the pool workers, worker overlap at entry,
+and utilization vs wall clock.
+
+## 15. The usb_urb gauge: URB cost measured, no USB wall found — and
+## the fec pace-setter is probably the FEC/pack CPU, not the radio
+## (2026-09-01, bench, drone-side only — GS ssh unreachable)
+
+Probe 2 of the handover: a per-URB gauge in `UsbTxPool` (commit
+bb996fd + a per-batch-size split) around each worker's `send_packets`
+call — wall-time distribution, overlap-at-entry, mean-inflight,
+sz1/2/3 split. Three regimes measured (`bitrate_max_kbps` 11000 /
+14000 / 18000, restarts between; config restored byte-identical to
+11 M after, bench healthy at cut). Scratchpad: `urb_11M_steady.txt`,
+`urb_14M_sat.txt`, `urb_18M_wall.txt`.
+
+**The URB cost model (this chip + this armv7 host, ch136):**
+
+| regime | bodies/s | bodies/call | sz1 µs | sz2 µs | sz3 µs | mean_inflight |
+|---|---|---|---|---|---|---|
+| 11 M | ~1580 | 1.02 | 212–233 | ~330 | ~480 | 0.33 |
+| 14 M | ~2010 | 1.01 | 230–248 | ~350 | ~500 | 0.47 |
+| 18 M | ~2460–2610 | 1.03 | 242–263 | ~390 | ~550 | 0.57–0.69 |
+
+- **A 1-body URB costs ~220 µs, and every extra body costs ~+110–130 µs**
+  — neither a fixed handshake (sz3 would be ~220) nor per-byte (would be
+  ~660). Wire time at 480 Mb/s is ~23 µs/body, so this is chip-side
+  descriptor/DMA processing. 3-body URBs run ~160 µs/body — a ~27%
+  per-body amortization that today's feed never gets, because…
+- **~99% of URBs carry ONE body at every offered rate.** The FEC seals
+  bodies slower than the pool drains them, so each body ships alone the
+  moment it exists. The handover's "0.4 ms ÷ 3-frame URBs ≈ 133 µs"
+  numerology assumed batching that does not happen; the pool's
+  parallelism is likewise idle (mean_inflight ≤ 0.7, overlap 0 dominant).
+- **No USB wall up to 2600 bodies/s ≈ 29 Mb/s effective.** URB times
+  crept 222 → 255 µs, no queue anywhere (TxQueue wait ~50 µs, txq 0).
+  The "~1826 bodies/s ceiling" (§12) is 14 M × 1.5 overhead ÷ 1396 B ≈
+  1880/s — **offered load again**, the same class of error as the
+  refuted 1341 (§8). ⚠ Caveat: the ladder was NOT pinned (GS ssh down,
+  radio link up); at 14–18 M it had clearly promoted above mcs5, so
+  this does not reproduce §12's mcs5-parked 100 ms air queue — that
+  queue was real and is consistent with mcs5 *air* drain < 1880/s
+  offered. Same offered load at a higher rung today: no queue.
+
+**The reframe.** `dq_split cpu_us` (venc read → last body pushed =
+fragmentation + GF256 + SBI pack, `main.cpp` hot thread) ran ~9–10 ms
+per AU at 11 M and ~14 ms at 18 M. Per body that is ~9000 µs / ~25
+bodies ≈ **360 µs/body — numerically §8's "0.385 ms/body burst-pace
+invariant"**, and its per-KB form (~0.37 ms/KB) is §8's fec slope
+(0.41 ms/KB). The pace that has been attributed to air (§9) and then to
+USB (§12) matches the drone's own FEC/pack CPU trickle:
+
+- §8's invariance across 8 vs 14 Mb/s offered: GF256 per-byte pace is
+  bitrate-independent. ✓
+- §9's mcs5 point (213 air + 151 dead = 364 µs) ≈ seal pace (360 µs) —
+  a coincidence at exactly the rung where the sweep had most weight; at
+  mcs1-3 air genuinely dominates (1.7 ms/body ≫ 360 µs), which is what
+  gave the fit its phy_rate slope. The two models were indistinguishable
+  by that experiment.
+- §12's A-MPDU null: compressing air per-body to ~216 µs moved nothing
+  — *predicted* by the production-pace model, inexplicable in the
+  air-pace model. ✓
+- Today: URB drain (~220–260 µs/body serialized) < seal pace (~360
+  µs/body) at mcs5+, so USB is not the binding stage either. ✓
+
+**Consequence, if this holds:** the fec lever is neither the radio nor
+the USB feed — it is **making bodies exist sooner**: multicore/NEON
+GF256 (the shelved "multicore async-repair" spec from the
+sliding-window-FEC work), cheaper SBI pack, or overlapping seal with
+encode. The USB-feed rework premise of this handover would be the
+investigation's third mis-attribution, killed by the same instrument
+pattern that killed the first two.
+
+**What still needs the GS** (next session, bench with ssh): (a) per-AU
+correlation of GS `fecdump` fec against drone `dq_split cpu_us` — the
+direct test; (b) pin mcs5 (`static_mcs`) and repeat 14 M to reproduce
+§12's air queue and re-measure the gauge at a *real* wall (does
+blocked-URB acceptance pipeline?); (c) if (a) confirms, retire the
+USB probes 3–4 of the handover and open a FEC-compute work item
+instead.
+
+Bench state at cut: `ampdu` builds both ends + drone `maburd` =
+urbgauge build (bb996fd + sz-split, md5 b529c7e8…), rollback
+`maburd.pre-urbgauge` on device (`maburd.pre-ampdu` also still present —
+rootfs at 3 binaries, prune at next deploy), config byte-identical to
+the §12 end state (11 M cap, ch136, agg off), link healthy (state 2,
+~1580 bodies/s, RCF flowing).
+
+## 16. GS back: the 2×2 (bunching × aggregation) is null, §15's CPU
+## reframe refuted, and ~360 µs/body survives everything — suspect the
+## GS RX path next (2026-09-01, session 2 continued)
+
+GS ssh returned (it had been up all along — only the host's route was
+down; `maburgs` was already the ampdu-HEAD build). Housekeeping done
+first: the pending fixed `maburplay` deployed (rollback
+`maburplay.pre-healslip`; the vsync open item is closed), the GS's
+on-device `ausniff.py` refreshed (its copy predated ring v2), opening
+and closing gates both 60.0 fps / 0 gaps / 0 incomplete.
+
+**The hog experiment (test a, and what it actually showed).** Two
+busy-loop hogs on the drone's two cores for 60–90 s — intended to slow
+the FEC compute and watch fec follow. Three instruments disagreed
+instructively:
+
+- `dq_split cpu_us` **halved** (9.3 → 5.0 ms/AU). Under contention the
+  writer/pool batched (3-body pops, 57% 3-body URBs) so the per-body
+  wakeup chain (hot → txq → writer → pool → libusb) ran 3× less often —
+  proving **~half of baseline `cpu_us` is per-body chain interleave/
+  preemption on the 2-core CPU, not GF256 compute**. §15's "fec ≈ CPU
+  seal pace" numerology was built on that contaminated gauge:
+  **refuted as stated**.
+- Scratchpad `fecdump.py` per-AU fec "improved" 10.2 → 6.5 ms p50 —
+  an **anchor artifact**: batching delays t_first, compressing
+  t_first→t_complete without delivering anything earlier. ⚠ Do not use
+  fecdump for A/Bs that change feed granularity.
+- The sideport 7-segment breakdown (statstap, 149 windows each): **e2e
+  unchanged** — SUM p50 17.5 → 17.7 ms (fec 9.3→8.7, dq 0→1.0,
+  air 1.1→0.8), fps 59.4 both, mcs 5 parked both.
+
+**The 2×2 completion.** §12 tested aggregation with a trickle feed
+(bodies ~360 µs apart — aggregates can't form deep); the hog run tested
+bunching with aggregation off (bunched URBs still air as singles). The
+missing cell — bunching + `ampdu{max_num:31, max_time:0}` (0x70 fill)
+— ran today:
+
+| cell | fec p50/p90 ms | SUM p50 | mcs in window | jitter |
+|---|---|---|---|---|
+| A base (11 M parked) | 9.3 / 14.8 | 17.5 | 5 | 5.7 |
+| B hogs | 8.7 / 13.9 | 17.7 | 5 | 5.9 |
+| C agg31 trickle | 10.7 / 17.0 | 19.0 | 2–5 (churn!) | 7.3 |
+| D agg31 + hogs | 10.1 / 16.2 | 20.4 | 1–5 (churn!) | 9.2 |
+
+No win anywhere, and cells C/D re-confirm the §12 addendum at the
+ladder level: even with `phy_valid` gating, the physt-passing aggregate
+reports pollute the RF EMAs enough to drive real demotes — agg-on
+configs churn the ladder on a clean bench. The bunched-feed + A-MPDU
+hypothesis is dead; aggregation stays off.
+
+**The standing fact, sharpened.** The per-body pace at mcs5 is
+~360 µs/body (fec/bodies: 9.3/26 base, 8.7/24 hogs) and is now measured
+invariant against: offered load (§8), tx_threads (§8), EDCA (§10),
+A-MPDU alone (§12/C), URB batching granularity (B), drone CPU
+contention (B), and their combination (D). Every drone-side and
+air-side lever is null.
+
+**New prime suspect: the GS RX path.** The per-AU arrival stamps that
+define fec are taken *inside maburgs* — so per-body GS processing
+(devourer RX pump → radiotap parse → FEC fold → aggregation) shapes the
+measured pace directly, is rate-independent (fits §9's
+airtime + ~150 µs form), and is untouched by every intervention above —
+the one hypothesis consistent with all the nulls at once. rxdemo
+ingested 3094 fps (~323 µs spacing, §11), but that is the thin path,
+not maburgs' FEC fold. **Next probe: a per-body RX gauge inside maburgs
+(the mirror of usb_urb) or `perf` on the RK3566**, then re-run the
+mcs5-pinned 14 M wall with gauges on BOTH ends.
+
+Bench end state: config byte-identical both ends (11 M, ch136, agg 0),
+drone = urbgauge maburd, GS = ampdu maburgs + fixed maburplay, closing
+gate clean. Scratchpad: `fec_11M_base/hog.csv`, `side_base/hog/agg/
+agghog.jsonl`, `dq_11M_base/hog.txt`.
+
+## 17. rx_pace + au_tail: the fec anatomy measured end-to-end, the
+## ~360 µs metronome found on the air, and one model that fits every
+## null (2026-09-01, session 2 close)
+
+Two new GS gauges (both live in the deployed maburgs, rollback
+`maburgs.pre-rxpace`):
+
+- **rx_pace** (`radio_frontend.cpp` on_packet, per card): per-body
+  inter-arrival deltas on TWO clocks — the chip RX TSF
+  (`RxAtrib.tsfl`, µs at the antenna) and the host `mono_us` stamp.
+  Immediately showed the host clock is useless for pacing questions
+  (USB RX aggregation delivers bodies in bunches: ~65% of host deltas
+  ≤100 µs) — tsfl is the truth channel.
+- **au_tail** (`main.cpp` end_frame, via `AuLatMeta.t_last_arr_us`):
+  splits fec into **arrival span** (last body − first body) and
+  **publish tail** (finish − last body: repair/decode/assembly/ring).
+
+**Finding 1 — the ~360 µs/body invariant lives on the air, as a
+metronome.** At 11 M/mcs5 (parked or pinned, identical): tsfl deltas
+mean 352–396 µs with ~88% in a single 300–400 µs bucket and ~nothing
+below 250 µs. Bodies fly evenly spaced, never back-to-back — although
+the §11 spike proved this silicon can fly 216 µs apart.
+
+**Finding 2 — the pinned-rung A-MPDU retest (static_mcs 5 kills the
+churn confound).** Today's C/D cells and §12's depth sweep were
+churn-suspect; pinned, the picture is crisp:
+
+| cell (all mcs5-pinned) | tsfl_d shape | fec p50 |
+|---|---|---|
+| agg off, trickle | one mode 300–400 (mean 370) | 10.3 |
+| agg 31, trickle | trimodal: 43% ≤250 + boundary mode 400–600 (mean 360) | 10.3 |
+| agg 31 + bunched feed (hogs) | **75% at 200–250, mean 260** | 9.4 |
+
+Aggregation engages even on the trickle feed but only ~2-deep (pays a
+boundary gap that nets zero — §12's null reproduces clean of churn:
+feed-limited, correctly diagnosed for the wrong reason). Bunching the
+feed forms deep aggregates and **breaks the metronome (−30% air
+spacing)** — yet fec only −0.9 ms, because…
+
+**Finding 3 — the fec anatomy (au_tail).** fec ≈ arrival span + GS
+publish tail. Measured at 11 M/mcs5 trickle: **span ~8.5–8.8 ms +
+tail ~2.0–2.3 ms** (tail max 20 ms on repair-heavy AUs) ≈ fec 10.3 ✓.
+
+**The unified model — every null in §§8–16 fits:**
+
+    fec ≈ max(production spread, air spread) + GS tail (~2.2 ms)
+
+- Trickle: production ~9 ms/AU binds (half GF256+pack CPU, half
+  per-body chain overhead, §16) — air (25 × 360 µs ≈ 9 ms) matches it
+  because bodies launch as produced: the equilibrium that made every
+  single-lever experiment read "invariant".
+- Hogs alone (§16 B): production 5 ms but air stays 360 µs singles →
+  air binds at ~9 ms → flat. Agg alone: air could compress but
+  production still binds → flat. Both (D′): span compresses toward
+  air-limited 25 × 260 ≈ 6.5 + 2.2 ≈ 8.7, measured 9.4 ✓ (hog noise +
+  dq +3 ms from crude bunching ate the e2e win).
+
+**Levers, correctly ranked at last:**
+
+1. **656-symbol bodies** (25 → ~13 bodies/AU) attacks every term at
+   once: chain overhead halves, air count halves (span ~4.7 ms trickle,
+   ~3.4 ms with agg) → fec ~7–8 ms without touching the equilibrium.
+   Still gated on the all-MCS hole sweep at wall power.
+2. Compound production + aggregation (designed SBI-group batching, not
+   hogs, + agg with the RF-report problem solved): ~−1.6 ms, and the
+   two halves are useless separately — budget accordingly.
+3. GS publish tail: profile the 2.2 ms (and its 20 ms repair spikes).
+4. `enc` 7.1 ms is the other big segment and is venc-floor work, not
+   transport.
+
+Bench end state: both configs restored byte-identical (adaptive, 11 M,
+agg 0), closing gate 60.0 fps / 0 gaps, adaptive-park au_tail baseline
+recorded (span 8.5–8.8 ms, tail 2.0 ms). GS runs the rx_pace+au_tail
+maburgs (rollback `maburgs.pre-rxpace`), drone the urbgauge maburd.
+Scratchpad: `side_pin_aggoff/agg31/agg31_hog.jsonl`.
+
+## 18. 656/w16 deployed — lever #1 lands −1.0 ms fec, with a jitter
+## trade to watch (2026-09-01, session 3)
+
+Hole sweep passed (mcs6-bench-anomaly.md addendum), so the flag day
+ran: **config-only both ends** — drone `fec.symbol_size 332→656` +
+`window 32→16` (byte-equivalent window), GS `symbol_size 332→656`
+(`seq_horizon` 512 kept: same symbol horizon = 2× the wall-time guard
+at half the symbol rate). Rollbacks `/tmp/*.pre-656` both ends.
+Bench 11 M / mcs5 parked, same scene as the 332 baseline taken minutes
+before:
+
+| metric | 332/w32 | 656/w16 |
+|---|---|---|
+| fec p50 (sideport) | 10.3 | **9.3** |
+| fecdump p50/p90 | — | 8.62 / 13.40 |
+| au_tail span / tail | 8.6 / 1.95 | **8.0 / 1.6** |
+| rx_pace per-body air | 382 µs (n≈7740) | 670 µs (n≈3820) |
+| per-BYTE air pace | 0.288 µs/B | **0.250 µs/B (−13%)** |
+| aucadence offset | +0.37 (last gate) | +0.58 |
+| ausniff | 60.0 / 0 gaps | 60.0 / 0 gaps |
+| stalls / q_drop / trunc | 0/0/0 (dropped 5) | 0/0/0 (dropped 0) |
+| arrival jitter EMA | 5.4 ms | **⚠ 8.2 ms** |
+
+**Reading.** The win is real but smaller than §17's projection because
+the per-body pace is not `airtime + fixed-150 µs` — it scaled to
+670 µs at 2× the body (the equilibrium's production term is per-BYTE,
+so doubling the body nearly doubles per-body pace). What 656 actually
+buys: the per-body chain overhead paid half as often (span −0.6) and a
+shorter GS publish tail (−0.35). Per-byte air efficiency +13% is a
+throughput/headroom win at every rung regardless.
+
+**The trade:** completion quanta are coarser → arrival jitter EMA
+5.4 → 8.2 ms. On the bench the player absorbed it (0 stalls, fps
+clean, gap_ms flat) — but the vsync servo (lead 6) was tuned at ~5 ms
+jitter; **flight validation must watch dsp/late-frame counts**, and the
+loss-granularity question (each lost body now erases 2× the bytes;
+rung overheads were tuned at 332) needs a loss-sim session before
+trusting lossy rungs. Rollback is one config restore per end.
+
+Bench stays on 656/w16. Code defaults untouched (configs govern);
+flip defaults only after flight acceptance.
+
+**Postscript (same day): ROLLED BACK to 332/w32 by operator decision.**
+The −1.0 ms fec did not justify the +2.9 ms arrival-jitter trade plus
+the two open validation debts (flight dsp watch, w16 loss-granularity
+sim). Rollback was the two `/tmp/*.pre-656` restores + restarts;
+verified back at the exact 332 signature (rx_pace 387 µs/7760 bodies,
+au_tail 8.8/1.9, ausniff 60.0/0). The hole-sweep PASS and this section's
+measurements stand — 656 can be re-flagged any time the jitter and
+loss-granularity questions are answered, or revisited as
+656-only-at-high-rungs if per-rung FEC geometry ever becomes a thing.
+
+## 19. The production pace dissected: worker exonerated, the hot
+## thread's own feed is the per-byte term, and core-sharing is the
+## multiplier (2026-09-01, session 4)
+
+Handover-fec-compute's step 1 asked why the span slope matches the
+single-core GF256 repair rate when repairs are off-thread. New drone
+gauge (`fec_worker` line, 5 s cadence, in the deployed maburd): per-sid
+repair jobs + build µs (worker-side), inline queue-full fallbacks,
+`join()` spin-wait count/mean/max (hot-side), worker queue depth max.
+Plus `sink_us` in dq_split (time inside the streaming sink), and all
+mabur threads now carry comm names (`mbr-hot`, `mbr-txw`, `mbr-fecw`,
+`mbr-usb`×4, `mbr-agent`, `mbr-msp`, `mbr-http`) — the forensics below
+initially pinned/reniced the WRONG thread because the hot loop is a
+spawned thread, not the main thread.
+
+**The structural read first**: `SwEncoder::flush()` runs at every frame
+end and spin-joins ALL outstanding repairs, and repair envelopes only
+drain back at the next `add_packet` — so emission CAN serialize behind
+the worker. Measured at 11 M/mcs5/332 (unpinned baseline, ~298
+frames/5 s):
+
+- **Worker exonerated as steady-state limiter**: ~90 µs/repair
+  (~10.5 k repairs/5 s across both sids), queue depth ≤31 of 256,
+  0 inline fallbacks, join wait mean only **0.35–0.5 ms/frame**
+  (max spikes 2–10 ms — the burst tail is real but thin).
+- **dq_split cpu_us ≈ 8.4–9.5 ms/frame**, of which sink_us (SBI patch +
+  stamps + txq.push/notify) reads **1.5–4 ms**.
+
+**The affinity experiments** (runtime taskset, no deploy): isolating
+`mbr-hot` alone on core 1 with everything else on core 0 gives
+**cpu_us 9.0 → 6.3 ms and sink_us 1.9 → 0.15 ms**; GS au_tail span
+8.6 → **7.9 ms**, rx_pace tsfl 382 → 346 µs, ausniff 60.0/0 gaps
+(gate clean). Forcing hot + worker onto ONE core gives cpu_us
+**14.4 ms** — the §17 equilibrium's "single-core GF256 slope" is what
+you get whenever hot and worker time-share a core, which the scheduler
+does intermittently in the unpinned baseline.
+
+**The isolated split closes the budget**: cpu 6.3 ≈ **feed-own ~4.7**
+(pure hot-thread frag→SwEncoder→SbiPacker compute for a ~23 KB AU —
+far above the ≤1 ms the handover hoped) **+ join ~1.4** (worker slower
+on the crowded core: 120 µs/job) **+ sink 0.15**. The baseline's extra
+~2.7 ms is interleave: same-core wake-preemption (every txq.push
+notify lets mbr-txw/mbr-usb preempt the producer) plus worker
+migration. §16's "cpu_us is ~half interleave" — confirmed and now
+separable at will.
+
+Meanwhile the drain side idles: dq_queue wait ~140 µs, usb_urb
+mean_inflight 0.29 (writer 29 % busy, URBs serialized ~350 µs
+round-trip, never >2 deep). Nobody is saturated; production pace is
+the pacer, and production pace = hot-thread wall.
+
+**Levers, re-ranked by this section:**
+
+1. **Feed-own diet (~4.7 ms, biggest single term)**: profile the
+   source path — per-envelope/body vector allocs (~130/frame),
+   the 4 copies (frag → current_symbol → ring → SBI body), CRC16
+   passes. Host-profileable; fecbench only ever measured the repair
+   path.
+2. **Affinity policy in maburd** — ✅ **SHIPPED, see §20 below.**
+3. **Flush-join relaxation**: joins exist to ship the tail repair with
+   its own frame; shipping it one frame late (SwDecoder has no ordering
+   contract) deletes the 0.4–1.5 ms join term at a small
+   protection-latency cost. Not measured yet.
+4. **mt2-row/spin demoted**: with the worker keeping pace and both
+   cores busy, folding one repair on two cores steals the hot core —
+   wrong direction at current geometry. Re-rank only if overheads grow.
+5. A-MPDU/656 unchanged (§17 #2, §18) — the air half still stands,
+   still blocked/rolled-back respectively.
+
+Bench end state: pins REVERTED (prod shape = unpinned), both ends on
+gauge builds — drone maburd = fecgauge+names (rollback
+`maburd.pre-fecgauge`; pre-urbgauge/pre-ampdu pruned per handover), GS
+unchanged (rx_pace+au_tail build). Configs untouched all session.
+
+## 20. Core-placement policy shipped — and the inheritance trap that
+## makes the naive version WORSE than nothing (2026-09-01, session 4)
+
+§19's lever #2 is now in `maburd` (no config key — operator ruling was
+"implement it, gate it, remove it if it fails"). Shape:
+`run_real_mode` sets **process** affinity to cpu0 before `libusb_init`
+and the venc bring-up, so every thread either library spawns inherits
+it; the hot thread then moves itself to cpu1. Guarded on exactly 2
+online CPUs so the same binary on a dev host doesn't cram everything
+onto CPU 0.
+
+**The trap, caught by the bench on the first deploy.** `FecWorker` is
+constructed INSIDE the hot thread's lambda, so its thread inherits the
+hot thread's cpu1 — putting the repair worker on the producer's core,
+which is the one placement strictly WORSE than no policy at all:
+
+| placement | dq_split cpu_us | flush-join mean |
+|---|---|---|
+| unpinned (old prod) | 8.4–9.5 ms | 0.35–0.5 ms |
+| hot pinned, worker inherits cpu1 | **11.0–11.6 ms** | **3.2–3.7 ms** |
+| hot cpu1, worker explicitly cpu0 | **6.1 ms** | 1.5 ms |
+
+`FecWorker`'s ctor already took a `cpu` argument for exactly this; it
+was being default-constructed. Passing `kRestCore` is what makes the
+policy a win, and the code comment says so — anyone "simplifying" that
+argument away reintroduces an 11.5 ms regression that still passes
+every functional gate.
+
+**Accepted numbers** (11 M/mcs5/332 park, 30 s sideport samples +
+5 s gauge windows, vs the same-session unpinned baseline):
+
+| metric | before | after |
+|---|---|---|
+| dq_split cpu_us | 9.0 ms | **6.1 ms** |
+| dq_split sink_us | 1.9 ms | **0.15 ms** |
+| GS au_tail span | 9.0 ms | **7.2 ms** |
+| rx_pace tsfl (air spacing) | 382 µs | **345 µs** |
+| fec p50 | 10.3 ms | **9.7 ms** |
+
+Gates all green: ausniff 60.0 fps / 0 gaps / 0 incomplete, aucadence
+**−0.26 ms** (band −1.1…−3.0, and within ±1 ms of this session's
++0.58 criterion), jitter EMA **5.79 ms** median vs the 332 signature
+~5.4 — i.e. no 656-style jitter trade — 0 stalls, 0 q_drop, venc ring
+0 % fill / 0 vanished / 0 idr-disagree.
+
+Note the span moved 1.8 ms but fec only 0.6 ms: the GS publish tail
+(~2.2 ms) is untouched by this and now accounts for a larger share of
+what's left. Lever #1 (feed-own ~4.7 ms) is still the big one, and
+§19's ranking is otherwise unchanged.
+
+**⚠ Every number in this section is a MEDIAN, and the median is not
+what the operator sees.** The player's OSD LAT row shows the **p99
+frame** — the worst frame by e2e in each 1 s window, refreshed at 1 Hz
+(`gs_overlay.h:77`, `LatTracker::p99_frame()`). Measured on the bench
+after this change: **fec p99 median 15.6 ms, ranging 12–39 ms**, and
+the au_tail per-window span max sat at ~33 ms both BEFORE and AFTER
+the policy. So this change improved the typical frame and did
+essentially nothing for the tail — which is the number on screen.
+Do not quote §20's table as "the OSD will read 9.7".
+
+The tail is therefore a separate, still-unattacked problem, and
+arguably the one that matters for perceived latency. Candidates from
+this session's data, none yet tested: IDR frames (much larger → more
+bodies → wider span), repair-heavy AUs (§17 already saw ~20 ms
+publish-tail spikes), and the drone-side flush-join spikes the new
+gauge shows (mean 1.5 ms but max 9–12 ms). A tail attack wants a
+per-frame distribution, not the 5 s window maxima the current gauges
+report.
+
+Also scene-dependent, which makes cross-session comparison a trap:
+in a busier scene the same build read fec p50 11.6 ms at 35.5 KB
+frames vs 9.7 ms at 24.0 KB (same rung, same overhead, gate clean,
+inside the 16 Mb/s cap). Always record frame size next to a fec
+number.
+
+⚠ Flight-unvalidated: bench only, and it deliberately crowds the venc
+SDK threads onto one core. No harm observed across ~15 min at 60 fps,
+but the first flight with this build should watch `vanished` and
+`frame_ring fill`. Rollback is `maburd.pre-affinity` on the drone
+(binary-only, no config pairing — this change touches no config key).
+
+Bench end state: drone maburd = affinity build (rollback
+`maburd.pre-affinity`), GS unchanged; GS `aucadence.py` refreshed from
+the repo (its installed copy still expected ring v1 and rejected the
+v2 ring — `ausniff.py` had been refreshed in an earlier session but
+`aucadence.py` was missed).
 
 ## Provenance
 

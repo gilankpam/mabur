@@ -1,6 +1,7 @@
 #include "mabur/sw_encoder.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstring>
 
 #include "mabur/gf256.h"
@@ -8,6 +9,14 @@
 #include "mabur/fec_worker.h"
 
 namespace mabur {
+namespace {
+uint64_t gauge_now_us() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+}  // namespace
 
 SwEncoder::SwEncoder(const SwConfig& cfg, uint32_t initial_seq, FecWorker* worker)
     : cfg_(cfg), worker_(worker), next_seq_(initial_seq) {
@@ -127,14 +136,24 @@ void SwEncoder::emit_or_enqueue_repair(std::vector<std::vector<uint8_t>>& out) {
   if (async_->outstanding.load(std::memory_order_relaxed) == 0)
     seals_since_join_ = 0;
   async_->outstanding.fetch_add(1, std::memory_order_relaxed);
-  if (!worker_->try_enqueue(j)) execute_repair_job(j);  // full: inline
+  if (!worker_->try_enqueue(j)) {  // full: inline
+    ++gauge_inline_full_;
+    execute_repair_job(j);
+    return;
+  }
+  const uint64_t d = worker_->depth();
+  if (d > gauge_enq_depth_max_) gauge_enq_depth_max_ = d;
 }
 
 void SwEncoder::execute_repair_job(const FecRepairJob& j) {
   // Precondition: async mode. Only FecWorker::loop and the inline
   // queue-full fallback call this; both exist only when async_ is set.
   assert(async_);
+  const uint64_t t0 = gauge_now_us();
   auto env = build_repair(j.repair_key, j.header_seq, j.window_len, j.start_slot);
+  async_->gauge_jobs.fetch_add(1, std::memory_order_relaxed);
+  async_->gauge_build_us.fetch_add(gauge_now_us() - t0,
+                                   std::memory_order_relaxed);
   {
     std::lock_guard<std::mutex> l(async_->done_m);
     async_->done.push_back(std::move(env));
@@ -149,13 +168,36 @@ void SwEncoder::drain_done(std::vector<std::vector<uint8_t>>& out) {
 }
 
 void SwEncoder::join() {
-  while (async_->outstanding.load(std::memory_order_relaxed) != 0) { /* spin */ }
+  if (async_->outstanding.load(std::memory_order_relaxed) != 0) {
+    const uint64_t t0 = gauge_now_us();
+    while (async_->outstanding.load(std::memory_order_relaxed) != 0) { /* spin */ }
+    const uint64_t us = gauge_now_us() - t0;
+    ++gauge_join_waits_;
+    gauge_join_wait_us_ += us;
+    if (us > gauge_join_wait_max_us_) gauge_join_wait_max_us_ = us;
+  }
   // One acquire LOAD (not a fence) pairs with execute_repair_job's
   // fetch_sub(release), publishing the worker's writes (done list, env
   // bytes). A fence would be equivalent per the standard, but TSAN cannot
   // model fence-based synchronization — a load keeps this verifiable.
   (void)async_->outstanding.load(std::memory_order_acquire);
   seals_since_join_ = 0;
+}
+
+SwEncoder::SwFecGauge SwEncoder::take_fec_gauge() {
+  SwFecGauge g;
+  if (async_) {
+    g.jobs = async_->gauge_jobs.load(std::memory_order_relaxed);
+    g.build_us = async_->gauge_build_us.load(std::memory_order_relaxed);
+  }
+  g.inline_full = gauge_inline_full_;
+  g.join_waits = gauge_join_waits_;
+  g.join_wait_us = gauge_join_wait_us_;
+  g.join_wait_max_us = gauge_join_wait_max_us_;
+  g.enq_depth_max = gauge_enq_depth_max_;
+  gauge_join_wait_max_us_ = 0;
+  gauge_enq_depth_max_ = 0;
+  return g;
 }
 
 std::vector<std::vector<uint8_t>> SwEncoder::flush() {

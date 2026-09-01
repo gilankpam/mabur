@@ -29,6 +29,22 @@ TEST(rx_body_pack_matches_python_and_roundtrips) {
   }
 }
 
+TEST(rx_body_phy_valid_roundtrips) {
+  node::RxBody m;
+  m.card_id = 2; m.mono_us = 42; m.mac_seq = 7; m.crc_ok = true;
+  m.phy_valid = true;
+  auto wire_true = node::pack_rx_body(m);
+  auto back_true = node::parse_rx_body(wire_true.data(), wire_true.size());
+  REQUIRE(back_true.has_value());
+  CHECK(back_true->phy_valid == true);
+
+  m.phy_valid = false;
+  auto wire_false = node::pack_rx_body(m);
+  auto back_false = node::parse_rx_body(wire_false.data(), wire_false.size());
+  REQUIRE(back_false.has_value());
+  CHECK(back_false->phy_valid == false);
+}
+
 TEST(rx_body_rejects_corruption) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/node.json");
   auto wire = mtest::unhex(j["rx_body"][1]["wire"].get<std::string>());

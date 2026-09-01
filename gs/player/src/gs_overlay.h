@@ -82,6 +82,14 @@ struct GsPlayerState {
   bool lat_valid = false;
   int lat_e2e_ms = 0;
   int lat_ms[7] = {0};  // enc,dq,air,fec,dec,reg,dsp -- the p99 frame's own
+  // The median frame's own breakdown, ranked the same way (p50-by-e2e).
+  // Shown as its own row directly above the p99 one so the tail is read
+  // against the typical frame rather than in isolation: before this
+  // existed, the OSD's only latency figure was a tail statistic sitting
+  // among averages (fps/jit/mbps) and read as if it were typical.
+  // Shares lat_valid -- both come from the same window and the same anchor.
+  int lat_p50_e2e_ms = 0;
+  int lat_p50_ms[7] = {0};
 };
 
 // Formatting. Every value is fixed-width by construction so a field box
@@ -124,6 +132,9 @@ enum class GsFieldId {
   // 7-segment breakdown. Appended, never inserted -- see the comment atop
   // this enum.
   kLatHead, kLatBreakdown,
+  // Median-latency row (2026-09-01): same shape, p50-by-e2e frame, drawn
+  // one row above the p99 pair. Appended for the same reason.
+  kLatP50Head, kLatP50Breakdown,
   kCount,
 };
 

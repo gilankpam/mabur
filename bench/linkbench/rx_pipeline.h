@@ -102,6 +102,15 @@ class RxPipeline {
       // whether in-order or late. Loss = expected − received, derived in
       // snapshot(). Robust to the ≤3-frame URB swaps a multi-threaded TX
       // feed produces (a per-frame gap counter books those as phantom loss).
+      //
+      // Seq baseline reset on idle (656 hole sweep 2026-09-01): a fresh TX
+      // invocation restarts its 12-bit seq, and against a stale max the
+      // estimator masks that cell's losses until seq re-crosses the old max
+      // (up to a whole ~3600-frame cell in 4096 space). A >2 s bench-frame
+      // gap can only be a TX restart on a cell rig, so re-anchor there.
+      if (have_mac_seq_ && last_seq_ms_ && now_ms - last_seq_ms_ > 2000)
+        have_mac_seq_ = false;
+      last_seq_ms_ = now_ms;
       if (have_mac_seq_) {
         const int d = seq_fwd_delta12(max_mac_seq_, mac_seq);
         if (d >= 1 && d < 2048) {
@@ -165,6 +174,7 @@ class RxPipeline {
   uint16_t max_mac_seq_ = 0;
   uint64_t mac_advance_ = 0;
   bool have_mac_seq_ = false;
+  uint64_t last_seq_ms_ = 0;  // last CRC-ok bench frame (idle re-anchor)
   uint32_t first_app_seq_ = 0, max_app_seq_ = 0;
   bool have_app_seq_ = false;
 };
