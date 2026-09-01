@@ -717,6 +717,79 @@ rootfs at 3 binaries, prune at next deploy), config byte-identical to
 the §12 end state (11 M cap, ch136, agg off), link healthy (state 2,
 ~1580 bodies/s, RCF flowing).
 
+## 16. GS back: the 2×2 (bunching × aggregation) is null, §15's CPU
+## reframe refuted, and ~360 µs/body survives everything — suspect the
+## GS RX path next (2026-09-01, session 2 continued)
+
+GS ssh returned (it had been up all along — only the host's route was
+down; `maburgs` was already the ampdu-HEAD build). Housekeeping done
+first: the pending fixed `maburplay` deployed (rollback
+`maburplay.pre-healslip`; the vsync open item is closed), the GS's
+on-device `ausniff.py` refreshed (its copy predated ring v2), opening
+and closing gates both 60.0 fps / 0 gaps / 0 incomplete.
+
+**The hog experiment (test a, and what it actually showed).** Two
+busy-loop hogs on the drone's two cores for 60–90 s — intended to slow
+the FEC compute and watch fec follow. Three instruments disagreed
+instructively:
+
+- `dq_split cpu_us` **halved** (9.3 → 5.0 ms/AU). Under contention the
+  writer/pool batched (3-body pops, 57% 3-body URBs) so the per-body
+  wakeup chain (hot → txq → writer → pool → libusb) ran 3× less often —
+  proving **~half of baseline `cpu_us` is per-body chain interleave/
+  preemption on the 2-core CPU, not GF256 compute**. §15's "fec ≈ CPU
+  seal pace" numerology was built on that contaminated gauge:
+  **refuted as stated**.
+- Scratchpad `fecdump.py` per-AU fec "improved" 10.2 → 6.5 ms p50 —
+  an **anchor artifact**: batching delays t_first, compressing
+  t_first→t_complete without delivering anything earlier. ⚠ Do not use
+  fecdump for A/Bs that change feed granularity.
+- The sideport 7-segment breakdown (statstap, 149 windows each): **e2e
+  unchanged** — SUM p50 17.5 → 17.7 ms (fec 9.3→8.7, dq 0→1.0,
+  air 1.1→0.8), fps 59.4 both, mcs 5 parked both.
+
+**The 2×2 completion.** §12 tested aggregation with a trickle feed
+(bodies ~360 µs apart — aggregates can't form deep); the hog run tested
+bunching with aggregation off (bunched URBs still air as singles). The
+missing cell — bunching + `ampdu{max_num:31, max_time:0}` (0x70 fill)
+— ran today:
+
+| cell | fec p50/p90 ms | SUM p50 | mcs in window | jitter |
+|---|---|---|---|---|
+| A base (11 M parked) | 9.3 / 14.8 | 17.5 | 5 | 5.7 |
+| B hogs | 8.7 / 13.9 | 17.7 | 5 | 5.9 |
+| C agg31 trickle | 10.7 / 17.0 | 19.0 | 2–5 (churn!) | 7.3 |
+| D agg31 + hogs | 10.1 / 16.2 | 20.4 | 1–5 (churn!) | 9.2 |
+
+No win anywhere, and cells C/D re-confirm the §12 addendum at the
+ladder level: even with `phy_valid` gating, the physt-passing aggregate
+reports pollute the RF EMAs enough to drive real demotes — agg-on
+configs churn the ladder on a clean bench. The bunched-feed + A-MPDU
+hypothesis is dead; aggregation stays off.
+
+**The standing fact, sharpened.** The per-body pace at mcs5 is
+~360 µs/body (fec/bodies: 9.3/26 base, 8.7/24 hogs) and is now measured
+invariant against: offered load (§8), tx_threads (§8), EDCA (§10),
+A-MPDU alone (§12/C), URB batching granularity (B), drone CPU
+contention (B), and their combination (D). Every drone-side and
+air-side lever is null.
+
+**New prime suspect: the GS RX path.** The per-AU arrival stamps that
+define fec are taken *inside maburgs* — so per-body GS processing
+(devourer RX pump → radiotap parse → FEC fold → aggregation) shapes the
+measured pace directly, is rate-independent (fits §9's
+airtime + ~150 µs form), and is untouched by every intervention above —
+the one hypothesis consistent with all the nulls at once. rxdemo
+ingested 3094 fps (~323 µs spacing, §11), but that is the thin path,
+not maburgs' FEC fold. **Next probe: a per-body RX gauge inside maburgs
+(the mirror of usb_urb) or `perf` on the RK3566**, then re-run the
+mcs5-pinned 14 M wall with gauges on BOTH ends.
+
+Bench end state: config byte-identical both ends (11 M, ch136, agg 0),
+drone = urbgauge maburd, GS = ampdu maburgs + fixed maburplay, closing
+gate clean. Scratchpad: `fec_11M_base/hog.csv`, `side_base/hog/agg/
+agghog.jsonl`, `dq_11M_base/hog.txt`.
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc
