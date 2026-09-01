@@ -35,7 +35,6 @@
 #include <sched.h>  // cpu_set_t — see the core-placement policy below
 #endif
 
-#include "air_feed.h"
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -846,12 +845,13 @@ int run_real_mode(const Config& cfg) {
 
   std::atomic<std::shared_ptr<const AppliedOp>> shared_op{nullptr};
 
-  // Cross-thread feed from the hot thread's AirFeed to the agent thread
-  // (bitrate policy input + telemetry snapshot) — see AirFeedOut's doc
-  // comment in rc_agent.h. Must outlive both hot_thread and agent_thread,
-  // so it lives in this outer scope beside shared_op, not inside either
-  // thread's lambda.
-  AirFeedOut air_feed_out;
+  // Debug-HTTP per-layer overhead override, shared by the HTTP thread (the
+  // writer), the hot thread (which applies it to the UEP layers) and the
+  // agent thread (whose bitrate target must describe what is actually
+  // flying) — see OvOverride's doc comment in rc_agent.h. Must outlive both
+  // hot_thread and agent_thread, so it lives in this outer scope beside
+  // shared_op, not inside either thread's lambda.
+  OvOverride ov_override;
 
   RealActuator actuator;
   actuator.tx = &tx;
@@ -865,7 +865,7 @@ int run_real_mode(const Config& cfg) {
   // commanded before the first transition ever happens.
   actuator.last_roi_qp = cfg.encoder.roi_qp_normal;
 
-  RcAgent agent(cfg, actuator, &air_feed_out);
+  RcAgent agent(cfg, actuator, &ov_override);
 
 #ifdef MABUR_HAVE_VENC
   // Boot the encoder BEFORE the radio and before any thread starts: it
@@ -918,7 +918,7 @@ int run_real_mode(const Config& cfg) {
   // are live from here on. localhost-only, always on -- bind failure logs
   // and disables itself, never fatal (see debug_http.h).
   debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality,
-                   &air_feed_out);
+                   &ov_override);
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};
@@ -1070,9 +1070,6 @@ int run_real_mode(const Config& cfg) {
     // unpinned). Sending it to kRestCore is what makes the policy a win.
     FecWorker fec_worker(two_core_target() ? kRestCore : -1);
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
-    // Hot-thread-owned, same exclusivity contract as uep above: writes the
-    // shared air_feed_out, never read back by this thread.
-    AirFeed feed(&air_feed_out);
 
     std::shared_ptr<const AppliedOp> last_applied_op;
     // Debug-HTTP per-layer overhead override transition tracking (fix
@@ -1081,10 +1078,8 @@ int run_real_mode(const Config& cfg) {
     // has NO bounded re-assert to fall back on -- run_bitrate_policy's 5 s
     // reassert (kReassertMs) only re-sends the bitrate/roi_qp verbs, never
     // touches the UEP layers' overhead, so without this the encoder would
-    // stay pinned at the last override value indefinitely (until the next
-    // genuine op change) while AirFeed's on_frame fallback snapped back to
-    // the stale op-pair anchor immediately -- exactly the encoder/anchor
-    // disagreement the finding flagged.
+    // stay pinned at the last override value indefinitely, until the next
+    // genuine op change.
     bool ov_override_was_armed = false;
 
     // dq_split gauge (dq-spike follow-up 2026-08-31): per-frame split of the
@@ -1120,10 +1115,6 @@ int run_real_mode(const Config& cfg) {
       auto op = shared_op.load();
       if (op && op != last_applied_op) {
         apply_op_to_uep(*op, uep);
-        // Anchors AirFeed's excess_base/enh + telemetry-only ov_base/enh
-        // against the pair actually applied above (Task 7: the fixed
-        // per-rung pair, no solver left to re-derive it).
-        feed.set_applied(op->fec_ov_base, op->fec_ov_enh);
         last_applied_op = op;
       }
 
@@ -1131,16 +1122,13 @@ int run_real_mode(const Config& cfg) {
       // /venc/set?ov_base_pct=N&ov_enh_pct=N): armed (both >= 0) wins over
       // the op pair on the UEP layers every tick. Checked BEFORE this
       // tick's frame is read/encoded (not after, and not gated on a frame
-      // having arrived) so that by the time pipe.encode() and feed.on_frame()
-      // run below, the UEP layers and AirFeed's anchor already agree on
-      // whichever value is in effect this tick -- an armed->cleared
-      // transition re-applies the op pair to BOTH in one shot, exactly
-      // once (not per-frame): the encoder stops flying the stale override
-      // and AirFeed's excess_*/ov_* stop misreporting against it in the
-      // same tick, instead of a one-tick-later correction.
+      // having arrived) so the UEP layers already carry whichever value is
+      // in effect this tick -- an armed->cleared transition re-applies the
+      // op pair exactly once (not per-frame), so the encoder stops flying
+      // the stale override in the same tick rather than one tick later.
       if (op) {
-        const int ob = feed.out().ovr_base_pct.load(std::memory_order_relaxed);
-        const int oe = feed.out().ovr_enh_pct.load(std::memory_order_relaxed);
+        const int ob = ov_override.ovr_base_pct.load(std::memory_order_relaxed);
+        const int oe = ov_override.ovr_enh_pct.load(std::memory_order_relaxed);
         const bool armed = ob >= 0 && oe >= 0;
         if (armed) {
           uep.set_layer_overhead(0, ob / 100.0);
@@ -1148,7 +1136,6 @@ int run_real_mode(const Config& cfg) {
           ov_override_was_armed = true;
         } else if (ov_override_was_armed) {
           apply_op_to_uep(*op, uep);
-          feed.set_applied(op->fec_ov_base, op->fec_ov_enh);
           ov_override_was_armed = false;
         }
       }
@@ -1187,8 +1174,6 @@ int run_real_mode(const Config& cfg) {
         // first sink call — see FramePipeline::encode's sink contract; the
         // SBI header sits outside the FEC envelope, so post-pack patching
         // stays CRC-safe).
-        size_t emitted = 0;
-        int emit_sid = -1;
         bool first = true;
         pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now,
                     [&](UepBody&& b) {
@@ -1200,8 +1185,6 @@ int run_real_mode(const Config& cfg) {
                       b.pushed_us = p_us;
                       b.au_first = first;
                       first = false;
-                      emitted += b.body.size();
-                      emit_sid = b.stream_id;
                       txq.push(std::move(b));
                       split_sink_sum_us += now_steady_us() - s_us;
                     });
@@ -1219,13 +1202,6 @@ int run_real_mode(const Config& cfg) {
           split_cpu_sum_us += cpu_us;
           if (cpu_us > split_cpu_max_us) split_cpu_max_us = cpu_us;
         }
-        // AirFeed (spec §2, Task 7 — the solver that used to redistribute
-        // overhead here is gone; the per-rung pair is fixed and applied
-        // directly by apply_op_to_uep above): feed actual emitted bytes,
-        // excluding IDR outliers, for the EWMAs run_bitrate_policy's blend
-        // consumes plus the excess_base/enh + ov_base/enh telemetry.
-        if (op && !(meta.flags & VENC_FRAME_FLAG_IDR) && emit_sid >= 0)
-          feed.on_frame(emit_sid, static_cast<size_t>(n), emitted);
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
         idr_disagree_total.store(pipe.idr_disagreements(),
@@ -1558,11 +1534,10 @@ int run_real_mode(const Config& cfg) {
           // RC_VERSION 5 — the fixed per-rung values RcAgent applies
           // directly to the UEP layers), or the debug-HTTP per-layer
           // override when armed (the same two atomics run_bitrate_policy's
-          // override check reads) — the AirFeed solver this used to report
-          // instead is gone (Task 7).
+          // override check reads).
           {
-            const int ob = air_feed_out.ovr_base_pct.load(std::memory_order_relaxed);
-            const int oe = air_feed_out.ovr_enh_pct.load(std::memory_order_relaxed);
+            const int ob = ov_override.ovr_base_pct.load(std::memory_order_relaxed);
+            const int oe = ov_override.ovr_enh_pct.load(std::memory_order_relaxed);
             if (ob >= 0 && oe >= 0) {
               ti.applied_ov_base = ob / 100.0;
               ti.applied_ov_enh = oe / 100.0;

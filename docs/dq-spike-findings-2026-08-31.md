@@ -29,7 +29,7 @@ iteration**, not at the push:
 | `drone/src/main.cpp:1008` | `uint64_t now = now_steady_ms()` — **`dq` clock starts** |
 | `drone/src/main.cpp:1058` | `fsrc.read(fbuf, size, 5, &meta)` — blocking venc-ring read, 5 ms timeout |
 | `drone/src/main.cpp:1075` | `pipe.encode(...)` → `frame_pipeline.cpp:66` `uep.add_frame(...)`: fragmentation → sliding-window FEC (GF256) → SBI packing |
-| `drone/src/main.cpp:1085` | `feed.on_frame(...)` AirFeed accounting |
+| `drone/src/main.cpp:1085` | `feed.on_frame(...)` AirFeed accounting (AirFeed deleted 2026-09-01) |
 | `drone/src/main.cpp:1093` | `b.enqueued_ms = now` — **the same `now` from 1008**, never re-sampled |
 | `drone/src/main.cpp:1184` | `w = pop_ms - b.enqueued_ms` — reported as `dq` |
 

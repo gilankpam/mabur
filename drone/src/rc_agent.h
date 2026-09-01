@@ -37,31 +37,23 @@ struct AppliedOp {
   uint64_t generation = 0;
 };
 
-// Cross-thread feed from the hot-loop AirFeed (Task 7; was the AirBalancer
-// solver's measurement half before the solver itself was deleted) to the
-// agent thread's bitrate policy: the feed's live measured share/excess
-// feed the blended-rate target (run_bitrate_policy), while ov_base/ov_enh
-// are telemetry-only snapshots of the per-stream overhead actually flying
-// (NOT consumed by the bitrate policy — see run_bitrate_policy's comment
-// on why the policy target must stay repair-byte-neutral). Plain atomics,
-// no lock: the hot loop writes every tick, the agent thread reads at
-// policy time: torn reads are impossible (each field loaded independently)
-// and a stale value by at most one hot-loop tick is harmless for a rate
-// target. May be null (tests, and any Actuator wiring that predates Task
-// 7's feed), in which case the policy uses the 0.5/0/0 defaults.
-struct AirFeedOut {
-  std::atomic<float> share_base{0.5f};
-  std::atomic<float> excess_base{0.0f};
-  std::atomic<float> excess_enh{0.0f};
-  std::atomic<float> ov_base{0.0f};
-  std::atomic<float> ov_enh{0.0f};
-  // Volatile per-layer overhead override (bench sweeps, set via the debug
-  // HTTP :8301 POST /venc/set?ov_base_pct=N / ov_enh_pct=N; -1 = off, both
-  // must be >= 0 to take effect). main.cpp's hot loop applies the forced
-  // pair to the UEP layers directly (the op pair loses) and AirFeed
-  // publishes the same forced pair as the anchor, so run_bitrate_policy's
-  // per-layer blend and the telemetry snapshot both track what's ACTUALLY
-  // flying. Not persisted; a daemon restart clears it.
+// Volatile per-layer overhead override (bench sweeps, set via the debug
+// HTTP :8301 POST /venc/set?ov_base_pct=N / ov_enh_pct=N; -1 = off, both
+// must be >= 0 to take effect). main.cpp's hot loop applies the forced pair
+// to the UEP layers directly (the op pair loses), and run_bitrate_policy
+// reads the same pair so its target describes what is ACTUALLY flying
+// rather than the commanded op. Not persisted; a daemon restart clears it.
+//
+// Plain atomics, no lock: the HTTP thread writes, the hot loop and the
+// agent thread read. Torn reads are impossible (each field loaded
+// independently) and a stale value by one tick is harmless for a rate
+// target. May be null (tests), in which case no override is ever armed.
+//
+// This struct is all that survives of AirFeedOut. AirFeed itself — the
+// measurement half of the deleted AirBalancer — was removed on 2026-09-01
+// along with the bitrate blend that was its only consumer; see
+// run_bitrate_policy.
+struct OvOverride {
   std::atomic<int> ovr_base_pct{-1};
   std::atomic<int> ovr_enh_pct{-1};
 };
@@ -107,10 +99,10 @@ class RcAgent {
  public:
   enum class State { BOOT, RENDEZVOUS, LINKED, FAILSAFE };
 
-  // feed is the hot-loop AirFeed's cross-thread readback (Task 7); may
-  // be null (tests, or before the feed is wired up), in which case the
-  // bitrate policy uses its 0.5/0/0 defaults.
-  RcAgent(const Config& cfg, Actuator& act, AirFeedOut* feed = nullptr);
+  // ovr is the debug-HTTP per-layer overhead override (bench sweeps); may
+  // be null (tests), in which case no override is ever armed and the
+  // bitrate policy always builds its target from the commanded pair.
+  RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr = nullptr);
 
   // Parses `body` as an RC frame (RCF or DISC; anything else, or a frame
   // failing CRC/vtx_id match, is silently ignored) and applies its effect.
@@ -163,7 +155,7 @@ class RcAgent {
  private:
   const Config& cfg_;
   Actuator& act_;
-  AirFeedOut* feed_;  // may be null — see the constructor comment
+  OvOverride* ovr_;  // may be null — see the constructor comment
   State state_ = State::BOOT;
   bool link_established_ = false;  // see take_link_established()
 

@@ -20,8 +20,8 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 
 }  // namespace
 
-RcAgent::RcAgent(const Config& cfg, Actuator& act, AirFeedOut* feed)
-    : cfg_(cfg), act_(act), feed_(feed) {}
+RcAgent::RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr)
+    : cfg_(cfg), act_(act), ovr_(ovr) {}
 
 void RcAgent::note_chain_break() {
   chain_break_pending_.store(true, std::memory_order_relaxed);
@@ -169,42 +169,59 @@ void RcAgent::reapply_with_shed() {
 //    either way, so a steady-state RCF arriving shortly after a forced call
 //    is throttled normally.
 //
-// The blend (spec 2026-08-29-airtime-balance-uep §2 bitrate): with two
-// streams at different PHY rates, a single-rate budget target (T0's rate
-// alone) is wrong the moment the encoder isn't splitting the video 50/50
-// across them, so the target is built from both rates weighted by the
-// live measured share. fb/exb/exe default to 0.5/0/0 (an even split, no
-// measured framing excess) whenever feed_ is null (tests, or before Task 7
-// wires the feed up) — see run_bitrate_policy's core comment below.
+// The target is a PURE FUNCTION OF THE OPERATING POINT — rung PHY rates
+// and the commanded overhead pair in, kbps out. Nothing measured enters
+// it, so a fixed op commands a fixed bitrate for as long as it is held.
+//
+// It was measurement-anchored between 2026-08-29 and 2026-09-01: AirFeed
+// published a live share_base plus per-stream framing excess (emitted air
+// bytes over frame bytes, EWMA), and this function blended them in. That
+// correction was real — framing excess runs ~5% at large frames and more
+// as frames shrink — but it closed a loop the encoder could not afford.
+// Lower rate -> smaller frames -> proportionally more padding -> higher
+// excess -> lower target, re-evaluated on every RCF at 10-20 Hz, with the
+// 100 kbps rounding grid fine enough that the dither kept crossing it.
+//
+// On Star6E every MI_VENC_SetChnAttr that actually changes the rate emits
+// a keyframe (measured 2026-09-01: 15 real changes, 15 IDRs, each on the
+// next frame; 16 same-value writes, 0 IDRs), and that keyframe bypasses
+// idr_rate_limit entirely. In flight-0000 an IDR cost a median 63.8 kB
+// against a 21.4 kB base P frame — 38 ms of airtime at the rung it flew,
+// p95 92 ms — and 151 of 226 bitrate writes had no rung change behind
+// them. The blend was buying a few percent of airtime accuracy with ~150
+// keyframes per 12-minute flight.
+//
+// So the measurement is gone and the share is a constant. kShareBase is
+// the measured median: 561 one-second windows of flight-0000 gave p50
+// 0.601, sd 0.044, and fixing it there costs -2.7%/+1.0% of target on the
+// worst overhead pair in that flight (1.0/0.5). On an EQUAL pair the term
+// cancels exactly, which is most rungs since the UEP flatten. The dropped
+// framing excess is not compensated here: airtime_budget is the operator's
+// lever if the resulting overshoot ever matters.
 void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
+  // Fixed base-layer byte share, replacing AirFeed's measured share_base.
+  static constexpr double kShareBase = 0.60;
+
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
   const double rate_b = rc::phy_rate_mbps(applied_.ladder[0]);
   const double rate_e = rc::phy_rate_mbps(applied_.ladder[1]);
-  // The commanded pair (Task 6, RC_VERSION 5) IS the source now — no single
+  // The commanded pair (Task 6, RC_VERSION 5) IS the source — no single
   // ov to fan out to both terms.
   double ovb = applied_.fec_ov_base, ove = applied_.fec_ov_enh;
-  double fb = 0.5, exb = 0.0, exe = 0.0;
-  if (feed_) {
-    fb = std::clamp<double>(feed_->share_base.load(std::memory_order_relaxed), 0.05, 0.95);
-    exb = feed_->excess_base.load(std::memory_order_relaxed);
-    exe = feed_->excess_enh.load(std::memory_order_relaxed);
-  }
   // Debug-HTTP per-layer override active: the layers fly THESE overheads
   // (not the commanded pair), so the budget target must be built from them.
-  // Still gated by feed_ (tests construct RcAgent with none): the ternary's
-  // -1 short-circuits the `>= 0` check exactly as a null feed_ did before.
-  const int ob = feed_ ? feed_->ovr_base_pct.load(std::memory_order_relaxed) : -1;
-  const int oe = feed_ ? feed_->ovr_enh_pct.load(std::memory_order_relaxed) : -1;
+  // Still gated by ovr_ (tests construct RcAgent with none): the ternary's
+  // -1 short-circuits the `>= 0` check exactly as a null ovr_ does.
+  const int ob = ovr_ ? ovr_->ovr_base_pct.load(std::memory_order_relaxed) : -1;
+  const int oe = ovr_ ? ovr_->ovr_enh_pct.load(std::memory_order_relaxed) : -1;
   if (ob >= 0 && oe >= 0) { ovb = ob / 100.0; ove = oe / 100.0; }
-  // Blended airtime: V * [fb*mult_b/rate_b + (1-fb)*mult_e/rate_e] = budget.
-  // mult uses the COMMANDED pair (ovb/ove, the RCF's literal
-  // fec_overhead_base/enh) plus MEASURED framing excess (exb/exe), never
-  // AirFeed's live per-stream ov (AirFeedOut::ov_base/ov_enh,
-  // telemetry-only) — that value is repair-byte-neutral and must not feed
-  // back into this target (spec §2 bitrate).
-  const double denom = fb * (1.0 + ovb + exb) / rate_b +
-                       (1.0 - fb) * (1.0 + ove + exe) / rate_e;
+  // Airtime: V * [f0*(1+ovb)/rate_b + (1-f0)*(1+ove)/rate_e] = budget.
+  // Two terms, not one, because BASE and ENH can carry different overhead
+  // (and, during an s3 probe, different MCS) — that part of the 2-stream
+  // shape stays; only the measured inputs are gone.
+  const double denom = kShareBase * (1.0 + ovb) / rate_b +
+                       (1.0 - kShareBase) * (1.0 + ove) / rate_e;
   double kbps = 1000.0 * cfg_.encoder.airtime_budget / denom;
   // NOTE the encoder has its own floor below this one: venc's apply_bitrate
   // rails at VENC_BITRATE_MIN_KBPS (1000), so a configured bitrate_min_kbps

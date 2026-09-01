@@ -7,7 +7,7 @@
 #pragma once
 #include <string>
 
-namespace mabur { struct AirFeedOut; }
+namespace mabur { struct OvOverride; }
 
 // Parsed request line. Deliberately dumb: no method beyond the three
 // routes below is understood, and everything else collapses to BAD so the
@@ -37,6 +37,6 @@ DebugReq debug_http_parse(const std::string& request_line);
 // the socket and thread at process teardown. No stop flag is needed
 // because nothing ever needs to observe "has it stopped yet".
 // feed, when non-null, enables the ov_base_pct/ov_enh_pct SET keys (bench
-// per-layer overhead override -- AirFeedOut::ovr_*_pct; -1 clears).
+// per-layer overhead override -- OvOverride::ovr_*_pct; -1 clears).
 void debug_http_start(int port, int snapshot_quality,
-                      mabur::AirFeedOut* feed = nullptr);
+                      mabur::OvOverride* feed = nullptr);

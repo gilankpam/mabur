@@ -49,34 +49,45 @@ streams now ride the SAME scored mcs — the `mcs−1` base rate and the
 expressed only through FEC overhead, and that overhead is a fixed
 **per-rung config pair** (`overhead_base`/`overhead_enh`, carried in the
 v5 RCF, RC_VERSION 5) applied directly to UEP with no per-frame
-redistribution. `AirFeed` (`drone/src/air_feed.{h,cpp}`) is the
-deleted solver's measurement-only successor: it keeps the same
-per-stream EWMAs but only to publish `share_base`/`excess_base`/
-`excess_enh` (consumed by the bitrate blend below) and `ov_base`/
-`ov_enh` (observability only) — none of it feeds back into what
-overhead is actually applied. GS-side, a single `budget()`/
+redistribution. `AirFeed`, the deleted solver's measurement-only
+successor, survived until 2026-09-01 publishing `share_base`/
+`excess_base`/`excess_enh` into the bitrate blend; it is now deleted
+too — see the bitrate paragraph below. GS-side, a single `budget()`/
 `budget_for(rung)` no longer exists: `budget_base()`/
 `budget_base_for(rung)` score sid 0 and `budget_enh_for(rung)` scores
 sid 1 — see `docs/link-adaptation.md`.
 
-The encoder's commanded bitrate is blended the same way — a single-rate
+The encoder's commanded bitrate keeps the two-term shape — a single-rate
 `kbps = rate(ladder[1]) · budget / (1 + ov)` is wrong in both directions
-once base and enh fly at different MCS (over-commanding at `rate(profile)`
-risks the shed-lag-freeze family; under-commanding at `rate(base)` just
-wastes ENH headroom):
+once base and enh carry different overhead (or, during an s3 probe,
+different MCS):
 
-    kbps = airtime_budget / [ f_b·mult_b/rate_b + f_e·mult_e/rate_e ]
+    kbps = airtime_budget / [ f0·(1+ov_base)/rate_b + (1−f0)·(1+ov_enh)/rate_e ]
 
-with byte shares `f_s = len_s/(len_b+len_e)` (50/50 until AirFeed's
-EWMAs seed) and `mult_s = (1 + ov_s_cmd) + excess_s`, where `ov_s_cmd`
-is sid s's own commanded pair member (`overhead_base`/`overhead_enh`
-off the v5 RCF — a per-sid pair since 2026-08-30, not a shared scalar)
-and `excess_s = m_s − (1 + ov_s_applied)` is the same measured framing
-excess the deleted balancer used to anchor on — deliberately the
-*commanded* redundancy plus measured excess, not AirFeed's live `ov_s`,
-so the bitrate policy stays decoupled from whatever overhead is
-actually flying and the two cannot feed back into each other. Full
-derivation of the deleted solver:
+where `ov_base`/`ov_enh` are the commanded pair off the v5 RCF and `f0`
+is a **fixed** base byte share (`kShareBase`, 0.60).
+
+⚠ **Measured inputs removed 2026-09-01.** `f0` was AirFeed's live
+`share_base`, and each term also carried a measured framing excess
+`excess_s = m_s − (1 + ov_s_applied)`. That correction was real —
+framing excess runs ~5% at large frames and grows as frames shrink —
+but it closed a loop the encoder could not afford: lower rate → smaller
+frames → proportionally more padding → higher excess → lower target,
+re-evaluated on every RCF at 10–20 Hz against a 100 kbps rounding grid.
+On Star6E every `MI_VENC_SetChnAttr` that changes the rate emits a
+keyframe that bypasses `idr_rate_limit` (measured 2026-09-01: 15 real
+changes → 15 IDRs, one frame later; 16 same-value writes → 0), and in
+`flight-0000` an IDR cost a median 63.8 kB against a 21.4 kB base P
+frame (38 ms of airtime at its rung, p95 92 ms) while **151 of 226
+bitrate writes had no rung change behind them**. The blend was buying a
+few percent of airtime accuracy for ~150 keyframes per 12-minute
+flight. `f0 = 0.60` is the measured median of that flight (561
+one-second windows, p50 0.601, sd 0.044); fixing it there costs
+−2.7%/+1.0% of target on the worst pair in the flight (1.0/0.5) and
+exactly nothing on an equal pair. The dropped framing excess is not
+compensated in the formula — `airtime_budget` is the lever if the
+resulting overshoot ever matters. Full derivation of the deleted
+solver:
 `docs/superpowers/specs/2026-08-29-airtime-balance-uep-design.md` §2;
 current architecture and GS-side ladder/attribution consequences:
 `docs/link-adaptation.md`; same-rate measurement basis:

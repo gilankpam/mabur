@@ -47,15 +47,16 @@ own budget: `budget_base()`/`budget_base_for(rung)` for sid 0 (base),
 `gs/src/ladder_controller.h`. There is no shared `budget()`/
 `budget_for()` anymore.
 
-**The runtime `AirBalancer` solver is deleted.** The drone applies the
-commanded overhead pair directly to UEP; there is no per-frame
-redistribution or solve. `AirFeed` (`drone/src/air_feed.{h,cpp}`, the
-solver's measurement-only successor) keeps per-stream EWMAs of
-frame-unit bytes vs. emitted body bytes, publishing `share_base`/
-`excess_base`/`excess_enh` for `run_bitrate_policy`'s blended-rate
-target (see `docs/airtime-model.md` §1) and `ov_base`/`ov_enh` purely
-for observability — none of it feeds back into what overhead is
-actually applied.
+**The runtime `AirBalancer` solver is deleted, and so is `AirFeed`.**
+The drone applies the commanded overhead pair directly to UEP; there is
+no per-frame redistribution or solve. `AirFeed`, the solver's
+measurement-only successor, kept per-stream EWMAs of frame-unit bytes
+vs. emitted body bytes and published `share_base`/`excess_base`/
+`excess_enh` into `run_bitrate_policy`'s blended target; it was deleted
+on 2026-09-01 when that blend became a fixed per-rung formula, because
+every bitrate write it provoked cost a keyframe (see
+`docs/airtime-model.md` §1). `run_bitrate_policy` is once again a pure
+function of the operating point: a held rung commands a held bitrate.
 
 The drone's `:8301` `ov_base_pct`/`ov_enh_pct` HTTP override (bench
 tooling, not a production control) is now the ONLY source of

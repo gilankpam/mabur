@@ -3,7 +3,6 @@ add_library(mabur_drone_core STATIC
   src/debug_http.cpp
   src/frame_source.cpp
   src/frame_pipeline.cpp
-  src/air_feed.cpp
   src/radio_tx.cpp
   src/rc_agent.cpp
   src/msp_serial.cpp

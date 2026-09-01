@@ -25,8 +25,8 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.state == 2);
   CHECK(t.flags == 0x07);  // failsafe_shed | radio_rx_ok | probing
   CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
-  // applied_ov_base/enh map straight through — per-stream applied overhead,
-  // fed by the hot-thread AirFeed via AirFeedOut (Task 8).
+  // applied_ov_base/enh map straight through — the commanded per-stream
+  // pair, or the debug-HTTP override when armed (main.cpp).
   CHECK(std::abs(t.applied_ov_base - 0.25) < 1e-9);
   CHECK(std::abs(t.applied_ov_enh - 0.4) < 1e-9);
   CHECK(t.rcf_age_ms == 65535);
