@@ -4,12 +4,14 @@
 > is RESOLVED — see §19 of the findings doc.** The worker is exonerated
 > (90 µs/repair, joins 0.35–0.5 ms mean); the per-byte term is the hot
 > thread's OWN feed compute (~4.7 ms/AU isolated) plus ~2.7 ms of
-> core-sharing interleave (removable via affinity, validated live:
-> cpu 9.0→6.3 ms, span 8.6→7.9 ms, gate clean). mt2-row/spin is
-> DEMOTED (would steal the hot core). New rank: (1) feed-own
-> alloc/copy diet, (2) affinity policy in maburd, (3) flush-join
-> relaxation, then the unchanged air half (A-MPDU/656). The probe
-> sequence below is kept for provenance; read §19 first.
+> core-sharing interleave. mt2-row/spin is DEMOTED (would steal the hot
+> core). **The affinity half is now SHIPPED and bench-accepted (§20):
+> fec p50 10.3 → 9.7 ms, au_tail span 9.0 → 7.2 ms, all gates green,
+> rollback `maburd.pre-affinity`** — flight-unvalidated. Remaining
+> rank: (1) feed-own alloc/copy diet (~4.7 ms, the big one),
+> (2) flush-join relaxation, then the unchanged air half
+> (A-MPDU/656). The probe sequence below is kept for provenance; read
+> §19 + §20 first.
 
 2026-09-01, bench (drone `192.168.10.152`, GS `10.18.0.1`), branch
 `ampdu`. Continues `docs/dq-spike-findings-2026-08-31.md` §14–§18 (the
@@ -121,10 +123,12 @@ or raw dq_split cpu_us (both instruments lie under feed-shape changes).
 
 332/w32 everywhere (656 rollback verified), adaptive ladder, 11 M cap,
 ch136, agg 0. Deployed instrumented builds: drone maburd =
-**fecgauge+thread-names** (session 4; rollback `maburd.pre-fecgauge`;
-pre-urbgauge and pre-ampdu PRUNED), GS maburgs = rx_pace+au_tail
-(rollback `maburgs.pre-rxpace`), fixed maburplay (rollback
-`maburplay.pre-healslip`). Config backups `/tmp/*.pre-656` (now equal
+**fecgauge + thread-names + core-affinity policy** (session 4;
+rollback `maburd.pre-affinity` = the gauge build without the policy;
+pre-fecgauge/pre-urbgauge/pre-ampdu PRUNED), GS maburgs =
+rx_pace+au_tail (rollback `maburgs.pre-rxpace`), fixed maburplay
+(rollback `maburplay.pre-healslip`). GS `aucadence.py` refreshed to
+ring v2. Config backups `/tmp/*.pre-656` (now equal
 to live), `/tmp/*.pre-sat`, `/tmp/maburgs.json.pre-pin` on the devices.
 Closing gate 60.0 fps / 0 gaps. ⚠ GS 2.4 GHz AP (AIC8800) drops its
 station under strong nearby 5 GHz TX — observation nuisance, wired

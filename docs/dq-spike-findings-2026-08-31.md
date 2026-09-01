@@ -976,11 +976,7 @@ the pacer, and production pace = hot-thread wall.
    the 4 copies (frag → current_symbol → ring → SBI body), CRC16
    passes. Host-profileable; fecbench only ever measured the repair
    path.
-2. **Affinity policy in maburd** (validated today, −2.7 ms cpu / −0.65 ms
-   span / −36 µs air spacing, gate-clean): pin mbr-hot alone, rest +
-   SDK on the other core. Costs join (+1 ms, worker slower) — net win
-   regardless. Needs an operator call because it also crowds the venc
-   SDK threads (no observed harm in 10+ min: ring fill 0 %, no vanish).
+2. **Affinity policy in maburd** — ✅ **SHIPPED, see §20 below.**
 3. **Flush-join relaxation**: joins exist to ship the tail repair with
    its own frame; shipping it one frame late (SwDecoder has no ordering
    contract) deletes the 0.4–1.5 ms join term at a small
@@ -995,6 +991,68 @@ Bench end state: pins REVERTED (prod shape = unpinned), both ends on
 gauge builds — drone maburd = fecgauge+names (rollback
 `maburd.pre-fecgauge`; pre-urbgauge/pre-ampdu pruned per handover), GS
 unchanged (rx_pace+au_tail build). Configs untouched all session.
+
+## 20. Core-placement policy shipped — and the inheritance trap that
+## makes the naive version WORSE than nothing (2026-09-01, session 4)
+
+§19's lever #2 is now in `maburd` (no config key — operator ruling was
+"implement it, gate it, remove it if it fails"). Shape:
+`run_real_mode` sets **process** affinity to cpu0 before `libusb_init`
+and the venc bring-up, so every thread either library spawns inherits
+it; the hot thread then moves itself to cpu1. Guarded on exactly 2
+online CPUs so the same binary on a dev host doesn't cram everything
+onto CPU 0.
+
+**The trap, caught by the bench on the first deploy.** `FecWorker` is
+constructed INSIDE the hot thread's lambda, so its thread inherits the
+hot thread's cpu1 — putting the repair worker on the producer's core,
+which is the one placement strictly WORSE than no policy at all:
+
+| placement | dq_split cpu_us | flush-join mean |
+|---|---|---|
+| unpinned (old prod) | 8.4–9.5 ms | 0.35–0.5 ms |
+| hot pinned, worker inherits cpu1 | **11.0–11.6 ms** | **3.2–3.7 ms** |
+| hot cpu1, worker explicitly cpu0 | **6.1 ms** | 1.5 ms |
+
+`FecWorker`'s ctor already took a `cpu` argument for exactly this; it
+was being default-constructed. Passing `kRestCore` is what makes the
+policy a win, and the code comment says so — anyone "simplifying" that
+argument away reintroduces an 11.5 ms regression that still passes
+every functional gate.
+
+**Accepted numbers** (11 M/mcs5/332 park, 30 s sideport samples +
+5 s gauge windows, vs the same-session unpinned baseline):
+
+| metric | before | after |
+|---|---|---|
+| dq_split cpu_us | 9.0 ms | **6.1 ms** |
+| dq_split sink_us | 1.9 ms | **0.15 ms** |
+| GS au_tail span | 9.0 ms | **7.2 ms** |
+| rx_pace tsfl (air spacing) | 382 µs | **345 µs** |
+| fec p50 | 10.3 ms | **9.7 ms** |
+
+Gates all green: ausniff 60.0 fps / 0 gaps / 0 incomplete, aucadence
+**−0.26 ms** (band −1.1…−3.0, and within ±1 ms of this session's
++0.58 criterion), jitter EMA **5.79 ms** median vs the 332 signature
+~5.4 — i.e. no 656-style jitter trade — 0 stalls, 0 q_drop, venc ring
+0 % fill / 0 vanished / 0 idr-disagree.
+
+Note the span moved 1.8 ms but fec only 0.6 ms: the GS publish tail
+(~2.2 ms) is untouched by this and now accounts for a larger share of
+what's left. Lever #1 (feed-own ~4.7 ms) is still the big one, and
+§19's ranking is otherwise unchanged.
+
+⚠ Flight-unvalidated: bench only, and it deliberately crowds the venc
+SDK threads onto one core. No harm observed across ~15 min at 60 fps,
+but the first flight with this build should watch `vanished` and
+`frame_ring fill`. Rollback is `maburd.pre-affinity` on the drone
+(binary-only, no config pairing — this change touches no config key).
+
+Bench end state: drone maburd = affinity build (rollback
+`maburd.pre-affinity`), GS unchanged; GS `aucadence.py` refreshed from
+the repo (its installed copy still expected ring v1 and rejected the
+v2 ring — `ausniff.py` had been refreshed in an earlier session but
+`aucadence.py` was missed).
 
 ## Provenance
 
