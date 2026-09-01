@@ -304,7 +304,11 @@ only):
   `tx_threads` setting including 1 — devourer's send path is async
   libusb submission all the way down
   (`third_party/devourer/src/UsbTransport.cpp`), so maburd never blocks
-  and never paces. The 0.385 ms/body is set below libusb: per-MPDU
+  and never paces. **⚠ The mechanism in that sentence is wrong — see
+  §14: the 20 µs is UsbTxPool enqueue (tx_threads>1) or an
+  unblocked *synchronous* bulk (tx_threads=1); jaguar3 never uses the
+  async libusb path. The conclusion (maburd's writer thread doesn't
+  pace) stands.** The 0.385 ms/body is set below libusb: per-MPDU
   ~0.16 ms of chip/medium-access overhead (descriptor processing, DIFS +
   backoff — injection still does CSMA) on top of ~0.22 ms mcs5 airtime.
   Splitting those two needs devourer/PHY instrumentation, not maburd's.
@@ -566,6 +570,68 @@ tx_threads already does… measure why acceptance serializes); devourer
    sign is also possible (`reg` mean fell 2.6 ms alongside the upstream
    saving). Segment savings and `e2e` savings remain non-1:1 in both
    directions.
+
+## 14. TX submission model pinned — the handover's sync/async
+## contradiction resolved (2026-09-01, code read)
+
+`docs/handover-usb-feed-2026-09-01.md` probe 1. The two "contradictory"
+statements described different layers, and §8's mechanism was
+misattributed:
+
+**The actual path** (tx_threads > 1, the deployed shape):
+
+1. TX writer thread: `tx.send_bodies` → `DevourerSink::send_many` →
+   `UsbTxPool::submit()` per frame — a **memcpy + deque push**
+   (`drone/src/usb_tx_pool.h`). No libusb anywhere. This is the ~20 µs
+   the `tx_send` gauge measured; §8's "async libusb all the way down"
+   was wrong about what sat under the gauge.
+2. UsbTxPool worker (×tx_threads): pops ≤3 frames →
+   `RtlJaguar3Device::send_packets` → packs one ≤3-descriptor URB
+   (`TxAggPlan`) → `bulk_send_sync_ep` → `UsbTransport::tx_sync` →
+   **`libusb_bulk_transfer`, synchronous blocking bulk-OUT**
+   (50 ms timeout; single-frame path 20 ms). aggregation.md's "each
+   sender thread blocks on its own transfer" is correct for J2/J3.
+3. The async path (`RtlAdapter::send_packet` → `tx_async`,
+   UsbTransport.cpp) **exists but jaguar3 never calls it** — its
+   `send_packet` overrides with the sync path because nothing pumps
+   libusb events on the J3 TX loop (comment at
+   `RtlJaguar3Device.cpp:1703`); the async machinery is jaguar1's.
+
+**The blocking is flow control, not a fixed handshake.** A bulk-OUT URB
+completes in tens of µs when the chip FIFO has room — which is why §8
+measured ~20 µs even at tx_threads=1, where the pool is bypassed
+(`main.cpp:780` only wires the pool for tx_threads>1) and the writer
+thread itself sat in `libusb_bulk_transfer`. The link was unsaturated
+(1341 bodies/s offered), so the FIFO always had room. The "~0.4 ms
+acceptance handshake" (linkbench 2026-07-14) is the *saturated* case:
+the chip NAKs until its FIFO drains, so URB completion pace becomes the
+FIFO drain pace. aggregation.md line 41 says exactly this
+("flow-controlled by the chip, ~ms scale between URB completions").
+
+**What this sharpens probe 2 into.** The open question is not "does
+acceptance cost 0.4 ms" — unsaturated it costs ~nothing. It is: **under
+saturation, do N workers' blocked URBs complete at N× the rate of one
+(pipelined FIFO fill: kernel queues all N, chip drains continuously) or
+at ~1× (serialized acceptance)?** tx_threads 1→8 flat (§8) was measured
+*unsaturated*, so it never tested this. Two corollaries worth
+falsifying while instrumented:
+
+- txdemo's 2346 singles/s = 2346 URBs/s accepted — far above maburd's
+  ~609 URBs/s (1826 bodies/s ÷ 3) — so raw URB acceptance is not the
+  ceiling; the difference is in *what the chip does with* maburd's
+  3-desc aggregated URBs vs txdemo's singles, or in FIFO drain pace at
+  maburd's frame sizes (1396 B vs txdemo's same 1396 B… the shapes
+  differ in URB packing, QSEL and cadence, not MPDU size).
+- If the saturated drain pace is the chip FIFO's air-drain being
+  reflected back through NAKs, then the ~151 µs/body intercept should
+  have moved with A-MPDU (it compresses air) — it didn't (§12). So
+  either the FIFO drain is *not* air-limited (internal DMA/parse pace),
+  or the intercept lives elsewhere host-side (URB turnaround gaps
+  between a worker's completion and its next submit).
+
+The per-URB gauge (probe 2) measures all of this drone-side: per-call
+wall-time distribution in the pool workers, worker overlap at entry,
+and utilization vs wall clock.
 
 ## Provenance
 

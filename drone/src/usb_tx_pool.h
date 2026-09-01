@@ -1,7 +1,9 @@
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -79,6 +81,13 @@ class UsbTxPool {
   }
 
  private:
+  static uint64_t now_us() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+  }
+
   void run() {
     std::vector<std::vector<uint8_t>> batch;
     for (;;) {
@@ -93,11 +102,93 @@ class UsbTxPool {
         }
       }
       space_.notify_one();
+      // usb_urb gauge (handover-usb-feed probe 2): wall time of each
+      // send_packets call (= one blocking bulk-OUT URB round-trip on
+      // jaguar3), the number of OTHER workers already inside send_ at
+      // entry (overlap: do blocked URBs pipeline?), and busy-µs for the
+      // window's mean-inflight figure. Unsaturated a URB completes in
+      // tens of µs (FIFO has room); the saturated distribution and its
+      // scaling with tx_threads is the measurement.
+      const uint64_t t0 = now_us();
+      const int ov = g_inflight_.fetch_add(1, std::memory_order_relaxed);
       const size_t ok = send_(batch);
+      g_inflight_.fetch_sub(1, std::memory_order_relaxed);
+      const uint64_t dt = now_us() - t0;
+      g_calls_.fetch_add(1, std::memory_order_relaxed);
+      g_bodies_.fetch_add(batch.size(), std::memory_order_relaxed);
+      g_sum_us_.fetch_add(dt, std::memory_order_relaxed);
+      uint64_t prev = g_max_us_.load(std::memory_order_relaxed);
+      while (dt > prev &&
+             !g_max_us_.compare_exchange_weak(prev, dt,
+                                              std::memory_order_relaxed)) {}
+      static constexpr uint64_t kEdge[5] = {50, 150, 300, 600, 1200};
+      size_t bi = 5;
+      for (size_t i = 0; i < 5; ++i)
+        if (dt <= kEdge[i]) { bi = i; break; }
+      g_dist_[bi].fetch_add(1, std::memory_order_relaxed);
+      g_overlap_[ov < 7 ? ov : 7].fetch_add(1, std::memory_order_relaxed);
+      // Split by batch size: fixed-per-URB acceptance would show sz3 mean
+      // ≈ sz1 mean (amortizing 3x per body); per-byte would show ~3x.
+      const size_t sz = batch.size() < 3 ? batch.size() : 3;
+      g_sz_calls_[sz - 1].fetch_add(1, std::memory_order_relaxed);
+      g_sz_sum_us_[sz - 1].fetch_add(dt, std::memory_order_relaxed);
+      maybe_report(t0 + dt);
+
       sent_ok_ += ok;
       send_fail_ += batch.size() - ok;
       batch.clear();
     }
+  }
+
+  // One worker (whoever crosses the 5 s boundary first, CAS-elected)
+  // prints and resets the shared window counters.
+  void maybe_report(uint64_t now) {
+    uint64_t last = g_last_report_us_.load(std::memory_order_relaxed);
+    if (last == 0) {
+      g_last_report_us_.compare_exchange_strong(last, now,
+                                                std::memory_order_relaxed);
+      return;
+    }
+    if (now - last < 5000000) return;
+    if (!g_last_report_us_.compare_exchange_strong(
+            last, now, std::memory_order_relaxed))
+      return;  // another worker owns this window's report
+    const uint64_t win_us = now - last;
+    const uint64_t calls = g_calls_.exchange(0, std::memory_order_relaxed);
+    const uint64_t bodies = g_bodies_.exchange(0, std::memory_order_relaxed);
+    const uint64_t sum = g_sum_us_.exchange(0, std::memory_order_relaxed);
+    const uint64_t mx = g_max_us_.exchange(0, std::memory_order_relaxed);
+    uint64_t d[6], o[8], sc[3], ss[3];
+    for (int i = 0; i < 6; ++i)
+      d[i] = g_dist_[i].exchange(0, std::memory_order_relaxed);
+    for (int i = 0; i < 8; ++i)
+      o[i] = g_overlap_[i].exchange(0, std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i) {
+      sc[i] = g_sz_calls_[i].exchange(0, std::memory_order_relaxed);
+      ss[i] = g_sz_sum_us_[i].exchange(0, std::memory_order_relaxed);
+    }
+    if (calls == 0) return;
+    std::fprintf(
+        stderr,
+        "maburd usb_urb: calls=%llu bodies=%llu us/call mean=%llu max=%llu "
+        "dist<=50/150/300/600/1200/inf=%llu/%llu/%llu/%llu/%llu/%llu "
+        "overlap0..7=%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu "
+        "mean_inflight=%llu.%02llu "
+        "sz1=%llu@%llu sz2=%llu@%llu sz3=%llu@%llu\n",
+        (unsigned long long)calls, (unsigned long long)bodies,
+        (unsigned long long)(sum / calls), (unsigned long long)mx,
+        (unsigned long long)d[0], (unsigned long long)d[1],
+        (unsigned long long)d[2], (unsigned long long)d[3],
+        (unsigned long long)d[4], (unsigned long long)d[5],
+        (unsigned long long)o[0], (unsigned long long)o[1],
+        (unsigned long long)o[2], (unsigned long long)o[3],
+        (unsigned long long)o[4], (unsigned long long)o[5],
+        (unsigned long long)o[6], (unsigned long long)o[7],
+        (unsigned long long)(sum / win_us),
+        (unsigned long long)(sum * 100 / win_us % 100),
+        (unsigned long long)sc[0], (unsigned long long)(sc[0] ? ss[0] / sc[0] : 0),
+        (unsigned long long)sc[1], (unsigned long long)(sc[1] ? ss[1] / sc[1] : 0),
+        (unsigned long long)sc[2], (unsigned long long)(sc[2] ? ss[2] / sc[2] : 0));
   }
 
   SendBatch send_;
@@ -108,6 +199,14 @@ class UsbTxPool {
   bool stopped_ = false;
   std::vector<std::thread> threads_;
   std::atomic<uint64_t> sent_ok_{0}, send_fail_{0};
+
+  // usb_urb gauge window state (shared across workers, reset each report).
+  std::atomic<int> g_inflight_{0};
+  std::atomic<uint64_t> g_calls_{0}, g_bodies_{0}, g_sum_us_{0}, g_max_us_{0};
+  std::atomic<uint64_t> g_dist_[6] = {};
+  std::atomic<uint64_t> g_overlap_[8] = {};
+  std::atomic<uint64_t> g_sz_calls_[3] = {}, g_sz_sum_us_[3] = {};
+  std::atomic<uint64_t> g_last_report_us_{0};
 };
 
 }  // namespace mabur
