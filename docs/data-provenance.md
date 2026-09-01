@@ -15,7 +15,9 @@ overhead flatten 2026-08-29 · overhead literal + 4→2 stream collapse
 ctllog 8 2026-08-30 (same-rate-fixed-pairs) · SlotHdr v2 (`# aulog 2`) +
 aucadence completion clock switched to ring `t_complete_us` 2026-08-31
 (latency-accounting) · `reg`/`dsp` split redistributed by the vsync
-servo 2026-08-31 (sum still comparable, split is not).
+servo 2026-08-31 (sum still comparable, split is not) · **post-FEC
+residual re-based from packet-seq to symbol abandonment + ctllog 9
+2026-09-02 (residual-phantom-demotes)**.
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -100,7 +102,11 @@ scale-break note below); 2026-08-30 `link.deadline_ms` (the
 the wall-2 bench measurement,
 `docs/wall2-deadline-findings-2026-08-30.md` addendum — the video
 decoders now rely on the seq horizon alone; MSP's SwDecoder keeps its
-own 2 s expiry). Removed keys are absent, not null. Keep appending to that list — not to protect
+own 2 s expiry); 2026-09-02 `link.attrib.suppressed` (deleted with the
+packet-level delivery window it was defined against — it counted windows
+where the total and attributed packet views disagreed, a question the
+symbol-based measure cannot ask; residual-phantom-demotes note below).
+Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
 sideport config lives in `/etc/maburgs.json` under `stats`
@@ -289,3 +295,52 @@ same-config A/B on the bench: `e2e` p50 55.9 → 45.3 ms, `air` 2–3 → 0–1,
 cannot be compared to one after it at any scale; a healthy pre-change
 recording shows `dq`≈6–7 where a healthy post-change one shows 0.
 `dq` > a few ms now genuinely means TxQueue backlog.
+
+
+**Scale break, 2026-09-02 — post-FEC residual is symbol abandonment, was
+packet-seq gaps.** Everything that reports "residual"/"post-FEC loss"
+changed what it counts: `link.residual_loss` and `link.attrib.residual_cur`
+on the sideport, `resid`/`resid_cur` on the ctl log's S lines, `resid` on
+its R lines, `link.layer_delivery_pct`, and the player OSD's post-loss row.
+
+Before: `1 - delivered/expected` over a per-RCF-period window, from FRAG-seq
+continuity of completed packets. That measure inferred loss from sequence
+gaps, and a gap is indistinguishable from a unit that has not completed
+*yet*. Sliding-window FEC completes a repaired unit *after* a later clean
+one, so the next forward gap re-booked an already-delivered unit as a fresh
+expectation. In a 50 ms window holding 3–6 units that reads as exactly
+0.2500 or 0.3333.
+
+After: `abandoned/expected` from the FEC decoder's own counters
+(`SwDecoder::syms_abandoned`), which is seq arithmetic over a span and is
+immune to arrival order. One formula for every consumer, in
+`gs/src/ladder_residual.cpp`.
+
+**Why recordings must be dated against this.** The old number was not a
+noisy version of the new one — on a clean bench it was pure artifact. A
+57-minute run on 2026-09-02 logged **200 `reason=residual` demotes with
+`syms_abandoned` frozen at 139 across 6.2 M packets**, i.e. zero real
+post-FEC loss the entire time, and `syms_recovered_arrived` (late originals)
+= 218, tracking the demotes ~1:1. Consequences when reading pre-2026-09-02
+data:
+
+- A pre-break `resid > 0` does **not** mean video was lost. Do not pool
+  per-rung `resid` across the boundary.
+- Pre-break per-rung residual tables (including `flightreport.py`'s
+  inversion callout) are contaminated by *reorder rate*, which scales with
+  packet rate and therefore with rung — so they systematically overstate
+  the high rungs. The "mcs5 is lossier" shape in older rung stores may be
+  this artifact rather than PHY.
+- Pre-break ladder behaviour is not comparable: the link could not hold a
+  rung, so dwell-time-per-rung, promote/demote counts and time-at-max are
+  all measuring the artifact.
+- The ladder's demote input additionally narrowed from pooled base+enh to
+  **BASE only** at the same date (the pooling was a 4-stream-era leftover);
+  the S line still logs the pooled view.
+- Post-break loss is booked ~80 ms later — a symbol counts abandoned only
+  once the sliding-window horizon passes it (`seq_horizon` 512 at ~6.4 k
+  sym/s). Sub-100 ms timing comparisons against pre-break recordings are
+  not valid.
+
+The ctl log self-identifies: `ctllog 9` and later are symbol-based, v1–v8
+are packet-based, and `flightreport.py` prints a pre-v9 warning.

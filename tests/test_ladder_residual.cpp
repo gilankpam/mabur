@@ -16,22 +16,32 @@ using namespace mabur;
 
 namespace {
 
-// One BASE-layer (stream 0) frame unit, small enough to ride a single
-// symbol so that one unit == one body == one delivery-window entry.
-std::vector<uint8_t> make_unit(uint32_t frame_id, size_t paylen,
-                               std::mt19937& rng) {
+// One frame unit, small enough to ride a single symbol. stream 0 = BASE
+// (VPS -> critical), stream 1 = ENH (TRAIL_R carrying the temporal id).
+std::vector<uint8_t> make_unit_for(int stream, uint32_t frame_id, size_t paylen,
+                                   std::mt19937& rng) {
   std::vector<uint8_t> unit(framewire::kFrameHdrLen);
   framewire::FrameHdr h;
   h.frame_id = static_cast<uint16_t>(frame_id);
-  h.flags = framewire::kFlagIdr;
+  h.flags = stream == 0 ? framewire::kFlagIdr : 0;
   h.pts_us = frame_id * 16667u;
   framewire::pack_frame_hdr(h, unit.data());
   for (uint8_t b : {0x00, 0x00, 0x00, 0x01}) unit.push_back(b);
-  unit.push_back(32 << 1);  // VPS -> critical/base
-  unit.push_back(1);
+  if (stream == 0) {
+    unit.push_back(32 << 1);  // VPS -> critical/base
+    unit.push_back(1);
+  } else {
+    unit.push_back(1 << 1);  // TRAIL_R
+    unit.push_back(static_cast<uint8_t>(stream));
+  }
   while (unit.size() < framewire::kFrameHdrLen + paylen)
     unit.push_back(static_cast<uint8_t>(rng()));
   return unit;
+}
+
+std::vector<uint8_t> make_unit(uint32_t frame_id, size_t paylen,
+                               std::mt19937& rng) {
+  return make_unit_for(0, frame_id, paylen, rng);
 }
 
 std::array<UepLayerCfg, 2> one_symbol_layers() {
@@ -101,6 +111,43 @@ TEST(dropped_unit_is_residual_loss) {
   const auto rc = maburgs::ladder_residual_counts(dec);
   CHECK(rc.expected > 0);
   CHECK(rc.arrived < rc.expected);
+}
+
+// The pooled observability view is exactly the two layers summed -- the
+// sideport/OSD number must not silently be base-only, nor double-count.
+TEST(pooled_residual_counts_sum_both_layers) {
+  auto layers = one_symbol_layers();
+  UepEncoder enc(layers, /*flush_ms=*/15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(11);
+  uint64_t now = 1000;
+
+  for (uint32_t i = 0; i < 20; ++i) {
+    for (int s = 0; s < 2; ++s) {
+      auto unit = make_unit_for(s, i, 64, rng);
+      auto bodies = enc.add_frame(s, unit.data(), unit.size(), now);
+      REQUIRE(!bodies.empty());
+      dec.add_body(bodies[0].body.data(), bodies[0].body.size(), now);
+    }
+    now += 5;
+  }
+
+  const auto base = maburgs::residual_counts(dec, 0, /*cur=*/false);
+  const auto enh = maburgs::residual_counts(dec, 1, /*cur=*/false);
+  const auto pooled = maburgs::residual_counts_pooled(dec, /*cur=*/false);
+  CHECK(base.expected > 0);
+  CHECK(enh.expected > 0);
+  CHECK(pooled.expected == base.expected + enh.expected);
+  CHECK(pooled.arrived == base.arrived + enh.arrived);
+}
+
+// An idle layer reads fully delivered, not 0% -- the old packet-level
+// window_delivery_pct returned 100 on an empty window and the sideport's
+// layer_delivery_pct consumers depend on that.
+TEST(delivery_pct_is_100_when_nothing_expected) {
+  CHECK(maburgs::delivery_pct(maburgs::ResidualCounts{0, 0}) == 100);
+  CHECK(maburgs::delivery_pct(maburgs::ResidualCounts{3, 4}) == 75);
+  CHECK(maburgs::delivery_pct(maburgs::ResidualCounts{4, 4}) == 100);
 }
 
 MTEST_MAIN

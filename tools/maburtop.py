@@ -1047,7 +1047,13 @@ def panel_ladder(model, wall):
     body.extend(_ladder_footer_rows(ctl, d.get("t_ms")))
     at = (d.get("link") or {}).get("attrib")
     if at:
-        body.append((f" attrib sup{_s(at.get('suppressed'))}", []))
+        # `suppressed` was deleted 2026-09-02 with the packet-level delivery
+        # window it was defined against; residual_cur is the current-rung
+        # (attributed) post-FEC loss the ladder actually demotes on.
+        rc = at.get("residual_cur")
+        rc_pct = None if rc is None else rc * 100.0
+        body.append((f" attrib resid_cur{_f(rc_pct, 5, 1)}%"
+                     f" close{_s(at.get('close_ms'), 0)}ms", []))
     fade = (ctl or {}).get("fade") or {}
     if fade.get("active"):
         body.append((" fade:ACTIVE"

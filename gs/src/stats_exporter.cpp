@@ -192,7 +192,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   if (in.residual_loss) link["residual_loss"] = *in.residual_loss;
   else link["residual_loss"] = nullptr;
   json& at = link["attrib"];
-  at["suppressed"] = in.attrib_suppressed;
   if (in.residual_cur) at["residual_cur"] = *in.residual_cur;
   else at["residual_cur"] = nullptr;
   if (in.attrib_close_ms) at["close_ms"] = *in.attrib_close_ms;

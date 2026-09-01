@@ -384,9 +384,11 @@ SysV respawn script (does `rmmod 8812eu` at start).
    indefinitely. Mechanism: (a) the ScoreWindow SNR feed is
    survivor-biased — at faint signal only the luckiest frames decode, and
    their SNR reads high (EMA showed 38–48 dB while the GS heard 20–40 fps
-   of a 1,750 fps stream); (b) `window_delivery_pct` returns **100 when the
-   window saw no traffic**, so total decode collapse reads as perfect
-   delivery; (c) the `video_silence_ms` escape valve never fires because a
+   of a 1,750 fps stream); (b) the per-layer delivery percent returns **100
+   when nothing was expected**, so total decode collapse reads as perfect
+   delivery (then `UepDecoder::window_delivery_pct`; since 2026-09-02
+   `maburgs::delivery_pct` in `gs/src/ladder_residual.cpp`, which keeps that
+   convention deliberately — see `delivery_pct_is_100_when_nothing_expected`); (c) the `video_silence_ms` escape valve never fires because a
    trickle of frames keeps refreshing last-video. High SNR + "100 %"
    delivery ⇒ the controller keeps commanding minimum power. Recovery:
    restart maburgs (controller reboots at MAX_RANGE). **Fix shipped

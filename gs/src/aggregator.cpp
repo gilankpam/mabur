@@ -7,7 +7,8 @@ namespace maburgs {
 namespace {
 // A monster gap is a link outage, not per-frame information — cap its
 // contribution so one outage doesn't dominate the delivery ratio (same
-// bounded-walk stance as common/src/uep_decoder.cpp's note_delivery()).
+// bounded-walk stance common/src/uep_decoder.cpp's note_delivery() used
+// before it was deleted 2026-09-02).
 constexpr uint16_t kMaxSeqGap = 512;
 constexpr double kEmaAlpha = 0.1;
 

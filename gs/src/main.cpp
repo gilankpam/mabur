@@ -434,9 +434,9 @@ static int run_radio(const maburgs::Config& cfg) {
   // (syms_recovered_arrived) — a repair that merely wins an arrival race is
   // not channel loss. Without that term, rung 0's 2x parity read a clean
   // bench as 19-26% pre-FEC loss and pinned u above up_util forever (stuck
-  // at mcs0, 2026-07-27). Not the same window as window_counts()'s post-FEC
-  // residual below: this one is symbol-level and time-windowed
-  // (S1LossWindow), that one is packet-level and RCF-period-windowed.
+  // at mcs0, 2026-07-27). This is the PRE-FEC window; the post-FEC residual
+  // below is a different question over the same symbol counters (what FEC
+  // could not repair at all) -- see gs/src/ladder_residual.cpp.
   maburgs::S1LossWindow s1_loss;
   // s3 probe-before-promote feedback (same windowing machinery as s1_loss,
   // stream 3): pre-FEC loss for probe/s3-demote decisions. The steady-state
@@ -448,9 +448,21 @@ static int run_radio(const maburgs::Config& cfg) {
   // same machinery, fed from the attributed counters. s1_loss/s3_loss stay
   // as the observability totals (residual_loss, the artifact-rate meter).
   maburgs::S1LossWindow s1_loss_cur, s1_resid_cur, s3_loss_cur, s3_resid_cur;
+  // Observability siblings of s1_resid_cur, pooled over both layers: the
+  // sideport's link.residual_loss / link.attrib.residual_cur and the ctl
+  // log's S-line resid/resid_cur. These MUST be windowed, not cumulative --
+  // the decoder's abandonment counters are monotonic since boot, and a
+  // lifetime average never returns to zero, which would break
+  // flightreport.py's residual-episode detection and turn the player OSD's
+  // post-loss row into a number that barely moves during a real burst.
+  maburgs::S1LossWindow pool_resid, pool_resid_cur;
+  // Per-layer delivery percent (sideport link.layer_delivery_pct), windowed
+  // for the same reason.
+  std::array<maburgs::S1LossWindow, 2> layer_resid;
   // Fade-trigger staleness gate (spec 2026-08-14 §3, source repointed to
   // the s1+s3 pool 2026-08-15): per-card pooled frame counts snapshotted
-  // once per feedback window (same cadence as reset_window()), so "zero
+  // once per feedback window (same cadence as the prev_pkts_out snapshot
+  // below), so "zero
   // s1+s3 frames this window" can NaN the RF labels before they reach the
   // controller. A frozen EMA must never read as a live signal. Snapshotted
   // for EVERY card, not just the chosen one: the choice itself is
@@ -461,14 +473,9 @@ static int run_radio(const maburgs::Config& cfg) {
   // allocates nothing after the first pass.
   std::vector<maburgs::CardLabelInput> label_card_inputs(
       static_cast<size_t>(n_cards));
-  // Windows where total residual was positive but attributed residual was
-  // zero at a rung > 0 — i.e. windows where the legacy instant demote
-  // would have fired on pure debris. THE headline artifact-rate number.
-  // Counted per contiguous suppressed episode, edge-detected — the loop
-  // runs per drained batch, far faster than the RCF window cadence, so a
-  // level-triggered increment here would count one episode tens of times.
-  uint64_t attrib_suppressed = 0;
-  bool attrib_suppressed_latched = false;
+  // Completed-packet high-water mark at the controller's last non-disc step;
+  // the starvation gate diffs against it (see the control step below).
+  uint64_t prev_pkts_out = 0;
   // Commanded-MCS edge detect for boundary marking. -1 forces a first mark
   // (which finds cur_mcs unknown -> closed plain-fallback boundary).
   int last_marked_op_mcs = -1;
@@ -698,31 +705,51 @@ static int run_radio(const maburgs::Config& cfg) {
       }
     }
 
-    // Control step: residual from the decode window, plus the base sid's
-    // cumulative symbol totals feeding the measured-loss window. Per-layer
-    // delivery is operator-facing only — it rides the stats sideport below,
-    // never the RCF (RC_VERSION 3 dropped it; maburd never read it).
+    // Control step: post-FEC residual from the FEC decoder's own abandonment
+    // counters — ONE formula for every consumer since 2026-09-02, see
+    // gs/src/ladder_residual.cpp. Per-layer delivery is operator-facing only
+    // — it rides the stats sideport below, never the RCF (RC_VERSION 3
+    // dropped it; maburd never read it).
     std::array<uint8_t, 2> ld{};
-    for (int s = 0; s < 2; ++s)
+    for (int s = 0; s < 2; ++s) {
+      const auto lc =
+          maburgs::residual_counts(agg.decoder(), s, /*cur=*/false);
+      auto& w = layer_resid[static_cast<size_t>(s)];
+      w.add(lc.expected, lc.arrived, now_ms);
+      const auto ls = w.sample(now_ms);
+      // Idle layer reads 100, matching the deleted window_delivery_pct (the
+      // 2026-07 controller-wedge finding in docs/bench-validation.md turns
+      // on that convention). Truncating like the old integer ratio did.
+      const int pct =
+          ls.valid ? static_cast<int>(100.0 * (1.0 - ls.loss)) : 100;
       ld[static_cast<size_t>(s)] =
-          static_cast<uint8_t>(agg.decoder().window_delivery_pct(s));
-    auto [d0, e0] = agg.decoder().window_counts(0);
-    auto [d1, e1] = agg.decoder().window_counts(1);
+          static_cast<uint8_t>(pct < 0 ? 0 : (pct > 100 ? 100 : pct));
+    }
+    const auto rc_tot =
+        maburgs::residual_counts_pooled(agg.decoder(), /*cur=*/false);
+    const auto rc_cur =
+        maburgs::residual_counts_pooled(agg.decoder(), /*cur=*/true);
+    pool_resid.add(rc_tot.expected, rc_tot.arrived, now_ms);
+    pool_resid_cur.add(rc_cur.expected, rc_cur.arrived, now_ms);
+    const auto pr = pool_resid.sample(now_ms);
+    const auto prc = pool_resid_cur.sample(now_ms);
     std::optional<double> residual;
-    if (e0 + e1 > 0)
-      residual = 1.0 - static_cast<double>(d0 + d1) / static_cast<double>(e0 + e1);
-    auto [d0c, e0c] = agg.decoder().window_counts_cur(0);
-    auto [d1c, e1c] = agg.decoder().window_counts_cur(1);
+    if (pr.valid) residual = pr.loss;
     std::optional<double> residual_cur;
-    if (e0c + e1c > 0)
-      residual_cur =
-          1.0 - static_cast<double>(d0c + d1c) / static_cast<double>(e0c + e1c);
-    // Zero completed base-layer packets while video frames still arrive =
-    // decode collapse; the ladder's video_starved path forces the failsafe
-    // rung then rather than trusting this window's (survivor-biased) loss
-    // sample. Gate on having ever seen video so a pre-link idle window
-    // doesn't count as starvation.
-    const bool starved = (e0 + e1 == 0) && agg.last_video_us() != 0;
+    if (prc.valid) residual_cur = prc.loss;
+    // Zero completed packets while video frames still arrive = decode
+    // collapse; the ladder's video_starved path forces the failsafe rung
+    // then rather than trusting this window's (survivor-biased) loss sample.
+    // Gate on having ever seen video so a pre-link idle window doesn't count
+    // as starvation.
+    //
+    // packets_out is CUMULATIVE, so this diffs against a snapshot taken at
+    // the same boundary the deleted reset_window() used (the controller's
+    // last non-disc step) — the residual counters are cumulative too now, so
+    // "expected == 0 this window" is no longer a thing the decoder can say.
+    const uint64_t pkts_now = agg.decoder().stats(0).packets_out +
+                              agg.decoder().stats(1).packets_out;
+    const bool starved = (pkts_now == prev_pkts_out) && agg.last_video_us() != 0;
 
     // s1_* names are historical (predate the 2-stream flatten): this is the
     // BASE sid's (0) window, the critical always-decode layer that drives
@@ -811,19 +838,9 @@ static int run_radio(const maburgs::Config& cfg) {
     health.rf_snr_db = rf_snr_db;
     health.rf_evm_db = rf_evm_db;
     health.rf_rssi_dbm = rf_rssi_dbm;
-    // Artifact-rate meter: a window the legacy instant demote would have
-    // acted on (total residual > 0, rung > 0) that the attributed view
-    // reads clean. Edge-detected on the latch above: one increment per
-    // contiguous suppressed episode, not once per main-loop pass.
-    const bool attrib_suppressed_now = vrx.ctl().rung() > 0 &&
-                                        residual.value_or(0.0) > 0.0 &&
-                                        residual_cur.value_or(0.0) <= 0.0;
-    if (attrib_suppressed_now && !attrib_suppressed_latched) ++attrib_suppressed;
-    attrib_suppressed_latched = attrib_suppressed_now;
-
     if (auto out = vrx.step(now_ms, health)) {
       if (!out->is_disc) {
-        agg.decoder().reset_window();  // window == RCF period
+        prev_pkts_out = pkts_now;  // window == RCF period
         // The RF staleness window and the loss window MUST share this
         // boundary: both are "since the last health the controller acted on".
         for (int i = 0; i < n_cards; ++i)
@@ -973,7 +990,6 @@ static int run_radio(const maburgs::Config& cfg) {
       for (int s = 0; s < 2; ++s)
         sin.gap_timeout_ms[s] = gap_policy.timeout_ms(s);
       sin.residual_loss = residual;
-      sin.attrib_suppressed = attrib_suppressed;
       sin.residual_cur = residual_cur;
       if (const double cms = agg.decoder().last_boundary_close_ms(0); cms >= 0)
         sin.attrib_close_ms = cms;
@@ -1308,7 +1324,8 @@ int main(int argc, char** argv) {
                  static_cast<unsigned long long>(st.syms_recovered),
                  static_cast<unsigned long long>(st.syms_abandoned),
                  static_cast<unsigned long long>(st.packets_out),
-                 agg.decoder().window_delivery_pct(s));
+                 maburgs::delivery_pct(
+                     maburgs::residual_counts(agg.decoder(), s, false)));
   }
   std::fprintf(stderr,
                "frames_out: clean=%llu truncated=%llu dropped=%llu bad_frag=%llu\n",

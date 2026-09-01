@@ -18,7 +18,7 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 8 <header_info>                                  # once, first line
+//   ctllog 9 <header_info>                                  # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr> <rssi_dbm>                # dwell sample, link.ctl_log_period_ms
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
@@ -41,6 +41,39 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 9 (2026-09-02, residual-phantom-demotes): line formats are
+// UNCHANGED from v8, but every RESIDUAL quantity changes MEANING. Through
+// v8, resid/resid_cur (S) and resid (R) were computed from the PACKET-level
+// delivery window -- FRAG-seq continuity of completed packets,
+// 1 - delivered/expected. That measure inferred loss from seq gaps and could
+// not tell a lost unit from one that had not completed yet, so a late
+// sliding-window FEC repair (completing an older unit after a newer one)
+// fabricated loss: on the 2026-09-02 bench, 200 spurious `residual` demotes
+// in 57 minutes while the FEC decoder's own abandonment counter sat frozen
+// at 139 across 6.2M packets. From v9 all of them come from that abandonment
+// counter instead (syms_abandoned / syms_abandoned_stale, order-independent
+// seq arithmetic in SwDecoder::advance) via gs/src/ladder_residual.cpp.
+//
+// What this means when comparing recordings across the v8/v9 line:
+//  - A v8 resid > 0 does NOT imply video was lost; a v9 resid > 0 does.
+//    Do not pool per-rung resid across the boundary, and treat v8 rung
+//    tables built from resid (flightreport's inversion detector) as
+//    contaminated by reorder rate, which scales with packet rate and so
+//    with rung.
+//  - v9 resid is BOTH LAYERS pooled (base+enh) exactly as v8 was, but the
+//    LADDER's demote input is now BASE ONLY -- v8 pooled enh into it, a
+//    leftover from the 4-stream era. The S line still logs the pooled view,
+//    so an E line with reason=residual can now fire on a rung whose logged
+//    resid is diluted by clean enh traffic.
+//  - v9 loss is booked ~80 ms later than v8's: a symbol counts abandoned
+//    only once the sliding-window horizon passes it (seq_horizon 512 at
+//    ~6.4k sym/s), where the packet measure fired on the next forward gap.
+//  - The `suppressed` sideport counter (link.attrib.suppressed) is GONE --
+//    it counted windows where the packet-level total and attributed views
+//    disagreed, which is not a question v9 can ask.
+// Attribution itself is UNCHANGED in spirit: resid_cur is still current-rung
+// only, now via syms_abandoned_stale rather than the packet stale buckets.
 //
 // ctllog 8 (2026-08-30, same-rate-fixed-pairs): a HEADER-ONLY change -- the
 // S/E/P/N/R line formats carry no overhead field at all (rung overhead only

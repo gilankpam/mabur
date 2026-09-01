@@ -34,7 +34,11 @@ struct GsSnapshot {
   std::optional<double> fec_pct;        // link.ctl.rung.ov x 100
   std::optional<double> air_pct;        // link.air_pct
   std::optional<double> pre_loss_pct;   // link.ctl.pre_fec_loss x 100
-  std::optional<double> post_loss_pct;  // link.residual_loss x 100
+  // link.residual_loss x 100. Since 2026-09-02 that key is symbol
+  // abandonment (base+enh pooled), not the old packet-seq delivery window --
+  // it now reads 0 on a clean link instead of blipping on reordered FEC
+  // repairs, so this row is quieter than pre-break recordings suggest.
+  std::optional<double> post_loss_pct;
   std::vector<GsCard> cards;            // in wire order
 };
 

@@ -27,12 +27,30 @@ namespace maburgs {
 // the "never-shed base layers" note on window_counts). Since the 2-stream
 // flatten sid 1 is the SHED-ABLE enh layer, which has its own demote path
 // in block 5a; pooling it here let enh loss demote through both.
+ResidualCounts residual_counts(const mabur::UepDecoder& dec, int sid,
+                               bool cur) {
+  const auto s = dec.stats(sid);
+  const uint64_t abandoned =
+      cur ? s.syms_abandoned - s.syms_abandoned_stale : s.syms_abandoned;
+  const uint64_t expected = s.syms_delivered + s.syms_recovered + abandoned;
+  return ResidualCounts{expected - abandoned, expected};
+}
+
+ResidualCounts residual_counts_pooled(const mabur::UepDecoder& dec, bool cur) {
+  const auto base = residual_counts(dec, 0, cur);
+  const auto enh = residual_counts(dec, 1, cur);
+  return ResidualCounts{base.arrived + enh.arrived,
+                        base.expected + enh.expected};
+}
+
+int delivery_pct(ResidualCounts rc) {
+  if (rc.expected == 0) return 100;  // idle layer is not a 0%-delivered layer
+  const uint64_t pct = rc.arrived * 100 / rc.expected;
+  return static_cast<int>(pct > 100 ? 100 : pct);
+}
+
 ResidualCounts ladder_residual_counts(const mabur::UepDecoder& dec) {
-  const auto s = dec.stats(0);
-  const uint64_t abandoned_cur = s.syms_abandoned - s.syms_abandoned_stale;
-  const uint64_t expected_cur =
-      s.syms_delivered + s.syms_recovered + abandoned_cur;
-  return ResidualCounts{expected_cur - abandoned_cur, expected_cur};
+  return residual_counts(dec, 0, /*cur=*/true);
 }
 
 }  // namespace maburgs

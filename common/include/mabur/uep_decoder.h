@@ -68,14 +68,6 @@ class UepDecoder {
                                     uint64_t body_mono_us = 0,
                                     bool body_crc_ok = true);
 
-  // Current-rung-only view of the delivery window: total minus units
-  // attributed to pre-transition debris, plus — while a boundary is armed —
-  // re-bookings and late deliveries of a unit already booked once (reorder
-  // double-count artifacts that a repair-cascade recovery can produce; the
-  // totals from window_counts() deliberately keep these, this view strips
-  // them). Same reset cadence as window_counts() (reset_window()).
-  std::pair<uint64_t, uint64_t> window_counts_cur(int sid) const;
-
   // Open->close latency (ms) of layer sid's last CLOSED boundary; -1 if a
   // boundary never closed on this layer. Observability only.
   double last_boundary_close_ms(int sid) const;
@@ -87,8 +79,8 @@ class UepDecoder {
   // or before the first repair.
   int repair_window(int sid) const;
 
-  // Drops delivery-window seq continuity — call on a session change, where the
-  // peer's FRAG seqs restart from an unrelated value.
+  // Drops per-layer decode state — call on a session change, where the peer's
+  // seqs restart from an unrelated value.
   void reset_continuity();
 
   struct LayerStats {
@@ -103,17 +95,16 @@ class UepDecoder {
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }
 
-  // Post-FEC delivery over a resettable window, from FRAG-seq continuity of
-  // completed packets: percent [0,100] delivered of expected; 100 when the
-  // window saw no traffic. Reordered/duplicate completions (backward gap)
-  // count as delivered without inflating expected.
-  int window_delivery_pct(int sid) const;
-  void reset_window();
-
-  // Raw window counters {delivered, expected} for stream sid — callers that
-  // combine streams (e.g. residual loss over the never-shed base layers)
-  // need the counts, not the rounded percent.
-  std::pair<uint64_t, uint64_t> window_counts(int sid) const;
+  // NOTE: the packet-level delivery window (window_counts/window_counts_cur/
+  // window_delivery_pct/reset_window) was DELETED 2026-09-02. It inferred
+  // loss from FRAG-seq gaps, which cannot distinguish a lost unit from one
+  // that has not completed yet, so a late sliding-window repair read as
+  // 25-33% loss and demoted the ladder ~200 times an hour on a clean bench.
+  // Post-FEC loss now comes from syms_abandoned/syms_abandoned_stale below
+  // (order-independent), via gs/src/ladder_residual.cpp. That measure
+  // strictly dominates: the packet one shared this decoder's join blind spot
+  // AND under-reported real loss (a unit missing a MIDDLE fragment but
+  // keeping its tail counted as delivered).
 
  private:
   struct Layer {
@@ -123,32 +114,16 @@ class UepDecoder {
     int env_size;
     SwDecoder sw;
     uint64_t bodies = 0, subblocks_failed = 0;
-    // delivery window
-    bool has_last_seq = false;
-    uint16_t last_seq = 0;
-    uint64_t win_delivered = 0, win_expected = 0;
     // --- transition-attribution boundary (spec 2026-08-14) ---
+    // Kept after the 2026-09-02 delivery-window deletion: these drive the
+    // kPre/kPost hint handed to SwDecoder::add_symbol (which is what splits
+    // syms_abandoned into stale/current) and the shipped close_ms metric.
     uint8_t cur_mcs = kMcsUnknown;  // expected PHY rate; kMcsUnknown = never set
     bool bnd_armed = false;         // watermark comparisons live
     bool bnd_open = false;          // boundary not yet closed by a kPost body
-    bool bnd_post_floor_set = false;  // first kPost completion consumed
     uint64_t bnd_arm_ms = 0;
     double bnd_close_ms = -1.0;     // last open->close latency
-    bool pkt_wm_valid = false;
-    uint16_t pkt_wm = 0;            // FRAG-seq watermark (u16, wrap-aware)
-    uint64_t win_delivered_stale = 0, win_expected_stale = 0;
-    // Monotonic high-water mark of every fseq ever passed to note_delivery
-    // (unlike last_seq, never regresses). A late FEC recovery can complete
-    // an OLDER unit after a newer one already completed, regressing
-    // last_seq; the next forward gap would then re-count the
-    // already-delivered newer unit as a fresh expectation. Once a boundary
-    // is armed, that re-ask is folded into the stale side rather than
-    // inflating the current-rung bucket with a phantom miss.
-    bool win_hwm_valid = false;
-    uint16_t win_hwm = 0;
   };
-  // Delivery-window accounting, called on each unit's last-fragment arrival.
-  void note_delivery(Layer& l, uint16_t seq);
 
   std::array<Layer, 2> layers_;
   uint64_t bodies_misrouted_ = 0;

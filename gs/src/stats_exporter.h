@@ -128,8 +128,9 @@ struct StatsInput {
   // Transition attribution (spec 2026-08-14, unconditional since
   // 2026-08-15). residual_cur = the attributed (current-rung-only) sibling
   // of residual_loss; close_ms = s1's last boundary open->close latency,
-  // nullopt = never closed.
-  uint64_t attrib_suppressed = 0;
+  // nullopt = never closed. The `suppressed` counter was deleted 2026-09-02
+  // with the packet-level delivery window it was defined against (it counted
+  // windows where the total-vs-attributed views disagreed).
   std::optional<double> residual_cur;
   std::optional<double> attrib_close_ms;
   std::array<int, 2> layer_delivery_pct{};

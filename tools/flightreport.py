@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v8,
-warns on pre-v4, pre-v7 and pre-v8). Format is auto-detected from the first
-line.
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v9,
+warns on pre-v4, pre-v7, pre-v8 and pre-v9). Format is auto-detected from the
+first line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
@@ -232,6 +232,16 @@ def print_wall_report(ctllog):
 
     print("CTL LOG HEADER")
     ver = header.get("_version", 0)
+    if ver and ver < 9:
+        print("  NOTE: ctllog v%d -- resid/resid_cur (S) and resid (R) come "
+              "from the PACKET-level delivery window, which counted a late "
+              "sliding-window FEC repair as loss. A v%d resid > 0 does NOT "
+              "mean video was lost: on the 2026-09-02 bench that measure "
+              "fired 200 spurious residual demotes in 57 min with the FEC "
+              "decoder's abandonment counter frozen. Do NOT pool per-rung "
+              "resid with v9+ recordings, and read the inversion callout "
+              "below as reorder rate (which scales with packet rate, hence "
+              "with rung) rather than as loss." % (ver, ver))
     if ver and ver < 8:
         print("  NOTE: ctllog v%d -- ladder rungs are single-overhead; pair "
               "semantics from v8 (same-rate-fixed-pairs, 2026-08-30) split "
@@ -616,11 +626,17 @@ def main(path):
         flat_traj = [u for traj in trajs for u in traj]
         print(f"  t={t} residual={rl:.4f} u[-5s..]={flat_traj} drone_state={drone_state}{rssi_str}{snr_str}")
 
+    # link.attrib.suppressed was removed from the sideport 2026-09-02 with
+    # the packet-level delivery window it was defined against. Old
+    # recordings still carry it; report it there and say what it means.
     sup = [((r.get("link") or {}).get("attrib") or {}).get("suppressed")
            for r in rows]
     sup = [s for s in sup if isinstance(s, (int, float))]
     if sup:
-        print(f"attrib suppressed delta over flight: {int(sup[-1] - sup[0])}")
+        print(f"attrib suppressed delta over flight: {int(sup[-1] - sup[0])}"
+              "  (pre-2026-09-02 recording: counted windows where the "
+              "packet-level total and attributed views disagreed; the key no "
+              "longer exists)")
 
 
 if __name__ == "__main__":

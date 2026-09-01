@@ -107,10 +107,12 @@ the RX PHY rate as the generation boundary — split every loss counter
 into current-rung vs pre-transition debris, and all four demote inputs
 (instant s1 residual, s3 residual, both utils) read the current-only
 side, so a rung change's own FEC debris can no longer fire a follow-up
-demote. The sideport reports `link.attrib.suppressed` (windows where the
-legacy instant demote would have fired on pure debris — the live artifact
-rate) and `link.streams[].abandoned_stale`; the ctl log went `ctllog 1` →
-`ctllog 2` (S line gained `resid_cur`; `resid` stays the total).
+demote. The sideport reports `link.streams[].abandoned_stale`; the ctl log
+went `ctllog 1` → `ctllog 2` (S line gained `resid_cur`; `resid` stays the
+total). ⚠ It also reported `link.attrib.suppressed` until 2026-09-02, when
+that counter was deleted along with the packet-level delivery window it was
+defined against — it counted windows where the packet total and attributed
+views disagreed, which the symbol-based measure cannot ask.
 `flightreport.py` parses every version. Date recordings against this
 line: pre-2026-08-14
 residual/util figures include transition debris that later recordings
@@ -204,7 +206,8 @@ parses v1, v2 and v3 and gained an episode analyzer (`find_episodes()`,
 times, false fades with time-to-repromote, plus an attribution-miss canary
 (`attribution_misses()` — a `residual` demote within 200 ms of any
 previous transition, which should be ~zero with `link.attrib` on). The
-jsonl branch also prints the flight-wide `link.attrib.suppressed` delta.
+jsonl branch also prints the flight-wide `link.attrib.suppressed` delta for
+recordings old enough to carry that key (removed 2026-09-02).
 ⚠ The s1 RF labels are now freshness-gated per card
 (`gs/src/rf_labels.h`, `select_label_card()`, unit-tested in
 `tests/test_rf_labels.cpp`): the best-card argmax only considers cards
@@ -264,9 +267,9 @@ wrong: the argmax runs on SNR, so the SNR label is `max(snr)` over live
 cards and is continuous across a hop; only RSSI stepped, and measured hop
 steps were indistinguishable from ordinary variation. (iii) `link.attrib`
 is REMOVED and now FAILS BOOT; attribution is unconditional and there is
-no config rollback, only a binary one. `link.attrib.suppressed` /
-`residual_cur` / `close_ms` remain on the sideport, but `link.attrib.on`
-is REMOVED — a `v: 1` schema removal in the same class as the 2026-08-12
+no config rollback, only a binary one. `residual_cur` / `close_ms` remain
+on the sideport (`suppressed` was removed later, 2026-09-02), but
+`link.attrib.on` is REMOVED — a `v: 1` schema removal in the same class as the 2026-08-12
 `offset_qdb` removals, with `maburtop.py` updated in the same wave.
 (iv) `link.s3_residual_confirm_ms` is REMOVED and FAILS BOOT: s3 residual
 now demotes on the first window, exempt from `min_between_changes_ms`,
