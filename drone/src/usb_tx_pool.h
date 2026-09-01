@@ -1,6 +1,9 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#if defined(__linux__)
+#include <pthread.h>
+#endif
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -89,6 +92,9 @@ class UsbTxPool {
   }
 
   void run() {
+#if defined(__linux__)
+    pthread_setname_np(pthread_self(), "mbr-usb");
+#endif
     std::vector<std::vector<uint8_t>> batch;
     for (;;) {
       {

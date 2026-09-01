@@ -8,6 +8,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -229,6 +230,9 @@ void handle_conn(int fd, int snapshot_quality, mabur::AirFeedOut* feed) {
 }
 
 void serve(int port, int snapshot_quality, mabur::AirFeedOut* feed) {
+#if defined(__linux__)
+  pthread_setname_np(pthread_self(), "mbr-http");
+#endif
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
     std::fprintf(stderr, "debug_http: socket() failed: %s -- endpoint disabled\n",

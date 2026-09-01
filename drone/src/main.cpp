@@ -30,6 +30,10 @@
 
 #include <unistd.h>  // _exit() — see the venc on_fault handler
 
+#if defined(__linux__)
+#include <pthread.h>
+#endif
+
 #include "air_feed.h"
 #include "config.h"
 #include "debug_http.h"
@@ -366,6 +370,18 @@ uint64_t now_steady_ms() {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count());
+}
+
+// Names show in /proc/<pid>/task/<tid>/comm (16-char cap) — without them
+// every maburd thread reads "maburd" next to the vendor SDK's unnamed
+// threads, and the 2026-09-01 fec-compute forensics spent an hour pinning
+// the wrong tid. Names also let an operator taskset/renice by name.
+void name_thread(const char* n) {
+#if defined(__linux__)
+  pthread_setname_np(pthread_self(), n);
+#else
+  (void)n;
+#endif
 }
 
 // µs sibling for the dq_split gauge: the intervals it separates (venc-ring
@@ -927,6 +943,7 @@ int run_real_mode(const Config& cfg) {
   std::thread msp_thread;
   if (cfg.msp.enable) {
     msp_thread = std::thread([&]() {
+      name_thread("mbr-msp");
       // Robust control modulation, same tier as DISC_ACK; MSP is a third
       // producer on the mutex-guarded dev_sink.send() path (never the pool).
       std::vector<uint8_t> radiotap = devourer::build_stream_radiotap(control_tx_mode());
@@ -980,6 +997,7 @@ int run_real_mode(const Config& cfg) {
   // the UEP pipeline, queues bodies for the TX writer. Owns the UepEncoder
   // exclusively; never blocks on USB.
   std::thread hot_thread([&]() {
+    name_thread("mbr-hot");
     // Ring name's single authority is now the compile-time VENC_RING_NAME
     // (drone/venc/venc_cfg.h "/mabur_f"); frame_ring_name config key
     // deleted (spec 2026-08-28 venc-foldin, Task B5 controller ruling).
@@ -1022,6 +1040,10 @@ int run_real_mode(const Config& cfg) {
     uint64_t split_n = 0;
     uint64_t split_ring_sum_us = 0, split_ring_max_us = 0;
     uint64_t split_cpu_sum_us = 0, split_cpu_max_us = 0;
+    // sink_us: time inside the streaming sink (SBI patch + stamps +
+    // txq.push/notify) — the per-body wakeup-chain half of cpu_us; the
+    // remainder minus join_wait is the frag/GF-credit/SBI-pack feed itself.
+    uint64_t split_sink_sum_us = 0;
 
     // fec_worker gauge (fec-compute handover 2026-09-01): per-layer split of
     // dq_split's cpu_us into wait-on-worker (join spins) vs the hot thread's
@@ -1116,6 +1138,7 @@ int run_real_mode(const Config& cfg) {
         bool first = true;
         pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now,
                     [&](UepBody&& b) {
+                      const uint64_t s_us = now_steady_us();
                       mabur::sbi_set_enc_us(b.body.data(), b.body.size(),
                                             pipe.last_enc_us());
                       const uint64_t p_us = now_steady_us();
@@ -1126,6 +1149,7 @@ int run_real_mode(const Config& cfg) {
                       emitted += b.body.size();
                       emit_sid = b.stream_id;
                       txq.push(std::move(b));
+                      split_sink_sum_us += now_steady_us() - s_us;
                     });
         // dq_split accounting: ring wait is loop-top → read return (the
         // interval during which this frame did not yet exist for us), CPU is
@@ -1205,16 +1229,18 @@ int run_real_mode(const Config& cfg) {
         if (split_n > 0) {
           std::fprintf(stderr,
               "maburd dq_split: n=%llu ring_us mean=%llu max=%llu "
-              "cpu_us mean=%llu max=%llu\n",
+              "cpu_us mean=%llu max=%llu sink_us mean=%llu\n",
               (unsigned long long)split_n,
               (unsigned long long)(split_ring_sum_us / split_n),
               (unsigned long long)split_ring_max_us,
               (unsigned long long)(split_cpu_sum_us / split_n),
-              (unsigned long long)split_cpu_max_us);
+              (unsigned long long)split_cpu_max_us,
+              (unsigned long long)(split_sink_sum_us / split_n));
         }
         split_n = 0;
         split_ring_sum_us = split_ring_max_us = 0;
         split_cpu_sum_us = split_cpu_max_us = 0;
+        split_sink_sum_us = 0;
         for (int sid = 0; sid < UepEncoder::kNumStreams; ++sid) {
           const auto g = uep.take_fec_gauge(sid);
           const auto& p = fec_gauge_prev[sid];
@@ -1269,6 +1295,7 @@ int run_real_mode(const Config& cfg) {
   // most 3 descriptors per transfer), amortizing the per-URB tax that
   // capped the old inline path at ~2500 fps.
   std::thread tx_thread([&]() {
+    name_thread("mbr-txw");
     std::vector<UepBody> batch;
     // dq_queue gauge (dq-spike follow-up 2026-08-31): TRUE push→pop queue
     // wait from the pre-push pushed_us stamp, per body and for the AU-first
@@ -1352,6 +1379,7 @@ int run_real_mode(const Config& cfg) {
   // RcAgent on cfg.link.tick_ms, runs the watchdog, and handles SIGUSR1
   // stats dumps.
   std::thread agent_thread([&]() {
+    name_thread("mbr-agent");
     const uint64_t grace_ms = 10000;
     const uint64_t stale_ms = 3000;
     uint64_t start = now_steady_ms();
