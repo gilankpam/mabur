@@ -790,6 +790,82 @@ drone = urbgauge maburd, GS = ampdu maburgs + fixed maburplay, closing
 gate clean. Scratchpad: `fec_11M_base/hog.csv`, `side_base/hog/agg/
 agghog.jsonl`, `dq_11M_base/hog.txt`.
 
+## 17. rx_pace + au_tail: the fec anatomy measured end-to-end, the
+## ~360 µs metronome found on the air, and one model that fits every
+## null (2026-09-01, session 2 close)
+
+Two new GS gauges (both live in the deployed maburgs, rollback
+`maburgs.pre-rxpace`):
+
+- **rx_pace** (`radio_frontend.cpp` on_packet, per card): per-body
+  inter-arrival deltas on TWO clocks — the chip RX TSF
+  (`RxAtrib.tsfl`, µs at the antenna) and the host `mono_us` stamp.
+  Immediately showed the host clock is useless for pacing questions
+  (USB RX aggregation delivers bodies in bunches: ~65% of host deltas
+  ≤100 µs) — tsfl is the truth channel.
+- **au_tail** (`main.cpp` end_frame, via `AuLatMeta.t_last_arr_us`):
+  splits fec into **arrival span** (last body − first body) and
+  **publish tail** (finish − last body: repair/decode/assembly/ring).
+
+**Finding 1 — the ~360 µs/body invariant lives on the air, as a
+metronome.** At 11 M/mcs5 (parked or pinned, identical): tsfl deltas
+mean 352–396 µs with ~88% in a single 300–400 µs bucket and ~nothing
+below 250 µs. Bodies fly evenly spaced, never back-to-back — although
+the §11 spike proved this silicon can fly 216 µs apart.
+
+**Finding 2 — the pinned-rung A-MPDU retest (static_mcs 5 kills the
+churn confound).** Today's C/D cells and §12's depth sweep were
+churn-suspect; pinned, the picture is crisp:
+
+| cell (all mcs5-pinned) | tsfl_d shape | fec p50 |
+|---|---|---|
+| agg off, trickle | one mode 300–400 (mean 370) | 10.3 |
+| agg 31, trickle | trimodal: 43% ≤250 + boundary mode 400–600 (mean 360) | 10.3 |
+| agg 31 + bunched feed (hogs) | **75% at 200–250, mean 260** | 9.4 |
+
+Aggregation engages even on the trickle feed but only ~2-deep (pays a
+boundary gap that nets zero — §12's null reproduces clean of churn:
+feed-limited, correctly diagnosed for the wrong reason). Bunching the
+feed forms deep aggregates and **breaks the metronome (−30% air
+spacing)** — yet fec only −0.9 ms, because…
+
+**Finding 3 — the fec anatomy (au_tail).** fec ≈ arrival span + GS
+publish tail. Measured at 11 M/mcs5 trickle: **span ~8.5–8.8 ms +
+tail ~2.0–2.3 ms** (tail max 20 ms on repair-heavy AUs) ≈ fec 10.3 ✓.
+
+**The unified model — every null in §§8–16 fits:**
+
+    fec ≈ max(production spread, air spread) + GS tail (~2.2 ms)
+
+- Trickle: production ~9 ms/AU binds (half GF256+pack CPU, half
+  per-body chain overhead, §16) — air (25 × 360 µs ≈ 9 ms) matches it
+  because bodies launch as produced: the equilibrium that made every
+  single-lever experiment read "invariant".
+- Hogs alone (§16 B): production 5 ms but air stays 360 µs singles →
+  air binds at ~9 ms → flat. Agg alone: air could compress but
+  production still binds → flat. Both (D′): span compresses toward
+  air-limited 25 × 260 ≈ 6.5 + 2.2 ≈ 8.7, measured 9.4 ✓ (hog noise +
+  dq +3 ms from crude bunching ate the e2e win).
+
+**Levers, correctly ranked at last:**
+
+1. **656-symbol bodies** (25 → ~13 bodies/AU) attacks every term at
+   once: chain overhead halves, air count halves (span ~4.7 ms trickle,
+   ~3.4 ms with agg) → fec ~7–8 ms without touching the equilibrium.
+   Still gated on the all-MCS hole sweep at wall power.
+2. Compound production + aggregation (designed SBI-group batching, not
+   hogs, + agg with the RF-report problem solved): ~−1.6 ms, and the
+   two halves are useless separately — budget accordingly.
+3. GS publish tail: profile the 2.2 ms (and its 20 ms repair spikes).
+4. `enc` 7.1 ms is the other big segment and is venc-floor work, not
+   transport.
+
+Bench end state: both configs restored byte-identical (adaptive, 11 M,
+agg 0), closing gate 60.0 fps / 0 gaps, adaptive-park au_tail baseline
+recorded (span 8.5–8.8 ms, tail 2.0 ms). GS runs the rx_pace+au_tail
+maburgs (rollback `maburgs.pre-rxpace`), drone the urbgauge maburd.
+Scratchpad: `side_pin_aggoff/agg31/agg31_hog.jsonl`.
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc

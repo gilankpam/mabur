@@ -302,6 +302,38 @@ static int run_radio(const maburgs::Config& cfg) {
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          if (stats) stats->on_frame(mono_ms());
+         // au_tail gauge (usb-feed probe 2026-09-01): fec = arrival span
+         // (last body mono - first body mono) + publish tail (now - last
+         // body: repair/decode/assembly/ring write). Core-thread-owned,
+         // 5 s stderr windows. Names where the fec residual lives when the
+         // air span is known from rx_pace.
+         if (lat.t_first_us && lat.t_last_arr_us >= lat.t_first_us) {
+           static uint64_t at_n = 0, at_span_sum = 0, at_span_max = 0;
+           static uint64_t at_tail_sum = 0, at_tail_max = 0, at_last_rep = 0;
+           const uint64_t now = mono_us();
+           const uint64_t span = lat.t_last_arr_us - lat.t_first_us;
+           const uint64_t tail =
+               now > lat.t_last_arr_us ? now - lat.t_last_arr_us : 0;
+           ++at_n;
+           at_span_sum += span;
+           at_tail_sum += tail;
+           if (span > at_span_max) at_span_max = span;
+           if (tail > at_tail_max) at_tail_max = tail;
+           if (at_last_rep == 0) at_last_rep = now;
+           if (now - at_last_rep >= 5000000 && at_n > 0) {
+             std::fprintf(stderr,
+                          "maburgs au_tail: n=%llu span_us mean=%llu max=%llu "
+                          "tail_us mean=%llu max=%llu\n",
+                          (unsigned long long)at_n,
+                          (unsigned long long)(at_span_sum / at_n),
+                          (unsigned long long)at_span_max,
+                          (unsigned long long)(at_tail_sum / at_n),
+                          (unsigned long long)at_tail_max);
+             at_n = at_span_sum = at_span_max = 0;
+             at_tail_sum = at_tail_max = 0;
+             at_last_rep = now;
+           }
+         }
          // Head-segment latency: t_first_us is the radio's mono stamp on
          // the AU's first body and t_complete_us (via mono_us() below,
          // the "now" at this closure) shares its timebase -- steady_clock

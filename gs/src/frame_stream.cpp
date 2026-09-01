@@ -40,6 +40,8 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
   if (arr.body_mono_us &&
       (s.lat.t_first_us == 0 || arr.body_mono_us < s.lat.t_first_us))
     s.lat.t_first_us = arr.body_mono_us;
+  if (arr.body_mono_us > s.lat.t_last_arr_us)
+    s.lat.t_last_arr_us = arr.body_mono_us;
   if (idx == 0 && !s.have_hdr) {
     auto h = mabur::framewire::parse_frame_hdr(s.chunks[0].data(), s.chunks[0].size());
     if (!h) { ++bad_frags_; slots_.erase(key); return; }

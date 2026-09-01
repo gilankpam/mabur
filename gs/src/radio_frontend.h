@@ -66,6 +66,22 @@ class RadioFrontend {
  private:
   void on_packet(const Packet& pkt);
 
+  // rx_pace gauge (usb-feed probe 2026-09-01, dq-spike findings §16): per
+  // accepted body, the inter-arrival delta on TWO clocks — the chip's RX TSF
+  // (RxAtrib.tsfl, µs at the antenna, upstream of ALL host processing) and
+  // this host's mono_us stamp. Whichever clock carries the ~360 µs/body
+  // spacing names the pace-setter (air/drone vs GS host). Pump-thread-owned
+  // (one RadioFrontend per card), reported to stderr every 5 s. Deltas
+  // > 5 ms are inter-burst gaps, counted but not folded into the hists.
+  static constexpr int kPaceBuckets = 9;
+  uint64_t rp_last_mono_ = 0;
+  uint32_t rp_last_tsfl_ = 0;
+  uint64_t rp_n_ = 0, rp_gaps_ = 0;
+  uint64_t rp_tsfl_sum_ = 0, rp_host_sum_ = 0;
+  uint64_t rp_tsfl_hist_[kPaceBuckets] = {};
+  uint64_t rp_host_hist_[kPaceBuckets] = {};
+  uint64_t rp_last_report_us_ = 0;
+
   Cfg cfg_;
   BodyQueue& out_;
   std::shared_ptr<Logger> logger_;

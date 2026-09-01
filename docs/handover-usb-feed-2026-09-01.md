@@ -1,16 +1,16 @@
 # Handover — the USB feed is the fec lever now
 
-> **⚠ SUPERSEDED IN PART, same day (session 2, 2026-09-01):** probes 1–2
-> ran; findings §14 (submission model pinned: sync blocking bulk in
-> UsbTxPool workers, the "async" claim was the enqueue) and §15 (URB cost
-> model measured, **no USB wall up to 2600 bodies/s**, ~99% single-body
-> URBs, and the fec pace matches the drone's own **FEC/pack CPU seal
-> pace** — the USB-feed premise of this page is likely the third
-> mis-attribution). Read §15 before spending on probes 3–5 below; the
-> next session's work is §15's "What still needs the GS" list (GS ssh was
-> unreachable — radio link was up, only the IP route down). Drone runs
-> the urbgauge maburd (rollback `maburd.pre-urbgauge`); config restored
-> byte-identical (11 M cap).
+> **⚠ SUPERSEDED (2026-09-01, sessions 2–3): read findings §14–§17
+> instead of this page.** The investigation closed the question this
+> handover posed: the USB feed is NOT the fec lever (no wall to 2600
+> bodies/s, §15), and neither is any other single lever — §17's unified
+> model is `fec ≈ max(production spread, air spread) + ~2.2 ms GS tail`,
+> with the ~360 µs/body invariant measured ON THE AIR (rx_pace tsfl) and
+> the anatomy split by the au_tail gauge. The pinned-rung retest showed
+> A-MPDU is feed-limited (2-deep, nets zero) and only pays combined with
+> feed bunching (~−1.6 ms). Ranked levers in §17; #1 is 656-symbol
+> bodies (attacks every term, hole-sweep gated). Probes 3–5 below are
+> retired.
 
 2026-09-01, bench (drone `192.168.10.152`, GS `10.18.0.1`), branch
 `ampdu`. Continues `docs/handover-fec-latency-2026-08-31.md` and
