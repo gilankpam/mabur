@@ -785,10 +785,11 @@ TEST(link_rc_drain_ms_must_not_exceed_tick_ms) {
 // ---- Task 3: ampdu block (spec 2026-09-01-ampdu-design.md) --------------
 
 TEST(ampdu_defaults_when_absent) {
-  // A config with no "ampdu" block gets the shipped defaults.
+  // A config with no "ampdu" block gets the shipped defaults — aggregation
+  // OFF since the 2026-09-01 bench verdict (no fec win, RF-report damage).
   auto path = write_temp_json("{}");
   auto cfg = load_config(path.string());
-  CHECK(cfg.ampdu.max_num == 6);
+  CHECK(cfg.ampdu.max_num == 0);
   CHECK(cfg.ampdu.max_time == 32);
   std::filesystem::remove(path);
 }

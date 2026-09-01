@@ -533,11 +533,21 @@ regression); aucadence +0.37 ms (baseline +2.5/+3.1 — improved); close_ms
 (fid_gaps 0 throughout — host seqs survive aggregation live, closing
 §11's renumbering caveat).
 
-**End state:** both ends on the `ampdu` builds, aggregation at default
-max_num 6 (no `ampdu` block in the deployed config), 11 M bitrate cap,
-ch136. Setting `ampdu.max_num 0` (config-only) returns to singles with
-full-rate RF sampling if the sparser (~6%-of-frames) RF feed proves
-annoying. Follow-ups: USB feed rework is the real fec lever now
+**Addendum (same day): even the physt-passing aggregate reports are
+untrustworthy.** On the static bench the operator still saw RSSI/SNR
+jumping; spike-log analysis of the ~6% physt-passing aggregated frames
+shows contaminated tails (rssiA 17…73 raw vs 52–54 sd 0.3 on singles,
+rssiB up to 225, snr excursions to 0) — the page-number check cannot
+reject garbled reports that alias page 0/1. With the fec benefit already
+measured null, **aggregation is now OFF by default** (`AmpduCfg.max_num`
+6 → 0 in config.h): every frame carries a pristine PHY report again
+(bench: s0 RSSI −52.0 sd 0.25 dB, SNR 32.4 sd 0.6 — flat). The wire,
+config block, `SetAmpduMode` path and phy_valid filtering all stay —
+re-enable via config for USB-feed-rework experiments only.
+
+**End state:** both ends on the `ampdu` builds, aggregation OFF
+(config `ampdu.max_num 0`, now also the compiled default), 11 M bitrate
+cap, ch136, air p50 1.1 ms. Follow-ups: USB feed rework is the real fec lever now
 (overlapped/async bulk-OUT, bigger URB batches — the HalMAC 3-desc cap
 is per *transfer*, so this means multiple transfers in flight, which
 tx_threads already does… measure why acceptance serializes); devourer

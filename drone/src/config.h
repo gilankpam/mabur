@@ -128,12 +128,17 @@ struct MspCfg {
   double overhead = 1.0;
 };
 
-// A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md). Shallow global
-// depth cap in v1; per-rung depth is a data-driven follow-up. The QoS-Data
-// wire header does NOT depend on this block — max_num 0 turns off only the
-// aggregation (frames become QoS-Data singles, the spike's control cell).
+// A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md). OFF by default
+// since the 2026-09-01 bench verdict (dq-spike-findings §12): the depth
+// sweep measured NO fec improvement at any depth — maburd's per-body tax is
+// host/USB-side, not medium access — while aggregate subframes carry
+// missing-or-untrustworthy PHY reports that degrade the GS's RF telemetry
+// even with the phy_valid filtering in place. Enable (max_num > 0) only for
+// experiments, e.g. after a USB feed rework. The QoS-Data wire header does
+// NOT depend on this block — max_num 0 turns off only the aggregation
+// (frames become QoS-Data singles, measured identical to the old pace).
 struct AmpduCfg {
-  int max_num = 6;    // MAX_AGG_NUM cap, 0 = aggregation off, max 31 (5-bit)
+  int max_num = 0;    // MAX_AGG_NUM cap, 0 = aggregation off, max 31 (5-bit)
   int max_time = 32;  // raw 0x455 fill-timer value (0x20 ~= 0.8 ms);
                       // 1..8 is a hardware cliff (disables aggregation) and
                       // is rejected at load; 0 keeps the chip bring-up
