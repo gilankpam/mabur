@@ -248,3 +248,35 @@ identical either way on this hardware pair.
 (attenuation rig would characterize the comb); TX-vs-RX attribution;
 whether the corner is silicon errata (worth reporting to devourer
 upstream as a Jaguar3 hardware note either way).
+
+## 656-symbol candidate: hole sweep PASSED (2026-09-01)
+
+The gate this page's fix #1 demands ("sweep the candidate size across
+all 8 rates") ran for the 656-symbol/bpb-4 candidate (the §17 lever in
+dq-spike-findings-2026-08-31.md). Grid: **symbol-size 649–661 in 1-sym
+(4 B air) steps — linkbench air 2699–2747 B, bracketing the production
+QoS-wire length ~2717–2721 B — × all 8 MCS, LDPC+STBC**, ch149,
+`--pwr-mode none`, 8 s cells (~1.3–3.5 k frames each), 104 cells /
+~330 k frames total. Rig: one continuous `linkbench-rx` on GS card 0
+(rx_pipeline patched to re-anchor the mac-seq baseline after a >2 s
+bench-frame gap, so per-cell TX restarts can't mask losses — commit
+with this note), TX cells driven per-invocation on the drone; cells
+matched to the RX json by activity-burst order; per-cell coverage
+(rx+lost)/tx verified 0.998–1.000.
+
+**Result: `mac_lost` = 0 and `crc_bad` = 0 in every cell.** No hole of
+the mcs6+STBC class (which read 5–8% under this same methodology and
+power mode) exists anywhere in the swept window at any rate.
+
+Caveat, recorded honestly: the sweep ran at `--pwr-mode none`
+(RX level ~−45 dBm on this bench), not at per-rate wall power, and this
+page documents that hole depth grows with RX level. The original hole
+was plainly visible at none-power, so a same-class hole is excluded;
+a strictly marginal one at higher RX level is not formally excluded.
+Optional tightening before shipping 656: rerun sym 655–659 × 8 MCS at
+`--pwr-mode override --pwr 63` (~12 min of link downtime).
+
+The 656 lever's remaining non-hole work (window 16 vs 32, both-ends
+flag day, coarser loss granularity) is tracked in §17 of the findings
+doc and the sliding-window-FEC notes — this page only certifies the
+air-length safety.
