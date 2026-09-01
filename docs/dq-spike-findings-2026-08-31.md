@@ -866,6 +866,48 @@ recorded (span 8.5–8.8 ms, tail 2.0 ms). GS runs the rx_pace+au_tail
 maburgs (rollback `maburgs.pre-rxpace`), drone the urbgauge maburd.
 Scratchpad: `side_pin_aggoff/agg31/agg31_hog.jsonl`.
 
+## 18. 656/w16 deployed — lever #1 lands −1.0 ms fec, with a jitter
+## trade to watch (2026-09-01, session 3)
+
+Hole sweep passed (mcs6-bench-anomaly.md addendum), so the flag day
+ran: **config-only both ends** — drone `fec.symbol_size 332→656` +
+`window 32→16` (byte-equivalent window), GS `symbol_size 332→656`
+(`seq_horizon` 512 kept: same symbol horizon = 2× the wall-time guard
+at half the symbol rate). Rollbacks `/tmp/*.pre-656` both ends.
+Bench 11 M / mcs5 parked, same scene as the 332 baseline taken minutes
+before:
+
+| metric | 332/w32 | 656/w16 |
+|---|---|---|
+| fec p50 (sideport) | 10.3 | **9.3** |
+| fecdump p50/p90 | — | 8.62 / 13.40 |
+| au_tail span / tail | 8.6 / 1.95 | **8.0 / 1.6** |
+| rx_pace per-body air | 382 µs (n≈7740) | 670 µs (n≈3820) |
+| per-BYTE air pace | 0.288 µs/B | **0.250 µs/B (−13%)** |
+| aucadence offset | +0.37 (last gate) | +0.58 |
+| ausniff | 60.0 / 0 gaps | 60.0 / 0 gaps |
+| stalls / q_drop / trunc | 0/0/0 (dropped 5) | 0/0/0 (dropped 0) |
+| arrival jitter EMA | 5.4 ms | **⚠ 8.2 ms** |
+
+**Reading.** The win is real but smaller than §17's projection because
+the per-body pace is not `airtime + fixed-150 µs` — it scaled to
+670 µs at 2× the body (the equilibrium's production term is per-BYTE,
+so doubling the body nearly doubles per-body pace). What 656 actually
+buys: the per-body chain overhead paid half as often (span −0.6) and a
+shorter GS publish tail (−0.35). Per-byte air efficiency +13% is a
+throughput/headroom win at every rung regardless.
+
+**The trade:** completion quanta are coarser → arrival jitter EMA
+5.4 → 8.2 ms. On the bench the player absorbed it (0 stalls, fps
+clean, gap_ms flat) — but the vsync servo (lead 6) was tuned at ~5 ms
+jitter; **flight validation must watch dsp/late-frame counts**, and the
+loss-granularity question (each lost body now erases 2× the bytes;
+rung overheads were tuned at 332) needs a loss-sim session before
+trusting lossy rungs. Rollback is one config restore per end.
+
+Bench stays on 656/w16. Code defaults untouched (configs govern);
+flip defaults only after flight acceptance.
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc
