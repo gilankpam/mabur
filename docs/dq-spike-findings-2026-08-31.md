@@ -633,6 +633,90 @@ The per-URB gauge (probe 2) measures all of this drone-side: per-call
 wall-time distribution in the pool workers, worker overlap at entry,
 and utilization vs wall clock.
 
+## 15. The usb_urb gauge: URB cost measured, no USB wall found — and
+## the fec pace-setter is probably the FEC/pack CPU, not the radio
+## (2026-09-01, bench, drone-side only — GS ssh unreachable)
+
+Probe 2 of the handover: a per-URB gauge in `UsbTxPool` (commit
+bb996fd + a per-batch-size split) around each worker's `send_packets`
+call — wall-time distribution, overlap-at-entry, mean-inflight,
+sz1/2/3 split. Three regimes measured (`bitrate_max_kbps` 11000 /
+14000 / 18000, restarts between; config restored byte-identical to
+11 M after, bench healthy at cut). Scratchpad: `urb_11M_steady.txt`,
+`urb_14M_sat.txt`, `urb_18M_wall.txt`.
+
+**The URB cost model (this chip + this armv7 host, ch136):**
+
+| regime | bodies/s | bodies/call | sz1 µs | sz2 µs | sz3 µs | mean_inflight |
+|---|---|---|---|---|---|---|
+| 11 M | ~1580 | 1.02 | 212–233 | ~330 | ~480 | 0.33 |
+| 14 M | ~2010 | 1.01 | 230–248 | ~350 | ~500 | 0.47 |
+| 18 M | ~2460–2610 | 1.03 | 242–263 | ~390 | ~550 | 0.57–0.69 |
+
+- **A 1-body URB costs ~220 µs, and every extra body costs ~+110–130 µs**
+  — neither a fixed handshake (sz3 would be ~220) nor per-byte (would be
+  ~660). Wire time at 480 Mb/s is ~23 µs/body, so this is chip-side
+  descriptor/DMA processing. 3-body URBs run ~160 µs/body — a ~27%
+  per-body amortization that today's feed never gets, because…
+- **~99% of URBs carry ONE body at every offered rate.** The FEC seals
+  bodies slower than the pool drains them, so each body ships alone the
+  moment it exists. The handover's "0.4 ms ÷ 3-frame URBs ≈ 133 µs"
+  numerology assumed batching that does not happen; the pool's
+  parallelism is likewise idle (mean_inflight ≤ 0.7, overlap 0 dominant).
+- **No USB wall up to 2600 bodies/s ≈ 29 Mb/s effective.** URB times
+  crept 222 → 255 µs, no queue anywhere (TxQueue wait ~50 µs, txq 0).
+  The "~1826 bodies/s ceiling" (§12) is 14 M × 1.5 overhead ÷ 1396 B ≈
+  1880/s — **offered load again**, the same class of error as the
+  refuted 1341 (§8). ⚠ Caveat: the ladder was NOT pinned (GS ssh down,
+  radio link up); at 14–18 M it had clearly promoted above mcs5, so
+  this does not reproduce §12's mcs5-parked 100 ms air queue — that
+  queue was real and is consistent with mcs5 *air* drain < 1880/s
+  offered. Same offered load at a higher rung today: no queue.
+
+**The reframe.** `dq_split cpu_us` (venc read → last body pushed =
+fragmentation + GF256 + SBI pack, `main.cpp` hot thread) ran ~9–10 ms
+per AU at 11 M and ~14 ms at 18 M. Per body that is ~9000 µs / ~25
+bodies ≈ **360 µs/body — numerically §8's "0.385 ms/body burst-pace
+invariant"**, and its per-KB form (~0.37 ms/KB) is §8's fec slope
+(0.41 ms/KB). The pace that has been attributed to air (§9) and then to
+USB (§12) matches the drone's own FEC/pack CPU trickle:
+
+- §8's invariance across 8 vs 14 Mb/s offered: GF256 per-byte pace is
+  bitrate-independent. ✓
+- §9's mcs5 point (213 air + 151 dead = 364 µs) ≈ seal pace (360 µs) —
+  a coincidence at exactly the rung where the sweep had most weight; at
+  mcs1-3 air genuinely dominates (1.7 ms/body ≫ 360 µs), which is what
+  gave the fit its phy_rate slope. The two models were indistinguishable
+  by that experiment.
+- §12's A-MPDU null: compressing air per-body to ~216 µs moved nothing
+  — *predicted* by the production-pace model, inexplicable in the
+  air-pace model. ✓
+- Today: URB drain (~220–260 µs/body serialized) < seal pace (~360
+  µs/body) at mcs5+, so USB is not the binding stage either. ✓
+
+**Consequence, if this holds:** the fec lever is neither the radio nor
+the USB feed — it is **making bodies exist sooner**: multicore/NEON
+GF256 (the shelved "multicore async-repair" spec from the
+sliding-window-FEC work), cheaper SBI pack, or overlapping seal with
+encode. The USB-feed rework premise of this handover would be the
+investigation's third mis-attribution, killed by the same instrument
+pattern that killed the first two.
+
+**What still needs the GS** (next session, bench with ssh): (a) per-AU
+correlation of GS `fecdump` fec against drone `dq_split cpu_us` — the
+direct test; (b) pin mcs5 (`static_mcs`) and repeat 14 M to reproduce
+§12's air queue and re-measure the gauge at a *real* wall (does
+blocked-URB acceptance pipeline?); (c) if (a) confirms, retire the
+USB probes 3–4 of the handover and open a FEC-compute work item
+instead.
+
+Bench state at cut: `ampdu` builds both ends + drone `maburd` =
+urbgauge build (bb996fd + sz-split, md5 b529c7e8…), rollback
+`maburd.pre-urbgauge` on device (`maburd.pre-ampdu` also still present —
+rootfs at 3 binaries, prune at next deploy), config byte-identical to
+the §12 end state (11 M cap, ch136, agg off), link healthy (state 2,
+~1580 bodies/s, RCF flowing).
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc
