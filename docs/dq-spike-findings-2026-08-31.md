@@ -1101,6 +1101,64 @@ the repo (its installed copy still expected ring v1 and rejected the
 v2 ring — `ausniff.py` had been refreshed in an earlier session but
 `aucadence.py` was missed).
 
+## 21. feed_batch × A-MPDU: the §17 compound validated with designed
+## batching — fec p50 −2.3/−2.7 ms at a FLAT p99, agg6+fb6 live on the
+## bench (2026-09-02)
+
+The compound became testable once the PHYST-bit fix (§12 resolution)
+ended aggregate RF contamination. Drone-side `fec.feed_batch` shipped
+(venc-foldin 21e85bc): TxQueue defers the TX-writer WAKEUP until G
+un-notified bodies accumulate (flush at AU end + idle-tail; a timeout
+wake still drains partials — nothing is withheld from an awake
+consumer), and `UsbTxPool::submit_many` keeps the group intact into one
+worker (one <=3-desc URB) instead of splitting across idle workers.
+
+**Two invalid starts worth remembering.** (a) The first cells ran on a
+drifted bench config — `bitrate_max_kbps` had become **16000**, which
+saturates mcs5 air (~20 Mb/s effective) and put a standing queue under
+everything (fec p50 ~11); cells must pin 11 M. (b) At `agg 31/0x70` the
+adaptive ladder walked 5→0 on **genuine residual demotes** (base symbol
+abandonment, abn>0 even pinned): a lost deep aggregate is a contiguous
+hole beyond the FEC burst budget. Deep aggregation is a loss-granularity
+hazard independent of the (fixed) RF-report problem — cap depth at 6.
+
+**The pinned cells** (static_mcs 5, 11 M, 60 s each, aucell.py off the
+AU ring; fec = t_complete−t_first per AU, sid0/sid1):
+
+| cell | fec p50 | fec p99 | span/tail µs | compl-jit sd |
+|---|---|---|---|---|
+| E agg0 fb0 (ref = §20 shape) | 9.72 / 9.29 | 18.3 / 17.7 | 7948 / 2234 | 3.5 / 3.8 |
+| A′ agg6 fb0 | 9.64 / 9.06 | 26.0 / 38.5 | 7032 / 2659 | 5.1 / 5.3 |
+| B′ agg6 fb3 | 8.61 / 6.45 | 24.7 / 33.9 | 5943 / 2351 | 5.5 / 5.5 |
+| C′ agg31/0x70 fb3 | 9.48 / 6.92 | 23.4 / 34.3 | 5849 / 2854 | 5.4 / 5.8 |
+| **D′ agg6 fb6** | **7.39 / 6.58** | **17.9 / 18.5** | **5463 / 1941** | 4.9 / 4.5 |
+
+§17's model holds: agg alone null (A′), and the compound pays — but the
+surprise is D′'s **flat p99** where every other agg cell paid a tail.
+fb6 feeds the aggregator exactly its `max_num` in one group; fb3
+half-fills it and the ragged 3+3 boundary shows up as tail. usb_urb
+confirms the mechanism drone-side (sz3 59–65% vs ~99% sz1 at fb0);
+rx_pace confirms it on air (agg6 cells ~48% ≤250 µs vs E's single
+300–400 metronome bucket; C′ deepens to 69% for no median gain).
+dq p50 0→1 ms (bodies hold ~2 production intervals for their group).
+
+**Gates (D′ config):** ausniff 60.0 fps / 0 gaps / 0 incomplete;
+aucadence **+0.659 ms** (band: +0.37/+0.58/−0.26 history, ±1 ms bar);
+completion-jitter cost ~+1.0–1.3 ms sd (vs 656's +2.9 EMA — accepted);
+adaptive 2-min soak: clean promote walk, parks mcs5, **zero residual
+demotes** (contrast §16's C/D churn — that was the RF contamination,
+now gone). ⚠ Flight validation debt: dsp/late-frame watch on the vsync
+servo (same debt class 656 carried), and a loss-sim pass for agg-burst
+loss granularity at agg6.
+
+**Bench end state:** drone `ampdu{max_num:6,max_time:32}` +
+`fec.feed_batch 6` + `bitrate_max_kbps` **11000** (16 M drift reverted —
+if 16 M was deliberate it needs a ladder that can hold mcs6+ first), GS
+adaptive (static_mcs −1). Compiled default `feed_batch 0` until flight
+acceptance. fec p50 at the park is now ~6–7.5 ms typical vs 9.7 —
+capture→glass should show most of it; the GS publish tail (~2 ms) and
+enc (~7.1 ms) are the next binding terms.
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc
