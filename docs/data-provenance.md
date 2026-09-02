@@ -344,3 +344,21 @@ data:
 
 The ctl log self-identifies: `ctllog 9` and later are symbol-based, v1–v8
 are packet-based, and `flightreport.py` prints a pre-v9 warning.
+
+**Scale break, 2026-09-02 (link-rtt) — the OSD LAT headlines became
+ABSOLUTE.** Before this date the burned-in `P50`/`P99` e2e (and `air+`)
+were relative to the luckiest observed frame's transit — the anchor ate
+the absolute network floor. After it, when `link.rtt.pts_off_us` is live
+the player folds the floor (own anchor + telem-derived pts offset) into
+`air+` AND the headline, so both read a few ms HIGHER than a pre-change
+recording of the same link; the segments still sum to the headline. The
+rows self-identify: a `~` prefix on the headline means the number is
+still the old relative kind (offset estimator cold, or sync lost — the
+floor freezes at last-good and drifts ~1 ms/min of outage). Sideport
+`link.video.lat` is untouched — the fold-in is display-side only. A new
+`RTT <n> ms` row above `P50` is control-path RTT (telem queues behind
+video on the drone TX: reads high under saturation by design), never a
+segment. Recordings' jsonl gains `link.rtt` the same date (additive).
+Even absolute, the headlines still exclude sensor pre-pts (~10–16 ms
+est.) and post-scanout display latency — only an LED/camera measurement
+sees those.

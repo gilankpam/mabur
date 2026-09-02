@@ -28,8 +28,35 @@ so each row's segments sum to its own headline. Read them together:
 `P99` alone is a tail statistic sitting among averages (fps/jit/mbps)
 and gets misread as typical — an operator reporting "fec is 10–30 ms"
 while the median was ~10 ms is what prompted the second row
-(`docs/dq-spike-findings-2026-08-31.md` §20). Consume the same numbers
-programmatically with:
+(`docs/dq-spike-findings-2026-08-31.md` §20).
+
+Since 2026-09-02 (link-rtt) `link.rtt` carries a clock-sync-free
+**control-path RTT** and the pts-clock offset behind the absolute LAT
+floor: the drone echoes which RCF `rcf_age_ms` ages against
+(`Telem.rcf_seq_echo`, validity = flags bit3) plus its MI-domain clock at
+telem build (`pts_at_build`), and maburgs matches the echo against its
+recorded send times — `rtt = (telem_rx − rcf_send) − rcf_age`, every
+1 Hz telem a sample. Keys: `ms` (EWMA), `min_ms` (session min — the
+floor bound), `n`, `pts_off_us` (min-RTT-filtered `pts − GS-mono`; null
+until the drone ships a usable pts clock), `floor_ms` (maburgs' anchor +
+offset = absolute network floor). The whole block is null until the
+first matched sample. Read it as CONTROL-path time: the telem reply
+queues behind video on the drone's half-duplex TX, so `ms` inflates
+under saturation (honest congestion signal, not PHY RTT), and the
+offset's residual error is the up/down asymmetry of the best samples,
+±1–2 ms class. On the player OSD the offset (combined with the player's
+OWN anchor) folds the floor into the `P50`/`P99` rows — `air+` and the
+headline both grow by it, so the segments still sum — and the headline
+carries a `~` prefix while the e2e is still relative (estimator cold, or
+sync lost at range: the floor freezes at last-good and drifts ~1 ms/min
+of outage). An `RTT <n> ms` field sits one row above `P50`; it is
+adjacent for one-glance reading but is two-way control time and never
+part of the e2e sum. What the absolute rows still exclude: sensor
+exposure/readout before the pts stamp (~10–16 ms est.) and everything
+past scanout start (HDMI + display processing) — LED/camera-lump
+territory, see `docs/latency-budget-findings-2026-08-31.md`.
+
+Consume the same numbers programmatically with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,
   grouped by link; color thresholds carry the judgment.
