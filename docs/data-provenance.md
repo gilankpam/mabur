@@ -362,3 +362,19 @@ segment. Recordings' jsonl gains `link.rtt` the same date (additive).
 Even absolute, the headlines still exclude sensor pre-pts (~10–16 ms
 est.) and post-scanout display latency — only an LED/camera measurement
 sees those.
+
+## 2026-09-03: per-card `loss_pct` phantom before the MSP seq fix
+
+Recordings made before the MSP seq-walk fix (branch `msp-seq-fix`)
+carry an inflated `cards[].loss_pct`: the GS excluded MSP bodies and
+the drone's RC frames (DISC_ACK, T_TELEM) from the per-card 802.11 seq
+walk on the (wrong) assumption that they carried their own counters. The
+chip stamps ONE hardware seq on every frame it injects (EN_HWSEQ), so
+each such frame booked one phantom lost frame. At the bench's ~5–10 MSP
++ ~2 RC frames/s over ~2300 bodies/s that is ~0.3–0.5 percentage points
+of phantom on top of the real figure (0.67 % reported vs ~0.35 % real,
+2026-09-02). `pre_fec_loss` and every ladder input are unaffected. When
+comparing `loss_pct` across the fix, subtract the non-video rate
+(`cards[].classes.msp.pps + ctrl.pps`, over `inj_pps`) from the old
+values, or compare `pre_fec_loss` instead.
+
