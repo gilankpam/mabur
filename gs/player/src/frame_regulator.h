@@ -50,10 +50,11 @@ namespace maburplay {
 class FrameRegulator {
  public:
   FrameRegulator(int regulate_ms, bool vsync_lock = false,
-                 int vsync_lead_ms = 3)
+                 int vsync_lead_ms = 3, int chain_budget = 0)
       : d_us_(static_cast<int64_t>(regulate_ms) * 1000),
         vsync_lock_(vsync_lock),
-        lead_us_(static_cast<uint64_t>(vsync_lead_ms) * 1000) {}
+        lead_us_(static_cast<uint64_t>(vsync_lead_ms) * 1000),
+        chain_budget_(static_cast<uint64_t>(chain_budget)) {}
 
   bool enabled() const { return d_us_ > 0; }
 
@@ -94,6 +95,26 @@ class FrameRegulator {
   uint64_t discont_count() const { return discont_count_; }
   double hold_ema_ms() const { return hold_ema_ms_; }
   uint64_t vsync_skips() const { return vsync_skips_; }
+  // Sequential-slot chain accounting (bench 2026-09-02): a frame whose
+  // natural vblank is held by its predecessor takes the next slot, and
+  // every frame after it at source cadence then finds ITS natural slot
+  // occupied too, so the whole stream runs one period late until an
+  // arrival gap wider than a period frees a slot. chained_count is every
+  // such +1-slot assignment, chain_run the current consecutive run,
+  // chain_max its high-water mark. In servo mode the extra period shows
+  // up in the lat line's reg segment, nowhere else -- these make it
+  // visible on the regulator line.
+  uint64_t chained_count() const { return chained_count_; }
+  uint64_t chain_run() const { return chain_run_; }
+  uint64_t chain_max() const { return chain_max_; }
+  uint64_t chains_count() const { return chains_count_; }  // runs started
+  // display.chain_budget (bench 2026-09-02): a chain breaks on its own
+  // only when an arrival gap exceeds a period plus the phase margin, so
+  // it lives longest exactly when the margin (and hence its cost) is
+  // largest. With a budget N, the frame that would extend a run past N
+  // takes its natural slot and the held occupant is displaced -- one
+  // drop re-aligns the stream. 0 = unbounded. chain_cuts counts those.
+  uint64_t chain_cuts() const { return chain_cuts_; }
   uint64_t fallback_frames() const { return fallback_frames_; }
   bool servo_locked() const { return servo_now_; }
 
@@ -129,6 +150,7 @@ class FrameRegulator {
   const int64_t d_us_;
   const bool vsync_lock_;
   const uint64_t lead_us_;
+  const uint64_t chain_budget_;
 
   maburgs::PtsAnchor anchor_;
   VblankEstimator est_;
@@ -142,6 +164,11 @@ class FrameRegulator {
   uint64_t discont_count_ = 0;
   double hold_ema_ms_ = 0.0;
   uint64_t vsync_skips_ = 0;
+  uint64_t chained_count_ = 0;
+  uint64_t chain_run_ = 0;
+  uint64_t chain_max_ = 0;
+  uint64_t chains_count_ = 0;
+  uint64_t chain_cuts_ = 0;
   uint64_t heals_ = 0;
   uint64_t fallback_frames_ = 0;
 };

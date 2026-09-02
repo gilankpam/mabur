@@ -314,3 +314,21 @@ TEST(display_vsync_lead_range_enforced) {
 }
 
 MTEST_MAIN
+
+TEST(display_chain_budget_key) {
+  // display.chain_budget: frames a sequential-slot chain may run before
+  // the regulator cuts it with one drop. Default 3 (bench A/B
+  // 2026-09-02, operator choice); 0 = unbounded; range [0, 60].
+  const auto def = maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+  CHECK(def.display.chain_budget == 3);
+  const auto bare = maburplay::load_config(write_tmp_play(R"({})"));
+  CHECK(bare.display.chain_budget == 3);
+  const auto cfg = maburplay::load_config(
+      write_tmp_play(R"({"display":{"chain_budget":0}})"));
+  CHECK(cfg.display.chain_budget == 0);
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play(R"({"display":{"chain_budget":61}})")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw == true);
+}

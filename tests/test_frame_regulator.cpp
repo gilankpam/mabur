@@ -711,3 +711,110 @@ TEST(heal_slip_preserves_release_order_with_a_mixed_queue) {
   CHECK(out.opaque == frame(kFrame).opaque);             // slipped servo
   CHECK(!reg.holding());
 }
+
+TEST(chain_counters_track_sequential_slot_assignments) {
+  // A collision (two decodes claiming one vblank) chains the newer frame
+  // onto the next slot; every frame after it at source cadence then finds
+  // its natural slot occupied and chains too, until a gap wider than a
+  // period frees a slot. chained= counts every +1-slot assignment,
+  // chain= is the current run length, chain_max= its high-water mark.
+  FrameRegulator reg(12, true, 3);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  CHECK(reg.chained_count() == 0);
+  CHECK(reg.chain_run() == 0);
+  const uint64_t t1 = phase + kVb - 12'000;
+  CHECK(!reg.offer(frame(0), t1, &disp));                // natural slot
+  CHECK(reg.chain_run() == 0);
+  CHECK(!reg.offer(frame(kFrame), t1 + 1'000, &disp));   // collision -> +1
+  CHECK(reg.chained_count() == 1);
+  CHECK(reg.chain_run() == 1);
+  // Next frame at exact source cadence: its natural slot is held by the
+  // chained predecessor, so it chains as well.
+  CHECK(!reg.offer(frame(2 * kFrame), t1 + 1'000 + kFrame, &disp));
+  CHECK(reg.chained_count() == 2);
+  CHECK(reg.chain_run() == 2);
+  CHECK(reg.chain_max() == 2);
+  CHECK(disp.n == 0);
+  CHECK(reg.vsync_skips() == 0);
+  // Drain everything, then a frame arriving with a free natural slot
+  // ends the run: chain= resets, chained= and chain_max= keep the tally.
+  while (reg.release_due(phase + 10 * kVb, &out)) {
+  }
+  CHECK(!reg.holding());
+  CHECK(!reg.offer(frame(3 * kFrame), phase + 5 * kVb - 9'000, &disp));
+  CHECK(reg.chain_run() == 0);
+  CHECK(reg.chained_count() == 2);
+  CHECK(reg.chain_max() == 2);
+}
+
+TEST(chains_counter_counts_chain_starts_not_frames) {
+  FrameRegulator reg(12, true, 3);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  const uint64_t t1 = phase + kVb - 12'000;
+  CHECK(!reg.offer(frame(0), t1, &disp));
+  CHECK(!reg.offer(frame(kFrame), t1 + 1'000, &disp));            // start
+  CHECK(!reg.offer(frame(2 * kFrame), t1 + 1'000 + kFrame, &disp));  // same chain
+  CHECK(reg.chains_count() == 1);
+  CHECK(reg.chained_count() == 2);
+  while (reg.release_due(phase + 10 * kVb, &out)) {
+  }
+  // Fresh collision after the queue drained = a second chain.
+  const uint64_t t2 = phase + 12 * kVb - 12'000;
+  CHECK(!reg.offer(frame(3 * kFrame), t2, &disp));
+  CHECK(!reg.offer(frame(4 * kFrame), t2 + 1'000, &disp));
+  CHECK(reg.chains_count() == 2);
+}
+
+TEST(chain_budget_cuts_run_by_dropping_held_older_frame) {
+  // display.chain_budget N: once a run has N chained frames, the next
+  // colliding frame takes its natural slot and the held occupant is
+  // displaced (freshest wins, one drop) instead of extending the chain.
+  FrameRegulator reg(12, true, 3, /*chain_budget=*/2);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  const uint64_t t1 = phase + kVb - 12'000;
+  CHECK(!reg.offer(frame(0), t1, &disp));                              // slot 1
+  CHECK(!reg.offer(frame(kFrame), t1 + 1'000, &disp));                 // chained, slot 2
+  CHECK(!reg.offer(frame(2 * kFrame), t1 + 1'000 + kFrame, &disp));    // chained, slot 3
+  CHECK(reg.chain_run() == 2);
+  CHECK(disp.n == 0);
+  // Fourth frame at cadence: natural slot 3 is held by frame 2 -- budget
+  // spent, so frame 2 is displaced and frame 3 takes slot 3.
+  CHECK(!reg.offer(frame(3 * kFrame), t1 + 1'000 + 2 * kFrame, &disp));
+  CHECK(disp.n == 1);
+  CHECK(disp.f[0].opaque == frame(2 * kFrame).opaque);
+  CHECK(reg.chain_cuts() == 1);
+  CHECK(reg.chain_run() == 0);
+  CHECK(reg.chained_count() == 2);
+  CHECK(reg.vsync_skips() == 0);
+  // Release order: frame 0 at slot 1, frame 1 at slot 2, frame 3 at slot 3.
+  CHECK(reg.release_due(phase + kVb - kLead, &out));
+  CHECK(out.opaque == frame(0).opaque);
+  CHECK(reg.release_due(phase + 2 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(kFrame).opaque);
+  CHECK(reg.release_due(phase + 3 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(3 * kFrame).opaque);
+  CHECK(!reg.holding());
+}
+
+TEST(chain_budget_zero_never_cuts) {
+  FrameRegulator reg(12, true, 3, 0);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  const uint64_t t1 = phase + kVb - 12'000;
+  CHECK(!reg.offer(frame(0), t1, &disp));
+  for (int i = 1; i <= 3; ++i)
+    CHECK(!reg.offer(frame(i * kFrame), t1 + 1'000 + (i - 1) * kFrame, &disp));
+  CHECK(reg.chain_run() == 3);
+  CHECK(reg.chain_cuts() == 0);
+  CHECK(disp.n == 0);
+}

@@ -223,6 +223,15 @@ at `mcs1`, `txq_drop` climbs into six figures, the GS sees ~48 fps with 1019
 Restore the GS's `maburgs.pre-foldin` at the same time, for the telemetry
 reason above.
 
+## `maburplay` — `display.chain_budget` (2026-09-02)
+
+Additive with an in-code default of 3 (0 = unbounded, the prior behavior),
+same rules as the vsync keys below: binary first, key optional. Rolling
+back to a pre-2026-09-02 binary (`maburplay.pre-chain` or older) with the
+key present in `/etc/maburplay.json` fails strict keys at boot — strip it
+first. Range [0, 60]; the bench A/B that sizes it is in
+`docs/observability.md` under the regulator line.
+
 ## `maburplay` — the vsync-locked regulator (2026-08-31)
 
 The three new player config keys — `display.vsync_lock`,

@@ -64,7 +64,14 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
         }
         return -1;
       };
-      if (occupant(target_v) >= 0) {
+      const int occ = occupant(target_v);
+      if (occ >= 0 && chain_budget_ > 0 && chain_run_ >= chain_budget_) {
+        // Budget spent: cut the chain here. The occupant is the older
+        // frame; freshest wins its slot and the stream is re-aligned.
+        displace(occ, out);
+        ++chain_cuts_;
+        chain_run_ = 0;
+      } else if (occ >= 0) {
         const uint64_t seq = target_v + per;
         const int later = occupant(seq);
         if (later >= 0) {
@@ -73,6 +80,11 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
         }
         target_v = seq;
         release = seq - lead_us_;
+        ++chained_count_;
+        if (chain_run_ == 0) ++chains_count_;
+        if (++chain_run_ > chain_max_) chain_max_ = chain_run_;
+      } else {
+        chain_run_ = 0;
       }
     }
   }

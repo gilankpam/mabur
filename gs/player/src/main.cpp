@@ -570,7 +570,8 @@ int main(int argc, char** argv) {
   // capture it by reference.
   maburplay::FrameRegulator regulator(cfg.display.regulate_ms,
                                       cfg.display.vsync_lock,
-                                      cfg.display.vsync_lead_ms);
+                                      cfg.display.vsync_lead_ms,
+                                      cfg.display.chain_budget);
   maburplay::LatLog lat_log(cfg.display.lat_log_dir);
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
@@ -659,7 +660,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
                    "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
-                   "fallback=%llu pend=%llu heals=%llu pdrop=%llu\n",
+                   "fallback=%llu pend=%llu heals=%llu pdrop=%llu "
+                   "chained=%llu chain=%llu chain_max=%llu chains=%llu cuts=%llu\n",
                    static_cast<unsigned long long>(regulator.held_count()),
                    static_cast<unsigned long long>(regulator.late_count()),
                    static_cast<unsigned long long>(regulator.replaced_count()),
@@ -671,7 +673,12 @@ int main(int argc, char** argv) {
                    static_cast<unsigned long long>(pend),
                    static_cast<unsigned long long>(regulator.heals()),
                    static_cast<unsigned long long>(
-                       presenter ? presenter->mailbox_dropped_paced() : 0));
+                       presenter ? presenter->mailbox_dropped_paced() : 0),
+                   static_cast<unsigned long long>(regulator.chained_count()),
+                   static_cast<unsigned long long>(regulator.chain_run()),
+                   static_cast<unsigned long long>(regulator.chain_max()),
+                   static_cast<unsigned long long>(regulator.chains_count()),
+                   static_cast<unsigned long long>(regulator.chain_cuts()));
     } else {
       std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
                    present_jitter_ema_ms);
