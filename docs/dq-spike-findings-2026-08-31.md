@@ -557,6 +557,28 @@ is per *transfer*, so this means multiple transfers in flight, which
 tx_threads already does… measure why acceptance serializes); devourer
 `jgr3-physt` upstreaming; airtime-budget honoring at the cap.
 
+**Resolution (2026-09-02): the "contaminated physt-passing reports" were
+a missing descriptor-bit gate, and the RF blocker on aggregation is
+CLEARED.** The Jaguar3 RX descriptor carries a per-frame PHYST flag (DW0
+bit 26, "a PHY-status report was actually written into this frame's
+drvinfo") — defined in `FrameParserJaguar3.h` since the port but never
+read. The device layer parsed the drvinfo whenever `drvinfo_size >= 28`,
+which is *always* true because `RX_DRVINFO_SZ=4` is a global register that
+reserves the space on every frame; on A-MPDU subframes the PHY writes no
+report and the reserved bytes hold stale garbage whose page nibble aliases
+0/1 two times in sixteen — exactly this addendum's rssiA 17…73 / rssiB 225
+tails. Jaguar1 always gated on the equivalent bit
+(`FrameParser.cpp:86`). Fix: devourer `jgr3-physt` commit 525dbda decodes
+the bit into `Rx8822cFrame.physt` and requires it before
+`parse_phy_sts_jgr3` (guarded by ctest `rx_physt_bit`). Bench validation,
+GS maburgs rebuilt, agg 6/0x20 live at mcs5: s0 rssi sd 0.44–0.87 dB /
+snr sd 0.45–0.74 across both cards (agg-OFF baseline same session:
+0.50–0.65 / 0.44–0.60), min–max spans ≤ 3.6 dB, no excursions; ausniff
+60.0 fps, 0 gaps, 0 incomplete; ladder promoted cleanly to its mcs5 park,
+zero phantom demotes. A-MPDU can now run without poisoning RF telemetry —
+the remaining reason it stays off by default is only §12.2's null fec win
+(USB-feed serialization), not RF. Bench left running `ampdu.max_num 6`.
+
 ## 13. Open questions
 
 1. ~~What is the true split of the 7 ms `dq`?~~ Answered in §7.
