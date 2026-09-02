@@ -1159,6 +1159,31 @@ acceptance. fec p50 at the park is now ~6–7.5 ms typical vs 9.7 —
 capture→glass should show most of it; the GS publish tail (~2 ms) and
 enc (~7.1 ms) are the next binding terms.
 
+**Loss-sim addendum (same day): the agg6 burst-granularity debt is
+PAID.** Campaign on the live agg6+fb6 config, pinned mcs5, per-card s0
+loss via the `--loss-sim` rig (sweep binary `maburgs.losssim` built
+`-DMABUR_LOSS_SIM=ON` off this tree, wrapper reverted after; rig port
+8303 — 8302 is taken by another maburgs socket now). burst=1 vs burst=6
+at matched per-card rates, 30 s cells, s0-abandonment delta per step:
+
+| per-card | b1 abn / fps | b6 abn / fps |
+|---|---|---|
+| 5% | 0 / 29.8 | 0 / 29.8 |
+| 10% | 0 / 29.6 | 241 / 29.6 |
+| 20% | 0 / 29.8 | 860 / 28.8 |
+| 35% | 102 / 29.5 | 3776 / **25.1** |
+
+The granularity penalty is real — burst=6 abandons ~10–30× more than
+singles once per-card loss reaches 10% — but the operating margin is
+comfortable: at ≤5% per-card (far above the residual-demote threshold
+that walks the adaptive ladder down at pre≈0.02) burst=6 is
+indistinguishable from singles, zero abandonment, clean fps. Real frame
+damage needs 35% per-card, a link the ladder would have long since
+demoted (and at lower rungs the overheads are richer). Verdict: **agg6 +
+fb6 is loss-safe in the regime the ladder actually lets it fly in**;
+the agg31 prohibition stands unchanged. Remaining flight debt: only the
+vsync-servo dsp watch.
+
 ## Provenance
 
 Captures kept out-of-tree in the session scratchpad; nothing in this doc
