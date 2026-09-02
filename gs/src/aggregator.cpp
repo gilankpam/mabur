@@ -149,15 +149,18 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     // previous frame instead booked every swap as an outage AND re-counted
     // the gap on the way back up.
     //
-    // Restricted to decoder-bound bodies (neither rc nor MSP): drone-
-    // originated RC frames (DISC_ACK, the 1 Hz T_TELEM) and MSP frames carry
-    // their OWN independent 802.11 seq counters on the drone, so walking them
-    // against the video high-water mark can book up to kMaxSeqGap phantom
-    // expected seqs per such frame — a periodic phantom loss_pct spike.
-    // Mirrors main.cpp's on_video() filter, which excludes RC+MSP from the
-    // rendezvous video-silence timer for exactly this reason.
-    const bool decoder_bound_seq =
-        rc_t < 0 && stream_id != mabur::kMspStreamId;
+    // Walk EVERY drone frame. The GS reads the 12-bit seq the 8812EU
+    // stamps in hardware: devourer sets EN_HWSEQ on the TX descriptor
+    // (FrameParserJaguar3.h), so the chip's single counter numbers every
+    // injected frame — video bodies, MSP bodies AND the drone's RC frames
+    // (DISC_ACK, the 1 Hz T_TELEM) — and the software seq_ctl maburd writes
+    // (RadioTx::seq_, control_seq) never reaches the air. The old walk
+    // excluded MSP and RC on the belief that they carried their own
+    // counters and booked one phantom lost frame per such frame (~0.3 % of
+    // loss_pct on the bench; measured 2026-09-03, both classes matched the
+    // missing seqs exactly — docs/gs-uplink-self-blanking-findings-2026-09-02.md).
+    // Self-originated frames were diverted above and never reach here.
+    const bool decoder_bound_seq = true;
     static const bool gaplog = std::getenv("MABUR_GAPLOG") != nullptr;
     if (gaplog && !decoder_bound_seq) {
       std::fprintf(stderr, "nonvid card=%u seq=%u mono=%llu len=%zu sid=%d rc=%d\n",

@@ -54,11 +54,15 @@ MABUR_GAPLOG=1 timeout 150 /usr/local/bin/maburgs.gaplog -c /etc/maburgs.json > 
    one software counter (`RadioTx::seq_` in `drone/src/radio_tx.cpp`,
    `stream_id >= 2 → layer 0`), so MSP bodies (stream 4, 1343 B, ~5–8/s)
    consume video seqs that the GS excludes from its seq walk. 477/481
-   short gaps matched an MSP frame with that exact seq within 50 ms. The
-   `aggregator.cpp` comment claiming MSP has its own 802.11 counter is
-   stale (true only for the 0x40 mgmt path — the T_TELEM/DISC RC frames
-   really are separate). Consequence: per-card `loss_pct` is ~2× too high
-   (0.34% phantom + 0.35% real ≈ 0.67%).
+   short gaps matched an MSP or drone RC frame with that exact seq within
+   50 ms. The `aggregator.cpp` comment claiming MSP and RC have their own
+   802.11 counters was wrong for both: maburd does keep separate software
+   counters (`RadioTx::seq_`, `control_seq`), but devourer sets EN_HWSEQ on
+   the TX descriptor and the chip overwrites the header with its single
+   hardware counter (confirmed 2026-09-03 after the MSP-only fix left
+   ~2 gaps/s that matched T_TELEM/DISC_ACK seqs exactly). Consequence:
+   per-card `loss_pct` was ~2× too high (phantom + 0.35% real ≈ 0.67%).
+   Fixed on branch `msp-seq-fix`: the walk now counts every drone frame.
 2. **Real losses are joint and whole-PPDU.** 569/570 card-0 gaps had a
    card-1 gap with the same seqs, same `n`, same TSF delta. Zero `late`
    lines (nothing ever arrived behind the mark). (A `keep_corrupted` run was attempted and is VOID: maburgs does not

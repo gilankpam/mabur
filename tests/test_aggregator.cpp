@@ -89,12 +89,11 @@ TEST(routes_video_to_decoder_and_rc_to_control) {
   CHECK(rcs == 1);
   CHECK(agg.card(0).video_bodies > 0);
   CHECK(agg.card(1).rc_frames == 1);
-  // last_video_seq() tracks ONLY the video/decoder-bound seq counter: RC
-  // frames (DISC_ACK here) carry their own independent dot11 seq on the
-  // drone and must never advance it, even though the ack is the last
-  // crc-ok frame fed in this test — so the mark stays on the last video
-  // body's seq (one behind the ack's).
-  CHECK(agg.last_video_seq() == seq - 2);
+  // The drone's chip stamps one hardware seq on every frame it injects
+  // (EN_HWSEQ), RC frames included, so the DISC_ACK — the last crc-ok frame
+  // fed here — advances the mark like any video body. (Pre-2026-09-03 the
+  // walk excluded RC on the belief it had its own counter: phantom loss.)
+  CHECK(agg.last_video_seq() == seq - 1);
 }
 
 TEST(seq_gap_tracking_crc_ok_only) {
@@ -215,6 +214,39 @@ TEST(msp_stream_body_routes_to_msp_sink_not_video) {
 
   CHECK(msp_hits == 1);
   CHECK(video_hits == 0);
+}
+
+// The drone's chip numbers every injected frame from ONE hardware seq
+// counter (EN_HWSEQ): video, MSP and its RC frames alike. So an MSP body
+// or a DISC_ACK interleaved with video must advance the per-card seq walk
+// like any video body. Skipping them booked one phantom lost frame per
+// such frame — ~0.3 % of loss_pct on the bench
+// (docs/gs-uplink-self-blanking-findings-2026-09-02.md).
+TEST(msp_and_rc_frames_advance_card_seq_walk_no_phantom_loss) {
+  mabur::MspSourceCfg cfg;
+  std::vector<std::vector<uint8_t>> bodies;
+  mabur::MspSource src(cfg, [&](const uint8_t* b, size_t n){ bodies.emplace_back(b, b + n); });
+  std::vector<uint8_t> blob;
+  std::vector<uint8_t> clear = {2};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, clear.data(), clear.size());
+  std::vector<uint8_t> draw = {4};
+  mabur::msp_append_message(blob, mabur::MSP_CMD_DISPLAYPORT, draw.data(), draw.size());
+  src.on_serial_bytes(blob.data(), blob.size(), 1000);
+  REQUIRE(!bodies.empty());
+
+  Aggregator agg(vec_layers(), 512, 1);
+  agg.set_msp_sink([&](const uint8_t*, size_t, uint64_t){});
+  std::vector<uint8_t> junk(20, 0);
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t){});
+  agg.on_rx_body(msg(0, 10, true, junk));                     // video
+  agg.on_rx_body(msg(0, 11, true, bodies[0]));                // MSP, same counter
+  agg.on_rx_body(msg(0, 12, true, junk));                     // video
+  agg.on_rx_body(msg(0, 13, true, disc_ack_fixture_wire()));  // drone RC, same counter
+  agg.on_rx_body(msg(0, 14, true, junk));                     // video
+  const CardTrack& c = agg.card(0);
+  CHECK(c.seq_received == 5);
+  CHECK(c.seq_expected == 5);                   // nothing lost
+  CHECK(agg.last_video_seq() == 14);
 }
 
 TEST(card_rx_bytes_counts_all_frames) {
@@ -469,21 +501,22 @@ TEST(rf_pool_with_no_enh_equals_the_base_series) {
   CHECK(c.rf_pool.rssi_ema == c.cls[int(RfClass::S0)].rssi_ema);
 }
 
-// RC frames (DISC_ACK here) carry their own independent 802.11 seq counter
-// on the drone — a wildly different mac_seq on an interleaved RC frame must
-// not perturb the video seq-gap walk (seq_expected/seq_received/
-// last_video_seq), only the RC-frame routing/class accounting.
-TEST(rc_frame_with_wild_seq_does_not_perturb_video_seq_accounting) {
+// The drone's chip numbers RC frames (DISC_ACK here) from the same
+// hardware seq counter as video (EN_HWSEQ), so an interleaved RC frame
+// occupies a seq and must advance the walk — otherwise the next video body
+// books a phantom lost frame. Routing/class accounting is unchanged.
+TEST(rc_frame_in_sequence_advances_video_seq_accounting) {
   auto ack = disc_ack_fixture_wire();
   Aggregator agg(vec_layers(), 512, 1);
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t){});
   std::vector<uint8_t> junk(20, 0);  // not SBI, not RC -> misroutes as "video"
   agg.on_rx_body(msg(0, 10, true, junk));    // video-ish body, seq 10
-  agg.on_rx_body(msg(0, 4000, true, ack));   // RC frame, wildly different seq
-  agg.on_rx_body(msg(0, 11, true, junk));    // next video-ish body, seq 11
+  agg.on_rx_body(msg(0, 11, true, ack));     // RC frame, next hw seq
+  agg.on_rx_body(msg(0, 12, true, junk));    // next video-ish body, seq 12
   const CardTrack& c = agg.card(0);
-  CHECK(c.seq_received == 2);            // only the two video-ish bodies
-  CHECK(c.seq_expected == 2);            // contiguous 10->11: no gap from the ack
-  CHECK(agg.last_video_seq() == 11);     // ack's seq (4000) never touches this
+  CHECK(c.seq_received == 3);            // all three frames delivered
+  CHECK(c.seq_expected == 3);            // contiguous 10,11,12: no gap
+  CHECK(agg.last_video_seq() == 12);
   CHECK(c.rc_frames == 1);               // the ack is still routed normally
   CHECK(c.cls[int(RfClass::Ctrl)].frames == 1);
 }
