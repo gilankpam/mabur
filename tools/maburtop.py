@@ -452,8 +452,15 @@ def render_rows_compact(model, wall, width):
     residual = link.get("residual_loss")
     residual_pct = None if residual is None else residual * 100.0
     air = link.get("air_pct")
+    # link.rtt (link-rtt 2026-09-02): control-path RTT — telem queues behind
+    # video on the drone TX, so this reads high under saturation. flr is the
+    # absolute network floor (anchor + pts offset).
+    rtt = link.get("rtt") or {}
     rows.append(f"LINK    residual {_f(residual_pct, 5, 1)} %"
-                f"   air ~{_f(air, 4, 1)}% of ladder")
+                f"   air ~{_f(air, 4, 1)}% of ladder"
+                f"   rtt {_f(rtt.get('ms'), 4, 1)} ms"
+                f" (min {_f(rtt.get('min_ms'), 4, 1)})"
+                f"   flr {_f(rtt.get('floor_ms'), 4, 1)} ms")
 
     # --- VIDEO ---
     rows.append(
@@ -770,7 +777,12 @@ def panel_video(model, wall):
 
     residual = link.get("residual_loss")
     residual_pct = None if residual is None else residual * 100.0
-    body.append((f"fec       residual {_f(residual_pct, 4, 1)} %", []))
+    rtt = link.get("rtt") or {}
+    body.append((f"fec       residual {_f(residual_pct, 4, 1)} %"
+                 f"   rtt {_f(rtt.get('ms'), 4, 1)} ms"
+                 f" (min {_f(rtt.get('min_ms'), 4, 1)}"
+                 f", n {_s(rtt.get('n'))})"
+                 f"   flr {_f(rtt.get('floor_ms'), 4, 1)} ms", []))
 
     # lat: head-segment latency aggregates (link.video.lat), omitted
     # entirely upstream while the pts anchor isn't usable or the window is

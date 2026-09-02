@@ -90,6 +90,45 @@ TEST(op_exports_overhead_pair_not_scalar) {
   CHECK(op["overhead_enh"].get<double>() > 0.499 && op["overhead_enh"].get<double>() < 0.501);
 }
 
+// link-rtt (2026-09-02): link.rtt is null until the estimator has a sample,
+// then carries the control-path RTT (EWMA + session min + n), the filtered
+// pts offset, and floor_ms when the anchor was usable — all from StatsInput,
+// the exporter never computes them.
+TEST(link_rtt_null_then_values) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  ex.poll(1000, base_input());
+  CHECK(cap.last()["link"]["rtt"].is_null());
+
+  StatsInput in = base_input();
+  StatsRttIn r;
+  r.rtt_ms = 12.34;
+  r.rtt_min_ms = 8.0;
+  r.n = 42;
+  r.pts_off_us = -123456789;
+  r.floor_ms = 3.2;
+  in.rtt = r;
+  ex.poll(1600, in);
+  const json rt = cap.last()["link"]["rtt"];
+  CHECK(std::abs(rt["ms"].get<double>() - 12.34) < 0.01);
+  CHECK(std::abs(rt["min_ms"].get<double>() - 8.0) < 0.01);
+  CHECK(rt["n"] == 42);
+  CHECK(rt["pts_off_us"] == -123456789);
+  CHECK(std::abs(rt["floor_ms"].get<double>() - 3.2) < 0.01);
+
+  // No offset yet (pts_at_build never arrived): offset keys are null,
+  // rtt keys still live.
+  StatsInput in2 = base_input();
+  StatsRttIn r2;
+  r2.rtt_ms = 12.0; r2.rtt_min_ms = 8.0; r2.n = 43;
+  in2.rtt = r2;
+  ex.poll(2200, in2);
+  const json rt2 = cap.last()["link"]["rtt"];
+  CHECK(rt2["n"] == 43);
+  CHECK(rt2["pts_off_us"].is_null());
+  CHECK(rt2["floor_ms"].is_null());
+}
+
 TEST(interval_gate_and_seq) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());

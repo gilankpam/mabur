@@ -198,6 +198,22 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   else at["close_ms"] = nullptr;
   link["layer_delivery_pct"] = in.layer_delivery_pct;
 
+  // Control-path RTT (link-rtt, 2026-09-02): null until the estimator's
+  // first matched sample. Offset/floor stay null until the drone ships a
+  // non-zero pts_at_build (MI clock unavailable, or a pre-echo build).
+  if (in.rtt) {
+    json& rt = link["rtt"];
+    rt["ms"] = in.rtt->rtt_ms;
+    rt["min_ms"] = in.rtt->rtt_min_ms;
+    rt["n"] = in.rtt->n;
+    if (in.rtt->pts_off_us) rt["pts_off_us"] = *in.rtt->pts_off_us;
+    else rt["pts_off_us"] = nullptr;
+    if (in.rtt->floor_ms) rt["floor_ms"] = *in.rtt->floor_ms;
+    else rt["floor_ms"] = nullptr;
+  } else {
+    link["rtt"] = nullptr;
+  }
+
   // Measured-loss ladder controller snapshot; static-pin mode never ticks
   // the controller, so it emits null rather than a frozen/meaningless state.
   if (in.ctl) {
