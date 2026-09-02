@@ -213,6 +213,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   } else {
     link["rtt"] = nullptr;
   }
+  {
+    json& rs = link["rcf_slot"];
+    rs["au"] = in.rcf_slot.au;
+    rs["timeout"] = in.rcf_slot.timeout;
+    rs["passthru"] = in.rcf_slot.passthru;
+  }
 
   // Measured-loss ladder controller snapshot; static-pin mode never ticks
   // the controller, so it emits null rather than a frozen/meaningless state.
