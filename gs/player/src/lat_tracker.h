@@ -64,6 +64,14 @@ class LatTracker {
 
   static constexpr std::size_t kMaxInflight = 64;
 
+  // link-rtt (2026-09-02): the tracker's own anchor, read-only, for the
+  // absolute-floor combination with the sideport pts offset
+  // (maburgs::floor_us_from). Each process combines the offset with its
+  // OWN anchor — the daemon's floor_ms export used ITS anchor and the two
+  // warm up independently, so borrowing the exported floor here would mix
+  // anchor domains.
+  const maburgs::PtsAnchor& anchor() const { return anchor_; }
+
  private:
   struct Entry {
     bool valid = false;

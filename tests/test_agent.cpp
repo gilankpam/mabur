@@ -245,6 +245,30 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
 // (mcs2, both slots), ovb==ove so the fixed share cancels out, denom =
 // 0.6*1.5/19.5 + 0.4*1.5/19.5 = 0.076923, kbps = 1000*0.65/0.076923 =
 // 8450.0 -> rounds to 8500.
+// link-rtt: the telem echo must name the RCF rcf_age_ms is aging against,
+// and go INVALID whenever last_fb_ms_ was refreshed by something that is
+// not an RCF. Failsafe entry is exactly that case: it resets the seq
+// window AND rebases last_fb_ms_ to now, so a fresh-looking age paired
+// with a stale echoed seq would let the GS fabricate an RTT sample from
+// the wrong send time. (A keepalive DISC while LINKED changes nothing —
+// feedback state included — so the echo correctly stays valid there.)
+TEST(last_feedback_seq_tracks_rcf_and_invalidates_on_failsafe) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  CHECK(!agent.last_feedback_seq().has_value());  // no RCF ever
+
+  auto rcf = make_rcf_wire(1, 4711, encode_profile(PhyMode::HT, 5, 20), 4);
+  agent.on_rc_frame(rcf.data(), rcf.size(), 100);
+  REQUIRE(agent.last_feedback_seq().has_value());
+  CHECK(*agent.last_feedback_seq() == 4711);
+
+  agent.tick(100 + static_cast<uint64_t>(cfg.link.failsafe_ms), RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(agent.have_feedback());  // last_fb_ms_ rebased, still "has feedback"
+  CHECK(!agent.last_feedback_seq().has_value());
+}
+
 TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   Config cfg = make_cfg();
   MockActuator act;

@@ -38,6 +38,7 @@
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
 #include "pts_anchor.h"
+#include "rtt_estimator.h"
 #include "radio_frontend.h"
 #include "rf_labels.h"
 #include "s1_loss.h"
@@ -249,6 +250,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // rx_ms is the GS-side mono stamp the aggregator carries on every rc frame.
   // Spec 2026-07-26 drone-telemetry.
   struct { std::optional<mabur::rc::Telem> t; uint64_t rx_ms = 0; } latest_telem;
+
+  // Control-path RTT + pts-offset estimator (link-rtt, 2026-09-02). Fed
+  // from the same core thread as latest_telem: RCF send stamps below,
+  // telem echoes in the rc sink.
+  maburgs::RttEstimator rtt_est;
 
   maburgs::AuRingWriter au_ring;
   maburgs::AuDoorbell au_bell;
@@ -518,6 +524,11 @@ static int run_radio(const maburgs::Config& cfg) {
       if (auto t = mabur::rc::parse_telem(f.data(), f.size())) {
         latest_telem.t = t;
         latest_telem.rx_ms = us / 1000;
+        // link-rtt: every telem is a sync sample. `us` is the radio
+        // frontend's steady_clock stamp — same base as the mono_us() send
+        // stamps below, so the subtraction is one clock throughout.
+        rtt_est.on_telem(t->rcf_seq_echo, (t->flags & 0x08) != 0,
+                         t->rcf_age_ms, t->pts_at_build, us);
       }
       return;
     }
@@ -856,6 +867,10 @@ static int run_radio(const maburgs::Config& cfg) {
       const int tx = sel.update(snaps, now_ms_u * 1000);
       last_tx_card = tx;
       fronts[static_cast<size_t>(tx)]->send_control(out->frame);
+      // link-rtt: stamp the emission. build_rcf bumped seq_, so rcf_seq()
+      // IS this frame's seq. DISCs are rendezvous traffic, not RCFs — the
+      // drone never ages against them, so they are not matchable sends.
+      if (!out->is_disc) rtt_est.on_rcf_sent(vrx.rcf_seq(), mono_us());
     }
     // RCF repeat burst drain (rcf-uplink-loss findings 2026-08-14): extra
     // copies of an op-CHANGING RCF, spaced rcf_repeat_ms, so the drone's
@@ -865,8 +880,12 @@ static int run_radio(const maburgs::Config& cfg) {
     // reset the decoder window ("window == RCF period" holds for step()
     // emissions only) and they reuse the card the last real emission
     // selected rather than re-running the selector.
-    while (auto rf = vrx.poll_repeat(now_ms))
+    while (auto rf = vrx.poll_repeat(now_ms)) {
       fronts[static_cast<size_t>(last_tx_card)]->send_control(*rf);
+      // Repeats carry fresh seqs (poll_repeat contract), so each is an
+      // independently matchable send for the RTT estimator.
+      rtt_est.on_rcf_sent(vrx.rcf_seq(), mono_us());
+    }
     // ctl: rung transition line — load-bearing for post-mortems (Task 6
     // adds the sideport link.ctl block; this stderr line is independent of
     // it and persists in /tmp/maburgs.log even when no sideport consumer is
@@ -1056,6 +1075,22 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.q_drop = queue.dropped();
       sin.telem = latest_telem.t;
       sin.telem_rx_ms = latest_telem.rx_ms;
+      // link-rtt block. floor via floor_us_from (pts_anchor.h), which owns
+      // the 32-bit-seed vs 64-bit-MI-domain wrap rule.
+      if (rtt_est.has_rtt()) {
+        maburgs::StatsRttIn ri;
+        ri.rtt_ms = rtt_est.rtt_ms();
+        ri.rtt_min_ms = rtt_est.rtt_min_ms();
+        ri.n = rtt_est.samples();
+        if (rtt_est.has_offset()) {
+          ri.pts_off_us = rtt_est.pts_off_us();
+          if (lat_anchor.usable())
+            ri.floor_ms = static_cast<double>(maburgs::floor_us_from(
+                              lat_anchor.base_us(), rtt_est.pts_off_us())) /
+                          1000.0;
+        }
+        sin.rtt = ri;
+      }
       // lat_win.flush() is destructive (reads AND clears): only pay for it
       // on a poll that stats->due() says will actually emit. This loop
       // iterates roughly every 10ms (the drain() cadence above) while

@@ -401,6 +401,17 @@ int venc_set_max_ipprop(int prop)
 
 /* ── Signals ──────────────────────────────────────────────────────────── */
 
+uint64_t venc_cur_pts_us(void)
+{
+	uint64_t cur = 0;
+
+	if (!venc_core_running())
+		return 0;
+	if (MI_SYS_GetCurPts(&cur) != 0)
+		return 0;
+	return cur;
+}
+
 void venc_get_stats(VencStats *out)
 {
 	venc_frame_ring_fill_t fill;

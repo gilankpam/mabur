@@ -118,6 +118,21 @@ struct StatsCtlIn {
   double fade_dsnr = 0.0;
 };
 
+// Control-path RTT + pts offset (link-rtt, 2026-09-02), straight from
+// RttEstimator. rtt_ms is EWMA, rtt_min_ms the session min (the floor
+// bound); pts_off_us the min-RTT-filtered (pts − GS-mono) offset, absent
+// until the drone ships a non-zero pts_at_build. floor_ms = maburgs'
+// own PtsAnchor minus that offset — the absolute network floor, exported
+// for maburtop/flightrec (maburplay computes its own against its own
+// anchor from pts_off_us).
+struct StatsRttIn {
+  double rtt_ms = 0.0;
+  double rtt_min_ms = 0.0;
+  uint32_t n = 0;
+  std::optional<int64_t> pts_off_us;
+  std::optional<double> floor_ms;
+};
+
 struct StatsInput {
   uint32_t vtx_id = 0;
   bool in_session = false;  // VrxState::SESSION
@@ -145,6 +160,10 @@ struct StatsInput {
   // leaves maburgs via the shm ring now; schema note in stats_exporter.cpp).
   uint64_t ring_published = 0, ring_dropped_oversize = 0, ring_bytes = 0;
   uint64_t q_drop = 0;
+
+  // Control-path RTT block; nullopt until the estimator's first sample ->
+  // JSON "rtt": null.
+  std::optional<StatsRttIn> rtt;
 
   // Latest drone telemetry, if any this session: wire struct + GS arrival clock.
   std::optional<mabur::rc::Telem> telem;

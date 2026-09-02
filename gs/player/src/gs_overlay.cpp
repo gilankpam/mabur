@@ -402,7 +402,9 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     // "P99"/"P50" rather than the old "LAT": with two rows present the
     // label has to say WHICH statistic it is. Same glyph count as "LAT",
     // so every width below is unchanged by the rename.
-    const int head_w = text_width(*secondary, "P99 999 |");
+    // "~999" not "999": the headline carries a leading ~ while the e2e is
+    // still relative (link-rtt) and the box must fit the widest form.
+    const int head_w = text_width(*secondary, "P99 ~999 |");
     const int bd_w = text_width(*secondary, worst_bd);
     // gap12, not gap10: per the horizontal clearance floor comment above
     // (kFpsValue/kFpsLabel's), anything smaller yields negative clearance
@@ -417,7 +419,7 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     // fields use the plain tokens directly rather than the stale-aware
     // `link_*` helpers -- this row is current by construction and never
     // dims.
-    place(GsFieldId::kLatHead, secondary, lat_x, lat_base, "P99 999 |");
+    place(GsFieldId::kLatHead, secondary, lat_x, lat_base, "P99 ~999 |");
     place(GsFieldId::kLatBreakdown, secondary, lat_x + head_w + gap12, lat_base,
           worst_bd);
     // Median row, one secondary line further up, same left edge and same
@@ -428,9 +430,24 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     const int lat_box_top = lat_base - secondary->baseline;
     const int med_base =
         lat_box_top - gap8 - (secondary->glyph_h - secondary->baseline);
-    place(GsFieldId::kLatP50Head, secondary, lat_x, med_base, "P50 999 |");
+    place(GsFieldId::kLatP50Head, secondary, lat_x, med_base, "P50 ~999 |");
     place(GsFieldId::kLatP50Breakdown, secondary, lat_x + head_w + gap12,
           med_base, worst_bd);
+    // Control-path RTT (link-rtt 2026-09-02): one more secondary line up —
+    // adjacent to the LAT pair for one-glance latency reading, but its own
+    // field because it is two-way control-path time and must never look
+    // like a segment of the e2e sum. RIGHT-flush, not at lat_x: the third
+    // row up crosses into the centre-of-frame keep-clear band (y < 780·s),
+    // whose x range ends at 1520·s — the full-width lat column's left edge
+    // (~1494 at 1080p) sits inside it, but this narrow field right-flushed
+    // starts ~1684 and clears the band at every resolution
+    // (safe_inset_and_centre_of_frame_hold_at_every_resolution pins it).
+    const int med_box_top = med_base - secondary->baseline;
+    const int rtt_base =
+        med_box_top - gap8 - (secondary->glyph_h - secondary->baseline);
+    const int rtt_w = text_width(*secondary, "RTT 999 ms");
+    place(GsFieldId::kLatRtt, secondary, right - rtt_w - pad_h(secondary),
+          rtt_base, "RTT 999 ms");
   }
 
   // --- bottom centre: loss -------------------------------------------
@@ -666,8 +683,13 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       // The trailing "|" is the breakdown's only separator -- there is no
       // third field to draw it in. It appears only when there is a
       // breakdown to introduce; the invalid case is just "LAT --" alone.
+      // The ~ marks a RELATIVE e2e (absolute floor unknown — offset
+      // estimator cold or sync lost); it drops once main folds the floor
+      // in (ps.lat_abs). Never on the em-dash form: a non-number needs no
+      // precision disclaimer.
       st.text = ps.lat_valid
-                    ? "P99 " + fmt_int(std::clamp((double)ps.lat_e2e_ms, 0.0, 999.0)) + " |"
+                    ? std::string("P99 ") + (ps.lat_abs ? "" : "~") +
+                          fmt_int(std::clamp((double)ps.lat_e2e_ms, 0.0, 999.0)) + " |"
                     : "P99 --";
       break;
     case GsFieldId::kLatBreakdown:
@@ -687,8 +709,10 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       st.rgb = tok::kTextSecondary;
       break;
     case GsFieldId::kLatP50Head:
+      // Same relative-marker rule as kLatHead; both rows share lat_abs
+      // because both e2e values got the same floor treatment in main.
       st.text = ps.lat_valid
-                    ? "P50 " +
+                    ? std::string("P50 ") + (ps.lat_abs ? "" : "~") +
                           fmt_int(std::clamp((double)ps.lat_p50_e2e_ms, 0.0, 999.0)) +
                           " |"
                     : "P50 --";
@@ -705,6 +729,19 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
                       seg(0), seg(1), seg(2), seg(3), seg(4), seg(5), seg(6));
         st.text = buf;
       }
+      st.rgb = tok::kTextSecondary;
+      break;
+    case GsFieldId::kLatRtt:
+      // Control-path RTT from the sideport (link.rtt.ms): two-way
+      // GS→drone→GS control time, adjacent to the LAT rows but never part
+      // of their sum. Reads high when telem queues behind video — honest
+      // congestion signal. Em-dash form while the estimator has never
+      // fired. Sideport-sourced, but rendered with the plain token like
+      // the LAT rows (it sits in their column; dimming one row of the
+      // block on `stale` would read as a partial failure).
+      st.text = snap.rtt_ms
+                    ? "RTT " + fmt_int(std::clamp(*snap.rtt_ms, 0.0, 999.0)) + " ms"
+                    : "RTT --";
       st.rgb = tok::kTextSecondary;
       break;
     default: {

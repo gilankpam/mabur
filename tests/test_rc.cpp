@@ -251,7 +251,9 @@ TEST(telem_round_trip_and_golden) {
   t.tlm_seq = 0x0102; t.state = 2; t.flags = 0x03; t.generation = 0x04050607;
   t.applied_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20);
   t.applied_ov_base = 0.25; t.applied_ov_enh = 0.30;
-  t.rcf_age_ms = 45; t.rcf_rx = 100000; t.enc_frames = 200000;
+  t.rcf_age_ms = 45; t.rcf_seq_echo = 0x1234;
+  t.pts_at_build = 0x0011223344556677ull;
+  t.rcf_rx = 100000; t.enc_frames = 200000;
   t.enc_kbytes = 300000; t.cmd_kbps = 9000; t.qp = 8; t.ring_drops = 1;
   t.txq_depth = 3; t.txq_cap = 64; t.txq_drops = 7; t.txq_wait_max_ms = 1234;
   t.radio_sent = 400000;
@@ -270,6 +272,8 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->applied_profile == t.applied_profile);
   CHECK(std::abs(back->applied_ov_base - 0.25) < 0.005);
   CHECK(std::abs(back->applied_ov_enh - 0.30) < 0.005);
+  CHECK(back->rcf_seq_echo == 0x1234);
+  CHECK(back->pts_at_build == 0x0011223344556677ull);
   CHECK(back->rcf_rx == t.rcf_rx);
   CHECK(back->enc_kbytes == t.enc_kbytes);
   CHECK(back->txq_wait_max_ms == 1234);
@@ -289,15 +293,32 @@ TEST(telem_round_trip_and_golden) {
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
-      "43520504030201020706050405191e2d00a0860100400d0300e0930400282308010"
-      "0034007000000d204801a0600090000000200333415163d034800040005000700080"
-      "009000a003eb263";
+      "43520504030201020706050405191e2d0034127766554433221100a0860100400d0"
+      "300e09304002823080100034007000000d204801a060009000000020033341516"
+      "3d034800040005000700080009000a003e51aa";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
   CHECK(!mabur::rc::parse_telem(trunc.data(), trunc.size()).has_value());
   auto flip = wire; flip[wire.size() / 2] ^= 0xFF;
   CHECK(!mabur::rc::parse_telem(flip.data(), flip.size()).has_value());
+}
+
+TEST(telem_rtt_sync_fields_round_trip) {
+  // link-rtt (2026-09-02): the drone echoes WHICH RCF rcf_age_ms is aging
+  // against (seq identity for the GS send-time match) and its pts-domain
+  // clock at telem build (the t3 of the NTP-style offset estimate). Both
+  // must survive the wire at full width — pts_at_build is a 64-bit µs
+  // value in the MI timebase and must not truncate.
+  mabur::rc::Telem t;
+  t.rcf_age_ms = 12;
+  t.rcf_seq_echo = 0xBEEF;
+  t.pts_at_build = 0x0123456789ABCDEFull;
+  auto w = mabur::rc::pack_telem(t);
+  auto p = mabur::rc::parse_telem(w.data(), w.size());
+  REQUIRE(p.has_value());
+  CHECK(p->rcf_seq_echo == 0xBEEF);
+  CHECK(p->pts_at_build == 0x0123456789ABCDEFull);
 }
 
 TEST(rcf_probe_roundtrip) {

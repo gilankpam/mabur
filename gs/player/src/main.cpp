@@ -1612,17 +1612,39 @@ int main(int argc, char** argv) {
       // reasoning as above: a stale post-reset bd would otherwise still
       // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
       // about to ignore them, leaving gs_ps holding phantom numbers.
+      // link-rtt (2026-09-02): absolute floor = own anchor + the sideport
+      // pts offset (floor_us_from owns the 32-bit-seed wrap rule). Folded
+      // into air+ AND e2e so the row's additive story survives: air+ was
+      // "excess above the luckiest transit", the floor IS that transit, so
+      // air+ becomes absolute first-body air time and the segments still
+      // sum to the headline. Sanity-bounded: an offset that puts the floor
+      // outside (-1ms, 1s) is estimator garbage — stay relative (~) rather
+      // than display a fabricated absolute.
+      int floor_ms = 0;
+      gs_ps.lat_abs = false;
+      if (gs_src && lat.anchor().usable()) {
+        if (const auto& off = gs_src->snapshot().pts_off_us) {
+          const int64_t f_us =
+              maburgs::floor_us_from(lat.anchor().base_us(), *off);
+          if (f_us > -1000 && f_us < 1'000'000) {
+            floor_ms = static_cast<int>((f_us + 500) / 1000);
+            gs_ps.lat_abs = true;
+          }
+        }
+      }
       if (gs_ps.lat_valid) {
-        gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]);
+        gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]) + floor_ms;
         for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
+        gs_ps.lat_ms[2] += floor_ms;  // air+ -> absolute air
         // Median row: same window, same anchor gate, same staleness
         // reasoning as the p99 pair above -- p50_frame_ likewise survives
         // flush_all(), so it is gated on the AND, not on bd50.valid alone.
         const auto bd50 = lat.p50_frame();
         if (bd50.valid) {
-          gs_ps.lat_p50_e2e_ms = static_cast<int>(bd50.ms[7]);
+          gs_ps.lat_p50_e2e_ms = static_cast<int>(bd50.ms[7]) + floor_ms;
           for (int i = 0; i < 7; ++i)
             gs_ps.lat_p50_ms[i] = static_cast<int>(bd50.ms[i]);
+          gs_ps.lat_p50_ms[2] += floor_ms;
         }
       }
       if (L.n > 0) {

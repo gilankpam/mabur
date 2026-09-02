@@ -37,6 +37,16 @@ uint32_t get32(const uint8_t* buf, size_t off) {
          (static_cast<uint32_t>(buf[off + 2]) << 16) | (static_cast<uint32_t>(buf[off + 3]) << 24);
 }
 
+void put64(std::vector<uint8_t>& out, uint64_t v) {
+  put32(out, static_cast<uint32_t>(v & 0xFFFFFFFFu));
+  put32(out, static_cast<uint32_t>(v >> 32));
+}
+
+uint64_t get64(const uint8_t* buf, size_t off) {
+  return static_cast<uint64_t>(get32(buf, off)) |
+         (static_cast<uint64_t>(get32(buf, off + 4)) << 32);
+}
+
 void put_crc(std::vector<uint8_t>& body) {
   uint16_t crc = crc16_ccitt(body.data(), body.size());
   put16(body, crc);
@@ -45,7 +55,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 14;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 73;  // grew by 2: txq_wait_max_ms (u16)
+constexpr size_t TELEM_LEN = 83;  // grew by 10: rcf_seq_echo (u16) + pts_at_build (u64)
 
 }  // namespace
 
@@ -187,6 +197,8 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_base * 100.0)));
   body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_enh * 100.0)));
   put16(body, t.rcf_age_ms);
+  put16(body, t.rcf_seq_echo);
+  put64(body, t.pts_at_build);
   put32(body, t.rcf_rx);
   put32(body, t.enc_frames);
   put32(body, t.enc_kbytes);
@@ -238,33 +250,35 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.applied_ov_base = buf[13] / 100.0;
   t.applied_ov_enh = buf[14] / 100.0;
   t.rcf_age_ms = get16(buf, 15);
-  t.rcf_rx = get32(buf, 17);
-  t.enc_frames = get32(buf, 21);
-  t.enc_kbytes = get32(buf, 25);
-  t.cmd_kbps = get16(buf, 29);
-  t.qp = buf[31];
-  t.ring_drops = get16(buf, 32);
-  t.txq_depth = buf[34];
-  t.txq_cap = buf[35];
-  t.txq_drops = get32(buf, 36);
-  t.txq_wait_max_ms = get16(buf, 40);
-  t.radio_sent = get32(buf, 42);
-  t.radio_drops = get32(buf, 46);
-  t.usb_fail = get16(buf, 50);
-  t.up_rssi[0] = buf[52];
-  t.up_rssi[1] = buf[53];
-  t.up_snr[0] = static_cast<int8_t>(buf[54]);
-  t.up_snr[1] = static_cast<int8_t>(buf[55]);
-  t.soc_temp_c = static_cast<int8_t>(buf[56]);
-  t.thermal_delta = static_cast<int8_t>(buf[57]);
-  t.load_x100 = get16(buf, 58);
-  t.idr_disagree = get16(buf, 60);
-  t.enhance_disagree = get16(buf, 62);
-  t.vanished_base = get16(buf, 64);
-  t.vanished_enh = get16(buf, 66);
-  t.self_idr_refused = get16(buf, 68);
-  t.venc_full_drops = get16(buf, 70);
-  t.venc_ring_fill_pct = buf[72];
+  t.rcf_seq_echo = get16(buf, 17);
+  t.pts_at_build = get64(buf, 19);
+  t.rcf_rx = get32(buf, 27);
+  t.enc_frames = get32(buf, 31);
+  t.enc_kbytes = get32(buf, 35);
+  t.cmd_kbps = get16(buf, 39);
+  t.qp = buf[41];
+  t.ring_drops = get16(buf, 42);
+  t.txq_depth = buf[44];
+  t.txq_cap = buf[45];
+  t.txq_drops = get32(buf, 46);
+  t.txq_wait_max_ms = get16(buf, 50);
+  t.radio_sent = get32(buf, 52);
+  t.radio_drops = get32(buf, 56);
+  t.usb_fail = get16(buf, 60);
+  t.up_rssi[0] = buf[62];
+  t.up_rssi[1] = buf[63];
+  t.up_snr[0] = static_cast<int8_t>(buf[64]);
+  t.up_snr[1] = static_cast<int8_t>(buf[65]);
+  t.soc_temp_c = static_cast<int8_t>(buf[66]);
+  t.thermal_delta = static_cast<int8_t>(buf[67]);
+  t.load_x100 = get16(buf, 68);
+  t.idr_disagree = get16(buf, 70);
+  t.enhance_disagree = get16(buf, 72);
+  t.vanished_base = get16(buf, 74);
+  t.vanished_enh = get16(buf, 76);
+  t.self_idr_refused = get16(buf, 78);
+  t.venc_full_drops = get16(buf, 80);
+  t.venc_ring_fill_pct = buf[82];
   return t;
 }
 
