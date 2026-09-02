@@ -80,6 +80,12 @@ struct GsPlayerState {
   // isn't usable yet (cold/discontinuous) -- the row renders "LAT --" and
   // no breakdown rather than stale or fabricated numbers.
   bool lat_valid = false;
+  // link-rtt (2026-09-02): true once main folded the absolute network
+  // floor (own anchor + sideport pts offset) into air+/e2e — the rows then
+  // read capture-stamp→scanout-start truth. False = today's relative
+  // numbers (offset estimator cold, or sync lost at range); the headline
+  // carries a ~ marker so the pilot always knows which one is showing.
+  bool lat_abs = false;
   int lat_e2e_ms = 0;
   int lat_ms[7] = {0};  // enc,dq,air,fec,dec,reg,dsp -- the p99 frame's own
   // The median frame's own breakdown, ranked the same way (p50-by-e2e).
@@ -135,6 +141,10 @@ enum class GsFieldId {
   // Median-latency row (2026-09-01): same shape, p50-by-e2e frame, drawn
   // one row above the p99 pair. Appended for the same reason.
   kLatP50Head, kLatP50Breakdown,
+  // Control-path RTT (link-rtt 2026-09-02): sideport link.rtt.ms, drawn
+  // adjacent to the LAT rows (one row above P50) but never summed into
+  // them — it is two-way control-path time, not a video segment.
+  kLatRtt,
   kCount,
 };
 

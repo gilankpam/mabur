@@ -1075,12 +1075,8 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.q_drop = queue.dropped();
       sin.telem = latest_telem.t;
       sin.telem_rx_ms = latest_telem.rx_ms;
-      // link-rtt block. floor = anchor + offset needs a domain fix-up:
-      // PtsAnchor's pts64 space is seeded from the TRUNCATED 32-bit slot
-      // pts while pts_at_build is the full 64-bit MI clock, so the sum can
-      // be off by k·2^32 µs (~71.6 min per drone-uptime wrap). The true
-      // floor is ms-class, so wrapping the sum back into ±2^31 µs recovers
-      // it exactly for any k.
+      // link-rtt block. floor via floor_us_from (pts_anchor.h), which owns
+      // the 32-bit-seed vs 64-bit-MI-domain wrap rule.
       if (rtt_est.has_rtt()) {
         maburgs::StatsRttIn ri;
         ri.rtt_ms = rtt_est.rtt_ms();
@@ -1088,13 +1084,10 @@ static int run_radio(const maburgs::Config& cfg) {
         ri.n = rtt_est.samples();
         if (rtt_est.has_offset()) {
           ri.pts_off_us = rtt_est.pts_off_us();
-          if (lat_anchor.usable()) {
-            const uint64_t sum = static_cast<uint64_t>(lat_anchor.base_us()) +
-                                 static_cast<uint64_t>(rtt_est.pts_off_us());
-            const int64_t floor_us =
-                static_cast<int32_t>(static_cast<uint32_t>(sum));
-            ri.floor_ms = static_cast<double>(floor_us) / 1000.0;
-          }
+          if (lat_anchor.usable())
+            ri.floor_ms = static_cast<double>(maburgs::floor_us_from(
+                              lat_anchor.base_us(), rtt_est.pts_off_us())) /
+                          1000.0;
         }
         sin.rtt = ri;
       }

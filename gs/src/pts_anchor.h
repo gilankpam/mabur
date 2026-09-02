@@ -103,6 +103,21 @@ class PtsAnchor {
   uint32_t warm_ = 0;
 };
 
+// link-rtt (2026-09-02): absolute network floor from an anchor base plus
+// the telem-derived (pts − GS-mono) offset. base_us = min(mono − pts64) =
+// min_transit − offset, so base + offset = min_transit — except the
+// anchor's pts64 space seeds from the TRUNCATED 32-bit slot pts while the
+// offset is measured in the full 64-bit MI domain, leaving the raw sum off
+// by k·2^32 µs (~71.6 min per drone-uptime wrap at seed). The true floor
+// is ms-class, so folding the sum back into ±2^31 µs recovers it exactly
+// for any k. Shared by maburgs (sideport floor_ms) and maburplay (absolute
+// LAT) so the two can never disagree on the wrap rule.
+inline int64_t floor_us_from(int64_t anchor_base_us, int64_t pts_off_us) {
+  const uint64_t sum = static_cast<uint64_t>(anchor_base_us) +
+                       static_cast<uint64_t>(pts_off_us);
+  return static_cast<int32_t>(static_cast<uint32_t>(sum));
+}
+
 }  // namespace maburgs
 
 #endif  // MABURGS_PTS_ANCHOR_H_

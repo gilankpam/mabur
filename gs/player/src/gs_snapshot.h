@@ -2,6 +2,7 @@
 #define MABUR_PLAYER_GS_SNAPSHOT_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -39,6 +40,14 @@ struct GsSnapshot {
   // it now reads 0 on a clean link instead of blipping on reordered FEC
   // repairs, so this row is quieter than pre-break recordings suggest.
   std::optional<double> post_loss_pct;
+  // link.rtt (link-rtt 2026-09-02): control-path RTT EWMA (telem queues
+  // behind video on the drone TX — reads high under saturation, honest
+  // congestion signal) and the min-RTT-filtered (pts − GS-mono) offset the
+  // player combines with its OWN PtsAnchor for the absolute LAT floor.
+  // pts_off_us empty ≠ zero: a 0 offset is a real value that would shift
+  // every absolute latency number.
+  std::optional<double> rtt_ms;         // link.rtt.ms
+  std::optional<int64_t> pts_off_us;    // link.rtt.pts_off_us
   std::vector<GsCard> cards;            // in wire order
 };
 

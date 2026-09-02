@@ -42,6 +42,15 @@ std::optional<int> integer(const json& o, const char* key) {
     return std::nullopt;
   return static_cast<int>(*v);
 }
+// int64 sibling of integer() for µs-scale offsets. The exporter emits
+// pts_off_us as a JSON integer; accept any integral number in int64 range
+// and drop the rest, same contract as every other accessor here.
+std::optional<int64_t> integer64(const json& o, const char* key) {
+  if (!o.is_object()) return std::nullopt;
+  auto it = o.find(key);
+  if (it == o.end() || !it->is_number_integer()) return std::nullopt;
+  return it->get<int64_t>();
+}
 }  // namespace
 
 bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
@@ -61,6 +70,10 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     out->air_pct = num(*link, "air_pct");
     if (const std::optional<double> r = num(*link, "residual_loss"))
       out->post_loss_pct = *r * 100.0;
+    if (const json* rtt = obj(*link, "rtt")) {
+      out->rtt_ms = num(*rtt, "ms");
+      out->pts_off_us = integer64(*rtt, "pts_off_us");
+    }
     if (const json* ctl = obj(*link, "ctl")) {
       if (const std::optional<double> p = num(*ctl, "pre_fec_loss"))
         out->pre_loss_pct = *p * 100.0;

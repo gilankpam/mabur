@@ -20,6 +20,8 @@ static const char* kLive = R"({
   "link": {
     "air_pct": 61.5,
     "residual_loss": 0.0,
+    "rtt": {"ms": 12.4, "min_ms": 8.0, "n": 42, "pts_off_us": -123456789,
+            "floor_ms": 3.2},
     "ctl": {"rung": {"idx": 3, "mcs": 5, "ov_base": 0.25}, "pre_fec_loss": 0.021},
     "video": {"fps": 60.0, "jitter_ms": 3.1, "mbps": 24.6}
   },
@@ -45,6 +47,37 @@ TEST(parses_a_live_datagram) {
   CHECK(*s.cards[0].rssi_dbm < -58.3 && *s.cards[0].rssi_dbm > -58.5);
   CHECK(*s.cards[0].snr_db > 18.1 && *s.cards[0].snr_db < 18.3);
   CHECK(s.cards[1].id == 1);
+  // link.rtt (link-rtt 2026-09-02): control-path RTT + the pts offset the
+  // player folds into its own anchor for the absolute LAT floor.
+  REQUIRE(s.rtt_ms.has_value());
+  CHECK(*s.rtt_ms > 12.3 && *s.rtt_ms < 12.5);
+  REQUIRE(s.pts_off_us.has_value());
+  CHECK(*s.pts_off_us == -123456789);
+}
+
+// link.rtt is null until the estimator's first sample, and pts_off_us stays
+// null until the drone ships a usable pts clock — each absence must stay an
+// empty optional, never zero (an offset of 0 is a REAL value that would
+// silently shift every absolute LAT number).
+TEST(rtt_nulls_and_partial_block) {
+  const char* j1 = R"({"v":1,"cards":[],"link":{"rtt":null}})";
+  GsSnapshot s;
+  REQUIRE(parse(j1, &s));
+  CHECK(!s.rtt_ms.has_value());
+  CHECK(!s.pts_off_us.has_value());
+  const char* j2 =
+      R"({"v":1,"cards":[],"link":{"rtt":{"ms":9.5,"pts_off_us":null}}})";
+  REQUIRE(parse(j2, &s));
+  REQUIRE(s.rtt_ms.has_value());
+  CHECK(*s.rtt_ms > 9.4 && *s.rtt_ms < 9.6);
+  CHECK(!s.pts_off_us.has_value());
+  // Wrong-typed members drop individually, same rule as every other field.
+  const char* j3 =
+      R"({"v":1,"cards":[],"link":{"rtt":{"ms":"slow","pts_off_us":7}}})";
+  REQUIRE(parse(j3, &s));
+  CHECK(!s.rtt_ms.has_value());
+  REQUIRE(s.pts_off_us.has_value());
+  CHECK(*s.pts_off_us == 7);
 }
 
 // nulls are "never received", NOT zero. Conflating them would paint a dead

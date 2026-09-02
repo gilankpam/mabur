@@ -666,6 +666,40 @@ TEST(no_two_active_field_boxes_overlap_at_any_resolution) {
   }
 }
 
+// link-rtt (2026-09-02): the LAT headlines carry a ~ marker while the
+// e2e is still RELATIVE (floor unknown — offset estimator cold or sync
+// lost at range); the marker drops once main folds the absolute floor in
+// (lat_abs). The RTT field renders the sideport's control-path RTT next
+// to the LAT rows and em-dashes when the estimator has never fired.
+TEST(lat_marks_relative_until_absolute_and_rtt_renders) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  GsPlayerState p = player_nominal();
+  p.lat_valid = true;
+  p.lat_e2e_ms = 78;
+  p.lat_p50_e2e_ms = 55;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) == "P99 ~78 |");
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatP50Head) ==
+        "P50 ~55 |");
+  p.lat_abs = true;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) == "P99 78 |");
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatP50Head) ==
+        "P50 55 |");
+  // Invalid stays the bare em-dash form — no marker on a non-number.
+  p.lat_valid = false;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) == "P99 --");
+
+  s.rtt_ms = 12.4;
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatRtt) == "RTT 12 ms");
+  s.rtt_ms.reset();
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatRtt) == "RTT --");
+}
+
 TEST(recording_states_render_distinctly) {
   const std::string fp = GSFONT_DESIGN;
   GsFont f;
