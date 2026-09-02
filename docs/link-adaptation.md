@@ -308,6 +308,39 @@ and `s3_residual_confirm_ms` were optional with live defaults on the old
 binary too, so the stripped config boots either way and there is nothing
 to restore alongside the binary.
 
+**Since 2026-09-02 (second wave, same day as ctllog 9) the s1 residual
+demote input carries a 150 ms post-transition settle blank**
+(`S1LossWindow::blank_until`, wired at `main.cpp`'s sid-0 transition
+edge-detect next to `mark_transition`; the constant is `kResidSettleMs`,
+not config). Root cause, from flight ctl-0160: the ctllog-9 rewrite fed
+block 4 from a 500 ms sliding window over the cumulative abandonment
+counters and deleted the old measure's per-step `reset_window()`, so loss
+correctly booked as current-rung stayed `> 0` across the demote it caused
+and — block 4 being instant, threshold-free and exempt from
+`min_between_changes_ms` — re-fired every 50 ms tick until rung 0. Every
+`first=residual` episode in that flight ran 4-5 rungs to the floor, one
+at 26-32 dB SNR; flightreport's attribution-miss canary read 14.
+Attribution itself was innocent (it classifies at booking time; already-
+booked current loss is never reclassified). The blank clears the window
+at the transition AND swallows deltas booked during the settle — the
+~80 ms abandonment-horizon lag books old-rung loss late, and an A-MPDU
+burst can kill the in-flight old-rate tail ABOVE the watermark, which
+books non-stale. 150 ms = one edge-detect tick + horizon lag + margin,
+half of `s3_settle_ms`; the s1 UTIL path keeps its no-blank design
+(amplitude decides it) and still carries a genuine sustained fade down at
+in-regime speed. This is the same window-outlives-the-blank hazard the
+s3 note above bounds with `s3_settle_ms` — s3's window is deliberately
+NOT blanked here (its ~2-firing bound is documented, accepted behaviour).
+Only the decision input is blanked: S-line `resid`/`resid_cur`, the
+sideport and the RungStore observability all still see the loss.
+Bench-validated 2026-09-02 (ctl-0165, loss-sim build): a 500 ms
+eff=20/burst=4 s0 pulse = ONE residual demote + two measured-util steps
+at ~155 ms, floor at rung 2, repromote — where ctl-0160's equivalent was
+a 50 ms/rung drop to rung 0; sustained eff=15 still walks 5→0 (util,
+150-320 ms/rung) and recovers; ausniff 60.0 fps / 0 gaps. Expect
+`residual` E-line pairs closer than 150 ms never again; a demote storm
+now shows `util` reasons and real per-rung `u`.
+
 On the drone, RCF drain is decoupled from the agent tick
 (`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop
 wakes every `rc_drain_ms` to drain queued RC frames, with ALL per-tick

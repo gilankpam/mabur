@@ -250,6 +250,59 @@ TEST(long_run_deque_pruning) {
   CHECK(approx_eq(sample.loss, 0.10, 1e-3));
 }
 
+// blank_until(): the 2026-09-02 flight ctl-0160 cascade fix. One residual
+// event stayed >0 in this window across a rung transition (nothing cleared
+// it), and block 4 demotes on >0 every tick — so every s1 residual event
+// walked the ladder to rung 0 at 50 ms/rung. The window must forget
+// pre-transition accumulation AND swallow deltas booked during the settle
+// period (the ~80 ms abandonment-horizon lag books old-rung loss late).
+TEST(blank_clears_accumulated_loss) {
+  S1LossWindow lw(500);
+  lw.add(0, 0, 0.0);        // baseline
+  lw.add(100, 60, 100.0);   // 40% loss event, would demote for 500 ms
+  auto before = lw.sample(150.0);
+  CHECK(before.valid);
+  CHECK(before.loss > 0.0);
+
+  lw.blank_until(300.0);    // rung transition at t=150
+
+  // The debris must be gone immediately: no traffic in window.
+  auto after = lw.sample(150.0);
+  CHECK(!after.valid);
+}
+
+TEST(adds_during_blank_are_baseline_only) {
+  S1LossWindow lw(500);
+  lw.add(0, 0, 0.0);
+  lw.add(100, 60, 100.0);   // loss at old rung
+  lw.blank_until(300.0);    // transition at t=100, settle until t=300
+  // Horizon-lag booking of old-rung loss lands during the blank: totals
+  // advance with more loss. Must update the baseline only, no entry.
+  lw.add(200, 120, 150.0);
+  lw.add(260, 180, 250.0);
+  // After the blank expires, none of that may be visible.
+  auto s = lw.sample(310.0);
+  CHECK(!s.valid);
+}
+
+TEST(loss_after_blank_expiry_books_normally) {
+  S1LossWindow lw(500);
+  lw.add(0, 0, 0.0);
+  lw.add(100, 60, 100.0);
+  lw.blank_until(300.0);
+  lw.add(200, 120, 250.0);  // swallowed (in blank)
+  // Fresh current-rung loss after expiry must still demote: 50% loss.
+  lw.add(300, 170, 350.0);
+  auto s = lw.sample(350.0);
+  CHECK(s.valid);
+  CHECK(approx_eq(s.loss, 0.50, 1e-6));
+  // And clean traffic after that reads clean.
+  lw.add(400, 270, 400.0);
+  auto s2 = lw.sample(900.0);  // first two entries aged out of 500 ms window
+  CHECK(s2.valid);
+  CHECK(approx_eq(s2.loss, 0.0, 1e-6));
+}
+
 TEST(expected_in_window_counts_window_only) {
   maburgs::S1LossWindow w(500);
   w.add(0, 0, 0.0);          // baseline

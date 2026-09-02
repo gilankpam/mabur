@@ -18,10 +18,24 @@ class S1LossWindow {
         prev_arrived_(0),
         have_first_sample_(false) {}
 
+  // Forget everything accumulated so far and swallow (baseline-only) every
+  // add() strictly before t_ms. For a window feeding an instant-demote
+  // decision, call this at a rung transition with t_ms = now + settle: the
+  // debris already booked must not outlive the rung it was measured on, and
+  // the abandonment horizon books old-rung loss up to ~80 ms late, so the
+  // settle tail has to be swallowed too (flight ctl-0160, 2026-09-02: one
+  // residual event cascaded mcs5->mcs0 at one demote per 50 ms tick).
+  void blank_until(double t_ms) {
+    window_.clear();
+    blank_until_ms_ = t_ms;
+  }
+
   void add(uint64_t expected_total, uint64_t arrived_total, double now_ms) {
     // Detect counter reset: if totals go backwards, flush the window and
     // re-baseline prev_expected_/prev_arrived_ without pushing an entry.
-    bool reset_detected = false;
+    // A blank period behaves the same way: totals keep advancing but none
+    // of it may become an entry.
+    bool reset_detected = now_ms < blank_until_ms_;
     if (have_first_sample_ &&
         (expected_total < prev_expected_ || arrived_total < prev_arrived_)) {
       window_.clear();
@@ -120,6 +134,7 @@ class S1LossWindow {
   uint64_t prev_expected_;
   uint64_t prev_arrived_;
   bool have_first_sample_;
+  double blank_until_ms_ = -1.0;  // adds before this instant are baseline-only
   std::deque<Entry> window_;
 };
 

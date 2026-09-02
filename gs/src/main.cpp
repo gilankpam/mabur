@@ -454,6 +454,14 @@ static int run_radio(const maburgs::Config& cfg) {
   // same machinery, fed from the attributed counters. s1_loss/s3_loss stay
   // as the observability totals (residual_loss, the artifact-rate meter).
   maburgs::S1LossWindow s1_loss_cur, s1_resid_cur, s3_loss_cur, s3_resid_cur;
+  // Post-transition settle for s1_resid_cur (the block-4 instant-demote
+  // input; see the blank_until call at the sid-0 transition edge-detect).
+  // Budget: one 50 ms edge-detect tick + the ~80 ms abandonment-horizon
+  // booking lag + margin. Deliberately half of s3_settle_ms: a genuine
+  // continuing fade then steps ~200 ms/rung, inside the ~410-440 ms/rung
+  // cadence flight-validated 2026-08-14, and nowhere near the broken
+  // 50 ms/rung debris cascade this exists to stop.
+  const double kResidSettleMs = 150.0;
   // Observability siblings of s1_resid_cur, pooled over both layers: the
   // sideport's link.residual_loss / link.attrib.residual_cur and the ctl
   // log's S-line resid/resid_cur. These MUST be windowed, not cumulative --
@@ -704,6 +712,17 @@ static int run_radio(const maburgs::Config& cfg) {
             static_cast<uint8_t>(op_now.mcs), static_cast<uint8_t>(op_now.bw))[0];
         agg.decoder().mark_transition(0, static_cast<uint8_t>(base_spec.mcs),
                                       now_ms_u);
+        // Block 4's instant-demote window must not outlive the rung it
+        // measured: the demote fires on anything > 0, has no settle blank,
+        // and is exempt from min_between_changes_ms, so debris left in the
+        // 500 ms window re-fires every 50 ms tick until rung 0 (flight
+        // ctl-0160: every s1 residual event cascaded 4-5 rungs to the
+        // floor, one at 26-32 dB SNR). The settle also swallows the
+        // abandonment horizon's ~80 ms late booking of old-rung loss the
+        // watermark cannot see (in-flight symbols above the highest
+        // old-rate seq). Observability windows (pool_resid*, s1_loss*)
+        // stay untouched -- they report, they don't decide.
+        s1_resid_cur.blank_until(now_ms + kResidSettleMs);
         last_marked_op_mcs = op_now.mcs;
         last_marked_op_ov = op_now.overhead_base;
       }
