@@ -58,6 +58,14 @@ struct CardTrack {
   bool has_ema = false, has_seq = false;
   uint16_t last_seq = 0;
   uint64_t last_frame_us = 0;
+  // MABUR_GAPLOG diagnostic: host mono + chip TSF of the last decoder-bound
+  // body, so a seq gap can be logged with the air-time it did (not) consume.
+  uint64_t gap_prev_mono_us = 0;
+  uint32_t gap_prev_tsfl = 0;
+  uint16_t gap_prev_seq = 0;
+  size_t gap_prev_len = 0;
+  uint32_t agg_pos = 0;       // frames since the last phy_valid (aggregate-first)
+  uint32_t gap_prev_agg_pos = 0;
   // Per-RF-class signal tracks (video streams, MSP, ctrl) — pooled EMAs
   // above REMAIN untouched (TxSelector + stderr consume them).
   std::array<ClassTrack, kNumRfClasses> cls{};

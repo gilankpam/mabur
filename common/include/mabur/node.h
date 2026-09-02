@@ -38,6 +38,9 @@ struct RxBody {
   bool phy_valid = true;
   bool crc_ok = true;        // 802.11 FCS; corrupt frames still carry bodies
   uint16_t mac_seq = 0;      // 12-bit hw seq from the dot11 header
+  // Chip TSF (low 32 bits, µs) stamped on the RX descriptor. Diagnostic:
+  // air-time continuity across per-card seq gaps (MABUR_GAPLOG).
+  uint32_t tsfl = 0;
   std::vector<uint8_t> body; // frame body, dot11 header stripped
   // RX HT MCS from the radio's RX descriptor (devourer rx_pkt_attrib
   // .data_rate: HT codes are 0x80 + mcs). 255 = unknown — legacy/VHT rate,

@@ -200,8 +200,9 @@ void RadioFrontend::on_packet(const Packet& pkt) {
   m.mac_seq = static_cast<uint16_t>(
       (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);
   m.body.assign(pkt.Data.begin() + static_cast<long>(body_off), pkt.Data.end());
+  m.tsfl = pkt.RxAtrib.tsfl;
   const uint64_t mono = m.mono_us;
-  const uint32_t tsfl = pkt.RxAtrib.tsfl;
+  const uint32_t tsfl = m.tsfl;
   out_.push(std::move(m));
 
   // rx_pace gauge (see header). uint32 subtraction handles the ~71 min TSF

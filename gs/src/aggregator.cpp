@@ -3,6 +3,9 @@
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace maburgs {
 namespace {
 // A monster gap is a link outage, not per-frame information — cap its
@@ -86,6 +89,20 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       m.crc_ok && (rc_t == mabur::rc::T_RCF || rc_t == mabur::rc::T_DISC);
   if (is_self) {
     ++c.self_frames;
+    static const bool gaplog_self = std::getenv("MABUR_GAPLOG") != nullptr;
+    if (gaplog_self)
+      std::fprintf(stderr,
+                   "self card=%u seq=%u mono=%llu tsfl=%u len=%zu mcs=%u "
+                   "physt=%d rssi=%d/%d snr=%d/%d rc=%d dprev_tsf=%u "
+                   "dprev_mono=%llu prev_agg=%u\n",
+                   static_cast<unsigned>(m.card_id),
+                   static_cast<unsigned>(m.mac_seq),
+                   static_cast<unsigned long long>(m.mono_us), m.tsfl,
+                   m.body.size(), static_cast<unsigned>(m.mcs),
+                   m.phy_valid ? 1 : 0, m.rssi[0], m.rssi[1], m.snr[0],
+                   m.snr[1], rc_t, m.tsfl - c.gap_prev_tsfl,
+                   static_cast<unsigned long long>(m.mono_us - c.gap_prev_mono_us),
+                   static_cast<unsigned>(c.gap_prev_agg_pos));
     ++c.rc_frames;
     if (rc_sink_) rc_sink_(m.card_id, m.body, m.mono_us);
     return;
@@ -111,6 +128,17 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
 
   if (!m.crc_ok) {
     ++c.crc_fail;
+    static const bool gaplog_cf = std::getenv("MABUR_GAPLOG") != nullptr;
+    if (gaplog_cf)
+      std::fprintf(stderr,
+                   "crcfail card=%u seq=%u mono=%llu tsfl=%u len=%zu mcs=%u "
+                   "physt=%d rssi=%d/%d snr=%d/%d sid=%d\n",
+                   static_cast<unsigned>(m.card_id),
+                   static_cast<unsigned>(m.mac_seq),
+                   static_cast<unsigned long long>(m.mono_us), m.tsfl,
+                   m.body.size(), static_cast<unsigned>(m.mcs),
+                   m.phy_valid ? 1 : 0, m.rssi[0], m.rssi[1], m.snr[0],
+                   m.snr[1], stream_id);
   } else {
     // Per-card delivery from 12-bit hw-seq gaps. The drone's VIDEO counter
     // numbers every injected decoder-bound body. last_seq is a MAX-seq
@@ -130,14 +158,49 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
     // rendezvous video-silence timer for exactly this reason.
     const bool decoder_bound_seq =
         rc_t < 0 && stream_id != mabur::kMspStreamId;
+    static const bool gaplog = std::getenv("MABUR_GAPLOG") != nullptr;
+    if (gaplog && !decoder_bound_seq) {
+      std::fprintf(stderr, "nonvid card=%u seq=%u mono=%llu len=%zu sid=%d rc=%d\n",
+                   static_cast<unsigned>(m.card_id),
+                   static_cast<unsigned>(m.mac_seq),
+                   static_cast<unsigned long long>(m.mono_us), m.body.size(),
+                   stream_id, rc_t);
+    }
     if (decoder_bound_seq) {
+      c.agg_pos = m.phy_valid ? 0 : c.agg_pos + 1;
       if (c.has_seq) {
         const uint16_t adv =
             static_cast<uint16_t>((m.mac_seq - c.last_seq) & 0x0FFF);
+        if (gaplog && adv >= 2048) {
+          std::fprintf(stderr, "late card=%u seq=%u behind=%u mono=%llu len=%zu\n",
+                       static_cast<unsigned>(m.card_id),
+                       static_cast<unsigned>(m.mac_seq),
+                       static_cast<unsigned>(4096 - adv),
+                       static_cast<unsigned long long>(m.mono_us), m.body.size());
+        }
         if (adv == 0) {
           c.seq_expected += 1;  // duplicate/retry: count as one delivered frame
         } else if (adv < 2048) {
           c.seq_expected += adv > kMaxSeqGap ? 1 : adv;
+          // MABUR_GAPLOG=1: one stderr line per per-card seq gap. dtsf =
+          // chip-TSF advance across the gap (air-time actually consumed),
+          // dhost = host mono advance; n = missing seqs. Diagnostic only.
+          if (gaplog && adv > 1 && adv <= kMaxSeqGap) {
+            std::fprintf(stderr,
+                         "gap card=%u seq=%u..%u n=%u dtsf=%u dhost=%llu "
+                         "mono=%llu prev_len=%zu len=%zu sid=%d prev_agg=%u "
+                         "after_physt=%d\n",
+                         static_cast<unsigned>(m.card_id),
+                         static_cast<unsigned>(c.gap_prev_seq),
+                         static_cast<unsigned>(m.mac_seq),
+                         static_cast<unsigned>(adv - 1),
+                         static_cast<unsigned>(m.tsfl - c.gap_prev_tsfl),
+                         static_cast<unsigned long long>(m.mono_us - c.gap_prev_mono_us),
+                         static_cast<unsigned long long>(m.mono_us),
+                         c.gap_prev_len, m.body.size(), stream_id,
+                         static_cast<unsigned>(c.gap_prev_agg_pos),
+                         m.phy_valid ? 1 : 0);
+          }
           c.last_seq = m.mac_seq;
         }
         // adv >= 2048: behind the mark (reorder) — expected already counted.
@@ -148,6 +211,13 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       }
       c.seq_received += 1;
       last_video_seq_ = m.mac_seq;
+      if (c.last_seq == m.mac_seq) {  // in-order/high-water frame: new gap anchor
+        c.gap_prev_mono_us = m.mono_us;
+        c.gap_prev_tsfl = m.tsfl;
+        c.gap_prev_seq = m.mac_seq;
+        c.gap_prev_len = m.body.size();
+        c.gap_prev_agg_pos = c.agg_pos;
+      }
     }
 
     const double rssi = static_cast<double>(m.rssi[0] > m.rssi[1] ? m.rssi[0] : m.rssi[1]);
