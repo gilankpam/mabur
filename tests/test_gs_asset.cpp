@@ -95,8 +95,12 @@ GsPlayerState player_nominal() {
   p.rec.kind = RecState::Kind::kRecording;
   p.rec.elapsed_s = 767;
   // Task 12's LAT row, valid -- the brief's own worked example (headline +
-  // that frame's own 7-segment breakdown).
+  // that frame's own 7-segment breakdown). Absolute (no ~ marker): the
+  // steady state once main folds the RTT offset floor in; the relative
+  // form has its own test in test_gs_overlay
+  // (lat_marks_relative_until_absolute_and_rtt_renders).
   p.lat_valid = true;
+  p.lat_abs = true;
   p.lat_e2e_ms = 34;
   const int seg[7] = {7, 0, 9, 3, 5, 10, 8};  // enc,dq,air,fec,dec,reg,dsp
   for (int i = 0; i < 7; ++i) p.lat_ms[i] = seg[i];
