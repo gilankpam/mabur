@@ -44,7 +44,7 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # y 858..893 -- a small isolated region above the FPS block (LAT stacks
 # above FPS in the video-figures column, see gs_overlay.cpp), matching
 # nothing but the new field's own box. No other block's pixels differ.
-GS_SHA_EXPECTED=91170ab2f7aa2e0a3ce7233e44568734e431605a33bb47e3cae69710f22b0575
+GS_SHA_EXPECTED=dbcad08e9c03e2dbcee5df388d14054110d1291f8dc92651b5ad21a73fcee3f6
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
