@@ -77,6 +77,41 @@ strings (`s3_residual`, `s3_util`) were kept as-is rather than renamed
 this point as sid0/sid1. (`s3_residual_confirm_ms` itself is gone, but
 that removal predates this change — see the pooled-RF note below.)
 
+## RCF slotting into the inter-AU idle (2026-09-03)
+
+Every GS control-frame send (RCF, DISC keepalive, repeat copies) blasts the
+sibling RX card at ~−4 dBm and deafens the TX card, so a drone PPDU whose
+preamble starts within ~180 µs of the send is lost on BOTH cards — one
+whole aggregate per hit, the source of the bench's ~0.35 %/PPDU loss and
+the 34 ms tail-repair stalls (`docs/gs-uplink-self-blanking-findings-2026-09-02.md`).
+The chip already holds the TX until the PPDU it is receiving ends; what
+kills is the NEXT PPDU starting right behind the blast, i.e. sends inside
+an AU burst.
+
+`RcfSlotter` (`gs/src/rcf_slot.h`) sits between `VrxController` and
+`send_control`: while video flows, a control frame waits for an AU
+completion at which the send will be on air before the next AU's burst is
+due — predicted from the first-body arrival cadence (`t_first` of
+consecutive AUs is flat to <1 ms; completion is not, it moves with frame
+size and FEC repair). Completions too close to the next burst are skipped;
+a frame offered within 2 ms after a good completion goes out at once; a
+hold longer than `link.rcf_slot_hold_ms` (default 30, 0 = off) is released
+anyway. With no AU in the last 100 ms (rendezvous, stalled video)
+everything passes through, which is why DISC needs no bypass.
+
+Bench A/B (mcs5 park, 11 Mb/s, agg 6, 100 s windows, gap-log instrument):
+
+| | real losses/s | frames lost/s | RCF rx at drone | `close_ms` |
+|---|---|---|---|---|
+| slotter off | 1.03 | 3.9 | 18.5/s | 5 |
+| slotter on | 0.11 | 0.4 | 19.4/s | 22 |
+
+Sends: 88 % released by an AU completion (hold p50 6 ms, p90 17 ms), 12 %
+in-grace immediate, 0.5 % hold-timeout. Cost: a commanded op change now
+reaches the drone up to one AU period later (`link.attrib.close_ms`
+5 → 22 ms). Player `fec` p99 ≥ 20 ms windows: 31/90 → 7/100.
+Sideport counters: `link.rcf_slot.{au,timeout,passthru}`.
+
 ## Tuning invariant
 
 Tuning invariant: the controller's s3 loss/residual

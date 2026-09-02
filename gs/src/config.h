@@ -49,6 +49,11 @@ struct LinkCfg {
   // must fit inside one feedback period (validated at load).
   int rcf_repeat_copies = 3;
   int rcf_repeat_ms = 10;
+  // RCF slotting (gs-uplink-self-blanking findings 2026-09-02): while video
+  // flows, hold each control frame until the next AU completes so the send
+  // lands in the drone's inter-AU idle instead of killing the next PPDU on
+  // both RX cards. Max hold before sending anyway; 0 disables.
+  int rcf_slot_hold_ms = 30;
   // Static-link mode: when static_mcs >= 0 the adaptive controller is
   // bypassed entirely and every RCF commands exactly this MCS/FEC overhead
   // (HT, 20 MHz). Rendezvous/keep-alive/failsafe machinery is unaffected.

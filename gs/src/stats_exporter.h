@@ -133,8 +133,17 @@ struct StatsRttIn {
   std::optional<double> floor_ms;
 };
 
+// RCF slotting counters (gs-uplink-self-blanking 2026-09-02), cumulative:
+// sends released by an AU completion (incl. in-grace immediate sends),
+// released by the hold timeout, and passed straight through (slotter off,
+// DISC, or no recent video).
+struct StatsRcfSlotIn {
+  uint64_t au = 0, timeout = 0, passthru = 0;
+};
+
 struct StatsInput {
   uint32_t vtx_id = 0;
+  StatsRcfSlotIn rcf_slot;
   bool in_session = false;  // VrxState::SESSION
   int tx_card = 0;
   OpPoint op;

@@ -817,6 +817,21 @@ TEST(rcf_repeat_explicit_values_parse) {
   CHECK(cfg.link.rcf_repeat_ms == 8);
 }
 
+// --- link.rcf_slot_hold_ms (gs-uplink-self-blanking 2026-09-02) --------------
+TEST(rcf_slot_hold_defaults_when_absent) {
+  auto cfg = maburgs::load_config(write_tmp("{}"));
+  CHECK(cfg.link.rcf_slot_hold_ms == 30);
+}
+
+TEST(rcf_slot_hold_explicit_and_zero_parse) {
+  auto a = maburgs::load_config(
+      write_tmp("{\"link\": {\"rcf_slot_hold_ms\": 33}}"));
+  CHECK(a.link.rcf_slot_hold_ms == 33);
+  auto b = maburgs::load_config(
+      write_tmp("{\"link\": {\"rcf_slot_hold_ms\": 0}}"));
+  CHECK(b.link.rcf_slot_hold_ms == 0);
+}
+
 // The burst must fit inside one feedback period: a burst spanning the next
 // regular RCF slot silently raises the steady-state control rate. Same
 // fail-fast stance as the drone's rc_drain_ms <= tick_ms cross-check.

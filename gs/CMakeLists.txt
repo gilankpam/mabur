@@ -10,6 +10,7 @@ add_library(mabur_gs_core STATIC
   src/ctl_log.cpp
   src/ladder_residual.cpp
   src/tx_selector.cpp
+  src/rcf_slot.cpp
   src/msp_sink.cpp
   src/frame_stream.cpp
   src/au_ring.cpp

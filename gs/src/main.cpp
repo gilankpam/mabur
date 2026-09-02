@@ -38,6 +38,7 @@
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
 #include "pts_anchor.h"
+#include "rcf_slot.h"
 #include "rtt_estimator.h"
 #include "radio_frontend.h"
 #include "rf_labels.h"
@@ -255,6 +256,27 @@ static int run_radio(const maburgs::Config& cfg) {
   // from the same core thread as latest_telem: RCF send stamps below,
   // telem echoes in the rc sink.
   maburgs::RttEstimator rtt_est;
+  // RCF slotting (gs-uplink-self-blanking findings 2026-09-02): control
+  // frames wait for the end-of-AU callback (FrameStream sink below) so the
+  // send lands in the drone's inter-AU idle. See rcf_slot.h.
+  maburgs::RcfSlotter rcf_slot(
+      maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
+  // The one place a control frame leaves the GS (direct or via the RCF
+  // slotter): card + RTT stamp travel with the frame (SlotFrame).
+  auto send_control_frame = [&](const maburgs::SlotFrame& f) {
+    static const bool gaplog = std::getenv("MABUR_GAPLOG") != nullptr;
+    if (gaplog) {
+      const uint64_t now_ms = mono_ms();
+      std::fprintf(stderr,
+                   "gstx card=%d mono=%llu reason=%d hold=%llu since_au=%llu\n",
+                   f.card, static_cast<unsigned long long>(mono_us()),
+                   static_cast<int>(f.reason),
+                   static_cast<unsigned long long>(now_ms - f.offered_ms),
+                   static_cast<unsigned long long>(now_ms - rcf_slot.last_au_ms()));
+    }
+    fronts[static_cast<size_t>(f.card)]->send_control(f.frame);
+    if (f.stamp_rtt) rtt_est.on_rcf_sent(f.seq, mono_us());
+  };
 
   maburgs::AuRingWriter au_ring;
   maburgs::AuDoorbell au_bell;
@@ -299,6 +321,7 @@ static int run_radio(const maburgs::Config& cfg) {
       {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
          cur_au_pts = h.pts_us;
          if (au_on) au_ring.begin(h, sid);
+         rcf_slot.on_au_first(mono_ms());
        },
        [&](const uint8_t* d, size_t n) {
          if (au_on) au_ring.append(d, n);
@@ -307,6 +330,13 @@ static int run_radio(const maburgs::Config& cfg) {
          if (au_on) {
            const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
+         }
+         rcf_slot.on_au_complete(mono_ms());
+         {
+           static const bool gaplog_au = std::getenv("MABUR_GAPLOG") != nullptr;
+           if (gaplog_au)
+             std::fprintf(stderr, "auc mono=%llu complete=%d\n",
+                          static_cast<unsigned long long>(mono_us()), c ? 1 : 0);
          }
          if (stats) stats->on_frame(mono_ms());
          // au_tail gauge (usb-feed probe 2026-09-01): fec = arrival span
@@ -885,11 +915,14 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       const int tx = sel.update(snaps, now_ms_u * 1000);
       last_tx_card = tx;
-      fronts[static_cast<size_t>(tx)]->send_control(out->frame);
-      // link-rtt: stamp the emission. build_rcf bumped seq_, so rcf_seq()
-      // IS this frame's seq. DISCs are rendezvous traffic, not RCFs — the
-      // drone never ages against them, so they are not matchable sends.
-      if (!out->is_disc) rtt_est.on_rcf_sent(vrx.rcf_seq(), mono_us());
+      // link-rtt: build_rcf bumped seq_, so rcf_seq() IS this frame's seq;
+      // captured now because the slotter may send it later. DISCs are
+      // rendezvous traffic, not RCFs — the drone never ages against them,
+      // so they are not matchable sends. The 1 Hz DISC keepalive is slotted
+      // like any other send (it killed a PPDU per second when it bypassed).
+      maburgs::SlotFrame sf{std::move(out->frame), vrx.rcf_seq(), tx,
+                            !out->is_disc};
+      if (!rcf_slot.offer(sf, drained_ms, false)) send_control_frame(sf);
     }
     // RCF repeat burst drain (rcf-uplink-loss findings 2026-08-14): extra
     // copies of an op-CHANGING RCF, spaced rcf_repeat_ms, so the drone's
@@ -900,11 +933,14 @@ static int run_radio(const maburgs::Config& cfg) {
     // emissions only) and they reuse the card the last real emission
     // selected rather than re-running the selector.
     while (auto rf = vrx.poll_repeat(now_ms)) {
-      fronts[static_cast<size_t>(last_tx_card)]->send_control(*rf);
       // Repeats carry fresh seqs (poll_repeat contract), so each is an
       // independently matchable send for the RTT estimator.
-      rtt_est.on_rcf_sent(vrx.rcf_seq(), mono_us());
+      maburgs::SlotFrame sf{std::move(*rf), vrx.rcf_seq(), last_tx_card, true};
+      if (!rcf_slot.offer(sf, drained_ms, false)) send_control_frame(sf);
     }
+    // Slotted sends whose hold ended (an AU completed in this iteration's
+    // drain, or the hold timed out).
+    for (const auto& f : rcf_slot.take_due(drained_ms)) send_control_frame(f);
     // ctl: rung transition line — load-bearing for post-mortems (Task 6
     // adds the sideport link.ctl block; this stderr line is independent of
     // it and persists in /tmp/maburgs.log even when no sideport consumer is
@@ -1094,6 +1130,8 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.q_drop = queue.dropped();
       sin.telem = latest_telem.t;
       sin.telem_rx_ms = latest_telem.rx_ms;
+      sin.rcf_slot = {rcf_slot.released_au(), rcf_slot.released_timeout(),
+                      rcf_slot.passthru()};
       // link-rtt block. floor via floor_us_from (pts_anchor.h), which owns
       // the 32-bit-seed vs 64-bit-MI-domain wrap rule.
       if (rtt_est.has_rtt()) {

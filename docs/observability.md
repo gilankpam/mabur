@@ -56,6 +56,13 @@ exposure/readout before the pts stamp (~10–16 ms est.) and everything
 past scanout start (HDMI + display processing) — LED/camera-lump
 territory, see `docs/latency-budget-findings-2026-08-31.md`.
 
+`link.rcf_slot` (2026-09-03) counts how the RCF slotter released each
+control-frame send: `au` (at an AU completion with idle ahead, incl. the
+in-grace immediate sends), `timeout` (hold reached
+`link.rcf_slot_hold_ms`), `passthru` (slotter off, or no AU in the last
+100 ms). Cumulative; diff across records. Healthy video = almost all `au`,
+`timeout` well under 1 %. See `docs/link-adaptation.md` "RCF slotting".
+
 Consume the same numbers programmatically with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,
