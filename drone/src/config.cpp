@@ -123,7 +123,7 @@ void parse_radio(const json& j, RadioCfg& r) {
 }
 
 void parse_fec(const json& j, FecCfg& f) {
-  check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms"}, "fec");
+  check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms", "feed_batch"}, "fec");
   if (j.contains("symbol_size")) {
     auto& s = j.at("symbol_size");
     if (s.is_array()) {
@@ -153,6 +153,9 @@ void parse_fec(const json& j, FecCfg& f) {
   }
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
+  assign_if_present(j, "feed_batch", f.feed_batch, "fec");
+  if (f.feed_batch < 0 || f.feed_batch > 8)
+    fail("fec.feed_batch", "must be in [0,8] (0 = streaming push)");
 
   for (int s : f.symbol_size)
     if (s < 32 || s > 1500) fail("fec.symbol_size", "must be in [32,1500]");

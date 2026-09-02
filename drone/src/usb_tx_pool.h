@@ -76,6 +76,37 @@ class UsbTxPool {
     return true;
   }
 
+  struct Frame {
+    const uint8_t* data;
+    size_t len;
+  };
+
+  // Grouped submit (fec.feed_batch): enqueues the group under ONE lock hold
+  // with one wakeup per <=3 frames, so a grouped feed reaches one worker as
+  // one full <=3-frame batch (one 3-descriptor URB) instead of splitting
+  // 1+1+1 across idle workers. A group bigger than cap_ is enqueued in
+  // cap_-sized chunks (blocking for each) rather than deadlocking on space
+  // that can never exist. Returns frames accepted (< n only after stop()).
+  size_t submit_many(const Frame* frames, size_t n) {
+    size_t done = 0;
+    while (done < n) {
+      const size_t want = n - done < cap_ ? n - done : cap_;
+      size_t notifies;
+      {
+        std::unique_lock<std::mutex> l(m_);
+        space_.wait(l, [&] { return q_.size() + want <= cap_ || stopped_; });
+        if (stopped_) return done;
+        for (size_t i = 0; i < want; ++i)
+          q_.emplace_back(frames[done + i].data,
+                          frames[done + i].data + frames[done + i].len);
+        notifies = (want + 2) / 3;  // one worker per full batch-of-3
+      }
+      for (size_t i = 0; i < notifies; ++i) fill_.notify_one();
+      done += want;
+    }
+    return done;
+  }
+
   uint64_t sent_ok() const { return sent_ok_.load(); }
   uint64_t send_fail() const { return send_fail_.load(); }
   size_t depth() const {

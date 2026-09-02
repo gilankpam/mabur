@@ -22,7 +22,20 @@ class TxQueue {
  public:
   explicit TxQueue(size_t cap) : cap_(cap) {}
 
+  // Feed grouping (fec.feed_batch): with G >= 2, push() defers the consumer
+  // WAKEUP until G un-notified bodies accumulate, so the TX writer pops
+  // whole groups, URBs fill their 3-descriptor cap and A-MPDU aggregates
+  // can form — instead of the per-body trickle that ships every body alone
+  // (~360 µs metronome, dq-spike findings §17). Bodies are never withheld
+  // from an awake consumer: a timeout wake still drains partial groups, so
+  // G only shapes the wakeup cadence, never delivery.
+  void set_batch(size_t g) {
+    std::lock_guard<std::mutex> l(m_);
+    batch_ = g < 1 ? 1 : g;
+  }
+
   void push(UepBody&& b) {
+    bool signal;
     {
       std::lock_guard<std::mutex> l(m_);
       if (closed_) return;
@@ -31,6 +44,19 @@ class TxQueue {
         ++dropped_;
       }
       q_.push_back(std::move(b));
+      signal = ++pending_ >= batch_;
+      if (signal) pending_ = 0;
+    }
+    if (signal) cv_.notify_one();
+  }
+
+  // Release a partial group now — called at AU end so a frame's tail bodies
+  // never wait on the next frame's production. No-op when nothing pends.
+  void flush() {
+    {
+      std::lock_guard<std::mutex> l(m_);
+      if (pending_ == 0) return;
+      pending_ = 0;
     }
     cv_.notify_one();
   }
@@ -76,6 +102,8 @@ class TxQueue {
   std::deque<UepBody> q_;
   bool closed_ = false;
   uint64_t dropped_ = 0;
+  size_t batch_ = 1;    // wakeup group size; 1 = signal every push
+  size_t pending_ = 0;  // pushes since the last signal
 };
 
 }  // namespace mabur

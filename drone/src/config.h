@@ -64,6 +64,15 @@ struct FecCfg {
   // space).
   double base_overhead = 0.5;
   int flush_ms = 15;
+  // Feed grouping: release sealed bodies to the TX writer in groups of N
+  // (TxQueue wakeup batching + grouped pool submit) so URBs fill their
+  // 3-descriptor cap and A-MPDU aggregates can form, instead of the
+  // per-body trickle that ships every body alone (~360 µs metronome,
+  // dq-spike findings §17). 0/1 = streaming push (per-body wakeups, the
+  // 2026-08-31 shape). Bench lever — default off until the batching+agg
+  // compound is accepted end-to-end (watch arrival-jitter EMA: coarser
+  // quanta, the 656-rollback lesson).
+  int feed_batch = 0;
 };
 
 // RcAgent's bitrate/ROI policy knobs (ex-WaybeamCfg; the HTTP fields

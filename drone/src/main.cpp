@@ -184,9 +184,19 @@ struct DevourerSink : mabur::FrameSink {
   size_t send_many(const View* frames, size_t n) override {
     if (ready && !ready->load(std::memory_order_acquire)) return 0;
     if (pool) {
+      // Grouped enqueue: the whole batch lands under one pool lock with one
+      // worker wakeup per 3 frames, so a feed_batch group becomes full
+      // 3-descriptor URBs instead of splitting 1+1+1 across idle workers.
       size_t ok = 0;
-      for (size_t i = 0; i < n; ++i)
-        if (pool->submit(frames[i].data, frames[i].len)) ++ok;
+      mabur::UsbTxPool::Frame g[16];
+      while (ok < n) {
+        const size_t k = std::min(n - ok, sizeof g / sizeof g[0]);
+        for (size_t i = 0; i < k; ++i)
+          g[i] = {frames[ok + i].data, frames[ok + i].len};
+        const size_t accepted = pool->submit_many(g, k);
+        ok += accepted;
+        if (accepted < k) break;  // stopped
+      }
       return ok;
     }
     std::vector<TxPacketView> v(n);
@@ -1039,6 +1049,11 @@ int run_real_mode(const Config& cfg) {
   // glitch root cause). ~256 bodies ≈ 150 ms at 1700 bodies/s.
   constexpr size_t kTxQueueCap = 256;  // also feeds Telem.txq_cap
   TxQueue txq(kTxQueueCap);
+  // fec.feed_batch: group the TX writer's wakeups so bodies leave in
+  // URB-filling batches (see TxQueue::set_batch); the hot thread flushes at
+  // every AU end so a tail group never waits on the next frame.
+  if (cfg.fec.feed_batch > 1)
+    txq.set_batch(static_cast<size_t>(cfg.fec.feed_batch));
 
   // Hot thread: pulls whole frames off the real SHM ring, runs them through
   // the UEP pipeline, queues bodies for the TX writer. Owns the UepEncoder
@@ -1188,6 +1203,7 @@ int run_real_mode(const Config& cfg) {
                       txq.push(std::move(b));
                       split_sink_sum_us += now_steady_us() - s_us;
                     });
+        txq.flush();  // release the AU's partial feed_batch group, if any
         // dq_split accounting: ring wait is loop-top → read return (the
         // interval during which this frame did not yet exist for us), CPU is
         // read return → all bodies pushed (fragmentation + GF256 + SBI pack,
@@ -1312,6 +1328,7 @@ int run_real_mode(const Config& cfg) {
           b.pushed_us = t_poll_us;
           txq.push(std::move(b));
         }
+        txq.flush();  // idle-tail bodies never wait on a feed_batch group
       }
 
       hot_beat.fetch_add(1, std::memory_order_relaxed);

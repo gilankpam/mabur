@@ -429,6 +429,23 @@ TEST(fec_symbol_size_array_per_layer) {
   std::filesystem::remove(path);
 }
 
+TEST(fec_feed_batch_parses_and_defaults_off) {
+  Config def;
+  CHECK(def.fec.feed_batch == 0);  // streaming push is the default shape
+  auto path = write_temp_json(R"({"fec":{"feed_batch":3}})");
+  Config cfg = load_config(path.string());
+  CHECK(cfg.fec.feed_batch == 3);
+  std::filesystem::remove(path);
+}
+
+TEST(fec_feed_batch_out_of_range_throws_naming_field) {
+  auto path = write_temp_json(R"({"fec":{"feed_batch":9}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("fec.feed_batch") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
 TEST(fec_symbol_size_rejects_wrong_len_array) {
   auto path = write_temp_json(R"({"fec":{"symbol_size":[164,1312,164]}})");
   bool threw = false;
