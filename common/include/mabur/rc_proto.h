@@ -114,6 +114,16 @@ struct Telem {
   double applied_ov_base = 0.0;
   double applied_ov_enh = 0.0;
   uint16_t rcf_age_ms = 0;  // saturating
+  // link-rtt (2026-09-02): seq of the RCF rcf_age_ms is aging against, so
+  // the GS can subtract the send time of the RIGHT frame (repeats are 10 ms
+  // apart — closer than the RTT being measured). Meaningless while
+  // rcf_age_ms holds its 65535 never-sentinel.
+  uint16_t rcf_seq_echo = 0;
+  // Drone pts-domain clock (MI timebase, µs) read at telem build — the t3
+  // of the GS's NTP-style offset estimate. A duration-free timestamp is
+  // safe here because the GS only ever differences it against its own
+  // arrival stamp plus rtt/2; it never treats it as a shared clock.
+  uint64_t pts_at_build = 0;
   uint32_t rcf_rx = 0;
   uint32_t enc_frames = 0;
   uint32_t enc_kbytes = 0;
