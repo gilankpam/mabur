@@ -50,7 +50,17 @@ class OsdRaster {
   // on record, so ONLY the new grid is cleared -- unlike clear(), draw()
   // never paints outside its own grid in the first place, so with nothing
   // to account for there is nothing else that could need erasing.
-  int draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow);
+  //
+  // `out`, when non-null, receives the pixel rects this call wrote --
+  // run-merged exactly like diff()'s, and the single union rect on a full
+  // redraw. APPENDED to (unlike diff(), which clears): callers batch draw
+  // rects with others'. This is draw()-with-rects rather than
+  // diff()-then-draw() because a caller that needs both (the burned DVR's
+  // cached canvas) cannot run them in either order: diff() first consumes
+  // the shadow delta so draw() paints nothing, and draw() first leaves
+  // diff() nothing to report.
+  int draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow,
+           std::vector<DirtyRect>* out = nullptr);
 
   // Blanks the grid the shadow records as drawn -- NOT the whole surface:
   // the GS link-status overlay shares this surface and must survive an MSP

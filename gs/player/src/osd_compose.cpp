@@ -47,6 +47,12 @@ void OsdComposer::set_burn_sink(BurnSink s) {
   burn_ = std::move(s);
   burn_shadow_ = ShadowGrid{};
   if (gs_[2]) gs_[2]->invalidate();
+  // Blank the canvas too: pixels from the previous recording outside the
+  // fresh restate's rects would otherwise linger in it, and a later rect
+  // that happens to cover them would quantize stale content into the new
+  // recording's map.
+  std::fill(burn_px_.begin(), burn_px_.end(), 0u);
+  burn_gs_cards_ = -1;
 }
 
 bool OsdComposer::gs_layout(int screen_w, int screen_h, std::string* err) {
@@ -198,76 +204,86 @@ OsdComposeOut OsdComposer::compose(int idx, const Surface& s, const OsdComposeIn
   }
 
   // ---------------- burned DVR ----------------
+  // Composed into the burn CANVAS -- the composer's own cached mirror --
+  // never read back out of `s`: the DRM buffers are write-combine mappings
+  // and quantize reading one was the burned-recording latency regression
+  // (see osd_compose.h). The canvas runs the SAME algorithm as the display
+  // path above, against the burn's own lineages (burn_shadow_, gs_[2]), so
+  // it renders the same picture the screen shows: MSP first, GS repainted
+  // over any cell that hit a field box, vacated card rows erased and the
+  // grid repaired underneath them.
   if (burn_) {
+    // (Re)size the canvas to THIS surface. A resize orphans the burn
+    // lineages (their geometry followed the old size), so they reset and
+    // the next feeds below restate everything -- same shape as a fresh
+    // set_burn_sink().
+    if (!burn_canvas_.pixels || burn_canvas_.width != s.width ||
+        burn_canvas_.height != s.height) {
+      burn_px_.assign((size_t)s.width * s.height, 0u);
+      burn_canvas_ = Surface{burn_px_.data(), s.width, s.height, s.width};
+      burn_shadow_ = ShadowGrid{};
+      if (gs_[2]) gs_[2]->invalidate();
+      burn_gs_cards_ = -1;
+    }
     burn_rects_.clear();
+    burn_msp_write_.clear();
+    bool burn_msp_drew = false;
     if (msp_on && have_screen_) {
       if (grid_blank) {
-        // On the TRANSITION, not on "this buffer was cleared just now": the
-        // composition that finally publishes a blank may be one whose buffer
-        // was already clear (it never held this episode's grid), and the map
-        // would then keep a grid the screen has dropped for the whole stale
-        // episode. Keyed off screen_blank_ for that reason.
+        // On the TRANSITION, not per buffer: the canvas follows the screen,
+        // so one clear on the episode's first composition is the whole
+        // blank. clear() blanks exactly the grid the shadow records and
+        // invalidates it; last_grid_ is that rect, pushed through
+        // burn_msp_write_ so the GS reclaim below restores any field boxes
+        // the grid overlapped.
         if (!screen_blank_) {
-          burn_shadow_ = ShadowGrid{};  // the grid really is blank now
-          // Rect-scoped rather than the whole surface. Not much of a saving
-          // where the grid is most of the screen -- 50x18 "sharp" at 1080p
-          // is ~84%, though a 30x16 SD grid is nearer 45% -- the point is
-          // correctness: a whole-surface blank would record the GS overlay
-          // as erased, which it is not.
-          if (last_grid_.w > 0 && last_grid_.h > 0) burn_rects_.push_back(last_grid_);
+          raster_->clear(burn_canvas_, &burn_shadow_);
+          if (last_grid_.w > 0 && last_grid_.h > 0) burn_msp_write_.push_back(last_grid_);
         }
       } else {
-        raster_->diff(*in.screen, s, &burn_shadow_, &burn_rects_);
+        raster_->draw(*in.screen, burn_canvas_, &burn_shadow_, &burn_msp_write_);
+        burn_msp_drew = true;
       }
     }
     if (gs_on) {
-      // The reclaim wrote THIS BUFFER's last values, which are not the
-      // lineage gs_[2] tracks -- it would report "nothing changed" over a
-      // map that now disagrees with the screen. So the reclaimed region has
-      // to be restated to the burn regardless of what gs_[2] thinks changed.
-      //
-      // Restate exactly the boxes the reclaim redrew -- NOT every active
-      // field, which is what an invalidate() here used to do. The trigger is
-      // "any MSP-written cell touched any GS field box", and with an HD
-      // 50x18 sharp grid at 1080p 140 of the 900 cells (16%) sit on one, so
-      // a single changed corner cell -- a flight timer ticking once a second
-      // -- fired it. Restating all 33 active fields for that is 179,392 px
-      // of quantize_rects (2.2 ms projected on the A55) at the MSP screen
-      // rate, on the loop that reaps DRM flips, and it is held under the
-      // recorder's map mutex. The reclaimed subset for one cell is ~3 k.
-      //
-      // gs_[2]'s own shadow is left alone deliberately: update() below runs
-      // unconditionally and syncs it to the current state, so after this
-      // composition the map and the shadow both hold current values for
-      // these boxes. Restating them here without touching the shadow cannot
-      // leave the two disagreeing.
-      for (const DirtyRect& r : gs_reclaim_) burn_rects_.push_back(r);
-      // invalidate() restates every ACTIVE field, which is not the same as
-      // every field that MOVED: a vacated card row is inactive and would
-      // never be restated, leaving the recording with the row the screen no
-      // longer has.
-      if (geom_changed) {
-        for (const DirtyRect& r : gs_rects_) burn_rects_.push_back(r);
-        // ...and the cells the repair repainted, which spill outside those
-        // boxes. Only when the repair ran: on the blank path msp_write_ is
-        // the grid rect, and it is already in burn_rects_ above.
-        if (msp_drew)
-          for (const DirtyRect& r : msp_write_) burn_rects_.push_back(r);
+      const int cards = (int)std::min<size_t>(in.snap->cards.size(), (size_t)kMaxCards);
+      const bool burn_geom_changed = cards != burn_gs_cards_;
+      burn_gs_cards_ = cards;
+      // GS wins the collision in the canvas exactly as on screen: repaint
+      // every field box an MSP-written cell (or the blank's grid rect)
+      // touched. The repaint emits its boxes into burn_rects_ -- they are
+      // quantize work whether or not update() below touches them again.
+      if (!burn_msp_write_.empty())
+        gs_[2]->repaint_intersecting(burn_msp_write_.data(), burn_msp_write_.size(),
+                                     burn_canvas_, &burn_rects_);
+      burn_gs_rects_.clear();
+      gs_[2]->update(*in.snap, in.gs_stale, in.gs_ps, burn_canvas_, &burn_gs_rects_);
+      // A changed card count erased boxes straight through to the canvas's
+      // MSP glyphs, same hole the display path repairs above: forget those
+      // cells, redraw them, and let GS win back whatever the repair spilled
+      // onto -- cell rects are bigger than the boxes that prompted them.
+      if (burn_geom_changed && burn_msp_drew) {
+        for (const DirtyRect& r : burn_gs_rects_) forget_cells(burn_shadow_, *in.screen, r);
+        const size_t repair_at = burn_msp_write_.size();
+        raster_->draw(*in.screen, burn_canvas_, &burn_shadow_, &burn_msp_write_);
+        if (burn_msp_write_.size() > repair_at)
+          gs_[2]->repaint_intersecting(burn_msp_write_.data() + repair_at,
+                                       burn_msp_write_.size() - repair_at, burn_canvas_,
+                                       &burn_rects_);
       }
-      // Appends: update() does not clear `out`, precisely so GS and MSP
-      // rects reach the encoder as one batch.
-      gs_[2]->update(*in.snap, in.gs_stale, in.gs_ps, Surface{}, &burn_rects_);
+      for (const DirtyRect& r : burn_gs_rects_) burn_rects_.push_back(r);
     }
+    for (const DirtyRect& r : burn_msp_write_) burn_rects_.push_back(r);
     // One call, one batch. Rect COUNT is worth a thought and not a worry:
-    // the worst card-count transition produces 106 rects against
+    // the worst card-count transition produces ~106 rects against
     // BurnRecorder's 128 cap, and exceeding the cap does not cost a
     // quantize() on this loop -- it sets osd_full_pending, which moves a
     // ~2 MB map copy onto the recorder thread. The 25 ms path needs
     // rects == nullptr, which this never passes. Two things do accumulate
     // toward the cap though: successive set_osd() calls before the recorder
-    // takes them, and OsdRaster::diff() on an adversarial screen (alternating
-    // columns is legal MSP and yields 483 rects on its own).
-    if (!burn_rects_.empty()) burn_(s, burn_rects_.data(), burn_rects_.size());
+    // takes them, and OsdRaster::draw() on an adversarial screen
+    // (alternating columns is legal MSP and yields 483 rects on its own).
+    if (!burn_rects_.empty()) burn_(burn_canvas_, burn_rects_.data(), burn_rects_.size());
   }
 
   // One announcement per episode, on the transition rather than on a latch:

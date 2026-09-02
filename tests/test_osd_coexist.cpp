@@ -623,6 +623,39 @@ TEST(the_burn_index_map_tracks_the_screen_through_an_alternating_value) {
   CHECK(worst == 0);
 }
 
+// The burn sink must never be handed the DISPLAY surface. On hardware that
+// surface is a write-combine DRM dumb-buffer mapping, and quantize READING
+// it uncached measured 2-23 ms per OSD update on the pump loop (dvr-latency
+// probe, 2026-09-02) -- every burned recording stalled decode drain and
+// blew vsync release deadlines, which is what "recording makes the display
+// laggy" was. The composer mirrors the picture into its own cached canvas
+// (heap memory, same lineage rules) and feeds THAT; the map must still
+// track what the SCREEN shows, so the truth reference stays the display
+// buffer.
+TEST(the_burn_sink_gets_a_cached_canvas_not_the_display_buffer) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  Rig r;
+  FakeBurn fb;
+  fb.pal = seeded_palette();
+  const uint32_t* sink_pixels = nullptr;
+  r.comp.set_burn_sink([&](const Surface& s, const DirtyRect* p, size_t n) {
+    sink_pixels = s.pixels;
+    fb.feed(s, p, n);
+  });
+  int worst = 0;
+  for (int i = 0; i < 6; ++i) {
+    r.step(make_in(&scr, i == 0, false, &sn, player(60.0 - i), true));
+    REQUIRE(sink_pixels != nullptr);
+    CHECK(sink_pixels != r.buf[0].px.data());
+    CHECK(sink_pixels != r.buf[1].px.data());
+    const int w = fb.wrong_against(r.buf[r.back].s);
+    if (w > worst) worst = w;
+    r.commit();
+  }
+  CHECK(worst == 0);
+}
+
 // Non-vacuity: the same sequence fed the rects a single per-buffer overlay
 // yields. Driven directly, so it cannot drift with the composer.
 TEST(a_per_buffer_rect_list_would_not_keep_the_burn_map_current) {

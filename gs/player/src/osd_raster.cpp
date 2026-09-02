@@ -124,7 +124,8 @@ int OsdRaster::diff(const mabur::MspScreen& screen, const Surface& s, ShadowGrid
   return changed;
 }
 
-int OsdRaster::draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow) {
+int OsdRaster::draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid* shadow,
+                    std::vector<DirtyRect>* out) {
   if (!s.pixels) return 0;
   const GlyphAtlas& nat = font_.native();
   if (!nat.pixels) return 0;
@@ -144,7 +145,13 @@ int OsdRaster::draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid
     // a shadow there is no previous grid to account for.
     const DirtyRect prev = shadow ? grid_rect(shadow->layout) : DirtyRect{0, 0, 0, 0};
     const DirtyRect r = union_rect(prev, grid_rect(layout_));
-    if (r.w > 0 && r.h > 0) clear_rect(s, r.x, r.y, r.w, r.h);
+    if (r.w > 0 && r.h > 0) {
+      clear_rect(s, r.x, r.y, r.w, r.h);
+      // The union covers everything this call touches (every cell below is
+      // redrawn inside the new grid, which is inside it), so on a full
+      // redraw the rect list is this one rect, not one per cell.
+      if (out) out->push_back(r);
+    }
     if (shadow) {
       shadow->layout = layout_;
       shadow->cells.assign(n_cells, 0u);
@@ -153,11 +160,31 @@ int OsdRaster::draw(const mabur::MspScreen& screen, const Surface& s, ShadowGrid
 
   int drawn = 0;
   for (int r = 0; r < screen.rows(); ++r) {
-    for (int c = 0; c < screen.cols(); ++c) {
-      const uint16_t cell = screen.cell(r, c);
-      const size_t idx = (size_t)r * screen.cols() + c;
-      if (!full && shadow->cells[idx] == cell) continue;
-      if (shadow) shadow->cells[idx] = cell;
+    int run_start = -1;  // first column of the current contiguous redrawn run
+    for (int c = 0; c <= screen.cols(); ++c) {
+      uint16_t cell = 0;
+      bool redraw = c < screen.cols();
+      if (redraw) {
+        cell = screen.cell(r, c);
+        const size_t idx = (size_t)r * screen.cols() + c;
+        if (!full && shadow->cells[idx] == cell) {
+          redraw = false;
+        } else if (shadow) {
+          shadow->cells[idx] = cell;
+        }
+      }
+      if (!redraw) {
+        // Run ended: one rect per span, same merge as diff(), so the rect
+        // count tracks updated FIELDS rather than characters. Suppressed on
+        // a full redraw -- the union rect above already covers the grid.
+        if (out && !full && run_start >= 0)
+          out->push_back(DirtyRect{layout_.origin_x + run_start * layout_.draw_w,
+                                   layout_.origin_y + r * layout_.draw_h,
+                                   (c - run_start) * layout_.draw_w, layout_.draw_h});
+        run_start = -1;
+        continue;
+      }
+      if (run_start < 0) run_start = c;
       ++drawn;
 
       const int ox = layout_.origin_x + c * layout_.draw_w;
