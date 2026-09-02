@@ -6,6 +6,15 @@
 
 namespace maburplay {
 
+// Exact vsync period from a DRM mode's timings (clock in kHz, total pixels
+// per line/frame), sidestepping the rounded integer vrefresh: 16.667 ms and
+// 16.949 ms both report "59". Degenerate timings fall back to the 60 Hz
+// seed instead of dividing by zero.
+inline double mode_period_us(int clock_khz, int htotal, int vtotal) {
+  if (clock_khz <= 0 || htotal <= 0 || vtotal <= 0) return 16'667.0;
+  return static_cast<double>(htotal) * vtotal * 1000.0 / clock_khz;
+}
+
 // Predicts the panel's vblank grid from the kernel page-flip timestamps
 // the presenter already captures (DRM_CAP_TIMESTAMP_MONOTONIC). Pure
 // arithmetic: no clocks, no threads, no DRM types. Exact flips only --
@@ -17,6 +26,12 @@ class VblankEstimator {
   static constexpr double kSeedPeriodUs = 16'667.0;
   static constexpr int kWarmFlips = 8;
   static constexpr int kStalePeriods = 32;
+
+  // seed_period_us comes from the chosen DRM mode's timings; the EMA then
+  // tracks the panel's real period within ±1% of that seed. Default keeps
+  // the historical 60 Hz assumption for callers with no mode in hand.
+  explicit VblankEstimator(double seed_period_us = kSeedPeriodUs)
+      : seed_us_(seed_period_us), period_us_(seed_period_us) {}
 
   void on_flip(uint64_t flip_us, bool exact) {
     if (!exact) return;
@@ -31,7 +46,7 @@ class VblankEstimator {
     if (k < 1.0) return;  // duplicate / backwards jitter: drop
     if (k == 1.0 && std::fabs(delta - period_us_) <= 0.02 * period_us_) {
       period_us_ += (delta - period_us_) / 16.0;
-      const double lo = kSeedPeriodUs * 0.99, hi = kSeedPeriodUs * 1.01;
+      const double lo = seed_us_ * 0.99, hi = seed_us_ * 1.01;
       if (period_us_ < lo) period_us_ = lo;
       if (period_us_ > hi) period_us_ = hi;
     }
@@ -72,7 +87,8 @@ class VblankEstimator {
   int exact_flips() const { return exact_flips_; }
 
  private:
-  double period_us_ = kSeedPeriodUs;
+  double seed_us_;  // non-const: FrameRegulator::set_panel_period reassigns
+  double period_us_;
   uint64_t phase_us_ = 0;
   uint64_t last_exact_us_ = 0;
   int exact_flips_ = 0;

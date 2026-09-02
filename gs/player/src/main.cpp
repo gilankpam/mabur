@@ -589,6 +589,20 @@ int main(int argc, char** argv) {
                    "decoded and released immediately\n");
       presenter.reset();
     } else {
+      // Seed the servo's vblank estimator with the committed mode's exact
+      // period BEFORE the first flip (splash_show below starts flipping):
+      // under the default 60 Hz seed a 90/120 Hz panel's flip deltas round
+      // to k=0 and are all dropped, so the servo would never engage.
+      const double panel_us = presenter->mode_period_us();
+      regulator.set_panel_period(panel_us);
+      if (cfg.display.vsync_lock &&
+          cfg.display.vsync_lead_ms * 1000.0 >= panel_us)
+        std::fprintf(stderr,
+                     "maburplay: display.vsync_lead_ms %d >= the %.1f ms panel "
+                     "period -- every servo release rolls past one extra "
+                     "vblank (a full period of added glass latency); lower "
+                     "the lead for this mode\n",
+                     cfg.display.vsync_lead_ms, panel_us / 1000.0);
       presenter->set_flip_sink(
           [&lat, &regulator](uint32_t p, uint64_t t, bool ex) {
             lat.on_flip(p, t, ex);
@@ -1024,9 +1038,9 @@ int main(int argc, char** argv) {
     const bool is_key = ev.meta.sid == 0;
 
     // GS overlay video figures, measured HERE -- at AU delivery -- and not
-    // at flip: the presenter is a mailbox on a 60 Hz vsync, so flip deltas
-    // are quantized to 16.67 ms multiples and a 3 ms arrival wobble is
-    // invisible in them. RingClient::pump(2) is a poll() on the doorbell fd
+    // at flip: the presenter is a mailbox on the panel vsync, so flip
+    // deltas are quantized to vsync-period multiples and a 3 ms arrival
+    // wobble is invisible in them. RingClient::pump(2) is a poll() on the doorbell fd
     // with a 2 ms CEILING, not a 2 ms sample grid, so the doorbell wakes us
     // promptly and steady_clock resolves sub-millisecond here.
     gs_jitter.on_au(mono_ms());
@@ -1421,6 +1435,9 @@ int main(int argc, char** argv) {
                     },
                     /*log_failures=*/false)) {
           presenter = std::move(p);
+          // Same pre-first-flip reseed as the startup path: a hotplugged
+          // panel may run a different mode/refresh than the one configured.
+          regulator.set_panel_period(presenter->mode_period_us());
           presenter->set_flip_sink(
               [&lat, &regulator](uint32_t pts, uint64_t t, bool ex) {
                 lat.on_flip(pts, t, ex);

@@ -17,8 +17,8 @@ namespace maburplay {
 // AU-delivery jitter: an EMA of the change in inter-arrival interval.
 //
 // Measured at delivery and not at flip because the presenter is a mailbox
-// on a 60 Hz vsync, so flip deltas are quantized to 16.67 ms multiples and
-// a 3 ms arrival wobble is invisible in them.
+// on the panel vsync, so flip deltas are quantized to vsync-period
+// multiples and a 3 ms arrival wobble is invisible in them.
 class AuJitter {
  public:
   // A gap at least this long is a freeze, not jitter. 200 ms is ~12 frames

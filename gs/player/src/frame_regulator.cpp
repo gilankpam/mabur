@@ -6,7 +6,7 @@ namespace maburplay {
 
 void FrameRegulator::displace(int idx, Displaced* out) {
   if (idx >= count_) return;
-  if (out && out->n < 2) out->f[out->n++] = held_[idx].f;
+  if (out && out->n < kMaxHeld) out->f[out->n++] = held_[idx].f;
   for (int i = idx; i + 1 < count_; ++i) held_[i] = held_[i + 1];
   --count_;
   ++replaced_count_;
@@ -85,18 +85,18 @@ bool FrameRegulator::offer(const DmaFrame& f, uint64_t mono_us,
   // displaces an untargeted held one -- the classic single-slot rule.
   // Servo frames never match anything here: the sequential-slot block
   // above either found the natural slot free or already moved this frame
-  // past (and displaced) the claimed one, so with count_ <= 2 no held
-  // entry can remain within half a period of the final target. The
-  // rounding tolerance that used to live in a same_slot matcher is now
-  // occupant()'s < hp window. vsync_skips_ increments only on the
-  // deep-burst claim above.
+  // past (and displaced) the claimed one, and every held entry claimed
+  // its own distinct slot the same way, so no held entry can remain
+  // within half a period of the final target. The rounding tolerance
+  // that used to live in a same_slot matcher is now occupant()'s < hp
+  // window. vsync_skips_ increments only on the deep-burst claim above.
   if (target_v == 0) {
     for (int i = 0; i < count_;) {
       if (held_[i].target_v == 0) displace(i, out);
       else ++i;
     }
   }
-  if (count_ == 2) displace(0, out);
+  if (count_ == kMaxHeld) displace(0, out);
 
   if (release <= mono_us) {
     ++late_count_;
@@ -131,8 +131,15 @@ void FrameRegulator::heal_slip() {
   // release_due() and next_release_us() depend on (found in review: an
   // inverted head released the fallback frame ~7 ms late, out of pts
   // order, and made next_release_us() misreport to the pump/idle logic).
-  if (count_ == 2 && held_[0].release_us > held_[1].release_us)
-    std::swap(held_[0], held_[1]);
+  for (int i = 1; i < count_; ++i) {
+    Held h = held_[i];
+    int j = i;
+    while (j > 0 && held_[j - 1].release_us > h.release_us) {
+      held_[j] = held_[j - 1];
+      --j;
+    }
+    held_[j] = h;
+  }
   if (any) ++heals_;
 }
 

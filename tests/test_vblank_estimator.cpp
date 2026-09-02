@@ -80,6 +80,42 @@ TEST(next_release_earliest_catchable) {
   CHECK(r.vblank_us == phase + 2 * kP);
 }
 
+TEST(mode_period_from_timings) {
+  // 1080p60 CEA: clock 148.5 MHz, 2200x1125 total -> 16666.67 µs.
+  CHECK(std::fabs(maburplay::mode_period_us(148'500, 2200, 1125) - 16'666.67) <
+        0.1);
+  // 1080p120: doubled clock -> 8333.33 µs.
+  CHECK(std::fabs(maburplay::mode_period_us(297'000, 2200, 1125) - 8'333.33) <
+        0.1);
+  // Degenerate timings fall back to the 60 Hz seed rather than divide by 0.
+  CHECK(maburplay::mode_period_us(0, 2200, 1125) ==
+        VblankEstimator::kSeedPeriodUs);
+}
+
+TEST(seeded_estimator_locks_120hz_grid) {
+  VblankEstimator e(8'333.3);  // 120 Hz panel
+  uint64_t t = kT0;
+  for (int i = 0; i < 64; ++i) { e.on_flip(t, true); t += 8'333; }
+  CHECK(e.period_us() > 8'320.0);
+  CHECK(e.period_us() < 8'347.0);
+  // Predicts the NEXT 120 Hz vblank, not a 60 Hz one: the last flip was at
+  // t - 8'333, so the earliest catchable vblank from just after it is one
+  // 120 Hz period later.
+  const auto r = e.next_release(t - 8'333 + 1'000, 2'000);
+  CHECK(r.vblank_us < t + 100);
+  CHECK(r.vblank_us > t - 100);
+}
+
+TEST(seeded_clamp_centers_on_seed_90hz) {
+  VblankEstimator e(11'111.1);  // 90 Hz panel
+  // Drift the EMA would chase past the clamp must cap at ±1% of the SEED,
+  // not of 16'667.
+  uint64_t t = kT0;
+  for (int i = 0; i < 512; ++i) { e.on_flip(t, true); t += 11'223; }  // +1%+
+  CHECK(e.period_us() <= 11'111.1 * 1.01 + 0.5);
+  CHECK(e.period_us() >= 11'111.1 * 0.99 - 0.5);
+}
+
 TEST(period_clamped_to_one_percent) {
   VblankEstimator e;
   // A drift the EMA would chase past the clamp must be capped.

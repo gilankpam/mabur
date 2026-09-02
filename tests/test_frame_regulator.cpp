@@ -295,13 +295,14 @@ TEST(servo_safety_clamp_uses_fallback_rule) {
   CHECK(reg.release_due(t_dec + kD, &out));
 }
 
-TEST(both_slots_full_evicts_oldest_on_third_distinct_target) {
-  // Reaches `if (count_ == 2) displace(0, out)` -- the only path that
-  // evicts out of a FULL 2-deep queue -- via the mixed fallback/servo
-  // construction: start stale (fallback frame held, target_v==0), re-warm
-  // to a fresh grid, hold a servo frame at a distinct target (both held,
-  // count_==2), then offer a THIRD frame whose target matches neither
-  // held slot.
+TEST(mixed_fallback_and_servo_targets_all_hold) {
+  // Mixed fallback/servo queue: start stale (fallback frame held,
+  // target_v==0), re-warm to a fresh grid, then hold TWO servo frames at
+  // distinct targets. Under the old 2-deep queue the third frame evicted
+  // the fallback head; at kMaxHeld=4 all three coexist and each releases
+  // by its own rule (fallback at floor+D, servo at vblank-lead). The
+  // full-queue eviction path is pinned by
+  // full_queue_evicts_overdue_head_on_fifth_target.
   FrameRegulator reg(12, /*vsync_lock=*/true, /*vsync_lead_ms=*/3);
   warm(reg);
   const uint64_t phase0 = kT0 + 7 * kVb;
@@ -329,26 +330,26 @@ TEST(both_slots_full_evicts_oldest_on_third_distinct_target) {
 
   // 4) Second servo frame decoded inside the FIRST target's lead window
   // (only 1 ms of margin, < the 3 ms lead): rolls to the next vblank
-  // (phase1+2*kVb), matching neither held target (0 or phase1+kVb) ->
-  // full queue, third target matches nothing -> eviction.
+  // (phase1+2*kVb), matching neither held target (0 or phase1+kVb). Three
+  // distinct targets, all held -- no eviction, no skip.
   const uint64_t t_dec3 = phase1 + kVb - 1'000;
   CHECK(!reg.offer(frame(2 * kFrame), t_dec3, &disp));
-  CHECK(disp.n == 1);
-  CHECK(disp.f[0].opaque == frame(0).opaque);  // oldest (fallback) evicted
-  CHECK(reg.replaced_count() == 1);
-  // Eviction is a separate branch from the same-slot sweep above it --
-  // it must not also count as a vsync skip.
+  CHECK(disp.n == 0);
+  CHECK(reg.replaced_count() == 0);
   CHECK(reg.vsync_skips() == 0);
   CHECK(reg.holding());
 
-  // The two SURVIVING frames (servo target phase1+kVb, then phase1+2*kVb)
-  // still release at their own vblanks -- the eviction only cost the
-  // stale fallback frame.
-  DmaFrame o1, o2;
+  // Releases interleave by each frame's own rule: the fallback frame's
+  // floor+D release (long overdue by phase1) heads the queue, then the
+  // servo frames at their vblanks.
+  DmaFrame o0, o1, o2;
+  CHECK(reg.release_due(phase1 + kVb - kLead, &o0));
+  CHECK(o0.opaque == frame(0).opaque);
   CHECK(reg.release_due(phase1 + kVb - kLead, &o1));
   CHECK(o1.opaque == frame(kFrame).opaque);
   CHECK(reg.release_due(phase1 + 2 * kVb - kLead, &o2));
   CHECK(o2.opaque == frame(2 * kFrame).opaque);
+  CHECK(!reg.holding());
 }
 
 TEST(discont_flushes_both_held_slots) {
@@ -391,11 +392,12 @@ struct BeatSim {
   uint64_t skips = 0, replaced = 0, fallback = 0, late = 0;
 };
 
-BeatSim run_beat_sim(double src_period_us) {
+BeatSim run_beat_sim(double src_period_us, double panel_period_us = 1e6 / 60.0) {
   FrameRegulator reg(12, true, 3);
+  reg.set_panel_period(panel_period_us);
   FrameRegulator::Displaced disp;
   DmaFrame out;
-  const double kPanel = 1e6 / 60.0;
+  const double kPanel = panel_period_us;
   BeatSim s;
   double flip_t = static_cast<double>(kT0);
   for (int i = 0; i < 8; ++i) {
@@ -461,7 +463,150 @@ TEST(beat_simulation_fast_source_drops_bounded_by_wraps) {
   CHECK(s.offered == s.released + s.replaced + s.late + s.drained);
 }
 
+TEST(cross_rate_90fps_on_60hz_drops_one_in_three) {
+  // The live bench case: 90 fps sensor on the 60 Hz GS panel. Three
+  // decodes per two vblanks -- exactly one of every three frames must be
+  // dropped (freshest-wins), never more, and the servo never disengages.
+  const BeatSim s = run_beat_sim(1e6 / 90.0);
+  CHECK(s.fallback == 0);
+  CHECK(s.offered == s.released + s.replaced + s.late + s.drained);
+  CHECK(static_cast<double>(s.replaced) >= 0.30 * s.offered);
+  CHECK(static_cast<double>(s.replaced) <= 0.36 * s.offered);
+}
+
+TEST(matched_120fps_on_120hz_never_drops) {
+  // Matched rates on a fast panel: one decode per vblank, no contention,
+  // no drops -- the servo behaves exactly as 60-on-60 does today.
+  const BeatSim s = run_beat_sim(1e6 / 120.0, 1e6 / 120.0);
+  CHECK(s.fallback == 0);
+  CHECK(s.skips == 0);
+  CHECK(s.replaced == 0);
+  CHECK(s.offered == s.released + s.replaced + s.late + s.drained);
+}
+
+TEST(cross_rate_120fps_on_60hz_drops_half) {
+  // Double-rate source: every second frame is dropped, freshest-wins.
+  const BeatSim s = run_beat_sim(1e6 / 120.0);
+  CHECK(s.fallback == 0);
+  CHECK(s.offered == s.released + s.replaced + s.late + s.drained);
+  CHECK(static_cast<double>(s.replaced) >= 0.46 * s.offered);
+  CHECK(static_cast<double>(s.replaced) <= 0.54 * s.offered);
+}
+
 MTEST_MAIN
+
+TEST(panel_period_reseed_locks_120hz_grid) {
+  // A 120 Hz panel's flips land 8333 µs apart -- under the default 60 Hz
+  // seed the estimator rounds that delta to k=0 and DROPS every flip, so
+  // the servo can never engage. main.cpp reseeds from the chosen DRM
+  // mode's timings before the presenter produces its first flip.
+  constexpr uint64_t kVb120 = 8'333;
+  FrameRegulator reg(12, true, 3);
+  reg.set_panel_period(8'333.3);
+  for (int i = 0; i < 8; ++i) reg.on_flip(kT0 + i * kVb120, true);
+  const uint64_t phase = kT0 + 7 * kVb120;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  const uint64_t t_dec = phase + kVb120 - 5'000;
+  CHECK(!reg.offer(frame(0), t_dec, &disp));
+  CHECK(reg.servo_locked());
+  const uint64_t release = phase + kVb120 - kLead;
+  CHECK(!reg.release_due(release - 1, &out));
+  CHECK(reg.release_due(release, &out));
+  CHECK(reg.fallback_frames() == 0);
+}
+
+TEST(without_reseed_120hz_flips_never_warm) {
+  // The defect the reseed fixes, pinned so it stays visible: same flip
+  // stream, no set_panel_period -- every offer takes the fallback rule.
+  constexpr uint64_t kVb120 = 8'333;
+  FrameRegulator reg(12, true, 3);
+  for (int i = 0; i < 8; ++i) reg.on_flip(kT0 + i * kVb120, true);
+  FrameRegulator::Displaced disp;
+  CHECK(!reg.offer(frame(0), kT0 + 8 * kVb120, &disp));
+  CHECK(!reg.servo_locked());
+  CHECK(reg.fallback_frames() == 1);
+}
+
+TEST(stall_backlog_holds_three_distinct_targets) {
+  // Post-stall scenario (main loop order: decode sink OFFERS before the
+  // loop drains release_due): f1@v1 and f2@v2 are held, the loop stalls
+  // past v1's release, and f3 decodes during the catch-up -- its natural
+  // slot v2 is occupied, so it takes v3. A 2-deep queue can only evict
+  // f1, a frame already due for display; the deeper queue holds all
+  // three and f1 merely releases late.
+  FrameRegulator reg(12, true, 3);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  CHECK(!reg.offer(frame(0), phase + kVb - 9'000, &disp));        // @v1
+  CHECK(!reg.offer(frame(kFrame), phase + kVb - 1'000, &disp));   // @v2
+  CHECK(disp.n == 0);
+  // Stall: v1's release (v1 - lead) passes undrained; f3 decodes at v1+1ms.
+  CHECK(!reg.offer(frame(2 * kFrame), phase + kVb + 1'000, &disp));  // @v3
+  CHECK(disp.n == 0);
+  CHECK(reg.replaced_count() == 0);
+  CHECK(reg.vsync_skips() == 0);
+  // All three drain in pts order on consecutive vblanks (f1 late).
+  CHECK(reg.release_due(phase + kVb + 1'001, &out));
+  CHECK(out.opaque == frame(0).opaque);
+  CHECK(reg.release_due(phase + 2 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(kFrame).opaque);
+  CHECK(reg.release_due(phase + 3 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(2 * kFrame).opaque);
+  CHECK(!reg.holding());
+}
+
+TEST(discont_flushes_three_held_frames) {
+  // Same backlog as above, then a drone-restart pts jump: the discont
+  // path must hand back ALL held frames, so Displaced must carry the
+  // full queue depth.
+  FrameRegulator reg(12, true, 3);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  CHECK(!reg.offer(frame(0), phase + kVb - 9'000, &disp));
+  CHECK(!reg.offer(frame(kFrame), phase + kVb - 1'000, &disp));
+  CHECK(!reg.offer(frame(2 * kFrame), phase + kVb + 1'000, &disp));
+  const uint32_t pts_jump = 2 * kFrame + 3'000'000u;  // > kResyncUs
+  CHECK(reg.offer(frame(pts_jump), phase + kVb + 2'000, &disp));
+  CHECK(disp.n == 3);
+  CHECK(disp.f[0].opaque == frame(0).opaque);
+  CHECK(disp.f[1].opaque == frame(kFrame).opaque);
+  CHECK(disp.f[2].opaque == frame(2 * kFrame).opaque);
+  CHECK(!reg.holding());
+}
+
+TEST(full_queue_evicts_overdue_head_on_fifth_target) {
+  // The depth cap still exists -- at FOUR. Extend the stall backlog to
+  // f1..f4 on v1..v4, then a fifth distinct target evicts the oldest
+  // (most-overdue) head, latency-first.
+  FrameRegulator reg(12, true, 3);
+  warm(reg);
+  const uint64_t phase = kT0 + 7 * kVb;
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  CHECK(!reg.offer(frame(0), phase + kVb - 9'000, &disp));            // @v1
+  CHECK(!reg.offer(frame(kFrame), phase + kVb - 1'000, &disp));       // @v2
+  CHECK(!reg.offer(frame(2 * kFrame), phase + kVb + 1'000, &disp));   // @v3
+  CHECK(!reg.offer(frame(3 * kFrame), phase + 2 * kVb + 1'000, &disp));  // @v4
+  CHECK(disp.n == 0);
+  CHECK(!reg.offer(frame(4 * kFrame), phase + 3 * kVb + 1'000, &disp));  // @v5
+  CHECK(disp.n == 1);
+  CHECK(disp.f[0].opaque == frame(0).opaque);  // overdue head evicted
+  CHECK(reg.replaced_count() == 1);
+  // Survivors still release in order.
+  CHECK(reg.release_due(phase + 3 * kVb + 1'001, &out));
+  CHECK(out.opaque == frame(kFrame).opaque);
+  CHECK(reg.release_due(phase + 3 * kVb + 1'002, &out));
+  CHECK(out.opaque == frame(2 * kFrame).opaque);
+  CHECK(reg.release_due(phase + 4 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(3 * kFrame).opaque);
+  CHECK(reg.release_due(phase + 5 * kVb - kLead, &out));
+  CHECK(out.opaque == frame(4 * kFrame).opaque);
+  CHECK(!reg.holding());
+}
 
 TEST(heal_slip_shifts_pending_releases_one_slot) {
   // Chain-break heal: when the main loop sees the presenter's in-flight

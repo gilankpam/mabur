@@ -167,6 +167,12 @@ class DrmPresenter {
   // -- LatTracker's dsp segment is then only as exact as poll() latency.
   bool vsync_ts_exact() const;
 
+  // The committed mode's exact vsync period (mode_period_us over its
+  // clock/htotal/vtotal — NOT the rounded integer vrefresh). Valid after
+  // init() succeeds; main.cpp seeds the FrameRegulator's vblank estimator
+  // with it so the servo can lock non-60 Hz panels.
+  double mode_period_us() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

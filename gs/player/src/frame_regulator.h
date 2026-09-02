@@ -25,22 +25,28 @@ namespace maburplay {
 //
 // Ownership: offer() either passes the frame through (present it NOW —
 // regulator disabled, frame already past its release, or a pts
-// discontinuity re-seed) or holds it in a 2-deep queue. A held frame
-// displaced by a newer one, or orphaned by a discontinuity, comes back
-// via *out (up to 2 at once) and MUST be returned to the backend by the
-// caller. release_due() surfaces held frames once their time arrives —
-// call it in a loop, since more than one can be due in the same tick.
+// discontinuity re-seed) or holds it in a kMaxHeld-deep queue. A held
+// frame displaced by a newer one, or orphaned by a discontinuity, comes
+// back via *out (up to kMaxHeld at once) and MUST be returned to the
+// backend by the caller. release_due() surfaces held frames once their
+// time arrives — call it in a loop, since more than one can be due in
+// the same tick.
 //
-// 2-deep queue (bench A/B 2026-08-30): the old single-slot mailbox meant
-// that once D approached the spacing to the next burst-decoded frame,
-// displacement rate climbed and the dropped frames judder more than the
-// smoothing helps — 12 ms measured 2.94 ms present-jitter with 5
-// replacements, 16 ms measured 5.32 ms with 804. Two slots let the queue
-// hold one frame per vsync target instead of collapsing every arrival
-// onto a single held frame; in fallback mode (no vsync lock) all entries
-// share target_v == 0, so the same-target displacement rule below
-// reproduces the old single-slot mailbox exactly. Vsync-servo mode
-// (Task 3) is what actually reaches the second slot.
+// Queue depth (bench A/B 2026-08-30, generalized 2026-09-02): the old
+// single-slot mailbox meant that once D approached the spacing to the
+// next burst-decoded frame, displacement rate climbed and the dropped
+// frames judder more than the smoothing helps — 12 ms measured 2.94 ms
+// present-jitter with 5 replacements, 16 ms measured 5.32 ms with 804.
+// Multiple slots let the queue hold one frame per vsync target instead
+// of collapsing every arrival onto a single held frame; in fallback mode
+// (no vsync lock) all entries share target_v == 0, so the same-target
+// displacement rule below reproduces the old single-slot mailbox
+// exactly. Depth 4 (was 2) covers the post-stall backlog: the decode
+// sink offers before the main loop drains overdue releases, so a stall
+// spanning a release deadline plus a decode burst legitimately wants 3+
+// distinct vsync targets in hold — at 120 Hz (8.3 ms periods) with
+// D=12–16 that window doubles relative to the 60 Hz bench. A full queue
+// still evicts the oldest (most-overdue) head: latency-first.
 class FrameRegulator {
  public:
   FrameRegulator(int regulate_ms, bool vsync_lock = false,
@@ -51,8 +57,10 @@ class FrameRegulator {
 
   bool enabled() const { return d_us_ > 0; }
 
+  static constexpr int kMaxHeld = 4;
+
   struct Displaced {
-    DmaFrame f[2];
+    DmaFrame f[kMaxHeld];
     int n = 0;
   };
 
@@ -70,6 +78,15 @@ class FrameRegulator {
 
   // Forwarded from the presenter's FlipSink (main thread, no locking).
   void on_flip(uint64_t flip_us, bool exact) { est_.on_flip(flip_us, exact); }
+
+  // Reseed the vblank estimator with the chosen DRM mode's exact period
+  // (mode_period_us). The regulator is constructed before the presenter
+  // (its flip-sink closures capture it by reference), so the panel rate
+  // arrives here post-init rather than through the constructor. Call
+  // before the first flip: reseeding discards any warm-up so far.
+  void set_panel_period(double period_us) {
+    est_ = VblankEstimator(period_us);
+  }
 
   uint64_t held_count() const { return held_count_; }
   uint64_t late_count() const { return late_count_; }
@@ -115,7 +132,7 @@ class FrameRegulator {
 
   maburgs::PtsAnchor anchor_;
   VblankEstimator est_;
-  Held held_[2];   // held_[0] releases first (sorted by release_us)
+  Held held_[kMaxHeld];  // held_[0] releases first (sorted by release_us)
   int count_ = 0;
   bool servo_now_ = false;
 

@@ -3,6 +3,7 @@
 #include "in_formats.h"  // in_formats_has_linear: the IN_FORMATS parser, unit-tested
 #include "osd_layout.h"  // plan_zpos: the plane stacking policy, unit-tested
 #include "osd_surface.h"
+#include "vblank_estimator.h"  // mode_period_us: pure timing math, unit-tested
 
 #include <fcntl.h>
 #include <poll.h>
@@ -1678,6 +1679,11 @@ bool DrmPresenter::async_probed() const { return impl_->async_probed; }
 void DrmPresenter::set_flip_sink(FlipSink sink) { impl_->flip_sink = std::move(sink); }
 
 bool DrmPresenter::vsync_ts_exact() const { return impl_->ts_exact; }
+
+double DrmPresenter::mode_period_us() const {
+  return maburplay::mode_period_us(impl_->mode.clock, impl_->mode.htotal,
+                                   impl_->mode.vtotal);
+}
 
 bool DrmPresenter::osd_available() const {
   return impl_->osd_plane_id != 0 && impl_->osd.ok();
