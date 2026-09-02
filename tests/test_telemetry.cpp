@@ -20,10 +20,16 @@ TEST(make_telem_maps_and_saturates) {
   in.uplink.snr[0] = 21.2; in.uplink.snr[1] = 22.0;
   in.soc_temp_c = 61; in.load1 = 0.72;
   in.idr_disagree = 3; in.enhance_disagree = 70000;
+  in.rcf_seq_echo = 0x4711;
+  in.rcf_seq_echo_valid = true;
+  in.pts_at_build_us = 0x0011223344556677ull;
   const auto t = mabur::make_telem(9, in);
   CHECK(t.tlm_seq == 9);
   CHECK(t.state == 2);
-  CHECK(t.flags == 0x07);  // failsafe_shed | radio_rx_ok | probing
+  // failsafe_shed | radio_rx_ok | probing | rcf_seq_echo_valid — bit3 is
+  // the GS's only way to tell "aging against this seq" from "aging against
+  // a DISC/failsafe rebase where the echoed seq is stale".
+  CHECK(t.flags == 0x0F);
   CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
   // applied_ov_base/enh map straight through — the commanded per-stream
   // pair, or the debug-HTTP override when armed (main.cpp).
@@ -40,6 +46,10 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.load_x100 == 72);
   CHECK(t.idr_disagree == 3);
   CHECK(t.enhance_disagree == 65535);  // saturates to u16
+  // link-rtt: seq echo + pts pass through at full width, no saturation —
+  // pts_at_build is a timestamp, not a gauge.
+  CHECK(t.rcf_seq_echo == 0x4711);
+  CHECK(t.pts_at_build == 0x0011223344556677ull);
 }
 
 TEST(uplink_track_ema_and_thread_snapshot) {

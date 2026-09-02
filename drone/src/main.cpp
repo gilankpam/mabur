@@ -1553,6 +1553,14 @@ int run_real_mode(const Config& cfg) {
           ti.rcf_age_ms = agent.have_feedback()
                               ? (now - agent.last_feedback_ms())
                               : static_cast<uint64_t>(UINT16_MAX) + 1;
+          // link-rtt: which RCF that age references. Invalid (flags bit3
+          // clear) after a DISC re-establish or failsafe rebase, where the
+          // age is fresh but no RCF backs it — the GS must not match a
+          // stale seq against it.
+          if (const auto fseq = agent.last_feedback_seq()) {
+            ti.rcf_seq_echo = *fseq;
+            ti.rcf_seq_echo_valid = true;
+          }
           ti.rcf_rx = agent.rcf_accepted();
           ti.enc_frames = enc_frames_total.load(std::memory_order_relaxed);
           ti.enc_bytes = enc_bytes_total.load(std::memory_order_relaxed);
@@ -1588,6 +1596,10 @@ int run_real_mode(const Config& cfg) {
           venc_get_stats(&vs);
           ti.venc_full_drops = vs.full_drops;
           ti.venc_ring_fill_pct = static_cast<int>(vs.ring_fill_pct);
+          // link-rtt t3: pts-domain clock at telem build. Stays 0 (the
+          // wire's "unavailable" sentinel) on host builds and when
+          // MI_SYS_GetCurPts is unresolved.
+          ti.pts_at_build_us = venc_cur_pts_us();
 #endif
 
           auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));

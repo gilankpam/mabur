@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "config.h"
@@ -133,6 +134,15 @@ class RcAgent {
   bool have_feedback() const { return have_last_fb_; }
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }
+  // link-rtt: seq of the RCF that last_feedback_ms/rcf_age_ms age against.
+  // Empty whenever the seq window is reset (DISC re-establish, failsafe) —
+  // in that state last_fb_ms_ was refreshed by a non-RCF event and echoing
+  // a stale seq would let the GS fabricate an RTT sample from the wrong
+  // send time.
+  std::optional<uint16_t> last_feedback_seq() const {
+    if (!have_last_seq_) return std::nullopt;
+    return last_seq_;
+  }
 
   // True iff the last accepted RCF carried probe3 (an s3-only MCS probe) —
   // cleared the moment a FAILSAFE/max-range apply takes over (a degraded or

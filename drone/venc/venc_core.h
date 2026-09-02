@@ -36,6 +36,13 @@ typedef struct {
 } VencStats;
 void venc_get_stats(VencStats *out);
 
+/* link-rtt: current pts-domain clock (MI_SYS_GetCurPts, µs) — the t3 of the
+ * GS's telem-time offset estimate, same MI timebase as frame pts and the
+ * enc_us probe. Returns 0 when the SDK symbol is unresolved or the core is
+ * not running; telem then ships pts_at_build 0 and the GS skips the offset
+ * sample (0 is the wire's "unavailable" sentinel, never a real clock). */
+uint64_t venc_cur_pts_us(void);
+
 /* One-shot JPEG snapshot (chn7). Returns malloc'd buffer via *out (caller
  * frees) and its size, or -1. Debug endpoint only. */
 int venc_snapshot_jpeg(uint8_t **out, size_t *out_len, int quality);

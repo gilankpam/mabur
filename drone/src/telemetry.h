@@ -41,6 +41,13 @@ struct TelemInputs {
   double applied_ov_base = 0.0;
   double applied_ov_enh = 0.0;
   uint64_t rcf_age_ms = 0, rcf_rx = 0;
+  // link-rtt: seq of the RCF rcf_age_ms ages against + the pts-domain clock
+  // (MI timebase, µs) at telem build. Straight pass-through, no saturation.
+  // echo_valid maps to flags bit3; false whenever RcAgent's seq window was
+  // reset (DISC re-establish, failsafe rebase) and the echo would be stale.
+  uint16_t rcf_seq_echo = 0;
+  bool rcf_seq_echo_valid = false;
+  uint64_t pts_at_build_us = 0;
   uint64_t enc_frames = 0, enc_bytes = 0;
   int cmd_kbps = 0, qp = 0;
   uint64_t ring_drops = 0;
