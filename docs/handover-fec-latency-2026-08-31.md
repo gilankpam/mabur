@@ -1,7 +1,9 @@
 # Handover — the `fec`/`dq` latency thread and the A-MPDU probe
 
 2026-08-31, bench (drone `192.168.10.152`, GS `10.18.0.1`), branch
-`venc-foldin`. Continues `docs/latency-budget-findings-2026-08-31.md`
+`venc-foldin` (**merged to master 2026-09-02 via PR #34, fast-forward,
+branch deleted** — every commit below is on master under its original
+SHA). Continues `docs/latency-budget-findings-2026-08-31.md`
 and `docs/dq-spike-findings-2026-08-31.md` (the running lab notebook —
 read §7–§10 there for the measurements; this page is the map and the
 open front).
@@ -18,7 +20,7 @@ host-side causes). The two levers that can move it are (1) **A-MPDU**
 this handover was cut. Nothing about #1 is committed; the tree and both
 devices are in their shipped state.
 
-## What shipped this session (all on `venc-foldin`, local — see "Push")
+## What shipped this session (on `venc-foldin` at the time; on master since 2026-09-02)
 
 | commit | what |
 |---|---|
@@ -29,9 +31,8 @@ devices are in their shipped state.
 | `0202bc9` | dq-spike §9: **rate sweep** (max_mcs 1/3/5) → pace = 11105 bits/rate + **150.6 µs fixed**; ~⅔ DIFS+backoff, ~¼ preamble, chip ≲15 µs. |
 | `a9968eb` | dq-spike §10: **EDCA A/B abandoned** — injection is on the MGMT queue, which can't aggregate and is already near-min-CW; starvation ruled out (streaming vs batch-all drain at identical slope). |
 
-PR #37 (`dq-scope`) is open on GitHub for the streaming-push work; it is
-already merged into local `venc-foldin` and will auto-close when the
-branch is pushed.
+PR #37 (`dq-scope`) covered the streaming-push work; it merged into
+`venc-foldin` and closed on push, and reached master with PR #34.
 
 ## The load-bearing facts for whoever picks this up
 
@@ -156,6 +157,6 @@ tail. This is specifically the frame-delivery segment.
 
 ## Push
 
-`venc-foldin` is ahead of `origin/venc-foldin` by all the commits above.
-`git push origin venc-foldin` closes PR #37 automatically and lands the
-findings docs. Nothing here is blocked on review.
+Done. `venc-foldin` was pushed and PR #37 closed; on 2026-09-02 master
+fast-forwarded to `venc-foldin` (PR #34) and the branch was deleted, so
+everything above lives on master. New work branches from master.
