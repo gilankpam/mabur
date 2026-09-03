@@ -367,8 +367,47 @@ What this says:
 
 What remains worth doing (ranked):
 
-- **Nothing on the encoder's rate control.** No live knob bounds a P
-  frame's size on this SoC. Scene-detector-triggered IDRs
+- **CORRECTION (same night, after checking `libmi_venc.so` exports, the
+  folded-in waybeam and upstream master): there IS a live P-frame size
+  cap on this SoC, and it was already measured.**
+  `MI_VENC_SetSuperFrameCfg` mode REENCODE with `u32SuperPFrmBitsThr`
+  (bits) bounds every P frame from the NEXT frame, keyframe-free, with the
+  I threshold left at `0xFFFFFFFF`. Measured 2026-08-27 on the local
+  waybeam stack (`../mabur-fork/mabur-stack-20260828/`, waybeam 0.69.2
+  `video0.superframePBytes`, mabur `docs/plan-frame-size-caps.md` S1;
+  uncommitted, never upstreamed, and mabur's fold-in is f956a52 of
+  2026-08-23 so it never arrived here — memory `venc-attr-change-idr`
+  recorded the fact and this handover missed it): rung 2, 720p120,
+  10.8 Mb/s, P threshold 6000 B → P frames 11.1 kB → **3.2 kB**, 122 fps
+  encoded / 119 decoded, 0 drops, glass 28 → 12.5 ms, qpDelta and min/max
+  QP unchanged by the call. Two hard caveats from the same probe: (a) an
+  **I threshold below the IDR size stalls the channel** (SDK aborts and
+  regenerates the GOP with the same oversize IDR, forever) — I must stay
+  unlimited; (b) the RC **re-plans well under** the P threshold (3.2 kB
+  under a 6 kB cap), so the cap is a quality lever too and must follow the
+  rung's per-frame budget (pct × kbps×1024/(fps×8)), applied with each
+  bitrate write. waybeam PR #113 also saw `SetSuperFrameCfg` reset qpDelta
+  to 0 / maxQp to 48 on its path; the S1 probe did not, but re-stage the
+  RC intent after the call regardless (see the #255 note below).
+  **This is the experiment to run next with tonight's rig**: port
+  `superframe_p_pct` into `drone/venc/star6e_controls.c`, sweep {off,
+  300, 200, 150} % of the per-frame budget, read peak/excess with
+  `vencburst_analyze.py` and quality by eye on the GS.
+- **Also from upstream waybeam (bf8c3cb, issue #255): `MI_VENC_GetRcParam`
+  returns stale driver defaults for ~0–5 s after `StartRecvPic`**, so a
+  Get→modify→Set in that window writes the stale block back. mabur's
+  `star6e_runtime_apply_startup_controls` does `qp_delta` then
+  `max_ipprop` (then `min_qp`) back-to-back right after start — exactly the
+  shape that reverted qpDelta to 0 on every star6e craft upstream. Our
+  `qp_delta` +4 may never have reached the encoder. Port the `g_rc_intent`
+  staging (every RC write writes the whole intent) and add a readback.
+- **Dead ends confirmed by upstream** (6106f24, HISTORY 4337): the
+  `MaxISize/MaxPSize` caps never bind on star6e (deleted upstream);
+  `MI_VENC_SetFrameLostStrategy` makes the firmware answer every skipped
+  frame with a keyframe (deleted upstream). `SetAdvCustRcAttr` and the
+  custom QP map are exported but no header on this machine defines their
+  layouts. `u32RowQpDelta` remains untested.
+- Scene-detector-triggered IDRs
   (`drone/venc/scene_detector.c`, ported but NOT wired) would fire one
   frame *after* the big frame and add an IDR on top — do not wire it for
   this.
