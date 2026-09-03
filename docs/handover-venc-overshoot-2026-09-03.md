@@ -558,3 +558,54 @@ Gate (b) passes. What remains before a flight config is a flight.
 GS restored to the wrapper-run non-loss-sim `maburgs` afterwards; the
 loss-sim binary stays at `/tmp/maburgs.losssim.new` (tmpfs) and
 `out/arm64/maburgs.losssim` on the dev host.
+
+## Follow-ups (as of 2026-09-03 night, branch `venc-overshoot-observability`, 16 commits, unmerged)
+
+Both devices run this branch: drone `maburd` 03aedd47… with the cap at 0,
+GS `maburgs` d2662ca4… on the adaptive ladder. Rollbacks
+`maburd.pre-superframe` (drone) and `maburgs.pre-vencobs` (GS).
+
+1. **Fly `venc.superframe_p_pct: 200`.** All bench gates passed (rung 5,
+   rungs 1–2, promote/demote under loss-sim). Add the key to
+   `/etc/mabur.json` — config only, no rebuild, the running binary reads
+   it at boot; restart maburd. Read the flight with `flightreport`,
+   `drone.congestion_shed`, `txq.drops`, `enc_pk100` in `/tmp/mabur.log`,
+   and the e2e segments against flight-0011. Do not change the key
+   mid-flight (loosening releases a catch-up second, item 4 of the sweep).
+2. **Strip the dead encoder-QP plumbing.** `Telem.qp` (wire 84→83),
+   sideport `drone.enc.qp`, maburtop's `qp NN`, `GET /venc` `"qp"`,
+   vencprobe's 3rd poll column (analyzer already tolerates its absence),
+   `VencStats.last_qp`, `Star6eVideoState.last_qp`, and the once-a-minute
+   `venc_strminfo:` dump in `star6e_video.c`. Keep `roi_qp` and
+   `congestion_shed`. This is a Telem flag day again (both binaries).
+3. **Port upstream waybeam #255** (`bf8c3cb`, `g_rc_intent` staging):
+   `MI_VENC_GetRcParam` is stale for ~5 s after `StartRecvPic`, and our
+   startup writes `qp_delta` → `max_ipprop` → `min_qp` back-to-back in that
+   window, so `qp_delta` +4 may be reverting to 0 at boot. Every RC write
+   should stage the whole intent; add a readback line at t+10 s so the
+   log proves what the encoder holds. `restage_qp_delta()` (added with the
+   SuperFrame port) is the natural seed for the intent struct.
+4. **Decide `venc.min_qp`.** Built, never run, and upstream's
+   characterisation says it is a bit ceiling that collapses the rate past
+   the scene's natural QP. Recommend deleting the key and verb rather than
+   shipping a knob whose only measured effect is harm.
+5. **Quiet the `> superframe P cap:` log line.** It prints on every
+   `apply_bitrate`, i.e. every RcAgent re-assert (5 s) once the knob is
+   non-zero. Print on change only, like `max_ipprop`.
+6. **Merge.** Nothing on master since 287bf2d; the branch fast-forwards.
+   Master will then describe what is deployed. Re-run
+   `ctest -R 'test_|host_e2e'` (105/105 tonight) and both cross-builds
+   first; items 2–3 change the wire and belong before the merge if they
+   are done the same day, after it otherwise.
+7. **Bench rig notes worth keeping**: `vencprobe --cycles 0 --duration MS`
+   is the passive capture; `vencburst_analyze.py` for lens cycles,
+   `--transitions` for rung moves; loss-sim = `out/arm64/maburgs.losssim`
+   (`build-losssim-arm64`, `-DMABUR_LOSS_SIM=ON`), run by hand with
+   `--loss-sim 8303` (8302 is a sideport consumer), `losssim.py --port
+   8303 s0 eff=4 burst=3` demotes 5→2 in 25 s; GS `link.static_mcs` pins
+   a rung (maburgs restart per change, restore −1 afterwards).
+8. **Open questions left from the original list**: `statTime` < 1 and
+   `avgLvl` 0/2 (create-time, need a config key each to sweep);
+   `u32RowQpDelta` never read or set; the flight's 4.9 Mb/s quiet seconds
+   were flatter than anything the bench produced — what was the camera
+   looking at at 87 s.
