@@ -1466,6 +1466,8 @@ int run_real_mode(const Config& cfg) {
         RadioHealth health;
         health.thermal_delta = thermal.valid ? thermal.delta : 0;
         health.tx_drops = txstats.failed;
+        health.txq_depth = txq.depth();
+        health.txq_cap = kTxQueueCap;
         agent.tick(now, health);
         if (agent.take_link_established())
           link_up_discont.store(true, std::memory_order_relaxed);

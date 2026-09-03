@@ -570,6 +570,51 @@ TEST(congestion_shed_escalates_and_recovers) {
   CHECK(agent.current().shed[1] == false);
 }
 
+// 9a. TxQueue backpressure is congestion too. The guard's only trigger was
+// TxStats::failed (USB bulk-OUT failures), so when the encoder overshot
+// the pipe the queue ran to its cap and drop-oldest threw bodies away with
+// shed_level_ still 0 -- and those drops are indistinguishable from RF
+// loss at the GS, which booked them as residual and demoted 5->4->3->2 in
+// 450 ms at 36 dB SNR (flight-0011 @88 s / @102 s, 2026-09-03). A queue at
+// or past half its cap must shed the enh layer BEFORE the first drop (a
+// shed is invisible to the ladder: no s3 traffic, no s3 decision); below
+// that it must not. Same 2 s clean decay as the USB trigger. REVERT CHECK:
+// ignore txq_depth/txq_cap in run_congestion_guard and the t=100 tick
+// leaves shed[1] false.
+TEST(txq_pressure_sheds_enh_before_drops) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  agent.on_rc_frame(wire.data(), wire.size(), 0);
+  CHECK(agent.current().shed[1] == false);
+
+  RadioHealth h;
+  h.txq_cap = 255;
+  h.txq_depth = 64;  // a quarter full: normal burst headroom, no shed
+  agent.tick(100, h);
+  CHECK(agent.current().shed[1] == false);
+
+  h.txq_depth = 128;  // half the cap: pressure, shed enh (no USB failure, no drop yet)
+  agent.tick(200, h);
+  CHECK(agent.current().shed[1] == true);
+  CHECK(agent.current().ladder[0].mcs == 5);  // op otherwise untouched
+
+  // Keep LINKED alive (failsafe_ms = 1000) while the queue drains.
+  auto wire2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  agent.on_rc_frame(wire2.data(), wire2.size(), 900);
+  auto wire3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  agent.on_rc_frame(wire3.data(), wire3.size(), 1800);
+
+  h.txq_depth = 0;
+  agent.tick(2300, h);  // 2000 ms since the last pressure tick: level 1 -> 0
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.current().shed[1] == false);
+}
+
 // 9b. FAILSAFE entry forces shed[1]; a subsequent congestion-guard reapply
 // (which recomputes shed[1] from shed_level_ alone) must not clobber the
 // failsafe-forced shed — it has to OR failsafe_shed_ in. Also covers:

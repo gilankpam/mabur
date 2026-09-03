@@ -116,6 +116,32 @@ reaches the drone up to one AU period later (`link.attrib.close_ms`
 5 → 22 ms). Player `fec` p99 ≥ 20 ms windows: 31/90 → 7/100.
 Sideport counters: `link.rcf_slot.{au,timeout,passthru}`.
 
+## Drone congestion shed (2026-09-03)
+
+The GS ladder never consumes drone telemetry (`T_TELEM` is display-only,
+`gs/src/main.cpp`); every demote input is measured on the GS from the
+video it receives. So a body the drone's TxQueue throws away before it is
+ever sent looks exactly like an RF loss — expected symbol, never arrived,
+abandoned at the horizon — and the ladder demotes for it. flight-0011
+showed the loop: an encoder scene burst over its command (17–22 Mb/s vs
+16) filled the queue to its cap at 36 dB SNR, drop-oldest booked ~330
+drops, the GS scored them as residual and stepped 5→4→3→2 in 450 ms
+with an IDR on every step into a queue that was already full. All 722
+TxQueue drops of that flight sat in three such events.
+
+The fix is drone-side and instant: `RcAgent::run_congestion_guard` now
+sheds the enh layer when the TxQueue is at or past **half its cap**
+(level-triggered, sampled on the 100 ms tick, via `RadioHealth::
+txq_depth`/`txq_cap`), in addition to its original USB-failure trigger.
+A shed is applied at the UEP encoder before anything is queued — no
+frame id, no expected symbol — so the GS sees enh silence, which
+`s3_usable()` treats as "no information", not loss. Recovery is the
+existing 2 s-clean step-down per level. `txq.drops` stays a telemetry
+counter: by the time it moves the damage is done, and at 1 Hz it would
+reach the GS after the cascade anyway. The remaining half of the problem
+— why the encoder overshoots its command by up to 40 % — is a venc
+rate-control question, not a ladder one.
+
 ## Tuning invariant
 
 Tuning invariant: the controller's s3 loss/residual

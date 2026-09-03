@@ -83,11 +83,15 @@ class Actuator {
 };
 
 // Radio-side health signals sampled once per tick. thermal_delta is
-// telemetry-only (nothing acts on it); tx_drops feeds the congestion-shed
-// policy.
+// telemetry-only (nothing acts on it); tx_drops and txq_depth/txq_cap feed
+// the congestion-shed policy (run_congestion_guard).
 struct RadioHealth {
   int thermal_delta = 0;
-  uint64_t tx_drops = 0;
+  uint64_t tx_drops = 0;  // TxStats::failed: USB bulk-OUT failures
+  // TxQueue occupancy at the tick (main.cpp). 0/0 when unknown (tests,
+  // pre-radio ticks) -- never reads as pressure.
+  size_t txq_depth = 0;
+  size_t txq_cap = 0;
 };
 
 // Control-plane state machine: BOOT -> RENDEZVOUS -> LINKED <-> FAILSAFE.
