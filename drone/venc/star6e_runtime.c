@@ -171,6 +171,14 @@ static int star6e_runtime_apply_startup_controls(Star6eRunnerContext *ctx)
 				(unsigned)cfg->max_ipprop);
 	}
 
+	/* 0 = leave the firmware u32MinQp; same non-fatal contract. */
+	if (cfg->min_qp > 0) {
+		if (star6e_controls_set_min_qp(cfg->min_qp) != 0)
+			fprintf(stderr,
+				"WARN: min_qp %u not applied\n",
+				(unsigned)cfg->min_qp);
+	}
+
 	return 0;
 }
 

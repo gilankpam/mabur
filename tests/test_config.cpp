@@ -102,6 +102,7 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.venc.core.gop_s == 2.0);
   CHECK(cfg.venc.core.qp_delta == -4);
   CHECK(cfg.venc.core.max_ipprop == 0);
+  CHECK(cfg.venc.core.min_qp == 0);
   CHECK(std::string(cfg.venc.core.resilience) == "rally");
   CHECK(cfg.venc.core.roi_enabled == true);
   CHECK(cfg.venc.core.roi_steps == 2);
@@ -304,6 +305,7 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.gop_s == 2.0);
   CHECK(c.venc.core.qp_delta == -4);
   CHECK(c.venc.core.max_ipprop == 0);
+  CHECK(c.venc.core.min_qp == 0);
   CHECK(std::string(c.venc.core.resilience) == "rally");
   CHECK(c.venc.core.roi_enabled == true);
   CHECK(c.venc.core.roi_steps == 2);
@@ -326,6 +328,19 @@ TEST(venc_max_ipprop_parses) {
       R"("max_ipprop":2}})");
   Config c = load_config(path.string());
   CHECK(c.venc.core.max_ipprop == 2);
+  std::filesystem::remove(path);
+}
+
+// min_qp is optional: absent -> 0 (leave the firmware's u32MinQp alone —
+// the shipped behaviour), 1..51 programs the CBR QP floor at boot. The
+// venc-overshoot bench sweeps it (docs/handover-venc-overshoot-2026-09-03.md);
+// it is NOT a default change.
+TEST(venc_min_qp_parses) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("min_qp":24}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.min_qp == 24);
   std::filesystem::remove(path);
 }
 
@@ -366,6 +381,8 @@ TEST(venc_range_checks) {
            Case{R"({"venc":{"qp_delta":13}})", "venc.qp_delta"},
            Case{R"({"venc":{"max_ipprop":-1}})", "venc.max_ipprop"},
            Case{R"({"venc":{"max_ipprop":101}})", "venc.max_ipprop"},
+           Case{R"({"venc":{"min_qp":-1}})", "venc.min_qp"},
+           Case{R"({"venc":{"min_qp":52}})", "venc.min_qp"},
            Case{R"({"venc":{"snapshot_quality":0}})", "venc.snapshot_quality"},
            Case{R"({"venc":{"snapshot_quality":101}})", "venc.snapshot_quality"},
            Case{R"({"venc":{"debug_port":1023}})", "venc.debug_port"},

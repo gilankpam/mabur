@@ -18,6 +18,15 @@ typedef struct {
                               * floor ~1.4 at small values (I-QP rails);
                               * useful range 2..4 under rally where IDRs
                               * are already ~1.7x P. */
+  uint8_t min_qp;            /* venc.min_qp: 0 (default) = leave the firmware
+                              * u32MinQp alone; 1..51 = program the H265 CBR
+                              * QP floor at boot. Bench knob for the
+                              * quiet-scene-floor hypothesis in
+                              * docs/handover-venc-overshoot-2026-09-03.md:
+                              * a static scene rails at u32MinQp far under
+                              * the command, and the first frames of motion
+                              * are then sized by content, not budget. Not
+                              * a shipped default until the sweep says so. */
   char resilience[16];       /* venc.resilience ("rally", ...) — preset table */
   bool roi_enabled;          /* venc.roi.enabled */
   uint8_t roi_steps;         /* venc.roi.steps */

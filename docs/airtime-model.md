@@ -192,6 +192,17 @@ their variance into jitter. Knobs, in order of proven usefulness:
   natural ratio is under the cap.
 - **`venc.qp_delta`** (s32IPQPDelta) is a weak bias: ~2% IDR size per
   QP step (±12 range ≈ ±25% total). Average-shifter, not a bound.
+- **`venc.min_qp`** (config, 0=firmware default; also volatile via
+  `:8301 /venc/set?min_qp=N`, 1..51) programs `u32MinQp`, the CBR QP
+  floor. Added 2026-09-03 as the bench knob for the quiet-scene
+  hypothesis in `docs/handover-venc-overshoot-2026-09-03.md`: a static
+  scene rails at the floor far under the command, and the first frames of
+  motion are then sized by content until the 1 s stat window catches up
+  (17–22 Mb/s against 16 in flight-0011). Raising the floor bounds that
+  deficit at the cost of quiet-scene quality. **Unmeasured** — the boot
+  log prints the firmware's MinQp/MaxQp/MinIQp/MaxIQp the first time it
+  is applied; the sweep (firmware, 20, 24, 28) has not run. Not a
+  shipped default.
 - **`u32MaxISize` / `u32MaxPSize` are DEAD on star6e** — SetRcParam
   accepts them, `SetRcPriority(FRAMEBITS_FIRST)` succeeds, output is
   bit-identical even at absurd caps (verified at 13× overshoot). The

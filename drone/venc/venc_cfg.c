@@ -43,6 +43,7 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->gop_s = 2.0;
 	cfg->qp_delta = -4;
 	cfg->max_ipprop = 0; /* leave the firmware default (unbounded) */
+	cfg->min_qp = 0;     /* leave the firmware u32MinQp */
 	preset_strcpy(cfg->resilience, sizeof(cfg->resilience), "rally");
 	cfg->roi_enabled = true;
 	cfg->roi_steps = 2;

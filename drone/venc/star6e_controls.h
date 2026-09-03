@@ -34,6 +34,14 @@ int star6e_controls_apply_qp_delta(int delta);
  *  so every other live RcParam field is preserved. */
 int star6e_controls_set_max_ipprop(uint32_t prop);
 
+/** Set u32MinQp (the H265 CBR QP floor) on the live RC params, boot
+ *  startup control and debug endpoint.  Prints the CURRENT MinQp/MaxQp/
+ *  MinIQp/MaxIQp before overwriting — on the first call the firmware
+ *  defaults, which nothing else in mabur ever reads back.  Rejects qp
+ *  outside [1,51].  Same Get->modify->Set as max_ipprop so every other
+ *  live field is preserved.  Does not request an IDR. */
+int star6e_controls_set_min_qp(uint32_t qp);
+
 /** Explicit IDR request.  Goes through the shared per-channel 100 ms
  *  rate limiter (idr_rate_limit.h); a coalesced request returns 0, not an
  *  error.  This is the only place in venc_core that calls

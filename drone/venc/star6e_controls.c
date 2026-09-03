@@ -302,3 +302,49 @@ int star6e_controls_set_max_ipprop(uint32_t prop)
 {
 	return apply_max_ipprop(prop);
 }
+
+/* Set u32MinQp on the CBR RC params.  The venc-overshoot hypothesis
+ * (docs/handover-venc-overshoot-2026-09-03.md): on a quiet scene the rate
+ * controller rails at the firmware's QP floor far under its command, and
+ * when motion arrives the first frames are sized by content with no
+ * budget pressure until the 1 s stat window catches up.  Raising the
+ * floor bounds how far under the command a quiet scene can sit, i.e. the
+ * deficit the RC has to climb out of.  Prints the current values first so
+ * the log records what the firmware ships with.  No IDR: a QP floor is a
+ * constraint on the next frames, not a stream discontinuity. */
+static int apply_min_qp(uint32_t qp)
+{
+	MI_VENC_ChnAttr_t attr = {0};
+	MI_VENC_RcParam_t param = {0};
+
+	if (qp < 1 || qp > 51)
+		return -1;
+
+	if (MI_VENC_GetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0)
+		return -1;
+	if (attr.rate.mode != I6_VENC_RATEMODE_H265CBR)
+		return -1;
+	if (MI_VENC_GetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
+		return -1;
+	printf("> min_qp: current MinQp=%u MaxQp=%u MinIQp=%u MaxIQp=%u "
+		"(firmware default or last-set)\n",
+		(unsigned)param.stParamH265Cbr.u32MinQp,
+		(unsigned)param.stParamH265Cbr.u32MaxQp,
+		(unsigned)param.stParamH265Cbr.u32MinIQp,
+		(unsigned)param.stParamH265Cbr.u32MaxIQp);
+	fflush(stdout);
+	if (param.stParamH265Cbr.u32MaxQp != 0 &&
+	    qp > param.stParamH265Cbr.u32MaxQp)
+		return -1;  /* floor above the live ceiling — refuse, don't wedge RC */
+	param.stParamH265Cbr.u32MinQp = qp;
+	if (MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
+		return -1;
+	printf("> min_qp: applied = %u\n", (unsigned)qp);
+	fflush(stdout);
+	return 0;
+}
+
+int star6e_controls_set_min_qp(uint32_t qp)
+{
+	return apply_min_qp(qp);
+}
