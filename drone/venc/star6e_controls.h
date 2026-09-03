@@ -37,9 +37,11 @@ int star6e_controls_set_max_ipprop(uint32_t prop);
 
 /** Log what the encoder's RC params actually hold (IPQPDelta, MaxIPProp,
  *  the QP bounds) against the staged intent, tagged with `when`
- *  (e.g. "t+10s").  Read-only; called once from the encoder loop after
- *  the #255 stale-Get window has closed so /tmp/mabur.log proves the
- *  boot-time qp_delta / max_ipprop reached the encoder. */
+ *  (e.g. "t+10s").  Read-only.  apply_bitrate calls it once, on the
+ *  agent thread, the first time it runs >= 10 s after bind (past the
+ *  #255 stale-Get window) so /tmp/mabur.log proves the boot-time
+ *  qp_delta / max_ipprop reached the encoder.  MUST stay on the agent
+ *  thread: from the encoder loop it segfaulted (2026-09-03). */
 void star6e_controls_log_rc_readback(const char *when);
 
 /** SuperFrame P-frame ceiling as a percentage of the per-frame budget

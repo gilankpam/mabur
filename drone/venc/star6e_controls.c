@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct {
 	MI_VENC_CHN venc_chn;
@@ -40,6 +41,19 @@ static int g_superframe_applied;
 static uint32_t g_superframe_logged_bytes;
 static int g_superframe_logged;
 static int apply_superframe_p(uint32_t kbps);
+
+/* One-shot readback of what the encoder holds, taken from apply_bitrate
+ * (RcAgent's thread, under venc_core's verb lock -- the ONLY thread that
+ * talks to MI_VENC_*RcParam) once >= RC_READBACK_AFTER_S have passed since
+ * bind, i.e. past the #255 stale window.  It was first hooked into the
+ * encoder loop at t+10 s and segfaulted there on the 2026-09-03 deploy the
+ * instant the line had printed (SCHED_FIFO/CPU0 thread, concurrent with
+ * the agent's Get/Set on the same channel); the same Get from the agent
+ * thread had already succeeded three times in that boot.  Keep every RC
+ * call on one thread. */
+#define RC_READBACK_AFTER_S 10.0
+static struct timespec g_rc_bind_ts;
+static int g_rc_readback_done;
 
 static uint32_t align_down(uint32_t value, uint32_t align)
 {
@@ -114,6 +128,16 @@ static int apply_bitrate(uint32_t kbps)
 	g_superframe_last_kbps = kbps;
 	if (g_superframe_p_pct || g_superframe_applied)
 		(void)apply_superframe_p(kbps);
+	if (!g_rc_readback_done) {
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		if ((double)(now.tv_sec - g_rc_bind_ts.tv_sec) +
+		    (double)(now.tv_nsec - g_rc_bind_ts.tv_nsec) / 1e9 >=
+		    RC_READBACK_AFTER_S) {
+			g_rc_readback_done = 1;
+			star6e_controls_log_rc_readback("t+10s");
+		}
+	}
 	return 0;
 }
 
@@ -404,6 +428,8 @@ void star6e_controls_bind(Star6ePipelineState *pipeline, const VencCfg *cfg)
 	g_superframe_logged_bytes = 0;
 	memset(&g_rc_intent, 0, sizeof(g_rc_intent));
 	memset(&g_rc_defaults, 0, sizeof(g_rc_defaults));
+	clock_gettime(CLOCK_MONOTONIC, &g_rc_bind_ts);
+	g_rc_readback_done = 0;
 }
 
 void star6e_controls_reset(void)
@@ -416,6 +442,7 @@ void star6e_controls_reset(void)
 	g_superframe_logged_bytes = 0;
 	memset(&g_rc_intent, 0, sizeof(g_rc_intent));
 	memset(&g_rc_defaults, 0, sizeof(g_rc_defaults));
+	g_rc_readback_done = 0;
 }
 
 int star6e_controls_set_superframe_p_pct(uint32_t pct)
