@@ -5,6 +5,17 @@ Companion to the two drone-side fixes on branch `probe-hold-bitrate`
 (4d16e10 probe bitrate hold, fe1643b TxQueue-pressure shed). Those
 contain the *damage*; this document is about the *cause* they contain.
 
+> **Progress 2026-09-03 (evening), branch `venc-overshoot-observability`
+> — instrumentation built, bench NOT run (both devices were off the
+> network).** Everything in "Observability follow-ups" except the config
+> backup is done, plus the bench prerequisites; see "Bench plan" for the
+> exact procedure with the new tools. Nothing below the TL;DR was
+> re-decided: the `×1024` stays as-is (it is a sweep arm, not a fix), no
+> default changed, `venc.min_qp` ships at 0 = firmware. Not deployed to
+> either device — and remember `probe-hold-bitrate` (287bf2d) is not on
+> the drone yet either, so the next drone deploy is a two-feature flag
+> day on Telem (83→84 bytes, GS must move too).
+
 ## TL;DR
 
 In flight-0011 the SigmaStar H.265 CBR encoder ran up to **41 % above
@@ -172,6 +183,41 @@ it immediately.
 Everything below runs against a live `maburd` without a GS in the
 loop, using the existing rigs.
 
+**Tooling as of 2026-09-03 evening (all host-tested, none hardware-run):**
+
+- `vencprobe --cycles 0 --duration 120000 > /tmp/vb.csv` — passive mode,
+  never POSTs; logs every frame plus a 25 ms `s,mono_us,req_kbps,qp` poll,
+  where `qp` is the encoder's own QP (`GET /venc` gained `"qp"`, from
+  `MI_VENC_Stream_t.h265Info.startQual`). Build:
+  `arm-openipc-linux-gnueabihf-gcc -O2 -Idrone/vendor -o out/arm/vencprobe tools/bench/vencprobe.c`.
+- `tools/bench/vencburst_analyze.py vb.csv` — finds the quiet→motion
+  cycles and prints per cycle: quiet rate (+qp), peak 100 ms rate as a
+  multiple of the *programmed* rate (kbps×1024, so exact CBR = 1.00×),
+  settle time back inside +10 %, integrated excess KB, IDRs in the ramp,
+  and the acceptance verdict (peak ≤ 1.2×, excess ≤ 64 KB). With ≥ 4
+  cycles it also splits by pre-burst deficit — prediction 1 of the
+  hypothesis. Synthetic-capture tests in `tests/test_vencburst.py`.
+- `venc.min_qp` (config, 0 = firmware) and `POST /venc/set?min_qp=N`
+  program `u32MinQp`; the first apply prints the firmware's
+  MinQp/MaxQp/MinIQp/MaxIQp to `/tmp/mabur.log` — **read that line first,
+  it answers "where does the firmware floor sit" before any sweep.**
+- Drone `stats:` line carries `enc_pk100=<kbit/s>k`, the busiest 100 ms
+  window of the stats second — the same quantity the analyzer computes,
+  without a capture, and the one to eyeball while covering the lens.
+- Telem: `drone.enc.qp` is now the encoder QP (was the ROI override —
+  the whole "qp read 0" observation above was that), `drone.enc.roi_qp`
+  the override, `drone.congestion_shed` the fe1643b shed. maburtop shows
+  `qp NN roi -NN` and `shed FS|CONG|off`.
+
+**Procedure:** deploy config-then-binary to the drone (and `maburgs` to
+the GS — Telem flag day). Park the link at rung 5 or pin
+`POST /venc/set?bitrate=16000` (re-POST inside the 5 s re-assert).
+Start `vencprobe --cycles 0 --duration 180000`, then ≥ 10 cover/uncover
+cycles with ≥ 5 s covered each. Run the analyzer. Then repeat with
+`min_qp` 20 / 24 / 28 via the debug endpoint (volatile, no restart), then
+`max_ipprop=2`, one variable at a time. Log `enc_pk100` and `txq=` from
+the stats line alongside; `shed CONG` in maburtop counts the sheds.
+
 **Rig.** `tools/bench/vencprobe` (passive mode: it mmaps the venc frame
 ring read-only and logs every frame's `mono_us pts len flags nal0` —
 see its header). Run it while the command is *held* (RcAgent
@@ -204,19 +250,19 @@ variance too.
 
 ## Observability follow-ups (cheap, do these first)
 
-- **Rename or replace `drone.enc.qp`.** It is the ROI QP. Either rename
-  to `roi_qp` in Telem + sideport + maburtop + flightreport in one
-  commit (schema is not additive-only, CLAUDE.md), or populate it from
-  the encoder's actual QP if `MI_VENC_GetChnStat`/`GetRcParam` exposes
-  one. Right now the field invites exactly the wrong conclusion.
-- **Telem bit for the congestion shed** (fe1643b). Only
-  `failsafe_shed` is visible today; a bench cannot count sheds without
-  it, and `flightreport` cannot attribute enh gaps to congestion vs RF.
-- **100 ms encoder rate in the `stats:` line** (drone side, stderr,
-  free): peak-of-window `enc_bytes` delta. The 1 Hz Telem average will
-  never show the burst; this would.
-- **Deployed drone config into the repo's `out/`** with today's date —
-  the 2026-08-29 backup no longer matches what flew.
+- ✅ **`drone.enc.qp` replaced** (2026-09-03 evening): now the encoder's
+  QP from `h265Info.startQual` (no `GetChnStat` QP exists on this SDK;
+  the stream info is the only readback), `roi_qp` split out. The ring
+  meta was deliberately NOT grown for a per-frame QP — it is the FrameHdr
+  wire format (`kFrameHdrLen == VENC_FRAME_META_SIZE`), so per-frame-ish
+  QP goes through the 25 ms `GET /venc` poll instead.
+- ✅ **Telem bit4 `congestion_shed`** — sideport `drone.congestion_shed`,
+  maburtop `shed CONG`. flightreport does not yet *use* it for
+  attribution; the data is recorded (flightrec is always-on).
+- ✅ **`enc_pk100=` on the `stats:` line** (`drone/src/peak_rate.h`).
+- ⬜ **Deployed drone config into `out/`** — blocked, drone offline. Do
+  it before the next deploy: `scp root@192.168.10.152:/etc/mabur.json
+  out/drone-mabur-config-<date>.json`.
 
 ## Open questions
 

@@ -22,6 +22,12 @@
  * Run on the drone (stdout is CSV; see tools/bench/vencprobe_analyze.py):
  *   vencprobe --low 3000 --high 10000 --dwell 2500 --cycles 6 > /tmp/vp.csv
  *
+ * PASSIVE mode (2026-09-03, venc-overshoot bench): --cycles 0 --duration MS
+ * never POSTs; it only logs frames and the 25 ms /venc polls (req bitrate +
+ * encoder qp) for MS milliseconds. Stimulus is external (cover/uncover the
+ * lens, pan) and tools/bench/vencburst_analyze.py finds the cycles:
+ *   vencprobe --cycles 0 --duration 120000 > /tmp/vb.csv
+ *
  * NOTE RcAgent re-asserts its own computed bitrate every 5 s
  * (kReassertMs, rc_agent.h), so an override here is bounded and self-heals
  * — that is also why dwell should stay under 5 s and why cycles are
@@ -150,7 +156,7 @@ int main(int argc, char **argv)
 {
 	const char *shm = "mabur_f";
 	int port = 8301, low = 3000, high = 10000, dwell_ms = 2500, cycles = 6;
-	int settle_ms = 1500;
+	int settle_ms = 1500, duration_ms = 0;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--shm") && i + 1 < argc) shm = argv[++i];
@@ -160,11 +166,18 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--dwell") && i + 1 < argc) dwell_ms = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--cycles") && i + 1 < argc) cycles = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--settle") && i + 1 < argc) settle_ms = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--duration") && i + 1 < argc) duration_ms = atoi(argv[++i]);
 		else {
 			fprintf(stderr, "usage: %s [--shm N] [--port P] [--low K] "
-				"[--high K] [--dwell MS] [--cycles N] [--settle MS]\n", argv[0]);
+				"[--high K] [--dwell MS] [--cycles N] [--settle MS]\n"
+				"       %s --cycles 0 --duration MS   (passive: no commands)\n",
+				argv[0], argv[0]);
 			return 2;
 		}
+	}
+	if (cycles <= 0 && duration_ms <= 0) {
+		fprintf(stderr, "--cycles 0 needs --duration MS\n");
+		return 2;
 	}
 
 	char path[300];
@@ -194,8 +207,8 @@ int main(int argc, char **argv)
 	const uint32_t count = hdr->slot_count;
 
 	printf("# vencprobe shm=%s slots=%u slot_data=%u low=%d high=%d "
-	       "dwell_ms=%d cycles=%d\n", shm, count, hdr->slot_data_size,
-	       low, high, dwell_ms, cycles);
+	       "dwell_ms=%d cycles=%d duration_ms=%d\n", shm, count,
+	       hdr->slot_data_size, low, high, dwell_ms, cycles, duration_ms);
 	printf("# f,mono_us,write_idx,len,pts_us,flags,enc_us\n");
 	printf("# c,mono_us_before,mono_us_after,kbps,ok\n");
 	printf("# s,mono_us,req_bitrate_kbps,qp  (25 ms poll; a change we did not command is RcAgent; qp = encoder startQual of the last frame, -1 if the daemon predates it)\n");
@@ -203,7 +216,10 @@ int main(int argc, char **argv)
 
 	uint64_t last_w = __atomic_load_n(&hdr->write_idx, __ATOMIC_ACQUIRE);
 	uint64_t t0 = mono_us();
-	uint64_t next_step_us = t0 + (uint64_t)settle_ms * 1000ull;
+	/* Passive: one deadline, no steps. Active: first step after settle. */
+	uint64_t next_step_us = cycles > 0
+		? t0 + (uint64_t)settle_ms * 1000ull
+		: t0 + (uint64_t)duration_ms * 1000ull;
 	uint64_t next_poll_us = t0;
 	int steps_left = cycles * 2;
 	int want_low = 1;
