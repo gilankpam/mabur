@@ -117,6 +117,16 @@ class NoBurst(unittest.TestCase):
         csv = synth([(8.0, 16.384)], qp_of)
         frames, polls, _ = vb.load(io.StringIO(csv))
         self.assertEqual(vb.find_cycles(frames, polls, vb.Params()), [])
+        # Calibration line: an exact-CBR stream reads 1.00x of programmed
+        # (kbps x 1024), at every percentile, and the qp trace is flat.
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            s = vb.capture_summary(frames, polls, vb.Params())
+        self.assertAlmostEqual(s['mean_kbps'] / s['prog'], 1.0, delta=0.01)
+        self.assertAlmostEqual(s['max'] / s['prog'], 1.0, delta=0.01)
+        self.assertAlmostEqual(s['fps'], 60.0, delta=0.5)
+        self.assertEqual((s['qp_min'], s['qp_max']), (28, 28))
+        self.assertIn("1.00x", buf.getvalue())
 
 
 class TwoCycles(unittest.TestCase):

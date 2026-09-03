@@ -105,12 +105,17 @@ knob value below):
   the RC is allowed to spend the whole window's budget in its first
   200 ms.
 - `gop` = `venc.gop_s` 2.0 × fps under the `rally` preset (refPred, 150
-  ms stripes; IDRs ~1.7× a P frame). `qp_delta` −4 (`s32IPQPDelta`).
-- `venc.max_ipprop`: **not set** in the 2026-08-29 backup, i.e. firmware
-  default (`apply_max_ipprop` prints the current value at boot — check
-  `/tmp/mabur.log` on the drone). `docs/airtime-model.md` §3 says "prod
-  runs 2"; one of the two is stale. It only bounds the I:P *ratio*
-  anyway, so it is inert on the P-frame ramp seen here.
+  ms stripes; IDRs ~1.7× a P frame). `qp_delta` (`s32IPQPDelta`): the
+  2026-08-29 backup says −4, **the deployed config says +4** (read off the
+  drone 2026-09-03 evening, `out/drone-mabur-config-2026-09-03.json`;
+  boot log `> qpDelta changed to 4`). Positive = I frames coarser than P.
+- `venc.max_ipprop`: **2 in the deployed config** (same read; boot log
+  `> max_ipprop: current (firmware default or last-set) = 0` then
+  `applied = 2`, so the firmware default is 0 = unbounded and
+  `docs/airtime-model.md` §3 "prod runs 2" was right, the 2026-08-29
+  backup was stale). It only bounds the I:P *ratio*, so it is inert on
+  the P-frame ramp seen here — the `max_ipprop` sweep arm below is
+  therefore {2 (current), firmware 0}, not {firmware, 2}.
 - `u32MaxISize` / `u32MaxPSize` are **dead on star6e** (hardware-proven
   2026-08-29, `docs/airtime-model.md` §3). Do not rebuild that feature.
 - The live `MI_VENC_ParamH265Cbr_t` also carries `u32MaxQp`, `u32MinQp`,
@@ -209,6 +214,29 @@ loop, using the existing rigs.
   the override, `drone.congestion_shed` the fe1643b shed. maburtop shows
   `qp NN roi -NN` and `shed FS|CONG|off`.
 
+**First look, 2026-09-03 evening, live drone, NO deploy** (passive
+`vencprobe` from tmpfs against the deployed Sep-2 `maburd`, rung 5, cmd
+16000, the bench's own static scene, 20 s, 1190 frames):
+
+| what | value | meaning |
+|---|---|---|
+| mean rate | 15.61 Mb/s = **0.95× programmed** (16.384) | the static bench scene is NOT a quiet scene — CBR spends its whole budget on it |
+| 100 ms rate p50 / p95 / max | 0.95× / 0.97× / 1.06× | steady state is tight; no spontaneous bursts |
+| base / enh median | 33.3 / 32.5 kB | refPred equalised, as designed |
+| IDR frames in 20 s | **0**; every frame carries the GDR flag | `rally` runs intra-refresh stripes, no periodic IDR at steady state — "IDR cost" is only the *requested* IDRs (rung/bitrate writes) |
+| largest frames | 41 kB (1.24× median), all stripe frames | |
+| commit interval p50 / p95 / max | 16.9 / 17.7 / 19.9 ms | **no frame bunching** — the alternative hypothesis (encoder fps not steady) is out, at least on a static scene |
+| enc_us p50 / max | 7.3 / 8.4 ms | as in the latency accounting |
+
+Consequences for the plan: (1) the pre-burst *deficit* the hypothesis
+needs (4.9 of 16 Mb/s in flight) does not exist on the bench unless the
+scene is made genuinely flat — **cover the lens**, a wall is not enough;
+(2) prediction 1 (burst ∝ deficit) is testable by varying how long/dark
+the cover is; (3) the flight's 4.9 Mb/s quiet seconds were flatter than
+anything the bench camera sees pointed at the room — worth asking what
+the camera was looking at at 87 s (sky? grass at hover?). The encoder
+QP was not in this capture (old daemon); the new binary adds it.
+
 **Procedure:** deploy config-then-binary to the drone (and `maburgs` to
 the GS — Telem flag day). Park the link at rung 5 or pin
 `POST /venc/set?bitrate=16000` (re-POST inside the 5 s re-assert).
@@ -260,9 +288,10 @@ variance too.
   maburtop `shed CONG`. flightreport does not yet *use* it for
   attribution; the data is recorded (flightrec is always-on).
 - ✅ **`enc_pk100=` on the `stats:` line** (`drone/src/peak_rate.h`).
-- ⬜ **Deployed drone config into `out/`** — blocked, drone offline. Do
-  it before the next deploy: `scp root@192.168.10.152:/etc/mabur.json
-  out/drone-mabur-config-<date>.json`.
+- ✅ **Deployed drone config into `out/`** —
+  `out/drone-mabur-config-2026-09-03.json` (drone came back online late
+  in the session): `bitrate_max_kbps` 16000, `airtime_budget` 0.6,
+  `qp_delta` **+4**, `max_ipprop` **2**, rally, 60 fps, gop 2 s.
 
 ## Open questions
 

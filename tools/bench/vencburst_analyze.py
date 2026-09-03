@@ -230,6 +230,50 @@ def _measure(rs, polls, frames, onset, quiet_rate, prog, prm) -> Cycle:
         idrs=idrs)
 
 
+def capture_summary(frames, polls, prm: Params):
+    """Whole-capture calibration, printed before the cycles: where the
+    encoder sits against its programmed rate with no stimulus at all (a
+    static bench scene IS the quiet scene of the hypothesis), and the
+    100 ms rate distribution. Returns dict for tests."""
+    if len(frames) < 10:
+        return None
+    prog = programmed_kbps(polls, prm.cmd_kbps) if (polls or prm.cmd_kbps is not None) else None
+    rs = RateSeries(frames)
+    step, win = prm.step_ms * 1000, prm.window_ms * 1000
+    g = frames[0]['t'] + win
+    r100 = []
+    while g <= frames[-1]['t']:
+        r100.append(rs.rate_kbps(g, win))
+        g += step
+    span_s = (frames[-1]['t'] - frames[0]['t']) / 1e6
+    total_bits = sum(f['len'] for f in frames[1:]) * 8
+    mean_kbps = total_bits / span_s / 1000 if span_s > 0 else 0.0
+    r100s = sorted(r100)
+    pct = lambda p: r100s[min(len(r100s) - 1, int(p * len(r100s)))] if r100s else 0.0
+    base = [f['len'] for f in frames if not (f['flags'] & (FLAG_ENH | FLAG_IDR))]
+    enh = [f['len'] for f in frames if (f['flags'] & FLAG_ENH) and not (f['flags'] & FLAG_IDR)]
+    idr = [f['len'] for f in frames if f['flags'] & FLAG_IDR]
+    qps = [s['qp'] for s in polls if s.get('qp') is not None]
+    out = dict(span_s=span_s, fps=(len(frames) - 1) / span_s if span_s > 0 else 0.0,
+               mean_kbps=mean_kbps, p50=pct(0.5), p95=pct(0.95), max=max(r100s) if r100s else 0.0,
+               prog=prog, base_kb=median(base) / 1000 if base else None,
+               enh_kb=median(enh) / 1000 if enh else None,
+               idr_kb=median(idr) / 1000 if idr else None, n_idr=len(idr),
+               qp_min=min(qps) if qps else None, qp_med=median(qps) if qps else None,
+               qp_max=max(qps) if qps else None)
+    ratio = (lambda v: f"{v/prog:.2f}x") if prog else (lambda v: "")
+    print(f"capture: {span_s:.1f} s, {out['fps']:.1f} fps, mean {mean_kbps/1000:.2f} Mb/s {ratio(mean_kbps)}"
+          + (f" of programmed {prog/1000:.3f}" if prog else "")
+          + f";  {prm.window_ms} ms rate p50 {out['p50']/1000:.2f} {ratio(out['p50'])}  "
+          f"p95 {out['p95']/1000:.2f} {ratio(out['p95'])}  max {out['max']/1000:.2f} {ratio(out['max'])}")
+    kb = lambda v: f"{v:.1f} kB" if v is not None else "--"
+    print(f"         frames: base {kb(out['base_kb'])}  enh {kb(out['enh_kb'])}  "
+          f"idr {kb(out['idr_kb'])} (n={len(idr)})"
+          + (f";  encoder qp min/med/max {out['qp_min']}/{out['qp_med']:.0f}/{out['qp_max']}"
+             if qps else ";  encoder qp: not in this capture (daemon predates 2026-09-03)"))
+    return out
+
+
 def report(cycles, polls, prm: Params):
     if polls or prm.cmd_kbps is not None:
         prog = programmed_kbps(polls, prm.cmd_kbps)
@@ -290,6 +334,8 @@ def main(argv=None):
         print(f"note: {len(cmds)} bitrate commands in this capture — this is an ACTIVE "
               f"vencprobe run; vencprobe_analyze.py is the tool for step response")
     print(f"{len(frames)} frames, {len(polls)} polls")
+    capture_summary(frames, polls, prm)
+    print()
     report(find_cycles(frames, polls, prm), polls, prm)
 
 
