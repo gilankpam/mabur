@@ -1449,12 +1449,14 @@ int run_real_mode(const Config& cfg) {
     std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
 
     mabur::TickGate tick_gate(now_steady_ms(), cfg.link.tick_ms);
-    // Peak 100 ms encoder byte rate for the stats line (peak_rate.h): fed
-    // every wake, which is the finest cadence anything here runs at.
-    mabur::PeakRate enc_peak(100);
+    // Peak 100 ms encoder rate for the stats line (peak_rate.h): fed every
+    // wake, which is the finest cadence anything here runs at; normalised
+    // by frame count at the configured sensor fps, not wall time.
+    mabur::PeakRate enc_peak(100, cfg.venc.core.fps);
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
-      enc_peak.sample(now, enc_bytes_total.load(std::memory_order_relaxed));
+      enc_peak.sample(now, enc_bytes_total.load(std::memory_order_relaxed),
+                      enc_frames_total.load(std::memory_order_relaxed));
 
       // Every wake (rc_drain_ms): drain and apply queued RCFs. This is the
       // whole point of the split — op actuation no longer waits for the
