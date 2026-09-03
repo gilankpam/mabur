@@ -52,6 +52,7 @@
 #include "radio_tx.h"
 #include "rc_agent.h"
 #include "telemetry.h"
+#include "peak_rate.h"
 #include "tick_gate.h"
 #include "tx_queue.h"
 #include "usb_tx_pool.h"
@@ -1448,8 +1449,12 @@ int run_real_mode(const Config& cfg) {
     std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
 
     mabur::TickGate tick_gate(now_steady_ms(), cfg.link.tick_ms);
+    // Peak 100 ms encoder byte rate for the stats line (peak_rate.h): fed
+    // every wake, which is the finest cadence anything here runs at.
+    mabur::PeakRate enc_peak(100);
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
+      enc_peak.sample(now, enc_bytes_total.load(std::memory_order_relaxed));
 
       // Every wake (rc_drain_ms): drain and apply queued RCFs. This is the
       // whole point of the split — op actuation no longer waits for the
@@ -1518,7 +1523,8 @@ int run_real_mode(const Config& cfg) {
           std::fprintf(stderr,
                        "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
                        "txq=%zu txq_drop=%llu "
-                       "thermal_delta=%d tx_failed=%llu venc_verb_fail=%llu\n",
+                       "thermal_delta=%d tx_failed=%llu venc_verb_fail=%llu "
+                       "enc_pk100=%uk\n",
                        static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
                        static_cast<unsigned long long>(rb), tx.seq(),
                        static_cast<unsigned long long>(tx.sent()),
@@ -1526,7 +1532,8 @@ int run_real_mode(const Config& cfg) {
                        txq.depth(), static_cast<unsigned long long>(txq.dropped()),
                        health.thermal_delta,
                        static_cast<unsigned long long>(txstats.failed),
-                       static_cast<unsigned long long>(actuator.venc_verb_failures));
+                       static_cast<unsigned long long>(actuator.venc_verb_failures),
+                       enc_peak.take_peak_kbps());
         }
 
         if (now - last_telem_ms >= 1000) {
