@@ -27,10 +27,19 @@ frame of the window back to the frame before it), not by the nominal
 window, so a 60 fps stream does not read 6 vs 7 frames per 100 ms
 depending on alignment.
 
-Cycle detection: a cycle starts (onset) when the 100 ms rate crosses the
-midpoint between the quiet rate and the programmed rate after >= quiet_s
-of the trailing-1 s rate sitting under quiet_frac x programmed. Cover the
-lens / point at a wall for >= 5 s, then uncover / pan hard, >= 10 times.
+Cycle detection, two triggers OR'd:
+  quiet->motion  the 100 ms rate crosses the midpoint between the quiet
+                 rate and the programmed rate after >= quiet_s of the
+                 trailing-1 s rate sitting under quiet_frac x programmed
+                 (the flight-0011 shape: 4.9 Mb/s static, then motion)
+  steady->burst  the 100 ms rate exceeds burst_frac x programmed after
+                 >= 1 s of the trailing-1 s rate inside +-10 % of it
+                 (the bench lens-uncover shape, 2026-09-03: CBR spends its
+                 whole budget even on a covered lens, so there is no quiet
+                 deficit, and the scene cut still costs one 6x frame)
+Each cycle also reports the largest frame and how many frames exceeded
+2x the per-frame budget, which tells a one-frame scene cut (no usable
+reference, effectively an uncapped I frame) from a multi-frame RC ramp.
 
   vencburst_analyze.py vb.csv [--cmd-kbps N] [--quiet-s S] [--window-ms W]
 
@@ -58,6 +67,8 @@ class Params:
     quiet_s: float = 2.0      # trailing-1 s rate must be quiet this long before an onset
     quiet_frac: float = 0.7   # quiet := trailing-1 s rate < quiet_frac x programmed
     settle_frac: float = 1.10 # settle := 100 ms rate <= settle_frac x programmed
+    burst_frac: float = 1.25  # steady->burst trigger on the 100 ms rate
+    steady_tol: float = 0.10  # "steady" := trailing-1 s rate within +-tol of programmed
     ramp_max_s: float = 3.0   # horizon for peak/settle/excess after the onset
     cmd_kbps: Optional[int] = None  # override the programmed rate source (polls)
 
@@ -75,6 +86,10 @@ class Cycle:
     qp_peak: Optional[int]
     qp_settle: Optional[int]
     idrs: int
+    trigger: str = ""            # "quiet" or "burst"
+    end_us: int = 0              # settle point, or onset + ramp_max_s
+    peak_frame_kb: float = 0.0   # largest frame in the ramp
+    frames_over_2x: int = 0      # frames > 2x the per-frame budget in the ramp
 
     @property
     def peak_ratio(self):
@@ -85,19 +100,25 @@ def load(fh):
     """vencprobe CSV -> (frames, polls, cmds). Polls carry qp=None when the
     capture predates the 3rd column (2026-09-03)."""
     frames, polls, cmds = [], [], []
+    bad = 0
     for line in fh:
         line = line.strip()
         if not line or line.startswith('#'):
             continue
         p = line.split(',')
-        if p[0] == 'f':
-            frames.append(dict(t=int(p[1]), idx=int(p[2]), len=int(p[3]),
-                               pts=int(p[4]), flags=int(p[5]), enc=int(p[6])))
-        elif p[0] == 's':
-            polls.append(dict(t=int(p[1]), kbps=int(p[2]),
-                              qp=int(p[3]) if len(p) > 3 and p[3] not in ('', '-1') else None))
-        elif p[0] == 'c':
-            cmds.append(dict(tb=int(p[1]), ta=int(p[2]), kbps=int(p[3]), ok=int(p[4])))
+        try:
+            if p[0] == 'f':
+                frames.append(dict(t=int(p[1]), idx=int(p[2]), len=int(p[3]),
+                                   pts=int(p[4]), flags=int(p[5]), enc=int(p[6])))
+            elif p[0] == 's':
+                polls.append(dict(t=int(p[1]), kbps=int(p[2]),
+                                  qp=int(p[3]) if len(p) > 3 and p[3] not in ('', '-1') else None))
+            elif p[0] == 'c':
+                cmds.append(dict(tb=int(p[1]), ta=int(p[2]), kbps=int(p[3]), ok=int(p[4])))
+        except (ValueError, IndexError):
+            bad += 1  # a capture killed mid-write leaves one torn line
+    if bad:
+        print(f"note: {bad} malformed line(s) skipped (capture killed mid-write?)", file=sys.stderr)
     frames.sort(key=lambda f: f['t'])
     polls.sort(key=lambda s: s['t'])
     return frames, polls, cmds
@@ -164,6 +185,7 @@ def find_cycles(frames, polls, prm: Params) -> List[Cycle]:
 
     cycles = []
     quiet_since = None
+    steady_since = None
     g = t0
     while g <= t1:
         prog = prog_at(g)
@@ -172,6 +194,7 @@ def find_cycles(frames, polls, prm: Params) -> List[Cycle]:
             continue
         r1 = rs.rate_kbps(g, 1_000_000)
         r100 = rs.rate_kbps(g, win)
+        fired = None
         if quiet_since is not None and (g - quiet_since) >= prm.quiet_s * 1e6:
             # Quiet rate one window BEFORE the candidate onset: the onset
             # grid point already sits a frame or two into the burst, and a
@@ -179,15 +202,30 @@ def find_cycles(frames, polls, prm: Params) -> List[Cycle]:
             # inflate "quiet" by ~10 %.
             quiet_rate = rs.rate_kbps(g - win, 1_000_000)
             if r100 > quiet_rate + 0.5 * (prog - quiet_rate):
-                cycles.append(_measure(rs, polls, frames, g, quiet_rate, prog, prm))
-                g += int(prm.ramp_max_s * 1e6)
-                quiet_since = None
-                continue
+                fired = ('quiet', quiet_rate)
+        if fired is None and steady_since is not None and (g - steady_since) >= 1e6:
+            if r100 > prm.burst_frac * prog:
+                fired = ('burst', rs.rate_kbps(g - win, 1_000_000))
+        if fired:
+            c = _measure(rs, polls, frames, g, fired[1], prog, prm)
+            c.trigger = fired[0]
+            cycles.append(c)
+            # Resume right after the ramp (settle, or the horizon if it
+            # never settled) so back-to-back cuts count separately; the
+            # steady/quiet pre-condition re-arms on its own.
+            g = c.end_us + step
+            quiet_since = steady_since = None
+            continue
         if r1 < prm.quiet_frac * prog:
             if quiet_since is None:
                 quiet_since = g
-        else:
+            steady_since = None
+        elif abs(r1 - prog) <= prm.steady_tol * prog:
+            if steady_since is None:
+                steady_since = g
             quiet_since = None
+        else:
+            quiet_since = steady_since = None
         g += step
     return cycles
 
@@ -218,7 +256,13 @@ def _measure(rs, polls, frames, onset, quiet_rate, prog, prm) -> Cycle:
         g += step
     ts = [f['t'] for f in frames]
     lo, hi = bisect.bisect_left(ts, onset - win), bisect.bisect_right(ts, end)
-    idrs = sum(1 for f in frames[lo:hi] if f['flags'] & FLAG_IDR)
+    ramp = frames[lo:hi]
+    idrs = sum(1 for f in ramp if f['flags'] & FLAG_IDR)
+    # Per-frame budget at the observed cadence: programmed bits per frame.
+    fps = _capture_fps(frames)
+    budget_bytes = prog * 1000.0 / 8.0 / fps if fps > 0 else 0.0
+    peak_frame_kb = max((f['len'] for f in ramp), default=0) / 1000.0
+    frames_over_2x = sum(1 for f in ramp if budget_bytes and f['len'] > 2 * budget_bytes)
     return Cycle(
         onset_us=onset, programmed_kbps=prog, quiet_kbps=quiet_rate,
         peak_kbps=peak, peak_at_ms=(peak_at - onset) / 1000.0,
@@ -227,7 +271,8 @@ def _measure(rs, polls, frames, onset, quiet_rate, prog, prm) -> Cycle:
         qp_quiet=_poll_at(polls, onset - 500_000, 'qp') if polls else None,
         qp_peak=_poll_at(polls, peak_at, 'qp') if polls else None,
         qp_settle=_poll_at(polls, settle, 'qp') if (polls and settle is not None) else None,
-        idrs=idrs)
+        idrs=idrs, peak_frame_kb=peak_frame_kb, frames_over_2x=frames_over_2x,
+        end_us=end)
 
 
 def capture_summary(frames, polls, prm: Params):
@@ -274,7 +319,18 @@ def capture_summary(frames, polls, prm: Params):
     return out
 
 
-def report(cycles, polls, prm: Params):
+def _capture_fps(frames):
+    if len(frames) < 2:
+        return 0.0
+    span = (frames[-1]['t'] - frames[0]['t']) / 1e6
+    return (len(frames) - 1) / span if span > 0 else 0.0
+
+
+def report(cycles, polls, prm: Params, t_first=None):
+    """t_first: capture start (first frame's mono_us) so cycle times are
+    seconds into the capture, matching the drone's stats: line by eye."""
+    if t_first is None:
+        t_first = cycles[0].onset_us if cycles else 0
     if polls or prm.cmd_kbps is not None:
         prog = programmed_kbps(polls, prm.cmd_kbps)
         print(f"programmed {prog/1000:.3f} Mb/s (= req {prog/1.024/1000:.1f} Mb/s x 1.024)")
@@ -288,16 +344,22 @@ def report(cycles, polls, prm: Params):
         qp = lambda v: f"{v:2d}" if v is not None else "--"
         settle = f"{c.settle_ms:5.0f} ms" if c.settle_ms is not None else "  never"
         ok = c.peak_ratio <= ACCEPT_PEAK_RATIO and c.excess_bytes <= ACCEPT_EXCESS_BYTES
-        print(f"cycle {i}: t+{(c.onset_us - cycles[0].onset_us)/1e6:6.1f} s  "
-              f"quiet {c.quiet_kbps/1000:5.2f} Mb/s ({c.quiet_kbps/c.programmed_kbps:.2f}x, qp {qp(c.qp_quiet)})  "
+        print(f"cycle {i}: t={(c.onset_us - t_first)/1e6:6.1f} s [{c.trigger:5s}]  "
+              f"pre {c.quiet_kbps/1000:5.2f} Mb/s ({c.quiet_kbps/c.programmed_kbps:.2f}x, qp {qp(c.qp_quiet)})  "
               f"peak {c.peak_kbps/1000:5.2f} Mb/s = {c.peak_ratio:.2f}x @+{c.peak_at_ms:.0f} ms (qp {qp(c.qp_peak)})  "
               f"settle {settle} (qp {qp(c.qp_settle)})  "
-              f"excess {c.excess_bytes/1024:6.1f} KB  idr {c.idrs}  {'ok' if ok else 'FAIL'}")
+              f"excess {c.excess_bytes/1024:6.1f} KB  maxframe {c.peak_frame_kb:5.0f} kB  "
+              f">2x {c.frames_over_2x}  idr {c.idrs}  {'ok' if ok else 'FAIL'}")
     ratios = [c.peak_ratio for c in cycles]
     excess = [c.excess_bytes / 1024 for c in cycles]
     settles = [c.settle_ms for c in cycles if c.settle_ms is not None]
     clean = [c for c in cycles if c.idrs == 0]
-    print(f"\nSUMMARY  peak ratio median {median(ratios):.2f}x  max {max(ratios):.2f}x   "
+    one_frame = sum(1 for c in cycles if c.frames_over_2x <= 1)
+    print(f"\nshape: {one_frame}/{len(cycles)} cycles are a single >2x frame (scene cut), "
+          f"{len(cycles)-one_frame} are multi-frame ramps; triggers "
+          f"{sum(1 for c in cycles if c.trigger=='quiet')} quiet->motion, "
+          f"{sum(1 for c in cycles if c.trigger=='burst')} steady->burst")
+    print(f"SUMMARY  peak ratio median {median(ratios):.2f}x  max {max(ratios):.2f}x   "
           f"excess median {median(excess):.0f} KB  max {max(excess):.0f} KB   "
           + (f"settle median {median(settles):.0f} ms  max {max(settles):.0f} ms" if settles
              else "settle: never within horizon")
@@ -336,7 +398,8 @@ def main(argv=None):
     print(f"{len(frames)} frames, {len(polls)} polls")
     capture_summary(frames, polls, prm)
     print()
-    report(find_cycles(frames, polls, prm), polls, prm)
+    report(find_cycles(frames, polls, prm), polls, prm,
+           t_first=frames[0]['t'] if frames else None)
 
 
 if __name__ == '__main__':

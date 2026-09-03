@@ -142,6 +142,43 @@ class TwoCycles(unittest.TestCase):
         self.assertTrue(any(c.idrs >= 0 for c in cycles))
 
 
+class SteadyToBurst(unittest.TestCase):
+    """The bench lens-uncover shape (2026-09-03): no quiet stretch at all --
+    CBR spends its budget on a covered lens too -- then ONE scene-cut frame
+    of ~6x the budget and straight back. Must be found via the steady->burst
+    trigger and classified as a single >2x frame."""
+
+    def test_single_scene_cut_frame_is_a_cycle(self):
+        csv = synth([(4.0, 16.384)], qp_of)
+        # splice one 195 kB frame (and a 100 kB neighbour) into the middle
+        lines = csv.splitlines()
+        fidx = [i for i, l in enumerate(lines) if l.startswith("f,")]
+        for i, kb in ((fidx[120], 195000), (fidx[121], 100000)):
+            p = lines[i].split(","); p[3] = str(kb); lines[i] = ",".join(p)
+        frames, polls, _ = vb.load(io.StringIO("\n".join(lines) + "\n"))
+        cycles = vb.find_cycles(frames, polls, vb.Params())
+        self.assertEqual(len(cycles), 1)
+        c = cycles[0]
+        self.assertEqual(c.trigger, "burst")
+        self.assertAlmostEqual(c.quiet_kbps / PROGRAMMED_KBPS, 1.0, delta=0.03)
+        self.assertGreater(c.peak_kbps / PROGRAMMED_KBPS, 1.25)
+        self.assertAlmostEqual(c.peak_frame_kb, 195.0, delta=1.0)
+        self.assertEqual(c.frames_over_2x, 2)
+        # excess ~= (195 + 100 - 2*34.1) kB = 227 kB, minus what the RC
+        # under-spends afterwards (none in this synthetic)
+        self.assertAlmostEqual(c.excess_bytes / 1000.0, 227.0, delta=40.0)
+
+    def test_quiet_trigger_still_wins_for_the_flight_shape(self):
+        csv = synth([(5.0, 5.0), (0.5, 22.0), (3.0, 16.384)], qp_of)
+        frames, polls, _ = vb.load(io.StringIO(csv))
+        cycles = vb.find_cycles(frames, polls, vb.Params())
+        self.assertEqual([c.trigger for c in cycles], ["quiet"])
+        # A 1.34x ramp has no single frame over 2x budget; it is a ramp by
+        # DURATION (hundreds of ms above +10 %), not by frame size.
+        self.assertEqual(cycles[0].frames_over_2x, 0)
+        self.assertGreater(cycles[0].settle_ms, 300)
+
+
 class OldCaptureWithoutQp(unittest.TestCase):
     def test_polls_without_qp_column(self):
         csv = synth([(5.0, 5.0), (0.5, 22.0), (3.0, 16.384)], qp_of)
