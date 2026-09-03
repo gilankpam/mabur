@@ -564,17 +564,36 @@ loss-sim binary stays at `/tmp/maburgs.losssim.new` (tmpfs) and
 > **Progress, later the same night:** items 2, 3, 4 and 5 are DONE in the
 > commits after 0ea9799 (Telem back to 83 bytes, `min_qp` deleted,
 > `g_rc_intent` staging + `rc_readback t+10s:` log line, SuperFrame line
-> prints on change only); item 6 (merge) follows them. **Neither device
-> has this build yet** — both still run 03aedd47… / d2662ca4… below, which
-> is a Telem 84-byte pair. The next deploy is a Telem flag day again
-> (both binaries, no config change: the deployed config never had
-> `min_qp`). Item 1 is untouched, and the first boot of the new drone
-> binary should be read for the `rc_readback t+10s:` verdict — if it says
-> MISMATCH, the flight's `qp_delta +4` was never in force before either.
+> prints on change only); item 6 (merge) done, master fast-forwarded
+> (d8d15c4, then c51c931). **DEPLOYED both ends the same night** (drone
+> `maburd` 04f226c7…, GS `maburgs` afb14d1c…; rollbacks
+> `maburd.pre-rcintent`, `maburgs.pre-rcintent`; no config change).
+> Verified: `rc_readback t+10s: IPQPDelta=4 MaxIPProp=2 MinQp=12 MaxQp=48
+> MinIQp=12 MaxIQp=48 … OK` — the boot-time `qp_delta +4` / `max_ipprop 2`
+> DO reach the encoder on this build (firmware QP bounds 12/48 recorded
+> for the first time); ausniff 30 s = 1800 AUs, 60.0 fps, 0 gaps, 0
+> incomplete; sideport `drone.enc` has `roi_qp` and no `qp`; ladder parked
+> rung 5, 15.85 Mb/s, `txq.drops` 0, shed off. The deployed
+> `/etc/mabur.json` already carries `venc.superframe_p_pct: 200` (seven
+> `> superframe P cap:` lines in the boot log, one per rung move — the
+> on-change print works), so item 1's config step is done and only the
+> flight itself remains.
+>
+> **Incident on the first drone boot:** the `rc_readback` was first
+> hooked into the ENCODER loop and `maburd` segfaulted the instant the
+> line had printed (verdict OK, then `Segmentation fault`, wrapper
+> crash-loop every ~12 s). The same `MI_VENC_GetRcParam` from the agent
+> thread had succeeded three times in that boot and the struct matches
+> upstream byte for byte, so the difference is the thread (SCHED_FIFO /
+> CPU0, concurrent with the agent's Get/Set on the channel). Fixed in
+> c51c931 by taking the readback from `apply_bitrate` (agent thread, verb
+> lock) the first time it runs ≥ 10 s after bind. Rule going forward:
+> **every MI_VENC RC call stays on the agent thread.**
 
-Both devices run this branch: drone `maburd` 03aedd47… with the cap at 0,
-GS `maburgs` d2662ca4… on the adaptive ladder. Rollbacks
-`maburd.pre-superframe` (drone) and `maburgs.pre-vencobs` (GS).
+(Superseded by the note above.) Before that deploy both devices ran the
+branch at 03aedd47… (drone, cap at 0) / d2662ca4… (GS, adaptive ladder);
+`maburd.pre-superframe` was pruned for rootfs room, `maburgs.pre-vencobs`
+still exists on the GS.
 
 1. **Fly `venc.superframe_p_pct: 200`.** All bench gates passed (rung 5,
    rungs 1–2, promote/demote under loss-sim). Add the key to
