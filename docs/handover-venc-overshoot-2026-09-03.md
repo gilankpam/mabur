@@ -561,6 +561,17 @@ loss-sim binary stays at `/tmp/maburgs.losssim.new` (tmpfs) and
 
 ## Follow-ups (as of 2026-09-03 night, branch `venc-overshoot-observability`, 16 commits, unmerged)
 
+> **Progress, later the same night:** items 2, 3, 4 and 5 are DONE in the
+> commits after 0ea9799 (Telem back to 83 bytes, `min_qp` deleted,
+> `g_rc_intent` staging + `rc_readback t+10s:` log line, SuperFrame line
+> prints on change only); item 6 (merge) follows them. **Neither device
+> has this build yet** — both still run 03aedd47… / d2662ca4… below, which
+> is a Telem 84-byte pair. The next deploy is a Telem flag day again
+> (both binaries, no config change: the deployed config never had
+> `min_qp`). Item 1 is untouched, and the first boot of the new drone
+> binary should be read for the `rc_readback t+10s:` verdict — if it says
+> MISMATCH, the flight's `qp_delta +4` was never in force before either.
+
 Both devices run this branch: drone `maburd` 03aedd47… with the cap at 0,
 GS `maburgs` d2662ca4… on the adaptive ladder. Rollbacks
 `maburd.pre-superframe` (drone) and `maburgs.pre-vencobs` (GS).
@@ -572,26 +583,26 @@ GS `maburgs` d2662ca4… on the adaptive ladder. Rollbacks
    `drone.congestion_shed`, `txq.drops`, `enc_pk100` in `/tmp/mabur.log`,
    and the e2e segments against flight-0011. Do not change the key
    mid-flight (loosening releases a catch-up second, item 4 of the sweep).
-2. **Strip the dead encoder-QP plumbing.** `Telem.qp` (wire 84→83),
+2. ✅ **Strip the dead encoder-QP plumbing.** `Telem.qp` (wire 84→83),
    sideport `drone.enc.qp`, maburtop's `qp NN`, `GET /venc` `"qp"`,
    vencprobe's 3rd poll column (analyzer already tolerates its absence),
    `VencStats.last_qp`, `Star6eVideoState.last_qp`, and the once-a-minute
    `venc_strminfo:` dump in `star6e_video.c`. Keep `roi_qp` and
    `congestion_shed`. This is a Telem flag day again (both binaries).
-3. **Port upstream waybeam #255** (`bf8c3cb`, `g_rc_intent` staging):
+3. ✅ **Port upstream waybeam #255** (`bf8c3cb`, `g_rc_intent` staging):
    `MI_VENC_GetRcParam` is stale for ~5 s after `StartRecvPic`, and our
    startup writes `qp_delta` → `max_ipprop` → `min_qp` back-to-back in that
    window, so `qp_delta` +4 may be reverting to 0 at boot. Every RC write
    should stage the whole intent; add a readback line at t+10 s so the
    log proves what the encoder holds. `restage_qp_delta()` (added with the
    SuperFrame port) is the natural seed for the intent struct.
-4. **Decide `venc.min_qp`.** Built, never run, and upstream's
+4. ✅ **Decide `venc.min_qp`.** Built, never run, and upstream's
    characterisation says it is a bit ceiling that collapses the rate past
-   the scene's natural QP. Recommend deleting the key and verb rather than
-   shipping a knob whose only measured effect is harm.
-5. **Quiet the `> superframe P cap:` log line.** It prints on every
-   `apply_bitrate`, i.e. every RcAgent re-assert (5 s) once the knob is
-   non-zero. Print on change only, like `max_ipprop`.
+   the scene's natural QP. DELETED — key, verb, whitelist entry, controls.
+   The firmware QP bounds are still printed by the `rc_readback` line.
+5. ✅ **Quiet the `> superframe P cap:` log line.** Now prints when the
+   derived threshold changes (rung move, knob write) or the RC-intent
+   re-stage after `SetSuperFrameCfg` fails; the 5 s re-assert is silent.
 6. **Merge.** Nothing on master since 287bf2d; the branch fast-forwards.
    Master will then describe what is deployed. Re-run
    `ctest -R 'test_|host_e2e'` (105/105 tonight) and both cross-builds

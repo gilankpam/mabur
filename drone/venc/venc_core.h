@@ -26,7 +26,6 @@ int venc_set_roi_qp(int qp);
 int venc_request_idr(void);          /* goes through idr_rate_limit */
 int venc_set_qp_delta(int qp_delta); /* boot + debug endpoint only */
 int venc_set_max_ipprop(int prop);   /* boot + debug endpoint only; u32MaxIPProp */
-int venc_set_min_qp(int qp);         /* boot + debug endpoint only; u32MinQp, 1..51 */
 int venc_set_superframe_p_pct(int pct); /* debug endpoint; 0 = off, 100..1000 (SuperFrame P cap) */
 
 /* Signals — read on demand (agent tick / telemetry / debug endpoint). */
@@ -35,12 +34,8 @@ typedef struct {
   uint32_t ring_fill_pct;   /* 0..100 */
   uint32_t frames_encoded;  /* lifetime */
   int cur_bitrate_kbps;     /* last applied via venc_set_bitrate_kbps, -1 before first */
-  int last_qp;              /* startQual of the last frame the encoder handed
-                             * us (MI_VENC_Stream_t h265Info) — the rate
-                             * controller's operating point, base and enh
-                             * frames alike. 0 = no frame yet. The only
-                             * encoder-QP readback this SDK offers; there is
-                             * no GetChnStat QP. */
+  /* No encoder QP: MI_VENC_Stream_t h265Info.startQual reads 0 on every
+   * frame this firmware emits and there is no GetChnStat QP (2026-09-03). */
 } VencStats;
 void venc_get_stats(VencStats *out);
 

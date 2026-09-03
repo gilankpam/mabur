@@ -23,8 +23,8 @@
  *   vencprobe --low 3000 --high 10000 --dwell 2500 --cycles 6 > /tmp/vp.csv
  *
  * PASSIVE mode (2026-09-03, venc-overshoot bench): --cycles 0 --duration MS
- * never POSTs; it only logs frames and the 25 ms /venc polls (req bitrate +
- * encoder qp) for MS milliseconds. Stimulus is external (cover/uncover the
+ * never POSTs; it only logs frames and the 25 ms /venc polls (req bitrate)
+ * for MS milliseconds. Stimulus is external (cover/uncover the
  * lens, pan) and tools/bench/vencburst_analyze.py finds the cycles:
  *   vencprobe --cycles 0 --duration 120000 > /tmp/vb.csv
  *
@@ -69,16 +69,13 @@ static uint32_t slot_stride(uint32_t slot_data_size)
  * and truncate that window instead of reporting the collision as encoder
  * behaviour. Reads atomics only — no verb lock, so it cannot perturb the
  * thing being measured. */
-static int get_req_bitrate(int port, int *qp)
+static int get_req_bitrate(int port)
 {
 	struct sockaddr_in sa;
 	const char *req = "GET /venc HTTP/1.1\r\nHost: 127.0.0.1\r\n"
 			  "Connection: close\r\n\r\n";
 	char resp[512], *p;
 	int fd, n, val = -1;
-
-	if (qp)
-		*qp = -1;
 
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0)
@@ -98,13 +95,6 @@ static int get_req_bitrate(int port, int *qp)
 			p = strstr(resp, "\"req_bitrate_kbps\":");
 			if (p)
 				val = atoi(p + strlen("\"req_bitrate_kbps\":"));
-			/* Encoder QP of the last published frame (VencStats
-			 * last_qp, 2026-09-03). The only per-frame-ish QP
-			 * readback without touching the ring meta (which is
-			 * the FrameHdr wire format, kFrameHdrLen == 8). */
-			p = strstr(resp, "\"qp\":");
-			if (p && qp)
-				*qp = atoi(p + strlen("\"qp\":"));
 		}
 	}
 	close(fd);
@@ -211,7 +201,7 @@ int main(int argc, char **argv)
 	       hdr->slot_data_size, low, high, dwell_ms, cycles, duration_ms);
 	printf("# f,mono_us,write_idx,len,pts_us,flags,enc_us\n");
 	printf("# c,mono_us_before,mono_us_after,kbps,ok\n");
-	printf("# s,mono_us,req_bitrate_kbps,qp  (25 ms poll; a change we did not command is RcAgent; qp = encoder startQual of the last frame, -1 if the daemon predates it)\n");
+	printf("# s,mono_us,req_bitrate_kbps  (25 ms poll; a change we did not command is RcAgent)\n");
 	fflush(stdout);
 
 	uint64_t last_w = __atomic_load_n(&hdr->write_idx, __ATOMIC_ACQUIRE);
@@ -244,10 +234,9 @@ int main(int argc, char **argv)
 
 		uint64_t now = mono_us();
 		if (now >= next_poll_us) {
-			int qp = -1;
-			int req = get_req_bitrate(port, &qp);
+			int req = get_req_bitrate(port);
 			uint64_t tp = mono_us();
-			printf("s,%llu,%d,%d\n", (unsigned long long)tp, req, qp);
+			printf("s,%llu,%d\n", (unsigned long long)tp, req);
 			next_poll_us = tp + 25000ull;
 		}
 

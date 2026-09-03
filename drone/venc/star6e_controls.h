@@ -27,20 +27,20 @@ int star6e_controls_apply_roi_qp(int qp);
 /** Apply relative I/P QP delta to the running encoder (boot-time). */
 int star6e_controls_apply_qp_delta(int delta);
 
-/** Set u32MaxIPProp directly on the CBR RC params (boot startup control
- *  and debug endpoint).  Prints the CURRENT value before overwriting it,
- *  which on the first call is the firmware's compiled-in default.
- *  Rejects prop outside [1,100].  Get->modify->Set like apply_qp_delta,
- *  so every other live RcParam field is preserved. */
+/** Set u32MaxIPProp on the CBR RC params (boot startup control and debug
+ *  endpoint).  Rejects prop outside [1,100].  Staged through the RC intent
+ *  (see g_rc_intent in star6e_controls.c): every RC write re-writes both
+ *  s32IPQPDelta and u32MaxIPProp, because MI_VENC_GetRcParam returns stale
+ *  driver defaults for ~5 s after StartRecvPic and a Get->modify->Set in
+ *  that window silently reverts the other field (waybeam #255). */
 int star6e_controls_set_max_ipprop(uint32_t prop);
 
-/** Set u32MinQp (the H265 CBR QP floor) on the live RC params, boot
- *  startup control and debug endpoint.  Prints the CURRENT MinQp/MaxQp/
- *  MinIQp/MaxIQp before overwriting — on the first call the firmware
- *  defaults, which nothing else in mabur ever reads back.  Rejects qp
- *  outside [1,51].  Same Get->modify->Set as max_ipprop so every other
- *  live field is preserved.  Does not request an IDR. */
-int star6e_controls_set_min_qp(uint32_t qp);
+/** Log what the encoder's RC params actually hold (IPQPDelta, MaxIPProp,
+ *  the QP bounds) against the staged intent, tagged with `when`
+ *  (e.g. "t+10s").  Read-only; called once from the encoder loop after
+ *  the #255 stale-Get window has closed so /tmp/mabur.log proves the
+ *  boot-time qp_delta / max_ipprop reached the encoder. */
+void star6e_controls_log_rc_readback(const char *when);
 
 /** SuperFrame P-frame ceiling as a percentage of the per-frame budget
  *  (0 = off, 100..1000).  Re-derived and re-programmed on every bitrate

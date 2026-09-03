@@ -97,8 +97,10 @@ class Cycle:
 
 
 def load(fh):
-    """vencprobe CSV -> (frames, polls, cmds). Polls carry qp=None when the
-    capture predates the 3rd column (2026-09-03)."""
+    """vencprobe CSV -> (frames, polls, cmds). Polls carry qp=None unless the
+    capture has the short-lived 3rd column (a few hours on 2026-09-03; it
+    always read 0 — this SDK has no encoder-QP readback, so the column and
+    the daemon plumbing behind it were removed the same day)."""
     frames, polls, cmds = [], [], []
     bad = 0
     for line in fh:
@@ -315,7 +317,7 @@ def capture_summary(frames, polls, prm: Params):
     print(f"         frames: base {kb(out['base_kb'])}  enh {kb(out['enh_kb'])}  "
           f"idr {kb(out['idr_kb'])} (n={len(idr)})"
           + (f";  encoder qp min/med/max {out['qp_min']}/{out['qp_med']:.0f}/{out['qp_max']}"
-             if qps else ";  encoder qp: not in this capture (daemon predates 2026-09-03)"))
+             if qps else ";  encoder qp: not in this capture (no readback on this SDK)"))
     return out
 
 

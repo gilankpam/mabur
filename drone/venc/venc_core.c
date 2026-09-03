@@ -414,21 +414,6 @@ int venc_set_superframe_p_pct(int pct)
 	return rc == 0 ? 0 : -1;
 }
 
-int venc_set_min_qp(int qp)
-{
-	int rc;
-
-	if (!venc_core_running())
-		return -1;
-	if (qp < 1 || qp > 51)
-		return -1;
-
-	pthread_mutex_lock(&g_verb_lock);
-	rc = star6e_controls_set_min_qp((uint32_t)qp);
-	pthread_mutex_unlock(&g_verb_lock);
-	return rc == 0 ? 0 : -1;
-}
-
 /* ── Signals ──────────────────────────────────────────────────────────── */
 
 uint64_t venc_cur_pts_us(void)
@@ -462,8 +447,6 @@ void venc_get_stats(VencStats *out)
 	 * the ring". full_drops below is the difference. */
 	out->frames_encoded = (uint32_t)__atomic_load_n(
 		&g_ctx.ps.video.frame_counter, __ATOMIC_RELAXED);
-	out->last_qp = (int)__atomic_load_n(&g_ctx.ps.video.last_qp,
-		__ATOMIC_RELAXED);
 
 	/* Straight from the shm ring header rather than the output's cached
 	 * copy, so a stalled encoder cannot serve a stale fill to RcAgent. */

@@ -41,7 +41,7 @@ bool parse_long_strict(const std::string& s, long* out) {
 
 bool key_whitelisted(const std::string& k) {
   return k == "bitrate" || k == "qp_delta" || k == "roi_qp" ||
-         k == "max_ipprop" || k == "min_qp" || k == "superframe_p_pct" ||
+         k == "max_ipprop" || k == "superframe_p_pct" ||
          k == "ov_base_pct" || k == "ov_enh_pct";
 }
 
@@ -146,10 +146,10 @@ void handle_stats(int fd) {
   int bn = std::snprintf(
       body, sizeof(body),
       "{\"req_bitrate_kbps\":%d,\"ring_fill_pct\":%u,\"full_drops\":%llu,"
-      "\"frames\":%u,\"qp\":%d}\n",
+      "\"frames\":%u}\n",
       vs.cur_bitrate_kbps, static_cast<unsigned>(vs.ring_fill_pct),
       static_cast<unsigned long long>(vs.full_drops),
-      static_cast<unsigned>(vs.frames_encoded), vs.last_qp);
+      static_cast<unsigned>(vs.frames_encoded));
   send_json(fd, "200 OK", std::string(body, bn > 0 ? static_cast<size_t>(bn) : 0));
 #else
   send_json(fd, "503 Service Unavailable", "{\"error\":\"disabled\"}\n");
@@ -195,8 +195,6 @@ void handle_set(int fd, const DebugReq& req, mabur::OvOverride* feed) {
     ok = venc_set_roi_qp(v) == 0;
   } else if (req.key == "max_ipprop") {
     ok = venc_set_max_ipprop(v) == 0;
-  } else if (req.key == "min_qp") {
-    ok = venc_set_min_qp(v) == 0;
   } else if (req.key == "superframe_p_pct") {
     ok = venc_set_superframe_p_pct(v) == 0;
   }

@@ -359,22 +359,20 @@ read the sideport. Reach for other tools only in these cases:**
   fatal. It is reachable only from the drone, so `ssh root@<drone> 'wget -qO-
   http://127.0.0.1:8301/venc'`:
   - `GET /venc` → `{"req_bitrate_kbps", "ring_fill_pct", "full_drops",
-    "frames", "qp"}`. `req_bitrate_kbps` is the REQUESTED rate — what RcAgent last
+    "frames"}`. `req_bitrate_kbps` is the REQUESTED rate — what RcAgent last
     successfully commanded — not a readback of what the encoder programmed;
     the key name says `req_` for that reason. `frames` advancing is the
     cheapest possible "is the camera alive" check, and the one that
     distinguishes a stalled encoder (fps flat, ring empty) from a starved link.
-    `qp` (2026-09-03) is the encoder's QP for the last frame it handed over
-    (`MI_VENC_Stream_t.h265Info.startQual`) — the rate controller's
-    operating point, the only QP readback this SDK has. `vencprobe` polls
-    it at 25 ms into its `s,` lines, which is how a bench sees rate control
-    climb out of a quiet-scene QP floor on a scene change.
+    There is deliberately no `qp`: this SDK has no encoder-QP readback
+    (`h265Info.startQual` is 0 on every frame, no `GetChnStat` QP), and the
+    key that briefly carried it on 2026-09-03 was removed the same night.
   - `GET /snapshot.jpg` → a JPEG straight off the encoder's snapshot channel
     at `venc.snapshot_quality`. Answers 503 on a build without the venc core,
     500 on a capture failure — the two are deliberately distinguishable.
   - `POST /venc/set?k=v`, whitelist `bitrate` / `qp_delta` / `roi_qp` /
-    `max_ipprop` / `min_qp` / `superframe_p_pct` (the last three are
-    volatile encoder pokes, `docs/airtime-model.md` §3). **An
+    `max_ipprop` / `superframe_p_pct` (the last two are volatile encoder
+    pokes, `docs/airtime-model.md` §3; `min_qp` was deleted 2026-09-03). **An
     override is not self-clearing.** RcAgent pushes a bitrate only when its
     computed value changes, so on a parked link whatever you set here holds
     until the next rung change or failsafe entry (measured: 20 s+ with no
@@ -413,19 +411,22 @@ with the detection port). The detection (pts-jump, EMA-period,
 shed-immune) ships in maburd and exports as
 `drone.enc.{vanished_base,vanished_enh,self_idr_refused}` on the sideport
 (Telem wire grew 61→67, then 67→70 for the venc ring stats below, 70→83
-for link-rtt, 83→84 for `roi_qp` — a
+for link-rtt, 83→84 for `roi_qp` and back to 83 the same night when the
+never-filled encoder `qp` byte was dropped — a
 version-mismatched pair just drops T_TELEM on CRC, so telemetry reads
 absent until both ends run the same build; video is unaffected) plus a 5 s
 `frame_ring:` stderr line in `/tmp/mabur.log`.
 
-**Encoder QP vs ROI QP, and the congestion-shed bit (2026-09-03).**
-`drone.enc.qp` is the encoder's own QP for the last frame published (venc
-`startQual`; 0 = unavailable). Until this date the same key carried
-RcAgent's ROI QP *override* and read 0 for entire flights, which the
-flight-0011 analysis mistook for "rate control never moved"
-(`docs/handover-venc-overshoot-2026-09-03.md`). The override now has its
-own key, `drone.enc.roi_qp` (signed delta, `encoder.roi_qp_low/normal`).
-maburtop's encoder row shows both as `qp NN roi -NN`. Alongside,
+**ROI QP, no encoder QP, and the congestion-shed bit (2026-09-03).**
+`drone.enc.roi_qp` is RcAgent's ROI QP *override* as commanded (signed
+delta, `encoder.roi_qp_low/normal`). Until this date the same value was
+exported as `drone.enc.qp`, read 0 for entire flights, and the flight-0011
+analysis mistook it for "rate control never moved"
+(`docs/handover-venc-overshoot-2026-09-03.md`). For a few hours that day
+`drone.enc.qp` carried the encoder's `startQual` instead — which this
+firmware never fills — so the key was deleted rather than shipped as a
+permanent 0: **there is no encoder-QP readback on this SDK.** maburtop's
+encoder row shows `roi -NN`. Alongside,
 `drone.congestion_shed` (Telem flags bit4) is true while
 `RcAgent::run_congestion_guard` holds any shed level — the drone-local
 TxQueue-pressure / USB-failure shed (`docs/link-adaptation.md`, "Drone

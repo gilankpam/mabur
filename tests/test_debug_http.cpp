@@ -15,13 +15,10 @@ TEST(superframe_p_pct_key_whitelisted) {
   CHECK(p.key == "superframe_p_pct");
   CHECK(p.val == 200);
 }
-TEST(min_qp_key_whitelisted) {
-  // Bench knob for the venc-overshoot sweep: volatile u32MinQp, same
-  // apply pattern as max_ipprop.
-  auto p = debug_http_parse("POST /venc/set?min_qp=24 HTTP/1.0");
-  CHECK(p.kind == DebugReq::SET);
-  CHECK(p.key == "min_qp");
-  CHECK(p.val == 24);
+TEST(min_qp_key_rejected) {
+  // Deleted 2026-09-03 with the venc.min_qp config key (bench refuted the
+  // QP-floor hypothesis); a stale bench script must get BAD, not a silent ok.
+  CHECK(debug_http_parse("POST /venc/set?min_qp=24 HTTP/1.0").kind == DebugReq::BAD);
 }
 TEST(max_ipprop_key_whitelisted) {
   auto p = debug_http_parse("POST /venc/set?max_ipprop=2 HTTP/1.0");

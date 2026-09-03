@@ -511,11 +511,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     enc["fps"] = have_telem_rates_ ? json(telem_enc_fps_) : json(nullptr);
     enc["mbps"] = have_telem_rates_ ? json(telem_enc_mbps_) : json(nullptr);
     enc["cmd_kbps"] = t.cmd_kbps;
-    // qp = the encoder's own QP (rate-control operating point, 0 =
-    // unavailable); roi_qp = RcAgent's ROI override (signed delta). Before
-    // 2026-09-03 `qp` carried the ROI value — recordings older than that
-    // read 0 here for the whole flight (docs/data-provenance.md).
-    enc["qp"] = t.qp;
+    // roi_qp = RcAgent's ROI override (signed delta). Before 2026-09-03 the
+    // same value was exported as `enc.qp`; that key is gone — this SDK has
+    // no encoder-QP readback (docs/data-provenance.md).
     enc["roi_qp"] = t.roi_qp;
     enc["ring_drops"] = t.ring_drops;
     enc["idr_disagree"] = t.idr_disagree;

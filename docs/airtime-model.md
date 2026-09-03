@@ -192,6 +192,14 @@ their variance into jitter. Knobs, in order of proven usefulness:
   natural ratio is under the cap.
 - **`venc.qp_delta`** (s32IPQPDelta) is a weak bias: ~2% IDR size per
   QP step (±12 range ≈ ±25% total). Average-shifter, not a bound.
+  **Every RC write stages the whole intent** (`qp_delta` + `max_ipprop`,
+  `g_rc_intent` in `star6e_controls.c`, ported 2026-09-03 from upstream
+  waybeam bf8c3cb / issue #255): `MI_VENC_GetRcParam` returns stale driver
+  defaults for ~5 s after `StartRecvPic`, so a Get→modify→Set of one field
+  in that window silently reverted the other — mabur's boot did exactly
+  that shape (`qp_delta` then `max_ipprop` back-to-back). The encoder
+  loop prints `rc_readback t+10s: … OK|MISMATCH` to `/tmp/mabur.log` so
+  the log proves what the encoder holds, not just what was written.
 - **`venc.superframe_p_pct`** (config, 0=off; also volatile via
   `:8301 /venc/set?superframe_p_pct=N`, 100..1000) programs
   `MI_VENC_SetSuperFrameCfg` REENCODE with a **P-frame** bit threshold of
@@ -205,17 +213,14 @@ their variance into jitter. Knobs, in order of proven usefulness:
   the 2026-09-03 bench motivates it (scene-cut P frames at 2–6× budget,
   `docs/handover-venc-overshoot-2026-09-03.md`); sweep before shipping
   non-zero. Ported 2026-09-03, default 0.
-- **`venc.min_qp`** (config, 0=firmware default; also volatile via
-  `:8301 /venc/set?min_qp=N`, 1..51) programs `u32MinQp`, the CBR QP
-  floor. Added 2026-09-03 as the bench knob for the quiet-scene
-  hypothesis in `docs/handover-venc-overshoot-2026-09-03.md`: a static
-  scene rails at the floor far under the command, and the first frames of
-  motion are then sized by content until the 1 s stat window catches up
-  (17–22 Mb/s against 16 in flight-0011). Raising the floor bounds that
-  deficit at the cost of quiet-scene quality. **Unmeasured** — the boot
-  log prints the firmware's MinQp/MaxQp/MinIQp/MaxIQp the first time it
-  is applied; the sweep (firmware, 20, 24, 28) has not run. Not a
-  shipped default.
+- **`venc.min_qp` / `u32MinQp` — DELETED 2026-09-03, same day it was
+  added.** It was the bench knob for the quiet-scene QP-floor hypothesis
+  in `docs/handover-venc-overshoot-2026-09-03.md`; the bench refuted the
+  hypothesis before the knob was ever run (the burst is scene content,
+  not rate-control recovery), and upstream waybeam's characterisation is
+  that `u32MinQp` acts as a bit *ceiling* that collapses the rate past
+  the scene's natural QP. The firmware's MinQp/MaxQp/MinIQp/MaxIQp are
+  still visible in the `rc_readback t+10s:` log line. Do not rebuild it.
 - **`u32MaxISize` / `u32MaxPSize` are DEAD on star6e** — SetRcParam
   accepts them, `SetRcPriority(FRAMEBITS_FIRST)` succeeds, output is
   bit-identical even at absurd caps (verified at 13× overshoot). The

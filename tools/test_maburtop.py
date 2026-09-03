@@ -41,7 +41,7 @@ DGRAM = {
         "applied": {"mcs": 5, "bw": 20, "vht": False,
                     "overhead_base": 0.25, "overhead_enh": 0.25},
         "rcf": {"age_ms": 45, "rx_pps": 19.4},
-        "enc": {"fps": 59.9, "mbps": 9.21, "cmd_kbps": 9000, "qp": 31,
+        "enc": {"fps": 59.9, "mbps": 9.21, "cmd_kbps": 9000,
                 "roi_qp": -24, "ring_drops": 0},
         "txq": {"depth": 3, "cap": 64, "drop_pps": 0.0, "drops": 0},
         "radio": {"sent_pps": 1461.0, "drops": 0, "usb_fail": 0},
@@ -130,7 +130,7 @@ class DronePanelTest(unittest.TestCase):
         self.assertTrue(rows[0][0].startswith("──"))
         joined = "\n".join(texts(rows))
         for cell in ("LINKED", "gen", "7", "mcs5/20", "ov b0.25/e0.25", "800ms",
-                     "59.9 fps", "9.21 Mbps", "9000k", "qp 31", "roi -24",
+                     "59.9 fps", "9.21 Mbps", "9000k", "roi -24",
                      "shed CONG", "1461",
                      "-58.9", "-58.0", "19.4", " 61", "0.72"):
             self.assertIn(cell, joined)
@@ -623,7 +623,7 @@ class NullRenderTest(unittest.TestCase):
         d = dict(DGRAM)
         d["drone"] = dict(DGRAM["drone"],
                            enc={"fps": None, "mbps": None, "cmd_kbps": 9000,
-                                "qp": 31, "roi_qp": -24, "ring_drops": 0},
+                                "roi_qp": -24, "ring_drops": 0},
                            radio={"sent_pps": None, "drops": 0, "usb_fail": 0},
                            rcf={"age_ms": 45, "rx_pps": None})
         rows = panel_drone(_fresh(d), 100.2)

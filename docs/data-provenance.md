@@ -396,3 +396,12 @@ bit4) is additive the same day: true while the drone-local
 TxQueue-pressure / USB-failure shed holds the enh layer, absent (not
 false) in older recordings — an enh gap in a pre-date recording cannot be
 attributed to congestion after the fact.
+
+**Same night: `drone.enc.qp` deleted.** The encoder `startQual` it was
+re-pointed at reads 0 on every frame this firmware emits (no
+`GetChnStat` QP exists either), so the key and the Telem byte behind it
+were removed rather than shipped as a permanent 0 (Telem 84 → 83). The
+only recordings with a non-zero `drone.enc.qp` would be from the few
+hours between the two changes, and would still be 0. `roi_qp` and
+`congestion_shed` stay. `vencprobe` captures from that window carry a 3rd
+`s,` column (always 0 or −1); both analyzers tolerate its absence.

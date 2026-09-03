@@ -8,7 +8,7 @@ TEST(make_telem_maps_and_saturates) {
   mabur::TelemInputs in;
   in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probing = true;
   in.congestion_shed = true;
-  in.qp = 31; in.roi_qp = -24;
+  in.roi_qp = -24;
   in.generation = 7; in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
   in.applied_ov_base = 0.25;
   in.applied_ov_enh = 0.4;
@@ -36,9 +36,8 @@ TEST(make_telem_maps_and_saturates) {
   // a bench can count congestion sheds and flightreport can attribute an
   // enh gap to congestion rather than RF.
   CHECK(t.flags == 0x1F);
-  // qp is the ENCODER's QP (venc stream startQual), roi_qp the ROI override
-  // RcAgent commanded — two different things that used to share one field.
-  CHECK(t.qp == 31);
+  // roi_qp is the ROI override RcAgent commanded (signed). It was exported
+  // as an unsigned `qp` until 2026-09-03; there is no encoder QP on the wire.
   CHECK(t.roi_qp == -24);
   CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
   // applied_ov_base/enh map straight through — the commanded per-stream

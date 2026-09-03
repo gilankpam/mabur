@@ -18,15 +18,6 @@ typedef struct {
                               * floor ~1.4 at small values (I-QP rails);
                               * useful range 2..4 under rally where IDRs
                               * are already ~1.7x P. */
-  uint8_t min_qp;            /* venc.min_qp: 0 (default) = leave the firmware
-                              * u32MinQp alone; 1..51 = program the H265 CBR
-                              * QP floor at boot. Bench knob for the
-                              * quiet-scene-floor hypothesis in
-                              * docs/handover-venc-overshoot-2026-09-03.md:
-                              * a static scene rails at u32MinQp far under
-                              * the command, and the first frames of motion
-                              * are then sized by content, not budget. Not
-                              * a shipped default until the sweep says so. */
   uint16_t superframe_p_pct; /* venc.superframe_p_pct: 0 (default) = off;
                               * 100..1000 = P-frame ceiling as a percentage
                               * of the rung's per-frame budget

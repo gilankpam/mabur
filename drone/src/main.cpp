@@ -1630,7 +1630,6 @@ int run_real_mode(const Config& cfg) {
           venc_get_stats(&vs);
           ti.venc_full_drops = vs.full_drops;
           ti.venc_ring_fill_pct = static_cast<int>(vs.ring_fill_pct);
-          ti.qp = vs.last_qp;
           // link-rtt t3: pts-domain clock at telem build. Stays 0 (the
           // wire's "unavailable" sentinel) on host builds and when
           // MI_SYS_GetCurPts is unresolved.

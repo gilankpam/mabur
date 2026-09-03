@@ -72,7 +72,6 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.enc_frames = saturate<uint32_t>(in.enc_frames);
   t.enc_kbytes = saturate<uint32_t>(in.enc_bytes / 1024);
   t.cmd_kbps = saturate<uint16_t>(in.cmd_kbps);
-  t.qp = saturate<uint8_t>(in.qp);
   t.roi_qp = saturate<int8_t>(in.roi_qp);
   t.ring_drops = saturate<uint16_t>(in.ring_drops);
   t.txq_depth = saturate<uint8_t>(in.txq_depth);

@@ -34,6 +34,11 @@ static Star6eControlContext g_star6e_control_ctx;
 static uint32_t g_superframe_p_pct;
 static uint32_t g_superframe_last_kbps;
 static int g_superframe_applied;
+/* Last threshold the "> superframe P cap:" line reported, so the line
+ * prints on CHANGE only (rung moves, knob writes) and not on every 5 s
+ * RcAgent re-assert of an unchanged bitrate. */
+static uint32_t g_superframe_logged_bytes;
+static int g_superframe_logged;
 static int apply_superframe_p(uint32_t kbps);
 
 static uint32_t align_down(uint32_t value, uint32_t align)
@@ -121,12 +126,41 @@ int star6e_controls_request_idr(void)
 	return MI_VENC_RequestIdr(chn, 1) == 0 ? 0 : -1;
 }
 
-/* Get->modify->Set of s32IPQPDelta alone: no IDR, no log. Shared by the
- * qp_delta verb and by the SuperFrame guard below (waybeam PR #113 saw
- * SetSuperFrameCfg reset qpDelta to 0 / maxQp to 48 on its path; the
- * 2026-08-27 fork probe did not, so this is belt-and-braces and must not
- * cost a keyframe per bitrate write). */
-static int restage_qp_delta(int delta)
+/* Everything we have asked the rate controller for, kept because
+ * MI_VENC_GetRcParam cannot be trusted to give it back (upstream waybeam
+ * bf8c3cb, issue #255, ported 2026-09-03).
+ *
+ * The SDK does not reflect a just-written s32IPQPDelta in the next Get: it
+ * keeps returning driver defaults until the driver commits the pending
+ * block, measured upstream on SSC338Q as somewhere between t+0 s and
+ * t+5 s after StartRecvPic.  A second Get->modify->Set inside that window
+ * reads a stale 0 and writes it straight back, silently reverting the
+ * earlier apply -- both calls return success and both log it.  mabur's
+ * startup has exactly that shape (qp_delta then max_ipprop back-to-back in
+ * star6e_runtime_apply_startup_controls), and the SuperFrame guard below
+ * re-stages on every bitrate write, so every RC write stages the WHOLE
+ * intent rather than patching a Get.  Ordering and timing then cannot
+ * matter.  star6e_controls_log_rc_readback() (encoder loop, t+10 s)
+ * prints what the encoder actually holds against this intent. */
+static struct {
+	int      qp_delta;    /* s32IPQPDelta (0 = the firmware default) */
+	uint32_t max_ipprop;  /* u32MaxIPProp; 0 = leave the firmware value */
+} g_rc_intent;
+
+/* Firmware u32MaxIPProp, captured on the first Get before any write so the
+ * boot log records what the SDK ships with. */
+static struct {
+	int      captured;
+	uint32_t max_ipprop;
+} g_rc_defaults;
+
+/* Write the whole of g_rc_intent, never a patched Get result -- see the
+ * note on g_rc_intent for why the Get cannot be trusted.  No IDR, no log:
+ * shared by the qp_delta / max_ipprop verbs and by the SuperFrame guard
+ * (waybeam PR #113 saw SetSuperFrameCfg reset qpDelta to 0 / maxQp to 48
+ * on its path; the 2026-08-27 fork probe did not, so that call is
+ * belt-and-braces and must not cost a keyframe per bitrate write). */
+static int rc_commit_intent(void)
 {
 	MI_VENC_ChnAttr_t attr = {0};
 	MI_VENC_RcParam_t param = {0};
@@ -135,19 +169,33 @@ static int restage_qp_delta(int delta)
 		return -1;
 	if (MI_VENC_GetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
 		return -1;
-	if (apply_rc_qp_delta(&attr, &param, delta) != 0)
+	if (apply_rc_qp_delta(&attr, &param, g_rc_intent.qp_delta) != 0)
 		return -1;
+	if (!g_rc_defaults.captured) {
+		g_rc_defaults.max_ipprop = param.stParamH265Cbr.u32MaxIPProp;
+		g_rc_defaults.captured = 1;
+	}
+	if (g_rc_intent.max_ipprop)
+		param.stParamH265Cbr.u32MaxIPProp = g_rc_intent.max_ipprop;
 	return MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) == 0
 		? 0 : -1;
 }
 
 static int apply_qp_delta(int delta)
 {
-	if (restage_qp_delta(delta) != 0)
+	int prev = g_rc_intent.qp_delta;
+
+	if (delta < -12 || delta > 12)
 		return -1;
+	g_rc_intent.qp_delta = delta;
+	if (rc_commit_intent() != 0) {
+		g_rc_intent.qp_delta = prev;
+		return -1;
+	}
 	if (star6e_controls_request_idr() != 0)
 		return -1;
 	printf("> qpDelta changed to %d\n", delta);
+	fflush(stdout);
 	return 0;
 }
 
@@ -182,50 +230,50 @@ static int apply_superframe_p(uint32_t kbps)
 	}
 	g_superframe_applied = bytes != 0;
 	(void)MI_VENC_GetSuperFrameCfg(g_star6e_control_ctx.venc_chn, &back);
-	if (g_star6e_control_ctx.cfg && g_star6e_control_ctx.cfg->qp_delta != 0)
-		rc_qp = restage_qp_delta(g_star6e_control_ctx.cfg->qp_delta);
-	printf("> superframe P cap: %u%% of %u kbps @ %u fps = %u bytes (%s); "
-		"readback mode=%d p_bits=%u qp_restage=%d\n",
-		(unsigned)g_superframe_p_pct, (unsigned)kbps,
-		(unsigned)g_star6e_control_ctx.delivered_fps, (unsigned)bytes,
-		bytes ? "reencode" : "off", (int)back.eSuperFrmMode,
-		(unsigned)back.u32SuperPFrmBitsThr, rc_qp);
-	fflush(stdout);
+	rc_qp = rc_commit_intent();
+	/* Print on change (or on a failed intent re-stage), like max_ipprop:
+	 * with the knob on this runs on every apply_bitrate, i.e. every 5 s
+	 * RcAgent re-assert, and an unchanged threshold is not news. */
+	if (!g_superframe_logged || bytes != g_superframe_logged_bytes ||
+	    rc_qp != 0) {
+		printf("> superframe P cap: %u%% of %u kbps @ %u fps = %u bytes "
+			"(%s); readback mode=%d p_bits=%u rc_restage=%d\n",
+			(unsigned)g_superframe_p_pct, (unsigned)kbps,
+			(unsigned)g_star6e_control_ctx.delivered_fps,
+			(unsigned)bytes, bytes ? "reencode" : "off",
+			(int)back.eSuperFrmMode,
+			(unsigned)back.u32SuperPFrmBitsThr, rc_qp);
+		fflush(stdout);
+		g_superframe_logged = 1;
+		g_superframe_logged_bytes = bytes;
+	}
 	return 0;
 }
 
-/* Set u32MaxIPProp directly on the CBR RC params.  Legal range 1..100
- * (max I-frame size as a multiple of P-frame size).  Get->modify->Set
- * like apply_qp_delta, so every other live RcParam field (s32IPQPDelta
- * included) is preserved.  Prints the CURRENT value before overwriting
- * it, which on the first call is the firmware's compiled-in default —
- * the 2026-08-29 probe found this proportion IS enforced under H265 CBR,
- * unlike u32MaxISize/u32MaxPSize, which were proven dead on hardware. */
+/* Set u32MaxIPProp on the CBR RC params.  Legal range 1..100 (max I-frame
+ * size as a multiple of P-frame size).  Staged through g_rc_intent like
+ * every other RC write, so it can neither be reverted by a later
+ * qp_delta/SuperFrame write nor revert one (issue #255).  Logs the
+ * firmware's own value beside it -- the 2026-08-29 probe found this
+ * proportion IS enforced under H265 CBR, unlike u32MaxISize/u32MaxPSize,
+ * which were proven dead on hardware. */
 static int apply_max_ipprop(uint32_t prop)
 {
-	MI_VENC_ChnAttr_t attr = {0};
-	MI_VENC_RcParam_t param = {0};
+	uint32_t prev = g_rc_intent.max_ipprop;
 
 	if (prop < 1 || prop > 100)
 		return -1;
-
-	if (MI_VENC_GetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0)
+	g_rc_intent.max_ipprop = prop;
+	if (rc_commit_intent() != 0) {
+		g_rc_intent.max_ipprop = prev;
 		return -1;
-	if (attr.rate.mode != I6_VENC_RATEMODE_H265CBR)
-		return -1;
-	if (MI_VENC_GetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
-		return -1;
-	printf("> max_ipprop: current (firmware default or last-set) = %u\n",
-		(unsigned)param.stParamH265Cbr.u32MaxIPProp);
+	}
 	/* stdout is fully buffered once the wrapper redirects it into
 	 * /tmp/mabur.log (not a tty) -- unlike the stats: line (main.cpp,
 	 * stderr, unbuffered), a lone control-verb printf can sit unflushed
 	 * for the life of the process.  Force it out now. */
-	fflush(stdout);
-	param.stParamH265Cbr.u32MaxIPProp = prop;
-	if (MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
-		return -1;
-	printf("> max_ipprop: applied = %u\n", (unsigned)prop);
+	printf("> max_ipprop: applied = %u (firmware default %u)\n",
+		(unsigned)prop, (unsigned)g_rc_defaults.max_ipprop);
 	fflush(stdout);
 	return 0;
 }
@@ -352,6 +400,10 @@ void star6e_controls_bind(Star6ePipelineState *pipeline, const VencCfg *cfg)
 	g_superframe_p_pct = cfg->superframe_p_pct;
 	g_superframe_last_kbps = 0;
 	g_superframe_applied = 0;
+	g_superframe_logged = 0;
+	g_superframe_logged_bytes = 0;
+	memset(&g_rc_intent, 0, sizeof(g_rc_intent));
+	memset(&g_rc_defaults, 0, sizeof(g_rc_defaults));
 }
 
 void star6e_controls_reset(void)
@@ -360,6 +412,10 @@ void star6e_controls_reset(void)
 	g_superframe_p_pct = 0;
 	g_superframe_last_kbps = 0;
 	g_superframe_applied = 0;
+	g_superframe_logged = 0;
+	g_superframe_logged_bytes = 0;
+	memset(&g_rc_intent, 0, sizeof(g_rc_intent));
+	memset(&g_rc_defaults, 0, sizeof(g_rc_defaults));
 }
 
 int star6e_controls_set_superframe_p_pct(uint32_t pct)
@@ -396,48 +452,33 @@ int star6e_controls_set_max_ipprop(uint32_t prop)
 	return apply_max_ipprop(prop);
 }
 
-/* Set u32MinQp on the CBR RC params.  The venc-overshoot hypothesis
- * (docs/handover-venc-overshoot-2026-09-03.md): on a quiet scene the rate
- * controller rails at the firmware's QP floor far under its command, and
- * when motion arrives the first frames are sized by content with no
- * budget pressure until the 1 s stat window catches up.  Raising the
- * floor bounds how far under the command a quiet scene can sit, i.e. the
- * deficit the RC has to climb out of.  Prints the current values first so
- * the log records what the firmware ships with.  No IDR: a QP floor is a
- * constraint on the next frames, not a stream discontinuity. */
-static int apply_min_qp(uint32_t qp)
+void star6e_controls_log_rc_readback(const char *when)
 {
-	MI_VENC_ChnAttr_t attr = {0};
 	MI_VENC_RcParam_t param = {0};
+	const int chn = g_star6e_control_ctx.venc_chn;
+	int held_delta, ok;
+	unsigned held_prop;
 
-	if (qp < 1 || qp > 51)
-		return -1;
-
-	if (MI_VENC_GetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0)
-		return -1;
-	if (attr.rate.mode != I6_VENC_RATEMODE_H265CBR)
-		return -1;
-	if (MI_VENC_GetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
-		return -1;
-	printf("> min_qp: current MinQp=%u MaxQp=%u MinIQp=%u MaxIQp=%u "
-		"(firmware default or last-set)\n",
+	if (MI_VENC_GetRcParam(chn, &param) != 0) {
+		fprintf(stderr, "WARN: rc_readback %s: MI_VENC_GetRcParam failed\n",
+			when);
+		return;
+	}
+	held_delta = param.stParamH265Cbr.s32IPQPDelta;
+	held_prop = (unsigned)param.stParamH265Cbr.u32MaxIPProp;
+	ok = held_delta == g_rc_intent.qp_delta &&
+	     (g_rc_intent.max_ipprop == 0 ||
+	      held_prop == g_rc_intent.max_ipprop);
+	/* stderr: unbuffered into /tmp/mabur.log like the stats: line, so a
+	 * crash a second later still leaves the proof in the log. */
+	fprintf(stderr, "rc_readback %s: IPQPDelta=%d MaxIPProp=%u MinQp=%u "
+		"MaxQp=%u MinIQp=%u MaxIQp=%u intent qp_delta=%d max_ipprop=%u "
+		"%s\n",
+		when, held_delta, held_prop,
 		(unsigned)param.stParamH265Cbr.u32MinQp,
 		(unsigned)param.stParamH265Cbr.u32MaxQp,
 		(unsigned)param.stParamH265Cbr.u32MinIQp,
-		(unsigned)param.stParamH265Cbr.u32MaxIQp);
-	fflush(stdout);
-	if (param.stParamH265Cbr.u32MaxQp != 0 &&
-	    qp > param.stParamH265Cbr.u32MaxQp)
-		return -1;  /* floor above the live ceiling — refuse, don't wedge RC */
-	param.stParamH265Cbr.u32MinQp = qp;
-	if (MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
-		return -1;
-	printf("> min_qp: applied = %u\n", (unsigned)qp);
-	fflush(stdout);
-	return 0;
-}
-
-int star6e_controls_set_min_qp(uint32_t qp)
-{
-	return apply_min_qp(qp);
+		(unsigned)param.stParamH265Cbr.u32MaxIQp,
+		g_rc_intent.qp_delta, (unsigned)g_rc_intent.max_ipprop,
+		ok ? "OK" : "MISMATCH -- the encoder is not holding the intent");
 }

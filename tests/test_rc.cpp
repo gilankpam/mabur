@@ -254,7 +254,7 @@ TEST(telem_round_trip_and_golden) {
   t.rcf_age_ms = 45; t.rcf_seq_echo = 0x1234;
   t.pts_at_build = 0x0011223344556677ull;
   t.rcf_rx = 100000; t.enc_frames = 200000;
-  t.enc_kbytes = 300000; t.cmd_kbps = 9000; t.qp = 8; t.roi_qp = -24;
+  t.enc_kbytes = 300000; t.cmd_kbps = 9000; t.roi_qp = -24;
   t.ring_drops = 1;
   t.txq_depth = 3; t.txq_cap = 64; t.txq_drops = 7; t.txq_wait_max_ms = 1234;
   t.radio_sent = 400000;
@@ -277,7 +277,6 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->pts_at_build == 0x0011223344556677ull);
   CHECK(back->rcf_rx == t.rcf_rx);
   CHECK(back->enc_kbytes == t.enc_kbytes);
-  CHECK(back->qp == 8);
   CHECK(back->roi_qp == -24);
   CHECK(back->txq_wait_max_ms == 1234);
   CHECK(back->radio_sent == t.radio_sent);
@@ -297,8 +296,8 @@ TEST(telem_round_trip_and_golden) {
   // not pass with an empty golden)
   const std::string GOLDEN =
       "43520504030201020706050405191e2d0034127766554433221100a0860100400d0"
-      "300e0930400282308e80100034007000000d204801a0600090000000200333415"
-      "163d034800040005000700080009000a003e796c";
+      "300e09304002823e80100034007000000d204801a0600090000000200333415163d"
+      "034800040005000700080009000a003eff44";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();

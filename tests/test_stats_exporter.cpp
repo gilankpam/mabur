@@ -454,7 +454,7 @@ TEST(drone_section_null_then_rates) {
   t.tlm_seq = 1; t.state = 2; t.enc_frames = 1000; t.enc_kbytes = 1000;
   t.rcf_rx = 100; t.radio_sent = 5000; t.up_rssi[1] = 52; t.soc_temp_c = 61;
   t.idr_disagree = 1; t.enhance_disagree = 2;
-  t.qp = 31; t.roi_qp = -24;
+  t.roi_qp = -24;
   t.flags = 0x14;  // probing + congestion_shed set, failsafe_shed/radio_rx_ok clear
   in.telem = t; in.telem_rx_ms = 1400;
   ex.poll(1500, in);
@@ -470,8 +470,8 @@ TEST(drone_section_null_then_rates) {
   CHECK(j["drone"]["radio_rx_ok"] == false);
   CHECK(j["drone"]["probing"] == true);
   CHECK(j["drone"]["congestion_shed"] == true);
-  // enc.qp is the encoder's own QP; enc.roi_qp the ROI override (signed).
-  CHECK(j["drone"]["enc"]["qp"] == 31);
+  // enc.roi_qp is the ROI override (signed); there is no enc.qp key.
+  CHECK(!j["drone"]["enc"].contains("qp"));
   CHECK(j["drone"]["enc"]["roi_qp"] == -24);
   t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;
   t.rcf_rx = 120; t.radio_sent = 6460;

@@ -134,13 +134,13 @@ struct Telem {
   uint32_t enc_frames = 0;
   uint32_t enc_kbytes = 0;
   uint16_t cmd_kbps = 0;
-  // Encoder QP of the last frame published (venc stream startQual, the
-  // rate controller's operating point). 0 = unavailable (host build, or no
-  // frame yet). Until 2026-09-03 this byte carried the ROI QP override and
-  // read 0 for whole flights — see roi_qp.
-  uint8_t qp = 0;
   // RcAgent's ROI QP override as last commanded (actuator.last_roi_qp;
-  // encoder.roi_qp_low/normal, e.g. -24 / 0). Signed delta QP.
+  // encoder.roi_qp_low/normal, e.g. -24 / 0). Signed delta QP. Until
+  // 2026-09-03 an unsigned `qp` byte carried this same value under the
+  // wrong name; for a few hours that day it carried the encoder's
+  // startQual instead, which this firmware never fills, so the byte was
+  // dropped (Telem 84 -> 83) — there is no encoder-QP readback on the
+  // wire, by design (docs/data-provenance.md).
   int8_t roi_qp = 0;
   uint16_t ring_drops = 0;  // saturating
   uint8_t txq_depth = 0, txq_cap = 0;

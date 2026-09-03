@@ -51,7 +51,6 @@ struct TelemInputs {
   uint64_t pts_at_build_us = 0;
   uint64_t enc_frames = 0, enc_bytes = 0;
   int cmd_kbps = 0;
-  int qp = 0;      // encoder QP (VencStats::last_qp; 0 = unavailable)
   int roi_qp = 0;  // RcAgent's ROI override as commanded (actuator.last_roi_qp)
   uint64_t ring_drops = 0;
   size_t txq_depth = 0, txq_cap = 0;

@@ -171,14 +171,6 @@ static int star6e_runtime_apply_startup_controls(Star6eRunnerContext *ctx)
 				(unsigned)cfg->max_ipprop);
 	}
 
-	/* 0 = leave the firmware u32MinQp; same non-fatal contract. */
-	if (cfg->min_qp > 0) {
-		if (star6e_controls_set_min_qp(cfg->min_qp) != 0)
-			fprintf(stderr,
-				"WARN: min_qp %u not applied\n",
-				(unsigned)cfg->min_qp);
-	}
-
 	return 0;
 }
 
@@ -295,6 +287,7 @@ void *star6e_runtime_encoder_loop(void *opaque)
 	struct timespec cus3a_ts_last = {0};
 	struct timespec run_start;
 	int cold_boot_fps_kick_done = 0;
+	int rc_readback_done = 0;
 	unsigned int idle_counter = 0;
 	int faulted = 0;
 
@@ -363,6 +356,21 @@ void *star6e_runtime_encoder_loop(void *opaque)
 			    (now.tv_nsec - run_start.tv_nsec) / 1e9 >= 1.5) {
 				star6e_pipeline_cold_boot_fps_rekick(&ctx->ps);
 				cold_boot_fps_kick_done = 1;
+			}
+		}
+
+		/* One-shot RC readback at t+10 s, past the ~5 s window in which
+		 * MI_VENC_GetRcParam still returns stale driver defaults
+		 * (waybeam #255): the only proof that the boot-time qp_delta /
+		 * max_ipprop are what the encoder holds, since the writes
+		 * themselves report success either way. */
+		if (!rc_readback_done) {
+			struct timespec now;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			if ((now.tv_sec - run_start.tv_sec) +
+			    (now.tv_nsec - run_start.tv_nsec) / 1e9 >= 10.0) {
+				star6e_controls_log_rc_readback("t+10s");
+				rc_readback_done = 1;
 			}
 		}
 	}
