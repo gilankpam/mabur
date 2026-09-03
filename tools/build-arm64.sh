@@ -222,11 +222,14 @@ export MABUR_MPP_ROOT="$PWD/toolchain/mpp-arm64"
 #        and some pull in extra libusb example plumbing not worth static-linking
 #        here. MABUR_BUILD_TESTS=OFF: the host test suite needs a host-runnable
 #        libusb + GoogleTest et al; irrelevant for a cross artifact.
+# Per-chip OFF list: see the note in tools/build-arm.sh — a new devourer
+# DEVOURER_<chip> option defaults ON and opts itself in on the next sync.
 cmake -S . -B build-arm64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-musl.cmake \
   -DCMAKE_BUILD_TYPE=Release -DMABUR_BUILD_TESTS=OFF -DMABUR_BUILD_DRONE=OFF \
   -DMABUR_BUILD_GS=ON -DDEVOURER_JAGUAR1=OFF -DDEVOURER_8814=OFF \
   -DDEVOURER_JAGUAR2_8822B=OFF -DDEVOURER_JAGUAR2_8821C=OFF \
   -DDEVOURER_JAGUAR3_8822C=OFF -DDEVOURER_JAGUAR3_8822E=ON \
+  -DDEVOURER_8733B=OFF \
   -DDEVOURER_KESTREL_8852B=OFF -DDEVOURER_KESTREL_8852C=OFF \
   -DDEVOURER_LOG_MAX_LEVEL=WARN \
   -DMABUR_PLAYER_HW=ON -DMABUR_MPP_ROOT="$MABUR_MPP_ROOT" -DMABUR_DRM_ROOT="$MABUR_DRM_ROOT"

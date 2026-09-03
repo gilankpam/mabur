@@ -72,11 +72,18 @@ export PKG_CONFIG_SYSROOT_DIR=""
 CPATH="$MABUR_GLIBC_STAGING/include${CPATH:+:$CPATH}"
 export CPATH
 
+# Every chip we do not fly is switched OFF by name. New devourer releases add
+# new DEVOURER_<chip> options that default ON, so they opt themselves in on the
+# next sync: DEVOURER_8733B did exactly that on 2026-09-03 and cost +385 KB
+# (982 KB -> 1.37 MB) on a rootfs with ~3 MB free that holds two maburd
+# generations. After syncing ../devourer, diff its CMakeLists option() lines
+# against this list.
 cmake -S . -B build-arm-glibc -DCMAKE_TOOLCHAIN_FILE=cmake/arm-openipc.cmake \
   -DCMAKE_BUILD_TYPE=Release -DMABUR_BUILD_TESTS=OFF \
   -DDEVOURER_JAGUAR1=OFF -DDEVOURER_8814=OFF -DDEVOURER_JAGUAR2_8822B=OFF \
   -DDEVOURER_JAGUAR2_8821C=OFF -DDEVOURER_JAGUAR3_8822C=OFF \
-  -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_KESTREL_8852B=OFF \
+  -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_8733B=OFF \
+  -DDEVOURER_KESTREL_8852B=OFF \
   -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
 # linkbench-tx / txagcbench-tx are the drone-side halves of the two bench
 # harnesses (bench/txagcbench/run_sweep.sh expects out/arm/txagcbench-tx).
