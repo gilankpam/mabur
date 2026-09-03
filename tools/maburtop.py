@@ -418,7 +418,7 @@ def render_rows_compact(model, wall, width):
             f"ENC     {_f(enc.get('fps'), 5, 1)} fps   "
             f"{_f(enc.get('mbps'), 5, 2)} Mbps   "
             f"cmd {_f(enc.get('cmd_kbps'), 5)}k   "
-            f"qp {_f(enc.get('qp'), 2)}   "
+            f"qp {_f(enc.get('qp'), 2)} roi {_f(enc.get('roi_qp'), 3)}   "
             f"ring {_f(enc.get('ring_drops'), 5)}   "
             f"dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}   "
             f"van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}   "
@@ -445,7 +445,8 @@ def render_rows_compact(model, wall, width):
             f"SYS     soc {_f(soc, 3)}C   "
             f"rf delta {_f(sys_d.get('thermal_delta'), 3)}   "
             f"load {_f(sys_d.get('load'), 4, 2)}   "
-            f"radio rx {_f(rx_s, 4)}"
+            f"radio rx {_f(rx_s, 4)}   "
+            f"shed {(_shed_cell(drone) or '--').ljust(4)}"
         )
 
     # --- link-wide residual (per-stream delivery now lives on the dec lines)
@@ -591,6 +592,19 @@ def panel_topbar(model, wall):
     return rows
 
 
+def _shed_cell(drone):
+    """Which shed holds the enh layer: FS (failsafe, rung 0 / lost link)
+    wins over CONG (drone-local TxQueue-pressure or USB-failure shed,
+    sideport drone.congestion_shed, 2026-09-03), else "off". None when the
+    recording predates the congestion key, so it renders as dashes."""
+    if drone.get("failsafe_shed"):
+        return "FS"
+    cong = drone.get("congestion_shed")
+    if cong is None:
+        return None
+    return "CONG" if cong else "off"
+
+
 def panel_drone(model, wall):
     d = model.d or {}
     link = d.get("link") or {}
@@ -643,6 +657,7 @@ def panel_drone(model, wall):
     line3 = (f"encoder   {_f(enc.get('fps'), 5, 1)} fps    "
              f"{_f(enc.get('mbps'), 5, 2)} Mbps    "
              f"cmd {_f(enc.get('cmd_kbps'), 5)}k   qp {_f(enc.get('qp'), 2)}"
+             f" roi {_f(enc.get('roi_qp'), 3)}"
              f"   ring {_f(enc.get('ring_drops'), 5)}"
              f"   dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}"
              f"   van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}"
@@ -727,6 +742,12 @@ def panel_drone(model, wall):
         line8 += "    radio rx DEAF"
         idx = line8.rindex("DEAF")
         spans8.append((idx, len("DEAF"), "bad"))
+    shed = _shed_cell(drone)
+    shed_s = (shed if shed is not None else "--").ljust(4)
+    line8 += f"    shed {shed_s}"
+    if shed in ("FS", "CONG"):
+        idx = line8.rindex(shed_s)
+        spans8.append((idx, len(shed_s), "warn"))
     body.append((line8, spans8))
 
     return _panel("DRONE", body)

@@ -109,7 +109,12 @@ struct Telem {
   uint16_t tlm_seq = 0;
   uint8_t state = 0;            // RcAgent::State numeric
   uint8_t flags = 0;  // bit0 failsafe_shed, bit1 radio_rx_ok, bit2 probing,
-                      // bit3 rcf_seq_echo valid (link-rtt)
+                      // bit3 rcf_seq_echo valid (link-rtt),
+                      // bit4 congestion_shed (RcAgent::run_congestion_guard
+                      //      shed_level >= 1: TxQueue pressure / USB failure;
+                      //      distinct from bit0 so a bench can count sheds
+                      //      and flightreport can attribute an enh gap to
+                      //      congestion rather than RF — 2026-09-03)
   uint32_t generation = 0;
   uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
   double applied_ov_base = 0.0;
@@ -129,7 +134,14 @@ struct Telem {
   uint32_t enc_frames = 0;
   uint32_t enc_kbytes = 0;
   uint16_t cmd_kbps = 0;
+  // Encoder QP of the last frame published (venc stream startQual, the
+  // rate controller's operating point). 0 = unavailable (host build, or no
+  // frame yet). Until 2026-09-03 this byte carried the ROI QP override and
+  // read 0 for whole flights — see roi_qp.
   uint8_t qp = 0;
+  // RcAgent's ROI QP override as last commanded (actuator.last_roi_qp;
+  // encoder.roi_qp_low/normal, e.g. -24 / 0). Signed delta QP.
+  int8_t roi_qp = 0;
   uint16_t ring_drops = 0;  // saturating
   uint8_t txq_depth = 0, txq_cap = 0;
   uint32_t txq_drops = 0;

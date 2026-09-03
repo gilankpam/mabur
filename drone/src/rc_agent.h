@@ -135,6 +135,12 @@ class RcAgent {
   // that isn't otherwise exposed. All same-thread reads (the agent thread
   // owns both RcAgent and the telemetry collector call site in main.cpp).
   bool failsafe_shed() const { return failsafe_shed_; }
+  // True while run_congestion_guard holds any shed level (TxQueue at/past
+  // half cap, or USB TX failures) — Telem flags bit4. Reported separately
+  // from failsafe_shed so a shed caused by the encoder overshooting its
+  // command (flight-0011) is countable on the bench and attributable in
+  // flightreport, instead of vanishing into an unexplained enh gap.
+  bool congestion_shed() const { return shed_level_ > 0; }
   bool have_feedback() const { return have_last_fb_; }
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }

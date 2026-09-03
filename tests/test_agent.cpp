@@ -540,9 +540,14 @@ TEST(congestion_shed_escalates_and_recovers) {
   auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
   CHECK(agent.current().shed[1] == false);
+  CHECK(agent.congestion_shed() == false);
 
   agent.tick(100, RadioHealth{0, 5});  // drops rose 0->5: level 1 (shed enh)
   CHECK(agent.current().shed[1] == true);
+  // Telemetry accessor (flags bit4): any level >= 1 is "congestion shed",
+  // independent of failsafe_shed() — this test never leaves LINKED.
+  CHECK(agent.congestion_shed() == true);
+  CHECK(agent.failsafe_shed() == false);
 
   agent.tick(200, RadioHealth{0, 10});  // drops rose 5->10: level 2 (still sheds enh — no 2nd layer left to differentiate)
   CHECK(agent.current().shed[1] == true);

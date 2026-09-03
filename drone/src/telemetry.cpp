@@ -56,7 +56,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.state = static_cast<uint8_t>(in.state);
   t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) | (in.radio_rx_ok ? 0x02 : 0) |
                                   (in.probing ? 0x04 : 0) |
-                                  (in.rcf_seq_echo_valid ? 0x08 : 0));
+                                  (in.rcf_seq_echo_valid ? 0x08 : 0) |
+                                  (in.congestion_shed ? 0x10 : 0));
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
   // Per-stream applied overhead: the commanded op pair (Task 6, RC_VERSION
@@ -72,6 +73,7 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.enc_kbytes = saturate<uint32_t>(in.enc_bytes / 1024);
   t.cmd_kbps = saturate<uint16_t>(in.cmd_kbps);
   t.qp = saturate<uint8_t>(in.qp);
+  t.roi_qp = saturate<int8_t>(in.roi_qp);
   t.ring_drops = saturate<uint16_t>(in.ring_drops);
   t.txq_depth = saturate<uint8_t>(in.txq_depth);
   t.txq_cap = saturate<uint8_t>(in.txq_cap);

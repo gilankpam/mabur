@@ -14,6 +14,10 @@
 typedef struct {
 	uint32_t sensor_framerate;
 	unsigned int frame_counter;
+	/* h265Info.startQual of the last stream handed over — the encoder's
+	 * QP for that frame. Written on the encoder thread, read relaxed by
+	 * venc_get_stats() (telemetry / debug endpoint). */
+	unsigned int last_qp;
 } Star6eVideoState;
 
 /** Reset video state to uninitialized (safe to reuse). */

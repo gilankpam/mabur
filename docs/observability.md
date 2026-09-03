@@ -359,11 +359,16 @@ read the sideport. Reach for other tools only in these cases:**
   fatal. It is reachable only from the drone, so `ssh root@<drone> 'wget -qO-
   http://127.0.0.1:8301/venc'`:
   - `GET /venc` → `{"req_bitrate_kbps", "ring_fill_pct", "full_drops",
-    "frames"}`. `req_bitrate_kbps` is the REQUESTED rate — what RcAgent last
+    "frames", "qp"}`. `req_bitrate_kbps` is the REQUESTED rate — what RcAgent last
     successfully commanded — not a readback of what the encoder programmed;
     the key name says `req_` for that reason. `frames` advancing is the
     cheapest possible "is the camera alive" check, and the one that
     distinguishes a stalled encoder (fps flat, ring empty) from a starved link.
+    `qp` (2026-09-03) is the encoder's QP for the last frame it handed over
+    (`MI_VENC_Stream_t.h265Info.startQual`) — the rate controller's
+    operating point, the only QP readback this SDK has. `vencprobe` polls
+    it at 25 ms into its `s,` lines, which is how a bench sees rate control
+    climb out of a quiet-scene QP floor on a scene change.
   - `GET /snapshot.jpg` → a JPEG straight off the encoder's snapshot channel
     at `venc.snapshot_quality`. Answers 503 on a build without the venc core,
     500 on a capture failure — the two are deliberately distinguishable.
@@ -405,10 +410,30 @@ Full findings: `docs/venc-ring-vanish-findings-2026-08-12.md` (committed
 with the detection port). The detection (pts-jump, EMA-period,
 shed-immune) ships in maburd and exports as
 `drone.enc.{vanished_base,vanished_enh,self_idr_refused}` on the sideport
-(Telem wire grew 61→67, then 67→70 for the venc ring stats below — a
+(Telem wire grew 61→67, then 67→70 for the venc ring stats below, 70→83
+for link-rtt, 83→84 for `roi_qp` — a
 version-mismatched pair just drops T_TELEM on CRC, so telemetry reads
 absent until both ends run the same build; video is unaffected) plus a 5 s
 `frame_ring:` stderr line in `/tmp/mabur.log`.
+
+**Encoder QP vs ROI QP, and the congestion-shed bit (2026-09-03).**
+`drone.enc.qp` is the encoder's own QP for the last frame published (venc
+`startQual`; 0 = unavailable). Until this date the same key carried
+RcAgent's ROI QP *override* and read 0 for entire flights, which the
+flight-0011 analysis mistook for "rate control never moved"
+(`docs/handover-venc-overshoot-2026-09-03.md`). The override now has its
+own key, `drone.enc.roi_qp` (signed delta, `encoder.roi_qp_low/normal`).
+maburtop's encoder row shows both as `qp NN roi -NN`. Alongside,
+`drone.congestion_shed` (Telem flags bit4) is true while
+`RcAgent::run_congestion_guard` holds any shed level — the drone-local
+TxQueue-pressure / USB-failure shed (`docs/link-adaptation.md`, "Drone
+congestion shed") — distinct from `failsafe_shed` (rung 0 / lost link).
+A shed enh layer is silence to the GS ladder, so this bit is the only way
+to attribute an enh gap to congestion rather than RF, and the only way a
+bench can count sheds at all. maburtop's system row renders the pair as
+`shed FS|CONG|off`. The drone `stats:` stderr line carries `enc_pk100=`,
+the peak 100 ms encoder byte rate (kbit/s, decimal) inside that stats
+second — the burst the 1 Hz `drone.enc.mbps` average hides.
 
 Since the venc fold-in (spec 2026-08-28) the drone also reports the
 PRODUCER side of that ring, straight from `venc_get_stats()`:

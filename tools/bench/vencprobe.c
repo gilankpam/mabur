@@ -63,13 +63,16 @@ static uint32_t slot_stride(uint32_t slot_data_size)
  * and truncate that window instead of reporting the collision as encoder
  * behaviour. Reads atomics only — no verb lock, so it cannot perturb the
  * thing being measured. */
-static int get_req_bitrate(int port)
+static int get_req_bitrate(int port, int *qp)
 {
 	struct sockaddr_in sa;
 	const char *req = "GET /venc HTTP/1.1\r\nHost: 127.0.0.1\r\n"
 			  "Connection: close\r\n\r\n";
 	char resp[512], *p;
 	int fd, n, val = -1;
+
+	if (qp)
+		*qp = -1;
 
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0)
@@ -89,6 +92,13 @@ static int get_req_bitrate(int port)
 			p = strstr(resp, "\"req_bitrate_kbps\":");
 			if (p)
 				val = atoi(p + strlen("\"req_bitrate_kbps\":"));
+			/* Encoder QP of the last published frame (VencStats
+			 * last_qp, 2026-09-03). The only per-frame-ish QP
+			 * readback without touching the ring meta (which is
+			 * the FrameHdr wire format, kFrameHdrLen == 8). */
+			p = strstr(resp, "\"qp\":");
+			if (p && qp)
+				*qp = atoi(p + strlen("\"qp\":"));
 		}
 	}
 	close(fd);
@@ -188,7 +198,7 @@ int main(int argc, char **argv)
 	       low, high, dwell_ms, cycles);
 	printf("# f,mono_us,write_idx,len,pts_us,flags,enc_us\n");
 	printf("# c,mono_us_before,mono_us_after,kbps,ok\n");
-	printf("# s,mono_us,req_bitrate_kbps  (25 ms poll; a change we did not command is RcAgent)\n");
+	printf("# s,mono_us,req_bitrate_kbps,qp  (25 ms poll; a change we did not command is RcAgent; qp = encoder startQual of the last frame, -1 if the daemon predates it)\n");
 	fflush(stdout);
 
 	uint64_t last_w = __atomic_load_n(&hdr->write_idx, __ATOMIC_ACQUIRE);
@@ -218,9 +228,10 @@ int main(int argc, char **argv)
 
 		uint64_t now = mono_us();
 		if (now >= next_poll_us) {
-			int req = get_req_bitrate(port);
+			int qp = -1;
+			int req = get_req_bitrate(port, &qp);
 			uint64_t tp = mono_us();
-			printf("s,%llu,%d\n", (unsigned long long)tp, req);
+			printf("s,%llu,%d,%d\n", (unsigned long long)tp, req, qp);
 			next_poll_us = tp + 25000ull;
 		}
 

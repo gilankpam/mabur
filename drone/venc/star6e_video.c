@@ -27,6 +27,8 @@ size_t star6e_video_send_frame(Star6eVideoState *state,
 		return 0;
 
 	state->frame_counter++;
+	__atomic_store_n(&state->last_qp, stream->h265Info.startQual,
+		__ATOMIC_RELAXED);
 
 	return star6e_output_send_frame(output, stream);
 }

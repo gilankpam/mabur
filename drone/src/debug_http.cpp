@@ -144,10 +144,11 @@ void handle_stats(int fd) {
   char body[192];
   int bn = std::snprintf(
       body, sizeof(body),
-      "{\"req_bitrate_kbps\":%d,\"ring_fill_pct\":%u,\"full_drops\":%llu,\"frames\":%u}\n",
+      "{\"req_bitrate_kbps\":%d,\"ring_fill_pct\":%u,\"full_drops\":%llu,"
+      "\"frames\":%u,\"qp\":%d}\n",
       vs.cur_bitrate_kbps, static_cast<unsigned>(vs.ring_fill_pct),
       static_cast<unsigned long long>(vs.full_drops),
-      static_cast<unsigned>(vs.frames_encoded));
+      static_cast<unsigned>(vs.frames_encoded), vs.last_qp);
   send_json(fd, "200 OK", std::string(body, bn > 0 ? static_cast<size_t>(bn) : 0));
 #else
   send_json(fd, "503 Service Unavailable", "{\"error\":\"disabled\"}\n");

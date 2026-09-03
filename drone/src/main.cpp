@@ -1535,6 +1535,7 @@ int run_real_mode(const Config& cfg) {
           TelemInputs ti;
           ti.state = static_cast<int>(agent.state());
           ti.failsafe_shed = agent.failsafe_shed();
+          ti.congestion_shed = agent.congestion_shed();
           ti.probing = agent.probing();
           // "advanced in the last 2 s" (spec) approximated as "advanced over
           // the last telemetry tick" (~1 s here) — the collector runs on this
@@ -1584,7 +1585,12 @@ int run_real_mode(const Config& cfg) {
           ti.enc_frames = enc_frames_total.load(std::memory_order_relaxed);
           ti.enc_bytes = enc_bytes_total.load(std::memory_order_relaxed);
           ti.cmd_kbps = actuator.last_bitrate_kbps;
-          ti.qp = actuator.last_roi_qp;
+          // roi_qp is what RcAgent COMMANDED (the ROI override); the
+          // encoder's own QP comes from venc_get_stats below and stays 0
+          // on host builds. They were one field until 2026-09-03, and the
+          // flight-0011 analysis read the ROI value as the rate
+          // controller's — docs/handover-venc-overshoot-2026-09-03.md.
+          ti.roi_qp = actuator.last_roi_qp;
           ti.ring_drops = ring_drops_total.load(std::memory_order_relaxed);
           ti.txq_depth = txq.depth();
           ti.txq_cap = kTxQueueCap;
@@ -1615,6 +1621,7 @@ int run_real_mode(const Config& cfg) {
           venc_get_stats(&vs);
           ti.venc_full_drops = vs.full_drops;
           ti.venc_ring_fill_pct = static_cast<int>(vs.ring_fill_pct);
+          ti.qp = vs.last_qp;
           // link-rtt t3: pts-domain clock at telem build. Stays 0 (the
           // wire's "unavailable" sentinel) on host builds and when
           // MI_SYS_GetCurPts is unresolved.

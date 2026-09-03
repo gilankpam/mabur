@@ -378,3 +378,21 @@ comparing `loss_pct` across the fix, subtract the non-video rate
 (`cards[].classes.msp.pps + ctrl.pps`, over `inj_pps`) from the old
 values, or compare `pre_fec_loss` instead.
 
+
+## 2026-09-03: `drone.enc.qp` changes meaning; `roi_qp` and `congestion_shed` added
+
+Before this date the sideport key `drone.enc.qp` (Telem byte `qp`) was
+RcAgent's **ROI QP override** (`actuator.last_roi_qp`, 0 = normal,
+`encoder.roi_qp_low` when the bitrate sat under `roi_threshold_kbps`).
+It read 0 for whole flights and says nothing about the encoder's rate
+control — flight-0011's analysis fell for exactly that
+(`docs/handover-venc-overshoot-2026-09-03.md`). From this date
+`drone.enc.qp` is the **encoder's QP** for the last frame it published
+(venc `startQual`, 0 = unavailable — host build or no frame yet) and the
+override lives in the new `drone.enc.roi_qp` (signed). Do not compare a
+`qp` column across the date: an old recording's 0 is "ROI normal", a new
+recording's 30-ish is a real QP. `drone.congestion_shed` (Telem flags
+bit4) is additive the same day: true while the drone-local
+TxQueue-pressure / USB-failure shed holds the enh layer, absent (not
+false) in older recordings — an enh gap in a pre-date recording cannot be
+attributed to congestion after the fact.

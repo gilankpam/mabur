@@ -432,6 +432,8 @@ void venc_get_stats(VencStats *out)
 	 * the ring". full_drops below is the difference. */
 	out->frames_encoded = (uint32_t)__atomic_load_n(
 		&g_ctx.ps.video.frame_counter, __ATOMIC_RELAXED);
+	out->last_qp = (int)__atomic_load_n(&g_ctx.ps.video.last_qp,
+		__ATOMIC_RELAXED);
 
 	/* Straight from the shm ring header rather than the output's cached
 	 * copy, so a stalled encoder cannot serve a stale fill to RcAgent. */

@@ -37,11 +37,12 @@ DGRAM = {
     "drone": {
         "tlm_age_ms": 800, "tlm_seq": 4211, "state": "linked",
         "gen": 7, "failsafe_shed": False, "radio_rx_ok": True,
+        "congestion_shed": True,
         "applied": {"mcs": 5, "bw": 20, "vht": False,
                     "overhead_base": 0.25, "overhead_enh": 0.25},
         "rcf": {"age_ms": 45, "rx_pps": 19.4},
-        "enc": {"fps": 59.9, "mbps": 9.21, "cmd_kbps": 9000, "qp": 8,
-                "ring_drops": 0},
+        "enc": {"fps": 59.9, "mbps": 9.21, "cmd_kbps": 9000, "qp": 31,
+                "roi_qp": -24, "ring_drops": 0},
         "txq": {"depth": 3, "cap": 64, "drop_pps": 0.0, "drops": 0},
         "radio": {"sent_pps": 1461.0, "drops": 0, "usb_fail": 0},
         "uplink": {"rssi_a": -58.9, "rssi_b": -58.0, "snr_a": 21.0, "snr_b": 22.0},
@@ -129,9 +130,23 @@ class DronePanelTest(unittest.TestCase):
         self.assertTrue(rows[0][0].startswith("──"))
         joined = "\n".join(texts(rows))
         for cell in ("LINKED", "gen", "7", "mcs5/20", "ov b0.25/e0.25", "800ms",
-                     "59.9 fps", "9.21 Mbps", "9000k", "qp  8", "1461",
+                     "59.9 fps", "9.21 Mbps", "9000k", "qp 31", "roi -24",
+                     "shed CONG", "1461",
                      "-58.9", "-58.0", "19.4", " 61", "0.72"):
             self.assertIn(cell, joined)
+
+    def test_shed_cell_states(self):
+        # failsafe wins the label (rung-0 forced shed), then congestion,
+        # then a plain "-" when neither; an old recording without the
+        # congestion key renders "--" not a crash.
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"], failsafe_shed=True, congestion_shed=True)
+        self.assertIn("shed FS", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+        d["drone"] = dict(DGRAM["drone"], failsafe_shed=False, congestion_shed=False)
+        self.assertIn("shed off", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+        d["drone"] = dict(DGRAM["drone"])
+        del d["drone"]["congestion_shed"]
+        self.assertIn("shed --", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
 
     def test_null_telemetry_single_line(self):
         d = dict(DGRAM, drone=None)
@@ -608,7 +623,7 @@ class NullRenderTest(unittest.TestCase):
         d = dict(DGRAM)
         d["drone"] = dict(DGRAM["drone"],
                            enc={"fps": None, "mbps": None, "cmd_kbps": 9000,
-                                "qp": 8, "ring_drops": 0},
+                                "qp": 31, "roi_qp": -24, "ring_drops": 0},
                            radio={"sent_pps": None, "drops": 0, "usb_fail": 0},
                            rcf={"age_ms": 45, "rx_pps": None})
         rows = panel_drone(_fresh(d), 100.2)

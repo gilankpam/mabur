@@ -495,6 +495,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["failsafe_shed"] = (t.flags & 0x01) != 0;
     d["radio_rx_ok"] = (t.flags & 0x02) != 0;
     d["probing"] = (t.flags & 0x04) != 0;
+    // TxQueue-pressure / USB-failure shed (drone-local, flags bit4). A
+    // shed enh layer is silence to the ladder, so this bit is the only way
+    // to tell a congestion-caused enh gap from an RF one.
+    d["congestion_shed"] = (t.flags & 0x10) != 0;
     d["applied"] = {{"mcs", mcs},
                     {"bw", bw},
                     {"vht", mode == mabur::rc::PhyMode::VHT},
@@ -507,7 +511,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     enc["fps"] = have_telem_rates_ ? json(telem_enc_fps_) : json(nullptr);
     enc["mbps"] = have_telem_rates_ ? json(telem_enc_mbps_) : json(nullptr);
     enc["cmd_kbps"] = t.cmd_kbps;
+    // qp = the encoder's own QP (rate-control operating point, 0 =
+    // unavailable); roi_qp = RcAgent's ROI override (signed delta). Before
+    // 2026-09-03 `qp` carried the ROI value — recordings older than that
+    // read 0 here for the whole flight (docs/data-provenance.md).
     enc["qp"] = t.qp;
+    enc["roi_qp"] = t.roi_qp;
     enc["ring_drops"] = t.ring_drops;
     enc["idr_disagree"] = t.idr_disagree;
     enc["enhance_disagree"] = t.enhance_disagree;

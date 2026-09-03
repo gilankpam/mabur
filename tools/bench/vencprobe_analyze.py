@@ -44,7 +44,9 @@ def load(path):
             cmds.append(dict(tb=int(p[1]), ta=int(p[2]), kbps=int(p[3]),
                              ok=int(p[4])))
         elif p[0] == 's':
-            polls.append(dict(t=int(p[1]), kbps=int(p[2])))
+            # 3rd column (encoder qp) added 2026-09-03; older captures lack it.
+            polls.append(dict(t=int(p[1]), kbps=int(p[2]),
+                              qp=int(p[3]) if len(p) > 3 else None))
     return frames, cmds, polls
 
 

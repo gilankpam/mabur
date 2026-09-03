@@ -55,7 +55,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 14;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 83;  // grew by 10: rcf_seq_echo (u16) + pts_at_build (u64)
+constexpr size_t TELEM_LEN = 84;  // 83 + roi_qp (i8), 2026-09-03 venc-overshoot observability
 
 }  // namespace
 
@@ -204,6 +204,7 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put32(body, t.enc_kbytes);
   put16(body, t.cmd_kbps);
   body.push_back(t.qp);
+  body.push_back(static_cast<uint8_t>(t.roi_qp));
   put16(body, t.ring_drops);
   body.push_back(t.txq_depth);
   body.push_back(t.txq_cap);
@@ -257,28 +258,29 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.enc_kbytes = get32(buf, 35);
   t.cmd_kbps = get16(buf, 39);
   t.qp = buf[41];
-  t.ring_drops = get16(buf, 42);
-  t.txq_depth = buf[44];
-  t.txq_cap = buf[45];
-  t.txq_drops = get32(buf, 46);
-  t.txq_wait_max_ms = get16(buf, 50);
-  t.radio_sent = get32(buf, 52);
-  t.radio_drops = get32(buf, 56);
-  t.usb_fail = get16(buf, 60);
-  t.up_rssi[0] = buf[62];
-  t.up_rssi[1] = buf[63];
-  t.up_snr[0] = static_cast<int8_t>(buf[64]);
-  t.up_snr[1] = static_cast<int8_t>(buf[65]);
-  t.soc_temp_c = static_cast<int8_t>(buf[66]);
-  t.thermal_delta = static_cast<int8_t>(buf[67]);
-  t.load_x100 = get16(buf, 68);
-  t.idr_disagree = get16(buf, 70);
-  t.enhance_disagree = get16(buf, 72);
-  t.vanished_base = get16(buf, 74);
-  t.vanished_enh = get16(buf, 76);
-  t.self_idr_refused = get16(buf, 78);
-  t.venc_full_drops = get16(buf, 80);
-  t.venc_ring_fill_pct = buf[82];
+  t.roi_qp = static_cast<int8_t>(buf[42]);
+  t.ring_drops = get16(buf, 43);
+  t.txq_depth = buf[45];
+  t.txq_cap = buf[46];
+  t.txq_drops = get32(buf, 47);
+  t.txq_wait_max_ms = get16(buf, 51);
+  t.radio_sent = get32(buf, 53);
+  t.radio_drops = get32(buf, 57);
+  t.usb_fail = get16(buf, 61);
+  t.up_rssi[0] = buf[63];
+  t.up_rssi[1] = buf[64];
+  t.up_snr[0] = static_cast<int8_t>(buf[65]);
+  t.up_snr[1] = static_cast<int8_t>(buf[66]);
+  t.soc_temp_c = static_cast<int8_t>(buf[67]);
+  t.thermal_delta = static_cast<int8_t>(buf[68]);
+  t.load_x100 = get16(buf, 69);
+  t.idr_disagree = get16(buf, 71);
+  t.enhance_disagree = get16(buf, 73);
+  t.vanished_base = get16(buf, 75);
+  t.vanished_enh = get16(buf, 77);
+  t.self_idr_refused = get16(buf, 79);
+  t.venc_full_drops = get16(buf, 81);
+  t.venc_ring_fill_pct = buf[83];
   return t;
 }
 

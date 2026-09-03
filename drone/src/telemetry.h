@@ -35,6 +35,7 @@ struct TelemInputs {
   bool failsafe_shed = false;
   bool radio_rx_ok = false;
   bool probing = false;  // RcAgent::probing() — spec 2026-08-05 s3-probe-promote
+  bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
   uint64_t generation = 0;
   rc::PhyMode mode = rc::PhyMode::HT;
   uint8_t mcs = 0, bw = 20;
@@ -49,7 +50,9 @@ struct TelemInputs {
   bool rcf_seq_echo_valid = false;
   uint64_t pts_at_build_us = 0;
   uint64_t enc_frames = 0, enc_bytes = 0;
-  int cmd_kbps = 0, qp = 0;
+  int cmd_kbps = 0;
+  int qp = 0;      // encoder QP (VencStats::last_qp; 0 = unavailable)
+  int roi_qp = 0;  // RcAgent's ROI override as commanded (actuator.last_roi_qp)
   uint64_t ring_drops = 0;
   size_t txq_depth = 0, txq_cap = 0;
   uint64_t txq_drops = 0;

@@ -33,6 +33,12 @@ typedef struct {
   uint32_t ring_fill_pct;   /* 0..100 */
   uint32_t frames_encoded;  /* lifetime */
   int cur_bitrate_kbps;     /* last applied via venc_set_bitrate_kbps, -1 before first */
+  int last_qp;              /* startQual of the last frame the encoder handed
+                             * us (MI_VENC_Stream_t h265Info) — the rate
+                             * controller's operating point, base and enh
+                             * frames alike. 0 = no frame yet. The only
+                             * encoder-QP readback this SDK offers; there is
+                             * no GetChnStat QP. */
 } VencStats;
 void venc_get_stats(VencStats *out);
 
