@@ -13,7 +13,8 @@ static const char* kLive = R"({
   "v": 1, "seq": 42, "t_ms": 1000, "session": 7,
   "cards": [
     {"id": 0, "up": true,
-     "classes": {"s0": {"rssi": -58.4, "snr": 18.2, "pps": 136.0}}},
+     "classes": {"s0": {"rssi": -58.4, "snr": 18.2, "evm": -22.5,
+                        "pps": 136.0}}},
     {"id": 1, "up": true,
      "classes": {"s0": {"rssi": -71.0, "snr": 9.0, "pps": 130.0}}}
   ],
@@ -46,7 +47,13 @@ TEST(parses_a_live_datagram) {
   CHECK(s.cards[0].heard);
   CHECK(*s.cards[0].rssi_dbm < -58.3 && *s.cards[0].rssi_dbm > -58.5);
   CHECK(*s.cards[0].snr_db > 18.1 && *s.cards[0].snr_db < 18.3);
+  REQUIRE(s.cards[0].evm_db.has_value());
+  CHECK(*s.cards[0].evm_db > -22.6 && *s.cards[0].evm_db < -22.4);
   CHECK(s.cards[1].id == 1);
+  // Card 1's s0 carries no "evm" at all: absent, and it must NOT cost the
+  // card its heard status (see the evm_db comment in gs_snapshot.h).
+  CHECK(!s.cards[1].evm_db.has_value());
+  CHECK(s.cards[1].heard);
   // link.rtt (link-rtt 2026-09-02): control-path RTT + the pts offset the
   // player folds into its own anchor for the absolute LAT floor.
   REQUIRE(s.rtt_ms.has_value());
@@ -106,6 +113,7 @@ TEST(card_without_s0_is_present_but_unheard) {
   CHECK(!s.cards[0].heard);
   CHECK(!s.cards[0].rssi_dbm.has_value());
   CHECK(!s.cards[0].snr_db.has_value());
+  CHECK(!s.cards[0].evm_db.has_value());
 }
 
 // A card whose s0 exists but carries nulls is also unheard.
@@ -117,6 +125,32 @@ TEST(card_with_null_s0_values_is_unheard) {
   REQUIRE(parse(j, &s));
   REQUIRE(s.cards.size() == 1);
   CHECK(!s.cards[0].heard);
+}
+
+// EVM is the one s0 figure the chip may simply not report on an otherwise
+// perfectly healthy card: the aggregator leaves evm_has false until a frame
+// arrives with PHY status, and the exporter then writes null. That absence
+// must render as a blank EVM field, NEVER as an unheard card -- so it stays
+// out of `heard`, which is worst-of(rssi, snr) and nothing else.
+TEST(null_evm_leaves_a_heard_card_heard) {
+  const char* j = R"({"v":1,"cards":[
+      {"id":0,"up":true,"classes":{"s0":{"rssi":-50.0,"snr":15.0,
+                                         "evm":null}}}],
+    "link":{}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  REQUIRE(s.cards.size() == 1);
+  CHECK(s.cards[0].heard);
+  CHECK(!s.cards[0].evm_db.has_value());
+  // Same for a wrong-typed evm: it drops on its own, like every other field.
+  const char* j2 = R"({"v":1,"cards":[
+      {"id":0,"up":true,"classes":{"s0":{"rssi":-50.0,"snr":15.0,
+                                         "evm":"clean"}}}],
+    "link":{}})";
+  REQUIRE(parse(j2, &s));
+  REQUIRE(s.cards.size() == 1);
+  CHECK(s.cards[0].heard);
+  CHECK(!s.cards[0].evm_db.has_value());
 }
 
 // Schema v1 is additive-only: consumers MUST ignore keys they do not know.

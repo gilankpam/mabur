@@ -111,6 +111,8 @@ std::string fmt_clock(int seconds);    // mm:ss, saturating at 99:59
 // Cards are a fixed set of slots: kMaxCards bounds the block, and a slot
 // past the reported card count simply renders nothing.
 constexpr int kMaxCards = 4;
+// Stride of one card slot in GsFieldId. See the card block in the enum.
+constexpr int kFieldsPerCard = 6;
 
 enum class GsFieldId {
   kRung = 0,
@@ -126,14 +128,22 @@ enum class GsFieldId {
   kFpsLabel,
   kJit,
   kMbps,
-  // Card slots: FIVE fields per card, contiguous per slot. Five and not
-  // four because the design colours every element of a row independently --
-  // the id and unit in kTextLabel, the RSSI by status, the SNR in
+  // Card slots: SIX fields per card, contiguous per slot. Split this finely
+  // because the design colours every element of a row independently -- the
+  // id and unit in kTextLabel, the RSSI by status, the SNR and EVM in
   // kTextSecondary -- and one field can carry only one colour.
-  kCard0Id, kCard0Bars, kCard0Rssi, kCard0Unit, kCard0Snr,
-  kCard1Id, kCard1Bars, kCard1Rssi, kCard1Unit, kCard1Snr,
-  kCard2Id, kCard2Bars, kCard2Rssi, kCard2Unit, kCard2Snr,
-  kCard3Id, kCard3Bars, kCard3Rssi, kCard3Unit, kCard3Snr,
+  //
+  // EVM (2026-09-04) was INSERTED here rather than appended at the tail, the
+  // one exception to the rule above: card_field() addresses a slot as
+  // kCard0Id + slot * 6 + which, so the block has to stay contiguous and
+  // uniformly strided. That shifts every id after it, which is safe because
+  // these values are compile-time only -- they index the shadow vector and
+  // set draw order, and are never stored, transmitted or persisted. Anything
+  // NOT part of the card block still appends at the tail.
+  kCard0Id, kCard0Bars, kCard0Rssi, kCard0Unit, kCard0Snr, kCard0Evm,
+  kCard1Id, kCard1Bars, kCard1Rssi, kCard1Unit, kCard1Snr, kCard1Evm,
+  kCard2Id, kCard2Bars, kCard2Rssi, kCard2Unit, kCard2Snr, kCard2Evm,
+  kCard3Id, kCard3Bars, kCard3Rssi, kCard3Unit, kCard3Snr, kCard3Evm,
   // Tail-latency row (Task 12): headline p99 e2e + that frame's own
   // 7-segment breakdown. Appended, never inserted -- see the comment atop
   // this enum.
@@ -269,13 +279,14 @@ class GsOverlay {
     const MaskAtlas* secondary = nullptr;
     int left = 0, bottom = 0, gap16 = 0, row_pitch = 0;
     int id_w = 0, bar_block_w = 0, bar_block_h = 0, rssi_w = 0, unit_w = 0;
+    int snr_w = 0;
     std::string rssi_worst;
   };
 
   FieldState state_of_(const GsSnapshot& snap, bool stale, const GsPlayerState& ps,
                        GsFieldId id) const;
   void draw_field_(GsFieldId id, const FieldState& st, const Surface& s);
-  // Places slot `slot`'s five fields with their row's bottom edge at
+  // Places slot `slot`'s kFieldsPerCard fields with their row's bottom edge at
   // `row_bottom`, using card_geom_. Shared by layout() (initial,
   // kMaxCards-reserved positions) and update() (re-anchored to `bottom`
   // for however many cards are actually active).
