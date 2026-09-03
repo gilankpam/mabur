@@ -31,7 +31,11 @@
     "fps": 60,
     "gop_s": 2.0,
     "qp_delta": -4,
-    "resilience": "rally",
+    "intra_refresh_rows": 4,
+    "intra_refresh_qp": 36,
+    "ref_base": 1,
+    "ref_enhance": 1,
+    "ref_pred": true,
     "roi": {
       "enabled": true,
       "steps": 2,

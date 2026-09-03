@@ -4,7 +4,6 @@
 #include "star6e_awb.h"
 
 #include "codec_types.h"
-#include "intra_refresh.h"
 #include "isp_runtime.h"
 #include "pipeline_common.h"
 #include "venc_cfg.h"
@@ -618,11 +617,11 @@ static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
 }
 
 static int star6e_pipeline_pre_start_apply_ref_pred(MI_VENC_CHN chn,
-	const VencPresetOut *preset);
+	const VencCfg *cfg);
 
 static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	uint32_t bitrate, uint32_t framerate, uint32_t gop,
-	const VencPresetOut *preset, MI_VENC_CHN *chn)
+	const VencCfg *cfg, int *svct_applied, MI_VENC_CHN *chn)
 {
 	MI_VENC_ChnAttr_t attr = {0};
 	MI_U32 bit_rate_bits;
@@ -655,7 +654,16 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	/* SDK convention: SetRefParam must be called between CreateChn and
 	 * StartRecvPic.  Star6E silently no-ops the call if invoked after
 	 * StartRecvPic, producing a flat single-layer stream. */
-	(void)star6e_pipeline_pre_start_apply_ref_pred(*chn, preset);
+	{
+		/* The call is NOT nested in the out-param check: SetRefParam is
+		 * a bitstream change, not a report, and a caller that does not
+		 * want the flag must still get the pyramid. */
+		int applied =
+			star6e_pipeline_pre_start_apply_ref_pred(*chn, cfg) == 0;
+
+		if (svct_applied)
+			*svct_applied = applied;
+	}
 
 	ret = MI_VENC_StartRecvPic(*chn);
 	if (ret != 0) {
@@ -673,182 +681,121 @@ static void star6e_pipeline_stop_venc(MI_VENC_CHN chn)
 	MI_VENC_DestroyChn(chn);
 }
 
-static Star6eIntraRefreshStatus g_intra_status;
-static pthread_mutex_t g_intra_status_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-void star6e_pipeline_intra_refresh_status(Star6eIntraRefreshStatus *out)
-{
-	if (!out)
-		return;
-	pthread_mutex_lock(&g_intra_status_mutex);
-	*out = g_intra_status;
-	pthread_mutex_unlock(&g_intra_status_mutex);
-}
-
-/* Compute IntraRefresh derived params from the expanded resilience preset.
- * Out param is always populated; mode is also returned for caller
- * convenience. */
-static IntraRefreshMode star6e_pipeline_intra_refresh_derive(
-	const VencPresetOut *preset, double explicit_gop_sec, uint32_t height,
-	uint32_t fps, IntraRefreshDerived *out_ir)
-{
-	IntraRefreshMode mode = INTRA_MODE_OFF;
-
-	memset(out_ir, 0, sizeof(*out_ir));
-	if (preset) {
-		mode = intra_refresh_parse_mode(preset->intra_refresh_mode);
-		intra_refresh_compute(mode, height, fps,
-			preset->intra_refresh_lines,
-			preset->intra_refresh_qp,
-			explicit_gop_sec, out_ir);
-	}
-	return mode;
-}
-
+/* Rolling intra refresh (GDR) — venc.intra_refresh_rows CTU rows forced
+ * intra per P-frame at venc.intra_refresh_qp, straight onto
+ * MI_VENC_IntraRefresh_t.  rows == 0 is the off switch and makes no SDK
+ * call at all.
+ *
+ * `height` is the ENCODED picture height, not cfg->height: config already
+ * rejected a rows value wider than the configured venc.size, but
+ * pipeline_common_clamp_image_size() can shrink the picture to what the
+ * sensor actually delivers, and a stripe wider than the picture would
+ * reach the SDK.  Hence the clamp below survives even though config
+ * validates — the two guard different heights.
+ *
+ * Returns 1 when the stripe is live, 0 when it is off or could not be
+ * applied — never fatal, the stream works without rolling refresh. */
 static int star6e_pipeline_apply_intra_refresh(MI_VENC_CHN chn,
-	const VencPresetOut *preset, double explicit_gop_sec, uint32_t height,
-	uint32_t fps)
+	const VencCfg *cfg, uint32_t height, uint32_t fps)
 {
-	MI_VENC_IntraRefresh_t cfg;
-	Star6eIntraRefreshStatus snap;
-	IntraRefreshDerived ir;
-	IntraRefreshMode mode;
-	const char *name;
+	MI_VENC_IntraRefresh_t ir;
+	uint16_t total_rows;
+	uint32_t rows;
+	uint32_t sweep_frames;
 
-	memset(&snap, 0, sizeof(snap));
-	mode = star6e_pipeline_intra_refresh_derive(preset, explicit_gop_sec,
-		height, fps, &ir);
-	name = intra_refresh_mode_name(mode);
-
-	snprintf(snap.mode_name, sizeof(snap.mode_name), "%s", name);
-	snap.mi_supported = g_mi_venc.fnSetIntraRefresh ? 1 : 0;
-	if (preset) {
-		snap.requested_lines  = preset->intra_refresh_lines;
-		snap.requested_qp     = preset->intra_refresh_qp;
-		snap.explicit_gop_sec = explicit_gop_sec;
-	}
-	snap.target_ms             = ir.target_ms;
-	snap.total_rows            = ir.total_rows;
-	snap.effective_lines_per_p = ir.lines;
-	snap.lines_clamped         = ir.lines_clamped;
-	snap.effective_qp          = ir.req_iqp;
-	snap.effective_gop_sec     = ir.gop_overridden ? snap.explicit_gop_sec : ir.gop_sec;
-	snap.gop_auto              = ir.gop_overridden ? 0 : (ir.gop_sec > 0.0);
-
-	if (mode == INTRA_MODE_OFF) {
-		pthread_mutex_lock(&g_intra_status_mutex);
-		g_intra_status = snap;
-		pthread_mutex_unlock(&g_intra_status_mutex);
+	if (!cfg || cfg->intra_refresh_rows == 0)
+		return 0;
+	if (!g_mi_venc.fnSetIntraRefresh) {
+		fprintf(stderr, "[venc] WARNING: intra_refresh_rows=%u requested "
+			"but libmi_venc.so does not export MI_VENC_SetIntraRefresh\n",
+			cfg->intra_refresh_rows);
 		return 0;
 	}
-	if (!g_mi_venc.fnSetIntraRefresh) {
-		fprintf(stderr, "[venc] WARNING: intraRefreshMode=%s requested "
-			"but libmi_venc.so does not export MI_VENC_SetIntraRefresh\n",
-			name);
-		pthread_mutex_lock(&g_intra_status_mutex);
-		g_intra_status = snap;
-		pthread_mutex_unlock(&g_intra_status_mutex);
-		return -1;
-	}
-	if (ir.lines_clamped) {
-		fprintf(stderr, "[venc] WARNING: intraRefreshLines exceeds picture "
-			"LCU rows=%u, clamped\n", ir.total_rows);
-	}
-	if (ir.gop_overridden) {
-		fprintf(stderr, "[venc] intra auto-GOP suppressed: explicit "
-			"gopSize=%.2fs\n", snap.explicit_gop_sec);
+
+	total_rows = venc_cfg_ctu_rows((uint16_t)height);
+	rows = cfg->intra_refresh_rows;
+	if (total_rows && rows > total_rows) {
+		fprintf(stderr, "[venc] WARNING: intra_refresh_rows=%u exceeds "
+			"the %u CTU rows of the %ux%u picture actually encoded, "
+			"clamped\n", rows, total_rows, cfg->width, height);
+		rows = total_rows;
 	}
 
-	memset(&cfg, 0, sizeof(cfg));
-	cfg.bEnable = 1;
-	cfg.u32RefreshLineNum = ir.lines;
-	cfg.u32ReqIQp = ir.req_iqp;
+	memset(&ir, 0, sizeof(ir));
+	ir.bEnable = 1;
+	ir.u32RefreshLineNum = rows;
+	ir.u32ReqIQp = cfg->intra_refresh_qp;
 
-	if (MI_VENC_SetIntraRefresh(chn, &cfg) != 0) {
+	if (MI_VENC_SetIntraRefresh(chn, &ir) != 0) {
 		fprintf(stderr, "[venc] ERROR: MI_VENC_SetIntraRefresh(chn=%d, "
-			"lines=%u, qp=%u) failed\n", chn,
-			cfg.u32RefreshLineNum, cfg.u32ReqIQp);
-		pthread_mutex_lock(&g_intra_status_mutex);
-		g_intra_status = snap;
-		pthread_mutex_unlock(&g_intra_status_mutex);
-		return -1;
+			"rows=%u, qp=%u) failed\n", chn, ir.u32RefreshLineNum,
+			ir.u32ReqIQp);
+		return 0;
 	}
-	snap.apply_ok = 1;
-	snap.active   = 1;
-	pthread_mutex_lock(&g_intra_status_mutex);
-	g_intra_status = snap;
-	pthread_mutex_unlock(&g_intra_status_mutex);
-	fprintf(stderr, "[venc] intraRefresh: mode=%s lines/P=%u qp=%u "
-		"gop=%.2fs (%s)\n", name, cfg.u32RefreshLineNum, cfg.u32ReqIQp,
-		snap.effective_gop_sec, snap.gop_auto ? "auto" : "explicit");
-	return 0;
+
+	/* Report the derived sweep the operator did NOT have to compute: how
+	 * many frames one top-to-bottom pass takes, and the effective window
+	 * once SVC-T is accounted for — a stripe landing in a non-referenced
+	 * frame never enters the DPB, so the real self-heal window is the
+	 * nominal sweep x (ref_enhance + 1).  It wants to be under the GOP,
+	 * or the IDR is doing the recovering rather than the stripe. */
+	sweep_frames = rows ? (total_rows + rows - 1u) / rows : 0u;
+	{
+		uint32_t eff = sweep_frames *
+			(cfg->ref_base ? (uint32_t)cfg->ref_enhance + 1u : 1u);
+
+		fprintf(stderr, "[venc] intraRefresh: chn=%d rows=%u/%u qp=%u "
+			"sweep=%uf/%.0fms eff=%uf/%.0fms gop=%.2fs\n", chn,
+			rows, total_rows, ir.u32ReqIQp,
+			sweep_frames,
+			fps ? sweep_frames * 1000.0 / fps : 0.0,
+			eff, fps ? eff * 1000.0 / fps : 0.0, cfg->gop_s);
+	}
+	return 1;
 }
 
-static Star6eRefPredStatus g_ref_pred_status;
-static pthread_mutex_t g_ref_pred_status_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-void star6e_pipeline_ref_pred_status(Star6eRefPredStatus *out)
-{
-	if (!out)
-		return;
-	pthread_mutex_lock(&g_ref_pred_status_mutex);
-	*out = g_ref_pred_status;
-	pthread_mutex_unlock(&g_ref_pred_status_mutex);
-}
-
-/* SVC-T reference structure — driven by the resilience preset's refBase.
- * Disabled means SDK default single-layer reference (one P references the
- * previous P).
+/* SVC-T reference structure — venc.ref_base / ref_enhance / ref_pred onto
+ * MI_VENC_ParamRef_t.  ref_base == 0 disables SVC-T outright: no SDK call,
+ * and the encoder runs its default flat single-reference P chain.
  *
  * Star6E SDK requires SetRefParam to land between CreateChn and
  * StartRecvPic — calling it later silently no-ops (verified with the
  * test_ref_pred harness: bitstream identical at any post-Start value).
  * Therefore this helper is invoked from star6e_pipeline_start_venc()
- * immediately after CreateChn. */
+ * immediately after CreateChn.
+ *
+ * Returns 0 when the pyramid is live (the caller turns that into
+ * output.svct_active, which gates the TRAIL_R -> TRAIL_N rewrite), -1
+ * when SVC-T is off or the call failed. */
 static int star6e_pipeline_pre_start_apply_ref_pred(MI_VENC_CHN chn,
-	const VencPresetOut *preset)
+	const VencCfg *cfg)
 {
 	MI_VENC_ParamRef_t ref;
-	Star6eRefPredStatus snap;
 
-	memset(&snap, 0, sizeof(snap));
-	snap.mi_supported = g_mi_venc.fnSetRefParam ? 1 : 0;
-	if (preset) {
-		snap.base    = preset->ref_base;
-		snap.enhance = preset->ref_enhance;
-		snap.pred    = preset->ref_pred ? 1 : 0;
-	}
-
-	if (!preset || preset->ref_base == 0)
-		goto publish;
+	if (!cfg || cfg->ref_base == 0)
+		return -1;
 	if (!g_mi_venc.fnSetRefParam) {
-		fprintf(stderr, "[venc] WARNING: refBase=%u requested but "
+		fprintf(stderr, "[venc] WARNING: ref_base=%u requested but "
 			"libmi_venc.so does not export MI_VENC_SetRefParam\n",
-			preset->ref_base);
-		goto publish;
+			cfg->ref_base);
+		return -1;
 	}
 
 	memset(&ref, 0, sizeof(ref));
-	ref.u32Base     = preset->ref_base;
-	ref.u32Enhance  = preset->ref_enhance ? preset->ref_enhance : 1;
-	ref.bEnablePred = preset->ref_pred ? 1 : 0;
+	ref.u32Base     = cfg->ref_base;
+	ref.u32Enhance  = cfg->ref_enhance;
+	ref.bEnablePred = cfg->ref_pred ? 1 : 0;
 
 	if (MI_VENC_SetRefParam(chn, &ref) != 0) {
 		fprintf(stderr, "[venc] ERROR: MI_VENC_SetRefParam(chn=%d, "
 			"base=%u, enhance=%u, pred=%u) failed\n", chn,
 			ref.u32Base, ref.u32Enhance, ref.bEnablePred);
-		goto publish;
+		return -1;
 	}
-	snap.apply_ok = 1;
-	snap.active   = 1;
 	fprintf(stderr, "[venc] refPred: chn=%d base=%u enhance=%u pred=%u "
 		"(applied pre-Start)\n", chn, ref.u32Base, ref.u32Enhance,
 		ref.bEnablePred);
-publish:
-	pthread_mutex_lock(&g_ref_pred_status_mutex);
-	g_ref_pred_status = snap;
-	pthread_mutex_unlock(&g_ref_pred_status_mutex);
-	return snap.active ? 0 : (preset && preset->ref_base > 0 ? -1 : 0);
+	return 0;
 }
 
 static void star6e_pipeline_sysfs_write(const char *path, const char *value)
@@ -912,7 +859,6 @@ typedef struct {
 	SensorSelectConfig sensor_cfg;
 	SensorUnlockConfig sensor_unlock;
 	SensorStrategy     sensor_strategy;
-	VencPresetOut      preset;              /* expanded venc.resilience */
 	char               isp_bin_path[256];   /* "" if no bin should be loaded;
 	                                         * resolved by bind_and_finalize_pipeline()
 	                                         * after we know the live sensor name */
@@ -923,7 +869,7 @@ typedef struct {
 	uint32_t           sensor_framerate;
 	uint32_t           venc_max_rate;
 	uint32_t           venc_gop_size;
-	double             gop_sec;             /* preset GOP, else venc.gop_s */
+	double             gop_sec;             /* venc.gop_s */
 	uint32_t           exposure_cap_us;
 	Star6ePrecropRect  precrop;
 } Star6ePipelineConfig;
@@ -935,15 +881,7 @@ static int prepare_pipeline_config(const VencCfg *cfg,
 {
 	memset(pconf, 0, sizeof(*pconf));
 
-	/* Unknown preset is a boot failure — mabur has no fall-back-to-off
-	 * migration shim (CLAUDE.md: a bad config key must not boot). */
-	if (venc_cfg_expand_preset(cfg, &pconf->preset) != 0) {
-		fprintf(stderr, "ERROR: unknown venc.resilience preset '%s'\n",
-			cfg->resilience);
-		return -1;
-	}
-	pconf->gop_sec = pconf->preset.gop_overridden ? pconf->preset.gop_s
-		: cfg->gop_s;
+	pconf->gop_sec = cfg->gop_s;
 
 	pconf->sensor_width    = cfg->width;
 	pconf->sensor_height   = cfg->height;
@@ -1316,12 +1254,6 @@ void star6e_pipeline_stop(Star6ePipelineState *state)
 	g_last_isp_bin_path[0] = '\0';
 	g_cus3a_handoff_done = 0;
 
-	/* Clear the IntraRefresh status snapshot — the channel it described is
-	 * about to be destroyed. */
-	pthread_mutex_lock(&g_intra_status_mutex);
-	memset(&g_intra_status, 0, sizeof(g_intra_status));
-	pthread_mutex_unlock(&g_intra_status_mutex);
-
 	star6e_output_teardown(&state->output);
 
 	/* Tear down the JPEG snapshot channel first — it's bound to the same
@@ -1378,6 +1310,11 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 	Star6ePipelineConfig pconf;
 	uint32_t venc_fps;
 	int ret;
+	/* Captured from the two apply helpers BEFORE bind_and_finalize_pipeline()
+	 * memsets state->output, then written into the output tagging fields
+	 * afterwards (see the block below its call). */
+	int svct_applied = 0;
+	int gdr_applied = 0;
 
 	if (!state || !cfg)
 		return -1;
@@ -1444,28 +1381,16 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 	 * exceeds the recorded sensor.fps (e.g. GOP=60 instead of 288 @144). */
 	pconf.venc_gop_size = pipeline_common_gop_frames(pconf.gop_sec, venc_fps);
 
-	/* IntraRefresh auto-GOP: when the preset's intra mode != off and it did
-	 * not pin a GOP, override the GOP frame count so each IDR aligns with
-	 * one full GDR pass. */
-	{
-		IntraRefreshDerived ir;
-		IntraRefreshMode mode = star6e_pipeline_intra_refresh_derive(
-			&pconf.preset, pconf.gop_sec, pconf.image_height,
-			venc_fps, &ir);
-		if (mode != INTRA_MODE_OFF && !ir.gop_overridden && ir.gop_frames > 0)
-			pconf.venc_gop_size = ir.gop_frames;
-	}
-
 	ret = star6e_pipeline_start_venc(pconf.image_width, pconf.image_height,
 		pconf.venc_max_rate, venc_fps, pconf.venc_gop_size,
-		&pconf.preset, &state->venc_channel);
+		cfg, &svct_applied, &state->venc_channel);
 	if (ret != 0)
 		goto fail_vpe;
 
-	/* IntraRefresh — driven by the resilience preset.  Failure is logged
-	 * but not fatal: stream still works without rolling refresh. */
-	(void)star6e_pipeline_apply_intra_refresh(state->venc_channel,
-		&pconf.preset, pconf.gop_sec, pconf.image_height, venc_fps);
+	/* IntraRefresh.  Failure is logged but not fatal: the stream still
+	 * works without rolling refresh. */
+	gdr_applied = star6e_pipeline_apply_intra_refresh(state->venc_channel,
+		cfg, pconf.image_height, venc_fps);
 
 	/* SVC-T reference pyramid (refPred) is applied inside
 	 * star6e_pipeline_start_venc() before StartRecvPic — the SDK
@@ -1480,19 +1405,19 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 	 * whole output struct and would otherwise zero these GDR/SVC-T
 	 * tagging fields. */
 	{
-		Star6eIntraRefreshStatus ir_status;
-		Star6eRefPredStatus ref_status;
-		uint32_t clen;
+		uint32_t clen = 0;
 
-		star6e_pipeline_intra_refresh_status(&ir_status);
-		star6e_pipeline_ref_pred_status(&ref_status);
-		state->output.gdr_active = ir_status.active && ir_status.apply_ok;
-		state->output.svct_active = ref_status.active && ref_status.apply_ok;
-		clen = (state->output.gdr_active && ir_status.total_rows &&
-			ir_status.effective_lines_per_p)
-			? (ir_status.total_rows + ir_status.effective_lines_per_p - 1) /
-				ir_status.effective_lines_per_p
-			: 0;
+		state->output.gdr_active = gdr_applied;
+		state->output.svct_active = svct_applied;
+		if (gdr_applied && cfg->intra_refresh_rows) {
+			uint16_t total = venc_cfg_ctu_rows(
+				(uint16_t)pconf.image_height);
+			uint32_t rows = cfg->intra_refresh_rows;
+
+			if (total && rows > total)
+				rows = total;  /* same clamp as the apply site */
+			clen = (total + rows - 1u) / rows;
+		}
 		state->output.gdr_cycle_len = clen > 255 ? 255 : (uint8_t)clen;
 		state->output.gdr_counter = 0;
 	}

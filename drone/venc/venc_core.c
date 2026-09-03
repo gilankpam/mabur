@@ -255,8 +255,8 @@ int venc_core_start(const VencCfg *cfg, const VencCallbacks *cb)
 	/* One call, because the ported runtime already performs waybeam's
 	 * whole prepare→init order in it: MI dlopen (star6e_mi_init) →
 	 * MI_SYS_Init → star6e_pipeline_start, which is sensor select +
-	 * unlock → VIF/VPE → preset expansion (venc_cfg_expand_preset) →
-	 * VENC create at VENC_BOOT_BITRATE_KBPS → refPred/intra-refresh →
+	 * unlock → VIF/VPE → VENC create at VENC_BOOT_BITRATE_KBPS →
+	 * refPred/intra-refresh →
 	 * JPEG chn7 → frame ring create (VENC_RING_NAME) → AWB thread; then
 	 * apply_startup_controls → controls_bind → CUS3A/AE thread →
 	 * qp_delta.  Splitting it here would only re-order the SDK calls

@@ -199,7 +199,9 @@ void parse_encoder(const json& j, EncoderCfg& e) {
 void parse_venc(const json& j, VencSectionCfg& v) {
   check_known_keys(j,
                     {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
-                     "max_ipprop", "superframe_p_pct", "resilience",
+                     "max_ipprop", "superframe_p_pct",
+                     "intra_refresh_rows", "intra_refresh_qp",
+                     "ref_base", "ref_enhance", "ref_pred",
                      "roi", "ae_fps", "awb_fps", "snapshot_quality",
                      "debug_port"},
                     "venc");
@@ -269,15 +271,48 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     v.core.superframe_p_pct = static_cast<uint16_t>(p);
   }
 
-  if (j.contains("resilience")) {
-    std::string s;
-    assign_if_present(j, "resilience", s, "venc");
-    if (s.size() >= sizeof(v.core.resilience))
-      fail("venc.resilience", "too long");
-    if (!venc_cfg_preset_known(s.c_str()))
-      fail("venc.resilience", "unknown preset");
-    std::snprintf(v.core.resilience, sizeof(v.core.resilience), "%s", s.c_str());
+  // Error-resilience structure: the five components venc.resilience used to
+  // name a preset for (deleted 2026-09-04). Each lands on an MI struct field
+  // verbatim, so the checks below are the hardware's own limits, not policy.
+  // Parsed AFTER "size" because the rows bound depends on the picture height.
+  if (j.contains("intra_refresh_rows")) {
+    int rows = 0;
+    assign_if_present(j, "intra_refresh_rows", rows, "venc");
+    if (rows < 0 || rows > UINT16_MAX)
+      fail("venc.intra_refresh_rows", "must be >= 0");
+    v.core.intra_refresh_rows = static_cast<uint16_t>(rows);
   }
+
+  if (j.contains("intra_refresh_qp")) {
+    int qp = 0;
+    assign_if_present(j, "intra_refresh_qp", qp, "venc");
+    if (qp < 1 || qp > 51) fail("venc.intra_refresh_qp", "must be in [1,51]");
+    v.core.intra_refresh_qp = static_cast<uint8_t>(qp);
+  }
+
+  if (j.contains("ref_base")) {
+    int base = 0;
+    assign_if_present(j, "ref_base", base, "venc");
+    if (base < 0 || base > 255)
+      fail("venc.ref_base", "must be 0 (SVC-T off) or in [1,255]");
+    v.core.ref_base = static_cast<uint8_t>(base);
+  }
+
+  if (j.contains("ref_enhance")) {
+    int enh = 0;
+    assign_if_present(j, "ref_enhance", enh, "venc");
+    if (enh < 0 || enh > 255) fail("venc.ref_enhance", "must be in [0,255]");
+    v.core.ref_enhance = static_cast<uint8_t>(enh);
+  }
+
+  assign_if_present(j, "ref_pred", v.core.ref_pred, "venc");
+
+  // u32Enhance is a period (one non-referenced frame per enhance+1), so 0
+  // has no meaning while SVC-T is on. The apply site used to paper over it
+  // with `enhance ? enhance : 1`, silently running a structure the config
+  // did not ask for. Checked after both keys are read so either order works.
+  if (v.core.ref_base != 0 && v.core.ref_enhance == 0)
+    fail("venc.ref_enhance", "must be >= 1 when venc.ref_base is nonzero");
 
   if (j.contains("roi")) {
     const json& r = j.at("roi");
@@ -324,6 +359,23 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "debug_port", v.debug_port, "venc");
     if (v.debug_port < 1024 || v.debug_port > 65535)
       fail("venc.debug_port", "must be in [1024,65535]");
+  }
+
+  // A stripe cannot be wider than the picture. Checked here rather than
+  // inside the key's own block for two reasons: it depends on venc.size,
+  // which is parsed above, and the DEFAULT rows value has to face the same
+  // bound — omitting the key must not buy a pass on a picture too short to
+  // hold the default sweep. The preset path clamped instead and warned on
+  // stderr, which ran a sweep the config did not describe; boot failure is
+  // the forcing function. (The apply site keeps its own clamp for the
+  // narrower case where the sensor delivers a shorter picture than
+  // venc.size asked for — see star6e_pipeline_apply_intra_refresh.)
+  {
+    const int max_rows = venc_cfg_ctu_rows(v.core.height);
+    if (v.core.intra_refresh_rows > max_rows)
+      fail("venc.intra_refresh_rows",
+           "must be 0 (off) or in [1," + std::to_string(max_rows) +
+               "] CTU rows for this venc.size");
   }
 
   // sensor_bin is the ONE venc key with no default (venc_cfg_defaults()

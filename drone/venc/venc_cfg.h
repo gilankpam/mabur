@@ -16,8 +16,8 @@ typedef struct {
                               * probe findings: enforced on star6e
                               * (dose-response measured), achieved-ratio
                               * floor ~1.4 at small values (I-QP rails);
-                              * useful range 2..4 under rally where IDRs
-                              * are already ~1.7x P. */
+                              * useful range 2..4 at the shipped GDR/SVC-T
+                              * settings, where IDRs are already ~1.7x P. */
   uint16_t superframe_p_pct; /* venc.superframe_p_pct: 0 (default) = off;
                               * 100..1000 = P-frame ceiling as a percentage
                               * of the rung's per-frame budget
@@ -28,7 +28,50 @@ typedef struct {
                               * star6e (fork probe 2026-08-27); the RC
                               * re-plans UNDER the cap, so this is a quality
                               * lever too — bench before shipping non-zero. */
-  char resilience[16];       /* venc.resilience ("rally", ...) — preset table */
+  /* ── Error-resilience structure ───────────────────────────────────────
+   * These six fields WERE one string, venc.resilience, naming a row in a
+   * preset table that expanded into them (deleted 2026-09-04). They are
+   * now config keys in their own right, and each is a field of one of the
+   * two MI structs verbatim — there is no derivation between config and
+   * hardware left to surprise anyone.
+   *
+   * MI_VENC_IntraRefresh_t {bEnable, u32RefreshLineNum, u32ReqIQp}: */
+  uint16_t intra_refresh_rows; /* venc.intra_refresh_rows: CTU rows forced
+                                * intra per P-frame. 0 = rolling refresh off,
+                                * and SetIntraRefresh is not called at all
+                                * (the channel is created fresh every start,
+                                * so there is no prior enable to clear).
+                                * Otherwise 1..ceil(height/32)
+                                * (H.265 CTU is 32x32; 1080 = 34 rows), and
+                                * the sweep takes ceil(rows_total/rows)
+                                * frames. Larger = faster self-heal, more
+                                * bitrate per P and more frame-size swing. */
+  uint8_t intra_refresh_qp;    /* venc.intra_refresh_qp: u32ReqIQp, the QP
+                                * of the stripe. 1..51. Lower = cleaner
+                                * recovery anchor, more bits. Unused while
+                                * intra_refresh_rows is 0. */
+  /* MI_VENC_ParamRef_t {u32Base, u32Enhance, bEnablePred} — SVC-T temporal
+   * hierarchy, applied once between CreateChn and StartRecvPic: */
+  uint8_t ref_base;            /* venc.ref_base: u32Base. 0 = SVC-T off,
+                                * SetRefParam is not called at all and the
+                                * encoder runs a flat single-ref P chain. */
+  uint8_t ref_enhance;         /* venc.ref_enhance: u32Enhance, a PERIOD —
+                                * the encoder emits exactly one
+                                * non-referenced frame per (enhance+1), so 1
+                                * is 50% droppable and the most resilient
+                                * structure this SoC expresses; larger is
+                                * strictly less. Must be >= 1 when ref_base
+                                * is nonzero. Device-measured on Star6E
+                                * 2026-08-06 by raw-ES NAL census.
+                                *
+                                * Costs the intra sweep: a stripe landing in
+                                * a non-referenced frame never enters the
+                                * DPB, so the effective self-heal window is
+                                * the nominal sweep x (enhance+1), and it
+                                * wants to stay under venc.gop_s or the IDR
+                                * is doing the recovering, not the stripe. */
+  bool ref_pred;               /* venc.ref_pred: bEnablePred, enhance->base
+                                * prediction. */
   bool roi_enabled;          /* venc.roi.enabled */
   uint8_t roi_steps;         /* venc.roi.steps */
   double roi_center;         /* venc.roi.center */
@@ -62,23 +105,6 @@ typedef struct {
  * boot value only has to be legal, not correct. */
 #define VENC_BOOT_BITRATE_KBPS VENC_BITRATE_MIN_KBPS
 
-/* ── Resilience preset expansion ─────────────────────────────────────── */
-
-/* Exactly the fields waybeam's apply_resilience_preset() writes into its
- * VencConfigVideo (f956a52:src/venc_config.c ~line 409).  gop_s is only
- * written when the preset pins one; `gop_overridden` says whether it did,
- * so the caller can keep its own venc.gop_s otherwise. */
-typedef struct {
-  char intra_refresh_mode[16];  /* "off" | "fast" | "balanced" | "robust" */
-  uint16_t intra_refresh_lines; /* CTU rows refreshed per P-frame (0 = auto) */
-  uint8_t intra_refresh_qp;     /* I-CTU QP override for the stripe (0 = auto) */
-  uint8_t ref_base;             /* SVC-T base-layer period; 0 = off */
-  uint8_t ref_enhance;          /* SVC-T reference PERIOD (see table comment) */
-  bool ref_pred;                /* SVC-T enhance→base prediction */
-  double gop_s;                 /* preset GOP in seconds (valid iff gop_overridden) */
-  bool gop_overridden;          /* preset pinned a GOP; else keep cfg->gop_s */
-} VencPresetOut;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -95,23 +121,16 @@ extern "C" {
  * not a fallback, a malformed pipeline. */
 void venc_cfg_defaults(VencCfg *cfg);
 
-/* Expands cfg->resilience into the pipeline's intra-refresh + SVC-T
- * parameters. Returns 0, or -1 on unknown preset name (boot failure). */
-int venc_cfg_expand_preset(const VencCfg *cfg, VencPresetOut *out);
-
-/* Preset-name validation authority for the config loader (drone/src/
- * config.cpp parse_venc, host build). Returns nonzero iff `name` is a
- * resilience preset venc_cfg_expand_preset() accepts (including "off",
- * NULL/empty defaulting to "off", and the "ltr"/"ltr:<N>" family) — it is
- * simply venc_cfg_expand_preset() with the output discarded, so there is
- * exactly ONE authority for "is this a known preset". */
-int venc_cfg_preset_known(const char *name);
+/* Total CTU rows in a picture of `height` lines (H.265 CTU is 32x32).
+ * The upper bound on venc.intra_refresh_rows, and the divisor that turns
+ * a rows-per-P setting into a sweep length in frames. Pure, host-tested. */
+uint16_t venc_cfg_ctu_rows(uint16_t height);
 
 /* P-frame SuperFrame threshold in BYTES for a pct-of-budget cap at the
  * given programmed rate and frame rate: pct * (kbps*1024) / (fps*8*100).
  * kbps is the value handed to the encoder (decimal kbps, x1024 inside),
  * fps the rate the RC budgets at. 0 when pct or fps is 0 (= off). Pure,
- * host-tested (tests/test_venc_preset.cpp). */
+ * host-tested (tests/test_venc_cfg.cpp). */
 uint32_t venc_superframe_p_bytes(unsigned pct, unsigned kbps, unsigned fps);
 
 #ifdef __cplusplus
