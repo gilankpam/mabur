@@ -519,3 +519,42 @@ Operator quality verdict across all arms including rung 5's 150 %:
 demote pass with the cap on (the cap→looser transition burst, item 4
 above, now applies to every promote since the budget rises with the
 rung), and one flight.
+
+### Promote/demote with the cap on (loss-sim, same evening): gate passed
+
+Rig: maburgs built from this branch with `-DMABUR_LOSS_SIM=ON`
+(`out/arm64/maburgs.losssim`, run by hand with `--loss-sim 8303` because
+8302 is a sideport consumer), `tools/bench/losssim.py --port 8303 s0
+eff=4 burst=3` for 25 s then `off` for 60 s, five cycles per arm, cap
+off then 200 %. 4 % nominal union loss on the base stream demotes
+5→4→3→2 (sometimes →1) within the 25 s and the ladder climbs back to 5
+within the 60 s, so each cycle is 3–4 demotes and 3–4 promotes. Passive
+vencprobe on the drone; `vencburst_analyze.py --transitions` reads every
+`req_bitrate` change from the 25 ms polls and reports the 2 s after it
+against the NEW programmed rate. Reports:
+`log/vencburst-bench-2026-09-03-pd-{off,200}.transitions.txt`.
+
+| arm | transitions | PROMOTE peak median / max | PROMOTE excess median / max | demote peak median / max | demote excess median / max | GS: shed / txq depth / wait / drops |
+|---|---|---|---|---|---|---|
+| cap off | 17 + 17 | 1.04× / 1.15× | 11 / 19 KB | 1.17× / 1.84× | 12 / 33 KB | 0 / ≤7 / ≤6 ms / 0 |
+| cap 200 % | 17 + 17 | 1.04× / 1.18× | 13 / 114 KB | 1.31× / 2.00× | 18 / 38 KB | 0 / ≤7 / ≤6 ms / 0 |
+
+- **The feared promote catch-up did not appear.** With the cap at 200 %
+  the RC is not held under the cap at steady state (the cap only binds on
+  scene content), so a promote raises the budget without releasing any
+  deficit. The two 200 % promotes with ~110 KB excess were 1.14× / 1.18×
+  peaks spread over 2 s (a 7800→10400 and a 15600→16000 step), nothing
+  like the 1.57× single-second dump when the 150 % cap was switched off.
+- **Demotes overshoot the new command for ~100 ms in both arms** (the
+  encoder is mid-window when the rate drops; 7800→3900 is the worst at
+  1.8–2.0×), with excess ≤ 38 KB — under one IDR's worth. The cap makes
+  no difference here because the frames in question are already under
+  2× of the *new* budget except the rung-change IDR itself (2.3× budget,
+  uncapped by design).
+- Nearly every rung move carries its IDR; no `venc_verb_fail`, no
+  `txq_drop`, no shed, in either arm.
+
+Gate (b) passes. What remains before a flight config is a flight.
+GS restored to the wrapper-run non-loss-sim `maburgs` afterwards; the
+loss-sim binary stays at `/tmp/maburgs.losssim.new` (tmpfs) and
+`out/arm64/maburgs.losssim` on the dev host.

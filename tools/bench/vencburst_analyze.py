@@ -379,6 +379,74 @@ def report(cycles, polls, prm: Params, t_first=None):
                  "  (NO deficit dependence — look elsewhere than the QP floor)"))
 
 
+def transitions(frames, polls, prm: Params, t_first=None):
+    """Every change of the polled req_bitrate (a ladder rung move, or a
+    debug poke): the 1 s rate before, and in the 2 s after — peak 100 ms
+    rate and integrated excess, both against the NEW programmed rate, plus
+    the largest frame. This is the promote/demote question: when the
+    budget rises, does the RC dump the window it was held under
+    (the 25.7 Mb/s catch-up second seen when the SuperFrame cap was
+    loosened, 2026-09-03), and when it falls, how long does the stream
+    overshoot the new command."""
+    if len(frames) < 10 or len(polls) < 2:
+        print("no polls to find transitions in")
+        return []
+    rs = RateSeries(frames)
+    step, win = prm.step_ms * 1000, prm.window_ms * 1000
+    t_first = frames[0]['t'] if t_first is None else t_first
+    fps = _capture_fps(frames)
+    out = []
+    prev = polls[0]['kbps']
+    for s in polls[1:]:
+        if s['kbps'] <= 0 or s['kbps'] == prev:
+            continue
+        t = s['t']
+        new_prog = s['kbps'] * 1.024
+        old_prog = prev * 1.024
+        before = rs.rate_kbps(t - step, 1_000_000)
+        peak, peak_at, excess_bits = 0.0, t, 0.0
+        g = t
+        while g <= t + 2_000_000:
+            r = rs.rate_kbps(g, win)
+            if r > peak:
+                peak, peak_at = r, g
+            excess_bits += max(0.0, r - new_prog) * prm.step_ms
+            g += step
+        after1 = rs.rate_kbps(t + 1_000_000, 1_000_000)
+        after2 = rs.rate_kbps(t + 2_000_000, 1_000_000)
+        ts = [f['t'] for f in frames]
+        lo, hi = bisect.bisect_left(ts, t), bisect.bisect_right(ts, t + 2_000_000)
+        seg = frames[lo:hi]
+        maxf = max((f['len'] for f in seg), default=0) / 1000.0
+        idrs = sum(1 for f in seg if f['flags'] & FLAG_IDR)
+        budget = new_prog * 1000 / 8 / fps if fps else 0
+        row = dict(t_s=(t - t_first) / 1e6, from_kbps=prev, to_kbps=s['kbps'],
+                   before=before, peak=peak, peak_at_ms=(peak_at - t) / 1000.0,
+                   after1=after1, after2=after2, excess_bytes=excess_bits / 8.0,
+                   maxframe_kb=maxf, maxframe_x=maxf * 1000 / budget if budget else 0.0,
+                   idrs=idrs, new_prog=new_prog, old_prog=old_prog)
+        out.append(row)
+        prev = s['kbps']
+    print(f"{len(out)} bitrate transition(s)  [before = trailing 1 s vs OLD programmed; "
+          f"peak/excess = 2 s after vs NEW programmed]")
+    for r in out:
+        kind = "PROMOTE" if r['to_kbps'] > r['from_kbps'] else "demote "
+        print(f"t={r['t_s']:6.1f} s {kind} {r['from_kbps']:5d}->{r['to_kbps']:5d} kbps  "
+              f"before {r['before']/r['old_prog']:.2f}x  "
+              f"peak {r['peak']/1000:5.2f} Mb/s = {r['peak']/r['new_prog']:.2f}x @+{r['peak_at_ms']:.0f} ms  "
+              f"1s-after {r['after1']/r['new_prog']:.2f}x  2s-after {r['after2']/r['new_prog']:.2f}x  "
+              f"excess {r['excess_bytes']/1024:6.1f} KB  maxframe {r['maxframe_kb']:5.0f} kB ({r['maxframe_x']:.1f}x budget)  idr {r['idrs']}")
+    pro = [r for r in out if r['to_kbps'] > r['from_kbps']]
+    dem = [r for r in out if r['to_kbps'] < r['from_kbps']]
+    for name, grp in (("PROMOTE", pro), ("demote", dem)):
+        if grp:
+            print(f"{name}: n={len(grp)}  peak median {median(r['peak']/r['new_prog'] for r in grp):.2f}x "
+                  f"max {max(r['peak']/r['new_prog'] for r in grp):.2f}x   excess median "
+                  f"{median(r['excess_bytes'] for r in grp)/1024:.0f} KB max {max(r['excess_bytes'] for r in grp)/1024:.0f} KB   "
+                  f"maxframe max {max(r['maxframe_x'] for r in grp):.1f}x budget")
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('csv')
@@ -387,6 +455,8 @@ def main(argv=None):
     ap.add_argument('--quiet-s', type=float, default=Params.quiet_s)
     ap.add_argument('--window-ms', type=int, default=Params.window_ms)
     ap.add_argument('--quiet-frac', type=float, default=Params.quiet_frac)
+    ap.add_argument('--transitions', action='store_true',
+                    help='report every req_bitrate change (rung move) instead of lens cycles')
     a = ap.parse_args(argv)
     prm = Params(window_ms=a.window_ms, quiet_s=a.quiet_s, quiet_frac=a.quiet_frac,
                  cmd_kbps=a.cmd_kbps)
@@ -396,6 +466,9 @@ def main(argv=None):
         print(f"note: {len(cmds)} bitrate commands in this capture — this is an ACTIVE "
               f"vencprobe run; vencprobe_analyze.py is the tool for step response")
     print(f"{len(frames)} frames, {len(polls)} polls")
+    if a.transitions:
+        transitions(frames, polls, prm, t_first=frames[0]['t'] if frames else None)
+        return
     capture_summary(frames, polls, prm)
     print()
     report(find_cycles(frames, polls, prm), polls, prm,
