@@ -1,9 +1,11 @@
 # Handover: encoder overshoot above the commanded bitrate (2026-09-03)
 
-Status: **OPEN — measured in flight, not yet reproduced on the bench.**
-Companion to the two drone-side fixes on branch `probe-hold-bitrate`
-(4d16e10 probe bitrate hold, fe1643b TxQueue-pressure shed). Those
-contain the *damage*; this document is about the *cause* they contain.
+Status: **BENCH-MEASURED 2026-09-03 evening — the QP-floor hypothesis
+below is REFUTED; the burst is scene-content, not rate-control recovery.
+See "Bench results" at the end.** Companion to the two drone-side fixes
+on branch `probe-hold-bitrate` (4d16e10 probe bitrate hold, fe1643b
+TxQueue-pressure shed). Those contain the *damage*; this document is
+about the *cause* they contain.
 
 > **Progress 2026-09-03 (evening), branch `venc-overshoot-observability`
 > — instrumentation built, bench NOT run (both devices were off the
@@ -316,3 +318,73 @@ variance too.
 - `docs/latency-budget-findings-2026-08-31.md` (burst drain, `dq`)
 - `tools/bench/vencprobe.c`, `tools/bench/vencprobe_analyze.py`
 - Memory: probe-bitrate-hold, venc-attr-change-idr, mcs1-budget-overshoot
+
+## Bench results (2026-09-03 evening, branch `venc-overshoot-observability` deployed both ends)
+
+Rig: passive `vencprobe` on the drone, rung 5 (cmd 16000 → 16.384 Mb/s
+programmed), operator covering/uncovering the lens ≥ 5 s per cycle, plus a
+run of quick open/close cycles; 301 s, 17917 frames, 13 cycles.
+Capture + report on the dev host: `log/vencburst-bench-2026-09-03-run2.*`
+(log/ is untracked).
+
+| metric | value |
+|---|---|
+| steady state | mean 0.95×, 100 ms p50 0.96×, p95 1.00× of programmed |
+| covered lens | **no dip at all** — the trailing-1 s rate never left 0.92–1.02× |
+| cycles found | 13, **all** steady→burst, **0** quiet→motion |
+| peak 100 ms rate | median **1.55×**, max **1.96×** (2.29× on a 25 ms grid point) |
+| excess bytes per cycle | median 92 KB, max 323 KB (the quick open/close run) |
+| settle back inside +10 % | median **100 ms** (one frame), max 1375 ms |
+| shape | 9/13 = a single frame > 2× budget (scene cut, 55–195 kB vs 34 kB budget); 4/13 = multi-frame ramps ≤ 1.4 s (quick open/close) |
+| deficit dependence | none: smaller-deficit half 1.52×, larger 1.55× |
+| IDRs | 0 in 301 s (rally = GDR stripes, IDRs only on request) |
+| encoder QP | **unreadable**: `MI_VENC_StreamInfoH265_t` has only `refType` filled by this firmware — `size`, all CU counters, `updAttrCnt`, `startQual` are 0 on every frame |
+| TxQueue during the bursts | depth ≤ 6 (1 Hz samples), wait ≤ 5 ms, 0 drops, `congestion_shed` never set, no rung move |
+
+What this says:
+
+1. **Prediction 2 fails, prediction 1 fails.** CBR spends its full budget
+   on a black frame (sensor noise at whatever QP), so there is no
+   quiet-scene deficit to climb out of, and the burst size does not track
+   the pre-burst rate. `venc.min_qp` therefore has nothing to bound —
+   **the min_qp sweep is pointless and was not run**; the knob stays in
+   the tree at 0 as a documented dead end, or gets deleted.
+2. **The mechanism is scene content.** A lens uncover is a scene cut: the
+   next frame has no usable reference, is intra-coded inside a P frame,
+   and rate control has no P-frame size cap on star6e (`u32MaxPSize`
+   dead, `max_ipprop` applies to I frames only). It comes out at 2–6× the
+   per-frame budget, and the RC then under-spends slightly (30.5 vs 33.6
+   kB frames) for the rest of its 1 s window — it is honouring the window,
+   as designed. Sustained motion (the quick open/close run, and the
+   flight's pans) is the same thing spread over 0.7–1.4 s at 1.5–2×.
+3. **The bench link absorbs it; the flight link did not.** 323 KB of
+   excess at rung 5 on the bench left the TxQueue at ≤ 6 bodies. In flight
+   the same excess hit a queue at 154/255 because the *drain* was lower
+   (range, retries, half-duplex uplink share) — the overshoot is a fixed
+   property of the encoder on a scene change, and whether it hurts depends
+   entirely on drain headroom. That puts the fix back on the transport
+   side, where fe1643b already is.
+
+What remains worth doing (ranked):
+
+- **Nothing on the encoder's rate control.** No live knob bounds a P
+  frame's size on this SoC. Scene-detector-triggered IDRs
+  (`drone/venc/scene_detector.c`, ported but NOT wired) would fire one
+  frame *after* the big frame and add an IDR on top — do not wire it for
+  this.
+- **Drain headroom is the lever**: `airtime_budget` (0.6 today, 0.614
+  with the ×1024) and the rung-5 `bitrate_max_kbps` 16000 set how much of
+  a 2× burst the air can absorb. A ×1024 fix is a 2.4 % contribution.
+- **The shed is the containment** and it never had to fire on the bench.
+  Whether the half-cap threshold is right is a *range* question: repeat
+  this capture with attenuation or a walk-out, and count
+  `drone.congestion_shed` (now recorded) against `txq.drops`.
+- **Remove the dead encoder-QP plumbing** (Telem `qp`, sideport
+  `drone.enc.qp`, `GET /venc` `qp`, vencprobe's 3rd poll column, the
+  strminfo dump). The SDK cannot supply it; a permanently-0 field is
+  exactly what this document started by complaining about.
+
+Corrections to the sections above, in light of this: the "Mechanism"
+section's classic-CBR-emergence story is wrong for this encoder; the
+"What would fix it" ranking's item 1 (`u32MinQp`) is dead; item 2
+(headroom) and the shed are what stands.
