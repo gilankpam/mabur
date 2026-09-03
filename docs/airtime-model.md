@@ -59,13 +59,20 @@ sid 1 — see `docs/link-adaptation.md`.
 
 The encoder's commanded bitrate keeps the two-term shape — a single-rate
 `kbps = rate(ladder[1]) · budget / (1 + ov)` is wrong in both directions
-once base and enh carry different overhead (or, during an s3 probe,
-different MCS):
+once base and enh carry different overhead:
 
     kbps = airtime_budget / [ f0·(1+ov_base)/rate_b + (1−f0)·(1+ov_enh)/rate_e ]
 
 where `ov_base`/`ov_enh` are the commanded pair off the v5 RCF and `f0`
-is a **fixed** base byte share (`kShareBase`, 0.60).
+is a **fixed** base byte share (`kShareBase`, 0.60). **`rate_e` is the
+base profile's rate even during an enh probe** (since 2026-09-03): the
+probe slot flies the candidate mcs, but feeding that rate in raised the
+command 11–15% on every probe entry at rungs 0–3 and lowered it on exit —
+two `SetChnAttr` writes, two forced IDRs, on a pipe already at ~65–70%
+air — and was the largest single source of >80 ms p50 seconds in
+flight-0011 (23 of 48). The 2026-08-05 probe spec always said the probe
+changes MCS only; the rate feed-in came with the 2-slot op (2bbaa3f)
+expecting the AirBalancer to absorb it, and the balancer is gone.
 
 ⚠ **Measured inputs removed 2026-09-01.** `f0` was AirFeed's live
 `share_base`, and each term also carried a measured framing excess

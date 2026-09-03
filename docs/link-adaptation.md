@@ -56,7 +56,11 @@ vs. emitted body bytes and published `share_base`/`excess_base`/
 on 2026-09-01 when that blend became a fixed per-rung formula, because
 every bitrate write it provoked cost a keyframe (see
 `docs/airtime-model.md` §1). `run_bitrate_policy` is once again a pure
-function of the operating point: a held rung commands a held bitrate.
+function of the operating point: a held rung commands a held bitrate,
+and (since 2026-09-03) so does a held rung *under probe* — the enh
+probe slot's candidate mcs is deliberately excluded from the bitrate
+formula (`docs/airtime-model.md`), so a probe costs zero encoder writes
+and zero IDRs; the probe changes MCS only, as the 2026-08-05 spec says.
 
 The drone's `:8301` `ov_base_pct`/`ov_enh_pct` HTTP override (bench
 tooling, not a production control) is now the ONLY source of
