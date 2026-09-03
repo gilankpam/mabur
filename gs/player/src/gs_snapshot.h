@@ -31,10 +31,16 @@ struct GsCard {
 // they arrive here already multiplied by 100. `air_pct` is a percent on the
 // wire and passes through untouched.
 struct GsSnapshot {
+  // link.ctl.rung.mcs / .ov_base x 100, falling back to link.op.mcs /
+  // .overhead_base x 100 when the ladder block is absent -- which is the
+  // normal, permanent state of a static-pinned link (link.static_mcs >= 0
+  // never ticks the controller, so the exporter emits link.ctl: null).
   std::optional<int> mcs;
-  std::optional<double> fec_pct;        // link.ctl.rung.ov x 100
+  std::optional<double> fec_pct;
   std::optional<double> air_pct;        // link.air_pct
-  std::optional<double> pre_loss_pct;   // link.ctl.pre_fec_loss x 100
+  // link.ctl.pre_fec_loss x 100, falling back to the link-level
+  // link.pre_fec_loss x 100 in static-pin mode (same reason as mcs above).
+  std::optional<double> pre_loss_pct;
   // link.residual_loss x 100. Since 2026-09-02 that key is symbol
   // abandonment (base+enh pooled), not the old packet-seq delivery window --
   // it now reads 0 on a clean link instead of blipping on reordered FEC

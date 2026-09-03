@@ -405,3 +405,33 @@ only recordings with a non-zero `drone.enc.qp` would be from the few
 hours between the two changes, and would still be 0. `roi_qp` and
 `congestion_shed` stay. `vencprobe` captures from that window carry a 3rd
 `s,` column (always 0 or −1); both analyzers tolerate its absence.
+
+
+## 2026-09-04: `link.pre_fec_loss` added (a gauge, not the ladder's number)
+
+Additive: recordings before this date have no `link.pre_fec_loss` and
+only the in-ctl `link.ctl.pre_fec_loss`. The two are NOT interchangeable
+and neither replaces the other.
+
+- `link.ctl.pre_fec_loss` is the last s1 sample the **ladder controller
+  acted on**. `LadderController::update()` returns early on a starved or
+  `!sample_valid` window (`gs/src/ladder_controller.cpp`), so through
+  those windows this key **holds its previous value**. It is null in
+  static-pin mode, where the controller is never ticked at all.
+- `link.pre_fec_loss` is that poll's **raw measured** s1 window loss,
+  exported unconditionally alongside the post-FEC `link.residual_loss`.
+  It is null when the window produced no valid sample, and — the reason
+  it exists — it is present in static-pin mode.
+
+Expect them to differ by a fraction of a poll's worth of drift while the
+ladder runs (bench 2026-09-04: 0.01029 vs 0.01001 on the same datagram),
+and to diverge properly across a starved run. Prefer the ctl figure when
+reconstructing a ladder decision; prefer the gauge when asking what the
+link was actually doing, and use it exclusively for pinned flights.
+
+Before this date the player's OSD read the rung and the pre-FEC half of
+its LOSS row **only** from `link.ctl`, so both rendered as em-dashes for
+the entire duration of any `link.static_mcs >= 0` flight. A pinned
+recording from before 2026-09-04 therefore shows a blank MCS/FEC/LOSS-pre
+OSD in its burned DVR video while the jsonl beside it has the real values
+in `link.op` — the display was wrong, the data was not.
