@@ -205,7 +205,17 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
   const double rate_b = rc::phy_rate_mbps(applied_.ladder[0]);
-  const double rate_e = rc::phy_rate_mbps(applied_.ladder[1]);
+  // During an enh probe ladder[1] flies the CANDIDATE mcs, but the bitrate
+  // stays keyed to the base profile (spec 2026-08-05 s3-probe-promote: the
+  // probe changes MCS only; encoder bitrate is untouched). Feeding the
+  // probed rate in here raised the command 11-15% on every probe entry at
+  // rungs 0-3 and lowered it on exit -- two SetChnAttr writes and two forced
+  // IDRs per probe, on a link already at ~65-70% air -- which is where the
+  // flight-0011 (2026-09-03) rung 1-3 air backlog came from. The AirBalancer
+  // that 2bbaa3f expected to absorb the probe window's air shift is gone
+  // (2026-09-01), so nothing compensates the raise any more.
+  const double rate_e =
+      probe3_active_ ? rate_b : rc::phy_rate_mbps(applied_.ladder[1]);
   // The commanded pair (Task 6, RC_VERSION 5) IS the source — no single
   // ov to fan out to both terms.
   double ovb = applied_.fec_ov_base, ove = applied_.fec_ov_enh;
@@ -218,8 +228,8 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   if (ob >= 0 && oe >= 0) { ovb = ob / 100.0; ove = oe / 100.0; }
   // Airtime: V * [f0*(1+ovb)/rate_b + (1-f0)*(1+ove)/rate_e] = budget.
   // Two terms, not one, because BASE and ENH can carry different overhead
-  // (and, during an s3 probe, different MCS) — that part of the 2-stream
-  // shape stays; only the measured inputs are gone.
+  // — that part of the 2-stream shape stays; only the measured inputs are
+  // gone. (A probe's different MCS is deliberately NOT a term: see rate_e.)
   const double denom = kShareBase * (1.0 + ovb) / rate_b +
                        (1.0 - kShareBase) * (1.0 + ove) / rate_e;
   double kbps = 1000.0 * cfg_.encoder.airtime_budget / denom;
@@ -299,19 +309,40 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 // (test 10e). Shedding layers remains the guard's whole job: bounded 0..3,
 // self-decaying, no ratchet.
 //
-// NOTE the trigger is health.tx_drops = TxStats::failed (main.cpp), which
-// counts USB bulk-OUT submission/completion FAILURES, not queue
-// backpressure -- TxQueue drop-oldest (txq.drops) and RadioTx::drops() are
-// separate counters and neither feeds this. So the guard responds to a sick
-// dongle, not to over-driving the air. Known mis-wiring, left as-is.
+// Two triggers, OR'd:
+//  - health.tx_drops = TxStats::failed (main.cpp): USB bulk-OUT
+//    submission/completion FAILURES -- a sick dongle. Edge-triggered on the
+//    counter rising.
+//  - health.txq_depth >= txq_cap * kTxqShedNum/kTxqShedDen: TxQueue
+//    backpressure -- over-driving the air. Level-triggered, because a full
+//    queue is the condition itself, not an event. This is the one that
+//    matters in flight: the encoder overshoots its command on a scene
+//    change (17-22 Mb/s against 16 commanded, flight-0011 2026-09-03), the
+//    queue runs to its cap, and drop-oldest throws bodies away with the
+//    guard idle. Those drops are indistinguishable from RF loss at the GS
+//    (expected symbol, never arrived), which books them as residual and
+//    demotes -- 5->4->3->2 in 450 ms at 36 dB SNR, each step an IDR into a
+//    queue that was already full. Shedding enh at half-cap lands BEFORE the
+//    first drop, and a shed is invisible to the ladder (no s3 traffic, no
+//    s3 decision -- LadderController::s3_usable). Half the cap is burst
+//    headroom: one agg-6 feed batch is a few bodies, one IDR at rung 5 is
+//    ~60-70 bodies; the tick is 100 ms and the queue drains 200+ bodies/s
+//    at any rung, so a false shed costs one 2 s enh gap, a late one costs
+//    the cascade. TxQueue drop-oldest (txq.drops) and RadioTx::drops()
+//    stay telemetry-only: by the time either moves the damage is done.
 void RcAgent::run_congestion_guard(uint64_t now_ms, const RadioHealth& health) {
   bool drops_rose = have_last_tx_drops_ && health.tx_drops > last_tx_drops_;
   if (!have_last_tx_drops_) drops_rose = health.tx_drops > 0;
   have_last_tx_drops_ = true;
   last_tx_drops_ = health.tx_drops;
 
+  static constexpr size_t kTxqShedNum = 1, kTxqShedDen = 2;
+  const bool txq_pressure =
+      health.txq_cap > 0 &&
+      health.txq_depth * kTxqShedDen >= health.txq_cap * kTxqShedNum;
+
   bool changed = false;
-  if (drops_rose) {
+  if (drops_rose || txq_pressure) {
     last_drop_rise_ms_ = now_ms;
     have_last_drop_rise_ = true;
     if (shed_level_ < 3) {

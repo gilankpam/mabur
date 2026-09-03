@@ -570,6 +570,51 @@ TEST(congestion_shed_escalates_and_recovers) {
   CHECK(agent.current().shed[1] == false);
 }
 
+// 9a. TxQueue backpressure is congestion too. The guard's only trigger was
+// TxStats::failed (USB bulk-OUT failures), so when the encoder overshot
+// the pipe the queue ran to its cap and drop-oldest threw bodies away with
+// shed_level_ still 0 -- and those drops are indistinguishable from RF
+// loss at the GS, which booked them as residual and demoted 5->4->3->2 in
+// 450 ms at 36 dB SNR (flight-0011 @88 s / @102 s, 2026-09-03). A queue at
+// or past half its cap must shed the enh layer BEFORE the first drop (a
+// shed is invisible to the ladder: no s3 traffic, no s3 decision); below
+// that it must not. Same 2 s clean decay as the USB trigger. REVERT CHECK:
+// ignore txq_depth/txq_cap in run_congestion_guard and the t=100 tick
+// leaves shed[1] false.
+TEST(txq_pressure_sheds_enh_before_drops) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  agent.on_rc_frame(wire.data(), wire.size(), 0);
+  CHECK(agent.current().shed[1] == false);
+
+  RadioHealth h;
+  h.txq_cap = 255;
+  h.txq_depth = 64;  // a quarter full: normal burst headroom, no shed
+  agent.tick(100, h);
+  CHECK(agent.current().shed[1] == false);
+
+  h.txq_depth = 128;  // half the cap: pressure, shed enh (no USB failure, no drop yet)
+  agent.tick(200, h);
+  CHECK(agent.current().shed[1] == true);
+  CHECK(agent.current().ladder[0].mcs == 5);  // op otherwise untouched
+
+  // Keep LINKED alive (failsafe_ms = 1000) while the queue drains.
+  auto wire2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  agent.on_rc_frame(wire2.data(), wire2.size(), 900);
+  auto wire3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  agent.on_rc_frame(wire3.data(), wire3.size(), 1800);
+
+  h.txq_depth = 0;
+  agent.tick(2300, h);  // 2000 ms since the last pressure tick: level 1 -> 0
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.current().shed[1] == false);
+}
+
 // 9b. FAILSAFE entry forces shed[1]; a subsequent congestion-guard reapply
 // (which recomputes shed[1] from shed_level_ alone) must not clobber the
 // failsafe-forced shed — it has to OR failsafe_shed_ in. Also covers:
@@ -972,6 +1017,55 @@ TEST(probing_cleared_on_failsafe) {
   agent.tick(1000, RadioHealth{});  // silence -> FAILSAFE (MAX_RANGE reapplied)
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   CHECK(!agent.probing());
+}
+
+// 11c. A probe must not move the encoder bitrate (spec 2026-08-05 s3-probe-
+// promote: "Base link (... encoder bitrate) is untouched; the probe changes
+// MCS only" / "Bitrate policy stays keyed to the base profile"). Since the
+// 2-slot op (2bbaa3f) the policy's enh term read the probed slot's PHY rate,
+// so every probe entry raised the command (~+11-15% at low rungs) and every
+// exit lowered it back -- two SetChnAttr writes, two forced IDRs, and the
+// flight-0011 air backlog at rungs 1-3 (2026-09-03 analysis). The balancer
+// that was meant to compensate the probe window's air shift was deleted
+// 2026-09-01. REVERT CHECK: feed rate_e = phy_rate(ladder[1]) unguarded and
+// the probe RCF writes 9400 (mcs2 base 19.5 / mcs3 probe 26.0, ov 0.5,
+// budget 0.65) and the exit RCF writes 8500 again -> two writes past count_linked.
+TEST(probe_rcf_does_not_change_bitrate) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
+
+  Rcf r;
+  r.vtx_id = cfg.link.vtx_id;
+  r.seq = 1;
+  r.profile = encode_profile(PhyMode::HT, 2, 20);
+  r.fec_overhead_base = 0.5;
+  r.fec_overhead_enh = 0.5;
+  auto wire = pack_rcf(r);
+  agent.on_rc_frame(wire.data(), wire.size(), 0);  // RENDEZVOUS -> LINKED
+  REQUIRE(!act.bitrates.empty());
+  CHECK(act.bitrates.back() == 8500);  // 1000*0.65/(1.5/19.5) = 8450 -> 8500
+  const size_t count_linked = act.bitrates.size();
+
+  // Probe entry, past the 1 s write throttle so a changed target WOULD
+  // be written: the enh slot flies mcs3 but the command must hold.
+  r.seq = 2;
+  r.probe3 = true;
+  r.probe_profile = encode_profile(PhyMode::HT, 3, 20);
+  auto wire2 = pack_rcf(r);
+  agent.on_rc_frame(wire2.data(), wire2.size(), 1100);
+  REQUIRE(agent.probing());
+  CHECK(agent.current().ladder[1].mcs == 3);
+  CHECK(act.bitrates.size() == count_linked);
+
+  // Probe exit (the decrease path is never throttled): still no write.
+  r.seq = 3;
+  r.probe3 = false;
+  auto wire3 = pack_rcf(r);
+  agent.on_rc_frame(wire3.data(), wire3.size(), 1200);
+  REQUIRE(!agent.probing());
+  CHECK(act.bitrates.size() == count_linked);
 }
 
 // 2d. DiscAck.chip_caps advertises CAP_ENH_PROBE alongside the existing
