@@ -132,10 +132,12 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
         if (const json* s0 = obj(*classes, "s0")) {
           card.rssi_dbm = num(*s0, "rssi");
           card.snr_db = num(*s0, "snr");
+          card.evm_db = num(*s0, "evm");
         }
       }
       // "Heard" needs both figures: the status colour is worst-of(rssi,snr)
-      // and a half-populated row would colour itself off one of them.
+      // and a half-populated row would colour itself off one of them. EVM is
+      // NOT one of them -- see GsCard::evm_db.
       card.heard = card.rssi_dbm.has_value() && card.snr_db.has_value();
       out->cards.push_back(card);
     }

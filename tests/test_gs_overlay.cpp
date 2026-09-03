@@ -964,4 +964,87 @@ TEST(absurd_values_never_draw_outside_their_field_boxes) {
   CHECK(stray == 0);
 }
 
+// --- per-card EVM (2026-09-04) ----------------------------------------
+// EVM rides beside the SNR on each card row, tagged "E " so the two dB
+// figures next to each other stay distinguishable.
+TEST(evm_renders_beside_the_snr_with_its_own_tag) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  s.cards[0].evm_db = -22.4;
+  s.cards[1].evm_db = -7.6;
+  // U+2212, not ASCII '-': the same sign glyph RSSI and SNR use on this row.
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard0Evm) ==
+        "E \xE2\x88\x92" "22");
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard1Evm) ==
+        "E \xE2\x88\x92" "8");  // rounds toward nearest, like every other value
+}
+
+// The chip reports EVM only on frames carrying PHY status, so a healthy,
+// heard card can legitimately have none. That renders blank -- it must
+// never blank the REST of the row, and it must never make the card unheard.
+TEST(a_heard_card_without_evm_draws_a_blank_evm_field_only) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();  // no evm_db anywhere
+  const GsPlayerState p = player_nominal();
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kCard0Evm).empty());
+  CHECK(!ov.debug_field_text(s, false, p, GsFieldId::kCard0Rssi).empty());
+  CHECK(!ov.debug_field_text(s, false, p, GsFieldId::kCard0Snr).empty());
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kCard0Unit) == "dBm");
+}
+
+// An unheard card silences EVM along with the dBm unit and the SNR, so the
+// em-dash pair in the RSSI slot is the row's only reading.
+TEST(an_unheard_card_silences_evm_too) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  s.cards[1].heard = false;
+  s.cards[1].rssi_dbm.reset();
+  s.cards[1].snr_db.reset();
+  s.cards[1].evm_db = -22.0;  // stale figure present: must still not draw
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard1Evm).empty());
+}
+
+// Widening the card row is the one real risk in adding this field: the block
+// grows rightward from the bottom-left inset toward the bottom-CENTRE LOSS
+// block, and nothing asserted the clearance before. Boxes are worst-case
+// sized at layout(), so this holds for every value the row can ever show.
+TEST(the_card_block_stays_clear_of_the_loss_block) {
+  // GSFONT_SCALED, not GSFONT_DESIGN: the design bake carries only the
+  // 1080p sizes, so it cannot lay out the other three resolutions at all.
+  const std::string fp = GSFONT_SCALED;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  for (const FourReso& res : kFourResolutions) {
+    GsOverlay ov(f);
+    REQUIRE(ov.layout(res.w, res.h, &err));
+    const DirtyRect loss = ov.debug_field_box(GsFieldId::kLossLabel);
+    REQUIRE(loss.w > 0);
+    for (int slot = 0; slot < kMaxCards; ++slot) {
+      const int base = (int)GsFieldId::kCard0Id + slot * 6;
+      const DirtyRect snr = ov.debug_field_box((GsFieldId)(base + 4));
+      const DirtyRect evm = ov.debug_field_box((GsFieldId)(base + 5));
+      REQUIRE(evm.w > 0);                // the field really is laid out
+      CHECK(evm.x >= snr.x + snr.w);     // right of the SNR, not over it
+      CHECK(evm.y == snr.y);             // and on the same row
+      CHECK(evm.x + evm.w <= loss.x);    // stopping short of LOSS
+    }
+  }
+}
+
 MTEST_MAIN

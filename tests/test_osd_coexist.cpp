@@ -143,6 +143,7 @@ static GsSnapshot snap_cards(int n) {
     c.heard = true;
     c.rssi_dbm = -58.0 - i * 4.0;
     c.snr_db = 18.0 - i;
+    c.evm_db = -27.0 + i * 4.0;
     s.cards.push_back(c);
   }
   return s;

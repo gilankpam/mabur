@@ -78,14 +78,17 @@ GsSnapshot nominal() {
   s.air_pct = 61.0;
   s.pre_loss_pct = 2.1;
   s.post_loss_pct = 0.0;
-  s.cards = {GsCard{0, true, -58.0, 18.0}, GsCard{1, true, -71.0, 9.0}};
+  // Every card carries an EVM: these are the real-asset geometry tests, so
+  // the card rows must be at their full drawn width here, not one field short.
+  s.cards = {GsCard{0, true, -58.0, 18.0, -27.0},
+             GsCard{1, true, -71.0, 9.0, -14.0}};
   return s;
 }
 
 GsSnapshot four_cards() {
   GsSnapshot s = nominal();
-  s.cards.push_back(GsCard{2, true, -60.0, 15.0});
-  s.cards.push_back(GsCard{3, true, -65.0, 12.0});
+  s.cards.push_back(GsCard{2, true, -60.0, 15.0, -22.0});
+  s.cards.push_back(GsCard{3, true, -65.0, 12.0, -9.0});
   return s;
 }
 
@@ -507,6 +510,32 @@ TEST(asset_lat_row_layout_and_content_at_every_resolution) {
     CHECK(lit_in(GsFieldId::kLatP50Breakdown) > 0);
     std::printf("  %dx%d: head=%zu bd=%zu lit px\n", r.w, r.h, lit_in(GsFieldId::kLatHead),
                 lit_in(GsFieldId::kLatBreakdown));
+  }
+}
+
+// The bottom row grows rightward from the title-safe inset toward the
+// bottom-CENTRE loss block, so every field added to a card row eats into
+// that clearance. asset_no_two_field_boxes_overlap would catch an actual
+// collision; this reports the remaining GAP, so the next person to widen
+// the row can see how much headroom is left before it becomes one.
+TEST(asset_card_rows_keep_clearance_to_the_loss_block) {
+  GsFont& f = asset();
+  REQUIRE(f.ok());
+  std::string err;
+  for (const FourReso& r : kFourResolutions) {
+    GsOverlay ov(f);
+    REQUIRE(ov.layout(r.w, r.h, &err));
+    const DirtyRect loss = ov.debug_field_box(GsFieldId::kLossLabel);
+    REQUIRE(loss.w > 0);
+    int worst = loss.x;
+    for (int slot = 0; slot < kMaxCards; ++slot) {
+      const DirtyRect evm = ov.debug_field_box(
+          (GsFieldId)((int)GsFieldId::kCard0Id + slot * kFieldsPerCard + 5));
+      REQUIRE(evm.w > 0);
+      worst = std::min(worst, loss.x - (evm.x + evm.w));
+    }
+    CHECK(worst > 0);
+    std::printf("  %dx%d: %d px between the card rows and LOSS\n", r.w, r.h, worst);
   }
 }
 

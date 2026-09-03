@@ -162,9 +162,18 @@ DirtyRect union_of(const DirtyRect& a, const DirtyRect& b) {
   return DirtyRect{x0, y0, x1 - x0, y1 - y0};
 }
 
-// which: 0 id, 1 bars, 2 rssi, 3 dBm unit, 4 snr
+// Worst-case card-row strings the boxes are sized from. Both are sized to
+// the widest value the clamps in state_of_ can produce -- SNR clamps to
+// -99..999 but "100 dB" is wider than the U+2212 form of any 2-digit
+// negative, and EVM clamps to -99..99, whose widest rendering is "E -99"
+// (with U+2212). Sizing from a value that can never appear costs every row
+// permanent dead space; sizing too small lets text draw past its own box.
+constexpr const char* kSnrWorst = "100 dB";
+constexpr const char* kEvmWorst = "E \xE2\x88\x92" "99";
+
+// which: 0 id, 1 bars, 2 rssi, 3 dBm unit, 4 snr, 5 evm
 GsFieldId card_field(int slot, int which) {
-  return (GsFieldId)((int)GsFieldId::kCard0Id + slot * 5 + which);
+  return (GsFieldId)((int)GsFieldId::kCard0Id + slot * kFieldsPerCard + which);
 }
 
 // Per-side shadow pad an atlas bakes in (gs_font.h: glyph_w/glyph_h include
@@ -500,6 +509,7 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     g.rssi_worst = "\xE2\x88\x92" "100";
     g.rssi_w = text_width(*primary, g.rssi_worst.c_str());
     g.unit_w = text_width(*label, "dBm");
+    g.snr_w = text_width(*secondary, kSnrWorst);
     // Row PITCH uses line_pitch (unpadded), not glyph_h -- see line_pitch's
     // comment. The BOX height below still uses the full glyph_h/baseline
     // pair so clearing still erases the shadow.
@@ -550,7 +560,9 @@ void GsOverlay::place_card_row_(int slot, int row_bottom) {
   x += g.rssi_w + g.gap16;
   place_text(card_field(slot, 3), g.label, x, "dBm");
   x += g.unit_w + g.gap16;
-  place_text(card_field(slot, 4), g.secondary, x, "100 dB");
+  place_text(card_field(slot, 4), g.secondary, x, kSnrWorst);
+  x += g.snr_w + g.gap16;
+  place_text(card_field(slot, 5), g.secondary, x, kEvmWorst);
 }
 
 GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
@@ -748,7 +760,7 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       // Card slots.
       const int base = (int)GsFieldId::kCard0Id;
       const int idx = (int)id - base;
-      const int slot = idx / 5, which = idx % 5;
+      const int slot = idx / kFieldsPerCard, which = idx % kFieldsPerCard;
       if (slot < 0 || slot >= (int)snap.cards.size()) return st;  // empty
       const GsCard& c = snap.cards[(size_t)slot];
       const Status cs = card_status(c);
@@ -792,6 +804,20 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
           // U+2212 for the same sign, an inconsistency within one row.
           st.text = (c.heard && c.snr_db)  // "100 dB"
                         ? fmt_signed_int(std::clamp(*c.snr_db, -99.0, 999.0)) + " dB"
+                        : "";
+          break;
+        case 5:
+          st.rgb = link_secondary;
+          // Tagged "E ", not given a "dB" unit of its own: EVM is in dB too,
+          // and two adjacent unlabelled dB figures on one row are worse than
+          // useless. The tag is the narrowest thing that names it.
+          //
+          // Blank on an unheard card (like the SNR beside it), and blank on
+          // a HEARD card that simply has no EVM -- the chip only reports it
+          // on frames carrying PHY status, so that is a routine state, not a
+          // fault, and must not be dressed up as one with an em-dash pair.
+          st.text = (c.heard && c.evm_db)  // "E -22", U+2212
+                        ? "E " + fmt_signed_int(std::clamp(*c.evm_db, -99.0, 99.0))
                         : "";
           break;
       }
@@ -840,16 +866,21 @@ void GsOverlay::draw_field_(GsFieldId id, const FieldState& st, const Surface& s
   }
 
   const int base = (int)GsFieldId::kCard0Id;
-  // Bounded above by the card block's own extent (kMaxCards * 5 fields), not
-  // just below by `base`: an unbounded "id >= base && (id-base)%5==1" test
-  // silently recaptures whichever LATER-appended field happens to alias the
-  // same residue -- Task 12's kLatBreakdown (index base+21) does, mod 5 ==
-  // 1, and would otherwise be drawn as an unlit card-bars block (tok::kTrack
-  // rects sized to kBarHeights) sitting well outside its own text box,
-  // tripping absurd_values_never_draw_outside_their_field_boxes. Appending
+  // Bounded above by the card block's own extent (kMaxCards rows of
+  // kFieldsPerCard), not just below by `base`: an unbounded
+  // "id >= base && (id-base)%kFieldsPerCard==1" test silently recaptures
+  // whichever LATER field happens to alias the same residue -- Task 12's
+  // kLatBreakdown does, at index base+25, mod 6 == 1 (it aliased under the
+  // old stride of 5 too, at base+21; widening the row for EVM moved both the
+  // index and the modulus and it STILL lands on the bars residue, which is
+  // how little this bound can be dispensed with). It would otherwise be
+  // drawn as an unlit card-bars block (tok::kTrack rects sized to
+  // kBarHeights) sitting well outside its own text box,
+  // tripping absurd_values_never_draw_outside_their_field_boxes. Adding
   // fields after the card block is supposed to be safe (the enum's own
   // comment says so); this bound is what actually makes it so.
-  if ((int)id >= base && (int)id < base + kMaxCards * 5 && ((int)id - base) % 5 == 1) {
+  if ((int)id >= base && (int)id < base + kMaxCards * kFieldsPerCard &&
+      ((int)id - base) % kFieldsPerCard == 1) {
     // a bars field
     const int bw = (int)(kBarW * scale_ + 0.5);
     const int bg = (int)(kBarGap * scale_ + 0.5);
@@ -895,7 +926,7 @@ int GsOverlay::update(const GsSnapshot& snap, bool stale, const GsPlayerState& p
     // repositioned by place_card_row_ below (its OLD box needs erasing
     // just as much; only the field's own next draw clears its NEW one).
     for (int slot = 0; slot < kMaxCards; ++slot)
-      for (int w = 0; w < 5; ++w) {
+      for (int w = 0; w < kFieldsPerCard; ++w) {
         Field& f = f_(card_field(slot, w));
         if (f.active) {
           clear_region(s, f.box);
@@ -911,7 +942,7 @@ int GsOverlay::update(const GsSnapshot& snap, bool stale, const GsPlayerState& p
     for (int i = 0; i < n; ++i)
       place_card_row_(i, card_geom_.bottom - (n - 1 - i) * card_geom_.row_pitch);
     for (int slot = 0; slot < kMaxCards; ++slot)
-      for (int w = 0; w < 5; ++w) {
+      for (int w = 0; w < kFieldsPerCard; ++w) {
         Field& f = f_(card_field(slot, w));
         f.active = slot < n;
         f.valid = false;

@@ -19,6 +19,11 @@ struct GsCard {
   bool heard = false;
   std::optional<double> rssi_dbm;
   std::optional<double> snr_db;
+  // s0 combined (best-chain) EVM in dB, negative = clean. Deliberately NOT
+  // part of `heard`: the aggregator only folds EVM from frames that carried
+  // PHY status, so a perfectly healthy card reports null here until one
+  // arrives. Gating `heard` on it would render a live antenna as dead.
+  std::optional<double> evm_db;
 };
 
 // The link half of the OSD's inputs, decoded from one sideport datagram.
