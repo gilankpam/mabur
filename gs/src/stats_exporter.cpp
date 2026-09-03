@@ -191,6 +191,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                 {"snr_req", in.op.snr_req}};
   if (in.residual_loss) link["residual_loss"] = *in.residual_loss;
   else link["residual_loss"] = nullptr;
+  // Pre-FEC sibling of the above, at link level so it outlives the ctl
+  // block in static-pin mode (see StatsInput::pre_fec_loss).
+  if (in.pre_fec_loss) link["pre_fec_loss"] = *in.pre_fec_loss;
+  else link["pre_fec_loss"] = nullptr;
   json& at = link["attrib"];
   if (in.residual_cur) at["residual_cur"] = *in.residual_cur;
   else at["residual_cur"] = nullptr;

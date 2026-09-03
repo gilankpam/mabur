@@ -19,6 +19,7 @@ StatsInput base_input() {
   in.op.overhead_base = 0.25; in.op.overhead_enh = 0.25;
   in.op.snr_req = 18.5;
   in.residual_loss = 0.012;
+  in.pre_fec_loss = 0.031;
   in.layer_delivery_pct = {100, 97};
   StatsCardIn c;
   c.up = true; c.frames = 1000; c.crc_fail = 12;
@@ -246,12 +247,34 @@ TEST(null_gauges_before_data) {
   in.cards[0].classes[1].has_ema = false;   // s1 has traffic but no ema yet
   in.cards[0].last_frame_us = 0;
   in.residual_loss.reset();
+  in.pre_fec_loss.reset();
   ex.poll(1000, in);
   const json j = cap.last();
   CHECK(j["cards"][0]["classes"]["s1"]["rssi"].is_null());
   CHECK(j["cards"][0]["classes"]["s1"]["snr_a"].is_null());
   CHECK(j["cards"][0]["last_frame_age_ms"].is_null());
   CHECK(j["link"]["residual_loss"].is_null());
+  CHECK(j["link"]["pre_fec_loss"].is_null());
+}
+
+// link.pre_fec_loss is the measured s1 window loss, exported at LINK level
+// and therefore present in static-pin mode, where link.ctl is null because
+// the ladder controller is never ticked. It is the unconditional sibling of
+// link.residual_loss (post-FEC), not a copy of link.ctl.pre_fec_loss: the
+// ctl figure is the last sample the CONTROLLER acted on and holds its value
+// through starved/invalid windows, while this one is this window's raw
+// measurement and goes null when the window had no valid sample.
+TEST(pre_fec_loss_is_exported_at_link_level_without_the_ctl_block) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  CHECK(!in.ctl.has_value());          // static-pin shape: no ladder snapshot
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(j["link"]["ctl"].is_null());
+  REQUIRE(j["link"]["pre_fec_loss"].is_number());
+  CHECK(j["link"]["pre_fec_loss"].get<double>() > 0.0309 &&
+        j["link"]["pre_fec_loss"].get<double>() < 0.0311);
 }
 
 TEST(rssi_converted_to_dbm) {

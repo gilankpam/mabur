@@ -1065,6 +1065,13 @@ static int run_radio(const maburgs::Config& cfg) {
         sin.gap_timeout_ms[s] = gap_policy.timeout_ms(s);
       sin.residual_loss = residual;
       sin.residual_cur = residual_cur;
+      // The same s1 window the ladder's LinkHealth reads, exported
+      // unconditionally: static-pin mode never fills sin.ctl below, and the
+      // OSD's pre-FEC LOSS figure has to come from somewhere. Left empty on
+      // an invalid window rather than defaulted to 0.0 the way LinkHealth
+      // does it -- a controller needs a number every tick, a gauge does not,
+      // and "no sample" must not render as a real zero-loss link.
+      if (s1_cur_sample.valid) sin.pre_fec_loss = s1_cur_sample.loss;
       if (const double cms = agg.decoder().last_boundary_close_ms(0); cms >= 0)
         sin.attrib_close_ms = cms;
       for (int s = 0; s < 2; ++s)

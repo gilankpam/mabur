@@ -90,6 +90,37 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
           out->fec_pct = *ov * 100.0;
       }
     }
+    // Static-pin fallbacks (link.static_mcs >= 0). The ladder controller is
+    // constructed but never ticked in pin mode, so the exporter deliberately
+    // emits link.ctl: null rather than a frozen state -- and every OSD field
+    // sourced from inside that block went blank for the whole flight even
+    // though the link was running at a perfectly real MCS, overhead and
+    // loss. Both fallbacks below are FALLBACKS, not primaries: while the
+    // ladder IS ticking, the ctl figures are the ones the controller acted
+    // on, and those are what the pilot should read.
+
+    // The LOSS row's pre-FEC half. link.pre_fec_loss is the always-exported
+    // link-level measurement, the unconditional sibling of the post-FEC
+    // link.residual_loss read above (which sat at link level all along and
+    // so never went blank); link.ctl.pre_fec_loss holds its value through
+    // starved/invalid windows, this one goes null on them.
+    if (!out->pre_loss_pct) {
+      if (const std::optional<double> p = num(*link, "pre_fec_loss"))
+        out->pre_loss_pct = *p * 100.0;
+    }
+    // The rung field. link.op is the GS-commanded op point in BOTH modes
+    // (StatsInput::op comes from vrx.cur_op(), which the pin branch writes
+    // directly and the ladder branch fills from the same ctrl_.op() that
+    // feeds ctl.rung above), so it carries exactly what is on air.
+    // Mid-probe, though, link.op is the probe point while ctl.rung is the
+    // settled rung -- hence ctl first.
+    if (const json* op = obj(*link, "op")) {
+      if (!out->mcs) out->mcs = integer(*op, "mcs");
+      if (!out->fec_pct) {
+        if (const std::optional<double> ov = num(*op, "overhead_base"))
+          out->fec_pct = *ov * 100.0;
+      }
+    }
   }
 
   if (j.contains("cards") && j["cards"].is_array()) {

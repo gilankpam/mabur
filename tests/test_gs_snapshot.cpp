@@ -290,4 +290,73 @@ TEST(parses_a_real_recorded_datagram) {
   CHECK(*s.cards[1].snr_db > 70.86 && *s.cards[1].snr_db < 70.87);
 }
 
+// Static-pin mode (link.static_mcs >= 0) never ticks the ladder controller,
+// so the exporter emits link.ctl: null on purpose -- but the link is still
+// running at a real MCS and a real FEC overhead, both of them in link.op.
+// Reading only link.ctl.rung blanked the OSD's rung field for the whole
+// flight; link.op is the GS-commanded op point in BOTH modes (it is filled
+// from vrx.cur_op(), which the pin branch writes directly), so it is the
+// fallback.
+TEST(pinned_link_reads_the_rung_from_link_op) {
+  const char* j = R"({"v":1,
+    "link":{"air_pct":40.0,"ctl":null,
+            "op":{"mcs":4,"bw":20,"sgi":false,"vht":false,
+                  "overhead_base":0.5,"overhead_enh":0.5,"snr_req":0.0}}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  REQUIRE(s.mcs.has_value());
+  CHECK(*s.mcs == 4);
+  REQUIRE(s.fec_pct.has_value());
+  CHECK(*s.fec_pct > 49.9 && *s.fec_pct < 50.1);       // ov 0.5 -> 50 %
+}
+
+// Same null-ctl datagram, the LOSS row: pre-FEC loss reads link.pre_fec_loss
+// (the link-level gauge, always exported) when the ladder block is absent.
+// Post-FEC already came from link.residual_loss and was never affected.
+TEST(pinned_link_reads_pre_fec_loss_from_link_level) {
+  const char* j = R"({"v":1,
+    "link":{"ctl":null,"pre_fec_loss":0.031,"residual_loss":0.004}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  REQUIRE(s.pre_loss_pct.has_value());
+  CHECK(*s.pre_loss_pct > 3.09 && *s.pre_loss_pct < 3.11);   // 0.031 -> 3.1 %
+  REQUIRE(s.post_loss_pct.has_value());
+  CHECK(*s.post_loss_pct > 0.39 && *s.post_loss_pct < 0.41);
+}
+
+// A null link-level gauge (no valid s1 window this poll) must stay an empty
+// optional and render as the em-dash, never as a real 0.0% loss.
+TEST(null_pre_fec_loss_stays_empty_not_zero) {
+  const char* j = R"({"v":1,"link":{"ctl":null,"pre_fec_loss":null}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  CHECK(!s.pre_loss_pct.has_value());
+}
+
+// The ctl figure is what the controller acted on and is the right number to
+// show while the ladder is running, so it wins over the link-level gauge.
+TEST(ctl_pre_fec_loss_wins_over_the_link_level_gauge) {
+  const char* j = R"({"v":1,
+    "link":{"ctl":{"pre_fec_loss":0.021},"pre_fec_loss":0.031}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  REQUIRE(s.pre_loss_pct.has_value());
+  CHECK(*s.pre_loss_pct > 2.09 && *s.pre_loss_pct < 2.11);
+}
+
+// The fallback must never override a ticking ladder: when link.ctl.rung is
+// present it wins, even mid-probe when link.op has already moved to the
+// probe point.
+TEST(ctl_rung_wins_over_link_op_when_both_are_present) {
+  const char* j = R"({"v":1,
+    "link":{"ctl":{"rung":{"idx":3,"mcs":5,"ov_base":0.25}},
+            "op":{"mcs":6,"overhead_base":0.15}}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  REQUIRE(s.mcs.has_value());
+  CHECK(*s.mcs == 5);
+  REQUIRE(s.fec_pct.has_value());
+  CHECK(*s.fec_pct > 24.9 && *s.fec_pct < 25.1);
+}
+
 MTEST_MAIN

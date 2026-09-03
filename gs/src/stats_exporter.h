@@ -149,6 +149,16 @@ struct StatsInput {
   OpPoint op;
   int gap_timeout_ms[2] = {0, 0};  // FrameStream's live per-sid gap timeout
   std::optional<double> residual_loss;  // nullopt -> JSON null
+  // Measured s1 pre-FEC window loss, the unconditional sibling of
+  // residual_loss. Exported at LINK level precisely so it survives
+  // static-pin mode, where the ladder controller is never ticked and the
+  // whole ctl block is null -- the loss is still measured there, and the
+  // OSD's LOSS row read nothing but em-dashes for the entire flight without
+  // this. NOT a copy of StatsCtlIn::pre_fec_loss: that one is the last
+  // sample the CONTROLLER acted on and holds through starved/invalid
+  // windows, this one is this window's raw measurement and is nullopt when
+  // the window produced no valid sample.
+  std::optional<double> pre_fec_loss;
   // Transition attribution (spec 2026-08-14, unconditional since
   // 2026-08-15). residual_cur = the attributed (current-rung-only) sibling
   // of residual_loss; close_ms = s1's last boundary open->close latency,
