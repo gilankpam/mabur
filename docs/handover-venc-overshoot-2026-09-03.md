@@ -493,3 +493,29 @@ cap's ~40 % worst-case cut is modest and the shed is doing the real
 work; if it is single-AU serialization latency and jitter (the 195 kB
 frame is 130 ms of air at rung 5's ~12 Mb/s effective), the cap is the
 fix.
+
+### Low-rung sweep (same evening): 200 % holds at rungs 1 and 2
+
+GS `link.static_mcs` pinned to 1 then 2 (maburgs restart each; config
+restored to −1 afterwards, byte-identical to the backup), cap toggled live
+on the drone; control and 200 % arm at each rung, operator on the lens.
+Captures + reports `log/vencburst-bench-2026-09-03-r{1,2}-{off,200}.*`
+(the rung-1 control is its last 120 s).
+
+| rung (cmd, budget) | arm | cycles | largest frame | peak 100 ms median / max | excess median / max | steady rate |
+|---|---|---|---|---|---|---|
+| 1 (5200 kbps, 11.1 kB) | off | 7 | 44 kB (4×) | 1.56× / 1.64× | 35 / 50 KB | 0.93× |
+| 1 | **200 % (22 kB)** | 5 | **18 kB** (+1 IDR at 59 kB, uncapped by design) | **1.27× / 1.70×** (1.31× max without the IDR cycle) | **13 / 46 KB** | 0.92× |
+| 2 (7800 kbps, 16.6 kB) | off | 7 | 83 kB (5×) | 1.79× / 2.24× | 84 / 172 KB | 0.94× |
+| 2 | **200 % (33 kB)** | 7 | **32 kB** | **1.51× / 1.56×** | **29 / 100 KB** | 0.94× |
+
+Unlike rung 5, at the low rungs the cap moves the **median** too: the
+scene-cut content is a larger multiple of the budget there (4–5× vs
+3.5×), so more of it was in the capped frame and the RC's redistribution
+into following frames is proportionally smaller. Steady rate unchanged at
+both rungs (no collapse at an 11 kB budget), no drops, `venc_verb_fail` 0.
+Operator quality verdict across all arms including rung 5's 150 %:
+"looked the same". Remaining gates before a flight config: a promote /
+demote pass with the cap on (the cap→looser transition burst, item 4
+above, now applies to every promote since the budget rises with the
+rung), and one flight.
