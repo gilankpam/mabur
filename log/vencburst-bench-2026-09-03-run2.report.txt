@@ -1,0 +1,26 @@
+note: 1 malformed line(s) skipped (capture killed mid-write?)
+17917 frames, 11399 polls
+capture: 301.3 s, 59.5 fps, mean 15.60 Mb/s 0.95x of programmed 16.384;  100 ms rate p50 15.68 0.96x  p95 16.39 1.00x  max 37.54 2.29x
+         frames: base 33.6 kB  enh 33.2 kB  idr -- (n=0);  encoder qp min/med/max 0/0/0
+
+programmed 16.384 Mb/s (= req 16.0 Mb/s x 1.024)
+13 cycle(s)  [window 100 ms, quiet >= 2 s under 0.70x, settle <= 1.10x]
+
+cycle 0: t= 146.5 s [burst]  pre 16.09 Mb/s (0.98x, qp  0)  peak 22.83 Mb/s = 1.39x @+25 ms (qp  0)  settle   100 ms (qp  0)  excess   57.3 KB  maxframe    60 kB  >2x 0  idr 0  FAIL
+cycle 1: t= 157.7 s [burst]  pre 15.70 Mb/s (0.96x, qp  0)  peak 28.45 Mb/s = 1.74x @+25 ms (qp  0)  settle   100 ms (qp  0)  excess  134.1 KB  maxframe   154 kB  >2x 1  idr 0  FAIL
+cycle 2: t= 166.1 s [burst]  pre 16.02 Mb/s (0.98x, qp  0)  peak 23.38 Mb/s = 1.43x @+25 ms (qp  0)  settle   100 ms (qp  0)  excess   75.6 KB  maxframe    65 kB  >2x 0  idr 0  FAIL
+cycle 3: t= 175.0 s [burst]  pre 15.54 Mb/s (0.95x, qp  0)  peak 26.18 Mb/s = 1.60x @+25 ms (qp  0)  settle   100 ms (qp  0)  excess  111.5 KB  maxframe   137 kB  >2x 1  idr 0  FAIL
+cycle 4: t= 182.6 s [burst]  pre 15.53 Mb/s (0.95x, qp --)  peak 24.85 Mb/s = 1.52x @+50 ms (qp  0)  settle   100 ms (qp  0)  excess   86.1 KB  maxframe    84 kB  >2x 1  idr 0  FAIL
+cycle 5: t= 190.5 s [burst]  pre 15.56 Mb/s (0.95x, qp  0)  peak 21.23 Mb/s = 1.30x @+0 ms (qp  0)  settle   100 ms (qp  0)  excess   48.4 KB  maxframe    55 kB  >2x 0  idr 0  FAIL
+cycle 6: t= 198.9 s [burst]  pre 15.62 Mb/s (0.95x, qp --)  peak 22.43 Mb/s = 1.37x @+0 ms (qp  0)  settle   100 ms (qp  0)  excess   55.2 KB  maxframe    69 kB  >2x 1  idr 0  FAIL
+cycle 7: t= 212.7 s [burst]  pre 15.08 Mb/s (0.92x, qp  0)  peak 32.10 Mb/s = 1.96x @+1325 ms (qp  0)  settle  1375 ms (qp  0)  excess  322.6 KB  maxframe   156 kB  >2x 4  idr 0  FAIL
+cycle 8: t= 215.1 s [burst]  pre 15.59 Mb/s (0.95x, qp --)  peak 25.43 Mb/s = 1.55x @+50 ms (qp  0)  settle   100 ms (qp  0)  excess   92.4 KB  maxframe   137 kB  >2x 1  idr 0  FAIL
+cycle 9: t= 220.2 s [burst]  pre 16.66 Mb/s (1.02x, qp  0)  peak 26.39 Mb/s = 1.61x @+725 ms (qp  0)  settle   775 ms (qp  0)  excess  165.7 KB  maxframe    96 kB  >2x 3  idr 0  FAIL
+cycle 10: t= 230.1 s [burst]  pre 15.04 Mb/s (0.92x, qp  0)  peak 30.84 Mb/s = 1.88x @+75 ms (qp  0)  settle   150 ms (qp  0)  excess  181.2 KB  maxframe   130 kB  >2x 2  idr 0  FAIL
+cycle 11: t= 235.3 s [burst]  pre 16.07 Mb/s (0.98x, qp --)  peak 23.01 Mb/s = 1.40x @+0 ms (qp  0)  settle    50 ms (qp  0)  excess   28.0 KB  maxframe    68 kB  >2x 0  idr 0  FAIL
+cycle 12: t= 246.3 s [burst]  pre 15.80 Mb/s (0.96x, qp  0)  peak 30.39 Mb/s = 1.85x @+50 ms (qp  0)  settle   100 ms (qp  0)  excess  158.6 KB  maxframe   123 kB  >2x 2  idr 0  FAIL
+
+shape: 9/13 cycles are a single >2x frame (scene cut), 4 are multi-frame ramps; triggers 0 quiet->motion, 13 steady->burst
+SUMMARY  peak ratio median 1.55x  max 1.96x   excess median 92 KB  max 323 KB   settle median 100 ms  max 1375 ms   (13/13 cycles IDR-free)
+ACCEPTANCE (peak <= 1.2x AND excess <= 64 KB): FAIL on cycle(s) [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+deficit split: smaller-deficit half peak median 1.52x, larger-deficit half 1.55x  (NO deficit dependence — look elsewhere than the QP floor)

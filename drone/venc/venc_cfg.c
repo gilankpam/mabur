@@ -44,6 +44,7 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->qp_delta = -4;
 	cfg->max_ipprop = 0; /* leave the firmware default (unbounded) */
 	cfg->min_qp = 0;     /* leave the firmware u32MinQp */
+	cfg->superframe_p_pct = 0; /* no P-frame ceiling */
 	preset_strcpy(cfg->resilience, sizeof(cfg->resilience), "rally");
 	cfg->roi_enabled = true;
 	cfg->roi_steps = 2;
@@ -214,4 +215,16 @@ int venc_cfg_preset_known(const char *name)
 	if (name)
 		preset_strcpy(cfg.resilience, sizeof(cfg.resilience), name);
 	return venc_cfg_expand_preset(&cfg, &out) == 0;
+}
+
+uint32_t venc_superframe_p_bytes(unsigned pct, unsigned kbps, unsigned fps)
+{
+	uint64_t bits_per_frame;
+
+	if (pct == 0 || fps == 0)
+		return 0;
+	/* Per-frame budget in bits = programmed bps / fps; programmed bps is
+	 * kbps * 1024 (star6e_controls.c apply_bitrate). */
+	bits_per_frame = ((uint64_t)kbps * 1024ull) / fps;
+	return (uint32_t)(bits_per_frame * pct / 100ull / 8ull);
 }

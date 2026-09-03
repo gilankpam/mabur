@@ -41,8 +41,8 @@ bool parse_long_strict(const std::string& s, long* out) {
 
 bool key_whitelisted(const std::string& k) {
   return k == "bitrate" || k == "qp_delta" || k == "roi_qp" ||
-         k == "max_ipprop" || k == "min_qp" || k == "ov_base_pct" ||
-         k == "ov_enh_pct";
+         k == "max_ipprop" || k == "min_qp" || k == "superframe_p_pct" ||
+         k == "ov_base_pct" || k == "ov_enh_pct";
 }
 
 }  // namespace
@@ -197,6 +197,8 @@ void handle_set(int fd, const DebugReq& req, mabur::OvOverride* feed) {
     ok = venc_set_max_ipprop(v) == 0;
   } else if (req.key == "min_qp") {
     ok = venc_set_min_qp(v) == 0;
+  } else if (req.key == "superframe_p_pct") {
+    ok = venc_set_superframe_p_pct(v) == 0;
   }
   send_json(fd, "200 OK", ok ? "{\"ok\":true}\n" : "{\"ok\":false}\n");
 #else

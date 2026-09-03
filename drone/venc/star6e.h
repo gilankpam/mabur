@@ -477,6 +477,30 @@ typedef enum {
 	E_MI_VENC_RC_PRIORITY_MAX,
 } MI_VENC_RcPriority_e;
 
+/* SuperFrame policy (mi_venc.h): bounds one encoded access unit. Thresholds
+ * are BITS. Measured on star6e 2026-08-27 (waybeam 0.69.2 probe, local
+ * stack): REENCODE with a P threshold is a real, next-frame, keyframe-free
+ * P-frame ceiling (11.1 kB -> 3.2 kB under 6000 B, no drops); an I
+ * threshold below the IDR size makes the SDK abort and regenerate the GOP
+ * with the same oversize IDR forever (channel emits nothing) — I stays
+ * 0xFFFFFFFF unconditionally in mabur. The only live P-frame size control
+ * on this SoC: u32MaxPSize is dead, max_ipprop is I-only. */
+typedef enum {
+	E_MI_VENC_SUPERFRM_NONE,
+	E_MI_VENC_SUPERFRM_DISCARD,
+	E_MI_VENC_SUPERFRM_REENCODE,
+	E_MI_VENC_SUPERFRM_MAX,
+} MI_VENC_SuperFrmMode_e;
+
+typedef struct {
+	MI_VENC_SuperFrmMode_e eSuperFrmMode;
+	MI_U32 u32SuperIFrmBitsThr;
+	MI_U32 u32SuperPFrmBitsThr;
+	MI_U32 u32SuperBFrmBitsThr;
+} MI_VENC_SuperFrameCfg_t;
+_Static_assert(sizeof(MI_VENC_SuperFrameCfg_t) == 16,
+	"MI_VENC_SuperFrameCfg_t layout changed - verify SDK match");
+
 /* Intra refresh (GDR-style rolling stripe) — identical layout on star6e and
  * maruko (mi_venc_datatype.h:992 for both).  Only the function arity differs
  * (maruko adds VeDev), handled by the per-backend macros below. */
@@ -556,6 +580,12 @@ _Static_assert(sizeof(MI_VENC_ParamH265SliceSplit_t) == 8,
 #define MI_VENC_SetRoiCfg(chn, cfg)   g_mi_venc.fnSetRoiCfg((chn), (cfg))
 #define MI_VENC_GetRoiCfg(chn, idx, cfg) g_mi_venc.fnGetRoiCfg((chn), (idx), (cfg))
 #define MI_VENC_GetChnDevid(chn, dev) g_mi_venc.fnGetChnDevid((chn), (dev))
+#define MI_VENC_SetSuperFrameCfg(chn, cfg) \
+	(g_mi_venc.fnSetSuperFrameCfg ? \
+		g_mi_venc.fnSetSuperFrameCfg((chn), (cfg)) : -1)
+#define MI_VENC_GetSuperFrameCfg(chn, cfg) \
+	(g_mi_venc.fnGetSuperFrameCfg ? \
+		g_mi_venc.fnGetSuperFrameCfg((chn), (cfg)) : -1)
 #define MI_VENC_SetIntraRefresh(chn, cfg) \
 	(g_mi_venc.fnSetIntraRefresh ? \
 		g_mi_venc.fnSetIntraRefresh((chn), (cfg)) : -1)

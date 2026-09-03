@@ -199,8 +199,9 @@ void parse_encoder(const json& j, EncoderCfg& e) {
 void parse_venc(const json& j, VencSectionCfg& v) {
   check_known_keys(j,
                     {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
-                     "max_ipprop", "min_qp", "resilience", "roi", "ae_fps",
-                     "awb_fps", "snapshot_quality", "debug_port"},
+                     "max_ipprop", "min_qp", "superframe_p_pct", "resilience",
+                     "roi", "ae_fps", "awb_fps", "snapshot_quality",
+                     "debug_port"},
                     "venc");
 
   if (j.contains("sensor_bin")) {
@@ -265,6 +266,14 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "min_qp", q, "venc");
     if (q < 0 || q > 51) fail("venc.min_qp", "must be in [0,51]");
     v.core.min_qp = static_cast<uint8_t>(q);
+  }
+
+  if (j.contains("superframe_p_pct")) {
+    int p = 0;
+    assign_if_present(j, "superframe_p_pct", p, "venc");
+    if (p != 0 && (p < 100 || p > 1000))
+      fail("venc.superframe_p_pct", "must be 0 (off) or in [100,1000]");
+    v.core.superframe_p_pct = static_cast<uint16_t>(p);
   }
 
   if (j.contains("resilience")) {

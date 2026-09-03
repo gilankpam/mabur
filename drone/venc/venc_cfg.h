@@ -27,6 +27,16 @@ typedef struct {
                               * the command, and the first frames of motion
                               * are then sized by content, not budget. Not
                               * a shipped default until the sweep says so. */
+  uint16_t superframe_p_pct; /* venc.superframe_p_pct: 0 (default) = off;
+                              * 100..1000 = P-frame ceiling as a percentage
+                              * of the rung's per-frame budget
+                              * (kbps*1024 / (fps*8)), programmed through
+                              * MI_VENC_SetSuperFrameCfg REENCODE with I
+                              * unlimited, re-derived on every bitrate
+                              * write. The one live P-frame size bound on
+                              * star6e (fork probe 2026-08-27); the RC
+                              * re-plans UNDER the cap, so this is a quality
+                              * lever too — bench before shipping non-zero. */
   char resilience[16];       /* venc.resilience ("rally", ...) — preset table */
   bool roi_enabled;          /* venc.roi.enabled */
   uint8_t roi_steps;         /* venc.roi.steps */
@@ -105,6 +115,13 @@ int venc_cfg_expand_preset(const VencCfg *cfg, VencPresetOut *out);
  * simply venc_cfg_expand_preset() with the output discarded, so there is
  * exactly ONE authority for "is this a known preset". */
 int venc_cfg_preset_known(const char *name);
+
+/* P-frame SuperFrame threshold in BYTES for a pct-of-budget cap at the
+ * given programmed rate and frame rate: pct * (kbps*1024) / (fps*8*100).
+ * kbps is the value handed to the encoder (decimal kbps, x1024 inside),
+ * fps the rate the RC budgets at. 0 when pct or fps is 0 (= off). Pure,
+ * host-tested (tests/test_venc_preset.cpp). */
+uint32_t venc_superframe_p_bytes(unsigned pct, unsigned kbps, unsigned fps);
 
 #ifdef __cplusplus
 }

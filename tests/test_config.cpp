@@ -306,6 +306,7 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.qp_delta == -4);
   CHECK(c.venc.core.max_ipprop == 0);
   CHECK(c.venc.core.min_qp == 0);
+  CHECK(c.venc.core.superframe_p_pct == 0);
   CHECK(std::string(c.venc.core.resilience) == "rally");
   CHECK(c.venc.core.roi_enabled == true);
   CHECK(c.venc.core.roi_steps == 2);
@@ -335,6 +336,20 @@ TEST(venc_max_ipprop_parses) {
 // the shipped behaviour), 1..51 programs the CBR QP floor at boot. The
 // venc-overshoot bench sweeps it (docs/handover-venc-overshoot-2026-09-03.md);
 // it is NOT a default change.
+// superframe_p_pct: 0 (default) = off; 100..1000 = P-frame ceiling as a
+// percentage of the rung's per-frame budget via MI_VENC_SetSuperFrameCfg
+// REENCODE (I unlimited). Below 100 is rejected: a cap under the budget
+// makes CBR re-plan far under it (fork probe 2026-08-27: 6000 B cap -> 3.2 kB
+// frames) and is a quality collapse, not a burst bound.
+TEST(venc_superframe_p_pct_parses) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("superframe_p_pct":200}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.superframe_p_pct == 200);
+  std::filesystem::remove(path);
+}
+
 TEST(venc_min_qp_parses) {
   auto path = write_temp_json(
       R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
@@ -383,6 +398,8 @@ TEST(venc_range_checks) {
            Case{R"({"venc":{"max_ipprop":101}})", "venc.max_ipprop"},
            Case{R"({"venc":{"min_qp":-1}})", "venc.min_qp"},
            Case{R"({"venc":{"min_qp":52}})", "venc.min_qp"},
+           Case{R"({"venc":{"superframe_p_pct":50}})", "venc.superframe_p_pct"},
+           Case{R"({"venc":{"superframe_p_pct":1001}})", "venc.superframe_p_pct"},
            Case{R"({"venc":{"snapshot_quality":0}})", "venc.snapshot_quality"},
            Case{R"({"venc":{"snapshot_quality":101}})", "venc.snapshot_quality"},
            Case{R"({"venc":{"debug_port":1023}})", "venc.debug_port"},

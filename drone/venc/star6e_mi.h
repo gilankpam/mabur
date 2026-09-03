@@ -105,6 +105,8 @@ typedef struct {
 	int (*fnGetRefParam)(int chn, void *p);
 	int (*fnSetH265SliceSplit)(int chn, void *p);
 	int (*fnGetH265SliceSplit)(int chn, void *p);
+	int (*fnSetSuperFrameCfg)(int chn, void *p); /* MI_VENC_SuperFrameCfg_t * */
+	int (*fnGetSuperFrameCfg)(int chn, void *p);
 } star6e_venc_impl;
 
 /* Global instances — defined in star6e_mi.c.

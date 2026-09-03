@@ -42,6 +42,14 @@ int star6e_controls_set_max_ipprop(uint32_t prop);
  *  live field is preserved.  Does not request an IDR. */
 int star6e_controls_set_min_qp(uint32_t qp);
 
+/** SuperFrame P-frame ceiling as a percentage of the per-frame budget
+ *  (0 = off, 100..1000).  Re-derived and re-programmed on every bitrate
+ *  write (apply_bitrate) from the rate the encoder was actually given;
+ *  this call changes the percentage live and re-applies at the last
+ *  programmed rate.  I threshold always unlimited (a low one stalls the
+ *  channel — see MI_VENC_SuperFrameCfg_t in star6e.h). */
+int star6e_controls_set_superframe_p_pct(uint32_t pct);
+
 /** Explicit IDR request.  Goes through the shared per-channel 100 ms
  *  rate limiter (idr_rate_limit.h); a coalesced request returns 0, not an
  *  error.  This is the only place in venc_core that calls

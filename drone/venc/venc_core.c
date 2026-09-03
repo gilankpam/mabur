@@ -399,6 +399,21 @@ int venc_set_max_ipprop(int prop)
 	return rc == 0 ? 0 : -1;
 }
 
+int venc_set_superframe_p_pct(int pct)
+{
+	int rc;
+
+	if (!venc_core_running())
+		return -1;
+	if (pct < 0 || pct > 1000 || (pct > 0 && pct < 100))
+		return -1;
+
+	pthread_mutex_lock(&g_verb_lock);
+	rc = star6e_controls_set_superframe_p_pct((uint32_t)pct);
+	pthread_mutex_unlock(&g_verb_lock);
+	return rc == 0 ? 0 : -1;
+}
+
 int venc_set_min_qp(int qp)
 {
 	int rc;

@@ -192,6 +192,19 @@ their variance into jitter. Knobs, in order of proven usefulness:
   natural ratio is under the cap.
 - **`venc.qp_delta`** (s32IPQPDelta) is a weak bias: ~2% IDR size per
   QP step (±12 range ≈ ±25% total). Average-shifter, not a bound.
+- **`venc.superframe_p_pct`** (config, 0=off; also volatile via
+  `:8301 /venc/set?superframe_p_pct=N`, 100..1000) programs
+  `MI_VENC_SetSuperFrameCfg` REENCODE with a **P-frame** bit threshold of
+  N % of the rung's per-frame budget (kbps×1024/(fps×8)), re-derived on
+  every bitrate write; I stays unlimited unconditionally because an I
+  threshold below the IDR size stalls the channel for good (fork probe
+  2026-08-27, `../mabur-fork/mabur-stack-20260828`). That probe is the
+  only hardware evidence so far: rung 2, 6000 B cap → P frames 11.1 →
+  3.2 kB from the next frame, keyframe-free, 0 drops. **The RC re-plans
+  well under the cap**, so this is a quality lever as much as a bound —
+  the 2026-09-03 bench motivates it (scene-cut P frames at 2–6× budget,
+  `docs/handover-venc-overshoot-2026-09-03.md`); sweep before shipping
+  non-zero. Ported 2026-09-03, default 0.
 - **`venc.min_qp`** (config, 0=firmware default; also volatile via
   `:8301 /venc/set?min_qp=N`, 1..51) programs `u32MinQp`, the CBR QP
   floor. Added 2026-09-03 as the bench knob for the quiet-scene

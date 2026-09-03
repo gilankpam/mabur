@@ -25,6 +25,17 @@ typedef struct {
 
 static Star6eControlContext g_star6e_control_ctx;
 
+/* SuperFrame P-frame ceiling state (see apply_superframe_p). pct is seeded
+ * from venc.superframe_p_pct at bind and changed live by the debug verb;
+ * last_kbps is the rate the encoder was actually given (post-compensation,
+ * post-rails), so a live pct change can re-derive the threshold without a
+ * bitrate write. applied says the SDK holds a non-NONE policy, so turning
+ * the knob off writes NONE once instead of leaving a stale cap. */
+static uint32_t g_superframe_p_pct;
+static uint32_t g_superframe_last_kbps;
+static int g_superframe_applied;
+static int apply_superframe_p(uint32_t kbps);
+
 static uint32_t align_down(uint32_t value, uint32_t align)
 {
 	return value / align * align;
@@ -92,6 +103,12 @@ static int apply_bitrate(uint32_t kbps)
 
 	if (MI_VENC_SetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0)
 		return -1;
+	/* The P ceiling is a fraction of THIS rate's per-frame budget, so it
+	 * follows every rung change. Non-fatal: the bitrate is programmed
+	 * whether or not the SDK takes the SuperFrame policy. */
+	g_superframe_last_kbps = kbps;
+	if (g_superframe_p_pct || g_superframe_applied)
+		(void)apply_superframe_p(kbps);
 	return 0;
 }
 
@@ -104,7 +121,12 @@ int star6e_controls_request_idr(void)
 	return MI_VENC_RequestIdr(chn, 1) == 0 ? 0 : -1;
 }
 
-static int apply_qp_delta(int delta)
+/* Get->modify->Set of s32IPQPDelta alone: no IDR, no log. Shared by the
+ * qp_delta verb and by the SuperFrame guard below (waybeam PR #113 saw
+ * SetSuperFrameCfg reset qpDelta to 0 / maxQp to 48 on its path; the
+ * 2026-08-27 fork probe did not, so this is belt-and-braces and must not
+ * cost a keyframe per bitrate write). */
+static int restage_qp_delta(int delta)
 {
 	MI_VENC_ChnAttr_t attr = {0};
 	MI_VENC_RcParam_t param = {0};
@@ -115,11 +137,60 @@ static int apply_qp_delta(int delta)
 		return -1;
 	if (apply_rc_qp_delta(&attr, &param, delta) != 0)
 		return -1;
-	if (MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
+	return MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) == 0
+		? 0 : -1;
+}
+
+static int apply_qp_delta(int delta)
+{
+	if (restage_qp_delta(delta) != 0)
 		return -1;
 	if (star6e_controls_request_idr() != 0)
 		return -1;
 	printf("> qpDelta changed to %d\n", delta);
+	return 0;
+}
+
+/* SuperFrame REENCODE with a P-frame threshold = g_superframe_p_pct % of
+ * the per-frame budget at `kbps` (the rate the encoder was just given),
+ * I and B thresholds unlimited. Measured on this SoC 2026-08-27 (waybeam
+ * 0.69.2 probe, ../mabur-fork stack): P frames bounded from the NEXT
+ * frame, keyframe-free, no drops; an I threshold below the IDR size
+ * stalls the channel permanently, hence the unconditional 0xFFFFFFFF.
+ * The RC re-plans UNDER the threshold rather than clipping at it (6000 B
+ * cap -> 3.2 kB frames), so the percentage is a quality lever as well as
+ * a burst bound — the 2026-09-03 bench's motivating case is a scene-cut
+ * P frame at 2-6x the budget (195 kB against 34 kB at rung 5). pct 0
+ * writes NONE (all thresholds unlimited) if a policy was ever applied. */
+static int apply_superframe_p(uint32_t kbps)
+{
+	MI_VENC_SuperFrameCfg_t cfg = {0};
+	MI_VENC_SuperFrameCfg_t back = {0};
+	uint32_t bytes = venc_superframe_p_bytes(g_superframe_p_pct, kbps,
+		g_star6e_control_ctx.delivered_fps);
+	int rc_qp = 0;
+
+	cfg.eSuperFrmMode = bytes ? E_MI_VENC_SUPERFRM_REENCODE
+				  : E_MI_VENC_SUPERFRM_NONE;
+	cfg.u32SuperIFrmBitsThr = 0xFFFFFFFFu;
+	cfg.u32SuperPFrmBitsThr = bytes ? bytes * 8u : 0xFFFFFFFFu;
+	cfg.u32SuperBFrmBitsThr = 0xFFFFFFFFu;
+	if (MI_VENC_SetSuperFrameCfg(g_star6e_control_ctx.venc_chn, &cfg) != 0) {
+		fprintf(stderr, "WARN: MI_VENC_SetSuperFrameCfg failed (%s)\n",
+			g_mi_venc.fnSetSuperFrameCfg ? "rejected" : "not exported");
+		return -1;
+	}
+	g_superframe_applied = bytes != 0;
+	(void)MI_VENC_GetSuperFrameCfg(g_star6e_control_ctx.venc_chn, &back);
+	if (g_star6e_control_ctx.cfg && g_star6e_control_ctx.cfg->qp_delta != 0)
+		rc_qp = restage_qp_delta(g_star6e_control_ctx.cfg->qp_delta);
+	printf("> superframe P cap: %u%% of %u kbps @ %u fps = %u bytes (%s); "
+		"readback mode=%d p_bits=%u qp_restage=%d\n",
+		(unsigned)g_superframe_p_pct, (unsigned)kbps,
+		(unsigned)g_star6e_control_ctx.delivered_fps, (unsigned)bytes,
+		bytes ? "reencode" : "off", (int)back.eSuperFrmMode,
+		(unsigned)back.u32SuperPFrmBitsThr, rc_qp);
+	fflush(stdout);
 	return 0;
 }
 
@@ -276,11 +347,33 @@ void star6e_controls_bind(Star6ePipelineState *pipeline, const VencCfg *cfg)
 	g_star6e_control_ctx.frame_height = pipeline->image_height;
 	g_star6e_control_ctx.pipeline = pipeline;
 	g_star6e_control_ctx.cfg = cfg;
+	/* Seeded here, programmed by the first apply_bitrate (RcAgent's first
+	 * control tick) — the boot rate is a placeholder, not a budget. */
+	g_superframe_p_pct = cfg->superframe_p_pct;
+	g_superframe_last_kbps = 0;
+	g_superframe_applied = 0;
 }
 
 void star6e_controls_reset(void)
 {
 	memset(&g_star6e_control_ctx, 0, sizeof(g_star6e_control_ctx));
+	g_superframe_p_pct = 0;
+	g_superframe_last_kbps = 0;
+	g_superframe_applied = 0;
+}
+
+int star6e_controls_set_superframe_p_pct(uint32_t pct)
+{
+	if (pct != 0 && (pct < 100 || pct > 1000))
+		return -1;
+	g_superframe_p_pct = pct;
+	if (g_superframe_last_kbps == 0) {
+		printf("> superframe P cap: %u%% staged, applies at the first "
+			"bitrate write\n", (unsigned)pct);
+		fflush(stdout);
+		return 0;
+	}
+	return apply_superframe_p(g_superframe_last_kbps);
 }
 
 int star6e_controls_apply_bitrate(uint32_t kbps)

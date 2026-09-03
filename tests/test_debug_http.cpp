@@ -9,6 +9,12 @@ TEST(debug_http_routes) {
   CHECK(debug_http_parse("GET /api/v1/set?video0.bitrate=1 HTTP/1.0").kind == DebugReq::BAD);
   CHECK(debug_http_parse("POST /venc/set?bitrate=nope HTTP/1.0").kind == DebugReq::BAD);
 }
+TEST(superframe_p_pct_key_whitelisted) {
+  auto p = debug_http_parse("POST /venc/set?superframe_p_pct=200 HTTP/1.0");
+  CHECK(p.kind == DebugReq::SET);
+  CHECK(p.key == "superframe_p_pct");
+  CHECK(p.val == 200);
+}
 TEST(min_qp_key_whitelisted) {
   // Bench knob for the venc-overshoot sweep: volatile u32MinQp, same
   // apply pattern as max_ipprop.

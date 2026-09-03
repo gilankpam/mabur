@@ -111,4 +111,18 @@ TEST(preset_known_matches_expand_preset) {
   CHECK(venc_cfg_preset_known("yolo") == 0);
 }
 
+// venc_superframe_p_bytes(): P-frame SuperFrame threshold as a percentage
+// of the per-frame budget at the PROGRAMMED rate (kbps x 1024), so the cap
+// follows the rung. Rung 5 at 60 fps: 16000 kbps -> 16.384 Mbit/s -> 34133 B
+// per frame; 200 % -> 68266 B. The 2026-09-03 bench saw scene-cut frames of
+// 195 kB against that budget.
+TEST(superframe_p_bytes_follows_the_rung_budget) {
+  CHECK(venc_superframe_p_bytes(100, 16000, 60) == 34133);
+  CHECK(venc_superframe_p_bytes(200, 16000, 60) == 68266);
+  CHECK(venc_superframe_p_bytes(150, 3900, 60) == 12480);  // rung 1: 66560 bits/frame x 1.5 / 8
+  CHECK(venc_superframe_p_bytes(0, 16000, 60) == 0);       // off
+  CHECK(venc_superframe_p_bytes(200, 16000, 0) == 0);      // no fps yet
+  CHECK(venc_superframe_p_bytes(1000, 200000, 1) > 0);     // no overflow at the rails
+}
+
 MTEST_MAIN

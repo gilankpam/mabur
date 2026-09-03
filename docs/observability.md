@@ -373,8 +373,8 @@ read the sideport. Reach for other tools only in these cases:**
     at `venc.snapshot_quality`. Answers 503 on a build without the venc core,
     500 on a capture failure — the two are deliberately distinguishable.
   - `POST /venc/set?k=v`, whitelist `bitrate` / `qp_delta` / `roi_qp` /
-    `max_ipprop` / `min_qp` (the last two are volatile RC-param pokes,
-    `docs/airtime-model.md` §3). **An
+    `max_ipprop` / `min_qp` / `superframe_p_pct` (the last three are
+    volatile encoder pokes, `docs/airtime-model.md` §3). **An
     override is not self-clearing.** RcAgent pushes a bitrate only when its
     computed value changes, so on a parked link whatever you set here holds
     until the next rung change or failsafe entry (measured: 20 s+ with no
