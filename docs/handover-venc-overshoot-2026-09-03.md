@@ -427,3 +427,69 @@ Corrections to the sections above, in light of this: the "Mechanism"
 section's classic-CBR-emergence story is wrong for this encoder; the
 "What would fix it" ranking's item 1 (`u32MinQp`) is dead; item 2
 (headroom) and the shed are what stands.
+
+## SuperFrame P-cap sweep (2026-09-03, later the same evening)
+
+`venc.superframe_p_pct` ported (commit aa80e1c) and deployed to the drone;
+GS unchanged. Four arms, each its own passive capture at rung 5 (cmd
+16000 → 16.384 Mb/s programmed, 34.1 kB per-frame budget), operator on
+the lens (6–10 cover/uncover cycles + quick open/close bursts per arm),
+cap changed live through the debug endpoint between arms. Captures and
+per-arm reports: `log/vencburst-bench-2026-09-03-arm-{off,300,200,150}.*`
+(untracked). Every `SetSuperFrameCfg` was accepted with an exact readback
+(REENCODE, P bits = pct × budget); `qp_restage` 0 (nothing to re-stage).
+
+| arm (cap) | cycles | largest frame | peak 100 ms median / max | excess median / max | steady 1 s rate p10 / p50 / p90 |
+|---|---|---|---|---|---|
+| off (control) | 10 | **121 kB** (195 kB in the earlier control) | 1.37× / 1.86× | 67 / 348 KB | 15.3 / 15.6 / 15.9 Mb/s |
+| 300 % (102 kB) | 8 | 92 kB | 1.40× / 1.63× | 105 / 306 KB | 15.3 / 15.6 / 15.9 |
+| **200 % (68 kB)** | 9 | **63 kB**, 0 frames > 2× budget | 1.35× / **1.48×** | 68 / **213 KB** | 15.0 / 15.6 / 16.2 |
+| 150 % (51 kB) | (6, all "quiet→motion") | 50 kB | — | — | **10.8 / 12.1 / 14.1** |
+
+Readings:
+
+1. **The cap binds, exactly and immediately.** Largest frame per arm sits
+   just under the programmed ceiling (92 / 63 / 50 kB against 102 / 68 /
+   51). The single-AU scene-cut frame — the thing no other knob could
+   touch — is gone at 200 %.
+2. **The bits are conserved, not removed.** Median peak and median excess
+   are unchanged across off / 300 / 200: the RC re-encodes the cut frame
+   at the cap and the remaining content lands in the next 1–3 frames.
+   What improves is the *worst case* (max peak 1.86 → 1.48×, max excess
+   348 → 213 KB) and the per-AU size, i.e. serialization jitter and the
+   size of the largest thing the TxQueue ever holds. For the queue-fill
+   question the 100 ms excess matters more than the single frame, and
+   there the cap buys ~40 % on the worst cycle and nothing on the median.
+3. **200 % is free at steady state on this scene; 150 % is not.** At
+   150 % the encoder abandoned its target for the whole arm: 10.6–12
+   Mb/s (0.65–0.73×) on the same static scene that runs 15.6 uncapped,
+   frame p50 33 → 24 kB. This is the fork's "RC re-plans well under the
+   cap" and upstream's "min_qp is a bit ceiling" — a P cap within ~1.5× of
+   the budget is a rate collapse, not a burst bound. Where the knee sits
+   is scene-dependent (this is a static room), so 200 % is *not* proven
+   safe for a busy scene or for rung 0's 8.5 kB budget without a sweep
+   there.
+4. **The cap→off transition is itself a burst.** Switching 150 % → 0
+   produced one telemetry second at **25.7 Mb/s** (1.57×), TxQueue wait
+   67 ms, and the first `congestion_shed` of the evening (4 s of shed,
+   GS record `t_ms` 5337723–5341758, no rung move, 0 drops). The RC
+   dumped the window budget it had been prevented from spending. Any
+   live *loosening* of the cap (debug pokes, or a rung promote raising
+   the budget while the RC sits under the old cap) can do this; a
+   tightening cannot. Not a reason to avoid the knob, a reason not to
+   toggle it in flight and to bench a promote with the cap on.
+5. **No frame was lost anywhere**: decoded fps held, ausniff 61 fps /
+   0 frame-id gaps after the sweep, `txq_drop` 0 all evening,
+   `venc_verb_fail` 0.
+
+Decision status: default stays 0. **200 % is the candidate** for a
+flight config, gated on (a) the same sweep at rungs 0–2 (budget 8.5–17
+kB — GDR stripe frames of 41 kB at rung 5 scale with the rate, but the
+collapse knee may not), (b) a promote/demote pass with the cap on
+(item 4), and (c) the operator's quality verdict on the uncovers.
+Whether it is worth shipping at all depends on what hurts in flight: if
+it is the 100 ms excess filling the queue (flight-0011's reading), the
+cap's ~40 % worst-case cut is modest and the shed is doing the real
+work; if it is single-AU serialization latency and jitter (the 195 kB
+frame is 130 ms of air at rung 5's ~12 Mb/s effective), the cap is the
+fix.
