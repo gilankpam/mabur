@@ -139,6 +139,8 @@ struct StatsRttIn {
 // DISC, or no recent video).
 struct StatsRcfSlotIn {
   uint64_t au = 0, timeout = 0, passthru = 0;
+  uint64_t probe = 0;   // released by the probe body's arrival (rcf_slot.h)
+  int tail_ub_ms = 0;   // learned completion->probe deadline, ms
 };
 
 // Continuous probe gate snapshot (probe-stream, 2026-09-04), straight from

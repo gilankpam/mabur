@@ -651,6 +651,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // reads. The RF labels are this body's own, not the card's EMA -- a probe
   // sample must carry the radio conditions it actually flew through.
   agg.set_probe_sink([&](uint8_t card, const mabur::node::RxBody& m) {
+    // The probe is the last PPDU of its ENH burst: seeing it (any card,
+    // any profile, parseable or not -- the aggregator routed it here by
+    // stream id) is the slotter's "burst off air" release (rcf_slot.h).
+    rcf_slot.on_probe_tail(mono_ms());
     mabur::probe::ProbeRx rx;
     if (!mabur::probe::parse_probe_body(m.body.data(), m.body.size(),
                                         probe_block_payload, &rx))
@@ -945,9 +949,9 @@ static int run_radio(const maburgs::Config& cfg) {
       probe_track.set_commanded(pc, now_ms);
       probe_loss.blank_until(now_ms + kProbeSwitchBlankMs);
       for (auto& w : probe_card_loss) w.blank_until(now_ms + kProbeSwitchBlankMs);
-      // RcfSlotter must wait out the probe body's airtime before releasing
-      // (slotter-tail 2026-09-04): the AU completes one probe body before
-      // the burst is actually off air.
+      // The probe body's own airtime is the floor of the slotter's learned
+      // completion->probe offset (rcf_slot.h "Probe tail"): the burst
+      // cannot end sooner than one probe body after the AU completes.
       int tail = 0;
       if (pc != mabur::rc::kNoProbeProfile) {
         mabur::rc::PhyMode pm; uint8_t pmcs, pbw;
@@ -1297,7 +1301,8 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.telem = latest_telem.t;
       sin.telem_rx_ms = latest_telem.rx_ms;
       sin.rcf_slot = {rcf_slot.released_au(), rcf_slot.released_timeout(),
-                      rcf_slot.passthru()};
+                      rcf_slot.passthru(), rcf_slot.released_probe(),
+                      rcf_slot.tail_ub_ms()};
       // link-rtt block. floor via floor_us_from (pts_anchor.h), which owns
       // the 32-bit-seed vs 64-bit-MI-domain wrap rule.
       if (rtt_est.has_rtt()) {

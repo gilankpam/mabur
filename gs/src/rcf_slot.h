@@ -25,18 +25,27 @@
 // passes through — that covers rendezvous, so DISC needs no bypass.
 // hold_max_ms 0 disables the slotter.
 //
-// Probe tail (spec 2026-09-04 probe-stream): the probe-stream body trails
-// every ENH burst, so the AU completes one probe body BEFORE the burst is
-// actually off air. A release armed at an ENH completion is therefore
-// deferred by probe_tail_ms — it goes out at completion + probe_tail_ms
-// instead of at completion (a base-AU completion is never trailed by a
-// probe and is never deferred). The cadence predictor is charged that same
-// delay, but ONLY for the completion that will actually incur it: an ENH
-// completion's idle_ahead() check adds probe_tail_ms (its send lands later),
-// a base-AU completion's and a grace offer's do not (their send goes out at
-// once). The grace window separately requires the tail to have elapsed
-// before treating "just went idle" as safe — the probe may still be on air
-// even though our own send would not be delayed by it.
+// Probe tail (spec 2026-09-04 probe-stream, fixed 2026-09-05): the
+// probe-stream body is the LAST PPDU of every ENH burst, and the AU
+// completes before it lands (bench: the probe's radio stamp is 0.9 ms p50
+// / 4 ms p99 after the completion stamp; a send's USB+chip latency is
+// 1-1.5 ms). A send released at the completion therefore puts the blast
+// exactly where the probe is -- measured 2x the enh stream's own loss,
+// and a fixed "one body airtime" deferral did nothing because it moved
+// the blast from one part of that spread to another
+// (docs/handover-probe-blanking-2026-09-04.md). So an ENH completion
+// releases NOTHING by itself: the release is the probe's own arrival
+// (on_probe_tail, fed from the probe sink), which is the exact "burst is
+// off air" signal at any MCS and frame size. A lost probe never arrives,
+// so each ENH completion also arms a deadline at completion + tail_ub,
+// where tail_ub is learned from the observed completion->probe offsets
+// (a decaying max, floored at probe_tail_ms = the body's own airtime,
+// plus 1 ms). Both the probe release and the deadline release re-check
+// idle_ahead() at the instant they fire, with no extra delay charged;
+// the completion itself charges nothing. A base-AU completion is never
+// trailed by a probe and releases at once, as before. The grace window
+// opens at the burst end -- the probe's arrival, or the estimate
+// completion + tail_ub while it is still expected.
 //
 // Single-threaded (core loop). Time is the core loop's mono ms.
 #include <cstdint>
@@ -53,16 +62,15 @@ struct RcfSlotCfg {
   int guard_ms = 1;          // margin before the predicted next burst
   // Airtime of the probe-stream body that trails every ENH burst (spec
   // 2026-09-04 probe-stream), ms, rounded up; 0 when no probe is commanded.
-  // The AU completes one probe body BEFORE the burst is off air, so a
-  // release armed at completion would put the GS's TX blast on the probe —
-  // measured 2x the slotter-off probe loss (findings 2026-09-04 Finding 2).
+  // Floor of the learned completion->probe offset (tail_ub_ms()): the
+  // burst cannot end sooner than one probe body after the completion.
   int probe_tail_ms = 0;
 };
 
 // A control frame plus what the sender needs at actual send time: the
 // card the selector chose when it was built, and the RCF seq to stamp the
 // RTT estimator with (built-time seq, since vrx.rcf_seq() moves on).
-enum class SlotReason : uint8_t { Passthru = 0, Grace = 1, Au = 2, Timeout = 3 };
+enum class SlotReason : uint8_t { Passthru = 0, Grace = 1, Au = 2, Timeout = 3, Probe = 4 };
 
 struct SlotFrame {
   std::vector<uint8_t> frame;
@@ -81,17 +89,23 @@ class RcfSlotter {
   // the burst-cadence predictor.
   void on_au_first(uint64_t now_ms);
   // The core loop finished an AU (end-of-AU callback). probe_follows says
-  // whether THIS AU is trailed by a probe body (enh AU + probe commanded).
+  // whether THIS AU is trailed by a probe body (enh AU + probe commanded):
+  // such a completion releases nothing itself -- see on_probe_tail.
   void on_au_complete(uint64_t now_ms, bool probe_follows);
+  // The probe sink saw a probe body (any card, any profile): the ENH
+  // burst is off air. Releases the hold if the idle ahead allows it, and
+  // feeds the completion->probe offset into tail_ub_ms().
+  void on_probe_tail(uint64_t now_ms);
   // Would a send at now_ms be on air before the next burst is due?
-  // extra_delay_ms is added on top of lead_ms for callers whose send
-  // will actually land that much later (an ENH completion's deferred
-  // release); 0 for a send that goes out immediately (grace, base AU).
-  bool idle_ahead(uint64_t now_ms, int extra_delay_ms = 0) const;
+  bool idle_ahead(uint64_t now_ms) const;
   double period_ms() const { return period_ms_; }
   // Airtime of the probe body trailing every ENH burst, ms; 0 = none
   // commanded. Runtime: the probe MCS follows the rung.
   void set_probe_tail_ms(int ms) { cfg_.probe_tail_ms = ms < 0 ? 0 : ms; }
+  // Learned upper bound on completion->probe-arrival, ms: the deadline a
+  // lost probe's release falls back to. ceil(decaying max of observed
+  // offsets, floored at probe_tail_ms) + 1.
+  int tail_ub_ms() const;
   // Offer a frame for sending. Returns true if it was taken into the hold
   // (send it when take_due() hands it back); false = send it now.
   bool offer(SlotFrame& f, uint64_t now_ms, bool bypass);
@@ -102,6 +116,7 @@ class RcfSlotter {
   uint64_t last_au_ms() const { return last_au_ms_; }
   uint64_t released_au() const { return released_au_; }
   uint64_t released_timeout() const { return released_timeout_; }
+  uint64_t released_probe() const { return released_probe_; }
   uint64_t passthru() const { return passthru_; }
   size_t pending() const { return pending_.size(); }
 
@@ -113,9 +128,21 @@ class RcfSlotter {
   uint64_t last_first_ms_ = 0;   // last first-body arrival
   bool have_au_ = false, have_first_ = false;
   double period_ms_ = 16.667;    // EMA of first-body intervals
-  bool release_pending_ = false; // an AU completion armed a release
-  uint64_t release_at_ms_ = 0;   // ... due at this time (completion + tail)
+  bool release_pending_ = false; // a completion/probe armed a release
+  SlotReason release_reason_ = SlotReason::Au;
+  // An ENH completion is waiting for its probe: the deadline releases
+  // instead if the probe never shows (lost on air).
+  bool probe_wait_ = false;
+  uint64_t probe_wait_from_ms_ = 0;  // that completion's time
+  uint64_t probe_deadline_ms_ = 0;
+  // When the current burst is (expected to be) off air: a base completion,
+  // the probe's arrival, or completion + tail_ub while the probe is still
+  // expected. The grace window counts from here.
+  uint64_t idle_from_ms_ = 0;
+  double tail_est_ms_ = 0;       // decaying max of completion->probe offsets
+  static constexpr double kTailMaxMs = 15.0;
   uint64_t released_au_ = 0, released_timeout_ = 0, passthru_ = 0;
+  uint64_t released_probe_ = 0;
 };
 
 }  // namespace maburgs

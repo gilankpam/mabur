@@ -149,16 +149,97 @@ TEST(hold_timer_counts_from_oldest_pending) {
 // which is what isolates the tail mechanic under test, same as the existing
 // no_first_body_history_means_every_completion_releases test above.)
 
-TEST(probe_tail_defers_the_release) {
+TEST(enh_completion_does_not_release_until_the_probe_is_seen) {
+  // The probe body is the last PPDU of every ENH burst, and a send issued
+  // at the completion goes on air right where it lands (bench 2026-09-05:
+  // the probe arrives 0.9 ms p50 / 4 ms p99 after the completion stamp,
+  // the send's USB+chip latency is 1-1.5 ms). So an ENH completion arms
+  // nothing by itself; the probe's own arrival is the release.
   RcfSlotCfg cfg{30, 100, 2, 3, 1};
   cfg.probe_tail_ms = 2;
   RcfSlotter s(cfg);
   s.on_au_complete(0, false);          // establish "video flowing"
   CHECK(offer(s, 1, 10, false));       // outside grace -> held
   s.on_au_complete(20, true);
+  CHECK(s.take_due(20).empty());
   CHECK(s.take_due(21).empty());
-  auto due = s.take_due(22);
-  CHECK(due.size() == 1 && due[0].reason == SlotReason::Au);
+  s.on_probe_tail(21);
+  auto due = s.take_due(21);
+  REQUIRE(due.size() == 1);
+  CHECK(due[0].reason == SlotReason::Probe);
+  CHECK(s.released_probe() == 1);
+  CHECK(s.released_au() == 0);
+}
+
+TEST(lost_probe_falls_back_to_the_learned_deadline) {
+  // No probe ever arrives (lost on air): the hold must still end at
+  // completion + tail_ub, not at hold_max. tail_ub starts from
+  // probe_tail_ms (the body's own airtime, a physical floor) + 1 ms.
+  RcfSlotCfg cfg{30, 100, 2, 3, 1};
+  cfg.probe_tail_ms = 2;
+  RcfSlotter s(cfg);
+  s.on_au_complete(0, false);
+  CHECK(offer(s, 1, 10, false));
+  s.on_au_complete(20, true);
+  CHECK(s.take_due(22).empty());
+  auto due = s.take_due(23);           // 20 + (2 + 1)
+  REQUIRE(due.size() == 1);
+  CHECK(due[0].reason == SlotReason::Au);
+  CHECK(s.released_au() == 1);
+}
+
+TEST(deadline_learns_from_observed_completion_to_probe_offsets) {
+  RcfSlotCfg cfg{30, 100, 2, 3, 1};
+  cfg.probe_tail_ms = 1;
+  RcfSlotter s(cfg);
+  s.on_au_complete(0, true);
+  s.on_probe_tail(5);                  // observed offset 5 ms > floor 1
+  CHECK(s.tail_ub_ms() == 6);          // ceil(5) + 1
+  CHECK(offer(s, 1, 90, false));
+  s.on_au_complete(100, true);         // this one's probe is lost
+  CHECK(s.take_due(105).empty());
+  CHECK(s.take_due(106).size() == 1);
+  // The estimate decays back toward the floor when offsets shrink.
+  for (int i = 0; i < 400; ++i) { s.on_au_complete(200 + i * 10, true); s.on_probe_tail(201 + i * 10); }
+  CHECK(s.tail_ub_ms() == 2);          // floor 1 + 1
+}
+
+TEST(probe_arrival_too_close_to_the_next_burst_does_not_release) {
+  RcfSlotCfg cfg{40, 100, 2, 3, 1};
+  cfg.probe_tail_ms = 1;
+  RcfSlotter s(cfg);
+  s.on_au_complete(999, false);
+  s.on_au_first(1000);
+  s.on_au_first(1016);                  // period ~16.6 ms; next due ~1032.6
+  CHECK(offer(s, 1, 1020, false));
+  s.on_au_complete(1027, true);
+  s.on_probe_tail(1029);                // 1029+3+1 = 1033 !< 1032.6 -> not idle ahead
+  CHECK(s.take_due(1029).empty());
+  CHECK(s.released_probe() == 0);
+  // ... and the deadline path (1027 + 2 = 1029, already past) must not
+  // release it either.
+  CHECK(s.take_due(1030).empty());
+  s.on_au_first(1033);
+  s.on_au_complete(1040, false);        // next (base) completion is the slot
+  auto due = s.take_due(1040);
+  REQUIRE(due.size() == 1);
+  CHECK(due[0].reason == SlotReason::Au);
+}
+
+TEST(probe_arrival_opens_the_grace_window) {
+  RcfSlotCfg cfg{30, 100, 2, 3, 1};
+  cfg.probe_tail_ms = 2;
+  cfg.grace_ms = 2;
+  RcfSlotter s(cfg);
+  s.on_au_complete(20, true);
+  CHECK(offer(s, 1, 21, false));        // before the probe: the burst is still on air
+  s.on_probe_tail(24);                  // later than the 2 ms estimate
+  CHECK(s.take_due(24).size() == 1);    // the held frame goes out on the probe
+  SlotFrame f2 = sf(2);
+  CHECK(!s.offer(f2, 26, false));       // 2 ms after the probe: grace
+  CHECK(f2.reason == SlotReason::Grace);
+  SlotFrame f3 = sf(3);
+  CHECK(s.offer(f3, 27, false));        // 3 ms after: outside grace, held
 }
 
 TEST(probe_tail_not_applied_to_a_base_au) {
@@ -185,9 +266,9 @@ TEST(probe_tail_blocks_the_grace_window) {
   CHECK(s.released_au() == 1);
 }
 
-TEST(probe_tail_counts_against_the_next_burst) {
-  // ENH completion: the tail IS charged to idle_ahead, so it can turn a
-  // completion that would otherwise fit into one that must wait.
+TEST(lost_probe_deadline_checks_idle_ahead_at_the_deadline) {
+  // The tail is NOT charged at the completion any more (the release does
+  // not happen there); it is the deadline instant that must be idle-ahead.
   RcfSlotCfg cfg{40, 100, 2, 3, 1};
   cfg.probe_tail_ms = 5;
   RcfSlotter s(cfg);
@@ -195,29 +276,23 @@ TEST(probe_tail_counts_against_the_next_burst) {
   s.on_au_first(1000);
   s.on_au_first(1016);                  // period learned ~16.6 ms; next due ~1032.6
   CHECK(offer(s, 1, 1020, false));      // held
-  // now+lead+guard (1025+3+1=1029) fits before the next burst (~1032.6), but
-  // now+lead+tail+guard (1034) does not -- an ENH completion's release must
-  // not arm.
   s.on_au_complete(1025, true);
   CHECK(s.take_due(1025).empty());
+  // deadline 1025 + (5+1) = 1031: 1031+3+1 = 1035 !< 1032.6 -> skipped
+  CHECK(s.take_due(1031).empty());
   CHECK(s.take_due(1059).empty());      // still not due; hold hasn't expired
   auto due = s.take_due(1060);          // hold_max (40) reached from hold_start=1020
   CHECK(due.size() == 1 && due[0].reason == SlotReason::Timeout);
 }
 
 TEST(probe_tail_not_charged_against_a_base_au_completion) {
-  // Converse of the above: the SAME completion time, but a base AU (no
-  // probe trails it) is not delayed, so idle_ahead must be evaluated
-  // without the tail and the release must still arm.
   RcfSlotCfg cfg{40, 100, 2, 3, 1};
   cfg.probe_tail_ms = 5;
   RcfSlotter s(cfg);
   s.on_au_complete(999, false);
   s.on_au_first(1000);
-  s.on_au_first(1016);                  // period learned ~16.6 ms; next due ~1032.6
-  CHECK(offer(s, 1, 1020, false));      // held
-  // now+lead+guard (1025+3+1=1029) fits before the next burst (~1032.6);
-  // a base AU's send is not delayed by the tail, so this must arm.
+  s.on_au_first(1016);
+  CHECK(offer(s, 1, 1020, false));
   s.on_au_complete(1025, false);
   auto due = s.take_due(1025);
   CHECK(due.size() == 1 && due[0].reason == SlotReason::Au);

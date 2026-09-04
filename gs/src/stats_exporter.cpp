@@ -222,6 +222,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     rs["au"] = in.rcf_slot.au;
     rs["timeout"] = in.rcf_slot.timeout;
     rs["passthru"] = in.rcf_slot.passthru;
+    rs["probe"] = in.rcf_slot.probe;
+    rs["tail_ub_ms"] = in.rcf_slot.tail_ub_ms;
   }
 
   // Measured-loss ladder controller snapshot; static-pin mode never ticks
