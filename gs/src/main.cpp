@@ -307,12 +307,13 @@ static int run_radio(const maburgs::Config& cfg) {
   // Head-segment latency aggregates (sideport link.video.lat, spec
   // 2026-08-30-latency-accounting Task 10): pts->mono anchor + rolling
   // percentile window, both core-loop-owned like everything else here.
-  // cur_au_pts is set in begin_frame and read back in end_frame -- legal
-  // because FrameStream's contract pairs begin/end for the SAME AU with no
-  // other AU's begin in between (single-threaded core loop).
+  // cur_au_pts/cur_au_sid are set in begin_frame and read back in end_frame
+  // -- legal because FrameStream's contract pairs begin/end for the SAME AU
+  // with no other AU's begin in between (single-threaded core loop).
   maburgs::PtsAnchor lat_anchor;
   maburgs::LatWindow lat_win;
   uint32_t cur_au_pts = 0;
+  uint8_t cur_au_sid = 0;
 
   // Probe stream (spec 2026-09-04 section 3): scored by ProbeTrack against
   // the enh AU count; the ENH layer's geometry gives bpb/block_payload, so
@@ -343,6 +344,7 @@ static int run_radio(const maburgs::Config& cfg) {
        cfg.video.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
          cur_au_pts = h.pts_us;
+         cur_au_sid = sid;
          if (au_on) au_ring.begin(h, sid);
          rcf_slot.on_au_first(mono_ms());
          // One probe expectation per ENH access unit: the probe body rides
@@ -358,7 +360,9 @@ static int run_radio(const maburgs::Config& cfg) {
            const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
-         rcf_slot.on_au_complete(mono_ms());
+         rcf_slot.on_au_complete(
+             mono_ms(),
+             cur_au_sid == 1 && probe_cmd_last != mabur::rc::kNoProbeProfile);
          {
            static const bool gaplog_au = std::getenv("MABUR_GAPLOG") != nullptr;
            if (gaplog_au)
@@ -941,6 +945,20 @@ static int run_radio(const maburgs::Config& cfg) {
       probe_track.set_commanded(pc, now_ms);
       probe_loss.blank_until(now_ms + kProbeSwitchBlankMs);
       for (auto& w : probe_card_loss) w.blank_until(now_ms + kProbeSwitchBlankMs);
+      // RcfSlotter must wait out the probe body's airtime before releasing
+      // (slotter-tail 2026-09-04): the AU completes one probe body before
+      // the burst is actually off air.
+      int tail = 0;
+      if (pc != mabur::rc::kNoProbeProfile) {
+        mabur::rc::PhyMode pm; uint8_t pmcs, pbw;
+        mabur::rc::decode_profile(pc, pm, pmcs, pbw);
+        const auto spec = mabur::rc::ladder_from(pm, pmcs, pbw)[1];
+        const double rate = mabur::rc::phy_rate_mbps(spec);
+        const double us = rate > 0 ? mabur::probe::probe_body_len(probe_bpb, probe_block_payload) * 8.0 / rate : 0.0;
+        tail = static_cast<int>(std::ceil(us / 1000.0));
+        if (tail < 1) tail = 1;
+      }
+      rcf_slot.set_probe_tail_ms(tail);
     }
     const auto& pu = probe_track.union_counts();
     probe_loss.add(pu.expected_blocks, pu.arrived_blocks, now_ms);

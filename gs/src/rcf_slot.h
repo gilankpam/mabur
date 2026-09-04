@@ -25,6 +25,15 @@
 // passes through — that covers rendezvous, so DISC needs no bypass.
 // hold_max_ms 0 disables the slotter.
 //
+// Probe tail (spec 2026-09-04 probe-stream): the probe-stream body trails
+// every ENH burst, so the AU completes one probe body BEFORE the burst is
+// actually off air. A release armed at completion is therefore deferred by
+// probe_tail_ms when the completing AU is trailed by a probe — it goes out
+// at completion + probe_tail_ms instead of at completion. The cadence
+// predictor and the grace window both account for that same delay (see
+// idle_ahead() and offer()) so a send is never scheduled to land on the
+// probe body itself.
+//
 // Single-threaded (core loop). Time is the core loop's mono ms.
 #include <cstdint>
 #include <deque>
@@ -38,6 +47,12 @@ struct RcfSlotCfg {
   int grace_ms = 2;          // offered this soon after a good AU -> send now
   int lead_ms = 3;           // send -> on air + blast (USB + chip + ~0.2 ms)
   int guard_ms = 1;          // margin before the predicted next burst
+  // Airtime of the probe-stream body that trails every ENH burst (spec
+  // 2026-09-04 probe-stream), ms, rounded up; 0 when no probe is commanded.
+  // The AU completes one probe body BEFORE the burst is off air, so a
+  // release armed at completion would put the GS's TX blast on the probe —
+  // measured 2x the slotter-off probe loss (findings 2026-09-04 Finding 2).
+  int probe_tail_ms = 0;
 };
 
 // A control frame plus what the sender needs at actual send time: the
@@ -61,11 +76,15 @@ class RcfSlotter {
   // The core loop saw an AU's first body (begin-of-AU callback): feeds
   // the burst-cadence predictor.
   void on_au_first(uint64_t now_ms);
-  // The core loop finished an AU (end-of-AU callback).
-  void on_au_complete(uint64_t now_ms);
+  // The core loop finished an AU (end-of-AU callback). probe_follows says
+  // whether THIS AU is trailed by a probe body (enh AU + probe commanded).
+  void on_au_complete(uint64_t now_ms, bool probe_follows);
   // Would a send at now_ms be on air before the next burst is due?
   bool idle_ahead(uint64_t now_ms) const;
   double period_ms() const { return period_ms_; }
+  // Airtime of the probe body trailing every ENH burst, ms; 0 = none
+  // commanded. Runtime: the probe MCS follows the rung.
+  void set_probe_tail_ms(int ms) { cfg_.probe_tail_ms = ms < 0 ? 0 : ms; }
   // Offer a frame for sending. Returns true if it was taken into the hold
   // (send it when take_due() hands it back); false = send it now.
   bool offer(SlotFrame& f, uint64_t now_ms, bool bypass);
@@ -87,7 +106,8 @@ class RcfSlotter {
   uint64_t last_first_ms_ = 0;   // last first-body arrival
   bool have_au_ = false, have_first_ = false;
   double period_ms_ = 16.667;    // EMA of first-body intervals
-  bool release_ = false;         // an AU completed while frames were pending
+  bool release_pending_ = false; // an AU completion armed a release
+  uint64_t release_at_ms_ = 0;   // ... due at this time (completion + tail)
   uint64_t released_au_ = 0, released_timeout_ = 0, passthru_ = 0;
 };
 
