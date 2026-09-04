@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v9,
-warns on pre-v4, pre-v7, pre-v8 and pre-v9). Format is auto-detected from the
-first line.
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v10,
+warns on pre-v4, pre-v7, pre-v8, pre-v9 and pre-v10). Format is auto-detected
+from the first line.
 Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
 inside one 500ms export window surface only as the LAST transition. Reported counts are
 a lower bound due to this schema limitation."""
-import json, math, sys
+import glob, json, math, os, re, sys
 
 # Same clamp sentinel CtlLog writes at the source (mirrors StatsExporter's
 # clamp_util(): u3/u_pred/E's u carry a 1e9 zero-guard sentinel from
@@ -113,6 +113,10 @@ def load_ctllog(path):
                         "dsnr": float(toks[11]) if len(toks) >= 12 else float("nan"),
                         # 2026-08-15 label RSSI (ctllog 5); absent on older logs.
                         "rssi": float(toks[12]) if len(toks) >= 13 else float("nan"),
+                        # 2026-09-04 probe gate (ctllog 10); absent on older logs.
+                        "probe_rung": int(toks[13]) if len(toks) >= 16 else -1,
+                        "probe_u": float(toks[14]) if len(toks) >= 16 else float("nan"),
+                        "probe_n": int(toks[15]) if len(toks) >= 16 else 0,
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({
@@ -160,9 +164,17 @@ def wall_fit(records):
     is the midpoint between the max inlier-fail snr and the min pass snr;
     "insufficient data" when either side is empty.
     """
-    passes = [r for r in records if r["outcome"] == "pass"]
-    fails = [r for r in records if r["outcome"] == "fail"]
-    aborts = [r for r in records if r["outcome"] == "abort"]
+    # v10 (probe-stream) renamed the P-line vocabulary from probe outcomes
+    # (pass/fail/abort) to gate EDGES (clean/lossy/noinfo); map the new
+    # names onto the old ones so the rest of this function -- and every
+    # caller -- doesn't need to know which log version it's reading.
+    def _oc(r):
+        return {"clean": "pass", "lossy": "fail", "noinfo": "abort"}.get(
+            r["outcome"], r["outcome"])
+
+    passes = [r for r in records if _oc(r) == "pass"]
+    fails = [r for r in records if _oc(r) == "fail"]
+    aborts = [r for r in records if _oc(r) == "abort"]
 
     def valid(rs): return [r["snr_db"] for r in rs if not math.isnan(r["snr_db"])]
 
@@ -232,6 +244,11 @@ def print_wall_report(ctllog):
 
     print("CTL LOG HEADER")
     ver = header.get("_version", 0)
+    if ver and ver < 10:
+        print("  NOTE: ctllog v%d -- P lines are discrete probe outcomes "
+              "(one per 2 s probe); v10+ P lines are gate EDGES and R/S "
+              "probe_u is a continuous EWMA -- do not pool probe_u across "
+              "this line." % ver)
     if ver and ver < 9:
         print("  NOTE: ctllog v%d -- resid/resid_cur (S) and resid (R) come "
               "from the PACKET-level delivery window, which counted a late "
@@ -464,6 +481,81 @@ def print_episode_report(ctllog):
           f"{len(misses)}" + ("" if not misses else " ⚠"))
 
 
+def probe_lead(E, P, horizon_ms=10000):
+    """Per demote episode: time from the last `lossy` gate edge before its
+    first demote (None if none). false_alarms = lossy edges with no demote
+    within horizon_ms after them. Input for the v2 probe-demote threshold."""
+    eps = find_episodes(E)
+    lossy = [p for p in P if p["outcome"] == "lossy"]
+    out = []
+    for e in eps:
+        prior = [p["t_ms"] for p in lossy if p["t_ms"] <= e["t0"]]
+        out.append({"t0": e["t0"], "first_reason": e["first_reason"],
+                    "lead_ms": (e["t0"] - max(prior)) if prior else None})
+    demote_ts = [ev["t_ms"] for ev in E if ev["to"] < ev["from"]]
+    false_alarms = sum(1 for p in lossy
+                       if not any(0 <= t - p["t_ms"] <= horizon_ms for t in demote_ts))
+    return {"episodes": out, "false_alarms": false_alarms, "lossy_edges": len(lossy)}
+
+
+def load_probelog(path):
+    """probe-NNNN_<date>.log: 'probelog 1 bpb=<n>' then
+    't_ms seq mcs enh_fid blocks_ok card_mask snr_c0 snr_c1 evm_c0 evm_c1'."""
+    rows, bpb = [], 4
+    with open(path) as f:
+        first = f.readline().split()
+        for tok in first[2:]:
+            if tok.startswith("bpb="): bpb = int(tok[4:])
+        for line in f:
+            t = line.split()
+            if len(t) < 10: continue
+            try:
+                rows.append({"t_ms": float(t[0]), "seq": int(t[1]), "mcs": int(t[2]),
+                             "enh_fid": int(t[3]), "blocks_ok": int(t[4]),
+                             "card_mask": int(t[5]),
+                             "snr": [float(t[6]), float(t[7])],
+                             "evm": [float(t[8]), float(t[9])]})
+            except ValueError:
+                continue
+    return {"bpb": bpb, "rows": rows}
+
+
+def probelog_summary(pl):
+    """Per mcs: received bodies, lost bodies (seq gaps, attributed to the
+    NEXT received body's mcs), surviving blocks, per-card body counts."""
+    out = {}
+    prev_seq = None
+    for r in pl["rows"]:
+        s = out.setdefault(r["mcs"], {"bodies": 0, "lost_bodies": 0, "blocks_ok": 0,
+                                       "card0": 0, "card1": 0})
+        if prev_seq is not None and r["seq"] > prev_seq + 1:
+            s["lost_bodies"] += r["seq"] - prev_seq - 1
+        prev_seq = r["seq"]
+        s["bodies"] += 1; s["blocks_ok"] += r["blocks_ok"]
+        if r["card_mask"] & 1: s["card0"] += 1
+        if r["card_mask"] & 2: s["card1"] += 1
+    return out
+
+
+def print_probe_report(ctllog, probelog):
+    lead = probe_lead(ctllog.get("E", []), ctllog.get("P", []))
+    print(f"\nPROBE GATE (lossy edges={lead['lossy_edges']}, "
+          f"false alarms (no demote within 10 s)={lead['false_alarms']})")
+    for e in lead["episodes"]:
+        l = "-" if e["lead_ms"] is None else f"{e['lead_ms']:.0f}ms"
+        print(f"  demote t={e['t0']/1000:.1f}s first={e['first_reason']} probe lead={l}")
+    if probelog:
+        bpb = probelog["bpb"]
+        print("PROBE LOG (per mcs)")
+        for mcs, s in sorted(probelog_summary(probelog).items()):
+            tot = s["bodies"] + s["lost_bodies"]
+            body_loss = s["lost_bodies"] / tot if tot else float("nan")
+            blk_loss = 1 - s["blocks_ok"] / (tot * bpb) if tot else float("nan")
+            print(f"  mcs{mcs}: bodies={s['bodies']} lost={s['lost_bodies']} "
+                  f"body_loss={body_loss:.3f} block_loss={blk_loss:.3f} "
+                  f"c0={s['card0']} c1={s['card1']}")
+
+
 def sniff_ctllog(path):
     """True if `path` is a maburgs ctl log (first line starts 'ctllog ')."""
     with open(path) as f:
@@ -476,6 +568,18 @@ def main(path):
         ctllog = load_ctllog(path)
         print_wall_report(ctllog)
         print_episode_report(ctllog)
+        probelog = None
+        # Sibling probe body log: same NNNN as the ctl log
+        # (ctl-NNNN_<date>.log / probe-NNNN_<date>.log), written alongside it
+        # by the same GS session (Task 11, probe-stream). Absent on older
+        # recordings and on ctl logs from a probe-less session.
+        m = re.search(r"ctl-(\d+)_", os.path.basename(path))
+        if m:
+            matches = sorted(glob.glob(os.path.join(
+                os.path.dirname(path), f"probe-{m.group(1)}_*.log")))
+            if matches:
+                probelog = load_probelog(matches[0])
+        print_probe_report(ctllog, probelog)
         return
 
     rows = load(path)

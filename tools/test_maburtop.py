@@ -460,12 +460,15 @@ class LinksPanelTest(unittest.TestCase):
             "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
                          "probation_fails": 0, "starved_drops": 0, "timeout_drops": 0},
             "last_event": {"t_ms": 0, "from": 0, "to": 0, "reason": "none", "u": 0.0},
-        })
+        }, probe={"on": True, "rung": 1, "mcs": 3, "state": "clean", "u": 0.12,
+                  "loss": 0.04, "streak_ms": 1800, "n": 60, "exp": 100, "rx": 24,
+                  "off_profile": 0, "cards": [{"loss": 0.0, "rx": 12}, {"loss": 0.05, "rx": 11}]})
         rows = panel_ladder(_fresh(d), 100.2)
         joined = "\n".join(t for t, _ in rows)
         self.assertIn("1 mcs3/ov0.50:0.25", joined)
         self.assertIn("0 mcs1/ov1.00:1.00", joined)
         self.assertNotIn("--", joined.split("\n")[1])  # current rung row
+        self.assertIn("probe: r1 mcs3 clean 1.8s u0.12 n60 | c0 0.00 c1 0.05", joined)
 
 
 class GsRadiosPanelTest(unittest.TestCase):

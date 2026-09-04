@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -672,6 +673,59 @@ def test_find_episodes_gap_boundary_closes_run():
     assert eps_over[1]["steps"] == 1
 
 
+CTL10 = """ctllog 10 ladder=0/200:200,2/100:100,4/50:50 down_util=0.60 up_util=0.15 probe_offset=1
+S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 2 0.1200 60
+P 1200 2 lossy 30.0 0.9000 4000 -24.0
+E 1500 1 0 residual 0.4000 29.0 -23.0
+P 2000 1 clean 29.5 0.0500 800 -23.5
+P 9000 1 lossy 29.5 0.9000 7000 -23.5
+E 20000 0 1 promote_probed 0.0100 31.0 -24.0
+"""
+
+
+class CtlLog10Test(unittest.TestCase):
+    def _write(self, text):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "ctl-0003_20260904.log")
+        with open(p, "w") as f: f.write(text)
+        return p
+
+    def test_v10_s_and_p_parse(self):
+        log = flightreport.load_ctllog(self._write(CTL10))
+        self.assertEqual(log["header"]["_version"], 10)
+        self.assertEqual(log["header"]["probe_offset"], "1")
+        s = log["S"][0]
+        self.assertEqual(s["probe_rung"], 2); self.assertAlmostEqual(s["probe_u"], 0.12)
+        self.assertEqual(s["probe_n"], 60)
+        self.assertEqual(log["P"][0]["outcome"], "lossy")
+
+    def test_wall_fit_maps_gate_states(self):
+        log = flightreport.load_ctllog(self._write(CTL10))
+        fit = flightreport.wall_fit([p for p in log["P"] if p["rung"] == 1])
+        self.assertEqual(fit["n_pass"], 1); self.assertEqual(fit["n_fail"], 1)
+
+    def test_probe_lead_report(self):
+        log = flightreport.load_ctllog(self._write(CTL10))
+        leads = flightreport.probe_lead(log["E"], log["P"])
+        self.assertEqual(len(leads["episodes"]), 1)
+        self.assertAlmostEqual(leads["episodes"][0]["lead_ms"], 300.0)   # 1500 - 1200
+        self.assertEqual(leads["false_alarms"], 1)                        # lossy@9000, no demote in 10 s
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): flightreport.print_probe_report(log, None)
+        self.assertIn("lead", buf.getvalue())
+
+    def test_probelog_loads_and_summarises(self):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "probe-0003_20260904.log")
+        with open(p, "w") as f:
+            f.write("probelog 1 bpb=4\n1000 10 6 5 4 3 30.5 28.0 -24.0 -22.0\n"
+                    "1033 12 6 6 2 1 30.0 nan -23.0 nan\n")
+        rows = flightreport.load_probelog(p)
+        self.assertEqual(rows["bpb"], 4); self.assertEqual(len(rows["rows"]), 2)
+        summ = flightreport.probelog_summary(rows)
+        self.assertEqual(summ[6]["bodies"], 2)
+        self.assertEqual(summ[6]["lost_bodies"], 1)   # seq 11 missing
+        self.assertEqual(summ[6]["blocks_ok"], 6)
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
@@ -686,3 +740,4 @@ if __name__ == "__main__":
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()
     test_find_episodes_gap_boundary_closes_run()
+    unittest.main()

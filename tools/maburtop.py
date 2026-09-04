@@ -1069,7 +1069,8 @@ def _ladder_footer_rows(ctl, t_ms):
              f" ↓util{_s(c.get('demotes_util'))}"
              f" ↓fade{_s(c.get('demotes_fade'))}"
              f" prob✗{_s(c.get('probation_fails'))}"
-             f" stv{_s(c.get('starved_drops'))} to{_s(c.get('timeout_drops'))}")
+             f" stv{_s(c.get('starved_drops'))} to{_s(c.get('timeout_drops'))}"
+             f" ↑p{_s(c.get('promotes_probed'))} hold{_s(c.get('probe_holds'))}")
     return [(line1, spans1), (line2, spans2), (line3, [])]
 
 
@@ -1097,6 +1098,12 @@ def panel_ladder(model, wall):
     if fade.get("active"):
         body.append((" fade:ACTIVE"
                      f" drssi{_s(fade.get('drssi'), 1)} dsnr{_s(fade.get('dsnr'), 1)}", []))
+    pb = (d.get("link") or {}).get("probe") or {}
+    if pb.get("on"):
+        cards = " ".join(f"c{i} {_s(c.get('loss'), 2)}" for i, c in enumerate(pb.get("cards") or []))
+        streak = pb.get("streak_ms") or 0
+        body.append((f" probe: r{_s(pb.get('rung'))} mcs{_s(pb.get('mcs'))} {pb.get('state', '?')}"
+                     f" {streak / 1000:.1f}s u{_s(pb.get('u'), 2)} n{_s(pb.get('n'))} | {cards}", []))
     return _panel("LADDER", body, min_width=34)
 
 
