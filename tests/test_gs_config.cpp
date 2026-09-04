@@ -630,36 +630,29 @@ TEST(au_ring_values_load) {
   CHECK(c.au_ring.slot_count == 8);
 }
 
-// link.probe_*/s3_*/ctl_log keys: s3-probe-before-promote + s3 steady-state
-// demote tuning (LadderCfg, Task 4) plus the dedicated adaptive-link log
-// (spec 2026-08-05 section 5). Strict keys apply here like every other
-// "link" key.
-TEST(probe_and_s3_keys_parse) {
+// link.s3_*/ctl_log keys: s3 steady-state demote tuning (LadderCfg) plus the
+// dedicated adaptive-link log (spec 2026-08-05 section 5). Strict keys apply
+// here like every other "link" key. The five flat probe_* keys went with the
+// s3 probe (spec 2026-09-04); link.probe replaces them.
+TEST(s3_and_ctl_log_keys_parse) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"probe_ms":3000,"probe_max_util":0.5,"s3_demote":false,)"
+      R"({"link":{"s3_demote":false,)"
       R"("s3_down_util":0.4,"ctl_log":true,"ctl_log_dir":"/tmp/x"}})"));
-  CHECK(cfg.link.ladder_cfg.probe_ms == 3000);
-  CHECK(cfg.link.ladder_cfg.probe_max_util > 0.499 && cfg.link.ladder_cfg.probe_max_util < 0.501);
   CHECK(!cfg.link.ladder_cfg.s3_demote);
   CHECK(cfg.link.ladder_cfg.s3_down_util > 0.399 && cfg.link.ladder_cfg.s3_down_util < 0.401);
   CHECK(cfg.link.ctl_log);
   CHECK(cfg.link.ctl_log_dir == "/tmp/x");
 }
 
-// probe_max_util/s3_down_util absent (< 0 sentinel) resolve to the loaded
-// down_util, not the struct default 0.6 -- sentinel resolution must happen
-// AFTER down_util parses.
-TEST(probe_defaults_and_sentinel_resolution) {
+// An absent s3_down_util (< 0 sentinel) resolves to the loaded down_util,
+// not the struct default 0.6 -- sentinel resolution must happen AFTER
+// down_util parses.
+TEST(s3_defaults_and_sentinel_resolution) {
   auto cfg = maburgs::load_config(write_tmp(R"({"link":{"down_util":0.35}})"));
   auto& lc = cfg.link.ladder_cfg;
-  CHECK(lc.probe_ms == 2000);
-  CHECK(lc.probe_settle_ms == 150);
-  CHECK(lc.probe_max_util > 0.349 && lc.probe_max_util < 0.351);  // resolved to down_util
   CHECK(lc.s3_down_util > 0.349 && lc.s3_down_util < 0.351);
   CHECK(lc.s3_demote);
   CHECK(lc.s3_settle_ms == 300);
-  CHECK(lc.probe_s3_min_syms == 50);
-  CHECK(lc.probe_s3_silence_ms == 500);
   CHECK(!cfg.link.ctl_log);
   CHECK(cfg.link.ctl_log_dir == "/media/dvr");
 }
@@ -670,20 +663,6 @@ TEST(unknown_probe_key_still_fails) {
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("probe_msx") != std::string::npos;
   }
-  CHECK(threw);
-}
-
-// Amendment (Task 4 review): a negative/zero probe_s3_min_syms cast to
-// uint64_t in the controller would silently disable all probing, so it
-// must be rejected loudly at load, not clamped.
-TEST(probe_s3_min_syms_rejects_non_positive) {
-  bool threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"probe_s3_min_syms":0}})")); }
-  catch (const std::exception&) { threw = true; }
-  CHECK(threw);
-  threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"probe_s3_min_syms":-1}})")); }
-  catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
 

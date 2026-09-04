@@ -4,6 +4,8 @@
 #include <optional>
 #include <vector>
 
+#include "mabur/rc_proto.h"
+
 #include "ladder_controller.h"
 #include "op_point.h"
 #include "rendezvous.h"
@@ -34,6 +36,9 @@ struct VrxCfg {
   // rcf_repeat_ms spacing (fresh seq each). 0 disables.
   int rcf_repeat_copies = 3;
   int rcf_repeat_ms = 10;
+  // link.probe.pin_mcs: static-pin mode only -- probe a fixed MCS while
+  // pinned (bench validation).
+  int probe_pin_mcs = -1;
 };
 
 class VrxController {
@@ -67,6 +72,8 @@ class VrxController {
   const LadderController& ctl() const { return ctrl_; }
   VrxState link_state() const;
   uint16_t rcf_seq() const;
+  // The probe byte the last built RCF carried (kNoProbeProfile when none).
+  uint8_t probe_profile() const { return last_cmd_probe_profile_; }
   // chip_caps from the most recently accepted DiscAck; 0 before any accept.
   // Gates GS main's video tail on mabur::rc::CAP_FRAME_WIRE.
   uint16_t peer_caps() const { return peer_caps_; }
@@ -99,7 +106,7 @@ class VrxController {
   uint8_t last_cmd_profile_ = 0;
   uint8_t last_cmd_ovx100_b_ = 0;
   uint8_t last_cmd_ovx100_e_ = 0;
-  uint8_t last_cmd_probe_profile_ = 0;
+  uint8_t last_cmd_probe_profile_ = mabur::rc::kNoProbeProfile;
 };
 
 }  // namespace maburgs

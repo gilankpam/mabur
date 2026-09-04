@@ -21,18 +21,19 @@ const char* to_string(CtlReason r) {
     case CtlReason::S3Residual: return "s3_residual";
     case CtlReason::S3Util: return "s3_util";
     case CtlReason::Fade: return "fade";
+    case CtlReason::PromoteProbed: return "promote_probed";
   }
   return "unknown";
 }
 
-const char* to_string(ProbeOutcome o) {
-  switch (o) {
-    case ProbeOutcome::None: return "none";
-    case ProbeOutcome::Pass: return "pass";
-    case ProbeOutcome::Fail: return "fail";
-    case ProbeOutcome::Abort: return "abort";
+const char* to_string(ProbeGateState s) {
+  switch (s) {
+    case ProbeGateState::Off: return "off";
+    case ProbeGateState::NoInfo: return "noinfo";
+    case ProbeGateState::Clean: return "clean";
+    case ProbeGateState::Lossy: return "lossy";
   }
-  return "unknown";
+  return "?";
 }
 
 LadderController::LadderController(LadderCfg cfg)
@@ -58,7 +59,7 @@ double LadderController::budget_enh_for(int rung) const {
 }
 
 double LadderController::probe_util_threshold() const {
-  return cfg_.probe_max_util < 0 ? cfg_.down_util : cfg_.probe_max_util;
+  return cfg_.probe.max_util < 0 ? cfg_.down_util : cfg_.probe.max_util;
 }
 
 double LadderController::s3_util_threshold() const {
@@ -70,42 +71,86 @@ double LadderController::s3_util_threshold() const {
 // nothing about the candidate MCS.
 bool LadderController::s3_usable(const LinkHealth& h) const {
   return h.s3_valid &&
-         h.s3_expected_syms >= static_cast<uint64_t>(cfg_.probe_s3_min_syms);
+         h.s3_expected_syms >= static_cast<uint64_t>(cfg_.s3_min_syms);
 }
 
 void LadderController::mark_transition(double now_ms) {
   s3_blank_until_ms_ = now_ms + cfg_.s3_settle_ms;
   s3_util_start_ms_ = -1.0;
+  // The new rung's probe has measured nothing yet: drop the streak and the
+  // last-sample stamp, and log the NoInfo edge so the ctl log shows the gap
+  // rather than an inherited verdict from the rung the link just left. The
+  // next update() with a usable sample flips it to Clean or Lossy and logs
+  // that edge too.
+  probe_clean_since_ms_ = -1.0;
+  probe_last_sample_ms_ = -1e18;
+  probe_hold_active_ = false;
+  if (probe_state_ != ProbeGateState::Off)
+    set_probe_state(ProbeGateState::NoInfo, probe_rung(), probe_u_, now_ms);
 }
 
-void LadderController::start_probe(int rung, double now_ms) {
-  probe_active_ = true;
-  probe_rung_ = rung;
-  probe_start_ms_ = now_ms;
-  probe_last_s3_ms_ = now_ms;
-  probe_u_pred_last_ = 0.0;
-  u3_ = 0.0;  // steady-state s3 is meaningless while s3 runs the candidate MCS
-  ++counters_.probes_started;
-  mark_transition(now_ms);
+int LadderController::probe_rung() const {
+  if (!cfg_.probe.enable) return -1;
+  const int top = static_cast<int>(cfg_.ladder.size()) - 1;
+  if (idx_ >= top) return -1;
+  return std::min(idx_ + cfg_.probe.rung_offset, top);
 }
 
-void LadderController::end_probe(ProbeOutcome oc, double u_pred,
-                                 double now_ms) {
-  last_probe_.t_ms = now_ms;
-  last_probe_.rung = probe_rung_;
-  last_probe_.outcome = oc;
-  last_probe_.snr_db = snr_now_;
-  last_probe_.evm_db = evm_now_;
-  last_probe_.u_pred = u_pred;
-  last_probe_.dur_ms = static_cast<int>(now_ms - probe_start_ms_);
-  probe_active_ = false;
-  probe_rung_ = -1;
-  mark_transition(now_ms);
+ProbeGate LadderController::probe_gate(double now_ms) const {
+  ProbeGate g;
+  g.state = probe_state_;
+  g.rung = probe_rung();
+  g.u = probe_u_;
+  g.streak_ms = (probe_state_ == ProbeGateState::Clean && probe_clean_since_ms_ >= 0.0)
+                    ? now_ms - probe_clean_since_ms_ : 0.0;
+  return g;
+}
+
+void LadderController::set_probe_state(ProbeGateState s, int rung, double u,
+                                        double now_ms) {
+  if (s == probe_state_) return;
+  last_probe_edge_ = ProbeEdge{now_ms, rung, s, u, snr_now_, evm_now_,
+                               now_ms - probe_state_since_ms_};
+  probe_state_ = s;
+  probe_state_since_ms_ = now_ms;
+}
+
+// Continuous probe verdict (spec 2026-09-04 §4.3). Runs on every valid
+// sample before the decision blocks so the RungStore sees the sample that
+// triggers a decision, and so the gate is current when block 6 consults it.
+void LadderController::update_probe_gate(const LinkHealth& h, double now_ms) {
+  const int pr = probe_rung();
+  if (pr < 0) {
+    probe_clean_since_ms_ = -1.0;
+    set_probe_state(ProbeGateState::Off, -1, 0.0, now_ms);
+    return;
+  }
+  const bool usable = h.probe_valid && h.probe_rung == pr &&
+                      h.probe_expected_syms >= static_cast<uint64_t>(cfg_.probe.min_syms);
+  if (usable) {
+    const double b = budget_enh_for(idx_ + 1);  // the CANDIDATE's enh budget
+    probe_u_ = b > 0.0 ? h.probe_loss / b : (h.probe_loss > 0.0 ? 1e9 : 0.0);
+    probe_last_sample_ms_ = now_ms;
+    store_.observe_probe(pr, probe_u_, now_ms);
+    if (probe_u_ <= probe_util_threshold()) {
+      if (probe_clean_since_ms_ < 0.0) probe_clean_since_ms_ = now_ms;
+      set_probe_state(ProbeGateState::Clean, pr, probe_u_, now_ms);
+    } else {
+      probe_clean_since_ms_ = -1.0;
+      set_probe_state(ProbeGateState::Lossy, pr, probe_u_, now_ms);
+    }
+  } else if (now_ms - probe_last_sample_ms_ > cfg_.probe.silence_ms) {
+    // A commanded probe that has gone quiet says nothing, and saying nothing
+    // holds the promote (block 6) exactly as a Lossy verdict does.
+    probe_clean_since_ms_ = -1.0;
+    set_probe_state(ProbeGateState::NoInfo, pr, probe_u_, now_ms);
+  }
 }
 
 void LadderController::reset_windows() {
   confirm_start_ms_ = -1.0;
   clean_start_ms_ = -1.0;
+  probe_hold_active_ = false;
 }
 
 void LadderController::set_event(double now_ms, int from, int to,
@@ -177,10 +222,15 @@ int LadderController::probation_ms_left(double now_ms) const {
   return 0;
 }
 
+// Check order (a spec contract; the block numbers below follow it):
+//   starved -> s1 residual -> fade -> s3 residual -> s1 util -> s3 util ->
+//   clean/probe-gated promote.
+// The probe verdict is not a check: it is scored once, up front, and only
+// the promote block consults it.
 bool LadderController::update(const LinkHealth& h, double now_ms) {
   check_probation_survival(now_ms);
 
-  // Label only, stashed for every set_event()/end_probe() below. NaN is legal
+  // Label only, stashed for every set_event()/probe edge below. NaN is legal
   // (no SNR known this window) and never influences a decision.
   snr_now_ = h.rf_snr_db;
   evm_now_ = h.rf_evm_db;
@@ -202,17 +252,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     // reliably yields 1-2 zero-completion decode windows on a healthy link
     // (hw 2026-07-27). Withhold decisions but do not demote until the
     // starved run has persisted starved_confirm_ms.
-    // (Ordered before the idx_ == 0 early-out only so a probe running from
-    // the failsafe rung is still abortable; both paths return false at rung 0
-    // exactly as before.)
     if (now_ms - starved_since_ms_ < cfg_.starved_confirm_ms) return false;
-    // Demotes always win over a probe: a confirmed starved run kills it
-    // before the rung force below, so the drone stops running the candidate
-    // MCS on s3 while the link is collapsing.
-    if (probe_active_) {
-      ++counters_.probe_aborts;
-      end_probe(ProbeOutcome::Abort, 0.0, now_ms);
-    }
     if (idx_ == 0) return false;
     const int from = idx_;
     idx_ = 0;
@@ -263,6 +303,12 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   pre_fec_loss_ = h.pre_fec_loss;
   u_ = h.pre_fec_loss / budget_base();
 
+  // 3. Probe verdict. Scored before every decision block: a demote below
+  // returns early, and the gate (plus its RungStore column and its edge log)
+  // must still reflect the sample that caused it. Nothing here decides
+  // anything — only block 6 reads the verdict.
+  update_probe_gate(h, now_ms);
+
   // Observe-only rung statistics (spec 2026-08-13): gated on the same
   // post-transition blank as s3 decisions — FEC re-key artifacts must not
   // be attributed to the new rung (up to ~200 ms of pre-transition symbols
@@ -279,11 +325,6 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // min_between_changes_ms. If the current rung was on probation, this also
   // books a probation failure and penalizes the rung.
   if (h.residual_loss > 0.0 && idx_ > 0) {
-    // Demotes always win over a probe.
-    if (probe_active_) {
-      ++counters_.probe_aborts;
-      end_probe(ProbeOutcome::Abort, 0.0, now_ms);
-    }
     const int from = idx_;
     const bool was_probation = probation_active_ && idx_ == probation_rung_;
     if (was_probation) {
@@ -337,11 +378,6 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       if (!fade_latched_ && idx_ > 0 && idx_ >= cfg_.fade.min_rung &&
           now_ms - fade_trig_start_ms_ >= cfg_.fade.trigger_ms &&
           now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
-        // Demotes always win over a probe.
-        if (probe_active_) {
-          ++counters_.probe_aborts;
-          end_probe(ProbeOutcome::Abort, 0.0, now_ms);
-        }
         const int from = idx_;
         probation_active_ = false;  // cleared, but NO probation-fail booked
         idx_ = from - 1;
@@ -362,16 +398,16 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // 5a. s3 steady-state measurement and early warning: s3's smaller FEC
   // budget exhausts before s1's, so confirmed s3 residual/util pressure
   // demotes without waiting for the base layer to degrade (spec 2026-08-05
-  // section 1b). Suspended while probing (s3 is at the CANDIDATE MCS then, so
-  // the steady-state reading is meaningless) and inside the post-transition
-  // blanking window (FEC re-key artifacts read as loss).
+  // section 1b). Suspended inside the post-transition blanking window (FEC
+  // re-key artifacts read as loss). The probe stream is its own sid and does
+  // not disturb this reading any more, so there is nothing else to suspend
+  // it for.
   //
   // The measurement is computed once here so BOTH s3 checks see the same
   // number, and it is left at the 0 stamped at update() entry whenever s3 is
   // not measurable this window: a persisted last-good value would make util3()
   // (sideport link.ctl.u3) report a frozen stale reading after s3 goes quiet.
-  const bool s3_live =
-      !probe_active_ && s3_usable(h) && now_ms >= s3_blank_until_ms_;
+  const bool s3_live = s3_usable(h) && now_ms >= s3_blank_until_ms_;
 
   // Continuity gate. The s3 util confirm window below is an elapsed-time test
   // against a start stamp, which only means "sustained" while the
@@ -455,11 +491,6 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 
     const bool in_probation = probation_active_ && idx_ == probation_rung_;
     if (in_probation) {
-      // Demotes always win over a probe.
-      if (probe_active_) {
-        ++counters_.probe_aborts;
-        end_probe(ProbeOutcome::Abort, 0.0, now_ms);
-      }
       const int from = idx_;
       ++counters_.probation_fails;
       penalize_rung(from, now_ms);
@@ -475,11 +506,6 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 
     if (idx_ > 0 && now_ms - confirm_start_ms_ >= eff_confirm_ms(now_ms) &&
         now_ms - last_change_ms_ >= cfg_.min_between_changes_ms) {
-      // Demotes always win over a probe.
-      if (probe_active_) {
-        ++counters_.probe_aborts;
-        end_probe(ProbeOutcome::Abort, 0.0, now_ms);
-      }
       const int from = idx_;
       idx_ = from - 1;
       last_down_ms_ = now_ms;
@@ -513,52 +539,6 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     }
   }
 
-  // 6. Probe evaluation. While a probe is up the clean/promote logic is fully
-  // suspended: the candidate is being measured on s3, and the only outcomes
-  // are fail (penalize the candidate, stay), pass (commit), or an abort from
-  // a demote above / s3 silence in on_tick().
-  if (probe_active_) {
-    if (s3_usable(h)) {
-      probe_last_s3_ms_ = now_ms;
-      // Strictly after the settle window: the drone needs a moment to switch
-      // s3 onto the candidate MCS, and the transition's own re-key glitch
-      // must not be scored against the candidate.
-      if (now_ms - probe_start_ms_ > cfg_.probe_settle_ms) {
-        const double u_pred = h.s3_pre_fec_loss / budget_enh_for(probe_rung_);
-        // Stash every scored sample, pass or fail: a Pass that squeaked in at
-        // u_pred 0.42 must not be logged as a flawless 0.0, or the labeled
-        // dataset (sideport last_probe, ctl-log P lines) cannot tell a
-        // marginal candidate from a clean one.
-        probe_u_pred_last_ = u_pred;
-        store_.observe_probe(probe_rung_, u_pred, now_ms);
-        if (u_pred > probe_util_threshold()) {
-          // The CANDIDATE rung earns the penalty (escalating ledger), and the
-          // link never moved.
-          penalize_rung(probe_rung_, now_ms);
-          ++counters_.probe_fails;
-          end_probe(ProbeOutcome::Fail, u_pred, now_ms);
-          reset_windows();
-          return false;  // rung did not change
-        }
-      }
-    }
-    if (probe_active_ && now_ms - probe_start_ms_ >= cfg_.probe_ms) {
-      const int from = idx_;
-      idx_ = probe_rung_;
-      last_change_ms_ = now_ms;
-      reset_windows();
-      probation_active_ = true;
-      probation_rung_ = idx_;
-      probation_until_ms_ = now_ms + cfg_.probation_ms;
-      ++counters_.promotes;
-      ++counters_.probes_ok;
-      set_event(now_ms, from, idx_, CtlReason::Promote, u_, snr_now_);
-      end_probe(ProbeOutcome::Pass, probe_u_pred_last_, now_ms);
-      return true;
-    }
-    return false;  // probing: clean/promote logic suspended
-  }
-
   // 6. Clean margin: accrue a clean window and promote once it has been
   // sustained long enough, clear of a recent downgrade and the min-between
   // gate, with a next rung that exists and isn't penalized.
@@ -571,18 +551,19 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
         now_ms - last_down_ms_ >= cfg_.hold_after_down_ms &&
         now_ms - last_change_ms_ >= cfg_.min_between_changes_ms &&
         !is_penalized(static_cast<int>(next), now_ms)) {
-      // The probe replaces the promote MOMENT only — every trigger condition
-      // above is untouched. When the peer can run the probe, s3 currently
-      // carries enough traffic to measure, and the candidate actually changes
-      // the PHY rate, spend probe_ms measuring the candidate MCS on the
-      // expendable stream instead of betting the whole link on it. Otherwise
-      // fall through to the legacy direct promote, byte-for-byte as before.
-      const bool phy_differs =
-          cfg_.ladder[next].mcs != cfg_.ladder[static_cast<std::size_t>(idx_)].mcs;
-      if (h.probe_allowed && s3_usable(h) && phy_differs) {
-        start_probe(static_cast<int>(next), now_ms);
-        reset_windows();
-        return false;
+      // Probe gate (spec 2026-09-04 §4.4): with a probe commanded, only a
+      // clean streak of probe.clean_ms may commit; Lossy AND NoInfo hold —
+      // a commanded-but-absent probe is exactly the blind promote the
+      // stream exists to prevent. No penalty: nothing was tried.
+      const ProbeGate g = probe_gate(now_ms);
+      CtlReason reason = CtlReason::Promote;
+      if (g.state != ProbeGateState::Off) {
+        if (g.state == ProbeGateState::Clean && g.streak_ms >= cfg_.probe.clean_ms) {
+          reason = CtlReason::PromoteProbed;
+        } else {
+          if (!probe_hold_active_) { probe_hold_active_ = true; ++counters_.probe_holds; }
+          return false;
+        }
       }
       const int from = idx_;
       idx_ = static_cast<int>(next);
@@ -593,11 +574,13 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       probation_until_ms_ = now_ms + cfg_.probation_ms;
       mark_transition(now_ms);
       ++counters_.promotes;
-      set_event(now_ms, from, idx_, CtlReason::Promote, u_, snr_now_);
+      if (reason == CtlReason::PromoteProbed) ++counters_.promotes_probed;
+      set_event(now_ms, from, idx_, reason, u_, snr_now_);
       return true;
     }
   } else {
     clean_start_ms_ = -1.0;
+    probe_hold_active_ = false;
   }
 
   return false;
@@ -606,23 +589,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
 bool LadderController::on_tick(double now_ms) {
   check_probation_survival(now_ms);
 
-  // A probe that stops hearing from s3 is inconclusive, not a failure: no
-  // penalty, just drop it. This lives on the blind side so it works even when
-  // the s1 samples stop arriving altogether (update() would never run).
-  if (probe_active_ &&
-      now_ms - probe_last_s3_ms_ > cfg_.probe_s3_silence_ms) {
-    ++counters_.probe_aborts;
-    end_probe(ProbeOutcome::Abort, 0.0, now_ms);
-  }
-
   if (now_ms - last_feedback_ms_ > cfg_.feedback_timeout_ms && idx_ > 0) {
-    // Demotes always win over a probe (normally the silence abort above has
-    // already fired, since probe_s3_silence_ms < feedback_timeout_ms is the
-    // usual configuration -- but that ordering is not guaranteed).
-    if (probe_active_) {
-      ++counters_.probe_aborts;
-      end_probe(ProbeOutcome::Abort, 0.0, now_ms);
-    }
     const int from = idx_;
     idx_ = 0;
     last_down_ms_ = now_ms;

@@ -91,6 +91,10 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   lcfg.probation_ms = 10;
   lcfg.hold_after_down_ms = 0;
   lcfg.min_between_changes_ms = 0;
+  // Legacy promote semantics: these tests climb on healthy() samples, which
+  // carry no probe window, so the always-on probe gate would read NoInfo and
+  // hold every promote. The gate itself is covered in test_ladder_controller.
+  lcfg.probe.enable = false;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
 
@@ -192,55 +196,6 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   CHECK(vrx.peer_acked());                       // now caps==0 means it truly said 0
   CHECK(vrx.peer_caps() == 0);
 }
-// T_TELEM frames are drone->GS display-only telemetry, not rendezvous
-// traffic: on_rc_frame must tolerate the unknown (to it) frame type and
-// leave rendezvous/link state completely untouched. GS routes T_TELEM to a
-// separate holder before it ever reaches on_rc_frame (Task 3), but the
-// controller itself must not choke if it ever sees one. Spec 2026-07-26
-// drone-telemetry.
-// s3-capable healthy sample; probe_allowed is set unconditionally true by
-// the CONTROLLER now (not by callers) — see step()'s h.probe_allowed.
-static LinkHealth healthy3() {
-  LinkHealth h = healthy();
-  h.s3_valid = true; h.s3_expected_syms = 500; h.rf_snr_db = 30.0;
-  return h;
-}
-
-// probe_allowed is unconditional now (CAP_ENH_PROBE removed, Task 7 deletes
-// the LinkHealth field): mirror disc_ack_feeds_rendezvous's flow to reach
-// SESSION the same way a live controller would.
-TEST(probe_encoded_in_rcf_when_peer_capable) {
-  auto vrx = make();
-  vrx.step(1500, healthy3());  // silence -> BEACONING
-  mabur::rc::DiscAck ack;
-  ack.vtx_id = 1;
-  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
-  auto wire = mabur::rc::pack_disc_ack(ack);
-  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
-
-  bool saw_probe = false;
-  double now = 1600;
-  for (int t = 0; t < 9000; t += 10) {
-    now = 1600 + t;
-    vrx.on_video(now);
-    if (auto out = vrx.step(now, healthy3())) {
-      if (out->is_disc) continue;
-      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-      REQUIRE(r.has_value());
-      if (r->probe_profile != mabur::rc::kNoProbeProfile) {
-        saw_probe = true;
-        // base profile still rung 0 (mcs0), probe targets rung 1 (mcs2):
-        mabur::rc::PhyMode m; uint8_t mcs, bw;
-        mabur::rc::decode_profile(r->profile, m, mcs, bw);
-        CHECK(mcs == 0);
-        mabur::rc::decode_profile(r->probe_profile, m, mcs, bw);
-        CHECK(mcs == 2);
-        break;
-      }
-    }
-  }
-  CHECK(saw_probe);
-}
 
 // While no DiscAck has ever been accepted, the SESSION keep-alive DISC runs
 // at unacked_keepalive_ms (250 ms) so a rebooted GS re-learns peer caps in
@@ -281,6 +236,12 @@ TEST(keepalive_disc_fast_until_peer_acked) {
   CHECK(discs_second_second <= 1);
 }
 
+// T_TELEM frames are drone->GS display-only telemetry, not rendezvous
+// traffic: on_rc_frame must tolerate the unknown (to it) frame type and
+// leave rendezvous/link state completely untouched. GS routes T_TELEM to a
+// separate holder before it ever reaches on_rc_frame (Task 3), but the
+// controller itself must not choke if it ever sees one. Spec 2026-07-26
+// drone-telemetry.
 TEST(on_rc_frame_tolerates_unknown_type_telem) {
   auto vrx = make();
   vrx.step(1500, no_data());  // silence -> BEACONING, seq_ advances
@@ -316,6 +277,10 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   lcfg.probation_ms = 10;
   lcfg.hold_after_down_ms = 0;
   lcfg.min_between_changes_ms = 0;
+  // Legacy promote semantics: these tests climb on healthy() samples, which
+  // carry no probe window, so the always-on probe gate would read NoInfo and
+  // hold every promote. The gate itself is covered in test_ladder_controller.
+  lcfg.probe.enable = false;
   // feedback_timeout_ms left at its default (1000 ms) -- exactly what this
   // test is guarding.
   auto vrx = make(lcfg);
@@ -366,6 +331,10 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   lcfg.probation_ms = 10;
   lcfg.hold_after_down_ms = 0;
   lcfg.min_between_changes_ms = 0;
+  // Legacy promote semantics: these tests climb on healthy() samples, which
+  // carry no probe window, so the always-on probe gate would read NoInfo and
+  // hold every promote. The gate itself is covered in test_ladder_controller.
+  lcfg.probe.enable = false;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
 
@@ -464,6 +433,10 @@ static LadderCfg fast_promote_ladder() {
   lcfg.probation_ms = 10;
   lcfg.hold_after_down_ms = 0;
   lcfg.min_between_changes_ms = 0;
+  // Legacy promote semantics: these tests climb on healthy() samples, which
+  // carry no probe window, so the always-on probe gate would read NoInfo and
+  // hold every promote. The gate itself is covered in test_ladder_controller.
+  lcfg.probe.enable = false;
   lcfg.feedback_timeout_ms = 100000;
   return lcfg;
 }

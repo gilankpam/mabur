@@ -64,9 +64,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   last_fb_ms_ = now_ms;
 
   if (cfg_.pin_mcs < 0) {
-    LinkHealth h = health;
-    h.probe_allowed = true;
-    if (ctrl_.update(h, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
+    if (ctrl_.update(health, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
   }
   mabur::rc::Rcf r = build_rcf();
 
@@ -98,11 +96,19 @@ mabur::rc::Rcf VrxController::build_rcf() {
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
   r.fec_overhead_base = cur_op_.overhead_base;
   r.fec_overhead_enh = cur_op_.overhead_enh;
+  // Probe stream MCS (spec 2026-09-04): the ladder names a rung to probe on
+  // every RCF, or none. In static-pin mode the ladder is out of the loop, so
+  // the probe follows the dedicated pin instead.
   r.probe_profile = mabur::rc::kNoProbeProfile;
-  if (cfg_.pin_mcs < 0 && ctrl_.probing()) {
+  const auto mode = cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT;
+  if (cfg_.pin_mcs >= 0) {
+    if (cfg_.probe_pin_mcs >= 0)
+      r.probe_profile = mabur::rc::encode_profile(mode, static_cast<uint8_t>(cfg_.probe_pin_mcs),
+                                                  static_cast<uint8_t>(cur_op_.bw));
+  } else if (const int pr = ctrl_.probe_rung(); pr >= 0) {
     r.probe_profile = mabur::rc::encode_profile(
-        cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
-        static_cast<uint8_t>(ctrl_.probe_mcs()), static_cast<uint8_t>(cur_op_.bw));
+        mode, static_cast<uint8_t>(cfg_.ladder.ladder[static_cast<std::size_t>(pr)].mcs),
+        static_cast<uint8_t>(cur_op_.bw));
   }
   return r;
 }

@@ -109,7 +109,7 @@ class S1LossWindow {
   }
 
   // Sum of d_expected over entries in [now_ms - window_ms, now_ms].
-  // Used for the s3 availability floor (probe_s3_min_syms).
+  // Used for the s3 availability floor (LadderCfg::s3_min_syms).
   uint64_t expected_in_window(double now_ms) const {
     const double cutoff_time = now_ms - window_ms_;
     uint64_t total = 0;
