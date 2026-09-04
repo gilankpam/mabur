@@ -957,12 +957,12 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
   CHECK(!agent.take_link_established());  // flap, not a (re)start
 }
 
-// 11. RCF with probe3=true overrides only the enh layer (ladder[1], the old
-// s3) with probe_profile's MCS while the base layer (ladder[0]) stays on
-// the base profile's scored mcs (same-rate ruling); agent.probing()
-// reflects the last accepted RCF's probe3 bit and reverts (both
-// op.ladder[1] and probing()) the moment a follow-up RCF arrives without
-// the flag.
+// 11. RCF with probe_profile != kNoProbeProfile overrides only the enh
+// layer (ladder[1], the old s3) with probe_profile's MCS while the base
+// layer (ladder[0]) stays on the base profile's scored mcs (same-rate
+// ruling); agent.probing() reflects the last accepted RCF's probe_profile
+// and reverts (both op.ladder[1] and probing()) the moment a follow-up RCF
+// arrives at kNoProbeProfile.
 TEST(probe_rcf_overrides_layer3_mcs) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -977,7 +977,6 @@ TEST(probe_rcf_overrides_layer3_mcs) {
   r.profile = profile_byte;
   r.fec_overhead_base = 0.5;
   r.fec_overhead_enh = 0.5;
-  r.probe3 = true;
   r.probe_profile = probe_byte;
   auto wire = pack_rcf(r);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
@@ -988,9 +987,9 @@ TEST(probe_rcf_overrides_layer3_mcs) {
   CHECK(op.ladder[1].mcs == 6);  // ENH at the probe MCS
   CHECK(agent.probing());
 
-  // A follow-up RCF without the flag reverts the enh layer to the base
+  // A follow-up RCF at kNoProbeProfile reverts the enh layer to the base
   // profile's mcs and clears probing().
-  r.probe3 = false;
+  r.probe_profile = kNoProbeProfile;
   r.seq = 2;
   auto wire2 = pack_rcf(r);
   agent.on_rc_frame(wire2.data(), wire2.size(), 100);
@@ -999,8 +998,8 @@ TEST(probe_rcf_overrides_layer3_mcs) {
 }
 
 // 11b. Failsafe entry (MAX_RANGE) clears probing() even if the last RCF
-// before the silence carried probe3=true — a degraded/lost link must never
-// report itself as still probing.
+// before the silence carried a probe_profile — a degraded/lost link must
+// never report itself as still probing.
 TEST(probing_cleared_on_failsafe) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -1013,7 +1012,6 @@ TEST(probing_cleared_on_failsafe) {
   r.profile = encode_profile(PhyMode::HT, 5, 20);
   r.fec_overhead_base = 0.5;
   r.fec_overhead_enh = 0.5;
-  r.probe3 = true;
   r.probe_profile = encode_profile(PhyMode::HT, 6, 20);
   auto wire = pack_rcf(r);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
@@ -1056,7 +1054,6 @@ TEST(probe_rcf_does_not_change_bitrate) {
   // Probe entry, past the 1 s write throttle so a changed target WOULD
   // be written: the enh slot flies mcs3 but the command must hold.
   r.seq = 2;
-  r.probe3 = true;
   r.probe_profile = encode_profile(PhyMode::HT, 3, 20);
   auto wire2 = pack_rcf(r);
   agent.on_rc_frame(wire2.data(), wire2.size(), 1100);
@@ -1066,29 +1063,11 @@ TEST(probe_rcf_does_not_change_bitrate) {
 
   // Probe exit (the decrease path is never throttled): still no write.
   r.seq = 3;
-  r.probe3 = false;
+  r.probe_profile = kNoProbeProfile;
   auto wire3 = pack_rcf(r);
   agent.on_rc_frame(wire3.data(), wire3.size(), 1200);
   REQUIRE(!agent.probing());
   CHECK(act.bitrates.size() == count_linked);
-}
-
-// 2d. DiscAck.chip_caps advertises CAP_ENH_PROBE alongside the existing
-// caps — this drone accepts RCF_F_PROBE_ENH.
-TEST(disc_ack_advertises_s3_probe) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
-                              /*op_width=*/40, 0, 2);
-  agent.on_rc_frame(wire.data(), wire.size(), 100);
-
-  REQUIRE(act.controls.size() == 1);
-  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
-  REQUIRE(parsed.has_value());
-  CHECK(parsed->chip_caps & mabur::rc::CAP_ENH_PROBE);
 }
 
 TEST(link_established_latches_on_disc_link_up) {

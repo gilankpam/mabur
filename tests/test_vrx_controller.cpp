@@ -198,27 +198,25 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
 // separate holder before it ever reaches on_rc_frame (Task 3), but the
 // controller itself must not choke if it ever sees one. Spec 2026-07-26
 // drone-telemetry.
-// s3-capable healthy sample; probe_allowed is set by the CONTROLLER from
-// peer caps, not by callers, so the test must feed a DiscAck first.
+// s3-capable healthy sample; probe_allowed is set unconditionally true by
+// the CONTROLLER now (not by callers) — see step()'s h.probe_allowed.
 static LinkHealth healthy3() {
   LinkHealth h = healthy();
   h.s3_valid = true; h.s3_expected_syms = 500; h.rf_snr_db = 30.0;
   return h;
 }
 
-// The controller must not encode a probe until the peer has advertised
-// CAP_ENH_PROBE via a DiscAck: mirror disc_ack_feeds_rendezvous's flow, add
-// CAP_ENH_PROBE to chip_caps.
+// probe_allowed is unconditional now (CAP_ENH_PROBE removed, Task 7 deletes
+// the LinkHealth field): mirror disc_ack_feeds_rendezvous's flow to reach
+// SESSION the same way a live controller would.
 TEST(probe_encoded_in_rcf_when_peer_capable) {
   auto vrx = make();
   vrx.step(1500, healthy3());  // silence -> BEACONING
   mabur::rc::DiscAck ack;
   ack.vtx_id = 1;
   ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
-  ack.chip_caps = mabur::rc::CAP_ENH_PROBE;
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
-  CHECK(vrx.peer_caps() & mabur::rc::CAP_ENH_PROBE);
 
   bool saw_probe = false;
   double now = 1600;
@@ -229,7 +227,7 @@ TEST(probe_encoded_in_rcf_when_peer_capable) {
       if (out->is_disc) continue;
       auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
       REQUIRE(r.has_value());
-      if (r->probe3) {
+      if (r->probe_profile != mabur::rc::kNoProbeProfile) {
         saw_probe = true;
         // base profile still rung 0 (mcs0), probe targets rung 1 (mcs2):
         mabur::rc::PhyMode m; uint8_t mcs, bw;
@@ -242,19 +240,6 @@ TEST(probe_encoded_in_rcf_when_peer_capable) {
     }
   }
   CHECK(saw_probe);
-}
-
-TEST(no_probe_without_cap) {
-  auto vrx = make();      // no DiscAck: peer_caps == 0
-  for (int t = 0; t < 9000; t += 10) {
-    vrx.on_video(t);
-    if (auto out = vrx.step(t, healthy3()); out && !out->is_disc) {
-      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-      if (r) CHECK(!r->probe3);
-    }
-  }
-  CHECK(vrx.ctl().counters().probes_started == 0);
-  CHECK(vrx.ctl().rung() >= 1);   // legacy promote happened instead
 }
 
 // While no DiscAck has ever been accepted, the SESSION keep-alive DISC runs

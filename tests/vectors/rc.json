@@ -48,6 +48,7 @@
    "fields": {
     "fec_overhead_base": 1.0,
     "fec_overhead_enh": 0.5,
+    "probe_profile": 6,
     "profile": 8,
     "seq": 42,
     "vtx_id": 287454020

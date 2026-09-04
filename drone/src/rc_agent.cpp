@@ -432,18 +432,17 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     rc::decode_profile(r->profile, mode, mcs, bw);
     auto ladder = rc::ladder_from(mode, mcs, bw);
 
-    // s3 probe (spec 2026-08-05): when the RCF carries probe3, the enh
-    // layer (ladder[1], the old s3) transmits at probe_profile's MCS while
-    // mode/bw stay the base profile's — MCS-only probe, the base layer
-    // (ladder[0]) rides the normal ladder. Recomputed on every accepted
-    // RCF, so a follow-up frame without the flag reverts the enh layer to
-    // the base profile's mcs.
+    // s3 probe (spec 2026-08-05): when the RCF carries a probe_profile, the
+    // enh layer (ladder[1], the old s3) transmits at probe_profile's MCS
+    // while mode/bw stay the base profile's — MCS-only probe, the base
+    // layer (ladder[0]) rides the normal ladder. Recomputed on every
+    // accepted RCF, so a follow-up frame at kNoProbeProfile reverts the enh
+    // layer to the base profile's mcs.
     probe3_active_ = false;
-    if (r->probe3) {
-      PhyMode pmode;
-      uint8_t pmcs, pbw;
+    if (r->probe_profile != rc::kNoProbeProfile) {
+      PhyMode pmode; uint8_t pmcs, pbw;
       rc::decode_profile(r->probe_profile, pmode, pmcs, pbw);
-      ladder[1].mcs = pmcs;
+      ladder[1].mcs = pmcs;   // TEMPORARY: Task 3 moves this to the probe slot
       probe3_active_ = true;
     }
 
@@ -576,9 +575,7 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq) const {
   // wire (one legal value) so a GS can still refuse a peer that lacks it.
   // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
   // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
-  // CAP_ENH_PROBE: this drone accepts RCF_F_PROBE_ENH (spec 2026-08-05
-  // s3-probe-promote).
-  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_ENH_PROBE;
+  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY;
   ack.agreed_channel = cfg_.radio.channel;
   ack.agreed_width = cfg_.radio.width;
   ack.seq = seq;
