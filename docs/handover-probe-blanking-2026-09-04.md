@@ -22,7 +22,8 @@ blast onto the probe. Turning the slotter off **halves** probe loss while
 raising enh loss — it is protecting video at the probe's expense.
 
 Adding the probe body's serialization (288 µs at mcs4, ceil → 1 ms) to
-the slotter's release did nothing. The gap between "AU decodable" and
+the slotter's release did nothing — measured over 57 k probes in an
+interleaved A/B, −0.007 ± 0.037 pp. The gap between "AU decodable" and
 "burst off air" is evidently several milliseconds — roughly a third of
 each enh burst is repair symbols that follow decode-completion — so one
 body is far too short a wait. **The next person needs to measure that
@@ -100,11 +101,24 @@ same rig, immediately after deploying it:
 | slotter OFF | 0.074 % | 0.074 % | 2 / 2693 |
 | `feedback_ms` 50 (repeat) | 0.111 % | 0.260 % | 7 / 2693 |
 
-**No effect, and the arms are too small to prove one either way** — 1 to 7
-lost bodies per arm, so Poisson error alone is ±2 to ±3. A longer
-interleaved A/B (fix / pre-fix / fix / pre-fix, 8 min each, ~40 losses per
-arm) was started to settle it; if its result is not appended below, it did
-not finish.
+**No effect**, and those arms were too small to prove one either way — 1 to
+7 lost bodies each, Poisson error ±2 to ±3. So the A/B was repeated long
+and interleaved (fix / pre-fix / fix / pre-fix, 8 min each, pinned mcs4 /
+probe mcs4 / `feedback_ms` 50, only the binary varying):
+
+| arm | probes | lost | probe loss | enh pre-FEC |
+|---|---|---|---|---|
+| fix 1 | 14292 | 24 | 0.168 % | 0.105 % |
+| pre-fix 1 | 14290 | 27 | 0.189 % | 0.086 % |
+| fix 2 | 14297 | 31 | 0.217 % | 0.088 % |
+| pre-fix 2 | 14291 | 30 | 0.210 % | 0.085 % |
+
+**Pooled: fix 55/28589 = 0.192 %, pre-fix 57/28581 = 0.199 %, difference
+−0.007 ± 0.037 pp (1 sd).** The error bar is now several times smaller
+than any effect that would matter, so this is a genuine null, not an
+underpowered one: **the probe-serialization tail does not reduce probe
+loss.** (The ~2× probe-to-enh ratio reproduces across all four arms:
+0.19 % probe vs 0.09 % enh.)
 
 ## Mechanism, and why 1 ms was the wrong number
 
