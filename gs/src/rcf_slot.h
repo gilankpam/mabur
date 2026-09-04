@@ -27,12 +27,16 @@
 //
 // Probe tail (spec 2026-09-04 probe-stream): the probe-stream body trails
 // every ENH burst, so the AU completes one probe body BEFORE the burst is
-// actually off air. A release armed at completion is therefore deferred by
-// probe_tail_ms when the completing AU is trailed by a probe — it goes out
-// at completion + probe_tail_ms instead of at completion. The cadence
-// predictor and the grace window both account for that same delay (see
-// idle_ahead() and offer()) so a send is never scheduled to land on the
-// probe body itself.
+// actually off air. A release armed at an ENH completion is therefore
+// deferred by probe_tail_ms — it goes out at completion + probe_tail_ms
+// instead of at completion (a base-AU completion is never trailed by a
+// probe and is never deferred). The cadence predictor is charged that same
+// delay, but ONLY for the completion that will actually incur it: an ENH
+// completion's idle_ahead() check adds probe_tail_ms (its send lands later),
+// a base-AU completion's and a grace offer's do not (their send goes out at
+// once). The grace window separately requires the tail to have elapsed
+// before treating "just went idle" as safe — the probe may still be on air
+// even though our own send would not be delayed by it.
 //
 // Single-threaded (core loop). Time is the core loop's mono ms.
 #include <cstdint>
@@ -80,7 +84,10 @@ class RcfSlotter {
   // whether THIS AU is trailed by a probe body (enh AU + probe commanded).
   void on_au_complete(uint64_t now_ms, bool probe_follows);
   // Would a send at now_ms be on air before the next burst is due?
-  bool idle_ahead(uint64_t now_ms) const;
+  // extra_delay_ms is added on top of lead_ms for callers whose send
+  // will actually land that much later (an ENH completion's deferred
+  // release); 0 for a send that goes out immediately (grace, base AU).
+  bool idle_ahead(uint64_t now_ms, int extra_delay_ms = 0) const;
   double period_ms() const { return period_ms_; }
   // Airtime of the probe body trailing every ENH burst, ms; 0 = none
   // commanded. Runtime: the probe MCS follows the rung.

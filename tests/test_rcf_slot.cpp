@@ -186,6 +186,8 @@ TEST(probe_tail_blocks_the_grace_window) {
 }
 
 TEST(probe_tail_counts_against_the_next_burst) {
+  // ENH completion: the tail IS charged to idle_ahead, so it can turn a
+  // completion that would otherwise fit into one that must wait.
   RcfSlotCfg cfg{40, 100, 2, 3, 1};
   cfg.probe_tail_ms = 5;
   RcfSlotter s(cfg);
@@ -194,7 +196,8 @@ TEST(probe_tail_counts_against_the_next_burst) {
   s.on_au_first(1016);                  // period learned ~16.6 ms; next due ~1032.6
   CHECK(offer(s, 1, 1020, false));      // held
   // now+lead+guard (1025+3+1=1029) fits before the next burst (~1032.6), but
-  // now+lead+tail+guard (1034) does not -- the release must not arm.
+  // now+lead+tail+guard (1034) does not -- an ENH completion's release must
+  // not arm.
   s.on_au_complete(1025, true);
   CHECK(s.take_due(1025).empty());
   CHECK(s.take_due(1059).empty());      // still not due; hold hasn't expired
@@ -202,15 +205,32 @@ TEST(probe_tail_counts_against_the_next_burst) {
   CHECK(due.size() == 1 && due[0].reason == SlotReason::Timeout);
 }
 
+TEST(probe_tail_not_charged_against_a_base_au_completion) {
+  // Converse of the above: the SAME completion time, but a base AU (no
+  // probe trails it) is not delayed, so idle_ahead must be evaluated
+  // without the tail and the release must still arm.
+  RcfSlotCfg cfg{40, 100, 2, 3, 1};
+  cfg.probe_tail_ms = 5;
+  RcfSlotter s(cfg);
+  s.on_au_complete(999, false);
+  s.on_au_first(1000);
+  s.on_au_first(1016);                  // period learned ~16.6 ms; next due ~1032.6
+  CHECK(offer(s, 1, 1020, false));      // held
+  // now+lead+guard (1025+3+1=1029) fits before the next burst (~1032.6);
+  // a base AU's send is not delayed by the tail, so this must arm.
+  s.on_au_complete(1025, false);
+  auto due = s.take_due(1025);
+  CHECK(due.size() == 1 && due[0].reason == SlotReason::Au);
+}
+
 TEST(set_probe_tail_ms_clamps_negative_to_zero) {
   RcfSlotCfg cfg{20, 100, 2, 3, 1};
   RcfSlotter s(cfg);
   s.set_probe_tail_ms(-5);
-  s.on_au_complete(0, false);
-  CHECK(offer(s, 1, 10, false));
-  s.on_au_complete(20, true);           // probe follows, but tail clamped to 0
-  auto due = s.take_due(20);
-  CHECK(due.size() == 1);
+  s.on_au_complete(1000, true);         // pending empty: just sets last_au_ms_
+  SlotFrame f = sf(1);
+  CHECK(!s.offer(f, 1001, false));      // grace still works => tail clamped to 0
+  CHECK(f.reason == SlotReason::Grace);
 }
 
 MTEST_MAIN

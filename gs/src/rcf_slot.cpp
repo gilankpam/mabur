@@ -13,19 +13,20 @@ void RcfSlotter::on_au_first(uint64_t now_ms) {
   have_first_ = true;
 }
 
-bool RcfSlotter::idle_ahead(uint64_t now_ms) const {
+bool RcfSlotter::idle_ahead(uint64_t now_ms, int extra_delay_ms) const {
   if (!have_first_) return true;
   const double next = static_cast<double>(last_first_ms_) + period_ms_;
-  return static_cast<double>(now_ms) + cfg_.lead_ms + cfg_.probe_tail_ms <
+  return static_cast<double>(now_ms) + cfg_.lead_ms + extra_delay_ms <
          next - cfg_.guard_ms;
 }
 
 void RcfSlotter::on_au_complete(uint64_t now_ms, bool probe_follows) {
   last_au_ms_ = now_ms;
   have_au_ = true;
-  if (!pending_.empty() && idle_ahead(now_ms)) {
+  const int tail = probe_follows ? cfg_.probe_tail_ms : 0;
+  if (!pending_.empty() && idle_ahead(now_ms, tail)) {
     release_pending_ = true;
-    release_at_ms_ = now_ms + (probe_follows ? cfg_.probe_tail_ms : 0);
+    release_at_ms_ = now_ms + tail;
   }
 }
 
