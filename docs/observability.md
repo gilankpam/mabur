@@ -64,10 +64,17 @@ territory, see `docs/latency-budget-findings-2026-08-31.md`.
 
 `link.rcf_slot` (2026-09-03) counts how the RCF slotter released each
 control-frame send: `au` (at an AU completion with idle ahead, incl. the
-in-grace immediate sends), `timeout` (hold reached
-`link.rcf_slot_hold_ms`), `passthru` (slotter off, or no AU in the last
-100 ms). Cumulative; diff across records. Healthy video = almost all `au`,
-`timeout` well under 1 %. See `docs/link-adaptation.md` "RCF slotting".
+in-grace immediate sends), `probe` (2026-09-05: at the probe body's
+arrival — the release for every ENH burst while a probe is commanded),
+`timeout` (hold reached `link.rcf_slot_hold_ms`), `passthru` (slotter
+off, or no AU in the last 100 ms). Cumulative; diff across records.
+`tail_ub_ms` is the slotter's learned completion→probe deadline (a lost
+probe's fallback release; ceil(decaying max) + 1). Healthy video = almost
+all `au`+`probe`, `timeout` well under 1 % — ⚠ at a high duty cycle
+(bench pinned mcs4, ~4 ms idle per 16.7 ms) `timeout` runs ~43 %, and
+with `feedback_ms` 50 = 3 AU periods those timeouts are phase-locked to
+the burst, see `docs/probe-blanking-fix-findings-2026-09-05.md`. See
+`docs/link-adaptation.md` "RCF slotting".
 
 Consume the same numbers programmatically with:
 
@@ -161,8 +168,12 @@ Consume the same numbers programmatically with:
   at 30/s), far denser than the ctl log's dwell-period `S` lines and so
   its own file. NNNN is taken from the paired `CtlLog` (`CtlLog::index()`)
   so a `probe-NNNN`/`ctl-NNNN` pair from one boot always lines up. Header
-  `probelog 1 bpb=<bpb>`, then `<t_ms> <seq> <mcs> <enh_fid> <blocks_ok>
-  <card_mask> <snr_c0> <snr_c1> <evm_c0> <evm_c1>` per row — `blocks_ok` is
+  `probelog 2 bpb=<bpb>`, then `<t_ms> <seq> <mcs> <enh_fid> <blocks_ok>
+  <card_mask> <snr_c0> <snr_c1> <evm_c0> <evm_c1> <first_ms>` per row
+  (`probelog 1`, 2026-09-04 only, lacked `first_ms`) — `t_ms` is the
+  finalize tick (~10 ms coarse), `first_ms` the radio's arrival stamp of
+  the body's first sight on any card (mono ms to 3 decimals, same
+  CLOCK_MONOTONIC as `au-NNNN.log`'s `t_complete`), `blocks_ok` is
   the union of surviving blocks, `card_mask` the bitmask of cards that
   delivered any block, snr/evm per-card in dB (`nan` when that card heard
   nothing this row). A row is written for EVERY finalized body, on- or
@@ -171,7 +182,15 @@ Consume the same numbers programmatically with:
   has caught up) still logs a row at its stale mcs instead of vanishing. A
   wholly-lost probe body is the only case with no row; `flightreport.py`
   derives it from `seq` gaps and the enh AU count and joins rows to
-  `au-NNNN.log` on `enh_fid`. Never fatal, like the ctl log.
+  `au-NNNN.log` on `enh_fid` (nearest completion in time — the id wraps
+  every ~36 min) to print the completion→probe offset percentiles
+  (`flightreport.py probe-NNNN_<date>.log [au-NNNN.log]`; without the
+  second argument it picks the au log in the same directory or `./log`
+  whose mono range overlaps — the au log's NNNN is flightrec's own
+  index, not the ctl/probe one). `tools/bench/probesend.py` adds the GS
+  send stamps from a `MABUR_GAPLOG=1` run to place every send against the
+  probe (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal,
+  like the ctl log.
 
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin

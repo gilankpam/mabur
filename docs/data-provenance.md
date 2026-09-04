@@ -20,7 +20,10 @@ servo 2026-08-31 (sum still comparable, split is not) · **post-FEC
 residual re-based from packet-seq to symbol abandonment + ctllog 9
 2026-09-02 (residual-phantom-demotes)** · **discrete s3 probe replaced by
 the always-on probe stream + ctllog 10, `probe_u`/`probe_n` become a
-continuous EWMA 2026-09-04 (probe-stream)**.
+continuous EWMA 2026-09-04 (probe-stream)** · `probelog 2` adds the
+per-body `first_ms` arrival stamp 2026-09-05 (probe-blanking fix; a
+`probelog 1` file's `t_ms` is the finalize tick and cannot be joined to
+`au-NNNN.log` for timing).
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the

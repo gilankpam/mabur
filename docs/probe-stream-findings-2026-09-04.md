@@ -40,7 +40,11 @@ Re-measured on the same bench with a long-dwell config (1350 samples at
 probe rungs 1-2): nonzero samples **23.6 % → ~12 %**. The residual is
 genuine loss, see Finding 2.
 
-## Finding 2 — the RCF slotter concentrates GS TX blanking onto the probe (OPEN)
+## Finding 2 — the RCF slotter concentrates GS TX blanking onto the probe (FIXED 2026-09-05)
+
+**Resolved:** `docs/probe-blanking-fix-findings-2026-09-05.md` — the
+slotter now releases on the probe's arrival; probe loss 0.21 % → 0.06 %.
+The record below is as written on 2026-09-04.
 
 The probe body is the **last** body of every enh burst, and `RcfSlotter`
 releases GS control frames at **AU completion** — which, since this

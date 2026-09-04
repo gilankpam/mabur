@@ -120,7 +120,25 @@ Sends: 88 % released by an AU completion (hold p50 6 ms, p90 17 ms), 12 %
 in-grace immediate, 0.5 % hold-timeout. Cost: a commanded op change now
 reaches the drone up to one AU period later (`link.attrib.close_ms`
 5 → 22 ms). Player `fec` p99 ≥ 20 ms windows: 31/90 → 7/100.
-Sideport counters: `link.rcf_slot.{au,timeout,passthru}`.
+Sideport counters: `link.rcf_slot.{au,probe,timeout,passthru,tail_ub_ms}`.
+
+**Probe-arrival release (2026-09-05).** While a probe is commanded, the
+probe body is the last PPDU of every ENH burst and it lands 0.9 ms p50 /
+4 ms p99 *after* the completion stamp (bench, probelog 2 `first_ms` vs
+`t_complete`); a send's USB+chip latency is 1–1.5 ms, so a release at the
+ENH completion put the blast exactly on the probe — the probe lost ~2.5×
+the enh stream's own symbol loss, 45 of 55 lost probes had a GS send
+inside the collision window (22 % baseline), and a fixed one-body tail
+(`bee51c6`) was a measured null. An ENH completion now releases nothing
+itself: the probe sink's `on_probe_tail` is the release
+(`SlotReason::Probe`), with the idle-ahead check made at that instant.
+A lost probe falls back to a deadline at completion + `tail_ub_ms`, a
+decaying max of the observed completion→probe offsets floored at the
+probe body's airtime, +1 ms. Base-AU completions release at once as
+before (no probe trails a base burst). Interleaved A/B, pinned mcs4 /
+probe mcs4 / `feedback_ms` 50, 8 min arms:
+`docs/probe-blanking-fix-findings-2026-09-05.md` — probe loss 0.21 % →
+0.06 %, below the enh stream's 0.08 %, enh unchanged.
 
 ## Probe stream (2026-09-04) — current promote gate
 
@@ -146,16 +164,18 @@ an FCS-corrupt video body — gating the probe sink on `crc_ok` would book
 every FCS-failing PPDU as a full `bpb`-block loss instead of just its
 dead sub-blocks, biasing the gate ~4x pessimistic toward Lossy.
 
-**Why the enh tail is safe from the GS uplink blast.** `RcfSlotter`
-releases a control-frame send at an AU completion and it is on air
-≥ `lead_ms` (3 ms) later ("RCF slotting" above); the probe PPDU starts a
-few hundred µs after the last enh body — long before that 3 ms window
-opens. A probe sent at a random time would instead land inside the
-~180 µs uplink blast ~0.35 %/PPDU of the time, exactly the loss the
-slotter exists to remove
-(`docs/gs-uplink-self-blanking-findings-2026-09-02.md`). The slotter
-needs no change for this: its `guard_ms` already covers the < 0.5 ms the
-probe extends the burst by.
+**The enh tail and the GS uplink blast (corrected 2026-09-05).** The
+2026-09-04 design assumed a send released at the ENH completion is on
+air ≥ `lead_ms` (3 ms) later, long after the probe. Measured: the probe
+lands 0.9 ms p50 / 4 ms p99 after the completion stamp and the send's
+real USB+chip latency is 1–1.5 ms, so the slotter aimed the blast at the
+probe (~2.5× the enh stream's own loss, GS-inflicted, vanishing at
+`feedback_ms` 200). Fixed by releasing on the probe's arrival instead —
+"RCF slotting" above, `docs/probe-blanking-fix-findings-2026-09-05.md`.
+A probe sent at a random time would land inside the ~180 µs blast
+~0.35 %/PPDU of the time; with the probe-arrival release it is the one
+PPDU the slotter can never hit, and on the bench it now loses *less*
+than the enh stream it predicts.
 
 **Scoring rule — union across cards, AU count for expected, never seq
 gaps.** `ProbeTrack` (`gs/src/probe_track.h`) books one expectation of

@@ -1,6 +1,15 @@
 # Handover: the probe stream loses ~2× what video loses, and the GS does it (2026-09-04)
 
-Status: **OPEN.** Root cause is established and reproducible — the loss is
+Status: **FIXED 2026-09-05** — see
+`docs/probe-blanking-fix-findings-2026-09-05.md` (instrumentation gap
+closed by `probelog 2`, mechanism measured, `RcfSlotter` releases on the
+probe's arrival, interleaved A/B: probe loss 0.21 % → 0.06 %, below the
+enh stream's own). The text below is the 2026-09-04 handover as written;
+its "Mechanism" section over-estimated the completion→burst-end offset
+(measured 0.9 ms p50, not 3–4 ms) and missed that `lead_ms` 3 is ~2× the
+real send latency, which is why the 1 ms tail could not work.
+
+Original status: **OPEN.** Root cause is established and reproducible — the loss is
 GS-inflicted, not RF — but the fix is NOT found. The obvious correction
 (make `RcfSlotter` wait out the probe body's own airtime, `bee51c6`,
 deployed) is **measurably ineffective**: it is the right mechanism with
