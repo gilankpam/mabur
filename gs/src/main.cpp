@@ -31,6 +31,7 @@
 #ifdef MABUR_LOSS_SIM
 #include "loss_control.h"
 #endif
+#include "mabur/probe_wire.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
@@ -38,6 +39,8 @@
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
 #include "pts_anchor.h"
+#include "probe_log.h"
+#include "probe_track.h"
 #include "rcf_slot.h"
 #include "rtt_estimator.h"
 #include "radio_frontend.h"
@@ -311,6 +314,26 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::LatWindow lat_win;
   uint32_t cur_au_pts = 0;
 
+  // Probe stream (spec 2026-09-04 section 3): scored by ProbeTrack against
+  // the enh AU count; the ENH layer's geometry gives bpb/block_payload, so
+  // the same array the Aggregator was built from decides how a probe body
+  // is parsed. Core-thread-owned like every other window in this loop.
+  const auto probe_layer = cfg.uep_layers()[1];  // ENH layer geometry
+  const int probe_bpb = probe_layer.blocks_per_body;
+  const int probe_block_payload =
+      static_cast<int>(mabur::sw::kSwHeaderLen) + probe_layer.fec.symbol_size;
+  maburgs::ProbeTrack probe_track(maburgs::ProbeTrackCfg{probe_bpb, 100, n_cards});
+  maburgs::S1LossWindow probe_loss;  // union, commanded profile
+  std::vector<maburgs::S1LossWindow> probe_card_loss(static_cast<size_t>(n_cards));
+  uint8_t probe_cmd_last = mabur::rc::kNoProbeProfile;
+  // A commanded-profile change blanks the windows: bodies already in flight
+  // carry the OLD profile and ProbeTrack stops scoring them, so the window
+  // must refill from the new profile's bodies only (RCF lag + finalize).
+  constexpr double kProbeSwitchBlankMs = 150.0;
+  // Per-body probe log, indexed to the same NNNN as the ctl log so a
+  // probe-NNNN/ctl-NNNN pair from one boot lines up.
+  std::optional<maburgs::ProbeLog> probe_log;
+
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits; whole access units leave maburgs through
   // the shm AU ring (PR C: the RTP packetizer/UDP path is gone — maburplay
@@ -322,6 +345,10 @@ static int run_radio(const maburgs::Config& cfg) {
          cur_au_pts = h.pts_us;
          if (au_on) au_ring.begin(h, sid);
          rcf_slot.on_au_first(mono_ms());
+         // One probe expectation per ENH access unit: the probe body rides
+         // the enh AU's send opportunity, so the AU count is what "expected"
+         // means (probe_track.h explains why seq gaps cannot be).
+         if (sid == 1) probe_track.on_enh_au(h.frame_id, static_cast<double>(mono_ms()));
        },
        [&](const uint8_t* d, size_t n) {
          if (au_on) au_ring.append(d, n);
@@ -431,6 +458,7 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
   vcfg.rcf_repeat_copies = cfg.link.rcf_repeat_copies;
   vcfg.rcf_repeat_ms = cfg.link.rcf_repeat_ms;
+  vcfg.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
   maburgs::VrxController vrx(vcfg);
 
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
@@ -451,15 +479,21 @@ static int run_radio(const maburgs::Config& cfg) {
                 ":" +
                 std::to_string(static_cast<int>(std::lround(r.overhead_enh * 100)));
     }
-    char tail[64];
-    std::snprintf(tail, sizeof(tail), " down_util=%.2f up_util=%.2f",
-                  cfg.link.ladder_cfg.down_util, cfg.link.ladder_cfg.up_util);
+    char tail[96];
+    std::snprintf(tail, sizeof(tail), " down_util=%.2f up_util=%.2f probe_offset=%d",
+                  cfg.link.ladder_cfg.down_util, cfg.link.ladder_cfg.up_util,
+                  cfg.link.ladder_cfg.probe.rung_offset);
     header += tail;
     ctl_log.emplace(cfg.link.ctl_log_dir, header);
     if (ctl_log->ok())
       std::fprintf(stderr, "ctl-log: %s\n", ctl_log->path().c_str());
     // else: CtlLog's constructor already printed the ok()=false reason to
     // stderr (opendir/fopen failure) -- non-fatal, logging just stays off.
+  }
+  if (ctl_log && ctl_log->ok()) {
+    probe_log.emplace(cfg.link.ctl_log_dir, ctl_log->index(), probe_bpb);
+    if (probe_log->ok())
+      std::fprintf(stderr, "probe-log: %s\n", probe_log->path().c_str());
   }
 
   // Measured-loss ladder feedback: stream 1 (base layer)'s cumulative
@@ -533,7 +567,7 @@ static int run_radio(const maburgs::Config& cfg) {
   double last_ctl_event_ms = vrx.ctl().last_event().t_ms;
   // Same change-detect pattern for the ctl log's probe/penalty records
   // (initialized to the pre-any-event default so boot doesn't print one).
-  double last_probe_t_ms = vrx.ctl().last_probe().t_ms;
+  double last_probe_t_ms = vrx.ctl().last_probe_edge().t_ms;
   double last_penalty_t_ms = vrx.ctl().last_penalty().t_ms;
   double last_rung_log_ms = 0;
   // R-line snapshot of every rung with any data (spec 2026-08-13).
@@ -588,6 +622,29 @@ static int run_radio(const maburgs::Config& cfg) {
       msp_sink->on_body(b, n, us / 1000);
     });
   }
+
+  // Probe stream bodies (SBI stream 5). Same core-thread contract as the MSP
+  // sink: the aggregator calls this from the drain loop below. Every body is
+  // scored per-card; ProbeTrack merges the cards into the union the ladder
+  // reads. The RF labels are this body's own, not the card's EMA -- a probe
+  // sample must carry the radio conditions it actually flew through.
+  agg.set_probe_sink([&](uint8_t card, const mabur::node::RxBody& m) {
+    mabur::probe::ProbeRx rx;
+    if (!mabur::probe::parse_probe_body(m.body.data(), m.body.size(),
+                                        probe_block_payload, &rx))
+      return;
+    const double snr = m.phy_valid
+                            ? std::max(m.snr[0], m.snr[1]) * maburgs::kSnrRawToDb
+                            : std::nan("");
+    // EVM: raw half-dB, negative = clean, 0 = not sampled (node.h) -- pick
+    // the better sampled chain, NaN when neither chain reported.
+    const int8_t evm_raw =
+        (m.evm[0] != 0 && (m.evm[1] == 0 || m.evm[0] < m.evm[1])) ? m.evm[0]
+                                                                  : m.evm[1];
+    const double evm = evm_raw != 0 ? evm_raw * maburgs::kEvmRawToDb : std::nan("");
+    probe_track.on_body(card, rx, snr, evm,
+                        static_cast<double>(m.mono_us) / 1000.0);
+  });
 
   maburgs::TxSelector sel(
       maburgs::TxSelectorCfg{cfg.radio.tx_card, 3.0, 2000, 1500}, n_cards);
@@ -732,7 +789,9 @@ static int run_radio(const maburgs::Config& cfg) {
     // Transition boundaries for loss attribution: edge-detect the COMMANDED
     // per-sid MCS. sid 0 (base) mirrors the drone's mcs-1 rule
     // (rc::ladder_from(...)[0].mcs) and always tracks the op; sid 1 (enh)
-    // runs the profile mcs, or the probe candidate while a probe is up.
+    // runs the op MCS too -- since the continuous probe stream replaced the
+    // discrete probe attempt (2026-09-04), the enh layer is never diverted
+    // to a candidate rate; the probe rides its own stream instead.
     // Overhead-only steps mark sid 0 too (FEC re-key debris exists without a
     // PHY change; the decoder then uses the plain same-MCS fallback).
     // Static-pin mode: the op never changes, so nothing ever arms.
@@ -759,8 +818,7 @@ static int run_radio(const maburgs::Config& cfg) {
         last_marked_op_mcs = op_now.mcs;
         last_marked_op_ov = op_now.overhead_base;
       }
-      const int enh_mcs_now =
-          vrx.ctl().probing() ? vrx.ctl().probe_mcs() : op_now.mcs;
+      const int enh_mcs_now = op_now.mcs;
       if (enh_mcs_now != last_marked_enh_mcs) {
         agg.decoder().mark_transition(1, static_cast<uint8_t>(enh_mcs_now),
                                       now_ms_u);
@@ -853,6 +911,37 @@ static int run_radio(const maburgs::Config& cfg) {
     const auto s3_cur_sample = s3_loss_cur.sample(now_ms);
     const auto s3_rcur_sample = s3_resid_cur.sample(now_ms);
 
+    // Probe window (spec 2026-09-04 section 3.3): union block counters for
+    // the profile currently commanded, windowed by the same machinery as the
+    // s1/s3 windows above. Blanked on a commanded-profile change so it
+    // refills only from bodies carrying the new profile (RCF lag + the
+    // finalize window). Per-card siblings are diagnostics only -- the ladder
+    // reads the union, because that is the path production video takes.
+    probe_track.tick(now_ms);
+    if (const uint8_t pc = vrx.probe_profile(); pc != probe_cmd_last) {
+      probe_cmd_last = pc;
+      probe_track.set_commanded(pc, now_ms);
+      probe_loss.blank_until(now_ms + kProbeSwitchBlankMs);
+      for (auto& w : probe_card_loss) w.blank_until(now_ms + kProbeSwitchBlankMs);
+    }
+    const auto& pu = probe_track.union_counts();
+    probe_loss.add(pu.expected_blocks, pu.arrived_blocks, now_ms);
+    for (int i = 0; i < n_cards; ++i) {
+      const auto& pcnt = probe_track.card_counts(i);
+      probe_card_loss[static_cast<size_t>(i)].add(pcnt.expected_blocks,
+                                                  pcnt.arrived_blocks, now_ms);
+    }
+    const auto probe_sample = probe_loss.sample(now_ms);
+    // Drain unconditionally: the finalized rows are a bounded queue inside
+    // ProbeTrack, and leaving them there when no log is open would grow it.
+    if (probe_log)
+      for (const auto& f : probe_track.take_finalized())
+        probe_log->row(f.t_ms, f.seq, f.profile & 0x0F, f.enh_fid, f.blocks_ok,
+                       f.card_mask, f.snr_db[0], f.snr_db[1], f.evm_db[0],
+                       f.evm_db[1]);
+    else
+      probe_track.take_finalized();
+
     // The strongest card that ACTUALLY RECEIVED s1-or-s3 this feedback
     // window supplies all three RF labels. Freshness is part of the argmax,
     // not a filter after it (select_label_card, rf_labels.h): a card whose
@@ -898,6 +987,13 @@ static int run_radio(const maburgs::Config& cfg) {
     health.s3_residual_loss =
         s3_rcur_sample.valid ? s3_rcur_sample.loss : 0.0;
     health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
+    // Probe gate inputs (spec 2026-09-04 section 3.3). probe_rung is the rung
+    // the sample was commanded at, so the controller can tell a stale sample
+    // from one that describes the rung it is about to promote to.
+    health.probe_valid = probe_sample.valid;
+    health.probe_loss = probe_sample.valid ? probe_sample.loss : 0.0;
+    health.probe_expected_syms = probe_loss.expected_in_window(now_ms);
+    health.probe_rung = vrx.ctl().probe_rung();
     health.rf_snr_db = rf_snr_db;
     health.rf_evm_db = rf_evm_db;
     health.rf_rssi_dbm = rf_rssi_dbm;
@@ -958,13 +1054,16 @@ static int run_radio(const maburgs::Config& cfg) {
                         e.u, e.snr_db, e.evm_db);
       if (ctl_log) emit_rung_lines(now_ms);  // store state at the decision
     }
-    // s3 probe-before-promote records: same t_ms-change detect pattern as
-    // the rung-transition line above.
-    if (const auto& p = vrx.ctl().last_probe(); p.t_ms != last_probe_t_ms) {
-      last_probe_t_ms = p.t_ms;
-      if (ctl_log)
-        ctl_log->probe(p.t_ms, p.rung, maburgs::to_string(p.outcome),
-                        p.snr_db, p.u_pred, p.dur_ms, p.evm_db);
+    // Probe gate EDGE records (ctllog 10): same t_ms-change detect pattern as
+    // the rung-transition line above. Off edges are not logged -- the gate
+    // leaving/entering Off just tracks whether a candidate rung exists at
+    // all (top rung, feature disabled), which the S line's probe_rung column
+    // already carries once per dwell sample.
+    if (const auto& pe = vrx.ctl().last_probe_edge(); pe.t_ms != last_probe_t_ms) {
+      last_probe_t_ms = pe.t_ms;
+      if (ctl_log && pe.state != maburgs::ProbeGateState::Off)
+        ctl_log->probe(pe.t_ms, pe.rung, maburgs::to_string(pe.state), pe.snr_db,
+                        pe.u, static_cast<int>(pe.prev_dur_ms), pe.evm_db);
     }
     if (const auto& n = vrx.ctl().last_penalty(); n.t_ms != last_penalty_t_ms) {
       last_penalty_t_ms = n.t_ms;
@@ -989,11 +1088,20 @@ static int run_radio(const maburgs::Config& cfg) {
       // measured_rung(), not rung(): every other field in this row is a
       // window measurement, and a demote has already stepped the live rung
       // down by the time we get here (see LadderController::measured_rung()).
+      // Probe columns: the gate's candidate rung, its scored utilization
+      // (NaN unless the gate actually has a verdict) and the window's block
+      // count, so a post-mortem can tell "clean probe" from "no probe data".
+      const auto pg = vrx.ctl().probe_gate(now_ms);
       ctl_log->sample(now_ms, c.measured_rung(), c.util(), health.rf_snr_db,
                        residual.value_or(0.0), c.util3(),
                        health.s3_residual_loss, health.rf_evm_db,
                        residual_cur.value_or(0.0), c.fade_drssi(),
-                       c.fade_dsnr(), health.rf_rssi_dbm);
+                       c.fade_dsnr(), health.rf_rssi_dbm, pg.rung,
+                       (pg.state == maburgs::ProbeGateState::Clean ||
+                        pg.state == maburgs::ProbeGateState::Lossy)
+                           ? pg.u
+                           : std::numeric_limits<double>::quiet_NaN(),
+                       probe_loss.expected_in_window(now_ms));
       // R lines keep their own, much slower period — they are a store
       // snapshot, not a dwell sample, and must not follow the S cadence.
       if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
@@ -1203,24 +1311,14 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.last_event_snr_db = e.snr_db;
         ci.last_event_evm_db = e.evm_db;
         ci.util3 = c.util3();
-        ci.probes_started = cnt.probes_started;
-        ci.probes_ok = cnt.probes_ok;
-        ci.probe_fails = cnt.probe_fails;
-        ci.probe_aborts = cnt.probe_aborts;
+        ci.promotes_probed = cnt.promotes_probed;
+        ci.probe_holds = cnt.probe_holds;
         ci.demotes_s3_residual = cnt.demotes_s3_residual;
         ci.demotes_s3_util = cnt.demotes_s3_util;
         ci.demotes_fade = cnt.demotes_fade;
         ci.fade_active = c.fade_active(now_ms);
         ci.fade_drssi = c.fade_drssi();
         ci.fade_dsnr = c.fade_dsnr();
-        const auto& pr = c.last_probe();
-        ci.last_probe_t_ms = pr.t_ms;
-        ci.last_probe_rung = pr.rung;
-        ci.last_probe_outcome = maburgs::to_string(pr.outcome);
-        ci.last_probe_snr_db = pr.snr_db;
-        ci.last_probe_evm_db = pr.evm_db;
-        ci.last_probe_u_pred = pr.u_pred;
-        ci.last_probe_dur_ms = pr.dur_ms;
         const maburgs::RungStore& rstore = c.rungs();
         for (std::size_t ri = 0; ri < rstore.size(); ++ri) {
           const maburgs::RungStat& rs = rstore.stat(static_cast<int>(ri));
@@ -1251,6 +1349,35 @@ static int run_radio(const maburgs::Config& cfg) {
           ci.rungs.push_back(rg);
         }
         sin.ctl = std::move(ci);
+      }
+      // Probe snapshot: OUTSIDE the ladder block on purpose, so static-pin
+      // mode (link.probe.pin_mcs on the bench) still exports what the probe
+      // stream is doing. The ladder is never ticked there, so probe_gate()
+      // reads Off and rung/state/u are inert -- on, mcs, loss and the
+      // per-card rows are the numbers that matter in that mode.
+      {
+        maburgs::StatsProbeIn pin;
+        const uint8_t pc = vrx.probe_profile();
+        pin.on = pc != mabur::rc::kNoProbeProfile;
+        pin.mcs = pin.on ? (pc & 0x0F) : -1;
+        const auto g = vrx.ctl().probe_gate(now_ms);
+        pin.rung = g.rung;
+        pin.state = maburgs::to_string(g.state);
+        pin.have_sample =
+            probe_sample.valid && g.state != maburgs::ProbeGateState::Off;
+        pin.u = g.u;
+        pin.loss = probe_sample.valid ? probe_sample.loss : 0.0;
+        pin.streak_ms = static_cast<int>(g.streak_ms);
+        pin.n = probe_loss.expected_in_window(now_ms);
+        pin.exp = pu.expected_blocks;
+        pin.rx = pu.bodies_rx;
+        pin.off_profile = probe_track.off_profile();
+        for (int i = 0; i < n_cards; ++i) {
+          const auto cs = probe_card_loss[static_cast<size_t>(i)].sample(now_ms);
+          pin.cards.push_back({cs.valid, cs.valid ? cs.loss : 0.0,
+                               probe_track.card_counts(i).bodies_rx});
+        }
+        sin.probe = std::move(pin);
       }
       stats->poll(drained_ms, sin);
     }

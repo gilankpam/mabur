@@ -179,23 +179,27 @@ TEST(feasible_pair_leaves_burst_unchanged) {
 // the aggregator's accounting, the sideport lies to the operator during the
 // very test the injector exists to support — so this invariant gets its own
 // explicit test rather than being assumed.
-static std::array<mabur::UepLayerCfg, 4> sim_layers() {
-  std::array<mabur::UepLayerCfg, 4> L{};
-  const double ov[4] = {1.00, 0.75, 0.50, 0.25};
-  for (int s = 0; s < 4; ++s)
+static std::array<mabur::UepLayerCfg, 2> sim_layers() {
+  std::array<mabur::UepLayerCfg, 2> L{};
+  const double ov[2] = {1.00, 0.50};
+  for (int s = 0; s < 2; ++s)
     L[s] = mabur::UepLayerCfg{mabur::SwConfig{64, 128, ov[s]}, 4};
   return L;
 }
 
-// Every fixture frame forced onto stream 3, so every body carries sid 3.
-static std::vector<std::vector<uint8_t>> s3_bodies() {
+// The enh sid, which is what these tests inject on: the 4->2 stream collapse
+// left sids 0 (base) and 1 (enh) only, and RfClass::S1 is its class index.
+static constexpr int kSimSid = 1;
+
+// Every fixture frame forced onto the enh stream, so every body carries sid 1.
+static std::vector<std::vector<uint8_t>> enh_bodies() {
   mabur::UepEncoder enc(sim_layers(), /*flush_ms=*/1'000'000'000ULL);
   std::vector<std::vector<uint8_t>> out;
   auto frames = mtest::load_frame_fixture(std::string(MABUR_FIXTURE_DIR) +
                                           "/frame_stream.bin");
   for (size_t i = 0; i < frames.size(); ++i) {
     auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
-    for (auto& b : enc.add_frame(3, unit.data(), unit.size(), 0))
+    for (auto& b : enc.add_frame(kSimSid, unit.data(), unit.size(), 0))
       out.push_back(std::move(b.body));
   }
   for (auto& b : enc.flush_all()) out.push_back(std::move(b.body));
@@ -214,13 +218,13 @@ static mabur::node::RxBody sim_msg(uint8_t card, uint16_t seq,
 }
 
 TEST(dropped_body_touches_no_counter) {
-  const auto bodies = s3_bodies();
+  const auto bodies = enh_bodies();
   REQUIRE(!bodies.empty());
 
-  Aggregator agg(sim_layers(), 200, 512, 2);
+  Aggregator agg(sim_layers(), 200, 2);
   int frags = 0;
   agg.set_frag_sink([&](const mabur::DecodedFrag&) { ++frags; });
-  agg.loss_sim().configure(3, 1.0, 1.0);   // drop every s3 body
+  agg.loss_sim().configure(kSimSid, 1.0, 1.0);   // drop every enh body
 
   uint16_t seq = 0;
   for (const auto& b : bodies) agg.on_rx_body(sim_msg(0, seq++, b));
@@ -232,20 +236,20 @@ TEST(dropped_body_touches_no_counter) {
   CHECK(c.seq_expected == 0);
   CHECK(c.video_bodies == 0);
   CHECK(c.has_ema == false);
-  CHECK(c.cls[3].frames == 0);
-  CHECK(c.cls[3].bytes == 0);
+  CHECK(c.cls[kSimSid].frames == 0);
+  CHECK(c.cls[kSimSid].bytes == 0);
   CHECK(frags == 0);
-  CHECK(agg.loss_sim().dropped(3) == bodies.size());
+  CHECK(agg.loss_sim().dropped(kSimSid) == bodies.size());
 }
 
 // The contrast case: with the sim off, the same bodies must flow normally.
 // Without this, a should_drop() that always returned true would still pass
 // the test above.
 TEST(sim_off_leaves_path_untouched) {
-  const auto bodies = s3_bodies();
+  const auto bodies = enh_bodies();
   REQUIRE(!bodies.empty());
 
-  Aggregator agg(sim_layers(), 200, 512, 2);
+  Aggregator agg(sim_layers(), 200, 2);
   int frags = 0;
   agg.set_frag_sink([&](const mabur::DecodedFrag&) { ++frags; });
 
@@ -256,20 +260,20 @@ TEST(sim_off_leaves_path_untouched) {
   CHECK(c.frames == bodies.size());
   CHECK(c.video_bodies == bodies.size());
   CHECK(c.seq_received == bodies.size());
-  CHECK(c.cls[3].frames == bodies.size());
+  CHECK(c.cls[kSimSid].frames == bodies.size());
   CHECK(frags > 0);
-  CHECK(agg.loss_sim().dropped(3) == 0);
+  CHECK(agg.loss_sim().dropped(kSimSid) == 0);
 }
 
 // A corrupt body's peeked stream_id is untrustworthy, so injection must skip
 // it rather than drop a randomly-misidentified stream.
 TEST(crc_fail_bodies_are_not_injected) {
-  const auto bodies = s3_bodies();
+  const auto bodies = enh_bodies();
   REQUIRE(!bodies.empty());
 
-  Aggregator agg(sim_layers(), 200, 512, 2);
+  Aggregator agg(sim_layers(), 200, 2);
   agg.set_frag_sink([](const mabur::DecodedFrag&) {});
-  agg.loss_sim().configure(3, 1.0, 1.0);
+  agg.loss_sim().configure(kSimSid, 1.0, 1.0);
 
   uint16_t seq = 0;
   for (const auto& b : bodies) {
@@ -277,7 +281,7 @@ TEST(crc_fail_bodies_are_not_injected) {
     m.crc_ok = false;
     agg.on_rx_body(m);
   }
-  CHECK(agg.loss_sim().dropped(3) == 0);
+  CHECK(agg.loss_sim().dropped(kSimSid) == 0);
   CHECK(agg.card(0).frames == bodies.size());
   CHECK(agg.card(0).crc_fail == bodies.size());
 }
