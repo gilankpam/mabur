@@ -132,8 +132,8 @@ Config load_config(const std::string& path) {
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
                 "starved_confirm_ms", "s3_demote", "s3_down_util",
-                "s3_settle_ms", "ctl_log", "ctl_log_dir", "ctl_log_period_ms",
-                "rung_stats", "fade",
+                "s3_settle_ms", "s3_min_syms", "ctl_log", "ctl_log_dir", "ctl_log_period_ms",
+                "rung_stats", "fade", "probe",
                 "rcf_repeat_copies", "rcf_repeat_ms", "rcf_slot_hold_ms"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
@@ -218,9 +218,27 @@ Config load_config(const std::string& path) {
     // s3 steady-state demote tuning (LadderCfg). s3_down_util keeps its
     // struct default (-1 sentinel) when absent from JSON and is resolved to
     // down_util below, AFTER down_util has parsed above.
-    // The five flat probe_* keys went with the s3 probe (spec 2026-09-04);
-    // the link.probe block that replaces them lands in the next task.
     auto& lc = c.link.ladder_cfg;
+    lc.s3_min_syms = static_cast<int>(get_int(r, "s3_min_syms", 50, 1, 100000, "link"));
+    // Probe stream gate (spec 2026-09-04 §5). Optional block with live
+    // defaults; the pre-2026-09-04 flat probe_* keys are gone and fail boot.
+    if (r.contains("probe")) {
+      const json& pj = r["probe"];
+      check_keys(pj, "link.probe", {"enable", "rung_offset", "clean_ms", "max_util",
+                                    "min_syms", "silence_ms", "pin_mcs"});
+      auto& pc = lc.probe;
+      if (pj.contains("enable")) {
+        if (!pj["enable"].is_boolean()) fail("link.probe.enable", "not a boolean");
+        pc.enable = pj["enable"].get<bool>();
+      }
+      pc.rung_offset = static_cast<int>(get_int(pj, "rung_offset", 1, 1, 7, "link.probe"));
+      pc.clean_ms = static_cast<int>(get_int(pj, "clean_ms", 2000, 100, 60000, "link.probe"));
+      if (pj.contains("max_util"))
+        pc.max_util = get_num(pj, "max_util", 0.35, 0.01, 2.0, "link.probe");
+      pc.min_syms = static_cast<int>(get_int(pj, "min_syms", 40, 4, 100000, "link.probe"));
+      pc.silence_ms = static_cast<int>(get_int(pj, "silence_ms", 500, 100, 10000, "link.probe"));
+      pc.pin_mcs = static_cast<int>(get_int(pj, "pin_mcs", -1, -1, 7, "link.probe"));
+    }
     if (r.contains("s3_demote")) {
       if (!r["s3_demote"].is_boolean()) fail("link.s3_demote", "not a boolean");
       lc.s3_demote = r["s3_demote"].get<bool>();
@@ -228,8 +246,6 @@ Config load_config(const std::string& path) {
     if (r.contains("s3_down_util"))
       lc.s3_down_util = get_num(r, "s3_down_util", 0.35, 0.01, 2.0, "link");
     lc.s3_settle_ms = static_cast<int>(get_int(r, "s3_settle_ms", 300, 0, 5000, "link"));
-    // Sentinel resolution: an absent s3_down_util tracks down_util.
-    if (lc.s3_down_util < 0) lc.s3_down_util = lc.down_util;
 
     // Fade-aware demotes (spec 2026-08-14 fade-demote). Config surface only:
     // nothing in this task consumes lc.fade yet.
@@ -273,6 +289,14 @@ Config load_config(const std::string& path) {
           get_int(rs, "rung_log_period_s", 10, 1, 600, "link.rung_stats"));
     }
   }
+  // Sentinel resolution: an absent link.probe.max_util/link.s3_down_util
+  // tracks down_util. Runs unconditionally (not just when "link" was
+  // present) so a wholly-absent config still resolves to down_util's
+  // struct default.
+  if (c.link.ladder_cfg.probe.max_util < 0)
+    c.link.ladder_cfg.probe.max_util = c.link.ladder_cfg.down_util;
+  if (c.link.ladder_cfg.s3_down_util < 0)
+    c.link.ladder_cfg.s3_down_util = c.link.ladder_cfg.down_util;
 
   if (j.contains("video")) {
     const json& r = j["video"];

@@ -533,3 +533,52 @@ TEST(rcf_repeat_restart_on_new_change_mid_burst) {
   }
   CHECK(drained == 3);
 }
+
+// --- link.probe byte in the RCF head (spec 2026-09-04 sections 4.2, 5) -----
+
+// Drives the link into SESSION with a DiscAck, then steps until an RCF is
+// emitted; returns the parsed RCF.
+static mabur::rc::Rcf first_rcf(VrxController& vrx, const LinkHealth& h, double& t) {
+  mabur::rc::DiscAck ack; ack.vtx_id = 1; ack.vrx_nonce = vrx.rz_nonce();
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE; ack.seq = 1;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), t);
+  for (int i = 0; i < 400; ++i, t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, h); out && !out->is_disc) {
+      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+      REQUIRE(r.has_value());
+      return *r;
+    }
+  }
+  REQUIRE(false);
+  return {};
+}
+
+TEST(rcf_carries_the_probe_rung_profile) {
+  auto vrx = make();  // rung 0 = mcs0, rung 1 = mcs2
+  double t = 0;
+  auto r = first_rcf(vrx, healthy(), t);
+  CHECK(r.probe_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 2, 20));
+  CHECK(vrx.probe_profile() == r.probe_profile);
+}
+
+TEST(rcf_probe_byte_is_none_when_disabled_or_pinned_without_pin_mcs) {
+  LadderCfg l = default_ladder(); l.probe.enable = false;
+  auto vrx = make(l);
+  double t = 0;
+  CHECK(first_rcf(vrx, healthy(), t).probe_profile == mabur::rc::kNoProbeProfile);
+  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
+  VrxController pinned(cfg);
+  t = 0;
+  CHECK(first_rcf(pinned, healthy(), t).probe_profile == mabur::rc::kNoProbeProfile);
+}
+
+TEST(pinned_link_can_probe_a_fixed_mcs) {
+  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
+  cfg.probe_pin_mcs = 5;
+  VrxController vrx(cfg);
+  double t = 0;
+  CHECK(first_rcf(vrx, healthy(), t).probe_profile ==
+        mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
+}

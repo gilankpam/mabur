@@ -4,7 +4,7 @@
 #include "mtest.h"
 #include "config.h"
 
-static std::string write_tmp(const char* text) {
+static std::string write_tmp(const std::string& text) {
   std::string path = "/tmp/maburgs_test_config.json";
   std::ofstream f(path);
   f << text;
@@ -841,4 +841,57 @@ TEST(rcf_repeat_copies_out_of_range_throws) {
     threw = std::string(e.what()).find("rcf_repeat_copies") != std::string::npos;
   }
   CHECK(threw);
+}
+
+// --- link.probe block (spec 2026-09-04 sections 4.2, 5) ---------------------
+TEST(probe_block_defaults) {
+  auto c = maburgs::load_config(write_tmp("{}"));
+  const auto& p = c.link.ladder_cfg.probe;
+  CHECK(p.enable); CHECK(p.rung_offset == 1); CHECK(p.clean_ms == 2000);
+  CHECK(p.max_util == c.link.ladder_cfg.down_util);  // sentinel resolved
+  CHECK(p.min_syms == 40); CHECK(p.silence_ms == 500); CHECK(p.pin_mcs == -1);
+  CHECK(c.link.ladder_cfg.s3_min_syms == 50);
+}
+
+TEST(probe_block_parses_and_bounds) {
+  auto c = maburgs::load_config(write_tmp(
+      "{\"link\": {\"probe\": {\"enable\": false, \"rung_offset\": 2, \"clean_ms\": 1500,"
+      " \"max_util\": 0.4, \"min_syms\": 20, \"silence_ms\": 800, \"pin_mcs\": 5},"
+      " \"s3_min_syms\": 30}}"));
+  const auto& p = c.link.ladder_cfg.probe;
+  CHECK(!p.enable); CHECK(p.rung_offset == 2); CHECK(p.clean_ms == 1500);
+  CHECK(std::abs(p.max_util - 0.4) < 1e-9); CHECK(p.min_syms == 20);
+  CHECK(p.silence_ms == 800); CHECK(p.pin_mcs == 5);
+  CHECK(c.link.ladder_cfg.s3_min_syms == 30);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"probe\": {\"rung_offset\": 0}}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  // link.probe.min_syms is bounded [4, 100000] -- 0 must reject too.
+  threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"probe\": {\"min_syms\": 0}}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(old_flat_probe_keys_fail_boot) {
+  for (const char* k : {"probe_ms", "probe_settle_ms", "probe_max_util",
+                        "probe_s3_min_syms", "probe_s3_silence_ms"}) {
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(std::string("{\"link\": {\"") + k + "\": 1}}")); }
+    catch (const std::exception& e) { threw = std::string(e.what()).find(k) != std::string::npos; }
+    CHECK(threw);
+  }
+}
+
+// Carried from the Task 7 review: s3_min_syms feeds s3_usable()'s
+// h.s3_expected_syms >= s3_min_syms comparison directly -- a non-positive
+// value would silently disable every s3 demote.
+TEST(s3_min_syms_rejects_non_positive) {
+  for (const char* v : {"0", "-5"}) {
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(std::string("{\"link\": {\"s3_min_syms\": ") + v + "}}")); }
+    catch (const std::exception& e) { threw = std::string(e.what()).find("s3_min_syms") != std::string::npos; }
+    CHECK(threw);
+  }
 }
