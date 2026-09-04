@@ -80,6 +80,12 @@ strings (`s3_residual`, `s3_util`) were kept as-is rather than renamed
 (see `gs/src/ctl_log.h`'s ctllog 7 note) — read every s1/s3 mention past
 this point as sid0/sid1. (`s3_residual_confirm_ms` itself is gone, but
 that removal predates this change — see the pooled-RF note below.)
+⚠ SUPERSEDED 2026-09-04: sid1 (ENH) never changes MCS any more. The probe stream (below) carries the
+candidate-MCS canary on its own SBI stream (id 5) now, so "sid1 — still
+the probe/canary layer" is accurate only for recordings dated before
+2026-09-04; from this date sid1 always rides the op MCS and every
+mention of "the enh layer diverting to a candidate rate" in older
+material is historical.
 
 ## RCF slotting into the inter-AU idle (2026-09-03)
 
@@ -116,6 +122,90 @@ reaches the drone up to one AU period later (`link.attrib.close_ms`
 5 → 22 ms). Player `fec` p99 ≥ 20 ms windows: 31/90 → 7/100.
 Sideport counters: `link.rcf_slot.{au,timeout,passthru}`.
 
+## Probe stream (2026-09-04) — current promote gate
+
+Replaces the s3 probe-before-promote design entirely (the 2026-08-05
+paragraphs below are marked superseded). RC_VERSION 5 → 6. Spec
+`docs/superpowers/specs/2026-09-04-probe-stream-design.md`.
+
+**What it is.** The drone appends one extra body — SBI stream id 5
+(`kProbeStreamId`, `common/include/mabur/probe_wire.h`), exactly one
+video-body length (1403 B at the shipped 332/bpb4 geometry,
+`11 + bpb*(2 + kSwHeaderLen + symbol_size)`, derived from the same
+`FecCfg` as video and never independently configured) — after every ENH
+access unit, all the time the link is LINKED. It flies at the profile of
+rung `current + link.probe.rung_offset` (default 1), commanded fresh on
+every RCF (`Rcf::probe_profile`, 0xFF = no probe: disabled, or already
+on the top rung). Every sub-block repeats a 9-byte header (magic, seq,
+profile, `enh_fid`) so a body with one surviving block is still
+attributed rather than booked as `bpb` lost blocks.
+
+**Why the enh tail is safe from the GS uplink blast.** `RcfSlotter`
+releases a control-frame send at an AU completion and it is on air
+≥ `lead_ms` (3 ms) later ("RCF slotting" above); the probe PPDU starts a
+few hundred µs after the last enh body — long before that 3 ms window
+opens. A probe sent at a random time would instead land inside the
+~180 µs uplink blast ~0.35 %/PPDU of the time, exactly the loss the
+slotter exists to remove
+(`docs/gs-uplink-self-blanking-findings-2026-09-02.md`). The slotter
+needs no change for this: its `guard_ms` already covers the < 0.5 ms the
+probe extends the burst by.
+
+**Scoring rule — union across cards, AU count for expected, never seq
+gaps.** `ProbeTrack` (`gs/src/probe_track.h`) books one expectation of
+`bpb` blocks per ENH AU that begins — NOT from probe sequence numbers.
+A wholly-lost probe stream carries its `seq` counter inside the lost
+bodies, so scoring "expected" from arrival-side seq gaps could never
+book an expectation for a 100 %-lost interval; it would read as silence
+(no data, ladder ignores it) instead of loss (data, score it zero) —
+exactly the case this gate exists to catch. Counters (`expected_blocks`,
+`arrived_blocks`, `bodies_rx`) are kept for the COMMANDED profile only,
+plus a single monotonic `off_profile` count for bodies that finalize
+carrying a different profile (the RCF-lag tail, ~20-65 ms after a rung
+change) — those bodies are "not scored", not "lost". `arrived_blocks` is
+the union (OR of survivor bitmaps) across GS radio cards, because that
+is what video gets through the two-card FEC dedup — scoring anything
+else would not predict what a promote actually delivers. Every counter
+is strictly non-decreasing: an off-profile body cancels its OWN enh AU's
+still-pending expectation (keyed by the AU's frame id, the same id the
+probe body carries as `enh_fid`) rather than an "un-book" of an already
+counted total — there is no subtraction path. Per-card cumulative
+counters exist alongside the union purely for the "which card collapsed
+at range" question (flight-0016).
+
+**Gate table (spec §4.4).** Every existing promote condition stays
+(`u < up_util` sustained `clean_ms`, `hold_after_down_ms`,
+`min_between_changes_ms`, next rung exists and unpenalized); the probe
+gate is consulted on top, only once a probe is commanded:
+
+| gate | action |
+|---|---|
+| Clean, streak ≥ `probe.clean_ms` | promote now; probation as today; `++promotes_probed`; reason `promote_probed` |
+| Clean, streak short | wait — the promote lands the tick the streak reaches `clean_ms` |
+| Lossy | **hold**, no penalty (nothing was tried, the probe keeps measuring for free); `++probe_holds` once per hold episode |
+| NoInfo | **hold**, same counter — a commanded-but-absent probe (enh shed, drone not sending) is precisely the blind promote this design exists to prevent |
+
+`promote_probed` vs plain `promote`: the legacy direct promote (reason
+`promote`) survives ONLY when no probe is commanded at all
+(`link.probe.enable: false`, or already on the top rung, which cannot
+promote anyway). Demotes always win and are untouched — there is no
+probe state to abort, since there is no probe state machine any more.
+
+`u_probe` is scored against the CANDIDATE rung's own enh budget
+(`budget_enh_for(idx + 1)`) — the tighter of the base/enh pair under the
+base ≥ enh operator rule — never the current rung's. `RungStore::
+observe_probe()` labels the sample by the PROBED rung, so
+`link.rungs[].probe_u` at rung r means "loss measured at r, scored
+against r's own enh budget" at the default `rung_offset` — with
+`rung_offset > 1` the sample is scored against the budget of
+`r − rung_offset + 1` instead, which is the extra margin the knob buys.
+
+**v2 hook.** The gate state at `rung_offset 1` is a leading indicator
+for demotes but does not drive one yet — the design's §10 keeps
+probe-driven demote explicitly out of scope. `flightreport.py`'s
+probe-lead report (`docs/observability.md`) is the input a v2 threshold
+would be tuned against.
+
 ## Drone congestion shed (2026-09-03)
 
 The GS ladder never consumes drone telemetry (`T_TELEM` is display-only,
@@ -148,7 +238,13 @@ Tuning invariant: the controller's s3 loss/residual
 windows are 500 ms wide, while the post-transition blanking
 (`s3_settle_ms`, default 300) and probe settle (`probe_settle_ms`, 150)
 are shorter — so up to ~200 ms of pre-transition symbols remain in view
-after blanking expires. Shipped defaults are safe (stale weight decays
+after blanking expires. ⚠ SUPERSEDED 2026-09-04 — see "Probe stream"
+above: `probe_settle_ms` and the discrete probe state machine it
+blanked are DELETED (the key now FAILS BOOT); the probe stream is
+always-on and has no settle blackout of its own to tune. The
+`s3_settle_ms` half of this paragraph (the ENH/base rung-transition
+blanking) is UNCHANGED and still governs real rung changes. Shipped
+defaults are safe (stale weight decays
 fast against the 250/500 ms confirm windows), but do NOT lower
 `s3_settle_ms`/`s3_residual_confirm_ms` toward their floors together: a
 rung transition's FEC re-key artifacts could then satisfy the s3-residual
