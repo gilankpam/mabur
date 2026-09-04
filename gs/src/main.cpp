@@ -465,11 +465,20 @@ static int run_radio(const maburgs::Config& cfg) {
   // section 5): maburgs' own compact S/E/P/N record of every rung decision,
   // independent of the stats sideport so the learning dataset survives a
   // dead/absent consumer (2026-08-04: statsrec wasn't running and the
-  // flight jsonl froze hours before the session). static_mcs >= 0 bypasses
-  // the adaptive controller entirely (LinkCfg::static_mcs) -- nothing to
-  // log in that mode.
+  // flight jsonl froze hours before the session).
+  //
+  // Opened whenever link.ctl_log is set, INCLUDING static-pin mode
+  // (static_mcs >= 0). It used to be skipped there -- a pinned link never
+  // ticks the adaptive controller, so there were no rung decisions to
+  // record -- but the probe stream changed that (spec 2026-09-04 section
+  // 8.3 steps 1-2): the pinned bench runs are exactly the ones whose
+  // per-body probe-NNNN.log matters, and ProbeLog takes its NNNN from this
+  // CtlLog so the two files pair up per boot. In pin mode the S lines
+  // describe a controller that is never updated -- u/util read 0, the probe
+  // columns read `-1 nan 0` and the gate stays Off -- and E/P/N/R records
+  // never fire at all; only the probe log's rows carry information there.
   std::optional<maburgs::CtlLog> ctl_log;
-  if (cfg.link.ctl_log && cfg.link.static_mcs < 0) {
+  if (cfg.link.ctl_log) {
     std::string header = "ladder=";
     for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
       const maburgs::Rung& r = cfg.link.ladder_cfg.ladder[i];
