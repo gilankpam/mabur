@@ -12,9 +12,9 @@ void ProbeTrack::set_commanded(uint8_t profile, double /*now_ms*/) {
 }
 uint8_t ProbeTrack::commanded() const { return commanded_; }
 
-void ProbeTrack::on_enh_au(double now_ms) {
+void ProbeTrack::on_enh_au(uint16_t enh_fid, double now_ms) {
   if (commanded_ == 0xFF) return;
-  au_pending_.push_back(now_ms);
+  au_pending_.push_back(PendingAu{enh_fid, now_ms, true});
 }
 
 void ProbeTrack::on_body(int card, const mabur::probe::ProbeRx& rx, double snr_db,
@@ -22,7 +22,8 @@ void ProbeTrack::on_body(int card, const mabur::probe::ProbeRx& rx, double snr_d
   if (card < 0 || card >= 8) return;
   auto it = std::find_if(ring_.begin(), ring_.end(),
                           [&](const Pending& p) { return p.seq == rx.hdr.seq; });
-  if (it == ring_.end()) {
+  const bool first_sight = (it == ring_.end());
+  if (first_sight) {
     Pending p;
     p.seq = rx.hdr.seq;
     p.profile = rx.hdr.profile;
@@ -48,31 +49,32 @@ void ProbeTrack::on_body(int card, const mabur::probe::ProbeRx& rx, double snr_d
   it->card_mask |= 1u << card;
   it->snr[c] = snr_db;
   it->evm[c] = evm_db;
+
+  if (first_sight && rx.hdr.profile != commanded_) {
+    // Cancel the AU that carried this body instead of unbooking a total
+    // that may already have been sampled downstream (see header comment
+    // for why counters must never step backwards). Counted once per seq,
+    // on the first sight only, regardless of how many cards see it.
+    ++off_profile_;
+    auto au = std::find_if(au_pending_.begin(), au_pending_.end(),
+                            [&](const PendingAu& a) { return a.enh_fid == rx.hdr.enh_fid; });
+    if (au != au_pending_.end()) au->scored = false;
+  }
 }
 
-void ProbeTrack::finalize_au() {
+void ProbeTrack::finalize_au(const PendingAu& au) {
+  if (!au.scored) return;  // cancelled by an off-profile body for this fid
   union_.expected_blocks += static_cast<uint64_t>(cfg_.bpb);
   for (int c = 0; c < cfg_.max_cards && c < 8; ++c)
     cards_[static_cast<size_t>(c)].expected_blocks += static_cast<uint64_t>(cfg_.bpb);
 }
 
 void ProbeTrack::finalize_body(Pending& p, double now_ms) {
-  const uint64_t bpb = static_cast<uint64_t>(cfg_.bpb);
   if (p.profile != commanded_) {
-    // The AU that carried this body was booked as an expectation before
-    // its profile was known (on_enh_au fires ahead of the probe body
-    // landing), but a probe sent at a stale/candidate profile isn't a
-    // sample of the commanded profile's loss -- un-book it rather than
-    // score it as either a hit or a miss. Saturate at arrived_blocks so
-    // a burst of off-profile bodies can never push expected below what
-    // has already been credited as arrived.
-    ++off_profile_;
-    auto unbook = [&](ProbeCounts& c) {
-      c.expected_blocks =
-          c.expected_blocks >= c.arrived_blocks + bpb ? c.expected_blocks - bpb : c.arrived_blocks;
-    };
-    unbook(union_);
-    for (int c = 0; c < cfg_.max_cards && c < 8; ++c) unbook(cards_[static_cast<size_t>(c)]);
+    // off_profile_ was already incremented, and this body's AU already
+    // cancelled (if it was still pending), on first sight in on_body.
+    // Nothing left to do -- and nothing is unbooked here, so the
+    // counters can only go forward.
     return;
   }
   union_.arrived_blocks += static_cast<uint64_t>(__builtin_popcount(p.bitmap));
@@ -97,9 +99,10 @@ void ProbeTrack::finalize_body(Pending& p, double now_ms) {
 }
 
 void ProbeTrack::tick(double now_ms) {
-  while (!au_pending_.empty() && now_ms - au_pending_.front() >= cfg_.finalize_ms) {
+  while (!au_pending_.empty() && now_ms - au_pending_.front().t_ms >= cfg_.finalize_ms) {
+    PendingAu au = au_pending_.front();
     au_pending_.pop_front();
-    finalize_au();
+    finalize_au(au);
   }
   while (!ring_.empty() && now_ms - ring_.front().first_ms >= cfg_.finalize_ms) {
     finalize_body(ring_.front(), now_ms);

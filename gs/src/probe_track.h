@@ -20,6 +20,24 @@
 // way -- per-card counters exist alongside the union for diagnostics
 // (which card is dragging), not as the number the ladder consumes.
 //
+// Counters are strictly non-decreasing (never unbooked, never reset) so
+// a downstream consumer that diffs successive samples (e.g. the ladder's
+// S1LossWindow) can treat any backward step as "the counter wrapped/reset"
+// without ProbeTrack itself ever producing a false one. A body that
+// finalizes at a profile other than the commanded one is therefore never
+// allowed to subtract from `expected_blocks` after the fact. Instead,
+// AU expectations are keyed by the enh AU's frame id (the same id the
+// probe body carries as `ProbeRx::hdr.enh_fid`): the FIRST sight of an
+// off-profile body cancels its own AU's still-pending expectation (marks
+// it unscored) rather than decrementing a total that may already have
+// been sampled. A body arrives well within the AU's own finalize_ms
+// window in the normal case (bodies land <30 ms after their AU begins;
+// the AU finalizes at +100 ms), so the AU is essentially always still
+// pending when its body's profile is checked. A body that somehow lands
+// late enough to miss its own AU's window books `bpb` of phantom loss
+// instead -- bounded to the profile-switch window and considered an
+// acceptable, documented cost of keeping the counters monotonic.
+//
 // Both an AU expectation and a received body sit in a small pending
 // window for `finalize_ms` before they count, so that a body's later
 // arrival on the second card (or a duplicate) can still fold into the
@@ -33,6 +51,7 @@
 // Single-threaded (core loop). Time is the core loop's mono ms; tick()
 // must be called once per iteration to advance finalization.
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <vector>
@@ -46,10 +65,11 @@ struct ProbeTrackCfg {
   int max_cards = 2;
 };
 
-// Cumulative, monotonic counters. Never reset -- callers diff between
-// samples (the ladder's loss windows, ProbeLog rows).
+// Cumulative, strictly non-decreasing counters. Never reset, never
+// unbooked -- callers diff between samples (the ladder's loss windows,
+// ProbeLog rows) and may treat any backward step as a counter reset.
 struct ProbeCounts {
-  uint64_t expected_blocks = 0;  // bpb x finalized enh AUs (while commanded)
+  uint64_t expected_blocks = 0;  // bpb x finalized, scored enh AUs (while commanded)
   uint64_t arrived_blocks = 0;   // survivors at the commanded profile
   uint64_t bodies_rx = 0;        // finalized bodies at the commanded profile
 };
@@ -62,8 +82,11 @@ struct ProbeFinalized {
   uint16_t enh_fid = 0;
   int blocks_ok = 0;
   uint32_t card_mask = 0;    // bit c set = card c saw at least one survivor
-  double snr_db[8];          // this body's per-card label; NaN where unheard
-  double evm_db[8];
+  // This body's per-card label; NaN where the card heard nothing. Default
+  // members so a struct built without looping over every card still reads
+  // as "unheard" rather than zero (a real EVM/SNR value).
+  double snr_db[8] = {NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN};
+  double evm_db[8] = {NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN};
 };
 
 class ProbeTrack {
@@ -76,16 +99,19 @@ class ProbeTrack {
   void set_commanded(uint8_t profile, double now_ms);
   uint8_t commanded() const;
 
-  // The core loop saw one enh AU begin. Books an expectation of `bpb`
-  // blocks, finalized `finalize_ms` later. No-op while commanded() ==
-  // 0xFF.
-  void on_enh_au(double now_ms);
+  // The core loop saw one enh AU begin, identified by its frame id (the
+  // same id probe bodies for it carry as ProbeRx::hdr.enh_fid). Books an
+  // expectation of `bpb` blocks, finalized `finalize_ms` later unless an
+  // off-profile body for this fid cancels it first. No-op while
+  // commanded() == 0xFF.
+  void on_enh_au(uint16_t enh_fid, double now_ms);
 
   // A parsed probe body arrived on `card`. snr_db/evm_db are this card's
   // RF labels for the body (NaN if unavailable). Bodies are keyed by
   // seq: the first sight opens a ring entry that later sights (the other
   // card, a duplicate) OR their bitmaps into, finalized `finalize_ms`
-  // after first sight.
+  // after first sight. The first sight of a body at a non-commanded
+  // profile also cancels its AU's expectation (see header comment).
   void on_body(int card, const mabur::probe::ProbeRx& rx, double snr_db,
                double evm_db, double now_ms);
 
@@ -110,14 +136,19 @@ class ProbeTrack {
     std::array<uint32_t, 8> card_bits{};
     std::array<double, 8> snr{}, evm{};
   };
+  struct PendingAu {
+    uint16_t enh_fid;
+    double t_ms;
+    bool scored = true;  // false = an off-profile body already cancelled this AU
+  };
 
   void finalize_body(Pending& p, double now_ms);
-  void finalize_au();
+  void finalize_au(const PendingAu& au);
 
   ProbeTrackCfg cfg_;
   uint8_t commanded_ = 0xFF;
   std::deque<Pending> ring_;
-  std::deque<double> au_pending_;
+  std::deque<PendingAu> au_pending_;
   ProbeCounts union_;
   std::array<ProbeCounts, 8> cards_{};
   uint64_t off_profile_ = 0;
