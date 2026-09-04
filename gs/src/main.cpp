@@ -977,7 +977,7 @@ static int run_radio(const maburgs::Config& cfg) {
       for (const auto& f : probe_track.take_finalized())
         probe_log->row(f.t_ms, f.seq, f.profile & 0x0F, f.enh_fid, f.blocks_ok,
                        f.card_mask, f.snr_db[0], f.snr_db[1], f.evm_db[0],
-                       f.evm_db[1]);
+                       f.evm_db[1], f.first_ms);
     else
       probe_track.take_finalized();
 

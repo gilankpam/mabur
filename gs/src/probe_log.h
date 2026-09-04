@@ -19,9 +19,12 @@ namespace maburgs {
 // Record format is LOCKED (tests/test_probe_log.cpp depends on the exact
 // byte layout):
 //
-//   probelog 1 bpb=<bpb>                                     # once, first line
+//   probelog 2 bpb=<bpb>                                     # once, first line
 //   <t_ms> <seq> <mcs> <enh_fid> <blocks_ok> <card_mask> <snr0> <snr1>
-//     <evm0> <evm1>                                          # one row per finalized body
+//     <evm0> <evm1> <first_ms>                               # one row per finalized body
+//
+// probelog 1 (2026-09-04, one day) had no first_ms column; everything
+// else is identical, and flightreport.py reads both.
 //
 // bpb (blocks-per-body) is the probe stream's block count, echoed in the
 // header so a row's blocks_ok is self-describing without cross-referencing
@@ -34,6 +37,11 @@ namespace maburgs {
 // snr0/snr1/evm0/evm1 are the per-card RF labels sampled for this body;
 // nan (via %.1f -> "nan") when that card had no reading this row -- an
 // unplugged/dead second card is a normal steady-state condition, not a bug.
+// first_ms is the radio's arrival stamp of the body's first sight on any
+// card, mono ms printed to 3 decimals (µs resolution) -- t_ms is the
+// finalize tick, ~10 ms coarse, and first_ms is what joins against
+// au-NNNN.log's t_complete (mono µs, same clock) to measure how far after
+// an enh AU's completion the probe, i.e. the end of the burst, lands.
 //
 // Every failure mode (dir missing/unwritable, fopen failure, ...) is
 // non-fatal: ok() reads false, the constructor prints the reason to
@@ -52,7 +60,7 @@ class ProbeLog {
 
   void row(double t_ms, uint32_t seq, int mcs, uint16_t enh_fid,
            int blocks_ok, uint32_t card_mask, double snr0, double snr1,
-           double evm0, double evm1);
+           double evm0, double evm1, double first_ms);
 
  private:
   std::FILE* f_ = nullptr;

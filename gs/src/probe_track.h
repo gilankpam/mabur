@@ -93,7 +93,13 @@ struct ProbeCounts {
 // its own `profile`); only the ProbeCounts booking above is gated to the
 // commanded profile.
 struct ProbeFinalized {
-  double t_ms = 0;
+  double t_ms = 0;      // finalize time: core-loop tick, ~10 ms granularity
+  // Radio arrival stamp of the FIRST sight on any card (mono ms with µs
+  // fraction -- the same CLOCK_MONOTONIC the AU ring's t_complete_us is
+  // on). This is the "burst is off air" instant the probe exists to mark;
+  // t_ms is two orders of magnitude too coarse for the completion->probe
+  // offset (handover-probe-blanking 2026-09-04, "Instrumentation gap").
+  double first_ms = 0;
   uint32_t seq = 0;
   uint8_t profile = 0;
   uint16_t enh_fid = 0;

@@ -33,7 +33,7 @@ ProbeLog::ProbeLog(const std::string& dir, int index, int bpb) {
   }
   // Line-buffered: a power cut loses at most the current row.
   std::setvbuf(f_, nullptr, _IOLBF, 0);
-  std::fprintf(f_, "probelog 1 bpb=%d\n", bpb);
+  std::fprintf(f_, "probelog 2 bpb=%d\n", bpb);
 }
 
 ProbeLog::~ProbeLog() {
@@ -42,10 +42,11 @@ ProbeLog::~ProbeLog() {
 
 void ProbeLog::row(double t_ms, uint32_t seq, int mcs, uint16_t enh_fid,
                     int blocks_ok, uint32_t card_mask, double snr0,
-                    double snr1, double evm0, double evm1) {
+                    double snr1, double evm0, double evm1, double first_ms) {
   if (!f_) return;
-  std::fprintf(f_, "%.0f %u %d %u %d %u %.1f %.1f %.1f %.1f\n", t_ms, seq,
-               mcs, enh_fid, blocks_ok, card_mask, snr0, snr1, evm0, evm1);
+  std::fprintf(f_, "%.0f %u %d %u %d %u %.1f %.1f %.1f %.1f %.3f\n", t_ms,
+               seq, mcs, enh_fid, blocks_ok, card_mask, snr0, snr1, evm0,
+               evm1, first_ms);
 }
 
 }  // namespace maburgs

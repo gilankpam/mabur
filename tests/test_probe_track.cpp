@@ -39,6 +39,22 @@ TEST(union_is_or_of_card_bitmaps_and_expected_comes_from_au_count) {
   CHECK(t.take_finalized().empty());
 }
 
+TEST(finalized_row_carries_first_sight_arrival_not_finalize_time) {
+  auto t = make();
+  t.set_commanded(0x06, 0);
+  t.on_enh_au(1, 0);
+  // Card 1 hears it first at 25.375 ms (radio stamp, µs resolution), card
+  // 0 at 27.0; the row must carry the FIRST sight on ANY card, untouched
+  // by the second sight and by the finalize tick (~10 ms granularity).
+  t.on_body(1, rx(1, 0x06, 0b1111), 30.0, -24.0, 25.375);
+  t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 27.0);
+  t.tick(140);
+  auto fin = t.take_finalized();
+  REQUIRE(fin.size() == 1);
+  CHECK(std::fabs(fin[0].first_ms - 25.375) < 1e-9);
+  CHECK(std::fabs(fin[0].t_ms - 140.0) < 1e-9);
+}
+
 TEST(delivered_body_finalizes_with_its_au) {
   auto t = make();
   t.set_commanded(0x06, 0);

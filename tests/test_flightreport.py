@@ -724,6 +724,39 @@ class CtlLog10Test(unittest.TestCase):
         self.assertEqual(summ[6]["bodies"], 2)
         self.assertEqual(summ[6]["lost_bodies"], 1)   # seq 11 missing
         self.assertEqual(summ[6]["blocks_ok"], 6)
+        self.assertIsNone(rows["rows"][0]["first_ms"])   # v1: no arrival stamp
+
+    def test_probelog_v2_first_ms_and_au_offsets(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "probe-0003_20260904.log")
+        with open(p, "w") as f:
+            f.write("probelog 2 bpb=4\n"
+                    "1130 10 4 5 4 3 30.5 28.0 -24.0 -22.0 1024.500\n"
+                    "1160 11 4 6 4 3 30.0 28.0 -23.0 -22.0 1058.250\n"
+                    "1190 12 4 7 4 3 30.0 28.0 -23.0 -22.0 1091.000\n")
+        pl = flightreport.load_probelog(p)
+        self.assertAlmostEqual(pl["rows"][0]["first_ms"], 1024.5)
+        # au-NNNN.log v2 rows: t_us pts sid fid len flags nal0 t_first
+        # t_complete enc dq -- t_complete is mono us, same clock as first_ms.
+        os.makedirs(os.path.join(d, "log"))
+        a = os.path.join(d, "log", "au-0007.log")
+        with open(a, "w") as f:
+            f.write("# aulog 2\n"
+                    "1 0 0 5 100 0x80 1 1010000 1015000 0 0\n"   # base fid 5: ignored
+                    "2 0 1 5 100 0x80 1 1012000 1020000 0 0\n"   # enh fid 5: +4.5 ms
+                    "3 0 1 6 100 0x80 1 1045000 1050000 0 0\n"   # enh fid 6: +8.25 ms
+                    "4 0 1 99 100 0x80 1 1080000 1085000 0 0\n") # no probe row
+        au = flightreport.load_aulog(a)
+        offs = flightreport.probe_au_offsets(pl, au)
+        self.assertEqual(sorted(offs), [4.5, 8.25])
+        # Auto-location: the au log lives in <dir>/log/ under flightrec's own
+        # index, so the match is by mono-time overlap, not by NNNN.
+        self.assertEqual(flightreport.find_aulog_for(p, pl), a)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_probe_report({"E": [], "P": []}, pl, au)
+        self.assertIn("completion->probe", buf.getvalue())
+        self.assertIn("n=2", buf.getvalue())
 
 
 if __name__ == "__main__":

@@ -109,6 +109,7 @@ void ProbeTrack::finalize_body(Pending& p, double now_ms) {
   // body instead of a commanded-profile mismatch.
   ProbeFinalized f;
   f.t_ms = now_ms;
+  f.first_ms = p.first_ms;
   f.seq = p.seq;
   f.profile = p.profile;
   f.enh_fid = p.enh_fid;
