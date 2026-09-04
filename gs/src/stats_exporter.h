@@ -24,8 +24,8 @@ struct StatsClassIn {  // copied from ClassTrack (gs/src/aggregator.h)
   bool evm_has = false, evm_a_has = false, evm_b_has = false;
 };
 
-// Class index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.
-constexpr int kNumStatsClasses = 6;
+// Class index order matches RfClass in gs/src/aggregator.h: s0,s1,probe,msp,ctrl.
+constexpr int kNumStatsClasses = 5;
 
 struct StatsCardIn {
   bool up = false;

@@ -236,7 +236,9 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       class_idx = static_cast<int>(RfClass::Ctrl);
     } else if (stream_id == mabur::kMspStreamId) {
       class_idx = static_cast<int>(RfClass::Msp);
-    } else if (stream_id >= 0 && stream_id < 4) {
+    } else if (stream_id == mabur::kProbeStreamId) {
+      class_idx = static_cast<int>(RfClass::Probe);
+    } else if (stream_id >= 0 && stream_id < 2) {
       class_idx = stream_id;
     }
     if (class_idx >= 0) {
@@ -267,6 +269,12 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   }
   if (stream_id == mabur::kMspStreamId) {
     if (msp_sink_) msp_sink_(m.body.data(), m.body.size(), m.mono_us);
+    return;
+  }
+  if (stream_id == mabur::kProbeStreamId) {
+    // Probe stream (spec 2026-09-04): scored by ProbeTrack, never decoded.
+    // A corrupt probe has no trustworthy sub-blocks: crc_ok-gated.
+    if (m.crc_ok && probe_sink_) probe_sink_(m.card_id, m);
     return;
   }
   ++c.video_bodies;

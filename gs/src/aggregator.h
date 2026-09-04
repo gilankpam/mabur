@@ -12,11 +12,12 @@
 
 namespace maburgs {
 
-// RF traffic class: stream_id 0..3 map to S0..S3 (video sub-streams), Msp is
-// the OSD sideband, Ctrl is RC-magic frames that aren't GS-self-originated
-// (e.g. DISC_ACK). Indexes CardTrack::cls[].
-enum class RfClass { S0 = 0, S1, S2, S3, Msp, Ctrl };
-constexpr int kNumRfClasses = 6;
+// RF traffic class: stream_id 0..1 map to S0/S1 (video BASE/ENH), Probe is
+// the stream-5 canary (spec 2026-09-04), Msp the OSD sideband, Ctrl RC-magic
+// frames that aren't GS-self-originated (e.g. DISC_ACK). Indexes
+// CardTrack::cls[]. S2/S3 were deleted with the 4->2 stream collapse.
+enum class RfClass { S0 = 0, S1, Probe, Msp, Ctrl };
+constexpr int kNumRfClasses = 5;
 
 // Per-class signal track, same shape/semantics as the pooled EMAs below but
 // scoped to one RfClass — lets the stats sideport (Task 3/4) report signal
@@ -102,6 +103,8 @@ class Aggregator {
                                     uint64_t mono_us)>;
   using MspSink = std::function<void(const uint8_t* body, size_t len,
                                      uint64_t mono_us)>;
+  using ProbeSink = std::function<void(uint8_t card_id,
+                                       const mabur::node::RxBody& m)>;
 
   Aggregator(const std::array<mabur::UepLayerCfg, 2>& layers,
              uint32_t seq_horizon, int n_cards);
@@ -109,6 +112,7 @@ class Aggregator {
   void set_frag_sink(FragSink s) { frag_sink_ = std::move(s); }
   void set_rc_sink(RcSink s) { rc_sink_ = std::move(s); }
   void set_msp_sink(MspSink s) { msp_sink_ = std::move(s); }
+  void set_probe_sink(ProbeSink s) { probe_sink_ = std::move(s); }
 
   void on_rx_body(const mabur::node::RxBody& m);
 
@@ -134,6 +138,7 @@ class Aggregator {
   FragSink frag_sink_;
   RcSink rc_sink_;
   MspSink msp_sink_;
+  ProbeSink probe_sink_;
   uint16_t last_video_seq_ = 0;
   uint64_t last_video_us_ = 0;
   uint64_t bad_card_msgs_ = 0;

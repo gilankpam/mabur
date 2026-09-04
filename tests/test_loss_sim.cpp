@@ -97,9 +97,19 @@ TEST(loss_one_drops_everything) {
 TEST(out_of_range_ids_never_drop) {
   LossSim s;
   s.configure(3, 1.0, 1.0);
-  CHECK(!s.should_drop(0, 4));            // MSP stream id
+  CHECK(!s.should_drop(0, 6));            // past kStreams (0..5 valid)
   CHECK(!s.should_drop(0, -1));
   CHECK(!s.should_drop(LossSim::kMaxCards, 3));
+}
+
+// sid 5 is the probe stream (spec 2026-09-04): configurable and dropped
+// like any other stream, unlike sids past kStreams which are ignored.
+TEST(probe_stream_sid5_is_configurable) {
+  LossSim s;
+  s.configure(5, 1.0, 1.0);
+  CHECK(s.enabled());
+  for (int i = 0; i < 10; ++i) CHECK(s.should_drop(0, 5));
+  CHECK(!s.should_drop(0, 1));
 }
 
 TEST(clamps_out_of_range_config) {
@@ -316,7 +326,10 @@ TEST(control_parses_commands) {
         "ok ncards=2 s0[percard=0.00 eff=0.000 burst=1.0] "
         "s1[percard=0.00 eff=0.000 burst=1.0] "
         "s2[percard=0.00 eff=0.000 burst=1.0] "
-        "s3[percard=0.00 eff=0.000 burst=1.0] drops=0,0,0,0 note=eff-nominal");
+        "s3[percard=0.00 eff=0.000 burst=1.0] "
+        "s4[percard=0.00 eff=0.000 burst=1.0] "
+        "s5[percard=0.00 eff=0.000 burst=1.0] "
+        "drops=0,0,0,0,0,0 note=eff-nominal");
 }
 
 // FINDING 1: `loss=` keeps meaning PER-CARD, unchanged. On 2 cards a dialled
@@ -463,7 +476,10 @@ TEST(control_status_full_reply_pinned) {
         "ok ncards=2 s0[percard=0.00 eff=0.000 burst=1.0] "
         "s1[percard=100.00 eff=100.000 burst=1.0] "
         "s2[percard=20.00 eff=4.000 burst=2.0] "
-        "s3[percard=8.00 eff=0.640 burst=3.0] drops=0,5,0,0 note=eff-nominal");
+        "s3[percard=8.00 eff=0.640 burst=3.0] "
+        "s4[percard=0.00 eff=0.000 burst=1.0] "
+        "s5[percard=0.00 eff=0.000 burst=1.0] "
+        "drops=0,5,0,0,0,0 note=eff-nominal");
 }
 
 // Fix round 1, IMPORTANT 2: loss=80/burst=3 is infeasible (80% exceeds the
@@ -486,7 +502,10 @@ TEST(control_reports_effective_burst_on_saturation) {
         "ok ncards=2 s0[percard=0.00 eff=0.000 burst=1.0] "
         "s1[percard=0.00 eff=0.000 burst=1.0] "
         "s2[percard=0.00 eff=0.000 burst=1.0] "
-        "s3[percard=80.00 eff=64.000 burst=4.0] drops=0,0,0,0 "
+        "s3[percard=80.00 eff=64.000 burst=4.0] "
+        "s4[percard=0.00 eff=0.000 burst=1.0] "
+        "s5[percard=0.00 eff=0.000 burst=1.0] "
+        "drops=0,0,0,0,0,0 "
         "note=eff-nominal");
 }
 

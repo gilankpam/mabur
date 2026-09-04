@@ -35,8 +35,8 @@ json snr_or_null(double snr_db) {
   return std::isnan(snr_db) ? json(nullptr) : json(snr_db);
 }
 
-// Index order matches RfClass in gs/src/aggregator.h: s0,s1,s2,s3,msp,ctrl.
-constexpr const char* kClassKeys[kNumStatsClasses] = {"s0", "s1", "s2", "s3", "msp", "ctrl"};
+// Index order matches RfClass in gs/src/aggregator.h: s0,s1,probe,msp,ctrl.
+constexpr const char* kClassKeys[kNumStatsClasses] = {"s0", "s1", "probe", "msp", "ctrl"};
 
 constexpr const char* kTelemStateNames[4] = {"boot", "rendezvous", "linked", "failsafe"};
 }  // namespace

@@ -658,15 +658,18 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned>(m.body[2]),
                      static_cast<unsigned>(mabur::rc::RC_VERSION));
       }
-      // Exclude RC frames AND MSP frames (SBI stream_id == kMspStreamId),
-      // mirroring Task 6's aggregator routing: only real video may refresh
-      // the rendezvous video-silence timer, or a link carrying nothing but
-      // MSP telemetry would never fall back to BEACONING. This keeps MSP
-      // traffic invisible to the adaptive-link controller end-to-end.
+      // Exclude RC frames, MSP frames (SBI stream_id == kMspStreamId) AND
+      // probe frames (stream_id == kProbeStreamId), mirroring the
+      // aggregator's routing: only real video may refresh the rendezvous
+      // video-silence timer, or a link carrying nothing but MSP telemetry
+      // or probe canaries would never fall back to BEACONING. This keeps
+      // MSP and probe traffic invisible to the adaptive-link controller
+      // end-to-end.
+      const int sid_peek =
+          mabur::sbi_peek_stream_id(m.body.data(), m.body.size());
       if (m.crc_ok &&
           mabur::rc::frame_type(m.body.data(), m.body.size()) < 0 &&
-          mabur::sbi_peek_stream_id(m.body.data(), m.body.size()) !=
-              mabur::kMspStreamId) {
+          sid_peek != mabur::kMspStreamId && sid_peek != mabur::kProbeStreamId) {
         vrx.on_video(static_cast<double>(m.mono_us) / 1000.0);
       }
     }
@@ -1046,11 +1049,13 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(fstream.stall_resets()));
 #ifdef MABUR_LOSS_SIM
       if (agg.loss_sim().enabled())
-        std::fprintf(stderr, " LOSS-SIM[s0/s1/s2/s3]=%llu/%llu/%llu/%llu",
+        std::fprintf(stderr, " LOSS-SIM[s0/s1/s2/s3/s4/s5]=%llu/%llu/%llu/%llu/%llu/%llu",
                      static_cast<unsigned long long>(agg.loss_sim().dropped(0)),
                      static_cast<unsigned long long>(agg.loss_sim().dropped(1)),
                      static_cast<unsigned long long>(agg.loss_sim().dropped(2)),
-                     static_cast<unsigned long long>(agg.loss_sim().dropped(3)));
+                     static_cast<unsigned long long>(agg.loss_sim().dropped(3)),
+                     static_cast<unsigned long long>(agg.loss_sim().dropped(4)),
+                     static_cast<unsigned long long>(agg.loss_sim().dropped(5)));
 #endif
       std::fprintf(stderr, "\n");
     }

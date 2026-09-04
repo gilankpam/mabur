@@ -51,17 +51,19 @@ RADIO_COLS = [("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6), ("rssiB", 6),
 # order; "ctrl" gets the short display label "ctl" (cls column is 4 wide,
 # compact renderer only).
 # 2-stream video (2026-08-29 airtime-balance-uep): s0 = BASE (mirrors the
-# ladder rung's mcs-1), s1 = ENH (canary attribution). s2/s3 are gone from
+# ladder rung's mcs-1), s1 = ENH (canary attribution). probe is the
+# stream-5 candidate-mcs canary (spec 2026-09-04). s2/s3 are gone from
 # the wire — class_seen_ never lights them up GS-side — but the string
 # space stays sparse-safe: an unrecognized class key from an old recording
 # would just never match here, not crash.
-CLASS_ORDER = ["s0", "s1", "msp", "ctrl"]
+CLASS_ORDER = ["s0", "s1", "probe", "msp", "ctrl"]
 CLASS_LABELS = {"ctrl": "ctl"}
 
 # Wide-mode LINKS panel block labels.
 LINK_CLASS_LABELS = {
     "s0": "s0 · video BASE",
     "s1": "s1 · video ENH",
+    "probe": "probe · canary",
     "msp": "msp · osd",
     "ctrl": "ctl · control",
 }
@@ -370,6 +372,8 @@ def render_rows_compact(model, wall, width):
             rows.append(_dec_line(label, model.strm_rows[sid], dlv))
         elif cls == "msp":
             rows.append(f"{label:<{LABEL_W}} (osd side-channel — no fec decode)")
+        elif cls == "probe":
+            rows.append(f"{label:<{LABEL_W}} (candidate-mcs canary — no fec decode)")
         elif cls == "ctrl":
             rows.append(f"{label:<{LABEL_W}} (control — rendezvous + 1 Hz telemetry)")
         else:
@@ -944,6 +948,8 @@ def _build_block(model, wall, d, link, cls):
         rows.append((dec_text, dec_spans))
     elif cls == "msp":
         rows.append((_annotation_line(label, "(no fec decode — repairs in MspSink)"), []))
+    elif cls == "probe":
+        rows.append((_annotation_line(label, "(candidate-mcs canary — no fec decode)"), []))
     elif cls == "ctrl":
         rows.append((_annotation_line(label, "(control — rendezvous + 1 Hz telemetry)"), []))
     else:

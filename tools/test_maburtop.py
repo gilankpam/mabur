@@ -56,6 +56,8 @@ DGRAM = {
          "classes": {
              "s1": {"pps": 890.0, "mbps": 14.2, "rssi": -50.1, "rssi_a": -50.9, "rssi_b": -52.3,
                     "snr": 27.1, "snr_a": 26.0, "snr_b": 24.5},
+             "probe": {"pps": 890.0, "mbps": 14.2, "rssi": -50.1, "rssi_a": -50.9, "rssi_b": -52.3,
+                       "snr": 27.1, "snr_a": 26.0, "snr_b": 24.5},
              "msp": {"pps": 8.0, "mbps": 0.084, "rssi": -49.0, "rssi_a": -50.0,
                      "rssi_b": -49.0, "snr": 67.0, "snr_a": 66.9, "snr_b": 66.1},
              "ctrl": {"pps": 1.0, "mbps": 0.004, "rssi": -47.2, "rssi_a": -47.9, "rssi_b": -49.0,
@@ -291,10 +293,11 @@ class LinksPanelTest(unittest.TestCase):
         rows = panel_links(_fresh(), 100.2)
         txt = texts(rows)
         idx = {}
-        for label in ("s0 ·", "s1 ·", "msp ·", "ctl ·"):
+        for label in ("s0 ·", "s1 ·", "probe ·", "msp ·", "ctl ·"):
             idx[label] = next(i for i, t in enumerate(txt) if t.strip().startswith(label))
         self.assertLess(idx["s0 ·"], idx["s1 ·"])
-        self.assertLess(idx["s1 ·"], idx["msp ·"])
+        self.assertLess(idx["s1 ·"], idx["probe ·"])
+        self.assertLess(idx["probe ·"], idx["msp ·"])
         self.assertLess(idx["msp ·"], idx["ctl ·"])
 
     def test_tx_decode_radio_row_content(self):
@@ -314,6 +317,15 @@ class LinksPanelTest(unittest.TestCase):
         ctl_block = self._block(rows, "ctl ·")
         self.assertIn("rendezvous", ctl_block[0][0])
         self.assertTrue(any(t.strip().startswith("radio") for t, _ in ctl_block))
+
+    def test_probe_block_annotation_and_content(self):
+        rows = panel_links(_fresh(), 100.2)
+        txt = "\n".join(texts(rows))
+        self.assertIn("probe", txt)
+        probe_block = self._block(rows, "probe ·")
+        self.assertIn("canary", probe_block[0][0])
+        self.assertIn("no fec decode", probe_block[0][0])
+        self.assertTrue(any(t.strip().startswith("radio") for t, _ in probe_block))
 
     def test_sticky_block_survives_class_disappearance_and_dims(self):
         # Dormancy has a CLASS_DORMANT_S memory: a class that was active

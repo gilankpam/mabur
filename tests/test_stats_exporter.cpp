@@ -31,9 +31,9 @@ StatsInput base_input() {
   c.classes[1].snr_ema = 27.1; c.classes[1].snr_a_ema = 26.0; c.classes[1].snr_b_ema = 24.5;
   c.classes[1].evm_has = true; c.classes[1].evm_a_has = true; c.classes[1].evm_b_has = true;
   c.classes[1].evm_ema = -48.0; c.classes[1].evm_a_ema = -48.0; c.classes[1].evm_b_ema = -44.2;
-  c.classes[5].frames = 10; c.classes[5].has_ema = true;  // ctrl
-  c.classes[5].rssi_ema = 62.8;
-  c.classes[5].snr_ema = 25.0;
+  c.classes[4].frames = 10; c.classes[4].has_ema = true;  // ctrl
+  c.classes[4].rssi_ema = 62.8;
+  c.classes[4].snr_ema = 25.0;
   c.tx_fail = 2;
   in.cards.push_back(c);
   in.streams[0].bodies = 500;

@@ -56,7 +56,9 @@ namespace maburgs {
 // Not thread-safe: lives in Aggregator, which is core-thread-only by contract.
 class LossSim {
  public:
-  static constexpr int kStreams = 4;
+  // sids 0..5: 0/1 are the video BASE/ENH streams, 2/3 are unused since the
+  // 4->2 stream collapse, 4 is MSP, 5 is the probe canary (spec 2026-09-04).
+  static constexpr int kStreams = 6;
   static constexpr int kMaxCards = 8;
 
   // loss clamps to [0, 1]; burst clamps to >= 1. Out-of-range sid is ignored.
