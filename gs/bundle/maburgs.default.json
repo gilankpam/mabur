@@ -35,6 +35,14 @@
     "min_between_changes_ms": 150,
     "starved_confirm_ms": 300,
     "feedback_timeout_ms": 1000,
+    "probe": {
+      "enable": true,
+      "rung_offset": 1,
+      "clean_ms": 2000,
+      "min_syms": 40,
+      "silence_ms": 500,
+      "pin_mcs": -1
+    },
     "ctl_log": false
   },
   "msp": {
