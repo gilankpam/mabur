@@ -165,7 +165,11 @@ Consume the same numbers programmatically with:
   <card_mask> <snr_c0> <snr_c1> <evm_c0> <evm_c1>` per row — `blocks_ok` is
   the union of surviving blocks, `card_mask` the bitmask of cards that
   delivered any block, snr/evm per-card in dB (`nan` when that card heard
-  nothing this row). A wholly-lost probe body has no row; `flightreport.py`
+  nothing this row). A row is written for EVERY finalized body, on- or
+  off-profile: `mcs` is that body's OWN profile, not the commanded one, so
+  an RCF-lag body (arrives just after a profile switch, before the drone
+  has caught up) still logs a row at its stale mcs instead of vanishing. A
+  wholly-lost probe body is the only case with no row; `flightreport.py`
   derives it from `seq` gaps and the enh AU count and joins rows to
   `au-NNNN.log` on `enh_fid`. Never fatal, like the ctl log.
 

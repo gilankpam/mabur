@@ -70,6 +70,19 @@ TEST(off_profile_body_without_a_pending_au_books_nothing) {
   CHECK(t.union_counts().bodies_rx == 0);
 }
 
+TEST(off_profile_body_still_logs_a_finalized_row) {
+  auto t = make();
+  t.set_commanded(0x06, 0);
+  t.on_body(0, rx(1, 0x05, 0b1111), 30.0, -24.0, 5);  // off-profile, RCF-lag row
+  t.tick(300);
+  CHECK(t.union_counts().bodies_rx == 0);  // counters stay gated on-profile
+  auto fin = t.take_finalized();
+  REQUIRE(fin.size() == 1);
+  CHECK(fin[0].seq == 1);
+  CHECK(fin[0].profile == 0x05);  // its own profile, not the commanded one
+  CHECK(fin[0].blocks_ok == 4);
+}
+
 TEST(duplicate_seq_on_same_card_counts_once) {
   auto t = make();
   t.set_commanded(0x06, 0);

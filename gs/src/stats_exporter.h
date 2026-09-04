@@ -94,9 +94,11 @@ struct StatsCtlIn {
   double last_event_snr_db = 0.0;  // NaN -> JSON null
   double last_event_evm_db = 0.0;  // NaN -> JSON null (label-only, like snr)
   // Continuous probe gate counters (probe-stream, 2026-09-04): promotes
-  // gated by a clean probe read, and ticks the gate held a candidate rung
-  // WITHOUT promoting (lossy/noinfo, or clean but not yet due). Replace the
-  // old discrete-attempt counters (probes_started/probes_ok/probe_fails/
+  // gated by a clean probe read, and probe_holds is a count of hold
+  // EPISODES (one per continuous Lossy/NoInfo run that blocked a promote),
+  // not ticks -- a Clean-but-short streak ("wait, it's working, just not
+  // long enough yet") is not a hold and does not count. Replace the old
+  // discrete-attempt counters (probes_started/probes_ok/probe_fails/
   // probe_aborts) and last_probe_* snapshot, both retired with the discrete
   // probe-attempt API (LadderController::last_probe()/probes_*()) -- the
   // gate's live state is now StatsProbeIn / link.probe instead.
@@ -154,7 +156,7 @@ struct StatsProbeIn {
   std::string state = "off";  // off|clean|lossy|noinfo
   bool have_sample = false;   // u/loss are meaningless until this is true
   double u = 0.0, loss = 0.0;
-  int streak_ms = 0;     // time the gate has held its current state
+  int streak_ms = 0;     // the current CLEAN streak; 0 in every other state
   uint64_t n = 0, exp = 0, rx = 0, off_profile = 0;
   struct Card {
     bool have = false;   // false -> this card's loss is JSON null

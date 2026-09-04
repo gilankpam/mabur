@@ -278,6 +278,9 @@ binary swap:
 grep -nE '"probe_(ms|settle_ms|max_util|s3_min_syms|s3_silence_ms)"' /etc/maburgs.json
 ```
 
+`probe_s3_min_syms` has a successor, `link.s3_min_syms` (default 50) —
+carry over a non-default value before deleting the old key.
+
 Drone config (`/etc/mabur.json`) is untouched — there is no drone-side
 probe config; the RCF byte is the only switch. Sequence:
 

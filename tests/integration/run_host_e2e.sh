@@ -80,6 +80,25 @@ echo "== full 2-stream recovery: all 13 frames byte-exact post-RCF =="
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
   --symbol-size 332,332
 
+echo "== f2.bin RCF carries probe_profile 0xFF: no probe stream at all =="
+python3 - "$TMP/f2.bin" <<'PYCHK'
+import struct, sys
+frames = []
+with open(sys.argv[1], "rb") as f:
+    while True:
+        h = f.read(4)
+        if not h: break
+        (l,) = struct.unpack("<I", h); frames.append(f.read(l))
+def sid_mcs(fr):
+    (rl,) = struct.unpack_from("<H", fr, 2)
+    body = fr[rl + 26:]
+    sid = body[3] if len(body) > 10 and body[:2] == b"\xb0\xf5" else -1
+    return sid, fr[12]
+seq = [sid_mcs(fr) for fr in frames]
+assert 5 not in {s for s, _ in seq}, "sid-5 probe body emitted with probe_profile 0xFF"
+print("probe check ok: none with 0xFF")
+PYCHK
+
 echo "== probe stream setup: RCF with probe_profile = HT mcs6 20 MHz =="
 python3 - "$TMP/rc6.bin" <<'EOF'
 import struct, sys, os

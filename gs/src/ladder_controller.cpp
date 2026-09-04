@@ -125,6 +125,12 @@ void LadderController::update_probe_gate(const LinkHealth& h, double now_ms) {
     set_probe_state(ProbeGateState::Off, -1, 0.0, now_ms);
     return;
   }
+  // h.probe_rung == pr is always true in practice -- main.cpp fills
+  // health.probe_rung from this same probe_rung() on the same tick -- so
+  // it is a cheap invariant check, not the staleness guard. The real guard
+  // against a sample surviving a profile switch is the 150 ms
+  // probe_loss.blank_until() set at the switch edge (gs/src/main.cpp) plus
+  // mark_transition()'s streak reset.
   const bool usable = h.probe_valid && h.probe_rung == pr &&
                       h.probe_expected_syms >= static_cast<uint64_t>(cfg_.probe.min_syms);
   if (usable) {
@@ -555,11 +561,19 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       // clean streak of probe.clean_ms may commit; Lossy AND NoInfo hold —
       // a commanded-but-absent probe is exactly the blind promote the
       // stream exists to prevent. No penalty: nothing was tried.
+      //
+      // probe_holds (spec §4.4) counts Lossy/NoInfo hold EPISODES only. A
+      // Clean-but-short streak is "wait, it's working, just not long
+      // enough yet" -- a fundamentally different reason to not promote --
+      // so it returns false without touching probe_hold_active_ or the
+      // counter.
       const ProbeGate g = probe_gate(now_ms);
       CtlReason reason = CtlReason::Promote;
       if (g.state != ProbeGateState::Off) {
         if (g.state == ProbeGateState::Clean && g.streak_ms >= cfg_.probe.clean_ms) {
           reason = CtlReason::PromoteProbed;
+        } else if (g.state == ProbeGateState::Clean) {
+          return false;  // clean but streak too short: not a hold
         } else {
           if (!probe_hold_active_) { probe_hold_active_ = true; ++counters_.probe_holds; }
           return false;

@@ -74,7 +74,10 @@ struct ProbeCounts {
   uint64_t bodies_rx = 0;        // finalized bodies at the commanded profile
 };
 
-// One row per finalized received body, drained by ProbeLog (Task 9).
+// One row per finalized received body, drained by ProbeLog (Task 9) --
+// emitted for EVERY body, on- or off-profile (an RCF-lag body still logs
+// its own `profile`); only the ProbeCounts booking above is gated to the
+// commanded profile.
 struct ProbeFinalized {
   double t_ms = 0;
   uint32_t seq = 0;
@@ -123,7 +126,8 @@ class ProbeTrack {
   const ProbeCounts& card_counts(int card) const;
   uint64_t off_profile() const;  // bodies finalized at a non-commanded profile
 
-  // Drains the rows finalized since the last call.
+  // Drains the rows finalized since the last call -- one row per finalized
+  // body, on- or off-profile; wholly-lost bodies are the only seq gaps.
   std::vector<ProbeFinalized> take_finalized();
 
  private:

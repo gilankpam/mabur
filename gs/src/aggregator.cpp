@@ -273,8 +273,10 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   }
   if (stream_id == mabur::kProbeStreamId) {
     // Probe stream (spec 2026-09-04): scored by ProbeTrack, never decoded.
-    // A corrupt probe has no trustworthy sub-blocks: crc_ok-gated.
-    if (m.crc_ok && probe_sink_) probe_sink_(m.card_id, m);
+    // FCS-failed bodies still reach the sink — parse_probe_body salvages
+    // CRC-clean sub-blocks exactly as the video decoder does, so probe loss
+    // stays comparable to video loss.
+    if (probe_sink_) probe_sink_(m.card_id, m);
     return;
   }
   ++c.video_bodies;

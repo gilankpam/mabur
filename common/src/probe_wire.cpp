@@ -1,5 +1,4 @@
 #include "mabur/probe_wire.h"
-#include <cstring>
 #include "mabur/crc16.h"
 #include "mabur/sbi.h"
 
@@ -37,6 +36,7 @@ size_t probe_body_len(int bpb, int block_payload) {
 }
 
 std::vector<uint8_t> build_probe_body(const ProbeHdr& h, int bpb, int block_payload) {
+  if (block_payload < static_cast<int>(kProbeHdrLen)) return {};
   std::vector<uint8_t> out;
   out.reserve(probe_body_len(bpb, block_payload));
   out.push_back(SBI_MAGIC & 0xFF); out.push_back(SBI_MAGIC >> 8);
@@ -61,6 +61,14 @@ std::vector<uint8_t> build_probe_body(const ProbeHdr& h, int bpb, int block_payl
 
 bool parse_probe_body(const uint8_t* body, size_t len, int block_payload, ProbeRx* out) {
   if (sbi_peek_stream_id(body, len) != kProbeStreamId) return false;
+  // Geometry sanity: the body's own SBI header must agree with the
+  // caller's block_payload. A drone/GS FEC-geometry mismatch (different
+  // symbol_size/block_payload config on the two ends) would otherwise walk
+  // the body at the wrong stride and read every block as CRC-garbage --
+  // 100% probe loss with no obvious cause. Rejecting it here instead reads
+  // loud on the sideport: rx stays 0 while classes.probe.frames climbs.
+  const int wire_block_payload = body[4] | (body[5] << 8);
+  if (wire_block_payload != block_payload) return false;
   int n = body[6];
   if (n < 1 || n > 32) return false;
   const size_t stride = 2 + static_cast<size_t>(block_payload);

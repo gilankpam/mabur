@@ -235,12 +235,13 @@ TEST(probe_body_routes_to_probe_sink_not_video) {
   CHECK(agg.card(1).rf_pool.frames == 0);  // probe stays out of the RF label pool
 }
 
-TEST(crc_failed_probe_body_is_not_delivered) {
+TEST(crc_failed_probe_body_is_delivered_for_salvage) {
   Aggregator agg(vec_layers(), 512, 2);
   int probes = 0;
   agg.set_probe_sink([&](uint8_t, const mabur::node::RxBody&) { ++probes; });
   agg.on_rx_body(msg(0, 10, false, probe_body_fixture(5)));
-  CHECK(probes == 0);
+  CHECK(probes == 1);
+  CHECK(agg.card(0).crc_fail == 1);
 }
 
 // The drone's chip numbers every injected frame from ONE hardware seq

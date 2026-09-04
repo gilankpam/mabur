@@ -544,6 +544,22 @@ TEST(clean_probe_streak_gates_the_promote) {
   CHECK(c.probation_ms_left(t) > 0);
 }
 
+TEST(clean_but_short_probe_streak_is_not_a_hold) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
+  double t = 0;
+  // Base link stays clean throughout (u_ never trips up_util); keep the
+  // probe Lossy until just before the base clean_ms gate opens, then flip
+  // it Clean -- by the time the promote block first checks the gate the
+  // Clean streak is short. Spec §4.4: that is "wait", not a hold.
+  for (; t < cfg.clean_ms - 100; t += 50) c.update(okp(0.0, c.probe_rung(), 0.9), t);
+  for (; t <= cfg.clean_ms + 50; t += 50) c.update(okp(0.0, c.probe_rung(), 0.0), t);
+  CHECK(c.rung() == 0);  // not promoted: streak hasn't reached probe.clean_ms
+  CHECK(c.probe_gate(t).state == ProbeGateState::Clean);
+  CHECK(c.probe_gate(t).streak_ms < cfg.probe.clean_ms);
+  CHECK(c.counters().probe_holds == 0);
+}
+
 TEST(probe_scores_against_the_candidates_enh_budget) {
   LadderCfg cfg = make_cfg();  // rung1 ov_enh 1.0 -> budget 0.5; rung2 0.5 -> 0.333
   LadderController c(cfg);

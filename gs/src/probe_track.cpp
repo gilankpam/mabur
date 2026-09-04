@@ -70,20 +70,23 @@ void ProbeTrack::finalize_au(const PendingAu& au) {
 }
 
 void ProbeTrack::finalize_body(Pending& p, double now_ms) {
-  if (p.profile != commanded_) {
-    // off_profile_ was already incremented, and this body's AU already
-    // cancelled (if it was still pending), on first sight in on_body.
-    // Nothing left to do -- and nothing is unbooked here, so the
-    // counters can only go forward.
-    return;
+  // Counters (union_/cards_) stay gated on-profile: off_profile_ was
+  // already incremented, and this body's AU already cancelled (if it was
+  // still pending), on first sight in on_body. Nothing is unbooked here,
+  // so the counters can only go forward.
+  if (p.profile == commanded_) {
+    union_.arrived_blocks += static_cast<uint64_t>(__builtin_popcount(p.bitmap));
+    ++union_.bodies_rx;
+    for (int c = 0; c < cfg_.max_cards && c < 8; ++c) {
+      const uint32_t b = p.card_bits[static_cast<size_t>(c)];
+      cards_[static_cast<size_t>(c)].arrived_blocks += static_cast<uint64_t>(__builtin_popcount(b));
+      if (b) ++cards_[static_cast<size_t>(c)].bodies_rx;
+    }
   }
-  union_.arrived_blocks += static_cast<uint64_t>(__builtin_popcount(p.bitmap));
-  ++union_.bodies_rx;
-  for (int c = 0; c < cfg_.max_cards && c < 8; ++c) {
-    const uint32_t b = p.card_bits[static_cast<size_t>(c)];
-    cards_[static_cast<size_t>(c)].arrived_blocks += static_cast<uint64_t>(__builtin_popcount(b));
-    if (b) ++cards_[static_cast<size_t>(c)].bodies_rx;
-  }
+  // The log row itself is emitted for every finalized body, on- or
+  // off-profile: an RCF-lag row is real evidence (it carries its own
+  // profile), and dropping it here would read on the probe log as a lost
+  // body instead of a commanded-profile mismatch.
   ProbeFinalized f;
   f.t_ms = now_ms;
   f.seq = p.seq;

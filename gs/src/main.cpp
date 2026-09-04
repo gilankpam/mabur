@@ -1009,8 +1009,13 @@ static int run_radio(const maburgs::Config& cfg) {
         s3_rcur_sample.valid ? s3_rcur_sample.loss : 0.0;
     health.s3_expected_syms = s3_loss.expected_in_window(now_ms);
     // Probe gate inputs (spec 2026-09-04 section 3.3). probe_rung is the rung
-    // the sample was commanded at, so the controller can tell a stale sample
-    // from one that describes the rung it is about to promote to.
+    // the sample was commanded at. The h.probe_rung == pr equality the
+    // controller checks against is always true in practice -- both sides
+    // read probe_rung() on the same tick -- and is kept only as a cheap
+    // invariant check, not the staleness guard: the real guard against a
+    // sample surviving a profile switch is the 150 ms
+    // probe_loss.blank_until() set at the switch edge plus mark_transition's
+    // streak reset.
     health.probe_valid = probe_sample.valid;
     health.probe_loss = probe_sample.valid ? probe_sample.loss : 0.0;
     health.probe_expected_syms = probe_loss.expected_in_window(now_ms);
@@ -1079,10 +1084,12 @@ static int run_radio(const maburgs::Config& cfg) {
     // the rung-transition line above. Off edges are not logged -- the gate
     // leaving/entering Off just tracks whether a candidate rung exists at
     // all (top rung, feature disabled), which the S line's probe_rung column
-    // already carries once per dwell sample.
+    // already carries once per dwell sample. Also skip rung < 0: promoting
+    // onto the top rung has no candidate rung to probe, and logging it would
+    // read on flightreport as a phantom rung -1.
     if (const auto& pe = vrx.ctl().last_probe_edge(); pe.t_ms != last_probe_t_ms) {
       last_probe_t_ms = pe.t_ms;
-      if (ctl_log && pe.state != maburgs::ProbeGateState::Off)
+      if (ctl_log && pe.state != maburgs::ProbeGateState::Off && pe.rung >= 0)
         ctl_log->probe(pe.t_ms, pe.rung, maburgs::to_string(pe.state), pe.snr_db,
                         pe.u, static_cast<int>(pe.prev_dur_ms), pe.evm_db);
     }

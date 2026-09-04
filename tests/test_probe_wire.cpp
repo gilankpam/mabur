@@ -63,6 +63,15 @@ TEST(fill_is_deterministic_per_seq) {
   CHECK(a == b); CHECK(a != c);
 }
 
+TEST(geometry_mismatch_is_rejected) {
+  // A drone/GS FEC-geometry mismatch (symbol_size/block_payload configured
+  // differently on the two ends) must read as "no probes parse", not as
+  // silent 100% loss walked at the wrong stride.
+  auto b = build_probe_body(ProbeHdr{7, 0x03, 1}, kBpb, 346);
+  ProbeRx rx;
+  CHECK(!parse_probe_body(b.data(), b.size(), 348, &rx));
+}
+
 TEST(short_or_wrong_stream_body_rejected) {
   ProbeRx rx;
   std::vector<uint8_t> junk(20, 0);

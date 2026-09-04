@@ -138,7 +138,13 @@ rung `current + link.probe.rung_offset` (default 1), commanded fresh on
 every RCF (`Rcf::probe_profile`, 0xFF = no probe: disabled, or already
 on the top rung). Every sub-block repeats a 9-byte header (magic, seq,
 profile, `enh_fid`) so a body with one surviving block is still
-attributed rather than booked as `bpb` lost blocks.
+attributed rather than booked as `bpb` lost blocks. An FCS-failed probe
+PPDU still reaches `ProbeTrack`: `Aggregator::on_rx_body` routes every
+probe body to the sink regardless of `crc_ok`, and `parse_probe_body`
+salvages the CRC-clean sub-blocks exactly as the video decoder does for
+an FCS-corrupt video body — gating the probe sink on `crc_ok` would book
+every FCS-failing PPDU as a full `bpb`-block loss instead of just its
+dead sub-blocks, biasing the gate ~4x pessimistic toward Lossy.
 
 **Why the enh tail is safe from the GS uplink blast.** `RcfSlotter`
 releases a control-frame send at an AU completion and it is on air
