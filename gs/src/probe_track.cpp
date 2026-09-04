@@ -31,6 +31,19 @@ void ProbeTrack::on_body(int card, const mabur::probe::ProbeRx& rx, double snr_d
     p.first_ms = now_ms;
     p.snr.fill(std::nan(""));
     p.evm.fill(std::nan(""));
+    if (rx.hdr.profile == commanded_) {
+      // On-profile: tie this body to its still-pending AU (if any) so
+      // the AU's expectation finalizes together with the body instead
+      // of independently on its own, earlier timer (see header
+      // comment). Pulling the AU out of au_pending_ now keeps that
+      // queue's own finalize loop strictly FIFO/monotonic.
+      auto au = std::find_if(au_pending_.begin(), au_pending_.end(),
+                              [&](const PendingAu& a) { return a.enh_fid == rx.hdr.enh_fid; });
+      if (au != au_pending_.end()) {
+        p.au_matched = true;
+        au_pending_.erase(au);
+      }
+    }
     ring_.push_back(p);
     it = std::prev(ring_.end());
     if (ring_.size() > kRingMax) {
@@ -75,6 +88,13 @@ void ProbeTrack::finalize_body(Pending& p, double now_ms) {
   // still pending), on first sight in on_body. Nothing is unbooked here,
   // so the counters can only go forward.
   if (p.profile == commanded_) {
+    if (p.au_matched) {
+      // The matched AU's expectation books in this same tick(), right
+      // alongside the body's own arrived blocks (see header comment).
+      union_.expected_blocks += static_cast<uint64_t>(cfg_.bpb);
+      for (int c = 0; c < cfg_.max_cards && c < 8; ++c)
+        cards_[static_cast<size_t>(c)].expected_blocks += static_cast<uint64_t>(cfg_.bpb);
+    }
     union_.arrived_blocks += static_cast<uint64_t>(__builtin_popcount(p.bitmap));
     ++union_.bodies_rx;
     for (int c = 0; c < cfg_.max_cards && c < 8; ++c) {

@@ -38,6 +38,20 @@
 // instead -- bounded to the profile-switch window and considered an
 // acceptable, documented cost of keeping the counters monotonic.
 //
+// A matched AU finalizes with its body; an unmatched one finalizes on
+// its own timer. The first sight of an on-profile body looks up the
+// still-pending AU with the same enh_fid and, if found, ties itself to
+// it (removing that AU from its own timer queue), so the AU's `bpb`
+// expectation books in the very same tick() as the body's arrived
+// blocks -- not ~5-30 ms earlier, on the AU's own t_au + finalize_ms.
+// Without this tie, a delivered body's AU finalizes strictly before the
+// body does, opening a one-body `expected` deficit that a downstream
+// sliding loss window can sample and misread as loss (2026-09-04 bench
+// finding: read as a phantom u_probe 0.2 quantum). An AU that never
+// finds a match -- the probe was lost, or its body arrives only after
+// the AU already finalized alone -- still finalizes independently, as
+// before.
+//
 // Both an AU expectation and a received body sit in a small pending
 // window for `finalize_ms` before they count, so that a body's later
 // arrival on the second card (or a duplicate) can still fold into the
@@ -139,6 +153,11 @@ class ProbeTrack {
     uint32_t bitmap = 0, card_mask = 0;
     std::array<uint32_t, 8> card_bits{};
     std::array<double, 8> snr{}, evm{};
+    // True when a still-pending AU with the same enh_fid was tied to
+    // this body on first sight (and removed from au_pending_): its
+    // `bpb` expectation books alongside this body's arrival in
+    // finalize_body, instead of independently on the AU's own timer.
+    bool au_matched = false;
   };
   struct PendingAu {
     uint16_t enh_fid;

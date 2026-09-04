@@ -39,6 +39,43 @@ TEST(union_is_or_of_card_bitmaps_and_expected_comes_from_au_count) {
   CHECK(t.take_finalized().empty());
 }
 
+TEST(delivered_body_finalizes_with_its_au) {
+  auto t = make();
+  t.set_commanded(0x06, 0);
+  t.on_enh_au(1, 0);
+  t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 25);
+  t.tick(105);
+  // The AU's own timer (t=0+100=100) has elapsed, but its matched body
+  // hasn't finalized yet (first_ms=25, +100=125): neither counter may
+  // finalize ahead of the other.
+  CHECK(t.union_counts().expected_blocks == 0);
+  CHECK(t.union_counts().arrived_blocks == 0);
+  t.tick(130);
+  CHECK(t.union_counts().expected_blocks == 4);
+  CHECK(t.union_counts().arrived_blocks == 4);
+}
+
+TEST(lost_probe_still_books_expected_on_the_au_timer) {
+  auto t = make();
+  t.set_commanded(0x06, 0);
+  t.on_enh_au(1, 0);
+  t.tick(105);
+  CHECK(t.union_counts().expected_blocks == 4);
+  CHECK(t.union_counts().arrived_blocks == 0);
+}
+
+TEST(late_body_after_au_timer_books_arrived_only) {
+  auto t = make();
+  t.set_commanded(0x06, 0);
+  t.on_enh_au(1, 0);
+  t.tick(105);
+  CHECK(t.union_counts().expected_blocks == 4);
+  t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 200);
+  t.tick(310);
+  CHECK(t.union_counts().expected_blocks == 4);  // no double-booking
+  CHECK(t.union_counts().arrived_blocks == 4);
+}
+
 TEST(total_loss_reads_as_loss_not_silence) {
   auto t = make();
   t.set_commanded(0x06, 0);

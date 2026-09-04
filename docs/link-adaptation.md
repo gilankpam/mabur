@@ -179,6 +179,16 @@ counted total — there is no subtraction path. Per-card cumulative
 counters exist alongside the union purely for the "which card collapsed
 at range" question (flight-0016).
 
+⚠ 2026-09-04 bench finding: a delivered body's AU used to finalize on
+its own timer, ~5-30 ms before the body's own finalize instant, so a
+one-body `expected` deficit sat open between the two and the 500 ms
+`S1LossWindow` (sampled every 50 ms) read a fraction of samples as a
+phantom `probe_u` 0.2 quantum against a real per-body loss of ~0.2 %.
+Fixed by tying a matched AU's finalize to its body's: a still-pending
+AU is matched to its body on the body's first sight and now finalizes
+in the same `tick()` as the body, so only a genuinely lost probe ever
+opens a gap.
+
 **Gate table (spec §4.4).** Every existing promote condition stays
 (`u < up_util` sustained `clean_ms`, `hold_after_down_ms`,
 `min_between_changes_ms`, next rung exists and unpenalized); the probe
