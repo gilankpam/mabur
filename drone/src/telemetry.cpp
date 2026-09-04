@@ -55,7 +55,7 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.tlm_seq = tlm_seq;
   t.state = static_cast<uint8_t>(in.state);
   t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) | (in.radio_rx_ok ? 0x02 : 0) |
-                                  (in.probing ? 0x04 : 0) |
+                                  (in.probe_on ? 0x04 : 0) |
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
                                   (in.congestion_shed ? 0x10 : 0));
   t.generation = saturate<uint32_t>(in.generation);

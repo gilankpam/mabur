@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 #include "mtest.h"
@@ -63,7 +65,7 @@ TEST(send_body_second_frame_has_ht_radiotap_and_dot11_header) {
   CaptureSink sink;
   RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::HT, 2, 20);
-  tx.set_ladder(ladder);
+  tx.set_ladder(ladder, std::nullopt);
 
   const uint8_t body0[] = {0xaa, 0xbb};
   const uint8_t body1[] = {0x01, 0x02, 0x03, 0x04};
@@ -103,7 +105,7 @@ TEST(seq_wraps_at_4096) {
   CaptureSink sink;
   RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::HT, 0, 20);
-  tx.set_ladder(ladder);
+  tx.set_ladder(ladder, std::nullopt);
 
   const uint8_t body[] = {0x00};
   for (int i = 0; i < 4096; ++i) {
@@ -116,7 +118,7 @@ TEST(vht_ladder_radiotap_length_is_22) {
   CaptureSink sink;
   RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::VHT, 4, 80);
-  tx.set_ladder(ladder);
+  tx.set_ladder(ladder, std::nullopt);
 
   const uint8_t body[] = {0xde, 0xad, 0xbe, 0xef};
   CHECK(tx.send_body(0, body, sizeof(body)));
@@ -132,7 +134,7 @@ TEST(sink_rejection_increments_drops_and_still_consumes_seq) {
   CaptureSink sink;
   RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::HT, 0, 20);
-  tx.set_ladder(ladder);
+  tx.set_ladder(ladder, std::nullopt);
 
   const uint8_t body[] = {0x7};
   sink.reject_next(1);
@@ -188,8 +190,8 @@ TEST(send_bodies_matches_send_body_framing) {
   RadioTx a(a_sink);
   RadioTx b(b_sink);
   auto ladder = ladder_from(PhyMode::HT, 2, 20);
-  a.set_ladder(ladder);
-  b.set_ladder(ladder);
+  a.set_ladder(ladder, std::nullopt);
+  b.set_ladder(ladder, std::nullopt);
 
   std::vector<UepBody> bodies;
   for (uint8_t i = 0; i < 7; ++i)
@@ -210,7 +212,7 @@ TEST(send_bodies_matches_send_body_framing) {
 TEST(send_bodies_submits_one_batch) {
   BatchSink sink;
   RadioTx tx(sink);
-  tx.set_ladder(ladder_from(PhyMode::HT, 2, 20));
+  tx.set_ladder(ladder_from(PhyMode::HT, 2, 20), std::nullopt);
   std::vector<UepBody> bodies;
   for (int i = 0; i < 5; ++i) bodies.push_back(UepBody{1, std::vector<uint8_t>(32, 0x5A)});
   CHECK(tx.send_bodies(bodies) == 5);
@@ -225,7 +227,7 @@ TEST(send_body_maps_msp_to_base_slot) {
   CaptureSink sink;
   RadioTx tx(sink);
   auto ladder = ladder_from(PhyMode::HT, 5, 20);  // base mcs4, enh mcs5
-  tx.set_ladder(ladder);
+  tx.set_ladder(ladder, std::nullopt);
 
   const uint8_t body[] = {0xaa, 0xbb};
   CHECK(tx.send_body(4, body, sizeof(body)));  // MSP stream_id
@@ -250,6 +252,35 @@ TEST(send_body_maps_msp_to_base_slot) {
 
   CHECK(tx.sent() == 1);
   CHECK(tx.drops() == 0);
+}
+
+TEST(probe_stream_rides_third_slot) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  auto ladder = ladder_from(PhyMode::HT, 4, 20);
+  LayerTxSpec probe = ladder[1];
+  probe.mcs = 6;
+  tx.set_ladder(ladder, probe);
+  const uint8_t body[] = {0x01, 0x02};
+  CHECK(tx.send_body(5, body, sizeof(body)));
+  REQUIRE(sink.frames_.size() == 1);
+  const auto& f = sink.frames_[0];
+  const uint16_t rl = read_le16(&f[2]);
+  const auto want = devourer::build_stream_radiotap(to_tx_mode(probe, probe.bw));
+  REQUIRE(rl == want.size());
+  CHECK(std::equal(want.begin(), want.end(), f.begin()));
+  CHECK(f[12] == 6);  // HT radiotap MCS byte
+}
+
+TEST(probe_stream_dropped_when_no_probe_slot) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  tx.set_ladder(ladder_from(PhyMode::HT, 4, 20), std::nullopt);
+  const uint8_t body[] = {0x01};
+  CHECK(!tx.send_body(5, body, sizeof(body)));
+  CHECK(sink.frames_.empty());
+  CHECK(tx.drops() == 1);
+  CHECK(tx.seq() == 1);  // seq consumed like every other drop
 }
 
 MTEST_MAIN

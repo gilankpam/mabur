@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "mabur/profile.h"
@@ -63,15 +64,15 @@ class RadioTx {
  public:
   explicit RadioTx(FrameSink& sink);
 
-  // Rebuilds the radiotap cache for the new ladder: prebuilds one radiotap
-  // header per layer, at that layer's bw. Safe to call concurrently with
-  // send_body() (agent thread vs hot thread) — the cache is swapped in
-  // atomically once fully built.
-  void set_ladder(const std::array<rc::LayerTxSpec, 2>& ladder);
+  // Rebuilds the radiotap cache: slot 0/1 = the video ladder, slot 2 = the
+  // probe stream's MCS (spec 2026-09-04) or empty when probe is nullopt.
+  void set_ladder(const std::array<rc::LayerTxSpec, 2>& ladder,
+                  const std::optional<rc::LayerTxSpec>& probe);
 
   // Builds and sends one frame for `stream_id` mapped to a ladder slot:
-  // stream 0→slot0, 1→slot1, anything else→slot0 (MSP OSD + side-channels
-  // ride the robust base rate). Returns whatever sink.send() returned. The
+  // stream 0→slot0, 1→slot1, kProbeStreamId→slot2 (dropped+counted when
+  // unset), anything else→slot0 (MSP OSD + side-channels ride the robust
+  // base rate). Returns whatever sink.send() returned. The
   // sequence counter is consumed (incremented, mod 4096) regardless of the
   // sink's return value, so a ground-station gap detector sees the loss
   // represented as a skipped sequence number.
@@ -98,7 +99,7 @@ class RadioTx {
     std::vector<uint8_t> radiotap;
   };
   struct Cache {
-    std::array<LayerCache, 2> layers;
+    std::array<LayerCache, 3> layers;
   };
 
   // Builds `radiotap | dot11(seq_) | body` into out, consuming seq_. False

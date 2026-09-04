@@ -6,7 +6,7 @@
 
 TEST(make_telem_maps_and_saturates) {
   mabur::TelemInputs in;
-  in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probing = true;
+  in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probe_on = true;
   in.congestion_shed = true;
   in.roi_qp = -24;
   in.generation = 7; in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
@@ -28,7 +28,7 @@ TEST(make_telem_maps_and_saturates) {
   const auto t = mabur::make_telem(9, in);
   CHECK(t.tlm_seq == 9);
   CHECK(t.state == 2);
-  // failsafe_shed | radio_rx_ok | probing | rcf_seq_echo_valid |
+  // failsafe_shed | radio_rx_ok | probe_on | rcf_seq_echo_valid |
   // congestion_shed — bit3 is the GS's only way to tell "aging against this
   // seq" from "aging against a DISC/failsafe rebase where the echoed seq is
   // stale"; bit4 is the TxQueue-pressure / USB-failure shed
