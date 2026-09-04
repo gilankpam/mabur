@@ -473,10 +473,19 @@ static int run_radio(const maburgs::Config& cfg) {
   // record -- but the probe stream changed that (spec 2026-09-04 section
   // 8.3 steps 1-2): the pinned bench runs are exactly the ones whose
   // per-body probe-NNNN.log matters, and ProbeLog takes its NNNN from this
-  // CtlLog so the two files pair up per boot. In pin mode the S lines
-  // describe a controller that is never updated -- u/util read 0, the probe
-  // columns read `-1 nan 0` and the gate stays Off -- and E/P/N/R records
-  // never fire at all; only the probe log's rows carry information there.
+  // CtlLog so the two files pair up per boot.
+  //
+  // What a pinned S line actually contains: the controller is never
+  // updated, so u/util read 0 and E/P/N/R records never fire at all. The
+  // three probe columns are `<rung> nan <probe_n>`, and only the last is a
+  // measurement. `rung` is probe_rung() off a frozen idx_ == 0 -- pinning
+  // does not disable link.probe.enable -- so it prints
+  // min(probe.rung_offset, top), i.e. 1 on a normal multi-rung ladder, NOT
+  // -1. `u` is nan because the gate never leaves Off. `probe_n` is the real
+  // count of expected blocks in the window: with link.probe.pin_mcs >= 0
+  // the RCF carries a probe profile, so ProbeTrack books bpb per enh AU and
+  // this is nonzero -- exactly the number the pinned bench runs want. It is
+  // 0 only when pin_mcs < 0, where nothing commands a probe profile.
   std::optional<maburgs::CtlLog> ctl_log;
   if (cfg.link.ctl_log) {
     std::string header = "ladder=";
@@ -941,8 +950,11 @@ static int run_radio(const maburgs::Config& cfg) {
                                                   pcnt.arrived_blocks, now_ms);
     }
     const auto probe_sample = probe_loss.sample(now_ms);
-    // Drain unconditionally: the finalized rows are a bounded queue inside
-    // ProbeTrack, and leaving them there when no log is open would grow it.
+    // Drain every iteration even with no log open: ProbeTrack's bounded
+    // structure is its pending ring, NOT the finalized list -- that is a
+    // plain std::vector it appends to and only take_finalized() clears, so
+    // skipping the drain would grow it without limit for the life of the
+    // process.
     if (probe_log)
       for (const auto& f : probe_track.take_finalized())
         probe_log->row(f.t_ms, f.seq, f.profile & 0x0F, f.enh_fid, f.blocks_ok,
@@ -1361,9 +1373,14 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       // Probe snapshot: OUTSIDE the ladder block on purpose, so static-pin
       // mode (link.probe.pin_mcs on the bench) still exports what the probe
-      // stream is doing. The ladder is never ticked there, so probe_gate()
-      // reads Off and rung/state/u are inert -- on, mcs, loss and the
-      // per-card rows are the numbers that matter in that mode.
+      // stream is doing. In that mode the controller is never ticked, so
+      // `state` stays "off" and `u`/`loss` export as JSON null (have_sample
+      // needs a non-Off gate). `rung` is NOT -1 there: pinning does not
+      // disable link.probe.enable, so probe_rung() off a frozen idx_ == 0
+      // reports min(probe.rung_offset, top). The informative fields in pin
+      // mode are `on`, `mcs`, `n`, `exp`, `rx`, `off_profile` and the
+      // per-card rows -- cards[].loss has its own validity flag and does
+      // not depend on the gate.
       {
         maburgs::StatsProbeIn pin;
         const uint8_t pc = vrx.probe_profile();
