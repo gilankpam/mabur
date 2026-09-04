@@ -93,6 +93,9 @@ std::vector<SlotFrame> RcfSlotter::take_due(uint64_t now_ms) {
   std::vector<SlotFrame> out;
   if (pending_.empty()) {
     release_pending_ = false;
+    // A deadline that passed with nothing to release is spent: it must
+    // not fire on a frame offered later at an unrelated time.
+    if (probe_wait_ && now_ms >= probe_deadline_ms_) probe_wait_ = false;
     return out;
   }
   if (probe_wait_ && now_ms >= probe_deadline_ms_) {

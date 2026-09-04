@@ -204,6 +204,21 @@ TEST(deadline_learns_from_observed_completion_to_probe_offsets) {
   CHECK(s.tail_ub_ms() == 2);          // floor 1 + 1
 }
 
+TEST(spent_deadline_does_not_release_a_later_offer) {
+  RcfSlotCfg cfg{30, 100, 2, 3, 1};
+  cfg.probe_tail_ms = 2;
+  RcfSlotter s(cfg);
+  s.on_au_complete(20, true);           // nothing pending; probe then lost
+  CHECK(s.take_due(30).empty());        // deadline (23) passes unused
+  CHECK(offer(s, 1, 40, false));        // outside grace -> held
+  CHECK(s.take_due(40).empty());        // the stale deadline must not fire
+  CHECK(s.take_due(45).empty());
+  s.on_au_complete(50, false);          // the next completion is the slot
+  auto due = s.take_due(50);
+  REQUIRE(due.size() == 1);
+  CHECK(due[0].reason == SlotReason::Au);
+}
+
 TEST(probe_arrival_too_close_to_the_next_burst_does_not_release) {
   RcfSlotCfg cfg{40, 100, 2, 3, 1};
   cfg.probe_tail_ms = 1;
