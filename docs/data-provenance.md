@@ -435,3 +435,49 @@ the entire duration of any `link.static_mcs >= 0` flight. A pinned
 recording from before 2026-09-04 therefore shows a blank MCS/FEC/LOSS-pre
 OSD in its burned DVR video while the jsonl beside it has the real values
 in `link.op` — the display was wrong, the data was not.
+
+## 2026-09-04: `venc.resilience` deleted; the encoder structure is six keys
+
+The drone config key `venc.resilience` — a string naming a row in a preset
+table (`rally`, `fpv`, `ltr:<N>`, …) that expanded into intra-refresh and
+SVC-T settings — no longer exists. A config still carrying it fails boot on
+the unknown-key path. Its components are now config keys of their own, each
+one an MI struct field verbatim:
+
+| was, inside the preset | is now |
+|---|---|
+| intra mode name → target ms → CTU rows/P | `venc.intra_refresh_rows` (rows/P directly, 0 = off) |
+| per-mode stripe QP (36/32/28) | `venc.intra_refresh_qp` |
+| `ref_base` / `ref_enhance` / `ref_pred` | `venc.ref_base` / `venc.ref_enhance` / `venc.ref_pred` |
+| preset-pinned GOP | `venc.gop_s`, which is now always authoritative |
+
+The shipped values (`rows 4, qp 36, base 1, enhance 1, pred true, gop_s
+2.0`) are what `rally` expanded to at 1080p60, so **recordings either side
+of this date are directly comparable** — the encoder structure did not move,
+only the way it is spelled. Two behaviour changes worth knowing when reading
+older material:
+
+- The preset path **clamped** an over-wide stripe to the picture height and
+  warned on stderr; config now refuses to boot instead. No flown config ever
+  hit the clamp.
+- Auto-GOP (one IDR per full stripe sweep, when no explicit GOP was set) is
+  gone. It was unreachable in mabur for its whole life — every preset pinned
+  a GOP — so no recording was ever produced under it.
+- **`venc.gop_s` was previously MASKED and is now authoritative.** Under the
+  preset path `gop_sec` was `preset.gop_overridden ? preset.gop_s :
+  cfg->gop_s`, and every named preset set `gop_overridden` — so whatever
+  `venc.gop_s` a config carried alongside `resilience: "rally"` was ignored
+  and 2.0 s was used. It takes effect from this date. The bundle already
+  says 2.0, but a deployed drone config is known to diverge from the bundle
+  (see `handover-venc-overshoot-2026-09-03.md`: `max_ipprop` 2 deployed vs 0
+  in the bundle), so **read `venc.gop_s` out of the drone's live
+  `/etc/mabur.json` before swapping** — anything but 2.0 changes the IDR
+  interval on this deploy, with nothing in the boot log calling it out.
+- The `rescue` preset's 0.25 s GOP is no longer expressible. It wrote
+  `gop_sec` directly and so bypassed the `venc.gop_s` range check, whose
+  floor is 0.5 s. The IDR-spam escape hatch is gone; nothing flew on it.
+
+Mentions of `venc.resilience ltr:1 → rally` and of the "rally preset" in
+the notes above and in `venc-ring-vanish-findings-2026-08-12.md` describe
+configs that produced data on the DVR. They stay accurate about that data;
+they just name a key that is no longer settable.

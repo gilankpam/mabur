@@ -102,7 +102,11 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.venc.core.gop_s == 2.0);
   CHECK(cfg.venc.core.qp_delta == -4);
   CHECK(cfg.venc.core.max_ipprop == 0);
-  CHECK(std::string(cfg.venc.core.resilience) == "rally");
+  CHECK(cfg.venc.core.intra_refresh_rows == 4);
+  CHECK(cfg.venc.core.intra_refresh_qp == 36);
+  CHECK(cfg.venc.core.ref_base == 1);
+  CHECK(cfg.venc.core.ref_enhance == 1);
+  CHECK(cfg.venc.core.ref_pred == true);
   CHECK(cfg.venc.core.roi_enabled == true);
   CHECK(cfg.venc.core.roi_steps == 2);
   CHECK(cfg.venc.core.roi_center == 0.4);
@@ -227,7 +231,8 @@ TEST(load_config_encoder_roi_threshold_negative_throws_naming_field) {
 std::string valid_venc_block() {
   return R"("venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
          R"("size":"1920x1080","fps":60,"gop_s":2.0,"qp_delta":-4,)"
-         R"("resilience":"rally",)"
+         R"("intra_refresh_rows":4,"intra_refresh_qp":36,)"
+         R"("ref_base":1,"ref_enhance":1,"ref_pred":true,)"
          R"("roi":{"enabled":true,"steps":2,"center":0.4},)"
          R"("ae_fps":15,"awb_fps":15,"snapshot_quality":80,)"
          R"("debug_port":8301})";
@@ -242,7 +247,8 @@ TEST(venc_section_parses_and_validates) {
   Config c = load_config(path.string());
   CHECK(c.venc.core.width == 1920);
   CHECK(c.venc.core.height == 1080);
-  CHECK(std::string(c.venc.core.resilience) == "rally");
+  CHECK(c.venc.core.intra_refresh_rows == 4);
+  CHECK(c.venc.core.ref_enhance == 1);
   CHECK(c.encoder.airtime_budget == 0.65);
   std::filesystem::remove(path);
 }
@@ -263,7 +269,7 @@ TEST(venc_rejects_bitrate_key) {
   auto path = write_temp_json(
       R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
       R"("size":"1920x1080","fps":60,"gop_s":2.0,"qp_delta":-4,)"
-      R"("resilience":"rally","bitrate":8000,)"
+      R"("bitrate":8000,)"
       R"("roi":{"enabled":true,"steps":2,"center":0.4},)"
       R"("ae_fps":15,"awb_fps":15,"snapshot_quality":80,)"
       R"("debug_port":8301}})");
@@ -273,23 +279,9 @@ TEST(venc_rejects_bitrate_key) {
   std::filesystem::remove(path);
 }
 
-TEST(venc_rejects_unknown_resilience) {
-  auto path = write_temp_json(
-      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
-      R"("size":"1920x1080","fps":60,"gop_s":2.0,"qp_delta":-4,)"
-      R"("resilience":"yolo",)"
-      R"("roi":{"enabled":true,"steps":2,"center":0.4},)"
-      R"("ae_fps":15,"awb_fps":15,"snapshot_quality":80,)"
-      R"("debug_port":8301}})");
-  std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(!msg.empty());
-  CHECK(msg.find("venc.resilience") != std::string::npos);
-  std::filesystem::remove(path);
-}
-
 // Absent venc keys fall back to the spec §3 values (venc_cfg_defaults(),
 // drone/venc/venc_cfg.c), NOT to the all-zero a plain `VencCfg core{}`
-// would give: a zeroed VencCfg is fps 0 / 0x0 / gop 0.0 / resilience "",
+// would give: a zeroed VencCfg is fps 0 / 0x0 / gop 0.0 / no stripe,
 // which is a malformed pipeline dressed up as a default.
 // REVERT CHECK: delete the VencSectionCfg() constructor in config.h (or the
 // body of venc_cfg_defaults) and every CHECK below reads 0/"".
@@ -305,7 +297,14 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.qp_delta == -4);
   CHECK(c.venc.core.max_ipprop == 0);
   CHECK(c.venc.core.superframe_p_pct == 0);
-  CHECK(std::string(c.venc.core.resilience) == "rally");
+  // The decomposed resilience components (venc.resilience was deleted
+  // 2026-09-04): defaults reproduce the old "rally" preset at 1080p60 —
+  // 4 CTU rows/P at QP 36, 1:1 SVC-T with enhance prediction on.
+  CHECK(c.venc.core.intra_refresh_rows == 4);
+  CHECK(c.venc.core.intra_refresh_qp == 36);
+  CHECK(c.venc.core.ref_base == 1);
+  CHECK(c.venc.core.ref_enhance == 1);
+  CHECK(c.venc.core.ref_pred == true);
   CHECK(c.venc.core.roi_enabled == true);
   CHECK(c.venc.core.roi_steps == 2);
   CHECK(c.venc.core.roi_center == 0.4);
@@ -313,9 +312,146 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.awb_fps == 15);
   CHECK(c.venc.core.snapshot_quality == 80);
   CHECK(c.venc.debug_port == 8301);
-  // The default resilience must survive the preset authority, or the
-  // fallback would boot-fail on a config that named nothing wrong.
-  CHECK(venc_cfg_preset_known(c.venc.core.resilience) != 0);
+  std::filesystem::remove(path);
+}
+
+// The six decomposed knobs land on VencCfg verbatim — they are the two MI
+// structs' fields (MI_VENC_IntraRefresh_t {bEnable, u32RefreshLineNum,
+// u32ReqIQp} and MI_VENC_ParamRef_t {u32Base, u32Enhance, bEnablePred}),
+// so config carries no derivation the operator cannot see.
+TEST(venc_intra_refresh_and_ref_keys_parse) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("intra_refresh_rows":1,"intra_refresh_qp":28,)"
+      R"("ref_base":1,"ref_enhance":4,"ref_pred":false}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.intra_refresh_rows == 1);
+  CHECK(c.venc.core.intra_refresh_qp == 28);
+  CHECK(c.venc.core.ref_base == 1);
+  CHECK(c.venc.core.ref_enhance == 4);
+  CHECK(c.venc.core.ref_pred == false);
+  std::filesystem::remove(path);
+}
+
+// rows 0 is the off switch (bEnable=0): no stripe, and the QP alongside it
+// is simply unused rather than an error.
+TEST(venc_intra_refresh_rows_zero_is_off) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("intra_refresh_rows":0}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.intra_refresh_rows == 0);
+  std::filesystem::remove(path);
+}
+
+// The stripe cannot be wider than the picture. H.265 CTU is 32x32, so 1080
+// lines is 34 CTU rows: 34 is the widest legal sweep (one row per frame is
+// the slowest), 35 is a config error. The old preset path silently CLAMPED
+// here and warned on stderr, which meant the encoder ran a sweep the
+// config did not describe; boot failure is the forcing function instead.
+TEST(venc_intra_refresh_rows_beyond_picture_rejected) {
+  auto ok = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("size":"1920x1080","intra_refresh_rows":34}})");
+  Config c = load_config(ok.string());
+  CHECK(c.venc.core.intra_refresh_rows == 34);
+  std::filesystem::remove(ok);
+
+  auto bad = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("size":"1920x1080","intra_refresh_rows":35}})");
+  std::string msg = what_of([&] { (void)load_config(bad.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.intra_refresh_rows") != std::string::npos);
+  std::filesystem::remove(bad);
+}
+
+// The bound tracks venc.size, and is checked against the height whether or
+// not the rows key is present. Testing it only at 1920x1080 -- which is also
+// the default height -- would pass against a hardcoded 34, and against a
+// check that ran BEFORE "size" was parsed. 720 lines is 23 CTU rows: a
+// pre-size check would see the 1080 default, compute 34, and accept 24.
+TEST(venc_intra_refresh_rows_bound_tracks_venc_size) {
+  auto ok = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("size":"1280x720","intra_refresh_rows":23}})");
+  Config c = load_config(ok.string());
+  CHECK(c.venc.core.intra_refresh_rows == 23);
+  std::filesystem::remove(ok);
+
+  auto bad = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("size":"1280x720","intra_refresh_rows":24}})");
+  std::string msg = what_of([&] { (void)load_config(bad.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.intra_refresh_rows") != std::string::npos);
+  std::filesystem::remove(bad);
+}
+
+// The default rows value is validated too. Omitting the key does not buy a
+// pass: a picture shorter than the default 4 CTU rows must fail boot, not
+// reach the encoder and get silently clamped there -- boot failure is the
+// whole point of the range check.
+TEST(venc_default_intra_refresh_rows_validated_against_size) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("size":"640x64"}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.intra_refresh_rows") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+// u32ReqIQp is an H.265 QP: [1,51]. 0 reached the SDK as "codec default"
+// under the preset table, but with the mode names gone there is no default
+// to fall back TO, so 0 is now a plain out-of-range value.
+TEST(venc_intra_refresh_qp_out_of_range_rejected) {
+  for (const char* qp : {"0", "52"}) {
+    auto path = write_temp_json(
+        std::string(R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+                    R"("intra_refresh_qp":)") + qp + "}}");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("venc.intra_refresh_qp") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
+// u32Enhance is a PERIOD (one non-referenced frame per enhance+1), so 0 is
+// meaningless while SVC-T is on. The preset path papered over this with a
+// `enhance ? enhance : 1` fallback at the apply site; config rejects it.
+TEST(venc_ref_enhance_zero_with_svct_on_rejected) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("ref_base":1,"ref_enhance":0}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("venc.ref_enhance") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+// ref_base 0 disables SVC-T outright (no MI_VENC_SetRefParam call), and
+// then ref_enhance is unused — a 0 alongside it is not an error.
+TEST(venc_ref_base_zero_disables_svct) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("ref_base":0,"ref_enhance":0}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.ref_base == 0);
+  std::filesystem::remove(path);
+}
+
+// venc.resilience was deleted 2026-09-04 in favour of the six components
+// above. A stale config still naming it must fail boot on the ordinary
+// unknown-key path, not be silently ignored while the encoder runs
+// something else (config strict-keys policy, CLAUDE.md).
+TEST(venc_stale_resilience_key_throws) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("resilience":"rally"}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(!msg.empty());
+  CHECK(msg.find("resilience") != std::string::npos);
   std::filesystem::remove(path);
 }
 

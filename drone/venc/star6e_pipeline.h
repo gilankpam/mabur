@@ -83,41 +83,4 @@ void star6e_pipeline_cus3a_reset(void);
 int star6e_pipeline_cap_exposure_for_fps(uint32_t fps,
 	bool shutter_rule_180);
 
-/** Snapshot of the IntraRefresh configuration applied to ch0 at the most
- *  recent pipeline start.  All zeros (mode_name="off") when feature is
- *  disabled.  Populated by mode-driven path in star6e_pipeline.c. */
-typedef struct {
-	char mode_name[16];             /* "off" | "fast" | "balanced" | "robust" */
-	int active;                     /* mode != off and apply_ok */
-	int mi_supported;               /* libmi_venc.so exports SetIntraRefresh */
-	int apply_ok;                   /* SetIntraRefresh succeeded */
-	uint32_t target_ms;             /* mode constant, 0 if off */
-	uint32_t total_rows;            /* ceil(height / lcu_h) */
-	uint32_t requested_lines;       /* preset override value (0 = mode auto) */
-	uint32_t effective_lines_per_p; /* what was actually programmed */
-	int      lines_clamped;         /* override exceeded total_rows */
-	uint32_t requested_qp;          /* preset override value (0 = codec default) */
-	uint32_t effective_qp;          /* what was actually programmed */
-	double   explicit_gop_sec;      /* config gop_s (0.0 = mode auto) */
-	double   effective_gop_sec;     /* what was actually programmed */
-	int      gop_auto;              /* 1 if effective_gop_sec came from auto */
-} Star6eIntraRefreshStatus;
-
-void star6e_pipeline_intra_refresh_status(Star6eIntraRefreshStatus *out);
-
-/* Snapshot of refPred (SVC-T) state at the most recent pipeline_start.
- * Populated by star6e_pipeline_pre_start_apply_ref_pred() — `active` is
- * true only when the resilience preset requested refBase>0 AND the
- * SDK SetRefParam call succeeded. */
-typedef struct {
-	int      active;
-	int      mi_supported;
-	int      apply_ok;
-	uint32_t base;
-	uint32_t enhance;
-	int      pred;
-} Star6eRefPredStatus;
-
-void star6e_pipeline_ref_pred_status(Star6eRefPredStatus *out);
-
 #endif /* STAR6E_PIPELINE_H */

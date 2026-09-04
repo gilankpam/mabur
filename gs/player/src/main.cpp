@@ -1008,7 +1008,7 @@ int main(int argc, char** argv) {
   uint64_t backend_submits = 0;
 
   // Sync-point gate for the backend feed (and DVR's hvcC collection below):
-  // this live encoder's "rally" resilience mode emits exactly ONE real IRAP
+  // this live encoder's shipped GDR + SVC-T config emits exactly ONE real IRAP
   // NAL, at session start, and never again -- au_is_irap()/kFlagIdr both
   // stay false for the rest of the session (measured on hardware: neither
   // ever fires past the opening IDR). The ~2 s periodic meta.sid==0 AUs are
