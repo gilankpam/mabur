@@ -15,6 +15,7 @@ add_library(mabur_gs_core STATIC
   src/frame_stream.cpp
   src/au_ring.cpp
   src/au_doorbell.cpp
+  src/probe_track.cpp
   src/rtt_estimator.cpp
   src/stats_exporter.cpp)
 target_include_directories(mabur_gs_core
