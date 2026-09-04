@@ -80,4 +80,48 @@ echo "== full 2-stream recovery: all 13 frames byte-exact post-RCF =="
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
   --symbol-size 332,332
 
+echo "== probe stream setup: RCF with probe_profile = HT mcs6 20 MHz =="
+python3 - "$TMP/rc6.bin" <<'EOF'
+import struct, sys, os
+sys.path.insert(0, os.path.abspath(os.path.join("..", "devourer", "tools", "precoder")))
+import rc_proto
+# Same v6 head as the RCF above, but probe_profile is 0x06 (HT mcs6, 20 MHz)
+# instead of 0xFF (no probe stream) -- spec 2026-09-04 §2.
+body = struct.pack("<HBBBIHBBBB", rc_proto.RC_MAGIC, 6, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0x06)
+w = body + struct.pack("<H", rc_proto._crc(body))
+with open(sys.argv[1], "wb") as f:
+    f.write(struct.pack("<II", 1, len(w))); f.write(w)
+EOF
+"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f3.bin" \
+  --rc-in "$TMP/rc6.bin"
+
+echo "== probe stream: one sid-5 body at mcs6 after each enh AU, none after base =="
+python3 - "$TMP/f3.bin" <<'PYCHK'
+import struct, sys
+frames = []
+with open(sys.argv[1], "rb") as f:
+    while True:
+        h = f.read(4)
+        if not h: break
+        (l,) = struct.unpack("<I", h); frames.append(f.read(l))
+def sid_mcs(fr):
+    (rl,) = struct.unpack_from("<H", fr, 2)
+    body = fr[rl + 26:]
+    sid = body[3] if len(body) > 10 and body[:2] == b"\xb0\xf5" else -1
+    return sid, fr[12]
+seq = [sid_mcs(fr) for fr in frames]
+probes = [i for i, (s, _) in enumerate(seq) if s == 5]
+assert probes, "no probe bodies emitted"
+for i in probes:
+    assert seq[i][1] == 6, f"probe at index {i} has mcs {seq[i][1]}"
+    assert seq[i - 1][0] == 1, f"probe at {i} does not trail an enh body (prev sid {seq[i-1][0]})"
+runs = 0
+for i in range(1, len(seq)):
+    if seq[i - 1][0] == 1 and seq[i][0] != 1:
+        runs += 1
+        assert seq[i][0] == 5, f"enh run ending at {i} not followed by a probe"
+print(f"probe check ok: {len(probes)} probes, {runs} enh runs")
+PYCHK
+
 echo "== all E2E checks passed =="

@@ -50,6 +50,7 @@
 #include "mabur/uep_encoder.h"
 #include "msp_serial.h"
 #include "power_plan.h"
+#include "probe_source.h"
 #include "radio_tx.h"
 #include "rc_agent.h"
 #include "telemetry.h"
@@ -567,6 +568,14 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   // dry-run mode (repair emission order would depend on thread timing).
   UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms);
 
+  // Probe stream (spec 2026-09-04 §2): same FEC geometry as the enh layer
+  // (block_payload/bpb), so a probe body is the same wire size as a video
+  // body at that rung.
+  const auto probe_layer = cfg.uep_layers()[1];
+  ProbeSource probe_src(probe_layer.blocks_per_body,
+                        static_cast<int>(mabur::sw::kSwHeaderLen) + probe_layer.fec.symbol_size,
+                        std::random_device{}());
+
   auto frames = read_frame_file(in_path);
   FramePipeline pipe;
   auto rc_recs = read_rc_in(rc_in_path);
@@ -636,6 +645,20 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
     for (auto& b : bodies) {
       tx.send_body(b.stream_id, b.body.data(), b.body.size());
       ++sent_bodies;
+    }
+
+    // Probe stream (spec 2026-09-04 §2): one body at the tail of every ENH
+    // burst, sent right after the AU's own bodies so it lands at the tail
+    // of the enh burst on the wire too. No enh AU (shed, base frame) =>
+    // no probe.
+    if (!bodies.empty() && bodies.back().stream_id == 1) {
+      auto op_now = shared_op.load();
+      if (op_now && op_now->probe_profile != rc::kNoProbeProfile && !op_now->shed[1]) {
+        UepBody pb = probe_src.build(op_now->probe_profile,
+                                     static_cast<uint16_t>(pipe.next_frame_id() - 1));
+        tx.send_body(pb.stream_id, pb.body.data(), pb.body.size());
+        ++sent_bodies;
+      }
     }
 
     auto polled = uep.poll(now);
@@ -1090,6 +1113,14 @@ int run_real_mode(const Config& cfg) {
     FecWorker fec_worker(two_core_target() ? kRestCore : -1);
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
 
+    // Probe stream (spec 2026-09-04 §2): same FEC geometry as the enh layer
+    // (block_payload/bpb), so a probe body is the same wire size as a video
+    // body at that rung.
+    const auto probe_layer = cfg.uep_layers()[1];
+    ProbeSource probe_src(probe_layer.blocks_per_body,
+                          static_cast<int>(mabur::sw::kSwHeaderLen) + probe_layer.fec.symbol_size,
+                          std::random_device{}());
+
     std::shared_ptr<const AppliedOp> last_applied_op;
     // Debug-HTTP per-layer overhead override transition tracking (fix
     // round 1, review finding): true while the last tick saw both
@@ -1194,8 +1225,10 @@ int run_real_mode(const Config& cfg) {
         // SBI header sits outside the FEC envelope, so post-pack patching
         // stays CRC-safe).
         bool first = true;
+        uint8_t au_sid = 0;
         pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now,
                     [&](UepBody&& b) {
+                      au_sid = b.stream_id;
                       const uint64_t s_us = now_steady_us();
                       mabur::sbi_set_enc_us(b.body.data(), b.body.size(),
                                             pipe.last_enc_us());
@@ -1208,6 +1241,20 @@ int run_real_mode(const Config& cfg) {
                       split_sink_sum_us += now_steady_us() - s_us;
                     });
         txq.flush();  // release the AU's partial feed_batch group, if any
+        // Probe stream (spec 2026-09-04 §2): one body at the tail of every
+        // ENH burst. FIFO order through the TxQueue puts it on air after
+        // the AU's last body, where the GS RcfSlotter's uplink blast can't
+        // reach it. No enh AU (shed, base frame) => no probe.
+        if (!first && au_sid == 1 && op &&
+            op->probe_profile != rc::kNoProbeProfile && !op->shed[1]) {
+          UepBody pb = probe_src.build(op->probe_profile,
+                                       static_cast<uint16_t>(pipe.next_frame_id() - 1));
+          const uint64_t p_us = now_steady_us();
+          pb.enqueued_ms = static_cast<uint32_t>(p_us / 1000);
+          pb.pushed_us = p_us;
+          txq.push(std::move(pb));
+          txq.flush();
+        }
         // dq_split accounting: ring wait is loop-top → read return (the
         // interval during which this frame did not yet exist for us), CPU is
         // read return → all bodies pushed (fragmentation + GF256 + SBI pack,
