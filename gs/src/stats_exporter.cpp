@@ -264,10 +264,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                        {"probation_fails", c.probation_fails},
                        {"starved_drops", c.starved_drops},
                        {"timeout_drops", c.timeout_drops},
-                       {"probes_started", c.probes_started},
-                       {"probes_ok", c.probes_ok},
-                       {"probe_fails", c.probe_fails},
-                       {"probe_aborts", c.probe_aborts},
+                       {"promotes_probed", c.promotes_probed},
+                       {"probe_holds", c.probe_holds},
                        {"demotes_s3_residual", c.demotes_s3_residual},
                        {"demotes_s3_util", c.demotes_s3_util},
                        {"demotes_fade", c.demotes_fade}};
@@ -281,18 +279,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                          {"u", clamp_util(c.last_event_u)},
                          {"snr", snr_or_null(c.last_event_snr_db)},
                          {"evm", snr_or_null(c.last_event_evm_db)}};
-    if (c.last_probe_t_ms > 0) {
-      ctl["last_probe"] = {{"t_ms", c.last_probe_t_ms},
-                           {"rung", c.last_probe_rung},
-                           {"outcome", c.last_probe_outcome},
-                           {"snr", snr_or_null(c.last_probe_snr_db)},
-                           {"evm", snr_or_null(c.last_probe_evm_db)},
-                           {"u_pred", clamp_util(c.last_probe_u_pred)},
-                           {"dur_ms", c.last_probe_dur_ms}};
-    } else {
-      ctl["last_probe"] = nullptr;
-    }
-
     // Per-rung EWMA store (spec 2026-08-13): additive, self-describing.
     json rungs = json::array();
     for (std::size_t i = 0; i < c.rungs.size(); ++i) {
@@ -319,6 +305,31 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     link["rungs"] = std::move(rungs);
   } else {
     link["ctl"] = nullptr;
+  }
+
+  // Continuous probe gate (probe-stream, 2026-09-04): unconditional, unlike
+  // ctl above -- a pinned link still has no controller but can still export
+  // the probe gate's (off) state, so this sits outside the `if (in.ctl)`.
+  {
+    const StatsProbeIn& p = in.probe;
+    json pj;
+    pj["on"] = p.on;
+    pj["rung"] = p.rung;
+    pj["mcs"] = p.mcs;
+    pj["state"] = p.state;
+    pj["u"] = p.have_sample ? json(clamp_util(p.u)) : json(nullptr);
+    pj["loss"] = p.have_sample ? json(p.loss) : json(nullptr);
+    pj["streak_ms"] = p.streak_ms;
+    pj["n"] = p.n;
+    pj["exp"] = p.exp;
+    pj["rx"] = p.rx;
+    pj["off_profile"] = p.off_profile;
+    json cards = json::array();
+    for (const auto& c : p.cards)
+      cards.push_back({{"loss", c.have ? json(c.loss) : json(nullptr)},
+                       {"rx", c.rx}});
+    pj["cards"] = std::move(cards);
+    link["probe"] = std::move(pj);
   }
 
   // The drone's per-rung TX spec is deterministic from the commanded op

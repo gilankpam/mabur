@@ -36,6 +36,7 @@ CtlLog::CtlLog(const std::string& dir, const std::string& header_info) {
       next_idx = std::max(next_idx, idx + 1);
   }
   closedir(d);
+  index_ = next_idx;
 
   // Date suffix is cosmetic only (RTC is wrong at boot) -- matches the
   // statsrec.py file-naming convention. localtime_r failure (e.g. a
@@ -63,7 +64,7 @@ CtlLog::CtlLog(const std::string& dir, const std::string& header_info) {
   }
   // Line-buffered: a power cut loses at most the current line.
   std::setvbuf(f_, nullptr, _IOLBF, 0);
-  std::fprintf(f_, "ctllog 9 %s\n", header_info.c_str());
+  std::fprintf(f_, "ctllog 10 %s\n", header_info.c_str());
 }
 
 CtlLog::~CtlLog() {
@@ -73,11 +74,15 @@ CtlLog::~CtlLog() {
 void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
                      double resid, double u3, double resid3, double evm_db,
                      double resid_cur, double drssi, double dsnr,
-                     double rssi_dbm) {
+                     double rssi_dbm, int probe_rung, double probe_u,
+                     uint64_t probe_n) {
   if (!f_) return;
-  std::fprintf(f_, "S %.0f %d %.4f %.1f %.4f %.4f %.4f %.1f %.4f %.1f %.1f %.1f\n",
+  std::fprintf(f_,
+               "S %.0f %d %.4f %.1f %.4f %.4f %.4f %.1f %.4f %.1f %.1f %.1f "
+               "%d %.4f %llu\n",
                t_ms, rung, u, snr_db, resid, clamp_util(u3), resid3, evm_db,
-               resid_cur, drssi, dsnr, rssi_dbm);
+               resid_cur, drssi, dsnr, rssi_dbm, probe_rung,
+               clamp_util(probe_u), static_cast<unsigned long long>(probe_n));
 }
 
 void CtlLog::event(double t_ms, int from, int to, const char* reason,
@@ -91,11 +96,11 @@ void CtlLog::event(double t_ms, int from, int to, const char* reason,
                clamp_util(u), snr_db, evm_db);
 }
 
-void CtlLog::probe(double t_ms, int rung, const char* outcome, double snr_db,
-                    double u_pred, int dur_ms, double evm_db) {
+void CtlLog::probe(double t_ms, int rung, const char* state, double snr_db,
+                    double u, int prev_dur_ms, double evm_db) {
   if (!f_) return;
-  std::fprintf(f_, "P %.0f %d %s %.1f %.4f %d %.1f\n", t_ms, rung, outcome,
-               snr_db, clamp_util(u_pred), dur_ms, evm_db);
+  std::fprintf(f_, "P %.0f %d %s %.1f %.4f %d %.1f\n", t_ms, rung, state,
+               snr_db, clamp_util(u), prev_dur_ms, evm_db);
 }
 
 void CtlLog::penalty(double t_ms, int rung, int k, double until_ms) {

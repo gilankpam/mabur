@@ -162,7 +162,7 @@ class RingReader:
 def extract_t_ms(datagram):
     """Sideport datagram's TOP-LEVEL t_ms (the live maburgs clock), or None.
     Must be a real JSON parse: the datagram also serializes nested, frozen
-    timestamps (ctl.last_event.t_ms, last_probe.t_ms) before the top-level
+    timestamps (ctl.last_event.t_ms) before the top-level
     key, so any first-match-in-bytes shortcut returns a stale clock. Called
     at most every sync_period_s — parse cost is irrelevant."""
     try:

@@ -18,11 +18,13 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 9 <header_info>                                  # once, first line
+//   ctllog 10 <header_info>                                 # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
-//     <drssi> <dsnr> <rssi_dbm>                # dwell sample, link.ctl_log_period_ms
+//     <drssi> <dsnr> <rssi_dbm> <probe_rung> <probe_u> <probe_n>
+//                                              # dwell sample, link.ctl_log_period_ms
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
-//   P <t_ms> <rung> <pass|fail|abort> <snr_db> <u_pred> <dur_ms> <evm_db>
+//   P <t_ms> <rung> <clean|lossy|noinfo> <snr_db> <u> <dur_ms> <evm_db>
+//                                                            # probe gate EDGE
 //   N <t_ms> <rung> <k> <until_ms>                           # penalty booked
 //   R <t_ms> <rung> <u> <resid> <u3> <resid3> <evm> <evm_sd> <n> <age_s> <probe_u> <probe_n>
 //                                                            # per-rung EWMA store snapshot
@@ -41,6 +43,39 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 10 (2026-09-04, probe-stream): the S line gains three trailing
+// fields -- probe_rung, probe_u, probe_n -- describing the CONTINUOUS probe
+// gate's commanded state at the sample instant (LadderController::
+// probe_gate()), not a discrete probe attempt: probe_rung is -1 and
+// probe_u/probe_n are nan/0 whenever no probe is commanded this tick (the
+// ordinary steady-state case). probe_u is the probe candidate's own utility
+// sample (u_pred's continuous successor), probe_n the sample count backing
+// it.
+//
+// The P line is REPURPOSED, not merely reformatted: through v9 it recorded
+// one row per discrete probe ATTEMPT (pass/fail/abort, gs/src/probe_track.h
+// era). From v10 it is a GATE EDGE -- one row every time
+// LadderController::probe_gate()'s state changes (LadderController::
+// last_probe_edge()) -- and the vocabulary in the third field is
+// clean|lossy|noinfo, not pass|fail|abort. `u` is the util sample that
+// caused the edge (the same continuous quantity as S's probe_u, clamped);
+// `dur_ms` is the duration of the PREVIOUS state (how long the gate held
+// before flipping), not a probe's own runtime; snr_db/evm_db are the pooled
+// RF labels for the rung the gate is parked on at the edge. A parser
+// counting v9 "pass" rows against v10 P lines is counting a different
+// thing -- discrete attempts vs. continuous-state transitions -- and must
+// not pool them.
+//
+// The E line's reason vocabulary gains `promote_probed` (a promote gated by
+// a clean probe read, LadderController's probe-before-promote path) --
+// existing reasons are unchanged.
+//
+// R's probe_u/probe_n are UNCHANGED in line position but change MEANING:
+// through v9 they were the last completed discrete probe's stats; from v10
+// they are the same continuous EWMA the S/P lines above describe (~20
+// samples/s while a probe candidate is parked), so an R row's probe_u now
+// updates far more often and never freezes between discrete attempts.
 //
 // ctllog 9 (2026-09-02, residual-phantom-demotes): line formats are
 // UNCHANGED from v8, but every RESIDUAL quantity changes MEANING. Through
@@ -149,14 +184,19 @@ class CtlLog {
 
   bool ok() const { return f_ != nullptr; }
   const std::string& path() const { return path_; }
+  int index() const { return index_; }  // the NNNN this log opened with
 
   void sample(double t_ms, int rung, double u, double snr_db, double resid,
               double u3, double resid3, double evm_db, double resid_cur,
-              double drssi, double dsnr, double rssi_dbm);
+              double drssi, double dsnr, double rssi_dbm, int probe_rung,
+              double probe_u, uint64_t probe_n);
   void event(double t_ms, int from, int to, const char* reason, double u,
              double snr_db, double evm_db);
-  void probe(double t_ms, int rung, const char* outcome, double snr_db,
-             double u_pred, int dur_ms, double evm_db);
+  // Probe gate EDGE (ctllog 10): state is clean|lossy|noinfo, u is the
+  // sample that caused the edge, prev_dur_ms the duration of the state the
+  // gate just left.
+  void probe(double t_ms, int rung, const char* state, double snr_db,
+             double u, int prev_dur_ms, double evm_db);
   void penalty(double t_ms, int rung, int k, double until_ms);
   void rung(double t_ms, int rung, double u, double resid, double u3,
             double resid3, double evm_db, double evm_sd_db, uint64_t n,
@@ -165,6 +205,7 @@ class CtlLog {
  private:
   std::FILE* f_ = nullptr;
   std::string path_;
+  int index_ = 0;
 };
 
 }  // namespace maburgs

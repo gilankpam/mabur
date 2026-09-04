@@ -90,19 +90,17 @@ struct StatsCtlIn {
   // --- s3 probe-before-promote / s3 steady-state (Tasks 4/5) ---
   double util3 = 0.0;  // LadderController::util3(); may carry a 1e9
                         // division-guard sentinel -> clamped at the exporter
-  uint64_t probes_started = 0, probes_ok = 0, probe_fails = 0,
-           probe_aborts = 0;
   uint64_t demotes_s3_residual = 0, demotes_s3_util = 0;
   double last_event_snr_db = 0.0;  // NaN -> JSON null
   double last_event_evm_db = 0.0;  // NaN -> JSON null (label-only, like snr)
-  // Last completed probe; last_probe_t_ms == 0 means "never probed" -> null.
-  double last_probe_t_ms = 0;
-  int last_probe_rung = 0;
-  std::string last_probe_outcome = "none";
-  double last_probe_snr_db = 0.0;
-  double last_probe_evm_db = 0.0;  // NaN -> JSON null
-  double last_probe_u_pred = 0.0;  // may carry the 1e9 sentinel -> clamped
-  int last_probe_dur_ms = 0;
+  // Continuous probe gate counters (probe-stream, 2026-09-04): promotes
+  // gated by a clean probe read, and ticks the gate held a candidate rung
+  // WITHOUT promoting (lossy/noinfo, or clean but not yet due). Replace the
+  // old discrete-attempt counters (probes_started/probes_ok/probe_fails/
+  // probe_aborts) and last_probe_* snapshot, both retired with the discrete
+  // probe-attempt API (LadderController::last_probe()/probes_*()) -- the
+  // gate's live state is now StatsProbeIn / link.probe instead.
+  uint64_t promotes_probed = 0, probe_holds = 0;
 
   // Per-rung EWMA store snapshot, index = rung index (spec 2026-08-13).
   std::vector<StatsRungIn> rungs;
@@ -141,6 +139,31 @@ struct StatsRcfSlotIn {
   uint64_t au = 0, timeout = 0, passthru = 0;
 };
 
+// Continuous probe gate snapshot (probe-stream, 2026-09-04), straight from
+// LadderController::probe_gate() -- plain values only, same no-controller-
+// reference pattern as StatsCtlIn. Unlike StatsCtlIn::ctl this is NOT
+// optional on StatsInput: it always exports (link.probe is present even in
+// static-pin mode / with no ladder), reading on=false and everything else
+// at its default when there is no probe gate to report. have_sample=false
+// (and per-card have=false) -> the corresponding JSON field is null, same
+// convention as the rest of the sideport.
+struct StatsProbeIn {
+  bool on = false;      // a probe candidate is currently parked
+  int rung = -1;        // candidate rung index, -1 when off
+  int mcs = -1;         // candidate rung's MCS, -1 when off
+  std::string state = "off";  // off|clean|lossy|noinfo
+  bool have_sample = false;   // u/loss are meaningless until this is true
+  double u = 0.0, loss = 0.0;
+  int streak_ms = 0;     // time the gate has held its current state
+  uint64_t n = 0, exp = 0, rx = 0, off_profile = 0;
+  struct Card {
+    bool have = false;   // false -> this card's loss is JSON null
+    double loss = 0.0;
+    uint64_t rx = 0;
+  };
+  std::vector<Card> cards;
+};
+
 struct StatsInput {
   uint32_t vtx_id = 0;
   StatsRcfSlotIn rcf_slot;
@@ -173,6 +196,9 @@ struct StatsInput {
   // LadderController snapshot; nullopt in static-pin mode -> JSON "ctl": null
   // (the ladder is never ticked there — see VrxController::ctl() comment).
   std::optional<StatsCtlIn> ctl;
+  // Continuous probe gate snapshot; unconditional (see StatsProbeIn) so a
+  // pinned link still exports link.probe (with on=false).
+  StatsProbeIn probe;
   uint64_t frames_clean = 0, frames_truncated = 0, frames_dropped = 0;
   uint64_t stall_resets = 0;
   // AU ring publish health (PR C: replaced the rtp/udp blocks -- video

@@ -594,14 +594,10 @@ TEST(ctl_block_shape_and_values) {
   ci.last_event_t_ms = 39243748; ci.last_event_from = 4; ci.last_event_to = 3;
   ci.last_event_reason = "util"; ci.last_event_u = 0.65;
   ci.util3 = 0.07;
-  ci.probes_started = 3; ci.probes_ok = 2; ci.probe_fails = 1; ci.probe_aborts = 0;
+  ci.promotes_probed = 3; ci.probe_holds = 5;
   ci.demotes_s3_residual = 1; ci.demotes_s3_util = 0;
   ci.last_event_snr_db = 27.5;
   ci.last_event_evm_db = -20.5;
-  ci.last_probe_t_ms = 1234; ci.last_probe_rung = 3;
-  ci.last_probe_outcome = "fail"; ci.last_probe_snr_db = 24.0;
-  ci.last_probe_evm_db = -21.0;
-  ci.last_probe_u_pred = 0.9; ci.last_probe_dur_ms = 600;
   in.ctl = ci;
   ex.poll(1000, in);
   const json ctl = cap.last()["link"]["ctl"];
@@ -631,40 +627,16 @@ TEST(ctl_block_shape_and_values) {
   CHECK(ctl["last_event"]["snr"].get<double>() > 27.49 && ctl["last_event"]["snr"].get<double>() < 27.51);
   CHECK(ctl["last_event"]["evm"].get<double>() > -20.51 && ctl["last_event"]["evm"].get<double>() < -20.49);
   CHECK(ctl["util3"].get<double>() > 0.069 && ctl["util3"].get<double>() < 0.071);
-  CHECK(ctl["counters"]["probes_started"] == 3);
-  CHECK(ctl["counters"]["probes_ok"] == 2);
-  CHECK(ctl["counters"]["probe_fails"] == 1);
-  CHECK(ctl["counters"]["probe_aborts"] == 0);
+  CHECK(ctl["counters"]["promotes_probed"] == 3);
+  CHECK(ctl["counters"]["probe_holds"] == 5);
   CHECK(ctl["counters"]["demotes_s3_residual"] == 1);
   CHECK(ctl["counters"]["demotes_s3_util"] == 0);
-  REQUIRE(!ctl["last_probe"].is_null());
-  CHECK(ctl["last_probe"]["t_ms"] == 1234);
-  CHECK(ctl["last_probe"]["rung"] == 3);
-  CHECK(ctl["last_probe"]["outcome"] == "fail");
-  CHECK(ctl["last_probe"]["snr"].get<double>() > 23.99 && ctl["last_probe"]["snr"].get<double>() < 24.01);
-  CHECK(ctl["last_probe"]["evm"].get<double>() > -21.01 && ctl["last_probe"]["evm"].get<double>() < -20.99);
-  CHECK(ctl["last_probe"]["u_pred"] == 0.9);
-  CHECK(ctl["last_probe"]["dur_ms"] == 600);
+  CHECK(!ctl.contains("last_probe"));
 }
 
-// last_probe_t_ms == 0 (never probed) must serialize as a null last_probe,
-// not an object with zeroed fields -- a consumer would otherwise mistake it
-// for a real probe that started at t=0.
-TEST(ctl_last_probe_null_when_never_probed) {
-  Capture cap;
-  StatsExporter ex(1, 500, cap.fn());
-  StatsInput in = base_input();
-  StatsCtlIn ci;
-  ci.last_probe_t_ms = 0;
-  in.ctl = ci;
-  ex.poll(1000, in);
-  const json ctl = cap.last()["link"]["ctl"];
-  CHECK(ctl["last_probe"].is_null());
-}
-
-// NaN SNR (no reading known this window) must serialize as JSON null on both
-// last_event.snr and last_probe.snr -- never a bare `nan` token, which is not
-// valid JSON and breaks every jq-based consumer.
+// NaN SNR (no reading known this window) must serialize as JSON null on
+// last_event.snr -- never a bare `nan` token, which is not valid JSON and
+// breaks every jq-based consumer.
 TEST(ctl_snr_nan_is_json_null) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
@@ -672,23 +644,17 @@ TEST(ctl_snr_nan_is_json_null) {
   StatsCtlIn ci;
   ci.last_event_snr_db = std::nan("");
   ci.last_event_evm_db = std::nan("");
-  ci.last_probe_t_ms = 500;  // non-zero so last_probe is emitted
-  ci.last_probe_snr_db = std::nan("");
-  ci.last_probe_evm_db = std::nan("");
   in.ctl = ci;
   ex.poll(1000, in);
   const json ctl = cap.last()["link"]["ctl"];
   CHECK(ctl["last_event"]["snr"].is_null());
   CHECK(ctl["last_event"]["evm"].is_null());
-  REQUIRE(!ctl["last_probe"].is_null());
-  CHECK(ctl["last_probe"]["snr"].is_null());
-  CHECK(ctl["last_probe"]["evm"].is_null());
 }
 
-// util3 and last_probe.u_pred (and last_event.u for s3 reasons) can carry a
-// 1e9 division-zero-guard sentinel from the controller (unreachable in
-// practice, see LadderController::update()). The exporter must clamp it to a
-// sane ceiling rather than putting a near-billion float on the wire.
+// util3 and last_event.u (for s3 reasons) can carry a 1e9 division-zero-
+// guard sentinel from the controller (unreachable in practice, see
+// LadderController::update()). The exporter must clamp it to a sane
+// ceiling rather than putting a near-billion float on the wire.
 TEST(ctl_util_sentinel_is_clamped) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
@@ -696,15 +662,11 @@ TEST(ctl_util_sentinel_is_clamped) {
   StatsCtlIn ci;
   ci.util3 = 1e9;
   ci.last_event_u = 1e9;
-  ci.last_probe_t_ms = 700;
-  ci.last_probe_u_pred = 1e9;
   in.ctl = ci;
   ex.poll(1000, in);
   const json ctl = cap.last()["link"]["ctl"];
   CHECK(ctl["util3"].get<double>() <= 1e3);
   CHECK(ctl["last_event"]["u"].get<double>() <= 1e3);
-  REQUIRE(!ctl["last_probe"].is_null());
-  CHECK(ctl["last_probe"]["u_pred"].get<double>() <= 1e3);
 }
 
 TEST(ctl_default_event_is_none_with_zeros) {
@@ -721,8 +683,81 @@ TEST(ctl_default_event_is_none_with_zeros) {
   CHECK(ctl["last_event"]["u"].get<double>() == 0.0);
   CHECK(ctl["penalized"].empty());
   CHECK(ctl["util3"].get<double>() == 0.0);
-  CHECK(ctl["last_probe"].is_null());
-  CHECK(ctl["counters"]["probes_started"] == 0);
+  CHECK(!ctl.contains("last_probe"));
+  CHECK(ctl["counters"]["promotes_probed"] == 0);
+  CHECK(ctl["counters"]["probe_holds"] == 0);
+}
+
+// link.probe (probe-stream, 2026-09-04): the continuous probe gate snapshot,
+// unconditional -- present even when in.ctl is nullopt (static-pin mode).
+TEST(probe_block_shape_and_values) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsCtlIn ci;
+  ci.promotes_probed = 7;
+  in.ctl = ci;
+  StatsProbeIn p;
+  p.on = true; p.rung = 3; p.mcs = 5; p.state = "clean";
+  p.have_sample = true; p.u = 0.12; p.loss = 0.04;
+  p.streak_ms = 1800; p.n = 60;
+  p.cards = {{true, 0.0, 10}, {true, 0.05, 9}};
+  in.probe = p;
+  ex.poll(1000, in);
+  const json j = cap.last();
+  const json pj = j["link"]["probe"];
+  CHECK(pj["on"] == true);
+  CHECK(pj["rung"] == 3);
+  CHECK(pj["mcs"] == 5);
+  CHECK(pj["state"] == "clean");
+  CHECK(pj["u"].get<double>() > 0.119 && pj["u"].get<double>() < 0.121);
+  CHECK(pj["loss"].get<double>() > 0.039 && pj["loss"].get<double>() < 0.041);
+  CHECK(pj["streak_ms"] == 1800);
+  CHECK(pj["n"] == 60);
+  REQUIRE(pj["cards"].size() == 2);
+  CHECK(pj["cards"][0]["loss"].get<double>() == 0.0);
+  CHECK(pj["cards"][0]["rx"] == 10);
+  CHECK(pj["cards"][1]["loss"].get<double>() > 0.049 && pj["cards"][1]["loss"].get<double>() < 0.051);
+  CHECK(pj["cards"][1]["rx"] == 9);
+  CHECK(!j["link"]["ctl"].contains("last_probe"));
+  CHECK(j["link"]["ctl"]["counters"]["promotes_probed"] == 7);
+}
+
+// have_sample=false and a card's have=false must serialize as JSON null,
+// not a plausible-looking 0.0 -- a consumer would otherwise mistake "no
+// sample yet" for "measured zero loss".
+TEST(probe_block_no_sample_is_null) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  StatsProbeIn p;
+  p.on = false;  // gate off entirely: default state
+  p.cards = {{false, 0.0, 0}};
+  in.probe = p;
+  ex.poll(1000, in);
+  const json pj = cap.last()["link"]["probe"];
+  CHECK(pj["on"] == false);
+  CHECK(pj["rung"] == -1);
+  CHECK(pj["mcs"] == -1);
+  CHECK(pj["state"] == "off");
+  CHECK(pj["u"].is_null());
+  CHECK(pj["loss"].is_null());
+  REQUIRE(pj["cards"].size() == 1);
+  CHECK(pj["cards"][0]["loss"].is_null());
+}
+
+// link.probe must still export (on=false) in static-pin mode, where in.ctl
+// is nullopt and link.ctl itself is null -- a pinned link's probe gate
+// state is still meaningful/measurable independent of the ladder controller.
+TEST(probe_block_present_when_ctl_null) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();  // in.ctl left nullopt (pin mode)
+  ex.poll(1000, in);
+  const json j = cap.last();
+  CHECK(j["link"]["ctl"].is_null());
+  REQUIRE(!j["link"]["probe"].is_null());
+  CHECK(j["link"]["probe"]["on"] == false);
 }
 
 TEST(ctl_ladder_and_thresholds) {

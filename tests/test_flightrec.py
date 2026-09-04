@@ -211,7 +211,7 @@ def test_extract_t_ms():
     assert flightrec.extract_t_ms(b'{"v":1}') is None
     assert flightrec.extract_t_ms(b"not json at all") is None
     # ONLY the top-level t_ms counts: the real datagram serializes nested,
-    # frozen timestamps (ctl.last_event.t_ms, last_probe.t_ms) BEFORE the
+    # frozen timestamps (ctl.last_event.t_ms) BEFORE the
     # top-level key — a byte-order regex returns the frozen one (live bug,
     # session 0024: every sync line carried last_event's 2722491).
     dg = (b'{"link":{"ctl":{"last_event":{"t_ms":2722491.0}}},'
