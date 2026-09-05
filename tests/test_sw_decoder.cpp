@@ -490,6 +490,7 @@ TEST(arrival_counters_survive_encoder_restart) {
   SwEncoder e2(cfg, /*initial_seq=*/5000000);  // far jump -> decoder reset
   std::vector<std::vector<uint8_t>> b;
   for (int i = 0; i < 100; ++i) { auto p = pat(62, i); for (auto& env : e2.add_packet(p.data(), p.size())) b.push_back(env); }
+  for (auto& env : e2.flush()) b.push_back(env);
   for (auto& env : b) d.add_symbol(env.data(), env.size(), 2000);
   CHECK(d.resets() == 1);
   CHECK(d.arr_expected() == e0 + 68);
