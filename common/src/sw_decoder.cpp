@@ -30,6 +30,7 @@ void SwDecoder::reset_state(uint64_t v) {
   recovered_await_src_.clear();
   newest_v_ = v;
   base_ = v;
+  arr_.reset(v);
   ++resets_;
   wm_open_ = false;
   wm_valid_ = false;
@@ -219,6 +220,11 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
       wm_open_ = false;
       if (wm_valid_ && v > 0 && v - 1 > wm_) wm_ = v - 1;
     }
+    // Arrival accounting BEFORE the dedup/stale early-return: a second-card
+    // copy still sets the heard bit (idempotent), a copy behind the settle
+    // line counts late.
+    arr_.on_source(v, arr_stale_end());
+    arr_.advance(v, arr_stale_end());
     if (v < live_floor() || known_.count(v)) {
       // First direct copy of a repair-recovered symbol: the channel did
       // deliver it, the repair just won the race. Not a stale dup.
@@ -250,6 +256,7 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
   }
   if (b == SwBoundary::kPre && wm_valid_ && wend - 1 > wm_) wm_ = wend - 1;
   advance(wend - 1);  // a repair implies its whole window was sent
+  arr_.advance(wend - 1, arr_stale_end());
   if (ws < live_floor()) {
     // References a seq older than the horizon — unsolvable, and (if any
     // covered seq is still unknown) that seq is already booked abandoned.

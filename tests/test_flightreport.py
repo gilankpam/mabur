@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -644,6 +645,23 @@ def test_false_fade_and_attribution_miss():
     assert misses[0]["t_ms"] == 20150.0
 
 
+def test_s3_settle_refire_canary():
+    # 5->4 s3_residual, then 4->3 at +303 ms = the debris re-fire; a later
+    # 3->2 at +2000 ms is a real second measurement and must not count, nor
+    # a 150 ms follow-up whose predecessor is a plain residual.
+    E = [
+        {"t_ms": 1000.0, "from": 5, "to": 4, "reason": "s3_residual"},
+        {"t_ms": 1303.0, "from": 4, "to": 3, "reason": "s3_residual"},
+        {"t_ms": 3303.0, "from": 3, "to": 2, "reason": "s3_residual"},
+        {"t_ms": 9000.0, "from": 2, "to": 3, "reason": "promote_probed"},
+        {"t_ms": 12000.0, "from": 3, "to": 2, "reason": "residual"},
+        {"t_ms": 12150.0, "from": 2, "to": 1, "reason": "util"},
+    ]
+    hits = flightreport.s3_settle_refires(E)
+    assert [h["t_ms"] for h in hits] == [1303.0], hits
+    print("✓ s3 settle refire canary test passed!")
+
+
 def test_find_episodes_gap_boundary_closes_run():
     """The episode definition is 'consecutive demotes <= gap_ms apart';
     a gap of exactly gap_ms (default 3000) must NOT close the episode, and
@@ -672,6 +690,120 @@ def test_find_episodes_gap_boundary_closes_run():
     assert eps_over[1]["steps"] == 1
 
 
+CTL10 = """ctllog 10 ladder=0/200:200,2/100:100,4/50:50 down_util=0.60 up_util=0.15 probe_offset=1
+S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 2 0.1200 60
+P 1200 2 lossy 30.0 0.9000 4000 -24.0
+E 1500 1 0 residual 0.4000 29.0 -23.0
+P 2000 1 clean 29.5 0.0500 800 -23.5
+P 9000 1 lossy 29.5 0.9000 7000 -23.5
+E 20000 0 1 promote_probed 0.0100 31.0 -24.0
+"""
+
+
+CTL10_HOLDS = """ctllog 10 ladder=0/100:50,1/100:50,2/100:50 down_util=0.35 up_util=0.15 probe_offset=1
+E 1000 0 1 promote_probed 0.0000 31.0 -24.0
+P 1200 2 lossy 30.0 0.4000 500 -24.0
+P 2000 2 clean 29.5 0.0000 800 -23.5
+E 4000 1 2 promote_probed 0.0000 31.0 -24.0
+E 4500 2 1 residual 0.4000 29.0 -23.0
+P 5000 2 lossy 29.5 0.4000 400 -23.5
+E 8000 1 0 residual 0.4000 29.0 -23.0
+"""
+
+
+class CtlLog10Test(unittest.TestCase):
+    def _write(self, text):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "ctl-0003_20260904.log")
+        with open(p, "w") as f: f.write(text)
+        return p
+
+    def test_v10_s_and_p_parse(self):
+        log = flightreport.load_ctllog(self._write(CTL10))
+        self.assertEqual(log["header"]["_version"], 10)
+        self.assertEqual(log["header"]["probe_offset"], "1")
+        s = log["S"][0]
+        self.assertEqual(s["probe_rung"], 2); self.assertAlmostEqual(s["probe_u"], 0.12)
+        self.assertEqual(s["probe_n"], 60)
+        self.assertEqual(log["P"][0]["outcome"], "lossy")
+
+    def test_wall_fit_maps_gate_states(self):
+        log = flightreport.load_ctllog(self._write(CTL10))
+        fit = flightreport.wall_fit([p for p in log["P"] if p["rung"] == 1])
+        self.assertEqual(fit["n_pass"], 1); self.assertEqual(fit["n_fail"], 1)
+
+    def test_probe_lead_report(self):
+        log = flightreport.load_ctllog(self._write(CTL10))
+        leads = flightreport.probe_lead(log["E"], log["P"])
+        self.assertEqual(len(leads["episodes"]), 1)
+        self.assertAlmostEqual(leads["episodes"][0]["lead_ms"], 300.0)   # 1500 - 1200
+        self.assertEqual(leads["false_alarms"], 1)                        # lossy@9000, no demote in 10 s
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): flightreport.print_probe_report(log, None)
+        self.assertIn("lead", buf.getvalue())
+
+    def test_probe_lead_bounded_to_the_hold(self):
+        # flight-0020 2026-09-05: a lossy edge BEFORE the promote into the
+        # rung is not a warning about that hold, and a demote of the NEXT
+        # hold does not vindicate an edge the gate then overrode.
+        log = flightreport.load_ctllog(self._write(CTL10_HOLDS))
+        leads = flightreport.probe_lead(log["E"], log["P"])
+        eps = leads["episodes"]
+        self.assertEqual([e["t0"] for e in eps], [4500.0, 8000.0])
+        self.assertIsNone(eps[0]["lead_ms"])          # lossy@1200 predates the 4000 promote
+        self.assertEqual(eps[0]["edges"], 0)
+        self.assertAlmostEqual(eps[1]["lead_ms"], 3000.0)   # 8000 - 5000, entry = 4500 demote
+        self.assertEqual(eps[1]["edges"], 1)
+        self.assertEqual(leads["false_alarms"], 1)     # lossy@1200: next E is a promote
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): flightreport.print_probe_report(log, None)
+        self.assertIn("edges=1", buf.getvalue())
+
+    def test_probelog_loads_and_summarises(self):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "probe-0003_20260904.log")
+        with open(p, "w") as f:
+            f.write("probelog 1 bpb=4\n1000 10 6 5 4 3 30.5 28.0 -24.0 -22.0\n"
+                    "1033 12 6 6 2 1 30.0 nan -23.0 nan\n")
+        rows = flightreport.load_probelog(p)
+        self.assertEqual(rows["bpb"], 4); self.assertEqual(len(rows["rows"]), 2)
+        summ = flightreport.probelog_summary(rows)
+        self.assertEqual(summ[6]["bodies"], 2)
+        self.assertEqual(summ[6]["lost_bodies"], 1)   # seq 11 missing
+        self.assertEqual(summ[6]["blocks_ok"], 6)
+        self.assertIsNone(rows["rows"][0]["first_ms"])   # v1: no arrival stamp
+
+    def test_probelog_v2_first_ms_and_au_offsets(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "probe-0003_20260904.log")
+        with open(p, "w") as f:
+            f.write("probelog 2 bpb=4\n"
+                    "1130 10 4 5 4 3 30.5 28.0 -24.0 -22.0 1024.500\n"
+                    "1160 11 4 6 4 3 30.0 28.0 -23.0 -22.0 1058.250\n"
+                    "1190 12 4 7 4 3 30.0 28.0 -23.0 -22.0 1091.000\n")
+        pl = flightreport.load_probelog(p)
+        self.assertAlmostEqual(pl["rows"][0]["first_ms"], 1024.5)
+        # au-NNNN.log v2 rows: t_us pts sid fid len flags nal0 t_first
+        # t_complete enc dq -- t_complete is mono us, same clock as first_ms.
+        os.makedirs(os.path.join(d, "log"))
+        a = os.path.join(d, "log", "au-0007.log")
+        with open(a, "w") as f:
+            f.write("# aulog 2\n"
+                    "1 0 0 5 100 0x80 1 1010000 1015000 0 0\n"   # base fid 5: ignored
+                    "2 0 1 5 100 0x80 1 1012000 1020000 0 0\n"   # enh fid 5: +4.5 ms
+                    "3 0 1 6 100 0x80 1 1045000 1050000 0 0\n"   # enh fid 6: +8.25 ms
+                    "4 0 1 99 100 0x80 1 1080000 1085000 0 0\n") # no probe row
+        au = flightreport.load_aulog(a)
+        offs = flightreport.probe_au_offsets(pl, au)
+        self.assertEqual(sorted(offs), [4.5, 8.25])
+        # Auto-location: the au log lives in <dir>/log/ under flightrec's own
+        # index, so the match is by mono-time overlap, not by NNNN.
+        self.assertEqual(flightreport.find_aulog_for(p, pl), a)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_probe_report({"E": [], "P": []}, pl, au)
+        self.assertIn("completion->probe", buf.getvalue())
+        self.assertIn("n=2", buf.getvalue())
+
+
 if __name__ == "__main__":
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
@@ -686,3 +818,5 @@ if __name__ == "__main__":
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()
     test_find_episodes_gap_boundary_closes_run()
+    test_s3_settle_refire_canary()
+    unittest.main()

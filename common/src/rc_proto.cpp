@@ -52,7 +52,7 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-constexpr size_t RCF_HEAD_LEN = 14;
+constexpr size_t RCF_HEAD_LEN = 15;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
 constexpr size_t TELEM_LEN = 83;  // 2026-09-03: +roi_qp (i8), -qp (u8, never filled) => net 83
@@ -61,45 +61,33 @@ constexpr size_t TELEM_LEN = 83;  // 2026-09-03: +roi_qp (i8), -qp (u8, never fi
 
 std::vector<uint8_t> pack_rcf(const Rcf& r) {
   std::vector<uint8_t> body;
-  body.reserve(RCF_HEAD_LEN + 3);
+  body.reserve(RCF_HEAD_LEN + 2);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_RCF);
-  body.push_back(static_cast<uint8_t>(r.probe3 ? RCF_F_PROBE_ENH : 0));
+  body.push_back(0);  // flags: nothing
   put32(body, r.vtx_id);
   put16(body, r.seq);
   body.push_back(r.profile);
   body.push_back(overhead_to_x100(r.fec_overhead_base));
   body.push_back(overhead_to_x100(r.fec_overhead_enh));
-  if (r.probe3) body.push_back(r.probe_profile);
-
+  body.push_back(r.probe_profile);
   put_crc(body);
   return body;
 }
 
 std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   if (len < RCF_HEAD_LEN + 2) return std::nullopt;
-  uint16_t magic = get16(buf, 0);
-  uint8_t ver = buf[2];
-  uint8_t type = buf[3];
-  if (magic != RC_MAGIC || ver != RC_VERSION || type != T_RCF) return std::nullopt;
-
-  uint8_t flags = buf[4];
-  size_t body_len = RCF_HEAD_LEN + ((flags & RCF_F_PROBE_ENH) ? 1 : 0);
-  if (len < body_len + 2) return std::nullopt;
-  uint16_t crc = get16(buf, body_len);
-  if (crc != crc16_ccitt(buf, body_len)) return std::nullopt;
-
+  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_RCF)
+    return std::nullopt;
+  if (get16(buf, RCF_HEAD_LEN) != crc16_ccitt(buf, RCF_HEAD_LEN)) return std::nullopt;
   Rcf r;
   r.vtx_id = get32(buf, 5);
   r.seq = get16(buf, 9);
   r.profile = buf[11];
   r.fec_overhead_base = buf[12] / 100.0;
   r.fec_overhead_enh = buf[13] / 100.0;
-  if (flags & RCF_F_PROBE_ENH) {
-    r.probe3 = true;
-    r.probe_profile = buf[RCF_HEAD_LEN];   // now offset 14
-  }
+  r.probe_profile = buf[14];
   return r;
 }
 

@@ -140,7 +140,7 @@ class LossControl {
     // sN ...
     if (tok[0].size() != 2 || tok[0][0] != 's' ||
         tok[0][1] < '0' || tok[0][1] >= '0' + LossSim::kStreams) {
-      *reply = "err want s0..s3 | off | status";
+      *reply = "err want s0..s5 | off | status";
       return false;
     }
     const int sid = tok[0][1] - '0';

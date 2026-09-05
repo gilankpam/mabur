@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "mabur/sw_encoder.h"  // SwConfig
+#include "mabur/arrival_tracker.h"
 
 namespace mabur {
 
@@ -70,6 +71,14 @@ class SwDecoder {
   void close_boundary() { wm_open_ = false; }
   bool boundary_open() const { return wm_open_; }
   uint64_t syms_abandoned_stale() const { return syms_abandoned_stale_; }
+  // Arrival-time pre-FEC accounting (ArrivalTracker, spec 2026-09-05):
+  // expected = seq advance past the settle line, arrived = heard; stale
+  // twins follow the same watermark boundary abandonment uses.
+  uint64_t arr_expected() const { return arr_.expected(); }
+  uint64_t arr_arrived() const { return arr_.arrived(); }
+  uint64_t arr_expected_stale() const { return arr_.expected_stale(); }
+  uint64_t arr_arrived_stale() const { return arr_.arrived_stale(); }
+  uint64_t arr_late() const { return arr_.late(); }
   uint64_t symbols_in() const { return symbols_in_; }
   // Highest virtual seq seen or implied — its ADVANCE rate is the stream's
   // send rate (loss-robust; any arriving symbol moves it). 0 before the
@@ -125,6 +134,13 @@ class SwDecoder {
   bool wm_open_ = false, wm_valid_ = false;
   uint64_t wm_ = 0;
   uint64_t syms_abandoned_stale_ = 0;
+
+  // Stale boundary in the form ArrivalTracker::advance() takes: everything
+  // while a boundary is open, seqs <= wm_ once closed, nothing when inactive.
+  uint64_t arr_stale_end() const {
+    return wm_open_ ? ~0ull : (wm_valid_ ? wm_ + 1 : 0);
+  }
+  ArrivalTracker arr_;
 };
 
 }  // namespace mabur

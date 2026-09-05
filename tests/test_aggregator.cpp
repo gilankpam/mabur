@@ -6,6 +6,8 @@
 #include "mabur/msp_dp.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
+#include "mabur/probe_wire.h"
+#include "mabur/sw_wire.h"
 
 using namespace maburgs;
 
@@ -214,6 +216,32 @@ TEST(msp_stream_body_routes_to_msp_sink_not_video) {
 
   CHECK(msp_hits == 1);
   CHECK(video_hits == 0);
+}
+
+static std::vector<uint8_t> probe_body_fixture(uint32_t seq) {
+  return mabur::probe::build_probe_body(mabur::probe::ProbeHdr{seq, 0x06, 1}, 4,
+                                        static_cast<int>(mabur::sw::kSwHeaderLen) + 64);
+}
+
+TEST(probe_body_routes_to_probe_sink_not_video) {
+  Aggregator agg(vec_layers(), 512, 2);
+  int frags = 0, probes = 0; uint8_t probe_card = 99;
+  agg.set_frag_sink([&](const mabur::DecodedFrag&) { ++frags; });
+  agg.set_probe_sink([&](uint8_t card, const mabur::node::RxBody&) { ++probes; probe_card = card; });
+  agg.on_rx_body(msg(1, 10, true, probe_body_fixture(5)));
+  CHECK(probes == 1); CHECK(probe_card == 1); CHECK(frags == 0);
+  CHECK(agg.card(1).video_bodies == 0);
+  CHECK(agg.card(1).cls[static_cast<size_t>(RfClass::Probe)].frames == 1);
+  CHECK(agg.card(1).rf_pool.frames == 0);  // probe stays out of the RF label pool
+}
+
+TEST(crc_failed_probe_body_is_delivered_for_salvage) {
+  Aggregator agg(vec_layers(), 512, 2);
+  int probes = 0;
+  agg.set_probe_sink([&](uint8_t, const mabur::node::RxBody&) { ++probes; });
+  agg.on_rx_body(msg(0, 10, false, probe_body_fixture(5)));
+  CHECK(probes == 1);
+  CHECK(agg.card(0).crc_fail == 1);
 }
 
 // The drone's chip numbers every injected frame from ONE hardware seq

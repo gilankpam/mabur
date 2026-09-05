@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v9,
-warns on pre-v4, pre-v7, pre-v8 and pre-v9). Format is auto-detected from the
-first line.
-Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v11,
+warns on pre-v4, pre-v7, pre-v8, pre-v9 and pre-v10; prints a u/u3
+definition label -- arrival-booked vs completion-booked -- at the v11
+boundary). Format is auto-detected from the first line.
+Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log | probe-0001_20260905.log [au-NNNN.log]
+
+A ctl or probe log also gets the probe-stream report; the optional second
+argument names the flightrec au-NNNN.log to join probe rows to (otherwise
+the one in the same directory or ./log whose mono-time range overlaps).
 
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
 inside one 500ms export window surface only as the LAST transition. Reported counts are
 a lower bound due to this schema limitation."""
-import json, math, sys
+import glob, json, math, os, re, sys
 
 # Same clamp sentinel CtlLog writes at the source (mirrors StatsExporter's
 # clamp_util(): u3/u_pred/E's u carry a 1e9 zero-guard sentinel from
@@ -22,13 +27,16 @@ def is_sentinel(v):
 
 
 def load(path):
+    # Binary read: a power-off mid-write leaves the DVR's tail as garbage
+    # bytes (flight-0023, 2026-09-05), and a text-mode iterator raises
+    # UnicodeDecodeError before json ever sees the line.
     rows = []
-    with open(path) as f:
+    with open(path, "rb") as f:
         for line in f:
             line = line.strip()
             if not line: continue
             try: rows.append(json.loads(line))
-            except ValueError: continue
+            except (ValueError, UnicodeDecodeError): continue
     if not rows: sys.exit("no parseable datagrams")
     return rows
 
@@ -113,6 +121,10 @@ def load_ctllog(path):
                         "dsnr": float(toks[11]) if len(toks) >= 12 else float("nan"),
                         # 2026-08-15 label RSSI (ctllog 5); absent on older logs.
                         "rssi": float(toks[12]) if len(toks) >= 13 else float("nan"),
+                        # 2026-09-04 probe gate (ctllog 10); absent on older logs.
+                        "probe_rung": int(toks[13]) if len(toks) >= 16 else -1,
+                        "probe_u": float(toks[14]) if len(toks) >= 16 else float("nan"),
+                        "probe_n": int(toks[15]) if len(toks) >= 16 else 0,
                     })
                 elif tag == "E" and len(toks) >= 7:
                     E.append({
@@ -160,9 +172,17 @@ def wall_fit(records):
     is the midpoint between the max inlier-fail snr and the min pass snr;
     "insufficient data" when either side is empty.
     """
-    passes = [r for r in records if r["outcome"] == "pass"]
-    fails = [r for r in records if r["outcome"] == "fail"]
-    aborts = [r for r in records if r["outcome"] == "abort"]
+    # v10 (probe-stream) renamed the P-line vocabulary from probe outcomes
+    # (pass/fail/abort) to gate EDGES (clean/lossy/noinfo); map the new
+    # names onto the old ones so the rest of this function -- and every
+    # caller -- doesn't need to know which log version it's reading.
+    def _oc(r):
+        return {"clean": "pass", "lossy": "fail", "noinfo": "abort"}.get(
+            r["outcome"], r["outcome"])
+
+    passes = [r for r in records if _oc(r) == "pass"]
+    fails = [r for r in records if _oc(r) == "fail"]
+    aborts = [r for r in records if _oc(r) == "abort"]
 
     def valid(rs): return [r["snr_db"] for r in rs if not math.isnan(r["snr_db"])]
 
@@ -232,6 +252,11 @@ def print_wall_report(ctllog):
 
     print("CTL LOG HEADER")
     ver = header.get("_version", 0)
+    if ver and ver < 10:
+        print("  NOTE: ctllog v%d -- P lines are discrete probe outcomes "
+              "(one per 2 s probe); v10+ P lines are gate EDGES and R/S "
+              "probe_u is a continuous EWMA -- do not pool probe_u across "
+              "this line." % ver)
     if ver and ver < 9:
         print("  NOTE: ctllog v%d -- resid/resid_cur (S) and resid (R) come "
               "from the PACKET-level delivery window, which counted a late "
@@ -268,6 +293,10 @@ def print_wall_report(ctllog):
     for k, v in header.items():
         if k.startswith("_"): continue  # internal, e.g. _version -- not a header field
         print(f"  {k}={v}")
+    if ver >= 11:
+        print("  u/u3: arrival-booked pre-FEC loss (ArrivalTracker, ctllog 11+)")
+    elif ver:
+        print("  u/u3: completion-booked pre-FEC loss (lags the air; transition-inflated) -- pre-ctllog-11")
 
     print("DWELL (S records)")
     by_rung = {}
@@ -444,6 +473,27 @@ def attribution_misses(E, window_ms=200):
     return out
 
 
+def s3_settle_refires(E, settle_ms=300, slack_ms=60):
+    """Canary for the 2026-09-05 s3 debris double-step (flights 20/21: 13 of
+    14 s3_residual cascades took a second step at exactly s3_settle_ms and
+    were promoted straight back). A demote whose predecessor is a demote of
+    reason s3_residual landing settle_ms..settle_ms+slack_ms earlier is the
+    window re-firing on old-rung debris the instant the controller's gate
+    opens, not a second measurement. Should be ~0 once transition_edge.h
+    blanks s3_resid_cur; a nonzero count on a new recording means the
+    settle blank regressed or s3_settle_ms was tuned below the horizon lag."""
+    out = []
+    for prev, ev in zip(E, E[1:]):
+        if ev["to"] >= ev["from"] or prev["to"] >= prev["from"]:
+            continue
+        if prev["reason"] != "s3_residual":
+            continue
+        dt = ev["t_ms"] - prev["t_ms"]
+        if settle_ms <= dt <= settle_ms + slack_ms:
+            out.append(ev)
+    return out
+
+
 def print_episode_report(ctllog):
     E = ctllog.get("E", [])
     eps = find_episodes(E)
@@ -462,6 +512,205 @@ def print_episode_report(ctllog):
     misses = attribution_misses(E)
     print(f"  attribution-miss canary (residual <=200ms after a transition): "
           f"{len(misses)}" + ("" if not misses else " ⚠"))
+    refires = s3_settle_refires(E)
+    print(f"  s3-settle-refire canary (demote 300-360ms after an s3_residual demote): "
+          f"{len(refires)}" + ("" if not refires else " ⚠"))
+
+
+def probe_lead(E, P, horizon_ms=10000):
+    """Per demote episode: time from the FIRST `lossy` gate edge since the
+    rung was entered (the last E line before the episode, any direction) to
+    the episode's first demote; None if no lossy edge fell inside that hold.
+    Edges before the entry transition were scored while a different rung
+    was held -- typically the pre-promote flapping that the 2 s clean
+    streak then overrode -- and are not a warning about this hold, so they
+    never count (flight-0020, 2026-09-05: the unbounded search reported
+    5-19 s "leads" that predated the promote by that much). `edges` is the
+    number of lossy edges inside the hold. false_alarms = lossy edges whose
+    next E line is not a demote within horizon_ms: a promote in between
+    means the gate went clean and the ladder moved on, so a demote of the
+    NEXT hold does not vindicate the edge. Input for the v2 probe-demote
+    threshold."""
+    eps = find_episodes(E)
+    lossy = [p for p in P if p["outcome"] == "lossy"]
+    out = []
+    for e in eps:
+        entry = max((ev["t_ms"] for ev in E if ev["t_ms"] < e["t0"]), default=-math.inf)
+        inside = [p["t_ms"] for p in lossy if entry < p["t_ms"] <= e["t0"]]
+        out.append({"t0": e["t0"], "first_reason": e["first_reason"],
+                    "lead_ms": (e["t0"] - min(inside)) if inside else None,
+                    "edges": len(inside)})
+    false_alarms = 0
+    for p in lossy:
+        nxt = next((ev for ev in E if ev["t_ms"] >= p["t_ms"]), None)
+        hit = (nxt is not None and nxt["to"] < nxt["from"]
+               and nxt["t_ms"] - p["t_ms"] <= horizon_ms)
+        false_alarms += not hit
+    return {"episodes": out, "false_alarms": false_alarms, "lossy_edges": len(lossy)}
+
+
+def load_probelog(path):
+    """probe-NNNN_<date>.log: 'probelog <v> bpb=<n>' then
+    't_ms seq mcs enh_fid blocks_ok card_mask snr_c0 snr_c1 evm_c0 evm_c1'
+    plus, from probelog 2 (2026-09-05), 'first_ms': the radio's arrival
+    stamp of the body's first sight (mono ms, µs fraction) -- None on v1
+    rows, whose t_ms is the ~10 ms finalize tick and useless for timing."""
+    rows, bpb, version = [], 4, 1
+    with open(path) as f:
+        first = f.readline().split()
+        if len(first) >= 2 and first[0] == "probelog":
+            version = int(first[1])
+        for tok in first[2:]:
+            if tok.startswith("bpb="): bpb = int(tok[4:])
+        for line in f:
+            t = line.split()
+            if len(t) < 10: continue
+            try:
+                rows.append({"t_ms": float(t[0]), "seq": int(t[1]), "mcs": int(t[2]),
+                             "enh_fid": int(t[3]), "blocks_ok": int(t[4]),
+                             "card_mask": int(t[5]),
+                             "snr": [float(t[6]), float(t[7])],
+                             "evm": [float(t[8]), float(t[9])],
+                             "first_ms": float(t[10]) if version >= 2 and len(t) >= 11 else None})
+            except ValueError:
+                continue
+    return {"bpb": bpb, "version": version, "rows": rows}
+
+
+def load_aulog(path):
+    """flightrec's au-NNNN.log (docs/observability.md): '# aulog N' marker
+    then 't_us pts sid fid len flags nal0 [t_first t_complete enc dq]'.
+    Only what the probe join needs: sid, fid, t_first/t_complete (mono µs).
+    v1 rows (no marker) have no completion stamp and are skipped."""
+    rows, version = [], 1
+    with open(path) as f:
+        for line in f:
+            p = line.split()
+            if not p: continue
+            if p[0] == "#":
+                if len(p) >= 3 and p[1] == "aulog": version = int(p[2])
+                continue
+            if version < 2 or len(p) < 11: continue
+            try:
+                rows.append({"sid": int(p[2]), "fid": int(p[3]),
+                             "t_first": int(p[7]), "t_complete": int(p[8])})
+            except ValueError:
+                continue
+    return rows
+
+
+def find_aulog_for(probe_path, pl):
+    """The au log is written by flightrec under ITS OWN index (max+1 in
+    /media/dvr/log), not the ctl/probe NNNN, and into a different directory
+    (<ctl_log_dir>/log/). Both stamp CLOCK_MONOTONIC, which restarts at
+    boot, so the au log from the same boot is the one whose t_complete
+    range overlaps the probe rows' first_ms range the most."""
+    stamps = [r["first_ms"] * 1000 for r in pl["rows"] if r["first_ms"] is not None]
+    if not stamps: return None
+    lo, hi = min(stamps), max(stamps)
+    d = os.path.dirname(os.path.abspath(probe_path))
+    best, best_ov = None, 0
+    for cand in sorted(glob.glob(os.path.join(d, "au-*.log")) +
+                       glob.glob(os.path.join(d, "log", "au-*.log"))):
+        ts = [r["t_complete"] for r in load_aulog(cand) if r["t_complete"]]
+        if not ts: continue
+        ov = min(hi, max(ts)) - max(lo, min(ts))
+        if ov > best_ov: best, best_ov = cand, ov
+    return best
+
+
+def probe_au_offset_rows(pl, au_rows, max_gap_ms=1000.0):
+    """(probe row, offset_ms) for every probe row with an arrival stamp:
+    first_ms - t_complete of the ENH AU (sid 1) it rode behind. Joined on
+    enh_fid, a 16-bit id that wraps every ~36 min: of the AUs sharing a
+    fid, the one whose completion is nearest in time (and within
+    max_gap_ms) is taken. This IS the tail the RCF slotter has to wait out
+    after an enh completion before the burst is actually off air."""
+    by_fid = {}
+    for r in au_rows:
+        if r["sid"] == 1 and r["t_complete"]:
+            by_fid.setdefault(r["fid"], []).append(r["t_complete"])
+    out = []
+    for r in pl["rows"]:
+        if r["first_ms"] is None: continue
+        cands = by_fid.get(r["enh_fid"])
+        if not cands: continue
+        t = r["first_ms"] * 1000
+        tc = min(cands, key=lambda c: abs(t - c))
+        if abs(t - tc) <= max_gap_ms * 1000:
+            out.append((r, (t - tc) / 1000.0))
+    return out
+
+
+def probe_au_offsets(pl, au_rows, max_gap_ms=1000.0):
+    return [o for _, o in probe_au_offset_rows(pl, au_rows, max_gap_ms)]
+
+
+def _pct(v, q):
+    if not v: return float("nan")
+    s = sorted(v); i = min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))
+    return s[i]
+
+
+def probelog_summary(pl):
+    """Per mcs: received bodies, lost bodies (seq gaps, attributed to the
+    NEXT received body's mcs), surviving blocks, per-card body counts."""
+    out = {}
+    prev_seq = None
+    for r in pl["rows"]:
+        s = out.setdefault(r["mcs"], {"bodies": 0, "lost_bodies": 0, "blocks_ok": 0,
+                                       "card0": 0, "card1": 0})
+        if prev_seq is not None and r["seq"] > prev_seq + 1:
+            s["lost_bodies"] += r["seq"] - prev_seq - 1
+        prev_seq = r["seq"]
+        s["bodies"] += 1; s["blocks_ok"] += r["blocks_ok"]
+        if r["card_mask"] & 1: s["card0"] += 1
+        if r["card_mask"] & 2: s["card1"] += 1
+    return out
+
+
+def print_probe_report(ctllog, probelog, au_rows=None):
+    lead = probe_lead(ctllog.get("E", []), ctllog.get("P", []))
+    print(f"\nPROBE GATE (lossy edges={lead['lossy_edges']}, "
+          f"false alarms (no demote before the next transition / within 10 s)="
+          f"{lead['false_alarms']}; lead = first lossy edge since the rung was entered)")
+    for e in lead["episodes"]:
+        l = "-" if e["lead_ms"] is None else f"{e['lead_ms']:.0f}ms"
+        print(f"  demote t={e['t0']/1000:.1f}s first={e['first_reason']} "
+              f"probe lead={l} edges={e['edges']}")
+    if probelog:
+        bpb = probelog["bpb"]
+        print("PROBE LOG (per mcs)")
+        for mcs, s in sorted(probelog_summary(probelog).items()):
+            tot = s["bodies"] + s["lost_bodies"]
+            body_loss = s["lost_bodies"] / tot if tot else float("nan")
+            blk_loss = 1 - s["blocks_ok"] / (tot * bpb) if tot else float("nan")
+            print(f"  mcs{mcs}: bodies={s['bodies']} lost={s['lost_bodies']} "
+                  f"body_loss={body_loss:.3f} block_loss={blk_loss:.3f} "
+                  f"c0={s['card0']} c1={s['card1']}")
+        if au_rows is not None:
+            pairs = probe_au_offset_rows(probelog, au_rows)
+            offs = [o for _, o in pairs]
+            if offs:
+                print(f"  completion->probe (ms, enh AU t_complete -> probe first sight): "
+                      f"n={len(offs)} p10={_pct(offs, .1):.2f} p50={_pct(offs, .5):.2f} "
+                      f"p90={_pct(offs, .9):.2f} p99={_pct(offs, .99):.2f} "
+                      f"max={max(offs):.2f} min={min(offs):.2f}")
+                by_mcs = {}
+                for r, o in pairs:
+                    by_mcs.setdefault(r["mcs"], []).append(o)
+                for mcs, v in sorted(by_mcs.items()):
+                    print(f"    mcs{mcs}: n={len(v)} p50={_pct(v, .5):.2f} p90={_pct(v, .9):.2f} "
+                          f"p99={_pct(v, .99):.2f}")
+            else:
+                print("  completion->probe: no joinable rows (probelog v1, or no "
+                      "overlapping au-NNNN.log v2 next to it / in ./log)")
+
+
+def sniff_probelog(path):
+    """True if `path` is a maburgs probe log (first line starts 'probelog ')."""
+    with open(path) as f:
+        return f.readline().startswith("probelog ")
 
 
 def sniff_ctllog(path):
@@ -471,11 +720,38 @@ def sniff_ctllog(path):
     return first.startswith("ctllog ")
 
 
-def main(path):
+def main(path, aulog=None):
+    if sniff_probelog(path):
+        # A probe log on its own (bench use): just the per-body report and
+        # the completion->probe join.
+        probelog = load_probelog(path)
+        au = load_aulog(aulog) if aulog else None
+        if au is None:
+            found = find_aulog_for(path, probelog)
+            au = load_aulog(found) if found else []
+            if found: print(f"au log: {found}")
+        print_probe_report({"E": [], "P": []}, probelog, au)
+        return
     if sniff_ctllog(path):
         ctllog = load_ctllog(path)
         print_wall_report(ctllog)
         print_episode_report(ctllog)
+        probelog = None
+        # Sibling probe body log: same NNNN as the ctl log
+        # (ctl-NNNN_<date>.log / probe-NNNN_<date>.log), written alongside it
+        # by the same GS session (Task 11, probe-stream). Absent on older
+        # recordings and on ctl logs from a probe-less session.
+        m = re.search(r"ctl-(\d+)_", os.path.basename(path))
+        if m:
+            matches = sorted(glob.glob(os.path.join(
+                os.path.dirname(path), f"probe-{m.group(1)}_*.log")))
+            if matches:
+                probelog = load_probelog(matches[0])
+        au = None
+        if probelog:
+            found = aulog or find_aulog_for(matches[0], probelog)
+            au = load_aulog(found) if found else []
+        print_probe_report(ctllog, probelog, au)
         return
 
     rows = load(path)
@@ -640,5 +916,5 @@ def main(path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2: sys.exit(__doc__)
-    main(sys.argv[1])
+    if len(sys.argv) not in (2, 3): sys.exit(__doc__)
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None)

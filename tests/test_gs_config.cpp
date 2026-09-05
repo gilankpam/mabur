@@ -4,7 +4,7 @@
 #include "mtest.h"
 #include "config.h"
 
-static std::string write_tmp(const char* text) {
+static std::string write_tmp(const std::string& text) {
   std::string path = "/tmp/maburgs_test_config.json";
   std::ofstream f(path);
   f << text;
@@ -630,36 +630,29 @@ TEST(au_ring_values_load) {
   CHECK(c.au_ring.slot_count == 8);
 }
 
-// link.probe_*/s3_*/ctl_log keys: s3-probe-before-promote + s3 steady-state
-// demote tuning (LadderCfg, Task 4) plus the dedicated adaptive-link log
-// (spec 2026-08-05 section 5). Strict keys apply here like every other
-// "link" key.
-TEST(probe_and_s3_keys_parse) {
+// link.s3_*/ctl_log keys: s3 steady-state demote tuning (LadderCfg) plus the
+// dedicated adaptive-link log (spec 2026-08-05 section 5). Strict keys apply
+// here like every other "link" key. The five flat probe_* keys went with the
+// s3 probe (spec 2026-09-04); link.probe replaces them.
+TEST(s3_and_ctl_log_keys_parse) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"probe_ms":3000,"probe_max_util":0.5,"s3_demote":false,)"
+      R"({"link":{"s3_demote":false,)"
       R"("s3_down_util":0.4,"ctl_log":true,"ctl_log_dir":"/tmp/x"}})"));
-  CHECK(cfg.link.ladder_cfg.probe_ms == 3000);
-  CHECK(cfg.link.ladder_cfg.probe_max_util > 0.499 && cfg.link.ladder_cfg.probe_max_util < 0.501);
   CHECK(!cfg.link.ladder_cfg.s3_demote);
   CHECK(cfg.link.ladder_cfg.s3_down_util > 0.399 && cfg.link.ladder_cfg.s3_down_util < 0.401);
   CHECK(cfg.link.ctl_log);
   CHECK(cfg.link.ctl_log_dir == "/tmp/x");
 }
 
-// probe_max_util/s3_down_util absent (< 0 sentinel) resolve to the loaded
-// down_util, not the struct default 0.6 -- sentinel resolution must happen
-// AFTER down_util parses.
-TEST(probe_defaults_and_sentinel_resolution) {
+// An absent s3_down_util (< 0 sentinel) resolves to the loaded down_util,
+// not the struct default 0.6 -- sentinel resolution must happen AFTER
+// down_util parses.
+TEST(s3_defaults_and_sentinel_resolution) {
   auto cfg = maburgs::load_config(write_tmp(R"({"link":{"down_util":0.35}})"));
   auto& lc = cfg.link.ladder_cfg;
-  CHECK(lc.probe_ms == 2000);
-  CHECK(lc.probe_settle_ms == 150);
-  CHECK(lc.probe_max_util > 0.349 && lc.probe_max_util < 0.351);  // resolved to down_util
   CHECK(lc.s3_down_util > 0.349 && lc.s3_down_util < 0.351);
   CHECK(lc.s3_demote);
   CHECK(lc.s3_settle_ms == 300);
-  CHECK(lc.probe_s3_min_syms == 50);
-  CHECK(lc.probe_s3_silence_ms == 500);
   CHECK(!cfg.link.ctl_log);
   CHECK(cfg.link.ctl_log_dir == "/media/dvr");
 }
@@ -670,20 +663,6 @@ TEST(unknown_probe_key_still_fails) {
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("probe_msx") != std::string::npos;
   }
-  CHECK(threw);
-}
-
-// Amendment (Task 4 review): a negative/zero probe_s3_min_syms cast to
-// uint64_t in the controller would silently disable all probing, so it
-// must be rejected loudly at load, not clamped.
-TEST(probe_s3_min_syms_rejects_non_positive) {
-  bool threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"probe_s3_min_syms":0}})")); }
-  catch (const std::exception&) { threw = true; }
-  CHECK(threw);
-  threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"probe_s3_min_syms":-1}})")); }
-  catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
 
@@ -801,22 +780,6 @@ TEST(link_fade_rejects_unknown_key_and_bad_ranges) {
   } catch (const std::exception&) {}
 }
 
-// --- link.rcf_repeat_* (rcf-uplink-loss findings 2026-08-14) ----------------
-
-TEST(rcf_repeat_defaults_when_absent) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
-  CHECK(cfg.link.rcf_repeat_copies == 3);
-  CHECK(cfg.link.rcf_repeat_ms == 10);
-}
-
-TEST(rcf_repeat_explicit_values_parse) {
-  auto cfg = maburgs::load_config(write_tmp(
-      "{\"link\": {\"feedback_ms\": 50, \"rcf_repeat_copies\": 4, "
-      "\"rcf_repeat_ms\": 8}}"));
-  CHECK(cfg.link.rcf_repeat_copies == 4);
-  CHECK(cfg.link.rcf_repeat_ms == 8);
-}
-
 // --- link.rcf_slot_hold_ms (gs-uplink-self-blanking 2026-09-02) --------------
 TEST(rcf_slot_hold_defaults_when_absent) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
@@ -832,34 +795,55 @@ TEST(rcf_slot_hold_explicit_and_zero_parse) {
   CHECK(b.link.rcf_slot_hold_ms == 0);
 }
 
-// The burst must fit inside one feedback period: a burst spanning the next
-// regular RCF slot silently raises the steady-state control rate. Same
-// fail-fast stance as the drone's rc_drain_ms <= tick_ms cross-check.
-// ⚠ Breaking shape: feedback_ms < 40 with the repeat keys left at defaults
-// (3*10=30 needs feedback_ms > 30). Nothing deployed sets feedback_ms
-// below 50.
-TEST(rcf_repeat_burst_must_fit_inside_feedback_period) {
-  bool threw = false;
-  try {
-    maburgs::load_config(write_tmp(
-        "{\"link\": {\"feedback_ms\": 50, \"rcf_repeat_copies\": 5, "
-        "\"rcf_repeat_ms\": 10}}"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("rcf_repeat") != std::string::npos;
-  }
-  CHECK(threw);
-  // copies 0 disables the burst and the cross-check with it.
-  auto cfg = maburgs::load_config(write_tmp(
-      "{\"link\": {\"feedback_ms\": 20, \"rcf_repeat_copies\": 0}}"));
-  CHECK(cfg.link.rcf_repeat_copies == 0);
+// --- link.probe block (spec 2026-09-04 sections 4.2, 5) ---------------------
+TEST(probe_block_defaults) {
+  auto c = maburgs::load_config(write_tmp("{}"));
+  const auto& p = c.link.ladder_cfg.probe;
+  CHECK(p.enable); CHECK(p.rung_offset == 1); CHECK(p.clean_ms == 2000);
+  CHECK(p.max_util == c.link.ladder_cfg.down_util);  // sentinel resolved
+  CHECK(p.min_syms == 40); CHECK(p.silence_ms == 500); CHECK(p.pin_mcs == -1);
+  CHECK(c.link.ladder_cfg.s3_min_syms == 50);
 }
 
-TEST(rcf_repeat_copies_out_of_range_throws) {
+TEST(probe_block_parses_and_bounds) {
+  auto c = maburgs::load_config(write_tmp(
+      "{\"link\": {\"probe\": {\"enable\": false, \"rung_offset\": 2, \"clean_ms\": 1500,"
+      " \"max_util\": 0.4, \"min_syms\": 20, \"silence_ms\": 800, \"pin_mcs\": 5},"
+      " \"s3_min_syms\": 30}}"));
+  const auto& p = c.link.ladder_cfg.probe;
+  CHECK(!p.enable); CHECK(p.rung_offset == 2); CHECK(p.clean_ms == 1500);
+  CHECK(std::abs(p.max_util - 0.4) < 1e-9); CHECK(p.min_syms == 20);
+  CHECK(p.silence_ms == 800); CHECK(p.pin_mcs == 5);
+  CHECK(c.link.ladder_cfg.s3_min_syms == 30);
   bool threw = false;
-  try {
-    maburgs::load_config(write_tmp("{\"link\": {\"rcf_repeat_copies\": 17}}"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("rcf_repeat_copies") != std::string::npos;
-  }
+  try { maburgs::load_config(write_tmp("{\"link\": {\"probe\": {\"rung_offset\": 0}}}")); }
+  catch (const std::exception&) { threw = true; }
   CHECK(threw);
+  // link.probe.min_syms is bounded [4, 100000] -- 0 must reject too.
+  threw = false;
+  try { maburgs::load_config(write_tmp("{\"link\": {\"probe\": {\"min_syms\": 0}}}")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(old_flat_probe_keys_fail_boot) {
+  for (const char* k : {"probe_ms", "probe_settle_ms", "probe_max_util",
+                        "probe_s3_min_syms", "probe_s3_silence_ms"}) {
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(std::string("{\"link\": {\"") + k + "\": 1}}")); }
+    catch (const std::exception& e) { threw = std::string(e.what()).find(k) != std::string::npos; }
+    CHECK(threw);
+  }
+}
+
+// Carried from the Task 7 review: s3_min_syms feeds s3_usable()'s
+// h.s3_expected_syms >= s3_min_syms comparison directly -- a non-positive
+// value would silently disable every s3 demote.
+TEST(s3_min_syms_rejects_non_positive) {
+  for (const char* v : {"0", "-5"}) {
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(std::string("{\"link\": {\"s3_min_syms\": ") + v + "}}")); }
+    catch (const std::exception& e) { threw = std::string(e.what()).find("s3_min_syms") != std::string::npos; }
+    CHECK(threw);
+  }
 }

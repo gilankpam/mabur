@@ -45,14 +45,13 @@ import rc_proto
 # mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
 # rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
 # byte plus the deleted ack_seq/score/layer_delivery fields, so its
-# pack_rcf() output is rejected outright by maburd. Pack the 14-byte v5 head
+# pack_rcf() output is rejected outright by maburd. Pack the 15-byte v6 head
 # here instead (magic, ver, type, flags, vtx_id, seq, profile,
-# fec_overhead_base_x100, fec_overhead_enh_x100 -- RC_VERSION 5, 2026-08-30,
-# split the single literal-overhead byte into a per-stream pair, spec
-# 2026-08-30-same-rate-fixed-pairs); encode_profile and the CRC are
-# unversioned.
-body = struct.pack("<HBBBIHBBB", rc_proto.RC_MAGIC, 5, rc_proto.T_RCF, 0,
-                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25)
+# fec_overhead_base_x100, fec_overhead_enh_x100, probe_profile -- RC_VERSION
+# 6, 2026-09-04, made probe_profile a fixed head byte, 0xFF = no probe
+# stream; encode_profile and the CRC are unversioned.
+body = struct.pack("<HBBBIHBBBB", rc_proto.RC_MAGIC, 6, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0xFF)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)
@@ -80,5 +79,68 @@ python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
 echo "== full 2-stream recovery: all 13 frames byte-exact post-RCF =="
 python3 tools/bench/decode_bodies.py --frames "$TMP/f2.bin" --fixture "$FIX" \
   --symbol-size 332,332
+
+echo "== f2.bin RCF carries probe_profile 0xFF: no probe stream at all =="
+python3 - "$TMP/f2.bin" <<'PYCHK'
+import struct, sys
+frames = []
+with open(sys.argv[1], "rb") as f:
+    while True:
+        h = f.read(4)
+        if not h: break
+        (l,) = struct.unpack("<I", h); frames.append(f.read(l))
+def sid_mcs(fr):
+    (rl,) = struct.unpack_from("<H", fr, 2)
+    body = fr[rl + 26:]
+    sid = body[3] if len(body) > 10 and body[:2] == b"\xb0\xf5" else -1
+    return sid, fr[12]
+seq = [sid_mcs(fr) for fr in frames]
+assert 5 not in {s for s, _ in seq}, "sid-5 probe body emitted with probe_profile 0xFF"
+print("probe check ok: none with 0xFF")
+PYCHK
+
+echo "== probe stream setup: RCF with probe_profile = HT mcs6 20 MHz =="
+python3 - "$TMP/rc6.bin" <<'EOF'
+import struct, sys, os
+sys.path.insert(0, os.path.abspath(os.path.join("..", "devourer", "tools", "precoder")))
+import rc_proto
+# Same v6 head as the RCF above, but probe_profile is 0x06 (HT mcs6, 20 MHz)
+# instead of 0xFF (no probe stream) -- spec 2026-09-04 §2.
+body = struct.pack("<HBBBIHBBBB", rc_proto.RC_MAGIC, 6, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0x06)
+w = body + struct.pack("<H", rc_proto._crc(body))
+with open(sys.argv[1], "wb") as f:
+    f.write(struct.pack("<II", 1, len(w))); f.write(w)
+EOF
+"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f3.bin" \
+  --rc-in "$TMP/rc6.bin"
+
+echo "== probe stream: one sid-5 body at mcs6 after each enh AU, none after base =="
+python3 - "$TMP/f3.bin" <<'PYCHK'
+import struct, sys
+frames = []
+with open(sys.argv[1], "rb") as f:
+    while True:
+        h = f.read(4)
+        if not h: break
+        (l,) = struct.unpack("<I", h); frames.append(f.read(l))
+def sid_mcs(fr):
+    (rl,) = struct.unpack_from("<H", fr, 2)
+    body = fr[rl + 26:]
+    sid = body[3] if len(body) > 10 and body[:2] == b"\xb0\xf5" else -1
+    return sid, fr[12]
+seq = [sid_mcs(fr) for fr in frames]
+probes = [i for i, (s, _) in enumerate(seq) if s == 5]
+assert probes, "no probe bodies emitted"
+for i in probes:
+    assert seq[i][1] == 6, f"probe at index {i} has mcs {seq[i][1]}"
+    assert seq[i - 1][0] == 1, f"probe at {i} does not trail an enh body (prev sid {seq[i-1][0]})"
+runs = 0
+for i in range(1, len(seq)):
+    if seq[i - 1][0] == 1 and seq[i][0] != 1:
+        runs += 1
+        assert seq[i][0] == 5, f"enh run ending at {i} not followed by a probe"
+print(f"probe check ok: {len(probes)} probes, {runs} enh runs")
+PYCHK
 
 echo "== all E2E checks passed =="

@@ -192,7 +192,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
             std::fprintf(stderr,
                          "gap card=%u seq=%u..%u n=%u dtsf=%u dhost=%llu "
                          "mono=%llu prev_len=%zu len=%zu sid=%d prev_agg=%u "
-                         "after_physt=%d\n",
+                         "after_physt=%d prev_mcs=%u mcs=%u prev_sid=%d\n",
                          static_cast<unsigned>(m.card_id),
                          static_cast<unsigned>(c.gap_prev_seq),
                          static_cast<unsigned>(m.mac_seq),
@@ -202,7 +202,9 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
                          static_cast<unsigned long long>(m.mono_us),
                          c.gap_prev_len, m.body.size(), stream_id,
                          static_cast<unsigned>(c.gap_prev_agg_pos),
-                         m.phy_valid ? 1 : 0);
+                         m.phy_valid ? 1 : 0,
+                         static_cast<unsigned>(c.gap_prev_mcs),
+                         static_cast<unsigned>(m.mcs), c.gap_prev_sid);
           }
           c.last_seq = m.mac_seq;
         }
@@ -220,6 +222,8 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
         c.gap_prev_seq = m.mac_seq;
         c.gap_prev_len = m.body.size();
         c.gap_prev_agg_pos = c.agg_pos;
+        c.gap_prev_mcs = m.mcs;
+        c.gap_prev_sid = stream_id;
       }
     }
 
@@ -236,7 +240,9 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
       class_idx = static_cast<int>(RfClass::Ctrl);
     } else if (stream_id == mabur::kMspStreamId) {
       class_idx = static_cast<int>(RfClass::Msp);
-    } else if (stream_id >= 0 && stream_id < 4) {
+    } else if (stream_id == mabur::kProbeStreamId) {
+      class_idx = static_cast<int>(RfClass::Probe);
+    } else if (stream_id >= 0 && stream_id < 2) {
       class_idx = stream_id;
     }
     if (class_idx >= 0) {
@@ -267,6 +273,14 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   }
   if (stream_id == mabur::kMspStreamId) {
     if (msp_sink_) msp_sink_(m.body.data(), m.body.size(), m.mono_us);
+    return;
+  }
+  if (stream_id == mabur::kProbeStreamId) {
+    // Probe stream (spec 2026-09-04): scored by ProbeTrack, never decoded.
+    // FCS-failed bodies still reach the sink — parse_probe_body salvages
+    // CRC-clean sub-blocks exactly as the video decoder does, so probe loss
+    // stays comparable to video loss.
+    if (probe_sink_) probe_sink_(m.card_id, m);
     return;
   }
   ++c.video_bodies;

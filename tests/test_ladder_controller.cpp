@@ -25,6 +25,17 @@ LadderCfg make_cfg() {
   return cfg;
 }
 
+// Same ladder with the probe stream OFF. Every legacy-behaviour test below
+// (probation, penalties, fade, s3 demotes, timeouts) promotes on ok(0.0)
+// samples, which carry no probe window: with the probe ENABLED the gate
+// reads NoInfo and HOLDS those promotes forever, so the legacy semantics are
+// pinned with the gate disabled and the gate itself is tested on its own.
+LadderCfg make_cfg_noprobe() {
+  LadderCfg cfg = make_cfg();
+  cfg.probe.enable = false;
+  return cfg;
+}
+
 LinkHealth ok(double pre) {
   LinkHealth h;
   h.sample_valid = true;
@@ -56,14 +67,25 @@ void feed_for(LadderController& ctl, double& t, double dt_total,
   }
 }
 
-// Healthy sample WITH usable s3 and probe permission.
+// Healthy base sample carrying a usable probe window measured at `rung`
+// with union block loss `loss` (and usable s3 for the steady-state paths).
+LinkHealth okp(double pre, int probe_rung, double loss) {
+  LinkHealth h = ok(pre);
+  h.s3_valid = true; h.s3_expected_syms = 500;
+  h.probe_valid = true; h.probe_loss = loss;
+  h.probe_expected_syms = 60; h.probe_rung = probe_rung;
+  h.rf_snr_db = 30.0;
+  return h;
+}
+
+// Healthy sample WITH usable s3 but NO probe window: the gate reads NoInfo
+// while a probe is commanded, so this is the steady-state s3 fixture only.
 LinkHealth ok3(double pre, double s3_pre = 0.0, double s3_resid = 0.0) {
   LinkHealth h = ok(pre);
   h.s3_valid = true;
   h.s3_pre_fec_loss = s3_pre;
   h.s3_residual_loss = s3_resid;
   h.s3_expected_syms = 500;
-  h.probe_allowed = true;
   h.rf_snr_db = 30.0;
   return h;
 }
@@ -121,7 +143,7 @@ TEST(per_sid_budgets) {
 }
 
 TEST(budget_uses_literal_overhead) {
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   // rung 0: overhead 2.0 (doubled fixture, see kLadder) -> budget = 2.0/3.0.
   CHECK(std::abs(ctl.budget_base() - (2.0 / 3.0)) < 1e-9);
 
@@ -138,7 +160,7 @@ TEST(starts_at_failsafe) {
 }
 
 TEST(promote_needs_clean_window) {
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   bool promoted = false;
   double promote_t = -1;
   for (double t = 0; t <= 5000; t += 50) {
@@ -157,7 +179,7 @@ TEST(promote_needs_clean_window) {
 }
 
 TEST(residual_demotes_immediately) {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);
@@ -184,7 +206,7 @@ TEST(residual_demotes_immediately) {
 }
 
 TEST(util_demote_needs_confirm) {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);
@@ -229,7 +251,7 @@ TEST(util_demote_needs_confirm) {
 }
 
 TEST(probation_fail_penalizes_and_doubles) {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
 
@@ -296,7 +318,7 @@ TEST(probation_fail_penalizes_and_doubles) {
 // probation failures on rung 1 (well past 64) and confirm the penalty
 // duration stays exactly capped at penalty_max_ms with no crash.
 TEST(penalty_duration_caps_after_many_consecutive_failures) {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_noprobe();
   // Tiny timings so a fail-reclimb-fail cycle costs only a couple of 50ms
   // ticks; probation_ms must stay comfortably above one tick (50ms) so the
   // failing sample below still lands inside the just-opened probation
@@ -325,7 +347,7 @@ TEST(penalty_duration_caps_after_many_consecutive_failures) {
 }
 
 TEST(starved_forces_bottom) {
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   double t = 0;
   promote_to(ctl, t, 3);
   REQUIRE(ctl.rung() == 3);
@@ -363,7 +385,7 @@ TEST(transient_starved_is_ignored) {
   // hw 2026-07-27: a rung transition re-keys the drone FEC stream and yields
   // 1-2 zero-completion decode windows on a healthy link. Those must not
   // demote — only a starved run persisting past starved_confirm_ms may.
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   double t = 0;
   promote_to(ctl, t, 2);
   REQUIRE(ctl.rung() == 2);
@@ -392,7 +414,7 @@ TEST(transient_starved_is_ignored) {
 }
 
 TEST(timeout_forces_bottom) {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);
@@ -417,7 +439,7 @@ TEST(timeout_forces_bottom) {
 // fires off the last REAL sample despite a continuous stream of invalid
 // updates in between.
 TEST(invalid_samples_do_not_suppress_feedback_timeout) {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);
@@ -439,7 +461,7 @@ TEST(invalid_samples_do_not_suppress_feedback_timeout) {
 }
 
 TEST(hold_after_downgrade) {
-  auto cfg = make_cfg();
+  auto cfg = make_cfg_noprobe();
   cfg.clean_ms = 100;  // isolate hold_after_down_ms as the binding gate
   LadderController ctl(cfg);
   double t = 0;
@@ -480,183 +502,147 @@ TEST(hold_after_downgrade) {
   CHECK(ctl.last_event().t_ms >= down_t + cfg.hold_after_down_ms - 1e-9);
 }
 
-// --- s3 probe-before-promote ---------------------------------------------
+// --- continuous probe gate (spec 2026-09-04) -----------------------------
 
-TEST(clean_margin_starts_probe_not_promote) {
-  LadderController ctl(make_cfg());
-  double t = 0;
-  // Drive clean s3-capable samples past clean_ms: rung must NOT change,
-  // probe must be active on rung 1.
-  for (; t < 7000; t += 50) ctl.update(ok3(0.0), t);
-  CHECK(ctl.rung() == 0);
-  CHECK(ctl.probing());
-  CHECK(ctl.probe_rung() == 1);
-  CHECK(ctl.probe_mcs() == 2);
-  CHECK(ctl.counters().probes_started == 1);
-}
-
-TEST(probe_fail_penalizes_candidate_and_stays) {
-  LadderController ctl(make_cfg());
-  double t = 0;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  // Candidate rung 1 budget = ov(1.0)/(1+ov(1.0)) = 0.5; drown it: u_pred >> threshold.
-  for (int i = 0; i < 20 && ctl.probing(); ++i, t += 50) ctl.update(ok3(0.0, 0.9), t);
-  CHECK(!ctl.probing());
-  CHECK(ctl.rung() == 0);                       // never moved
-  CHECK(ctl.counters().probe_fails == 1);
-  CHECK(penalty_ms_for(ctl, t, 1) > 0);          // candidate penalized
-  CHECK(ctl.last_probe().outcome == ProbeOutcome::Fail);
-  CHECK(ctl.last_probe().rung == 1);
-  CHECK(ctl.last_probe().snr_db == 30.0);
-}
-
-TEST(probe_pass_commits_with_probation) {
-  LadderController ctl(make_cfg());
-  double t = 0;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  const double start = t;
-  for (; ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t - start < 5000); }
-  CHECK(ctl.rung() == 1);
-  CHECK(ctl.counters().probes_ok == 1);
-  CHECK(ctl.counters().promotes == 1);
-  CHECK(ctl.probation_ms_left(t) > 0);           // probation still guards commit
-  CHECK(ctl.last_probe().outcome == ProbeOutcome::Pass);
-  CHECK(t - start >= 2000);                       // full probe_ms elapsed
-}
-
-// Review finding: a Pass used to report u_pred = u3_, and u3_ is pinned to 0
-// for the whole duration of a probe — so every passing probe logged
-// u_pred=0.000 and a candidate that squeaked in just under the threshold was
-// indistinguishable from a flawless one in last_probe() (and the ctl-log P
-// lines / sideport built on it). A Pass must report the last post-settle
-// u_pred it actually scored.
-TEST(probe_pass_reports_measured_u_pred) {
-  LadderController ctl(make_cfg());
-  double t = 0;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  // Candidate rung 1 budget = ov(1.0)/(1+ov(1.0)) = 0.5 (the literal FEC
-  // overhead directly, since the 2026-08-29 flatten made the old
-  // uep_layer_overhead scaling a no-op and task-10-airtime-balance-uep
-  // deleted it), so an s3 pre-FEC loss of 0.12 is u_pred 0.24: nonzero,
-  // comfortably under the probe util threshold, so the probe still passes.
-  for (; ctl.probing(); t += 50) {
-    ctl.update(ok3(0.0, 0.12), t);
-    REQUIRE(t < 1e5);
-  }
-  CHECK(ctl.rung() == 1);
-  CHECK(ctl.last_probe().outcome == ProbeOutcome::Pass);
-  CHECK(ctl.last_probe().u_pred > 0.0);
-  CHECK(std::abs(ctl.last_probe().u_pred - 0.24) < 1e-9);
-}
-
-TEST(probe_settle_blackout_ignores_early_s3_loss) {
-  LadderController ctl(make_cfg());
-  double t = 0;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  ctl.update(ok3(0.0, 0.9), t + 100);   // within probe_settle_ms 150
-  CHECK(ctl.probing());                  // not failed
-  CHECK(ctl.counters().probe_fails == 0);
-}
-
-TEST(demote_signal_aborts_probe) {
+TEST(probe_rung_is_offset_clamped_to_top) {
   LadderCfg cfg = make_cfg();
-  LadderController ctl(cfg);
+  cfg.probe.rung_offset = 2;
+  LadderController c(cfg);
+  CHECK(c.probe_rung() == 2);
   double t = 0;
-  // reach rung 1 the legacy way (no probe_allowed), then probe toward 2:
-  promote_to(ctl, t, 1);
-  t += cfg.probation_ms + cfg.hold_after_down_ms;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e6); }
-  LinkHealth bad = ok3(0.0); bad.residual_loss = 0.05;   // s1 residual: instant demote
-  ctl.update(bad, t);
-  CHECK(!ctl.probing());
-  CHECK(ctl.rung() == 0);
-  CHECK(ctl.counters().probe_aborts == 1);
-  CHECK(ctl.last_probe().outcome == ProbeOutcome::Abort);
+  cfg.probe.enable = false;  // climb without the gate, then re-check
+  LadderController d(cfg);
+  promote_to(d, t, 5);
+  CHECK(d.probe_rung() == -1);          // disabled
+  cfg.probe.enable = true;
+  LadderController e(cfg);
+  t = 0;
+  // drive e to the top with clean probes
+  while (e.rung() < 5) { e.update(okp(0.0, e.probe_rung(), 0.0), t); t += 50; REQUIRE(t < 1e6); }
+  CHECK(e.probe_rung() == -1);          // top rung: nothing to probe
 }
 
-TEST(s3_silence_aborts_probe_without_penalty) {
-  LadderController ctl(make_cfg());
+TEST(clean_probe_streak_gates_the_promote) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
   double t = 0;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  LinkHealth h = ok3(0.0); h.s3_valid = false; h.s3_expected_syms = 0;
-  for (int i = 0; i < 15 && ctl.probing(); ++i, t += 50) { ctl.update(h, t); ctl.on_tick(t); }
-  CHECK(!ctl.probing());
-  CHECK(ctl.counters().probe_aborts == 1);
-  CHECK(penalty_ms_for(ctl, t, 1) == -1);        // inconclusive: no penalty
+  // Lossy probe: the base trigger is satisfied after clean_ms but the
+  // promote holds, without a penalty.
+  for (; t < cfg.clean_ms + 2000; t += 50) c.update(okp(0.0, c.probe_rung(), 0.9), t);
+  CHECK(c.rung() == 0);
+  CHECK(c.counters().probe_holds == 1);
+  CHECK(c.penalized(t).empty());
+  CHECK(c.probe_gate(t).state == ProbeGateState::Lossy);
+  // Probe turns clean: promote lands once the streak reaches probe.clean_ms.
+  const double t_clean = t;
+  while (c.rung() == 0) { c.update(okp(0.0, c.probe_rung(), 0.0), t); t += 50; REQUIRE(t < t_clean + 5000); }
+  CHECK(c.rung() == 1);
+  CHECK(t - t_clean >= cfg.probe.clean_ms);
+  CHECK(t - t_clean < cfg.probe.clean_ms + 200);
+  CHECK(c.counters().promotes_probed == 1);
+  CHECK(c.last_event().reason == CtlReason::PromoteProbed);
+  CHECK(c.probation_ms_left(t) > 0);
 }
 
-TEST(no_probe_allowed_falls_back_to_legacy_promote) {
-  LadderController ctl(make_cfg());
+TEST(clean_but_short_probe_streak_is_not_a_hold) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
   double t = 0;
-  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(ok(0.0), t);  // ok(): probe_allowed=false
-  CHECK(ctl.rung() == 1);                        // promoted directly, as today
-  CHECK(ctl.counters().probes_started == 0);
-  CHECK(ctl.probation_ms_left(t) > 0);
+  // Base link stays clean throughout (u_ never trips up_util); keep the
+  // probe Lossy until just before the base clean_ms gate opens, then flip
+  // it Clean -- by the time the promote block first checks the gate the
+  // Clean streak is short. Spec §4.4: that is "wait", not a hold.
+  for (; t < cfg.clean_ms - 100; t += 50) c.update(okp(0.0, c.probe_rung(), 0.9), t);
+  for (; t <= cfg.clean_ms + 50; t += 50) c.update(okp(0.0, c.probe_rung(), 0.0), t);
+  CHECK(c.rung() == 0);  // not promoted: streak hasn't reached probe.clean_ms
+  CHECK(c.probe_gate(t).state == ProbeGateState::Clean);
+  CHECK(c.probe_gate(t).streak_ms < cfg.probe.clean_ms);
+  CHECK(c.counters().probe_holds == 0);
 }
 
-// Review finding: a candidate rung that shares the current rung's MCS (an
-// overhead-only step) doesn't change the PHY rate, so there is nothing for
-// an s3 probe to measure -- phy_differs is false and the controller must
-// take the legacy direct-promote path, not spend probe_ms measuring a
-// no-op.
-TEST(equal_mcs_candidate_skips_probe) {
-  LadderCfg cfg;
-  cfg.ladder = {{0, 1.0}, {2, 0.5}, {2, 0.25}};  // rung 1 and rung 2 share mcs 2
-  LadderController ctl(cfg);
+TEST(probe_scores_against_the_candidates_enh_budget) {
+  LadderCfg cfg = make_cfg();  // rung1 ov_enh 1.0 -> budget 0.5; rung2 0.5 -> 0.333
+  LadderController c(cfg);
   double t = 0;
-  // Reach rung 1 the legacy way (probe_allowed=false) so this test isolates
-  // the equal-mcs skip at the rung1->rung2 transition, same idiom as
-  // demote_signal_aborts_probe above.
-  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(ok(0.0), t);
-  REQUIRE(ctl.rung() == 1);
-  t += cfg.probation_ms + cfg.hold_after_down_ms;  // clear probation/hold gates
-  const double start = t;
-  for (; ctl.rung() == 1 && t - start < cfg.clean_ms + 1000; t += 50)
-    ctl.update(ok3(0.0), t);  // clean, probe-capable s3 samples
-  CHECK(ctl.rung() == 2);                        // promoted directly, no probe
-  CHECK(ctl.counters().probes_started == 0);
-  CHECK(ctl.probation_ms_left(t) > 0);
+  c.update(okp(0.0, c.probe_rung(), 0.20), t);  // 0.20/0.5 = 0.4 < down_util 0.6
+  CHECK(c.probe_gate(t).state == ProbeGateState::Clean);
+  CHECK(std::abs(c.probe_gate(t).u - 0.4) < 1e-9);
+  c.update(okp(0.0, c.probe_rung(), 0.35), t += 50);  // 0.7 > 0.6
+  CHECK(c.probe_gate(t).state == ProbeGateState::Lossy);
 }
 
-// Review finding: s3 unusable AT ENTRY (below the probe_s3_min_syms floor,
-// as opposed to going silent mid-probe -- see s3_silence_aborts_probe_without_penalty)
-// means s3_usable() is false before a probe is ever started, so the
-// clean-margin branch must fall through to the legacy direct promote rather
-// than attempting a probe with nothing to measure it against.
-TEST(s3_unusable_at_entry_falls_back_to_legacy_promote) {
-  LadderController ctl(make_cfg());
+TEST(noinfo_holds_while_a_probe_is_commanded) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
   double t = 0;
-  LinkHealth h = ok3(0.0);
-  h.s3_expected_syms = 10;  // < probe_s3_min_syms (50): "no traffic" floor
-  for (; t < 7000 && ctl.rung() == 0; t += 50) ctl.update(h, t);
-  CHECK(ctl.rung() == 1);                        // promoted directly, no probe
-  CHECK(ctl.counters().probes_started == 0);
-  CHECK(ctl.probation_ms_left(t) > 0);
+  for (; t < cfg.clean_ms + 3000; t += 50) c.update(ok3(0.0), t);  // no probe window
+  CHECK(c.rung() == 0);
+  CHECK(c.probe_gate(t).state == ProbeGateState::NoInfo);
+  CHECK(c.counters().probe_holds == 1);
 }
 
-TEST(feedback_timeout_clears_probe) {
-  LadderController ctl(make_cfg());
+TEST(probe_disabled_falls_back_to_legacy_direct_promote) {
+  LadderCfg cfg = make_cfg();
+  cfg.probe.enable = false;
+  LadderController c(cfg);
   double t = 0;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  // Probing from rung 0: the timeout branch (idx_ > 0) can't fire, but the
-  // probe's own s3-silence abort must clear it — no rung change to report.
-  CHECK(!ctl.on_tick(t + 1500));                 // > probe_s3_silence_ms
-  CHECK(ctl.rung() == 0);
-  CHECK(!ctl.probing());
-  CHECK(ctl.counters().probe_aborts == 1);
-  // From a higher rung the timeout branch itself must also clear a probe:
-  LadderController c2(make_cfg());
-  double t2 = 0;
-  promote_to(c2, t2, 1);
-  t2 += 4200;                                     // clear hold_after_down
-  for (; !c2.probing(); t2 += 50) { c2.update(ok3(0.0), t2); REQUIRE(t2 < 1e6); }
-  CHECK(c2.on_tick(t2 + 1500));                   // timeout: rung 1 -> 0
-  CHECK(c2.rung() == 0);
-  CHECK(!c2.probing());
+  promote_to(c, t, 1);
+  CHECK(c.rung() == 1);
+  CHECK(c.last_event().reason == CtlReason::Promote);
+  CHECK(c.probe_gate(t).state == ProbeGateState::Off);
+}
+
+TEST(probe_silence_decays_to_noinfo_and_resets_the_streak) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
+  double t = 0;
+  for (; t < 1000; t += 50) c.update(okp(0.0, c.probe_rung(), 0.0), t);
+  CHECK(c.probe_gate(t).state == ProbeGateState::Clean);
+  for (; t < 1000 + cfg.probe.silence_ms + 100; t += 50) c.update(ok3(0.0), t);
+  CHECK(c.probe_gate(t).state == ProbeGateState::NoInfo);
+  CHECK(c.probe_gate(t).streak_ms == 0.0);
+}
+
+TEST(rung_change_resets_the_probe_streak) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
+  double t = 0;
+  while (c.rung() == 0) { c.update(okp(0.0, c.probe_rung(), 0.0), t); t += 50; REQUIRE(t < 1e6); }
+  // Right after the promote the new rung's probe has no streak yet.
+  CHECK(c.probe_gate(t).streak_ms < 100.0);
+}
+
+TEST(probe_edges_are_recorded_with_labels) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
+  double t = 0;
+  c.update(okp(0.0, c.probe_rung(), 0.0), t);
+  CHECK(c.last_probe_edge().state == ProbeGateState::Clean);
+  CHECK(c.last_probe_edge().rung == 1);
+  for (int i = 0; i < 10; ++i) c.update(okp(0.0, c.probe_rung(), 0.0), t += 50);
+  c.update(okp(0.0, c.probe_rung(), 0.9), t += 50);
+  const ProbeEdge& e = c.last_probe_edge();
+  CHECK(e.state == ProbeGateState::Lossy);
+  CHECK(std::abs(e.prev_dur_ms - 550.0) < 1e-9);
+  CHECK(std::abs(e.snr_db - 30.0) < 1e-9);
+  CHECK(e.u > 1.0);
+}
+
+TEST(demotes_still_win_and_the_gate_follows_the_new_rung) {
+  LadderCfg cfg = make_cfg();
+  LadderController c(cfg);
+  double t = 0;
+  while (c.rung() < 2) { c.update(okp(0.0, c.probe_rung(), 0.0), t); t += 50; REQUIRE(t < 1e6); }
+  feed_for(c, t, cfg.probation_ms + 100, 0.3);
+  LinkHealth bad = okp(0.0, c.probe_rung(), 0.0);
+  bad.residual_loss = 0.01;
+  CHECK(c.update(bad, t));
+  CHECK(c.rung() == 1);
+  CHECK(c.probe_rung() == 2);
 }
 
 TEST(event_carries_snr) {
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   double t = 0;
   LinkHealth bad = ok3(0.0); bad.residual_loss = 0.05;
   promote_to(ctl, t, 1);
@@ -673,7 +659,7 @@ TEST(event_carries_snr) {
 // (sw_decoder.h), so pre-transition debris is absent from the input rather
 // than outrun by a shorter window.
 TEST(s3_residual_demotes_on_the_first_window) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 4);
@@ -695,7 +681,7 @@ TEST(s3_residual_demotes_on_the_first_window) {
 // measured_rung() is stamped before any decision block and is what the log
 // must record.
 TEST(measured_rung_is_the_rung_the_loss_was_measured_on) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 4);
@@ -712,7 +698,7 @@ TEST(measured_rung_is_the_rung_the_loss_was_measured_on) {
 // On a tick with no transition the two must agree, or every quiet row in the
 // log would disagree with itself.
 TEST(measured_rung_equals_rung_when_no_demote) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 3);
@@ -726,7 +712,7 @@ TEST(s3_residual_demote_is_exempt_from_min_between_changes) {
   // now is too. s3_settle_ms (300) is longer than min_between_changes_ms
   // (150), so the blank would mask the spacing gate entirely — zero it to
   // isolate what this test is actually about.
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   cfg.s3_settle_ms = 0;
   LadderController ctl(cfg);
   double t = 0;
@@ -747,7 +733,7 @@ TEST(s3_residual_demote_is_exempt_from_min_between_changes) {
 // cannot tell the difference, so this pins the half the controller can
 // defend on its own.
 TEST(instant_s3_residual_still_respects_the_settle_blank) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 4);
@@ -764,7 +750,7 @@ TEST(instant_s3_residual_still_respects_the_settle_blank) {
 }
 
 TEST(s3_util_confirmed_demotes) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);
@@ -795,7 +781,7 @@ TEST(s3_util_confirmed_demotes) {
 // documentation half of the same finding, mirroring the pair that was
 // deleted.)
 TEST(s3_util_confirm_window_resets_across_an_s3_gap) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);
@@ -832,7 +818,7 @@ TEST(s3_util_confirm_window_resets_across_an_s3_gap) {
 // continuity gate, comparing against the stale s3_last_live_ms_, catches it
 // on the far side of the gap. The run must still break.
 TEST(s3_util_confirm_window_resets_across_an_invalid_sample_gap) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);
@@ -851,7 +837,7 @@ TEST(s3_util_confirm_window_resets_across_an_invalid_sample_gap) {
 }
 
 TEST(s3_demote_kill_switch) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   cfg.s3_demote = false;
   LadderController ctl(cfg);
   double t = 0;
@@ -861,20 +847,8 @@ TEST(s3_demote_kill_switch) {
   CHECK(ctl.rung() == 2);                    // inert
 }
 
-TEST(s3_signals_suspended_while_probing) {
-  LadderController ctl(make_cfg());
-  double t = 0;
-  for (; !ctl.probing(); t += 50) { ctl.update(ok3(0.0), t); REQUIRE(t < 1e5); }
-  // Heavy s3 residual during the probe must FAIL THE PROBE, not book an
-  // s3_residual demote of the current rung:
-  for (int i = 0; i < 20 && ctl.probing(); ++i, t += 50) ctl.update(ok3(0.0, 0.9, 0.5), t);
-  CHECK(ctl.counters().demotes_s3_residual == 0);
-  CHECK(ctl.counters().probe_fails == 1);
-  CHECK(ctl.rung() == 0);
-}
-
 TEST(s3_demote_during_probation_books_fail) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 2);                     // rung 2 now on probation
@@ -898,7 +872,7 @@ TEST(rung_store_feeds_parked_samples) {
 }
 
 TEST(rung_store_blanks_post_transition_samples) {
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   double t = 0;
   promote_to(ctl, t, 1);
   const uint64_t n_before = ctl.rungs().stat(1).u.n;
@@ -909,7 +883,7 @@ TEST(rung_store_blanks_post_transition_samples) {
 }
 
 TEST(rung_store_residual_demote_sample_feeds_measured_rung) {
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   double t = 0;
   promote_to(ctl, t, 2);
   feed_for(ctl, t, 400, 0.5);    // clears the post-promote blank
@@ -925,7 +899,7 @@ TEST(rung_store_residual_demote_sample_feeds_measured_rung) {
 }
 
 TEST(rung_store_util_demote_not_a_bad_exit) {
-  LadderController ctl(make_cfg());
+  LadderController ctl(make_cfg_noprobe());
   double t = 0;
   promote_to(ctl, t, 1);
   feed_for(ctl, t, 4000, 0.5);   // survive probation (3000 ms)
@@ -938,20 +912,15 @@ TEST(rung_store_util_demote_not_a_bad_exit) {
   CHECK(ctl.rungs().stat(1).exits_bad == bad_before);
 }
 
-TEST(rung_store_probe_feeds_candidate) {
-  LadderController ctl(make_cfg());
-  double t = 0;
-  while (!ctl.probing() && t < 60000) {
-    ctl.update(ok3(0.0), t);
-    t += 50;
-  }
-  REQUIRE(ctl.probing());
-  CHECK(ctl.probe_rung() == 1);
-  const uint64_t before = ctl.rungs().stat(1).probe_u.n;
-  t += 200;                       // strictly past probe_settle_ms (150)
-  ctl.update(ok3(0.0, 0.01), t);
-  CHECK(ctl.rungs().stat(1).probe_u.n == before + 1);
-  CHECK(ctl.rungs().stat(1).u.n == 0);  // parked column untouched by probes
+// The probe column is labeled by the rung that was PROBED, not by the
+// candidate whose budget scored it: with rung_offset 2 those differ.
+TEST(rung_store_probe_labels_the_probed_rung) {
+  LadderCfg cfg = make_cfg();
+  cfg.probe.rung_offset = 2;
+  LadderController c(cfg);
+  c.update(okp(0.0, 2, 0.1), 0);
+  CHECK(c.rungs().stat(2).probe_u.n == 1);
+  CHECK(c.rungs().stat(1).probe_u.n == 0);
 }
 
 TEST(rung_store_evm_feeds_only_when_sampled) {
@@ -979,7 +948,7 @@ MTEST_MAIN
 // --- fade-aware demotes: regime cascade (Part A) --------------------------
 
 TEST(fade_regime_cascade_shortens_util_confirm) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 3);
@@ -1009,7 +978,7 @@ TEST(fade_regime_cascade_shortens_util_confirm) {
 }
 
 TEST(fade_regime_expires_back_to_full_confirm) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   cfg.fade.hold_ms = 500;  // short regime for the test
   LadderController ctl(cfg);
   double t = 0;
@@ -1042,7 +1011,7 @@ TEST(fade_regime_s3_blanking_invariant_holds) {
   // respect s3_settle_ms — the re-key blank is NOT shortened by the regime.
   // There is no separate confirm to shorten any more: the demote fires on
   // the first live sample after the blank, in or out of the regime.
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 3);
@@ -1068,7 +1037,7 @@ TEST(fade_regime_s3_blanking_invariant_holds) {
 }
 
 TEST(fade_cascade_kill_switch_is_legacy) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   cfg.fade.cascade = false;
   LadderController ctl(cfg);
   double t = 0;
@@ -1097,7 +1066,7 @@ TEST(fade_cascade_kill_switch_is_legacy) {
 // --- Part B: predictive fade trigger (spec 2026-08-14 section 3) ---
 
 TEST(fade_predict_fires_on_joint_ramp) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   // Keep rung 3's probation open across the whole test so the "no penalty
   // path" assertions below are load-bearing: a fade demote booked like the
   // residual/util ones would charge a probation failure and penalize the rung.
@@ -1131,7 +1100,7 @@ TEST(fade_predict_fires_on_joint_ramp) {
 }
 
 TEST(fade_predict_requires_both_signals) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 3);
@@ -1148,7 +1117,7 @@ TEST(fade_predict_requires_both_signals) {
 }
 
 TEST(fade_predict_nan_breaks_sustain_run) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   cfg.fade.trigger_ms = 300;
   LadderController ctl(cfg);
   double t = 0;
@@ -1167,7 +1136,7 @@ TEST(fade_predict_nan_breaks_sustain_run) {
 }
 
 TEST(fade_predict_gates_min_rung_and_kill_switch) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   cfg.fade.min_rung = 3;
   LadderController ctl(cfg);
   double t = 0;
@@ -1178,7 +1147,7 @@ TEST(fade_predict_gates_min_rung_and_kill_switch) {
     CHECK(!ctl.update(rf(0.0, 27.0, -67.0), t));
   CHECK(ctl.rung() == 2);
 
-  LadderCfg cfg2 = make_cfg();
+  LadderCfg cfg2 = make_cfg_noprobe();
   cfg2.fade.predict = false;
   LadderController ctl2(cfg2);
   double t2 = 0;
@@ -1190,40 +1159,8 @@ TEST(fade_predict_gates_min_rung_and_kill_switch) {
   CHECK(ctl2.rung() == 3);
 }
 
-TEST(fade_demote_aborts_running_probe) {
-  LadderCfg cfg = make_cfg();
-  LadderController ctl(cfg);
-  double t = 0;
-  promote_to(ctl, t, 3);
-  // Establish RF baselines while ALSO feeding s3/probe-capable health, then
-  // ride the clean path until a probe starts (the promote gate probes when
-  // probe_allowed && s3 usable && candidate PHY differs — same recipe the
-  // file's existing probe tests use; reuse ok3() and set the RF fields).
-  // The util here is deliberately clean (unlike fade_baseline's neutral 0.3):
-  // this test NEEDS the clean window that arms the probe.
-  auto rf3 = [&](double snr, double rssi) {
-    LinkHealth h = ok3(0.0);
-    h.rf_snr_db = snr;
-    h.rf_rssi_dbm = rssi;
-    return h;
-  };
-  for (double end = t + 3000; t < end; t += 50) ctl.update(rf3(33.0, -55.0), t);
-  REQUIRE(ctl.probation_ms_left(t) == 0);
-  while (!ctl.probing()) { ctl.update(rf3(33.0, -55.0), t); t += 50; REQUIRE(t < 1e6); }
-  const auto before = ctl.counters();
-  // Joint fade while the probe is up: the fade demote must win and abort it.
-  bool fired = false;
-  for (double end = t + 2000; t < end && !fired; t += 50)
-    if (ctl.update(rf3(27.0, -67.0), t)) fired = true;
-  REQUIRE(fired);
-  CHECK(ctl.last_event().reason == CtlReason::Fade);
-  CHECK(!ctl.probing());
-  CHECK(ctl.counters().probe_aborts == before.probe_aborts + 1);
-  CHECK(ctl.counters().probe_fails == before.probe_fails);  // abort, not fail
-}
-
 TEST(fade_baseline_asymmetry_survives_3s_fade) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   cfg.fade.min_rung = 99;  // block firing; test the EWMAs only
   LadderController ctl(cfg);
   double t = 0;
@@ -1238,7 +1175,7 @@ TEST(fade_baseline_asymmetry_survives_3s_fade) {
 }
 
 TEST(fade_predict_fires_once_per_fade_event) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 5);
@@ -1262,7 +1199,7 @@ TEST(fade_predict_fires_once_per_fade_event) {
 }
 
 TEST(fade_predict_rearms_after_recovery) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 5);
@@ -1289,7 +1226,7 @@ TEST(fade_predict_rearms_after_recovery) {
 }
 
 TEST(fade_predict_latch_survives_nan_blip) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 5);
@@ -1324,7 +1261,7 @@ TEST(fade_predict_latch_survives_nan_blip) {
 // fade_drssi/fade_dsnr (sideport link.ctl.fade, ctl-log S line) froze at
 // stale values through the episodes the feature will be tuned from.
 TEST(fade_ewmas_feed_on_a_residual_demote_tick) {
-  LadderCfg cfg = make_cfg();
+  LadderCfg cfg = make_cfg_noprobe();
   LadderController ctl(cfg);
   double t = 0;
   promote_to(ctl, t, 3);
@@ -1348,7 +1285,7 @@ TEST(fade_ewmas_feed_on_a_residual_demote_tick) {
 // guard went with the switch and only the shortening remains.
 TEST(fade_regime_shortens_the_s3_util_confirm) {
   auto follow_on_demotes = []() {
-    LadderCfg cfg = make_cfg();
+    LadderCfg cfg = make_cfg_noprobe();
     cfg.s3_demote = true;
     LadderController ctl(cfg);
     double t = 0;

@@ -385,4 +385,144 @@ TEST(watermark_inactive_decoder_books_all_current) {
   CHECK(d.syms_abandoned_stale() == 0);
 }
 
+// --- ArrivalTracker feed (spec 2026-09-05-arrival-loss-design.md §4.1) ----
+// Sources only (overhead 0.0) so pkt index == seq and no repairs move the
+// expectation; default guard 32.
+
+TEST(arrival_counts_clean_stream) {
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 100, nullptr);
+  SwDecoder d(cfg, /*seq_horizon=*/512);
+  for (auto& env : envs) d.add_symbol(env.data(), env.size(), 1000);
+  CHECK(d.arr_expected() == 68);  // newest 99 - guard 32 -> seqs 0..67
+  CHECK(d.arr_arrived() == 68);
+  CHECK(d.arr_expected_stale() == 0);
+  CHECK(d.arr_late() == 0);
+  CHECK(d.syms_abandoned() == 0);  // decode accounting untouched
+}
+
+TEST(arrival_counts_loss_pattern_exactly) {
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 100, nullptr);
+  SwDecoder d(cfg, 512);
+  for (size_t i = 0; i < envs.size(); ++i) {
+    if (i == 3 || (i >= 40 && i <= 42)) continue;
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  }
+  CHECK(d.arr_expected() == 68);
+  CHECK(d.arr_arrived() == 64);
+}
+
+TEST(arrival_duplicate_source_is_idempotent) {
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 100, nullptr);
+  SwDecoder d(cfg, 512);
+  for (auto& env : envs) {
+    d.add_symbol(env.data(), env.size(), 1000);
+    d.add_symbol(env.data(), env.size(), 1000);  // second card heard it too
+  }
+  CHECK(d.arr_expected() == 68);
+  CHECK(d.arr_arrived() == 68);
+  CHECK(d.arr_late() == 0);
+}
+
+TEST(arrival_behind_settle_line_counts_late) {
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 100, nullptr);
+  SwDecoder d(cfg, 512);
+  for (size_t i = 0; i < envs.size(); ++i) {
+    if (i == 3) continue;
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  }
+  d.add_symbol(envs[3].data(), envs[3].size(), 1001);  // 96 seqs late
+  CHECK(d.arr_late() == 1);
+  CHECK(d.arr_arrived() == 67);  // not un-booked
+}
+
+TEST(arrival_stale_split_follows_the_watermark) {
+  // Mirrors watermark_pre_transition_abandonment_books_stale: drop 4..6
+  // before the transition, close the boundary with kPost sources.
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 100, nullptr);
+  SwDecoder d(cfg, 512);
+  for (size_t i = 0; i < 20; ++i) {
+    if (i >= 4 && i <= 6) continue;
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  }
+  d.mark_transition();
+  for (size_t i = 20; i < 100; ++i) {
+    if (i == 30) continue;  // a CURRENT-rung loss
+    d.add_symbol(envs[i].data(), envs[i].size(), 1001, SwBoundary::kPost);
+  }
+  CHECK(!d.boundary_open());
+  CHECK(d.arr_expected() == 68);
+  CHECK(d.arr_arrived() == 64);
+  CHECK(d.arr_expected_stale() == 20);   // seqs 0..19 (wm = 19)
+  CHECK(d.arr_arrived_stale() == 17);    // 4,5,6 missing
+  CHECK(d.arr_expected() - d.arr_expected_stale() == 48);
+  CHECK(d.arr_arrived() - d.arr_arrived_stale() == 47);  // only seq 30
+}
+
+TEST(arrival_repair_advances_expectation) {
+  // overhead 1.0: repairs follow every window; drop ALL sources after 10
+  // and feed only repairs -> expectation advances, nothing arrives.
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 60, nullptr);
+  SwDecoder d(cfg, 512);
+  size_t src = 0;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair) { if (src++ < 10) d.add_symbol(env.data(), env.size(), 1000); continue; }
+    d.add_symbol(env.data(), env.size(), 1000);
+  }
+  CHECK(d.arr_expected() > 10);
+  CHECK(d.arr_arrived() == 10);
+}
+
+TEST(arrival_counters_survive_encoder_restart) {
+  SwConfig cfg{64, 4, 0.0};
+  SwDecoder d(cfg, 512);
+  auto a = encode_stream(cfg, 100, nullptr);
+  for (auto& env : a) d.add_symbol(env.data(), env.size(), 1000);
+  const auto e0 = d.arr_expected();
+  REQUIRE(e0 == 68);
+  SwEncoder e2(cfg, /*initial_seq=*/5000000);  // far jump -> decoder reset
+  std::vector<std::vector<uint8_t>> b;
+  for (int i = 0; i < 100; ++i) { auto p = pat(62, i); for (auto& env : e2.add_packet(p.data(), p.size())) b.push_back(env); }
+  for (auto& env : e2.flush()) b.push_back(env);
+  for (auto& env : b) d.add_symbol(env.data(), env.size(), 2000);
+  CHECK(d.resets() == 1);
+  CHECK(d.arr_expected() == e0 + 68);
+  CHECK(d.arr_arrived() == e0 + 68);
+}
+
+TEST(arrival_open_boundary_books_everything_stale) {
+  // While wm_open_ stays true, arr_stale_end() returns ~0ull (final-review
+  // Finding 3): kPre never closes the boundary (only kPost does), so every
+  // seq the tracker books from mark_transition() onward -- however far the
+  // watermark itself keeps advancing on kPre -- lands on the stale side.
+  // This is the adaptive-blank mechanism: the current-only side
+  // (expected - expected_stale) stays flat for as long as the boundary is
+  // open (docs/link-adaptation.md).
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 120, nullptr);
+  SwDecoder d(cfg, 512);
+  for (size_t i = 0; i < 20; ++i) {
+    if (i == 5) continue;  // lost forever
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  }
+  d.mark_transition();
+  REQUIRE(d.boundary_open());
+  // Tail fed as kPre (NOT kPost): the boundary must never close.
+  for (size_t i = 20; i < 120; ++i)
+    d.add_symbol(envs[i].data(), envs[i].size(), 1001, SwBoundary::kPre);
+  CHECK(d.boundary_open());
+  CHECK(d.arr_expected() == 88);  // newest 119 - guard 32 -> seqs 0..87
+  CHECK(d.arr_expected_stale() == d.arr_expected());
+  CHECK(d.arr_arrived_stale() == d.arr_arrived());
+  CHECK(d.arr_arrived() == 87);  // seq 5 the only miss
+  CHECK(d.arr_expected() - d.arr_expected_stale() == 0);  // current side: flat
+}
+
 MTEST_MAIN

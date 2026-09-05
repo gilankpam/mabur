@@ -34,7 +34,7 @@ struct TelemInputs {
   int state = 0;
   bool failsafe_shed = false;
   bool radio_rx_ok = false;
-  bool probing = false;  // RcAgent::probing() — spec 2026-08-05 s3-probe-promote
+  bool probe_on = false;  // RcAgent::probe_on() — flags bit2, spec 2026-09-04 probe-stream
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
   uint64_t generation = 0;
   rc::PhyMode mode = rc::PhyMode::HT;

@@ -91,6 +91,10 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   lcfg.probation_ms = 10;
   lcfg.hold_after_down_ms = 0;
   lcfg.min_between_changes_ms = 0;
+  // Legacy promote semantics: these tests climb on healthy() samples, which
+  // carry no probe window, so the always-on probe gate would read NoInfo and
+  // hold every promote. The gate itself is covered in test_ladder_controller.
+  lcfg.probe.enable = false;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
 
@@ -192,70 +196,6 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   CHECK(vrx.peer_acked());                       // now caps==0 means it truly said 0
   CHECK(vrx.peer_caps() == 0);
 }
-// T_TELEM frames are drone->GS display-only telemetry, not rendezvous
-// traffic: on_rc_frame must tolerate the unknown (to it) frame type and
-// leave rendezvous/link state completely untouched. GS routes T_TELEM to a
-// separate holder before it ever reaches on_rc_frame (Task 3), but the
-// controller itself must not choke if it ever sees one. Spec 2026-07-26
-// drone-telemetry.
-// s3-capable healthy sample; probe_allowed is set by the CONTROLLER from
-// peer caps, not by callers, so the test must feed a DiscAck first.
-static LinkHealth healthy3() {
-  LinkHealth h = healthy();
-  h.s3_valid = true; h.s3_expected_syms = 500; h.rf_snr_db = 30.0;
-  return h;
-}
-
-// The controller must not encode a probe until the peer has advertised
-// CAP_ENH_PROBE via a DiscAck: mirror disc_ack_feeds_rendezvous's flow, add
-// CAP_ENH_PROBE to chip_caps.
-TEST(probe_encoded_in_rcf_when_peer_capable) {
-  auto vrx = make();
-  vrx.step(1500, healthy3());  // silence -> BEACONING
-  mabur::rc::DiscAck ack;
-  ack.vtx_id = 1;
-  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
-  ack.chip_caps = mabur::rc::CAP_ENH_PROBE;
-  auto wire = mabur::rc::pack_disc_ack(ack);
-  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
-  CHECK(vrx.peer_caps() & mabur::rc::CAP_ENH_PROBE);
-
-  bool saw_probe = false;
-  double now = 1600;
-  for (int t = 0; t < 9000; t += 10) {
-    now = 1600 + t;
-    vrx.on_video(now);
-    if (auto out = vrx.step(now, healthy3())) {
-      if (out->is_disc) continue;
-      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-      REQUIRE(r.has_value());
-      if (r->probe3) {
-        saw_probe = true;
-        // base profile still rung 0 (mcs0), probe targets rung 1 (mcs2):
-        mabur::rc::PhyMode m; uint8_t mcs, bw;
-        mabur::rc::decode_profile(r->profile, m, mcs, bw);
-        CHECK(mcs == 0);
-        mabur::rc::decode_profile(r->probe_profile, m, mcs, bw);
-        CHECK(mcs == 2);
-        break;
-      }
-    }
-  }
-  CHECK(saw_probe);
-}
-
-TEST(no_probe_without_cap) {
-  auto vrx = make();      // no DiscAck: peer_caps == 0
-  for (int t = 0; t < 9000; t += 10) {
-    vrx.on_video(t);
-    if (auto out = vrx.step(t, healthy3()); out && !out->is_disc) {
-      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-      if (r) CHECK(!r->probe3);
-    }
-  }
-  CHECK(vrx.ctl().counters().probes_started == 0);
-  CHECK(vrx.ctl().rung() >= 1);   // legacy promote happened instead
-}
 
 // While no DiscAck has ever been accepted, the SESSION keep-alive DISC runs
 // at unacked_keepalive_ms (250 ms) so a rebooted GS re-learns peer caps in
@@ -296,6 +236,12 @@ TEST(keepalive_disc_fast_until_peer_acked) {
   CHECK(discs_second_second <= 1);
 }
 
+// T_TELEM frames are drone->GS display-only telemetry, not rendezvous
+// traffic: on_rc_frame must tolerate the unknown (to it) frame type and
+// leave rendezvous/link state completely untouched. GS routes T_TELEM to a
+// separate holder before it ever reaches on_rc_frame (Task 3), but the
+// controller itself must not choke if it ever sees one. Spec 2026-07-26
+// drone-telemetry.
 TEST(on_rc_frame_tolerates_unknown_type_telem) {
   auto vrx = make();
   vrx.step(1500, no_data());  // silence -> BEACONING, seq_ advances
@@ -331,6 +277,10 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   lcfg.probation_ms = 10;
   lcfg.hold_after_down_ms = 0;
   lcfg.min_between_changes_ms = 0;
+  // Legacy promote semantics: these tests climb on healthy() samples, which
+  // carry no probe window, so the always-on probe gate would read NoInfo and
+  // hold every promote. The gate itself is covered in test_ladder_controller.
+  lcfg.probe.enable = false;
   // feedback_timeout_ms left at its default (1000 ms) -- exactly what this
   // test is guarding.
   auto vrx = make(lcfg);
@@ -381,6 +331,10 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   lcfg.probation_ms = 10;
   lcfg.hold_after_down_ms = 0;
   lcfg.min_between_changes_ms = 0;
+  // Legacy promote semantics: these tests climb on healthy() samples, which
+  // carry no probe window, so the always-on probe gate would read NoInfo and
+  // hold every promote. The gate itself is covered in test_ladder_controller.
+  lcfg.probe.enable = false;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
 
@@ -450,128 +404,51 @@ TEST(static_pin_overrides_controller) {
   CHECK(std::abs(r->fec_overhead_enh - 0.4) < 1e-9);
 }
 
-// --- RCF repeat burst (rcf-uplink-loss findings 2026-08-14 §4 item 3) -------
-// An op-changing RCF has a 30-50% chance of dying in the drone's TX airtime,
-// and the next chance is a full feedback_ms away. After any emission whose
-// commanded content changed, the controller exposes `copies` repeat frames at
-// `rcf_repeat_ms` spacing via poll_repeat(): fresh seq each (the drone's
-// freshness gate drops non-advancing seqs), same commanded op.
+// --- link.probe byte in the RCF head (spec 2026-09-04 sections 4.2, 5) -----
 
-// Drive to the first ladder promote and return the committing RCF's parse.
-static std::optional<mabur::rc::Rcf> drive_to_promote(VrxController& vrx,
-                                                      double& now) {
-  std::optional<VrxController::Out> out;
-  for (; now < 5000; now += 10) {
-    vrx.on_video(now);
-    auto o = vrx.step(now, healthy());
-    if (o && !o->is_disc && vrx.ctl().rung() == 1) { out = o; break; }
-  }
-  if (!out) return std::nullopt;
-  return mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-}
-
-static LadderCfg fast_promote_ladder() {
-  LadderCfg lcfg = default_ladder();
-  lcfg.ladder = {{0, 1.0, 1.0}, {4, 0.25, 0.25}};
-  lcfg.up_util = 0.1;
-  lcfg.confirm_ms = 10;
-  lcfg.clean_ms = 10;
-  lcfg.probation_ms = 10;
-  lcfg.hold_after_down_ms = 0;
-  lcfg.min_between_changes_ms = 0;
-  lcfg.feedback_timeout_ms = 100000;
-  return lcfg;
-}
-
-TEST(rcf_repeat_burst_after_op_change) {
-  auto vrx = make(fast_promote_ladder());
-  double now = 0;
-  auto commit = drive_to_promote(vrx, now);
-  REQUIRE(commit.has_value());
-
-  // Not due yet at +5 ms.
-  CHECK(!vrx.poll_repeat(now + 5).has_value());
-
-  uint16_t prev_seq = commit->seq;
-  for (int k = 1; k <= 3; ++k) {
-    auto f = vrx.poll_repeat(now + 10.0 * k);
-    REQUIRE(f.has_value());
-    auto r = mabur::rc::parse_rcf(f->data(), f->size());
-    REQUIRE(r.has_value());
-    CHECK(r->profile == commit->profile);
-    CHECK(std::abs(r->fec_overhead_base - commit->fec_overhead_base) < 1e-9);
-    CHECK(r->seq == static_cast<uint16_t>(prev_seq + 1));
-    prev_seq = r->seq;
-  }
-  // Burst exhausted.
-  CHECK(!vrx.poll_repeat(now + 40).has_value());
-}
-
-TEST(rcf_repeat_none_when_op_unchanged) {
-  auto vrx = make(fast_promote_ladder());
-  double now = 0;
-  REQUIRE(drive_to_promote(vrx, now).has_value());
-  // Drain the promote's own burst.
-  while (vrx.poll_repeat(now + 1000)) now += 1000;
-
-  // Steady state: emit several more RCFs with the op parked; none arm.
-  int emitted = 0;
-  for (int i = 0; i < 50; ++i) {
-    now += 110;  // past feedback_ms every iteration
-    vrx.on_video(now);
-    auto o = vrx.step(now, healthy());
-    if (o && !o->is_disc) {
-      ++emitted;
-      CHECK(!vrx.poll_repeat(now + 500).has_value());
+// Drives the link into SESSION with a DiscAck, then steps until an RCF is
+// emitted; returns the parsed RCF.
+static mabur::rc::Rcf first_rcf(VrxController& vrx, const LinkHealth& h, double& t) {
+  mabur::rc::DiscAck ack; ack.vtx_id = 1; ack.vrx_nonce = vrx.rz_nonce();
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE; ack.seq = 1;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), t);
+  for (int i = 0; i < 400; ++i, t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, h); out && !out->is_disc) {
+      auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+      REQUIRE(r.has_value());
+      return *r;
     }
   }
-  CHECK(emitted >= 10);
+  REQUIRE(false);
+  return {};
 }
 
-TEST(rcf_repeat_copies_zero_disables) {
-  VrxCfg cfg;
-  cfg.vtx_id = 1;
-  cfg.ladder = fast_promote_ladder();
-  cfg.rcf_repeat_copies = 0;
+TEST(rcf_carries_the_probe_rung_profile) {
+  auto vrx = make();  // rung 0 = mcs0, rung 1 = mcs2
+  double t = 0;
+  auto r = first_rcf(vrx, healthy(), t);
+  CHECK(r.probe_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 2, 20));
+  CHECK(vrx.probe_profile() == r.probe_profile);
+}
+
+TEST(rcf_probe_byte_is_none_when_disabled_or_pinned_without_pin_mcs) {
+  LadderCfg l = default_ladder(); l.probe.enable = false;
+  auto vrx = make(l);
+  double t = 0;
+  CHECK(first_rcf(vrx, healthy(), t).probe_profile == mabur::rc::kNoProbeProfile);
+  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
+  VrxController pinned(cfg);
+  t = 0;
+  CHECK(first_rcf(pinned, healthy(), t).probe_profile == mabur::rc::kNoProbeProfile);
+}
+
+TEST(pinned_link_can_probe_a_fixed_mcs) {
+  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
+  cfg.probe_pin_mcs = 5;
   VrxController vrx(cfg);
-  double now = 0;
-  REQUIRE(drive_to_promote(vrx, now).has_value());
-  CHECK(!vrx.poll_repeat(now + 1000).has_value());
-}
-
-// A second op change mid-burst supersedes the first burst: exactly `copies`
-// fresh repeats, all carrying the NEW command.
-TEST(rcf_repeat_restart_on_new_change_mid_burst) {
-  auto vrx = make(fast_promote_ladder());
-  double now = 0;
-  auto promote = drive_to_promote(vrx, now);
-  REQUIRE(promote.has_value());
-  // Drain one repeat of the promote burst.
-  REQUIRE(vrx.poll_repeat(now + 10).has_value());
-
-  // Force a demote back to rung 0; its committing RCF re-arms the burst.
-  LinkHealth lossy{true, 0.0, 0.2, false};
-  std::optional<VrxController::Out> out;
-  for (int i = 0; i < 60 && vrx.ctl().rung() != 0; ++i) {
-    now += 110;
-    vrx.on_video(now);
-    auto o = vrx.step(now, lossy);
-    if (o && !o->is_disc) out = o;
-  }
-  REQUIRE(vrx.ctl().rung() == 0);
-  REQUIRE(out.has_value());
-  auto commit = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-  REQUIRE(commit.has_value());
-  CHECK(commit->profile != promote->profile);
-
-  int drained = 0;
-  for (int k = 1; k <= 10; ++k) {
-    auto f = vrx.poll_repeat(now + 10.0 * k);
-    if (!f) break;
-    auto r = mabur::rc::parse_rcf(f->data(), f->size());
-    REQUIRE(r.has_value());
-    CHECK(r->profile == commit->profile);  // new command, not the stale promote
-    ++drained;
-  }
-  CHECK(drained == 3);
+  double t = 0;
+  CHECK(first_rcf(vrx, healthy(), t).probe_profile ==
+        mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
 }

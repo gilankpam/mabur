@@ -257,3 +257,47 @@ player just doesn't come back). **Strip the `display.vsync_*` /
 `lat_log_dir` keys from the file BEFORE dropping back to
 `maburplay.pre-vsync`** — config-before-binary applies rolling back too,
 not only rolling forward.
+
+## 2026-09-04 RC_VERSION 6 (probe stream)
+
+The discrete s3 probe is replaced by an always-on probe-stream canary
+(`docs/link-adaptation.md` "Probe stream"); the RCF head gains a fixed
+`probe_profile` byte and `RCF_F_PROBE_ENH`/`CAP_ENH_PROBE`/`CAP_S3_PROBE`
+are deleted — RC_VERSION 5 → 6, so this is a version-mismatch flag day
+like the 2026-08-12/2026-08-15 bumps above: a mismatched pair rejects
+each other's frames in both directions and, since DISC_ACK carries
+`CAP_FRAME_WIRE`, looks like no video at all until both ends match.
+
+**GS config first.** `/etc/maburgs.json` gains the optional `link.probe`
+block (live defaults if omitted: `enable true, rung_offset 1, clean_ms
+2000, max_util <0 ⇒ down_util, min_syms 40, silence_ms 500, pin_mcs -1`)
+and loses five flat keys that now FAIL BOOT — delete them before the
+binary swap:
+
+```sh
+grep -nE '"probe_(ms|settle_ms|max_util|s3_min_syms|s3_silence_ms)"' /etc/maburgs.json
+```
+
+`probe_s3_min_syms` has a successor, `link.s3_min_syms` (default 50) —
+carry over a non-default value before deleting the old key.
+
+Drone config (`/etc/mabur.json`) is untouched — there is no drone-side
+probe config; the RCF byte is the only switch. Sequence:
+
+1. Edit `/etc/maburgs.json` on the GS (delete the five keys above; add
+   `link.probe` or rely on defaults).
+2. Swap `maburgs` AND `tools/maburtop.py` together (the sideport's
+   `classes` keys change shape — `s2`/`s3` gone, `probe` added — and an
+   old `maburtop` against a new `maburgs` mis-renders the signal panel).
+3. Swap `maburd`.
+
+Between steps 2 and 3 the pair is mismatched (RC_VERSION 5 drone vs 6
+GS): no control link, no video, exactly the deploy-window symptom this
+page opens with. Finish the deploy; do not restart either daemon hoping
+to fix it.
+
+Rollback is paired, as always: `maburgs.pre-probe` / `maburd.pre-probe`
+with `maburgs.json.pre-probe` (the five flat keys restored, `link.probe`
+removed) alongside the GS binary — an old GS binary against a config
+carrying `link.probe` fails strict keys at boot just as surely as the
+reverse.

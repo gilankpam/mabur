@@ -392,4 +392,110 @@ TEST(uep_attrib_expiry_guard_no_underflow) {
   CHECK(dec.last_boundary_close_ms(1) >= 0.0);
 }
 
+TEST(layer_stats_carry_arrival_counters) {
+  std::array<UepLayerCfg, 2> layers{};
+  for (auto& l : layers) { l.fec = SwConfig{64, 8, 0.0}; l.blocks_per_body = 1; }
+  UepDecoder dec(layers);
+  const auto s = dec.stats(0);
+  CHECK(s.arr_expected == 0);
+  CHECK(s.arr_arrived == 0);
+  CHECK(s.arr_expected_stale == 0);
+  CHECK(s.arr_arrived_stale == 0);
+  CHECK(s.arr_late == 0);
+
+  // The zero-decoder checks above pass whether or not stats()'s brace-init
+  // is transcribed in order (every field compares equal to every other).
+  // Drive a live decoder over the fixture stream -- forced entirely onto
+  // stream 1, mirroring layer_stats_expose_recovered_arrived's routing --
+  // and hold back its 5th stream-1 body. NOT the 1st: SwDecoder anchors its
+  // seq space on the first symbol it ever sees, so holding body #1 back
+  // would put its seqs BEFORE that anchor, invisible to the tracker rather
+  // than genuinely missing (verified empirically: with body #1 held,
+  // arr_arrived tracks arr_expected exactly throughout). Body #5 arrives
+  // after the anchor is already set, so its seqs pass the settle line as
+  // genuinely-missing while the rest of the fixture plays through.
+  UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
+  std::vector<UepBody> bodies;
+  auto frames = fixture_frames();
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
+    for (auto& b : enc.add_frame(1, unit.data(), unit.size(), 0))
+      bodies.push_back(std::move(b));
+  }
+  for (auto& b : enc.flush_all()) bodies.push_back(std::move(b));
+
+  UepDecoder live(vec_layers());
+  std::vector<uint8_t> held;
+  size_t s1_seen = 0;
+  for (auto& b : bodies) {
+    if (b.stream_id == 1) {
+      ++s1_seen;
+      if (held.empty() && s1_seen == 5) { held = b.body; continue; }
+    }
+    live.add_body(b.body.data(), b.body.size(), 0);
+  }
+  REQUIRE(!held.empty());
+
+  // Before the held body arrives: expectation has advanced past it (both
+  // > 0), arrival trails it (held body's symbols are genuinely missing at
+  // the settle line -- distinguishes arr_expected from arr_arrived), no
+  // transition was ever marked (both _stale fields pinned at 0), and
+  // nothing has arrived late yet.
+  const auto s1 = live.stats(1);
+  CHECK(s1.arr_expected > 0);
+  CHECK(s1.arr_arrived > 0);
+  CHECK(s1.arr_arrived < s1.arr_expected);
+  CHECK(s1.arr_expected_stale == 0);
+  CHECK(s1.arr_arrived_stale == 0);
+  CHECK(s1.arr_late == 0);
+
+  // Feed the held body: its seqs are behind the settle line, so they count
+  // late rather than retroactively filling arr_arrived (counters are
+  // monotonic and never rewound -- ArrivalTracker's documented contract).
+  live.add_body(held.data(), held.size(), 0);
+  const auto s2 = live.stats(1);
+  CHECK(s2.arr_late > 0);
+  CHECK(s2.arr_expected == s1.arr_expected);
+  CHECK(s2.arr_arrived == s1.arr_arrived);
+}
+
+TEST(layer_stats_arr_stale_split_follows_transition) {
+  // Round-2 review finding: layer_stats_carry_arrival_counters never marks
+  // a transition, so a swap of arr_expected_stale <-> arr_arrived_stale in
+  // UepDecoder::stats()'s brace-init passed silently (both stale twins sat
+  // at 0/0 throughout). Pin them to DIFFERENT values via a real transition,
+  // mirroring uep_attrib_same_mcs_transition_plain_fallback's fixture.
+  auto layers = layers_for(64, 1, 8);
+  UepEncoder enc(layers, 15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(42);
+  uint64_t now = 1000;
+  auto feed = [&](int i, bool drop, uint8_t mcs) {
+    auto unit = make_unit(1, static_cast<uint32_t>(i), 300, rng);
+    auto bodies = enc.add_frame(1, unit.data(), unit.size(), now);
+    for (auto& b : bodies)
+      if (!drop) dec.add_body(b.body.data(), b.body.size(), now, mcs);
+    now += 5;
+    for (auto& b : enc.poll(now))
+      if (!drop) dec.add_body(b.body.data(), b.body.size(), now, mcs);
+  };
+  dec.mark_transition(1, 5, now);   // first-ever mark: plain fallback, establishes mcs 5
+  // Frames 37/38 dropped just before the cutover (i=40): close enough to
+  // the boundary that their seqs are still inside the ArrivalTracker guard
+  // window (32) when the boundary closes, so they retroactively book
+  // stale rather than having already settled as plain current-side loss --
+  // same reasoning as uep_attrib_pre_transition_loss_books_stale_and_output_identical's
+  // drop-right-before-the-transition placement.
+  for (int i = 0; i < 40; ++i) feed(i, i == 37 || i == 38, 5);
+  dec.mark_transition(1, 4, now);   // real transition: 5 -> 4, opens the boundary
+  for (int i = 40; i < 100; ++i) feed(i, false, 4);  // 60 clean post-transition frames
+
+  const auto s = dec.stats(1);
+  CHECK(s.arr_expected_stale > 0);
+  CHECK(s.arr_arrived_stale < s.arr_expected_stale);  // 37/38's sources never arrived
+  CHECK(s.arr_expected - s.arr_expected_stale > 0);    // current side booked too
+  // No current-side loss was injected: current-side expected == arrived.
+  CHECK(s.arr_arrived - s.arr_arrived_stale == s.arr_expected - s.arr_expected_stale);
+}
+
 MTEST_MAIN

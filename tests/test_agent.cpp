@@ -67,14 +67,22 @@ Config make_cfg() {
 // weighted target can't tell base from enh apart (see the weakened-test
 // comments this replaced, Task 2 finding).
 std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
-                                    uint8_t ov_base_16ths, uint8_t ov_enh_16ths) {
+                                    uint8_t ov_base_16ths, uint8_t ov_enh_16ths,
+                                    uint8_t probe_profile) {
   Rcf r;
   r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
   r.fec_overhead_base = ov_base_16ths / 16.0;
   r.fec_overhead_enh = ov_enh_16ths / 16.0;
+  r.probe_profile = probe_profile;
   return pack_rcf(r);
+}
+
+// Convenience overload: the common case with no probe stream commanded.
+std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
+                                    uint8_t ov_base_16ths, uint8_t ov_enh_16ths) {
+  return make_rcf_wire(vtx_id, seq, profile, ov_base_16ths, ov_enh_16ths, kNoProbeProfile);
 }
 
 // Convenience overload: the common case where a test wants the same
@@ -957,138 +965,71 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
   CHECK(!agent.take_link_established());  // flap, not a (re)start
 }
 
-// 11. RCF with probe3=true overrides only the enh layer (ladder[1], the old
-// s3) with probe_profile's MCS while the base layer (ladder[0]) stays on
-// the base profile's scored mcs (same-rate ruling); agent.probing()
-// reflects the last accepted RCF's probe3 bit and reverts (both
-// op.ladder[1] and probing()) the moment a follow-up RCF arrives without
-// the flag.
-TEST(probe_rcf_overrides_layer3_mcs) {
+// 11. RCF with probe_profile != kNoProbeProfile fills the dedicated probe
+// slot (AppliedOp.probe/probe_profile), NOT the enh layer — ladder[1] stays
+// on the base profile's scored mcs regardless of a probe (spec 2026-09-04
+// probe-stream). agent.probe_on() reflects the last accepted RCF's
+// probe_profile and clears the moment a follow-up RCF arrives at
+// kNoProbeProfile.
+TEST(probe_rcf_fills_the_probe_slot_not_the_enh_layer) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-
-  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
-  uint8_t probe_byte = encode_profile(PhyMode::HT, 6, 20);
-  Rcf r;
-  r.vtx_id = cfg.link.vtx_id;
-  r.seq = 1;
-  r.profile = profile_byte;
-  r.fec_overhead_base = 0.5;
-  r.fec_overhead_enh = 0.5;
-  r.probe3 = true;
-  r.probe_profile = probe_byte;
-  auto wire = pack_rcf(r);
-  agent.on_rc_frame(wire.data(), wire.size(), 0);
-
-  CHECK(agent.state() == RcAgent::State::LINKED);
-  const AppliedOp& op = agent.current();
-  CHECK(op.ladder[0].mcs == 5);  // BASE = scored mcs, unaffected by the probe
-  CHECK(op.ladder[1].mcs == 6);  // ENH at the probe MCS
-  CHECK(agent.probing());
-
-  // A follow-up RCF without the flag reverts the enh layer to the base
-  // profile's mcs and clears probing().
-  r.probe3 = false;
-  r.seq = 2;
-  auto wire2 = pack_rcf(r);
-  agent.on_rc_frame(wire2.data(), wire2.size(), 100);
-  CHECK(agent.current().ladder[1].mcs == 5);
-  CHECK(!agent.probing());
+  agent.tick(0, RadioHealth{});
+  const uint8_t probe_byte = encode_profile(PhyMode::HT, 6, 20);
+  auto wire = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 5, 20), 8, 8, probe_byte);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  REQUIRE(!act.applied.empty());
+  const AppliedOp& op = act.applied.back();
+  CHECK(op.ladder[0].mcs == 5);
+  CHECK(op.ladder[1].mcs == 5);            // enh no longer moves for a probe
+  CHECK(op.probe_profile == probe_byte);
+  CHECK(op.probe.mcs == 6);
+  CHECK(op.probe.bw == 20);
+  CHECK(op.probe.ldpc && op.probe.stbc);
+  CHECK(agent.probe_on());
+  // A follow-up RCF without a probe clears the slot.
+  auto wire2 = make_rcf_wire(1, 2, encode_profile(PhyMode::HT, 5, 20), 8, 8, kNoProbeProfile);
+  agent.on_rc_frame(wire2.data(), wire2.size(), 200);
+  CHECK(act.applied.back().probe_profile == kNoProbeProfile);
+  CHECK(!agent.probe_on());
 }
 
-// 11b. Failsafe entry (MAX_RANGE) clears probing() even if the last RCF
-// before the silence carried probe3=true — a degraded/lost link must never
-// report itself as still probing.
-TEST(probing_cleared_on_failsafe) {
+// 11b. Failsafe entry (MAX_RANGE) clears the probe slot even if the last
+// RCF before the silence carried a probe_profile — a degraded/lost link
+// must never report itself as still probing.
+TEST(max_range_clears_the_probe_slot) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-
-  Rcf r;
-  r.vtx_id = cfg.link.vtx_id;
-  r.seq = 1;
-  r.profile = encode_profile(PhyMode::HT, 5, 20);
-  r.fec_overhead_base = 0.5;
-  r.fec_overhead_enh = 0.5;
-  r.probe3 = true;
-  r.probe_profile = encode_profile(PhyMode::HT, 6, 20);
-  auto wire = pack_rcf(r);
-  agent.on_rc_frame(wire.data(), wire.size(), 0);
-  CHECK(agent.probing());
-
-  agent.tick(1000, RadioHealth{});  // silence -> FAILSAFE (MAX_RANGE reapplied)
+  agent.tick(0, RadioHealth{});
+  auto wire = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 5, 20), 8, 8,
+                            encode_profile(PhyMode::HT, 6, 20));
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  CHECK(agent.probe_on());
+  agent.tick(100 + cfg.link.failsafe_ms + cfg.link.tick_ms, RadioHealth{});  // -> FAILSAFE
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
-  CHECK(!agent.probing());
+  CHECK(!agent.probe_on());
+  CHECK(act.applied.back().probe_profile == kNoProbeProfile);
 }
 
 // 11c. A probe must not move the encoder bitrate (spec 2026-08-05 s3-probe-
-// promote: "Base link (... encoder bitrate) is untouched; the probe changes
-// MCS only" / "Bitrate policy stays keyed to the base profile"). Since the
-// 2-slot op (2bbaa3f) the policy's enh term read the probed slot's PHY rate,
-// so every probe entry raised the command (~+11-15% at low rungs) and every
-// exit lowered it back -- two SetChnAttr writes, two forced IDRs, and the
-// flight-0011 air backlog at rungs 1-3 (2026-09-03 analysis). The balancer
-// that was meant to compensate the probe window's air shift was deleted
-// 2026-09-01. REVERT CHECK: feed rate_e = phy_rate(ladder[1]) unguarded and
-// the probe RCF writes 9400 (mcs2 base 19.5 / mcs3 probe 26.0, ov 0.5,
-// budget 0.65) and the exit RCF writes 8500 again -> two writes past count_linked.
+// promote, carried into 2026-09-04 probe-stream: the probe stream has its
+// own slot and costs zero encoder writes — the bitrate stays keyed to the
+// base profile's ladder[1]).
 TEST(probe_rcf_does_not_change_bitrate) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-
-  Rcf r;
-  r.vtx_id = cfg.link.vtx_id;
-  r.seq = 1;
-  r.profile = encode_profile(PhyMode::HT, 2, 20);
-  r.fec_overhead_base = 0.5;
-  r.fec_overhead_enh = 0.5;
-  auto wire = pack_rcf(r);
-  agent.on_rc_frame(wire.data(), wire.size(), 0);  // RENDEZVOUS -> LINKED
+  agent.tick(0, RadioHealth{});
+  auto plain = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 5, 20), 8, 8);
+  agent.on_rc_frame(plain.data(), plain.size(), 100);
   REQUIRE(!act.bitrates.empty());
-  CHECK(act.bitrates.back() == 8500);  // 1000*0.65/(1.5/19.5) = 8450 -> 8500
-  const size_t count_linked = act.bitrates.size();
-
-  // Probe entry, past the 1 s write throttle so a changed target WOULD
-  // be written: the enh slot flies mcs3 but the command must hold.
-  r.seq = 2;
-  r.probe3 = true;
-  r.probe_profile = encode_profile(PhyMode::HT, 3, 20);
-  auto wire2 = pack_rcf(r);
-  agent.on_rc_frame(wire2.data(), wire2.size(), 1100);
-  REQUIRE(agent.probing());
-  CHECK(agent.current().ladder[1].mcs == 3);
-  CHECK(act.bitrates.size() == count_linked);
-
-  // Probe exit (the decrease path is never throttled): still no write.
-  r.seq = 3;
-  r.probe3 = false;
-  auto wire3 = pack_rcf(r);
-  agent.on_rc_frame(wire3.data(), wire3.size(), 1200);
-  REQUIRE(!agent.probing());
-  CHECK(act.bitrates.size() == count_linked);
-}
-
-// 2d. DiscAck.chip_caps advertises CAP_ENH_PROBE alongside the existing
-// caps — this drone accepts RCF_F_PROBE_ENH.
-TEST(disc_ack_advertises_s3_probe) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
-                              /*op_width=*/40, 0, 2);
-  agent.on_rc_frame(wire.data(), wire.size(), 100);
-
-  REQUIRE(act.controls.size() == 1);
-  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
-  REQUIRE(parsed.has_value());
-  CHECK(parsed->chip_caps & mabur::rc::CAP_ENH_PROBE);
+  const int before = act.bitrates.back();
+  auto probed = make_rcf_wire(1, 2, encode_profile(PhyMode::HT, 5, 20), 8, 8,
+                              encode_profile(PhyMode::HT, 6, 20));
+  agent.on_rc_frame(probed.data(), probed.size(), 1200);
+  CHECK(act.bitrates.back() == before);
 }
 
 TEST(link_established_latches_on_disc_link_up) {

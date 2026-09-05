@@ -4,6 +4,8 @@
 #include <optional>
 #include <vector>
 
+#include "mabur/rc_proto.h"
+
 #include "ladder_controller.h"
 #include "op_point.h"
 #include "rendezvous.h"
@@ -29,11 +31,9 @@ struct VrxCfg {
   int pin_mcs = -1;
   double pin_overhead_base = 0.25;
   double pin_overhead_enh = 0.25;
-  // RCF repeat burst (rcf-uplink-loss findings 2026-08-14): after an RCF
-  // whose commanded content changed, re-send it copies times at
-  // rcf_repeat_ms spacing (fresh seq each). 0 disables.
-  int rcf_repeat_copies = 3;
-  int rcf_repeat_ms = 10;
+  // link.probe.pin_mcs: static-pin mode only -- probe a fixed MCS while
+  // pinned (bench validation).
+  int probe_pin_mcs = -1;
 };
 
 class VrxController {
@@ -54,12 +54,6 @@ class VrxController {
   // gates everything else) replace the old SNR-survivor-bias special case
   // here — see ladder_controller.cpp update().
   std::optional<Out> step(double now_ms, const LinkHealth& health);
-  // Repeat-burst drain: returns the next repeat RCF when one is due at
-  // now_ms, rebuilt from CURRENT controller state with a fresh seq. Callers
-  // send it like any control frame but must NOT treat it as a feedback
-  // boundary (no decoder-window reset — window == RCF period holds for
-  // step() emissions only).
-  std::optional<std::vector<uint8_t>> poll_repeat(double now_ms);
   const OpPoint& cur_op() const;
   // The ladder controller itself, for Task 6's sideport link.ctl block and
   // the "ctl: rung a->b" transition line in main.cpp. Exists even in pin
@@ -67,6 +61,8 @@ class VrxController {
   const LadderController& ctl() const { return ctrl_; }
   VrxState link_state() const;
   uint16_t rcf_seq() const;
+  // The probe byte the last built RCF carried (kNoProbeProfile when none).
+  uint8_t probe_profile() const { return last_cmd_probe_profile_; }
   // chip_caps from the most recently accepted DiscAck; 0 before any accept.
   // Gates GS main's video tail on mabur::rc::CAP_FRAME_WIRE.
   uint16_t peer_caps() const { return peer_caps_; }
@@ -92,15 +88,7 @@ class VrxController {
   OpPoint cur_op_;
   uint16_t peer_caps_ = 0;
   bool peer_acked_ = false;
-  // RCF repeat burst state (see poll_repeat).
-  int repeats_left_ = 0;
-  double next_repeat_ms_ = 0;
-  bool have_last_cmd_ = false;
-  uint8_t last_cmd_profile_ = 0;
-  uint8_t last_cmd_ovx100_b_ = 0;
-  uint8_t last_cmd_ovx100_e_ = 0;
-  bool last_cmd_probe3_ = false;
-  uint8_t last_cmd_probe_profile_ = 0;
+  uint8_t last_cmd_probe_profile_ = mabur::rc::kNoProbeProfile;
 };
 
 }  // namespace maburgs

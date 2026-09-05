@@ -73,6 +73,14 @@ air — and was the largest single source of >80 ms p50 seconds in
 flight-0011 (23 of 48). The 2026-08-05 probe spec always said the probe
 changes MCS only; the rate feed-in came with the 2-slot op (2bbaa3f)
 expecting the AirBalancer to absorb it, and the balancer is gone.
+⚠ SUPERSEDED 2026-09-04: there is no more "enh probe" slot to feed a
+rate into at all — the probe-stream redesign (§6 below,
+`docs/link-adaptation.md` "Probe stream") moved the candidate-MCS canary
+onto its own SBI stream, so ENH always runs the op MCS and `rate_e` is
+simply the op rate, no longer a special case. The mechanism this
+paragraph describes is historical; the principle it states (a probe must
+never change bitrate) is exactly why the probe stream is excluded from
+this formula and from `run_bitrate_policy` altogether.
 
 ⚠ **Measured inputs removed 2026-09-01.** `f0` was AirFeed's live
 `share_base`, and each term also carried a measured framing excess
@@ -295,3 +303,16 @@ their variance into jitter. Knobs, in order of proven usefulness:
   the wall is sharp. Any alternating bitrate ratio r:1 prices as
   EMA ≈ 2·Δair/wire-rate; 1-in-N droppable patterns cost ~2/N of the
   every-other-frame damage.
+
+## 6. Probe stream air share (2026-09-04)
+
+The always-on probe stream (`docs/link-adaptation.md` "Probe stream")
+adds one 1403 B body per ENH AU — 30 bodies/s at 30 fps — at the MCS of
+rung `current + link.probe.rung_offset`. Air share = 30 × serialization
+of 1403 B at that MCS: **≈ 1 % at mcs4-5, ≈ 2.7 % at mcs1** (lower MCS
+serializes a fixed byte count more slowly). It is NOT budgeted by
+`run_bitrate_policy` or the RcAgent airtime estimator — the probe
+changes MCS only, never bitrate (§1's superseded "enh probe" note above
+states the same principle for the mechanism this one replaced), so it
+costs zero encoder writes and zero IDRs. At the top of the ladder (no
+probe commanded, `probe_rung() == -1`) the cost is zero, not 1 %.

@@ -80,10 +80,16 @@ strings (`s3_residual`, `s3_util`) were kept as-is rather than renamed
 (see `gs/src/ctl_log.h`'s ctllog 7 note) — read every s1/s3 mention past
 this point as sid0/sid1. (`s3_residual_confirm_ms` itself is gone, but
 that removal predates this change — see the pooled-RF note below.)
+⚠ SUPERSEDED 2026-09-04: sid1 (ENH) never changes MCS any more. The probe stream (below) carries the
+candidate-MCS canary on its own SBI stream (id 5) now, so "sid1 — still
+the probe/canary layer" is accurate only for recordings dated before
+2026-09-04; from this date sid1 always rides the op MCS and every
+mention of "the enh layer diverting to a candidate rate" in older
+material is historical.
 
 ## RCF slotting into the inter-AU idle (2026-09-03)
 
-Every GS control-frame send (RCF, DISC keepalive, repeat copies) blasts the
+Every GS control-frame send (RCF, DISC keepalive) blasts the
 sibling RX card at ~−4 dBm and deafens the TX card, so a drone PPDU whose
 preamble starts within ~180 µs of the send is lost on BOTH cards — one
 whole aggregate per hit, the source of the bench's ~0.35 %/PPDU loss and
@@ -114,7 +120,130 @@ Sends: 88 % released by an AU completion (hold p50 6 ms, p90 17 ms), 12 %
 in-grace immediate, 0.5 % hold-timeout. Cost: a commanded op change now
 reaches the drone up to one AU period later (`link.attrib.close_ms`
 5 → 22 ms). Player `fec` p99 ≥ 20 ms windows: 31/90 → 7/100.
-Sideport counters: `link.rcf_slot.{au,timeout,passthru}`.
+Sideport counters: `link.rcf_slot.{au,probe,timeout,passthru,tail_ub_ms}`.
+
+**Probe-arrival release (2026-09-05).** While a probe is commanded, the
+probe body is the last PPDU of every ENH burst and it lands 0.9 ms p50 /
+4 ms p99 *after* the completion stamp (bench, probelog 2 `first_ms` vs
+`t_complete`); a send's USB+chip latency is 1–1.5 ms, so a release at the
+ENH completion put the blast exactly on the probe — the probe lost ~2.5×
+the enh stream's own symbol loss, 45 of 55 lost probes had a GS send
+inside the collision window (22 % baseline), and a fixed one-body tail
+(`bee51c6`) was a measured null. An ENH completion now releases nothing
+itself: the probe sink's `on_probe_tail` is the release
+(`SlotReason::Probe`), with the idle-ahead check made at that instant.
+A lost probe falls back to a deadline at completion + `tail_ub_ms`, a
+decaying max of the observed completion→probe offsets floored at the
+probe body's airtime, +1 ms. Base-AU completions release at once as
+before (no probe trails a base burst). Interleaved A/B, pinned mcs4 /
+probe mcs4 / `feedback_ms` 50, 8 min arms:
+`docs/probe-blanking-fix-findings-2026-09-05.md` — probe loss 0.21 % →
+0.06 %, below the enh stream's 0.08 %, enh unchanged.
+
+## Probe stream (2026-09-04) — current promote gate
+
+Replaces the s3 probe-before-promote design entirely (the 2026-08-05
+paragraphs below are marked superseded). RC_VERSION 5 → 6. Spec
+`docs/superpowers/specs/2026-09-04-probe-stream-design.md`.
+
+**What it is.** The drone appends one extra body — SBI stream id 5
+(`kProbeStreamId`, `common/include/mabur/probe_wire.h`), exactly one
+video-body length (1403 B at the shipped 332/bpb4 geometry,
+`11 + bpb*(2 + kSwHeaderLen + symbol_size)`, derived from the same
+`FecCfg` as video and never independently configured) — after every ENH
+access unit, all the time the link is LINKED. It flies at the profile of
+rung `current + link.probe.rung_offset` (default 1), commanded fresh on
+every RCF (`Rcf::probe_profile`, 0xFF = no probe: disabled, or already
+on the top rung). Every sub-block repeats a 9-byte header (magic, seq,
+profile, `enh_fid`) so a body with one surviving block is still
+attributed rather than booked as `bpb` lost blocks. An FCS-failed probe
+PPDU still reaches `ProbeTrack`: `Aggregator::on_rx_body` routes every
+probe body to the sink regardless of `crc_ok`, and `parse_probe_body`
+salvages the CRC-clean sub-blocks exactly as the video decoder does for
+an FCS-corrupt video body — gating the probe sink on `crc_ok` would book
+every FCS-failing PPDU as a full `bpb`-block loss instead of just its
+dead sub-blocks, biasing the gate ~4x pessimistic toward Lossy.
+
+**The enh tail and the GS uplink blast (corrected 2026-09-05).** The
+2026-09-04 design assumed a send released at the ENH completion is on
+air ≥ `lead_ms` (3 ms) later, long after the probe. Measured: the probe
+lands 0.9 ms p50 / 4 ms p99 after the completion stamp and the send's
+real USB+chip latency is 1–1.5 ms, so the slotter aimed the blast at the
+probe (~2.5× the enh stream's own loss, GS-inflicted, vanishing at
+`feedback_ms` 200). Fixed by releasing on the probe's arrival instead —
+"RCF slotting" above, `docs/probe-blanking-fix-findings-2026-09-05.md`.
+A probe sent at a random time would land inside the ~180 µs blast
+~0.35 %/PPDU of the time; with the probe-arrival release it is the one
+PPDU the slotter can never hit, and on the bench it now loses *less*
+than the enh stream it predicts.
+
+**Scoring rule — union across cards, AU count for expected, never seq
+gaps.** `ProbeTrack` (`gs/src/probe_track.h`) books one expectation of
+`bpb` blocks per ENH AU that begins — NOT from probe sequence numbers.
+A wholly-lost probe stream carries its `seq` counter inside the lost
+bodies, so scoring "expected" from arrival-side seq gaps could never
+book an expectation for a 100 %-lost interval; it would read as silence
+(no data, ladder ignores it) instead of loss (data, score it zero) —
+exactly the case this gate exists to catch. Counters (`expected_blocks`,
+`arrived_blocks`, `bodies_rx`) are kept for the COMMANDED profile only,
+plus a single monotonic `off_profile` count for bodies that finalize
+carrying a different profile (the RCF-lag tail, ~20-65 ms after a rung
+change) — those bodies are "not scored", not "lost". `arrived_blocks` is
+the union (OR of survivor bitmaps) across GS radio cards, because that
+is what video gets through the two-card FEC dedup — scoring anything
+else would not predict what a promote actually delivers. Every counter
+is strictly non-decreasing: an off-profile body cancels its OWN enh AU's
+still-pending expectation (keyed by the AU's frame id, the same id the
+probe body carries as `enh_fid`) rather than an "un-book" of an already
+counted total — there is no subtraction path. Per-card cumulative
+counters exist alongside the union purely for the "which card collapsed
+at range" question (flight-0016).
+
+⚠ 2026-09-04 bench finding: a delivered body's AU used to finalize on
+its own timer, ~5-30 ms before the body's own finalize instant, so a
+one-body `expected` deficit sat open between the two and the 500 ms
+`S1LossWindow` (sampled every 50 ms) read a fraction of samples as a
+phantom `probe_u` 0.2 quantum against a real per-body loss of ~0.2 %.
+Fixed by tying a matched AU's finalize to its body's: a still-pending
+AU is matched to its body on the body's first sight and now finalizes
+in the same `tick()` as the body, so only a genuinely lost probe ever
+opens a gap.
+
+**Gate table (spec §4.4).** Every existing promote condition stays
+(`u < up_util` sustained `clean_ms`, `hold_after_down_ms`,
+`min_between_changes_ms`, next rung exists and unpenalized); the probe
+gate is consulted on top, only once a probe is commanded:
+
+| gate | action |
+|---|---|
+| Clean, streak ≥ `probe.clean_ms` | promote now; probation as today; `++promotes_probed`; reason `promote_probed` |
+| Clean, streak short | wait — the promote lands the tick the streak reaches `clean_ms` |
+| Lossy | **hold**, no penalty (nothing was tried, the probe keeps measuring for free); `++probe_holds` once per hold episode |
+| NoInfo | **hold**, same counter — a commanded-but-absent probe (enh shed, drone not sending) is precisely the blind promote this design exists to prevent |
+
+`promote_probed` vs plain `promote`: the legacy direct promote (reason
+`promote`) survives ONLY when no probe is commanded at all
+(`link.probe.enable: false`, or already on the top rung, which cannot
+promote anyway). Demotes always win and are untouched — there is no
+probe state to abort, since there is no probe state machine any more.
+
+`u_probe` is scored against the CANDIDATE rung's own enh budget
+(`budget_enh_for(idx + 1)`) — the tighter of the base/enh pair under the
+base ≥ enh operator rule — never the current rung's. `RungStore::
+observe_probe()` labels the sample by the PROBED rung, so
+`link.rungs[].probe_u` at rung r means "loss measured at r, scored
+against r's own enh budget" at the default `rung_offset` — with
+`rung_offset > 1` the sample is scored against the budget of
+`r − rung_offset + 1` instead, which is the extra margin the knob buys.
+
+**v2 hook.** The gate state at `rung_offset 1` is a leading indicator
+for demotes but does not drive one yet — the design's §10 keeps
+probe-driven demote explicitly out of scope. `flightreport.py`'s
+probe-lead report (`docs/observability.md`) is the input a v2 threshold
+would be tuned against.
+First flights 2026-09-05: `docs/probe-stream-flight-findings-2026-09-05.md`
+— the gate's loss quantum is 0.2 per lost body, so `max_util` must sit
+below 0.2 (0.15 flown: rung-5 median hold 16 s vs 1 s at 0.2).
 
 ## Drone congestion shed (2026-09-03)
 
@@ -148,11 +277,41 @@ Tuning invariant: the controller's s3 loss/residual
 windows are 500 ms wide, while the post-transition blanking
 (`s3_settle_ms`, default 300) and probe settle (`probe_settle_ms`, 150)
 are shorter — so up to ~200 ms of pre-transition symbols remain in view
-after blanking expires. Shipped defaults are safe (stale weight decays
+after blanking expires. ⚠ SUPERSEDED 2026-09-04 — see "Probe stream"
+above: `probe_settle_ms` and the discrete probe state machine it
+blanked are DELETED (the key now FAILS BOOT); the probe stream is
+always-on and has no settle blackout of its own to tune. The
+`s3_settle_ms` half of this paragraph (the ENH/base rung-transition
+blanking) is UNCHANGED and still governs real rung changes. Shipped
+defaults are safe (stale weight decays
 fast against the 250/500 ms confirm windows), but do NOT lower
 `s3_settle_ms`/`s3_residual_confirm_ms` toward their floors together: a
 rung transition's FEC re-key artifacts could then satisfy the s3-residual
-confirm and self-demote on every promote. ⚠ SUPERSEDED 2026-08-15 — see
+confirm and self-demote on every promote. ⚠ 2026-09-05: that self-demote
+DID happen, from the other direction — `s3_settle_ms` only gated the
+controller's READ; the 500 ms `s3_resid_cur` window behind it was never
+cleared at the edge (the base window got its 150 ms `blank_until` on
+2026-09-02, the enh one did not), so the abandonment horizon's ~80 ms
+late booking of old-rung loss re-fired an `s3_residual` demote the tick
+the 300 ms gate opened, on a 0 ms confirm. Flights 20/21: 13 of 14
+s3_residual cascades double-stepped at exactly 300–310 ms and were
+promoted straight back ~3 s later. Fixed by `gs/src/transition_edge.h`,
+which settle-blanks only the two RESIDUAL decision windows (base and
+enh; pinned by `tests/test_transition_edge.cpp`) at every op edge. The
+util windows (pre-FEC, base and enh) briefly joined the same blank later
+that day (51dd79e), for the same reason: with only the residual windows
+blanked the bench still took an `s3_util` step at +400 ms on stale loss,
+because every demote opens the fade regime and in-regime the util
+confirm is `fade.confirm_ms`, not the 250 ms the "util needs no blank"
+paragraph above assumed. That util blank was itself reverted the same
+day (2026-09-05) when the two util inputs moved to arrival-time booking
+— see "**Since 2026-09-05 (arrival tracker, ctllog 11)…**" further down
+this file: the ArrivalTracker never books old-rung loss against the new
+rung, so its denominator does not collapse after a re-key and no blank
+is needed there any more; `TransitionEdge` today blanks only the two
+residual windows. `flightreport.py` prints an
+"s3-settle-refire canary" that must read ~0 on any recording after this.
+See `docs/probe-stream-flight-findings-2026-09-05.md` §9. ⚠ SUPERSEDED 2026-08-15 — see
 the pooled-RF note below: `s3_residual_confirm_ms` is REMOVED and FAILS
 BOOT, so there is no longer a config knob to lower — the s3-residual
 confirm window this paragraph warns about is now permanently at 0 ms
@@ -405,6 +564,65 @@ a 50 ms/rung drop to rung 0; sustained eff=15 still walks 5→0 (util,
 150-320 ms/rung) and recovers; ausniff 60.0 fps / 0 gaps. Expect
 `residual` E-line pairs closer than 150 ms never again; a demote storm
 now shows `util` reasons and real per-rung `u`.
+
+**Since 2026-09-05 (arrival tracker, ctllog 11) the two util inputs are
+booked at arrival time**, not from the decoder's completion counters:
+`SwDecoder` owns a `mabur::ArrivalTracker` that books every source seq
+once when it crosses a settle line 32 seqs behind the newest seq seen
+(expected = sequence advance, arrived = heard; a repair's window end
+advances the expectation), splitting both into stale/current with the
+same watermark boundary abandonment uses. `main.cpp` feeds
+`s1_loss_cur`/`s3_loss_cur` from the current-only side. Two things
+follow. (1) The util blank added the same day (51dd79e) is REMOVED —
+`TransitionEdge` blanks only the two residual windows — because the
+tracker never books old-rung loss against the new rung and its
+denominator does not collapse after a re-key. (2) The post-promote
+`probation` bounce class (flight-0023: u = 1.0/0.8 on the first
+post-blank tick; bench ctl-0299: 1.125) cannot occur: the offending
+sample was a ~60 ms bucket with near-zero completions. What did NOT
+change: the residual inputs (abandonment + 150 ms `kResidSettleMs`), the
+thresholds, the budgets (`u` is still source-symbol loss over the parity
+fraction). Bench and flight numbers before this line are
+completion-booked (`docs/data-provenance.md`).
+**Bench-validated ctl-0305..0339, deployed to the GS 2026-09-05**
+(rollback `maburgs.pre-arrival`, the `ctllog 10` completion-booked build;
+no config change); campaign-1 sweep inconclusive within bench noise — see
+`docs/arrival-loss-findings-2026-09-05.md`. What passed: the pulse
+campaign and the restart climbs — every demoting pulse `steps=1`, both
+canaries 0, **no util sample above `down_util` within 200 ms of any
+transition** now that the blank is gone, drone-switch p50 42 ms (control
+57), 10/10 cold climbs reach rung 5 with `probation=0` — and the standing
+gates on the deploy artifact (ausniff 60.0 fps / `fid_gaps=0` /
+`incomplete={}`, aucadence offset 2.87 ms inside the 4.0 ms gate), plus
+post-deploy ctl-0341 (clean 0→5, no `probation`, ausniff 1800 AUs /
+`fid_gaps=0` / 60.0 fps). The steady-loss sweep decided nothing: on 200 ms
+sideport buckets its run-to-run variance exceeds the control-candidate
+difference (two runs of the same control binary disagree by 1.0 pp at
+eff 20 %), so its accuracy criterion fails control-vs-control too; the one
+repeatable per-step difference is a +0.7 pp over-read at eff 10 %, which
+errs toward an earlier demote. The bench does not reproduce the probation
+bounce this change targets (the control is `probation=0` on 10/10 too), so
+the flight remains the real test.
+
+The open-boundary path is itself an adaptive blank, not an absence of
+one. While `SwDecoder`'s `wm_open_` is true, `arr_stale_end()` returns
+`~0ull`, so every seq the tracker books during that time is stale and
+the current-only side (`arr_expected − arr_expected_stale`) stays flat
+— `s1_loss_cur`/`s3_loss_cur` receive no new entries until the boundary
+closes on the first `kPost` body. Normally that lasts the drone's real
+switch latency (bench: p50 42 ms, p90 65 ms), so the fixed 150 ms blank
+this section describes for residual has effectively been replaced, on
+the util side, by an adaptive blank scoped to the transition's true
+length rather than a fixed guess. Degraded case: if `rx_mcs` is
+`kMcsUnknown` no body ever carries `kPost`, and the boundary stays open
+until `kBoundaryExpiryMs` (1000 ms, `common/src/uep_decoder.cpp`) —
+during which the 500 ms util window empties, `s1_cur_sample.valid` goes
+false and `gs/src/main.cpp` defaults `health.pre_fec_loss` to 0.0
+(promote-permissive), and `link.pre_fec_loss` reads null. The ladder
+reads a clean link (`u` = 0) for as long as this lasts, so
+`clean_start` accrues through it. Watch `link.attrib_close_ms` (the
+boundary close latency gauge) on a flight to see how long the adaptive
+blank actually ran and whether it ever hit the 1 s worst case.
 
 On the drone, RCF drain is decoupled from the agent tick
 (`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop

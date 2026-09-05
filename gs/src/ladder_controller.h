@@ -58,6 +58,21 @@ struct FadeCfg {
   int min_rung = 2;      // no predictive fires below this rung
 };
 
+// --- always-on probe stream (spec 2026-09-04) ---
+// The drone pushes a small canary body at the rung `current + rung_offset`
+// after every enh AU; the GS scores its loss continuously and the promote
+// trigger consults the verdict. No state machine: nothing starts, nothing
+// aborts, and a demote never has to cancel anything.
+struct ProbeCfg {
+  bool enable = true;
+  int rung_offset = 1;
+  int clean_ms = 2000;
+  double max_util = -1.0;   // <0 => down_util
+  int min_syms = 40;
+  int silence_ms = 500;
+  int pin_mcs = -1;         // consumed by VrxController only
+};
+
 struct LadderCfg {
   std::vector<Rung> ladder;  // effective (post-filter), size >= 1; [0] = failsafe
   double down_util = 0.6, up_util = 0.15;
@@ -75,22 +90,19 @@ struct LadderCfg {
   // never stamp feedback, so the blind-side timeout stays the backstop.
   int starved_confirm_ms = 300;
 
-  // --- s3 probe-before-promote ---
-  // Instead of stepping the whole link onto the candidate rung and hoping,
-  // the controller first runs the candidate MCS on the expendable s3
-  // enhancement stream for probe_ms and only commits if s3 measures clean.
-  int probe_ms = 2000;         // how long a probe runs before it commits
-  int probe_settle_ms = 150;   // ignore s3 loss this long after probe start
-  double probe_max_util = -1.0;  // <0 => down_util
-  int probe_s3_min_syms = 50;    // an s3 window below this is "no traffic"
-  int probe_s3_silence_ms = 500;  // no usable s3 for this long aborts a probe
+  // --- always-on probe stream (see ProbeCfg above) ---
+  ProbeCfg probe;
 
   // --- s3 steady-state demotes (consumed by the s3-demote logic) ---
   bool s3_demote = true;
   double s3_down_util = -1.0;   // <0 => down_util
-  // After any rung transition (or probe start/end) the drone re-keys its FEC
-  // streams; blank s3-derived decisions for this long so the re-key glitch
-  // does not read as loss.
+  // An s3 window below this many expected symbols is "no traffic" and carries
+  // no information. The flat key that used to carry this floor went with the
+  // s3 probe (spec 2026-09-04); link.s3_min_syms replaces it.
+  int s3_min_syms = 50;
+  // After any rung transition the drone re-keys its FEC streams; blank
+  // s3-derived decisions for this long so the re-key glitch does not read as
+  // loss.
   int s3_settle_ms = 300;
 
   // --- per-rung EWMA store (spec 2026-08-13, observe-only) ---
@@ -105,8 +117,11 @@ struct LadderCfg {
 // current rung's s1 stream, over the loss window the caller maintains.
 // Fields are APPEND-ONLY with defaults: existing positional brace-inits
 // (LinkHealth{true, 0.0, 0.0, false} in main.cpp / test_vrx_controller.cpp)
-// must keep compiling untouched, and a caller that fills only the s1 fields
-// gets the legacy direct-promote behaviour verbatim.
+// must keep compiling untouched. A caller that fills only the s1 fields no
+// longer gets the legacy direct promote, though: with ProbeCfg::enable on
+// (the default) the absent probe window reads as NoInfo and HOLDS every
+// promote — that is the point of the gate. Disable the probe to get the
+// legacy behaviour back.
 struct LinkHealth {
   bool sample_valid = false;  // false when the s1 window saw 0 expected symbols
   double pre_fec_loss = 0.0;  // s1 missing/expected over the loss window
@@ -116,12 +131,11 @@ struct LinkHealth {
   double s3_pre_fec_loss = 0.0;   // s3 missing/expected over the window
   double s3_residual_loss = 0.0;  // abandoned/expected over the window
   uint64_t s3_expected_syms = 0;  // expected s3 symbols in the window
-  // Carried onto CtlEvent/ProbeEvent so the ctl log can say what the RF
+  // Carried onto CtlEvent/ProbeEdge so the ctl log can say what the RF
   // looked like when a decision fired, AND — since the Part B predictive fade
   // trigger (spec 2026-08-14) — a decision input in its own right. NaN is a
   // legal value (no SNR known this window) and leaves the trigger inert.
   double rf_snr_db = std::numeric_limits<double>::quiet_NaN();
-  bool probe_allowed = false;  // peer advertised CAP_ENH_PROBE
   // Label only: the RF EVM (dB, s1+s3 pooled) of the card that supplied
   // rf_snr_db. NaN when unsampled. Deliberately NOT a decision input — raw
   // EVM is op-point-dependent (docs/evm-sweep-findings-2026-08-10.md).
@@ -130,26 +144,44 @@ struct LinkHealth {
   // Part B fade trigger's joint condition. NaN = unsampled, which leaves it
   // inert.
   double rf_rssi_dbm = std::numeric_limits<double>::quiet_NaN();
+  // --- probe stream window (spec 2026-09-04), from ProbeTrack ---
+  bool probe_valid = false;      // probe window had a sample
+  double probe_loss = 0.0;       // union block loss over the window
+  uint64_t probe_expected_syms = 0;
+  int probe_rung = -1;           // rung the sample was commanded at
 };
 
 enum class CtlReason {
   None, Residual, Util, Probation, Starved, Timeout, Promote,
-  S3Residual, S3Util, Fade
+  S3Residual, S3Util, Fade, PromoteProbed
 };
 const char* to_string(CtlReason r);
 
-// Outcome of one s3 probe. None = no probe has finished yet.
-enum class ProbeOutcome { None, Pass, Fail, Abort };
-const char* to_string(ProbeOutcome o);
+// Continuous verdict of the probe stream. Off = no probe is commanded (the
+// feature is disabled, or the link is already on the top rung); NoInfo = one
+// IS commanded but nothing usable has been measured recently, which holds a
+// promote exactly as a Lossy verdict does — a commanded-but-absent probe is
+// the blind promote the stream exists to prevent.
+enum class ProbeGateState { Off, NoInfo, Clean, Lossy };
+const char* to_string(ProbeGateState s);  // "off" "noinfo" "clean" "lossy"
 
-struct ProbeEvent {
+struct ProbeGate {
+  ProbeGateState state = ProbeGateState::Off;
+  int rung = -1;         // the rung being probed; -1 when none is
+  double u = 0.0;        // last scored probe utilization
+  double streak_ms = 0.0;  // how long the state has been Clean; 0 otherwise
+};
+
+// One state change of the gate, for the ctl log / sideport. prev_dur_ms is
+// how long the state it replaced had stood.
+struct ProbeEdge {
   double t_ms = 0;
-  int rung = 0;  // the CANDIDATE rung the probe was testing
-  ProbeOutcome outcome = ProbeOutcome::None;
-  double snr_db = 0;
-  double u_pred = 0;  // s3-measured utilization predicted for the candidate
-  int dur_ms = 0;
+  int rung = -1;
+  ProbeGateState state = ProbeGateState::Off;
+  double u = 0.0;
+  double snr_db = std::numeric_limits<double>::quiet_NaN();
   double evm_db = std::numeric_limits<double>::quiet_NaN();
+  double prev_dur_ms = 0;
 };
 
 // Stamped by penalize_rung() so the ctl log can report the escalating ledger
@@ -173,8 +205,9 @@ struct CtlEvent {
 struct CtlCounters {
   uint64_t demotes_residual = 0, demotes_util = 0, promotes = 0,
            probation_fails = 0, starved_drops = 0, timeout_drops = 0;
-  uint64_t probes_started = 0, probes_ok = 0, probe_fails = 0,
-           probe_aborts = 0;
+  // Promotes that the probe gate cleared, and hold EPISODES (one count per
+  // continuous run of held promotes, not one per sample).
+  uint64_t promotes_probed = 0, probe_holds = 0;
   uint64_t demotes_s3_residual = 0, demotes_s3_util = 0;
   uint64_t demotes_fade = 0;
 };
@@ -230,20 +263,22 @@ class LadderController {
   int probation_ms_left(double now_ms) const;  // 0 when not probing
   std::vector<std::pair<int, int>> penalized(double now_ms) const;  // {rung, ms_left}
 
-  // --- s3 probe view ---
-  bool probing() const { return probe_active_; }
-  int probe_rung() const { return probe_rung_; }  // -1 when idle
-  // The MCS the drone must run on s3 while the probe is up; -1 when idle.
-  int probe_mcs() const {
-    return probe_active_
-               ? cfg_.ladder[static_cast<std::size_t>(probe_rung_)].mcs
-               : -1;
-  }
+  // --- probe stream view ---
+  // The rung the drone must run the probe stream at: min(rung + offset, top),
+  // or -1 when nothing is to be probed (feature disabled, or already on the
+  // top rung). Pure function of the current rung — there is no probe state.
+  int probe_rung() const;
+  // The gate's current verdict; consulted by the promote trigger and
+  // exported. streak_ms is live against now_ms.
+  ProbeGate probe_gate(double now_ms) const;
+  // The last gate state CHANGE (ctl log / sideport). Off with rung -1 before
+  // any change has happened.
+  const ProbeEdge& last_probe_edge() const { return last_probe_edge_; }
+
   // Steady-state s3 utilization against the CURRENT rung's s3 budget. 0
-  // whenever the last sample could not measure it: while a probe is up (s3 is
-  // deliberately running a different MCS then, so the reading is meaningless),
-  // inside the post-transition blanking window, or when s3 carried no usable
-  // traffic. Never a persisted stale value.
+  // whenever the last sample could not measure it: inside the post-transition
+  // blanking window, or when s3 carried no usable traffic. Never a persisted
+  // stale value.
   double util3() const { return u3_; }
 
   // Observe-only per-rung statistics (spec 2026-08-13). NEVER read by any
@@ -263,7 +298,6 @@ class LadderController {
 
   const CtlCounters& counters() const { return counters_; }
   const CtlEvent& last_event() const { return last_event_; }
-  const ProbeEvent& last_probe() const { return last_probe_; }
   const PenaltyEvent& last_penalty() const { return last_penalty_; }
 
  private:
@@ -328,10 +362,14 @@ class LadderController {
     }
   };
 
-  void start_probe(int rung, double now_ms);
-  void end_probe(ProbeOutcome oc, double u_pred, double now_ms);
-  // Every rung change and every probe start/end: blank s3-derived decisions
-  // over the drone's FEC re-key and drop any half-accumulated s3 window.
+  // Score this sample's probe window and move the gate (spec 2026-09-04
+  // §4.3). Runs on every valid sample, before any decision block.
+  void update_probe_gate(const LinkHealth& h, double now_ms);
+  // Move the gate to `s`, logging an edge when it actually changes.
+  void set_probe_state(ProbeGateState s, int rung, double u, double now_ms);
+  // Every rung change: blank s3-derived decisions over the drone's FEC
+  // re-key, drop any half-accumulated s3 window, and reset the probe gate —
+  // the new rung's probe has measured nothing yet.
   void mark_transition(double now_ms);
 
   LadderCfg cfg_;
@@ -373,14 +411,15 @@ class LadderController {
   std::vector<int> fail_count_;        // per-rung consecutive probation-fail count k
   std::vector<double> penalty_until_;  // per-rung penalty expiry (ms); -1e18 = none
 
-  // --- s3 probe state ---
-  bool probe_active_ = false;
-  int probe_rung_ = -1;
-  double probe_start_ms_ = -1.0, probe_last_s3_ms_ = -1.0;
-  // Last post-settle u_pred scored during the current probe, so a Pass
-  // reports what it actually measured instead of 0. 0.0 means no post-settle
-  // sample was ever scored (probe committed on liveness alone).
-  double probe_u_pred_last_ = 0.0;
+  // --- probe gate state (spec 2026-09-04) ---
+  ProbeGateState probe_state_ = ProbeGateState::Off;
+  double probe_state_since_ms_ = 0.0;
+  double probe_clean_since_ms_ = -1.0;   // -1 = no streak
+  double probe_last_sample_ms_ = -1e18;
+  double probe_u_ = 0.0;
+  bool probe_hold_active_ = false;       // one probe_holds count per hold episode
+  ProbeEdge last_probe_edge_;
+
   double u3_ = 0.0;
   double s3_util_start_ms_ = -1.0;
   // Last sample that could actually measure s3. The confirm window above is
@@ -393,7 +432,6 @@ class LadderController {
 
   CtlCounters counters_;
   CtlEvent last_event_;
-  ProbeEvent last_probe_;
   PenaltyEvent last_penalty_;
 };
 

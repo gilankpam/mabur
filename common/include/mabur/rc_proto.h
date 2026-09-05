@@ -31,10 +31,16 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // fec_overhead_base/fec_overhead_enh (fixed per-rung pairs replace the
 // balancer; base rides the scored mcs — same-rate). Spec
 // 2026-08-30-same-rate-fixed-pairs-design.md.
+// Bumped 5 -> 6 on 2026-09-04: probe_profile is a FIXED head byte (0xFF =
+// no probe stream); the RCF_F_PROBE_ENH flag + optional tail and
+// CAP_ENH_PROBE are gone. Spec 2026-09-04-probe-stream-design.md.
 // Old and new peers reject each other in BOTH directions -- a half-deployed
 // pair has no control link and, because DISC_ACK carries CAP_FRAME_WIRE, no
 // video either. Recovery is to finish the deploy.
-constexpr uint8_t RC_VERSION = 5;
+constexpr uint8_t RC_VERSION = 6;
+
+// RCF probe_profile sentinel: the drone runs no probe stream.
+constexpr uint8_t kNoProbeProfile = 0xFF;
 
 constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
@@ -42,11 +48,6 @@ constexpr uint8_t T_DISC_ACK = 3;
 constexpr uint8_t T_TELEM = 4;
 
 constexpr uint8_t F_DISCOVERY = 0x04;
-
-// RCF flags bit: one probe_profile byte follows the head — layer 3 (s3)
-// transmits at that MCS while everything else stays on Rcf.profile. This is
-// the only bit an RCF ever sets; the flags byte carries nothing else.
-constexpr uint8_t RCF_F_PROBE_ENH = 0x08;
 
 // DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
 // (8-byte FrameHdr units + 6-byte wide FRAG headers) instead of pre-built
@@ -57,10 +58,6 @@ constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
 // Display-grade only (not a safety gate): a GS lacking this bit just never
 // sees a T_TELEM frame from an old drone. Spec 2026-07-26 drone-telemetry.
 constexpr uint16_t CAP_TELEMETRY = 0x0002;
-
-// DiscAck.chip_caps bit: drone accepts RCF_F_PROBE_ENH (s3-only MCS probe).
-// Spec 2026-08-05 s3-probe-promote.
-constexpr uint16_t CAP_ENH_PROBE = 0x0004;
 
 // VRX -> VTX feedback: the GS-authoritative operating point. Every field
 // here is one maburd acts on. It used to also carry ack_seq, an alink-style
@@ -74,10 +71,9 @@ struct Rcf {
   double fec_overhead_base = 0.5;
   double fec_overhead_enh = 0.5;
 
-  // s3 probe (spec 2026-08-05): when true, pack appends probe_profile after
-  // the head (inside the CRC) and sets RCF_F_PROBE_ENH in the flags byte.
-  bool probe3 = false;
-  uint8_t probe_profile = 0;
+  // Probe stream MCS (spec 2026-09-04): encode_profile of the rung the GS
+  // wants probed, or kNoProbeProfile. Always present in the head.
+  uint8_t probe_profile = kNoProbeProfile;
 };
 
 // VRX -> VTX discovery beacon (rendezvous), addressed to a VTX_ID.
@@ -108,7 +104,8 @@ struct DiscAck {
 struct Telem {
   uint16_t tlm_seq = 0;
   uint8_t state = 0;            // RcAgent::State numeric
-  uint8_t flags = 0;  // bit0 failsafe_shed, bit1 radio_rx_ok, bit2 probing,
+  uint8_t flags = 0;  // bit0 failsafe_shed, bit1 radio_rx_ok,
+                      // bit2 probe stream on (RcAgent::probe_on()),
                       // bit3 rcf_seq_echo valid (link-rtt),
                       // bit4 congestion_shed (RcAgent::run_congestion_guard
                       //      shed_level >= 1: TxQueue pressure / USB failure;

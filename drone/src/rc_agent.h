@@ -36,6 +36,12 @@ struct AppliedOp {
   double fec_ov_enh = 2.0;
   std::array<bool, 2> shed = {false, false};
   uint64_t generation = 0;
+
+  // Probe stream (spec 2026-09-04): the RCF's probe_profile byte as received
+  // (kNoProbeProfile = no stream) and the resolved TX spec for it — same
+  // mode/bw as the op, LDPC+STBC like the video slots. RadioTx slot 2.
+  uint8_t probe_profile = rc::kNoProbeProfile;
+  rc::LayerTxSpec probe;
 };
 
 // Volatile per-layer overhead override (bench sweeps, set via the debug
@@ -154,11 +160,11 @@ class RcAgent {
     return last_seq_;
   }
 
-  // True iff the last accepted RCF carried probe3 (an s3-only MCS probe) —
-  // cleared the moment a FAILSAFE/max-range apply takes over (a degraded or
-  // lost link must never report itself as still probing) or a follow-up RCF
-  // arrives without the flag. Spec 2026-08-05 s3-probe-promote.
-  bool probing() const { return probe3_active_; }
+  // True while the drone is emitting the probe stream: LINKED and the last
+  // accepted RCF commanded a probe MCS. Telem flags bit2.
+  bool probe_on() const {
+    return state_ == State::LINKED && applied_.probe_profile != rc::kNoProbeProfile;
+  }
 
   // Latched on a BOOT/RENDEZVOUS -> LINKED transition — the process-(re)start
   // link-up, when frames encoded so far never reached the air and the GS may
@@ -191,11 +197,6 @@ class RcAgent {
   // Telem.rcf_rx. Never reset (a session-boundary reset would make the GS's
   // rate computation, which is over a measured interval, ambiguous).
   uint64_t rcf_accepted_ = 0;
-
-  // Mirrors the last accepted RCF's probe3 bit — see probing(). Cleared in
-  // apply_max_range() (FAILSAFE/boot never probes) and recomputed at the top
-  // of every RCF apply.
-  bool probe3_active_ = false;
 
   // IDR policy state (spec 2026-08-28 venc-foldin §4). Every IDR producer
   // — the GS-driven RCF-after-failsafe path and the encoder's chain-break
@@ -264,7 +265,7 @@ class RcAgent {
 
   void apply_max_range(uint64_t now_ms);
   void apply_ladder_op(const std::array<rc::LayerTxSpec, 2>& ladder,
-                        double ov_base, double ov_enh);
+                        double ov_base, double ov_enh, uint8_t probe_profile);
   void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);

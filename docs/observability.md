@@ -7,11 +7,17 @@ health, TX/injection rates, airtime estimate, and drone telemetry (state,
 applied op, encoder, queues, uplink RF, temps — via the 1 Hz T_TELEM
 control frame); `link.ctl` carries the ladder controller's rung, util,
 probation/counters, and last-transition reason, and `tools/flightreport.py`
-is the post-flight analyzer over a recorded jsonl. Promotes now probe the
-candidate MCS on the s3 enhancement stream first when the drone advertises
-`CAP_S3_PROBE`, and s3 residual/util loss demotes in steady state (kill-switch
+is the post-flight analyzer over a recorded jsonl. ⚠ Superseded
+2026-09-04: promotes used to probe the candidate MCS by moving the whole
+ENH stream to it (`CAP_S3_PROBE`/`CAP_ENH_PROBE`, both deleted, RC_VERSION
+5 → 6); the drone now always sends a dedicated probe-stream canary (SBI
+sid 5) behind every ENH AU and the ladder's promote trigger consults the
+continuous verdict instead of starting a discrete probe — see
+`docs/link-adaptation.md` "Probe stream" and `link.probe` below. s3
+residual/util loss demotes in steady state are unchanged (kill-switch
 `link.s3_demote`); spec
-`docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md`. Since
+`docs/superpowers/specs/2026-09-04-probe-stream-design.md` (historical:
+`docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md`). Since
 2026-08-31 (latency-accounting) `link.video.lat` carries the end-to-end
 head-segment latency breakdown (`n`, and p50/p99 pairs for `enc`/`dq`/`air`/
 `fec`) once the AU ring's SlotHdr v2 stamps are flowing — omitted, not
@@ -58,10 +64,27 @@ territory, see `docs/latency-budget-findings-2026-08-31.md`.
 
 `link.rcf_slot` (2026-09-03) counts how the RCF slotter released each
 control-frame send: `au` (at an AU completion with idle ahead, incl. the
-in-grace immediate sends), `timeout` (hold reached
-`link.rcf_slot_hold_ms`), `passthru` (slotter off, or no AU in the last
-100 ms). Cumulative; diff across records. Healthy video = almost all `au`,
-`timeout` well under 1 %. See `docs/link-adaptation.md` "RCF slotting".
+in-grace immediate sends), `probe` (2026-09-05: at the probe body's
+arrival — the release for every ENH burst while a probe is commanded),
+`timeout` (hold reached `link.rcf_slot_hold_ms`), `passthru` (slotter
+off, or no AU in the last 100 ms). Cumulative; diff across records.
+`tail_ub_ms` is the slotter's learned completion→probe deadline (a lost
+probe's fallback release; ceil(decaying max) + 1). Healthy video = almost
+all `au`+`probe`, `timeout` well under 1 % — ⚠ at a high duty cycle
+(bench pinned mcs4, ~4 ms idle per 16.7 ms) `timeout` runs ~43 %, and
+with `feedback_ms` 50 = 3 AU periods those timeouts are phase-locked to
+the burst, see `docs/probe-blanking-fix-findings-2026-09-05.md`. See
+`docs/link-adaptation.md` "RCF slotting".
+
+`link.streams[].arr_expected / arr_arrived / arr_expected_stale /
+arr_arrived_stale / arr_late` (2026-09-05, arrival tracker): cumulative
+arrival-time pre-FEC accounting, the ladder's util input since ctllog
+11 — `expected` is seq advance past a 32-seq settle line, `arrived` what
+was heard, `_stale` the pre-transition share the watermark attributes to
+the old rung, `late` symbols heard after their seq was already booked
+missing (healthy = 0; a rising `late` means reorder deeper than the
+guard and the tracker is under-counting arrivals). Current-only loss =
+`1 − Δ(arrived−arrived_stale)/Δ(expected−expected_stale)`.
 
 Consume the same numbers programmatically with:
 
@@ -120,13 +143,99 @@ Consume the same numbers programmatically with:
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
   file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 4` header (v1 before 2026-08-14, v2 for that day's
-first wave, v3 for that day's second wave, v4 since 2026-08-15 — see the
-  pooled-RF note in `docs/link-adaptation.md`) followed by compact S/E/P/N/R
-  lines (rung/state, ctl events, probe events, penalties, per-rung EWMA store snapshots). `flightreport.py`
-  auto-detects this format alongside the jsonl format, so no separate
-  invocation is needed. The controller-side tuning invariants that govern
-  what those lines mean live in `docs/link-adaptation.md`.
+  default `/media/dvr`), a `ctllog 11` header (v1 before 2026-08-14, v2/v3
+  that day's two waves, v4 since 2026-08-15 — pooled-RF note in
+  `docs/link-adaptation.md` — … v10 since 2026-09-04, probe stream, v11
+  since 2026-09-05, arrival-booked u/u3) followed by compact S/E/P/N/R
+  lines (rung/state, ctl events, probe gate edges,
+  penalties, per-rung EWMA store snapshots). Since ctllog 10 the `S` line
+  carries three trailing probe columns (`probe_rung probe_u probe_n`, `-1
+  nan 0` when nothing is commanded) and the `P` line is REPURPOSED: it used
+  to be one row per discrete 2 s probe attempt (`pass|fail|abort`), and is
+  now one row per PROBE GATE STATE EDGE (`clean|lossy|noinfo`) — a gate
+  edge, not a probe outcome; do not pool v9-and-earlier P rows against v10
+  ones. `flightreport.py` auto-detects this format alongside the jsonl
+  format, so no separate invocation is needed. The controller-side tuning
+  invariants that govern what those lines mean live in
+  `docs/link-adaptation.md`. Its `PROBE GATE` report scores the edges as a
+  demote predictor for the v2 threshold: per demote episode, `lead` is
+  the time from the FIRST lossy edge since the held rung was entered (the
+  last `E` line before the episode, either direction) — edges before that
+  transition were measured under a different hold and never count (the
+  2026-09-05 version searched unbounded and reported 5-19 s "leads" that
+  simply predated the promote) — and a lossy edge is a false alarm unless
+  the next `E` line is a demote within 10 s, so an edge the gate overrode
+  with a promote stays a false alarm even if that next hold then fails.
+
+  ⚠ Since 2026-09-04 the ctl log (and with it the probe log below) also
+  opens in **static-pin mode** (`link.static_mcs >= 0`) — it used to be
+  skipped there, since a pinned link never ticks the adaptive controller
+  and so had no rung decisions to record, but the pinned bench runs are
+  exactly the ones whose per-body probe log matters (spec §8.3 steps 1-2).
+  A pinned `S` line's controller columns are frozen and uninformative
+  (`u`/`util` read 0, `E`/`P`/`N`/`R` records never fire): only its probe
+  columns move, `<probe_rung> nan <probe_n>` — `probe_rung` is
+  `min(probe.rung_offset, top)` off a frozen `idx_ == 0`, `u` is `nan`
+  because the gate never leaves `Off`, and `probe_n` is the real count of
+  expected blocks (nonzero whenever `link.probe.pin_mcs >= 0`, 0
+  otherwise) — so in pin mode only the probe rows, and the `probe-NNNN`
+  log they summarize, carry information.
+
+  Per-body raw probe log: with `link.ctl_log` on, maburgs also writes
+  `<ctl_log_dir>/probe-NNNN_<date>.log` (`gs/src/probe_log.h`) — one row
+  per finalized received probe body, at roughly the enh AU rate (≈5 MB/h
+  at 30/s), far denser than the ctl log's dwell-period `S` lines and so
+  its own file. NNNN is taken from the paired `CtlLog` (`CtlLog::index()`)
+  so a `probe-NNNN`/`ctl-NNNN` pair from one boot always lines up. Header
+  `probelog 2 bpb=<bpb>`, then `<t_ms> <seq> <mcs> <enh_fid> <blocks_ok>
+  <card_mask> <snr_c0> <snr_c1> <evm_c0> <evm_c1> <first_ms>` per row
+  (`probelog 1`, 2026-09-04 only, lacked `first_ms`) — `t_ms` is the
+  finalize tick (~10 ms coarse), `first_ms` the radio's arrival stamp of
+  the body's first sight on any card (mono ms to 3 decimals, same
+  CLOCK_MONOTONIC as `au-NNNN.log`'s `t_complete`), `blocks_ok` is
+  the union of surviving blocks, `card_mask` the bitmask of cards that
+  delivered any block, snr/evm per-card in dB (`nan` when that card heard
+  nothing this row). A row is written for EVERY finalized body, on- or
+  off-profile: `mcs` is that body's OWN profile, not the commanded one, so
+  an RCF-lag body (arrives just after a profile switch, before the drone
+  has caught up) still logs a row at its stale mcs instead of vanishing. A
+  wholly-lost probe body is the only case with no row; `flightreport.py`
+  derives it from `seq` gaps and the enh AU count and joins rows to
+  `au-NNNN.log` on `enh_fid` (nearest completion in time — the id wraps
+  every ~36 min) to print the completion→probe offset percentiles
+  (the episode report also prints an "s3-settle-refire canary" since
+  2026-09-05 — demotes landing 300–360 ms after an `s3_residual` demote,
+  the debris double-step `transition_edge.h` removed; ~0 expected)
+  (`flightreport.py probe-NNNN_<date>.log [au-NNNN.log]`; without the
+  second argument it picks the au log in the same directory or `./log`
+  whose mono range overlaps — the au log's NNNN is flightrec's own
+  index, not the ctl/probe one). `tools/bench/probesend.py` adds the GS
+  send stamps from a `MABUR_GAPLOG=1` run to place every send against the
+  probe (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal,
+  like the ctl log.
+
+**Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
+stream's live gate state is exported unconditionally (even in static-pin
+mode, where there is no controller) as `link.probe = {on, rung, mcs,
+state, u, loss, streak_ms, n, exp, rx, off_profile, cards:[{loss, rx}]}`
+— `u`/`loss` are `null` when the gate has no usable sample yet. `classes`
+gains a `probe` entry alongside `s0`/`s1`/`msp`/`ctrl` (`RfClass::Probe`,
+`kNumRfClasses` 5) with the probe stream's own per-card RSSI/SNR/EVM —
+`classes.s2`/`classes.s3` are gone (they were always empty since the
+2026-08-29 UEP flatten). `link.rungs[].probe_u`/`probe_n` MEAN something
+different from before this date too — see `docs/data-provenance.md`.
+`maburtop`'s LADDER panel replaces its old "last probe" line with a live
+gate line: `probe: r3 mcs5 clean 1.8s u0.12 n48 | c0 0.00 c1 0.05`, and its
+signal panel gains the `probe` class in `CLASS_ORDER`.
+
+**Loss-sim rig covers the probe stream too.** `LossSim::kStreams` (bench
+rig, `MABUR_LOSS_SIM` builds only, see `docs/airtime-model.md` §4) is
+`s0..s5`, `5` = probe — `tools/bench/losssim.py s5 eff=<pct>` injects
+loss on the probe stream for the gate's refusal test (design spec §8.3
+step 3: parked clean, inject, expect `Lossy`/`probe_holds`, no promote).
+Host build for that rig: `cmake -S . -B build-losssim
+-DDEVOURER_DIR=$PWD/../devourer -DMABUR_LOSS_SIM=ON` (gitignored dir,
+separate from the normal `build/`).
 
 **Rule of thumb: if you want to KNOW something about the running link,
 read the sideport. Reach for other tools only in these cases:**
@@ -142,6 +251,20 @@ read the sideport. Reach for other tools only in these cases:**
   mode is best-effort — Python cannot fence.) Host-side, the same
   invariant is `ctest -R 'gs_e2e|gs_au_e2e|player_e2e'` (byte-exact
   fixture-to-ring/AU comparisons via `verify_aus.py`/`--out-aus`).
+- **Per-frame `air` excess around rung transitions → `tools/bench/airdrain.py`**
+  (`python3 tools/bench/airdrain.py ctl-NNNN_<date>.log log/au-NNNN.log
+  [--profiles]`, host-side, no lat log needed). Replays the player's
+  `air` arithmetic over the AU log — `t_first − enc − q − pts` minus a
+  `PtsAnchor`-style leaky min floor with the 2 s pts-discontinuity reset
+  — and joins the ctl log's E lines: per cascade the 250 ms-binned excess
+  around the first demote with IDRs marked, peak / time-to-peak / settle,
+  the 1 s pre-demote excess, and the first-500 ms on-air bytes against
+  the new rung's nominal PHY rate; single-demote and promote peaks;
+  steady-state excess per rung; standalone spike seconds. This is the
+  §9 measurement of `docs/probe-stream-flight-findings-2026-09-05.md`
+  and the A/B instrument for its drain-shed follow-up
+  (`tests/test_airdrain.py` pins it on a synthetic cascade). The ctl and
+  au indices are separate counters: pair them by mono span.
 - **Verifying AU-completion cadence → `tools/bench/aucadence.py`** (on the
   GS: `python3 aucadence.py --ring /dev/shm/mabur-au --seconds 25 --json`).
   Same outside-the-daemon ring posture as ausniff; reports the base−enh
@@ -184,8 +307,16 @@ read the sideport. Reach for other tools only in these cases:**
   boot, and `ctl`'s date suffix plus its index-reuse history has already
   caused session-identification confusion once (see the
   `data-provenance.md` DVR-filename note); sessions are matched by the
-  `# sync` bridge against the flight jsonl's `t_ms`, not by filename. A
-  failed open (DVR not mounted yet) is retried every 30 s and never
+  `# sync` bridge against the flight jsonl's `t_ms`, not by filename.
+  ⚠ 2026-09-05: the bridge is NOT a boot identifier on the DVR — the GS
+  RTC restarts at the same bogus epoch every boot, so every lat/au log
+  on the disk carries one of two bridge values — and the lat index is
+  the player's own next-free counter, unrelated to flightrec's
+  `au`/`flight` index or maburgs' `ctl` index (the player restarts far
+  more often: flight 20/21 were `lat-0047`/`0048` against
+  `au-0020`/`0021`). Pair a lat log by its mono span (first/last row)
+  against the ctl log's `S` range, highest index = latest boot; see
+  `docs/probe-stream-flight-findings-2026-09-05.md` §9. A failed open (DVR not mounted yet) is retried every 30 s and never
   blocks or spams; it never blocks the stderr line either, which keeps
   going regardless. `tools/bench/latab.py latA.log latB.log` reads a pair
   of these logs and prints the vsync A/B verdict (four log-derived gates:

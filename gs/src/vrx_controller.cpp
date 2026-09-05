@@ -64,28 +64,17 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   last_fb_ms_ = now_ms;
 
   if (cfg_.pin_mcs < 0) {
-    LinkHealth h = health;
-    h.probe_allowed = (peer_caps_ & mabur::rc::CAP_ENH_PROBE) != 0;
-    if (ctrl_.update(h, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
+    if (ctrl_.update(health, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
   }
   mabur::rc::Rcf r = build_rcf();
-
-  // RCF repeat burst (rcf-uplink-loss findings 2026-08-14): the drone's
-  // half-duplex TX kills 30-50% of uplink control frames, and a lost
-  // op-CHANGING RCF costs a full feedback_ms. Arm `copies` repeats at
-  // rcf_repeat_ms spacing whenever the commanded content differs from the
-  // previously sent frame; steady-state re-sends of an unchanged command
-  // are already their own retries and arm nothing.
-  const bool changed = !have_last_cmd_ || r.profile != last_cmd_profile_ ||
-                       mabur::rc::overhead_to_x100(r.fec_overhead_base) != last_cmd_ovx100_b_ ||
-                       mabur::rc::overhead_to_x100(r.fec_overhead_enh) != last_cmd_ovx100_e_ ||
-                       r.probe3 != last_cmd_probe3_ ||
-                       (r.probe3 && r.probe_profile != last_cmd_probe_profile_);
+  // No repeat copies of an op-changing RCF: the 2026-08-14 repeat burst
+  // (3 copies 10 ms apart) was removed 2026-09-05 -- with the RCF slotter
+  // the drone hears ~90 % of single sends, and the slotter released the
+  // three copies as one batch at an AU completion, which overran the
+  // inter-AU idle and killed the next aggregate on both cards on a quarter
+  // to a third of all rung changes (bench A/B, ctl-0296/0298/0300,
+  // docs/switch-loss-findings-2026-09-05.md).
   note_cmd(r);
-  if (changed && cfg_.rcf_repeat_copies > 0) {
-    repeats_left_ = cfg_.rcf_repeat_copies;
-    next_repeat_ms_ = now_ms + cfg_.rcf_repeat_ms;
-  }
   return Out{mabur::rc::pack_rcf(r), false};
 }
 
@@ -99,34 +88,25 @@ mabur::rc::Rcf VrxController::build_rcf() {
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
   r.fec_overhead_base = cur_op_.overhead_base;
   r.fec_overhead_enh = cur_op_.overhead_enh;
-  if (cfg_.pin_mcs < 0 && ctrl_.probing()) {
-    r.probe3 = true;
+  // Probe stream MCS (spec 2026-09-04): the ladder names a rung to probe on
+  // every RCF, or none. In static-pin mode the ladder is out of the loop, so
+  // the probe follows the dedicated pin instead.
+  r.probe_profile = mabur::rc::kNoProbeProfile;
+  const auto mode = cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT;
+  if (cfg_.pin_mcs >= 0) {
+    if (cfg_.probe_pin_mcs >= 0)
+      r.probe_profile = mabur::rc::encode_profile(mode, static_cast<uint8_t>(cfg_.probe_pin_mcs),
+                                                  static_cast<uint8_t>(cur_op_.bw));
+  } else if (const int pr = ctrl_.probe_rung(); pr >= 0) {
     r.probe_profile = mabur::rc::encode_profile(
-        cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
-        static_cast<uint8_t>(ctrl_.probe_mcs()), static_cast<uint8_t>(cur_op_.bw));
+        mode, static_cast<uint8_t>(cfg_.ladder.ladder[static_cast<std::size_t>(pr)].mcs),
+        static_cast<uint8_t>(cur_op_.bw));
   }
   return r;
 }
 
 void VrxController::note_cmd(const mabur::rc::Rcf& r) {
-  have_last_cmd_ = true;
-  last_cmd_profile_ = r.profile;
-  last_cmd_ovx100_b_ = mabur::rc::overhead_to_x100(r.fec_overhead_base);
-  last_cmd_ovx100_e_ = mabur::rc::overhead_to_x100(r.fec_overhead_enh);
-  last_cmd_probe3_ = r.probe3;
   last_cmd_probe_profile_ = r.probe_profile;
-}
-
-std::optional<std::vector<uint8_t>> VrxController::poll_repeat(double now_ms) {
-  if (repeats_left_ <= 0 || now_ms < next_repeat_ms_) return std::nullopt;
-  --repeats_left_;
-  next_repeat_ms_ = now_ms + cfg_.rcf_repeat_ms;
-  // Rebuild from CURRENT state, not a stashed frame: if the op moved again
-  // between arm and drain, the repeat carries the newest command (and the
-  // next step() emission compares against what actually went out).
-  mabur::rc::Rcf r = build_rcf();
-  note_cmd(r);
-  return mabur::rc::pack_rcf(r);
 }
 
 const OpPoint& VrxController::cur_op() const { return cur_op_; }

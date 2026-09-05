@@ -55,7 +55,6 @@ bool RcAgent::idr_due(uint64_t now_ms, bool chain) {
 // a degraded radio link must never keep flooding at the last LINKED rate.
 void RcAgent::apply_max_range(uint64_t now_ms) {
   auto ladder = rc::ladder_from(PhyMode::HT, 0, 20);
-  probe3_active_ = false;  // FAILSAFE/boot never probes
 
   // Forced shed while MAX_RANGE is the operating point (BOOT/RENDEZVOUS or a
   // LINKED->FAILSAFE entry) — held sticky in failsafe_shed_ until an
@@ -65,6 +64,7 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
   failsafe_shed_ = true;
 
   applied_.ladder = ladder;
+  applied_.probe_profile = rc::kNoProbeProfile;
   // 2.0, not 1.0: the pre-Task-1 wire scale doubled every commanded
   // overhead on its way into the budget formula (uep_layer_overhead's ref
   // scale); RC_VERSION 4 made fec_overhead a literal actual-overhead value
@@ -89,7 +89,8 @@ void RcAgent::apply_max_range(uint64_t now_ms) {
 // NOT run the bitrate policy itself — callers on the RCF path invoke
 // run_bitrate_policy() explicitly afterwards, per the spec.
 void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
-                              double ov_base, double ov_enh) {
+                              double ov_base, double ov_enh,
+                              uint8_t probe_profile) {
   // A resolved DISC/RCF op is only ever applied on a path that (re)enters
   // LINKED (see on_rc_frame), so the sticky MAX_RANGE forced-shed from a
   // prior RENDEZVOUS/FAILSAFE no longer applies — clear it here rather than
@@ -99,6 +100,12 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
   applied_.ladder = ladder;
   applied_.fec_ov_base = ov_base;
   applied_.fec_ov_enh = ov_enh;
+  applied_.probe_profile = probe_profile;
+  if (probe_profile != rc::kNoProbeProfile) {
+    PhyMode pm; uint8_t pmcs, pbw;
+    rc::decode_profile(probe_profile, pm, pmcs, pbw);
+    applied_.probe = rc::ladder_from(ladder[1].mode, pmcs, ladder[1].bw)[1];
+  }
   applied_.shed[0] = false;
   // shed_level_ still counts 0..3 (congestion semantics untouched — see
   // run_congestion_guard), but with the reserved layer gone there is only
@@ -205,17 +212,9 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
   const double rate_b = rc::phy_rate_mbps(applied_.ladder[0]);
-  // During an enh probe ladder[1] flies the CANDIDATE mcs, but the bitrate
-  // stays keyed to the base profile (spec 2026-08-05 s3-probe-promote: the
-  // probe changes MCS only; encoder bitrate is untouched). Feeding the
-  // probed rate in here raised the command 11-15% on every probe entry at
-  // rungs 0-3 and lowered it on exit -- two SetChnAttr writes and two forced
-  // IDRs per probe, on a link already at ~65-70% air -- which is where the
-  // flight-0011 (2026-09-03) rung 1-3 air backlog came from. The AirBalancer
-  // that 2bbaa3f expected to absorb the probe window's air shift is gone
-  // (2026-09-01), so nothing compensates the raise any more.
-  const double rate_e =
-      probe3_active_ ? rate_b : rc::phy_rate_mbps(applied_.ladder[1]);
+  // The probe stream has its own slot and is deliberately NOT a term here
+  // — a probe costs zero encoder writes.
+  const double rate_e = rc::phy_rate_mbps(applied_.ladder[1]);
   // The commanded pair (Task 6, RC_VERSION 5) IS the source — no single
   // ov to fan out to both terms.
   double ovb = applied_.fec_ov_base, ove = applied_.fec_ov_enh;
@@ -390,7 +389,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
                                    static_cast<int>(rc::profile_table().size()) - 1);
     auto ladder = rc::ladder_for_row(row_idx);
     const auto& row = rc::profile_table()[static_cast<size_t>(row_idx)];
-    apply_ladder_op(ladder, row.ov_base, row.ov_enh);
+    apply_ladder_op(ladder, row.ov_base, row.ov_enh, rc::kNoProbeProfile);
 
     if (state_ != State::FAILSAFE) link_established_ = true;
     state_ = State::LINKED;
@@ -432,23 +431,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     rc::decode_profile(r->profile, mode, mcs, bw);
     auto ladder = rc::ladder_from(mode, mcs, bw);
 
-    // s3 probe (spec 2026-08-05): when the RCF carries probe3, the enh
-    // layer (ladder[1], the old s3) transmits at probe_profile's MCS while
-    // mode/bw stay the base profile's — MCS-only probe, the base layer
-    // (ladder[0]) rides the normal ladder. Recomputed on every accepted
-    // RCF, so a follow-up frame without the flag reverts the enh layer to
-    // the base profile's mcs.
-    probe3_active_ = false;
-    if (r->probe3) {
-      PhyMode pmode;
-      uint8_t pmcs, pbw;
-      rc::decode_profile(r->probe_profile, pmode, pmcs, pbw);
-      ladder[1].mcs = pmcs;
-      probe3_active_ = true;
-    }
-
     State prev_state = state_;
-    apply_ladder_op(ladder, r->fec_overhead_base, r->fec_overhead_enh);
+    apply_ladder_op(ladder, r->fec_overhead_base, r->fec_overhead_enh, r->probe_profile);
 
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;
@@ -576,9 +560,7 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq) const {
   // wire (one legal value) so a GS can still refuse a peer that lacks it.
   // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
   // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
-  // CAP_ENH_PROBE: this drone accepts RCF_F_PROBE_ENH (spec 2026-08-05
-  // s3-probe-promote).
-  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_ENH_PROBE;
+  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY;
   ack.agreed_channel = cfg_.radio.channel;
   ack.agreed_width = cfg_.radio.width;
   ack.seq = seq;

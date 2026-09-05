@@ -44,6 +44,11 @@ void sbi_set_enc_us(uint8_t* body, size_t len, uint16_t us);
 // decoder.
 constexpr uint8_t kMspStreamId = 4;
 
+// Reserved SBI stream_id for the probe stream (spec 2026-09-04): a
+// video-body-sized canary at the candidate rung's MCS, one per enh AU.
+// Routed to the GS ProbeTrack, never the video decoder.
+constexpr uint8_t kProbeStreamId = 5;
+
 // Packs fixed-size FEC envelopes into SBI radio bodies, each sub-block
 // guarded by its own CRC16-CCITT so a corrupted body still yields its
 // surviving sub-blocks as usable symbols. Byte-exact port of

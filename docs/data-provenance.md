@@ -6,7 +6,8 @@ not be pooled. Nothing in the sideport reports most of them, so the only
 reliable method is to date the recording against this page.
 
 Quick index: carrier sense off 2026-08-05 · TX power constant 2026-08-12 ·
-sideport key removals 2026-08-12, 2026-08-15, 2026-08-29 and 2026-08-30 ·
+sideport key removals 2026-08-12, 2026-08-15, 2026-08-29, 2026-08-30 and
+2026-09-04 ·
 SNR half-dB scale break 2026-08-04 · EVM op-point dependence 2026-08-10 ·
 RF labels pooled and fade deltas unsuppressed 2026-08-15 (see
 `docs/link-adaptation.md`) · DVR filenames un-dated 2026-08-26 · UEP
@@ -17,7 +18,12 @@ aucadence completion clock switched to ring `t_complete_us` 2026-08-31
 (latency-accounting) · `reg`/`dsp` split redistributed by the vsync
 servo 2026-08-31 (sum still comparable, split is not) · **post-FEC
 residual re-based from packet-seq to symbol abandonment + ctllog 9
-2026-09-02 (residual-phantom-demotes)**.
+2026-09-02 (residual-phantom-demotes)** · **discrete s3 probe replaced by
+the always-on probe stream + ctllog 10, `probe_u`/`probe_n` become a
+continuous EWMA 2026-09-04 (probe-stream)** · `probelog 2` adds the
+per-body `first_ms` arrival stamp 2026-09-05 (probe-blanking fix; a
+`probelog 1` file's `t_ms` is the finalize tick and cannot be joined to
+`au-NNNN.log` for timing).
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -105,7 +111,13 @@ decoders now rely on the seq horizon alone; MSP's SwDecoder keeps its
 own 2 s expiry); 2026-09-02 `link.attrib.suppressed` (deleted with the
 packet-level delivery window it was defined against — it counted windows
 where the total and attributed packet views disagreed, a question the
-symbol-based measure cannot ask; residual-phantom-demotes note below).
+symbol-based measure cannot ask; residual-phantom-demotes note below);
+2026-09-04 `link.ctl.last_probe` (the discrete probe-attempt snapshot —
+there is no discrete attempt any more, its live state is `link.probe`
+instead), `counters.probes_started`/`probes_ok`/`probe_fails`/
+`probe_aborts` (replaced by `counters.promotes_probed`/`probe_holds`),
+`classes.s2`/`classes.s3` (removed, were always empty since the
+2026-08-29 UEP flatten; `classes.probe` added) — probe-stream note below.
 Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
@@ -481,3 +493,74 @@ Mentions of `venc.resilience ltr:1 → rally` and of the "rally preset" in
 the notes above and in `venc-ring-vanish-findings-2026-08-12.md` describe
 configs that produced data on the DVR. They stay accurate about that data;
 they just name a key that is no longer settable.
+
+## 2026-09-04: probe stream replaces the discrete s3 probe — RC_VERSION 6, ctllog 10
+
+The s3 probe-before-promote design (2026-08-05) is gone: the drone no
+longer moves the whole ENH stream to a candidate MCS for 2 s per promote
+attempt. Instead it always sends a dedicated probe-stream canary body
+(SBI stream id 5) behind every ENH access unit, at the MCS of rung
+`current + link.probe.rung_offset`, and the ladder's promote trigger
+reads a continuous verdict instead of starting a discrete probe. Detail
+in `docs/link-adaptation.md` "Probe stream". RCF gains a fixed
+`probe_profile` byte (`RCF_F_PROBE_ENH`/`CAP_ENH_PROBE`/`CAP_S3_PROBE`
+deleted); RC_VERSION 5 → 6 — a drone/GS pair must be swapped together
+(`docs/deploy.md`).
+
+Sideport (schema `v: 1`, unchanged): REMOVED `link.ctl.last_probe`,
+`counters.probes_started/probes_ok/probe_fails/probe_aborts`,
+`classes.s2`, `classes.s3` (the last two were always empty since the
+2026-08-29 UEP flatten — no data lost). ADDED `counters.promotes_probed`,
+`counters.probe_holds`, `classes.probe`, and the `link.probe` block
+(gate state, rung/mcs, streak, union + per-card loss and counts — see
+`docs/observability.md`).
+
+**Scale break: `link.rungs[].probe_u`/`probe_n` change from a discrete
+per-attempt sample to a continuous EWMA.** Before this date a rung's
+`probe_u` was the last COMPLETED 2 s discrete probe's utilization at that
+rung — one sample roughly every few minutes, only while a promote to
+that rung was actually being attempted. From this date it is the same
+`RungStore` field fed by the always-on gate, updating at ~20 samples/s
+continuously while that rung is the commanded probe candidate. **Do not
+pool `probe_u`/`probe_n` populations across this date**: a pre-date
+`probe_n` of a few tens means a handful of discrete attempts: a post-date
+one of the same magnitude means well under a second of continuous
+sampling. The `age_s` column next to it in the `R` ctl-log line is
+unaffected — `age_s` was always wall-clock time since the last sample.
+
+**`ctllog 10`'s `P` line is REPURPOSED, not just reformatted.** Through
+v9 a `P` row was one discrete probe ATTEMPT outcome (`pass|fail|abort`)
+written once per 2 s probe. From v10 it is a GATE-STATE EDGE
+(`clean|lossy|noinfo`) written every time
+`LadderController::probe_gate()`'s state changes — a continuous-state
+transition, not an attempt outcome. `flightreport.py`'s wall-fit maps
+`clean→pass, lossy→fail, noinfo→abort` for the per-rung wall report, but
+a v9-vs-v10 P-row COUNT is not the same kind of number (attempts vs
+edges) and must not be pooled. The `E` line's reason vocabulary gains
+`promote_probed` (a probe-gated promote); existing reasons are
+unchanged. `R`'s `probe_u`/`probe_n` line position is unchanged but
+carries the new continuous meaning above from this date.
+
+## 2026-09-05: `u`, `u3`, `link.pre_fec_loss`, `link.ctl.util` are arrival-booked — ctllog 11
+
+Scale break, not additive. Before this deploy the ladder's pre-FEC
+util number was `1 − (delivered + recovered_arrived) / (delivered +
+recovered + abandoned_cur)` from the FEC decoder's completion counters:
+a lost symbol entered it only when repaired or given up on (a repair
+window to ~80 ms late), and right after a rung change the first bucket
+had almost no deliveries, so a handful of repairs read as 50–100 %
+(flight-0023's two `probation` demotes at +151/+160 ms; bench ctl-0299
+u = 1.125). Since ctllog 11 the number is `1 − arrived/expected` from
+`SwDecoder`'s `ArrivalTracker`: `expected` is sequence advance past a
+32-seq settle line, `arrived` is what was heard, both booked at arrival,
+current-only via the transition watermark. Consequences for readers:
+
+- `u`/`u3` on S lines, `u` on util/probation E lines, `link.pre_fec_loss`,
+  `link.ctl.util`/`util3` and the RungStore `u` columns read LOWER and
+  SMOOTHER across transitions and react sooner to a fade. Do not pool
+  them across the ctllog 10/11 boundary; `flightreport.py` prints which
+  definition a log used.
+- New `link.streams[].arr_*` keys (cumulative). The old
+  `recovered`/`recovered_arrived`/`abandoned` keys stay and still describe
+  decoder completion; they are no longer what the ladder acts on.
+- The 150 ms util settle blank is gone; the residual blank stays.

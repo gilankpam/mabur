@@ -106,7 +106,8 @@ def main():
                          "write down as the loss under test.")
     ap.add_argument("--dwell", type=float, default=25.0, help="seconds per step")
     ap.add_argument("--burst", type=float, default=1.0, help="mean burst length")
-    ap.add_argument("--stream", type=int, default=3, help="stream id 0..3")
+    ap.add_argument("--stream", type=int, default=3,
+                    help="stream id 0..5 (1 = enh, 5 = probe)")
     a = ap.parse_args()
 
     addr = ("127.0.0.1", a.port)
