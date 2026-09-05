@@ -8,6 +8,8 @@
 // ladder, so this is the host-side pin for that wiring.
 // The util windows left the edge on 2026-09-05 (arrival tracker): they
 // classify debris at booking time and are never blanked.
+#include <type_traits>
+
 #include "mtest.h"
 #include "transition_edge.h"
 #include "mabur/uep_encoder.h"
@@ -70,17 +72,24 @@ TEST(mcs_edge_blanks_both_residual_windows) {
 
 TEST(util_windows_are_not_the_edges_business) {
   // Since the arrival tracker (2026-09-05 spec) the util inputs classify
-  // every missing symbol by the watermark at booking time, so they carry
-  // no transition debris to blank and are not passed to the edge at all.
-  // A util window booked with old-rung loss keeps its sample across an
-  // edge; the stale split (SwDecoder::arr_*_stale) is what excludes it.
-  auto dec = make_dec();
-  S1LossWindow s1(500), s3(500), u1(500);
-  TransitionEdge edge;
-  edge.on_tick(op_at(5), dec, s1, s3, 1000.0);
-  book_loss(u1, 2000.0);
-  CHECK(edge.on_tick(op_at(4), dec, s1, s3, 2050.0));
-  CHECK(u1.sample(2050.0).valid);
+  // every missing symbol by the watermark at booking time (SwDecoder::
+  // arr_*_stale, pinned by arrival_stale_split_follows_the_watermark in
+  // tests/test_sw_decoder.cpp and layer_stats_arr_stale_split_follows_
+  // transition in tests/test_uep_decoder.cpp) and are never blanked by
+  // the edge -- the pin here is that on_tick cannot even be handed a
+  // util window: the signature only accepts the two residual windows.
+  static_assert(
+      std::is_invocable_r_v<bool, decltype(&TransitionEdge::on_tick),
+                             TransitionEdge&, const OpPoint&,
+                             mabur::UepDecoder&, S1LossWindow&, S1LossWindow&,
+                             double>,
+      "edge takes exactly the two residual windows");
+  static_assert(
+      !std::is_invocable_v<decltype(&TransitionEdge::on_tick),
+                            TransitionEdge&, const OpPoint&,
+                            mabur::UepDecoder&, S1LossWindow&, S1LossWindow&,
+                            S1LossWindow&, S1LossWindow&, double>,
+      "the util windows are not the edge's business (removed 2026-09-05)");
 }
 
 TEST(overhead_only_step_blanks_base_not_enh) {
