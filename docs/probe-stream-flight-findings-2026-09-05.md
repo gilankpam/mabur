@@ -346,10 +346,101 @@ cascade and the flight are still owed. Expected effect: half the
 cascades lose one rung and one IDR, and the lowest rung is what sets
 the drain rate.
 
+### Follow-up: drain shed — shed the enh layer for the drain window after a demote
+
+The spike is a drain of bytes produced at the OLD rung's rate into the
+NEW rung's airtime (§9, point 2): the encoder's CBR needs ~400 ms p50
+(max 0.6–2 s) to get within 1.25× the new command, and during that
+window the on-air bytes were 70–115 % of the new rung's nominal PHY
+rate (185 % for the 3→0 at 155.0 s in flight 21). Nothing on the drone
+sees the backlog (point 3), so the congestion shed never fires. The
+proposal is to shed the enh layer for a fixed drain window on every
+rung decrease, using the shed path that already exists.
+
+**Why enh.** Under the 1.0/0.5 pair the enh layer is ~40 % of the
+video bytes but only ~33 % of the AIR (base flies at 2×, enh at 1.5×),
+and it is the expendable layer by design: the GS decoder already
+handles enh silence (SVC-T base-only playback at 30 fps), the ladder
+reads it as "no information" (`s3_usable()` false, probe gate
+`NoInfo`), never as loss. Shedding it during the drain removes a third
+of the air at exactly the moment the pipe is over-full, and it also
+removes the probe bodies (the probe rides after each enh AU and is
+suppressed while `shed[1]` is set, `drone/src/main.cpp`) — a further
+~2 % of air at 30 bodies/s.
+
+**Mechanism (drone-side, RcAgent).** `apply_ladder_op()` still holds
+the previous `applied_.ladder` when the new one arrives, so a decrease
+is `phy_rate_mbps(new.ladder[0]) < phy_rate_mbps(old.ladder[0])`. On a
+decrease, stamp `drain_until_ms_ = now + encoder.drain_shed_ms` and OR
+it into the enh shed the same way `failsafe_shed_` is:
+
+    applied_.shed[1] = failsafe_shed_ || shed_level_ >= 1 || now < drain_until_ms_;
+
+`tick()` (100 ms) clears it when the deadline passes via
+`reapply_with_shed()` (no generation bump — same contract as the
+congestion guard). Do NOT touch `shed_level_`: that counter has
+2-s-per-level step-down semantics and a USB-failure meaning, and a
+drain shed must not delay a real congestion recovery or be delayed by
+one. A cascade that steps again inside the window simply re-stamps the
+deadline, so a 3-step cascade is one continuous shed of window +
+~300 ms, not three. Config key `encoder.drain_shed_ms`, default 0 =
+off, so the A/B is a config restart on the drone, no rebuild. Start at
+500 (the measured 400 ms p50 convergence + one tick); the profile
+settles by +1.8–2.4 s, so anything past ~800 is paying frame rate for
+nothing.
+
+**Expected effect.** First-500 ms on-air bytes after a cascade from
+70–115 % of the new rung's nominal rate to ~47–77 %; the 185 % case to
+~125 %, still over but with a third less to drain. Peak `air` excess
+should scale with the same ratio; the 92/118 ms p50 peaks were reached
+at +0.8 s, inside the window. Measure it, don't assume it: the
+backlog's service rate at the new MCS is what sets the decay, and the
+2–3 IDRs (all base, unaffected by an enh shed) still land.
+
+**Cost.** 30 fps instead of 60 for ≤ 500 ms after every demote — flight
+20 had 52 demotes in 381 s, so ~26 s of the flight at half rate in
+half-second pieces, each inside a cascade the pilot already sees as an
+IDR step. Enh-side, nothing is lost that the GS would have decoded:
+the shed happens at the UEP encoder before anything is queued, so no
+frame id and no expected symbol exist for the GS to miss.
+
+**Side effects to check.**
+- Probe gate reads `NoInfo` for the window; harmless, `hold_after_down_ms`
+  (4000) blocks promotes for far longer anyway. Confirm `probe_holds`
+  does not tick up per demote (it counts hold EPISODES).
+- The GS s3 windows see silence for the window, so the s3 demote path
+  is blind for 500 ms instead of the 300 ms settle. After the s3
+  debris fix that path is only ever right to fire on rung-N loss, and
+  a genuine continuing fade still fires on base (`residual`, unblinded)
+  and on s3 the moment enh returns.
+- Enh return is a step in bytes (+40 %) at the end of the window; the
+  window must end AFTER the CBR has converged or it re-creates a
+  smaller drain. Read the per-frame air profile at the window edge.
+- `drone.enc.enhance_disagree` / `vanished_enh` must not move: the shed
+  is upstream of the encoder ring, same path the congestion shed uses
+  in prod today.
+- Failsafe/MAX_RANGE unaffected (OR, and `failsafe_shed_` stays sticky).
+
+**Test plan.** Bench, loss-sim GS binary, after lever 0 is deployed
+(it removes half the cascades, so measure on the population that
+remains): inject a 500 ms `s3` burst (eff 20, as for the 2026-09-02
+s1 fix on ctl-0165) and a sustained `s1` burst that walks 5→2, with
+`drain_shed_ms` 0 then 500 then 800, interleaved. Per arm: per-frame
+air-excess replay over the AU log (the §9 method: `t_first − enc − q −
+pts` minus the leaky min floor, 250 ms bins around each first demote)
+— peak, time-to-peak, settle; `flightjitter.py`'s `rung-change` class
+count; `ausniff.py` 60 fps / 0 gaps outside the windows and exactly
+the shed frames inside; the s3-settle-refire canary still 0. Then the
+flight, same §9 table.
+
+**Not this.** Shedding on every RCF, or on promotes: a promote's IDR
+is one frame into MORE capacity (40–60 ms p50, own serialization).
+And not the base layer: the IDR is base and is the one frame that
+must land.
+
 Levers still open: the 150 ms residual→util pairs (same late booking
 into the unblanked `s1_loss_cur`, confirm shortened by the fade regime;
-4 cases, evidence split), shedding enh for the ~500 ms drain window,
-coalescing a genuine multi-step cascade's bitrate writes into one IDR,
+4 cases, evidence split), the drain shed above, coalescing a genuine multi-step cascade's bitrate writes into one IDR,
 faster CBR convergence via IDR-free `SetRcParam` clamps, and sizing the
 demote IDR against the NEW rung (`venc.max_ipprop`). All bench-testable
 with the loss-sim cascade and `flightjitter.py`'s `rung-change` class.
