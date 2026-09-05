@@ -241,6 +241,9 @@ for demotes but does not drive one yet — the design's §10 keeps
 probe-driven demote explicitly out of scope. `flightreport.py`'s
 probe-lead report (`docs/observability.md`) is the input a v2 threshold
 would be tuned against.
+First flights 2026-09-05: `docs/probe-stream-flight-findings-2026-09-05.md`
+— the gate's loss quantum is 0.2 per lost body, so `max_util` must sit
+below 0.2 (0.15 flown: rung-5 median hold 16 s vs 1 s at 0.2).
 
 ## Drone congestion shed (2026-09-03)
 
