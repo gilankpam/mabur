@@ -190,8 +190,8 @@ the gate overrode with a promote as a false alarm:
 | | flight 20 | flight 21 |
 |---|---|---|
 | lossy edges | 117 | 55 |
-| false alarms (next E not a demote within 10 s) | 60 | — |
-| episodes with a lossy edge inside the hold | 12 of 29 | 7 of 13 (ad-hoc) |
+| false alarms (next E not a demote within 10 s) | 60 | 34 |
+| episodes with a lossy edge inside the hold | 12 of 29 | 11 of 19 |
 | lead p10 / p50 / p90 (ad-hoc, first edge) | 0.6 / 1.5 / 6.1 s | 0.4 / 2.3 / 8.5 s |
 
 17 of flight 20's 29 episodes had no warning inside their hold — most
