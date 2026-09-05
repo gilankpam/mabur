@@ -448,6 +448,17 @@ void parse_ampdu(const json& j, AmpduCfg& a) {
          "use 0 for the chip default or >= 9");
 }
 
+void parse_air_clock(const json& j, AirClockCfg& a) {
+  check_known_keys(j, {"shed_ms", "efficiency", "body_us"}, "air_clock");
+  assign_if_present(j, "shed_ms", a.shed_ms, "air_clock");
+  assign_if_present(j, "efficiency", a.efficiency, "air_clock");
+  assign_if_present(j, "body_us", a.body_us, "air_clock");
+  if (a.shed_ms < 0) fail("air_clock.shed_ms", "must be >= 0 (0 = observe only)");
+  if (a.efficiency <= 0.0 || a.efficiency > 1.0)
+    fail("air_clock.efficiency", "must be in (0,1]");
+  if (a.body_us < 0) fail("air_clock.body_us", "must be >= 0");
+}
+
 }  // namespace
 
 std::array<UepLayerCfg, 2> Config::uep_layers() const {
@@ -474,7 +485,7 @@ Config load_config(const std::string& path) {
 
   if (!j.is_object()) fail("file", "top-level JSON must be an object");
 
-  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu"}, "");
+  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock"}, "");
 
   Config cfg;
   if (j.contains("radio")) parse_radio(j.at("radio"), cfg.radio);
@@ -484,6 +495,7 @@ Config load_config(const std::string& path) {
   if (j.contains("link")) parse_link(j.at("link"), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
   if (j.contains("ampdu")) parse_ampdu(j.at("ampdu"), cfg.ampdu);
+  if (j.contains("air_clock")) parse_air_clock(j.at("air_clock"), cfg.air_clock);
 
   return cfg;
 }
