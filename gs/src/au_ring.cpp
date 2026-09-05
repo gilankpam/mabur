@@ -21,7 +21,7 @@ constexpr size_t kSOffLock = 0, kSOffLen = 4, kSOffRecNo = 8,
                  kSOffFlags = 29, kSOffCodec = 30;
 // SlotHdr v2 additions (kAuRingVersion 2).
 constexpr size_t kSOffTFirst = 32, kSOffTComplete = 40, kSOffDroneQ = 48,
-                 kSOffEncUs = 50;
+                 kSOffEncUs = 50, kSOffAirMs = 52;
 
 uint32_t load32(const uint8_t* p) {
   return __atomic_load_n(reinterpret_cast<const uint32_t*>(p), __ATOMIC_ACQUIRE);
@@ -191,6 +191,7 @@ uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
   put64(slot + kSOffTComplete, l.t_complete_us);
   put16(slot + kSOffDroneQ, l.drone_q_ms);
   put16(slot + kSOffEncUs, l.enc_us);
+  put16(slot + kSOffAirMs, l.drone_air_ms);
   store32(slot + kSOffLock, lock + 2);  // even: stable, release
   ++published_;
   bytes_published_ += au_.size();
@@ -329,6 +330,7 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
   m.t_complete_us = get64(slot + kSOffTComplete);
   m.drone_q_ms = get16(slot + kSOffDroneQ);
   m.enc_us = get16(slot + kSOffEncUs);
+  m.drone_air_ms = get16(slot + kSOffAirMs);
   if (m.len > geom_.slot_bytes) {  // torn beyond repair
     ++resyncs_;
     cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;

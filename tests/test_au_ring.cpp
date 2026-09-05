@@ -410,6 +410,7 @@ TEST(au_ring_v2_lat_meta_roundtrip) {
   lat.t_complete_us = 222222;
   lat.drone_q_ms = 7;
   lat.enc_us = 9001;
+  lat.drone_air_ms = 21;
   CHECK(w.finish(true, lat) == 0);
 
   maburgs::AuRingReader r;
@@ -421,6 +422,7 @@ TEST(au_ring_v2_lat_meta_roundtrip) {
   CHECK(m.t_complete_us == 222222);
   CHECK(m.drone_q_ms == 7);
   CHECK(m.enc_us == 9001);
+  CHECK(m.drone_air_ms == 21);
   unlink(path.c_str());
 }
 
