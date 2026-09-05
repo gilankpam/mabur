@@ -683,6 +683,17 @@ E 20000 0 1 promote_probed 0.0100 31.0 -24.0
 """
 
 
+CTL10_HOLDS = """ctllog 10 ladder=0/100:50,1/100:50,2/100:50 down_util=0.35 up_util=0.15 probe_offset=1
+E 1000 0 1 promote_probed 0.0000 31.0 -24.0
+P 1200 2 lossy 30.0 0.4000 500 -24.0
+P 2000 2 clean 29.5 0.0000 800 -23.5
+E 4000 1 2 promote_probed 0.0000 31.0 -24.0
+E 4500 2 1 residual 0.4000 29.0 -23.0
+P 5000 2 lossy 29.5 0.4000 400 -23.5
+E 8000 1 0 residual 0.4000 29.0 -23.0
+"""
+
+
 class CtlLog10Test(unittest.TestCase):
     def _write(self, text):
         d = tempfile.mkdtemp(); p = os.path.join(d, "ctl-0003_20260904.log")
@@ -712,6 +723,23 @@ class CtlLog10Test(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf): flightreport.print_probe_report(log, None)
         self.assertIn("lead", buf.getvalue())
+
+    def test_probe_lead_bounded_to_the_hold(self):
+        # flight-0020 2026-09-05: a lossy edge BEFORE the promote into the
+        # rung is not a warning about that hold, and a demote of the NEXT
+        # hold does not vindicate an edge the gate then overrode.
+        log = flightreport.load_ctllog(self._write(CTL10_HOLDS))
+        leads = flightreport.probe_lead(log["E"], log["P"])
+        eps = leads["episodes"]
+        self.assertEqual([e["t0"] for e in eps], [4500.0, 8000.0])
+        self.assertIsNone(eps[0]["lead_ms"])          # lossy@1200 predates the 4000 promote
+        self.assertEqual(eps[0]["edges"], 0)
+        self.assertAlmostEqual(eps[1]["lead_ms"], 3000.0)   # 8000 - 5000, entry = 4500 demote
+        self.assertEqual(eps[1]["edges"], 1)
+        self.assertEqual(leads["false_alarms"], 1)     # lossy@1200: next E is a promote
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): flightreport.print_probe_report(log, None)
+        self.assertIn("edges=1", buf.getvalue())
 
     def test_probelog_loads_and_summarises(self):
         d = tempfile.mkdtemp(); p = os.path.join(d, "probe-0003_20260904.log")

@@ -146,7 +146,15 @@ Consume the same numbers programmatically with:
   ones. `flightreport.py` auto-detects this format alongside the jsonl
   format, so no separate invocation is needed. The controller-side tuning
   invariants that govern what those lines mean live in
-  `docs/link-adaptation.md`.
+  `docs/link-adaptation.md`. Its `PROBE GATE` report scores the edges as a
+  demote predictor for the v2 threshold: per demote episode, `lead` is
+  the time from the FIRST lossy edge since the held rung was entered (the
+  last `E` line before the episode, either direction) — edges before that
+  transition were measured under a different hold and never count (the
+  2026-09-05 version searched unbounded and reported 5-19 s "leads" that
+  simply predated the promote) — and a lossy edge is a false alarm unless
+  the next `E` line is a demote within 10 s, so an edge the gate overrode
+  with a promote stays a false alarm even if that next hold then fails.
 
   ⚠ Since 2026-09-04 the ctl log (and with it the probe log below) also
   opens in **static-pin mode** (`link.static_mcs >= 0`) — it used to be

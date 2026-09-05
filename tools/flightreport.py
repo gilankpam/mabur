@@ -486,19 +486,34 @@ def print_episode_report(ctllog):
 
 
 def probe_lead(E, P, horizon_ms=10000):
-    """Per demote episode: time from the last `lossy` gate edge before its
-    first demote (None if none). false_alarms = lossy edges with no demote
-    within horizon_ms after them. Input for the v2 probe-demote threshold."""
+    """Per demote episode: time from the FIRST `lossy` gate edge since the
+    rung was entered (the last E line before the episode, any direction) to
+    the episode's first demote; None if no lossy edge fell inside that hold.
+    Edges before the entry transition were scored while a different rung
+    was held -- typically the pre-promote flapping that the 2 s clean
+    streak then overrode -- and are not a warning about this hold, so they
+    never count (flight-0020, 2026-09-05: the unbounded search reported
+    5-19 s "leads" that predated the promote by that much). `edges` is the
+    number of lossy edges inside the hold. false_alarms = lossy edges whose
+    next E line is not a demote within horizon_ms: a promote in between
+    means the gate went clean and the ladder moved on, so a demote of the
+    NEXT hold does not vindicate the edge. Input for the v2 probe-demote
+    threshold."""
     eps = find_episodes(E)
     lossy = [p for p in P if p["outcome"] == "lossy"]
     out = []
     for e in eps:
-        prior = [p["t_ms"] for p in lossy if p["t_ms"] <= e["t0"]]
+        entry = max((ev["t_ms"] for ev in E if ev["t_ms"] < e["t0"]), default=-math.inf)
+        inside = [p["t_ms"] for p in lossy if entry < p["t_ms"] <= e["t0"]]
         out.append({"t0": e["t0"], "first_reason": e["first_reason"],
-                    "lead_ms": (e["t0"] - max(prior)) if prior else None})
-    demote_ts = [ev["t_ms"] for ev in E if ev["to"] < ev["from"]]
-    false_alarms = sum(1 for p in lossy
-                       if not any(0 <= t - p["t_ms"] <= horizon_ms for t in demote_ts))
+                    "lead_ms": (e["t0"] - min(inside)) if inside else None,
+                    "edges": len(inside)})
+    false_alarms = 0
+    for p in lossy:
+        nxt = next((ev for ev in E if ev["t_ms"] >= p["t_ms"]), None)
+        hit = (nxt is not None and nxt["to"] < nxt["from"]
+               and nxt["t_ms"] - p["t_ms"] <= horizon_ms)
+        false_alarms += not hit
     return {"episodes": out, "false_alarms": false_alarms, "lossy_edges": len(lossy)}
 
 
@@ -625,10 +640,12 @@ def probelog_summary(pl):
 def print_probe_report(ctllog, probelog, au_rows=None):
     lead = probe_lead(ctllog.get("E", []), ctllog.get("P", []))
     print(f"\nPROBE GATE (lossy edges={lead['lossy_edges']}, "
-          f"false alarms (no demote within 10 s)={lead['false_alarms']})")
+          f"false alarms (no demote before the next transition / within 10 s)="
+          f"{lead['false_alarms']}; lead = first lossy edge since the rung was entered)")
     for e in lead["episodes"]:
         l = "-" if e["lead_ms"] is None else f"{e['lead_ms']:.0f}ms"
-        print(f"  demote t={e['t0']/1000:.1f}s first={e['first_reason']} probe lead={l}")
+        print(f"  demote t={e['t0']/1000:.1f}s first={e['first_reason']} "
+              f"probe lead={l} edges={e['edges']}")
     if probelog:
         bpb = probelog["bpb"]
         print("PROBE LOG (per mcs)")
