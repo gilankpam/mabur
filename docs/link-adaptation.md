@@ -271,6 +271,33 @@ reach the GS after the cascade anyway. The remaining half of the problem
 — why the encoder overshoots its command by up to 40 % — is a venc
 rate-control question, not a ladder one.
 
+## Drone air clock (2026-09-06)
+
+The post-demote latency spike (`docs/probe-stream-flight-findings-2026-09-05.md`
+§9) is a drain: 2–3 IDRs plus the encoder still producing the OLD rung's
+bitrate for ~0.4–1 s after the RCF dropped the MCS, served at the new,
+lower rate. The backlog sits past the TxQueue pop, where the congestion
+shed above cannot see it. The drone now models it directly
+(`drone/src/air_clock.h`, spec `2026-09-06-air-clock-enh-shed-design.md`):
+every body pushed to the TxQueue books `bytes × 8 / (phy_rate(layer) ×
+air_clock.efficiency) + air_clock.body_us` on a virtual air clock, priced
+at the APPLIED op's per-layer rate (re-priced on every AppliedOp, so the
+clock drops to the new rate the instant a demote lands), leaky at zero.
+`backlog = free_at − now` is read at every frame's arrival, stamped on the
+AU's bodies (SBI `air_ms`) and, when `air_clock.shed_ms` > 0 and the
+backlog is at/past it, the enh AU is dropped at `FramePipeline` before a
+frame_id exists (no id gap; base and IDR are never dropped; the probe body
+rides only after a shipped enh AU, so it goes too). `shed_ms` 0 — the
+shipped default — is observe-only.
+
+Ladder-side this is the same contract as the congestion shed: enh
+silence is `NoInfo` to `s3_usable()` and the probe gate, never loss; the
+base `residual` path stays live. It ORs with, and never touches,
+`failsafe_shed_` / `shed_level_`. `efficiency` and `body_us` are
+calibration knobs, not derivations — `tools/bench/airdrain.py --model`
+fits them against the player's measured air excess per frame
+(Stage A of the spec) before the gate is armed (Stage B).
+
 ## Tuning invariant
 
 Tuning invariant: the controller's s3 loss/residual
