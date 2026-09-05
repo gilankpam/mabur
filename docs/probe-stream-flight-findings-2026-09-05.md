@@ -344,7 +344,32 @@ after an s3_residual demote) that reads 9 and 5 on these two flights
 and must read ~0 on the next. Host suite 111/111. DEPLOYED to the GS
 2026-09-05 (`maburgs` only, no config change; rollback
 `/usr/local/bin/maburgs.pre-s3blank`), ausniff 1800 AUs / 60.0 fps / 0
-gaps, pid stable. Bench loss-sim cascade and the flight are still owed. Expected effect: half the
+gaps, pid stable. **Bench loss-sim cascade DONE 2026-09-05** (rig: GS
+loss-sim binary of the same commit vs the pre-fix `maburgs.losssim`,
+`losssim.py --port 8390 s1 eff=20 burst=3` pulses 25/20 s apart, 8 × 500
+ms then 6 × 150 ms per arm, ctl-0284/0285/0286/0287):
+
+| arm | pulses | s3_residual-first | s3_residual re-fire @300 ms | canary | s3_util step @400 ms | rungs dropped |
+|---|---|---|---|---|---|---|
+| pre-fix, 500 ms | 8 | 6 | 6 of 6 | 7 | 1 | 24 |
+| FIX, 500 ms | 8 | 4 | 0 of 4 | 0 | 8 of 8 | 24 |
+| pre-fix, 150 ms | 6 | 4 | 4 of 4 | 4 | 2 | 13 |
+| FIX, 150 ms | 6 | 3 | 0 of 3 | 0 | 6 of 6 | 12 |
+
+The debris `s3_residual` re-fire is gone (0 of 7 vs 10 of 10). The
+cascade is NOT single-step yet: an `s3_util` step lands at +400–420 ms
+in every fixed-arm pulse, even with the 150 ms pulse whose loss was
+off ~250 ms before it — the same mechanism on the other s3 input.
+`s3_loss_cur` (pre-FEC, the util path) is not settle-blanked either,
+every demote opens the fade regime, and in-regime the s3 util confirm
+is `fade.confirm_ms` instead of 250 ms, so the window's pre-demote
+tail clears the amplitude bar the moment the 300 ms gate opens and
+the short confirm fires ~100 ms later. The design note that the util
+path "has no blanking, the 250 ms confirm sits inside the debris
+window" assumed the out-of-regime confirm. Same one-line fix on
+`s3_loss_cur` (and `s1_loss_cur` for the base util path, the flights'
+150 ms residual→util pairs) is the next step; not applied here. The
+flight is still owed. Expected effect: half the
 cascades lose one rung and one IDR, and the lowest rung is what sets
 the drain rate.
 
