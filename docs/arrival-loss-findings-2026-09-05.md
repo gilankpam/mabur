@@ -19,8 +19,8 @@ completion-booked loss-sim build. Bench link clean throughout (SNR ~33 dB,
 |---|---|---|---|
 | control (completion-booked, LOSS_SIM=ON) | — | `8880940cd41c81cfb78af604895b125d` | `/usr/local/bin/maburgs.switchloss` |
 | candidate, campaigns (LOSS_SIM=ON) | `out/arm64/maburgs.arrival.losssim` | `ff35ddf34c0526162a476635257b3440` | `/usr/local/bin/maburgs.arrival.losssim` |
-| candidate, deploy (LOSS_SIM=OFF) | `out/arm64/maburgs` | `17d35fd044b15942acd9f51b8d0bd556` | staged `/usr/local/bin/maburgs.arrival` |
-| GS prod at time of writing | — | `c55ca697931ee9dbf3573c04fd626e2b` | `/usr/local/bin/maburgs` (`ctllog 10`) |
+| candidate, deploy (LOSS_SIM=OFF) | `out/arm64/maburgs` | `17d35fd044b15942acd9f51b8d0bd556` | `/usr/local/bin/maburgs` (deployed 2026-09-05) |
+| previous GS prod, now the rollback | — | `c55ca697931ee9dbf3573c04fd626e2b` | `/usr/local/bin/maburgs.pre-arrival` (`ctllog 10`) |
 
 Build checks: `strings … | grep -c 'loss-sim [port]'` = **2** on the
 LOSS_SIM=ON binary (the brief said 1; the usage block spells the option on
@@ -141,8 +141,9 @@ rather than confirming the fix. The fix itself stays flight-pending.
 
 ## Standing gates — PASS on the LOSS_SIM=OFF binary
 
-Run on `/usr/local/bin/maburgs.arrival` (md5 `17d35fd0…`), fresh start,
-ctl-0339:
+Run on the deploy artifact (md5 `17d35fd0…`, then still staged as
+`/usr/local/bin/maburgs.arrival`, now `/usr/local/bin/maburgs`), fresh
+start, ctl-0339:
 
 ```
 ctllog 11 ladder=0/100:50,...,5/100:50 down_util=0.35 up_util=0.15 probe_offset=1
@@ -157,18 +158,10 @@ aucadence: {"n_base": 743, "n_enh": 744, "idr_excluded": 0, "resyncs": 0,
 60.0 fps, `fid_gaps=0`, `incomplete={}`, base−enh completion offset
 2.87 ms inside the 4.0 ms gate, clean 0→5 climb with no `probation`.
 
-## Deploy — NOT DONE
+## Deploy — DONE 2026-09-05
 
-The GS still runs the completion-booked prod binary
-(`c55ca697931ee9dbf3573c04fd626e2b`, `ctllog 10`) and `/etc/maburgs.json`
-is untouched. Campaign 1's literal pass criterion failed, and the standing
-rule for this task is that a failed criterion blocks the deploy — even
-though §Campaign 1 shows the criterion cannot be passed by any binary,
-including the control. That call belongs to whoever reads this, not to the
-campaign.
-
-The candidate is staged and gate-clean, so the deploy is one rotation
-(no config change either way):
+Deployed to the ground station on 2026-09-05, config unchanged (no new
+keys), drone untouched:
 
 ```sh
 ssh root@10.18.0.1 '/etc/init.d/S96maburgs stop; sleep 2; killall maburgs 2>/dev/null; sleep 1; \
@@ -177,8 +170,38 @@ ssh root@10.18.0.1 '/etc/init.d/S96maburgs stop; sleep 2; killall maburgs 2>/dev
   chmod 755 /usr/local/bin/maburgs; /etc/init.d/S96maburgs start'
 ```
 
-Rollback: **`/usr/local/bin/maburgs.pre-arrival`** (created by the mv
-above), no config restore needed.
+`/usr/local/bin/maburgs` is now the LOSS_SIM=OFF candidate, md5
+`17d35fd044b15942acd9f51b8d0bd556`.
+Rollback: **`/usr/local/bin/maburgs.pre-arrival`**, md5
+`c55ca697931ee9dbf3573c04fd626e2b` (the completion-booked `ctllog 10`
+build). No config restore needed either way.
+
+Post-deploy verification, ctl-0341:
+
+- header `ctllog 11`;
+- cold climb 0→1→2→3→4→5, five `promote_probed` E lines
+  (u 0.0000 / 0.0000 / 0.0090 / 0.0132 / 0.0118), **no `probation`**;
+- ausniff 30 s: `aus=1800 complete={'0': 900, '1': 900} incomplete={}
+  fid_gaps=0`, 60.0 fps.
+
+### Deploy decision
+
+Campaign 1's per-step criterion was ruled **non-discriminating**: it fails
+control-vs-control (3 of 8 sub-criteria) and candidate-vs-candidate (4 of
+8), so no binary — including the one it was meant to defend — can pass it,
+and a criterion two identical builds fail cannot be evidence against this
+one. Read as spec §6.1 intended it (does arrival booking track the dialled
+loss as well as completion booking?), the answer holds within bench noise:
+every step's bootstrap CIs overlap between arms, and the sign of the
+largest discrepancy (eff 20 %) flips between replicates. Campaigns 2 and 3
+pass outright, the standing gates pass on the exact deploy artifact, and
+the one repeatable per-step difference — the +0.7 pp over-read at eff 10 %
+— errs toward demoting *earlier*, which is the safe direction for a link
+that has just lost margin. The bench cannot settle the rest: it does not
+reproduce the probation bounce this change targets (the control is also
+`probation=0` on 10/10), so **the flight is the real test**, and the two
+things to watch there are the post-promote bounce class and demote
+sensitivity to short pulses (ARR missed one of eight bench pulses).
 
 ## Artefacts on the GS
 

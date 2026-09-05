@@ -584,21 +584,25 @@ change: the residual inputs (abandonment + 150 ms `kResidSettleMs`), the
 thresholds, the budgets (`u` is still source-symbol loss over the parity
 fraction). Bench and flight numbers before this line are
 completion-booked (`docs/data-provenance.md`).
-Bench result 2026-09-05 (ctl-0305..0339, loss-sim arm against the
-completion-booked build, `docs/arrival-loss-findings-2026-09-05.md`): the
-pulse campaign and the restart climbs PASS — every demoting pulse
-`steps=1`, both canaries 0, **no util sample above `down_util` within
-200 ms of any transition** now that the blank is gone, drone-switch p50
-42 ms (control 57), 10/10 cold climbs reach rung 5 with `probation=0` —
-and the standing gates pass on the LOSS_SIM=OFF binary (ausniff 60.0 fps /
-`fid_gaps=0` / `incomplete={}`, aucadence offset 2.87 ms inside the 4.0 ms
-gate). The steady-loss sweep is NOT decided: on 200 ms sideport buckets its
-run-to-run variance exceeds the control-candidate difference (two runs of
-the same control binary disagree by 1.0 pp at eff 20 %), so the accuracy
-criterion fails control-vs-control too; the only repeatable per-step
-difference is a +0.7 pp over-read at eff 10 %. **Not deployed** — the GS
-still runs the completion-booked build; the candidate is staged at
-`/usr/local/bin/maburgs.arrival`, rollback name `maburgs.pre-arrival`.
+**Bench-validated ctl-0305..0339, deployed to the GS 2026-09-05**
+(rollback `maburgs.pre-arrival`, the `ctllog 10` completion-booked build;
+no config change); campaign-1 sweep inconclusive within bench noise — see
+`docs/arrival-loss-findings-2026-09-05.md`. What passed: the pulse
+campaign and the restart climbs — every demoting pulse `steps=1`, both
+canaries 0, **no util sample above `down_util` within 200 ms of any
+transition** now that the blank is gone, drone-switch p50 42 ms (control
+57), 10/10 cold climbs reach rung 5 with `probation=0` — and the standing
+gates on the deploy artifact (ausniff 60.0 fps / `fid_gaps=0` /
+`incomplete={}`, aucadence offset 2.87 ms inside the 4.0 ms gate), plus
+post-deploy ctl-0341 (clean 0→5, no `probation`, ausniff 1800 AUs /
+`fid_gaps=0` / 60.0 fps). The steady-loss sweep decided nothing: on 200 ms
+sideport buckets its run-to-run variance exceeds the control-candidate
+difference (two runs of the same control binary disagree by 1.0 pp at
+eff 20 %), so its accuracy criterion fails control-vs-control too; the one
+repeatable per-step difference is a +0.7 pp over-read at eff 10 %, which
+errs toward an earlier demote. The bench does not reproduce the probation
+bounce this change targets (the control is `probation=0` on 10/10 too), so
+the flight remains the real test.
 
 The open-boundary path is itself an adaptive blank, not an absence of
 one. While `SwDecoder`'s `wm_open_` is true, `arr_stale_end()` returns
