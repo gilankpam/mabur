@@ -276,6 +276,17 @@ presence, and a v1 row is padded with `t_first=t_complete=enc_us=dq_ms=0`
 so the fec-wait class and the t_complete arrival-basis fallback both treat
 "absent" the same as "present but zero".
 
+**2026-09-06 (air clock): `# aulog 3`, SBI ver 2, SlotHdr v3.** AU rows
+gain a 12th column, `air_ms` — the drone's modelled air backlog at the
+AU's arrival (`AirClock`, `docs/link-adaptation.md`), carried in the SBI
+body header (ver 2, 13-byte header; ver-1 bodies are rejected) and the AU
+ring slot at offset 52 (`kAuRingVersion` 3). A row without the column
+predates the model; `airdrain.py --model` says so instead of comparing.
+`flightjitter.load_au_log` and `flightreport.load_aulog` ignore the extra
+column. Recordings from the observe-only period (`air_clock.shed_ms` 0)
+carry a live `air_ms` and zero `drone.air_shed_drops`; a non-zero drop
+count means the gate was armed for that flight.
+
 **2026-08-31 (vsync servo): `reg`/`dsp` semantics change when
 `display.vsync_lock` is on.** `reg` becomes hold-to-vblank (grows to
 ~½ panel period mean, up from the old D=12 dejitter hold); `dsp`
