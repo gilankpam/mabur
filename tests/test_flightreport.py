@@ -645,6 +645,23 @@ def test_false_fade_and_attribution_miss():
     assert misses[0]["t_ms"] == 20150.0
 
 
+def test_s3_settle_refire_canary():
+    # 5->4 s3_residual, then 4->3 at +303 ms = the debris re-fire; a later
+    # 3->2 at +2000 ms is a real second measurement and must not count, nor
+    # a 150 ms follow-up whose predecessor is a plain residual.
+    E = [
+        {"t_ms": 1000.0, "from": 5, "to": 4, "reason": "s3_residual"},
+        {"t_ms": 1303.0, "from": 4, "to": 3, "reason": "s3_residual"},
+        {"t_ms": 3303.0, "from": 3, "to": 2, "reason": "s3_residual"},
+        {"t_ms": 9000.0, "from": 2, "to": 3, "reason": "promote_probed"},
+        {"t_ms": 12000.0, "from": 3, "to": 2, "reason": "residual"},
+        {"t_ms": 12150.0, "from": 2, "to": 1, "reason": "util"},
+    ]
+    hits = flightreport.s3_settle_refires(E)
+    assert [h["t_ms"] for h in hits] == [1303.0], hits
+    print("✓ s3 settle refire canary test passed!")
+
+
 def test_find_episodes_gap_boundary_closes_run():
     """The episode definition is 'consecutive demotes <= gap_ms apart';
     a gap of exactly gap_ms (default 3000) must NOT close the episode, and
@@ -801,4 +818,5 @@ if __name__ == "__main__":
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()
     test_find_episodes_gap_boundary_closes_run()
+    test_s3_settle_refire_canary()
     unittest.main()

@@ -287,7 +287,19 @@ defaults are safe (stale weight decays
 fast against the 250/500 ms confirm windows), but do NOT lower
 `s3_settle_ms`/`s3_residual_confirm_ms` toward their floors together: a
 rung transition's FEC re-key artifacts could then satisfy the s3-residual
-confirm and self-demote on every promote. ⚠ SUPERSEDED 2026-08-15 — see
+confirm and self-demote on every promote. ⚠ 2026-09-05: that self-demote
+DID happen, from the other direction — `s3_settle_ms` only gated the
+controller's READ; the 500 ms `s3_resid_cur` window behind it was never
+cleared at the edge (the base window got its 150 ms `blank_until` on
+2026-09-02, the enh one did not), so the abandonment horizon's ~80 ms
+late booking of old-rung loss re-fired an `s3_residual` demote the tick
+the 300 ms gate opened, on a 0 ms confirm. Flights 20/21: 13 of 14
+s3_residual cascades double-stepped at exactly 300–310 ms and were
+promoted straight back ~3 s later. Fixed by `gs/src/transition_edge.h`
+(both instant-demote windows settle-blank at every op edge; pinned by
+`tests/test_transition_edge.cpp`); `flightreport.py` prints an
+"s3-settle-refire canary" that must read ~0 on any recording after this.
+See `docs/probe-stream-flight-findings-2026-09-05.md` §9. ⚠ SUPERSEDED 2026-08-15 — see
 the pooled-RF note below: `s3_residual_confirm_ms` is REMOVED and FAILS
 BOOT, so there is no longer a config knob to lower — the s3-residual
 confirm window this paragraph warns about is now permanently at 0 ms

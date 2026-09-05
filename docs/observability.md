@@ -192,6 +192,9 @@ Consume the same numbers programmatically with:
   derives it from `seq` gaps and the enh AU count and joins rows to
   `au-NNNN.log` on `enh_fid` (nearest completion in time — the id wraps
   every ~36 min) to print the completion→probe offset percentiles
+  (the episode report also prints an "s3-settle-refire canary" since
+  2026-09-05 — demotes landing 300–360 ms after an `s3_residual` demote,
+  the debris double-step `transition_edge.h` removed; ~0 expected)
   (`flightreport.py probe-NNNN_<date>.log [au-NNNN.log]`; without the
   second argument it picks the au log in the same directory or `./log`
   whose mono range overlaps — the au log's NNNN is flightrec's own

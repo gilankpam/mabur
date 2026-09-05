@@ -465,6 +465,27 @@ def attribution_misses(E, window_ms=200):
     return out
 
 
+def s3_settle_refires(E, settle_ms=300, slack_ms=60):
+    """Canary for the 2026-09-05 s3 debris double-step (flights 20/21: 13 of
+    14 s3_residual cascades took a second step at exactly s3_settle_ms and
+    were promoted straight back). A demote whose predecessor is a demote of
+    reason s3_residual landing settle_ms..settle_ms+slack_ms earlier is the
+    window re-firing on old-rung debris the instant the controller's gate
+    opens, not a second measurement. Should be ~0 once transition_edge.h
+    blanks s3_resid_cur; a nonzero count on a new recording means the
+    settle blank regressed or s3_settle_ms was tuned below the horizon lag."""
+    out = []
+    for prev, ev in zip(E, E[1:]):
+        if ev["to"] >= ev["from"] or prev["to"] >= prev["from"]:
+            continue
+        if prev["reason"] != "s3_residual":
+            continue
+        dt = ev["t_ms"] - prev["t_ms"]
+        if settle_ms <= dt <= settle_ms + slack_ms:
+            out.append(ev)
+    return out
+
+
 def print_episode_report(ctllog):
     E = ctllog.get("E", [])
     eps = find_episodes(E)
@@ -483,6 +504,9 @@ def print_episode_report(ctllog):
     misses = attribution_misses(E)
     print(f"  attribution-miss canary (residual <=200ms after a transition): "
           f"{len(misses)}" + ("" if not misses else " ⚠"))
+    refires = s3_settle_refires(E)
+    print(f"  s3-settle-refire canary (demote 300-360ms after an s3_residual demote): "
+          f"{len(refires)}" + ("" if not refires else " ⚠"))
 
 
 def probe_lead(E, P, horizon_ms=10000):

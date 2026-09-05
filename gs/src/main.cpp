@@ -48,6 +48,7 @@
 #include "s1_loss.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
+#include "transition_edge.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
 #include "vrx_controller.h"
@@ -547,7 +548,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // continuing fade then steps ~200 ms/rung, inside the ~410-440 ms/rung
   // cadence flight-validated 2026-08-14, and nowhere near the broken
   // 50 ms/rung debris cascade this exists to stop.
-  const double kResidSettleMs = 150.0;
+  // (settle constant now lives in TransitionEdge::kResidSettleMs)
   // Observability siblings of s1_resid_cur, pooled over both layers: the
   // sideport's link.residual_loss / link.attrib.residual_cur and the ctl
   // log's S-line resid/resid_cur. These MUST be windowed, not cumulative --
@@ -578,9 +579,7 @@ static int run_radio(const maburgs::Config& cfg) {
   uint64_t prev_pkts_out = 0;
   // Commanded-MCS edge detect for boundary marking. -1 forces a first mark
   // (which finds cur_mcs unknown -> closed plain-fallback boundary).
-  int last_marked_op_mcs = -1;
-  double last_marked_op_ov = -1.0;
-  int last_marked_enh_mcs = -1;
+  maburgs::TransitionEdge edge;
   // Card the last real RCF/DISC emission went out on; repeat-burst copies
   // reuse it instead of re-running the selector between emissions.
   int last_tx_card = 0;
@@ -812,45 +811,10 @@ static int run_radio(const maburgs::Config& cfg) {
     if (frame_wire) fstream.poll(drained_ms);
     if (au_on) au_bell.poll();
 
-    // Transition boundaries for loss attribution: edge-detect the COMMANDED
-    // per-sid MCS. sid 0 (base) mirrors the drone's mcs-1 rule
-    // (rc::ladder_from(...)[0].mcs) and always tracks the op; sid 1 (enh)
-    // runs the op MCS too -- since the continuous probe stream replaced the
-    // discrete probe attempt (2026-09-04), the enh layer is never diverted
-    // to a candidate rate; the probe rides its own stream instead.
-    // Overhead-only steps mark sid 0 too (FEC re-key debris exists without a
-    // PHY change; the decoder then uses the plain same-MCS fallback).
-    // Static-pin mode: the op never changes, so nothing ever arms.
-    {
-      const auto& op_now = vrx.cur_op();
-      if (op_now.mcs != last_marked_op_mcs ||
-          op_now.overhead_base != last_marked_op_ov) {
-        const auto base_spec = mabur::rc::ladder_from(
-            op_now.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
-            static_cast<uint8_t>(op_now.mcs), static_cast<uint8_t>(op_now.bw))[0];
-        agg.decoder().mark_transition(0, static_cast<uint8_t>(base_spec.mcs),
-                                      now_ms_u);
-        // Block 4's instant-demote window must not outlive the rung it
-        // measured: the demote fires on anything > 0, has no settle blank,
-        // and is exempt from min_between_changes_ms, so debris left in the
-        // 500 ms window re-fires every 50 ms tick until rung 0 (flight
-        // ctl-0160: every s1 residual event cascaded 4-5 rungs to the
-        // floor, one at 26-32 dB SNR). The settle also swallows the
-        // abandonment horizon's ~80 ms late booking of old-rung loss the
-        // watermark cannot see (in-flight symbols above the highest
-        // old-rate seq). Observability windows (pool_resid*, s1_loss*)
-        // stay untouched -- they report, they don't decide.
-        s1_resid_cur.blank_until(now_ms + kResidSettleMs);
-        last_marked_op_mcs = op_now.mcs;
-        last_marked_op_ov = op_now.overhead_base;
-      }
-      const int enh_mcs_now = op_now.mcs;
-      if (enh_mcs_now != last_marked_enh_mcs) {
-        agg.decoder().mark_transition(1, static_cast<uint8_t>(enh_mcs_now),
-                                      now_ms_u);
-        last_marked_enh_mcs = enh_mcs_now;
-      }
-    }
+    // Transition boundaries for loss attribution + settle-blank of both
+    // instant-demote windows: gs/src/transition_edge.h (extracted 2026-09-05
+    // so tests/test_transition_edge.cpp can pin what an edge blanks).
+    edge.on_tick(vrx.cur_op(), agg.decoder(), s1_resid_cur, s3_resid_cur, now_ms);
 
     // Control step: post-FEC residual from the FEC decoder's own abandonment
     // counters — ONE formula for every consumer since 2026-09-02, see

@@ -50,7 +50,8 @@ AU log (the numbers below name which). Pre-probe comparison flights:
 8. `flightreport.py`'s probe-lead report was contaminated by
    pre-promote edges; fixed in `a9ea738`.
 9. **Latency (lat-0047 / lat-0048, §9): the demote cascades ARE the
-   latency spikes.** 15–18 % of flight seconds have e2e p50 ≥ 68 ms,
+   latency spikes — and half of them had a debris second step, FIXED
+   (`transition_edge.h`, canary in flightreport).** 15–18 % of flight seconds have e2e p50 ≥ 68 ms,
    every one carried by `air`; 65–70 % of cascades spike (peak p50
    92/118 ms, max 155/309), promotes 37–49 % (p50 40/60). The excess is
    zero through the fade, starts with the first IDR, peaks ~0.8 s after
@@ -326,12 +327,32 @@ admitting to it. Flight 21's rung 1/3 sat at 2–5 ms, so it is a
 window, not a rule; same class as the open mcs1 budget overshoot
 (memory `mcs1-budget-overshoot`).
 
-Levers, not done: coalesce a cascade's bitrate writes into one (one
-IDR per episode instead of one per step; the ladder already knows it
-is stepping at 150 ms), have the bitrate step-down land with the MCS
-step rather than ~1 s later, or size the demote IDR against the NEW
-rung's budget. Any of them is testable on the bench with the loss-sim
-cascade and `flightjitter.py`'s `rung-change` class.
+**The s3 second step was debris — FIXED (same day).** 13 of the 14
+cascades that opened with `s3_residual` were exactly two steps 300–310
+ms apart, and 11 of 13 were promoted back at the earliest moment the
+gate allows (~3.1 s); single residual demotes sat ~10 s before climbing.
+Mechanism: the controller's `s3_settle_ms` (300) only gates the read;
+the 500 ms `s3_resid_cur` window was never blanked at the transition
+edge, unlike `s1_resid_cur` since 2026-09-02, so the abandonment
+horizon's ~80 ms late booking of old-rung loss was still in view when
+the gate opened and re-fired on the 0 ms confirm. Fix: the edge-detect
+is extracted to `gs/src/transition_edge.h` and settle-blanks BOTH
+instant-demote windows (150 ms); `tests/test_transition_edge.cpp` pins
+it (fails on exactly the s3 assertions with the blank removed);
+`flightreport.py` gains an "s3-settle-refire canary" (demote 300–360 ms
+after an s3_residual demote) that reads 9 and 5 on these two flights
+and must read ~0 on the next. Host suite 111/111. Bench loss-sim
+cascade and the flight are still owed. Expected effect: half the
+cascades lose one rung and one IDR, and the lowest rung is what sets
+the drain rate.
+
+Levers still open: the 150 ms residual→util pairs (same late booking
+into the unblanked `s1_loss_cur`, confirm shortened by the fade regime;
+4 cases, evidence split), shedding enh for the ~500 ms drain window,
+coalescing a genuine multi-step cascade's bitrate writes into one IDR,
+faster CBR convergence via IDR-free `SetRcParam` clamps, and sizing the
+demote IDR against the NEW rung (`venc.max_ipprop`). All bench-testable
+with the loss-sim cascade and `flightjitter.py`'s `rung-change` class.
 
 **⚠ Pairing `lat-NNNN` to a flight.** The lat index is maburplay's
 own next-free counter; flightrec's `au`/`flight` index and maburgs'
