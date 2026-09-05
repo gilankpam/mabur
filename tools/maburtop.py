@@ -599,14 +599,18 @@ def panel_topbar(model, wall):
 def _shed_cell(drone):
     """Which shed holds the enh layer: FS (failsafe, rung 0 / lost link)
     wins over CONG (drone-local TxQueue-pressure or USB-failure shed,
-    sideport drone.congestion_shed, 2026-09-03), else "off". None when the
-    recording predates the congestion key, so it renders as dashes."""
+    sideport drone.congestion_shed, 2026-09-03), which wins over AIR (the
+    air-clock admission gate dropped >= 1 enh AU this window,
+    drone.air_shed, 2026-09-06), else "off". None when the recording
+    predates the congestion key, so it renders as dashes."""
     if drone.get("failsafe_shed"):
         return "FS"
     cong = drone.get("congestion_shed")
     if cong is None:
         return None
-    return "CONG" if cong else "off"
+    if cong:
+        return "CONG"
+    return "AIR" if drone.get("air_shed") else "off"
 
 
 def panel_drone(model, wall):
@@ -687,7 +691,8 @@ def panel_drone(model, wall):
     depth_s, cap_s = _f(depth, 3), _f(cap, 3)
     drops_s = _f(txq.get("drops"), 5)
     wait_s = _f(drone.get("txq_wait_ms"), 5)
-    line4 = f"queue     {depth_s} / {cap_s}   txw {wait_s} ms   drops {drops_s}"
+    air_s = _f(drone.get("air_backlog_max_ms"), 4)
+    line4 = f"queue     {depth_s} / {cap_s}   txw {wait_s} ms   drops {drops_s}   air {air_s} ms"
     spans4 = []
     if depth is not None and cap is not None and depth > cap / 2:
         idx = line4.index(depth_s)
@@ -695,6 +700,10 @@ def panel_drone(model, wall):
     if _increased(txq.get("drops"), (prev_drone.get("txq") or {}).get("drops")):
         idx = line4.rindex(drops_s)
         spans4.append((idx, len(drops_s), "bad"))
+    ab = drone.get("air_backlog_max_ms")
+    if isinstance(ab, (int, float)) and ab >= 25:
+        idx = line4.rindex(air_s)
+        spans4.append((idx, len(air_s), "warn"))
     body.append((line4, spans4))
 
     # radio (RadioTx)
@@ -749,7 +758,7 @@ def panel_drone(model, wall):
     shed = _shed_cell(drone)
     shed_s = (shed if shed is not None else "--").ljust(4)
     line8 += f"    shed {shed_s}"
-    if shed in ("FS", "CONG"):
+    if shed in ("FS", "CONG", "AIR"):
         idx = line8.rindex(shed_s)
         spans8.append((idx, len(shed_s), "warn"))
     body.append((line8, spans8))

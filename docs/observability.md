@@ -102,11 +102,13 @@ Consume the same numbers programmatically with:
     from 2026-08-13 silently vanished — probably clobbered by a later
     S97* deploy — which is how the 2026-08-2x flights went unrecorded, the
     recorder gap's 4th bite; the recorder is in-repo now for that reason).
-  - `au-NNNN.log` — per-AU meta rows, SlotHdr v2 since 2026-08-31 behind a
-    `# aulog 2` marker line written once at session start (`t_us pts sid
-    fid len flags nal0 t_first t_complete enc dq`; a log without the
-    marker is the pre-2026-08-31 7-column v1 format — `t_us pts sid fid
-    len flags nal0` only), read from the `/dev/shm/mabur-au` ring exactly
+  - `au-NNNN.log` — per-AU meta rows, SlotHdr v3 since 2026-09-06 behind a
+    `# aulog 3` marker line written once at session start (`t_us pts sid
+    fid len flags nal0 t_first t_complete enc dq air_ms`; a log without
+    the marker is the pre-2026-08-31 7-column v1 format — `t_us pts sid
+    fid len flags nal0` only — or, with a `# aulog 2` marker instead, the
+    2026-08-31 SlotHdr v2 format without the trailing `air_ms` column),
+    read from the `/dev/shm/mabur-au` ring exactly
     like `ausniff.py` (seqlock copy, epoch resync ⇒ `# resync` marker;
     attaches at the write head so pre-attach history can't be stamped with
     attach time), plus `# sync <t_us> <t_ms>` clock anchors every 10 s
@@ -565,9 +567,22 @@ congestion shed") — distinct from `failsafe_shed` (rung 0 / lost link).
 A shed enh layer is silence to the GS ladder, so this bit is the only way
 to attribute an enh gap to congestion rather than RF, and the only way a
 bench can count sheds at all. maburtop's system row renders the pair as
-`shed FS|CONG|off`. The drone `stats:` stderr line carries `enc_pk100=`,
+`shed FS|CONG|AIR|off`. The drone `stats:` stderr line carries `enc_pk100=`,
 the peak 100 ms encoder byte rate (kbit/s, decimal) inside that stats
 second — the burst the 1 Hz `drone.enc.mbps` average hides.
+
+**2026-09-06 (air clock).** `drone.air_backlog_max_ms` is the per-window
+max of the drone's modelled air backlog (`AirClock`, spec
+2026-09-06; `docs/link-adaptation.md` "Drone air clock"),
+`drone.air_shed_drops` the enh AUs its admission gate has dropped since
+link-up, and `drone.air_shed` (Telem flags bit5) whether it dropped any
+this window — the third shed tier, below FS and CONG in maburtop's
+`shed` cell; the queue row carries the backlog as `air N ms`. With
+`air_clock.shed_ms` 0 (the shipped default) the model runs observe-only:
+backlog reported, nothing dropped. Per frame, the same backlog rides the
+SBI body header (`air_ms`, ver 2) into the AU ring (SlotHdr v3, offset
+52) and the AU log's 12th column (`# aulog 3`); `tools/bench/airdrain.py
+--model` compares it against the player's measured air excess.
 
 Since the venc fold-in (spec 2026-08-28) the drone also reports the
 PRODUCER side of that ring, straight from `venc_get_stats()`:
