@@ -780,22 +780,6 @@ TEST(link_fade_rejects_unknown_key_and_bad_ranges) {
   } catch (const std::exception&) {}
 }
 
-// --- link.rcf_repeat_* (rcf-uplink-loss findings 2026-08-14) ----------------
-
-TEST(rcf_repeat_defaults_when_absent) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
-  CHECK(cfg.link.rcf_repeat_copies == 3);
-  CHECK(cfg.link.rcf_repeat_ms == 10);
-}
-
-TEST(rcf_repeat_explicit_values_parse) {
-  auto cfg = maburgs::load_config(write_tmp(
-      "{\"link\": {\"feedback_ms\": 50, \"rcf_repeat_copies\": 4, "
-      "\"rcf_repeat_ms\": 8}}"));
-  CHECK(cfg.link.rcf_repeat_copies == 4);
-  CHECK(cfg.link.rcf_repeat_ms == 8);
-}
-
 // --- link.rcf_slot_hold_ms (gs-uplink-self-blanking 2026-09-02) --------------
 TEST(rcf_slot_hold_defaults_when_absent) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
@@ -809,38 +793,6 @@ TEST(rcf_slot_hold_explicit_and_zero_parse) {
   auto b = maburgs::load_config(
       write_tmp("{\"link\": {\"rcf_slot_hold_ms\": 0}}"));
   CHECK(b.link.rcf_slot_hold_ms == 0);
-}
-
-// The burst must fit inside one feedback period: a burst spanning the next
-// regular RCF slot silently raises the steady-state control rate. Same
-// fail-fast stance as the drone's rc_drain_ms <= tick_ms cross-check.
-// ⚠ Breaking shape: feedback_ms < 40 with the repeat keys left at defaults
-// (3*10=30 needs feedback_ms > 30). Nothing deployed sets feedback_ms
-// below 50.
-TEST(rcf_repeat_burst_must_fit_inside_feedback_period) {
-  bool threw = false;
-  try {
-    maburgs::load_config(write_tmp(
-        "{\"link\": {\"feedback_ms\": 50, \"rcf_repeat_copies\": 5, "
-        "\"rcf_repeat_ms\": 10}}"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("rcf_repeat") != std::string::npos;
-  }
-  CHECK(threw);
-  // copies 0 disables the burst and the cross-check with it.
-  auto cfg = maburgs::load_config(write_tmp(
-      "{\"link\": {\"feedback_ms\": 20, \"rcf_repeat_copies\": 0}}"));
-  CHECK(cfg.link.rcf_repeat_copies == 0);
-}
-
-TEST(rcf_repeat_copies_out_of_range_throws) {
-  bool threw = false;
-  try {
-    maburgs::load_config(write_tmp("{\"link\": {\"rcf_repeat_copies\": 17}}"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("rcf_repeat_copies") != std::string::npos;
-  }
-  CHECK(threw);
 }
 
 // --- link.probe block (spec 2026-09-04 sections 4.2, 5) ---------------------

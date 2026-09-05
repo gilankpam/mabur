@@ -54,7 +54,7 @@ GS → drone (the uplink, low duty cycle, but every send is a blast):
 | what | cadence | notes |
 |---|---|---|
 | RCF (rate-control feedback) | every `feedback_ms` (default 100; bench 50) → 10–20/s | ~20–27 B at HT MCS0, ~180 µs incl. preamble |
-| RCF repeat burst | `rcf_repeat_copies` 3 × `rcf_repeat_ms` 10 on an op-changing RCF only | the fix for the 30–50 % uplink loss (`rcf-uplink-loss` §4.3); adds sends exactly when the link is changing |
+| ~~RCF repeat burst~~ | REMOVED 2026-09-05 (was 3 copies 10 ms apart on an op-changing RCF) | the slotter batched the copies into one release, killing the next aggregate on both cards on 25–33 % of rung changes; single sends reach the drone ~90 % of the time — `docs/switch-loss-findings-2026-09-05.md` |
 | DISC keepalive | `beacon_keepalive_ms` 1000 | slotted like any RCF since 2026-09-03 |
 
 Bench totals: GS 20 sends/s, drone hears 18.5/s (93 %) *with the slotter
@@ -136,8 +136,12 @@ mitigate the resulting 30–50 % uplink loss:
 
 1. the GS slotter (3.2) — sends now land in the drone's gaps, 93 %
    delivery on the bench;
-2. the **repeat burst** — an op-changing RCF goes out 3× 10 ms apart,
-   so a lost commit costs 10 ms, not a full `feedback_ms`;
+2. ~~the repeat burst~~ — REMOVED 2026-09-05: an op-changing RCF went
+   out 3× 10 ms apart so a lost commit cost 10 ms instead of a
+   `feedback_ms`, but with the slotter the three copies were released as
+   one batch at an AU completion and killed the next aggregate; a lost
+   single send now costs one `feedback_ms` (~1 in 14 op changes at
+   flight-0023 range, `docs/switch-loss-findings-2026-09-05.md`);
 3. **failsafe timing** — `link.failsafe_ms` 3000 without any RCF drops
    the drone to the max-range op, `rendezvous_ms` 30000 to
    re-rendezvous. These are the only drone-side reactions to not hearing
@@ -165,7 +169,7 @@ Per AU period `T = 1/fps_AU` (16.7 ms at 60 AU/s):
 | MCS | serialization | the ladder's whole point: each rung re-targets bitrate so `burst/T` stays ≈ budget; the *idle in ms* is therefore roughly rung-independent by design |
 | probe | +1 body/ENH AU | 0.3 ms at mcs4, 2 ms at mcs0 — always at the burst end, now the slotter's release signal |
 | `feedback_ms` | sends/s | more sends = more blasts; **50 = 3 × T phase-locks timeouts to the burst** |
-| repeat burst | sends during rung changes | three sends 10 ms apart inside one period: at most one of them can be slotted |
+| ~~repeat burst~~ | REMOVED 2026-09-05 | three sends 10 ms apart inside one period could not be slotted individually — the slotter batched them and the batch overran the idle |
 
 The design supports the variables **in the sense that the idle is
 re-targeted per rung** (bitrate policy) and the GS **re-learns the

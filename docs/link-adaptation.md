@@ -89,7 +89,7 @@ material is historical.
 
 ## RCF slotting into the inter-AU idle (2026-09-03)
 
-Every GS control-frame send (RCF, DISC keepalive, repeat copies) blasts the
+Every GS control-frame send (RCF, DISC keepalive) blasts the
 sibling RX card at ~−4 dBm and deafens the TX card, so a drone PPDU whose
 preamble starts within ~180 µs of the send is lost on BOTH cards — one
 whole aggregate per hit, the source of the bench's ~0.35 %/PPDU loss and
