@@ -558,6 +558,26 @@ a 50 ms/rung drop to rung 0; sustained eff=15 still walks 5→0 (util,
 `residual` E-line pairs closer than 150 ms never again; a demote storm
 now shows `util` reasons and real per-rung `u`.
 
+**Since 2026-09-05 (arrival tracker, ctllog 11) the two util inputs are
+booked at arrival time**, not from the decoder's completion counters:
+`SwDecoder` owns a `mabur::ArrivalTracker` that books every source seq
+once when it crosses a settle line 32 seqs behind the newest seq seen
+(expected = sequence advance, arrived = heard; a repair's window end
+advances the expectation), splitting both into stale/current with the
+same watermark boundary abandonment uses. `main.cpp` feeds
+`s1_loss_cur`/`s3_loss_cur` from the current-only side. Two things
+follow. (1) The util blank added the same day (51dd79e) is REMOVED —
+`TransitionEdge` blanks only the two residual windows — because the
+tracker never books old-rung loss against the new rung and its
+denominator does not collapse after a re-key. (2) The post-promote
+`probation` bounce class (flight-0023: u = 1.0/0.8 on the first
+post-blank tick; bench ctl-0299: 1.125) cannot occur: the offending
+sample was a ~60 ms bucket with near-zero completions. What did NOT
+change: the residual inputs (abandonment + 150 ms `kResidSettleMs`), the
+thresholds, the budgets (`u` is still source-symbol loss over the parity
+fraction). Bench and flight numbers before this line are
+completion-booked (`docs/data-provenance.md`).
+
 On the drone, RCF drain is decoupled from the agent tick
 (`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop
 wakes every `rc_drain_ms` to drain queued RC frames, with ALL per-tick

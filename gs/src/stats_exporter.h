@@ -45,6 +45,8 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
            syms_recovered_arrived = 0, syms_abandoned = 0, symbols_in = 0,
            symbols_stale = 0, symbols_bad_cfg = 0, rows_in_flight = 0;
   uint64_t syms_abandoned_stale = 0;
+  uint64_t arr_expected = 0, arr_arrived = 0, arr_expected_stale = 0,
+           arr_arrived_stale = 0, arr_late = 0;  // ArrivalTracker (2026-09-05)
 };
 
 // One rung of the per-rung EWMA store (spec 2026-08-13), copied plain from

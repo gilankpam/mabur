@@ -18,7 +18,7 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 10 <header_info>                                 # once, first line
+//   ctllog 11 <header_info>                                 # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr> <rssi_dbm> <probe_rung> <probe_u> <probe_n>
 //                                              # dwell sample, link.ctl_log_period_ms
@@ -43,6 +43,14 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 11 (2026-09-05, arrival tracker): no column change. The S line's
+// <u> and <u3> (and the E line's u for util/probation reasons) are now
+// ARRIVAL-booked pre-FEC loss (SwDecoder::arr_*, current-only side) --
+// before this they were completion-booked (delivered+recovered+abandoned)
+// and lagged the air by a repair window, reading a transition's re-key as
+// 50-100 % loss on the first post-blank tick. Do not pool u across the
+// version boundary (docs/data-provenance.md).
 //
 // ctllog 10 (2026-09-04, probe-stream): the S line gains three trailing
 // fields -- probe_rung, probe_u, probe_n -- describing the CONTINUOUS probe

@@ -540,3 +540,27 @@ edges) and must not be pooled. The `E` line's reason vocabulary gains
 `promote_probed` (a probe-gated promote); existing reasons are
 unchanged. `R`'s `probe_u`/`probe_n` line position is unchanged but
 carries the new continuous meaning above from this date.
+
+## 2026-09-05: `u`, `u3`, `link.pre_fec_loss`, `link.ctl.util` are arrival-booked — ctllog 11
+
+Scale break, not additive. Before this deploy the ladder's pre-FEC
+util number was `1 − (delivered + recovered_arrived) / (delivered +
+recovered + abandoned_cur)` from the FEC decoder's completion counters:
+a lost symbol entered it only when repaired or given up on (a repair
+window to ~80 ms late), and right after a rung change the first bucket
+had almost no deliveries, so a handful of repairs read as 50–100 %
+(flight-0023's two `probation` demotes at +151/+160 ms; bench ctl-0299
+u = 1.125). Since ctllog 11 the number is `1 − arrived/expected` from
+`SwDecoder`'s `ArrivalTracker`: `expected` is sequence advance past a
+32-seq settle line, `arrived` is what was heard, both booked at arrival,
+current-only via the transition watermark. Consequences for readers:
+
+- `u`/`u3` on S lines, `u` on util/probation E lines, `link.pre_fec_loss`,
+  `link.ctl.util`/`util3` and the RungStore `u` columns read LOWER and
+  SMOOTHER across transitions and react sooner to a fade. Do not pool
+  them across the ctllog 10/11 boundary; `flightreport.py` prints which
+  definition a log used.
+- New `link.streams[].arr_*` keys (cumulative). The old
+  `recovered`/`recovered_arrived`/`abandoned` keys stay and still describe
+  decoder completion; they are no longer what the ladder acts on.
+- The 150 ms util settle blank is gone; the residual blank stays.

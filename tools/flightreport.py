@@ -292,6 +292,10 @@ def print_wall_report(ctllog):
     for k, v in header.items():
         if k.startswith("_"): continue  # internal, e.g. _version -- not a header field
         print(f"  {k}={v}")
+    if ver >= 11:
+        print("  u/u3: arrival-booked pre-FEC loss (ArrivalTracker, ctllog 11+)")
+    elif ver:
+        print("  u/u3: completion-booked pre-FEC loss (lags the air; transition-inflated) -- pre-ctllog-11")
 
     print("DWELL (S records)")
     by_rung = {}

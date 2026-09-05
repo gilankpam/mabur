@@ -76,6 +76,16 @@ with `feedback_ms` 50 = 3 AU periods those timeouts are phase-locked to
 the burst, see `docs/probe-blanking-fix-findings-2026-09-05.md`. See
 `docs/link-adaptation.md` "RCF slotting".
 
+`link.streams[].arr_expected / arr_arrived / arr_expected_stale /
+arr_arrived_stale / arr_late` (2026-09-05, arrival tracker): cumulative
+arrival-time pre-FEC accounting, the ladder's util input since ctllog
+11 — `expected` is seq advance past a 32-seq settle line, `arrived` what
+was heard, `_stale` the pre-transition share the watermark attributes to
+the old rung, `late` symbols heard after their seq was already booked
+missing (healthy = 0; a rising `late` means reorder deeper than the
+guard and the tracker is under-counting arrivals). Current-only loss =
+`1 − Δ(arrived−arrived_stale)/Δ(expected−expected_stale)`.
+
 Consume the same numbers programmatically with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,

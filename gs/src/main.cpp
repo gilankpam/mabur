@@ -1235,6 +1235,11 @@ static int run_radio(const maburgs::Config& cfg) {
         o.symbols_stale = st.symbols_stale;
         o.symbols_bad_cfg = st.symbols_bad_cfg;
         o.rows_in_flight = st.rows_in_flight;
+        o.arr_expected = st.arr_expected;
+        o.arr_arrived = st.arr_arrived;
+        o.arr_expected_stale = st.arr_expected_stale;
+        o.arr_arrived_stale = st.arr_arrived_stale;
+        o.arr_late = st.arr_late;
       }
       sin.frames_clean = fstream.frames_clean();
       sin.frames_truncated = fstream.frames_truncated();

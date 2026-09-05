@@ -391,6 +391,14 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     fj["recovered_arrived"] = st.syms_recovered_arrived;
     fj["abandoned"] = st.syms_abandoned;
     fj["abandoned_stale"] = st.syms_abandoned_stale;
+    // ArrivalTracker (2026-09-05): arrival-time pre-FEC accounting, the
+    // ladder's util input. Cumulative; diff across records. Current-only
+    // loss = 1 - (arrived-arrived_stale)/(expected-expected_stale).
+    fj["arr_expected"] = st.arr_expected;
+    fj["arr_arrived"] = st.arr_arrived;
+    fj["arr_expected_stale"] = st.arr_expected_stale;
+    fj["arr_arrived_stale"] = st.arr_arrived_stale;
+    fj["arr_late"] = st.arr_late;
     fj["stale"] = st.symbols_stale;
     fj["bad_cfg"] = st.symbols_bad_cfg;
     fj["sub_fail"] = st.subblocks_failed;
