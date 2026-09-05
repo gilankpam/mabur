@@ -19,7 +19,7 @@ SLOT_HDR = 64
 MAGIC = 0x4D425541
 
 
-def make_ring(slot_bytes=256, slot_count=8, epoch=0xABCD, version=2):
+def make_ring(slot_bytes=256, slot_count=8, epoch=0xABCD, version=3):
     buf = bytearray(HDR + slot_count * (SLOT_HDR + slot_bytes))
     struct.pack_into("<IIII", buf, 0, MAGIC, version, slot_bytes, slot_count)
     struct.pack_into("<Q", buf, 32, epoch)
@@ -28,13 +28,13 @@ def make_ring(slot_bytes=256, slot_count=8, epoch=0xABCD, version=2):
 
 def put_slot(buf, slot_bytes, slot_count, rec, payload, fid=None, pts=1000,
              sid=0, flags=0x80, codec=1, lock=None,
-             t_first=0, t_complete=0, dq_ms=0, enc_us=0):
+             t_first=0, t_complete=0, dq_ms=0, enc_us=0, air_ms=0):
     base = HDR + (rec % slot_count) * (SLOT_HDR + slot_bytes)
     struct.pack_into("<I", buf, base, (rec * 2) if lock is None else lock)
     struct.pack_into("<IQQIBBB", buf, base + 4, len(payload), rec,
                      fid if fid is not None else rec, pts, sid, flags, codec)
     struct.pack_into("<QQ", buf, base + 32, t_first, t_complete)
-    struct.pack_into("<HH", buf, base + 48, dq_ms, enc_us)
+    struct.pack_into("<HHH", buf, base + 48, dq_ms, enc_us, air_ms)
     buf[base + SLOT_HDR:base + SLOT_HDR + len(payload)] = payload
 
 
@@ -66,7 +66,8 @@ def test_reads_metas_from_ring():
         buf = make_ring()
         put_slot(buf, 256, 8, 0, H265_VPS, pts=111, sid=0)
         put_slot(buf, 256, 8, 1, H265_TRAIL + b"x" * 40, pts=222, sid=1,
-                 t_first=5000, t_complete=5030, dq_ms=4, enc_us=1800)
+                 t_first=5000, t_complete=5030, dq_ms=4, enc_us=1800,
+                 air_ms=17)
         put_slot(buf, 256, 8, 2, H265_IDR + b"y" * 10, pts=333, sid=0)
         set_wseq(buf, 3)
         write_ring(ring, buf)
@@ -84,6 +85,8 @@ def test_reads_metas_from_ring():
                metas[0]["dq_ms"], metas[0]["enc_us"]) == (0, 0, 0, 0)
         assert (metas[1]["t_first"], metas[1]["t_complete"],
                metas[1]["dq_ms"], metas[1]["enc_us"]) == (5000, 5030, 4, 1800)
+        # SlotHdr v3 (Task 9): drone_air_ms round-trips.
+        assert metas[1]["air_ms"] == 17
         # nothing new -> empty poll
         assert r.poll() == []
         r.close()
@@ -156,41 +159,43 @@ def test_pick_index():
 
 
 def test_row_format():
-    """v2 row (Task 13): the 4 SlotHdr v2 columns ride behind nal0, in
-    t_first/t_complete/enc_us/dq_ms order — flightjitter's marker-keyed
-    parser depends on this exact order."""
+    """v3 row (Task 9): the 5 SlotHdr columns ride behind nal0, in
+    t_first/t_complete/enc_us/dq_ms/air_ms order — flightjitter's
+    marker-keyed parser depends on this exact order."""
     m = {"pts": 42, "sid": 1, "fid": 7, "len": 1234, "flags": 0x80,
          "nal0": 19, "t_first": 900000, "t_complete": 900450,
-         "enc_us": 2200, "dq_ms": 6}
+         "enc_us": 2200, "dq_ms": 6, "air_ms": 31}
     row = flightrec.format_row(1755000000123456, m)
-    t, pts, sid, fid, ln, flags, nal0, t_first, t_complete, enc_us, dq_ms = \
-        row.split()
+    (t, pts, sid, fid, ln, flags, nal0, t_first, t_complete, enc_us, dq_ms,
+     air_ms) = row.split()
     assert (int(t), int(pts), int(sid), int(fid), int(ln)) == (
         1755000000123456, 42, 1, 7, 1234)
     assert int(flags, 0) == 0x80 and int(nal0) == 19
     assert (int(t_first), int(t_complete), int(enc_us), int(dq_ms)) == (
         900000, 900450, 2200, 6)
+    assert int(air_ms) == 31
 
 
 def test_version_mismatch_refused():
-    """open_ring (via RingReader) refuses a v1 ring header, matching the
-    C++ readers' version gate — the tool must not silently misparse an
-    old-layout ring as v2."""
-    with tempfile.TemporaryDirectory() as d:
-        ring = os.path.join(d, "ring")
-        buf = make_ring(version=1)
-        put_slot(buf, 256, 8, 0, H265_VPS)
-        set_wseq(buf, 1)
-        write_ring(ring, buf)
-        try:
-            flightrec.RingReader(ring)
-            assert False, "expected FileNotFoundError on version mismatch"
-        except FileNotFoundError:
-            pass
+    """open_ring (via RingReader) refuses a v1 or v2 ring header, matching
+    the C++ readers' version gate — the tool must not silently misparse an
+    old-layout ring as v3."""
+    for version in (1, 2):
+        with tempfile.TemporaryDirectory() as d:
+            ring = os.path.join(d, "ring")
+            buf = make_ring(version=version)
+            put_slot(buf, 256, 8, 0, H265_VPS)
+            set_wseq(buf, 1)
+            write_ring(ring, buf)
+            try:
+                flightrec.RingReader(ring)
+                assert False, "expected FileNotFoundError on version mismatch"
+            except FileNotFoundError:
+                pass
 
 
 def test_au_log_marker_written():
-    """AuLog.__init__ writes '# aulog 2' as the session's first line so
+    """AuLog.__init__ writes '# aulog 3' as the session's first line so
     flightjitter can key its row-format parsing on it."""
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "au-0000.log")
@@ -198,11 +203,11 @@ def test_au_log_marker_written():
         log.write_line(flightrec.format_row(1000, {
             "pts": 1, "sid": 0, "fid": 0, "len": 10, "flags": 0x80,
             "nal0": 1, "t_first": 0, "t_complete": 0, "enc_us": 0,
-            "dq_ms": 0}))
+            "dq_ms": 0, "air_ms": 0}))
         log.flush()
         with open(path) as f:
             lines = f.read().splitlines()
-        assert lines[0] == "# aulog 2"
+        assert lines[0] == "# aulog 3"
 
 
 def test_extract_t_ms():
