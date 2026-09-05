@@ -48,6 +48,13 @@ void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
     ++enhance_disagree_;
   }
 
+  // Air-clock admission: same "before frame_id, before last_enc_us" contract
+  // as the shed check below, own counter (see set_enh_gate_closed).
+  if (sid == 1 && enh_gate_closed_) {
+    ++air_dropped_;
+    return;
+  }
+
   // Shed check BEFORE frame_id allocation: a shed frame must not punch an
   // id gap into the GS FrameStream (each gap stalls emit for gap_timeout /
   // lookahead). The drop is still booked in dropped(sid); the discont latch
