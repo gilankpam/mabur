@@ -49,6 +49,19 @@ AU log (the numbers below name which). Pre-probe comparison flights:
    `record-0021.mp4` is 8 s.
 8. `flightreport.py`'s probe-lead report was contaminated by
    pre-promote edges; fixed in `a9ea738`.
+9. **Latency (lat-0047 / lat-0048, §9): the demote cascades ARE the
+   latency spikes.** 15–18 % of flight seconds have e2e p50 ≥ 68 ms,
+   every one carried by `air`; 65–70 % of cascades spike (peak p50
+   92/118 ms, max 155/309), promotes 37–49 % (p50 40/60). The excess is
+   zero through the fade, starts with the first IDR, peaks ~0.8 s after
+   the first demote and drains over ~2 s: one IDR per step (2–3 per
+   cascade, 2–2.5× a P frame, ×2 on air under base ov 1.0) plus the
+   encoder still running the OLD bitrate for up to ~1 s into the new,
+   lower MCS. The drone's `txq` gauges barely see it: the backlog sits
+   downstream of the TxQueue pop.
+10. ⚠ `lat-NNNN` is the player's own next-free index, not flightrec's:
+   flight 20/21 are `lat-0047`/`lat-0048`, and `lat-0020`/`lat-0021`
+   are older sessions whose wall–mono bridge is indistinguishable.
 
 ## 1. Ladder behaviour, flight vs flight vs the old probe
 
@@ -243,3 +256,93 @@ range, with `dq`/`enc` flat — not new, not near the crash.
 4. The drone temperature deserves a thermal check on the airframe.
 5. DVR: both files unusable; the GS logs carry no DVR state, so check
    the button/autostart path on the next ground run.
+
+## 9. Latency — the cascades are the spikes
+
+Player `lat:` lines from `lat-0047` (flight 20) and `lat-0048` (flight
+21) — see the pairing warning below — plus a per-frame replay of the
+player's `air` arithmetic over the AU log (`t_first − enc − q − pts`
+minus a leaky running-min floor, i.e. `PtsAnchor`), joined to the E
+lines.
+
+| | flight 20 | flight 21 |
+|---|---|---|
+| e2e p50-of-seconds: median / p90 / max | 53 / 82 / 169 ms | 53 / 83 / 303 ms |
+| e2e p99-of-seconds: median / p90 / max | 72 / 123 / 247 | 67 / 130 / 376 |
+| segment p50 medians enc/dq/air/fec/dec/reg/dsp | 7/1/3/11/7/12/5 | 7/1/2/12/7/13/5 |
+| spike seconds (e2e p50 ≥ 68) | 65 of 371 (17.5 %) | 47 of 327 (14.4 %) |
+| … dominant segment | air 65/65 | air 47/47 |
+| … within 2.5 s of: cascade / promote / single / none | 22 / 19 / 3 / 21 | 13 / 19 / 6 / 9 |
+| cascades that spike within 2.5 s | 11 of 17 (65 %) | 7 of 10 (70 %) |
+| single demotes that spike | 2 of 11 | 4 of 7 |
+| promotes that spike | 21 of 57 (37 %) | 17 of 35 (49 %) |
+| per-frame air excess, whole flight p50 / p90 / p99 | 4 / 42 / 99 ms | 3 / 41 / 129 ms |
+
+Cascade profile (per-frame air excess, 250 ms bins, n = 17 + 10):
+
+| | flight 20 | flight 21 |
+|---|---|---|
+| excess in the 1 s BEFORE the first demote, p50 | 5 ms (0 of 17 ≥ 20 ms) | 4 ms (1 of 10) |
+| peak after the first demote, p50 / max | 92 / 155 ms | 118 / 309 ms |
+| time to peak, p50 | 0.82 s | 0.80 s |
+| settled (< 15 ms for 5 frames), p50 | +1.8 s | +2.4 s |
+| IDRs in the 1.5 s after, p50 / max | 2 / 4, 65 kB / 178 kB | 2 / 3, 117 / 174 kB |
+| single demote: peak p50 | 40 ms | 89 ms |
+| promote: peak p50 / p90 | 40 / 105 ms | 60 / 131 ms |
+
+Three things the profile says:
+
+1. **The fade itself adds no latency.** Excess is ~0 up to the first
+   demote in 26 of 27 cascades; loss is paid in `fec`, not `air`.
+2. **The spike is a drain.** It starts with the first IDR (every step
+   of a cascade is a bitrate change, every bitrate change is an IDR —
+   `docs/link-adaptation.md`, venc attr-change), rises for ~0.8 s and
+   decays for another 1–1.5 s: a backlog being served at the new,
+   lower MCS. Two inputs fill it: 2–3 IDRs at 2–2.5× the P-frame size,
+   ×2 on air under base ov 1.0 (192.5 s in flight 20: 63 + 46 + 40 kB
+   of IDR inside 500 ms at mcs2 ≈ 120 ms of airtime by itself), and the
+   encoder still producing the OLD rung's bitrate for up to ~1 s after
+   the RCF has already dropped the MCS (211.2 s: mcs 3, encoder 13.7
+   Mb/s, `air_pct` 117 %; 155.9 s flight 21: mcs 0, encoder 8.7 Mb/s,
+   command 8700 → 2200 only at 156.1). Bytes on air in the first 500 ms
+   after a cascade were 70–115 % of the new rung's NOMINAL PHY rate
+   (185 % for the 3→0 at 155.0 s, the 309 ms peak).
+3. **The drone's queue gauges barely see it.** `dq` (per-frame q_ms)
+   stays at 1 ms p99 and `txq.depth` reads 0–6 while `air` carries
+   100–150 ms; only `txq_wait_ms` blips to 20–56 ms for one sample.
+   The backlog sits past the TxQueue pop — USB pool / bulk-out / chip
+   FIFO — where the congestion shed (`docs/link-adaptation.md`, half
+   cap) cannot trigger and nothing is measured.
+
+Promotes spike less and shorter: one IDR at the new (higher) bitrate,
+roughly its own serialization time (40–60 ms p50), no sustained
+overshoot because capacity went up.
+
+**Rung 2 standing excess (flight 20 only).** Frames > 3 s from any
+transition: r4 3 ms / r5 2 ms p50, but r2 62 ms p50 / 81 ms p99 (235
+frames, 161–171 s). Encoder 6.6–6.9 Mb/s on a 6500 command, `air_pct`
+66–77 %, `txq` 0 — a standing ~60 ms backlog at mcs2 with no gauge
+admitting to it. Flight 21's rung 1/3 sat at 2–5 ms, so it is a
+window, not a rule; same class as the open mcs1 budget overshoot
+(memory `mcs1-budget-overshoot`).
+
+Levers, not done: coalesce a cascade's bitrate writes into one (one
+IDR per episode instead of one per step; the ladder already knows it
+is stepping at 150 ms), have the bitrate step-down land with the MCS
+step rather than ~1 s later, or size the demote IDR against the NEW
+rung's budget. Any of them is testable on the bench with the loss-sim
+cascade and `flightjitter.py`'s `rung-change` class.
+
+**⚠ Pairing `lat-NNNN` to a flight.** The lat index is maburplay's
+own next-free counter; flightrec's `au`/`flight` index and maburgs'
+`ctl` index are separate counters, and the player restarts far more
+often. Flight 20 is `lat-0047` (mono 71–443 s), flight 21 is
+`lat-0048` (27–357 s); `lat-0020`/`lat-0021` are 33-min and 5-min
+sessions from earlier boots that happen to overlap the same mono
+range, and the first pass of this analysis was run on them. The
+`# sync` wall–mono bridge does NOT disambiguate: the GS RTC restarts
+at the same bogus epoch every boot, so every lat and au log on the DVR
+carries one of two bridge values (…208.530 or …208.591). Match by mono
+span against the ctl log (first/last `S` line) and take the highest
+index as the latest boot.
+

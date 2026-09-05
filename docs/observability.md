@@ -279,8 +279,16 @@ read the sideport. Reach for other tools only in these cases:**
   boot, and `ctl`'s date suffix plus its index-reuse history has already
   caused session-identification confusion once (see the
   `data-provenance.md` DVR-filename note); sessions are matched by the
-  `# sync` bridge against the flight jsonl's `t_ms`, not by filename. A
-  failed open (DVR not mounted yet) is retried every 30 s and never
+  `# sync` bridge against the flight jsonl's `t_ms`, not by filename.
+  ⚠ 2026-09-05: the bridge is NOT a boot identifier on the DVR — the GS
+  RTC restarts at the same bogus epoch every boot, so every lat/au log
+  on the disk carries one of two bridge values — and the lat index is
+  the player's own next-free counter, unrelated to flightrec's
+  `au`/`flight` index or maburgs' `ctl` index (the player restarts far
+  more often: flight 20/21 were `lat-0047`/`0048` against
+  `au-0020`/`0021`). Pair a lat log by its mono span (first/last row)
+  against the ctl log's `S` range, highest index = latest boot; see
+  `docs/probe-stream-flight-findings-2026-09-05.md` §9. A failed open (DVR not mounted yet) is retried every 30 s and never
   blocks or spams; it never blocks the stderr line either, which keeps
   going regardless. `tools/bench/latab.py latA.log latB.log` reads a pair
   of these logs and prints the vsync A/B verdict (four log-derived gates:
