@@ -240,6 +240,20 @@ read the sideport. Reach for other tools only in these cases:**
   mode is best-effort — Python cannot fence.) Host-side, the same
   invariant is `ctest -R 'gs_e2e|gs_au_e2e|player_e2e'` (byte-exact
   fixture-to-ring/AU comparisons via `verify_aus.py`/`--out-aus`).
+- **Per-frame `air` excess around rung transitions → `tools/bench/airdrain.py`**
+  (`python3 tools/bench/airdrain.py ctl-NNNN_<date>.log log/au-NNNN.log
+  [--profiles]`, host-side, no lat log needed). Replays the player's
+  `air` arithmetic over the AU log — `t_first − enc − q − pts` minus a
+  `PtsAnchor`-style leaky min floor with the 2 s pts-discontinuity reset
+  — and joins the ctl log's E lines: per cascade the 250 ms-binned excess
+  around the first demote with IDRs marked, peak / time-to-peak / settle,
+  the 1 s pre-demote excess, and the first-500 ms on-air bytes against
+  the new rung's nominal PHY rate; single-demote and promote peaks;
+  steady-state excess per rung; standalone spike seconds. This is the
+  §9 measurement of `docs/probe-stream-flight-findings-2026-09-05.md`
+  and the A/B instrument for its drain-shed follow-up
+  (`tests/test_airdrain.py` pins it on a synthetic cascade). The ctl and
+  au indices are separate counters: pair them by mono span.
 - **Verifying AU-completion cadence → `tools/bench/aucadence.py`** (on the
   GS: `python3 aucadence.py --ring /dev/shm/mabur-au --seconds 25 --json`).
   Same outside-the-daemon ring posture as ausniff; reports the base−enh

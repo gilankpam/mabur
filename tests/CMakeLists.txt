@@ -283,6 +283,9 @@ if(Python3_EXECUTABLE)
   add_test(NAME test_flightrec
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightrec.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME test_airdrain
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_airdrain.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   add_test(NAME test_flightjitter
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightjitter.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

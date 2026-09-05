@@ -425,10 +425,11 @@ frame id and no expected symbol exist for the GS to miss.
 (it removes half the cascades, so measure on the population that
 remains): inject a 500 ms `s3` burst (eff 20, as for the 2026-09-02
 s1 fix on ctl-0165) and a sustained `s1` burst that walks 5→2, with
-`drain_shed_ms` 0 then 500 then 800, interleaved. Per arm: per-frame
-air-excess replay over the AU log (the §9 method: `t_first − enc − q −
-pts` minus the leaky min floor, 250 ms bins around each first demote)
-— peak, time-to-peak, settle; `flightjitter.py`'s `rung-change` class
+`drain_shed_ms` 0 then 500 then 800, interleaved. Per arm:
+`tools/bench/airdrain.py ctl au --profiles` (the §9 replay, committed as
+a bench tool: `t_first − enc − q − pts` minus the leaky min floor, 250 ms
+bins around each first demote) — peak, time-to-peak, settle, first-500 ms
+on-air %; `flightjitter.py`'s `rung-change` class
 count; `ausniff.py` 60 fps / 0 gaps outside the windows and exactly
 the shed frames inside; the s3-settle-refire canary still 0. Then the
 flight, same §9 table.
