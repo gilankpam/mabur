@@ -7,17 +7,27 @@
 // On a COMMANDED op change this (1) marks the decoder's per-sid transition
 // watermark and (2) settle-blanks the two residual decision windows; the
 // util windows stopped being blanked on 2026-09-05 when they moved to the
-// ArrivalTracker (bench ctl-0287's s3_util re-fire was completion-counter
-// debris that the tracker never books against the new rung) -- the base
-// (s1) residual window since 2026-09-02 (flight ctl-0160: one residual
-// event walked the ladder to rung 0 at 50 ms/rung), and the enh (s3)
-// residual window since 2026-09-05 (flights 20/21: 13 of 14 s3_residual
-// cascades took a second step at exactly s3_settle_ms and were promoted
-// straight back). The controller's s3_blank_until only gates READING for
-// s3_settle_ms; the 500 ms window behind it kept the abandonment-horizon's
-// ~80 ms late booking of old-rung loss, so the tick the gate opened it
-// demoted again on a 0 ms confirm. Observability windows (pool_resid*,
-// s1_loss, s3_loss) stay untouched -- they report, they don't decide.
+// ArrivalTracker -- the base (s1) residual window since 2026-09-02 (flight
+// ctl-0160: one residual event walked the ladder to rung 0 at 50 ms/rung),
+// and the enh (s3) residual window since 2026-09-05 (flights 20/21: 13 of
+// 14 s3_residual cascades took a second step at exactly s3_settle_ms and
+// were promoted straight back). The controller's s3_blank_until only gates
+// READING for s3_settle_ms; the 500 ms window behind it kept the
+// abandonment-horizon's ~80 ms late booking of old-rung loss, so the tick
+// the gate opened it demoted again on a 0 ms confirm. Bench ctl-0287's
+// s3_util re-fire was NOT completion-counter debris the tracker fails to
+// attribute: the 500 ms s3_loss_cur window was still holding genuine
+// pre-demote (old-rung) loss entries when the 300 ms gate opened, and the
+// arrival tracker still books those -- it just (i) stamps them ~80 ms
+// earlier, so more have aged out of the window by the time the gate opens,
+// (ii) contributes no entries from the boundary-open interval, and (iii)
+// dilutes them faster with post-close current entries. The residual
+// exposure this leaves: old-rung util entries can survive up to 500 ms
+// into the new rung while the in-regime confirm is fade.confirm_ms
+// (100 ms); bench campaign 2 (8 pulses, docs/arrival-loss-findings-2026-09-05.md)
+// showed zero re-fires, but the control arm also showed none. Observability
+// windows (pool_resid*, s1_loss, s3_loss) stay untouched -- they report,
+// they don't decide.
 #include "mabur/profile.h"
 #include "mabur/uep_decoder.h"
 #include "op_point.h"
@@ -41,7 +51,9 @@ struct TransitionEdge {
   // (post-FEC) windows are settle-blanked: abandonment books ~80 ms late.
   // The util (pre-FEC) windows read the ArrivalTracker (2026-09-05 spec),
   // which classifies every missing symbol by the watermark at booking
-  // time, so they carry no transition debris and are not blanked.
+  // time, so they carry no transition debris and are not blanked. They
+  // are still blind while the decoder's attribution boundary is open --
+  // an adaptive blank rather than none, see docs/link-adaptation.md.
   bool on_tick(const OpPoint& op, mabur::UepDecoder& dec,
                S1LossWindow& s1_resid_cur, S1LossWindow& s3_resid_cur,
                double now_ms) {

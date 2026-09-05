@@ -295,14 +295,21 @@ cleared at the edge (the base window got its 150 ms `blank_until` on
 late booking of old-rung loss re-fired an `s3_residual` demote the tick
 the 300 ms gate opened, on a 0 ms confirm. Flights 20/21: 13 of 14
 s3_residual cascades double-stepped at exactly 300–310 ms and were
-promoted straight back ~3 s later. Fixed by `gs/src/transition_edge.h`
-(all four decision windows — residual AND pre-FEC util, base and enh —
-settle-blank at every op edge; pinned by `tests/test_transition_edge.cpp`.
-The util windows joined the same day: with only the residual windows
+promoted straight back ~3 s later. Fixed by `gs/src/transition_edge.h`,
+which settle-blanks only the two RESIDUAL decision windows (base and
+enh; pinned by `tests/test_transition_edge.cpp`) at every op edge. The
+util windows (pre-FEC, base and enh) briefly joined the same blank later
+that day (51dd79e), for the same reason: with only the residual windows
 blanked the bench still took an `s3_util` step at +400 ms on stale loss,
 because every demote opens the fade regime and in-regime the util
 confirm is `fade.confirm_ms`, not the 250 ms the "util needs no blank"
-paragraph above assumed); `flightreport.py` prints an
+paragraph above assumed. That util blank was itself reverted the same
+day (2026-09-05) when the two util inputs moved to arrival-time booking
+— see "**Since 2026-09-05 (arrival tracker, ctllog 11)…**" further down
+this file: the ArrivalTracker never books old-rung loss against the new
+rung, so its denominator does not collapse after a re-key and no blank
+is needed there any more; `TransitionEdge` today blanks only the two
+residual windows. `flightreport.py` prints an
 "s3-settle-refire canary" that must read ~0 on any recording after this.
 See `docs/probe-stream-flight-findings-2026-09-05.md` §9. ⚠ SUPERSEDED 2026-08-15 — see
 the pooled-RF note below: `s3_residual_confirm_ms` is REMOVED and FAILS
@@ -592,6 +599,26 @@ criterion fails control-vs-control too; the only repeatable per-step
 difference is a +0.7 pp over-read at eff 10 %. **Not deployed** — the GS
 still runs the completion-booked build; the candidate is staged at
 `/usr/local/bin/maburgs.arrival`, rollback name `maburgs.pre-arrival`.
+
+The open-boundary path is itself an adaptive blank, not an absence of
+one. While `SwDecoder`'s `wm_open_` is true, `arr_stale_end()` returns
+`~0ull`, so every seq the tracker books during that time is stale and
+the current-only side (`arr_expected − arr_expected_stale`) stays flat
+— `s1_loss_cur`/`s3_loss_cur` receive no new entries until the boundary
+closes on the first `kPost` body. Normally that lasts the drone's real
+switch latency (bench: p50 42 ms, p90 65 ms), so the fixed 150 ms blank
+this section describes for residual has effectively been replaced, on
+the util side, by an adaptive blank scoped to the transition's true
+length rather than a fixed guess. Degraded case: if `rx_mcs` is
+`kMcsUnknown` no body ever carries `kPost`, and the boundary stays open
+until `kBoundaryExpiryMs` (1000 ms, `common/src/uep_decoder.cpp`) —
+during which the 500 ms util window empties, `s1_cur_sample.valid` goes
+false and `gs/src/main.cpp` defaults `health.pre_fec_loss` to 0.0
+(promote-permissive), and `link.pre_fec_loss` reads null. The ladder
+reads a clean link (`u` = 0) for as long as this lasts, so
+`clean_start` accrues through it. Watch `link.attrib_close_ms` (the
+boundary close latency gauge) on a flight to see how long the adaptive
+blank actually ran and whether it ever hit the 1 s worst case.
 
 On the drone, RCF drain is decoupled from the agent tick
 (`link.rc_drain_ms`, optional, default 5, bounds 1–1000): the agent loop

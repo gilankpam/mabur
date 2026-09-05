@@ -497,4 +497,32 @@ TEST(arrival_counters_survive_encoder_restart) {
   CHECK(d.arr_arrived() == e0 + 68);
 }
 
+TEST(arrival_open_boundary_books_everything_stale) {
+  // While wm_open_ stays true, arr_stale_end() returns ~0ull (final-review
+  // Finding 3): kPre never closes the boundary (only kPost does), so every
+  // seq the tracker books from mark_transition() onward -- however far the
+  // watermark itself keeps advancing on kPre -- lands on the stale side.
+  // This is the adaptive-blank mechanism: the current-only side
+  // (expected - expected_stale) stays flat for as long as the boundary is
+  // open (docs/link-adaptation.md).
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 120, nullptr);
+  SwDecoder d(cfg, 512);
+  for (size_t i = 0; i < 20; ++i) {
+    if (i == 5) continue;  // lost forever
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  }
+  d.mark_transition();
+  REQUIRE(d.boundary_open());
+  // Tail fed as kPre (NOT kPost): the boundary must never close.
+  for (size_t i = 20; i < 120; ++i)
+    d.add_symbol(envs[i].data(), envs[i].size(), 1001, SwBoundary::kPre);
+  CHECK(d.boundary_open());
+  CHECK(d.arr_expected() == 88);  // newest 119 - guard 32 -> seqs 0..87
+  CHECK(d.arr_expected_stale() == d.arr_expected());
+  CHECK(d.arr_arrived_stale() == d.arr_arrived());
+  CHECK(d.arr_arrived() == 87);  // seq 5 the only miss
+  CHECK(d.arr_expected() - d.arr_expected_stale() == 0);  // current side: flat
+}
+
 MTEST_MAIN

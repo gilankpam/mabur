@@ -143,10 +143,11 @@ Consume the same numbers programmatically with:
   `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
   like `stats.enable` — the bench GS turns it on), one DVR-style indexed
   file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 10` header (v1 before 2026-08-14, v2/v3
+  default `/media/dvr`), a `ctllog 11` header (v1 before 2026-08-14, v2/v3
   that day's two waves, v4 since 2026-08-15 — pooled-RF note in
-  `docs/link-adaptation.md` — … v10 since 2026-09-04, probe stream) followed
-  by compact S/E/P/N/R lines (rung/state, ctl events, probe gate edges,
+  `docs/link-adaptation.md` — … v10 since 2026-09-04, probe stream, v11
+  since 2026-09-05, arrival-booked u/u3) followed by compact S/E/P/N/R
+  lines (rung/state, ctl events, probe gate edges,
   penalties, per-rung EWMA store snapshots). Since ctllog 10 the `S` line
   carries three trailing probe columns (`probe_rung probe_u probe_n`, `-1
   nan 0` when nothing is commanded) and the `P` line is REPURPOSED: it used

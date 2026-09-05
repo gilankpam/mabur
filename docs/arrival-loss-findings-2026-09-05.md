@@ -1,8 +1,8 @@
 # Arrival-time loss booking — bench validation (2026-09-05)
 
 Successor to `docs/switch-loss-findings-2026-09-05.md`. Validates the
-arrival tracker (branch `probe-stream`, HEAD 439b237): the GS util-loss
-inputs (`s1_loss_cur`/`s3_loss_cur`, hence `link.pre_fec_loss` and the
+arrival tracker (branch `probe-stream`, commits d90d86b..089962f): the
+GS util-loss inputs (`s1_loss_cur`/`s3_loss_cur`, hence `link.pre_fec_loss` and the
 ladder's `u`/`u3`) are now booked at arrival time by
 `mabur::ArrivalTracker` instead of read off the FEC completion counters,
 the 150 ms util settle blank is gone (`TransitionEdge` blanks only the two
