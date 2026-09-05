@@ -23,7 +23,8 @@ Inputs (one boot -- the ctl and au indices are DIFFERENT counters, match
 them by mono span; the lat log is not needed and its index is a third
 counter, see docs/observability.md):
   ctl    /media/dvr/ctl-NNNN_<date>.log   (ctllog >= 8 for the ov pairs)
-  aulog  /media/dvr/log/au-NNNN.log       (flightrec '# aulog 2')
+  aulog  /media/dvr/log/au-NNNN.log       (flightrec '# aulog 3', air_ms
+                                          column 12; aulog-2 logs still parse)
 
 Usage: python3 tools/bench/airdrain.py ctl-NNNN_<date>.log au-NNNN.log
          [--from S --to S] [--spike MS] [--profiles] [--model]

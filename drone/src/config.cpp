@@ -453,7 +453,8 @@ void parse_air_clock(const json& j, AirClockCfg& a) {
   assign_if_present(j, "shed_ms", a.shed_ms, "air_clock");
   assign_if_present(j, "efficiency", a.efficiency, "air_clock");
   assign_if_present(j, "body_us", a.body_us, "air_clock");
-  if (a.shed_ms < 0) fail("air_clock.shed_ms", "must be >= 0 (0 = observe only)");
+  if (a.shed_ms < 0 || a.shed_ms > 60000)
+    fail("air_clock.shed_ms", "must be in [0,60000] (0 = observe only)");
   if (a.efficiency <= 0.0 || a.efficiency > 1.0)
     fail("air_clock.efficiency", "must be in (0,1]");
   if (a.body_us < 0) fail("air_clock.body_us", "must be >= 0");

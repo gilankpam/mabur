@@ -43,8 +43,8 @@ Drone → GS (the downlink, ~99 % of airtime):
 
 | what | cadence | size / air (bench, mcs4) | shaped by |
 |---|---|---|---|
-| video bodies, base (sid 0) + enh (sid 1) | one AU per frame, 60 AU/s alternating base/enh at 30 fps each; each AU is one burst | AU ~29–37 kB p50 → 20–27 bodies of 1403 B → 5–7 aggregates of 4 (agg 6 fills 4 on this feed); burst 12.7 ms mean, max 21–28 | encoder bitrate (`run_bitrate_policy`), FEC overhead pair per rung, MCS, `feed_batch` 6 + `ampdu.max_num` 6 |
-| probe stream (sid 5) | one body after every ENH AU, 30/s | 1403 B, own PPDU right behind the burst's last aggregate; lands 0.9 ms p50 / 4 ms p99 after the AU's completion stamp | MCS of rung `current + 1`; ≈1 % of air at mcs4, 2.7 % at mcs1 (`docs/airtime-model.md` §6) |
+| video bodies, base (sid 0) + enh (sid 1) | one AU per frame, 60 AU/s alternating base/enh at 30 fps each; each AU is one burst | AU ~29–37 kB p50 → 20–27 bodies of 1405 B → 5–7 aggregates of 4 (agg 6 fills 4 on this feed); burst 12.7 ms mean, max 21–28 | encoder bitrate (`run_bitrate_policy`), FEC overhead pair per rung, MCS, `feed_batch` 6 + `ampdu.max_num` 6 |
+| probe stream (sid 5) | one body after every ENH AU, 30/s | 1405 B, own PPDU right behind the burst's last aggregate; lands 0.9 ms p50 / 4 ms p99 after the AU's completion stamp | MCS of rung `current + 1`; ≈1 % of air at mcs4, 2.7 % at mcs1 (`docs/airtime-model.md` §6) |
 | MSP OSD (sid 4) | `msp.update_rate_hz` 3, ~5–8 bodies/s | 1343 B | not slotted; shares the chip's hardware seq counter with video (was the phantom-loss source, fixed) |
 | T_TELEM | 1 Hz | ~80 B | not slotted |
 | DISC_ACK / beacons | rendezvous only | small | not slotted |

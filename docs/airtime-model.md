@@ -307,9 +307,9 @@ their variance into jitter. Knobs, in order of proven usefulness:
 ## 6. Probe stream air share (2026-09-04)
 
 The always-on probe stream (`docs/link-adaptation.md` "Probe stream")
-adds one 1403 B body per ENH AU — 30 bodies/s at 30 fps — at the MCS of
+adds one 1405 B body per ENH AU — 30 bodies/s at 30 fps — at the MCS of
 rung `current + link.probe.rung_offset`. Air share = 30 × serialization
-of 1403 B at that MCS: **≈ 1 % at mcs4-5, ≈ 2.7 % at mcs1** (lower MCS
+of 1405 B at that MCS: **≈ 1 % at mcs4-5, ≈ 2.7 % at mcs1** (lower MCS
 serializes a fixed byte count more slowly). It is NOT budgeted by
 `run_bitrate_policy` or the RcAgent airtime estimator — the probe
 changes MCS only, never bitrate (§1's superseded "enh probe" note above

@@ -1068,6 +1068,7 @@ TEST(air_clock_range_checks_name_the_key) {
   struct Case { const char* json; const char* key; };
   const Case cases[] = {
       {R"({"air_clock":{"shed_ms":-1}})", "air_clock.shed_ms"},
+      {R"({"air_clock":{"shed_ms":60001}})", "air_clock.shed_ms"},
       {R"({"air_clock":{"efficiency":0}})", "air_clock.efficiency"},
       {R"({"air_clock":{"efficiency":1.5}})", "air_clock.efficiency"},
       {R"({"air_clock":{"body_us":-5}})", "air_clock.body_us"},

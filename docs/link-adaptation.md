@@ -148,8 +148,10 @@ paragraphs below are marked superseded). RC_VERSION 5 → 6. Spec
 
 **What it is.** The drone appends one extra body — SBI stream id 5
 (`kProbeStreamId`, `common/include/mabur/probe_wire.h`), exactly one
-video-body length (1403 B at the shipped 332/bpb4 geometry,
-`11 + bpb*(2 + kSwHeaderLen + symbol_size)`, derived from the same
+video-body length (1405 B at the shipped 332/bpb4 geometry since SBI
+header ver 2 (`air_ms`, 2026-09-06; was 1403 B on the 11-byte ver-1
+header),
+`13 + bpb*(2 + kSwHeaderLen + symbol_size)`, derived from the same
 `FecCfg` as video and never independently configured) — after every ENH
 access unit, all the time the link is LINKED. It flies at the profile of
 rung `current + link.probe.rung_offset` (default 1), commanded fresh on
@@ -289,6 +291,18 @@ backlog is at/past it, the enh AU is dropped at `FramePipeline` before a
 frame_id exists (no id gap; base and IDR are never dropped; the probe body
 rides only after a shipped enh AU, so it goes too). `shed_ms` 0 — the
 shipped default — is observe-only.
+
+The gate in `frame_pipeline.cpp` runs before `drop_if_shed`, so when the
+congestion shed and the air gate are both active on sid 1 the drop is
+booked in `air_dropped()`, not `UepEncoder::dropped(1)` — maburtop's
+`_shed_cell` shows `CONG` over `AIR` for the same reason. `air_shed_drops`
+therefore equals ausniff's missing-enh count only while CONG is off; with
+CONG also on, some of ausniff's missing enh bodies are attributed to the
+congestion shed instead. The dry-run replay path (`main.cpp`'s
+`run_dry_run` pump) calls `apply_op_to_uep` only, never
+`apply_op_to_clock` — this is intentional, not a gap: dry-run does not
+price the clock, so replayed bodies always carry `air_ms` 0 and the gate
+never closes there.
 
 Ladder-side this is the same contract as the congestion shed: enh
 silence is `NoInfo` to `s3_usable()` and the probe gate, never loss; the

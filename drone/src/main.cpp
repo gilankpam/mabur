@@ -616,6 +616,8 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
     auto op = shared_op.load();
     if (op && op != last_applied_op) {
       apply_op_to_uep(*op, uep);
+      // Dry-run deliberately does not call apply_op_to_clock: the air
+      // clock is not priced here, so replayed bodies carry air_ms 0.
       last_applied_op = op;
     }
   };
@@ -1309,7 +1311,11 @@ int run_real_mode(const Config& cfg) {
           if (cpu_us > split_cpu_max_us) split_cpu_max_us = cpu_us;
         }
         {
-          const uint32_t bl = air_clock.backlog_us(now_steady_us());
+          // Arrival-side backlog: the same quantity the gate and the wire
+          // air_ms use (backlog_us, computed before pipe.encode), not a
+          // fresh post-booking sample -- that would always include this
+          // frame's own just-booked airtime (a rung-2 IDR alone ~23 ms).
+          const uint32_t bl = backlog_us;
           uint32_t prev = air_backlog_max_us.load(std::memory_order_relaxed);
           while (bl > prev &&
                  !air_backlog_max_us.compare_exchange_weak(prev, bl)) {}
