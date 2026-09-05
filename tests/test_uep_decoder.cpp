@@ -459,4 +459,43 @@ TEST(layer_stats_carry_arrival_counters) {
   CHECK(s2.arr_arrived == s1.arr_arrived);
 }
 
+TEST(layer_stats_arr_stale_split_follows_transition) {
+  // Round-2 review finding: layer_stats_carry_arrival_counters never marks
+  // a transition, so a swap of arr_expected_stale <-> arr_arrived_stale in
+  // UepDecoder::stats()'s brace-init passed silently (both stale twins sat
+  // at 0/0 throughout). Pin them to DIFFERENT values via a real transition,
+  // mirroring uep_attrib_same_mcs_transition_plain_fallback's fixture.
+  auto layers = layers_for(64, 1, 8);
+  UepEncoder enc(layers, 15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(42);
+  uint64_t now = 1000;
+  auto feed = [&](int i, bool drop, uint8_t mcs) {
+    auto unit = make_unit(1, static_cast<uint32_t>(i), 300, rng);
+    auto bodies = enc.add_frame(1, unit.data(), unit.size(), now);
+    for (auto& b : bodies)
+      if (!drop) dec.add_body(b.body.data(), b.body.size(), now, mcs);
+    now += 5;
+    for (auto& b : enc.poll(now))
+      if (!drop) dec.add_body(b.body.data(), b.body.size(), now, mcs);
+  };
+  dec.mark_transition(1, 5, now);   // first-ever mark: plain fallback, establishes mcs 5
+  // Frames 37/38 dropped just before the cutover (i=40): close enough to
+  // the boundary that their seqs are still inside the ArrivalTracker guard
+  // window (32) when the boundary closes, so they retroactively book
+  // stale rather than having already settled as plain current-side loss --
+  // same reasoning as uep_attrib_pre_transition_loss_books_stale_and_output_identical's
+  // drop-right-before-the-transition placement.
+  for (int i = 0; i < 40; ++i) feed(i, i == 37 || i == 38, 5);
+  dec.mark_transition(1, 4, now);   // real transition: 5 -> 4, opens the boundary
+  for (int i = 40; i < 100; ++i) feed(i, false, 4);  // 60 clean post-transition frames
+
+  const auto s = dec.stats(1);
+  CHECK(s.arr_expected_stale > 0);
+  CHECK(s.arr_arrived_stale < s.arr_expected_stale);  // 37/38's sources never arrived
+  CHECK(s.arr_expected - s.arr_expected_stale > 0);    // current side booked too
+  // No current-side loss was injected: current-side expected == arrived.
+  CHECK(s.arr_arrived - s.arr_arrived_stale == s.arr_expected - s.arr_expected_stale);
+}
+
 MTEST_MAIN
