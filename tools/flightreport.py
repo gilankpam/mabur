@@ -26,13 +26,16 @@ def is_sentinel(v):
 
 
 def load(path):
+    # Binary read: a power-off mid-write leaves the DVR's tail as garbage
+    # bytes (flight-0023, 2026-09-05), and a text-mode iterator raises
+    # UnicodeDecodeError before json ever sees the line.
     rows = []
-    with open(path) as f:
+    with open(path, "rb") as f:
         for line in f:
             line = line.strip()
             if not line: continue
             try: rows.append(json.loads(line))
-            except ValueError: continue
+            except (ValueError, UnicodeDecodeError): continue
     if not rows: sys.exit("no parseable datagrams")
     return rows
 

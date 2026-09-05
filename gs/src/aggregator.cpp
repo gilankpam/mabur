@@ -192,7 +192,7 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
             std::fprintf(stderr,
                          "gap card=%u seq=%u..%u n=%u dtsf=%u dhost=%llu "
                          "mono=%llu prev_len=%zu len=%zu sid=%d prev_agg=%u "
-                         "after_physt=%d\n",
+                         "after_physt=%d prev_mcs=%u mcs=%u prev_sid=%d\n",
                          static_cast<unsigned>(m.card_id),
                          static_cast<unsigned>(c.gap_prev_seq),
                          static_cast<unsigned>(m.mac_seq),
@@ -202,7 +202,9 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
                          static_cast<unsigned long long>(m.mono_us),
                          c.gap_prev_len, m.body.size(), stream_id,
                          static_cast<unsigned>(c.gap_prev_agg_pos),
-                         m.phy_valid ? 1 : 0);
+                         m.phy_valid ? 1 : 0,
+                         static_cast<unsigned>(c.gap_prev_mcs),
+                         static_cast<unsigned>(m.mcs), c.gap_prev_sid);
           }
           c.last_seq = m.mac_seq;
         }
@@ -220,6 +222,8 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
         c.gap_prev_seq = m.mac_seq;
         c.gap_prev_len = m.body.size();
         c.gap_prev_agg_pos = c.agg_pos;
+        c.gap_prev_mcs = m.mcs;
+        c.gap_prev_sid = stream_id;
       }
     }
 

@@ -67,6 +67,8 @@ struct CardTrack {
   size_t gap_prev_len = 0;
   uint32_t agg_pos = 0;       // frames since the last phy_valid (aggregate-first)
   uint32_t gap_prev_agg_pos = 0;
+  uint8_t gap_prev_mcs = 255;  // RX MCS of the frame before the gap (gaplog)
+  int gap_prev_sid = -1;       // stream id of the frame before the gap (gaplog)
   // Per-RF-class signal tracks (video streams, MSP, ctrl) — pooled EMAs
   // above REMAIN untouched (TxSelector + stderr consume them).
   std::array<ClassTrack, kNumRfClasses> cls{};

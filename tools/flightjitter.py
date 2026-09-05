@@ -282,12 +282,15 @@ def load_au_log(path):
 
 
 def load_jsonl(path):
+    # Binary read: a power-off mid-write leaves the DVR's tail as garbage
+    # bytes (flight-0023, 2026-09-05), and a text-mode iterator raises
+    # UnicodeDecodeError before json ever sees the line.
     out = []
-    with open(path) as f:
+    with open(path, "rb") as f:
         for line in f:
             try:
                 out.append(json.loads(line))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
     return out
 
