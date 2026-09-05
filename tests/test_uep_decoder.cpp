@@ -392,4 +392,16 @@ TEST(uep_attrib_expiry_guard_no_underflow) {
   CHECK(dec.last_boundary_close_ms(1) >= 0.0);
 }
 
+TEST(layer_stats_carry_arrival_counters) {
+  std::array<UepLayerCfg, 2> layers{};
+  for (auto& l : layers) { l.fec = SwConfig{64, 8, 0.0}; l.blocks_per_body = 1; }
+  UepDecoder dec(layers);
+  const auto s = dec.stats(0);
+  CHECK(s.arr_expected == 0);
+  CHECK(s.arr_arrived == 0);
+  CHECK(s.arr_expected_stale == 0);
+  CHECK(s.arr_arrived_stale == 0);
+  CHECK(s.arr_late == 0);
+}
+
 MTEST_MAIN

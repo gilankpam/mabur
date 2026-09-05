@@ -102,7 +102,10 @@ UepDecoder::LayerStats UepDecoder::stats(int sid) const {
                     L.sw.syms_abandoned(), L.sw.packets_out(),
                     L.sw.symbols_in(),     L.sw.symbols_dropped_stale(),
                     L.sw.symbols_dropped_bad_cfg(), L.sw.rows_in_flight(),
-                    L.sw.syms_abandoned_stale()};
+                    L.sw.syms_abandoned_stale(),
+                    L.sw.arr_expected(),   L.sw.arr_arrived(),
+                    L.sw.arr_expected_stale(), L.sw.arr_arrived_stale(),
+                    L.sw.arr_late()};
 }
 
 double UepDecoder::last_boundary_close_ms(int sid) const {

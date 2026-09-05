@@ -91,6 +91,9 @@ class UepDecoder {
     uint64_t symbols_in = 0, symbols_stale = 0, symbols_bad_cfg = 0;
     size_t rows_in_flight = 0;
     uint64_t syms_abandoned_stale = 0;
+    // ArrivalTracker (spec 2026-09-05): arrival-time pre-FEC accounting.
+    uint64_t arr_expected = 0, arr_arrived = 0, arr_expected_stale = 0,
+             arr_arrived_stale = 0, arr_late = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }
