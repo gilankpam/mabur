@@ -57,7 +57,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) | (in.radio_rx_ok ? 0x02 : 0) |
                                   (in.probe_on ? 0x04 : 0) |
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
-                                  (in.congestion_shed ? 0x10 : 0));
+                                  (in.congestion_shed ? 0x10 : 0) |
+                                  (in.air_shed ? 0x20 : 0));
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
   // Per-stream applied overhead: the commanded op pair (Task 6, RC_VERSION
@@ -105,6 +106,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   // garbage percentage would read as a plausible occupancy.
   t.venc_ring_fill_pct =
       saturate<uint8_t>(std::clamp(in.venc_ring_fill_pct, 0, 100));
+  t.air_backlog_max_ms = saturate<uint16_t>(in.air_backlog_max_ms);
+  t.air_shed_drops = saturate<uint16_t>(in.air_shed_drops);
   return t;
 }
 

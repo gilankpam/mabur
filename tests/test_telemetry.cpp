@@ -143,4 +143,31 @@ TEST(venc_ring_stats_clamp_and_round_trip) {
   CHECK(back->venc_ring_fill_pct == 73);
 }
 
+// Air clock (spec 2026-09-06 §4.6): window-max backlog + drop counter ride
+// the wire as saturating u16; flags bit5 = at least one enh AU dropped by
+// the air clock in this telemetry window (distinct from bit0 failsafe and
+// bit4 congestion so the bench can tell the three sheds apart).
+TEST(air_clock_fields_saturate_and_round_trip) {
+  mabur::TelemInputs in;
+  in.air_shed = true;
+  in.air_backlog_max_ms = 70000;
+  in.air_shed_drops = 80000;
+  auto t = mabur::make_telem(1, in);
+  CHECK((t.flags & 0x20) != 0);
+  CHECK(t.air_backlog_max_ms == 65535);
+  CHECK(t.air_shed_drops == 65535);
+
+  in.air_shed = false;
+  in.air_backlog_max_ms = 37;
+  in.air_shed_drops = 12;
+  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
+  CHECK(wire.size() == 87 + 2);   // TELEM_LEN + crc16
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK((back->flags & 0x20) == 0);
+  CHECK(back->air_backlog_max_ms == 37);
+  CHECK(back->air_shed_drops == 12);
+  CHECK(back->venc_ring_fill_pct == 0);   // the field before ours still parses
+}
+
 MTEST_MAIN

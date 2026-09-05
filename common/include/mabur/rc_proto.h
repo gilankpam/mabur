@@ -111,7 +111,8 @@ struct Telem {
                       //      shed_level >= 1: TxQueue pressure / USB failure;
                       //      distinct from bit0 so a bench can count sheds
                       //      and flightreport can attribute an enh gap to
-                      //      congestion rather than RF — 2026-09-03)
+                      //      congestion rather than RF — 2026-09-03),
+                      // bit5 air_shed (AirClock enh admission dropped >= 1 enh AU this window — spec 2026-09-06)
   uint32_t generation = 0;
   uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
   double applied_ov_base = 0.0;
@@ -175,6 +176,11 @@ struct Telem {
   // reader; a *stalled* encoder shows instead as enc_frames not advancing.
   uint16_t venc_full_drops = 0;     // saturating
   uint8_t venc_ring_fill_pct = 0;   // 0..100
+  // Drone air clock (spec 2026-09-06 §4.6): per-telemetry-window max of the
+  // modelled air backlog, and enh AUs dropped by the admission gate since
+  // link-up. Both saturating.
+  uint16_t air_backlog_max_ms = 0;
+  uint16_t air_shed_drops = 0;
 };
 
 std::vector<uint8_t> pack_rcf(const Rcf& r);
