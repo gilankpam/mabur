@@ -8,6 +8,13 @@ Branch in the main checkout instead. Split checkouts drift here — a PR
 merges on GitHub while the main checkout sits behind, and merged work looks
 missing.
 
+**Code review:** do NOT run Claude Code's built-in `/review` /
+`code-review` skill (nor `/code-review ultra`) on mabur work — too
+expensive for diffs that are gated on tests plus an inline read. This
+does NOT cover the superpowers workflows: `subagent-driven-development`'s
+per-task implementer + spec/quality reviewer subagents are wanted and
+should be used when a plan is executed that way.
+
 mabur is an RTP-free FPV video link: `maburd` (drone, OpenIPC/SigmaStar,
 armv7) drives the SigmaStar MI encoder in-process and injects — one daemon,
 no waybeam, since the 2026-08-29 venc fold-in (`drone/venc/`, ported from
