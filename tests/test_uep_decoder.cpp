@@ -402,6 +402,61 @@ TEST(layer_stats_carry_arrival_counters) {
   CHECK(s.arr_expected_stale == 0);
   CHECK(s.arr_arrived_stale == 0);
   CHECK(s.arr_late == 0);
+
+  // The zero-decoder checks above pass whether or not stats()'s brace-init
+  // is transcribed in order (every field compares equal to every other).
+  // Drive a live decoder over the fixture stream -- forced entirely onto
+  // stream 1, mirroring layer_stats_expose_recovered_arrived's routing --
+  // and hold back its 5th stream-1 body. NOT the 1st: SwDecoder anchors its
+  // seq space on the first symbol it ever sees, so holding body #1 back
+  // would put its seqs BEFORE that anchor, invisible to the tracker rather
+  // than genuinely missing (verified empirically: with body #1 held,
+  // arr_arrived tracks arr_expected exactly throughout). Body #5 arrives
+  // after the anchor is already set, so its seqs pass the settle line as
+  // genuinely-missing while the rest of the fixture plays through.
+  UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
+  std::vector<UepBody> bodies;
+  auto frames = fixture_frames();
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
+    for (auto& b : enc.add_frame(1, unit.data(), unit.size(), 0))
+      bodies.push_back(std::move(b));
+  }
+  for (auto& b : enc.flush_all()) bodies.push_back(std::move(b));
+
+  UepDecoder live(vec_layers());
+  std::vector<uint8_t> held;
+  size_t s1_seen = 0;
+  for (auto& b : bodies) {
+    if (b.stream_id == 1) {
+      ++s1_seen;
+      if (held.empty() && s1_seen == 5) { held = b.body; continue; }
+    }
+    live.add_body(b.body.data(), b.body.size(), 0);
+  }
+  REQUIRE(!held.empty());
+
+  // Before the held body arrives: expectation has advanced past it (both
+  // > 0), arrival trails it (held body's symbols are genuinely missing at
+  // the settle line -- distinguishes arr_expected from arr_arrived), no
+  // transition was ever marked (both _stale fields pinned at 0), and
+  // nothing has arrived late yet.
+  const auto s1 = live.stats(1);
+  CHECK(s1.arr_expected > 0);
+  CHECK(s1.arr_arrived > 0);
+  CHECK(s1.arr_arrived < s1.arr_expected);
+  CHECK(s1.arr_expected_stale == 0);
+  CHECK(s1.arr_arrived_stale == 0);
+  CHECK(s1.arr_late == 0);
+
+  // Feed the held body: its seqs are behind the settle line, so they count
+  // late rather than retroactively filling arr_arrived (counters are
+  // monotonic and never rewound -- ArrivalTracker's documented contract).
+  live.add_body(held.data(), held.size(), 0);
+  const auto s2 = live.stats(1);
+  CHECK(s2.arr_late > 0);
+  CHECK(s2.arr_expected == s1.arr_expected);
+  CHECK(s2.arr_arrived == s1.arr_arrived);
 }
 
 MTEST_MAIN
