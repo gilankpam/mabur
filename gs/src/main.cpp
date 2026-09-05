@@ -811,10 +811,11 @@ static int run_radio(const maburgs::Config& cfg) {
     if (frame_wire) fstream.poll(drained_ms);
     if (au_on) au_bell.poll();
 
-    // Transition boundaries for loss attribution + settle-blank of both
-    // instant-demote windows: gs/src/transition_edge.h (extracted 2026-09-05
+    // Transition boundaries for loss attribution + settle-blank of the four
+    // decision windows: gs/src/transition_edge.h (extracted 2026-09-05
     // so tests/test_transition_edge.cpp can pin what an edge blanks).
-    edge.on_tick(vrx.cur_op(), agg.decoder(), s1_resid_cur, s3_resid_cur, now_ms);
+    edge.on_tick(vrx.cur_op(), agg.decoder(), s1_resid_cur, s1_loss_cur,
+                 s3_resid_cur, s3_loss_cur, now_ms);
 
     // Control step: post-FEC residual from the FEC decoder's own abandonment
     // counters — ONE formula for every consumer since 2026-09-02, see

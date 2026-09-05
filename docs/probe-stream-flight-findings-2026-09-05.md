@@ -360,16 +360,40 @@ The debris `s3_residual` re-fire is gone (0 of 7 vs 10 of 10). The
 cascade is NOT single-step yet: an `s3_util` step lands at +400–420 ms
 in every fixed-arm pulse, even with the 150 ms pulse whose loss was
 off ~250 ms before it — the same mechanism on the other s3 input.
-`s3_loss_cur` (pre-FEC, the util path) is not settle-blanked either,
+`s3_loss_cur` (pre-FEC, the util path) was not settle-blanked either,
 every demote opens the fade regime, and in-regime the s3 util confirm
 is `fade.confirm_ms` instead of 250 ms, so the window's pre-demote
 tail clears the amplitude bar the moment the 300 ms gate opens and
 the short confirm fires ~100 ms later. The design note that the util
 path "has no blanking, the 250 ms confirm sits inside the debris
-window" assumed the out-of-regime confirm. Same one-line fix on
-`s3_loss_cur` (and `s1_loss_cur` for the base util path, the flights'
-150 ms residual→util pairs) is the next step; not applied here. The
-flight is still owed. Expected effect: half the
+window" assumed the out-of-regime confirm.
+
+**Util windows blanked too — FIXED, bench-verified, DEPLOYED (same
+day).** `TransitionEdge::on_tick` now blanks all four decision
+windows (`s1_resid_cur`, `s1_loss_cur`, `s3_resid_cur`, `s3_loss_cur`)
+for the 150 ms settle; `tests/test_transition_edge.cpp` fails on
+exactly the four util assertions with the two lines removed; host
+112/112. Note on the rig: `losssim.py` is a fresh Python process per
+command, so the script-driven "150 ms" pulses above were really
+several hundred ms of loss and the 6/6 util second steps were partly
+genuine. Re-run with an in-process UDP pulser (`/root/s3pulser.py`,
+exact 150 ms, monotonic on/off stamps), 6 pulses per arm, 20 s apart,
+ctl-0290/0291/0292:
+
+| arm (exact 150 ms pulses) | demoting pulses | 2nd step `s3_residual` @300 | 2nd step `s3_util` @400 | canary | rungs dropped |
+|---|---|---|---|---|---|
+| pre-fix | 4 | 3 of 3 residual-first | 0 | 3 | 7 |
+| residual blank only | 5 | 0 | 2 of 5 | 0 | 7 |
+| residual + util blank | 5 | 0 | 0 of 5 | 0 | 5 |
+
+With both blanks every demoting pulse is a single step; the first
+demote lands 70–400 ms after the loss stopped (still inside the 500
+ms windows, so a genuine continuing fade at the new rung is still
+seen at the gate's first read). Deployed to the GS as prod `maburgs`
+(md5 b737e9d4; rollback `/usr/local/bin/maburgs.pre-utilblank` = the
+residual-blank-only build), ausniff 59.5 fps / 0 gaps. The flight is
+still owed: canary ~0, and the 150 ms residual→util pairs (base side,
+same blank) should be gone with it. Expected effect: half the
 cascades lose one rung and one IDR, and the lowest rung is what sets
 the drain rate.
 
