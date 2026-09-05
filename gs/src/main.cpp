@@ -806,11 +806,12 @@ static int run_radio(const maburgs::Config& cfg) {
     if (frame_wire) fstream.poll(drained_ms);
     if (au_on) au_bell.poll();
 
-    // Transition boundaries for loss attribution + settle-blank of the four
-    // decision windows: gs/src/transition_edge.h (extracted 2026-09-05
-    // so tests/test_transition_edge.cpp can pin what an edge blanks).
-    edge.on_tick(vrx.cur_op(), agg.decoder(), s1_resid_cur, s1_loss_cur,
-                 s3_resid_cur, s3_loss_cur, now_ms);
+    // Transition boundaries for loss attribution + settle-blank of the two
+    // residual decision windows: gs/src/transition_edge.h (extracted
+    // 2026-09-05 so tests/test_transition_edge.cpp can pin what an edge
+    // blanks). The util windows read the ArrivalTracker below and are no
+    // longer reachable from the edge at all.
+    edge.on_tick(vrx.cur_op(), agg.decoder(), s1_resid_cur, s3_resid_cur, now_ms);
 
     // Control step: post-FEC residual from the FEC decoder's own abandonment
     // counters — ONE formula for every consumer since 2026-09-02, see
@@ -862,13 +863,15 @@ static int run_radio(const maburgs::Config& cfg) {
     // BASE sid's (0) window, the critical always-decode layer that drives
     // the ladder's ordinary demote/promote decisions.
     const auto s1 = agg.decoder().stats(0);
-    s1_loss.add(s1.syms_delivered + s1.syms_recovered + s1.syms_abandoned,
-                s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
+    // Pre-FEC (util) accounting from the ArrivalTracker (spec 2026-09-05):
+    // expected = seq advance past the settle line, arrived = heard, booked
+    // at arrival -- no repair/completion lag, and a denominator that does
+    // not depend on decoder progress after a re-key. The total feeds the
+    // sideport/ctl-log gauge, the current-only side feeds block 5 (util).
+    s1_loss.add(s1.arr_expected, s1.arr_arrived, now_ms);
     const auto s1_sample = s1_loss.sample(now_ms);
-
-    const uint64_t s1_ab_cur = s1.syms_abandoned - s1.syms_abandoned_stale;
-    s1_loss_cur.add(s1.syms_delivered + s1.syms_recovered + s1_ab_cur,
-                    s1.syms_delivered + s1.syms_recovered_arrived, now_ms);
+    s1_loss_cur.add(s1.arr_expected - s1.arr_expected_stale,
+                    s1.arr_arrived - s1.arr_arrived_stale, now_ms);
     const auto s1_cur_sample = s1_loss_cur.sample(now_ms);
 
     // Block 4's instant-demote input: BASE post-FEC loss from the FEC
@@ -884,15 +887,13 @@ static int run_radio(const maburgs::Config& cfg) {
     // budget. s3_* names are historical too: this is the ENH sid's (1)
     // window — the shed-able layer the probe candidate rides.
     const auto s3 = agg.decoder().stats(1);
-    const uint64_t s3_expected =
-        s3.syms_delivered + s3.syms_recovered + s3.syms_abandoned;
-    s3_loss.add(s3_expected, s3.syms_delivered + s3.syms_recovered_arrived, now_ms);
+    s3_loss.add(s3.arr_expected, s3.arr_arrived, now_ms);
     const auto s3_sample = s3_loss.sample(now_ms);
 
     const uint64_t s3_ab_cur = s3.syms_abandoned - s3.syms_abandoned_stale;
     const uint64_t s3_exp_cur = s3.syms_delivered + s3.syms_recovered + s3_ab_cur;
-    s3_loss_cur.add(s3_exp_cur, s3.syms_delivered + s3.syms_recovered_arrived,
-                    now_ms);
+    s3_loss_cur.add(s3.arr_expected - s3.arr_expected_stale,
+                    s3.arr_arrived - s3.arr_arrived_stale, now_ms);
     s3_resid_cur.add(s3_exp_cur, s3_exp_cur - s3_ab_cur, now_ms);
     const auto s3_cur_sample = s3_loss_cur.sample(now_ms);
     const auto s3_rcur_sample = s3_resid_cur.sample(now_ms);

@@ -6,6 +6,8 @@
 // (flights 20/21: 13 of 14 s3_residual cascades double-stepped at exactly
 // 300 ms and were promoted straight back). The dry-run e2e never runs the
 // ladder, so this is the host-side pin for that wiring.
+// The util windows left the edge on 2026-09-05 (arrival tracker): they
+// classify debris at booking time and are never blanked.
 #include "mtest.h"
 #include "transition_edge.h"
 #include "mabur/uep_encoder.h"
@@ -37,37 +39,23 @@ void book_loss(S1LossWindow& w, double t) {
 
 }  // namespace
 
-TEST(mcs_edge_blanks_both_demote_windows) {
+TEST(mcs_edge_blanks_both_residual_windows) {
   auto dec = make_dec();
-  S1LossWindow s1(500), s3(500), u1(500), u3(500);
+  S1LossWindow s1(500), s3(500);
   TransitionEdge edge;
-  CHECK(edge.on_tick(op_at(5), dec, s1, u1, s3, u3, 1000.0));  // first sight arms both
+  CHECK(edge.on_tick(op_at(5), dec, s1, s3, 1000.0));  // first sight arms both
   book_loss(s1, 2000.0);
   book_loss(s3, 2000.0);
   CHECK(s1.sample(2000.0).valid && s1.sample(2000.0).loss > 0.0);
   CHECK(s3.sample(2000.0).valid && s3.sample(2000.0).loss > 0.0);
 
-  book_loss(u1, 2000.0);
-  book_loss(u3, 2000.0);
-
-  // Demote 5 -> 4 at t=2050: the debris must be gone from ALL FOUR decision
-  // inputs at once -- s3 residual was left dirty until 2026-09-05, and the
-  // two util windows until the same day's bench (s3_util re-fired at
-  // +400 ms on every pulse with the loss off, ctl-0287).
-  CHECK(edge.on_tick(op_at(4), dec, s1, u1, s3, u3, 2050.0));
+  // Demote 5 -> 4 at t=2050: both residual inputs cleared at once.
+  CHECK(edge.on_tick(op_at(4), dec, s1, s3, 2050.0));
   CHECK(!s1.sample(2050.0).valid);
   CHECK(!s3.sample(2050.0).valid);
-  CHECK(!u1.sample(2050.0).valid);
-  CHECK(!u3.sample(2050.0).valid);
-  // What the controller's 300 ms s3 gate then reads on the util input:
-  // nothing older than the settle, so a stopped fade cannot re-fire s3_util
-  // on its own tail and the in-regime fade.confirm_ms has nothing to confirm.
-  u3.add(200, 120, 2100.0);
-  CHECK(!u3.sample(2350.0).valid);
 
-  // Horizon-lag booking of old-rung loss inside the settle is swallowed on
-  // both, and after the settle the window is still empty (this is what the
-  // controller's 300 ms s3 gate then reads: nothing, not the old rung).
+  // Horizon-lag booking of old-rung abandonment inside the settle is
+  // swallowed, and after the settle the window is still empty.
   s1.add(200, 120, 2100.0);
   s3.add(200, 120, 2100.0);
   CHECK(!s1.sample(2350.0).valid);
@@ -80,32 +68,41 @@ TEST(mcs_edge_blanks_both_demote_windows) {
   CHECK(fresh.loss > 0.49 && fresh.loss < 0.51);
 }
 
-TEST(overhead_only_step_blanks_base_not_enh) {
-  // An FEC re-key without a PHY change is a sid-0 edge only (same-MCS
-  // fallback on the decoder); the enh layer keeps measuring.
+TEST(util_windows_are_not_the_edges_business) {
+  // Since the arrival tracker (2026-09-05 spec) the util inputs classify
+  // every missing symbol by the watermark at booking time, so they carry
+  // no transition debris to blank and are not passed to the edge at all.
+  // A util window booked with old-rung loss keeps its sample across an
+  // edge; the stale split (SwDecoder::arr_*_stale) is what excludes it.
   auto dec = make_dec();
-  S1LossWindow s1(500), s3(500), u1(500), u3(500);
+  S1LossWindow s1(500), s3(500), u1(500);
   TransitionEdge edge;
-  edge.on_tick(op_at(4, 1.0), dec, s1, u1, s3, u3, 1000.0);
+  edge.on_tick(op_at(5), dec, s1, s3, 1000.0);
+  book_loss(u1, 2000.0);
+  CHECK(edge.on_tick(op_at(4), dec, s1, s3, 2050.0));
+  CHECK(u1.sample(2050.0).valid);
+}
+
+TEST(overhead_only_step_blanks_base_not_enh) {
+  auto dec = make_dec();
+  S1LossWindow s1(500), s3(500);
+  TransitionEdge edge;
+  edge.on_tick(op_at(4, 1.0), dec, s1, s3, 1000.0);
   book_loss(s1, 2000.0);
   book_loss(s3, 2000.0);
-  book_loss(u1, 2000.0);
-  book_loss(u3, 2000.0);
-  CHECK(edge.on_tick(op_at(4, 0.5), dec, s1, u1, s3, u3, 2050.0));
+  CHECK(edge.on_tick(op_at(4, 0.5), dec, s1, s3, 2050.0));
   CHECK(!s1.sample(2050.0).valid);
-  CHECK(!u1.sample(2050.0).valid);
   CHECK(s3.sample(2050.0).valid);
-  CHECK(u3.sample(2050.0).valid);
 }
 
 TEST(no_change_never_blanks) {
   auto dec = make_dec();
-  S1LossWindow s1(500), s3(500), u1(500), u3(500);
+  S1LossWindow s1(500), s3(500);
   TransitionEdge edge;
-  edge.on_tick(op_at(3), dec, s1, u1, s3, u3, 1000.0);
+  edge.on_tick(op_at(3), dec, s1, s3, 1000.0);
   book_loss(s1, 2000.0);
   book_loss(s3, 2000.0);
-  CHECK(!edge.on_tick(op_at(3), dec, s1, u1, s3, u3, 2050.0));  // static pin / steady
+  CHECK(!edge.on_tick(op_at(3), dec, s1, s3, 2050.0));
   CHECK(s1.sample(2050.0).valid);
   CHECK(s3.sample(2050.0).valid);
 }

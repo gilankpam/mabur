@@ -5,8 +5,10 @@
 // host could pin which decision windows get settle-blanked at an edge.
 //
 // On a COMMANDED op change this (1) marks the decoder's per-sid transition
-// watermark and (2) settle-blanks all four decision windows (residual and
-// pre-FEC util, base and enh) -- the base
+// watermark and (2) settle-blanks the two residual decision windows; the
+// util windows stopped being blanked on 2026-09-05 when they moved to the
+// ArrivalTracker (bench ctl-0287's s3_util re-fire was completion-counter
+// debris that the tracker never books against the new rung) -- the base
 // (s1) residual window since 2026-09-02 (flight ctl-0160: one residual
 // event walked the ladder to rung 0 at 50 ms/rung), and the enh (s3)
 // residual window since 2026-09-05 (flights 20/21: 13 of 14 s3_residual
@@ -14,15 +16,8 @@
 // straight back). The controller's s3_blank_until only gates READING for
 // s3_settle_ms; the 500 ms window behind it kept the abandonment-horizon's
 // ~80 ms late booking of old-rung loss, so the tick the gate opened it
-// demoted again on a 0 ms confirm. The util (pre-FEC) windows get the same
-// blank since 2026-09-05 too: bench ctl-0287 showed s3_util re-firing at
-// +400 ms on every pulse with the loss off for 250 ms -- u3 read 0.27 the
-// tick the 300 ms gate opened (the 500 ms s3_loss_cur window still held the
-// pre-demote loss) and the in-regime fade.confirm_ms (every demote opens
-// the regime) confirmed it in ~100 ms. The old "no blank on util, the 250 ms
-// confirm sits inside the debris window" argument only held OUT of the
-// regime. Observability windows (pool_resid*, s1_loss, s3_loss) stay
-// untouched -- they report, they don't decide.
+// demoted again on a 0 ms confirm. Observability windows (pool_resid*,
+// s1_loss, s3_loss) stay untouched -- they report, they don't decide.
 #include "mabur/profile.h"
 #include "mabur/uep_decoder.h"
 #include "op_point.h"
@@ -42,10 +37,13 @@ struct TransitionEdge {
   double last_op_ov = -1.0;
   int last_enh_mcs = -1;
 
-  // Returns true when any edge fired this tick.
+  // Returns true when any edge fired this tick. Only the two RESIDUAL
+  // (post-FEC) windows are settle-blanked: abandonment books ~80 ms late.
+  // The util (pre-FEC) windows read the ArrivalTracker (2026-09-05 spec),
+  // which classifies every missing symbol by the watermark at booking
+  // time, so they carry no transition debris and are not blanked.
   bool on_tick(const OpPoint& op, mabur::UepDecoder& dec,
-               S1LossWindow& s1_resid_cur, S1LossWindow& s1_loss_cur,
-               S1LossWindow& s3_resid_cur, S1LossWindow& s3_loss_cur,
+               S1LossWindow& s1_resid_cur, S1LossWindow& s3_resid_cur,
                double now_ms) {
     bool fired = false;
     // sid 0 (base) mirrors the drone's mcs-1 rule (rc::ladder_from(...)[0]
@@ -59,7 +57,6 @@ struct TransitionEdge {
       dec.mark_transition(0, static_cast<uint8_t>(base_spec.mcs),
                           static_cast<uint64_t>(now_ms));
       s1_resid_cur.blank_until(now_ms + kResidSettleMs);
-      s1_loss_cur.blank_until(now_ms + kResidSettleMs);
       last_op_mcs = op.mcs;
       last_op_ov = op.overhead_base;
       fired = true;
@@ -71,7 +68,6 @@ struct TransitionEdge {
       dec.mark_transition(1, static_cast<uint8_t>(op.mcs),
                           static_cast<uint64_t>(now_ms));
       s3_resid_cur.blank_until(now_ms + kResidSettleMs);
-      s3_loss_cur.blank_until(now_ms + kResidSettleMs);
       last_enh_mcs = op.mcs;
       fired = true;
     }
