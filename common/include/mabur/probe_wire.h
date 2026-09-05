@@ -28,14 +28,14 @@ void pack_hdr(uint8_t out[kProbeHdrLen], const ProbeHdr& h);
 // bad magic. Otherwise, h is filled and returns true.
 bool parse_hdr(const uint8_t* p, size_t len, ProbeHdr* h);
 
-// Computes the full SBI-framed probe body size: 11-byte SBI header plus per-block
+// Computes the full SBI-framed probe body size: 13-byte SBI header plus per-block
 // 2-byte CRC and block_payload bytes.
 size_t probe_body_len(int bpb, int block_payload);
 
 // Builds an SBI-framed probe body with the probe header repeated in every sub-block,
 // and the remaining payload filled deterministically from the header's seq number
 // via splitmix64 pseudo-random fill. The body is routed to stream_id 5 (kProbeStreamId).
-// Layout: 11-byte SBI header, then bpb x [crc16 LE | kProbeHdrLen-byte header + fill].
+// Layout: 13-byte SBI header, then bpb x [crc16 LE | kProbeHdrLen-byte header + fill].
 std::vector<uint8_t> build_probe_body(const ProbeHdr& h, int bpb, int block_payload);
 
 // Receives a parsed probe body. The caller's own per-block CRC scan (sbi_unpack

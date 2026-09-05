@@ -1,21 +1,23 @@
-"""SBI (Sub-Block Integrity) ver 1 packer for test vector generation.
-Override of devourer's fec_subblock for latency-accounting: adds q_ms and enc_us duration fields.
-Ver 0 is hard-rejected (flag-day deploy, no compatibility).
+"""SBI (Sub-Block Integrity) ver 2 packer for test vector generation.
+Override of devourer's fec_subblock for latency-accounting: adds q_ms, enc_us and air_ms duration fields.
+Ver 0 and ver 1 are hard-rejected (flag-day deploy, no compatibility).
 """
 import struct
 from typing import List
 
 SBI_MAGIC = 0xF5B0
-SBI_VER = 1
-SBI_HDR_STRUCT = "<HBBHBHH"  # MAGIC, VER, STREAM_ID, BLOCK_PAYLOAD, N_BLOCKS, Q_MS, ENC_US
-SBI_HDR_LEN = struct.calcsize(SBI_HDR_STRUCT)  # 11 bytes
+SBI_VER = 2
+SBI_HDR_STRUCT = "<HBBHBHHH"  # MAGIC, VER, STREAM_ID, BLOCK_PAYLOAD, N_BLOCKS, Q_MS, ENC_US, AIR_MS
+SBI_HDR_LEN = struct.calcsize(SBI_HDR_STRUCT)  # 13 bytes
 SBI_Q_MS_OFF = 7
 SBI_ENC_US_OFF = 9
+SBI_AIR_MS_OFF = 11
 
 
 class SubBlockPacker:
-    """Ver 1 SBI packer: 11-byte header with q_ms and enc_us latency fields.
-    Replaces devourer's version for test vector generation only."""
+    """Ver 2 SBI packer: 13-byte header with q_ms, enc_us and air_ms.
+    Replaces devourer's version for test vector generation only.
+    """
 
     def __init__(self, block_payload: int, blocks_per_body: int, stream_id: int = 0):
         self.block_payload = block_payload
@@ -51,8 +53,8 @@ class SubBlockPacker:
         """Build one SBI body from a batch of envelopes."""
         out = bytearray()
 
-        # Header: <u16 MAGIC LE, u8 ver, u8 stream_id, u16 block_payload LE, u8 n_blocks, u16 q_ms LE, u16 enc_us LE>
-        # q_ms and enc_us are initialized as zero placeholders.
+        # Header: <u16 MAGIC LE, u8 ver, u8 stream_id, u16 block_payload LE, u8 n_blocks, u16 q_ms LE, u16 enc_us LE, u16 air_ms LE>
+        # q_ms, enc_us and air_ms are initialized as zero placeholders.
         out.extend(
             struct.pack(
                 SBI_HDR_STRUCT,
@@ -63,6 +65,7 @@ class SubBlockPacker:
                 len(batch),
                 0,  # q_ms placeholder
                 0,  # enc_us placeholder
+                0,  # air_ms placeholder
             )
         )
 
@@ -89,8 +92,8 @@ class SubBlockPacker:
 
 
 def unpack(body: bytes, block_payload: int) -> dict:
-    """Unpack an SBI body into surviving sub-blocks (ver 1).
-    Returns: {survivors: list of valid payloads, n_blocks, n_failed, header_ok, stream_id, q_ms, enc_us}
+    """Unpack an SBI body into surviving sub-blocks (ver 2).
+    Returns: {survivors: list of valid payloads, n_blocks, n_failed, header_ok, stream_id, q_ms, enc_us, air_ms}
     """
     result = {
         "survivors": [],
@@ -100,12 +103,13 @@ def unpack(body: bytes, block_payload: int) -> dict:
         "stream_id": 0,
         "q_ms": 0,
         "enc_us": 0,
+        "air_ms": 0,
     }
 
     if block_payload <= 0 or len(body) < SBI_HDR_LEN:
         return result
 
-    magic, ver, stream_id, hdr_bp, n_blocks, q_ms, enc_us = struct.unpack_from(
+    magic, ver, stream_id, hdr_bp, n_blocks, q_ms, enc_us, air_ms = struct.unpack_from(
         SBI_HDR_STRUCT, body
     )
 
@@ -116,6 +120,7 @@ def unpack(body: bytes, block_payload: int) -> dict:
     if result["header_ok"]:
         result["q_ms"] = q_ms
         result["enc_us"] = enc_us
+        result["air_ms"] = air_ms
 
     region = body[SBI_HDR_LEN :]
     stride = 2 + block_payload
@@ -136,10 +141,10 @@ def unpack(body: bytes, block_payload: int) -> dict:
 
 
 def peek_stream_id(body: bytes) -> int:
-    """Peek stream_id from SBI header (ver 1), or -1 on invalid header."""
+    """Peek stream_id from SBI header (ver 2), or -1 on invalid header."""
     if len(body) < SBI_HDR_LEN:
         return -1
-    magic, ver, stream_id, _, _, _, _ = struct.unpack_from(SBI_HDR_STRUCT, body)
+    magic, ver, stream_id, _, _, _, _, _ = struct.unpack_from(SBI_HDR_STRUCT, body)
     if magic != SBI_MAGIC or ver != SBI_VER:
         return -1
     return stream_id

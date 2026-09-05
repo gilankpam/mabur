@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
 import sbi, stream_fec  # noqa: E402
 
 K, SYMBOL = 8, 64
-ENV_SIZE = 11 + SYMBOL
+ENV_SIZE = sbi.SBI_HDR_LEN + SYMBOL
 FRAG_HDR = struct.Struct("<HBB")
 
 src, dst = sys.argv[1], sys.argv[2]

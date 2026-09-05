@@ -11,7 +11,7 @@ static constexpr int kPayload = static_cast<int>(sw::kSwHeaderLen) + 332;  // 34
 TEST(probe_body_is_video_geometry_long) {
   ProbeHdr h{0x01020304, 0x05, 0x0607};
   auto b = build_probe_body(h, kBpb, kPayload);
-  CHECK(b.size() == 1403);
+  CHECK(b.size() == 1405);  // prod geometry: SBI_HDR_LEN(13) + 4*(2+348)
   CHECK(b.size() == probe_body_len(kBpb, kPayload));
   CHECK(sbi_peek_stream_id(b.data(), b.size()) == kProbeStreamId);
 }

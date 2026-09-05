@@ -46,6 +46,7 @@ std::vector<uint8_t> build_probe_body(const ProbeHdr& h, int bpb, int block_payl
   out.push_back(static_cast<uint8_t>(bpb));
   out.push_back(0); out.push_back(0);  // q_ms (patched by the TX thread)
   out.push_back(0); out.push_back(0);  // enc_us (meaningless for a probe)
+  out.push_back(0); out.push_back(0);  // air_ms (0: a probe body is not an AU)
   std::vector<uint8_t> payload(static_cast<size_t>(block_payload));
   uint64_t rng = h.seq;
   for (int i = 0; i < bpb; ++i) {
