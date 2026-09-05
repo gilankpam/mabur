@@ -341,8 +341,10 @@ instant-demote windows (150 ms); `tests/test_transition_edge.cpp` pins
 it (fails on exactly the s3 assertions with the blank removed);
 `flightreport.py` gains an "s3-settle-refire canary" (demote 300–360 ms
 after an s3_residual demote) that reads 9 and 5 on these two flights
-and must read ~0 on the next. Host suite 111/111. Bench loss-sim
-cascade and the flight are still owed. Expected effect: half the
+and must read ~0 on the next. Host suite 111/111. DEPLOYED to the GS
+2026-09-05 (`maburgs` only, no config change; rollback
+`/usr/local/bin/maburgs.pre-s3blank`), ausniff 1800 AUs / 60.0 fps / 0
+gaps, pid stable. Bench loss-sim cascade and the flight are still owed. Expected effect: half the
 cascades lose one rung and one IDR, and the lowest rung is what sets
 the drain rate.
 
