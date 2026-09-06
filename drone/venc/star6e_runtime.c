@@ -171,6 +171,17 @@ static int star6e_runtime_apply_startup_controls(Star6eRunnerContext *ctx)
 				(unsigned)cfg->max_ipprop);
 	}
 
+	/* 0 = leave the firmware I-QP floor. Same staging (g_rc_intent) as
+	 * qp_delta / max_ipprop above, so the three boot writes cannot revert
+	 * each other; the t+10 s rc_readback line proves what the encoder
+	 * holds. */
+	if (cfg->min_iqp > 0) {
+		if (star6e_controls_set_iqp_bound(1, cfg->min_iqp) != 0)
+			fprintf(stderr,
+				"WARN: min_iqp %u not applied\n",
+				(unsigned)cfg->min_iqp);
+	}
+
 	return 0;
 }
 

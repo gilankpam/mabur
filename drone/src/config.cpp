@@ -199,7 +199,7 @@ void parse_encoder(const json& j, EncoderCfg& e) {
 void parse_venc(const json& j, VencSectionCfg& v) {
   check_known_keys(j,
                     {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
-                     "max_ipprop", "superframe_p_pct",
+                     "max_ipprop", "min_iqp", "superframe_p_pct",
                      "intra_refresh_rows", "intra_refresh_qp",
                      "ref_base", "ref_enhance", "ref_pred",
                      "roi", "ae_fps", "awb_fps", "snapshot_quality",
@@ -261,6 +261,13 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "max_ipprop", prop, "venc");
     if (prop < 0 || prop > 100) fail("venc.max_ipprop", "must be in [0,100]");
     v.core.max_ipprop = static_cast<uint8_t>(prop);
+  }
+
+  if (j.contains("min_iqp")) {
+    int q = 0;
+    assign_if_present(j, "min_iqp", q, "venc");
+    if (q < 0 || q > 51) fail("venc.min_iqp", "must be in [0,51]");
+    v.core.min_iqp = static_cast<uint8_t>(q);
   }
 
   if (j.contains("superframe_p_pct")) {
