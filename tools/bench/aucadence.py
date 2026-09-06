@@ -40,9 +40,9 @@ import argparse, json, mmap, statistics, struct, sys, time
 HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
-# SlotHdr v2 (kAuRingVersion 2, 2026-08-30 latency-accounting task 6): meta()
-# below reads t_complete_us (offset 40) as the completion clock (task 13).
-VERSION = 2
+# SlotHdr v3 (kAuRingVersion 3, 2026-09-06 air-clock): +u16 drone_air_ms at
+# slot offset 52 (the drone's modelled air backlog at the AU's arrival, ms).
+VERSION = 3
 FLAG_IDR = 0x01
 
 

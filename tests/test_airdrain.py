@@ -29,10 +29,10 @@ def excess_at(t_ms):
     return 0.0
 
 
-def write_logs(d):
+def write_logs(d, model=True):
     ctl = os.path.join(d, 'ctl-0007_20260905.log')
     au = os.path.join(d, 'log', 'au-0003.log')
-    os.makedirs(os.path.dirname(au))
+    os.makedirs(os.path.dirname(au), exist_ok=True)
     E = [(10000, 0, 1, 'promote_probed'), (13000, 1, 2, 'promote_probed'),
          (16000, 2, 3, 'promote_probed'), (19000, 3, 4, 'promote_probed'),
          (22000, 4, 5, 'promote_probed'),
@@ -50,7 +50,7 @@ def write_logs(d):
                 rung = E[ei][2]; ei += 1
             f.write(f'S {t} {rung} 0.0000 30.0 0.0000 0.0000 0.0000 -20.0 0.0000 0.0 0.0 -50.0 -1 nan 0\n')
     with open(au, 'w') as f:
-        f.write('# aulog 2\n')
+        f.write('# aulog 3\n' if model else '# aulog 2\n')
         fid = 0; t = 5000.0
         while t < 152000.0:
             sid = fid & 1
@@ -60,8 +60,11 @@ def write_logs(d):
             length = 80000 if idr else (30000 if sid == 0 else 20000)
             tf = t + FLOOR_MS + enc / 1000.0 + q + excess_at(t)
             tc = tf + 12.0
-            f.write(f'{int(1.5e15 + t * 1000)} {int(pts * 1000)} {sid} {fid} {length} '
-                    f'{"0x81" if idr else "0x80"} 1 {int(tf * 1000)} {int(tc * 1000)} {enc} {q}\n')
+            line = (f'{int(1.5e15 + t * 1000)} {int(pts * 1000)} {sid} {fid} {length} '
+                    f'{"0x81" if idr else "0x80"} 1 {int(tf * 1000)} {int(tc * 1000)} {enc} {q}')
+            if model:
+                line += f' {int(0.8 * excess_at(t))}'
+            f.write(line + '\n')
             fid += 1; t += PERIOD_MS
     return ctl, au
 
@@ -121,6 +124,27 @@ def main():
         airdrain.print_report(r, ctl, au, profiles=True)
     out = buf.getvalue()
     assert 'cascade summary: peak p50=120' in out, out
+
+    # --model: aulog-3 air_ms column vs measured air + q. The fixture's model
+    # is 0.8x the truth, so the through-origin slope (measured/model) reads
+    # 1/0.8 plus the q=1 ms offset spread over big frames.
+    m = r['model']
+    assert m is not None and m['n'] == r['n_au'], m
+    assert 1.20 <= m['slope'] <= 1.32, m['slope']
+    assert m['quiet_model_p99'] == 0, m['quiet_model_p99']          # no phantom backlog
+    assert len(m['cascades']) == 1
+    t0, pk_model, pk_meas = m['cascades'][0]
+    assert approx(pk_model, 96.0, 2.0) and approx(pk_meas, 121.0, 3.0), m['cascades']
+
+    # aulog-2 (no air_ms column): model comparison is absent, report doesn't throw.
+    d2 = tempfile.mkdtemp()
+    ctl2, au2 = write_logs(d2, model=False)
+    r2 = airdrain.analyze(ctl2, au2)
+    assert r2['model'] is None, r2['model']
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        airdrain.print_report(r2, ctl2, au2, model_flag=True)
+
     print('✓ airdrain test passed!')
 
 

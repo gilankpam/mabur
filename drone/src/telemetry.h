@@ -36,6 +36,7 @@ struct TelemInputs {
   bool radio_rx_ok = false;
   bool probe_on = false;  // RcAgent::probe_on() — flags bit2, spec 2026-09-04 probe-stream
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
+  bool air_shed = false;  // flags bit5: AirClock gate dropped >= 1 enh AU this window
   uint64_t generation = 0;
   rc::PhyMode mode = rc::PhyMode::HT;
   uint8_t mcs = 0, bw = 20;
@@ -71,6 +72,9 @@ struct TelemInputs {
   // isn't compiled in. See rc::Telem for what they mean.
   uint64_t venc_full_drops = 0;
   int venc_ring_fill_pct = 0;
+  // Air clock (spec 2026-09-06): window max backlog (main.cpp atomic,
+  // exchange(0) per tick) and FramePipeline::air_dropped() mirror.
+  uint64_t air_backlog_max_ms = 0, air_shed_drops = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

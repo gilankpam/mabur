@@ -28,10 +28,9 @@ import time
 HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
-# SlotHdr v2 (kAuRingVersion 2, 2026-08-30 latency-accounting task 6): the
-# latency fields (t_first_us/t_complete_us/drone_q_ms/enc_us at slot offsets
-# 32/40/48/50) are parsed by read_slot_meta below (task 13).
-VERSION = 2
+# SlotHdr v3 (kAuRingVersion 3, 2026-09-06 air-clock): +u16 drone_air_ms at
+# slot offset 52 (the drone's modelled air backlog at the AU's arrival, ms).
+VERSION = 3
 STALL_LIMIT = 500
 MAX_AU_LOG_BYTES = 1 << 30  # 1 GiB/session cap; ~17 MB/h means weeks of margin
 
@@ -54,7 +53,7 @@ def read_slot_meta(mm, base, slot_bytes):
     ln, rec, fid, pts, sid, flags, codec = struct.unpack_from(
         "<IQQIBBB", mm, base + 4)
     t_first, t_complete = struct.unpack_from("<QQ", mm, base + 32)
-    dq_ms, enc_us = struct.unpack_from("<HH", mm, base + 48)
+    dq_ms, enc_us, air_ms = struct.unpack_from("<HHH", mm, base + 48)
     if ln > slot_bytes:
         return None
     head = bytes(mm[base + SLOT_HDR:base + SLOT_HDR + min(ln, 6)])
@@ -64,7 +63,7 @@ def read_slot_meta(mm, base, slot_bytes):
     return {"rec": rec, "len": ln, "fid": fid, "pts": pts, "sid": sid,
             "flags": flags, "codec": codec, "nal0": nal0_of(head),
             "t_first": t_first, "t_complete": t_complete,
-            "dq_ms": dq_ms, "enc_us": enc_us}
+            "dq_ms": dq_ms, "enc_us": enc_us, "air_ms": air_ms}
 
 
 def open_ring(path):
@@ -186,7 +185,7 @@ def pick_index(logdir):
 def format_row(t_us, m):
     return (f"{t_us} {m['pts']} {m['sid']} {m['fid']} {m['len']} "
             f"0x{m['flags']:02x} {m['nal0']} {m['t_first']} "
-            f"{m['t_complete']} {m['enc_us']} {m['dq_ms']}")
+            f"{m['t_complete']} {m['enc_us']} {m['dq_ms']} {m['air_ms']}")
 
 
 class AuLog:
@@ -201,9 +200,10 @@ class AuLog:
         self.lock = threading.Lock()
         self.written = 0
         # Every session starts a fresh au-NNNN.log (pick_index), so this is
-        # always the first line: flightjitter.load_au_log keys its v1-vs-v2
-        # row parsing on it (absent marker = pre-2026-08-31 v1 rows).
-        self.write_line("# aulog 2")
+        # always the first line: flightjitter.load_au_log keys its row
+        # parsing on it. v3 (2026-09-06 air-clock) = 12 columns, air_ms
+        # (drone_air_ms) appended after dq_ms.
+        self.write_line("# aulog 3")
 
     def write_line(self, line):
         with self.lock:

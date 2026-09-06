@@ -17,6 +17,7 @@ struct FragArrival {
   uint64_t body_mono_us = 0;  // RX stamp of the completing body (0 = unknown)
   uint16_t q_ms = 0;          // SBI q_ms of that body (0 = unknown)
   uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
+  uint16_t air_ms = 0;        // SBI air_ms of that body (0 = unknown)
 };
 
 struct FrameStreamCfg {
@@ -83,7 +84,7 @@ class FrameStream {
     //    (repair-completed heads carry the completing body's time —
     //    documented approximation, biased small on exactly the frames
     //    repaired at the wall).
-    //  - drone_q_ms / enc_us: latched from the fragment that sets have_hdr
+    //  - drone_q_ms / enc_us / drone_air_ms: latched from the fragment that sets have_hdr
     //    (chunk idx 0, the AU's first data fragment); never overwritten
     //    after that; stays 0 if the frame was force-advanced without its
     //    idx-0 chunk.

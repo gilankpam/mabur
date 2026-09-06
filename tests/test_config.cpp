@@ -91,6 +91,11 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.encoder.roi_qp_low == -24);
   CHECK(cfg.encoder.roi_qp_normal == 0);
 
+  // air_clock: bundle carries the observe-only defaults (spec 2026-09-06).
+  CHECK(cfg.air_clock.shed_ms == 0);
+  CHECK(cfg.air_clock.efficiency == 0.7);
+  CHECK(cfg.air_clock.body_us == 0);
+
   // venc: boot-time encoder pipeline config (Task B5), also bundle-pinned
   // rather than struct-default (struct defaults are all-zero/empty, not a
   // bootable encoder configuration).
@@ -1035,6 +1040,53 @@ TEST(ampdu_rejects_bad_values) {
     CHECK(msg.find("unknown key") != std::string::npos);
     std::filesystem::remove(path);
   }
+}
+
+// air_clock (spec 2026-09-06): shed_ms 0 = observe only; efficiency is the
+// fraction of nominal PHY rate the model treats as capacity; body_us a
+// fixed per-body cost. All three are bench calibration knobs.
+TEST(air_clock_defaults_when_absent) {
+  auto path = write_temp_json(R"({"link":{"tick_ms":100}})");
+  Config c = load_config(path.string());
+  CHECK(c.air_clock.shed_ms == 0);
+  CHECK(c.air_clock.efficiency == 0.7);
+  CHECK(c.air_clock.body_us == 0);
+  std::filesystem::remove(path);
+}
+
+TEST(air_clock_section_parses) {
+  auto path = write_temp_json(
+      R"({"air_clock":{"shed_ms":25,"efficiency":0.65,"body_us":40}})");
+  Config c = load_config(path.string());
+  CHECK(c.air_clock.shed_ms == 25);
+  CHECK(c.air_clock.efficiency == 0.65);
+  CHECK(c.air_clock.body_us == 40);
+  std::filesystem::remove(path);
+}
+
+TEST(air_clock_range_checks_name_the_key) {
+  struct Case { const char* json; const char* key; };
+  const Case cases[] = {
+      {R"({"air_clock":{"shed_ms":-1}})", "air_clock.shed_ms"},
+      {R"({"air_clock":{"shed_ms":60001}})", "air_clock.shed_ms"},
+      {R"({"air_clock":{"efficiency":0}})", "air_clock.efficiency"},
+      {R"({"air_clock":{"efficiency":1.5}})", "air_clock.efficiency"},
+      {R"({"air_clock":{"body_us":-5}})", "air_clock.body_us"},
+  };
+  for (const auto& k : cases) {
+    auto path = write_temp_json(k.json);
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(msg.find(k.key) != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(air_clock_unknown_key_throws) {
+  auto path = write_temp_json(R"({"air_clock":{"window_ms":500}})");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("window_ms") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
 }
 
 MTEST_MAIN

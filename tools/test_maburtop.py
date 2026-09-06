@@ -3,7 +3,7 @@ import unittest
 from maburtop import (
     Model, render_screen, render_rows_compact, hstack,
     panel_topbar, panel_drone, panel_video, panel_links, panel_gs_radios,
-    panel_ladder,
+    panel_ladder, _shed_cell,
     CARD_COLS, RADIO_COLS, GRID_WIDTH,
 )
 
@@ -149,6 +149,28 @@ class DronePanelTest(unittest.TestCase):
         d["drone"] = dict(DGRAM["drone"])
         del d["drone"]["congestion_shed"]
         self.assertIn("shed --", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+
+    def test_shed_cell_air_tier(self):
+        # Air-clock admission gate (2026-09-06): AIR ranks below FS and
+        # CONG, above off; None (recording predates congestion_shed) is
+        # unaffected by air_shed.
+        self.assertEqual(_shed_cell({"failsafe_shed": True,
+                                      "congestion_shed": True,
+                                      "air_shed": True}), "FS")
+        self.assertEqual(_shed_cell({"congestion_shed": True,
+                                      "air_shed": True}), "CONG")
+        self.assertEqual(_shed_cell({"congestion_shed": False,
+                                      "air_shed": True}), "AIR")
+        self.assertEqual(_shed_cell({"congestion_shed": False,
+                                      "air_shed": False}), "off")
+        self.assertIsNone(_shed_cell({}))
+
+    def test_queue_row_shows_air_backlog(self):
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"], air_backlog_max_ms=37)
+        line = next(t for t in texts(panel_drone(_fresh(d), 100.2))
+                    if t.strip().startswith("queue"))
+        self.assertRegex(line, r"air\s+37 ms")
 
     def test_null_telemetry_single_line(self):
         d = dict(DGRAM, drone=None)

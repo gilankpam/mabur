@@ -36,6 +36,7 @@
 #include <sched.h>  // cpu_set_t — see the core-placement policy below
 #endif
 
+#include "air_clock.h"
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -460,6 +461,19 @@ void apply_op_to_uep(const AppliedOp& op, UepEncoder& uep) {
   for (int i = 0; i < 2; ++i) uep.set_shed(i, op.shed[static_cast<size_t>(i)]);
 }
 
+// Re-prices the air clock from a freshly-published AppliedOp (spec
+// 2026-09-06 §2): base/enh bodies at the ladder's per-layer PHY rate, the
+// probe body at the probe profile's rate (0 = probe off -> not booked).
+// Called wherever apply_op_to_uep is, so the clock drops to the new rate
+// the instant a demote RCF lands -- while the encoder is still producing
+// at the old rung's bitrate, which is exactly when the backlog grows.
+void apply_op_to_clock(const AppliedOp& op, const AirClockCfg& c, AirClock& clock) {
+  const double probe_mbps = op.probe_profile != rc::kNoProbeProfile
+                                ? rc::phy_rate_mbps(op.probe) : 0.0;
+  clock.set_rates(rc::phy_rate_mbps(op.ladder[0]), rc::phy_rate_mbps(op.ladder[1]),
+                  probe_mbps, c.efficiency, static_cast<uint32_t>(c.body_us));
+}
+
 // ---------------------------------------------------------------------------
 // Dry-run mode
 // ---------------------------------------------------------------------------
@@ -602,6 +616,8 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
     auto op = shared_op.load();
     if (op && op != last_applied_op) {
       apply_op_to_uep(*op, uep);
+      // Dry-run deliberately does not call apply_op_to_clock: the air
+      // clock is not priced here, so replayed bodies carry air_ms 0.
       last_applied_op = op;
     }
   };
@@ -994,6 +1010,12 @@ int run_real_mode(const Config& cfg) {
   // 1 Hz telemetry read; the agent thread's collector (Task 5) exchanges it
   // back to 0 so each tick reports its own window, not a running max.
   std::atomic<uint32_t> txq_wait_max_ms{0};
+  // Air clock (spec 2026-09-06 §4.3): hot thread CAS-max'es the modelled
+  // backlog after every AU (txq_wait_max_ms pattern; the 1 Hz collector
+  // exchanges it back to 0) and mirrors FramePipeline::air_dropped() the
+  // way enhance_disagree_total mirrors its counter.
+  std::atomic<uint32_t> air_backlog_max_us{0};
+  std::atomic<uint64_t> air_shed_drops_total{0};
   // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
   // frame encoded so far died before the air — re-mark the discontinuity
   // window so the GS gets the re-base signal on frames that can actually
@@ -1095,6 +1117,7 @@ int run_real_mode(const Config& cfg) {
     // is behaviourally identical to the old default "mabur_f".
     FrameSource fsrc(VENC_RING_NAME);
     FramePipeline pipe;
+    AirClock air_clock;   // spec 2026-09-06; priced by apply_op_to_clock
     std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
     uint64_t last_reattach = 0;
     uint64_t last_ring_stats_ms = 0;
@@ -1165,6 +1188,7 @@ int run_real_mode(const Config& cfg) {
       auto op = shared_op.load();
       if (op && op != last_applied_op) {
         apply_op_to_uep(*op, uep);
+        apply_op_to_clock(*op, cfg.air_clock, air_clock);
         last_applied_op = op;
       }
 
@@ -1224,6 +1248,18 @@ int run_real_mode(const Config& cfg) {
         // first sink call — see FramePipeline::encode's sink contract; the
         // SBI header sits outside the FEC envelope, so post-pack patching
         // stays CRC-safe).
+        // Air-clock admission (spec 2026-09-06 §3): read the modelled backlog
+        // at this frame's arrival, stamp it on every body of the AU (the
+        // decision input, so airdrain.py can compare model vs measured per
+        // frame) and close the enh gate while it is at/past shed_ms. 0 =
+        // observe only.
+        const uint64_t t_arr_us = now_steady_us();
+        const uint32_t backlog_us = air_clock.backlog_us(t_arr_us);
+        const uint16_t air_ms = static_cast<uint16_t>(
+            std::min<uint32_t>(backlog_us / 1000u, 65535u));
+        pipe.set_enh_gate_closed(
+            cfg.air_clock.shed_ms > 0 &&
+            backlog_us >= static_cast<uint32_t>(cfg.air_clock.shed_ms) * 1000u);
         bool first = true;
         uint8_t au_sid = 0;
         pipe.encode(uep, fbuf.data(), static_cast<size_t>(n), meta, now,
@@ -1232,12 +1268,16 @@ int run_real_mode(const Config& cfg) {
                       const uint64_t s_us = now_steady_us();
                       mabur::sbi_set_enc_us(b.body.data(), b.body.size(),
                                             pipe.last_enc_us());
+                      mabur::sbi_set_air_ms(b.body.data(), b.body.size(), air_ms);
                       const uint64_t p_us = now_steady_us();
                       b.enqueued_ms = static_cast<uint32_t>(p_us / 1000);
                       b.pushed_us = p_us;
                       b.au_first = first;
                       first = false;
+                      const size_t body_bytes = b.body.size();
+                      const int body_sid = b.stream_id;
                       txq.push(std::move(b));
+                      air_clock.book(p_us, body_bytes, body_sid);
                       split_sink_sum_us += now_steady_us() - s_us;
                     });
         txq.flush();  // release the AU's partial feed_batch group, if any
@@ -1252,6 +1292,7 @@ int run_real_mode(const Config& cfg) {
           const uint64_t p_us = now_steady_us();
           pb.enqueued_ms = static_cast<uint32_t>(p_us / 1000);
           pb.pushed_us = p_us;
+          air_clock.book(p_us, pb.body.size(), AirClock::kProbeSid);
           txq.push(std::move(pb));
           txq.flush();
         }
@@ -1268,6 +1309,17 @@ int run_real_mode(const Config& cfg) {
           if (ring_us > split_ring_max_us) split_ring_max_us = ring_us;
           split_cpu_sum_us += cpu_us;
           if (cpu_us > split_cpu_max_us) split_cpu_max_us = cpu_us;
+        }
+        {
+          // Arrival-side backlog: the same quantity the gate and the wire
+          // air_ms use (backlog_us, computed before pipe.encode), not a
+          // fresh post-booking sample -- that would always include this
+          // frame's own just-booked airtime (a rung-2 IDR alone ~23 ms).
+          const uint32_t bl = backlog_us;
+          uint32_t prev = air_backlog_max_us.load(std::memory_order_relaxed);
+          while (bl > prev &&
+                 !air_backlog_max_us.compare_exchange_weak(prev, bl)) {}
+          air_shed_drops_total.store(pipe.air_dropped(), std::memory_order_relaxed);
         }
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
@@ -1494,6 +1546,7 @@ int run_real_mode(const Config& cfg) {
     // perturb either.
     uint64_t last_telem_ms = start;
     uint64_t rx_beat_at_last_telem = 0;
+    uint64_t air_drops_at_last_telem = 0;
     uint16_t telem_wire_seq = 0;
     uint16_t telem_dot11_seq = 0;
     std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
@@ -1669,6 +1722,11 @@ int run_real_mode(const Config& cfg) {
           ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);
           ti.vanished_enh = vanished_enh_total.load(std::memory_order_relaxed);
           ti.self_idr_refused = self_idr_refused_total.load(std::memory_order_relaxed);
+          ti.air_backlog_max_ms =
+              air_backlog_max_us.exchange(0, std::memory_order_relaxed) / 1000u;
+          ti.air_shed_drops = air_shed_drops_total.load(std::memory_order_relaxed);
+          ti.air_shed = ti.air_shed_drops > air_drops_at_last_telem;
+          air_drops_at_last_telem = ti.air_shed_drops;
 #ifdef MABUR_HAVE_VENC
           // Producer side of the frame ring, straight from the encoder
           // (venc_get_stats is thread-safe and reads the shm header, not a

@@ -23,14 +23,20 @@ Inputs (one boot -- the ctl and au indices are DIFFERENT counters, match
 them by mono span; the lat log is not needed and its index is a third
 counter, see docs/observability.md):
   ctl    /media/dvr/ctl-NNNN_<date>.log   (ctllog >= 8 for the ov pairs)
-  aulog  /media/dvr/log/au-NNNN.log       (flightrec '# aulog 2')
+  aulog  /media/dvr/log/au-NNNN.log       (flightrec '# aulog 3', air_ms
+                                          column 12; aulog-2 logs still parse)
 
 Usage: python3 tools/bench/airdrain.py ctl-NNNN_<date>.log au-NNNN.log
-         [--from S --to S] [--spike MS] [--profiles]
+         [--from S --to S] [--spike MS] [--profiles] [--model]
   --from/--to  analysis window in ctl seconds (default: first E line to the
                first starved E line, else the last S line)
   --spike MS   per-frame excess threshold for the spike-second list (15)
   --profiles   print every cascade's 250 ms bin row (default: summary only)
+  --model      compare the drone's air-clock model (aulog-3 `air_ms`) against
+               the GS-measured air+q per frame -- a through-origin slope,
+               residual percentiles, per-cascade peak pairs, and the quiet
+               floor; prints one line saying so instead if the log predates
+               aulog 3 (docs/data-provenance.md, 2026-09-06 air clock)
 (run from the repo root: imports tools/flightreport.py; tests/test_airdrain.py)
 """
 import argparse, bisect, collections, os, statistics as st, sys
@@ -62,7 +68,8 @@ def load_au(path):
             if len(p) < 11 or int(p[7]) == 0: continue   # t_first 0 = unknown stamp
             rows.append({'tc': int(p[8]) / 1e3, 'tf': int(p[7]) / 1e3, 'pts': int(p[1]) / 1e3,
                          'sid': int(p[2]), 'len': int(p[4]), 'idr': int(p[5], 16) & 1,
-                         'enc': int(p[9]) / 1e3, 'q': int(p[10])})
+                         'enc': int(p[9]) / 1e3, 'q': int(p[10]),
+                         'air_ms': int(p[11]) if len(p) >= 12 else None})
     rows.sort(key=lambda a: a['tf'])
     return rows
 
@@ -80,6 +87,34 @@ def air_excess(rows):
             if adj < base: base = adj
         last_tf = a['tf']; last_pts = a['pts']
         a['air'] = adj - base
+
+
+def model_compare(A, casc):
+    """Drone air-clock model (aulog-3 `air_ms`: the modelled backlog at the
+    AU's arrival on the drone, spec 2026-09-06) vs the GS-measured excess.
+    Compared as air + q: the drone books at TxQueue push, the GS floor is
+    post-pop, so the queue wait sits between the two. Through-origin slope
+    measured/model over frames where either side is >= 5 ms (the leaky
+    floor makes both ~0 elsewhere), residual percentiles, per-cascade peak
+    pairs, and the model's p99 on frames the GS saw as quiet (a phantom
+    backlog would show here). None when the log predates aulog 3."""
+    rows = [a for a in A if a.get('air_ms') is not None]
+    if not rows: return None
+    pairs = [(a['air_ms'], a['air'] + a['q']) for a in rows]
+    big = [(m, x) for m, x in pairs if m >= 5 or x >= 5]
+    smm = sum(m * m for m, _ in big)
+    slope = sum(m * x for m, x in big) / smm if smm else float('nan')
+    resid = [x - m for m, x in big]
+    per_casc = []
+    for c in casc:
+        w = [a for a in rows if c['t0'] <= a['tf'] <= c['t0'] + 3000]
+        if w:
+            per_casc.append((c['t0'], max(a['air_ms'] for a in w),
+                             max(a['air'] + a['q'] for a in w)))
+    quiet = [m for m, x in pairs if x < 5]
+    return {'n': len(rows), 'n_big': len(big), 'slope': slope,
+            'resid_p50': pct(resid, .5), 'resid_p90': pct(resid, .9),
+            'cascades': per_casc, 'quiet_model_p99': pct(quiet, .99)}
 
 
 def analyze(ctl_path, au_path, t0=None, t1=None, spike_ms=15.0):
@@ -167,10 +202,10 @@ def analyze(ctl_path, au_path, t0=None, t1=None, spike_ms=15.0):
     return {'t0': t0, 't1': t1, 'n_au': len(W), 'excess': [a['air'] for a in W],
             'cascades': casc, 'singles': singles, 'promotes': promotes,
             'steady': dict(steady), 'n_secs': len(secs), 'spike_secs': spike_secs,
-            'standalone': standalone}
+            'standalone': standalone, 'model': model_compare(W, casc)}
 
 
-def print_report(r, ctl_path, au_path, profiles=False, spike_ms=15.0):
+def print_report(r, ctl_path, au_path, profiles=False, spike_ms=15.0, model_flag=False):
     ex = r['excess']
     print(f"airdrain: {os.path.basename(ctl_path)} + {os.path.basename(au_path)}, "
           f"window {r['t0']/1000:.0f}-{r['t1']/1000:.0f} s, {r['n_au']} AUs")
@@ -198,6 +233,16 @@ def print_report(r, ctl_path, au_path, profiles=False, spike_ms=15.0):
     print(f"  spike seconds (median excess >= {spike_ms:.0f} ms): {r['spike_secs']} of {r['n_secs']}; "
           f"standalone (no transition within 3 s): {len(r['standalone'])}" +
           (': ' + ' '.join(f"{s}s({m:.0f}/{mx:.0f})" for s, m, mx in r['standalone'][:12]) if r['standalone'] else ''))
+    m = r.get('model')
+    if m:
+        print(f"\n  air-clock model (aulog-3 air_ms) vs measured air+q: n={m['n']} ({m['n_big']} >= 5 ms) | "
+              f"slope measured/model={m['slope']:.2f} (1.00 = calibrated; scale air_clock.efficiency by 1/slope) | "
+              f"residual p50={m['resid_p50']:.1f} p90={m['resid_p90']:.1f} ms | "
+              f"quiet-frame model p99={m['quiet_model_p99']:.0f} ms")
+        for t0, pm, px in m['cascades']:
+            print(f"   t={t0/1000:6.1f}s peak model={pm:4.0f} measured={px:4.0f} ms")
+    elif model_flag:
+        print("\n  --model: no air_ms column (aulog < 3) -- nothing to compare")
 
 
 def main():
@@ -206,9 +251,10 @@ def main():
     ap.add_argument('--from', dest='t0', type=float); ap.add_argument('--to', dest='t1', type=float)
     ap.add_argument('--spike', type=float, default=15.0)
     ap.add_argument('--profiles', action='store_true')
+    ap.add_argument('--model', action='store_true')
     args = ap.parse_args()
     r = analyze(args.ctl, args.aulog, args.t0, args.t1, args.spike)
-    print_report(r, args.ctl, args.aulog, args.profiles, args.spike)
+    print_report(r, args.ctl, args.aulog, args.profiles, args.spike, args.model)
 
 
 if __name__ == '__main__':

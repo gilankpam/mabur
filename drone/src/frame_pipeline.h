@@ -58,6 +58,17 @@ class FramePipeline {
     self_idr_pending_ = false;
   }
 
+  // Air-clock enh admission (spec 2026-09-06 §3). While closed, a frame
+  // that resolves to sid 1 (enh) is dropped BEFORE frame_id allocation --
+  // the drop_if_shed contract: no id gap reaches the GS FrameStream,
+  // last_enc_us is not latched, the discont latch stays pending. Base and
+  // IDR frames are never gated. Set by the hot thread before each encode
+  // from AirClock::backlog_us vs air_clock.shed_ms; booked in
+  // air_dropped(), deliberately NOT in UepEncoder::dropped(1) so the
+  // congestion/failsafe shed counter keeps its meaning.
+  void set_enh_gate_closed(bool closed) { enh_gate_closed_ = closed; }
+  uint64_t air_dropped() const { return air_dropped_; }
+
   // Frames whose Annex-B scan disagreed with the producer's IDR flag. A bug
   // signal (producer vs. scanner), surfaced in maburd's stats line — never a
   // silent choice.
@@ -123,6 +134,8 @@ class FramePipeline {
   uint64_t idr_disagree_ = 0;
   uint64_t enhance_disagree_ = 0;
   uint16_t last_enc_us_ = 0;
+  bool enh_gate_closed_ = false;
+  uint64_t air_dropped_ = 0;
 
   // Vanish tracker state (see accessors above). The period is an EMA over
   // "normal" deltas only — never hardcoded, so any encoder frame rate works —

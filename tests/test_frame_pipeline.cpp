@@ -239,6 +239,62 @@ TEST(frame_pipeline_shed_frames_consume_no_frame_id) {
   CHECK((h->flags & framewire::kFlagDiscont) != 0);
 }
 
+// Air-clock enh admission (spec 2026-09-06 §3): with the gate closed a
+// frame that resolves to sid 1 is dropped BEFORE frame_id allocation (no id
+// gap on the GS), booked in air_dropped() -- NOT in the encoder's shed
+// counter -- and leaves last_enc_us alone. Base, IDR and a protected-up
+// (enhance-disagree) frame ship regardless: the demote IDR is the frame
+// that must land.
+TEST(frame_pipeline_air_gate_drops_enh_only_and_before_id) {
+  UepEncoder enc(layers(), 15);
+  FramePipeline pipe;
+  pipe.set_enh_gate_closed(true);
+
+  auto m1 = meta_flags(1000, VENC_FRAME_FLAG_ENHANCE);
+  m1.enc_us = 777;
+  auto b1 = ring_buf(0, 0, 900);   // TRAIL_N + ENHANCE flag -> sid 1
+  auto out1 = pipe.encode(enc, b1.data(), payload_len(b1), m1, 1);
+  CHECK(out1.empty());
+  CHECK(pipe.next_frame_id() == 0);
+  CHECK(pipe.air_dropped() == 1);
+  CHECK(enc.dropped(1) == 0);          // not the congestion/failsafe shed
+  CHECK(pipe.last_enc_us() == 0);      // not latched for a dropped frame
+
+  auto m2 = meta_flags(2000, 0);
+  m2.enc_us = 888;
+  auto b2 = ring_buf(1, 0, 900);       // TRAIL_R base
+  auto out2 = pipe.encode(enc, b2.data(), payload_len(b2), m2, 2);
+  REQUIRE(!out2.empty());
+  CHECK(pipe.next_frame_id() == 1);
+  CHECK(pipe.last_enc_us() == 888);
+  auto h = framewire::parse_frame_hdr(b2.data(), b2.size());
+  REQUIRE(h.has_value());
+  CHECK(h->frame_id == 0);
+  CHECK((h->flags & framewire::kFlagDiscont) != 0);   // window anchors on a shipped frame
+
+  auto b3 = ring_buf(19, 0, 2000);     // IDR_W_RADL
+  auto out3 = pipe.encode(enc, b3.data(), payload_len(b3), meta_of(3000, true), 3);
+  REQUIRE(!out3.empty());
+  CHECK(out3[0].stream_id == 0);
+  CHECK(pipe.next_frame_id() == 2);
+
+  // TRAIL_N scan but no ENHANCE flag: protected up to sid 0 -> ships.
+  auto b4 = ring_buf(0, 0, 900);
+  auto out4 = pipe.encode(enc, b4.data(), payload_len(b4), meta_flags(4000, 0), 4);
+  REQUIRE(!out4.empty());
+  CHECK(pipe.enhance_disagreements() == 1);
+  CHECK(pipe.air_dropped() == 1);
+
+  pipe.set_enh_gate_closed(false);
+  auto b5 = ring_buf(0, 0, 900);
+  auto out5 = pipe.encode(enc, b5.data(), payload_len(b5),
+                          meta_flags(5000, VENC_FRAME_FLAG_ENHANCE), 5);
+  REQUIRE(!out5.empty());
+  CHECK(out5[0].stream_id == 1);
+  CHECK(pipe.next_frame_id() == 4);
+  CHECK(pipe.air_dropped() == 1);
+}
+
 // ── venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md)
 //
 // Encoded frames can vanish between waybeam's encoder and maburd's ring read

@@ -50,10 +50,11 @@ namespace maburgs {
 //                              the caller passed 0
 //   48 u16 drone_q_ms        — from SBI q_ms via the AU's first fragment
 //   50 u16 enc_us            — from SBI enc_us, same latch
-// (52..63 unused padding; SlotHdr stays 64 B)
+//   52 u16 drone_air_ms      — from SBI air_ms, same latch (SlotHdr v3, 2026-09-06)
+// (54..63 unused padding; SlotHdr stays 64 B)
 // followed by slot_bytes of Annex-B AU payload.
 inline constexpr uint32_t kAuRingMagic = 0x4D425541;  // "AUBM" LE
-inline constexpr uint32_t kAuRingVersion = 2;
+inline constexpr uint32_t kAuRingVersion = 3;
 inline constexpr size_t kAuRingHdrBytes = 4096;
 inline constexpr size_t kAuSlotHdrBytes = 64;
 // ORed into the record flags byte next to framewire kFlagIdr/kFlagDiscont.
@@ -79,6 +80,7 @@ struct AuRecordMeta {
   uint64_t t_complete_us = 0;
   uint16_t drone_q_ms = 0;
   uint16_t enc_us = 0;
+  uint16_t drone_air_ms = 0;
 };
 
 // GS-side per-AU latency stamps (SlotHdr v2). Passed to finish() so the
@@ -96,6 +98,7 @@ struct AuLatMeta {
   uint64_t t_last_arr_us = 0;
   uint16_t drone_q_ms = 0;    // from SBI q_ms via the AU's first fragment
   uint16_t enc_us = 0;        // from SBI enc_us, same latch
+  uint16_t drone_air_ms = 0;  // from SBI air_ms, same latch as drone_q_ms
 };
 
 // Creates/truncates the ring file and publishes AUs accumulated between

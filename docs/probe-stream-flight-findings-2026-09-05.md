@@ -399,6 +399,12 @@ the drain rate.
 
 ### Follow-up: drain shed — shed the enh layer for the drain window after a demote
 
+> ⚠ 2026-09-06: NOT built as written. Superseded by the per-frame air
+> clock (`docs/link-adaptation.md` "Drone air clock"; spec
+> `docs/superpowers/specs/2026-09-06-air-clock-enh-shed-design.md`): the
+> fixed window became a modelled backlog, the layer flag became per-AU
+> admission. The measurements and the "not this" list below still stand.
+
 The spike is a drain of bytes produced at the OLD rung's rate into the
 NEW rung's airtime (§9, point 2): the encoder's CBR needs ~400 ms p50
 (max 0.6–2 s) to get within 1.25× the new command, and during that

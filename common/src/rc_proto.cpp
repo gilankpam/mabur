@@ -55,7 +55,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 15;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 83;  // 2026-09-03: +roi_qp (i8), -qp (u8, never filled) => net 83
+constexpr size_t TELEM_LEN = 87;  // 2026-09-06: +air_backlog_max_ms, +air_shed_drops (u16 each)
 
 }  // namespace
 
@@ -214,6 +214,8 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put16(body, t.self_idr_refused);
   put16(body, t.venc_full_drops);
   body.push_back(t.venc_ring_fill_pct);
+  put16(body, t.air_backlog_max_ms);
+  put16(body, t.air_shed_drops);
 
   put_crc(body);
   return body;
@@ -267,6 +269,8 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.self_idr_refused = get16(buf, 78);
   t.venc_full_drops = get16(buf, 80);
   t.venc_ring_fill_pct = buf[82];
+  t.air_backlog_max_ms = get16(buf, 83);
+  t.air_shed_drops = get16(buf, 85);
   return t;
 }
 

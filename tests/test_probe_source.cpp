@@ -10,7 +10,7 @@ TEST(probe_source_builds_sequential_bodies) {
   UepBody a = src.build(0x06, 17);
   UepBody b = src.build(0x06, 18);
   CHECK(a.stream_id == kProbeStreamId);
-  CHECK(a.body.size() == 1403);
+  CHECK(a.body.size() == 1405);  // prod geometry: SBI_HDR_LEN(13) + 4*(2+348)
   CHECK(!a.au_first);
   probe::ProbeRx ra, rb;
   REQUIRE(probe::parse_probe_body(a.body.data(), a.body.size(), static_cast<int>(sw::kSwHeaderLen) + 332, &ra));

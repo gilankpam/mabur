@@ -154,6 +154,19 @@ struct AmpduCfg {
                       // default (0x70 ~= 3 ms — too slow, but valid for A/B)
 };
 
+// Drone air clock (spec 2026-09-06 air-clock): per-frame virtual
+// air-serialization model + enh admission. shed_ms 0 = observe only (the
+// model runs and exports, nothing is dropped); > 0 drops an enh AU whose
+// arrival finds the modelled backlog at or past shed_ms. efficiency is the
+// fraction of nominal PHY rate treated as capacity; body_us a fixed
+// per-body cost. Both are calibrated on the bench (Stage A of the spec),
+// not derived.
+struct AirClockCfg {
+  int shed_ms = 0;
+  double efficiency = 0.7;
+  int body_us = 0;
+};
+
 struct Config {
   RadioCfg radio;
   FecCfg fec;
@@ -162,6 +175,7 @@ struct Config {
   LinkCfg link;
   MspCfg msp;
   AmpduCfg ampdu;
+  AirClockCfg air_clock;
   std::array<UepLayerCfg, 2> uep_layers() const;
 };
 

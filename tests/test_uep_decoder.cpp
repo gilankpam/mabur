@@ -167,6 +167,7 @@ TEST(decoded_frag_carries_body_time_and_sbi_durations) {
   auto& b = bodies.front();
   sbi_set_q_ms(b.body.data(), b.body.size(), 33);
   sbi_set_enc_us(b.body.data(), b.body.size(), 44);
+  sbi_set_air_ms(b.body.data(), b.body.size(), 55);
 
   UepDecoder dec(vec_layers());
   auto frags = dec.add_body(b.body.data(), b.body.size(), /*now_ms=*/0,
@@ -176,6 +177,7 @@ TEST(decoded_frag_carries_body_time_and_sbi_durations) {
     CHECK(f.body_mono_us == 424242);
     CHECK(f.q_ms == 33);
     CHECK(f.enc_us == 44);
+    CHECK(f.air_ms == 55);
   }
 }
 
@@ -189,6 +191,7 @@ TEST(fcs_corrupt_body_zeroes_wire_durations) {
   auto& b = bodies.front();
   sbi_set_q_ms(b.body.data(), b.body.size(), 33);
   sbi_set_enc_us(b.body.data(), b.body.size(), 44);
+  sbi_set_air_ms(b.body.data(), b.body.size(), 55);
 
   UepDecoder dec(vec_layers());
   auto frags = dec.add_body(b.body.data(), b.body.size(), /*now_ms=*/0,
@@ -199,6 +202,7 @@ TEST(fcs_corrupt_body_zeroes_wire_durations) {
     CHECK(f.body_mono_us == 424242);
     CHECK(f.q_ms == 0);
     CHECK(f.enc_us == 0);
+    CHECK(f.air_ms == 0);
   }
 }
 

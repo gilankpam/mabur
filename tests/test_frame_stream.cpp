@@ -307,15 +307,16 @@ TEST(lat_t_first_is_min_body_time_q_enc_latched_from_idx0) {
   // idx1 arrives FIRST with a LARGER body time (would wrongly latch as
   // t_first under a "first write wins"/no-min bug); idx0 arrives SECOND
   // with a SMALLER body time plus the q/enc payload that only idx0 carries.
-  fs.push_fragment(1, frags[1].data(), frags[1].size(), 10, {2000, 0, 0});
+  fs.push_fragment(1, frags[1].data(), frags[1].size(), 10, {2000, 0, 0, 99});
   REQUIRE(cap.evs.empty());  // idx0 (the header) hasn't arrived yet
-  fs.push_fragment(1, frags[0].data(), frags[0].size(), 11, {1000, 5, 6});
+  fs.push_fragment(1, frags[0].data(), frags[0].size(), 11, {1000, 5, 6, 12});
   REQUIRE(cap.evs.size() == 2);  // B E: frame completes once both chunks are in
   CHECK(cap.evs[1].kind == 'E');
   CHECK(cap.evs[1].complete);
   CHECK(cap.evs[1].lat.t_first_us == 1000);  // min(2000, 1000), not last-write
   CHECK(cap.evs[1].lat.drone_q_ms == 5);
   CHECK(cap.evs[1].lat.enc_us == 6);
+  CHECK(cap.evs[1].lat.drone_air_ms == 12);
   CHECK(cap.evs[1].lat.t_complete_us == 0);  // ring writer stamps this, not us
 }
 

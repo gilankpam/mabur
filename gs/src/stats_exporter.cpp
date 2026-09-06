@@ -524,6 +524,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // shed enh layer is silence to the ladder, so this bit is the only way
     // to tell a congestion-caused enh gap from an RF one.
     d["congestion_shed"] = (t.flags & 0x10) != 0;
+    // Air clock (spec 2026-09-06): per-window max of the drone's modelled
+    // air backlog, enh AUs its admission gate dropped, and whether it
+    // dropped any this window (flags bit5). Third shed tier for maburtop.
+    d["air_shed"] = (t.flags & 0x20) != 0;
+    d["air_backlog_max_ms"] = t.air_backlog_max_ms;
+    d["air_shed_drops"] = t.air_shed_drops;
     d["applied"] = {{"mcs", mcs},
                     {"bw", bw},
                     {"vht", mode == mabur::rc::PhyMode::VHT},

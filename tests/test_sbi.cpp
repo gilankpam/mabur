@@ -104,7 +104,7 @@ TEST(sbi_wrong_length_add_returns_empty) {
   CHECK(out.empty());
 }
 
-TEST(sbi_ver1_header_and_patch) {
+TEST(sbi_ver2_header_and_patch) {
   mabur::SbiPacker p(8, 2, 0);
   std::vector<std::vector<uint8_t>> bodies;
   const uint8_t env[8] = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -112,29 +112,35 @@ TEST(sbi_ver1_header_and_patch) {
     for (auto& b : p.add(env, sizeof(env))) bodies.push_back(std::move(b));
   CHECK(bodies.size() == 1);
   auto& b = bodies[0];
+  CHECK(mabur::SBI_HDR_LEN == 13);
   CHECK(b.size() == static_cast<size_t>(mabur::SBI_HDR_LEN + 2 * (2 + 8)));
-  CHECK(b[2] == mabur::SBI_VER);          // ver byte is 1 now
+  CHECK(b[2] == mabur::SBI_VER && mabur::SBI_VER == 2);
   CHECK(b[7] == 0 && b[8] == 0);          // q_ms placeholder zeroed
   CHECK(b[9] == 0 && b[10] == 0);         // enc_us placeholder zeroed
+  CHECK(b[11] == 0 && b[12] == 0);        // air_ms placeholder zeroed (ver 2)
   mabur::sbi_set_q_ms(b.data(), b.size(), 0x1234);
   mabur::sbi_set_enc_us(b.data(), b.size(), 0xBEEF);
+  mabur::sbi_set_air_ms(b.data(), b.size(), 0x0A0B);
   auto r = mabur::sbi_unpack(b.data(), b.size(), 8);
   CHECK(r.header_ok);
   CHECK(r.q_ms == 0x1234);
   CHECK(r.enc_us == 0xBEEF);
+  CHECK(r.air_ms == 0x0A0B);
   CHECK(static_cast<int>(r.survivors.size()) == 2);  // patch broke no CRC
   CHECK(mabur::sbi_peek_stream_id(b.data(), b.size()) == 0);
 }
 
-TEST(sbi_ver0_rejected) {
+TEST(sbi_stale_versions_rejected) {
   mabur::SbiPacker p(8, 1, 3);
   const uint8_t env[8] = {9, 9, 9, 9, 9, 9, 9, 9};
   auto bodies = p.add(env, sizeof(env));
   CHECK(bodies.size() == 1);
-  auto b = bodies[0];
-  b[2] = 0;  // forge a ver-0 header
-  CHECK(!mabur::sbi_unpack(b.data(), b.size(), 8).header_ok);
-  CHECK(mabur::sbi_peek_stream_id(b.data(), b.size()) == -1);
+  for (uint8_t stale : {uint8_t{0}, uint8_t{1}}) {
+    auto b = bodies[0];
+    b[2] = stale;  // forge a ver-0 (7-byte) / ver-1 (11-byte) header
+    CHECK(!mabur::sbi_unpack(b.data(), b.size(), 8).header_ok);
+    CHECK(mabur::sbi_peek_stream_id(b.data(), b.size()) == -1);
+  }
 }
 
 TEST(sbi_q_ms_saturates) {

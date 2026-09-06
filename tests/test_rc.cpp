@@ -298,7 +298,7 @@ TEST(telem_round_trip_and_golden) {
   const std::string GOLDEN =
       "43520604030201020706050405191e2d0034127766554433221100a0860100400d0"
       "300e09304002823e80100034007000000d204801a0600090000000200333415163d"
-      "034800040005000700080009000a003ef0f0";
+      "034800040005000700080009000a003e000000001f7c";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();

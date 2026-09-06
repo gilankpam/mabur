@@ -48,6 +48,7 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
     s.have_hdr = true;
     s.lat.drone_q_ms = arr.q_ms;
     s.lat.enc_us = arr.enc_us;
+    s.lat.drone_air_ms = arr.air_ms;
     s.hdr = *h;
     bool rebased = false;
     s.id64 = unwrap_id(h->frame_id, h->flags, &rebased);

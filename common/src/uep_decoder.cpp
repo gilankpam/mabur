@@ -69,7 +69,8 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
       // may vouch for them (0 = unknown downstream, header comment).
       out.push_back(DecodedFrag{static_cast<uint8_t>(sid), pkt, body_mono_us,
                                 body_crc_ok ? r.q_ms : static_cast<uint16_t>(0),
-                                body_crc_ok ? r.enc_us : static_cast<uint16_t>(0)});
+                                body_crc_ok ? r.enc_us : static_cast<uint16_t>(0),
+                                body_crc_ok ? r.air_ms : static_cast<uint16_t>(0)});
     }
   }
   return out;

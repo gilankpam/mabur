@@ -60,5 +60,10 @@
     "symbol_size": 1312,
     "window": 16,
     "overhead": 1.0
+  },
+  "air_clock": {
+    "shed_ms": 0,
+    "efficiency": 0.7,
+    "body_us": 0
   }
 }

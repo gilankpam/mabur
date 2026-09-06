@@ -22,6 +22,7 @@ struct DecodedFrag {
                               // approximation). 0 = unknown (tests).
   uint16_t q_ms = 0;          // SBI q_ms of that body (0 = unknown)
   uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
+  uint16_t air_ms = 0;        // SBI air_ms of that body (0 = unknown)
 };
 
 // Receiver mirror of UepEncoder: route a body by its SBI stream_id to that

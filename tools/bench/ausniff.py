@@ -16,10 +16,10 @@ import argparse, json, mmap, struct, sys, time
 HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
-# SlotHdr v2 (kAuRingVersion 2, 2026-08-30 latency-accounting task 6): the
-# latency fields (t_first_us/t_complete_us/drone_q_ms/enc_us at slot offsets
-# 32/40/48/50) are parsed by read_slot below (task 13's full mirror update).
-VERSION = 2
+# SlotHdr v3 (kAuRingVersion 3, 2026-09-06 air-clock): +u16 drone_air_ms at
+# slot offset 52 (the drone's modelled air backlog at the AU's arrival, ms);
+# parsed by read_slot below.
+VERSION = 3
 FLAG_IDR, FLAG_DISCONT, FLAG_COMPLETE = 0x01, 0x02, 0x80
 
 
@@ -31,7 +31,7 @@ def read_slot(mm, base, slot_bytes):
     ln, rec, fid, pts, sid, flags, codec = struct.unpack_from(
         "<IQQIBBB", mm, base + 4)
     t_first, t_complete = struct.unpack_from("<QQ", mm, base + 32)
-    dq_ms, enc_us = struct.unpack_from("<HH", mm, base + 48)
+    dq_ms, enc_us, air_ms = struct.unpack_from("<HHH", mm, base + 48)
     if ln > slot_bytes:
         return None
     payload = bytes(mm[base + SLOT_HDR:base + SLOT_HDR + ln])
@@ -41,7 +41,7 @@ def read_slot(mm, base, slot_bytes):
     return {"rec": rec, "len": ln, "fid": fid, "pts": pts, "sid": sid,
             "flags": flags, "codec": codec, "payload": payload,
             "t_first": t_first, "t_complete": t_complete,
-            "dq_ms": dq_ms, "enc_us": enc_us}
+            "dq_ms": dq_ms, "enc_us": enc_us, "air_ms": air_ms}
 
 
 def open_ring(path, exit_on_fail=True):

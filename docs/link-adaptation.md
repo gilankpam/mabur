@@ -148,8 +148,10 @@ paragraphs below are marked superseded). RC_VERSION 5 → 6. Spec
 
 **What it is.** The drone appends one extra body — SBI stream id 5
 (`kProbeStreamId`, `common/include/mabur/probe_wire.h`), exactly one
-video-body length (1403 B at the shipped 332/bpb4 geometry,
-`11 + bpb*(2 + kSwHeaderLen + symbol_size)`, derived from the same
+video-body length (1405 B at the shipped 332/bpb4 geometry since SBI
+header ver 2 (`air_ms`, 2026-09-06; was 1403 B on the 11-byte ver-1
+header),
+`13 + bpb*(2 + kSwHeaderLen + symbol_size)`, derived from the same
 `FecCfg` as video and never independently configured) — after every ENH
 access unit, all the time the link is LINKED. It flies at the profile of
 rung `current + link.probe.rung_offset` (default 1), commanded fresh on
@@ -270,6 +272,64 @@ counter: by the time it moves the damage is done, and at 1 Hz it would
 reach the GS after the cascade anyway. The remaining half of the problem
 — why the encoder overshoots its command by up to 40 % — is a venc
 rate-control question, not a ladder one.
+
+## Drone air clock (2026-09-06)
+
+The post-demote latency spike (`docs/probe-stream-flight-findings-2026-09-05.md`
+§9) is a drain: 2–3 IDRs plus the encoder still producing the OLD rung's
+bitrate for ~0.4–1 s after the RCF dropped the MCS, served at the new,
+lower rate. The backlog sits past the TxQueue pop, where the congestion
+shed above cannot see it. The drone now models it directly
+(`drone/src/air_clock.h`, spec `2026-09-06-air-clock-enh-shed-design.md`):
+every body pushed to the TxQueue books `bytes × 8 / (phy_rate(layer) ×
+air_clock.efficiency) + air_clock.body_us` on a virtual air clock, priced
+at the APPLIED op's per-layer rate (re-priced on every AppliedOp, so the
+clock drops to the new rate the instant a demote lands), leaky at zero.
+`backlog = free_at − now` is read at every frame's arrival, stamped on the
+AU's bodies (SBI `air_ms`) and, when `air_clock.shed_ms` > 0 and the
+backlog is at/past it, the enh AU is dropped at `FramePipeline` before a
+frame_id exists (no id gap; base and IDR are never dropped; the probe body
+rides only after a shipped enh AU, so it goes too). `shed_ms` 0 — the
+shipped default — is observe-only.
+
+The gate in `frame_pipeline.cpp` runs before `drop_if_shed`, so when the
+congestion shed and the air gate are both active on sid 1 the drop is
+booked in `air_dropped()`, not `UepEncoder::dropped(1)` — maburtop's
+`_shed_cell` shows `CONG` over `AIR` for the same reason. `air_shed_drops`
+therefore equals ausniff's missing-enh count only while CONG is off; with
+CONG also on, some of ausniff's missing enh bodies are attributed to the
+congestion shed instead. The dry-run replay path (`main.cpp`'s
+`run_dry_run` pump) calls `apply_op_to_uep` only, never
+`apply_op_to_clock` — this is intentional, not a gap: dry-run does not
+price the clock, so replayed bodies always carry `air_ms` 0 and the gate
+never closes there.
+
+Ladder-side this is the same contract as the congestion shed: enh
+silence is `NoInfo` to `s3_usable()` and the probe gate, never loss; the
+base `residual` path stays live. It ORs with, and never touches,
+`failsafe_shed_` / `shed_level_`. `efficiency` and `body_us` are
+calibration knobs, not derivations — `tools/bench/airdrain.py --model`
+fits them against the player's measured air excess per frame
+(Stage A of the spec) before the gate is armed (Stage B).
+
+**Flown 2026-09-06, three flights
+(`docs/air-clock-flight-findings-2026-09-06.md`).** The model is only
+calibratable when the link has headroom: at `encoder.airtime_budget`
+0.6 the bitrate policy's `rate/3` command plus uncounted framing puts
+~70 % of nominal on air, which is 100 % of the model's capacity at
+efficiency 0.7 — the clock ran at 0.9–0.95 utilisation, integrated
+every burst and over-predicted ~2.5× with a knife-edge fit. **Budget
+0.5 removed the post-demote drain at the source** (cascade peak 47 →
+20 ms, settle 1.9 → 0.3 s, steady-state p99 ~10 ms every rung) and
+brought the model to 0.74–0.81 utilisation, where it tracks the GS.
+Flight-fitted efficiency is ~0.73 at rungs 1–4 (rung 0 still
+over-priced). **Shipped production values: budget 0.5, `shed_ms` 25,
+`efficiency` 0.73** — armed, the gate dropped 14 enh AUs in a 344 s
+flight, all at transitions (demote drains and promote IDRs, a ~60 kB
+IDR alone is ~25 ms at mcs3), zero phantoms, air tail clipped at 35 ms.
+Do not arm it with the budget back at 0.6: there it becomes a
+steady-state enh throttle. The remaining > 100 ms tails are FEC repair
+waits at loss-driven demotes, not air.
 
 ## Tuning invariant
 

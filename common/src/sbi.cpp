@@ -37,7 +37,7 @@ std::vector<uint8_t> SbiPacker::build_body(
   std::vector<uint8_t> out;
   out.reserve(SBI_HDR_LEN + batch.size() * block_stride());
 
-  // Header: <u16 MAGIC LE, u8 ver, u8 stream_id, u16 block_payload LE, u8 n_blocks, u16 q_ms LE, u16 enc_us LE>
+  // Header: <u16 MAGIC LE, u8 ver, u8 stream_id, u16 block_payload LE, u8 n_blocks, u16 q_ms LE, u16 enc_us LE, u16 air_ms LE>
   out.push_back(static_cast<uint8_t>(SBI_MAGIC & 0xFF));
   out.push_back(static_cast<uint8_t>((SBI_MAGIC >> 8) & 0xFF));
   out.push_back(SBI_VER);
@@ -49,6 +49,9 @@ std::vector<uint8_t> SbiPacker::build_body(
   out.push_back(0);
   out.push_back(0);
   // enc_us placeholder (bytes 9-10)
+  out.push_back(0);
+  out.push_back(0);
+  // air_ms placeholder (bytes 11-12), patched by the hot thread's sink
   out.push_back(0);
   out.push_back(0);
 
@@ -82,6 +85,7 @@ SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload) {
     if (r.header_ok) {
       r.q_ms = sbi_rd_u16(body + SBI_Q_MS_OFF);
       r.enc_us = sbi_rd_u16(body + SBI_ENC_US_OFF);
+      r.air_ms = sbi_rd_u16(body + SBI_AIR_MS_OFF);
     }
   } else {
     return r;  // Python: empty region -> zero blocks, header_ok false
@@ -116,6 +120,12 @@ void sbi_set_enc_us(uint8_t* body, size_t len, uint16_t us) {
   if (len < static_cast<size_t>(SBI_HDR_LEN)) return;
   body[SBI_ENC_US_OFF] = static_cast<uint8_t>(us & 0xFF);
   body[SBI_ENC_US_OFF + 1] = static_cast<uint8_t>(us >> 8);
+}
+
+void sbi_set_air_ms(uint8_t* body, size_t len, uint16_t ms) {
+  if (len < static_cast<size_t>(SBI_HDR_LEN)) return;
+  body[SBI_AIR_MS_OFF] = static_cast<uint8_t>(ms & 0xFF);
+  body[SBI_AIR_MS_OFF + 1] = static_cast<uint8_t>(ms >> 8);
 }
 
 }  // namespace mabur
