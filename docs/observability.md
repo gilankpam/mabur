@@ -266,7 +266,14 @@ read the sideport. Reach for other tools only in these cases:**
   §9 measurement of `docs/probe-stream-flight-findings-2026-09-05.md`
   and the A/B instrument for its drain-shed follow-up
   (`tests/test_airdrain.py` pins it on a synthetic cascade). The ctl and
-  au indices are separate counters: pair them by mono span.
+  au indices are separate counters: pair them by mono span. ⚠ The
+  default window runs from the first E line to the FIRST `starved` E
+  line — on a flight with link losses pass `--from/--to` explicitly or
+  most of the flight is silently dropped (flight 0031 read as 72 s of
+  566). `--model` on the three 2026-09-06 flights:
+  `docs/air-clock-flight-findings-2026-09-06.md`, which also gives the
+  per-AU reconstruction of the drone clock from `air_ms` (a candidate
+  `--fit` mode).
 - **Verifying AU-completion cadence → `tools/bench/aucadence.py`** (on the
   GS: `python3 aucadence.py --ring /dev/shm/mabur-au --seconds 25 --json`).
   Same outside-the-daemon ring posture as ausniff; reports the base−enh

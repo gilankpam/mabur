@@ -312,6 +312,25 @@ calibration knobs, not derivations — `tools/bench/airdrain.py --model`
 fits them against the player's measured air excess per frame
 (Stage A of the spec) before the gate is armed (Stage B).
 
+**Flown 2026-09-06, three flights
+(`docs/air-clock-flight-findings-2026-09-06.md`).** The model is only
+calibratable when the link has headroom: at `encoder.airtime_budget`
+0.6 the bitrate policy's `rate/3` command plus uncounted framing puts
+~70 % of nominal on air, which is 100 % of the model's capacity at
+efficiency 0.7 — the clock ran at 0.9–0.95 utilisation, integrated
+every burst and over-predicted ~2.5× with a knife-edge fit. **Budget
+0.5 removed the post-demote drain at the source** (cascade peak 47 →
+20 ms, settle 1.9 → 0.3 s, steady-state p99 ~10 ms every rung) and
+brought the model to 0.74–0.81 utilisation, where it tracks the GS.
+Flight-fitted efficiency is ~0.73 at rungs 1–4 (rung 0 still
+over-priced). **Shipped production values: budget 0.5, `shed_ms` 25,
+`efficiency` 0.73** — armed, the gate dropped 14 enh AUs in a 344 s
+flight, all at transitions (demote drains and promote IDRs, a ~60 kB
+IDR alone is ~25 ms at mcs3), zero phantoms, air tail clipped at 35 ms.
+Do not arm it with the budget back at 0.6: there it becomes a
+steady-state enh throttle. The remaining > 100 ms tails are FEC repair
+waits at loss-driven demotes, not air.
+
 ## Tuning invariant
 
 Tuning invariant: the controller's s3 loss/residual

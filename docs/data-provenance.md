@@ -285,7 +285,17 @@ predates the model; `airdrain.py --model` says so instead of comparing.
 `flightjitter.load_au_log` and `flightreport.load_aulog` ignore the extra
 column. Recordings from the observe-only period (`air_clock.shed_ms` 0)
 carry a live `air_ms` and zero `drone.air_shed_drops`; a non-zero drop
-count means the gate was armed for that flight.
+count means the gate was armed for that flight. Two caveats from the
+first armed flight (`docs/air-clock-flight-findings-2026-09-06.md`
+§5): the counter runs from link-up, so ground-time drops before takeoff
+are in it (flight 0032 started at 12); and a missing enh AU in the AU
+log is not a shed unless a neighbouring `air_ms` is near `shed_ms` —
+~1 enh per rung transition is lost over RF, so `ausniff`'s missing-enh
+count exceeds `air_shed_drops` on a lossy flight even with CONG off.
+The `encoder.airtime_budget` flag day is 2026-09-06 as well: flights up
+to `ctl-0351` / `au-0030` flew 0.6 (commanded `nominal/3`), from
+`ctl-0352` / `au-0031` on 0.5 — `enc.cmd_kbps` in the flight jsonl says
+which, and latency/air numbers across that break are not comparable.
 
 **2026-08-31 (vsync servo): `reg`/`dsp` semantics change when
 `display.vsync_lock` is on.** `reg` becomes hold-to-vblank (grows to
