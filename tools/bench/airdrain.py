@@ -29,7 +29,7 @@ counter, see docs/observability.md):
 Usage: python3 tools/bench/airdrain.py ctl-NNNN_<date>.log au-NNNN.log
          [--from S --to S] [--spike MS] [--profiles] [--model]
   --from/--to  analysis window in ctl seconds (default: first E line to the
-               first starved E line, else the last S line)
+               last S line; starves open no episode)
   --spike MS   per-frame excess threshold for the spike-second list (15)
   --profiles   print every cascade's 250 ms bin row (default: summary only)
   --model      compare the drone's air-clock model (aulog-3 `air_ms`) against
@@ -124,8 +124,10 @@ def analyze(ctl_path, au_path, t0=None, t1=None, spike_ms=15.0):
     rungs = fr._parse_ladder_token(log['header'].get('ladder', ''))
     if not E: raise SystemExit('no E lines: nothing transitioned')
     t0 = t0 * 1000 if t0 is not None else E[0]['t_ms']
-    starved = [e for e in E if e['reason'] == 'starved']
-    t1 = t1 * 1000 if t1 is not None else (starved[0]['t_ms'] if starved else S[-1]['t_ms'])
+    # To the LAST S line: a starve is link loss, not the end of the flight,
+    # and find_episodes' starved episodes are dropped below. (Ending at the
+    # first starved E line read flight 0031 as 72 s of 566, 2026-09-06.)
+    t1 = t1 * 1000 if t1 is not None else S[-1]['t_ms']
     Ew = [e for e in E if t0 <= e['t_ms'] <= t1]
 
     A = load_au(au_path)

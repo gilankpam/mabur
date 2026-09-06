@@ -771,6 +771,53 @@ class CtlLog10Test(unittest.TestCase):
         self.assertEqual(summ[6]["blocks_ok"], 6)
         self.assertIsNone(rows["rows"][0]["first_ms"])   # v1: no arrival stamp
 
+    def test_probelog_summary_resyncs_on_restart_and_starve(self):
+        # ProbeSource seeds a RANDOM initial seq per daemon start (SwEncoder
+        # restart contract), and across a starve the GS is deaf for > failsafe
+        # while the drone keeps counting. Neither gap is a per-mcs loss sample:
+        # probe-0352 (2026-09-06) read mcs1 lost=2600797061 from one restart.
+        pl = {"bpb": 4, "version": 2, "rows": [
+            {"t_ms": 1000.0, "seq": 10, "mcs": 3, "enh_fid": 1, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 1000.0},
+            {"t_ms": 1066.0, "seq": 12, "mcs": 3, "enh_fid": 3, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 1066.0},  # seq 11 lost: real
+            {"t_ms": 9000.0, "seq": 340179437, "mcs": 1, "enh_fid": 5, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 9000.0},  # restart: new seed
+            {"t_ms": 9033.0, "seq": 340179438, "mcs": 1, "enh_fid": 6, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 9033.0},
+            {"t_ms": 20000.0, "seq": 340179700, "mcs": 1, "enh_fid": 7, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 20000.0},  # starve: 11 s deaf
+            {"t_ms": 20033.0, "seq": 5, "mcs": 2, "enh_fid": 8, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 20033.0},  # backwards: restart again
+        ]}
+        summ = flightreport.probelog_summary(pl)
+        self.assertEqual(summ[3]["lost_bodies"], 1)
+        self.assertEqual(summ[1]["lost_bodies"], 0)
+        self.assertEqual(summ[2]["lost_bodies"], 0)
+        self.assertEqual(summ[1]["resyncs"], 2)       # the restart seed jump + the starve
+        self.assertEqual(summ[2]["resyncs"], 1)       # the backwards jump
+        self.assertEqual(summ[3].get("resyncs", 0), 0)
+
+    def test_find_aulog_for_prefers_the_log_that_joins(self):
+        # Every boot's mono clock starts near 0, so on a DVR holding many
+        # flights a dozen au logs overlap the probe span within seconds of
+        # each other (probe-0353 vs au-0020..0032, 2026-09-06). Overlap alone
+        # picked au-0001; the au log that JOINS on enh_fid is the right one.
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "probe-0009_20260906.log")
+        with open(p, "w") as f:
+            f.write("probelog 2 bpb=4\n"
+                    "1130 10 4 5 4 3 30.5 28.0 -24.0 -22.0 1024.500\n"
+                    "1160 11 4 6 4 3 30.0 28.0 -23.0 -22.0 1058.250\n")
+        pl = flightreport.load_probelog(p)
+        os.makedirs(os.path.join(d, "log"))
+        other = os.path.join(d, "log", "au-0001.log")   # earlier flight, bigger overlap, wrong fids
+        with open(other, "w") as f:
+            f.write("# aulog 2\n"
+                    "1 0 1 500 100 0x80 1 900000 905000 0 0\n"
+                    "2 0 1 501 100 0x80 1 1012000 1020000 0 0\n"
+                    "3 0 1 502 100 0x80 1 1200000 1205000 0 0\n")
+        right = os.path.join(d, "log", "au-0002.log")   # this flight: fids 5/6 join
+        with open(right, "w") as f:
+            f.write("# aulog 2\n"
+                    "1 0 1 5 100 0x80 1 1012000 1020000 0 0\n"
+                    "2 0 1 6 100 0x80 1 1045000 1050000 0 0\n")
+        self.assertEqual(flightreport.find_aulog_for(p, pl), right)
+
     def test_probelog_v2_first_ms_and_au_offsets(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "probe-0003_20260904.log")

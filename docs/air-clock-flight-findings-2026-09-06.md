@@ -248,9 +248,12 @@ same way; not 0.6.
 
 1. Merge PR #45; commit budget 0.5 + `air_clock {shed_ms 25, efficiency
    0.73, body_us 0}` as the production drone config.
-2. `airdrain.py`: the default window stops at the FIRST starved E line
-   (flight 0031 read as 72 s until `--from/--to`); fold the §3
-   reconstruction in as a `--fit` mode.
+2. ~~`airdrain.py`: the default window stops at the FIRST starved E line~~
+   FIXED same day (window runs to the last S line; `flightreport.py`'s
+   per-mcs probe loss now re-anchors on a restart/starve instead of
+   booking a seed jump as loss, and its au-log auto-match picks the log
+   whose enh fids join rather than the biggest mono overlap). Still
+   open: fold the §3 reconstruction in as a `--fit` mode.
 3. GS `S95flightrec stop` still uses `pkill` (absent on BusyBox) — kill
    the old recorder by hand, or fix the wrapper.
 4. Stop investing in the gate. The next latency win is on the ladder
