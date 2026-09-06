@@ -55,10 +55,14 @@ jobs:
           nix-shell -p pkg-config libusb1 --run \
             "cmake --build build -j$(nproc)"
 
+      # The two filters CLAUDE.md names, in one run: the host suite (test_ /
+      # host_e2e) plus the standing gs/player regression gates, which do NOT
+      # match the host-suite pattern. Left out: sim_shed_lag (red, and
+      # deliberately not test_-prefixed) and burst_sim_selfcheck.
       - name: Test
         run: |
           nix-shell -p pkg-config libusb1 --run \
-            "ctest --test-dir build -R 'test_|host_e2e' -j$(nproc) --output-on-failure"
+            "ctest --test-dir build -R 'test_|host_e2e|gs_e2e|gs_au_e2e|player_e2e' -j$(nproc) --output-on-failure"
 
       - name: Upload ctest log
         if: failure()
