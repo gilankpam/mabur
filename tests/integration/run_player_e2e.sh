@@ -44,7 +44,24 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # y 858..893 -- a small isolated region above the FPS block (LAT stacks
 # above FPS in the video-figures column, see gs_overlay.cpp), matching
 # nothing but the new field's own box. No other block's pixels differ.
-GS_SHA_EXPECTED=3d9269985ae17d73331080ccbc30afa686de3f5db68d6858d73e6ac3e97874dd
+#
+# Re-blessed 2026-09-06 (was 3d926998...): commit 6709053 collapsed the LAT
+# block to three right-flush rows (RTT / P50 / P99) sharing one right edge and
+# dropped the per-segment breakdown column, so the two LAT rows this harness
+# renders as placeholders changed from "P50 --"/"P99 --" left-anchored in the
+# old head column to "LAT P50 --"/"LAT P99 --" flushed right. Pixel diff
+# old->new: 16,928 px differ, ALL of them inside the two LAT row bands
+# (y 812..847 and y 858..893); the surface is byte-identical everywhere else,
+# so the RTT row above and the FPS/JIT/MBPS block below did not move. Per row:
+# 3,224 px erased at x 993..1082, 5,240 px added at x 1607..1752, ZERO px
+# recoloured and ZERO change in vertical extent -- a rightward translation plus
+# the "LAT " prefix each row absorbed from the deleted label column. Lit total
+# 84,362 -> 88,394 (delta 4,032 == added - erased exactly).
+#
+# The preceding commit fc44c70 (per-card EVM) is NOT in this delta: rebuilt and
+# rendered, it still hashes 3d926998..., because the fixture's cards carry no
+# EVM and that field blanks.
+GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
