@@ -26,8 +26,11 @@ counter, see docs/observability.md):
   aulog  /media/dvr/log/au-NNNN.log       (flightrec '# aulog 3', air_ms
                                           column 12; aulog-2 logs still parse)
 
-Usage: python3 tools/bench/airdrain.py ctl-NNNN_<date>.log au-NNNN.log
+Usage: python3 tools/bench/airdrain.py [<session-dir> | ctl-NNNN_<date>.log au-NNNN.log]
          [--from S --to S] [--spike MS] [--profiles] [--model]
+  A session directory (tools/session.py) resolves both ctl.log and au.log
+  structurally; omit both positionals to use the latest session under
+  /media/dvr/log. The legacy two-file form still works unchanged.
   --from/--to  analysis window in ctl seconds (default: first E line to the
                last S line; starves open no episode)
   --spike MS   per-frame excess threshold for the spike-second list (15)

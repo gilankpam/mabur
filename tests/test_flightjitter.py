@@ -325,6 +325,33 @@ def test_aulog_v4_needs_no_clock_offset():
         assert rows[0]["t_us"] == 1000000
 
 
+def test_aulog_v4_ignores_sync_lines_even_when_present():
+    """The distinguishing case for the v4 no-offset rule: a v4 log that
+    DOES carry `# sync` lines (the pre-v4 wall/mono bridge) must still
+    report offset=0, because v4's t_us is already monotonic and the sync
+    lines are not consulted. Without gating on version, this is the case
+    that would silently regress -- a v4 file with no sync lines at all
+    (the smoke case above) passes with or without the version check,
+    since an empty `syncs` list already yields offset 0 either way."""
+    import tempfile, os
+    rows = make_rows(n=10)
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "au.log")
+        with open(p, "w") as f:
+            f.write("# aulog 4\n")
+            # wall clock runs 5_000_000 us ahead of the sideport t_ms clock
+            # -- same shape as test_load_au_log_sync_offset's v<=3 case.
+            f.write(f"# sync {rows[0]['t_us']} {(rows[0]['t_us'] - 5_000_000) // 1000}\n")
+            f.write(f"# sync {rows[5]['t_us']} {(rows[5]['t_us'] - 5_000_000) // 1000}\n")
+            for r in rows:
+                f.write(f"{r['t_us']} {r['pts']} {r['sid']} {r['fid']} "
+                        f"{r['len']} 0x{r['flags']:02x} {r['nal0']} "
+                        f"{r['t_us'] - 1000} {r['t_us']} 1800 4\n")
+        rows_loaded, offset, resyncs = flightjitter.load_au_log(p)
+        assert len(rows_loaded) == 10
+        assert offset == 0, offset
+
+
 def test_repeated_marker_line_is_not_a_row():
     import tempfile, os
     with tempfile.TemporaryDirectory() as d:

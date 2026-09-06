@@ -5,8 +5,12 @@ probe stream? (probe-blanking fix, 2026-09-05)
 Inputs, all from one maburgs run on the GS:
   gaplog   stderr of maburgs started with MABUR_GAPLOG=1 ('gstx card=..
            mono=<us> reason=<r> ...' per control send, mono us at send time)
-  probe    /media/dvr/probe-NNNN_<date>.log (probelog 2: first_ms column)
-  aulog    /media/dvr/log/au-NNNN.log (flightrec, '# aulog 2': t_complete)
+           -- bench capture output, not part of a session; always explicit
+  probe    probe.log (probelog 2+: first_ms column) resolved from a
+           session directory (tools/session.py), or the legacy explicit
+           /media/dvr/probe-NNNN_<date>.log
+  aulog    au.log (flightrec, '# aulog 2'+: t_complete) resolved from the
+           same session, or the legacy explicit /media/dvr/log/au-NNNN.log
 
 Prints: each send relative to the preceding enh/base completion; each
 probe relative to its enh AU's completion; sends relative to the probe of

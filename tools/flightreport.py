@@ -746,7 +746,7 @@ def sniff_ctllog(path):
     return first.startswith("ctllog ")
 
 
-def main(path, aulog=None):
+def main(path, aulog=None, probelog_path=None):
     if sniff_probelog(path):
         # A probe log on its own (bench use): just the per-body report and
         # the completion->probe join.
@@ -763,19 +763,29 @@ def main(path, aulog=None):
         print_wall_report(ctllog)
         print_episode_report(ctllog)
         probelog = None
-        # Sibling probe body log: same NNNN as the ctl log
-        # (ctl-NNNN_<date>.log / probe-NNNN_<date>.log), written alongside it
-        # by the same GS session (Task 11, probe-stream). Absent on older
-        # recordings and on ctl logs from a probe-less session.
-        m = re.search(r"ctl-(\d+)_", os.path.basename(path))
-        if m:
-            matches = sorted(glob.glob(os.path.join(
-                os.path.dirname(path), f"probe-{m.group(1)}_*.log")))
-            if matches:
-                probelog = load_probelog(matches[0])
+        probe_src = None
+        if probelog_path:
+            # Session mode: session.resolve() already paired ctl.log with
+            # probe.log structurally (they are siblings in the session
+            # directory), so the legacy filename-glob heuristic below is
+            # not consulted at all.
+            probelog = load_probelog(probelog_path)
+            probe_src = probelog_path
+        else:
+            # Sibling probe body log: same NNNN as the ctl log
+            # (ctl-NNNN_<date>.log / probe-NNNN_<date>.log), written alongside it
+            # by the same GS session (Task 11, probe-stream). Absent on older
+            # recordings and on ctl logs from a probe-less session.
+            m = re.search(r"ctl-(\d+)_", os.path.basename(path))
+            if m:
+                matches = sorted(glob.glob(os.path.join(
+                    os.path.dirname(path), f"probe-{m.group(1)}_*.log")))
+                if matches:
+                    probelog = load_probelog(matches[0])
+                    probe_src = matches[0]
         au = None
         if probelog:
-            found = aulog or find_aulog_for(matches[0], probelog)
+            found = aulog or find_aulog_for(probe_src, probelog)
             au = load_aulog(found) if found else []
         print_probe_report(ctllog, probelog, au)
         return
@@ -952,8 +962,11 @@ if __name__ == "__main__":
         primary = s.ctl or s.probe or s.flight
         if primary is None:
             sys.exit(f"{s.dir}: no ctl.log, probe.log or flight.jsonl")
-        # In session mode the au log is structural -- find_aulog_for's
-        # index-overlap guess is not consulted at all.
-        main(primary, s.au)
+        # In session mode both the au log and the ctl<->probe pairing are
+        # structural (session.resolve() found them as siblings in the
+        # session directory) -- find_aulog_for's index-overlap guess and
+        # the ctl-NNNN_ filename-glob heuristic are not consulted at all.
+        probe_arg = s.probe if primary == s.ctl else None
+        main(primary, s.au, probe_arg)
     else:
         main(arg, sys.argv[2] if len(sys.argv) > 2 else None)

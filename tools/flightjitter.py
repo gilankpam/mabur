@@ -23,14 +23,19 @@
 #                 second (FEC repair wait) — needs the jsonl
 #   transport     none of the above (USB batching, scheduling, queueing)
 #
-# Row format: v1 (7 columns, no header marker) or v2 (11 columns, behind a
-# "# aulog 2" marker line — SlotHdr v2's t_first/t_complete/enc_us/dq_ms
-# appended, 2026-08-31 latency-accounting task 13). load_au_log keys its
-# parsing on the marker; v1 rows get t_first=t_complete=0 (arrival/jitter
-# math falls back to the read-time t_us column, as before). When t_complete
-# is nonzero it is the arrival-time basis for inter-AU intervals (writer-
-# stamped ring completion time, not flightrec's read-poll stamp) — same
-# fix as aucadence.py's t_complete switch, see docs/data-provenance.md.
+# Row format: v1 (7 columns, no header marker), v2 (11 columns behind a
+# "# aulog 2" marker — SlotHdr v2's t_first/t_complete/enc_us/dq_ms
+# appended, 2026-08-31 latency-accounting task 13), v3 (12 columns behind
+# "# aulog 3" — a trailing air_ms column, 2026-09-06 air clock, ignored
+# here), or v4 (same 12 columns behind "# aulog 4" — the debug-log
+# consolidation: t_us now runs on ONE session-wide CLOCK_MONOTONIC shared
+# with ctl/probe/lat, so it needs no wall-clock bridge; "# sync" lines are
+# ignored for v4+ even if present). load_au_log keys its parsing on the
+# marker; v1 rows get t_first=t_complete=0 (arrival/jitter math falls back
+# to the read-time t_us column, as before). When t_complete is nonzero it
+# is the arrival-time basis for inter-AU intervals (writer-stamped ring
+# completion time, not flightrec's read-poll stamp) — same fix as
+# aucadence.py's t_complete switch, see docs/data-provenance.md.
 #
 # Usage: flightjitter.py au-0001.log [flight-0001.jsonl]
 import bisect
@@ -247,10 +252,14 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
 
 def load_au_log(path):
     """Parses au-NNNN.log. Row format is keyed off a "# aulog N" marker line
-    (absent = v1, 7 columns; N>=2 = v2, 11 columns — SlotHdr v2's
-    t_first/t_complete/enc_us/dq_ms appended). v1 rows get
-    t_first=t_complete=enc_us=dq_ms=0 so downstream code (_arr_us, the
-    fec-wait class) can treat "present" as "nonzero" uniformly."""
+    (absent = v1, 7 columns; N>=2 = v2+, 11+ columns — SlotHdr v2's
+    t_first/t_complete/enc_us/dq_ms appended; v3/v4 add a trailing air_ms
+    column, ignored here). v1 rows get t_first=t_complete=enc_us=dq_ms=0
+    so downstream code (_arr_us, the fec-wait class) can treat "present"
+    as "nonzero" uniformly. v4+ t_us is already on one session-wide
+    CLOCK_MONOTONIC (debug-log consolidation), so no wall-clock/mono
+    offset is derived from "# sync" lines even when present; only v<=3
+    logs still bridge through them."""
     rows, resyncs, syncs = [], 0, []
     version = 1
     with open(path) as f:
