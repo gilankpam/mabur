@@ -124,6 +124,12 @@ struct StatsOut {
 /// (SO_REUSEPORT load-balances, it does not duplicate), so consumers
 /// cannot simply share a port -- which is why statsrec has to re-emit, and
 /// why maburplay's OSD would otherwise depend on statsrec staying alive.
+///
+/// `enable` gates the UDP sinks ONLY -- :8302 feeds maburplay's GS OSD, so
+/// turning debug logging on or off must never blank it, and turning `enable`
+/// off must not disable flight.jsonl (gs/src/stats_sink.h). `interval_ms` is
+/// the snapshot cadence, shared by the sideport and flight.jsonl; there is
+/// deliberately no separate debug_log.flight_period_ms.
 struct StatsCfg {
   bool enable = false;
   int interval_ms = 500;  // clamped to [100, 10000] at load

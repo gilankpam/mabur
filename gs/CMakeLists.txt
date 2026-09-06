@@ -21,7 +21,8 @@ add_library(mabur_gs_core STATIC
   src/au_doorbell.cpp
   src/probe_track.cpp
   src/rtt_estimator.cpp
-  src/stats_exporter.cpp)
+  src/stats_exporter.cpp
+  src/stats_sink.cpp)
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)

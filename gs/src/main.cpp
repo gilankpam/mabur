@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -51,6 +52,7 @@
 #include "s1_loss.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
+#include "stats_sink.h"
 #include "transition_edge.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
@@ -229,10 +231,14 @@ static int run_radio(const maburgs::Config& cfg) {
     std::fprintf(stderr, "debug-log: session %s%s\n", debug.dir().c_str(),
                  debug.rejoined() ? " (rejoined)" : "");
   }
-  // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
-  // Declared here (ahead of the FrameStream construction below)
-  // so the FrameStream end_frame lambda can capture `stats` by reference; both
-  // must also outlive every lambda that captures them.
+  // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md)
+  // and flight.jsonl (debug-log consolidation, 2026-09-06) share one
+  // StatsExporter snapshot, so the snapshot builder runs whenever either
+  // wants it: `cfg.stats.enable` gates the UDP sinks ONLY (:8302 feeds
+  // maburplay's GS OSD, so debug logging must never blank it), `debug.ok()`
+  // gates the file. Declared here (ahead of the FrameStream construction
+  // below) so the FrameStream end_frame lambda can capture `stats` by
+  // reference; both must also outlive every lambda that captures them.
   // session id: nonzero random u32 so consumers detect restarts.
   // UdpSink has a user-declared destructor and a deleted copy constructor
   // with no declared move constructor, so it has neither -- std::vector
@@ -241,27 +247,45 @@ static int run_radio(const maburgs::Config& cfg) {
   // that: the vector moves pointers, never UdpSink objects.
   std::vector<std::unique_ptr<maburgs::UdpSink>> stats_udp;
   std::optional<maburgs::StatsExporter> stats;
-  if (cfg.stats.enable) {
-    stats_udp.reserve(cfg.stats.out.size());
-    for (const auto& o : cfg.stats.out)
-      stats_udp.push_back(std::make_unique<maburgs::UdpSink>(o.host, o.port));
+  maburgs::LogWriter::Stream flight_jsonl = maburgs::LogWriter::kBadStream;
+  if (debug.ok())
+    flight_jsonl = log_writer->open(debug.dir(), "flight.jsonl", "",
+                                    /*mark_drops=*/false);
+  if (cfg.stats.enable || debug.ok()) {
+    std::function<bool(const std::string&)> to_udp;
+    if (cfg.stats.enable) {
+      stats_udp.reserve(cfg.stats.out.size());
+      for (const auto& o : cfg.stats.out)
+        stats_udp.push_back(std::make_unique<maburgs::UdpSink>(o.host, o.port));
+      to_udp = [&stats_udp](const std::string& s) {
+        // Every destination gets the same buffer. One failing sink must not
+        // stop the others -- a dead consumer is not a reason to blind the
+        // live ones.
+        bool any = false;
+        for (auto& u : stats_udp)
+          if (u->send(reinterpret_cast<const uint8_t*>(s.data()), s.size()))
+            any = true;
+        return any;
+      };
+    }
+    std::function<void(const std::string&)> to_file;
+    if (flight_jsonl != maburgs::LogWriter::kBadStream)
+      to_file = [&log_writer, flight_jsonl](const std::string& s) {
+        log_writer->line(flight_jsonl, s.data(), s.size());
+      };
     uint32_t session = 0;
     std::random_device rd;
     while (session == 0) session = rd();
-    stats.emplace(session, cfg.stats.interval_ms,
-                  [&stats_udp](const std::string& s) {
-                    // Every destination gets the same buffer. One failing
-                    // sink must not stop the others -- a dead consumer is
-                    // not a reason to blind the live ones.
-                    bool any = false;
-                    for (auto& u : stats_udp)
-                      if (u->send(reinterpret_cast<const uint8_t*>(s.data()), s.size()))
-                        any = true;
-                    return any;
-                  });
-    for (const auto& o : cfg.stats.out)
-      std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
-                   o.host.c_str(), o.port, cfg.stats.interval_ms);
+    stats.emplace(
+        session, cfg.stats.interval_ms,
+        maburgs::make_stats_sink(std::move(to_udp), std::move(to_file)));
+    if (cfg.stats.enable)
+      for (const auto& o : cfg.stats.out)
+        std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
+                     o.host.c_str(), o.port, cfg.stats.interval_ms);
+    if (flight_jsonl != maburgs::LogWriter::kBadStream)
+      std::fprintf(stderr, "debug-log: flight jsonl -> %s every %d ms\n",
+                   log_writer->path(flight_jsonl).c_str(), cfg.stats.interval_ms);
   }
 
   // Drone telemetry (T_TELEM): display-only, not rendezvous traffic — held
