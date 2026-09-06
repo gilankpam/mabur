@@ -226,8 +226,10 @@ if(MABUR_BUILD_GS)
   add_mtest(test_vrx_controller test_vrx_controller.cpp LIBS mabur_gs_core)
   add_mtest(test_ladder_controller test_ladder_controller.cpp LIBS mabur_gs_core)
   add_mtest(test_rung_store test_rung_store.cpp LIBS mabur_gs_core)
-  add_mtest(test_ctl_log test_ctl_log.cpp LIBS mabur_gs_core)
-  add_mtest(test_probe_log test_probe_log.cpp LIBS mabur_gs_core)
+  add_mtest(test_ctl_log test_ctl_log.cpp LIBS mabur_gs_core pthread)
+  add_mtest(test_probe_log test_probe_log.cpp LIBS mabur_gs_core pthread)
+  add_mtest(test_debug_session test_debug_session.cpp LIBS mabur_gs_core)
+  add_mtest(test_log_writer test_log_writer.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_rtt_estimator test_rtt_estimator.cpp LIBS mabur_gs_core)
   add_mtest(test_ladder_residual test_ladder_residual.cpp LIBS mabur_gs_core)
   add_mtest(test_s1_loss test_s1_loss.cpp LIBS mabur_gs_core)
@@ -240,6 +242,7 @@ if(MABUR_BUILD_GS)
   add_mtest(test_control_frame test_control_frame.cpp LIBS mabur_gs_radio)
   add_mtest(test_frame_stream test_frame_stream.cpp LIBS mabur_gs_core)
 add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
+  add_mtest(test_au_log test_au_log.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_au_doorbell test_au_doorbell.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
     # frame_e2e_sustained_shed_no_gaps_no_stalls drives the real drone-side
@@ -253,6 +256,7 @@ add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
     add_mtest(test_frame_e2e test_frame_e2e.cpp LIBS mabur_gs_core)
   endif()
   add_mtest(test_stats_exporter test_stats_exporter.cpp LIBS mabur_gs_core)
+  add_mtest(test_stats_sink test_stats_sink.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
     add_test(NAME gs_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_e2e.sh)
     set_tests_properties(gs_e2e PROPERTIES ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
@@ -277,14 +281,17 @@ if(Python3_EXECUTABLE)
   add_test(NAME test_flightreport
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightreport.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME test_session
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_session.py)
+  add_test(NAME test_maburtop
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/test_maburtop.py)
+  set_tests_properties(test_maburtop PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
   add_test(NAME test_gen_font
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_gen_font.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   add_test(NAME test_gen_gsfont
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_gen_gsfont.py)
-  add_test(NAME test_flightrec
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightrec.py
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   add_test(NAME test_airdrain
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_airdrain.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

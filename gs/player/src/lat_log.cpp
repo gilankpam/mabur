@@ -1,53 +1,62 @@
 #include "lat_log.h"
 
-#include <dirent.h>
-
-#include <algorithm>
-#include <cstdio>
+#include <fstream>
 
 namespace maburplay {
 
 namespace {
-constexpr uint64_t kRetryUs = 30'000'000;
+constexpr uint64_t kRecheckUs = 30'000'000;
+
+std::string read_marker(const char* path) {
+  std::ifstream f(path);
+  if (!f.good()) return {};
+  std::string s;
+  std::getline(f, s);
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+    s.pop_back();
+  return s;
+}
 }  // namespace
 
 LatLog::~LatLog() {
   if (f_) std::fclose(f_);
 }
 
-void LatLog::try_open(uint64_t mono_us, uint64_t wall_us) {
-  last_attempt_us_ = mono_us;
-  attempted_ = true;
-  DIR* d = opendir(dir_.c_str());
-  if (!d) return;
-  int next_idx = 0;
-  struct dirent* ent;
-  while ((ent = readdir(d)) != nullptr) {
-    int idx = -1;
-    if (std::sscanf(ent->d_name, "lat-%d", &idx) == 1 && idx >= 0)
-      next_idx = std::max(next_idx, idx + 1);
+void LatLog::reopen_(uint64_t mono_us) {
+  last_check_us_ = mono_us;
+  checked_ = true;
+  const std::string dir = read_marker(marker_);
+  if (dir == dir_ && f_) return;  // same session, already open
+  if (dir.empty()) {
+    if (f_) {
+      std::fclose(f_);
+      f_ = nullptr;
+      path_.clear();
+      dir_.clear();
+    }
+    return;
   }
-  closedir(d);
-  char fname[32];
-  std::snprintf(fname, sizeof(fname), "lat-%04d.log", next_idx);
-  const std::string p = dir_ + "/" + fname;
-  std::FILE* f = std::fopen(p.c_str(), "w");
+  const std::string p = dir + "/lat.log";
+  std::FILE* f = std::fopen(p.c_str(), "a");
+  // A new session that can't be opened leaves any still-open previous
+  // session's handle alone (deliberate: keep logging into the old
+  // directory rather than go dark over a bad new target).
   if (!f) return;
   setvbuf(f, nullptr, _IOLBF, 0);
-  std::fprintf(f, "# latlog 1\n# sync %llu %llu\n",
-               static_cast<unsigned long long>(mono_us),
-               static_cast<unsigned long long>(wall_us));
+  std::fprintf(f, "# latlog 2\n");
+  if (f_) std::fclose(f_);
   f_ = f;
   path_ = p;
+  dir_ = dir;
 }
 
-void LatLog::write(uint64_t mono_us, uint64_t wall_us, const char* payload) {
-  if (dir_.empty()) return;
-  if (!f_) {
-    if (attempted_ && mono_us - last_attempt_us_ < kRetryUs) return;
-    try_open(mono_us, wall_us);
-    if (!f_) return;
-  }
+void LatLog::write(uint64_t mono_us, const char* payload) {
+  // Gate on elapsed time alone -- not on whether f_ is currently open --
+  // so a missing or unusable session backs off for kRecheckUs instead of
+  // re-attempting read_marker()/fopen() on every single write().
+  if (!checked_ || mono_us - last_check_us_ >= kRecheckUs)
+    reopen_(mono_us);
+  if (!f_) return;
   std::fprintf(f_, "%llu %s\n", static_cast<unsigned long long>(mono_us),
                payload);
 }

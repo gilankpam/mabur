@@ -11,6 +11,7 @@
 
 #include "au_ring.h"
 #include "mtest.h"
+#include "scratch.h"
 
 using mabur::framewire::FrameHdr;
 using mabur::framewire::kFlagIdr;
@@ -445,6 +446,53 @@ TEST(au_ring_v1_refused_by_reader) {
   maburgs::AuRingReader r;
   CHECK(!r.open(path));
   unlink(path.c_str());
+}
+
+TEST(last_record_matches_the_published_slot) {
+  ScratchFile sf("test_au_ring", ".ring");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(sf.path, maburgs::AuRingGeom{4096, 4}));
+  mabur::framewire::FrameHdr h;
+  h.frame_id = 7;
+  h.flags = 0x01;  // kFlagIdr
+  h.codec = mabur::framewire::kCodecH265;
+  h.pts_us = 4242;
+  w.begin(h, /*sid=*/1);
+  const uint8_t payload[] = {0, 0, 0, 1, 0x40, 0x01};
+  w.append(payload, sizeof(payload));
+  maburgs::AuLatMeta lat;
+  lat.t_first_us = 1000;
+  lat.t_complete_us = 2000;
+  lat.drone_q_ms = 3;
+  lat.enc_us = 7000;
+  lat.drone_air_ms = 21;
+  const uint64_t rec = w.finish(true, lat);
+  REQUIRE(rec != UINT64_MAX);
+  const maburgs::AuRecordMeta& m = w.last_record();
+  CHECK(m.rec_no == rec);
+  CHECK(m.frame_id64 == 7);
+  CHECK(m.pts_us == 4242);
+  CHECK(m.len == sizeof(payload));
+  CHECK(m.sid == 1);
+  CHECK(m.flags == 0x81);  // kFlagIdr | kRecFlagComplete
+  CHECK(m.t_first_us == 1000);
+  CHECK(m.t_complete_us == 2000);
+  CHECK(m.enc_us == 7000);
+  CHECK(m.drone_q_ms == 3);
+  CHECK(m.drone_air_ms == 21);
+}
+
+TEST(last_record_stamps_t_complete_when_caller_passes_zero) {
+  ScratchFile sf("test_au_ring", ".ring");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(sf.path, maburgs::AuRingGeom{4096, 4}));
+  mabur::framewire::FrameHdr h;
+  w.begin(h, 0);
+  const uint8_t payload[] = {1};
+  w.append(payload, sizeof(payload));
+  w.finish(false, maburgs::AuLatMeta{});
+  CHECK(w.last_record().t_complete_us != 0);   // writer filled it
+  CHECK((w.last_record().flags & 0x80) == 0);  // not complete
 }
 
 MTEST_MAIN

@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import flightreport
+import session
 
 
 def synthesize_flight_jsonl():
@@ -849,6 +850,53 @@ class CtlLog10Test(unittest.TestCase):
             flightreport.print_probe_report({"E": [], "P": []}, pl, au)
         self.assertIn("completion->probe", buf.getvalue())
         self.assertIn("n=2", buf.getvalue())
+
+
+class SessionModeProbeJoinTest(unittest.TestCase):
+    """Task 8 review finding 1: session mode must not silently drop the
+    probe join. session.resolve() finds ctl.log and probe.log as siblings
+    structurally; the legacy ctl-NNNN_ filename-glob heuristic in main()
+    can never match those session-mode filenames, so main() must be told
+    the probe path explicitly instead of relying on that heuristic."""
+
+    PROBE_LOG = ("probelog 1 bpb=4\n"
+                 "1000 10 6 5 4 3 30.5 28.0 -24.0 -22.0\n"
+                 "1033 12 6 6 2 1 30.0 nan -23.0 nan\n")
+
+    def test_session_mode_passes_probe_through_to_main(self):
+        with tempfile.TemporaryDirectory() as root:
+            d = os.path.join(root, "0001")
+            os.makedirs(d)
+            with open(os.path.join(d, "ctl.log"), "w") as f:
+                f.write(CTL_LOG)
+            with open(os.path.join(d, "probe.log"), "w") as f:
+                f.write(self.PROBE_LOG)
+            s = session.resolve(d)
+            self.assertIsNotNone(s.probe)   # resolver found it; main() must use it
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                flightreport.main(s.ctl, s.au, s.probe)
+            out = buf.getvalue()
+        self.assertIn("PROBE LOG (per mcs)", out)
+
+    def test_legacy_ctl_still_finds_sibling_probelog_by_filename_glob(self):
+        """The legacy heuristic (ctl-NNNN_<date>.log -> sibling
+        probe-NNNN_*.log, matched by filename) must keep working EXACTLY
+        as before when no probelog_path is passed -- this is the case it
+        was written for and it must not be weakened by the session-mode
+        fix above."""
+        with tempfile.TemporaryDirectory() as d:
+            ctl_p = os.path.join(d, "ctl-0003_20260904.log")
+            with open(ctl_p, "w") as f:
+                f.write(CTL_LOG)
+            with open(os.path.join(d, "probe-0003_20260904.log"), "w") as f:
+                f.write(self.PROBE_LOG)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                flightreport.main(ctl_p)   # no probelog_path: legacy glob heuristic
+            out = buf.getvalue()
+        self.assertIn("PROBE LOG (per mcs)", out)
+
 
 
 if __name__ == "__main__":

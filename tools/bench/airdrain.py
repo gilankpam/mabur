@@ -26,8 +26,11 @@ counter, see docs/observability.md):
   aulog  /media/dvr/log/au-NNNN.log       (flightrec '# aulog 3', air_ms
                                           column 12; aulog-2 logs still parse)
 
-Usage: python3 tools/bench/airdrain.py ctl-NNNN_<date>.log au-NNNN.log
+Usage: python3 tools/bench/airdrain.py [<session-dir> | ctl-NNNN_<date>.log au-NNNN.log]
          [--from S --to S] [--spike MS] [--profiles] [--model]
+  A session directory (tools/session.py) resolves both ctl.log and au.log
+  structurally; omit both positionals to use the latest session under
+  /media/dvr/log. The legacy two-file form still works unchanged.
   --from/--to  analysis window in ctl seconds (default: first E line to the
                last S line; starves open no episode)
   --spike MS   per-frame excess threshold for the spike-second list (15)
@@ -249,12 +252,18 @@ def print_report(r, ctl_path, au_path, profiles=False, spike_ms=15.0, model_flag
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('ctl'); ap.add_argument('aulog')
+    ap.add_argument('ctl', nargs='?'); ap.add_argument('aulog', nargs='?')
     ap.add_argument('--from', dest='t0', type=float); ap.add_argument('--to', dest='t1', type=float)
     ap.add_argument('--spike', type=float, default=15.0)
     ap.add_argument('--profiles', action='store_true')
     ap.add_argument('--model', action='store_true')
     args = ap.parse_args()
+    if args.ctl is None or os.path.isdir(args.ctl):
+        import session as _session   # tools/ is already on sys.path here
+        s = _session.resolve(args.ctl)
+        if s.ctl is None or s.au is None:
+            sys.exit('session needs both ctl.log and au.log')
+        args.ctl, args.aulog = s.ctl, s.au
     r = analyze(args.ctl, args.aulog, args.t0, args.t1, args.spike)
     print_report(r, args.ctl, args.aulog, args.profiles, args.spike, args.model)
 

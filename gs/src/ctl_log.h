@@ -4,16 +4,19 @@
 #include <cstdio>
 #include <string>
 
+#include "log_writer.h"
+
 namespace maburgs {
 
 // maburgs' own compact adaptive-link log (spec
 // docs/superpowers/specs/2026-08-05-s3-probe-promote-design.md section 5).
-// A per-boot indexed, line-buffered text file: `ctl-NNNN_<date>.log` in
-// `dir` (NNNN = 1 + the highest existing ctl-* index, 0 on an empty dir;
-// `<date>` is `%Y%m%d` from localtime, cosmetic only -- the GS RTC is wrong
-// at boot). The learning dataset must not depend on any sideport consumer
-// being alive, so this is maburgs writing its own record independent of
-// StatsExporter/maburtop/flightreport's live feed.
+// Writes `ctl.log` inside the session directory (DebugSession::dir()) via
+// the shared LogWriter -- the 2026-09-06 consolidation collapsed the
+// per-boot indexed `ctl-NNNN_<date>.log` naming into one session directory
+// per boot, so the index and date suffix are gone; DebugSession::index()
+// carries that identity now. The learning dataset must not depend on any
+// sideport consumer being alive, so this is maburgs writing its own record
+// independent of StatsExporter/maburtop/flightreport's live feed.
 //
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
@@ -21,7 +24,7 @@ namespace maburgs {
 //   ctllog 11 <header_info>                                 # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr> <rssi_dbm> <probe_rung> <probe_u> <probe_n>
-//                                              # dwell sample, link.ctl_log_period_ms
+//                                              # dwell sample, debug_log.ctl_period_ms
 //   E <t_ms> <from> <to> <reason> <u> <snr_db> <evm_db>      # rung transition
 //   P <t_ms> <rung> <clean|lossy|noinfo> <snr_db> <u> <dur_ms> <evm_db>
 //                                                            # probe gate EDGE
@@ -173,26 +176,26 @@ namespace maburgs {
 // puts a nonsense magnitude in the log. The clamp also applies to E's u for
 // s3_* reasons, since that field is u3 under the hood.
 //  - R lines (spec 2026-08-13) are the per-rung EWMA store: one line per
-//    rung with any data, every link.rung_stats.rung_log_period_s AND a
+//    rung with any data, every debug_log.rung_period_s AND a
 //    full snapshot right after every E line. u/u3/probe_u get the same
 //    <= 1e3 clamp; evm/evm_sd are nan until the rung has an EVM sample;
 //    age_s is -1 when the rung was never parked-sampled.
 //
-// Every failure mode (dir missing/unwritable, index scan failure, fopen
-// failure, ...) is non-fatal: ok() reads false, the constructor prints the
-// reason to stderr, and every record method becomes a silent no-op.
-// maburgs must never exit or crash over this log.
+// Every failure mode (LogWriter::open() unable to prepare the file, ...) is
+// non-fatal: ok() reads false and every record method becomes a silent
+// no-op. maburgs must never exit or crash over this log.
 class CtlLog {
  public:
-  CtlLog(const std::string& dir, const std::string& header_info);
-  ~CtlLog();
+  // dir is the session directory (DebugSession::dir()); the file is always
+  // "ctl.log" inside it. The per-boot index and the cosmetic date suffix
+  // are gone -- the session directory carries that identity now.
+  CtlLog(LogWriter& w, const std::string& dir, const std::string& header_info);
 
   CtlLog(const CtlLog&) = delete;
   CtlLog& operator=(const CtlLog&) = delete;
 
-  bool ok() const { return f_ != nullptr; }
-  const std::string& path() const { return path_; }
-  int index() const { return index_; }  // the NNNN this log opened with
+  bool ok() const { return s_ != LogWriter::kBadStream; }
+  const std::string& path() const { return w_.path(s_); }
 
   void sample(double t_ms, int rung, double u, double snr_db, double resid,
               double u3, double resid3, double evm_db, double resid_cur,
@@ -211,9 +214,8 @@ class CtlLog {
             double age_s, double probe_u, uint64_t probe_n);
 
  private:
-  std::FILE* f_ = nullptr;
-  std::string path_;
-  int index_ = 0;
+  LogWriter& w_;
+  LogWriter::Stream s_;
 };
 
 }  // namespace maburgs

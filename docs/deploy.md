@@ -235,10 +235,11 @@ first. Range [0, 60]; the bench A/B that sizes it is in
 ## `maburplay` — the vsync-locked regulator (2026-08-31)
 
 The three new player config keys — `display.vsync_lock`,
-`display.vsync_lead_ms`, `display.lat_log_dir` — are **additive, with
-in-code defaults**. Strict keys only rejects a key that is UNPRESENT in
-the binary but PRESENT in the file; it says nothing about a key that is
-merely absent from the file, which just takes the compiled-in default.
+`display.vsync_lead_ms`, `display.lat_log_dir` (removed 2026-09-06 — see
+below) — are **additive, with in-code defaults**. Strict keys only rejects
+a key that is UNPRESENT in the binary but PRESENT in the file; it says
+nothing about a key that is merely absent from the file, which just takes
+the compiled-in default.
 So this swap, unlike the RC-version and venc flag days above, needs
 **no config edit before the binary swap**: drop in the new `maburplay`
 against the existing `/etc/maburplay.json` and it boots with
@@ -301,3 +302,38 @@ with `maburgs.json.pre-probe` (the five flat keys restored, `link.probe`
 removed) alongside the GS binary — an old GS binary against a config
 carrying `link.probe` fails strict keys at boot just as surely as the
 reverse.
+
+## 2026-09-06 debug-log consolidation
+
+The five separate debug files (`ctl-NNNN_<date>.log`, `probe-NNNN_<date>.log`,
+`au-NNNN.log`, `flight-NNNN.jsonl`, `lat-NNNN.log`, the last three written by
+the standalone `flightrec.py` recorder) collapse into one per-session
+directory, `<debug_log.dir>/NNNN/` holding `ctl.log`, `probe.log`, `au.log`,
+`flight.jsonl` and `lat.log`, gated by one knob: `debug_log.enable`. This is
+**config-before-binary on BOTH ground-station daemons**, not just one — an
+unknown key fails boot into the usual 2 s respawn loop (see the top of this
+page).
+
+- `/etc/maburgs.json` loses four keys that now FAIL BOOT — delete them
+  before swapping `maburgs`: `link.ctl_log`, `link.ctl_log_dir`,
+  `link.ctl_log_period_ms`, `link.rung_stats.rung_log_period_s`. Their
+  replacements live under the new `debug_log` block (`enable`, `dir`,
+  `ctl_period_ms`, `rung_period_s`) — additive, its own key, not a rename
+  in place.
+- `/etc/maburplay.json` loses `display.lat_log_dir` — also now FAIL BOOT.
+  maburplay holds no logging config of its own any more: it follows the
+  `/tmp/mabur-session` marker maburgs writes and needs no key at all.
+- **After both binaries land, delete `/root/flightrec.py` and
+  `/etc/init.d/S95flightrec` from the ground station.** A leftover S95
+  keeps boot-starting the old recorder, which still binds UDP `:8300` —
+  starving `maburtop`, which now binds that port directly — and still
+  attaches to the AU ring as a second outside reader, racing maburgs'
+  own in-process ring publish for no reason.
+- **Half-deployed signature:** a session directory containing every file
+  EXCEPT `lat.log` (`ctl.log`, `probe.log`, `au.log`, `flight.jsonl` all
+  present) means `maburgs` was updated but `maburplay` was not — the old
+  player is still writing (or failing to write) `lat-NNNN.log` the old
+  way, or not writing anything if it never had `lat_log_dir` set. Swap
+  `maburplay` to close the gap; there is no wire-format risk in doing so
+  on its own schedule, since this is config/logging only, not an
+  RC_VERSION bump.

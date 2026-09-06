@@ -164,6 +164,7 @@ uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
     return UINT64_MAX;
   }
   const uint64_t n = published_;
+  const size_t bytes = au_.size();
   uint8_t* slot = slot_base_(n);
   const uint32_t lock = load32(slot + kSOffLock);
   store32_relaxed(slot + kSOffLock, lock + 1);  // odd: write in progress
@@ -197,6 +198,18 @@ uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
   bytes_published_ += au_.size();
   store64(map_ + kOffWriteSeq, published_);
   au_.clear();
+  last_.rec_no = n;
+  last_.frame_id64 = last_id_;
+  last_.pts_us = hdr_.pts_us;
+  last_.len = static_cast<uint32_t>(bytes);
+  last_.sid = sid_;
+  last_.flags = static_cast<uint8_t>(hdr_.flags | (complete ? kRecFlagComplete : 0));
+  last_.codec = hdr_.codec;
+  last_.t_first_us = l.t_first_us;
+  last_.t_complete_us = l.t_complete_us;
+  last_.drone_q_ms = l.drone_q_ms;
+  last_.enc_us = l.enc_us;
+  last_.drone_air_ms = l.drone_air_ms;
   return n;
 }
 

@@ -8,6 +8,8 @@ add_library(mabur_gs_core STATIC
   src/ladder_controller.cpp
   src/rung_store.cpp
   src/ctl_log.cpp
+  src/debug_session.cpp
+  src/log_writer.cpp
   src/probe_log.cpp
   src/ladder_residual.cpp
   src/tx_selector.cpp
@@ -15,10 +17,12 @@ add_library(mabur_gs_core STATIC
   src/msp_sink.cpp
   src/frame_stream.cpp
   src/au_ring.cpp
+  src/au_log.cpp
   src/au_doorbell.cpp
   src/probe_track.cpp
   src/rtt_estimator.cpp
-  src/stats_exporter.cpp)
+  src/stats_exporter.cpp
+  src/stats_sink.cpp)
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)

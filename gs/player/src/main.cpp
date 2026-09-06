@@ -572,7 +572,7 @@ int main(int argc, char** argv) {
                                       cfg.display.vsync_lock,
                                       cfg.display.vsync_lead_ms,
                                       cfg.display.chain_budget);
-  maburplay::LatLog lat_log(cfg.display.lat_log_dir);
+  maburplay::LatLog lat_log;
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
@@ -1680,12 +1680,7 @@ int main(int argc, char** argv) {
             L.p50[6]/1000, L.p99[6]/1000, L.chk_ms,
             L.anchor_ok ? "ok" : "warm");
         std::fprintf(stderr, "%s\n", lat_buf);
-        lat_log.write(mono_us(),
-                      static_cast<uint64_t>(std::chrono::duration_cast<
-                          std::chrono::microseconds>(
-                          std::chrono::system_clock::now().time_since_epoch())
-                          .count()),
-                      lat_buf);
+        lat_log.write(mono_us(), lat_buf);
       }
       // Same 1 Hz tick as the lat: line above, so the bench fallback-drill
       // gate ("fallback= climbs then stops after re-warm") has a periodic

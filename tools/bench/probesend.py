@@ -5,8 +5,12 @@ probe stream? (probe-blanking fix, 2026-09-05)
 Inputs, all from one maburgs run on the GS:
   gaplog   stderr of maburgs started with MABUR_GAPLOG=1 ('gstx card=..
            mono=<us> reason=<r> ...' per control send, mono us at send time)
-  probe    /media/dvr/probe-NNNN_<date>.log (probelog 2: first_ms column)
-  aulog    /media/dvr/log/au-NNNN.log (flightrec, '# aulog 2': t_complete)
+           -- bench capture output, not part of a session; always explicit
+  probe    probe.log (probelog 2+: first_ms column) resolved from a
+           session directory (tools/session.py), or the legacy explicit
+           /media/dvr/probe-NNNN_<date>.log
+  aulog    au.log (flightrec, '# aulog 2'+: t_complete) resolved from the
+           same session, or the legacy explicit /media/dvr/log/au-NNNN.log
 
 Prints: each send relative to the preceding enh/base completion; each
 probe relative to its enh AU's completion; sends relative to the probe of
@@ -16,14 +20,24 @@ many had a send within the collision window, against the same rate for
 delivered probes. Bench 2026-09-05 (pinned mcs4, feedback 50): 45/55 lost
 vs 22 % baseline before the fix.
 
-Usage: python3 tools/bench/probesend.py gaplog.txt probe-NNNN.log au-NNNN.log
+Usage: python3 tools/bench/probesend.py gaplog.txt <session-dir> | probe-NNNN.log au-NNNN.log
 (run from the repo root: imports tools/flightreport.py)
 """
 import sys, bisect, re, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import flightreport as fr
-if len(sys.argv) != 4: sys.exit(__doc__)
-gap, probe, aulog = sys.argv[1:4]
+if len(sys.argv) < 2: sys.exit(__doc__)
+gap = sys.argv[1]
+arg2 = sys.argv[2] if len(sys.argv) > 2 else None
+if arg2 is None or os.path.isdir(arg2):
+    import session as _session   # tools/ is already on sys.path here
+    s = _session.resolve(arg2)
+    if s.probe is None or s.au is None:
+        sys.exit('session needs both probe.log and au.log')
+    probe, aulog = s.probe, s.au
+else:
+    if len(sys.argv) != 4: sys.exit(__doc__)
+    probe, aulog = sys.argv[2], sys.argv[3]
 pl = fr.load_probelog(probe); au = fr.load_aulog(aulog)
 sends = [int(m.group(1)) for m in re.finditer(r'gstx card=\d+ mono=(\d+)', open(gap).read())]
 sends.sort()

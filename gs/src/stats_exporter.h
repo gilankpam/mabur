@@ -125,7 +125,7 @@ struct StatsCtlIn {
 // bound); pts_off_us the min-RTT-filtered (pts − GS-mono) offset, absent
 // until the drone ships a non-zero pts_at_build. floor_ms = maburgs'
 // own PtsAnchor minus that offset — the absolute network floor, exported
-// for maburtop/flightrec (maburplay computes its own against its own
+// for maburtop/flight.jsonl (maburplay computes its own against its own
 // anchor from pts_off_us).
 struct StatsRttIn {
   double rtt_ms = 0.0;

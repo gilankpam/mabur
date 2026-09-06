@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-# Post-flight jitter/stutter attribution over the GS flight instrument's
-# recordings (tools/gs/flightrec.py): au-NNNN.log per-AU rows, plus the
-# matching flight-NNNN.jsonl 1 Hz sideport recording when present.
+# Post-flight jitter/stutter attribution over a debug-log session directory
+# (docs/observability.md): au.log per-AU rows, written in-process by
+# maburgs itself since the 2026-09-06 debug-log consolidation (formerly
+# tools/gs/flightrec.py, an external ring reader, deleted that day), plus
+# the matching flight.jsonl 1 Hz sideport recording when present.
 #
 # Method (docs/airtime-model.md §4 "decomposition trick"): inter-arrival
 # intervals are predicted purely from AU size deltas (iv ≈ frame_period +
@@ -23,18 +25,26 @@
 #                 second (FEC repair wait) — needs the jsonl
 #   transport     none of the above (USB batching, scheduling, queueing)
 #
-# Row format: v1 (7 columns, no header marker) or v2 (11 columns, behind a
-# "# aulog 2" marker line — SlotHdr v2's t_first/t_complete/enc_us/dq_ms
-# appended, 2026-08-31 latency-accounting task 13). load_au_log keys its
-# parsing on the marker; v1 rows get t_first=t_complete=0 (arrival/jitter
-# math falls back to the read-time t_us column, as before). When t_complete
-# is nonzero it is the arrival-time basis for inter-AU intervals (writer-
-# stamped ring completion time, not flightrec's read-poll stamp) — same
-# fix as aucadence.py's t_complete switch, see docs/data-provenance.md.
+# Row format: v1 (7 columns, no header marker), v2 (11 columns behind a
+# "# aulog 2" marker — SlotHdr v2's t_first/t_complete/enc_us/dq_ms
+# appended, 2026-08-31 latency-accounting task 13), v3 (12 columns behind
+# "# aulog 3" — a trailing air_ms column, 2026-09-06 air clock, ignored
+# here), or v4 (same 12 columns behind "# aulog 4" — the debug-log
+# consolidation: t_us now runs on ONE session-wide CLOCK_MONOTONIC shared
+# with ctl/probe/lat, so it needs no wall-clock bridge; "# sync" lines are
+# ignored for v4+ even if present). load_au_log keys its parsing on the
+# marker; v1 rows get t_first=t_complete=0 (arrival/jitter math falls back
+# to the read-time t_us column, as before). When t_complete is nonzero it
+# is the arrival-time basis for inter-AU intervals (writer-stamped ring
+# completion time, not flightrec's read-poll stamp) — same fix as
+# aucadence.py's t_complete switch, see docs/data-provenance.md.
 #
-# Usage: flightjitter.py au-0001.log [flight-0001.jsonl]
+# Usage: flightjitter.py [session-dir | au-0001.log [flight-0001.jsonl]]
+#        (no argument -> the highest-numbered session under session.py's
+#        DEFAULT_ROOT)
 import bisect
 import json
+import os
 import statistics
 import sys
 
@@ -246,11 +256,22 @@ def analyze(rows, jsonl=None, fps=60.0, stutter_excess_ms=25.0, offset_us=0):
 
 def load_au_log(path):
     """Parses au-NNNN.log. Row format is keyed off a "# aulog N" marker line
-    (absent = v1, 7 columns; N>=2 = v2, 11 columns — SlotHdr v2's
-    t_first/t_complete/enc_us/dq_ms appended). v1 rows get
-    t_first=t_complete=enc_us=dq_ms=0 so downstream code (_arr_us, the
-    fec-wait class) can treat "present" as "nonzero" uniformly."""
-    rows, resyncs, syncs = [], 0, []
+    (absent = v1, 7 columns; N>=2 = v2+, 11+ columns — SlotHdr v2's
+    t_first/t_complete/enc_us/dq_ms appended; v3/v4 add a trailing air_ms
+    column, ignored here). v1 rows get t_first=t_complete=enc_us=dq_ms=0
+    so downstream code (_arr_us, the fec-wait class) can treat "present"
+    as "nonzero" uniformly. v4+ t_us is already on one session-wide
+    CLOCK_MONOTONIC (debug-log consolidation), so no wall-clock/mono
+    offset is derived from "# sync" lines even when present; only v<=3
+    logs still bridge through them.
+
+    "# resync N" only ever appears in a pre-v4 log (the deleted flightrec's
+    external-reader epoch resync marker). "# dropped N" is the v4 writer's
+    own hole-signal (gs/src/log_writer.h: the shared per-session LogWriter's
+    ring overflowed and it counted the lines it had to drop) — summed here
+    across every marker in the file, since a rejoined session can flush more
+    than one."""
+    rows, resyncs, dropped, syncs = [], 0, 0, []
     version = 1
     with open(path) as f:
         for line in f:
@@ -262,6 +283,8 @@ def load_au_log(path):
                     syncs.append((int(parts[2]), int(parts[3])))
                 elif parts[:2] == ["#", "resync"]:
                     resyncs += 1
+                elif parts[:2] == ["#", "dropped"] and len(parts) >= 3:
+                    dropped += int(parts[2])
                 continue
             fields = line.split()
             t, pts, sid, fid, ln, flags, nal0 = fields[:7]
@@ -275,10 +298,12 @@ def load_au_log(path):
                              t_complete=int(t_complete), enc_us=int(enc_us),
                              dq_ms=int(dq_ms)))
     offset = 0
-    if syncs:
+    # v4+ t_us is already monotonic (no wall-clock/mono bridge needed);
+    # only v<=3 logs derive an offset from their "# sync" lines.
+    if version <= 3 and syncs:
         offset = int(statistics.median(t_us - t_ms * 1000
                                        for t_us, t_ms in syncs))
-    return rows, offset, resyncs
+    return rows, offset, resyncs, dropped
 
 
 def load_jsonl(path):
@@ -296,15 +321,31 @@ def load_jsonl(path):
 
 
 def main():
-    if len(sys.argv) < 2:
-        sys.exit("usage: flightjitter.py au-NNNN.log [flight-NNNN.jsonl]")
-    rows, offset, resyncs = load_au_log(sys.argv[1])
-    jsonl = load_jsonl(sys.argv[2]) if len(sys.argv) > 2 else None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import session as _session
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg is None or os.path.isdir(arg):
+        s = _session.resolve(arg)
+        if s.au is None:
+            sys.exit("no au log in that session")
+        au_path, jsonl_path = s.au, s.flight
+    else:
+        au_path = arg
+        jsonl_path = sys.argv[2] if len(sys.argv) > 2 else None
+    rows, offset, resyncs, dropped = load_au_log(au_path)
+    jsonl = load_jsonl(jsonl_path) if jsonl_path else None
     if not rows:
-        sys.exit(f"{sys.argv[1]}: no AU rows")
+        sys.exit(f"{au_path}: no AU rows")
     rep = analyze(rows, jsonl=jsonl, offset_us=offset)
     s = rep["summary"]
+    # ring_resyncs is the pre-v4 hole-signal (the deleted flightrec's
+    # external-reader epoch resync) and is structurally always 0 for a v4
+    # log written by maburgs itself — kept here only because an old
+    # recording can still carry it. log_dropped is the v4 replacement: the
+    # in-process LogWriter's own ring-overflow counter (gs/src/log_writer.h,
+    # "# dropped N"), which IS live on current recordings.
     s["ring_resyncs"] = resyncs
+    s["log_dropped"] = dropped
     print(json.dumps(s, indent=2))
     kinds = {}
     for e in rep["events"]:

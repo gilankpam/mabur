@@ -99,39 +99,64 @@ guard and the tracker is under-counting arrivals). Current-only loss =
 Consume the same numbers programmatically with:
 
 - `maburtop` on the GS (`tools/maburtop.py`) — full-screen console,
-  grouped by link; color thresholds carry the judgment.
-- Ad-hoc capture: any UDP listener on :8300, or passively via AF_PACKET on
-  `lo` when a consumer already holds the port.
-- Flight instrument: since 2026-08-30 the GS boot-starts
-  `/etc/init.d/S95flightrec` running `/root/flightrec.py` (both checked in
-  under `tools/gs/`, scp'd as-is), one always-on daemon writing a session
-  pair into `/media/dvr/log/` per boot (shared index NNNN = max+1, no
-  auto-pruning — recordings outlive the code, prune by hand):
-  - `flight-NNNN.jsonl` — every sideport datagram off UDP :8300 (absorbs
-    the old `/root/rec8300.py`, whose device-only `S97flightrec` wrapper
-    from 2026-08-13 silently vanished — probably clobbered by a later
-    S97* deploy — which is how the 2026-08-2x flights went unrecorded, the
-    recorder gap's 4th bite; the recorder is in-repo now for that reason).
-  - `au-NNNN.log` — per-AU meta rows, SlotHdr v3 since 2026-09-06 behind a
-    `# aulog 3` marker line written once at session start (`t_us pts sid
-    fid len flags nal0 t_first t_complete enc dq air_ms`; a log without
-    the marker is the pre-2026-08-31 7-column v1 format — `t_us pts sid
-    fid len flags nal0` only — or, with a `# aulog 2` marker instead, the
-    2026-08-31 SlotHdr v2 format without the trailing `air_ms` column),
-    read from the `/dev/shm/mabur-au` ring exactly
-    like `ausniff.py` (seqlock copy, epoch resync ⇒ `# resync` marker;
-    attaches at the write head so pre-attach history can't be stamped with
-    attach time), plus `# sync <t_us> <t_ms>` clock anchors every 10 s
-    pairing wall time with the datagram's **top-level** `t_ms` (nested
-    `last_event.t_ms` is frozen — a first-match regex records a dead
-    clock; parse the JSON). `t_first`/`t_complete` are the AU's SlotHdr v2
-    mono-µs latency stamps (first body / finish()); `enc`/`dq` are the
-    drone's SBI-latched `enc_us`/`drone_q_ms` (venc encode time, TX queue
-    wait) carried through on the AU's first fragment. Since 2026-08-31
-    (streaming push) `q_ms` is stamped at the body's actual TxQueue push
-    and is the TRUE queue wait, ~0 when healthy — before that it also
-    swallowed the venc-ring wait and the FEC/SBI CPU (~6 ms standing; see
-    the scale-break note in `docs/data-provenance.md`).
+  grouped by link; color thresholds carry the judgment. Binds :8300
+  directly — nothing else holds the port any more.
+- Debug logs: maburgs writes a per-session directory when `debug_log.enable`
+  is set — `<debug_log.dir>/NNNN/` holding `ctl.log`, `probe.log`, `au.log`
+  and `flight.jsonl`; maburplay writes `lat.log` into the same directory by
+  following the `/tmp/mabur-session` marker and holds no logging config of
+  its own. Default is **off**: nothing is written until the knob is set.
+  The marker lives in tmpfs, so a reboot starts a new session while a 2 s
+  wrapper respawn rejoins the current one and appends (which is why a format
+  marker line can appear more than once in a file). Every file shares one
+  CLOCK_MONOTONIC clock, so any two rows join directly — there is no `# sync`
+  bridge any more. `ctl.log`, `probe.log` and `au.log` share one writer
+  thread (`gs/src/log_writer.h`) whose per-stream ring can fill under load;
+  when it does, the writer counts the dropped lines and, at its next 1 Hz
+  flush, appends `# dropped N` into the affected file so the gap is always
+  visible in the data itself — this is the v4 hole-signal, replacing the
+  external reader's `# resync` marker (below). `flight.jsonl` opts out
+  (`mark_drops=false`: NDJSON can't carry a comment line, and a gap is
+  already visible there from the datagram's own `seq` field). Analysis:
+  `flightreport.py <session-dir>` (also
+  `flightjitter.py`, `airdrain.py`, `probesend.py`); with no argument they
+  take the highest-numbered session. Replaces `flightrec.py`/`S95flightrec`,
+  deleted 2026-09-06.
+
+  `au.log` carries per-AU meta rows, SlotHdr v3 since 2026-09-06 (the
+  air-clock 12th column, `air_ms`), behind a `# aulog 4` marker line —
+  written at file open and re-written on every reopen, so a respawn
+  within the session appends a second copy (`t_us pts sid fid len flags
+  nal0 t_first t_complete enc dq air_ms`; a log without the marker is
+  the pre-2026-08-31 7-column v1 format — `t_us pts sid fid len flags
+  nal0` only — or, with a `# aulog 2` marker instead, the 2026-08-31
+  SlotHdr v2 format, which adds `t_first t_complete enc dq` but not the
+  trailing `air_ms` column). `aulog 4` is fed IN-PROCESS from
+  `AuRingWriter::last_record()` (`gs/src/main.cpp`'s FrameStream finish
+  callback; `gs/src/au_log.h`, `gs/src/au_ring.h`) — maburgs is the ring
+  WRITER, so there is no mmap, no seqlock copy, and no epoch resync; unlike
+  an outside reader, the writer cannot miss an AU to a ring overrun. Its
+  hole-signal is the shared `# dropped N` marker described above — the v4
+  equivalent of the `# resync` marker below. `t_us` in `aulog 4` is
+  CLOCK_MONOTONIC µs, the same clock every other file in the session
+  directory uses — in `aulog 1..3` (the last of those, `# aulog 3`, the
+  SAME SlotHdr v3 columns as `aulog 4` but written only by the now-deleted
+  `flightrec.py`, which read the rows from the `/dev/shm/mabur-au` ring
+  from OUTSIDE maburgs exactly like `ausniff.py` — seqlock copy, epoch
+  resync ⇒ `# resync` marker; attaches at the write head so pre-attach
+  history can't be stamped with attach time) it was WALL-clock µs and the
+  file carried `# sync <t_us> <t_ms>` anchors every 10 s to bridge to the
+  jsonl's `t_ms`; a v4 log has neither the wall clock nor the anchors (see
+  the scale-break note in `docs/data-provenance.md`).
+  `t_first`/`t_complete` are the AU's SlotHdr v2 mono-µs latency stamps
+  (first body / finish()); `enc`/`dq` are the drone's SBI-latched
+  `enc_us`/`drone_q_ms` (venc encode time, TX queue wait) carried through
+  on the AU's first fragment. Since 2026-08-31 (streaming push) `q_ms` is
+  stamped at the body's actual TxQueue push and is the TRUE queue wait,
+  ~0 when healthy — before that it also swallowed the venc-ring wait and
+  the FEC/SBI CPU (~6 ms standing; see the scale-break note in
+  `docs/data-provenance.md`).
+
   `tools/flightjitter.py` is the analyzer: reproduces the player's jitter
   EMA from the AU rows — using each row's `t_complete` as the arrival
   basis when present (the writer-stamped ring completion time, sharper
@@ -140,23 +165,27 @@ Consume the same numbers programmatically with:
   decomposition), and classifies each stutter event — `gap` /
   `rung-change` / `size` / `fec-wait` / `loss-recovery` / `transport` —
   using the jsonl for ladder and loss context (clock offset from the sync
-  anchors). `fec-wait` is direct per-frame evidence (the stutter AU's own
+  anchors on a pre-v4 au log; a v4 log needs no offset — same clock as the
+  jsonl). `fec-wait` is direct per-frame evidence (the stutter AU's own
   `t_complete − t_first > 20 ms`), checked before the jsonl-inferred
-  `loss-recovery` class so it wins when both apply. Tests:
-  `ctest -R 'test_flightrec|test_flightjitter'`.
-  ⚠ UDP unicast means ONE consumer per port:
-  `/etc/init.d/S95flightrec stop` before running maburtop against :8300
-  on the GS, then `start` after. The old ad-hoc recipe
-  (`socat -u udp-recv:8300 - | jq -c . >> flight.jsonl`) still works
-  ATTENDED, but dies on ssh detach even under nohup (jq buffering +
-  SIGHUP — measured 2026-08-13); don't use it for anything that must
-  survive the session. The adaptive-link record survives separately and
-  automatically: maburgs writes its own compact ctl log whenever
-  `link.ctl_log` is set in `/etc/maburgs.json` (shipped default `false`,
-  like `stats.enable` — the bench GS turns it on), one DVR-style indexed
-  file per boot at `/media/dvr/ctl-NNNN_<date>.log` (`ctl_log_dir`,
-  default `/media/dvr`), a `ctllog 11` header (v1 before 2026-08-14, v2/v3
-  that day's two waves, v4 since 2026-08-15 — pooled-RF note in
+  `loss-recovery` class so it wins when both apply. Tests: `ctest -R
+  test_flightjitter`.
+
+  Until 2026-09-06 the GS boot-started `/etc/init.d/S95flightrec` running
+  `/root/flightrec.py`, an always-on Python daemon reading the sideport off
+  UDP :8300 to write the jsonl and reading the AU ring from outside maburgs
+  (seqlock copy, epoch resync) to write the au log — the only consumer of
+  either, which meant `S95flightrec stop` before pointing maburtop or any
+  ad-hoc UDP listener at :8300, and `start` after. The 2026-09-06
+  consolidation deleted it: maburgs now writes `flight.jsonl` itself
+  (straight from `StatsExporter`, no UDP round-trip, no second reader of
+  the AU ring) and :8300 has exactly the one producer and no default
+  consumer, so `maburtop` binds it directly. The adaptive-link record
+  survives exactly as before, just relocated: maburgs writes its own
+  compact `ctl.log` into the session directory whenever `debug_log.enable`
+  is set in `/etc/maburgs.json` (shipped default `false` — the bench GS
+  turns it on), a `ctllog 11` header (v1 before 2026-08-14, v2/v3 that
+  day's two waves, v4 since 2026-08-15 — pooled-RF note in
   `docs/link-adaptation.md` — … v10 since 2026-09-04, probe stream, v11
   since 2026-09-05, arrival-booked u/u3) followed by compact S/E/P/N/R
   lines (rung/state, ctl events, probe gate edges,
@@ -190,41 +219,43 @@ Consume the same numbers programmatically with:
   `min(probe.rung_offset, top)` off a frozen `idx_ == 0`, `u` is `nan`
   because the gate never leaves `Off`, and `probe_n` is the real count of
   expected blocks (nonzero whenever `link.probe.pin_mcs >= 0`, 0
-  otherwise) — so in pin mode only the probe rows, and the `probe-NNNN`
-  log they summarize, carry information.
+  otherwise) — so in pin mode only the probe rows, and the `probe.log`
+  they summarize, carry information.
 
-  Per-body raw probe log: with `link.ctl_log` on, maburgs also writes
-  `<ctl_log_dir>/probe-NNNN_<date>.log` (`gs/src/probe_log.h`) — one row
+  Per-body raw probe log: with `debug_log.enable` on, maburgs also writes
+  `probe.log` into the session directory (`gs/src/probe_log.h`) — one row
   per finalized received probe body, at roughly the enh AU rate (≈5 MB/h
   at 30/s), far denser than the ctl log's dwell-period `S` lines and so
-  its own file. NNNN is taken from the paired `CtlLog` (`CtlLog::index()`)
-  so a `probe-NNNN`/`ctl-NNNN` pair from one boot always lines up. Header
-  `probelog 2 bpb=<bpb>`, then `<t_ms> <seq> <mcs> <enh_fid> <blocks_ok>
-  <card_mask> <snr_c0> <snr_c1> <evm_c0> <evm_c1> <first_ms>` per row
-  (`probelog 1`, 2026-09-04 only, lacked `first_ms`) — `t_ms` is the
-  finalize tick (~10 ms coarse), `first_ms` the radio's arrival stamp of
-  the body's first sight on any card (mono ms to 3 decimals, same
-  CLOCK_MONOTONIC as `au-NNNN.log`'s `t_complete`), `blocks_ok` is
-  the union of surviving blocks, `card_mask` the bitmask of cards that
-  delivered any block, snr/evm per-card in dB (`nan` when that card heard
-  nothing this row). A row is written for EVERY finalized body, on- or
-  off-profile: `mcs` is that body's OWN profile, not the commanded one, so
-  an RCF-lag body (arrives just after a profile switch, before the drone
-  has caught up) still logs a row at its stale mcs instead of vanishing. A
-  wholly-lost probe body is the only case with no row; `flightreport.py`
-  derives it from `seq` gaps and the enh AU count and joins rows to
-  `au-NNNN.log` on `enh_fid` (nearest completion in time — the id wraps
-  every ~36 min) to print the completion→probe offset percentiles
+  its own file. Since the 2026-09-06 consolidation `probe.log` and
+  `ctl.log` from one boot are siblings in the same session directory, so
+  they pair by directory rather than by a shared NNNN (before that, NNNN
+  was taken from the paired `CtlLog::index()` so a `probe-NNNN`/`ctl-NNNN`
+  pair from one boot lined up). Header `probelog 2 bpb=<bpb>`, then `<t_ms>
+  <seq> <mcs> <enh_fid> <blocks_ok> <card_mask> <snr_c0> <snr_c1> <evm_c0>
+  <evm_c1> <first_ms>` per row (`probelog 1`, 2026-09-04 only, lacked
+  `first_ms`) — `t_ms` is the finalize tick (~10 ms coarse), `first_ms`
+  the radio's arrival stamp of the body's first sight on any card (mono ms
+  to 3 decimals, same CLOCK_MONOTONIC as `au.log`'s `t_complete`),
+  `blocks_ok` is the union of surviving blocks, `card_mask` the bitmask of
+  cards that delivered any block, snr/evm per-card in dB (`nan` when that
+  card heard nothing this row). A row is written for EVERY finalized body,
+  on- or off-profile: `mcs` is that body's OWN profile, not the commanded
+  one, so an RCF-lag body (arrives just after a profile switch, before the
+  drone has caught up) still logs a row at its stale mcs instead of
+  vanishing. A wholly-lost probe body is the only case with no row;
+  `flightreport.py` derives it from `seq` gaps and the enh AU count and
+  joins rows to `au.log` on `enh_fid` (nearest completion in time — the id
+  wraps every ~36 min) to print the completion→probe offset percentiles
   (the episode report also prints an "s3-settle-refire canary" since
   2026-09-05 — demotes landing 300–360 ms after an `s3_residual` demote,
   the debris double-step `transition_edge.h` removed; ~0 expected)
-  (`flightreport.py probe-NNNN_<date>.log [au-NNNN.log]`; without the
-  second argument it picks the au log in the same directory or `./log`
-  whose mono range overlaps — the au log's NNNN is flightrec's own
-  index, not the ctl/probe one). `tools/bench/probesend.py` adds the GS
-  send stamps from a `MABUR_GAPLOG=1` run to place every send against the
-  probe (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal,
-  like the ctl log.
+  (`flightreport.py <session-dir>`, or the legacy explicit `probe-NNNN_
+  <date>.log [au-NNNN.log]`; without the second argument the legacy form
+  picks the au log in the same directory or `./log` whose mono range
+  overlaps). `tools/bench/probesend.py` adds the GS send stamps from a
+  `MABUR_GAPLOG=1` run to place every send against the probe
+  (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal, like
+  the ctl log.
 
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin
@@ -310,35 +341,29 @@ read the sideport. Reach for other tools only in these cases:**
   aggregates; when a summary number looks wrong, these record raw bodies
   for offline dissection. (The RTP-era FU tools — `fu_probe.py`,
   `fu_chain_analyze.py` — survive for reading OLD recordings only.)
-- **Player tail-latency persistence → `lat-NNNN.log`** (since 2026-08-31,
-  vsync-locked-regulator). The player's 1 Hz `lat:` stderr line used to
-  die in tmpfs with the power-off (`/tmp/maburplay.log`, gone on
-  reboot — this is how the flight-0035 tail segments were lost, see
-  `docs/latency-budget-findings-2026-08-31.md`). It is now additionally
-  appended to `<display.lat_log_dir>/lat-NNNN.log` (default
-  `/media/dvr/log`, `""` disables). Format: `# latlog 1` then
-  `# sync <mono_us> <wall_us>` (written once, at the first successful
-  open — the clock bridge that lets a lat log's rows line up against the
-  flight jsonl's `t_ms`), then one `<mono_us> <lat-payload>` line per
-  second, line-buffered. Index is next-free `lat-NNNN` in the directory
-  (same scan idiom as `ctl_log.cpp`) — **deliberately no date suffix**,
-  unlike the old `ctl-NNNN_<date>.log` naming: the GS RTC is bogus at
-  boot, and `ctl`'s date suffix plus its index-reuse history has already
-  caused session-identification confusion once (see the
-  `data-provenance.md` DVR-filename note); sessions are matched by the
-  `# sync` bridge against the flight jsonl's `t_ms`, not by filename.
-  ⚠ 2026-09-05: the bridge is NOT a boot identifier on the DVR — the GS
-  RTC restarts at the same bogus epoch every boot, so every lat/au log
-  on the disk carries one of two bridge values — and the lat index is
-  the player's own next-free counter, unrelated to flightrec's
-  `au`/`flight` index or maburgs' `ctl` index (the player restarts far
-  more often: flight 20/21 were `lat-0047`/`0048` against
-  `au-0020`/`0021`). Pair a lat log by its mono span (first/last row)
-  against the ctl log's `S` range, highest index = latest boot; see
-  `docs/probe-stream-flight-findings-2026-09-05.md` §9. A failed open (DVR not mounted yet) is retried every 30 s and never
-  blocks or spams; it never blocks the stderr line either, which keeps
-  going regardless. `tools/bench/latab.py latA.log latB.log` reads a pair
-  of these logs and prints the vsync A/B verdict (four log-derived gates:
+- **Player tail-latency persistence → `lat.log`** (since 2026-08-31,
+  vsync-locked-regulator; relocated by the 2026-09-06 consolidation). The
+  player's 1 Hz `lat:` stderr line used to die in tmpfs with the power-off
+  (`/tmp/maburplay.log`, gone on reboot — this is how the flight-0035 tail
+  segments were lost, see `docs/latency-budget-findings-2026-08-31.md`). It
+  is now additionally appended to `lat.log` inside maburgs' current session
+  directory — maburplay holds no logging config of its own, it just follows
+  the `/tmp/mabur-session` marker maburgs writes and stops if the marker
+  disappears. Format: `# latlog 2` then one `<mono_us> <lat-payload>` line
+  per second, line-buffered; there is no `# sync` bridge — maburgs and
+  maburplay both stamp CLOCK_MONOTONIC on the same box, so `lat.log`'s rows
+  join the session's other files directly. (`# latlog 1`, before this
+  change, needed the bridge to line up against the flight jsonl's `t_ms`,
+  and lived at `<display.lat_log_dir>/lat-NNNN.log` under its own next-free
+  index, unrelated to the flightrec-written `au`/`flight` index or maburgs'
+  `ctl` index — pairing an old recording still needs the mono-span/`#
+  sync` matching described in `docs/data-provenance.md`; a session
+  directory needs none of it, since `lat.log` is simply the file next to
+  `ctl.log`.) A failed open (DVR not mounted yet, or no session yet) is
+  retried every 30 s and never blocks or spams; it never blocks the stderr
+  line either, which keeps going regardless. `tools/bench/latab.py
+  latA.log latB.log` reads a pair of these logs and prints the vsync
+  A/B verdict (four log-derived gates:
   `e2e` p50 B≤A−8, `dsp` p50 B≤6 (level), `dsp` p99 B≤A−8, `dsp` p50
   4 s-bucket sweep ≤3 (flatness, separate from the p50 level gate) —
   `anchor=warm` windows are excluded from all four,
@@ -485,8 +510,9 @@ read the sideport. Reach for other tools only in these cases:**
   opens, so the OSD REC indicator visibly lags the press, while burned mode
   resumes at the next decoded frame. Files are `record-NNNN.mp4` under
   `dvr.dir`, indexed one past the highest `record-NNNN` already on the card
-  — no timestamp, since the GS RTC is wrong at boot (same reasoning as
-  `ctl-NNNN` and `flight-NNNN`). The index therefore climbs across boots and
+  — no timestamp, since the GS RTC is wrong at boot (same reasoning as the
+  debug-log session directory's own `NNNN` index, above). The index
+  therefore climbs across boots and
   never overwrites an earlier flight; date-stamped `record_<date>.mp4` files
   from before 2026-08-26 do not match the pattern, so they are ignored by
   the scan and keep their names. No `input` block means no button.

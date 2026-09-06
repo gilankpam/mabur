@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -19,15 +20,18 @@
 
 #include "aggregator.h"
 #include "au_doorbell.h"
+#include "au_log.h"
 #include "au_ring.h"
 #include "body_queue.h"
 #include "config.h"
 #include "ctl_log.h"
+#include "debug_session.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
 #include "ladder_residual.h"
 #include "lat_window.h"
+#include "log_writer.h"
 #ifdef MABUR_LOSS_SIM
 #include "loss_control.h"
 #endif
@@ -48,6 +52,7 @@
 #include "s1_loss.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
+#include "stats_sink.h"
 #include "transition_edge.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
@@ -214,10 +219,26 @@ static int run_radio(const maburgs::Config& cfg) {
     }
   }
 #endif
-  // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md).
-  // Declared here (ahead of the FrameStream construction below)
-  // so the FrameStream end_frame lambda can capture `stats` by reference; both
-  // must also outlive every lambda that captures them.
+  // Debug-log session (2026-09-06 consolidation): one directory for
+  // ctl.log/probe.log/au.log/flight.jsonl, one writer thread feeding all of
+  // them. Declared here (ahead of the stats block and the FrameStream
+  // construction below) so `log_writer` outlives every log object that binds
+  // to it.
+  maburgs::DebugSession debug(cfg.debug_log.dir, cfg.debug_log.enable);
+  std::optional<maburgs::LogWriter> log_writer;
+  if (debug.ok()) {
+    log_writer.emplace();
+    std::fprintf(stderr, "debug-log: session %s%s\n", debug.dir().c_str(),
+                 debug.rejoined() ? " (rejoined)" : "");
+  }
+  // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md)
+  // and flight.jsonl (debug-log consolidation, 2026-09-06) share one
+  // StatsExporter snapshot, so the snapshot builder runs whenever either
+  // wants it: `cfg.stats.enable` gates the UDP sinks ONLY (:8302 feeds
+  // maburplay's GS OSD, so debug logging must never blank it), `debug.ok()`
+  // gates the file. Declared here (ahead of the FrameStream construction
+  // below) so the FrameStream end_frame lambda can capture `stats` by
+  // reference; both must also outlive every lambda that captures them.
   // session id: nonzero random u32 so consumers detect restarts.
   // UdpSink has a user-declared destructor and a deleted copy constructor
   // with no declared move constructor, so it has neither -- std::vector
@@ -226,27 +247,45 @@ static int run_radio(const maburgs::Config& cfg) {
   // that: the vector moves pointers, never UdpSink objects.
   std::vector<std::unique_ptr<maburgs::UdpSink>> stats_udp;
   std::optional<maburgs::StatsExporter> stats;
-  if (cfg.stats.enable) {
-    stats_udp.reserve(cfg.stats.out.size());
-    for (const auto& o : cfg.stats.out)
-      stats_udp.push_back(std::make_unique<maburgs::UdpSink>(o.host, o.port));
+  maburgs::LogWriter::Stream flight_jsonl = maburgs::LogWriter::kBadStream;
+  if (debug.ok())
+    flight_jsonl = log_writer->open(debug.dir(), "flight.jsonl", "",
+                                    /*mark_drops=*/false);
+  if (cfg.stats.enable || debug.ok()) {
+    std::function<bool(const std::string&)> to_udp;
+    if (cfg.stats.enable) {
+      stats_udp.reserve(cfg.stats.out.size());
+      for (const auto& o : cfg.stats.out)
+        stats_udp.push_back(std::make_unique<maburgs::UdpSink>(o.host, o.port));
+      to_udp = [&stats_udp](const std::string& s) {
+        // Every destination gets the same buffer. One failing sink must not
+        // stop the others -- a dead consumer is not a reason to blind the
+        // live ones.
+        bool any = false;
+        for (auto& u : stats_udp)
+          if (u->send(reinterpret_cast<const uint8_t*>(s.data()), s.size()))
+            any = true;
+        return any;
+      };
+    }
+    std::function<void(const std::string&)> to_file;
+    if (flight_jsonl != maburgs::LogWriter::kBadStream)
+      to_file = [&log_writer, flight_jsonl](const std::string& s) {
+        log_writer->line(flight_jsonl, s.data(), s.size());
+      };
     uint32_t session = 0;
     std::random_device rd;
     while (session == 0) session = rd();
-    stats.emplace(session, cfg.stats.interval_ms,
-                  [&stats_udp](const std::string& s) {
-                    // Every destination gets the same buffer. One failing
-                    // sink must not stop the others -- a dead consumer is
-                    // not a reason to blind the live ones.
-                    bool any = false;
-                    for (auto& u : stats_udp)
-                      if (u->send(reinterpret_cast<const uint8_t*>(s.data()), s.size()))
-                        any = true;
-                    return any;
-                  });
-    for (const auto& o : cfg.stats.out)
-      std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
-                   o.host.c_str(), o.port, cfg.stats.interval_ms);
+    stats.emplace(
+        session, cfg.stats.interval_ms,
+        maburgs::make_stats_sink(std::move(to_udp), std::move(to_file)));
+    if (cfg.stats.enable)
+      for (const auto& o : cfg.stats.out)
+        std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
+                     o.host.c_str(), o.port, cfg.stats.interval_ms);
+    if (flight_jsonl != maburgs::LogWriter::kBadStream)
+      std::fprintf(stderr, "debug-log: flight jsonl -> %s every %d ms\n",
+                   log_writer->path(flight_jsonl).c_str(), cfg.stats.interval_ms);
   }
 
   // Drone telemetry (T_TELEM): display-only, not rendezvous traffic — held
@@ -332,9 +371,15 @@ static int run_radio(const maburgs::Config& cfg) {
   // carry the OLD profile and ProbeTrack stops scoring them, so the window
   // must refill from the new profile's bodies only (RCF lag + finalize).
   constexpr double kProbeSwitchBlankMs = 150.0;
-  // Per-body probe log, indexed to the same NNNN as the ctl log so a
-  // probe-NNNN/ctl-NNNN pair from one boot lines up.
+  // Per-body probe log, alongside ctl.log and au.log in the same session
+  // directory (DebugSession). Declared here, before FrameStream/au_log
+  // below, and emplaced later once debug_log.enable is known.
   std::optional<maburgs::ProbeLog> probe_log;
+  // Per-AU meta log; forward-declared here so the FrameStream callbacks
+  // just below can reference it by [&] capture, even though it is only
+  // emplaced once debug.ok() is known (ctl/probe/au construction, below,
+  // next to ctl_log).
+  std::optional<maburgs::AuLog> au_log;
 
   // Video tail: FrameStream reassembles whole frames from the raw FRAG
   // fragments the decoder emits; whole access units leave maburgs through
@@ -347,6 +392,7 @@ static int run_radio(const maburgs::Config& cfg) {
          cur_au_pts = h.pts_us;
          cur_au_sid = sid;
          if (au_on) au_ring.begin(h, sid);
+         if (au_log) au_log->begin();
          rcf_slot.on_au_first(mono_ms());
          // One probe expectation per ENH access unit: the probe body rides
          // the enh AU's send opportunity, so the AU count is what "expected"
@@ -355,11 +401,14 @@ static int run_radio(const maburgs::Config& cfg) {
        },
        [&](const uint8_t* d, size_t n) {
          if (au_on) au_ring.append(d, n);
+         if (au_log) au_log->payload(d, n);
        },
        [&](bool c, const maburgs::AuLatMeta& lat) {
          if (au_on) {
            const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
+           if (rec != UINT64_MAX && au_log)
+             au_log->row(mono_us(), au_ring.last_record());
          }
          rcf_slot.on_au_complete(
              mono_ms(),
@@ -470,13 +519,13 @@ static int run_radio(const maburgs::Config& cfg) {
   // dead/absent consumer (2026-08-04: statsrec wasn't running and the
   // flight jsonl froze hours before the session).
   //
-  // Opened whenever link.ctl_log is set, INCLUDING static-pin mode
+  // Opened whenever debug_log.enable is set, INCLUDING static-pin mode
   // (static_mcs >= 0). It used to be skipped there -- a pinned link never
   // ticks the adaptive controller, so there were no rung decisions to
   // record -- but the probe stream changed that (spec 2026-09-04 section
   // 8.3 steps 1-2): the pinned bench runs are exactly the ones whose
-  // per-body probe-NNNN.log matters, and ProbeLog takes its NNNN from this
-  // CtlLog so the two files pair up per boot.
+  // per-body probe.log matters, and it lives alongside ctl.log in the same
+  // session directory so the two files from one boot always pair up.
   //
   // What a pinned S line actually contains: the controller is never
   // updated, so u/util read 0 and E/P/N/R records never fire at all. The
@@ -489,8 +538,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // the RCF carries a probe profile, so ProbeTrack books bpb per enh AU and
   // this is nonzero -- exactly the number the pinned bench runs want. It is
   // 0 only when pin_mcs < 0, where nothing commands a probe profile.
+  // au_log (AuLog) is forward-declared above, next to probe_log, so the
+  // FrameStream callbacks can capture it by reference; only ctl_log is new
+  // here.
   std::optional<maburgs::CtlLog> ctl_log;
-  if (cfg.link.ctl_log) {
+  if (debug.ok()) {
     std::string header = "ladder=";
     for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
       const maburgs::Rung& r = cfg.link.ladder_cfg.ladder[i];
@@ -505,16 +557,13 @@ static int run_radio(const maburgs::Config& cfg) {
                   cfg.link.ladder_cfg.down_util, cfg.link.ladder_cfg.up_util,
                   cfg.link.ladder_cfg.probe.rung_offset);
     header += tail;
-    ctl_log.emplace(cfg.link.ctl_log_dir, header);
-    if (ctl_log->ok())
-      std::fprintf(stderr, "ctl-log: %s\n", ctl_log->path().c_str());
-    // else: CtlLog's constructor already printed the ok()=false reason to
-    // stderr (opendir/fopen failure) -- non-fatal, logging just stays off.
-  }
-  if (ctl_log && ctl_log->ok()) {
-    probe_log.emplace(cfg.link.ctl_log_dir, ctl_log->index(), probe_bpb);
-    if (probe_log->ok())
-      std::fprintf(stderr, "probe-log: %s\n", probe_log->path().c_str());
+    ctl_log.emplace(*log_writer, debug.dir(), header);
+    probe_log.emplace(*log_writer, debug.dir(), probe_bpb);
+    // Gated on au_on too (not just debug.ok()): with au_ring.enable=false
+    // there are never any rows to write, and an emplace here would leave
+    // au.log containing only its "# aulog 4" header -- reads as "the
+    // logger is broken" rather than "the ring is off".
+    if (au_on) au_log.emplace(*log_writer, debug.dir());
   }
 
   // Measured-loss ladder feedback: stream 1 (base layer)'s cumulative
@@ -672,7 +721,7 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   uint64_t last_stats_ms = 0;
   // Separate from last_stats_ms since 2026-08-15: the ctl log runs on
-  // link.ctl_log_period_ms, the stderr line stays at 1 Hz.
+  // debug_log.ctl_period_ms, the stderr line stays at 1 Hz.
   uint64_t last_ctl_sample_ms = 0;
   // Foreign-RC_VERSION warning throttle. Separate `logged` flag rather than a
   // 0 sentinel: mono_ms() is small but not guaranteed non-zero at startup.
@@ -1071,14 +1120,14 @@ static int run_radio(const maburgs::Config& cfg) {
     // did when the two were one block.
     const bool dump_now = g_dump.exchange(false);
 
-    // Adaptive-link log, on its OWN cadence (link.ctl_log_period_ms, default
+    // Adaptive-link log, on its OWN cadence (debug_log.ctl_period_ms, default
     // 1000). Split from the stderr block below on 2026-08-15: the ctl log is
     // the instrument the ladder is tuned from and wants to run as fast as
     // 50 ms, while the stderr line is human-readable and lands in /tmp, which
     // is tmpfs — running that at 20 Hz would fill RAM for no one's benefit.
     if (ctl_log &&
         (dump_now || now_ms_u - last_ctl_sample_ms >= static_cast<uint64_t>(
-                                                          cfg.link.ctl_log_period_ms))) {
+                                                          cfg.debug_log.ctl_period_ms))) {
       last_ctl_sample_ms = now_ms_u;
       const auto& c = vrx.ctl();
       // measured_rung(), not rung(): every other field in this row is a
@@ -1100,7 +1149,7 @@ static int run_radio(const maburgs::Config& cfg) {
                        probe_loss.expected_in_window(now_ms));
       // R lines keep their own, much slower period — they are a store
       // snapshot, not a dwell sample, and must not follow the S cadence.
-      if (now_ms - last_rung_log_ms >= cfg.link.rung_log_period_s * 1000.0) {
+      if (now_ms - last_rung_log_ms >= cfg.debug_log.rung_period_s * 1000.0) {
         last_rung_log_ms = now_ms;
         emit_rung_lines(now_ms);
       }

@@ -80,28 +80,6 @@ struct LinkCfg {
                         {5, 0.5, 0.5},
                         {6, 0.5, 0.5},
                         {7, 0.2, 0.2}}};
-
-  // Dedicated adaptive-link log (spec 2026-08-05 section 5). Dir is
-  // overridable for host tests; the device default is the DVR SD card.
-  bool ctl_log = false;
-  std::string ctl_log_dir = "/media/dvr";
-
-  // S-line cadence, ms (2026-08-15). Was hardcoded at 1000 and shared with
-  // main.cpp's stderr stats line; the two are now separate timers, because
-  // the ctl log is the adaptive-link instrument and wants to run FASTER than
-  // a human-readable log should. The floor exists for fade-trigger tuning:
-  // the predictive trigger decides every feedback_ms (50) against a 300 ms
-  // fast tau and a trigger_ms (300) sustain, so a 1 Hz record cannot tell a
-  // sustained fade from a sub-second transient — the exact question the
-  // 2026-08-15 sweep of 41 flights could not answer. 100 ms or finer
-  // resolves it. Cost is linear: ~80 B per S line, so 50 ms ~= 1.6 MB per
-  // 6-minute flight against a 58 GB DVR card.
-  int ctl_log_period_ms = 1000;
-
-  // R-line emission cadence for the per-rung EWMA store (spec 2026-08-13).
-  // The store's own tuning (half_life_samples) lives in
-  // ladder_cfg.rung_stats; this is main.cpp's log cadence only.
-  int rung_log_period_s = 10;
 };
 
 /// Video reassembly tuning (PR C: the RTP output destination is gone --
@@ -146,6 +124,12 @@ struct StatsOut {
 /// (SO_REUSEPORT load-balances, it does not duplicate), so consumers
 /// cannot simply share a port -- which is why statsrec has to re-emit, and
 /// why maburplay's OSD would otherwise depend on statsrec staying alive.
+///
+/// `enable` gates the UDP sinks ONLY -- :8302 feeds maburplay's GS OSD, so
+/// turning debug logging on or off must never blank it, and turning `enable`
+/// off must not disable flight.jsonl (gs/src/stats_sink.h). `interval_ms` is
+/// the snapshot cadence, shared by the sideport and flight.jsonl; there is
+/// deliberately no separate debug_log.flight_period_ms.
 struct StatsCfg {
   bool enable = false;
   int interval_ms = 500;  // clamped to [100, 10000] at load
@@ -162,6 +146,17 @@ struct AuRingOutCfg {
   int slot_count = 16;  // 16 x 512 KiB = 8 MiB default ring
 };
 
+/// Debug logs: the per-session directory of machine-parsed files (ctl, probe,
+/// au, flight jsonl written by maburgs; lat written by maburplay, which
+/// follows the /tmp/mabur-session marker and has no config of its own).
+/// Default OFF: nothing is written until this is turned on.
+struct DebugLogCfg {
+  bool enable = false;
+  std::string dir = "/media/dvr/log";
+  int ctl_period_ms = 1000;  // ctl.log S lines
+  int rung_period_s = 10;    // ctl.log R lines (the per-rung store snapshot)
+};
+
 /// Ground station configuration: radio, FEC, link, video reassembly, AU ring, MSP OSD.
 struct Config {
   RadioCfg radio;
@@ -171,6 +166,7 @@ struct Config {
   MspCfg msp;
   StatsCfg stats;
   AuRingOutCfg au_ring;
+  DebugLogCfg debug_log;
 
   /// Builds decoder configuration with per-stream RS and UEP overhead
   /// (2 streams since the airtime-balance-uep fold-in).

@@ -23,7 +23,9 @@ the always-on probe stream + ctllog 10, `probe_u`/`probe_n` become a
 continuous EWMA 2026-09-04 (probe-stream)** · `probelog 2` adds the
 per-body `first_ms` arrival stamp 2026-09-05 (probe-blanking fix; a
 `probelog 1` file's `t_ms` is the finalize tick and cannot be joined to
-`au-NNNN.log` for timing).
+`au-NNNN.log` for timing) · debug logs consolidate into one per-session
+directory and `au.log`'s clock switches WALL→MONOTONIC (`# aulog 4`,
+`# latlog 2`, both drop the `# sync` bridge) 2026-09-06.
 
 **Carrier sense is OFF on both daemons since 2026-08-05.** `maburd` and
 `maburgs` both set `dev_cfg.tuning.disable_cca = true` at bring-up, so the
@@ -84,7 +86,9 @@ while the new ones sort by index. A card holds both: the two families never
 collide (the scan ignores `record_`-prefixed names) and old files keep their
 names, so pair an old recording with its jsonl/ctl neighbours by mtime, not
 by the stem. Same reasoning as `ctl-NNNN` and `flight-NNNN`, which were
-index-first all along.
+index-first all along — both names retired by the 2026-09-06 consolidation,
+whose own `NNNN` session-directory index is index-first for the same
+reason.
 
 Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md` and
@@ -595,3 +599,25 @@ current-only via the transition watermark. Consequences for readers:
   `recovered`/`recovered_arrived`/`abandoned` keys stay and still describe
   decoder completion; they are no longer what the ladder acts on.
 - The 150 ms util settle blank is gone; the residual blank stays.
+
+## 2026-09-06 — debug-log consolidation, and the au-log clock break
+
+`au.log`'s `# aulog 4` marker means its leading `t_us` column is
+CLOCK_MONOTONIC µs. In `aulog 1..3` — written by the retired
+`flightrec.py`, which read the ring from outside maburgs — it was WALL-clock
+µs, and the file carried `# sync <wall_us> <t_ms>` anchors every 10 s so
+`flightjitter.py` could bridge to the jsonl's monotonic `t_ms`. Do not pool
+`t_us` across the version boundary, and do not assume a v4 log has any
+`# sync` line. `lat.log`'s `# latlog 2` drops its own `# sync` header for the
+same reason.
+
+Recordings made before this change are three independent session counters
+across two directories (`/media/dvr/ctl-NNNN_<date>.log` and
+`/media/dvr/log/{au,flight,lat}-NNNN.*`), which is why pairing them needs
+mono-span overlap and `last_event` identity. Sessions from `NNNN/` onward
+need none of that: one directory is one session.
+
+A format marker line may appear more than once in a v4/v2 file — each
+daemon restart within a session appends and re-states its header, including
+a `header_info` that may have changed. Parsers must treat a repeated marker
+as a re-statement, not as the start of a new file.

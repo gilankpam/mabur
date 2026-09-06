@@ -74,7 +74,8 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"radio", "fec", "link", "video", "msp", "stats", "au_ring"});
+  check_keys(j, "", {"radio", "fec", "link", "video", "msp", "stats", "au_ring",
+                     "debug_log"});
   Config c;
 
   if (j.contains("radio")) {
@@ -132,7 +133,7 @@ Config load_config(const std::string& path) {
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
                 "starved_confirm_ms", "s3_demote", "s3_down_util",
-                "s3_settle_ms", "s3_min_syms", "ctl_log", "ctl_log_dir", "ctl_log_period_ms",
+                "s3_settle_ms", "s3_min_syms",
                 "rung_stats", "fade", "probe",
                 "rcf_slot_hold_ms"});
     c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
@@ -262,22 +263,11 @@ Config load_config(const std::string& path) {
       fc.min_rung = static_cast<int>(get_int(fj, "min_rung", 2, 0, 15, "link.fade"));
     }
 
-    if (r.contains("ctl_log")) {
-      if (!r["ctl_log"].is_boolean()) fail("link.ctl_log", "not a boolean");
-      c.link.ctl_log = r["ctl_log"].get<bool>();
-    }
-    c.link.ctl_log_dir = get_str(r, "ctl_log_dir", "/media/dvr", "link");
-    c.link.ctl_log_period_ms = static_cast<int>(
-        get_int(r, "ctl_log_period_ms", 1000, 50, 60000, "link"));
-
     if (r.contains("rung_stats")) {
       const json& rs = r["rung_stats"];
-      check_keys(rs, "link.rung_stats",
-                 {"half_life_samples", "rung_log_period_s"});
+      check_keys(rs, "link.rung_stats", {"half_life_samples"});
       c.link.ladder_cfg.rung_stats.half_life_samples = static_cast<int>(
           get_int(rs, "half_life_samples", 600, 10, 100000, "link.rung_stats"));
-      c.link.rung_log_period_s = static_cast<int>(
-          get_int(rs, "rung_log_period_s", 10, 1, 600, "link.rung_stats"));
     }
   }
   // Sentinel resolution: an absent link.probe.max_util/link.s3_down_util
@@ -370,6 +360,21 @@ Config load_config(const std::string& path) {
         static_cast<int>(get_int(r, "slot_kb", 512, 64, 4096, "au_ring"));
     c.au_ring.slot_count =
         static_cast<int>(get_int(r, "slot_count", 16, 4, 256, "au_ring"));
+  }
+
+  if (j.contains("debug_log")) {
+    const json& r = j["debug_log"];
+    check_keys(r, "debug_log",
+               {"enable", "dir", "ctl_period_ms", "rung_period_s"});
+    if (r.contains("enable")) {
+      if (!r["enable"].is_boolean()) fail("debug_log.enable", "not a boolean");
+      c.debug_log.enable = r["enable"].get<bool>();
+    }
+    c.debug_log.dir = get_str(r, "dir", "/media/dvr/log", "debug_log");
+    c.debug_log.ctl_period_ms = static_cast<int>(
+        get_int(r, "ctl_period_ms", 1000, 50, 60000, "debug_log"));
+    c.debug_log.rung_period_s = static_cast<int>(
+        get_int(r, "rung_period_s", 10, 1, 600, "debug_log"));
   }
   return c;
 }
