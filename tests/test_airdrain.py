@@ -57,7 +57,10 @@ def write_logs(d, model=True):
             sid = fid & 1
             pts = t - PTS_OFF_MS + (100000.0 if t >= 130000.0 else 0.0)  # restart: pts jumps +100 s
             enc = 7000; q = 1
-            idr = t in (60110.0,) or (60100.0 <= t < 60100.0 + PERIOD_MS) or (60400.0 <= t < 60400.0 + PERIOD_MS)
+            # One BASE IDR per cascade step: a 2-frame window holds exactly
+            # one sid-0 frame, whichever parity the float walk lands on.
+            idr = sid == 0 and ((60100.0 <= t < 60100.0 + 2 * PERIOD_MS) or
+                                (60400.0 <= t < 60400.0 + 2 * PERIOD_MS))
             length = 80000 if idr else (30000 if sid == 0 else 20000)
             tf = t + FLOOR_MS + enc / 1000.0 + q + excess_at(t)
             tc = tf + 12.0
@@ -121,6 +124,20 @@ def main():
     assert r['spike_secs'] == 2, r['spike_secs']
     assert r['standalone'] == [], r['standalone']
 
+    # Transition IDRs (the venc.min_iqp tuning readout, 2026-09-06): one row
+    # per non-starved E line with the first BASE IDR completing within
+    # 600 ms of it. The cascade's two steps each own one 80 kB IDR; the
+    # single demote at 90 s and every promote have none.
+    ti = r['idrs']
+    assert [(x['from'], x['to']) for x in ti if x['kb'] is not None] == [(5, 4), (4, 3)], ti
+    assert all(x['kb'] == 80.0 for x in ti if x['kb'] is not None), ti
+    d54 = next(x for x in ti if x['t0'] == 60000)
+    assert 100.0 <= d54['dt_ms'] <= 200.0, d54
+    assert d54['post_p_kb'] == 30.0 and d54['pre_p_kb'] == 30.0, d54
+    single = next(x for x in ti if x['t0'] == 90000)
+    assert single['kb'] is None and single['dt_ms'] is None, single
+    assert not any(x['t0'] == 150000 for x in ti), ti     # starved: no row
+
     # print_report must not throw on this input (smoke).
     import contextlib, io
     buf = io.StringIO()
@@ -128,6 +145,7 @@ def main():
         airdrain.print_report(r, ctl, au, profiles=True)
     out = buf.getvalue()
     assert 'cascade summary: peak p50=120' in out, out
+    assert 'transition IDRs' in out, out
 
     # --model: aulog-3 air_ms column vs measured air + q. The fixture's model
     # is 0.8x the truth, so the through-origin slope (measured/model) reads

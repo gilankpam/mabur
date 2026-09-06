@@ -303,7 +303,13 @@ read the sideport. Reach for other tools only in these cases:**
   around the first demote with IDRs marked, peak / time-to-peak / settle,
   the 1 s pre-demote excess, and the first-500 ms on-air bytes against
   the new rung's nominal PHY rate; single-demote and promote peaks;
-  steady-state excess per rung; standalone spike seconds. This is the
+  steady-state excess per rung; standalone spike seconds; and, since
+  2026-09-06, a **transition IDRs** table — every non-starved `E` line
+  with the first base IDR completing within 600 ms of it, kB p50/max
+  by target rung split demotes | promotes and the ratio to the
+  post-transition base P (`--profiles` lists every row). That table is
+  the `venc.min_iqp` tuning readout (`docs/airtime-model.md`): read the
+  rung-0 demote column after a flight, then move the floor. This is the
   §9 measurement of `docs/probe-stream-flight-findings-2026-09-05.md`
   and the A/B instrument for its drain-shed follow-up
   (`tests/test_airdrain.py` pins it on a synthetic cascade). The ctl and
