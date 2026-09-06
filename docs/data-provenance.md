@@ -396,6 +396,16 @@ Even absolute, the headlines still exclude sensor pre-pts (~10–16 ms
 est.) and post-scanout display latency — only an LED/camera measurement
 sees those.
 
+**Burned-DVR shape change, 2026-09-06 — the LAT segment breakdown left
+the screen.** Recordings burned before this date show each LAT row as
+`P50 <e2e> | enc… dq… air+… fec… dec… reg… dsp…`; after it the rows read
+`LAT P50 <e2e> ms` / `LAT P99 <e2e> ms`, right-flushed under `RTT`, with
+no segments. This is a DISPLAY change only — no scale break, the same
+frames and the same absolute e2e — but a burned-video comparison across
+the date will look like data went missing. It did not: the segments are
+in the flight jsonl `lat:` line for both eras, and the sideport
+`link.video.lat` block is unchanged.
+
 ## 2026-09-03: per-card `loss_pct` phantom before the MSP seq fix
 
 Recordings made before the MSP seq-walk fix (branch `msp-seq-fix`)

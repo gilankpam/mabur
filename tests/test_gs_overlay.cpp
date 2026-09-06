@@ -683,16 +683,19 @@ TEST(lat_marks_relative_until_absolute_and_rtt_renders) {
   p.lat_valid = true;
   p.lat_e2e_ms = 78;
   p.lat_p50_e2e_ms = 55;
-  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) == "P99 ~78 |");
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) ==
+        "LAT P99 ~78 ms");
   CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatP50Head) ==
-        "P50 ~55 |");
+        "LAT P50 ~55 ms");
   p.lat_abs = true;
-  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) == "P99 78 |");
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) ==
+        "LAT P99 78 ms");
   CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatP50Head) ==
-        "P50 55 |");
-  // Invalid stays the bare em-dash form — no marker on a non-number.
+        "LAT P50 55 ms");
+  // Invalid stays the bare em-dash form — no marker, and no unit either:
+  // "ms" on a non-number reads like a measurement.
   p.lat_valid = false;
-  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) == "P99 --");
+  CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatHead) == "LAT P99 --");
 
   s.rtt_ms = 12.4;
   CHECK(ov.debug_field_text(s, false, p, GsFieldId::kLatRtt) == "RTT 12 ms");

@@ -1610,10 +1610,10 @@ int main(int argc, char** argv) {
     if (idle_ok && mono_ms() - lat_mark_ms >= 1000) {
       lat_mark_ms = mono_ms();
       const auto L = lat.flush_line();
-      // OSD LAT row (Task 12): p99_frame() returns the REAL p99-by-e2e
-      // frame's own segment breakdown, computed as a side effect inside
-      // flush_line() above from the window it is about to clear -- it is
-      // a member that persists across flush_line() calls, not derived
+      // OSD LAT rows (Task 12): p99_frame() returns the REAL p99-by-e2e
+      // frame, computed as a side effect inside flush_line() above from
+      // the window it is about to clear -- it is a member that
+      // persists across flush_line() calls, not derived
       // from `completed_` at call time, so calling it after flush_line()
       // here is safe and gets THIS window's frame (see lat_tracker.h and
       // lat_tracker.cpp's flush_line()/p99_frame()). A window with zero
@@ -1629,21 +1629,24 @@ int main(int argc, char** argv) {
       // pre-reset frame as if it were current. `L.anchor_ok`, from this
       // SAME flush_line() call, is what actually reflects whether the
       // window just flushed has a usable anchor -- gate on both, or a
-      // reset shows a stale breakdown labeled current for ~1s+ instead
-      // of "LAT --".
+      // reset shows a stale number labeled current for ~1s+ instead of
+      // "LAT P99 --".
       gs_ps.lat_valid = bd.valid && L.anchor_ok;
       // Gated on gs_ps.lat_valid (the AND), not bd.valid alone -- same
       // reasoning as above: a stale post-reset bd would otherwise still
-      // get copied into gs_ps.lat_e2e_ms/lat_ms even though the OSD is
-      // about to ignore them, leaving gs_ps holding phantom numbers.
+      // get copied into gs_ps.lat_e2e_ms even though the OSD is about to
+      // ignore it, leaving gs_ps holding a phantom number.
       // link-rtt (2026-09-02): absolute floor = own anchor + the sideport
       // pts offset (floor_us_from owns the 32-bit-seed wrap rule). Folded
-      // into air+ AND e2e so the row's additive story survives: air+ was
-      // "excess above the luckiest transit", the floor IS that transit, so
-      // air+ becomes absolute first-body air time and the segments still
-      // sum to the headline. Sanity-bounded: an offset that puts the floor
-      // outside (-1ms, 1s) is estimator garbage — stay relative (~) rather
-      // than display a fabricated absolute.
+      // into e2e, turning it from "excess above the luckiest transit" into
+      // capture-stamp→scanout-start truth. (It used to be folded into the
+      // air+ segment as well, so the OSD breakdown still summed to the
+      // headline; that breakdown is gone as of 2026-09-06, and the jsonl
+      // lat: line below is deliberately untouched by the floor -- it is
+      // the relative record the older recordings are in.) Sanity-bounded:
+      // an offset that puts the floor outside (-1ms, 1s) is estimator
+      // garbage — stay relative (~) rather than display a fabricated
+      // absolute.
       int floor_ms = 0;
       gs_ps.lat_abs = false;
       if (gs_src && lat.anchor().usable()) {
@@ -1658,18 +1661,12 @@ int main(int argc, char** argv) {
       }
       if (gs_ps.lat_valid) {
         gs_ps.lat_e2e_ms = static_cast<int>(bd.ms[7]) + floor_ms;
-        for (int i = 0; i < 7; ++i) gs_ps.lat_ms[i] = static_cast<int>(bd.ms[i]);
-        gs_ps.lat_ms[2] += floor_ms;  // air+ -> absolute air
         // Median row: same window, same anchor gate, same staleness
-        // reasoning as the p99 pair above -- p50_frame_ likewise survives
+        // reasoning as the p99 one above -- p50_frame_ likewise survives
         // flush_all(), so it is gated on the AND, not on bd50.valid alone.
         const auto bd50 = lat.p50_frame();
-        if (bd50.valid) {
+        if (bd50.valid)
           gs_ps.lat_p50_e2e_ms = static_cast<int>(bd50.ms[7]) + floor_ms;
-          for (int i = 0; i < 7; ++i)
-            gs_ps.lat_p50_ms[i] = static_cast<int>(bd50.ms[i]);
-          gs_ps.lat_p50_ms[2] += floor_ms;
-        }
       }
       if (L.n > 0) {
         char lat_buf[256];

@@ -404,53 +404,36 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     const int lat_base =
         fps_box_top - gap8 - (secondary->glyph_h - secondary->baseline);
 
-    char worst_bd[80];
-    std::snprintf(worst_bd, sizeof(worst_bd),
-                  "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d", 999, 999, 999,
-                  999, 999, 999, 999);
-    // "P99"/"P50" rather than the old "LAT": with two rows present the
-    // label has to say WHICH statistic it is. Same glyph count as "LAT",
-    // so every width below is unchanged by the rename.
-    // "~999" not "999": the headline carries a leading ~ while the e2e is
-    // still relative (link-rtt) and the box must fit the widest form.
-    const int head_w = text_width(*secondary, "P99 ~999 |");
-    const int bd_w = text_width(*secondary, worst_bd);
-    // gap12, not gap10: per the horizontal clearance floor comment above
-    // (kFpsValue/kFpsLabel's), anything smaller yields negative clearance
-    // at 720p once the atlas's 8 px shadow pad is subtracted -- measured
-    // as a genuine 1 px box overlap with gap10 here.
-    const int lat_x = right - head_w - gap12 - bd_w - pad_h(secondary);
-    // Headline reads "LAT <e2e> |" (or "LAT --" with no breakdown while the
-    // anchor isn't usable yet); the breakdown is that SAME p99-by-e2e
-    // frame's own seven segments -- never a mix of independently-ranked
-    // per-segment percentiles, which would not sum to anything meaningful
-    // (see lat_tracker.h's Breakdown comment). Player-measured, so both
-    // fields use the plain tokens directly rather than the stale-aware
-    // `link_*` helpers -- this row is current by construction and never
-    // dims.
-    place(GsFieldId::kLatHead, secondary, lat_x, lat_base, "P99 ~999 |");
-    place(GsFieldId::kLatBreakdown, secondary, lat_x + head_w + gap12, lat_base,
-          worst_bd);
-    // Median row, one secondary line further up, same left edge and same
-    // box widths -- derived from kLatHead's box top the same box-edges-not-
-    // glyph_h way lat_base itself is derived from the FPS box, for the same
-    // overlap reason. Guarded by asset_safe_inset_and_centre_of_frame_hold:
-    // this column now grows two rows above FPS, not one.
+    // Three narrow RIGHT-flush rows, top to bottom: RTT, P50, P99 -- one
+    // block, one right edge. The per-segment breakdown that used to sit
+    // beside each headline was dropped 2026-09-06 (see GsPlayerState),
+    // which is what lets these share the RTT field's right-flush
+    // treatment: the old full-width lat column's left edge (~1494 at
+    // 1080p) sat inside the centre-of-frame keep-clear band (y < 780·s,
+    // x < 1520·s), and only RTT was narrow enough to clear it. Now all
+    // three do, at every resolution
+    // (safe_inset_and_centre_of_frame_hold_at_every_resolution pins it).
+    //
+    // Both LAT boxes are sized on the SAME widest string so they share a
+    // width and therefore an x -- "~999" carries the relative marker (see
+    // kLatHead's update case) and " ms" the unit.
+    const char* kLatWidest = "LAT P99 ~999 ms";
+    const int lat_w = text_width(*secondary, kLatWidest);
+    const int lat_x = right - lat_w - pad_h(secondary);
+    place(GsFieldId::kLatHead, secondary, lat_x, lat_base, kLatWidest);
+    // Median row, one secondary line further up -- derived from kLatHead's
+    // box top the same box-edges-not-glyph_h way lat_base itself is derived
+    // from the FPS box, for the same overlap reason. Guarded by
+    // asset_safe_inset_and_centre_of_frame_hold: this column grows three
+    // rows above FPS, not one.
     const int lat_box_top = lat_base - secondary->baseline;
     const int med_base =
         lat_box_top - gap8 - (secondary->glyph_h - secondary->baseline);
-    place(GsFieldId::kLatP50Head, secondary, lat_x, med_base, "P50 ~999 |");
-    place(GsFieldId::kLatP50Breakdown, secondary, lat_x + head_w + gap12,
-          med_base, worst_bd);
-    // Control-path RTT (link-rtt 2026-09-02): one more secondary line up —
-    // adjacent to the LAT pair for one-glance latency reading, but its own
-    // field because it is two-way control-path time and must never look
-    // like a segment of the e2e sum. RIGHT-flush, not at lat_x: the third
-    // row up crosses into the centre-of-frame keep-clear band (y < 780·s),
-    // whose x range ends at 1520·s — the full-width lat column's left edge
-    // (~1494 at 1080p) sits inside it, but this narrow field right-flushed
-    // starts ~1684 and clears the band at every resolution
-    // (safe_inset_and_centre_of_frame_hold_at_every_resolution pins it).
+    place(GsFieldId::kLatP50Head, secondary, lat_x, med_base, kLatWidest);
+    // Control-path RTT (link-rtt 2026-09-02): one more line up -- adjacent
+    // to the LAT pair for one-glance latency reading, but its own field
+    // because it is two-way control-path time and must never look like a
+    // segment of the video path.
     const int med_box_top = med_base - secondary->baseline;
     const int rtt_base =
         med_box_top - gap8 - (secondary->glyph_h - secondary->baseline);
@@ -692,55 +675,24 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
       break;
     case GsFieldId::kLatHead:
       st.rgb = tok::kTextPrimary;
-      // The trailing "|" is the breakdown's only separator -- there is no
-      // third field to draw it in. It appears only when there is a
-      // breakdown to introduce; the invalid case is just "LAT --" alone.
       // The ~ marks a RELATIVE e2e (absolute floor unknown — offset
       // estimator cold or sync lost); it drops once main folds the floor
       // in (ps.lat_abs). Never on the em-dash form: a non-number needs no
-      // precision disclaimer.
+      // precision disclaimer, and no unit either.
       st.text = ps.lat_valid
-                    ? std::string("P99 ") + (ps.lat_abs ? "" : "~") +
-                          fmt_int(std::clamp((double)ps.lat_e2e_ms, 0.0, 999.0)) + " |"
-                    : "P99 --";
-      break;
-    case GsFieldId::kLatBreakdown:
-      // Blank (and cleared -- draw_field_ clears the box before bailing on
-      // empty text, same as the armed kRec case) while the anchor is cold:
-      // there is no real per-segment breakdown to show yet, and showing
-      // stale or fabricated numbers would be worse than showing nothing.
-      if (ps.lat_valid) {
-        char buf[80];
-        auto seg = [&](int i) {
-          return (int)std::clamp((double)ps.lat_ms[i], 0.0, 999.0);
-        };
-        std::snprintf(buf, sizeof(buf), "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d",
-                      seg(0), seg(1), seg(2), seg(3), seg(4), seg(5), seg(6));
-        st.text = buf;
-      }
-      st.rgb = tok::kTextSecondary;
+                    ? std::string("LAT P99 ") + (ps.lat_abs ? "" : "~") +
+                          fmt_int(std::clamp((double)ps.lat_e2e_ms, 0.0, 999.0)) +
+                          " ms"
+                    : "LAT P99 --";
       break;
     case GsFieldId::kLatP50Head:
       // Same relative-marker rule as kLatHead; both rows share lat_abs
       // because both e2e values got the same floor treatment in main.
       st.text = ps.lat_valid
-                    ? std::string("P50 ") + (ps.lat_abs ? "" : "~") +
+                    ? std::string("LAT P50 ") + (ps.lat_abs ? "" : "~") +
                           fmt_int(std::clamp((double)ps.lat_p50_e2e_ms, 0.0, 999.0)) +
-                          " |"
-                    : "P50 --";
-      st.rgb = tok::kTextSecondary;
-      break;
-    case GsFieldId::kLatP50Breakdown:
-      // Same cold-anchor rule as kLatBreakdown: blank rather than stale.
-      if (ps.lat_valid) {
-        char buf[80];
-        auto seg = [&](int i) {
-          return (int)std::clamp((double)ps.lat_p50_ms[i], 0.0, 999.0);
-        };
-        std::snprintf(buf, sizeof(buf), "enc%d dq%d air+%d fec%d dec%d reg%d dsp%d",
-                      seg(0), seg(1), seg(2), seg(3), seg(4), seg(5), seg(6));
-        st.text = buf;
-      }
+                          " ms"
+                    : "LAT P50 --";
       st.rgb = tok::kTextSecondary;
       break;
     case GsFieldId::kLatRtt:
@@ -869,11 +821,13 @@ void GsOverlay::draw_field_(GsFieldId id, const FieldState& st, const Surface& s
   // Bounded above by the card block's own extent (kMaxCards rows of
   // kFieldsPerCard), not just below by `base`: an unbounded
   // "id >= base && (id-base)%kFieldsPerCard==1" test silently recaptures
-  // whichever LATER field happens to alias the same residue -- Task 12's
-  // kLatBreakdown does, at index base+25, mod 6 == 1 (it aliased under the
-  // old stride of 5 too, at base+21; widening the row for EVM moved both the
-  // index and the modulus and it STILL lands on the bars residue, which is
-  // how little this bound can be dispensed with). It would otherwise be
+  // whichever LATER field happens to alias the same residue -- kLatP50Head
+  // does, at index base+25, mod 6 == 1. Something always has: the LAT
+  // breakdown field held that slot before it was deleted (2026-09-06), and
+  // before EVM widened the row to a stride of 6 it aliased at base+21 under
+  // the old stride of 5. Every edit to this enum so far has left SOME field
+  // on the bars residue, which is how little this bound can be dispensed
+  // with. The aliasing field would otherwise be
   // drawn as an unlit card-bars block (tok::kTrack rects sized to
   // kBarHeights) sitting well outside its own text box,
   // tripping absurd_values_never_draw_outside_their_field_boxes. Adding

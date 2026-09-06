@@ -71,31 +71,35 @@ struct GsPlayerState {
   double mbps = 0.0;
   RecState rec;
 
-  // Tail-latency OSD row (Task 12, spec 2026-08-30-latency-accounting).
+  // Latency OSD rows (Task 12, spec 2026-08-30-latency-accounting).
   // Player-measured, same as fps/jitter/mbps above -- current by
   // construction, never dimmed by `stale`. Sourced from
-  // maburplay::LatTracker::p99_frame() at 1 Hz: the REAL p99-by-e2e frame's
-  // own segment breakdown, not independently-ranked per-segment
-  // percentiles (see lat_tracker.h). `lat_valid` false means the anchor
-  // isn't usable yet (cold/discontinuous) -- the row renders "LAT --" and
-  // no breakdown rather than stale or fabricated numbers.
+  // maburplay::LatTracker::p99_frame()/p50_frame() at 1 Hz: the REAL
+  // p99- and p50-by-e2e frames' end-to-end times, not independently-ranked
+  // per-segment percentiles (see lat_tracker.h). `lat_valid` false means
+  // the anchor isn't usable yet (cold/discontinuous) -- the rows render
+  // "LAT P99 --" rather than stale or fabricated numbers.
+  //
+  // Each frame's own 7-segment breakdown used to render beside these
+  // headlines; it was dropped 2026-09-06. Segment attribution is a
+  // post-flight question the flight jsonl and flightreport.py answer
+  // better, and on the glass it cost a full-width column that reached
+  // into the centre-of-frame keep-clear band.
   bool lat_valid = false;
   // link-rtt (2026-09-02): true once main folded the absolute network
-  // floor (own anchor + sideport pts offset) into air+/e2e — the rows then
+  // floor (own anchor + sideport pts offset) into e2e — the rows then
   // read capture-stamp→scanout-start truth. False = today's relative
   // numbers (offset estimator cold, or sync lost at range); the headline
   // carries a ~ marker so the pilot always knows which one is showing.
   bool lat_abs = false;
   int lat_e2e_ms = 0;
-  int lat_ms[7] = {0};  // enc,dq,air,fec,dec,reg,dsp -- the p99 frame's own
-  // The median frame's own breakdown, ranked the same way (p50-by-e2e).
-  // Shown as its own row directly above the p99 one so the tail is read
-  // against the typical frame rather than in isolation: before this
-  // existed, the OSD's only latency figure was a tail statistic sitting
-  // among averages (fps/jit/mbps) and read as if it were typical.
-  // Shares lat_valid -- both come from the same window and the same anchor.
+  // The median frame, ranked the same way (p50-by-e2e). Shown as its own
+  // row directly above the p99 one so the tail is read against the typical
+  // frame rather than in isolation: before this existed, the OSD's only
+  // latency figure was a tail statistic sitting among averages
+  // (fps/jit/mbps) and read as if it were typical. Shares lat_valid --
+  // both come from the same window and the same anchor.
   int lat_p50_e2e_ms = 0;
-  int lat_p50_ms[7] = {0};
 };
 
 // Formatting. Every value is fixed-width by construction so a field box
@@ -144,16 +148,19 @@ enum class GsFieldId {
   kCard1Id, kCard1Bars, kCard1Rssi, kCard1Unit, kCard1Snr, kCard1Evm,
   kCard2Id, kCard2Bars, kCard2Rssi, kCard2Unit, kCard2Snr, kCard2Evm,
   kCard3Id, kCard3Bars, kCard3Rssi, kCard3Unit, kCard3Snr, kCard3Evm,
-  // Tail-latency row (Task 12): headline p99 e2e + that frame's own
-  // 7-segment breakdown. Appended, never inserted -- see the comment atop
-  // this enum.
-  kLatHead, kLatBreakdown,
+  // Tail-latency row (Task 12): the p99-by-e2e frame's end-to-end time.
+  // Appended, never inserted -- see the comment atop this enum. (The
+  // per-segment breakdown field that used to follow it was REMOVED
+  // 2026-09-06, as was the median row's; removal from the tail region is
+  // safe for the same reason insertion into the card block was -- these
+  // values are compile-time only, never stored or transmitted.)
+  kLatHead,
   // Median-latency row (2026-09-01): same shape, p50-by-e2e frame, drawn
-  // one row above the p99 pair. Appended for the same reason.
-  kLatP50Head, kLatP50Breakdown,
+  // one row above the p99 one. Appended for the same reason.
+  kLatP50Head,
   // Control-path RTT (link-rtt 2026-09-02): sideport link.rtt.ms, drawn
-  // adjacent to the LAT rows (one row above P50) but never summed into
-  // them — it is two-way control-path time, not a video segment.
+  // atop the LAT rows but never summed into them — it is two-way
+  // control-path time, not a video segment.
   kLatRtt,
   kCount,
 };

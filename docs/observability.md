@@ -25,16 +25,24 @@ null, until then — and `maburplay`'s OSD grows a matching latency block
 above the fps line, reading `--` while its own e2e-latency tracker is
 cold or discontinuous.
 
-Since 2026-09-01 that block is **two rows, `P50` and `P99`** (the label
-was `LAT` when there was only the tail row — renamed because with two
-rows present it has to say which statistic it is). Each row is ONE REAL
-FRAME from the last 1 s window, ranked by e2e, showing that frame's own
-seven segments — never independently-ranked per-segment percentiles,
-so each row's segments sum to its own headline. Read them together:
+Since 2026-09-01 that block is **two rows, `LAT P50 <n> ms` and
+`LAT P99 <n> ms`**, right-flushed under the `RTT` row. Each is ONE REAL
+FRAME from the last 1 s window, ranked by e2e. Read them together:
 `P99` alone is a tail statistic sitting among averages (fps/jit/mbps)
 and gets misread as typical — an operator reporting "fec is 10–30 ms"
 while the median was ~10 ms is what prompted the second row
 (`docs/dq-spike-findings-2026-08-31.md` §20).
+
+**2026-09-06: the per-segment breakdown left the OSD.** Each row used to
+render its frame's own seven segments (`enc dq air+ fec dec reg dsp`)
+beside the headline — never independently-ranked percentiles, so a row's
+segments summed to its own headline. That is now a post-flight question
+only: the `lat:` jsonl line and `flightreport.py` carry the same
+decomposition with more resolution, and on the glass it cost a
+full-width column whose left edge reached into the centre-of-frame
+keep-clear band. **The sideport `link.video.lat` block is unchanged** —
+segment p50/p99 pairs still ship there, so maburtop and the recorders
+lost nothing.
 
 Since 2026-09-02 (link-rtt) `link.rtt` carries a clock-sync-free
 **control-path RTT** and the pts-clock offset behind the absolute LAT
@@ -51,13 +59,15 @@ queues behind video on the drone's half-duplex TX, so `ms` inflates
 under saturation (honest congestion signal, not PHY RTT), and the
 offset's residual error is the up/down asymmetry of the best samples,
 ±1–2 ms class. On the player OSD the offset (combined with the player's
-OWN anchor) folds the floor into the `P50`/`P99` rows — `air+` and the
-headline both grow by it, so the segments still sum — and the headline
-carries a `~` prefix while the e2e is still relative (estimator cold, or
-sync lost at range: the floor freezes at last-good and drifts ~1 ms/min
-of outage). An `RTT <n> ms` field sits one row above `P50`; it is
-adjacent for one-glance reading but is two-way control time and never
-part of the e2e sum. What the absolute rows still exclude: sensor
+OWN anchor) folds the floor into the `LAT P50`/`LAT P99` headlines, and
+each carries a `~` prefix while its e2e is still relative (estimator
+cold, or sync lost at range: the floor freezes at last-good and drifts
+~1 ms/min of outage). Before 2026-09-06 the floor was folded into the
+`air+` segment too, so the on-screen breakdown still summed to the
+headline; with the breakdown gone only the headline takes it. An
+`RTT <n> ms` field sits one row above `LAT P50`, sharing its right edge;
+it is adjacent for one-glance reading but is two-way control time and
+never part of the e2e sum. What the absolute rows still exclude: sensor
 exposure/readout before the pts stamp (~10–16 ms est.) and everything
 past scanout start (HDMI + display processing) — LED/camera-lump
 territory, see `docs/latency-budget-findings-2026-08-31.md`.
