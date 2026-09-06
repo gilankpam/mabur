@@ -17,6 +17,7 @@ add_library(mabur_gs_core STATIC
   src/msp_sink.cpp
   src/frame_stream.cpp
   src/au_ring.cpp
+  src/au_log.cpp
   src/au_doorbell.cpp
   src/probe_track.cpp
   src/rtt_estimator.cpp

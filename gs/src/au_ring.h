@@ -123,6 +123,13 @@ class AuRingWriter {
   uint64_t published() const { return published_; }
   uint64_t dropped_oversize() const { return dropped_oversize_; }
   uint64_t bytes_published() const { return bytes_published_; }
+  // The meta of the most recently published record, exactly as written into
+  // the slot (flags include kRecFlagComplete; t_complete_us is post
+  // zero-substitution). Undefined before the first successful finish().
+  // AuLog's row source: the writer already unwrapped frame_id to 64 bits
+  // here, and duplicating that in a second place would be a second copy of a
+  // subtle invariant.
+  const AuRecordMeta& last_record() const { return last_; }
 
  private:
   uint8_t* slot_base_(uint64_t rec_no) const;
@@ -138,6 +145,7 @@ class AuRingWriter {
   uint64_t bytes_published_ = 0;
   uint64_t last_id_ = 0;
   bool have_id_ = false;
+  AuRecordMeta last_;
 };
 
 // Maps an existing ring read-only and iterates records seqlock-safely.
