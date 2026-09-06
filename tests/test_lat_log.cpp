@@ -54,6 +54,30 @@ TEST(no_marker_writes_nothing) {
   CHECK(log.path().empty());
 }
 
+TEST(missing_marker_backs_off_for_the_full_recheck_window) {
+  // no_marker_writes_nothing above only calls write() once, so it can't
+  // tell "no marker" from "checked and backing off" -- this pins the
+  // throttle itself: several closely-spaced calls with no marker must not
+  // hammer read_marker()/fopen() on every tick, and a marker that appears
+  // mid-window must not be picked up until the window elapses.
+  const std::string dir = make_dir("backoff");
+  const std::string mk = marker_for("backoff");
+  std::remove(mk.c_str());
+  maburplay::LatLog log(mk.c_str());
+  log.write(0, "lat: a");
+  log.write(1'000, "lat: b");
+  log.write(2'000, "lat: c");
+  CHECK(log.path().empty());
+  set_marker(mk, dir);
+  log.write(29'000'000, "lat: still-throttled");  // inside the 30 s window
+  CHECK(log.path().empty());
+  log.write(31'000'000, "lat: opens-now");  // past the window
+  CHECK(log.path() == dir + "/lat.log");
+  const std::string s = slurp(log.path());
+  CHECK(s.find("lat: still-throttled") == std::string::npos);
+  CHECK(s.find("lat: opens-now") != std::string::npos);
+}
+
 TEST(marker_change_reopens_in_the_new_session) {
   const std::string a = make_dir("switch-a");
   const std::string b = make_dir("switch-b");

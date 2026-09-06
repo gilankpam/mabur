@@ -38,6 +38,9 @@ void LatLog::reopen_(uint64_t mono_us) {
   }
   const std::string p = dir + "/lat.log";
   std::FILE* f = std::fopen(p.c_str(), "a");
+  // A new session that can't be opened leaves any still-open previous
+  // session's handle alone (deliberate: keep logging into the old
+  // directory rather than go dark over a bad new target).
   if (!f) return;
   setvbuf(f, nullptr, _IOLBF, 0);
   std::fprintf(f, "# latlog 2\n");
@@ -48,7 +51,10 @@ void LatLog::reopen_(uint64_t mono_us) {
 }
 
 void LatLog::write(uint64_t mono_us, const char* payload) {
-  if (!f_ || (checked_ && mono_us - last_check_us_ >= kRecheckUs))
+  // Gate on elapsed time alone -- not on whether f_ is currently open --
+  // so a missing or unusable session backs off for kRecheckUs instead of
+  // re-attempting read_marker()/fopen() on every single write().
+  if (!checked_ || mono_us - last_check_us_ >= kRecheckUs)
     reopen_(mono_us);
   if (!f_) return;
   std::fprintf(f_, "%llu %s\n", static_cast<unsigned long long>(mono_us),
