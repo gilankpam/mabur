@@ -630,18 +630,14 @@ TEST(au_ring_values_load) {
   CHECK(c.au_ring.slot_count == 8);
 }
 
-// link.s3_*/ctl_log keys: s3 steady-state demote tuning (LadderCfg) plus the
-// dedicated adaptive-link log (spec 2026-08-05 section 5). Strict keys apply
-// here like every other "link" key. The five flat probe_* keys went with the
-// s3 probe (spec 2026-09-04); link.probe replaces them.
-TEST(s3_and_ctl_log_keys_parse) {
+// link.s3_* keys: s3 steady-state demote tuning (LadderCfg). Strict keys
+// apply here like every other "link" key. The five flat probe_* keys went
+// with the s3 probe (spec 2026-09-04); link.probe replaces them.
+TEST(s3_keys_parse) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"s3_demote":false,)"
-      R"("s3_down_util":0.4,"ctl_log":true,"ctl_log_dir":"/tmp/x"}})"));
+      R"({"link":{"s3_demote":false,"s3_down_util":0.4}})"));
   CHECK(!cfg.link.ladder_cfg.s3_demote);
   CHECK(cfg.link.ladder_cfg.s3_down_util > 0.399 && cfg.link.ladder_cfg.s3_down_util < 0.401);
-  CHECK(cfg.link.ctl_log);
-  CHECK(cfg.link.ctl_log_dir == "/tmp/x");
 }
 
 // An absent s3_down_util (< 0 sentinel) resolves to the loaded down_util,
@@ -653,8 +649,24 @@ TEST(s3_defaults_and_sentinel_resolution) {
   CHECK(lc.s3_down_util > 0.349 && lc.s3_down_util < 0.351);
   CHECK(lc.s3_demote);
   CHECK(lc.s3_settle_ms == 300);
-  CHECK(!cfg.link.ctl_log);
-  CHECK(cfg.link.ctl_log_dir == "/media/dvr");
+}
+
+// The four keys the 2026-09-06 consolidation removed. Unknown keys fail boot
+// by design (PR #7), which is what makes an old config a hard stop rather
+// than a silently half-configured GS.
+TEST(removed_ctl_log_keys_are_rejected) {
+  auto throws = [](const char* text) {
+    try {
+      maburgs::load_config(write_tmp(text));
+    } catch (const std::exception&) {
+      return true;
+    }
+    return false;
+  };
+  CHECK(throws(R"({"link":{"ctl_log":true}})"));
+  CHECK(throws(R"({"link":{"ctl_log_dir":"/x"}})"));
+  CHECK(throws(R"({"link":{"ctl_log_period_ms":500}})"));
+  CHECK(throws(R"({"link":{"rung_stats":{"rung_log_period_s":5}}})"));
 }
 
 TEST(unknown_probe_key_still_fails) {
@@ -686,14 +698,12 @@ TEST(au_ring_strictness) {
 TEST(rung_stats_defaults) {
   auto cfg = maburgs::load_config(write_tmp("{}"));
   CHECK(cfg.link.ladder_cfg.rung_stats.half_life_samples == 600);
-  CHECK(cfg.link.rung_log_period_s == 10);
 }
 
 TEST(rung_stats_parses_and_validates) {
-  auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"rung_stats":{"half_life_samples":100,"rung_log_period_s":5}}})"));
+  auto cfg = maburgs::load_config(
+      write_tmp(R"({"link":{"rung_stats":{"half_life_samples":100}}})"));
   CHECK(cfg.link.ladder_cfg.rung_stats.half_life_samples == 100);
-  CHECK(cfg.link.rung_log_period_s == 5);
   try {  // out-of-range fails boot (strict config)
     maburgs::load_config(
         write_tmp(R"({"link":{"rung_stats":{"half_life_samples":0}}})"));
@@ -708,21 +718,6 @@ TEST(rung_stats_parses_and_validates) {
 // Removed 2026-08-15: attribution is unconditional. The switch's remaining
 // value was reproducing pre-attribution numbers, and the instant s3
 // residual demote makes attrib=false unsafe rather than merely different.
-// link.ctl_log_period_ms (2026-08-15): the S-line cadence became configurable
-// so the ctl log can run fast enough to resolve the fade trigger's 300 ms
-// sustain, which a 1 Hz record cannot. Optional with a live default, so a
-// config that never names it is unaffected.
-TEST(ctl_log_period_ms_defaults_and_bounds) {
-  auto c = maburgs::load_config(write_tmp("{}"));
-  CHECK(c.link.ctl_log_period_ms == 1000);
-  auto c2 = maburgs::load_config(write_tmp("{\"link\": {\"ctl_log_period_ms\": 50}}"));
-  CHECK(c2.link.ctl_log_period_ms == 50);
-  bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"ctl_log_period_ms\": 49}}")); }
-  catch (const std::exception&) { threw = true; }
-  CHECK(threw);  // below the 50 ms floor
-}
-
 TEST(stale_link_attrib_key_throws) {
   bool threw = false;
   try { maburgs::load_config(write_tmp("{\"link\": {\"attrib\": true}}")); }

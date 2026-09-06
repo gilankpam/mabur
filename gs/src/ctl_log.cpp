@@ -1,11 +1,6 @@
 #include "ctl_log.h"
 
 #include <algorithm>
-#include <cerrno>
-#include <cstring>
-#include <ctime>
-
-#include <dirent.h>
 
 namespace maburgs {
 
@@ -17,106 +12,69 @@ namespace {
 double clamp_util(double u) { return std::min(u, 1e3); }
 }  // namespace
 
-CtlLog::CtlLog(const std::string& dir, const std::string& header_info) {
-  DIR* d = opendir(dir.c_str());
-  if (!d) {
-    std::fprintf(stderr, "ctl-log: opendir '%s' failed: %s\n", dir.c_str(),
-                 std::strerror(errno));
-    return;
-  }
-  // Per-boot index: one past the highest existing ctl-NNNN* file (0 on an
-  // empty/fresh dir). Malformed/foreign entries are silently ignored --
-  // this is a best-effort scan of a directory maburgs does not own
-  // exclusively (the DVR SD card also holds video and stats files).
-  int next_idx = 0;
-  struct dirent* ent;
-  while ((ent = readdir(d)) != nullptr) {
-    int idx = -1;
-    if (std::sscanf(ent->d_name, "ctl-%d", &idx) == 1 && idx >= 0)
-      next_idx = std::max(next_idx, idx + 1);
-  }
-  closedir(d);
-  index_ = next_idx;
-
-  // Date suffix is cosmetic only (RTC is wrong at boot) -- matches the
-  // statsrec.py file-naming convention. localtime_r failure (e.g. a
-  // corrupt/unset TZ) must not be fatal for a log whose header promises
-  // never to crash over logging -- fall back to a fixed placeholder date;
-  // the per-boot index in the filename is what actually matters.
-  std::time_t now = std::time(nullptr);
-  std::tm tmv{};
-  char date[16] = {};
-  if (::localtime_r(&now, &tmv)) {
-    std::strftime(date, sizeof(date), "%Y%m%d", &tmv);
-  } else {
-    std::snprintf(date, sizeof(date), "00000000");
-  }
-
-  char fname[64];
-  std::snprintf(fname, sizeof(fname), "ctl-%04d_%s.log", next_idx, date);
-  path_ = dir + "/" + fname;
-
-  f_ = std::fopen(path_.c_str(), "w");
-  if (!f_) {
-    std::fprintf(stderr, "ctl-log: fopen '%s' failed: %s\n", path_.c_str(),
-                 std::strerror(errno));
-    return;
-  }
-  // Line-buffered: a power cut loses at most the current line.
-  std::setvbuf(f_, nullptr, _IOLBF, 0);
-  std::fprintf(f_, "ctllog 11 %s\n", header_info.c_str());
-}
-
-CtlLog::~CtlLog() {
-  if (f_) std::fclose(f_);
-}
+CtlLog::CtlLog(LogWriter& w, const std::string& dir,
+               const std::string& header_info)
+    : w_(w), s_(w.open(dir, "ctl.log", "ctllog 11 " + header_info)) {}
 
 void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
                      double resid, double u3, double resid3, double evm_db,
                      double resid_cur, double drssi, double dsnr,
                      double rssi_dbm, int probe_rung, double probe_u,
                      uint64_t probe_n) {
-  if (!f_) return;
-  std::fprintf(f_,
-               "S %.0f %d %.4f %.1f %.4f %.4f %.4f %.1f %.4f %.1f %.1f %.1f "
-               "%d %.4f %llu\n",
-               t_ms, rung, u, snr_db, resid, clamp_util(u3), resid3, evm_db,
-               resid_cur, drssi, dsnr, rssi_dbm, probe_rung,
-               clamp_util(probe_u), static_cast<unsigned long long>(probe_n));
+  if (s_ == LogWriter::kBadStream) return;
+  char b[256];
+  const int n = std::snprintf(
+      b, sizeof(b),
+      "S %.0f %d %.4f %.1f %.4f %.4f %.4f %.1f %.4f %.1f %.1f %.1f %d %.4f %llu",
+      t_ms, rung, u, snr_db, resid, clamp_util(u3), resid3, evm_db, resid_cur,
+      drssi, dsnr, rssi_dbm, probe_rung, clamp_util(probe_u),
+      static_cast<unsigned long long>(probe_n));
+  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
 }
 
 void CtlLog::event(double t_ms, int from, int to, const char* reason,
                     double u, double snr_db, double evm_db) {
-  if (!f_) return;
+  if (s_ == LogWriter::kBadStream) return;
   // u is u3 (not the ordinary BASE/sid0 util) whenever reason is one of the
   // s3_* reasons -- clamp unconditionally since that's the only case the raw
   // value can run away, and clamping the ordinary util (already bounded) is
   // a no-op.
-  std::fprintf(f_, "E %.0f %d %d %s %.4f %.1f %.1f\n", t_ms, from, to, reason,
-               clamp_util(u), snr_db, evm_db);
+  char b[256];
+  const int n = std::snprintf(b, sizeof(b), "E %.0f %d %d %s %.4f %.1f %.1f",
+                               t_ms, from, to, reason, clamp_util(u), snr_db,
+                               evm_db);
+  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
 }
 
 void CtlLog::probe(double t_ms, int rung, const char* state, double snr_db,
                     double u, int prev_dur_ms, double evm_db) {
-  if (!f_) return;
-  std::fprintf(f_, "P %.0f %d %s %.1f %.4f %d %.1f\n", t_ms, rung, state,
-               snr_db, clamp_util(u), prev_dur_ms, evm_db);
+  if (s_ == LogWriter::kBadStream) return;
+  char b[256];
+  const int n =
+      std::snprintf(b, sizeof(b), "P %.0f %d %s %.1f %.4f %d %.1f", t_ms,
+                    rung, state, snr_db, clamp_util(u), prev_dur_ms, evm_db);
+  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
 }
 
 void CtlLog::penalty(double t_ms, int rung, int k, double until_ms) {
-  if (!f_) return;
-  std::fprintf(f_, "N %.0f %d %d %.0f\n", t_ms, rung, k, until_ms);
+  if (s_ == LogWriter::kBadStream) return;
+  char b[256];
+  const int n =
+      std::snprintf(b, sizeof(b), "N %.0f %d %d %.0f", t_ms, rung, k, until_ms);
+  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
 }
 
 void CtlLog::rung(double t_ms, int rung, double u, double resid, double u3,
                    double resid3, double evm_db, double evm_sd_db, uint64_t n,
                    double age_s, double probe_u, uint64_t probe_n) {
-  if (!f_) return;
-  std::fprintf(
-      f_, "R %.0f %d %.4f %.4f %.4f %.4f %.1f %.2f %llu %.1f %.4f %llu\n",
+  if (s_ == LogWriter::kBadStream) return;
+  char b[256];
+  const int len = std::snprintf(
+      b, sizeof(b), "R %.0f %d %.4f %.4f %.4f %.4f %.1f %.2f %llu %.1f %.4f %llu",
       t_ms, rung, clamp_util(u), resid, clamp_util(u3), resid3, evm_db,
       evm_sd_db, static_cast<unsigned long long>(n), age_s,
       clamp_util(probe_u), static_cast<unsigned long long>(probe_n));
+  if (len > 0) w_.line(s_, b, static_cast<size_t>(len));
 }
 
 }  // namespace maburgs

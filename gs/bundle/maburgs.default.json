@@ -42,8 +42,13 @@
       "min_syms": 40,
       "silence_ms": 500,
       "pin_mcs": -1
-    },
-    "ctl_log": false
+    }
+  },
+  "debug_log": {
+    "enable": false,
+    "dir": "/media/dvr/log",
+    "ctl_period_ms": 1000,
+    "rung_period_s": 10
   },
   "msp": {
     "enable": false,
