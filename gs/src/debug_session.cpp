@@ -82,23 +82,33 @@ bool DebugSession::allocate_(const std::string& root, const char* marker_path) {
   struct dirent* ent;
   while ((ent = readdir(d)) != nullptr) {
     const std::string name = ent->d_name;
-    if (name.size() != 4) continue;
-    bool numeric = true;
-    for (char c : name)
-      if (c < '0' || c > '9') numeric = false;
-    if (!numeric) continue;
+    if (name.size() < 4) continue;
+    // index_of_dir is the single source of truth for numeric validation.
+    const int idx = index_of_dir(name);
+    if (idx < 0) continue;
     if (!is_dir(root + "/" + name)) continue;
-    next_idx = std::max(next_idx, std::atoi(name.c_str()) + 1);
+    next_idx = std::max(next_idx, idx + 1);
   }
   closedir(d);
 
   char buf[16];
   std::snprintf(buf, sizeof(buf), "%04d", next_idx);
   const std::string dir = root + "/" + buf;
-  if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
-    std::fprintf(stderr, "debug-log: mkdir '%s' failed: %s\n", dir.c_str(),
-                 std::strerror(errno));
-    return false;
+  if (::mkdir(dir.c_str(), 0755) != 0) {
+    if (errno == EEXIST) {
+      // mkdir returned EEXIST: a collision. Validate the existing entry is
+      // a directory, not a file. File collision is a hard failure.
+      if (!is_dir(dir)) {
+        std::fprintf(stderr, "debug-log: '%s' exists but is not a directory\n",
+                     dir.c_str());
+        return false;
+      }
+      // Directory exists; proceed (reusing existing session directory).
+    } else {
+      std::fprintf(stderr, "debug-log: mkdir '%s' failed: %s\n", dir.c_str(),
+                   std::strerror(errno));
+      return false;
+    }
   }
   // Marker written last: a reader never sees a marker naming a directory
   // that does not exist yet.

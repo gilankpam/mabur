@@ -102,4 +102,27 @@ TEST(unwritable_root_is_nonfatal) {
   CHECK(s.dir().empty());
 }
 
+TEST(file_collision_on_claimed_name_is_nonfatal) {
+  const std::string root = make_root("file-collision");
+  const std::string mk = marker_for("file-collision");
+  std::remove(mk.c_str());
+  // Create a FILE (not directory) at the name the allocator would claim.
+  { std::ofstream(root + "/0000") << "collision\n"; }
+  maburgs::DebugSession s(root, true, mk.c_str());
+  CHECK(!s.ok());
+  CHECK(s.dir().empty());
+}
+
+TEST(five_digit_directory_counted_in_next_allocation) {
+  const std::string root = make_root("five-digit");
+  const std::string mk = marker_for("five-digit");
+  std::remove(mk.c_str());
+  ::mkdir((root + "/10000").c_str(), 0755);
+  maburgs::DebugSession s(root, true, mk.c_str());
+  REQUIRE(s.ok());
+  CHECK(s.index() == 10001);
+  CHECK(s.dir() == root + "/10001");
+  CHECK(is_dir(s.dir()));
+}
+
 MTEST_MAIN
