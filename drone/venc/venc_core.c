@@ -399,6 +399,36 @@ int venc_set_max_ipprop(int prop)
 	return rc == 0 ? 0 : -1;
 }
 
+int venc_set_min_iqp(int qp)
+{
+	int rc;
+
+	if (!venc_core_running())
+		return -1;
+	if (qp < 1 || qp > 51)
+		return -1;
+
+	pthread_mutex_lock(&g_verb_lock);
+	rc = star6e_controls_set_iqp_bound(1, (uint32_t)qp);
+	pthread_mutex_unlock(&g_verb_lock);
+	return rc == 0 ? 0 : -1;
+}
+
+int venc_set_max_iqp(int qp)
+{
+	int rc;
+
+	if (!venc_core_running())
+		return -1;
+	if (qp < 1 || qp > 51)
+		return -1;
+
+	pthread_mutex_lock(&g_verb_lock);
+	rc = star6e_controls_set_iqp_bound(0, (uint32_t)qp);
+	pthread_mutex_unlock(&g_verb_lock);
+	return rc == 0 ? 0 : -1;
+}
+
 int venc_set_superframe_p_pct(int pct)
 {
 	int rc;

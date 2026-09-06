@@ -471,6 +471,26 @@ TEST(venc_max_ipprop_parses) {
   std::filesystem::remove(path);
 }
 
+// min_iqp: 0 (default) = leave the firmware I-QP floor; 1..51 = program
+// u32MinIQp at boot. The one direct IDR SIZE bound star6e honours
+// (bench 2026-09-06: 12/36/42/48 -> 11.6/5.0/2.6/1.4 kB, P untouched).
+TEST(venc_min_iqp_parses) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin",)"
+      R"("min_iqp":44}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.min_iqp == 44);
+  std::filesystem::remove(path);
+}
+
+TEST(venc_min_iqp_absent_leaves_firmware_floor) {
+  auto path = write_temp_json(
+      R"({"venc":{"sensor_bin":"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"}})");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.min_iqp == 0);
+  std::filesystem::remove(path);
+}
+
 // superframe_p_pct: 0 (default) = off; 100..1000 = P-frame ceiling as a
 // percentage of the rung's per-frame budget via MI_VENC_SetSuperFrameCfg
 // REENCODE (I unlimited). Below 100 is rejected: a cap under the budget
@@ -537,6 +557,8 @@ TEST(venc_range_checks) {
            Case{R"({"venc":{"qp_delta":13}})", "venc.qp_delta"},
            Case{R"({"venc":{"max_ipprop":-1}})", "venc.max_ipprop"},
            Case{R"({"venc":{"max_ipprop":101}})", "venc.max_ipprop"},
+           Case{R"({"venc":{"min_iqp":-1}})", "venc.min_iqp"},
+           Case{R"({"venc":{"min_iqp":52}})", "venc.min_iqp"},
            Case{R"({"venc":{"superframe_p_pct":50}})", "venc.superframe_p_pct"},
            Case{R"({"venc":{"superframe_p_pct":1001}})", "venc.superframe_p_pct"},
            Case{R"({"venc":{"snapshot_quality":0}})", "venc.snapshot_quality"},

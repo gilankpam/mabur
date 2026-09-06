@@ -208,6 +208,23 @@ their variance into jitter. Knobs, in order of proven usefulness:
   that shape (`qp_delta` then `max_ipprop` back-to-back). The encoder
   loop prints `rc_readback t+10s: … OK|MISMATCH` to `/tmp/mabur.log` so
   the log proves what the encoder holds, not just what was written.
+- **`venc.min_iqp`** (config, 0=leave firmware 12; also volatile via
+  `:8301 /venc/set?min_iqp=N`, 1..51, with `max_iqp=N` beside it)
+  programs `u32MinIQp`, the I-frame QP floor — **the one direct IDR
+  SIZE bound star6e honours.** Bench 2026-09-06 (static 1080p, ROI off,
+  `max_ipprop` 2, the 14400→10800 attr-change IDR): floor 12/30/36/42/48
+  → IDR 11.6/11.4/5.0/2.6/1.4 kB, P frames unchanged at 23 kB, the
+  `SetRcParam` write fires no IDR and the very next IDR honours it.
+  `max_iqp` 48→51 did nothing at 1800 kbps. Motivation: the rung-0
+  demote IDR (27–41 kB in flight 0356 = 90–140 ms on the wire at mcs0,
+  every 75–140 ms over-budget episode) — half of it was `roi_qp_low`
+  −24 landing in the keyframe (ROI now disabled in the drone config),
+  the rest is the RC anchoring the GOP at a low I-QP. Cost: one soft
+  keyframe per transition, refined by the following P frames at no
+  extra bytes. Shipped 44 on 2026-09-06 as a first static guess, to be
+  refined from the au.log IDR sizes after a flight; a per-rung floor
+  (high at rungs 0–1, firmware at the top) is the follow-up if a single
+  value proves too coarse on promotes.
 - **`venc.superframe_p_pct`** (config, 0=off; also volatile via
   `:8301 /venc/set?superframe_p_pct=N`, 100..1000) programs
   `MI_VENC_SetSuperFrameCfg` REENCODE with a **P-frame** bit threshold of

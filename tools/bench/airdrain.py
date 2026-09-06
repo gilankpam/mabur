@@ -191,6 +191,24 @@ def analyze(ctl_path, au_path, t0=None, t1=None, spike_ms=15.0):
     promotes = [{'t0': e['t_ms'], 'peak_ms': post_peak(e['t_ms']), 'pre_ms': pre_median(e['t_ms'])}
                 for e in Ew if e['to'] > e['from']]
 
+    # Transition IDRs: every non-starved E line with the first BASE IDR that
+    # completes within 600 ms of it (the SetChnAttr keyframe every bitrate
+    # write fires), its size against the base P median 1 s before and
+    # 0.3-1.3 s after. This is the venc.min_iqp readout (2026-09-06): the
+    # rung-0 demote IDR ran 27-41 kB at ~3x the OLD P in flight 0356.
+    idrs = []
+    for e in Ew:
+        if e['reason'] == 'starved': continue
+        tt = e['t_ms']
+        hit = next((a for a in A if tt <= a['tf'] <= tt + 600 and a['sid'] == 0 and a['idr']), None)
+        pre = [a['len'] for a in A if tt - 1000 <= a['tf'] < tt and a['sid'] == 0 and not a['idr']]
+        post = [a['len'] for a in A if tt + 300 <= a['tf'] < tt + 1300 and a['sid'] == 0 and not a['idr']]
+        idrs.append({'t0': tt, 'from': e['from'], 'to': e['to'], 'reason': e['reason'],
+                     'kb': hit['len'] / 1000 if hit else None,
+                     'dt_ms': hit['tf'] - tt if hit else None,
+                     'pre_p_kb': st.median(pre) / 1000 if pre else None,
+                     'post_p_kb': st.median(post) / 1000 if post else None})
+
     ev = sorted(e['t_ms'] for e in E)
     steady = collections.defaultdict(list)
     for a in W:
@@ -205,7 +223,7 @@ def analyze(ctl_path, au_path, t0=None, t1=None, spike_ms=15.0):
                   if st.median(v) >= spike_ms and min(abs(t - s * 1000 - 500) for t in ev) >= STEADY_GUARD_MS]
 
     return {'t0': t0, 't1': t1, 'n_au': len(W), 'excess': [a['air'] for a in W],
-            'cascades': casc, 'singles': singles, 'promotes': promotes,
+            'cascades': casc, 'singles': singles, 'promotes': promotes, 'idrs': idrs,
             'steady': dict(steady), 'n_secs': len(secs), 'spike_secs': spike_secs,
             'standalone': standalone, 'model': model_compare(W, casc)}
 
@@ -233,6 +251,23 @@ def print_report(r, ctl_path, au_path, profiles=False, spike_ms=15.0, model_flag
         if sel:
             pk = [x['peak_ms'] for x in sel]; pr = [x['pre_ms'] for x in sel]
             print(f"  {name:<14} n={len(sel)}: post peak p50={pct(pk,.5):.0f} p90={pct(pk,.9):.0f} max={max(pk):.0f} ms | pre-1 s p50={pct(pr,.5):.0f}")
+    ti = r.get('idrs', [])
+    hits = [x for x in ti if x['kb'] is not None]
+    print(f"\n  transition IDRs: {len(hits)} of {len(ti)} transitions had a base IDR within 600 ms "
+          f"-- kB by TARGET rung, demotes | promotes (p50/max, n); x = ratio to the post-transition base P p50")
+    by = collections.defaultdict(lambda: {'d': [], 'p': []})
+    for x in hits: by[x['to']]['d' if x['to'] < x['from'] else 'p'].append(x)
+    def cell(v):
+        if not v: return '-'
+        kb = [x['kb'] for x in v]; rat = [x['kb'] / x['post_p_kb'] for x in v if x['post_p_kb']]
+        return f"{pct(kb,.5):.0f}/{max(kb):.0f}({len(v)})" + (f" {pct(rat,.5):.1f}x" if rat else '')
+    print('   ' + ' '.join(f"r{k}: {cell(v['d'])} | {cell(v['p'])}" for k, v in sorted(by.items())))
+    if profiles:
+        for x in ti:
+            print(f"   t={x['t0']/1000:6.1f}s {x['from']}>{x['to']} {x['reason']:<15} "
+                  + (f"IDR {x['kb']:5.1f} kB @+{x['dt_ms']:3.0f} ms" if x['kb'] is not None else "IDR none        ")
+                  + f"  pre-P {x['pre_p_kb'] if x['pre_p_kb'] is not None else float('nan'):5.1f}"
+                  + f"  post-P {x['post_p_kb'] if x['post_p_kb'] is not None else float('nan'):5.1f} kB")
     print("  steady state by rung (frames >=3 s from any transition), p50/p99 ms (n): " +
           ' '.join(f"r{k}={pct(v,.5):.0f}/{pct(v,.99):.0f}({len(v)})" for k, v in sorted(r['steady'].items())))
     print(f"  spike seconds (median excess >= {spike_ms:.0f} ms): {r['spike_secs']} of {r['n_secs']}; "

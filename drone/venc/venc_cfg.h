@@ -18,6 +18,16 @@ typedef struct {
                               * floor ~1.4 at small values (I-QP rails);
                               * useful range 2..4 at the shipped GDR/SVC-T
                               * settings, where IDRs are already ~1.7x P. */
+  uint8_t min_iqp;           /* venc.min_iqp: 0 (default) = leave the
+                              * firmware I-QP floor (12); 1..51 = program
+                              * u32MinIQp at boot. The one direct IDR SIZE
+                              * bound star6e honours (bench 2026-09-06,
+                              * 14400->10800 attr-change IDR: floor
+                              * 12/30/36/42/48 -> 11.6/11.4/5.0/2.6/1.4 kB,
+                              * P frames unchanged, no IDR on the write).
+                              * Costs one soft keyframe per transition;
+                              * sized for the rung-0 demote IDR. Must not
+                              * exceed the MaxIQp rail (48 firmware). */
   uint16_t superframe_p_pct; /* venc.superframe_p_pct: 0 (default) = off;
                               * 100..1000 = P-frame ceiling as a percentage
                               * of the rung's per-frame budget

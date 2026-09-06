@@ -27,6 +27,8 @@ int venc_request_idr(void);          /* goes through idr_rate_limit */
 int venc_set_qp_delta(int qp_delta); /* boot + debug endpoint only */
 int venc_set_max_ipprop(int prop);   /* boot + debug endpoint only; u32MaxIPProp */
 int venc_set_superframe_p_pct(int pct); /* debug endpoint; 0 = off, 100..1000 (SuperFrame P cap) */
+int venc_set_min_iqp(int qp);          /* debug endpoint; u32MinIQp 1..51 (I-frame QP floor = IDR size cap) */
+int venc_set_max_iqp(int qp);          /* debug endpoint; u32MaxIQp 1..51 */
 
 /* Signals — read on demand (agent tick / telemetry / debug endpoint). */
 typedef struct {

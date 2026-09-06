@@ -35,6 +35,15 @@ int star6e_controls_apply_qp_delta(int delta);
  *  that window silently reverts the other field (waybeam #255). */
 int star6e_controls_set_max_ipprop(uint32_t prop);
 
+/** Set the I-frame QP rail (u32MinIQp when is_min, else u32MaxIQp) on the
+ *  CBR RC params, 1..51.  Staged through the RC intent like max_ipprop.
+ *  Rejects a floor above the ceiling the encoder would then hold (the SDK
+ *  accepts the inversion silently and misbehaves — waybeam).  A raised
+ *  MinIQp is the only direct I-frame SIZE bound star6e offers: MaxISize
+ *  is dead, MaxIPProp is a ratio, and the I frame otherwise sits wherever
+ *  the RC (or the MaxIQp 48 rail) puts it. */
+int star6e_controls_set_iqp_bound(int is_min, uint32_t qp);
+
 /** Log what the encoder's RC params actually hold (IPQPDelta, MaxIPProp,
  *  the QP bounds) against the staged intent, tagged with `when`
  *  (e.g. "t+10s").  Read-only.  apply_bitrate calls it once, on the

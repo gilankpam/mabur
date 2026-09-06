@@ -30,6 +30,7 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->gop_s = 2.0;
 	cfg->qp_delta = -4;
 	cfg->max_ipprop = 0; /* leave the firmware default (unbounded) */
+	cfg->min_iqp = 0;    /* leave the firmware I-QP floor */
 	cfg->superframe_p_pct = 0; /* no P-frame ceiling */
 	/* Error-resilience structure. These reproduce, at 1080p60, exactly
 	 * what the deleted "rally" preset expanded to: its "fast" intra mode

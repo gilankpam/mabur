@@ -20,6 +20,20 @@ TEST(min_qp_key_rejected) {
   // QP-floor hypothesis); a stale bench script must get BAD, not a silent ok.
   CHECK(debug_http_parse("POST /venc/set?min_qp=24 HTTP/1.0").kind == DebugReq::BAD);
 }
+TEST(min_iqp_key_whitelisted) {
+  auto p = debug_http_parse("POST /venc/set?min_iqp=40 HTTP/1.0");
+  CHECK(p.kind == DebugReq::SET);
+  CHECK(p.key == "min_iqp");
+  CHECK(p.val == 40);
+}
+
+TEST(max_iqp_key_whitelisted) {
+  auto p = debug_http_parse("POST /venc/set?max_iqp=51 HTTP/1.0");
+  CHECK(p.kind == DebugReq::SET);
+  CHECK(p.key == "max_iqp");
+  CHECK(p.val == 51);
+}
+
 TEST(max_ipprop_key_whitelisted) {
   auto p = debug_http_parse("POST /venc/set?max_ipprop=2 HTTP/1.0");
   CHECK(p.kind == DebugReq::SET);
