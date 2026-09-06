@@ -8,6 +8,7 @@ add_library(mabur_gs_core STATIC
   src/ladder_controller.cpp
   src/rung_store.cpp
   src/ctl_log.cpp
+  src/debug_session.cpp
   src/probe_log.cpp
   src/ladder_residual.cpp
   src/tx_selector.cpp
