@@ -29,7 +29,8 @@ void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
       t_ms, rung, u, snr_db, resid, clamp_util(u3), resid3, evm_db, resid_cur,
       drssi, dsnr, rssi_dbm, probe_rung, clamp_util(probe_u),
       static_cast<unsigned long long>(probe_n));
-  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
+  if (n > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
 void CtlLog::event(double t_ms, int from, int to, const char* reason,
@@ -43,7 +44,8 @@ void CtlLog::event(double t_ms, int from, int to, const char* reason,
   const int n = std::snprintf(b, sizeof(b), "E %.0f %d %d %s %.4f %.1f %.1f",
                                t_ms, from, to, reason, clamp_util(u), snr_db,
                                evm_db);
-  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
+  if (n > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
 void CtlLog::probe(double t_ms, int rung, const char* state, double snr_db,
@@ -53,7 +55,8 @@ void CtlLog::probe(double t_ms, int rung, const char* state, double snr_db,
   const int n =
       std::snprintf(b, sizeof(b), "P %.0f %d %s %.1f %.4f %d %.1f", t_ms,
                     rung, state, snr_db, clamp_util(u), prev_dur_ms, evm_db);
-  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
+  if (n > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
 void CtlLog::penalty(double t_ms, int rung, int k, double until_ms) {
@@ -61,7 +64,8 @@ void CtlLog::penalty(double t_ms, int rung, int k, double until_ms) {
   char b[256];
   const int n =
       std::snprintf(b, sizeof(b), "N %.0f %d %d %.0f", t_ms, rung, k, until_ms);
-  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
+  if (n > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
 void CtlLog::rung(double t_ms, int rung, double u, double resid, double u3,
@@ -74,7 +78,8 @@ void CtlLog::rung(double t_ms, int rung, double u, double resid, double u3,
       t_ms, rung, clamp_util(u), resid, clamp_util(u3), resid3, evm_db,
       evm_sd_db, static_cast<unsigned long long>(n), age_s,
       clamp_util(probe_u), static_cast<unsigned long long>(probe_n));
-  if (len > 0) w_.line(s_, b, static_cast<size_t>(len));
+  if (len > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(len), sizeof(b) - 1));
 }
 
 }  // namespace maburgs

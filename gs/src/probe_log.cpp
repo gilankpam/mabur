@@ -1,5 +1,7 @@
 #include "probe_log.h"
 
+#include <algorithm>
+
 namespace maburgs {
 
 ProbeLog::ProbeLog(LogWriter& w, const std::string& dir, int bpb)
@@ -14,7 +16,8 @@ void ProbeLog::row(double t_ms, uint32_t seq, int mcs, uint16_t enh_fid,
   const int n = std::snprintf(
       b, sizeof(b), "%.0f %u %d %u %d %u %.1f %.1f %.1f %.1f %.3f", t_ms, seq,
       mcs, enh_fid, blocks_ok, card_mask, snr0, snr1, evm0, evm1, first_ms);
-  if (n > 0) w_.line(s_, b, static_cast<size_t>(n));
+  if (n > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
 }  // namespace maburgs

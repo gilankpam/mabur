@@ -353,7 +353,8 @@ static int run_radio(const maburgs::Config& cfg) {
   std::optional<maburgs::ProbeLog> probe_log;
   // Per-AU meta log; forward-declared here so the FrameStream callbacks
   // just below can reference it by [&] capture, even though it is only
-  // emplaced once debug.ok() is known (ctl/probe/au construction, ~492).
+  // emplaced once debug.ok() is known (ctl/probe/au construction, below,
+  // next to ctl_log).
   std::optional<maburgs::AuLog> au_log;
 
   // Video tail: FrameStream reassembles whole frames from the raw FRAG

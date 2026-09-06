@@ -12,6 +12,10 @@ static std::string read_all(const std::string& p) {
   std::ifstream f(p); std::stringstream ss; ss << f.rdbuf(); return ss.str();
 }
 
+// Load-bearing: LogWriter::open() opens ctl.log with "a" (append), so
+// without wiping the dir first a second ctest run in the same build tree
+// appends onto a PREVIOUS run's ctl.log, and the header/record `find()`
+// assertions below start matching stale bytes from that earlier run.
 static void reset_dir(const std::string& dir) {
   (void)std::system(("rm -rf " + dir).c_str());
   mkdir(dir.c_str(), 0755);
