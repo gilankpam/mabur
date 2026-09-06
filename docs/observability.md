@@ -115,22 +115,25 @@ Consume the same numbers programmatically with:
   take the highest-numbered session. Replaces `flightrec.py`/`S95flightrec`,
   deleted 2026-09-06.
 
-  `au.log` carries per-AU meta rows, SlotHdr v2 since 2026-08-31, behind a
-  `# aulog 4` marker line written once at session start (`t_us pts sid
-  fid len flags nal0 t_first t_complete enc dq air_ms`; a log without
-  the marker is the pre-2026-08-31 7-column v1 format — `t_us pts sid
-  fid len flags nal0` only — or, with a `# aulog 2` marker instead, the
-  2026-08-31 SlotHdr v2 format without the trailing `air_ms` column),
-  read from the `/dev/shm/mabur-au` ring exactly like `ausniff.py`
-  (seqlock copy, epoch resync ⇒ `# resync` marker; attaches at the write
-  head so pre-attach history can't be stamped with attach time). `t_us`
-  in `aulog 4` is CLOCK_MONOTONIC µs, the same clock every other file in
-  the session directory uses — in `aulog 1..3` (the last of those, `#
-  aulog 3`, written only by the now-deleted `flightrec.py`) it was
-  WALL-clock µs and the file carried `# sync <t_us> <t_ms>` anchors every
-  10 s to bridge to the jsonl's `t_ms`; a v4 log has neither the wall
-  clock nor the anchors (see the scale-break note in
-  `docs/data-provenance.md`).
+  `au.log` carries per-AU meta rows, SlotHdr v3 since 2026-09-06 (the
+  air-clock 12th column, `air_ms`), behind a `# aulog 4` marker line —
+  written at file open and re-written on every reopen, so a respawn
+  within the session appends a second copy (`t_us pts sid fid len flags
+  nal0 t_first t_complete enc dq air_ms`; a log without the marker is
+  the pre-2026-08-31 7-column v1 format — `t_us pts sid fid len flags
+  nal0` only — or, with a `# aulog 2` marker instead, the 2026-08-31
+  SlotHdr v2 format, which adds `t_first t_complete enc dq` but not the
+  trailing `air_ms` column), read from the `/dev/shm/mabur-au` ring
+  exactly like `ausniff.py` (seqlock copy, epoch resync ⇒ `# resync`
+  marker; attaches at the write head so pre-attach history can't be
+  stamped with attach time). `t_us` in `aulog 4` is CLOCK_MONOTONIC µs,
+  the same clock every other file in the session directory uses — in
+  `aulog 1..3` (the last of those, `# aulog 3`, the SAME SlotHdr v3
+  columns as `aulog 4` but written only by the now-deleted
+  `flightrec.py`) it was WALL-clock µs and the file carried `# sync
+  <t_us> <t_ms>` anchors every 10 s to bridge to the jsonl's `t_ms`; a
+  v4 log has neither the wall clock nor the anchors (see the
+  scale-break note in `docs/data-provenance.md`).
   `t_first`/`t_complete` are the AU's SlotHdr v2 mono-µs latency stamps
   (first body / finish()); `enc`/`dq` are the drone's SBI-latched
   `enc_us`/`drone_q_ms` (venc encode time, TX queue wait) carried through
