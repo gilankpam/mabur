@@ -79,6 +79,54 @@ TEST(unrecognised_payload_reports_minus_one) {
   CHECK(slurp(dir + "/au.log").find(" 0x81 -1 ") != std::string::npos);
 }
 
+TEST(three_byte_start_code_nal_type_at_true_minimum_length) {
+  const std::string dir = make_dir("nal3min");
+  maburgs::LogWriter w;
+  maburgs::AuLog au(w, dir);
+  au.begin();
+  const uint8_t payload[] = {0, 0, 1, 0x02};  // exactly 4 bytes: n >= 4, not 5
+  au.payload(payload, sizeof(payload));
+  au.row(1, meta());
+  w.flush_now();
+  CHECK(slurp(dir + "/au.log").find(" 0x81 1 ") != std::string::npos);
+}
+
+TEST(three_byte_start_code_one_byte_short_reports_minus_one) {
+  const std::string dir = make_dir("nal3short");
+  maburgs::LogWriter w;
+  maburgs::AuLog au(w, dir);
+  au.begin();
+  const uint8_t payload[] = {0, 0, 1};  // one byte short of the true minimum
+  au.payload(payload, sizeof(payload));
+  au.row(1, meta());
+  w.flush_now();
+  CHECK(slurp(dir + "/au.log").find(" 0x81 -1 ") != std::string::npos);
+}
+
+TEST(four_byte_start_code_nal_type_at_true_minimum_length) {
+  const std::string dir = make_dir("nal4min");
+  maburgs::LogWriter w;
+  maburgs::AuLog au(w, dir);
+  au.begin();
+  const uint8_t payload[] = {0, 0, 0, 1, 0x40};  // exactly 5 bytes: n >= 5, not 6
+  au.payload(payload, sizeof(payload));
+  au.row(1, meta());
+  w.flush_now();
+  CHECK(slurp(dir + "/au.log").find(" 0x81 32 ") != std::string::npos);
+}
+
+TEST(four_byte_start_code_one_byte_short_reports_minus_one) {
+  const std::string dir = make_dir("nal4short");
+  maburgs::LogWriter w;
+  maburgs::AuLog au(w, dir);
+  au.begin();
+  const uint8_t payload[] = {0, 0, 0, 1};  // one byte short of the true minimum
+  au.payload(payload, sizeof(payload));
+  au.row(1, meta());
+  w.flush_now();
+  CHECK(slurp(dir + "/au.log").find(" 0x81 -1 ") != std::string::npos);
+}
+
 TEST(head_is_latched_across_fragmented_payload_and_reset_by_begin) {
   const std::string dir = make_dir("frag");
   maburgs::LogWriter w;

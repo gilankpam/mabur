@@ -17,9 +17,9 @@ void AuLog::payload(const uint8_t* d, size_t n) {
 }
 
 int AuLog::nal0_of(const uint8_t* h, size_t n) {
-  if (n >= 5 && h[0] == 0 && h[1] == 0) {
+  if (n >= 4 && h[0] == 0 && h[1] == 0) {
     if (h[2] == 1) return (h[3] >> 1) & 0x3F;
-    if (n >= 6 && h[2] == 0 && h[3] == 1) return (h[4] >> 1) & 0x3F;
+    if (n >= 5 && h[2] == 0 && h[3] == 1) return (h[4] >> 1) & 0x3F;
   }
   return -1;
 }
@@ -37,7 +37,8 @@ void AuLog::row(uint64_t t_us, const AuRecordMeta& m) {
       static_cast<unsigned long long>(m.t_complete_us),
       static_cast<unsigned>(m.enc_us), static_cast<unsigned>(m.drone_q_ms),
       static_cast<unsigned>(m.drone_air_ms));
-  if (n > 0) w_.line(s_, buf, static_cast<size_t>(n));
+  if (n > 0)
+    w_.line(s_, buf, std::min(static_cast<size_t>(n), sizeof(buf) - 1));
 }
 
 }  // namespace maburgs
