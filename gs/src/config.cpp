@@ -74,7 +74,8 @@ Config load_config(const std::string& path) {
   } catch (const std::exception& e) {
     fail(path, std::string("parse error: ") + e.what());
   }
-  check_keys(j, "", {"radio", "fec", "link", "video", "msp", "stats", "au_ring"});
+  check_keys(j, "", {"radio", "fec", "link", "video", "msp", "stats", "au_ring",
+                     "debug_log"});
   Config c;
 
   if (j.contains("radio")) {
@@ -370,6 +371,21 @@ Config load_config(const std::string& path) {
         static_cast<int>(get_int(r, "slot_kb", 512, 64, 4096, "au_ring"));
     c.au_ring.slot_count =
         static_cast<int>(get_int(r, "slot_count", 16, 4, 256, "au_ring"));
+  }
+
+  if (j.contains("debug_log")) {
+    const json& r = j["debug_log"];
+    check_keys(r, "debug_log",
+               {"enable", "dir", "ctl_period_ms", "rung_period_s"});
+    if (r.contains("enable")) {
+      if (!r["enable"].is_boolean()) fail("debug_log.enable", "not a boolean");
+      c.debug_log.enable = r["enable"].get<bool>();
+    }
+    c.debug_log.dir = get_str(r, "dir", "/media/dvr/log", "debug_log");
+    c.debug_log.ctl_period_ms = static_cast<int>(
+        get_int(r, "ctl_period_ms", 1000, 50, 60000, "debug_log"));
+    c.debug_log.rung_period_s = static_cast<int>(
+        get_int(r, "rung_period_s", 10, 1, 600, "debug_log"));
   }
   return c;
 }

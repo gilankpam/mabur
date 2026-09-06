@@ -162,6 +162,17 @@ struct AuRingOutCfg {
   int slot_count = 16;  // 16 x 512 KiB = 8 MiB default ring
 };
 
+/// Debug logs: the per-session directory of machine-parsed files (ctl, probe,
+/// au, flight jsonl written by maburgs; lat written by maburplay, which
+/// follows the /tmp/mabur-session marker and has no config of its own).
+/// Default OFF: nothing is written until this is turned on.
+struct DebugLogCfg {
+  bool enable = false;
+  std::string dir = "/media/dvr/log";
+  int ctl_period_ms = 1000;  // ctl.log S lines
+  int rung_period_s = 10;    // ctl.log R lines (the per-rung store snapshot)
+};
+
 /// Ground station configuration: radio, FEC, link, video reassembly, AU ring, MSP OSD.
 struct Config {
   RadioCfg radio;
@@ -171,6 +182,7 @@ struct Config {
   MspCfg msp;
   StatsCfg stats;
   AuRingOutCfg au_ring;
+  DebugLogCfg debug_log;
 
   /// Builds decoder configuration with per-stream RS and UEP overhead
   /// (2 streams since the airtime-balance-uep fold-in).

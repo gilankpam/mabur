@@ -847,3 +847,38 @@ TEST(s3_min_syms_rejects_non_positive) {
     CHECK(threw);
   }
 }
+
+// debug_log (2026-09-06 consolidation): one knob for the whole GS. Default
+// OFF -- nothing is written until it is set.
+TEST(debug_log_defaults) {
+  auto c = maburgs::load_config(write_tmp("{}"));
+  CHECK(!c.debug_log.enable);
+  CHECK(c.debug_log.dir == "/media/dvr/log");
+  CHECK(c.debug_log.ctl_period_ms == 1000);
+  CHECK(c.debug_log.rung_period_s == 10);
+}
+
+TEST(debug_log_parses_values) {
+  auto c = maburgs::load_config(write_tmp(
+      R"({"debug_log":{"enable":true,"dir":"/tmp/x",)"
+      R"("ctl_period_ms":250,"rung_period_s":30}})"));
+  CHECK(c.debug_log.enable);
+  CHECK(c.debug_log.dir == "/tmp/x");
+  CHECK(c.debug_log.ctl_period_ms == 250);
+  CHECK(c.debug_log.rung_period_s == 30);
+}
+
+TEST(debug_log_rejects_out_of_range_and_unknown_keys) {
+  auto throws = [](const char* text) {
+    try {
+      maburgs::load_config(write_tmp(text));
+    } catch (const std::exception&) {
+      return true;
+    }
+    return false;
+  };
+  CHECK(throws(R"({"debug_log":{"ctl_period_ms":49}})"));   // below the floor
+  CHECK(throws(R"({"debug_log":{"rung_period_s":0}})"));    // below the floor
+  CHECK(throws(R"({"debug_log":{"enable":"yes"}})"));       // wrong type
+  CHECK(throws(R"({"debug_log":{"nope":1}})"));             // strict keys
+}
