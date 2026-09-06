@@ -281,7 +281,7 @@ def test_load_au_log_sync_offset(tmp_path=None):
             for r in rows:
                 f.write(f"{r['t_us']} {r['pts']} {r['sid']} {r['fid']} "
                         f"{r['len']} 0x{r['flags']:02x} {r['nal0']}\n")
-        loaded, offset, resyncs = flightjitter.load_au_log(p)
+        loaded, offset, resyncs, dropped = flightjitter.load_au_log(p)
         assert len(loaded) == 10
         assert resyncs == 1
         assert abs(offset - 5_000_000) < 1000, offset
@@ -302,7 +302,7 @@ def test_load_au_log_v2_marker():
                 f.write(f"{r['t_us']} {r['pts']} {r['sid']} {r['fid']} "
                         f"{r['len']} 0x{r['flags']:02x} {r['nal0']} "
                         f"{r['t_us'] - 1000} {r['t_us']} 1800 4\n")
-        loaded, offset, resyncs = flightjitter.load_au_log(p)
+        loaded, offset, resyncs, dropped = flightjitter.load_au_log(p)
         assert len(loaded) == 5
         assert loaded[0]["t_first"] == rows[0]["t_us"] - 1000
         assert loaded[0]["t_complete"] == rows[0]["t_us"]
@@ -318,7 +318,7 @@ def test_aulog_v4_needs_no_clock_offset():
             f.write("# aulog 4\n")
             f.write("1000000 100 0 1 5000 0x81 32 900000 990000 7000 3 21\n")
             f.write("1016000 200 0 2 5000 0x01 1 1000000 1006000 7000 3 21\n")
-        rows, offset, resyncs = flightjitter.load_au_log(p)
+        rows, offset, resyncs, dropped = flightjitter.load_au_log(p)
         # v4 t_us is already monotonic: no `# sync` bridge, so no offset.
         assert offset == 0
         assert len(rows) == 2
@@ -347,7 +347,7 @@ def test_aulog_v4_ignores_sync_lines_even_when_present():
                 f.write(f"{r['t_us']} {r['pts']} {r['sid']} {r['fid']} "
                         f"{r['len']} 0x{r['flags']:02x} {r['nal0']} "
                         f"{r['t_us'] - 1000} {r['t_us']} 1800 4\n")
-        rows_loaded, offset, resyncs = flightjitter.load_au_log(p)
+        rows_loaded, offset, resyncs, dropped = flightjitter.load_au_log(p)
         assert len(rows_loaded) == 10
         assert offset == 0, offset
 
@@ -361,8 +361,52 @@ def test_repeated_marker_line_is_not_a_row():
             f.write("1000000 100 0 1 5000 0x81 32 900000 990000 7000 3 21\n")
             f.write("# aulog 4\n")  # a respawn rejoined this session
             f.write("2000000 200 0 2 5000 0x01 1 1900000 1990000 7000 3 21\n")
-        rows, _, _ = flightjitter.load_au_log(p)
+        rows, _, _, _ = flightjitter.load_au_log(p)
         assert len(rows) == 2
+
+
+def test_dropped_lines_summed_and_surfaced():
+    """`# dropped N` (LogWriter's ring-overflow hole signal, gs/src/log_writer.h
+    -- the v4 replacement for the deleted flightrec's `# resync`) must be
+    summed by load_au_log, not silently discarded like every other
+    '#'-prefixed line, and must land in the printed summary the way
+    ring_resyncs already does (mirrors main()'s s["ring_resyncs"] = resyncs
+    assignment)."""
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "au.log")
+        with open(p, "w") as f:
+            f.write("# aulog 4\n")
+            f.write("1000000 100 0 1 5000 0x81 32 900000 990000 7000 3 21\n")
+            f.write("# dropped 3\n")
+            f.write("2000000 200 0 2 5000 0x01 1 1900000 1990000 7000 3 21\n")
+        rows, offset, resyncs, dropped = flightjitter.load_au_log(p)
+        assert len(rows) == 2
+        assert dropped == 3
+        rep = flightjitter.analyze(rows)
+        s = rep["summary"]
+        s["ring_resyncs"] = resyncs
+        s["log_dropped"] = dropped
+        assert s["log_dropped"] == 3
+
+
+def test_dropped_lines_from_multiple_markers_accumulate():
+    """A rejoined session (2 s wrapper respawn) can flush more than one
+    "# dropped N" marker into the same file; they must accumulate, not
+    overwrite."""
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "au.log")
+        with open(p, "w") as f:
+            f.write("# aulog 4\n")
+            f.write("1000000 100 0 1 5000 0x81 32 900000 990000 7000 3 21\n")
+            f.write("# dropped 2\n")
+            f.write("2000000 200 0 2 5000 0x01 1 1900000 1990000 7000 3 21\n")
+            f.write("# dropped 5\n")
+            f.write("3000000 300 0 3 5000 0x01 1 2900000 2990000 7000 3 21\n")
+        rows, offset, resyncs, dropped = flightjitter.load_au_log(p)
+        assert len(rows) == 3
+        assert dropped == 7
 
 
 def main():

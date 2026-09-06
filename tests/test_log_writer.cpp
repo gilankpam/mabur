@@ -96,6 +96,24 @@ TEST(ring_overflow_drops_and_reports) {
   CHECK(text.find("# dropped ") != std::string::npos);
 }
 
+TEST(destructor_reports_drops_accrued_since_last_flush) {
+  // No explicit flush_now() here: the 1 Hz run_() flush hasn't fired yet,
+  // so these drops exist only in the atomic counter until ~LogWriter()
+  // runs. Before the fix, the destructor's hand-rolled fflush loop never
+  // called report_and_flush_(), so this marker was silently lost --
+  // exactly the crash-adjacent case where it matters most.
+  const std::string dir = make_dir("dtor-drops");
+  {
+    maburgs::LogWriter w;
+    auto a = w.open(dir, "au.log", "# aulog 4");
+    const std::string big(8192, 'y');
+    for (int i = 0; i < 4096; ++i) put(w, a, big);
+    REQUIRE(w.dropped(a) > 0);
+  }  // ~LogWriter runs here
+  const std::string text = slurp(dir + "/au.log");
+  CHECK(text.find("# dropped ") != std::string::npos);
+}
+
 TEST(empty_header_writes_nothing_and_is_not_a_drop) {
   const std::string dir = make_dir("nohdr");
   maburgs::LogWriter w;

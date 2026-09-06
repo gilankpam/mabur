@@ -27,7 +27,7 @@ Session = collections.namedtuple("Session", "dir ctl probe au flight lat")
 
 _FILES = {"ctl": "ctl.log", "probe": "probe.log", "au": "au.log",
           "flight": "flight.jsonl", "lat": "lat.log"}
-_SESSION_DIR = re.compile(r"^\d{4}$")
+_SESSION_DIR = re.compile(r"^\d{4,}$")
 
 
 def latest(root=DEFAULT_ROOT):
@@ -44,7 +44,7 @@ def latest(root=DEFAULT_ROOT):
            if _SESSION_DIR.match(n) and os.path.isdir(os.path.join(root, n))]
     if not idx:
         return None
-    return os.path.join(root, max(idx))
+    return os.path.join(root, max(idx, key=int))
 
 
 def _classify(path):

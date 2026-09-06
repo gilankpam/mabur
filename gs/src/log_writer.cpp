@@ -1,5 +1,6 @@
 #include "log_writer.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -19,12 +20,16 @@ LogWriter::~LogWriter() {
   stop_.store(true, std::memory_order_release);
   if (th_.joinable()) th_.join();
   drain_();  // anything queued after the thread's last pass
+  // report_and_flush_() takes drain_mu_, same as drain_() above -- called
+  // sequentially here, never nested, so there is no self-deadlock. This
+  // (rather than a hand-rolled fflush loop) is what stamps "# dropped N"
+  // for drops accrued in the last second before shutdown, which the 1 Hz
+  // run_() loop would otherwise never get to flush -- exactly when a crash
+  // makes that count most interesting.
+  report_and_flush_();
   const size_t n = n_outs_.load(std::memory_order_acquire);
   for (size_t i = 0; i < n; ++i) {
-    if (outs_[i] && outs_[i]->f) {
-      std::fflush(outs_[i]->f);
-      std::fclose(outs_[i]->f);
-    }
+    if (outs_[i] && outs_[i]->f) std::fclose(outs_[i]->f);
   }
 }
 

@@ -110,7 +110,15 @@ Consume the same numbers programmatically with:
   wrapper respawn rejoins the current one and appends (which is why a format
   marker line can appear more than once in a file). Every file shares one
   CLOCK_MONOTONIC clock, so any two rows join directly — there is no `# sync`
-  bridge any more. Analysis: `flightreport.py <session-dir>` (also
+  bridge any more. `ctl.log`, `probe.log` and `au.log` share one writer
+  thread (`gs/src/log_writer.h`) whose per-stream ring can fill under load;
+  when it does, the writer counts the dropped lines and, at its next 1 Hz
+  flush, appends `# dropped N` into the affected file so the gap is always
+  visible in the data itself — this is the v4 hole-signal, replacing the
+  external reader's `# resync` marker (below). `flight.jsonl` opts out
+  (`mark_drops=false`: NDJSON can't carry a comment line, and a gap is
+  already visible there from the datagram's own `seq` field). Analysis:
+  `flightreport.py <session-dir>` (also
   `flightjitter.py`, `airdrain.py`, `probesend.py`); with no argument they
   take the highest-numbered session. Replaces `flightrec.py`/`S95flightrec`,
   deleted 2026-09-06.
@@ -123,17 +131,23 @@ Consume the same numbers programmatically with:
   the pre-2026-08-31 7-column v1 format — `t_us pts sid fid len flags
   nal0` only — or, with a `# aulog 2` marker instead, the 2026-08-31
   SlotHdr v2 format, which adds `t_first t_complete enc dq` but not the
-  trailing `air_ms` column), read from the `/dev/shm/mabur-au` ring
-  exactly like `ausniff.py` (seqlock copy, epoch resync ⇒ `# resync`
-  marker; attaches at the write head so pre-attach history can't be
-  stamped with attach time). `t_us` in `aulog 4` is CLOCK_MONOTONIC µs,
-  the same clock every other file in the session directory uses — in
-  `aulog 1..3` (the last of those, `# aulog 3`, the SAME SlotHdr v3
-  columns as `aulog 4` but written only by the now-deleted
-  `flightrec.py`) it was WALL-clock µs and the file carried `# sync
-  <t_us> <t_ms>` anchors every 10 s to bridge to the jsonl's `t_ms`; a
-  v4 log has neither the wall clock nor the anchors (see the
-  scale-break note in `docs/data-provenance.md`).
+  trailing `air_ms` column). `aulog 4` is fed IN-PROCESS from
+  `AuRingWriter::last_record()` (`gs/src/main.cpp`'s FrameStream finish
+  callback; `gs/src/au_log.h`, `gs/src/au_ring.h`) — maburgs is the ring
+  WRITER, so there is no mmap, no seqlock copy, and no epoch resync; unlike
+  an outside reader, the writer cannot miss an AU to a ring overrun. Its
+  hole-signal is the shared `# dropped N` marker described above — the v4
+  equivalent of the `# resync` marker below. `t_us` in `aulog 4` is
+  CLOCK_MONOTONIC µs, the same clock every other file in the session
+  directory uses — in `aulog 1..3` (the last of those, `# aulog 3`, the
+  SAME SlotHdr v3 columns as `aulog 4` but written only by the now-deleted
+  `flightrec.py`, which read the rows from the `/dev/shm/mabur-au` ring
+  from OUTSIDE maburgs exactly like `ausniff.py` — seqlock copy, epoch
+  resync ⇒ `# resync` marker; attaches at the write head so pre-attach
+  history can't be stamped with attach time) it was WALL-clock µs and the
+  file carried `# sync <t_us> <t_ms>` anchors every 10 s to bridge to the
+  jsonl's `t_ms`; a v4 log has neither the wall clock nor the anchors (see
+  the scale-break note in `docs/data-provenance.md`).
   `t_first`/`t_complete` are the AU's SlotHdr v2 mono-µs latency stamps
   (first body / finish()); `enc`/`dq` are the drone's SBI-latched
   `enc_us`/`drone_q_ms` (venc encode time, TX queue wait) carried through

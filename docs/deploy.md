@@ -235,10 +235,11 @@ first. Range [0, 60]; the bench A/B that sizes it is in
 ## `maburplay` — the vsync-locked regulator (2026-08-31)
 
 The three new player config keys — `display.vsync_lock`,
-`display.vsync_lead_ms`, `display.lat_log_dir` — are **additive, with
-in-code defaults**. Strict keys only rejects a key that is UNPRESENT in
-the binary but PRESENT in the file; it says nothing about a key that is
-merely absent from the file, which just takes the compiled-in default.
+`display.vsync_lead_ms`, `display.lat_log_dir` (removed 2026-09-06 — see
+below) — are **additive, with in-code defaults**. Strict keys only rejects
+a key that is UNPRESENT in the binary but PRESENT in the file; it says
+nothing about a key that is merely absent from the file, which just takes
+the compiled-in default.
 So this swap, unlike the RC-version and venc flag days above, needs
 **no config edit before the binary swap**: drop in the new `maburplay`
 against the existing `/etc/maburplay.json` and it boots with
