@@ -4,7 +4,7 @@ or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v11,
 warns on pre-v4, pre-v7, pre-v8, pre-v9 and pre-v10; prints a u/u3
 definition label -- arrival-booked vs completion-booked -- at the v11
 boundary). Format is auto-detected from the first line.
-Usage: flightreport.py flight.jsonl | ctl-0001_20260805.log | probe-0001_20260905.log [au-NNNN.log]
+Usage: flightreport.py <session-dir> | flight.jsonl | ctl-*.log | probe-*.log [au-*.log]
 
 A ctl or probe log also gets the probe-stream report; the optional second
 argument names the flightrec au-NNNN.log to join probe rows to (otherwise
@@ -942,5 +942,18 @@ def main(path, aulog=None):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3): sys.exit(__doc__)
-    main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import session as _session
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg is None or os.path.isdir(arg):
+        s = _session.resolve(arg)
+        if s.dir is None:
+            sys.exit("no session found; pass a session dir or a log file")
+        primary = s.ctl or s.probe or s.flight
+        if primary is None:
+            sys.exit(f"{s.dir}: no ctl.log, probe.log or flight.jsonl")
+        # In session mode the au log is structural -- find_aulog_for's
+        # index-overlap guess is not consulted at all.
+        main(primary, s.au)
+    else:
+        main(arg, sys.argv[2] if len(sys.argv) > 2 else None)

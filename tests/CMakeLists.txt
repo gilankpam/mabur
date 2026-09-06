@@ -281,6 +281,12 @@ if(Python3_EXECUTABLE)
   add_test(NAME test_flightreport
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightreport.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME test_session
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_session.py)
+  add_test(NAME test_maburtop
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/test_maburtop.py)
+  set_tests_properties(test_maburtop PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
   add_test(NAME test_gen_font
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_gen_font.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

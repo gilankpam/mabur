@@ -310,6 +310,34 @@ def test_load_au_log_v2_marker():
         assert loaded[0]["dq_ms"] == 4
 
 
+def test_aulog_v4_needs_no_clock_offset():
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "au.log")
+        with open(p, "w") as f:
+            f.write("# aulog 4\n")
+            f.write("1000000 100 0 1 5000 0x81 32 900000 990000 7000 3 21\n")
+            f.write("1016000 200 0 2 5000 0x01 1 1000000 1006000 7000 3 21\n")
+        rows, offset, resyncs = flightjitter.load_au_log(p)
+        # v4 t_us is already monotonic: no `# sync` bridge, so no offset.
+        assert offset == 0
+        assert len(rows) == 2
+        assert rows[0]["t_us"] == 1000000
+
+
+def test_repeated_marker_line_is_not_a_row():
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "au.log")
+        with open(p, "w") as f:
+            f.write("# aulog 4\n")
+            f.write("1000000 100 0 1 5000 0x81 32 900000 990000 7000 3 21\n")
+            f.write("# aulog 4\n")  # a respawn rejoined this session
+            f.write("2000000 200 0 2 5000 0x01 1 1900000 1990000 7000 3 21\n")
+        rows, _, _ = flightjitter.load_au_log(p)
+        assert len(rows) == 2
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

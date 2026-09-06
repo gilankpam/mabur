@@ -249,12 +249,18 @@ def print_report(r, ctl_path, au_path, profiles=False, spike_ms=15.0, model_flag
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('ctl'); ap.add_argument('aulog')
+    ap.add_argument('ctl', nargs='?'); ap.add_argument('aulog', nargs='?')
     ap.add_argument('--from', dest='t0', type=float); ap.add_argument('--to', dest='t1', type=float)
     ap.add_argument('--spike', type=float, default=15.0)
     ap.add_argument('--profiles', action='store_true')
     ap.add_argument('--model', action='store_true')
     args = ap.parse_args()
+    if args.ctl is None or os.path.isdir(args.ctl):
+        import session as _session   # tools/ is already on sys.path here
+        s = _session.resolve(args.ctl)
+        if s.ctl is None or s.au is None:
+            sys.exit('session needs both ctl.log and au.log')
+        args.ctl, args.aulog = s.ctl, s.au
     r = analyze(args.ctl, args.aulog, args.t0, args.t1, args.spike)
     print_report(r, args.ctl, args.aulog, args.profiles, args.spike, args.model)
 

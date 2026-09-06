@@ -16,14 +16,24 @@ many had a send within the collision window, against the same rate for
 delivered probes. Bench 2026-09-05 (pinned mcs4, feedback 50): 45/55 lost
 vs 22 % baseline before the fix.
 
-Usage: python3 tools/bench/probesend.py gaplog.txt probe-NNNN.log au-NNNN.log
+Usage: python3 tools/bench/probesend.py gaplog.txt <session-dir> | probe-NNNN.log au-NNNN.log
 (run from the repo root: imports tools/flightreport.py)
 """
 import sys, bisect, re, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import flightreport as fr
-if len(sys.argv) != 4: sys.exit(__doc__)
-gap, probe, aulog = sys.argv[1:4]
+if len(sys.argv) < 2: sys.exit(__doc__)
+gap = sys.argv[1]
+arg2 = sys.argv[2] if len(sys.argv) > 2 else None
+if arg2 is None or os.path.isdir(arg2):
+    import session as _session   # tools/ is already on sys.path here
+    s = _session.resolve(arg2)
+    if s.probe is None or s.au is None:
+        sys.exit('session needs both probe.log and au.log')
+    probe, aulog = s.probe, s.au
+else:
+    if len(sys.argv) != 4: sys.exit(__doc__)
+    probe, aulog = sys.argv[2], sys.argv[3]
 pl = fr.load_probelog(probe); au = fr.load_aulog(aulog)
 sends = [int(m.group(1)) for m in re.finditer(r'gstx card=\d+ mono=(\d+)', open(gap).read())]
 sends.sort()

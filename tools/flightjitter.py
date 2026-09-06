@@ -35,6 +35,7 @@
 # Usage: flightjitter.py au-0001.log [flight-0001.jsonl]
 import bisect
 import json
+import os
 import statistics
 import sys
 
@@ -275,7 +276,9 @@ def load_au_log(path):
                              t_complete=int(t_complete), enc_us=int(enc_us),
                              dq_ms=int(dq_ms)))
     offset = 0
-    if syncs:
+    # v4+ t_us is already monotonic (no wall-clock/mono bridge needed);
+    # only v<=3 logs derive an offset from their "# sync" lines.
+    if version <= 3 and syncs:
         offset = int(statistics.median(t_us - t_ms * 1000
                                        for t_us, t_ms in syncs))
     return rows, offset, resyncs
@@ -296,12 +299,21 @@ def load_jsonl(path):
 
 
 def main():
-    if len(sys.argv) < 2:
-        sys.exit("usage: flightjitter.py au-NNNN.log [flight-NNNN.jsonl]")
-    rows, offset, resyncs = load_au_log(sys.argv[1])
-    jsonl = load_jsonl(sys.argv[2]) if len(sys.argv) > 2 else None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import session as _session
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg is None or os.path.isdir(arg):
+        s = _session.resolve(arg)
+        if s.au is None:
+            sys.exit("no au log in that session")
+        au_path, jsonl_path = s.au, s.flight
+    else:
+        au_path = arg
+        jsonl_path = sys.argv[2] if len(sys.argv) > 2 else None
+    rows, offset, resyncs = load_au_log(au_path)
+    jsonl = load_jsonl(jsonl_path) if jsonl_path else None
     if not rows:
-        sys.exit(f"{sys.argv[1]}: no AU rows")
+        sys.exit(f"{au_path}: no AU rows")
     rep = analyze(rows, jsonl=jsonl, offset_us=offset)
     s = rep["summary"]
     s["ring_resyncs"] = resyncs
