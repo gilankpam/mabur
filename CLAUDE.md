@@ -35,7 +35,7 @@ page the task needs rather than carrying all of it.
 | If the task touches… | Read |
 |---|---|
 | ladder rungs, promote/demote, s3 probes, fade, attribution, RCF drain, RcAgent's encoder verbs + IDR pacing | `docs/link-adaptation.md` |
-| the stats sideport, maburtop, recorders, ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
+| the stats sideport, maburtop, the debug-log session directory (ctl/probe/au/flight/lat), ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
 | shipping a binary or config to a device | `docs/deploy.md` |
 | a specific past investigation | the dated `docs/*-findings-*.md` / `docs/handover-*.md` |
@@ -56,11 +56,16 @@ build. mabur owes nothing to old peers, old configs, or old consumers.
   struct, drop dead RCF fields. No deprecation cycle, no reserved bytes,
   no placeholder fields kept "so a peer could still refuse us" — delete
   dead weight instead of preserving it for a peer that will never exist.
-- **The sideport schema is NOT additive-only.** Remove, rename and re-type
-  keys under `v: 1` as convenient; `v` does not need bumping. The
+- **The sideport schema, and the debug-log session layout it pairs with,
+  are NOT additive-only.** Remove, rename and re-type sideport keys under
+  `v: 1` as convenient; `v` does not need bumping. The per-session log
+  files (`ctl.log`, `probe.log`, `au.log`, `flight.jsonl`, `lat.log`) are
+  under the same rule — their own format-marker lines (`ctllog N`,
+  `aulog N`, `probelog N`, `latlog N`) carry the version instead. The
   obligation is to fix the in-repo consumers — `tools/maburtop.py`,
-  `tools/flightreport.py`, `gs/player`'s OSD — **in the same commit**, not
-  to keep the old shape alive.
+  `tools/flightreport.py` (which reads both the sideport jsonl and the
+  session directory's log files), `gs/player`'s OSD — **in the same
+  commit**, not to keep the old shape alive.
 - **Config keys are free to change.** A removed key failing boot is the
   intended forcing function, not a regression. No migration shims.
 - **There is no rollback contract.** An old binary needs its old config

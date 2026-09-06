@@ -292,9 +292,6 @@ if(Python3_EXECUTABLE)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   add_test(NAME test_gen_gsfont
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_gen_gsfont.py)
-  add_test(NAME test_flightrec
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_flightrec.py
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   add_test(NAME test_airdrain
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_airdrain.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
