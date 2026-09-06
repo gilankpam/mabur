@@ -157,9 +157,13 @@ EOF
 # VPS/SPS/PPS/NAL/HEVC keywords itself.
 echo "== ffprobe gate A (container-level, fixture-chain DVR file) =="
 set +e
+# The redirect belongs to ffprobe, INSIDE --run: hung off nix-shell it also
+# captures nix-shell's own stderr, and on a cold store that is a few hundred
+# lines of "these N paths will be fetched" / "copying path ..." which the
+# noise filter below then reports as ffprobe diagnostics. Warm stores hide
+# this; CI does not have one.
 OUT_A=$(nix-shell -p ffmpeg --run \
-  "ffprobe -v error -count_packets -select_streams v -show_entries stream=codec_name,nb_read_packets -of csv=p=0 $TMP/record-*.mp4" \
-  2> "$TMP/ffprobeA.stderr")
+  "ffprobe -v error -count_packets -select_streams v -show_entries stream=codec_name,nb_read_packets -of csv=p=0 $TMP/record-*.mp4 2> '$TMP/ffprobeA.stderr'")
 RC_A=$?
 set -e
 echo "ffprobe A: $OUT_A (rc=$RC_A)"
@@ -192,9 +196,10 @@ echo "== maburplay --mux-annexb: real stream -> DVR fMP4 =="
 "$MABURPLAY" --mux-annexb "$TMP/real.265" "$TMP/real.mp4"
 
 echo "== ffprobe gate B (real decode, real HEVC file) =="
+# Redirect inside --run, same reason as gate A -- and this gate is stricter
+# still, failing on ANY stderr line at all.
 OUT_B=$(nix-shell -p ffmpeg --run \
-  "ffprobe -v error -count_frames -select_streams v -show_entries stream=codec_name,nb_read_frames -of csv=p=0 $TMP/real.mp4" \
-  2> "$TMP/ffprobeB.stderr")
+  "ffprobe -v error -count_frames -select_streams v -show_entries stream=codec_name,nb_read_frames -of csv=p=0 $TMP/real.mp4 2> '$TMP/ffprobeB.stderr'")
 ERR_B=$(cat "$TMP/ffprobeB.stderr")
 echo "ffprobe B: $OUT_B"
 if [ -n "$ERR_B" ]; then
