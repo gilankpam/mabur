@@ -39,12 +39,13 @@ def write_logs(d, model=True):
          (60000, 5, 4, 's3_residual'), (60300, 4, 3, 's3_residual'),   # the cascade
          (90000, 3, 2, 'residual'),                                    # single
          (110000, 2, 3, 'promote_probed'),
-         (150000, 3, 0, 'starved')]
+         (150000, 3, 0, 'starved'),                                    # link loss mid-flight...
+         (155000, 0, 1, 'promote_probed')]                             # ...and the re-climb after it
     with open(ctl, 'w') as f:
         f.write('ctllog 10 ladder=0/100:50,1/100:50,2/100:50,3/100:50,4/100:50,5/100:50 '
                 'down_util=0.35 up_util=0.15 probe_offset=1\n')
         ei = 0; rung = 0
-        for t in range(5000, 152000, 1000):
+        for t in range(5000, 162000, 1000):
             while ei < len(E) and E[ei][0] <= t:
                 f.write(f'E {E[ei][0]} {E[ei][1]} {E[ei][2]} {E[ei][3]} 0.0000 30.0 -20.0\n')
                 rung = E[ei][2]; ei += 1
@@ -52,7 +53,7 @@ def write_logs(d, model=True):
     with open(au, 'w') as f:
         f.write('# aulog 3\n' if model else '# aulog 2\n')
         fid = 0; t = 5000.0
-        while t < 152000.0:
+        while t < 162000.0:
             sid = fid & 1
             pts = t - PTS_OFF_MS + (100000.0 if t >= 130000.0 else 0.0)  # restart: pts jumps +100 s
             enc = 7000; q = 1
@@ -77,7 +78,10 @@ def main():
     d = tempfile.mkdtemp()
     ctl, au = write_logs(d)
     r = airdrain.analyze(ctl, au)
-    assert r['t0'] == 10000 and r['t1'] == 150000, (r['t0'], r['t1'])
+    # The window runs to the LAST S line: a starve is link loss, not the end
+    # of the flight (flight 0031 read as 72 s of 566 when it stopped at the
+    # first starved E line, 2026-09-06).
+    assert r['t0'] == 10000 and r['t1'] == 161000, (r['t0'], r['t1'])
 
     # The cascade: one episode, 5->3 in 2 steps, peak ~120 ms at ~+800 ms,
     # drained by ~+2000 ms, nothing before it, two IDRs in the bins.
@@ -101,7 +105,7 @@ def main():
     # Single demote: one 40 ms frame, nothing before. Promote: nothing at all.
     assert len(r['singles']) == 1 and approx(r['singles'][0]['peak_ms'], 40.0, 1.0), r['singles']
     assert r['singles'][0]['pre_ms'] < 1.0
-    assert len(r['promotes']) == 6, len(r['promotes'])           # 5 climb + 1 at 110 s
+    assert len(r['promotes']) == 7, len(r['promotes'])           # 5 climb + 110 s + the post-starve 155 s
     late = [p for p in r['promotes'] if p['t0'] == 110000]
     assert late and late[0]['peak_ms'] < 1.0, late
 

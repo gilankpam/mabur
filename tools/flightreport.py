@@ -609,13 +609,22 @@ def find_aulog_for(probe_path, pl):
     if not stamps: return None
     lo, hi = min(stamps), max(stamps)
     d = os.path.dirname(os.path.abspath(probe_path))
-    best, best_ov = None, 0
+    # Overlap alone does not discriminate: every boot's mono clock starts
+    # near zero, so on a DVR holding many flights a dozen au logs overlap
+    # the probe span within seconds of each other (probe-0353 vs
+    # au-0020..0032 picked au-0001, 2026-09-06). Among the overlapping
+    # candidates take the one whose enh fids actually JOIN the probe rows;
+    # overlap only breaks ties (and is the fallback when nothing joins).
+    best, best_key = None, (0, 0)
     for cand in sorted(glob.glob(os.path.join(d, "au-*.log")) +
                        glob.glob(os.path.join(d, "log", "au-*.log"))):
-        ts = [r["t_complete"] for r in load_aulog(cand) if r["t_complete"]]
+        au = load_aulog(cand)
+        ts = [r["t_complete"] for r in au if r["t_complete"]]
         if not ts: continue
         ov = min(hi, max(ts)) - max(lo, min(ts))
-        if ov > best_ov: best, best_ov = cand, ov
+        if ov <= 0: continue
+        key = (len(probe_au_offset_rows(pl, au)), ov)
+        if key > best_key: best, best_key = cand, key
     return best
 
 
@@ -652,17 +661,33 @@ def _pct(v, q):
     return s[i]
 
 
+PROBE_RESYNC_MS = 3000.0      # link.failsafe_ms: a longer silence is a starve, not loss
+PROBE_RESYNC_BODIES = 10000   # ~5 min of enh AUs: a bigger seq jump is a new random seed
+
+
 def probelog_summary(pl):
     """Per mcs: received bodies, lost bodies (seq gaps, attributed to the
-    NEXT received body's mcs), surviving blocks, per-card body counts."""
+    NEXT received body's mcs), surviving blocks, per-card body counts.
+    A seq gap is loss only inside a live link: ProbeSource seeds a RANDOM
+    initial seq per daemon start (the SwEncoder restart contract), and
+    across a starve the GS is deaf for > failsafe_ms while the drone keeps
+    counting -- both read as billions of "lost" bodies otherwise
+    (probe-0352 mcs1, 2026-09-06). A backwards seq, a > PROBE_RESYNC_MS
+    silence or a > PROBE_RESYNC_BODIES jump re-anchors instead, counted in
+    `resyncs` on the mcs of the body that re-anchored."""
     out = {}
-    prev_seq = None
+    prev_seq = None; prev_t = None
     for r in pl["rows"]:
         s = out.setdefault(r["mcs"], {"bodies": 0, "lost_bodies": 0, "blocks_ok": 0,
-                                       "card0": 0, "card1": 0})
-        if prev_seq is not None and r["seq"] > prev_seq + 1:
-            s["lost_bodies"] += r["seq"] - prev_seq - 1
-        prev_seq = r["seq"]
+                                       "card0": 0, "card1": 0, "resyncs": 0})
+        if prev_seq is not None:
+            gap = r["seq"] - prev_seq - 1
+            if (r["seq"] <= prev_seq or gap > PROBE_RESYNC_BODIES or
+                    r["t_ms"] - prev_t > PROBE_RESYNC_MS):
+                s["resyncs"] += 1
+            elif gap > 0:
+                s["lost_bodies"] += gap
+        prev_seq = r["seq"]; prev_t = r["t_ms"]
         s["bodies"] += 1; s["blocks_ok"] += r["blocks_ok"]
         if r["card_mask"] & 1: s["card0"] += 1
         if r["card_mask"] & 2: s["card1"] += 1
@@ -687,7 +712,8 @@ def print_probe_report(ctllog, probelog, au_rows=None):
             blk_loss = 1 - s["blocks_ok"] / (tot * bpb) if tot else float("nan")
             print(f"  mcs{mcs}: bodies={s['bodies']} lost={s['lost_bodies']} "
                   f"body_loss={body_loss:.3f} block_loss={blk_loss:.3f} "
-                  f"c0={s['card0']} c1={s['card1']}")
+                  f"c0={s['card0']} c1={s['card1']}"
+                  + (f" resyncs={s['resyncs']}" if s.get("resyncs") else ""))
         if au_rows is not None:
             pairs = probe_au_offset_rows(probelog, au_rows)
             offs = [o for _, o in pairs]
