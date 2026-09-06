@@ -28,7 +28,6 @@
         "regulate_ms": 12,
         "vsync_lock": true,
         "vsync_lead_ms": 6,
-        "chain_budget": 3,
-        "lat_log_dir": "/media/dvr/log"
+        "chain_budget": 3
     }
 }

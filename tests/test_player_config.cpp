@@ -295,7 +295,6 @@ TEST(display_vsync_defaults) {
       std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
   CHECK(cfg.display.vsync_lock == true);
   CHECK(cfg.display.vsync_lead_ms == 6);
-  CHECK(cfg.display.lat_log_dir == "/media/dvr/log");
 }
 
 TEST(display_vsync_lead_range_enforced) {
@@ -311,6 +310,19 @@ TEST(display_vsync_lead_range_enforced) {
   try { maburplay::load_config(write_tmp_play(R"({"display":{"vsync_lead_ms":11}})")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
+}
+
+// display.lat_log_dir went with the 2026-09-06 consolidation: maburplay holds
+// no logging config at all now, it follows /tmp/mabur-session.
+TEST(removed_lat_log_dir_is_rejected) {
+  bool threw = false;
+  try {
+    maburplay::load_config(write_tmp_play(
+        R"({"display":{"lat_log_dir":"/media/dvr/log"}})"));
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK(threw);
 }
 
 MTEST_MAIN

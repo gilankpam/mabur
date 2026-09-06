@@ -7,33 +7,46 @@
 
 namespace maburplay {
 
-// Persists the player's 1 Hz `lat:` line to <dir>/lat-NNNN.log so the
-// tail latency segments survive power-off (/tmp is tmpfs; the flight-0035
-// tail was lost exactly this way). Never blocks, never throws, never
-// spams: a failed open retries at most every 30 s and the line always
-// still goes to stderr via the caller.
+// Written by maburgs' DebugSession; maburplay only ever reads it. Declared
+// here rather than shared from gs/src because the player does not link
+// mabur_gs_core -- the two constants must stay equal.
+inline constexpr const char* kSessionMarker = "/tmp/mabur-session";
+
+// Persists the player's 1 Hz `lat:` line into the CURRENT debug session, so
+// the tail latency segments survive power-off (/tmp is tmpfs; the flight-0035
+// tail was lost exactly that way).
 //
-// Format: "# latlog 1" then "# sync <mono_us> <wall_us>" (clock bridge to
-// the flight jsonl), then "<mono_us> <payload>" per write. Index scan
-// mirrors gs/src/ctl_log.cpp; no date suffix (RTC is bogus at boot).
+// maburplay holds no logging config: it follows the marker maburgs writes.
+// No marker means no session means no file -- which is how one knob in
+// maburgs.json turns the whole GS's debug logging off.
+//
+// Format: "# latlog 2" then "<mono_us> <payload>" per write, appended. There
+// is no `# sync` clock bridge any more: maburgs and maburplay both stamp
+// CLOCK_MONOTONIC on the same box, so every debug-log file shares one clock.
+//
+// Never blocks, never throws, never spams: a missing or unusable session is
+// re-checked at most every 30 s and the line always still goes to stderr via
+// the caller.
 class LatLog {
  public:
-  explicit LatLog(std::string dir) : dir_(std::move(dir)) {}
+  explicit LatLog(const char* marker_path = kSessionMarker)
+      : marker_(marker_path) {}
   ~LatLog();
   LatLog(const LatLog&) = delete;
   LatLog& operator=(const LatLog&) = delete;
 
-  void write(uint64_t mono_us, uint64_t wall_us, const char* payload);
+  void write(uint64_t mono_us, const char* payload);
   const std::string& path() const { return path_; }
 
  private:
-  void try_open(uint64_t mono_us, uint64_t wall_us);
+  void reopen_(uint64_t mono_us);
 
-  const std::string dir_;
+  const char* marker_;
   std::FILE* f_ = nullptr;
   std::string path_;
-  uint64_t last_attempt_us_ = 0;
-  bool attempted_ = false;
+  std::string dir_;
+  uint64_t last_check_us_ = 0;
+  bool checked_ = false;
 };
 
 }  // namespace maburplay
