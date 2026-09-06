@@ -169,6 +169,8 @@ int star6e_controls_request_idr(void)
 static struct {
 	int      qp_delta;    /* s32IPQPDelta (0 = the firmware default) */
 	uint32_t max_ipprop;  /* u32MaxIPProp; 0 = leave the firmware value */
+	uint32_t min_iqp;     /* u32MinIQp;    0 = leave the firmware value */
+	uint32_t max_iqp;     /* u32MaxIQp;    0 = leave the firmware value */
 } g_rc_intent;
 
 /* Firmware u32MaxIPProp, captured on the first Get before any write so the
@@ -201,8 +203,32 @@ static int rc_commit_intent(void)
 	}
 	if (g_rc_intent.max_ipprop)
 		param.stParamH265Cbr.u32MaxIPProp = g_rc_intent.max_ipprop;
+	if (g_rc_intent.min_iqp)
+		param.stParamH265Cbr.u32MinIQp = g_rc_intent.min_iqp;
+	if (g_rc_intent.max_iqp)
+		param.stParamH265Cbr.u32MaxIQp = g_rc_intent.max_iqp;
+	if (param.stParamH265Cbr.u32MinIQp > param.stParamH265Cbr.u32MaxIQp)
+		return -1;
 	return MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) == 0
 		? 0 : -1;
+}
+
+static int apply_iqp_bound(int is_min, uint32_t qp)
+{
+	uint32_t *slot = is_min ? &g_rc_intent.min_iqp : &g_rc_intent.max_iqp;
+	uint32_t prev = *slot;
+
+	if (qp < 1 || qp > 51)
+		return -1;
+	*slot = qp;
+	if (rc_commit_intent() != 0) {
+		*slot = prev;
+		return -1;
+	}
+	printf("> %s: applied = %u\n", is_min ? "min_iqp" : "max_iqp",
+		(unsigned)qp);
+	fflush(stdout);
+	return 0;
 }
 
 static int apply_qp_delta(int delta)
@@ -479,6 +505,11 @@ int star6e_controls_set_max_ipprop(uint32_t prop)
 	return apply_max_ipprop(prop);
 }
 
+int star6e_controls_set_iqp_bound(int is_min, uint32_t qp)
+{
+	return apply_iqp_bound(is_min, qp);
+}
+
 void star6e_controls_log_rc_readback(const char *when)
 {
 	MI_VENC_RcParam_t param = {0};
@@ -495,17 +526,22 @@ void star6e_controls_log_rc_readback(const char *when)
 	held_prop = (unsigned)param.stParamH265Cbr.u32MaxIPProp;
 	ok = held_delta == g_rc_intent.qp_delta &&
 	     (g_rc_intent.max_ipprop == 0 ||
-	      held_prop == g_rc_intent.max_ipprop);
+	      held_prop == g_rc_intent.max_ipprop) &&
+	     (g_rc_intent.min_iqp == 0 ||
+	      param.stParamH265Cbr.u32MinIQp == g_rc_intent.min_iqp) &&
+	     (g_rc_intent.max_iqp == 0 ||
+	      param.stParamH265Cbr.u32MaxIQp == g_rc_intent.max_iqp);
 	/* stderr: unbuffered into /tmp/mabur.log like the stats: line, so a
 	 * crash a second later still leaves the proof in the log. */
 	fprintf(stderr, "rc_readback %s: IPQPDelta=%d MaxIPProp=%u MinQp=%u "
 		"MaxQp=%u MinIQp=%u MaxIQp=%u intent qp_delta=%d max_ipprop=%u "
-		"%s\n",
+		"min_iqp=%u max_iqp=%u %s\n",
 		when, held_delta, held_prop,
 		(unsigned)param.stParamH265Cbr.u32MinQp,
 		(unsigned)param.stParamH265Cbr.u32MaxQp,
 		(unsigned)param.stParamH265Cbr.u32MinIQp,
 		(unsigned)param.stParamH265Cbr.u32MaxIQp,
 		g_rc_intent.qp_delta, (unsigned)g_rc_intent.max_ipprop,
+		(unsigned)g_rc_intent.min_iqp, (unsigned)g_rc_intent.max_iqp,
 		ok ? "OK" : "MISMATCH -- the encoder is not holding the intent");
 }
