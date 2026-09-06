@@ -1,0 +1,69 @@
+name: CI
+
+# Host test suite only. The cross-builds (tools/build-arm.sh, build-arm64.sh)
+# need the OpenIPC toolchain plus MPP/DRM roots that live outside this repo, so
+# they cannot run here; see docs/deploy.md.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# A newer push to the same ref makes the older run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-suite:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mabur
+    env:
+      # run_player_e2e.sh calls `nix-shell -p ffmpeg` itself for the ffprobe /
+      # libx265 gates, so <nixpkgs> has to resolve inside the TEST process, not
+      # just inside the wrapper below.
+      NIX_PATH: nixpkgs=channel:nixos-unstable
+    steps:
+      # The build wants devourer as a SIBLING directory (DEVOURER_DIR defaults
+      # to ../devourer), and tests/integration/run_gs_e2e.sh imports
+      # ../devourer/tools/precoder/rc_proto.py. Hence the two-checkout layout.
+      # Tracking devourer's master mirrors the dev box; the third_party/devourer
+      # submodule pin is NOT the build input and is routinely stale.
+      - uses: actions/checkout@v5
+        with:
+          path: mabur
+      - uses: actions/checkout@v5
+        with:
+          repository: gilankpam/devourer
+          ref: master
+          path: devourer
+
+      - uses: cachix/install-nix-action@v31.11.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Configure
+        run: |
+          nix-shell -p pkg-config libusb1 --run \
+            "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DDEVOURER_DIR=$GITHUB_WORKSPACE/devourer"
+
+      - name: Build
+        run: |
+          nix-shell -p pkg-config libusb1 --run \
+            "cmake --build build -j$(nproc)"
+
+      - name: Test
+        run: |
+          nix-shell -p pkg-config libusb1 --run \
+            "ctest --test-dir build -R 'test_|host_e2e' -j$(nproc) --output-on-failure"
+
+      - name: Upload ctest log
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ctest-log
+          path: mabur/build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
