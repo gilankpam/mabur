@@ -243,6 +243,55 @@ TEST(toml_rejects_bad_arrays) {
   }
 }
 
+TEST(toml_crlf_line_endings) {
+  // A file that arrived via a Windows scp or an editor that defaults to
+  // CRLF. Each line, including continuation lines inside a multi-line
+  // array, must have its trailing \r trimmed rather than folded into the
+  // value or the key.
+  Value v = parse_toml_string(
+      "backend = \"mpp\"\r\n"
+      "\r\n"
+      "[fec]\r\n"
+      "symbol_size = 332\r\n"
+      "blocks_per_body = [\r\n"
+      "  4,\r\n"
+      "  4,\r\n"
+      "]\r\n",
+      "t.toml");
+  CHECK(v.at("backend").get<std::string>() == "mpp");
+  CHECK(v.at("fec").at("symbol_size").get<int>() == 332);
+  const Value& bpb = v.at("fec").at("blocks_per_body");
+  CHECK(bpb.size() == 2);
+  CHECK(bpb.at(0).get<int>() == 4);
+  CHECK(bpb.at(1).get<int>() == 4);
+}
+
+TEST(toml_tabs_as_separators) {
+  // A tab in place of the spaces around '=' and after a table header must
+  // not become part of the key or the value.
+  Value v = parse_toml_string(
+      "backend\t=\t\"mpp\"\n"
+      "[fec]\n"
+      "symbol_size\t=\t332\n",
+      "t.toml");
+  CHECK(v.at("backend").get<std::string>() == "mpp");
+  CHECK(v.at("fec").at("symbol_size").get<int>() == 332);
+}
+
+TEST(toml_empty_file) {
+  Value v = parse_toml_string("", "t.toml");
+  CHECK(v.is_object());
+  CHECK(!v.contains("anything"));
+}
+
+TEST(toml_no_trailing_newline) {
+  // std::getline still yields the final line when the file has no
+  // terminating \n; a common shape for a hand-edited config saved by an
+  // editor that doesn't add one.
+  Value v = parse_toml_string("[fec]\nsymbol_size = 332", "t.toml");
+  CHECK(v.at("fec").at("symbol_size").get<int>() == 332);
+}
+
 TEST(toml_get_unsigned_integral_range_check) {
   Value v = parse_toml_string(
       "positive = 300\n"
@@ -269,6 +318,45 @@ TEST(toml_get_unsigned_integral_range_check) {
     threw = true;
   }
   CHECK(threw);
+}
+
+TEST(toml_table_header_descends_into_array_of_tables) {
+  // parent_of's array-descent branch: [[a]] opens an array of one table,
+  // then [a.b] must walk INTO that array's last element (not treat "a" as
+  // a plain table) to attach "b" under it.
+  Value v = parse_toml_string(
+      "[[a]]\n"
+      "x = 1\n"
+      "\n"
+      "[a.b]\n"
+      "y = 2\n",
+      "t.toml");
+  const Value& arr = v.at("a");
+  CHECK(arr.is_array());
+  CHECK(arr.size() == 1);
+  CHECK(arr.at(0).at("x").get<int>() == 1);
+  CHECK(arr.at(0).at("b").at("y").get<int>() == 2);
+}
+
+TEST(toml_table_header_middle_segment_is_array) {
+  // Same branch, exercised on a 3-segment path where the MIDDLE segment
+  // (not the last, as above) is the array to descend into: [[a.b]] makes
+  // "a" a table and "a.b" an array of one table, then [a.b.c] must land
+  // inside that array's last element.
+  Value v = parse_toml_string(
+      "[[a.b]]\n"
+      "x = 1\n"
+      "\n"
+      "[a.b.c]\n"
+      "y = 2\n",
+      "t.toml");
+  const Value& tbl_a = v.at("a");
+  CHECK(tbl_a.is_object());
+  const Value& arr_b = tbl_a.at("b");
+  CHECK(arr_b.is_array());
+  CHECK(arr_b.size() == 1);
+  CHECK(arr_b.at(0).at("x").get<int>() == 1);
+  CHECK(arr_b.at(0).at("c").at("y").get<int>() == 2);
 }
 
 MTEST_MAIN

@@ -47,6 +47,15 @@ sed -e "/^\[fec\]/,/^\[/ s|^symbol_size = .*|symbol_size = 332|" \
     -e "/^\[au_ring\]/a path = \"$TMP/au-ring\"\nsocket = \"$TMP/au-ring.sock\"" \
     gs/bundle/maburgs.default.toml > "$TMP/gs.toml"
 
+# The sed above is layout-sensitive (bare `^symbol_size = ` anchor): if the
+# bundle's [fec] section is ever reworded or re-indented, it silently stops
+# matching and the test would still pass, just against whatever symbol_size
+# the bundle shipped with. Assert the pin actually landed.
+sed -n '/^\[fec\]/,/^\[/p' "$TMP/gs.toml" | grep -q '^symbol_size = 332$' || {
+  echo "FAIL: fec.symbol_size sed did not match in $TMP/gs.toml -- bundle layout changed" >&2
+  exit 1
+}
+
 "$MABURGS" -c "$TMP/gs.toml" --dry-run --in "$TMP/bodies.bin"
 
 python3 tools/bench/ausniff.py --ring "$TMP/au-ring" --oneshot \
