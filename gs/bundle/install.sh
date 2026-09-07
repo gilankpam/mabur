@@ -34,9 +34,22 @@ scp -O gs/bundle/S96maburgs "$HOST:/etc/init.d/S96maburgs"
 # maburtop goes to /usr/bin: the GS shell's default PATH does not include
 # /usr/local/bin (maburgs itself is only ever launched by absolute path).
 scp -O tools/maburtop.py "$HOST:/usr/bin/maburtop"
-# Config: install the default only if none exists (never clobber a tuned one).
-ssh "$HOST" "[ -f /etc/maburgs.toml ]" || \
+# Config: seed the default only if NEITHER a tuned .toml NOR a legacy .json
+# exists. A bare "no .toml" check would seed the repo default over an
+# un-converted device's tuned /etc/maburgs.json -- the daemon then boots
+# cleanly on repo defaults (no crash, no signal; the startup defaulted-keys
+# report can't catch it either, since it compares against compiled defaults,
+# not the old config) and silently runs on the wrong values. Convert first.
+if ssh "$HOST" '[ -f /etc/maburgs.toml ]'; then
+  : # tuned config already present -- never clobber it
+elif ssh "$HOST" '[ -f /etc/maburgs.json ]'; then
+  echo "error: $HOST has /etc/maburgs.json but no /etc/maburgs.toml -- convert" >&2
+  echo "the tuned JSON config to TOML by hand before deploying (docs/deploy.md," >&2
+  echo "'JSON to TOML cutover'). Refusing to seed the repo default over it." >&2
+  exit 1
+else
   scp -O gs/bundle/maburgs.default.toml "$HOST:/etc/maburgs.toml"
+fi
 
 # Start via the init script. S96maburgs' start does `rmmod 8812eu` so devourer
 # can claim the cards over libusb; its daemon stdout is redirected to

@@ -266,6 +266,14 @@ cp gs/player/bundle/gs_osd.gfont out/arm64/gs_osd.gfont
 # tools/gen_splash.py (see its header for the exact command).
 cp gs/player/bundle/splash.bin out/arm64/splash.bin
 
+# The default player config, staged the same way. Unlike the three assets
+# above there is no `gs/player/bundle/install.sh` to place it, so the
+# operator copies it to /etc/maburplay.toml by hand (see docs/deploy.md's
+# "JSON to TOML cutover") -- without it S97maburplay's `-c /etc/maburplay.toml`
+# has nothing to read, maburplay exits 2, and the wrapper treats exit 2 as
+# terminal: no respawn, permanently black GS screen.
+cp gs/player/bundle/maburplay.default.toml out/arm64/maburplay.default.toml
+
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then
   nix-build -E \
