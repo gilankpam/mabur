@@ -627,9 +627,8 @@ Items 1-3 are measured; the rest are estimates.
    0.854 s without. Live on `.95`; not yet on the drone.
 2. **`verify=no` + `baseaddr=0x20007FC0`** — **0.55 s**, measured, env-only,
    reversible, already live on `.95`. Included in the number above.
-3. **`quiet loglevel=1`** — 0.68 s, measured earlier this session,
-   config-only. Re-apply once the console work is done; it blanks the
-   console it is being measured on.
+3. ~~**`quiet loglevel=1`**~~ — **DONE and re-measured: 0.84 s**, see
+   below. Live on `.95`; not yet on the drone. Config-only (`bootargs`).
 4. **Overlap devourer `InitWrite` with the MI bring-up** in `maburd` —
    estimated ~1.5 s. Today they are strictly serial and the encoder spends
    the gap producing frames into the void (`drops=309`, `sent=0`).
@@ -790,6 +789,48 @@ Two things worth carrying forward:
   there, but the drone has never been measured across repeated boots either,
   and its timing differs. The env pin removes the question rather than
   answering it.
+
+### `quiet loglevel=1` — re-measured on the serial rig, 0.84 s
+
+Applied to `bootargs` on `.95` on 2026-09-08 and measured over 8 boots per
+arm, against the LZO + trimmed-module + env-pinned build.
+
+| marker (s from IPL) | baseline (n=8) | quiet (n=8) | Δ |
+|---|---|---|---|
+| `Starting kernel` | 0.886 ±0.024 | 0.880 ±0.025 | −0.006 |
+| `Starting syslogd` (first rcS) | 3.835 ±0.025 | **2.997 ±0.025** | **−0.839** |
+| `Starting network` | 4.456 ±0.046 | 3.612 ±0.002 | −0.844 |
+| `Loading vendor modules` | 10.509 ±0.430 | 9.584 ±0.673 | −0.925 |
+| login prompt | 11.293 ±0.455 | 10.381 ±0.673 | −0.912 |
+
+**0.84 s**, against the 0.68 s measured over the network rig earlier — the
+same effect, larger here because this image logs more. `Starting kernel` is
+unchanged, which is the sanity check: a kernel cmdline parameter cannot
+affect U-Boot, and it doesn't. The saving is banked before rcS and carried
+forward unchanged, exactly as the original A/B found. `syslogd` and
+`network` are the numbers to quote (±0.03); everything past `network` is
+inside `.95`'s DHCP wait and carries its ±0.5 s.
+
+No regressions: 8/8 sensor detections, zero `maburd` respawns, MI bring-up
+unchanged.
+
+**What this does to the measurement rig.** `loglevel=1` silences kernel
+printk on the console but *not* userspace writes to `/dev/console`, so with
+quiet on:
+
+- **Still visible** — every IPL and U-Boot line, `Starting kernel ...`, and
+  all rcS output (`Starting syslogd`, `Starting network`, `Loading vendor
+  modules`, `Sensor assigned`, the login prompt). The console log drops from
+  ~305 lines to ~92.
+- **Gone** — `Booting Linux on physical CPU`, `console [ttyS0] enabled`,
+  `Mounted root (squashfs …)`, and the whole kernel-init window. Anything
+  measuring those markers reads zero.
+
+That last point is a trap: a script that greps for a kernel marker cannot
+distinguish "quiet is on" from "the board failed". To measure the kernel
+phase again, drop `quiet loglevel=1` from `bootargs` for the session.
+`dmesg` is unaffected either way — still 702 lines with quiet on, so nothing
+is lost post-boot.
 
 ## What is still blocked
 
