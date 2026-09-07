@@ -371,6 +371,50 @@ TEST(gs_load_config_errors_carry_file_and_line) {
   CHECK(msg.find(".toml:3:") != std::string::npos);
 }
 
+// Fix round 1 (task-4 review): five keys were guarded by a bare
+// `if (contains(...))` with no `get_*` call and no `else note_default`,
+// so their absence silently vanished from the defaulted-key report --
+// fec.symbol_size, radio.cards, link.ladder (all reported by the drone's
+// equivalent parse_radio/parse_fec), plus the two sentinel-guarded keys
+// link.s3_down_util and link.probe.max_util (whose guard must stay: an
+// absent value resolves to link.down_util, not to get_num's own default).
+TEST(gs_load_config_reports_previously_invisible_defaults) {
+  const std::string path = write_tmp(
+      "[radio]\nchannel = 149\n"
+      "\n[fec]\nseq_horizon = 512\n"
+      "\n[link]\nvtx_id = 1\ndown_util = 0.4\n"
+      "\n[link.probe]\nenable = true\n");
+  std::vector<std::string> defaulted;
+  auto cfg = maburgs::load_config(path, &defaulted);
+  CHECK(cfg.radio.cards.size() == 1);
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 6);
+
+  bool saw_cards = false, saw_symbol_size = false, saw_ladder = false,
+       saw_s3_down_util = false, saw_probe_max_util = false;
+  for (const std::string& d : defaulted) {
+    if (d == "radio.cards=(1 default card)") saw_cards = true;
+    if (d == "fec.symbol_size=64") saw_symbol_size = true;
+    if (d == "link.ladder=(6 default rungs)") saw_ladder = true;
+    if (d == "link.s3_down_util=(defaults to link.down_util)") saw_s3_down_util = true;
+    if (d == "link.probe.max_util=(defaults to link.down_util)") saw_probe_max_util = true;
+    // The "report a fake number" trap: an absent link.s3_down_util must
+    // never be reported as get_num's own default (0.35) -- it resolves to
+    // link.down_util (0.4 in this fixture, not 0.35) after this function
+    // returns, so a line naming 0.35 would be a lie.
+    if (d.rfind("link.s3_down_util=", 0) == 0)
+      CHECK(d.find("0.35") == std::string::npos);
+  }
+  CHECK(saw_cards);
+  CHECK(saw_symbol_size);
+  CHECK(saw_ladder);
+  CHECK(saw_s3_down_util);
+  CHECK(saw_probe_max_util);
+  // Confirms the sentinel resolution actually ran to down_util (0.4), not
+  // to get_num's own out-of-band default (0.35).
+  CHECK(std::abs(cfg.link.ladder_cfg.s3_down_util - 0.4) < 1e-9);
+  CHECK(std::abs(cfg.link.ladder_cfg.probe.max_util - 0.4) < 1e-9);
+}
+
 MTEST_MAIN
 
 TEST(gs_config_rejects_static_offset_qdb) {

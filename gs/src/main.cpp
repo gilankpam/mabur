@@ -84,10 +84,10 @@ uint64_t mono_us() {
 
 void usage() {
   std::fprintf(stderr,
-               "usage: maburgs -c <config.json> --dry-run --in <frames.bin>\n"
+               "usage: maburgs -c <config.toml> --dry-run --in <frames.bin>\n"
                "               [--cards N] [--drop-pct P] [--seed S] [--out-aus <file>]\n"
 #ifdef MABUR_LOSS_SIM
-               "       maburgs -c <config.json> [--loss-sim [port]]\n"
+               "       maburgs -c <config.toml> [--loss-sim [port]]\n"
                "\n"
                "  --loss-sim [port]  BENCH ONLY: bind a loopback UDP command\n"
                "                     socket (default port 8302) for injecting\n"

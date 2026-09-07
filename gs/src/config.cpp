@@ -131,6 +131,11 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     if (!j.contains(sec)) note_default("", sec, "(section absent)");
   Config c;
 
+  // Set when "radio" is present but "cards" is absent from it; the
+  // resulting default card count is only known after the post-block
+  // fallback below runs, so the note is emitted there, sourced from the
+  // real resulting size rather than a hardcoded "1".
+  bool radio_cards_absent = false;
   if (j.contains("radio")) {
     const Value& r = j["radio"];
     check_keys(r, "radio", {"channel", "width", "cards", "tx_card"});
@@ -151,9 +156,15 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         card.index = static_cast<int>(get_int(cj, "index", 0, 0, 15, where));
         c.radio.cards.push_back(card);
       }
+    } else {
+      radio_cards_absent = true;
     }
   }
   if (c.radio.cards.empty()) c.radio.cards.push_back(CardCfg{});
+  if (radio_cards_absent)
+    note_default("radio", "cards",
+                 "(" + std::to_string(c.radio.cards.size()) + " default card" +
+                     (c.radio.cards.size() == 1 ? "" : "s") + ")");
   if (c.radio.tx_card >= static_cast<int>(c.radio.cards.size()))
     fail("radio.tx_card", "no such card");
 
@@ -173,6 +184,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       }
       for (int v : c.fec.symbol_size)
         if (v < 32 || v > 1500) fail("fec.symbol_size", "must be in [32,1500]");
+    } else {
+      note_default("fec", "symbol_size", to_text(c.fec.symbol_size[0]));
     }
     c.fec.seq_horizon = static_cast<int>(get_int(r, "seq_horizon", 512, 16, 65536, "fec"));
   }
@@ -226,6 +239,10 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         parsed.push_back(rung);
       }
       c.link.ladder_cfg.ladder = parsed;
+    } else {
+      note_default("link", "ladder",
+                   "(" + std::to_string(c.link.ladder_cfg.ladder.size()) +
+                       " default rungs)");
     }
     const long max_mcs = get_int(r, "max_mcs", 7, 0, 7, "link");
     {
@@ -277,6 +294,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       pc.clean_ms = static_cast<int>(get_int(pj, "clean_ms", 2000, 100, 60000, "link.probe"));
       if (pj.contains("max_util"))
         pc.max_util = get_num(pj, "max_util", 0.35, 0.01, 2.0, "link.probe");
+      else
+        note_default("link.probe", "max_util", "(defaults to link.down_util)");
       pc.min_syms = static_cast<int>(get_int(pj, "min_syms", 40, 4, 100000, "link.probe"));
       pc.silence_ms = static_cast<int>(get_int(pj, "silence_ms", 500, 100, 10000, "link.probe"));
       pc.pin_mcs = static_cast<int>(get_int(pj, "pin_mcs", -1, -1, 7, "link.probe"));
@@ -291,6 +310,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     lc.s3_demote = get_bool(r, "s3_demote", lc.s3_demote, "link");
     if (r.contains("s3_down_util"))
       lc.s3_down_util = get_num(r, "s3_down_util", 0.35, 0.01, 2.0, "link");
+    else
+      note_default("link", "s3_down_util", "(defaults to link.down_util)");
     lc.s3_settle_ms = static_cast<int>(get_int(r, "s3_settle_ms", 300, 0, 5000, "link"));
 
     // Fade-aware demotes (spec 2026-08-14 fade-demote). Config surface only:
