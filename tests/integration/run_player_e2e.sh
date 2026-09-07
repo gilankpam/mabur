@@ -91,37 +91,41 @@ with open(sys.argv[1], "wb") as f:
 EOF
 
 echo "== fixture -> maburd bodies -> maburgs -> AU ring (same chain as gs_au_e2e) =="
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
   --rc-in "$TMP/rc.bin"
 
 # Same symbol_size 332 pin as run_gs_au_e2e.sh: now redundant with PR #11's
 # encode-time default, but it documents the encode geometry contract this
 # test relies on (the gs bundle default is stale vs the drone bundle).
-python3 - "$TMP/gs.json" <<'EOF'
-import json, sys
-c = json.load(open("gs/bundle/maburgs.default.json"))
-tmp = sys.argv[1].rsplit("/", 1)[0]
-c["fec"]["symbol_size"] = 332
-c["au_ring"] = {"enable": True, "path": tmp + "/au-ring",
-                "socket": tmp + "/au-ring.sock"}
-json.dump(c, open(sys.argv[1], "w"))
-EOF
+#
+# Range-anchored sed, not a bare one: `symbol_size` also appears under [msp].
+sed -e "/^\[fec\]/,/^\[/ s|^symbol_size = .*|symbol_size = 332|" \
+    -e "/^\[au_ring\]/a path = \"$TMP/au-ring\"\nsocket = \"$TMP/au-ring.sock\"" \
+    gs/bundle/maburgs.default.toml > "$TMP/gs.toml"
 
-"$MABURGS" -c "$TMP/gs.json" --dry-run --in "$TMP/bodies.bin"
+# The sed above is layout-sensitive (bare `^symbol_size = ` anchor): if the
+# bundle's [fec] section is ever reworded or re-indented, it silently stops
+# matching and the test would still pass, just against whatever symbol_size
+# the bundle shipped with. Assert the pin actually landed.
+sed -n '/^\[fec\]/,/^\[/p' "$TMP/gs.toml" | grep -q '^symbol_size = 332$' || {
+  echo "FAIL: fec.symbol_size sed did not match in $TMP/gs.toml -- bundle layout changed" >&2
+  exit 1
+}
+
+"$MABURGS" -c "$TMP/gs.toml" --dry-run --in "$TMP/bodies.bin"
 
 echo "== maburplay --oneshot: drain ring, null backend, DVR on =="
-python3 - "$TMP/play.json" <<'EOF'
-import json, sys
-cfg = {
-    "ring_path": sys.argv[1].rsplit("/", 1)[0] + "/au-ring",
-    "socket": sys.argv[1].rsplit("/", 1)[0] + "/none.sock",
-    "backend": "null",
-    "dvr": {"autostart": True, "dir": sys.argv[1].rsplit("/", 1)[0]},
-}
-json.dump(cfg, open(sys.argv[1], "w"))
+cat > "$TMP/play.toml" <<EOF
+ring_path = "$TMP/au-ring"
+socket = "$TMP/none.sock"
+backend = "null"
+
+[dvr]
+autostart = true
+dir = "$TMP"
 EOF
 
-"$MABURPLAY" -c "$TMP/play.json" --oneshot > "$TMP/stats.json"
+"$MABURPLAY" -c "$TMP/play.toml" --oneshot > "$TMP/stats.json"
 cat "$TMP/stats.json"
 
 python3 - "$TMP/stats.json" <<'EOF'

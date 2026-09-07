@@ -35,7 +35,23 @@ ssh "$HOST" '/etc/init.d/S96mabur stop'
 # /usr/libexec/sftp-server, so modern scp's default sftp mode fails ("scp:
 # Connection closed"). -O is also accepted by full OpenSSH, so it's safe here.
 scp -O "$BIN" "$HOST:/usr/bin/maburd"
-ssh "$HOST" '[ -f /etc/mabur.json ]' || scp -O bundle/mabur.default.json "$HOST:/etc/mabur.json"
+
+# Config: seed the default only if NEITHER a tuned .toml NOR a legacy .json
+# exists. A bare "no .toml" check would seed the repo default over an
+# un-converted device's tuned /etc/mabur.json -- the daemon then boots
+# cleanly on repo defaults (no crash, no signal; the startup defaulted-keys
+# report can't catch it either, since it compares against compiled defaults,
+# not the old config) and silently flies on the wrong values. Convert first.
+if ssh "$HOST" '[ -f /etc/mabur.toml ]'; then
+  : # tuned config already present -- never clobber it
+elif ssh "$HOST" '[ -f /etc/mabur.json ]'; then
+  echo "error: $HOST has /etc/mabur.json but no /etc/mabur.toml -- convert the" >&2
+  echo "tuned JSON config to TOML by hand before deploying (docs/deploy.md," >&2
+  echo "'JSON to TOML cutover'). Refusing to seed the repo default over it." >&2
+  exit 1
+else
+  scp -O bundle/mabur.default.toml "$HOST:/etc/mabur.toml"
+fi
 scp -O bundle/S96mabur "$HOST:/etc/init.d/S96mabur"
 
 ssh "$HOST" '

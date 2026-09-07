@@ -125,7 +125,7 @@ instead), `counters.probes_started`/`probes_ok`/`probe_fails`/
 Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
-sideport config lives in `/etc/maburgs.json` under `stats`
+sideport config lives in `/etc/maburgs.toml` under `stats`
 (default-off in the shipped bundle; enabled on the bench GS).
 
 **Scale break, 2026-08-04 — `classes.*.snr` is now dB, was half-dB.** The
@@ -201,7 +201,7 @@ the *same* repair-symbol count on the FEC's quantization grid, so their
 actual on-air overhead was identically ~0.125 in every pre-break
 recording (**0.10 ≡ 0.15 ≡ 0.125 on air**). The 2026-08-29 config bump
 that doubled the nominal values (0.15→0.3, 0.10→0.2 — see
-`gs/bundle/maburgs.default.json`) was not "just x2": it also resolved
+`gs/bundle/maburgs.default.toml`) was not "just x2": it also resolved
 that collision, so mcs6 and mcs7 now carry genuinely different overhead.
 Do not back-compute a pre-break "real" overhead by simply halving a
 post-break number for mcs6/mcs7 specifically — the halved figure lands
@@ -518,7 +518,7 @@ older material:
   says 2.0, but a deployed drone config is known to diverge from the bundle
   (see `handover-venc-overshoot-2026-09-03.md`: `max_ipprop` 2 deployed vs 0
   in the bundle), so **read `venc.gop_s` out of the drone's live
-  `/etc/mabur.json` before swapping** — anything but 2.0 changes the IDR
+  `/etc/mabur.toml` before swapping** — anything but 2.0 changes the IDR
   interval on this deploy, with nothing in the boot log calling it out.
 - The `rescue` preset's 0.25 s GOP is no longer expressible. It wrote
   `gop_sec` directly and so bypassed the `venc.gop_s` range check, whose

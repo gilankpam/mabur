@@ -5,7 +5,7 @@ BUILD=${BUILD:-build}
 MABURD=$BUILD/drone/maburd
 MABURGS=$BUILD/gs/maburgs
 FIX=tests/fixtures/frame_stream.bin
-GSCFG=gs/bundle/maburgs.default.json
+GSCFG=gs/bundle/maburgs.default.toml
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -34,7 +34,7 @@ w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)
 EOF
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" \
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" \
   --out "$TMP/frames.bin" --rc-in "$TMP/rc.bin"
 
 # maburgs captures each reassembled AU via --out-aus (PR C: the RTP output

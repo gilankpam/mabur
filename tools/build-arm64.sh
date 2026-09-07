@@ -246,12 +246,12 @@ cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx txagcbench-
 # was the point of retiring the generated msp_font_btfl.cpp): stage the
 # committed bundle copy next to the binaries so the deploy step has one
 # directory holding everything it must push. Installs on the GS as
-# /usr/local/share/mabur/font_btfl.mfont -- the path maburplay.default.json's
+# /usr/local/share/mabur/font_btfl.mfont -- the path maburplay.default.toml's
 # osd.font points at. Regenerate with tools/msp/gen_font.py (see its header).
 cp gs/player/bundle/font_btfl.mfont out/arm64/font_btfl.mfont
 
 # The GS link-status overlay's own atlas, staged the same way. Installs as
-# /usr/local/share/mabur/gs_osd.gfont -- the path maburplay.default.json's
+# /usr/local/share/mabur/gs_osd.gfont -- the path maburplay.default.toml's
 # osd.gs.font points at. Unlike the MSP .mfont (pre-coloured ARGB glyphs at
 # one size), this is a two-channel coverage+shadow MASK baked at all 30
 # sizes the responsive layout can ask for across 720p..2160p, which is why
@@ -265,6 +265,14 @@ cp gs/player/bundle/gs_osd.gfont out/arm64/gs_osd.gfont
 # header, so the player needs no image decoder; regenerate with
 # tools/gen_splash.py (see its header for the exact command).
 cp gs/player/bundle/splash.bin out/arm64/splash.bin
+
+# The default player config, staged the same way. Unlike the three assets
+# above there is no `gs/player/bundle/install.sh` to place it, so the
+# operator copies it to /etc/maburplay.toml by hand (see docs/deploy.md's
+# "JSON to TOML cutover") -- without it S97maburplay's `-c /etc/maburplay.toml`
+# has nothing to read, maburplay exits 2, and the wrapper treats exit 2 as
+# terminal: no respawn, permanently black GS screen.
+cp gs/player/bundle/maburplay.default.toml out/arm64/maburplay.default.toml
 
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then

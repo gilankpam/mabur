@@ -1,18 +1,20 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <string>
+#include <vector>
 #include "mtest.h"
 #include "config.h"
 
 static std::string write_tmp(const std::string& text) {
-  std::string path = "/tmp/maburgs_test_config.json";
+  std::string path = "/tmp/maburgs_test_config.toml";
   std::ofstream f(path);
   f << text;
   return path;
 }
 
 TEST(default_bundle_config_loads) {
-  auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
+  auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   CHECK(cfg.radio.channel == 149);
   CHECK(cfg.radio.cards.size() == 1);
   CHECK(cfg.radio.tx_card == -1);
@@ -25,7 +27,7 @@ TEST(default_bundle_config_loads) {
 }
 
 TEST(missing_keys_fall_back_to_defaults) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.radio.channel == 149);
   CHECK(cfg.video.frame_lookahead == 8);
 }
@@ -36,26 +38,26 @@ TEST(missing_keys_fall_back_to_defaults) {
 // Same-rate-fixed-pairs (Task 3): static_overhead split into a base/enh
 // pair, both keeping the old scalar's default/range.
 TEST(static_overhead_default_and_range) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.link.static_overhead_base > 0.499 && cfg.link.static_overhead_base < 0.501);
   CHECK(cfg.link.static_overhead_enh > 0.499 && cfg.link.static_overhead_enh < 0.501);
-  auto cfg2 = maburgs::load_config(write_tmp(R"({"link":{}})"));
+  auto cfg2 = maburgs::load_config(write_tmp("[link]\n"));
   CHECK(cfg2.link.static_overhead_base > 0.499 && cfg2.link.static_overhead_base < 0.501);
   CHECK(cfg2.link.static_overhead_enh > 0.499 && cfg2.link.static_overhead_enh < 0.501);
 
   bool threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"static_overhead_base":2.1}})"));
+    maburgs::load_config(write_tmp("[link]\nstatic_overhead_base = 2.1\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"static_overhead_enh":0.05}})"));
+    maburgs::load_config(write_tmp("[link]\nstatic_overhead_enh = 0.05\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 
   auto cfg3 = maburgs::load_config(write_tmp(
-      R"({"link":{"static_overhead_base":2.0,"static_overhead_enh":0.1}})"));
+      "[link]\nstatic_overhead_base = 2.0\nstatic_overhead_enh = 0.1\n"));
   CHECK(cfg3.link.static_overhead_base > 1.999 && cfg3.link.static_overhead_base < 2.001);
   CHECK(cfg3.link.static_overhead_enh > 0.0999 && cfg3.link.static_overhead_enh < 0.1001);
 }
@@ -65,7 +67,7 @@ TEST(static_overhead_default_and_range) {
 TEST(stale_static_overhead_key_throws) {
   bool threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"static_overhead":0.5}})"));
+    maburgs::load_config(write_tmp("[link]\nstatic_overhead = 0.5\n"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("unknown key") != std::string::npos;
   }
@@ -79,7 +81,7 @@ TEST(stale_static_overhead_key_throws) {
 // stale key fails the boot like any other unknown key.
 TEST(stale_video_silence_ms_key_throws) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"video_silence_ms\": 3000}}")); }
+  try { maburgs::load_config(write_tmp("[link]\nvideo_silence_ms = 3000\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("video_silence_ms") != std::string::npos;
   }
@@ -92,7 +94,7 @@ TEST(stale_video_silence_ms_key_throws) {
 // by hand BEFORE the new binary starts, or maburgs crash-loops at 2 s.
 TEST(stale_s3_residual_confirm_ms_key_throws) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"s3_residual_confirm_ms\": 500}}")); }
+  try { maburgs::load_config(write_tmp("[link]\ns3_residual_confirm_ms = 500\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("s3_residual_confirm_ms") != std::string::npos;
   }
@@ -101,32 +103,32 @@ TEST(stale_s3_residual_confirm_ms_key_throws) {
 
 TEST(errors_are_fail_fast) {
   bool threw = false;
-  try { maburgs::load_config("/nonexistent/x.json"); } catch (const std::exception&) { threw = true; }
+  try { maburgs::load_config("/nonexistent/x.toml"); } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"radio\": {\"chanel\": 149}}")); }
+  try { maburgs::load_config(write_tmp("[radio]\nchanel = 149\n")); }
   catch (const std::exception& e) { threw = std::string(e.what()).find("chanel") != std::string::npos; }
   CHECK(threw);  // unknown key named in the error
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"video\": {\"frame_gap_timeout_ms\": 5}}")); }
+  try { maburgs::load_config(write_tmp("[video]\nframe_gap_timeout_ms = 5\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // out of range
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"radio\": {\"cards\": []}}")); }
+  try { maburgs::load_config(write_tmp("[radio]\ncards = []\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // zero cards is a config error
 }
 
 TEST(fec_symbol_size_array_per_layer) {
   auto cfg = maburgs::load_config(
-      write_tmp(R"({"fec":{"symbol_size":[164,1312]}})"));
+      write_tmp("[fec]\nsymbol_size = [164, 1312]\n"));
   auto layers = cfg.uep_layers();
   CHECK(layers[0].fec.symbol_size == 164);
   CHECK(layers[1].fec.symbol_size == 1312);
 }
 
 TEST(fec_symbol_size_scalar_fans_out) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"fec":{"symbol_size":328}})"));
+  auto cfg = maburgs::load_config(write_tmp("[fec]\nsymbol_size = 328\n"));
   auto layers = cfg.uep_layers();
   for (int s = 0; s < 2; ++s) CHECK(layers[(size_t)s].fec.symbol_size == 328);
 }
@@ -135,7 +137,7 @@ TEST(fec_symbol_size_bounds) {
   bool threw = false;
   try {
     maburgs::load_config(
-        write_tmp(R"({"fec":{"symbol_size":[164,1600]}})"));
+        write_tmp("[fec]\nsymbol_size = [164, 1600]\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);  // 1600 > 1500 upper bound
 }
@@ -147,7 +149,7 @@ TEST(fec_symbol_size_wrong_length_rejected) {
   bool threw = false;
   try {
     maburgs::load_config(
-        write_tmp(R"({"fec":{"symbol_size":[164,1312,1312,1312]}})"));
+        write_tmp("[fec]\nsymbol_size = [164, 1312, 1312, 1312]\n"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("array must have 2 ints") != std::string::npos;
   }
@@ -156,19 +158,19 @@ TEST(fec_symbol_size_wrong_length_rejected) {
 
 TEST(tx_card_validates_against_effective_card_list) {
   // Test: tx_card 0 with default single card should load without error
-  auto cfg = maburgs::load_config(write_tmp("{\"radio\": {\"tx_card\": 0}}"));
+  auto cfg = maburgs::load_config(write_tmp("[radio]\ntx_card = 0\n"));
   CHECK(cfg.radio.cards.size() == 1);
   CHECK(cfg.radio.tx_card == 0);
 
   // Test: tx_card 5 with default single card should fail (out of range)
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"radio\": {\"tx_card\": 5}}")); }
+  try { maburgs::load_config(write_tmp("[radio]\ntx_card = 5\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // out of range against the effective single default card
 }
 TEST(gs_msp_defaults_and_parse) {
   {
-    auto cfg = maburgs::load_config(write_tmp("{}"));
+    auto cfg = maburgs::load_config(write_tmp(""));
     CHECK(cfg.msp.enable == false);
     CHECK(cfg.msp.out_host == "127.0.0.1");
     CHECK(cfg.msp.out_port == 14560);
@@ -177,8 +179,8 @@ TEST(gs_msp_defaults_and_parse) {
   }
   {
     auto cfg = maburgs::load_config(write_tmp(
-        R"({"msp":{"enable":true,"out":{"host":"10.0.0.9","port":15000},)"
-        R"("symbol_size":1024,"window":32}})"));
+        "[msp]\nenable = true\nsymbol_size = 1024\nwindow = 32\n"
+        "\n[msp.out]\nhost = \"10.0.0.9\"\nport = 15000\n"));
     CHECK(cfg.msp.enable == true);
     CHECK(cfg.msp.out_host == "10.0.0.9");
     CHECK(cfg.msp.out_port == 15000);
@@ -188,27 +190,27 @@ TEST(gs_msp_defaults_and_parse) {
 }
 TEST(msp_render_and_shm_keys_are_rejected) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp(R"({"msp":{"enable":true,"render":"shm"}})")); }
+  try { maburgs::load_config(write_tmp("[msp]\nenable = true\nrender = \"shm\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburgs::load_config(write_tmp(R"({"msp":{"enable":true,"shm":{"name":"msp"}}})")); }
+  try { maburgs::load_config(write_tmp("[msp]\nenable = true\n\n[msp.shm]\nname = \"msp\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }
 
 TEST(msp_udp_keys_still_parse) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"msp":{"enable":true,"out":{"host":"127.0.0.1","port":14560},)"
-      R"("symbol_size":1312,"window":16}})"));
+      "[msp]\nenable = true\nsymbol_size = 1312\nwindow = 16\n"
+      "\n[msp.out]\nhost = \"127.0.0.1\"\nport = 14560\n"));
   CHECK(cfg.msp.enable == true);
   CHECK(cfg.msp.out_port == 14560);
   CHECK(cfg.msp.symbol_size == 1312);
 }
 
 TEST(stats_defaults_disabled) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(!cfg.stats.enable);
   REQUIRE(cfg.stats.out.size() == 1);
   CHECK(cfg.stats.out[0].host == "127.0.0.1");
@@ -218,25 +220,25 @@ TEST(stats_defaults_disabled) {
 
 TEST(stats_section_parses_and_validates) {
   auto cfg = maburgs::load_config(write_tmp(
-      "{\"stats\": {\"enable\": true, \"host\": \"10.0.0.2\","
-      " \"port\": 9000, \"interval_ms\": 250}}"));
+      "[stats]\nenable = true\nhost = \"10.0.0.2\"\n"
+      "port = 9000\ninterval_ms = 250\n"));
   CHECK(cfg.stats.enable);
   REQUIRE(cfg.stats.out.size() == 1);
   CHECK(cfg.stats.out[0].host == "10.0.0.2");
   CHECK(cfg.stats.out[0].port == 9000);
   CHECK(cfg.stats.interval_ms == 250);
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"stats\": {\"interval_ms\": 50}}")); }
+  try { maburgs::load_config(write_tmp("[stats]\ninterval_ms = 50\n")); }
   catch (const std::exception& e) { threw = std::string(e.what()).find("interval_ms") != std::string::npos; }
   CHECK(threw);  // below the 100 ms floor
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"stats\": {\"prot\": 1}}")); }
+  try { maburgs::load_config(write_tmp("[stats]\nprot = 1\n")); }
   catch (const std::exception& e) { threw = std::string(e.what()).find("prot") != std::string::npos; }
   CHECK(threw);  // unknown key fail-fast, like every other section
 }
 
 TEST(stats_defaults_to_one_destination) {
-  const std::string p = write_tmp("{}");
+  const std::string p = write_tmp("");
   const maburgs::Config c = maburgs::load_config(p);
   REQUIRE(c.stats.out.size() == 1);
   CHECK(c.stats.out[0].host == "127.0.0.1");
@@ -246,7 +248,7 @@ TEST(stats_defaults_to_one_destination) {
 
 TEST(legacy_host_port_still_works) {
   const std::string p = write_tmp(
-      "{\"stats\":{\"enable\":true,\"host\":\"10.0.0.5\",\"port\":9999}}");
+      "[stats]\nenable = true\nhost = \"10.0.0.5\"\nport = 9999\n");
   const maburgs::Config c = maburgs::load_config(p);
   REQUIRE(c.stats.out.size() == 1);
   CHECK(c.stats.out[0].host == "10.0.0.5");
@@ -256,9 +258,9 @@ TEST(legacy_host_port_still_works) {
 
 TEST(out_list_yields_every_destination_in_order) {
   const std::string p = write_tmp(
-      "{\"stats\":{\"enable\":true,\"out\":["
-      "{\"host\":\"127.0.0.1\",\"port\":8300},"
-      "{\"host\":\"127.0.0.1\",\"port\":8302}]}}");
+      "[stats]\nenable = true\n"
+      "\n[[stats.out]]\nhost = \"127.0.0.1\"\nport = 8300\n"
+      "\n[[stats.out]]\nhost = \"127.0.0.1\"\nport = 8302\n");
   const maburgs::Config c = maburgs::load_config(p);
   REQUIRE(c.stats.out.size() == 2);
   CHECK(c.stats.out[0].port == 8300);
@@ -270,8 +272,8 @@ TEST(out_list_yields_every_destination_in_order) {
 // boot failure rather than a silent precedence rule nobody can remember.
 TEST(out_together_with_host_or_port_is_rejected) {
   for (const char* body : {
-           "{\"stats\":{\"out\":[{\"host\":\"127.0.0.1\",\"port\":8300}],\"host\":\"127.0.0.1\"}}",
-           "{\"stats\":{\"out\":[{\"host\":\"127.0.0.1\",\"port\":8300}],\"port\":8300}}"}) {
+           "[stats]\nhost = \"127.0.0.1\"\n\n[[stats.out]]\nhost = \"127.0.0.1\"\nport = 8300\n",
+           "[stats]\nport = 8300\n\n[[stats.out]]\nhost = \"127.0.0.1\"\nport = 8300\n"}) {
     const std::string p = write_tmp(body);
     bool threw = false;
     try { maburgs::load_config(p); } catch (const std::exception&) { threw = true; }
@@ -281,7 +283,7 @@ TEST(out_together_with_host_or_port_is_rejected) {
 }
 
 TEST(empty_out_list_is_rejected) {
-  const std::string p = write_tmp("{\"stats\":{\"out\":[]}}");
+  const std::string p = write_tmp("[stats]\nout = []\n");
   bool threw = false;
   try { maburgs::load_config(p); } catch (const std::exception&) { threw = true; }
   CHECK(threw);
@@ -289,7 +291,7 @@ TEST(empty_out_list_is_rejected) {
 }
 
 TEST(out_entry_missing_a_port_is_rejected) {
-  const std::string p = write_tmp("{\"stats\":{\"out\":[{\"host\":\"127.0.0.1\"}]}}");
+  const std::string p = write_tmp("[[stats.out]]\nhost = \"127.0.0.1\"\n");
   bool threw = false;
   try { maburgs::load_config(p); } catch (const std::exception&) { threw = true; }
   CHECK(threw);
@@ -298,11 +300,119 @@ TEST(out_entry_missing_a_port_is_rejected) {
 
 TEST(stale_video_out_key_throws) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"video_out\": {\"port\": 5600}}")); }
+  try { maburgs::load_config(write_tmp("[video_out]\nport = 5600\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("video_out") != std::string::npos;
   }
   CHECK(threw);
+}
+
+TEST(gs_load_config_parses_arrays_of_tables) {
+  const std::string path = write_tmp(
+      "[[radio.cards]]\n"
+      "usb_vid = 3034\n"
+      "index = 0\n"
+      "\n"
+      "[[radio.cards]]\n"
+      "usb_vid = 3034\n"
+      "index = 1\n"
+      "\n"
+      "[link]\n"
+      "vtx_id = 1\n"
+      "\n"
+      "[[link.ladder]]\n"
+      "mcs = 2\n"
+      "overhead_base = 1.0\n"
+      "overhead_enh = 1.0\n"
+      "\n"
+      "[[link.ladder]]\n"
+      "mcs = 5\n"
+      "overhead_base = 0.5\n"
+      "overhead_enh = 0.5\n");
+  auto cfg = maburgs::load_config(path);
+  CHECK(cfg.radio.cards.size() == 2);
+  CHECK(cfg.radio.cards[1].index == 1);
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 2);
+  CHECK(cfg.link.ladder_cfg.ladder[0].mcs == 2);
+  CHECK(cfg.link.ladder_cfg.ladder[1].overhead_enh == 0.5);
+}
+
+TEST(gs_load_config_reports_defaulted_keys) {
+  // The sections must be PRESENT for their keys to be visited: a whole
+  // missing section is reported as the section, not key by key.
+  const std::string path = write_tmp(
+      "[link]\nvtx_id = 1\n"
+      "\n[stats]\ninterval_ms = 500\n");
+  std::vector<std::string> defaulted;
+  auto cfg = maburgs::load_config(path, &defaulted);
+  CHECK(cfg.link.feedback_ms == 100);
+  bool saw_bool = false, saw_int = false, saw_section = false;
+  for (const std::string& d : defaulted) {
+    if (d == "stats.enable=false") saw_bool = true;       // via get_bool
+    if (d == "link.feedback_ms=100") saw_int = true;      // via get_int
+    if (d == "radio=(section absent)") saw_section = true;
+  }
+  CHECK(saw_bool);
+  CHECK(saw_int);
+  CHECK(saw_section);
+}
+
+TEST(gs_load_config_errors_carry_file_and_line) {
+  // up_util must stay below down_util; this trips that rule on line 3.
+  const std::string path =
+      write_tmp("[link]\ndown_util = 0.6\nup_util = 0.9\n");
+  std::string msg;
+  try {
+    maburgs::load_config(path);
+  } catch (const std::exception& e) {
+    msg = e.what();
+  }
+  CHECK(msg.find("link.up_util") != std::string::npos);
+  CHECK(msg.find(".toml:3:") != std::string::npos);
+}
+
+// Fix round 1 (task-4 review): five keys were guarded by a bare
+// `if (contains(...))` with no `get_*` call and no `else note_default`,
+// so their absence silently vanished from the defaulted-key report --
+// fec.symbol_size, radio.cards, link.ladder (all reported by the drone's
+// equivalent parse_radio/parse_fec), plus the two sentinel-guarded keys
+// link.s3_down_util and link.probe.max_util (whose guard must stay: an
+// absent value resolves to link.down_util, not to get_num's own default).
+TEST(gs_load_config_reports_previously_invisible_defaults) {
+  const std::string path = write_tmp(
+      "[radio]\nchannel = 149\n"
+      "\n[fec]\nseq_horizon = 512\n"
+      "\n[link]\nvtx_id = 1\ndown_util = 0.4\n"
+      "\n[link.probe]\nenable = true\n");
+  std::vector<std::string> defaulted;
+  auto cfg = maburgs::load_config(path, &defaulted);
+  CHECK(cfg.radio.cards.size() == 1);
+  CHECK(cfg.link.ladder_cfg.ladder.size() == 6);
+
+  bool saw_cards = false, saw_symbol_size = false, saw_ladder = false,
+       saw_s3_down_util = false, saw_probe_max_util = false;
+  for (const std::string& d : defaulted) {
+    if (d == "radio.cards=(1 default card)") saw_cards = true;
+    if (d == "fec.symbol_size=64") saw_symbol_size = true;
+    if (d == "link.ladder=(6 default rungs)") saw_ladder = true;
+    if (d == "link.s3_down_util=(defaults to link.down_util)") saw_s3_down_util = true;
+    if (d == "link.probe.max_util=(defaults to link.down_util)") saw_probe_max_util = true;
+    // The "report a fake number" trap: an absent link.s3_down_util must
+    // never be reported as get_num's own default (0.35) -- it resolves to
+    // link.down_util (0.4 in this fixture, not 0.35) after this function
+    // returns, so a line naming 0.35 would be a lie.
+    if (d.rfind("link.s3_down_util=", 0) == 0)
+      CHECK(d.find("0.35") == std::string::npos);
+  }
+  CHECK(saw_cards);
+  CHECK(saw_symbol_size);
+  CHECK(saw_ladder);
+  CHECK(saw_s3_down_util);
+  CHECK(saw_probe_max_util);
+  // Confirms the sentinel resolution actually ran to down_util (0.4), not
+  // to get_num's own out-of-band default (0.35).
+  CHECK(std::abs(cfg.link.ladder_cfg.s3_down_util - 0.4) < 1e-9);
+  CHECK(std::abs(cfg.link.ladder_cfg.probe.max_util - 0.4) < 1e-9);
 }
 
 MTEST_MAIN
@@ -313,7 +423,7 @@ TEST(gs_config_rejects_static_offset_qdb) {
   // fails.
   bool threw = false;
   try {
-    maburgs::load_config(write_tmp("{\"link\":{\"static_offset_qdb\":0}}"));
+    maburgs::load_config(write_tmp("[link]\nstatic_offset_qdb = 0\n"));
   } catch (const std::runtime_error& e) {
     threw = true;
     CHECK(std::string(e.what()).find("unknown key") != std::string::npos);
@@ -332,10 +442,10 @@ TEST(deleted_model_controller_keys_now_throw) {
                                 "base_ref_idx"};
   for (const char* key : deleted_keys) {
     bool threw = false;
-    const std::string json =
-        std::string(R"({"link":{")") + key + R"(":1}})";
+    const std::string toml_body =
+        std::string("[link]\n") + key + " = 1\n";
     try {
-      maburgs::load_config(write_tmp(json.c_str()));
+      maburgs::load_config(write_tmp(toml_body));
     } catch (const std::exception& e) {
       threw = std::string(e.what()).find(key) != std::string::npos;
     }
@@ -348,11 +458,11 @@ TEST(deleted_model_controller_keys_now_throw) {
 // (PR C: the section was video_out until the RTP destination was deleted;
 // a stale video_out key now fails boot like any other unknown key).
 TEST(video_frame_keys) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.video.frame_gap_timeout_ms == 50);
   CHECK(cfg.video.frame_lookahead == 8);
   auto cfg2 = maburgs::load_config(write_tmp(
-      "{\"video\": {\"frame_gap_timeout_ms\": 30, \"frame_lookahead\": 4}}"));
+      "[video]\nframe_gap_timeout_ms = 30\nframe_lookahead = 4\n"));
   CHECK(cfg2.video.frame_gap_timeout_ms == 30);
   CHECK(cfg2.video.frame_lookahead == 4);
 }
@@ -367,7 +477,7 @@ TEST(video_frame_keys) {
 // would parse and validate silently (all in-range), so this test exists
 // to catch exactly that.
 TEST(ladder_defaults_to_spec_six_rung_ladder) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   auto& L = cfg.link.ladder_cfg.ladder;
   CHECK(L.size() == 6);
   CHECK(L[0].mcs == 0); CHECK(L[0].overhead_base > 1.999 && L[0].overhead_base < 2.001);
@@ -387,7 +497,7 @@ TEST(ladder_defaults_to_spec_six_rung_ladder) {
 // Same-rate-fixed-pairs (Task 3): rung overhead is now a base/enh pair.
 TEST(rung_overhead_pair_parses) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[{"mcs":1,"overhead_base":1.0,"overhead_enh":0.5}]}})"));
+      "[[link.ladder]]\nmcs = 1\noverhead_base = 1.0\noverhead_enh = 0.5\n"));
   auto& L = cfg.link.ladder_cfg.ladder;
   CHECK(L.size() == 1);
   CHECK(L[0].mcs == 1);
@@ -401,7 +511,7 @@ TEST(rung_old_overhead_key_fails_boot) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":1,"overhead":1.0}]}})"));
+        "[[link.ladder]]\nmcs = 1\noverhead = 1.0\n"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("unknown key") != std::string::npos;
   }
@@ -410,8 +520,8 @@ TEST(rung_old_overhead_key_fails_boot) {
 
 TEST(ladder_parses_explicit_array_in_order) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":1.0},)"
-      R"({"mcs":3,"overhead_base":0.4,"overhead_enh":0.4}]}})"));
+      "[[link.ladder]]\nmcs = 0\noverhead_base = 1.0\noverhead_enh = 1.0\n"
+      "\n[[link.ladder]]\nmcs = 3\noverhead_base = 0.4\noverhead_enh = 0.4\n"));
   auto& L = cfg.link.ladder_cfg.ladder;
   CHECK(L.size() == 2);
   CHECK(L[0].mcs == 0);
@@ -423,7 +533,7 @@ TEST(ladder_rung_unknown_key_rejected) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":1.0,"bogus":1}]}})"));
+        "[[link.ladder]]\nmcs = 0\noverhead_base = 1.0\noverhead_enh = 1.0\nbogus = 1\n"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("bogus") != std::string::npos;
   }
@@ -434,7 +544,7 @@ TEST(ladder_rung_mcs_out_of_range_rejected) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":8,"overhead_base":0.5,"overhead_enh":0.5}]}})"));
+        "[[link.ladder]]\nmcs = 8\noverhead_base = 0.5\noverhead_enh = 0.5\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
@@ -446,25 +556,25 @@ TEST(ladder_rung_overhead_out_of_range_rejected) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":0,"overhead_base":0.01,"overhead_enh":1.0}]}})"));
+        "[[link.ladder]]\nmcs = 0\noverhead_base = 0.01\noverhead_enh = 1.0\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":0,"overhead_base":2.1,"overhead_enh":1.0}]}})"));
+        "[[link.ladder]]\nmcs = 0\noverhead_base = 2.1\noverhead_enh = 1.0\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":0.01}]}})"));
+        "[[link.ladder]]\nmcs = 0\noverhead_base = 1.0\noverhead_enh = 0.01\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":2.1}]}})"));
+        "[[link.ladder]]\nmcs = 0\noverhead_base = 1.0\noverhead_enh = 2.1\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
@@ -472,10 +582,9 @@ TEST(ladder_rung_overhead_out_of_range_rejected) {
 TEST(ladder_rung_overhead_boundary_values_accepted) {
   // overhead exactly at the [0.1, 2.0] boundary must load, not throw.
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[)"
-      R"({"mcs":0,"overhead_base":0.1,"overhead_enh":0.1},)"
-      R"({"mcs":7,"overhead_base":1.9,"overhead_enh":1.9},)"
-      R"({"mcs":6,"overhead_base":2.0,"overhead_enh":2.0}]}})"));
+      "[[link.ladder]]\nmcs = 0\noverhead_base = 0.1\noverhead_enh = 0.1\n"
+      "\n[[link.ladder]]\nmcs = 7\noverhead_base = 1.9\noverhead_enh = 1.9\n"
+      "\n[[link.ladder]]\nmcs = 6\noverhead_base = 2.0\noverhead_enh = 2.0\n"));
   CHECK(cfg.link.ladder_cfg.ladder.size() == 3);
   CHECK(cfg.link.ladder_cfg.ladder[0].overhead_base > 0.0999 && cfg.link.ladder_cfg.ladder[0].overhead_base < 0.1001);
   CHECK(cfg.link.ladder_cfg.ladder[1].overhead_base > 1.899 && cfg.link.ladder_cfg.ladder[1].overhead_base < 1.901);
@@ -484,7 +593,7 @@ TEST(ladder_rung_overhead_boundary_values_accepted) {
 
 TEST(ladder_empty_array_rejected) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"ladder":[]}})")); }
+  try { maburgs::load_config(write_tmp("[link]\nladder = []\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
@@ -492,15 +601,13 @@ TEST(ladder_empty_array_rejected) {
 // Spec: ladder must have 1-8 entries. A 9-rung ladder must be rejected even
 // though every individual rung is otherwise valid.
 TEST(ladder_over_eight_entries_rejected) {
-  std::string json = R"({"link":{"ladder":[)";
+  std::string toml_body;
   for (int i = 0; i < 9; ++i) {
-    if (i) json += ",";
-    json += "{\"mcs\":" + std::to_string(i % 8) +
-            ",\"overhead_base\":0.25,\"overhead_enh\":0.25}";
+    toml_body += "[[link.ladder]]\nmcs = " + std::to_string(i % 8) +
+                 "\noverhead_base = 0.25\noverhead_enh = 0.25\n\n";
   }
-  json += "]}}";
   bool threw = false;
-  try { maburgs::load_config(write_tmp(json.c_str())); }
+  try { maburgs::load_config(write_tmp(toml_body)); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("link.ladder") != std::string::npos;
   }
@@ -508,7 +615,7 @@ TEST(ladder_over_eight_entries_rejected) {
 }
 
 TEST(max_mcs_filters_effective_ladder) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"link":{"max_mcs":5}})"));
+  auto cfg = maburgs::load_config(write_tmp("[link]\nmax_mcs = 5\n"));
   auto& L = cfg.link.ladder_cfg.ladder;
   CHECK(L.size() == 4);
   for (auto& r : L) CHECK(r.mcs <= 5);
@@ -516,9 +623,9 @@ TEST(max_mcs_filters_effective_ladder) {
 
 TEST(max_mcs_zero_keeps_single_mcs0_rung) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"ladder":[{"mcs":0,"overhead_base":1.0,"overhead_enh":1.0},)"
-      R"({"mcs":4,"overhead_base":0.25,"overhead_enh":0.25}],)"
-      R"("max_mcs":0}})"));
+      "[link]\nmax_mcs = 0\n"
+      "\n[[link.ladder]]\nmcs = 0\noverhead_base = 1.0\noverhead_enh = 1.0\n"
+      "\n[[link.ladder]]\nmcs = 4\noverhead_base = 0.25\noverhead_enh = 0.25\n"));
   CHECK(cfg.link.ladder_cfg.ladder.size() == 1);
   CHECK(cfg.link.ladder_cfg.ladder[0].mcs == 0);
 }
@@ -527,9 +634,9 @@ TEST(max_mcs_filter_leaving_no_rungs_throws) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        R"({"link":{"ladder":[{"mcs":4,"overhead_base":0.25,"overhead_enh":0.25},)"
-        R"({"mcs":6,"overhead_base":0.15,"overhead_enh":0.15}],)"
-        R"("max_mcs":2}})"));
+        "[link]\nmax_mcs = 2\n"
+        "\n[[link.ladder]]\nmcs = 4\noverhead_base = 0.25\noverhead_enh = 0.25\n"
+        "\n[[link.ladder]]\nmcs = 6\noverhead_base = 0.15\noverhead_enh = 0.15\n"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("empty after max_mcs filter") != std::string::npos;
   }
@@ -539,12 +646,12 @@ TEST(max_mcs_filter_leaving_no_rungs_throws) {
 TEST(up_util_must_be_less_than_down_util) {
   bool threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"up_util":0.6,"down_util":0.6}})"));
+    maburgs::load_config(write_tmp("[link]\nup_util = 0.6\ndown_util = 0.6\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
   threw = false;
   try {
-    maburgs::load_config(write_tmp(R"({"link":{"up_util":0.7,"down_util":0.6}})"));
+    maburgs::load_config(write_tmp("[link]\nup_util = 0.7\ndown_util = 0.6\n"));
   } catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
@@ -556,7 +663,7 @@ TEST(up_util_must_be_less_than_down_util) {
 // rung 0.
 TEST(up_util_must_be_strictly_positive) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"up_util":0.0}})")); }
+  try { maburgs::load_config(write_tmp("[link]\nup_util = 0.0\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("link.up_util") != std::string::npos;
   }
@@ -564,7 +671,7 @@ TEST(up_util_must_be_strictly_positive) {
 }
 
 TEST(ladder_threshold_keys_parse_with_defaults) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.link.ladder_cfg.down_util > 0.599 && cfg.link.ladder_cfg.down_util < 0.601);
   CHECK(cfg.link.ladder_cfg.up_util > 0.149 && cfg.link.ladder_cfg.up_util < 0.151);
   CHECK(cfg.link.ladder_cfg.confirm_ms == 250);
@@ -577,7 +684,7 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
   CHECK(cfg.link.ladder_cfg.feedback_timeout_ms == 1000);
 
   auto cfg2 = maburgs::load_config(write_tmp(
-      R"({"link":{"down_util":0.5,"clean_ms":4000,"penalty_max_ms":30000}})"));
+      "[link]\ndown_util = 0.5\nclean_ms = 4000\npenalty_max_ms = 30000\n"));
   CHECK(cfg2.link.ladder_cfg.down_util > 0.499 && cfg2.link.ladder_cfg.down_util < 0.501);
   CHECK(cfg2.link.ladder_cfg.clean_ms == 4000);
   CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
@@ -588,7 +695,7 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
 // bytes now (0.3 vs 0.2) instead of the 16ths grid collapsing 0.15/0.10
 // to the same repair-symbol count.
 TEST(default_bundle_ladder_is_actual_overhead) {
-  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
+  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   auto& L = c.link.ladder_cfg.ladder;
   CHECK(L.size() == 6);
   CHECK(L[0].mcs == 0); CHECK(L[0].overhead_base > 1.999 && L[0].overhead_base < 2.001);
@@ -608,11 +715,11 @@ TEST(default_bundle_ladder_is_actual_overhead) {
 }
 
 TEST(au_ring_defaults) {
-  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.json");
+  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   // PR C: the ring IS the video output, so the shipped bundle enables it;
   // the STRUCT default stays false (empty config checked below).
   CHECK(c.au_ring.enable);
-  CHECK(!maburgs::load_config(write_tmp("{}")).au_ring.enable);
+  CHECK(!maburgs::load_config(write_tmp("")).au_ring.enable);
   CHECK(c.au_ring.path == "/dev/shm/mabur-au");
   CHECK(c.au_ring.socket == "/run/mabur-au.sock");
   CHECK(c.au_ring.slot_kb == 512);
@@ -621,8 +728,8 @@ TEST(au_ring_defaults) {
 
 TEST(au_ring_values_load) {
   auto c = maburgs::load_config(write_tmp(
-      "{\"au_ring\": {\"enable\": true, \"path\": \"/tmp/r\","
-      " \"socket\": \"/tmp/s\", \"slot_kb\": 256, \"slot_count\": 8}}"));
+      "[au_ring]\nenable = true\npath = \"/tmp/r\"\n"
+      "socket = \"/tmp/s\"\nslot_kb = 256\nslot_count = 8\n"));
   CHECK(c.au_ring.enable);
   CHECK(c.au_ring.path == "/tmp/r");
   CHECK(c.au_ring.socket == "/tmp/s");
@@ -635,7 +742,7 @@ TEST(au_ring_values_load) {
 // with the s3 probe (spec 2026-09-04); link.probe replaces them.
 TEST(s3_keys_parse) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link":{"s3_demote":false,"s3_down_util":0.4}})"));
+      "[link]\ns3_demote = false\ns3_down_util = 0.4\n"));
   CHECK(!cfg.link.ladder_cfg.s3_demote);
   CHECK(cfg.link.ladder_cfg.s3_down_util > 0.399 && cfg.link.ladder_cfg.s3_down_util < 0.401);
 }
@@ -644,7 +751,7 @@ TEST(s3_keys_parse) {
 // not the struct default 0.6 -- sentinel resolution must happen AFTER
 // down_util parses.
 TEST(s3_defaults_and_sentinel_resolution) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"link":{"down_util":0.35}})"));
+  auto cfg = maburgs::load_config(write_tmp("[link]\ndown_util = 0.35\n"));
   auto& lc = cfg.link.ladder_cfg;
   CHECK(lc.s3_down_util > 0.349 && lc.s3_down_util < 0.351);
   CHECK(lc.s3_demote);
@@ -663,15 +770,15 @@ TEST(removed_ctl_log_keys_are_rejected) {
     }
     return false;
   };
-  CHECK(throws(R"({"link":{"ctl_log":true}})"));
-  CHECK(throws(R"({"link":{"ctl_log_dir":"/x"}})"));
-  CHECK(throws(R"({"link":{"ctl_log_period_ms":500}})"));
-  CHECK(throws(R"({"link":{"rung_stats":{"rung_log_period_s":5}}})"));
+  CHECK(throws("[link]\nctl_log = true\n"));
+  CHECK(throws("[link]\nctl_log_dir = \"/x\"\n"));
+  CHECK(throws("[link]\nctl_log_period_ms = 500\n"));
+  CHECK(throws("[link.rung_stats]\nrung_log_period_s = 5\n"));
 }
 
 TEST(unknown_probe_key_still_fails) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp(R"({"link":{"probe_msx":1}})")); }
+  try { maburgs::load_config(write_tmp("[link]\nprobe_msx = 1\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("probe_msx") != std::string::npos;
   }
@@ -680,37 +787,37 @@ TEST(unknown_probe_key_still_fails) {
 
 TEST(au_ring_strictness) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"au_ring\": {\"bogus\": 1}}")); }
+  try { maburgs::load_config(write_tmp("[au_ring]\nbogus = 1\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("bogus") != std::string::npos;
   }
   CHECK(threw);  // unknown key named in the error
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"au_ring\": {\"slot_kb\": 16}}")); }
+  try { maburgs::load_config(write_tmp("[au_ring]\nslot_kb = 16\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // below the 64 KiB floor
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"au_ring\": {\"slot_count\": 2}}")); }
+  try { maburgs::load_config(write_tmp("[au_ring]\nslot_count = 2\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // below the 4-slot floor
 }
 
 TEST(rung_stats_defaults) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.link.ladder_cfg.rung_stats.half_life_samples == 600);
 }
 
 TEST(rung_stats_parses_and_validates) {
   auto cfg = maburgs::load_config(
-      write_tmp(R"({"link":{"rung_stats":{"half_life_samples":100}}})"));
+      write_tmp("[link.rung_stats]\nhalf_life_samples = 100\n"));
   CHECK(cfg.link.ladder_cfg.rung_stats.half_life_samples == 100);
   try {  // out-of-range fails boot (strict config)
     maburgs::load_config(
-        write_tmp(R"({"link":{"rung_stats":{"half_life_samples":0}}})"));
+        write_tmp("[link.rung_stats]\nhalf_life_samples = 0\n"));
     CHECK(false);
   } catch (const std::exception&) {}
   try {  // unknown nested key fails boot
-    maburgs::load_config(write_tmp(R"({"link":{"rung_stats":{"bogus":1}}})"));
+    maburgs::load_config(write_tmp("[link.rung_stats]\nbogus = 1\n"));
     CHECK(false);
   } catch (const std::exception&) {}
 }
@@ -720,7 +827,7 @@ TEST(rung_stats_parses_and_validates) {
 // residual demote makes attrib=false unsafe rather than merely different.
 TEST(stale_link_attrib_key_throws) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"attrib\": true}}")); }
+  try { maburgs::load_config(write_tmp("[link]\nattrib = true\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("attrib") != std::string::npos;
   }
@@ -731,7 +838,7 @@ TEST(stale_link_attrib_key_throws) {
 // fade-demote). This task adds ONLY the config block; nothing consumes
 // cfg_.fade yet.
 TEST(link_fade_defaults) {
-  auto cfg = maburgs::load_config(write_tmp(R"({"link": {}})"));
+  auto cfg = maburgs::load_config(write_tmp("[link]\n"));
   CHECK(cfg.link.ladder_cfg.fade.cascade == true);
   CHECK(cfg.link.ladder_cfg.fade.predict == true);
   CHECK(cfg.link.ladder_cfg.fade.hold_ms == 2500);
@@ -744,9 +851,9 @@ TEST(link_fade_defaults) {
 
 TEST(link_fade_explicit_values_and_kill_switches) {
   auto cfg = maburgs::load_config(write_tmp(
-      R"({"link": {"fade": {"cascade": false, "predict": false,
-      "hold_ms": 1000, "confirm_ms": 50, "rssi_db": 6.0, "snr_db": 3.0,
-      "trigger_ms": 200, "min_rung": 1}}})"));
+      "[link.fade]\ncascade = false\npredict = false\n"
+      "hold_ms = 1000\nconfirm_ms = 50\nrssi_db = 6.0\nsnr_db = 3.0\n"
+      "trigger_ms = 200\nmin_rung = 1\n"));
   CHECK(cfg.link.ladder_cfg.fade.cascade == false);
   CHECK(cfg.link.ladder_cfg.fade.predict == false);
   CHECK(cfg.link.ladder_cfg.fade.hold_ms == 1000);
@@ -760,39 +867,39 @@ TEST(link_fade_explicit_values_and_kill_switches) {
 TEST(link_fade_rejects_unknown_key_and_bad_ranges) {
   // strict keys inside the block
   try {
-    maburgs::load_config(write_tmp(R"({"link": {"fade": {"bogus": 1}}})"));
+    maburgs::load_config(write_tmp("[link.fade]\nbogus = 1\n"));
     CHECK(false);
   } catch (const std::exception&) {}
   // bounds: confirm_ms 20-1000, trigger_ms 50-5000, hold_ms 0-60000,
   // min_rung 0-15, rssi_db/snr_db 0.5-40
   try {
-    maburgs::load_config(write_tmp(R"({"link": {"fade": {"confirm_ms": 5}}})"));
+    maburgs::load_config(write_tmp("[link.fade]\nconfirm_ms = 5\n"));
     CHECK(false);
   } catch (const std::exception&) {}
   try {
-    maburgs::load_config(write_tmp(R"({"link": {"fade": {"rssi_db": 0.1}}})"));
+    maburgs::load_config(write_tmp("[link.fade]\nrssi_db = 0.1\n"));
     CHECK(false);
   } catch (const std::exception&) {}
 }
 
 // --- link.rcf_slot_hold_ms (gs-uplink-self-blanking 2026-09-02) --------------
 TEST(rcf_slot_hold_defaults_when_absent) {
-  auto cfg = maburgs::load_config(write_tmp("{}"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.link.rcf_slot_hold_ms == 30);
 }
 
 TEST(rcf_slot_hold_explicit_and_zero_parse) {
   auto a = maburgs::load_config(
-      write_tmp("{\"link\": {\"rcf_slot_hold_ms\": 33}}"));
+      write_tmp("[link]\nrcf_slot_hold_ms = 33\n"));
   CHECK(a.link.rcf_slot_hold_ms == 33);
   auto b = maburgs::load_config(
-      write_tmp("{\"link\": {\"rcf_slot_hold_ms\": 0}}"));
+      write_tmp("[link]\nrcf_slot_hold_ms = 0\n"));
   CHECK(b.link.rcf_slot_hold_ms == 0);
 }
 
 // --- link.probe block (spec 2026-09-04 sections 4.2, 5) ---------------------
 TEST(probe_block_defaults) {
-  auto c = maburgs::load_config(write_tmp("{}"));
+  auto c = maburgs::load_config(write_tmp(""));
   const auto& p = c.link.ladder_cfg.probe;
   CHECK(p.enable); CHECK(p.rung_offset == 1); CHECK(p.clean_ms == 2000);
   CHECK(p.max_util == c.link.ladder_cfg.down_util);  // sentinel resolved
@@ -802,21 +909,21 @@ TEST(probe_block_defaults) {
 
 TEST(probe_block_parses_and_bounds) {
   auto c = maburgs::load_config(write_tmp(
-      "{\"link\": {\"probe\": {\"enable\": false, \"rung_offset\": 2, \"clean_ms\": 1500,"
-      " \"max_util\": 0.4, \"min_syms\": 20, \"silence_ms\": 800, \"pin_mcs\": 5},"
-      " \"s3_min_syms\": 30}}"));
+      "[link]\ns3_min_syms = 30\n"
+      "\n[link.probe]\nenable = false\nrung_offset = 2\nclean_ms = 1500\n"
+      "max_util = 0.4\nmin_syms = 20\nsilence_ms = 800\npin_mcs = 5\n"));
   const auto& p = c.link.ladder_cfg.probe;
   CHECK(!p.enable); CHECK(p.rung_offset == 2); CHECK(p.clean_ms == 1500);
   CHECK(std::abs(p.max_util - 0.4) < 1e-9); CHECK(p.min_syms == 20);
   CHECK(p.silence_ms == 800); CHECK(p.pin_mcs == 5);
   CHECK(c.link.ladder_cfg.s3_min_syms == 30);
   bool threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"probe\": {\"rung_offset\": 0}}}")); }
+  try { maburgs::load_config(write_tmp("[link.probe]\nrung_offset = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);
   // link.probe.min_syms is bounded [4, 100000] -- 0 must reject too.
   threw = false;
-  try { maburgs::load_config(write_tmp("{\"link\": {\"probe\": {\"min_syms\": 0}}}")); }
+  try { maburgs::load_config(write_tmp("[link.probe]\nmin_syms = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
@@ -825,7 +932,7 @@ TEST(old_flat_probe_keys_fail_boot) {
   for (const char* k : {"probe_ms", "probe_settle_ms", "probe_max_util",
                         "probe_s3_min_syms", "probe_s3_silence_ms"}) {
     bool threw = false;
-    try { maburgs::load_config(write_tmp(std::string("{\"link\": {\"") + k + "\": 1}}")); }
+    try { maburgs::load_config(write_tmp(std::string("[link]\n") + k + " = 1\n")); }
     catch (const std::exception& e) { threw = std::string(e.what()).find(k) != std::string::npos; }
     CHECK(threw);
   }
@@ -837,7 +944,7 @@ TEST(old_flat_probe_keys_fail_boot) {
 TEST(s3_min_syms_rejects_non_positive) {
   for (const char* v : {"0", "-5"}) {
     bool threw = false;
-    try { maburgs::load_config(write_tmp(std::string("{\"link\": {\"s3_min_syms\": ") + v + "}}")); }
+    try { maburgs::load_config(write_tmp(std::string("[link]\ns3_min_syms = ") + v + "\n")); }
     catch (const std::exception& e) { threw = std::string(e.what()).find("s3_min_syms") != std::string::npos; }
     CHECK(threw);
   }
@@ -846,7 +953,7 @@ TEST(s3_min_syms_rejects_non_positive) {
 // debug_log (2026-09-06 consolidation): one knob for the whole GS. Default
 // OFF -- nothing is written until it is set.
 TEST(debug_log_defaults) {
-  auto c = maburgs::load_config(write_tmp("{}"));
+  auto c = maburgs::load_config(write_tmp(""));
   CHECK(!c.debug_log.enable);
   CHECK(c.debug_log.dir == "/media/dvr/log");
   CHECK(c.debug_log.ctl_period_ms == 1000);
@@ -855,8 +962,8 @@ TEST(debug_log_defaults) {
 
 TEST(debug_log_parses_values) {
   auto c = maburgs::load_config(write_tmp(
-      R"({"debug_log":{"enable":true,"dir":"/tmp/x",)"
-      R"("ctl_period_ms":250,"rung_period_s":30}})"));
+      "[debug_log]\nenable = true\ndir = \"/tmp/x\"\n"
+      "ctl_period_ms = 250\nrung_period_s = 30\n"));
   CHECK(c.debug_log.enable);
   CHECK(c.debug_log.dir == "/tmp/x");
   CHECK(c.debug_log.ctl_period_ms == 250);
@@ -872,8 +979,8 @@ TEST(debug_log_rejects_out_of_range_and_unknown_keys) {
     }
     return false;
   };
-  CHECK(throws(R"({"debug_log":{"ctl_period_ms":49}})"));   // below the floor
-  CHECK(throws(R"({"debug_log":{"rung_period_s":0}})"));    // below the floor
-  CHECK(throws(R"({"debug_log":{"enable":"yes"}})"));       // wrong type
-  CHECK(throws(R"({"debug_log":{"nope":1}})"));             // strict keys
+  CHECK(throws("[debug_log]\nctl_period_ms = 49\n"));   // below the floor
+  CHECK(throws("[debug_log]\nrung_period_s = 0\n"));    // below the floor
+  CHECK(throws("[debug_log]\nenable = \"yes\"\n"));     // wrong type
+  CHECK(throws("[debug_log]\nnope = 1\n"));             // strict keys
 }

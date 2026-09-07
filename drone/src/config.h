@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
@@ -179,9 +180,15 @@ struct Config {
   std::array<UepLayerCfg, 2> uep_layers() const;
 };
 
-// Loads and validates a mabur.json config file. Missing keys fall back to
+// Loads and validates a mabur.toml config file. Missing keys fall back to
 // the struct defaults above; unknown keys and out-of-range values throw
-// std::runtime_error("config: <field>: <why>"). Missing file throws too.
-Config load_config(const std::string& path);
+// std::runtime_error("config: <file>:<line>: <field>: <why>"). Missing file
+// throws too.
+//
+// `defaulted`, when non-null, receives "dotted.key=value" for every known
+// key the file did not set. main() prints it once at startup so a
+// hand-transcribed config shows its gaps in the log, not in the air.
+Config load_config(const std::string& path,
+                   std::vector<std::string>* defaulted = nullptr);
 
 }  // namespace mabur

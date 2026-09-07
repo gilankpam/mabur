@@ -88,8 +88,8 @@ fast incremental rebuilds. No `nix-shell` wrapper is needed.
 bash bundle/install.sh root@<camera-ip>
 ```
 
-This copies `out/arm/maburd` to `/usr/bin/maburd`, seeds `/etc/mabur.json`
-from `bundle/mabur.default.json` if one isn't already present, installs
+This copies `out/arm/maburd` to `/usr/bin/maburd`, seeds `/etc/mabur.toml`
+from `bundle/mabur.default.toml` if one isn't already present, installs
 `bundle/S96mabur` (a BusyBox-compatible init script with a respawn loop) to
 `/etc/init.d/S96mabur`, and (re)starts `S96mabur`. There is no waybeam step
 any more: since 2026-08-29 `maburd` owns the encoder itself, and a camera
@@ -113,7 +113,7 @@ support is not implemented in v1.
 
 ## MSP DisplayPort OSD (ground-side)
 
-Set `msp.enable=true` on the drone (`mabur.json`) and GS (`maburgs.json`);
+Set `msp.enable=true` on the drone (`mabur.toml`) and GS (`maburgs.toml`);
 `msp.symbol_size`/`msp.window` must match on both ends. The drone taps the
 flight controller's MSP DisplayPort UART (`msp.serial`, default `/dev/ttyS2`)
 and forwards full-screen keyframe snapshots at `msp.update_rate_hz` (default
@@ -127,7 +127,7 @@ the old `msp.render = "shm"` shared-memory path are gone). One-way display
 only — see `docs/superpowers/specs/2026-07-15-msp-displayport-osd-design.md`
 for the drone-side-burn-in and GS→FC-menu future doors.
 
-Player-side config lives in `maburplay.json` under `osd`: `enable`, `port`,
+Player-side config lives in `maburplay.toml` under `osd`: `enable`, `port`,
 `font` (path to a `.mfont` atlas), `scale` (`sharp` | `fill`) and `stale_ms`
 (blank the overlay after this much silence; keep it at several multiples of
 the drone's `msp.update_rate_hz` period, default 5000 ms).
@@ -161,9 +161,9 @@ the centre of frame stays clear. It shares the MSP overlay's plane and
 surface (MSP draws first, then the GS fields repaint over any collision, so
 GS pixels always win), and it is burned into the DVR alongside the MSP grid.
 
-Config lives in `maburplay.json` under `osd.gs`: `enable` (default false),
+Config lives in `maburplay.toml` under `osd.gs`: `enable` (default false),
 `port` (the sideport fan-out destination maburgs sends to — see `stats.out`
-in `maburgs.json`), `font` (path to a `.gfont` atlas) and `stale_ms` (dim
+in `maburgs.toml`), `font` (path to a `.gfont` atlas) and `stale_ms` (dim
 every link-derived field after this much silence; the player-measured fields
 ignore it, being current by construction).
 

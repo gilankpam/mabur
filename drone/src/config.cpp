@@ -4,26 +4,55 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
-#include <sstream>
 #include <stdexcept>
 
-#include "json.hpp"
+#include "mabur/toml.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
 
 namespace mabur {
 namespace {
 
-using nlohmann::json;
+namespace toml = mabur::toml;   // maburgs/maburplay are not inside mabur
+using mabur::toml::Value;
 
-[[noreturn]] void fail(const std::string& field, const std::string& why) {
-  throw std::runtime_error("config: " + field + ": " + why);
+// Set for the duration of load_config; collects keys that fell back to their
+// struct default. Not reentrant, which is fine: it is called once at boot.
+std::vector<std::string>* g_defaulted = nullptr;
+
+std::string to_text(bool v) { return v ? "true" : "false"; }
+std::string to_text(const std::string& v) { return v; }
+template <typename T>
+std::string to_text(const T& v) { return std::to_string(v); }
+
+void note_default(const std::string& prefix, const char* key,
+                  const std::string& value) {
+  if (g_defaulted == nullptr) return;
+  g_defaulted->push_back((prefix.empty() ? std::string(key)
+                                         : prefix + "." + key) + "=" + value);
 }
 
-// Rejects any key in `j` (a JSON object) that isn't in `known`. `prefix` is
+std::string g_file;      // set by load_config, "" outside it
+// Line of the LAST key read, not necessarily the key currently being
+// validated: a cross-key check (e.g. "up_util >= down_util") runs after both
+// keys have been read, so it reports whichever key assign_if_present touched
+// last, not necessarily the one actually at fault. This is a known, accepted
+// limitation, not a bug to "fix": the field NAME in a fail() call is always
+// the right one, so the operator is never misdirected about WHICH key is
+// bad — only the cited line can be off by a key when two interacting keys
+// disagree.
+int g_line = 0;
+
+[[noreturn]] void fail(const std::string& field, const std::string& why) {
+  std::string where = "config: ";
+  if (!g_file.empty() && g_line > 0)
+    where += g_file + ":" + std::to_string(g_line) + ": ";
+  throw std::runtime_error(where + field + ": " + why);
+}
+
+// Rejects any key in `j` (a TOML table) that isn't in `known`. `prefix` is
 // the dotted field-path prefix used in the error message (e.g. "fec").
-void check_known_keys(const json& j, const std::vector<std::string>& known,
+void check_known_keys(const Value& j, const std::vector<std::string>& known,
                        const std::string& prefix) {
   if (!j.is_object()) return;
   for (auto it = j.begin(); it != j.end(); ++it) {
@@ -36,19 +65,22 @@ void check_known_keys(const json& j, const std::vector<std::string>& known,
 }
 
 template <typename T>
-void assign_if_present(const json& j, const char* key, T& out,
+void assign_if_present(const Value& j, const char* key, T& out,
                        const std::string& prefix = "") {
-  if (j.contains(key)) {
-    try {
-      out = j.at(key).get<T>();
-    } catch (const json::exception& e) {
-      std::string field = prefix.empty() ? key : prefix + "." + key;
-      fail(field, "wrong type");
-    }
+  if (!j.contains(key)) {
+    note_default(prefix, key, to_text(out));
+    return;
+  }
+  try {
+    g_line = j.at(key).line();
+    out = j.at(key).get<T>();
+  } catch (const toml::Error& e) {
+    std::string field = prefix.empty() ? key : prefix + "." + key;
+    fail(field, "wrong type");
   }
 }
 
-void parse_radio(const json& j, RadioCfg& r) {
+void parse_radio(const Value& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width",
                         "power_mode", "tx_threads", "rate_walls_idx",
                         "legacy_wall_idx", "wall_margin_db",
@@ -64,15 +96,17 @@ void parse_radio(const json& j, RadioCfg& r) {
   bool rate_walls_idx_present = j.contains("rate_walls_idx");
   if (rate_walls_idx_present) {
     auto& arr = j.at("rate_walls_idx");
+    g_line = arr.line();
     if (!arr.is_array() || arr.size() != 8)
       fail("radio.rate_walls_idx", "must be an array of 8 ints");
     try {
       for (size_t i = 0; i < 8; ++i)
         r.rate_walls_idx[i] = arr.at(i).get<int>();
-    } catch (const json::exception&) {
+    } catch (const toml::Error&) {
       fail("radio.rate_walls_idx", "wrong type");
     }
   }
+  if (!rate_walls_idx_present) note_default("radio", "rate_walls_idx", "(unit defaults)");
   assign_if_present(j, "legacy_wall_idx", r.legacy_wall_idx, "radio");
   assign_if_present(j, "wall_margin_db", r.wall_margin_db, "radio");
   assign_if_present(j, "base_ref_idx", r.base_ref_idx, "radio");
@@ -122,34 +156,40 @@ void parse_radio(const json& j, RadioCfg& r) {
   }
 }
 
-void parse_fec(const json& j, FecCfg& f) {
+void parse_fec(const Value& j, FecCfg& f) {
   check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms", "feed_batch"}, "fec");
   if (j.contains("symbol_size")) {
     auto& s = j.at("symbol_size");
+    g_line = s.line();
     if (s.is_array()) {
       if (s.size() != 2) fail("fec.symbol_size", "array must have 2 ints");
       try {
         for (size_t i = 0; i < 2; ++i) f.symbol_size[i] = s.at(i).get<int>();
-      } catch (const json::exception&) {
+      } catch (const toml::Error&) {
         fail("fec.symbol_size", "wrong type");
       }
     } else {
       int v = 0;
-      try { v = s.get<int>(); } catch (const json::exception&) {
+      try { v = s.get<int>(); } catch (const toml::Error&) {
         fail("fec.symbol_size", "wrong type");
       }
       f.symbol_size.fill(v);
     }
+  } else {
+    note_default("fec", "symbol_size", to_text(f.symbol_size[0]));
   }
   assign_if_present(j, "window", f.window, "fec");
   if (j.contains("blocks_per_body")) {
     auto& arr = j.at("blocks_per_body");
+    g_line = arr.line();
     if (!arr.is_array() || arr.size() != 2) fail("fec.blocks_per_body", "must be an array of 2 ints");
     try {
       for (size_t i = 0; i < 2; ++i) f.blocks_per_body[i] = arr.at(i).get<int>();
-    } catch (const json::exception& e) {
+    } catch (const toml::Error& e) {
       fail("fec.blocks_per_body", "wrong type");
     }
+  } else {
+    note_default("fec", "blocks_per_body", to_text(f.blocks_per_body[0]));
   }
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
@@ -171,7 +211,7 @@ void parse_fec(const json& j, FecCfg& f) {
   if (f.base_overhead < 0.1 || f.base_overhead > 2.0) fail("fec.base_overhead", "must be in [0.1,2.0]");
 }
 
-void parse_encoder(const json& j, EncoderCfg& e) {
+void parse_encoder(const Value& j, EncoderCfg& e) {
   check_known_keys(j,
                     {"bitrate_min_kbps", "bitrate_max_kbps", "airtime_budget",
                      "roi_threshold_kbps", "roi_qp_low", "roi_qp_normal"},
@@ -196,7 +236,7 @@ void parse_encoder(const json& j, EncoderCfg& e) {
 // there is intentionally NO "bitrate" key here — it's simply absent from
 // the known-key set below, so one lands on the ordinary unknown-key path
 // like any other stale key (global constraint: no venc.bitrate ever).
-void parse_venc(const json& j, VencSectionCfg& v) {
+void parse_venc(const Value& j, VencSectionCfg& v) {
   check_known_keys(j,
                     {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
                      "max_ipprop", "min_iqp", "superframe_p_pct",
@@ -206,12 +246,22 @@ void parse_venc(const json& j, VencSectionCfg& v) {
                      "debug_port"},
                     "venc");
 
+  // Real compiled defaults, for accurate reporting only. Every branch below
+  // reads into a local temp (or validates in place) before the struct field
+  // is ever touched, so assign_if_present's own absent-branch never fires
+  // for a key here -- report the actual compiled default explicitly instead
+  // of letting a temp's zero-init sentinel masquerade as one (a bare
+  // "venc.fps=0" would be a lie: the real default is 60).
+  const VencSectionCfg kDef{};
+
   if (j.contains("sensor_bin")) {
     std::string s;
     assign_if_present(j, "sensor_bin", s, "venc");
     if (s.size() >= sizeof(v.core.sensor_bin))
       fail("venc.sensor_bin", "too long");
     std::snprintf(v.core.sensor_bin, sizeof(v.core.sensor_bin), "%s", s.c_str());
+  } else {
+    note_default("venc", "sensor_bin", "(required, no default)");
   }
 
   if (j.contains("size")) {
@@ -234,6 +284,9 @@ void parse_venc(const json& j, VencSectionCfg& v) {
       fail("venc.size", "malformed, expected WIDTHxHEIGHT (e.g. \"1920x1080\")");
     v.core.width = static_cast<uint16_t>(w);
     v.core.height = static_cast<uint16_t>(h);
+  } else {
+    note_default("venc", "size",
+                  to_text(kDef.core.width) + "x" + to_text(kDef.core.height));
   }
 
   if (j.contains("fps")) {
@@ -241,12 +294,16 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "fps", fps, "venc");
     if (fps < 1 || fps > 120) fail("venc.fps", "must be in [1,120]");
     v.core.fps = static_cast<uint16_t>(fps);
+  } else {
+    note_default("venc", "fps", to_text(kDef.core.fps));
   }
 
   if (j.contains("gop_s")) {
     assign_if_present(j, "gop_s", v.core.gop_s, "venc");
     if (v.core.gop_s < 0.5 || v.core.gop_s > 10.0)
       fail("venc.gop_s", "must be in [0.5,10]");
+  } else {
+    note_default("venc", "gop_s", to_text(kDef.core.gop_s));
   }
 
   if (j.contains("qp_delta")) {
@@ -254,6 +311,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "qp_delta", qp, "venc");
     if (qp < -12 || qp > 12) fail("venc.qp_delta", "must be in [-12,12]");
     v.core.qp_delta = static_cast<int8_t>(qp);
+  } else {
+    note_default("venc", "qp_delta", to_text(static_cast<int>(kDef.core.qp_delta)));
   }
 
   if (j.contains("max_ipprop")) {
@@ -261,6 +320,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "max_ipprop", prop, "venc");
     if (prop < 0 || prop > 100) fail("venc.max_ipprop", "must be in [0,100]");
     v.core.max_ipprop = static_cast<uint8_t>(prop);
+  } else {
+    note_default("venc", "max_ipprop", to_text(static_cast<int>(kDef.core.max_ipprop)));
   }
 
   if (j.contains("min_iqp")) {
@@ -268,6 +329,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "min_iqp", q, "venc");
     if (q < 0 || q > 51) fail("venc.min_iqp", "must be in [0,51]");
     v.core.min_iqp = static_cast<uint8_t>(q);
+  } else {
+    note_default("venc", "min_iqp", to_text(static_cast<int>(kDef.core.min_iqp)));
   }
 
   if (j.contains("superframe_p_pct")) {
@@ -276,6 +339,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     if (p != 0 && (p < 100 || p > 1000))
       fail("venc.superframe_p_pct", "must be 0 (off) or in [100,1000]");
     v.core.superframe_p_pct = static_cast<uint16_t>(p);
+  } else {
+    note_default("venc", "superframe_p_pct", to_text(kDef.core.superframe_p_pct));
   }
 
   // Error-resilience structure: the five components venc.resilience used to
@@ -288,6 +353,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     if (rows < 0 || rows > UINT16_MAX)
       fail("venc.intra_refresh_rows", "must be >= 0");
     v.core.intra_refresh_rows = static_cast<uint16_t>(rows);
+  } else {
+    note_default("venc", "intra_refresh_rows", to_text(kDef.core.intra_refresh_rows));
   }
 
   if (j.contains("intra_refresh_qp")) {
@@ -295,6 +362,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "intra_refresh_qp", qp, "venc");
     if (qp < 1 || qp > 51) fail("venc.intra_refresh_qp", "must be in [1,51]");
     v.core.intra_refresh_qp = static_cast<uint8_t>(qp);
+  } else {
+    note_default("venc", "intra_refresh_qp", to_text(static_cast<int>(kDef.core.intra_refresh_qp)));
   }
 
   if (j.contains("ref_base")) {
@@ -303,6 +372,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     if (base < 0 || base > 255)
       fail("venc.ref_base", "must be 0 (SVC-T off) or in [1,255]");
     v.core.ref_base = static_cast<uint8_t>(base);
+  } else {
+    note_default("venc", "ref_base", to_text(static_cast<int>(kDef.core.ref_base)));
   }
 
   if (j.contains("ref_enhance")) {
@@ -310,6 +381,8 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "ref_enhance", enh, "venc");
     if (enh < 0 || enh > 255) fail("venc.ref_enhance", "must be in [0,255]");
     v.core.ref_enhance = static_cast<uint8_t>(enh);
+  } else {
+    note_default("venc", "ref_enhance", to_text(static_cast<int>(kDef.core.ref_enhance)));
   }
 
   assign_if_present(j, "ref_pred", v.core.ref_pred, "venc");
@@ -322,7 +395,7 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     fail("venc.ref_enhance", "must be >= 1 when venc.ref_base is nonzero");
 
   if (j.contains("roi")) {
-    const json& r = j.at("roi");
+    const Value& r = j.at("roi");
     check_known_keys(r, {"enabled", "steps", "center"}, "venc.roi");
     assign_if_present(r, "enabled", v.core.roi_enabled, "venc.roi");
     if (r.contains("steps")) {
@@ -330,12 +403,21 @@ void parse_venc(const json& j, VencSectionCfg& v) {
       assign_if_present(r, "steps", steps, "venc.roi");
       if (steps < 1 || steps > 4) fail("venc.roi.steps", "must be in [1,4]");
       v.core.roi_steps = static_cast<uint8_t>(steps);
+    } else {
+      note_default("venc.roi", "steps", to_text(static_cast<int>(kDef.core.roi_steps)));
     }
     if (r.contains("center")) {
       assign_if_present(r, "center", v.core.roi_center, "venc.roi");
       if (v.core.roi_center < 0.0 || v.core.roi_center > 1.0)
         fail("venc.roi.center", "must be in [0,1]");
+    } else {
+      note_default("venc.roi", "center", to_text(kDef.core.roi_center));
     }
+  } else {
+    // Whole sub-table absent: one line, same style as a missing top-level
+    // section, rather than three separate per-key lines the operator would
+    // have to mentally group back together.
+    note_default("venc", "roi", "(section absent)");
   }
 
   // Range-checked BEFORE the uint16 cast: unchecked, ae_fps -1 wrapped to
@@ -347,12 +429,16 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "ae_fps", v_ae, "venc");
     if (v_ae < 1 || v_ae > 60) fail("venc.ae_fps", "must be in [1,60]");
     v.core.ae_fps = static_cast<uint16_t>(v_ae);
+  } else {
+    note_default("venc", "ae_fps", to_text(kDef.core.ae_fps));
   }
   if (j.contains("awb_fps")) {
     int v_awb = 0;
     assign_if_present(j, "awb_fps", v_awb, "venc");
     if (v_awb < 1 || v_awb > 60) fail("venc.awb_fps", "must be in [1,60]");
     v.core.awb_fps = static_cast<uint16_t>(v_awb);
+  } else {
+    note_default("venc", "awb_fps", to_text(kDef.core.awb_fps));
   }
 
   if (j.contains("snapshot_quality")) {
@@ -360,12 +446,16 @@ void parse_venc(const json& j, VencSectionCfg& v) {
     assign_if_present(j, "snapshot_quality", q, "venc");
     if (q < 1 || q > 100) fail("venc.snapshot_quality", "must be in [1,100]");
     v.core.snapshot_quality = static_cast<uint8_t>(q);
+  } else {
+    note_default("venc", "snapshot_quality", to_text(static_cast<int>(kDef.core.snapshot_quality)));
   }
 
   if (j.contains("debug_port")) {
     assign_if_present(j, "debug_port", v.debug_port, "venc");
     if (v.debug_port < 1024 || v.debug_port > 65535)
       fail("venc.debug_port", "must be in [1024,65535]");
+  } else {
+    note_default("venc", "debug_port", to_text(kDef.debug_port));
   }
 
   // A stripe cannot be wider than the picture. Checked here rather than
@@ -394,7 +484,7 @@ void parse_venc(const json& j, VencSectionCfg& v) {
   if (v.core.sensor_bin[0] == '\0') fail("venc.sensor_bin", "is required");
 }
 
-void parse_link(const json& j, LinkCfg& l) {
+void parse_link(const Value& j, LinkCfg& l) {
   check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms",
                        "rc_drain_ms"}, "link");
   assign_if_present(j, "vtx_id", l.vtx_id, "link");
@@ -422,7 +512,7 @@ void parse_link(const json& j, LinkCfg& l) {
     fail("link.rc_drain_ms", "must be <= link.tick_ms");
 }
 
-void parse_msp(const json& j, MspCfg& m) {
+void parse_msp(const Value& j, MspCfg& m) {
   check_known_keys(j, {"enable", "serial", "baud", "update_rate_hz",
                         "symbol_size", "window", "overhead"}, "msp");
   assign_if_present(j, "enable", m.enable, "msp");
@@ -441,7 +531,7 @@ void parse_msp(const json& j, MspCfg& m) {
   if (m.baud <= 0) fail("msp.baud", "must be > 0");
 }
 
-void parse_ampdu(const json& j, AmpduCfg& a) {
+void parse_ampdu(const Value& j, AmpduCfg& a) {
   check_known_keys(j, {"max_num", "max_time"}, "ampdu");
   assign_if_present(j, "max_num", a.max_num, "ampdu");
   assign_if_present(j, "max_time", a.max_time, "ampdu");
@@ -455,7 +545,7 @@ void parse_ampdu(const json& j, AmpduCfg& a) {
          "use 0 for the chip default or >= 9");
 }
 
-void parse_air_clock(const json& j, AirClockCfg& a) {
+void parse_air_clock(const Value& j, AirClockCfg& a) {
   check_known_keys(j, {"shed_ms", "efficiency", "body_us"}, "air_clock");
   assign_if_present(j, "shed_ms", a.shed_ms, "air_clock");
   assign_if_present(j, "efficiency", a.efficiency, "air_clock");
@@ -480,20 +570,29 @@ std::array<UepLayerCfg, 2> Config::uep_layers() const {
   return layers;
 }
 
-Config load_config(const std::string& path) {
-  std::ifstream in(path);
-  if (!in) fail("file", "cannot open '" + path + "'");
-
-  json j;
+Config load_config(const std::string& path, std::vector<std::string>* defaulted) {
+  Value j;
   try {
-    j = json::parse(in);
-  } catch (const json::parse_error& e) {
-    fail("file", std::string("invalid JSON: ") + e.what());
+    j = toml::parse_toml_file(path);
+  } catch (const toml::Error& e) {
+    throw std::runtime_error(std::string("config: ") + e.what());
   }
 
-  if (!j.is_object()) fail("file", "top-level JSON must be an object");
+  g_defaulted = defaulted;
+  g_file = path;
+  struct Clear {
+    ~Clear() { g_defaulted = nullptr; g_file.clear(); g_line = 0; }
+  } clear_on_exit;
 
+  static const char* kSections[] = {"radio", "fec", "encoder", "venc",
+                                    "link", "msp", "ampdu", "air_clock"};
   check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock"}, "");
+
+  // A whole missing section means none of its keys are visited below, so
+  // report the section itself. Dropping a [table] while hand-transcribing is
+  // exactly the mistake this line exists to catch.
+  for (const char* sec : kSections)
+    if (!j.contains(sec)) note_default("", sec, "(section absent)");
 
   Config cfg;
   if (j.contains("radio")) parse_radio(j.at("radio"), cfg.radio);

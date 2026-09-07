@@ -84,10 +84,10 @@ uint64_t mono_us() {
 
 void usage() {
   std::fprintf(stderr,
-               "usage: maburgs -c <config.json> --dry-run --in <frames.bin>\n"
+               "usage: maburgs -c <config.toml> --dry-run --in <frames.bin>\n"
                "               [--cards N] [--drop-pct P] [--seed S] [--out-aus <file>]\n"
 #ifdef MABUR_LOSS_SIM
-               "       maburgs -c <config.json> [--loss-sim [port]]\n"
+               "       maburgs -c <config.toml> [--loss-sim [port]]\n"
                "\n"
                "  --loss-sim [port]  BENCH ONLY: bind a loopback UDP command\n"
                "                     socket (default port 8302) for injecting\n"
@@ -1446,7 +1446,7 @@ static int run_radio(const maburgs::Config& cfg) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string config_path = "/etc/maburgs.json";
+  std::string config_path = "/etc/maburgs.toml";
   std::string in_path, out_aus_path;
   bool dry_run = false;
 #ifdef MABUR_LOSS_SIM
@@ -1479,8 +1479,14 @@ int main(int argc, char** argv) {
     // real-radio mode: load config, then run. (Branches off BEFORE the
     // dry-run-only arg checks, exactly where the Plan-1 stub sat.)
     maburgs::Config cfg;
-    try { cfg = maburgs::load_config(config_path); }
+    std::vector<std::string> defaulted;
+    try { cfg = maburgs::load_config(config_path, &defaulted); }
     catch (const std::exception& e) { std::fprintf(stderr, "error: %s\n", e.what()); return 2; }
+    if (!defaulted.empty()) {
+      std::fprintf(stderr, "config: %zu key(s) defaulted:\n", defaulted.size());
+      for (const std::string& d : defaulted)
+        std::fprintf(stderr, "  %s\n", d.c_str());
+    }
 #ifdef MABUR_LOSS_SIM
     return run_radio(cfg, loss_sim_port);
 #else

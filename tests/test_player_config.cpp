@@ -3,7 +3,7 @@
 #include "player_config.h"
 
 static std::string write_tmp_play(const char* text) {
-  std::string path = "/tmp/maburplay_test_config.json";
+  std::string path = "/tmp/maburplay_test_config.toml";
   std::ofstream f(path);
   f << text;
   return path;
@@ -11,7 +11,7 @@ static std::string write_tmp_play(const char* text) {
 
 TEST(defaults_from_bundle) {
   auto c = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
   CHECK(c.ring_path == "/dev/shm/mabur-au");
   CHECK(c.socket == "/run/mabur-au.sock");
   CHECK(c.backend == "mpp");
@@ -29,31 +29,31 @@ TEST(defaults_from_bundle) {
 
 TEST(values_and_strictness) {
   auto c = maburplay::load_config(write_tmp_play(
-      "{\"backend\": \"null\", \"dvr\": {\"autostart\": false, \"fragment_ms\": 500}}"));
+      "backend = \"null\"\n\n[dvr]\nautostart = false\nfragment_ms = 500\n"));
   CHECK(c.backend == "null");
   CHECK(!c.dvr.autostart);
   CHECK(c.dvr.fragment_ms == 500);
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play("{\"bogus\": 1}")); }
+  try { maburplay::load_config(write_tmp_play("bogus = 1\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("bogus") != std::string::npos;
   }
   CHECK(threw);
   threw = false;
-  try { maburplay::load_config(write_tmp_play("{\"backend\": \"vaapi\"}")); }
+  try { maburplay::load_config(write_tmp_play("backend = \"vaapi\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // backend must be one of mpp|null
   threw = false;
-  try { maburplay::load_config(write_tmp_play("{\"dvr\": {\"fragment_ms\": 50}}")); }
+  try { maburplay::load_config(write_tmp_play("[dvr]\nfragment_ms = 50\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // floor 100
 }
 
 TEST(the_old_dvr_enabled_key_is_rejected) {
-  // The rename is breaking on purpose: an un-updated /etc/maburplay.json
+  // The rename is breaking on purpose: an un-updated /etc/maburplay.toml
   // must fail boot loudly rather than silently reverting to the default.
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"enabled":true}})")); }
+  try { maburplay::load_config(write_tmp_play("[dvr]\nenabled = true\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("enabled") != std::string::npos;
   }
@@ -61,7 +61,7 @@ TEST(the_old_dvr_enabled_key_is_rejected) {
 }
 
 TEST(osd_defaults_are_off_and_conventional) {
-  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  auto c = maburplay::load_config(write_tmp_play("backend = \"null\"\n"));
   CHECK(c.osd.enable == false);
   CHECK(c.osd.port == 14560);
   CHECK(c.osd.scale == "sharp");
@@ -73,8 +73,8 @@ TEST(osd_defaults_are_off_and_conventional) {
 
 TEST(osd_block_is_parsed) {
   auto c = maburplay::load_config(write_tmp_play(
-      R"({"backend":"null","osd":{"enable":true,"port":15000,)"
-      R"("font":"/tmp/f.mfont","scale":"fill","stale_ms":0}})"));
+      "backend = \"null\"\n\n[osd]\nenable = true\nport = 15000\n"
+      "font = \"/tmp/f.mfont\"\nscale = \"fill\"\nstale_ms = 0\n"));
   CHECK(c.osd.enable == true);
   CHECK(c.osd.port == 15000);
   CHECK(c.osd.font == "/tmp/f.mfont");
@@ -84,24 +84,24 @@ TEST(osd_block_is_parsed) {
 
 TEST(osd_rejects_unknown_keys_and_bad_scale) {
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"enabl":true}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd]\nenabl = true\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"scale":"blurry"}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd]\nscale = \"blurry\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }
 
 TEST(bundle_default_parses_with_osd_enabled) {
   auto c = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
   CHECK(c.osd.enable == true);
 }
 
 TEST(dvr_mode_defaults_to_raw) {
-  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  auto c = maburplay::load_config(write_tmp_play("backend = \"null\"\n"));
   CHECK(c.dvr.mode == "raw");
   CHECK(c.dvr.burned.bitrate_kbps == 12000);
   CHECK(c.dvr.burned.fps_cap == 30);
@@ -109,8 +109,8 @@ TEST(dvr_mode_defaults_to_raw) {
 
 TEST(dvr_burned_block_parses) {
   auto c = maburplay::load_config(write_tmp_play(
-      R"({"backend":"null","dvr":{"mode":"burned",)"
-      R"("burned":{"bitrate_kbps":20000,"fps_cap":60}}})"));
+      "backend = \"null\"\n\n[dvr]\nmode = \"burned\"\n\n"
+      "[dvr.burned]\nbitrate_kbps = 20000\nfps_cap = 60\n"));
   CHECK(c.dvr.mode == "burned");
   CHECK(c.dvr.burned.bitrate_kbps == 20000);
   CHECK(c.dvr.burned.fps_cap == 60);
@@ -118,12 +118,12 @@ TEST(dvr_burned_block_parses) {
 
 TEST(dvr_rejects_bad_mode_and_unknown_keys) {
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"mode":"burnt"}})")); }
+  try { maburplay::load_config(write_tmp_play("[dvr]\nmode = \"burnt\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"dvr":{"burned":{"bitrate":1}}})")); }
+  try { maburplay::load_config(write_tmp_play("[dvr.burned]\nbitrate = 1\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }
@@ -131,19 +131,19 @@ TEST(dvr_rejects_bad_mode_and_unknown_keys) {
 TEST(dvr_burned_bounds_are_enforced) {
   bool threw = false;
   try { maburplay::load_config(write_tmp_play(
-      R"({"dvr":{"burned":{"fps_cap":0}}})")); }
+      "[dvr.burned]\nfps_cap = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
   try { maburplay::load_config(write_tmp_play(
-      R"({"dvr":{"burned":{"bitrate_kbps":500000}}})")); }
+      "[dvr.burned]\nbitrate_kbps = 500000\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }
 
 TEST(gs_osd_defaults_are_off_on_8302) {
-  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  auto c = maburplay::load_config(write_tmp_play("backend = \"null\"\n"));
   CHECK(c.osd.gs.enable == false);
   CHECK(c.osd.gs.port == 8302);
   // 3 s = 6 missed samples at the sideport's 500 ms cadence.
@@ -156,7 +156,7 @@ TEST(gs_osd_defaults_are_off_on_8302) {
 // the gs defaults off the presence of the outer block would only show here.
 TEST(gs_osd_defaults_survive_an_osd_block_without_gs) {
   auto c = maburplay::load_config(write_tmp_play(
-      R"({"backend":"null","osd":{"enable":true,"port":15000}})"));
+      "backend = \"null\"\n\n[osd]\nenable = true\nport = 15000\n"));
   CHECK(c.osd.enable == true);
   CHECK(c.osd.gs.enable == false);
   CHECK(c.osd.gs.port == 8302);
@@ -166,8 +166,8 @@ TEST(gs_osd_defaults_survive_an_osd_block_without_gs) {
 
 TEST(gs_osd_keys_parse) {
   auto c = maburplay::load_config(write_tmp_play(
-      R"({"osd":{"gs":{"enable":true,"port":9000,"font":"/x.gfont",)"
-      R"("stale_ms":1500}}})"));
+      "[osd.gs]\nenable = true\nport = 9000\nfont = \"/x.gfont\"\n"
+      "stale_ms = 1500\n"));
   CHECK(c.osd.gs.enable == true);
   CHECK(c.osd.gs.port == 9000);
   CHECK(c.osd.gs.font == "/x.gfont");
@@ -180,7 +180,7 @@ TEST(gs_osd_keys_parse) {
 // would make that unreachable.
 TEST(gs_osd_alone_is_expressible) {
   auto c = maburplay::load_config(write_tmp_play(
-      R"({"osd":{"enable":false,"gs":{"enable":true}}})"));
+      "[osd]\nenable = false\n\n[osd.gs]\nenable = true\n"));
   CHECK(c.osd.enable == false);
   CHECK(c.osd.gs.enable == true);
 }
@@ -189,34 +189,34 @@ TEST(gs_osd_alone_is_expressible) {
 // than silently ignore a typo'd port.
 TEST(unknown_gs_key_is_rejected) {
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"prot":8302}}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd.gs]\nprot = 8302\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }
 
 TEST(gs_osd_bounds_and_types_are_enforced) {
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"port":0}}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd.gs]\nport = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"port":70000}}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd.gs]\nport = 70000\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"stale_ms":-1}}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd.gs]\nstale_ms = -1\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"enable":"yes"}}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd.gs]\nenable = \"yes\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"osd":{"gs":{"font":7}}})")); }
+  try { maburplay::load_config(write_tmp_play("[osd.gs]\nfont = 7\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }
@@ -225,7 +225,7 @@ TEST(gs_osd_bounds_and_types_are_enforced) {
 // matching how the MSP OSD and maburgs' sideport itself ship.
 TEST(bundle_default_parses_with_gs_osd_off) {
   auto c = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
   CHECK(c.osd.gs.enable == false);
   CHECK(c.osd.gs.port == 8302);
   CHECK(c.osd.gs.stale_ms == 3000);
@@ -233,13 +233,13 @@ TEST(bundle_default_parses_with_gs_osd_off) {
 }
 
 TEST(input_rec_defaults_to_absent) {
-  auto c = maburplay::load_config(write_tmp_play(R"({"backend":"null"})"));
+  auto c = maburplay::load_config(write_tmp_play("backend = \"null\"\n"));
   CHECK(c.input.rec.configured == false);
 }
 
 TEST(input_rec_is_parsed_with_button_to_ground_defaults) {
   auto c = maburplay::load_config(write_tmp_play(
-      R"({"backend":"null","input":{"rec":{"pin":32}}})"));
+      "backend = \"null\"\n\n[input.rec]\npin = 32\n"));
   CHECK(c.input.rec.configured == true);
   CHECK(c.input.rec.pin == 32);
   // The assumed wiring: button between the pin and GND, kernel pull-up,
@@ -250,8 +250,8 @@ TEST(input_rec_is_parsed_with_button_to_ground_defaults) {
 
 TEST(input_rec_honours_explicit_wiring) {
   auto c = maburplay::load_config(write_tmp_play(
-      R"({"backend":"null","input":{"rec":{"pin":11,"active_low":false,)"
-      R"("bias":"pull-down"}}})"));
+      "backend = \"null\"\n\n[input.rec]\npin = 11\nactive_low = false\n"
+      "bias = \"pull-down\"\n"));
   CHECK(c.input.rec.pin == 11);
   CHECK(c.input.rec.active_low == false);
   CHECK(c.input.rec.bias == "pull-down");
@@ -260,7 +260,7 @@ TEST(input_rec_honours_explicit_wiring) {
 TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
   bool threw = false;
   try { maburplay::load_config(write_tmp_play(
-      R"({"input":{"rec":{"active_low":true}}})")); }
+      "[input.rec]\nactive_low = true\n")); }
   catch (const std::exception& e) {
     threw = std::string(e.what()).find("pin") != std::string::npos;
   }
@@ -268,31 +268,31 @@ TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
 
   threw = false;
   try { maburplay::load_config(write_tmp_play(
-      R"({"input":{"rec":{"pin":32,"bias":"floating"}}})")); }
+      "[input.rec]\npin = 32\nbias = \"floating\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // bias must be pull-up|pull-down|none
 
   threw = false;
   try { maburplay::load_config(write_tmp_play(
-      R"({"input":{"rec":{"pin":32,"debounce_ms":50}}})")); }
+      "[input.rec]\npin = 32\ndebounce_ms = 50\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // debounce is a constant, not a key
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"input":{"menu":{"pin":11}}})")); }
+  try { maburplay::load_config(write_tmp_play("[input.menu]\npin = 11\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // one button, one job
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"input":{"rec":{"pin":0}}})")); }
+  try { maburplay::load_config(write_tmp_play("[input.rec]\npin = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // pin range floor
 }
 
 TEST(display_vsync_defaults) {
-  // Bundle default json must carry the new keys with spec defaults.
+  // Bundle default toml must carry the new keys with spec defaults.
   const auto cfg = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
   CHECK(cfg.display.vsync_lock == true);
   CHECK(cfg.display.vsync_lead_ms == 6);
 }
@@ -302,12 +302,14 @@ TEST(display_vsync_lead_range_enforced) {
   // config with display.vsync_lead_ms: 0 via the tmp-file helper and
   // CHECK the load throws, matching the file's existing bad-value tests.
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"display":{"vsync_lead_ms":0}})")); }
+  try { maburplay::load_config(write_tmp_play(
+      "[display]\nvsync_lead_ms = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 
   threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"display":{"vsync_lead_ms":11}})")); }
+  try { maburplay::load_config(write_tmp_play(
+      "[display]\nvsync_lead_ms = 11\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }
@@ -318,11 +320,63 @@ TEST(removed_lat_log_dir_is_rejected) {
   bool threw = false;
   try {
     maburplay::load_config(write_tmp_play(
-        R"({"display":{"lat_log_dir":"/media/dvr/log"}})"));
+        "[display]\nlat_log_dir = \"/media/dvr/log\"\n"));
   } catch (const std::exception&) {
     threw = true;
   }
   CHECK(threw);
+}
+
+TEST(player_load_config_top_level_scalars_then_tables) {
+  const std::string path = write_tmp_play(
+      "backend = \"null\"\n"
+      "screen_mode = \"1280x720@60\"\n"
+      "\n"
+      "[dvr]\n"
+      "autostart = true\n"
+      "mode = \"burned\"\n"
+      "\n"
+      "[dvr.burned]\n"
+      "bitrate_kbps = 8000\n"
+      "\n"
+      "[osd.gs]\n"
+      "enable = true\n"
+      "port = 8302\n");
+  auto c = maburplay::load_config(path);
+  CHECK(c.backend == "null");
+  CHECK(c.screen_mode == "1280x720@60");
+  CHECK(c.dvr.autostart == true);
+  CHECK(c.dvr.mode == "burned");
+  CHECK(c.dvr.burned.bitrate_kbps == 8000);
+  CHECK(c.osd.gs.enable == true);
+  CHECK(c.osd.gs.port == 8302);
+}
+
+TEST(player_load_config_reports_defaulted_keys) {
+  const std::string path = write_tmp_play("backend = \"null\"\n");
+  std::vector<std::string> defaulted;
+  maburplay::load_config(path, &defaulted);
+  bool saw_key = false, saw_section = false;
+  for (const std::string& d : defaulted) {
+    if (d == "screen_mode=1920x1080@60") saw_key = true;   // top-level
+    if (d == "display=(section absent)") saw_section = true;
+  }
+  CHECK(saw_key);
+  CHECK(saw_section);
+}
+
+TEST(player_load_config_errors_carry_file_and_line) {
+  // vsync_lead_ms is range-checked to [1,10]; 99 trips it on line 4.
+  const std::string path = write_tmp_play(
+      "backend = \"null\"\n\n[display]\nvsync_lead_ms = 99\n");
+  std::string msg;
+  try {
+    maburplay::load_config(path);
+  } catch (const std::exception& e) {
+    msg = e.what();
+  }
+  CHECK(msg.find("display.vsync_lead_ms") != std::string::npos);
+  CHECK(msg.find(".toml:4:") != std::string::npos);
 }
 
 MTEST_MAIN
@@ -332,15 +386,15 @@ TEST(display_chain_budget_key) {
   // the regulator cuts it with one drop. Default 3 (bench A/B
   // 2026-09-02, operator choice); 0 = unbounded; range [0, 60].
   const auto def = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.json");
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
   CHECK(def.display.chain_budget == 3);
-  const auto bare = maburplay::load_config(write_tmp_play(R"({})"));
+  const auto bare = maburplay::load_config(write_tmp_play(""));
   CHECK(bare.display.chain_budget == 3);
   const auto cfg = maburplay::load_config(
-      write_tmp_play(R"({"display":{"chain_budget":0}})"));
+      write_tmp_play("[display]\nchain_budget = 0\n"));
   CHECK(cfg.display.chain_budget == 0);
   bool threw = false;
-  try { maburplay::load_config(write_tmp_play(R"({"display":{"chain_budget":61}})")); }
+  try { maburplay::load_config(write_tmp_play("[display]\nchain_budget = 61\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
 }

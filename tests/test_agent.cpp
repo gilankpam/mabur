@@ -865,7 +865,7 @@ TEST(bitrate_increase_still_gated) {
 // CHANGED target is never discarded for being too small a step.
 TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
   Config cfg = make_cfg();
-  cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
+  cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.toml)
   cfg.encoder.bitrate_max_kbps = 10000; // prod value; this clamp is the trap
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -899,7 +899,7 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
 // restored it and the ratchet ran unopposed toward ~0.4 Mbps.
 TEST(congestion_shed_never_commands_below_bitrate_min) {
   Config cfg = make_cfg();
-  cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.json)
+  cfg.encoder.airtime_budget = 0.60;    // prod value (/etc/mabur.toml)
   cfg.encoder.bitrate_max_kbps = 10000; // prod value
   MockActuator act;
   RcAgent agent(cfg, act);

@@ -22,12 +22,12 @@ trap 'rm -rf "$TMP"' EXIT
 # ceiling: maburd never allocates a frame_id for a shed frame, so leaving the
 # default (1) would misalign every "want" key past the first shed frame.
 echo "== clean pipe: all reachable frames must reconstruct byte-exact =="
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f0.bin"
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/f0.bin"
 python3 tools/bench/decode_bodies.py --frames "$TMP/f0.bin" --fixture "$FIX" \
   --symbol-size 332,332 --max-stream 0
 
 echo "== 20% body loss: critical stream must still fully deliver =="
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f1.bin"
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/f1.bin"
 # Seed pinned to 1: the sliding-window bundle geometry (scalar-332/window-32/
 # blocks_per_body-4) packs this short fixture's reachable 7-frame stream (all
 # on sid 0 under MAX_RANGE -- see above) into a modest body count, so a
@@ -56,7 +56,7 @@ w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)
 EOF
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f2.bin" \
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/f2.bin" \
   --rc-in "$TMP/rc.bin"
 # 2-stream space (spec 2026-08-29-airtime-balance-uep): the fixture's IDR
 # always classifies to sid 0 (base) regardless of the P-frame alternation
@@ -112,7 +112,7 @@ w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)
 EOF
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/f3.bin" \
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/f3.bin" \
   --rc-in "$TMP/rc6.bin"
 
 echo "== probe stream: one sid-5 body at mcs6 after each enh AU, none after base =="

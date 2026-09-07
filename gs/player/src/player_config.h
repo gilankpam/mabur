@@ -2,6 +2,7 @@
 #define MABUR_PLAYER_CONFIG_H_
 
 #include <string>
+#include <vector>
 
 namespace maburplay {
 
@@ -111,7 +112,8 @@ struct Config {
   DisplayCfg display;
 };
 
-Config load_config(const std::string& path);  // strict; throws like maburgs
+Config load_config(const std::string& path,
+                   std::vector<std::string>* defaulted = nullptr);  // strict; throws like maburgs
 
 }  // namespace maburplay
 

@@ -173,9 +173,14 @@ struct Config {
   std::array<mabur::UepLayerCfg, 2> uep_layers() const;
 };
 
-/// Loads configuration from a JSON file (MABUR_GS_BUNDLE_DIR/maburgs.default.json).
+/// Loads configuration from a TOML file (MABUR_GS_BUNDLE_DIR/maburgs.default.toml).
 /// Fail-fast: missing keys use struct defaults; unknown keys, out-of-range values,
-/// or missing file throw std::runtime_error("config: <field>: <why>").
-Config load_config(const std::string& path);
+/// or missing file throw std::runtime_error("config: <file>:<line>: <field>: <why>").
+///
+/// `defaulted`, when non-null, receives "dotted.key=value" for every known
+/// key the file did not set. main() prints it once at startup so a
+/// hand-transcribed config shows its gaps in the log, not in the air.
+Config load_config(const std::string& path,
+                   std::vector<std::string>* defaulted = nullptr);
 
 }  // namespace maburgs
