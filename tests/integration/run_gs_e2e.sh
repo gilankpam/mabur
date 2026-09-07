@@ -5,7 +5,7 @@ BUILD=${BUILD:-build}
 MABURD=$BUILD/drone/maburd
 MABURGS=$BUILD/gs/maburgs
 FIX=tests/fixtures/frame_stream.bin
-GSCFG=gs/bundle/maburgs.default.json
+GSCFG=gs/bundle/maburgs.default.toml
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

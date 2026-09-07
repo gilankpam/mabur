@@ -35,8 +35,8 @@ scp -O gs/bundle/S96maburgs "$HOST:/etc/init.d/S96maburgs"
 # /usr/local/bin (maburgs itself is only ever launched by absolute path).
 scp -O tools/maburtop.py "$HOST:/usr/bin/maburtop"
 # Config: install the default only if none exists (never clobber a tuned one).
-ssh "$HOST" "[ -f /etc/maburgs.json ]" || \
-  scp -O gs/bundle/maburgs.default.json "$HOST:/etc/maburgs.json"
+ssh "$HOST" "[ -f /etc/maburgs.toml ]" || \
+  scp -O gs/bundle/maburgs.default.toml "$HOST:/etc/maburgs.toml"
 
 # Start via the init script. S96maburgs' start does `rmmod 8812eu` so devourer
 # can claim the cards over libusb; its daemon stdout is redirected to

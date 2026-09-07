@@ -1,0 +1,103 @@
+# maburgs — ground station. Installed to /etc/maburgs.toml.
+
+[radio]
+channel = 149
+width   = 20
+tx_card = -1               # -1 = auto
+
+[[radio.cards]]
+usb_vid = 3034
+usb_pid = 0
+index   = 0
+
+[fec]
+symbol_size = 332          # must match the drone
+seq_horizon = 512
+
+[link]
+vtx_id                 = 1
+feedback_ms            = 100
+beacon_keepalive_ms    = 1000
+static_overhead_base   = 0.5
+static_overhead_enh    = 0.5
+max_mcs                = 7
+down_util              = 0.6
+up_util                = 0.15
+confirm_ms             = 250
+clean_ms               = 5000
+probation_ms           = 3000
+penalty_base_ms        = 10000
+penalty_max_ms         = 60000
+hold_after_down_ms     = 4000
+min_between_changes_ms = 150
+starved_confirm_ms     = 300
+feedback_timeout_ms    = 1000
+
+# Ladder rungs, low to high. base overhead must stay >= enh overhead.
+[[link.ladder]]
+mcs = 0
+overhead_base = 2.0
+overhead_enh  = 2.0
+
+[[link.ladder]]
+mcs = 2
+overhead_base = 1.0
+overhead_enh  = 1.0
+
+[[link.ladder]]
+mcs = 4
+overhead_base = 0.5
+overhead_enh  = 0.5
+
+[[link.ladder]]
+mcs = 5
+overhead_base = 0.5
+overhead_enh  = 0.5
+
+[[link.ladder]]
+mcs = 6
+overhead_base = 0.3
+overhead_enh  = 0.3
+
+[[link.ladder]]
+mcs = 7
+overhead_base = 0.2
+overhead_enh  = 0.2
+
+[link.probe]
+enable      = true
+rung_offset = 1
+clean_ms    = 2000
+min_syms    = 40
+silence_ms  = 500
+pin_mcs     = -1
+
+[debug_log]
+enable        = false
+dir           = "/media/dvr/log"
+ctl_period_ms = 1000
+rung_period_s = 10
+
+[msp]
+enable      = false
+symbol_size = 1312
+window      = 16
+
+[msp.out]
+host = "127.0.0.1"
+port = 14560
+
+[stats]
+enable      = false
+interval_ms = 500
+
+[[stats.out]]
+host = "127.0.0.1"
+port = 8300                # maburtop
+
+[[stats.out]]
+host = "127.0.0.1"
+port = 8302                # player GS-OSD
+
+[au_ring]
+enable = true

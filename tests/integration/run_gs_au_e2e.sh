@@ -37,22 +37,17 @@ echo "== fixture -> maburd bodies -> maburgs -> AU ring must be byte-exact =="
 "$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
   --rc-in "$TMP/rc.bin"
 
-# The gs bundle's fec.symbol_size default (328) is stale vs the drone bundle's
-# encode-time symbol_size (332, adopted 2026-07-29 to dodge the mcs6+STBC
-# 1392-1400 B PHY hole — see ladder-controller memory); without overriding it
-# here the sliding-window decode geometry mismatches the encoder and yields 0
-# AUs. Force it to 332 to match the drone bundle actually used above.
-python3 - "$TMP/gs.json" <<'EOF'
-import json, sys
-c = json.load(open("gs/bundle/maburgs.default.json"))
-tmp = sys.argv[1].rsplit("/", 1)[0]
-c["fec"]["symbol_size"] = 332
-c["au_ring"] = {"enable": True, "path": tmp + "/au-ring",
-                "socket": tmp + "/au-ring.sock"}
-json.dump(c, open(sys.argv[1], "w"))
-EOF
+# The gs bundle's fec.symbol_size must match the drone bundle's encode-time
+# symbol_size (332, adopted 2026-07-29 to dodge the mcs6+STBC 1392-1400 B PHY
+# hole); without it the sliding-window decode geometry mismatches and yields 0
+# AUs. The au_ring paths point at this run's temp dir.
+#
+# Range-anchored sed, not a bare one: `symbol_size` also appears under [msp].
+sed -e "/^\[fec\]/,/^\[/ s|^symbol_size = .*|symbol_size = 332|" \
+    -e "/^\[au_ring\]/a path = \"$TMP/au-ring\"\nsocket = \"$TMP/au-ring.sock\"" \
+    gs/bundle/maburgs.default.toml > "$TMP/gs.toml"
 
-"$MABURGS" -c "$TMP/gs.json" --dry-run --in "$TMP/bodies.bin"
+"$MABURGS" -c "$TMP/gs.toml" --dry-run --in "$TMP/bodies.bin"
 
 python3 tools/bench/ausniff.py --ring "$TMP/au-ring" --oneshot \
   --dump-annexb "$TMP/ring-aus.bin" --json > "$TMP/sniff.json"

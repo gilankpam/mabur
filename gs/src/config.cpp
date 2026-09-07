@@ -3,19 +3,49 @@
 #include <fstream>
 #include <stdexcept>
 
-#include "json.hpp"
+#include "mabur/toml.h"
 
 namespace maburgs {
 namespace {
-using nlohmann::json;
 
-[[noreturn]] void fail(const std::string& field, const std::string& why) {
-  throw std::runtime_error("config: " + field + ": " + why);
+namespace toml = mabur::toml;   // maburgs/maburplay are not inside mabur
+using mabur::toml::Value;
+
+// Set for the duration of load_config; collects keys that fell back to their
+// struct default. Not reentrant, which is fine: it is called once at boot.
+std::vector<std::string>* g_defaulted = nullptr;
+
+std::string to_text(bool v) { return v ? "true" : "false"; }
+std::string to_text(const std::string& v) { return v; }
+template <typename T>
+std::string to_text(const T& v) { return std::to_string(v); }
+
+void note_default(const std::string& prefix, const char* key,
+                  const std::string& value) {
+  if (g_defaulted == nullptr) return;
+  g_defaulted->push_back((prefix.empty() ? std::string(key)
+                                         : prefix + "." + key) + "=" + value);
 }
 
-void check_keys(const json& o, const std::string& where,
+std::string g_file;      // set by load_config, "" outside it
+// Line of the LAST key read, not necessarily the key currently being
+// validated: a cross-key check (e.g. "up_util >= down_util") runs after both
+// keys have been read, so it reports whichever key assign_if_present touched
+// last, not necessarily the one actually at fault. Known, accepted
+// limitation (see drone/src/config.cpp for the full rationale).
+int g_line = 0;
+
+[[noreturn]] void fail(const std::string& field, const std::string& why) {
+  std::string where = "config: ";
+  if (!g_file.empty() && g_line > 0)
+    where += g_file + ":" + std::to_string(g_line) + ": ";
+  throw std::runtime_error(where + field + ": " + why);
+}
+
+void check_keys(const Value& o, const std::string& where,
                 std::initializer_list<const char*> allowed) {
-  for (auto& [k, v] : o.items()) {
+  for (auto it = o.begin(); it != o.end(); ++it) {
+    const std::string& k = it.key();
     bool ok = false;
     for (const char* a : allowed)
       if (k == a) { ok = true; break; }
@@ -23,29 +53,42 @@ void check_keys(const json& o, const std::string& where,
   }
 }
 
-long get_int(const json& o, const char* key, long dflt, long lo, long hi,
+long get_int(const Value& o, const char* key, long dflt, long lo, long hi,
              const std::string& where) {
-  if (!o.contains(key)) return dflt;
+  if (!o.contains(key)) { note_default(where, key, to_text(dflt)); return dflt; }
+  g_line = o[key].line();
   if (!o[key].is_number_integer()) fail(where + "." + key, "not an integer");
   const long v = o[key].get<long>();
   if (v < lo || v > hi) fail(where + "." + key, "out of range");
   return v;
 }
 
-double get_num(const json& o, const char* key, double dflt, double lo,
+double get_num(const Value& o, const char* key, double dflt, double lo,
                double hi, const std::string& where) {
-  if (!o.contains(key)) return dflt;
+  if (!o.contains(key)) { note_default(where, key, to_text(dflt)); return dflt; }
+  g_line = o[key].line();
   if (!o[key].is_number()) fail(where + "." + key, "not a number");
   const double v = o[key].get<double>();
   if (v < lo || v > hi) fail(where + "." + key, "out of range");
   return v;
 }
 
-std::string get_str(const json& o, const char* key, const std::string& dflt,
+std::string get_str(const Value& o, const char* key, const std::string& dflt,
                     const std::string& where) {
-  if (!o.contains(key)) return dflt;
+  if (!o.contains(key)) { note_default(where, key, dflt); return dflt; }
+  g_line = o[key].line();
   if (!o[key].is_string()) fail(where + "." + key, "not a string");
   return o[key].get<std::string>();
+}
+
+// New: bools went through inline `if (o.contains(...))` blocks, which meant a
+// missing bool could not be reported. Same shape as the others now.
+bool get_bool(const Value& o, const char* key, bool dflt,
+              const std::string& where) {
+  if (!o.contains(key)) { note_default(where, key, to_text(dflt)); return dflt; }
+  g_line = o[key].line();
+  if (!o[key].is_boolean()) fail(where + "." + key, "not a boolean");
+  return o[key].get<bool>();
 }
 }  // namespace
 
@@ -65,21 +108,31 @@ std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
   return out;
 }
 
-Config load_config(const std::string& path) {
-  std::ifstream f(path);
-  if (!f) fail(path, "cannot open");
-  json j;
+Config load_config(const std::string& path, std::vector<std::string>* defaulted) {
+  Value j;
   try {
-    j = json::parse(f);
-  } catch (const std::exception& e) {
-    fail(path, std::string("parse error: ") + e.what());
+    j = toml::parse_toml_file(path);
+  } catch (const toml::Error& e) {
+    throw std::runtime_error(std::string("config: ") + e.what());
   }
+  g_defaulted = defaulted;
+  g_file = path;
+  struct Clear {
+    ~Clear() { g_defaulted = nullptr; g_file.clear(); g_line = 0; }
+  } clear_on_exit;
+
   check_keys(j, "", {"radio", "fec", "link", "video", "msp", "stats", "au_ring",
                      "debug_log"});
+  // Same reason as the drone's: a missing section visits none of its keys.
+  // Kept in the exact order of the check_keys list above -- if they drift a
+  // section goes silently unreported.
+  for (const char* sec : {"radio", "fec", "link", "video", "msp", "stats",
+                          "au_ring", "debug_log"})
+    if (!j.contains(sec)) note_default("", sec, "(section absent)");
   Config c;
 
   if (j.contains("radio")) {
-    const json& r = j["radio"];
+    const Value& r = j["radio"];
     check_keys(r, "radio", {"channel", "width", "cards", "tx_card"});
     c.radio.channel = static_cast<uint8_t>(get_int(r, "channel", 149, 1, 200, "radio"));
     c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 80, "radio"));
@@ -89,7 +142,7 @@ Config load_config(const std::string& path) {
         fail("radio.cards", "must be a non-empty array");
       c.radio.cards.clear();
       int i = 0;
-      for (const json& cj : r["cards"]) {
+      for (const Value& cj : r["cards"]) {
         const std::string where = "radio.cards[" + std::to_string(i++) + "]";
         check_keys(cj, where, {"usb_vid", "usb_pid", "index"});
         CardCfg card;
@@ -105,7 +158,7 @@ Config load_config(const std::string& path) {
     fail("radio.tx_card", "no such card");
 
   if (j.contains("fec")) {
-    const json& r = j["fec"];
+    const Value& r = j["fec"];
     check_keys(r, "fec", {"symbol_size", "seq_horizon"});
     if (r.contains("symbol_size")) {
       auto& s = r.at("symbol_size");
@@ -125,7 +178,7 @@ Config load_config(const std::string& path) {
   }
 
   if (j.contains("link")) {
-    const json& r = j["link"];
+    const Value& r = j["link"];
     check_keys(r, "link",
                {"vtx_id", "feedback_ms", "beacon_keepalive_ms",
                 "static_mcs", "static_overhead_base", "static_overhead_enh",
@@ -160,7 +213,7 @@ Config load_config(const std::string& path) {
         fail("link.ladder", "must have at most 8 entries");
       std::vector<Rung> parsed;
       int i = 0;
-      for (const json& rj : r["ladder"]) {
+      for (const Value& rj : r["ladder"]) {
         const std::string where = "link.ladder[" + std::to_string(i++) + "]";
         check_keys(rj, where, {"mcs", "overhead_base", "overhead_enh"});
         Rung rung;
@@ -215,14 +268,11 @@ Config load_config(const std::string& path) {
     // Probe stream gate (spec 2026-09-04 §5). Optional block with live
     // defaults; the pre-2026-09-04 flat probe_* keys are gone and fail boot.
     if (r.contains("probe")) {
-      const json& pj = r["probe"];
+      const Value& pj = r["probe"];
       check_keys(pj, "link.probe", {"enable", "rung_offset", "clean_ms", "max_util",
                                     "min_syms", "silence_ms", "pin_mcs"});
       auto& pc = lc.probe;
-      if (pj.contains("enable")) {
-        if (!pj["enable"].is_boolean()) fail("link.probe.enable", "not a boolean");
-        pc.enable = pj["enable"].get<bool>();
-      }
+      pc.enable = get_bool(pj, "enable", pc.enable, "link.probe");
       pc.rung_offset = static_cast<int>(get_int(pj, "rung_offset", 1, 1, 7, "link.probe"));
       pc.clean_ms = static_cast<int>(get_int(pj, "clean_ms", 2000, 100, 60000, "link.probe"));
       if (pj.contains("max_util"))
@@ -230,11 +280,15 @@ Config load_config(const std::string& path) {
       pc.min_syms = static_cast<int>(get_int(pj, "min_syms", 40, 4, 100000, "link.probe"));
       pc.silence_ms = static_cast<int>(get_int(pj, "silence_ms", 500, 100, 10000, "link.probe"));
       pc.pin_mcs = static_cast<int>(get_int(pj, "pin_mcs", -1, -1, 7, "link.probe"));
+    } else {
+      // Whole sub-table absent: one line, same style as a missing top-level
+      // section, rather than seven separate per-key lines the operator would
+      // have to mentally group back together.
+      note_default("link", "probe", "(section absent)");
     }
-    if (r.contains("s3_demote")) {
-      if (!r["s3_demote"].is_boolean()) fail("link.s3_demote", "not a boolean");
-      lc.s3_demote = r["s3_demote"].get<bool>();
-    }
+    // get_bool reports its own default when absent (no wrapping "section"
+    // to collapse -- s3_demote is a single scalar, not a sub-table).
+    lc.s3_demote = get_bool(r, "s3_demote", lc.s3_demote, "link");
     if (r.contains("s3_down_util"))
       lc.s3_down_util = get_num(r, "s3_down_util", 0.35, 0.01, 2.0, "link");
     lc.s3_settle_ms = static_cast<int>(get_int(r, "s3_settle_ms", 300, 0, 5000, "link"));
@@ -242,32 +296,30 @@ Config load_config(const std::string& path) {
     // Fade-aware demotes (spec 2026-08-14 fade-demote). Config surface only:
     // nothing in this task consumes lc.fade yet.
     if (r.contains("fade")) {
-      const json& fj = r["fade"];
+      const Value& fj = r["fade"];
       check_keys(fj, "link.fade",
                  {"cascade", "predict", "hold_ms", "confirm_ms", "rssi_db",
                   "snr_db", "trigger_ms", "min_rung"});
       auto& fc = lc.fade;
-      if (fj.contains("cascade")) {
-        if (!fj["cascade"].is_boolean()) fail("link.fade.cascade", "not a boolean");
-        fc.cascade = fj["cascade"].get<bool>();
-      }
-      if (fj.contains("predict")) {
-        if (!fj["predict"].is_boolean()) fail("link.fade.predict", "not a boolean");
-        fc.predict = fj["predict"].get<bool>();
-      }
+      fc.cascade = get_bool(fj, "cascade", fc.cascade, "link.fade");
+      fc.predict = get_bool(fj, "predict", fc.predict, "link.fade");
       fc.hold_ms = static_cast<int>(get_int(fj, "hold_ms", 2500, 0, 60000, "link.fade"));
       fc.confirm_ms = static_cast<int>(get_int(fj, "confirm_ms", 100, 20, 1000, "link.fade"));
       fc.rssi_db = get_num(fj, "rssi_db", 8.0, 0.5, 40.0, "link.fade");
       fc.snr_db = get_num(fj, "snr_db", 4.0, 0.5, 40.0, "link.fade");
       fc.trigger_ms = static_cast<int>(get_int(fj, "trigger_ms", 300, 50, 5000, "link.fade"));
       fc.min_rung = static_cast<int>(get_int(fj, "min_rung", 2, 0, 15, "link.fade"));
+    } else {
+      note_default("link", "fade", "(section absent)");
     }
 
     if (r.contains("rung_stats")) {
-      const json& rs = r["rung_stats"];
+      const Value& rs = r["rung_stats"];
       check_keys(rs, "link.rung_stats", {"half_life_samples"});
       c.link.ladder_cfg.rung_stats.half_life_samples = static_cast<int>(
           get_int(rs, "half_life_samples", 600, 10, 100000, "link.rung_stats"));
+    } else {
+      note_default("link", "rung_stats", "(section absent)");
     }
   }
   // Sentinel resolution: an absent link.probe.max_util/link.s3_down_util
@@ -280,7 +332,7 @@ Config load_config(const std::string& path) {
     c.link.ladder_cfg.s3_down_util = c.link.ladder_cfg.down_util;
 
   if (j.contains("video")) {
-    const json& r = j["video"];
+    const Value& r = j["video"];
     check_keys(r, "video",
                {"frame_gap_timeout_ms", "frame_gap_timeout_max_ms",
                 "frame_lookahead"});
@@ -295,29 +347,28 @@ Config load_config(const std::string& path) {
   }
 
   if (j.contains("msp")) {
-    const json& r = j["msp"];
+    const Value& r = j["msp"];
     check_keys(r, "msp", {"enable", "out", "symbol_size", "window"});
-    if (r.contains("enable")) {
-      if (!r["enable"].is_boolean()) fail("msp.enable", "not a boolean");
-      c.msp.enable = r["enable"].get<bool>();
-    }
+    c.msp.enable = get_bool(r, "enable", c.msp.enable, "msp");
     if (r.contains("out")) {
-      const json& o = r["out"];
+      const Value& o = r["out"];
       check_keys(o, "msp.out", {"host", "port"});
       c.msp.out_host = get_str(o, "host", "127.0.0.1", "msp.out");
       c.msp.out_port = static_cast<int>(get_int(o, "port", 14560, 1, 65535, "msp.out"));
+    } else {
+      // Whole sub-table absent: one line, same style as a missing top-level
+      // section, rather than two separate per-key lines the operator would
+      // have to mentally group back together.
+      note_default("msp", "out", "(section absent)");
     }
     c.msp.symbol_size = static_cast<int>(get_int(r, "symbol_size", 1312, 16, 2048, "msp"));
     c.msp.window = static_cast<int>(get_int(r, "window", 16, 2, 255, "msp"));
   }
 
   if (j.contains("stats")) {
-    const json& r = j["stats"];
+    const Value& r = j["stats"];
     check_keys(r, "stats", {"enable", "host", "port", "interval_ms", "out"});
-    if (r.contains("enable")) {
-      if (!r["enable"].is_boolean()) fail("stats.enable", "not a boolean");
-      c.stats.enable = r["enable"].get<bool>();
-    }
+    c.stats.enable = get_bool(r, "enable", c.stats.enable, "stats");
     c.stats.interval_ms =
         static_cast<int>(get_int(r, "interval_ms", 500, 100, 10000, "stats"));
 
@@ -330,7 +381,7 @@ Config load_config(const std::string& path) {
       if (!r["out"].is_array()) fail("stats.out", "not an array");
       if (r["out"].empty()) fail("stats.out", "must have at least one destination");
       c.stats.out.clear();
-      for (const json& e : r["out"]) {
+      for (const Value& e : r["out"]) {
         if (!e.is_object()) fail("stats.out[]", "not an object");
         check_keys(e, "stats.out[]", {"host", "port"});
         if (!e.contains("port")) fail("stats.out[].port", "missing");
@@ -348,12 +399,9 @@ Config load_config(const std::string& path) {
   }
 
   if (j.contains("au_ring")) {
-    const json& r = j["au_ring"];
+    const Value& r = j["au_ring"];
     check_keys(r, "au_ring", {"enable", "path", "socket", "slot_kb", "slot_count"});
-    if (r.contains("enable")) {
-      if (!r["enable"].is_boolean()) fail("au_ring.enable", "not a boolean");
-      c.au_ring.enable = r["enable"].get<bool>();
-    }
+    c.au_ring.enable = get_bool(r, "enable", c.au_ring.enable, "au_ring");
     c.au_ring.path = get_str(r, "path", "/dev/shm/mabur-au", "au_ring");
     c.au_ring.socket = get_str(r, "socket", "/run/mabur-au.sock", "au_ring");
     c.au_ring.slot_kb =
@@ -363,13 +411,10 @@ Config load_config(const std::string& path) {
   }
 
   if (j.contains("debug_log")) {
-    const json& r = j["debug_log"];
+    const Value& r = j["debug_log"];
     check_keys(r, "debug_log",
                {"enable", "dir", "ctl_period_ms", "rung_period_s"});
-    if (r.contains("enable")) {
-      if (!r["enable"].is_boolean()) fail("debug_log.enable", "not a boolean");
-      c.debug_log.enable = r["enable"].get<bool>();
-    }
+    c.debug_log.enable = get_bool(r, "enable", c.debug_log.enable, "debug_log");
     c.debug_log.dir = get_str(r, "dir", "/media/dvr/log", "debug_log");
     c.debug_log.ctl_period_ms = static_cast<int>(
         get_int(r, "ctl_period_ms", 1000, 50, 60000, "debug_log"));

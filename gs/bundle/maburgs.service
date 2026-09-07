@@ -3,7 +3,7 @@ Description=mabur ground station (maburgs)
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/maburgs -c /etc/maburgs.json
+ExecStart=/usr/local/bin/maburgs -c /etc/maburgs.toml
 Restart=always
 RestartSec=2
 
