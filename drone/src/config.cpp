@@ -246,12 +246,22 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
                      "debug_port"},
                     "venc");
 
+  // Real compiled defaults, for accurate reporting only. Every branch below
+  // reads into a local temp (or validates in place) before the struct field
+  // is ever touched, so assign_if_present's own absent-branch never fires
+  // for a key here -- report the actual compiled default explicitly instead
+  // of letting a temp's zero-init sentinel masquerade as one (a bare
+  // "venc.fps=0" would be a lie: the real default is 60).
+  const VencSectionCfg kDef{};
+
   if (j.contains("sensor_bin")) {
     std::string s;
     assign_if_present(j, "sensor_bin", s, "venc");
     if (s.size() >= sizeof(v.core.sensor_bin))
       fail("venc.sensor_bin", "too long");
     std::snprintf(v.core.sensor_bin, sizeof(v.core.sensor_bin), "%s", s.c_str());
+  } else {
+    note_default("venc", "sensor_bin", "(required, no default)");
   }
 
   if (j.contains("size")) {
@@ -274,6 +284,9 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
       fail("venc.size", "malformed, expected WIDTHxHEIGHT (e.g. \"1920x1080\")");
     v.core.width = static_cast<uint16_t>(w);
     v.core.height = static_cast<uint16_t>(h);
+  } else {
+    note_default("venc", "size",
+                  to_text(kDef.core.width) + "x" + to_text(kDef.core.height));
   }
 
   if (j.contains("fps")) {
@@ -281,12 +294,16 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "fps", fps, "venc");
     if (fps < 1 || fps > 120) fail("venc.fps", "must be in [1,120]");
     v.core.fps = static_cast<uint16_t>(fps);
+  } else {
+    note_default("venc", "fps", to_text(kDef.core.fps));
   }
 
   if (j.contains("gop_s")) {
     assign_if_present(j, "gop_s", v.core.gop_s, "venc");
     if (v.core.gop_s < 0.5 || v.core.gop_s > 10.0)
       fail("venc.gop_s", "must be in [0.5,10]");
+  } else {
+    note_default("venc", "gop_s", to_text(kDef.core.gop_s));
   }
 
   if (j.contains("qp_delta")) {
@@ -294,6 +311,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "qp_delta", qp, "venc");
     if (qp < -12 || qp > 12) fail("venc.qp_delta", "must be in [-12,12]");
     v.core.qp_delta = static_cast<int8_t>(qp);
+  } else {
+    note_default("venc", "qp_delta", to_text(static_cast<int>(kDef.core.qp_delta)));
   }
 
   if (j.contains("max_ipprop")) {
@@ -301,6 +320,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "max_ipprop", prop, "venc");
     if (prop < 0 || prop > 100) fail("venc.max_ipprop", "must be in [0,100]");
     v.core.max_ipprop = static_cast<uint8_t>(prop);
+  } else {
+    note_default("venc", "max_ipprop", to_text(static_cast<int>(kDef.core.max_ipprop)));
   }
 
   if (j.contains("min_iqp")) {
@@ -308,6 +329,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "min_iqp", q, "venc");
     if (q < 0 || q > 51) fail("venc.min_iqp", "must be in [0,51]");
     v.core.min_iqp = static_cast<uint8_t>(q);
+  } else {
+    note_default("venc", "min_iqp", to_text(static_cast<int>(kDef.core.min_iqp)));
   }
 
   if (j.contains("superframe_p_pct")) {
@@ -316,6 +339,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     if (p != 0 && (p < 100 || p > 1000))
       fail("venc.superframe_p_pct", "must be 0 (off) or in [100,1000]");
     v.core.superframe_p_pct = static_cast<uint16_t>(p);
+  } else {
+    note_default("venc", "superframe_p_pct", to_text(kDef.core.superframe_p_pct));
   }
 
   // Error-resilience structure: the five components venc.resilience used to
@@ -328,6 +353,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     if (rows < 0 || rows > UINT16_MAX)
       fail("venc.intra_refresh_rows", "must be >= 0");
     v.core.intra_refresh_rows = static_cast<uint16_t>(rows);
+  } else {
+    note_default("venc", "intra_refresh_rows", to_text(kDef.core.intra_refresh_rows));
   }
 
   if (j.contains("intra_refresh_qp")) {
@@ -335,6 +362,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "intra_refresh_qp", qp, "venc");
     if (qp < 1 || qp > 51) fail("venc.intra_refresh_qp", "must be in [1,51]");
     v.core.intra_refresh_qp = static_cast<uint8_t>(qp);
+  } else {
+    note_default("venc", "intra_refresh_qp", to_text(static_cast<int>(kDef.core.intra_refresh_qp)));
   }
 
   if (j.contains("ref_base")) {
@@ -343,6 +372,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     if (base < 0 || base > 255)
       fail("venc.ref_base", "must be 0 (SVC-T off) or in [1,255]");
     v.core.ref_base = static_cast<uint8_t>(base);
+  } else {
+    note_default("venc", "ref_base", to_text(static_cast<int>(kDef.core.ref_base)));
   }
 
   if (j.contains("ref_enhance")) {
@@ -350,6 +381,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "ref_enhance", enh, "venc");
     if (enh < 0 || enh > 255) fail("venc.ref_enhance", "must be in [0,255]");
     v.core.ref_enhance = static_cast<uint8_t>(enh);
+  } else {
+    note_default("venc", "ref_enhance", to_text(static_cast<int>(kDef.core.ref_enhance)));
   }
 
   assign_if_present(j, "ref_pred", v.core.ref_pred, "venc");
@@ -370,12 +403,21 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
       assign_if_present(r, "steps", steps, "venc.roi");
       if (steps < 1 || steps > 4) fail("venc.roi.steps", "must be in [1,4]");
       v.core.roi_steps = static_cast<uint8_t>(steps);
+    } else {
+      note_default("venc.roi", "steps", to_text(static_cast<int>(kDef.core.roi_steps)));
     }
     if (r.contains("center")) {
       assign_if_present(r, "center", v.core.roi_center, "venc.roi");
       if (v.core.roi_center < 0.0 || v.core.roi_center > 1.0)
         fail("venc.roi.center", "must be in [0,1]");
+    } else {
+      note_default("venc.roi", "center", to_text(kDef.core.roi_center));
     }
+  } else {
+    // Whole sub-table absent: one line, same style as a missing top-level
+    // section, rather than three separate per-key lines the operator would
+    // have to mentally group back together.
+    note_default("venc", "roi", "(section absent)");
   }
 
   // Range-checked BEFORE the uint16 cast: unchecked, ae_fps -1 wrapped to
@@ -387,12 +429,16 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "ae_fps", v_ae, "venc");
     if (v_ae < 1 || v_ae > 60) fail("venc.ae_fps", "must be in [1,60]");
     v.core.ae_fps = static_cast<uint16_t>(v_ae);
+  } else {
+    note_default("venc", "ae_fps", to_text(kDef.core.ae_fps));
   }
   if (j.contains("awb_fps")) {
     int v_awb = 0;
     assign_if_present(j, "awb_fps", v_awb, "venc");
     if (v_awb < 1 || v_awb > 60) fail("venc.awb_fps", "must be in [1,60]");
     v.core.awb_fps = static_cast<uint16_t>(v_awb);
+  } else {
+    note_default("venc", "awb_fps", to_text(kDef.core.awb_fps));
   }
 
   if (j.contains("snapshot_quality")) {
@@ -400,12 +446,16 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     assign_if_present(j, "snapshot_quality", q, "venc");
     if (q < 1 || q > 100) fail("venc.snapshot_quality", "must be in [1,100]");
     v.core.snapshot_quality = static_cast<uint8_t>(q);
+  } else {
+    note_default("venc", "snapshot_quality", to_text(static_cast<int>(kDef.core.snapshot_quality)));
   }
 
   if (j.contains("debug_port")) {
     assign_if_present(j, "debug_port", v.debug_port, "venc");
     if (v.debug_port < 1024 || v.debug_port > 65535)
       fail("venc.debug_port", "must be in [1024,65535]");
+  } else {
+    note_default("venc", "debug_port", to_text(kDef.debug_port));
   }
 
   // A stripe cannot be wider than the picture. Checked here rather than

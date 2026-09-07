@@ -1215,4 +1215,43 @@ TEST(load_config_accepts_int_for_a_float_key) {
   std::filesystem::remove(path);
 }
 
+// Fix round 1 finding: parse_venc wraps every key's assign_if_present in an
+// outer `if (j.contains(key))`, so the built-in absent-branch reporting
+// never fires there -- the [venc] section was silently missing from the
+// operator-facing defaulted-key log. Pins that every venc key still gets
+// reported when absent, with the REAL compiled default (parse_venc's local
+// kDef), not the zero-init sentinel its validation temps start from.
+TEST(load_config_reports_real_venc_defaults_not_zero) {
+  // Only the one required key present; every other venc key (and the whole
+  // [venc.roi] sub-table) is absent.
+  auto path = write_temp_toml(
+      "[venc]\nsensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n");
+  std::vector<std::string> defaulted;
+  Config cfg = load_config(path.string(), &defaulted);
+  CHECK(cfg.venc.core.fps == 60);
+
+  bool saw_fps = false, saw_qp_delta = false, saw_roi_absent = false;
+  for (const std::string& d : defaulted) {
+    if (d == "venc.fps=60") saw_fps = true;
+    if (d == "venc.qp_delta=-4") saw_qp_delta = true;
+    if (d == "venc.roi=(section absent)") saw_roi_absent = true;
+    // These keys' real compiled defaults are all nonzero (venc_cfg.c); a
+    // bare "=0" here would be exactly the lie a naive `else
+    // note_default(key, to_text(local_temp))` would have produced.
+    for (const char* wrong : {"venc.fps=0", "venc.qp_delta=0",
+                              "venc.intra_refresh_rows=0",
+                              "venc.intra_refresh_qp=0", "venc.ref_base=0",
+                              "venc.ref_enhance=0", "venc.ae_fps=0",
+                              "venc.awb_fps=0", "venc.snapshot_quality=0",
+                              "venc.debug_port=0", "venc.roi.steps=0"}) {
+      CHECK(d != wrong);
+    }
+  }
+  CHECK(saw_fps);
+  CHECK(saw_qp_delta);
+  CHECK(saw_roi_absent);
+  std::filesystem::remove(path);
+}
+
+
 MTEST_MAIN
