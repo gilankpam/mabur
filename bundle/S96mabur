@@ -1,6 +1,6 @@
 #!/bin/sh
 DAEMON=/usr/bin/maburd
-CONF=/etc/mabur.json
+CONF=/etc/mabur.toml
 PIDFILE=/var/run/mabur-loop.pid
 LOGPIDFILE=/var/run/mabur-logwatch.pid
 LOG=/tmp/mabur.log

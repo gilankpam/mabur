@@ -6,8 +6,8 @@
 // path picks up via a lock-free shared_ptr handoff.
 //
 // Two modes:
-//   maburd -c /etc/mabur.json                     — real mode (devourer USB radio)
-//   maburd -c cfg.json --dry-run --in F --out F [--rc-in F]  — file-driven, no radio
+//   maburd -c /etc/mabur.toml                     — real mode (devourer USB radio)
+//   maburd -c cfg.toml --dry-run --in F --out F [--rc-in F]  — file-driven, no radio
 //
 // Dry-run is the tested path (see tests/fixtures/frame_stream.bin smoke test);
 // real mode must compile and be structurally sound but is not exercised here
@@ -1884,7 +1884,7 @@ int run_real_mode(const Config& cfg) {
 
 void print_usage(const char* argv0) {
   std::fprintf(stderr,
-               "usage: %s -c <config.json> [--dry-run --in <file> --out <file> [--rc-in <file>]]\n",
+               "usage: %s -c <config.toml> [--dry-run --in <file> --out <file> [--rc-in <file>]]\n",
                argv0);
 }
 
@@ -1928,11 +1928,17 @@ int main(int argc, char** argv) {
   }
 
   Config cfg;
+  std::vector<std::string> defaulted;
   try {
-    cfg = load_config(cfg_path);
+    cfg = load_config(cfg_path, &defaulted);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;
+  }
+  if (!defaulted.empty()) {
+    std::fprintf(stderr, "config: %zu key(s) defaulted:\n", defaulted.size());
+    for (const std::string& d : defaulted)
+      std::fprintf(stderr, "  %s\n", d.c_str());
   }
 
   std::fprintf(stderr,

@@ -35,7 +35,7 @@ ssh "$HOST" '/etc/init.d/S96mabur stop'
 # /usr/libexec/sftp-server, so modern scp's default sftp mode fails ("scp:
 # Connection closed"). -O is also accepted by full OpenSSH, so it's safe here.
 scp -O "$BIN" "$HOST:/usr/bin/maburd"
-ssh "$HOST" '[ -f /etc/mabur.json ]' || scp -O bundle/mabur.default.json "$HOST:/etc/mabur.json"
+ssh "$HOST" '[ -f /etc/mabur.toml ]' || scp -O bundle/mabur.default.toml "$HOST:/etc/mabur.toml"
 scp -O bundle/S96mabur "$HOST:/etc/init.d/S96mabur"
 
 ssh "$HOST" '

@@ -34,7 +34,7 @@ with open(sys.argv[1], "wb") as f:
 EOF
 
 echo "== fixture -> maburd bodies -> maburgs -> AU ring must be byte-exact =="
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
   --rc-in "$TMP/rc.bin"
 
 # The gs bundle's fec.symbol_size default (328) is stale vs the drone bundle's

@@ -91,7 +91,7 @@ with open(sys.argv[1], "wb") as f:
 EOF
 
 echo "== fixture -> maburd bodies -> maburgs -> AU ring (same chain as gs_au_e2e) =="
-"$MABURD" -c bundle/mabur.default.json --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
+"$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/bodies.bin" \
   --rc-in "$TMP/rc.bin"
 
 # Same symbol_size 332 pin as run_gs_au_e2e.sh: now redundant with PR #11's
