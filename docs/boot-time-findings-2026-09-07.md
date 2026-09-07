@@ -635,10 +635,13 @@ Items 1-3 are measured; the rest are estimates.
    the gap producing frames into the void (`drops=309`, `sent=0`).
    Code-only, no deploy-order hazard. Now cheap to verify: timestamp
    `maburd`'s log lines and read them off the console.
-5. **A mabur-specific device profile and a custom rcS** — estimated
-   1.5-2 s. Pin the sensor from the U-Boot env instead of autodetecting,
-   insmod only the MI modules `maburd` opens, start `maburd` before
-   syslogd/ntpd/dropbear/crond.
+5. **A mabur-specific device profile and a custom rcS** — the
+   `load_sigmastar` half is **DONE: −0.07 s**, see below; it was worth far
+   less than the 1.5-2 s estimated here, because squashfs LZO had already
+   taken most of that window (`insert_ko` 1.251 → 0.651 s before this change
+   even landed). What remains is the rcS ordering — starting `maburd` before
+   syslogd/ntpd/dropbear/crond — which touches the mabur repo's own init
+   script, not just the builder.
 
    Two warnings that used to sit here are **no longer true**, verified
    against a full build on 2026-09-08: the `ssc338q_fpv_openipc-urllc-aio`
@@ -731,6 +734,62 @@ Cost: 4.26 MB → 5.42 MB of flash. Two things that cost an hour to work out:
 LZ4 is not available without a kernel change: `CONFIG_SQUASHFS_LZO=y` is set
 but `CONFIG_SQUASHFS_LZ4` is not, and the failure mode is an unmountable
 rootfs.
+
+### load_sigmastar — measured, and a boot-failure mode found
+
+Builder-side, 2026-09-08. `load_sigmastar` loaded all 14 vendor modules and
+probed for the sensor over I2C. Both were cut back; the result is **−0.07 s**
+and, more usefully, one fewer way for the drone to boot without video.
+
+| | 14 modules, `ipcinfo` probe | 9 modules, env-pinned |
+|---|---|---|
+| `insert_ko` | 0.625 | **0.544** |
+| `detect_sensor` | 0.074 | 0.087 |
+| `Loading vendor modules` → login | 0.852 | **0.784** |
+| sensor detected | 4/4 | **8/8** |
+
+Dropped — `mi_ai`, `mi_ao`, `mi_divp`, `mi_shadow`, `mi_mipitx`, 466 KB.
+`maburd` dlopens only `libcam_os_wrapper`, `libmi_ipu`, `libmi_isp`,
+`libmi_sensor`, `libmi_sys`, `libmi_venc`, `libmi_vif`, `libmi_vpe`; ISP and
+IPU are served through `mhal`/`mi_sys` and have no `.ko`.
+
+**`mi_ldc` and `mi_rgn` must stay** even though `maburd` never calls them:
+`mi_vpe` links against both, 27 and 2 symbols. Removing them gives
+`insmod: can't insert mi_vpe.ko: unknown symbol in module`, then
+`maburd exited (139)` respawning every 2 s. Check a candidate before
+dropping it:
+
+```sh
+nm -u <kept>.ko | awk '{print $2}' | sort -u > keep.txt
+nm -g --defined-only <candidate>.ko | awk '{print $3}' | sort -u \
+    | comm -12 - keep.txt        # must be empty
+```
+
+**The interesting part: the trim exposed a latent race.** With ~0.1 s less
+`insmod` ahead of it, `ipcinfo -s` — which reads the sensor ID over I2C —
+returned **empty on 5 of 8 boots**. An empty `SENSOR` makes the script print
+`Sensor parameter MISSING` and exit before `set_sensor`, so no sensor driver
+is loaded at all and `maburd` exits(3) in a respawn loop. It never failed
+once across 4 boots with the full module list, so this was latent, not new:
+the extra module-loading time was hiding it.
+
+`SENSOR` now comes from the U-Boot environment (already pinned to `imx415`),
+with the probe kept as a fallback. The `sensor_config`/`srcfg` sequence is
+deliberately untouched — it powers and clocks the sensor for the driver
+loaded later, and removing it was never the goal. Eight consecutive boots
+detect the sensor, with `maburd`'s MI bring-up identical to baseline
+(sensor pad, star6e pipeline, VPE scaling, jpeg init) and zero respawns.
+
+Two things worth carrying forward:
+
+- **A faster boot is not automatically a working boot.** This is the second
+  time today that removing time from the boot path changed behaviour rather
+  than just timing — the first being `sysupgrade -x`. Any change here wants
+  a repeat-boot loop, not a single sample.
+- **The same race may exist on the drone.** It has never been observed
+  there, but the drone has never been measured across repeated boots either,
+  and its timing differs. The env pin removes the question rather than
+  answering it.
 
 ## What is still blocked
 
