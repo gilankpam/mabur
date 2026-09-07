@@ -650,11 +650,28 @@ Items 1-3 are measured; the rest are estimates.
 6. **Fix the emac PHY node in the device tree** — 0.185 s, measured. The
    MDIO bus scans all 32 addresses because `ethernet-phy@0` has an
    "invalid PHY address", then finds the PHY at 0.
-7. **LZO or LZ4 instead of XZ** for kernel and squashfs, funded by dropping
-   majestic, waybeam, vtund, curl, mbedtls, opus, ntpd, crond, wireguard,
-   wpa_supplicant and exfat from the profile — estimated 1-2 s, unverified.
-   Note the XZ cost now has a measured reference point: decompressing
-   U-Boot's own 351 kB image takes 0.092-0.098 s.
+7. **LZO instead of XZ.** Split in two, because the halves behave nothing
+   alike:
+   - **squashfs — DONE and measured, 0.58 s.** See "squashfs LZO" below.
+     `BR2_TARGET_ROOTFS_SQUASHFS4_LZO=y`, live on `.95`.
+   - **kernel — do this last, not first.** The doc used to say this would be
+     "funded by dropping majestic, waybeam, vtund, curl, mbedtls, …" from the
+     profile. That funding no longer exists: the profile is already minimal
+     and curl/mbedtls are kept deliberately for `sysupgrade`. And those are
+     rootfs packages, while the binding constraint is the **kernel
+     partition**: `Image` is 4202496, the XZ `zImage` 2038312, and the
+     partition is 2 MiB — **58 KB spare**. LZO would take the zImage to
+     roughly 2.9 MB and LZ4 to ~3.1 MB; neither fits. It needs a slimmer
+     kernel config first, or a repartition (`mtdparts` plus `kernaddr` /
+     `kernsize` / `rootaddr`), which is a flag day. It also partly
+     self-defeats: +1 MB of NOR read at the measured 5.2 MB/s is ~+0.2 s
+     back. The upside is real though — `CONFIG_KERNEL_XZ=y`, and U-Boot
+     reports "uncompressed" only because it jumps straight to the
+     self-decompressing zImage, so 4 MB of XZ decompression happens inside
+     the silent 1.07 s window before the console comes up. **Trimming
+     `infinity6e-ssc012b.config` is the pure win** — a smaller `Image`
+     decompresses faster *and* shortens the `sf read`, with no partition
+     change.
 8. **Shrink or relocate the jffs2 overlay** — up to ~1.5 s, but it holds the
    config and the imx415 ISP tuning bin, so those need a home first.
 
@@ -664,6 +681,56 @@ monotonic prefix, so the 2.64 s radio window is directly measurable.
 Realistic floor with this SoC, the vendor ISP blobs and a USB dongle: 5-6 s
 from power to video. Items 1-3 alone are 5.2 s of measured, mostly cheap
 savings against that.
+
+### squashfs LZO — measured
+
+`BR2_TARGET_ROOTFS_SQUASHFS4_XZ` → `BR2_TARGET_ROOTFS_SQUASHFS4_LZO` in the
+device defconfig, built and flashed to `.95` on 2026-09-08. squashfs
+decompresses lazily on every file read, so the compressor is paid right
+through userspace startup rather than once.
+
+| marker (s from IPL) | XZ | LZO #1 | LZO #2 |
+|---|---|---|---|
+| `Starting kernel` | 0.903 | 0.855 | 0.904 |
+| console registered | 2.229 | 2.218 | 2.230 |
+| `Mounted root` | 3.344 | 3.310 | 3.345 |
+| `Starting syslogd` | 4.259 | **3.858** | **3.858** |
+| `Starting network` | 5.060 | **4.462** | **4.462** |
+| `Starting dropbear` | 10.168 | 10.626 | 10.224 |
+| login prompt | 11.871 | 11.527 | 11.125 |
+
+**Quote the DHCP-free window**, `Mounted root` → `Starting network`:
+**1.716 → 1.152 / 1.117 s, a 0.58 s saving**, with the two LZO runs agreeing
+to 35 ms. Everything after `Starting network` is contaminated by `.95`'s
+DHCP wait, which varies 5.1–6.2 s run to run and swamps the totals; the
+drone is static and never pays it, so there the 0.58 s shows through
+directly. Pre-kernel and the mount itself are unchanged, which is the
+expected shape — mounting reads only the superblock.
+
+Cost: 4.26 MB → 5.42 MB of flash. Two things that cost an hour to work out:
+
+- **U-Boot sizes the rootfs partition from the image.** `common/cmd_sf.c`
+  reads the squashfs superblock at `0x250000` on every `sf probe`:
+  `bytes + 0x1000 < 0x500000` → `rootmtd=5120k`, else `8192k`. The 4.26 MB XZ
+  image had already shrunk mtd3 to **5 MB**, so "the partition is 8 MiB,
+  plenty of headroom" was wrong. A fresh flash sizes itself correctly; an
+  incremental `sysupgrade` cannot bootstrap it, because the partition is
+  still 5 MB at the moment `flashcp` runs. Break the cycle by pinning
+  `mtdparts` to `8192k` literally for one boot, flashing, then restoring
+  `bootargs` to the `${rootmtd}` form — U-Boot then derives `8192k` itself.
+- **`sysupgrade` reports success over a failed flash.** It printed
+  `RootFS updated to …` immediately after `flashcp: /tmp/rootfs-lzo.squashfs
+  bigger than /dev/mtd3`, because it never checks flashcp's exit status.
+  Only the superblock told the truth (compression byte `04` = XZ vs `03` =
+  LZO). **Verify a rootfs flash by reading the partition back**, exactly as
+  the U-Boot runbook does — do not trust the tool's own summary. Related:
+  `sysupgrade` also skips silently when the version string matches
+  (`Same version, nothing to update`), and changing only the compressor does
+  not change the version, so iterating needs `-f`.
+
+LZ4 is not available without a kernel change: `CONFIG_SQUASHFS_LZO=y` is set
+but `CONFIG_SQUASHFS_LZ4` is not, and the failure mode is an unmountable
+rootfs.
 
 ## What is still blocked
 
