@@ -369,9 +369,30 @@ flight configuration no longer pays a penalty for having no Ethernet.
 
 ### Source and build
 
-`OpenIPC/u-boot-sigmastar` ("U-Boot for Infinity6xx"). The builder does not
-build it — `openipc-builder/builder.sh` downloads a prebuilt
-`u-boot-${SOC}-universal.bin` from OpenIPC releases. Verified recipe:
+Upstream is `OpenIPC/u-boot-sigmastar` ("U-Boot for Infinity6xx"). The two
+changes below live on our fork, **`gilankpam/u-boot-sigmastar`, branch
+`mabur-fastboot`** (`f8a00c4`, on top of upstream master `bf77aff`).
+
+`openipc-builder` (branch `feat/mabur`) builds that fork as part of a normal
+device build: `build_uboot()` runs after `make BOARD=`, clones the fork and
+compiles it with the Buildroot toolchain the device build has just produced,
+so no second cross compiler is involved. It drops three files into
+`output/images` and the timestamped archive:
+
+| file | what it is |
+|---|---|
+| `u-boot-<soc>-nor.bin` | raw `BOOT.bin` |
+| `u-boot-<soc>-universal.bin` | same, under the name `autoup_rootfs` expects |
+| `u-boot-<soc>-nor-padded.bin` | padded to the 256k boot partition with 0xFF, ready for `flashcp` |
+
+`SKIP_UBOOT=1` turns the step off; `UBOOT_REPO`, `UBOOT_REF`, `UBOOT_DIR`
+and `UBOOT_PART_SIZE` are overridable. An unknown SoC or a missing toolchain
+skips the step rather than failing the build. Worth knowing why this was
+needed at all: for ssc338q the builder previously produced **no U-Boot**,
+because the prebuilt download only feeds `autoup_rootfs` and that runs for
+`hi3518ev200_lite` alone.
+
+To build it by hand instead:
 
 ```sh
 export PATH=$HOME/Projects/drone/openipc-builder/openipc/output/host/bin:$PATH
