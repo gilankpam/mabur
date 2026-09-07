@@ -554,7 +554,24 @@ doing this on the spare board first.
   and erases `rootfs_data`. Its single mention of `autoupdate-uboot.img` is
   a `check_sdcard()` interlock that *aborts* the upgrade if it finds that
   file on a mounted SD card. It is still the right tool for the kernel and
-  rootfs the same build produces.
+  rootfs the same build produces:
+
+  ```sh
+  scp -O $A/uImage.ssc338q $A/rootfs.squashfs.ssc338q $HOST:/tmp/
+  ssh $HOST 'sysupgrade --kernel=/tmp/uImage.ssc338q \
+                        --rootfs=/tmp/rootfs.squashfs.ssc338q -n'
+  ```
+
+  **Never pass `-x` (no reboot).** `sysupgrade` overwrites the squashfs the
+  running system is executing from, so between the write and the reboot the
+  machine is incoherent — the console fills with respawning getty and the
+  `sysupgrade` script itself wedges, because its own remaining pages are
+  read back from flash that has changed under it. It reboots unconditionally
+  by default for exactly this reason. Learned the hard way on 2026-09-08:
+  with `-x` the board hung for ~1 minute and then the hardware watchdog
+  reset it. No damage — it came up on the new image and both partitions
+  verified — but the reboot is not optional, and `-n` (wipe overlay) is what
+  you want going from a stock image to a mabur one.
 - **The `ubnor` env command**, which is `sf erase 0x0 0x50000` — that spans
   mtd0 *and* the environment at 0x40000, so it takes `ethaddr` and every
   `fw_setenv` tweak with it. `flashcp` to `/dev/mtd0` touches only mtd0.
@@ -569,6 +586,35 @@ a full `builder.sh` run, then this runbook. It reports
 in the `bootm` block, not a difference between the two builds. So the whole
 path from `builder.sh` to a booting board is verified, not just the
 hand-assembled one.
+
+### Whole-stack boot on the new image
+
+`.95` was moved onto the build's own kernel and rootfs with `sysupgrade` on
+2026-09-08 (both partitions md5-verified against the files after flashing),
+which makes it the first board on the serial rig running a **mabur**
+userspace rather than stock majestic/wifibroadcast. From the first IPL byte:
+
+| marker | s from IPL | Δ |
+|---|---|---|
+| `Starting kernel` | 0.903 | 0.903 |
+| console registered | 2.229 | 1.326 |
+| rootfs mounted | 3.344 | 1.115 |
+| `Starting syslogd` (first rcS) | 4.259 | 0.915 |
+| `Starting network` | 5.060 | 0.801 |
+| `Starting dropbear` | 10.168 | **5.108** |
+| sensor assigned (`S70vendor`) | 11.668 | 1.500 |
+| login prompt | 11.871 | 0.203 |
+
+Two things to read carefully before optimising against this:
+
+- **The 5.1 s at `Starting network` is a `.95` artifact, not a drone cost.**
+  Its `eth0` is `inet dhcp` and it waits for a lease. The drone is static
+  (`192.168.10.152`), which is why the earlier drone baseline shows only
+  0.81 s for the whole `syslogd → dropbear` window. Do not chase it.
+- **`maburd` starts and stays up** (no respawn over 72 s) but sits at
+  `waiting for encoder data... fill=0%`. That is this board's dead camera,
+  not a software fault — `.95` has no working sensor. So everything from the
+  MI bring-up onward still has to be measured on the drone.
 
 ## Ranked next steps
 
