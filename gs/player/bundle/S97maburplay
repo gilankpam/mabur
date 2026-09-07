@@ -29,7 +29,7 @@ esac
 
 (
   while true; do
-    /usr/local/bin/maburplay -c /etc/maburplay.json
+    /usr/local/bin/maburplay -c /etc/maburplay.toml
     rc=$?
     if [ "$rc" = 2 ] || [ "$rc" = 143 ]; then
       echo "maburplay exited: $rc, skip restart ...."

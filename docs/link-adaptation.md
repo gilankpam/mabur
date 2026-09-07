@@ -580,7 +580,7 @@ machinery. The ctl log went
 `ctllog 3` → `4` (formats byte-identical, meanings changed);
 `flightreport.py` parses v1–v4 and warns on pre-v4. Deploy is GS-only and
 config-before-binary: `grep -nE '"(attrib|s3_residual_confirm_ms)"'
-/etc/maburgs.json` and delete any hit before starting the new binary,
+/etc/maburgs.toml` and delete any hit before starting the new binary,
 or maburgs crash-loops at 2 s. **Also swap `tools/maburtop.py` in the same
 step, not as an afterthought:** an old maburtop against a new maburgs
 renders the now-absent `link.attrib.on` as `attrib:OFF` — indistinguishable
@@ -716,12 +716,12 @@ IDR requests — and `feedback_ms` is effectively the uplink retry quantum.
 Full analysis: `docs/rcf-uplink-loss-findings-2026-08-14.md`.** `link.fade`
 and `link.rc_drain_ms` are optional with live defaults, so the new binary
 runs against an untouched config on either device. Once either is
-hand-tuned into `/etc/maburgs.json` or `/etc/mabur.json` — and the bench
+hand-tuned into `/etc/maburgs.toml` or `/etc/mabur.toml` — and the bench
 GS is exactly the machine that will tune `link.fade.rssi_db` — that config
 stops loading on an older binary (`unknown key` → the 2 s crash-loop
 described further down). Write the key anyway when tuning wants it; that
 is a rollback cost, and rolling forward is the answer. The former rule
-that `bundle/mabur.default.json` must NOT list `rc_drain_ms` was purely an
+that `bundle/mabur.default.toml` must NOT list `rc_drain_ms` was purely an
 old-binary concession and no longer applies.
 
 

@@ -183,7 +183,7 @@ Consume the same numbers programmatically with:
   consumer, so `maburtop` binds it directly. The adaptive-link record
   survives exactly as before, just relocated: maburgs writes its own
   compact `ctl.log` into the session directory whenever `debug_log.enable`
-  is set in `/etc/maburgs.json` (shipped default `false` — the bench GS
+  is set in `/etc/maburgs.toml` (shipped default `false` — the bench GS
   turns it on), a `ctllog 11` header (v1 before 2026-08-14, v2/v3 that
   day's two waves, v4 since 2026-08-15 — pooled-RF note in
   `docs/link-adaptation.md` — … v10 since 2026-09-04, probe stream, v11
@@ -476,13 +476,13 @@ read the sideport. Reach for other tools only in these cases:**
   /tmp is tmpfs.
 - **The GS link-status OSD on the screen is a sideport consumer, not a
   separate instrument.** maburplay draws it from the SAME datagram
-  `maburtop` reads: `stats.out` in `/etc/maburgs.json` is a list, and the
+  `maburtop` reads: `stats.out` in `/etc/maburgs.toml` is a list, and the
   bench GS fans out to `:8300` (maburtop / ad-hoc capture) and `:8302`
   (maburplay's `osd.gs.port`). So the screen and the recorder cannot
   disagree — if the OSD shows something surprising, the answer is in that
   jsonl, and `flightreport.py` will say the same thing with more
   precision. Config is
-  `osd.gs` in `/etc/maburplay.json` (`enable` default false, `stale_ms`
+  `osd.gs` in `/etc/maburplay.toml` (`enable` default false, `stale_ms`
   dims every link-derived field after silence; fps/jitter/bitrate/REC are
   player-measured and never dim). The glyph atlas is
   `/usr/local/share/mabur/gs_osd.gfont`, committed and staged by
@@ -506,7 +506,7 @@ read the sideport. Reach for other tools only in these cases:**
   used to cost 179,392 px per changed cell instead of ~13,000. Steady state
   is 0.13 ms.
 - **Record button (GPIO).** `maburplay` can toggle the DVR from a button on
-  the GS header: `input.rec` in `/etc/maburplay.json` (`pin` is the header
+  the GS header: `input.rec` in `/etc/maburplay.toml` (`pin` is the header
   pin number, resolved at startup by matching the kernel's line names —
   the Radxa ZERO 3 names its header `PIN_7`…`PIN_40` across gpiochip1/3/4;
   `active_low`/`bias` default to a button between the pin and GND with the

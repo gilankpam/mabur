@@ -106,18 +106,17 @@ sed -e "/^\[fec\]/,/^\[/ s|^symbol_size = .*|symbol_size = 332|" \
 "$MABURGS" -c "$TMP/gs.toml" --dry-run --in "$TMP/bodies.bin"
 
 echo "== maburplay --oneshot: drain ring, null backend, DVR on =="
-python3 - "$TMP/play.json" <<'EOF'
-import json, sys
-cfg = {
-    "ring_path": sys.argv[1].rsplit("/", 1)[0] + "/au-ring",
-    "socket": sys.argv[1].rsplit("/", 1)[0] + "/none.sock",
-    "backend": "null",
-    "dvr": {"autostart": True, "dir": sys.argv[1].rsplit("/", 1)[0]},
-}
-json.dump(cfg, open(sys.argv[1], "w"))
+cat > "$TMP/play.toml" <<EOF
+ring_path = "$TMP/au-ring"
+socket = "$TMP/none.sock"
+backend = "null"
+
+[dvr]
+autostart = true
+dir = "$TMP"
 EOF
 
-"$MABURPLAY" -c "$TMP/play.json" --oneshot > "$TMP/stats.json"
+"$MABURPLAY" -c "$TMP/play.toml" --oneshot > "$TMP/stats.json"
 cat "$TMP/stats.json"
 
 python3 - "$TMP/stats.json" <<'EOF'

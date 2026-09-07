@@ -246,12 +246,12 @@ cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx txagcbench-
 # was the point of retiring the generated msp_font_btfl.cpp): stage the
 # committed bundle copy next to the binaries so the deploy step has one
 # directory holding everything it must push. Installs on the GS as
-# /usr/local/share/mabur/font_btfl.mfont -- the path maburplay.default.json's
+# /usr/local/share/mabur/font_btfl.mfont -- the path maburplay.default.toml's
 # osd.font points at. Regenerate with tools/msp/gen_font.py (see its header).
 cp gs/player/bundle/font_btfl.mfont out/arm64/font_btfl.mfont
 
 # The GS link-status overlay's own atlas, staged the same way. Installs as
-# /usr/local/share/mabur/gs_osd.gfont -- the path maburplay.default.json's
+# /usr/local/share/mabur/gs_osd.gfont -- the path maburplay.default.toml's
 # osd.gs.font points at. Unlike the MSP .mfont (pre-coloured ARGB glyphs at
 # one size), this is a two-channel coverage+shadow MASK baked at all 30
 # sizes the responsive layout can ask for across 720p..2160p, which is why

@@ -72,7 +72,7 @@ uint64_t mono_us() {
 
 void usage() {
   std::fprintf(stderr,
-               "usage: maburplay [-c <config.json>] [--oneshot] "
+               "usage: maburplay [-c <config.toml>] [--oneshot] "
                "[--backend null|mpp]\n"
                "                 [--decode-only --seconds N] [--fps-log]\n"
                "       maburplay --mux-annexb <in.265> <out.mp4>\n"
@@ -424,7 +424,7 @@ int main(int argc, char** argv) {
     return run_gs_render(snap, out, font, w, h, stale, ps);
   }
 
-  std::string config_path = "/etc/maburplay.json";
+  std::string config_path = "/etc/maburplay.toml";
   bool oneshot = false;
   bool decode_only = false;
   double decode_only_seconds = 30.0;
@@ -452,11 +452,18 @@ int main(int argc, char** argv) {
   }
 
   maburplay::Config cfg;
+  std::vector<std::string> defaulted;
   try {
-    cfg = maburplay::load_config(config_path);
+    cfg = maburplay::load_config(config_path, &defaulted);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "maburplay: config: %s\n", e.what());
     return 2;
+  }
+  if (!defaulted.empty()) {
+    std::fprintf(stderr, "maburplay: config: %zu key(s) defaulted:\n",
+                 defaulted.size());
+    for (const std::string& d : defaulted)
+      std::fprintf(stderr, "  %s\n", d.c_str());
   }
   if (!backend_override.empty()) cfg.backend = backend_override;
 

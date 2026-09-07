@@ -888,7 +888,7 @@ TEST(stale_frame_ring_name_key_throws) {
 
 // video_input/ring_name selected and named the pre-frame-shm RTP-packet ring.
 // Their accept-and-warn grace release has passed and the drone's live
-// /etc/mabur.json no longer carries them, so they now hit the blanket
+// /etc/mabur.toml no longer carries them, so they now hit the blanket
 // unknown-key check like any other stale key.
 TEST(stale_video_input_and_ring_name_keys_throw) {
   auto path = write_temp_toml("video_input = \"frame_ring\"\n");

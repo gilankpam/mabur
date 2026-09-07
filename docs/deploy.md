@@ -42,8 +42,8 @@ has none (`bundle/install.sh:33`, `gs/bundle/install.sh:38-39` — "never
 clobber a tuned one"), then start the service immediately
 (`bundle/install.sh:36-40`, `gs/bundle/install.sh:44-48`). Neither
 migrates an existing config, so on a device that has ever been tuned the
-four removed keys must be deleted from `/etc/mabur.json` and
-`/etc/maburgs.json` BY HAND before the new binaries start.
+four removed keys must be deleted from `/etc/mabur.toml` and
+`/etc/maburgs.toml` BY HAND before the new binaries start.
 
 **Restarting the drone daemon over ssh: use `setsid`.** `S96mabur`'s respawn
 loop is a background subshell of the shell that started it, so a plain
@@ -60,6 +60,43 @@ it had not happened. `S96mabur stop` kills a PID read from
 `/var/run/mabur-loop.pid`, and after hours of uptime that PID can name
 something else. **Never chain work after a `stop` in the same ssh command:
 stop in one invocation, verify with `ps`, then swap in the next.**
+
+## Config format
+
+The three configs are TOML. The parser (`common/src/toml.cpp`) accepts a
+deliberate subset and rejects everything else with a `file:line` message
+rather than reinterpreting it:
+
+| Accepted | Rejected |
+|---|---|
+| `# comment`, own line or trailing | inline tables `{ a = 1 }` |
+| `[table]`, `[table.sub]` | dotted keys in assignments (`a.b = 1`) |
+| `[[array.of.tables]]` | literal `'strings'`, multi-line `"""` |
+| `key = "basic string"` (`\\`, `\"`) | dates, hex, underscored ints |
+| `key = 149`, `-24`, `1.0` | arrays of arrays, mixed-type arrays |
+| `key = [1, 2, 3]`, multi-line, trailing comma | duplicate keys, table redefinition |
+| `key = true` / `false` | everything else |
+
+An int loads into a float field (`airtime_budget = 1` is fine); a float
+never loads into an int field (`symbol_size = 332.0` fails).
+
+Two ordering rules TOML imposes: top-level scalars must precede the first
+`[table]` header, and once `[[link.ladder]]` opens you cannot go back to
+adding `[link]` scalars.
+
+At startup each daemon prints the known keys the file did not set, with
+the value they fell back to. After hand-editing a config, read that list:
+anything unexpected in it is a knob you dropped.
+
+**Scripted edits.** `json_cli` no longer applies. Keys sit under `[table]`
+headers rather than dotted paths, so a bare
+`sed -i 's/^symbol_size.*/symbol_size = 656/'` hits `[fec]` **and**
+`[msp]` — the same trap exists for `enable`, `window`, `port` and `host`.
+Anchor the range:
+
+    sed -i '/^\[fec\]/,/^\[/ s/^symbol_size = .*/symbol_size = 656/' /etc/mabur.toml
+
+Prefer `vi` for one-off changes.
 
 ## Stale-caps restart deadlock — retired
 
@@ -130,8 +167,8 @@ frame-shm ring between two processes. Consequences for a deploy:
 - **The config gains `venc` (pipeline bring-up) and `encoder` (RcAgent's
   bitrate/ROI policy), and loses `waybeam` and `frame_ring_name`.** Strict
   keys mean the old config fails boot against the new binary and vice versa,
-  so this is a paired swap like any other. `bundle/mabur.default.json` carries
-  the shipped shape; the bench's tuned values live in `/etc/mabur.json`.
+  so this is a paired swap like any other. `bundle/mabur.default.toml` carries
+  the shipped shape; the bench's tuned values live in `/etc/mabur.toml`.
 - **There is no `venc.bitrate` key and never will be.** The encoder rate comes
   only from `RcAgent::run_bitrate_policy()` — see `docs/link-adaptation.md`.
 - **The GS deploys with the drone.** The `Telem` struct widened to 70 bytes for
@@ -146,14 +183,14 @@ frame-shm ring between two processes. Consequences for a deploy:
 ssh root@<drone> 'df -h /; ls -la /usr/bin/waybeam* /usr/bin/maburd*'   # prune first
 tools/build-arm.sh                                # -> out/arm/maburd
 scp -O out/arm/maburd  root@<drone>:/tmp/maburd.new
-scp -O <new-config>    root@<drone>:/tmp/mabur.json.new
+scp -O <new-config>    root@<drone>:/tmp/mabur.toml.new
 ssh root@<drone> '
   /etc/init.d/S95waybeam stop; /etc/init.d/S96mabur stop; sleep 1
   mv /usr/bin/waybeam /usr/bin/waybeam.retired && chmod a-x /etc/init.d/S95waybeam
   mv /usr/bin/maburd /usr/bin/maburd.pre-foldin
-  mv /etc/mabur.json /etc/mabur.json.pre-foldin
+  mv /etc/mabur.toml /etc/mabur.toml.pre-foldin
   mv /tmp/maburd.new /usr/bin/maburd && chmod 755 /usr/bin/maburd
-  mv /tmp/mabur.json.new /etc/mabur.json
+  mv /tmp/mabur.toml.new /etc/mabur.toml
   reboot'
 ```
 
@@ -176,7 +213,7 @@ re-deploy, not a file swap: rebuild waybeam in `../openipc-builder`
 `/etc/waybeam.json` from the archived copy
 (`out/drone-waybeam-config-final-2026-08-29.json` on the dev host), and
 recreate `S95waybeam` from the openipc-builder package's `init.d/`. The
-same cleanup also removed **every** `maburd.pre-*`/`mabur.json.pre-*`
+same cleanup also removed **every** `maburd.pre-*`/`mabur.toml.pre-*`
 rollback from the drone and the `*.pre-*` binaries from the GS (archived
 on the dev host as `out/drone-rollback-archive-2026-08-29.tar.gz` and
 `out/gs-rollback-archive-2026-08-29.tar.gz`) — rollback of anything now
@@ -189,8 +226,8 @@ ssh root@<drone> '
   /etc/init.d/S96mabur stop; killall maburd; sleep 1
   mv /usr/bin/maburd /usr/bin/maburd.foldin
   mv /usr/bin/maburd.pre-foldin /usr/bin/maburd
-  mv /etc/mabur.json /etc/mabur.json.foldin
-  mv /etc/mabur.json.pre-foldin /etc/mabur.json
+  mv /etc/mabur.toml /etc/mabur.toml.foldin
+  mv /etc/mabur.toml.pre-foldin /etc/mabur.toml
   chmod 755 /etc/init.d/S95waybeam
   /etc/init.d/S95waybeam start
   # 1. WAIT for waybeam HTTP to answer -- do not sleep a fixed interval
@@ -228,7 +265,7 @@ reason above.
 Additive with an in-code default of 3 (0 = unbounded, the prior behavior),
 same rules as the vsync keys below: binary first, key optional. Rolling
 back to a pre-2026-09-02 binary (`maburplay.pre-chain` or older) with the
-key present in `/etc/maburplay.json` fails strict keys at boot — strip it
+key present in `/etc/maburplay.toml` fails strict keys at boot — strip it
 first. Range [0, 60]; the bench A/B that sizes it is in
 `docs/observability.md` under the regulator line.
 
@@ -242,12 +279,12 @@ nothing about a key that is merely absent from the file, which just takes
 the compiled-in default.
 So this swap, unlike the RC-version and venc flag days above, needs
 **no config edit before the binary swap**: drop in the new `maburplay`
-against the existing `/etc/maburplay.json` and it boots with
+against the existing `/etc/maburplay.toml` and it boots with
 `vsync_lock: true`, `vsync_lead_ms: 6`, `lat_log_dir: "/media/dvr/log"`
 without either key ever having been written to the file.
 
 **Rollback gotcha, the other direction.** Strict keys still cuts the
-other way once the file HAS been touched: if `/etc/maburplay.json` picks
+other way once the file HAS been touched: if `/etc/maburplay.toml` picks
 up any `display.vsync_*` key or `lat_log_dir` — which the vsync A/B
 protocol does, by design, since it toggles `vsync_lock` in the file
 between arms (`docs/bench-protocols-latency-2026-08-31.md`) — a
@@ -269,23 +306,23 @@ like the 2026-08-12/2026-08-15 bumps above: a mismatched pair rejects
 each other's frames in both directions and, since DISC_ACK carries
 `CAP_FRAME_WIRE`, looks like no video at all until both ends match.
 
-**GS config first.** `/etc/maburgs.json` gains the optional `link.probe`
+**GS config first.** `/etc/maburgs.toml` gains the optional `link.probe`
 block (live defaults if omitted: `enable true, rung_offset 1, clean_ms
 2000, max_util <0 ⇒ down_util, min_syms 40, silence_ms 500, pin_mcs -1`)
 and loses five flat keys that now FAIL BOOT — delete them before the
 binary swap:
 
 ```sh
-grep -nE '"probe_(ms|settle_ms|max_util|s3_min_syms|s3_silence_ms)"' /etc/maburgs.json
+grep -nE '"probe_(ms|settle_ms|max_util|s3_min_syms|s3_silence_ms)"' /etc/maburgs.toml
 ```
 
 `probe_s3_min_syms` has a successor, `link.s3_min_syms` (default 50) —
 carry over a non-default value before deleting the old key.
 
-Drone config (`/etc/mabur.json`) is untouched — there is no drone-side
+Drone config (`/etc/mabur.toml`) is untouched — there is no drone-side
 probe config; the RCF byte is the only switch. Sequence:
 
-1. Edit `/etc/maburgs.json` on the GS (delete the five keys above; add
+1. Edit `/etc/maburgs.toml` on the GS (delete the five keys above; add
    `link.probe` or rely on defaults).
 2. Swap `maburgs` AND `tools/maburtop.py` together (the sideport's
    `classes` keys change shape — `s2`/`s3` gone, `probe` added — and an
@@ -298,7 +335,7 @@ page opens with. Finish the deploy; do not restart either daemon hoping
 to fix it.
 
 Rollback is paired, as always: `maburgs.pre-probe` / `maburd.pre-probe`
-with `maburgs.json.pre-probe` (the five flat keys restored, `link.probe`
+with `maburgs.toml.pre-probe` (the five flat keys restored, `link.probe`
 removed) alongside the GS binary — an old GS binary against a config
 carrying `link.probe` fails strict keys at boot just as surely as the
 reverse.
@@ -314,13 +351,13 @@ directory, `<debug_log.dir>/NNNN/` holding `ctl.log`, `probe.log`, `au.log`,
 unknown key fails boot into the usual 2 s respawn loop (see the top of this
 page).
 
-- `/etc/maburgs.json` loses four keys that now FAIL BOOT — delete them
+- `/etc/maburgs.toml` loses four keys that now FAIL BOOT — delete them
   before swapping `maburgs`: `link.ctl_log`, `link.ctl_log_dir`,
   `link.ctl_log_period_ms`, `link.rung_stats.rung_log_period_s`. Their
   replacements live under the new `debug_log` block (`enable`, `dir`,
   `ctl_period_ms`, `rung_period_s`) — additive, its own key, not a rename
   in place.
-- `/etc/maburplay.json` loses `display.lat_log_dir` — also now FAIL BOOT.
+- `/etc/maburplay.toml` loses `display.lat_log_dir` — also now FAIL BOOT.
   maburplay holds no logging config of its own any more: it follows the
   `/tmp/mabur-session` marker maburgs writes and needs no key at all.
 - **After both binaries land, delete `/root/flightrec.py` and

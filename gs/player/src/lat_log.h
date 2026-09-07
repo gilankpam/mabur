@@ -18,7 +18,7 @@ inline constexpr const char* kSessionMarker = "/tmp/mabur-session";
 //
 // maburplay holds no logging config: it follows the marker maburgs writes.
 // No marker means no session means no file -- which is how one knob in
-// maburgs.json turns the whole GS's debug logging off.
+// maburgs.toml turns the whole GS's debug logging off.
 //
 // Format: "# latlog 2" then "<mono_us> <payload>" per write, appended. There
 // is no `# sync` clock bridge any more: maburgs and maburplay both stamp

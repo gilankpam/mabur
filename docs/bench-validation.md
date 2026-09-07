@@ -154,7 +154,7 @@ Earlier bugs (morning session):
    Worked around at the bench by side-loading `out/arm/maburd` (static musl).
 
 3. **🟡 B4 waybeam IDR endpoint (fixed).** Route is `GET /request/idr`, not
-   `/api/v1/idr`. Default corrected in `config.h` + `bundle/mabur.default.json`.
+   `/api/v1/idr`. Default corrected in `config.h` + `bundle/mabur.default.toml`.
 
 **Useful bench levers:** VBUS cold power-cycle (soft `libusb_reset` does NOT
 clear a wedged Realtek chip) =
@@ -232,7 +232,7 @@ Session evidence:
   all frames = the `seq%32==8` probe slot, observed at hw-seq slot 9 due to
   the EN_HWSEQ offset), and the boot log has no clamp warning. The image was
   built from the *committed* pin 641bded; the working-tree `mabur.mk` bump
-  to 423d286 is uncommitted. **Remediation options:** edit `/etc/mabur.json`
+  to 423d286 is uncommitted. **Remediation options:** edit `/etc/mabur.toml`
   `bw_set` to `[20]` on the drone (works on any binary), and/or commit the
   mk bump + rebuild/reflash. Until then the drone burns 3.1% of frames as
   dead-air 40 MHz probes.
@@ -284,7 +284,7 @@ leftover).
 
 ## Bench results — 2026-07-12 (late session): E1 STRICT PASS + receiver root-cause
 
-`bw_set` remediated on the drone (`/etc/mabur.json` → `[20]`, restart);
+`bw_set` remediated on the drone (`/etc/mabur.toml` → `[20]`, restart);
 confirmed on air: loss went flat across mod-32 slots (probe-slot spike
 gone). Then the day's "link budget problem" got root-caused — it was never
 the drone TX or the air link. Two GS-receiver findings:
@@ -596,8 +596,8 @@ SysV respawn script (does `rmmod 8812eu` at start).
 
 ### Bench config deltas (persisted on the targets)
 
-- GS `/etc/maburgs.json`: `cards` ×2 (index 0+1), `feedback_ms: 50`.
-- Drone `/etc/mabur.json`: `blocks_per_body: [8,8,16,16]`,
+- GS `/etc/maburgs.toml`: `cards` ×2 (index 0+1), `feedback_ms: 50`.
+- Drone `/etc/mabur.toml`: `blocks_per_body: [8,8,16,16]`,
   `airtime_budget: 0.45`, `bitrate_max_kbps: 3000` (stability ceiling —
   revisit after finding 5). `max_txagc` back at 63.
 - GS image: `8812eu.ko` disabled (finding 1); `/etc/init.d/S96maburgs`
@@ -621,7 +621,7 @@ Pick one:
    binary and scp it over an existing image:
    ```
    bash tools/build-arm.sh            # → out/arm/maburd
-   bundle/install.sh root@<camera-ip> # scp binary + S96mabur + mabur.json
+   bundle/install.sh root@<camera-ip> # scp binary + S96mabur + mabur.toml
    ```
    ⚠ Written for the waybeam era, when install.sh also json_cli-wired
    waybeam's output. Since the 2026-08-29 fold-in maburd owns the encoder and
@@ -656,9 +656,9 @@ The RC wire protocol both ends share is `tools/precoder/rc_proto.py`
 (RCF/DISC/DISC_ACK) — mabur's `common/src/rc_proto.cpp` is byte-pinned to it,
 so a vrx built on the Python side and mabur agree by construction.
 
-## Config quick reference (`/etc/mabur.json`)
+## Config quick reference (`/etc/mabur.toml`)
 
-Defaults that matter for bench (full defaults in `bundle/mabur.default.json`):
+Defaults that matter for bench (full defaults in `bundle/mabur.default.toml`):
 
 | Field | Default | Bench relevance |
 |---|---|---|
@@ -696,7 +696,7 @@ Ordered smoke → integration. Stop and diagnose at the first failure.
   is `GET /request/idr` (returns `{"ok":true,"data":{"idr":true}}`), **not**
   `/api/v1/idr` (that 404s: `{"ok":false,"error":{"code":"not_found"}}`).
   `waybeam.idr_path` default fixed to `/request/idr` in `drone/src/config.h` +
-  `bundle/mabur.default.json`. Still TODO: confirm `bundle/install.sh`'s
+  `bundle/mabur.default.toml`. Still TODO: confirm `bundle/install.sh`'s
   `json_cli` flag spelling matches the on-device `json_cli`.
 - [x] **B5 — monitor-mode capture.** DONE (with the bug-4 workaround; see
   above). Receiver = the host's RTL8812AU (`0bda:8812`) running devourer's
