@@ -440,24 +440,130 @@ base, not the riskier one. Verified on both builds.
    during boot reaches the `OpenIPC #` prompt at `bootdelay=0` too —
    verified after flashing. So: keep `bootdelay=0` and interrupt with CR.
 
-### Flashing
+### Flashing — the runbook
 
-`flashcp BOOT.bin /dev/mtd0` from Linux on the device, having padded the
-image to the full 262144 with 0xFF. This preserves the env in mtd1.
+Every step below was run in this order on `.95`. It is written to be
+device-agnostic: set `HOST` and go. **Do not skip the readback in step 5** —
+it is the last point at which a bad write is still recoverable.
 
-**Do not use the `ubnor` env command:** it is `sf erase 0x0 0x50000`, which
-wipes mtd0 *and* the env at 0x40000, losing `ethaddr` and every `fw_setenv`
-tweak. Save `fw_printenv` first regardless — and dump `/dev/mtd0` to a file
-first, which is a byte-exact rollback as long as the new U-Boot still boots
-Linux. If it does not, there is no recovery short of an SPI programmer; the
-IPL will still run and print, but it cannot load an alternative payload.
+Before starting: a **serial console must be attached**. If the new U-Boot
+does not boot there is no recovery short of an SPI programmer, and without a
+console you will not even see how it failed.
 
-Every flash here was verified by reading `/dev/mtd0` back and comparing md5
-against the file that was written.
+```sh
+HOST=root@192.168.10.95           # the drone is root@192.168.10.152
+SOC=ssc338q
+IMG=$(ls -t ~/Projects/drone/openipc-builder/archive/*/*/u-boot-${SOC}-nor-padded.bin | head -1)
+```
+
+**0 — Build the image.** A normal device build produces it; see "Source and
+build" above.
+
+```sh
+cd ~/Projects/drone/openipc-builder
+printf './builder.sh ssc338q_fpv_openipc-urllc-aio\n' | nix-shell
+```
+
+`nix-shell --run` does **not** work here: the `buildFHSEnv` shell's
+`runScript = "bash"` overrides it, so `--run` starts bash, finds no tty and
+exits 0 having built nothing. Pipe the command in instead.
+
+**1 — Back up mtd0 and the environment.** The mtd0 dump is a byte-exact
+rollback, but only as long as the new U-Boot still boots Linux.
+
+```sh
+ssh $HOST 'dd if=/dev/mtd0 bs=64k 2>/dev/null' > mtd0-backup-$(date +%Y%m%d%H%M).bin
+ssh $HOST 'fw_printenv' > env-backup-$(date +%Y%m%d%H%M).txt
+ssh $HOST 'dd if=/dev/mtd0 bs=64k 2>/dev/null | md5sum'
+```
+
+**2 — Transfer.**
+
+```sh
+scp -O "$IMG" $HOST:/tmp/
+```
+
+**3 — Verify the transfer.** Must equal `md5sum "$IMG"` on the host.
+
+```sh
+ssh $HOST "md5sum /tmp/$(basename $IMG)"
+```
+
+**4 — Flash.** The irreversible step. Keep it a command of its own.
+
+```sh
+ssh $HOST "flashcp /tmp/$(basename $IMG) /dev/mtd0"
+```
+
+**5 — Verify the readback BEFORE rebooting.** Must equal the step-3 md5.
+**If it does not match, re-flash — do not reboot.**
+
+```sh
+ssh $HOST 'dd if=/dev/mtd0 bs=64k 2>/dev/null | md5sum'
+```
+
+**6 — Reboot with the console watching**, so a failure is visible rather
+than just an unreachable board.
+
+```sh
+cd ~/Projects/drone/mabur
+nix-shell -p python3Packages.pyserial --run \
+  "python3 tools/bench/bootcap.py 35 boot-new-uboot.log 'ssh $HOST reboot'"
+```
+
+**7 — Confirm and measure.** Expect the new banner, then `Starting kernel`,
+then a login prompt; `IPL` → `Starting kernel` should be ~0.9 s.
+
+```sh
+grep -E 'Version:|Starting kernel|Mounted root' boot-new-uboot.log
+ssh $HOST 'uptime'
+```
+
+**8 — Set the environment** (independent of the flash; `verify` and
+`baseaddr` work on the stock U-Boot too, so they can be applied separately).
+
+```sh
+ssh $HOST 'fw_setenv bootdelay 0; fw_setenv verify no; fw_setenv baseaddr 0x20007FC0'
+```
+
+`bootdelay=0` matters **only on the rebuilt U-Boot**, where a non-zero
+bootdelay costs 1.195 s; on the stock one it was free. It does not cost the
+recovery window: a CR spammed during boot still reaches the `OpenIPC #`
+prompt at `bootdelay=0`, which is what `tools/bench/ubcmd.py` relies on.
+
+#### Rollback
+
+Name the backup explicitly — a glob would match every backup you have ever
+taken, and `flashcp` would take the wrong one.
+
+```sh
+BAK=mtd0-backup-202609080434.bin          # the one from step 1
+scp -O "$BAK" $HOST:/tmp/
+ssh $HOST "flashcp /tmp/$BAK /dev/mtd0"
+```
+
+Then re-verify with step 5. If the board does **not** boot Linux, this path
+is gone with it — that is the whole reason for the serial console and for
+doing this on the spare board first.
+
+#### Two things that do not work
+
+- **`sysupgrade` cannot flash U-Boot.** Its only options are `--kernel` and
+  `--rootfs` (plus `-k`/`-r`/`--url`/`--archive`, which feed the same two),
+  and internally it only ever `flashcp`s the kernel and rootfs partitions
+  and erases `rootfs_data`. Its single mention of `autoupdate-uboot.img` is
+  a `check_sdcard()` interlock that *aborts* the upgrade if it finds that
+  file on a mounted SD card. It is still the right tool for the kernel and
+  rootfs the same build produces.
+- **The `ubnor` env command**, which is `sf erase 0x0 0x50000` — that spans
+  mtd0 *and* the environment at 0x40000, so it takes `ethaddr` and every
+  `fw_setenv` tweak with it. `flashcp` to `/dev/mtd0` touches only mtd0.
+
+Every flash recorded here was verified by reading `/dev/mtd0` back and
+comparing md5 against the file written.
 
 **The builder-produced image is the one now running on `.95`** (2026-09-08):
-a full `builder.sh ssc338q_fpv_openipc-urllc-aio` run, then
-`flashcp u-boot-ssc338q-nor-padded.bin /dev/mtd0`. It reports
+a full `builder.sh` run, then this runbook. It reports
 `Version: I6E#f8a00c4#`, boots to userspace and ssh, and measures pre-kernel
 0.856 s against the hand-built image's 0.904 s — the 0.05 s is run variance
 in the `bootm` block, not a difference between the two builds. So the whole
