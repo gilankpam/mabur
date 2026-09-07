@@ -592,11 +592,15 @@ Items 1-3 are measured; the rest are estimates.
 5. **A mabur-specific device profile and a custom rcS** — estimated
    1.5-2 s. Pin the sensor from the U-Boot env instead of autodetecting,
    insmod only the MI modules `maburd` opens, start `maburd` before
-   syslogd/ntpd/dropbear/crond. Note the current
-   `ssc338q_fpv_openipc-urllc-aio` profile still sets
-   `BR2_PACKAGE_WAYBEAM_VENC=y`, so a fresh image would ship and start
-   waybeam again at S95; and `package/mabur/mabur.mk` pins commit
-   `423d286`, 542 commits behind HEAD.
+   syslogd/ntpd/dropbear/crond.
+
+   Two warnings that used to sit here are **no longer true**, verified
+   against a full build on 2026-09-08: the `ssc338q_fpv_openipc-urllc-aio`
+   profile no longer sets `BR2_PACKAGE_WAYBEAM_VENC` at all (the built
+   rootfs contains no waybeam and no S95 entry), and `package/mabur/mabur.mk`
+   no longer pins a stale SHA — it resolves `gilankpam/mabur` master at build
+   time via `git ls-remote`. A fresh image ships current `maburd`,
+   `S96mabur` and `/etc/mabur.toml`, with majestic explicitly off.
 6. **Fix the emac PHY node in the device tree** — 0.185 s, measured. The
    MDIO bus scans all 32 addresses because `ethernet-phy@0` has an
    "invalid PHY address", then finds the PHY at 0.
