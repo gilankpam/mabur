@@ -647,13 +647,14 @@ Items 1-3 are measured; the rest are estimates.
    the gap producing frames into the void (`drops=309`, `sent=0`).
    Code-only, no deploy-order hazard. Now cheap to verify: timestamp
    `maburd`'s log lines and read them off the console.
-5. **A mabur-specific device profile and a custom rcS** — the
-   `load_sigmastar` half is **DONE: −0.07 s**, see below; it was worth far
-   less than the 1.5-2 s estimated here, because squashfs LZO had already
-   taken most of that window (`insert_ko` 1.251 → 0.651 s before this change
-   even landed). What remains is the rcS ordering — starting `maburd` before
-   syslogd/ntpd/dropbear/crond — which touches the mabur repo's own init
-   script, not just the builder.
+5. ~~**A mabur-specific device profile and a custom rcS**~~ — **DONE**,
+   both halves, see below. `load_sigmastar` returned −0.07 s (far less than
+   estimated: squashfs LZO had already taken most of that window). The rcS
+   reorder moves `maburd`'s start from 9.6 s to 3.6 s on `.95`, most of
+   which is DHCP relocation, so expect nearer 1–1.5 s on the static-IP
+   drone — plus determinism, which does transfer. It turned out to be
+   builder-only after all: `mabur.mk` chooses the installed name, so the
+   mabur repo is untouched.
 
    Two warnings that used to sit here are **no longer true**, verified
    against a full build on 2026-09-08: the `ssc338q_fpv_openipc-urllc-aio`
@@ -844,6 +845,66 @@ distinguish "quiet is on" from "the board failed". To measure the kernel
 phase again, drop `quiet loglevel=1` from `bootargs` for the session.
 `dmesg` is unaffected either way — still 702 lines with quiet on, so nothing
 is lost post-boot.
+
+### Custom rcS — the video path first
+
+Builder-side, 2026-09-08. `busybox` rcS runs `/etc/init.d/S*` strictly
+serially in lexical order, and the video path was at the end of it:
+`S70vendor` (`load_sigmastar`) and `S96mabur` ran *after* `S40network`,
+`S49ntpd`, `S50dropbear` and `S60crond`. New order:
+
+```
+S38mdev  <  S38vendor  <  S39mabur  <  S40network  <  S49ntpd  <  S50dropbear
+```
+
+`mdev` stays first because `maburd` needs the device nodes, and `S38vendor`
+precedes `maburd` because it insmods the MI modules `maburd` dlopens
+against. 8 boots each side:
+
+| marker (s from IPL) | before | after |
+|---|---|---|
+| `Starting syslogd` | 2.997 | 2.998 |
+| `Loading vendor modules` | 9.584 (8.63–9.98) | **3.556 (3.51–3.61)** |
+| `Sensor assigned` | 10.216 (9.33–10.63) | **4.188 (4.16–4.22)** |
+| login prompt | 10.381 | 9.594 |
+
+8/8 sensor detections, no `maburd` respawns, and `eth0` still gets its lease
+even though the network now starts after `maburd`.
+
+**Read the 6 s carefully.** Most of it is `.95`'s DHCP wait being moved
+*behind* video rather than in front of it. A static-IP drone never paid that,
+so its gain is nearer the estimated 1–1.5 s — what used to run between
+`mdev` and the MI bring-up is `S40network` (cheap when static), `S49ntpd`,
+`S50dropbear` and `S60crond`. The markers before the change are unchanged,
+which is the shape that says the measurement is honest.
+
+The other half of the win does transfer, though: **`maburd`'s start time
+becomes deterministic**, 3.51–3.61 s against 8.63–9.98 s before, because it
+is no longer downstream of DHCP.
+
+Three parts, all builder-side — note the second, which is not obvious:
+
+- `S38vendor` shipped in the device overlay, a copy of `S70vendor`.
+- `/etc/init.d/S70vendor` added to the excludes list. **An overlay can
+  overwrite a file but not delete one**, and leaving both would run
+  `load_sigmastar` twice; `general/scripts/rootfs_script.sh` `rm -f`s every
+  path in `scripts/excludes/<soc>_<variant>.list` at image assembly, and
+  reports entries that matched nothing.
+- `package/mabur/mabur.mk` installs the init script as `S39mabur`. Only the
+  destination name changes — the source is still `bundle/S96mabur` from the
+  mabur repo, so this is builder-only despite appearances.
+
+Two traps when rebuilding this incrementally rather than through
+`builder.sh`:
+
+- `builder.sh` copies **both** `devices/<dev>/*` and `package/*` into the
+  firmware tree (`copy_extra_packages`). Copying only the device overlay
+  builds against the old `mabur.mk` and the rename silently does nothing.
+- Buildroot's **per-package directory** keeps its own target tree. Deleting
+  the stale `output/target/etc/init.d/S96mabur` is not enough — it is
+  re-populated from `output/per-package/mabur/target/`, and the image ends
+  up with both `S39mabur` and `S96mabur`, starting `maburd` twice. A clean
+  `builder.sh` run has neither problem.
 
 ## What is still blocked
 
