@@ -68,9 +68,18 @@ class Value {
       type_error("float");
     } else if constexpr (std::is_integral_v<T>) {
       if (kind_ != Kind::Int) type_error("int");
-      if (int_ < static_cast<std::int64_t>(std::numeric_limits<T>::min()) ||
-          int_ > static_cast<std::int64_t>(std::numeric_limits<T>::max()))
-        type_error("int (out of range for this field)");
+      if constexpr (std::is_signed_v<T>) {
+        if (int_ < static_cast<std::int64_t>(std::numeric_limits<T>::min()) ||
+            int_ > static_cast<std::int64_t>(std::numeric_limits<T>::max()))
+          type_error("int (out of range for this field)");
+      } else {
+        // numeric_limits<uint64_t>::max() does not survive a cast to int64_t,
+        // so compare in the unsigned domain after excluding negatives.
+        if (int_ < 0 ||
+            static_cast<std::uint64_t>(int_) >
+                static_cast<std::uint64_t>(std::numeric_limits<T>::max()))
+          type_error("int (out of range for this field)");
+      }
       return static_cast<T>(int_);
     } else {
       static_assert(sizeof(T) == 0, "toml::Value::get<T>: unsupported type");

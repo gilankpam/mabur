@@ -131,11 +131,82 @@ struct Parser {
     return out;
   }
 
+  // Net '[' depth of `s`, ignoring brackets inside basic strings.
+  int bracket_depth(const std::string& s) const {
+    int depth = 0;
+    bool in_str = false;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+      if (in_str) {
+        if (s[i] == '\\') ++i;
+        else if (s[i] == '"') in_str = false;
+      } else if (s[i] == '"') {
+        in_str = true;
+      } else if (s[i] == '[') {
+        ++depth;
+      } else if (s[i] == ']') {
+        --depth;
+      }
+    }
+    return depth;
+  }
+
+  // Splits "[a, b, c]" (outermost brackets included) into its elements.
+  // A trailing comma is allowed; nested arrays are rejected by the caller.
+  std::vector<std::string> split_elements(const std::string& tok,
+                                          std::size_t line1) const {
+    std::vector<std::string> out;
+    const std::string body = tok.substr(1, tok.size() - 2);
+    std::string cur_el;
+    int depth = 0;
+    bool in_str = false;
+    for (std::size_t i = 0; i < body.size(); ++i) {
+      const char c = body[i];
+      if (in_str) {
+        cur_el += c;
+        if (c == '\\' && i + 1 < body.size()) cur_el += body[++i];
+        else if (c == '"') in_str = false;
+        continue;
+      }
+      if (c == '"') { in_str = true; cur_el += c; continue; }
+      if (c == '[') ++depth;
+      if (c == ']') --depth;
+      if (c == ',' && depth == 0) {
+        out.push_back(trim(cur_el));
+        cur_el.clear();
+        continue;
+      }
+      cur_el += c;
+    }
+    if (in_str) err(line1, "unterminated string");
+    const std::string last = trim(cur_el);
+    if (!last.empty()) out.push_back(last);       // else: trailing comma
+    for (const std::string& e : out)
+      if (e.empty()) err(line1, "empty array element");
+    return out;
+  }
+
   Value parse_scalar(const std::string& tok, std::size_t line1) const {
     if (tok.empty()) err(line1, "missing value");
     if (tok[0] == '{') err(line1, "inline tables are not supported");
     if (tok[0] == '\'') err(line1, "literal strings are not supported; use \"...\"");
-    if (tok[0] == '[') err(line1, "arrays are not supported");
+    if (tok[0] == '[') {
+      if (tok.back() != ']') err(line1, "unterminated array");
+      Value v(Value::Kind::Array, static_cast<int>(line1));
+      bool first = true;
+      Value::Kind elem_kind = Value::Kind::Table;
+      for (const std::string& e : split_elements(tok, line1)) {
+        if (e[0] == '[') err(line1, "arrays of arrays are not supported");
+        Value ev = parse_scalar(e, line1);
+        if (first) {
+          elem_kind = ev.kind();
+          first = false;
+        } else if (ev.kind() != elem_kind) {
+          err(line1, "array has mixed types");
+        }
+        v.push(std::move(ev));
+      }
+      return v;
+    }
     if (tok[0] == '"') {
       Value v(Value::Kind::String, static_cast<int>(line1));
       v.set_string(parse_string(tok, line1));
@@ -195,6 +266,19 @@ struct Parser {
     cur = self;
   }
 
+  void array_table_header(const std::string& inner, std::size_t line1) {
+    const std::vector<std::string> parts = split_path(inner, line1);
+    Value* parent = parent_of(parts, line1);
+    Value* self = parent->find(parts.back());
+    if (self == nullptr) {
+      self = &parent->set(parts.back(),
+                          Value(Value::Kind::Array, static_cast<int>(line1)));
+    } else if (!self->is_array()) {
+      err(line1, "'" + parts.back() + "' is not an array of tables");
+    }
+    cur = &self->push(Value(Value::Kind::Table, static_cast<int>(line1)));
+  }
+
   void assignment(const std::string& line, std::size_t line1) {
     bool in_str = false;
     std::size_t eq = std::string::npos;
@@ -224,17 +308,29 @@ struct Parser {
   Value run() {
     for (std::size_t i = 0; i < lines.size(); ++i) {
       const std::size_t line1 = i + 1;
-      const std::string line = trim(strip_comment(lines[i], line1));
+      std::string line = trim(strip_comment(lines[i], line1));
       if (line.empty()) continue;
+
       if (line.compare(0, 2, "[[") == 0) {
-        err(line1, "arrays of tables are not supported");
-      } else if (line[0] == '[') {
+        if (line.size() < 4 || line.compare(line.size() - 2, 2, "]]") != 0)
+          err(line1, "table header: expected a closing ']]'");
+        array_table_header(trim(line.substr(2, line.size() - 4)), line1);
+        continue;
+      }
+      if (line[0] == '[') {
         if (line.back() != ']')
           err(line1, "table header: expected a closing ']'");
         table_header(trim(line.substr(1, line.size() - 2)), line1);
-      } else {
-        assignment(line, line1);
+        continue;
       }
+
+      // An assignment whose value opens an array may span lines. Gather
+      // continuation lines (comments stripped) until the brackets balance.
+      while (bracket_depth(line) > 0) {
+        if (++i >= lines.size()) err(line1, "unterminated array");
+        line += " " + trim(strip_comment(lines[i], i + 1));
+      }
+      assignment(line, line1);
     }
     return std::move(root);
   }

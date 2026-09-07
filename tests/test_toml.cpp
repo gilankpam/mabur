@@ -144,4 +144,131 @@ TEST(toml_missing_file_is_an_error) {
   CHECK(threw);
 }
 
+TEST(toml_flat_arrays) {
+  Value v = parse_toml_string(
+      "rate_walls_idx = [91, 91, 91, 91, 73, 56, 51, 49]\n"
+      "blocks_per_body = [4, 4]\n"
+      "empty = []\n",
+      "t.toml");
+  const Value& w = v.at("rate_walls_idx");
+  CHECK(w.is_array());
+  CHECK(w.size() == 8);
+  CHECK(w.at(0).get<int>() == 91);
+  CHECK(w.at(7).get<int>() == 49);
+  CHECK(v.at("blocks_per_body").size() == 2);
+  CHECK(v.at("empty").is_array());
+  CHECK(v.at("empty").empty());
+  // Range-for over an array yields elements.
+  long sum = 0;
+  for (const Value& e : v.at("blocks_per_body")) sum += e.get<long>();
+  CHECK(sum == 8);
+}
+
+TEST(toml_multiline_array_with_trailing_comma_and_comments) {
+  Value v = parse_toml_string(
+      "blocks_per_body = [\n"
+      "  4,   # base\n"
+      "  4,   # enhance\n"
+      "]\n"
+      "after = 1\n",
+      "t.toml");
+  CHECK(v.at("blocks_per_body").size() == 2);
+  CHECK(v.at("blocks_per_body").at(1).get<int>() == 4);
+  CHECK(v.at("after").get<int>() == 1);
+}
+
+TEST(toml_arrays_of_tables) {
+  Value v = parse_toml_string(
+      "[link]\n"
+      "vtx_id = 1\n"
+      "\n"
+      "[[link.ladder]]\n"
+      "mcs = 0\n"
+      "overhead_base = 2.0\n"
+      "\n"
+      "[[link.ladder]]\n"
+      "mcs = 2\n"
+      "overhead_base = 1.0\n"
+      "\n"
+      "[link.probe]\n"
+      "enable = true\n",
+      "t.toml");
+  CHECK(v.at("link").at("vtx_id").get<int>() == 1);
+  const Value& lad = v.at("link").at("ladder");
+  CHECK(lad.is_array());
+  CHECK(lad.size() == 2);
+  CHECK(lad.at(0).at("mcs").get<int>() == 0);
+  CHECK(lad.at(1).at("mcs").get<int>() == 2);
+  CHECK(lad.at(1).at("overhead_base").get<double>() == 1.0);
+  // A [table] header still works after the [[array]] blocks.
+  CHECK(v.at("link").at("probe").at("enable").get<bool>() == true);
+  // Range-for yields the table elements.
+  int seen = 0;
+  for (const Value& r : lad) {
+    CHECK(r.is_object());
+    ++seen;
+  }
+  CHECK(seen == 2);
+}
+
+TEST(toml_array_of_tables_at_top_level) {
+  Value v = parse_toml_string(
+      "[[stats.out]]\n"
+      "host = \"127.0.0.1\"\n"
+      "port = 8300\n"
+      "\n"
+      "[[stats.out]]\n"
+      "host = \"127.0.0.1\"\n"
+      "port = 8302\n",
+      "t.toml");
+  CHECK(v.at("stats").at("out").size() == 2);
+  CHECK(v.at("stats").at("out").at(1).at("port").get<int>() == 8302);
+}
+
+TEST(toml_rejects_bad_arrays) {
+  struct Case { const char* text; const char* needle; int line; };
+  const Case cases[] = {
+      {"a = [1, [2]]\n", "arrays of arrays", 1},
+      {"a = [1, \"two\"]\n", "mixed types", 1},
+      {"a = [1, 2.0]\n", "mixed types", 1},
+      {"a = [1, 2\n", "unterminated array", 1},
+      {"[[a]\nx = 1\n", "expected a closing ']]'", 1},
+      {"a = 1\n[[a]]\nx = 2\n", "not an array of tables", 2},
+  };
+  for (const Case& c : cases) {
+    const std::string msg = parse_error(c.text);
+    CHECK(msg.find(c.needle) != std::string::npos);
+    CHECK(msg.find("t.toml:" + std::to_string(c.line) + ":") !=
+          std::string::npos);
+  }
+}
+
+TEST(toml_get_unsigned_integral_range_check) {
+  Value v = parse_toml_string(
+      "positive = 300\n"
+      "negative = -1\n"
+      "big = 4294967296\n",
+      "t.toml");
+  // A positive value round-trips through both uint64_t and size_t.
+  CHECK(v.at("positive").get<std::uint64_t>() == 300);
+  CHECK(v.at("positive").get<std::size_t>() == 300);
+  CHECK(v.at("big").get<std::uint64_t>() == 4294967296ULL);
+  // A negative value is rejected for an unsigned T.
+  bool threw = false;
+  try {
+    v.at("negative").get<std::uint64_t>();
+  } catch (const Error&) {
+    threw = true;
+  }
+  CHECK(threw);
+  // An out-of-range value is rejected for a narrow T.
+  threw = false;
+  try {
+    v.at("positive").get<std::uint8_t>();  // 300 > UINT8_MAX
+  } catch (const Error&) {
+    threw = true;
+  }
+  CHECK(threw);
+}
+
 MTEST_MAIN
