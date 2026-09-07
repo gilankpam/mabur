@@ -452,8 +452,17 @@ first, which is a byte-exact rollback as long as the new U-Boot still boots
 Linux. If it does not, there is no recovery short of an SPI programmer; the
 IPL will still run and print, but it cannot load an alternative payload.
 
-Both flashes here were verified by reading `/dev/mtd0` back and comparing
-md5 against the file that was written.
+Every flash here was verified by reading `/dev/mtd0` back and comparing md5
+against the file that was written.
+
+**The builder-produced image is the one now running on `.95`** (2026-09-08):
+a full `builder.sh ssc338q_fpv_openipc-urllc-aio` run, then
+`flashcp u-boot-ssc338q-nor-padded.bin /dev/mtd0`. It reports
+`Version: I6E#f8a00c4#`, boots to userspace and ssh, and measures pre-kernel
+0.856 s against the hand-built image's 0.904 s — the 0.05 s is run variance
+in the `bootm` block, not a difference between the two builds. So the whole
+path from `builder.sh` to a booting board is verified, not just the
+hand-assembled one.
 
 ## Ranked next steps
 
