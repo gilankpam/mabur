@@ -519,12 +519,25 @@ grep -E 'Version:|Starting kernel|Mounted root' boot-new-uboot.log
 ssh $HOST 'uptime'
 ```
 
-**8 — Set the environment** (independent of the flash; `verify` and
-`baseaddr` work on the stock U-Boot too, so they can be applied separately).
+**8 — Set the environment.** **Normally nothing to do:** the image ships
+these in `/usr/share/openipc/customizer.sh`, which `S30customizer` runs once
+per overlay wipe. They take effect on the *next* boot, so the first boot
+after a flash is still the slow one. By hand, if the overlay was not wiped
+or you are on an older rootfs:
 
 ```sh
-ssh $HOST 'fw_setenv bootdelay 0; fw_setenv verify no; fw_setenv baseaddr 0x20007FC0'
+ssh $HOST "fw_setenv bootdelay 0; fw_setenv verify no; fw_setenv baseaddr 0x20007FC0"
+ssh $HOST "fw_setenv bootargs 'console=ttyS0,115200 quiet loglevel=1 panic=20 \
+  root=/dev/mtdblock3 init=/init \
+  mtdparts=NOR_FLASH:256k(boot),64k(env),2048k(kernel),\${rootmtd}(rootfs),-(rootfs_data) \
+  LX_MEM=\${memlx} mma_heap=mma_heap_name0,miu=0,sz=\${memsz}'"
 ```
+
+All four are safe on the stock U-Boot as well as the rebuilt one, so the
+rootfs does not depend on the bootloader having been flashed first. Baking
+them into the U-Boot compiled-in defaults instead would **not** help an
+existing device — a stored environment overrides the compiled ones, so that
+only reaches a board whose env is blank or erased.
 
 `bootdelay=0` matters **only on the rebuilt U-Boot**, where a non-zero
 bootdelay costs 1.195 s; on the stock one it was free. It does not cost the
