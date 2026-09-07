@@ -49,7 +49,7 @@ void check_keys(const Value& o, const std::string& where,
     bool ok = false;
     for (const char* a : allowed)
       if (k == a) { ok = true; break; }
-    if (!ok) fail(where + "." + k, "unknown key");
+    if (!ok) fail(where.empty() ? k : where + "." + k, "unknown key");
   }
 }
 

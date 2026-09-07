@@ -49,7 +49,7 @@ void check_keys(const Value& o, const std::string& where,
     bool ok = false;
     for (const char* a : allowed)
       if (k == a) { ok = true; break; }
-    if (!ok) fail(where + "." + k, "unknown key");
+    if (!ok) fail(where.empty() ? k : where + "." + k, "unknown key");
   }
 }
 
@@ -175,8 +175,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       auto& s = r.at("symbol_size");
       if (s.is_array()) {
         if (s.size() != 2) fail("fec.symbol_size", "array must have 2 ints");
-        for (size_t i = 0; i < 2; ++i)
-          c.fec.symbol_size[i] = static_cast<int>(s.at(i).get<int64_t>());
+        try {
+          for (size_t i = 0; i < 2; ++i)
+            c.fec.symbol_size[i] = static_cast<int>(s.at(i).get<int64_t>());
+        } catch (const toml::Error&) {
+          fail("fec.symbol_size", "wrong type");
+        }
       } else if (s.is_number_integer()) {
         c.fec.symbol_size.fill(static_cast<int>(s.get<int64_t>()));
       } else {
