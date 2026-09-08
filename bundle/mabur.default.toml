@@ -52,6 +52,10 @@ ae_fps      = 15
 awb_fps     = 15
 snapshot_quality = 80
 debug_port  = 8301
+# Runs on a cold boot when /sys/module has no live mi_venc + sensor driver:
+# init starts maburd first and maburd loads the MI stack itself, under the
+# radio bring-up (docs/boot-time-findings-2026-09-07.md). "" = only wait.
+module_loader = "/usr/bin/load_sigmastar -i"
 superframe_p_pct = 200     # P-frame cap; see docs/handover-venc-overshoot-2026-09-03.md
 
 [venc.roi]

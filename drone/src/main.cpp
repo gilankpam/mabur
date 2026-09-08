@@ -57,6 +57,7 @@
 #include "probe_source.h"
 #include "radio_tx.h"
 #include "rc_agent.h"
+#include "mi_ready.h"
 #include "telemetry.h"
 #include "peak_rate.h"
 #include "tick_gate.h"
@@ -1040,6 +1041,32 @@ int run_real_mode(const Config& cfg) {
     _exit(3);
   };
   vcb.user = &agent;
+  // Cold boot: init starts maburd BEFORE the MI modules exist (S00mabur is
+  // the first rcS entry; there is no S38vendor any more), and maburd loads
+  // them itself HERE -- after the USB port reset, with InitWrite already
+  // running on its thread -- so the ~0.7 s insmod chain and the ~0.9 s venc
+  // bring-up both sit under the radio's ~2 s, the one window in the boot
+  // where the CPU and the NOR are otherwise idle. Running the chain any
+  // earlier (measured: backgrounded from the init script) only contends
+  // with maburd's own exec and page-in for the same flash and gains
+  // nothing. Warm restarts find the modules live and skip the loader; the
+  // wait then costs one sysfs scan. On a loader failure the wait times out
+  // and the MI init below reports it exactly as it always did -- and the
+  // wrapper's respawn retries the loader, which S38vendor never did.
+  {
+    if (!cfg.venc.module_loader.empty() && !mabur::mi_modules_live("/sys/module")) {
+      std::fprintf(stderr, "MI modules not live: running `%s`\n", cfg.venc.module_loader.c_str());
+      const int lrc = std::system(cfg.venc.module_loader.c_str());
+      if (lrc != 0) std::fprintf(stderr, "warning: module loader exited %d\n", lrc);
+    }
+    const auto mi = mabur::wait_for_mi_modules("/sys/module", 15000);
+    if (!mi.ready) {
+      std::fprintf(stderr, "warning: MI modules not live after %d ms, starting venc anyway\n",
+                   mi.waited_ms);
+    } else if (mi.waited_ms > 0) {
+      std::fprintf(stderr, "waited %d ms for the MI modules\n", mi.waited_ms);
+    }
+  }
   if (venc_core_start(&cfg.venc.core, &vcb) != 0) {
     // Boot failure, not a transient: the wrapper's 2 s respawn is the retry.
     // Release the USB device on the way out (same shape as the

@@ -735,6 +735,10 @@ Items 1-3 are measured; the rest are estimates.
    stamped" below. Today the encoder spends the gap producing frames into
    the void (`drops=309`, `sent=0`). Code-only, no deploy-order hazard.
 5. ~~**A mabur-specific device profile and a custom rcS**~~ — **DONE**,
+   and **superseded on 2026-09-09** by "rcS, stamped" below: maburd is
+   now the first rcS entry and loads the MI stack itself; the
+   `S38vendor < S39mabur < S40network` order described here no longer
+   exists.
    both halves, see below. `load_sigmastar` returned −0.07 s (far less than
    estimated: squashfs LZO had already taken most of that window). The rcS
    reorder moves `maburd`'s start from 9.6 s to 3.6 s on `.95`, most of
@@ -1299,6 +1303,142 @@ sleep 20; ssh root@192.168.10.152 'grep "\[boot" /tmp/bt.log'
 Kernel-side view of the same run: `echo Y >
 /sys/module/printk/parameters/time; dmesg | grep "client \["`. Restore with
 `setsid /etc/init.d/S96mabur start </dev/null >/dev/null 2>&1 &`.
+
+## rcS, stamped — 2026-09-08/09: the video path goes first, maburd loads the MI stack
+
+The custom-rcS work above was measured on `.95`; this is the same window on
+the drone itself, with a rig that finally dates every rcS entry on one
+clock and without a console: `/etc/init.d/rcS` writes
+`rcS: <script>` to `/dev/kmsg` before each entry, which lands in the kernel
+ring buffer with a kernel timestamp regardless of `quiet loglevel=1` (only
+the console is silenced), and `dmesg` reads it back over ssh after the
+boot. The end marker is the first AU in the GS ring (`wseq` at
+`/dev/shm/mabur-au`, 200 Hz), converted to drone uptime through a
+host→GS clock sandwich and `kernel t=0 = host_time − /proc/uptime` from the
+first ssh. `/proc/uptime` and the dmesg clock agree to ~10 ms here, so the
+stamps and the AU time are directly comparable. Two boots per arm; the
+pairs agree to ±0.05 s except where noted.
+
+**Result: first AU on the GS 5.40 → 4.02 / 4.09 s of uptime (−1.3 s,
+−24 %) in the layout that shipped**,
+from three changes plus a cold-boot cpufreq boost, all builder-side except
+one small `maburd` change. Nothing on the wire moved.
+
+### Where the 5.4 s went (baseline, seconds of uptime)
+
+| marker | t | Δ |
+|---|---|---|
+| root mounted (squashfs) | 0.51 | kernel |
+| `inittab: begin` | 1.09 | **0.58 — `/init`: the jffs2 overlay mount** |
+| `rcS: begin` | 1.11 | 0.05 inittab |
+| `S38vendor` (MI insmods) starts | 1.73 | **0.63 of generic init** ahead of it |
+| `S39mabur` starts | 2.46 | 0.71 MI chain |
+| maburd's USB port reset starts | 2.96 | 0.47 exec + page-in, cold |
+| MI client connects (venc bring-up) | 3.65 | 0.69 USB reset |
+| first AU in the GS ring | 5.40 | InitWrite ~2.0, venc hidden under it |
+
+Of the 0.63 s of generic init: `S02fakehwclock` 0.32, `S30customizer` 0.09,
+`S38mdev` 0.07, the two `fw_printenv` exports in rcS 0.04, `S02sysctl`
+0.04, everything else ≤ 0.02 each. `fake-hwclock load` is the surprise: it
+takes the newest mtime under `/etc` with `find -exec date -r {} \;`, one
+`date` fork per file, 75 files. On a warm system that call alone measures
+0.9 s.
+
+### The arms, in the order they were tried
+
+| arm | change on top of the previous | first AU (s) |
+|---|---|---|
+| baseline | image as flashed 2026-09-08 | 5.40 |
+| A | rcS runs `S38vendor` + `S39mabur` before every generic script | 5.23 / 4.65 |
+| A+C | + `fake-hwclock` uses one `stat` over `/etc` instead of a fork per file | 4.74 / 4.71 |
+| B | + `S38vendor` backgrounds `load_sigmastar`, maburd waits for the modules | 4.58 / 4.91 |
+| D | A+C + kernel uevent helper (`/sbin/mdev`) disabled during rcS | 4.80 / 4.84 |
+| E | A+C + cpufreq 1.2 GHz during rcS (vendor driver pins 800 MHz) | 4.48 / 4.48 |
+| **Y** | A+C, **maburd first, maburd runs `load_sigmastar` itself after its USB reset** | **4.39 / 4.37** |
+| **Y+E** | Y + the boot-only 1.2 GHz | **4.23 / 4.25** |
+| **final** | the shipped layout: stock rcS loop + stamps, `S00cpuboost`, `S00mabur`, `S99cpurestore` | **4.09 / 4.02** |
+
+What each one taught:
+
+- **A, the reorder, is worth 0.67 s at maburd's start** (2.46 → 1.79) but
+  only 0.2–0.7 s at the AU, because the generic scripts now run *during*
+  maburd's exec and stretch it from 0.47 to 0.6–1.0 s. They fight for the
+  same NOR flash and two cores.
+- **C recovers most of that**: with the fork storm gone the exec window is
+  back to ~0.6 s and the AU time is reproducible.
+- **B is a wash, and the reason matters.** Starting the insmod chain in
+  parallel with maburd's exec gains nothing: both are NOR reads + LZO
+  decompression + CPU, the chain slows from 0.67 to 1.44 s and the exec
+  from 0.6 to 1.3 s. The only *idle* window on this path is the USB port
+  reset (0.69 s of waiting for re-enumeration) followed by devourer's
+  `InitWrite` (~2 s, USB-bound). Overlap has to land there or it is not
+  overlap. (The readiness wait built for B stayed; see Y.)
+- **D is a dead end**: the kernel forks `/sbin/mdev` for every uevent
+  (`CONFIG_UEVENT_HELPER_PATH`), but only 48 uevents fall between rcS
+  start and maburd's start. `mdev -s` itself is 0.07 s and devtmpfs makes
+  every node maburd and the MI stack use (`/dev/mi_poll` is `mknod`ed by
+  `load_sigmastar`), so `S38mdev` is not on the video path either way.
+- **E: the SoC runs at 800 MHz because the vendor driver says so.**
+  `drivers/sstar/cpufreq/infinity6e/cpufreq.c` `ms_cpufreq_init` sets
+  `policy->min = policy->max = 800000` although the OPP table reaches
+  1.2 GHz. Raising the cap for the rcS window is −0.25 s on top of A+C
+  (the insmod chain 0.67 → 0.54 s, the exec 0.62 → 0.57 s); most of the
+  boot is I/O- or USB-bound, which is why it is not more. `S00cpuboost`
+  raises it, `S99cpurestore` puts the 800 MHz cap back at the end of rcS,
+  so the in-flight envelope is untouched. Verified live first: a shell
+  loop ran 2.3x faster at 1.2 GHz and the board stayed up.
+- **Y is the one that pays.** maburd is the *first* rcS entry
+  (`S00mabur`), there is no vendor init script at all, and maburd runs
+  `load_sigmastar -i` itself (new config key `venc.module_loader`) right
+  after `claim_interface_then_reset` and the `InitWrite` thread spawn,
+  when `/sys/module` shows no live `mi_venc` + `sensor_*_mipi`
+  (`drone/src/mi_ready.h`). Timeline on the drone: maburd starts at 1.21,
+  exec 0.47 (uncontended again), USB reset 1.68 → 2.37, insmod chain
+  2.4 → 3.06, MI client connects 3.13, venc up ~4.0, TX gate ~4.4, first
+  AU 4.37. The chain (0.7) plus the venc bring-up (0.9) fit under
+  `InitWrite` (2.0) with ~0.4 s to spare, and the radio is the entire
+  critical path: `rcS begin 1.17 + exec 0.47 + reset 0.69 + InitWrite
+  2.04 ≈ 4.4`. Warm restarts find the modules live and skip the loader
+  (one sysfs scan). A loader failure is now *retried* by the wrapper's
+  respawn, which `S38vendor` never did.
+
+Side effect worth knowing: the first `stats:` line shows `drops=34–47`
+again (frames encoded before the TX gate opened), where the InitWrite
+overlap had brought it to 0. That is the venc finishing ~0.4 s before the
+radio, not a fault; the frames cost nothing.
+
+### What shipped
+
+- mabur branch `boot-rcs`: `drone/src/mi_ready.h` (+ `tests/test_mi_ready`),
+  `venc.module_loader` (`config.h`/`.cpp`, `bundle/mabur.default.toml`,
+  default `/usr/bin/load_sigmastar -i`, `""` = only wait), the loader call
+  and wait in `main.cpp` before `venc_core_start`.
+- `openipc-builder` `feat/mabur`: `mabur.mk` installs the wrapper as
+  `S00mabur`; device overlay drops `S38vendor`, adds `S00cpuboost`,
+  `S99cpurestore`, a stamped `etc/init.d/rcS` (the `rcS:` kmsg lines now
+  ship, so every boot leaves its timeline in `dmesg`) and the fixed
+  `usr/sbin/fake-hwclock`; `S70vendor` stays in the excludes list.
+- The drone runs exactly this layout through its overlay (rollback binary
+  `/usr/bin/maburd.pre-miwait`); the next image flash brings the same
+  from the squashfs.
+
+**Deploy order for the config key**: binary before config — an old
+`maburd` exits on the unknown `module_loader` key. The bundle default
+equals the compiled default, so the config needs no edit at all.
+
+### What is left on this path, sized
+
+| item | s | note |
+|---|---|---|
+| U-Boot + kernel to root mount | ~1.35 | items 6-7 above |
+| `/init`: jffs2 overlay mount | 0.58 | scan of a 5.8 MB partition at ~4.5 MB/s NOR; item 8. `CONFIG_JFFS2_SUMMARY` is off; empty blocks are already fast-pathed, so shrinking the partition is the lever |
+| maburd exec + page-in | 0.47 | 1 MB binary + 1.4 MB libstdc++ from LZO squashfs |
+| USB port reset | 0.69 | item 9, parked; the chain + venc (1.6 s) still fit under InitWrite alone, so skipping it would be the full 0.69 |
+| devourer `InitWrite` | 2.04 | firmware download; the biggest single leg and devourer-side |
+
+The rig: `tools/bench/cycle.sh`-style scripts lived in the session
+scratchpad; the parts that matter are the `rcS:` stamps (now permanent),
+the GS `wseq` poller from "Reproducing" below, and `dmesg` after the boot.
 
 ## What is still blocked
 

@@ -141,6 +141,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.venc.core.awb_fps == 15);
   CHECK(cfg.venc.core.snapshot_quality == 80);
   CHECK(cfg.venc.debug_port == 8301);
+  CHECK(cfg.venc.module_loader == "/usr/bin/load_sigmastar -i");
 
   CHECK(cfg.link.vtx_id == def.link.vtx_id);
   // 3 s, not the compiled 1 s: a 1 s failsafe fired on ordinary rung
@@ -283,6 +284,7 @@ std::string valid_venc_block() {
          "awb_fps = 15\n"
          "snapshot_quality = 80\n"
          "debug_port = 8301\n"
+         "module_loader = \"\"\n"
          "\n"
          "[venc.roi]\n"
          "enabled = true\n"
@@ -306,6 +308,7 @@ TEST(venc_section_parses_and_validates) {
   CHECK(c.venc.core.intra_refresh_rows == 4);
   CHECK(c.venc.core.ref_enhance == 1);
   CHECK(c.encoder.airtime_budget == 0.65);
+  CHECK(c.venc.module_loader.empty());  // "" = never run a loader, only wait
   std::filesystem::remove(path);
 }
 
@@ -378,6 +381,7 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.awb_fps == 15);
   CHECK(c.venc.core.snapshot_quality == 80);
   CHECK(c.venc.debug_port == 8301);
+  CHECK(c.venc.module_loader == "/usr/bin/load_sigmastar -i");
   std::filesystem::remove(path);
 }
 

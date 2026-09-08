@@ -101,6 +101,14 @@ struct EncoderCfg {
 struct VencSectionCfg {
   VencCfg core{};
   int debug_port = 8301;
+  // Shell command that loads the SigmaStar MI kernel modules and the sensor
+  // driver, run by maburd itself on a cold boot when /sys/module says they
+  // are not live yet (drone/src/mi_ready.h). Init starts maburd first and
+  // the ~0.7 s insmod chain then lands under the radio bring-up, which is
+  // the boot's only idle window (docs/boot-time-findings-2026-09-07.md,
+  // "rcS, stamped"). Empty = never run anything, only wait. Already-live
+  // modules (every warm restart) skip it.
+  std::string module_loader = "/usr/bin/load_sigmastar -i";
   // Not aggregate-initialised on purpose: VencCfg is a plain C struct, so
   // `VencCfg core{}` alone would zero every field and an absent venc key
   // would hand the encoder fps 0 / 0x0 / gop 0.0 rather than a fallback.
