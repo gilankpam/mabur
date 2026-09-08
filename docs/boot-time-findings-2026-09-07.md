@@ -1089,6 +1089,34 @@ the ticker on cpu0, `state=2`, no respawns:
 unattributed (first-ever firmware load, or residual contention on the
 USB/libusb event thread, which stays on core 0).
 
+### IDR on DISC-driven LINKED entry — the picture no longer waits for the GOP
+
+The GS player cannot start on a P-frame (parameter sets ride in-band on
+IDRs only), so after every link-up the first decodable AU is the first
+IDR. The first LINKED after boot is always DISC-driven, and that path in
+`RcAgent::on_rc_frame` never requested one — only the RCF-driven re-entry
+did (`rc_agent.cpp:449`). What made 3 of 5 measured resumes start on an
+IDR anyway was an accident: the forced bitrate write at LINKED entry
+drags an IDR out of `SetChnAttr` as a side effect whenever the rate
+actually changes; when it didn't, the picture waited for the GOP (+1.0 s
+twice, worst case 2 s).
+
+Fixed 2026-09-08: the DISC path now calls `request_idr()` through the
+same `idr_due` pacer as the RCF path (`tests/test_agent.cpp`
+`disc_link_up_requests_one_idr` — exactly one, and none for a keep-alive
+DISC while LINKED). Three warm restarts, first AU after each resume on
+the GS (`au.log`, `nal0`=32 is the VPS of an IDR AU):
+
+| resume | first AU | first IDR |
+|---|---|---|
+| 1 | P (`nal0`=1) | **+0.113 s** (request lands on the next encode) |
+| 2 | IDR | **+0.000** |
+| 3 | IDR | **+0.000** |
+
+Against 0–2 s before. The link-up path is identical cold and warm, so no
+cold boot was spent on it. Cost: at most one extra IDR at link-up, at
+the MAX_RANGE rung, ~2 kB at `min_iqp` 44.
+
 ### Why the USB port reset is not overlapped too
 
 The 0.80 s `claim_interface_then_reset` ahead of `CreateRtlDevice` looks
@@ -1119,7 +1147,7 @@ measured on the drone and the GS on 2026-09-08 (the drone still runs the
 | kernel → `S96mabur` starts `maburd` | 5.13–5.26 | `/proc/<pid>/stat` start tick |
 | `maburd` start → TX gate open | 2.43 (was 2.92–3.01 before the core-1 pin) | boot stamps (overlapped build) |
 | TX gate → first packet from GS → LINKED | **0.003 → 0.08** | boot stamps, cold and warm |
-| first AU on GS → first IDR AU | 0 (3 of 5 resumes) / 1.0 (2 of 5) | `au.log` `nal0`=32 |
+| first AU on GS → first IDR AU | ≤0.11 (was 0 or 1.0 by GOP luck; fixed, see below) | `au.log` `nal0`=32 |
 | first AU on GS → first displayed frame | **~1.6** | `lat.log` first window |
 | **battery → picture** | **~15** | sum; matches the stopwatch |
 
