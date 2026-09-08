@@ -402,6 +402,7 @@ int star6e_runtime_init(Star6eRunnerContext *ctx)
 		return -1;
 	}
 
+
 	sdk_quiet_begin(&g_sdk_quiet);
 	ret = MI_SYS_Init();
 	sdk_quiet_end(&g_sdk_quiet);
@@ -436,7 +437,8 @@ int star6e_runtime_init(Star6eRunnerContext *ctx)
 		return ret;
 	ctx->pipeline_started = 1;
 
-	return star6e_runtime_apply_startup_controls(ctx);
+	ret = star6e_runtime_apply_startup_controls(ctx);
+	return ret;
 }
 
 void star6e_runtime_teardown(Star6eRunnerContext *ctx)

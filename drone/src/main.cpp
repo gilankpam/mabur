@@ -27,13 +27,16 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <exception>
 #include <vector>
 
 #include <unistd.h>  // _exit() — see the venc on_fault handler
 
 #if defined(__linux__)
+#include <dirent.h>       // repin_inherited_threads() walks /proc/self/task
 #include <pthread.h>
 #include <sched.h>  // cpu_set_t — see the core-placement policy below
+#include <sys/syscall.h>  // SYS_gettid
 #endif
 
 #include "air_clock.h"
@@ -419,6 +422,42 @@ void name_thread(const char* n) {
 constexpr int kHotCore = 1;
 constexpr int kRestCore = 0;
 
+// Moves every OTHER thread of this process whose comm equals `comm` onto
+// `cpu`. A thread's children inherit its affinity AND its name, so a thread
+// that pins itself somewhere unusual before calling into a library that
+// spawns workers (devourer's InitWrite starts a periodic ticker) leaves
+// those workers on that core with its name on them -- which is exactly how
+// they are found again here. Returns the number moved.
+int repin_inherited_threads(const char* comm, int cpu) {
+#if defined(__linux__)
+  const long self = syscall(SYS_gettid);
+  int moved = 0;
+  DIR* d = opendir("/proc/self/task");
+  if (!d) return 0;
+  while (dirent* e = readdir(d)) {
+    if (e->d_name[0] == '.') continue;
+    const long tid = std::atol(e->d_name);
+    if (tid == self) continue;
+    char path[64], name[32] = {0};
+    std::snprintf(path, sizeof path, "/proc/self/task/%ld/comm", tid);
+    FILE* f = std::fopen(path, "r");
+    if (!f) continue;
+    if (!std::fgets(name, sizeof name, f)) name[0] = '\0';
+    std::fclose(f);
+    name[strcspn(name, "\n")] = '\0';
+    if (std::strcmp(name, comm) != 0) continue;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (sched_setaffinity(static_cast<pid_t>(tid), sizeof set, &set) == 0) ++moved;
+  }
+  closedir(d);
+  return moved;
+#else
+  (void)comm; (void)cpu;
+  return 0;
+#endif
+}
 bool two_core_target() {
 #if defined(__linux__)
   return sysconf(_SC_NPROCESSORS_ONLN) == 2;
@@ -873,6 +912,53 @@ int run_real_mode(const Config& cfg) {
     return 1;
   }
 
+
+  // Radio bring-up on its own thread, started HERE so it overlaps the venc
+  // bring-up below instead of following it. Measured 2026-09-08 (docs/
+  // boot-time-findings-2026-09-07.md, "maburd's own startup, stamped"):
+  // InitWrite is 1.73 s of power-on + firmware download + TX enable, all of
+  // it USB-bound, and it used to run strictly after venc_core_start (~1.5 s
+  // on a cold boot), with the encoder producing frames into the void for
+  // the whole of it. The two touch disjoint hardware (USB radio vs the
+  // SigmaStar MI stack), and nothing transmits until device_ready opens
+  // below, which still happens after this thread is joined and the TX
+  // power / A-MPDU writes have run on the main thread in their old order.
+  //
+  // InitWrite throws on a USB/firmware failure. Today that escapes main()
+  // and the wrapper respawns; capturing it here and rethrowing after the
+  // join keeps exactly that behaviour instead of turning it into a
+  // std::terminate inside a thread.
+  std::exception_ptr radio_init_error;
+  std::thread radio_init_thread([&]() {
+    name_thread("mbr-radio-init");
+    // Off core 0 for the duration of the bring-up. This thread inherits the
+    // main thread's kRestCore pin, and on a cold boot that core also hosts
+    // the venc bring-up (main thread) and, from ~1 s in, the encoder thread
+    // at SCHED_FIFO 50 -- InitWrite measured 2.12 s cold against 1.33 s on
+    // a warm restart, where the venc side sleeps in the kernel and it has
+    // the core to itself. kHotCore is idle until video flows (the hot
+    // thread only spins on an empty ring), so the radio borrows it and
+    // exits before there is anything to contend with.
+    if (two_core_target()) pin_self_to(kHotCore);
+    try {
+      rtl_device->InitWrite(
+          SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+    } catch (...) {
+      radio_init_error = std::current_exception();
+    }
+    // Undo the borrow for anything InitWrite left behind: devourer spawns a
+    // periodic thread inside it, and that thread inherited this thread's
+    // core-1 pin (and its name, which is how it is found). The policy is
+    // "every library thread on kRestCore"; put it back there.
+    if (two_core_target()) repin_inherited_threads("mbr-radio-init", kRestCore);
+  });
+  // Joins the bring-up thread; must run on every path out of this function
+  // that releases the USB handle, or InitWrite keeps driving a device that
+  // has been closed under it.
+  auto join_radio_init = [&]() {
+    if (radio_init_thread.joinable()) radio_init_thread.join();
+  };
+
   // Gate for DevourerSink: stays false until InitWrite() completes bring-up.
   std::atomic<bool> device_ready{false};
 
@@ -960,6 +1046,7 @@ int run_real_mode(const Config& cfg) {
     // CreateRtlDevice failure path above) — the radio is not up yet, so
     // there is nothing else to unwind.
     std::fprintf(stderr, "venc_core_start failed — exiting\n");
+    join_radio_init();
     libusb_release_interface(handle, 0);
     libusb_close(handle);
     libusb_exit(usb_ctx);
@@ -1761,6 +1848,7 @@ int run_real_mode(const Config& cfg) {
     }
   });
 
+
   // v1 only ever tunes the radio to 20 MHz — cfg.radio.width is parsed and
   // validated (config.cpp) but not otherwise consulted here. Rather than
   // silently ignoring a configured 40/80 and running at 20 MHz anyway, warn
@@ -1771,15 +1859,15 @@ int run_real_mode(const Config& cfg) {
                  cfg.radio.width);
   }
 
-  // Bring up TX FIRST and let it finish before anything transmits. InitWrite
-  // runs the full power-on + firmware download + TX-path enable and returns
-  // only once the chip is ready; StartRxLoop then runs the (blocking) RX worker
-  // with TX+RX concurrent on the same handle. Opening device_ready between the
-  // two is what keeps the hot/agent threads from clogging the bulk-OUT FIFO
-  // mid-DLFW — see DevourerSink::ready.
-  std::fprintf(stderr, "maburd bringing up TX on channel %d\n", cfg.radio.channel);
-  rtl_device->InitWrite(
-      SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+  // TX bring-up must be complete before anything transmits. InitWrite (on
+  // radio_init_thread, started right after CreateRtlDevice above) runs the
+  // full power-on + firmware download + TX-path enable and returns only
+  // once the chip is ready; StartRxLoop then runs the (blocking) RX worker
+  // with TX+RX concurrent on the same handle. Opening device_ready between
+  // the two is what keeps the hot/agent threads from clogging the bulk-OUT
+  // FIFO mid-DLFW — see DevourerSink::ready.
+  join_radio_init();
+  if (radio_init_error) std::rethrow_exception(radio_init_error);
   // Bring-up record for the non-standard MAC state requested via
   // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
   // at info, and the production cross-build compiles info out

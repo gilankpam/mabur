@@ -1,5 +1,6 @@
 /* ported from waybeam_venc f956a52:src/sensor_select.c */
 #include "sensor_select.h"
+
 #include "sdk_quiet.h"
 
 #include <stdio.h>
