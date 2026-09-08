@@ -33,8 +33,10 @@
 #include <unistd.h>  // _exit() — see the venc on_fault handler
 
 #if defined(__linux__)
+#include <dirent.h>       // repin_inherited_threads() walks /proc/self/task
 #include <pthread.h>
 #include <sched.h>  // cpu_set_t — see the core-placement policy below
+#include <sys/syscall.h>  // SYS_gettid
 #endif
 
 #include "air_clock.h"
@@ -421,6 +423,42 @@ void name_thread(const char* n) {
 constexpr int kHotCore = 1;
 constexpr int kRestCore = 0;
 
+// Moves every OTHER thread of this process whose comm equals `comm` onto
+// `cpu`. A thread's children inherit its affinity AND its name, so a thread
+// that pins itself somewhere unusual before calling into a library that
+// spawns workers (devourer's InitWrite starts a periodic ticker) leaves
+// those workers on that core with its name on them -- which is exactly how
+// they are found again here. Returns the number moved.
+int repin_inherited_threads(const char* comm, int cpu) {
+#if defined(__linux__)
+  const long self = syscall(SYS_gettid);
+  int moved = 0;
+  DIR* d = opendir("/proc/self/task");
+  if (!d) return 0;
+  while (dirent* e = readdir(d)) {
+    if (e->d_name[0] == '.') continue;
+    const long tid = std::atol(e->d_name);
+    if (tid == self) continue;
+    char path[64], name[32] = {0};
+    std::snprintf(path, sizeof path, "/proc/self/task/%ld/comm", tid);
+    FILE* f = std::fopen(path, "r");
+    if (!f) continue;
+    if (!std::fgets(name, sizeof name, f)) name[0] = '\0';
+    std::fclose(f);
+    name[strcspn(name, "\n")] = '\0';
+    if (std::strcmp(name, comm) != 0) continue;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (sched_setaffinity(static_cast<pid_t>(tid), sizeof set, &set) == 0) ++moved;
+  }
+  closedir(d);
+  return moved;
+#else
+  (void)comm; (void)cpu;
+  return 0;
+#endif
+}
 bool two_core_target() {
 #if defined(__linux__)
   return sysconf(_SC_NPROCESSORS_ONLN) == 2;
@@ -899,6 +937,15 @@ int run_real_mode(const Config& cfg) {
   std::exception_ptr radio_init_error;
   std::thread radio_init_thread([&]() {
     name_thread("mbr-radio-init");
+    // Off core 0 for the duration of the bring-up. This thread inherits the
+    // main thread's kRestCore pin, and on a cold boot that core also hosts
+    // the venc bring-up (main thread) and, from ~1 s in, the encoder thread
+    // at SCHED_FIFO 50 -- InitWrite measured 2.12 s cold against 1.33 s on
+    // a warm restart, where the venc side sleeps in the kernel and it has
+    // the core to itself. kHotCore is idle until video flows (the hot
+    // thread only spins on an empty ring), so the radio borrows it and
+    // exits before there is anything to contend with.
+    if (two_core_target()) pin_self_to(kHotCore);
     bootlog("radio InitWrite start (channel %d)", cfg.radio.channel);
     try {
       rtl_device->InitWrite(
@@ -906,7 +953,17 @@ int run_real_mode(const Config& cfg) {
     } catch (...) {
       radio_init_error = std::current_exception();
     }
-    bootlog("radio InitWrite done");
+    // Undo the borrow for anything InitWrite left behind: devourer spawns a
+    // periodic thread inside it, and that thread inherited this thread's
+    // core-1 pin (and its name, which is how it is found). The policy is
+    // "every library thread on kRestCore"; put it back there.
+    if (two_core_target()) {
+      const int n = repin_inherited_threads("mbr-radio-init", kRestCore);
+      bootlog("radio InitWrite done (%d inherited thread%s re-pinned to cpu%d)",
+              n, n == 1 ? "" : "s", kRestCore);
+    } else {
+      bootlog("radio InitWrite done");
+    }
   });
   // Joins the bring-up thread; must run on every path out of this function
   // that releases the USB handle, or InitWrite keeps driving a device that

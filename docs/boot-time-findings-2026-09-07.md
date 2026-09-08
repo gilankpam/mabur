@@ -1053,6 +1053,42 @@ printk stamps run on `sched_clock`, which on this SoC starts late (the
 process-relative stamps plus the start tick for absolutes; use dmesg only
 for ordering and for deltas within dmesg.
 
+### Core placement: `InitWrite` off core 0 — −0.55 s cold, measured
+
+`InitWrite` measured 2.04–2.12 s on a cold boot against 1.33 s on a warm
+restart, same code. The difference was company: the main thread pins
+itself to `kRestCore` (core 0) before anything spawns, so the radio
+thread inherited core 0 — where the venc bring-up runs on the main
+thread and, from ~1 s in, the encoder thread sits at SCHED_FIFO 50. Warm,
+the venc side sleeps 10 s in `MI_DEVICE_Open` and the radio has the core
+alone. Core 1 belongs to the hot thread, which only spins on an empty
+ring until video flows, so the radio thread now borrows it for the
+bring-up (`pin_self_to(kHotCore)` at the top of `radio_init_thread`).
+
+One trap, found on the first warm restart: **devourer spawns a periodic
+thread inside `InitWrite`**, and a child inherits both its parent's
+affinity and its name — so a `mbr-radio-init` thread was still alive on
+core 1 a minute after the join, sleeping in `hrtimer_nanosleep`. That is
+a devourer ticker on the hot core, against the "every library thread on
+`kRestCore`" policy. `repin_inherited_threads("mbr-radio-init",
+kRestCore)` walks `/proc/self/task` after `InitWrite` returns and moves
+anything still carrying the name; the stamp reports the count (1).
+
+Cold boot after the change, n = 1, `venc-enc` on cpu0, `mbr-hot` on cpu1,
+the ticker on cpu0, `state=2`, no respawns:
+
+| marker | before | after |
+|---|---|---|
+| `InitWrite` | 2.04–2.12 | **1.53** |
+| venc bring-up done | +1.75 / +1.84 | **+1.57** (it stopped sharing core 0 too) |
+| TX gate open | +2.92 / +3.01 | **+2.43** |
+| **LINKED — video starts** | **+3.09** | **+2.51** |
+
+`maburd` → LINKED is 2.5 s now, 2.4 of it radio: 0.85 USB port reset +
+1.53 `InitWrite`. The remaining 0.2 s cold-vs-warm gap in `InitWrite` is
+unattributed (first-ever firmware load, or residual contention on the
+USB/libusb event thread, which stays on core 0).
+
 ### Why the USB port reset is not overlapped too
 
 The 0.80 s `claim_interface_then_reset` ahead of `CreateRtlDevice` looks
@@ -1081,7 +1117,7 @@ measured on the drone and the GS on 2026-09-08 (the drone still runs the
 |---|---|---|
 | U-Boot, no Ethernet (flight config) | ~5.5 | serial rig, stock U-Boot (`.95`); ~2.8 with a cable |
 | kernel → `S96mabur` starts `maburd` | 5.13–5.26 | `/proc/<pid>/stat` start tick |
-| `maburd` start → TX gate open | 2.92–3.01 | boot stamps (overlapped build) |
+| `maburd` start → TX gate open | 2.43 (was 2.92–3.01 before the core-1 pin) | boot stamps (overlapped build) |
 | TX gate → first packet from GS → LINKED | **0.003 → 0.08** | boot stamps, cold and warm |
 | first AU on GS → first IDR AU | 0 (3 of 5 resumes) / 1.0 (2 of 5) | `au.log` `nal0`=32 |
 | first AU on GS → first displayed frame | **~1.6** | `lat.log` first window |
