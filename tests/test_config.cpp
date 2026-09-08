@@ -42,78 +42,99 @@ std::string what_of(const std::function<void()>& fn) {
 
 }  // namespace
 
-TEST(load_config_default_file_matches_struct_defaults) {
+TEST(load_config_default_file_is_the_flight_config) {
   Config cfg = load_config(default_config_path());
   Config def;  // struct defaults
 
+  // What this test is for: `bundle/mabur.default.toml` is not a "sensible
+  // starting point" any more. Since 2026-09-08 it is a verbatim copy of the
+  // drone's own /etc/mabur.toml, and openipc-builder bakes it into the image
+  // as /etc/mabur.toml -- so a fresh flash boots the flight configuration
+  // with no hand-editing. That makes the file a deployment artifact, and this
+  // test the change-detector on it: every literal below is a value someone
+  // measured and flew, with the doc that justifies it. Changing one here
+  // without changing the drone (or the reverse) is the bug this catches.
+  //
+  // It therefore checks against `def` only where bundle and struct still
+  // legitimately agree; everywhere else it pins the flown literal.
+
   CHECK(cfg.radio.usb_vid == def.radio.usb_vid);
   CHECK(cfg.radio.usb_pid == def.radio.usb_pid);
-  CHECK(cfg.radio.channel == def.radio.channel);
+  CHECK(cfg.radio.channel == 136);
   CHECK(cfg.radio.width == def.radio.width);
-  CHECK(cfg.radio.power_mode == "none");
+  // Was "none" (efuse table untouched) while the bundle was a neutral seed.
+  // The flown config runs the adaptive per-rate offset mode; wall_margin_db
+  // is the only lever that moves TX power in it (docs/txagcbench.md).
+  CHECK(cfg.radio.power_mode == "offset");
 
-  // Default bundle ships power-inert ("none" = efuse/kernel per-rate table
-  // untouched). "offset" is the adaptive opt-in at deploy time. Bundle
-  // carries unit's measured wall-equalization values (Task 9) alongside
-  // the inert power mode.
+  // Unit's measured wall-equalization (Task 9), unchanged by the cutover.
   CHECK((cfg.radio.rate_walls_idx ==
          std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
   CHECK(cfg.radio.legacy_wall_idx == 91);
   CHECK(cfg.radio.wall_margin_db == 1.0);
   CHECK(cfg.radio.base_ref_idx == 53);
 
-  // The bundle intentionally diverges from struct defaults for fec, so check
-  // against the bundle's actual values rather than the struct defaults used
-  // for everything else. 332/w32/bpb4 is the 2026-07-29 geometry: same CPU/
-  // air profile as the 2026-07-25 gated 328 (docs/fec-symbol-size-328.md),
-  // shifted +4 because 328x4 = 1396 B air frames sit exactly in the
-  // mcs6+STBC PHY hole (docs/mcs6-bench-anomaly.md — air MPDUs 1392-1400 B
-  // vanish whole at RX). Any new size needs the all-8-MCS hole-scan.
+  // 332/w32/bpb4 is the 2026-07-29 geometry: same CPU/air profile as the
+  // 2026-07-25 gated 328 (docs/fec-symbol-size-328.md), shifted +4 because
+  // 328x4 = 1396 B air frames sit exactly in the mcs6+STBC PHY hole
+  // (docs/mcs6-bench-anomaly.md -- air MPDUs 1392-1400 B vanish whole at RX).
+  // Any new size needs the all-8-MCS hole-scan.
   CHECK((cfg.fec.symbol_size == std::array<int, 2>{332, 332}));
   CHECK(cfg.fec.window == 32);
   CHECK((cfg.fec.blocks_per_body == std::array<int, 2>{4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
+  // Grouped submit, paired with ampdu.max_num 6 below: agg6 + feed_batch 6
+  // bought fec -2.3/-2.7 ms with a flat p99 (docs/observability.md A-MPDU).
+  CHECK(cfg.fec.feed_batch == 6);
   CHECK(cfg.fec.flush_ms == 25);
 
-  // waybeam is retired (Task B5). Since the 2026-08-29 flag day the bundle
-  // carries the config that was actually validated on hardware and deployed
-  // (1000/10000/0.70, roi_qp_low -24) rather than the pre-fold-in waybeam-era
-  // tuning it was seeded with — same "bundle diverges from struct defaults on
-  // purpose" pattern as fec above (EncoderCfg compiles 2000/10000/0.60/+8).
-  // NOTE the sign: apply_roi_qp() takes a QP OFFSET for the centre region, so
-  // the useful low-bitrate value is NEGATIVE (better centre quality). The
-  // struct default +8 has the opposite sign and is left alone deliberately —
-  // nothing deployed relies on it, and changing a compiled default is not a
-  // flag-day concern.
+  // 16 Mbps ceiling and airtime_budget 0.5: 0.5 is what killed the air-clock
+  // drain (peak 47 -> 20 ms, settle 1.9 -> 0.3 s). NOTE the sign of
+  // roi_qp_low: apply_roi_qp() takes a QP OFFSET for the centre region, so
+  // the useful low-bitrate value is NEGATIVE. It is still carried even though
+  // venc.roi is off (below) -- turning ROI back on must not also need the
+  // offset re-derived. The struct default has the opposite sign and is left
+  // alone deliberately; changing a compiled default is not a flag day.
   CHECK(cfg.encoder.bitrate_min_kbps == 1000);
-  CHECK(cfg.encoder.bitrate_max_kbps == 10000);
-  CHECK(cfg.encoder.airtime_budget == 0.70);
+  CHECK(cfg.encoder.bitrate_max_kbps == 16000);
+  CHECK(cfg.encoder.airtime_budget == 0.50);
   CHECK(cfg.encoder.roi_threshold_kbps == 3000);
   CHECK(cfg.encoder.roi_qp_low == -24);
   CHECK(cfg.encoder.roi_qp_normal == 0);
 
-  // air_clock: bundle carries the observe-only defaults (spec 2026-09-06).
-  CHECK(cfg.air_clock.shed_ms == 0);
-  CHECK(cfg.air_clock.efficiency == 0.7);
+  // air_clock: ARMED. shed 25 / efficiency 0.73 is the combination that flew
+  // clean -- 14 drops, all at rung transitions, 0 phantom (docs/airtime-model.md).
+  CHECK(cfg.air_clock.shed_ms == 25);
+  CHECK(cfg.air_clock.efficiency == 0.73);
   CHECK(cfg.air_clock.body_us == 0);
 
-  // venc: boot-time encoder pipeline config (Task B5), also bundle-pinned
-  // rather than struct-default (struct defaults are all-zero/empty, not a
-  // bootable encoder configuration).
+  // venc: boot-time encoder pipeline config, bundle-pinned rather than
+  // struct-default (struct defaults are all-zero/empty, not a bootable
+  // encoder configuration).
   CHECK(cfg.venc.core.sensor_bin ==
         std::string("/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"));
   CHECK(cfg.venc.core.width == 1920);
   CHECK(cfg.venc.core.height == 1080);
   CHECK(cfg.venc.core.fps == 60);
   CHECK(cfg.venc.core.gop_s == 2.0);
-  CHECK(cfg.venc.core.qp_delta == -4);
-  CHECK(cfg.venc.core.max_ipprop == 0);
-  CHECK(cfg.venc.core.intra_refresh_rows == 4);
+  CHECK(cfg.venc.core.qp_delta == 4);
+  CHECK(cfg.venc.core.max_ipprop == 2);
+  // I-frame QP floor: the only knob that caps IDR size (bench 2026-09-06,
+  // min_iqp 44 -> 2.2 kB IDRs vs 4.5-24 kB). docs/iqp-cap-findings-2026-09-06.md.
+  CHECK(cfg.venc.core.min_iqp == 44);
+  // 3, not the 1080p-derived 4: the drone encodes 720p, where the
+  // rally-equivalent row count is 3 (docs/venc-resilience).
+  CHECK(cfg.venc.core.intra_refresh_rows == 3);
   CHECK(cfg.venc.core.intra_refresh_qp == 36);
+  // P-frame size cap, 200 % (docs/handover-venc-overshoot-2026-09-03.md).
+  CHECK(cfg.venc.core.superframe_p_pct == 200);
   CHECK(cfg.venc.core.ref_base == 1);
   CHECK(cfg.venc.core.ref_enhance == 1);
   CHECK(cfg.venc.core.ref_pred == true);
-  CHECK(cfg.venc.core.roi_enabled == true);
+  // ROI OFF since 2026-09-06: roi_qp_low -24 was being applied to the
+  // SetChnAttr IDR at a rung-0 demote and blew it up 1.7-2.6x
+  // (docs/link-adaptation.md, rung-0 demote IDR).
+  CHECK(cfg.venc.core.roi_enabled == false);
   CHECK(cfg.venc.core.roi_steps == 2);
   CHECK(cfg.venc.core.roi_center == 0.4);
   CHECK(cfg.venc.core.ae_fps == 15);
@@ -122,13 +143,24 @@ TEST(load_config_default_file_matches_struct_defaults) {
   CHECK(cfg.venc.debug_port == 8301);
 
   CHECK(cfg.link.vtx_id == def.link.vtx_id);
-  CHECK(cfg.link.failsafe_ms == def.link.failsafe_ms);
+  // 3 s, not the compiled 1 s: a 1 s failsafe fired on ordinary rung
+  // transitions in flight.
+  CHECK(cfg.link.failsafe_ms == 3000);
   CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
+  // MSP OSD is on in flight (stream_id 4), 3 Hz.
+  CHECK(cfg.msp.enable == true);
+  CHECK(cfg.msp.serial == std::string("/dev/ttyS2"));
+  CHECK(cfg.msp.update_rate_hz == 3);
+
+  // A-MPDU agg6; see fec.feed_batch above. agg31 cascades residuals.
+  CHECK(cfg.ampdu.max_num == 6);
+  CHECK(cfg.ampdu.max_time == 32);
+
   auto layers = cfg.uep_layers();
   // Literal passthrough (Task 3): no uep_layer_overhead ladder translation
-  // left — every layer's overhead is exactly fec.base_overhead.
+  // left -- every layer's overhead is exactly fec.base_overhead.
   CHECK(layers[0].fec.overhead == cfg.fec.base_overhead);
   CHECK(layers[1].fec.overhead == cfg.fec.base_overhead);
 }
