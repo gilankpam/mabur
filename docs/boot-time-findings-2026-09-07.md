@@ -695,6 +695,11 @@ Items 1-3 are measured; the rest are estimates.
      change.
 8. **Shrink or relocate the jffs2 overlay** — up to ~1.5 s, but it holds the
    config and the imx415 ISP tuning bin, so those need a home first.
+9. **Skip the USB port reset on a cold boot** — 0.85 s, measured;
+   **PARKED 2026-09-08**, see "The USB port reset — parked" below for
+   the mechanism, the change, and the soak it needs before it is believed.
+10. **The GS player's ~1.6 s from first AU to first picture** — measured,
+    unattributed, GS side; not touched by anything in this document.
 
 ~~Still worth doing before 4-8: **timestamp `maburd`'s own log lines**~~ —
 **DONE 2026-09-08**, `drone/src/boot_trace.h`; the section below is what
@@ -702,10 +707,11 @@ it found.
 
 Realistic floor with this SoC, the vendor ISP blobs and a USB dongle: 5-6 s
 from power to video. Items 1-3 alone are 5.2 s of measured, mostly cheap
-savings against that, and item 4 is a further 0.87 s inside `maburd` on a
-cold boot (1.73 warm), measured and deployed. `maburd`'s own cold path is
-now 2.92 s, of which 2.85 s is the radio (USB reset 0.81 + `InitWrite`
-2.04) — the next cut there is below mabur, in devourer.
+savings against that. Inside `maburd` — the only part deployed on the
+drone as of 2026-09-08 — item 4 plus the core-1 pin and the link-up IDR
+took `maburd` start → decodable frame on the GS from ~3.8 s to ~2.6 s,
+measured and deployed. Of the 2.5 s to LINKED, 2.4 is the radio: 0.85
+USB port reset (item 9, parked) + 1.53 `InitWrite` (devourer).
 
 ### squashfs LZO — measured
 
@@ -1117,21 +1123,50 @@ Against 0–2 s before. The link-up path is identical cold and warm, so no
 cold boot was spent on it. Cost: at most one extra IDR at link-up, at
 the MAX_RANGE rung, ~2 kB at `min_iqp` 44.
 
-### Why the USB port reset is not overlapped too
+### The USB port reset — parked
 
-The 0.80 s `claim_interface_then_reset` ahead of `CreateRtlDevice` looks
-like the next candidate, but on a cold boot it does not pay. After the
-`InitWrite` overlap the radio path is 0.80 + 1.33 = 2.1 s and the venc
-bring-up ~0.6–1.5 s, so the radio is already the critical path:
-overlapping the reset gives `max(2.1, venc)` where today is
-`0.8 + max(venc, 1.33)` — identical unless venc exceeds 1.33 s, and at
-most 0.2 s if it does. It would also move every USB open/claim/create
-failure to after the encoder has started, which is a new failure shape
-for a `return 1`. Not built. What is left on `maburd`'s cold-boot critical
-path is the USB port reset itself (whether a freshly enumerated dongle
-needs one is a devourer question — it is there because a radio that
-comes up deaf after a restart is worse than 0.8 s) and the firmware
-download inside `InitWrite`, both below mabur.
+`claim_interface_then_reset(…, do_reset=true)` costs 0.85 s on the
+drone's cold path, and after the core-1 pin it is 35 % of `maburd` →
+LINKED. Two questions were asked of it and both were answered on
+2026-09-08; the change itself is **parked**, not built.
+
+**Overlapping it with the venc bring-up does not pay.** The radio path is
+0.85 + 1.53 = 2.4 s and the venc bring-up 0.7 s, so the radio is already
+the critical path: moving the reset onto the thread gives `max(2.4,
+venc)` where today is `0.85 + max(venc, 1.53)` — the same number — and
+would move every USB open/claim/create failure to after the encoder has
+started, a new failure shape for a `return 1`.
+
+**Skipping it on a cold boot would.** Read from devourer's
+`UsbOpen.cpp`: the function takes an advisory lock, detaches the kernel
+driver, sets configuration 1 and claims interface 0 — microseconds —
+then calls `libusb_reset_device()` and re-claims. There are no sleeps in
+devourer; the 0.8 s is the reset itself: the kernel drops the port, the
+dongle re-enumerates (the `Plug in USB Port1` / `reset high-speed USB
+device` pair in dmesg at every `maburd` start), descriptors are re-read
+and libusb re-attaches. Devourer's own comment calls it "re-runs the
+chip's own boot". It exists so a *restarted* `maburd` never inherits a
+chip the previous process left half-configured — the deaf-radio-after-
+restart history from July — and devourer already skips it for the
+Kestrel (11ax) family, where the reset *causes* a bad state, so "always
+reset" is a per-chip judgment, not a law. On a battery plug the kernel
+enumerated the dongle ~4 s before `maburd` opens it and nothing has
+touched it; the reset re-runs a chip boot that just happened, and
+`InitWrite` does the full power-on sequence afterwards regardless.
+
+**The change, when it is taken up:** reset only when this is not the
+first `maburd` since boot — a marker in `/tmp` (tmpfs, gone on reboot)
+written by every instance, and `do_reset = marker_existed`. Cold boot
+skips it (−0.8 s), every restart keeps it. About ten lines in
+`run_real_mode`.
+
+**Why it is parked:** it is the one candidate that changes what the
+radio path *does* rather than when, and the failure it guards against —
+a radio that comes up deaf — is exactly the kind a single clean boot
+cannot rule out. It needs ≥10 cold power-cycles with LINKED and video
+confirmed on each (the boot stamps for LINKED, `tools/bench/ausniff.py`
+on the GS for video), scripted `reboot`s being an acceptable stand-in.
+Not one sample, the way the affinity pin was accepted.
 
 ### Where battery-to-picture actually goes — why −0.87 s is invisible on a stopwatch
 
@@ -1145,11 +1180,11 @@ measured on the drone and the GS on 2026-09-08 (the drone still runs the
 |---|---|---|
 | U-Boot, no Ethernet (flight config) | ~5.5 | serial rig, stock U-Boot (`.95`); ~2.8 with a cable |
 | kernel → `S96mabur` starts `maburd` | 5.13–5.26 | `/proc/<pid>/stat` start tick |
-| `maburd` start → TX gate open | 2.43 (was 2.92–3.01 before the core-1 pin) | boot stamps (overlapped build) |
+| `maburd` start → TX gate open | 2.43 (was 3.79 serial, 2.92–3.01 overlapped, before the core-1 pin) | boot stamps |
 | TX gate → first packet from GS → LINKED | **0.003 → 0.08** | boot stamps, cold and warm |
 | first AU on GS → first IDR AU | ≤0.11 (was 0 or 1.0 by GOP luck; fixed, see below) | `au.log` `nal0`=32 |
 | first AU on GS → first displayed frame | **~1.6** | `lat.log` first window |
-| **battery → picture** | **~15** | sum; matches the stopwatch |
+| **battery → picture** | **~14 (no cable) / ~11.5 (cable)** — was ~15/16 before 2026-09-08 | sum; matches the stopwatch |
 
 Three things this settles:
 
@@ -1162,11 +1197,10 @@ Three things this settles:
 - **The player, not the link, owns the last 1.6 s.** In the three most
   recent resumes the very first AU was already an IDR, and the first
   displayed frame still came 1.6 s later. Two earlier resumes additionally
-  waited 1.0 s for the next GOP IDR: DISC-driven LINKED entry never calls
-  `request_idr()` — only the RCF-driven path does (`rc_agent.cpp:449`) —
-  so whether the first sent frame is an IDR is GOP phase. Both are
-  GS/player-side or one-line drone-side items, and both are bigger than
-  what was saved in `maburd`. Neither is touched here.
+  waited 1.0 s for the next GOP IDR because DISC-driven LINKED entry
+  never requested one — **fixed the same day**, see "IDR on DISC-driven
+  LINKED entry" above. The player's 1.6 s is GS-side and untouched
+  (ranked item 10).
 - **The biggest leg is still U-Boot's auto-negotiation on the drone**,
   because the rebuilt U-Boot has only been flashed on `.95`. In the field
   there is no cable, so the drone pays the 4.0 s timeout on every battery
@@ -1174,10 +1208,13 @@ Three things this settles:
   pad is destroyed — that is the real blocker on the number the pilot
   sees, and it has been since the first day of this document.
 
-On the numbers a stopwatch can resolve: 15.9 → 15.0 s is the change that
-shipped. 15 → ~9 s is what items 1-3 would do on the drone once the
-console problem is solved; the two GS-side items above are another
-1.5–2.5 s after that.
+On the numbers a stopwatch can resolve, end of 2026-09-08: the drone's
+share went from ~3.8 s to ~2.6 s (`maburd` start → decodable frame), and
+the link-up IDR took another 0–2 s of GOP luck off the top, so battery →
+picture is ~14 s without a cable against ~16 before. 14 → ~9 s is what
+items 1-3 would do on the drone once the console problem is solved; the
+parked USB reset (item 9) and the player (item 10) are another ~2.4 s
+after that.
 
 ### Two hazards found on the way
 
