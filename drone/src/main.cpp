@@ -40,7 +40,6 @@
 #endif
 
 #include "air_clock.h"
-#include "boot_trace.h"
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -868,7 +867,7 @@ int run_real_mode(const Config& cfg) {
     libusb_exit(usb_ctx);
     return 1;
   }
-  bootlog("usb opened %04x:%04x", cfg.radio.usb_vid, pid);
+  std::fprintf(stderr, "opened device %04x:%04x\n", cfg.radio.usb_vid, pid);
 
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock;
   rc = devourer::claim_interface_then_reset(handle, 0, logger, /*do_reset=*/true, usb_lock);
@@ -878,10 +877,6 @@ int run_real_mode(const Config& cfg) {
     libusb_exit(usb_ctx);
     return 1;
   }
-  // Stamped separately from the open above because this call includes a USB
-  // port reset and re-enumeration, whose cost was never measured — the
-  // question of whether it is worth overlapping too turns on this delta.
-  bootlog("usb interface claimed + reset");
 
   // Jaguar3 TX+RX on one claimed handle: enable_with_tx makes InitWrite keep
   // the RX filters open so a later StartRxLoop can run concurrently with TX
@@ -917,7 +912,6 @@ int run_real_mode(const Config& cfg) {
     return 1;
   }
 
-  bootlog("rtl device created");
 
   // Radio bring-up on its own thread, started HERE so it overlaps the venc
   // bring-up below instead of following it. Measured 2026-09-08 (docs/
@@ -946,7 +940,6 @@ int run_real_mode(const Config& cfg) {
     // thread only spins on an empty ring), so the radio borrows it and
     // exits before there is anything to contend with.
     if (two_core_target()) pin_self_to(kHotCore);
-    bootlog("radio InitWrite start (channel %d)", cfg.radio.channel);
     try {
       rtl_device->InitWrite(
           SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
@@ -957,13 +950,7 @@ int run_real_mode(const Config& cfg) {
     // periodic thread inside it, and that thread inherited this thread's
     // core-1 pin (and its name, which is how it is found). The policy is
     // "every library thread on kRestCore"; put it back there.
-    if (two_core_target()) {
-      const int n = repin_inherited_threads("mbr-radio-init", kRestCore);
-      bootlog("radio InitWrite done (%d inherited thread%s re-pinned to cpu%d)",
-              n, n == 1 ? "" : "s", kRestCore);
-    } else {
-      bootlog("radio InitWrite done");
-    }
+    if (two_core_target()) repin_inherited_threads("mbr-radio-init", kRestCore);
   });
   // Joins the bring-up thread; must run on every path out of this function
   // that releases the USB handle, or InitWrite keeps driving a device that
@@ -1053,7 +1040,6 @@ int run_real_mode(const Config& cfg) {
     _exit(3);
   };
   vcb.user = &agent;
-  bootlog("venc bring-up start");
   if (venc_core_start(&cfg.venc.core, &vcb) != 0) {
     // Boot failure, not a transient: the wrapper's 2 s respawn is the retry.
     // Release the USB device on the way out (same shape as the
@@ -1066,7 +1052,6 @@ int run_real_mode(const Config& cfg) {
     libusb_exit(usb_ctx);
     return 3;
   }
-  bootlog("venc bring-up done");
 #endif
   // After venc_core_start: RcAgent's first tick (below) already commands a
   // bitrate through the verbs, so the ring/stats the debug endpoint reads
@@ -1074,7 +1059,6 @@ int run_real_mode(const Config& cfg) {
   // and disables itself, never fatal (see debug_http.h).
   debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality,
                    &ov_override);
-  bootlog("debug http started (port %d)", cfg.venc.debug_port);
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};
@@ -1128,23 +1112,12 @@ int run_real_mode(const Config& cfg) {
   // RX callback: pulls RC frames (rc::frame_type >= 0) off the air and
   // queues them for the agent thread. Runs on the main thread (inside
   // rtl_device->Init's blocking RX loop).
-  // Boot-timeline stamps for the rendezvous: the TX gate opening is not the
-  // end of "time to video" -- nothing is sent until an RC frame from the GS
-  // takes RcAgent to LINKED, and that needs the radio to actually hear one.
-  // One line each per process (RX thread; the flags are only ever set).
-  std::atomic<bool> first_rx_stamped{false};
-  std::atomic<bool> first_rc_stamped{false};
   auto rx_callback = [&](const Packet& pkt) {
     rx_beat.fetch_add(1, std::memory_order_relaxed);
-    if (!first_rx_stamped.exchange(true, std::memory_order_relaxed))
-      bootlog("first packet received by the RX loop (%zu bytes, crc_err=%d)",
-              pkt.Data.size(), pkt.RxAtrib.crc_err ? 1 : 0);
     if (pkt.Data.size() < kDot11HeaderLen + 4) return;
     const uint8_t* body = pkt.Data.data() + kDot11HeaderLen;
     size_t body_len = pkt.Data.size() - kDot11HeaderLen;
     if (rc::frame_type(body, body_len) >= 0) {
-      if (!first_rc_stamped.exchange(true, std::memory_order_relaxed))
-        bootlog("first RC frame received (type %d)", rc::frame_type(body, body_len));
       rc_queue.push(body, body_len);
       // Uplink EMAs feed off CRC-clean RC frames only — a corrupt frame's
       // attrib (rssi/snr) is not a trustworthy sample.
@@ -1288,9 +1261,6 @@ int run_real_mode(const Config& cfg) {
     // diff here; the maxima reset inside the take.
     SwEncoder::SwFecGauge fec_gauge_prev[UepEncoder::kNumStreams]{};
 
-    // One-shot boot stamp, hot-thread-local: see the use site in the loop.
-    bool first_frame_stamped = false;
-
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
       const uint64_t t0_us = now_steady_us();
@@ -1339,15 +1309,6 @@ int run_real_mode(const Config& cfg) {
       int n = fsrc.read(fbuf.data(), fbuf.size(), 5, &meta);
       const uint64_t t_read_us = now_steady_us();
       if (n > 0) {
-        // The other end of the window docs/boot-time-findings-2026-09-07.md
-        // could only bound indirectly: the first frame actually out of the
-        // venc ring, i.e. the encoder is producing, whether or not the TX
-        // gate is open yet. One line per process, so it costs nothing at
-        // video rate.
-        if (!first_frame_stamped) {
-          first_frame_stamped = true;
-          bootlog("first encoded frame out of the venc ring (%d bytes)", n);
-        }
         if (fsrc.reattach_count() != last_reattach) {
           last_reattach = fsrc.reattach_count();
           pipe.mark_discontinuity();  // joined a new ring mid-GOP
@@ -1705,10 +1666,8 @@ int run_real_mode(const Config& cfg) {
         health.txq_depth = txq.depth();
         health.txq_cap = kTxQueueCap;
         agent.tick(now, health);
-        if (agent.take_link_established()) {
+        if (agent.take_link_established())
           link_up_discont.store(true, std::memory_order_relaxed);
-          bootlog("link established (RcAgent LINKED) -- video starts");
-        }
 
         // Watchdog: after an initial grace period, a heartbeat going stale for
         // > stale_ms means the corresponding loop is wedged — EXCEPT rx_beat,
@@ -1889,7 +1848,6 @@ int run_real_mode(const Config& cfg) {
     }
   });
 
-  bootlog("worker threads spawned");
 
   // v1 only ever tunes the radio to 20 MHz — cfg.radio.width is parsed and
   // validated (config.cpp) but not otherwise consulted here. Rather than
@@ -1910,7 +1868,6 @@ int run_real_mode(const Config& cfg) {
   // FIFO mid-DLFW — see DevourerSink::ready.
   join_radio_init();
   if (radio_init_error) std::rethrow_exception(radio_init_error);
-  bootlog("radio bring-up joined");
   // Bring-up record for the non-standard MAC state requested via
   // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
   // at info, and the production cross-build compiles info out
@@ -1945,7 +1902,6 @@ int run_real_mode(const Config& cfg) {
     // sticky across retunes, so zero it explicitly rather than assuming
     // whatever a prior process or bench tool left in the chip.
     rtl_device->SetTxPowerOffsetQdb(0);
-    bootlog("tx power table programmed (offset mode)");
   }
 
   // A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md): one devourer
@@ -1981,13 +1937,9 @@ int run_real_mode(const Config& cfg) {
                  "maburd radio: A-MPDU OFF (ampdu.max_num=0) — QoS-Data "
                  "singles\n");
   }
-  bootlog("A-MPDU mode programmed");
 
   device_ready.store(true, std::memory_order_release);
-  // The TX gate opens HERE, ~0.1 s before the RX-loop line below is printed
-  // — video is already flowing at this stamp, which is why this one, not the
-  // RX line, is the end marker for "time to first possible frame on air".
-  bootlog("TX gate open — entering RX loop on channel %d", cfg.radio.channel);
+  std::fprintf(stderr, "maburd entering RX loop on channel %d\n", cfg.radio.channel);
   rtl_device->StartRxLoop(rx_callback);
 
   // Init() returns once g_devourer_should_stop is set (SIGINT/SIGTERM) or the
@@ -2027,12 +1979,6 @@ void print_usage(const char* argv0) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  // First statement in the process: every "[boot +S.mmm]" stamp below is
-  // relative to here, so the timeline read out of /tmp/mabur.log measures
-  // maburd's own startup and nothing before it. See boot_trace.h for why the
-  // log rather than a console.
-  boot_trace_init();
-
   std::string cfg_path;
   bool dry_run = false;
   std::string in_path, out_path, rc_in_path;
@@ -2088,7 +2034,6 @@ int main(int argc, char** argv) {
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
                cfg.fec.blocks_per_body[0], cfg.fec.blocks_per_body[1],
                cfg.fec.window);
-  bootlog("config loaded (%s)", cfg_path.c_str());
 
   if (dry_run) {
     if (in_path.empty() || out_path.empty()) {

@@ -1,8 +1,6 @@
 /* ported from waybeam_venc f956a52:src/star6e_runtime.c */
 #include "star6e_runtime.h"
 
-#include "boot_trace.h"
-
 #include "pipeline_common.h"
 #include "sdk_quiet.h"
 #include "star6e.h"
@@ -404,7 +402,6 @@ int star6e_runtime_init(Star6eRunnerContext *ctx)
 		return -1;
 	}
 
-	bootlog("venc: MI libraries dlopened");
 
 	sdk_quiet_begin(&g_sdk_quiet);
 	ret = MI_SYS_Init();
@@ -415,7 +412,6 @@ int star6e_runtime_init(Star6eRunnerContext *ctx)
 		return ret;
 	}
 	ctx->system_initialized = 1;
-	bootlog("venc: MI_SYS_Init done");
 
 	/* Always, before any VIF/VPE/ISP bring-up: reconcile NPU driver state a
 	 * predecessor may have poisoned.  A process that ran the i6e IPU
@@ -435,16 +431,13 @@ int star6e_runtime_init(Star6eRunnerContext *ctx)
 	 * (waybeam_venc f956a52:src/star6e_runtime.c star6e_runner_init,
 	 * HISTORY 0.53.0/0.54.0.) */
 	(void)star6e_ipu_scrub();
-	bootlog("venc: IPU scrub done");
 
 	ret = star6e_pipeline_start(&ctx->ps, &ctx->cfg, &g_sdk_quiet);
 	if (ret != 0)
 		return ret;
 	ctx->pipeline_started = 1;
-	bootlog("venc: pipeline started");
 
 	ret = star6e_runtime_apply_startup_controls(ctx);
-	bootlog("venc: startup controls applied");
 	return ret;
 }
 

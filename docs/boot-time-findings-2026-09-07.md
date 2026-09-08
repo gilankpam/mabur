@@ -924,12 +924,22 @@ Two traps when rebuilding this incrementally rather than through
 
 ## maburd's own startup, stamped — 2026-09-08
 
-`maburd` now prints `[boot +S.mmm] …` lines (`drone/src/boot_trace.h`,
-monotonic since the first statement of `main()`) at every stage boundary
-of its own bring-up, including inside the venc code, and writes them to a
-private dup of stderr so the venc's `sdk_quiet` redirects cannot swallow
-them. They land in `/tmp/mabur.log`, which is the point: the drone has no
-console, but the log survives and is readable over ssh after the fact.
+For this investigation `maburd` printed `[boot +S.mmm] …` lines
+(`drone/src/boot_trace.h`, monotonic since the first statement of
+`main()`) at every stage boundary of its own bring-up, including inside
+the venc code, written to a private dup of stderr so the venc's
+`sdk_quiet` redirects could not swallow them. They landed in
+`/tmp/mabur.log`, which was the point: the drone has no console, but the
+log survives and is readable over ssh after the fact.
+
+**The stamps were removed again on 2026-09-08** once the measurements
+below were taken (operator's call: no debug trace in the shipped code).
+To re-measure, cherry-pick `7eaab01` (stage lines), `4e51c7d` (venc
+internals + the `sdk_quiet`-proof writer) and the rendezvous stamps from
+`299323f` onto a scratch branch, build, and run from `/tmp` as under
+"Reproducing" below; nothing else in those commits is needed. The
+affinity change (`d18938d`) and the `InitWrite` overlap (`1a78ccf`) are
+code, not trace, and stay.
 
 Measured on the drone (`192.168.10.152`) by running the stamped binary
 from `/tmp` with the wrapper stopped — i.e. a **warm restart**, the thing

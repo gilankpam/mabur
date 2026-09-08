@@ -1,8 +1,6 @@
 /* ported from waybeam_venc f956a52:src/star6e_pipeline.c */
 #include "star6e_pipeline.h"
 
-#include "boot_trace.h"
-
 #include "star6e_awb.h"
 
 #include "codec_types.h"
@@ -105,19 +103,14 @@ static void star6e_pipeline_pre_init_teardown(void)
 		.module = I6_SYS_MOD_VENC, .device = 0, .channel = 0, .port = 0 };
 
 	(void)MI_SYS_UnBindChnPort(&vpe_port, &venc_port);
-	bootlog("venc: pre-init: unbind vpe->venc");
 	(void)MI_SYS_UnBindChnPort(&vif_port, &vpe_port);
-	bootlog("venc: pre-init: unbind vif->vpe");
 	(void)MI_VENC_StopRecvPic(0);
-	bootlog("venc: pre-init: VENC StopRecvPic");
 	(void)MI_VENC_DestroyChn(0);
-	bootlog("venc: pre-init: VENC DestroyChn");
 
 	/* VPE: probe channel existence before teardown — MI_VPE_DisablePort
 	 * calls exit(127) when called on a non-existent channel under dlopen. */
 	MI_VPE_ChannelAttr_t probe_attr;
 	if (MI_VPE_GetChannelAttr(0, &probe_attr) == 0) {
-		bootlog("venc: pre-init: VPE channel exists");
 		/* port1 too, not just port0.  An unclean exit can leave the
 		 * second-scaler tap enabled and the teardown below would then
 		 * run with a live port still registered. */
@@ -126,19 +119,12 @@ static void star6e_pipeline_pre_init_teardown(void)
 			fprintf(stderr, "[venc] pre-init: stale VPE port1 was "
 				"enabled — disabled\n");
 		(void)MI_VPE_DisablePort(0, 0);
-		bootlog("venc: pre-init: VPE ports disabled");
 		(void)MI_VPE_StopChannel(0);
-		bootlog("venc: pre-init: VPE StopChannel");
 		(void)MI_VPE_DestroyChannel(0);
-		bootlog("venc: pre-init: VPE DestroyChannel");
-	} else {
-		bootlog("venc: pre-init: no VPE channel (probe)");
 	}
 
 	(void)MI_VIF_DisableChnPort(0, 0);
-	bootlog("venc: pre-init: VIF DisableChnPort");
 	(void)MI_VIF_DisableDev(0);
-	bootlog("venc: pre-init: VIF DisableDev");
 }
 
 static int star6e_pipeline_disable_userspace3a(const IspRuntimeLib *lib,
@@ -951,7 +937,6 @@ static int select_and_configure_sensor(Star6ePipelineState *state,
 	sdk_quiet_begin(sdk_quiet);
 	star6e_pipeline_pre_init_teardown();
 	sdk_quiet_end(sdk_quiet);
-	bootlog("venc: pre-init teardown done");
 
 	ret = sensor_select(&pconf->sensor_cfg, &pconf->sensor_strategy,
 		&state->sensor);
@@ -1342,14 +1327,12 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 	ret = select_and_configure_sensor(state, &pconf, sdk_quiet);
 	if (ret != 0)
 		return ret;
-	bootlog("venc: sensor selected + configured");
 
 	state->active_precrop = pconf.precrop;
 
 	ret = star6e_pipeline_start_vif(&state->sensor, &pconf.precrop);
 	if (ret != 0)
 		goto fail_sensor;
-	bootlog("venc: VIF started");
 
 	ret = star6e_pipeline_start_vpe(&state->sensor, &pconf.precrop,
 		pconf.image_width, pconf.image_height,
@@ -1357,7 +1340,6 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 		STAR6E_VPE_LEVEL_3DNR, sdk_quiet);
 	if (ret != 0)
 		goto fail_vif;
-	bootlog("venc: VPE started");
 
 	state->image_width = pconf.image_width;
 	state->image_height = pconf.image_height;
@@ -1404,13 +1386,11 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 		cfg, &svct_applied, &state->venc_channel);
 	if (ret != 0)
 		goto fail_vpe;
-	bootlog("venc: VENC channel created");
 
 	/* IntraRefresh.  Failure is logged but not fatal: the stream still
 	 * works without rolling refresh. */
 	gdr_applied = star6e_pipeline_apply_intra_refresh(state->venc_channel,
 		cfg, pconf.image_height, venc_fps);
-	bootlog("venc: intra-refresh applied");
 
 	/* SVC-T reference pyramid (refPred) is applied inside
 	 * star6e_pipeline_start_venc() before StartRecvPic — the SDK
@@ -1419,7 +1399,6 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 	ret = bind_and_finalize_pipeline(state, cfg, &pconf, sdk_quiet);
 	if (ret != 0)
 		goto fail_venc;
-	bootlog("venc: pipeline bound + finalized");
 
 	/* Must run AFTER bind_and_finalize_pipeline(): it calls
 	 * star6e_output_init() -> star6e_output_reset(), which memsets the

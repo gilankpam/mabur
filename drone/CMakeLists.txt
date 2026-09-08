@@ -1,5 +1,4 @@
 add_library(mabur_drone_core STATIC
-  src/boot_trace.cpp
   src/config.cpp
   src/debug_http.cpp
   src/frame_source.cpp

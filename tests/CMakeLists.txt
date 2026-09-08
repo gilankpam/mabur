@@ -100,7 +100,6 @@ add_mtest(test_sweep_wire test_sweep_wire.cpp)
 add_mtest(test_toml test_toml.cpp)
 target_include_directories(test_sweep_wire PRIVATE ${CMAKE_SOURCE_DIR}/bench/txagcbench)
 if(MABUR_BUILD_DRONE)
-  add_mtest(test_boot_trace test_boot_trace.cpp LIBS mabur_drone_core)
   add_mtest(test_config test_config.cpp LIBS mabur_drone_core)
   target_compile_definitions(test_config PRIVATE
     MABUR_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/bundle")
