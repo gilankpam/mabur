@@ -37,6 +37,7 @@
 #endif
 
 #include "air_clock.h"
+#include "boot_trace.h"
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -828,7 +829,7 @@ int run_real_mode(const Config& cfg) {
     libusb_exit(usb_ctx);
     return 1;
   }
-  std::fprintf(stderr, "opened device %04x:%04x\n", cfg.radio.usb_vid, pid);
+  bootlog("usb opened %04x:%04x", cfg.radio.usb_vid, pid);
 
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock;
   rc = devourer::claim_interface_then_reset(handle, 0, logger, /*do_reset=*/true, usb_lock);
@@ -838,6 +839,10 @@ int run_real_mode(const Config& cfg) {
     libusb_exit(usb_ctx);
     return 1;
   }
+  // Stamped separately from the open above because this call includes a USB
+  // port reset and re-enumeration, whose cost was never measured — the
+  // question of whether it is worth overlapping too turns on this delta.
+  bootlog("usb interface claimed + reset");
 
   // Jaguar3 TX+RX on one claimed handle: enable_with_tx makes InitWrite keep
   // the RX filters open so a later StartRxLoop can run concurrently with TX
@@ -872,6 +877,8 @@ int run_real_mode(const Config& cfg) {
     libusb_exit(usb_ctx);
     return 1;
   }
+
+  bootlog("rtl device created");
 
   // Gate for DevourerSink: stays false until InitWrite() completes bring-up.
   std::atomic<bool> device_ready{false};
@@ -954,6 +961,7 @@ int run_real_mode(const Config& cfg) {
     _exit(3);
   };
   vcb.user = &agent;
+  bootlog("venc bring-up start");
   if (venc_core_start(&cfg.venc.core, &vcb) != 0) {
     // Boot failure, not a transient: the wrapper's 2 s respawn is the retry.
     // Release the USB device on the way out (same shape as the
@@ -965,6 +973,7 @@ int run_real_mode(const Config& cfg) {
     libusb_exit(usb_ctx);
     return 3;
   }
+  bootlog("venc bring-up done");
 #endif
   // After venc_core_start: RcAgent's first tick (below) already commands a
   // bitrate through the verbs, so the ring/stats the debug endpoint reads
@@ -972,6 +981,7 @@ int run_real_mode(const Config& cfg) {
   // and disables itself, never fatal (see debug_http.h).
   debug_http_start(cfg.venc.debug_port, cfg.venc.core.snapshot_quality,
                    &ov_override);
+  bootlog("debug http started (port %d)", cfg.venc.debug_port);
 
   RcQueue rc_queue;
   std::atomic<uint64_t> rx_beat{0};
@@ -1174,6 +1184,9 @@ int run_real_mode(const Config& cfg) {
     // diff here; the maxima reset inside the take.
     SwEncoder::SwFecGauge fec_gauge_prev[UepEncoder::kNumStreams]{};
 
+    // One-shot boot stamp, hot-thread-local: see the use site in the loop.
+    bool first_frame_stamped = false;
+
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
       const uint64_t t0_us = now_steady_us();
@@ -1222,6 +1235,15 @@ int run_real_mode(const Config& cfg) {
       int n = fsrc.read(fbuf.data(), fbuf.size(), 5, &meta);
       const uint64_t t_read_us = now_steady_us();
       if (n > 0) {
+        // The other end of the window docs/boot-time-findings-2026-09-07.md
+        // could only bound indirectly: the first frame actually out of the
+        // venc ring, i.e. the encoder is producing, whether or not the TX
+        // gate is open yet. One line per process, so it costs nothing at
+        // video rate.
+        if (!first_frame_stamped) {
+          first_frame_stamped = true;
+          bootlog("first encoded frame out of the venc ring (%d bytes)", n);
+        }
         if (fsrc.reattach_count() != last_reattach) {
           last_reattach = fsrc.reattach_count();
           pipe.mark_discontinuity();  // joined a new ring mid-GOP
@@ -1761,6 +1783,8 @@ int run_real_mode(const Config& cfg) {
     }
   });
 
+  bootlog("worker threads spawned");
+
   // v1 only ever tunes the radio to 20 MHz — cfg.radio.width is parsed and
   // validated (config.cpp) but not otherwise consulted here. Rather than
   // silently ignoring a configured 40/80 and running at 20 MHz anyway, warn
@@ -1777,9 +1801,10 @@ int run_real_mode(const Config& cfg) {
   // with TX+RX concurrent on the same handle. Opening device_ready between the
   // two is what keeps the hot/agent threads from clogging the bulk-OUT FIFO
   // mid-DLFW — see DevourerSink::ready.
-  std::fprintf(stderr, "maburd bringing up TX on channel %d\n", cfg.radio.channel);
+  bootlog("radio InitWrite start (channel %d)", cfg.radio.channel);
   rtl_device->InitWrite(
       SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+  bootlog("radio InitWrite done");
   // Bring-up record for the non-standard MAC state requested via
   // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
   // at info, and the production cross-build compiles info out
@@ -1814,6 +1839,7 @@ int run_real_mode(const Config& cfg) {
     // sticky across retunes, so zero it explicitly rather than assuming
     // whatever a prior process or bench tool left in the chip.
     rtl_device->SetTxPowerOffsetQdb(0);
+    bootlog("tx power table programmed (offset mode)");
   }
 
   // A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md): one devourer
@@ -1849,9 +1875,13 @@ int run_real_mode(const Config& cfg) {
                  "maburd radio: A-MPDU OFF (ampdu.max_num=0) — QoS-Data "
                  "singles\n");
   }
+  bootlog("A-MPDU mode programmed");
 
   device_ready.store(true, std::memory_order_release);
-  std::fprintf(stderr, "maburd entering RX loop on channel %d\n", cfg.radio.channel);
+  // The TX gate opens HERE, ~0.1 s before the RX-loop line below is printed
+  // — video is already flowing at this stamp, which is why this one, not the
+  // RX line, is the end marker for "time to first possible frame on air".
+  bootlog("TX gate open — entering RX loop on channel %d", cfg.radio.channel);
   rtl_device->StartRxLoop(rx_callback);
 
   // Init() returns once g_devourer_should_stop is set (SIGINT/SIGTERM) or the
@@ -1891,6 +1921,12 @@ void print_usage(const char* argv0) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // First statement in the process: every "[boot +S.mmm]" stamp below is
+  // relative to here, so the timeline read out of /tmp/mabur.log measures
+  // maburd's own startup and nothing before it. See boot_trace.h for why the
+  // log rather than a console.
+  mabur::boot_trace_init();
+
   std::string cfg_path;
   bool dry_run = false;
   std::string in_path, out_path, rc_in_path;
@@ -1946,6 +1982,7 @@ int main(int argc, char** argv) {
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
                cfg.fec.blocks_per_body[0], cfg.fec.blocks_per_body[1],
                cfg.fec.window);
+  mabur::bootlog("config loaded (%s)", cfg_path.c_str());
 
   if (dry_run) {
     if (in_path.empty() || out_path.empty()) {
