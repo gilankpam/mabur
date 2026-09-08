@@ -98,6 +98,10 @@ TEST(bundle_default_parses_with_osd_enabled) {
   auto c = maburplay::load_config(
       std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
   CHECK(c.osd.enable == true);
+  // The shipped bundle draws the compact bar. Pinned for the same reason
+  // dvr.mode is: it is a product decision, and the file is what lands on
+  // the GS at the next wipe.
+  CHECK(c.osd.gs.style == "compact");
 }
 
 TEST(dvr_mode_defaults_to_raw) {
@@ -149,6 +153,8 @@ TEST(gs_osd_defaults_are_off_on_8302) {
   // 3 s = 6 missed samples at the sideport's 500 ms cadence.
   CHECK(c.osd.gs.stale_ms == 3000);
   CHECK(c.osd.gs.font == "/usr/local/share/mabur/gs_osd.gfont");
+  // The one-line bottom bar is the default layout, not the corner blocks.
+  CHECK(c.osd.gs.style == "compact");
 }
 
 // An empty osd block must leave the gs defaults alone: parsing "osd" and
@@ -167,11 +173,29 @@ TEST(gs_osd_defaults_survive_an_osd_block_without_gs) {
 TEST(gs_osd_keys_parse) {
   auto c = maburplay::load_config(write_tmp_play(
       "[osd.gs]\nenable = true\nport = 9000\nfont = \"/x.gfont\"\n"
-      "stale_ms = 1500\n"));
+      "style = \"essential\"\nstale_ms = 1500\n"));
   CHECK(c.osd.gs.enable == true);
   CHECK(c.osd.gs.port == 9000);
   CHECK(c.osd.gs.font == "/x.gfont");
+  CHECK(c.osd.gs.style == "essential");
   CHECK(c.osd.gs.stale_ms == 1500);
+}
+
+// Both layouts are expressible, and nothing else is. A typo'd style must
+// fail the load rather than silently pick one: the two look nothing alike,
+// so "whichever the default was" is not a recoverable outcome in flight.
+TEST(gs_osd_style_accepts_both_layouts_and_rejects_anything_else) {
+  auto c = maburplay::load_config(write_tmp_play(
+      "[osd.gs]\nstyle = \"compact\"\n"));
+  CHECK(c.osd.gs.style == "compact");
+  for (const char* bad : {"Compact", "bar", "", "essentail"}) {
+    bool threw = false;
+    try {
+      maburplay::load_config(write_tmp_play(
+          (std::string("[osd.gs]\nstyle = \"") + bad + "\"\n").c_str()));
+    } catch (const std::exception&) { threw = true; }
+    CHECK(threw == true);
+  }
 }
 
 // The GS-only topology -- no MSP-capable FC -- is a supported configuration

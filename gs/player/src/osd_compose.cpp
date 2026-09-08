@@ -35,8 +35,8 @@ void forget_cells(ShadowGrid& sh, const mabur::MspScreen& scr, const DirtyRect& 
 
 }  // namespace
 
-void OsdComposer::set_gs(std::unique_ptr<GsOverlay> b0, std::unique_ptr<GsOverlay> b1,
-                         std::unique_ptr<GsOverlay> burn) {
+void OsdComposer::set_gs(std::unique_ptr<GsLayer> b0, std::unique_ptr<GsLayer> b1,
+                         std::unique_ptr<GsLayer> burn) {
   gs_[0] = std::move(b0);
   gs_[1] = std::move(b1);
   gs_[2] = std::move(burn);

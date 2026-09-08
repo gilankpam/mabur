@@ -36,6 +36,10 @@ struct GsCard {
 // they arrive here already multiplied by 100. `air_pct` is a percent on the
 // wire and passes through untouched.
 struct GsSnapshot {
+  // link.channel: the GS radio's operating channel. Straight from the GS
+  // config, not measured, so it never goes null on a bad window -- an
+  // empty optional here means an older maburgs that did not export it.
+  std::optional<int> channel;
   // link.ctl.rung.mcs / .ov_base x 100, falling back to link.op.mcs /
   // .overhead_base x 100 when the ladder block is absent -- which is the
   // normal, permanent state of a static-pinned link (link.static_mcs >= 0

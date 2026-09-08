@@ -62,6 +62,11 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # rendered, it still hashes 3d926998..., because the fixture's cards carry no
 # EVM and that field blanks.
 GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
+# Golden for PART E, the compact bar (osd.gs.style = "compact"). Same rule
+# as the two above: re-bless only from a pixel diff, never from a hash swap
+# alone -- the geometry floor below sees a bar that moved or grew a row, but
+# not a transposed value pair or a blanked field.
+BAR_SHA_EXPECTED=f5c5b69ceb1ea0392ed96858243ed325a943115457ee5b51034ab05da4436286
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -282,8 +287,12 @@ echo "== GS render gate =="
 python3 tools/msp/gen_gsfont.py --synthetic "$TMP/syn.gfont" \
   --sizes 19,21,22,24,26,34,38,56
 
+# --style essential explicitly: the shipped default is the compact bar (PART
+# E below), and this whole part -- corner anchors, the centre-of-frame band,
+# the golden hash -- is about the four-block layout.
 "$MABURPLAY" --gs-render tests/fixtures/gs_snapshot_nominal.json \
   --out-gs "$TMP/gs.bin" --gsfont "$TMP/syn.gfont" --screen 1920x1080 \
+  --style essential \
   --rec recording --rec-elapsed 767 --fps 60 --jit 3 --mbps 24.6
 
 # Sanity floor before the hash: an all-transparent dump would match a stale
@@ -362,6 +371,57 @@ GS_SHA=$(sha256sum "$TMP/gs.bin" | cut -d' ' -f1)
 echo "gs render sha256: $GS_SHA"
 if [ "$GS_SHA" != "$GS_SHA_EXPECTED" ]; then
   echo "GS render hash changed (expected $GS_SHA_EXPECTED)" >&2
+  exit 1
+fi
+
+# --- PART E: compact bar render gate ----------------------------------
+# The shipped default layout (osd.gs.style = "compact"): one plain-text line
+# along the bottom edge. Same dump format and the same reasoning as PART D,
+# but the invariants are the bar's own -- ONE row of ink, hugging the bottom
+# inset, and nothing anywhere else on the surface. The four-corner
+# assertions above do not apply and would all fail here, which is the point
+# of gating the two styles separately.
+echo "== GS compact bar render gate =="
+"$MABURPLAY" --gs-render tests/fixtures/gs_snapshot_nominal.json \
+  --out-gs "$TMP/gsbar.bin" --gsfont "$TMP/syn.gfont" --screen 1920x1080 \
+  --style compact \
+  --fps 60 --jit 5.2 --mbps 8.1 --res 1280x720 --lat 45/78
+
+python3 - "$TMP/gsbar.bin" <<'EOF'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+magic, w, h, stride = struct.unpack("<4I", d[:16])
+assert magic == 0x5244534F, hex(magic)
+assert (w, h, stride) == (1920, 1080, 1920), (w, h, stride)
+px = struct.unpack("<%dI" % (h * stride), d[16:])
+
+on = [(x, y) for y in range(h) for x in range(w) if px[y * stride + x]]
+assert on, "nothing drawn at all"
+x0, x1 = min(p[0] for p in on), max(p[0] for p in on)
+y0, y1 = min(p[1] for p in on), max(p[1] for p in on)
+print("  bar bbox x %d..%d y %d..%d lit=%d" % (x0, x1, y0, y1, len(on)))
+
+# ONE row: the ink is a strip no taller than a single line cell. 64 px is
+# generous at 1080p (the chosen atlas is ~22 px) and still an order of
+# magnitude under anything that stacked two rows.
+assert y1 - y0 < 64, "bar is more than one row tall (%d px)" % (y1 - y0 + 1)
+# Hugging the bottom: within the 24 px inset plus the cell's own descender.
+assert h - 1 - y1 < 40, "bar does not hug the bottom (%d px clear)" % (h - 1 - y1)
+# And nothing above it anywhere -- no corner blocks, no stray field.
+assert not [p for p in on if p[1] < y0], "ink above the bar"
+# Centred on the surface. Loose for the same reason PART D's hcentre is:
+# every box is sized from its worst case, so short values sit legitimately
+# off centre -- 160 px still discriminates against an edge-anchored line.
+assert abs((x0 + x1) // 2 - w // 2) <= 160, "bar not centred (%d..%d)" % (x0, x1)
+# Inside the bar's own 32 px horizontal inset.
+assert x0 >= 32 and x1 <= w - 32, "bar crosses its inset (%d..%d)" % (x0, x1)
+print("OK gs compact bar: %dx%d lit=%d" % (w, h, len(on)))
+EOF
+
+BAR_SHA=$(sha256sum "$TMP/gsbar.bin" | cut -d' ' -f1)
+echo "gs compact bar sha256: $BAR_SHA"
+if [ "$BAR_SHA" != "$BAR_SHA_EXPECTED" ]; then
+  echo "GS compact bar render hash changed (expected $BAR_SHA_EXPECTED)" >&2
   exit 1
 fi
 

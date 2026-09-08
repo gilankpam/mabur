@@ -881,7 +881,7 @@ TEST(safe_inset_and_centre_of_frame_hold_at_every_resolution) {
 
 TEST(palette_seeds_cover_every_token) {
   size_t n = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  const uint32_t* seeds = gs_palette_seeds(&n);
   REQUIRE(seeds != nullptr);
   CHECK(n > 0);
   // Each token must appear at full alpha somewhere in the seed set, or the

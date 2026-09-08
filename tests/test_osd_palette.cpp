@@ -2,7 +2,7 @@
 #include "osd_palette.h"
 #include "osd_font.h"
 #include "gs_draw.h"     // premul()
-#include "gs_overlay.h"  // GsOverlay::palette_seeds(), tok::
+#include "gs_layer.h"  // gs_palette_seeds(), tok::
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -290,7 +290,7 @@ TEST(extra_seeds_are_representable_in_the_msp_plus_gs_palette) {
   REQUIRE(font.load(MABUR_PLAY_BUNDLE_DIR "/font_btfl.mfont", &err));
 
   size_t n = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  const uint32_t* seeds = gs_palette_seeds(&n);
   REQUIRE(seeds != nullptr && n > 0);
 
   const OsdPalette without = build_palette(font.native());
@@ -345,7 +345,7 @@ TEST(empty_atlas_without_seeds_is_the_transparent_entry_alone) {
 // quantize the overlay against.
 TEST(empty_atlas_with_seeds_yields_a_seed_only_palette) {
   size_t n = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  const uint32_t* seeds = gs_palette_seeds(&n);
   REQUIRE(seeds != nullptr && n > 0);
   const OsdPalette p = build_palette(GlyphAtlas{}, seeds, n);
   CHECK(p.n > 1);           // index 0 transparent, plus the seeds
@@ -374,7 +374,7 @@ TEST(the_one_token_the_seeds_do_not_place_exactly_is_pinned_by_axis) {
   std::string err;
   REQUIRE(font.load(MABUR_PLAY_BUNDLE_DIR "/font_btfl.mfont", &err));
   size_t n = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  const uint32_t* seeds = gs_palette_seeds(&n);
   const OsdPalette with = build_palette(font.native(), seeds, n);
   const OsdPalette without = build_palette(font.native());
 
@@ -416,7 +416,7 @@ TEST(the_one_token_the_seeds_do_not_place_exactly_is_pinned_by_axis) {
 // search axis, and getting it wrong makes antialiased text bloom).
 TEST(seeded_palette_keeps_the_alpha_ramp_not_just_solid_colours) {
   size_t n = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  const uint32_t* seeds = gs_palette_seeds(&n);
   const OsdPalette p = build_palette(GlyphAtlas{}, seeds, n);
   const uint32_t half = premul(tok::kStatusOk, 128);
   std::vector<uint32_t> px = {half};

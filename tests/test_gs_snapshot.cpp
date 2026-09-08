@@ -19,6 +19,7 @@ static const char* kLive = R"({
      "classes": {"s0": {"rssi": -71.0, "snr": 9.0, "pps": 130.0}}}
   ],
   "link": {
+    "channel": 149,
     "air_pct": 61.5,
     "residual_loss": 0.0,
     "rtt": {"ms": 12.4, "min_ms": 8.0, "n": 42, "pts_off_us": -123456789,
@@ -36,6 +37,8 @@ TEST(parses_a_live_datagram) {
   CHECK(*s.mcs == 5);
   REQUIRE(s.fec_pct.has_value());
   CHECK(*s.fec_pct > 24.9 && *s.fec_pct < 25.1);      // ov 0.25 -> 25 %
+  REQUIRE(s.channel.has_value());
+  CHECK(*s.channel == 149);
   REQUIRE(s.air_pct.has_value());
   CHECK(*s.air_pct > 61.4 && *s.air_pct < 61.6);
   REQUIRE(s.pre_loss_pct.has_value());
@@ -96,6 +99,9 @@ TEST(nulls_stay_empty_and_never_become_zero) {
   GsSnapshot s;
   REQUIRE(parse(j, &s));
   CHECK(!s.air_pct.has_value());
+  // An absent channel is "the daemon never told us", which the compact bar
+  // renders "ch:--". It must never fall back to a plausible number.
+  CHECK(!s.channel.has_value());
   CHECK(!s.post_loss_pct.has_value());
   CHECK(s.cards.empty());
   REQUIRE(s.mcs.has_value());
@@ -174,6 +180,9 @@ TEST(missing_blocks_yield_empty_optionals) {
   CHECK(!s.mcs.has_value());
   CHECK(!s.fec_pct.has_value());
   CHECK(!s.air_pct.has_value());
+  // An absent channel is "the daemon never told us", which the compact bar
+  // renders "ch:--". It must never fall back to a plausible number.
+  CHECK(!s.channel.has_value());
   CHECK(!s.pre_loss_pct.has_value());
   CHECK(!s.post_loss_pct.has_value());
   CHECK(s.cards.empty());
@@ -209,6 +218,9 @@ TEST(wrong_types_drop_only_their_own_field) {
   REQUIRE(parse(j, &s));
   CHECK(*s.mcs == 5);
   CHECK(!s.air_pct.has_value());
+  // An absent channel is "the daemon never told us", which the compact bar
+  // renders "ch:--". It must never fall back to a plausible number.
+  CHECK(!s.channel.has_value());
   REQUIRE(s.cards.size() == 1);
   CHECK(!s.cards[0].rssi_dbm.has_value());
   CHECK(s.cards[0].snr_db.has_value());

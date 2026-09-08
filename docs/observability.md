@@ -484,12 +484,37 @@ read the sideport. Reach for other tools only in these cases:**
   precision. Config is
   `osd.gs` in `/etc/maburplay.toml` (`enable` default false, `stale_ms`
   dims every link-derived field after silence; fps/jitter/bitrate/REC are
-  player-measured and never dim). The glyph atlas is
+  player-measured and never dim). `osd.gs.style` picks the layout, and
+  **the shipped default is `"compact"`**: one plain-text line along the
+  bottom edge,
+
+  ```
+  ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
+  ```
+
+  — no status colours, no meters, no bars, one type size: everything the
+  four corner blocks show minus REC and FEC, plus the channel, the decoded
+  resolution and both latency percentiles. `"essential"` selects the older
+  four-corner layout with the signal bars, the airtime meter and the status
+  hues. Exactly one renders; there is no both, and an unrecognised value
+  fails the config load rather than picking one. Three things about the bar
+  are worth knowing before reading one on the bench: `ch` comes from the
+  sideport's `link.channel` (the GS's own `radio.channel`, so it says what
+  the RECEIVER is tuned to, not what the player believes); `lat` is
+  p50/p99 and reads `--/--` while the anchor is cold, exactly as the
+  essential rows do; and every item sits in a box sized for its WORST-CASE
+  string, so the gaps between items are uneven and short values leave
+  trailing space — that is what stops the whole line reflowing every time a
+  figure gains a digit. The type size is likewise chosen once, for the
+  four-card worst case (22 px at 1080p with the shipped asset), so a card
+  dropping out never changes the font under the pilot. The glyph atlas is
   `/usr/local/share/mabur/gs_osd.gfont`, committed and staged by
   `tools/build-arm64.sh` — if it is missing, maburplay logs the reason to
   `/tmp/maburplay.log` and runs with the MSP overlay only. Host-side you can
   see the actual pixels without hardware: `maburplay --gs-render` dumps a
-  rendered frame, `tests/test_gs_asset.cpp` gates the real asset's layout at
+  rendered frame (`--style compact|essential`, plus `--res WxH` and
+  `--lat P50/P99` for the bar's player-measured fields; both styles are
+  pixel-gated in `run_player_e2e.sh` PARTS D and E), `tests/test_gs_asset.cpp` gates the real asset's layout at
   720p/1080p/1440p/2160p, and `tools/bench/gs_overlay_bench.cpp` measures
   draw+quantize per update at 1080p and 2160p. Read that bench before
   changing anything on this path: it runs on the 2 ms pump loop, and the

@@ -172,6 +172,11 @@ struct StatsProbeIn {
 
 struct StatsInput {
   uint32_t vtx_id = 0;
+  // radio.channel, straight from the GS config. Exported because the
+  // player's compact OSD names the channel the rest of the line describes,
+  // and reading it out of maburplay's own config instead would say what
+  // the PLAYER believes rather than what the receiver is tuned to.
+  int channel = 0;
   StatsRcfSlotIn rcf_slot;
   bool in_session = false;  // VrxState::SESSION
   int tx_card = 0;
