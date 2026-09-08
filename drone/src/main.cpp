@@ -842,6 +842,36 @@ int run_real_mode(const Config& cfg) {
   // the flag IRtlDevice::Init()'s blocking RX loop actually watches.
   install_devourer_signal_handlers();
 
+  // Cold boot: the MI kernel modules are loaded by maburd itself (see the
+  // wait before venc_core_start). Kicked off HERE, on a thread, so the
+  // ~0.7 s insmod chain runs under the USB port reset below -- an idle wait
+  // -- rather than after it. Warm restarts find the modules live and skip.
+  // The same thread then dlopens the MI libraries (venc_core_preload, ~0.4 s
+  // of squashfs page-in cold) -- sequenced after the insmods because both are
+  // NOR-bound and would only contend, and off the main thread so the radio's
+  // USB reset + InitWrite (USB-bound waits) run alongside. Warm restarts:
+  // modules live, libraries page-cached -- a few ms.
+  std::thread module_loader_thread;
+  struct JoinOnExit {  // every early `return 1` below must not terminate() on a live thread
+    std::thread& t;
+    ~JoinOnExit() { if (t.joinable()) t.join(); }
+  } module_loader_join{module_loader_thread};
+  {
+    const bool run_loader =
+        !cfg.venc.module_loader.empty() && !mabur::mi_modules_live("/sys/module");
+    if (run_loader)
+      std::fprintf(stderr, "MI modules not live: running `%s`\n", cfg.venc.module_loader.c_str());
+    module_loader_thread = std::thread([run_loader, cmd = cfg.venc.module_loader]() {
+      if (run_loader) {
+        const int lrc = std::system(cmd.c_str());
+        if (lrc != 0) std::fprintf(stderr, "warning: module loader exited %d\n", lrc);
+      }
+#ifdef MABUR_HAVE_VENC
+      venc_core_preload();
+#endif
+    });
+  }
+
   auto logger = std::make_shared<Logger>();
   // devourer has two independent output channels and this daemon wants both
   // quiet. set_level() gates only the human diagnostics (logger->info/warn/…);
@@ -852,7 +882,18 @@ int run_real_mode(const Config& cfg) {
   // /tmp in ~30 min — after which every log write failed silently. Nothing is
   // lost by muting the stream: our stats line already carries tx_failed=.
   logger->set_level(Logger::Level::Warn);
-  logger->events().disable();
+  // MABUR_DEVOURER_EVENTS=1 keeps the stream on for a bench run from /tmp
+  // (e.g. devourer's per-stage `init.timing` events, which are how the radio
+  // bring-up is attributed -- docs/boot-time-findings-2026-09-07.md). Never
+  // set it under the S00mabur wrapper: see the /tmp-filling note above.
+  if (const char* ev = std::getenv("MABUR_DEVOURER_EVENTS"); ev && ev[0] == '1') {
+    // A private dup of stdout: the venc's sdk_quiet brackets dup2() /dev/null
+    // over fds 1 and 2 process-wide, and the radio bring-up (and its timing
+    // events) runs concurrently on its own thread.
+    if (FILE* f = fdopen(dup(fileno(stdout)), "w")) logger->events().configure(f);
+  } else {
+    logger->events().disable();
+  }
 
   libusb_context* usb_ctx = nullptr;
   int rc = libusb_init(&usb_ctx);
@@ -1054,11 +1095,7 @@ int run_real_mode(const Config& cfg) {
   // and the MI init below reports it exactly as it always did -- and the
   // wrapper's respawn retries the loader, which S38vendor never did.
   {
-    if (!cfg.venc.module_loader.empty() && !mabur::mi_modules_live("/sys/module")) {
-      std::fprintf(stderr, "MI modules not live: running `%s`\n", cfg.venc.module_loader.c_str());
-      const int lrc = std::system(cfg.venc.module_loader.c_str());
-      if (lrc != 0) std::fprintf(stderr, "warning: module loader exited %d\n", lrc);
-    }
+    if (module_loader_thread.joinable()) module_loader_thread.join();
     const auto mi = mabur::wait_for_mi_modules("/sys/module", 15000);
     if (!mi.ready) {
       std::fprintf(stderr, "warning: MI modules not live after %d ms, starting venc anyway\n",

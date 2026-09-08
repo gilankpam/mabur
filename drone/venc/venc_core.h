@@ -20,6 +20,13 @@ typedef struct {
 int venc_core_start(const VencCfg *cfg, const VencCallbacks *cb);
 void venc_core_stop(void);
 
+/* Optional, before venc_core_start: dlopen the SigmaStar MI libraries
+ * (~0.4 s of page-in from squashfs on a cold boot). Touches no MI device --
+ * the kernel modules need not be loaded yet -- so a boot path can run it on
+ * a side thread under the radio's USB port reset. Idempotent; venc_core_start
+ * does it anyway if it was not called. Returns 0 or -1 (logged). */
+int venc_core_preload(void);
+
 /* Verbs — thread-safe, callable from the agent thread. */
 int venc_set_bitrate_kbps(int kbps);
 int venc_set_roi_qp(int qp);

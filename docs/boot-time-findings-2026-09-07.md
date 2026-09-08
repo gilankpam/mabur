@@ -1434,11 +1434,139 @@ equals the compiled default, so the config needs no edit at all.
 | `/init`: jffs2 overlay mount | 0.58 | scan of a 5.8 MB partition at ~4.5 MB/s NOR; item 8. `CONFIG_JFFS2_SUMMARY` is off; empty blocks are already fast-pathed, so shrinking the partition is the lever |
 | maburd exec + page-in | 0.47 | 1 MB binary + 1.4 MB libstdc++ from LZO squashfs |
 | USB port reset | 0.69 | item 9, parked; the chain + venc (1.6 s) still fit under InitWrite alone, so skipping it would be the full 0.69 |
-| devourer `InitWrite` | 2.04 | firmware download; the biggest single leg and devourer-side |
+| devourer `InitWrite` | ~~2.04~~ **0.65** | 14k USB control transfers, now pipelined — see "InitWrite, attributed and pipelined" |
 
 The rig: `tools/bench/cycle.sh`-style scripts lived in the session
 scratchpad; the parts that matter are the `rcS:` stamps (now permanent),
 the GS `wseq` poller from "Reproducing" below, and `dmesg` after the boot.
+
+## InitWrite, attributed and pipelined — 2026-09-09
+
+After "rcS, stamped" the radio's `InitWrite` was the largest leg left on
+the cold-boot path: 2.04 s cold, 1.33 s warm. Two questions: what is it
+made of, and what is the floor.
+
+### What it is made of
+
+devourer's `InitTimer` (`src/InitTimer.h`, already used by the Jaguar1 HAL)
+now brackets every stage of the Jaguar3 `rtw_hal_init` and `InitWrite`
+(`j3hal.*`, `j3init.*` events), and reports per stage the number of USB
+vendor control transfers it spent (`UsbXferCount.h`, bumped by
+`UsbTransport`). maburd keeps devourer's event stream off (it fills `/tmp`
+at video rate); `MABUR_DEVOURER_EVENTS=1` turns it on for a run from
+`/tmp`, routed to a private dup of stdout because the venc's `sdk_quiet`
+brackets dup2 `/dev/null` over fds 1 and 2 while the radio thread is
+still bringing up. Warm restart, before any change:
+
+| stage | ms | transfers | µs/transfer |
+|---|---|---|---|
+| IQK | 267 | 2918 | 92 |
+| RF radioA+B tables (read-modify-write per entry) | 263 | 3094 | 85 |
+| RFK `cal_init` table | 213 | 2619 | 81 |
+| efuse/OTP walk | 140 | 1149 | 122 |
+| firmware download (49 × 4 KB + polls) | 122 | 1023 | 119 |
+| BB `phy_reg` + AGC tables | 157 | 1935 | 81 |
+| DACK | 59 | 696 | 85 |
+| power-on, MAC/USB cfg, coex, FW H2Cs, TX power, … | ~77 | ~830 | |
+| **total** | **1298** | **14265** | **91** |
+
+**14,265 synchronous EP0 round trips at ~91 µs each, and nothing else.**
+There is no sleep worth naming (the largest are 50 ms pseudo-entries in
+the tables, hit a handful of times). The bring-up is paid in USB control
+transfers, so the only levers are fewer transfers or cheaper ones.
+
+### The floor of a control transfer on this SoC
+
+A libusb microbench against the dongle from the drone (`usbctlbench`, in
+the session scratchpad; 1000 × 1-byte reads/writes of `0x0640`):
+
+| method | µs/transfer |
+|---|---|
+| synchronous `libusb_control_transfer` | 76–80 |
+| async, 2 in flight | 43–45 |
+| async, 4 in flight | 30–31 |
+| async, 8 in flight | **27–28** |
+| async, 16–32 in flight | 26–27 |
+
+The bus cost is ~27 µs; the other ~50 µs is the host side of one URB
+round trip (submit, interrupt, wake, return). EP0 completes URBs in
+submission order, so a queue of writes followed by a read behaves exactly
+like the synchronous sequence — the read still sees every write — while
+the host only pays the round trip once per read.
+
+### Pipelined register writes (devourer)
+
+`IRtlTransport::write_batch_begin/end` + `flush_writes` (no-ops on PCIe).
+Inside a batch, `UsbTransport` submits register writes as async control
+URBs from a pool of 8 and does not wait; a read is submitted behind them
+and waited for on its own completion only, so a read-modify-write pair
+costs one wakeup instead of two; bulk transfers and `write_bytes` drain
+the queue first. The Jaguar3 `InitWrite` opens a batch for the whole
+bring-up and closes it before the coex thread starts (RAII guard, so a
+throw never leaves the transport in batch mode). The millisecond-scale
+delays in the table loaders, `Halrf8822e::delay_ms` and the efuse
+power-cut flush before sleeping; sub-millisecond ones are noise next to
+the ~0.2 ms a full queue holds. Single-threaded by contract.
+
+Second change: the RF table load is write-only. The vendor's
+`config_phydm_direct_write_rf_reg` does a read-modify-write under
+`MASK20BITS`, preserving bits [31:20] of the direct-window dword. Those
+bits read back **0 for every one of the 1540 entries**, cold boot and
+warm restart alike (histogrammed on the 8812EU), so the read was a
+synchronous round trip preserving nothing.
+
+| warm InitWrite | ms | transfers |
+|---|---|---|
+| before | 1298 | 14265 |
+| + async writes | 991 | 14262 |
+| + async reads (one wait per RMW pair) | 741 | 14330 |
+| + RF table write-only | **646** | **12789** |
+
+**Cold boot: 2.04 → 0.74 s** measured with the events on through the
+wrapper (before the RF change; ~0.65 expected after). The cold number
+used to be 0.7 s worse than warm because every synchronous transfer
+paid a scheduling wakeup under a loaded CPU; a queue that keeps the host
+controller busy while the thread waits to run does not care.
+
+### On the boot path
+
+With the radio 1.4 s faster the venc side became the critical path
+(first `stats:` line back to `drops=0` — the TX gate opened before the
+first frame). So the module loader moved to a thread spawned at the top
+of `run_real_mode`, under the 0.69 s USB port reset (an idle wait), and
+the same thread then dlopens the MI libraries (`venc_core_preload`,
+idempotent; `venc_core_start` still does it if nobody did).
+
+| cold boot, first AU on the GS ring (s of uptime) | |
+|---|---|
+| "rcS, stamped" final layout | 4.02 / 4.09 |
+| + pipelined InitWrite | 3.84 / 3.89 |
+| + loader thread under the USB reset | 3.56 / 3.69 |
+| + RF write-only + MI-library preload | **3.40 / 3.68** |
+
+ausniff on the GS after the last one: 60.3 fps, 0 fid gaps, 0 resyncs;
+`state=2`, `tx_failed=0`, one maburd, no respawns; run-to-run noise on
+the AU time is ±0.15 s. Timeline of the last boot: maburd 1.30, USB reset
+1.89 → 2.58, insmod chain done 2.45, MI clients 2.55, first AU ~3.5. The
+critical path is now `maburd start → insmod chain (1.15 s, slowed by
+maburd's own page-in and the reset's re-enumeration) → venc bring-up
+(0.9)`; the radio (reset 0.69 + InitWrite 0.65) has ~0.3 s of slack.
+
+What is left in InitWrite itself, and why it stops here: IQK 167 ms and
+DACK 40 ms are the calibration algorithms' own poll loops (serial by
+nature); the efuse walk (107 ms, 1149 transfers for ~380 OTP bytes, each
+a trigger write + a ready poll) could be read ahead in blocks or cached
+per unit, worth ~80 ms; the firmware download (~100 ms) is 49 chunks with
+~20 polls each. None of it is on the critical path any more.
+
+Deploy notes: devourer branch `jgr3-init-timing` (based on
+`jgr3-keep-corrupted`, which the `../devourer` checkout must stay on for
+GS builds — the new branch is a superset). **The GS RX bring-up (`Init`)
+deliberately opens no batch** until it is measured on a ground-station
+card; the write-only RF load applies to both paths, so the next maburgs
+rebuild needs its ausniff gate. mabur: `MABUR_DEVOURER_EVENTS=1` env
+knob, the loader thread + preload in `main.cpp`, `venc_core_preload`.
+Drone runs it (rollback `/usr/bin/maburd.pre-usbpipe`).
 
 ## What is still blocked
 

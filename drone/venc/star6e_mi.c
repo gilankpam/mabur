@@ -338,8 +338,14 @@ static void i6e_venc_unload(star6e_venc_impl *venc)
 
 /* --- Init / Deinit ------------------------------------------------------ */
 
+static int s_mi_loaded;
+
 int star6e_mi_init(void)
 {
+	/* Idempotent: venc_core_preload() may have loaded the libraries
+	 * already (boot-path overlap); a second call is free. */
+	if (s_mi_loaded)
+		return 0;
 	/* Load order matters: vendor libs have cross-library symbol deps.
 	 * With direct linking the dynamic linker resolved these at startup.
 	 * With dlopen we must load in dependency order:
@@ -395,6 +401,7 @@ int star6e_mi_init(void)
 		goto fail;
 	}
 
+	s_mi_loaded = 1;
 	return 0;
 
 fail:
@@ -404,6 +411,7 @@ fail:
 
 void star6e_mi_deinit(void)
 {
+	s_mi_loaded = 0;
 	i6e_venc_unload(&g_mi_venc);
 	i6e_snr_unload(&g_mi_snr);
 	i6e_vpe_unload(&g_mi_vpe);

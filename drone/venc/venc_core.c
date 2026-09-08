@@ -17,6 +17,7 @@
 
 #include "star6e_controls.h"
 #include "star6e_output.h"
+#include "star6e_mi.h"
 #include "star6e_runtime.h"
 #include "venc_core_internal.h"
 #include "venc_frame_ring.h"
@@ -222,6 +223,11 @@ static void *venc_encoder_thread(void *arg)
 }
 
 /* ── Lifecycle ────────────────────────────────────────────────────────── */
+
+int venc_core_preload(void)
+{
+	return star6e_mi_init();
+}
 
 int venc_core_start(const VencCfg *cfg, const VencCallbacks *cb)
 {
