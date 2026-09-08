@@ -1389,7 +1389,8 @@ What each one taught:
   loop ran 2.3x faster at 1.2 GHz and the board stayed up.
 - **Y is the one that pays.** maburd is the *first* rcS entry
   (`S00mabur`), there is no vendor init script at all, and maburd runs
-  `load_sigmastar -i` itself (new config key `venc.module_loader`) right
+  `load_sigmastar -i` itself (a constant in `main.cpp`; it was briefly a
+  config key, folded back because nothing ever needed to change it) right
   after `claim_interface_then_reset` and the `InitWrite` thread spawn,
   when `/sys/module` shows no live `mi_venc` + `sensor_*_mipi`
   (`drone/src/mi_ready.h`). Timeline on the drone: maburd starts at 1.21,
@@ -1410,9 +1411,8 @@ radio, not a fault; the frames cost nothing.
 ### What shipped
 
 - mabur branch `boot-rcs`: `drone/src/mi_ready.h` (+ `tests/test_mi_ready`),
-  `venc.module_loader` (`config.h`/`.cpp`, `bundle/mabur.default.toml`,
-  default `/usr/bin/load_sigmastar -i`, `""` = only wait), the loader call
-  and wait in `main.cpp` before `venc_core_start`.
+  the loader (`/usr/bin/load_sigmastar -i`, a constant in `main.cpp`) and
+  the wait before `venc_core_start`.
 - `openipc-builder` `feat/mabur`: `mabur.mk` installs the wrapper as
   `S00mabur`; device overlay drops `S38vendor`, adds `S00cpuboost`,
   `S99cpurestore`, a stamped `etc/init.d/rcS` (the `rcS:` kmsg lines now
@@ -1422,9 +1422,8 @@ radio, not a fault; the frames cost nothing.
   `/usr/bin/maburd.pre-miwait`); the next image flash brings the same
   from the squashfs.
 
-**Deploy order for the config key**: binary before config — an old
-`maburd` exits on the unknown `module_loader` key. The bundle default
-equals the compiled default, so the config needs no edit at all.
+No config change: the loader path is compiled in, so there is no
+config-before-binary ordering to respect for this one.
 
 ### What is left on this path, sized
 

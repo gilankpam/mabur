@@ -243,7 +243,7 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
                      "intra_refresh_rows", "intra_refresh_qp",
                      "ref_base", "ref_enhance", "ref_pred",
                      "roi", "ae_fps", "awb_fps", "snapshot_quality",
-                     "debug_port", "module_loader"},
+                     "debug_port"},
                     "venc");
 
   // Real compiled defaults, for accurate reporting only. Every branch below
@@ -456,12 +456,6 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
       fail("venc.debug_port", "must be in [1024,65535]");
   } else {
     note_default("venc", "debug_port", to_text(kDef.debug_port));
-  }
-
-  if (j.contains("module_loader")) {
-    assign_if_present(j, "module_loader", v.module_loader, "venc");
-  } else {
-    note_default("venc", "module_loader", kDef.module_loader);
   }
 
   // A stripe cannot be wider than the picture. Checked here rather than

@@ -857,13 +857,16 @@ int run_real_mode(const Config& cfg) {
     ~JoinOnExit() { if (t.joinable()) t.join(); }
   } module_loader_join{module_loader_thread};
   {
-    const bool run_loader =
-        !cfg.venc.module_loader.empty() && !mabur::mi_modules_live("/sys/module");
+    // The OpenIPC script that insmods the MI stack and the sensor driver --
+    // a fixed property of the image maburd is built for, not a knob (it was
+    // briefly a config key; nothing ever needed to change it).
+    static constexpr const char* kModuleLoader = "/usr/bin/load_sigmastar -i";
+    const bool run_loader = !mabur::mi_modules_live("/sys/module");
     if (run_loader)
-      std::fprintf(stderr, "MI modules not live: running `%s`\n", cfg.venc.module_loader.c_str());
-    module_loader_thread = std::thread([run_loader, cmd = cfg.venc.module_loader]() {
+      std::fprintf(stderr, "MI modules not live: running `%s`\n", kModuleLoader);
+    module_loader_thread = std::thread([run_loader]() {
       if (run_loader) {
-        const int lrc = std::system(cmd.c_str());
+        const int lrc = std::system(kModuleLoader);
         if (lrc != 0) std::fprintf(stderr, "warning: module loader exited %d\n", lrc);
       }
 #ifdef MABUR_HAVE_VENC
@@ -1083,17 +1086,14 @@ int run_real_mode(const Config& cfg) {
   };
   vcb.user = &agent;
   // Cold boot: init starts maburd BEFORE the MI modules exist (S00mabur is
-  // the first rcS entry; there is no S38vendor any more), and maburd loads
-  // them itself HERE -- after the USB port reset, with InitWrite already
-  // running on its thread -- so the ~0.7 s insmod chain and the ~0.9 s venc
-  // bring-up both sit under the radio's ~2 s, the one window in the boot
-  // where the CPU and the NOR are otherwise idle. Running the chain any
-  // earlier (measured: backgrounded from the init script) only contends
-  // with maburd's own exec and page-in for the same flash and gains
-  // nothing. Warm restarts find the modules live and skip the loader; the
-  // wait then costs one sysfs scan. On a loader failure the wait times out
-  // and the MI init below reports it exactly as it always did -- and the
-  // wrapper's respawn retries the loader, which S38vendor never did.
+  // the first rcS entry; there is no S38vendor any more) and the loader
+  // thread spawned at the top of this function is inserting them under the
+  // USB port reset. Join it and wait for /sys/module to say live before the
+  // venc touches MI. Warm restarts find the modules live and skip the
+  // loader; the wait then costs one sysfs scan. On a loader failure the
+  // wait times out and the MI init below reports it exactly as it always
+  // did -- and the wrapper's respawn retries the loader, which S38vendor
+  // never did.
   {
     if (module_loader_thread.joinable()) module_loader_thread.join();
     const auto mi = mabur::wait_for_mi_modules("/sys/module", 15000);
