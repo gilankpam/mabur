@@ -709,8 +709,8 @@ Realistic floor with this SoC, the vendor ISP blobs and a USB dongle: 5-6 s
 from power to video. Items 1-3 alone are 5.2 s of measured, mostly cheap
 savings against that. Inside `maburd` — the only part deployed on the
 drone as of 2026-09-08 — item 4 plus the core-1 pin and the link-up IDR
-took `maburd` start → decodable frame on the GS from ~3.8 s to ~2.6 s,
-measured and deployed. Of the 2.5 s to LINKED, 2.4 is the radio: 0.85
+took `maburd` start → TX gate from ~3.8 s to ~2.4 s, measured and
+deployed (the link-up IDR request was tried and reverted). Of the 2.5 s to LINKED, 2.4 is the radio: 0.85
 USB port reset (item 9, parked) + 1.53 `InitWrite` (devourer).
 
 ### squashfs LZO — measured
@@ -1059,71 +1059,26 @@ printk stamps run on `sched_clock`, which on this SoC starts late (the
 process-relative stamps plus the start tick for absolutes; use dmesg only
 for ordering and for deltas within dmesg.
 
-### Core placement: `InitWrite` off core 0 — −0.55 s cold, measured
-
-`InitWrite` measured 2.04–2.12 s on a cold boot against 1.33 s on a warm
-restart, same code. The difference was company: the main thread pins
-itself to `kRestCore` (core 0) before anything spawns, so the radio
-thread inherited core 0 — where the venc bring-up runs on the main
-thread and, from ~1 s in, the encoder thread sits at SCHED_FIFO 50. Warm,
-the venc side sleeps 10 s in `MI_DEVICE_Open` and the radio has the core
-alone. Core 1 belongs to the hot thread, which only spins on an empty
-ring until video flows, so the radio thread now borrows it for the
-bring-up (`pin_self_to(kHotCore)` at the top of `radio_init_thread`).
-
-One trap, found on the first warm restart: **devourer spawns a periodic
-thread inside `InitWrite`**, and a child inherits both its parent's
-affinity and its name — so a `mbr-radio-init` thread was still alive on
-core 1 a minute after the join, sleeping in `hrtimer_nanosleep`. That is
-a devourer ticker on the hot core, against the "every library thread on
-`kRestCore`" policy. `repin_inherited_threads("mbr-radio-init",
-kRestCore)` walks `/proc/self/task` after `InitWrite` returns and moves
-anything still carrying the name; the stamp reports the count (1).
-
-Cold boot after the change, n = 1, `venc-enc` on cpu0, `mbr-hot` on cpu1,
-the ticker on cpu0, `state=2`, no respawns:
-
-| marker | before | after |
-|---|---|---|
-| `InitWrite` | 2.04–2.12 | **1.53** |
-| venc bring-up done | +1.75 / +1.84 | **+1.57** (it stopped sharing core 0 too) |
-| TX gate open | +2.92 / +3.01 | **+2.43** |
-| **LINKED — video starts** | **+3.09** | **+2.51** |
-
-`maburd` → LINKED is 2.5 s now, 2.4 of it radio: 0.85 USB port reset +
-1.53 `InitWrite`. The remaining 0.2 s cold-vs-warm gap in `InitWrite` is
-unattributed (first-ever firmware load, or residual contention on the
-USB/libusb event thread, which stays on core 0).
-
-### IDR on DISC-driven LINKED entry — the picture no longer waits for the GOP
+### IDR on DISC-driven LINKED entry — tried, glitched, reverted
 
 The GS player cannot start on a P-frame (parameter sets ride in-band on
-IDRs only), so after every link-up the first decodable AU is the first
-IDR. The first LINKED after boot is always DISC-driven, and that path in
-`RcAgent::on_rc_frame` never requested one — only the RCF-driven re-entry
-did (`rc_agent.cpp:449`). What made 3 of 5 measured resumes start on an
-IDR anyway was an accident: the forced bitrate write at LINKED entry
-drags an IDR out of `SetChnAttr` as a side effect whenever the rate
-actually changes; when it didn't, the picture waited for the GOP (+1.0 s
-twice, worst case 2 s).
+IDRs only), and the first LINKED after boot is DISC-driven, a path that
+never calls `request_idr()` — only the RCF-driven re-entry does
+(`rc_agent.cpp:449`). 3 of 5 measured resumes started on an IDR anyway,
+by accident: the forced bitrate write at LINKED entry drags one out of
+`SetChnAttr` when the rate changes. The other 2 waited 1.0 s for the GOP.
 
-Fixed 2026-09-08: the DISC path now calls `request_idr()` through the
-same `idr_due` pacer as the RCF path (`tests/test_agent.cpp`
-`disc_link_up_requests_one_idr` — exactly one, and none for a keep-alive
-DISC while LINKED). Three warm restarts, first AU after each resume on
-the GS (`au.log`, `nal0`=32 is the VPS of an IDR AU):
+Tried on 2026-09-08 (commit `6c85d3e`): the DISC path requested an IDR
+through the same `idr_due` pacer as the RCF path. On the GS the first AU
+after each of three resumes was an IDR within 0.11 s — **and the pilot
+saw a visible glitch on the first link-up.** Reverted the same day, code
+and drone. Not attributed: the likely shape is two IDRs within a few
+frames (the explicit one and the `SetChnAttr` side-effect one, which the
+pacer's 100 ms floor does not always separate), or the explicit IDR
+landing at the MAX_RANGE bitrate before the rung's rate applies. Whoever
+retries this should watch the first second of video on the GS, not the
+`au.log`, and consider ordering the request after `run_bitrate_policy`.
 
-| resume | first AU | first IDR |
-|---|---|---|
-| 1 | P (`nal0`=1) | **+0.113 s** (request lands on the next encode) |
-| 2 | IDR | **+0.000** |
-| 3 | IDR | **+0.000** |
-
-Against 0–2 s before. The link-up path is identical cold and warm, so no
-cold boot was spent on it. Cost: at most one extra IDR at link-up, at
-the MAX_RANGE rung, ~2 kB at `min_iqp` 44.
-
-### The USB port reset — parked
 
 `claim_interface_then_reset(…, do_reset=true)` costs 0.85 s on the
 drone's cold path, and after the core-1 pin it is 35 % of `maburd` →
@@ -1182,9 +1137,9 @@ measured on the drone and the GS on 2026-09-08 (the drone still runs the
 | kernel → `S96mabur` starts `maburd` | 5.13–5.26 | `/proc/<pid>/stat` start tick |
 | `maburd` start → TX gate open | 2.43 (was 3.79 serial, 2.92–3.01 overlapped, before the core-1 pin) | boot stamps |
 | TX gate → first packet from GS → LINKED | **0.003 → 0.08** | boot stamps, cold and warm |
-| first AU on GS → first IDR AU | ≤0.11 (was 0 or 1.0 by GOP luck; fixed, see below) | `au.log` `nal0`=32 |
+| first AU on GS → first IDR AU | 0 (3 of 5 resumes) / 1.0 (2 of 5) | `au.log` `nal0`=32 |
 | first AU on GS → first displayed frame | **~1.6** | `lat.log` first window |
-| **battery → picture** | **~14 (no cable) / ~11.5 (cable)** — was ~15/16 before 2026-09-08 | sum; matches the stopwatch |
+| **battery → picture** | **~15 (no cable) / ~12.5 (cable)** — was ~16/15 before 2026-09-08 | sum; matches the stopwatch |
 
 Three things this settles:
 
@@ -1198,8 +1153,9 @@ Three things this settles:
   recent resumes the very first AU was already an IDR, and the first
   displayed frame still came 1.6 s later. Two earlier resumes additionally
   waited 1.0 s for the next GOP IDR because DISC-driven LINKED entry
-  never requested one — **fixed the same day**, see "IDR on DISC-driven
-  LINKED entry" above. The player's 1.6 s is GS-side and untouched
+  never requests one. An explicit request was tried the same day and
+  **reverted — it glitched the first link-up** (see "IDR on DISC-driven
+  LINKED entry" above). The player's 1.6 s is GS-side and untouched
   (ranked item 10).
 - **The biggest leg is still U-Boot's auto-negotiation on the drone**,
   because the rebuilt U-Boot has only been flashed on `.95`. In the field
@@ -1209,9 +1165,9 @@ Three things this settles:
   sees, and it has been since the first day of this document.
 
 On the numbers a stopwatch can resolve, end of 2026-09-08: the drone's
-share went from ~3.8 s to ~2.6 s (`maburd` start → decodable frame), and
-the link-up IDR took another 0–2 s of GOP luck off the top, so battery →
-picture is ~14 s without a cable against ~16 before. 14 → ~9 s is what
+share went from ~3.8 s to ~2.4 s (`maburd` start → TX gate), so battery →
+picture is ~15 s without a cable against ~16 before; the 0–2 s of GOP
+luck at link-up stays (the IDR request was reverted). 14 → ~9 s is what
 items 1-3 would do on the drone once the console problem is solved; the
 parked USB reset (item 9) and the player (item 10) are another ~2.4 s
 after that.

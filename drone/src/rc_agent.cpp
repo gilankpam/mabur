@@ -399,16 +399,6 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // reset as failsafe entry above.
     have_last_seq_ = false;
 
-    // Same as the RCF path's entering_linked IDR below, and for the same
-    // reason it goes through the pacer: the GS's player cannot start on a
-    // P-frame (parameter sets are in-band on IDRs only), and this is the
-    // path every first LINKED after boot takes. Without it the picture
-    // waited for the next GOP IDR (0-2 s) unless the forced bitrate write
-    // below happened to change the rate and drag an IDR out of SetChnAttr
-    // as a side effect -- which is what made 3 of 5 measured resumes start
-    // on an IDR and 2 of 5 wait 1.0 s (2026-09-08). Explicit now.
-    if (idr_due(now_ms, /*chain=*/false)) act_.request_idr();
-
     // Same rationale as RCF's entering_linked force: DISC always
     // (re)establishes LINKED from RENDEZVOUS/FAILSAFE, so the newly resolved
     // op's bitrate must take effect immediately rather than waiting for the

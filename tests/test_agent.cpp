@@ -177,32 +177,6 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(!act.bitrates.empty());
 }
 
-// 2b. DISC-driven LINKED entry requests an IDR, exactly once, through the
-// pacer. The first LINKED after boot always comes from the GS's DISC, and
-// the player cannot start on a P-frame (parameter sets ride in-band on
-// IDRs only) -- without this the picture waited 0-2 s for the next GOP
-// IDR, or got one by accident from the forced bitrate write's SetChnAttr
-// side effect (measured 2026-09-08: 3 of 5 resumes 0 s, 2 of 5 +1.0 s).
-// The RCF-driven re-entry from FAILSAFE/RENDEZVOUS already does this.
-TEST(disc_link_up_requests_one_idr) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-  CHECK(act.idr_calls == 0);
-
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 2);
-  agent.on_rc_frame(wire.data(), wire.size(), 100);
-  REQUIRE(agent.state() == RcAgent::State::LINKED);
-  CHECK(act.idr_calls == 1);
-
-  // A keep-alive DISC while already LINKED is ack-only: no second IDR.
-  auto again = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 3);
-  agent.on_rc_frame(again.data(), again.size(), 1100);
-  CHECK(agent.state() == RcAgent::State::LINKED);
-  CHECK(act.idr_calls == 1);
-}
-
 // 2c. DiscAck.chip_caps always advertises CAP_FRAME_WIRE: the frame wire is
 // the only video format maburd speaks since the pre-frame-shm path was
 // deleted. The bit stays on the wire so a GS can refuse a peer without it.
