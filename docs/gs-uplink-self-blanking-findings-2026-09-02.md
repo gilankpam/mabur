@@ -67,7 +67,12 @@ MABUR_GAPLOG=1 timeout 150 /usr/local/bin/maburgs.gaplog -c /etc/maburgs.json > 
    card-1 gap with the same seqs, same `n`, same TSF delta. Zero `late`
    lines (nothing ever arrived behind the mark). (A `keep_corrupted` run was attempted and is VOID: maburgs does not
    plumb `DEVOURER_RX_KEEP_CORRUPTED`, and devourer implements it only on
-   jaguar1/2, not the GS's 8822E.)
+   jaguar1/2, not the GS's 8822E. **2026-09-08 follow-up:** devourer's
+   Jaguar3 monitor RCR now honours `rx.keep_corrupted` and maburgs sets it
+   unconditionally, so FCS-failed frames DO reach the host — per-card
+   `crc_fail` is live and SBI sub-block salvage fires. That does not change
+   this finding: the losses here are whole PPDUs killed at the preamble,
+   and a re-run would show them as gaps, not as corrupt bodies.)
    With agg 6: `n` = 4 (64) or 3 (16) of 87, `prev_agg` = 3 in 82/87,
    `after_physt` = 1 in 87/87 → exactly one whole aggregate (aggregates
    run 4 deep on this feed, not 6). TSF advance across the hole ≈ 1.55 ms

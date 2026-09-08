@@ -116,6 +116,16 @@ bool RadioFrontend::open_and_start() {
 
   devourer::DeviceConfig dev_cfg;
   dev_cfg.rx.enable_with_tx = true;  // TX+RX duplex: mandatory on the 8822E
+  // Keep FCS-failed frames (RCR ACRC32|AICV on the 8822E). A corrupt body
+  // still yields its intact SBI sub-blocks -- each carries its own CRC16 --
+  // and that salvage path was unreachable until devourer honoured this on
+  // Jaguar3 (2026-09-08): the WMAC dropped the frames before the host saw
+  // them, which is why per-card crc_fail sat at 0 for the project's whole
+  // history. Cost measured on the bench: ~19 foreign junk frames in 4 min
+  // against ~150k real frames/card/min. on_packet() below lets crc_err
+  // frames past the SA filter; the aggregator counts them (crc_fail) and
+  // keeps them out of the seq walk; UepDecoder::add_body salvages.
+  dev_cfg.rx.keep_corrupted = true;
   // Debug passthrough: devourer's env->config translation lives in its
   // examples/, not the library, so these two register-dump levers (used to
   // diff a live card against the vendor kernel's end state) must be wired

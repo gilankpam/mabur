@@ -25,6 +25,19 @@ null, until then — and `maburplay`'s OSD grows a matching latency block
 above the fps line, reading `--` while its own e2e-latency tracker is
 cold or discontinuous.
 
+**Per-card `crc_fail` is live since 2026-09-08.** The GS asks devourer to
+keep FCS-failed frames (`rx.keep_corrupted`, RCR ACRC32|AICV on the 8822E,
+set unconditionally in `gs/src/radio_frontend.cpp`), so a corrupt frame
+reaches the aggregator, bumps that card's `crc_fail`, stays out of the seq
+walk, and hands its body to the UEP decoder, which keeps the SBI
+sub-blocks whose own CRC16 still passes (per-stream `sub_fail` counts the
+ones that did not). Before that date the WMAC dropped those frames on the
+chip and `crc_fail` was structurally 0 — not "no damage", "damage never
+seen". Foreign traffic that fails FCS is counted too (the SA filter cannot
+trust a corrupt address), so a busy channel shows a slow `crc_fail` creep
+with the drone off; `MABUR_GAPLOG=1` prints one `crcfail card=… sid=…`
+line per event, `sid=-1` being the foreign ones.
+
 Since 2026-09-01 that block is **two rows, `LAT P50 <n> ms` and
 `LAT P99 <n> ms`**, right-flushed under the `RTT` row. Each is ONE REAL
 FRAME from the last 1 s window, ranked by e2e. Read them together:
