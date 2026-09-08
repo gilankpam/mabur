@@ -51,6 +51,15 @@ struct OsdCfg {
     bool enable = false;
     int port = 8302;
     std::string font = "/usr/local/share/mabur/gs_osd.gfont";
+    // Which layout the GS overlay draws (gs_layer.h):
+    //   "compact"   — two plain-text rows along the bottom edge (radio
+    //                 above, picture below), the shipped default.
+    //   "essential" — the four-corner block layout with status colours,
+    //                 signal bars and the airtime meter.
+    // Exactly one renders; there is no both. Anything else fails the load,
+    // deliberately: a typo silently picking a layout is worse than a
+    // daemon that will not start.
+    std::string style = "compact";
     // Dim (never blank) after this much sideport silence. 3000 = 6 missed
     // samples at the 500 ms sideport cadence.
     int stale_ms = 3000;

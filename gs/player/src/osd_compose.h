@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "gs_overlay.h"
+#include "gs_layer.h"
 #include "mabur/msp_dp.h"
 #include "osd_raster.h"
 
@@ -84,9 +84,11 @@ class OsdComposer {
 
   // Null raster => this run has no MSP overlay. Not owned.
   void set_raster(OsdRaster* r) { raster_ = r; }
-  // All three or none: buffer 0, buffer 1, and the burn's lineage.
-  void set_gs(std::unique_ptr<GsOverlay> b0, std::unique_ptr<GsOverlay> b1,
-              std::unique_ptr<GsOverlay> burn);
+  // All three or none: buffer 0, buffer 1, and the burn's lineage. All
+  // three must be the SAME style -- they are three lineages of one overlay,
+  // not three overlays (see make_gs_layer / osd.gs.style).
+  void set_gs(std::unique_ptr<GsLayer> b0, std::unique_ptr<GsLayer> b1,
+              std::unique_ptr<GsLayer> burn);
   // Installing a sink resets the burn's OWN lineage -- burn_shadow_ (the
   // MSP grid), gs_[2] (the GS twin) and the canvas pixels -- because a
   // newly started BurnRecorder's index map is sized and blank, so a diff
@@ -97,7 +99,7 @@ class OsdComposer {
   // cadence -- see CLAUDE.md on the 2 ms pump budget.
   void set_burn_sink(BurnSink s);
 
-  // Lays out all three GS overlays at the same size. On failure drops all
+  // Lays out all three GS layers at the same size. On failure drops all
   // three (so gs_present() goes false) and sets *err.
   bool gs_layout(int screen_w, int screen_h, std::string* err);
 
@@ -120,7 +122,7 @@ class OsdComposer {
 
  private:
   OsdRaster* raster_ = nullptr;
-  std::unique_ptr<GsOverlay> gs_[3];
+  std::unique_ptr<GsLayer> gs_[3];
   BurnSink burn_;
 
   ShadowGrid shadow_[2], pre_, burn_shadow_;

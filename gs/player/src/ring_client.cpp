@@ -25,6 +25,12 @@ uint64_t now_ms() {
 
 constexpr uint64_t kDoorReconnectBackoffMs = 1000;
 
+// Ring-wait cadence (GS boot race, 2026-09-08). Nothing is latency-critical
+// here -- the doorbell is not up yet and there is no video to be late for --
+// so poll slowly and say so periodically, to tell "waiting" from "hung".
+constexpr uint64_t kRingWaitPollMs = 100;
+constexpr uint64_t kRingWaitNoteMs = 5000;
+
 }  // namespace
 
 RingClient::RingClient(Cfg cfg, Sink sink)
@@ -32,7 +38,42 @@ RingClient::RingClient(Cfg cfg, Sink sink)
 
 RingClient::~RingClient() { drop_door_(); }
 
-bool RingClient::open() { return reader_.open(cfg_.ring_path); }
+// maburgs creates the ring; the init scripts start us within milliseconds of
+// it, so at boot we routinely get here first (see the 2026-09-08 GS boot-race
+// finding). Waiting -- rather than exiting, which the respawn wrapper reads as
+// a permanent config error -- keeps the splash up until video can start.
+// Note this blocks the whole player: no OSD and no record button until the
+// ring exists. That matches the old behaviour, which did not reach the main
+// loop either, and there is nothing to show or record without a video source.
+bool RingClient::open(int wait_ms) {
+  if (reader_.open(cfg_.ring_path)) return true;
+  if (wait_ms == 0) return false;
+  const uint64_t start = now_ms();
+  std::fprintf(stderr, "maburplay: ring %s not there yet -- waiting for it\n",
+               cfg_.ring_path.c_str());
+  uint64_t last_note = start;
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(kRingWaitPollMs));
+    if (reader_.open(cfg_.ring_path)) {
+      std::fprintf(stderr, "maburplay: ring %s appeared after %llu ms\n",
+                   cfg_.ring_path.c_str(),
+                   static_cast<unsigned long long>(now_ms() - start));
+      return true;
+    }
+    const uint64_t now = now_ms();
+    if (wait_ms > 0 && now - start >= static_cast<uint64_t>(wait_ms)) {
+      std::fprintf(stderr, "maburplay: ring %s still absent after %d ms\n",
+                   cfg_.ring_path.c_str(), wait_ms);
+      return false;
+    }
+    if (now - last_note >= kRingWaitNoteMs) {
+      last_note = now;
+      std::fprintf(stderr, "maburplay: still waiting for ring %s (%llu s)\n",
+                   cfg_.ring_path.c_str(),
+                   static_cast<unsigned long long>((now - start) / 1000));
+    }
+  }
+}
 
 size_t RingClient::drain_ring_() {
   size_t n = 0;

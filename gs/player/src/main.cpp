@@ -21,6 +21,7 @@
 #include "dvr_name.h"
 #include "gs_font.h"
 #include "gs_metrics.h"
+#include "gs_layer.h"
 #include "gs_overlay.h"
 #include "osd_compose.h"
 #include "gs_source.h"
@@ -92,9 +93,11 @@ void usage() {
                "            is the host e2e's OSD pixel-path gate.)\n"
                "       maburplay --gs-render <snap.json> --out-gs <out.bin>\n"
                "                 [--gsfont F] [--screen WxH] [--stale]\n"
+               "                 [--style compact|essential]\n"
                "                 [--rec recording|armed|fault] "
                "[--rec-elapsed N]\n"
-               "                 [--fps N] [--jit N] [--mbps N]\n"
+               "                 [--fps N] [--jit N] [--mbps N] [--res WxH]\n"
+               "                 [--lat P50/P99]\n"
                "           (test support: render one stats-sideport snapshot\n"
                "            through the live GS overlay path and dump ARGB.\n"
                "            No ring, no backend, no DRM. Same 16-byte dump\n"
@@ -263,7 +266,7 @@ int run_osd_render(const std::string& snap_path, const std::string& out_path,
 // Dump format is byte-identical to --osd-render's.
 int run_gs_render(const std::string& snap_path, const std::string& out_path,
                   const std::string& font_path, int width, int height, bool stale,
-                  const maburplay::GsPlayerState& ps) {
+                  const maburplay::GsPlayerState& ps, maburplay::GsStyle style) {
   const std::vector<uint8_t> snap = read_whole_file(snap_path);
   if (snap.empty()) {
     std::fprintf(stderr, "maburplay: --gs-render: cannot read %s\n", snap_path.c_str());
@@ -282,7 +285,8 @@ int run_gs_render(const std::string& snap_path, const std::string& out_path,
                  snap_path.c_str());
     return 2;
   }
-  maburplay::GsOverlay ov(font);
+  std::unique_ptr<maburplay::GsLayer> ovp = maburplay::make_gs_layer(style, font);
+  maburplay::GsLayer& ov = *ovp;
   if (!ov.layout(width, height, &err)) {
     std::fprintf(stderr, "maburplay: --gs-render: %s\n", err.c_str());
     return 2;
@@ -373,6 +377,7 @@ int main(int argc, char** argv) {
     std::string font = maburplay::Config().osd.gs.font;
     int w = 1920, h = 1080;
     bool stale = false;
+    maburplay::GsStyle style = maburplay::GsStyle::kCompact;
     maburplay::GsPlayerState ps;
     for (int i = 2; i < argc; ++i) {
       const std::string a = argv[i];
@@ -387,6 +392,23 @@ int main(int argc, char** argv) {
         }
       } else if (a == "--stale") {
         stale = true;
+      } else if (a == "--style" && i + 1 < argc) {
+        if (!maburplay::parse_gs_style(argv[++i], &style)) {
+          usage();
+          return 2;
+        }
+      } else if (a == "--res" && i + 1 < argc) {
+        if (std::sscanf(argv[++i], "%dx%d", &ps.vid_w, &ps.vid_h) != 2) {
+          usage();
+          return 2;
+        }
+      } else if (a == "--lat" && i + 1 < argc) {
+        // p50/p99, the pair the compact bar's lat: field renders.
+        if (std::sscanf(argv[++i], "%d/%d", &ps.lat_p50_e2e_ms, &ps.lat_e2e_ms) != 2) {
+          usage();
+          return 2;
+        }
+        ps.lat_valid = true;
       } else if (a == "--fps" && i + 1 < argc) {
         ps.fps = std::atof(argv[++i]);
       } else if (a == "--jit" && i + 1 < argc) {
@@ -421,7 +443,7 @@ int main(int argc, char** argv) {
       usage();
       return 2;
     }
-    return run_gs_render(snap, out, font, w, h, stale, ps);
+    return run_gs_render(snap, out, font, w, h, stale, ps, style);
   }
 
   std::string config_path = "/etc/maburplay.toml";
@@ -540,6 +562,10 @@ int main(int argc, char** argv) {
   // wiring: sources, fonts, and the decision to invoke it.
   maburplay::OsdComposer composer;
   bool want_gs_osd = false;
+  // Validated at config load (player_config.cpp fails an unknown value), so
+  // this cannot pick a layout the operator did not ask for.
+  maburplay::GsStyle gs_style = maburplay::GsStyle::kCompact;
+  maburplay::parse_gs_style(cfg.osd.gs.style, &gs_style);
   if (cfg.osd.gs.enable && !decode_only) {
     std::string err;
     if (!gs_font.load(cfg.osd.gs.font, &err)) {
@@ -734,12 +760,14 @@ int main(int argc, char** argv) {
       // Three, not one: two DRM buffers plus the burned DVR's index map, all
       // three needing their own record of what they already show. See
       // osd_compose.h for why a shared shadow strobes.
-      composer.set_gs(std::make_unique<maburplay::GsOverlay>(gs_font),
-                      std::make_unique<maburplay::GsOverlay>(gs_font),
-                      std::make_unique<maburplay::GsOverlay>(gs_font));
+      composer.set_gs(maburplay::make_gs_layer(gs_style, gs_font),
+                      maburplay::make_gs_layer(gs_style, gs_font),
+                      maburplay::make_gs_layer(gs_style, gs_font));
       std::fprintf(stderr,
-                   "maburplay: gs osd on udp 127.0.0.1:%d font=%s stale_ms=%d\n",
-                   gs_src->port(), cfg.osd.gs.font.c_str(), cfg.osd.gs.stale_ms);
+                   "maburplay: gs osd on udp 127.0.0.1:%d font=%s style=%s "
+                   "stale_ms=%d\n",
+                   gs_src->port(), cfg.osd.gs.font.c_str(),
+                   cfg.osd.gs.style.c_str(), cfg.osd.gs.stale_ms);
     }
   }
 
@@ -809,7 +837,7 @@ int main(int argc, char** argv) {
       bc.osd_height = osd_surf.height;
       size_t n_seeds = 0;
       const uint32_t* seeds = composer.gs_present()
-                                  ? maburplay::GsOverlay::palette_seeds(&n_seeds)
+                                  ? maburplay::gs_palette_seeds(&n_seeds)
                                   : nullptr;
       // Seeds are needed even when the MSP atlas IS loaded: median cut over
       // the Betaflight atlas alone reproduces the atlas's own hues, and the
@@ -899,6 +927,13 @@ int main(int argc, char** argv) {
     lat.on_decoded(f.pts_us, mono_us());
 #endif
     ++frame_count;
+    // The DECODED picture size, which is what the OSD's res: field means --
+    // not screen_mode (the panel) and not bcfg (the burn encoder), both of
+    // which stay at 1080p while the drone streams 720p. Latched here rather
+    // than sampled at the 1 Hz mark because the sink is the only place the
+    // real dimensions exist, and it costs two stores.
+    gs_ps.vid_w = f.width;
+    gs_ps.vid_h = f.height;
     const auto now = std::chrono::steady_clock::now();
     if (!have_first_frame) {
       t_first_frame = now;
@@ -1156,7 +1191,13 @@ int main(int argc, char** argv) {
   };
 
   maburplay::RingClient ring({cfg.ring_path, cfg.socket}, sink);
-  if (!ring.open()) {
+  // Wait indefinitely for maburgs to create the ring (GS boot race,
+  // 2026-09-08): the init scripts start us milliseconds after maburgs, so
+  // losing the race is normal, not a config error -- and exiting made it
+  // permanent, because S97maburplay reads our exit 2 as "config error, skip
+  // restart". --oneshot is the exception: there the ring is the test fixture,
+  // so its absence is a real failure and must not hang the host suite.
+  if (!ring.open(oneshot ? 0 : -1)) {
     std::fprintf(stderr, "maburplay: cannot open ring %s\n", cfg.ring_path.c_str());
     return 2;
   }

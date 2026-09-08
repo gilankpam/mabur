@@ -10,6 +10,7 @@
 // that contract is the whole reason the bugs exist.
 #include "mtest.h"
 
+#include "gs_compact.h"
 #include "gs_draw.h"
 #include "gs_font.h"
 #include "gs_overlay.h"
@@ -175,11 +176,13 @@ struct Rig {
   bool dirty = false;
   bool last_announce = false;
 
-  explicit Rig(bool with_msp = true, bool with_gs = true) : raster(mspfont(), ScaleMode::kSharp) {
+  explicit Rig(bool with_msp = true, bool with_gs = true,
+               GsStyle style = GsStyle::kEssential)
+      : raster(mspfont(), ScaleMode::kSharp) {
     if (with_msp) comp.set_raster(&raster);
     if (with_gs) {
-      comp.set_gs(std::make_unique<GsOverlay>(gsfont()), std::make_unique<GsOverlay>(gsfont()),
-                  std::make_unique<GsOverlay>(gsfont()));
+      comp.set_gs(make_gs_layer(style, gsfont()), make_gs_layer(style, gsfont()),
+                  make_gs_layer(style, gsfont()));
       std::string err;
       REQUIRE(comp.gs_layout(W, H, &err));
     }
@@ -225,8 +228,9 @@ static OsdComposeIn make_in(const mabur::MspScreen* scr, bool fresh, bool stale,
 
 // The picture the screen is supposed to be showing, composed from nothing.
 static std::vector<uint32_t> reference(const OsdComposeIn& in, bool with_msp, bool with_gs,
-                                       bool seen_screen = true) {
-  Rig r(with_msp, with_gs);
+                                       bool seen_screen = true,
+                                       GsStyle style = GsStyle::kEssential) {
+  Rig r(with_msp, with_gs, style);
   OsdComposeIn ref = in;
   // A virgin composer has never seen a screen, so it needs the fresh flag to
   // latch one; a blanked grid, or a run in which no screen has ever arrived,
@@ -602,7 +606,7 @@ struct FakeBurn {
 
 static OsdPalette seeded_palette() {
   size_t n = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n);
+  const uint32_t* seeds = gs_palette_seeds(&n);
   return build_palette(mspfont().native(), seeds, n);
 }
 
@@ -1095,6 +1099,93 @@ TEST(a_new_burn_sink_gets_a_full_msp_restate_too) {
   r.step(make_in(&scr, true, false, nullptr, GsPlayerState{}, false));
   r.commit();
   CHECK(second.wrong_against(r.buf[r.front].s) == 0);
+}
+
+// ======================================================================
+// (k) The compact bar through the same composer
+// ======================================================================
+//
+// The bar is a different GsLayer, not a different composer, so nothing in
+// osd_compose.cpp knows which one it is holding. What IS different is where
+// the ink sits: the bar runs the full width of the BOTTOM ROW, which the MSP
+// grid covers everywhere, so it collides with the grid on essentially every
+// cell instead of in the four corners. That makes it the harsher case for
+// the collision reclaim, which is why it gets its own pair here.
+
+static int diff_bar_fields(const Rig& r, int b, const std::vector<uint32_t>& ref,
+                           int* boxes) {
+  GsCompactBar probe(gsfont());
+  std::string err;
+  REQUIRE(probe.layout(W, H, &err));
+  Buf scratch;
+  std::vector<DirtyRect> d;
+  // Reconcile the probe to the same card count the rig saw, so its boxes are
+  // the ones actually on the buffers.
+  probe.update(snap_cards(3), false, player(60.0), scratch.s, &d);
+  int n = 0, cnt = 0;
+  for (int f = 0; f < (int)GsBarField::kCount; ++f) {
+    const DirtyRect box = probe.debug_field_box((GsBarField)f);
+    if (box.w <= 0 || box.h <= 0) continue;
+    ++cnt;
+    n += diff_box(r.buf[b].px, ref, box);
+  }
+  if (boxes) *boxes = cnt;
+  return n;
+}
+
+TEST(the_msp_grid_never_destroys_a_compact_bar_field_in_either_buffer) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  Rig r(true, true, GsStyle::kCompact);
+  for (int i = 0; i < 2; ++i) r.tick(make_in(&scr, false, false, &sn, ps, true));
+  for (int i = 0; i < 2; ++i) r.tick(make_in(&scr, true, false, &sn, ps, false));
+
+  const auto ref = reference(make_in(&scr, true, false, &sn, ps, true), true, true,
+                             true, GsStyle::kCompact);
+  int boxes = 0;
+  CHECK(diff_bar_fields(r, 0, ref, &boxes) == 0);
+  CHECK(diff_bar_fields(r, 1, ref, nullptr) == 0);
+  CHECK(boxes == (int)GsBarField::kCount);  // the fixture has ink to destroy
+  CHECK(r.px(0, kProbeX, kProbeY) == glyph_px('X'));
+}
+
+// Non-vacuity for the test above, and the same control the corner layout
+// has: draw the bar, then let the grid draw over it with nothing reclaiming,
+// and the bar's boxes must differ from the composed picture. Driven directly
+// rather than through the composer so it cannot drift with it.
+TEST(without_a_reclaim_the_msp_grid_does_destroy_the_compact_bar) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  GsCompactBar bar(gsfont());
+  OsdRaster raster(mspfont(), ScaleMode::kSharp);
+  std::string err;
+  REQUIRE(bar.layout(W, H, &err));
+  Buf b;
+  ShadowGrid sh;
+  bar.update(sn, false, ps, b.s, nullptr);
+  raster.draw(scr, b.s, &sh);
+  const auto ref = reference(make_in(&scr, true, false, &sn, ps, true), true, true,
+                             true, GsStyle::kCompact);
+  Rig probe(true, true, GsStyle::kCompact);  // only for the box enumeration
+  probe.buf[0].px = b.px;
+  CHECK(diff_bar_fields(probe, 0, ref, nullptr) > 0);
+}
+
+// Both buffers converge on the same picture with the bar, exactly as they
+// must with the corner blocks: a per-buffer lineage that only one publisher
+// refreshes is what strobes at the publish rate.
+TEST(both_buffers_match_a_from_scratch_compact_composition) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(2);
+  const GsPlayerState ps = player(60.0);
+  Rig r(true, true, GsStyle::kCompact);
+  for (int i = 0; i < 4; ++i) r.tick(make_in(&scr, i == 0, false, &sn, ps, true));
+  const auto ref = reference(make_in(&scr, true, false, &sn, ps, true), true, true,
+                             true, GsStyle::kCompact);
+  CHECK(diff_px(r.buf[0].px, ref) == 0);
+  CHECK(diff_px(r.buf[1].px, ref) == 0);
 }
 
 MTEST_MAIN

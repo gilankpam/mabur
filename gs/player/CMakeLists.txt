@@ -10,7 +10,9 @@ add_library(mabur_player_core STATIC
   src/gs_draw.cpp
   src/gs_snapshot.cpp
   src/gs_source.cpp
+  src/gs_layer.cpp
   src/gs_overlay.cpp
+  src/gs_compact.cpp
   src/gs_metrics.cpp
   src/osd_layout.cpp
   src/osd_raster.cpp

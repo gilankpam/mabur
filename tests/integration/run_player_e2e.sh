@@ -62,6 +62,31 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # rendered, it still hashes 3d926998..., because the fixture's cards carry no
 # EVM and that field blanks.
 GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
+# Golden for PART E, the compact bar (osd.gs.style = "compact"). Same rule
+# as the two above: re-bless only from a pixel diff, never from a hash swap
+# alone -- the geometry floor below sees a bar that moved or lost a row, but
+# not a transposed value pair or a blanked field.
+#
+# Re-blessed 2026-09-08 (was 27566469...): the recording indicator moved out
+# of row 0 and up to the TOP-RIGHT corner, on its own. Row 0 goes back to
+# exactly the pixels it had before the indicator existed (d4cc28b3's row 0),
+# row 1 is untouched, and the only new ink is the indicator's own band at
+# the top inset -- which is what the third band the gate now asserts is.
+#
+# Re-blessed 2026-09-08 (was d4cc28b3...): the bar gained the recording
+# indicator, rendered identically to the essential overlay's (dot, REC,
+# mm:ss clock), and this invocation now passes --rec recording so the pixel
+# path covers it.
+#
+# Re-blessed 2026-09-08 (was f5c5b69c...): the bar went from one row to two.
+# A single line capped the type at 22 px on a 1080p panel -- too small to
+# read on the GS screen -- and splitting the eleven items across two rows
+# (radio above, picture below) lets the same "largest baked size that fits"
+# rule pick 38 px instead. Every pixel moves, so a diff against the old dump
+# says nothing; what was checked instead is the geometry floor below (two
+# bands, both centred, block hugging the bottom) plus the per-row strings
+# pinned in tests/test_gs_compact.cpp.
+BAR_SHA_EXPECTED=bc0c783287ff9d26f7a9450eac18e61aaae3077315a46a27295f73a732eb207b
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -282,8 +307,12 @@ echo "== GS render gate =="
 python3 tools/msp/gen_gsfont.py --synthetic "$TMP/syn.gfont" \
   --sizes 19,21,22,24,26,34,38,56
 
+# --style essential explicitly: the shipped default is the compact bar (PART
+# E below), and this whole part -- corner anchors, the centre-of-frame band,
+# the golden hash -- is about the four-block layout.
 "$MABURPLAY" --gs-render tests/fixtures/gs_snapshot_nominal.json \
   --out-gs "$TMP/gs.bin" --gsfont "$TMP/syn.gfont" --screen 1920x1080 \
+  --style essential \
   --rec recording --rec-elapsed 767 --fps 60 --jit 3 --mbps 24.6
 
 # Sanity floor before the hash: an all-transparent dump would match a stale
@@ -362,6 +391,93 @@ GS_SHA=$(sha256sum "$TMP/gs.bin" | cut -d' ' -f1)
 echo "gs render sha256: $GS_SHA"
 if [ "$GS_SHA" != "$GS_SHA_EXPECTED" ]; then
   echo "GS render hash changed (expected $GS_SHA_EXPECTED)" >&2
+  exit 1
+fi
+
+# --- PART E: compact bar render gate ----------------------------------
+# The shipped default layout (osd.gs.style = "compact"): two plain-text rows
+# along the bottom edge, plus the recording indicator alone in the TOP-RIGHT
+# corner. Same dump format and the same reasoning as PART D, but the
+# invariants are the bar's own -- three bands of ink and nothing else: the
+# indicator up top, then the two rows hugging the bottom inset. The
+# four-corner assertions above do not apply and would all fail here, which
+# is the point of gating the two styles separately.
+echo "== GS compact bar render gate =="
+"$MABURPLAY" --gs-render tests/fixtures/gs_snapshot_nominal.json \
+  --out-gs "$TMP/gsbar.bin" --gsfont "$TMP/syn.gfont" --screen 1920x1080 \
+  --style compact \
+  --rec recording --rec-elapsed 767 \
+  --fps 60 --jit 5.2 --mbps 8.1 --res 1280x720 --lat 45/78
+
+python3 - "$TMP/gsbar.bin" <<'EOF'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+magic, w, h, stride = struct.unpack("<4I", d[:16])
+assert magic == 0x5244534F, hex(magic)
+assert (w, h, stride) == (1920, 1080, 1920), (w, h, stride)
+px = struct.unpack("<%dI" % (h * stride), d[16:])
+
+lit_rows = [y for y in range(h) if any(px[y * stride + x] for x in range(w))]
+assert lit_rows, "nothing drawn at all"
+
+# Group the lit scanlines into contiguous bands. THREE: the recording
+# indicator alone at the top inset, then the two stacked rows at the bottom.
+# The two rows are separated by a gap wide enough that no glyph bridges
+# them -- a single bottom band means the row pitch collapsed and they are
+# overlapping.
+bands = []
+for y in lit_rows:
+    if bands and y == bands[-1][1] + 1:
+        bands[-1][1] = y
+    else:
+        bands.append([y, y])
+print("  ink bands: %s" % (bands,))
+assert len(bands) == 3, "expected REC + two rows, got %d bands" % len(bands)
+
+def extent(y0, y1):
+    on = [x for y in range(y0, y1 + 1) for x in range(w) if px[y * stride + x]]
+    return min(on), max(on)
+
+# --- the recording indicator, alone in the top-right corner ---
+ry0, ry1 = bands[0]
+rx0, rx1 = extent(ry0, ry1)
+print("  rec: x %d..%d y %d..%d" % (rx0, rx1, ry0, ry1))
+# Its box's top edge sits on the 40 px inset; the ink starts a few px in
+# (the cell's ascender gap and the shadow pad).
+assert 40 <= ry0 < 40 + 24, "rec not at the top inset (y0=%d)" % ry0
+# Right-flushed against the same 32 px inset the rows use.
+assert 1920 - 32 - 24 <= rx1 <= 1920 - 32, "rec not flush right (x1=%d)" % rx1
+# In the RIGHT half, unambiguously -- this is what says "corner", not "top".
+assert rx0 > w // 2, "rec is not in the right half (x0=%d)" % rx0
+
+# --- the two bottom rows ---
+for i, (y0, y1) in enumerate(bands[1:]):
+    x0, x1 = extent(y0, y1)
+    print("  row %d: x %d..%d y %d..%d" % (i, x0, x1, y0, y1))
+    # Centred on the surface. Loose for the same reason PART D's hcentre is:
+    # every box is sized from its worst case, so short values sit
+    # legitimately off centre -- 160 px still discriminates against an
+    # edge-anchored row.
+    assert abs((x0 + x1) // 2 - w // 2) <= 160, "row %d not centred" % i
+    # Inside the bar's own 32 px horizontal inset.
+    assert x0 >= 32 and x1 <= w - 32, "row %d crosses its inset" % i
+
+# The block hugs the bottom: within the 24 px inset plus the cell's own
+# descender.
+assert h - 1 - bands[-1][1] < 40, "bar does not hug the bottom"
+# Two rows, not three: the bottom block stays inside a band a bit over two
+# cells tall (the chosen synthetic atlas is 38 px, cell 76).
+assert bands[-1][1] - bands[1][0] < 3 * 76, "bottom block is taller than two rows"
+# Nothing between the corner item and the rows.
+assert bands[1][0] - bands[0][1] > 100, "rec and the rows have run together"
+print("  OK gs compact bar: %dx%d lit=%d" %
+      (w, h, sum(1 for y in range(h) for x in range(w) if px[y * stride + x])))
+EOF
+
+BAR_SHA=$(sha256sum "$TMP/gsbar.bin" | cut -d' ' -f1)
+echo "gs compact bar sha256: $BAR_SHA"
+if [ "$BAR_SHA" != "$BAR_SHA_EXPECTED" ]; then
+  echo "GS compact bar render hash changed (expected $BAR_SHA_EXPECTED)" >&2
   exit 1
 fi
 

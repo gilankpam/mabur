@@ -177,6 +177,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
 
   json& link = j["link"];
   link["vtx_id"] = in.vtx_id;
+  link["channel"] = in.channel;
   link["state"] = in.in_session ? "session" : "beaconing";
   link["tx_card"] = in.tx_card;
   // OpPoint.overhead is a base/enh pair (Task 4, same-rate-fixed-pairs):

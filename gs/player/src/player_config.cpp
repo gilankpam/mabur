@@ -3,6 +3,7 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "gs_layer.h"  // parse_gs_style
 #include "mabur/toml.h"
 
 namespace maburplay {
@@ -151,10 +152,13 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
 
     if (o.contains("gs")) {
       const Value& g = o["gs"];
-      check_keys(g, "osd.gs", {"enable", "port", "font", "stale_ms"});
+      check_keys(g, "osd.gs", {"enable", "port", "font", "style", "stale_ms"});
       c.osd.gs.enable = get_bool(g, "enable", c.osd.gs.enable, "osd.gs");
       c.osd.gs.port = static_cast<int>(get_int(g, "port", c.osd.gs.port, 1, 65535, "osd.gs"));
       c.osd.gs.font = get_str(g, "font", c.osd.gs.font, "osd.gs");
+      c.osd.gs.style = get_str(g, "style", c.osd.gs.style, "osd.gs");
+      if (!parse_gs_style(c.osd.gs.style, nullptr))
+        fail("osd.gs.style", "must be \"compact\" or \"essential\"");
       // Default mirrors OsdCfg::GsCfg::stale_ms (see player_config.h).
       c.osd.gs.stale_ms =
           static_cast<int>(get_int(g, "stale_ms", c.osd.gs.stale_ms, 0, 60000, "osd.gs"));

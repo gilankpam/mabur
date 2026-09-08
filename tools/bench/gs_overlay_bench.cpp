@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
   OsdFont mf;
   GlyphAtlas empty;
   size_t n_seeds = 0;
-  const uint32_t* seeds = GsOverlay::palette_seeds(&n_seeds);
+  const uint32_t* seeds = gs_palette_seeds(&n_seeds);
   const bool have_msp = mf.load(mspfont, &err);
   const OsdPalette pal = build_palette(have_msp ? mf.native() : empty, seeds, n_seeds);
 

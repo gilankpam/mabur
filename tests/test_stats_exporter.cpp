@@ -13,6 +13,7 @@ namespace {
 StatsInput base_input() {
   StatsInput in;
   in.vtx_id = 1;
+  in.channel = 149;
   in.in_session = true;
   in.tx_card = 0;
   in.op.mcs = 5; in.op.bw = 20;
@@ -70,6 +71,9 @@ TEST(first_emission_immediate_with_null_rates) {
   CHECK(j["cards"][0]["self_pps"].is_null());
   // gauges are live even on the first datagram
   CHECK(j["link"]["vtx_id"] == 1);
+  // The player's compact OSD names the channel the rest of its line
+  // describes, and it can only get it from here.
+  CHECK(j["link"]["channel"] == 149);
   CHECK(j["link"]["state"] == "session");
   CHECK(j["link"]["op"]["mcs"] == 5);
   CHECK(j["cards"][0]["frames"] == 1000);

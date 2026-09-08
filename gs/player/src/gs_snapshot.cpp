@@ -67,6 +67,13 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
   if (!j.is_object()) return false;
 
   if (const json* link = obj(j, "link")) {
+    // The GS's operating wifi channel (radio.channel). Exported from the GS
+    // config, so it is a constant for the session -- but it is the one
+    // number on the compact bar that says WHICH link the rest of the line
+    // describes, and getting it from the daemon rather than from the
+    // player's own config is what keeps it honest when the two configs
+    // disagree.
+    out->channel = integer(*link, "channel");
     out->air_pct = num(*link, "air_pct");
     if (const std::optional<double> r = num(*link, "residual_loss"))
       out->post_loss_pct = *r * 100.0;

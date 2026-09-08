@@ -364,4 +364,66 @@ TEST(incomplete_sid1_with_discont_flag_still_flushes_next_base) {
   unlink(ring.c_str());
 }
 
+// The GS boot race (2026-09-08): S97maburplay starts within milliseconds of
+// S96maburgs, so maburplay can reach the ring open before maburgs has created
+// the ring. A waiting open lets the player sit on its splash until the ring
+// shows up instead of exiting.
+TEST(open_waits_for_a_ring_created_after_the_call) {
+  const std::string ring = tmp_path("ring_late");
+  unlink(ring.c_str());
+
+  std::unique_ptr<maburgs::AuRingWriter> w;
+  std::thread writer([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    w = std::make_unique<maburgs::AuRingWriter>();
+    REQUIRE(w->open(ring, {4096, 8}));
+    publish(*w, 0, true, 20, 1);
+  });
+
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_late")}, c.sink());
+  const bool ok = rc.open(5000);
+  writer.join();
+
+  CHECK(ok);
+  CHECK(rc.pump(50) == 1);
+  REQUIRE(c.events.size() == 1);
+  CHECK(c.events[0].au == au_bytes(20, 1));
+  unlink(ring.c_str());
+}
+
+// --oneshot (host e2e) must still fail fast on a missing ring rather than
+// hang: the ring is the fixture there, and its absence is a real failure.
+TEST(open_without_wait_fails_immediately_on_missing_ring) {
+  const std::string ring = tmp_path("ring_absent");
+  unlink(ring.c_str());
+
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_absent")}, c.sink());
+  const auto t0 = std::chrono::steady_clock::now();
+  const bool ok = rc.open(0);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+  CHECK(!ok);
+  CHECK(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() < 200);
+}
+
+// A bounded wait that never sees a ring gives up and says so.
+TEST(open_with_bounded_wait_times_out_on_missing_ring) {
+  const std::string ring = tmp_path("ring_never");
+  unlink(ring.c_str());
+
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_never")}, c.sink());
+  const auto t0 = std::chrono::steady_clock::now();
+  const bool ok = rc.open(300);
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+  CHECK(!ok);
+  const auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  CHECK(ms >= 300);
+  CHECK(ms < 3000);
+}
+
 MTEST_MAIN

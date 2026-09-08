@@ -312,13 +312,15 @@ def render_rows_compact(model, wall, width):
     else:
         tx_card = link.get("tx_card")
         vtx_id = link.get("vtx_id")
+        chan = link.get("channel")
         bw = op.get("bw")
         cmd_ov_base = op.get("overhead_base")
         cmd_ov_enh = op.get("overhead_enh")
         drone_applied = (d.get("drone") or {}).get("applied") or {}
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
-            f"maburgs   {state_s}   vtx {_s(vtx_id)}   tx c{_s(tx_card)}   "
+            f"maburgs   {state_s}   vtx {_s(vtx_id)}   ch {_s(chan)}   "
+            f"tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
             f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}"
         ).ljust(width)
@@ -550,6 +552,7 @@ def panel_topbar(model, wall):
     state = link.get("state")
     state_s = state.upper() if isinstance(state, str) else "--"
     vtx_id = link.get("vtx_id")
+    chan = link.get("channel")
     mcs, bw = op.get("mcs"), op.get("bw")
     cmd_ov_base = op.get("overhead_base")
     cmd_ov_enh = op.get("overhead_enh")
@@ -567,7 +570,7 @@ def panel_topbar(model, wall):
 
     dot = "●"
     text = (
-        f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   "
+        f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   ch {_s(chan)}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
         f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
         f"air ~{_s(air, 0)}%      session {session_s}   "

@@ -1216,6 +1216,7 @@ static int run_radio(const maburgs::Config& cfg) {
     if (stats) {
       maburgs::StatsInput sin;
       sin.vtx_id = cfg.link.vtx_id;
+      sin.channel = cfg.radio.channel;
       sin.in_session = in_session;
       sin.tx_card = sel.selected();
       sin.op = vrx.cur_op();
