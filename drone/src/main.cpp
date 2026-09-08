@@ -27,6 +27,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <exception>
 #include <vector>
 
 #include <unistd.h>  // _exit() — see the venc on_fault handler
@@ -880,6 +881,40 @@ int run_real_mode(const Config& cfg) {
 
   bootlog("rtl device created");
 
+  // Radio bring-up on its own thread, started HERE so it overlaps the venc
+  // bring-up below instead of following it. Measured 2026-09-08 (docs/
+  // boot-time-findings-2026-09-07.md, "maburd's own startup, stamped"):
+  // InitWrite is 1.73 s of power-on + firmware download + TX enable, all of
+  // it USB-bound, and it used to run strictly after venc_core_start (~1.5 s
+  // on a cold boot), with the encoder producing frames into the void for
+  // the whole of it. The two touch disjoint hardware (USB radio vs the
+  // SigmaStar MI stack), and nothing transmits until device_ready opens
+  // below, which still happens after this thread is joined and the TX
+  // power / A-MPDU writes have run on the main thread in their old order.
+  //
+  // InitWrite throws on a USB/firmware failure. Today that escapes main()
+  // and the wrapper respawns; capturing it here and rethrowing after the
+  // join keeps exactly that behaviour instead of turning it into a
+  // std::terminate inside a thread.
+  std::exception_ptr radio_init_error;
+  std::thread radio_init_thread([&]() {
+    name_thread("mbr-radio-init");
+    bootlog("radio InitWrite start (channel %d)", cfg.radio.channel);
+    try {
+      rtl_device->InitWrite(
+          SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+    } catch (...) {
+      radio_init_error = std::current_exception();
+    }
+    bootlog("radio InitWrite done");
+  });
+  // Joins the bring-up thread; must run on every path out of this function
+  // that releases the USB handle, or InitWrite keeps driving a device that
+  // has been closed under it.
+  auto join_radio_init = [&]() {
+    if (radio_init_thread.joinable()) radio_init_thread.join();
+  };
+
   // Gate for DevourerSink: stays false until InitWrite() completes bring-up.
   std::atomic<bool> device_ready{false};
 
@@ -968,6 +1003,7 @@ int run_real_mode(const Config& cfg) {
     // CreateRtlDevice failure path above) — the radio is not up yet, so
     // there is nothing else to unwind.
     std::fprintf(stderr, "venc_core_start failed — exiting\n");
+    join_radio_init();
     libusb_release_interface(handle, 0);
     libusb_close(handle);
     libusb_exit(usb_ctx);
@@ -1795,16 +1831,16 @@ int run_real_mode(const Config& cfg) {
                  cfg.radio.width);
   }
 
-  // Bring up TX FIRST and let it finish before anything transmits. InitWrite
-  // runs the full power-on + firmware download + TX-path enable and returns
-  // only once the chip is ready; StartRxLoop then runs the (blocking) RX worker
-  // with TX+RX concurrent on the same handle. Opening device_ready between the
-  // two is what keeps the hot/agent threads from clogging the bulk-OUT FIFO
-  // mid-DLFW — see DevourerSink::ready.
-  bootlog("radio InitWrite start (channel %d)", cfg.radio.channel);
-  rtl_device->InitWrite(
-      SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
-  bootlog("radio InitWrite done");
+  // TX bring-up must be complete before anything transmits. InitWrite (on
+  // radio_init_thread, started right after CreateRtlDevice above) runs the
+  // full power-on + firmware download + TX-path enable and returns only
+  // once the chip is ready; StartRxLoop then runs the (blocking) RX worker
+  // with TX+RX concurrent on the same handle. Opening device_ready between
+  // the two is what keeps the hot/agent threads from clogging the bulk-OUT
+  // FIFO mid-DLFW — see DevourerSink::ready.
+  join_radio_init();
+  if (radio_init_error) std::rethrow_exception(radio_init_error);
+  bootlog("radio bring-up joined");
   // Bring-up record for the non-standard MAC state requested via
   // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
   // at info, and the production cross-build compiles info out

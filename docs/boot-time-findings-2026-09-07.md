@@ -104,9 +104,9 @@ Notes on the individual stages:
   `mi_mipitx`, `mi_ldc`, `mi_divp`, `mi_rgn` and `mi_shadow`, none of which
   `maburd` opens.
 - The 2.64 s from first frame to radio-ready contains devourer's `InitWrite`
-  — power-on, 8812eu firmware download, TX enable — but its exact share is
-  **unmeasured**, because `maburd`'s log lines carry no timestamps of their
-  own and the poller cannot attach before ~7.3 s.
+  — power-on, 8812eu firmware download, TX enable. Its share was
+  unmeasurable from this rig; it is now measured at **1.73 s** on the
+  stamped build — see "maburd's own startup, stamped" below.
 - Nothing before 5.11 s is video work. The overlay mount, four generic
   daemons and the sensor autodetect sit in front of `maburd`.
 
@@ -642,11 +642,14 @@ Items 1-3 are measured; the rest are estimates.
    reversible, already live on `.95`. Included in the number above.
 3. ~~**`quiet loglevel=1`**~~ — **DONE and re-measured: 0.84 s**, see
    below. Live on `.95`; not yet on the drone. Config-only (`bootargs`).
-4. **Overlap devourer `InitWrite` with the MI bring-up** in `maburd` —
-   estimated ~1.5 s. Today they are strictly serial and the encoder spends
-   the gap producing frames into the void (`drops=309`, `sent=0`).
-   Code-only, no deploy-order hazard. Now cheap to verify: timestamp
-   `maburd`'s log lines and read them off the console.
+4. ~~**Overlap devourer `InitWrite` with the MI bring-up** in `maburd`~~ —
+   **DONE 2026-09-08, −1.73 s measured** (warm restart, n=5); see
+   "InitWrite overlapped" below. The sizing that follows is what it was
+   built against — **now measured, not estimated**: `InitWrite` is 1.73 s and the USB
+   claim + port reset ahead of it another 0.80 s, both strictly serial
+   with a venc bring-up of ~1.5 s (cold) — see "maburd's own startup,
+   stamped" below. Today the encoder spends the gap producing frames into
+   the void (`drops=309`, `sent=0`). Code-only, no deploy-order hazard.
 5. ~~**A mabur-specific device profile and a custom rcS**~~ — **DONE**,
    both halves, see below. `load_sigmastar` returned −0.07 s (far less than
    estimated: squashfs LZO had already taken most of that window). The rcS
@@ -691,8 +694,9 @@ Items 1-3 are measured; the rest are estimates.
 8. **Shrink or relocate the jffs2 overlay** — up to ~1.5 s, but it holds the
    config and the imx415 ISP tuning bin, so those need a home first.
 
-Still worth doing before 4-8: **timestamp `maburd`'s own log lines** with a
-monotonic prefix, so the 2.64 s radio window is directly measurable.
+~~Still worth doing before 4-8: **timestamp `maburd`'s own log lines**~~ —
+**DONE 2026-09-08**, `drone/src/boot_trace.h`; the section below is what
+it found.
 
 Realistic floor with this SoC, the vendor ISP blobs and a USB dongle: 5-6 s
 from power to video. Items 1-3 alone are 5.2 s of measured, mostly cheap
@@ -905,6 +909,149 @@ Two traps when rebuilding this incrementally rather than through
   re-populated from `output/per-package/mabur/target/`, and the image ends
   up with both `S39mabur` and `S96mabur`, starting `maburd` twice. A clean
   `builder.sh` run has neither problem.
+
+
+## maburd's own startup, stamped — 2026-09-08
+
+`maburd` now prints `[boot +S.mmm] …` lines (`drone/src/boot_trace.h`,
+monotonic since the first statement of `main()`) at every stage boundary
+of its own bring-up, including inside the venc code, and writes them to a
+private dup of stderr so the venc's `sdk_quiet` redirects cannot swallow
+them. They land in `/tmp/mabur.log`, which is the point: the drone has no
+console, but the log survives and is readable over ssh after the fact.
+
+Measured on the drone (`192.168.10.152`) by running the stamped binary
+from `/tmp` with the wrapper stopped — i.e. a **warm restart**, the thing
+every deploy and every wedge recovery does. Five runs, all within ±40 ms:
+
+| stage | cost (s) |
+|---|---|
+| config load, USB open | 0.004 |
+| USB `claim_interface_then_reset` (port reset + re-enumeration) | **0.804** |
+| `CreateRtlDevice` | 0.001 |
+| **venc bring-up** (`venc_core_start`) | **10.64** |
+| debug HTTP + spawning the four worker threads | 0.010 |
+| **radio `InitWrite`** (power-on, firmware, TX enable) | **1.73** |
+| TX power table + A-MPDU | 0.024 |
+| **total → TX gate open** | **13.2** |
+
+The first frame comes out of the venc ring 0.14 s after `InitWrite`
+starts — the encoder is already producing while the radio is still coming
+up, which is the overlap item 4 targets, seen from the other side.
+
+### Where the 10.6 s goes, and why it is not a boot cost
+
+Stamping down through `star6e_runtime_init` and `star6e_pipeline_start`
+attributes 10.4 of the 10.64 s to **five calls at 2.04–2.08 s each**, and
+every one of them is the *first call into a different MI module*:
+
+| call | module | cost (s) |
+|---|---|---|
+| `MI_SYS_Init` | sys | 2.04 |
+| `MI_VENC_StopRecvPic(0)` (pre-init teardown) | venc | 2.08 |
+| `MI_VPE_GetChannelAttr(0)` (pre-init teardown) | vpe | 2.08 |
+| `MI_VIF_DisableChnPort(0,0)` (pre-init teardown) | vif | 2.08 |
+| `MI_SNR_QueryResCount(0)` (sensor select) | sensor | 2.08 |
+
+The second call into the same module is free; everything else in the
+pipeline — VIF/VPE/VENC create, bind, ISP bin load, `MI_SNR_Enable`
+(0.17 s) — totals under 0.3 s.
+
+Three things pin it to the vendor kernel driver rather than to anything
+in `drone/venc`:
+
+- With `printk.time` on, dmesg shows `client [pid] connected, module:sys`
+  … `venc` … `vpe` … `vif` … `sensor` at exactly 2.08 s intervals, and
+  `/proc/<pid>/wchan` through the whole window is **`MI_DEVICE_Open`** —
+  the process is asleep inside `mi_sys.ko`'s device open, silently.
+- A bare `exec 3<>/dev/mi_sys` from a shell, no `maburd` running, pays
+  the same 2.04 s; `/dev/mi_venc` 2.08 s.
+- The previous client disconnects cleanly (`client [pid] disconnected` for
+  all five modules within 1 s of the kill) and `/proc/mi_modules/mi_sys/
+  mi_sys0` shows nothing left over; a 1–2 minute gap before the restart
+  does not help. It is not an expiring timer and not stale state we can
+  scrub — it is what the driver does on the second-ever open of a module.
+
+**On a cold boot it does not exist.** The kernel log buffer stores
+timestamps whether or not `printk.time` displays them, so switching it
+on after the fact reads back the boot: on the first `maburd` after power-up
+all five `client connected` lines land between **6.812 and 6.832 s** —
+20 ms for all of them. So the cold-boot venc bring-up really is ~1.5 s
+(6.81 → ~7.3 s on that boot: MI connects, sensor query at 6.84/7.02), the
+old 1.45 s reconstruction stands, and the 10.6 s is a **restart-only
+penalty**: `S96mabur restart` costs ~10.4 s more than a boot does before
+video returns. Nothing in mabur can shorten it; measure boot-path work on
+a cold boot, or subtract 5 × 2.08 s from a warm one.
+
+The cold-boot kernel log also dates the rest of `maburd`'s start on that
+boot: process start 5.20 s, USB port reset 6.11 s, MI connects 6.81 s —
+consistent with the warm-restart table above minus the penalty.
+
+### `InitWrite` overlapped — measured
+
+`drone/src/main.cpp`: `InitWrite` now runs on its own thread, spawned the
+moment `CreateRtlDevice` returns, and is joined where the call used to be
+— just before the TX-power and A-MPDU writes and the `device_ready`
+store, which keep their order on the main thread. An `InitWrite` throw is
+captured and rethrown after the join, so a USB/firmware failure still
+escapes `main()` for the wrapper exactly as before; the `venc_core_start`
+failure path joins before releasing the USB handle.
+
+Five warm restarts of the overlap build against the five before it:
+
+| marker | serial (s) | overlapped (s) |
+|---|---|---|
+| `InitWrite` start → done | 11.45 → 13.18 (1.73) | 0.82 → 2.14 (**1.33**, hidden inside venc) |
+| venc bring-up done | 11.44 | 11.45 |
+| **TX gate open** | **13.20** | **11.47** (−1.73, ±0.03 over n=5) |
+| boot-window `drops=` in the first stats line | 231–256 | **0** |
+
+`InitWrite` itself got faster (1.73 → 1.33 s) because it now runs while
+the encoder thread is asleep in the kernel rather than alongside a live
+hot/agent/tx thread set. The drops row is the side effect worth having:
+the TX gate opens 20 ms after venc completes, before the first frame
+leaves the ring (+0.12 s), so nothing is encoded into the void any more.
+5/5 runs `state=2`, sending, no faults, no respawns.
+
+On a cold boot the venc bring-up is ~1.5 s rather than 10.6, so the whole
+1.33 s still hides inside it; expect −1.3 to −1.7 s there. Unmeasured on a
+cold boot as of this writing — the stamped binary has only run from
+`/tmp`.
+
+### Two hazards found on the way
+
+- **Never bare-open `/dev/mi_*` from a shell.** `/dev/mi_sys` and
+  `/dev/mi_venc` opened and closed (2 s each); `exec 3<>/dev/mi_vpe` **took
+  the drone down** — the shell hung and ~2 minutes later the board was back
+  up from a fresh boot (`panic=20` in `bootargs`; whether it was the panic
+  or the hardware watchdog is unknowable from the new dmesg). A non-MI
+  client evidently trips the `/dev/mi_*` close deadlock waybeam documented
+  (`../waybeam_venc/documentation/STAR6E_SINGLE_PID_REINIT_FINDINGS.md`).
+  The timing question it was answering is settled above; do not repeat it.
+- **`sdk_quiet` eats stderr.** The venc brackets every vendor call in
+  `sdk_quiet_begin/end`, which `dup2()`s `/dev/null` over fds 1 and 2.
+  Anything that logs by writing to fd 2 inside those windows vanishes —
+  the first attribution run lost all ten stamps of the pre-init teardown
+  to it. `bootlog` writes to its own dup of stderr for exactly this
+  reason, and `tests/test_boot_trace.cpp` pins it.
+
+### Reproducing
+
+Stamped binary from `tools/build-arm.sh`, staged in tmpfs so the rootfs
+(3 × `maburd` already, 2.5 MB free) is untouched:
+
+```sh
+scp -O out/arm/maburd root@192.168.10.152:/tmp/maburd.bt
+ssh root@192.168.10.152 '/etc/init.d/S96mabur stop'         # own invocation
+ssh root@192.168.10.152 'ps | grep "[m]aburd"'               # must be empty
+ssh root@192.168.10.152 'setsid sh -c "/tmp/maburd.bt -c /etc/mabur.toml \
+  > /tmp/bt.log 2>&1" </dev/null >/dev/null 2>&1 &'
+sleep 20; ssh root@192.168.10.152 'grep "\[boot" /tmp/bt.log'
+```
+
+Kernel-side view of the same run: `echo Y >
+/sys/module/printk/parameters/time; dmesg | grep "client \["`. Restore with
+`setsid /etc/init.d/S96mabur start </dev/null >/dev/null 2>&1 &`.
 
 ## What is still blocked
 
