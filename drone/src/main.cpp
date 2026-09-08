@@ -1071,12 +1071,23 @@ int run_real_mode(const Config& cfg) {
   // RX callback: pulls RC frames (rc::frame_type >= 0) off the air and
   // queues them for the agent thread. Runs on the main thread (inside
   // rtl_device->Init's blocking RX loop).
+  // Boot-timeline stamps for the rendezvous: the TX gate opening is not the
+  // end of "time to video" -- nothing is sent until an RC frame from the GS
+  // takes RcAgent to LINKED, and that needs the radio to actually hear one.
+  // One line each per process (RX thread; the flags are only ever set).
+  std::atomic<bool> first_rx_stamped{false};
+  std::atomic<bool> first_rc_stamped{false};
   auto rx_callback = [&](const Packet& pkt) {
     rx_beat.fetch_add(1, std::memory_order_relaxed);
+    if (!first_rx_stamped.exchange(true, std::memory_order_relaxed))
+      bootlog("first packet received by the RX loop (%zu bytes, crc_err=%d)",
+              pkt.Data.size(), pkt.RxAtrib.crc_err ? 1 : 0);
     if (pkt.Data.size() < kDot11HeaderLen + 4) return;
     const uint8_t* body = pkt.Data.data() + kDot11HeaderLen;
     size_t body_len = pkt.Data.size() - kDot11HeaderLen;
     if (rc::frame_type(body, body_len) >= 0) {
+      if (!first_rc_stamped.exchange(true, std::memory_order_relaxed))
+        bootlog("first RC frame received (type %d)", rc::frame_type(body, body_len));
       rc_queue.push(body, body_len);
       // Uplink EMAs feed off CRC-clean RC frames only — a corrupt frame's
       // attrib (rssi/snr) is not a trustworthy sample.
@@ -1637,8 +1648,10 @@ int run_real_mode(const Config& cfg) {
         health.txq_depth = txq.depth();
         health.txq_cap = kTxQueueCap;
         agent.tick(now, health);
-        if (agent.take_link_established())
+        if (agent.take_link_established()) {
           link_up_discont.store(true, std::memory_order_relaxed);
+          bootlog("link established (RcAgent LINKED) -- video starts");
+        }
 
         // Watchdog: after an initial grace period, a heartbeat going stale for
         // > stale_ms means the corresponding loop is wedged — EXCEPT rx_beat,

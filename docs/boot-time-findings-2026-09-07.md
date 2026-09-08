@@ -1069,6 +1069,52 @@ needs one is a devourer question — it is there because a radio that
 comes up deaf after a restart is worse than 0.8 s) and the firmware
 download inside `InitWrite`, both below mabur.
 
+### Where battery-to-picture actually goes — why −0.87 s is invisible on a stopwatch
+
+Hand-timed battery-plug → first picture did not visibly change after the
+overlap deployed. It shouldn't have: the drone got exactly one change
+today, and it is 0.87 s of a ~15 s chain. The rest of the chain,
+measured on the drone and the GS on 2026-09-08 (the drone still runs the
+**stock** U-Boot; everything in items 1-3, 5 and 7 is only on `.95`):
+
+| leg | s | measured how |
+|---|---|---|
+| U-Boot, no Ethernet (flight config) | ~5.5 | serial rig, stock U-Boot (`.95`); ~2.8 with a cable |
+| kernel → `S96mabur` starts `maburd` | 5.13–5.26 | `/proc/<pid>/stat` start tick |
+| `maburd` start → TX gate open | 2.92–3.01 | boot stamps (overlapped build) |
+| TX gate → first packet from GS → LINKED | **0.003 → 0.08** | boot stamps, cold and warm |
+| first AU on GS → first IDR AU | 0 (3 of 5 resumes) / 1.0 (2 of 5) | `au.log` `nal0`=32 |
+| first AU on GS → first displayed frame | **~1.6** | `lat.log` first window |
+| **battery → picture** | **~15** | sum; matches the stopwatch |
+
+Three things this settles:
+
+- **The rendezvous is instant**, cold and warm: first packet 3 ms after
+  `StartRxLoop`, LINKED 80 ms after (stamps `first packet received`,
+  `first RC frame`, `link established`, added for this). An earlier read
+  of the drone's `stats:` line as "deaf for 2 s after the gate" was wrong
+  — the hot loop spins at 200 Hz while the venc ring is empty, so
+  `hot_beat=203` is ~1 s into the process, not 5.
+- **The player, not the link, owns the last 1.6 s.** In the three most
+  recent resumes the very first AU was already an IDR, and the first
+  displayed frame still came 1.6 s later. Two earlier resumes additionally
+  waited 1.0 s for the next GOP IDR: DISC-driven LINKED entry never calls
+  `request_idr()` — only the RCF-driven path does (`rc_agent.cpp:449`) —
+  so whether the first sent frame is an IDR is GOP phase. Both are
+  GS/player-side or one-line drone-side items, and both are bigger than
+  what was saved in `maburd`. Neither is touched here.
+- **The biggest leg is still U-Boot's auto-negotiation on the drone**,
+  because the rebuilt U-Boot has only been flashed on `.95`. In the field
+  there is no cable, so the drone pays the 4.0 s timeout on every battery
+  plug. Flashing it needs a console for recovery, and the drone's UART0
+  pad is destroyed — that is the real blocker on the number the pilot
+  sees, and it has been since the first day of this document.
+
+On the numbers a stopwatch can resolve: 15.9 → 15.0 s is the change that
+shipped. 15 → ~9 s is what items 1-3 would do on the drone once the
+console problem is solved; the two GS-side items above are another
+1.5–2.5 s after that.
+
 ### Two hazards found on the way
 
 - **Never bare-open `/dev/mi_*` from a shell.** `/dev/mi_sys` and
