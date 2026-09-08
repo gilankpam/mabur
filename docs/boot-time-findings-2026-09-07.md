@@ -700,7 +700,8 @@ it found.
 
 Realistic floor with this SoC, the vendor ISP blobs and a USB dongle: 5-6 s
 from power to video. Items 1-3 alone are 5.2 s of measured, mostly cheap
-savings against that.
+savings against that, and item 4 is a further 1.3–1.7 s inside `maburd`
+(1.73 measured warm, cold pending).
 
 ### squashfs LZO — measured
 
@@ -1017,6 +1018,22 @@ On a cold boot the venc bring-up is ~1.5 s rather than 10.6, so the whole
 1.33 s still hides inside it; expect −1.3 to −1.7 s there. Unmeasured on a
 cold boot as of this writing — the stamped binary has only run from
 `/tmp`.
+
+### Why the USB port reset is not overlapped too
+
+The 0.80 s `claim_interface_then_reset` ahead of `CreateRtlDevice` looks
+like the next candidate, but on a cold boot it does not pay. After the
+`InitWrite` overlap the radio path is 0.80 + 1.33 = 2.1 s and the venc
+bring-up ~0.6–1.5 s, so the radio is already the critical path:
+overlapping the reset gives `max(2.1, venc)` where today is
+`0.8 + max(venc, 1.33)` — identical unless venc exceeds 1.33 s, and at
+most 0.2 s if it does. It would also move every USB open/claim/create
+failure to after the encoder has started, which is a new failure shape
+for a `return 1`. Not built. What is left on `maburd`'s cold-boot critical
+path is the USB port reset itself (whether a freshly enumerated dongle
+needs one is a devourer question — it is there because a radio that
+comes up deaf after a restart is worse than 0.8 s) and the firmware
+download inside `InitWrite`, both below mabur.
 
 ### Two hazards found on the way
 
