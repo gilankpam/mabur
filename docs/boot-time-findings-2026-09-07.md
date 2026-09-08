@@ -643,7 +643,9 @@ Items 1-3 are measured; the rest are estimates.
 3. ~~**`quiet loglevel=1`**~~ — **DONE and re-measured: 0.84 s**, see
    below. Live on `.95`; not yet on the drone. Config-only (`bootargs`).
 4. ~~**Overlap devourer `InitWrite` with the MI bring-up** in `maburd`~~ —
-   **DONE 2026-09-08, −1.73 s measured** (warm restart, n=5); see
+   **DONE 2026-09-08 and deployed on the drone: −0.87 s cold boot
+   (venc fully hidden; TX gate 2.92 s after start), −1.73 s warm
+   restart (n=5)**; see
    "InitWrite overlapped" below. The sizing that follows is what it was
    built against — **now measured, not estimated**: `InitWrite` is 1.73 s and the USB
    claim + port reset ahead of it another 0.80 s, both strictly serial
@@ -700,8 +702,10 @@ it found.
 
 Realistic floor with this SoC, the vendor ISP blobs and a USB dongle: 5-6 s
 from power to video. Items 1-3 alone are 5.2 s of measured, mostly cheap
-savings against that, and item 4 is a further 1.3–1.7 s inside `maburd`
-(1.73 measured warm, cold pending).
+savings against that, and item 4 is a further 0.87 s inside `maburd` on a
+cold boot (1.73 warm), measured and deployed. `maburd`'s own cold path is
+now 2.92 s, of which 2.85 s is the radio (USB reset 0.81 + `InitWrite`
+2.04) — the next cut there is below mabur, in devourer.
 
 ### squashfs LZO — measured
 
@@ -1014,10 +1018,40 @@ the TX gate opens 20 ms after venc completes, before the first frame
 leaves the ring (+0.12 s), so nothing is encoded into the void any more.
 5/5 runs `state=2`, sending, no faults, no respawns.
 
-On a cold boot the venc bring-up is ~1.5 s rather than 10.6, so the whole
-1.33 s still hides inside it; expect −1.3 to −1.7 s there. Unmeasured on a
-cold boot as of this writing — the stamped binary has only run from
-`/tmp`.
+**Cold boot, measured** (binary installed as `/usr/bin/maburd` by
+rotation — rollback `maburd.pre-bootoverlap` — and the drone rebooted;
+first process after power-up, `S96mabur` starts it at 5.26 s of uptime):
+
+| marker | s after `maburd` start |
+|---|---|
+| USB claim + port reset done | 0.844 |
+| venc bring-up start / radio `InitWrite` start | 0.862 / 0.864 |
+| MI libraries dlopened | 1.303 (0.42 s — the biggest venc item cold) |
+| `MI_SYS_Init` … all five MI client connects | 1.306 → 1.336 (**30 ms**) |
+| `MI_SNR_Enable` done | 1.524 |
+| **venc bring-up done** | **1.748** (0.89 s) |
+| first encoded frame out of the ring | 1.881 |
+| **radio `InitWrite` done** | **2.906** (2.04 s) |
+| **TX gate open** | **2.921** → 8.18 s of uptime |
+
+The venc bring-up is 0.89 s cold and is hidden in full: it ends at +1.75
+while `InitWrite` runs to +2.91, so the radio is the entire critical path
+(0.81 + 2.04 of the 2.92 s). Summing the same stamps serially gives
+3.79 s — **−0.87 s on a cold boot**, i.e. the whole venc window, as the
+`min(venc, InitWrite)` model predicts. `InitWrite` is 2.04 s cold against
+1.33 s warm: warm it runs while the encoder thread sleeps in
+`MI_DEVICE_Open`; cold it shares the two cores with a real bring-up.
+`state=2`, sending, zero respawns. For scale against the network-rig
+baseline table above: `S96mabur` → RX loop was 4.09 s there, on the
+serial build.
+
+One clock caveat when lining the stamps up with dmesg on the same boot:
+the kernel log stamps (`client connected` at 7.05 s) sit ~0.5 s later than
+`/proc/<pid>/stat` start tick + `[boot +…]` (6.57 s) predicts, because
+printk stamps run on `sched_clock`, which on this SoC starts late (the
+"Kernel init" section above measured ~0.76 s before it exists). Use
+process-relative stamps plus the start tick for absolutes; use dmesg only
+for ordering and for deltas within dmesg.
 
 ### Why the USB port reset is not overlapped too
 
