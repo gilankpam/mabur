@@ -629,6 +629,85 @@ Two things to read carefully before optimising against this:
   not a software fault — `.95` has no working sensor. So everything from the
   MI bring-up onward still has to be measured on the drone.
 
+## The drone, flashed — 2026-09-08
+
+`.95` had proved the pieces; this is all of them on the drone at
+`192.168.10.152`, in one session. **Net-drop → first AU in the GS ring:
+13.23/13.33 s → 8.66/8.52 s, a 4.7 s cut (−35 %).** The three changes were
+applied and measured one at a time, so the split below is measured, not
+apportioned:
+
+| step | net-drop → first AU | Δ |
+|---|---|---|
+| baseline (this morning's build) | 13.23 / 13.33 | — |
+| + rebuilt U-Boot on `/dev/mtd0` | 12.15 | **−1.1** |
+| + `verify=no`, `baseaddr` XIP, `quiet loglevel=1` | 10.68 | **−1.47** |
+| + new kernel & rootfs (`sysupgrade -n`) | 8.66 / 8.52 | **−2.1** |
+
+Note the baseline is 13.2 s, not the 15.0/15.1 s at the top of this
+document: that table predates the `InitWrite` overlap, which was deployed on
+2026-09-08 before any of this. Same rig, same day, so the deltas are clean.
+
+Where the last −2.1 s comes from, on the drone's own clock (field 22 of
+`/proc/<pid>/stat`, ticks since boot at `CONFIG_HZ=100`):
+
+| stage, s since kernel t=0 | before | after |
+|---|---|---|
+| first rcS entry (`syslogd`) | 2.87 | **0.99** |
+| MI stack up (`SensorIfThreadW`) | 4.22 | **1.75** |
+| `maburd` start | 5.15 | **2.18** |
+| venc threads | 6.95 | **3.52** |
+
+That is squashfs LZO plus the rcS reorder plus the trimmed module list,
+which are not separable from each other in this run — but the shape is
+unmistakable: **`maburd` now starts at 2.18 s instead of 5.15 s**, because
+`S39mabur` runs ahead of `S40network`, `S49ntpd`, `S50dropbear` and
+`S60crond` instead of behind all four.
+
+The clearest sign the reorder is doing what it was meant to: **ping now comes
+back at 10.6 s, two seconds *after* video is already flowing at 8.5 s.** The
+network is no longer on the critical path to a picture. It also means the
+network rig's "ping back" column stops being a useful proxy for anything —
+use the AU-ring resume.
+
+### What went onto the board
+
+- **U-Boot**: `u-boot-ssc338q-nor-padded.bin` from the builder, `flashcp` to
+  `/dev/mtd0`, md5 readback verified against the file before rebooting
+  (`779387cb…`). The runbook above, followed step for step. `mtd0` and
+  `fw_printenv` were backed up first and the backup verified byte-exact
+  against a device readback.
+- **Kernel + rootfs**: `sysupgrade --kernel= --rootfs= -n`. The `-n` matters
+  here — the drone's overlay held 3.7 MB of hand-deployed history (four
+  `maburd` binaries, `S96mabur`, `waybeam`, nine `mabur.json` backups), all
+  of which would have **shadowed** the image's own copies through the
+  overlayfs. After the wipe the overlay is 272 KB and every file in the
+  video path comes from the image.
+- **Config**: `/etc/mabur.toml` now comes from the image. Since mabur
+  `5f3077a` the bundle default is a verbatim copy of the drone's flight
+  config rather than a neutral seed, so this was a no-op on behaviour —
+  confirmed live afterwards by `curl 127.0.0.1:8301/venc` reporting
+  `req_bitrate_kbps: 16000`, the flight ceiling, where the old seed capped
+  at 10000.
+
+### Two things to know before repeating this
+
+- **`baseaddr=0x20007FC0` is only correct while the uImage loads at
+  `0x20008000`**, and it is unrecoverable on a board with no console if it
+  is wrong. Check it, do not assume it: the load address is bytes 16-19 of
+  the uImage header, big-endian, and `baseaddr` is that minus the 0x40-byte
+  header. Both the image being flashed *and* the kernel already on the board
+  were checked here (`dd if=/dev/mtd2 bs=64 count=1 | od -An -tx1`), because
+  the env change takes effect one boot before the new kernel does.
+- **`sysupgrade -n` takes ssh with it.** The image ships root with no
+  password and no `authorized_keys`, so `/usr/sbin/openipc-claim` — which is
+  root's login shell until `/etc/shadow` has a hash — refuses every
+  non-interactive `ssh host 'cmd'` with "This camera has not been set up
+  yet". One interactive login to set a password releases it (the script
+  rewrites root's shell back to `/bin/sh` itself). Budget for that step, or
+  the board is up and encoding while being unreachable to every script you
+  own.
+
 ## Ranked next steps
 
 Re-sized against a **flight-configuration** boot (no Ethernet), which is
@@ -637,11 +716,14 @@ Items 1-3 are measured; the rest are estimates.
 
 1. ~~**Kill U-Boot's Ethernet auto-negotiation**~~ — **DONE and measured**,
    see the section above. Pre-kernel 2.907 → 0.904 s with a cable, 4.911 →
-   0.854 s without. Live on `.95`; not yet on the drone.
+   0.854 s without. **Live on the drone since 2026-09-08** — worth 1.1 s of
+   the 4.7 s measured there; see "The drone, flashed".
 2. **`verify=no` + `baseaddr=0x20007FC0`** — **0.55 s**, measured, env-only,
-   reversible, already live on `.95`. Included in the number above.
+   reversible. **Live on the drone since 2026-09-08.** Check the uImage load
+   address before setting `baseaddr` on any other board.
 3. ~~**`quiet loglevel=1`**~~ — **DONE and re-measured: 0.84 s**, see
-   below. Live on `.95`; not yet on the drone. Config-only (`bootargs`).
+   below. Config-only (`bootargs`). **Live on the drone since 2026-09-08**;
+   with item 2 it accounts for the 1.47 s env step there.
 4. ~~**Overlap devourer `InitWrite` with the MI bring-up** in `maburd`~~ —
    **DONE 2026-09-08 and deployed on the drone: −0.87 s cold boot
    (venc fully hidden; TX gate 2.92 s after start), −1.73 s warm
@@ -674,7 +756,8 @@ Items 1-3 are measured; the rest are estimates.
 7. **LZO instead of XZ.** Split in two, because the halves behave nothing
    alike:
    - **squashfs — DONE and measured, 0.58 s.** See "squashfs LZO" below.
-     `BR2_TARGET_ROOTFS_SQUASHFS4_LZO=y`, live on `.95`.
+     `BR2_TARGET_ROOTFS_SQUASHFS4_LZO=y`, live on `.95` and, since
+     2026-09-08, on the drone.
    - **kernel — do this last, not first.** The doc used to say this would be
      "funded by dropping majestic, waybeam, vtund, curl, mbedtls, …" from the
      profile. That funding no longer exists: the profile is already minimal
@@ -1230,7 +1313,10 @@ attribution outright.
   UART0 pad works. The drone's UART0 TX pad is still destroyed, so
   everything mabur-specific — `load_sigmastar`, the 2.64 s radio window,
   `maburd` itself — is still only reachable over the network or by
-  repairing the pad. `console=ttyS2,115200` on the FC pads (needs
+  repairing the pad. This did not block the 2026-09-08 flash (see "The
+  drone, flashed"), but it is why every irreversible write there was
+  md5-verified by readback before the reboot, and why `baseaddr` was
+  checked against the uImage header on both the old and the new kernel. `console=ttyS2,115200` on the FC pads (needs
   `msp.enabled = false`) remains the cheapest way to get the drone's own
   kernel log, and `printk.time=1` is now confirmed to work there.
 - **The no-cable auto-negotiation number is n = 1.** See above.
