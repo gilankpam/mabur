@@ -5,7 +5,7 @@
 namespace maburplay {
 
 namespace {
-constexpr uint64_t kRecheckUs = 30'000'000;
+constexpr uint64_t kRecheckUs = 5'000'000;  // a session rotation (drone restart) lands here within 5 s
 
 std::string read_marker(const char* path) {
   std::ifstream f(path);

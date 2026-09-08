@@ -58,6 +58,8 @@ class ProbeLog {
   ProbeLog& operator=(const ProbeLog&) = delete;
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
+  // Session rotation: same file name under a new session directory.
+  void rotate(const std::string& dir) { w_.reopen(s_, dir); }
   const std::string& path() const { return w_.path(s_); }
 
   void row(double t_ms, uint32_t seq, int mcs, uint16_t enh_fid,

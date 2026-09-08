@@ -137,4 +137,24 @@ TEST(mark_drops_false_keeps_the_file_free_of_comment_lines) {
   CHECK(text.find('#') == std::string::npos);  // ...and left no comment line
 }
 
+TEST(reopen_moves_a_stream_to_a_new_dir_and_repeats_its_header) {
+  // Session rotation: lines queued before reopen() land in the old file,
+  // the new file starts with the same format-marker header, and the slot
+  // (Stream id) is reused so rotation never eats into kMaxStreams.
+  const std::string d1 = make_dir("reopen-1");
+  const std::string d2 = make_dir("reopen-2");
+  maburgs::LogWriter w;
+  auto a = w.open(d1, "ctl.log", "ctllog 11 ladder=x");
+  REQUIRE(a != maburgs::LogWriter::kBadStream);
+  put(w, a, "S 1000 2");
+  REQUIRE(w.reopen(a, d2));
+  put(w, a, "S 2000 3");
+  w.flush_now();
+  CHECK(w.path(a) == d2 + "/ctl.log");
+  CHECK(slurp(d1 + "/ctl.log") == "ctllog 11 ladder=x\nS 1000 2\n");
+  CHECK(slurp(d2 + "/ctl.log") == "ctllog 11 ladder=x\nS 2000 3\n");
+  auto b = w.open(d2, "au.log", "# aulog 4");
+  CHECK(b == a + 1);  // no slot was consumed by the reopen
+}
+
 MTEST_MAIN

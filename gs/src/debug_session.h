@@ -35,6 +35,11 @@ class DebugSession {
   // inside one boot). Callers open their files in APPEND mode either way;
   // this is for the stderr line only.
   bool rejoined() const { return rejoined_; }
+  // Start a new session in place (drone restart = new flight): allocates
+  // the next NNNN under the same root and rewrites the marker, exactly as a
+  // fresh start does, without a process restart. On failure ok() reads
+  // false and dir() is unchanged; the caller keeps logging where it was.
+  bool rotate();
 
  private:
   bool adopt_marker_(const char* marker_path);
@@ -43,6 +48,8 @@ class DebugSession {
   std::string dir_;
   int index_ = 0;
   bool ok_ = false;
+  std::string root_;
+  const char* marker_ = nullptr;
   bool rejoined_ = false;
 };
 

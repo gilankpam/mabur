@@ -45,7 +45,8 @@ int index_of_dir(const std::string& dir) {
 }  // namespace
 
 DebugSession::DebugSession(const std::string& root, bool enable,
-                           const char* marker_path) {
+                           const char* marker_path)
+    : root_(root), marker_(marker_path) {
   if (!enable) {
     // Deliberate: clearing the marker is how one knob stops maburplay too.
     std::remove(marker_path);
@@ -53,6 +54,17 @@ DebugSession::DebugSession(const std::string& root, bool enable,
   }
   if (adopt_marker_(marker_path)) return;
   allocate_(root, marker_path);
+}
+
+bool DebugSession::rotate() {
+  if (!ok_) return false;
+  const std::string keep_dir = dir_;
+  const int keep_idx = index_;
+  rejoined_ = false;
+  if (allocate_(root_, marker_)) return true;
+  dir_ = keep_dir;
+  index_ = keep_idx;
+  return false;
 }
 
 bool DebugSession::adopt_marker_(const char* marker_path) {

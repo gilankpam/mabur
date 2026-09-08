@@ -25,6 +25,7 @@
 #include "body_queue.h"
 #include "config.h"
 #include "ctl_log.h"
+#include "drone_restart.h"
 #include "debug_session.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
@@ -651,6 +652,29 @@ static int run_radio(const maburgs::Config& cfg) {
                      rs.probe_u.n);
     }
   };
+  // Drone restart = new flight: rotate the debug-log session in place so
+  // each maburd start gets its own NNNN directory (ctl/probe/au/flight, and
+  // maburplay's lat.log follows the marker within 5 s). Detected from
+  // tlm_seq restarting (drone_restart.h); nothing else here resets.
+  maburgs::DroneRestartDetector drone_restart;
+  auto rotate_session = [&](uint16_t from_seq, uint16_t to_seq) {
+    if (!debug.ok()) return;
+    const std::string old_dir = debug.dir();
+    if (!debug.rotate()) {
+      std::fprintf(stderr, "debug-log: rotate failed, staying in %s\n",
+                   old_dir.c_str());
+      return;
+    }
+    if (flight_jsonl != maburgs::LogWriter::kBadStream)
+      log_writer->reopen(flight_jsonl, debug.dir());
+    if (ctl_log) ctl_log->rotate(debug.dir());
+    if (probe_log) probe_log->rotate(debug.dir());
+    if (au_log) au_log->rotate(debug.dir());
+    std::fprintf(stderr,
+                 "debug-log: drone restart (tlm_seq %u -> %u): session %s -> %s\n",
+                 static_cast<unsigned>(from_seq), static_cast<unsigned>(to_seq),
+                 old_dir.c_str(), debug.dir().c_str());
+  };
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
       // A CRC-clean frame can still fail to parse as a valid Telem (e.g. a
@@ -659,6 +683,9 @@ static int run_radio(const maburgs::Config& cfg) {
       // so a bad frame leaves the last good telemetry (and its rx_ms stamp)
       // untouched rather than clobbering it with nullopt.
       if (auto t = mabur::rc::parse_telem(f.data(), f.size())) {
+        const uint16_t prev_seq = latest_telem.t ? latest_telem.t->tlm_seq : 0;
+        if (drone_restart.on_telem(t->tlm_seq, static_cast<double>(us) / 1000.0))
+          rotate_session(prev_seq, t->tlm_seq);
         latest_telem.t = t;
         latest_telem.rx_ms = us / 1000;
         // link-rtt: every telem is a sync sample. `us` is the radio

@@ -125,7 +125,16 @@ Consume the same numbers programmatically with:
   its own. Default is **off**: nothing is written until the knob is set.
   The marker lives in tmpfs, so a reboot starts a new session while a 2 s
   wrapper respawn rejoins the current one and appends (which is why a format
-  marker line can appear more than once in a file). Every file shares one
+  marker line can appear more than once in a file). **A drone restart is a
+  new flight (2026-09-08):** when T_TELEM's `tlm_seq` steps backwards by
+  more than 100 (maburd restarts it from 0; a fade or re-rendezvous keeps it
+  climbing) maburgs rotates in place — next NNNN, marker rewritten, all four
+  files reopened under it with their format marker at the top — with no
+  process restart and no video blink; maburplay's `lat.log` follows the
+  marker within 5 s. Cumulative sideport counters do NOT reset at a
+  rotation (same maburgs process), so the new `flight.jsonl` starts at
+  nonzero values; `flightreport.py` differences within the file. A maburd
+  crash-restart mid-flight therefore splits that flight in two, by design. Every file shares one
   CLOCK_MONOTONIC clock, so any two rows join directly — there is no `# sync`
   bridge any more. `ctl.log`, `probe.log` and `au.log` share one writer
   thread (`gs/src/log_writer.h`) whose per-stream ring can fill under load;

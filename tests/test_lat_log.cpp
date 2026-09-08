@@ -69,9 +69,9 @@ TEST(missing_marker_backs_off_for_the_full_recheck_window) {
   log.write(2'000, "lat: c");
   CHECK(log.path().empty());
   set_marker(mk, dir);
-  log.write(29'000'000, "lat: still-throttled");  // inside the 30 s window
+  log.write(4'000'000, "lat: still-throttled");  // inside the 5 s window
   CHECK(log.path().empty());
-  log.write(31'000'000, "lat: opens-now");  // past the window
+  log.write(6'000'000, "lat: opens-now");  // past the window
   CHECK(log.path() == dir + "/lat.log");
   const std::string s = slurp(log.path());
   CHECK(s.find("lat: still-throttled") == std::string::npos);
@@ -87,7 +87,7 @@ TEST(marker_change_reopens_in_the_new_session) {
   log.write(1'000'000, "lat: first");
   CHECK(log.path() == a + "/lat.log");
   set_marker(mk, b);
-  log.write(32'000'000, "lat: second");  // past the 30 s recheck
+  log.write(7'000'000, "lat: second");  // past the 5 s recheck
   CHECK(log.path() == b + "/lat.log");
   CHECK(slurp(a + "/lat.log").find("lat: first") != std::string::npos);
   CHECK(slurp(b + "/lat.log").find("lat: second") != std::string::npos);

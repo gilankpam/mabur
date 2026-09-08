@@ -57,6 +57,12 @@ class LogWriter {
   // gap is already visible there from the datagram's own `seq` field.
   Stream open(const std::string& dir, const char* name,
               const std::string& header, bool mark_drops = true);
+  // Session rotation (drone restart = new flight): drains what is queued
+  // into the current file, closes it, opens <dir>/<same name> for APPEND and
+  // re-queues the header the stream was opened with, so the new file starts
+  // with its format marker like any other. The slot (Stream id) is reused.
+  // Producer-thread only, like open(). false (stream untouched) on failure.
+  bool reopen(Stream s, const std::string& dir);
 
   void line(Stream s, const char* text, size_t len);
   const std::string& path(Stream s) const;
@@ -70,6 +76,7 @@ class LogWriter {
   struct Out {
     std::FILE* f = nullptr;
     std::string path;
+    std::string name, header;  // for reopen()
     std::atomic<uint64_t> dropped{0};
     uint64_t reported = 0;
     bool mark_drops = true;
