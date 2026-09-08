@@ -39,7 +39,10 @@ class RingClient {
   RingClient(const RingClient&) = delete;
   RingClient& operator=(const RingClient&) = delete;
 
-  bool open();                     // maps ring; doorbell connect is lazy/optional
+  // Maps the ring; doorbell connect is lazy/optional. wait_ms controls what
+  // happens when the ring is not there yet: 0 tries once, >0 retries until
+  // that many ms have passed, <0 retries forever.
+  bool open(int wait_ms = 0);
   // Pumps everything currently readable through the sink; returns count.
   // Blocking wait strategy: poll(2) on the doorbell fd with timeout_ms when
   // connected, plain timeout sleep otherwise (doorbell is an optimization,

@@ -1156,7 +1156,13 @@ int main(int argc, char** argv) {
   };
 
   maburplay::RingClient ring({cfg.ring_path, cfg.socket}, sink);
-  if (!ring.open()) {
+  // Wait indefinitely for maburgs to create the ring (GS boot race,
+  // 2026-09-08): the init scripts start us milliseconds after maburgs, so
+  // losing the race is normal, not a config error -- and exiting made it
+  // permanent, because S97maburplay reads our exit 2 as "config error, skip
+  // restart". --oneshot is the exception: there the ring is the test fixture,
+  // so its absence is a real failure and must not hang the host suite.
+  if (!ring.open(oneshot ? 0 : -1)) {
     std::fprintf(stderr, "maburplay: cannot open ring %s\n", cfg.ring_path.c_str());
     return 2;
   }
