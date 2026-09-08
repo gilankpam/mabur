@@ -746,6 +746,61 @@ def sniff_ctllog(path):
     return first.startswith("ctllog ")
 
 
+def print_salvage_report(rows):
+    """SALVAGE: what rx.keep_corrupted (2026-09-08) bought. The sideport's
+    per-card crc_fail and per-stream corrupt/salvaged/sub_fail are
+    cumulative; difference them over the recording and attribute each
+    interval's movement to the rung the ladder reports at the interval's
+    end, next to that interval's abandoned symbols (the post-FEC loss the
+    salvage is competing with). Silent on recordings that predate the
+    counters -- old jsonl on the DVR must still report cleanly."""
+    srows = [r for r in rows
+             if any("corrupt" in (s or {})
+                    for s in ((r.get("link") or {}).get("streams") or []))]
+    if len(srows) < 2:
+        return
+    first, last = srows[0], srows[-1]
+
+    def card_map(r):
+        return {c.get("id"): c.get("crc_fail") or 0 for c in (r.get("cards") or [])}
+
+    def stream_map(r):
+        return {s.get("stream"): s for s in ((r.get("link") or {}).get("streams") or [])}
+
+    keys = ("corrupt", "salvaged", "sub_fail", "abandoned")
+    print("SALVAGE (rx.keep_corrupted: FCS-corrupt bodies delivered, "
+          "CRC16-clean sub-blocks salvaged)")
+    cf0, cf1 = card_map(first), card_map(last)
+    for cid in sorted(cf1):
+        print(f"  card {cid}: crc_fail={cf1[cid] - cf0.get(cid, 0)}"
+              "  (mabur + foreign; foreign junk lands here too)")
+    s0, s1 = stream_map(first), stream_map(last)
+    for sid in sorted(s1):
+        a, b = s0.get(sid) or {}, s1[sid]
+        tot = {k: (b.get(k) or 0) - (a.get(k) or 0) for k in keys}
+        print(f"  stream {sid}: corrupt={tot['corrupt']} salvaged={tot['salvaged']} "
+              f"sub_fail={tot['sub_fail']} abandoned={tot['abandoned']}")
+
+    by_rung = {}
+    prev = None
+    for r in srows:
+        cur = stream_map(r)
+        ctl = (r.get("link") or {}).get("ctl") or {}
+        rung = ((ctl.get("rung") or {}).get("idx"))
+        if prev is not None:
+            acc = by_rung.setdefault(rung, {k: 0 for k in keys})
+            for sid, b in cur.items():
+                a = prev.get(sid) or {}
+                for k in keys:
+                    acc[k] += (b.get(k) or 0) - (a.get(k) or 0)
+        prev = cur
+    print("  PER RUNG (all streams; interval attributed to the rung at its end)")
+    for rung in sorted(by_rung, key=lambda x: (x is None, x)):
+        v = by_rung[rung]
+        print(f"    rung {rung}: corrupt={v['corrupt']} salvaged={v['salvaged']} "
+              f"sub_fail={v['sub_fail']} abandoned={v['abandoned']}")
+
+
 def main(path, aulog=None, probelog_path=None):
     if sniff_probelog(path):
         # A probe log on its own (bench use): just the per-body report and
@@ -937,6 +992,8 @@ def main(path, aulog=None, probelog_path=None):
         # Flatten list of trajectory lists
         flat_traj = [u for traj in trajs for u in traj]
         print(f"  t={t} residual={rl:.4f} u[-5s..]={flat_traj} drone_state={drone_state}{rssi_str}{snr_str}")
+
+    print_salvage_report(rows)
 
     # link.attrib.suppressed was removed from the sideport 2026-09-02 with
     # the packet-level delivery window it was defined against. Old

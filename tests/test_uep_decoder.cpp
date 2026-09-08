@@ -206,6 +206,42 @@ TEST(fcs_corrupt_body_zeroes_wire_durations) {
   }
 }
 
+TEST(fcs_corrupt_body_counts_corrupt_and_salvaged_subblocks) {
+  // Salvage accounting for the flight readout: a body the radio flagged
+  // FCS-corrupt increments bodies_corrupt, and every sub-block of it whose
+  // own CRC16 still passes counts as salvaged. Flip one payload byte inside
+  // the first sub-block: exactly one sub-block fails, the rest survive and
+  // are what the RCR ACRC32|AICV change (2026-09-08) actually buys.
+  auto bodies = encode_fixture_bodies();
+  REQUIRE(!bodies.empty());
+  auto& b = bodies.front();
+  REQUIRE(b.body.size() > static_cast<size_t>(SBI_HDR_LEN + 8));
+  b.body[static_cast<size_t>(SBI_HDR_LEN + 5)] ^= 0x5A;
+
+  UepDecoder dec(vec_layers());
+  dec.add_body(b.body.data(), b.body.size(), /*now_ms=*/0,
+               UepDecoder::kMcsUnknown, /*body_mono_us=*/0,
+               /*body_crc_ok=*/false);
+  auto st = dec.stats(0);
+  CHECK(st.bodies == 1);
+  CHECK(st.bodies_corrupt == 1);
+  CHECK(st.subblocks_failed == 1);
+  CHECK(st.subblocks_salvaged >= 1);
+
+  // A clean body contributes to neither counter even when it is the same
+  // damaged bytes: salvage is defined against the radio's FCS verdict.
+  auto bodies2 = encode_fixture_bodies();
+  auto& c = bodies2.front();
+  c.body[static_cast<size_t>(SBI_HDR_LEN + 5)] ^= 0x5A;
+  UepDecoder dec2(vec_layers());
+  dec2.add_body(c.body.data(), c.body.size(), 0, UepDecoder::kMcsUnknown, 0,
+                /*body_crc_ok=*/true);
+  auto st2 = dec2.stats(0);
+  CHECK(st2.bodies_corrupt == 0);
+  CHECK(st2.subblocks_failed == 1);
+  CHECK(st2.subblocks_salvaged == 0);
+}
+
 // Attribution harness: run frames through UepEncoder -> UepDecoder with a
 // mid-stream transition; returns the decoder for counter assertions and
 // collects emitted fragment bytes for the identity check.

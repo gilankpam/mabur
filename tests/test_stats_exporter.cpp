@@ -197,6 +197,23 @@ TEST(recovered_arrived_exported_with_rate) {
         j["link"]["streams"][0]["recovered_arrived_s"].get<double>() < 9.1);
 }
 
+TEST(corrupt_bodies_and_salvaged_subblocks_exported) {
+  // rx.keep_corrupted (2026-09-08): FCS-corrupt bodies reach the decoder and
+  // their CRC16-clean sub-blocks are salvaged. Both cumulative counters ride
+  // every datagram so a flight recording can say what salvage bought.
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.streams[0].bodies_corrupt = 3;
+  in.streams[0].subblocks_salvaged = 7;
+  in.streams[0].subblocks_failed = 5;
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["link"]["streams"][0]["corrupt"] == 3);
+  CHECK(j["link"]["streams"][0]["salvaged"] == 7);
+  CHECK(j["link"]["streams"][0]["sub_fail"] == 5);
+}
+
 TEST(loss_pct_null_when_no_expected_and_clamp_negative) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());

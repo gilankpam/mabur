@@ -1181,7 +1181,7 @@ static int run_radio(const maburgs::Config& cfg) {
         if (st.bodies == 0) continue;  // idle streams: keep the line short
         std::fprintf(stderr,
                      " s%d[p=%llu abn=%llu rec=%llu ra=%llu si=%llu st=%llu"
-                     " bc=%llu sbf=%llu fl=%zu]",
+                     " bc=%llu sbf=%llu cor=%llu sal=%llu fl=%zu]",
                      s, static_cast<unsigned long long>(st.packets_out),
                      static_cast<unsigned long long>(st.syms_abandoned),
                      static_cast<unsigned long long>(st.syms_recovered),
@@ -1190,6 +1190,8 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned long long>(st.symbols_stale),
                      static_cast<unsigned long long>(st.symbols_bad_cfg),
                      static_cast<unsigned long long>(st.subblocks_failed),
+                     static_cast<unsigned long long>(st.bodies_corrupt),
+                     static_cast<unsigned long long>(st.subblocks_salvaged),
                      st.rows_in_flight);
       }
       std::fprintf(stderr, " mis=%llu",
@@ -1277,6 +1279,8 @@ static int run_radio(const maburgs::Config& cfg) {
         auto& o = sin.streams[static_cast<size_t>(s)];
         o.bodies = st.bodies;
         o.subblocks_failed = st.subblocks_failed;
+        o.bodies_corrupt = st.bodies_corrupt;
+        o.subblocks_salvaged = st.subblocks_salvaged;
         o.syms_recovered = st.syms_recovered;
         o.syms_recovered_arrived = st.syms_recovered_arrived;
         o.syms_abandoned = st.syms_abandoned;
@@ -1611,10 +1615,12 @@ int main(int argc, char** argv) {
   for (int s = 0; s < 2; ++s) {
     const auto st = agg.decoder().stats(s);
     std::fprintf(stderr,
-                 "stream %d: bodies=%llu sub_fail=%llu rec=%llu abn=%llu "
-                 "pkts=%llu delivery=%d%%\n",
+                 "stream %d: bodies=%llu corrupt=%llu sub_fail=%llu "
+                 "salvaged=%llu rec=%llu abn=%llu pkts=%llu delivery=%d%%\n",
                  s, static_cast<unsigned long long>(st.bodies),
+                 static_cast<unsigned long long>(st.bodies_corrupt),
                  static_cast<unsigned long long>(st.subblocks_failed),
+                 static_cast<unsigned long long>(st.subblocks_salvaged),
                  static_cast<unsigned long long>(st.syms_recovered),
                  static_cast<unsigned long long>(st.syms_abandoned),
                  static_cast<unsigned long long>(st.packets_out),

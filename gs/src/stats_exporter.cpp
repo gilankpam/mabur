@@ -403,6 +403,11 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     fj["stale"] = st.symbols_stale;
     fj["bad_cfg"] = st.symbols_bad_cfg;
     fj["sub_fail"] = st.subblocks_failed;
+    // rx.keep_corrupted (2026-09-08): FCS-corrupt bodies the radio delivered
+    // and the CRC16-clean sub-blocks salvaged out of them. Cumulative; diff
+    // across records. flightreport.py's SALVAGE section is the consumer.
+    fj["corrupt"] = st.bodies_corrupt;
+    fj["salvaged"] = st.subblocks_salvaged;
     fj["in_flight"] = st.rows_in_flight;
     link["streams"].push_back(std::move(fj));
   }

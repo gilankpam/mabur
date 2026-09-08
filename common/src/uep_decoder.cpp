@@ -61,6 +61,10 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
   }
   const SbiUnpackResult r = sbi_unpack(body, len, L.env_size);
   L.subblocks_failed += static_cast<uint64_t>(r.n_failed);
+  if (!body_crc_ok) {
+    ++L.bodies_corrupt;
+    L.subblocks_salvaged += static_cast<uint64_t>(r.survivors.size());
+  }
   std::vector<DecodedFrag> out;
   for (const auto& env : r.survivors) {
     for (const auto& pkt : L.sw.add_symbol(env.data(), env.size(), now_ms, hint)) {
@@ -106,7 +110,8 @@ UepDecoder::LayerStats UepDecoder::stats(int sid) const {
                     L.sw.syms_abandoned_stale(),
                     L.sw.arr_expected(),   L.sw.arr_arrived(),
                     L.sw.arr_expected_stale(), L.sw.arr_arrived_stale(),
-                    L.sw.arr_late()};
+                    L.sw.arr_late(),
+                    L.bodies_corrupt,      L.subblocks_salvaged};
 }
 
 double UepDecoder::last_boundary_close_ms(int sid) const {

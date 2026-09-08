@@ -30,8 +30,12 @@ keep FCS-failed frames (`rx.keep_corrupted`, RCR ACRC32|AICV on the 8822E,
 set unconditionally in `gs/src/radio_frontend.cpp`), so a corrupt frame
 reaches the aggregator, bumps that card's `crc_fail`, stays out of the seq
 walk, and hands its body to the UEP decoder, which keeps the SBI
-sub-blocks whose own CRC16 still passes (per-stream `sub_fail` counts the
-ones that did not). Before that date the WMAC dropped those frames on the
+sub-blocks whose own CRC16 still passes. Per stream the sideport carries
+`corrupt` (FCS-corrupt bodies delivered), `salvaged` (CRC16-clean
+sub-blocks taken out of them) and `sub_fail` (sub-blocks that failed, from
+any body); `flightreport.py` prints them as a SALVAGE section — totals per
+card/stream and the deltas per rung next to that rung's abandoned
+symbols, which is the post-flight answer to "what did salvage buy". Before that date the WMAC dropped those frames on the
 chip and `crc_fail` was structurally 0 — not "no damage", "damage never
 seen". Foreign traffic that fails FCS is counted too (the SA filter cannot
 trust a corrupt address), so a busy channel shows a slow `crc_fail` creep
