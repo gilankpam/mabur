@@ -692,7 +692,7 @@ TEST(uep_layers_overhead_is_literal_base_overhead) {
 TEST(fec_symbol_size_scalar_fans_out) {
   // 164 keeps every layer's body (bpb*(hdr+symbol_size)) within
   // kMaxBodyBytes at the default blocks_per_body {4,8}: 8*(14+164)=1424 <
-  // 2900.
+  // 3760.
   auto path = write_temp_toml("[fec]\nsymbol_size = 164\n");
   Config cfg = load_config(path.string());
   for (int s = 0; s < 2; ++s) CHECK(cfg.fec.symbol_size[s] == 164);
@@ -740,8 +740,42 @@ TEST(fec_symbol_size_rejects_wrong_len_array) {
   std::filesystem::remove(path);
 }
 
+TEST(fec_body_cap_is_the_ht_mpdu_limit) {
+  // 2026-09-08: the 2900 B cap was an empirical envelope from the July
+  // symbol-size sweep, not a chip limit (GS RX packet limit is 12 kB, an HT
+  // MPDU may be 3839 B). Raised to 3760 by the guard's formula so a 9- or
+  // 10-block 332 B body (guard 3132 / 3480, ~3163 / 3513 B on air) loads;
+  // 11 blocks (guard 3828, 3863 B on air > 3839 - 24 - 4) must still fail.
+  {
+    auto path = write_temp_toml(
+        "[fec]\nsymbol_size = 332\nblocks_per_body = [9, 9]\n");
+    Config cfg = load_config(path.string());
+    CHECK(cfg.fec.blocks_per_body[0] == 9);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_toml(
+        "[fec]\nsymbol_size = 332\nblocks_per_body = [10, 10]\n");
+    Config cfg = load_config(path.string());
+    CHECK(cfg.fec.blocks_per_body[1] == 10);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_toml(
+        "[fec]\nsymbol_size = 332\nblocks_per_body = [11, 11]\n");
+    bool threw = false;
+    try {
+      (void)load_config(path.string());
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    CHECK(threw);
+    std::filesystem::remove(path);
+  }
+}
+
 TEST(fec_symbol_size_rejects_oversize_body) {
-  // 1312B symbols at bpb 8 -> 8*(14+1312) = 10608 > kMaxBodyBytes 2900
+  // 1312B symbols at bpb 8 -> 8*(14+1312) = 10608 > kMaxBodyBytes 3760
   auto path = write_temp_toml(
       "[fec]\nsymbol_size = 1312\nblocks_per_body = [8, 8]\n");
   bool threw = false;

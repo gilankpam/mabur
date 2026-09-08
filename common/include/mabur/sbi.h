@@ -6,10 +6,15 @@ namespace mabur {
 
 // Hard cap on one SBI body (one injected air frame's payload). No 802.11
 // constant enforces this in code — the chip accepts well past the 2304B
-// MSDU nominal via injection — 2900 covers every geometry proven on air
-// (2848B linkbench bodies 2026-07-13; 2652-2680B big-symbol probes
-// 2026-07-15) while rejecting configs that would silently change the
-// airtime/PER envelope.
+// MSDU nominal via injection. The cap was 2900 from 2026-07 to 2026-09-08:
+// the July symbol-size sweep saw a 3207 B body lose 61.6% of frames whole
+// (docs/fec-symbol-size-328.md) and the constant fenced that envelope. No
+// register explains it (GS RX packet limit 12 kB, HT MPDU max 3839 B) and
+// it predates A-MPDU, so on 2026-09-08 the cap was raised to the HT MPDU
+// ceiling — 3839 B less the 24 B MAC header and 4 B FCS = 3811 B on air,
+// which by the guard's formula below (which under-counts by 13 + 2*bpb)
+// is 3760 — to let the bench re-test 9/10-block bodies. Bodies beyond the
+// old 2900 are UNPROVEN on air until that test reports.
 //
 // NOTE: the config-load guard that enforces this (drone/src/config.cpp)
 // measures only bpb*(kSwHeaderLen + symbol_size) — the per-block SW-header
@@ -21,7 +26,7 @@ namespace mabur {
 // measured 2887B actual against a 2848B-by-the-guard-formula config,
 // comfortably under 2900 either way (deployed geometry: 13 + 4*(16+332) =
 // 1405 B).
-inline constexpr int kMaxBodyBytes = 2900;
+inline constexpr int kMaxBodyBytes = 3760;
 
 // Sub-Block Integrity (SBI) framing constants. Byte-exact port of devourer's
 // tools/precoder/fec_subblock.py (SBI_MAGIC, SBI_HDR_LEN, SBI_HDR_STRUCT
