@@ -23,7 +23,7 @@ stale_ms = 5000
 enable   = false
 port     = 8302           # must match a stats.out entry in maburgs.toml
 font     = "/usr/local/share/mabur/gs_osd.gfont"
-style    = "compact"      # "compact" (one bottom line) | "essential" (corners)
+style    = "compact"      # "compact" (two bottom rows) | "essential" (corners)
 stale_ms = 3000
 
 [display]

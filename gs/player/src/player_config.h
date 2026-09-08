@@ -52,8 +52,8 @@ struct OsdCfg {
     int port = 8302;
     std::string font = "/usr/local/share/mabur/gs_osd.gfont";
     // Which layout the GS overlay draws (gs_layer.h):
-    //   "compact"   — one plain-text line along the bottom edge, the
-    //                 shipped default.
+    //   "compact"   — two plain-text rows along the bottom edge (radio
+    //                 above, picture below), the shipped default.
     //   "essential" — the four-corner block layout with status colours,
     //                 signal bars and the airtime meter.
     // Exactly one renders; there is no both. Anything else fails the load,

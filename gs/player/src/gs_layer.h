@@ -105,7 +105,7 @@ std::string fmt_clock(int seconds);    // mm:ss, saturating at 99:59
 //
 //   GsOverlay    "essential" -- four corner blocks, status colours, meters
 //                and signal bars (gs_overlay.h).
-//   GsCompactBar "compact"   -- one plain-text line along the bottom edge
+//   GsCompactBar "compact"   -- two plain-text rows along the bottom edge
 //                (gs_compact.h).
 //
 // The seam exists because OsdComposer owns THREE of whichever one is
