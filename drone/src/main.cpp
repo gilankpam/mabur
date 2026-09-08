@@ -1925,7 +1925,7 @@ int main(int argc, char** argv) {
   // relative to here, so the timeline read out of /tmp/mabur.log measures
   // maburd's own startup and nothing before it. See boot_trace.h for why the
   // log rather than a console.
-  mabur::boot_trace_init();
+  boot_trace_init();
 
   std::string cfg_path;
   bool dry_run = false;
@@ -1982,7 +1982,7 @@ int main(int argc, char** argv) {
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
                cfg.fec.blocks_per_body[0], cfg.fec.blocks_per_body[1],
                cfg.fec.window);
-  mabur::bootlog("config loaded (%s)", cfg_path.c_str());
+  bootlog("config loaded (%s)", cfg_path.c_str());
 
   if (dry_run) {
     if (in_path.empty() || out_path.empty()) {

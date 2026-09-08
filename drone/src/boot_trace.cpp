@@ -7,13 +7,20 @@
 #include <atomic>
 #include <unistd.h>
 
-namespace mabur {
 namespace {
 
 // Nanoseconds of CLOCK_MONOTONIC at boot_trace_init(). Zero means "not
 // initialised" — the clock's own zero is unreachable in practice (it is
 // system uptime), so no sentinel is wasted.
 std::atomic<uint64_t> g_t0_ns{0};
+
+// Private dup of stderr taken at init. The venc bring-up wraps its vendor
+// calls in sdk_quiet, which dup2()s /dev/null over fds 1 and 2 to silence
+// the MI blobs — a stamp written to fd 2 inside such a window simply
+// vanishes (that is how the pre-init teardown's ten calls hid from the
+// first attribution run). Writing to our own descriptor makes the stamp
+// independent of whatever the process later does to fd 2.
+std::atomic<int> g_fd{STDERR_FILENO};
 
 uint64_t mono_ns() {
   struct timespec ts;
@@ -24,14 +31,21 @@ uint64_t mono_ns() {
 
 }  // namespace
 
-void boot_trace_init() {
+extern "C" {
+
+void boot_trace_init(void) {
   uint64_t expected = 0;
   // compare_exchange, not a plain store: idempotent by construction, so a
   // stray second call cannot restart the timeline at zero.
-  g_t0_ns.compare_exchange_strong(expected, mono_ns(), std::memory_order_relaxed);
+  if (g_t0_ns.compare_exchange_strong(expected, mono_ns(), std::memory_order_relaxed)) {
+    int fd = ::dup(STDERR_FILENO);
+    if (fd >= 0) g_fd.store(fd, std::memory_order_relaxed);
+  }
 }
 
-uint64_t boot_trace_elapsed_us() {
+int boot_trace_fd(void) { return g_fd.load(std::memory_order_relaxed); }
+
+uint64_t boot_trace_elapsed_us(void) {
   uint64_t t0 = g_t0_ns.load(std::memory_order_relaxed);
   if (t0 == 0) return 0;
   uint64_t now = mono_ns();
@@ -85,8 +99,8 @@ void bootlog(const char* fmt, ...) {
   // would still let a second line land between this stamp and its text if
   // the two were separate calls. fd 2 directly also survives the _exit(3)
   // fault path with no buffered tail to lose.
-  ssize_t ignored = ::write(STDERR_FILENO, line, off);
+  ssize_t ignored = ::write(g_fd.load(std::memory_order_relaxed), line, off);
   (void)ignored;
 }
 
-}  // namespace mabur
+}  // extern "C"

@@ -1,5 +1,7 @@
 /* ported from waybeam_venc f956a52:src/sensor_select.c */
 #include "sensor_select.h"
+
+#include "boot_trace.h"
 #include "sdk_quiet.h"
 
 #include <stdio.h>
@@ -321,6 +323,8 @@ static int find_best_mode(const SensorSelectConfig *cfg,
 	for (int p = pad_start; p <= pad_end; ++p) {
 		MI_U32 count = 0;
 		MI_S32 ret = MI_SNR_QueryResCount((MI_SNR_PAD_ID_e)p, &count);
+		bootlog("venc: pad %d QueryResCount -> ret %d count %u",
+			p, (int)ret, (unsigned)count);
 		if (ret != 0 || count == 0)
 			continue;
 
@@ -347,6 +351,7 @@ static int find_best_mode(const SensorSelectConfig *cfg,
 				*out_mode_count = count;
 			}
 		}
+		bootlog("venc: pad %d GetRes x%u done", p, (unsigned)count);
 	}
 
 	if (*best_index < 0) {
@@ -422,12 +427,14 @@ static int configure_selected_sensor(const SensorSelectConfig *cfg,
 	} else {
 		(void)MI_SNR_Disable(best_pad);
 	}
+	bootlog("venc: MI_SNR_Disable done");
 
 	ret = MI_SNR_SetPlaneMode(best_pad, E_MI_SNR_PLANE_MODE_LINEAR);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_SNR_SetPlaneMode(pad %d) failed %d\n", best_pad, ret);
 		return ret;
 	}
+	bootlog("venc: MI_SNR_SetPlaneMode done");
 
 	if (strategy && strategy->pre_set_mode) {
 		ret = strategy->pre_set_mode(best_pad, best_index, strategy->ctx);
@@ -450,11 +457,13 @@ static int configure_selected_sensor(const SensorSelectConfig *cfg,
 			best_pad, best_index, ret);
 		return ret;
 	}
+	bootlog("venc: MI_SNR_SetRes done");
 
 	ret = set_sensor_fps(best_pad, (MI_U32)best_index, best_mode,
 		cfg->target_fps, strategy, result);
 	if (ret != 0)
 		return ret;
+	bootlog("venc: MI_SNR_SetFps done");
 
 	/* Apply orientation before Enable so the sensor driver's pCus_sensor_init
 	 * (triggered by Enable) picks up the correct flip/mirror state.
@@ -479,6 +488,7 @@ static int configure_selected_sensor(const SensorSelectConfig *cfg,
 		fprintf(stderr, "ERROR: MI_SNR_Enable(pad %d) failed %d\n", best_pad, ret);
 		return ret;
 	}
+	bootlog("venc: MI_SNR_Enable done");
 
 	if (strategy && strategy->post_enable)
 		(void)strategy->post_enable(best_pad, result, strategy->ctx);
@@ -494,6 +504,7 @@ static int configure_selected_sensor(const SensorSelectConfig *cfg,
 		fprintf(stderr, "ERROR: MI_SNR_GetPlaneInfo(pad %d) failed %d\n", best_pad, ret);
 		return ret;
 	}
+	bootlog("venc: sensor pad/plane info read");
 
 	sensor_list_modes(cfg->forced_pad, (int)best_pad, best_index);
 
@@ -522,6 +533,8 @@ int sensor_select(const SensorSelectConfig *cfg,
 		&mode_count);
 	if (err != 0)
 		return err;
+	bootlog("venc: sensor modes queried, best pad %d idx %d",
+		(int)best_pad, (int)best_index);
 
 	return configure_selected_sensor(cfg, strategy, best_pad, best_index,
 		&best_mode, mode_count, result);

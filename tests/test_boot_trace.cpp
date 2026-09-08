@@ -10,11 +10,10 @@
 #include <string>
 #include <thread>
 
-#include "mtest.h"
+#include <fcntl.h>
+#include <unistd.h>
 
-using mabur::boot_trace_elapsed_us;
-using mabur::boot_trace_fmt;
-using mabur::boot_trace_init;
+#include "mtest.h"
 
 namespace {
 
@@ -95,6 +94,41 @@ TEST(init_is_idempotent) {
   boot_trace_init();
   uint64_t after = boot_trace_elapsed_us();
   CHECK(after >= before);
+}
+
+TEST(bootlog_survives_a_dup2_over_stderr) {
+  // The venc bring-up's sdk_quiet dup2()s /dev/null over fd 2 around every
+  // vendor call. A stamp emitted inside that window must still reach the
+  // log, or the slowest calls in the whole startup are exactly the ones
+  // that cannot be timed. Capture the real stderr through a pipe, then
+  // blank fd 2 the way sdk_quiet does, and stamp.
+  int saved = dup(STDERR_FILENO);
+  REQUIRE(saved >= 0);
+  int pfd[2];
+  REQUIRE(pipe(pfd) == 0);
+  REQUIRE(dup2(pfd[1], STDERR_FILENO) == STDERR_FILENO);
+  // init (already ran in an earlier test, so it is idempotent here) took
+  // its dup while fd 2 pointed at the original stderr, not our pipe. Force
+  // the test's own view: re-point boot_trace's descriptor at the pipe via
+  // a fresh dup so the assertion is about the mechanism, not test order.
+  int bt = boot_trace_fd();
+  CHECK(bt != STDERR_FILENO);  // init took a private dup
+  REQUIRE(dup2(pfd[1], bt) == bt);
+
+  int devnull = open("/dev/null", O_WRONLY);
+  REQUIRE(devnull >= 0);
+  REQUIRE(dup2(devnull, STDERR_FILENO) == STDERR_FILENO);  // sdk_quiet
+  bootlog("inside quiet window %d", 42);
+  REQUIRE(dup2(saved, STDERR_FILENO) == STDERR_FILENO);    // sdk_quiet_end
+
+  char buf[256] = {0};
+  ssize_t n = read(pfd[0], buf, sizeof(buf) - 1);
+  REQUIRE(n > 0);
+  std::string got(buf, static_cast<size_t>(n));
+  CHECK(got.find("] inside quiet window 42\n") != std::string::npos);
+  CHECK(got.rfind("[boot +", 0) == 0);
+
+  close(devnull); close(pfd[0]); close(pfd[1]); close(saved);
 }
 
 MTEST_MAIN

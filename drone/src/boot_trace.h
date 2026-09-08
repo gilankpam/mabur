@@ -14,18 +14,27 @@
 // that would also catch devourer and the MI blobs, but it can lose the tail
 // on the _exit(3) fault path in maburd's venc on_fault callback — which is
 // precisely the log you would be reading.
-#include <cstddef>
-#include <cstdint>
+// C linkage: the venc bring-up (drone/venc/*.c) is where most of the
+// startup time turned out to live, and it is C.
+#include <stddef.h>
+#include <stdint.h>
 
-namespace mabur {
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // Latches t0 on CLOCK_MONOTONIC. Call once, first thing in main().
 // Idempotent: a second call is ignored, so a stray one cannot re-zero a
 // timeline that is already being read.
-void boot_trace_init();
+void boot_trace_init(void);
 
 // Microseconds since boot_trace_init(). 0 if init has not run.
-uint64_t boot_trace_elapsed_us();
+uint64_t boot_trace_elapsed_us(void);
+
+// The descriptor bootlog() writes to: a private dup of stderr taken at
+// init (STDERR_FILENO before init). Exposed for the test; nothing else
+// needs it.
+int boot_trace_fd(void);
 
 // Renders `us` as the "+S.mmm" field of a boot line into `out`. Split out
 // from bootlog() because it is the only part with arithmetic in it and
@@ -34,9 +43,14 @@ uint64_t boot_trace_elapsed_us();
 // Returns the number of characters written, excluding the NUL.
 size_t boot_trace_fmt(uint64_t us, char* out, size_t cap);
 
-// Writes "[boot +S.mmm] " + the formatted line + "\n" to stderr in ONE
-// write, so a line from a concurrently-starting thread cannot land between
-// a stamp and its own text. Newline is supplied here; do not pass one.
+// Writes "[boot +S.mmm] " + the formatted line + "\n" in ONE write to a
+// private dup of stderr taken at init, so (a) a line from a concurrently-
+// starting thread cannot land between a stamp and its own text, and (b) a
+// later dup2() over fd 2 -- the venc bring-up's sdk_quiet does exactly
+// that around every vendor call -- cannot swallow a stamp. Newline is
+// supplied here; do not pass one.
 void bootlog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
-}  // namespace mabur
+#ifdef __cplusplus
+}  // extern "C"
+#endif

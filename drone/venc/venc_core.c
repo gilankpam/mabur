@@ -19,6 +19,7 @@
 #include "star6e_output.h"
 #include "star6e_runtime.h"
 #include "venc_core_internal.h"
+#include "boot_trace.h"
 #include "venc_frame_ring.h"
 #include "venc_jpeg.h"
 
@@ -243,6 +244,7 @@ int venc_core_start(const VencCfg *cfg, const VencCallbacks *cb)
 
 	if (venc_stale_kernel_thread_check() != 0)
 		return -1;
+	bootlog("venc: stale-thread check done");
 
 	memset(&g_ctx, 0, sizeof(g_ctx));
 	g_ctx.cfg = *cfg;
@@ -261,6 +263,7 @@ int venc_core_start(const VencCfg *cfg, const VencCallbacks *cb)
 	 * apply_startup_controls → controls_bind → CUS3A/AE thread →
 	 * qp_delta.  Splitting it here would only re-order the SDK calls
 	 * away from the sequence that is device-proven. */
+	bootlog("venc: runtime prepared");
 	rc = star6e_runtime_init(&g_ctx);
 	if (rc != 0) {
 		fprintf(stderr, "ERROR: venc runtime init failed (%d)\n", rc);
