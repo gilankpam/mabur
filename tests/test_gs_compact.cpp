@@ -12,7 +12,7 @@
 
 using namespace maburplay;
 
-// The compact bar (osd.gs.style = "compact"): one plain-text line along the
+// The compact bar (osd.gs.style = "compact"): two plain-text rows along the
 // bottom edge. Everything here runs against the SYNTHETIC .gfont fixtures
 // (GSFONT_SCALED, the full 30-size bake set), same as test_gs_overlay --
 // the real asset is re-proved exactly once, in test_gs_asset.
@@ -53,15 +53,23 @@ GsPlayerState player_nominal() {
   return p;
 }
 
-// The line as one string, in draw order -- what the pilot actually reads.
-std::string line_of(const GsCompactBar& bar, const GsSnapshot& snap, bool stale,
-                    const GsPlayerState& ps) {
+// One row as a string, in draw order -- what the pilot actually reads.
+std::string row_of(const GsCompactBar& bar, const GsSnapshot& snap, bool stale,
+                   const GsPlayerState& ps, int row) {
   std::string out;
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
-    if (i) out += " ";
-    out += bar.debug_field_text(snap, stale, ps, (GsBarField)i);
+    const GsBarField id = (GsBarField)i;
+    if (GsCompactBar::row_of(id) != row) continue;
+    if (!out.empty()) out += " ";
+    out += bar.debug_field_text(snap, stale, ps, id);
   }
   return out;
+}
+
+// Both rows, newline-separated.
+std::string line_of(const GsCompactBar& bar, const GsSnapshot& snap, bool stale,
+                    const GsPlayerState& ps) {
+  return row_of(bar, snap, stale, ps, 0) + "\n" + row_of(bar, snap, stale, ps, 1);
 }
 
 bool overlaps(const DirtyRect& a, const DirtyRect& b) {
@@ -76,17 +84,20 @@ constexpr Reso kFourResolutions[] = {
 
 // --- the line ---------------------------------------------------------
 
-// The format the operator asked for, field by field. Pinned as one string
-// because the ORDER is as much a part of the request as the labels.
-TEST(the_line_reads_exactly_as_specified) {
+// The format the operator asked for, field by field. Pinned per row because
+// the ORDER and the SPLIT are as much a part of the layout as the labels --
+// and because which row an item sits on decides the type size (row 1 is the
+// wider one, see kRow in gs_compact.cpp).
+TEST(the_rows_read_exactly_as_specified) {
   GsFont f;
   std::string err;
   REQUIRE(f.load(GSFONT_SCALED, &err));
   GsCompactBar bar(f);
   REQUIRE(bar.layout(1920, 1080, &err));
-  CHECK(line_of(bar, nominal(), false, player_nominal()) ==
-        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 bitrate:8.1 "
-        "res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0");
+  CHECK(row_of(bar, nominal(), false, player_nominal(), 0) ==
+        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20");
+  CHECK(row_of(bar, nominal(), false, player_nominal(), 1) ==
+        "bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0");
 }
 
 // A card count of four widens exactly two items and nothing else.
@@ -117,9 +128,10 @@ TEST(missing_values_render_as_double_dash_never_zero) {
   REQUIRE(bar.layout(1920, 1080, &err));
   const GsSnapshot empty;          // nothing ever received, no cards
   const GsPlayerState cold;        // nothing ever decoded
-  CHECK(line_of(bar, empty, false, cold) ==
-        "ch:-- mcs:-- air:-- rssi:-- snr:-- bitrate:0.0 res:-- fps:0 "
-        "jit:0.0 lat:--/-- loss:--/--");
+  CHECK(row_of(bar, empty, false, cold, 0) ==
+        "ch:-- mcs:-- air:-- rssi:-- snr:--");
+  CHECK(row_of(bar, empty, false, cold, 1) ==
+        "bitrate:0.0 res:-- fps:0 jit:0.0 lat:--/-- loss:--/--");
 }
 
 // A heard card with no SNR yet still shows its RSSI: the two are separate
@@ -189,13 +201,48 @@ TEST(the_bar_sits_along_the_bottom_edge) {
     CHECK(b.y + b.h <= r.h);         // and inside the surface
     CHECK(b.x >= 0);
     CHECK(b.x + b.w <= r.w);
+    // Two rows and no more: the block spans a bit over two cells, and
+    // anything approaching three means a row escaped its baseline.
+    const MaskAtlas* a = f.atlas(bar.debug_atlas_px());
+    REQUIRE(a != nullptr);
+    CHECK(b.h >= 2 * a->glyph_h);
+    CHECK(b.h < 3 * a->glyph_h);
   }
 }
 
-// One type size for the whole line, and the biggest one that fits. The
-// bar has no design-size table -- "the largest baked size whose worst-case
-// line fits between the insets" IS the rule, which is what lets it render
-// readably on a 720p panel and larger on a 4K one.
+// Row 0 is the radio, row 1 the picture. Pinned because the split is what
+// decides the type size, so an item quietly moving rows would shrink or
+// grow the whole bar.
+TEST(items_are_split_radio_above_picture_below) {
+  CHECK(GsCompactBar::row_of(GsBarField::kCh) == 0);
+  CHECK(GsCompactBar::row_of(GsBarField::kMcs) == 0);
+  CHECK(GsCompactBar::row_of(GsBarField::kAir) == 0);
+  CHECK(GsCompactBar::row_of(GsBarField::kRssi) == 0);
+  CHECK(GsCompactBar::row_of(GsBarField::kSnr) == 0);
+  CHECK(GsCompactBar::row_of(GsBarField::kBitrate) == 1);
+  CHECK(GsCompactBar::row_of(GsBarField::kRes) == 1);
+  CHECK(GsCompactBar::row_of(GsBarField::kFps) == 1);
+  CHECK(GsCompactBar::row_of(GsBarField::kJit) == 1);
+  CHECK(GsCompactBar::row_of(GsBarField::kLat) == 1);
+  CHECK(GsCompactBar::row_of(GsBarField::kLoss) == 1);
+}
+
+// The whole point of the two-row split: one line capped the type at 22 px
+// on a 1080p panel, which is too small to read on the GS screen. Pinned as
+// a floor, not an exact size -- the asset's bake set may gain a size.
+TEST(two_rows_buy_at_least_half_again_the_single_line_size) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  CHECK(bar.debug_atlas_px() >= 33);  // 1.5x the 22 px a single line allowed
+}
+
+// One type size for both rows, and the biggest one that fits. The bar has
+// no design-size table -- "the largest baked size whose worst-case rows fit
+// between the insets and stack inside the surface" IS the rule, which is
+// what lets it render readably on a 720p panel and larger on a 4K one.
 TEST(layout_picks_the_largest_baked_size_that_fits) {
   GsFont f;
   std::string err;
@@ -210,15 +257,22 @@ TEST(layout_picks_the_largest_baked_size_that_fits) {
     // The inset the bar reserves, recomputed the way layout() does.
     const double scale = (double)r.h / 1080.0;
     const int avail = r.w - 2 * (int)(32 * scale + 0.5);
-    CHECK(GsCompactBar::worst_line_width(*chosen, kMaxCards) <= avail);
+    const int row_gap = (int)(4 * scale + 0.5);
+    auto fits_in = [&](const MaskAtlas& a) {
+      for (int row = 0; row < GsCompactBar::kRows; ++row)
+        if (GsCompactBar::worst_row_width(a, row, kMaxCards) > avail) return false;
+      const int block = GsCompactBar::kRows * a.glyph_h +
+                        (GsCompactBar::kRows - 1) * row_gap;
+      return block + (int)(24 * scale + 0.5) <= r.h;
+    };
+    CHECK(fits_in(*chosen));
     for (int bigger = px + 1; bigger <= 512; ++bigger) {
       const MaskAtlas* a = f.atlas(bigger);
       if (!a) continue;
-      const bool fits = GsCompactBar::worst_line_width(*a, kMaxCards) <= avail &&
-                        a->glyph_h + (int)(24 * scale + 0.5) <= r.h;
-      if (fits) std::printf("  %dx%d: chose %d px but %d px also fits\n", r.w,
-                            r.h, px, bigger);
-      CHECK(!fits);
+      if (fits_in(*a))
+        std::printf("  %dx%d: chose %d px but %d px also fits\n", r.w, r.h, px,
+                    bigger);
+      CHECK(!fits_in(*a));
     }
   }
 }

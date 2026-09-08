@@ -13,12 +13,19 @@ namespace maburplay {
 class GsFont;
 struct MaskAtlas;
 
-// osd.gs.style = "compact": ONE plain-text line along the bottom edge.
+// osd.gs.style = "compact": two plain-text rows along the bottom edge.
 //
-//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 bitrate:8.1 res:1280x720
-//   fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
+//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
+//   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
 //
-// (one line on the glass; wrapped here only to fit this comment.)
+// TWO rows, not one, purely for type size: the eleven items on a single
+// line cap out at 22 px on a 1080p panel (132 worst-case characters into
+// 1856 px), which is too small to read on the GS screen. Split across two
+// rows the widest one is ~74 character advances, and the same "largest
+// baked size that fits" rule lands on ~38 px -- 1.7x. The rows are split by
+// SOURCE (link above, video below) rather than by width, so the pilot reads
+// the radio on one line and the picture on the other; `loss` sits with the
+// video row it explains rather than with the radio figures that cause it.
 //
 // No status colours, no meters, no bars -- every glyph takes
 // tok::kTextPrimary. The one exception is staleness: the six LINK-sourced
@@ -31,10 +38,17 @@ struct MaskAtlas;
 // styling: without it the line is unreadable over bright video.
 //
 // Same per-field dirty discipline as GsOverlay, and for the same reason --
-// see the budget paragraph in gs_overlay.h. A full-line repaint is ~76 k px
-// at 1080p (~1.6 ms projected on the A55), too close to the 2 ms pump
-// period to do on a cadence; a typical second redraws the handful of items
-// whose text actually moved.
+// see the budget paragraph in gs_overlay.h. Measured against the real asset
+// with four cards, a FULL repaint is 184,316 px at 1080p and 671,440 at
+// 2160p: within a few percent of the four-corner layout's own 179,392 /
+// 649,429, i.e. the same ~3.7 ms and ~9.9 ms projected on the A55, both
+// past the 2 ms pump period. The two rows did not make this cheaper by
+// being simpler -- bigger type over two rows covers about the same ink --
+// so the rule is unchanged: a full repaint is a startup/re-layout event and
+// must never land on a cadence. A typical second redraws the one or two
+// items whose text moved, ~17 k px each at 1080p.
+// The order here is the draw order and the index into the shadow array.
+// Which ROW each item lands on is kRow in the .cpp, not this enum.
 enum class GsBarField {
   kCh = 0,
   kMcs,
@@ -54,13 +68,13 @@ class GsCompactBar final : public GsLayer {
  public:
   explicit GsCompactBar(GsFont& font) : font_(font) {}
 
-  // Picks the LARGEST baked atlas whose worst-case line (kMaxCards cards,
-  // every value at the magnitude its clamp allows) fits between the
-  // insets, then centres the line for however many cards are actually
-  // reported. Type size is fixed at the worst case on purpose: sizing it
-  // to the live card count would change the font under the pilot the first
-  // time a card dropped out. Fails (with *err set) when even the smallest
-  // baked size cannot fit the line.
+  // Picks the LARGEST baked atlas whose worst-case rows (kMaxCards cards,
+  // every value at the magnitude its clamp allows) both fit between the
+  // insets and stack inside the surface, then centres each row for however
+  // many cards are actually reported. Type size is fixed at the worst case
+  // on purpose: sizing it to the live card count would change the font
+  // under the pilot the first time a card dropped out. Fails (with *err
+  // set) when even the smallest baked size cannot fit.
   bool layout(int screen_w, int screen_h, std::string* err) override;
 
   int update(const GsSnapshot& snap, bool stale, const GsPlayerState& ps,
@@ -80,11 +94,14 @@ class GsCompactBar final : public GsLayer {
                                const GsPlayerState& ps, GsBarField id) const;
   DirtyRect debug_field_box(GsBarField id) const;
   int debug_atlas_px() const;
-  // Width of the worst-case line in `a`, boxes included -- exactly what
+  // Width of worst-case row `row` in `a`, boxes included -- exactly what
   // layout() compares against the space between the insets. Exposed so the
   // size-choice test can assert "no larger baked size fits" by the same
   // measurement layout() makes, rather than by reimplementing it.
-  static int worst_line_width(const MaskAtlas& a, int n_cards);
+  static int worst_row_width(const MaskAtlas& a, int row, int n_cards);
+  // Which row an item draws on: 0 (link figures) or 1 (video figures).
+  static int row_of(GsBarField id);
+  static constexpr int kRows = 2;
   // The number of card slots the line is currently drawn for, -1 before the
   // first update() has reconciled one.
   int debug_cards() const { return n_cards_; }
@@ -98,6 +115,7 @@ class GsCompactBar final : public GsLayer {
   struct Field {
     DirtyRect box{0, 0, 0, 0};
     int pen_x = 0;
+    int baseline_y = 0;
     FieldState last;
     bool valid = false;
   };
@@ -111,7 +129,7 @@ class GsCompactBar final : public GsLayer {
 
   FieldState state_of_(const GsSnapshot& snap, bool stale,
                        const GsPlayerState& ps, GsBarField id) const;
-  // Centres the line for `n_cards` and recomputes every box. Called by
+  // Centres each row for `n_cards` and recomputes every box. Called by
   // layout() (with kMaxCards, to reserve nothing wider than the atlas was
   // chosen for) and by update() whenever the reported card count moves.
   void place_(int n_cards);
@@ -123,7 +141,10 @@ class GsCompactBar final : public GsLayer {
   Field fields_[(size_t)GsBarField::kCount];
   const MaskAtlas* atlas_ = nullptr;
   DirtyRect bounds_{0, 0, 0, 0};
-  int screen_w_ = 0, baseline_y_ = 0, gap_ = 0, inset_x_ = 0;
+  int screen_w_ = 0, gap_ = 0, inset_x_ = 0;
+  // Baseline of each row, absolute within the surface. Row 1 is the bottom
+  // one, anchored to the inset; row 0 stacks above it.
+  int baseline_y_[kRows] = {0, 0};
   int n_cards_ = -1;  // card slots the line is placed for; -1 = never placed
   bool laid_out_ = false;
 };

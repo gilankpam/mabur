@@ -64,9 +64,18 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # Golden for PART E, the compact bar (osd.gs.style = "compact"). Same rule
 # as the two above: re-bless only from a pixel diff, never from a hash swap
-# alone -- the geometry floor below sees a bar that moved or grew a row, but
+# alone -- the geometry floor below sees a bar that moved or lost a row, but
 # not a transposed value pair or a blanked field.
-BAR_SHA_EXPECTED=f5c5b69ceb1ea0392ed96858243ed325a943115457ee5b51034ab05da4436286
+#
+# Re-blessed 2026-09-08 (was f5c5b69c...): the bar went from one row to two.
+# A single line capped the type at 22 px on a 1080p panel -- too small to
+# read on the GS screen -- and splitting the eleven items across two rows
+# (radio above, picture below) lets the same "largest baked size that fits"
+# rule pick 38 px instead. Every pixel moves, so a diff against the old dump
+# says nothing; what was checked instead is the geometry floor below (two
+# bands, both centred, block hugging the bottom) plus the per-row strings
+# pinned in tests/test_gs_compact.cpp.
+BAR_SHA_EXPECTED=d4cc28b340a705b838dded78c960969e3adbf8c9af190e1ad167d4b70fda7ab9
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -375,12 +384,12 @@ if [ "$GS_SHA" != "$GS_SHA_EXPECTED" ]; then
 fi
 
 # --- PART E: compact bar render gate ----------------------------------
-# The shipped default layout (osd.gs.style = "compact"): one plain-text line
+# The shipped default layout (osd.gs.style = "compact"): two plain-text rows
 # along the bottom edge. Same dump format and the same reasoning as PART D,
-# but the invariants are the bar's own -- ONE row of ink, hugging the bottom
-# inset, and nothing anywhere else on the surface. The four-corner
-# assertions above do not apply and would all fail here, which is the point
-# of gating the two styles separately.
+# but the invariants are the bar's own -- exactly TWO rows of ink, hugging
+# the bottom inset, and nothing anywhere else on the surface. The
+# four-corner assertions above do not apply and would all fail here, which
+# is the point of gating the two styles separately.
 echo "== GS compact bar render gate =="
 "$MABURPLAY" --gs-render tests/fixtures/gs_snapshot_nominal.json \
   --out-gs "$TMP/gsbar.bin" --gsfont "$TMP/syn.gfont" --screen 1920x1080 \
@@ -395,27 +404,46 @@ assert magic == 0x5244534F, hex(magic)
 assert (w, h, stride) == (1920, 1080, 1920), (w, h, stride)
 px = struct.unpack("<%dI" % (h * stride), d[16:])
 
-on = [(x, y) for y in range(h) for x in range(w) if px[y * stride + x]]
-assert on, "nothing drawn at all"
-x0, x1 = min(p[0] for p in on), max(p[0] for p in on)
-y0, y1 = min(p[1] for p in on), max(p[1] for p in on)
-print("  bar bbox x %d..%d y %d..%d lit=%d" % (x0, x1, y0, y1, len(on)))
+lit_rows = [y for y in range(h) if any(px[y * stride + x] for x in range(w))]
+assert lit_rows, "nothing drawn at all"
 
-# ONE row: the ink is a strip no taller than a single line cell. 64 px is
-# generous at 1080p (the chosen atlas is ~22 px) and still an order of
-# magnitude under anything that stacked two rows.
-assert y1 - y0 < 64, "bar is more than one row tall (%d px)" % (y1 - y0 + 1)
-# Hugging the bottom: within the 24 px inset plus the cell's own descender.
-assert h - 1 - y1 < 40, "bar does not hug the bottom (%d px clear)" % (h - 1 - y1)
+# Group the lit scanlines into contiguous bands. Exactly two, because the
+# rows are stacked with a gap wide enough that no glyph bridges them -- a
+# single band means the pitch collapsed and the rows are overlapping.
+bands = []
+for y in lit_rows:
+    if bands and y == bands[-1][1] + 1:
+        bands[-1][1] = y
+    else:
+        bands.append([y, y])
+print("  ink bands: %s" % (bands,))
+assert len(bands) == 2, "expected two rows of ink, got %d bands" % len(bands)
+
+def extent(y0, y1):
+    on = [x for y in range(y0, y1 + 1) for x in range(w) if px[y * stride + x]]
+    return min(on), max(on)
+
+for i, (y0, y1) in enumerate(bands):
+    x0, x1 = extent(y0, y1)
+    print("  row %d: x %d..%d y %d..%d" % (i, x0, x1, y0, y1))
+    # Centred on the surface. Loose for the same reason PART D's hcentre is:
+    # every box is sized from its worst case, so short values sit
+    # legitimately off centre -- 160 px still discriminates against an
+    # edge-anchored row.
+    assert abs((x0 + x1) // 2 - w // 2) <= 160, "row %d not centred" % i
+    # Inside the bar's own 32 px horizontal inset.
+    assert x0 >= 32 and x1 <= w - 32, "row %d crosses its inset" % i
+
+# The block hugs the bottom: within the 24 px inset plus the cell's own
+# descender.
+assert h - 1 - bands[-1][1] < 40, "bar does not hug the bottom"
 # And nothing above it anywhere -- no corner blocks, no stray field.
-assert not [p for p in on if p[1] < y0], "ink above the bar"
-# Centred on the surface. Loose for the same reason PART D's hcentre is:
-# every box is sized from its worst case, so short values sit legitimately
-# off centre -- 160 px still discriminates against an edge-anchored line.
-assert abs((x0 + x1) // 2 - w // 2) <= 160, "bar not centred (%d..%d)" % (x0, x1)
-# Inside the bar's own 32 px horizontal inset.
-assert x0 >= 32 and x1 <= w - 32, "bar crosses its inset (%d..%d)" % (x0, x1)
-print("OK gs compact bar: %dx%d lit=%d" % (w, h, len(on)))
+assert lit_rows[0] == bands[0][0], "ink above the bar"
+# Two rows, not three: the whole block stays inside a band a bit over two
+# cells tall (the chosen synthetic atlas is 38 px, cell 76).
+assert bands[-1][1] - bands[0][0] < 3 * 76, "block is taller than two rows"
+print("  OK gs compact bar: %dx%d lit=%d" %
+      (w, h, sum(1 for y in range(h) for x in range(w) if px[y * stride + x])))
 EOF
 
 BAR_SHA=$(sha256sum "$TMP/gsbar.bin" | cut -d' ' -f1)

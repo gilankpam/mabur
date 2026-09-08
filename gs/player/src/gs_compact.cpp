@@ -16,14 +16,30 @@ namespace {
 // size. 32/24 still clears the panel bezel on the GS's own display.
 constexpr int kInsetX = 32, kInsetY = 24;
 
-// The eleven items, in draw order. This IS the order on the glass.
+// The eleven items, in draw order, and the row each one lands on. This IS
+// the reading order on the glass: row 0 is the radio (what the link is
+// doing), row 1 the picture (what came out of it). Split by source rather
+// than by width -- an even split would put `snr` next to `bitrate`, which
+// reads as one continuous line of unrelated figures.
+//
+// Row 1 is the WIDER of the two (69 worst-case characters against 63), and
+// therefore the one that decides the type size. Moving an item between rows
+// changes the size the whole bar renders at.
 constexpr GsBarField kOrder[] = {
     GsBarField::kCh,  GsBarField::kMcs, GsBarField::kAir,     GsBarField::kRssi,
     GsBarField::kSnr, GsBarField::kBitrate, GsBarField::kRes, GsBarField::kFps,
     GsBarField::kJit, GsBarField::kLat, GsBarField::kLoss,
 };
+constexpr int kRow[] = {0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1};
 static_assert(sizeof(kOrder) / sizeof(kOrder[0]) == (size_t)GsBarField::kCount,
               "every field must appear exactly once in the draw order");
+static_assert(sizeof(kRow) / sizeof(kRow[0]) == (size_t)GsBarField::kCount,
+              "every field needs a row");
+
+// Gap between the two rows, on top of the cell height. The boxes span the
+// padded CELL, so stacking by glyph_h alone already separates them; this is
+// margin, not clearance.
+constexpr int kRowGap = 4;
 
 bool intersects(const DirtyRect& a, const DirtyRect& b) {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -113,14 +129,22 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
   return "";
 }
 
-int GsCompactBar::worst_line_width(const MaskAtlas& a, int n_cards) {
+int GsCompactBar::row_of(GsBarField id) {
+  for (int i = 0; i < (int)GsBarField::kCount; ++i)
+    if (kOrder[i] == id) return kRow[i];
+  return 0;
+}
+
+int GsCompactBar::worst_row_width(const MaskAtlas& a, int row, int n_cards) {
   const int gap = item_gap(&a);
-  int w = 2 * pad_h(&a);  // the first box's left pad and the last one's right
+  int w = 0, n = 0;
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
-    if (i) w += gap;
+    if (kRow[i] != row) continue;
+    if (n++) w += gap;
     w += text_width(a, worst_case(kOrder[i], n_cards).c_str());
   }
-  return w;
+  // The first box's left pad and the last one's right.
+  return n ? w + 2 * pad_h(&a) : 0;
 }
 
 bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
@@ -142,21 +166,25 @@ bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
   const int inset_y = (int)(kInsetY * scale + 0.5);
   const int avail_w = screen_w - 2 * inset_x;
 
-  // Largest baked size whose WORST-CASE line fits. Unlike the essential
+  // Largest baked size whose WORST-CASE rows both fit. Unlike the essential
   // overlay this asks for no particular design size: the bar has one type
-  // size and its only constraint is the width of the line, so "the biggest
-  // that fits" is the whole rule -- and it is what makes the bar render at
-  // a readable size on a 720p panel and a bigger one on a 4K panel without
-  // a per-resolution table.
+  // size and its only constraints are the width of its widest row and the
+  // height of the stack, so "the biggest that fits" is the whole rule --
+  // and it is what makes the bar render at a readable size on a 720p panel
+  // and a bigger one on a 4K panel without a per-resolution table.
   const MaskAtlas* best = nullptr;
   int best_px = 0;
   for (int px = 1; px <= 512; ++px) {
     const MaskAtlas* a = font_.atlas(px);
     if (!a || a->advance_x <= 0) continue;
-    if (worst_line_width(*a, kMaxCards) > avail_w) continue;
-    // The line also has to fit ABOVE the bottom inset without running off
-    // the top of a very short surface.
-    if (a->glyph_h + inset_y > screen_h) continue;
+    bool fits = true;
+    for (int row = 0; row < kRows; ++row)
+      if (worst_row_width(*a, row, kMaxCards) > avail_w) fits = false;
+    if (!fits) continue;
+    // The stack also has to sit ABOVE the bottom inset without running off
+    // the top of a short surface.
+    const int block_h = kRows * a->glyph_h + (kRows - 1) * (int)(kRowGap * scale + 0.5);
+    if (block_h + inset_y > screen_h) continue;
     if (a->px > best_px) { best_px = a->px; best = a; }
   }
   if (!best) {
@@ -170,8 +198,14 @@ bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
   gap_ = item_gap(best);
   // The cell's descender sits below the baseline, so the baseline has to
   // rise by that much for the BOX -- shadow pad included -- to clear the
-  // bottom inset.
-  baseline_y_ = screen_h - inset_y - (best->glyph_h - best->baseline);
+  // bottom inset. Rows stack by a full glyph_h plus a margin: a shorter
+  // pitch would have row 0's padded box overlap row 1's, and an overlap is
+  // one row's clear erasing the other's ink (the mistake gs_overlay.cpp
+  // documents at kRung's placement).
+  const int row_pitch = best->glyph_h + (int)(kRowGap * scale + 0.5);
+  baseline_y_[kRows - 1] = screen_h - inset_y - (best->glyph_h - best->baseline);
+  for (int row = kRows - 2; row >= 0; --row)
+    baseline_y_[row] = baseline_y_[row + 1] - row_pitch;
   // Reserve the worst case until the first snapshot says how many cards
   // there really are. Nothing draws before then (update() reconciles the
   // count first), but bounds() is legitimately asked for in between.
@@ -183,24 +217,34 @@ bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
 void GsCompactBar::place_(int n_cards) {
   if (!atlas_) return;
   const int pad = pad_h(atlas_);
-  int total = 0;
   int w[(size_t)GsBarField::kCount];
-  for (int i = 0; i < (int)GsBarField::kCount; ++i) {
+  for (int i = 0; i < (int)GsBarField::kCount; ++i)
     w[i] = text_width(*atlas_, worst_case(kOrder[i], n_cards).c_str());
-    total += w[i] + (i ? gap_ : 0);
-  }
-  // Centred, but never past the inset: with kMaxCards the line can be wide
-  // enough that centring and the inset disagree, and the inset wins.
-  int pen = (screen_w_ - total) / 2;
-  if (pen < inset_x_ + pad) pen = inset_x_ + pad;
 
-  for (int i = 0; i < (int)GsBarField::kCount; ++i) {
-    Field& f = f_(kOrder[i]);
-    f.pen_x = pen;
-    f.box = DirtyRect{pen - pad, baseline_y_ - atlas_->baseline, w[i] + 2 * pad,
-                      atlas_->glyph_h};
-    bounds_ = union_of(bounds_, f.box);
-    pen += w[i] + gap_;
+  // Each row is centred on its OWN width, not on the block's: the two rows
+  // hold different amounts of text, and left-aligning the shorter one to
+  // the longer one's edge reads as a layout that slipped.
+  for (int row = 0; row < kRows; ++row) {
+    int total = 0, n = 0;
+    for (int i = 0; i < (int)GsBarField::kCount; ++i) {
+      if (kRow[i] != row) continue;
+      total += w[i] + (n++ ? gap_ : 0);
+    }
+    if (n == 0) continue;
+    // Centred, but never past the inset: with kMaxCards a row can be wide
+    // enough that centring and the inset disagree, and the inset wins.
+    int pen = (screen_w_ - total) / 2;
+    if (pen < inset_x_ + pad) pen = inset_x_ + pad;
+    for (int i = 0; i < (int)GsBarField::kCount; ++i) {
+      if (kRow[i] != row) continue;
+      Field& f = f_(kOrder[i]);
+      f.pen_x = pen;
+      f.baseline_y = baseline_y_[row];
+      f.box = DirtyRect{pen - pad, baseline_y_[row] - atlas_->baseline,
+                        w[i] + 2 * pad, atlas_->glyph_h};
+      bounds_ = union_of(bounds_, f.box);
+      pen += w[i] + gap_;
+    }
   }
 }
 
@@ -310,7 +354,7 @@ void GsCompactBar::draw_field_(GsBarField id, const FieldState& st,
   if (!atlas_) return;
   clear_region(s, f.box);
   if (st.text.empty()) return;
-  draw_text(s, *atlas_, f.pen_x, baseline_y_, st.text.c_str(), st.rgb);
+  draw_text(s, *atlas_, f.pen_x, f.baseline_y, st.text.c_str(), st.rgb);
 }
 
 int GsCompactBar::update(const GsSnapshot& snap, bool stale,
@@ -320,10 +364,11 @@ int GsCompactBar::update(const GsSnapshot& snap, bool stale,
   int drawn = 0;
 
   // A changed card count changes the width of two items and therefore the
-  // x of every item after them -- and, because the line is centred, of
-  // every item before them too. So the whole line moves: erase it where it
-  // was before anything is re-placed, since a field's own next draw only
-  // ever clears its NEW box.
+  // x of every item after them -- and, because each row is centred, of
+  // every item before them on that row too. Both items live on row 0, but
+  // erase EVERYTHING anyway: it costs one extra clear of a row that did not
+  // move and removes the standing question of whether the split still keeps
+  // the widths apart. A field's own next draw only ever clears its NEW box.
   const int n = std::min((int)snap.cards.size(), kMaxCards);
   if (n != n_cards_) {
     if (n_cards_ >= 0) {
