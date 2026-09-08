@@ -236,6 +236,33 @@ def test_salvage_section_totals_and_per_rung():
     assert re.search(r"rung 2:.*corrupt=1\b.*salvaged=2\b.*sub_fail=2\b.*abandoned=10\b", sec), sec
 
 
+def test_salvage_section_survives_counter_reset_on_restart():
+    """A maburgs restart rejoins the session directory (debug-log
+    consolidation 2026-09-06), so one flight.jsonl can carry a counter
+    reset: the sideport `session` id changes and every cumulative counter
+    restarts from 0. The section must sum per-interval deltas and treat a
+    reset interval's delta as the post-reset value, never last-minus-first
+    (which would go negative). Before: corrupt 2 / salvaged 5 / crc_fail 3.
+    After the restart: corrupt 1 / salvaged 2 / crc_fail 4. Totals 3/7/7."""
+    a = _mk_salvage_row(0,   0, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0)
+    b = _mk_salvage_row(500, 0, crc_fail=3, corrupt=2, salvaged=5, sub_fail=3, abandoned=4)
+    c = _mk_salvage_row(1000, 1, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0)
+    d = _mk_salvage_row(1500, 1, crc_fail=4, corrupt=1, salvaged=2, sub_fail=2, abandoned=6)
+    for r in (a, b): r["session"] = 111
+    for r in (c, d): r["session"] = 222
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in (a, b, c, d)))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    sec = result.stdout[result.stdout.find("SALVAGE"):]
+    assert re.search(r"card 0:\s*crc_fail=7\b", sec), sec
+    assert re.search(r"stream 0:.*corrupt=3\b.*salvaged=7\b.*sub_fail=5\b.*abandoned=10\b", sec), sec
+    assert re.search(r"rung 0:.*corrupt=2\b.*salvaged=5\b", sec), sec
+    assert re.search(r"rung 1:.*corrupt=1\b.*salvaged=2\b.*abandoned=6\b", sec), sec
+
+
 def test_salvage_section_absent_on_old_recordings():
     """A recording that predates the counters prints no SALVAGE section
     (data-provenance: old jsonl on the DVR must still report cleanly)."""
@@ -980,4 +1007,5 @@ if __name__ == "__main__":
     test_s3_settle_refire_canary()
     test_salvage_section_totals_and_per_rung()
     test_salvage_section_absent_on_old_recordings()
+    test_salvage_section_survives_counter_reset_on_restart()
     unittest.main()
