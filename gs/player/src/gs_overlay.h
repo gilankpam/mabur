@@ -15,7 +15,6 @@ namespace maburplay {
 constexpr const char* kEmDashPair = "——";  // never received
 constexpr const char* kMinus = "−";             // NOT a hyphen
 constexpr const char* kArrow = "→";
-constexpr const char* kDotFilled = "●";
 
 enum class Status { kOk, kCaution, kCritical };
 

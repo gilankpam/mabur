@@ -9,6 +9,7 @@
 #include "gs_draw.h"
 #include "gs_font.h"
 #include "gs_layer.h"
+#include "gs_overlay.h"
 
 using namespace maburplay;
 
@@ -50,6 +51,10 @@ GsPlayerState player_nominal() {
   p.lat_valid = true;
   p.lat_p50_e2e_ms = 45;
   p.lat_e2e_ms = 78;
+  // Recording, 12:47 in -- the same fixture value test_gs_overlay uses, so
+  // the two styles' REC assertions are directly comparable.
+  p.rec.kind = RecState::Kind::kRecording;
+  p.rec.elapsed_s = 767;
   return p;
 }
 
@@ -95,7 +100,7 @@ TEST(the_rows_read_exactly_as_specified) {
   GsCompactBar bar(f);
   REQUIRE(bar.layout(1920, 1080, &err));
   CHECK(row_of(bar, nominal(), false, player_nominal(), 0) ==
-        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20");
+        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 \xE2\x97\x8F REC 12:47");
   CHECK(row_of(bar, nominal(), false, player_nominal(), 1) ==
         "bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0");
 }
@@ -129,7 +134,7 @@ TEST(missing_values_render_as_double_dash_never_zero) {
   const GsSnapshot empty;          // nothing ever received, no cards
   const GsPlayerState cold;        // nothing ever decoded
   CHECK(row_of(bar, empty, false, cold, 0) ==
-        "ch:-- mcs:-- air:-- rssi:-- snr:--");
+        "ch:-- mcs:-- air:-- rssi:-- snr:-- ");  // trailing: REC armed, blank
   CHECK(row_of(bar, empty, false, cold, 1) ==
         "bitrate:0.0 res:-- fps:0 jit:0.0 lat:--/-- loss:--/--");
 }
@@ -161,6 +166,141 @@ TEST(invalid_latency_renders_dashes_not_zero) {
   ps.lat_valid = false;
   CHECK(bar.debug_field_text(nominal(), false, ps, GsBarField::kLat) ==
         "lat:--/--");
+}
+
+// --- the recording indicator ------------------------------------------
+
+// One aircraft, one recording indicator: the bar renders the SAME strings
+// the essential overlay does, in the same colours. Pinned against
+// GsOverlay's own output rather than against literals, so the two cannot
+// drift apart.
+TEST(the_recording_indicator_matches_the_essential_overlay) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+
+  const GsSnapshot s = nominal();
+  GsPlayerState ps = player_nominal();
+  for (RecState::Kind k : {RecState::Kind::kArmed, RecState::Kind::kRecording,
+                           RecState::Kind::kFault}) {
+    ps.rec.kind = k;
+    ps.rec.elapsed_s = 767;
+    const std::string bar_txt =
+        bar.debug_field_text(s, false, ps, GsBarField::kRec);
+    const std::string ov_txt =
+        ov.debug_field_text(s, false, ps, GsFieldId::kRec);
+    if (bar_txt != ov_txt)
+      std::printf("  kind %d: bar \"%s\" vs essential \"%s\"\n", (int)k,
+                  bar_txt.c_str(), ov_txt.c_str());
+    CHECK(bar_txt == ov_txt);
+  }
+}
+
+TEST(the_recording_clock_saturates_and_armed_draws_nothing) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  const GsSnapshot s = nominal();
+  GsPlayerState ps = player_nominal();
+
+  ps.rec.kind = RecState::Kind::kArmed;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kRec) == "");
+  ps.rec.kind = RecState::Kind::kRecording;
+  ps.rec.elapsed_s = 9;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kRec) ==
+        "\xE2\x97\x8F REC 00:09");
+  // Past 99:59 the clock saturates rather than widening its box.
+  ps.rec.elapsed_s = 999999;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kRec) ==
+        "\xE2\x97\x8F REC 99:59");
+  ps.rec.kind = RecState::Kind::kFault;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kRec) ==
+        "\xE2\x97\x8F REC FAULT");
+}
+
+// The recorder is the player's own business and says nothing about the
+// link, so a quiet sideport must not dim it.
+TEST(the_recording_indicator_never_dims_on_a_stale_link) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  Canvas c(1920, 1080);
+  const GsSnapshot s = nominal();
+  GsPlayerState ps = player_nominal();
+  ps.rec.kind = RecState::Kind::kRecording;
+  std::vector<DirtyRect> rects;
+  bar.update(s, false, ps, c.s, &rects);
+  // Fresh -> stale redraws only the six LINK items; REC is not one of them.
+  rects.clear();
+  CHECK(bar.update(s, true, ps, c.s, &rects) == 6);
+  CHECK(bar.debug_field_text(s, true, ps, GsBarField::kRec) ==
+        bar.debug_field_text(s, false, ps, GsBarField::kRec));
+}
+
+// A blank REC box inside a centred row would drag it 166 px off centre at
+// 1080p for the whole flight, since armed is the normal state. So armed
+// deactivates the box entirely and the row re-centres -- and starting a
+// recording reflows row 0 once, erasing where it was.
+TEST(an_armed_recorder_leaves_row_0_centred_and_starting_one_reflows_it) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  Canvas c(1920, 1080);
+  const GsSnapshot s = nominal();
+  GsPlayerState ps = player_nominal();
+  ps.rec.kind = RecState::Kind::kArmed;
+
+  std::vector<DirtyRect> rects;
+  bar.update(s, false, ps, c.s, &rects);
+  CHECK(!bar.debug_field_active(GsBarField::kRec));
+
+  auto row0_extent = [&]() {
+    int x0 = 1 << 30, x1 = -1;
+    for (int i = 0; i < (int)GsBarField::kCount; ++i) {
+      const GsBarField id = (GsBarField)i;
+      if (GsCompactBar::row_of(id) != 0 || !bar.debug_field_active(id)) continue;
+      const DirtyRect b = bar.debug_field_box(id);
+      x0 = std::min(x0, b.x);
+      x1 = std::max(x1, b.x + b.w);
+    }
+    return std::pair<int, int>(x0, x1);
+  };
+  const auto armed = row0_extent();
+  CHECK(std::abs((armed.first + armed.second) / 2 - 960) <= 8);
+
+  // Press record: the box appears, the row re-centres, and every old box is
+  // erased on the way (nothing is left outside the new ones).
+  ps.rec.kind = RecState::Kind::kRecording;
+  rects.clear();
+  bar.update(s, false, ps, c.s, &rects);
+  CHECK(bar.debug_field_active(GsBarField::kRec));
+  const auto live = row0_extent();
+  CHECK(std::abs((live.first + live.second) / 2 - 960) <= 8);
+  CHECK(live.second > armed.second);  // the row really did grow
+
+  for (int y = 0; y < 1080; ++y)
+    for (int x = 0; x < 1920; ++x) {
+      if (!c.px[(size_t)y * 1920 + x]) continue;
+      bool owned = false;
+      for (int i = 0; i < (int)GsBarField::kCount && !owned; ++i) {
+        const GsBarField id = (GsBarField)i;
+        if (!bar.debug_field_active(id)) continue;
+        const DirtyRect b = bar.debug_field_box(id);
+        owned = x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
+      }
+      if (!owned) std::printf("  orphan pixel at %d,%d\n", x, y);
+      REQUIRE(owned);
+    }
 }
 
 // --- staleness --------------------------------------------------------
@@ -219,6 +359,9 @@ TEST(items_are_split_radio_above_picture_below) {
   CHECK(GsCompactBar::row_of(GsBarField::kAir) == 0);
   CHECK(GsCompactBar::row_of(GsBarField::kRssi) == 0);
   CHECK(GsCompactBar::row_of(GsBarField::kSnr) == 0);
+  // REC is player-measured but lives on row 0: row 1 sets the type size,
+  // and REC there would cost a size step (38 px -> 34 at 1080p).
+  CHECK(GsCompactBar::row_of(GsBarField::kRec) == 0);
   CHECK(GsCompactBar::row_of(GsBarField::kBitrate) == 1);
   CHECK(GsCompactBar::row_of(GsBarField::kRes) == 1);
   CHECK(GsCompactBar::row_of(GsBarField::kFps) == 1);
@@ -307,6 +450,12 @@ TEST(no_two_field_boxes_overlap_at_any_resolution) {
     bar.update(nominal(), false, player_nominal(), c.s, &rects);
     for (int i = 0; i < (int)GsBarField::kCount; ++i)
       for (int j = i + 1; j < (int)GsBarField::kCount; ++j) {
+        // Inactive fields keep whatever box they last had, and nothing
+        // draws or clears through one -- a stale box coinciding with a live
+        // one is not a collision.
+        if (!bar.debug_field_active((GsBarField)i) ||
+            !bar.debug_field_active((GsBarField)j))
+          continue;
         const DirtyRect a = bar.debug_field_box((GsBarField)i);
         const DirtyRect b = bar.debug_field_box((GsBarField)j);
         if (overlaps(a, b))

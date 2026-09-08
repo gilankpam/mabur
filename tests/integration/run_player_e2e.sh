@@ -67,6 +67,12 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # alone -- the geometry floor below sees a bar that moved or lost a row, but
 # not a transposed value pair or a blanked field.
 #
+# Re-blessed 2026-09-08 (was d4cc28b3...): the bar gained the recording
+# indicator, rendered identically to the essential overlay's (dot, REC,
+# mm:ss clock) at the end of row 0, and this invocation now passes
+# --rec recording so the pixel path covers it. Row 0 grows by the
+# indicator's box and re-centres; row 1 is untouched.
+#
 # Re-blessed 2026-09-08 (was f5c5b69c...): the bar went from one row to two.
 # A single line capped the type at 22 px on a 1080p panel -- too small to
 # read on the GS screen -- and splitting the eleven items across two rows
@@ -75,7 +81,7 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # says nothing; what was checked instead is the geometry floor below (two
 # bands, both centred, block hugging the bottom) plus the per-row strings
 # pinned in tests/test_gs_compact.cpp.
-BAR_SHA_EXPECTED=d4cc28b340a705b838dded78c960969e3adbf8c9af190e1ad167d4b70fda7ab9
+BAR_SHA_EXPECTED=27566469fa343ed77fcc8ce61e5f3ba6a0179b1cd46a338381bfca7c2dcb78a6
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -394,6 +400,7 @@ echo "== GS compact bar render gate =="
 "$MABURPLAY" --gs-render tests/fixtures/gs_snapshot_nominal.json \
   --out-gs "$TMP/gsbar.bin" --gsfont "$TMP/syn.gfont" --screen 1920x1080 \
   --style compact \
+  --rec recording --rec-elapsed 767 \
   --fps 60 --jit 5.2 --mbps 8.1 --res 1280x720 --lat 45/78
 
 python3 - "$TMP/gsbar.bin" <<'EOF'

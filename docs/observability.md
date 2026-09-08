@@ -489,13 +489,13 @@ read the sideport. Reach for other tools only in these cases:**
   bottom edge, radio above and picture below,
 
   ```
-  ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
+  ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 ● REC 12:47
   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
   ```
 
   — no status colours, no meters, no bars, one type size for both rows:
   everything the
-  four corner blocks show minus REC and FEC, plus the channel, the decoded
+  four corner blocks show minus FEC, plus the channel, the decoded
   resolution and both latency percentiles. `"essential"` selects the older
   four-corner layout with the signal bars, the airtime meter and the status
   hues. Exactly one renders; there is no both, and an unrecognised value
@@ -504,7 +504,11 @@ read the sideport. Reach for other tools only in these cases:**
   sideport's `link.channel` (the GS's own `radio.channel`, so it says what
   the RECEIVER is tuned to, not what the player believes); `lat` is
   p50/p99 and reads `--/--` while the anchor is cold, exactly as the
-  essential rows do; and every item sits in a box sized for its WORST-CASE
+  essential rows do; the RECORDING indicator is byte-for-byte the essential
+  overlay's (red dot, `REC`, mm:ss clock, `REC FAULT` in amber) because one
+  aircraft should not have two recording indicators — armed draws nothing
+  and row 0 re-centres, so starting a recording shifts that row once; and
+  every item sits in a box sized for its WORST-CASE
   string, so the gaps between items are uneven and short values leave
   trailing space — that is what stops a row reflowing every time a figure
   gains a digit. The type size is likewise chosen once, for the four-card

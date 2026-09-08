@@ -88,6 +88,10 @@ struct GsPlayerState {
   int lat_p50_e2e_ms = 0;
 };
 
+// The recording dot. Shared: both styles draw the same indicator, so the
+// glyph it is made of cannot live in either one's header.
+constexpr const char* kDotFilled = "●";
+
 // The most receiving cards either style will render. A snapshot reporting
 // more is truncated to this: the essential overlay has this many card rows
 // laid out, and the compact bar sizes its type from a line this wide.

@@ -15,7 +15,7 @@ struct MaskAtlas;
 
 // osd.gs.style = "compact": two plain-text rows along the bottom edge.
 //
-//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
+//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 ● REC 12:47
 //   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
 //
 // TWO rows, not one, purely for type size: the eleven items on a single
@@ -28,19 +28,43 @@ struct MaskAtlas;
 // video row it explains rather than with the radio figures that cause it.
 //
 // No status colours, no meters, no bars -- every glyph takes
-// tok::kTextPrimary. The one exception is staleness: the six LINK-sourced
-// items dim to tok::kTextLabel while the sideport is quiet, because the
-// alternative is a frozen line that looks live, which is the failure this
-// OSD exists to prevent. The five player-measured items (bitrate, res,
-// fps, jit, lat) never dim -- they are current by construction.
+// tok::kTextPrimary, with two deliberate exceptions.
+//
+// The first is staleness: the six LINK-sourced items dim to
+// tok::kTextLabel while the sideport is quiet, because the alternative is
+// a line of frozen numbers that looks live, which is the failure this OSD
+// exists to prevent. The player-measured items never dim -- they are
+// current by construction.
+//
+// The second is the RECORDING indicator, which is deliberately IDENTICAL
+// to the essential overlay's: a tok::kStatusRec dot, "REC" and an mm:ss
+// clock, or "REC FAULT" in tok::kStatusCaution. Same reasoning as
+// gs_overlay.h gives for the dot -- recording is a mode, not a status, and
+// a white dot does not read as recording -- plus the stronger one that a
+// pilot must not have to learn two recording indicators for one aircraft.
+// Armed draws nothing at all, exactly as it does there -- and, unlike
+// there, is not even reserved: a blank box inside a CENTRED row drags the
+// whole row 166 px off centre at 1080p for the entire flight, since armed
+// is the normal state. So the REC box appears and disappears with the
+// recorder, and row 0 re-centres when it does. That is a second thing
+// (besides the card count) that reflows the line, but it is a deliberate
+// button press rather than a cadence, and it takes the same erase-then-
+// re-place path.
+//
+// It sits at the end of ROW 0 rather than with the other player-measured
+// items on row 1 for a purely mechanical reason: row 1 is the wider row
+// and therefore the one that sets the type size (see kRow in the .cpp), so
+// putting REC there would cost a size step -- 38 px to 34 at 1080p. On row
+// 0 it is free. That also happens to match where the essential layout puts
+// it, in the link block rather than the video one.
 //
 // The glyph mask's baked drop shadow stays. It is part of the glyph, not
 // styling: without it the line is unreadable over bright video.
 //
 // Same per-field dirty discipline as GsOverlay, and for the same reason --
 // see the budget paragraph in gs_overlay.h. Measured against the real asset
-// with four cards, a FULL repaint is 184,316 px at 1080p and 671,440 at
-// 2160p: within a few percent of the four-corner layout's own 179,392 /
+// with four cards and a live REC, a FULL repaint is 199,715 px at 1080p and
+// 727,466 at 2160p: within ~12% of the four-corner layout's own 179,392 /
 // 649,429, i.e. the same ~3.7 ms and ~9.9 ms projected on the A55, both
 // past the 2 ms pump period. The two rows did not make this cheaper by
 // being simpler -- bigger type over two rows covers about the same ink --
@@ -61,6 +85,7 @@ enum class GsBarField {
   kJit,
   kLat,
   kLoss,
+  kRec,
   kCount,
 };
 
@@ -105,17 +130,29 @@ class GsCompactBar final : public GsLayer {
   // The number of card slots the line is currently drawn for, -1 before the
   // first update() has reconciled one.
   int debug_cards() const { return n_cards_; }
+  // Whether a field currently renders. Only kRec is ever false (armed);
+  // the box-overlap tests scope themselves to active fields, since an
+  // inactive one keeps whatever box it last had.
+  bool debug_field_active(GsBarField id) const { return f_(id).active; }
 
  private:
   struct FieldState {
     std::string text;
     uint32_t rgb = 0;
+    // 1 = paint the leading glyph in tok::kStatusRec (the recording dot),
+    // -1 = unused. One field, two colours, same as GsOverlay's kRec: they
+    // change together, so splitting them would double the dirty rects for
+    // nothing.
+    int aux = -1;
     bool operator==(const FieldState&) const = default;
   };
   struct Field {
     DirtyRect box{0, 0, 0, 0};
     int pen_x = 0;
     int baseline_y = 0;
+    // false => this field never renders and never clears. Only kRec is ever
+    // inactive (armed); everything else is placed for the life of a layout.
+    bool active = false;
     FieldState last;
     bool valid = false;
   };
@@ -132,7 +169,7 @@ class GsCompactBar final : public GsLayer {
   // Centres each row for `n_cards` and recomputes every box. Called by
   // layout() (with kMaxCards, to reserve nothing wider than the atlas was
   // chosen for) and by update() whenever the reported card count moves.
-  void place_(int n_cards);
+  void place_(int n_cards, bool rec_on);
   void draw_field_(GsBarField id, const FieldState& st, const Surface& s);
   Field& f_(GsBarField id) { return fields_[(size_t)id]; }
   const Field& f_(GsBarField id) const { return fields_[(size_t)id]; }
@@ -146,6 +183,10 @@ class GsCompactBar final : public GsLayer {
   // one, anchored to the inset; row 0 stacks above it.
   int baseline_y_[kRows] = {0, 0};
   int n_cards_ = -1;  // card slots the line is placed for; -1 = never placed
+  // Whether the placement reserves a REC box. -1 = never reconciled, so the
+  // first update() always re-places (0 as the sentinel would make a first
+  // report of "armed" a no-op against an initial state that also reads 0).
+  int rec_on_ = -1;
   bool laid_out_ = false;
 };
 
