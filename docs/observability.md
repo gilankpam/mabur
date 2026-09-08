@@ -489,7 +489,9 @@ read the sideport. Reach for other tools only in these cases:**
   bottom edge, radio above and picture below,
 
   ```
-  ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 ● REC 12:47
+                                              ● REC 12:47   <- top right
+  ...
+  ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
   ```
 
@@ -506,8 +508,9 @@ read the sideport. Reach for other tools only in these cases:**
   p50/p99 and reads `--/--` while the anchor is cold, exactly as the
   essential rows do; the RECORDING indicator is byte-for-byte the essential
   overlay's (red dot, `REC`, mm:ss clock, `REC FAULT` in amber) because one
-  aircraft should not have two recording indicators — armed draws nothing
-  and row 0 re-centres, so starting a recording shifts that row once; and
+  aircraft should not have two recording indicators, and it is anchored
+  **top-right**, alone — in a row it would have cost the bar type size and
+  dragged that row off centre whenever the recorder was merely armed; and
   every item sits in a box sized for its WORST-CASE
   string, so the gaps between items are uneven and short values leave
   trailing space — that is what stops a row reflowing every time a figure

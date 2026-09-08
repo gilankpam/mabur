@@ -100,7 +100,7 @@ TEST(the_rows_read_exactly_as_specified) {
   GsCompactBar bar(f);
   REQUIRE(bar.layout(1920, 1080, &err));
   CHECK(row_of(bar, nominal(), false, player_nominal(), 0) ==
-        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 \xE2\x97\x8F REC 12:47");
+        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20");
   CHECK(row_of(bar, nominal(), false, player_nominal(), 1) ==
         "bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0");
 }
@@ -134,7 +134,7 @@ TEST(missing_values_render_as_double_dash_never_zero) {
   const GsSnapshot empty;          // nothing ever received, no cards
   const GsPlayerState cold;        // nothing ever decoded
   CHECK(row_of(bar, empty, false, cold, 0) ==
-        "ch:-- mcs:-- air:-- rssi:-- snr:-- ");  // trailing: REC armed, blank
+        "ch:-- mcs:-- air:-- rssi:-- snr:--");
   CHECK(row_of(bar, empty, false, cold, 1) ==
         "bitrate:0.0 res:-- fps:0 jit:0.0 lat:--/-- loss:--/--");
 }
@@ -245,30 +245,37 @@ TEST(the_recording_indicator_never_dims_on_a_stale_link) {
         bar.debug_field_text(s, false, ps, GsBarField::kRec));
 }
 
-// A blank REC box inside a centred row would drag it 166 px off centre at
-// 1080p for the whole flight, since armed is the normal state. So armed
-// deactivates the box entirely and the row re-centres -- and starting a
-// recording reflows row 0 once, erasing where it was.
-TEST(an_armed_recorder_leaves_row_0_centred_and_starting_one_reflows_it) {
+// The indicator is anchored top-right and stays there: neither the
+// recorder's state nor the card count may move it, and it must not drag
+// the centred rows around the way an in-row box did.
+TEST(the_recording_indicator_is_anchored_top_right_and_moves_nothing) {
   GsFont f;
   std::string err;
   REQUIRE(f.load(GSFONT_SCALED, &err));
   GsCompactBar bar(f);
   REQUIRE(bar.layout(1920, 1080, &err));
   Canvas c(1920, 1080);
-  const GsSnapshot s = nominal();
+  GsSnapshot s = nominal();
   GsPlayerState ps = player_nominal();
   ps.rec.kind = RecState::Kind::kArmed;
-
   std::vector<DirtyRect> rects;
   bar.update(s, false, ps, c.s, &rects);
-  CHECK(!bar.debug_field_active(GsBarField::kRec));
+
+  const DirtyRect rec = bar.debug_field_box(GsBarField::kRec);
+  const MaskAtlas* a = f.atlas(bar.debug_atlas_px());
+  REQUIRE(a != nullptr);
+  // Top: the box's top edge sits on the 40 px inset.
+  CHECK(rec.y == 40);
+  // Right: flush against the same 32 px inset the rows use.
+  CHECK(std::abs((rec.x + rec.w) - (1920 - 32)) <= 1);
+  // Nowhere near the rows.
+  CHECK(rec.y + rec.h < 1080 / 2);
 
   auto row0_extent = [&]() {
     int x0 = 1 << 30, x1 = -1;
     for (int i = 0; i < (int)GsBarField::kCount; ++i) {
       const GsBarField id = (GsBarField)i;
-      if (GsCompactBar::row_of(id) != 0 || !bar.debug_field_active(id)) continue;
+      if (GsCompactBar::row_of(id) != 0) continue;
       const DirtyRect b = bar.debug_field_box(id);
       x0 = std::min(x0, b.x);
       x1 = std::max(x1, b.x + b.w);
@@ -276,31 +283,16 @@ TEST(an_armed_recorder_leaves_row_0_centred_and_starting_one_reflows_it) {
     return std::pair<int, int>(x0, x1);
   };
   const auto armed = row0_extent();
+  // Row 0 is centred, and stays exactly where it is when recording starts.
   CHECK(std::abs((armed.first + armed.second) / 2 - 960) <= 8);
-
-  // Press record: the box appears, the row re-centres, and every old box is
-  // erased on the way (nothing is left outside the new ones).
   ps.rec.kind = RecState::Kind::kRecording;
   rects.clear();
   bar.update(s, false, ps, c.s, &rects);
-  CHECK(bar.debug_field_active(GsBarField::kRec));
-  const auto live = row0_extent();
-  CHECK(std::abs((live.first + live.second) / 2 - 960) <= 8);
-  CHECK(live.second > armed.second);  // the row really did grow
-
-  for (int y = 0; y < 1080; ++y)
-    for (int x = 0; x < 1920; ++x) {
-      if (!c.px[(size_t)y * 1920 + x]) continue;
-      bool owned = false;
-      for (int i = 0; i < (int)GsBarField::kCount && !owned; ++i) {
-        const GsBarField id = (GsBarField)i;
-        if (!bar.debug_field_active(id)) continue;
-        const DirtyRect b = bar.debug_field_box(id);
-        owned = x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
-      }
-      if (!owned) std::printf("  orphan pixel at %d,%d\n", x, y);
-      REQUIRE(owned);
-    }
+  CHECK(row0_extent() == armed);
+  const DirtyRect rec2 = bar.debug_field_box(GsBarField::kRec);
+  CHECK(rec2.x == rec.x && rec2.y == rec.y && rec2.w == rec.w && rec2.h == rec.h);
+  // Starting a recording redraws ONE field -- no reflow.
+  CHECK(rects.size() == 1);
 }
 
 // --- staleness --------------------------------------------------------
@@ -336,17 +328,28 @@ TEST(the_bar_sits_along_the_bottom_edge) {
   for (const Reso& r : kFourResolutions) {
     GsCompactBar bar(f);
     REQUIRE(bar.layout(r.w, r.h, &err));
-    const DirtyRect b = bar.bounds();
-    CHECK(b.y > r.h / 2);            // bottom half, not floating mid-screen
-    CHECK(b.y + b.h <= r.h);         // and inside the surface
-    CHECK(b.x >= 0);
-    CHECK(b.x + b.w <= r.w);
+    // The ROWS, not bounds() -- bounds() now also spans the top-right
+    // corner item, so it covers most of the surface by construction.
+    int y0 = 1 << 30, y1 = -1, x0 = 1 << 30, x1 = -1;
+    for (int i = 0; i < (int)GsBarField::kCount; ++i) {
+      const GsBarField id = (GsBarField)i;
+      if (GsCompactBar::row_of(id) == GsCompactBar::kCorner) continue;
+      const DirtyRect b = bar.debug_field_box(id);
+      y0 = std::min(y0, b.y); y1 = std::max(y1, b.y + b.h);
+      x0 = std::min(x0, b.x); x1 = std::max(x1, b.x + b.w);
+    }
+    CHECK(y0 > r.h / 2);   // bottom half, not floating mid-screen
+    CHECK(y1 <= r.h);      // and inside the surface
+    CHECK(x0 >= 0);
+    CHECK(x1 <= r.w);
     // Two rows and no more: the block spans a bit over two cells, and
     // anything approaching three means a row escaped its baseline.
     const MaskAtlas* a = f.atlas(bar.debug_atlas_px());
     REQUIRE(a != nullptr);
-    CHECK(b.h >= 2 * a->glyph_h);
-    CHECK(b.h < 3 * a->glyph_h);
+    CHECK(y1 - y0 >= 2 * a->glyph_h);
+    CHECK(y1 - y0 < 3 * a->glyph_h);
+    // And the corner item is up top, clear of them.
+    CHECK(bar.debug_field_box(GsBarField::kRec).y + a->glyph_h < y0);
   }
 }
 
@@ -359,9 +362,10 @@ TEST(items_are_split_radio_above_picture_below) {
   CHECK(GsCompactBar::row_of(GsBarField::kAir) == 0);
   CHECK(GsCompactBar::row_of(GsBarField::kRssi) == 0);
   CHECK(GsCompactBar::row_of(GsBarField::kSnr) == 0);
-  // REC is player-measured but lives on row 0: row 1 sets the type size,
-  // and REC there would cost a size step (38 px -> 34 at 1080p).
-  CHECK(GsCompactBar::row_of(GsBarField::kRec) == 0);
+  // REC belongs to no row at all: it is anchored top-right, so it costs
+  // the rows no width (and therefore the bar no type size) and cannot
+  // pull a centred row off centre.
+  CHECK(GsCompactBar::row_of(GsBarField::kRec) == GsCompactBar::kCorner);
   CHECK(GsCompactBar::row_of(GsBarField::kBitrate) == 1);
   CHECK(GsCompactBar::row_of(GsBarField::kRes) == 1);
   CHECK(GsCompactBar::row_of(GsBarField::kFps) == 1);

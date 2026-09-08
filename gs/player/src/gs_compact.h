@@ -15,7 +15,9 @@ struct MaskAtlas;
 
 // osd.gs.style = "compact": two plain-text rows along the bottom edge.
 //
-//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 ● REC 12:47
+//                                                   ● REC 12:47   <- top right
+//   ...
+//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
 //   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
 //
 // TWO rows, not one, purely for type size: the eleven items on a single
@@ -124,15 +126,18 @@ class GsCompactBar final : public GsLayer {
   // size-choice test can assert "no larger baked size fits" by the same
   // measurement layout() makes, rather than by reimplementing it.
   static int worst_row_width(const MaskAtlas& a, int row, int n_cards);
-  // Which row an item draws on: 0 (link figures) or 1 (video figures).
+  // Which row an item draws on: 0 (link figures), 1 (video figures), or
+  // kCorner for the recording indicator, which is right-flushed at the top
+  // inset and belongs to no row.
   static int row_of(GsBarField id);
   static constexpr int kRows = 2;
+  static constexpr int kCorner = -1;
   // The number of card slots the line is currently drawn for, -1 before the
   // first update() has reconciled one.
   int debug_cards() const { return n_cards_; }
-  // Whether a field currently renders. Only kRec is ever false (armed);
-  // the box-overlap tests scope themselves to active fields, since an
-  // inactive one keeps whatever box it last had.
+  // Whether a field currently renders. Every field is active for the life
+  // of a layout now that REC no longer joins and leaves a row; the hook
+  // stays because the box-overlap tests scope themselves to active fields.
   bool debug_field_active(GsBarField id) const { return f_(id).active; }
 
  private:
@@ -150,8 +155,9 @@ class GsCompactBar final : public GsLayer {
     DirtyRect box{0, 0, 0, 0};
     int pen_x = 0;
     int baseline_y = 0;
-    // false => this field never renders and never clears. Only kRec is ever
-    // inactive (armed); everything else is placed for the life of a layout.
+    // false => this field never renders and never clears. Nothing sets it
+    // false today; it exists so a future item that comes and goes cannot
+    // draw or clear through a box it no longer owns.
     bool active = false;
     FieldState last;
     bool valid = false;
@@ -169,7 +175,7 @@ class GsCompactBar final : public GsLayer {
   // Centres each row for `n_cards` and recomputes every box. Called by
   // layout() (with kMaxCards, to reserve nothing wider than the atlas was
   // chosen for) and by update() whenever the reported card count moves.
-  void place_(int n_cards, bool rec_on);
+  void place_(int n_cards);
   void draw_field_(GsBarField id, const FieldState& st, const Surface& s);
   Field& f_(GsBarField id) { return fields_[(size_t)id]; }
   const Field& f_(GsBarField id) const { return fields_[(size_t)id]; }
@@ -182,11 +188,9 @@ class GsCompactBar final : public GsLayer {
   // Baseline of each row, absolute within the surface. Row 1 is the bottom
   // one, anchored to the inset; row 0 stacks above it.
   int baseline_y_[kRows] = {0, 0};
+  // Baseline of the corner-anchored recording indicator, at the TOP inset.
+  int corner_baseline_ = 0;
   int n_cards_ = -1;  // card slots the line is placed for; -1 = never placed
-  // Whether the placement reserves a REC box. -1 = never reconciled, so the
-  // first update() always re-places (0 as the sentinel would make a first
-  // report of "armed" a no-op against an initial state that also reads 0).
-  int rec_on_ = -1;
   bool laid_out_ = false;
 };
 

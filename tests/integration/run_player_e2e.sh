@@ -67,11 +67,16 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # alone -- the geometry floor below sees a bar that moved or lost a row, but
 # not a transposed value pair or a blanked field.
 #
+# Re-blessed 2026-09-08 (was 27566469...): the recording indicator moved out
+# of row 0 and up to the TOP-RIGHT corner, on its own. Row 0 goes back to
+# exactly the pixels it had before the indicator existed (d4cc28b3's row 0),
+# row 1 is untouched, and the only new ink is the indicator's own band at
+# the top inset -- which is what the third band the gate now asserts is.
+#
 # Re-blessed 2026-09-08 (was d4cc28b3...): the bar gained the recording
 # indicator, rendered identically to the essential overlay's (dot, REC,
-# mm:ss clock) at the end of row 0, and this invocation now passes
-# --rec recording so the pixel path covers it. Row 0 grows by the
-# indicator's box and re-centres; row 1 is untouched.
+# mm:ss clock), and this invocation now passes --rec recording so the pixel
+# path covers it.
 #
 # Re-blessed 2026-09-08 (was f5c5b69c...): the bar went from one row to two.
 # A single line capped the type at 22 px on a 1080p panel -- too small to
@@ -81,7 +86,7 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # says nothing; what was checked instead is the geometry floor below (two
 # bands, both centred, block hugging the bottom) plus the per-row strings
 # pinned in tests/test_gs_compact.cpp.
-BAR_SHA_EXPECTED=27566469fa343ed77fcc8ce61e5f3ba6a0179b1cd46a338381bfca7c2dcb78a6
+BAR_SHA_EXPECTED=bc0c783287ff9d26f7a9450eac18e61aaae3077315a46a27295f73a732eb207b
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -391,9 +396,10 @@ fi
 
 # --- PART E: compact bar render gate ----------------------------------
 # The shipped default layout (osd.gs.style = "compact"): two plain-text rows
-# along the bottom edge. Same dump format and the same reasoning as PART D,
-# but the invariants are the bar's own -- exactly TWO rows of ink, hugging
-# the bottom inset, and nothing anywhere else on the surface. The
+# along the bottom edge, plus the recording indicator alone in the TOP-RIGHT
+# corner. Same dump format and the same reasoning as PART D, but the
+# invariants are the bar's own -- three bands of ink and nothing else: the
+# indicator up top, then the two rows hugging the bottom inset. The
 # four-corner assertions above do not apply and would all fail here, which
 # is the point of gating the two styles separately.
 echo "== GS compact bar render gate =="
@@ -414,9 +420,11 @@ px = struct.unpack("<%dI" % (h * stride), d[16:])
 lit_rows = [y for y in range(h) if any(px[y * stride + x] for x in range(w))]
 assert lit_rows, "nothing drawn at all"
 
-# Group the lit scanlines into contiguous bands. Exactly two, because the
-# rows are stacked with a gap wide enough that no glyph bridges them -- a
-# single band means the pitch collapsed and the rows are overlapping.
+# Group the lit scanlines into contiguous bands. THREE: the recording
+# indicator alone at the top inset, then the two stacked rows at the bottom.
+# The two rows are separated by a gap wide enough that no glyph bridges
+# them -- a single bottom band means the row pitch collapsed and they are
+# overlapping.
 bands = []
 for y in lit_rows:
     if bands and y == bands[-1][1] + 1:
@@ -424,13 +432,26 @@ for y in lit_rows:
     else:
         bands.append([y, y])
 print("  ink bands: %s" % (bands,))
-assert len(bands) == 2, "expected two rows of ink, got %d bands" % len(bands)
+assert len(bands) == 3, "expected REC + two rows, got %d bands" % len(bands)
 
 def extent(y0, y1):
     on = [x for y in range(y0, y1 + 1) for x in range(w) if px[y * stride + x]]
     return min(on), max(on)
 
-for i, (y0, y1) in enumerate(bands):
+# --- the recording indicator, alone in the top-right corner ---
+ry0, ry1 = bands[0]
+rx0, rx1 = extent(ry0, ry1)
+print("  rec: x %d..%d y %d..%d" % (rx0, rx1, ry0, ry1))
+# Its box's top edge sits on the 40 px inset; the ink starts a few px in
+# (the cell's ascender gap and the shadow pad).
+assert 40 <= ry0 < 40 + 24, "rec not at the top inset (y0=%d)" % ry0
+# Right-flushed against the same 32 px inset the rows use.
+assert 1920 - 32 - 24 <= rx1 <= 1920 - 32, "rec not flush right (x1=%d)" % rx1
+# In the RIGHT half, unambiguously -- this is what says "corner", not "top".
+assert rx0 > w // 2, "rec is not in the right half (x0=%d)" % rx0
+
+# --- the two bottom rows ---
+for i, (y0, y1) in enumerate(bands[1:]):
     x0, x1 = extent(y0, y1)
     print("  row %d: x %d..%d y %d..%d" % (i, x0, x1, y0, y1))
     # Centred on the surface. Loose for the same reason PART D's hcentre is:
@@ -444,11 +465,11 @@ for i, (y0, y1) in enumerate(bands):
 # The block hugs the bottom: within the 24 px inset plus the cell's own
 # descender.
 assert h - 1 - bands[-1][1] < 40, "bar does not hug the bottom"
-# And nothing above it anywhere -- no corner blocks, no stray field.
-assert lit_rows[0] == bands[0][0], "ink above the bar"
-# Two rows, not three: the whole block stays inside a band a bit over two
+# Two rows, not three: the bottom block stays inside a band a bit over two
 # cells tall (the chosen synthetic atlas is 38 px, cell 76).
-assert bands[-1][1] - bands[0][0] < 3 * 76, "block is taller than two rows"
+assert bands[-1][1] - bands[1][0] < 3 * 76, "bottom block is taller than two rows"
+# Nothing between the corner item and the rows.
+assert bands[1][0] - bands[0][1] > 100, "rec and the rows have run together"
 print("  OK gs compact bar: %dx%d lit=%d" %
       (w, h, sum(1 for y in range(h) for x in range(w) if px[y * stride + x])))
 EOF

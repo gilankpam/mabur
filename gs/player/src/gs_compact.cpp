@@ -22,17 +22,16 @@ constexpr int kInsetX = 32, kInsetY = 24;
 // than by width -- an even split would put `snr` next to `bitrate`, which
 // reads as one continuous line of unrelated figures.
 //
-// Row 1 is the WIDER of the two once the padding is counted (69 worst-case
-// characters plus 5 gaps, against row 0's 74 plus 5), so it is what decides
-// the type size at 1080p. Moving an item between rows changes the size the
-// whole bar renders at -- REC is on row 0 for exactly that reason (see
-// gs_compact.h).
+// Row 1 is the WIDER of the two (69 worst-case characters plus 5 gaps,
+// against row 0's 63 plus 4), so it is what decides the type size. Moving
+// an item between rows changes the size the whole bar renders at -- which
+// is one of the reasons REC is in the corner instead (see gs_compact.h).
 constexpr GsBarField kOrder[] = {
     GsBarField::kCh,  GsBarField::kMcs, GsBarField::kAir,     GsBarField::kRssi,
     GsBarField::kSnr, GsBarField::kRec, GsBarField::kBitrate, GsBarField::kRes,
     GsBarField::kFps, GsBarField::kJit, GsBarField::kLat,     GsBarField::kLoss,
 };
-constexpr int kRow[] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1};
+constexpr int kRow[] = {0, 0, 0, 0, 0, GsCompactBar::kCorner, 1, 1, 1, 1, 1, 1};
 static_assert(sizeof(kOrder) / sizeof(kOrder[0]) == (size_t)GsBarField::kCount,
               "every field must appear exactly once in the draw order");
 static_assert(sizeof(kRow) / sizeof(kRow[0]) == (size_t)GsBarField::kCount,
@@ -42,6 +41,12 @@ static_assert(sizeof(kRow) / sizeof(kRow[0]) == (size_t)GsBarField::kCount,
 // padded CELL, so stacking by glyph_h alone already separates them; this is
 // margin, not clearance.
 constexpr int kRowGap = 4;
+
+// Top inset for the corner-anchored recording indicator. Deeper than the
+// bar's own 24 px bottom inset: the bottom strip is a deliberate band of
+// instrumentation, while this one sits alone in the picture and wants the
+// clearance a title-safe area gives it.
+constexpr int kInsetTop = 40;
 
 bool intersects(const DirtyRect& a, const DirtyRect& b) {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -147,7 +152,7 @@ int GsCompactBar::worst_row_width(const MaskAtlas& a, int row, int n_cards) {
   const int gap = item_gap(&a);
   int w = 0, n = 0;
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
-    if (kRow[i] != row) continue;
+    if (kRow[i] != row) continue;  // kCorner belongs to no row
     if (n++) w += gap;
     w += text_width(a, worst_case(kOrder[i], n_cards).c_str());
   }
@@ -164,7 +169,6 @@ bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
   // to reconcile the card count again, even if it reports what it did
   // before this layout() threw the boxes away.
   n_cards_ = -1;
-  rec_on_ = -1;
 
   if (screen_w <= 0 || screen_h <= 0) {
     if (err) *err = "gs osd: bad screen size";
@@ -215,23 +219,37 @@ bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
   baseline_y_[kRows - 1] = screen_h - inset_y - (best->glyph_h - best->baseline);
   for (int row = kRows - 2; row >= 0; --row)
     baseline_y_[row] = baseline_y_[row + 1] - row_pitch;
-  // Reserve the worst case -- every card and a live REC -- until the first
-  // snapshot says what is really there. Nothing draws before then (update()
-  // reconciles first), but bounds() is legitimately asked for in between,
-  // and it must cover everything the bar can ever touch.
-  place_(kMaxCards, true);
+  // The corner item hangs off the TOP inset instead, so its box's top edge
+  // -- shadow pad included -- sits exactly on it.
+  corner_baseline_ = (int)(kInsetTop * scale + 0.5) + best->baseline;
+  // Reserve the worst case until the first snapshot says how many cards
+  // there really are. Nothing draws before then (update() reconciles the
+  // count first), but bounds() is legitimately asked for in between, and it
+  // must cover everything the bar can ever touch.
+  place_(kMaxCards);
   laid_out_ = true;
   return true;
 }
 
-void GsCompactBar::place_(int n_cards, bool rec_on) {
+void GsCompactBar::place_(int n_cards) {
   if (!atlas_) return;
   const int pad = pad_h(atlas_);
   int w[(size_t)GsBarField::kCount];
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
-    const bool on = kOrder[i] != GsBarField::kRec || rec_on;
-    f_(kOrder[i]).active = on;
-    w[i] = on ? text_width(*atlas_, worst_case(kOrder[i], n_cards).c_str()) : 0;
+    f_(kOrder[i]).active = true;
+    w[i] = text_width(*atlas_, worst_case(kOrder[i], n_cards).c_str());
+  }
+
+  // The corner item: right-flushed at the top inset, reserving the shadow
+  // pad so its box does not overhang the inset it is flush against.
+  for (int i = 0; i < (int)GsBarField::kCount; ++i) {
+    if (kRow[i] != kCorner) continue;
+    Field& f = f_(kOrder[i]);
+    f.pen_x = screen_w_ - inset_x_ - w[i] - pad;
+    f.baseline_y = corner_baseline_;
+    f.box = DirtyRect{f.pen_x - pad, corner_baseline_ - atlas_->baseline,
+                      w[i] + 2 * pad, atlas_->glyph_h};
+    bounds_ = union_of(bounds_, f.box);
   }
 
   // Each row is centred on its OWN width, not on the block's: the two rows
@@ -240,7 +258,7 @@ void GsCompactBar::place_(int n_cards, bool rec_on) {
   for (int row = 0; row < kRows; ++row) {
     int total = 0, n = 0;
     for (int i = 0; i < (int)GsBarField::kCount; ++i) {
-      if (kRow[i] != row || !f_(kOrder[i]).active) continue;
+      if (kRow[i] != row) continue;
       total += w[i] + (n++ ? gap_ : 0);
     }
     if (n == 0) continue;
@@ -249,7 +267,7 @@ void GsCompactBar::place_(int n_cards, bool rec_on) {
     int pen = (screen_w_ - total) / 2;
     if (pen < inset_x_ + pad) pen = inset_x_ + pad;
     for (int i = 0; i < (int)GsBarField::kCount; ++i) {
-      if (kRow[i] != row || !f_(kOrder[i]).active) continue;
+      if (kRow[i] != row) continue;
       Field& f = f_(kOrder[i]);
       f.pen_x = pen;
       f.baseline_y = baseline_y_[row];
@@ -412,10 +430,12 @@ int GsCompactBar::update(const GsSnapshot& snap, bool stale,
   // move and removes the standing question of whether the split still keeps
   // the widths apart. A field's own next draw only ever clears its NEW box.
   const int n = std::min((int)snap.cards.size(), kMaxCards);
-  const int rec_on = ps.rec.kind != RecState::Kind::kArmed ? 1 : 0;
-  if (n != n_cards_ || rec_on != rec_on_) {
+  if (n != n_cards_) {
     if (n_cards_ >= 0) {
       for (int i = 0; i < (int)GsBarField::kCount; ++i) {
+        // The corner item is anchored, not centred: a card count change
+        // cannot move it, so erasing it would cost a redraw for nothing.
+        if (kRow[i] == kCorner) continue;
         Field& f = f_(kOrder[i]);
         if (!f.active) continue;
         clear_region(s, f.box);
@@ -423,10 +443,9 @@ int GsCompactBar::update(const GsSnapshot& snap, bool stale,
         ++drawn;
       }
     }
-    place_(n, rec_on != 0);
+    place_(n);
     for (Field& f : fields_) f.valid = false;
     n_cards_ = n;
-    rec_on_ = rec_on;
   }
 
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
