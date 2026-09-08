@@ -1035,5 +1035,11 @@ if __name__ == "__main__":
         # the ctl-NNNN_ filename-glob heuristic are not consulted at all.
         probe_arg = s.probe if primary == s.ctl else None
         main(primary, s.au, probe_arg)
+        # The ctl/probe branches of main() return before the jsonl analysis,
+        # so in session mode read the sibling flight.jsonl for the SALVAGE
+        # section too -- it is a flight's post-flight command, not a ctl
+        # viewer. Silent when the recording predates the counters.
+        if primary != s.flight and s.flight:
+            print_salvage_report(load(s.flight))
     else:
         main(arg, sys.argv[2] if len(sys.argv) > 2 else None)

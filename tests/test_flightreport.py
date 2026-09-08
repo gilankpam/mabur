@@ -263,6 +263,29 @@ def test_salvage_section_survives_counter_reset_on_restart():
     assert re.search(r"rung 1:.*corrupt=1\b.*salvaged=2\b.*abandoned=6\b", sec), sec
 
 
+def test_session_dir_mode_prints_salvage_from_flight_jsonl():
+    """`flightreport.py <session-dir>` is the post-flight command. Session
+    mode runs the ctl-log reports and must ALSO read the sibling
+    flight.jsonl for the SALVAGE section, or the salvage counters are only
+    reachable by pointing at the jsonl by hand."""
+    rows = [
+        _mk_salvage_row(0,   0, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0),
+        _mk_salvage_row(500, 0, crc_fail=2, corrupt=2, salvaged=5, sub_fail=3, abandoned=4),
+    ]
+    with tempfile.TemporaryDirectory() as root:
+        d = os.path.join(root, "0007")
+        os.makedirs(d)
+        with open(os.path.join(d, "ctl.log"), "w") as f:
+            f.write(CTL_LOG)
+        with open(os.path.join(d, "flight.jsonl"), "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", d],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "CTL LOG HEADER" in result.stdout, result.stdout  # ctl-log reports still ran
+    assert re.search(r"SALVAGE.*\n\s*card 0:\s*crc_fail=2\b", result.stdout), result.stdout
+
+
 def test_salvage_section_absent_on_old_recordings():
     """A recording that predates the counters prints no SALVAGE section
     (data-provenance: old jsonl on the DVR must still report cleanly)."""
@@ -1008,4 +1031,5 @@ if __name__ == "__main__":
     test_salvage_section_totals_and_per_rung()
     test_salvage_section_absent_on_old_recordings()
     test_salvage_section_survives_counter_reset_on_restart()
+    test_session_dir_mode_prints_salvage_from_flight_jsonl()
     unittest.main()
