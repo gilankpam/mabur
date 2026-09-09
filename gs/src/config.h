@@ -20,7 +20,11 @@ struct CardCfg {
 struct RadioCfg {
   uint8_t channel = 149;
   uint8_t width = 20;
-  std::vector<CardCfg> cards;  // default: one auto-scan card
+  // Empty + auto_scan: probe the bus and use every supported card found
+  // (card_scan.h). A non-empty list pins exactly those devices and skips
+  // the probe entirely -- that is the config-only way to fly one card.
+  std::vector<CardCfg> cards;
+  bool auto_scan = true;
   int tx_card = -1;            // -1 = auto-select (Plan 2)
 };
 

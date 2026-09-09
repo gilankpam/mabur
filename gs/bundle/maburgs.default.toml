@@ -1,14 +1,14 @@
 # maburgs — ground station. Installed to /etc/maburgs.toml.
 
 [radio]
-channel = 149
+channel = 136
 width   = 20
-tx_card = -1               # -1 = auto
+tx_card = -1               # -1 = auto-select the best-SNR card
 
-[[radio.cards]]
-usb_vid = 3034
-usb_pid = 0
-index   = 0
+# No [[radio.cards]]: maburgs probes the USB bus at startup and uses every
+# supported card it finds (chip-id, not PID -- see card_scan.h). Add explicit
+# [[radio.cards]] blocks to pin a fixed set instead, which also skips the
+# probe; that is how you fly one card without unplugging an antenna.
 
 [fec]
 symbol_size = 332          # must match the drone

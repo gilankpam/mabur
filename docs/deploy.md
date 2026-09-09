@@ -461,3 +461,37 @@ page).
   `maburplay` to close the gap; there is no wire-format risk in doing so
   on its own schedule, since this is config/logging only, not an
   RC_VERSION bump.
+
+## 2026-09-09 GS card auto-scan
+
+`maburgs` discovers its radios itself. With no `[[radio.cards]]` in
+`/etc/maburgs.toml` it probes the USB bus at startup and receives on every
+supported card it finds, identifying each by chip-id — one device-recipient
+vendor read of `SYS_CFG2`, no claim and no reset, so a non-radio device that
+shares the Realtek VID is asked one question, STALLs it, and is left alone.
+Cards are ordered by physical port (`bus-port.path`, logged at startup as
+`cards: card 0 = 0bda:a81a at usb 2-1.1`), so `card 0` in the stats and the
+OSD is the same antenna across reboots.
+
+Deploy notes, none of which are wire-format:
+
+- **This is a GS-only change.** No RC_VERSION bump, no drone deploy, no flag
+  day. Swap `maburgs` alone.
+- **Binary before config, unusually.** The new binary reads an old config
+  (explicit `[[radio.cards]]` blocks) exactly as before — the list still
+  pins, and skips the probe entirely. So swap the binary, confirm, then
+  delete the card blocks.
+- **The rollback trap is silent.** An OLD `maburgs` with the NEW card-less
+  config does not fail boot: absent `radio.cards` used to mean *one default
+  card*, so it comes up receiving on a single radio and looks exactly like a
+  dead antenna. Rolling back the binary means restoring
+  `/etc/maburgs.toml.pre-autoscan` alongside it — the standing paired-rollback
+  rule, with no error message to remind you.
+- **An empty bus exits 1** after a 15 s wait rather than running blind; the
+  `S96maburgs` wrapper respawns at 2 s, which is also the retry a card that
+  enumerates late needs. The 2 s per-card reopen retry is unchanged.
+- **`radio.tx_card` is no longer range-checked at config load** under
+  auto-scan — the count is hardware, not config. A pin past the cards found
+  logs `warning: radio.tx_card N but only M card(s) found; falling back to
+  auto-select` and runs on auto, rather than costing the uplink because one
+  card did not enumerate.

@@ -131,10 +131,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     if (!j.contains(sec)) note_default("", sec, "(section absent)");
   Config c;
 
-  // Set when "radio" is present but "cards" is absent from it; the
-  // resulting default card count is only known after the post-block
-  // fallback below runs, so the note is emitted there, sourced from the
-  // real resulting size rather than a hardcoded "1".
+  // Set when "radio" is present but "cards" is absent from it: that is the
+  // auto-scan case, reported below once the flag is settled.
   bool radio_cards_absent = false;
   if (j.contains("radio")) {
     const Value& r = j["radio"];
@@ -160,12 +158,17 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       radio_cards_absent = true;
     }
   }
-  if (c.radio.cards.empty()) c.radio.cards.push_back(CardCfg{});
-  if (radio_cards_absent)
-    note_default("radio", "cards",
-                 "(" + std::to_string(c.radio.cards.size()) + " default card" +
-                     (c.radio.cards.size() == 1 ? "" : "s") + ")");
-  if (c.radio.tx_card >= static_cast<int>(c.radio.cards.size()))
+  // No list -> auto-scan (card_scan.h fills the list from the bus at
+  // startup). A list -> pin exactly those, no probing. There is no longer a
+  // silent "one default card": a GS with two cards and no config used to
+  // receive on one of them.
+  c.radio.auto_scan = c.radio.cards.empty();
+  if (radio_cards_absent) note_default("radio", "cards", "(auto-scan)");
+  // Only an explicit list is a fact at load time. Under auto-scan the count
+  // is hardware, discovered after this returns; main.cpp warns and falls
+  // back to auto-select when the scan finds fewer cards than the pin.
+  if (!c.radio.auto_scan &&
+      c.radio.tx_card >= static_cast<int>(c.radio.cards.size()))
     fail("radio.tx_card", "no such card");
 
   if (j.contains("fec")) {

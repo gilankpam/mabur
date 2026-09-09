@@ -23,6 +23,7 @@
 #include "au_log.h"
 #include "au_ring.h"
 #include "body_queue.h"
+#include "card_scan.h"
 #include "config.h"
 #include "ctl_log.h"
 #include "drone_restart.h"
@@ -182,18 +183,72 @@ static int run_radio(const maburgs::Config& cfg) {
   std::signal(SIGTERM, on_signal);
   std::signal(SIGUSR1, on_usr1);
 
-  const int n_cards = static_cast<int>(cfg.radio.cards.size());
+  // Card discovery. With no [[radio.cards]] in the config the bus is the
+  // source of truth: probe every device the chip itself claims as a
+  // supported radio and receive on all of them. The wait exists because
+  // maburgs starts during boot, with USB enumeration still in flight --
+  // deciding on the first poll is how a two-card GS silently becomes a
+  // one-card GS for the whole flight. Fixed for the process lifetime once
+  // settled: Aggregator, TxSelector and the sideport all size off it.
+  std::vector<maburgs::ScannedCard> scanned;
+  if (cfg.radio.auto_scan) {
+    libusb_context* scan_ctx = nullptr;
+    if (libusb_init(&scan_ctx) != 0) {
+      std::fprintf(stderr, "error: libusb_init failed for the card scan\n");
+      return 1;
+    }
+    const maburgs::ScanPolicy policy;
+    std::fprintf(stderr, "cards: scanning USB (settle %d ms, timeout %d ms)\n",
+                 policy.settle_ms, policy.timeout_ms);
+    scanned = maburgs::scan_until_settled(
+        policy, [scan_ctx] { return maburgs::enumerate_supported_cards(scan_ctx); },
+        [] { return mono_ms(); },
+        [](int ms) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        });
+    libusb_exit(scan_ctx);
+    if (scanned.empty()) {
+      // Nothing to receive on. Exit rather than run blind: S96maburgs
+      // respawns at 2 s, which is the retry a late-appearing card needs.
+      std::fprintf(stderr, "error: no supported radio found on USB\n");
+      return 1;
+    }
+    for (size_t i = 0; i < scanned.size(); ++i)
+      std::fprintf(stderr, "cards: card %zu = %04x:%04x at usb %s\n", i,
+                   scanned[i].usb_vid, scanned[i].usb_pid,
+                   maburgs::port_name(scanned[i]).c_str());
+  }
+
+  const int n_cards = cfg.radio.auto_scan
+                          ? static_cast<int>(scanned.size())
+                          : static_cast<int>(cfg.radio.cards.size());
   maburgs::BodyQueue queue;  // all cards share one queue; card_id tags origin
   std::vector<std::unique_ptr<maburgs::RadioFrontend>> fronts;
   for (int i = 0; i < n_cards; ++i) {
     maburgs::RadioFrontend::Cfg fc;
-    fc.usb_vid = cfg.radio.cards[static_cast<size_t>(i)].usb_vid;
-    fc.usb_pid = cfg.radio.cards[static_cast<size_t>(i)].usb_pid;
-    fc.index = cfg.radio.cards[static_cast<size_t>(i)].index;
+    if (cfg.radio.auto_scan) {
+      fc.by_port = true;
+      fc.port = scanned[static_cast<size_t>(i)];
+      fc.usb_vid = fc.port.usb_vid;
+      fc.usb_pid = fc.port.usb_pid;
+    } else {
+      fc.usb_vid = cfg.radio.cards[static_cast<size_t>(i)].usb_vid;
+      fc.usb_pid = cfg.radio.cards[static_cast<size_t>(i)].usb_pid;
+      fc.index = cfg.radio.cards[static_cast<size_t>(i)].index;
+    }
     fc.channel = cfg.radio.channel;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
   }
+
+  // A pin that outruns the cards actually found is a missing antenna, not a
+  // config error: fall back to auto-select rather than lose the uplink.
+  const int tx_card_pin = maburgs::effective_tx_card(cfg.radio.tx_card, n_cards);
+  if (tx_card_pin != cfg.radio.tx_card)
+    std::fprintf(stderr,
+                 "warning: radio.tx_card %d but only %d card(s) found; "
+                 "falling back to auto-select\n",
+                 cfg.radio.tx_card, n_cards);
 
   maburgs::Aggregator agg(cfg.uep_layers(),
                           static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
@@ -743,7 +798,7 @@ static int run_radio(const maburgs::Config& cfg) {
   });
 
   maburgs::TxSelector sel(
-      maburgs::TxSelectorCfg{cfg.radio.tx_card, 3.0, 2000, 1500}, n_cards);
+      maburgs::TxSelectorCfg{tx_card_pin, 3.0, 2000, 1500}, n_cards);
 
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   uint64_t last_stats_ms = 0;

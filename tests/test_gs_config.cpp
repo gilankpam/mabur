@@ -15,8 +15,10 @@ static std::string write_tmp(const std::string& text) {
 
 TEST(default_bundle_config_loads) {
   auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(cfg.radio.channel == 149);
-  CHECK(cfg.radio.cards.size() == 1);
+  CHECK(cfg.radio.channel == 136);
+  // The shipped default lists no cards: the GS auto-scans the bus.
+  CHECK(cfg.radio.auto_scan == true);
+  CHECK(cfg.radio.cards.empty());
   CHECK(cfg.radio.tx_card == -1);
   CHECK(cfg.fec.seq_horizon == 512);
   CHECK(cfg.link.vtx_id == 1);
@@ -156,17 +158,24 @@ TEST(fec_symbol_size_wrong_length_rejected) {
   CHECK(threw);
 }
 
-TEST(tx_card_validates_against_effective_card_list) {
-  // Test: tx_card 0 with default single card should load without error
-  auto cfg = maburgs::load_config(write_tmp("[radio]\ntx_card = 0\n"));
-  CHECK(cfg.radio.cards.size() == 1);
-  CHECK(cfg.radio.tx_card == 0);
+TEST(tx_card_validates_against_an_explicit_card_list_only) {
+  // An explicit list is a fact at load time, so it is range-checked here.
+  const std::string two_cards =
+      "[[radio.cards]]\nindex = 0\n\n[[radio.cards]]\nindex = 1\n";
+  auto cfg = maburgs::load_config(write_tmp(two_cards + "\n[radio]\ntx_card = 1\n"));
+  CHECK(cfg.radio.tx_card == 1);
 
-  // Test: tx_card 5 with default single card should fail (out of range)
   bool threw = false;
-  try { maburgs::load_config(write_tmp("[radio]\ntx_card = 5\n")); }
+  try { maburgs::load_config(write_tmp(two_cards + "\n[radio]\ntx_card = 5\n")); }
   catch (const std::exception&) { threw = true; }
-  CHECK(threw);  // out of range against the effective single default card
+  CHECK(threw);  // out of range against the two cards actually listed
+
+  // Under auto-scan the count is a hardware fact discovered after load, so
+  // a pin cannot be range-checked here -- main.cpp warns and falls back to
+  // auto-select if the scan comes back with fewer cards than the pin.
+  auto autocfg = maburgs::load_config(write_tmp("[radio]\ntx_card = 5\n"));
+  CHECK(autocfg.radio.auto_scan == true);
+  CHECK(autocfg.radio.tx_card == 5);
 }
 TEST(gs_msp_defaults_and_parse) {
   {
@@ -332,6 +341,7 @@ TEST(gs_load_config_parses_arrays_of_tables) {
   auto cfg = maburgs::load_config(path);
   CHECK(cfg.radio.cards.size() == 2);
   CHECK(cfg.radio.cards[1].index == 1);
+  CHECK(cfg.radio.auto_scan == false);  // an explicit list pins; no scan
   CHECK(cfg.link.ladder_cfg.ladder.size() == 2);
   CHECK(cfg.link.ladder_cfg.ladder[0].mcs == 2);
   CHECK(cfg.link.ladder_cfg.ladder[1].overhead_enh == 0.5);
@@ -386,13 +396,13 @@ TEST(gs_load_config_reports_previously_invisible_defaults) {
       "\n[link.probe]\nenable = true\n");
   std::vector<std::string> defaulted;
   auto cfg = maburgs::load_config(path, &defaulted);
-  CHECK(cfg.radio.cards.size() == 1);
+  CHECK(cfg.radio.auto_scan == true);
   CHECK(cfg.link.ladder_cfg.ladder.size() == 6);
 
   bool saw_cards = false, saw_symbol_size = false, saw_ladder = false,
        saw_s3_down_util = false, saw_probe_max_util = false;
   for (const std::string& d : defaulted) {
-    if (d == "radio.cards=(1 default card)") saw_cards = true;
+    if (d == "radio.cards=(auto-scan)") saw_cards = true;
     if (d == "fec.symbol_size=64") saw_symbol_size = true;
     if (d == "link.ladder=(6 default rungs)") saw_ladder = true;
     if (d == "link.s3_down_util=(defaults to link.down_util)") saw_s3_down_util = true;
