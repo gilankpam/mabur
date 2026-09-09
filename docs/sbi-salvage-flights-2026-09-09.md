@@ -104,3 +104,30 @@ probation demote at t=207.7 s) is not an 8-bpb result. Fixes: ProbeTrack
 should book expected from the body's own block count (wire), not from the
 GS config, and the probe.log header/flightreport should take bpb from the
 rows. Any future bpb A/B must change both ends until then.
+
+## Flight 0046 (same day): the measured number
+
+First flight with `salvage_only` (4 blocks per body, both ends). Same
+method as above, plus `salvage_only` per rung; avoided =
+salvage_only / (miss + salvage_only).
+
+| stream | bodies | corrupt | salvaged | salvage_only | miss | avoided |
+|---|---|---|---|---|---|---|
+| 0 (base) | 169 432 | 4 302 | 7 081 | 471 | 4 803 | 8.9 % |
+| 1 (enh) | 125 609 | 2 564 | 4 167 | 391 | 3 276 | 10.7 % |
+| both | 295 040 | 2.3 % | 11 248 | 862 | 8 079 | **9.6 %** |
+
+Per rung, avoided runs 26-34 % at rung 0, 15-17 % at rung 1 and 6-10 %
+at rungs 2-4; `salvage_only` is 5-12 % of `salvaged` everywhere. So the
+upper bound (58 % for this flight) was off by six times: about 92 % of
+the salvaged sub-blocks were also delivered clean by the other card
+(roughly half of the salvaged sub-blocks are repair symbols, which never
+count; of the salvaged *sources*, ~86 % were shadowed). What salvage buys
+is pre-FEC loss 0.68 % instead of 0.76 %, i.e. one in ten misses, for the
+8 B/body of sub-block CRCs (~0.6 % of a 1.4 kB body). Post-FEC, current
+abandoned symbols were 235 over the flight, 133 of them at rung 3.
+
+Verdict: keep it (it is free at runtime and helps most exactly where the
+link is worst, rung 0), but it is not a lever. Do not spend geometry on
+it: the 8-block case's higher salvage yield cannot overcome a 92 %
+shadowing rate, and whole-body loss remains the loss that matters.
