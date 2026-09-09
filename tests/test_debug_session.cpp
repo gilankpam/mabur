@@ -125,4 +125,25 @@ TEST(five_digit_directory_counted_in_next_allocation) {
   CHECK(is_dir(s.dir()));
 }
 
+TEST(rotate_allocates_next_index_and_moves_marker) {
+  // A drone restart mid-run starts a new flight: rotate() behaves like a
+  // fresh allocation (next NNNN, marker rewritten last) without a process
+  // restart, so the video tail never blinks.
+  const std::string root = make_root("rotate");
+  const std::string mk = marker_for("rotate");
+  std::remove(mk.c_str());
+  maburgs::DebugSession s(root, true, mk.c_str());
+  REQUIRE(s.ok());
+  const int idx0 = s.index();
+  const std::string dir0 = s.dir();
+  REQUIRE(s.rotate());
+  CHECK(s.ok());
+  CHECK(s.index() == idx0 + 1);
+  CHECK(s.dir() != dir0);
+  CHECK(is_dir(s.dir()));
+  CHECK(is_dir(dir0));  // the old flight's directory is left alone
+  CHECK(slurp(mk) == s.dir());
+  CHECK(!s.rejoined());
+}
+
 MTEST_MAIN

@@ -746,6 +746,78 @@ def sniff_ctllog(path):
     return first.startswith("ctllog ")
 
 
+def print_salvage_report(rows):
+    """SALVAGE: what rx.keep_corrupted (2026-09-08) bought. The sideport's
+    per-card crc_fail and per-stream corrupt/salvaged/sub_fail are
+    cumulative; sum their per-interval deltas over the recording and
+    attribute each interval's movement to the rung the ladder reports at
+    the interval's end, next to that interval's abandoned symbols (the
+    post-FEC loss the salvage is competing with). A maburgs restart
+    rejoins the session directory, so one file can carry a counter reset
+    (sideport `session` changes, counters restart from 0): a reset
+    interval contributes the post-reset value, never a negative delta.
+    Silent on recordings that predate the counters -- old jsonl on the DVR
+    must still report cleanly."""
+    srows = [r for r in rows
+             if any("corrupt" in (s or {})
+                    for s in ((r.get("link") or {}).get("streams") or []))]
+    if len(srows) < 2:
+        return
+
+    def card_map(r):
+        return {c.get("id"): c.get("crc_fail") or 0 for c in (r.get("cards") or [])}
+
+    def stream_map(r):
+        return {s.get("stream"): s for s in ((r.get("link") or {}).get("streams") or [])}
+
+    def delta(cur, prev, reset):
+        cur, prev = cur or 0, prev or 0
+        return cur if (reset or cur < prev) else cur - prev
+
+    keys = ("corrupt", "salvaged", "salvage_only", "sub_fail", "abandoned")
+    # salvage_only (2026-09-09) is younger than the section: print it only
+    # when the recording carries the key, so older jsonl reads unchanged.
+    have_so = any("salvage_only" in (s or {})
+                  for r in srows for s in stream_map(r).values())
+
+    def so(v):
+        return f" salvage_only={v['salvage_only']}" if have_so else ""
+    card_tot, stream_tot, by_rung = {}, {}, {}
+    prev = None
+    for r in srows:
+        cards, streams = card_map(r), stream_map(r)
+        if prev is not None:
+            pr, pcards, pstreams = prev
+            reset = r.get("session") != pr.get("session")
+            for cid, v in cards.items():
+                card_tot[cid] = card_tot.get(cid, 0) + delta(v, pcards.get(cid), reset)
+            rung = (((r.get("link") or {}).get("ctl") or {}).get("rung") or {}).get("idx")
+            acc = by_rung.setdefault(rung, {k: 0 for k in keys})
+            for sid, b in streams.items():
+                a = pstreams.get(sid) or {}
+                st = stream_tot.setdefault(sid, {k: 0 for k in keys})
+                for k in keys:
+                    dv = delta(b.get(k), a.get(k), reset)
+                    st[k] += dv
+                    acc[k] += dv
+        prev = (r, cards, streams)
+
+    print("SALVAGE (rx.keep_corrupted: FCS-corrupt bodies delivered, "
+          "CRC16-clean sub-blocks salvaged)")
+    for cid in sorted(card_tot):
+        print(f"  card {cid}: crc_fail={card_tot[cid]}"
+              "  (mabur + foreign; foreign junk lands here too)")
+    for sid in sorted(stream_tot):
+        v = stream_tot[sid]
+        print(f"  stream {sid}: corrupt={v['corrupt']} salvaged={v['salvaged']}{so(v)} "
+              f"sub_fail={v['sub_fail']} abandoned={v['abandoned']}")
+    print("  PER RUNG (all streams; interval attributed to the rung at its end)")
+    for rung in sorted(by_rung, key=lambda x: (x is None, x)):
+        v = by_rung[rung]
+        print(f"    rung {rung}: corrupt={v['corrupt']} salvaged={v['salvaged']}{so(v)} "
+              f"sub_fail={v['sub_fail']} abandoned={v['abandoned']}")
+
+
 def main(path, aulog=None, probelog_path=None):
     if sniff_probelog(path):
         # A probe log on its own (bench use): just the per-body report and
@@ -938,6 +1010,8 @@ def main(path, aulog=None, probelog_path=None):
         flat_traj = [u for traj in trajs for u in traj]
         print(f"  t={t} residual={rl:.4f} u[-5s..]={flat_traj} drone_state={drone_state}{rssi_str}{snr_str}")
 
+    print_salvage_report(rows)
+
     # link.attrib.suppressed was removed from the sideport 2026-09-02 with
     # the packet-level delivery window it was defined against. Old
     # recordings still carry it; report it there and say what it means.
@@ -968,5 +1042,11 @@ if __name__ == "__main__":
         # the ctl-NNNN_ filename-glob heuristic are not consulted at all.
         probe_arg = s.probe if primary == s.ctl else None
         main(primary, s.au, probe_arg)
+        # The ctl/probe branches of main() return before the jsonl analysis,
+        # so in session mode read the sibling flight.jsonl for the SALVAGE
+        # section too -- it is a flight's post-flight command, not a ctl
+        # viewer. Silent when the recording predates the counters.
+        if primary != s.flight and s.flight:
+            print_salvage_report(load(s.flight))
     else:
         main(arg, sys.argv[2] if len(sys.argv) > 2 else None)

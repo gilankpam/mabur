@@ -190,7 +190,8 @@ void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
 }
 
 std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size_t len,
-                                                        uint64_t now_ms, SwBoundary b) {
+                                                        uint64_t now_ms, SwBoundary b,
+                                                        bool clean) {
   std::vector<std::vector<uint8_t>> out;
   sw::SwHeader h;
   if (!sw::parse_header(env, len, &h)) return out;
@@ -223,7 +224,7 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
     // Arrival accounting BEFORE the dedup/stale early-return: a second-card
     // copy still sets the heard bit (idempotent), a copy behind the settle
     // line counts late.
-    arr_.on_source(v, arr_stale_end());
+    arr_.on_source(v, arr_stale_end(), clean);
     arr_.advance(v, arr_stale_end());
     if (v < live_floor() || known_.count(v)) {
       // First direct copy of a repair-recovered symbol: the channel did

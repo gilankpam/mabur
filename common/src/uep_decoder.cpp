@@ -61,9 +61,14 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
   }
   const SbiUnpackResult r = sbi_unpack(body, len, L.env_size);
   L.subblocks_failed += static_cast<uint64_t>(r.n_failed);
+  if (!body_crc_ok) {
+    ++L.bodies_corrupt;
+    L.subblocks_salvaged += static_cast<uint64_t>(r.survivors.size());
+  }
   std::vector<DecodedFrag> out;
   for (const auto& env : r.survivors) {
-    for (const auto& pkt : L.sw.add_symbol(env.data(), env.size(), now_ms, hint)) {
+    for (const auto& pkt :
+         L.sw.add_symbol(env.data(), env.size(), now_ms, hint, body_crc_ok)) {
       if (pkt.size() < Fragmenter::kHdrLen) continue;
       // q_ms/enc_us are outside the per-block CRCs: only an FCS-clean body
       // may vouch for them (0 = unknown downstream, header comment).
@@ -106,7 +111,9 @@ UepDecoder::LayerStats UepDecoder::stats(int sid) const {
                     L.sw.syms_abandoned_stale(),
                     L.sw.arr_expected(),   L.sw.arr_arrived(),
                     L.sw.arr_expected_stale(), L.sw.arr_arrived_stale(),
-                    L.sw.arr_late()};
+                    L.sw.arr_late(),
+                    L.bodies_corrupt,      L.subblocks_salvaged,
+                    L.sw.arr_salvage_only()};
 }
 
 double UepDecoder::last_boundary_close_ms(int sid) const {

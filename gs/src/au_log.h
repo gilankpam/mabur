@@ -30,6 +30,8 @@ class AuLog {
   AuLog& operator=(const AuLog&) = delete;
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
+  // Session rotation: same file name under a new session directory.
+  void rotate(const std::string& dir) { w_.reopen(s_, dir); }
 
   void begin() { head_n_ = 0; }
   // Latches the first kHead bytes of the AU; everything after is ignored.

@@ -47,6 +47,8 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
   uint64_t syms_abandoned_stale = 0;
   uint64_t arr_expected = 0, arr_arrived = 0, arr_expected_stale = 0,
            arr_arrived_stale = 0, arr_late = 0;  // ArrivalTracker (2026-09-05)
+  uint64_t bodies_corrupt = 0, subblocks_salvaged = 0;  // rx.keep_corrupted (2026-09-08)
+  uint64_t arr_salvage_only = 0;  // seqs only a salvaged sub-block delivered (2026-09-09)
 };
 
 // One rung of the per-rung EWMA store (spec 2026-08-13), copied plain from

@@ -185,6 +185,144 @@ def synthesize_flight_jsonl():
     return "\n".join(rows) + "\n"
 
 
+def _mk_salvage_row(t, rung_idx, crc_fail, corrupt, salvaged, sub_fail, abandoned,
+                    salvage_only=0):
+    """Sideport-shaped row carrying the rx.keep_corrupted counters
+    (2026-09-08): per-card crc_fail, per-stream corrupt/salvaged/sub_fail."""
+    return {
+        "v": 1, "t_ms": t,
+        "cards": [{"id": 0, "crc_fail": crc_fail, "frames": 1000 + t},
+                  {"id": 1, "crc_fail": 0, "frames": 1000 + t}],
+        "link": {
+            "state": "linked", "residual_loss": None,
+            "ctl": {"rung": {"idx": rung_idx, "mcs": rung_idx, "ov": 0.5},
+                    "util": 0.0, "last_event": {"t_ms": 0.0}},
+            "op": {"mcs": rung_idx, "bw": 20, "overhead": 0.5},
+            "streams": [{"stream": 0, "ov": 0.5, "corrupt": corrupt,
+                         "salvaged": salvaged, "sub_fail": sub_fail,
+                         "abandoned": abandoned, "salvage_only": salvage_only},
+                        {"stream": 1, "ov": 0.5, "corrupt": 0,
+                         "salvaged": 0, "sub_fail": 0, "abandoned": 0}],
+        },
+    }
+
+
+def test_salvage_section_totals_and_per_rung():
+    """SALVAGE section: cumulative counters are differenced over the
+    recording and attributed to the rung the ladder sat in when they
+    moved. Rung 0: 2 corrupt bodies, 5 salvaged, 3 sub_fail, 4 abandoned.
+    Rung 2: 1 corrupt body, 2 salvaged, 2 sub_fail, 10 abandoned."""
+    rows = [
+        _mk_salvage_row(0,    0, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0),
+        _mk_salvage_row(500,  0, crc_fail=2, corrupt=2, salvaged=5, sub_fail=3, abandoned=4),
+        _mk_salvage_row(1000, 2, crc_fail=2, corrupt=2, salvaged=5, sub_fail=3, abandoned=4),
+        _mk_salvage_row(1500, 2, crc_fail=4, corrupt=3, salvaged=7, sub_fail=5, abandoned=14),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "SALVAGE" in out, out
+    sec = out[out.find("SALVAGE"):]
+    # card totals: crc_fail delta per card
+    assert re.search(r"card 0:\s*crc_fail=4\b", sec), sec
+    assert re.search(r"card 1:\s*crc_fail=0\b", sec), sec
+    # stream 0 totals
+    assert re.search(r"stream 0:.*corrupt=3\b.*salvaged=7\b.*sub_fail=5\b", sec), sec
+    # per-rung attribution of the deltas
+    assert re.search(r"rung 0:.*corrupt=2\b.*salvaged=5\b.*sub_fail=3\b.*abandoned=4\b", sec), sec
+    assert re.search(r"rung 2:.*corrupt=1\b.*salvaged=2\b.*sub_fail=2\b.*abandoned=10\b", sec), sec
+
+
+def test_salvage_section_reports_salvage_only_per_stream_and_rung():
+    """salvage_only (2026-09-09): seqs whose only arrival was a salvaged
+    sub-block. Differenced and attributed like the other counters: rung 0
+    moves 2, rung 2 moves 1, stream total 3."""
+    rows = [
+        _mk_salvage_row(0,    0, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0),
+        _mk_salvage_row(500,  0, crc_fail=2, corrupt=2, salvaged=5, sub_fail=3, abandoned=4,
+                        salvage_only=2),
+        _mk_salvage_row(1000, 2, crc_fail=4, corrupt=3, salvaged=7, sub_fail=5, abandoned=4,
+                        salvage_only=3),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    sec = result.stdout[result.stdout.find("SALVAGE"):]
+    assert re.search(r"stream 0:.*salvaged=7\b.*salvage_only=3\b", sec), sec
+    assert re.search(r"rung 0:.*salvaged=5\b.*salvage_only=2\b", sec), sec
+    assert re.search(r"rung 2:.*salvaged=2\b.*salvage_only=1\b", sec), sec
+
+
+def test_salvage_section_survives_counter_reset_on_restart():
+    """A maburgs restart rejoins the session directory (debug-log
+    consolidation 2026-09-06), so one flight.jsonl can carry a counter
+    reset: the sideport `session` id changes and every cumulative counter
+    restarts from 0. The section must sum per-interval deltas and treat a
+    reset interval's delta as the post-reset value, never last-minus-first
+    (which would go negative). Before: corrupt 2 / salvaged 5 / crc_fail 3.
+    After the restart: corrupt 1 / salvaged 2 / crc_fail 4. Totals 3/7/7."""
+    a = _mk_salvage_row(0,   0, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0)
+    b = _mk_salvage_row(500, 0, crc_fail=3, corrupt=2, salvaged=5, sub_fail=3, abandoned=4)
+    c = _mk_salvage_row(1000, 1, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0)
+    d = _mk_salvage_row(1500, 1, crc_fail=4, corrupt=1, salvaged=2, sub_fail=2, abandoned=6)
+    for r in (a, b): r["session"] = 111
+    for r in (c, d): r["session"] = 222
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in (a, b, c, d)))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    sec = result.stdout[result.stdout.find("SALVAGE"):]
+    assert re.search(r"card 0:\s*crc_fail=7\b", sec), sec
+    assert re.search(r"stream 0:.*corrupt=3\b.*salvaged=7\b.*sub_fail=5\b.*abandoned=10\b", sec), sec
+    assert re.search(r"rung 0:.*corrupt=2\b.*salvaged=5\b", sec), sec
+    assert re.search(r"rung 1:.*corrupt=1\b.*salvaged=2\b.*abandoned=6\b", sec), sec
+
+
+def test_session_dir_mode_prints_salvage_from_flight_jsonl():
+    """`flightreport.py <session-dir>` is the post-flight command. Session
+    mode runs the ctl-log reports and must ALSO read the sibling
+    flight.jsonl for the SALVAGE section, or the salvage counters are only
+    reachable by pointing at the jsonl by hand."""
+    rows = [
+        _mk_salvage_row(0,   0, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0),
+        _mk_salvage_row(500, 0, crc_fail=2, corrupt=2, salvaged=5, sub_fail=3, abandoned=4),
+    ]
+    with tempfile.TemporaryDirectory() as root:
+        d = os.path.join(root, "0007")
+        os.makedirs(d)
+        with open(os.path.join(d, "ctl.log"), "w") as f:
+            f.write(CTL_LOG)
+        with open(os.path.join(d, "flight.jsonl"), "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", d],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "CTL LOG HEADER" in result.stdout, result.stdout  # ctl-log reports still ran
+    assert re.search(r"SALVAGE.*\n\s*card 0:\s*crc_fail=2\b", result.stdout), result.stdout
+
+
+def test_salvage_section_absent_on_old_recordings():
+    """A recording that predates the counters prints no SALVAGE section
+    (data-provenance: old jsonl on the DVR must still report cleanly)."""
+    rows = [_mk_stream_row(0, 2), _mk_stream_row(500, 2)]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "SALVAGE" not in result.stdout
+
+
 def test_flightreport_structure():
     """Run flightreport.py and verify output structure."""
     # Create fixture directory
@@ -914,4 +1052,9 @@ if __name__ == "__main__":
     test_false_fade_and_attribution_miss()
     test_find_episodes_gap_boundary_closes_run()
     test_s3_settle_refire_canary()
+    test_salvage_section_totals_and_per_rung()
+    test_salvage_section_reports_salvage_only_per_stream_and_rung()
+    test_salvage_section_absent_on_old_recordings()
+    test_salvage_section_survives_counter_reset_on_restart()
+    test_session_dir_mode_prints_salvage_from_flight_jsonl()
     unittest.main()

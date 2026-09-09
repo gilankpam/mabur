@@ -25,6 +25,32 @@ null, until then — and `maburplay`'s OSD grows a matching latency block
 above the fps line, reading `--` while its own e2e-latency tracker is
 cold or discontinuous.
 
+**Per-card `crc_fail` is live since 2026-09-08.** The GS asks devourer to
+keep FCS-failed frames (`rx.keep_corrupted`, RCR ACRC32|AICV on the 8822E,
+set unconditionally in `gs/src/radio_frontend.cpp`), so a corrupt frame
+reaches the aggregator, bumps that card's `crc_fail`, stays out of the seq
+walk, and hands its body to the UEP decoder, which keeps the SBI
+sub-blocks whose own CRC16 still passes. Per stream the sideport carries
+`corrupt` (FCS-corrupt bodies delivered), `salvaged` (CRC16-clean
+sub-blocks taken out of them) and `sub_fail` (sub-blocks that failed, from
+any body), and since 2026-09-09 `salvage_only` — seqs whose ONLY arrival
+inside the arrival guard was a salvaged sub-block (a second "heard clean"
+bit in the ArrivalTracker, booked at settle time). `salvaged` is the
+upper bound and `salvage_only` the value: the other card's clean copy of
+the same body shadows most salvaged sub-blocks (flights 0043/0044,
+`docs/sbi-salvage-flights-2026-09-09.md`), and a salvaged repair symbol
+never counts here because it carries no seq of its own.
+`flightreport.py` prints them as a SALVAGE section — totals per
+card/stream and the deltas per rung next to that rung's abandoned
+symbols, which is the post-flight answer to "what did salvage buy"
+(`salvage_only` appears only on recordings that carry the key). Before
+that date the WMAC dropped those frames on the
+chip and `crc_fail` was structurally 0 — not "no damage", "damage never
+seen". Foreign traffic that fails FCS is counted too (the SA filter cannot
+trust a corrupt address), so a busy channel shows a slow `crc_fail` creep
+with the drone off; `MABUR_GAPLOG=1` prints one `crcfail card=… sid=…`
+line per event, `sid=-1` being the foreign ones.
+
 Since 2026-09-01 that block is **two rows, `LAT P50 <n> ms` and
 `LAT P99 <n> ms`**, right-flushed under the `RTT` row. Each is ONE REAL
 FRAME from the last 1 s window, ranked by e2e. Read them together:
@@ -108,7 +134,16 @@ Consume the same numbers programmatically with:
   its own. Default is **off**: nothing is written until the knob is set.
   The marker lives in tmpfs, so a reboot starts a new session while a 2 s
   wrapper respawn rejoins the current one and appends (which is why a format
-  marker line can appear more than once in a file). Every file shares one
+  marker line can appear more than once in a file). **A drone restart is a
+  new flight (2026-09-08):** when T_TELEM's `tlm_seq` steps backwards by
+  more than 100 (maburd restarts it from 0; a fade or re-rendezvous keeps it
+  climbing) maburgs rotates in place — next NNNN, marker rewritten, all four
+  files reopened under it with their format marker at the top — with no
+  process restart and no video blink; maburplay's `lat.log` follows the
+  marker within 5 s. Cumulative sideport counters do NOT reset at a
+  rotation (same maburgs process), so the new `flight.jsonl` starts at
+  nonzero values; `flightreport.py` differences within the file. A maburd
+  crash-restart mid-flight therefore splits that flight in two, by design. Every file shares one
   CLOCK_MONOTONIC clock, so any two rows join directly — there is no `# sync`
   bridge any more. `ctl.log`, `probe.log` and `au.log` share one writer
   thread (`gs/src/log_writer.h`) whose per-stream ring can fill under load;

@@ -30,12 +30,18 @@ class ArrivalTracker {
   // (second card, retry) as long as v is still inside the guard. A v the
   // ring cannot hold yet (>= settle_ + ring) moves the settle line forward
   // first, booking what it passes, so its bit never aliases an unbooked seq.
-  void on_source(uint64_t v, uint64_t stale_end) {
+  // clean: the body's FCS verdict. A copy salvaged out of an FCS-corrupt
+  // body (rx.keep_corrupted, 2026-09-08) still counts as heard; a seq that
+  // settles heard but never clean books `salvage_only` -- what salvage
+  // actually bought, as opposed to UepDecoder's subblocks_salvaged, which
+  // also counts sub-blocks the other card delivered clean anyway
+  // (docs/sbi-salvage-flights-2026-09-09.md).
+  void on_source(uint64_t v, uint64_t stale_end, bool clean = true) {
     if (!anchored_) anchor(v);
     if (v < settle_) { ++late_; return; }
     const uint64_t ring = mask_ + 1;
     if (v >= settle_ + ring) settle_to(v - ring + 1, stale_end);
-    bits_[static_cast<size_t>(v & mask_)] = 1;
+    bits_[static_cast<size_t>(v & mask_)] |= clean ? (kHeard | kClean) : kHeard;
     if (v > newest_) newest_ = v;
   }
 
@@ -62,6 +68,7 @@ class ArrivalTracker {
   uint64_t expected_stale() const { return expected_stale_; }
   uint64_t arrived_stale() const { return arrived_stale_; }
   uint64_t late() const { return late_; }
+  uint64_t salvage_only() const { return salvage_only_; }
   bool anchored() const { return anchored_; }
 
  private:
@@ -78,10 +85,12 @@ class ArrivalTracker {
   void settle_to(uint64_t target, uint64_t stale_end) {
     while (settle_ < target) {
       const size_t i = static_cast<size_t>(settle_ & mask_);
-      const bool heard = bits_[i] != 0;
+      const bool heard = (bits_[i] & kHeard) != 0;
+      const bool clean = (bits_[i] & kClean) != 0;
       bits_[i] = 0;
       ++expected_;
       if (heard) ++arrived_;
+      if (heard && !clean) ++salvage_only_;
       if (settle_ < stale_end) {
         ++expected_stale_;
         if (heard) ++arrived_stale_;
@@ -90,13 +99,15 @@ class ArrivalTracker {
     }
   }
 
+  static constexpr uint8_t kHeard = 1, kClean = 2;
   uint32_t guard_;
-  std::vector<uint8_t> bits_;
+  std::vector<uint8_t> bits_;  // per-seq kHeard | kClean, cleared at settle
   uint32_t mask_;
   bool anchored_ = false;
   uint64_t newest_ = 0;
   uint64_t settle_ = 0;  // next seq to book
   uint64_t expected_ = 0, arrived_ = 0, expected_stale_ = 0, arrived_stale_ = 0, late_ = 0;
+  uint64_t salvage_only_ = 0;
 };
 
 }  // namespace mabur

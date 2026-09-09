@@ -195,6 +195,8 @@ class CtlLog {
   CtlLog& operator=(const CtlLog&) = delete;
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
+  // Session rotation: same file name under a new session directory.
+  void rotate(const std::string& dir) { w_.reopen(s_, dir); }
   const std::string& path() const { return w_.path(s_); }
 
   void sample(double t_ms, int rung, double u, double snr_db, double resid,

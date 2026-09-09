@@ -55,6 +55,8 @@ LogWriter::Stream LogWriter::open(const std::string& dir, const char* name,
   auto out = std::make_unique<Out>();
   out->f = f;
   out->path = p;
+  out->name = name;
+  out->header = header;
   out->mark_drops = mark_drops;
   outs_[n] = std::move(out);
   // Publish the slot only after it is fully built.
@@ -64,6 +66,33 @@ LogWriter::Stream LogWriter::open(const std::string& dir, const char* name,
   // to line() would be a zero-length record, i.e. a counted drop.
   if (!header.empty()) line(s, header.data(), header.size());
   return s;
+}
+
+bool LogWriter::reopen(Stream s, const std::string& dir) {
+  if (s < 0 || static_cast<size_t>(s) >= n_outs_.load(std::memory_order_acquire))
+    return false;
+  Out& o = *outs_[static_cast<size_t>(s)];
+  const std::string p = dir + "/" + o.name;
+  std::FILE* f = std::fopen(p.c_str(), "a");
+  if (!f) {
+    std::fprintf(stderr, "debug-log: fopen '%s' failed: %s\n", p.c_str(),
+                 std::strerror(errno));
+    return false;
+  }
+  std::setvbuf(f, nullptr, _IOFBF, 1 << 16);
+  // Everything queued so far belongs to the old file: drain and flush it
+  // (both take drain_mu_ themselves), then swap the FILE* under the same
+  // lock so the writer thread never sees a half-switched slot.
+  drain_();
+  report_and_flush_();
+  {
+    std::lock_guard<std::mutex> lk(drain_mu_);
+    if (o.f) std::fclose(o.f);
+    o.f = f;
+    o.path = p;
+  }
+  if (!o.header.empty()) line(s, o.header.data(), o.header.size());
+  return true;
 }
 
 void LogWriter::put_(uint64_t at, const char* src, size_t n) {

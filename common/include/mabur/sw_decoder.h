@@ -43,9 +43,12 @@ class SwDecoder {
   // Feeds one received envelope; returns app packets unpacked from every
   // symbol that became known (source first, cascades after). Malformed or
   // config-mismatched envelopes are counted and dropped, never applied.
+  // clean: the carrying body's FCS verdict (ArrivalTracker::on_source);
+  // decode is identical either way, only arr_salvage_only depends on it.
   std::vector<std::vector<uint8_t>> add_symbol(const uint8_t* env, size_t len,
                                                uint64_t now_ms,
-                                               SwBoundary b = SwBoundary::kNone);
+                                               SwBoundary b = SwBoundary::kNone,
+                                               bool clean = true);
 
   // Drops repair rows first seen more than deadline_ms ago. Call ~1 Hz.
   // Precondition: now_ms monotonic non-decreasing.
@@ -79,6 +82,7 @@ class SwDecoder {
   uint64_t arr_expected_stale() const { return arr_.expected_stale(); }
   uint64_t arr_arrived_stale() const { return arr_.arrived_stale(); }
   uint64_t arr_late() const { return arr_.late(); }
+  uint64_t arr_salvage_only() const { return arr_.salvage_only(); }
   uint64_t symbols_in() const { return symbols_in_; }
   // Highest virtual seq seen or implied — its ADVANCE rate is the stream's
   // send rate (loss-robust; any arriving symbol moves it). 0 before the

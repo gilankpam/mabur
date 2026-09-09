@@ -6,6 +6,7 @@
 #include "vectors.h"
 #include "mabur/frame_wire.h"
 #include "mabur/sbi.h"
+#include "mabur/sw_wire.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 using namespace mabur;
@@ -204,6 +205,42 @@ TEST(fcs_corrupt_body_zeroes_wire_durations) {
     CHECK(f.enc_us == 0);
     CHECK(f.air_ms == 0);
   }
+}
+
+TEST(fcs_corrupt_body_counts_corrupt_and_salvaged_subblocks) {
+  // Salvage accounting for the flight readout: a body the radio flagged
+  // FCS-corrupt increments bodies_corrupt, and every sub-block of it whose
+  // own CRC16 still passes counts as salvaged. Flip one payload byte inside
+  // the first sub-block: exactly one sub-block fails, the rest survive and
+  // are what the RCR ACRC32|AICV change (2026-09-08) actually buys.
+  auto bodies = encode_fixture_bodies();
+  REQUIRE(!bodies.empty());
+  auto& b = bodies.front();
+  REQUIRE(b.body.size() > static_cast<size_t>(SBI_HDR_LEN + 8));
+  b.body[static_cast<size_t>(SBI_HDR_LEN + 5)] ^= 0x5A;
+
+  UepDecoder dec(vec_layers());
+  dec.add_body(b.body.data(), b.body.size(), /*now_ms=*/0,
+               UepDecoder::kMcsUnknown, /*body_mono_us=*/0,
+               /*body_crc_ok=*/false);
+  auto st = dec.stats(0);
+  CHECK(st.bodies == 1);
+  CHECK(st.bodies_corrupt == 1);
+  CHECK(st.subblocks_failed == 1);
+  CHECK(st.subblocks_salvaged >= 1);
+
+  // A clean body contributes to neither counter even when it is the same
+  // damaged bytes: salvage is defined against the radio's FCS verdict.
+  auto bodies2 = encode_fixture_bodies();
+  auto& c = bodies2.front();
+  c.body[static_cast<size_t>(SBI_HDR_LEN + 5)] ^= 0x5A;
+  UepDecoder dec2(vec_layers());
+  dec2.add_body(c.body.data(), c.body.size(), 0, UepDecoder::kMcsUnknown, 0,
+                /*body_crc_ok=*/true);
+  auto st2 = dec2.stats(0);
+  CHECK(st2.bodies_corrupt == 0);
+  CHECK(st2.subblocks_failed == 1);
+  CHECK(st2.subblocks_salvaged == 0);
 }
 
 // Attribution harness: run frames through UepEncoder -> UepDecoder with a
@@ -503,3 +540,65 @@ TEST(layer_stats_arr_stale_split_follows_transition) {
 }
 
 MTEST_MAIN
+
+TEST(salvage_only_books_seqs_no_clean_copy_ever_delivered) {
+  // arr_salvage_only (2026-09-09): of the sub-blocks salvaged out of
+  // FCS-corrupt bodies, how many carried a seq that NO clean copy (other
+  // card, retry) ever delivered inside the arrival guard. This is what
+  // salvage actually bought; subblocks_salvaged is only its upper bound.
+  // Only SOURCE survivors can be salvage-only: a salvaged repair symbol is
+  // fed to the window too (it counts in subblocks_salvaged) but carries no
+  // seq of its own for the arrival tracker to book.
+  const int bp = static_cast<int>(mabur::sw::kSwHeaderLen) + vec_layers()[0].fec.symbol_size;
+  const size_t stride = 2 + static_cast<size_t>(bp);
+  auto sources_in = [&](const std::vector<uint8_t>& body) {
+    std::vector<int> idx;
+    const auto r = mabur::sbi_unpack(body.data(), body.size(), bp);
+    for (size_t k = 0; k < r.survivors.size(); ++k) {
+      mabur::sw::SwHeader h;
+      if (mabur::sw::parse_header(r.survivors[k].data(), r.survivors[k].size(), &h) &&
+          !h.repair)
+        idx.push_back(static_cast<int>(k));
+    }
+    return idx;
+  };
+  auto bodies = encode_fixture_bodies();
+  size_t pick = bodies.size();
+  for (size_t i = 0; i < bodies.size(); ++i)
+    if (sources_in(bodies[i].body).size() >= 2) { pick = i; break; }
+  REQUIRE(pick < bodies.size());
+  REQUIRE(bodies.size() > pick + 12);  // long enough after it to settle
+  const auto srcs = sources_in(bodies[pick].body);
+  auto& b = bodies[pick];
+  // Kill the first source sub-block; the other sources of this body survive.
+  b.body[SBI_HDR_LEN + static_cast<size_t>(srcs.front()) * stride + 2 + 5] ^= 0x5A;
+  const uint64_t source_survivors = srcs.size() - 1;
+
+  // Single card: the corrupt body is the only copy. Its surviving sources
+  // settle as salvage-only once the stream runs past the guard.
+  UepDecoder dec(vec_layers());
+  for (size_t i = 0; i < bodies.size(); ++i)
+    dec.add_body(bodies[i].body.data(), bodies[i].body.size(), 0,
+                 UepDecoder::kMcsUnknown, 0, /*body_crc_ok=*/i != pick);
+  auto st = dec.stats(0);
+  REQUIRE(st.arr_expected >= 4);
+  CHECK(st.bodies_corrupt == 1);
+  CHECK(st.subblocks_failed == 1);
+  CHECK(st.subblocks_salvaged >= source_survivors);
+  CHECK(st.arr_salvage_only == source_survivors);
+
+  // Second card delivers the same body clean right after: nothing was
+  // salvage-only, even though the corrupt copy came first.
+  auto bodies2 = encode_fixture_bodies();
+  UepDecoder dec2(vec_layers());
+  for (size_t i = 0; i < bodies2.size(); ++i) {
+    if (i == pick)
+      dec2.add_body(b.body.data(), b.body.size(), 0, UepDecoder::kMcsUnknown, 0,
+                    false);
+    dec2.add_body(bodies2[i].body.data(), bodies2[i].body.size(), 0,
+                  UepDecoder::kMcsUnknown, 0, true);
+  }
+  auto st2 = dec2.stats(0);
+  CHECK(st2.subblocks_salvaged == st.subblocks_salvaged);
+  CHECK(st2.arr_salvage_only == 0);
+}

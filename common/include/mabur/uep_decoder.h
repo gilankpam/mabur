@@ -95,6 +95,16 @@ class UepDecoder {
     // ArrivalTracker (spec 2026-09-05): arrival-time pre-FEC accounting.
     uint64_t arr_expected = 0, arr_arrived = 0, arr_expected_stale = 0,
              arr_arrived_stale = 0, arr_late = 0;
+    // FCS-corrupt bodies the radio still delivered (rx.keep_corrupted,
+    // 2026-09-08) and the sub-blocks of those bodies whose own CRC16 passed
+    // and were fed to the decoder -- what salvage actually recovered.
+    // subblocks_failed above counts the misses from any body.
+    uint64_t bodies_corrupt = 0, subblocks_salvaged = 0;
+    // Of those salvaged sub-blocks, the seqs no clean copy ever delivered
+    // inside the arrival guard (2026-09-09): the measured value of salvage.
+    // subblocks_salvaged is its upper bound -- the other card's clean copy
+    // shadows most of it (docs/sbi-salvage-flights-2026-09-09.md).
+    uint64_t arr_salvage_only = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }
@@ -118,6 +128,7 @@ class UepDecoder {
     int env_size;
     SwDecoder sw;
     uint64_t bodies = 0, subblocks_failed = 0;
+    uint64_t bodies_corrupt = 0, subblocks_salvaged = 0;
     // --- transition-attribution boundary (spec 2026-08-14) ---
     // Kept after the 2026-09-02 delivery-window deletion: these drive the
     // kPre/kPost hint handed to SwDecoder::add_symbol (which is what splits

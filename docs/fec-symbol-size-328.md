@@ -31,10 +31,12 @@ The sweep question: where is the knee?
 | 2624/1/8 | 2649 B | 78.2% | 3.42% | 0.10% |
 
 Knee at 328–656. Hard side-findings:
-- **Air bodies > 2900 B hit an RX cliff**: an 82/32 config (body 3207 B) lost
-  61.6% of frames (vanishing whole, SNR normal); the same symbol size at
-  2807 B ran at 3.0%. `kMaxBodyBytes = 2900` (`common/include/mabur/sbi.h`)
-  is empirically confirmed as a hard limit, not a soft margin.
+- **Air bodies > 2900 B hit an RX cliff** *(2026-07)*: an 82/32 config
+  (body 3207 B) lost 61.6% of frames (vanishing whole, SNR normal); the
+  same symbol size at 2807 B ran at 3.0%. `kMaxBodyBytes = 2900` fenced
+  that envelope. **NOT REPRODUCED 2026-09-08** — see the update below; the
+  July cliff was almost certainly RF (pre-eFEM-pinmux chain-B-in-software,
+  pre-PHYST-fix, pre-A-MPDU), not a body-size limit. Cap raised to 3760.
 - **Zero sub-block CRC failures across ~640k sub-blocks**: on this link bodies
   are lost whole, never delivered corrupted. SBI's salvage margin is currently
   pure insurance.
@@ -97,3 +99,29 @@ Restore `/etc/mabur.json.pre-sym328` (drone) and
   A/B at higher operating bitrates; body-burst tolerance quantizes coarser
   (2 bodies/window at ov 0.25), so it needs its own marginal-link gate.
 - Longer soak at 328 under real flight RF (desk-only so far).
+
+## Update 2026-09-08 — the 2900 B cliff did not reproduce; cap raised to 3760
+
+Re-ran a body-size sweep on the bench (drone `blocks_per_body` 4/8/9/10 at
+symbol_size 332, one warm restart each, 60 s GS sideport + 30 s ausniff),
+because the fused-FEC discussion (bigger body = more sub-blocks = better
+recovery ratio) needs bodies past the old 2900 B cap and the "hard limit"
+was never explained by any register (GS RX pkt limit 12 kB, HT MPDU max
+3839 B).
+
+| bpb | ~air body | rung | ausniff AUs (incomplete) | crc_fail Δ c0/c1 | fps |
+|-----|-----------|------|--------------------------|------------------|-----|
+| 4   | 1413 B    | mcs5 | 1801 (0)                 | +1 / +5          | 60  |
+| 8   | 2813 B    | mcs5 | 1799 (0)                 | +2 / +1          | 60  |
+| 9   | 3163 B    | mcs5 | 1800 (0)                 | +1 / +3          | 60  |
+| 10  | 3513 B    | mcs3->4 | 1800 (0)              | +1 / +1          | 60  |
+
+**9 blocks (3163 B, above the old cap) ran perfectly at mcs5:** zero
+incomplete AUs, loss 0, full 60 fps — right through the 3207 B point that
+lost 61.6% in July. So the cliff was RF-era, not fundamental. **10 blocks
+(3513 B) still delivered every AU but the ladder sat at mcs3-4**, not 5: a
+longer frame's higher per-frame PER at a fixed MCS is the first real cost of
+jumbo bodies, so 3513 B trades rung headroom even though nothing broke.
+`kMaxBodyBytes` raised 2900 -> 3760 (HT MPDU ceiling by the guard's formula)
+to allow the config; the deployed default stays 4/4 (1405 B). Bodies above
+2900 B remain UNPROVEN at range/fade — this is a clean high-SNR bench only.

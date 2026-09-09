@@ -206,7 +206,8 @@ void parse_fec(const Value& j, FecCfg& f) {
     const int body = f.blocks_per_body[i] *
                      (static_cast<int>(sw::kSwHeaderLen) + f.symbol_size[i]);
     if (body > kMaxBodyBytes)
-      fail("fec", "layer body bytes exceed kMaxBodyBytes (2900)");
+      fail("fec", "layer body bytes exceed kMaxBodyBytes (" +
+                      std::to_string(kMaxBodyBytes) + ")");
   }
   if (f.base_overhead < 0.1 || f.base_overhead > 2.0) fail("fec.base_overhead", "must be in [0.1,2.0]");
 }
