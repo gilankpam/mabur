@@ -62,12 +62,19 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.radio.usb_pid == def.radio.usb_pid);
   CHECK(cfg.radio.channel == 136);
   CHECK(cfg.radio.width == def.radio.width);
-  // Was "none" (efuse table untouched) while the bundle was a neutral seed.
-  // The flown config runs the adaptive per-rate offset mode; wall_margin_db
-  // is the only lever that moves TX power in it (docs/txagcbench.md).
-  CHECK(cfg.radio.power_mode == "offset");
+  // "none" = leave the chip's efuse power table untouched. The bundle ships
+  // this way because rate_walls_idx below is a per-UNIT calibration and the
+  // shipped file cannot know the wall of the board it lands on -- flashing
+  // someone else's walls would park every rate at a ceiling never measured
+  // there. Set "offset" once you have run docs/txagcbench.md on your own
+  // vtx; then wall_margin_db is the only lever that moves TX power.
+  // NOTE this drone flies "offset": /etc/mabur.toml and this file diverge on
+  // exactly this key, deliberately.
+  CHECK(cfg.radio.power_mode == "none");
 
-  // Unit's measured wall-equalization (Task 9), unchanged by the cutover.
+  // Reference wall-equalization from the author's 8812EU. Inert while
+  // power_mode is "none" (parsed and range-checked, never programmed), but
+  // pinned so the calibration is not lost.
   CHECK((cfg.radio.rate_walls_idx ==
          std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
   CHECK(cfg.radio.legacy_wall_idx == 91);
@@ -1321,3 +1328,16 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
 
 
 MTEST_MAIN
+
+// "Every knob is in the bundle": the loader reports each known key the file
+// did not set, so an empty report IS the completeness gate. Adding a config
+// key without writing it into bundle/mabur.default.toml fails here, which is
+// the point -- a knob that only exists in a struct default is a knob nobody
+// knows about, and this bundle is also the drone's verbatim /etc/mabur.toml.
+TEST(bundle_default_sets_every_known_key) {
+  std::vector<std::string> defaulted;
+  load_config(default_config_path(), &defaulted);
+  for (const std::string& d : defaulted)
+    std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
+  CHECK(defaulted.empty());
+}

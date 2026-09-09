@@ -100,6 +100,34 @@ At startup each daemon prints the known keys the file did not set, with
 the value they fell back to. After hand-editing a config, read that list:
 anything unexpected in it is a knob you dropped.
 
+**The bundles set every knob (2026-09-10).** All three shipped defaults —
+`bundle/mabur.default.toml`, `gs/bundle/maburgs.default.toml`,
+`gs/player/bundle/maburplay.default.toml` — are the live flight configs off
+the drone and the GS, extended so that every key its loader knows is written
+out explicitly: live value where the device had one, struct default where it
+did not.
+
+The one deliberate divergence from the flown value is
+`radio.power_mode`, which ships `"none"` while this drone flies `"offset"`.
+`rate_walls_idx` is a per-UNIT calibration (`docs/txagcbench.md`) and the
+shipped file cannot know the wall of the board it lands on, so it carries the
+author's 8812EU numbers as a reference and leaves them inert — parsed and
+range-checked, never programmed. Run the bench on your own vtx before
+setting `"offset"`. ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside
+the plan, so a global offset left in the chip by a bench tool survives a
+`maburd` restart; power-cycle if you need a known baseline. On a stock bundle the startup defaulted-key list is therefore
+**empty**, and anything in it is a real gap. Three tests hold that line
+(`bundle_default_sets_every_known_key` in `test_config` and
+`test_player_config`, `bundle_default_sets_every_known_key_but_radio_cards`
+in `test_gs_config`), so **a new config key must be written into its bundle
+in the same commit** or the host suite fails.
+
+The single permitted omission is `radio.cards` on the GS: its *absence* is
+the auto-scan setting (a `[[radio.cards]]` list pins exactly that set and
+skips the bus probe), so no value can express it. `stats.host`/`stats.port`
+are absent for a harder reason — the loader fails boot if either appears
+alongside `[[stats.out]]`. Both are commented out in place in the bundle.
+
 **Scripted edits.** `json_cli` no longer applies. Keys sit under `[table]`
 headers rather than dotted paths, so a bare
 `sed -i 's/^symbol_size.*/symbol_size = 656/'` hits `[fec]` **and**
@@ -108,8 +136,8 @@ Anchor the range:
 
     sed -i '/^\[fec\]/,/^\[/ s/^symbol_size[[:space:]]*=.*/symbol_size = 656/' /etc/mabur.toml
 
-The bundles column-align their `=` (`symbol_size     = 332`, 39 of
-`bundle/mabur.default.toml`'s 51 keys are padded this way) — a naive
+The bundles column-align their `=` (`symbol_size     = 332`, 43 of
+`bundle/mabur.default.toml`'s 59 keys are padded this way) — a naive
 `^symbol_size = ` anchor matches nothing against that padding and sed
 still exits 0, so a hand-written replacement must tolerate the padding
 the way the anchor above does. Do not "fix" the bundle files' alignment

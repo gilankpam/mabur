@@ -700,23 +700,24 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
   CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
 }
 
-// Default bundle ladder rewritten to actual-air overhead (airtime-balance-
-// uep): old cmd values x2, with mcs6/mcs7 landing on genuinely different
-// bytes now (0.3 vs 0.2) instead of the 16ths grid collapsing 0.15/0.10
-// to the same repair-symbol count.
-TEST(default_bundle_ladder_is_actual_overhead) {
+// The bundle carries the FLIGHT ladder, not a neutral seed: seven written
+// rungs mcs 0..5, none of which link.max_mcs = 5 filters out. mcs 0 is the
+// failsafe floor every controller starts from and falls back to -- pinned
+// here because "the failsafe rung moved" is the kind of change that must be
+// deliberate. Overheads are actual-air (airtime-balance-uep), and the flight
+// ladder splits them: base 1.0 / enh 0.5 on every rung.
+TEST(default_bundle_ladder_is_the_flight_ladder) {
   auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   auto& L = c.link.ladder_cfg.ladder;
   CHECK(L.size() == 6);
-  CHECK(L[0].mcs == 0); CHECK(L[0].overhead_base > 1.999 && L[0].overhead_base < 2.001);
-  CHECK(L[1].mcs == 2); CHECK(L[1].overhead_base > 0.999 && L[1].overhead_base < 1.001);
-  CHECK(L[2].mcs == 4); CHECK(L[2].overhead_base > 0.499 && L[2].overhead_base < 0.501);
-  CHECK(L[3].mcs == 5); CHECK(L[3].overhead_base > 0.499 && L[3].overhead_base < 0.501);
-  CHECK(L[4].mcs == 6); CHECK(L[4].overhead_base > 0.299 && L[4].overhead_base < 0.301);
-  CHECK(L[5].mcs == 7); CHECK(L[5].overhead_base > 0.199 && L[5].overhead_base < 0.201);
-  // Same-rate-fixed-pairs (Task 3): the bundle's ladder duplicates base
-  // into enh for every rung.
-  for (auto& r : L) CHECK(std::abs(r.overhead_enh - r.overhead_base) < 1e-9);
+  for (size_t i = 0; i < L.size(); ++i) {
+    CHECK(L[i].mcs == static_cast<int>(i));
+    CHECK(L[i].overhead_base > 0.999 && L[i].overhead_base < 1.001);
+    CHECK(L[i].overhead_enh > 0.499 && L[i].overhead_enh < 0.501);
+  }
+  // Operator rule (uep-base-protection-constraint): base protection must
+  // never fall below enh on any rung.
+  for (auto& r : L) CHECK(r.overhead_base >= r.overhead_enh);
   CHECK(c.link.static_overhead_base > 0.499 && c.link.static_overhead_base < 0.501);
   CHECK(c.link.static_overhead_enh > 0.499 && c.link.static_overhead_enh < 0.501);
   auto layers = c.uep_layers();
@@ -993,4 +994,22 @@ TEST(debug_log_rejects_out_of_range_and_unknown_keys) {
   CHECK(throws("[debug_log]\nrung_period_s = 0\n"));    // below the floor
   CHECK(throws("[debug_log]\nenable = \"yes\"\n"));     // wrong type
   CHECK(throws("[debug_log]\nnope = 1\n"));             // strict keys
+}
+
+// "Every knob is in the bundle": the loader reports each known key the file
+// did not set, so the report IS the completeness gate. Adding a config key
+// without writing it into the bundle fails here, which is the point -- a
+// knob that only exists in a struct default is a knob nobody knows about.
+//
+// radio.cards is the one permitted omission, and it is not laziness: its
+// ABSENCE is the auto-scan setting (a list pins cards and skips the probe),
+// so there is no value the bundle could write that means "scan the bus".
+TEST(bundle_default_sets_every_known_key_but_radio_cards) {
+  std::vector<std::string> defaulted;
+  maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml",
+                       &defaulted);
+  for (const std::string& d : defaulted)
+    std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
+  CHECK(defaulted.size() == 1);
+  CHECK(!defaulted.empty() && defaulted[0] == "radio.cards=(auto-scan)");
 }
