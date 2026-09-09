@@ -1,5 +1,6 @@
 add_library(mabur_gs_core STATIC
   src/config.cpp
+  src/card_scan.cpp
   src/aggregator.cpp
   src/udp_sink.cpp
   src/frame_file_source.cpp
@@ -38,7 +39,7 @@ if(RT_LIB AND NOT CMAKE_CROSSCOMPILING)
   target_link_libraries(mabur_gs_core PUBLIC ${RT_LIB})
 endif()
 
-add_library(mabur_gs_radio STATIC src/radio_frontend.cpp)
+add_library(mabur_gs_radio STATIC src/radio_frontend.cpp src/card_scan_usb.cpp)
 target_include_directories(mabur_gs_radio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mabur_gs_radio PUBLIC mabur_gs_core mabur_common devourer)
 

@@ -80,12 +80,19 @@ RadioFrontend::~RadioFrontend() { stop(); }
 
 bool RadioFrontend::open_and_start() {
   if (libusb_init(&usb_ctx_) != 0) return false;
-  // Find the index-th device matching vid + (pid or the scan list).
+  // Two ways to name the device. Auto-scan (the default) hands us a
+  // physical port, which survives the card re-enumerating at a new address;
+  // an explicit [[radio.cards]] entry names the index-th VID/PID match, as
+  // it always did.
   libusb_device** list = nullptr;
   const ssize_t n = libusb_get_device_list(usb_ctx_, &list);
   int match = 0;
   libusb_device* dev = nullptr;
   for (ssize_t i = 0; i < n; ++i) {
+    if (cfg_.by_port) {
+      if (device_at_port(list[i], cfg_.port)) { dev = list[i]; break; }
+      continue;
+    }
     libusb_device_descriptor dd;
     if (libusb_get_device_descriptor(list[i], &dd) != 0) continue;
     if (dd.idVendor != cfg_.usb_vid) continue;

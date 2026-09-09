@@ -10,6 +10,7 @@
 #include <libusb.h>
 
 #include "body_queue.h"
+#include "card_scan.h"
 #include "logger.h"
 
 // Forward declarations for devourer types
@@ -49,6 +50,11 @@ class RadioFrontend {
     int index = 0;             // ordinal among matching devices
     uint8_t channel = 149;
     uint8_t card_id = 0;
+    // Set by the startup scan (card_scan.h): open the device at this
+    // physical port instead of the index-th VID/PID match. Survives the
+    // card re-enumerating at a new bus address, which the ordinal does not.
+    bool by_port = false;
+    ScannedCard port;
   };
 
   RadioFrontend(Cfg cfg, BodyQueue& out);
