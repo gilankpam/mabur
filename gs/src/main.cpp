@@ -1208,7 +1208,7 @@ static int run_radio(const maburgs::Config& cfg) {
         if (st.bodies == 0) continue;  // idle streams: keep the line short
         std::fprintf(stderr,
                      " s%d[p=%llu abn=%llu rec=%llu ra=%llu si=%llu st=%llu"
-                     " bc=%llu sbf=%llu cor=%llu sal=%llu so=%llu fl=%zu]",
+                     " bc=%llu sbf=%llu cor=%llu sal=%llu fl=%zu]",
                      s, static_cast<unsigned long long>(st.packets_out),
                      static_cast<unsigned long long>(st.syms_abandoned),
                      static_cast<unsigned long long>(st.syms_recovered),
@@ -1219,7 +1219,6 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned long long>(st.subblocks_failed),
                      static_cast<unsigned long long>(st.bodies_corrupt),
                      static_cast<unsigned long long>(st.subblocks_salvaged),
-                     static_cast<unsigned long long>(st.arr_salvage_only),
                      st.rows_in_flight);
       }
       std::fprintf(stderr, " mis=%llu",

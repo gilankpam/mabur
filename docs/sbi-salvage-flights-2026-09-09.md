@@ -76,7 +76,7 @@ nonzero, and a false accept poisons every repair in its window.
 Counts sources whose ONLY arrival was a salvaged sub-block from a corrupt
 body — a second heard bit in the ArrivalTracker (`kClean`), booked at
 settle time as `heard && !clean`. Per stream on the sideport as
-`salvage_only` next to `salvaged`, in the live stats line as `so=`, and in
+`salvage_only` next to `salvaged`, in the exit summary line, and in
 flightreport's SALVAGE section per stream and per rung. That turns the
 upper bound into the number, and pairs with `miss` (arr_expected −
 arr_arrived) to give the true avoided share: `salvage_only / (miss +
