@@ -40,11 +40,14 @@ echo "== fixture -> maburd bodies -> maburgs -> AU ring must be byte-exact =="
 # The gs bundle's fec.symbol_size must match the drone bundle's encode-time
 # symbol_size (332, adopted 2026-07-29 to dodge the mcs6+STBC 1392-1400 B PHY
 # hole); without it the sliding-window decode geometry mismatches and yields 0
-# AUs. The au_ring paths point at this run's temp dir.
+# AUs. The au_ring paths are REWRITTEN to this run's temp dir -- the bundle
+# sets every knob explicitly, including path/socket, so appending a second
+# pair here would be a duplicate key and fail the load.
 #
 # Range-anchored sed, not a bare one: `symbol_size` also appears under [msp].
 sed -e "/^\[fec\]/,/^\[/ s|^symbol_size = .*|symbol_size = 332|" \
-    -e "/^\[au_ring\]/a path = \"$TMP/au-ring\"\nsocket = \"$TMP/au-ring.sock\"" \
+    -e "/^\[au_ring\]/,/^\[/ s|^path *= .*|path = \"$TMP/au-ring\"|" \
+    -e "/^\[au_ring\]/,/^\[/ s|^socket *= .*|socket = \"$TMP/au-ring.sock\"|" \
     gs/bundle/maburgs.default.toml > "$TMP/gs.toml"
 
 # The sed above is layout-sensitive (bare `^symbol_size = ` anchor): if the

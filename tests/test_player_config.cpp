@@ -1,4 +1,7 @@
+#include <cstdio>
 #include <fstream>
+#include <string>
+#include <vector>
 #include "mtest.h"
 #include "player_config.h"
 
@@ -16,7 +19,9 @@ TEST(defaults_from_bundle) {
   CHECK(c.socket == "/run/mabur-au.sock");
   CHECK(c.backend == "mpp");
   CHECK(c.screen_mode == "1920x1080@60");
-  CHECK(c.dvr.autostart);
+  // The bundle is the flight config: the record button arms the DVR, so
+  // autostart ships OFF even though DvrCfg::autostart defaults to true.
+  CHECK(c.dvr.autostart == false);
   CHECK(c.dvr.dir == "/media/dvr");
   CHECK(c.dvr.fragment_ms == 1000);
   // The shipped bundle records with the OSD burned in. Pinned here because
@@ -245,12 +250,13 @@ TEST(gs_osd_bounds_and_types_are_enforced) {
   CHECK(threw == true);
 }
 
-// The shipped bundle must parse, and must ship with the overlay off --
-// matching how the MSP OSD and maburgs' sideport itself ship.
-TEST(bundle_default_parses_with_gs_osd_off) {
+// The shipped bundle must parse, and ships with the GS overlay ON -- the
+// bundle is the flight config, and maburgs' sideport ships enabled to feed
+// it. The STRUCT default stays false (see gs_osd_defaults_are_off_on_8302).
+TEST(bundle_default_parses_with_gs_osd_on) {
   auto c = maburplay::load_config(
       std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
-  CHECK(c.osd.gs.enable == false);
+  CHECK(c.osd.gs.enable == true);
   CHECK(c.osd.gs.port == 8302);
   CHECK(c.osd.gs.stale_ms == 3000);
   CHECK(c.osd.gs.font == "/usr/local/share/mabur/gs_osd.gfont");
@@ -421,4 +427,17 @@ TEST(display_chain_budget_key) {
   try { maburplay::load_config(write_tmp_play("[display]\nchain_budget = 61\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
+}
+
+// "Every knob is in the bundle": the loader reports each known key the file
+// did not set, so an empty report IS the completeness gate. Adding a config
+// key without writing it into the bundle fails here, which is the point --
+// a knob that only exists in a struct default is a knob nobody knows about.
+TEST(bundle_default_sets_every_known_key) {
+  std::vector<std::string> defaulted;
+  maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml", &defaulted);
+  for (const std::string& d : defaulted)
+    std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
+  CHECK(defaulted.empty());
 }

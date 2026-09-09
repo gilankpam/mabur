@@ -125,7 +125,8 @@ echo "== fixture -> maburd bodies -> maburgs -> AU ring (same chain as gs_au_e2e
 #
 # Range-anchored sed, not a bare one: `symbol_size` also appears under [msp].
 sed -e "/^\[fec\]/,/^\[/ s|^symbol_size = .*|symbol_size = 332|" \
-    -e "/^\[au_ring\]/a path = \"$TMP/au-ring\"\nsocket = \"$TMP/au-ring.sock\"" \
+    -e "/^\[au_ring\]/,/^\[/ s|^path *= .*|path = \"$TMP/au-ring\"|" \
+    -e "/^\[au_ring\]/,/^\[/ s|^socket *= .*|socket = \"$TMP/au-ring.sock\"|" \
     gs/bundle/maburgs.default.toml > "$TMP/gs.toml"
 
 # The sed above is layout-sensitive (bare `^symbol_size = ` anchor): if the

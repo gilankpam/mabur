@@ -1,18 +1,13 @@
-# maburd — drone. Installed to /etc/mabur.toml, and baked into the
-# openipc-builder image as the shipped default. This IS the flight config as
-# it stood on the drone on 2026-09-08 — copied off /etc/mabur.toml verbatim,
-# not a hand-written "sensible default". Retune here, not only on the device.
-# Config-before-binary: an unknown key fails boot and S96mabur respawns
-# forever at 2 s. See docs/deploy.md.
-
 [radio]
 usb_vid    = 3034
 usb_pid    = 0
 channel    = 136
 width      = 20
-power_mode = "offset"      # adaptive per-rate power; wall_margin_db is the lever
+power_mode = "none"      # set to offset to use rate_walls_idx
+tx_threads = 4
 
-# Wall-equalization measured on this unit; see docs/txagcbench.md.
+# Wall-equalization measured on my vtx not yours, set power_mode to offset to use.
+# Calibrated on 8812EU
 # Only wall_margin_db moves TX power in offset mode.
 rate_walls_idx  = [91, 91, 91, 91, 73, 56, 51, 49]
 legacy_wall_idx = 91
@@ -20,7 +15,7 @@ wall_margin_db  = 1.0
 base_ref_idx    = 53       # derived diffs must land in [-64,63] or boot fails
 
 [fec]
-symbol_size     = 332      # mcs6+STBC 1392-1400B frame-length hole — must match the GS
+symbol_size     = 332      # must match the GS
 window          = 32
 blocks_per_body = [4, 4]   # base, enhance
 base_overhead   = 0.5
@@ -42,8 +37,8 @@ fps        = 60
 gop_s      = 2.0
 qp_delta   = 4
 max_ipprop = 2
-min_iqp    = 44            # I-frame QP floor, caps IDR size (docs/iqp-cap-findings-2026-09-06.md)
-intra_refresh_rows = 3     # drone is 720p — rally-equivalent is 3, not the 1080p default 4
+min_iqp    = 44            # I-frame QP floor, caps IDR size
+intra_refresh_rows = 3
 intra_refresh_qp   = 36
 ref_base    = 1
 ref_enhance = 1
@@ -52,16 +47,17 @@ ae_fps      = 15
 awb_fps     = 15
 snapshot_quality = 80
 debug_port  = 8301
-superframe_p_pct = 200     # P-frame cap; see docs/handover-venc-overshoot-2026-09-03.md
+superframe_p_pct = 200     # P-frame cap
 
 [venc.roi]
-enabled = false            # OFF since 2026-09-06: roi_qp_low -24 blew up the rung-0 demote IDR
+enabled = false            # OFF or roi_qp_low blew up the rung-0 demote IDR
 steps   = 2
 center  = 0.4
 
 [link]
 vtx_id        = 1
 failsafe_ms   = 3000
+rc_drain_ms   = 5
 rendezvous_ms = 30000
 tick_ms       = 100
 
@@ -75,7 +71,7 @@ window         = 16
 overhead       = 1.0
 
 [ampdu]
-max_num  = 6               # agg6: fec -2.3/-2.7ms flat-p99
+max_num  = 6
 max_time = 32
 
 [air_clock]

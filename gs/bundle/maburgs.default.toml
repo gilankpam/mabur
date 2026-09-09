@@ -1,14 +1,17 @@
-# maburgs — ground station. Installed to /etc/maburgs.toml.
-
 [radio]
 channel = 136
 width   = 20
 tx_card = -1               # -1 = auto-select the best-SNR card
 
 # No [[radio.cards]]: maburgs probes the USB bus at startup and uses every
-# supported card it finds (chip-id, not PID -- see card_scan.h). Add explicit
-# [[radio.cards]] blocks to pin a fixed set instead, which also skips the
-# probe; that is how you fly one card without unplugging an antenna.
+# supported card it finds (chip-id, not PID -- see card_scan.h). Adding
+# explicit [[radio.cards]] blocks pins exactly that set AND skips the probe;
+# that is how you fly one card without unplugging an antenna. Absence is the
+# knob here, so this stays commented out.
+#[[radio.cards]]
+#usb_vid = 0x0bda
+#usb_pid = 0
+#index   = 0
 
 [fec]
 symbol_size = 332          # must match the drone
@@ -16,70 +19,90 @@ seq_horizon = 512
 
 [link]
 vtx_id                 = 1
-feedback_ms            = 100
+feedback_ms            = 50
+rcf_slot_hold_ms       = 30   # hold each RCF for the next AU; 0 disables
 beacon_keepalive_ms    = 1000
-static_overhead_base   = 0.5
-static_overhead_enh    = 0.5
-max_mcs                = 7
-down_util              = 0.6
+static_mcs             = -1   # -1 = adaptive ladder
+max_mcs                = 5    # mcs5 is unholdable at range; 5 is the reach ceiling
+down_util              = 0.35
 up_util                = 0.15
 confirm_ms             = 250
-clean_ms               = 5000
+clean_ms               = 3000
 probation_ms           = 3000
-penalty_base_ms        = 10000
-penalty_max_ms         = 60000
-hold_after_down_ms     = 4000
+penalty_base_ms        = 5000
+penalty_max_ms         = 10000
+hold_after_down_ms     = 0
 min_between_changes_ms = 150
-starved_confirm_ms     = 300
 feedback_timeout_ms    = 1000
+starved_confirm_ms     = 300
+s3_demote              = true
+s3_down_util           = 0.15
+s3_min_syms            = 50   # below this many expected symbols = no traffic
+s3_settle_ms           = 300
+static_overhead_base   = 0.5  # static_mcs mode only
+static_overhead_enh    = 0.5
 
 # Ladder rungs, low to high. base overhead must stay >= enh overhead.
+
 [[link.ladder]]
 mcs = 0
-overhead_base = 2.0
-overhead_enh  = 2.0
+overhead_base = 1.0
+overhead_enh  = 0.5
+
+[[link.ladder]]
+mcs = 1
+overhead_base = 1.0
+overhead_enh  = 0.5
 
 [[link.ladder]]
 mcs = 2
 overhead_base = 1.0
-overhead_enh  = 1.0
+overhead_enh  = 0.5
+
+[[link.ladder]]
+mcs = 3
+overhead_base = 1.0
+overhead_enh  = 0.5
 
 [[link.ladder]]
 mcs = 4
-overhead_base = 0.5
+overhead_base = 1.0
 overhead_enh  = 0.5
 
 [[link.ladder]]
 mcs = 5
-overhead_base = 0.5
+overhead_base = 1.0
 overhead_enh  = 0.5
-
-[[link.ladder]]
-mcs = 6
-overhead_base = 0.3
-overhead_enh  = 0.3
-
-[[link.ladder]]
-mcs = 7
-overhead_base = 0.2
-overhead_enh  = 0.2
 
 [link.probe]
 enable      = true
 rung_offset = 1
-clean_ms    = 2000
+max_util    = 0.15         # 0.15 = zero loss allowed; 0.2 allows one lost body
+clean_ms    = 3000
 min_syms    = 40
 silence_ms  = 500
 pin_mcs     = -1
 
-[debug_log]
-enable        = false
-dir           = "/media/dvr/log"
-ctl_period_ms = 1000
-rung_period_s = 10
+[link.fade]
+cascade    = true
+predict    = true
+hold_ms    = 2500
+confirm_ms = 100
+rssi_db    = 14.0
+snr_db     = 6.0
+trigger_ms = 300
+min_rung   = 2
+
+[link.rung_stats]
+half_life_samples = 600
+
+[video]
+frame_gap_timeout_ms     = 50
+frame_gap_timeout_max_ms = 100
+frame_lookahead          = 8
 
 [msp]
-enable      = false
+enable      = true
 symbol_size = 1312
 window      = 16
 
@@ -88,8 +111,8 @@ host = "127.0.0.1"
 port = 14560
 
 [stats]
-enable      = false
-interval_ms = 500
+enable      = true
+interval_ms = 200
 
 [[stats.out]]
 host = "127.0.0.1"
@@ -100,4 +123,14 @@ host = "127.0.0.1"
 port = 8302                # player GS-OSD
 
 [au_ring]
-enable = true
+enable     = true
+path       = "/dev/shm/mabur-au"
+socket     = "/run/mabur-au.sock"
+slot_kb    = 512
+slot_count = 16
+
+[debug_log]
+enable        = true
+dir           = "/media/dvr/log"
+ctl_period_ms = 50
+rung_period_s = 10
