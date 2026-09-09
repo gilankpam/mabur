@@ -33,9 +33,18 @@ walk, and hands its body to the UEP decoder, which keeps the SBI
 sub-blocks whose own CRC16 still passes. Per stream the sideport carries
 `corrupt` (FCS-corrupt bodies delivered), `salvaged` (CRC16-clean
 sub-blocks taken out of them) and `sub_fail` (sub-blocks that failed, from
-any body); `flightreport.py` prints them as a SALVAGE section — totals per
+any body), and since 2026-09-09 `salvage_only` — seqs whose ONLY arrival
+inside the arrival guard was a salvaged sub-block (a second "heard clean"
+bit in the ArrivalTracker, booked at settle time). `salvaged` is the
+upper bound and `salvage_only` the value: the other card's clean copy of
+the same body shadows most salvaged sub-blocks (flights 0043/0044,
+`docs/sbi-salvage-flights-2026-09-09.md`), and a salvaged repair symbol
+never counts here because it carries no seq of its own.
+`flightreport.py` prints them as a SALVAGE section — totals per
 card/stream and the deltas per rung next to that rung's abandoned
-symbols, which is the post-flight answer to "what did salvage buy". Before that date the WMAC dropped those frames on the
+symbols, which is the post-flight answer to "what did salvage buy"
+(`salvage_only` appears only on recordings that carry the key). Before
+that date the WMAC dropped those frames on the
 chip and `crc_fail` was structurally 0 — not "no damage", "damage never
 seen". Foreign traffic that fails FCS is counted too (the SA filter cannot
 trust a corrupt address), so a busy channel shows a slow `crc_fail` creep

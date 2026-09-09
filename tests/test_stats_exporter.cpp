@@ -214,6 +214,20 @@ TEST(corrupt_bodies_and_salvaged_subblocks_exported) {
   CHECK(j["link"]["streams"][0]["sub_fail"] == 5);
 }
 
+TEST(salvage_only_exported_next_to_salvaged) {
+  // arr_salvage_only (2026-09-09): seqs whose only arrival was a salvaged
+  // sub-block -- the measured value of salvage, vs `salvaged` its bound.
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.streams[0].subblocks_salvaged = 7;
+  in.streams[0].arr_salvage_only = 4;
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["link"]["streams"][0]["salvaged"] == 7);
+  CHECK(j["link"]["streams"][0]["salvage_only"] == 4);
+}
+
 TEST(loss_pct_null_when_no_expected_and_clamp_negative) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());

@@ -128,3 +128,39 @@ TEST(jump_beyond_ring_settles_forward_without_aliasing) {
 }
 
 MTEST_MAIN
+
+// --- salvage_only (2026-09-09) ---------------------------------------------
+// A seq whose ONLY arrival was a sub-block salvaged out of an FCS-corrupt
+// body. The salvaged/corrupt counters in UepDecoder cannot say whether a
+// salvaged sub-block was needed: the other card usually delivers a clean
+// copy of the same body (flights 0043/0044, docs/sbi-salvage-flights-
+// 2026-09-09.md). Booked at settle time like expected/arrived; a clean copy
+// arriving before OR after the corrupt one inside the guard clears it.
+TEST(salvage_only_counts_seqs_heard_only_through_corrupt_copies) {
+  ArrivalTracker t(32);
+  for (uint64_t v = 0; v < 100; ++v) {
+    const bool corrupt_only = v >= 10 && v <= 12;   // no clean copy ever
+    if (corrupt_only) {
+      t.on_source(v, 0, /*clean=*/false);
+    } else if (v == 20) {          // corrupt first, clean copy second
+      t.on_source(v, 0, false);
+      t.on_source(v, 0, true);
+    } else if (v == 21) {          // clean first, corrupt copy second
+      t.on_source(v, 0, true);
+      t.on_source(v, 0, false);
+    } else {
+      t.on_source(v, 0);           // default = clean
+    }
+    t.advance(v, 0);
+  }
+  CHECK(t.expected() == 68);
+  CHECK(t.arrived() == 68);        // salvaged copies still count as arrived
+  CHECK(t.salvage_only() == 3);    // seqs 10, 11, 12
+}
+
+TEST(salvage_only_not_booked_for_a_missing_seq) {
+  ArrivalTracker t(32);
+  feed(t, 100, {5});
+  CHECK(t.arrived() == 67);
+  CHECK(t.salvage_only() == 0);
+}

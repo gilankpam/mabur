@@ -185,7 +185,8 @@ def synthesize_flight_jsonl():
     return "\n".join(rows) + "\n"
 
 
-def _mk_salvage_row(t, rung_idx, crc_fail, corrupt, salvaged, sub_fail, abandoned):
+def _mk_salvage_row(t, rung_idx, crc_fail, corrupt, salvaged, sub_fail, abandoned,
+                    salvage_only=0):
     """Sideport-shaped row carrying the rx.keep_corrupted counters
     (2026-09-08): per-card crc_fail, per-stream corrupt/salvaged/sub_fail."""
     return {
@@ -199,7 +200,7 @@ def _mk_salvage_row(t, rung_idx, crc_fail, corrupt, salvaged, sub_fail, abandone
             "op": {"mcs": rung_idx, "bw": 20, "overhead": 0.5},
             "streams": [{"stream": 0, "ov": 0.5, "corrupt": corrupt,
                          "salvaged": salvaged, "sub_fail": sub_fail,
-                         "abandoned": abandoned},
+                         "abandoned": abandoned, "salvage_only": salvage_only},
                         {"stream": 1, "ov": 0.5, "corrupt": 0,
                          "salvaged": 0, "sub_fail": 0, "abandoned": 0}],
         },
@@ -234,6 +235,29 @@ def test_salvage_section_totals_and_per_rung():
     # per-rung attribution of the deltas
     assert re.search(r"rung 0:.*corrupt=2\b.*salvaged=5\b.*sub_fail=3\b.*abandoned=4\b", sec), sec
     assert re.search(r"rung 2:.*corrupt=1\b.*salvaged=2\b.*sub_fail=2\b.*abandoned=10\b", sec), sec
+
+
+def test_salvage_section_reports_salvage_only_per_stream_and_rung():
+    """salvage_only (2026-09-09): seqs whose only arrival was a salvaged
+    sub-block. Differenced and attributed like the other counters: rung 0
+    moves 2, rung 2 moves 1, stream total 3."""
+    rows = [
+        _mk_salvage_row(0,    0, crc_fail=0, corrupt=0, salvaged=0, sub_fail=0, abandoned=0),
+        _mk_salvage_row(500,  0, crc_fail=2, corrupt=2, salvaged=5, sub_fail=3, abandoned=4,
+                        salvage_only=2),
+        _mk_salvage_row(1000, 2, crc_fail=4, corrupt=3, salvaged=7, sub_fail=5, abandoned=4,
+                        salvage_only=3),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    sec = result.stdout[result.stdout.find("SALVAGE"):]
+    assert re.search(r"stream 0:.*salvaged=7\b.*salvage_only=3\b", sec), sec
+    assert re.search(r"rung 0:.*salvaged=5\b.*salvage_only=2\b", sec), sec
+    assert re.search(r"rung 2:.*salvaged=2\b.*salvage_only=1\b", sec), sec
 
 
 def test_salvage_section_survives_counter_reset_on_restart():
@@ -1029,6 +1053,7 @@ if __name__ == "__main__":
     test_find_episodes_gap_boundary_closes_run()
     test_s3_settle_refire_canary()
     test_salvage_section_totals_and_per_rung()
+    test_salvage_section_reports_salvage_only_per_stream_and_rung()
     test_salvage_section_absent_on_old_recordings()
     test_salvage_section_survives_counter_reset_on_restart()
     test_session_dir_mode_prints_salvage_from_flight_jsonl()

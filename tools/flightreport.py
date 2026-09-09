@@ -774,7 +774,14 @@ def print_salvage_report(rows):
         cur, prev = cur or 0, prev or 0
         return cur if (reset or cur < prev) else cur - prev
 
-    keys = ("corrupt", "salvaged", "sub_fail", "abandoned")
+    keys = ("corrupt", "salvaged", "salvage_only", "sub_fail", "abandoned")
+    # salvage_only (2026-09-09) is younger than the section: print it only
+    # when the recording carries the key, so older jsonl reads unchanged.
+    have_so = any("salvage_only" in (s or {})
+                  for r in srows for s in stream_map(r).values())
+
+    def so(v):
+        return f" salvage_only={v['salvage_only']}" if have_so else ""
     card_tot, stream_tot, by_rung = {}, {}, {}
     prev = None
     for r in srows:
@@ -802,12 +809,12 @@ def print_salvage_report(rows):
               "  (mabur + foreign; foreign junk lands here too)")
     for sid in sorted(stream_tot):
         v = stream_tot[sid]
-        print(f"  stream {sid}: corrupt={v['corrupt']} salvaged={v['salvaged']} "
+        print(f"  stream {sid}: corrupt={v['corrupt']} salvaged={v['salvaged']}{so(v)} "
               f"sub_fail={v['sub_fail']} abandoned={v['abandoned']}")
     print("  PER RUNG (all streams; interval attributed to the rung at its end)")
     for rung in sorted(by_rung, key=lambda x: (x is None, x)):
         v = by_rung[rung]
-        print(f"    rung {rung}: corrupt={v['corrupt']} salvaged={v['salvaged']} "
+        print(f"    rung {rung}: corrupt={v['corrupt']} salvaged={v['salvaged']}{so(v)} "
               f"sub_fail={v['sub_fail']} abandoned={v['abandoned']}")
 
 

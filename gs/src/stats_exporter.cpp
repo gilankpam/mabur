@@ -408,6 +408,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // across records. flightreport.py's SALVAGE section is the consumer.
     fj["corrupt"] = st.bodies_corrupt;
     fj["salvaged"] = st.subblocks_salvaged;
+    // salvage_only (2026-09-09): seqs whose only arrival was a salvaged
+    // sub-block -- salvaged is the bound, this is the value.
+    fj["salvage_only"] = st.arr_salvage_only;
     fj["in_flight"] = st.rows_in_flight;
     link["streams"].push_back(std::move(fj));
   }

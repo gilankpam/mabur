@@ -526,3 +526,25 @@ TEST(arrival_open_boundary_books_everything_stale) {
 }
 
 MTEST_MAIN
+
+TEST(arrival_salvage_only_from_corrupt_body_copies) {
+  // add_symbol's `clean` flag is the body's FCS verdict (UepDecoder passes
+  // body_crc_ok). Seqs 10..12 arrive only as salvaged sub-blocks; seq 20
+  // arrives salvaged first and clean from the other card afterwards, so it
+  // is NOT salvage-only. Decode accounting is unchanged either way.
+  SwConfig cfg{64, 4, 0.0};
+  auto envs = encode_stream(cfg, 100, nullptr);
+  SwDecoder d(cfg, 512);
+  for (size_t i = 0; i < envs.size(); ++i) {
+    const bool corrupt = (i >= 10 && i <= 12) || i == 20;
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000, SwBoundary::kNone,
+                 /*clean=*/!corrupt);
+    if (i == 20)
+      d.add_symbol(envs[i].data(), envs[i].size(), 1000, SwBoundary::kNone,
+                   /*clean=*/true);
+  }
+  CHECK(d.arr_expected() == 68);
+  CHECK(d.arr_arrived() == 68);
+  CHECK(d.arr_salvage_only() == 3);
+  CHECK(d.syms_abandoned() == 0);
+}

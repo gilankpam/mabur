@@ -100,6 +100,11 @@ class UepDecoder {
     // and were fed to the decoder -- what salvage actually recovered.
     // subblocks_failed above counts the misses from any body.
     uint64_t bodies_corrupt = 0, subblocks_salvaged = 0;
+    // Of those salvaged sub-blocks, the seqs no clean copy ever delivered
+    // inside the arrival guard (2026-09-09): the measured value of salvage.
+    // subblocks_salvaged is its upper bound -- the other card's clean copy
+    // shadows most of it (docs/sbi-salvage-flights-2026-09-09.md).
+    uint64_t arr_salvage_only = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }
