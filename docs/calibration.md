@@ -26,19 +26,30 @@ to `maburgs`' loopback-only `CalControl` listener (`127.0.0.1:8400`,
 unreachable off-box), streams progress every 500 ms, and prints a final
 table when the drone returns to normal video. Under the hood:
 
-1. **Coarse sweep** (~36 s): every 4th TXAGC index, 0..127, across all
-   8 MCS rows, 20 frames per cell.
-2. **Fine sweep** (~0-41 s, skipped for rows with no dip): ±8 indices
-   around each row's coarse dip, at full resolution, 100 frames per cell.
-   This also re-measures the exact cell the coarse pass flagged, about a
-   minute later — two independent readings of the same operating point,
-   which is the run's built-in thermal-drift check (the `drift` flag).
+1. **Coarse sweep** (~36 s of sweep time): every 4th TXAGC index, 0..124,
+   across all 8 MCS rows, 20 frames per cell.
+2. **Fine sweep** (~0-41 s of sweep time, skipped for rows with no dip):
+   ±8 indices around each row's coarse dip, at full resolution, 100
+   frames per cell. This also re-measures the exact cell the coarse pass
+   flagged, about a minute later — two independent readings of the same
+   operating point, which is the run's built-in thermal-drift check
+   (the `drift` flag).
 3. **Apply**: the GS computes final walls and sends them to the drone,
    which validates them, backs up and patches `/etc/mabur.toml`,
    reprograms the per-rate diffs live, and flips `power_mode` to
    `"offset"` — no restart.
-4. **Verify** (~2 s): the drone immediately sweeps its own eight newly
-   parked indices; the GS tallies delivery at each and reports it.
+4. **Verify** (~2 s of sweep time): the drone immediately sweeps its own
+   eight newly parked indices; the GS tallies delivery at each and
+   reports it.
+
+Each phase also carries a further ~4 s tail after its last frame
+(`phase_slack_ms` in `cal_session.h`) — a listen window the GS waits out
+before declaring the phase over and issuing the next command. The
+figures above are pure sweep time (cells × (settle + frames × gap), from
+`gs/src/cal_plan.h`); the totals below fold in three of these ~4 s tails
+(one per phase) on top of that sweep time, plus a small apply/report
+overhead — they are not a straight sum of the three headline numbers
+above.
 
 On the reference unit a full run is **~72 s** (three rows — MCS 0-2 — never
 dip, so they skip the fine phase). A unit whose PA walls every rate runs
@@ -81,9 +92,9 @@ index, verify-pass delivery, and health flags:
 ```
 run nonce=... base_ref=53 margin=1.00dB
 rate    wall  park verify   flags
-mcs0      91    88    99%   no_dip
-mcs1      91    88   100%   no_dip
-mcs2      91    88    99%   no_dip
+mcs0      91    87    99%   no_dip
+mcs1      91    87   100%   no_dip
+mcs2      91    87    99%   no_dip
 mcs3      95    91    98%
 mcs4      73    69    97%
 mcs5      54    50    96%   drift
@@ -127,6 +138,55 @@ reference config's own numbers corroborate it (both read 91), and the
 hardware acceptance checklist below re-checks it on every unit calibrated:
 if `legacy_wall_idx` ever diverges meaningfully from the MCS0 result on a
 real run, the assumption needs revisiting, not the code.
+
+## When it doesn't work
+
+Two failure shapes fall outside every health flag above, because a flag
+is only computed from the sweep phases' own delivery data.
+
+**`maburcal start` refuses immediately, with a one-line reason.** Before
+any sweep frame goes out, the GS checks preconditions and returns one of:
+`err a calibration session is already running`, `err refused: link is
+down`, or `err refused: peer does not advertise CAP_CALIBRATE`. The first
+two are exactly what they say — wait for the running session to finish
+(or `maburcal abort` it), or get the link back to `LINKED` first. A
+half-deployed `RC_VERSION` 6-vs-7 pair (see the flag-day note below)
+never completes a `SESSION` handshake at the wire level at all, so it
+surfaces here as **"link is down"**, not as the capability error — the
+capability check is only reachable once `LINKED` is already true, which a
+version-mismatched pair never reaches. If `CAP_CALIBRATE` itself is ever
+the refusal on a pair that otherwise links fine, that means one side
+predates this kit; rebuild and redeploy both binaries from the same
+commit.
+
+**The session starts, then ends in `state=failed` with no video loss and
+no config change.** `maburcal start`'s streamed progress lines will show
+`state=await_ack` repeating, then `state=failed`. This is the drone never
+acknowledging the phase command within `ack_timeout_ms` (3 s, repeated
+every 200 ms until then) — the *only* path to `Failed` in `CalSession`,
+and it can only happen after `start()` already passed the link/capability
+checks above. The reason string it records internally
+(`"calibration ack timeout"`) is not currently surfaced through
+`status`/`start`'s output, so `state=failed` with no other detail is all
+you get. The most likely real cause is RF, not configuration: the uplink
+is already lossy by design (30-50% per frame, `rcf-uplink-loss`), so a
+genuinely poor link at that moment can lose all of the ~15 repeats inside
+the 3 s window even though it looked `LINKED` a second earlier. Improve
+geometry/orientation and retry before suspecting anything else. Nothing
+was written in this case — the drone only writes config after reaching
+`Result`, several states past `AwaitAck`.
+
+**Verify delivery reads low on a rate with no flag at all.** Flags are
+computed from the coarse/fine sweep data; the verify pass has none of its
+own; a rate can measure a clean wall and still show poor delivery when
+the drone parks there a minute or two later. Likely causes are geometry
+having moved between the sweep and the verify pass, or a wall estimate
+that a flag should have caught but the sweep data didn't quite cross the
+threshold for. There is no automatic signal for this beyond reading the
+`verify` column yourself — if a rate reads low there, treat that number
+over the flag: rerun (a `drift` flag on the same rate in the rerun would
+corroborate it), or widen `wall_margin_db` for that run
+(`maburcal start --margin`) and check whether verify delivery recovers.
 
 ## What gets written, and how to roll back
 
@@ -237,11 +297,26 @@ a `frame_id_gap`; the first pass after a restart can show a phantom one.
 ssh root@10.18.0.1 maburcal start
 ```
 
+> **The kit reports the *measured wall*, which is not always the same
+> number as `bundle/mabur.default.toml`'s `rate_walls_idx`.** That
+> array's mcs3 entry reads 91, while the measured mcs3 wall documented in
+> `docs/txagc-calibration.md` is ~95. That same page's "suggested clamp
+> values" line lists `{3: 91}` as *wall − ~1 dB margin* — a park index,
+> not a wall — so the shipped array appears to carry a park value in the
+> mcs3 slot that `power_plan.h` treats as a raw wall, subtracting the
+> margin a second time and parking mcs3 about 1 dB lower than intended.
+> That is a hypothesis about the existing shipped config, not a
+> confirmed finding — check it at the bench rather than editing the
+> bundle on the strength of this paragraph. **A `maburcal` run reporting
+> 95 for mcs3 on this unit is behaving correctly**; a mismatch against
+> the *bundle's* 91 is the thing this paragraph explains, not a bug in
+> the kit.
+
 Check every one of these against the run:
 
 | Check | Expected |
 |---|---|
-| Wall table | `[91,91,91,91,73,56,51,49]`, mcs5 may read 54 |
+| Wall table | `[91,91,91,95,73,56,51,49]` (measured walls — see note above), mcs5 may read 54 |
 | MCS 0-2 | flagged `no_dip`, wall ~91 from the knee — **not 127** |
 | `base_ref_idx` | 53 on this unit |
 | `legacy_wall_idx` | equals the MCS0 result (91) |
