@@ -155,6 +155,74 @@ TEST(accepts_the_next_phase_after_the_current_one_finishes) {
   CHECK(info.phase == cal::kPhaseFine);
 }
 
+TEST(stale_earlier_phase_duplicate_is_ignored_mid_fine_sweep) {
+  // Constraint 3 must reject a phase at or BEHIND the one already
+  // accepted, not just an exact repeat of the current one: a delayed
+  // coarse retransmission can arrive after fine has already started.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  run_to_quiescence(s, tx, pwr);
+  const size_t after_coarse = sink.frames.size();
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000);
+  // Advance partway into the fine sweep -- not finished.
+  s.pump(1000, tx, pwr);
+  s.pump(1001, tx, pwr);
+  s.pump(1002, tx, pwr);
+  const size_t mid_fine = sink.frames.size();
+  const size_t fine_so_far = mid_fine - after_coarse;
+  REQUIRE(fine_so_far > 0);
+  REQUIRE(fine_so_far < 40);
+
+  // The stale coarse retransmission finally lands, late.
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 1003);
+  CHECK(s.state() == CalSweep::State::Sweeping);  // still the fine plan
+  CHECK(sink.frames.size() == mid_fine);          // cursor did not rewind
+
+  // Two more pumps: enough to re-enter a cell and send its first frame if
+  // the (buggy) duplicate had rewound the cursor to coarse's window 0.
+  s.pump(1004, tx, pwr);
+  s.pump(1005, tx, pwr);
+  CHECK(sink.frames.size() == mid_fine + 2);
+  cal::CalFrameInfo info;
+  REQUIRE(payload_of(sink.frames.back(), &info));
+  CHECK(info.phase == cal::kPhaseFine);           // not reset to coarse
+}
+
+TEST(stale_earlier_phase_duplicate_does_not_discard_an_undrained_result) {
+  // The more serious half of the same bug: a stale duplicate arriving
+  // after a result has landed (but before it's drained) must not reset
+  // state_ to Sweeping and silently throw the measured wall table away.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  run_to_quiescence(s, tx, pwr);
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000);
+  run_to_quiescence(s, tx, pwr, 1000);
+  const size_t after_fine = sink.frames.size();
+
+  rc::CalResult r;
+  r.vtx_id = 1;
+  r.nonce = 7;
+  r.walls = {88, 88, 88, 95, 73, 54, 51, 49};
+  r.legacy_wall = 88;
+  s.on_result(r, 2000);
+  CHECK(s.state() == CalSweep::State::Applying);
+
+  // A stale coarse retransmission arrives after the result is in.
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 2100);
+  CHECK(s.state() == CalSweep::State::Applying);  // not reset to Sweeping
+  CHECK(sink.frames.size() == after_fine);        // no cells re-walked
+
+  const auto pending = s.take_pending_result();
+  REQUIRE(pending.has_value());                   // result survived
+  CHECK(pending->walls[5] == 54);
+}
+
 TEST(hard_cap_returns_to_idle_even_with_the_gs_silent) {
   // The open-loop guarantee: no command, no result, no link -- the drone
   // still restores itself. Losing the link mid-sweep is the EXPECTED case.
@@ -186,6 +254,11 @@ TEST(await_next_timeout_returns_to_idle_without_applying) {
   s.pump(5000, tx, pwr);
   CHECK(s.state() == CalSweep::State::Idle);
   CHECK(!s.take_pending_result().has_value());
+  // This exit path is reached via await_deadline_ms_, not hard_cap_ms
+  // (still 180000 ms away) -- restores_power_state_on_every_exit_path only
+  // exercises the hard-cap branch, so this is the only test that pins
+  // "restore power" for the await-timeout path specifically.
+  CHECK(s.power_restored_for_test());
 }
 
 TEST(result_moves_to_applying_then_verify) {

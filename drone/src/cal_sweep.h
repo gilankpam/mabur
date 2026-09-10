@@ -21,11 +21,15 @@
 //      silent for most of a session. pump() checks the session-wide
 //      deadline before anything else, so the drone always finds its way
 //      back to Idle with power restored, GS or no GS.
-//   3. Idempotent by (nonce, phase). The uplink loses 30-50% of frames, so
-//      the GS repeats a CalCmd into the drone's listen window. A repeat of
-//      the phase already running (or just finished) must be ignored, not
-//      restarted -- restarting would re-zero the cell cursor and throw
-//      away partial progress for no reason.
+//   3. Idempotent by (nonce, phase), monotonically. The uplink loses
+//      30-50% of frames, so the GS repeats a CalCmd into the drone's
+//      listen window, and those repeats can arrive out of order. A phase
+//      at or behind the one already accepted -- a repeat of the phase
+//      running now, or a late duplicate of an EARLIER phase arriving after
+//      the session has moved on -- must be ignored, not restarted:
+//      restarting would re-zero the cell cursor, throw away partial
+//      progress, and (if a result is sitting undrained in Applying)
+//      silently discard the measured wall table itself.
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -43,9 +47,12 @@ struct CalSweepCfg {
   // Reserved for a future half-duplex listen window between cells (Task
   // 11's ack wiring); this class does not read it yet.
   uint32_t listen_ms = 1000;
-  // How long to wait, once a phase finishes, for the GS to either send the
-  // next phase's CalCmd or an on_result -- before giving up on the session
-  // and restoring power on its own.
+  // How long to wait for the next session event -- the next phase's
+  // CalCmd, an on_result, or (once a result is accepted) the verify-phase
+  // CalCmd it should trigger -- before giving up on the session and
+  // restoring power on its own. Re-armed fresh at each of those events
+  // (see on_result(), which sets it from its own now_ms rather than
+  // inheriting whatever was left over from the last phase finishing).
   uint32_t await_next_ms = 15000;
 };
 
@@ -74,9 +81,11 @@ class CalSweep {
 
   // Accepts a sweep command. A brand-new nonce starts a fresh session
   // (state -> Sweeping, cell cursor reset, per-rate diffs zeroed on the
-  // next pump()). A repeat of the (nonce, phase) already running or just
-  // completed is ignored outright (constraint 3). A new phase of the
-  // session already in flight (matching nonce, different phase) resumes
+  // next pump()). A phase at or behind the one already accepted for this
+  // nonce -- an exact repeat, or a late duplicate of an earlier phase --
+  // is ignored outright (constraint 3: phases are idempotent AND
+  // monotonic, since coarse < fine < verify never runs backward). A phase
+  // strictly ahead of the one already accepted (matching nonce) resumes
   // sweeping with a fresh cell cursor built from this command's windows,
   // without re-zeroing the diffs a prior phase of the same session already
   // zeroed.

@@ -1,7 +1,6 @@
 #include "cal_sweep.h"
 
 #include "mabur/cal_wire.h"
-#include "mabur/profile.h"
 
 namespace mabur {
 
@@ -18,11 +17,17 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms) {
     result_accepted_ = false;
     hard_cap_deadline_ms_ = now_ms + cfg_.hard_cap_ms;
     last_started_phase_ = -1;
-  } else if (static_cast<int>(c.phase) == last_started_phase_) {
-    // Constraint 3: idempotent by (nonce, phase). The uplink loses
-    // 30-50% of frames, so the GS repeats commands into the drone's
-    // listen window -- a repeat of the phase already running (or just
-    // finished) must not restart it or re-zero the cell cursor.
+  } else if (static_cast<int>(c.phase) <= last_started_phase_) {
+    // Constraint 3: idempotent by (nonce, phase), and MONOTONIC within a
+    // session -- phases only ever advance (coarse < fine < verify), so a
+    // phase at or behind the one already accepted can only be a stale
+    // retransmission, never a legitimate next step. Rejecting <= rather
+    // than == also catches a late duplicate of an EARLIER phase arriving
+    // after the session has moved on (e.g. a delayed coarse retransmission
+    // landing after fine has started, or after a result is already sitting
+    // undrained in Applying) -- a plain == guard would treat that as a
+    // fresh command and silently discard the in-progress phase's cursor
+    // and any undrained CalResult.
     return;
   }
 
@@ -39,7 +44,6 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms) {
 }
 
 void CalSweep::on_result(const rc::CalResult& r, uint64_t now_ms) {
-  (void)now_ms;
   // Stale/foreign session: a result whose nonce doesn't match the one in
   // flight (or arriving with no session open at all) is ignored outright,
   // same as a repeated command -- see stale_nonce_result_is_ignored.
@@ -55,6 +59,14 @@ void CalSweep::on_result(const rc::CalResult& r, uint64_t now_ms) {
   result_accepted_ = true;
   pending_result_ = r;
   state_ = State::Applying;
+  // The verify window starts now, at acceptance -- not inherited from
+  // whenever the last phase happened to finish. A result can legitimately
+  // arrive with its own now_ms already past a stale await_deadline_ms_
+  // (pump() just hasn't been called with a time that late yet), and
+  // leaving the old value in place would let the very next pump() close
+  // the session before Task 11 gets a chance to drain this result and
+  // drive the verify phase.
+  await_deadline_ms_ = now_ms + cfg_.await_next_ms;
 }
 
 std::optional<rc::CalResult> CalSweep::take_pending_result() {
@@ -62,14 +74,10 @@ std::optional<rc::CalResult> CalSweep::take_pending_result() {
   auto r = pending_result_;
   pending_result_.reset();
   // Nothing left to apply: fall back to the same "awaiting the next
-  // session event" limbo a finished phase leaves behind, reusing
-  // await_deadline_ms_ from whenever the phase completed. This is safe
-  // because on_cmd/on_result/pump are only ever called from one thread in
-  // sequence (the class's whole contract) -- if this result got this far
-  // at all, its own now_ms was still short of that deadline, so pump()
-  // cannot have already fired the timeout on an earlier, smaller now_ms.
-  // Task 11 issuing the verify-phase CalCmd right after this call is what
-  // actually moves things along, same as a fine phase following coarse.
+  // session event" limbo a finished phase leaves behind. await_deadline_ms_
+  // was already set fresh by on_result() at acceptance time, so the window
+  // for Task 11 to drive the verify-phase CalCmd is well-defined regardless
+  // of how long the result took to arrive.
   if (state_ == State::Applying) state_ = State::Idle;
   return r;
 }
