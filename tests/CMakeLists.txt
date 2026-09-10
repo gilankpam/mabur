@@ -315,6 +315,8 @@ if(Python3_EXECUTABLE)
   add_test(NAME test_vencburst
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_vencburst.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME test_maburcal
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_maburcal.py)
 endif()
 
 if(MABUR_BUILD_LINKBENCH)
