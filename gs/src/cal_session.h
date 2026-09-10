@@ -21,7 +21,6 @@ namespace maburgs {
 struct CalSessionCfg {
   CalThresholds th;
   uint32_t ack_timeout_ms = 3000;
-  uint32_t listen_ms = 1000;
   uint32_t phase_slack_ms = 4000;
   double margin_db = 1.0;
 };

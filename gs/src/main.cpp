@@ -23,6 +23,9 @@
 #include "au_log.h"
 #include "au_ring.h"
 #include "body_queue.h"
+#include "cal_control.h"
+#include "cal_log.h"
+#include "cal_session.h"
 #include "card_scan.h"
 #include "config.h"
 #include "ctl_log.h"
@@ -37,6 +40,7 @@
 #ifdef MABUR_LOSS_SIM
 #include "loss_control.h"
 #endif
+#include "mabur/cal_wire.h"
 #include "mabur/probe_wire.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
@@ -275,6 +279,29 @@ static int run_radio(const maburgs::Config& cfg) {
     }
   }
 #endif
+  // TX-power wall calibration (2026-09-10-tx-power-calibration): the
+  // session brain and its loopback command listener. Unlike loss_ctl
+  // above, this is compiled into every prod build -- calibration is a
+  // real operator workflow, not a bench-only scaffold -- so there is no
+  // MABUR_LOSS_SIM-style guard (cal_control.h). Port 8400 is pinned by the
+  // design doc: the 830x block belongs to the stats sideport, its UDP
+  // sinks and the OSD feed.
+  maburgs::CalSession cal_session(maburgs::CalSessionCfg{});
+  maburgs::CalControl cal_ctl;
+  if (!cal_ctl.open(8400))
+    std::fprintf(stderr,
+                 "warning: calibration control port 8400 unusable; "
+                 "`maburcal start` will not reach this daemon\n");
+  // Telem (the drone's only calibration ack signal, flags bit6 cal_active)
+  // carries no nonce of its own, so this is what the T_TELEM handler below
+  // hands back to CalSession::on_ack() -- stashed from the CalCmd the last
+  // due_cmd() call actually sent.
+  uint32_t cal_pending_nonce = 0;
+  // cal.log's R line is written once per SESSION (cal_log.h), but the ack
+  // above fires once per PHASE within a session (coarse, then fine) --
+  // this dedups by nonce, which is constant across a session and freshly
+  // randomized per `maburcal start` (cal_control.h).
+  std::optional<uint32_t> cal_log_run_nonce;
   // Debug-log session (2026-09-06 consolidation): one directory for
   // ctl.log/probe.log/au.log/flight.jsonl, one writer thread feeding all of
   // them. Declared here (ahead of the stats block and the FrameStream
@@ -286,6 +313,20 @@ static int run_radio(const maburgs::Config& cfg) {
     log_writer.emplace();
     std::fprintf(stderr, "debug-log: session %s%s\n", debug.dir().c_str(),
                  debug.rejoined() ? " (rejoined)" : "");
+  }
+  // cal.log (callog 1): TX-power calibration's raw per-cell record (spec
+  // 2026-09-10-tx-power-calibration-design.md). Unlike ctl.log/probe.log/
+  // au.log below, this uses its own private LogWriter (cal_log.h) rather
+  // than the shared `log_writer` -- a calibration run is rare and
+  // short-lived, so there is nothing to gain from the fixed-slot session
+  // writer. header() writes the file's format marker at most once per
+  // FILE: a wrapper respawn that rejoins an existing session directory
+  // must not repeat it, or a real run's start would read as a corrupt
+  // record to a later reader (cal_log.h).
+  std::optional<maburgs::CalLog> cal_log;
+  if (debug.ok()) {
+    cal_log.emplace(debug.dir());
+    if (!debug.rejoined()) cal_log->header();
   }
   // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md)
   // and flight.jsonl (debug-log consolidation, 2026-09-06) share one
@@ -748,6 +789,24 @@ static int run_radio(const maburgs::Config& cfg) {
         // stamps below, so the subtraction is one clock throughout.
         rtt_est.on_telem(t->rcf_seq_echo, (t->flags & 0x08) != 0,
                          t->rcf_age_ms, t->pts_at_build, us);
+        // Calibration ack (spec: Telem flags bit6 cal_active) -- the only
+        // acknowledgment signal the wire carries for a T_CAL_CMD. Telem has
+        // no nonce field, so cal_pending_nonce (stashed from the CalCmd the
+        // last due_cmd() call sent) is what on_ack() checks against; a
+        // stale/mismatched nonce or an ack outside AwaitAck is a no-op
+        // inside CalSession (cal_session.h).
+        if ((t->flags & 0x40) != 0) {
+          cal_session.on_ack(cal_pending_nonce, t->cal_base_ref_idx, us / 1000);
+          // cal.log's R line is once per SESSION, but this ack fires once
+          // per PHASE (coarse, then fine) within one session -- dedup by
+          // nonce so a second phase's ack does not write a second R line
+          // into the same run (cal_log.h).
+          if (cal_log && cal_log_run_nonce != cal_pending_nonce) {
+            cal_log->run(cal_pending_nonce, t->cal_base_ref_idx,
+                        cal_session.margin_db());
+            cal_log_run_nonce = cal_pending_nonce;
+          }
+        }
       }
       return;
     }
@@ -836,6 +895,26 @@ static int run_radio(const maburgs::Config& cfg) {
     batch.clear();
     queue.drain(batch, 10);
     for (const auto& m : batch) {
+      // Calibration sweep frames (cal_wire.h) are a distinct body type, not
+      // video, and must be recognized BEFORE agg.on_rx_body() routes the
+      // body -- nothing downstream of on_rx_body() (the decoder, the RC
+      // dispatch, the video-silence timer) knows what a sweep frame is, and
+      // a frame stamped at TXAGC idx 127 fed to the decoder as garbage
+      // video would be silently wrong rather than loudly ignored. Must run
+      // even for CRC-bad frames: maburgs sets rx.keep_corrupted
+      // unconditionally, so corrupt sweep frames arrive and are tallied as
+      // `corrupt`, not silently dropped (design "CRC-bad frames now
+      // arrive"). A frame whose corruption flips rate/idx/phase/fill fails
+      // parse_cal_payload's fill guard and falls through to the ordinary
+      // path below instead of being misattributed to a cell.
+      mabur::cal::CalFrameInfo cal_info;
+      if (mabur::cal::parse_cal_payload(m.body.data(), m.body.size(), &cal_info)) {
+        const int rssi_dbm =
+            static_cast<int>(std::max(m.rssi[0], m.rssi[1])) - 110;
+        cal_session.on_cal_frame(m.card_id, cal_info, rssi_dbm, m.crc_ok,
+                                 m.mono_us / 1000);
+        continue;
+      }
       agg.on_rx_body(m);
       // A drone at a different RC_VERSION is invisible to every RC path here:
       // frame_type() returns -1 for it, which is this loop's affirmative "this
@@ -898,6 +977,8 @@ static int run_radio(const maburgs::Config& cfg) {
 #ifdef MABUR_LOSS_SIM
     if (loss_ctl.ok()) loss_ctl.poll(agg.loss_sim());
 #endif
+    // Compiled into every prod build, unlike loss_ctl above (cal_control.h).
+    cal_ctl.poll(cal_session);
 
     // Session capability gate: the peer must be in an active SESSION (not
     // beaconing/pre-rendezvous) AND have advertised CAP_FRAME_WIRE in its
@@ -908,6 +989,12 @@ static int run_radio(const maburgs::Config& cfg) {
     // session's seqs and frame_ids are unrelated to the old one's.
     const bool in_session = vrx.link_state() == maburgs::VrxState::SESSION;
     const bool fw = in_session && (vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
+    // Told every tick (CalSession::set_peer): whether the link is up and
+    // whether the peer's last DiscAck carried CAP_CALIBRATE. start() (via
+    // CalControl, below the operator's `maburcal start`) is the only place
+    // that reads these back.
+    cal_session.set_peer(
+        in_session, in_session && (vrx.peer_caps() & mabur::rc::CAP_CALIBRATE));
     if (fw != frame_wire) {
       frame_wire = fw;
       agg.decoder().reset_continuity();
@@ -1160,11 +1247,47 @@ static int run_radio(const maburgs::Config& cfg) {
       // like any other send (it killed a PPDU per second when it bypassed).
       maburgs::SlotFrame sf{std::move(out->frame), vrx.rcf_seq(), tx,
                             !out->is_disc};
-      if (!rcf_slot.offer(sf, drained_ms, false)) send_control_frame(sf);
+      // Radio silence during a calibration sweep (design "Radio silence
+      // during a sweep phase"): RcfSlotter hides sends in the drone's
+      // inter-AU idle, but a sweep has no AUs at all -- rcf_slot.h says
+      // plainly that with no recent AU everything passes through, which
+      // would put RCF and the DISC keepalive (both ride this one path)
+      // straight into the drone's back-to-back sweep transmissions.
+      // radio_silent() is the predicate that actually knows a sweep is
+      // running, so it gates the send itself rather than trusting the
+      // slotter's AU-cadence guess to have degraded safely.
+      if (!rcf_slot.offer(sf, drained_ms, false) &&
+          !cal_session.radio_silent(drained_ms))
+        send_control_frame(sf);
     }
     // Slotted sends whose hold ended (an AU completed in this iteration's
-    // drain, or the hold timed out).
-    for (const auto& f : rcf_slot.take_due(drained_ms)) send_control_frame(f);
+    // drain, or the hold timed out). Same gate as above: a calibration
+    // sweep leaves nothing for the slotter to hold against, so anything
+    // still queued from before the sweep started must not go out either.
+    for (const auto& f : rcf_slot.take_due(drained_ms))
+      if (!cal_session.radio_silent(drained_ms)) send_control_frame(f);
+    // Calibration uplink (T_CAL_CMD / T_CAL_RESULT): straight through
+    // send_control_frame, bypassing rcf_slot entirely -- there is no video
+    // for the slotter to hide a send behind during a sweep, and
+    // radio_silent() already knows the drone's listen windows precisely
+    // from the plan the GS itself sent, a tighter answer than the
+    // slotter's AU-cadence guess. Gated the same way as every other
+    // transmit above: nothing goes out while a sweep phase is running.
+    if (!cal_session.radio_silent(drained_ms)) {
+      if (auto cmd = cal_session.due_cmd(drained_ms)) {
+        cal_pending_nonce = cmd->nonce;
+        maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd), 0, sel.selected(),
+                              false};
+        cf.offered_ms = drained_ms;
+        send_control_frame(cf);
+      }
+      if (auto res = cal_session.due_result(drained_ms)) {
+        maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res), 0,
+                              sel.selected(), false};
+        rf.offered_ms = drained_ms;
+        send_control_frame(rf);
+      }
+    }
     // ctl: rung transition line — load-bearing for post-mortems (Task 6
     // adds the sideport link.ctl block; this stderr line is independent of
     // it and persists in /tmp/maburgs.log even when no sideport consumer is

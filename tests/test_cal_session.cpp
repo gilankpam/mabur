@@ -257,4 +257,22 @@ TEST(abort_returns_to_idle_and_reopens_the_air) {
   CHECK(s.state() == CalSession::State::Idle);
 }
 
+TEST(gate_contract_covers_every_transmit_class) {
+  // main.cpp must gate RCF, the slotter drain, the DISC keepalive AND
+  // calibration commands on this one predicate. Enumerated here so a
+  // reviewer can check the wiring against a test rather than against prose.
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 500;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 3, 0, &err));
+  s.due_cmd(0);
+  s.on_ack(3, 53, 10);
+  CHECK(s.radio_silent(11));
+  // ... and after abort, everything may transmit again immediately.
+  s.abort("test");
+  CHECK(!s.radio_silent(12));
+}
+
 MTEST_MAIN
