@@ -96,7 +96,8 @@ std::string rewrite_line(const std::string& line, size_t key_begin,
 
 }  // namespace
 
-std::string patch_toml(const std::string& text, const CalWrite& w) {
+std::string patch_toml(const std::string& text, const CalWrite& w,
+                        PatchStatus* status) {
   std::vector<std::string> lines;
   {
     std::stringstream ss(text);
@@ -126,6 +127,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w) {
           arr += "]";
           line = rewrite_line(line, key_begin, std::string("rate_walls_idx").size(),
                                eq_pos, arr, close + 1);
+          if (status) status->rate_walls_idx = true;
         }
       }
       continue;
@@ -143,6 +145,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w) {
       while (e < line.size() && std::isdigit(static_cast<unsigned char>(line[e]))) ++e;
       line = rewrite_line(line, key_begin, std::string("legacy_wall_idx").size(),
                            eq_pos, std::to_string(w.legacy_wall), e);
+      if (status) status->legacy_wall_idx = true;
       continue;
     }
 
@@ -154,6 +157,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w) {
       while (e < line.size() && std::isdigit(static_cast<unsigned char>(line[e]))) ++e;
       line = rewrite_line(line, key_begin, std::string("base_ref_idx").size(),
                            eq_pos, std::to_string(w.base_ref_idx), e);
+      if (status) status->base_ref_idx = true;
       continue;
     }
 
@@ -165,6 +169,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w) {
         if (close != std::string::npos) {
           line = rewrite_line(line, key_begin, std::string("power_mode").size(),
                                eq_pos, "\"offset\"", close + 1);
+          if (status) status->power_mode = true;
         }
       }
       continue;
@@ -215,6 +220,34 @@ bool walls_in_range(const CalWrite& w, double margin_db, std::string* why) {
                "check base_ref_idx/wall_margin_db calibration";
       return false;
     }
+  }
+  return true;
+}
+
+// Checks that patch_toml() actually found and rewrote every key this file
+// is required to have touched. Required-ness mirrors CalWrite's own
+// sentinel rule: rate_walls_idx, base_ref_idx and power_mode are always
+// rewritten, so their PatchStatus flag must always be set; legacy_wall_idx
+// is only required when CalWrite::legacy_wall is determined (not -1) --
+// when it's -1 the line is deliberately left untouched and its flag is
+// expected to stay false.
+bool patch_covered_required_keys(const PatchStatus& s, const CalWrite& w,
+                                  std::string* why) {
+  if (!s.rate_walls_idx) {
+    if (why) *why = "radio.rate_walls_idx: line not found in config -- unexpected file structure, nothing written";
+    return false;
+  }
+  if (!s.base_ref_idx) {
+    if (why) *why = "radio.base_ref_idx: line not found in config -- unexpected file structure, nothing written";
+    return false;
+  }
+  if (!s.power_mode) {
+    if (why) *why = "radio.power_mode: line not found in config -- unexpected file structure, nothing written";
+    return false;
+  }
+  if (w.legacy_wall != -1 && !s.legacy_wall_idx) {
+    if (why) *why = "radio.legacy_wall_idx: line not found in config -- unexpected file structure, nothing written";
+    return false;
   }
   return true;
 }
@@ -283,6 +316,27 @@ bool write_file_fsync(const std::string& path, const std::string& content) {
 // at the directory next).
 void remove_scratch(const std::string& tmp) { ::unlink(tmp.c_str()); }
 
+// Writes `content` to `path` via a private temp file + fsync + rename,
+// same pattern as the main "<path>.new" publish, so a failure partway
+// through (disk full mid-write) never destroys whatever `path` already
+// held. Used for the backup copy: "<path>.pre-cal" is the operator's
+// actual rollback artifact, and losing the PREVIOUS session's backup to a
+// failed O_TRUNC write -- while producing nothing usable in its place --
+// would be a silent loss even though the live config stays unaffected.
+bool write_file_atomic(const std::string& path, const std::string& content) {
+  const std::string tmp = path + ".tmp";
+  if (!write_file_fsync(tmp, content)) {
+    remove_scratch(tmp);
+    return false;
+  }
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    remove_scratch(tmp);
+    return false;
+  }
+  fsync_parent_dir(path);
+  return true;
+}
+
 // Shared body of apply_calibration() and its corrupt-writer test seam.
 // `content_override`, when set, replaces the real patch_toml() output --
 // the seam tests need a way to get deliberate garbage onto disk without a
@@ -315,18 +369,40 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
     return ApplyResult::WriteFailed;
   }
 
-  // Step 2: write the candidate to a scratch file. Nothing at `path` has
+  // Step 2: patch in memory and check every REQUIRED key was actually
+  // found and rewritten. patch_toml has no error channel of its own -- a
+  // key it can't match (missing, reformatted, a multi-line array) is
+  // silently left as the original's value, which load_config() below
+  // would still accept (an unmodified original value is still a valid
+  // one). Without this check, apply_calibration could report Ok on a
+  // calibration that never actually applied -- the exact
+  // silent-miscalibration failure this file exists to prevent, arriving
+  // through the back door. Skipped for content_override: that seam
+  // bypasses patch_toml on purpose to inject raw garbage.
+  std::string content;
+  if (content_override) {
+    content = *content_override;
+  } else {
+    PatchStatus status;
+    content = patch_toml(original, w, &status);
+    std::string key_why;
+    if (!patch_covered_required_keys(status, w, &key_why)) {
+      if (err) *err = key_why;
+      return ApplyResult::KeyNotFound;
+    }
+  }
+
+  // Step 3: write the candidate to a scratch file. Nothing at `path` has
   // moved yet -- this is not a publish, it's a place to point the real
   // loader at.
   const std::string tmp = path + ".new";
-  const std::string content = content_override ? *content_override : patch_toml(original, w);
   if (!write_file_fsync(tmp, content)) {
     remove_scratch(tmp);
     if (err) *err = "failed to write/fsync " + tmp;
     return ApplyResult::WriteFailed;
   }
 
-  // Step 3: verify with the SAME function maburd boots with --
+  // Step 4: verify with the SAME function maburd boots with --
   // mabur::load_config, not toml::parse_toml_file. parse_toml_file only
   // proves the bytes are syntactically valid TOML; everything that
   // actually fails a boot -- check_known_keys' unknown-key rejection, and
@@ -354,18 +430,20 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
     return ApplyResult::ReparseFailed;
   }
 
-  // Step 4: back up the original. Now that the candidate is proven
+  // Step 5: back up the original. Now that the candidate is proven
   // loadable, this is purely the operator's rollback artifact (the "undo
   // my last calibration" copy), not a crash-recovery mechanism -- nothing
   // downstream of this point can produce a `path` that fails to load.
+  // Written via write_file_atomic so a failure partway through can't
+  // destroy the PREVIOUS session's backup while leaving nothing usable.
   const std::string backup_path = path + ".pre-cal";
-  if (!write_file_fsync(backup_path, original)) {
+  if (!write_file_atomic(backup_path, original)) {
     remove_scratch(tmp);
     if (err) *err = "failed to write backup " + backup_path;
     return ApplyResult::BackupFailed;
   }
 
-  // Step 5: publish. `tmp` has already been proven loadable by the same
+  // Step 6: publish. `tmp` has already been proven loadable by the same
   // function maburd boots with, so this rename can only ever replace
   // `path` with something good.
   ++g_write_counts[path];  // flash-wear guard: counts publish attempts to this path

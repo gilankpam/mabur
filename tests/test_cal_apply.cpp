@@ -33,6 +33,24 @@ CalWrite sample_write() {
   return w;
 }
 
+// Same as kSample but with the rate_walls_idx line removed entirely --
+// stands in for "unexpected file structure" (missing, hand-edited,
+// reformatted): patch_toml can't find the line to rewrite, and that must
+// be refused loudly rather than silently produce a config that never
+// actually picked up the new walls.
+const char* kSampleMissingRateWalls = R"(# a comment that must survive
+[radio]
+usb_vid    = 3034
+power_mode = "none"      # set to offset to use rate_walls_idx
+
+legacy_wall_idx = 91
+wall_margin_db  = 1.0
+base_ref_idx    = 53       # derived diffs must land in [-64,63] or boot fails
+
+[fec]
+symbol_size = 332
+)";
+
 }  // namespace
 
 TEST(patch_rewrites_only_the_four_keys) {
@@ -60,6 +78,16 @@ TEST(patch_leaves_undetermined_entries_untouched) {
   const auto out = patch_toml(kSample, w);
   CHECK(out.find("rate_walls_idx  = [88, 88, 88, 91, 73, 54, 51, 49]") !=
         std::string::npos);
+}
+
+TEST(patch_leaves_undetermined_legacy_untouched) {
+  // Mirrors the walls[] sentinel test above, for legacy_wall_idx: MCS0
+  // came back undetermined this session, so the line must be left exactly
+  // as the original had it, not rewritten to a fabricated number.
+  CalWrite w = sample_write();
+  w.legacy_wall = -1;
+  const auto out = patch_toml(kSample, w);
+  CHECK(out.find("legacy_wall_idx = 91") != std::string::npos);
 }
 
 TEST(patch_output_still_parses) {
@@ -116,6 +144,49 @@ TEST(apply_refuses_out_of_range_without_touching_the_file) {
   std::ifstream f(path);
   std::stringstream s; s << f.rdbuf();
   CHECK(s.str() == kSample);   // untouched
+}
+
+TEST(apply_refuses_when_a_required_key_is_missing) {
+  // patch_toml has no error channel: a key it can't find is silently left
+  // alone, and load_config() alone can't tell "found and rewritten" apart
+  // from "never touched because it wasn't there" -- an unmodified original
+  // value is still a valid one. apply_calibration must catch this itself
+  // (KeyNotFound) rather than report Ok on a calibration that never
+  // actually applied.
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal6.toml";
+  { std::ofstream f(path); f << kSampleMissingRateWalls; }
+  std::string err;
+  CHECK(apply_calibration(path, sample_write(), 1.0, &err) ==
+        ApplyResult::KeyNotFound);
+  CHECK(err.find("rate_walls_idx") != std::string::npos);
+  std::ifstream f(path);
+  std::stringstream s; s << f.rdbuf();
+  CHECK(s.str() == kSampleMissingRateWalls);   // untouched
+  std::ifstream tmp(path + ".new");
+  CHECK(!tmp.good());   // never even got as far as writing a scratch file
+}
+
+TEST(apply_rejects_a_file_only_the_real_loader_can_reject) {
+  // Pins the load_config() switch: parse_toml_file would happily accept
+  // base_ref_idx = -1 (a syntactically valid negative int), and
+  // walls_in_range() only checks the DERIVED diff, not base_ref_idx's own
+  // [0,127] range (config.cpp) -- so this candidate sails through step 1
+  // and would have sailed through the old parse_toml_file-only check too.
+  // Only load_config()'s own range check catches it. Revert the
+  // verification call to parse_toml_file and this test starts failing.
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal7.toml";
+  { std::ofstream f(path); f << kSample; }
+  CalWrite w;
+  w.walls = {60, 60, 60, 60, 60, 60, 60, 60};
+  w.legacy_wall = 60;
+  w.base_ref_idx = -1;   // diff = 60 - 4 - (-1) = 57, in range; base_ref_idx itself is not
+  std::string err;
+  CHECK(apply_calibration(path, w, 1.0, &err) == ApplyResult::ReparseFailed);
+  std::ifstream f(path);
+  std::stringstream s; s << f.rdbuf();
+  CHECK(s.str() == kSample);   // never published
+  std::ifstream tmp(path + ".new");
+  CHECK(!tmp.good());
 }
 
 TEST(apply_never_publishes_a_file_that_will_not_parse) {
