@@ -161,7 +161,7 @@ TEST(air_clock_fields_saturate_and_round_trip) {
   in.air_backlog_max_ms = 37;
   in.air_shed_drops = 12;
   auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
-  CHECK(wire.size() == 87 + 2);   // TELEM_LEN + crc16
+  CHECK(wire.size() == 88 + 2);   // TELEM_LEN + crc16
   auto back = mabur::rc::parse_telem(wire.data(), wire.size());
   REQUIRE(back.has_value());
   CHECK((back->flags & 0x20) == 0);

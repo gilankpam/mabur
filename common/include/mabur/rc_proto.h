@@ -1,8 +1,10 @@
 #pragma once
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
+#include "mabur/cal_wire.h"
 namespace mabur::rc {
 
 // RC control-plane framing (adaptive-link feedback + rendezvous): RCF
@@ -37,7 +39,10 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Old and new peers reject each other in BOTH directions -- a half-deployed
 // pair has no control link and, because DISC_ACK carries CAP_FRAME_WIRE, no
 // video either. Recovery is to finish the deploy.
-constexpr uint8_t RC_VERSION = 6;
+// Bumped 6 -> 7 on 2026-09-10: T_CAL_CMD / T_CAL_RESULT carry the TX-power
+// wall calibration session; Telem gained cal_base_ref_idx and flags bit6
+// (cal_active). Spec 2026-09-10-tx-power-calibration-design.md.
+constexpr uint8_t RC_VERSION = 7;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -46,6 +51,8 @@ constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
 constexpr uint8_t T_DISC_ACK = 3;
 constexpr uint8_t T_TELEM = 4;
+constexpr uint8_t T_CAL_CMD = 5;
+constexpr uint8_t T_CAL_RESULT = 6;
 
 constexpr uint8_t F_DISCOVERY = 0x04;
 
@@ -58,6 +65,10 @@ constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
 // Display-grade only (not a safety gate): a GS lacking this bit just never
 // sees a T_TELEM frame from an old drone. Spec 2026-07-26 drone-telemetry.
 constexpr uint16_t CAP_TELEMETRY = 0x0002;
+
+// DiscAck.chip_caps bit: VTX understands T_CAL_CMD / T_CAL_RESULT and can run
+// a TX-power wall calibration. The GS refuses to start a session without it.
+constexpr uint16_t CAP_CALIBRATE = 0x0004;
 
 // VRX -> VTX feedback: the GS-authoritative operating point. Every field
 // here is one maburd acts on. It used to also carry ack_seq, an alink-style
@@ -112,7 +123,9 @@ struct Telem {
                       //      distinct from bit0 so a bench can count sheds
                       //      and flightreport can attribute an enh gap to
                       //      congestion rather than RF — 2026-09-03),
-                      // bit5 air_shed (AirClock enh admission dropped >= 1 enh AU this window — spec 2026-09-06)
+                      // bit5 air_shed (AirClock enh admission dropped >= 1 enh AU this window — spec 2026-09-06),
+                      // bit6 cal_active (drone accepted a calibration command; set on the single
+                      //      acknowledgment Telem, no further Telem until the session ends — spec 2026-09-10)
   uint32_t generation = 0;
   uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
   double applied_ov_base = 0.0;
@@ -181,6 +194,49 @@ struct Telem {
   // link-up. Both saturating.
   uint16_t air_backlog_max_ms = 0;
   uint16_t air_shed_drops = 0;
+  // Calibration (spec 2026-09-10): this chip's efuse TXAGC reference index,
+  // read back at bring-up. power_plan.h derives every per-rate diff as
+  // walls[r] - margin*4 - base_ref_idx, so the GS needs this unit's value to
+  // range-check a candidate wall table before sending it. 0 = not read.
+  // Paired with flags bit6 (cal_active), which the drone sets on the single
+  // Telem it emits when it accepts a calibration command -- that frame is the
+  // acknowledgment, and no further Telem goes out until the session ends.
+  uint8_t cal_base_ref_idx = 0;
+};
+
+// One rate's index range for a calibration phase. idx_step 4 is the coarse
+// scan; 1 is the full-resolution fine window.
+struct CalWindow {
+  uint8_t rate = 0;      // HT MCS 0..7
+  uint8_t idx_lo = 0;
+  uint8_t idx_hi = 0;
+  uint8_t idx_step = 1;
+};
+
+constexpr size_t kMaxCalWindows = 8;  // one per HT MCS
+
+// VRX -> VTX: run this sweep. Idempotent by (nonce, phase) so the GS can
+// repeat it into the drone's listen window without the drone re-running a
+// phase it already started -- the uplink loses 30-50% of frames.
+struct CalCmd {
+  uint32_t vtx_id = 0;
+  uint32_t nonce = 0;
+  uint8_t phase = 0;              // cal::kPhaseCoarse / Fine / Verify
+  uint16_t frames_per_cell = 20;
+  uint16_t settle_ms = 100;
+  uint16_t gap_us = 2000;
+  std::vector<CalWindow> windows;  // 1..kMaxCalWindows
+};
+
+// VRX -> VTX: the measured table. A wall of -1 is UNDETERMINED -- the GS
+// could not derive one from the data, and the drone must leave that config
+// entry exactly as it found it rather than write a fabricated number.
+struct CalResult {
+  uint32_t vtx_id = 0;
+  uint32_t nonce = 0;
+  std::array<int16_t, 8> walls{};   // per-MCS, -1 = undetermined
+  int16_t legacy_wall = -1;
+  uint32_t flags = 0;               // maburgs::CalFlag bitset, for the log
 };
 
 std::vector<uint8_t> pack_rcf(const Rcf& r);
@@ -194,6 +250,12 @@ std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len);
 
 std::vector<uint8_t> pack_telem(const Telem& t);
 std::optional<Telem> parse_telem(const uint8_t* buf, size_t len);
+
+std::vector<uint8_t> pack_cal_cmd(const CalCmd& c);
+std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len);
+
+std::vector<uint8_t> pack_cal_result(const CalResult& r);
+std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len);
 
 // Peeks the RC frame type without a full parse (no CRC check). Returns -1 if
 // the buffer is too short or doesn't carry the RC magic/version.
