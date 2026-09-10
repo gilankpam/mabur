@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -109,7 +110,18 @@ class CalControl {
     }
 
     if (tok[0] == "abort") {
+      // abort() is idempotent -- Idle stays Idle -- but the caller (poll())
+      // logs a `true` return as "a calibration happened" for /tmp/maburgs.log
+      // to preserve as post-mortem evidence. An operator's idle sanity-check
+      // abort is not an event and must not write that line.
+      const bool was_running = s.state() != CalSession::State::Idle &&
+                               s.state() != CalSession::State::Done &&
+                               s.state() != CalSession::State::Failed;
       s.abort("operator abort");
+      if (!was_running) {
+        *reply = "ok nothing running";
+        return false;
+      }
       *reply = "ok aborted";
       return true;
     }
@@ -132,6 +144,10 @@ class CalControl {
       static std::random_device rd;
       const uint32_t nonce = rd();
       std::string err;
+      // vtx_id=0 is safe: CalControl has no config access to a real one,
+      // and unlike Rcf/Disc (which gate on vtx_id in their own handlers),
+      // no calibration-frame consumer validates it -- checked against
+      // every task in the plan (2026-09-11 review).
       if (!s.start(/*vtx_id=*/0, nonce, now_ms(), &err)) {
         *reply = "err " + err;
         return false;

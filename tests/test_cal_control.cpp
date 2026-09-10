@@ -50,6 +50,17 @@ TEST(abort_stops_a_running_session) {
   CHECK(s.state() == CalSession::State::Idle);
 }
 
+TEST(abort_while_idle_is_a_no_op_and_is_not_logged) {
+  // The stderr line poll() emits on a true return is the post-mortem record
+  // that a calibration happened. An operator's idle sanity-check abort must
+  // not write one.
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string reply;
+  CHECK(!CalControl::apply("abort", s, &reply));
+  CHECK(s.state() == CalSession::State::Idle);
+}
+
 TEST(unknown_and_empty_commands_are_errors_not_crashes) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
