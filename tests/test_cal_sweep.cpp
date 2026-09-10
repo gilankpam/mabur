@@ -243,4 +243,41 @@ TEST(restores_power_state_on_every_exit_path) {
   }
 }
 
+TEST(duplicate_result_for_accepted_nonce_is_ignored) {
+  // NOT the same bug as stale_nonce_result_is_ignored (a DIFFERENT nonce):
+  // this is a repeat of the nonce the sweeper already accepted. The uplink
+  // can duplicate a result frame same as it duplicates commands, and
+  // letting it re-arm Applying would mean cal_apply's flash write runs a
+  // second time -- Task 9 exists partly to hold that line at one write
+  // per session.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(), 0);
+  run_to_quiescence(s, tx, pwr);
+  rc::CalResult r;
+  r.vtx_id = 1;
+  r.nonce = 1;
+  r.walls = {88, 88, 88, 95, 73, 54, 51, 49};
+  r.legacy_wall = 88;
+  s.on_result(r, 100);
+  REQUIRE(s.take_pending_result().has_value());
+  s.on_result(r, 150);   // duplicate of the already-accepted result
+  CHECK(s.state() != CalSweep::State::Applying);
+  CHECK(!s.take_pending_result().has_value());
+}
+
+TEST(zero_frames_per_cell_sends_nothing) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  rc::CalCmd c = small_cmd();
+  c.frames_per_cell = 0;
+  s.on_cmd(c, 0);
+  run_to_quiescence(s, tx, pwr);
+  CHECK(sink.frames.size() == 0);
+}
+
 MTEST_MAIN

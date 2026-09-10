@@ -15,6 +15,7 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms) {
     has_session_ = true;
     zeroed_for_session_ = false;
     power_restored_ = false;
+    result_accepted_ = false;
     hard_cap_deadline_ms_ = now_ms + cfg_.hard_cap_ms;
     last_started_phase_ = -1;
   } else if (static_cast<int>(c.phase) == last_started_phase_) {
@@ -43,6 +44,15 @@ void CalSweep::on_result(const rc::CalResult& r, uint64_t now_ms) {
   // flight (or arriving with no session open at all) is ignored outright,
   // same as a repeated command -- see stale_nonce_result_is_ignored.
   if (!has_session_ || r.nonce != nonce_) return;
+  // Idempotent by nonce, same spirit as on_cmd's (nonce, phase) guard: the
+  // uplink can duplicate a result frame exactly as it duplicates commands,
+  // and a second acceptance means a second trip through the apply path --
+  // a second /etc/mabur.toml flash write. cal_apply.h's whole design is
+  // one write per session (a past bug wore out flash writing config on
+  // every bitrate change), so a repeat of the nonce already accepted here
+  // must be a no-op, not a re-arm of Applying.
+  if (result_accepted_) return;
+  result_accepted_ = true;
   pending_result_ = r;
   state_ = State::Applying;
 }
@@ -51,6 +61,16 @@ std::optional<rc::CalResult> CalSweep::take_pending_result() {
   if (!pending_result_.has_value()) return std::nullopt;
   auto r = pending_result_;
   pending_result_.reset();
+  // Nothing left to apply: fall back to the same "awaiting the next
+  // session event" limbo a finished phase leaves behind, reusing
+  // await_deadline_ms_ from whenever the phase completed. This is safe
+  // because on_cmd/on_result/pump are only ever called from one thread in
+  // sequence (the class's whole contract) -- if this result got this far
+  // at all, its own now_ms was still short of that deadline, so pump()
+  // cannot have already fired the timeout on an earlier, smaller now_ms.
+  // Task 11 issuing the verify-phase CalCmd right after this call is what
+  // actually moves things along, same as a fine phase following coarse.
+  if (state_ == State::Applying) state_ = State::Idle;
   return r;
 }
 
@@ -74,9 +94,10 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 
   switch (state_) {
     case State::Idle:
-      // Between phases (or between the last phase and a result): give the
-      // GS up to await_next_ms to either send the next phase or the
-      // result before this session gives up on its own.
+      // Between phases (or between the last phase and a result, or
+      // between draining a result and the verify phase it should trigger):
+      // give the GS up to await_next_ms to move things along before this
+      // session gives up on its own.
       if (has_session_ && now_ms >= await_deadline_ms_) close_session(pwr);
       return;
     case State::Applying:
@@ -112,6 +133,13 @@ void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
       return;
     }
     const Cell cell = cells_[cursor_];
+    if (frames_per_cell_ == 0) {
+      // Nothing to attribute to this cell -- step over it rather than
+      // parking the radio there (index write + ladder swap) to send a
+      // frame nobody asked for.
+      ++cursor_;
+      return;
+    }
     active_rate_ = cell.rate;
     active_idx_ = cell.idx;
     // Every frame is stamped with the cell it's sent in (attribution IS

@@ -144,6 +144,11 @@ class CalSweep {
   bool zeroed_for_session_ = false;
   int base_ref_idx_ = 0;
   bool power_restored_ = false;
+  // Latched the first time this session's on_result() is accepted, so a
+  // duplicated result frame (the uplink retransmits same as it does
+  // commands) cannot re-arm Applying and drive a second cal_apply flash
+  // write -- see the comment on on_result()'s definition.
+  bool result_accepted_ = false;
 
   // Current phase's cell plan and cursor.
   std::vector<Cell> cells_;
@@ -152,7 +157,14 @@ class CalSweep {
   uint8_t active_rate_ = 0;
   uint8_t active_idx_ = 0;
 
-  // Per-cell frame pacing, copied out of the accepted CalCmd.
+  // Per-cell frame pacing, copied out of the accepted CalCmd. gap_us is
+  // truncated to whole milliseconds here -- pump()'s only clock is a
+  // uint64_t now_ms -- so the shipped plan runs gap_us=2000 (2 ms)
+  // deliberately: it lands exactly on this quantization. Lowering gap_us
+  // much below ~1000 will silently collapse to "as fast as pump() is
+  // called" rather than actually spacing frames tighter, since sub-ms
+  // gaps have no representation at this resolution; giving pump() a
+  // finer-grained clock is the fix if that's ever needed.
   uint16_t frames_per_cell_ = 0;
   uint32_t settle_ms_ = 0;
   uint32_t gap_ms_ = 0;
