@@ -80,6 +80,14 @@ class TestReport(unittest.TestCase):
         out = render(GOOD + "C not a record\nW\n")
         self.assertIn("mcs3", out)
 
+    def test_malformed_field_value_is_skipped_not_fatal(self):
+        # Right shape (6 tokens for a W record), but a non-numeric field --
+        # this must reach the try/except ValueError branch inside
+        # _Run.feed_line, not the tag/length filtering the line above
+        # exercises, which never gets as far as int().
+        out = render(GOOD + "W abc 91 28 0 1\n")
+        self.assertIn("mcs3", out)
+
     def test_unknown_version_is_refused_not_misparsed(self):
         with self.assertRaises(maburcal.UnsupportedLog):
             render(GOOD.replace("callog 1", "callog 9"))
@@ -101,6 +109,31 @@ class TestReport(unittest.TestCase):
     def test_missing_header_is_refused(self):
         with self.assertRaises(maburcal.UnsupportedLog):
             render("W 0 91 28 0 1\n")
+
+    def test_written_line_only_when_verify_completed(self):
+        # A run with V records reached and passed the drone's self-initiated
+        # verify sweep, which only runs after a successful apply -- the one
+        # signal cal.log actually carries for "this run's config landed".
+        out = render(GOOD)
+        self.assertIn("written: /etc/mabur.toml", out)
+
+    def test_no_verify_reports_not_written(self):
+        # Walls measured (a W record exists) but the run never produced a
+        # verify pass -- e.g. phase 2's command was lost and the session's
+        # deadline expired (Task 10's await_next_timeout path). cal.log has
+        # no record of an apply outcome, so this must not claim one.
+        text = "callog 1\nR 44 53 1.00\nW 0 91 28 0 1\n"
+        out = render(text)
+        self.assertNotIn("written: /etc/mabur.toml", out)
+        self.assertIn("not written", out)
+
+    def test_no_measurements_reports_not_written(self):
+        # A run that only ever wrote its R line (e.g. the ack for phase 1
+        # arrived but nothing was ever measured) must not claim a write.
+        text = "callog 1\nR 45 53 1.00\n"
+        out = render(text)
+        self.assertNotIn("written: /etc/mabur.toml", out)
+        self.assertIn("not written", out)
 
 
 if __name__ == "__main__":

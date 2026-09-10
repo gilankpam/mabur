@@ -24,6 +24,7 @@ parse here silently costs that capability rather than merely failing loud.
 python3 standard library only -- there is no pip on the GS.
 """
 import argparse
+import math
 import os
 import re
 import socket
@@ -152,14 +153,46 @@ def _flag_string(flags):
     return ",".join(name for bit, name in FLAG_NAMES if flags & bit)
 
 
+def _margin_steps(margin_db):
+    # margin_db is in dB, TXAGC steps are 0.25 dB -- see power_plan.h.
+    # floor(x + 0.5) matches C++'s std::lround (round-half-away-from-zero)
+    # for the non-negative margins this kit ever deals in, rather than
+    # Python's round() (round-half-to-even) -- so a report never disagrees
+    # with the park index the drone actually flew over an exact .5 tie.
+    return math.floor(margin_db * 4 + 0.5)
+
+
+def _apply_status_line(run):
+    """What the log can actually attest to about whether this run's
+    measurements ever reached the drone's config.
+
+    cal.log has no record for the apply outcome itself -- Task 9's
+    OutOfRange/BackupFailed/WriteFailed/ReparseFailed results, and a
+    session that never gets a phase-2 command at all (Task 10's
+    await_next_timeout_returns_to_idle_without_applying), all end a run
+    with nothing written and nothing on the wire for the GS to log. `V`
+    records are the usable signal instead: CalSession only emits them
+    once the drone's self-initiated verify sweep runs, and that sweep is
+    only armed after a successful apply (design doc step 9). So a run
+    with verify data DID apply; a run with only wall data measured but
+    never confirmed an apply; a run with neither did nothing at all.
+    """
+    if run.verify:
+        return f"written: {CONFIG_PATH} (backup {CONFIG_BACKUP})"
+    if run.walls:
+        return ("not written: walls were measured but no verify pass "
+                "completed -- the drone's config was not confirmed updated "
+                "by this run")
+    return "not written: this run produced no measurements"
+
+
 def _render_run(run):
     lines = [
         f"run nonce={run.nonce} base_ref={run.base_ref_idx} "
         f"margin={run.margin_db:.2f}dB",
         f"{'rate':<6}{'wall':>6}{'park':>6}{'verify':>7}   flags",
     ]
-    # margin_db is in dB, TXAGC steps are 0.25 dB -- see power_plan.h.
-    park_step = round(run.margin_db * 4)
+    park_step = _margin_steps(run.margin_db)
     for rate in range(8):
         if rate not in run.walls:
             continue
@@ -181,7 +214,7 @@ def _render_run(run):
     legacy_s = "undetermined" if legacy_wall < 0 else str(legacy_wall)
     lines.append(f"legacy  {legacy_s} (derived from mcs0)")
     lines.append(f"base_ref_idx {run.base_ref_idx}")
-    lines.append(f"written: {CONFIG_PATH} (backup {CONFIG_BACKUP})")
+    lines.append(_apply_status_line(run))
     return "\n".join(lines)
 
 
@@ -222,6 +255,7 @@ def _require_reply(message):
 
 
 _STATE_RE = re.compile(r"state=(\S+)")
+# gs/src/cal_session.cpp:168-175 emits these lowercase.
 TERMINAL_STATES = ("done", "failed", "idle")
 
 
@@ -277,7 +311,7 @@ def cmd_start(args):
         print()
         try:
             print(render_report(path), end="")
-        except UnsupportedLog as e:
+        except (UnsupportedLog, OSError) as e:
             print(f"could not render {path}: {e}")
     else:
         print(f"\nsession ended ({state}); could not find its cal.log "
