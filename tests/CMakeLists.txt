@@ -116,6 +116,7 @@ if(MABUR_BUILD_DRONE)
   add_mtest(test_telemetry test_telemetry.cpp LIBS mabur_drone_core)
   add_mtest(test_power_plan test_power_plan.cpp LIBS mabur_drone_core)
   add_mtest(test_cal_apply test_cal_apply.cpp LIBS mabur_drone_core)
+  add_mtest(test_cal_sweep test_cal_sweep.cpp LIBS mabur_drone_core)
   add_mtest(test_debug_http test_debug_http.cpp LIBS mabur_drone_core)
   add_mtest(test_probe_source test_probe_source.cpp LIBS mabur_drone_core)
 

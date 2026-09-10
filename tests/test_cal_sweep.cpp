@@ -1,0 +1,246 @@
+#include "mtest.h"
+#include "cal_sweep.h"
+#include "mabur/cal_wire.h"
+#include "radio_tx.h"
+
+#include <vector>
+
+using namespace mabur;
+
+namespace {
+
+// Captures every built frame so the test can parse the payloads back out.
+struct CaptureSink : FrameSink {
+  std::vector<std::vector<uint8_t>> frames;
+  bool send(const uint8_t* f, size_t n) override {
+    frames.emplace_back(f, f + n);
+    return true;
+  }
+};
+
+struct FakePowerCtl : CalSweep::PowerCtl {
+  std::vector<int> index_writes;
+  int zero_diff_calls = 0;
+  int base_ref = 53;
+  bool set_index_override(int idx) override {
+    index_writes.push_back(idx);
+    return true;
+  }
+  bool zero_rate_diffs() override { ++zero_diff_calls; return true; }
+  int read_base_ref_idx() override { return base_ref; }
+};
+
+// 2 rates x 4 indices x 5 frames.
+rc::CalCmd small_cmd(uint8_t phase = cal::kPhaseCoarse, uint32_t nonce = 1) {
+  rc::CalCmd c;
+  c.vtx_id = 1;
+  c.nonce = nonce;
+  c.phase = phase;
+  c.frames_per_cell = 5;
+  c.settle_ms = 0;
+  c.gap_us = 0;
+  c.windows = {{0, 0, 12, 4}, {5, 40, 52, 4}};
+  return c;
+}
+
+rc::CalCmd coarse_cmd() { return small_cmd(cal::kPhaseCoarse, 7); }
+
+// Runs pump() until the sweep leaves Sweeping or the budget is spent.
+void run_to_quiescence(CalSweep& s, RadioTx& tx, FakePowerCtl& pwr,
+                       uint64_t start_ms = 0, uint64_t step_ms = 1,
+                       int max_steps = 100000) {
+  uint64_t t = start_ms;
+  for (int i = 0; i < max_steps && s.state() == CalSweep::State::Sweeping;
+       ++i) {
+    s.pump(t, tx, pwr);
+    t += step_ms;
+  }
+}
+
+// Parses a captured frame's calibration payload. Frames are
+// radiotap | dot11(26) | body, so the body is found by scanning for the
+// magic rather than by hard-coding a header length the builder owns.
+bool payload_of(const std::vector<uint8_t>& frame, cal::CalFrameInfo* out) {
+  for (size_t i = 0; i + cal::kCalPayloadLen <= frame.size(); ++i)
+    if (cal::parse_cal_payload(frame.data() + i, cal::kCalPayloadLen, out))
+      return true;
+  return false;
+}
+
+}  // namespace
+
+TEST(walks_every_cell_in_the_plan) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(), 0);
+  run_to_quiescence(s, tx, pwr);
+  // 8 cells x 5 frames.
+  CHECK(sink.frames.size() == 40);
+  // One index write per cell, in plan order.
+  REQUIRE(pwr.index_writes.size() == 8);
+  CHECK(pwr.index_writes[0] == 0);
+  CHECK(pwr.index_writes[3] == 12);
+  CHECK(pwr.index_writes[4] == 40);
+  CHECK(pwr.index_writes[7] == 52);
+}
+
+TEST(stamps_each_frame_with_its_rate_and_index) {
+  // Attribution IS the measurement: a frame stamped with the wrong cell
+  // corrupts that cell's delivery ratio and moves the wall.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(), 0);
+  run_to_quiescence(s, tx, pwr);
+  REQUIRE(sink.frames.size() == 40);
+  int rate0 = 0, rate5 = 0;
+  for (const auto& f : sink.frames) {
+    cal::CalFrameInfo info;
+    REQUIRE(payload_of(f, &info));
+    CHECK(info.phase == cal::kPhaseCoarse);
+    if (info.rate == 0) { ++rate0; CHECK(info.idx % 4 == 0); CHECK(info.idx <= 12); }
+    else { ++rate5; CHECK(info.rate == 5); CHECK(info.idx >= 40 && info.idx <= 52); }
+  }
+  CHECK(rate0 == 20);
+  CHECK(rate5 == 20);
+}
+
+TEST(zeroes_rate_diffs_before_sweeping) {
+  // Per-rate walls must be measured against a common base, so the
+  // wall-equalized diff table comes off before the first frame.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(), 0);
+  s.pump(0, tx, pwr);
+  CHECK(pwr.zero_diff_calls == 1);
+}
+
+TEST(ignores_a_repeat_of_the_running_phase) {
+  // The uplink loses 30-50% of frames, so the GS repeats. A repeat must not
+  // restart the phase or re-zero the cell cursor.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  const auto c = small_cmd();
+  s.on_cmd(c, 0);
+  s.pump(0, tx, pwr);
+  s.pump(1, tx, pwr);
+  const size_t after_two_pumps = sink.frames.size();
+  s.on_cmd(c, 2);                       // exact repeat: same nonce+phase
+  CHECK(pwr.zero_diff_calls == 1);      // not re-entered
+  s.pump(3, tx, pwr);
+  CHECK(sink.frames.size() > after_two_pumps);  // still advancing, not reset
+}
+
+TEST(accepts_the_next_phase_after_the_current_one_finishes) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  run_to_quiescence(s, tx, pwr);
+  const size_t after_coarse = sink.frames.size();
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000);
+  CHECK(s.state() == CalSweep::State::Sweeping);
+  run_to_quiescence(s, tx, pwr, 1000);
+  CHECK(sink.frames.size() > after_coarse);
+  cal::CalFrameInfo info;
+  REQUIRE(payload_of(sink.frames.back(), &info));
+  CHECK(info.phase == cal::kPhaseFine);
+}
+
+TEST(hard_cap_returns_to_idle_even_with_the_gs_silent) {
+  // The open-loop guarantee: no command, no result, no link -- the drone
+  // still restores itself. Losing the link mid-sweep is the EXPECTED case.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweepCfg cfg;
+  cfg.hard_cap_ms = 500;
+  CalSweep s(cfg);
+  rc::CalCmd big = small_cmd();
+  big.frames_per_cell = 60000;   // would never finish on its own
+  s.on_cmd(big, 0);
+  CHECK(s.state() == CalSweep::State::Sweeping);
+  s.pump(600, tx, pwr);
+  CHECK(s.state() == CalSweep::State::Idle);
+  CHECK(!s.active());
+}
+
+TEST(await_next_timeout_returns_to_idle_without_applying) {
+  // Phase 2 never arrives: end the session, write nothing.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweepCfg cfg;
+  cfg.await_next_ms = 1000;
+  CalSweep s(cfg);
+  s.on_cmd(small_cmd(), 0);
+  run_to_quiescence(s, tx, pwr);
+  s.pump(5000, tx, pwr);
+  CHECK(s.state() == CalSweep::State::Idle);
+  CHECK(!s.take_pending_result().has_value());
+}
+
+TEST(result_moves_to_applying_then_verify) {
+  // Applying is what arms the verify pass -- no further command needed.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(), 0);
+  run_to_quiescence(s, tx, pwr);
+  rc::CalResult r;
+  r.vtx_id = 1;
+  r.nonce = 1;
+  r.walls = {88, 88, 88, 95, 73, 54, 51, 49};
+  r.legacy_wall = 88;
+  s.on_result(r, 100);
+  CHECK(s.state() == CalSweep::State::Applying);
+  const auto pending = s.take_pending_result();
+  REQUIRE(pending.has_value());
+  CHECK(pending->walls[5] == 54);
+}
+
+TEST(stale_nonce_result_is_ignored) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  run_to_quiescence(s, tx, pwr);
+  rc::CalResult r;
+  r.vtx_id = 1;
+  r.nonce = 999;   // a different session
+  s.on_result(r, 100);
+  CHECK(s.state() != CalSweep::State::Applying);
+  CHECK(!s.take_pending_result().has_value());
+}
+
+TEST(restores_power_state_on_every_exit_path) {
+  // Timeout and completion alike must leave the radio as they found it, or a
+  // failed calibration silently changes the drone's operating power.
+  for (int path = 0; path < 2; ++path) {
+    CaptureSink sink;
+    RadioTx tx(sink);
+    FakePowerCtl pwr;
+    CalSweepCfg cfg;
+    cfg.hard_cap_ms = 500;
+    CalSweep s(cfg);
+    rc::CalCmd c = small_cmd();
+    if (path == 1) c.frames_per_cell = 60000;   // force the timeout path
+    s.on_cmd(c, 0);
+    run_to_quiescence(s, tx, pwr);
+    s.pump(600, tx, pwr);
+    CHECK(s.state() == CalSweep::State::Idle);
+    CHECK(s.power_restored_for_test());
+  }
+}
+
+MTEST_MAIN
