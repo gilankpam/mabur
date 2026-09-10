@@ -1772,6 +1772,20 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // snapshot is strictly better than a wrong-looking one.
       rc::Telem t = *last_telem_snapshot.load(std::memory_order_relaxed);
       t.tlm_seq = telem_wire_seq.fetch_add(1, std::memory_order_relaxed);
+      // Re-review fix: the snapshot's link-rtt fields describe WHEN THE
+      // SNAPSHOT WAS BUILT, not this ack -- a coarse-phase ack can go out
+      // up to ~1 s after that build, and every 200 ms GS retransmission
+      // (Important fix 3's re-armed ack) sends another, progressively
+      // more stale one. gs/src/main.cpp feeds every Telem to
+      // rtt_est.on_telem() unconditionally, whose only plausibility gate
+      // is rtt_us < 3 s -- comfortably wide enough to accept these as real
+      // samples into an EWMA whose true value is ~7 ms. Clearing the echo
+      // fields (and bit3, which marks them valid) makes rtt_est's own
+      // !echo_valid check reject the ack outright instead.
+      t.flags &= ~0x08;      // bit3 rcf_seq_echo valid -- not valid on an ack
+      t.rcf_seq_echo = 0;
+      t.rcf_age_ms = 0;
+      t.pts_at_build = 0;
       t.flags |= 0x40;  // bit6 cal_active, OR'd onto the snapshot's real flags
       t.cal_base_ref_idx = base_ref_idx;
       auto telem = rc::pack_telem(t);
@@ -2385,6 +2399,20 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   std::fprintf(stderr,
                "maburd radio: MAC carrier sense (CCA+EDCCA) requested OFF -- TX "
                "will not defer to co-channel traffic\n");
+
+  // Always start clean: a flat TXAGC index override is sticky in the chip
+  // across a process restart, and the ONLY place that ever sets one is a
+  // calibration sweep (cal_sweep.cpp/CalSweep::PowerCtl -- pump_sweeping
+  // parks it per cell, close_session parks it at the anchor). A maburd
+  // killed mid-session (operator interrupt, wrapper respawn, watchdog)
+  // never reaches the TX writer thread's falling-edge restore
+  // (restore_operating_power(), below) and hands off to the next process
+  // with the override still live -- reverting it here, unconditionally,
+  // before the power plan is applied, means a fresh process never depends
+  // on how the previous one died. -1 reverts to the calibrated table
+  // (devourer/src/TxPower.h); a bring-up with no history at all just
+  // clears a knob that was already clear.
+  rtl_device->SetTxPowerIndexOverride(-1);
 
   // power_mode == "offset": program the wall-equalized per-rate diff table
   // once at bring-up, then zero the global offset once (see below) — power
