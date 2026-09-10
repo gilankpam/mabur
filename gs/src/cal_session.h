@@ -18,6 +18,12 @@
 
 namespace maburgs {
 
+// Forward-declared rather than #included: CalSession only ever holds a
+// pointer to it (an optional sink, not an owned collaborator), and the
+// definition (cal_log.h -> log_writer.h) is only needed where the pointer
+// is actually dereferenced (cal_session.cpp).
+class CalLog;
+
 struct CalSessionCfg {
   CalThresholds th;
   uint32_t ack_timeout_ms = 3000;
@@ -38,7 +44,13 @@ class CalSession {
     Failed
   };
 
-  explicit CalSession(CalSessionCfg cfg) : cfg_(cfg) {}
+  // `log` is an optional sink for the session's own raw data (per-cell
+  // tallies, analyzed walls, verify results) -- nullptr (the default) is
+  // exactly how every existing caller/test that predates cal.log logging
+  // keeps compiling and behaving unchanged. Not owned; must outlive the
+  // session.
+  explicit CalSession(CalSessionCfg cfg, CalLog* log = nullptr)
+      : cfg_(cfg), log_(log) {}
 
   // Refuses (returning false and filling `*err`) unless the link is up, the
   // peer advertised CAP_CALIBRATE, and no session is already running -- the
@@ -176,6 +188,12 @@ class CalSession {
   // Park index per rate (wall - margin), -1 where undetermined. Feeds both
   // CalResult and the locally-built verify plan.
   std::array<int, 8> pending_park_{};
+
+  // Optional cal.log sink; see the constructor comment. Every call site
+  // gates on this being non-null AND (inside CalLog itself) on ok(), so a
+  // null sink or an unopenable file changes nothing about the session's
+  // own behavior.
+  CalLog* log_ = nullptr;
 };
 
 }  // namespace maburgs

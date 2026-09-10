@@ -283,13 +283,13 @@ static int run_radio(const maburgs::Config& cfg) {
   }
 #endif
   // TX-power wall calibration (2026-09-10-tx-power-calibration): the
-  // session brain and its loopback command listener. Unlike loss_ctl
-  // above, this is compiled into every prod build -- calibration is a
-  // real operator workflow, not a bench-only scaffold -- so there is no
-  // MABUR_LOSS_SIM-style guard (cal_control.h). Port 8400 is pinned by the
-  // design doc: the 830x block belongs to the stats sideport, its UDP
-  // sinks and the OSD feed.
-  maburgs::CalSession cal_session(maburgs::CalSessionCfg{});
+  // loopback command listener. Unlike loss_ctl above, this is compiled
+  // into every prod build -- calibration is a real operator workflow, not
+  // a bench-only scaffold -- so there is no MABUR_LOSS_SIM-style guard
+  // (cal_control.h). Port 8400 is pinned by the design doc: the 830x
+  // block belongs to the stats sideport, its UDP sinks and the OSD feed.
+  // CalSession itself is constructed further down, once cal_log exists --
+  // it needs a CalLog* to write into.
   maburgs::CalControl cal_ctl;
   if (!cal_ctl.open(8400))
     std::fprintf(stderr,
@@ -368,6 +368,12 @@ static int run_radio(const maburgs::Config& cfg) {
                  "trace will be lost\n",
                  cal_log_dir.c_str());
   }
+  // The session brain. cal_log always exists by now (emplace() above is
+  // unconditional); CalLog::ok() being false just makes every record
+  // method a silent no-op (cal_log.h's own contract), so handing over
+  // &*cal_log unconditionally is safe even when the directory resolution
+  // above failed.
+  maburgs::CalSession cal_session(maburgs::CalSessionCfg{}, &*cal_log);
   // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md)
   // and flight.jsonl (debug-log consolidation, 2026-09-06) share one
   // StatsExporter snapshot, so the snapshot builder runs whenever either

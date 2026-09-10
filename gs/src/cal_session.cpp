@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "cal_log.h"
+
 namespace maburgs {
 namespace {
 
@@ -200,7 +202,30 @@ void CalSession::step(uint64_t now_ms) {
       if (now_ms >= phase_end_ms_ + cfg_.phase_slack_ms) finish_phase(now_ms);
       break;
     case State::Verify:
-      if (now_ms >= phase_end_ms_ + cfg_.phase_slack_ms) state_ = State::Done;
+      if (now_ms >= phase_end_ms_ + cfg_.phase_slack_ms) {
+        // Verify completion: one V record per rate that actually had a
+        // park index to verify (make_verify_plan skips undetermined
+        // rates entirely, so cells_[r] is empty for those -- nothing to
+        // log, by design, not a gap). Best single card, matching
+        // analyze_rate's own convention (PA compression degrades both
+        // cards' waveform together; the union would only inflate the
+        // number and hide a compressed rate as "verified clean").
+        if (log_) {
+          for (int r = 0; r < 8; ++r) {
+            const auto it = cells_[static_cast<size_t>(r)].begin();
+            if (it == cells_[static_cast<size_t>(r)].end()) continue;
+            const CalCell& c = it->second;
+            const int best =
+                std::max(c.received[0], c.received[1]);
+            const int pct = c.expected > 0
+                ? static_cast<int>(std::lround(
+                      100.0 * static_cast<double>(best) / c.expected))
+                : 0;
+            log_->verify(static_cast<uint8_t>(r), c.idx, pct);
+          }
+        }
+        state_ = State::Done;
+      }
       break;
     default:
       break;
@@ -272,10 +297,33 @@ void CalSession::finish_phase(uint64_t now_ms) {
   std::array<std::vector<CalCell>, 8> snapshot;
   for (int r = 0; r < 8; ++r) snapshot[static_cast<size_t>(r)] = sorted_cells(r);
 
+  // Raw per-cell record, BOTH phases: this is the only moment the data
+  // exists to log -- begin_await()/begin_verify() clear_cells() the raw
+  // tally as soon as the next phase (or verify) starts, so a coarse-only
+  // log call would silently lose every fine-phase cell. running_phase_
+  // still names the phase that just ended (finish_phase() runs before any
+  // transition touches it).
+  if (log_)
+    for (int r = 0; r < 8; ++r)
+      for (const auto& c : snapshot[static_cast<size_t>(r)])
+        log_->cell(running_phase_, static_cast<uint8_t>(r), c.idx, c);
+
   if (running_phase_ == mabur::cal::kPhaseCoarse) {
     for (int r = 0; r < 8; ++r)
       coarse_walls_[static_cast<size_t>(r)] =
           analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);
+
+    // Logged here too, not only from finalize_result(): a two-phase run
+    // refines only the rows coarse found a real dip in (see the fine-phase
+    // comment below), so coarse's own numbers are the only record that
+    // ever exists for the rest -- and even for a refined row, seeing what
+    // coarse alone concluded is exactly the kind of provenance cal.log
+    // exists to keep. maburcal's reader keys W lines by rate in a dict, so
+    // a later (fine-phase) W line for the same rate simply supersedes this
+    // one -- harmless, not a duplicate-data bug.
+    if (log_)
+      for (int r = 0; r < 8; ++r)
+        log_->wall(static_cast<uint8_t>(r), coarse_walls_[static_cast<size_t>(r)]);
 
     const auto fine_cmd = make_fine_plan(vtx_id_, nonce_, coarse_walls_);
     if (fine_cmd.windows.empty()) {
@@ -316,6 +364,9 @@ void CalSession::finish_phase(uint64_t now_ms) {
     if (std::abs(fw.wall - cw.wall) > 1) merged.flags |= kCalDrift;
     final_walls_[static_cast<size_t>(r)] = merged;
   }
+  if (log_)
+    for (int r = 0; r < 8; ++r)
+      log_->wall(static_cast<uint8_t>(r), final_walls_[static_cast<size_t>(r)]);
   finalize_result();
 }
 

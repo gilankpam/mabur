@@ -1,12 +1,35 @@
 #include "mtest.h"
 #include "cal_session.h"
 #include "cal_plan.h"
+#include "cal_log.h"
 
+#include <cstdlib>
+#include <fstream>
 #include <string>
+#include <sys/stat.h>
+#include <vector>
 
 using namespace maburgs;
 
 namespace {
+
+// Mirrors tests/test_cal_log.cpp's own fresh_dir(): a clean scratch
+// directory per test, under the build tree (MABUR_TEST_SCRATCH_DIR), not
+// /tmp. Best-effort cleanup, deliberately unchecked (see that file's
+// comment on system()'s warn_unused_result).
+std::string fresh_dir(const char* name) {
+  const std::string d = std::string(MABUR_TEST_SCRATCH_DIR) + "/" + name;
+  if (std::system(("rm -rf " + d).c_str()) != 0) { /* best-effort */ }
+  ::mkdir(d.c_str(), 0755);
+  return d;
+}
+
+std::vector<std::string> cal_log_lines(const std::string& dir) {
+  std::ifstream f(dir + "/cal.log");
+  std::vector<std::string> out;
+  for (std::string l; std::getline(f, l);) out.push_back(l);
+  return out;
+}
 
 // The real TXAGC transfer curve is a flat floor below idx ~28, a ~0.3 dB/idx
 // ramp to ~91, then a flat ceiling to 127 (docs/txagc-calibration.md). A
@@ -313,6 +336,129 @@ TEST(gate_contract_covers_every_transmit_class) {
   // ... and after abort, everything may transmit again immediately.
   s.abort("test");
   CHECK(!s.radio_silent(12));
+}
+
+TEST(null_log_sink_is_inert) {
+  // The gap this covers: CalLog::cell()/wall()/verify() went unwired for
+  // eleven tasks with nothing catching it -- every existing test above
+  // constructs a CalSession with no CalLog* and none of them noticed a
+  // real cal.log was never getting written. This makes the "no sink ->
+  // nothing happens, no crash" contract an explicit assertion rather than
+  // an accident of every other test's setup.
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg);  // no CalLog* -- log_ defaults to nullptr
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 30, 0, &err));
+  s.due_cmd(0);
+  s.on_ack(30, 53, 1);
+  const auto coarse = make_coarse_plan(1, 30);
+  feed_phase(s, coarse, 100, 10);
+  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+  // finish_phase() and finalize_result() run their log_ calls right here;
+  // with log_ == nullptr this must complete exactly as every other test
+  // above does, not crash or silently change the result.
+  const auto res = s.due_result(t1 + 2000);
+  REQUIRE(res.has_value());
+  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == 88);
+}
+
+TEST(cal_log_records_cells_and_walls_at_phase_end) {
+  // The actual regression test for the gap: a real CalLog wired in must
+  // come out of a coarse-only run holding a C row per swept cell and a W
+  // row per rate, with an unheard rate's wall/floor written as the
+  // documented -1 sentinels (cal_log.h) rather than 0 or garbage.
+  const std::string dir = fresh_dir("cal_session_log_cells");
+  {
+    // Scoped: LogWriter's writer thread flushes on ~LogWriter (joined from
+    // CalLog's destructor), so the file is only guaranteed complete once
+    // `log` (and the CalSession pointing at it) goes out of scope --
+    // exactly the pattern tests/test_cal_log.cpp uses.
+    CalLog log(dir);
+    log.header();
+
+    CalSessionCfg cfg;
+    cfg.phase_slack_ms = 0;
+    CalSession s(cfg, &log);
+    s.set_peer(true, true);
+    std::string err;
+    REQUIRE(s.start(1, 31, 0, &err));
+    log.run(31, 53, s.margin_db());
+    s.due_cmd(0);
+    s.on_ack(31, 53, 1);
+
+    // Every rate clean except rate 3, which hears nothing at all -> that
+    // row never reaches deliver_pct anywhere and comes out kCalUndetermined.
+    const auto coarse = make_coarse_plan(1, 31);
+    feed_phase_fn(s, coarse, [](uint8_t r, int) { return r == 3 ? 0 : 100; }, 10);
+    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+    // Undetermined and no-dip rows both skip the fine phase (make_fine_plan),
+    // so this coarse-only run goes straight to Result -- finish_phase() has
+    // already logged everything by the time due_result() returns.
+    REQUIRE(s.due_result(t1 + 2000).has_value());
+  }
+
+  const auto lines = cal_log_lines(dir);
+  int c_count = 0, w_count = 0;
+  bool saw_undetermined_wall = false;
+  for (const auto& l : lines) {
+    if (l.rfind("C ", 0) == 0) ++c_count;
+    if (l.rfind("W ", 0) == 0) {
+      ++w_count;
+      if (l == "W 3 -1 -1 0 2") saw_undetermined_wall = true;
+    }
+  }
+  // Coarse sweeps idx 0..124 step 4 = 32 cells/rate * 8 rates.
+  CHECK(c_count == 256);
+  CHECK(w_count == 8);
+  CHECK(saw_undetermined_wall);
+}
+
+TEST(cal_log_records_verify_results) {
+  const std::string dir = fresh_dir("cal_session_log_verify");
+  {
+    // Scoped for the same reason as the test above: read only after both
+    // `log` and `s` (which holds a pointer into it) are gone.
+    CalLog log(dir);
+    log.header();
+
+    CalSessionCfg cfg;
+    cfg.phase_slack_ms = 0;
+    CalSession s(cfg, &log);
+    s.set_peer(true, true);
+    std::string err;
+    REQUIRE(s.start(1, 32, 0, &err));
+    log.run(32, 53, s.margin_db());
+    s.due_cmd(0);
+    s.on_ack(32, 53, 1);
+
+    // Every rate clean everywhere -> knee wall 88 (see coarse_then_fine_
+    // then_result), this session's own park index 88 - 4 = 84 (1 dB margin).
+    const auto coarse = make_coarse_plan(1, 32);
+    feed_phase(s, coarse, 100, 10);
+    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+    REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
+
+    // 97/100 on card 0 for rate 0's verify cell.
+    for (int k = 0; k < 97; ++k) {
+      mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify,
+                                static_cast<uint16_t>(k)};
+      s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
+    }
+    // Close the verify window: phase_slack_ms is 0, and a verify plan with
+    // all 8 rates parked (none undetermined here) runs well under a
+    // minute, so this tick is guaranteed past phase_end_ms_ regardless of
+    // the exact per-cell timing math.
+    s.due_cmd(t1 + 2000 + 60000);
+    CHECK(s.state() == CalSession::State::Done);
+  }
+
+  const auto lines = cal_log_lines(dir);
+  bool saw_rate0_verify = false;
+  for (const auto& l : lines)
+    if (l == "V 0 84 97") saw_rate0_verify = true;
+  CHECK(saw_rate0_verify);
 }
 
 MTEST_MAIN
