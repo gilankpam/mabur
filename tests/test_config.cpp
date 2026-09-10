@@ -66,8 +66,9 @@ TEST(load_config_default_file_is_the_flight_config) {
   // this way because rate_walls_idx below is a per-UNIT calibration and the
   // shipped file cannot know the wall of the board it lands on -- flashing
   // someone else's walls would park every rate at a ceiling never measured
-  // there. Set "offset" once you have run docs/txagcbench.md on your own
-  // vtx; then wall_margin_db is the only lever that moves TX power.
+  // there. Set "offset" once you have run `maburcal start` on your own vtx
+  // (see docs/calibration.md); then wall_margin_db is the only lever that
+  // moves TX power.
   // NOTE this drone flies "offset": /etc/mabur.toml and this file diverge on
   // exactly this key, deliberately.
   CHECK(cfg.radio.power_mode == "none");

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Cross-build the drone-side ARM binaries with the OpenIPC Buildroot
-# toolchain: maburd (DYNAMIC glibc, armv7-a hard-float) plus the two bench
-# TX harnesses. This replaced the musl/static build on 2026-08-29 with the
-# venc fold-in flag day (was tools/build-arm-glibc.sh; the musl script and
-# cmake/arm-musl.cmake are deleted).
+# toolchain: maburd (DYNAMIC glibc, armv7-a hard-float) plus the bench TX
+# harness (linkbench; txagcbench was deleted along with bench/txagcbench/
+# when the TX-power calibration kit superseded it, 2026-09-10). This
+# replaced the musl/static build on 2026-08-29 with the venc fold-in flag
+# day (was tools/build-arm-glibc.sh; the musl script and cmake/arm-musl.cmake
+# are deleted).
 #
 # Why glibc-dynamic, not musl-static any more: maburd now runs the encoder
 # in-process, and the SigmaStar MI libraries it drives (libmi_venc.so and

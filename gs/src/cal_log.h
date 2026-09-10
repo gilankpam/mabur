@@ -20,7 +20,7 @@ struct RateWall;
 // nothing to gain from wiring it into the fixed-slot session writer and
 // every caller that wants one just constructs it from a directory.
 //
-// This file exists because a later task deletes bench/txagcbench/ (the old
+// This file exists because Task 13 deleted bench/txagcbench/ (the old
 // sweep tooling) along with its Python analyzer. cal.log plus the
 // `maburcal report` reader is what replaces that capability -- without it,
 // deleting the old tool would cost the ability to examine a run's
@@ -33,7 +33,10 @@ struct RateWall;
 //   R <nonce> <base_ref> <margin_db>             # once per calibration run
 //   C <phase> <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>
 //                                                # one row per measured cell
-//   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, at Result
+//   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, at each
+//                                                 # phase-end (coarse then
+//                                                 # fine); reader takes
+//                                                 # last-write-wins
 //   V <rate> <idx> <pct>                         # one row per verify cell
 //
 // The marker and the per-run parameters are deliberately split: `callog 1`

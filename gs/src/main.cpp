@@ -331,7 +331,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // every flight. A calibration run is a different risk profile: a
   // bounded (~380-line) trace, once per unit, on a deliberate operator
   // action, and the sole record of a measurement written straight into
-  // the drone's config. Task 13 deletes bench/txagcbench's Python
+  // the drone's config. Task 13 deleted bench/txagcbench's Python
   // analyzer; cal.log + `maburcal report` is the ENTIRE replacement for
   // examining a run's data after the fact -- shipping with debug_log off
   // (as gs/bundle/maburgs.default.toml does since 671c848) must not mean
