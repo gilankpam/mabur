@@ -89,7 +89,15 @@ class CalSweep {
   // sweeping with a fresh cell cursor built from this command's windows,
   // without re-zeroing the diffs a prior phase of the same session already
   // zeroed.
-  void on_cmd(const rc::CalCmd& c, uint64_t now_ms);
+  //
+  // Takes PowerCtl (unlike on_result/pump's later, per-cell uses of it)
+  // because a NEW session's diffs must be zeroed and its base_ref_idx
+  // captured here, synchronously, at acceptance -- before pump() ever
+  // parks the TXAGC at a swept cell's index. A later phase (fine) landing
+  // after an earlier phase already did that would otherwise read the
+  // override instead of the anchor if it read again (see
+  // take_ack_base_ref()'s header comment).
+  void on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr);
 
   // Accepts a measured-wall result for the session currently in flight.
   // Ignored if there is no open session or the nonce doesn't match (a
@@ -115,6 +123,32 @@ class CalSweep {
   // the caller (Task 11's apply/verify wiring) owns it; a second call
   // returns nullopt until another on_result() lands.
   std::optional<rc::CalResult> take_pending_result();
+
+  // Drains the ack payload on_cmd() armed for the phase it just accepted
+  // (nullopt for a call that didn't accept one -- a new/rejected repeat,
+  // constraint 3). The caller (Task 11's RC dispatch) must send exactly
+  // one T_TELEM per drained value, before it next calls pump() for this
+  // phase: CalSession::on_ack() (gs/src/cal_session.h) is what ends the
+  // GS's AwaitAck state and opens its radio-silence window, and it
+  // re-enters AwaitAck for the fine phase, so a drone that acked only once
+  // would leave the GS transmitting into the very sweep the radio-silence
+  // rule exists to keep clear.
+  //
+  // Always the value on_cmd() captured ONCE at session start, never a
+  // fresh PowerCtl::read_base_ref_idx() taken here or inside on_cmd() for
+  // a later phase: by the time a second phase (fine) is accepted, the
+  // first phase has already parked the TXAGC at a swept cell's index
+  // (pump_sweeping never restores between phases), and devourer's
+  // GetTxPowerState reports that override, not the anchor, if read again.
+  std::optional<int> take_ack_base_ref();
+
+  // The same value take_ack_base_ref() vends, without draining it --
+  // non-destructive, so the caller can still ask after already draining an
+  // ack (Task 11's apply/verify wiring needs it again once a result lands,
+  // by which point any ack for the phase that produced it is long gone).
+  // 0 before any phase of this session has ever been accepted -- matches
+  // the wire's own "0 = not read" sentinel (Telem.cal_base_ref_idx).
+  int base_ref_idx() const { return base_ref_idx_; }
 
   // True once this session's TXAGC override has actually been restored to
   // the base reference index read at session start -- i.e. close_session()
@@ -158,6 +192,11 @@ class CalSweep {
   // commands) cannot re-arm Applying and drive a second cal_apply flash
   // write -- see the comment on on_result()'s definition.
   bool result_accepted_ = false;
+
+  // Set by on_cmd() every time it accepts a phase (never on a rejected
+  // repeat), drained by take_ack_base_ref(). See that method's header
+  // comment for why this is always base_ref_idx_, not a fresh read.
+  std::optional<int> pending_ack_base_ref_;
 
   // Current phase's cell plan and cursor.
   std::vector<Cell> cells_;

@@ -74,7 +74,7 @@ TEST(walks_every_cell_in_the_plan) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(), 0);
+  s.on_cmd(small_cmd(), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   // 8 cells x 5 frames.
   CHECK(sink.frames.size() == 40);
@@ -93,7 +93,7 @@ TEST(stamps_each_frame_with_its_rate_and_index) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(), 0);
+  s.on_cmd(small_cmd(), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   REQUIRE(sink.frames.size() == 40);
   int rate0 = 0, rate5 = 0;
@@ -115,7 +115,7 @@ TEST(zeroes_rate_diffs_before_sweeping) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(), 0);
+  s.on_cmd(small_cmd(), 0, pwr);
   s.pump(0, tx, pwr);
   CHECK(pwr.zero_diff_calls == 1);
 }
@@ -128,11 +128,11 @@ TEST(ignores_a_repeat_of_the_running_phase) {
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
   const auto c = small_cmd();
-  s.on_cmd(c, 0);
+  s.on_cmd(c, 0, pwr);
   s.pump(0, tx, pwr);
   s.pump(1, tx, pwr);
   const size_t after_two_pumps = sink.frames.size();
-  s.on_cmd(c, 2);                       // exact repeat: same nonce+phase
+  s.on_cmd(c, 2, pwr);                       // exact repeat: same nonce+phase
   CHECK(pwr.zero_diff_calls == 1);      // not re-entered
   s.pump(3, tx, pwr);
   CHECK(sink.frames.size() > after_two_pumps);  // still advancing, not reset
@@ -143,10 +143,10 @@ TEST(accepts_the_next_phase_after_the_current_one_finishes) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   const size_t after_coarse = sink.frames.size();
-  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000);
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
   CHECK(s.state() == CalSweep::State::Sweeping);
   run_to_quiescence(s, tx, pwr, 1000);
   CHECK(sink.frames.size() > after_coarse);
@@ -163,10 +163,10 @@ TEST(stale_earlier_phase_duplicate_is_ignored_mid_fine_sweep) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   const size_t after_coarse = sink.frames.size();
-  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000);
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
   // Advance partway into the fine sweep -- not finished.
   s.pump(1000, tx, pwr);
   s.pump(1001, tx, pwr);
@@ -177,7 +177,7 @@ TEST(stale_earlier_phase_duplicate_is_ignored_mid_fine_sweep) {
   REQUIRE(fine_so_far < 40);
 
   // The stale coarse retransmission finally lands, late.
-  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 1003);
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 1003, pwr);
   CHECK(s.state() == CalSweep::State::Sweeping);  // still the fine plan
   CHECK(sink.frames.size() == mid_fine);          // cursor did not rewind
 
@@ -199,9 +199,9 @@ TEST(stale_earlier_phase_duplicate_does_not_discard_an_undrained_result) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
   run_to_quiescence(s, tx, pwr);
-  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000);
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
   run_to_quiescence(s, tx, pwr, 1000);
   const size_t after_fine = sink.frames.size();
 
@@ -214,7 +214,7 @@ TEST(stale_earlier_phase_duplicate_does_not_discard_an_undrained_result) {
   CHECK(s.state() == CalSweep::State::Applying);
 
   // A stale coarse retransmission arrives after the result is in.
-  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 2100);
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 2100, pwr);
   CHECK(s.state() == CalSweep::State::Applying);  // not reset to Sweeping
   CHECK(sink.frames.size() == after_fine);        // no cells re-walked
 
@@ -234,7 +234,7 @@ TEST(hard_cap_returns_to_idle_even_with_the_gs_silent) {
   CalSweep s(cfg);
   rc::CalCmd big = small_cmd();
   big.frames_per_cell = 60000;   // would never finish on its own
-  s.on_cmd(big, 0);
+  s.on_cmd(big, 0, pwr);
   CHECK(s.state() == CalSweep::State::Sweeping);
   s.pump(600, tx, pwr);
   CHECK(s.state() == CalSweep::State::Idle);
@@ -249,7 +249,7 @@ TEST(await_next_timeout_returns_to_idle_without_applying) {
   CalSweepCfg cfg;
   cfg.await_next_ms = 1000;
   CalSweep s(cfg);
-  s.on_cmd(small_cmd(), 0);
+  s.on_cmd(small_cmd(), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   s.pump(5000, tx, pwr);
   CHECK(s.state() == CalSweep::State::Idle);
@@ -267,7 +267,7 @@ TEST(result_moves_to_applying_then_verify) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(), 0);
+  s.on_cmd(small_cmd(), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   rc::CalResult r;
   r.vtx_id = 1;
@@ -286,7 +286,7 @@ TEST(stale_nonce_result_is_ignored) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0);
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   rc::CalResult r;
   r.vtx_id = 1;
@@ -308,7 +308,7 @@ TEST(restores_power_state_on_every_exit_path) {
     CalSweep s(cfg);
     rc::CalCmd c = small_cmd();
     if (path == 1) c.frames_per_cell = 60000;   // force the timeout path
-    s.on_cmd(c, 0);
+    s.on_cmd(c, 0, pwr);
     run_to_quiescence(s, tx, pwr);
     s.pump(600, tx, pwr);
     CHECK(s.state() == CalSweep::State::Idle);
@@ -327,7 +327,7 @@ TEST(duplicate_result_for_accepted_nonce_is_ignored) {
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
-  s.on_cmd(small_cmd(), 0);
+  s.on_cmd(small_cmd(), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   rc::CalResult r;
   r.vtx_id = 1;
@@ -348,9 +348,58 @@ TEST(zero_frames_per_cell_sends_nothing) {
   CalSweep s(CalSweepCfg{});
   rc::CalCmd c = small_cmd();
   c.frames_per_cell = 0;
-  s.on_cmd(c, 0);
+  s.on_cmd(c, 0, pwr);
   run_to_quiescence(s, tx, pwr);
   CHECK(sink.frames.size() == 0);
+}
+
+TEST(base_ref_readback_feeds_the_ack) {
+  // The GS range-checks a candidate table against THIS unit's base_ref_idx
+  // (power_plan.h derives every diff from it), so the readback must reach
+  // the acknowledgment or the whole table is unusable on another VTX.
+  FakePowerCtl pwr;
+  pwr.base_ref = 53;
+  CalSweep s(CalSweepCfg{});
+  rc::CalCmd c = coarse_cmd();
+  s.on_cmd(c, 0, pwr);
+  CHECK(s.take_ack_base_ref() == 53);
+}
+
+TEST(ack_base_ref_is_not_re_read_through_a_parked_override) {
+  // A second phase's on_cmd() lands with the FIRST phase's TXAGC override
+  // still parked (pump_sweeping never restores between phases -- see
+  // cal_sweep.h). If the ack re-read base_ref_idx at THIS point instead of
+  // reusing the one value latched at session start, it would report the
+  // override, not the anchor -- devourer/src/TxPower.h: GetTxPowerState's
+  // representative indices report chip truth "for the current moment,"
+  // flat during an override.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  pwr.base_ref = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
+  CHECK(s.take_ack_base_ref() == 53);
+  run_to_quiescence(s, tx, pwr);
+  // Coarse finished with the TXAGC parked at its last swept cell; simulate
+  // that drift being visible to a readback taken now.
+  pwr.base_ref = 12;
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
+  CHECK(s.take_ack_base_ref() == 53);  // still the session's original value
+}
+
+TEST(a_rejected_repeat_arms_no_ack) {
+  // Constraint 3's early return (a stale/behind-phase repeat) must not
+  // arm a second ack for a phase that was already acknowledged.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  const auto c = small_cmd();
+  s.on_cmd(c, 0, pwr);
+  CHECK(s.take_ack_base_ref().has_value());
+  s.on_cmd(c, 2, pwr);  // exact repeat: same nonce+phase
+  CHECK(!s.take_ack_base_ref().has_value());
 }
 
 MTEST_MAIN

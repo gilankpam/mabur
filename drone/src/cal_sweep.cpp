@@ -4,7 +4,7 @@
 
 namespace mabur {
 
-void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms) {
+void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
   if (new_session) {
     // A brand-new nonce: reset every piece of session state, including the
@@ -12,11 +12,21 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms) {
     // drone happened to boot.
     nonce_ = c.nonce;
     has_session_ = true;
-    zeroed_for_session_ = false;
     power_restored_ = false;
     result_accepted_ = false;
     hard_cap_deadline_ms_ = now_ms + cfg_.hard_cap_ms;
     last_started_phase_ = -1;
+    // Global constraint: per-rate walls must be measured against a common
+    // base, so the wall-equalized diff table comes off -- and this
+    // session's base reference index is captured -- HERE, synchronously,
+    // at acceptance, not lazily on pump()'s first call. Only a genuinely
+    // new session reaches this branch, so the chip is still clean: no
+    // phase of THIS session has parked the TXAGC at a swept cell's index
+    // yet (a later phase's on_cmd() reuses base_ref_idx_ below rather than
+    // reading again for exactly that reason -- see take_ack_base_ref()).
+    pwr.zero_rate_diffs();
+    base_ref_idx_ = pwr.read_base_ref_idx();
+    zeroed_for_session_ = true;
   } else if (static_cast<int>(c.phase) <= last_started_phase_) {
     // Constraint 3: idempotent by (nonce, phase), and MONOTONIC within a
     // session -- phases only ever advance (coarse < fine < verify), so a
@@ -41,6 +51,17 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms) {
   gap_ms_ = c.gap_us / 1000;
   state_ = State::Sweeping;
   pending_result_.reset();
+  // Task 11: arm this phase's ack. Always base_ref_idx_ (captured once,
+  // above or by an earlier phase of this same session) -- see
+  // take_ack_base_ref()'s header comment for why a fresh read here would
+  // be wrong for any phase after the first.
+  pending_ack_base_ref_ = base_ref_idx_;
+}
+
+std::optional<int> CalSweep::take_ack_base_ref() {
+  auto v = pending_ack_base_ref_;
+  pending_ack_base_ref_.reset();
+  return v;
 }
 
 void CalSweep::on_result(const rc::CalResult& r, uint64_t now_ms) {
@@ -119,17 +140,12 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 }
 
 void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
-  // Global constraint: per-rate walls must be measured against a common
-  // base, so the wall-equalized diff table comes off before the very
-  // first frame of the session -- once, not once per phase, so fine and
-  // verify measure against the same zeroed baseline coarse already
-  // established.
-  if (!zeroed_for_session_) {
-    pwr.zero_rate_diffs();
-    base_ref_idx_ = pwr.read_base_ref_idx();
-    zeroed_for_session_ = true;
-  }
-
+  // Global constraint ("per-rate walls must be measured against a common
+  // base"): the wall-equalized diff table comes off, and base_ref_idx_ is
+  // captured, once per session -- but now inside on_cmd() at acceptance
+  // (Task 11), not here. By the time this is ever reached, on_cmd() has
+  // already run at least once for this session and zeroed_for_session_ is
+  // therefore already true; nothing left to do here.
   if (!cell_entered_) {
     if (cursor_ >= cells_.size()) {
       // Phase exhausted. Session stays open -- fine follows coarse, and

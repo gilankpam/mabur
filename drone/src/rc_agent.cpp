@@ -560,7 +560,10 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq) const {
   // wire (one legal value) so a GS can still refuse a peer that lacks it.
   // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink
   // (spec 2026-07-26 drone-telemetry) — display-grade only, not a gate.
-  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY;
+  // CAP_CALIBRATE: this build understands T_CAL_CMD/T_CAL_RESULT (Task 11
+  // wires them up in main.cpp) -- a real gate, unlike CAP_TELEMETRY:
+  // gs/src/cal_session.cpp's start() refuses a session outright without it.
+  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_CALIBRATE;
   ack.agreed_channel = cfg_.radio.channel;
   ack.agreed_width = cfg_.radio.width;
   ack.seq = seq;
