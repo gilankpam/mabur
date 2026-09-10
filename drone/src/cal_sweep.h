@@ -80,15 +80,20 @@ class CalSweep {
   explicit CalSweep(CalSweepCfg cfg) : cfg_(cfg) {}
 
   // Accepts a sweep command. A brand-new nonce starts a fresh session
-  // (state -> Sweeping, cell cursor reset, per-rate diffs zeroed on the
-  // next pump()). A phase at or behind the one already accepted for this
-  // nonce -- an exact repeat, or a late duplicate of an earlier phase --
-  // is ignored outright (constraint 3: phases are idempotent AND
-  // monotonic, since coarse < fine < verify never runs backward). A phase
-  // strictly ahead of the one already accepted (matching nonce) resumes
-  // sweeping with a fresh cell cursor built from this command's windows,
-  // without re-zeroing the diffs a prior phase of the same session already
-  // zeroed.
+  // (state -> Sweeping, cell cursor reset, per-rate diffs zeroed and
+  // base_ref_idx captured right here, synchronously -- not lazily on the
+  // next pump()). A phase strictly BEHIND the one already accepted for
+  // this nonce -- a late duplicate of an earlier phase -- is ignored
+  // outright with no ack (constraint 3's monotonic half: coarse < fine <
+  // verify never runs backward). An EXACT repeat of the phase already
+  // running is also idempotent -- the cell cursor is left exactly as it
+  // is, nothing is re-zeroed -- but re-arms the ack every time (review
+  // ruling: the GS resends its CalCmd every 200 ms into a 30-50%-lossy
+  // uplink, and a single lost ack Telem must not cost the whole phase). A
+  // phase strictly AHEAD of the one already accepted (matching nonce)
+  // resumes sweeping with a fresh cell cursor built from this command's
+  // windows, without re-zeroing the diffs a prior phase of the same
+  // session already zeroed.
   //
   // Takes PowerCtl (unlike on_result/pump's later, per-cell uses of it)
   // because a NEW session's diffs must be zeroed and its base_ref_idx
@@ -124,15 +129,20 @@ class CalSweep {
   // returns nullopt until another on_result() lands.
   std::optional<rc::CalResult> take_pending_result();
 
-  // Drains the ack payload on_cmd() armed for the phase it just accepted
-  // (nullopt for a call that didn't accept one -- a new/rejected repeat,
-  // constraint 3). The caller (Task 11's RC dispatch) must send exactly
-  // one T_TELEM per drained value, before it next calls pump() for this
-  // phase: CalSession::on_ack() (gs/src/cal_session.h) is what ends the
-  // GS's AwaitAck state and opens its radio-silence window, and it
-  // re-enters AwaitAck for the fine phase, so a drone that acked only once
-  // would leave the GS transmitting into the very sweep the radio-silence
-  // rule exists to keep clear.
+  // Drains the ack payload on_cmd() armed: for a new phase, OR an exact
+  // repeat of the phase already running (review ruling reversing the
+  // original "exactly one ack per phase" -- the GS resends its CalCmd
+  // every 200 ms and gives up at 3000 ms over a 30-50%-lossy uplink, and a
+  // single lost ack Telem otherwise cost the whole phase). nullopt only
+  // for a call that accepted nothing at all -- a stale repeat of an
+  // EARLIER phase, constraint 3's other branch. The caller (Task 11's RC
+  // dispatch) must send one T_TELEM per drained value, before it next
+  // calls pump() for this phase: CalSession::on_ack() (gs/src/cal_session.h)
+  // is a no-op outside AwaitAck (so re-answering a retransmission is
+  // harmless) but is what ENDS AwaitAck and opens the radio-silence
+  // window the first time it lands, and it re-enters AwaitAck for the
+  // fine phase, so a drone that never acked at all would leave the GS
+  // transmitting into the very sweep that window exists to keep clear.
   //
   // Always the value on_cmd() captured ONCE at session start, never a
   // fresh PowerCtl::read_base_ref_idx() taken here or inside on_cmd() for

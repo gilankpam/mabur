@@ -219,6 +219,43 @@ TEST(undetermined_rate_reaches_the_result_as_minus_one) {
   for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == -1);
 }
 
+TEST(verify_phase_tallies_by_rate_despite_a_margin_mismatch) {
+  // Review fix (Important 4): the GS seeds verify cells at wall - m_gs; the
+  // drone independently derives wall - m_drone. If the two configs'
+  // margin_db values ever disagree (nothing enforces they match -- both
+  // default to 1.0, hand-set on each end separately), an exact-index match
+  // would read ZERO delivery on every rate: a silent, total verify failure
+  // sitting right next to a correct table already written to disk.
+  // Tallying by rate alone -- there is exactly one verify cell per rate,
+  // so the index carries no information the rate does not already -- is
+  // what removes that coupling entirely.
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 9, 0, &err));
+  s.due_cmd(0);
+  s.on_ack(9, 53, 1);
+
+  // Every rate clean everywhere -> knee wall 88, this session's own park
+  // index 88 - 4 = 84 (1 dB margin -> 4 TXAGC steps).
+  const auto coarse = make_coarse_plan(1, 9);
+  feed_phase(s, coarse, 100, 10);
+  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+  REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify (begin_verify)
+
+  // The drone parks one index off from what THIS session predicted --
+  // standing in for a disagreeing drone-side margin_db -- yet every frame
+  // must still land and be counted.
+  for (int r = 0; r < 8; ++r) {
+    mabur::cal::CalFrameInfo f{static_cast<uint8_t>(r), 85,
+                              mabur::cal::kPhaseVerify, 0};
+    s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
+  }
+  for (int r = 0; r < 8; ++r) CHECK(s.cell_received(r, 84, 0) == 1);
+}
+
 TEST(corrupt_frames_count_as_loss_not_delivery) {
   CalSessionCfg cfg;
   CalSession s(cfg);

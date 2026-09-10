@@ -27,17 +27,34 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     pwr.zero_rate_diffs();
     base_ref_idx_ = pwr.read_base_ref_idx();
     zeroed_for_session_ = true;
-  } else if (static_cast<int>(c.phase) <= last_started_phase_) {
-    // Constraint 3: idempotent by (nonce, phase), and MONOTONIC within a
-    // session -- phases only ever advance (coarse < fine < verify), so a
-    // phase at or behind the one already accepted can only be a stale
-    // retransmission, never a legitimate next step. Rejecting <= rather
-    // than == also catches a late duplicate of an EARLIER phase arriving
-    // after the session has moved on (e.g. a delayed coarse retransmission
-    // landing after fine has started, or after a result is already sitting
-    // undrained in Applying) -- a plain == guard would treat that as a
-    // fresh command and silently discard the in-progress phase's cursor
-    // and any undrained CalResult.
+  } else if (static_cast<int>(c.phase) == last_started_phase_) {
+    // An exact repeat of the phase already running -- the GS resends its
+    // CalCmd every 200 ms and gives up at 3000 ms (gs/src/cal_session.cpp),
+    // over an uplink that loses 30-50% of frames. Ruling (Task 11 review):
+    // re-arm the ack every time this happens, not just once per phase. The
+    // ack is the only non-redundant frame in this protocol -- a single
+    // lost ack Telem otherwise costs the GS the WHOLE phase (it never
+    // leaves AwaitAck, so it never stops transmitting retries into the
+    // live sweep, which is precisely the airtime contamination the
+    // radio-silence rule exists to prevent) -- and CalSession::on_ack() is
+    // a no-op outside AwaitAck (gs/src/cal_session.h), so answering a
+    // retransmission a second (or fifth) time is harmless. This does NOT
+    // restart the phase: cells_/cursor_/frames_per_cell_ etc. are left
+    // exactly as they are, only the ack gets re-armed.
+    pending_ack_base_ref_ = base_ref_idx_;
+    return;
+  } else if (static_cast<int>(c.phase) < last_started_phase_) {
+    // Constraint 3, the other half: a phase STRICTLY BEHIND the one
+    // already accepted can only be a stale retransmission of an EARLIER
+    // phase arriving late (a delayed coarse repeat landing after fine has
+    // started, or after a result is already sitting undrained in
+    // Applying) -- ignored outright, with NO ack (unlike the exact-repeat
+    // case above): the GS is not awaiting an ack for this old phase any
+    // more, and re-sending one now would tell it its stale phase was just
+    // accepted while the session has actually moved on. Silently
+    // discarding the in-progress phase's cursor and any undrained
+    // CalResult would be the failure mode a plain == guard (instead of
+    // this <) would reintroduce.
     return;
   }
 
@@ -195,9 +212,23 @@ void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 }
 
 void CalSweep::close_session(PowerCtl& pwr) {
-  // Only actually restore if this session ever touched the radio (zeroed
-  // the diffs / wrote an index override) -- a session that hard-caps out
-  // on its very first pump() call never left anything to undo.
+  // zeroed_for_session_ is set unconditionally inside on_cmd()'s
+  // new_session branch, before this class's caller could ever call
+  // pump() -- and therefore this function -- for the session (Task 11
+  // moved it there from a lazy once-per-session guard in pump_sweeping).
+  // So by the time close_session() can run for any session that ever set
+  // has_session_, this is always true; the stale comment this replaced
+  // described a "hard-caps out before ever touching the radio" case that
+  // predates that move and is no longer reachable. Kept as a defensive
+  // check, not because the false branch still happens.
+  //
+  // NOTE this restores a FLAT INDEX OVERRIDE parked at the anchor, not "no
+  // override at all" -- main.cpp's cal_active falling edge is what
+  // actually clears the override (SetTxPowerIndexOverride(-1)) and
+  // re-applies the real operating plan (rate diffs + global offset) on
+  // top, because THIS class's narrow PowerCtl interface has no concept of
+  // "the operating plan" (that is config/power_mode-driven, main.cpp's
+  // business, not this one's).
   if (zeroed_for_session_) {
     pwr.set_index_override(base_ref_idx_);
     power_restored_ = true;

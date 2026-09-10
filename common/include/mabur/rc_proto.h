@@ -124,10 +124,14 @@ struct Telem {
                       //      and flightreport can attribute an enh gap to
                       //      congestion rather than RF — 2026-09-03),
                       // bit5 air_shed (AirClock enh admission dropped >= 1 enh AU this window — spec 2026-09-06),
-                      // bit6 cal_active (drone accepted a calibration command; set on ONE
-                      //      Telem PER ACCEPTED PHASE -- coarse, then fine -- sent BEFORE that
-                      //      phase's first sweep frame; Telem is suppressed only WHILE a phase
-                      //      is actively sweeping, so the ack and the suppression do not
+                      // bit6 cal_active (drone accepted a calibration command; set on the
+                      //      ack Telem for each accepted PHASE -- coarse, then fine -- sent
+                      //      BEFORE that phase's first sweep frame, and re-sent on every exact
+                      //      retransmission of the phase already running (the GS resends its
+                      //      CalCmd every 200 ms into a 30-50%-lossy uplink; CalSession::on_ack
+                      //      is a no-op once already out of AwaitAck, so answering a repeat is
+                      //      harmless — Task 11 review). Telem is suppressed only WHILE a phase
+                      //      is actively sweeping, so the ack(s) and the suppression do not
                       //      conflict. The verify pass has no command and therefore no ack: the
                       //      drone self-initiates it after applying the result — spec 2026-09-10)
   uint32_t generation = 0;
@@ -202,15 +206,18 @@ struct Telem {
   // read back at bring-up. power_plan.h derives every per-rate diff as
   // walls[r] - margin*4 - base_ref_idx, so the GS needs this unit's value to
   // range-check a candidate wall table before sending it. 0 = not read.
-  // Paired with flags bit6 (cal_active): the drone emits one such Telem per
-  // ACCEPTED PHASE (coarse, then fine -- CalSession::on_ack() re-enters
+  // Paired with flags bit6 (cal_active): the drone emits this Telem for
+  // each ACCEPTED PHASE (coarse, then fine -- CalSession::on_ack() re-enters
   // AwaitAck for the fine phase and needs a second ack to leave it, see
   // tests/test_cal_session.cpp's fine_phase_sharpens_a_real_dip_and_flags_drift),
-  // before that phase starts sweeping. Telem is suppressed only while a
-  // phase is actively sweeping, not for the whole session, so a phase
-  // boundary's ack Telem and the suppression rule never conflict. The
-  // verify pass sends no command and gets no ack -- the drone self-initiates
-  // it once it applies the result.
+  // before that phase starts sweeping -- and again on every exact
+  // retransmission of the phase already running, since on_ack() is a
+  // no-op once the GS has already left AwaitAck (Task 11 review: a single
+  // lost ack must not cost the whole phase). Telem is suppressed only
+  // while a phase is actively sweeping, not for the whole session, so a
+  // phase boundary's ack Telem(s) and the suppression rule never conflict.
+  // The verify pass sends no command and gets no ack -- the drone
+  // self-initiates it once it applies the result.
   uint8_t cal_base_ref_idx = 0;
 };
 

@@ -73,9 +73,27 @@ void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
   if (f.phase != running_phase_) return;
   if (f.rate > 7 || card < 0 || card > 1) return;
 
-  auto it = cells_[f.rate].find(f.idx);
-  if (it == cells_[f.rate].end()) return;  // not a cell this plan named
-  CalCell& c = it->second;
+  CalCell* cp = nullptr;
+  if (state_ == State::Verify) {
+    // Review fix (Important 4): tally by RATE alone, accepting whatever
+    // index actually arrives, rather than requiring an exact match against
+    // this session's OWN predicted park index. make_verify_plan seeds
+    // exactly one cell per rate, so the index carries no information the
+    // rate does not already -- but the drone parks its verify cells at
+    // wall - lround(drone_margin_db*4), independently of this session's
+    // own cfg_.margin_db (both default 1.0, nothing enforces they match).
+    // An exact-index match would read ZERO delivery on all eight rates the
+    // instant the two configs disagree -- a total, silent verify failure
+    // sitting right next to a correct table already written to disk.
+    auto& per_rate = cells_[f.rate];
+    if (per_rate.empty()) return;  // this rate had nothing to verify
+    cp = &per_rate.begin()->second;
+  } else {
+    auto it = cells_[f.rate].find(f.idx);
+    if (it == cells_[f.rate].end()) return;  // not a cell this plan named
+    cp = &it->second;
+  }
+  CalCell& c = *cp;
 
   if (!crc_ok) {
     // maburgs sets rx.keep_corrupted unconditionally, so CRC-bad frames do

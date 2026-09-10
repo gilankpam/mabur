@@ -108,15 +108,20 @@ TEST(stamps_each_frame_with_its_rate_and_index) {
   CHECK(rate5 == 20);
 }
 
-TEST(zeroes_rate_diffs_before_sweeping) {
+TEST(zeroes_rate_diffs_on_session_acceptance) {
   // Per-rate walls must be measured against a common base, so the
-  // wall-equalized diff table comes off before the first frame.
+  // wall-equalized diff table comes off at on_cmd() acceptance itself
+  // (Task 11 review: moved out of pump_sweeping's old lazy once-per-
+  // session guard, so the ack -- also armed inside on_cmd() -- reads a
+  // chip that has already been zeroed). No pump() call is needed to
+  // trigger it any more, which is the whole point of this test: it would
+  // have kept passing even with the old lazy behaviour if it still called
+  // pump() first, so it deliberately does not.
   CaptureSink sink;
   RadioTx tx(sink);
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
   s.on_cmd(small_cmd(), 0, pwr);
-  s.pump(0, tx, pwr);
   CHECK(pwr.zero_diff_calls == 1);
 }
 
@@ -388,9 +393,13 @@ TEST(ack_base_ref_is_not_re_read_through_a_parked_override) {
   CHECK(s.take_ack_base_ref() == 53);  // still the session's original value
 }
 
-TEST(a_rejected_repeat_arms_no_ack) {
-  // Constraint 3's early return (a stale/behind-phase repeat) must not
-  // arm a second ack for a phase that was already acknowledged.
+TEST(a_repeat_of_the_running_phase_re_arms_the_ack) {
+  // Review ruling reversing the original "exactly one ack per phase" (Task
+  // 11): the GS repeats its CalCmd every 200 ms and gives up (fails the
+  // whole session) at 3000 ms, and a single lost ack Telem previously cost
+  // the entire phase. CalSession::on_ack() is a no-op outside AwaitAck, so
+  // re-arming on every exact repeat of the phase already running is
+  // harmless and strictly better than losing the phase to one dropped ack.
   CaptureSink sink;
   RadioTx tx(sink);
   FakePowerCtl pwr;
@@ -399,6 +408,28 @@ TEST(a_rejected_repeat_arms_no_ack) {
   s.on_cmd(c, 0, pwr);
   CHECK(s.take_ack_base_ref().has_value());
   s.on_cmd(c, 2, pwr);  // exact repeat: same nonce+phase
+  CHECK(s.take_ack_base_ref().has_value());  // re-armed, not dropped
+  s.on_cmd(c, 4, pwr);  // and again -- every repeat re-arms
+  CHECK(s.take_ack_base_ref().has_value());
+}
+
+TEST(a_stale_earlier_phase_repeat_arms_no_ack) {
+  // The other half of constraint 3: a phase STRICTLY BEHIND the one
+  // already accepted (not an exact repeat of it) is a late duplicate of
+  // an EARLIER phase and must still be dropped silently -- acking it would
+  // tell the GS its old phase was just accepted when the session has
+  // actually moved on to fine.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
+  REQUIRE(s.take_ack_base_ref().has_value());
+  run_to_quiescence(s, tx, pwr);
+  s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
+  REQUIRE(s.take_ack_base_ref().has_value());
+  // A stale coarse retransmission finally lands, late.
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 1500, pwr);
   CHECK(!s.take_ack_base_ref().has_value());
 }
 
