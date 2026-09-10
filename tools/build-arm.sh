@@ -85,13 +85,11 @@ cmake -S . -B build-arm-glibc -DCMAKE_TOOLCHAIN_FILE=cmake/arm-openipc.cmake \
   -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_8733B=OFF \
   -DDEVOURER_KESTREL_8852B=OFF \
   -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
-# linkbench-tx / txagcbench-tx are the drone-side halves of the two bench
-# harnesses (bench/txagcbench/run_sweep.sh expects out/arm/txagcbench-tx).
-# They carry over from the musl script unchanged; they build none of
-# drone/venc, but they ship to the same rootfs, so one toolchain is enough.
-cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx txagcbench-tx
+# linkbench-tx is the drone-side half of the bench harness. It carries
+# over from the musl script unchanged; it builds none of drone/venc, but
+# it ships to the same rootfs, so one toolchain is enough.
+cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx
 STRIP="$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-strip"
 "$STRIP" build-arm-glibc/drone/maburd                     -o out/arm/maburd
 "$STRIP" build-arm-glibc/bench/linkbench/linkbench-tx     -o out/arm/linkbench-tx
-"$STRIP" build-arm-glibc/bench/txagcbench/txagcbench-tx   -o out/arm/txagcbench-tx
 "$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-readelf" -d out/arm/maburd | head -12

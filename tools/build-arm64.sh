@@ -234,11 +234,10 @@ cmake -S . -B build-arm64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-musl.cmake \
   -DDEVOURER_LOG_MAX_LEVEL=WARN \
   -DMABUR_PLAYER_HW=ON -DMABUR_MPP_ROOT="$MABUR_MPP_ROOT" -DMABUR_DRM_ROOT="$MABUR_DRM_ROOT"
 
-cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx txagcbench-rx maburplay encosd
+cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx maburplay encosd
 
 "${TARGET_TRIPLE}-strip" build-arm64/gs/maburgs -o out/arm64/maburgs
 "${TARGET_TRIPLE}-strip" build-arm64/bench/linkbench/linkbench-rx -o out/arm64/linkbench-rx
-"${TARGET_TRIPLE}-strip" build-arm64/bench/txagcbench/txagcbench-rx -o out/arm64/txagcbench-rx
 "${TARGET_TRIPLE}-strip" build-arm64/gs/player/maburplay -o out/arm64/maburplay
 "${TARGET_TRIPLE}-strip" build-arm64/bench/encosd/encosd -o out/arm64/encosd
 
@@ -280,4 +279,4 @@ if [ ! -e toolchain/file ]; then
     'with import <nixpkgs> {}; file' \
     -o toolchain/file
 fi
-"$(readlink -f toolchain/file)/bin/file" out/arm64/maburgs out/arm64/linkbench-rx out/arm64/txagcbench-rx out/arm64/maburplay out/arm64/encosd
+"$(readlink -f toolchain/file)/bin/file" out/arm64/maburgs out/arm64/linkbench-rx out/arm64/maburplay out/arm64/encosd
