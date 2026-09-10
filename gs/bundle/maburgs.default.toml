@@ -130,7 +130,7 @@ slot_kb    = 512
 slot_count = 16
 
 [debug_log]
-enable        = true
+enable        = false
 dir           = "/media/dvr/log"
 ctl_period_ms = 50
 rung_period_s = 10
