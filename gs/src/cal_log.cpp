@@ -6,20 +6,26 @@
 
 namespace maburgs {
 
-// LogWriter::open()'s own header parameter is unused here: header() is a
-// distinct call the caller only makes when starting a genuinely new run, so
-// the marker line goes through line() like every other record rather than
-// through open()'s re-queue-on-reopen contract (which exists for the
-// session-writer case, not this private one).
+// LogWriter::open()'s own header parameter is unused here: header() and
+// run() are distinct calls the caller makes explicitly (header() at most
+// once per file, run() once per calibration run -- see cal_log.h), so both
+// go through line() like every other record rather than through open()'s
+// re-queue-on-reopen contract (which exists for the session-writer case,
+// not this private one).
 CalLog::CalLog(const std::string& dir)
     : s_(w_.open(dir, "cal.log", "")) {}
 
-void CalLog::header(uint32_t nonce, int base_ref_idx, double margin_db) {
+void CalLog::header() {
   if (s_ == LogWriter::kBadStream) return;
-  char b[128];
-  const int n =
-      std::snprintf(b, sizeof(b), "callog 1 nonce=%u base_ref=%d margin_db=%.2f",
-                    nonce, base_ref_idx, margin_db);
+  static constexpr char kMarker[] = "callog 1";
+  w_.line(s_, kMarker, sizeof(kMarker) - 1);
+}
+
+void CalLog::run(uint32_t nonce, int base_ref_idx, double margin_db) {
+  if (s_ == LogWriter::kBadStream) return;
+  char b[64];
+  const int n = std::snprintf(b, sizeof(b), "R %u %d %.2f", nonce,
+                              base_ref_idx, margin_db);
   if (n > 0)
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }

@@ -29,11 +29,25 @@ struct RateWall;
 // Record format is LOCKED (gs/bundle/maburcal's reader and
 // tests/test_cal_log.cpp depend on the exact byte layout):
 //
-//   callog 1 nonce=<n> base_ref=<i> margin_db=<f>          # once, first line
+//   callog 1                                               # once, first line
+//   R <nonce> <base_ref> <margin_db>             # once per calibration run
 //   C <phase> <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>
 //                                                # one row per measured cell
 //   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, at Result
 //   V <rate> <idx> <pct>                         # one row per verify cell
+//
+// The marker and the per-run parameters are deliberately split: `callog 1`
+// versions the FILE (mirrors ctllog N elsewhere in this codebase) and is
+// written at most once no matter how many runs share the session
+// directory, while `R` carries one run's own (nonce, base_ref, margin_db)
+// and is written once at the start of EVERY run. The normal retry path --
+// `maburcal start`, see a narrow/saturated flag, move the drone, start
+// again -- puts a second run's records in the same session directory
+// (nothing about a run rotates the session), so a single shared header
+// would leave the second run's C/W/V lines with no way to say which
+// nonce/base_ref/margin they belong to. An R line is what a reader keys
+// runs by, and it also reliably marks where one run's lines end and the
+// next begins.
 //
 // margin_db prints to two decimals. A card with no RSSI reading in a cell
 // (CalCell::have_rssi[i] false) writes -999 (kRssiNone), never a blank or a
@@ -55,8 +69,9 @@ class CalLog {
   // dir is the session directory (DebugSession::dir()); the file is always
   // "cal.log" inside it, opened for append. A wrapper respawn that rejoins
   // an existing session directory must not call header() again -- the
-  // caller decides whether this construction starts a genuinely new run;
-  // this class never writes a header on its own.
+  // caller decides whether this construction is the FILE's first ever
+  // writer (header()) or merely another run sharing the session (run()
+  // only); this class never writes anything on its own.
   explicit CalLog(const std::string& dir);
 
   CalLog(const CalLog&) = delete;
@@ -64,10 +79,17 @@ class CalLog {
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
 
-  // The format-marker line. Call exactly once per calibration run -- never
-  // on a rejoin of an already-headed session directory, or the reader would
-  // see the second run's start as a corrupt first record.
-  void header(uint32_t nonce, int base_ref_idx, double margin_db);
+  // The format-marker line, `callog 1`. Call at most once per FILE (i.e.
+  // never on a rejoin of an already-headed session directory) -- it
+  // carries no per-run data, so unlike ctl.log's single combined header
+  // there is no reason for a second calibration run in the same session to
+  // repeat it.
+  void header();
+  // One run's own parameters: `R <nonce> <base_ref> <margin_db>`. Call once
+  // at the start of EVERY calibration run, including the second and later
+  // ones sharing a session directory -- this is what a reader keys a run's
+  // C/W/V lines by and what delimits one run's lines from the next.
+  void run(uint32_t nonce, int base_ref_idx, double margin_db);
   void cell(uint8_t phase, uint8_t rate, uint8_t idx, const CalCell& c);
   void wall(uint8_t rate, const RateWall& w);
   void verify(uint8_t rate, uint8_t idx, int pct);
