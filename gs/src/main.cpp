@@ -2,6 +2,9 @@
 // Plan 1 scope: the dry-run datapath (frame file -> aggregator -> frame tail
 // -> AU records; the original RTP output was deleted in PR C).
 // Plan 2 scope: real-radio mode (N-card front-ends, control loop, card failover).
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -320,13 +323,50 @@ static int run_radio(const maburgs::Config& cfg) {
   // than the shared `log_writer` -- a calibration run is rare and
   // short-lived, so there is nothing to gain from the fixed-slot session
   // writer. header() writes the file's format marker at most once per
-  // FILE: a wrapper respawn that rejoins an existing session directory
-  // must not repeat it, or a real run's start would read as a corrupt
-  // record to a later reader (cal_log.h).
+  // FILE.
+  //
+  // Deliberately NOT gated on debug.ok()/debug_log.enable, unlike every
+  // log above -- that flag governs CONTINUOUS per-second flight logging,
+  // where the risk is disk volume and flash wear across every second of
+  // every flight. A calibration run is a different risk profile: a
+  // bounded (~380-line) trace, once per unit, on a deliberate operator
+  // action, and the sole record of a measurement written straight into
+  // the drone's config. Task 13 deletes bench/txagcbench's Python
+  // analyzer; cal.log + `maburcal report` is the ENTIRE replacement for
+  // examining a run's data after the fact -- shipping with debug_log off
+  // (as gs/bundle/maburgs.default.toml does since 671c848) must not mean
+  // every calibration runs silently and leaves no trace. When debug
+  // logging is on, reuse its session directory (one place to look, and
+  // `header()`'s once-per-file rule can lean on DebugSession's own
+  // rejoin detection); when it's off, fall back to <debug_log.dir>/cal --
+  // `dir` is present in config independent of `enable` -- and fall back
+  // to the file's own presence (no DebugSession marker exists here) to
+  // decide whether header() is due.
+  std::string cal_log_dir = debug.dir();
+  bool cal_log_new_file = !debug.rejoined();
+  if (!debug.ok()) {
+    cal_log_dir = cfg.debug_log.dir + "/cal";
+    // Best-effort, mirroring DebugSession::allocate_(): debug_log.dir may
+    // legitimately not exist yet on a unit that has never turned on
+    // flight logging. mkdir the parent, then the leaf; EEXIST on either
+    // is the expected steady-state, not a failure.
+    ::mkdir(cfg.debug_log.dir.c_str(), 0755);
+    ::mkdir(cal_log_dir.c_str(), 0755);
+    cal_log_new_file = ::access((cal_log_dir + "/cal.log").c_str(), F_OK) != 0;
+  }
   std::optional<maburgs::CalLog> cal_log;
-  if (debug.ok()) {
-    cal_log.emplace(debug.dir());
-    if (!debug.rejoined()) cal_log->header();
+  cal_log.emplace(cal_log_dir);
+  if (cal_log->ok()) {
+    if (cal_log_new_file) cal_log->header();
+  } else {
+    // Non-fatal by cal_log.h's own contract: the walls still get measured
+    // and applied with no trace, which is bad but not as bad as refusing
+    // to calibrate over a logging directory problem.
+    std::fprintf(stderr,
+                 "warning: calibration log directory %s unusable; a "
+                 "calibration will still run and apply, but its cal.log "
+                 "trace will be lost\n",
+                 cal_log_dir.c_str());
   }
   // Stats sideport (spec: docs/superpowers/specs/2026-07-25-gs-stats-sideport-design.md)
   // and flight.jsonl (debug-log consolidation, 2026-09-06) share one
@@ -978,7 +1018,18 @@ static int run_radio(const maburgs::Config& cfg) {
     if (loss_ctl.ok()) loss_ctl.poll(agg.loss_sim());
 #endif
     // Compiled into every prod build, unlike loss_ctl above (cal_control.h).
+    const auto cal_state_before_poll = cal_session.state();
     cal_ctl.poll(cal_session);
+    // Loud, exactly once per accepted `maburcal start` (Idle/Done/Failed ->
+    // AwaitAck): the operator's own terminal is streaming CalControl's
+    // "CAL start -> ok started" reply already, but this is the one place
+    // that knows where cal_log_dir actually resolved to -- see the cal_log
+    // construction comment for why that is not always debug.dir().
+    if (cal_state_before_poll != maburgs::CalSession::State::AwaitAck &&
+        cal_session.state() == maburgs::CalSession::State::AwaitAck) {
+      std::fprintf(stderr, "maburgs: calibration started -> %s/cal.log\n",
+                   cal_log_dir.c_str());
+    }
 
     // Session capability gate: the peer must be in an active SESSION (not
     // beaconing/pre-rendezvous) AND have advertised CAP_FRAME_WIRE in its
