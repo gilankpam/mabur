@@ -151,9 +151,12 @@ TEST(coarse_then_fine_then_result) {
   REQUIRE(res.has_value());
   CHECK(res->nonce == 5);
   // Every rate is clean everywhere, so every row is no-dip and takes its
-  // wall from the RSSI knee: peak -62 dBm is first reached at idx 88, minus
-  // the 1 dB margin (4 TXAGC steps) = 84.
-  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == 84);
+  // wall from the RSSI knee: peak -62 dBm is first reached at idx 88. The
+  // result carries that RAW wall verbatim -- no margin subtracted here.
+  // margin_db is applied exactly once, on the drone, by power_plan.h's
+  // diff[r] = walls[r] - m - base_ref_idx (spec: two independently
+  // configured margins in one derivation is the bug this shape avoids).
+  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == 88);
 }
 
 // The coarse pass locates a dip at 4-index resolution; the fine pass is what
@@ -194,8 +197,8 @@ TEST(fine_phase_sharpens_a_real_dip_and_flags_drift) {
 
   const auto res = s.due_result(t2 + 5000);
   REQUIRE(res.has_value());
-  CHECK(res->walls[5] == 50);              // fine wall 54, minus the 4-step margin
-  CHECK(res->walls[0] == 84);              // untouched rows keep their knee wall
+  CHECK(res->walls[5] == 54);              // fine wall, raw -- no margin subtracted
+  CHECK(res->walls[0] == 88);              // untouched rows keep their raw knee wall
   CHECK((s.walls()[5].flags & kCalDrift) != 0);   // coarse 56 vs fine 54
 }
 

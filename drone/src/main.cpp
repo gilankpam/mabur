@@ -1715,6 +1715,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // measured result validates/patches/reprograms without a restart, then
     // arms the verify pass the GS expects but never commands.
     auto apply_result_and_arm_verify = [&](const rc::CalResult& result) {
+      // T_CAL_RESULT carries the RAW measured wall (gs/src/cal_session.cpp
+      // finalize_result()) -- the same number rate_walls_idx/legacy_wall_idx
+      // hold in config.cpp/power_plan.h, so no margin arithmetic happens on
+      // this side of the wire. margin_db is applied exactly once, on the
+      // drone, below (the verify plan) and again every boot inside
+      // power_plan.h's diff[r] = walls[r] - m - base_ref_idx -- never on
+      // the GS, so there is no second, independently-configured margin_db
+      // that could silently disagree with this one.
       const int m = static_cast<int>(std::lround(cfg.radio.wall_margin_db * 4.0));
       CalWrite w;
       // NOT pwr.read_base_ref_idx(): the phase that produced this result
@@ -1723,20 +1731,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // report that override, not the anchor. cal_sweep.base_ref_idx() is
       // the same value this session's ack(s) already reported to the GS.
       w.base_ref_idx = cal_sweep.base_ref_idx();
-      for (int r = 0; r < 8; ++r) {
-        // T_CAL_RESULT.walls carries the GS's PARKED index (wall - margin
-        // -- gs/src/cal_session.cpp finalize_result()), not the raw
-        // measured PA wall config.cpp/power_plan.h expect in
-        // rate_walls_idx. Add the margin back to recover it; the round
-        // trip is exact because both ends apply the SAME hand-set
-        // margin_db (never itself calibrated -- design non-goal).
-        w.walls[r] = (result.walls[r] == -1)
-                         ? -1
-                         : static_cast<int>(result.walls[r]) + m;
-      }
-      w.legacy_wall = (result.legacy_wall == -1)
-                          ? -1
-                          : static_cast<int>(result.legacy_wall) + m;
+      for (int r = 0; r < 8; ++r) w.walls[r] = result.walls[r];
+      w.legacy_wall = result.legacy_wall;
 
       std::string err;
       const ApplyResult ar =
@@ -1782,9 +1778,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       verify.vtx_id = result.vtx_id;
       verify.nonce = result.nonce;
       verify.phase = cal::kPhaseVerify;
+      // Authority for all three: gs/src/cal_plan.h's kVerifyFrames/
+      // kSettleMs/kGapUs. The drone self-initiates this phase -- there is
+      // no CalCmd on the wire to derive them from -- so they are pinned
+      // here to literally match that file rather than inferred from
+      // anything transmitted.
       verify.frames_per_cell = 100;  // gs/src/cal_plan.h kVerifyFrames
-      verify.settle_ms = 100;        // kSettleMs
-      verify.gap_us = 2000;          // kGapUs
+      verify.settle_ms = 100;        // gs/src/cal_plan.h kSettleMs
+      verify.gap_us = 2000;          // gs/src/cal_plan.h kGapUs
       for (uint8_t r = 0; r < 8; ++r) {
         if (w.walls[r] == -1) continue;  // undetermined: nothing to verify
         const int idx = w.walls[r] - m;  // parked index: power_plan.h's

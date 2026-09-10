@@ -302,6 +302,18 @@ void CalSession::finish_phase(uint64_t now_ms) {
 }
 
 void CalSession::finalize_result() {
+  // T_CAL_RESULT carries the RAW measured wall, not a park index: the
+  // drone's power_plan.h is what subtracts margin_db
+  // (diff[r] = walls[r] - m - base_ref_idx), and it is drone-config-owned
+  // -- nothing forces this session's cfg_.margin_db to equal it. Sending a
+  // pre-subtracted value here would mean the drone adds a margin back
+  // (whose value it has no way to verify against what the GS actually
+  // used) before power_plan.h subtracts one again: two independently
+  // configured margins in one derivation, silently wrong if they ever
+  // differ, in a kit whose whole purpose is getting this table right.
+  // pending_park_ below is a SEPARATE, purely local concern: the GS's own
+  // verify-phase tally needs a park index too, computed with this
+  // session's margin_db, but that computation never leaves this process.
   const int m = static_cast<int>(std::lround(cfg_.margin_db * 4.0));
 
   mabur::rc::CalResult res;
@@ -315,9 +327,8 @@ void CalSession::finalize_result() {
       res.walls[static_cast<size_t>(r)] = -1;
       pending_park_[static_cast<size_t>(r)] = -1;
     } else {
-      const int park = w.wall - m;
-      res.walls[static_cast<size_t>(r)] = static_cast<int16_t>(park);
-      pending_park_[static_cast<size_t>(r)] = park;
+      res.walls[static_cast<size_t>(r)] = static_cast<int16_t>(w.wall);
+      pending_park_[static_cast<size_t>(r)] = w.wall - m;
     }
   }
   res.legacy_wall = res.walls[0];
