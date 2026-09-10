@@ -118,9 +118,11 @@ TEST(apply_refuses_out_of_range_without_touching_the_file) {
   CHECK(s.str() == kSample);   // untouched
 }
 
-TEST(apply_restores_the_backup_when_the_result_will_not_parse) {
-  // The respawn-loop guard: if what we wrote does not load, put the old file
-  // back before anyone restarts the daemon.
+TEST(apply_never_publishes_a_file_that_will_not_parse) {
+  // The respawn-loop guard: verification runs on "<path>.new" BEFORE it is
+  // ever renamed onto `path`, so a candidate that will not load is never
+  // published in the first place -- the original is never replaced, not
+  // restored after the fact.
   const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal3.toml";
   { std::ofstream f(path); f << kSample; }
   std::string err;
@@ -129,7 +131,11 @@ TEST(apply_restores_the_backup_when_the_result_will_not_parse) {
         ApplyResult::ReparseFailed);
   std::ifstream f(path);
   std::stringstream s; s << f.rdbuf();
-  CHECK(s.str() == kSample);   // original restored
+  CHECK(s.str() == kSample);   // never replaced
+
+  // A failed run must not leave a stale scratch file next to a live config.
+  std::ifstream tmp(path + ".new");
+  CHECK(!tmp.good());
 }
 
 TEST(apply_writes_once) {

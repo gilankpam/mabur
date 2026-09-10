@@ -12,6 +12,12 @@
 #include <string>
 #include <vector>
 
+// The real loader, not just the TOML syntax check: see the "Verification"
+// section of the file header comment for why config.cpp's load_config --
+// unknown-key rejection, every per-section range/type check -- is the
+// thing that must run here, not toml::parse_toml_file alone.
+#include "config.h"
+
 namespace mabur {
 
 namespace {
@@ -51,8 +57,8 @@ std::string trim(const std::string& s) {
 // Parses the 8 ints out of a "[91, 91, ...]" array's inner text. A
 // malformed original (should never happen -- it's bundle/mabur.default.toml
 // verbatim) falls back to 0 for the unparseable slot rather than throwing;
-// walls_in_range() and the re-parse step are the layers that actually
-// guard correctness, not this cosmetic fallback.
+// walls_in_range() and the load_config() verification step are the layers
+// that actually guard correctness, not this cosmetic fallback.
 std::array<int, 8> parse_int_array(const std::string& inner) {
   std::array<int, 8> vals{};
   size_t pos = 0;
@@ -177,8 +183,13 @@ std::string patch_toml(const std::string& text, const CalWrite& w) {
 bool walls_in_range(const CalWrite& w, double margin_db, std::string* why) {
   // Mirrors drone/src/config.cpp:133-155 exactly, including its message
   // wording, so a refusal here reads the same way a boot-time refusal
-  // would -- this task's whole point is to never let a config reach that
-  // boot-time check unvalidated.
+  // would. This pre-check and the load_config() verification step later in
+  // apply_calibration() serve different purposes and both stay: this one
+  // refuses a bad table before the disk is touched at all, with a specific
+  // OutOfRange result and a message naming the exact derivation that
+  // failed; load_config() is the backstop that catches anything this
+  // model does not -- a mistyped key, a value outside the four keys we
+  // patch, a config field this function knows nothing about.
   const int m = static_cast<int>(std::lround(margin_db * 4.0));
   for (size_t i = 0; i < w.walls.size(); ++i) {
     if (w.walls[i] == -1) continue;  // undetermined this session, not written
@@ -211,11 +222,15 @@ bool walls_in_range(const CalWrite& w, double margin_db, std::string* why) {
 namespace {
 
 // Keyed by real config path, not accumulated globally: production only
-// ever touches one path (/etc/mabur.toml) across a whole daemon session,
-// so this still catches the flash-wear bug (repeated calls against that
-// one path) while a test's own scratch path -- untouched by any other
-// test -- starts fresh regardless of how many other paths earlier tests
-// in the same binary wrote to.
+// ever publishes to one path (/etc/mabur.toml) across a whole daemon
+// session, so this still catches the flash-wear bug (repeated publishes
+// against that one path) while a test's own scratch path -- untouched by
+// any other test -- starts fresh regardless of how many other paths
+// earlier tests in the same binary published to. Incremented once per
+// *publish attempt* (the final rename onto `path`), not per byte written
+// to a scratch file -- writing "<path>.new" and then discarding it
+// because verification failed never touches the real path's flash cell
+// at all.
 std::map<std::string, int> g_write_counts;
 std::string g_last_write_path;
 
@@ -261,37 +276,33 @@ bool write_file_fsync(const std::string& path, const std::string& content) {
   return ok;
 }
 
-// The only place anything is written to a real config path. write ->
-// fsync -> rename: a crash before the rename leaves the old file at
-// `path` untouched (the new content only ever exists at "<path>.new"),
-// and a crash after it is a completed, durable write. There is no
-// in-between state where `path` itself is half-written.
-ApplyResult write_new_and_rename(const std::string& path,
-                                  const std::string& content,
-                                  std::string* err) {
-  ++g_write_counts[path];  // flash-wear guard: counts every write attempt to this path
-  g_last_write_path = path;
-  const std::string tmp = path + ".new";
-  if (!write_file_fsync(tmp, content)) {
-    if (err) *err = "failed to write/fsync " + tmp;
-    return ApplyResult::WriteFailed;
-  }
-  if (::rename(tmp.c_str(), path.c_str()) != 0) {
-    if (err) *err = "failed to rename " + tmp + " onto " + path;
-    return ApplyResult::WriteFailed;
-  }
-  fsync_parent_dir(path);
-  return ApplyResult::Ok;
-}
+// Best-effort cleanup of the scratch file: never let a failed run leave a
+// stale "<path>.new" sitting next to a live config (confusing at best, and
+// a later successful run's O_TRUNC would clobber it anyway -- this just
+// makes a failed run leave no trace instead of a trap for whoever looks
+// at the directory next).
+void remove_scratch(const std::string& tmp) { ::unlink(tmp.c_str()); }
 
 // Shared body of apply_calibration() and its corrupt-writer test seam.
 // `content_override`, when set, replaces the real patch_toml() output --
 // the seam tests need a way to get deliberate garbage onto disk without a
-// real writer bug, to prove the restore path actually runs.
+// real writer bug, to prove verification actually catches it.
+//
+// Order matters and is deliberately NOT "publish, then verify": that
+// ordering (this file's first draft) leaves a crash window between the
+// rename that publishes a candidate and the check that would have caught
+// it, during which a bad file can already be live at `path`. No restore
+// logic can close that window -- it's a property of doing the checkable
+// operation on the file only after that file is already the one `maburd`
+// will read. Verifying "<path>.new" BEFORE it is ever renamed onto `path`
+// removes the window instead of narrowing it: every crash point below
+// leaves either the untouched original or bytes already proven loadable.
 ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
                                     double margin_db, std::string* err,
                                     const std::string* content_override) {
-  // Step 1: validate. Nothing is touched if this fails.
+  // Step 1: validate the derived diffs. Nothing on disk is touched if
+  // this fails -- see the walls_in_range() comment for why this pre-check
+  // stays even though load_config() below re-derives the same numbers.
   std::string why;
   if (!walls_in_range(w, margin_db, &why)) {
     if (err) *err = why;
@@ -304,48 +315,73 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
     return ApplyResult::WriteFailed;
   }
 
-  // Step 2a: back up, before anything at `path` is touched.
+  // Step 2: write the candidate to a scratch file. Nothing at `path` has
+  // moved yet -- this is not a publish, it's a place to point the real
+  // loader at.
+  const std::string tmp = path + ".new";
+  const std::string content = content_override ? *content_override : patch_toml(original, w);
+  if (!write_file_fsync(tmp, content)) {
+    remove_scratch(tmp);
+    if (err) *err = "failed to write/fsync " + tmp;
+    return ApplyResult::WriteFailed;
+  }
+
+  // Step 3: verify with the SAME function maburd boots with --
+  // mabur::load_config, not toml::parse_toml_file. parse_toml_file only
+  // proves the bytes are syntactically valid TOML; everything that
+  // actually fails a boot -- check_known_keys' unknown-key rejection, and
+  // every per-section range/type check config.cpp applies, including the
+  // very rate_walls_idx/base_ref_idx diff check walls_in_range() mirrors
+  // above -- lives inside load_config(), past the parse. A verification
+  // step that cannot detect the failure it exists to guard against is
+  // worse than none: it would make maburd's later refusal look
+  // impossible right up until it happens on the device.
+  //
+  // load_config() is a pure parse-and-validate with no hardware side
+  // effects (it builds and returns a Config value; it does not open any
+  // device or touch global state beyond a scoped defaulted-keys collector
+  // that is cleared on every return path), which is what makes it safe to
+  // call speculatively on a file that is not the live config. That is an
+  // assumption about a function this file does not own -- if a future
+  // load_config() gained a side effect, this call would need revisiting.
+  try {
+    (void)load_config(tmp, nullptr);
+  } catch (const std::exception& e) {
+    // Never published: `path` was never touched, so there is nothing to
+    // restore, only something to discard.
+    remove_scratch(tmp);
+    if (err) *err = std::string("candidate failed load_config, not published: ") + e.what();
+    return ApplyResult::ReparseFailed;
+  }
+
+  // Step 4: back up the original. Now that the candidate is proven
+  // loadable, this is purely the operator's rollback artifact (the "undo
+  // my last calibration" copy), not a crash-recovery mechanism -- nothing
+  // downstream of this point can produce a `path` that fails to load.
   const std::string backup_path = path + ".pre-cal";
   if (!write_file_fsync(backup_path, original)) {
+    remove_scratch(tmp);
     if (err) *err = "failed to write backup " + backup_path;
     return ApplyResult::BackupFailed;
   }
 
-  // Step 2b: atomic write of the candidate content.
-  const std::string content = content_override ? *content_override : patch_toml(original, w);
-  const ApplyResult wr = write_new_and_rename(path, content, err);
-  if (wr != ApplyResult::Ok) return wr;
-
-  // Step 3: re-parse with the REAL loader. This is the check that makes
-  // the respawn loop unreachable -- everything above is defense in depth
-  // for a bug this step would still catch.
-  try {
-    (void)toml::parse_toml_file(path);
-  } catch (const std::exception& e) {
-    // Restore via rename, not a content copy: one more atomic swap, same
-    // guarantee as the write we're undoing -- no window where `path` is
-    // half-restored. This does consume the ".pre-cal" file (it becomes
-    // `path` again), which is fine: a session that got this far already
-    // failed and the caller is being told so.
-    //
-    // The restore rename itself can fail too (rare, but this is exactly
-    // the corner the whole design exists to be paranoid about): if it
-    // does, `path` is left holding the content that just failed to parse
-    // -- the one outcome every earlier step was meant to prevent. Report
-    // that distinctly rather than claiming a restore that didn't happen,
-    // so an operator (or a caller logging this) knows the device needs a
-    // manual fix, not just a "try again."
-    if (::rename(backup_path.c_str(), path.c_str()) != 0) {
-      if (err)
-        *err = std::string("re-parse failed AND restore failed -- ") + path +
-               " is left holding unparseable content, backup is at " +
-               backup_path + ": " + e.what();
-      return ApplyResult::ReparseFailed;
-    }
-    fsync_parent_dir(path);
-    if (err) *err = std::string("re-parse failed, restored backup: ") + e.what();
-    return ApplyResult::ReparseFailed;
+  // Step 5: publish. `tmp` has already been proven loadable by the same
+  // function maburd boots with, so this rename can only ever replace
+  // `path` with something good.
+  ++g_write_counts[path];  // flash-wear guard: counts publish attempts to this path
+  g_last_write_path = path;
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    // The live config was never touched -- `path` still holds exactly
+    // what it did before this call, which is a safe outcome. But it is a
+    // failure, not a success: report it as one, and don't leave the
+    // proven-good scratch file sitting next to the (unchanged) live
+    // config for someone to find later.
+    if (err)
+      *err = "verified candidate but failed to rename " + tmp + " onto " + path;
+    remove_scratch(tmp);
+    return ApplyResult::WriteFailed;
   }
+  fsync_parent_dir(path);
   return ApplyResult::Ok;
 }
 
