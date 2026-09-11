@@ -94,6 +94,14 @@ out and restores itself whether or not the GS is still talking. Killing
 flying video with an **unchanged** config — nothing was written, because
 nothing reached the apply step.
 
+## Calibrate on the channel you fly
+
+The wall table and `base_ref_idx` are **per-channel** — measured on the
+bench 2026-09-11, `base_ref_idx` reads 39 on ch136 and 53 on ch149, and the
+walls move 3-10 indices with it. Set `radio.channel` to the channel you
+intend to fly before running `maburcal`, and re-run it if you change
+channel. Details and the numbers in "Bench validation" below.
+
 ## Geometry
 
 Put the drone and GS at a normal bench distance — close enough that the
@@ -346,10 +354,84 @@ knob exists to gate — so a run's data is never silently lost to a debug
 logging default. See `docs/observability.md` for the file's exact format
 and where it lives when debug logging is off.
 
+## Bench validation, 2026-09-11 — what three real runs showed
+
+The kit was deployed to the bench pair (`RC_VERSION` 7 both ends) and run
+three times: twice on channel 136, once on channel 149. Raw data is on the
+GS at `/media/dvr/log/0057/cal.log` (+ `cal-run1-headerless.log`) and
+`/media/dvr/log/0058/cal.log`.
+
+**The mechanism works.** Every structural check passed: the run drives
+itself end to end, `/etc/mabur.toml` is patched surgically (three lines,
+every comment and unrelated key intact) with a byte-identical `.pre-cal`
+backup, the verify pass reads 96-100% at every parked index, video resumes
+with no restart (`ausniff` 60.3 fps / 0 gaps after every session), and
+killing `maburgs` mid-sweep leaves the drone flying with a **bit-identical**
+config — nothing written. Radio silence is corroborated statistically
+rather than by capture: MCS 0-2 delivered 3840/3840 coarse frames with zero
+loss across the three runs, and GS uplink self-blanking would have cost
+~0.35% of them.
+
+**Two measurement results are NOT yet trustworthy. Read the numbers for
+MCS 0-2 as advisory, whatever flags they carry.**
+
+### The walls and `base_ref_idx` are per-channel
+
+This contradicts the design's own non-goal ("PA walls are dominated by
+modulation PAPR, not channel"). That is true of the wall *in dBm*; it is
+not true of the wall *in TXAGC index*, because the index→power mapping
+carries a per-channel-group trim (`docs/txagc-calibration.md`).
+
+| | ch 136 | ch 149 | shipped table (measured on 149) |
+|---|---|---|---|
+| `base_ref_idx` (efuse readback) | **39** | **53** | 53 |
+| mcs3 / 4 / 5 / 6 / 7 wall | 85-87 / 67-68 / 45 / 48 / 44 | 91 / 70 / 58 / 51 / 55 | 95 / 73 / 54 / 51 / 49 |
+
+The efuse readback tracking the channel exactly — 53 on the channel the
+shipped constant was measured on — is what settles this: it is the same
+anchor `power_plan.h` expects, and it moves with the channel. So
+**calibrate on the channel you fly**, and re-calibrate if you change
+channel. A ch149 table flown on ch136 parks every rate ~1.5 dB high.
+
+On ch149 the delivery-derived walls land within about 4 indices (~1 dB) of
+the 2026-07-29 ground truth, mcs6 exactly. The residual scatter is link
+margin: the reference run was at 3 m / −67 dBm peak, this bench sits at
+−53 dBm, and a cell near the wall delivers better with more margin, which
+reads as a higher wall (mcs7: 55 here, 49 there).
+
+### Defect: one noisy coarse cell reroutes a no-dip row
+
+MCS 0-2 never compress, so they are supposed to take the RSSI-knee path.
+In two runs of three, a *single* coarse cell in the mcs2 row read below
+90% — 4 frames lost out of 20 — and that one cell ended the "first
+contiguous ≥90% run", putting the row on the delivery path instead. It
+reported 101 (ch136) and 111 (ch149) against a run-1 knee of 68, and
+**both were written to the flight config**: mcs2 parked at 97 is roughly
+6 dB above where run 1 put it, in the overdriving direction.
+
+With 20 frames per coarse cell a 90% threshold has no noise margin, and a
+run has 256 cells, so an outlier is likely *every* run. The `narrow` flag
+fires on the resulting row and is reported — but flags never block, so the
+number is applied anyway.
+
+### Defect: the RSSI knee is not reproducible
+
+mcs0's knee read **72, 56 and 84** across the three runs. The knee rule is
+"first index within `knee_tol_db` (1.0 dB) of the peak median RSSI", and
+the transfer curve creeps at ~0.2 dB/idx with 1 dB RSSI quantization: the
+tolerance band alone spans ~5 indices, and a 1 dB wobble in the measured
+peak moves the answer another ~5-10. The design's "coarse resolution puts
+the knee within ±2 indices, which costs nothing because the curve is flat
+there" does not hold — near the tolerance boundary the curve is not flat,
+it is still climbing.
+
+Until both are fixed, treat a run's MCS 3-7 numbers as the product and set
+MCS 0-2 by hand.
+
 ## Hardware acceptance checklist
 
-This is written for a real bench session — work through it on deployed
-hardware; nothing here was run as part of writing this page.
+Work through this on deployed hardware. Most of it was exercised on
+2026-09-11 (above); the rows that still say "capture to confirm" were not.
 
 ### 1. Two-device flag-day deploy
 
