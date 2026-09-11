@@ -7,6 +7,27 @@ namespace mabur {
 void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
   if (new_session) {
+    // A brand-new nonce ARRIVING WHILE A SESSION IS STILL LIVE is a real
+    // case, not a theoretical one: new_session is `!has_session_ ||
+    // nonce != nonce_`, and the second disjunct fires for any second
+    // `maburcal start` after an abort, after a GS restart, or within
+    // await_next_ms (15 s) of the previous run's last frame. At that
+    // moment the TXAGC override is still parked at the PREVIOUS session's
+    // last swept cell (pump_sweeping never restores between cells or
+    // phases; only close_session() does), and devourer's GetTxPowerState
+    // reports that override rather than the anchor -- so the
+    // read_base_ref_idx() below would latch a swept cell's index as this
+    // session's base reference. That wrong anchor rides the ack to the GS,
+    // comes back inside the result, and lands in radio.base_ref_idx in
+    // /etc/mabur.toml, where every subsequent boot derives
+    // diff[r] = wall - m - base_ref from it: a parked cell BELOW the true
+    // anchor makes every rate transmit ABOVE its measured wall, persisted
+    // across reboots, from the kit that exists to prevent exactly that.
+    // The same-nonce version of this hazard is guarded by reusing the
+    // latched value (see take_ack_base_ref()); this is its mirror --
+    // restore the anchor before reading, so the chip is in the same clean
+    // state a genuinely first session would find it in.
+    if (has_session_) pwr.set_index_override(base_ref_idx_);
     // A brand-new nonce: reset every piece of session state, including the
     // hard cap, which is measured from THIS command, not from whenever the
     // drone happened to boot.
@@ -19,11 +40,12 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     // Global constraint: per-rate walls must be measured against a common
     // base, so the wall-equalized diff table comes off -- and this
     // session's base reference index is captured -- HERE, synchronously,
-    // at acceptance, not lazily on pump()'s first call. Only a genuinely
-    // new session reaches this branch, so the chip is still clean: no
-    // phase of THIS session has parked the TXAGC at a swept cell's index
-    // yet (a later phase's on_cmd() reuses base_ref_idx_ below rather than
-    // reading again for exactly that reason -- see take_ack_base_ref()).
+    // at acceptance, not lazily on pump()'s first call. The chip is clean
+    // by the time of the read: no phase of THIS session has parked the
+    // TXAGC at a swept cell's index yet, and any PREVIOUS session's park
+    // was just undone above (a later phase of the same session reuses
+    // base_ref_idx_ below rather than reading again for exactly that
+    // reason -- see take_ack_base_ref()).
     pwr.zero_rate_diffs();
     base_ref_idx_ = pwr.read_base_ref_idx();
     zeroed_for_session_ = true;

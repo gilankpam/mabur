@@ -22,8 +22,15 @@ struct FakePowerCtl : CalSweep::PowerCtl {
   std::vector<int> index_writes;
   int zero_diff_calls = 0;
   int base_ref = 53;
+  // Models devourer's GetTxPowerState under an index override: the chip
+  // reports whatever index is parked "for the current moment", not the
+  // efuse anchor. With this on, a readback returns the last index written
+  // -- so a test can tell "re-read through a parked override" apart from
+  // "reused the latched anchor" instead of both returning the same number.
+  bool report_override_as_base = false;
   bool set_index_override(int idx) override {
     index_writes.push_back(idx);
+    if (report_override_as_base) base_ref = idx;
     return true;
   }
   bool zero_rate_diffs() override { ++zero_diff_calls; return true; }
@@ -391,6 +398,37 @@ TEST(ack_base_ref_is_not_re_read_through_a_parked_override) {
   pwr.base_ref = 12;
   s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
   CHECK(s.take_ack_base_ref() == 53);  // still the session's original value
+}
+
+TEST(a_new_nonce_mid_session_does_not_read_base_ref_through_a_parked_override) {
+  // The mirror of the test above, for the NEW-nonce branch. on_cmd()'s
+  // new_session predicate is `!has_session_ || nonce != nonce_`: the second
+  // disjunct fires while a previous session is STILL LIVE -- any second
+  // `maburcal start` after an abort, after a GS restart, or inside
+  // await_next_ms of the last run's final frame. The TXAGC is parked at the
+  // old session's last swept cell at that moment, so a bare
+  // read_base_ref_idx() would latch that cell as the new session's anchor
+  // and ship it to /etc/mabur.toml's radio.base_ref_idx -- where a park
+  // BELOW the true anchor overdrives every rate, on every subsequent boot.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  pwr.base_ref = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
+  CHECK(s.take_ack_base_ref() == 53);
+  run_to_quiescence(s, tx, pwr);
+  CHECK(s.active());  // still live: awaiting the next phase, not closed
+  // The chip now reports the last swept cell, not the anchor -- exactly
+  // what devourer's GetTxPowerState does under an index override.
+  const int parked = pwr.index_writes.back();
+  CHECK(parked != 53);
+  pwr.base_ref = parked;
+  pwr.report_override_as_base = true;
+  // A SECOND run starts (new nonce) before this session times out.
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 8), 1000, pwr);
+  CHECK(s.take_ack_base_ref() == 53);   // the anchor, not the parked cell
+  CHECK(s.base_ref_idx() == 53);
 }
 
 TEST(a_repeat_of_the_running_phase_re_arms_the_ack) {
