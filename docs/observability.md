@@ -662,10 +662,15 @@ read the sideport. Reach for other tools only in these cases:**
   `DEVOURER_RX_ALLPATHS=1`, `doctor`, etc. — see
   `third_party/devourer/CLAUDE.md`). Use these when the question is about
   the chip/driver rather than the mabur link.
-- **Bench harnesses** (`bench/linkbench`, `bench/txagcbench`) drive
-  special TX/RX modes for characterization; they are not monitoring tools.
-  Note: the drone radio RX can wedge after a linkbench run — restart
-  maburd.
+- **Bench harnesses** (`bench/linkbench`) drive special TX/RX modes for
+  characterization; they are not monitoring tools. Note: the drone radio
+  RX can wedge after a linkbench run — restart maburd.
+- **TX-power wall calibration → `maburcal`** (`docs/calibration.md`), the
+  GS-side operator CLI that replaced `bench/txagcbench` when it was
+  deleted on 2026-09-10. `maburcal start` sweeps a unit's per-rate PA
+  compression walls and applies them; `maburcal report <cal.log>`
+  re-renders a saved run offline, which is where a run's raw per-cell
+  tallies live now.
 
 **"Wire clean" does NOT mean "no frame loss" — venc-ring vanish class,
 detected since 2026-08-13.** Frames can vanish INSIDE the drone (between

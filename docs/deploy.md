@@ -109,11 +109,14 @@ did not.
 
 The one deliberate divergence from the flown value is
 `radio.power_mode`, which ships `"none"` while this drone flies `"offset"`.
-`rate_walls_idx` is a per-UNIT calibration (`docs/txagcbench.md`) and the
+`rate_walls_idx` is a per-UNIT calibration (`docs/calibration.md`) and the
 shipped file cannot know the wall of the board it lands on, so it carries the
 author's 8812EU numbers as a reference and leaves them inert — parsed and
-range-checked, never programmed. Run the bench on your own vtx before
-setting `"offset"`. ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside
+range-checked, never programmed. Measure your own vtx before setting
+`"offset"`: ssh to the GS and run `maburcal start`, which sweeps the walls,
+writes them to the drone's `/etc/mabur.toml` (backing the old file up to
+`.pre-cal`) and flips `power_mode` to `"offset"` itself — no restart, no
+laptop-side step. ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside
 the plan, so a global offset left in the chip by a bench tool survives a
 `maburd` restart; power-cycle if you need a known baseline. On a stock bundle the startup defaulted-key list is therefore
 **empty**, and anything in it is a real gap. Three tests hold that line

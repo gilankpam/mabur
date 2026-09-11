@@ -62,7 +62,7 @@ and re-test to confirm the generated vectors still round-trip.
 
 `tools/build-arm.sh` produces the drone-side binaries with the OpenIPC
 Buildroot toolchain: `maburd` at `out/arm/maburd`, plus the bench TX
-harnesses `out/arm/linkbench-tx` and `out/arm/txagcbench-tx`. `maburd` is a
+harness `out/arm/linkbench-tx`. `maburd` is a
 DYNAMIC glibc `armv7-a` hard-float executable (`libstdc++`, `libm`,
 `libgcc_s`, `libc`, `ld-linux-armhf` — all present on the OpenIPC rootfs,
 with `libstdc++.so.6` under `/usr/lib`). It stopped being a static musl
