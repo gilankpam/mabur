@@ -5,7 +5,6 @@
 
 #include <cstdlib>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -38,11 +37,6 @@ std::vector<std::string> cal_log_lines(const std::string& dir) {
 // claim -- power that never rises -- whose knee correctly sits at the bottom
 // of the sweep. Feeding one here made this test assert against a degenerate
 // case rather than against the behavior it is named for.
-// A representative raw half-dB EVM (-15 dB) for tests that care about
-// delivery, not EVM. Nonzero so the sample is kept: the chip's 0 means
-// "not sampled" and CalSession drops it.
-constexpr int kTestEvm = -30;
-
 int ramp_rssi(int idx) {
   if (idx <= 28) return -80;
   if (idx <= 91) return -80 + (idx - 28) * 3 / 10;
@@ -59,7 +53,7 @@ void feed_phase(CalSession& s, const mabur::rc::CalCmd& c, int pct,
       for (int k = 0; k < n; ++k) {
         mabur::cal::CalFrameInfo f{w.rate, static_cast<uint8_t>(i), c.phase,
                                    seq++};
-        s.on_cal_frame(0, f, ramp_rssi(i), kTestEvm, /*crc_ok=*/true, now_ms);
+        s.on_cal_frame(0, f, ramp_rssi(i), /*crc_ok=*/true, now_ms);
       }
     }
   }
@@ -78,7 +72,7 @@ void feed_phase_fn(CalSession& s, const mabur::rc::CalCmd& c, F pct,
       for (int k = 0; k < n; ++k) {
         mabur::cal::CalFrameInfo f{w.rate, static_cast<uint8_t>(i), c.phase,
                                    seq++};
-        s.on_cal_frame(0, f, ramp_rssi(i), kTestEvm, /*crc_ok=*/true, now_ms);
+        s.on_cal_frame(0, f, ramp_rssi(i), /*crc_ok=*/true, now_ms);
       }
     }
   }
@@ -280,7 +274,7 @@ TEST(verify_phase_tallies_by_rate_despite_a_margin_mismatch) {
   for (int r = 0; r < 8; ++r) {
     mabur::cal::CalFrameInfo f{static_cast<uint8_t>(r), 85,
                               mabur::cal::kPhaseVerify, 0};
-    s.on_cal_frame(0, f, -60, kTestEvm, /*crc_ok=*/true, t1 + 3000);
+    s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
   }
   for (int r = 0; r < 8; ++r) CHECK(s.cell_received(r, 84, 0) == 1);
 }
@@ -295,7 +289,7 @@ TEST(corrupt_frames_count_as_loss_not_delivery) {
   s.on_ack(8, 53, 1);
   mabur::cal::CalFrameInfo f{0, 40, mabur::cal::kPhaseCoarse, 0};
   for (int k = 0; k < 20; ++k)
-    s.on_cal_frame(0, f, -70, kTestEvm, /*crc_ok=*/false, 10);
+    s.on_cal_frame(0, f, -70, /*crc_ok=*/false, 10);
   CHECK(s.cell_received(0, 40, 0) == 0);
   CHECK(s.cell_corrupt(0, 40) == 20);
 }
@@ -309,7 +303,7 @@ TEST(frames_from_a_stale_phase_are_ignored) {
   s.due_cmd(0);
   s.on_ack(9, 53, 1);
   mabur::cal::CalFrameInfo f{0, 40, mabur::cal::kPhaseVerify, 0};  // wrong phase
-  s.on_cal_frame(0, f, -70, kTestEvm, true, 10);
+  s.on_cal_frame(0, f, -70, true, 10);
   CHECK(s.cell_received(0, 40, 0) == 0);
 }
 
@@ -455,7 +449,7 @@ TEST(cal_log_records_verify_results) {
     for (int k = 0; k < 97; ++k) {
       mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify,
                                 static_cast<uint16_t>(k)};
-      s.on_cal_frame(0, f, -60, kTestEvm, /*crc_ok=*/true, t1 + 3000);
+      s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
     }
     // Close the verify window: phase_slack_ms is 0, and a verify plan with
     // all 8 rates parked (none undetermined here) runs well under a
@@ -505,7 +499,7 @@ TEST(result_is_repeated_until_a_verify_frame_acks_it) {
 
   // The drone applied and started sweeping: one verify frame is the ack.
   mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify, 0};
-  s.on_cal_frame(0, f, -60, kTestEvm, /*crc_ok=*/true, t_first + 500);
+  s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t_first + 500);
   CHECK(!s.due_result(t_first + 600).has_value());
   CHECK(!s.due_result(t_first + 5000).has_value());
 }
@@ -528,7 +522,7 @@ TEST(a_crc_bad_verify_frame_still_stops_the_repeats) {
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   REQUIRE(s.due_result(t1 + 2000).has_value());
   mabur::cal::CalFrameInfo f{3, 84, mabur::cal::kPhaseVerify, 0};
-  s.on_cal_frame(0, f, -60, kTestEvm, /*crc_ok=*/false, t1 + 2100);
+  s.on_cal_frame(0, f, -60, /*crc_ok=*/false, t1 + 2100);
   CHECK(!s.due_result(t1 + 2200).has_value());
 }
 
@@ -653,7 +647,7 @@ TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
     for (int k = 0; k < 55; ++k) {
       mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify,
                                 static_cast<uint16_t>(k)};
-      s.on_cal_frame(0, f, -60, kTestEvm, /*crc_ok=*/true, t1 + 3000);
+      s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
     }
     s.due_cmd(t1 + 2000 + 60000);
     CHECK(s.state() == CalSession::State::Done);
@@ -697,7 +691,7 @@ TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
   for (int k = 0; k < 97; ++k) {
     mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify,
                               static_cast<uint16_t>(k)};
-    s.on_cal_frame(0, f, -60, kTestEvm, /*crc_ok=*/true, t1 + 3000);
+    s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
   }
   s.due_cmd(t1 + 2000 + 60000);
   REQUIRE(s.state() == CalSession::State::Done);
@@ -730,7 +724,7 @@ TEST(a_sweep_frame_is_an_implicit_ack_for_the_phase_it_names) {
   CHECK(!s.radio_silent(10));   // no ack yet: the air is still open
 
   mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseCoarse, 0};
-  s.on_cal_frame(0, f, -70, kTestEvm, /*crc_ok=*/true, 100);
+  s.on_cal_frame(0, f, -70, /*crc_ok=*/true, 100);
   CHECK(s.state() == CalSession::State::Sweep);
   CHECK(s.radio_silent(101));               // ...and now it is shut
   CHECK(!s.due_cmd(300).has_value());       // no more repeats into the sweep
@@ -754,115 +748,9 @@ TEST(a_frame_from_another_phase_is_not_an_implicit_ack) {
   REQUIRE(s.start(1, 72, 0, &err));
   REQUIRE(s.due_cmd(0).has_value());
   mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseVerify, 0};
-  s.on_cal_frame(0, f, -70, kTestEvm, true, 100);
+  s.on_cal_frame(0, f, -70, true, 100);
   CHECK(s.state() == CalSession::State::AwaitAck);
   CHECK(s.cell_received(0, 8, 0) == 0);
 }
 
 MTEST_MAIN
-
-TEST(cell_records_carry_the_median_evm_of_the_frames_that_reported_one) {
-  // EVM is the direct observable of PA compression -- it degrades under
-  // drive whether or not the frame still decodes, which is exactly where
-  // delivery is blind (MCS 0-2 deliver 100% straight through saturation).
-  // It arrives on the same RxBody as RSSI, so the cost of recording it is
-  // a field. Observability only: nothing in analyze_rate reads it yet.
-  const std::string dir = fresh_dir("cal_session_log_evm");
-  {
-    CalLog log(dir);
-    log.header();
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg, &log);
-    s.set_peer(true, true);
-    std::string err;
-    REQUIRE(s.start(1, 31, 0, &err));
-    log.run(31, 53, s.margin_db());
-    s.due_cmd(0);
-    s.on_ack(31, 53, 1);
-
-    const auto coarse = make_coarse_plan(1, 31);
-    uint16_t seq = 0;
-    for (const auto& w : coarse.windows) {
-      for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) {
-        for (int k = 0; k < coarse.frames_per_cell; ++k) {
-          mabur::cal::CalFrameInfo f{w.rate, static_cast<uint8_t>(i),
-                                     coarse.phase, seq++};
-          // Raw half-dB, negative = cleaner. An odd sample count makes the
-          // median exactly the middle value: -40, -38, -36 -> -38.
-          const int evm = -40 + 2 * (k % 3);
-          // Card 1 never reports one. Both of the chip's no-measurement
-          // encodings appear: raw 0 (no phy status at all) and raw -128,
-          // the vendor's 0x80 "this stream was not measured", which reads
-          // as an impossible -64 dB if taken at face value.
-          s.on_cal_frame(0, f, ramp_rssi(i), evm, /*crc_ok=*/true, 10);
-          s.on_cal_frame(1, f, ramp_rssi(i), k % 2 ? 0 : -128,
-                         /*crc_ok=*/true, 10);
-        }
-      }
-    }
-    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-    REQUIRE(s.due_result(t1 + 2000).has_value());
-  }
-
-  int checked = 0;
-  for (const auto& l : cal_log_lines(dir)) {
-    if (l.rfind("C ", 0) != 0) continue;
-    std::istringstream is(l);
-    std::string tag;
-    int phase, rate, idx, expected, r0, r1, corrupt, s0, s1, e0, e1;
-    is >> tag >> phase >> rate >> idx >> expected >> r0 >> r1 >> corrupt >>
-        s0 >> s1 >> e0 >> e1;
-    REQUIRE(!is.fail());
-    CHECK(e0 == -38);          // card 0's median of {-40,-38,-36}
-    CHECK(e1 == kEvmNone);     // card 1 sampled none, sentinel not zero
-    ++checked;
-  }
-  CHECK(checked > 0);
-}
-
-
-TEST(the_vendor_no_measurement_sentinel_never_enters_the_evm_median) {
-  // Measured on the bench 2026-09-11: every calibration sweep frame came
-  // back with rxevm 0x80 on both streams -- the Jaguar3 type1 page's "this
-  // stream was not measured" encoding (FrameParserJaguar3.h) -- while
-  // ordinary video on the same link reported -14.5 dB. Taken at face value
-  // it is -64 dB, a cleaner signal than physics allows, and it would have
-  // filled cal.log with a flat fake curve indistinguishable from a real
-  // measurement. It is dropped exactly like raw 0.
-  const std::string dir = fresh_dir("cal_session_evm_sentinel");
-  {
-    CalLog log(dir);
-    log.header();
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg, &log);
-    s.set_peer(true, true);
-    std::string err;
-    REQUIRE(s.start(1, 31, 0, &err));
-    log.run(31, 39, s.margin_db());
-    s.due_cmd(0);
-    s.on_ack(31, 39, 1);
-    const auto coarse = make_coarse_plan(1, 31);
-    uint16_t seq = 0;
-    for (const auto& w : coarse.windows)
-      for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step)
-        for (int k = 0; k < coarse.frames_per_cell; ++k) {
-          mabur::cal::CalFrameInfo f{w.rate, static_cast<uint8_t>(i),
-                                     coarse.phase, seq++};
-          s.on_cal_frame(0, f, ramp_rssi(i), -128, /*crc_ok=*/true, 10);
-        }
-    REQUIRE(s.due_result(1 + plan_duration_ms(coarse) + 2001).has_value());
-  }
-  for (const auto& l : cal_log_lines(dir)) {
-    if (l.rfind("C ", 0) != 0) continue;
-    std::istringstream is(l);
-    std::string tag;
-    int phase, rate, idx, expected, r0, r1, corrupt, s0, s1, e0, e1;
-    is >> tag >> phase >> rate >> idx >> expected >> r0 >> r1 >> corrupt >>
-        s0 >> s1 >> e0 >> e1;
-    REQUIRE(!is.fail());
-    CHECK(e0 == kEvmNone);
-    CHECK(e1 == kEvmNone);
-  }
-}

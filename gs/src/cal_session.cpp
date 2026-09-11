@@ -84,8 +84,7 @@ void CalSession::on_ack(uint32_t nonce, int base_ref_idx, uint64_t now_ms) {
 }
 
 void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
-                              int rssi_dbm, int evm_raw, bool crc_ok,
-                              uint64_t now_ms) {
+                              int rssi_dbm, bool crc_ok, uint64_t now_ms) {
   // A sweep frame for the phase currently being commanded is an IMPLICIT
   // ACK, exactly as a verify frame is the implicit ack for T_CAL_RESULT.
   // Found by tests/test_cal_e2e.cpp: the drone's ack rides a Telem, Telem
@@ -155,14 +154,6 @@ void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
   }
   ++c.received[static_cast<size_t>(card)];
   rssi_raw_[f.rate][f.idx][static_cast<size_t>(card)].push_back(rssi_dbm);
-  // Two encodings mean "no measurement" and neither may enter the median:
-  // raw 0 is "no phy status on this frame" (node.h), and raw -128 is the
-  // Jaguar3 type1 page's 0x80, "this stream was not measured"
-  // (FrameParserJaguar3.h). The second is the dangerous one -- it reads as
-  // -64 dB, a cleaner signal than physics allows, and on the bench
-  // 2026-09-11 it was what EVERY calibration sweep frame carried.
-  if (evm_raw != 0 && evm_raw != -128)
-    evm_raw_[f.rate][f.idx][static_cast<size_t>(card)].push_back(evm_raw);
 }
 
 std::optional<mabur::rc::CalCmd> CalSession::due_cmd(uint64_t now_ms) {
@@ -352,7 +343,6 @@ void CalSession::seed_cells(const mabur::rc::CalCmd& cmd) {
 void CalSession::clear_cells() {
   for (auto& m : cells_) m.clear();
   for (auto& m : rssi_raw_) m.clear();
-  for (auto& m : evm_raw_) m.clear();
 }
 
 void CalSession::begin_await(const mabur::rc::CalCmd& cmd, uint64_t now_ms) {
@@ -387,16 +377,6 @@ std::vector<CalCell> CalSession::sorted_cells(int rate) const {
         if (!samples.empty()) {
           c.rssi_dbm[static_cast<size_t>(card)] = median(samples);
           c.have_rssi[static_cast<size_t>(card)] = true;
-        }
-      }
-    }
-    auto eit = evm_raw_[static_cast<size_t>(rate)].find(idx);
-    if (eit != evm_raw_[static_cast<size_t>(rate)].end()) {
-      for (int card = 0; card < 2; ++card) {
-        const auto& samples = eit->second[static_cast<size_t>(card)];
-        if (!samples.empty()) {
-          c.evm_dbh[static_cast<size_t>(card)] = median(samples);
-          c.have_evm[static_cast<size_t>(card)] = true;
         }
       }
     }

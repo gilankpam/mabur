@@ -52,11 +52,12 @@ MABURGS_LOG = "/tmp/maburgs.log"
 SESSION_MARKER = "/tmp/mabur-session"
 DEFAULT_DEBUG_LOG_DIR = "/media/dvr/log"
 
-# The marker versions the FILE. `callog 2` added two per-card EVM columns to
-# the C row; this reader has never stored C rows (the W/V rows carry
-# everything the report shows), so both shapes render identically -- and DVR
-# recordings outlive the code that wrote them (CLAUDE.md), so v1 stays
-# readable rather than being dropped the moment v2 exists.
+# The marker versions the FILE. 1 is what maburgs writes. 2 is accepted too:
+# it briefly existed on 2026-09-11 (two per-card EVM columns on the C row,
+# reverted when the sweep frames turned out to carry no EVM reading -- see
+# docs/calibration.md), and bench runs in that shape are sitting on the DVR.
+# Since this reader has never stored C rows, a v2 file renders identically to
+# a v1 one, and recordings outlive the code that wrote them (CLAUDE.md).
 KNOWN_CALLOG_VERSIONS = (1, 2)
 
 # flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree 32=drift
@@ -100,9 +101,7 @@ class _Run:
                 self.verify[rate] = pct
             # "C" rows (per-cell tallies) carry no information the final W/V
             # rows don't already summarize for this report, and are the
-            # densest line in the file -- deliberately not stored. This is
-            # also why `callog 2` widening C with EVM columns needs nothing
-            # here beyond accepting the version.
+            # densest line in the file -- deliberately not stored.
         except ValueError:
             return  # non-numeric field: skip the line, not the file
 

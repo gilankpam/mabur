@@ -12,7 +12,7 @@
 
 namespace maburgs {
 namespace {
-constexpr char kCalLogMarker[] = "callog 2";
+constexpr char kCalLogMarker[] = "callog 1";
 }  // namespace
 
 bool cal_log_header_due(const std::string& dir) {
@@ -72,17 +72,10 @@ void CalLog::cell(uint8_t phase, uint8_t rate, uint8_t idx, const CalCell& c) {
   // leak a stale or zero-initialized value into the record.
   const int rssi0 = c.have_rssi[0] ? c.rssi_dbm[0] : kRssiNone;
   const int rssi1 = c.have_rssi[1] ? c.rssi_dbm[1] : kRssiNone;
-  // Same rule for EVM, and it matters more: the chip encodes "not sampled"
-  // as raw 0, which is also a legal EVM value, so writing the slot straight
-  // through would make an unsampled card indistinguishable from a perfect
-  // one. kEvmNone is unambiguous.
-  const int evm0 = c.have_evm[0] ? c.evm_dbh[0] : kEvmNone;
-  const int evm1 = c.have_evm[1] ? c.evm_dbh[1] : kEvmNone;
-  char b[192];
+  char b[160];
   const int n = std::snprintf(
-      b, sizeof(b), "C %d %d %d %d %d %d %d %d %d %d %d", phase, rate, idx,
-      c.expected, c.received[0], c.received[1], c.corrupt, rssi0, rssi1,
-      evm0, evm1);
+      b, sizeof(b), "C %d %d %d %d %d %d %d %d %d", phase, rate, idx,
+      c.expected, c.received[0], c.received[1], c.corrupt, rssi0, rssi1);
   if (n > 0)
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }

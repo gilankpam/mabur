@@ -354,7 +354,7 @@ knob exists to gate — so a run's data is never silently lost to a debug
 logging default. See `docs/observability.md` for the file's exact format
 and where it lives when debug logging is off.
 
-## Bench validation, 2026-09-11 — what three real runs showed
+## Bench validation, 2026-09-11 — what four real runs showed
 
 The kit was deployed to the bench pair (`RC_VERSION` 7 both ends) and run
 four times: three on channel 136, once on channel 149. Raw data is on the
@@ -414,32 +414,35 @@ run has 256 cells, so an outlier is likely *every* run. The `narrow` flag
 fires on the resulting row and is reported — but flags never block, so the
 number is applied anyway.
 
-### EVM is recorded (`callog 2`) but the sweep frames don't carry one
+### EVM was tried as a second instrument and the sweep frames carry none
 
-`cal.log`'s `C` rows carry per-card median RX EVM since `callog 2` — raw
-half-dB, negative = cleaner, `kEvmNone` (-999) when no card reported one.
-It was added because EVM is the direct observable of PA compression, which
-is exactly what delivery cannot see on the rows above.
+EVM is the direct observable of PA compression — it degrades under drive
+whether or not the frame still decodes, which is exactly what delivery
+cannot see on the rows above. It arrives on the same `RxBody` as RSSI, so
+it was recorded per cell (`callog 2`) and the bench re-run on
+2026-09-11.
 
-**On the bench 2026-09-11 it came back empty.** Every sweep frame, every
-rate, every index reported rxevm `0x80` on both streams — the Jaguar3 type1
-phy-status page's "this stream was not measured"
-(`FrameParserJaguar3.h`). Ordinary video on the same link at the same
-moment reported −14.5 dB, so the chip measures EVM fine; something about
-how the sweep frames are sent stops it. RSSI on those same frames is
-valid and tracks the index ramp cleanly, so the phy-status page is
-present and being parsed — it is the per-stream EVM field specifically
-that is blank.
+**It came back empty.** Every sweep frame, every rate, every index
+reported rxevm `0x80` on both streams — the Jaguar3 type1 phy-status
+page's "this stream was not measured" (`FrameParserJaguar3.h`), which
+reaches `RxBody` as raw −128 and reads as an impossible −64 dB if taken
+at face value. Ordinary video on the same link at the same moment
+reported −14.5 dB, so the chip measures EVM fine. RSSI on those same
+sweep frames is valid and tracks the index ramp cleanly, so the
+phy-status page is present and parsed — it is the per-stream EVM field
+specifically that is blank.
+
+The code was **reverted**; `cal.log` is `callog 1` again with no EVM
+columns. `maburcal` still accepts a `callog 2` file because bench runs in
+that shape are on the DVR.
 
 The plausible difference is the frames themselves: 64-byte single
 (non-aggregated) probe-request frames, versus the large A-MPDU-aggregated
-data frames video sends. Untested. If EVM is worth having here, the
-experiment is a longer sweep payload, or sending sweep frames as
-aggregated data frames, and re-running — both change `cal_wire.h` and so
-need both binaries redeployed together.
-
-Until then the EVM columns will be all `-999`, which is the honest
-reading and not a bug in the log.
+data frames video sends. **Untested.** If EVM is worth another attempt,
+that is the experiment — a longer sweep payload, or sweep frames sent as
+aggregated data frames — and it changes `cal_wire.h`, so it needs both
+binaries redeployed together. Do not re-add the recording without
+changing the frames first; it produced nothing but `-999` columns.
 
 ### Defect: the RSSI knee is not reproducible
 

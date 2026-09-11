@@ -10,10 +10,6 @@ namespace maburgs {
 
 // Sentinel for "this card measured no RSSI in this cell".
 constexpr int kRssiNone = -999;
-// Sentinel for "this card reported no EVM in this cell". Distinct from the
-// chip's own encoding, where raw 0 means "not sampled" -- 0 is also a legal
-// (if absurd) EVM value, and a log must not pass that ambiguity on.
-constexpr int kEvmNone = -999;
 
 // One (rate, idx) measurement. `expected` comes from the plan the GS itself
 // sent, never from anything the drone reports -- so a drone that dies
@@ -25,16 +21,6 @@ struct CalCell {
   uint16_t corrupt = 0;                 // CRC-bad, diagnostics only
   std::array<int, 2> rssi_dbm{};        // per-card median
   std::array<bool, 2> have_rssi{};
-  // Per-card median RX EVM in RAW HALF-dB, the units the chip reports
-  // (negative = cleaner; x0.5 for dB). Recorded but not yet analyzed:
-  // analyze_rate reads delivery and RSSI only. EVM is here because it is
-  // the direct observable of PA compression -- it degrades under drive
-  // whether or not the frame still decodes, which is precisely where
-  // delivery goes blind (MCS 0-2 deliver 100% straight through saturation,
-  // so their wall comes from the RSSI knee, which measured 72/56/84 on
-  // three runs of one unit -- docs/calibration.md, 2026-09-11).
-  std::array<int, 2> evm_dbh{};
-  std::array<bool, 2> have_evm{};
 };
 
 enum CalFlag : uint32_t {

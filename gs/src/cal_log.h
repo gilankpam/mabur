@@ -29,10 +29,10 @@ struct RateWall;
 // Record format is LOCKED (gs/bundle/maburcal's reader and
 // tests/test_cal_log.cpp depend on the exact byte layout):
 //
-//   callog 2                                               # once, first line
+//   callog 1                                               # once, first line
 //   R <nonce> <base_ref> <margin_db>             # once per calibration run
 //   C <phase> <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>
-//     <evm0> <evm1>                              # one row per measured cell
+//                                                # one row per measured cell
 //   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, at each
 //                                                 # phase-end (coarse then
 //                                                 # fine); reader takes
@@ -62,13 +62,6 @@ struct RateWall;
 // nonce/base_ref/margin they belong to. An R line is what a reader keys
 // runs by, and it also reliably marks where one run's lines end and the
 // next begins.
-//
-// evm0/evm1 are per-card median RX EVM in RAW HALF-dB (negative = cleaner;
-// x0.5 for dB), the units the chip reports -- no lossy conversion in the
-// log. They joined C in `callog 2`; a v1 file on the DVR has nine fields on
-// that row, not eleven. Nothing in analyze_rate reads EVM yet: it is
-// recorded because it is the direct observable of PA compression, seeing
-// what delivery cannot on rows that never drop a frame.
 //
 // margin_db prints to two decimals. A card with no RSSI reading in a cell
 // (CalCell::have_rssi[i] false) writes -999 (kRssiNone), never a blank or a
@@ -128,7 +121,7 @@ class CalLog {
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
 
-  // The format-marker line, `callog 2`. Call at most once per FILE (i.e.
+  // The format-marker line, `callog 1`. Call at most once per FILE (i.e.
   // never on a rejoin of an already-headed session directory) -- it
   // carries no per-run data, so unlike ctl.log's single combined header
   // there is no reason for a second calibration run in the same session to

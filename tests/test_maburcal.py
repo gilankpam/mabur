@@ -211,10 +211,10 @@ class TestRenderWhenReady(unittest.TestCase):
 
 
 class TestCallogVersions(unittest.TestCase):
-    """The marker versions the FILE. v2 added EVM columns to C; the reader
-    ignores C rows entirely, so both shapes render identically -- and DVR
-    recordings outlive the code that wrote them (CLAUDE.md), so v1 files
-    must stay readable."""
+    """The marker versions the FILE. maburgs writes 1; 2 is accepted because
+    bench runs in that shape (the reverted EVM columns, docs/calibration.md)
+    are on the DVR, and this reader ignores C rows entirely so both render
+    identically."""
 
     def test_v1_and_v2_both_render(self):
         v1 = GOOD  # "callog 1", nine-field C row
