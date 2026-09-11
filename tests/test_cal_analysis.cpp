@@ -45,11 +45,24 @@ TEST(mcs7_first_dip_not_last_good) {
   CHECK((w.flags & kCalUndetermined) == 0);
 }
 
-// mcs0: never dips. The wall is the saturation knee from the RSSI curve --
-// the index where radiated power stops rising -- NOT 127.
-TEST(mcs0_no_dip_uses_saturation_knee) {
+// mcs0: never dips anywhere in the sweep. There is no compression wall to
+// find, so the row is parked at the highest index this unit can express --
+// base_ref_idx + 63, the +63 rail of the chip's 7-bit per-rate diff field.
+//
+// This replaced an RSSI "saturation knee" (the lowest index within 1 dB of
+// the row's peak median RSSI). That number was not reproducible: on one unit
+// it read 72, 56, 84 and 56 on four runs an hour apart, and in one run mcs0
+// and mcs1 -- the same PA, the same modulation class -- came out 3 dB apart.
+// The rule cannot do better: the transfer curve creeps at ~0.2 dB/idx, so a
+// 1 dB tolerance band already spans ~5 indices before 1 dB of RSSI
+// quantization moves it further. Parking at the rail is instead exact,
+// identical every run, and PROVABLY INSIDE MEASURED-GOOD TERRITORY -- the
+// sweep just delivered >=90% at every index through 124, and the rail is
+// below that. The old knee was never validated by delivery at any index.
+TEST(mcs0_no_dip_parks_at_the_diff_field_rail) {
   std::vector<CalCell> cells;
-  // Flat floor to 28, ~0.3 dB/idx ramp to 91, flat ceiling to 127.
+  // Flat floor to 28, ~0.3 dB/idx ramp to 91, flat ceiling to 127 -- the
+  // real measured shape, which this rule deliberately no longer reads.
   for (int i = 0; i <= 127; i += 4) {
     int rssi;
     if (i <= 28) rssi = -80;
@@ -57,12 +70,42 @@ TEST(mcs0_no_dip_uses_saturation_knee) {
     else rssi = -80 + (91 - 28) * 3 / 10;
     cells.push_back(cell(i, 100, rssi));
   }
-  const auto w = analyze_rate(cells, CalThresholds{});
+  CalThresholds th;
+  th.max_wall = 102;  // base_ref_idx 39 (ch136) + 63
+  const auto w = analyze_rate(cells, th);
   CHECK((w.flags & kCalNoDip) != 0);
   CHECK((w.flags & kCalUndetermined) == 0);
-  // Coarse step is 4, so the knee lands within +/-2 of 91. It must never be
-  // 127: parking above the knee radiates nothing extra and burns diff range.
-  CHECK(w.wall >= 88 && w.wall <= 92);
+  CHECK(w.wall == 102);
+}
+
+TEST(the_rail_never_exceeds_the_seven_bit_txagc_range) {
+  // A unit whose base_ref_idx sits high has a rail past the end of the
+  // index range; 127 is the ceiling regardless, and config.cpp range-checks
+  // rate_walls_idx to [0,127] independently.
+  std::vector<CalCell> cells;
+  for (int i = 0; i <= 127; i += 4) cells.push_back(cell(i, 100, -60));
+  CalThresholds th;
+  th.max_wall = 127;  // caller clamped base_ref 90 + 63 = 153
+  CHECK(analyze_rate(cells, th).wall == 127);
+}
+
+TEST(a_no_dip_row_with_no_known_rail_is_undetermined) {
+  // The rail is base_ref_idx + 63, and base_ref_idx arrives in the phase-1
+  // acknowledgment -- a Telem, lost like anything else. The sweep can
+  // complete without one (a sweep frame is an implicit ack, cal_session.h).
+  // With no anchor there is no derivable wall, so the row reports
+  // undetermined and its config entry is left untouched. Inventing a number
+  // from a base_ref of 0 would park the rate at idx 59 on a unit whose
+  // anchor is 39 -- 10 dB low, silently, on the rates the link falls back to.
+  std::vector<CalCell> cells;
+  for (int i = 0; i <= 127; i += 4) cells.push_back(cell(i, 100, -60));
+  CalThresholds th;
+  th.max_wall = -1;  // no ack ever arrived
+  const auto w = analyze_rate(cells, th);
+  CHECK((w.flags & kCalNoDip) != 0);
+  CHECK((w.flags & kCalUndetermined) != 0);
+  CHECK(w.wall == -1);
+  CHECK(w.floor_idx == -1);
 }
 
 TEST(row_never_reaching_threshold_is_undetermined) {

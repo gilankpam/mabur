@@ -24,7 +24,7 @@ struct CalCell {
 };
 
 enum CalFlag : uint32_t {
-  kCalNoDip = 1u << 0,          // never fell below threshold; wall = knee
+  kCalNoDip = 1u << 0,          // never fell below threshold; wall = the rail
   kCalUndetermined = 1u << 1,   // never reached threshold; no wall derivable
   kCalNarrow = 1u << 2,         // usable window too thin to trust
   kCalSaturated = 1u << 3,      // RX front-end compression suspected
@@ -37,7 +37,24 @@ struct CalThresholds {
   double sat_rssi_dbm = -45.0;  // above this, suspect RX saturation
   int narrow_span = 4;          // wall - floor <= this => kCalNarrow
   int card_disagree = 2;        // per-card wall gap beyond this => flag
-  double knee_tol_db = 1.0;     // within this of peak RSSI => on the ceiling
+  // The highest wall this UNIT can express: base_ref_idx + 63, capped at
+  // 127. The chip takes a per-rate diff, not an index, and that field is
+  // 7-bit two's complement (power_plan.h), so a wall past this rail derives
+  // a diff outside [-64,63] and drone/src/config.cpp refuses to load the
+  // config at all. A row with no compression wall is parked here.
+  //
+  // Deliberately computed from base_ref_idx ALONE and not from the margin:
+  // diff = wall - margin*4 - base_ref, so any margin >= 0 only makes the
+  // diff smaller. A rail that ignores the margin is therefore valid for
+  // whatever wall_margin_db the drone's own config happens to carry --
+  // which is the authority here, and which nothing forces to equal this
+  // session's (cal_session.cpp, finalize_result). It gives up 4 indices at
+  // the default 1 dB margin, in a region where the measured transfer curve
+  // is flat to within quantization.
+  //
+  // -1 = this unit's base_ref_idx is not known (no phase-1 ack arrived), and
+  // a no-dip row then has no derivable wall at all.
+  int max_wall = -1;
 };
 
 struct RateWall {

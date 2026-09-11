@@ -64,6 +64,16 @@ class CalSession {
   // failed/aborted, must not resurrect anything.
   void on_ack(uint32_t nonce, int base_ref_idx, uint64_t now_ms);
 
+  // This unit's efuse anchor, from any cal_active Telem in this session.
+  // Separate from on_ack because the two answer different questions: on_ack
+  // is a PHASE acknowledgment and is correctly ignored outside AwaitAck,
+  // while base_ref_idx is a property of the hardware that stays true
+  // whenever it arrives. Keeping them fused meant a phase-1 ack lost to the
+  // 30-50% uplink took the anchor with it, and with no anchor there is no
+  // rail -- so every no-dip row (normally MCS 0-2, on every run) came out
+  // undetermined. Call it from every cal_active Telem, not only acks.
+  void note_base_ref(int base_ref_idx);
+
   // A sweep-frame arrival. Frames outside the phase currently running, or
   // for an index this session never asked for, are dropped -- silently, by
   // design: a stray frame must never be attributed to a cell it doesn't
@@ -172,7 +182,15 @@ class CalSession {
   uint32_t nonce_ = 0;
   bool linked_ = false;
   bool cal_capable_ = false;
-  int base_ref_idx_ = 0;
+  // This unit's efuse anchor, from the phase-1 acknowledgment. -1 until one
+  // arrives: a sweep frame is an implicit ack (on_cal_frame) and only the
+  // Telem carries base_ref, so a whole run can complete without it. The rail
+  // a no-dip row parks at is derived from this, and cal_analysis.h's
+  // max_wall < 0 is what "no anchor, so no derivable wall" looks like.
+  int base_ref_idx_ = -1;
+
+  // cfg_.th plus the per-unit rail (cal_analysis.h, CalThresholds::max_wall).
+  CalThresholds thresholds_() const;
   const char* fail_reason_ = "";
 
   // AwaitAck bookkeeping.

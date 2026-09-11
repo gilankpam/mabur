@@ -60,6 +60,12 @@ bool CalSession::start(uint32_t vtx_id, uint32_t nonce, uint64_t now_ms,
 
   vtx_id_ = vtx_id;
   nonce_ = nonce;
+  // Learned fresh every session: base_ref_idx is per-CHANNEL (measured on
+  // the bench 2026-09-11, 39 on ch136 and 53 on ch149), so an anchor
+  // carried over from a session before a channel change would put the rail
+  // in the wrong place -- either refused by the drone's range check, or,
+  // worse, silently low.
+  base_ref_idx_ = -1;
   fail_reason_ = "";
   result_ready_ = false;
   result_repeats_left_ = 0;
@@ -81,6 +87,10 @@ void CalSession::on_ack(uint32_t nonce, int base_ref_idx, uint64_t now_ms) {
   phase_start_ms_ = now_ms;
   phase_end_ms_ = now_ms + plan_duration_ms(pending_cmd_);
   state_ = State::Sweep;
+}
+
+void CalSession::note_base_ref(int base_ref_idx) {
+  if (base_ref_idx >= 0 && base_ref_idx <= 127) base_ref_idx_ = base_ref_idx;
 }
 
 void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
@@ -365,6 +375,15 @@ void CalSession::begin_verify(uint64_t now_ms) {
   state_ = State::Verify;
 }
 
+CalThresholds CalSession::thresholds_() const {
+  CalThresholds th = cfg_.th;
+  // The chip's per-rate diff field is 7-bit two's complement, so the highest
+  // expressible wall is base_ref_idx + 63 -- capped at 127, the top of the
+  // TXAGC range itself. No anchor means no rail (cal_analysis.h).
+  th.max_wall = base_ref_idx_ < 0 ? -1 : std::min(127, base_ref_idx_ + 63);
+  return th;
+}
+
 std::vector<CalCell> CalSession::sorted_cells(int rate) const {
   std::vector<CalCell> out;
   out.reserve(cells_[static_cast<size_t>(rate)].size());
@@ -407,7 +426,7 @@ void CalSession::finish_phase(uint64_t now_ms) {
   if (running_phase_ == mabur::cal::kPhaseCoarse) {
     for (int r = 0; r < 8; ++r)
       coarse_walls_[static_cast<size_t>(r)] =
-          analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);
+          analyze_rate(snapshot[static_cast<size_t>(r)], thresholds_());
 
     // Logged here too, not only from finalize_result(): a two-phase run
     // refines only the rows coarse found a real dip in (see the fine-phase
@@ -452,7 +471,7 @@ void CalSession::finish_phase(uint64_t now_ms) {
     // Seeded (and therefore non-empty) exactly when this row was in
     // fine_cmd's windows -- the same set the flag check above already
     // narrowed to.
-    const RateWall fw = analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);
+    const RateWall fw = analyze_rate(snapshot[static_cast<size_t>(r)], thresholds_());
     if (fw.flags & (kCalNoDip | kCalUndetermined))
       continue;  // truncated-window misread; keep the coarse wall.
 

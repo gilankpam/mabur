@@ -32,26 +32,6 @@ std::pair<int, int> first_run(const std::vector<CalCell>& cells, int card,
   return {floor_idx, wall};
 }
 
-// The PA saturation knee: the lowest index whose median RSSI is already
-// within knee_tol_db of the row's peak. Above it the transfer curve is flat,
-// so more index buys no more radiated power and only burns diff range.
-// Returns -1 when the row carries no RSSI at all.
-int saturation_knee(const std::vector<CalCell>& cells, int card,
-                    double tol_db) {
-  int peak = kRssiNone;
-  for (const auto& c : cells)
-    if (c.have_rssi[static_cast<size_t>(card)])
-      peak = std::max(peak, c.rssi_dbm[static_cast<size_t>(card)]);
-  if (peak == kRssiNone) return -1;
-  for (const auto& c : cells) {
-    if (!c.have_rssi[static_cast<size_t>(card)]) continue;
-    if (static_cast<double>(c.rssi_dbm[static_cast<size_t>(card)]) >=
-        static_cast<double>(peak) - tol_db)
-      return static_cast<int>(c.idx);
-  }
-  return -1;
-}
-
 }  // namespace
 
 RateWall analyze_rate(const std::vector<CalCell>& cells,
@@ -78,6 +58,17 @@ RateWall analyze_rate(const std::vector<CalCell>& cells,
   }
   out.best_card = best;
 
+  // Computed here, before any wall-finding can return early: saturation is a
+  // property of the RSSI this row was measured at, not of whether a wall came
+  // out of it. A row that ends undetermined most needs this flag -- it is
+  // often the reason there is nothing to find.
+  int peak = kRssiNone;
+  for (const auto& c : cells)
+    if (c.have_rssi[static_cast<size_t>(best)])
+      peak = std::max(peak, c.rssi_dbm[static_cast<size_t>(best)]);
+  if (peak != kRssiNone && static_cast<double>(peak) > th.sat_rssi_dbm)
+    out.flags |= kCalSaturated;
+
   const auto [floor_idx, wall] = first_run(cells, best, th.deliver_pct);
   out.floor_idx = floor_idx;
 
@@ -90,23 +81,34 @@ RateWall analyze_rate(const std::vector<CalCell>& cells,
 
   const int last_idx = static_cast<int>(cells.back().idx);
   if (wall >= last_idx) {
-    // Never dipped. Delivery cannot see the PA ceiling (it stays at 100%
-    // straight through), so the wall is the RSSI knee instead.
+    // Never dipped: this rate has no compression wall inside the swept
+    // range, so there is nothing for delivery to find and nothing to back
+    // off from. Park it at the rail instead -- the highest wall the chip's
+    // 7-bit per-rate diff field can express for this unit (th.max_wall).
+    //
+    // The rail is below the top of the sweep, so the parked index sits
+    // inside territory this very run measured at >=90% delivery. That is a
+    // stronger guarantee than the RSSI "saturation knee" this replaced,
+    // which was an inference from a curve -- and an unreproducible one: on
+    // one unit it read 72, 56, 84 and 56 across four runs, and once put
+    // mcs0 and mcs1, the same PA and the same modulation class, 3 dB apart.
     out.flags |= kCalNoDip;
-    const int knee = saturation_knee(cells, best, th.knee_tol_db);
-    out.wall = knee >= 0 ? knee : wall;
+    if (th.max_wall < 0) {
+      // No anchor, no rail, no wall. Never invent one: a base_ref_idx of 0
+      // would park the rate ~10 dB low on a unit whose real anchor is 39,
+      // silently, on the rates the link falls back to when it is struggling.
+      out.flags |= kCalUndetermined;
+      out.wall = -1;
+      out.floor_idx = -1;
+      return out;
+    }
+    out.wall = th.max_wall;
   } else {
     out.wall = wall;
   }
 
   if (out.wall - floor_idx <= th.narrow_span) out.flags |= kCalNarrow;
 
-  int peak = kRssiNone;
-  for (const auto& c : cells)
-    if (c.have_rssi[static_cast<size_t>(best)])
-      peak = std::max(peak, c.rssi_dbm[static_cast<size_t>(best)]);
-  if (peak != kRssiNone && static_cast<double>(peak) > th.sat_rssi_dbm)
-    out.flags |= kCalSaturated;
 
   // Card disagreement means an antenna or card problem, not a PA: compression
   // is a property of the transmitter and both cards should see it together.

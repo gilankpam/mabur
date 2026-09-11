@@ -146,7 +146,7 @@ the PA.
 | Flag | Meaning | What to do |
 |---|---|---|
 | `saturated` | Peak median RSSI crossed the saturation threshold — the GS's own RX front end is compressing, not (only) the drone's PA. | Walls read **low** under this flag, which is the *conservative* direction: it costs some power headroom, never overdrives anything. Safe to ship, but move the drone farther out and rerun if you want a tighter number. |
-| `no_dip` | The row never dropped below 90% delivery anywhere in the sweep — there is no compression wall to find. The reported number is the *RSSI saturation knee* instead (where the per-cell median RSSI curve stops rising), not a delivery-derived wall. | Normal for MCS 0-2 on healthy hardware (BPSK/QPSK never compresses within the sweep's range). If it fires on a higher MCS, that rate is unusually clean — nothing to fix. |
+| `no_dip` | The row never dropped below 90% delivery anywhere in the sweep — there is no compression wall to find, so the rate is parked at the **rail**: `base_ref_idx + 63`, the highest wall the chip's 7-bit per-rate diff field can express (102 on a unit whose anchor is 39). The number is not a measurement; the flag is what says so. | Normal for MCS 0-2 on healthy hardware (BPSK/QPSK never compresses within the sweep's range). If it fires on a higher MCS, that rate is unusually clean — nothing to fix. |
 | `undetermined` | No cell in the row ever reached 90% delivery at any index — no first-dip exists to find. | **That rate's config entry is left untouched** — the kit never invents a wall from data that can't support one. Check geometry (likely too far for that rate) and rerun if you need a real number. |
 | `narrow` | The floor edge (where delivery first reaches 90%, ascending) sits within ~4 indices of the wall. The usable window between "too weak to hear" and "compressing" is too thin to trust. | Move closer and rerun; a wall this close to its own floor is not a reliable measurement. |
 | `card_disagree` | The two GS RX cards' independently-computed walls differ by more than a couple of indices. | Points at an antenna or card problem, not a PA — check cabling/orientation on the disagreeing card before trusting either number. |
@@ -401,11 +401,11 @@ reads as a higher wall (mcs7: 55 here, 49 there).
 
 ### Defect: one noisy coarse cell reroutes a no-dip row
 
-MCS 0-2 never compress, so they are supposed to take the RSSI-knee path.
+MCS 0-2 never compress, so they are supposed to take the no-dip path.
 In two runs of four, a *single* coarse cell in the mcs2 row read below
 90% — 4 frames lost out of 20 — and that one cell ended the "first
 contiguous ≥90% run", putting the row on the delivery path instead. It
-reported 101 (ch136) and 111 (ch149) against a run-1 knee of 68, and
+reported 101 (ch136) and 111 (ch149) against a no-dip rail of 102, and
 **both were written to the flight config**: mcs2 parked at 97 is roughly
 6 dB above where run 1 put it, in the overdriving direction.
 
@@ -413,6 +413,13 @@ With 20 frames per coarse cell a 90% threshold has no noise margin, and a
 run has 256 cells, so an outlier is likely *every* run. The `narrow` flag
 fires on the resulting row and is reported — but flags never block, so the
 number is applied anyway.
+
+The rail change above shrank the damage **in the observed cases only**.
+Both outliers happened to sit near the top of the sweep (idx 112), so the
+rerouted row reported 101 against a rail of 102 — near-harmless. That is
+luck, not a fix: an outlier at idx 40 would report a wall of 36 and park
+that rate about 16 dB low. The failure mode is still live; it is the
+`no_dip` flag going missing that tells you it happened.
 
 ### EVM was tried as a second instrument and the sweep frames carry none
 
@@ -444,21 +451,47 @@ aggregated data frames — and it changes `cal_wire.h`, so it needs both
 binaries redeployed together. Do not re-add the recording without
 changing the frames first; it produced nothing but `-999` columns.
 
-### Defect: the RSSI knee is not reproducible
+### Fixed: the RSSI knee is gone, no-dip rows park at the rail
 
-mcs0's knee read **72, 56, 84 and 56** across four runs, and run 4 put mcs0
-at 56 and mcs1 at 68 — two BPSK/QPSK rows off the same PA, in the same
-run, 3 dB apart. The knee rule is
-"first index within `knee_tol_db` (1.0 dB) of the peak median RSSI", and
-the transfer curve creeps at ~0.2 dB/idx with 1 dB RSSI quantization: the
-tolerance band alone spans ~5 indices, and a 1 dB wobble in the measured
-peak moves the answer another ~5-10. The design's "coarse resolution puts
-the knee within ±2 indices, which costs nothing because the curve is flat
-there" does not hold — near the tolerance boundary the curve is not flat,
-it is still climbing.
+The original rule for a row with no compression wall was the *RSSI
+saturation knee* — the lowest index whose median RSSI was within 1 dB of
+the row's peak. It was not reproducible: mcs0 read **72, 56, 84 and 56**
+across four runs of one unit, and run 4 put mcs0 at 56 and mcs1 at 68 —
+same PA, same modulation class, same run, 3 dB apart. The rule cannot do
+better. The transfer curve creeps at ~0.2 dB/idx, so a 1 dB tolerance
+band already spans ~5 indices before 1 dB of RSSI quantization moves it
+further, and `peak` is a maximum over 32 quantized samples, which is both
+upward-biased and jumpy. The design's claim that coarse resolution puts
+the knee within ±2 indices "because the curve is flat there" does not
+hold — near the tolerance boundary the curve is still climbing.
 
-Until both are fixed, treat a run's MCS 3-7 numbers as the product and set
-MCS 0-2 by hand.
+**A no-dip row now parks at the rail instead:** `base_ref_idx + 63`,
+capped at 127. That is the highest wall the chip's 7-bit per-rate diff
+field can express (`power_plan.h`); one index higher derives a diff
+outside `[-64, 63]` and `drone/src/config.cpp` refuses to load the config
+at all, crash-looping `maburd` at 2 s.
+
+Three things make this better than the knee, not merely more stable:
+
+- **It is exact and identical every run.** No scatter to reason about.
+- **It is provably inside measured-good territory.** The rail is below
+  the top of the sweep, and a no-dip row just delivered ≥90% at every
+  index through 124. The knee was never validated by delivery anywhere.
+- **It does not cost range.** On the measured curve the last real gain
+  lands by idx ~80; everything above is flat to within quantization. The
+  knee, firing early by construction, was giving up ~1-1.5 dB on
+  precisely the rates the link falls back to when it is struggling.
+
+The anchor comes from a `cal_active` Telem and is learned separately from
+the phase acknowledgment (`CalSession::note_base_ref`), so one Telem lost
+to the 30-50%-lossy uplink does not cost the rail. **With no anchor at
+all there is no rail**, and those rows report `undetermined` and keep
+their existing config values rather than being parked from a guess — a
+`base_ref_idx` of 0 would park them ~10 dB low, silently. The anchor is
+also re-learned every session, because it is per-channel.
+
+One defect remains -- the noisy-cell reroute above. MCS 3-7 are the
+measured product; a no-dip MCS 0-2 row is now a deterministic constant.
 
 ## Hardware acceptance checklist
 
@@ -512,7 +545,7 @@ Check every one of these against the run:
 | Check | Expected |
 |---|---|
 | Wall table | `[91,91,91,95,73,56,51,49]` (measured walls — see note above), mcs5 may read 54 |
-| MCS 0-2 | flagged `no_dip`, wall ~91 from the knee — **not 127** |
+| MCS 0-2 | flagged `no_dip`, wall = `base_ref_idx + 63` — **not 127**, which derives a diff the drone refuses to load |
 | `base_ref_idx` | 53 on this unit |
 | `legacy_wall_idx` | equals the MCS0 result (91) |
 | Run duration | ~72 s |

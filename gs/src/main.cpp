@@ -845,6 +845,10 @@ static int run_radio(const maburgs::Config& cfg) {
         // stale/mismatched nonce or an ack outside AwaitAck is a no-op
         // inside CalSession (cal_session.h).
         if ((t->flags & 0x40) != 0) {
+          // The anchor first, unconditionally: on_ack drops everything
+          // outside AwaitAck, and a no-dip row's rail is derived from this
+          // (cal_session.h, note_base_ref).
+          cal_session.note_base_ref(t->cal_base_ref_idx);
           cal_session.on_ack(cal_pending_nonce, t->cal_base_ref_idx, us / 1000);
           // cal.log's R line is once per SESSION, but this ack fires once
           // per PHASE (coarse, then fine) within one session -- dedup by

@@ -225,7 +225,14 @@ struct Pair {
         drone.on_cmd(*c, t_ms(), pwr);
         if (auto base_ref = drone.take_ack_base_ref()) {
           // The ack rides a Telem, and Telem is lost like anything else.
-          if (!drop(drop_ack_pct)) gs.on_ack(c->nonce, *base_ref, t_ms());
+          // A surviving one teaches the anchor AND acknowledges the phase,
+          // exactly as gs/src/main.cpp does it -- the anchor first, since
+          // on_ack drops everything outside AwaitAck and the rail a no-dip
+          // row parks at is derived from the anchor.
+          if (!drop(drop_ack_pct)) {
+            gs.note_base_ref(*base_ref);
+            gs.on_ack(c->nonce, *base_ref, t_ms());
+          }
         }
       }
     } else if (type == mabur::rc::T_CAL_RESULT) {
@@ -391,12 +398,13 @@ TEST(full_cycle_over_a_clean_channel) {
   CHECK(!p.gs_talked_during_sweep);
 
   // The measured table. Rates 3-7 have a real dip and must land on their
-  // true wall; 0-2 never dip and take the RSSI knee (88, where the ramp
-  // first reaches its ceiling), flagged no_dip -- never 127.
+  // true wall; 0-2 never dip, so they park at the rail -- base_ref_idx 53
+  // + 63, the top of the chip's 7-bit per-rate diff field -- flagged
+  // no_dip. Never 127: that derives a diff the drone refuses to load.
   const auto& w = p.gs.walls();
   for (int r = 0; r < 3; ++r) {
     CHECK((w[r].flags & maburgs::kCalNoDip) != 0);
-    CHECK(w[r].wall == 88);
+    CHECK(w[r].wall == 116);
   }
   for (int r = 3; r < 8; ++r) {
     CHECK((w[r].flags & maburgs::kCalUndetermined) == 0);
@@ -406,9 +414,9 @@ TEST(full_cycle_over_a_clean_channel) {
   // Invariant: margin is applied exactly once, on the drone. The config
   // on disk carries the RAW walls, and power_mode flipped to offset.
   const std::string cfg = read_file(p.cfg_path);
-  CHECK(cfg.find("rate_walls_idx  = [88, 88, 88, 95, 73, 54, 51, 49]") !=
+  CHECK(cfg.find("rate_walls_idx  = [116, 116, 116, 95, 73, 54, 51, 49]") !=
         std::string::npos);
-  CHECK(cfg.find("legacy_wall_idx = 88") != std::string::npos);
+  CHECK(cfg.find("legacy_wall_idx = 116") != std::string::npos);
   CHECK(cfg.find("base_ref_idx    = 53") != std::string::npos);
   CHECK(cfg.find("power_mode = \"offset\"") != std::string::npos);
   // ...and every comment survived the line-surgical patch.
@@ -504,7 +512,7 @@ TEST(a_lossy_control_plane_still_produces_the_right_table) {
   // on a Telem that may never come.
   CHECK(!p.gs_talked_during_sweep);
   const auto& w = p.gs.walls();
-  for (int r = 0; r < 3; ++r) CHECK(w[r].wall == 88);
+  for (int r = 0; r < 3; ++r) CHECK(w[r].wall == 116);
   for (int r = 3; r < 8; ++r) CHECK(w[r].wall == kTrueWall[r]);
   CHECK(read_file(p.cfg_path).find("power_mode = \"offset\"") !=
         std::string::npos);
