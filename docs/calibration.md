@@ -357,9 +357,9 @@ and where it lives when debug logging is off.
 ## Bench validation, 2026-09-11 — what three real runs showed
 
 The kit was deployed to the bench pair (`RC_VERSION` 7 both ends) and run
-three times: twice on channel 136, once on channel 149. Raw data is on the
+four times: three on channel 136, once on channel 149. Raw data is on the
 GS at `/media/dvr/log/0057/cal.log` (+ `cal-run1-headerless.log`) and
-`/media/dvr/log/0058/cal.log`.
+`/media/dvr/log/0058/cal.log` (+ `cal.log.callog1` for the ch149 run).
 
 **The mechanism works.** Every structural check passed: the run drives
 itself end to end, `/etc/mabur.toml` is patched surgically (three lines,
@@ -369,8 +369,8 @@ with no restart (`ausniff` 60.3 fps / 0 gaps after every session), and
 killing `maburgs` mid-sweep leaves the drone flying with a **bit-identical**
 config — nothing written. Radio silence is corroborated statistically
 rather than by capture: MCS 0-2 delivered 3840/3840 coarse frames with zero
-loss across the three runs, and GS uplink self-blanking would have cost
-~0.35% of them.
+loss across the first three runs, and GS uplink self-blanking would have
+cost ~0.35% of them.
 
 **Two measurement results are NOT yet trustworthy. Read the numbers for
 MCS 0-2 as advisory, whatever flags they carry.**
@@ -402,7 +402,7 @@ reads as a higher wall (mcs7: 55 here, 49 there).
 ### Defect: one noisy coarse cell reroutes a no-dip row
 
 MCS 0-2 never compress, so they are supposed to take the RSSI-knee path.
-In two runs of three, a *single* coarse cell in the mcs2 row read below
+In two runs of four, a *single* coarse cell in the mcs2 row read below
 90% — 4 frames lost out of 20 — and that one cell ended the "first
 contiguous ≥90% run", putting the row on the delivery path instead. It
 reported 101 (ch136) and 111 (ch149) against a run-1 knee of 68, and
@@ -414,9 +414,38 @@ run has 256 cells, so an outlier is likely *every* run. The `narrow` flag
 fires on the resulting row and is reported — but flags never block, so the
 number is applied anyway.
 
+### EVM is recorded (`callog 2`) but the sweep frames don't carry one
+
+`cal.log`'s `C` rows carry per-card median RX EVM since `callog 2` — raw
+half-dB, negative = cleaner, `kEvmNone` (-999) when no card reported one.
+It was added because EVM is the direct observable of PA compression, which
+is exactly what delivery cannot see on the rows above.
+
+**On the bench 2026-09-11 it came back empty.** Every sweep frame, every
+rate, every index reported rxevm `0x80` on both streams — the Jaguar3 type1
+phy-status page's "this stream was not measured"
+(`FrameParserJaguar3.h`). Ordinary video on the same link at the same
+moment reported −14.5 dB, so the chip measures EVM fine; something about
+how the sweep frames are sent stops it. RSSI on those same frames is
+valid and tracks the index ramp cleanly, so the phy-status page is
+present and being parsed — it is the per-stream EVM field specifically
+that is blank.
+
+The plausible difference is the frames themselves: 64-byte single
+(non-aggregated) probe-request frames, versus the large A-MPDU-aggregated
+data frames video sends. Untested. If EVM is worth having here, the
+experiment is a longer sweep payload, or sending sweep frames as
+aggregated data frames, and re-running — both change `cal_wire.h` and so
+need both binaries redeployed together.
+
+Until then the EVM columns will be all `-999`, which is the honest
+reading and not a bug in the log.
+
 ### Defect: the RSSI knee is not reproducible
 
-mcs0's knee read **72, 56 and 84** across the three runs. The knee rule is
+mcs0's knee read **72, 56, 84 and 56** across four runs, and run 4 put mcs0
+at 56 and mcs1 at 68 — two BPSK/QPSK rows off the same PA, in the same
+run, 3 dB apart. The knee rule is
 "first index within `knee_tol_db` (1.0 dB) of the peak median RSSI", and
 the transfer curve creeps at ~0.2 dB/idx with 1 dB RSSI quantization: the
 tolerance band alone spans ~5 indices, and a 1 dB wobble in the measured
