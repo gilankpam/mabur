@@ -320,20 +320,33 @@ RENDER_RETRY_SLEEP_S = 0.2
 
 
 def _render_when_ready(path):
-    """Renders `path` once it holds at least one calibration run, or None if
-    it never does within RENDER_RETRY_S. Never raises."""
+    """Returns (rendered, problem): the report text once `path` holds at
+    least one calibration run, or a one-line reason it never will. Exactly
+    one of the two is None -- except for no path at all, where both are
+    (there is nothing to report a problem about). Never raises.
+
+    Only a file that is merely INCOMPLETE is worth waiting on: maburgs
+    flushes cal.log at the end of a run, and `maburcal start` gets here the
+    moment it sees state=done, so a partial tail is an ordinary race that
+    RENDER_RETRY_S resolves. An UnsupportedLog is the opposite -- a missing
+    or unknown `callog N` marker never becomes readable by waiting, and
+    polling it just delays a wrong diagnosis (the caller's fallback message
+    says "holds no calibration run", which for a headerless file full of
+    measurements points at entirely the wrong thing)."""
     if not path:
-        return None
+        return None, None
     deadline = time.time() + RENDER_RETRY_S
     while True:
         try:
             runs = _parse_cal_log(path)
             if runs:
-                return "\n\n".join(_render_run(r) for r in runs) + "\n"
-        except (UnsupportedLog, OSError):
+                return "\n\n".join(_render_run(r) for r in runs) + "\n", None
+        except UnsupportedLog as e:
+            return None, str(e)
+        except OSError:
             pass
         if time.time() >= deadline:
-            return None
+            return None, None
         time.sleep(RENDER_RETRY_SLEEP_S)
 
 
@@ -360,10 +373,13 @@ def cmd_start(_args):
         state = _progress_state(reply)
 
     path = _find_cal_log_path()
-    rendered = _render_when_ready(path)
+    rendered, problem = _render_when_ready(path)
     if rendered is not None:
         print()
         print(rendered, end="")
+    elif problem is not None:
+        print(f"\nsession ended ({state}); its cal.log cannot be read: "
+              f"{problem}")
     elif path and os.path.isfile(path):
         print(f"\nsession ended ({state}); {path} exists but holds no "
               f"calibration run -- run 'maburcal report {path}' by hand.")

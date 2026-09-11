@@ -10,6 +10,7 @@ import importlib.util
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -171,6 +172,42 @@ class TestReport(unittest.TestCase):
         # And the run as a whole still applied: mcs0's real delivery is
         # proof enough, mcs1's silence notwithstanding.
         self.assertIn("written: /etc/mabur.toml", out)
+
+
+class TestRenderWhenReady(unittest.TestCase):
+    """`maburcal start`'s end-of-run render, which polls a file the daemon
+    is still writing."""
+
+    def _tmp(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".log",
+                                         delete=False) as f:
+            f.write(text)
+            return f.name
+
+    def test_a_complete_run_renders(self):
+        text, problem = maburcal._render_when_ready(self._tmp(GOOD))
+        self.assertIsNone(problem)
+        self.assertIn("mcs0", text)
+
+    def test_a_structural_problem_is_reported_not_waited_out(self):
+        # Regression (hardware, 2026-09-11): a cal.log missing its `callog 1`
+        # marker is unreadable FOREVER -- no amount of polling makes a
+        # format marker appear -- yet the reader swallowed UnsupportedLog
+        # inside the retry loop and the operator got "holds no calibration
+        # run" after a RENDER_RETRY_S wait, which points at the wrong thing
+        # entirely (the file was full of perfectly good measurements). A
+        # permanent problem must come back immediately, with its reason.
+        path = self._tmp(GOOD.replace("callog 1\n", "", 1))
+        start = time.monotonic()
+        text, problem = maburcal._render_when_ready(path)
+        self.assertIsNone(text)
+        self.assertIn("callog format marker", problem)
+        self.assertLess(time.monotonic() - start, maburcal.RENDER_RETRY_S)
+
+    def test_no_path_is_not_a_problem_to_report(self):
+        text, problem = maburcal._render_when_ready(None)
+        self.assertIsNone(text)
+        self.assertIsNone(problem)
 
 
 if __name__ == "__main__":
