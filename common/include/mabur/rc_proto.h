@@ -253,7 +253,10 @@ struct CalResult {
   uint32_t nonce = 0;
   std::array<int16_t, 8> walls{};   // per-MCS, -1 = undetermined
   int16_t legacy_wall = -1;
-  uint32_t flags = 0;               // maburgs::CalFlag bitset, for the log
+  // No flags field: the health flags (no_dip, narrow, saturated, drift,
+  // card_disagree) never leave the GS -- they reach cal.log from its own
+  // W rows, and the drone has no use for them. Nothing on this side of
+  // the wire ever read one.
 };
 
 std::vector<uint8_t> pack_rcf(const Rcf& r);

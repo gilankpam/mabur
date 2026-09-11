@@ -44,9 +44,6 @@ struct CalSweepCfg {
   // combined), from the first accepted CalCmd. The backstop for "the GS
   // never speaks again" -- see constraint 2.
   uint32_t hard_cap_ms = 180000;
-  // Reserved for a future half-duplex listen window between cells (Task
-  // 11's ack wiring); this class does not read it yet.
-  uint32_t listen_ms = 1000;
   // How long to wait for the next session event -- the next phase's
   // CalCmd, an on_result, or (once a result is accepted) the verify-phase
   // CalCmd it should trigger -- before giving up on the session and
@@ -141,8 +138,11 @@ class CalSweep {
   // is a no-op outside AwaitAck (so re-answering a retransmission is
   // harmless) but is what ENDS AwaitAck and opens the radio-silence
   // window the first time it lands, and it re-enters AwaitAck for the
-  // fine phase, so a drone that never acked at all would leave the GS
-  // transmitting into the very sweep that window exists to keep clear.
+  // fine phase. A drone that never acked at all no longer costs the phase
+  // outright -- the GS takes the first arriving sweep frame of the phase
+  // it is commanding as an implicit ack -- but that only closes the air
+  // one settle_ms after the sweep has already started, so the Telem ack
+  // is still the one that gets the window right.
   //
   // Always the value on_cmd() captured ONCE at session start, never a
   // fresh PowerCtl::read_base_ref_idx() taken here or inside on_cmd() for

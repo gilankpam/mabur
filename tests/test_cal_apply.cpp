@@ -94,7 +94,7 @@ TEST(patch_output_still_parses) {
   const auto out = patch_toml(kSample, sample_write());
   bool threw = false;
   try {
-    (void)parse_toml_string(out, "patched");
+    (void)toml::parse_toml_string(out, "patched");
   } catch (...) {
     threw = true;
   }

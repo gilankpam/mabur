@@ -503,7 +503,6 @@ TEST(cal_result_round_trip) {
   r.nonce = 99;
   r.walls = {91, 91, 91, 95, 73, 54, 51, 49};
   r.legacy_wall = 91;
-  r.flags = 0x21;
   auto b = mabur::rc::pack_cal_result(r);
   CHECK(mabur::rc::frame_type(b.data(), b.size()) == mabur::rc::T_CAL_RESULT);
   auto got = mabur::rc::parse_cal_result(b.data(), b.size());
@@ -511,7 +510,6 @@ TEST(cal_result_round_trip) {
   CHECK(got->walls[3] == 95);
   CHECK(got->walls[7] == 49);
   CHECK(got->legacy_wall == 91);
-  CHECK(got->flags == 0x21);
 }
 
 TEST(cal_result_carries_undetermined_sentinel) {

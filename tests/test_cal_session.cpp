@@ -320,10 +320,15 @@ TEST(abort_returns_to_idle_and_reopens_the_air) {
   CHECK(s.state() == CalSession::State::Idle);
 }
 
-TEST(gate_contract_covers_every_transmit_class) {
-  // main.cpp must gate RCF, the slotter drain, the DISC keepalive AND
-  // calibration commands on this one predicate. Enumerated here so a
-  // reviewer can check the wiring against a test rather than against prose.
+TEST(radio_silent_is_true_from_ack_until_abort) {
+  // Named for what it can actually check. main.cpp must gate RCF, the
+  // slotter drain, the DISC keepalive and T_CAL_CMD on radio_silent()
+  // (T_CAL_RESULT is the deliberate exception -- see due_result()), but
+  // nothing here can fail against an ungated call site; only reading
+  // main.cpp, or the loopback in tests/test_cal_e2e.cpp -- which watches
+  // the invariant continuously against a transcription of those call
+  // sites -- can. This pins the predicate itself: shut from the ack,
+  // open again the instant a session is aborted.
   CalSessionCfg cfg;
   cfg.phase_slack_ms = 500;
   CalSession s(cfg);

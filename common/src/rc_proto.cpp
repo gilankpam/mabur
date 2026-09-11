@@ -67,8 +67,8 @@ constexpr size_t TELEM_LEN = 88;  // 2026-09-10: +cal_base_ref_idx (u8)
 // same byte -- the two must agree.
 constexpr size_t kCalCmdFixedLen = 5 + 4 + 4 + 1 + 2 + 2 + 2 + 1;  // 21
 // magic(2) | ver | type | flags | vtx(4) | nonce(4) | walls(8*2) |
-// legacy(2) | flags32(4)
-constexpr size_t kCalResultLen = 5 + 4 + 4 + 16 + 2 + 4;
+// legacy(2)
+constexpr size_t kCalResultLen = 5 + 4 + 4 + 16 + 2;
 
 }  // namespace
 
@@ -172,7 +172,6 @@ std::vector<uint8_t> pack_cal_result(const CalResult& r) {
   for (int i = 0; i < 8; ++i)
     put16(body, static_cast<uint16_t>(r.walls[static_cast<size_t>(i)]));
   put16(body, static_cast<uint16_t>(r.legacy_wall));
-  put32(body, r.flags);
   put_crc(body);
   return body;
 }
@@ -191,7 +190,6 @@ std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len) {
     r.walls[static_cast<size_t>(i)] =
         static_cast<int16_t>(get16(buf, 13 + static_cast<size_t>(i) * 2));
   r.legacy_wall = static_cast<int16_t>(get16(buf, 29));
-  r.flags = get32(buf, 31);
   return r;
 }
 

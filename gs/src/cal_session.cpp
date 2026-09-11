@@ -476,10 +476,8 @@ void CalSession::finalize_result() {
   mabur::rc::CalResult res;
   res.vtx_id = vtx_id_;
   res.nonce = nonce_;
-  uint32_t flags = 0;
   for (int r = 0; r < 8; ++r) {
     const auto& w = final_walls_[static_cast<size_t>(r)];
-    flags |= w.flags;
     if (w.wall < 0) {
       res.walls[static_cast<size_t>(r)] = -1;
       pending_park_[static_cast<size_t>(r)] = -1;
@@ -489,7 +487,8 @@ void CalSession::finalize_result() {
     }
   }
   res.legacy_wall = res.walls[0];
-  res.flags = flags;
+  // The health flags stay here: they reach cal.log from this session's own
+  // W rows, and nothing on the drone ever read them off the wire.
 
   pending_result_ = res;
   result_ready_ = true;

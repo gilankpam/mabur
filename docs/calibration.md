@@ -69,6 +69,24 @@ without `CAP_CALIBRATE` in the DISC handshake and a session already
 `LINKED`. If the link is down, fix that first — calibration cannot be
 used to bring it up.
 
+### The drone will be in `RENDEZVOUS` by the end of every run
+
+The GS is radio-silent for the whole session, so the drone's `RcAgent`
+sees no RCF and no DISC and ages out of `LINKED` on its own schedule:
+`LINKED` → `FAILSAFE` at `link.failsafe_ms` (3 s), `FAILSAFE` →
+`RENDEZVOUS` at a further `link.rendezvous_ms` (30 s) — about 33 s into
+the coarse sweep, on every run. This is expected and benign, not a
+symptom: `RENDEZVOUS` is a passive waiting state, and `set_ladder` is
+gated on `cal_active` while a session runs (`drone/src/main.cpp`), so the
+agent cannot fight the sweep for the radio. The falling edge of
+`cal_active` re-applies the operating ladder and TX power together.
+
+The operator's job is only to **confirm the pair re-links after each
+session**: video should resume within a couple of DISC beacons, with an
+IDR at the join. If it doesn't, that is the ordinary stale-caps
+restart-deadlock shape and not a calibration bug — see
+`docs/deploy.md`.
+
 Corollary: losing the link *during* a run is expected, not an error. The
 drone's sweep is open-loop and wall-clock-bounded; it finishes or times
 out and restores itself whether or not the GS is still talking. Killing
@@ -362,6 +380,7 @@ Check every one of these against the run:
 | Verify pass | high delivery at every parked index |
 | Config | `/etc/mabur.toml` patched, comments intact, `.pre-cal` is the byte-identical original |
 | Video | resumes with no restart |
+| Re-link after the session | the drone is in `RENDEZVOUS` by ~33 s into the coarse phase, every run (see above) — confirm it rejoins and that an IDR lands at the join, after BOTH a successful and an aborted run |
 
 ### 4. Interruption test
 

@@ -69,11 +69,6 @@
 
 namespace mabur {
 
-// Re-exported so callers (this header's own tests included) can write
-// mabur::parse_toml_string instead of mabur::toml::parse_toml_string.
-using toml::parse_toml_string;
-using toml::parse_toml_file;
-
 // -1 in walls[r] (or legacy_wall) means "undetermined": that rate wasn't
 // swept this session, so the existing config's value for it is kept.
 // Never write a fabricated number over a real measurement.
