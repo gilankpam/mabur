@@ -285,6 +285,12 @@ void CalSession::step(uint64_t now_ms) {
           }
         }
         state_ = State::Done;
+        // The run is over: get every record on disk before `maburcal`
+        // (polling `status` at 500 ms) sees state=done and reads the file.
+        // LogWriter's own 1 Hz flush loses that race about half the time,
+        // and the records it strands are exactly the V rows the report
+        // needs to say whether the config was written. See CalLog::flush().
+        if (log_) log_->flush();
       }
       break;
     default:
@@ -471,6 +477,11 @@ void CalSession::finalize_result() {
 void CalSession::fail(const char* why) {
   fail_reason_ = why;
   state_ = State::Failed;
+  // Same reason as the Done transition (see step()): the operator's
+  // `maburcal start` reads cal.log as soon as it sees a terminal state,
+  // and a failed run's partial record is exactly what tells them how far
+  // it got.
+  if (log_) log_->flush();
 }
 
 }  // namespace maburgs

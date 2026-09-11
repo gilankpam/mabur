@@ -62,4 +62,9 @@ void CalLog::verify(uint8_t rate, uint8_t idx, int pct) {
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
+void CalLog::flush() {
+  if (s_ == LogWriter::kBadStream) return;
+  w_.flush_now();
+}
+
 }  // namespace maburgs

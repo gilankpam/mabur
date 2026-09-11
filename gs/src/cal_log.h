@@ -97,6 +97,18 @@ class CalLog {
   void wall(uint8_t rate, const RateWall& w);
   void verify(uint8_t rate, uint8_t idx, int pct);
 
+  // Blocks until every record handed over so far is on disk. Call at the
+  // end of a run (Done or Failed), and only there: LogWriter's own thread
+  // flushes at 1 Hz, which is fine for the continuous logs but not for
+  // this one -- `maburcal start` polls `status` every 500 ms and reads
+  // cal.log the moment it sees state=done, so the V records written at
+  // the Verify->Done transition could still be sitting in the stdio
+  // buffer, and roughly half of successful runs rendered from a file
+  // missing its tail ("walls were measured but no verify pass completed"
+  // for a run that worked). The producer knows when a run is over; the
+  // reader can only guess. Producer-thread only, like LogWriter::open().
+  void flush();
+
  private:
   LogWriter w_;
   LogWriter::Stream s_;

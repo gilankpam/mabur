@@ -296,6 +296,34 @@ def _find_cal_log_path():
     return os.path.join(DEFAULT_DEBUG_LOG_DIR, "cal", "cal.log")
 
 
+# How long `start` will keep re-reading cal.log before giving up on finding
+# the run that just ended. Belt and braces only: maburgs flushes cal.log at
+# the Done/Failed transition (CalLog::flush()), which happens strictly
+# before `status` can report a terminal state, so the first read normally
+# succeeds. This covers the file appearing a moment late (a directory
+# resolved differently, an NFS-ish mount) rather than a buffering race.
+RENDER_RETRY_S = 2.0
+RENDER_RETRY_SLEEP_S = 0.2
+
+
+def _render_when_ready(path):
+    """Renders `path` once it holds at least one calibration run, or None if
+    it never does within RENDER_RETRY_S. Never raises."""
+    if not path:
+        return None
+    deadline = time.time() + RENDER_RETRY_S
+    while True:
+        try:
+            runs = _parse_cal_log(path)
+            if runs:
+                return "\n\n".join(_render_run(r) for r in runs) + "\n"
+        except (UnsupportedLog, OSError):
+            pass
+        if time.time() >= deadline:
+            return None
+        time.sleep(RENDER_RETRY_SLEEP_S)
+
+
 def cmd_start(args):
     message = "start"
     if args.margin is not None:
@@ -316,12 +344,13 @@ def cmd_start(args):
         state = _progress_state(reply)
 
     path = _find_cal_log_path()
-    if path and os.path.isfile(path):
+    rendered = _render_when_ready(path)
+    if rendered is not None:
         print()
-        try:
-            print(render_report(path), end="")
-        except (UnsupportedLog, OSError) as e:
-            print(f"could not render {path}: {e}")
+        print(rendered, end="")
+    elif path and os.path.isfile(path):
+        print(f"\nsession ended ({state}); {path} exists but holds no "
+              f"calibration run -- run 'maburcal report {path}' by hand.")
     else:
         print(f"\nsession ended ({state}); could not find its cal.log "
               f"automatically (looked for {path}) -- check /tmp/maburgs.log "

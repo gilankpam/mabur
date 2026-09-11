@@ -582,4 +582,42 @@ TEST(no_verify_row_is_logged_for_a_rate_that_heard_nothing) {
     CHECK(l.rfind("V ", 0) != 0);   // not one V row in the file
 }
 
+TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
+  // LogWriter flushes at 1 Hz; `maburcal start` polls `status` every
+  // 500 ms and reads cal.log the instant it sees state=done. The V
+  // records are written at the Verify->Done transition, so without a
+  // flush at that transition roughly half of successful runs rendered
+  // from a file missing its tail -- and printed "no verify pass
+  // completed" for a run that worked. Read here WITHOUT destroying the
+  // CalLog first (the destructor would flush and hide the bug).
+  const std::string dir = fresh_dir("cal_session_flush_on_done");
+  CalLog log(dir);
+  log.header();
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg, &log);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 34, 0, &err));
+  log.run(34, 53, s.margin_db());
+  s.due_cmd(0);
+  s.on_ack(34, 53, 1);
+  const auto coarse = make_coarse_plan(1, 34);
+  feed_phase(s, coarse, 100, 10);
+  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+  REQUIRE(s.due_result(t1 + 2000).has_value());
+  for (int k = 0; k < 97; ++k) {
+    mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify,
+                              static_cast<uint16_t>(k)};
+    s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
+  }
+  s.due_cmd(t1 + 2000 + 60000);
+  REQUIRE(s.state() == CalSession::State::Done);
+
+  bool saw_verify = false;
+  for (const auto& l : cal_log_lines(dir))
+    if (l == "V 0 84 97") saw_verify = true;
+  CHECK(saw_verify);
+}
+
 MTEST_MAIN
