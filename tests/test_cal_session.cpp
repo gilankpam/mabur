@@ -791,9 +791,13 @@ TEST(cell_records_carry_the_median_evm_of_the_frames_that_reported_one) {
           // Raw half-dB, negative = cleaner. An odd sample count makes the
           // median exactly the middle value: -40, -38, -36 -> -38.
           const int evm = -40 + 2 * (k % 3);
-          // Card 1 never reports one: the chip's 0 means "not sampled".
+          // Card 1 never reports one. Both of the chip's no-measurement
+          // encodings appear: raw 0 (no phy status at all) and raw -128,
+          // the vendor's 0x80 "this stream was not measured", which reads
+          // as an impossible -64 dB if taken at face value.
           s.on_cal_frame(0, f, ramp_rssi(i), evm, /*crc_ok=*/true, 10);
-          s.on_cal_frame(1, f, ramp_rssi(i), 0, /*crc_ok=*/true, 10);
+          s.on_cal_frame(1, f, ramp_rssi(i), k % 2 ? 0 : -128,
+                         /*crc_ok=*/true, 10);
         }
       }
     }
@@ -815,4 +819,50 @@ TEST(cell_records_carry_the_median_evm_of_the_frames_that_reported_one) {
     ++checked;
   }
   CHECK(checked > 0);
+}
+
+
+TEST(the_vendor_no_measurement_sentinel_never_enters_the_evm_median) {
+  // Measured on the bench 2026-09-11: every calibration sweep frame came
+  // back with rxevm 0x80 on both streams -- the Jaguar3 type1 page's "this
+  // stream was not measured" encoding (FrameParserJaguar3.h) -- while
+  // ordinary video on the same link reported -14.5 dB. Taken at face value
+  // it is -64 dB, a cleaner signal than physics allows, and it would have
+  // filled cal.log with a flat fake curve indistinguishable from a real
+  // measurement. It is dropped exactly like raw 0.
+  const std::string dir = fresh_dir("cal_session_evm_sentinel");
+  {
+    CalLog log(dir);
+    log.header();
+    CalSessionCfg cfg;
+    cfg.phase_slack_ms = 0;
+    CalSession s(cfg, &log);
+    s.set_peer(true, true);
+    std::string err;
+    REQUIRE(s.start(1, 31, 0, &err));
+    log.run(31, 39, s.margin_db());
+    s.due_cmd(0);
+    s.on_ack(31, 39, 1);
+    const auto coarse = make_coarse_plan(1, 31);
+    uint16_t seq = 0;
+    for (const auto& w : coarse.windows)
+      for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step)
+        for (int k = 0; k < coarse.frames_per_cell; ++k) {
+          mabur::cal::CalFrameInfo f{w.rate, static_cast<uint8_t>(i),
+                                     coarse.phase, seq++};
+          s.on_cal_frame(0, f, ramp_rssi(i), -128, /*crc_ok=*/true, 10);
+        }
+    REQUIRE(s.due_result(1 + plan_duration_ms(coarse) + 2001).has_value());
+  }
+  for (const auto& l : cal_log_lines(dir)) {
+    if (l.rfind("C ", 0) != 0) continue;
+    std::istringstream is(l);
+    std::string tag;
+    int phase, rate, idx, expected, r0, r1, corrupt, s0, s1, e0, e1;
+    is >> tag >> phase >> rate >> idx >> expected >> r0 >> r1 >> corrupt >>
+        s0 >> s1 >> e0 >> e1;
+    REQUIRE(!is.fail());
+    CHECK(e0 == kEvmNone);
+    CHECK(e1 == kEvmNone);
+  }
 }

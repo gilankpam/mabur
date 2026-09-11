@@ -74,9 +74,9 @@ class CalSession {
   // both ends AwaitAck and counts. Otherwise a lost ack Telem leaves the
   // GS repeating T_CAL_CMD into a live sweep while discarding every frame
   // of it.
-  // evm_raw is this frame's RX EVM in raw half-dB as the chip reports it,
-  // where 0 means NOT SAMPLED (node.h) and is dropped rather than averaged
-  // in -- a zero folded into the median would read as a perfect signal.
+  // evm_raw is this frame's RX EVM in raw half-dB as the chip reports it.
+  // Both 0 (no phy status, node.h) and -128 (the vendor's 0x80 "stream not
+  // measured") mean NO MEASUREMENT and are dropped rather than averaged in.
   void on_cal_frame(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm,
                     int evm_raw,
                     bool crc_ok, uint64_t now_ms);

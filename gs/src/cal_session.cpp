@@ -155,7 +155,13 @@ void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
   }
   ++c.received[static_cast<size_t>(card)];
   rssi_raw_[f.rate][f.idx][static_cast<size_t>(card)].push_back(rssi_dbm);
-  if (evm_raw != 0)
+  // Two encodings mean "no measurement" and neither may enter the median:
+  // raw 0 is "no phy status on this frame" (node.h), and raw -128 is the
+  // Jaguar3 type1 page's 0x80, "this stream was not measured"
+  // (FrameParserJaguar3.h). The second is the dangerous one -- it reads as
+  // -64 dB, a cleaner signal than physics allows, and on the bench
+  // 2026-09-11 it was what EVERY calibration sweep frame carried.
+  if (evm_raw != 0 && evm_raw != -128)
     evm_raw_[f.rate][f.idx][static_cast<size_t>(card)].push_back(evm_raw);
 }
 
