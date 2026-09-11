@@ -225,7 +225,21 @@ void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
                                               current_phase_, cell_seq_);
   tx.send_body(0, payload.data(), payload.size());
   ++cell_seq_;
-  next_send_ms_ = now_ms + gap_ms_;
+  // DEADLINE-based, not now_ms-based: the next frame is due gap_ms_ after
+  // the one that was DUE, not after the one that was SENT. This matters
+  // because the writer thread now SLEEPS between pumps (drone/src/main.cpp
+  // stopped spinning a core for the whole session), and the phase is
+  // measured against a GS listen window sized from plan_duration_ms()
+  // (settle + frames*gap per cell) that leaves one gap -- 2 ms -- of slack
+  // per 140 ms cell. Re-basing off the observed clock charges every late
+  // wake to the phase and can only push it later; the deadline form
+  // absorbs a late wake instead (it simply fires the next frame
+  // immediately, catching the phase back up to its plan) and stays
+  // anchored to the plan the GS is timing against no matter what the
+  // caller's loop costs. tests/test_cal_e2e.cpp pins the realized
+  // duration against plan_duration_ms() for both the shipped 200 us
+  // sleep and a 1 ms one.
+  next_send_ms_ += gap_ms_;
 
   if (cell_seq_ >= frames_per_cell_) {
     ++cursor_;

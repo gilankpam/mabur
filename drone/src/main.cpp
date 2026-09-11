@@ -2007,6 +2007,26 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
         if (!cal_was_active) txq.drain();
         cal_was_active = true;
         cal_sweep.pump(now_steady_ms(), tx, pwr);
+        // The one blocking wait this loop has is txq.pop_batch(.., 5) at
+        // the bottom, which a calibration session never reaches -- and
+        // pump() returns immediately whenever the current cell is still
+        // settling or the next frame is not due yet. Without this sleep
+        // the writer thread spins one of the SigmaStar's two cores at
+        // 100% for the 72-180 s of a session, on a SoC with a documented
+        // thermal incident (flight 21, 81 C).
+        //
+        // 200 us is chosen against the plan's own 2 ms inter-frame gap:
+        // an order of magnitude finer, so a frame is never more than
+        // ~200 us late, and CalSweep's pacing is deadline-based
+        // (cal_sweep.cpp) so that lateness does not accumulate into the
+        // phase duration. The GS's listen window leaves one gap -- 2 ms --
+        // of slack per 140 ms cell; tests/test_cal_e2e.cpp measures a
+        // coarse phase finishing ~0.5 s inside its 35.8 s window at
+        // 200 us, and within a MILLISECOND of it at 1 ms. That is why
+        // this is 200 us and not the obvious 1 ms, and that test is what
+        // will notice if something else on this thread spends the
+        // difference.
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
         continue;  // never fall through to the video drain below
       }
       if (cal_was_active) {
