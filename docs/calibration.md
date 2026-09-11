@@ -59,6 +59,7 @@ no keepalive DISC, nothing but the sweep frames themselves and the two
 pause and resume with the session.
 
 `maburcal status` polls a running session; `maburcal abort` cancels one.
+None of the three take arguments.
 
 ## Prerequisite: the pair must already be linked and flying video
 
@@ -204,9 +205,19 @@ or a wall estimate that a flag should have caught but the sweep data
 didn't quite cross the threshold for. There is no automatic signal for
 this beyond reading the `verify` column yourself — if a rate reads low
 there, treat that number over the flag: rerun (a `drift` flag on the same
-rate in the rerun would corroborate it), or widen `wall_margin_db` for
-that run (`maburcal start --margin`) and check whether verify delivery
-recovers.
+rate in the rerun would corroborate it), or back the parked power off by
+widening the margin — edit `radio.wall_margin_db` in `/etc/mabur.toml` on
+the drone and re-run — and check whether verify delivery recovers.
+
+`maburcal start` takes no arguments, and in particular there is no
+`--margin`. Calibrating `wall_margin_db` is an explicit non-goal: it is
+the operator's safety choice, hand-set on the drone, and it is applied
+exactly once, there. The flag that used to exist moved only the GS's own
+park bookkeeping (this report's `park` column and the indices the verify
+plan expected frames at) — it never reached the hardware, because
+`maburcal` patches `rate_walls_idx`, `legacy_wall_idx`, `base_ref_idx` and
+`power_mode`, and `wall_margin_db` is not one of them. All it could
+achieve was making the `park` column disagree with what the drone flew.
 
 ## What gets written, and how to roll back
 

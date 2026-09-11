@@ -111,8 +111,12 @@ class CalSession {
   // that reads these.
   void set_peer(bool linked, bool cal_capable);
 
+  // The GS's own margin, for its own park bookkeeping only (the verify
+  // plan's expected indices, cal.log's R line). Read-only by design: the
+  // drone applies its own cfg.radio.wall_margin_db and margin is applied
+  // exactly once, there. `maburcal start --margin` used to set this and
+  // changed nothing on hardware -- see cal_control.h.
   double margin_db() const { return cfg_.margin_db; }
-  void set_margin_db(double db) { cfg_.margin_db = db; }
 
   // Test accessors into the currently-live phase's cell tally.
   uint16_t cell_received(uint8_t rate, uint8_t idx, int card) const;

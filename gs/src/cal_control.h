@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <ctime>
 #include <random>
 #include <string>
@@ -95,10 +94,20 @@ class CalControl {
   // the command language is unit-testable without a socket.
   //
   // Command language:
-  //   start [margin=<db>]   begin a session (refuses if not linked / no
+  //   start                 begin a session (refuses if not linked / no
   //                         CAP_CALIBRATE / already running)
   //   status                one-line progress, never mutates
   //   abort                 abandon the running session
+  //
+  // `start` takes no arguments. It used to accept `margin=<db>`, which
+  // only moved the GS's own park bookkeeping (the verify plan's expected
+  // indices and cal.log's R line) -- the drone applies its OWN
+  // cfg.radio.wall_margin_db, and cal_apply patches four keys of which
+  // wall_margin_db is not one, so the override changed nothing on
+  // hardware and merely made the report's `park` column disagree with
+  // what the drone flew. Calibrating wall_margin_db is an explicit
+  // non-goal: it is the operator's safety choice, hand-set in
+  // /etc/mabur.toml.
   static bool apply(const std::string& line, CalSession& s,
                     std::string* reply) {
     const std::vector<std::string> tok = split(line);
@@ -127,14 +136,10 @@ class CalControl {
     }
 
     if (tok[0] == "start") {
-      double margin = -1.0;
-      for (size_t i = 1; i < tok.size(); ++i) {
-        double v = 0.0;
-        if (kv(tok[i], "margin=", &v)) { margin = v; continue; }
-        *reply = "err bad token: " + tok[i];
+      if (tok.size() > 1) {
+        *reply = "err bad token: " + tok[1];
         return false;
       }
-      if (margin >= 0.0) s.set_margin_db(margin);
 
       // A fresh nonce per start means a stale ack from a session the
       // operator already aborted can never be mistaken for this one's --
@@ -156,7 +161,7 @@ class CalControl {
       return true;
     }
 
-    *reply = "err want start [margin=<db>] | status | abort";
+    *reply = "err want start | status | abort";
     return false;
   }
 
@@ -178,19 +183,6 @@ class CalControl {
       if (i > start) out.push_back(s.substr(start, i - start));
     }
     return out;
-  }
-
-  // Strict numeric parse: "margin=abc" must be rejected, not silently read
-  // as 0.
-  static bool kv(const std::string& tok, const char* key, double* out) {
-    const size_t klen = std::strlen(key);
-    if (tok.size() <= klen || tok.compare(0, klen, key) != 0) return false;
-    const std::string val = tok.substr(klen);
-    char* end = nullptr;
-    const double v = std::strtod(val.c_str(), &end);
-    if (end == val.c_str() || *end != '\0') return false;
-    *out = v;
-    return true;
   }
 
   int fd_ = -1;

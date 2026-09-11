@@ -24,12 +24,20 @@ TEST(start_reports_why_it_refused) {
   CHECK(reply.find("link") != std::string::npos);
 }
 
-TEST(start_accepts_a_margin_override) {
+TEST(start_takes_no_arguments) {
+  // `start margin=<db>` was removed: it only moved the GS's own park
+  // bookkeeping, while the drone applies its own cfg.radio.wall_margin_db
+  // (which cal_apply does not patch), so it changed nothing on hardware
+  // and only made the report's `park` column disagree with what the drone
+  // flew. An operator who still types it must get a refusal, not a
+  // silently-ignored argument.
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string reply;
-  CHECK(CalControl::apply("start margin=2.0", s, &reply));
-  CHECK(s.margin_db() == 2.0);
+  CHECK(!CalControl::apply("start margin=2.0", s, &reply));
+  CHECK(reply.find("err") == 0);
+  CHECK(s.state() == CalSession::State::Idle);
+  CHECK(s.margin_db() == 1.0);   // untouched
 }
 
 TEST(status_never_changes_state) {

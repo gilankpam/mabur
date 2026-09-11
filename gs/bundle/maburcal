@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """maburcal -- the TX-power wall calibration kit's entire operator UI.
 
-    maburcal start [--margin DB]   begin a run (streams progress, then the
+    maburcal start                 begin a run (streams progress, then the
                                     final table)
     maburcal status                one-line progress of a running session
     maburcal abort                 abandon the running session
@@ -324,11 +324,14 @@ def _render_when_ready(path):
         time.sleep(RENDER_RETRY_SLEEP_S)
 
 
-def cmd_start(args):
-    message = "start"
-    if args.margin is not None:
-        message += f" margin={args.margin}"
-    reply = _require_reply(message)
+def cmd_start(_args):
+    # No arguments. `--margin` was removed: it fed only the GS's own park
+    # bookkeeping (the verify plan and this report's `park` column), while
+    # the drone applies its own radio.wall_margin_db, which cal_apply does
+    # not patch -- so it changed nothing on hardware and only made the
+    # report disagree with what the drone flew. To change the margin, edit
+    # wall_margin_db in /etc/mabur.toml on the drone and re-run.
+    reply = _require_reply("start")
     print(reply)
     if reply.startswith("err"):
         sys.exit(1)
@@ -383,9 +386,6 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="command", required=True)
 
     p_start = sub.add_parser("start", help="begin a calibration run")
-    p_start.add_argument("--margin", type=float, default=None,
-                         help="wall_margin_db to park at (default: "
-                              "whatever maburgs is already configured with)")
     p_start.set_defaults(func=cmd_start)
 
     p_status = sub.add_parser("status", help="progress of a running session")
