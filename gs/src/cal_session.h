@@ -74,7 +74,11 @@ class CalSession {
   // both ends AwaitAck and counts. Otherwise a lost ack Telem leaves the
   // GS repeating T_CAL_CMD into a live sweep while discarding every frame
   // of it.
+  // evm_raw is this frame's RX EVM in raw half-dB as the chip reports it,
+  // where 0 means NOT SAMPLED (node.h) and is dropped rather than averaged
+  // in -- a zero folded into the median would read as a perfect signal.
   void on_cal_frame(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm,
+                    int evm_raw,
                     bool crc_ok, uint64_t now_ms);
 
   // The command the GS should (re)send right now, or nullopt if nothing is
@@ -195,6 +199,11 @@ class CalSession {
   // Raw per-cell-per-card RSSI samples, median-reduced into CalCell::rssi_dbm
   // at phase end (sorted_cells()).
   std::array<std::map<uint8_t, std::array<std::vector<int>, 2>>, 8> rssi_raw_;
+  // Same shape for EVM, median-reduced into CalCell::evm_dbh. Separate from
+  // rssi_raw_ rather than a second slot in it because the two have
+  // different sample counts: every received frame carries RSSI, only some
+  // carry an EVM reading.
+  std::array<std::map<uint8_t, std::array<std::vector<int>, 2>>, 8> evm_raw_;
 
   std::array<RateWall, 8> coarse_walls_{};
   std::array<RateWall, 8> final_walls_{};

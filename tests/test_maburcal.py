@@ -210,5 +210,24 @@ class TestRenderWhenReady(unittest.TestCase):
         self.assertIsNone(problem)
 
 
+class TestCallogVersions(unittest.TestCase):
+    """The marker versions the FILE. v2 added EVM columns to C; the reader
+    ignores C rows entirely, so both shapes render identically -- and DVR
+    recordings outlive the code that wrote them (CLAUDE.md), so v1 files
+    must stay readable."""
+
+    def test_v1_and_v2_both_render(self):
+        v1 = GOOD  # "callog 1", nine-field C row
+        v2 = (GOOD.replace("callog 1", "callog 2", 1)
+                  .replace("C 1 0 88 20 20 0 0 -62 -999",
+                           "C 1 0 88 20 20 0 0 -62 -999 -31 -999", 1))
+        self.assertIn("mcs0", render(v1))
+        self.assertIn("mcs0", render(v2))
+
+    def test_an_unknown_version_is_still_refused(self):
+        with self.assertRaises(maburcal.UnsupportedLog):
+            render(GOOD.replace("callog 1", "callog 99", 1))
+
+
 if __name__ == "__main__":
     unittest.main()

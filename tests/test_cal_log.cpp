@@ -46,7 +46,7 @@ TEST(header_is_the_format_marker) {
   { CalLog l(d); l.header(); }
   const auto ls = lines_of(d);
   REQUIRE(!ls.empty());
-  CHECK(ls[0] == "callog 1");
+  CHECK(ls[0] == "callog 2");
 }
 
 TEST(run_record_carries_the_per_run_parameters) {
@@ -76,7 +76,7 @@ TEST(two_runs_in_one_session_append_two_run_records) {
   int header_count = 0;
   std::vector<std::string> run_lines;
   for (const auto& line : ls) {
-    if (line == "callog 1") ++header_count;
+    if (line == "callog 2") ++header_count;
     if (line.rfind("R ", 0) == 0) run_lines.push_back(line);
   }
   CHECK(header_count == 1);
@@ -94,10 +94,39 @@ TEST(cell_record_round_trips_every_field) {
   c.corrupt = 3;
   c.rssi_dbm = {-67, kRssiNone};
   c.have_rssi = {true, false};
+  c.evm_dbh = {-31, kEvmNone};
+  c.have_evm = {true, false};
   { CalLog l(d); l.header(); l.run(1, 53, 1.0); l.cell(1, 7, 56, c); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
-  CHECK(ls[2] == "C 1 7 56 100 97 12 3 -67 -999");
+  CHECK(ls[2] == "C 1 7 56 100 97 12 3 -67 -999 -31 -999");
+}
+
+TEST(header_marker_is_version_2_since_evm_joined_the_cell_record) {
+  // callog 2 adds the two trailing EVM columns to C. The marker is what
+  // tells a reader which C shape it is looking at -- a v1 file on the DVR
+  // has nine fields, not eleven, and gs/bundle/maburcal reads both.
+  const auto d = fresh_dir("callog_v2");
+  { CalLog l(d); l.header(); }
+  CHECK(lines_of(d)[0] == "callog 2");
+}
+
+TEST(a_cell_with_no_evm_sample_writes_the_sentinel_not_a_zero) {
+  // The chip encodes "not sampled" as raw 0, which is also a legal (absurd)
+  // EVM value, so the log must not pass that ambiguity on: an unsampled
+  // card writes kEvmNone exactly as an unheard card writes kRssiNone.
+  const auto d = fresh_dir("callog_evmnone");
+  CalCell c;
+  c.idx = 8;
+  c.expected = 20;
+  c.received = {20, 20};
+  c.rssi_dbm = {-60, -62};
+  c.have_rssi = {true, true};
+  c.have_evm = {false, false};
+  { CalLog l(d); l.header(); l.run(1, 53, 1.0); l.cell(1, 0, 8, c); }
+  const auto ls = lines_of(d);
+  REQUIRE(ls.size() == 3);
+  CHECK(ls[2] == "C 1 0 8 20 20 20 0 -60 -62 -999 -999");
 }
 
 TEST(undetermined_wall_writes_minus_one) {
@@ -129,7 +158,7 @@ TEST(reopening_appends_without_a_second_header) {
   { CalLog l(d); l.verify(1, 87, 99); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
-  CHECK(ls[0] == "callog 1");
+  CHECK(ls[0] == "callog 2");
   CHECK(ls[1].rfind("V ", 0) == 0);
   CHECK(ls[2].rfind("V ", 0) == 0);
 }

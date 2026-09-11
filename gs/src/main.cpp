@@ -960,8 +960,16 @@ static int run_radio(const maburgs::Config& cfg) {
       if (mabur::cal::parse_cal_payload(m.body.data(), m.body.size(), &cal_info)) {
         const int rssi_dbm =
             static_cast<int>(std::max(m.rssi[0], m.rssi[1])) - 110;
-        cal_session.on_cal_frame(m.card_id, cal_info, rssi_dbm, m.crc_ok,
-                                 m.mono_us / 1000);
+        // EVM: raw half-dB, negative = cleaner, 0 = not sampled (node.h).
+        // Pick the better-sampled chain, exactly as the probe sink above
+        // does; 0 passes straight through and CalSession drops it rather
+        // than folding a "perfect" reading into the median.
+        const int8_t cal_evm =
+            (m.evm[0] != 0 && (m.evm[1] == 0 || m.evm[0] < m.evm[1]))
+                ? m.evm[0]
+                : m.evm[1];
+        cal_session.on_cal_frame(m.card_id, cal_info, rssi_dbm, cal_evm,
+                                 m.crc_ok, m.mono_us / 1000);
         continue;
       }
       agg.on_rx_body(m);

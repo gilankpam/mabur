@@ -59,6 +59,8 @@ constexpr int kTrueWall[8] = {127, 127, 127, 95, 73, 54, 51, 49};
 // The TXAGC transfer curve of docs/txagc-calibration.md: flat floor, a
 // ~0.3 dB/idx ramp, then a flat ceiling. The knee at the top is what a
 // no_dip row's wall is derived from.
+constexpr int kTestEvm = -30;  // raw half-dB (-15 dB); nonzero = sampled
+
 int ramp_rssi(int idx) {
   if (idx <= 28) return -80;
   if (idx <= 91) return -80 + (idx - 28) * 3 / 10;
@@ -285,11 +287,11 @@ struct Pair {
       if (lost) continue;
       // Two cards; card 1 hears a little less, which is also what makes
       // "best single card" a real choice rather than a formality.
-      gs.on_cal_frame(0, info, ramp_rssi(info.idx), /*crc_ok=*/!compressed,
+      gs.on_cal_frame(0, info, ramp_rssi(info.idx), kTestEvm, /*crc_ok=*/!compressed,
                       t_ms());
       heard_sweep_frame_ = true;
       if (!compressed && (rng() % 100) < 80)
-        gs.on_cal_frame(1, info, ramp_rssi(info.idx) - 3, true, t_ms());
+        gs.on_cal_frame(1, info, ramp_rssi(info.idx) - 3, kTestEvm, true, t_ms());
     }
     sink.frames.clear();
   }

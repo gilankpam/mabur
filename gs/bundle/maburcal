@@ -15,7 +15,7 @@ both how an operator re-examines an old run and what makes this script's own
 test hermetic.
 
 This is also the in-repo cal.log consumer the project's compatibility
-policy requires (CLAUDE.md): the schema is free to change under `callog 1`,
+policy requires (CLAUDE.md): the schema is free to change under `callog N`,
 but this file has to change with it in the same commit. A later task deletes
 bench/txagcbench/ and its Python analyzer; `maburcal report` is the entire
 replacement for examining a run's underlying data afterwards, so a wrong
@@ -52,7 +52,12 @@ MABURGS_LOG = "/tmp/maburgs.log"
 SESSION_MARKER = "/tmp/mabur-session"
 DEFAULT_DEBUG_LOG_DIR = "/media/dvr/log"
 
-KNOWN_CALLOG_VERSION = 1
+# The marker versions the FILE. `callog 2` added two per-card EVM columns to
+# the C row; this reader has never stored C rows (the W/V rows carry
+# everything the report shows), so both shapes render identically -- and DVR
+# recordings outlive the code that wrote them (CLAUDE.md), so v1 stays
+# readable rather than being dropped the moment v2 exists.
+KNOWN_CALLOG_VERSIONS = (1, 2)
 
 # flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree 32=drift
 FLAG_NAMES = (
@@ -95,7 +100,9 @@ class _Run:
                 self.verify[rate] = pct
             # "C" rows (per-cell tallies) carry no information the final W/V
             # rows don't already summarize for this report, and are the
-            # densest line in the file -- deliberately not stored.
+            # densest line in the file -- deliberately not stored. This is
+            # also why `callog 2` widening C with EVM columns needs nothing
+            # here beyond accepting the version.
         except ValueError:
             return  # non-numeric field: skip the line, not the file
 
@@ -124,10 +131,11 @@ def _parse_cal_log(path):
                 except ValueError:
                     raise UnsupportedLog(
                         f"{path}: malformed callog marker {line!r}")
-                if version != KNOWN_CALLOG_VERSION:
+                if version not in KNOWN_CALLOG_VERSIONS:
+                    known = ", ".join(str(v) for v in KNOWN_CALLOG_VERSIONS)
                     raise UnsupportedLog(
                         f"{path}: callog version {version} is not one this "
-                        f"reader knows (only {KNOWN_CALLOG_VERSION})")
+                        f"reader knows (only {known})")
                 continue
 
             tok = line.split()
