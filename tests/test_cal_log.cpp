@@ -190,3 +190,35 @@ TEST(a_rejoined_session_directory_with_no_cal_log_is_still_due_a_marker) {
   std::ofstream(d + "/ctl.log") << "ctllog 11\n";
   CHECK(cal_log_header_due(d));
 }
+
+TEST(a_cal_log_from_an_older_format_is_retired_rather_than_appended_to) {
+  // The once-per-FILE marker rule means a cal.log can only ever hold one
+  // format's C rows, and nothing else enforces that: cal_log_header_due
+  // alone says "file exists, no header needed", so a maburgs carrying a
+  // newer schema would append its rows under the older file's marker and
+  // leave a file that lies about its own shape. Rotating the old one aside
+  // keeps its data readable as what it actually is.
+  const auto d = fresh_dir("callog_stale");
+  { std::ofstream f(d + "/cal.log"); f << "callog 1\nR 1 53 1.00\n"; }
+  CHECK(cal_log_prepare(d));
+  CHECK(cal_log_header_due(d));  // the current file is gone, so it is due
+  std::ifstream retired(d + "/cal.log.callog1");
+  REQUIRE(retired.good());
+  std::string first;
+  std::getline(retired, first);
+  CHECK(first == "callog 1");
+}
+
+TEST(a_current_format_cal_log_is_left_alone) {
+  const auto d = fresh_dir("callog_current");
+  { CalLog l(d); l.header(); l.run(1, 53, 1.0); }
+  CHECK(!cal_log_prepare(d));
+  const auto ls = lines_of(d);
+  REQUIRE(ls.size() == 2);
+  CHECK(ls[0] == "callog 2");
+}
+
+TEST(prepare_on_a_directory_with_no_cal_log_reports_the_header_is_due) {
+  const auto d = fresh_dir("callog_absent");
+  CHECK(cal_log_prepare(d));
+}

@@ -356,7 +356,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // evidence that a cal.log exists in it -- that inference shipped, and the
   // first calibration after any maburgs restart lost its `callog 1` marker
   // and with it every operator-facing rendering of the run.
-  const bool cal_log_new_file = maburgs::cal_log_header_due(cal_log_dir);
+  const bool cal_log_new_file = maburgs::cal_log_prepare(cal_log_dir);
   std::optional<maburgs::CalLog> cal_log;
   cal_log.emplace(cal_log_dir);
   if (cal_log->ok()) {

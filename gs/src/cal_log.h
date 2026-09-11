@@ -101,6 +101,18 @@ struct RateWall;
 // there is (deploy a binary, then calibrate).
 bool cal_log_header_due(const std::string& dir);
 
+// Call once before constructing the CalLog: returns whether header() is due,
+// and first retires a cal.log written in an OLDER format by renaming it to
+// cal.log.callog<N>.
+//
+// The once-per-file marker rule means one file holds exactly one format's
+// rows, and nothing else enforces it -- appending today's C rows under
+// yesterday's marker produces a file that misreports its own shape, which is
+// the one thing the marker exists to prevent. Retiring rather than deleting
+// keeps the old run's data on the DVR readable as what it is (CLAUDE.md:
+// recordings outlive the code that wrote them).
+bool cal_log_prepare(const std::string& dir);
+
 class CalLog {
  public:
   // dir is the session directory (DebugSession::dir()); the file is always

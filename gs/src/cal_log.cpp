@@ -1,15 +1,45 @@
 #include "cal_log.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <fstream>
+#include <string>
 
 #include <unistd.h>
 
 #include "cal_analysis.h"
 
 namespace maburgs {
+namespace {
+constexpr char kCalLogMarker[] = "callog 2";
+}  // namespace
 
 bool cal_log_header_due(const std::string& dir) {
   return ::access((dir + "/cal.log").c_str(), F_OK) != 0;
+}
+
+bool cal_log_prepare(const std::string& dir) {
+  const std::string path = dir + "/cal.log";
+  std::string first;
+  {
+    std::ifstream f(path);
+    if (!f.good()) return true;  // no file at all: header is due
+    std::getline(f, first);
+  }
+  if (first == kCalLogMarker) return false;
+  // Anything else -- an older version, or the headerless file the
+  // rejoined-session bug used to produce -- is retired under a name that
+  // says what it holds, and the caller starts a fresh file.
+  std::string tag = "unmarked";
+  if (first.rfind("callog ", 0) == 0) {
+    tag = "callog" + first.substr(7);
+    tag.erase(std::remove_if(tag.begin(), tag.end(),
+                             [](unsigned char c) { return !std::isalnum(c); }),
+              tag.end());
+  }
+  std::rename(path.c_str(), (path + "." + tag).c_str());
+  return true;
 }
 
 // LogWriter::open()'s own header parameter is unused here: header() and
@@ -23,8 +53,7 @@ CalLog::CalLog(const std::string& dir)
 
 void CalLog::header() {
   if (s_ == LogWriter::kBadStream) return;
-  static constexpr char kMarker[] = "callog 2";
-  w_.line(s_, kMarker, sizeof(kMarker) - 1);
+  w_.line(s_, kCalLogMarker, sizeof(kCalLogMarker) - 1);
 }
 
 void CalLog::run(uint32_t nonce, int base_ref_idx, double margin_db) {
