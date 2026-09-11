@@ -620,4 +620,55 @@ TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
   CHECK(saw_verify);
 }
 
+TEST(a_sweep_frame_is_an_implicit_ack_for_the_phase_it_names) {
+  // The drone's ack rides a Telem, and Telem is lost like anything else.
+  // Until one arrives the session sits in AwaitAck, where it (a) keeps
+  // transmitting T_CAL_CMD repeats every 200 ms straight into the drone's
+  // live sweep -- contaminating the measurement the radio-silence rule
+  // exists to protect, and blanking its own RX cards with every send --
+  // and (b) DROPS every frame that arrives meanwhile, so those cells keep
+  // their seeded 0-received tally and score as total loss.
+  //
+  // A sweep frame for the phase being commanded proves exactly what the
+  // ack would have: the drone accepted this phase and is on the air with
+  // it. Found by tests/test_cal_e2e.cpp.
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 71, 0, &err));
+  REQUIRE(s.due_cmd(0).has_value());
+  CHECK(!s.radio_silent(10));   // no ack yet: the air is still open
+
+  mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseCoarse, 0};
+  s.on_cal_frame(0, f, -70, /*crc_ok=*/true, 100);
+  CHECK(s.state() == CalSession::State::Sweep);
+  CHECK(s.radio_silent(101));               // ...and now it is shut
+  CHECK(!s.due_cmd(300).has_value());       // no more repeats into the sweep
+  CHECK(s.cell_received(0, 8, 0) == 1);     // and the frame itself counted
+
+  // The window is sized from the frame's arrival, so the phase still gets
+  // its full planned duration of silence.
+  const uint32_t dur = plan_duration_ms(make_coarse_plan(1, 71));
+  CHECK(s.radio_silent(100 + dur - 1));
+  CHECK(!s.radio_silent(100 + dur + 1));
+}
+
+TEST(a_frame_from_another_phase_is_not_an_implicit_ack) {
+  // Only the phase currently being commanded counts. A straggler from a
+  // phase this session already left (or one it has not asked for yet)
+  // must not open the sweep window early or be tallied into it.
+  CalSessionCfg cfg;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 72, 0, &err));
+  REQUIRE(s.due_cmd(0).has_value());
+  mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseVerify, 0};
+  s.on_cal_frame(0, f, -70, true, 100);
+  CHECK(s.state() == CalSession::State::AwaitAck);
+  CHECK(s.cell_received(0, 8, 0) == 0);
+}
+
 MTEST_MAIN

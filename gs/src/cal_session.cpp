@@ -85,7 +85,29 @@ void CalSession::on_ack(uint32_t nonce, int base_ref_idx, uint64_t now_ms) {
 
 void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
                               int rssi_dbm, bool crc_ok, uint64_t now_ms) {
-  (void)now_ms;
+  // A sweep frame for the phase currently being commanded is an IMPLICIT
+  // ACK, exactly as a verify frame is the implicit ack for T_CAL_RESULT.
+  // Found by tests/test_cal_e2e.cpp: the drone's ack rides a Telem, Telem
+  // is lost like anything else, and until one arrives the session sits in
+  // AwaitAck -- where it (a) keeps transmitting T_CAL_CMD repeats every
+  // 200 ms straight into the drone's live sweep, contaminating the very
+  // measurement the radio-silence rule exists to protect and blanking its
+  // own RX cards with each send (gs-uplink-self-blanking), and (b) DROPS
+  // every frame that arrives meanwhile, so those cells keep their seeded
+  // 0-received tally and read as total loss. The result is not a missing
+  // wall but a WRONG one: in the loopback with a lossy ack the low end of
+  // each rate's curve was scored as dead air and the analysis walked off
+  // to walls like 12 and 16 with no flag saying anything was amiss.
+  //
+  // The frame itself proves what the ack would have: the drone accepted
+  // this exact phase and is on the air with it. base_ref_idx_ stays
+  // whatever it was -- only the Telem carries it, and main.cpp writes
+  // cal.log's R line from that Telem whenever it does arrive.
+  if (state_ == State::AwaitAck && f.phase == pending_cmd_.phase) {
+    phase_start_ms_ = now_ms;
+    phase_end_ms_ = now_ms + plan_duration_ms(pending_cmd_);
+    state_ = State::Sweep;
+  }
   if (state_ != State::Sweep && state_ != State::Verify) return;
   // Frames whose phase is not the one currently running are ignored
   // entirely -- a drone still finishing kPhaseVerify's self-check, or a

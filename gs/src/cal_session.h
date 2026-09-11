@@ -68,6 +68,12 @@ class CalSession {
   // for an index this session never asked for, are dropped -- silently, by
   // design: a stray frame must never be attributed to a cell it doesn't
   // belong to.
+  //
+  // A frame naming the phase currently being COMMANDED is the exception:
+  // it is an implicit ack (the drone is demonstrably sweeping it), and it
+  // both ends AwaitAck and counts. Otherwise a lost ack Telem leaves the
+  // GS repeating T_CAL_CMD into a live sweep while discarding every frame
+  // of it.
   void on_cal_frame(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm,
                     bool crc_ok, uint64_t now_ms);
 
