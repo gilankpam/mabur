@@ -76,9 +76,15 @@ class CalSession {
   // discover an ack timeout.
   std::optional<mabur::rc::CalCmd> due_cmd(uint64_t now_ms);
 
-  // The result ready to send, or nullopt. One-shot: delivered once per
-  // session, then the session moves on to silently watching for the
-  // drone's self-initiated verify sweep. Also advances the state machine.
+  // The result to send right now, or nullopt. Delivered once when the
+  // analysis completes, then REPEATED at ~200 ms (bounded) until the
+  // drone's first verify-phase frame acks it -- T_CAL_RESULT rides the
+  // same 30-50%-lossy uplink as everything else and carries the whole
+  // run's measured table, and the drone's own nonce latch makes repeats
+  // free. Unlike due_cmd(), main.cpp calls this OUTSIDE its
+  // radio_silent() gate: the repeats live inside the verify window by
+  // construction, and this method (not the caller) is what knows the
+  // drone has not started sweeping yet. Also advances the state machine.
   std::optional<mabur::rc::CalResult> due_result(uint64_t now_ms);
 
   // True whenever a GS transmit would corrupt the measurement: from the
@@ -185,8 +191,18 @@ class CalSession {
 
   mabur::rc::CalResult pending_result_;
   bool result_ready_ = false;
-  // Park index per rate (wall - margin), -1 where undetermined. Feeds both
-  // CalResult and the locally-built verify plan.
+  // Result-repeat bookkeeping (see due_result()). verify_frame_seen_ is
+  // the implicit ack: the drone sweeps verify only after a successful
+  // apply, so the first frame of that sweep both proves delivery and
+  // means the GS must go silent again.
+  uint64_t last_result_sent_ms_ = 0;
+  int result_repeats_left_ = 0;
+  bool verify_frame_seen_ = false;
+  // Park index per rate (wall - margin_db*4), -1 where undetermined.
+  // Purely local since T_CAL_RESULT started carrying the raw wall: the
+  // drone derives its own park from its own wall_margin_db, and this
+  // exists only to build the GS's verify plan (which indices to expect
+  // frames at) and to fill cal.log's R-line margin.
   std::array<int, 8> pending_park_{};
 
   // Optional cal.log sink; see the constructor comment. Every call site

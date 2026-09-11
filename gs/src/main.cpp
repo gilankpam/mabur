@@ -1338,12 +1338,21 @@ static int run_radio(const maburgs::Config& cfg) {
         cf.offered_ms = drained_ms;
         send_control_frame(cf);
       }
-      if (auto res = cal_session.due_result(drained_ms)) {
-        maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res), 0,
-                              sel.selected(), false};
-        rf.offered_ms = drained_ms;
-        send_control_frame(rf);
-      }
+    }
+    // T_CAL_RESULT is the one transmit NOT gated on radio_silent(), and
+    // deliberately so: it must be repeated into the verify window until
+    // the drone's first verify frame acks it (cal_session.h's due_result()
+    // comment), and radio_silent() is true for that whole window. The
+    // invariant still holds -- CalSession stops vending repeats the
+    // instant a verify-phase frame arrives, and before that arrives the
+    // drone has not applied and is not sweeping anything. Losing this one
+    // frame to the 30-50%-lossy uplink otherwise ends the run with the
+    // config untouched and the report claiming it was written.
+    if (auto res = cal_session.due_result(drained_ms)) {
+      maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res), 0,
+                            sel.selected(), false};
+      rf.offered_ms = drained_ms;
+      send_control_frame(rf);
     }
     // ctl: rung transition line — load-bearing for post-mortems (Task 6
     // adds the sideport link.ctl block; this stderr line is independent of

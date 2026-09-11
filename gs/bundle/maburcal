@@ -171,18 +171,27 @@ def _apply_status_line(run):
     session that never gets a phase-2 command at all (Task 10's
     await_next_timeout_returns_to_idle_without_applying), all end a run
     with nothing written and nothing on the wire for the GS to log. `V`
-    records are the usable signal instead: CalSession only emits them
-    once the drone's self-initiated verify sweep runs, and that sweep is
-    only armed after a successful apply (design doc step 9). So a run
-    with verify data DID apply; a run with only wall data measured but
+    records are the usable signal instead: CalSession emits one only for
+    a rate whose verify cell actually HEARD something, and the drone
+    sweeps verify only after a successful apply (design doc step 9). So a
+    run with verify data DID apply; a run with only wall data measured but
     never confirmed an apply; a run with neither did nothing at all.
+
+    That "actually heard something" clause is load-bearing and was a real
+    bug: CalSession used to emit a V row per rate at verify-window close
+    whether or not a single frame arrived, so a run whose T_CAL_RESULT was
+    lost on the uplink -- or whose apply failed before verify was armed --
+    printed an all-zero verify column AND claimed the config was written.
     """
     if run.verify:
         return f"written: {CONFIG_PATH} (backup {CONFIG_BACKUP})"
     if run.walls:
-        return ("not written: walls were measured but no verify pass "
-                "completed -- the drone's config was not confirmed updated "
-                "by this run")
+        return ("not written: walls were measured but the drone never ran "
+                "its verify sweep -- either the result frame never reached "
+                "it, or the apply itself was refused (out-of-range table, "
+                "backup/write failure, or a candidate config that would not "
+                "load). Nothing was changed on the drone; check "
+                "/tmp/maburd.log on the drone and re-run")
     return "not written: this run produced no measurements"
 
 

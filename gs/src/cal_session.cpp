@@ -15,6 +15,23 @@ namespace {
 // repeating it costs nothing on the drone side.
 constexpr uint32_t kCmdResendIntervalMs = 200;
 
+// T_CAL_RESULT gets the same treatment, and for the same reason: it rides
+// the same 30-50%-lossy uplink, and it is the ONE frame in this protocol
+// that carries the whole run's measured table. A single send that lost the
+// coin flip used to end the run with the drone's config untouched and the
+// operator's report claiming `written: /etc/mabur.toml` (an all-zero
+// verify column was the only hint). There is no explicit ack for it -- the
+// drone's verify sweep IS the ack, since it only sweeps verify after a
+// successful apply -- so the repeats stop at the first verify-phase frame,
+// and the drone's own result_accepted_ nonce latch (drone/src/cal_sweep.cpp)
+// makes every repeat before that a no-op.
+//
+// Bounded at kMaxResultRepeats, mirroring T_CAL_CMD's own ~15 tries in
+// 3000 ms: past that the drone is not coming back this session, and
+// repeating into the whole verify window would only add noise.
+constexpr uint32_t kResultResendIntervalMs = 200;
+constexpr int kMaxResultRepeats = 15;
+
 int median(std::vector<int> v) {
   std::sort(v.begin(), v.end());
   return v[v.size() / 2];
@@ -45,6 +62,8 @@ bool CalSession::start(uint32_t vtx_id, uint32_t nonce, uint64_t now_ms,
   nonce_ = nonce;
   fail_reason_ = "";
   result_ready_ = false;
+  result_repeats_left_ = 0;
+  verify_frame_seen_ = false;
   coarse_walls_ = {};
   final_walls_ = {};
   pending_park_ = {};
@@ -73,6 +92,14 @@ void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
   // late straggler from a phase this session already left, must never be
   // attributed to the phase running now.
   if (f.phase != running_phase_) return;
+  // The implicit ack for T_CAL_RESULT: the drone self-initiates the verify
+  // sweep only after a successful apply, so ANY verify-phase frame -- any
+  // rate, CRC-bad included (attribution survives corruption by design,
+  // cal_wire.h) -- proves the result landed and applied. Latched before
+  // the validity checks below precisely because it is not a measurement:
+  // it is the signal that stops the result repeats, and the moment from
+  // which the GS owes the drone total radio silence again.
+  if (state_ == State::Verify) verify_frame_seen_ = true;
   if (f.rate > 7 || card < 0 || card > 1) return;
 
   CalCell* cp = nullptr;
@@ -119,15 +146,36 @@ std::optional<mabur::rc::CalCmd> CalSession::due_cmd(uint64_t now_ms) {
 
 std::optional<mabur::rc::CalResult> CalSession::due_result(uint64_t now_ms) {
   step(now_ms);
-  if (state_ != State::Result || !result_ready_) return std::nullopt;
-  result_ready_ = false;
-  // Applying the result is what arms the drone's self-initiated verify
-  // sweep (spec step 9: "the drone immediately sweeps the eight park
-  // indices with no further command"). There is no ack for T_CAL_RESULT,
-  // so the GS has to assume delivery happens now and stay silent for the
-  // verify window exactly as it did for a commanded phase -- otherwise its
-  // own uplink blanks the very sweep this whole kit exists to read cleanly.
-  begin_verify(now_ms);
+  if (state_ == State::Result && result_ready_) {
+    result_ready_ = false;
+    // Applying the result is what arms the drone's self-initiated verify
+    // sweep (spec step 9: "the drone immediately sweeps the eight park
+    // indices with no further command"). There is no ack for
+    // T_CAL_RESULT, so the GS assumes delivery happens now and opens the
+    // verify window immediately -- otherwise its own uplink blanks the
+    // very sweep this whole kit exists to read cleanly.
+    begin_verify(now_ms);
+    last_result_sent_ms_ = now_ms;
+    result_repeats_left_ = kMaxResultRepeats;
+    return pending_result_;
+  }
+  // Repeats, inside the verify window, until the drone's first verify
+  // frame acks it (see kResultResendIntervalMs). This does NOT violate
+  // "the GS transmits nothing during a sweep phase": until a verify frame
+  // arrives, the drone has not applied and therefore is not sweeping
+  // anything -- it is sitting in its own await_next_ms limbo with the
+  // radio idle. The instant it does sweep, verify_frame_seen_ latches and
+  // this path goes quiet for the rest of the run. The one narrow overlap
+  // left is the drone's settle_ms (100 ms) between applying and its first
+  // frame; a repeat landing in that gap can cost at most a couple of
+  // frames out of the 100 in one verify cell, against a lost result frame
+  // costing the entire run.
+  if (state_ != State::Verify || verify_frame_seen_) return std::nullopt;
+  if (result_repeats_left_ <= 0) return std::nullopt;
+  if (now_ms - last_result_sent_ms_ < kResultResendIntervalMs)
+    return std::nullopt;
+  --result_repeats_left_;
+  last_result_sent_ms_ = now_ms;
   return pending_result_;
 }
 
@@ -140,6 +188,7 @@ void CalSession::abort(const char* why) {
   fail_reason_ = why ? why : "aborted";
   state_ = State::Idle;
   result_ready_ = false;
+  result_repeats_left_ = 0;
   clear_cells();
 }
 
@@ -206,15 +255,26 @@ void CalSession::step(uint64_t now_ms) {
         // Verify completion: one V record per rate that actually had a
         // park index to verify (make_verify_plan skips undetermined
         // rates entirely, so cells_[r] is empty for those -- nothing to
-        // log, by design, not a gap). Best single card, matching
-        // analyze_rate's own convention (PA compression degrades both
-        // cards' waveform together; the union would only inflate the
-        // number and hide a compressed rate as "verified clean").
+        // log, by design, not a gap) AND actually heard something there.
+        // A `V` row means "this rate was verified", never "a window
+        // closed": a run whose T_CAL_RESULT was lost, or whose apply
+        // failed before arming verify, receives nothing at all, and an
+        // all-zero V column emitted anyway is what let maburcal print
+        // `written: /etc/mabur.toml` for a run that wrote nothing. Best
+        // single card, matching analyze_rate's own convention (PA
+        // compression degrades both cards' waveform together; the union
+        // would only inflate the number and hide a compressed rate as
+        // "verified clean").
         if (log_) {
           for (int r = 0; r < 8; ++r) {
             const auto it = cells_[static_cast<size_t>(r)].begin();
             if (it == cells_[static_cast<size_t>(r)].end()) continue;
             const CalCell& c = it->second;
+            // Corrupt-but-arrived still counts as verified: the drone
+            // demonstrably swept this cell, and 0% delivery there is a
+            // real (bad) measurement, not an absent one.
+            if (c.received[0] == 0 && c.received[1] == 0 && c.corrupt == 0)
+              continue;
             const int best =
                 std::max(c.received[0], c.received[1]);
             const int pct = c.expected > 0

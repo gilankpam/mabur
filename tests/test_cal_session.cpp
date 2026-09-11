@@ -461,4 +461,125 @@ TEST(cal_log_records_verify_results) {
   CHECK(saw_rate0_verify);
 }
 
+TEST(result_is_repeated_until_a_verify_frame_acks_it) {
+  // T_CAL_RESULT carries the whole run's measured table over an uplink
+  // that loses 30-50% of frames, and there is no explicit ack for it. A
+  // single send that lost the coin flip ended the run with the drone's
+  // config untouched -- while the report claimed it had been written.
+  // The drone's verify sweep is the implicit ack (it only sweeps verify
+  // after a successful apply), so the repeats run until the first
+  // verify-phase frame arrives and then stop for good.
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 21, 0, &err));
+  s.due_cmd(0);
+  s.on_ack(21, 53, 1);
+  const auto coarse = make_coarse_plan(1, 21);
+  feed_phase(s, coarse, 100, 10);
+  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+
+  const uint64_t t_first = t1 + 2000;
+  REQUIRE(s.due_result(t_first).has_value());   // first send, arms verify
+  CHECK(s.radio_silent(t_first));               // ...and the window is open
+  // Too soon: the cadence matches T_CAL_CMD's own ~200 ms.
+  CHECK(!s.due_result(t_first + 50).has_value());
+  const auto again = s.due_result(t_first + 200);
+  REQUIRE(again.has_value());
+  CHECK(again->nonce == 21);
+  CHECK(again->walls[0] == 88);                 // the same table, verbatim
+  REQUIRE(s.due_result(t_first + 400).has_value());
+
+  // The drone applied and started sweeping: one verify frame is the ack.
+  mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify, 0};
+  s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t_first + 500);
+  CHECK(!s.due_result(t_first + 600).has_value());
+  CHECK(!s.due_result(t_first + 5000).has_value());
+}
+
+TEST(a_crc_bad_verify_frame_still_stops_the_repeats) {
+  // Attribution survives corruption by design (cal_wire.h), and a corrupt
+  // verify frame proves just as much as a clean one: the drone applied and
+  // is on the air. Continuing to transmit into that sweep is exactly what
+  // the radio-silence rule forbids.
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 22, 0, &err));
+  s.due_cmd(0);
+  s.on_ack(22, 53, 1);
+  const auto coarse = make_coarse_plan(1, 22);
+  feed_phase(s, coarse, 100, 10);
+  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+  REQUIRE(s.due_result(t1 + 2000).has_value());
+  mabur::cal::CalFrameInfo f{3, 84, mabur::cal::kPhaseVerify, 0};
+  s.on_cal_frame(0, f, -60, /*crc_ok=*/false, t1 + 2100);
+  CHECK(!s.due_result(t1 + 2200).has_value());
+}
+
+TEST(result_repeats_are_bounded_when_the_drone_never_applies) {
+  // The drone is gone (or its apply was refused): no verify frame will
+  // ever arrive. The repeats must stop on their own rather than filling
+  // the whole verify window with uplink traffic.
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1, 23, 0, &err));
+  s.due_cmd(0);
+  s.on_ack(23, 53, 1);
+  const auto coarse = make_coarse_plan(1, 23);
+  feed_phase(s, coarse, 100, 10);
+  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+
+  uint64_t t = t1 + 2000;
+  int sends = 0;
+  for (int i = 0; i < 200; ++i) {
+    if (s.due_result(t).has_value()) ++sends;
+    t += 200;
+    if (s.state() != CalSession::State::Verify) break;
+  }
+  // First send plus a bounded number of repeats -- not one per tick for
+  // the whole window.
+  CHECK(sends >= 2);
+  CHECK(sends <= 20);
+}
+
+TEST(no_verify_row_is_logged_for_a_rate_that_heard_nothing) {
+  // A `V` row means "this rate was verified", never "a window closed".
+  // maburcal reads any V row as proof the drone applied (the drone sweeps
+  // verify only after a successful apply), so emitting an all-zero row per
+  // rate at window close made a run whose T_CAL_RESULT was lost -- or
+  // whose apply was refused -- print `written: /etc/mabur.toml`.
+  const std::string dir = fresh_dir("cal_session_log_verify_empty");
+  {
+    CalLog log(dir);
+    log.header();
+    CalSessionCfg cfg;
+    cfg.phase_slack_ms = 0;
+    CalSession s(cfg, &log);
+    s.set_peer(true, true);
+    std::string err;
+    REQUIRE(s.start(1, 33, 0, &err));
+    log.run(33, 53, s.margin_db());
+    s.due_cmd(0);
+    s.on_ack(33, 53, 1);
+    const auto coarse = make_coarse_plan(1, 33);
+    feed_phase(s, coarse, 100, 10);
+    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+    REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
+    // ...and nothing at all comes back: the result never reached the
+    // drone, or the drone refused to apply it.
+    s.due_cmd(t1 + 2000 + 60000);
+    CHECK(s.state() == CalSession::State::Done);
+  }
+  for (const auto& l : cal_log_lines(dir))
+    CHECK(l.rfind("V ", 0) != 0);   // not one V row in the file
+}
+
 MTEST_MAIN

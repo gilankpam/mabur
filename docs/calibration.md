@@ -141,7 +141,7 @@ real run, the assumption needs revisiting, not the code.
 
 ## When it doesn't work
 
-Two failure shapes fall outside every health flag above, because a flag
+Three failure shapes fall outside every health flag above, because a flag
 is only computed from the sweep phases' own delivery data.
 
 **`maburcal start` refuses immediately, with a one-line reason.** Before
@@ -176,17 +176,37 @@ geometry/orientation and retry before suspecting anything else. Nothing
 was written in this case — the drone only writes config after reaching
 `Result`, several states past `AwaitAck`.
 
-**Verify delivery reads low on a rate with no flag at all.** Flags are
-computed from the coarse/fine sweep data; the verify pass has none of its
-own; a rate can measure a clean wall and still show poor delivery when
-the drone parks there a minute or two later. Likely causes are geometry
-having moved between the sweep and the verify pass, or a wall estimate
-that a flag should have caught but the sweep data didn't quite cross the
-threshold for. There is no automatic signal for this beyond reading the
-`verify` column yourself — if a rate reads low there, treat that number
-over the flag: rerun (a `drift` flag on the same rate in the rerun would
-corroborate it), or widen `wall_margin_db` for that run
-(`maburcal start --margin`) and check whether verify delivery recovers.
+**The `verify` column is blank on every rate.** Read this first, before
+the low-delivery case below: a dash in `verify` for *all eight* rates is
+not a delivery problem, it means the drone never ran its verify sweep at
+all. The report says so explicitly — `not written: walls were measured but
+the drone never ran its verify sweep`. Two things produce it:
+
+- The `T_CAL_RESULT` frame never arrived. It rides the same 30-50%-lossy
+  uplink as everything else, so the GS repeats it every 200 ms (bounded,
+  ~15 tries) until the drone's first verify frame acks it — the drone
+  sweeps verify only after a successful apply, so that frame *is* the ack.
+  Fifteen consecutive losses is unlikely but possible on a bad link.
+- The drone refused the apply — an out-of-range table, a backup or write
+  failure, or a candidate config that would not reload. All of these
+  return before verify is armed, and all of them leave `/etc/mabur.toml`
+  exactly as it was. `/tmp/maburd.log` on the drone names which.
+
+Either way **nothing was written**. Re-run; if it repeats, read the drone
+log before touching geometry.
+
+**Verify delivery reads low on a rate that has a number there and no flag
+at all.** Flags are computed from the coarse/fine sweep data; the verify
+pass has none of its own; a rate can measure a clean wall and still show
+poor delivery when the drone parks there a minute or two later. Likely
+causes are geometry having moved between the sweep and the verify pass,
+or a wall estimate that a flag should have caught but the sweep data
+didn't quite cross the threshold for. There is no automatic signal for
+this beyond reading the `verify` column yourself — if a rate reads low
+there, treat that number over the flag: rerun (a `drift` flag on the same
+rate in the rerun would corroborate it), or widen `wall_margin_db` for
+that run (`maburcal start --margin`) and check whether verify delivery
+recovers.
 
 ## What gets written, and how to roll back
 
