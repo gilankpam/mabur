@@ -135,3 +135,29 @@ TEST(reopening_appends_without_a_second_header) {
 }
 
 MTEST_MAIN
+
+TEST(header_is_due_only_until_the_file_itself_exists) {
+  // cal_log_header_due is the single source of truth for "is this
+  // construction the FILE's first writer", and it answers that by asking
+  // the filesystem rather than by inferring it from anything else.
+  const auto d = fresh_dir("callog_due");
+  CHECK(cal_log_header_due(d));
+  { CalLog l(d); l.header(); l.run(7, 39, 1.0); }
+  CHECK(!cal_log_header_due(d));
+}
+
+TEST(a_rejoined_session_directory_with_no_cal_log_is_still_due_a_marker) {
+  // Regression (hardware, 2026-09-11): maburgs keyed header() on
+  // DebugSession::rejoined(), so the first calibration in a session
+  // directory that maburgs had merely RESTARTED into -- the ordinary case,
+  // since deploying a new binary restarts the daemon and it rejoins the
+  // live session via the marker file -- wrote a cal.log with no `callog 1`
+  // line. `maburcal report` then refused the file outright and `maburcal
+  // start`'s own end-of-run table never rendered, losing the entire
+  // operator-facing result of a run that had already measured and applied
+  // walls. A rejoined session says nothing about whether cal.log exists:
+  // here the directory is old and populated, and the marker is still due.
+  const auto d = fresh_dir("callog_rejoin");
+  std::ofstream(d + "/ctl.log") << "ctllog 11\n";
+  CHECK(cal_log_header_due(d));
+}

@@ -78,6 +78,22 @@ struct RateWall;
 // Every failure mode (LogWriter::open() unable to prepare the file, ...) is
 // non-fatal: ok() reads false and every record method becomes a silent
 // no-op. maburgs must never exit or crash over this log.
+// True when <dir>/cal.log does not exist yet -- i.e. the CalLog about to be
+// constructed on `dir` will be that FILE's first writer and header() is due.
+// Ask this BEFORE constructing the CalLog: the constructor opens the file for
+// append and so creates it, after which the answer is always false.
+//
+// This exists so the once-per-file rule is decided by the file, and never
+// inferred from something merely correlated with it. maburgs originally
+// inferred it from DebugSession::rejoined() -- "did this process allocate the
+// session directory or adopt an existing one" -- which is a different
+// question with a different answer: restarting maburgs rejoins the live
+// session directory, and if that directory had never held a calibration, the
+// first run wrote a headerless cal.log that gs/bundle/maburcal then refused
+// to read at all. Seen on hardware 2026-09-11, on the most ordinary path
+// there is (deploy a binary, then calibrate).
+bool cal_log_header_due(const std::string& dir);
+
 class CalLog {
  public:
   // dir is the session directory (DebugSession::dir()); the file is always

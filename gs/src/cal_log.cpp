@@ -2,9 +2,15 @@
 
 #include <algorithm>
 
+#include <unistd.h>
+
 #include "cal_analysis.h"
 
 namespace maburgs {
+
+bool cal_log_header_due(const std::string& dir) {
+  return ::access((dir + "/cal.log").c_str(), F_OK) != 0;
+}
 
 // LogWriter::open()'s own header parameter is unused here: header() and
 // run() are distinct calls the caller makes explicitly (header() at most

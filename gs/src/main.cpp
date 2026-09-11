@@ -337,13 +337,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // (as gs/bundle/maburgs.default.toml does since 671c848) must not mean
   // every calibration runs silently and leaves no trace. When debug
   // logging is on, reuse its session directory (one place to look, and
-  // `header()`'s once-per-file rule can lean on DebugSession's own
-  // rejoin detection); when it's off, fall back to <debug_log.dir>/cal --
-  // `dir` is present in config independent of `enable` -- and fall back
-  // to the file's own presence (no DebugSession marker exists here) to
-  // decide whether header() is due.
+  // one session's worth of context around a run); when it's off, fall back
+  // to <debug_log.dir>/cal -- `dir` is present in config independent of
+  // `enable`. Either way the once-per-FILE marker decision is the file's
+  // own presence (cal_log_header_due), never the session's rejoin state.
   std::string cal_log_dir = debug.dir();
-  bool cal_log_new_file = !debug.rejoined();
   if (!debug.ok()) {
     cal_log_dir = cfg.debug_log.dir + "/cal";
     // Best-effort, mirroring DebugSession::allocate_(): debug_log.dir may
@@ -352,8 +350,13 @@ static int run_radio(const maburgs::Config& cfg) {
     // is the expected steady-state, not a failure.
     ::mkdir(cfg.debug_log.dir.c_str(), 0755);
     ::mkdir(cal_log_dir.c_str(), 0755);
-    cal_log_new_file = ::access((cal_log_dir + "/cal.log").c_str(), F_OK) != 0;
   }
+  // Ask the FILE, in both branches, and ask before constructing the CalLog
+  // that would create it (cal_log.h). A rejoined session directory is not
+  // evidence that a cal.log exists in it -- that inference shipped, and the
+  // first calibration after any maburgs restart lost its `callog 1` marker
+  // and with it every operator-facing rendering of the run.
+  const bool cal_log_new_file = maburgs::cal_log_header_due(cal_log_dir);
   std::optional<maburgs::CalLog> cal_log;
   cal_log.emplace(cal_log_dir);
   if (cal_log->ok()) {
