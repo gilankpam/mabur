@@ -39,6 +39,17 @@ struct RateWall;
 //                                                 # last-write-wins
 //   V <rate> <idx> <pct>                         # one row per verify cell
 //
+// A V row means "this rate was in the verify plan", never "this rate
+// verified clean" -- pct 0 is a real (bad) measurement, written exactly
+// like any other, for a rate that was parked and heard nothing. A rate
+// with no row at all (make_verify_plan skips undetermined ones) was never
+// planned in the first place. maburcal's reader is what turns "was there
+// at least one nonzero pct anywhere in the run" into the written: claim;
+// it must never key that claim on a V row's mere presence, since an
+// optimistically-opened verify window that heard nothing on any rate
+// (a lost T_CAL_RESULT, or a refused apply) still gets a full set of
+// all-zero V rows under this rule.
+//
 // The marker and the per-run parameters are deliberately split: `callog 1`
 // versions the FILE (mirrors ctllog N elsewhere in this codebase) and is
 // written at most once no matter how many runs share the session

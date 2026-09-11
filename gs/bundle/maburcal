@@ -171,19 +171,32 @@ def _apply_status_line(run):
     session that never gets a phase-2 command at all (Task 10's
     await_next_timeout_returns_to_idle_without_applying), all end a run
     with nothing written and nothing on the wire for the GS to log. `V`
-    records are the usable signal instead: CalSession emits one only for
-    a rate whose verify cell actually HEARD something, and the drone
-    sweeps verify only after a successful apply (design doc step 9). So a
-    run with verify data DID apply; a run with only wall data measured but
-    never confirmed an apply; a run with neither did nothing at all.
+    records are the usable signal instead: CalSession emits one for every
+    rate that was in the verify plan, whether or not anything actually
+    arrived there (pct 0 included) -- a planned-but-silent rate is exactly
+    the thing this report needs to be able to say plainly, so the row must
+    exist either way (see cal_log.h). The drone sweeps verify only after a
+    successful apply (design doc step 9), but due_result() opens the GS's
+    own verify window optimistically, with no ack to wait on -- so a run
+    whose T_CAL_RESULT was lost on the uplink, or whose apply was refused,
+    still gets a full set of V rows, every one of them 0%. A row's mere
+    presence is therefore NOT evidence of a successful apply; a NONZERO
+    pct on at least one row is, because the drone had to actually be on
+    the air sweeping verify to produce it. So a run with any nonzero
+    verify delivery DID apply -- a sibling rate in that same run reading
+    0% (or missing outright, if its own wall never came back determined)
+    is then a real finding about that one rate, dead at its own parked
+    power, not a reason to doubt the apply; a run whose verify rows, if
+    any, are all zero (or that has wall data but no V rows at all) only
+    measured but never confirmed an apply; a run with neither did nothing
+    at all.
 
-    That "actually heard something" clause is load-bearing and was a real
-    bug: CalSession used to emit a V row per rate at verify-window close
-    whether or not a single frame arrived, so a run whose T_CAL_RESULT was
-    lost on the uplink -- or whose apply failed before verify was armed --
-    printed an all-zero verify column AND claimed the config was written.
+    Keying this on presence instead of a nonzero reading was a real bug:
+    an all-zero verify column, from a lost result frame or a refused
+    apply, used to be indistinguishable from a real one and printed
+    `written: /etc/mabur.toml` for a run that changed nothing.
     """
-    if run.verify:
+    if any(pct > 0 for pct in run.verify.values()):
         return f"written: {CONFIG_PATH} (backup {CONFIG_BACKUP})"
     if run.walls:
         return ("not written: walls were measured but the drone never ran "

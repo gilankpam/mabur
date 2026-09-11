@@ -275,28 +275,36 @@ void CalSession::step(uint64_t now_ms) {
     case State::Verify:
       if (now_ms >= phase_end_ms_ + cfg_.phase_slack_ms) {
         // Verify completion: one V record per rate that actually had a
-        // park index to verify (make_verify_plan skips undetermined
-        // rates entirely, so cells_[r] is empty for those -- nothing to
-        // log, by design, not a gap) AND actually heard something there.
-        // A `V` row means "this rate was verified", never "a window
-        // closed": a run whose T_CAL_RESULT was lost, or whose apply
-        // failed before arming verify, receives nothing at all, and an
-        // all-zero V column emitted anyway is what let maburcal print
-        // `written: /etc/mabur.toml` for a run that wrote nothing. Best
-        // single card, matching analyze_rate's own convention (PA
-        // compression degrades both cards' waveform together; the union
-        // would only inflate the number and hide a compressed rate as
-        // "verified clean").
+        // park index to verify. make_verify_plan skips undetermined rates
+        // entirely, so cells_[r] is empty for those -- nothing to log, by
+        // design, not a gap. This is a "was it planned" test only: a rate
+        // that WAS planned still gets its V row even when the cell heard
+        // nothing at all (pct 0), because that silence -- one rate dead at
+        // its own parked power while its siblings verify clean -- is the
+        // single most important thing this pass exists to surface, and an
+        // absent row reads identically to "never planned" in maburcal's
+        // report. Best single card, matching analyze_rate's own convention
+        // (PA compression degrades both cards' waveform together; the
+        // union would only inflate the number and hide a compressed rate
+        // as "verified clean").
+        //
+        // A run whose T_CAL_RESULT was lost, or whose apply failed before
+        // arming verify, optimistically opens this same verify window
+        // (due_result() has no ack to wait for) and then hears NOTHING on
+        // ANY rate -- which, under this rule, still emits a full set of
+        // all-zero V rows. That used to be exactly the bug: any V row at
+        // all read as proof of a successful apply. The fix is not to
+        // suppress the row (that is what made a single dead rate
+        // indistinguishable from one that was never parked); it is that
+        // maburcal's `written:` claim must key on at least one row with
+        // nonzero delivery, never on a row merely existing. See
+        // gs/bundle/maburcal's _apply_status_line and
+        // tests/test_maburcal.py's written:-gating tests.
         if (log_) {
           for (int r = 0; r < 8; ++r) {
             const auto it = cells_[static_cast<size_t>(r)].begin();
             if (it == cells_[static_cast<size_t>(r)].end()) continue;
             const CalCell& c = it->second;
-            // Corrupt-but-arrived still counts as verified: the drone
-            // demonstrably swept this cell, and 0% delivery there is a
-            // real (bad) measurement, not an absent one.
-            if (c.received[0] == 0 && c.received[1] == 0 && c.corrupt == 0)
-              continue;
             const int best =
                 std::max(c.received[0], c.received[1]);
             const int pct = c.expected > 0

@@ -135,6 +135,43 @@ class TestReport(unittest.TestCase):
         self.assertNotIn("written: /etc/mabur.toml", out)
         self.assertIn("not written", out)
 
+    def test_all_zero_verify_rows_report_not_written(self):
+        # due_result() opens the GS's own verify window optimistically (no
+        # ack for T_CAL_RESULT), so a lost result frame or a refused apply
+        # still produces a full set of V rows -- every one of them 0%
+        # (gs/src/cal_session.cpp). A row's mere presence must never be
+        # read as evidence of an apply; only a nonzero delivery is.
+        text = ("callog 1\nR 46 53 1.00\n"
+                "W 0 91 28 0 1\nW 1 88 28 0 1\n"
+                "V 0 87 0\nV 1 84 0\n")
+        out = render(text)
+        self.assertNotIn("written: /etc/mabur.toml", out)
+        self.assertIn("not written", out)
+
+    def test_one_silent_rate_is_distinguishable_from_never_planned(self):
+        # A rate with a real, determined wall that was included in the
+        # verify plan and heard nothing at its parked power (mcs1, "0%")
+        # must render differently from a rate whose wall never came back
+        # determined in the first place (mcs7, "-" -- make_verify_plan
+        # never seeds a cell for it, so cal.log carries no V row at all).
+        # Both used to print "-" in the verify column, hiding the single
+        # most important signal a verify pass exists to produce: a rate
+        # that is dead at its own parked power.
+        text = ("callog 1\nR 47 53 1.00\n"
+                "W 0 91 28 0 1\nW 1 88 28 0 1\nW 7 -1 -1 0 2\n"
+                "V 0 87 62\nV 1 84 0\n")
+        out = render(text)
+        row0 = [l for l in out.splitlines() if l.startswith("mcs0")][0]
+        row1 = [l for l in out.splitlines() if l.startswith("mcs1")][0]
+        row7 = [l for l in out.splitlines() if l.startswith("mcs7")][0]
+        self.assertIn("62%", row0)
+        self.assertIn("0%", row1)     # planned, silent -- a real 0%, not "-"
+        self.assertNotIn("0%", row7)  # never planned -- "-", not a measurement
+        self.assertIn("-", row7)
+        # And the run as a whole still applied: mcs0's real delivery is
+        # proof enough, mcs1's silence notwithstanding.
+        self.assertIn("written: /etc/mabur.toml", out)
+
 
 if __name__ == "__main__":
     unittest.main()

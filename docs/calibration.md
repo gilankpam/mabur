@@ -214,6 +214,38 @@ the drone never ran its verify sweep`. Two things produce it:
 Either way **nothing was written**. Re-run; if it repeats, read the drone
 log before touching geometry.
 
+**One rate reads `0%` in `verify` while its neighbors show real
+percentages.** This looks similar to the two shapes above but means
+something different from both, and the report is deliberately built to
+tell them apart:
+
+- A `-` in `verify` (wall column also shows a number less than 0, and
+  `undetermined` in flags) means this rate's wall was never determined at
+  all — nothing was ever parked for it, so there was nothing to verify.
+  Benign, and unrelated to the drone's radio.
+- `-` in `verify` on *every* rate, alongside `not written`, means the
+  drone's verify sweep never ran at all (the previous case above) — no
+  rate was confirmed, full stop.
+- `0%` on one rate, with `written: /etc/mabur.toml` still printed and
+  other rates showing real delivery, means this rate genuinely *was*
+  parked, the drone genuinely *did* sweep verify (proven by every other
+  rate's nonzero reading), and this one rate's parked power is dead —
+  the GS heard nothing there at all. This is the single most important
+  reading the verify pass exists to produce, and it must not be confused
+  with either "-" case above: unlike them, it says the config on the
+  drone right now is untransmittable at this MCS.
+
+  The most likely causes are specific to that one rate: a wall measured
+  too high for it (the coarse/fine sweep's own dip landed a bit
+  optimistic, without quite tripping a flag), or an antenna/geometry
+  problem that only affects that rate's bandwidth or the RX card that
+  happens to win verify's single-card best-of for it. Re-run first — a
+  repeat pins it as real rather than a one-off miss on the verify pass
+  itself. If it repeats, treat that MCS row as unreliable: widen
+  `radio.wall_margin_db` on the drone if several rates show the same
+  shape, or avoid that rate in the ladder (`link.max_mcs`) until a
+  rerun at different bench geometry gives it a real number.
+
 **Verify delivery reads low on a rate that has a number there and no flag
 at all.** Flags are computed from the coarse/fine sweep data; the verify
 pass has none of its own; a rate can measure a clean wall and still show

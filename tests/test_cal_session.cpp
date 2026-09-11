@@ -555,12 +555,21 @@ TEST(result_repeats_are_bounded_when_the_drone_never_applies) {
   CHECK(sends <= 20);
 }
 
-TEST(no_verify_row_is_logged_for_a_rate_that_heard_nothing) {
-  // A `V` row means "this rate was verified", never "a window closed".
-  // maburcal reads any V row as proof the drone applied (the drone sweeps
-  // verify only after a successful apply), so emitting an all-zero row per
-  // rate at window close made a run whose T_CAL_RESULT was lost -- or
-  // whose apply was refused -- print `written: /etc/mabur.toml`.
+TEST(all_zero_verify_rows_are_logged_for_a_totally_silent_result) {
+  // due_result() opens the GS's own verify window optimistically -- there
+  // is no ack for T_CAL_RESULT -- so a run whose result frame was lost on
+  // the uplink, or whose apply was refused, still gets a full set of V
+  // rows: every rate that was planned, all of them 0%. That is
+  // deliberate: a V row means "this rate was IN THE PLAN", never "this
+  // rate verified clean" (see cal_log.h), and suppressing the row for a
+  // silent rate is what made a single genuinely dead rate indistinguish-
+  // able from one that was never parked at all (see
+  // silent_verify_cell_is_distinguishable_from_a_never_planned_rate
+  // below). The `written:` claim this used to feed maburcal now keys on a
+  // NONZERO pct somewhere in the run instead of a row's mere presence --
+  // exercised in tests/test_maburcal.py's written:-gating tests -- so
+  // this all-zero set must still read as "not written" there even though
+  // every planned rate gets a row here.
   const std::string dir = fresh_dir("cal_session_log_verify_empty");
   {
     CalLog log(dir);
@@ -583,8 +592,76 @@ TEST(no_verify_row_is_logged_for_a_rate_that_heard_nothing) {
     s.due_cmd(t1 + 2000 + 60000);
     CHECK(s.state() == CalSession::State::Done);
   }
-  for (const auto& l : cal_log_lines(dir))
-    CHECK(l.rfind("V ", 0) != 0);   // not one V row in the file
+  int v_count = 0;
+  for (const auto& l : cal_log_lines(dir)) {
+    if (l.rfind("V ", 0) != 0) continue;
+    ++v_count;
+    // "V <rate> <idx> 0" -- every planned rate came back at 0%.
+    CHECK(l.size() >= 2 && l.compare(l.size() - 2, 2, " 0") == 0);
+  }
+  // All 8 rates were clean during coarse (feed_phase 100%), so all 8 had a
+  // real wall and therefore a real verify cell.
+  CHECK(v_count == 8);
+}
+
+TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
+  // Two failure shapes that used to render identically in maburcal's
+  // report: a rate whose wall came back undetermined (make_verify_plan
+  // never seeds a cell for it -- nothing to verify, by design, and
+  // therefore no V row ever) versus a rate that WAS parked and verified
+  // but heard nothing at wall - margin (dead at its own parked power).
+  // The fix is that the second case now still gets a V row, at 0%; the
+  // first never does. This is the single most important signal the
+  // verify pass exists to produce, and it must not look like "nothing to
+  // report" (see docs/calibration.md).
+  const std::string dir = fresh_dir("cal_session_log_verify_one_silent");
+  {
+    CalLog log(dir);
+    log.header();
+    CalSessionCfg cfg;
+    cfg.phase_slack_ms = 0;
+    CalSession s(cfg, &log);
+    s.set_peer(true, true);
+    std::string err;
+    REQUIRE(s.start(1, 34, 0, &err));
+    log.run(34, 53, s.margin_db());
+    s.due_cmd(0);
+    s.on_ack(34, 53, 1);
+
+    // Rate 3 hears nothing the whole coarse sweep -> undetermined wall,
+    // never planned for verify at all. Every other rate is clean -> a
+    // real wall (88, matching cal_log_records_verify_results), and
+    // therefore a real park index (84, margin 1.0 dB = 4 steps) seeded
+    // into the verify plan.
+    const auto coarse = make_coarse_plan(1, 34);
+    feed_phase_fn(
+        s, coarse, [](uint8_t r, int) { return r == 3 ? 0 : 100; }, 10);
+    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
+    REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
+
+    // Rate 0's parked cell hears real traffic, proving the run genuinely
+    // applied and is on the air sweeping verify. Every other planned rate
+    // (1, 2, 4, 5, 6, 7) hears nothing at its own cell -- each is dead at
+    // its parked power, not a casualty of a lost result frame, since
+    // rate 0's frames already prove the drone applied and is sweeping.
+    for (int k = 0; k < 55; ++k) {
+      mabur::cal::CalFrameInfo f{0, 84, mabur::cal::kPhaseVerify,
+                                static_cast<uint16_t>(k)};
+      s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
+    }
+    s.due_cmd(t1 + 2000 + 60000);
+    CHECK(s.state() == CalSession::State::Done);
+  }
+
+  bool saw_rate0_55pct = false, saw_rate1_zero = false, saw_rate3 = false;
+  for (const auto& l : cal_log_lines(dir)) {
+    if (l == "V 0 84 55") saw_rate0_55pct = true;
+    if (l == "V 1 84 0") saw_rate1_zero = true;
+    if (l.rfind("V 3 ", 0) == 0) saw_rate3 = true;
+  }
+  CHECK(saw_rate0_55pct);   // planned, heard, and measured correctly
+  CHECK(saw_rate1_zero);    // planned, silent -- gets a row, at 0%
+  CHECK(!saw_rate3);        // never planned (undetermined wall) -- no row
 }
 
 TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
