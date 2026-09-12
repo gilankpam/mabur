@@ -24,6 +24,19 @@ session. Paths relative to the mabur repo root; tool source under
 > offset" statement below as history. See the constant-TX-power note in
 > `CLAUDE.md`.
 
+> **Further superseded 2026-09-10 — `bench/txagcbench` deleted, replaced by
+> `maburcal`.** An operator no longer runs a bench tool by hand to get a
+> unit's walls: `ssh` to the GS and run `maburcal start` — see
+> `docs/calibration.md` for the operator page, the health flags, and the
+> rollback rule. This document's "Consuming the walls" section and the
+> `bench/txagcbench` invocations under "How the measurement works" /
+> "Reproduction" describe the retired workflow and are kept only as a
+> record of how the original 2026-07-16/2026-07-29 numbers were produced —
+> **the wall table, the transfer curve, and the comb finding below are
+> still current and still the ground truth `maburcal`'s host tests are
+> checked against.** They document hardware behavior and data sitting on
+> the DVR, not a tool, and outlive the tool that first measured them.
+
 **TL;DR:** the adaptive controller's original power model (`kTxagcGainDb`,
 since deleted from `gs/src/gen/gen_tables.h`) bore no resemblance to the
 hardware. The real curve is a flat floor below idx ~29, a ~0.3 dB/step ramp,
@@ -225,7 +238,16 @@ items 1–4 are a record of why the old model was wrong, not work to do.
    `wall_margin_db` park every rate below its own measured first dip, since
    that park is now the only power decision made.
 
-## Consuming the walls
+## Consuming the walls — superseded 2026-09-10
+
+**How to apply a wall table is no longer a hand process; see
+`docs/calibration.md`.** `maburcal start` measures, validates and writes
+`radio.rate_walls_idx`/`legacy_wall_idx`/`base_ref_idx`/`power_mode`
+straight into `/etc/mabur.toml` and reprograms the diffs live, in one
+~75 s run, with `/etc/mabur.toml.pre-cal` as the rollback copy. What
+follows is kept because the derivation it describes —
+`power_plan.h` turning a wall table into per-rate diffs — is unchanged and
+is exactly what `maburcal` automates.
 
 The measured wall table above is now live config, not just findings. It's
 read at `radio.rate_walls_idx` in `bundle/mabur.default.json`, set to this

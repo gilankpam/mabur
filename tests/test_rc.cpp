@@ -3,6 +3,7 @@
 #include "vectors.h"
 #include "mabur/rc_proto.h"
 #include "mabur/profile.h"
+#include "mabur/cal_wire.h"
 using namespace mabur;
 using namespace mabur::rc;
 
@@ -49,11 +50,11 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352060100efbeadde0700243232ff7991",
-      "435206010001000000ffff006464ff9bef",
+      "4352070100efbeadde0700243232ff1ad4",
+      "435207010001000000ffff006464fff8aa",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "4352060100443322112a0008643206951f",
+      "4352070100443322112a0008643206f65a",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -83,7 +84,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352060204010000000100feca95140100000002001053",
+      "4352070204010000000100feca95140100000002000f8d",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -116,7 +117,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352060304010000000100feca030095140100ceb2",
+      "4352070304010000000100feca0300951401002ca2",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -296,9 +297,9 @@ TEST(telem_round_trip_and_golden) {
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
-      "43520604030201020706050405191e2d0034127766554433221100a0860100400d0"
+      "43520704030201020706050405191e2d0034127766554433221100a0860100400d0"
       "300e09304002823e80100034007000000d204801a0600090000000200333415163d"
-      "034800040005000700080009000a003e000000001f7c";
+      "034800040005000700080009000a003e0000000000b67e";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -354,7 +355,7 @@ TEST(rcf_v5_wire_is_rejected) {
 }
 
 TEST(version_mismatch_rejected_both_directions) {
-  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored v5 frame
+  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored v6 frame
   // become current-version, so it parses and the first CHECK fails.
   mabur::rc::Rcf r;
   r.vtx_id = 7;
@@ -368,14 +369,14 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
   // Byte 2 is the version. Any other version must be refused outright —
-  // including 5, the previous RCF wire this build bumped away from.
-  auto v5 = body;
-  v5[2] = 5;
-  CHECK(!mabur::rc::parse_rcf(v5.data(), v5.size()).has_value());
+  // including 6, the previous RCF wire this build bumped away from.
+  auto v6 = body;
+  v6[2] = 6;
+  CHECK(!mabur::rc::parse_rcf(v6.data(), v6.size()).has_value());
 
-  auto v7 = body;
-  v7[2] = 7;
-  CHECK(!mabur::rc::parse_rcf(v7.data(), v7.size()).has_value());
+  auto v8 = body;
+  v8[2] = 8;
+  CHECK(!mabur::rc::parse_rcf(v8.data(), v8.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
   // direction (drone -> GS). A half-deployed pair must fail BOTH ways.
@@ -448,6 +449,93 @@ TEST(foreign_rc_version_predicate) {
   for (size_t n = 0; n < 4; ++n)
     CHECK(!mabur::rc::is_foreign_rc_version(truncated.data(), n));
   CHECK(!mabur::rc::is_foreign_rc_version(nullptr, 0));
+}
+
+TEST(cal_cmd_round_trip) {
+  mabur::rc::CalCmd c;
+  c.vtx_id = 0xDEADBEEF;
+  c.nonce = 0x12345678;
+  c.phase = mabur::cal::kPhaseCoarse;
+  c.frames_per_cell = 20;
+  c.settle_ms = 100;
+  c.gap_us = 2000;
+  c.windows = {{0, 0, 124, 4}, {7, 40, 56, 1}};
+  auto b = mabur::rc::pack_cal_cmd(c);
+  CHECK(mabur::rc::frame_type(b.data(), b.size()) == mabur::rc::T_CAL_CMD);
+  auto got = mabur::rc::parse_cal_cmd(b.data(), b.size());
+  REQUIRE(got.has_value());
+  CHECK(got->vtx_id == 0xDEADBEEF);
+  CHECK(got->nonce == 0x12345678);
+  CHECK(got->phase == mabur::cal::kPhaseCoarse);
+  CHECK(got->frames_per_cell == 20);
+  CHECK(got->settle_ms == 100);
+  CHECK(got->gap_us == 2000);
+  REQUIRE(got->windows.size() == 2);
+  CHECK(got->windows[0].rate == 0);
+  CHECK(got->windows[0].idx_hi == 124);
+  CHECK(got->windows[0].idx_step == 4);
+  CHECK(got->windows[1].rate == 7);
+  CHECK(got->windows[1].idx_lo == 40);
+}
+
+TEST(cal_cmd_rejects_corrupt_crc) {
+  mabur::rc::CalCmd c;
+  c.windows = {{0, 0, 124, 4}};
+  auto b = mabur::rc::pack_cal_cmd(c);
+  b[b.size() - 1] ^= 0xFF;
+  CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
+}
+
+TEST(cal_cmd_rejects_bad_window_count) {
+  mabur::rc::CalCmd c;
+  c.windows = {{0, 0, 124, 4}};
+  auto b = mabur::rc::pack_cal_cmd(c);
+  // n_windows sits after hdr(5) + vtx(4) + nonce(4) + phase(1) + three
+  // u16s(6) = offset 20. Claim 9 windows; the max is 8.
+  const size_t n_off = 5 + 4 + 4 + 1 + 2 + 2 + 2;  // 20
+  b[n_off] = 9;
+  CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
+}
+
+TEST(cal_result_round_trip) {
+  mabur::rc::CalResult r;
+  r.vtx_id = 7;
+  r.nonce = 99;
+  r.walls = {91, 91, 91, 95, 73, 54, 51, 49};
+  r.legacy_wall = 91;
+  auto b = mabur::rc::pack_cal_result(r);
+  CHECK(mabur::rc::frame_type(b.data(), b.size()) == mabur::rc::T_CAL_RESULT);
+  auto got = mabur::rc::parse_cal_result(b.data(), b.size());
+  REQUIRE(got.has_value());
+  CHECK(got->walls[3] == 95);
+  CHECK(got->walls[7] == 49);
+  CHECK(got->legacy_wall == 91);
+}
+
+TEST(cal_result_carries_undetermined_sentinel) {
+  // -1 means "no wall could be derived": the drone must leave that config
+  // entry untouched rather than write a number the data cannot support.
+  mabur::rc::CalResult r;
+  r.walls = {91, 91, 91, -1, 73, 54, 51, 49};
+  auto b = mabur::rc::pack_cal_result(r);
+  auto got = mabur::rc::parse_cal_result(b.data(), b.size());
+  REQUIRE(got.has_value());
+  CHECK(got->walls[3] == -1);
+}
+
+TEST(telem_carries_cal_base_ref) {
+  mabur::rc::Telem t;
+  t.cal_base_ref_idx = 53;
+  t.flags = 0x40;  // bit6 = cal_active
+  auto b = mabur::rc::pack_telem(t);
+  auto got = mabur::rc::parse_telem(b.data(), b.size());
+  REQUIRE(got.has_value());
+  CHECK(got->cal_base_ref_idx == 53);
+  CHECK((got->flags & 0x40) != 0);
+}
+
+TEST(rc_version_is_seven) {
+  CHECK(mabur::rc::RC_VERSION == 7);
 }
 
 MTEST_MAIN

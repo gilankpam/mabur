@@ -78,6 +78,19 @@ class TxQueue {
     return n;
   }
 
+  // Drops everything currently queued without closing the queue (Task 11
+  // video quiesce: pre-calibration video bodies must not trickle out mixed
+  // with sweep frames once the TX writer thread switches to draining
+  // cal_sweep.pump() instead of this queue). Distinct from close(): the
+  // queue keeps accepting pushes (there are none while the hot thread is
+  // itself quiesced, but nothing here should assume that) and pop_batch
+  // keeps working once video resumes.
+  void drain() {
+    std::lock_guard<std::mutex> l(m_);
+    q_.clear();
+    pending_ = 0;
+  }
+
   void close() {
     {
       std::lock_guard<std::mutex> l(m_);

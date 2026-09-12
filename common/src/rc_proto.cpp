@@ -55,7 +55,20 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 15;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 87;  // 2026-09-06: +air_backlog_max_ms, +air_shed_drops (u16 each)
+constexpr size_t TELEM_LEN = 88;  // 2026-09-10: +cal_base_ref_idx (u8)
+
+// magic(2) | ver | type | flags | vtx(4) | nonce(4) | phase | fpc(2) |
+// settle(2) | gap(2) | n_windows(1) | n * 4 bytes
+//
+// Offsets: hdr 0..4, vtx 5..8, nonce 9..12, phase 13, fpc 14..15,
+// settle 16..17, gap 18..19, n_windows 20. The constant INCLUDES the
+// n_windows byte, so buf[kCalCmdFixedLen - 1] IS n_windows and the windows
+// array starts at kCalCmdFixedLen. tests/test_rc.cpp hard-codes 20 for the
+// same byte -- the two must agree.
+constexpr size_t kCalCmdFixedLen = 5 + 4 + 4 + 1 + 2 + 2 + 2 + 1;  // 21
+// magic(2) | ver | type | flags | vtx(4) | nonce(4) | walls(8*2) |
+// legacy(2)
+constexpr size_t kCalResultLen = 5 + 4 + 4 + 16 + 2;
 
 }  // namespace
 
@@ -88,6 +101,95 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.fec_overhead_base = buf[12] / 100.0;
   r.fec_overhead_enh = buf[13] / 100.0;
   r.probe_profile = buf[14];
+  return r;
+}
+
+std::vector<uint8_t> pack_cal_cmd(const CalCmd& c) {
+  std::vector<uint8_t> body;
+  const size_t n = c.windows.size() > kMaxCalWindows ? kMaxCalWindows
+                                                     : c.windows.size();
+  body.reserve(kCalCmdFixedLen + n * 4 + 2);
+  put16(body, RC_MAGIC);
+  body.push_back(RC_VERSION);
+  body.push_back(T_CAL_CMD);
+  body.push_back(0);  // flags: nothing
+  put32(body, c.vtx_id);
+  put32(body, c.nonce);
+  body.push_back(c.phase);
+  put16(body, c.frames_per_cell);
+  put16(body, c.settle_ms);
+  put16(body, c.gap_us);
+  body.push_back(static_cast<uint8_t>(n));
+  for (size_t i = 0; i < n; ++i) {
+    body.push_back(c.windows[i].rate);
+    body.push_back(c.windows[i].idx_lo);
+    body.push_back(c.windows[i].idx_hi);
+    body.push_back(c.windows[i].idx_step);
+  }
+  put_crc(body);
+  return body;
+}
+
+std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len) {
+  if (len < kCalCmdFixedLen + 2) return std::nullopt;
+  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_CAL_CMD)
+    return std::nullopt;
+  const uint8_t n = buf[kCalCmdFixedLen - 1];
+  if (n == 0 || n > kMaxCalWindows) return std::nullopt;
+  const size_t plen = kCalCmdFixedLen + static_cast<size_t>(n) * 4;
+  if (len < plen + 2) return std::nullopt;
+  if (get16(buf, plen) != crc16_ccitt(buf, plen)) return std::nullopt;
+  CalCmd c;
+  c.vtx_id = get32(buf, 5);
+  c.nonce = get32(buf, 9);
+  c.phase = buf[13];
+  c.frames_per_cell = get16(buf, 14);
+  c.settle_ms = get16(buf, 16);
+  c.gap_us = get16(buf, 18);
+  for (uint8_t i = 0; i < n; ++i) {
+    const size_t o = kCalCmdFixedLen + static_cast<size_t>(i) * 4;
+    CalWindow w;
+    w.rate = buf[o];
+    w.idx_lo = buf[o + 1];
+    w.idx_hi = buf[o + 2];
+    w.idx_step = buf[o + 3];
+    if (w.rate > 7 || w.idx_step == 0 || w.idx_hi < w.idx_lo)
+      return std::nullopt;
+    c.windows.push_back(w);
+  }
+  return c;
+}
+
+std::vector<uint8_t> pack_cal_result(const CalResult& r) {
+  std::vector<uint8_t> body;
+  body.reserve(kCalResultLen + 2);
+  put16(body, RC_MAGIC);
+  body.push_back(RC_VERSION);
+  body.push_back(T_CAL_RESULT);
+  body.push_back(0);
+  put32(body, r.vtx_id);
+  put32(body, r.nonce);
+  for (int i = 0; i < 8; ++i)
+    put16(body, static_cast<uint16_t>(r.walls[static_cast<size_t>(i)]));
+  put16(body, static_cast<uint16_t>(r.legacy_wall));
+  put_crc(body);
+  return body;
+}
+
+std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len) {
+  if (len < kCalResultLen + 2) return std::nullopt;
+  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION ||
+      buf[3] != T_CAL_RESULT)
+    return std::nullopt;
+  if (get16(buf, kCalResultLen) != crc16_ccitt(buf, kCalResultLen))
+    return std::nullopt;
+  CalResult r;
+  r.vtx_id = get32(buf, 5);
+  r.nonce = get32(buf, 9);
+  for (int i = 0; i < 8; ++i)
+    r.walls[static_cast<size_t>(i)] =
+        static_cast<int16_t>(get16(buf, 13 + static_cast<size_t>(i) * 2));
+  r.legacy_wall = static_cast<int16_t>(get16(buf, 29));
   return r;
 }
 
@@ -216,6 +318,7 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(t.venc_ring_fill_pct);
   put16(body, t.air_backlog_max_ms);
   put16(body, t.air_shed_drops);
+  body.push_back(t.cal_base_ref_idx);
 
   put_crc(body);
   return body;
@@ -271,6 +374,7 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.venc_ring_fill_pct = buf[82];
   t.air_backlog_max_ms = get16(buf, 83);
   t.air_shed_drops = get16(buf, 85);
+  t.cal_base_ref_idx = buf[87];
   return t;
 }
 

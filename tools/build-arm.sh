@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Cross-build the drone-side ARM binaries with the OpenIPC Buildroot
-# toolchain: maburd (DYNAMIC glibc, armv7-a hard-float) plus the two bench
-# TX harnesses. This replaced the musl/static build on 2026-08-29 with the
-# venc fold-in flag day (was tools/build-arm-glibc.sh; the musl script and
-# cmake/arm-musl.cmake are deleted).
+# toolchain: maburd (DYNAMIC glibc, armv7-a hard-float) plus the bench TX
+# harness (linkbench; txagcbench was deleted along with bench/txagcbench/
+# when the TX-power calibration kit superseded it, 2026-09-10). This
+# replaced the musl/static build on 2026-08-29 with the venc fold-in flag
+# day (was tools/build-arm-glibc.sh; the musl script and cmake/arm-musl.cmake
+# are deleted).
 #
 # Why glibc-dynamic, not musl-static any more: maburd now runs the encoder
 # in-process, and the SigmaStar MI libraries it drives (libmi_venc.so and
@@ -85,13 +87,11 @@ cmake -S . -B build-arm-glibc -DCMAKE_TOOLCHAIN_FILE=cmake/arm-openipc.cmake \
   -DDEVOURER_JAGUAR3_8822E=ON -DDEVOURER_8733B=OFF \
   -DDEVOURER_KESTREL_8852B=OFF \
   -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
-# linkbench-tx / txagcbench-tx are the drone-side halves of the two bench
-# harnesses (bench/txagcbench/run_sweep.sh expects out/arm/txagcbench-tx).
-# They carry over from the musl script unchanged; they build none of
-# drone/venc, but they ship to the same rootfs, so one toolchain is enough.
-cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx txagcbench-tx
+# linkbench-tx is the drone-side half of the bench harness. It carries
+# over from the musl script unchanged; it builds none of drone/venc, but
+# it ships to the same rootfs, so one toolchain is enough.
+cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx
 STRIP="$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-strip"
 "$STRIP" build-arm-glibc/drone/maburd                     -o out/arm/maburd
 "$STRIP" build-arm-glibc/bench/linkbench/linkbench-tx     -o out/arm/linkbench-tx
-"$STRIP" build-arm-glibc/bench/txagcbench/txagcbench-tx   -o out/arm/txagcbench-tx
 "$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-readelf" -d out/arm/maburd | head -12

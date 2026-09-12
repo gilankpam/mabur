@@ -158,6 +158,23 @@ Consume the same numbers programmatically with:
   take the highest-numbered session. Replaces `flightrec.py`/`S95flightrec`,
   deleted 2026-09-06.
 
+  `cal.log` (`gs/src/cal_log.h`, `callog 1` format marker) sits in the same
+  session directory but does not follow the rule above: it writes
+  regardless of `debug_log.enable` — that knob governs continuous
+  per-second flight logging, and a calibration run is a bounded (~380-line)
+  trace on a deliberate operator action, the sole record of what
+  `maburcal start` measured. With logging off it falls back to
+  `<debug_log.dir>/cal` instead of a numbered session, and either way
+  `maburgs` prints the resolved path to stderr at the start of a run. Its
+  shape is `callog 1` once, then one `R <nonce> <base_ref> <margin_db>` per
+  calibration run (a retry — narrow flag, move the drone, run again — adds
+  another `R` line to the same file rather than rotating it, so one
+  `cal.log` can hold several runs; a reader keys `C`/`W`/`V` rows by the
+  most recent `R`), `C` per measured cell, `W` per rate at each phase-end
+  (coarse then fine — last-write-wins), and `V` per verify cell.
+  `maburcal report <cal.log>` re-renders a saved run; see
+  `docs/calibration.md`.
+
   `au.log` carries per-AU meta rows, SlotHdr v3 since 2026-09-06 (the
   air-clock 12th column, `air_ms`), behind a `# aulog 4` marker line —
   written at file open and re-written on every reopen, so a respawn
@@ -645,10 +662,15 @@ read the sideport. Reach for other tools only in these cases:**
   `DEVOURER_RX_ALLPATHS=1`, `doctor`, etc. — see
   `third_party/devourer/CLAUDE.md`). Use these when the question is about
   the chip/driver rather than the mabur link.
-- **Bench harnesses** (`bench/linkbench`, `bench/txagcbench`) drive
-  special TX/RX modes for characterization; they are not monitoring tools.
-  Note: the drone radio RX can wedge after a linkbench run — restart
-  maburd.
+- **Bench harnesses** (`bench/linkbench`) drive special TX/RX modes for
+  characterization; they are not monitoring tools. Note: the drone radio
+  RX can wedge after a linkbench run — restart maburd.
+- **TX-power wall calibration → `maburcal`** (`docs/calibration.md`), the
+  GS-side operator CLI that replaced `bench/txagcbench` when it was
+  deleted on 2026-09-10. `maburcal start` sweeps a unit's per-rate PA
+  compression walls and applies them; `maburcal report <cal.log>`
+  re-renders a saved run offline, which is where a run's raw per-cell
+  tallies live now.
 
 **"Wire clean" does NOT mean "no frame loss" — venc-ring vanish class,
 detected since 2026-08-13.** Frames can vanish INSIDE the drone (between

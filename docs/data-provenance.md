@@ -10,7 +10,8 @@ sideport key removals 2026-08-12, 2026-08-15, 2026-08-29, 2026-08-30 and
 2026-09-04 ·
 SNR half-dB scale break 2026-08-04 · EVM op-point dependence 2026-08-10 ·
 RF labels pooled and fade deltas unsuppressed 2026-08-15 (see
-`docs/link-adaptation.md`) · DVR filenames un-dated 2026-08-26 · UEP
+`docs/link-adaptation.md`) · DVR filenames un-dated 2026-08-26 ·
+walls measured by `maburcal` not txagcbench 2026-09-10 · UEP
 overhead flatten 2026-08-29 · overhead literal + 4→2 stream collapse
 2026-08-29 (airtime-balance-uep) · overhead splits into base/enh pairs +
 ctllog 8 2026-08-30 (same-rate-fixed-pairs) · SlotHdr v2 (`# aulog 2`) +
@@ -75,6 +76,22 @@ not a power one). `bench/txagcbench` still drives `SetTxPowerOffsetQdb`
 directly and is still how the walls are measured; it was deliberately
 left alone. Date any recording against this line, the same way the
 2026-08-04 SNR scale break is dated.
+
+**Walls are measured by `maburcal`, not `txagcbench`, since 2026-09-10.**
+`bench/txagcbench/` was deleted that day and the sentence above is
+historical from then on — it describes how the walls in a recording made
+before it were produced. The kit that replaced it (`docs/calibration.md`)
+sweeps from inside the running daemons rather than from a bench harness:
+the drone's own `CalSweep` parks each TXAGC index through the same
+`SetTxPowerIndexOverride` path production uses, and the GS tallies
+delivery. Two consequences for comparing runs. A wall measured before
+this date came from a standalone TX/RX pair with no daemon MAC config
+(carrier sense ON, see the 2026-08-05 line above); one measured after
+comes from the flying pair with the GS radio-silent for the whole sweep.
+And a post-2026-09-10 run leaves its own raw record — `cal.log` in the
+debug-log session directory, `callog 1`, readable with
+`maburcal report` — where a txagcbench run left a CSV the deleted Python
+analyzer read.
 
 **DVR filenames carry no date since 2026-08-26.** `maburplay` writes
 `record-NNNN.mp4` (index one past the highest already on the card), where it

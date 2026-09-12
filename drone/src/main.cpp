@@ -40,6 +40,8 @@
 #endif
 
 #include "air_clock.h"
+#include "cal_apply.h"
+#include "cal_sweep.h"
 #include "config.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
@@ -278,6 +280,12 @@ struct RealActuator : mabur::Actuator {
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
+  // Task 11 review, Important fix 2: null in dry-run and in run_dry_run's
+  // own RealActuator (calibration is real-mode only), set to run_real_
+  // mode's cal_active once it exists. Gates the set_ladder() call below --
+  // see that call site's comment for why a second writer during a sweep
+  // is a measurement bug, not a memory-safety one.
+  std::atomic<bool>* cal_active = nullptr;
 
   std::vector<uint8_t> control_radiotap;  // built once; control channel is fixed
   uint16_t control_seq = 0;
@@ -296,9 +304,26 @@ struct RealActuator : mabur::Actuator {
   uint64_t venc_verb_failures = 0;
 
   void apply_op(const AppliedOp& op) override {
-    tx->set_ladder(op.ladder, op.probe_profile != rc::kNoProbeProfile
-                                  ? std::optional<rc::LayerTxSpec>(op.probe)
-                                  : std::nullopt);
+    // Calibration owns the radio's ladder for the session's duration
+    // (Task 11 review, Important fix 2): CalSweep::pump_sweeping (TX
+    // writer thread) calls tx->set_ladder() once per cell so every sweep
+    // frame transmits at the rate it is STAMPED with -- a concurrent write
+    // from here (the agent thread, on every RCF and on the FAILSAFE entry
+    // the GS's deliberate ~41 s radio silence triggers about 3 s into any
+    // phase in the shipped config) is memory-safe (RadioTx::set_ladder is
+    // one atomic shared_ptr swap) but not measurement-safe: whichever
+    // writer's call lands last decides what rate actually goes out, and
+    // the GS attributes delivery to the cell CalSweep stamped, not the
+    // rate the frame was actually sent at. FEC/shed still apply
+    // unconditionally below; only the ladder write is skipped here. The
+    // agent thread's own loop re-applies this exact op once, on the
+    // falling edge of cal_active, so the ladder is correct again the
+    // instant video resumes rather than waiting for the next RCF.
+    if (!(cal_active && cal_active->load(std::memory_order_relaxed))) {
+      tx->set_ladder(op.ladder, op.probe_profile != rc::kNoProbeProfile
+                                    ? std::optional<rc::LayerTxSpec>(op.probe)
+                                    : std::nullopt);
+    }
     // Applying an op is a ladder + FEC + shed change and nothing else — see
     // the struct comment: there is no per-op power step to do in real mode.
     if (!dev && dry_run) {
@@ -829,7 +854,7 @@ uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
   return 0;
 }
 
-int run_real_mode(const Config& cfg) {
+int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // Before libusb_init and the venc bring-up, so every thread either
   // library spawns inherits core 0; the hot thread claims core 1 itself.
   if (two_core_target()) {
@@ -1125,13 +1150,79 @@ int run_real_mode(const Config& cfg) {
                    &ov_override);
 
   RcQueue rc_queue;
+  // T_CAL_CMD/T_CAL_RESULT land here instead of rc_queue (RX callback,
+  // below): CalSweep::on_cmd/on_result/pump must all run on the same
+  // thread (cal_sweep.h constraint 1, cal_sweep.pump()'s sole legal
+  // caller is the TX writer thread), and RcAgent's on_rc_frame -- rc_queue's
+  // consumer -- runs on the agent thread instead.
+  RcQueue cal_queue;
   std::atomic<uint64_t> rx_beat{0};
   std::atomic<uint64_t> hot_beat{0};
+  // Calibration session state the hot/agent threads need to read without
+  // taking on CalSweep's own "single owner thread" contract (cal_sweep.h):
+  // CalSweep itself lives on and is mutated only by the TX writer thread,
+  // which mirrors these two booleans out every time it pumps. cal_active
+  // spans the whole session (any phase, or a between-phase gap) and gates
+  // the hot thread's video quiesce; cal_sweeping is narrower (true only
+  // during CalSweep::State::Sweeping) and gates the agent thread's
+  // telemetry suppression -- the ack Telem (TX writer thread) is sent in
+  // the between-phase gap that narrower flag must NOT cover, or the ack
+  // and the suppression rule would fight over the same frame.
+  std::atomic<bool> cal_active{false};
+  std::atomic<bool> cal_sweeping{false};
+  // Shared between the agent thread's periodic 1 Hz T_TELEM and the TX
+  // writer thread's calibration ack (Task 11): both send T_TELEM frames on
+  // the SAME wire tlm_seq stream, and gs/src/drone_restart.h treats a big
+  // backward step in tlm_seq as "the drone restarted". Two independently
+  // zeroed counters would make every ack look like a restart to the GS, so
+  // this one shared, monotonic counter pair (moved here from what used to
+  // be agent_thread-local variables) is what keeps the stream single
+  // regardless of which thread sent the last frame.
+  std::atomic<uint16_t> telem_wire_seq{0};
+  std::atomic<uint16_t> telem_dot11_seq{0};
+  std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
+  // Minor 5 fix: the TX writer thread's calibration ack (below) starts from
+  // the most recent REAL Telem the agent thread built, not a default-
+  // constructed one -- otherwise the GS's `latest_telem` (its OSD/sideport
+  // source) gets clobbered with an all-zero snapshot carrying a fresh
+  // timestamp for up to ~41 s. Updated by the agent thread on every
+  // periodic build (even ones it goes on to suppress the SEND of), read by
+  // the TX writer thread; a shared_ptr swap, same shape as shared_op, so
+  // there is no lock and no torn read of the struct across threads.
+  std::atomic<std::shared_ptr<const rc::Telem>> last_telem_snapshot{
+      std::make_shared<const rc::Telem>()};
+
+  // Programs the wall-equalized rate-diff table + zeroes the global offset
+  // (power_mode=="offset"): bring-up's one-shot plan (below) and
+  // calibration's post-session restore (Critical fix 1, TX writer thread)
+  // must never drift apart, so this is the ONE definition either of them
+  // calls -- factored out rather than duplicated so a future change to
+  // this derivation cannot fix one call site and silently miss the other.
+  auto apply_offset_power_plan = [&](const std::array<int, 8>& walls,
+                                     int legacy_wall, int base_ref_idx,
+                                     double margin_db) {
+    const auto plan = make_power_plan(walls, legacy_wall, base_ref_idx, margin_db);
+    devourer::TxRateDiffsQdb diffs;
+    diffs.cck = plan.cck;
+    diffs.legacy = plan.legacy;
+    for (int i = 0; i < 8; ++i) diffs.mcs[i] = plan.mcs[i];
+    const bool ok = rtl_device->SetTxPowerRateDiffs(diffs);
+    // Power is constant from here on (or once again, after a session):
+    // devourer documents the offset as sticky across retunes, so zero it
+    // explicitly rather than assuming whatever a prior process, bench
+    // tool, or calibration's own zero_rate_diffs() left in the chip.
+    rtl_device->SetTxPowerOffsetQdb(0);
+    return ok;
+  };
 
   // Uplink RSSI/SNR EMAs, fed from rx_callback (RX thread) on CRC-clean RC
   // frames, read by the agent thread's 1 Hz telemetry collector (spec
   // 2026-07-26 drone-telemetry). Thread-safe per UplinkTrack's own mutex.
   UplinkTrack uplink_track;
+
+  // Critical fix 1's other half lives on the agent thread (RealActuator::
+  // apply_op, Important fix 2) -- wire it up now that cal_active exists.
+  actuator.cal_active = &cal_active;
 
   // Cumulative encoder/ring counters (spec 2026-07-26 drone-telemetry):
   // written by the hot thread, read by the agent thread's telemetry
@@ -1181,8 +1272,18 @@ int run_real_mode(const Config& cfg) {
     if (pkt.Data.size() < kDot11HeaderLen + 4) return;
     const uint8_t* body = pkt.Data.data() + kDot11HeaderLen;
     size_t body_len = pkt.Data.size() - kDot11HeaderLen;
-    if (rc::frame_type(body, body_len) >= 0) {
-      rc_queue.push(body, body_len);
+    const int rc_type = rc::frame_type(body, body_len);
+    if (rc_type >= 0) {
+      // T_CAL_CMD/T_CAL_RESULT go to cal_queue instead of rc_queue: they
+      // are not vtx_id-filtered the way Rcf/Disc are inside RcAgent (the
+      // GS's CalControl has no config access and always sends vtx_id=0),
+      // and CalSweep's on_cmd/on_result must run on the TX writer thread,
+      // not the agent thread rc_queue feeds.
+      if (rc_type == rc::T_CAL_CMD || rc_type == rc::T_CAL_RESULT) {
+        cal_queue.push(body, body_len);
+      } else {
+        rc_queue.push(body, body_len);
+      }
       // Uplink EMAs feed off CRC-clean RC frames only — a corrupt frame's
       // attrib (rssi/snr) is not a trustworthy sample.
       if (!pkt.RxAtrib.crc_err)
@@ -1208,6 +1309,13 @@ int run_real_mode(const Config& cfg) {
       std::random_device rd;
       MspSource src(to_msp_source_cfg(cfg.msp),
         [&](const uint8_t* body, size_t n) {
+          // Minor fix 6: quiesce for the calibration session's duration --
+          // the same "non-sweep PPDUs in the characterized airtime"
+          // telemetry suppression exists to avoid (spec 2026-09-10 step 2).
+          // Reading/decoding serial bytes continues regardless (src still
+          // gets on_serial_bytes() below), only the TRANSMIT is skipped, so
+          // the UART side never desyncs or overflows waiting out a session.
+          if (cal_active.load(std::memory_order_relaxed)) return;
           std::vector<uint8_t> frame;
           frame.reserve(radiotap.size() + kDot11HeaderLen + n);
           frame.insert(frame.end(), radiotap.begin(), radiotap.end());
@@ -1326,6 +1434,20 @@ int run_real_mode(const Config& cfg) {
     SwEncoder::SwFecGauge fec_gauge_prev[UepEncoder::kNumStreams]{};
 
     while (!g_devourer_should_stop) {
+      // Video quiesce (Task 11 spec step 4): a calibration session owns the
+      // radio for its duration (up to CalSweepCfg::hard_cap_ms, 180 s), so
+      // this thread stops reading the ring/encoding/pushing bodies for as
+      // long as cal_active is set — the TX writer thread has already
+      // stopped draining TxQueue in favor of cal_sweep.pump(), so anything
+      // pushed here would just pile up behind it. hot_beat still has to
+      // advance, though: the watchdog below aborts the whole daemon on
+      // "hot thread stalled" if it doesn't see a beat within stale_ms, and
+      // that check knows nothing about calibration.
+      if (cal_active.load(std::memory_order_relaxed)) {
+        hot_beat.fetch_add(1, std::memory_order_relaxed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
       uint64_t now = now_steady_ms();
       const uint64_t t0_us = now_steady_us();
 
@@ -1590,14 +1712,240 @@ int run_real_mode(const Config& cfg) {
     txq.close();
   });
 
+  // Calibration's power actuator (Task 11): CalSweep::PowerCtl driven by
+  // the live devourer device, using the same three TX-power knobs bring-up's
+  // power_mode=="offset" block below already uses — just under CalSweep's
+  // state machine instead of a one-shot bring-up plan.
+  struct DevicePowerCtl : CalSweep::PowerCtl {
+    IRtlDevice* dev;
+    bool set_index_override(int idx) override {
+      // SetTxPowerIndexOverride is void on every family (IRtlDevice.h) —
+      // there is no failure it could report back.
+      dev->SetTxPowerIndexOverride(idx);
+      return true;
+    }
+    bool zero_rate_diffs() override {
+      // A table of zeros is a no-op at the anchor rate (MCS7) and flattens
+      // every other rate onto it (devourer/src/TxPower.h) — exactly "every
+      // rate measures against a common base" (cal_sweep.h constraint 2).
+      return dev->SetTxPowerRateDiffs(devourer::TxRateDiffsQdb{});
+    }
+    int read_base_ref_idx() override {
+      // mcs7_index is the chip's own default-walk level for the anchor
+      // rate with diffs zeroed — exactly base_ref_idx's definition in
+      // power_plan.h. GetTxPowerState().valid stays false on chips this
+      // knob doesn't support; 0 matches Telem.cal_base_ref_idx's own
+      // documented "0 = not read" sentinel rather than a raw -1 wrapping
+      // into a huge uint8_t on the wire.
+      const auto st = dev->GetTxPowerState();
+      return (st.valid && st.mcs7_index >= 0) ? st.mcs7_index : 0;
+    }
+  };
+
   // TX writer thread: sole caller of tx.send_bodies (RadioTx's
   // single-thread contract). Batches up to 3 bodies per call — devourer's
   // Jaguar3 send_packets packs them into one bulk-OUT URB (HalMAC parses at
   // most 3 descriptors per transfer), amortizing the per-URB tax that
-  // capped the old inline path at ~2500 fps.
+  // capped the old inline path at ~2500 fps. It is also, by that same
+  // contract, cal_sweep.pump()'s sole legal caller (cal_sweep.h) — CalCmd/
+  // CalResult frames are dispatched here too (cal_queue, fed by the RX
+  // callback above), so on_cmd/on_result/pump never run off this thread.
   std::thread tx_thread([&]() {
     name_thread("mbr-txw");
     std::vector<UepBody> batch;
+    CalSweep cal_sweep(CalSweepCfg{});
+    DevicePowerCtl pwr;
+    pwr.dev = rtl_device.get();
+    // The ack Telem (§2 below) is a minimal, separate T_TELEM producer on
+    // this thread — same dev_sink.send() rendezvous the agent thread's
+    // periodic telemetry and the MSP thread already share, using the SAME
+    // shared tlm_seq/dot11_seq counters (see their declaration above) so
+    // the wire's sequence stays single and monotonic no matter which
+    // thread sent the last frame.
+    auto send_cal_ack_telem = [&](uint8_t base_ref_idx) {
+      // Minor fix 5: start from the latest REAL Telem snapshot, not a
+      // default-constructed one -- the GS's `latest_telem` (its OSD/
+      // sideport source) would otherwise get clobbered with an all-zero
+      // "fresh" reading for up to ~41 s. Only flags bit6 and
+      // cal_base_ref_idx are load-bearing for the ack contract itself
+      // (CalSession::on_ack reads exactly those two), but a stale-looking
+      // snapshot is strictly better than a wrong-looking one.
+      rc::Telem t = *last_telem_snapshot.load(std::memory_order_relaxed);
+      t.tlm_seq = telem_wire_seq.fetch_add(1, std::memory_order_relaxed);
+      // Re-review fix: the snapshot's link-rtt fields describe WHEN THE
+      // SNAPSHOT WAS BUILT, not this ack -- a coarse-phase ack can go out
+      // up to ~1 s after that build, and every 200 ms GS retransmission
+      // (Important fix 3's re-armed ack) sends another, progressively
+      // more stale one. gs/src/main.cpp feeds every Telem to
+      // rtt_est.on_telem() unconditionally, whose only plausibility gate
+      // is rtt_us < 3 s -- comfortably wide enough to accept these as real
+      // samples into an EWMA whose true value is ~7 ms. Clearing the echo
+      // fields (and bit3, which marks them valid) makes rtt_est's own
+      // !echo_valid check reject the ack outright instead.
+      t.flags &= ~0x08;      // bit3 rcf_seq_echo valid -- not valid on an ack
+      t.rcf_seq_echo = 0;
+      t.rcf_age_ms = 0;
+      t.pts_at_build = 0;
+      t.flags |= 0x40;  // bit6 cal_active, OR'd onto the snapshot's real flags
+      t.cal_base_ref_idx = base_ref_idx;
+      auto telem = rc::pack_telem(t);
+      std::vector<uint8_t> frame;
+      frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
+      frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
+      const uint16_t dot11_seq =
+          telem_dot11_seq.fetch_add(1, std::memory_order_relaxed) & 0xFFF;
+      auto hdr = build_dot11_header(dot11_seq);
+      frame.insert(frame.end(), hdr.begin(), hdr.end());
+      frame.insert(frame.end(), telem.begin(), telem.end());
+      dev_sink.send(frame.data(), frame.size());
+    };
+    // Live reprogram + self-initiated verify (spec 2026-09-10 steps 8-9): a
+    // measured result validates/patches/reprograms without a restart, then
+    // arms the verify pass the GS expects but never commands.
+    auto apply_result_and_arm_verify = [&](const rc::CalResult& result) {
+      // T_CAL_RESULT carries the RAW measured wall (gs/src/cal_session.cpp
+      // finalize_result()) -- the same number rate_walls_idx/legacy_wall_idx
+      // hold in config.cpp/power_plan.h, so no margin arithmetic happens on
+      // this side of the wire. margin_db is applied exactly once, on the
+      // drone, below (the verify plan) and again every boot inside
+      // power_plan.h's diff[r] = walls[r] - m - base_ref_idx -- never on
+      // the GS, so there is no second, independently-configured margin_db
+      // that could silently disagree with this one.
+      const int m = static_cast<int>(std::lround(cfg.radio.wall_margin_db * 4.0));
+      CalWrite w;
+      // NOT pwr.read_base_ref_idx(): the phase that produced this result
+      // left the TXAGC parked at its last swept cell's index (CalSweep
+      // never restores between phases), so a fresh chip read here would
+      // report that override, not the anchor. cal_sweep.base_ref_idx() is
+      // the same value this session's ack(s) already reported to the GS.
+      w.base_ref_idx = cal_sweep.base_ref_idx();
+      for (int r = 0; r < 8; ++r) w.walls[r] = result.walls[r];
+      w.legacy_wall = result.legacy_wall;
+
+      std::string err;
+      const ApplyResult ar =
+          apply_calibration(cfg_path, w, cfg.radio.wall_margin_db, &err);
+      if (ar != ApplyResult::Ok) {
+        std::fprintf(stderr, "maburd cal: apply_calibration failed: %s\n",
+                     err.c_str());
+        return;
+      }
+
+      // Live reprogram (spec step 9): same derivation + devourer path
+      // bring-up's power_mode=="offset" block uses below, so the verify
+      // pass measures the plan actually in effect, with no restart. An
+      // undetermined row (w.walls[r] == -1) keeps whatever bring-up
+      // loaded, exactly mirroring what apply_calibration left on disk.
+      std::array<int, 8> merged_walls;
+      for (int r = 0; r < 8; ++r)
+        merged_walls[r] = (w.walls[r] != -1) ? w.walls[r]
+                                              : cfg.radio.rate_walls_idx[r];
+      const int merged_legacy =
+          (w.legacy_wall != -1) ? w.legacy_wall : cfg.radio.legacy_wall_idx;
+      if (!apply_offset_power_plan(merged_walls, merged_legacy, w.base_ref_idx,
+                                   cfg.radio.wall_margin_db)) {
+        std::fprintf(stderr,
+                     "maburd cal: SetTxPowerRateDiffs failed after apply\n");
+      }
+
+      // Self-initiate the verify pass (spec step 9): the GS sends no
+      // command for this -- it stays silent and tallies whatever the
+      // drone transmits, using the identical plan it computes for itself
+      // from pending_park_ (gs/src/cal_session.cpp begin_verify(),
+      // gs/src/cal_plan.cpp make_verify_plan). frames_per_cell/settle_ms/
+      // gap_us here MUST match make_verify_plan's kVerifyFrames/kSettleMs/
+      // kGapUs exactly, or the GS's listen-window deadline
+      // (plan_duration_ms) desyncs from what actually airs.
+      rc::CalCmd verify;
+      verify.vtx_id = result.vtx_id;
+      verify.nonce = result.nonce;
+      verify.phase = cal::kPhaseVerify;
+      // Authority for all three: gs/src/cal_plan.h's kVerifyFrames/
+      // kSettleMs/kGapUs. The drone self-initiates this phase -- there is
+      // no CalCmd on the wire to derive them from -- so they are pinned
+      // here to literally match that file rather than inferred from
+      // anything transmitted.
+      verify.frames_per_cell = 100;  // gs/src/cal_plan.h kVerifyFrames
+      verify.settle_ms = 100;        // gs/src/cal_plan.h kSettleMs
+      verify.gap_us = 2000;          // gs/src/cal_plan.h kGapUs
+      for (uint8_t r = 0; r < 8; ++r) {
+        if (w.walls[r] == -1) continue;  // undetermined: nothing to verify
+        const int idx = w.walls[r] - m;  // parked index: power_plan.h's
+                                          // base_ref_idx + diff[r] == wall - m
+        if (idx < 0 || idx > 127) continue;  // belt and braces: apply_calibration's
+                                              // walls_in_range already refused an
+                                              // out-of-range derived diff
+        verify.windows.push_back({r, static_cast<uint8_t>(idx),
+                                  static_cast<uint8_t>(idx), 1});
+      }
+      if (!verify.windows.empty()) {
+        cal_sweep.on_cmd(verify, now_steady_ms(), pwr);
+        // Spec: the verify pass has no command and therefore no ack --
+        // this on_cmd() call is the drone's OWN, not the GS's, so discard
+        // whatever take_ack_base_ref() would otherwise arm rather than
+        // sending one.
+        (void)cal_sweep.take_ack_base_ref();
+      }
+    };
+    // Critical fix 1 (Task 11 review): close_session() (cal_sweep.cpp)
+    // only ever restores the flat index override to base_ref_idx_ -- it
+    // never clears the override (SetTxPowerIndexOverride(-1) appears
+    // nowhere else in this file) and never restores the rate-diff table
+    // on_cmd() zeroed. Left alone, the drone flies ONE FLAT INDEX across
+    // every rate after EVERY session, forever, until restart:
+    //   - after a SUCCESSFUL session, the fresh SetTxPowerRateDiffs write
+    //     from apply_result_and_arm_verify is masked by the still-live
+    //     override -- spec step 9's "no restart needed" silently
+    //     undelivered, while the verify pass still reports success (each
+    //     verify cell parks its index explicitly, so it reads right while
+    //     the OPERATING power is wrong).
+    //   - after an ABORTED session (link lost mid-sweep -- the documented
+    //     expected case), every rate below the MCS7 anchor transmits
+    //     ABOVE its measured wall: the overdriven direction, the exact
+    //     hazard this kit exists to prevent, caused by the kit itself.
+    // Called on the falling edge of cal_active, below. Re-derives from
+    // whatever is now on disk (mabur::load_config(cfg_path, ...)), not the
+    // bring-up `cfg` captured at process start, so ONE restore path
+    // correctly covers both "session succeeded" (disk already holds the
+    // fresh walls apply_calibration published) and "session aborted before
+    // ever applying" (disk is unchanged, so this reproduces exactly what
+    // bring-up itself would have done) without this thread having to track
+    // which case happened.
+    auto restore_operating_power = [&]() {
+      // Reprogram the rate-diff table BEFORE clearing the override, not
+      // after: while the override is still active it masks whatever diffs
+      // are underneath (devourer/src/TxPower.h), so writing the correct
+      // table first and only then calling SetTxPowerIndexOverride(-1) is
+      // what makes the correct table visible on air atomically, with no
+      // window where "no override" and "still-zeroed diffs" coincide.
+      Config live_cfg = cfg;
+      try {
+        live_cfg = load_config(cfg_path, nullptr);
+      } catch (const std::exception& e) {
+        std::fprintf(stderr,
+                     "maburd cal: reload after session failed (%s); "
+                     "restoring with the bring-up config instead\n",
+                     e.what());
+      }
+      if (live_cfg.radio.power_mode == "offset") {
+        if (!apply_offset_power_plan(live_cfg.radio.rate_walls_idx,
+                                     live_cfg.radio.legacy_wall_idx,
+                                     live_cfg.radio.base_ref_idx,
+                                     live_cfg.radio.wall_margin_db)) {
+          std::fprintf(stderr,
+                       "maburd cal: SetTxPowerRateDiffs failed restoring "
+                       "after session\n");
+        }
+      } else {
+        // "none": on_cmd() unconditionally zeroed the diffs for the sweep
+        // regardless of power_mode, so a device that never wanted a custom
+        // shape at all is left with a flattened one unless it is
+        // explicitly cleared back to the untrimmed efuse table.
+        rtl_device->SetTxPowerRateDiffs(std::nullopt);
+      }
+      rtl_device->SetTxPowerIndexOverride(-1);
+    };
+    bool cal_was_active = false;  // edge-detect: session start -> drain txq once
     // dq_queue gauge (dq-spike follow-up 2026-08-31): TRUE push→pop queue
     // wait from the pre-push pushed_us stamp, per body and for the AU-first
     // body alone (the one whose q_ms the GS latches as dq). Thread-owned,
@@ -1611,6 +1959,91 @@ int run_real_mode(const Config& cfg) {
     uint64_t sb_calls = 0, sb_bodies = 0, sb_sum_us = 0, sb_max_us = 0;
     uint32_t last_qw_report_ms = static_cast<uint32_t>(now_steady_ms());
     while (!g_devourer_should_stop) {
+      // Calibration control frames (cal_queue, fed by the RX callback):
+      // dispatched here, not on the agent thread, so on_cmd/on_result share
+      // pump()'s thread (cal_sweep.h constraint 1).
+      std::vector<uint8_t> cal_body;
+      while (cal_queue.pop(cal_body)) {
+        const int cal_type = rc::frame_type(cal_body.data(), cal_body.size());
+        const uint64_t cal_now = now_steady_ms();
+        if (cal_type == rc::T_CAL_CMD) {
+          if (auto c = rc::parse_cal_cmd(cal_body.data(), cal_body.size())) {
+            cal_sweep.on_cmd(*c, cal_now, pwr);
+            // §2 (spec 2026-09-10 step 2, revised by review ruling): sent
+            // HERE -- synchronously, before this thread ever calls
+            // cal_sweep.pump() for the phase this command just touched --
+            // so the GS's CalSession::on_ack() (AwaitAck -> radio-silence
+            // window) can never race a sweep frame landing first. Armed on
+            // every ACCEPTED phase (a new one, or an exact repeat of the
+            // one already running -- cal_sweep.cpp's on_cmd()) but NOT on
+            // a stale repeat of an EARLIER phase: the GS resends its
+            // CalCmd every 200 ms over a 30-50%-lossy uplink and gives up
+            // at 3000 ms, so answering every live retransmission is what
+            // keeps one lost ack Telem from costing the whole phase.
+            if (auto base_ref = cal_sweep.take_ack_base_ref())
+              send_cal_ack_telem(static_cast<uint8_t>(*base_ref));
+          }
+        } else if (cal_type == rc::T_CAL_RESULT) {
+          if (auto r = rc::parse_cal_result(cal_body.data(), cal_body.size()))
+            cal_sweep.on_result(*r, cal_now);
+        }
+      }
+
+      // A measured result landed: apply it live and self-initiate the
+      // verify pass (spec step 9 — the GS sends no command for this, it
+      // just stays silent and tallies whatever airs).
+      if (auto result = cal_sweep.take_pending_result())
+        apply_result_and_arm_verify(*result);
+
+      cal_active.store(cal_sweep.active(), std::memory_order_relaxed);
+      cal_sweeping.store(cal_sweep.state() == CalSweep::State::Sweeping,
+                         std::memory_order_relaxed);
+
+      if (cal_sweep.active()) {
+        // Video quiesce (spec step 4): the hot thread has already stopped
+        // pushing (its own cal_active guard, above), but bodies queued
+        // before this exact moment must not trickle out mixed with sweep
+        // frames — drain once, on the session's very first iteration here.
+        if (!cal_was_active) txq.drain();
+        cal_was_active = true;
+        cal_sweep.pump(now_steady_ms(), tx, pwr);
+        // The one blocking wait this loop has is txq.pop_batch(.., 5) at
+        // the bottom, which a calibration session never reaches -- and
+        // pump() returns immediately whenever the current cell is still
+        // settling or the next frame is not due yet. Without this sleep
+        // the writer thread spins one of the SigmaStar's two cores at
+        // 100% for the 72-180 s of a session, on a SoC with a documented
+        // thermal incident (flight 21, 81 C).
+        //
+        // 200 us is chosen against the plan's own 2 ms inter-frame gap:
+        // an order of magnitude finer, so a frame is never more than
+        // ~200 us late, and CalSweep's pacing is deadline-based
+        // (cal_sweep.cpp) so that lateness does not accumulate into the
+        // phase duration. The GS's listen window leaves one gap -- 2 ms --
+        // of slack per 140 ms cell; tests/test_cal_e2e.cpp measures a
+        // coarse phase finishing ~0.5 s inside its 35.8 s window at
+        // 200 us, and within a MILLISECOND of it at 1 ms. That is why
+        // this is 200 us and not the obvious 1 ms, and that test is what
+        // will notice if something else on this thread spends the
+        // difference.
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+        continue;  // never fall through to the video drain below
+      }
+      if (cal_was_active) {
+        // Falling edge: restore TX power for real (Critical fix 1) before
+        // anything below can transmit again. Minor fix 7: drain TxQueue a
+        // SECOND time here too -- the hot thread's own cal_active guard
+        // (its loop, above) can race this exact transition and push one
+        // more AU's bodies into txq between this thread clearing
+        // cal_active and noticing it here; left alone those bodies would
+        // sit queued for the length of the NEXT session (or forever, if
+        // there isn't one) and go out stale with a session-length q_ms
+        // stamp whenever they finally flush.
+        restore_operating_power();
+        txq.drain();
+      }
+      cal_was_active = false;
+
       batch.clear();
       if (txq.pop_batch(batch, 3, 5) == 0) continue;
       // Patch each body's SBI q_ms with its TxQueue wait (push→pop), and
@@ -1691,26 +2124,42 @@ int run_real_mode(const Config& cfg) {
 
     // T_TELEM (spec 2026-07-26 drone-telemetry): sent at ~1 Hz on this same
     // periodic path, on the mutex-guarded dev_sink.send() the MSP thread
-    // also uses. Its own radiotap (control modulation, built once) and its
-    // own dot11 seq counter — deliberately NOT the video path's tx.seq() or
-    // RealActuator's DISC_ACK control_seq, so a telemetry-send bug can never
-    // perturb either.
+    // also uses. Radiotap and the tlm_seq/dot11 seq counters are declared
+    // at run_real_mode scope (not here) — deliberately NOT the video path's
+    // tx.seq() or RealActuator's DISC_ACK control_seq, so a telemetry-send
+    // bug can never perturb either, but shared with the TX writer thread's
+    // calibration ack (Task 11), which sends T_TELEM frames on this same
+    // wire sequence from a different thread — see that declaration's
+    // comment for why a shared counter is load-bearing there.
     uint64_t last_telem_ms = start;
     uint64_t rx_beat_at_last_telem = 0;
     uint64_t air_drops_at_last_telem = 0;
-    uint16_t telem_wire_seq = 0;
-    uint16_t telem_dot11_seq = 0;
-    std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
 
     mabur::TickGate tick_gate(now_steady_ms(), cfg.link.tick_ms);
     // Peak 100 ms encoder rate for the stats line (peak_rate.h): fed every
     // wake, which is the finest cadence anything here runs at; normalised
     // by frame count at the configured sensor fps, not wall time.
     mabur::PeakRate enc_peak(100, cfg.venc.core.fps);
+    // Important fix 2's other half: RealActuator::apply_op's set_ladder()
+    // is gated off while cal_active (see that call site), so the ladder
+    // sits at whatever CalSweep's TX-writer-thread sweep last parked it at
+    // until this re-applies the last-known-correct op -- once, right on
+    // the falling edge, on THIS thread (apply_op's documented contract),
+    // not from the TX writer thread that noticed cal_active clear.
+    bool cal_was_active_for_ladder = false;
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
       enc_peak.sample(now, enc_bytes_total.load(std::memory_order_relaxed),
                       enc_frames_total.load(std::memory_order_relaxed));
+
+      const bool cal_now_active = cal_active.load(std::memory_order_relaxed);
+      if (cal_was_active_for_ladder && !cal_now_active) {
+        // Video resumes on this same cal_active transition (hot thread's
+        // own guard), so this cannot wait for the next RCF -- re-apply the
+        // agent's own last-known-good op immediately.
+        actuator.apply_op(agent.current());
+      }
+      cal_was_active_for_ladder = cal_now_active;
 
       // Every wake (rc_drain_ms): drain and apply queued RCFs. This is the
       // whole point of the split — op actuation no longer waits for the
@@ -1759,6 +2208,15 @@ int run_real_mode(const Config& cfg) {
           last_rx_beat = rb;
           last_rx_change_ms = now;
         }
+        // Calibration radio silence (spec 2026-09-10 step 4): the GS is
+        // designed to transmit NOTHING for a whole sweep phase (up to
+        // ~41 s, gs/src/cal_plan.h), so rx_beat legitimately stalls for
+        // the session's duration -- pin the "last seen" clock to now
+        // instead of gating the check below on cal_active, so the instant
+        // the session ends the watchdog gets a full fresh stale_ms window
+        // rather than reading however long the session already ran as
+        // instant staleness.
+        if (cal_active.load(std::memory_order_relaxed)) last_rx_change_ms = now;
         if (now - start > grace_ms) {
           if (now - last_hot_change_ms > stale_ms) {
             std::fprintf(stderr, "watchdog: hot thread stalled (no beat for >%llums)\n",
@@ -1792,7 +2250,17 @@ int run_real_mode(const Config& cfg) {
                        enc_peak.take_peak_kbps());
         }
 
-        if (now - last_telem_ms >= 1000) {
+        // Telemetry suppression (spec 2026-09-10 step 2): non-sweep PPDUs in
+        // the airtime a calibration phase is characterizing buy nothing --
+        // drone TX does not itself blank the GS receivers, so this is an
+        // airtime courtesy, not a correctness requirement. Gated on
+        // cal_sweeping specifically (State::Sweeping), not cal_active (the
+        // whole session): the ack Telem (TX writer thread) is sent in the
+        // between-phase gap this narrower flag leaves open, and skipping
+        // last_telem_ms's update while suppressed means telemetry resumes
+        // on the very next tick once a phase ends, not up to 1 s later.
+        if (!cal_sweeping.load(std::memory_order_relaxed) &&
+            now - last_telem_ms >= 1000) {
           last_telem_ms = now;
 
           TelemInputs ti;
@@ -1895,13 +2363,22 @@ int run_real_mode(const Config& cfg) {
           ti.pts_at_build_us = venc_cur_pts_us();
 #endif
 
-          auto telem = rc::pack_telem(make_telem(telem_wire_seq++, ti));
+          const rc::Telem telem_struct = make_telem(
+              telem_wire_seq.fetch_add(1, std::memory_order_relaxed), ti);
+          // Minor fix 5: publish this real snapshot for the TX writer
+          // thread's calibration ack to start from (send_cal_ack_telem)
+          // instead of a default-constructed Telem.
+          last_telem_snapshot.store(
+              std::make_shared<const rc::Telem>(telem_struct),
+              std::memory_order_relaxed);
+          auto telem = rc::pack_telem(telem_struct);
 
           std::vector<uint8_t> frame;
           frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
           frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
-          auto hdr = build_dot11_header(telem_dot11_seq);
-          telem_dot11_seq = static_cast<uint16_t>((telem_dot11_seq + 1) & 0xFFF);
+          const uint16_t dot11_seq =
+              telem_dot11_seq.fetch_add(1, std::memory_order_relaxed) & 0xFFF;
+          auto hdr = build_dot11_header(dot11_seq);
           frame.insert(frame.end(), hdr.begin(), hdr.end());
           frame.insert(frame.end(), telem.begin(), telem.end());
           dev_sink.send(frame.data(), frame.size());
@@ -1943,6 +2420,20 @@ int run_real_mode(const Config& cfg) {
                "maburd radio: MAC carrier sense (CCA+EDCCA) requested OFF -- TX "
                "will not defer to co-channel traffic\n");
 
+  // Always start clean: a flat TXAGC index override is sticky in the chip
+  // across a process restart, and the ONLY place that ever sets one is a
+  // calibration sweep (cal_sweep.cpp/CalSweep::PowerCtl -- pump_sweeping
+  // parks it per cell, close_session parks it at the anchor). A maburd
+  // killed mid-session (operator interrupt, wrapper respawn, watchdog)
+  // never reaches the TX writer thread's falling-edge restore
+  // (restore_operating_power(), below) and hands off to the next process
+  // with the override still live -- reverting it here, unconditionally,
+  // before the power plan is applied, means a fresh process never depends
+  // on how the previous one died. -1 reverts to the calibrated table
+  // (devourer/src/TxPower.h); a bring-up with no history at all just
+  // clears a knob that was already clear.
+  rtl_device->SetTxPowerIndexOverride(-1);
+
   // power_mode == "offset": program the wall-equalized per-rate diff table
   // once at bring-up, then zero the global offset once (see below) — power
   // is constant for the life of the process, no per-op trim.
@@ -1951,21 +2442,12 @@ int run_real_mode(const Config& cfg) {
   // "offset" configured on an unsupported chip degrades to the untrimmed
   // efuse table instead of failing to fly.
   if (cfg.radio.power_mode == "offset") {
-    auto plan = make_power_plan(cfg.radio.rate_walls_idx, cfg.radio.legacy_wall_idx,
-                                 cfg.radio.base_ref_idx, cfg.radio.wall_margin_db);
-    devourer::TxRateDiffsQdb diffs;
-    diffs.cck = plan.cck;
-    diffs.legacy = plan.legacy;
-    for (int i = 0; i < 8; ++i) diffs.mcs[i] = plan.mcs[i];
-    if (!rtl_device->SetTxPowerRateDiffs(diffs)) {
+    if (!apply_offset_power_plan(cfg.radio.rate_walls_idx, cfg.radio.legacy_wall_idx,
+                                 cfg.radio.base_ref_idx, cfg.radio.wall_margin_db)) {
       std::fprintf(stderr,
                    "warning: SetTxPowerRateDiffs failed (non-8822E board?); "
                    "power_mode=offset will trim the untrimmed efuse table\n");
     }
-    // Power is constant from here on. devourer documents the offset as
-    // sticky across retunes, so zero it explicitly rather than assuming
-    // whatever a prior process or bench tool left in the chip.
-    rtl_device->SetTxPowerOffsetQdb(0);
   }
 
   // A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md): one devourer
@@ -2108,5 +2590,5 @@ int main(int argc, char** argv) {
     return run_dry_run(cfg, in_path, out_path, rc_in_path, msp_in_path, msp_out_path);
   }
 
-  return run_real_mode(cfg);
+  return run_real_mode(cfg, cfg_path);
 }

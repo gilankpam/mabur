@@ -38,6 +38,7 @@ page the task needs rather than carrying all of it.
 | the stats sideport, maburtop, the debug-log session directory (ctl/probe/au/flight/lat), ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
 | shipping a binary or config to a device | `docs/deploy.md` |
+| calibrating a VTX's TX-power walls, maburcal, cal.log | `docs/calibration.md` |
 | a specific past investigation | the dated `docs/*-findings-*.md` / `docs/handover-*.md` |
 | airtime/serialization math, per-stream FEC overhead, why jitter ∝ frame size, encoder size knobs (max_ipprop, presets, dead SDK caps) | `docs/airtime-model.md` |
 | half-duplex timing: who transmits when, the slotter, airtime budget, why RCFs get lost | `docs/tx-rx-timing.md` |

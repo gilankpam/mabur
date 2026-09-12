@@ -96,9 +96,8 @@ add_mtest(test_profile test_profile.cpp)
 add_mtest(test_node test_node.cpp)
 add_mtest(test_msp_dp test_msp_dp.cpp)
 add_mtest(test_msp_source test_msp_source.cpp)
-add_mtest(test_sweep_wire test_sweep_wire.cpp)
+add_mtest(test_cal_wire test_cal_wire.cpp)
 add_mtest(test_toml test_toml.cpp)
-target_include_directories(test_sweep_wire PRIVATE ${CMAKE_SOURCE_DIR}/bench/txagcbench)
 if(MABUR_BUILD_DRONE)
   add_mtest(test_config test_config.cpp LIBS mabur_drone_core)
   target_compile_definitions(test_config PRIVATE
@@ -116,6 +115,8 @@ if(MABUR_BUILD_DRONE)
   add_mtest(sim_shed_lag sim_shed_lag.cpp LIBS mabur_drone_core)
   add_mtest(test_telemetry test_telemetry.cpp LIBS mabur_drone_core)
   add_mtest(test_power_plan test_power_plan.cpp LIBS mabur_drone_core)
+  add_mtest(test_cal_apply test_cal_apply.cpp LIBS mabur_drone_core)
+  add_mtest(test_cal_sweep test_cal_sweep.cpp LIBS mabur_drone_core)
   add_mtest(test_debug_http test_debug_http.cpp LIBS mabur_drone_core)
   add_mtest(test_probe_source test_probe_source.cpp LIBS mabur_drone_core)
 
@@ -265,12 +266,21 @@ add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
   endif()
   add_mtest(test_stats_exporter test_stats_exporter.cpp LIBS mabur_gs_core)
   add_mtest(test_stats_sink test_stats_sink.cpp LIBS mabur_gs_core)
+  add_mtest(test_cal_analysis test_cal_analysis.cpp LIBS mabur_gs_core)
+  add_mtest(test_cal_plan test_cal_plan.cpp LIBS mabur_gs_core)
+  add_mtest(test_cal_session test_cal_session.cpp LIBS mabur_gs_core pthread)
+  add_mtest(test_cal_log test_cal_log.cpp LIBS mabur_gs_core pthread)
+  add_mtest(test_cal_control test_cal_control.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
     add_test(NAME gs_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_e2e.sh)
     set_tests_properties(gs_e2e PROPERTIES ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
   endif()
 endif()
 if(MABUR_BUILD_DRONE AND MABUR_BUILD_GS)
+  # The only coverage of the two calibration state machines running
+  # against each other -- everything else tests one side in isolation, and
+  # every defect that escaped this build lived in the glue between them.
+  add_mtest(test_cal_e2e test_cal_e2e.cpp LIBS mabur_gs_core mabur_drone_core)
   add_test(NAME gs_au_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_au_e2e.sh)
   set_tests_properties(gs_au_e2e PROPERTIES
     ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
@@ -309,6 +319,8 @@ if(Python3_EXECUTABLE)
   add_test(NAME test_vencburst
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_vencburst.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME test_maburcal
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_maburcal.py)
 endif()
 
 if(MABUR_BUILD_LINKBENCH)

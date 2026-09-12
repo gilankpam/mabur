@@ -31,9 +31,11 @@ ssh "$HOST" '
 # no /usr/libexec/sftp-server (BusyBox); also accepted by full OpenSSH.
 scp -O "$BIN" "$HOST:/usr/local/bin/maburgs"
 scp -O gs/bundle/S96maburgs "$HOST:/etc/init.d/S96maburgs"
-# maburtop goes to /usr/bin: the GS shell's default PATH does not include
-# /usr/local/bin (maburgs itself is only ever launched by absolute path).
+# maburtop and maburcal go to /usr/bin: the GS shell's default PATH does not
+# include /usr/local/bin (maburgs itself is only ever launched by absolute
+# path).
 scp -O tools/maburtop.py "$HOST:/usr/bin/maburtop"
+scp -O gs/bundle/maburcal "$HOST:/usr/bin/maburcal"
 # Config: seed the default only if NEITHER a tuned .toml NOR a legacy .json
 # exists. A bare "no .toml" check would seed the repo default over an
 # un-converted device's tuned /etc/maburgs.json -- the daemon then boots
@@ -56,7 +58,7 @@ fi
 # /tmp/maburgs.log, so start returns without holding this ssh channel open.
 ssh "$HOST" '
   set -e
-  chmod +x /usr/local/bin/maburgs /etc/init.d/S96maburgs /usr/bin/maburtop
+  chmod +x /usr/local/bin/maburgs /etc/init.d/S96maburgs /usr/bin/maburtop /usr/bin/maburcal
   /etc/init.d/S96maburgs start
 '
 echo "installed. logs: ssh $HOST 'tail -f /tmp/maburgs.log'"

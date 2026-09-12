@@ -109,11 +109,14 @@ did not.
 
 The one deliberate divergence from the flown value is
 `radio.power_mode`, which ships `"none"` while this drone flies `"offset"`.
-`rate_walls_idx` is a per-UNIT calibration (`docs/txagcbench.md`) and the
+`rate_walls_idx` is a per-UNIT calibration (`docs/calibration.md`) and the
 shipped file cannot know the wall of the board it lands on, so it carries the
 author's 8812EU numbers as a reference and leaves them inert — parsed and
-range-checked, never programmed. Run the bench on your own vtx before
-setting `"offset"`. ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside
+range-checked, never programmed. Measure your own vtx before setting
+`"offset"`: ssh to the GS and run `maburcal start`, which sweeps the walls,
+writes them to the drone's `/etc/mabur.toml` (backing the old file up to
+`.pre-cal`) and flips `power_mode` to `"offset"` itself — no restart, no
+laptop-side step. ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside
 the plan, so a global offset left in the chip by a bench tool survives a
 `maburd` restart; power-cycle if you need a known baseline. On a stock bundle the startup defaulted-key list is therefore
 **empty**, and anything in it is a real gap. Three tests hold that line
@@ -523,3 +526,26 @@ Deploy notes, none of which are wire-format:
   logs `warning: radio.tx_card N but only M card(s) found; falling back to
   auto-select` and runs on auto, rather than costing the uplink because one
   card did not enumerate.
+
+## 2026-09-10 RC_VERSION 7 (TX-power calibration kit)
+
+Two new frame types, `T_CAL_CMD` and `T_CAL_RESULT`, carry the
+`maburcal` calibration protocol between `maburgs` and `maburd`
+(`docs/calibration.md`) — `RC_VERSION` 6 → 7, a version-mismatch flag day
+like the 2026-08-12/2026-08-15/2026-09-04 bumps above. A mismatched pair
+rejects each other's frames in both directions and, since `DISC_ACK`
+carries `CAP_FRAME_WIRE`, **looks like no video at all** between the two
+swaps — exactly the stale-caps restart deadlock's symptom. Restarting
+either daemon will not fix it; finish the deploy.
+
+No config keys move. This is a binary-only flag day on both ends —
+deploy `maburd` and `maburgs` together, in either order, and confirm
+video before treating the deploy as done. Rollback is the usual paired
+one: an old `maburd`/`maburgs` pair (`.pre-cal` binaries, if kept) talks
+`RC_VERSION` 6 to itself and needs no config change to go with it, since
+none of this bump touches config.
+
+`ausniff` is the standing gate for this change (`tools/bench/ausniff.py`)
+— run it once both binaries are up, expecting ~59.8 fps and 0 gaps; a
+`frame_id_gap` on the very first post-deploy pass can be a phantom from
+the restart itself, so take a second pass before treating it as real.

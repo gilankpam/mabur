@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+"""maburcal -- the TX-power wall calibration kit's entire operator UI.
+
+    maburcal start                 begin a run (streams progress, then the
+                                    final table)
+    maburcal status                one-line progress of a running session
+    maburcal abort                 abandon the running session
+    maburcal report <cal.log>      re-render a saved run, no daemon involved
+
+`start`/`status`/`abort` speak one UDP datagram at a time to CalControl
+(gs/src/cal_control.h), which binds 127.0.0.1:8400 ONLY -- you have to be
+logged into the GS itself to reach it. `report` is the offline path: it
+parses a saved cal.log (gs/src/cal_log.h) with no daemon involved, which is
+both how an operator re-examines an old run and what makes this script's own
+test hermetic.
+
+This is also the in-repo cal.log consumer the project's compatibility
+policy requires (CLAUDE.md): the schema is free to change under `callog N`,
+but this file has to change with it in the same commit. A later task deletes
+bench/txagcbench/ and its Python analyzer; `maburcal report` is the entire
+replacement for examining a run's underlying data afterwards, so a wrong
+parse here silently costs that capability rather than merely failing loud.
+
+python3 standard library only -- there is no pip on the GS.
+"""
+import argparse
+import math
+import os
+import re
+import socket
+import sys
+import time
+
+CAL_HOST = "127.0.0.1"
+CAL_PORT = 8400
+
+# Where an operator's config actually lands, per the design doc's Applying
+# step (docs/superpowers/specs/2026-09-10-tx-power-calibration-design.md).
+# The path is fixed, not something cal.log carries -- it is the drone's own
+# /etc/mabur.toml, always.
+CONFIG_PATH = "/etc/mabur.toml"
+CONFIG_BACKUP = CONFIG_PATH + ".pre-cal"
+
+# Where `start` looks for the cal.log a just-finished run wrote, in order:
+# maburgs' own stderr log announces the resolved directory once per session
+# (main.cpp, "calibration started -> <dir>/cal.log") -- the same computation
+# the daemon itself made, so it is the most reliable source; the debug-log
+# session marker is the fallback for when that line has scrolled out of a
+# truncated/rotated log; the fixed <dir>/cal fallback is cal_log.h's own
+# behavior when debug_log.enable is off (the shipped default since 671c848).
+MABURGS_LOG = "/tmp/maburgs.log"
+SESSION_MARKER = "/tmp/mabur-session"
+DEFAULT_DEBUG_LOG_DIR = "/media/dvr/log"
+
+# The marker versions the FILE. 1 is what maburgs writes. 2 is accepted too:
+# it briefly existed on 2026-09-11 (two per-card EVM columns on the C row,
+# reverted when the sweep frames turned out to carry no EVM reading -- see
+# docs/calibration.md), and bench runs in that shape are sitting on the DVR.
+# Since this reader has never stored C rows, a v2 file renders identically to
+# a v1 one, and recordings outlive the code that wrote them (CLAUDE.md).
+KNOWN_CALLOG_VERSIONS = (1, 2)
+
+# flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree 32=drift
+FLAG_NAMES = (
+    (1, "no_dip"),
+    (2, "undetermined"),
+    (4, "narrow"),
+    (8, "saturated"),
+    (16, "card_disagree"),
+    (32, "drift"),
+)
+
+
+class UnsupportedLog(Exception):
+    """Raised when a cal.log's format marker is missing or names a version
+    this reader does not know. Never raised for a merely malformed line --
+    those are skipped (see _Run.feed_line) so one corrupt row doesn't cost
+    the rest of a run's data."""
+
+
+class _Run:
+    """One calibration run's worth of cal.log records, keyed by rate 0-7."""
+
+    def __init__(self, nonce, base_ref_idx, margin_db):
+        self.nonce = nonce
+        self.base_ref_idx = base_ref_idx
+        self.margin_db = margin_db
+        self.walls = {}    # rate -> (wall, floor_idx, best_card, flags)
+        self.verify = {}   # rate -> pct
+
+    def feed_line(self, tag, tok):
+        """tok is the line's whitespace-split tokens, tok[0] == tag. Any
+        line that doesn't fit the shape this run expects is ignored -- a
+        malformed line must never be fatal to the rest of the file."""
+        try:
+            if tag == "W" and len(tok) == 6:
+                rate, wall, floor_idx, best_card, flags = (int(x) for x in tok[1:])
+                self.walls[rate] = (wall, floor_idx, best_card, flags)
+            elif tag == "V" and len(tok) == 4:
+                rate, _idx, pct = (int(x) for x in tok[1:])
+                self.verify[rate] = pct
+            # "C" rows (per-cell tallies) carry no information the final W/V
+            # rows don't already summarize for this report, and are the
+            # densest line in the file -- deliberately not stored.
+        except ValueError:
+            return  # non-numeric field: skip the line, not the file
+
+
+def _parse_cal_log(path):
+    """Returns the list of _Run objects a cal.log holds, in file order.
+
+    Raises UnsupportedLog if the file has no `callog N` marker as its first
+    non-empty line, or names a version this reader doesn't know."""
+    runs = []
+    cur = None
+    version = None
+    with open(path, "r", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            if version is None:
+                tok = line.split()
+                if len(tok) != 2 or tok[0] != "callog":
+                    raise UnsupportedLog(
+                        f"{path}: missing callog format marker "
+                        f"(first line was {line!r})")
+                try:
+                    version = int(tok[1])
+                except ValueError:
+                    raise UnsupportedLog(
+                        f"{path}: malformed callog marker {line!r}")
+                if version not in KNOWN_CALLOG_VERSIONS:
+                    known = ", ".join(str(v) for v in KNOWN_CALLOG_VERSIONS)
+                    raise UnsupportedLog(
+                        f"{path}: callog version {version} is not one this "
+                        f"reader knows (only {known})")
+                continue
+
+            tok = line.split()
+            tag = tok[0]
+            if tag == "R" and len(tok) == 4:
+                try:
+                    cur = _Run(int(tok[1]), int(tok[2]), float(tok[3]))
+                except ValueError:
+                    cur = None
+                    continue
+                runs.append(cur)
+                continue
+            if cur is not None:
+                cur.feed_line(tag, tok)
+            # A record before any R line (or a malformed R line) has no run
+            # to attach to; skipped rather than fatal.
+    if version is None:
+        raise UnsupportedLog(f"{path}: missing callog format marker (empty file)")
+    return runs
+
+
+def _flag_string(flags):
+    return ",".join(name for bit, name in FLAG_NAMES if flags & bit)
+
+
+def _margin_steps(margin_db):
+    # margin_db is in dB, TXAGC steps are 0.25 dB -- see power_plan.h.
+    # floor(x + 0.5) matches C++'s std::lround (round-half-away-from-zero)
+    # for the non-negative margins this kit ever deals in, rather than
+    # Python's round() (round-half-to-even) -- so a report never disagrees
+    # with the park index the drone actually flew over an exact .5 tie.
+    return math.floor(margin_db * 4 + 0.5)
+
+
+def _apply_status_line(run):
+    """What the log can actually attest to about whether this run's
+    measurements ever reached the drone's config.
+
+    cal.log has no record for the apply outcome itself -- Task 9's
+    OutOfRange/BackupFailed/WriteFailed/ReparseFailed results, and a
+    session that never gets a phase-2 command at all (Task 10's
+    await_next_timeout_returns_to_idle_without_applying), all end a run
+    with nothing written and nothing on the wire for the GS to log. `V`
+    records are the usable signal instead: CalSession emits one for every
+    rate that was in the verify plan, whether or not anything actually
+    arrived there (pct 0 included) -- a planned-but-silent rate is exactly
+    the thing this report needs to be able to say plainly, so the row must
+    exist either way (see cal_log.h). The drone sweeps verify only after a
+    successful apply (design doc step 9), but due_result() opens the GS's
+    own verify window optimistically, with no ack to wait on -- so a run
+    whose T_CAL_RESULT was lost on the uplink, or whose apply was refused,
+    still gets a full set of V rows, every one of them 0%. A row's mere
+    presence is therefore NOT evidence of a successful apply; a NONZERO
+    pct on at least one row is, because the drone had to actually be on
+    the air sweeping verify to produce it. So a run with any nonzero
+    verify delivery DID apply -- a sibling rate in that same run reading
+    0% (or missing outright, if its own wall never came back determined)
+    is then a real finding about that one rate, dead at its own parked
+    power, not a reason to doubt the apply; a run whose verify rows, if
+    any, are all zero (or that has wall data but no V rows at all) only
+    measured but never confirmed an apply; a run with neither did nothing
+    at all.
+
+    Keying this on presence instead of a nonzero reading was a real bug:
+    an all-zero verify column, from a lost result frame or a refused
+    apply, used to be indistinguishable from a real one and printed
+    `written: /etc/mabur.toml` for a run that changed nothing.
+    """
+    if any(pct > 0 for pct in run.verify.values()):
+        return f"written: {CONFIG_PATH} (backup {CONFIG_BACKUP})"
+    if run.walls:
+        return ("not written: walls were measured but the drone never ran "
+                "its verify sweep -- either the result frame never reached "
+                "it, or the apply itself was refused (out-of-range table, "
+                "backup/write failure, or a candidate config that would not "
+                "load). Nothing was changed on the drone; check "
+                "/tmp/maburd.log on the drone and re-run")
+    return "not written: this run produced no measurements"
+
+
+def _render_run(run):
+    lines = [
+        f"run nonce={run.nonce} base_ref={run.base_ref_idx} "
+        f"margin={run.margin_db:.2f}dB",
+        f"{'rate':<6}{'wall':>6}{'park':>6}{'verify':>7}   flags",
+    ]
+    park_step = _margin_steps(run.margin_db)
+    for rate in range(8):
+        if rate not in run.walls:
+            continue
+        wall, _floor_idx, _best_card, flags = run.walls[rate]
+        if wall < 0:
+            # Undetermined: no wall could be derived, so nothing downstream
+            # of it (park index, verify delivery) gets a number either.
+            wall_s, park_s, verify_s = str(wall), "-", "-"
+        else:
+            wall_s = str(wall)
+            park_s = str(wall - park_step)
+            pct = run.verify.get(rate)
+            verify_s = f"{pct}%" if pct is not None else "-"
+        row = (f"{'mcs' + str(rate):<6}{wall_s:>6}{park_s:>6}{verify_s:>7}"
+               f"   {_flag_string(flags)}")
+        lines.append(row.rstrip())
+
+    legacy_wall = run.walls.get(0, (-1,))[0]
+    legacy_s = "undetermined" if legacy_wall < 0 else str(legacy_wall)
+    lines.append(f"legacy  {legacy_s} (derived from mcs0)")
+    lines.append(f"base_ref_idx {run.base_ref_idx}")
+    lines.append(_apply_status_line(run))
+    return "\n".join(lines)
+
+
+def render_report(path):
+    """Renders the final table(s) for every calibration run a saved cal.log
+    holds, in file order. Raises UnsupportedLog for a file this reader
+    cannot parse; never for a merely malformed line within it."""
+    runs = _parse_cal_log(path)
+    if not runs:
+        return "no calibration run found in this log (no R record)\n"
+    return "\n\n".join(_render_run(r) for r in runs) + "\n"
+
+
+# --- live commands (start/status/abort) -------------------------------
+
+def _send_cmd(message, timeout=1.0):
+    """Sends one command datagram to CalControl and returns its single-line
+    reply, or None if nothing came back within `timeout`."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(timeout)
+        sock.sendto(message.encode(), (CAL_HOST, CAL_PORT))
+        try:
+            data, _addr = sock.recvfrom(1024)
+        except socket.timeout:
+            return None
+        return data.decode(errors="replace").strip()
+    finally:
+        sock.close()
+
+
+def _require_reply(message):
+    reply = _send_cmd(message)
+    if reply is None:
+        sys.exit(f"no reply from maburgs on {CAL_HOST}:{CAL_PORT} -- "
+                  f"is it running?")
+    return reply
+
+
+_STATE_RE = re.compile(r"state=(\S+)")
+# gs/src/cal_session.cpp:168-175 emits these lowercase.
+TERMINAL_STATES = ("done", "failed", "idle")
+
+
+def _progress_state(reply):
+    m = _STATE_RE.search(reply)
+    return m.group(1) if m else None
+
+
+def _find_cal_log_path():
+    """Best-effort guess at where the run that just ended wrote its
+    cal.log, for `start`'s own final render. Never raises -- worst case it
+    returns the fixed fallback path, which may not exist."""
+    try:
+        with open(MABURGS_LOG, "r", errors="replace") as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            m = re.search(r"calibration started -> (\S+/cal\.log)", line)
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    try:
+        with open(SESSION_MARKER, "r") as f:
+            session_dir = f.read().strip()
+        if session_dir and os.path.isdir(session_dir):
+            return os.path.join(session_dir, "cal.log")
+    except OSError:
+        pass
+    return os.path.join(DEFAULT_DEBUG_LOG_DIR, "cal", "cal.log")
+
+
+# How long `start` will keep re-reading cal.log before giving up on finding
+# the run that just ended. Belt and braces only: maburgs flushes cal.log at
+# the Done/Failed transition (CalLog::flush()), which happens strictly
+# before `status` can report a terminal state, so the first read normally
+# succeeds. This covers the file appearing a moment late (a directory
+# resolved differently, an NFS-ish mount) rather than a buffering race.
+RENDER_RETRY_S = 2.0
+RENDER_RETRY_SLEEP_S = 0.2
+
+
+def _render_when_ready(path):
+    """Returns (rendered, problem): the report text once `path` holds at
+    least one calibration run, or a one-line reason it never will. Exactly
+    one of the two is None -- except for no path at all, where both are
+    (there is nothing to report a problem about). Never raises.
+
+    Only a file that is merely INCOMPLETE is worth waiting on: maburgs
+    flushes cal.log at the end of a run, and `maburcal start` gets here the
+    moment it sees state=done, so a partial tail is an ordinary race that
+    RENDER_RETRY_S resolves. An UnsupportedLog is the opposite -- a missing
+    or unknown `callog N` marker never becomes readable by waiting, and
+    polling it just delays a wrong diagnosis (the caller's fallback message
+    says "holds no calibration run", which for a headerless file full of
+    measurements points at entirely the wrong thing)."""
+    if not path:
+        return None, None
+    deadline = time.time() + RENDER_RETRY_S
+    while True:
+        try:
+            runs = _parse_cal_log(path)
+            if runs:
+                return "\n\n".join(_render_run(r) for r in runs) + "\n", None
+        except UnsupportedLog as e:
+            return None, str(e)
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            return None, None
+        time.sleep(RENDER_RETRY_SLEEP_S)
+
+
+def cmd_start(_args):
+    # No arguments. `--margin` was removed: it fed only the GS's own park
+    # bookkeeping (the verify plan and this report's `park` column), while
+    # the drone applies its own radio.wall_margin_db, which cal_apply does
+    # not patch -- so it changed nothing on hardware and only made the
+    # report disagree with what the drone flew. To change the margin, edit
+    # wall_margin_db in /etc/mabur.toml on the drone and re-run.
+    reply = _require_reply("start")
+    print(reply)
+    if reply.startswith("err"):
+        sys.exit(1)
+
+    state = None
+    while state not in TERMINAL_STATES:
+        time.sleep(0.5)
+        reply = _send_cmd("status")
+        if reply is None:
+            print("(no reply from maburgs -- retrying)")
+            continue
+        print(reply)
+        state = _progress_state(reply)
+
+    path = _find_cal_log_path()
+    rendered, problem = _render_when_ready(path)
+    if rendered is not None:
+        print()
+        print(rendered, end="")
+    elif problem is not None:
+        print(f"\nsession ended ({state}); its cal.log cannot be read: "
+              f"{problem}")
+    elif path and os.path.isfile(path):
+        print(f"\nsession ended ({state}); {path} exists but holds no "
+              f"calibration run -- run 'maburcal report {path}' by hand.")
+    else:
+        print(f"\nsession ended ({state}); could not find its cal.log "
+              f"automatically (looked for {path}) -- check /tmp/maburgs.log "
+              f"for the 'calibration started -> ...' line and run "
+              f"'maburcal report <that path>' by hand.")
+
+
+def cmd_status(_args):
+    print(_require_reply("status"))
+
+
+def cmd_abort(_args):
+    print(_require_reply("abort"))
+
+
+def cmd_report(args):
+    try:
+        print(render_report(args.path), end="")
+    except UnsupportedLog as e:
+        sys.exit(str(e))
+    except OSError as e:
+        sys.exit(f"{args.path}: {e}")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="maburcal",
+        description="TX-power wall calibration: start/status/abort a run "
+                    "on the GS, or report on a saved cal.log.")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    p_start = sub.add_parser("start", help="begin a calibration run")
+    p_start.set_defaults(func=cmd_start)
+
+    p_status = sub.add_parser("status", help="progress of a running session")
+    p_status.set_defaults(func=cmd_status)
+
+    p_abort = sub.add_parser("abort", help="abandon the running session")
+    p_abort.set_defaults(func=cmd_abort)
+
+    p_report = sub.add_parser(
+        "report", help="render a saved cal.log, no daemon involved")
+    p_report.add_argument("path")
+    p_report.set_defaults(func=cmd_report)
+
+    args = ap.parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

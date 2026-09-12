@@ -103,12 +103,14 @@ import rc_proto
 # mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
 # rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
 # byte plus the deleted ack_seq/score/layer_delivery fields, so its
-# pack_rcf() output is rejected outright by maburd. Pack the 15-byte v6 head
+# pack_rcf() output is rejected outright by maburd. Pack the 15-byte v7 head
 # here instead (magic, ver, type, flags, vtx_id, seq, profile,
 # fec_overhead_base_x100, fec_overhead_enh_x100, probe_profile --
 # RC_VERSION 6, 2026-09-04, made probe_profile a fixed head byte, 0xFF = no
-# probe stream; encode_profile and the CRC are unversioned.
-body = struct.pack("<HBBBIHBBBB", rc_proto.RC_MAGIC, 6, rc_proto.T_RCF, 0,
+# probe stream; RC_VERSION 7, 2026-09-10, added T_CAL_CMD/T_CAL_RESULT and
+# widened Telem, but did not touch the RCF layout -- only the version byte
+# moves here. encode_profile and the CRC are unversioned.
+body = struct.pack("<HBBBIHBBBB", rc_proto.RC_MAGIC, 7, rc_proto.T_RCF, 0,
                    1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0xFF)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
