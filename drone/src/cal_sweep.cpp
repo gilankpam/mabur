@@ -1,5 +1,7 @@
 #include "cal_sweep.h"
 
+#include <algorithm>
+
 #include "mabur/cal_wire.h"
 
 namespace mabur {
@@ -15,39 +17,44 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     // moment the TXAGC override is still parked at the PREVIOUS session's
     // last swept cell (pump_sweeping never restores between cells or
     // phases; only close_session() does), and devourer's GetTxPowerState
-    // reports that override rather than the anchor -- so the
-    // read_base_ref_idx() below would latch a swept cell's index as this
-    // session's base reference. That wrong anchor rides the ack to the GS,
-    // comes back inside the result, and lands in radio.base_ref_idx in
-    // /etc/mabur.toml, where every subsequent boot derives
-    // diff[r] = wall - m - base_ref from it: a parked cell BELOW the true
-    // anchor makes every rate transmit ABOVE its measured wall, persisted
-    // across reboots, from the kit that exists to prevent exactly that.
-    // The same-nonce version of this hazard is guarded by reusing the
-    // latched value (see take_ack_base_ref()); this is its mirror --
-    // restore the anchor before reading, so the chip is in the same clean
-    // state a genuinely first session would find it in.
-    if (has_session_) pwr.set_index_override(base_ref_idx_);
+    // reports that override rather than the anchor -- so read_anchor_idx()
+    // below would latch a swept cell's index as this session's anchor.
+    // Every cell of the new session would then be programmed relative to
+    // that wrong anchor: a parked cell BELOW the true anchor makes every
+    // rate transmit ABOVE its intended TXAGC index for the rest of the
+    // session. The same-nonce version of this hazard is guarded by reusing
+    // the latched value (see take_ack()); this is its mirror -- restore
+    // the anchor before reading, so the chip is in the same clean state a
+    // genuinely first session would find it in.
+    if (has_session_) pwr.set_index_override(anchor_idx_);
     // A brand-new nonce: reset every piece of session state, including the
     // hard cap, which is measured from THIS command, not from whenever the
     // drone happened to boot.
     nonce_ = c.nonce;
-    has_session_ = true;
     power_restored_ = false;
     result_accepted_ = false;
     hard_cap_deadline_ms_ = now_ms + cfg_.hard_cap_ms;
     last_started_phase_ = -1;
     // Global constraint: per-rate walls must be measured against a common
     // base, so the wall-equalized diff table comes off -- and this
-    // session's base reference index is captured -- HERE, synchronously,
-    // at acceptance, not lazily on pump()'s first call. The chip is clean
-    // by the time of the read: no phase of THIS session has parked the
-    // TXAGC at a swept cell's index yet, and any PREVIOUS session's park
-    // was just undone above (a later phase of the same session reuses
-    // base_ref_idx_ below rather than reading again for exactly that
-    // reason -- see take_ack_base_ref()).
+    // session's anchor is captured -- HERE, synchronously, at acceptance,
+    // not lazily on pump()'s first call. The chip is clean by the time of
+    // the read: no phase of THIS session has parked the TXAGC at a swept
+    // cell's index yet, and any PREVIOUS session's park was just undone
+    // above (a later phase of the same session reuses anchor_idx_ below
+    // rather than reading again for exactly that reason -- see
+    // take_ack()).
     pwr.zero_rate_diffs();
-    base_ref_idx_ = pwr.read_base_ref_idx();
+    const int anchor = pwr.read_anchor_idx();
+    if (anchor < 0) {
+      // Cannot place a relative cell without the reference: refuse the
+      // session outright (no ack -> the GS times out in AwaitAck).
+      has_session_ = false;
+      zeroed_for_session_ = false;
+      return;
+    }
+    anchor_idx_ = anchor;
+    has_session_ = true;
     zeroed_for_session_ = true;
   } else if (static_cast<int>(c.phase) == last_started_phase_) {
     // An exact repeat of the phase already running -- the GS resends its
@@ -63,7 +70,7 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     // retransmission a second (or fifth) time is harmless. This does NOT
     // restart the phase: cells_/cursor_/frames_per_cell_ etc. are left
     // exactly as they are, only the ack gets re-armed.
-    pending_ack_base_ref_ = base_ref_idx_;
+    pending_ack_ = true;
     return;
   } else if (static_cast<int>(c.phase) < last_started_phase_) {
     // Constraint 3, the other half: a phase STRICTLY BEHIND the one
@@ -90,16 +97,16 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   gap_ms_ = c.gap_us / 1000;
   state_ = State::Sweeping;
   pending_result_.reset();
-  // Task 11: arm this phase's ack. Always base_ref_idx_ (captured once,
-  // above or by an earlier phase of this same session) -- see
-  // take_ack_base_ref()'s header comment for why a fresh read here would
-  // be wrong for any phase after the first.
-  pending_ack_base_ref_ = base_ref_idx_;
+  // Task 11: arm this phase's ack -- a plain flag now (the anchor,
+  // captured once above or by an earlier phase of this same session, never
+  // rides the ack -- see take_ack()'s header comment for why a fresh read
+  // here would be wrong for any phase after the first anyway).
+  pending_ack_ = true;
 }
 
-std::optional<int> CalSweep::take_ack_base_ref() {
-  auto v = pending_ack_base_ref_;
-  pending_ack_base_ref_.reset();
+bool CalSweep::take_ack() {
+  const bool v = pending_ack_;
+  pending_ack_ = false;
   return v;
 }
 
@@ -147,7 +154,7 @@ void CalSweep::build_cells(const std::vector<rc::CalWindow>& windows) {
   for (const auto& w : windows) {
     if (w.idx_step == 0) continue;  // malformed window: never advances, skip
     for (int idx = w.idx_lo; idx <= w.idx_hi; idx += w.idx_step)
-      cells_.push_back(Cell{w.rate, static_cast<uint8_t>(idx)});
+      cells_.push_back(Cell{w.rate, static_cast<int8_t>(idx)});
   }
 }
 
@@ -180,7 +187,7 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 
 void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
   // Global constraint ("per-rate walls must be measured against a common
-  // base"): the wall-equalized diff table comes off, and base_ref_idx_ is
+  // base"): the wall-equalized diff table comes off, and anchor_idx_ is
   // captured, once per session -- but now inside on_cmd() at acceptance
   // (Task 11), not here. By the time this is ever reached, on_cmd() has
   // already run at least once for this session and zeroed_for_session_ is
@@ -205,10 +212,15 @@ void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
     }
     active_rate_ = cell.rate;
     active_idx_ = cell.idx;
-    // Every frame is stamped with the cell it's sent in (attribution IS
-    // the measurement), so the ladder and the TXAGC index are both
-    // pinned to this cell before the first frame goes out.
-    pwr.set_index_override(cell.idx);
+    // Every frame is stamped with the RELATIVE cell it's sent in
+    // (attribution IS the measurement), so the ladder and the TXAGC index
+    // are both pinned to this cell before the first frame goes out --
+    // programmed as the anchor plus the relative offset, clamped to the
+    // chip's real [0, 127] index range (a window's rel can legally land
+    // outside it near the rails, kRelMin/kRelMax being wider than any one
+    // chip's usable span).
+    pwr.set_index_override(
+        std::clamp(anchor_idx_ + static_cast<int>(cell.idx), 0, 127));
     tx.set_ladder({rc::LayerTxSpec{rc::PhyMode::HT, cell.rate, 20},
                    rc::LayerTxSpec{}},
                   std::nullopt);
@@ -266,7 +278,7 @@ void CalSweep::close_session(PowerCtl& pwr) {
   // "the operating plan" (that is config/power_mode-driven, main.cpp's
   // business, not this one's).
   if (zeroed_for_session_) {
-    pwr.set_index_override(base_ref_idx_);
+    pwr.set_index_override(anchor_idx_);
     power_restored_ = true;
   }
   has_session_ = false;
