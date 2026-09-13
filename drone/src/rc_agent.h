@@ -92,7 +92,16 @@ class Actuator {
   // fails to take leaves the radio on its previous channel, which the
   // move-confirm/fallback-home machinery in RcAgent::tick already treats as
   // "nothing heard on the new channel" and recovers from on its own.
-  virtual void retune(uint8_t ch) = 0;
+  //
+  // `reason` is a stable, short literal naming WHY the move is happening --
+  // "disc" (a DISC proposed a channel we agreed to), "move_unconfirmed"
+  // (the post-move confirm window expired), "rendezvous" (the rendezvous
+  // timer sent us home). It is spec §7 observability only: the real
+  // actuator prints it on the retune line so a stderr/serial capture says
+  // which of the three fired, which is otherwise indistinguishable from
+  // the channel numbers alone (all three can move us to home). Never null,
+  // never freed -- always a string literal.
+  virtual void retune(uint8_t ch, const char* reason) = 0;
 };
 
 // Radio-side health signals sampled once per tick. thermal_delta is

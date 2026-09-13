@@ -160,6 +160,23 @@ MspSourceCfg to_msp_source_cfg(const MspCfg& m) {
   return c;
 }
 
+// Writer-priority handshake for tx_gate (Important fix 5). glibc's
+// pthread_rwlock is READER-PREFERRING by default: with video bodies,
+// control frames and the calibration writer all taking the gate shared at
+// a few kHz, a thread blocked in pthread_rwlock_wrlock can be overtaken
+// indefinitely by newly arriving readers. The one writer is
+// RealActuator::retune, which runs on the AGENT thread -- a starved writer
+// there stalls the whole tick (RCF drain, telemetry, the ladder), so the
+// retune must not be allowed to queue behind an unbounded reader stream.
+// Every shared-taker spins on this flag first, so once retune raises it no
+// NEW reader enters and the writer gets in after at most the readers
+// already inside. The spin is yield-only and the window is the ~7 ms of a
+// single FastRetune, once per channel move.
+inline void await_retune_gate(const std::atomic<bool>* waiting) {
+  if (!waiting) return;
+  while (waiting->load(std::memory_order_acquire)) std::this_thread::yield();
+}
+
 // Wraps IRtlDevice::send_packet with a mutex — shared between the hot
 // thread (video bodies) and the agent thread (send_control / DISC_ACK).
 struct DevourerSink : mabur::FrameSink {
@@ -189,9 +206,12 @@ struct DevourerSink : mabur::FrameSink {
   // shared; retune takes it exclusive. Null in dry-run, where there is no
   // device to retune and no gate to take.
   std::shared_mutex* gate = nullptr;
+  // Writer-priority flag paired with `gate` — see await_retune_gate above.
+  std::atomic<bool>* gate_waiting = nullptr;
 
   bool send(const uint8_t* p, size_t n) override {
     if (ready && !ready->load(std::memory_order_acquire)) return false;
+    await_retune_gate(gate_waiting);
     std::shared_lock<std::shared_mutex> sg;
     if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
     std::lock_guard<std::mutex> l(m);
@@ -223,6 +243,7 @@ struct DevourerSink : mabur::FrameSink {
     }
     std::vector<TxPacketView> v(n);
     for (size_t i = 0; i < n; ++i) v[i] = {frames[i].data, frames[i].len};
+    await_retune_gate(gate_waiting);
     std::shared_lock<std::shared_mutex> sg;
     if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
     std::lock_guard<std::mutex> l(m);
@@ -428,17 +449,74 @@ struct RealActuator : mabur::Actuator {
   // apply_op/send_control above). Null in dry-run (dev == nullptr): there is
   // no device and no tx_gate to take, so that path is a pure stderr echo.
   std::shared_mutex* tx_gate = nullptr;
+  // Writer-priority flag for tx_gate (Important fix 5) — raised around the
+  // exclusive take so no new shared-taker enters while this thread waits.
+  // See await_retune_gate's comment for why a reader-preferring rwlock
+  // cannot be left to starve this writer: it runs on the agent thread.
+  std::atomic<bool>* retune_waiting = nullptr;
   uint8_t cur = 0;  // set to cfg.radio.channel where the actuator is configured
+  // A retune that arrived during a calibration sweep and has not been
+  // performed yet (see retune() below). Agent-thread-only, like every other
+  // member here.
+  std::optional<uint8_t> deferred_ch;
+  const char* deferred_reason = "";
 
-  void retune(uint8_t ch) override {
+  // Threading (Critical fix 1): FastRetune is a control-plane call, and
+  // devourer's IRtlDevice.h threading contract forbids one concurrent with
+  // ANY other device call — not just a bulk-OUT. A calibration sweep runs
+  // the three TX-power knobs (DevicePowerCtl, below) from the TX writer
+  // thread for up to 180 s, which is far longer than link.rendezvous_ms
+  // (30 s): the agent's own FAILSAFE->RENDEZVOUS go_home_ fires mid-sweep
+  // as a matter of course. Two rules keep that safe without ever blocking
+  // the agent thread on a sweep:
+  //   * the three power calls take tx_gate SHARED (they are device calls,
+  //     not senders, but the gate is what serialises them against this one);
+  //   * a retune requested while cal_active simply does not happen — it is
+  //     latched into deferred_ch and replayed by apply_deferred_retune() on
+  //     the agent thread's own cal falling edge, next to the ladder
+  //     re-apply. `cur` deliberately stays on the radio's REAL channel
+  //     while deferred, so the replayed retune still logs the true from->to
+  //     and a same-channel deferral cannot be mistaken for a completed move.
+  // RcAgent's move-confirm/rendezvous machinery already handles "the retune
+  // did not take" (it hears nothing on the new channel and goes home), so a
+  // deferral degrades to that path rather than to a wedged link.
+  // Not host-testable: RealActuator lives in main.cpp and needs a real
+  // IRtlDevice, so this comment is the specification.
+  void retune(uint8_t ch, const char* reason) override {
     if (!dev) {
-      std::fprintf(stderr, "[dry-run] retune(%u)\n", static_cast<unsigned>(ch));
+      std::fprintf(stderr, "[dry-run] retune(%u, %s)\n", static_cast<unsigned>(ch),
+                   reason);
       return;
     }
+    if (cal_active && cal_active->load(std::memory_order_relaxed)) {
+      deferred_ch = ch;
+      deferred_reason = reason;
+      std::fprintf(stderr, "maburd: retune %u -> %u (%s) deferred (calibration active)\n",
+                   static_cast<unsigned>(cur), static_cast<unsigned>(ch), reason);
+      return;
+    }
+    retune_now_(ch, reason);
+  }
+
+  // Replays the retune retune() deferred, if any. Called from the agent
+  // thread on the falling edge of cal_active (see main.cpp's agent loop),
+  // the same edge that re-applies the ladder.
+  void apply_deferred_retune() {
+    if (!deferred_ch.has_value()) return;
+    const uint8_t ch = *deferred_ch;
+    const char* reason = deferred_reason;
+    deferred_ch.reset();
+    deferred_reason = "";
+    if (!dev) return;
+    retune_now_(ch, reason);
+  }
+
+  void retune_now_(uint8_t ch, const char* reason) {
     // Exclusive against every USB sender (DevourerSink/UsbTxPool take the
     // gate shared): FastRetune is a control-plane call and must not overlap
     // a bulk-OUT (devourer threading contract). ~2.4 ms on the 8812EU.
     const uint8_t from = cur;
+    if (retune_waiting) retune_waiting->store(true, std::memory_order_release);
     {
       std::unique_lock<std::shared_mutex> g(*tx_gate);
       // The DISC_ACK that precedes this retune (RcAgent sends it via
@@ -457,9 +535,10 @@ struct RealActuator : mabur::Actuator {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       dev->FastRetune(ch, /*cache_rf=*/true);
     }
+    if (retune_waiting) retune_waiting->store(false, std::memory_order_release);
     cur = ch;
-    std::fprintf(stderr, "maburd: retune %u -> %u\n", static_cast<unsigned>(from),
-                 static_cast<unsigned>(ch));
+    std::fprintf(stderr, "maburd: retune %u -> %u (%s)\n", static_cast<unsigned>(from),
+                 static_cast<unsigned>(ch), reason);
   }
 };
 
@@ -1092,20 +1171,28 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // this shared; retune takes it exclusive. Declared here, ahead of every
   // sender that references it.
   std::shared_mutex tx_gate;
+  // Writer-priority flag for tx_gate (Important fix 5): raised by
+  // RealActuator::retune while it waits for the exclusive lock, spun on by
+  // every shared-taker before it enters. glibc's rwlock is reader-preferring
+  // and the writer runs on the agent thread — see await_retune_gate.
+  std::atomic<bool> retune_waiting{false};
 
   DevourerSink dev_sink;
   dev_sink.dev = rtl_device.get();
   dev_sink.ready = &device_ready;
   dev_sink.gate = &tx_gate;
+  dev_sink.gate_waiting = &retune_waiting;
 
   // Capacity 6 frames per sender: enough to keep every sender's next ≤3-
   // frame URB staged while it blocks in the current one, small enough that
   // backlog still lands in TxQueue (whose drop-oldest policy is the
   // FEC-recoverable erasure path).
   mabur::UsbTxPool tx_pool(
-      [dev = rtl_device.get(), &tx_gate](const std::vector<std::vector<uint8_t>>& b) {
+      [dev = rtl_device.get(), &tx_gate, &retune_waiting](
+          const std::vector<std::vector<uint8_t>>& b) {
         std::vector<TxPacketView> v(b.size());
         for (size_t i = 0; i < b.size(); ++i) v[i] = {b[i].data(), b[i].size()};
+        await_retune_gate(&retune_waiting);
         std::shared_lock<std::shared_mutex> sg(tx_gate);
         return dev->send_packets(v.data(), v.size());
       },
@@ -1132,6 +1219,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
   actuator.tx_gate = &tx_gate;
+  actuator.retune_waiting = &retune_waiting;
   actuator.cur = static_cast<uint8_t>(cfg.radio.channel);
   // Encoder starts at the "normal" ROI QP (RcAgent only calls set_roi_qp on
   // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
@@ -1781,11 +1869,27 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // the live devourer device, using the same three TX-power knobs bring-up's
   // power_mode=="offset" block below already uses — just under CalSweep's
   // state machine instead of a one-shot bring-up plan.
+  //
+  // Threading (Critical fix 1): all three are device control-plane calls
+  // made from the TX writer thread, and devourer's IRtlDevice.h contract
+  // forbids any of them concurrent with a channel set. RealActuator::retune
+  // takes tx_gate exclusive around FastRetune, so each call here takes it
+  // SHARED -- a cal session lasts up to 180 s while link.rendezvous_ms is
+  // 30 s, so the agent's FAILSAFE->RENDEZVOUS go_home_ retune landing
+  // mid-sweep is the normal case, not a corner. (retune's other half of the
+  // fix defers the move entirely while cal_active; this gate is what makes
+  // the window between "cal_active clears" and "the sweep's last write
+  // returns" safe.) Held only for the single call, never across pump().
   struct DevicePowerCtl : CalSweep::PowerCtl {
     IRtlDevice* dev;
+    std::shared_mutex* gate = nullptr;
+    std::atomic<bool>* gate_waiting = nullptr;
     bool set_index_override(int idx) override {
       // SetTxPowerIndexOverride is void on every family (IRtlDevice.h) —
       // there is no failure it could report back.
+      await_retune_gate(gate_waiting);
+      std::shared_lock<std::shared_mutex> sg;
+      if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
       dev->SetTxPowerIndexOverride(idx);
       return true;
     }
@@ -1793,6 +1897,9 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // A table of zeros is a no-op at the anchor rate (MCS7) and flattens
       // every other rate onto it (devourer/src/TxPower.h) — exactly "every
       // rate measures against a common base" (cal_sweep.h constraint 2).
+      await_retune_gate(gate_waiting);
+      std::shared_lock<std::shared_mutex> sg;
+      if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
       return dev->SetTxPowerRateDiffs(devourer::TxRateDiffsQdb{});
     }
     int read_base_ref_idx() override {
@@ -1802,6 +1909,9 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // knob doesn't support; 0 matches Telem.cal_base_ref_idx's own
       // documented "0 = not read" sentinel rather than a raw -1 wrapping
       // into a huge uint8_t on the wire.
+      await_retune_gate(gate_waiting);
+      std::shared_lock<std::shared_mutex> sg;
+      if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
       const auto st = dev->GetTxPowerState();
       return (st.valid && st.mcs7_index >= 0) ? st.mcs7_index : 0;
     }
@@ -1821,6 +1931,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     CalSweep cal_sweep(CalSweepCfg{});
     DevicePowerCtl pwr;
     pwr.dev = rtl_device.get();
+    pwr.gate = &tx_gate;
+    pwr.gate_waiting = &retune_waiting;
     // The ack Telem (§2 below) is a minimal, separate T_TELEM producer on
     // this thread — same dev_sink.send() rendezvous the agent thread's
     // periodic telemetry and the MSP thread already share, using the SAME
@@ -2223,6 +2335,11 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
         // own guard), so this cannot wait for the next RCF -- re-apply the
         // agent's own last-known-good op immediately.
         actuator.apply_op(agent.current());
+        // Critical fix 1's other half: a retune requested during the sweep
+        // was latched, not performed (RealActuator::retune). The sweep's
+        // device calls are done as of this edge, so replay it here, on the
+        // agent thread, next to the ladder re-apply.
+        actuator.apply_deferred_retune();
       }
       cal_was_active_for_ladder = cal_now_active;
 

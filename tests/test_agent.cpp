@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "mtest.h"
@@ -28,6 +29,10 @@ struct MockActuator : Actuator {
   bool bitrate_ok = true;
   bool roi_ok = true;
   std::vector<uint8_t> retunes;
+  // Parallel to `retunes` (same index): the spec §7 reason literal the agent
+  // passed with each move. Kept separate so channel assertions stay
+  // `retunes[i] == ch`.
+  std::vector<std::string> retune_reasons;
 
   void apply_op(const AppliedOp& op) override { applied.push_back(op); }
   void send_control(const std::vector<uint8_t>& body) override { controls.push_back(body); }
@@ -40,7 +45,10 @@ struct MockActuator : Actuator {
     return roi_ok;
   }
   void request_idr() override { ++idr_calls; }
-  void retune(uint8_t ch) override { retunes.push_back(ch); }
+  void retune(uint8_t ch, const char* reason) override {
+    retunes.push_back(ch);
+    retune_reasons.push_back(reason ? reason : "");
+  }
 };
 
 Config make_cfg() {
@@ -1073,6 +1081,8 @@ TEST(disc_foreign_channel_acks_then_retunes) {
   CHECK(ack->agreed_channel == 149);
   REQUIRE(act.retunes.size() == 1);
   CHECK(act.retunes[0] == 149);
+  REQUIRE(act.retune_reasons.size() == 1);
+  CHECK(act.retune_reasons[0] == "disc");             // spec §7 reason
   CHECK(agent.channel() == 149);
   CHECK(agent.state() == RcAgent::State::LINKED);
 }
@@ -1128,6 +1138,8 @@ TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
   agent.tick(2100, RadioHealth{});                     // 100 + 2000 elapsed
   REQUIRE(act.retunes.size() == 2);
   CHECK(act.retunes[1] == 136);
+  REQUIRE(act.retune_reasons.size() == 2);
+  CHECK(act.retune_reasons[1] == "move_unconfirmed");  // spec §7 reason
   CHECK(agent.channel() == 136);
   CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
 }
@@ -1159,6 +1171,8 @@ TEST(gs_frame_confirms_move_and_rendezvous_entry_returns_home) {
   CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
   REQUIRE(act.retunes.size() == 2);
   CHECK(act.retunes[1] == 136);
+  REQUIRE(act.retune_reasons.size() == 2);
+  CHECK(act.retune_reasons[1] == "rendezvous");        // spec §7 reason
 }
 
 TEST(follow_gs_false_acks_home_and_never_retunes) {

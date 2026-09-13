@@ -388,7 +388,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       // has no other way to learn about.
       act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq, agreed)));
       if (move) {
-        act_.retune(d->op_channel);
+        act_.retune(d->op_channel, "disc");
         channel_ = d->op_channel;
         move_pending_ = true;
         move_at_ms_ = now_ms;
@@ -400,7 +400,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
 
     act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq, agreed)));
     if (move) {
-      act_.retune(d->op_channel);
+      act_.retune(d->op_channel, "disc");
       channel_ = d->op_channel;
       move_pending_ = true;
       move_at_ms_ = now_ms;
@@ -500,7 +500,7 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     if (state_ == State::LINKED) apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;
     have_last_seq_ = false;
-    go_home_("move unconfirmed");
+    go_home_("move_unconfirmed");
   }
 
   // Chain-break intake, evaluated against the state as of this tick's ENTRY
@@ -612,9 +612,11 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq, uint8_t agreed)
 }
 
 void RcAgent::go_home_(const char* why) {
-  (void)why;  // stderr logging on the real Actuator, not here (see main.cpp)
+  // `why` is spec §7's retune reason: it rides through to the Actuator,
+  // which is where the stderr line is printed (see RealActuator in
+  // main.cpp) -- RcAgent itself logs nothing.
   if (channel_ != cfg_.radio.channel) {
-    act_.retune(cfg_.radio.channel);
+    act_.retune(cfg_.radio.channel, why);
     channel_ = cfg_.radio.channel;
   }
   move_pending_ = false;
