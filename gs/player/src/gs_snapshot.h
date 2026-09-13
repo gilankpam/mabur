@@ -40,6 +40,11 @@ struct GsSnapshot {
   // config, not measured, so it never goes null on a bad window -- an
   // empty optional here means an older maburgs that did not export it.
   std::optional<int> channel;
+  // scan.state != "off": the GS's boot-time channel scan is enabled
+  // (auto channel select, docs/channel-select.md), so `channel` may be a
+  // pick rather than the configured home. False when the block is absent
+  // (older maburgs) or malformed.
+  bool scan_auto = false;
   // link.ctl.rung.mcs / .ov_base x 100, falling back to link.op.mcs /
   // .overhead_base x 100 when the ladder block is absent -- which is the
   // normal, permanent state of a static-pinned link (link.static_mcs >= 0

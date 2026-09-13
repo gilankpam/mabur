@@ -86,7 +86,7 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # says nothing; what was checked instead is the geometry floor below (two
 # bands, both centred, block hugging the bottom) plus the per-row strings
 # pinned in tests/test_gs_compact.cpp.
-BAR_SHA_EXPECTED=bc0c783287ff9d26f7a9450eac18e61aaae3077315a46a27295f73a732eb207b
+BAR_SHA_EXPECTED=2daf85d0a42e221a86f80c7d4db2b571c3efc1b7ba8537ec1d25e07ff46b7a40
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

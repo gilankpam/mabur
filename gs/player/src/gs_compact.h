@@ -20,6 +20,10 @@ struct MaskAtlas;
 //   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
 //   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
 //
+// With the GS's channel scan enabled (sideport scan.state != "off") the
+// channel reads "ch:149(a)": the number may be an auto-selected pick rather
+// than the configured home (docs/channel-select.md).
+//
 // TWO rows, not one, purely for type size: the eleven items on a single
 // line cap out at 22 px on a 1080p panel (132 worst-case characters into
 // 1856 px), which is too small to read on the GS screen. Split across two

@@ -244,6 +244,11 @@ A <t> <card> <ch> <cca> <fa> <own> <foreign> <igi|->         # in-flight energy
 
 ## Sideport keys (as built)
 
+The player's compact GS bar marks the channel `ch:149(a)` whenever the GS
+reports `scan.state` other than `off`, so a pilot can tell an auto-selected
+channel from a configured one; an older maburgs with no `scan` block shows
+the plain `ch:149`.
+
 The spec sketched a `radio.*` block; the shipped schema instead extends the
 existing `link` object and adds one new top-level object, to match what
 already existed (`link.channel` predates this feature and already drives
