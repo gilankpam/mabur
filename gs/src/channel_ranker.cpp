@@ -39,11 +39,12 @@ std::vector<RankEntry> ChannelRanker::ranked() const {
   for (const RankEntry& e : entries_)
     if (e.visits >= static_cast<uint32_t>(min_rounds_)) out.push_back(e);
   // Stable sort keeps config order (home first) as the final tie-break.
+  // Tie-break: valid floor before invalid; among valid, lower floor_dbm first.
   std::stable_sort(out.begin(), out.end(), [](const RankEntry& a, const RankEntry& b) {
     if (a.worst_busy != b.worst_busy) return a.worst_busy < b.worst_busy;
-    if (a.floor_valid && b.floor_valid && a.floor_dbm != b.floor_dbm)
-      return a.floor_dbm < b.floor_dbm;
-    return false;
+    if (a.floor_valid != b.floor_valid) return a.floor_valid;   // valid before invalid
+    if (a.floor_valid && a.floor_dbm != b.floor_dbm) return a.floor_dbm < b.floor_dbm;
+    return false;                                                 // stable: config order
   });
   return out;
 }

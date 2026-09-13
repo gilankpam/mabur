@@ -21,8 +21,9 @@ struct RankEntry {
   int8_t floor_dbm = 0;
 };
 
-// Pure boot-time ranking: worst visit wins-or-loses, floor as tie-break,
-// home first, then config order. No improvement margin, no "clean" bar.
+// Pure boot-time ranking: worst visit wins-or-loses; tie-break by valid floor
+// before none, lower floor_dbm first among valid, then config order (home first).
+// No improvement margin, no "clean" bar.
 class ChannelRanker {
  public:
   ChannelRanker(uint8_t home, const std::vector<uint8_t>& candidates, int min_rounds);

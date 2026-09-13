@@ -62,4 +62,15 @@ TEST(unknown_channel_ignored) {
   CHECK(r.ranked().empty());
   CHECK(r.proposal() == 136);
 }
+
+TEST(floor_tiebreak_is_transitive_with_a_floorless_entry_between) {
+  ChannelRanker r(1, {2, 3, 4}, 1);
+  r.add(S(1, 0, 0, 0, 0));
+  r.add(S(2, 0, 0, 0, 0, true, -70));
+  r.add(S(3, 0, 0, 0, 0));
+  r.add(S(4, 0, 0, 0, 0, true, -95));
+  auto k = r.ranked();
+  REQUIRE(k.size() == 4);
+  CHECK(k[0].ch == 4); CHECK(k[1].ch == 2); CHECK(k[2].ch == 1); CHECK(k[3].ch == 3);
+}
 MTEST_MAIN
