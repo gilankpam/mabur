@@ -1,6 +1,7 @@
 #include "mtest.h"
 #include "cal_apply.h"
 #include "scratch.h"
+#include "mabur/rc_proto.h"
 
 #include <fstream>
 #include <sstream>
@@ -13,13 +14,12 @@ namespace {
 const char* kSample = R"(# a comment that must survive
 [radio]
 usb_vid    = 3034
-power_mode = "none"      # set to offset to use rate_walls_idx
+power_mode = "none"      # set to offset to use rate_walls_rel
 
 # Wall-equalization measured on my vtx not yours.
-rate_walls_idx  = [91, 91, 91, 91, 73, 56, 51, 49]
-legacy_wall_idx = 91
+rate_walls_rel  = [63, 63, 63, 42, 20, 1, -2, -4]
+legacy_wall_rel = 63
 wall_margin_db  = 1.0
-base_ref_idx    = 53       # derived diffs must land in [-64,63] or boot fails
 
 [fec]
 symbol_size = 332
@@ -27,13 +27,12 @@ symbol_size = 332
 
 CalWrite sample_write() {
   CalWrite w;
-  w.walls = {88, 88, 88, 95, 73, 54, 51, 49};
-  w.legacy_wall = 88;
-  w.base_ref_idx = 50;
+  w.walls = {60, 60, 60, 45, 22, 6, 9, 5};
+  w.legacy_wall = 60;
   return w;
 }
 
-// Same as kSample but with the rate_walls_idx line removed entirely --
+// Same as kSample but with the rate_walls_rel line removed entirely --
 // stands in for "unexpected file structure" (missing, hand-edited,
 // reformatted): patch_toml can't find the line to rewrite, and that must
 // be refused loudly rather than silently produce a config that never
@@ -41,11 +40,10 @@ CalWrite sample_write() {
 const char* kSampleMissingRateWalls = R"(# a comment that must survive
 [radio]
 usb_vid    = 3034
-power_mode = "none"      # set to offset to use rate_walls_idx
+power_mode = "none"      # set to offset to use rate_walls_rel
 
-legacy_wall_idx = 91
+legacy_wall_rel = 63
 wall_margin_db  = 1.0
-base_ref_idx    = 53       # derived diffs must land in [-64,63] or boot fails
 
 [fec]
 symbol_size = 332
@@ -53,13 +51,13 @@ symbol_size = 332
 
 }  // namespace
 
-TEST(patch_rewrites_only_the_four_keys) {
+TEST(patch_rewrites_only_the_three_keys) {
   const auto out = patch_toml(kSample, sample_write());
-  CHECK(out.find("rate_walls_idx  = [88, 88, 88, 95, 73, 54, 51, 49]") !=
+  CHECK(out.find("rate_walls_rel  = [60, 60, 60, 45, 22, 6, 9, 5]") !=
         std::string::npos);
-  CHECK(out.find("legacy_wall_idx = 88") != std::string::npos);
-  CHECK(out.find("base_ref_idx    = 50") != std::string::npos);
+  CHECK(out.find("legacy_wall_rel = 60") != std::string::npos);
   CHECK(out.find("power_mode = \"offset\"") != std::string::npos);
+  CHECK(out.find("base_ref_idx") == std::string::npos);
 }
 
 TEST(patch_preserves_every_comment_and_unrelated_key) {
@@ -73,21 +71,24 @@ TEST(patch_preserves_every_comment_and_unrelated_key) {
 }
 
 TEST(patch_leaves_undetermined_entries_untouched) {
+  // The sentinel slot's original value is itself negative -- this pins
+  // that the sentinel check compares against kWallUndetermined (-128), not
+  // against "< 0", and that a kept negative original round-trips intact.
   CalWrite w = sample_write();
-  w.walls[3] = -1;  // undetermined: keep the existing 91
+  w.walls[6] = mabur::rc::kWallUndetermined;  // undetermined: keep the existing -2
   const auto out = patch_toml(kSample, w);
-  CHECK(out.find("rate_walls_idx  = [88, 88, 88, 91, 73, 54, 51, 49]") !=
+  CHECK(out.find("rate_walls_rel  = [60, 60, 60, 45, 22, 6, -2, 5]") !=
         std::string::npos);
 }
 
 TEST(patch_leaves_undetermined_legacy_untouched) {
-  // Mirrors the walls[] sentinel test above, for legacy_wall_idx: MCS0
+  // Mirrors the walls[] sentinel test above, for legacy_wall_rel: MCS0
   // came back undetermined this session, so the line must be left exactly
   // as the original had it, not rewritten to a fabricated number.
   CalWrite w = sample_write();
-  w.legacy_wall = -1;
+  w.legacy_wall = mabur::rc::kWallUndetermined;
   const auto out = patch_toml(kSample, w);
-  CHECK(out.find("legacy_wall_idx = 91") != std::string::npos);
+  CHECK(out.find("legacy_wall_rel = 63") != std::string::npos);
 }
 
 TEST(patch_output_still_parses) {
@@ -102,18 +103,18 @@ TEST(patch_output_still_parses) {
 }
 
 TEST(range_check_matches_the_config_loader) {
-  // config.cpp refuses a config whose derived diff (wall - margin*4 -
-  // base_ref) leaves [-64,63]; writing one would fail boot forever.
   CalWrite w;
-  w.walls = {127, 127, 127, 127, 127, 127, 127, 127};
-  w.legacy_wall = 127;
-  w.base_ref_idx = 0;   // diff = 127 - 4 - 0 = 123, way out of range
+  w.walls = {63, 63, 63, 63, 63, 63, 63, -62};
+  w.legacy_wall = 63;
   std::string why;
-  CHECK(!walls_in_range(w, 1.0, &why));
-  CHECK(why.find("base_ref_idx") != std::string::npos);
+  CHECK(!walls_in_range(w, 1.0, &why));   // -62 - 4 = -66 < -64
+  CHECK(why.find("rate_walls_rel") != std::string::npos);
 
-  CalWrite ok = sample_write();
-  CHECK(walls_in_range(ok, 1.0, &why));
+  CalWrite hi = sample_write();
+  hi.walls[0] = 64;                       // outside the field outright
+  CHECK(!walls_in_range(hi, 1.0, &why));
+
+  CHECK(walls_in_range(sample_write(), 1.0, &why));
 }
 
 TEST(apply_writes_backup_and_new_file) {
@@ -129,16 +130,15 @@ TEST(apply_writes_backup_and_new_file) {
 
   std::ifstream now(path);
   std::stringstream n; n << now.rdbuf();
-  CHECK(n.str().find("base_ref_idx    = 50") != std::string::npos);
+  CHECK(n.str().find("legacy_wall_rel = 60") != std::string::npos);
 }
 
 TEST(apply_refuses_out_of_range_without_touching_the_file) {
   const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal2.toml";
   { std::ofstream f(path); f << kSample; }
   CalWrite bad;
-  bad.walls = {127, 127, 127, 127, 127, 127, 127, 127};
-  bad.legacy_wall = 127;
-  bad.base_ref_idx = 0;
+  bad.walls = {64, 64, 64, 64, 64, 64, 64, 64};
+  bad.legacy_wall = 64;
   std::string err;
   CHECK(apply_calibration(path, bad, 1.0, &err) == ApplyResult::OutOfRange);
   std::ifstream f(path);
@@ -158,35 +158,12 @@ TEST(apply_refuses_when_a_required_key_is_missing) {
   std::string err;
   CHECK(apply_calibration(path, sample_write(), 1.0, &err) ==
         ApplyResult::KeyNotFound);
-  CHECK(err.find("rate_walls_idx") != std::string::npos);
+  CHECK(err.find("rate_walls_rel") != std::string::npos);
   std::ifstream f(path);
   std::stringstream s; s << f.rdbuf();
   CHECK(s.str() == kSampleMissingRateWalls);   // untouched
   std::ifstream tmp(path + ".new");
   CHECK(!tmp.good());   // never even got as far as writing a scratch file
-}
-
-TEST(apply_rejects_a_file_only_the_real_loader_can_reject) {
-  // Pins the load_config() switch: parse_toml_file would happily accept
-  // base_ref_idx = -1 (a syntactically valid negative int), and
-  // walls_in_range() only checks the DERIVED diff, not base_ref_idx's own
-  // [0,127] range (config.cpp) -- so this candidate sails through step 1
-  // and would have sailed through the old parse_toml_file-only check too.
-  // Only load_config()'s own range check catches it. Revert the
-  // verification call to parse_toml_file and this test starts failing.
-  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal7.toml";
-  { std::ofstream f(path); f << kSample; }
-  CalWrite w;
-  w.walls = {60, 60, 60, 60, 60, 60, 60, 60};
-  w.legacy_wall = 60;
-  w.base_ref_idx = -1;   // diff = 60 - 4 - (-1) = 57, in range; base_ref_idx itself is not
-  std::string err;
-  CHECK(apply_calibration(path, w, 1.0, &err) == ApplyResult::ReparseFailed);
-  std::ifstream f(path);
-  std::stringstream s; s << f.rdbuf();
-  CHECK(s.str() == kSample);   // never published
-  std::ifstream tmp(path + ".new");
-  CHECK(!tmp.good());
 }
 
 TEST(apply_never_publishes_a_file_that_will_not_parse) {

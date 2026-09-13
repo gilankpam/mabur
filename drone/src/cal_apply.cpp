@@ -26,7 +26,7 @@ namespace {
 
 // Leading-whitespace-tolerant match for a bare top-level key: the key text
 // followed (after optional whitespace) by '='. Rejects a key that's really
-// a longer identifier's prefix (e.g. this must not fire for "legacy_wall_idx"
+// a longer identifier's prefix (e.g. this must not fire for "legacy_wall_rel"
 // while scanning for "legacy"). On success, *key_begin is where the key's
 // own leading whitespace starts and *eq_pos is the index of '='.
 bool match_key(const std::string& line, const std::string& key,
@@ -109,7 +109,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w,
   for (std::string& line : lines) {
     size_t key_begin, eq_pos;
 
-    if (match_key(line, "rate_walls_idx", &key_begin, &eq_pos)) {
+    if (match_key(line, "rate_walls_rel", &key_begin, &eq_pos)) {
       size_t v = eq_pos + 1;
       while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
       if (v < line.size() && line[v] == '[') {
@@ -118,46 +118,35 @@ std::string patch_toml(const std::string& text, const CalWrite& w,
           const auto orig = parse_int_array(line.substr(v + 1, close - v - 1));
           std::string arr = "[";
           for (int i = 0; i < 8; ++i) {
-            const int val = w.walls[static_cast<size_t>(i)] == -1
-                                ? orig[static_cast<size_t>(i)]
-                                : w.walls[static_cast<size_t>(i)];
+            const int val =
+                w.walls[static_cast<size_t>(i)] == mabur::rc::kWallUndetermined
+                    ? orig[static_cast<size_t>(i)]
+                    : w.walls[static_cast<size_t>(i)];
             if (i) arr += ", ";
             arr += std::to_string(val);
           }
           arr += "]";
-          line = rewrite_line(line, key_begin, std::string("rate_walls_idx").size(),
+          line = rewrite_line(line, key_begin, std::string("rate_walls_rel").size(),
                                eq_pos, arr, close + 1);
-          if (status) status->rate_walls_idx = true;
+          if (status) status->rate_walls_rel = true;
         }
       }
       continue;
     }
 
-    if (match_key(line, "legacy_wall_idx", &key_begin, &eq_pos)) {
-      // -1 = not swept this session (derived from MCS0, per the header
-      // comment) -- leave the line untouched rather than write a
-      // fabricated number.
-      if (w.legacy_wall == -1) continue;
+    if (match_key(line, "legacy_wall_rel", &key_begin, &eq_pos)) {
+      // kWallUndetermined = not swept this session (derived from MCS0, per
+      // the header comment) -- leave the line untouched rather than write
+      // a fabricated number.
+      if (w.legacy_wall == mabur::rc::kWallUndetermined) continue;
       size_t v = eq_pos + 1;
       while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
       size_t e = v;
       if (e < line.size() && line[e] == '-') ++e;
       while (e < line.size() && std::isdigit(static_cast<unsigned char>(line[e]))) ++e;
-      line = rewrite_line(line, key_begin, std::string("legacy_wall_idx").size(),
+      line = rewrite_line(line, key_begin, std::string("legacy_wall_rel").size(),
                            eq_pos, std::to_string(w.legacy_wall), e);
-      if (status) status->legacy_wall_idx = true;
-      continue;
-    }
-
-    if (match_key(line, "base_ref_idx", &key_begin, &eq_pos)) {
-      size_t v = eq_pos + 1;
-      while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-      size_t e = v;
-      if (e < line.size() && line[e] == '-') ++e;
-      while (e < line.size() && std::isdigit(static_cast<unsigned char>(line[e]))) ++e;
-      line = rewrite_line(line, key_begin, std::string("base_ref_idx").size(),
-                           eq_pos, std::to_string(w.base_ref_idx), e);
-      if (status) status->base_ref_idx = true;
+      if (status) status->legacy_wall_rel = true;
       continue;
     }
 
@@ -186,67 +175,56 @@ std::string patch_toml(const std::string& text, const CalWrite& w,
 }
 
 bool walls_in_range(const CalWrite& w, double margin_db, std::string* why) {
-  // Mirrors drone/src/config.cpp:133-155 exactly, including its message
-  // wording, so a refusal here reads the same way a boot-time refusal
-  // would. This pre-check and the load_config() verification step later in
+  // Mirrors drone/src/config.cpp exactly, including its message wording, so
+  // a refusal here reads the same way a boot-time refusal would. This
+  // pre-check and the load_config() verification step later in
   // apply_calibration() serve different purposes and both stay: this one
   // refuses a bad table before the disk is touched at all, with a specific
   // OutOfRange result and a message naming the exact derivation that
   // failed; load_config() is the backstop that catches anything this
-  // model does not -- a mistyped key, a value outside the four keys we
+  // model does not -- a mistyped key, a value outside the three keys we
   // patch, a config field this function knows nothing about.
   const int m = static_cast<int>(std::lround(margin_db * 4.0));
-  for (size_t i = 0; i < w.walls.size(); ++i) {
-    if (w.walls[i] == -1) continue;  // undetermined this session, not written
-    const int diff = w.walls[i] - m - w.base_ref_idx;
-    if (diff < -64 || diff > 63) {
-      if (why)
-        *why = "radio.rate_walls_idx[" + std::to_string(i) +
-               "]: derived diff (wall - wall_margin_db*4 - base_ref_idx) = " +
-               std::to_string(diff) +
-               " is out of the 7-bit hardware field range [-64,63] -- "
-               "check base_ref_idx/wall_margin_db calibration";
+  auto check = [&](int v, const std::string& key) {
+    if (v == mabur::rc::kWallUndetermined) return true;
+    if (v < rc::kRelMin || v > rc::kRelMax) {
+      if (why) *why = key + ": " + std::to_string(v) +
+                      " is outside the 7-bit hardware field range [-64,63]";
       return false;
     }
-  }
-  if (w.legacy_wall != -1) {
-    const int diff = w.legacy_wall - m - w.base_ref_idx;
-    if (diff < -64 || diff > 63) {
-      if (why)
-        *why = "radio.legacy_wall_idx: derived diff (legacy_wall_idx - "
-               "wall_margin_db*4 - base_ref_idx) = " +
-               std::to_string(diff) +
-               " is out of the 7-bit hardware field range [-64,63] -- "
-               "check base_ref_idx/wall_margin_db calibration";
+    if (v - m < rc::kRelMin) {
+      if (why) *why = key + ": " + std::to_string(v) +
+                      " - wall_margin_db*4 = " + std::to_string(v - m) +
+                      " is below the hardware field floor -64";
       return false;
     }
-  }
-  return true;
+    return true;
+  };
+  for (size_t i = 0; i < w.walls.size(); ++i)
+    if (!check(w.walls[i], "radio.rate_walls_rel[" + std::to_string(i) + "]"))
+      return false;
+  return check(w.legacy_wall, "radio.legacy_wall_rel");
 }
 
 // Checks that patch_toml() actually found and rewrote every key this file
 // is required to have touched. Required-ness mirrors CalWrite's own
-// sentinel rule: rate_walls_idx, base_ref_idx and power_mode are always
-// rewritten, so their PatchStatus flag must always be set; legacy_wall_idx
-// is only required when CalWrite::legacy_wall is determined (not -1) --
-// when it's -1 the line is deliberately left untouched and its flag is
-// expected to stay false.
+// sentinel rule: rate_walls_rel and power_mode are always rewritten, so
+// their PatchStatus flag must always be set; legacy_wall_rel is only
+// required when CalWrite::legacy_wall is determined (not
+// kWallUndetermined) -- when it's kWallUndetermined the line is
+// deliberately left untouched and its flag is expected to stay false.
 bool patch_covered_required_keys(const PatchStatus& s, const CalWrite& w,
                                   std::string* why) {
-  if (!s.rate_walls_idx) {
-    if (why) *why = "radio.rate_walls_idx: line not found in config -- unexpected file structure, nothing written";
-    return false;
-  }
-  if (!s.base_ref_idx) {
-    if (why) *why = "radio.base_ref_idx: line not found in config -- unexpected file structure, nothing written";
+  if (!s.rate_walls_rel) {
+    if (why) *why = "radio.rate_walls_rel: line not found in config -- unexpected file structure, nothing written";
     return false;
   }
   if (!s.power_mode) {
     if (why) *why = "radio.power_mode: line not found in config -- unexpected file structure, nothing written";
     return false;
   }
-  if (w.legacy_wall != -1 && !s.legacy_wall_idx) {
-    if (why) *why = "radio.legacy_wall_idx: line not found in config -- unexpected file structure, nothing written";
+  if (w.legacy_wall != mabur::rc::kWallUndetermined && !s.legacy_wall_rel) {
+    if (why) *why = "radio.legacy_wall_rel: line not found in config -- unexpected file structure, nothing written";
     return false;
   }
   return true;
@@ -407,7 +385,7 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
   // proves the bytes are syntactically valid TOML; everything that
   // actually fails a boot -- check_known_keys' unknown-key rejection, and
   // every per-section range/type check config.cpp applies, including the
-  // very rate_walls_idx/base_ref_idx diff check walls_in_range() mirrors
+  // very rate_walls_rel/legacy_wall_rel range check walls_in_range() mirrors
   // above -- lives inside load_config(), past the parse. A verification
   // step that cannot detect the failure it exists to guard against is
   // worse than none: it would make maburd's later refusal look
