@@ -31,7 +31,7 @@ STALE_S = 2.0
 LABEL_W = 6
 CARD_COLS = [("st", 4), ("pps", 5), ("inj", 5), ("Mbps", 5), ("loss%", 5),
              ("crc", 5), ("age", 6), ("forgn", 6), ("self", 6), ("tx", 4),
-             ("txf", 4)]
+             ("txf", 4), ("busy", 6)]
 # LNK blocks (compact renderer only): one block per link type (class), a
 # decode line for the FEC streams, then per-card signal rows sharing these
 # columns across all blocks (their titles live on the LNK rule line).
@@ -313,13 +313,16 @@ def render_rows_compact(model, wall, width):
         tx_card = link.get("tx_card")
         vtx_id = link.get("vtx_id")
         chan = link.get("channel")
+        home = link.get("home")
+        scan = d.get("scan") or {}
         bw = op.get("bw")
         cmd_ov_base = op.get("overhead_base")
         cmd_ov_enh = op.get("overhead_enh")
         drone_applied = (d.get("drone") or {}).get("applied") or {}
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
-            f"maburgs   {state_s}   vtx {_s(vtx_id)}   ch {_s(chan)}   "
+            f"maburgs   {state_s}   vtx {_s(vtx_id)}   "
+            f"ch {_s(chan)}/h{_s(home)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))}   "
             f"tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
             f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}"
@@ -351,6 +354,8 @@ def render_rows_compact(model, wall, width):
                 _f(c.get("self_pps"), CARD_COLS[8][1], 1),
                 _f(c.get("tx_pps"), CARD_COLS[9][1], 0),
                 _f(c.get("tx_fail"), CARD_COLS[10][1]),
+                _f((e.get("cca", 0) - min(e.get("cca", 0), e.get("own", 0))) + e.get("fa", 0) + e.get("foreign", 0)
+                   if (e := c.get("energy")) else None, CARD_COLS[11][1], 0),
             ]
             rows.append(_grid_row(f"  c{_s(c.get('id'))}", cells))
 
@@ -1171,6 +1176,8 @@ def panel_gs_radios(model, wall):
                 _f(c.get("self_pps"), CARD_COLS[8][1], 1),
                 _f(c.get("tx_pps"), CARD_COLS[9][1], 0),
                 _f(txf, CARD_COLS[10][1]),
+                _f((e.get("cca", 0) - min(e.get("cca", 0), e.get("own", 0))) + e.get("fa", 0) + e.get("foreign", 0)
+                   if (e := c.get("energy")) else None, CARD_COLS[11][1], 0),
             ]
             text = _grid_row(f"  c{_s(c.get('id'))}", cells)
             spans = []

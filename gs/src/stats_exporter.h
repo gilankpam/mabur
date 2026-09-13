@@ -27,6 +27,13 @@ struct StatsClassIn {  // copied from ClassTrack (gs/src/aggregator.h)
 // Class index order matches RfClass in gs/src/aggregator.h: s0,s1,probe,msp,ctrl.
 constexpr int kNumStatsClasses = 5;
 
+// Per-card energy detection sample (spec 2026-09-13-auto-channel-select).
+struct StatsEnergyIn {
+  uint32_t cca = 0, fa = 0;
+  uint64_t own = 0, foreign = 0;
+  std::optional<int> igi;
+};
+
 struct StatsCardIn {
   bool up = false;
   uint64_t frames = 0, crc_fail = 0;
@@ -38,6 +45,7 @@ struct StatsCardIn {
   uint64_t tx_frames = 0;      // control frames this card sent OK
   uint64_t tx_fail = 0;        // send_control failures (cumulative)
   std::array<StatsClassIn, kNumStatsClasses> classes{};
+  std::optional<StatsEnergyIn> energy;  // nullopt -> JSON null
 };
 
 struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
@@ -179,6 +187,12 @@ struct StatsInput {
   // and reading it out of maburplay's own config instead would say what
   // the PLAYER believes rather than what the receiver is tuned to.
   int channel = 0;
+  // Home (rendezvous) channel and the boot-time scan's state
+  // (spec 2026-09-13-auto-channel-select): "scouting" | "frozen" | "off".
+  int home = 0;
+  std::string scan_state = "off";
+  uint64_t scan_rounds = 0;
+  std::optional<int> scan_pick;
   StatsRcfSlotIn rcf_slot;
   bool in_session = false;  // VrxState::SESSION
   int tx_card = 0;
