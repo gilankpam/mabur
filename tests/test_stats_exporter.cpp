@@ -1107,4 +1107,18 @@ TEST(exports_home_scan_block_and_card_energy) {
   CHECK(j["cards"][0]["energy"].is_null());
 }
 
+TEST(card_energy_igi_null_when_absent) {
+  StatsInput in = base_input();
+  REQUIRE(!in.cards.empty());
+  StatsEnergyIn e; e.cca = 61; e.fa = 2; e.own = 59; e.foreign = 1;
+  e.igi = std::nullopt;
+  in.cards[0].energy = e;
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  CHECK(ex.poll(1000, in));
+  json j = cap.last();
+  CHECK(j["cards"][0]["energy"]["cca"] == 61);
+  CHECK(j["cards"][0]["energy"]["igi"].is_null());
+}
+
 MTEST_MAIN

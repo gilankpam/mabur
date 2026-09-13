@@ -551,6 +551,34 @@ class GsRadiosPanelTest(unittest.TestCase):
         rows = panel_gs_radios(_fresh(d), 100.2)
         self.assertTrue(any("no cards" in t for t, _ in rows))
 
+    def test_energy_busy_cell(self):
+        # busy = (cca - min(cca, own)) + fa + foreign; card1 carries no
+        # "energy" key at all (old-daemon datagram) -> "--".
+        d = dict(DGRAM)
+        d["cards"] = [
+            dict(DGRAM["cards"][0],
+                 energy={"cca": 61, "fa": 2, "own": 59, "foreign": 1, "igi": 40}),
+            DGRAM["cards"][1],
+        ]
+        rows = panel_gs_radios(_fresh(d), 100.2)
+        header = rows[1][0]
+        data0 = next(t for t, _ in rows if t.lstrip().startswith("c0"))
+        data1 = next(t for t, _ in rows if t.lstrip().startswith("c1"))
+        end = header.index("busy") + len("busy")
+        w = dict(CARD_COLS)["busy"]
+        self.assertEqual(data0[end - w:end].strip(), "5")
+        self.assertEqual(data1[end - w:end].strip(), "--")
+
+    def test_energy_null_renders_dashes(self):
+        d = dict(DGRAM)
+        d["cards"] = [dict(DGRAM["cards"][0], energy=None), DGRAM["cards"][1]]
+        rows = panel_gs_radios(_fresh(d), 100.2)
+        header = rows[1][0]
+        data0 = next(t for t, _ in rows if t.lstrip().startswith("c0"))
+        end = header.index("busy") + len("busy")
+        w = dict(CARD_COLS)["busy"]
+        self.assertEqual(data0[end - w:end].strip(), "--")
+
 
 class LayoutTest(unittest.TestCase):
     def test_wide_hstack_gutter_present(self):
@@ -598,6 +626,23 @@ class RenderRowsCompactTest(unittest.TestCase):
         self.assertLess(90, GRID_WIDTH)
         rows = render_rows_compact(_fresh(), wall=100.2, width=90)
         self.assertEqual(len(rows), 1)
+
+    def test_card_energy_busy_cell(self):
+        # Wide grid (width >= GRID_WIDTH) so the CARD block actually renders.
+        d = dict(DGRAM)
+        d["cards"] = [
+            dict(DGRAM["cards"][0],
+                 energy={"cca": 61, "fa": 2, "own": 59, "foreign": 1, "igi": 40}),
+            DGRAM["cards"][1],
+        ]
+        rows = render_rows_compact(_fresh(d), wall=100.2, width=200)
+        header = next(r for r in rows if r.startswith("CARD"))
+        data0 = next(r for r in rows if r.lstrip().startswith("c0"))
+        data1 = next(r for r in rows if r.lstrip().startswith("c1"))
+        end = header.index("busy") + len("busy")
+        w = dict(CARD_COLS)["busy"]
+        self.assertEqual(data0[end - w:end].strip(), "5")
+        self.assertEqual(data1[end - w:end].strip(), "--")  # no "energy" key
 
 
 class HstackTest(unittest.TestCase):
