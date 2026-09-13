@@ -255,11 +255,18 @@ def _render_run(run):
         wall, _floor_idx, _best_card, flags = run.walls[rate]
         if run.undetermined(wall):
             # Undetermined: no wall could be derived, so nothing downstream
-            # of it (park index, verify delivery) gets a number either. The
-            # sentinel value itself (-128 for v3, -1 for v1/v2) never
-            # prints -- v3's -128 is not a TXAGC step an operator should
-            # read as one, and printing it invites exactly that misread.
-            wall_s, park_s, verify_s = "undetermined", "-", "-"
+            # of it (park index, verify delivery) gets a number either.
+            # v1/v2 files render the raw sentinel here exactly as they
+            # always have (-1, never a word) -- that output must not
+            # change for a file already on the DVR (CLAUDE.md). v3's
+            # sentinel is -128, which must never print as a number an
+            # operator could misread as a TXAGC step, so it prints "-"
+            # instead; the flags column already spells out "undetermined"
+            # in both cases, so the wall column need not repeat it.
+            if run.version >= 3:
+                wall_s, park_s, verify_s = "-", "-", "-"
+            else:
+                wall_s, park_s, verify_s = str(wall), "-", "-"
         else:
             wall_s = str(wall)
             park_s = str(wall - park_step)

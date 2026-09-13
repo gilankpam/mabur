@@ -207,6 +207,22 @@ class TestReportV3(unittest.TestCase):
         row = [l for l in out.splitlines() if l.startswith("mcs7")][0]
         self.assertIn("undetermined", row)
         self.assertNotIn("-128", row)
+        # The word appears once (the flags column) -- the wall column
+        # prints "-", not a second "undetermined", to keep the wall(rel)
+        # column's width sane.
+        self.assertEqual(row.count("undetermined"), 1)
+        fields = row.split()
+        self.assertEqual(fields[1], "-")  # wall column
+
+    def test_v1_undetermined_row_renders_exactly_as_before(self):
+        # Regression: v1/v2 files must render byte-for-byte as they always
+        # have (recordings on the DVR outlive the code, CLAUDE.md) -- the
+        # wall column keeps printing the raw sentinel (-1), never the word
+        # "undetermined", even though the flags column's own "undetermined"
+        # text satisfies the weaker (pre-existing) assertion above it.
+        old_row = (f"{'mcs7':<6}{'-1':>6}{'-':>6}{'-':>7}   "
+                   f"undetermined").rstrip()
+        self.assertIn(old_row, render(GOOD).splitlines())
 
     def test_v1_still_renders_with_the_anchor(self):
         out = render(GOOD)
