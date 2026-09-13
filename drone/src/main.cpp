@@ -25,6 +25,7 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <exception>
@@ -74,9 +75,11 @@
 // so the same binary runs (in dry-run) on a machine with no dongle attached.
 #endif
 
+#include "AdapterCaps.h"
 #include "AmpduMode.h"
 #include "RadiotapBuilder.h"
 #include "RxPacket.h"
+#include "RxSense.h"
 #include "SignalStop.h"
 #include "TxMode.h"
 #include "UsbOpen.h"
@@ -180,8 +183,17 @@ struct DevourerSink : mabur::FrameSink {
   // ~26 Mbps regardless of MCS). Null = direct synchronous path.
   mabur::UsbTxPool* pool = nullptr;
 
+  // Shared/exclusive gate against RealActuator::retune's FastRetune
+  // (devourer threading contract: a control-plane call must not overlap a
+  // bulk-OUT from any sender thread). Every USB sender here takes it
+  // shared; retune takes it exclusive. Null in dry-run, where there is no
+  // device to retune and no gate to take.
+  std::shared_mutex* gate = nullptr;
+
   bool send(const uint8_t* p, size_t n) override {
     if (ready && !ready->load(std::memory_order_acquire)) return false;
+    std::shared_lock<std::shared_mutex> sg;
+    if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
     std::lock_guard<std::mutex> l(m);
     return dev->send_packet(p, n);
   }
@@ -211,6 +223,8 @@ struct DevourerSink : mabur::FrameSink {
     }
     std::vector<TxPacketView> v(n);
     for (size_t i = 0; i < n; ++i) v[i] = {frames[i].data, frames[i].len};
+    std::shared_lock<std::shared_mutex> sg;
+    if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
     std::lock_guard<std::mutex> l(m);
     return dev->send_packets(v.data(), n);
   }
@@ -409,13 +423,42 @@ struct RealActuator : mabur::Actuator {
 #endif
   }
 
-  // Task 11 stub: RcAgent now calls this on a Disc.op_channel move and on
-  // the move-confirm/rendezvous fallback home. Task 12 wires it to a real
-  // FastRetune with the TX queue quiesced; for now just make the request
-  // visible on stderr so the state machine's behaviour is buildable and
-  // observable ahead of that.
+  // RcAgent calls this on a Disc.op_channel move and on the move-confirm/
+  // rendezvous fallback home, from the agent thread only (same contract as
+  // apply_op/send_control above). Null in dry-run (dev == nullptr): there is
+  // no device and no tx_gate to take, so that path is a pure stderr echo.
+  std::shared_mutex* tx_gate = nullptr;
+  uint8_t cur = 0;  // set to cfg.radio.channel where the actuator is configured
+
   void retune(uint8_t ch) override {
-    std::fprintf(stderr, "maburd: retune request %u (not wired yet)\n",
+    if (!dev) {
+      std::fprintf(stderr, "[dry-run] retune(%u)\n", static_cast<unsigned>(ch));
+      return;
+    }
+    // Exclusive against every USB sender (DevourerSink/UsbTxPool take the
+    // gate shared): FastRetune is a control-plane call and must not overlap
+    // a bulk-OUT (devourer threading contract). ~2.4 ms on the 8812EU.
+    const uint8_t from = cur;
+    {
+      std::unique_lock<std::shared_mutex> g(*tx_gate);
+      // The DISC_ACK that precedes this retune (RcAgent sends it via
+      // send_control -> sink->send, synchronous) has RETURNED from
+      // send_packet but may still be sitting in the chip's TX FIFO -- the
+      // GS commits the move on hearing that ack arrive on the OLD (home)
+      // channel; if FastRetune races it out from under the ack and it
+      // actually airs on the new channel instead, the GS never hears it on
+      // home and the lost-ack/retry cycle fires on every single move.
+      // Holding the gate exclusive already stops any NEW send from
+      // starting, but does nothing about a frame the chip already
+      // accepted and queued before this lock was taken; this sleep is
+      // what gives that frame time to actually leave the antenna on the
+      // old channel before FastRetune reprograms it. Once-per-move 5 ms
+      // TX stall.
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      dev->FastRetune(ch, /*cache_rf=*/true);
+    }
+    cur = ch;
+    std::fprintf(stderr, "maburd: retune %u -> %u\n", static_cast<unsigned>(from),
                  static_cast<unsigned>(ch));
   }
 };
@@ -1042,18 +1085,28 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // Gate for DevourerSink: stays false until InitWrite() completes bring-up.
   std::atomic<bool> device_ready{false};
 
+  // Exclusive against RealActuator::retune's FastRetune (devourer threading
+  // contract: control-plane calls must not overlap a bulk-OUT from any
+  // sender thread). Every USB sender in this function -- DevourerSink::send/
+  // send_many's direct branch, and the UsbTxPool send lambda below -- takes
+  // this shared; retune takes it exclusive. Declared here, ahead of every
+  // sender that references it.
+  std::shared_mutex tx_gate;
+
   DevourerSink dev_sink;
   dev_sink.dev = rtl_device.get();
   dev_sink.ready = &device_ready;
+  dev_sink.gate = &tx_gate;
 
   // Capacity 6 frames per sender: enough to keep every sender's next ≤3-
   // frame URB staged while it blocks in the current one, small enough that
   // backlog still lands in TxQueue (whose drop-oldest policy is the
   // FEC-recoverable erasure path).
   mabur::UsbTxPool tx_pool(
-      [dev = rtl_device.get()](const std::vector<std::vector<uint8_t>>& b) {
+      [dev = rtl_device.get(), &tx_gate](const std::vector<std::vector<uint8_t>>& b) {
         std::vector<TxPacketView> v(b.size());
         for (size_t i = 0; i < b.size(); ++i) v[i] = {b[i].data(), b[i].size()};
+        std::shared_lock<std::shared_mutex> sg(tx_gate);
         return dev->send_packets(v.data(), v.size());
       },
       cfg.radio.tx_threads,
@@ -1078,6 +1131,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   actuator.shared_op = &shared_op;
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
+  actuator.tx_gate = &tx_gate;
+  actuator.cur = static_cast<uint8_t>(cfg.radio.channel);
   // Encoder starts at the "normal" ROI QP (RcAgent only calls set_roi_qp on
   // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
   // so the telemetry collector needs this seeded to reflect what's actually
@@ -2419,6 +2474,26 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // FIFO mid-DLFW — see DevourerSink::ready.
   join_radio_init();
   if (radio_init_error) std::rethrow_exception(radio_init_error);
+
+  // Adapter caps + RX-sensor availability record, once at bring-up. Static
+  // per chip identity (AdapterCaps.h), so one read on the main thread here
+  // -- before StartRxLoop, so there is no sender/hot-thread contention to
+  // worry about -- is all this ever needs. GetRxEnergy(with_nhm=true) is
+  // the with-NHM variant (~2 ms) since this is a one-shot startup read, not
+  // a sampling-cadence call.
+  {
+    const devourer::AdapterCaps ac = rtl_device->GetAdapterCaps();
+    const RxEnergy e = rtl_device->GetRxEnergy(/*with_nhm=*/true);
+    std::fprintf(stderr,
+                 "maburd radio caps: %s %s %ux%u bw=%x tune5g=%u-%u fast_retune=%d "
+                 "sensors fa=%d igi=%d nhm=%d floor=%d\n",
+                 ac.chip_name ? ac.chip_name : "?", devourer::generation_name(ac.generation),
+                 ac.tx_chains, ac.rx_chains, ac.bw_mask,
+                 ac.tune_5g.valid ? ac.tune_5g.min_mhz : 0, ac.tune_5g.valid ? ac.tune_5g.max_mhz : 0,
+                 ac.fastretune_ok ? 1 : 0, e.valid_fa ? 1 : 0, e.valid_igi ? 1 : 0,
+                 e.valid_nhm ? 1 : 0, e.valid_noise_floor ? 1 : 0);
+  }
+
   // Bring-up record for the non-standard MAC state requested via
   // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
   // at info, and the production cross-build compiles info out
