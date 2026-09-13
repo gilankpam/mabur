@@ -143,11 +143,11 @@ class RcAgent {
   State state() const { return state_; }
   const AppliedOp& current() const { return applied_; }
 
-  // The drone's current radio channel (spec 2026-09-13
-  // auto-channel-select §6): cfg_.radio.channel (home) at boot, the DISC's
-  // op_channel while a follow_gs move is in effect, home again once the
-  // move falls back unconfirmed or the drone re-enters RENDEZVOUS by any
-  // path.
+  // The channel the agent last commanded (requested, not radio-confirmed)
+  // (spec 2026-09-13 auto-channel-select §6): cfg_.radio.channel (home) at
+  // boot, the DISC's op_channel while a follow_gs move is in effect, home
+  // again once the move falls back unconfirmed or the drone re-enters
+  // RENDEZVOUS by any path.
   uint8_t channel() const { return channel_; }
 
   // Telemetry accessors (spec 2026-07-26 drone-telemetry): read-only
@@ -200,12 +200,13 @@ class RcAgent {
   bool link_established_ = false;  // see take_link_established()
 
   // Auto channel select (spec 2026-09-13 §6). channel_ is home
-  // (cfg_.radio.channel) at construction and tracks the drone's actual
-  // radio channel from then on -- see channel(). move_pending_/move_at_ms_
-  // track an unconfirmed follow_gs move: set when a DISC requests a
-  // different channel and act_.retune() is called, cleared by the first
-  // subsequent accepted DISC/RCF that is not itself a new move (confirms
-  // the move) or by go_home_() (the fallback fires it home instead).
+  // (cfg_.radio.channel) at construction and tracks the channel the agent
+  // last commanded (requested, not radio-confirmed) from then on -- see
+  // channel(). move_pending_/move_at_ms_ track an unconfirmed follow_gs
+  // move: set when a DISC requests a different channel and act_.retune()
+  // is called, cleared by the first subsequent accepted DISC/RCF that is
+  // not itself a new move (confirms the move) or by go_home_() (the
+  // fallback fires it home instead).
   uint8_t channel_;
   bool move_pending_ = false;
   uint64_t move_at_ms_ = 0;

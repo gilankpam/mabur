@@ -195,7 +195,7 @@ TEST(disc_ack_advertises_frame_wire_cap) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/136,
                               /*op_width=*/40, 0, 2);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
@@ -1050,7 +1050,7 @@ TEST(link_established_latches_on_disc_link_up) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20,
+  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20,
                              /*init_profile=*/0, /*seq=*/1);
   agent.on_rc_frame(disc.data(), disc.size(), 10);  // RENDEZVOUS -> LINKED
   REQUIRE(agent.state() == RcAgent::State::LINKED);
@@ -1075,6 +1075,32 @@ TEST(disc_foreign_channel_acks_then_retunes) {
   CHECK(act.retunes[0] == 149);
   CHECK(agent.channel() == 149);
   CHECK(agent.state() == RcAgent::State::LINKED);
+}
+
+// GS re-proposes a channel mid-flight: the LINKED keep-alive DISC path must
+// ack the new channel, retune, and change NOTHING else (op-thrash contract).
+TEST(linked_keepalive_disc_foreign_channel_acks_then_retunes) {
+  auto cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto home = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20, 0, 1);
+  agent.on_rc_frame(home.data(), home.size(), 100);          // -> LINKED on home
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  const uint64_t gen_before = agent.current().generation;
+  const size_t applied_before = act.applied.size();
+  auto move = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 2);
+  agent.on_rc_frame(move.data(), move.size(), 200);          // LINKED keep-alive path
+  REQUIRE(act.controls.size() == 2);
+  auto ack = parse_disc_ack(act.controls[1].data(), act.controls[1].size());
+  REQUIRE(ack.has_value());
+  CHECK(ack->agreed_channel == 149);
+  REQUIRE(act.retunes.size() == 1);
+  CHECK(act.retunes[0] == 149);
+  CHECK(agent.channel() == 149);
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.current().generation == gen_before);           // no op re-apply
+  CHECK(act.applied.size() == applied_before);
 }
 
 TEST(disc_same_channel_never_retunes) {
