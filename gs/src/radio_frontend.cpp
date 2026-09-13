@@ -8,8 +8,10 @@
 #include <cstring>
 #include <memory>
 
+#include "AdapterCaps.h"
 #include "RadiotapBuilder.h"
 #include "RxPacket.h"
+#include "RxSense.h"
 #include "TxMode.h"
 #include "UsbDeviceLock.h"
 #include "UsbOpen.h"
@@ -133,6 +135,11 @@ bool RadioFrontend::open_and_start() {
   // frames past the SA filter; the aggregator counts them (crc_fail) and
   // keeps them out of the seq walk; UepDecoder::add_body salvages.
   dev_cfg.rx.keep_corrupted = true;
+  // Absolute idle floor (jgr3-nhm-abs-floor): only the with_nhm=true read
+  // pays for it (the scout's dwell read and the one-off caps read). The
+  // 1 Hz A record uses with_nhm=false and must stay a handful of register
+  // reads -- bench check in the auto-channel-select plan, Task 14.
+  dev_cfg.rx.abs_noise_floor = true;
   // Debug passthrough: devourer's env->config translation lives in its
   // examples/, not the library, so these two register-dump levers (used to
   // diff a live card against the vendor kernel's end state) must be wired
@@ -154,6 +161,24 @@ bool RadioFrontend::open_and_start() {
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
   device_->InitWrite(SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
+  channel_.store(cfg_.channel, std::memory_order_release);
+  {
+    const devourer::AdapterCaps ac = device_->GetAdapterCaps();
+    const RxEnergy e = device_->GetRxEnergy(/*with_nhm=*/true);
+    caps_.valid = ac.supported;
+    caps_.chip = ac.chip_name ? ac.chip_name : "";
+    caps_.gen = devourer::generation_name(ac.generation);
+    caps_.tx_chains = ac.tx_chains;
+    caps_.rx_chains = ac.rx_chains;
+    caps_.bw_mask = ac.bw_mask;
+    caps_.tune5g_lo = ac.tune_5g.valid ? ac.tune_5g.min_mhz : 0;
+    caps_.tune5g_hi = ac.tune_5g.valid ? ac.tune_5g.max_mhz : 0;
+    caps_.fast_retune = ac.fastretune_ok;
+    caps_.fa_ok = e.valid_fa;
+    caps_.igi_ok = e.valid_igi;
+    caps_.nhm_ok = e.valid_nhm;
+    caps_.floor_ok = e.valid_noise_floor;
+  }
   // Bring-up record for the non-standard MAC state requested via
   // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line at
   // info, and the production cross-build compiles info out
@@ -187,6 +212,7 @@ void RadioFrontend::on_packet(const Packet& pkt) {
     foreign_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
+  if (!pkt.RxAtrib.crc_err) own_.fetch_add(1, std::memory_order_relaxed);
   mabur::node::RxBody m;
   m.card_id = cfg_.card_id;
   m.mono_us = mono_us_now();
@@ -273,6 +299,28 @@ void RadioFrontend::on_packet(const Packet& pkt) {
     for (int i = 0; i < kPaceBuckets; ++i)
       rp_tsfl_hist_[i] = rp_host_hist_[i] = 0;
   }
+}
+
+bool RadioFrontend::retune(uint8_t ch) {
+  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  device_->FastRetune(ch, /*cache_rf=*/true);
+  channel_.store(ch, std::memory_order_release);
+  return true;
+}
+
+ScoutEnergy RadioFrontend::read_energy(bool with_nhm) {
+  ScoutEnergy out;
+  if (!ready_.load(std::memory_order_acquire) || !device_) return out;
+  const RxEnergy e = device_->GetRxEnergy(with_nhm);
+  out.fa_valid = e.valid_fa;
+  out.cca_ofdm = e.cca_ofdm;
+  out.fa_ofdm = e.fa_ofdm;
+  out.igi_valid = e.valid_igi;
+  out.igi = e.igi;
+  out.nhm_valid = e.valid_nhm;
+  out.floor_valid = e.valid_noise_floor;
+  out.floor_dbm = e.abs_noise_floor_dbm;
+  return out;
 }
 
 bool RadioFrontend::send_control(const std::vector<uint8_t>& body) {
