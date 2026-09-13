@@ -9,6 +9,8 @@
 
 namespace maburgs {
 
+constexpr int kCoarseLo = -40;
+constexpr int kCoarseHi = 63;
 constexpr uint8_t kCoarseStep = 4;
 constexpr int kFineHalfWidth = 8;
 constexpr uint16_t kCoarseFrames = 20;
@@ -25,8 +27,8 @@ mabur::rc::CalCmd make_coarse_plan(uint32_t vtx_id, uint32_t nonce);
 mabur::rc::CalCmd make_fine_plan(uint32_t vtx_id, uint32_t nonce,
                                  const std::array<RateWall, 8>& coarse);
 
-// One cell per rate at its parked index (wall - margin). A negative park
-// index means that rate was undetermined and is skipped.
+// One cell per rate at its parked index (wall - margin). kNoWall or a park
+// index out of [-64,63] means that rate was undetermined and is skipped.
 mabur::rc::CalCmd make_verify_plan(uint32_t vtx_id, uint32_t nonce,
                                    const std::array<int, 8>& park_idx);
 

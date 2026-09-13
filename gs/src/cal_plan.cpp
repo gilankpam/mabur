@@ -13,7 +13,8 @@ mabur::rc::CalCmd make_coarse_plan(uint32_t vtx_id, uint32_t nonce) {
   c.settle_ms = kSettleMs;
   c.gap_us = kGapUs;
   for (uint8_t r = 0; r < 8; ++r)
-    c.windows.push_back({r, 0, 124, kCoarseStep});
+    c.windows.push_back({r, static_cast<int8_t>(kCoarseLo),
+                         static_cast<int8_t>(kCoarseHi), kCoarseStep});
   return c;
 }
 
@@ -29,11 +30,11 @@ mabur::rc::CalCmd make_fine_plan(uint32_t vtx_id, uint32_t nonce,
   for (uint8_t r = 0; r < 8; ++r) {
     const auto& w = coarse[r];
     if (w.flags & (kCalNoDip | kCalUndetermined)) continue;
-    if (w.wall < 0) continue;
-    const int lo = std::max(0, w.wall - kFineHalfWidth);
-    const int hi = std::min(127, w.wall + kFineHalfWidth);
-    c.windows.push_back({r, static_cast<uint8_t>(lo),
-                         static_cast<uint8_t>(hi), 1});
+    if (w.wall == kNoWall) continue;
+    const int lo = std::max(mabur::rc::kRelMin, w.wall - kFineHalfWidth);
+    const int hi = std::min(mabur::rc::kRelMax, w.wall + kFineHalfWidth);
+    c.windows.push_back({r, static_cast<int8_t>(lo),
+                         static_cast<int8_t>(hi), 1});
   }
   return c;
 }
@@ -49,9 +50,10 @@ mabur::rc::CalCmd make_verify_plan(uint32_t vtx_id, uint32_t nonce,
   c.gap_us = kGapUs;
   for (uint8_t r = 0; r < 8; ++r) {
     const int idx = park_idx[r];
-    if (idx < 0 || idx > 127) continue;
-    c.windows.push_back({r, static_cast<uint8_t>(idx),
-                         static_cast<uint8_t>(idx), 1});
+    if (idx == kNoWall || idx < mabur::rc::kRelMin || idx > mabur::rc::kRelMax)
+      continue;
+    c.windows.push_back({r, static_cast<int8_t>(idx),
+                         static_cast<int8_t>(idx), 1});
   }
   return c;
 }

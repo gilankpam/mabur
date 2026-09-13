@@ -376,12 +376,11 @@ void CalSession::begin_verify(uint64_t now_ms) {
 }
 
 CalThresholds CalSession::thresholds_() const {
-  CalThresholds th = cfg_.th;
-  // The chip's per-rate diff field is 7-bit two's complement, so the highest
-  // expressible wall is base_ref_idx + 63 -- capped at 127, the top of the
-  // TXAGC range itself. No anchor means no rail (cal_analysis.h).
-  th.max_wall = base_ref_idx_ < 0 ? -1 : std::min(127, base_ref_idx_ + 63);
-  return th;
+  // TASK-6 MINIMAL COMPILE FIX (not the Task-7 port): CalThresholds no
+  // longer carries max_wall -- the rail is now the constant kRailRel, not
+  // derived from base_ref_idx_. This function otherwise still needs Task
+  // 7's full pass (idx truncation, wall < 0 checks elsewhere in this file).
+  return cfg_.th;
 }
 
 std::vector<CalCell> CalSession::sorted_cells(int rate) const {
