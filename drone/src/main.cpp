@@ -1345,16 +1345,23 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   std::atomic<std::shared_ptr<const rc::Telem>> last_telem_snapshot{
       std::make_shared<const rc::Telem>()};
 
+  // The chip's TXAGC reference for the boot channel (mcs7_index read back
+  // with no custom rate-diff table live, i.e. before SetTxPowerRateDiffs is
+  // first applied). Drone-internal only: it caps reference + diff at 127
+  // (power_plan.h) and never reaches config or the wire. 0 = not yet read
+  // by bring-up (below); make_power_plan treats anchor_idx <= 0 as no cap.
+  int boot_anchor_idx = 0;
+
   // Programs the wall-equalized rate-diff table + zeroes the global offset
   // (power_mode=="offset"): bring-up's one-shot plan (below) and
   // calibration's post-session restore (Critical fix 1, TX writer thread)
   // must never drift apart, so this is the ONE definition either of them
   // calls -- factored out rather than duplicated so a future change to
   // this derivation cannot fix one call site and silently miss the other.
-  auto apply_offset_power_plan = [&](const std::array<int, 8>& walls,
-                                     int legacy_wall, int base_ref_idx,
-                                     double margin_db) {
-    const auto plan = make_power_plan(walls, legacy_wall, base_ref_idx, margin_db);
+  auto apply_offset_power_plan = [&](const std::array<int, 8>& walls_rel,
+                                     int legacy_wall_rel, double margin_db) {
+    const auto plan = make_power_plan(walls_rel, legacy_wall_rel, margin_db,
+                                       boot_anchor_idx);
     devourer::TxRateDiffsQdb diffs;
     diffs.cck = plan.cck;
     diffs.legacy = plan.legacy;
@@ -1906,18 +1913,18 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
       return dev->SetTxPowerRateDiffs(devourer::TxRateDiffsQdb{});
     }
-    int read_base_ref_idx() override {
-      // mcs7_index is the chip's own default-walk level for the anchor
-      // rate with diffs zeroed — exactly base_ref_idx's definition in
-      // power_plan.h. GetTxPowerState().valid stays false on chips this
-      // knob doesn't support; 0 matches Telem.cal_base_ref_idx's own
-      // documented "0 = not read" sentinel rather than a raw -1 wrapping
-      // into a huge uint8_t on the wire.
+    int read_anchor_idx() override {
+      // mcs7_index with diffs zeroed is the chip's own reference level for
+      // the anchor rate -- the anchor the sweep programs each relative
+      // cell against (cal_sweep.h). GetTxPowerState().valid stays false on
+      // chips this knob doesn't support; -1 means "unreadable" and the
+      // caller refuses the session rather than sweeping against a made-up
+      // anchor.
       await_retune_gate(gate_waiting);
       std::shared_lock<std::shared_mutex> sg;
       if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
       const auto st = dev->GetTxPowerState();
-      return (st.valid && st.mcs7_index >= 0) ? st.mcs7_index : 0;
+      return (st.valid && st.mcs7_index >= 0) ? st.mcs7_index : -1;
     }
   };
 
@@ -1943,14 +1950,15 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // shared tlm_seq/dot11_seq counters (see their declaration above) so
     // the wire's sequence stays single and monotonic no matter which
     // thread sent the last frame.
-    auto send_cal_ack_telem = [&](uint8_t base_ref_idx) {
+    auto send_cal_ack_telem = [&]() {
       // Minor fix 5: start from the latest REAL Telem snapshot, not a
       // default-constructed one -- the GS's `latest_telem` (its OSD/
       // sideport source) would otherwise get clobbered with an all-zero
-      // "fresh" reading for up to ~41 s. Only flags bit6 and
-      // cal_base_ref_idx are load-bearing for the ack contract itself
-      // (CalSession::on_ack reads exactly those two), but a stale-looking
-      // snapshot is strictly better than a wrong-looking one.
+      // "fresh" reading for up to ~41 s. Only flags bit6 is load-bearing
+      // for the ack contract itself (CalSession::on_ack reads exactly that
+      // one flag -- the anchor is drone-internal now, never on the wire),
+      // but a stale-looking snapshot is strictly better than a wrong-
+      // looking one.
       rc::Telem t = *last_telem_snapshot.load(std::memory_order_relaxed);
       t.tlm_seq = telem_wire_seq.fetch_add(1, std::memory_order_relaxed);
       // Re-review fix: the snapshot's link-rtt fields describe WHEN THE
@@ -1968,7 +1976,6 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       t.rcf_age_ms = 0;
       t.pts_at_build = 0;
       t.flags |= 0x40;  // bit6 cal_active, OR'd onto the snapshot's real flags
-      t.cal_base_ref_idx = base_ref_idx;
       auto telem = rc::pack_telem(t);
       std::vector<uint8_t> frame;
       frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
@@ -1984,22 +1991,18 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // measured result validates/patches/reprograms without a restart, then
     // arms the verify pass the GS expects but never commands.
     auto apply_result_and_arm_verify = [&](const rc::CalResult& result) {
-      // T_CAL_RESULT carries the RAW measured wall (gs/src/cal_session.cpp
-      // finalize_result()) -- the same number rate_walls_idx/legacy_wall_idx
-      // hold in config.cpp/power_plan.h, so no margin arithmetic happens on
-      // this side of the wire. margin_db is applied exactly once, on the
-      // drone, below (the verify plan) and again every boot inside
-      // power_plan.h's diff[r] = walls[r] - m - base_ref_idx -- never on
-      // the GS, so there is no second, independently-configured margin_db
-      // that could silently disagree with this one.
+      // T_CAL_RESULT carries the RAW measured wall relative to the anchor
+      // (gs/src/cal_session.cpp finalize_result()) -- the same number
+      // rate_walls_rel/legacy_wall_rel hold in config.cpp/power_plan.h, so
+      // no margin arithmetic happens on this side of the wire. margin_db is
+      // applied exactly once, on the drone, below (the verify plan) and
+      // again every boot inside power_plan.h's diff[r] = wall_rel[r] - m --
+      // never on the GS, so there is no second, independently-configured
+      // margin_db that could silently disagree with this one. The anchor
+      // itself stays drone-internal (cal_sweep.anchor_idx()) and is never
+      // part of this write.
       const int m = static_cast<int>(std::lround(cfg.radio.wall_margin_db * 4.0));
       CalWrite w;
-      // NOT pwr.read_base_ref_idx(): the phase that produced this result
-      // left the TXAGC parked at its last swept cell's index (CalSweep
-      // never restores between phases), so a fresh chip read here would
-      // report that override, not the anchor. cal_sweep.base_ref_idx() is
-      // the same value this session's ack(s) already reported to the GS.
-      w.base_ref_idx = cal_sweep.base_ref_idx();
       for (int r = 0; r < 8; ++r) w.walls[r] = result.walls[r];
       w.legacy_wall = result.legacy_wall;
 
@@ -2015,15 +2018,18 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // Live reprogram (spec step 9): same derivation + devourer path
       // bring-up's power_mode=="offset" block uses below, so the verify
       // pass measures the plan actually in effect, with no restart. An
-      // undetermined row (w.walls[r] == -1) keeps whatever bring-up
-      // loaded, exactly mirroring what apply_calibration left on disk.
+      // undetermined row (w.walls[r] == kWallUndetermined) keeps whatever
+      // bring-up loaded, exactly mirroring what apply_calibration left on
+      // disk.
       std::array<int, 8> merged_walls;
       for (int r = 0; r < 8; ++r)
-        merged_walls[r] = (w.walls[r] != -1) ? w.walls[r]
-                                              : cfg.radio.rate_walls_idx[r];
-      const int merged_legacy =
-          (w.legacy_wall != -1) ? w.legacy_wall : cfg.radio.legacy_wall_idx;
-      if (!apply_offset_power_plan(merged_walls, merged_legacy, w.base_ref_idx,
+        merged_walls[r] = (w.walls[r] != rc::kWallUndetermined)
+                               ? w.walls[r]
+                               : cfg.radio.rate_walls_rel[r];
+      const int merged_legacy = (w.legacy_wall != rc::kWallUndetermined)
+                                     ? w.legacy_wall
+                                     : cfg.radio.legacy_wall_rel;
+      if (!apply_offset_power_plan(merged_walls, merged_legacy,
                                    cfg.radio.wall_margin_db)) {
         std::fprintf(stderr,
                      "maburd cal: SetTxPowerRateDiffs failed after apply\n");
@@ -2050,26 +2056,22 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       verify.settle_ms = 100;        // gs/src/cal_plan.h kSettleMs
       verify.gap_us = 2000;          // gs/src/cal_plan.h kGapUs
       for (uint8_t r = 0; r < 8; ++r) {
-        if (w.walls[r] == -1) continue;  // undetermined: nothing to verify
-        const int idx = w.walls[r] - m;  // parked index: power_plan.h's
-                                          // base_ref_idx + diff[r] == wall - m
-        if (idx < 0 || idx > 127) continue;  // belt and braces: apply_calibration's
-                                              // walls_in_range already refused an
-                                              // out-of-range derived diff
-        verify.windows.push_back({r, static_cast<uint8_t>(idx),
-                                  static_cast<uint8_t>(idx), 1});
+        if (w.walls[r] == rc::kWallUndetermined) continue;  // nothing to verify
+        const int park = w.walls[r] - m;  // relative parked index
+        if (park < rc::kRelMin || park > rc::kRelMax) continue;
+        verify.windows.push_back({r, static_cast<int8_t>(park),
+                                  static_cast<int8_t>(park), 1});
       }
       if (!verify.windows.empty()) {
         cal_sweep.on_cmd(verify, now_steady_ms(), pwr);
         // Spec: the verify pass has no command and therefore no ack --
         // this on_cmd() call is the drone's OWN, not the GS's, so discard
-        // whatever take_ack_base_ref() would otherwise arm rather than
-        // sending one.
-        (void)cal_sweep.take_ack_base_ref();
+        // whatever take_ack() would otherwise arm rather than sending one.
+        (void)cal_sweep.take_ack();
       }
     };
     // Critical fix 1 (Task 11 review): close_session() (cal_sweep.cpp)
-    // only ever restores the flat index override to base_ref_idx_ -- it
+    // only ever restores the flat index override to anchor_idx_ -- it
     // never clears the override (SetTxPowerIndexOverride(-1) appears
     // nowhere else in this file) and never restores the rate-diff table
     // on_cmd() zeroed. Left alone, the drone flies ONE FLAT INDEX across
@@ -2128,9 +2130,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       await_retune_gate(&retune_waiting);
       std::shared_lock<std::shared_mutex> pg(tx_gate);
       if (live_cfg.radio.power_mode == "offset") {
-        if (!apply_offset_power_plan(live_cfg.radio.rate_walls_idx,
-                                     live_cfg.radio.legacy_wall_idx,
-                                     live_cfg.radio.base_ref_idx,
+        if (!apply_offset_power_plan(live_cfg.radio.rate_walls_rel,
+                                     live_cfg.radio.legacy_wall_rel,
                                      live_cfg.radio.wall_margin_db)) {
           std::fprintf(stderr,
                        "maburd cal: SetTxPowerRateDiffs failed restoring "
@@ -2180,8 +2181,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
             // CalCmd every 200 ms over a 30-50%-lossy uplink and gives up
             // at 3000 ms, so answering every live retransmission is what
             // keeps one lost ack Telem from costing the whole phase.
-            if (auto base_ref = cal_sweep.take_ack_base_ref())
-              send_cal_ack_telem(static_cast<uint8_t>(*base_ref));
+            if (cal_sweep.take_ack()) send_cal_ack_telem();
           }
         } else if (cal_type == rc::T_CAL_RESULT) {
           if (auto r = rc::parse_cal_result(cal_body.data(), cal_body.size()))
@@ -2659,6 +2659,15 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // clears a knob that was already clear.
   rtl_device->SetTxPowerIndexOverride(-1);
 
+  // The chip's TXAGC reference for the boot channel, read with no custom
+  // table live (GetTxPowerState reports the reference itself then). Used
+  // ONLY to cap reference + diff at 127 (power_plan.h); it never reaches
+  // config or the wire. 0 = unknown, no cap.
+  {
+    const auto st = rtl_device->GetTxPowerState();
+    if (st.valid && st.mcs7_index >= 0) boot_anchor_idx = st.mcs7_index;
+  }
+
   // power_mode == "offset": program the wall-equalized per-rate diff table
   // once at bring-up, then zero the global offset once (see below) — power
   // is constant for the life of the process, no per-op trim.
@@ -2667,8 +2676,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // "offset" configured on an unsupported chip degrades to the untrimmed
   // efuse table instead of failing to fly.
   if (cfg.radio.power_mode == "offset") {
-    if (!apply_offset_power_plan(cfg.radio.rate_walls_idx, cfg.radio.legacy_wall_idx,
-                                 cfg.radio.base_ref_idx, cfg.radio.wall_margin_db)) {
+    if (!apply_offset_power_plan(cfg.radio.rate_walls_rel, cfg.radio.legacy_wall_rel,
+                                 cfg.radio.wall_margin_db)) {
       std::fprintf(stderr,
                    "warning: SetTxPowerRateDiffs failed (non-8822E board?); "
                    "power_mode=offset will trim the untrimmed efuse table\n");
