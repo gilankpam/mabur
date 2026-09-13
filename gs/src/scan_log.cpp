@@ -41,7 +41,10 @@ void ScanLog::dwell(double t_ms, int card, const ScoutDwell& d) {
 
 void ScanLog::pick(double t_ms, std::optional<uint8_t> picked, uint64_t rounds,
                    const std::vector<RankEntry>& all, int min_rounds) {
-  std::string line = "K " + std::to_string(static_cast<long long>(t_ms + (t_ms >= 0 ? 0.5 : -0.5)));
+  if (s_ == LogWriter::kBadStream) return;
+  char tb[32];
+  std::snprintf(tb, sizeof(tb), "%.0f", t_ms);
+  std::string line = "K " + std::string(tb);
   line += picked ? " " + std::to_string(static_cast<unsigned>(*picked)) : " none";
   line += " " + std::to_string(static_cast<unsigned long long>(rounds));
   if (picked) {
