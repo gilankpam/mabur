@@ -408,6 +408,16 @@ struct RealActuator : mabur::Actuator {
     }
 #endif
   }
+
+  // Task 11 stub: RcAgent now calls this on a Disc.op_channel move and on
+  // the move-confirm/rendezvous fallback home. Task 12 wires it to a real
+  // FastRetune with the TX queue quiesced; for now just make the request
+  // visible on stderr so the state machine's behaviour is buildable and
+  // observable ahead of that.
+  void retune(uint8_t ch) override {
+    std::fprintf(stderr, "maburd: retune request %u (not wired yet)\n",
+                 static_cast<unsigned>(ch));
+  }
 };
 
 uint64_t now_steady_ms() {

@@ -21,7 +21,7 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 }  // namespace
 
 RcAgent::RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr)
-    : cfg_(cfg), act_(act), ovr_(ovr) {}
+    : cfg_(cfg), act_(act), ovr_(ovr), channel_(cfg.radio.channel) {}
 
 void RcAgent::note_chain_break() {
   chain_break_pending_.store(true, std::memory_order_relaxed);
@@ -365,25 +365,48 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     auto d = rc::parse_disc(body, len);
     if (!d.has_value() || d->vtx_id != cfg_.link.vtx_id) return;
 
+    // Auto channel select (spec 2026-09-13 auto-channel-select §6): a DISC
+    // is a proposal (Disc.op_channel), not a command. follow_gs=false, or a
+    // proposal that already matches where we are, is a no-op move; anything
+    // else means we ack agreeing to the NEW channel (sent from the CURRENT
+    // channel, before we've moved there — the ack itself must still reach
+    // the GS on the channel it's listening on) and then request the retune.
+    // Idempotent by construction: a repeated DISC for a channel we're
+    // already agreeing to move to (or already on) computes move=false and
+    // touches nothing further.
+    const bool move = cfg_.radio.follow_gs && d->op_channel != channel_;
+    const uint8_t agreed = cfg_.radio.follow_gs ? d->op_channel : cfg_.radio.channel;
+
     if (state_ == State::LINKED) {
       // Ack-only: a rebooted GS starts in SESSION with peer_caps_=0 and
       // its video tail gated off; its ~1 Hz keep-alive DISC is the only
       // way it can re-learn chip_caps (stale-caps deadlock, 2026-08-12).
       // Reply, but change NOTHING else — the init-profile apply, state
       // transition and watchdog refresh stay LINKED-entry-only (op-thrash
-      // fix, 2026-07-12).
-      act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq)));
+      // fix, 2026-07-12). A channel move IS honoured here, though: it's the
+      // one thing a keep-alive DISC can carry that a steady LINKED session
+      // has no other way to learn about.
+      act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq, agreed)));
+      if (move) {
+        act_.retune(d->op_channel);
+        channel_ = d->op_channel;
+        move_pending_ = true;
+        move_at_ms_ = now_ms;
+      } else {
+        move_pending_ = false;
+      }
       return;
     }
 
-    // Echo the drone's ACTUAL operating channel/width, not the GS-requested
-    // d->op_channel/op_width — the drone doesn't retune in v1 (its channel
-    // is fixed from its own config at startup), so acking back the GS's
-    // request would claim an agreement that never happened whenever the
-    // two disagree. Reporting the true op point lets the GS detect and
-    // handle a mismatch instead of being told (incorrectly) that its
-    // request was honored.
-    act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq)));
+    act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, d->seq, agreed)));
+    if (move) {
+      act_.retune(d->op_channel);
+      channel_ = d->op_channel;
+      move_pending_ = true;
+      move_at_ms_ = now_ms;
+    } else {
+      move_pending_ = false;
+    }
 
     int row_idx = std::clamp<int>(d->init_profile, 0,
                                    static_cast<int>(rc::profile_table().size()) - 1);
@@ -425,6 +448,11 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     last_seq_ = r->seq;
     have_last_seq_ = true;
     ++rcf_accepted_;
+    // Any accepted RCF confirms an in-flight move (spec §6: "the first GS
+    // frame received after the move confirms it") -- it arrived on the
+    // channel we retuned to, so there's nothing left for tick()'s fallback
+    // to guard against.
+    move_pending_ = false;
 
     PhyMode mode;
     uint8_t mcs, bw;
@@ -467,6 +495,14 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     return;
   }
 
+  if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms)) {
+    // Unconfirmed move (spec §6): nothing from the GS on the new channel.
+    if (state_ == State::LINKED) apply_max_range(now_ms);
+    state_ = State::RENDEZVOUS;
+    have_last_seq_ = false;
+    go_home_("move unconfirmed");
+  }
+
   // Chain-break intake, evaluated against the state as of this tick's ENTRY
   // — deliberately ahead of the failsafe/rendezvous timers below. The
   // encoder broke its reference chain while the link was up, and the tick
@@ -506,6 +542,7 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     if (have_last_fb_ &&
         now_ms - last_fb_ms_ >= static_cast<uint64_t>(cfg_.link.rendezvous_ms)) {
       state_ = State::RENDEZVOUS;
+      go_home_("rendezvous");
     }
   }
 
@@ -552,7 +589,7 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
   run_congestion_guard(now_ms, health);
 }
 
-rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq) const {
+rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq, uint8_t agreed) const {
   DiscAck ack;
   ack.vtx_id = cfg_.link.vtx_id;
   ack.vrx_nonce = nonce;
@@ -564,10 +601,23 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq) const {
   // wires them up in main.cpp) -- a real gate, unlike CAP_TELEMETRY:
   // gs/src/cal_session.cpp's start() refuses a session outright without it.
   ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_CALIBRATE;
-  ack.agreed_channel = cfg_.radio.channel;
+  // agreed is follow_gs ? the DISC's proposed op_channel : home (spec
+  // 2026-09-13 auto-channel-select §6) -- computed by the caller, which
+  // also drives the actual retune, so the ack and the move can never
+  // disagree about what was agreed to.
+  ack.agreed_channel = agreed;
   ack.agreed_width = cfg_.radio.width;
   ack.seq = seq;
   return ack;
+}
+
+void RcAgent::go_home_(const char* why) {
+  (void)why;  // stderr logging on the real Actuator, not here (see main.cpp)
+  if (channel_ != cfg_.radio.channel) {
+    act_.retune(cfg_.radio.channel);
+    channel_ = cfg_.radio.channel;
+  }
+  move_pending_ = false;
 }
 
 }  // namespace mabur

@@ -86,6 +86,13 @@ class Actuator {
   // re-raised by whatever produced it (the next chain break, or the next
   // RCF that re-enters LINKED).
   virtual void request_idr() = 0;
+  // Requests a retune to the given channel (spec 2026-09-13
+  // auto-channel-select §6: FastRetune). Called from the agent thread only,
+  // same as every other verb on this interface. No return: a retune that
+  // fails to take leaves the radio on its previous channel, which the
+  // move-confirm/fallback-home machinery in RcAgent::tick already treats as
+  // "nothing heard on the new channel" and recovers from on its own.
+  virtual void retune(uint8_t ch) = 0;
 };
 
 // Radio-side health signals sampled once per tick. thermal_delta is
@@ -136,6 +143,13 @@ class RcAgent {
   State state() const { return state_; }
   const AppliedOp& current() const { return applied_; }
 
+  // The drone's current radio channel (spec 2026-09-13
+  // auto-channel-select §6): cfg_.radio.channel (home) at boot, the DISC's
+  // op_channel while a follow_gs move is in effect, home again once the
+  // move falls back unconfirmed or the drone re-enters RENDEZVOUS by any
+  // path.
+  uint8_t channel() const { return channel_; }
+
   // Telemetry accessors (spec 2026-07-26 drone-telemetry): read-only
   // snapshots of RcAgent-internal state the T_TELEM collector needs but
   // that isn't otherwise exposed. All same-thread reads (the agent thread
@@ -184,6 +198,17 @@ class RcAgent {
   OvOverride* ovr_;  // may be null — see the constructor comment
   State state_ = State::BOOT;
   bool link_established_ = false;  // see take_link_established()
+
+  // Auto channel select (spec 2026-09-13 §6). channel_ is home
+  // (cfg_.radio.channel) at construction and tracks the drone's actual
+  // radio channel from then on -- see channel(). move_pending_/move_at_ms_
+  // track an unconfirmed follow_gs move: set when a DISC requests a
+  // different channel and act_.retune() is called, cleared by the first
+  // subsequent accepted DISC/RCF that is not itself a new move (confirms
+  // the move) or by go_home_() (the fallback fires it home instead).
+  uint8_t channel_;
+  bool move_pending_ = false;
+  uint64_t move_at_ms_ = 0;
 
   AppliedOp applied_;
 
@@ -269,7 +294,13 @@ class RcAgent {
   void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);
-  rc::DiscAck make_disc_ack(uint32_t nonce, uint16_t seq) const;
+  rc::DiscAck make_disc_ack(uint32_t nonce, uint16_t seq, uint8_t agreed) const;
+
+  // Retunes home if not already there and clears move_pending_ (spec §6:
+  // "the drone is on the op channel only while LINKED or FAILSAFE, home
+  // otherwise"). Called on the move-confirm fallback and on every path that
+  // enters RENDEZVOUS.
+  void go_home_(const char* why);
 };
 
 }  // namespace mabur
