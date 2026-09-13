@@ -42,4 +42,12 @@ TEST(video_returns_to_session) {
   CHECK(rz.state() == VrxState::SESSION);
   CHECK(rz.tick(1250) == VrxAction::TxFeedback);
 }
+
+TEST(beacon_carries_settable_proposal) {
+  VrxRendezvous rz(VrxRzConfig{7, 1000, 20, 136});
+  CHECK(rz.beacon().op_channel == 136);
+  rz.set_proposal(149);
+  CHECK(rz.proposal() == 149);
+  CHECK(rz.beacon().op_channel == 149);
+}
 MTEST_MAIN

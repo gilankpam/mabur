@@ -74,6 +74,13 @@ class VrxController {
   bool peer_acked() const { return peer_acked_; }
   // Rendezvous nonce for test construction of acceptable DiscAcks.
   uint32_t rz_nonce() const { return rz_.nonce(); }
+  void set_proposal(uint8_t ch) { rz_.set_proposal(ch); }
+  uint8_t proposal() const { return rz_.proposal(); }
+  // Last accepted ack's agreed_channel (0 before any accept). Set BEFORE
+  // peer_caps_ so a caller reading both on one tick sees a consistent pair.
+  uint8_t agreed_channel() const { return agreed_channel_; }
+  // Ack accept edge for this tick: true once per accepted ack, cleared by read.
+  bool take_ack_edge() { const bool e = ack_edge_; ack_edge_ = false; return e; }
 
  private:
   mabur::rc::Rcf build_rcf();
@@ -89,6 +96,8 @@ class VrxController {
   uint16_t peer_caps_ = 0;
   bool peer_acked_ = false;
   uint8_t last_cmd_probe_profile_ = mabur::rc::kNoProbeProfile;
+  uint8_t agreed_channel_ = 0;
+  bool ack_edge_ = false;
 };
 
 }  // namespace maburgs

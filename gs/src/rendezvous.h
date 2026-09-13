@@ -23,6 +23,8 @@ class VrxRendezvous {
   bool feed_disc_ack(const mabur::rc::DiscAck& ack, double now_ms);
   VrxState state() const;
   uint32_t nonce() const;
+  void set_proposal(uint8_t ch) { proposal_ = ch; }
+  uint8_t proposal() const { return proposal_; }
 
  private:
   VrxRzConfig cfg_;
@@ -31,6 +33,7 @@ class VrxRendezvous {
   double last_beacon_ms_ = -1e18;
   uint16_t seq_ = 0;
   uint32_t nonce_;
+  uint8_t proposal_;
 };
 
 }  // namespace maburgs
