@@ -516,6 +516,7 @@ struct RealActuator : mabur::Actuator {
     // gate shared): FastRetune is a control-plane call and must not overlap
     // a bulk-OUT (devourer threading contract). ~2.4 ms on the 8812EU.
     const uint8_t from = cur;
+    bool tx_power_ok = false;
     if (retune_waiting) retune_waiting->store(true, std::memory_order_release);
     {
       std::unique_lock<std::shared_mutex> g(*tx_gate);
@@ -534,11 +535,42 @@ struct RealActuator : mabur::Actuator {
       // TX stall.
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       dev->FastRetune(ch, /*cache_rf=*/true);
+      // Critical: FastRetune does NOT re-fold TX power for us at mabur's
+      // settings. devourer re-derives it inside FastRetune only on a BAND
+      // change and only when a global offset or an index override is live
+      // (RtlJaguar3Device.cpp, the `_tx_pwr_offset_steps != 0 ||
+      // _tx_pwr_override >= 0` guard); mabur runs offset 0 and override -1
+      // by design (power_plan.h: the rate-diff table IS the whole policy),
+      // so neither leg fires and the per-rate diff table keeps being added
+      // to the BOOT channel's efuse anchor after an auto-select move. The
+      // anchors differ per channel -- 39 / 53 / 57 on this unit for
+      // ch136 / 149 / 165 -- so that is up to 18 indices, 4.5 dB, of
+      // silent error in the overdriven direction on the channel the link
+      // just moved to for being quieter.
+      //
+      // ReApplyTxPower() is apply_tx_power_current(full=true) on Jaguar3:
+      // it re-reads the efuse references for the channel the chip is NOW
+      // on and rewrites the caller-supplied diffs on top of them. Inside
+      // the same exclusive tx_gate as FastRetune, because it is a
+      // control-plane register walk and must not overlap a bulk-OUT
+      // (devourer threading contract), and because a send landing between
+      // the retune and the re-apply would air at the stale anchor.
+      //
+      // FastRetune returns void (IRtlDevice.h), so there is no success to
+      // branch on: re-apply unconditionally. ReApplyTxPower() is the one
+      // that reports -- false means the chip is not brought up or a CW
+      // tone is active, i.e. the diffs are NOT sitting on this channel's
+      // anchor and the log line below is the only trace of it.
+      tx_power_ok = dev->ReApplyTxPower();
     }
     if (retune_waiting) retune_waiting->store(false, std::memory_order_release);
     cur = ch;
     std::fprintf(stderr, "maburd: retune %u -> %u (%s)\n", static_cast<unsigned>(from),
                  static_cast<unsigned>(ch), reason);
+    std::fprintf(stderr,
+                 "maburd: retune %u -> %u: tx power re-applied (%s)\n",
+                 static_cast<unsigned>(from), static_cast<unsigned>(ch),
+                 tx_power_ok ? "ok" : "failed");
   }
 };
 
@@ -1345,11 +1377,26 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   std::atomic<std::shared_ptr<const rc::Telem>> last_telem_snapshot{
       std::make_shared<const rc::Telem>()};
 
-  // The chip's TXAGC reference for the boot channel (mcs7_index read back
+  // The chip's TXAGC reference for the BOOT channel (mcs7_index read back
   // with no custom rate-diff table live, i.e. before SetTxPowerRateDiffs is
   // first applied). Drone-internal only: it caps reference + diff at 127
   // (power_plan.h) and never reaches config or the wire. 0 = not yet read
   // by bring-up (below); make_power_plan treats anchor_idx <= 0 as no cap.
+  //
+  // Deliberately NOT re-read on a channel move, and it does not need to be.
+  // The `127 - anchor` cap it feeds is a BOOT-CHANNEL APPROXIMATION of a
+  // guard that never binds in practice: measured efuse anchors on this unit
+  // are 39-57, so the cap lands at +70..+88, well above kRelMax (+63). It
+  // exists for devourer's blank-efuse fallback (75), where it caps at +52
+  // and touches only no-dip rows. The per-channel anchor the diffs actually
+  // ride on is re-derived by devourer itself on every retune, via the
+  // ReApplyTxPower() call in RealActuator::retune_now_() above -- that, not
+  // this number, is what keeps the walls valid across an auto-select move.
+  //
+  // Re-reading it after a retune is not merely unnecessary but WRONG:
+  // GetTxPowerState reports the raw reference only while no custom table is
+  // live, and by then SetTxPowerRateDiffs has been applied, so a fresh read
+  // would return the trimmed value, not the anchor.
   int boot_anchor_idx = 0;
 
   // Programs the wall-equalized rate-diff table + zeroes the global offset
@@ -2182,6 +2229,24 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
             // at 3000 ms, so answering every live retransmission is what
             // keeps one lost ack Telem from costing the whole phase.
             if (cal_sweep.take_ack()) send_cal_ack_telem();
+            // Final review, finding 2: a command REFUSED because the chip
+            // could not report its TXAGC anchor was refused only AFTER
+            // on_cmd() had already flattened the rate-diff table (it has to
+            // zero the diffs to read the anchor at all -- cal_sweep.cpp).
+            // No session opens, so cal_active never rises and the falling
+            // edge below -- the one place operating power is ever
+            // reprogrammed -- never fires: left alone the drone flies a
+            // FLAT table until restart, every rate below the anchor
+            // transmitting above its measured wall. Restore here instead,
+            // synchronously, on the same thread; restore_operating_power()
+            // takes tx_gate itself, and a refusal leaves nothing else in
+            // flight to conflict with it.
+            if (cal_sweep.take_refused()) {
+              std::fprintf(stderr,
+                           "maburd cal: command refused (TXAGC anchor "
+                           "unreadable); restoring operating power\n");
+              restore_operating_power();
+            }
           }
         } else if (cal_type == rc::T_CAL_RESULT) {
           if (auto r = rc::parse_cal_result(cal_body.data(), cal_body.size()))
@@ -2662,7 +2727,10 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // The chip's TXAGC reference for the boot channel, read with no custom
   // table live (GetTxPowerState reports the reference itself then). Used
   // ONLY to cap reference + diff at 127 (power_plan.h); it never reaches
-  // config or the wire. 0 = unknown, no cap.
+  // config or the wire. 0 = unknown, no cap. This is the ONE read: see the
+  // declaration of boot_anchor_idx for why a channel move re-applies TX
+  // power (devourer re-derives the new channel's anchor) instead of
+  // re-reading here.
   {
     const auto st = rtl_device->GetTxPowerState();
     if (st.valid && st.mcs7_index >= 0) boot_anchor_idx = st.mcs7_index;

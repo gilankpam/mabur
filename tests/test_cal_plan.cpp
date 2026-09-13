@@ -19,14 +19,18 @@ TEST(coarse_plan_covers_all_eight_rates) {
   CHECK(c.frames_per_cell == 20);
 }
 
-TEST(coarse_plan_is_208_cells) {
-  // 8 rates x 26 indices (-40,-36,...,60). This count drives the duration
-  // estimate the GS uses to know when the drone stops transmitting.
+TEST(coarse_plan_is_216_cells) {
+  // 8 rates x 27 indices (-41,-37,...,63). kCoarseLo is -41 rather than the
+  // rounder -40 precisely so the last cell lands ON kRailRel (63): a no-dip
+  // row parks at the rail, and the rail has to be an index this very sweep
+  // measured at >=90% delivery, not one index past the top of the sweep.
+  // This count also drives the duration estimate the GS uses to know when
+  // the drone stops transmitting.
   const auto c = make_coarse_plan(1, 1);
   int cells = 0;
   for (const auto& w : c.windows)
     for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) ++cells;
-  CHECK(cells == 208);
+  CHECK(cells == 216);
 }
 
 TEST(fine_plan_only_covers_rows_that_dipped) {

@@ -26,9 +26,12 @@ to `maburgs`' loopback-only `CalControl` listener (`127.0.0.1:8400`,
 unreachable off-box), streams progress every 500 ms, and prints a final
 table when the drone returns to normal video. Under the hood:
 
-1. **Coarse sweep** (~29 s of sweep time): every 4th relative TXAGC
-   index, rel −40..63 (26 cells per row, 208 total), across all 8 MCS
-   rows, 20 frames per cell.
+1. **Coarse sweep** (~30 s of sweep time): every 4th relative TXAGC
+   index, rel −41..63 (27 cells per row, 216 total — 216 × 140 ms), across
+   all 8 MCS rows, 20 frames per cell. The low end is −41 and not the
+   rounder −40 so that the grid lands on **+63 exactly**: a no-dip row
+   parks at that rail, and the rail has to be a cell the run actually
+   measured.
 2. **Fine sweep** (~0-41 s of sweep time, skipped for rows with no dip):
    ±8 indices around each row's coarse dip, at full resolution, 100
    frames per cell. This also re-measures the exact cell the coarse pass
@@ -104,7 +107,10 @@ efuse on every channel set (39 / 53 / 57 on this unit for ch136 / 149 /
 165), and the chip adds it itself, so `maburcal` on any channel produces
 a table that is valid on home and on every auto-select candidate
 (`docs/channel-select.md`). The anchor never leaves the drone: it is not
-in config, not on the wire, not in `cal.log`.
+in config, not on the wire, not in `cal.log`. `maburd` re-applies TX power
+(devourer's `ReApplyTxPower()`) immediately after every retune, so the
+diffs always sit on the anchor of the channel the link is actually on,
+not on the boot channel's.
 
 Measured 2026-09-13 (six runs, two interleaved passes over ch136 / 149 /
 165 at one geometry, GS `/media/dvr/log/0074/cal.log`):
@@ -479,9 +485,10 @@ A no-dip row parks at the rail: `+63`, the top of the diff field.
 Three things make this better than the knee, not merely more stable:
 
 - **It is exact and identical every run.** No scatter to reason about.
-- **It is provably inside measured-good territory.** The rail is below
-  the top of the sweep, and a no-dip row just delivered ≥90% at every
-  index through 124. The knee was never validated by delivery anywhere.
+- **It is provably inside measured-good territory.** The rail is the top
+  cell of the sweep (the coarse grid runs −41..63 step 4 for exactly this
+  reason), so a no-dip row just delivered ≥90% *at* the index it parks on.
+  The knee was never validated by delivery anywhere.
 - **It does not cost range.** On the measured curve the last real gain
   lands by idx ~80; everything above is flat to within quantization. The
   knee, firing early by construction, was giving up ~1-1.5 dB on

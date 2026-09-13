@@ -109,7 +109,7 @@ did not.
 
 The one deliberate divergence from the flown value is
 `radio.power_mode`, which ships `"none"` while this drone flies `"offset"`.
-`rate_walls_idx` is a per-UNIT calibration (`docs/calibration.md`) and the
+`rate_walls_rel` is a per-UNIT calibration (`docs/calibration.md`) and the
 shipped file cannot know the wall of the board it lands on, so it carries the
 author's 8812EU numbers as a reference and leaves them inert — parsed and
 range-checked, never programmed. Measure your own vtx before setting

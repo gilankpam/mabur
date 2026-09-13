@@ -171,6 +171,30 @@ class CalSweep {
   // reports that override, not the anchor, if read again.
   bool take_ack();
 
+  // Drains the "this command was REFUSED after flattening the rate-diff
+  // table" flag, armed once by on_cmd()'s anchor-read failure and cleared
+  // by this call.
+  //
+  // Why the caller must act on it (final review, finding 2): on_cmd()'s
+  // new-session branch calls zero_rate_diffs() BEFORE read_anchor_idx(),
+  // because the diffs have to be off before the anchor can be read at all.
+  // A chip that then cannot report its anchor leaves the drone with a
+  // FLATTENED table and no session -- has_session_ stays false, so
+  // main.cpp's cal_active falling edge (the one place that re-programs the
+  // operating power, restore_operating_power()) never fires, and the
+  // flattening is permanent until restart. Every rate whose wall sits
+  // below the anchor then transmits ABOVE its measured wall: the
+  // overdriven direction, caused by the calibration kit itself, which is
+  // the exact hazard close_session() exists to prevent for the sessions
+  // that DO open. So this is not a diagnostic -- draining it true is a
+  // standing obligation to restore operating power.
+  //
+  // Armed on both refusal paths: a cold refusal (no session in flight) and
+  // a refusal that preempted a live session with a new nonce. Never armed
+  // for an accepted phase, an idempotent repeat, or a stale earlier phase
+  // -- none of those re-zero anything.
+  bool take_refused();
+
   // The drone-internal TXAGC reference this session's cells are
   // programmed relative to (see the class comment) -- read once at
   // session start (on_cmd()'s new-session branch) and never re-read for a
@@ -228,6 +252,11 @@ class CalSweep {
   // why the ack itself carries no value any more -- the anchor never
   // leaves the drone.
   bool pending_ack_ = false;
+
+  // Set by on_cmd() when it refuses a command AFTER zero_rate_diffs() has
+  // already flattened the table, drained by take_refused(). See that
+  // method's header comment.
+  bool pending_refusal_ = false;
 
   // Current phase's cell plan and cursor.
   std::vector<Cell> cells_;

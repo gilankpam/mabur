@@ -11,7 +11,7 @@
 // unreachable:
 //
 //   1. validate  -- run the candidate walls through the same derivation
-//      config.cpp's loader applies (drone/src/config.cpp:133-155) and
+//      config.cpp's loader applies (parse_radio's wall checks) and
 //      refuse to touch anything if a derived diff would leave the 8822E's
 //      7-bit rate-diff field range [-64,63].
 //   2. patch -- rewrite the three keys in memory and check that every

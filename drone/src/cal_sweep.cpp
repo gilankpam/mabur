@@ -69,6 +69,14 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
       pending_result_.reset();
       has_session_ = false;
       zeroed_for_session_ = false;
+      // Final review, finding 2: the pwr.zero_rate_diffs() above already
+      // happened and nothing here undoes it -- this class's PowerCtl has
+      // no concept of the operating plan (see close_session()'s note), so
+      // only the caller can put the real table back. has_session_ is
+      // false, so the caller's cal_active falling edge will never fire;
+      // this flag is the only signal it gets. Un-drained, the drone flies
+      // a flat table forever.
+      pending_refusal_ = true;
       return;
     }
     anchor_idx_ = anchor;
@@ -125,6 +133,12 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
 bool CalSweep::take_ack() {
   const bool v = pending_ack_;
   pending_ack_ = false;
+  return v;
+}
+
+bool CalSweep::take_refused() {
+  const bool v = pending_refusal_;
+  pending_refusal_ = false;
   return v;
 }
 

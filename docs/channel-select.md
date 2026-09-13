@@ -105,7 +105,9 @@ antenna, and switches the GS into one-card interleave mode below.
 
 **Calibration:** `maburcal` stores walls relative to the chip's
 per-channel anchor (`docs/calibration.md`), so one run on home is valid
-on every candidate; no per-channel tables.
+on every candidate; no per-channel tables. `maburd` re-applies TX power
+right after every retune, so the walls land on the new channel's own
+anchor rather than the boot channel's.
 
 ## Rules
 

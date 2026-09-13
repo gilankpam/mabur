@@ -102,17 +102,24 @@ TEST(cell_record_round_trips_every_field) {
 
 
 
-TEST(undetermined_wall_writes_minus_one) {
+TEST(a_minus_one_wall_is_written_verbatim) {
+  // Relative walls: -1 is an ORDINARY wall one index below the chip's
+  // anchor, not a sentinel -- mcs7 measured -4 on the 2026-09-13 bench.
+  // (This test used to pair -1 with kCalUndetermined, which is a
+  // contradiction under the relative model: an undetermined row carries
+  // kNoWall/kWallUndetermined, never a real index. The undetermined
+  // sentinel's own round-trip is covered by
+  // negative_indices_and_the_sentinel_print_verbatim below.)
   const auto d = fresh_dir("callog3");
   RateWall w;
   w.wall = -1;
   w.floor_idx = -1;
   w.best_card = 0;
-  w.flags = kCalUndetermined;
+  w.flags = 0;
   { CalLog l(d); l.header(); l.run(1, 1.0); l.wall(7, w); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
-  CHECK(ls[2] == "W 7 -1 -1 0 2");
+  CHECK(ls[2] == "W 7 -1 -1 0 0");
 }
 
 TEST(verify_record) {

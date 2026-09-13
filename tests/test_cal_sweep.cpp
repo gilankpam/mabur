@@ -511,6 +511,59 @@ TEST(unreadable_anchor_refuses_the_command_and_arms_no_ack) {
   CHECK(pwr.index_writes.empty());
 }
 
+TEST(a_refused_command_is_observable_exactly_once) {
+  // Final-review finding 2: the refusal path above zeroes the rate-diff
+  // table (on_cmd does that BEFORE read_anchor_idx()) and then opens no
+  // session at all -- so active() never rises and main.cpp's falling-edge
+  // restore_operating_power() never fires. Left invisible, the drone flies
+  // with a FLAT (zeroed) diff table forever: every rate below its own wall
+  // transmits above it, the overdriven direction this whole kit exists to
+  // prevent. take_refused() is what lets the caller notice and restore.
+  FakePowerCtl pwr;
+  pwr.anchor = -1;
+  CalSweep s(CalSweepCfg{});
+  CHECK(!s.take_refused());  // nothing refused yet
+  s.on_cmd(coarse_cmd(), 0, pwr);
+  CHECK(pwr.zero_diff_calls == 1);  // the diffs really were flattened
+  CHECK(s.take_refused());
+  CHECK(!s.take_refused());  // drained: one refusal, one restore
+}
+
+TEST(an_accepted_command_is_not_a_refusal) {
+  // The flag must not fire on the ordinary path, or every accepted phase
+  // would drag an operating-power reprogram in behind it mid-sweep.
+  FakePowerCtl pwr;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(coarse_cmd(), 0, pwr);
+  CHECK(s.active());
+  CHECK(!s.take_refused());
+  // Nor on the idempotent repeat / stale-phase paths, which never reach
+  // the zeroing branch at all.
+  s.on_cmd(coarse_cmd(), 1, pwr);
+  CHECK(!s.take_refused());
+}
+
+TEST(unreadable_anchor_mid_sweep_is_a_refusal_too) {
+  // The preempting-nonce variant (see the test below): the OLD session's
+  // diffs were zeroed and never restored either, so this refusal must be
+  // just as visible to the caller as a cold one.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
+  REQUIRE(s.active());
+  CHECK(!s.take_refused());
+  s.pump(0, tx, pwr);
+  pwr.anchor = -1;
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 8), 3, pwr);
+  CHECK(!s.active());
+  CHECK(s.take_refused());
+  CHECK(!s.take_refused());
+}
+
 TEST(unreadable_anchor_mid_sweep_quiesces_the_old_session) {
   // Review finding: a new nonce preempting an actively-Sweeping session
   // whose anchor read then fails must fully quiesce, not just clear

@@ -47,7 +47,8 @@ TEST(mcs7_first_dip_not_last_good) {
 
 // mcs0: never dips anywhere in the sweep. There is no compression wall to
 // find, so the row is parked at the highest index this unit can express --
-// base_ref_idx + 63, the +63 rail of the chip's 7-bit per-rate diff field.
+// kRailRel, the +63 rail of the chip's 7-bit per-rate diff field, relative
+// to whatever per-channel anchor the chip adds itself.
 //
 // This replaced an RSSI "saturation knee" (the lowest index within 1 dB of
 // the row's peak median RSSI). That number was not reproducible: on one unit
@@ -57,13 +58,19 @@ TEST(mcs7_first_dip_not_last_good) {
 // 1 dB tolerance band already spans ~5 indices before 1 dB of RSSI
 // quantization moves it further. Parking at the rail is instead exact,
 // identical every run, and PROVABLY INSIDE MEASURED-GOOD TERRITORY -- the
-// sweep just delivered >=90% at every index through 124, and the rail is
-// below that. The old knee was never validated by delivery at any index.
+// rail IS the top cell of the coarse sweep (kCoarseLo = -41 is chosen so
+// the grid lands on kRailRel exactly, gs/src/cal_plan.h), so a no-dip row
+// just delivered >=90% AT the very index it parks on. The old knee was
+// never validated by delivery at any index.
+//
+// The fixture therefore sweeps the real coarse grid, -41..63 step 4: if
+// kCoarseLo/kCoarseHi ever drift so the rail stops being a measured cell,
+// this test is where that shows up.
 TEST(mcs0_no_dip_parks_at_the_diff_field_rail) {
   std::vector<CalCell> cells;
-  // Flat floor to 28, ~0.3 dB/idx ramp to 91, flat ceiling to 127 -- the
-  // real measured shape, which this rule deliberately no longer reads.
-  for (int i = -40; i <= 60; i += 4) {
+  // Flat floor to 28, ~0.3 dB/idx ramp, then a flat ceiling -- the real
+  // measured shape, which this rule deliberately no longer reads.
+  for (int i = -41; i <= 63; i += 4) {
     int rssi;
     if (i <= 28) rssi = -80;
     else if (i <= 91) rssi = -80 + (i - 28) * 3 / 10;

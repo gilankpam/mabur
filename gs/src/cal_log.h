@@ -130,7 +130,7 @@ class CalLog {
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
 
-  // The format-marker line, `callog 1`. Call at most once per FILE (i.e.
+  // The format-marker line, `callog 3`. Call at most once per FILE (i.e.
   // never on a rejoin of an already-headed session directory) -- it
   // carries no per-run data, so unlike ctl.log's single combined header
   // there is no reason for a second calibration run in the same session to

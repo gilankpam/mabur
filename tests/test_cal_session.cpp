@@ -195,11 +195,12 @@ TEST(fine_phase_sharpens_a_real_dip_and_flags_drift) {
   s.due_cmd(0);
   s.on_ack(11, 1);
 
-  // Every rate clean except rate 5, which dips above idx 56. At coarse
-  // resolution (step 4) the last clean cell is therefore 56.
+  // Every rate clean except rate 5, which dips above idx 55. At coarse
+  // resolution (the grid is -41, -37, ..., 55, 59, 63) the last clean cell
+  // is therefore 55.
   const auto coarse = make_coarse_plan(1, 11);
   feed_phase_fn(s, coarse,
-                [](uint8_t r, int i) { return r != 5 ? 100 : (i <= 56 ? 100 : 10); },
+                [](uint8_t r, int i) { return r != 5 ? 100 : (i <= 55 ? 100 : 10); },
                 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
 
@@ -212,17 +213,17 @@ TEST(fine_phase_sharpens_a_real_dip_and_flags_drift) {
   CHECK(fine->windows[0].idx_step == 1);
   s.on_ack(11, t1 + 1);
 
-  // At full resolution the true wall is 54 -- two steps below the coarse
-  // estimate. The merge must adopt 54 and flag the disagreement.
-  feed_phase_fn(s, *fine, [](uint8_t, int i) { return i <= 54 ? 100 : 10; },
+  // At full resolution the true wall is 53 -- two steps below the coarse
+  // estimate. The merge must adopt 53 and flag the disagreement.
+  feed_phase_fn(s, *fine, [](uint8_t, int i) { return i <= 53 ? 100 : 10; },
                 t1 + 2);
   const uint64_t t2 = t1 + 1 + plan_duration_ms(*fine) + 1;
 
   const auto res = s.due_result(t2 + 5000);
   REQUIRE(res.has_value());
-  CHECK(res->walls[5] == 54);              // fine wall, raw -- no margin subtracted
+  CHECK(res->walls[5] == 53);              // fine wall, raw -- no margin subtracted
   CHECK(res->walls[0] == kRailRel);        // untouched rows keep the constant rail
-  CHECK((s.walls()[5].flags & kCalDrift) != 0);   // coarse 56 vs fine 54
+  CHECK((s.walls()[5].flags & kCalDrift) != 0);   // coarse 55 vs fine 53
 }
 
 TEST(undetermined_rate_reaches_the_result_as_minus_one) {
@@ -289,11 +290,11 @@ TEST(corrupt_frames_count_as_loss_not_delivery) {
   REQUIRE(s.start(1, 8, 0, &err));
   s.due_cmd(0);
   s.on_ack(8, 1);
-  mabur::cal::CalFrameInfo f{0, 40, mabur::cal::kPhaseCoarse, 0};
+  mabur::cal::CalFrameInfo f{0, 39, mabur::cal::kPhaseCoarse, 0};
   for (int k = 0; k < 20; ++k)
     s.on_cal_frame(0, f, -70, /*crc_ok=*/false, 10);
-  CHECK(s.cell_received(0, 40, 0) == 0);
-  CHECK(s.cell_corrupt(0, 40) == 20);
+  CHECK(s.cell_received(0, 39, 0) == 0);
+  CHECK(s.cell_corrupt(0, 39) == 20);
 }
 
 TEST(frames_from_a_stale_phase_are_ignored) {
@@ -419,9 +420,9 @@ TEST(cal_log_records_cells_and_walls_at_phase_end) {
       if (l == want_undetermined) saw_undetermined_wall = true;
     }
   }
-  // Coarse sweeps [kCoarseLo, kCoarseHi] step kCoarseStep = -40..60 step 4 =
-  // 26 cells/rate * 8 rates.
-  CHECK(c_count == 208);
+  // Coarse sweeps [kCoarseLo, kCoarseHi] step kCoarseStep = -41..63 step 4 =
+  // 27 cells/rate * 8 rates.
+  CHECK(c_count == 216);
   CHECK(w_count == 8);
   CHECK(saw_undetermined_wall);
 }
@@ -729,12 +730,12 @@ TEST(a_sweep_frame_is_an_implicit_ack_for_the_phase_it_names) {
   REQUIRE(s.due_cmd(0).has_value());
   CHECK(!s.radio_silent(10));   // no ack yet: the air is still open
 
-  mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseCoarse, 0};
+  mabur::cal::CalFrameInfo f{0, 7, mabur::cal::kPhaseCoarse, 0};
   s.on_cal_frame(0, f, -70, /*crc_ok=*/true, 100);
   CHECK(s.state() == CalSession::State::Sweep);
   CHECK(s.radio_silent(101));               // ...and now it is shut
   CHECK(!s.due_cmd(300).has_value());       // no more repeats into the sweep
-  CHECK(s.cell_received(0, 8, 0) == 1);     // and the frame itself counted
+  CHECK(s.cell_received(0, 7, 0) == 1);     // and the frame itself counted
 
   // The window is sized from the frame's arrival, so the phase still gets
   // its full planned duration of silence.
