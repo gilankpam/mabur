@@ -1,4 +1,5 @@
 add_library(mabur_gs_core STATIC
+  src/channel_ranker.cpp
   src/config.cpp
   src/card_scan.cpp
   src/aggregator.cpp
