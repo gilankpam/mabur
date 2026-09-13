@@ -601,22 +601,31 @@ expectations. Drone confirmed post-write: `rate_walls_rel = [63, 63,
 63, 41, 24, 9, 9, 6]`, `legacy_wall_rel = 63`, no `base_ref` key,
 `power_mode = "offset"`.
 
-`ausniff` (15 s passes, `/dev/shm/mabur-au`):
+`ausniff` (15 s passes, `/dev/shm/mabur-au`), with the `incomplete`
+count that the first write of this section omitted — **most passes
+below are not fully clean**; only the two rows marked `{}` + `fid_gaps
+0` are:
 
-| point | aus | fid_gaps | resyncs | fps |
-|---|---|---|---|---|
-| post-deploy, pass 1 | 907 | 0 | 0 | 60.5 |
-| post-deploy, pass 2 | 909 | 0 | 0 | 60.6 |
-| post-calibration, pass 1 | 895 | 3 | 0 | 59.7 |
-| post-calibration, pass 2 | 907 | 1 | 0 | 60.5 |
-| post-calibration, pass 3 | 907 | 0 | 0 | 60.5 |
-| home-scan (candidates default) | 908 | 0 | 0 | 60.6 |
-| forced `candidates=[149]`, `home_margin=0`, pass 1 | 892 | 1 | 1 | 59.5 |
-| forced `candidates=[149]`, `home_margin=0`, pass 2 | 909 | 0 | 0 | 60.6 |
-| config restored, final | 908 | 0 | 0 | 60.6 |
+| point | aus | incomplete | fid_gaps | resyncs | fps |
+|---|---|---|---|---|---|
+| post-deploy, pass 1 | 907 | `{'1': 1}` | 0 | 0 | 60.5 |
+| post-deploy, pass 2 | 909 | `{'1': 3}` | 0 | 0 | 60.6 |
+| post-calibration, pass 1 | 895 | `{}` | 3 | 0 | 59.7 |
+| post-calibration, pass 2 | 907 | `{'1': 1}` | 1 | 0 | 60.5 |
+| post-calibration, pass 3 | 907 | `{'1': 2}` | 0 | 0 | 60.5 |
+| home-scan (candidates default) | 908 | `{'1': 2}` | 0 | 0 | 60.6 |
+| forced `candidates=[149]`, `home_margin=0`, pass 1 | 892 | `{'1': 2}` | 1 | 1 | 59.5 |
+| forced `candidates=[149]`, `home_margin=0`, pass 2 | 909 | `{'1': 3}` | 0 | 0 | 60.6 |
+| config restored, final | 908 | `{}` | 0 | 0 | 60.6 |
 
-Every settling blip resolved to `fid_gaps=0` on a follow-up pass, in
-line with the documented first-pass-after-restart phantom.
+`fid_gaps` resolved to 0 on a follow-up pass every time it went
+nonzero, in line with the documented first-pass-after-restart phantom
+— but `incomplete` on stream `'1'` did not: only the post-calibration
+pass 1 row and the final config-restored row show `{}`, and those two
+still disagree with each other on `fid_gaps` (3 vs 0). The other seven
+rows all carry a nonzero `incomplete['1']`, so the deploy record above
+did **not** establish a steady-state clean pass; see the 2026-09-14
+follow-up below for that evidence.
 
 Channel auto-select: with the shipped defaults
 (`candidates=[120,149,165]`, `home_margin=20`) the scan committed to
@@ -624,7 +633,55 @@ home 136 (`K none 0` / `M all 136 136 commit`) — expected on a quiet
 bench. Forcing `candidates=[149]`, `home_margin=0` and restarting three
 times still produced `K none 0` / `M all 136 136 commit` every time:
 136 was never worse than 149 by any margin at this bench's noise
-floor. The GS config was restored to `candidates=[120,149,165]`,
-`home_margin=20` and confirmed live via grep; **the pair ran the whole
-session, and finished it, on channel 136**. Step 8 (ch149
-cross-channel re-check) was skipped by controller ruling.
+floor. `pgrep -a maburd` on the drone during this window returned
+`926 /usr/bin/maburd` unchanged on both a check taken mid-wait for the
+first forced-candidate restart and a second taken mid-wait for the
+third — no respawn. The GS config was restored to
+`candidates=[120,149,165]`, `home_margin=20` and confirmed live via
+grep; **the pair ran the whole session, and finished it, on channel
+136**. Step 8 (ch149 cross-channel re-check) was skipped by controller
+ruling.
+
+### 2026-09-14 follow-up: steady-state ausniff evidence
+
+Three fresh 20 s passes, ch136, nothing restarted in between (spacing
+is back-to-back — each pass's own 20 s runtime plus ssh round-trip):
+
+```
+aus=1203 complete={'1': 589, '0': 602} incomplete={'1': 12} fid_gaps=1 resyncs=0 bytes=4562962 dropped_oversize=0 fps=60.3
+aus=409  complete={'1': 201, '0': 206} incomplete={'1': 2}  fid_gaps=61010 resyncs=0 bytes=1387375 dropped_oversize=0 fps=20.5
+aus=668  complete={'0': 334, '1': 332} incomplete={'1': 2}  fid_gaps=0 resyncs=1 bytes=2538925 dropped_oversize=0 fps=61.0
+```
+
+A fourth pass with `--json`, taken after the anomaly below had settled:
+
+```
+{"aus": 1206, "complete": {"1": 598, "0": 606}, "incomplete": {"1": 2}, "frame_id_gaps": 0, "resyncs": 0, "bytes": 22206293, "dropped_oversize": 0, "fps": 60.3}
+```
+
+**None of the four is fully clean** — every one shows a nonzero
+`incomplete['1']`. Per-pass residual rate (`incomplete / aus`): pass 1
+1.0% (12/1203), pass 2 0.5% (2/409), pass 3 0.3% (2/668), the json pass
+0.17% (2/1206). This residual is unattributed — this change moves TX
+power on the drone (the fresh calibration parks mcs5-7 about 1 dB
+hotter than the previous table), so a power-related contribution
+cannot be ruled out from this evidence alone.
+
+Separately, pass 2's `fid_gaps=61010`/`fps=20.5` is not part of that
+residual pattern — it is a distinct anomaly. `dmesg` on the GS during
+this window showed `usb 3-1.1`/`usb 3-1.4` (both radio cards) reset by
+`ehci-platform` in a burst (`14742.9s`, `14822.4s`, `14909.0s` since
+boot), and pass 3's `resyncs=1` corresponds to two `writer epoch
+changed` lines from `ausniff` mid-pass — the shared-memory ring's
+writer (`maburgs`) restarted (`epoch -> 0x0` then a new nonzero epoch).
+`/proc/uptime` and the new PID's start tick put that restart at
+~41 s before the check, i.e. inside the fresh-evidence window, and no
+GS deploy/restart command was issued at that time. The same USB-reset
+signature appears in `dmesg` back to boot (`t=17s`) in several earlier
+bursts, so this looks like a pre-existing, periodic GS-side radio/USB
+behavior rather than something introduced by relative walls — but it
+was not previously known to also crash-restart `maburgs`, and that
+correlation is new information for the controller to weigh. The GS
+daemon was not touched again after this; a final read-only `ps` check
+showed it stable on the post-restart PID with no further resets in
+`dmesg`.
