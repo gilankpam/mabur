@@ -568,3 +568,63 @@ both are safe to leave as shipped, but cheap to improve on real hardware:
   GS and confirm it does. If the threshold never fires at any workable
   bench geometry it is discriminating against nothing and should be
   raised until it actually separates a good run from a saturated one.
+
+### 2026-09-14 relative walls
+
+Deployed commit `3d1bbe1` (branch `relative-walls`). `RC_VERSION` 7 → 8,
+plus `/etc/mabur.toml` swapped from `rate_walls_idx`/`legacy_wall_idx`/
+`base_ref_idx` to `rate_walls_rel`/`legacy_wall_rel` — a config-key flag
+day on top of the binary flag day, drone stopped/config+binary
+swapped/started together as usual. Both device binaries rotated
+(`maburd.pre-relwalls`, `maburgs.pre-relwalls`, `maburcal.pre-relwalls`);
+md5s of the deployed files matched the local build outputs exactly.
+Drone daemon PID (926) stayed constant across the whole session — no
+respawn observed at any point.
+
+`maburcal start` on ch136 (nonce 1651516276, margin 1.00 dB):
+
+| rate | wall(rel) | park | verify | flags |
+|---|---|---|---|---|
+| mcs0 | 63 | 59 | 100% | no_dip |
+| mcs1 | 63 | 59 | 100% | no_dip |
+| mcs2 | 63 | 59 | 100% | no_dip |
+| mcs3 | 41 | 37 | 100% | narrow,drift |
+| mcs4 | 24 | 20 | 100% | card_disagree |
+| mcs5 | 9 | 5 | 100% | drift |
+| mcs6 | 9 | 5 | 100% | |
+| mcs7 | 6 | 2 | 100% | drift |
+
+`legacy_wall_rel = 63` (derived from mcs0). `written: /etc/mabur.toml`.
+mcs5/6/7 landed at 9/9/6 — within ±5 of the 2026-09-13 reference
+(6/9/5) — and mcs0-2 parked `no_dip` at the 63 rail, matching
+expectations. Drone confirmed post-write: `rate_walls_rel = [63, 63,
+63, 41, 24, 9, 9, 6]`, `legacy_wall_rel = 63`, no `base_ref` key,
+`power_mode = "offset"`.
+
+`ausniff` (15 s passes, `/dev/shm/mabur-au`):
+
+| point | aus | fid_gaps | resyncs | fps |
+|---|---|---|---|---|
+| post-deploy, pass 1 | 907 | 0 | 0 | 60.5 |
+| post-deploy, pass 2 | 909 | 0 | 0 | 60.6 |
+| post-calibration, pass 1 | 895 | 3 | 0 | 59.7 |
+| post-calibration, pass 2 | 907 | 1 | 0 | 60.5 |
+| post-calibration, pass 3 | 907 | 0 | 0 | 60.5 |
+| home-scan (candidates default) | 908 | 0 | 0 | 60.6 |
+| forced `candidates=[149]`, `home_margin=0`, pass 1 | 892 | 1 | 1 | 59.5 |
+| forced `candidates=[149]`, `home_margin=0`, pass 2 | 909 | 0 | 0 | 60.6 |
+| config restored, final | 908 | 0 | 0 | 60.6 |
+
+Every settling blip resolved to `fid_gaps=0` on a follow-up pass, in
+line with the documented first-pass-after-restart phantom.
+
+Channel auto-select: with the shipped defaults
+(`candidates=[120,149,165]`, `home_margin=20`) the scan committed to
+home 136 (`K none 0` / `M all 136 136 commit`) — expected on a quiet
+bench. Forcing `candidates=[149]`, `home_margin=0` and restarting three
+times still produced `K none 0` / `M all 136 136 commit` every time:
+136 was never worse than 149 by any margin at this bench's noise
+floor. The GS config was restored to `candidates=[120,149,165]`,
+`home_margin=20` and confirmed live via grep; **the pair ran the whole
+session, and finished it, on channel 136**. Step 8 (ch149
+cross-channel re-check) was skipped by controller ruling.
