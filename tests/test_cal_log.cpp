@@ -46,15 +46,15 @@ TEST(header_is_the_format_marker) {
   { CalLog l(d); l.header(); }
   const auto ls = lines_of(d);
   REQUIRE(!ls.empty());
-  CHECK(ls[0] == "callog 1");
+  CHECK(ls[0] == "callog 3");
 }
 
 TEST(run_record_carries_the_per_run_parameters) {
   const auto d = fresh_dir("callog_run");
-  { CalLog l(d); l.header(); l.run(42, 53, 1.0); }
+  { CalLog l(d); l.header(); l.run(42, 1.0); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 2);
-  CHECK(ls[1] == "R 42 53 1.00");
+  CHECK(ls[1] == "R 42 1.00");
 }
 
 TEST(two_runs_in_one_session_append_two_run_records) {
@@ -67,22 +67,22 @@ TEST(two_runs_in_one_session_append_two_run_records) {
   {
     CalLog l(d);
     l.header();
-    l.run(42, 53, 1.0);
+    l.run(42, 1.0);
     l.verify(0, 10, 90);
-    l.run(43, 53, 1.5);
+    l.run(43, 1.5);
     l.verify(0, 12, 95);
   }
   const auto ls = lines_of(d);
   int header_count = 0;
   std::vector<std::string> run_lines;
   for (const auto& line : ls) {
-    if (line == "callog 1") ++header_count;
+    if (line == "callog 3") ++header_count;
     if (line.rfind("R ", 0) == 0) run_lines.push_back(line);
   }
   CHECK(header_count == 1);
   REQUIRE(run_lines.size() == 2);
-  CHECK(run_lines[0] == "R 42 53 1.00");
-  CHECK(run_lines[1] == "R 43 53 1.50");
+  CHECK(run_lines[0] == "R 42 1.00");
+  CHECK(run_lines[1] == "R 43 1.50");
 }
 
 TEST(cell_record_round_trips_every_field) {
@@ -94,7 +94,7 @@ TEST(cell_record_round_trips_every_field) {
   c.corrupt = 3;
   c.rssi_dbm = {-67, kRssiNone};
   c.have_rssi = {true, false};
-  { CalLog l(d); l.header(); l.run(1, 53, 1.0); l.cell(1, 7, 56, c); }
+  { CalLog l(d); l.header(); l.run(1, 1.0); l.cell(1, 7, 56, c); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
   CHECK(ls[2] == "C 1 7 56 100 97 12 3 -67 -999");
@@ -109,7 +109,7 @@ TEST(undetermined_wall_writes_minus_one) {
   w.floor_idx = -1;
   w.best_card = 0;
   w.flags = kCalUndetermined;
-  { CalLog l(d); l.header(); l.run(1, 53, 1.0); l.wall(7, w); }
+  { CalLog l(d); l.header(); l.run(1, 1.0); l.wall(7, w); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
   CHECK(ls[2] == "W 7 -1 -1 0 2");
@@ -117,10 +117,27 @@ TEST(undetermined_wall_writes_minus_one) {
 
 TEST(verify_record) {
   const auto d = fresh_dir("callog4");
-  { CalLog l(d); l.header(); l.run(1, 53, 1.0); l.verify(5, 50, 97); }
+  { CalLog l(d); l.header(); l.run(1, 1.0); l.verify(5, 50, 97); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
   CHECK(ls[2] == "V 5 50 97");
+}
+
+TEST(negative_indices_and_the_sentinel_print_verbatim) {
+  const auto d = fresh_dir("callog_neg");
+  {
+    CalLog l(d); l.header(); l.run(1, 1.0);
+    RateWall w; w.wall = -4; w.floor_idx = -40; w.best_card = 0; w.flags = 0;
+    l.wall(7, w);
+    RateWall u;  // default: kNoWall
+    l.wall(3, u);
+    l.verify(7, -8, 97);
+  }
+  const auto ls = lines_of(d);
+  REQUIRE(ls.size() == 5);
+  CHECK(ls[2] == "W 7 -4 -40 0 0");
+  CHECK(ls[3] == "W 3 -128 -128 -1 0");
+  CHECK(ls[4] == "V 7 -8 97");
 }
 
 TEST(reopening_appends_without_a_second_header) {
@@ -131,7 +148,7 @@ TEST(reopening_appends_without_a_second_header) {
   { CalLog l(d); l.verify(1, 87, 99); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
-  CHECK(ls[0] == "callog 1");
+  CHECK(ls[0] == "callog 3");
   CHECK(ls[1].rfind("V ", 0) == 0);
   CHECK(ls[2].rfind("V ", 0) == 0);
 }
@@ -144,7 +161,7 @@ TEST(header_is_due_only_until_the_file_itself_exists) {
   // the filesystem rather than by inferring it from anything else.
   const auto d = fresh_dir("callog_due");
   CHECK(cal_log_header_due(d));
-  { CalLog l(d); l.header(); l.run(7, 39, 1.0); }
+  { CalLog l(d); l.header(); l.run(7, 1.0); }
   CHECK(!cal_log_header_due(d));
 }
 
@@ -184,11 +201,11 @@ TEST(a_cal_log_from_an_older_format_is_retired_rather_than_appended_to) {
 
 TEST(a_current_format_cal_log_is_left_alone) {
   const auto d = fresh_dir("callog_current");
-  { CalLog l(d); l.header(); l.run(1, 53, 1.0); }
+  { CalLog l(d); l.header(); l.run(1, 1.0); }
   CHECK(!cal_log_prepare(d));
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 2);
-  CHECK(ls[0] == "callog 1");
+  CHECK(ls[0] == "callog 3");
 }
 
 TEST(prepare_on_a_directory_with_no_cal_log_reports_the_header_is_due) {

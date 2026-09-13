@@ -29,8 +29,8 @@ struct RateWall;
 // Record format is LOCKED (gs/bundle/maburcal's reader and
 // tests/test_cal_log.cpp depend on the exact byte layout):
 //
-//   callog 1                                               # once, first line
-//   R <nonce> <base_ref> <margin_db>             # once per calibration run
+//   callog 3                                               # once, first line
+//   R <nonce> <margin_db>                        # once per calibration run
 //   C <phase> <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>
 //                                                # one row per measured cell
 //   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, at each
@@ -38,6 +38,13 @@ struct RateWall;
 //                                                 # fine); reader takes
 //                                                 # last-write-wins
 //   V <rate> <idx> <pct>                         # one row per verify cell
+//
+// Every index this run writes (C's idx, W's wall/floor, V's idx) is SIGNED
+// and RELATIVE to the drone chip's own anchor, never an absolute TXAGC
+// step -- there is no anchor left anywhere in this file (it was carried on
+// the wire and on the R line through callog 2; both are gone as of callog
+// 3). A reader that wants an absolute step has nowhere to get one from a
+// v3 file; it was never this file's job to supply one.
 //
 // A V row means "this rate was in the verify plan", never "this rate
 // verified clean" -- pct 0 is a real (bad) measurement, written exactly
@@ -53,22 +60,24 @@ struct RateWall;
 // The marker and the per-run parameters are deliberately split: `callog N`
 // versions the FILE (mirrors ctllog N elsewhere in this codebase) and is
 // written at most once no matter how many runs share the session
-// directory, while `R` carries one run's own (nonce, base_ref, margin_db)
-// and is written once at the start of EVERY run. The normal retry path --
+// directory, while `R` carries one run's own (nonce, margin_db) and is
+// written once at the start of EVERY run. The normal retry path --
 // `maburcal start`, see a narrow/saturated flag, move the drone, start
 // again -- puts a second run's records in the same session directory
 // (nothing about a run rotates the session), so a single shared header
 // would leave the second run's C/W/V lines with no way to say which
-// nonce/base_ref/margin they belong to. An R line is what a reader keys
-// runs by, and it also reliably marks where one run's lines end and the
-// next begins.
+// nonce/margin they belong to. An R line is what a reader keys runs by,
+// and it also reliably marks where one run's lines end and the next
+// begins.
 //
 // margin_db prints to two decimals. A card with no RSSI reading in a cell
 // (CalCell::have_rssi[i] false) writes -999 (kRssiNone), never a blank or a
 // zero -- the sentinel is what lets the reader tell "no signal heard" apart
 // from "heard it loud" without a second column. An undetermined rate (no
-// wall could be derived) writes -1 for both wall and floor, mirroring
-// RateWall's own in-memory sentinel.
+// wall could be derived) writes -128 for both wall and floor, mirroring
+// RateWall's own in-memory sentinel (cal_analysis.h's kNoWall) -- not -1,
+// which callog 1/2 used and which is now a real (relative) wall value a
+// rate can legitimately have.
 //
 // Per the project's compatibility policy the `callog N` marker is what
 // versions this file -- the schema itself is free to change, provided both
@@ -127,11 +136,14 @@ class CalLog {
   // there is no reason for a second calibration run in the same session to
   // repeat it.
   void header();
-  // One run's own parameters: `R <nonce> <base_ref> <margin_db>`. Call once
-  // at the start of EVERY calibration run, including the second and later
-  // ones sharing a session directory -- this is what a reader keys a run's
-  // C/W/V lines by and what delimits one run's lines from the next.
-  void run(uint32_t nonce, int base_ref_idx, double margin_db);
+  // One run's own parameters: `R <nonce> <margin_db>`. Call once at the
+  // start of EVERY calibration run, including the second and later ones
+  // sharing a session directory -- this is what a reader keys a run's
+  // C/W/V lines by and what delimits one run's lines from the next. No
+  // anchor: every index this run writes (C/W's idx/wall/floor) is already
+  // relative to the drone chip's own anchor, not an absolute TXAGC step, so
+  // there is nothing left for the R line to carry it.
+  void run(uint32_t nonce, double margin_db);
   void cell(uint8_t phase, uint8_t rate, int idx, const CalCell& c);
   void wall(uint8_t rate, const RateWall& w);
   void verify(uint8_t rate, int idx, int pct);
