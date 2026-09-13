@@ -62,17 +62,7 @@ class CalSession {
   // different nonce or arrives outside AwaitAck -- a late repeat of an ack
   // the session already consumed, or an ack for a session that has since
   // failed/aborted, must not resurrect anything.
-  void on_ack(uint32_t nonce, int base_ref_idx, uint64_t now_ms);
-
-  // This unit's efuse anchor, from any cal_active Telem in this session.
-  // Separate from on_ack because the two answer different questions: on_ack
-  // is a PHASE acknowledgment and is correctly ignored outside AwaitAck,
-  // while base_ref_idx is a property of the hardware that stays true
-  // whenever it arrives. Keeping them fused meant a phase-1 ack lost to the
-  // 30-50% uplink took the anchor with it, and with no anchor there is no
-  // rail -- so every no-dip row (normally MCS 0-2, on every run) came out
-  // undetermined. Call it from every cal_active Telem, not only acks.
-  void note_base_ref(int base_ref_idx);
+  void on_ack(uint32_t nonce, uint64_t now_ms);
 
   // A sweep-frame arrival. Frames outside the phase currently running, or
   // for an index this session never asked for, are dropped -- silently, by
@@ -134,9 +124,11 @@ class CalSession {
   // changed nothing on hardware -- see cal_control.h.
   double margin_db() const { return cfg_.margin_db; }
 
-  // Test accessors into the currently-live phase's cell tally.
-  uint16_t cell_received(uint8_t rate, uint8_t idx, int card) const;
-  uint16_t cell_corrupt(uint8_t rate, uint8_t idx) const;
+  // Test accessors into the currently-live phase's cell tally. idx is
+  // signed and relative to the drone chip's anchor (spec 2026-09-13); the
+  // anchor itself never reaches this session.
+  uint16_t cell_received(uint8_t rate, int idx, int card) const;
+  uint16_t cell_corrupt(uint8_t rate, int idx) const;
 
  private:
   // Advances time-driven transitions (ack timeout, phase-end analysis, the
@@ -182,15 +174,7 @@ class CalSession {
   uint32_t nonce_ = 0;
   bool linked_ = false;
   bool cal_capable_ = false;
-  // This unit's efuse anchor, from the phase-1 acknowledgment. -1 until one
-  // arrives: a sweep frame is an implicit ack (on_cal_frame) and only the
-  // Telem carries base_ref, so a whole run can complete without it. The rail
-  // a no-dip row parks at is derived from this, and cal_analysis.h's
-  // max_wall < 0 is what "no anchor, so no derivable wall" looks like.
-  int base_ref_idx_ = -1;
 
-  // cfg_.th plus the per-unit rail (cal_analysis.h, CalThresholds::max_wall).
-  CalThresholds thresholds_() const;
   const char* fail_reason_ = "";
 
   // AwaitAck bookkeeping.
@@ -208,11 +192,12 @@ class CalSession {
   // Sparse per-rate cell tally for whichever phase is currently running.
   // Cleared and reseeded at each phase boundary -- once a phase's cells
   // have been folded into coarse_walls_/final_walls_ the raw tally is no
-  // longer needed.
-  std::array<std::map<uint8_t, CalCell>, 8> cells_;
+  // longer needed. Keyed by `int`: idx is signed and relative to the
+  // drone's anchor (spec 2026-09-13), not an absolute TXAGC index.
+  std::array<std::map<int, CalCell>, 8> cells_;
   // Raw per-cell-per-card RSSI samples, median-reduced into CalCell::rssi_dbm
   // at phase end (sorted_cells()).
-  std::array<std::map<uint8_t, std::array<std::vector<int>, 2>>, 8> rssi_raw_;
+  std::array<std::map<int, std::array<std::vector<int>, 2>>, 8> rssi_raw_;
 
   std::array<RateWall, 8> coarse_walls_{};
   std::array<RateWall, 8> final_walls_{};
@@ -226,7 +211,7 @@ class CalSession {
   uint64_t last_result_sent_ms_ = 0;
   int result_repeats_left_ = 0;
   bool verify_frame_seen_ = false;
-  // Park index per rate (wall - margin_db*4), -1 where undetermined.
+  // Park index per rate (wall - margin_db*4), kNoWall where undetermined.
   // Purely local since T_CAL_RESULT started carrying the raw wall: the
   // drone derives its own park from its own wall_margin_db, and this
   // exists only to build the GS's verify plan (which indices to expect

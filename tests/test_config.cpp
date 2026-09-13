@@ -63,7 +63,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.radio.channel == 136);
   CHECK(cfg.radio.width == def.radio.width);
   // "none" = leave the chip's efuse power table untouched. The bundle ships
-  // this way because rate_walls_idx below is a per-UNIT calibration and the
+  // this way because rate_walls_rel below is a per-UNIT calibration and the
   // shipped file cannot know the wall of the board it lands on -- flashing
   // someone else's walls would park every rate at a ceiling never measured
   // there. Set "offset" once you have run `maburcal start` on your own vtx
@@ -72,15 +72,15 @@ TEST(load_config_default_file_is_the_flight_config) {
   // NOTE this drone flies "offset": /etc/mabur.toml and this file diverge on
   // exactly this key, deliberately.
   CHECK(cfg.radio.power_mode == "none");
+  CHECK(cfg.radio.follow_gs == true);
 
-  // Reference wall-equalization from the author's 8812EU. Inert while
-  // power_mode is "none" (parsed and range-checked, never programmed), but
-  // pinned so the calibration is not lost.
-  CHECK((cfg.radio.rate_walls_idx ==
-         std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
-  CHECK(cfg.radio.legacy_wall_idx == 91);
+  // Reference wall-equalization from the author's 8812EU, RELATIVE to the
+  // chip's per-channel anchor (2026-09-13 ch136 means). Inert while
+  // power_mode is "none", pinned so the calibration is not lost.
+  CHECK((cfg.radio.rate_walls_rel ==
+         std::array<int, 8>{63, 63, 62, 45, 22, 6, 9, 5}));
+  CHECK(cfg.radio.legacy_wall_rel == 63);
   CHECK(cfg.radio.wall_margin_db == 1.0);
-  CHECK(cfg.radio.base_ref_idx == 53);
 
   // 332/w32/bpb4 is the 2026-07-29 geometry: same CPU/air profile as the
   // 2026-07-25 gated 328 (docs/fec-symbol-size-328.md), shifted +4 because
@@ -155,6 +155,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   // transitions in flight.
   CHECK(cfg.link.failsafe_ms == 3000);
   CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
+  CHECK(cfg.link.move_confirm_ms == 2000);
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
   // MSP OSD is on in flight (stream_id 4), 3 Hz.
@@ -884,55 +885,66 @@ TEST(radio_wall_equalization_keys_parse) {
   auto path = write_temp_toml(
       "[radio]\n"
       "power_mode = \"offset\"\n"
-      "rate_walls_idx = [91, 91, 91, 91, 73, 56, 51, 49]\n"
-      "legacy_wall_idx = 91\n"
-      "wall_margin_db = 2.0\n"
-      "base_ref_idx = 50\n");
+      "rate_walls_rel = [63, 63, 63, 42, 20, 1, -2, -4]\n"
+      "legacy_wall_rel = 63\n"
+      "wall_margin_db = 2.0\n");
   Config cfg = load_config(path.string());
-  CHECK((cfg.radio.rate_walls_idx ==
-         std::array<int, 8>{91, 91, 91, 91, 73, 56, 51, 49}));
-  CHECK(cfg.radio.legacy_wall_idx == 91);
+  CHECK((cfg.radio.rate_walls_rel ==
+         std::array<int, 8>{63, 63, 63, 42, 20, 1, -2, -4}));
+  CHECK(cfg.radio.legacy_wall_rel == 63);
   CHECK(cfg.radio.wall_margin_db == 2.0);
-  CHECK(cfg.radio.base_ref_idx == 50);
   std::filesystem::remove(path);
 }
 
-TEST(radio_rate_walls_idx_wrong_length_rejected) {
-  auto path = write_temp_toml("[radio]\nrate_walls_idx = [91, 91, 91]\n");
+TEST(radio_rate_walls_rel_wrong_length_rejected) {
+  auto path = write_temp_toml("[radio]\nrate_walls_rel = [63, 63, 63]\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(!msg.empty());
-  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
   std::filesystem::remove(path);
 }
 
-TEST(radio_power_mode_offset_requires_rate_walls_idx) {
+TEST(radio_power_mode_offset_requires_rate_walls_rel) {
   auto path = write_temp_toml("[radio]\npower_mode = \"offset\"\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(!msg.empty());
-  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
+  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
   std::filesystem::remove(path);
 }
 
-// The 8822E's per-rate diff field is 7-bit two's complement: diff[r] =
-// walls[r] - wall_margin_db*4 - base_ref_idx must land in [-64,63], or the
-// value silently wraps on air (e.g. +70 -> -58, sign-flipping per-rate
-// power) with no error. base_ref_idx left at 0 (a plausible miscalibration:
-// forgetting to set the unit's efuse anchor) drives every wall straight out
-// of range, so config load must fail loudly rather than let power_plan.h's
-// clamp paper over it silently.
-TEST(radio_offset_diff_out_of_range_rejected) {
+TEST(radio_rel_wall_outside_diff_field_rejected) {
+  auto path = write_temp_toml(
+      "[radio]\n"
+      "rate_walls_rel = [64, 63, 63, 63, 63, 63, 63, 63]\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
+  CHECK(msg.find("[-64,63]") != std::string::npos);
+  std::filesystem::remove(path);
+  auto path2 = write_temp_toml("[radio]\nlegacy_wall_rel = -65\n");
+  msg = what_of([&] { (void)load_config(path2.string()); });
+  CHECK(msg.find("radio.legacy_wall_rel") != std::string::npos);
+  std::filesystem::remove(path2);
+}
+
+TEST(radio_offset_rel_minus_margin_below_field_rejected) {
+  // rel - m must stay >= -64 or the diff clamps silently; -62 - 4 = -66.
   auto path = write_temp_toml(
       "[radio]\n"
       "power_mode = \"offset\"\n"
-      "rate_walls_idx = [127, 127, 127, 127, 127, 127, 127, 127]\n"
-      "legacy_wall_idx = 91\n"
-      "wall_margin_db = 0.0\n"
-      "base_ref_idx = 0\n");
+      "rate_walls_rel = [63, 63, 63, 63, 63, 63, 63, -62]\n"
+      "legacy_wall_rel = 63\n"
+      "wall_margin_db = 1.0\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(!msg.empty());
-  CHECK(msg.find("radio.rate_walls_idx") != std::string::npos);
-  CHECK(msg.find("[-64,63]") != std::string::npos);
+  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
   std::filesystem::remove(path);
+}
+
+TEST(deleted_absolute_wall_keys_fail_boot) {
+  for (const char* key : {"rate_walls_idx = [1,1,1,1,1,1,1,1]",
+                          "legacy_wall_idx = 91", "base_ref_idx = 53"}) {
+    auto path = write_temp_toml(std::string("[radio]\n") + key + "\n");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    std::filesystem::remove(path);
+  }
 }
 
 // The transitional async gate was removed after hardware acceptance (plan
@@ -1327,6 +1339,20 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
   std::filesystem::remove(path);
 }
 
+TEST(follow_gs_and_move_confirm_parse_with_defaults) {
+  Config def = load_config(default_config_path());
+  CHECK(def.radio.follow_gs == true);
+  CHECK(def.link.move_confirm_ms == 2000);
+  auto p = write_temp_toml("[radio]\nchannel = 136\nfollow_gs = false\n[link]\nmove_confirm_ms = 500\n");
+  Config c = load_config(p.string());
+  CHECK(c.radio.follow_gs == false);
+  CHECK(c.link.move_confirm_ms == 500);
+  std::filesystem::remove(p);
+  auto bad = write_temp_toml("[link]\nmove_confirm_ms = 10\n");
+  std::string msg = what_of([&] { (void)load_config(bad.string()); });
+  CHECK(msg.find("link.move_confirm_ms") != std::string::npos);
+  std::filesystem::remove(bad);
+}
 
 MTEST_MAIN
 

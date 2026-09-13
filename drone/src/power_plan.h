@@ -4,56 +4,55 @@
 #include <cmath>
 #include <cstdint>
 
+#include "mabur/rc_proto.h"
+
 namespace mabur {
 
-// Wall-equalized power plan: derives per-rate qdB diffs from measured
-// clean-air TXAGC ceilings ("walls") so that every rate's effective TXAGC
-// index (base_ref_idx + diff[r]) equals walls[r] - margin — every rate parked
-// at wall-minus-margin, level-continuous with the power_mode "none" baseline.
-// diff[r] = walls[r] - m - base_ref_idx, where m = round(margin_db * 4) is
-// the margin converted from dB to the chip's 0.25 dB (qdB) index steps.
+// Relative-wall power plan (spec 2026-09-13-relative-walls-design.md):
+// every wall is a signed index RELATIVE to the chip's own per-channel TXAGC
+// anchor (the efuse reference devourer programs into 0x18e8 on each channel
+// set). diff[r] = rel[r] - m parks rate r at wall-minus-margin on whatever
+// channel the chip is on, because the chip adds the right anchor itself.
+// m = round(margin_db * 4) converts dB to the chip's 0.25 dB index steps.
 //
-// This plan is the WHOLE of mabur's power policy. It is programmed once at
-// bring-up and the global offset is zeroed once beside it; there is no
-// runtime power control left to interact with (no GS-commanded offset, no
-// thermal derate — deleted 2026-08-12, spec
-// 2026-08-12-constant-txpower-design.md). So the park below is the operating
-// power for the life of the process: raising a wall or lowering the margin
-// radiates more, permanently, with nothing downstream to pull it back.
+// anchor_idx: the reference index read back at bring-up ON THE BOOT
+// CHANNEL, used only to keep reference + diff <= 127 (the vendor driver
+// guarantees that in software; hardware behaviour beyond it is undefined).
+// <= 0 means unknown: no cap. On this unit (anchors 39-57) the cap never
+// binds -- it lands at +70..+88, above kRelMax (+63); it exists for a
+// blank-efuse card (devourer fallback 75), which caps at +52 and touches
+// only no-dip rows.
+//
+// It is therefore a BOOT-CHANNEL APPROXIMATION, and deliberately so: the
+// per-channel anchor the diffs ride on is NOT this number. devourer
+// re-derives it from the efuse on every channel change, driven by the
+// ReApplyTxPower() call maburd makes right after each FastRetune
+// (drone/src/main.cpp, RealActuator::retune_now_). A stale value here can
+// only mis-size a guard that does not bind; it cannot mis-place a wall.
+//
+// This plan is the WHOLE of mabur's power policy: programmed once at
+// bring-up (and re-programmed live by a calibration apply), global offset
+// zeroed beside it, nothing moves power afterwards.
 struct PowerPlan {
   int8_t cck;
   int8_t legacy;
   int8_t mcs[8];
 };
 
-namespace detail {
-// The 8822E's per-rate diff field is 7-bit two's complement (devourer's
-// pack_rate_diff_word masks each byte & 0x7f before packing), so its valid
-// range is [-64, 63], not the full int8 [-128, 127]. A diff outside this
-// range would silently wrap on air (e.g. +70 -> -58) with no error. This is
-// a defensive belt-and-braces clamp only — config.cpp's radio-section
-// validation is the loud layer that refuses to load a config whose diffs
-// would land out of range in the first place; this function still always
-// returns a value (never throws).
-inline int8_t clamp_i8(int v) {
-  return static_cast<int8_t>(std::clamp(v, -64, 63));
-}
-}  // namespace detail
-
-// walls_idx: per-MCS max clean TXAGC index (measured); legacy_wall_idx same
-// for the OFDM control rate; base_ref_idx: this unit's efuse reference
-// index (the anchor rate's index the diffs are relative to); margin_db:
-// uniform safety margin in dB applied to every rate's wall.
-inline PowerPlan make_power_plan(const std::array<int, 8>& walls_idx,
-                                  int legacy_wall_idx, int base_ref_idx,
-                                  double margin_db) {
+inline PowerPlan make_power_plan(const std::array<int, 8>& walls_rel,
+                                  int legacy_wall_rel, double margin_db,
+                                  int anchor_idx) {
   const int m = static_cast<int>(std::lround(margin_db * 4.0));
+  const int hi =
+      anchor_idx > 0 ? std::min(rc::kRelMax, 127 - anchor_idx) : rc::kRelMax;
+  auto clamp = [&](int v) {
+    return static_cast<int8_t>(std::clamp(v, rc::kRelMin, hi));
+  };
   PowerPlan p{};
-  for (int r = 0; r < 8; ++r) {
-    p.mcs[r] = detail::clamp_i8(walls_idx[static_cast<size_t>(r)] - m - base_ref_idx);
-  }
-  p.legacy = detail::clamp_i8(legacy_wall_idx - m - base_ref_idx);
-  p.cck = p.legacy;  // v1: cck rides the legacy wall
+  for (int r = 0; r < 8; ++r)
+    p.mcs[r] = clamp(walls_rel[static_cast<size_t>(r)] - m);
+  p.legacy = clamp(legacy_wall_rel - m);
+  p.cck = p.legacy;  // cck rides the legacy wall
   return p;
 }
 

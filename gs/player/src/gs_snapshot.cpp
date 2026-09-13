@@ -66,6 +66,10 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
   }
   if (!j.is_object()) return false;
 
+  if (const json* scan = obj(j, "scan")) {
+    auto it = scan->find("state");
+    out->scan_auto = it != scan->end() && it->is_string() && it->get<std::string>() != "off";
+  }
   if (const json* link = obj(j, "link")) {
     // The GS's operating wifi channel (radio.channel). Exported from the GS
     // config, so it is a constant for the session -- but it is the one

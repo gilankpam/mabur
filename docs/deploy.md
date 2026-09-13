@@ -109,7 +109,7 @@ did not.
 
 The one deliberate divergence from the flown value is
 `radio.power_mode`, which ships `"none"` while this drone flies `"offset"`.
-`rate_walls_idx` is a per-UNIT calibration (`docs/calibration.md`) and the
+`rate_walls_rel` is a per-UNIT calibration (`docs/calibration.md`) and the
 shipped file cannot know the wall of the board it lands on, so it carries the
 author's 8812EU numbers as a reference and leaves them inert — parsed and
 range-checked, never programmed. Measure your own vtx before setting
@@ -549,3 +549,19 @@ none of this bump touches config.
 — run it once both binaries are up, expecting ~59.8 fps and 0 gaps; a
 `frame_id_gap` on the very first post-deploy pass can be a phantom from
 the restart itself, so take a second pass before treating it as real.
+
+## 2026-09-13 RC_VERSION 8 (relative TX-power walls)
+
+Calibration indices are signed and relative to the chip's efuse anchor;
+`Telem` drops `cal_base_ref_idx` (88 → 87 bytes) — `RC_VERSION` 7 → 8, a
+version-mismatch flag day like the ones above (no control link and no
+video between the two swaps; finish the deploy, do not restart).
+
+**Config keys move on the drone:** `radio.rate_walls_idx`,
+`radio.legacy_wall_idx` and `radio.base_ref_idx` are gone;
+`radio.rate_walls_rel` and `radio.legacy_wall_rel` replace them. Old
+binary + new config, or new binary + old config, both fail boot into the
+2 s respawn loop — swap config and binary together on the drone (stop
+`S00mabur`, copy both, start with `setsid`). The GS has no config change.
+Rollback is paired: `maburd.pre-relwalls` + `mabur.toml.pre-relwalls`
+on the drone with `maburgs.pre-relwalls` on the GS.

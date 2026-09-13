@@ -11,10 +11,10 @@
 // unreachable:
 //
 //   1. validate  -- run the candidate walls through the same derivation
-//      config.cpp's loader applies (drone/src/config.cpp:133-155) and
+//      config.cpp's loader applies (parse_radio's wall checks) and
 //      refuse to touch anything if a derived diff would leave the 8822E's
 //      7-bit rate-diff field range [-64,63].
-//   2. patch -- rewrite the four keys in memory and check that every
+//   2. patch -- rewrite the three keys in memory and check that every
 //      REQUIRED one was actually found and rewritten (see PatchStatus).
 //      patch_toml has no TOML-writer fallback: if a key's line can't be
 //      matched -- missing, reformatted, a multi-line array -- silently
@@ -59,36 +59,42 @@
 // parse_toml_file/parse_toml_string), and /etc/mabur.toml is
 // bundle/mabur.default.toml verbatim -- a heavily commented file a
 // re-serialize would flatten. patch_toml is therefore line-surgical: it
-// rewrites only the four keys this task owns, in place, preserving every
+// rewrites only the three keys this task owns, in place, preserving every
 // other line -- comments included -- byte for byte.
 
 #include <array>
 #include <string>
 
+#include "mabur/rc_proto.h"
 #include "mabur/toml.h"
 
 namespace mabur {
 
-// -1 in walls[r] (or legacy_wall) means "undetermined": that rate wasn't
-// swept this session, so the existing config's value for it is kept.
-// Never write a fabricated number over a real measurement.
+// kWallUndetermined in walls[r] (or legacy_wall) means "undetermined: keep
+// the config's value": that rate wasn't swept this session, so the
+// existing config's value for it is kept. Never write a fabricated number
+// over a real measurement.
 struct CalWrite {
-  std::array<int, 8> walls{-1, -1, -1, -1, -1, -1, -1, -1};
-  int legacy_wall = -1;  // derived from the MCS0 sweep result, not swept itself
-  int base_ref_idx = 0;
+  std::array<int, 8> walls{
+      mabur::rc::kWallUndetermined, mabur::rc::kWallUndetermined,
+      mabur::rc::kWallUndetermined, mabur::rc::kWallUndetermined,
+      mabur::rc::kWallUndetermined, mabur::rc::kWallUndetermined,
+      mabur::rc::kWallUndetermined, mabur::rc::kWallUndetermined};
+  int legacy_wall =
+      mabur::rc::kWallUndetermined;  // derived from the MCS0 sweep result,
+                                      // not swept itself
 };
 
-// Which of the four keys patch_toml actually found and rewrote. A flag
+// Which of the three keys patch_toml actually found and rewrote. A flag
 // stays false either because the key's line was never matched at all
 // (missing, reformatted, a multi-line array patch_toml doesn't parse) or,
-// for legacy_wall_idx only, because CalWrite::legacy_wall was -1 and the
-// line was deliberately left untouched. apply_calibration_impl uses this
-// to tell those two cases apart from each other and from "found and
-// rewritten", since only the first is an error.
+// for legacy_wall_rel only, because CalWrite::legacy_wall was
+// kWallUndetermined and the line was deliberately left untouched.
+// apply_calibration_impl uses this to tell those two cases apart from each
+// other and from "found and rewritten", since only the first is an error.
 struct PatchStatus {
-  bool rate_walls_idx = false;
-  bool legacy_wall_idx = false;
-  bool base_ref_idx = false;
+  bool rate_walls_rel = false;
+  bool legacy_wall_rel = false;
   bool power_mode = false;
 };
 
@@ -104,10 +110,10 @@ enum class ApplyResult {
   ReparseFailed,  // candidate failed mabur::load_config -- never published
 };
 
-// Rewrites only rate_walls_idx, legacy_wall_idx, base_ref_idx and
-// power_mode (set to "offset") in `text`, preserving every other line,
-// every comment, and each rewritten line's original spacing before '=' and
-// any trailing comment. An entry left at -1 keeps whatever value the
+// Rewrites only rate_walls_rel, legacy_wall_rel and power_mode (set to
+// "offset") in `text`, preserving every other line, every comment, and
+// each rewritten line's original spacing before '=' and any trailing
+// comment. An entry left at kWallUndetermined keeps whatever value the
 // original text had for it. If `status` is non-null, it is filled in with
 // which keys were actually found and rewritten -- see PatchStatus. Never
 // throws; a key it can't find is simply left unmatched in `*status` for
@@ -115,23 +121,19 @@ enum class ApplyResult {
 std::string patch_toml(const std::string& text, const CalWrite& w,
                         PatchStatus* status = nullptr);
 
-// Mirrors the range check drone/src/config.cpp:133-155 applies at load
-// time: wall - lround(margin_db * 4.0) - base_ref_idx must land in
-// [-64,63] for every swept rate (walls[r] != -1) and for legacy_wall (if
-// determined). On failure, *why names the offending key, matching
-// config.cpp's message so this refusal reads the same as a boot failure
-// would.
+// Mirrors config.cpp: every determined rel in [-64,63] and
+// rel - lround(margin_db*4) >= -64, for every swept rate
+// (walls[r] != kWallUndetermined) and for legacy_wall (if determined). On
+// failure, *why names the offending key, matching config.cpp's message so
+// this refusal reads the same as a boot failure would.
 //
 // This stays even though apply_calibration()'s load_config() verification
 // re-derives the same numbers: this check refuses a bad table before the
 // disk is touched at all, with a specific OutOfRange result and a message
 // naming the exact derivation that failed. load_config() is the backstop
 // that catches anything this model does not -- a mistyped key, a value
-// outside the four keys this file patches, a config field this function
-// knows nothing about. Belt and braces, not redundancy. Note that this
-// check is necessarily narrower than load_config()'s: it only checks the
-// DERIVED diff, not (for example) base_ref_idx's own [0,127] range, so a
-// candidate can pass this and still be refused at the load_config() step.
+// outside the three keys this file patches, a config field this function
+// knows nothing about. Belt and braces, not redundancy.
 bool walls_in_range(const CalWrite& w, double margin_db, std::string* why);
 
 // Validate -> patch (+ required-key check) -> write "<path>.new" + fsync

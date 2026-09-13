@@ -58,47 +58,63 @@ struct CalSweepCfg {
 // CalResult (once one arrives) for the caller to apply. Not thread-safe;
 // on_cmd/on_result/pump are all meant to be called from the same thread
 // that owns the RadioTx passed to pump() (see the file header).
+//
+// Every cell a CalCmd describes is SIGNED and RELATIVE to the chip's own
+// TXAGC anchor (mabur::rc::kRelMin/kRelMax) -- the wire never carries an
+// absolute index, on the command in, the stamped sweep frame, or the ack
+// out. The anchor itself is read once per session (read_anchor_idx(),
+// below) and stays entirely drone-internal: it is what
+// pwr.set_index_override() is programmed against
+// (clamp(anchor_idx_ + rel, 0, 127)) and what close_session() restores,
+// but it is never reported to the GS -- take_ack() is a plain flag, not a
+// value.
 class CalSweep {
  public:
   enum class State { Idle, Sweeping, Applying };
 
-  // Test/production seam for the two knobs this class needs from the
+  // Test/production seam for the three knobs this class needs from the
   // drone's real power path (drone/src/power_plan.h in production):
-  // parking the TXAGC index at a candidate cell, and zeroing the
+  // parking the TXAGC index at a candidate cell, zeroing the
   // wall-equalized per-rate diff table so every rate is swept from the
-  // same base index (Global Constraint: "zero the diffs before sweeping").
+  // same anchor (Global Constraint: "zero the diffs before sweeping"), and
+  // reading that anchor back.
   struct PowerCtl {
     virtual ~PowerCtl() = default;
     virtual bool set_index_override(int idx) = 0;
     virtual bool zero_rate_diffs() = 0;
-    virtual int read_base_ref_idx() = 0;
+    // The chip's TXAGC reference for the current channel with the diff
+    // table zeroed and no override live; -1 if the chip cannot report it.
+    virtual int read_anchor_idx() = 0;
   };
 
   explicit CalSweep(CalSweepCfg cfg) : cfg_(cfg) {}
 
   // Accepts a sweep command. A brand-new nonce starts a fresh session
-  // (state -> Sweeping, cell cursor reset, per-rate diffs zeroed and
-  // base_ref_idx captured right here, synchronously -- not lazily on the
-  // next pump()). A phase strictly BEHIND the one already accepted for
-  // this nonce -- a late duplicate of an earlier phase -- is ignored
-  // outright with no ack (constraint 3's monotonic half: coarse < fine <
-  // verify never runs backward). An EXACT repeat of the phase already
-  // running is also idempotent -- the cell cursor is left exactly as it
-  // is, nothing is re-zeroed -- but re-arms the ack every time (review
-  // ruling: the GS resends its CalCmd every 200 ms into a 30-50%-lossy
-  // uplink, and a single lost ack Telem must not cost the whole phase). A
-  // phase strictly AHEAD of the one already accepted (matching nonce)
-  // resumes sweeping with a fresh cell cursor built from this command's
-  // windows, without re-zeroing the diffs a prior phase of the same
-  // session already zeroed.
+  // (state -> Sweeping, cell cursor reset, per-rate diffs zeroed and the
+  // chip's anchor captured right here, synchronously -- not lazily on the
+  // next pump()). A chip that cannot report its anchor right now
+  // (read_anchor_idx() < 0) cannot place a single relative cell, so a
+  // brand-new session opens none -- has_session_ stays false and no ack is
+  // armed; the GS times out in AwaitAck exactly as it would for a lost ack.
+  // A phase strictly BEHIND the one already accepted for this nonce -- a
+  // late duplicate of an earlier phase -- is ignored outright with no ack
+  // (constraint 3's monotonic half: coarse < fine < verify never runs
+  // backward). An EXACT repeat of the phase already running is also
+  // idempotent -- the cell cursor is left exactly as it is, nothing is
+  // re-zeroed -- but re-arms the ack every time (review ruling: the GS
+  // resends its CalCmd every 200 ms into a 30-50%-lossy uplink, and a
+  // single lost ack Telem must not cost the whole phase). A phase strictly
+  // AHEAD of the one already accepted (matching nonce) resumes sweeping
+  // with a fresh cell cursor built from this command's windows, without
+  // re-zeroing the diffs a prior phase of the same session already zeroed.
   //
   // Takes PowerCtl (unlike on_result/pump's later, per-cell uses of it)
-  // because a NEW session's diffs must be zeroed and its base_ref_idx
-  // captured here, synchronously, at acceptance -- before pump() ever
-  // parks the TXAGC at a swept cell's index. A later phase (fine) landing
-  // after an earlier phase already did that would otherwise read the
-  // override instead of the anchor if it read again (see
-  // take_ack_base_ref()'s header comment).
+  // because a NEW session's diffs must be zeroed and its anchor captured
+  // here, synchronously, at acceptance -- before pump() ever parks the
+  // TXAGC at a swept cell's index. A later phase (fine) landing after an
+  // earlier phase already did that would otherwise read the override
+  // instead of the anchor if it read again (see take_ack()'s header
+  // comment).
   void on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr);
 
   // Accepts a measured-wall result for the session currently in flight.
@@ -126,51 +142,77 @@ class CalSweep {
   // returns nullopt until another on_result() lands.
   std::optional<rc::CalResult> take_pending_result();
 
-  // Drains the ack payload on_cmd() armed: for a new phase, OR an exact
+  // Drains the ack flag on_cmd() armed: for a new phase, OR an exact
   // repeat of the phase already running (review ruling reversing the
   // original "exactly one ack per phase" -- the GS resends its CalCmd
   // every 200 ms and gives up at 3000 ms over a 30-50%-lossy uplink, and a
-  // single lost ack Telem otherwise cost the whole phase). nullopt only
-  // for a call that accepted nothing at all -- a stale repeat of an
-  // EARLIER phase, constraint 3's other branch. The caller (Task 11's RC
-  // dispatch) must send one T_TELEM per drained value, before it next
-  // calls pump() for this phase: CalSession::on_ack() (gs/src/cal_session.h)
-  // is a no-op outside AwaitAck (so re-answering a retransmission is
-  // harmless) but is what ENDS AwaitAck and opens the radio-silence
-  // window the first time it lands, and it re-enters AwaitAck for the
-  // fine phase. A drone that never acked at all no longer costs the phase
-  // outright -- the GS takes the first arriving sweep frame of the phase
-  // it is commanding as an implicit ack -- but that only closes the air
-  // one settle_ms after the sweep has already started, so the Telem ack
-  // is still the one that gets the window right.
+  // single lost ack Telem otherwise cost the whole phase). False for a
+  // call that accepted nothing at all -- a stale repeat of an EARLIER
+  // phase (constraint 3's other branch), or a new session refused because
+  // the anchor couldn't be read. The caller (Task 11's RC dispatch) must
+  // send one T_TELEM per drained true, before it next calls pump() for
+  // this phase: CalSession::on_ack() (gs/src/cal_session.h) is a no-op
+  // outside AwaitAck (so re-answering a retransmission is harmless) but is
+  // what ENDS AwaitAck and opens the radio-silence window the first time
+  // it lands, and it re-enters AwaitAck for the fine phase. A drone that
+  // never acked at all no longer costs the phase outright -- the GS takes
+  // the first arriving sweep frame of the phase it is commanding as an
+  // implicit ack -- but that only closes the air one settle_ms after the
+  // sweep has already started, so the Telem ack is still the one that
+  // gets the window right.
   //
-  // Always the value on_cmd() captured ONCE at session start, never a
-  // fresh PowerCtl::read_base_ref_idx() taken here or inside on_cmd() for
-  // a later phase: by the time a second phase (fine) is accepted, the
-  // first phase has already parked the TXAGC at a swept cell's index
-  // (pump_sweeping never restores between phases), and devourer's
-  // GetTxPowerState reports that override, not the anchor, if read again.
-  std::optional<int> take_ack_base_ref();
+  // The ack no longer carries the anchor -- it never left the drone in
+  // the first place (see the class comment) -- so this is a plain flag,
+  // armed once per accepted phase and never re-derived from a fresh
+  // PowerCtl::read_anchor_idx() taken here or inside on_cmd() for a later
+  // phase: by the time a second phase (fine) is accepted, the first phase
+  // has already parked the TXAGC at a swept cell's index (pump_sweeping
+  // never restores between phases), and devourer's GetTxPowerState
+  // reports that override, not the anchor, if read again.
+  bool take_ack();
 
-  // The same value take_ack_base_ref() vends, without draining it --
-  // non-destructive, so the caller can still ask after already draining an
-  // ack (Task 11's apply/verify wiring needs it again once a result lands,
-  // by which point any ack for the phase that produced it is long gone).
-  // 0 before any phase of this session has ever been accepted -- matches
-  // the wire's own "0 = not read" sentinel (Telem.cal_base_ref_idx).
-  int base_ref_idx() const { return base_ref_idx_; }
+  // Drains the "this command was REFUSED after flattening the rate-diff
+  // table" flag, armed once by on_cmd()'s anchor-read failure and cleared
+  // by this call.
+  //
+  // Why the caller must act on it (final review, finding 2): on_cmd()'s
+  // new-session branch calls zero_rate_diffs() BEFORE read_anchor_idx(),
+  // because the diffs have to be off before the anchor can be read at all.
+  // A chip that then cannot report its anchor leaves the drone with a
+  // FLATTENED table and no session -- has_session_ stays false, so
+  // main.cpp's cal_active falling edge (the one place that re-programs the
+  // operating power, restore_operating_power()) never fires, and the
+  // flattening is permanent until restart. Every rate whose wall sits
+  // below the anchor then transmits ABOVE its measured wall: the
+  // overdriven direction, caused by the calibration kit itself, which is
+  // the exact hazard close_session() exists to prevent for the sessions
+  // that DO open. So this is not a diagnostic -- draining it true is a
+  // standing obligation to restore operating power.
+  //
+  // Armed on both refusal paths: a cold refusal (no session in flight) and
+  // a refusal that preempted a live session with a new nonce. Never armed
+  // for an accepted phase, an idempotent repeat, or a stale earlier phase
+  // -- none of those re-zero anything.
+  bool take_refused();
+
+  // The drone-internal TXAGC reference this session's cells are
+  // programmed relative to (see the class comment) -- read once at
+  // session start (on_cmd()'s new-session branch) and never re-read for a
+  // later phase of the same session. 0 before any phase of this session
+  // has ever been accepted. Test-only: production code has no reason to
+  // read this back, since it never leaves the drone.
+  int anchor_idx() const { return anchor_idx_; }
 
   // True once this session's TXAGC override has actually been restored to
-  // the base reference index read at session start -- i.e. close_session()
-  // has run and there was something to restore. Test-only: production
-  // code has no reason to poll this, since restoring IS the point of
-  // reaching Idle.
+  // the anchor read at session start -- i.e. close_session() has run and
+  // there was something to restore. Test-only: production code has no
+  // reason to poll this, since restoring IS the point of reaching Idle.
   bool power_restored_for_test() const { return power_restored_; }
 
  private:
   struct Cell {
     uint8_t rate = 0;
-    uint8_t idx = 0;
+    int8_t idx = 0;  // relative to anchor_idx_, [kRelMin, kRelMax]
   };
 
   void pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr);
@@ -192,10 +234,12 @@ class CalSweep {
   uint64_t await_deadline_ms_ = 0;     // between-phase / between-result wait
 
   // Zeroed once per session (not per phase, so fine/verify measure against
-  // the same base coarse already zeroed against), and the reference index
-  // read back at that moment so close_session() can restore it.
+  // the same base coarse already zeroed against), and the chip's anchor
+  // read back at that moment (drone-internal, never sent to the GS) so
+  // close_session() can restore it and every cell can be programmed
+  // relative to it.
   bool zeroed_for_session_ = false;
-  int base_ref_idx_ = 0;
+  int anchor_idx_ = 0;
   bool power_restored_ = false;
   // Latched the first time this session's on_result() is accepted, so a
   // duplicated result frame (the uplink retransmits same as it does
@@ -204,16 +248,22 @@ class CalSweep {
   bool result_accepted_ = false;
 
   // Set by on_cmd() every time it accepts a phase (never on a rejected
-  // repeat), drained by take_ack_base_ref(). See that method's header
-  // comment for why this is always base_ref_idx_, not a fresh read.
-  std::optional<int> pending_ack_base_ref_;
+  // repeat), drained by take_ack(). See that method's header comment for
+  // why the ack itself carries no value any more -- the anchor never
+  // leaves the drone.
+  bool pending_ack_ = false;
+
+  // Set by on_cmd() when it refuses a command AFTER zero_rate_diffs() has
+  // already flattened the table, drained by take_refused(). See that
+  // method's header comment.
+  bool pending_refusal_ = false;
 
   // Current phase's cell plan and cursor.
   std::vector<Cell> cells_;
   size_t cursor_ = 0;
   bool cell_entered_ = false;
   uint8_t active_rate_ = 0;
-  uint8_t active_idx_ = 0;
+  int8_t active_idx_ = 0;  // relative, as stamped on the wire
 
   // Per-cell frame pacing, copied out of the accepted CalCmd. gap_us is
   // truncated to whole milliseconds here -- pump()'s only clock is a

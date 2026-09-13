@@ -12,7 +12,7 @@
 
 namespace maburgs {
 namespace {
-constexpr char kCalLogMarker[] = "callog 1";
+constexpr char kCalLogMarker[] = "callog 3";
 }  // namespace
 
 bool cal_log_header_due(const std::string& dir) {
@@ -56,16 +56,15 @@ void CalLog::header() {
   w_.line(s_, kCalLogMarker, sizeof(kCalLogMarker) - 1);
 }
 
-void CalLog::run(uint32_t nonce, int base_ref_idx, double margin_db) {
+void CalLog::run(uint32_t nonce, double margin_db) {
   if (s_ == LogWriter::kBadStream) return;
   char b[64];
-  const int n = std::snprintf(b, sizeof(b), "R %u %d %.2f", nonce,
-                              base_ref_idx, margin_db);
+  const int n = std::snprintf(b, sizeof(b), "R %u %.2f", nonce, margin_db);
   if (n > 0)
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
-void CalLog::cell(uint8_t phase, uint8_t rate, uint8_t idx, const CalCell& c) {
+void CalLog::cell(uint8_t phase, uint8_t rate, int idx, const CalCell& c) {
   if (s_ == LogWriter::kBadStream) return;
   // -999 (kRssiNone) whenever a card had no reading, never the raw
   // rssi_dbm slot -- a caller that forgets to gate on have_rssi must not
@@ -89,7 +88,7 @@ void CalLog::wall(uint8_t rate, const RateWall& w) {
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
-void CalLog::verify(uint8_t rate, uint8_t idx, int pct) {
+void CalLog::verify(uint8_t rate, int idx, int pct) {
   if (s_ == LogWriter::kBadStream) return;
   char b[64];
   const int n = std::snprintf(b, sizeof(b), "V %d %d %d", rate, idx, pct);

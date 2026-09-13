@@ -42,7 +42,11 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 6 -> 7 on 2026-09-10: T_CAL_CMD / T_CAL_RESULT carry the TX-power
 // wall calibration session; Telem gained cal_base_ref_idx and flags bit6
 // (cal_active). Spec 2026-09-10-tx-power-calibration-design.md.
-constexpr uint8_t RC_VERSION = 7;
+// Bumped 7 -> 8 on 2026-09-13: calibration indices are SIGNED and RELATIVE
+// to the chip's efuse anchor (CalWindow int8, CalResult walls in [-64,63],
+// sentinel -128); Telem drops cal_base_ref_idx. Spec
+// 2026-09-13-relative-walls-design.md.
+constexpr uint8_t RC_VERSION = 8;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -202,13 +206,11 @@ struct Telem {
   // link-up. Both saturating.
   uint16_t air_backlog_max_ms = 0;
   uint16_t air_shed_drops = 0;
-  // Calibration (spec 2026-09-10): this chip's efuse TXAGC reference index,
-  // read back at bring-up. power_plan.h derives every per-rate diff as
-  // walls[r] - margin*4 - base_ref_idx, so the GS needs this unit's value to
-  // range-check a candidate wall table before sending it. 0 = not read.
-  // Paired with flags bit6 (cal_active): the drone emits this Telem for
-  // each ACCEPTED PHASE (coarse, then fine -- CalSession::on_ack() re-enters
-  // AwaitAck for the fine phase and needs a second ack to leave it, see
+  // Calibration ack (spec 2026-09-10, indices made relative 2026-09-13): the
+  // anchor never leaves the drone, so the ack is flags bit6 (cal_active)
+  // alone. The drone emits this Telem for each ACCEPTED PHASE (coarse, then
+  // fine -- CalSession::on_ack() re-enters AwaitAck for the fine phase and
+  // needs a second ack to leave it, see
   // tests/test_cal_session.cpp's fine_phase_sharpens_a_real_dip_and_flags_drift),
   // before that phase starts sweeping -- and again on every exact
   // retransmission of the phase already running, since on_ack() is a
@@ -218,15 +220,14 @@ struct Telem {
   // phase boundary's ack Telem(s) and the suppression rule never conflict.
   // The verify pass sends no command and gets no ack -- the drone
   // self-initiates it once it applies the result.
-  uint8_t cal_base_ref_idx = 0;
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse
 // scan; 1 is the full-resolution fine window.
 struct CalWindow {
   uint8_t rate = 0;      // HT MCS 0..7
-  uint8_t idx_lo = 0;
-  uint8_t idx_hi = 0;
+  int8_t idx_lo = 0;     // relative to the chip's anchor, [-64, 63]
+  int8_t idx_hi = 0;     // relative to the chip's anchor, [-64, 63]
   uint8_t idx_step = 1;
 };
 
@@ -245,14 +246,26 @@ struct CalCmd {
   std::vector<CalWindow> windows;  // 1..kMaxCalWindows
 };
 
-// VRX -> VTX: the measured table. A wall of -1 is UNDETERMINED -- the GS
-// could not derive one from the data, and the drone must leave that config
-// entry exactly as it found it rather than write a fabricated number.
+// Calibration indices are relative to the chip's own per-channel TXAGC
+// anchor, so they live in the 7-bit signed diff-field range. -1 is a legal
+// wall; "undetermined" is this sentinel, outside the range.
+constexpr int kRelMin = -64;
+constexpr int kRelMax = 63;
+constexpr int kRailRel = 63;  // a no-dip row's wall: rail to the top of the range
+constexpr int16_t kWallUndetermined = -128;
+
+// VRX -> VTX: the measured table. A wall of kWallUndetermined is
+// UNDETERMINED -- the GS could not derive one from the data, and the drone
+// must leave that config entry exactly as it found it rather than write a
+// fabricated number.
 struct CalResult {
   uint32_t vtx_id = 0;
   uint32_t nonce = 0;
-  std::array<int16_t, 8> walls{};   // per-MCS, -1 = undetermined
-  int16_t legacy_wall = -1;
+  std::array<int16_t, 8> walls{kWallUndetermined, kWallUndetermined,
+                                kWallUndetermined, kWallUndetermined,
+                                kWallUndetermined, kWallUndetermined,
+                                kWallUndetermined, kWallUndetermined};
+  int16_t legacy_wall = kWallUndetermined;
   // No flags field: the health flags (no_dip, narrow, saturated, drift,
   // card_disagree) never leave the GS -- they reach cal.log from its own
   // W rows, and the drone has no use for them. Nothing on this side of

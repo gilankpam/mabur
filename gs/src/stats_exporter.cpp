@@ -98,6 +98,13 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     cj["up"] = c.up;
     cj["frames"] = c.frames;
     cj["crc_fail"] = c.crc_fail;
+    if (c.energy) {
+      cj["energy"] = {{"cca", c.energy->cca}, {"fa", c.energy->fa}, {"own", c.energy->own},
+                      {"foreign", c.energy->foreign}};
+      if (c.energy->igi) cj["energy"]["igi"] = *c.energy->igi; else cj["energy"]["igi"] = nullptr;
+    } else {
+      cj["energy"] = nullptr;
+    }
     if (have_window) {
       const uint64_t d_exp = c.seq_expected > p.seq_expected
                                  ? c.seq_expected - p.seq_expected : 0;
@@ -178,6 +185,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   json& link = j["link"];
   link["vtx_id"] = in.vtx_id;
   link["channel"] = in.channel;
+  link["home"] = in.home;
   link["state"] = in.in_session ? "session" : "beaconing";
   link["tx_card"] = in.tx_card;
   // OpPoint.overhead is a base/enh pair (Task 4, same-rate-fixed-pairs):
@@ -457,6 +465,14 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                 {"air", {lat.p50[2], lat.p99[2]}},
                 {"fec", {lat.p50[3], lat.p99[3]}}};
   }
+
+  // Boot-time channel scan snapshot (spec 2026-09-13-auto-channel-select),
+  // top-level rather than under link: it outlives the session and describes
+  // the receiver's own scan/freeze state, not the link it eventually picks.
+  json& scan = j["scan"];
+  scan["state"] = in.scan_state;
+  scan["rounds"] = in.scan_rounds;
+  if (in.scan_pick) scan["pick"] = *in.scan_pick; else scan["pick"] = nullptr;
 
   if (in.telem) {
     const mabur::rc::Telem& t = *in.telem;

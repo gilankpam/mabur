@@ -21,7 +21,7 @@ struct CaptureSink : FrameSink {
 struct FakePowerCtl : CalSweep::PowerCtl {
   std::vector<int> index_writes;
   int zero_diff_calls = 0;
-  int base_ref = 53;
+  int anchor = 53;
   // Models devourer's GetTxPowerState under an index override: the chip
   // reports whatever index is parked "for the current moment", not the
   // efuse anchor. With this on, a readback returns the last index written
@@ -30,11 +30,11 @@ struct FakePowerCtl : CalSweep::PowerCtl {
   bool report_override_as_base = false;
   bool set_index_override(int idx) override {
     index_writes.push_back(idx);
-    if (report_override_as_base) base_ref = idx;
+    if (report_override_as_base) anchor = idx;
     return true;
   }
   bool zero_rate_diffs() override { ++zero_diff_calls; return true; }
-  int read_base_ref_idx() override { return base_ref; }
+  int read_anchor_idx() override { return anchor; }
 };
 
 // 2 rates x 4 indices x 5 frames.
@@ -46,7 +46,7 @@ rc::CalCmd small_cmd(uint8_t phase = cal::kPhaseCoarse, uint32_t nonce = 1) {
   c.frames_per_cell = 5;
   c.settle_ms = 0;
   c.gap_us = 0;
-  c.windows = {{0, 0, 12, 4}, {5, 40, 52, 4}};
+  c.windows = {{0, -40, -28, 4}, {5, -13, -1, 4}};
   return c;
 }
 
@@ -85,12 +85,18 @@ TEST(walks_every_cell_in_the_plan) {
   run_to_quiescence(s, tx, pwr);
   // 8 cells x 5 frames.
   CHECK(sink.frames.size() == 40);
-  // One index write per cell, in plan order.
+  // One index write per cell, in plan order -- PROGRAMMED (anchor + rel)
+  // values, anchor 53.
   REQUIRE(pwr.index_writes.size() == 8);
-  CHECK(pwr.index_writes[0] == 0);
-  CHECK(pwr.index_writes[3] == 12);
+  CHECK(pwr.index_writes[0] == 13);
+  CHECK(pwr.index_writes[3] == 25);
   CHECK(pwr.index_writes[4] == 40);
   CHECK(pwr.index_writes[7] == 52);
+  // The stamped payload carries the RELATIVE index, never the programmed
+  // (anchor + rel) one.
+  cal::CalFrameInfo info;
+  REQUIRE(payload_of(sink.frames.front(), &info));
+  CHECK(info.idx == -40);
 }
 
 TEST(stamps_each_frame_with_its_rate_and_index) {
@@ -108,8 +114,8 @@ TEST(stamps_each_frame_with_its_rate_and_index) {
     cal::CalFrameInfo info;
     REQUIRE(payload_of(f, &info));
     CHECK(info.phase == cal::kPhaseCoarse);
-    if (info.rate == 0) { ++rate0; CHECK(info.idx % 4 == 0); CHECK(info.idx <= 12); }
-    else { ++rate5; CHECK(info.rate == 5); CHECK(info.idx >= 40 && info.idx <= 52); }
+    if (info.rate == 0) { ++rate0; CHECK(info.idx % 4 == 0); CHECK(info.idx >= -40 && info.idx <= -28); }
+    else { ++rate5; CHECK(info.rate == 5); CHECK(info.idx >= -13 && info.idx <= -1); }
   }
   CHECK(rate0 == 20);
   CHECK(rate5 == 20);
@@ -365,70 +371,76 @@ TEST(zero_frames_per_cell_sends_nothing) {
   CHECK(sink.frames.size() == 0);
 }
 
-TEST(base_ref_readback_feeds_the_ack) {
-  // The GS range-checks a candidate table against THIS unit's base_ref_idx
-  // (power_plan.h derives every diff from it), so the readback must reach
-  // the acknowledgment or the whole table is unusable on another VTX.
+TEST(anchor_readback_feeds_the_ack) {
+  // The GS range-checks a candidate table against THIS unit's anchor_idx
+  // (power_plan.h derives every diff from it), so the readback must open
+  // the session and arm the acknowledgment or the whole table is unusable
+  // on another VTX.
   FakePowerCtl pwr;
-  pwr.base_ref = 53;
+  pwr.anchor = 53;
   CalSweep s(CalSweepCfg{});
   rc::CalCmd c = coarse_cmd();
   s.on_cmd(c, 0, pwr);
-  CHECK(s.take_ack_base_ref() == 53);
+  CHECK(s.take_ack());
 }
 
-TEST(ack_base_ref_is_not_re_read_through_a_parked_override) {
+TEST(anchor_is_not_re_read_through_a_parked_override) {
   // A second phase's on_cmd() lands with the FIRST phase's TXAGC override
   // still parked (pump_sweeping never restores between phases -- see
-  // cal_sweep.h). If the ack re-read base_ref_idx at THIS point instead of
-  // reusing the one value latched at session start, it would report the
-  // override, not the anchor -- devourer/src/TxPower.h: GetTxPowerState's
-  // representative indices report chip truth "for the current moment,"
-  // flat during an override.
+  // cal_sweep.h). If the anchor were re-read at THIS point instead of
+  // reusing the one value latched at session start, the SECOND phase's
+  // cells would be programmed relative to a drifted anchor --
+  // devourer/src/TxPower.h: GetTxPowerState's representative indices report
+  // chip truth "for the current moment," flat during an override.
   CaptureSink sink;
   RadioTx tx(sink);
   FakePowerCtl pwr;
-  pwr.base_ref = 53;
+  pwr.anchor = 53;
   CalSweep s(CalSweepCfg{});
   s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
-  CHECK(s.take_ack_base_ref() == 53);
+  CHECK(s.take_ack());
   run_to_quiescence(s, tx, pwr);
   // Coarse finished with the TXAGC parked at its last swept cell; simulate
   // that drift being visible to a readback taken now.
-  pwr.base_ref = 12;
+  pwr.anchor = 12;
   s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
-  CHECK(s.take_ack_base_ref() == 53);  // still the session's original value
+  CHECK(s.take_ack());
+  CHECK(s.anchor_idx() == 53);  // still the session's original value
+  // And the programmed index for the new phase's first cell is built from
+  // that ORIGINAL anchor (53 + -40), not the drifted readback (12 + -40).
+  s.pump(1000, tx, pwr);
+  CHECK(pwr.index_writes.back() == 13);
 }
 
-TEST(a_new_nonce_mid_session_does_not_read_base_ref_through_a_parked_override) {
+TEST(a_new_nonce_mid_session_does_not_read_the_anchor_through_a_parked_override) {
   // The mirror of the test above, for the NEW-nonce branch. on_cmd()'s
   // new_session predicate is `!has_session_ || nonce != nonce_`: the second
   // disjunct fires while a previous session is STILL LIVE -- any second
   // `maburcal start` after an abort, after a GS restart, or inside
   // await_next_ms of the last run's final frame. The TXAGC is parked at the
   // old session's last swept cell at that moment, so a bare
-  // read_base_ref_idx() would latch that cell as the new session's anchor
-  // and ship it to /etc/mabur.toml's radio.base_ref_idx -- where a park
-  // BELOW the true anchor overdrives every rate, on every subsequent boot.
+  // read_anchor_idx() would latch that cell as the new session's anchor and
+  // program every cell of the new session off it -- a park BELOW the true
+  // anchor overdrives every rate for the rest of that session.
   CaptureSink sink;
   RadioTx tx(sink);
   FakePowerCtl pwr;
-  pwr.base_ref = 53;
+  pwr.anchor = 53;
   CalSweep s(CalSweepCfg{});
   s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
-  CHECK(s.take_ack_base_ref() == 53);
+  CHECK(s.take_ack());
   run_to_quiescence(s, tx, pwr);
   CHECK(s.active());  // still live: awaiting the next phase, not closed
   // The chip now reports the last swept cell, not the anchor -- exactly
   // what devourer's GetTxPowerState does under an index override.
   const int parked = pwr.index_writes.back();
   CHECK(parked != 53);
-  pwr.base_ref = parked;
+  pwr.anchor = parked;
   pwr.report_override_as_base = true;
   // A SECOND run starts (new nonce) before this session times out.
   s.on_cmd(small_cmd(cal::kPhaseCoarse, 8), 1000, pwr);
-  CHECK(s.take_ack_base_ref() == 53);   // the anchor, not the parked cell
-  CHECK(s.base_ref_idx() == 53);
+  CHECK(s.take_ack());
+  CHECK(s.anchor_idx() == 53);   // the anchor, not the parked cell
 }
 
 TEST(a_repeat_of_the_running_phase_re_arms_the_ack) {
@@ -444,11 +456,11 @@ TEST(a_repeat_of_the_running_phase_re_arms_the_ack) {
   CalSweep s(CalSweepCfg{});
   const auto c = small_cmd();
   s.on_cmd(c, 0, pwr);
-  CHECK(s.take_ack_base_ref().has_value());
+  CHECK(s.take_ack());
   s.on_cmd(c, 2, pwr);  // exact repeat: same nonce+phase
-  CHECK(s.take_ack_base_ref().has_value());  // re-armed, not dropped
+  CHECK(s.take_ack());  // re-armed, not dropped
   s.on_cmd(c, 4, pwr);  // and again -- every repeat re-arms
-  CHECK(s.take_ack_base_ref().has_value());
+  CHECK(s.take_ack());
 }
 
 TEST(a_stale_earlier_phase_repeat_arms_no_ack) {
@@ -462,13 +474,133 @@ TEST(a_stale_earlier_phase_repeat_arms_no_ack) {
   FakePowerCtl pwr;
   CalSweep s(CalSweepCfg{});
   s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
-  REQUIRE(s.take_ack_base_ref().has_value());
+  REQUIRE(s.take_ack());
   run_to_quiescence(s, tx, pwr);
   s.on_cmd(small_cmd(cal::kPhaseFine, 7), 1000, pwr);
-  REQUIRE(s.take_ack_base_ref().has_value());
+  REQUIRE(s.take_ack());
   // A stale coarse retransmission finally lands, late.
   s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 1500, pwr);
-  CHECK(!s.take_ack_base_ref().has_value());
+  CHECK(!s.take_ack());
+}
+
+TEST(programmed_index_is_anchor_plus_rel_clamped_to_the_chip_range) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  pwr.anchor = 100;
+  CalSweep s(CalSweepCfg{});
+  rc::CalCmd c = small_cmd();
+  c.windows = {{0, 20, 63, 43}};  // cells rel 20 and 63
+  s.on_cmd(c, 0, pwr);
+  run_to_quiescence(s, tx, pwr);
+  REQUIRE(pwr.index_writes.size() >= 2);
+  CHECK(pwr.index_writes[0] == 120);
+  CHECK(pwr.index_writes[1] == 127);  // 163 clamped
+}
+
+TEST(unreadable_anchor_refuses_the_command_and_arms_no_ack) {
+  // A chip whose reference cannot be read back (GetTxPowerState invalid)
+  // cannot place a relative cell; the GS times out in AwaitAck as for a
+  // lost ack (spec 2026-09-13 §2).
+  FakePowerCtl pwr;
+  pwr.anchor = -1;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(coarse_cmd(), 0, pwr);
+  CHECK(!s.active());
+  CHECK(!s.take_ack());
+  CHECK(pwr.index_writes.empty());
+}
+
+TEST(a_refused_command_is_observable_exactly_once) {
+  // Final-review finding 2: the refusal path above zeroes the rate-diff
+  // table (on_cmd does that BEFORE read_anchor_idx()) and then opens no
+  // session at all -- so active() never rises and main.cpp's falling-edge
+  // restore_operating_power() never fires. Left invisible, the drone flies
+  // with a FLAT (zeroed) diff table forever: every rate below its own wall
+  // transmits above it, the overdriven direction this whole kit exists to
+  // prevent. take_refused() is what lets the caller notice and restore.
+  FakePowerCtl pwr;
+  pwr.anchor = -1;
+  CalSweep s(CalSweepCfg{});
+  CHECK(!s.take_refused());  // nothing refused yet
+  s.on_cmd(coarse_cmd(), 0, pwr);
+  CHECK(pwr.zero_diff_calls == 1);  // the diffs really were flattened
+  CHECK(s.take_refused());
+  CHECK(!s.take_refused());  // drained: one refusal, one restore
+}
+
+TEST(an_accepted_command_is_not_a_refusal) {
+  // The flag must not fire on the ordinary path, or every accepted phase
+  // would drag an operating-power reprogram in behind it mid-sweep.
+  FakePowerCtl pwr;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(coarse_cmd(), 0, pwr);
+  CHECK(s.active());
+  CHECK(!s.take_refused());
+  // Nor on the idempotent repeat / stale-phase paths, which never reach
+  // the zeroing branch at all.
+  s.on_cmd(coarse_cmd(), 1, pwr);
+  CHECK(!s.take_refused());
+}
+
+TEST(unreadable_anchor_mid_sweep_is_a_refusal_too) {
+  // The preempting-nonce variant (see the test below): the OLD session's
+  // diffs were zeroed and never restored either, so this refusal must be
+  // just as visible to the caller as a cold one.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
+  REQUIRE(s.active());
+  CHECK(!s.take_refused());
+  s.pump(0, tx, pwr);
+  pwr.anchor = -1;
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 8), 3, pwr);
+  CHECK(!s.active());
+  CHECK(s.take_refused());
+  CHECK(!s.take_refused());
+}
+
+TEST(unreadable_anchor_mid_sweep_quiesces_the_old_session) {
+  // Review finding: a new nonce preempting an actively-Sweeping session
+  // whose anchor read then fails must fully quiesce, not just clear
+  // has_session_ -- otherwise pump()'s switch(state_) keeps dispatching to
+  // pump_sweeping() on the stale Sweeping state forever (has_session_ only
+  // gates the hard-cap/await guards), reprogramming the override for
+  // cells nobody owns any more with no close_session() path left to
+  // restore it (constraint 2's exact hazard).
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
+  REQUIRE(s.take_ack());
+  // Advance partway into the sweep -- actively Sweeping, not finished.
+  s.pump(0, tx, pwr);
+  s.pump(1, tx, pwr);
+  s.pump(2, tx, pwr);
+  REQUIRE(s.state() == CalSweep::State::Sweeping);
+
+  // A new nonce lands, and this time the anchor can't be read.
+  pwr.anchor = -1;
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 8), 3, pwr);
+  CHECK(!s.active());
+  CHECK(s.state() == CalSweep::State::Idle);
+  CHECK(!s.take_ack());
+  // The last write is the restore to the OLD session's anchor (53), done
+  // by the `if (has_session_) pwr.set_index_override(anchor_idx_);` line
+  // before the failed read.
+  CHECK(pwr.index_writes.back() == 53);
+
+  const size_t writes_before = pwr.index_writes.size();
+  const size_t frames_before = sink.frames.size();
+  for (uint64_t t = 3; t < 53; ++t) s.pump(t, tx, pwr);
+  CHECK(pwr.index_writes.size() == writes_before);  // no further programming
+  CHECK(sink.frames.size() == frames_before);       // no further frames
 }
 
 MTEST_MAIN

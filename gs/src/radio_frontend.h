@@ -12,6 +12,7 @@
 #include "body_queue.h"
 #include "card_scan.h"
 #include "logger.h"
+#include "scout_radio.h"
 
 // Forward declarations for devourer types
 class WiFiDriver;
@@ -42,7 +43,7 @@ bool sa_canonical(const uint8_t* dot11, size_t len);
 // sits at bytes 22-23 in BOTH layouts, so mac_seq extraction is unchanged.
 size_t dot11_body_offset(const uint8_t* dot11, size_t len);
 
-class RadioFrontend {
+class RadioFrontend : public ScoutRadio {
  public:
   struct Cfg {
     uint16_t usb_vid = 0x0bda;
@@ -68,6 +69,15 @@ class RadioFrontend {
   uint64_t tx_fail() const;    // send_control calls that returned false
   uint64_t foreign() const;   // CRC-clean frames dropped by the SA filter
   bool send_control(const std::vector<uint8_t>& body);  // false pre-ready/on error
+
+  // ScoutRadio interface: the scout thread's control plane on this card.
+  bool retune(uint8_t ch) override;                 // FastRetune; false pre-ready
+  ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
+  ScoutFrames frames() const override {
+    return ScoutFrames{own_.load(std::memory_order_relaxed), foreign_.load(std::memory_order_relaxed)};
+  }
+  CardCaps caps() const { return caps_; }            // filled in open_and_start() after InitWrite
+  uint8_t channel() const { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
 
  private:
   void on_packet(const Packet& pkt);
@@ -104,6 +114,9 @@ class RadioFrontend {
   std::atomic<uint64_t> tx_fail_{0};
   uint16_t tx_seq_ = 0;
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
+  std::atomic<uint64_t> own_{0};
+  std::atomic<uint8_t> channel_{0};
+  CardCaps caps_;
 };
 
 }  // namespace maburgs

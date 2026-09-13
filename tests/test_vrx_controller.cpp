@@ -312,6 +312,33 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
 }
 
+TEST(controller_exposes_agreed_channel_and_ack_edge) {
+  auto vrx = make();
+  CHECK(vrx.agreed_channel() == 0);
+  CHECK(!vrx.take_ack_edge());
+  vrx.set_proposal(149);
+  vrx.on_video(0.0);
+  double now = 0;
+  std::optional<VrxController::Out> out;
+  while (!out || !out->is_disc) { now += 10; out = vrx.step(now, no_data()); }   // no video -> BEACONING
+  auto d = mabur::rc::parse_disc(out->frame.data(), out->frame.size());
+  REQUIRE(d.has_value());
+  CHECK(d->op_channel == 149);
+  mabur::rc::DiscAck ack;
+  ack.vtx_id = 1; ack.vrx_nonce = vrx.rz_nonce(); ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  ack.agreed_channel = 149; ack.seq = 1;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), now);
+  CHECK(vrx.agreed_channel() == 149);
+  CHECK(vrx.take_ack_edge());
+  CHECK(!vrx.take_ack_edge());
+  ack.agreed_channel = 136; ack.seq = 2;
+  wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), now + 1);
+  CHECK(vrx.agreed_channel() == 136);
+  CHECK(vrx.take_ack_edge());
+}
+
 MTEST_MAIN
 
 // (c) Starvation guard: a decode-collapse window (zero completed base-layer

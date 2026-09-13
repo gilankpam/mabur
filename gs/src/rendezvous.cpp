@@ -5,7 +5,8 @@ namespace maburgs {
 VrxRendezvous::VrxRendezvous(VrxRzConfig cfg)
     : cfg_(cfg),
       nonce_(static_cast<uint32_t>(
-          (static_cast<uint64_t>(cfg.vtx_id) * 2654435761ull) & 0xFFFFFFFFull)) {}
+          (static_cast<uint64_t>(cfg.vtx_id) * 2654435761ull) & 0xFFFFFFFFull)),
+      proposal_(cfg.op_channel) {}
 
 void VrxRendezvous::feed_video(double now_ms) {
   last_video_ms_ = now_ms;
@@ -31,7 +32,7 @@ mabur::rc::Disc VrxRendezvous::beacon() {
   mabur::rc::Disc d;
   d.vtx_id = cfg_.vtx_id;
   d.vrx_nonce = nonce_;
-  d.op_channel = cfg_.op_channel;
+  d.op_channel = proposal_;
   d.op_width = 20;
   d.seq = seq_;
   return d;

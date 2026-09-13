@@ -7,9 +7,9 @@
 // the two main.cpp files had no coverage at all. Every defect that
 // actually escaped this build was of that class -- CAP_CALIBRATE never
 // wired, a watchdog aborting 3 s into every sweep, a result frame sent
-// exactly once over an uplink that loses 30-50% of frames, and a
-// base_ref_idx read back through a parked TXAGC override. None of them
-// were visible from either side alone.
+// exactly once over an uplink that loses 30-50% of frames, and the chip's
+// TXAGC anchor read back through a parked override instead of its true
+// value. None of them were visible from either side alone.
 //
 // The harness below is deliberately a TRANSCRIPTION of the two main.cpp
 // call sites, not an idealized protocol:
@@ -56,6 +56,15 @@ namespace {
 // no_dip path through the RSSI knee.
 constexpr int kTrueWall[8] = {127, 127, 127, 95, 73, 54, 51, 49};
 
+// The drone chip's own anchor, as read back by SimPower::read_anchor_idx()
+// with no override live. kTrueWall above is physical (what the simulated
+// channel actually compresses at); the GS only ever sees indices relative
+// to this anchor, so every assertion against a measured wall has to
+// convert. Rates 0-2 never dip inside the sweep range either way (kept at
+// 127, "never dips"), which stays true in either index space.
+constexpr int kAnchor = 53;
+int kTrueWallRel(int r) { return kTrueWall[r] - kAnchor; }
+
 // The TXAGC transfer curve of docs/txagc-calibration.md: flat floor, a
 // ~0.3 dB/idx ramp, then a flat ceiling. The knee at the top is what a
 // no_dip row's wall is derived from.
@@ -72,12 +81,11 @@ int ramp_rssi(int idx) {
 const char* kConfig = R"(# a comment that must survive
 [radio]
 usb_vid    = 3034
-power_mode = "none"      # set to offset to use rate_walls_idx
+power_mode = "none"      # set to offset to use rate_walls_rel
 
-rate_walls_idx  = [91, 91, 91, 91, 73, 56, 51, 49]
-legacy_wall_idx = 91
+rate_walls_rel  = [63, 63, 63, 42, 20, 1, -2, -4]
+legacy_wall_rel = 63
 wall_margin_db  = 1.0
-base_ref_idx    = 53
 
 [fec]
 symbol_size = 332
@@ -121,7 +129,7 @@ struct SimPower : mabur::CalSweep::PowerCtl {
     ++zero_calls;
     return true;
   }
-  int read_base_ref_idx() override {
+  int read_anchor_idx() override {
     // The hazard C2 exists for: a readback taken while an override is
     // parked reports the override, not the efuse anchor.
     return override_idx >= 0 ? override_idx : anchor;
@@ -223,16 +231,12 @@ struct Pair {
     if (type == mabur::rc::T_CAL_CMD) {
       if (auto c = mabur::rc::parse_cal_cmd(body.data(), body.size())) {
         drone.on_cmd(*c, t_ms(), pwr);
-        if (auto base_ref = drone.take_ack_base_ref()) {
+        if (drone.take_ack()) {
           // The ack rides a Telem, and Telem is lost like anything else.
-          // A surviving one teaches the anchor AND acknowledges the phase,
-          // exactly as gs/src/main.cpp does it -- the anchor first, since
-          // on_ack drops everything outside AwaitAck and the rail a no-dip
-          // row parks at is derived from the anchor.
-          if (!drop(drop_ack_pct)) {
-            gs.note_base_ref(*base_ref);
-            gs.on_ack(c->nonce, *base_ref, t_ms());
-          }
+          // It carries no anchor -- the anchor never leaves the drone
+          // (drone/src/cal_sweep.h) -- so a surviving one just closes
+          // AwaitAck, exactly as gs/src/main.cpp does it.
+          if (!drop(drop_ack_pct)) gs.on_ack(c->nonce, t_ms());
         }
       }
     } else if (type == mabur::rc::T_CAL_RESULT) {
@@ -247,7 +251,6 @@ struct Pair {
   void drone_apply(const mabur::rc::CalResult& result) {
     const int m = static_cast<int>(std::lround(drone_margin_db * 4.0));
     mabur::CalWrite w;
-    w.base_ref_idx = drone.base_ref_idx();
     for (int r = 0; r < 8; ++r) w.walls[r] = result.walls[r];
     w.legacy_wall = result.legacy_wall;
 
@@ -267,15 +270,15 @@ struct Pair {
     verify.settle_ms = maburgs::kSettleMs;
     verify.gap_us = maburgs::kGapUs;
     for (uint8_t r = 0; r < 8; ++r) {
-      if (w.walls[r] == -1) continue;
-      const int idx = w.walls[r] - m;
-      if (idx < 0 || idx > 127) continue;
-      verify.windows.push_back(
-          {r, static_cast<uint8_t>(idx), static_cast<uint8_t>(idx), 1});
+      if (w.walls[r] == mabur::rc::kWallUndetermined) continue;
+      const int park = w.walls[r] - m;
+      if (park < mabur::rc::kRelMin || park > mabur::rc::kRelMax) continue;
+      const int8_t idx = static_cast<int8_t>(park);
+      verify.windows.push_back({r, idx, idx, 1});
     }
     if (!verify.windows.empty()) {
       drone.on_cmd(verify, t_ms(), pwr);
-      (void)drone.take_ack_base_ref();  // the drone's own command: no ack
+      (void)drone.take_ack();  // the drone's own command: no ack
     }
   }
 
@@ -285,18 +288,22 @@ struct Pair {
     for (const auto& f : sink.frames) {
       mabur::cal::CalFrameInfo info;
       if (!payload_of(f, &info)) continue;
+      // The stamped index is relative to the drone's anchor; the simulated
+      // channel's PA compression (kTrueWall) and RSSI ramp are both
+      // physical, so convert back before comparing against either.
+      const int physical = pwr.anchor + info.idx;
       // PA compression: above the true wall the waveform is mush.
       const bool compressed =
-          model_compression && info.idx > kTrueWall[info.rate];
+          model_compression && physical > kTrueWall[info.rate];
       const bool lost = drop(drop_downlink_pct);
       if (lost) continue;
       // Two cards; card 1 hears a little less, which is also what makes
       // "best single card" a real choice rather than a formality.
-      gs.on_cal_frame(0, info, ramp_rssi(info.idx), /*crc_ok=*/!compressed,
+      gs.on_cal_frame(0, info, ramp_rssi(physical), /*crc_ok=*/!compressed,
                       t_ms());
       heard_sweep_frame_ = true;
       if (!compressed && (rng() % 100) < 80)
-        gs.on_cal_frame(1, info, ramp_rssi(info.idx) - 3, true, t_ms());
+        gs.on_cal_frame(1, info, ramp_rssi(physical) - 3, true, t_ms());
     }
     sink.frames.clear();
   }
@@ -397,27 +404,28 @@ TEST(full_cycle_over_a_clean_channel) {
   // Invariant 1: the GS transmits nothing during a sweep phase.
   CHECK(!p.gs_talked_during_sweep);
 
-  // The measured table. Rates 3-7 have a real dip and must land on their
-  // true wall; 0-2 never dip, so they park at the rail -- base_ref_idx 53
-  // + 63, the top of the chip's 7-bit per-rate diff field -- flagged
-  // no_dip. Never 127: that derives a diff the drone refuses to load.
+  // The measured table, in the relative index space the wire (and the
+  // config) carries. Rates 3-7 have a real dip and must land on their
+  // true wall; 0-2 never dip, so they park at the rail -- kRailRel, the
+  // top of the chip's 7-bit per-rate diff field -- flagged no_dip. Never
+  // beyond it: that derives a diff the drone refuses to load.
   const auto& w = p.gs.walls();
   for (int r = 0; r < 3; ++r) {
     CHECK((w[r].flags & maburgs::kCalNoDip) != 0);
-    CHECK(w[r].wall == 116);
+    CHECK(w[r].wall == maburgs::kRailRel);
   }
   for (int r = 3; r < 8; ++r) {
     CHECK((w[r].flags & maburgs::kCalUndetermined) == 0);
-    CHECK(w[r].wall == kTrueWall[r]);
+    CHECK(w[r].wall == kTrueWallRel(r));
   }
 
   // Invariant: margin is applied exactly once, on the drone. The config
   // on disk carries the RAW walls, and power_mode flipped to offset.
   const std::string cfg = read_file(p.cfg_path);
-  CHECK(cfg.find("rate_walls_idx  = [116, 116, 116, 95, 73, 54, 51, 49]") !=
+  CHECK(cfg.find("rate_walls_rel  = [63, 63, 63, 42, 20, 1, -2, -4]") !=
         std::string::npos);
-  CHECK(cfg.find("legacy_wall_idx = 116") != std::string::npos);
-  CHECK(cfg.find("base_ref_idx    = 53") != std::string::npos);
+  CHECK(cfg.find("legacy_wall_rel = 63") != std::string::npos);
+  CHECK(cfg.find("base_ref_idx") == std::string::npos);
   CHECK(cfg.find("power_mode = \"offset\"") != std::string::npos);
   // ...and every comment survived the line-surgical patch.
   CHECK(cfg.find("# a comment that must survive") != std::string::npos);
@@ -481,7 +489,7 @@ TEST(realized_phase_duration_fits_the_gs_listen_window) {
   // The table is still right, which is the outcome that actually matters:
   // an overrun surfaces as missing cells, never as an error.
   const auto& w = slow.gs.walls();
-  for (int r = 3; r < 8; ++r) CHECK(w[r].wall == kTrueWall[r]);
+  for (int r = 3; r < 8; ++r) CHECK(w[r].wall == kTrueWallRel(r));
 }
 
 TEST(a_lossy_control_plane_still_produces_the_right_table) {
@@ -512,8 +520,8 @@ TEST(a_lossy_control_plane_still_produces_the_right_table) {
   // on a Telem that may never come.
   CHECK(!p.gs_talked_during_sweep);
   const auto& w = p.gs.walls();
-  for (int r = 0; r < 3; ++r) CHECK(w[r].wall == 116);
-  for (int r = 3; r < 8; ++r) CHECK(w[r].wall == kTrueWall[r]);
+  for (int r = 0; r < 3; ++r) CHECK(w[r].wall == maburgs::kRailRel);
+  for (int r = 3; r < 8; ++r) CHECK(w[r].wall == kTrueWallRel(r));
   CHECK(read_file(p.cfg_path).find("power_mode = \"offset\"") !=
         std::string::npos);
 }
@@ -529,7 +537,7 @@ TEST(a_lossy_measurement_never_reads_a_wall_HIGHER_than_the_truth) {
   // extending a run across a failed cell -- landing inside the comb and
   // overdriving the PA, which is the one outcome this kit exists to
   // prevent.
-  const int kKneeWall[8] = {88, 88, 88, 95, 73, 54, 51, 49};
+  const int kKneeWall[8] = {88, 88, 88, 95, 73, 54, 51, 49};  // physical
   Pair p("cal_e2e_lossy_meas");
   p.drop_downlink_pct = 5;
   std::string err;
@@ -540,7 +548,7 @@ TEST(a_lossy_measurement_never_reads_a_wall_HIGHER_than_the_truth) {
   const auto& w = p.gs.walls();
   for (int r = 0; r < 8; ++r) {
     if (w[r].flags & maburgs::kCalUndetermined) continue;  // no wall claimed
-    CHECK(w[r].wall <= kKneeWall[r]);
+    CHECK(w[r].wall <= kKneeWall[r] - kAnchor);
   }
   // And whatever it concluded, it either applied it or it did not -- never
   // "reported an apply that did not happen".
@@ -584,16 +592,19 @@ TEST(a_second_run_in_the_same_session_window_anchors_correctly) {
   // C2 end to end: a second `maburcal start` inside the drone's
   // await_next_ms (15 s) window reaches CalSweep::on_cmd() with the
   // previous session still live and the TXAGC parked at its last swept
-  // cell. SimPower::read_base_ref_idx() reports the override in that
-  // state, exactly as devourer does -- so a base_ref_idx of 53 in the
-  // second run's config is the whole assertion.
+  // cell. on_cmd() restores the override to the previous session's anchor
+  // before calling PowerCtl::read_anchor_idx() again (drone/src/cal_sweep.
+  // cpp) -- the anchor never leaves the drone to check directly, so a
+  // wrong readback would show up only as a shifted measured table. Both
+  // runs producing the identical relative walls is the whole assertion.
   Pair p("cal_e2e_second_run");
   std::string err;
   REQUIRE(p.gs.start(0, 61, p.t_ms(), &err));
   p.run();
   REQUIRE(p.gs.state() == CalSession::State::Done);
-  const std::string first = read_file(p.cfg_path);
-  CHECK(first.find("base_ref_idx    = 53") != std::string::npos);
+  const std::string kExpectedWalls =
+      "rate_walls_rel  = [63, 63, 63, 42, 20, 1, -2, -4]";
+  CHECK(read_file(p.cfg_path).find(kExpectedWalls) != std::string::npos);
 
   // Deliberately do NOT let the drone's session time out: start again
   // immediately, which is the reachable case (an operator re-running
@@ -604,8 +615,7 @@ TEST(a_second_run_in_the_same_session_window_anchors_correctly) {
   p.run();
   CHECK(p.gs.state() == CalSession::State::Done);
   CHECK(p.applies_ok == 1);
-  CHECK(read_file(p.cfg_path).find("base_ref_idx    = 53") !=
-        std::string::npos);
+  CHECK(read_file(p.cfg_path).find(kExpectedWalls) != std::string::npos);
 }
 
 MTEST_MAIN

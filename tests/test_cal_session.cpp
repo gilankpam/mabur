@@ -51,7 +51,7 @@ void feed_phase(CalSession& s, const mabur::rc::CalCmd& c, int pct,
     for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) {
       const int n = c.frames_per_cell * pct / 100;
       for (int k = 0; k < n; ++k) {
-        mabur::cal::CalFrameInfo f{w.rate, static_cast<uint8_t>(i), c.phase,
+        mabur::cal::CalFrameInfo f{w.rate, static_cast<int8_t>(i), c.phase,
                                    seq++};
         s.on_cal_frame(0, f, ramp_rssi(i), /*crc_ok=*/true, now_ms);
       }
@@ -70,7 +70,7 @@ void feed_phase_fn(CalSession& s, const mabur::rc::CalCmd& c, F pct,
     for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) {
       const int n = c.frames_per_cell * pct(w.rate, i) / 100;
       for (int k = 0; k < n; ++k) {
-        mabur::cal::CalFrameInfo f{w.rate, static_cast<uint8_t>(i), c.phase,
+        mabur::cal::CalFrameInfo f{w.rate, static_cast<int8_t>(i), c.phase,
                                    seq++};
         s.on_cal_frame(0, f, ramp_rssi(i), /*crc_ok=*/true, now_ms);
       }
@@ -113,7 +113,7 @@ TEST(repeats_command_until_acknowledged) {
   // Still unacknowledged: the GS must offer it again.
   const auto b = s.due_cmd(300);
   CHECK(b.has_value());
-  s.on_ack(42, 53, 400);
+  s.on_ack(42, 400);
   // Acknowledged: nothing more to send, and the air must go quiet.
   CHECK(!s.due_cmd(500).has_value());
   CHECK(s.radio_silent(500));
@@ -130,7 +130,7 @@ TEST(radio_is_silent_for_the_whole_phase_and_opens_after) {
   std::string err;
   REQUIRE(s.start(1, 7, 0, &err));
   REQUIRE(s.due_cmd(0).has_value());
-  s.on_ack(7, 53, 100);
+  s.on_ack(7, 100);
 
   const auto plan = make_coarse_plan(1, 7);
   const uint32_t dur = plan_duration_ms(plan);
@@ -162,7 +162,7 @@ TEST(coarse_then_fine_then_result) {
   std::string err;
   REQUIRE(s.start(1, 5, 0, &err));
   s.due_cmd(0);
-  s.on_ack(5, 53, 1);
+  s.on_ack(5, 1);
 
   // Coarse: every rate clean everywhere -> all no-dip, parked at the rail.
   const auto coarse = make_coarse_plan(1, 5);
@@ -174,12 +174,12 @@ TEST(coarse_then_fine_then_result) {
   REQUIRE(res.has_value());
   CHECK(res->nonce == 5);
   // Every rate is clean everywhere, so every row is no-dip and parks at the
-  // rail: base_ref_idx 53 from the ack, + 63 for the diff field = 116. The
-  // result carries that RAW wall verbatim -- no margin subtracted here.
-  // margin_db is applied exactly once, on the drone, by power_plan.h's
-  // diff[r] = walls[r] - m - base_ref_idx (spec: two independently
+  // constant rail, kRailRel -- the drone's own anchor never enters this
+  // computation. The result carries that RAW wall verbatim -- no margin
+  // subtracted here. margin_db is applied exactly once, on the drone, by
+  // power_plan.h's diff[r] = walls[r] - m (spec: two independently
   // configured margins in one derivation is the bug this shape avoids).
-  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == 116);
+  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == kRailRel);
 }
 
 // The coarse pass locates a dip at 4-index resolution; the fine pass is what
@@ -193,13 +193,14 @@ TEST(fine_phase_sharpens_a_real_dip_and_flags_drift) {
   std::string err;
   REQUIRE(s.start(1, 11, 0, &err));
   s.due_cmd(0);
-  s.on_ack(11, 53, 1);
+  s.on_ack(11, 1);
 
-  // Every rate clean except rate 5, which dips above idx 56. At coarse
-  // resolution (step 4) the last clean cell is therefore 56.
+  // Every rate clean except rate 5, which dips above idx 55. At coarse
+  // resolution (the grid is -41, -37, ..., 55, 59, 63) the last clean cell
+  // is therefore 55.
   const auto coarse = make_coarse_plan(1, 11);
   feed_phase_fn(s, coarse,
-                [](uint8_t r, int i) { return r != 5 ? 100 : (i <= 56 ? 100 : 10); },
+                [](uint8_t r, int i) { return r != 5 ? 100 : (i <= 55 ? 100 : 10); },
                 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
 
@@ -210,19 +211,19 @@ TEST(fine_phase_sharpens_a_real_dip_and_flags_drift) {
   REQUIRE(fine->windows.size() == 1);
   CHECK(fine->windows[0].rate == 5);
   CHECK(fine->windows[0].idx_step == 1);
-  s.on_ack(11, 53, t1 + 1);
+  s.on_ack(11, t1 + 1);
 
-  // At full resolution the true wall is 54 -- two steps below the coarse
-  // estimate. The merge must adopt 54 and flag the disagreement.
-  feed_phase_fn(s, *fine, [](uint8_t, int i) { return i <= 54 ? 100 : 10; },
+  // At full resolution the true wall is 53 -- two steps below the coarse
+  // estimate. The merge must adopt 53 and flag the disagreement.
+  feed_phase_fn(s, *fine, [](uint8_t, int i) { return i <= 53 ? 100 : 10; },
                 t1 + 2);
   const uint64_t t2 = t1 + 1 + plan_duration_ms(*fine) + 1;
 
   const auto res = s.due_result(t2 + 5000);
   REQUIRE(res.has_value());
-  CHECK(res->walls[5] == 54);              // fine wall, raw -- no margin subtracted
-  CHECK(res->walls[0] == 116);             // untouched rows keep their raw rail wall
-  CHECK((s.walls()[5].flags & kCalDrift) != 0);   // coarse 56 vs fine 54
+  CHECK(res->walls[5] == 53);              // fine wall, raw -- no margin subtracted
+  CHECK(res->walls[0] == kRailRel);        // untouched rows keep the constant rail
+  CHECK((s.walls()[5].flags & kCalDrift) != 0);   // coarse 55 vs fine 53
 }
 
 TEST(undetermined_rate_reaches_the_result_as_minus_one) {
@@ -233,13 +234,14 @@ TEST(undetermined_rate_reaches_the_result_as_minus_one) {
   std::string err;
   REQUIRE(s.start(1, 6, 0, &err));
   s.due_cmd(0);
-  s.on_ack(6, 53, 1);
+  s.on_ack(6, 1);
   // Nothing heard at all: every rate is undetermined.
   const auto coarse = make_coarse_plan(1, 6);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   const auto res = s.due_result(t1 + 5000);
   REQUIRE(res.has_value());
-  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == -1);
+  for (int r = 0; r < 8; ++r)
+    CHECK(res->walls[r] == mabur::rc::kWallUndetermined);
 }
 
 TEST(verify_phase_tallies_by_rate_despite_a_margin_mismatch) {
@@ -259,10 +261,11 @@ TEST(verify_phase_tallies_by_rate_despite_a_margin_mismatch) {
   std::string err;
   REQUIRE(s.start(1, 9, 0, &err));
   s.due_cmd(0);
-  s.on_ack(9, 53, 1);
+  s.on_ack(9, 1);
 
-  // Every rate clean everywhere -> rail wall 116 (base_ref 53 + 63), this
-  // session's own park index 116 - 4 = 112 (1 dB margin -> 4 TXAGC steps).
+  // Every rate clean everywhere -> the constant rail wall (kRailRel), this
+  // session's own park index kRailRel - 4 = 59 (1 dB margin -> 4 TXAGC
+  // steps).
   const auto coarse = make_coarse_plan(1, 9);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
@@ -272,11 +275,11 @@ TEST(verify_phase_tallies_by_rate_despite_a_margin_mismatch) {
   // standing in for a disagreeing drone-side margin_db -- yet every frame
   // must still land and be counted.
   for (int r = 0; r < 8; ++r) {
-    mabur::cal::CalFrameInfo f{static_cast<uint8_t>(r), 113,
+    mabur::cal::CalFrameInfo f{static_cast<uint8_t>(r), 60,
                               mabur::cal::kPhaseVerify, 0};
     s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
   }
-  for (int r = 0; r < 8; ++r) CHECK(s.cell_received(r, 112, 0) == 1);
+  for (int r = 0; r < 8; ++r) CHECK(s.cell_received(r, 59, 0) == 1);
 }
 
 TEST(corrupt_frames_count_as_loss_not_delivery) {
@@ -286,12 +289,12 @@ TEST(corrupt_frames_count_as_loss_not_delivery) {
   std::string err;
   REQUIRE(s.start(1, 8, 0, &err));
   s.due_cmd(0);
-  s.on_ack(8, 53, 1);
-  mabur::cal::CalFrameInfo f{0, 40, mabur::cal::kPhaseCoarse, 0};
+  s.on_ack(8, 1);
+  mabur::cal::CalFrameInfo f{0, 39, mabur::cal::kPhaseCoarse, 0};
   for (int k = 0; k < 20; ++k)
     s.on_cal_frame(0, f, -70, /*crc_ok=*/false, 10);
-  CHECK(s.cell_received(0, 40, 0) == 0);
-  CHECK(s.cell_corrupt(0, 40) == 20);
+  CHECK(s.cell_received(0, 39, 0) == 0);
+  CHECK(s.cell_corrupt(0, 39) == 20);
 }
 
 TEST(frames_from_a_stale_phase_are_ignored) {
@@ -301,7 +304,7 @@ TEST(frames_from_a_stale_phase_are_ignored) {
   std::string err;
   REQUIRE(s.start(1, 9, 0, &err));
   s.due_cmd(0);
-  s.on_ack(9, 53, 1);
+  s.on_ack(9, 1);
   mabur::cal::CalFrameInfo f{0, 40, mabur::cal::kPhaseVerify, 0};  // wrong phase
   s.on_cal_frame(0, f, -70, true, 10);
   CHECK(s.cell_received(0, 40, 0) == 0);
@@ -313,7 +316,7 @@ TEST(abort_returns_to_idle_and_reopens_the_air) {
   std::string err;
   REQUIRE(s.start(1, 1, 0, &err));
   s.due_cmd(0);
-  s.on_ack(1, 53, 1);
+  s.on_ack(1, 1);
   CHECK(s.radio_silent(100));
   s.abort("operator");
   CHECK(!s.radio_silent(100));
@@ -336,7 +339,7 @@ TEST(radio_silent_is_true_from_ack_until_abort) {
   std::string err;
   REQUIRE(s.start(1, 3, 0, &err));
   s.due_cmd(0);
-  s.on_ack(3, 53, 10);
+  s.on_ack(3, 10);
   CHECK(s.radio_silent(11));
   // ... and after abort, everything may transmit again immediately.
   s.abort("test");
@@ -357,7 +360,7 @@ TEST(null_log_sink_is_inert) {
   std::string err;
   REQUIRE(s.start(1, 30, 0, &err));
   s.due_cmd(0);
-  s.on_ack(30, 53, 1);
+  s.on_ack(30, 1);
   const auto coarse = make_coarse_plan(1, 30);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
@@ -366,14 +369,14 @@ TEST(null_log_sink_is_inert) {
   // above does, not crash or silently change the result.
   const auto res = s.due_result(t1 + 2000);
   REQUIRE(res.has_value());
-  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == 116);
+  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == kRailRel);
 }
 
 TEST(cal_log_records_cells_and_walls_at_phase_end) {
   // The actual regression test for the gap: a real CalLog wired in must
   // come out of a coarse-only run holding a C row per swept cell and a W
   // row per rate, with an unheard rate's wall/floor written as the
-  // documented -1 sentinels (cal_log.h) rather than 0 or garbage.
+  // documented kNoWall sentinels (cal_log.h) rather than 0 or garbage.
   const std::string dir = fresh_dir("cal_session_log_cells");
   {
     // Scoped: LogWriter's writer thread flushes on ~LogWriter (joined from
@@ -389,9 +392,9 @@ TEST(cal_log_records_cells_and_walls_at_phase_end) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 31, 0, &err));
-    log.run(31, 53, s.margin_db());
+    log.run(31, s.margin_db());
     s.due_cmd(0);
-    s.on_ack(31, 53, 1);
+    s.on_ack(31, 1);
 
     // Every rate clean except rate 3, which hears nothing at all -> that
     // row never reaches deliver_pct anywhere and comes out kCalUndetermined.
@@ -407,15 +410,19 @@ TEST(cal_log_records_cells_and_walls_at_phase_end) {
   const auto lines = cal_log_lines(dir);
   int c_count = 0, w_count = 0;
   bool saw_undetermined_wall = false;
+  const std::string want_undetermined =
+      "W 3 " + std::to_string(kNoWall) + " " + std::to_string(kNoWall) +
+      " 0 2";
   for (const auto& l : lines) {
     if (l.rfind("C ", 0) == 0) ++c_count;
     if (l.rfind("W ", 0) == 0) {
       ++w_count;
-      if (l == "W 3 -1 -1 0 2") saw_undetermined_wall = true;
+      if (l == want_undetermined) saw_undetermined_wall = true;
     }
   }
-  // Coarse sweeps idx 0..124 step 4 = 32 cells/rate * 8 rates.
-  CHECK(c_count == 256);
+  // Coarse sweeps [kCoarseLo, kCoarseHi] step kCoarseStep = -41..63 step 4 =
+  // 27 cells/rate * 8 rates.
+  CHECK(c_count == 216);
   CHECK(w_count == 8);
   CHECK(saw_undetermined_wall);
 }
@@ -434,12 +441,12 @@ TEST(cal_log_records_verify_results) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 32, 0, &err));
-    log.run(32, 53, s.margin_db());
+    log.run(32, s.margin_db());
     s.due_cmd(0);
-    s.on_ack(32, 53, 1);
+    s.on_ack(32, 1);
 
-    // Every rate clean everywhere -> rail wall 116 (see coarse_then_fine_
-    // then_result), this session's own park index 116 - 4 = 112 (1 dB margin).
+    // Every rate clean everywhere -> the constant rail wall (kRailRel), this
+    // session's own park index kRailRel - 4 = 59 (1 dB margin).
     const auto coarse = make_coarse_plan(1, 32);
     feed_phase(s, coarse, 100, 10);
     const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
@@ -447,7 +454,7 @@ TEST(cal_log_records_verify_results) {
 
     // 97/100 on card 0 for rate 0's verify cell.
     for (int k = 0; k < 97; ++k) {
-      mabur::cal::CalFrameInfo f{0, 112, mabur::cal::kPhaseVerify,
+      mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify,
                                 static_cast<uint16_t>(k)};
       s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
     }
@@ -462,7 +469,7 @@ TEST(cal_log_records_verify_results) {
   const auto lines = cal_log_lines(dir);
   bool saw_rate0_verify = false;
   for (const auto& l : lines)
-    if (l == "V 0 112 97") saw_rate0_verify = true;
+    if (l == "V 0 59 97") saw_rate0_verify = true;
   CHECK(saw_rate0_verify);
 }
 
@@ -481,7 +488,7 @@ TEST(result_is_repeated_until_a_verify_frame_acks_it) {
   std::string err;
   REQUIRE(s.start(1, 21, 0, &err));
   s.due_cmd(0);
-  s.on_ack(21, 53, 1);
+  s.on_ack(21, 1);
   const auto coarse = make_coarse_plan(1, 21);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
@@ -494,11 +501,11 @@ TEST(result_is_repeated_until_a_verify_frame_acks_it) {
   const auto again = s.due_result(t_first + 200);
   REQUIRE(again.has_value());
   CHECK(again->nonce == 21);
-  CHECK(again->walls[0] == 116);                // the same table, verbatim
+  CHECK(again->walls[0] == kRailRel);                // the same table, verbatim
   REQUIRE(s.due_result(t_first + 400).has_value());
 
   // The drone applied and started sweeping: one verify frame is the ack.
-  mabur::cal::CalFrameInfo f{0, 112, mabur::cal::kPhaseVerify, 0};
+  mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify, 0};
   s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t_first + 500);
   CHECK(!s.due_result(t_first + 600).has_value());
   CHECK(!s.due_result(t_first + 5000).has_value());
@@ -516,12 +523,12 @@ TEST(a_crc_bad_verify_frame_still_stops_the_repeats) {
   std::string err;
   REQUIRE(s.start(1, 22, 0, &err));
   s.due_cmd(0);
-  s.on_ack(22, 53, 1);
+  s.on_ack(22, 1);
   const auto coarse = make_coarse_plan(1, 22);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   REQUIRE(s.due_result(t1 + 2000).has_value());
-  mabur::cal::CalFrameInfo f{3, 112, mabur::cal::kPhaseVerify, 0};
+  mabur::cal::CalFrameInfo f{3, 59, mabur::cal::kPhaseVerify, 0};
   s.on_cal_frame(0, f, -60, /*crc_ok=*/false, t1 + 2100);
   CHECK(!s.due_result(t1 + 2200).has_value());
 }
@@ -537,7 +544,7 @@ TEST(result_repeats_are_bounded_when_the_drone_never_applies) {
   std::string err;
   REQUIRE(s.start(1, 23, 0, &err));
   s.due_cmd(0);
-  s.on_ack(23, 53, 1);
+  s.on_ack(23, 1);
   const auto coarse = make_coarse_plan(1, 23);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
@@ -580,9 +587,9 @@ TEST(all_zero_verify_rows_are_logged_for_a_totally_silent_result) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 33, 0, &err));
-    log.run(33, 53, s.margin_db());
+    log.run(33, s.margin_db());
     s.due_cmd(0);
-    s.on_ack(33, 53, 1);
+    s.on_ack(33, 1);
     const auto coarse = make_coarse_plan(1, 33);
     feed_phase(s, coarse, 100, 10);
     const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
@@ -624,14 +631,14 @@ TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 34, 0, &err));
-    log.run(34, 53, s.margin_db());
+    log.run(34, s.margin_db());
     s.due_cmd(0);
-    s.on_ack(34, 53, 1);
+    s.on_ack(34, 1);
 
     // Rate 3 hears nothing the whole coarse sweep -> undetermined wall,
     // never planned for verify at all. Every other rate is clean -> a
-    // real wall (116, matching cal_log_records_verify_results), and
-    // therefore a real park index (112, margin 1.0 dB = 4 steps) seeded
+    // real wall (kRailRel, matching cal_log_records_verify_results), and
+    // therefore a real park index (kRailRel - 4 = 59, margin 1.0 dB = 4 steps) seeded
     // into the verify plan.
     const auto coarse = make_coarse_plan(1, 34);
     feed_phase_fn(
@@ -645,7 +652,7 @@ TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
     // its parked power, not a casualty of a lost result frame, since
     // rate 0's frames already prove the drone applied and is sweeping.
     for (int k = 0; k < 55; ++k) {
-      mabur::cal::CalFrameInfo f{0, 112, mabur::cal::kPhaseVerify,
+      mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify,
                                 static_cast<uint16_t>(k)};
       s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
     }
@@ -655,8 +662,8 @@ TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
 
   bool saw_rate0_55pct = false, saw_rate1_zero = false, saw_rate3 = false;
   for (const auto& l : cal_log_lines(dir)) {
-    if (l == "V 0 112 55") saw_rate0_55pct = true;
-    if (l == "V 1 112 0") saw_rate1_zero = true;
+    if (l == "V 0 59 55") saw_rate0_55pct = true;
+    if (l == "V 1 59 0") saw_rate1_zero = true;
     if (l.rfind("V 3 ", 0) == 0) saw_rate3 = true;
   }
   CHECK(saw_rate0_55pct);   // planned, heard, and measured correctly
@@ -681,15 +688,15 @@ TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
   s.set_peer(true, true);
   std::string err;
   REQUIRE(s.start(1, 34, 0, &err));
-  log.run(34, 53, s.margin_db());
+  log.run(34, s.margin_db());
   s.due_cmd(0);
-  s.on_ack(34, 53, 1);
+  s.on_ack(34, 1);
   const auto coarse = make_coarse_plan(1, 34);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   REQUIRE(s.due_result(t1 + 2000).has_value());
   for (int k = 0; k < 97; ++k) {
-    mabur::cal::CalFrameInfo f{0, 112, mabur::cal::kPhaseVerify,
+    mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify,
                               static_cast<uint16_t>(k)};
     s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
   }
@@ -698,7 +705,7 @@ TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
 
   bool saw_verify = false;
   for (const auto& l : cal_log_lines(dir))
-    if (l == "V 0 112 97") saw_verify = true;
+    if (l == "V 0 59 97") saw_verify = true;
   CHECK(saw_verify);
 }
 
@@ -723,12 +730,12 @@ TEST(a_sweep_frame_is_an_implicit_ack_for_the_phase_it_names) {
   REQUIRE(s.due_cmd(0).has_value());
   CHECK(!s.radio_silent(10));   // no ack yet: the air is still open
 
-  mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseCoarse, 0};
+  mabur::cal::CalFrameInfo f{0, 7, mabur::cal::kPhaseCoarse, 0};
   s.on_cal_frame(0, f, -70, /*crc_ok=*/true, 100);
   CHECK(s.state() == CalSession::State::Sweep);
   CHECK(s.radio_silent(101));               // ...and now it is shut
   CHECK(!s.due_cmd(300).has_value());       // no more repeats into the sweep
-  CHECK(s.cell_received(0, 8, 0) == 1);     // and the frame itself counted
+  CHECK(s.cell_received(0, 7, 0) == 1);     // and the frame itself counted
 
   // The window is sized from the frame's arrival, so the phase still gets
   // its full planned duration of silence.
@@ -753,78 +760,22 @@ TEST(a_frame_from_another_phase_is_not_an_implicit_ack) {
   CHECK(s.cell_received(0, 8, 0) == 0);
 }
 
-MTEST_MAIN
-
-TEST(the_rail_survives_a_lost_phase_ack_but_not_a_silent_drone) {
-  // base_ref_idx is the whole of a no-dip row's wall now, so where it comes
-  // from matters. It rides a Telem on a 30-50%-lossy uplink, and on_ack
-  // drops anything outside AwaitAck -- so if learning the anchor were fused
-  // to acknowledging the phase, one unlucky Telem would turn MCS 0-2
-  // undetermined on a run that measured everything else perfectly.
-  {
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg);
-    s.set_peer(true, true);
-    std::string err;
-    REQUIRE(s.start(1, 41, 0, &err));
-    s.due_cmd(0);
-    // No on_ack at all: the sweep frames are the implicit ack (the session
-    // leaves AwaitAck on its own), and a later cal_active Telem teaches the
-    // anchor without acknowledging anything.
-    const auto coarse = make_coarse_plan(1, 41);
-    feed_phase(s, coarse, 100, 10);
-    s.note_base_ref(39);  // ch136
-    const auto res = s.due_result(1 + plan_duration_ms(coarse) + 2001);
-    REQUIRE(res.has_value());
-    for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == 102);  // 39 + 63
-  }
-  // With no anchor from anywhere there is no rail, and the kit refuses to
-  // invent one: every row reports undetermined and keeps its config entry.
-  {
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg);
-    s.set_peer(true, true);
-    std::string err;
-    REQUIRE(s.start(1, 42, 0, &err));
-    s.due_cmd(0);
-    const auto coarse = make_coarse_plan(1, 42);
-    feed_phase(s, coarse, 100, 10);
-    const auto res = s.due_result(1 + plan_duration_ms(coarse) + 2001);
-    REQUIRE(res.has_value());
-    for (int r = 0; r < 8; ++r) {
-      CHECK(res->walls[r] == -1);
-      CHECK((s.walls()[r].flags & kCalUndetermined) != 0);
-    }
-  }
-}
-
-TEST(a_new_session_does_not_inherit_the_previous_anchor) {
-  // base_ref_idx is per-CHANNEL (39 on ch136, 53 on ch149 -- measured
-  // 2026-09-11). A channel change restarts maburd, and a stale anchor
-  // carried into the next session would put the rail in the wrong place:
-  // too high and the drone's range check refuses the whole table, too low
-  // and it silently parks the fallback rates down a couple of dB.
+TEST(no_dip_rows_park_at_the_constant_rail_without_any_ack) {
+  // The rail no longer depends on anything the drone reports: a run whose
+  // ack Telem was lost (sweep frames are the implicit ack) still parks
+  // every clean row at kRailRel.
   CalSessionCfg cfg;
   cfg.phase_slack_ms = 0;
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 43, 0, &err));
-  s.note_base_ref(53);
+  REQUIRE(s.start(1, 41, 0, &err));
   s.due_cmd(0);
-  const auto coarse = make_coarse_plan(1, 43);
+  const auto coarse = make_coarse_plan(1, 41);
   feed_phase(s, coarse, 100, 10);
-  REQUIRE(s.due_result(1 + plan_duration_ms(coarse) + 2001).has_value());
-  CHECK(s.walls()[0].wall == 116);
-  s.abort("test: end the first session");
-
-  REQUIRE(s.start(1, 44, 0, &err));
-  s.due_cmd(0);
-  const auto c2 = make_coarse_plan(1, 44);
-  feed_phase(s, c2, 100, 10);
-  const auto res = s.due_result(1 + plan_duration_ms(c2) + 2001);
+  const auto res = s.due_result(1 + plan_duration_ms(coarse) + 2001);
   REQUIRE(res.has_value());
-  CHECK(res->walls[0] == -1);  // 116 would be the stale ch149 rail
+  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == kRailRel);
 }
+
+MTEST_MAIN

@@ -105,6 +105,23 @@ TEST(the_rows_read_exactly_as_specified) {
         "bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0");
 }
 
+// radio.scan enabled on the GS: the channel carries an "(a)" suffix so the
+// pilot can tell an auto-selected channel from a configured one.
+TEST(auto_channel_select_marks_the_channel) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  s.scan_auto = true;
+  CHECK(row_of(bar, s, false, player_nominal(), 0) ==
+        "ch:149(a) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+  s.channel.reset();
+  CHECK(row_of(bar, s, false, player_nominal(), 0) ==
+        "ch:--(a) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+}
+
 // A card count of four widens exactly two items and nothing else.
 TEST(four_cards_extend_the_rssi_and_snr_lists) {
   GsFont f;

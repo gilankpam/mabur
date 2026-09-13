@@ -425,6 +425,64 @@ TEST(gs_load_config_reports_previously_invisible_defaults) {
   CHECK(std::abs(cfg.link.ladder_cfg.probe.max_util - 0.4) < 1e-9);
 }
 
+TEST(radio_scan_defaults_when_absent) {
+  auto p = write_tmp("[radio]\nchannel = 136\n");
+  auto cfg = maburgs::load_config(p);
+  CHECK(cfg.radio.scan.enable == true);
+  CHECK(cfg.radio.scan.candidates.empty());
+  CHECK(cfg.radio.scan.dwell_ms == 250);
+  CHECK(cfg.radio.scan.settle_ms == 30);
+  CHECK(cfg.radio.scan.min_rounds == 3);
+  CHECK(cfg.radio.scan.home_window_ms == 300);
+  CHECK(cfg.radio.scan.split_after_ms == 5000);
+  CHECK(cfg.radio.scan.energy_period_ms == 1000);
+  CHECK(cfg.radio.scan.home_margin == 20);
+}
+
+TEST(radio_scan_parses_and_validates) {
+  auto p = write_tmp(
+      "[radio]\nchannel = 136\n[radio.scan]\nenable = false\n"
+      "candidates = [149, 153, 161]\ndwell_ms = 500\nsettle_ms = 40\n"
+      "min_rounds = 2\nhome_window_ms = 400\nsplit_after_ms = 8000\n"
+      "energy_period_ms = 0\nhome_margin = 5\n");
+  auto cfg = maburgs::load_config(p);
+  CHECK(cfg.radio.scan.enable == false);
+  REQUIRE(cfg.radio.scan.candidates.size() == 3);
+  CHECK(cfg.radio.scan.candidates[0] == 149);
+  CHECK(cfg.radio.scan.candidates[2] == 161);
+  CHECK(cfg.radio.scan.dwell_ms == 500);
+  CHECK(cfg.radio.scan.energy_period_ms == 0);
+  CHECK(cfg.radio.scan.home_margin == 5);
+
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\ndwell_ms = 10\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.dwell_ms") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\ncandidates = [0]\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.candidates") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\nhome_window_ms = 30\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.home_window_ms") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\nbogus = 1\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.bogus") != std::string::npos; }
+  CHECK(threw);
+}
+
+TEST(default_bundle_has_scan_section) {
+  auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
+  CHECK(cfg.radio.scan.enable == true);
+  // One escape per band block that is not home (docs/channel-select.md).
+  REQUIRE(cfg.radio.scan.candidates.size() == 3);
+  CHECK(cfg.radio.scan.candidates[0] == 120);
+  CHECK(cfg.radio.scan.candidates[1] == 149);
+  CHECK(cfg.radio.scan.candidates[2] == 165);
+  CHECK(cfg.radio.scan.home_margin == 20);
+}
+
 MTEST_MAIN
 
 TEST(gs_config_rejects_static_offset_qdb) {

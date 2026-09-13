@@ -27,7 +27,8 @@ static const char* kLive = R"({
     "ctl": {"rung": {"idx": 3, "mcs": 5, "ov_base": 0.25}, "pre_fec_loss": 0.021},
     "video": {"fps": 60.0, "jitter_ms": 3.1, "mbps": 24.6}
   },
-  "drone": null
+  "drone": null,
+  "scan": {"state": "frozen", "rounds": 12, "pick": 149}
 })";
 
 TEST(parses_a_live_datagram) {
@@ -39,6 +40,7 @@ TEST(parses_a_live_datagram) {
   CHECK(*s.fec_pct > 24.9 && *s.fec_pct < 25.1);      // ov 0.25 -> 25 %
   REQUIRE(s.channel.has_value());
   CHECK(*s.channel == 149);
+  CHECK(s.scan_auto);                                // scan.state != "off"
   REQUIRE(s.air_pct.has_value());
   CHECK(*s.air_pct > 61.4 && *s.air_pct < 61.6);
   REQUIRE(s.pre_loss_pct.has_value());
@@ -405,4 +407,15 @@ TEST(ctl_rung_wins_over_link_op_when_both_are_present) {
   CHECK(*s.fec_pct > 24.9 && *s.fec_pct < 25.1);
 }
 
+TEST(scan_auto_is_false_when_off_or_absent) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"link": {"channel": 136}, "scan": {"state": "off", "rounds": 0, "pick": null}})", &s));
+  CHECK(!s.scan_auto);
+  REQUIRE(parse(R"({"link": {"channel": 136}})", &s));   // older maburgs: no scan block
+  CHECK(!s.scan_auto);
+  REQUIRE(parse(R"({"link": {"channel": 136}, "scan": {"state": "scouting", "rounds": 3, "pick": null}})", &s));
+  CHECK(s.scan_auto);
+  REQUIRE(parse(R"({"link": {"channel": 136}, "scan": {"state": 7}})", &s));   // wrong type: dropped
+  CHECK(!s.scan_auto);
+}
 MTEST_MAIN

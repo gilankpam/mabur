@@ -15,6 +15,9 @@ struct RadioCfg {
   uint16_t usb_pid = 0;  // 0 = scan
   uint8_t channel = 149;
   uint8_t width = 20;
+  // Honour Disc.op_channel: ack from the current channel, then retune
+  // (spec 2026-09-13-auto-channel-select §6). false = ack home, never move.
+  bool follow_gs = true;
   // How bring-up programs TX power:
   //   "offset" — program the wall-equalized per-rate diff table
   //              (SetTxPowerRateDiffs) once, then zero the global offset
@@ -23,15 +26,14 @@ struct RadioCfg {
   // There is no runtime power control: no per-op power, no thermal derate.
   // Spec 2026-08-12-constant-txpower-design.md.
   std::string power_mode = "none";
-  // Wall-equalization inputs (Task 9): measured per-rate clean-air TXAGC
-  // ceilings and the plan derived from them. rate_walls_idx is REQUIRED
-  // when power_mode == "offset" (the plan can't be built without it);
-  // otherwise it may be left absent/default. See power_plan.h for the
-  // diff[r] = walls[r] - m - base_ref_idx formulation.
-  std::array<int, 8> rate_walls_idx = {0, 0, 0, 0, 0, 0, 0, 0};
-  int legacy_wall_idx = 91;
+  // Wall-equalization inputs: measured per-rate clean-air ceilings as
+  // signed indices RELATIVE to the chip's per-channel anchor, [-64,63].
+  // rate_walls_rel is REQUIRED when power_mode == "offset". See
+  // power_plan.h for diff[r] = rel[r] - m. One table covers every
+  // channel (spec 2026-09-13-relative-walls-design.md).
+  std::array<int, 8> rate_walls_rel = {0, 0, 0, 0, 0, 0, 0, 0};
+  int legacy_wall_rel = 63;
   double wall_margin_db = 1.0;
-  int base_ref_idx = 53;
   // Parallel USB sender threads (URBs in flight). The 8822E flow-controls
   // sync bulk-OUT URBs (~0.4 ms acceptance handshake + FIFO drain), so a
   // single blocking sender caps air throughput at ~26 Mbps regardless of
@@ -114,6 +116,8 @@ struct LinkCfg {
   uint32_t vtx_id = 1;
   int failsafe_ms = 1000;
   int rendezvous_ms = 30000;
+  // After a GS-commanded retune, hear the GS within this or go home.
+  int move_confirm_ms = 2000;
   // Housekeeping cadence for the agent loop's TickGate. Bounded [1,1000]
   // at load: behind the gate a non-positive value stops every per-tick job
   // silently (see parse_link in config.cpp).

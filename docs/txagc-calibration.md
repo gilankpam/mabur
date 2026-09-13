@@ -242,9 +242,13 @@ items 1–4 are a record of why the old model was wrong, not work to do.
 
 **How to apply a wall table is no longer a hand process; see
 `docs/calibration.md`.** `maburcal start` measures, validates and writes
-`radio.rate_walls_idx`/`legacy_wall_idx`/`base_ref_idx`/`power_mode`
-straight into `/etc/mabur.toml` and reprograms the diffs live, in one
-~75 s run, with `/etc/mabur.toml.pre-cal` as the rollback copy. What
+the wall keys straight into `/etc/mabur.toml` and reprograms the diffs
+live, in one ~75 s run, with `/etc/mabur.toml.pre-cal` as the rollback
+copy. It wrote `radio.rate_walls_idx`/`legacy_wall_idx`/`base_ref_idx`
+until 2026-09-13; since then the walls are stored relative to the chip's
+own per-channel anchor and the keys are
+`radio.rate_walls_rel`/`legacy_wall_rel`, with `base_ref_idx` deleted
+(`docs/calibration.md`). What
 follows is kept because the derivation it describes —
 `power_plan.h` turning a wall table into per-rate diffs — is unchanged and
 is exactly what `maburcal` automates.
@@ -265,6 +269,12 @@ operating power for the life of the process. A different unit's card
 gets its own walls by re-running the sweep (`bench/txagcbench/`) and
 updating `rate_walls_idx` — the walls do not transfer unit-to-unit (see
 Caveats below).
+
+Since 2026-09-13 the consumed keys are `radio.rate_walls_rel` /
+`radio.legacy_wall_rel`, relative to the efuse anchor;
+`diff[r] = rel[r] − round(wall_margin_db × 4)`. The absolute numbers on
+this page are still the measurement history (anchor 53 on ch149):
+subtract 53 to compare.
 
 ## How the measurement works (methodology)
 

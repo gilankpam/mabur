@@ -10,7 +10,7 @@ namespace {
 // Builds one cell. rssi is the best card's median; -999 = unmeasured.
 CalCell cell(int idx, int pct, int rssi = -70, int expected = 100) {
   CalCell c;
-  c.idx = static_cast<uint8_t>(idx);
+  c.idx = idx;
   c.expected = static_cast<uint16_t>(expected);
   c.received[0] = static_cast<uint16_t>(expected * pct / 100);
   c.received[1] = 0;
@@ -47,7 +47,8 @@ TEST(mcs7_first_dip_not_last_good) {
 
 // mcs0: never dips anywhere in the sweep. There is no compression wall to
 // find, so the row is parked at the highest index this unit can express --
-// base_ref_idx + 63, the +63 rail of the chip's 7-bit per-rate diff field.
+// kRailRel, the +63 rail of the chip's 7-bit per-rate diff field, relative
+// to whatever per-channel anchor the chip adds itself.
 //
 // This replaced an RSSI "saturation knee" (the lowest index within 1 dB of
 // the row's peak median RSSI). That number was not reproducible: on one unit
@@ -57,55 +58,29 @@ TEST(mcs7_first_dip_not_last_good) {
 // 1 dB tolerance band already spans ~5 indices before 1 dB of RSSI
 // quantization moves it further. Parking at the rail is instead exact,
 // identical every run, and PROVABLY INSIDE MEASURED-GOOD TERRITORY -- the
-// sweep just delivered >=90% at every index through 124, and the rail is
-// below that. The old knee was never validated by delivery at any index.
+// rail IS the top cell of the coarse sweep (kCoarseLo = -41 is chosen so
+// the grid lands on kRailRel exactly, gs/src/cal_plan.h), so a no-dip row
+// just delivered >=90% AT the very index it parks on. The old knee was
+// never validated by delivery at any index.
+//
+// The fixture therefore sweeps the real coarse grid, -41..63 step 4: if
+// kCoarseLo/kCoarseHi ever drift so the rail stops being a measured cell,
+// this test is where that shows up.
 TEST(mcs0_no_dip_parks_at_the_diff_field_rail) {
   std::vector<CalCell> cells;
-  // Flat floor to 28, ~0.3 dB/idx ramp to 91, flat ceiling to 127 -- the
-  // real measured shape, which this rule deliberately no longer reads.
-  for (int i = 0; i <= 127; i += 4) {
+  // Flat floor to 28, ~0.3 dB/idx ramp, then a flat ceiling -- the real
+  // measured shape, which this rule deliberately no longer reads.
+  for (int i = -41; i <= 63; i += 4) {
     int rssi;
     if (i <= 28) rssi = -80;
     else if (i <= 91) rssi = -80 + (i - 28) * 3 / 10;
     else rssi = -80 + (91 - 28) * 3 / 10;
     cells.push_back(cell(i, 100, rssi));
   }
-  CalThresholds th;
-  th.max_wall = 102;  // base_ref_idx 39 (ch136) + 63
-  const auto w = analyze_rate(cells, th);
+  const auto w = analyze_rate(cells, CalThresholds{});
   CHECK((w.flags & kCalNoDip) != 0);
   CHECK((w.flags & kCalUndetermined) == 0);
-  CHECK(w.wall == 102);
-}
-
-TEST(the_rail_never_exceeds_the_seven_bit_txagc_range) {
-  // A unit whose base_ref_idx sits high has a rail past the end of the
-  // index range; 127 is the ceiling regardless, and config.cpp range-checks
-  // rate_walls_idx to [0,127] independently.
-  std::vector<CalCell> cells;
-  for (int i = 0; i <= 127; i += 4) cells.push_back(cell(i, 100, -60));
-  CalThresholds th;
-  th.max_wall = 127;  // caller clamped base_ref 90 + 63 = 153
-  CHECK(analyze_rate(cells, th).wall == 127);
-}
-
-TEST(a_no_dip_row_with_no_known_rail_is_undetermined) {
-  // The rail is base_ref_idx + 63, and base_ref_idx arrives in the phase-1
-  // acknowledgment -- a Telem, lost like anything else. The sweep can
-  // complete without one (a sweep frame is an implicit ack, cal_session.h).
-  // With no anchor there is no derivable wall, so the row reports
-  // undetermined and its config entry is left untouched. Inventing a number
-  // from a base_ref of 0 would park the rate at idx 59 on a unit whose
-  // anchor is 39 -- 10 dB low, silently, on the rates the link falls back to.
-  std::vector<CalCell> cells;
-  for (int i = 0; i <= 127; i += 4) cells.push_back(cell(i, 100, -60));
-  CalThresholds th;
-  th.max_wall = -1;  // no ack ever arrived
-  const auto w = analyze_rate(cells, th);
-  CHECK((w.flags & kCalNoDip) != 0);
-  CHECK((w.flags & kCalUndetermined) != 0);
-  CHECK(w.wall == -1);
-  CHECK(w.floor_idx == -1);
+  CHECK(w.wall == kRailRel);
 }
 
 TEST(row_never_reaching_threshold_is_undetermined) {
@@ -113,7 +88,19 @@ TEST(row_never_reaching_threshold_is_undetermined) {
   for (int i = 0; i <= 127; i += 4) cells.push_back(cell(i, 40));
   const auto w = analyze_rate(cells, CalThresholds{});
   CHECK((w.flags & kCalUndetermined) != 0);
-  CHECK(w.wall == -1);  // caller must leave the config entry alone
+  CHECK(w.wall == kNoWall);  // caller must leave the config entry alone
+}
+
+TEST(negative_relative_indices_are_ordinary_cells) {
+  // Relative indices: a wall can sit below the anchor (mcs7 read -4 on
+  // the 2026-09-13 bench at anchor 53). Nothing may treat < 0 as a sentinel.
+  std::vector<CalCell> cells;
+  for (int i = -40; i <= -8; i += 4) cells.push_back(cell(i, 98));
+  for (int i = -4; i <= 60; i += 4) cells.push_back(cell(i, 10));
+  const auto w = analyze_rate(cells, CalThresholds{});
+  CHECK(w.wall == -8);
+  CHECK(w.floor_idx == -40);
+  CHECK((w.flags & kCalUndetermined) == 0);
 }
 
 // Diversity is not protection against PA compression: both cards see the same
@@ -180,7 +167,7 @@ TEST(flags_card_disagreement) {
 
 TEST(empty_input_is_undetermined) {
   const auto w = analyze_rate({}, CalThresholds{});
-  CHECK(w.wall == -1);
+  CHECK(w.wall == kNoWall);
   CHECK((w.flags & kCalUndetermined) != 0);
 }
 

@@ -34,6 +34,18 @@ V 3 91 99
 V 5 50 97
 """
 
+GOOD3 = """callog 3
+R 42 1.00
+C 1 0 -40 20 20 0 0 -62 -999
+W 0 63 -40 0 1
+W 3 42 -40 0 0
+W 5 -1 -40 0 32
+W 7 -128 -128 -1 2
+V 0 59 100
+V 3 38 99
+V 5 -5 97
+"""
+
 
 def render(text):
     with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
@@ -172,6 +184,53 @@ class TestReport(unittest.TestCase):
         # And the run as a whole still applied: mcs0's real delivery is
         # proof enough, mcs1's silence notwithstanding.
         self.assertIn("written: /etc/mabur.toml", out)
+
+
+class TestReportV3(unittest.TestCase):
+    def test_v3_renders_relative_walls_and_no_anchor(self):
+        out = render(GOOD3)
+        self.assertIn("wall(rel)", out)
+        self.assertNotIn("base_ref", out)
+        row = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertIn("42", row)
+        self.assertIn("38", row)   # park = 42 - 4
+
+    def test_v3_minus_one_is_a_real_wall(self):
+        out = render(GOOD3)
+        row = [l for l in out.splitlines() if l.startswith("mcs5")][0]
+        self.assertIn(" -1", row)
+        self.assertIn(" -5", row)  # park
+        self.assertIn("97%", row)
+
+    def test_v3_undetermined_is_the_sentinel_not_a_number(self):
+        out = render(GOOD3)
+        row = [l for l in out.splitlines() if l.startswith("mcs7")][0]
+        self.assertIn("undetermined", row)
+        self.assertNotIn("-128", row)
+        # The word appears once (the flags column) -- the wall column
+        # prints "-", not a second "undetermined", to keep the wall(rel)
+        # column's width sane.
+        self.assertEqual(row.count("undetermined"), 1)
+        fields = row.split()
+        self.assertEqual(fields[1], "-")  # wall column
+
+    def test_v1_undetermined_row_renders_exactly_as_before(self):
+        # Regression: v1/v2 files must render byte-for-byte as they always
+        # have (recordings on the DVR outlive the code, CLAUDE.md) -- the
+        # wall column keeps printing the raw sentinel (-1), never the word
+        # "undetermined", even though the flags column's own "undetermined"
+        # text satisfies the weaker (pre-existing) assertion above it.
+        old_row = (f"{'mcs7':<6}{'-1':>6}{'-':>6}{'-':>7}   "
+                   f"undetermined").rstrip()
+        self.assertIn(old_row, render(GOOD).splitlines())
+
+    def test_v1_still_renders_with_the_anchor(self):
+        out = render(GOOD)
+        self.assertIn("base_ref=53", out)
+        self.assertIn("base_ref_idx 53", out)
+
+    def test_v3_written_claim_keys_on_verify(self):
+        self.assertIn("written:", render(GOOD3))
 
 
 class TestRenderWhenReady(unittest.TestCase):

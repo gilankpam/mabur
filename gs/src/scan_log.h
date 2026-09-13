@@ -1,0 +1,51 @@
+#pragma once
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "channel_plan.h"
+#include "channel_ranker.h"
+#include "channel_scout.h"
+#include "log_writer.h"
+#include "scout_radio.h"
+
+namespace maburgs {
+
+// scan.log (scanlog 1) -- the channel-selection record in the debug-log
+// session directory (spec 2026-09-13-auto-channel-select §7). Formats are
+// LOCKED by tests/test_scan_log.cpp:
+//
+//   scanlog 1 <header_info>
+//   C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
+//     <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
+//   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
+//     <floor_dbm|nan> <flags_hex>                                # one scout dwell
+//   K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... # the pick
+//   M <t> <card|all> <from> <to> <reason>                        # a link move
+//   A <t> <card> <ch> <cca> <fa> <own> <foreign> <igi|->         # in-flight energy
+class ScanLog {
+ public:
+  ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info);
+  ScanLog(const ScanLog&) = delete;
+  ScanLog& operator=(const ScanLog&) = delete;
+
+  bool ok() const { return s_ != LogWriter::kBadStream; }
+  void rotate(const std::string& dir) { w_.reopen(s_, dir); }
+  const std::string& path() const { return w_.path(s_); }
+
+  void caps(double t_ms, int card, const CardCaps& c);
+  void dwell(double t_ms, int card, const ScoutDwell& d);
+  void pick(double t_ms, std::optional<uint8_t> picked, uint64_t rounds,
+            const std::vector<RankEntry>& all, int min_rounds);
+  void move(const MoveEvent& e);
+  void energy(double t_ms, int card, uint8_t ch, const ScoutEnergy& e,
+              uint64_t own, uint64_t foreign);
+
+ private:
+  void put_(const char* b, int n);
+  LogWriter& w_;
+  LogWriter::Stream s_;
+};
+
+}  // namespace maburgs

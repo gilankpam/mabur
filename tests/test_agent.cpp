@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "mtest.h"
@@ -27,6 +28,11 @@ struct MockActuator : Actuator {
   int idr_calls = 0;
   bool bitrate_ok = true;
   bool roi_ok = true;
+  std::vector<uint8_t> retunes;
+  // Parallel to `retunes` (same index): the spec §7 reason literal the agent
+  // passed with each move. Kept separate so channel assertions stay
+  // `retunes[i] == ch`.
+  std::vector<std::string> retune_reasons;
 
   void apply_op(const AppliedOp& op) override { applied.push_back(op); }
   void send_control(const std::vector<uint8_t>& body) override { controls.push_back(body); }
@@ -39,6 +45,10 @@ struct MockActuator : Actuator {
     return roi_ok;
   }
   void request_idr() override { ++idr_calls; }
+  void retune(uint8_t ch, const char* reason) override {
+    retunes.push_back(ch);
+    retune_reasons.push_back(reason ? reason : "");
+  }
 };
 
 Config make_cfg() {
@@ -53,6 +63,9 @@ Config make_cfg() {
   cfg.encoder.roi_threshold_kbps = 3000;
   cfg.encoder.roi_qp_low = 8;
   cfg.encoder.roi_qp_normal = 0;
+  cfg.radio.channel = 136;
+  cfg.radio.follow_gs = true;
+  cfg.link.move_confirm_ms = 2000;
   return cfg;
 }
 
@@ -142,19 +155,21 @@ TEST(boot_first_tick_applies_max_range_and_moves_to_rendezvous) {
 }
 
 // 2. DISC (vtx_id matches cfg) -> send_control called once with a valid
-// DISC_ACK (nonce echo matches) and state LINKED. The GS requests a
-// DIFFERENT channel/width (36/40) than the drone's own cfg.radio (149/20,
-// the RadioCfg struct defaults) specifically to catch a DISC_ACK that
-// echoes the GS's request instead of reporting reality — the drone never
-// retunes in v1, so echoing the request would misreport an agreement that
-// never happened.
+// DISC_ACK (nonce echo matches) and state LINKED. The GS proposes the
+// drone's OWN channel (auto channel select, spec 2026-09-13 §6: a DISC on
+// the current channel is a no-op move -- see disc_same_channel_never_retunes
+// for the foreign-channel case), and op_width is a channel-move field the
+// drone never acts on, so agreed_width always reports the drone's own
+// configured width regardless of what's proposed -- 40 here specifically to
+// catch a DISC_ACK that echoes the GS's request instead of reporting
+// reality.
 TEST(disc_replies_disc_ack_and_moves_to_linked) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, cfg.radio.channel,
                               /*op_width=*/40, 0, 2);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
@@ -164,12 +179,14 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(parsed.has_value());
   CHECK(parsed->vtx_id == cfg.link.vtx_id);
   CHECK(parsed->vrx_nonce == 0xCAFEF00D);
-  // Must reflect the drone's own configured channel/width (149/20), NOT the
-  // GS-requested 36/40 — the drone doesn't retune in v1.
+  // Same channel proposed -> no move, ack agrees on it; width is never
+  // taken from the wire, so it stays the drone's own configured width (20)
+  // despite the GS's requested 40.
   CHECK(parsed->agreed_channel == cfg.radio.channel);
   CHECK(parsed->agreed_width == cfg.radio.width);
-  CHECK(parsed->agreed_channel == 149);
+  CHECK(parsed->agreed_channel == 136);
   CHECK(parsed->agreed_width == 20);
+  CHECK(act.retunes.empty());
 
   // DISC apply must force-run the bitrate policy immediately (same force
   // semantics as any other LINKED-entering transition), not leave the
@@ -186,7 +203,7 @@ TEST(disc_ack_advertises_frame_wire_cap) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/36,
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/136,
                               /*op_width=*/40, 0, 2);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
@@ -216,7 +233,10 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   const size_t n_controls = act.controls.size();
   const size_t n_bitrates = act.bitrates.size();
 
-  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20,
+  // Same channel proposed as the drone's own -> no move (channel moves are
+  // covered separately by disc_foreign_channel_acks_then_retunes; this test
+  // stays about the keep-alive no-op).
+  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, cfg.radio.channel, 20,
                              /*init_profile=*/0, /*seq=*/7);
   agent.on_rc_frame(disc.data(), disc.size(), 600);
 
@@ -232,6 +252,7 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
   CHECK(parsed->agreed_channel == cfg.radio.channel);
   CHECK(parsed->agreed_width == cfg.radio.width);
+  CHECK(act.retunes.empty());
 
   // Everything else about the DISC is still ignored.
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -1037,12 +1058,134 @@ TEST(link_established_latches_on_disc_link_up) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20,
+  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20,
                              /*init_profile=*/0, /*seq=*/1);
   agent.on_rc_frame(disc.data(), disc.size(), 10);  // RENDEZVOUS -> LINKED
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.take_link_established());
   CHECK(!agent.take_link_established());
+}
+
+// Auto channel select (spec 2026-09-13): DISC with a foreign channel -> ack
+// (agreeing to the NEW channel) from the current channel, then retune.
+TEST(disc_foreign_channel_acks_then_retunes) {
+  auto cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/149, 20, 0, 1);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  REQUIRE(act.controls.size() == 1);
+  auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  REQUIRE(ack.has_value());
+  CHECK(ack->agreed_channel == 149);
+  REQUIRE(act.retunes.size() == 1);
+  CHECK(act.retunes[0] == 149);
+  REQUIRE(act.retune_reasons.size() == 1);
+  CHECK(act.retune_reasons[0] == "disc");             // spec §7 reason
+  CHECK(agent.channel() == 149);
+  CHECK(agent.state() == RcAgent::State::LINKED);
+}
+
+// GS re-proposes a channel mid-flight: the LINKED keep-alive DISC path must
+// ack the new channel, retune, and change NOTHING else (op-thrash contract).
+TEST(linked_keepalive_disc_foreign_channel_acks_then_retunes) {
+  auto cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto home = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20, 0, 1);
+  agent.on_rc_frame(home.data(), home.size(), 100);          // -> LINKED on home
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  const uint64_t gen_before = agent.current().generation;
+  const size_t applied_before = act.applied.size();
+  auto move = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 2);
+  agent.on_rc_frame(move.data(), move.size(), 200);          // LINKED keep-alive path
+  REQUIRE(act.controls.size() == 2);
+  auto ack = parse_disc_ack(act.controls[1].data(), act.controls[1].size());
+  REQUIRE(ack.has_value());
+  CHECK(ack->agreed_channel == 149);
+  REQUIRE(act.retunes.size() == 1);
+  CHECK(act.retunes[0] == 149);
+  CHECK(agent.channel() == 149);
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.current().generation == gen_before);           // no op re-apply
+  CHECK(act.applied.size() == applied_before);
+}
+
+TEST(disc_same_channel_never_retunes) {
+  auto cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20, 0, 1);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  agent.on_rc_frame(wire.data(), wire.size(), 200);   // LINKED keep-alive
+  CHECK(act.retunes.empty());
+  REQUIRE(act.controls.size() == 2);
+  CHECK(parse_disc_ack(act.controls[1].data(), act.controls[1].size())->agreed_channel == 136);
+}
+
+TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
+  auto cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 1);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  agent.tick(1000, RadioHealth{});
+  CHECK(act.retunes.size() == 1);
+  agent.tick(2100, RadioHealth{});                     // 100 + 2000 elapsed
+  REQUIRE(act.retunes.size() == 2);
+  CHECK(act.retunes[1] == 136);
+  REQUIRE(act.retune_reasons.size() == 2);
+  CHECK(act.retune_reasons[1] == "move_unconfirmed");  // spec §7 reason
+  CHECK(agent.channel() == 136);
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+}
+
+// Reordered from the brief (which ticked 3000 then 1600, non-monotonic) to a
+// monotonic timeline that still exercises all four checkpoints: confirm at
+// 500; no fallback past move_confirm_ms (100+2000=2100, checked via
+// retunes.size() staying at 1 -- state has already moved on to FAILSAFE by
+// then since failsafe_ms(1000) < move_confirm_ms(2000) from the RCF's
+// last_fb_ms=500, which the same tick(2100) call also crosses); LINKED ->
+// FAILSAFE without a home retune (channel stays on the op channel per spec
+// §6: "on the op channel only while LINKED or FAILSAFE"); FAILSAFE ->
+// RENDEZVOUS at +rendezvous_ms from the FAILSAFE-entry rebase, WITH a home
+// retune.
+TEST(gs_frame_confirms_move_and_rendezvous_entry_returns_home) {
+  auto cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 1);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
+  agent.on_rc_frame(rcf.data(), rcf.size(), 500);      // confirms
+  agent.tick(2100, RadioHealth{});
+  CHECK(act.retunes.size() == 1);                      // no fallback, no FAILSAFE-entry retune
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(agent.channel() == 149);                       // FAILSAFE stays on the op channel
+  agent.tick(2100 + 30000, RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  REQUIRE(act.retunes.size() == 2);
+  CHECK(act.retunes[1] == 136);
+  REQUIRE(act.retune_reasons.size() == 2);
+  CHECK(act.retune_reasons[1] == "rendezvous");        // spec §7 reason
+}
+
+TEST(follow_gs_false_acks_home_and_never_retunes) {
+  auto cfg = make_cfg();
+  cfg.radio.follow_gs = false;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 1);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  REQUIRE(act.controls.size() == 1);
+  CHECK(parse_disc_ack(act.controls[0].data(), act.controls[0].size())->agreed_channel == 136);
+  CHECK(act.retunes.empty());
 }
 
 MTEST_MAIN

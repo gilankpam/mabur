@@ -52,13 +52,18 @@ MABURGS_LOG = "/tmp/maburgs.log"
 SESSION_MARKER = "/tmp/mabur-session"
 DEFAULT_DEBUG_LOG_DIR = "/media/dvr/log"
 
-# The marker versions the FILE. 1 is what maburgs writes. 2 is accepted too:
-# it briefly existed on 2026-09-11 (two per-card EVM columns on the C row,
-# reverted when the sweep frames turned out to carry no EVM reading -- see
-# docs/calibration.md), and bench runs in that shape are sitting on the DVR.
-# Since this reader has never stored C rows, a v2 file renders identically to
-# a v1 one, and recordings outlive the code that wrote them (CLAUDE.md).
-KNOWN_CALLOG_VERSIONS = (1, 2)
+# The marker versions the FILE. 3 is what maburgs writes now: every index
+# (wall/floor/idx) is SIGNED and RELATIVE to the drone chip's own anchor,
+# and the R line carries no base_ref at all (spec 2026-09-13, relative
+# walls). 1 and 2 are absolute-index formats still sitting on the DVR --
+# both carry base_ref (on the R line) and both key "undetermined" off
+# wall < 0, since -1 was their sentinel and never a real wall; 2 briefly
+# existed on 2026-09-11 (two per-card EVM columns on the C row, reverted
+# when the sweep frames turned out to carry no EVM reading -- see
+# docs/calibration.md). Since this reader has never stored C rows, a v2
+# file renders identically to a v1 one. All three stay readable because
+# recordings outlive the code that wrote them (CLAUDE.md).
+KNOWN_CALLOG_VERSIONS = (1, 2, 3)
 
 # flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree 32=drift
 FLAG_NAMES = (
@@ -81,12 +86,22 @@ class UnsupportedLog(Exception):
 class _Run:
     """One calibration run's worth of cal.log records, keyed by rate 0-7."""
 
-    def __init__(self, nonce, base_ref_idx, margin_db):
+    def __init__(self, version, nonce, margin_db, base_ref_idx=None):
+        self.version = version
         self.nonce = nonce
-        self.base_ref_idx = base_ref_idx
+        self.base_ref_idx = base_ref_idx  # None for v3: no anchor on the wire
         self.margin_db = margin_db
         self.walls = {}    # rate -> (wall, floor_idx, best_card, flags)
         self.verify = {}   # rate -> pct
+
+    def undetermined(self, wall):
+        """True when `wall` is the "no wall could be derived" sentinel for
+        this run's format -- -128 (kNoWall) from callog 3 on, -1 (the only
+        sentinel callog 1/2 ever wrote, since their indices were absolute
+        and non-negative) before that. Never a plain `wall < 0` test on a
+        v3 run: relative indices make -1 (and any other negative) a real,
+        measured wall."""
+        return wall == -128 if self.version >= 3 else wall < 0
 
     def feed_line(self, tag, tok):
         """tok is the line's whitespace-split tokens, tok[0] == tag. Any
@@ -139,9 +154,14 @@ def _parse_cal_log(path):
 
             tok = line.split()
             tag = tok[0]
-            if tag == "R" and len(tok) == 4:
+            if tag == "R" and ((version >= 3 and len(tok) == 3) or
+                               (version < 3 and len(tok) == 4)):
                 try:
-                    cur = _Run(int(tok[1]), int(tok[2]), float(tok[3]))
+                    if version >= 3:
+                        cur = _Run(version, int(tok[1]), float(tok[2]))
+                    else:
+                        cur = _Run(version, int(tok[1]), float(tok[3]),
+                                   int(tok[2]))
                 except ValueError:
                     cur = None
                     continue
@@ -216,33 +236,53 @@ def _apply_status_line(run):
 
 
 def _render_run(run):
+    # v1/v2 files carry an absolute anchor (base_ref_idx); v3 carries none
+    # -- every index is already relative to the drone chip's own anchor, so
+    # there is nothing left to print, neither on this header line nor as
+    # the trailing base_ref_idx line below.
+    base_ref_part = (f"base_ref={run.base_ref_idx} "
+                      if run.base_ref_idx is not None else "")
+    wall_col = "wall(rel)" if run.version >= 3 else "wall"
+    wall_w = 10 if run.version >= 3 else 6
     lines = [
-        f"run nonce={run.nonce} base_ref={run.base_ref_idx} "
-        f"margin={run.margin_db:.2f}dB",
-        f"{'rate':<6}{'wall':>6}{'park':>6}{'verify':>7}   flags",
+        f"run nonce={run.nonce} {base_ref_part}margin={run.margin_db:.2f}dB",
+        f"{'rate':<6}{wall_col:>{wall_w}}{'park':>6}{'verify':>7}   flags",
     ]
     park_step = _margin_steps(run.margin_db)
     for rate in range(8):
         if rate not in run.walls:
             continue
         wall, _floor_idx, _best_card, flags = run.walls[rate]
-        if wall < 0:
+        if run.undetermined(wall):
             # Undetermined: no wall could be derived, so nothing downstream
             # of it (park index, verify delivery) gets a number either.
-            wall_s, park_s, verify_s = str(wall), "-", "-"
+            # v1/v2 files render the raw sentinel here exactly as they
+            # always have (-1, never a word) -- that output must not
+            # change for a file already on the DVR (CLAUDE.md). v3's
+            # sentinel is -128, which must never print as a number an
+            # operator could misread as a TXAGC step, so it prints "-"
+            # instead; the flags column already spells out "undetermined"
+            # in both cases, so the wall column need not repeat it.
+            if run.version >= 3:
+                wall_s, park_s, verify_s = "-", "-", "-"
+            else:
+                wall_s, park_s, verify_s = str(wall), "-", "-"
         else:
             wall_s = str(wall)
             park_s = str(wall - park_step)
             pct = run.verify.get(rate)
             verify_s = f"{pct}%" if pct is not None else "-"
-        row = (f"{'mcs' + str(rate):<6}{wall_s:>6}{park_s:>6}{verify_s:>7}"
-               f"   {_flag_string(flags)}")
+        row = (f"{'mcs' + str(rate):<6}{wall_s:>{wall_w}}{park_s:>6}"
+               f"{verify_s:>7}   {_flag_string(flags)}")
         lines.append(row.rstrip())
 
-    legacy_wall = run.walls.get(0, (-1,))[0]
-    legacy_s = "undetermined" if legacy_wall < 0 else str(legacy_wall)
+    default_wall = -128 if run.version >= 3 else -1
+    legacy_wall = run.walls.get(0, (default_wall,))[0]
+    legacy_s = ("undetermined" if run.undetermined(legacy_wall)
+                else str(legacy_wall))
     lines.append(f"legacy  {legacy_s} (derived from mcs0)")
-    lines.append(f"base_ref_idx {run.base_ref_idx}")
+    if run.base_ref_idx is not None:
+        lines.append(f"base_ref_idx {run.base_ref_idx}")
     lines.append(_apply_status_line(run))
     return "\n".join(lines)
 
