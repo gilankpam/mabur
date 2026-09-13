@@ -23,7 +23,7 @@ energy_period_ms = 1000     # in-flight per-card energy record (scan.log A lines
 # that is how you fly one card without unplugging an antenna. Absence is the
 # knob here, so this stays commented out.
 #[[radio.cards]]
-#usb_vid = 0x0bda
+#usb_vid = 3034   # decimal: the TOML subset rejects hex
 #usb_pid = 0
 #index   = 0
 

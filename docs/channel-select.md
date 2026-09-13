@@ -288,9 +288,57 @@ beacon card's `A`-line `cca` against `own` during a linked session at MCS
 the `− own` term with a measured `k × own` and re-run
 `test_channel_ranker` pinned to that constant.
 
-## Bench validation
+## Bench validation 2026-09-13
 
-Pending — see the plan's Task 14.
+Bench, drone on the desk, GS session `/media/dvr/log/0069` (`scan.log`
+carries every K/M line below). Deployed binary-before-config on both ends;
+rollbacks `maburgs.pre-chansel` / `maburd.pre-chansel` + `*.toml.pre-chansel`
+(the drone's `maburd.pre-cal` was pruned to make room).
+
+| check | result |
+|---|---|
+| C record, both GS cards | `RTL8822E jaguar3 2x2 1f 5080-6165 1 1 1 1 1` — all four sensors valid incl. the absolute floor; the drone (no floor opt-in) reports `floor=0` |
+| scout cadence, two cards | 11 visits per channel in 18 s (round ≈ 1.1 s at the defaults) |
+| pick, two cards, home 136, cands 149/153/161 | `K 136 44 136:5:-95 149:52:-94 153:53:-92 161:53:-95`, `M all 136 136 commit`, no drone retune |
+| pick, two cards, home 153, cands 136/149/161 | `K 153 15 153:9 136:152 149:45 161:39` — home won again; 136 took one 152-busy visit |
+| pick + move, ONE card, home 153 | `K 161 17 153:32 136:42 149:12 161:8`, `M all 153 161 commit`, drone `retune 153 -> 161 (disc)`, video in SESSION on 161; `scoutgate=3` sends held during the join window |
+| ausniff on the moved link | 60.2 fps / 1 gap first pass (post-restart phantom), then 60.3 fps / 0 gaps / 0 incomplete |
+| link loss (drone stopped), one card | `M 0 161 153 split_home` at loss + 5 s |
+| drone restart, one card | drone boots on 153, caught in a home window: GS `M 0 153 161 reunite`, drone `retune 153 -> 161 (disc)`, 60.4 fps |
+| `cca − own` (beacons) | on home the scouting card saw own=12 beacons and cca=12: one decoded single-MPDU frame is one CCA event |
+| `cca − own` (video, A records) | cca 226-948 against own ≈ 2200 frames/s: CCA counts PPDUs, so under A-MPDU `cca − own` clamps to 0 and the A record's busy is `fa + foreign` |
+| A records at 1 Hz | no change in ausniff cadence (60.3 fps with them on) |
+| restored flight config (home 136, two cards) | `K 136 10 136:1 149:50 153:53 161:58`, commit home, 60.5 fps |
+
+Not done: the 2 s RF fade (needs an antenna pull), the two-card split/reunite
+(needs a home-losing pick, see the bias below), the `tx_gate` exclusive
+latency measurement, and `lat.log` e2e with A records on vs off.
+
+### Findings
+
+**The home reading is biased, in opposite directions per mode.** With two
+cards the scouting card sits next to the beaconing card: on home its floor
+reads 2-3 dB higher (−92 vs −95) and its CCA/FA counters go quiet (cca ≈ own,
+fa ≈ 1) while every candidate reads cca ≈ 22 + fa ≈ 20 per 250 ms with zero
+frames — the same channel read 5 as home and 152 as a candidate minutes
+apart. The neighbour's TX desensitises the scout, so home carries a ~45-unit
+head start and only a strongly busy home ever loses. With one card the bias
+flips: the card's own beacon TX leaks into its receiver, home reads cca ≈ 12
++ fa ≈ 13 per window while the candidates read 0-12, so home always loses by
+~25. The ranking law itself behaved exactly as specified in both cases; the
+input is what is skewed. Until this is fixed, treat two-card mode as
+"move only off a clearly busy home" and one-card mode as "always moves". A
+fair home measurement needs the beacon suspended for the home dwell, or the
+home busy score corrected by the beacon count.
+
+**`[[radio.cards]]` needs decimal VIDs.** The TOML subset rejects `0x0bda`
+(`'0x0bda' is not a valid value`) and maburgs crash-loops on the respawn;
+the bundle's commented example now says `3034`.
+
+**The GS's own Wi-Fi AP drops stations around a restart.** The `aicwf_sdio`
+AP logged STA churn at the moment of a maburgs restart (its USB resets), and
+a laptop on that AP saw "no route to host" for ~20 s. Not a reboot: uptime
+and the session directory were continuous.
 
 ## Deploy
 
