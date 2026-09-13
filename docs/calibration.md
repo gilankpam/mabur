@@ -623,9 +623,9 @@ nonzero, in line with the documented first-pass-after-restart phantom
 — but `incomplete` on stream `'1'` did not: only the post-calibration
 pass 1 row and the final config-restored row show `{}`, and those two
 still disagree with each other on `fid_gaps` (3 vs 0). The other seven
-rows all carry a nonzero `incomplete['1']`, so the deploy record above
-did **not** establish a steady-state clean pass; see the 2026-09-14
-follow-up below for that evidence.
+rows all carry a nonzero `incomplete['1']`; see the steady-state and
+TX-power A/B passes below for the clean-bench characterization of that
+residual.
 
 Channel auto-select: with the shipped defaults
 (`candidates=[120,149,165]`, `home_margin=20`) the scan committed to
@@ -642,46 +642,28 @@ grep; **the pair ran the whole session, and finished it, on channel
 136**. Step 8 (ch149 cross-channel re-check) was skipped by controller
 ruling.
 
-### 2026-09-14 follow-up: steady-state ausniff evidence
+### 2026-09-14 follow-up: steady-state and TX-power A/B
 
-Three fresh 20 s passes, ch136, nothing restarted in between (spacing
-is back-to-back — each pass's own 20 s runtime plus ssh round-trip):
+The passes above were taken while the operator was also exercising
+channel-select restarts on the GS, so they are not a steady-state
+baseline. With the pair left untouched, three clean passes at the
+calibrated table, three at an old-power control (the pre-deploy
+absolute parks re-expressed relative to the ch136 anchor 39 —
+`rate_walls_rel = [59, 59, 59, 25, 26, 2, 5, -1]`, applied via a drone
+restart), and two after restoring the calibrated table (md5
+`91aac883f215c2d975d00db420f37bb8` on the drone):
 
-```
-aus=1203 complete={'1': 589, '0': 602} incomplete={'1': 12} fid_gaps=1 resyncs=0 bytes=4562962 dropped_oversize=0 fps=60.3
-aus=409  complete={'1': 201, '0': 206} incomplete={'1': 2}  fid_gaps=61010 resyncs=0 bytes=1387375 dropped_oversize=0 fps=20.5
-aus=668  complete={'0': 334, '1': 332} incomplete={'1': 2}  fid_gaps=0 resyncs=1 bytes=2538925 dropped_oversize=0 fps=61.0
-```
+| point | aus | incomplete | fid_gaps | resyncs | fps |
+|---|---|---|---|---|---|
+| calibrated `[63,63,63,41,24,9,9,6]`, pass 1 | 1205 | `{'1': 1}` | 1 | 0 | 60.3 |
+| calibrated, pass 2 | 1205 | `{'1': 1}` | 0 | 0 | 60.3 |
+| calibrated, pass 3 | 1206 | `{'1': 1}` | 0 | 0 | 60.3 |
+| old-power control `[59,59,59,25,26,2,5,-1]`, pass 1 | 1205 | `{'1': 1}` | 0 | 0 | 60.3 |
+| old-power control, pass 2 | 1205 | `{'1': 1}` | 1 | 0 | 60.3 |
+| old-power control, pass 3 | 1204 | `{'1': 1}` | 1 | 0 | 60.2 |
+| calibrated table restored, pass 1 | 1205 | `{}` | 0 | 0 | 60.3 |
+| calibrated table restored, pass 2 | 1204 | `{'1': 2}` | 1 | 0 | 60.2 |
 
-A fourth pass with `--json`, taken after the anomaly below had settled:
-
-```
-{"aus": 1206, "complete": {"1": 598, "0": 606}, "incomplete": {"1": 2}, "frame_id_gaps": 0, "resyncs": 0, "bytes": 22206293, "dropped_oversize": 0, "fps": 60.3}
-```
-
-**None of the four is fully clean** — every one shows a nonzero
-`incomplete['1']`. Per-pass residual rate (`incomplete / aus`): pass 1
-1.0% (12/1203), pass 2 0.5% (2/409), pass 3 0.3% (2/668), the json pass
-0.17% (2/1206). This residual is unattributed — this change moves TX
-power on the drone (the fresh calibration parks mcs5-7 about 1 dB
-hotter than the previous table), so a power-related contribution
-cannot be ruled out from this evidence alone.
-
-Separately, pass 2's `fid_gaps=61010`/`fps=20.5` is not part of that
-residual pattern — it is a distinct anomaly. `dmesg` on the GS during
-this window showed `usb 3-1.1`/`usb 3-1.4` (both radio cards) reset by
-`ehci-platform` in a burst (`14742.9s`, `14822.4s`, `14909.0s` since
-boot), and pass 3's `resyncs=1` corresponds to two `writer epoch
-changed` lines from `ausniff` mid-pass — the shared-memory ring's
-writer (`maburgs`) restarted (`epoch -> 0x0` then a new nonzero epoch).
-`/proc/uptime` and the new PID's start tick put that restart at
-~41 s before the check, i.e. inside the fresh-evidence window, and no
-GS deploy/restart command was issued at that time. The same USB-reset
-signature appears in `dmesg` back to boot (`t=17s`) in several earlier
-bursts, so this looks like a pre-existing, periodic GS-side radio/USB
-behavior rather than something introduced by relative walls — but it
-was not previously known to also crash-restart `maburgs`, and that
-correlation is new information for the controller to weigh. The GS
-daemon was not touched again after this; a final read-only `ps` check
-showed it stable on the post-restart PID with no further resets in
-`dmesg`.
+The incomplete-enhancement-AU residual (~0.08% of enh AUs) is the same
+at the old and new TX-power tables, so it is bench background loss and
+not attributable to relative walls.
