@@ -55,7 +55,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 15;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 88;  // 2026-09-10: +cal_base_ref_idx (u8)
+constexpr size_t TELEM_LEN = 87;  // 2026-09-13: cal_base_ref_idx removed
 
 // magic(2) | ver | type | flags | vtx(4) | nonce(4) | phase | fpc(2) |
 // settle(2) | gap(2) | n_windows(1) | n * 4 bytes
@@ -122,8 +122,8 @@ std::vector<uint8_t> pack_cal_cmd(const CalCmd& c) {
   body.push_back(static_cast<uint8_t>(n));
   for (size_t i = 0; i < n; ++i) {
     body.push_back(c.windows[i].rate);
-    body.push_back(c.windows[i].idx_lo);
-    body.push_back(c.windows[i].idx_hi);
+    body.push_back(static_cast<uint8_t>(c.windows[i].idx_lo));
+    body.push_back(static_cast<uint8_t>(c.windows[i].idx_hi));
     body.push_back(c.windows[i].idx_step);
   }
   put_crc(body);
@@ -150,10 +150,11 @@ std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len) {
     const size_t o = kCalCmdFixedLen + static_cast<size_t>(i) * 4;
     CalWindow w;
     w.rate = buf[o];
-    w.idx_lo = buf[o + 1];
-    w.idx_hi = buf[o + 2];
+    w.idx_lo = static_cast<int8_t>(buf[o + 1]);
+    w.idx_hi = static_cast<int8_t>(buf[o + 2]);
     w.idx_step = buf[o + 3];
-    if (w.rate > 7 || w.idx_step == 0 || w.idx_hi < w.idx_lo)
+    if (w.rate > 7 || w.idx_step == 0 || w.idx_hi < w.idx_lo ||
+        w.idx_lo < kRelMin || w.idx_hi > kRelMax)
       return std::nullopt;
     c.windows.push_back(w);
   }
@@ -318,7 +319,6 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(t.venc_ring_fill_pct);
   put16(body, t.air_backlog_max_ms);
   put16(body, t.air_shed_drops);
-  body.push_back(t.cal_base_ref_idx);
 
   put_crc(body);
   return body;
@@ -374,7 +374,6 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.venc_ring_fill_pct = buf[82];
   t.air_backlog_max_ms = get16(buf, 83);
   t.air_shed_drops = get16(buf, 85);
-  t.cal_base_ref_idx = buf[87];
   return t;
 }
 

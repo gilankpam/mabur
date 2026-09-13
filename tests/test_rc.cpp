@@ -4,6 +4,7 @@
 #include "mabur/rc_proto.h"
 #include "mabur/profile.h"
 #include "mabur/cal_wire.h"
+#include "mabur/crc16.h"
 using namespace mabur;
 using namespace mabur::rc;
 
@@ -50,11 +51,11 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352070100efbeadde0700243232ff1ad4",
-      "435207010001000000ffff006464fff8aa",
+      "4352080100efbeadde0700243232ff4815",
+      "435208010001000000ffff006464ffaa6b",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "4352070100443322112a0008643206f65a",
+      "4352080100443322112a0008643206a49b",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -84,7 +85,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352070204010000000100feca95140100000002000f8d",
+      "4352080204010000000100feca95140100000002002e27",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -117,7 +118,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "4352070304010000000100feca0300951401002ca2",
+      "4352080304010000000100feca0300951401009257",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -297,9 +298,9 @@ TEST(telem_round_trip_and_golden) {
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
-      "43520704030201020706050405191e2d0034127766554433221100a0860100400d0"
+      "43520804030201020706050405191e2d0034127766554433221100a0860100400d0"
       "300e09304002823e80100034007000000d204801a0600090000000200333415163d"
-      "034800040005000700080009000a003e0000000000b67e";
+      "034800040005000700080009000a003e00000000453a";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -374,9 +375,9 @@ TEST(version_mismatch_rejected_both_directions) {
   v6[2] = 6;
   CHECK(!mabur::rc::parse_rcf(v6.data(), v6.size()).has_value());
 
-  auto v8 = body;
-  v8[2] = 8;
-  CHECK(!mabur::rc::parse_rcf(v8.data(), v8.size()).has_value());
+  auto v9 = body;
+  v9[2] = 9;
+  CHECK(!mabur::rc::parse_rcf(v9.data(), v9.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
   // direction (drone -> GS). A half-deployed pair must fail BOTH ways.
@@ -459,7 +460,7 @@ TEST(cal_cmd_round_trip) {
   c.frames_per_cell = 20;
   c.settle_ms = 100;
   c.gap_us = 2000;
-  c.windows = {{0, 0, 124, 4}, {7, 40, 56, 1}};
+  c.windows = {{0, -40, 60, 4}, {7, -8, 8, 1}};
   auto b = mabur::rc::pack_cal_cmd(c);
   CHECK(mabur::rc::frame_type(b.data(), b.size()) == mabur::rc::T_CAL_CMD);
   auto got = mabur::rc::parse_cal_cmd(b.data(), b.size());
@@ -472,10 +473,11 @@ TEST(cal_cmd_round_trip) {
   CHECK(got->gap_us == 2000);
   REQUIRE(got->windows.size() == 2);
   CHECK(got->windows[0].rate == 0);
-  CHECK(got->windows[0].idx_hi == 124);
+  CHECK(got->windows[0].idx_lo == -40);
+  CHECK(got->windows[0].idx_hi == 60);
   CHECK(got->windows[0].idx_step == 4);
   CHECK(got->windows[1].rate == 7);
-  CHECK(got->windows[1].idx_lo == 40);
+  CHECK(got->windows[1].idx_lo == -8);
 }
 
 TEST(cal_cmd_rejects_corrupt_crc) {
@@ -497,6 +499,22 @@ TEST(cal_cmd_rejects_bad_window_count) {
   CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
 }
 
+TEST(cal_cmd_rejects_window_outside_relative_range) {
+  mabur::rc::CalCmd c;
+  c.windows = {{0, -40, 60, 4}};
+  auto b = mabur::rc::pack_cal_cmd(c);
+  // Window bytes start at kCalCmdFixedLen (21): rate, idx_lo, idx_hi, step.
+  b[22] = static_cast<uint8_t>(-70);  // idx_lo below -64
+  // A bad CRC also rejects, so re-sign the body: mabur::crc16_ccitt from
+  // common/include/mabur/crc16.h, little-endian, exactly as put_crc() in
+  // rc_proto.cpp writes it (check put_crc's byte order and match it).
+  const size_t plen = b.size() - 2;
+  const uint16_t crc = mabur::crc16_ccitt(b.data(), plen);
+  b[plen] = static_cast<uint8_t>(crc & 0xFF);
+  b[plen + 1] = static_cast<uint8_t>(crc >> 8);
+  CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
+}
+
 TEST(cal_result_round_trip) {
   mabur::rc::CalResult r;
   r.vtx_id = 7;
@@ -512,30 +530,34 @@ TEST(cal_result_round_trip) {
   CHECK(got->legacy_wall == 91);
 }
 
-TEST(cal_result_carries_undetermined_sentinel) {
-  // -1 means "no wall could be derived": the drone must leave that config
-  // entry untouched rather than write a number the data cannot support.
+TEST(cal_result_sentinel_is_minus_128_and_minus_1_is_a_real_wall) {
+  // Relative walls make -1 a legal value (one index below the anchor), so
+  // "no wall could be derived" is kWallUndetermined (-128), never -1.
   mabur::rc::CalResult r;
-  r.walls = {91, 91, 91, -1, 73, 54, 51, 49};
+  r.walls = {63, 63, 63, mabur::rc::kWallUndetermined, 20, 1, -2, -1};
+  r.legacy_wall = 63;
   auto b = mabur::rc::pack_cal_result(r);
   auto got = mabur::rc::parse_cal_result(b.data(), b.size());
   REQUIRE(got.has_value());
-  CHECK(got->walls[3] == -1);
+  CHECK(got->walls[3] == mabur::rc::kWallUndetermined);
+  CHECK(got->walls[6] == -2);
+  CHECK(got->walls[7] == -1);
 }
 
-TEST(telem_carries_cal_base_ref) {
+TEST(telem_ack_is_the_cal_active_bit_alone) {
+  // The anchor never leaves the drone (spec 2026-09-13): the calibration
+  // ack is flags bit6 and nothing else. TELEM_LEN shrank 88 -> 87.
   mabur::rc::Telem t;
-  t.cal_base_ref_idx = 53;
-  t.flags = 0x40;  // bit6 = cal_active
+  t.flags = 0x40;
   auto b = mabur::rc::pack_telem(t);
+  CHECK(b.size() == 87 + 2);  // body + crc16
   auto got = mabur::rc::parse_telem(b.data(), b.size());
   REQUIRE(got.has_value());
-  CHECK(got->cal_base_ref_idx == 53);
   CHECK((got->flags & 0x40) != 0);
 }
 
-TEST(rc_version_is_seven) {
-  CHECK(mabur::rc::RC_VERSION == 7);
+TEST(rc_version_is_eight) {
+  CHECK(mabur::rc::RC_VERSION == 8);
 }
 
 MTEST_MAIN
