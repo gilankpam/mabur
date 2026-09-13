@@ -128,8 +128,8 @@ Consume the same numbers programmatically with:
   grouped by link; color thresholds carry the judgment. Binds :8300
   directly — nothing else holds the port any more.
 - Debug logs: maburgs writes a per-session directory when `debug_log.enable`
-  is set — `<debug_log.dir>/NNNN/` holding `ctl.log`, `probe.log`, `au.log`
-  and `flight.jsonl`; maburplay writes `lat.log` into the same directory by
+  is set — `<debug_log.dir>/NNNN/` holding `ctl.log`, `probe.log`, `au.log`,
+  `scan.log` and `flight.jsonl`; maburplay writes `lat.log` into the same directory by
   following the `/tmp/mabur-session` marker and holds no logging config of
   its own. Default is **off**: nothing is written until the knob is set.
   The marker lives in tmpfs, so a reboot starts a new session while a 2 s
@@ -308,6 +308,22 @@ Consume the same numbers programmatically with:
   `MABUR_GAPLOG=1` run to place every send against the probe
   (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal, like
   the ctl log.
+
+**scan.log (scanlog 1).** New per-session file (spec
+2026-09-13-auto-channel-select), opened alongside `ctl.log` whenever
+`debug_log.enable` is set. Five record letters, one line each:
+
+- `C` — a card's adapter-caps identity plus sensor validity flags, once at
+  bring-up.
+- `D` — one scout dwell (the channel-ranker's raw input).
+- `K` — the pick at freeze, with the full ranking.
+- `M` — a GS retune that changes where the link lives (`commit`,
+  `ack_override`, `split_home`, `reunite`).
+- `A` — one card's in-flight frame-free energy sample, at
+  `radio.scan.energy_period_ms` while linked.
+
+Full formats, the config, the sideport keys it feeds, and the
+`cca − own` ranking assumption are in `docs/channel-select.md`.
 
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin

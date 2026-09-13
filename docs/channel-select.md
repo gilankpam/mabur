@@ -1,0 +1,288 @@
+# Auto channel selection
+
+At boot the GS measures a configured candidate list — with a spare card, or
+with its only card interleaved with beaconing — ranks channels by that
+card's own busy counters, proposes the least busy one in DISC, and the
+drone follows. Both ends always fall back to a shared **home** channel
+whenever they lose each other, so a reboot or a lost pair can always find
+each other without a laptop-side step. The pick is boot-only: it freezes at
+the first accepted DISC_ACK and never re-scans, so there is no in-flight
+channel flapping. Every measurement, the decision and every retune are
+logged to a new per-session file, `scan.log`, and once linked both GS cards
+sample the active channel's frame-free energy at 1 Hz — the evidence a
+later in-flight hopping design will read. In-flight migration itself is
+**not** built here; see "Out of scope" below.
+
+Design spec: `docs/superpowers/specs/2026-09-13-auto-channel-select-design.md`
+(gitignored — this page is the durable record). Continues the spike in
+`docs/channel-scan-findings-2026-09-13.md`.
+
+## Config
+
+Both ends keep `radio.channel` as a plain number. It means **home**: the
+channel each end boots on and the channel both return to whenever they
+lose each other. There is no `"auto"` value — both ends need a concrete
+channel to find each other on.
+
+GS, `gs/bundle/maburgs.default.toml` `[radio.scan]` (verbatim):
+
+```toml
+[radio]
+channel = 136
+width   = 20
+tx_card = -1               # -1 = auto-select the best-SNR card
+
+# Boot-time channel scan: while waiting for the drone the spare card measures
+# these plus `channel` (home) and the DISC proposes the least busy one. The
+# pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
+# One card: the same card alternates home windows and dwells.
+[radio.scan]
+enable           = true
+candidates       = [149, 153, 161]
+dwell_ms         = 250
+settle_ms        = 30
+min_rounds       = 3
+home_window_ms   = 300
+split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
+energy_period_ms = 1000     # in-flight per-card energy record (scan.log A lines); 0 = off
+```
+
+Drone, `bundle/mabur.default.toml` (verbatim, the relevant keys):
+
+```toml
+[radio]
+usb_vid    = 3034
+usb_pid    = 0
+channel    = 136
+width      = 20
+follow_gs  = true        # honour the GS's DISC op_channel (auto channel select)
+power_mode = "none"      # set to offset to use rate_walls_idx
+tx_threads = 4
+```
+
+```toml
+[link]
+vtx_id        = 1
+failsafe_ms   = 3000
+rc_drain_ms   = 5
+rendezvous_ms = 30000
+move_confirm_ms = 2000  # after a GS-commanded retune, hear the GS within this or return home
+tick_ms       = 100
+```
+
+Validation (`gs/src/config.cpp`, `drone/src/config.cpp`): every candidate in
+`[1,177]`; `dwell_ms` in `[50,10000]`; `settle_ms` in `[0,1000]`;
+`min_rounds` in `[1,100]`; `home_window_ms` in `[40,10000]`;
+`split_after_ms` in `[0,600000]`; `energy_period_ms` in `[0,60000]`;
+`move_confirm_ms` in `[200,30000]`; unknown keys fail boot as everywhere.
+`radio.scan.enable = false` makes every DISC propose home and nothing
+moves. `follow_gs = false` makes the drone ack home and never retune, so
+the GS's `ChannelPlan` never sees a disagreeing ack and stays on home too.
+
+No `[[radio.cards]]` block pins nothing: `maburgs` auto-probes the USB bus
+and uses every supported card it finds, which is two-card mode. Adding an
+explicit `[[radio.cards]]` block (commented out by default) pins exactly
+that set — one entry is how you fly one card without unplugging an
+antenna, and switches the GS into one-card interleave mode below.
+
+## Rules
+
+- **Home is a number on both ends**, configured independently; both must
+  agree on it out of band (it is never negotiated). A cold boot, a
+  reboot, or either end losing the other for long enough always lands
+  back on home.
+- **Boot-only pick, frozen at first ack.** The GS scout proposes the
+  ranker's best candidate once `min_rounds` full passes are complete
+  (home before that). The first DISC_ACK a peer accepts freezes the pick
+  for the GS process's lifetime — later link losses re-propose the same
+  frozen pick and the scout never runs again. A drone that appears before
+  the scan matures gets home; that is the price of boot-only.
+- **Ack-on-home, then move.** A DISC is a proposal, never a command. The
+  drone acks agreement to a NEW channel from the channel it is CURRENTLY
+  on — the ack itself must still reach the GS on the channel the GS is
+  listening on — and only then requests its own retune. A DISC proposing
+  the drone's current channel is a no-op ack. This makes the exchange
+  idempotent: a repeated DISC for a move already agreed to, or already
+  made, touches nothing further.
+- **Invariant: the drone is on the op channel only while LINKED or
+  FAILSAFE, home otherwise.** Entering RENDEZVOUS by any path — the
+  ordinary failsafe timeout, or an unconfirmed move — retunes home first.
+  `channel_` is constructed from `cfg.radio.channel`, so a reboot lands on
+  home with no special-case code.
+- **Move confirm.** After a GS-commanded retune the drone marks the move
+  unconfirmed and waits `move_confirm_ms` (2 s default) for anything from
+  the GS on the new channel. If nothing arrives it retunes home and
+  re-enters RENDEZVOUS rather than waiting out the full
+  `failsafe_ms + rendezvous_ms` (33 s at the shipped defaults) on a
+  channel where the GS never hears it. On the GS's usual 50-70%
+  per-frame uplink odds this costs
+  about 2 s per retry cycle.
+- **Retune mechanics.** The drone's `Actuator::retune()` takes the TX gate
+  exclusive against every USB sender, sleeps 5 ms so the DISC_ACK that
+  precedes the retune (sent, per the rule above, on the OLD channel) has
+  time to actually leave the antenna before the chip is reprogrammed out
+  from under it, then calls `FastRetune`. Skipping that drain would race
+  the ack out onto the NEW channel, where the GS — still listening on the
+  channel it proposed the move from — never hears it, and every single
+  move would fall into the lost-ack retry cycle. TX power survives a
+  retune: `FastRetune` never rewrites TXAGC.
+- **GS split after `split_after_ms`.** On link loss the GS stays on the
+  op channel with every card and keeps beaconing there for
+  `split_after_ms` (5 s default), so a short fade resumes in place with
+  no retune on either end and two-card diversity holds through it. Past
+  that window the rendezvous set becomes `{op, home}`: with two cards,
+  card 0 goes home and beacons there while the other card keeps beaconing
+  on the op channel; with one card, the card interleaves — a
+  `home_window_ms` window on home (beacon every 20 ms and listen, leaving
+  only after one quiet beacon period so a landed ack has time to arrive),
+  then a candidate dwell, then home again. The first ack or video heard on
+  either channel re-unites every card there; the GS never needs to know
+  the drone's timers.
+- **The scan does not stop at `min_rounds`**; that is only the floor
+  below which the DISC proposal is home. The scan does stop if the scout
+  card dies mid-scan — the scan is abandoned and frozen on whatever the
+  ranker has measured so far (drone-side stderr and GS-side `M`/log lines
+  cover this in Observability below).
+- **One-card mode gates every send while the scout is off-home.** With a
+  single pinned card the same radio is doing scouting and TX, so the core
+  thread sends DISC (and everything else) only while the scout reports it
+  is on home; the stderr status line's `scoutgate=<n>` counter is the
+  cumulative count of sends withheld this way.
+
+## Boot / battery-swap timeline
+
+A drone power-cycle with the GS already up and its pick already frozen
+from an earlier boot:
+
+1. Pilot swaps the battery. The air link drops; both radios are still on
+   the frozen op channel.
+2. The GS's `ChannelPlan` keeps every card beaconing on the op channel for
+   `split_after_ms`, in case this is just a fade.
+3. Past `split_after_ms` with still no ack, the plan enters the `{op,
+   home}` split: two cards diverge (card 0 → home) or a single card starts
+   interleaving home windows and op-channel dwells.
+4. The drone reboots. `RcAgent`'s `channel_` is constructed from
+   `cfg.radio.channel` (home) and it starts in BOOT → RENDEZVOUS — on home
+   by construction, no scan of its own.
+5. The drone, listening on home, hears the GS's home-window beacon
+   carrying the frozen pick as `Disc.op_channel`.
+6. Because `follow_gs` is true and the proposed channel differs from
+   home, the drone acks agreement **from home**, then requests its own
+   retune to the op channel and marks the move unconfirmed.
+7. The GS reads `agreed_channel` off that ack; it matches the frozen op
+   channel, so the plan reunites every card there (`M ... reunite`) — no
+   new commit, since the pick did not change.
+8. The drone retunes (5 ms TX drain, then `FastRetune`) and waits up to
+   `move_confirm_ms` for a GS frame on the new channel. Any GS send
+   (beacon, RCF, video) confirms the move; LINKED follows on the next
+   accepted DISC.
+9. If the ack never lands, the drone waits out `move_confirm_ms`, goes
+   back home, and retries the ack on the next beacon — roughly a 2 s
+   cycle at the uplink's usual per-frame odds until one lands.
+
+## `scan.log`
+
+New per-session file in the GS debug-log session directory (see
+`docs/observability.md`), opened whenever `debug_log.enable` is set, like
+`ctl.log`. Marker `scanlog 1`. Space-separated; formats locked by
+`tests/test_scan_log.cpp`; `nan` for an invalid float, `-` for an invalid
+int. Copied verbatim from `gs/src/scan_log.h`:
+
+```
+scanlog 1 <header_info>
+C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
+  <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
+D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
+  <floor_dbm|nan> <flags_hex>                                # one scout dwell
+K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... # the pick
+M <t> <card|all> <from> <to> <reason>                        # a link move
+A <t> <card> <ch> <cca> <fa> <own> <foreign> <igi|->         # in-flight energy
+```
+
+- **C** — once per card at bring-up: `GetAdapterCaps` identity (chip,
+  generation, chains, `bw_mask`, tunable 5 GHz span, fast-retune flag)
+  plus the four validity flags of one `GetRxEnergy(true)` read.
+- **D** — one per scout dwell, the `SurveyDwell` fields the ranker
+  consumes; `flags` is the chanmig `SurveyFlag` mask in hex.
+- **K** — the pick at freeze: rounds completed and the full ranking as
+  `ch:worst_busy[:floor]` pairs (unranked channels omitted), so the
+  decision is reproducible from the log alone. `K <t> none 0` when a peer
+  appeared before `min_rounds`.
+- **M** — every GS retune that changes where the link lives: `commit`,
+  `ack_override` (the ack disagreed with the proposal and won anyway),
+  `split_home` (entering the `{op, home}` set), `reunite`. Scout dwells
+  and one-card interleave hops are NOT `M` lines — `D` carries the
+  dwells, and the interleave is implied by `split_home`.
+- **A** — per card every `energy_period_ms` while the rendezvous is in
+  SESSION, from a scalar `GetRxEnergy(false)` read (no NHM, no floor —
+  those cost a 2 ms window plus ~10 ms of USB and are not going on the RX
+  cards' control path at 60 fps until measured). `own` is canonical-SA
+  frames decoded in the period, so `cca − own` is foreign busy on the
+  active channel; see "The `cca − own` assumption" below.
+
+## Sideport keys (as built)
+
+The spec sketched a `radio.*` block; the shipped schema instead extends the
+existing `link` object and adds one new top-level object, to match what
+already existed (`link.channel` predates this feature and already drives
+the player OSD's `ch` field):
+
+- `link.channel` — the live channel of the GS's TX card.
+- `link.home` — the configured home channel.
+- `scan` (top level, not under `link` — it outlives any one session and
+  describes the receiver's own scan/freeze state, not the link it
+  eventually picks): `scan.state` (`off|scouting|frozen`), `scan.rounds`,
+  `scan.pick` (the frozen channel, or `null` before freeze).
+- `cards[i].energy` — the last `A`-record sample for that card, or `null`
+  if none has been taken yet: `{cca, fa, own, foreign, igi}`, with `igi`
+  itself `null` when that card's IGI read is invalid.
+
+`tools/maburtop.py` and `flightreport.py` are unchanged this round;
+`scanlog 1` reserves the parser for a later task.
+
+## The `cca − own` assumption
+
+The ranker's busy score (`gs/src/channel_ranker.{h,cpp}`) is:
+
+```
+busy = (cca_ofdm − canonical_frames) + fa_ofdm + foreign_frames
+```
+
+`cca_ofdm` counts every OFDM CCA event the chip saw, including the ones
+caused by our own beacon and RCF traffic — subtracting `own` (canonical-SA
+frames decoded) is meant to leave foreign busy only, on the assumption that
+one decoded own-frame costs exactly one CCA event. If a decoded frame
+actually costs more than one CCA event (aggregation, retries at the PHY),
+the subtraction under-corrects and channels get scored busier than they
+are. This is exactly the check Task 14's bench validation runs: compare a
+beacon card's `A`-line `cca` against `own` during a linked session at MCS
+0, and if the gap exceeds the expected foreign/false-alarm floor, replace
+the `− own` term with a measured `k × own` and re-run
+`test_channel_ranker` pinned to that constant.
+
+## Bench validation
+
+Pending — see the plan's Task 14.
+
+## Deploy
+
+Config before binary, on both ends, same as every other config-key change
+in this repo (`docs/deploy.md`): `gs/bundle/maburgs.default.toml` →
+GS `/etc/maburgs.toml`, `bundle/mabur.default.toml` → drone
+`/etc/mabur.toml`, both BEFORE the new binaries — a daemon that sees an
+unknown key exits and its wrapper respawns it forever at 2 s. No
+`RC_VERSION` bump: `Disc.op_channel`/`DiscAck.agreed_channel` are existing
+wire fields that both ends now mean literally, so an old binary paired
+with a new config (or vice versa) just never moves off home rather than
+desyncing — there is no flag day here, unlike most wire changes in this
+repo.
+
+## Out of scope
+
+In-flight channel migration — re-ranking and moving while linked, fed by
+mabur's live FEC loss as devourer chanmig's `ActiveLink` evidence through
+the same `RecommendEngine` this design deliberately does not call — is a
+later design; this one is boot-time only, and the pick never moves again
+once frozen. Also out of scope: 40 MHz and 2.4 GHz candidates, per-card
+channels, a `flightreport.py` SCAN section, and an OSD channel-scan
+display.
