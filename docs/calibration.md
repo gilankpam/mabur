@@ -578,7 +578,7 @@ both are safe to leave as shipped, but cheap to improve on real hardware:
 
 ### 2026-09-14 relative walls
 
-Deployed commit `3d1bbe1` (branch `relative-walls`). `RC_VERSION` 7 → 8,
+Deployed commit `07d0df2` (branch `relative-walls`; supersedes the earlier `3d1bbe1` deploy — see the follow-up below). `RC_VERSION` 7 → 8,
 plus `/etc/mabur.toml` swapped from `rate_walls_idx`/`legacy_wall_idx`/
 `base_ref_idx` to `rate_walls_rel`/`legacy_wall_rel` — a config-key flag
 day on top of the binary flag day, drone stopped/config+binary
@@ -674,3 +674,57 @@ restart), and two after restoring the calibrated table (md5
 The incomplete-enhancement-AU residual (~0.08% of enh AUs) is the same
 at the old and new TX-power tables, so it is bench background loss and
 not attributable to relative walls.
+
+### 2026-09-14 follow-up: live retune re-applies the anchor (07d0df2)
+
+The final review found and fixed a real gap: devourer does not
+re-derive the per-channel efuse anchor on a plain retune, so `maburd`
+now calls `ReApplyTxPower()` after every `FastRetune` (commit
+`07d0df2`); the coarse sweep is also now rel −41..63, 27 cells/row, 216
+total. Redeployed both ends at `07d0df2` (maburd md5
+`8ed0a5e90dadcc668e29ab2fd450d06f`, maburgs md5
+`7c554ea0964ec08e4b241390381cf76f`); config unchanged (ch136-calibrated
+rel table `[63, 63, 63, 41, 24, 9, 9, 6]`).
+
+Cross-channel by reboot: both ends home 149 (anchor 53) with the
+ch136-calibrated table:
+
+```
+aus=907 complete={'1': 450, '0': 456} incomplete={'1': 1} fid_gaps=1 resyncs=0 fps=60.5
+```
+
+Live retune: home 48 (the operator's house WiFi channel) on both ends,
+GS candidates `[136]`, `home_margin 0`. GS `scan.log`:
+
+```
+K 18114850 136 16 48:24:-95 136:4:-95
+M 18114850 all 48 136 commit
+```
+
+Drone `/tmp/mabur.log`:
+
+```
+maburd: retune 48 -> 136 (disc)
+maburd: retune 48 -> 136: tx power re-applied (ok)
+```
+
+`ausniff` on 136 after the live move:
+
+```
+aus=907 complete={'0': 456, '1': 450} incomplete={'1': 1} fid_gaps=1 resyncs=0 fps=60.5
+```
+
+Why 48 was needed (note for the auto-channel-select scanner, not this
+change): on this bench the scanner ranks home quieter from either side
+— 136 as home busy 2 vs as candidate 88; 149 as home 12 vs as candidate
+13 — so with home 136 or 149 it never left home even at
+`home_margin 0`; a genuinely busy home (48) was required to provoke a
+move.
+
+Restored afterwards: both ends home 136, GS scan config
+`candidates [120, 149, 165]`, `home_margin 20`:
+
+```
+aus=908 … incomplete={'1': 1} fid_gaps=0 fps=60.5
+aus=906 … incomplete={'1': 1} fid_gaps=1 fps=60.5
+```
