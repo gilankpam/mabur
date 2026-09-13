@@ -45,6 +45,7 @@ void ChannelScout::run() {
   while (run_once()) {}
   radio_.retune(target_.load(std::memory_order_acquire));
   at_home_.store(false, std::memory_order_release);
+  quiet_.store(false, std::memory_order_release);
   done_.store(true, std::memory_order_release);
 }
 
@@ -52,18 +53,29 @@ bool ChannelScout::run_once() {
   if (frozen()) return false;
   const uint64_t round = sched_.rounds_complete();
   if (cfg_.one_card) {
-    if (!dwell(cfg_.home, cfg_.home_window_ms, /*home_window=*/true, round)) return !frozen();
+    if (!dwell(cfg_.home, Kind::HomeOneCard, round)) return !frozen();
+    if (frozen()) return false;
+  } else if (beacon_due_) {
+    // Beacon window: the core may send DISC on the home card. Then a quiet
+    // gap so the last DISC's ack has landed before the silent dwells.
+    quiet_.store(false, std::memory_order_release);
+    sleep_(cfg_.home_window_ms);
+    quiet_.store(true, std::memory_order_release);
+    sleep_(cfg_.beacon_period_ms);
+    beacon_due_ = false;
     if (frozen()) return false;
   }
   auto p = sched_.next(now_());
   if (!p.valid) return !frozen();
-  const bool ok = dwell(p.bin_ch, cfg_.dwell_ms, /*home_window=*/false, p.round);
+  const bool ok = dwell(p.bin_ch, Kind::Silent, p.round);
   sched_.complete(p, now_(), ok);
-  rounds_.store(sched_.rounds_complete(), std::memory_order_release);
+  const uint64_t now_rounds = sched_.rounds_complete();
+  if (now_rounds != round) beacon_due_ = true;
+  rounds_.store(now_rounds, std::memory_order_release);
   return !frozen();
 }
 
-bool ChannelScout::dwell(uint8_t ch, int observe_ms, bool home_window, uint64_t round) {
+bool ChannelScout::dwell(uint8_t ch, Kind kind, uint64_t round) {
   ScoutDwell d;
   auto& s = d.survey;
   s.seq = seq_++;
@@ -82,18 +94,19 @@ bool ChannelScout::dwell(uint8_t ch, int observe_ms, bool home_window, uint64_t 
   }
   s.retune_us = (now_() - s.t_start_ms) * 1000;
   sleep_(cfg_.settle_ms);
+  if (kind == Kind::HomeOneCard) {
+    // Beacon phase: the core may send DISC on this card. Then a quiet gap so
+    // the last DISC's ack has landed, and the measurement below is silent.
+    at_home_.store(true, std::memory_order_release);
+    sleep_(cfg_.home_window_ms);
+    at_home_.store(false, std::memory_order_release);
+    sleep_(cfg_.beacon_period_ms);
+  }
   // Discard barrier: zero the delta counters and let the USB pipe drain.
   (void)radio_.read_energy(false);
   const ScoutFrames f0 = radio_.frames();
   const int64_t t0 = now_();
-  if (home_window) {
-    at_home_.store(true, std::memory_order_release);
-    sleep_(observe_ms - cfg_.beacon_period_ms);
-    at_home_.store(false, std::memory_order_release);
-    sleep_(cfg_.beacon_period_ms);  // quiet gap: the last DISC's ack has landed
-  } else {
-    sleep_(observe_ms);
-  }
+  sleep_(cfg_.dwell_ms);
   const ScoutEnergy e = radio_.read_energy(true);
   const ScoutFrames f1 = radio_.frames();
   s.observe_ms = now_() - t0;

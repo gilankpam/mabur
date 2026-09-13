@@ -83,8 +83,8 @@ the GS's `ChannelPlan` never sees a disagreeing ack and stays on home too.
 **These two configs are coupled.** On a one-card GS the single radio is
 also the scout, so after the first ack it can be away from the link
 channel — finishing a dwell, settling, or serving the split's home
-window — for up to `home_window_ms + settle_ms + dwell_ms` (580 ms at the
-shipped defaults) before the drone hears anything from it. That sum must
+window — for up to one scout cycle, `2·settle_ms + home_window_ms +
+beacon period + 2·dwell_ms` (880 ms at the shipped defaults) before the drone hears anything from it. That sum must
 stay well under the drone's `link.move_confirm_ms` (2000 ms), or the drone
 declares the move unconfirmed and goes home while the GS is merely
 mid-hop, and the pair retries the move forever.
@@ -316,20 +316,35 @@ latency measurement, and `lat.log` e2e with A records on vs off.
 
 ### Findings
 
-**The home reading is biased, in opposite directions per mode.** With two
-cards the scouting card sits next to the beaconing card: on home its floor
-reads 2-3 dB higher (−92 vs −95) and its CCA/FA counters go quiet (cca ≈ own,
-fa ≈ 1) while every candidate reads cca ≈ 22 + fa ≈ 20 per 250 ms with zero
-frames — the same channel read 5 as home and 152 as a candidate minutes
-apart. The neighbour's TX desensitises the scout, so home carries a ~45-unit
-head start and only a strongly busy home ever loses. With one card the bias
-flips: the card's own beacon TX leaks into its receiver, home reads cca ≈ 12
-+ fa ≈ 13 per window while the candidates read 0-12, so home always loses by
-~25. The ranking law itself behaved exactly as specified in both cases; the
-input is what is skewed. Until this is fixed, treat two-card mode as
-"move only off a clearly busy home" and one-card mode as "always moves". A
-fair home measurement needs the beacon suspended for the home dwell, or the
-home busy score corrected by the beacon count.
+**The readings were dominated by our own beacons (FIXED the same day).**
+With two cards the beaconing card's DISC TX (every 20 ms, a few cm from the
+scout) leaks into the scout on EVERY channel: on home the leak decodes as our
+own frames and `cca − own` subtracts it (home read ~2), on a candidate it is
+undecodable energy and counts as busy (~25-40 per 250 ms with zero frames).
+The same channel read 5 as home and 152 as a candidate minutes apart. With
+one card the card's own TX leaked into its receiver during the home window
+(home read ~25 against candidates at 0-12). Silencing the beacon only for
+the home dwell, and parking the home card 40 MHz away, changed nothing —
+the leak is on the candidate side — so parking was dropped again.
+
+Fix: every dwell is silent. Two cards: `ChannelScout::quiet()` is true
+during every dwell and the core sends no DISC while it is; once per
+scheduler round the scout opens a beacon window of `home_window_ms` (quiet
+false) so the drone can still be found mid-scan — a round is now ~1.4-1.9 s
+instead of ~1.1 s, and worst-case discovery latency during the scan is one
+round. One card: the home cycle is a beacon phase (`home_window_ms`,
+`at_home()`), a quiet gap, then a silent `dwell_ms` observe with its own
+discard read (~0.9 s per candidate instead of ~0.6 s). Home's D line now
+carries `own = 0` and `observe_ms = dwell_ms`.
+
+After the fix (drone off, home 153, candidates 136/149/161): two cards,
+scout = card 1: 136 0.7 / 149 6.6 / 153 2.9 / 161 1.6 mean busy (worst
+5-10), floors −92…−96 — home is no longer privileged. One card, card 0:
+0.0 / 5.8 / 4.1 / 1.1; card 1: 0.4 / 8.6 / 5.0 / 3.8. Clean channels now
+sit within ~10 units of each other, so with no improvement margin the pick
+among clean channels is effectively arbitrary — keep `candidates` to
+channels you are happy to fly (calibrated ones under `power_mode =
+"offset"`), or leave it empty to stay on home unless home is clearly busy.
 
 **`[[radio.cards]]` needs decimal VIDs.** The TOML subset rejects `0x0bda`
 (`'0x0bda' is not a valid value`) and maburgs crash-loops on the respawn;

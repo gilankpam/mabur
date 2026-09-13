@@ -35,18 +35,47 @@ TEST(two_card_dwell_sequence_and_discard_read) {
   FakeRadio r;
   ChannelScout s(cfg2(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
   CHECK(s.run_once());
-  // retune -> settle -> discard read (no nhm) -> observe -> real read (nhm)
+  // First dwell of a round: beacon window (quiet false) -> gap -> retune
+  // home (plan order) -> settle -> discard read -> silent observe -> read.
   REQUIRE(r.calls.size() == 3);
-  CHECK(r.calls[0] == "retune 136");        // scheduler visits plan order: home first
+  CHECK(r.calls[0] == "retune 136");
   CHECK(r.calls[1] == "read");
   CHECK(r.calls[2] == "read+nhm");
-  CHECK(r.now == 280);                      // settle 30 + dwell 250
+  CHECK(r.now == 300 + 20 + 30 + 250);      // window + gap + settle + dwell
+  CHECK(s.quiet());                         // dwells stay silent until the next window
   auto d = s.take_dwells();
   REQUIRE(d.size() == 1);
   CHECK(d[0].survey.def.primary == 136);
   CHECK(d[0].survey.observe_ms == 250);
   CHECK(d[0].floor_valid && d[0].floor_dbm == -95);
   CHECK(s.take_dwells().empty());
+  // Later dwells of the round: no window.
+  CHECK(s.run_once());
+  CHECK(r.calls[3] == "retune 149");
+  CHECK(r.now == 600 + 30 + 250);
+}
+
+TEST(two_card_beacon_window_opens_once_per_round) {
+  FakeRadio r;
+  std::vector<std::pair<int, bool>> sleeps;   // (ms, quiet at that sleep)
+  ChannelScout s(cfg2(), r, [&] { return r.now; }, [&](int ms) {
+    sleeps.push_back({ms, s.quiet()});
+    r.now += ms;
+  });
+  for (int i = 0; i < 3; ++i) s.run_once();   // one full round: 136, 149, 161
+  CHECK(s.rounds() == 1);
+  // window(300, not quiet) gap(20, quiet) then 3 x [settle, observe] all quiet
+  REQUIRE(sleeps.size() == 8);
+  CHECK(sleeps[0].first == 300 && !sleeps[0].second);
+  CHECK(sleeps[1].first == 20 && sleeps[1].second);
+  for (size_t i = 2; i < 8; ++i) CHECK(sleeps[i].second);
+  sleeps.clear();
+  s.run_once();                               // next round opens a new window
+  REQUIRE(sleeps.size() == 4);
+  CHECK(sleeps[0].first == 300 && !sleeps[0].second);
+  s.freeze(149);
+  s.run();
+  CHECK(!s.quiet());                          // released for the core once done
 }
 
 TEST(round_covers_home_and_candidates_then_proposes_best) {
@@ -77,18 +106,17 @@ TEST(freeze_stops_run_and_retunes_to_target) {
   CHECK(s.proposal() == 149);               // frozen proposal is the target
 }
 
-TEST(one_card_interleaves_home_window_and_dwell_with_quiet_gap) {
+TEST(one_card_home_is_beacon_phase_then_silent_measurement) {
   FakeRadio r;
-  bool saw_home_true = false;
+  std::vector<std::pair<int, bool>> sleeps;   // (ms, at_home at that sleep)
   ChannelScout s(cfg2(true), r, [&] { return r.now; }, [&](int ms) {
-    if (s.at_home()) saw_home_true = true;
+    sleeps.push_back({ms, s.at_home()});
     r.now += ms;
   });
   CHECK(!s.at_home());
   CHECK(s.run_once());
-  // home window first: retune home, settle, discard, at_home for
-  // (home_window - beacon_period), quiet beacon_period, read; then one
-  // candidate dwell.
+  // home cycle: retune home, settle, BEACON phase (at_home), quiet gap,
+  // discard read, silent observe of dwell_ms, read; then one candidate.
   REQUIRE(r.calls.size() == 6);
   CHECK(r.calls[0] == "retune 136");
   CHECK(r.calls[1] == "read");
@@ -96,14 +124,22 @@ TEST(one_card_interleaves_home_window_and_dwell_with_quiet_gap) {
   CHECK(r.calls[3] == "retune 149");
   CHECK(r.calls[4] == "read");
   CHECK(r.calls[5] == "read+nhm");
-  CHECK(saw_home_true);
+  REQUIRE(sleeps.size() == 6);
+  CHECK(sleeps[0].first == 30 && !sleeps[0].second);   // settle
+  CHECK(sleeps[1].first == 300 && sleeps[1].second);   // beacon phase
+  CHECK(sleeps[2].first == 20 && !sleeps[2].second);   // quiet gap
+  CHECK(sleeps[3].first == 250 && !sleeps[3].second);  // silent observe
+  CHECK(sleeps[4].first == 30 && !sleeps[4].second);   // candidate settle
+  CHECK(sleeps[5].first == 250 && !sleeps[5].second);  // candidate observe
   CHECK(!s.at_home());
-  CHECK(r.now == 30 + 300 + 30 + 250);
+  CHECK(!s.quiet());                                    // one card never uses quiet()
+  CHECK(r.now == 30 + 300 + 20 + 250 + 30 + 250);
   auto d = s.take_dwells();
   REQUIRE(d.size() == 2);
   CHECK(d[0].survey.def.primary == 136);
-  CHECK(d[0].survey.observe_ms == 300);
+  CHECK(d[0].survey.observe_ms == 250);                 // same window as a candidate
   CHECK(d[1].survey.def.primary == 149);
+  CHECK(d[1].survey.observe_ms == 250);
 }
 
 TEST(one_card_home_counts_as_visits) {

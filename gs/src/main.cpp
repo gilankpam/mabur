@@ -502,12 +502,15 @@ static int run_radio(const maburgs::Config& cfg) {
   // later with no re-check, and RCFs (which exist from the first ack
   // until the join) never consulted it at all. This is the one gate that
   // covers both, at the single site every control frame passes through.
-  // Two-card mode never trips it: card 0 is home throughout.
+  // Two-card mode trips it while the scout has a silent dwell in progress
+  // (quiet()): the beaconing card's TX leaks into the adjacent scout on
+  // every channel and dominated the readings otherwise.
   uint64_t scout_gated_sends = 0;
   // The one place a control frame leaves the GS (direct or via the RCF
   // slotter): card + RTT stamp travel with the frame (SlotFrame).
   auto send_control_frame = [&](const maburgs::SlotFrame& f) {
-    if (one_card && scout && !scout_joined && !scout->at_home()) {
+    if (scout && !scout_joined &&
+        ((one_card && !scout->at_home()) || scout->quiet())) {
       ++scout_gated_sends;
       return;
     }
@@ -1539,7 +1542,9 @@ static int run_radio(const maburgs::Config& cfg) {
       } else if (auto bc = plan.beacon_cards()) {
         targets = *bc;
       } else if (!scout_joined) {
-        if (!one_card || scout->at_home()) targets.push_back(0);
+        // Silent during every scout dwell (two cards: quiet(); one card:
+        // outside the beacon phase).
+        if (!scout->quiet() && (!one_card || scout->at_home())) targets.push_back(0);
       } else {
         targets.push_back(tx);
       }
