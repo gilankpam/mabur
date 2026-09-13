@@ -309,6 +309,7 @@ rollbacks `maburgs.pre-chansel` / `maburd.pre-chansel` + `*.toml.pre-chansel`
 | `cca − own` (video, A records) | cca 226-948 against own ≈ 2200 frames/s: CCA counts PPDUs, so under A-MPDU `cca − own` clamps to 0 and the A record's busy is `fa + foreign` |
 | A records at 1 Hz | no change in ausniff cadence (60.3 fps with them on) |
 | restored flight config (home 136, two cards) | `K 136 10 136:1 149:50 153:53 161:58`, commit home, 60.5 fps |
+| interference test after the fix: home 136, candidates 44 (router, 80 MHz on 36-48), 120 (clean), 149/153/157/161 (neighbourhood), drone off then on | 13 rounds: 44 worst 274 (305 foreign frames), 157 worst 145 (undecodable), 149 worst 20 (43 frames), 120/136/153/161 at 1-2; at freeze (26 rounds) `K 136 26 136:6 44:336 120:62 149:140 153:67 157:445 161:16` — the worst-visit rule caught later bursts on 120/153 and home won; commit home, 60.4 fps |
 
 Not done: the 2 s RF fade (needs an antenna pull), the two-card split/reunite
 (needs a home-losing pick, see the bias below), the `tx_gate` exclusive
