@@ -48,7 +48,25 @@ void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     const int anchor = pwr.read_anchor_idx();
     if (anchor < 0) {
       // Cannot place a relative cell without the reference: refuse the
-      // session outright (no ack -> the GS times out in AwaitAck).
+      // session outright (no ack -> the GS times out in AwaitAck). This
+      // must be a FULL teardown, not just clearing has_session_: if the
+      // session this new nonce is preempting was still actively Sweeping,
+      // leaving state_/cursor_/cells_ untouched would leave pump()'s
+      // switch(state_) still dispatching to pump_sweeping() on the stale
+      // Sweeping state forever -- has_session_ being false gates only the
+      // hard-cap/await guards, not the state machine's dispatch -- which
+      // would keep reprogramming the override for the OLD (now-abandoned)
+      // cells with no close_session() path left to ever restore it
+      // (constraint 2's exact hazard). The override was already restored
+      // to the previous session's anchor by the `if (has_session_)
+      // pwr.set_index_override(anchor_idx_);` line above, before this
+      // read -- nothing left to undo on the PowerCtl side here.
+      state_ = State::Idle;
+      cursor_ = 0;
+      cell_entered_ = false;
+      cells_.clear();
+      pending_ack_ = false;
+      pending_result_.reset();
       has_session_ = false;
       zeroed_for_session_ = false;
       return;

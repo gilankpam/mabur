@@ -511,4 +511,43 @@ TEST(unreadable_anchor_refuses_the_command_and_arms_no_ack) {
   CHECK(pwr.index_writes.empty());
 }
 
+TEST(unreadable_anchor_mid_sweep_quiesces_the_old_session) {
+  // Review finding: a new nonce preempting an actively-Sweeping session
+  // whose anchor read then fails must fully quiesce, not just clear
+  // has_session_ -- otherwise pump()'s switch(state_) keeps dispatching to
+  // pump_sweeping() on the stale Sweeping state forever (has_session_ only
+  // gates the hard-cap/await guards), reprogramming the override for
+  // cells nobody owns any more with no close_session() path left to
+  // restore it (constraint 2's exact hazard).
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
+  REQUIRE(s.take_ack());
+  // Advance partway into the sweep -- actively Sweeping, not finished.
+  s.pump(0, tx, pwr);
+  s.pump(1, tx, pwr);
+  s.pump(2, tx, pwr);
+  REQUIRE(s.state() == CalSweep::State::Sweeping);
+
+  // A new nonce lands, and this time the anchor can't be read.
+  pwr.anchor = -1;
+  s.on_cmd(small_cmd(cal::kPhaseCoarse, 8), 3, pwr);
+  CHECK(!s.active());
+  CHECK(s.state() == CalSweep::State::Idle);
+  CHECK(!s.take_ack());
+  // The last write is the restore to the OLD session's anchor (53), done
+  // by the `if (has_session_) pwr.set_index_override(anchor_idx_);` line
+  // before the failed read.
+  CHECK(pwr.index_writes.back() == 53);
+
+  const size_t writes_before = pwr.index_writes.size();
+  const size_t frames_before = sink.frames.size();
+  for (uint64_t t = 3; t < 53; ++t) s.pump(t, tx, pwr);
+  CHECK(pwr.index_writes.size() == writes_before);  // no further programming
+  CHECK(sink.frames.size() == frames_before);       // no further frames
+}
+
 MTEST_MAIN
