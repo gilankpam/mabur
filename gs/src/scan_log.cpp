@@ -14,10 +14,20 @@ void ScanLog::put_(const char* b, int n) {
 }
 
 void ScanLog::caps(double t_ms, int card, const CardCaps& c) {
+  // A C record is positional and space-separated, so no field may ever be
+  // empty: an empty %s would silently shift every column after it and the
+  // record would still parse. A card whose GetAdapterCaps came back
+  // unsupported carries no chip/gen at all -- print "?" for both (the
+  // numeric fields are already zeroed by CardCaps' defaults, which is a
+  // truthful "nothing was read").
+  const char* chip = (c.valid && !c.chip.empty()) ? c.chip.c_str() : "?";
+  const char* gen = (c.valid && !c.gen.empty()) ? c.gen.c_str() : "?";
   char b[256];
   const int n = std::snprintf(b, sizeof(b), "C %.0f %d %s %s %dx%d %x %u-%u %d %d %d %d %d",
-                              t_ms, card, c.chip.c_str(), c.gen.c_str(), c.tx_chains,
-                              c.rx_chains, c.bw_mask, c.tune5g_lo, c.tune5g_hi,
+                              t_ms, card, chip, gen, c.tx_chains,
+                              c.rx_chains, static_cast<unsigned>(c.bw_mask),
+                              static_cast<unsigned>(c.tune5g_lo),
+                              static_cast<unsigned>(c.tune5g_hi),
                               c.fast_retune ? 1 : 0, c.fa_ok ? 1 : 0, c.igi_ok ? 1 : 0,
                               c.nhm_ok ? 1 : 0, c.floor_ok ? 1 : 0);
   put_(b, std::min(n, static_cast<int>(sizeof(b) - 1)));

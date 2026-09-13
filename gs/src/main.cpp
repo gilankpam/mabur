@@ -1196,6 +1196,14 @@ static int run_radio(const maburgs::Config& cfg) {
                          scout->rounds(), all, scfg.min_rounds);
         }
       }
+      // Re-publish the proposal the instant the plan commits (Important
+      // fix 3): set_proposal above ran BEFORE on_ack, so on the commit tick
+      // it still holds the pre-ack proposal. On an ack_override -- the
+      // drone agreeing to a channel that is not the one we proposed -- the
+      // DISC built later in this same tick would otherwise beacon the STALE
+      // proposal on the NEW channel, i.e. command the drone to move a
+      // second time, to the channel it just declined.
+      if (plan.frozen()) vrx.set_proposal(plan.op());
     }
     // Scout bookkeeping: drain the dwell records, then join the thread once
     // it has parked its card on the op channel (run() retunes before done()).

@@ -26,6 +26,11 @@ void ChannelPlan::tick(double now_ms, bool in_session) {
     have_lost_since_ = true;
     lost_since_ms_ = now_ms;
   }
+  // op == home: the split has nothing to split. Both halves of the
+  // rendezvous set are the same channel, so entering it would fan the same
+  // DISC out on both cards on one channel (and log a from==to SplitHome
+  // move) while changing nothing about what is on the air.
+  if (op_ == cfg_.home) return;
   if (!split_ && now_ms - lost_since_ms_ >= cfg_.split_after_ms) {
     split_ = true;
     split_at_ms_ = now_ms;

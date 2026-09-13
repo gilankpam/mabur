@@ -71,6 +71,23 @@ TEST(video_reunites_and_short_fade_never_splits) {
   REQUIRE(ev.size() == 1); CHECK(ev[0].reason == MoveReason::Reunite);
 }
 
+// An ack that agrees to home freezes the plan on home: there is nothing to
+// split toward. Entering the split would fan the same DISC out on both cards
+// on one channel and log a from==to move, so tick() must refuse it forever.
+TEST(op_equal_home_never_splits) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 136, 136);                            // drone agreed to home
+  CHECK(p.frozen() && p.op() == 136);
+  p.take_events();
+  p.tick(100, true);
+  p.tick(1100, false);                              // link lost
+  p.tick(60000, false);                             // far past split_after_ms
+  CHECK(!p.split());
+  CHECK(p.desired(0) == 136 && p.desired(1) == 136);
+  CHECK(!p.beacon_cards().has_value());
+  CHECK(p.take_events().empty());
+}
+
 TEST(one_card_interleaves_with_quiet_gap) {
   ChannelPlan p(C(1));
   p.on_ack(0, 149, 149); p.take_events();

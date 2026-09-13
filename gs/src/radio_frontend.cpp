@@ -166,8 +166,14 @@ bool RadioFrontend::open_and_start() {
     const devourer::AdapterCaps ac = device_->GetAdapterCaps();
     const RxEnergy e = device_->GetRxEnergy(/*with_nhm=*/true);
     caps_.valid = ac.supported;
-    caps_.chip = ac.chip_name ? ac.chip_name : "";
-    caps_.gen = devourer::generation_name(ac.generation);
+    // "?" rather than "": the scan.log C record is a positional,
+    // space-separated line, so an empty field silently shifts every column
+    // after it. devourer returns a null chip_name on an unrecognised chip
+    // and generation_name can return an empty string for an unmapped
+    // generation.
+    caps_.chip = (ac.chip_name && *ac.chip_name) ? ac.chip_name : "?";
+    const char* gen = devourer::generation_name(ac.generation);
+    caps_.gen = (gen && *gen) ? gen : "?";
     caps_.tx_chains = ac.tx_chains;
     caps_.rx_chains = ac.rx_chains;
     caps_.bw_mask = ac.bw_mask;
