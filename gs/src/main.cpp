@@ -444,6 +444,48 @@ static int run_radio(const maburgs::Config& cfg) {
   // Spec 2026-07-26 drone-telemetry.
   struct { std::optional<mabur::rc::Telem> t; uint64_t rx_ms = 0; } latest_telem;
 
+  // Auto channel selection (spec 2026-09-13-auto-channel-select). The plan
+  // owns where the link lives; the scout (only while radio.scan.enable and
+  // until the first ack) measures candidates on the spare card, or on the
+  // only card between home windows.
+  const maburgs::ScanCfg& scfg = cfg.radio.scan;
+  maburgs::ChannelPlan plan(maburgs::ChannelPlanCfg{
+      cfg.radio.channel, n_cards, scfg.split_after_ms, scfg.home_window_ms, 20});
+  // Live channel per card, as far as this thread knows: InitWrite tunes to
+  // home, retune() moves it, and the scout owns its card's entry until the
+  // scout thread is joined.
+  std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
+  const bool one_card = n_cards == 1;
+  const int scout_card = one_card ? 0 : n_cards - 1;
+  std::unique_ptr<maburgs::ChannelScout> scout;
+  std::thread scout_thread;
+  bool scout_joined = true;  // no thread running
+  if (scfg.enable) {
+    maburgs::ScoutCfg sc;
+    sc.home = cfg.radio.channel;
+    sc.candidates = scfg.candidates;
+    sc.dwell_ms = scfg.dwell_ms;
+    sc.settle_ms = scfg.settle_ms;
+    sc.min_rounds = scfg.min_rounds;
+    sc.home_window_ms = scfg.home_window_ms;
+    sc.beacon_period_ms = 20;
+    sc.one_card = one_card;
+    scout = std::make_unique<maburgs::ChannelScout>(
+        sc, *fronts[static_cast<size_t>(scout_card)],
+        [] { return static_cast<int64_t>(mono_ms()); },
+        [](int ms) {
+          if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        });
+  }
+  // Freeze + join the scout thread (it exits at the end of the current
+  // dwell, after parking its card on `target`). Idempotent.
+  auto join_scout = [&](uint8_t target) {
+    if (scout_joined) return;
+    scout->freeze(target);
+    scout_thread.join();
+    scout_joined = true;
+  };
+
   // Control-path RTT + pts-offset estimator (link-rtt, 2026-09-02). Fed
   // from the same core thread as latest_telem: RCF send stamps below,
   // telem echoes in the rc sink.
@@ -453,9 +495,22 @@ static int run_radio(const maburgs::Config& cfg) {
   // send lands in the drone's inter-AU idle. See rcf_slot.h.
   maburgs::RcfSlotter rcf_slot(
       maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
+  // One card + a running scout: sends that leave while the card is off
+  // measuring a candidate would race the scout thread's FastRetune /
+  // GetRxEnergy on the same device. The DISC routing ladder checks
+  // at_home() when the frame is OFFERED, but the slotter releases it
+  // later with no re-check, and RCFs (which exist from the first ack
+  // until the join) never consulted it at all. This is the one gate that
+  // covers both, at the single site every control frame passes through.
+  // Two-card mode never trips it: card 0 is home throughout.
+  uint64_t scout_gated_sends = 0;
   // The one place a control frame leaves the GS (direct or via the RCF
   // slotter): card + RTT stamp travel with the frame (SlotFrame).
   auto send_control_frame = [&](const maburgs::SlotFrame& f) {
+    if (one_card && scout && !scout_joined && !scout->at_home()) {
+      ++scout_gated_sends;
+      return;
+    }
     static const bool gaplog = std::getenv("MABUR_GAPLOG") != nullptr;
     if (gaplog) {
       const uint64_t now_ms = mono_ms();
@@ -661,48 +716,6 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
   vcfg.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
   maburgs::VrxController vrx(vcfg);
-
-  // Auto channel selection (spec 2026-09-13-auto-channel-select). The plan
-  // owns where the link lives; the scout (only while radio.scan.enable and
-  // until the first ack) measures candidates on the spare card, or on the
-  // only card between home windows.
-  const maburgs::ScanCfg& scfg = cfg.radio.scan;
-  maburgs::ChannelPlan plan(maburgs::ChannelPlanCfg{
-      cfg.radio.channel, n_cards, scfg.split_after_ms, scfg.home_window_ms, 20});
-  // Live channel per card, as far as this thread knows: InitWrite tunes to
-  // home, retune() moves it, and the scout owns its card's entry until the
-  // scout thread is joined.
-  std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
-  const bool one_card = n_cards == 1;
-  const int scout_card = one_card ? 0 : n_cards - 1;
-  std::unique_ptr<maburgs::ChannelScout> scout;
-  std::thread scout_thread;
-  bool scout_joined = true;  // no thread running
-  if (scfg.enable) {
-    maburgs::ScoutCfg sc;
-    sc.home = cfg.radio.channel;
-    sc.candidates = scfg.candidates;
-    sc.dwell_ms = scfg.dwell_ms;
-    sc.settle_ms = scfg.settle_ms;
-    sc.min_rounds = scfg.min_rounds;
-    sc.home_window_ms = scfg.home_window_ms;
-    sc.beacon_period_ms = 20;
-    sc.one_card = one_card;
-    scout = std::make_unique<maburgs::ChannelScout>(
-        sc, *fronts[static_cast<size_t>(scout_card)],
-        [] { return static_cast<int64_t>(mono_ms()); },
-        [](int ms) {
-          if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-        });
-  }
-  // Freeze + join the scout thread (it exits at the end of the current
-  // dwell, after parking its card on `target`). Idempotent.
-  auto join_scout = [&](uint8_t target) {
-    if (scout_joined) return;
-    scout->freeze(target);
-    scout_thread.join();
-    scout_joined = true;
-  };
 
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
   // section 5): maburgs' own compact S/E/P/N record of every rung decision,
@@ -1013,8 +1026,14 @@ static int run_radio(const maburgs::Config& cfg) {
       // before the card is stopped and reopened underneath it. A dead card
       // also fails every retune, which costs the scout its dwell sleeps and
       // spins it; freezing on what it has measured so far ends that.
-      if (i == scout_card && !scout_joined && !fe.alive())
+      if (i == scout_card && !scout_joined && !fe.alive()) {
+        const uint64_t rounds = scout->rounds();
         join_scout(scout->proposal());
+        std::fprintf(stderr,
+                     "maburgs channel: scout card %d died, scan abandoned at "
+                     "%llu rounds\n",
+                     i, static_cast<unsigned long long>(rounds));
+      }
       if (!fe.alive() && now_ms_u >= retry_at_ms[static_cast<size_t>(i)]) {
         fe.stop();
         if (!fe.open_and_start())
@@ -1188,7 +1207,12 @@ static int run_radio(const maburgs::Config& cfg) {
       if (!scout_joined && scout->done()) {
         scout_thread.join();
         scout_joined = true;
-        cur_ch[static_cast<size_t>(scout_card)] = plan.op();
+        // The live atomic, not plan.op(): a second ack with a different
+        // agreed channel between freeze and join would otherwise record a
+        // channel the card is not on, and the loop below would never
+        // correct it (it only retunes on a mismatch).
+        cur_ch[static_cast<size_t>(scout_card)] =
+            fronts[static_cast<size_t>(scout_card)]->channel();
       }
     }
     // Every move that changes where the link lives -> M line + stderr.
@@ -1690,6 +1714,10 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(fstream.frames_dropped()),
                    static_cast<unsigned long long>(fstream.bad_fragments()),
                    static_cast<unsigned long long>(fstream.stall_resets()));
+      // Only while a one-card scout is actually costing us sends.
+      if (scout_gated_sends)
+        std::fprintf(stderr, " scoutgate=%llu",
+                     static_cast<unsigned long long>(scout_gated_sends));
 #ifdef MABUR_LOSS_SIM
       if (agg.loss_sim().enabled())
         std::fprintf(stderr, " LOSS-SIM[s0/s1/s2/s3/s4/s5]=%llu/%llu/%llu/%llu/%llu/%llu",
@@ -1707,11 +1735,17 @@ static int run_radio(const maburgs::Config& cfg) {
       maburgs::StatsInput sin;
       sin.vtx_id = cfg.link.vtx_id;
       // Live channel of the TX card, not the configured home (spec
-      // section 7): with a pick committed they differ.
-      sin.channel = cur_ch[static_cast<size_t>(sel.selected())];
+      // section 7): with a pick committed they differ. Straight off the
+      // front-end's atomic -- cur_ch is deliberately untracked for the
+      // scout card while the scout owns it.
+      sin.channel = fronts[static_cast<size_t>(sel.selected())]->channel();
       sin.home = cfg.radio.channel;
-      sin.scan_state = !scfg.enable ? "off"
-                                    : (plan.frozen() ? "frozen" : "scouting");
+      // The scout, not the plan: the plan is still unfrozen after the
+      // scout-card-death path abandons the scan, and with scan.enable
+      // false there is no scout at all.
+      sin.scan_state = (!scfg.enable || !scout)
+                           ? "off"
+                           : (scout->frozen() ? "frozen" : "scouting");
       sin.scan_rounds = scout ? scout->rounds() : 0;
       if (plan.frozen()) sin.scan_pick = plan.op();
       sin.in_session = in_session;
