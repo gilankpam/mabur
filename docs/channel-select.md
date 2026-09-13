@@ -80,6 +80,15 @@ Validation (`gs/src/config.cpp`, `drone/src/config.cpp`): every candidate in
 moves. `follow_gs = false` makes the drone ack home and never retune, so
 the GS's `ChannelPlan` never sees a disagreeing ack and stays on home too.
 
+**These two configs are coupled.** On a one-card GS the single radio is
+also the scout, so after the first ack it can be away from the link
+channel — finishing a dwell, settling, or serving the split's home
+window — for up to `home_window_ms + settle_ms + dwell_ms` (580 ms at the
+shipped defaults) before the drone hears anything from it. That sum must
+stay well under the drone's `link.move_confirm_ms` (2000 ms), or the drone
+declares the move unconfirmed and goes home while the GS is merely
+mid-hop, and the pair retries the move forever.
+
 No `[[radio.cards]]` block pins nothing: `maburgs` auto-probes the USB bus
 and uses every supported card it finds, which is two-card mode. Adding an
 explicit `[[radio.cards]]` block (commented out by default) pins exactly
@@ -125,7 +134,17 @@ antenna, and switches the GS into one-card interleave mode below.
   the ack out onto the NEW channel, where the GS — still listening on the
   channel it proposed the move from — never hears it, and every single
   move would fall into the lost-ack retry cycle. TX power survives a
-  retune: `FastRetune` never rewrites TXAGC.
+  retune: `FastRetune` never rewrites TXAGC. Every move prints
+  `maburd: retune <from> -> <to> (<reason>)` on stderr, where `reason` is
+  `disc` (a DISC proposed a channel we agreed to), `move_unconfirmed` (the
+  confirm window expired) or `rendezvous` (the rendezvous timer sent us
+  home) — all three can end on home, so the number pair alone does not say
+  which fired. A retune requested while a calibration sweep is running is
+  latched instead of performed and prints
+  `maburd: retune <from> -> <to> (<reason>) deferred (calibration active)`;
+  the agent replays it on the sweep's falling edge (devourer forbids a
+  channel set concurrent with the sweep's TX-power calls, and a sweep
+  outlasts `rendezvous_ms` by 6x).
 - **GS split after `split_after_ms`.** On link loss the GS stays on the
   op channel with every card and keeps beaconing there for
   `split_after_ms` (5 s default), so a short fade resumes in place with
@@ -240,8 +259,13 @@ the player OSD's `ch` field):
   if none has been taken yet: `{cca, fa, own, foreign, igi}`, with `igi`
   itself `null` when that card's IGI read is invalid.
 
-`tools/maburtop.py` and `flightreport.py` are unchanged this round;
-`scanlog 1` reserves the parser for a later task.
+`flightreport.py` is unchanged this round. `tools/maburtop.py` gained the
+new header fields (`scan.state`/`scan.rounds`/`scan.pick`, and `link.home`
+next to `link.channel`) and a per-card `busy` column computing
+`(cca − min(cca, own)) + fa + foreign` from `cards[i].energy` — the same
+score the ranker uses, clamped so a card whose own-frame count exceeds its
+CCA count reads 0 rather than going negative. `scanlog 1` reserves the
+log-file parser for a later task.
 
 ## The `cca − own` assumption
 
@@ -269,16 +293,22 @@ Pending — see the plan's Task 14.
 
 ## Deploy
 
-Config before binary, on both ends, same as every other config-key change
-in this repo (`docs/deploy.md`): `gs/bundle/maburgs.default.toml` →
-GS `/etc/maburgs.toml`, `bundle/mabur.default.toml` → drone
-`/etc/mabur.toml`, both BEFORE the new binaries — a daemon that sees an
-unknown key exits and its wrapper respawns it forever at 2 s. No
-`RC_VERSION` bump: `Disc.op_channel`/`DiscAck.agreed_channel` are existing
-wire fields that both ends now mean literally, so an old binary paired
-with a new config (or vice versa) just never moves off home rather than
-desyncing — there is no flag day here, unlike most wire changes in this
-repo.
+**Binary before config, unusually** (the same exception `docs/deploy.md`
+records for the GS card auto-scan). Every key this feature adds has a
+default, so the NEW binaries boot unchanged on the OLD config — they come
+up with scanning off and the link pinned to home, which is exactly the
+pre-feature behaviour. Config-first would be the unsafe order here: the
+old binary rejects the new keys, exits, and its wrapper respawns it
+forever at 2 s. So swap `maburgs` and `maburd`, confirm both are up, then
+push `gs/bundle/maburgs.default.toml` → GS `/etc/maburgs.toml` and
+`bundle/mabur.default.toml` → drone `/etc/mabur.toml`.
+
+Both ends, but no `RC_VERSION` bump:
+`Disc.op_channel`/`DiscAck.agreed_channel` are existing wire fields that
+both ends now mean literally, so an old binary paired with a new one just
+never moves off home rather than desyncing — there is no flag day here,
+unlike most wire changes in this repo. Rolling a binary back means
+restoring its old config alongside it, as always.
 
 ## Out of scope
 
