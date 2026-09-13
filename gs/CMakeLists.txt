@@ -1,5 +1,6 @@
 add_library(mabur_gs_core STATIC
   src/channel_ranker.cpp
+  src/channel_scout.cpp
   src/config.cpp
   src/card_scan.cpp
   src/aggregator.cpp
@@ -32,6 +33,8 @@ add_library(mabur_gs_core STATIC
 target_include_directories(mabur_gs_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+# chanmig (ScanScheduler, SurveyDwell) is header-only and pure; no link.
+target_include_directories(mabur_gs_core PUBLIC ${DEVOURER_DIR}/src)
 target_link_libraries(mabur_gs_core PUBLIC mabur_common)
 
 # shm_open/mmap need librt on glibc hosts; the musl aarch64 cross-build folds
