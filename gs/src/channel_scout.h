@@ -20,6 +20,7 @@ struct ScoutCfg {
   int min_rounds = 3;
   int home_window_ms = 300;
   int beacon_period_ms = 20;
+  uint32_t home_margin = 0;
   bool one_card = false;
 };
 

@@ -73,4 +73,26 @@ TEST(floor_tiebreak_is_transitive_with_a_floorless_entry_between) {
   REQUIRE(k.size() == 4);
   CHECK(k[0].ch == 4); CHECK(k[1].ch == 2); CHECK(k[2].ch == 1); CHECK(k[3].ch == 3);
 }
+// home_margin: a candidate replaces home only when its worst visit is at
+// least `margin` busy units below home's. 0 = plain lowest-worst wins.
+TEST(home_margin_keeps_home_unless_a_candidate_is_clearly_cleaner) {
+  ChannelRanker r(136, {149, 165}, 1, /*home_margin=*/20);
+  r.add(S(136, 6, 0, 0, 0)); r.add(S(149, 2, 0, 0, 0)); r.add(S(165, 0, 0, 0, 0));
+  CHECK(r.proposal() == 136);                 // 6 vs 0: within the margin
+  ChannelRanker r2(136, {149, 165}, 1, 20);
+  r2.add(S(136, 30, 0, 0, 0)); r2.add(S(149, 8, 0, 0, 0)); r2.add(S(165, 12, 0, 0, 0));
+  CHECK(r2.proposal() == 149);                // 30 - 8 >= 20: leave, to the best candidate
+  ChannelRanker r3(136, {149}, 1, 20);
+  r3.add(S(136, 25, 0, 0, 0)); r3.add(S(149, 5, 0, 0, 0));
+  CHECK(r3.proposal() == 149);                // exactly 20 counts
+  ChannelRanker r4(136, {149}, 1, 20);
+  r4.add(S(136, 24, 0, 0, 0)); r4.add(S(149, 5, 0, 0, 0));
+  CHECK(r4.proposal() == 136);                // 19 does not
+  ChannelRanker r5(136, {149}, 2, 20);
+  r5.add(S(149, 0, 0, 0, 0)); r5.add(S(149, 0, 0, 0, 0)); r5.add(S(136, 300, 0, 0, 0));
+  CHECK(r5.proposal() == 149);                // home unranked (1 visit): best ranked wins
+  ChannelRanker r6(136, {149}, 1, 0);
+  r6.add(S(136, 6, 0, 0, 0)); r6.add(S(149, 2, 0, 0, 0));
+  CHECK(r6.proposal() == 149);                // margin 0 = old rule
+}
 MTEST_MAIN

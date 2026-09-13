@@ -29,6 +29,9 @@ struct ScanCfg {
   int home_window_ms = 300;
   int split_after_ms = 5000;
   int energy_period_ms = 1000;
+  // A candidate replaces home only if its worst visit is at least this many
+  // busy units below home's (ChannelRanker). 0 = lowest worst wins.
+  int home_margin = 20;
 };
 
 /// Radio hardware: channel, bandwidth, cards, and transmit card selection.

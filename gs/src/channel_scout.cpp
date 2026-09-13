@@ -32,7 +32,7 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       now_(std::move(now_ms)),
       sleep_(std::move(sleep_ms)),
       sched_(plan_for(cfg_)),
-      ranker_(cfg_.home, cfg_.candidates, cfg_.min_rounds),
+      ranker_(cfg_.home, cfg_.candidates, cfg_.min_rounds, cfg_.home_margin),
       proposal_(cfg_.home) {}
 
 void ChannelScout::freeze(uint8_t target) {

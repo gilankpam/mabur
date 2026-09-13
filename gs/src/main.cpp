@@ -469,6 +469,7 @@ static int run_radio(const maburgs::Config& cfg) {
     sc.min_rounds = scfg.min_rounds;
     sc.home_window_ms = scfg.home_window_ms;
     sc.beacon_period_ms = 20;
+    sc.home_margin = static_cast<uint32_t>(scfg.home_margin);
     sc.one_card = one_card;
     scout = std::make_unique<maburgs::ChannelScout>(
         sc, *fronts[static_cast<size_t>(scout_card)],

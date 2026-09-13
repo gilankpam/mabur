@@ -26,7 +26,13 @@ struct RankEntry {
 // No improvement margin, no "clean" bar.
 class ChannelRanker {
  public:
-  ChannelRanker(uint8_t home, const std::vector<uint8_t>& candidates, int min_rounds);
+  // home_margin: a candidate replaces home only when its worst visit is at
+  // least this many busy units below home's (0 = lowest worst wins, the
+  // original rule). Bench 2026-09-13: clean channels tie within ~10 units,
+  // so without it the pick among clean channels is a coin toss that costs
+  // a calibrated home for nothing.
+  ChannelRanker(uint8_t home, const std::vector<uint8_t>& candidates, int min_rounds,
+                uint32_t home_margin = 0);
   void add(const RankSample& s);
   std::vector<RankEntry> ranked() const;
   std::vector<RankEntry> all() const { return entries_; }
@@ -37,6 +43,7 @@ class ChannelRanker {
  private:
   uint8_t home_;
   int min_rounds_;
+  uint32_t home_margin_;
   std::vector<RankEntry> entries_;  // config order, home at [0]
 };
 

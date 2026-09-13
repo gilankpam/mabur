@@ -436,6 +436,7 @@ TEST(radio_scan_defaults_when_absent) {
   CHECK(cfg.radio.scan.home_window_ms == 300);
   CHECK(cfg.radio.scan.split_after_ms == 5000);
   CHECK(cfg.radio.scan.energy_period_ms == 1000);
+  CHECK(cfg.radio.scan.home_margin == 20);
 }
 
 TEST(radio_scan_parses_and_validates) {
@@ -443,7 +444,7 @@ TEST(radio_scan_parses_and_validates) {
       "[radio]\nchannel = 136\n[radio.scan]\nenable = false\n"
       "candidates = [149, 153, 161]\ndwell_ms = 500\nsettle_ms = 40\n"
       "min_rounds = 2\nhome_window_ms = 400\nsplit_after_ms = 8000\n"
-      "energy_period_ms = 0\n");
+      "energy_period_ms = 0\nhome_margin = 5\n");
   auto cfg = maburgs::load_config(p);
   CHECK(cfg.radio.scan.enable == false);
   REQUIRE(cfg.radio.scan.candidates.size() == 3);
@@ -451,6 +452,7 @@ TEST(radio_scan_parses_and_validates) {
   CHECK(cfg.radio.scan.candidates[2] == 161);
   CHECK(cfg.radio.scan.dwell_ms == 500);
   CHECK(cfg.radio.scan.energy_period_ms == 0);
+  CHECK(cfg.radio.scan.home_margin == 5);
 
   bool threw = false;
   try { maburgs::load_config(write_tmp("[radio.scan]\ndwell_ms = 10\n")); }
@@ -473,7 +475,12 @@ TEST(radio_scan_parses_and_validates) {
 TEST(default_bundle_has_scan_section) {
   auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   CHECK(cfg.radio.scan.enable == true);
-  CHECK(!cfg.radio.scan.candidates.empty());
+  // One escape per band block that is not home (docs/channel-select.md).
+  REQUIRE(cfg.radio.scan.candidates.size() == 3);
+  CHECK(cfg.radio.scan.candidates[0] == 120);
+  CHECK(cfg.radio.scan.candidates[1] == 149);
+  CHECK(cfg.radio.scan.candidates[2] == 165);
+  CHECK(cfg.radio.scan.home_margin == 20);
 }
 
 MTEST_MAIN

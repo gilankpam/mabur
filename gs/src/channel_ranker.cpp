@@ -5,8 +5,8 @@
 namespace maburgs {
 
 ChannelRanker::ChannelRanker(uint8_t home, const std::vector<uint8_t>& candidates,
-                             int min_rounds)
-    : home_(home), min_rounds_(min_rounds) {
+                             int min_rounds, uint32_t home_margin)
+    : home_(home), min_rounds_(min_rounds), home_margin_(home_margin) {
   entries_.push_back(RankEntry{home, 0, 0, false, 0});
   for (uint8_t c : candidates) {
     bool dup = false;
@@ -51,7 +51,13 @@ std::vector<RankEntry> ChannelRanker::ranked() const {
 
 uint8_t ChannelRanker::proposal() const {
   auto k = ranked();
-  return k.empty() ? home_ : k.front().ch;
+  if (k.empty()) return home_;
+  const RankEntry& best = k.front();
+  if (best.ch == home_ || home_margin_ == 0) return best.ch;
+  for (const RankEntry& e : k)
+    if (e.ch == home_)
+      return best.worst_busy + home_margin_ <= e.worst_busy ? best.ch : home_;
+  return best.ch;  // home not ranked yet: the best ranked candidate
 }
 
 }  // namespace maburgs

@@ -161,7 +161,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       const Value& s = r["scan"];
       check_keys(s, "radio.scan",
                  {"enable", "candidates", "dwell_ms", "settle_ms", "min_rounds",
-                  "home_window_ms", "split_after_ms", "energy_period_ms"});
+                  "home_window_ms", "split_after_ms", "energy_period_ms",
+                  "home_margin"});
       ScanCfg& sc = c.radio.scan;
       sc.enable = get_bool(s, "enable", sc.enable, "radio.scan");
       if (s.contains("candidates")) {
@@ -184,6 +185,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       sc.home_window_ms = static_cast<int>(get_int(s, "home_window_ms", 300, 40, 10000, "radio.scan"));
       sc.split_after_ms = static_cast<int>(get_int(s, "split_after_ms", 5000, 0, 600000, "radio.scan"));
       sc.energy_period_ms = static_cast<int>(get_int(s, "energy_period_ms", 1000, 0, 60000, "radio.scan"));
+      sc.home_margin = static_cast<int>(get_int(s, "home_margin", 20, 0, 100000, "radio.scan"));
     } else {
       note_default("radio", "scan", "(section absent)");
     }

@@ -7,15 +7,19 @@ tx_card = -1               # -1 = auto-select the best-SNR card
 # these plus `channel` (home) and the DISC proposes the least busy one. The
 # pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
 # One card: the same card alternates home windows and dwells.
+# Candidates = one escape per 5 GHz block that is not home (136 sits in
+# 132-144): 120 (UNII-2e, DFS, APs avoid it), 149 (calibrated walls exist),
+# 165 (20 MHz-only top of UNII-3). Each one costs ~280 ms per scan round.
 [radio.scan]
 enable           = true
-candidates       = [149, 153, 161]
+candidates       = [120, 149, 165]
 dwell_ms         = 250
 settle_ms        = 30
 min_rounds       = 3
 home_window_ms   = 300
 split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
 energy_period_ms = 1000     # in-flight per-card energy record (scan.log A lines); 0 = off
+home_margin      = 20       # leave home only if a candidate's worst visit is >= 20 busy units lower
 
 # No [[radio.cards]]: maburgs probes the USB bus at startup and uses every
 # supported card it finds (chip-id, not PID -- see card_scan.h). Adding

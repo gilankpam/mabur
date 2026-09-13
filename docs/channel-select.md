@@ -25,8 +25,16 @@ channel each end boots on and the channel both return to whenever they
 lose each other. There is no `"auto"` value — both ends need a concrete
 channel to find each other on.
 
-GS, `gs/bundle/maburgs.default.toml` `[radio.scan]` (verbatim):
-
+GS, `gs/bundle/maburgs.default.toml` `[radio.scan]
+enable           = true
+candidates       = [120, 149, 165]
+dwell_ms         = 250
+settle_ms        = 30
+min_rounds       = 3
+home_window_ms   = 300
+split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
+energy_period_ms = 1000     # in-flight per-card energy record (scan.log A lines); 0 = off
+home_margin      = 20       # leave home only if a candidate's worst visit is >= 20 busy units lower
 ```toml
 [radio]
 channel = 136
@@ -73,7 +81,7 @@ tick_ms       = 100
 
 Validation (`gs/src/config.cpp`, `drone/src/config.cpp`): every candidate in
 `[1,177]`; `dwell_ms` in `[50,10000]`; `settle_ms` in `[0,1000]`;
-`min_rounds` in `[1,100]`; `home_window_ms` in `[40,10000]`;
+`min_rounds` in `[1,100]`; `home_margin` in `[0,100000]`; `home_window_ms` in `[40,10000]`;
 `split_after_ms` in `[0,600000]`; `energy_period_ms` in `[0,60000]`;
 `move_confirm_ms` in `[200,30000]`; unknown keys fail boot as everywhere.
 `radio.scan.enable = false` makes every DISC propose home and nothing
@@ -96,6 +104,11 @@ that set — one entry is how you fly one card without unplugging an
 antenna, and switches the GS into one-card interleave mode below.
 
 ## Rules
+
+- **Home keeps a margin.** A candidate replaces home only if its worst visit
+  is at least `home_margin` busy units below home's (default 20: a clean
+  channel reads 0-10, a weak AP 20-140, a router or the FPV band 145-445).
+  Among the candidates themselves the lowest worst visit still wins.
 
 - **Home is a number on both ends**, configured independently; both must
   agree on it out of band (it is never negotiated). A cold boot, a
