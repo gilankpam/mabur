@@ -16,6 +16,21 @@ struct CardCfg {
   int index = 0;
 };
 
+/// Boot-time channel scan (spec 2026-09-13-auto-channel-select). The GS
+/// measures `candidates` (plus radio.channel, the home channel) with a
+/// spare card while it waits for the drone and proposes the least busy one
+/// in DISC. enable=false: every DISC proposes home and nothing retunes.
+struct ScanCfg {
+  bool enable = true;
+  std::vector<uint8_t> candidates;
+  int dwell_ms = 250;
+  int settle_ms = 30;
+  int min_rounds = 3;
+  int home_window_ms = 300;
+  int split_after_ms = 5000;
+  int energy_period_ms = 1000;
+};
+
 /// Radio hardware: channel, bandwidth, cards, and transmit card selection.
 struct RadioCfg {
   uint8_t channel = 149;
@@ -26,6 +41,7 @@ struct RadioCfg {
   std::vector<CardCfg> cards;
   bool auto_scan = true;
   int tx_card = -1;            // -1 = auto-select (Plan 2)
+  ScanCfg scan;
 };
 
 /// FEC configuration: sliding-window decoder parameters.

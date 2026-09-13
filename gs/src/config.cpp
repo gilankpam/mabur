@@ -136,7 +136,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   bool radio_cards_absent = false;
   if (j.contains("radio")) {
     const Value& r = j["radio"];
-    check_keys(r, "radio", {"channel", "width", "cards", "tx_card"});
+    check_keys(r, "radio", {"channel", "width", "cards", "tx_card", "scan"});
     c.radio.channel = static_cast<uint8_t>(get_int(r, "channel", 149, 1, 200, "radio"));
     c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 80, "radio"));
     c.radio.tx_card = static_cast<int>(get_int(r, "tx_card", -1, -1, 15, "radio"));
@@ -156,6 +156,36 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       }
     } else {
       radio_cards_absent = true;
+    }
+    if (r.contains("scan")) {
+      const Value& s = r["scan"];
+      check_keys(s, "radio.scan",
+                 {"enable", "candidates", "dwell_ms", "settle_ms", "min_rounds",
+                  "home_window_ms", "split_after_ms", "energy_period_ms"});
+      ScanCfg& sc = c.radio.scan;
+      sc.enable = get_bool(s, "enable", sc.enable, "radio.scan");
+      if (s.contains("candidates")) {
+        g_line = s["candidates"].line();
+        if (!s["candidates"].is_array()) fail("radio.scan.candidates", "not an array");
+        sc.candidates.clear();
+        for (const Value& v : s["candidates"]) {
+          if (!v.is_number_integer()) fail("radio.scan.candidates", "not an integer");
+          const long ch = v.get<int64_t>();
+          if (ch < 1 || ch > 177) fail("radio.scan.candidates", "must be in [1,177]");
+          sc.candidates.push_back(static_cast<uint8_t>(ch));
+        }
+      } else {
+        note_default("radio.scan", "candidates", "(home only)");
+      }
+      sc.dwell_ms = static_cast<int>(get_int(s, "dwell_ms", 250, 50, 10000, "radio.scan"));
+      sc.settle_ms = static_cast<int>(get_int(s, "settle_ms", 30, 0, 1000, "radio.scan"));
+      sc.min_rounds = static_cast<int>(get_int(s, "min_rounds", 3, 1, 100, "radio.scan"));
+      // >= 2 beacon periods (20 ms): one to beacon, one quiet before leaving.
+      sc.home_window_ms = static_cast<int>(get_int(s, "home_window_ms", 300, 40, 10000, "radio.scan"));
+      sc.split_after_ms = static_cast<int>(get_int(s, "split_after_ms", 5000, 0, 600000, "radio.scan"));
+      sc.energy_period_ms = static_cast<int>(get_int(s, "energy_period_ms", 1000, 0, 60000, "radio.scan"));
+    } else {
+      note_default("radio", "scan", "(section absent)");
     }
   }
   // No list -> auto-scan (card_scan.h fills the list from the bus at
