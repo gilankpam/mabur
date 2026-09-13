@@ -3,6 +3,7 @@ usb_vid    = 3034
 usb_pid    = 0
 channel    = 136
 width      = 20
+follow_gs  = true        # honour the GS's DISC op_channel (auto channel select)
 power_mode = "none"      # set to offset to use rate_walls_idx
 tx_threads = 4
 
@@ -59,6 +60,7 @@ vtx_id        = 1
 failsafe_ms   = 3000
 rc_drain_ms   = 5
 rendezvous_ms = 30000
+move_confirm_ms = 2000  # after a GS-commanded retune, hear the GS within this or return home
 tick_ms       = 100
 
 [msp]

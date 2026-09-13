@@ -15,6 +15,9 @@ struct RadioCfg {
   uint16_t usb_pid = 0;  // 0 = scan
   uint8_t channel = 149;
   uint8_t width = 20;
+  // Honour Disc.op_channel: ack from the current channel, then retune
+  // (spec 2026-09-13-auto-channel-select §6). false = ack home, never move.
+  bool follow_gs = true;
   // How bring-up programs TX power:
   //   "offset" — program the wall-equalized per-rate diff table
   //              (SetTxPowerRateDiffs) once, then zero the global offset
@@ -114,6 +117,8 @@ struct LinkCfg {
   uint32_t vtx_id = 1;
   int failsafe_ms = 1000;
   int rendezvous_ms = 30000;
+  // After a GS-commanded retune, hear the GS within this or go home.
+  int move_confirm_ms = 2000;
   // Housekeeping cadence for the agent loop's TickGate. Bounded [1,1000]
   // at load: behind the gate a non-positive value stops every per-tick job
   // silently (see parse_link in config.cpp).

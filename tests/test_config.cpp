@@ -72,6 +72,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   // NOTE this drone flies "offset": /etc/mabur.toml and this file diverge on
   // exactly this key, deliberately.
   CHECK(cfg.radio.power_mode == "none");
+  CHECK(cfg.radio.follow_gs == true);
 
   // Reference wall-equalization from the author's 8812EU. Inert while
   // power_mode is "none" (parsed and range-checked, never programmed), but
@@ -155,6 +156,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   // transitions in flight.
   CHECK(cfg.link.failsafe_ms == 3000);
   CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
+  CHECK(cfg.link.move_confirm_ms == 2000);
   CHECK(cfg.link.tick_ms == def.link.tick_ms);
 
   // MSP OSD is on in flight (stream_id 4), 3 Hz.
@@ -1327,6 +1329,20 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
   std::filesystem::remove(path);
 }
 
+TEST(follow_gs_and_move_confirm_parse_with_defaults) {
+  Config def = load_config(default_config_path());
+  CHECK(def.radio.follow_gs == true);
+  CHECK(def.link.move_confirm_ms == 2000);
+  auto p = write_temp_toml("[radio]\nchannel = 136\nfollow_gs = false\n[link]\nmove_confirm_ms = 500\n");
+  Config c = load_config(p.string());
+  CHECK(c.radio.follow_gs == false);
+  CHECK(c.link.move_confirm_ms == 500);
+  std::filesystem::remove(p);
+  auto bad = write_temp_toml("[link]\nmove_confirm_ms = 10\n");
+  std::string msg = what_of([&] { (void)load_config(bad.string()); });
+  CHECK(msg.find("link.move_confirm_ms") != std::string::npos);
+  std::filesystem::remove(bad);
+}
 
 MTEST_MAIN
 

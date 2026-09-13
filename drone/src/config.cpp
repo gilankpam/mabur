@@ -84,12 +84,13 @@ void parse_radio(const Value& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width",
                         "power_mode", "tx_threads", "rate_walls_idx",
                         "legacy_wall_idx", "wall_margin_db",
-                        "base_ref_idx"},
+                        "base_ref_idx", "follow_gs"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
   assign_if_present(j, "channel", r.channel, "radio");
   assign_if_present(j, "width", r.width, "radio");
+  assign_if_present(j, "follow_gs", r.follow_gs, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
 
@@ -487,14 +488,17 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
 
 void parse_link(const Value& j, LinkCfg& l) {
   check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms",
-                       "rc_drain_ms"}, "link");
+                       "rc_drain_ms", "move_confirm_ms"}, "link");
   assign_if_present(j, "vtx_id", l.vtx_id, "link");
   assign_if_present(j, "failsafe_ms", l.failsafe_ms, "link");
   assign_if_present(j, "rendezvous_ms", l.rendezvous_ms, "link");
+  assign_if_present(j, "move_confirm_ms", l.move_confirm_ms, "link");
   assign_if_present(j, "tick_ms", l.tick_ms, "link");
   assign_if_present(j, "rc_drain_ms", l.rc_drain_ms, "link");
 
   if (l.vtx_id == 0) fail("link.vtx_id", "must be non-zero");
+  if (l.move_confirm_ms < 200 || l.move_confirm_ms > 30000)
+    fail("link.move_confirm_ms", "must be in [200,30000]");
   // tick_ms is the agent loop's housekeeping deadline (TickGate). Unbounded
   // it was merely a hot spin at 0; behind the gate a non-positive value casts
   // to a ~1.8e19 ms period and the gate fires once at startup and never
