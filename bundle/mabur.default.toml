@@ -4,16 +4,16 @@ usb_pid    = 0
 channel    = 136
 width      = 20
 follow_gs  = true        # honour the GS's DISC op_channel (auto channel select)
-power_mode = "none"      # set to offset to use rate_walls_idx
+power_mode = "none"      # set to offset to use rate_walls_rel
 tx_threads = 4
 
 # Wall-equalization measured on my vtx not yours, set power_mode to offset to use.
-# Calibrated on 8812EU
+# Calibrated on 8812EU, 2026-09-13, ch136. Values are RELATIVE to the chip's
+# own per-channel efuse anchor, so one table covers every channel.
 # Only wall_margin_db moves TX power in offset mode.
-rate_walls_idx  = [91, 91, 91, 91, 73, 56, 51, 49]
-legacy_wall_idx = 91
+rate_walls_rel  = [63, 63, 62, 45, 22, 6, 9, 5]
+legacy_wall_rel = 63
 wall_margin_db  = 1.0
-base_ref_idx    = 53       # derived diffs must land in [-64,63] or boot fails
 
 [fec]
 symbol_size     = 332      # must match the GS

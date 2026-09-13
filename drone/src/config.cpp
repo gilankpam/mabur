@@ -9,6 +9,7 @@
 #include "mabur/toml.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
+#include "mabur/rc_proto.h"
 
 namespace mabur {
 namespace {
@@ -82,9 +83,8 @@ void assign_if_present(const Value& j, const char* key, T& out,
 
 void parse_radio(const Value& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width",
-                        "power_mode", "tx_threads", "rate_walls_idx",
-                        "legacy_wall_idx", "wall_margin_db",
-                        "base_ref_idx", "follow_gs"},
+                        "power_mode", "tx_threads", "rate_walls_rel",
+                        "legacy_wall_rel", "wall_margin_db", "follow_gs"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
@@ -94,23 +94,22 @@ void parse_radio(const Value& j, RadioCfg& r) {
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
 
-  bool rate_walls_idx_present = j.contains("rate_walls_idx");
-  if (rate_walls_idx_present) {
-    auto& arr = j.at("rate_walls_idx");
+  bool rate_walls_rel_present = j.contains("rate_walls_rel");
+  if (rate_walls_rel_present) {
+    auto& arr = j.at("rate_walls_rel");
     g_line = arr.line();
     if (!arr.is_array() || arr.size() != 8)
-      fail("radio.rate_walls_idx", "must be an array of 8 ints");
+      fail("radio.rate_walls_rel", "must be an array of 8 ints");
     try {
       for (size_t i = 0; i < 8; ++i)
-        r.rate_walls_idx[i] = arr.at(i).get<int>();
+        r.rate_walls_rel[i] = arr.at(i).get<int>();
     } catch (const toml::Error&) {
-      fail("radio.rate_walls_idx", "wrong type");
+      fail("radio.rate_walls_rel", "wrong type");
     }
   }
-  if (!rate_walls_idx_present) note_default("radio", "rate_walls_idx", "(unit defaults)");
-  assign_if_present(j, "legacy_wall_idx", r.legacy_wall_idx, "radio");
+  if (!rate_walls_rel_present) note_default("radio", "rate_walls_rel", "(unit defaults)");
+  assign_if_present(j, "legacy_wall_rel", r.legacy_wall_rel, "radio");
   assign_if_present(j, "wall_margin_db", r.wall_margin_db, "radio");
-  assign_if_present(j, "base_ref_idx", r.base_ref_idx, "radio");
 
   if (r.channel < 1 || r.channel > 177) fail("radio.channel", "must be in [1,177]");
   if (r.tx_threads < 1 || r.tx_threads > 8)
@@ -118,42 +117,34 @@ void parse_radio(const Value& j, RadioCfg& r) {
   if (r.power_mode != "offset" && r.power_mode != "none")
     fail("radio.power_mode", "must be \"offset\" or \"none\"");
 
-  if (r.power_mode == "offset" && !rate_walls_idx_present)
-    fail("radio.rate_walls_idx", "required when radio.power_mode is \"offset\"");
-  for (int w : r.rate_walls_idx)
-    if (w < 0 || w > 127) fail("radio.rate_walls_idx", "values must be in [0,127]");
-  if (r.legacy_wall_idx < 0 || r.legacy_wall_idx > 127)
-    fail("radio.legacy_wall_idx", "must be in [0,127]");
+  if (r.power_mode == "offset" && !rate_walls_rel_present)
+    fail("radio.rate_walls_rel", "required when power_mode = \"offset\"");
+
+  // Relative walls live in the 7-bit two's complement diff field [-64,63]
+  // (spec 2026-09-13). Outside it the value would wrap on air.
+  for (size_t i = 0; i < r.rate_walls_rel.size(); ++i) {
+    const int v = r.rate_walls_rel[i];
+    if (v < rc::kRelMin || v > rc::kRelMax)
+      fail("radio.rate_walls_rel",
+           "[" + std::to_string(i) + "] = " + std::to_string(v) +
+               " is outside the 7-bit hardware field range [-64,63]");
+  }
+  if (r.legacy_wall_rel < rc::kRelMin || r.legacy_wall_rel > rc::kRelMax)
+    fail("radio.legacy_wall_rel", "must be in [-64,63]");
   if (r.wall_margin_db < 0.0 || r.wall_margin_db > 6.0)
     fail("radio.wall_margin_db", "must be in [0,6]");
-  if (r.base_ref_idx < 0 || r.base_ref_idx > 127)
-    fail("radio.base_ref_idx", "must be in [0,127]");
 
-  // The 8822E's per-rate diff field is 7-bit two's complement (devourer's
-  // pack_rate_diff_word masks & 0x7f), so every diff make_power_plan will
-  // derive — walls[r] - m - base_ref_idx, and the same for legacy_wall_idx —
-  // must land in [-64, 63]. Outside that range the value silently wraps on
-  // air (e.g. +70 becomes -58) with no error, sign-flipping per-rate power.
-  // A miscalibrated config (e.g. base_ref_idx left at 0) must refuse to
-  // boot here rather than let power_plan.h's clamp silently paper over it.
   if (r.power_mode == "offset") {
     const int m = static_cast<int>(std::lround(r.wall_margin_db * 4.0));
-    for (int w : r.rate_walls_idx) {
-      const int diff = w - m - r.base_ref_idx;
-      if (diff < -64 || diff > 63)
-        fail("radio.rate_walls_idx",
-             "derived diff (wall - wall_margin_db*4 - base_ref_idx) = " +
-                 std::to_string(diff) +
-                 " is out of the 7-bit hardware field range [-64,63] — "
-                 "check base_ref_idx/wall_margin_db calibration");
+    for (size_t i = 0; i < r.rate_walls_rel.size(); ++i) {
+      if (r.rate_walls_rel[i] - m < rc::kRelMin)
+        fail("radio.rate_walls_rel",
+             "[" + std::to_string(i) + "] - wall_margin_db*4 = " +
+                 std::to_string(r.rate_walls_rel[i] - m) +
+                 " is below the hardware field floor -64");
     }
-    const int legacy_diff = r.legacy_wall_idx - m - r.base_ref_idx;
-    if (legacy_diff < -64 || legacy_diff > 63)
-      fail("radio.legacy_wall_idx",
-           "derived diff (legacy_wall_idx - wall_margin_db*4 - base_ref_idx) = " +
-               std::to_string(legacy_diff) +
-               " is out of the 7-bit hardware field range [-64,63] — "
-               "check base_ref_idx/wall_margin_db calibration");
+    if (r.legacy_wall_rel - m < rc::kRelMin)
+      fail("radio.legacy_wall_rel", "minus wall_margin_db*4 is below -64");
   }
 }
 

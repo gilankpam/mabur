@@ -26,15 +26,14 @@ struct RadioCfg {
   // There is no runtime power control: no per-op power, no thermal derate.
   // Spec 2026-08-12-constant-txpower-design.md.
   std::string power_mode = "none";
-  // Wall-equalization inputs (Task 9): measured per-rate clean-air TXAGC
-  // ceilings and the plan derived from them. rate_walls_idx is REQUIRED
-  // when power_mode == "offset" (the plan can't be built without it);
-  // otherwise it may be left absent/default. See power_plan.h for the
-  // diff[r] = walls[r] - m - base_ref_idx formulation.
-  std::array<int, 8> rate_walls_idx = {0, 0, 0, 0, 0, 0, 0, 0};
-  int legacy_wall_idx = 91;
+  // Wall-equalization inputs: measured per-rate clean-air ceilings as
+  // signed indices RELATIVE to the chip's per-channel anchor, [-64,63].
+  // rate_walls_rel is REQUIRED when power_mode == "offset". See
+  // power_plan.h for diff[r] = rel[r] - m. One table covers every
+  // channel (spec 2026-09-13-relative-walls-design.md).
+  std::array<int, 8> rate_walls_rel = {0, 0, 0, 0, 0, 0, 0, 0};
+  int legacy_wall_rel = 63;
   double wall_margin_db = 1.0;
-  int base_ref_idx = 53;
   // Parallel USB sender threads (URBs in flight). The 8822E flow-controls
   // sync bulk-OUT URBs (~0.4 ms acceptance handshake + FIFO drain), so a
   // single blocking sender caps air throughput at ~26 Mbps regardless of
