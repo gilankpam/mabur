@@ -15,7 +15,8 @@ later in-flight hopping design will read. In-flight migration itself is
 
 Design spec: `docs/superpowers/specs/2026-09-13-auto-channel-select-design.md`
 (gitignored — this page is the durable record). Continues the spike in
-`docs/channel-scan-findings-2026-09-13.md`.
+`docs/channel-scan-findings-2026-09-13.md` (lands via the separate branch
+`docs-channel-scan-2026-09-13`).
 
 ## Config
 
@@ -115,8 +116,7 @@ antenna, and switches the GS into one-card interleave mode below.
   re-enters RENDEZVOUS rather than waiting out the full
   `failsafe_ms + rendezvous_ms` (33 s at the shipped defaults) on a
   channel where the GS never hears it. On the GS's usual 50-70%
-  per-frame uplink odds this costs
-  about 2 s per retry cycle.
+  per-frame uplink odds this costs about 2 s per retry cycle.
 - **Retune mechanics.** The drone's `Actuator::retune()` takes the TX gate
   exclusive against every USB sender, sleeps 5 ms so the DISC_ACK that
   precedes the retune (sent, per the rule above, on the OLD channel) has
@@ -141,8 +141,10 @@ antenna, and switches the GS into one-card interleave mode below.
 - **The scan does not stop at `min_rounds`**; that is only the floor
   below which the DISC proposal is home. The scan does stop if the scout
   card dies mid-scan — the scan is abandoned and frozen on whatever the
-  ranker has measured so far (drone-side stderr and GS-side `M`/log lines
-  cover this in Observability below).
+  ranker has measured so far, GS-only: the drone has no idea a scan is
+  running at all. Logged as a GS stderr line (`maburgs channel: scout
+  card N died, scan abandoned at R rounds`, `gs/src/main.cpp`); see
+  `scan.log` below for the frozen pick that results.
 - **One-card mode gates every send while the scout is off-home.** With a
   single pinned card the same radio is doing scouting and TX, so the core
   thread sends DISC (and everything else) only while the scout reports it
@@ -173,8 +175,9 @@ from an earlier boot:
    channel, so the plan reunites every card there (`M ... reunite`) — no
    new commit, since the pick did not change.
 8. The drone retunes (5 ms TX drain, then `FastRetune`) and waits up to
-   `move_confirm_ms` for a GS frame on the new channel. Any GS send
-   (beacon, RCF, video) confirms the move; LINKED follows on the next
+   `move_confirm_ms` for a GS frame on the new channel. The first
+   accepted DISC or RCF from the GS confirms the move (the GS→drone wire
+   carries only DISC and RCF, never video); LINKED follows on the next
    accepted DISC.
 9. If the ack never lands, the drone waits out `move_confirm_ms`, goes
    back home, and retries the ack on the next beacon — roughly a 2 s

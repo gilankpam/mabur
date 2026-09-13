@@ -137,8 +137,9 @@ Consume the same numbers programmatically with:
   marker line can appear more than once in a file). **A drone restart is a
   new flight (2026-09-08):** when T_TELEM's `tlm_seq` steps backwards by
   more than 100 (maburd restarts it from 0; a fade or re-rendezvous keeps it
-  climbing) maburgs rotates in place — next NNNN, marker rewritten, all four
-  files reopened under it with their format marker at the top — with no
+  climbing) maburgs rotates in place — next NNNN, marker rewritten, all five
+  files (`flight.jsonl`, `ctl.log`, `probe.log`, `au.log`, `scan.log`)
+  reopened under it with their format marker at the top — with no
   process restart and no video blink; maburplay's `lat.log` follows the
   marker within 5 s. Cumulative sideport counters do NOT reset at a
   rotation (same maburgs process), so the new `flight.jsonl` starts at
