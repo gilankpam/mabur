@@ -49,6 +49,27 @@ wall_margin_db  = 1.0
 symbol_size = 332
 )";
 
+// Same as kSample but with rate_walls_rel[3] carrying a stale value (70)
+// already outside the 7-bit hardware field range [-64,63] -- stands in for
+// a slot no session ever swept, left behind by an older/hand-edited
+// config. walls_in_range() skips any slot at kWallUndetermined without
+// looking at what the file already holds there, so a CalWrite that leaves
+// slot 3 undetermined sails past walls_in_range() with this file; only
+// load_config()'s unconditional per-field range check (inside
+// apply_calibration_impl's verify step) can still catch it.
+const char* kSampleStaleOutOfRange = R"(# a comment that must survive
+[radio]
+usb_vid    = 3034
+power_mode = "none"      # set to offset to use rate_walls_rel
+
+rate_walls_rel  = [63, 63, 63, 70, 20, 1, -2, -4]
+legacy_wall_rel = 63
+wall_margin_db  = 1.0
+
+[fec]
+symbol_size = 332
+)";
+
 }  // namespace
 
 TEST(patch_rewrites_only_the_three_keys) {
@@ -184,6 +205,35 @@ TEST(apply_never_publishes_a_file_that_will_not_parse) {
   // A failed run must not leave a stale scratch file next to a live config.
   std::ifstream tmp(path + ".new");
   CHECK(!tmp.good());
+}
+
+TEST(apply_rejects_a_stale_out_of_range_value_at_an_undetermined_slot) {
+  // walls_in_range() skips any slot at kWallUndetermined without looking at
+  // what the config file already holds there (it has nothing to look at --
+  // CalWrite doesn't carry the original text), so a stale out-of-range
+  // value sitting in a slot no session swept sails straight past it. Only
+  // load_config()'s unconditional per-field range check (run against
+  // "<path>.new" inside apply_calibration_impl's verify step, BEFORE
+  // publish) still catches it -- the same backstop property the deleted
+  // apply_rejects_a_file_only_the_real_loader_can_reject test used to pin
+  // via base_ref_idx, now exercised through a stale undetermined slot
+  // instead.
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal8.toml";
+  { std::ofstream f(path); f << kSampleStaleOutOfRange; }
+  CalWrite w = sample_write();
+  w.walls[3] = mabur::rc::kWallUndetermined;  // leave the stale 70 untouched
+  std::string err;
+  CHECK(walls_in_range(w, 1.0, &err));  // passes: slot 3 is skipped, not read
+  CHECK(apply_calibration(path, w, 1.0, &err) == ApplyResult::ReparseFailed);
+
+  std::ifstream f(path);
+  std::stringstream s; s << f.rdbuf();
+  CHECK(s.str() == kSampleStaleOutOfRange);   // never published
+
+  std::ifstream tmp(path + ".new");
+  CHECK(!tmp.good());   // scratch file discarded, not left behind
+  std::ifstream backup(path + ".pre-cal");
+  CHECK(!backup.good());   // never reached the backup step
 }
 
 TEST(apply_writes_once) {
