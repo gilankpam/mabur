@@ -12,6 +12,7 @@ add_library(mabur_gs_core STATIC
   src/ladder_controller.cpp
   src/rung_store.cpp
   src/ctl_log.cpp
+  src/scan_log.cpp
   src/cal_analysis.cpp
   src/cal_plan.cpp
   src/cal_session.cpp
