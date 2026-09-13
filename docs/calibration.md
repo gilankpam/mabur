@@ -26,8 +26,9 @@ to `maburgs`' loopback-only `CalControl` listener (`127.0.0.1:8400`,
 unreachable off-box), streams progress every 500 ms, and prints a final
 table when the drone returns to normal video. Under the hood:
 
-1. **Coarse sweep** (~36 s of sweep time): every 4th TXAGC index, 0..124,
-   across all 8 MCS rows, 20 frames per cell.
+1. **Coarse sweep** (~29 s of sweep time): every 4th relative TXAGC
+   index, rel −40..63 (26 cells per row, 208 total), across all 8 MCS
+   rows, 20 frames per cell.
 2. **Fine sweep** (~0-41 s of sweep time, skipped for rows with no dip):
    ±8 indices around each row's coarse dip, at full resolution, 100
    frames per cell. This also re-measures the exact cell the coarse pass
@@ -138,15 +139,15 @@ index, verify-pass delivery, and health flags:
 
 ```
 run nonce=... margin=1.00dB
-rate    wall(rel)  park verify   flags
-mcs0      63    59    99%   no_dip
-mcs1      63    59   100%   no_dip
-mcs2      62    58    99%   no_dip
-mcs3      45    41    98%
-mcs4      22    18    97%
-mcs5       6     2    96%   drift
-mcs6       9     5    99%
-mcs7       5     1    98%
+rate   wall(rel)  park verify   flags
+mcs0          63    59    99%   no_dip
+mcs1          63    59   100%   no_dip
+mcs2          62    58    99%   no_dip
+mcs3          45    41    98%
+mcs4          22    18    97%
+mcs5           6     2    96%   drift
+mcs6           9     5    99%
+mcs7           5     1    98%
 legacy  63 (derived from mcs0)
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 ```
