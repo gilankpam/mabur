@@ -60,12 +60,6 @@ bool CalSession::start(uint32_t vtx_id, uint32_t nonce, uint64_t now_ms,
 
   vtx_id_ = vtx_id;
   nonce_ = nonce;
-  // Learned fresh every session: base_ref_idx is per-CHANNEL (measured on
-  // the bench 2026-09-11, 39 on ch136 and 53 on ch149), so an anchor
-  // carried over from a session before a channel change would put the rail
-  // in the wrong place -- either refused by the drone's range check, or,
-  // worse, silently low.
-  base_ref_idx_ = -1;
   fail_reason_ = "";
   result_ready_ = false;
   result_repeats_left_ = 0;
@@ -78,19 +72,14 @@ bool CalSession::start(uint32_t vtx_id, uint32_t nonce, uint64_t now_ms,
   return true;
 }
 
-void CalSession::on_ack(uint32_t nonce, int base_ref_idx, uint64_t now_ms) {
+void CalSession::on_ack(uint32_t nonce, uint64_t now_ms) {
   // A stale ack (wrong nonce, or arriving after the session has moved past
   // AwaitAck -- e.g. it already timed out) must not resurrect a dead
   // session or restart a phase that is already sweeping.
   if (state_ != State::AwaitAck || nonce != nonce_) return;
-  base_ref_idx_ = base_ref_idx;
   phase_start_ms_ = now_ms;
   phase_end_ms_ = now_ms + plan_duration_ms(pending_cmd_);
   state_ = State::Sweep;
-}
-
-void CalSession::note_base_ref(int base_ref_idx) {
-  if (base_ref_idx >= 0 && base_ref_idx <= 127) base_ref_idx_ = base_ref_idx;
 }
 
 void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
@@ -110,9 +99,9 @@ void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
   // to walls like 12 and 16 with no flag saying anything was amiss.
   //
   // The frame itself proves what the ack would have: the drone accepted
-  // this exact phase and is on the air with it. base_ref_idx_ stays
-  // whatever it was -- only the Telem carries it, and main.cpp writes
-  // cal.log's R line from that Telem whenever it does arrive.
+  // this exact phase and is on the air with it. There is no anchor to
+  // track any more -- f.idx already arrives relative to the drone's own
+  // chip, so this session has nothing further to learn from a Telem.
   if (state_ == State::AwaitAck && f.phase == pending_cmd_.phase) {
     phase_start_ms_ = now_ms;
     phase_end_ms_ = now_ms + plan_duration_ms(pending_cmd_);
@@ -229,14 +218,14 @@ void CalSession::set_peer(bool linked, bool cal_capable) {
   cal_capable_ = cal_capable;
 }
 
-uint16_t CalSession::cell_received(uint8_t rate, uint8_t idx, int card) const {
+uint16_t CalSession::cell_received(uint8_t rate, int idx, int card) const {
   if (rate > 7 || card < 0 || card > 1) return 0;
   auto it = cells_[rate].find(idx);
   if (it == cells_[rate].end()) return 0;
   return it->second.received[static_cast<size_t>(card)];
 }
 
-uint16_t CalSession::cell_corrupt(uint8_t rate, uint8_t idx) const {
+uint16_t CalSession::cell_corrupt(uint8_t rate, int idx) const {
   if (rate > 7) return 0;
   auto it = cells_[rate].find(idx);
   if (it == cells_[rate].end()) return 0;
@@ -343,9 +332,9 @@ void CalSession::seed_cells(const mabur::rc::CalCmd& cmd) {
     if (w.idx_step == 0) continue;
     for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) {
       CalCell c;
-      c.idx = static_cast<uint8_t>(i);
+      c.idx = i;
       c.expected = cmd.frames_per_cell;
-      cells_[w.rate][static_cast<uint8_t>(i)] = c;
+      cells_[w.rate][i] = c;
     }
   }
 }
@@ -373,14 +362,6 @@ void CalSession::begin_verify(uint64_t now_ms) {
   phase_start_ms_ = now_ms;
   phase_end_ms_ = now_ms + plan_duration_ms(verify_cmd);
   state_ = State::Verify;
-}
-
-CalThresholds CalSession::thresholds_() const {
-  // TASK-6 MINIMAL COMPILE FIX (not the Task-7 port): CalThresholds no
-  // longer carries max_wall -- the rail is now the constant kRailRel, not
-  // derived from base_ref_idx_. This function otherwise still needs Task
-  // 7's full pass (idx truncation, wall < 0 checks elsewhere in this file).
-  return cfg_.th;
 }
 
 std::vector<CalCell> CalSession::sorted_cells(int rate) const {
@@ -425,7 +406,7 @@ void CalSession::finish_phase(uint64_t now_ms) {
   if (running_phase_ == mabur::cal::kPhaseCoarse) {
     for (int r = 0; r < 8; ++r)
       coarse_walls_[static_cast<size_t>(r)] =
-          analyze_rate(snapshot[static_cast<size_t>(r)], thresholds_());
+          analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);
 
     // Logged here too, not only from finalize_result(): a two-phase run
     // refines only the rows coarse found a real dip in (see the fine-phase
@@ -470,7 +451,7 @@ void CalSession::finish_phase(uint64_t now_ms) {
     // Seeded (and therefore non-empty) exactly when this row was in
     // fine_cmd's windows -- the same set the flag check above already
     // narrowed to.
-    const RateWall fw = analyze_rate(snapshot[static_cast<size_t>(r)], thresholds_());
+    const RateWall fw = analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);
     if (fw.flags & (kCalNoDip | kCalUndetermined))
       continue;  // truncated-window misread; keep the coarse wall.
 
@@ -486,14 +467,14 @@ void CalSession::finish_phase(uint64_t now_ms) {
 
 void CalSession::finalize_result() {
   // T_CAL_RESULT carries the RAW measured wall, not a park index: the
-  // drone's power_plan.h is what subtracts margin_db
-  // (diff[r] = walls[r] - m - base_ref_idx), and it is drone-config-owned
-  // -- nothing forces this session's cfg_.margin_db to equal it. Sending a
-  // pre-subtracted value here would mean the drone adds a margin back
-  // (whose value it has no way to verify against what the GS actually
-  // used) before power_plan.h subtracts one again: two independently
-  // configured margins in one derivation, silently wrong if they ever
-  // differ, in a kit whose whole purpose is getting this table right.
+  // drone's power_plan.h is what subtracts margin_db (diff[r] = walls[r] -
+  // m), and it is drone-config-owned -- nothing forces this session's
+  // cfg_.margin_db to equal it. Sending a pre-subtracted value here would
+  // mean the drone adds a margin back (whose value it has no way to verify
+  // against what the GS actually used) before power_plan.h subtracts one
+  // again: two independently configured margins in one derivation, silently
+  // wrong if they ever differ, in a kit whose whole purpose is getting this
+  // table right.
   // pending_park_ below is a SEPARATE, purely local concern: the GS's own
   // verify-phase tally needs a park index too, computed with this
   // session's margin_db, but that computation never leaves this process.
@@ -504,9 +485,9 @@ void CalSession::finalize_result() {
   res.nonce = nonce_;
   for (int r = 0; r < 8; ++r) {
     const auto& w = final_walls_[static_cast<size_t>(r)];
-    if (w.wall < 0) {
-      res.walls[static_cast<size_t>(r)] = -1;
-      pending_park_[static_cast<size_t>(r)] = -1;
+    if (w.wall == kNoWall) {
+      res.walls[static_cast<size_t>(r)] = mabur::rc::kWallUndetermined;
+      pending_park_[static_cast<size_t>(r)] = kNoWall;
     } else {
       res.walls[static_cast<size_t>(r)] = static_cast<int16_t>(w.wall);
       pending_park_[static_cast<size_t>(r)] = w.wall - m;

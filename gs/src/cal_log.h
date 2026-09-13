@@ -132,9 +132,9 @@ class CalLog {
   // ones sharing a session directory -- this is what a reader keys a run's
   // C/W/V lines by and what delimits one run's lines from the next.
   void run(uint32_t nonce, int base_ref_idx, double margin_db);
-  void cell(uint8_t phase, uint8_t rate, uint8_t idx, const CalCell& c);
+  void cell(uint8_t phase, uint8_t rate, int idx, const CalCell& c);
   void wall(uint8_t rate, const RateWall& w);
-  void verify(uint8_t rate, uint8_t idx, int pct);
+  void verify(uint8_t rate, int idx, int pct);
 
   // Blocks until every record handed over so far is on disk. Call at the
   // end of a run (Done or Failed), and only there: LogWriter's own thread

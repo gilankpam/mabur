@@ -65,7 +65,7 @@ void CalLog::run(uint32_t nonce, int base_ref_idx, double margin_db) {
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
-void CalLog::cell(uint8_t phase, uint8_t rate, uint8_t idx, const CalCell& c) {
+void CalLog::cell(uint8_t phase, uint8_t rate, int idx, const CalCell& c) {
   if (s_ == LogWriter::kBadStream) return;
   // -999 (kRssiNone) whenever a card had no reading, never the raw
   // rssi_dbm slot -- a caller that forgets to gate on have_rssi must not
@@ -89,7 +89,7 @@ void CalLog::wall(uint8_t rate, const RateWall& w) {
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
-void CalLog::verify(uint8_t rate, uint8_t idx, int pct) {
+void CalLog::verify(uint8_t rate, int idx, int pct) {
   if (s_ == LogWriter::kBadStream) return;
   char b[64];
   const int n = std::snprintf(b, sizeof(b), "V %d %d %d", rate, idx, pct);
