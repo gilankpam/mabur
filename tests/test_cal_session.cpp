@@ -391,7 +391,7 @@ TEST(cal_log_records_cells_and_walls_at_phase_end) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 31, 0, &err));
-    log.run(31, 53, s.margin_db());
+    log.run(31, s.margin_db());
     s.due_cmd(0);
     s.on_ack(31, 1);
 
@@ -440,7 +440,7 @@ TEST(cal_log_records_verify_results) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 32, 0, &err));
-    log.run(32, 53, s.margin_db());
+    log.run(32, s.margin_db());
     s.due_cmd(0);
     s.on_ack(32, 1);
 
@@ -586,7 +586,7 @@ TEST(all_zero_verify_rows_are_logged_for_a_totally_silent_result) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 33, 0, &err));
-    log.run(33, 53, s.margin_db());
+    log.run(33, s.margin_db());
     s.due_cmd(0);
     s.on_ack(33, 1);
     const auto coarse = make_coarse_plan(1, 33);
@@ -630,7 +630,7 @@ TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
     s.set_peer(true, true);
     std::string err;
     REQUIRE(s.start(1, 34, 0, &err));
-    log.run(34, 53, s.margin_db());
+    log.run(34, s.margin_db());
     s.due_cmd(0);
     s.on_ack(34, 1);
 
@@ -687,7 +687,7 @@ TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
   s.set_peer(true, true);
   std::string err;
   REQUIRE(s.start(1, 34, 0, &err));
-  log.run(34, 53, s.margin_db());
+  log.run(34, s.margin_db());
   s.due_cmd(0);
   s.on_ack(34, 1);
   const auto coarse = make_coarse_plan(1, 34);
