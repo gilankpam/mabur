@@ -60,7 +60,8 @@ per-profile offset. `maburd` programs the wall-equalized per-rate diff
 table and zeroes the global offset once at bring-up — both steps live
 inside the `radio.power_mode: "offset"` branch — and never calls a power
 API again: for the life of the process each rate `r` sits at effective
-TXAGC index `rate_walls_idx[r] - round(wall_margin_db * 4)`. Note the
+TXAGC index `anchor(channel) + rate_walls_rel[r] − round(wall_margin_db *
+4)`. Note the
 `* 4`: the chip's index step is 0.25 dB, so `wall_margin_db` is a dB
 figure converted to index steps, and a 1 dB margin is 4 steps
 (`make_power_plan()` in `drone/src/power_plan.h`). The config keys
@@ -68,6 +69,9 @@ figure converted to index steps, and a 1 dB margin is 4 steps
 `radio.min_offset_qdb`, `radio.power_offset_qdb` and
 `link.static_offset_qdb` were REMOVED and now FAIL BOOT, as does
 `radio.power_mode: "override"` (it had become identical to `"none"`).
+Also REMOVED: `radio.rate_walls_idx`, `radio.legacy_wall_idx`,
+`radio.base_ref_idx` (2026-09-13, replaced by `rate_walls_rel`/
+`legacy_wall_rel`).
 Sideport keys `link.op.offset_qdb`, `drone.applied.offset_qdb` and
 `drone.applied.derate_qdb` are gone; `thermal_delta` REMAINS and is the
 only surviving signal that a PA is running hot — nothing acts on it, so
@@ -89,9 +93,10 @@ this date came from a standalone TX/RX pair with no daemon MAC config
 (carrier sense ON, see the 2026-08-05 line above); one measured after
 comes from the flying pair with the GS radio-silent for the whole sweep.
 And a post-2026-09-10 run leaves its own raw record — `cal.log` in the
-debug-log session directory, `callog 1`, readable with
-`maburcal report` — where a txagcbench run left a CSV the deleted Python
-analyzer read.
+debug-log session directory: `callog 1`/`2` (absolute walls, anchor on
+the R line) through 2026-09-13, `callog 3` (relative walls, `-128` =
+undetermined) after; `maburcal report` reads all three — where a
+txagcbench run left a CSV the deleted Python analyzer read.
 
 **DVR filenames carry no date since 2026-08-26.** `maburplay` writes
 `record-NNNN.mp4` (index one past the highest already on the card), where it

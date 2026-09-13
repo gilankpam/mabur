@@ -266,6 +266,12 @@ gets its own walls by re-running the sweep (`bench/txagcbench/`) and
 updating `rate_walls_idx` — the walls do not transfer unit-to-unit (see
 Caveats below).
 
+Since 2026-09-13 the consumed keys are `radio.rate_walls_rel` /
+`radio.legacy_wall_rel`, relative to the efuse anchor;
+`diff[r] = rel[r] − round(wall_margin_db × 4)`. The absolute numbers on
+this page are still the measurement history (anchor 53 on ch149):
+subtract 53 to compare.
+
 ## How the measurement works (methodology)
 
 Tooling: `bench/txagcbench/` (branch `txagcbench`; spec under gitignored

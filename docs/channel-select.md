@@ -65,7 +65,7 @@ usb_pid    = 0
 channel    = 136
 width      = 20
 follow_gs  = true        # honour the GS's DISC op_channel (auto channel select)
-power_mode = "none"      # set to offset to use rate_walls_idx
+power_mode = "none"      # set to offset to use rate_walls_rel
 tx_threads = 4
 ```
 
@@ -102,6 +102,10 @@ and uses every supported card it finds, which is two-card mode. Adding an
 explicit `[[radio.cards]]` block (commented out by default) pins exactly
 that set — one entry is how you fly one card without unplugging an
 antenna, and switches the GS into one-card interleave mode below.
+
+**Calibration:** `maburcal` stores walls relative to the chip's
+per-channel anchor (`docs/calibration.md`), so one run on home is valid
+on every candidate; no per-channel tables.
 
 ## Rules
 
