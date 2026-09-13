@@ -260,8 +260,9 @@ the player OSD's `ch` field):
   itself `null` when that card's IGI read is invalid.
 
 `flightreport.py` is unchanged this round. `tools/maburtop.py` gained the
-new header fields (`scan.state`/`scan.rounds`/`scan.pick`, and `link.home`
-next to `link.channel`) and a per-card `busy` column computing
+new header fields (`scan.state` and `scan.rounds`, and `link.home` next to
+`link.channel` — it does not display `scan.pick`, which the sideport still
+emits) and a per-card `busy` column computing
 `(cca − min(cca, own)) + fa + foreign` from `cards[i].energy` — the same
 score the ranker uses, clamped so a card whose own-frame count exceeds its
 CCA count reads 0 rather than going negative. `scanlog 1` reserves the
@@ -295,10 +296,15 @@ Pending — see the plan's Task 14.
 
 **Binary before config, unusually** (the same exception `docs/deploy.md`
 records for the GS card auto-scan). Every key this feature adds has a
-default, so the NEW binaries boot unchanged on the OLD config — they come
-up with scanning off and the link pinned to home, which is exactly the
-pre-feature behaviour. Config-first would be the unsafe order here: the
-old binary rejects the new keys, exits, and its wrapper respawns it
+default, so the NEW binaries boot unchanged on the OLD config. That is not
+the same as scanning being off: `radio.scan.enable` defaults **true**, so
+the scout DOES run — but `candidates` defaults empty, so the only channel
+it ever visits is home, the pick is home, and the DISC proposes home. The
+link therefore stays pinned to home because there is nothing else to
+propose, not because the feature is disabled; on a one-card GS the DISC
+send is additionally gated by the home window. Config-first would be the
+unsafe order here: the old binary rejects the new keys, exits, and its
+wrapper respawns it
 forever at 2 s. So swap `maburgs` and `maburd`, confirm both are up, then
 push `gs/bundle/maburgs.default.toml` → GS `/etc/maburgs.toml` and
 `bundle/mabur.default.toml` → drone `/etc/mabur.toml`.

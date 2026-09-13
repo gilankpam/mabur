@@ -1876,10 +1876,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // takes tx_gate exclusive around FastRetune, so each call here takes it
   // SHARED -- a cal session lasts up to 180 s while link.rendezvous_ms is
   // 30 s, so the agent's FAILSAFE->RENDEZVOUS go_home_ retune landing
-  // mid-sweep is the normal case, not a corner. (retune's other half of the
-  // fix defers the move entirely while cal_active; this gate is what makes
-  // the window between "cal_active clears" and "the sweep's last write
-  // returns" safe.) Held only for the single call, never across pump().
+  // mid-sweep is the normal case, not a corner. retune's other half of the
+  // fix defers the move entirely while cal_active, and the deferred replay
+  // fires on the agent thread's falling edge -- by which time this thread
+  // may still be inside the post-session power restore. So the gate covers
+  // BOTH ends of the session: these three sweep-time calls and
+  // restore_operating_power()'s post-session writes all take it shared, and
+  // the replayed FastRetune (which takes it exclusive) therefore cannot
+  // overlap either. Held only for the single call, never across pump().
   struct DevicePowerCtl : CalSweep::PowerCtl {
     IRtlDevice* dev;
     std::shared_mutex* gate = nullptr;
@@ -2104,6 +2108,25 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                      "restoring with the bring-up config instead\n",
                      e.what());
       }
+      // Threading (Critical fix 1, residual): every device call below runs
+      // on the TX writer thread AFTER cal_active was cleared, which is
+      // exactly the window the agent thread's apply_deferred_retune() fires
+      // FastRetune in -- the deferral does not remove that race, it
+      // CONCENTRATES it here. So take tx_gate shared around the device
+      // calls, and only those: the load_config() file read above is
+      // deliberately outside the lock (it can block on disk), and nothing
+      // in here can block on the USB TX pool. One scope, not three: a
+      // FastRetune landing between the diff-table write and the override
+      // clear would expose the very "no override, still-zeroed diffs"
+      // window the ordering comment above exists to prevent.
+      //
+      // apply_offset_power_plan's two OTHER call sites need no gate of
+      // their own: bring-up (below) runs before any thread that could
+      // retune exists, and apply_result_and_arm_verify runs with
+      // cal_active still true (it is called above the cal_active.store
+      // that clears it), so a retune there defers instead of racing.
+      await_retune_gate(&retune_waiting);
+      std::shared_lock<std::shared_mutex> pg(tx_gate);
       if (live_cfg.radio.power_mode == "offset") {
         if (!apply_offset_power_plan(live_cfg.radio.rate_walls_idx,
                                      live_cfg.radio.legacy_wall_idx,
