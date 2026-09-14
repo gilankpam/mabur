@@ -28,6 +28,14 @@ TEST(dwell_sequence_and_record) {
   FakeRadio r; int64_t t = 0;
   InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; r.foreign += 2; });
   r.fa_next = 13;
+  // Pre-seed foreign to a NONZERO value before dwell() runs, so f0 != 0 and
+  // an absolute-count implementation (foreign_delta = f1.foreign, dropping
+  // the f0 subtraction) genuinely diverges from the correct delta -- with
+  // foreign starting at 0 (the field's default), the two are numerically
+  // identical and this assertion can't tell them apart. Round 1 fix: a
+  // mutation to the absolute form was confirmed to still pass 3/3 before
+  // this seed was added.
+  r.foreign = 100;
   ScoutDwell d; HopVisit v;
   CHECK(s.dwell(149, 136, d, v));
   REQUIRE(r.log.size() == 4);
@@ -50,5 +58,54 @@ TEST(failed_retune_returns_false_and_leaves_card_on_back) {
   ScoutDwell d; HopVisit v;
   CHECK(!s.dwell(149, 136, d, v));
   CHECK(d.survey.flags & devourer::chanmig::kFlagRetuneFailed);
+}
+// Round 1 fix #3: the return-to-`back` retune's own result must be checked
+// too -- a stranded scout card (parked on the candidate, mistaken for
+// having returned) is exactly the failure this module exists to prevent,
+// since live video is on the OTHER card. A fake whose SECOND retune call
+// (the return-to-back one; the first, to the candidate, succeeds) fails,
+// and -- matching RadioFrontend::retune's real contract, where a failed
+// call never reaches FastRetune -- leaves `ch` wherever the last
+// successful retune put it, i.e. still on the candidate.
+TEST(failed_return_retune_flags_and_refuses_the_visit) {
+  struct SecondFails : FakeRadio {
+    int retunes = 0;
+    bool retune(uint8_t c) override {
+      log.push_back("retune " + std::to_string(c));
+      ++retunes;
+      if (retunes == 2) return false;   // return-to-back retune fails; ch does NOT move
+      ch = c;
+      return true;
+    }
+  } r;
+  int64_t t = 0;
+  InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; r.foreign += 2; });
+  r.fa_next = 13;
+  ScoutDwell d; HopVisit v;
+  CHECK(!s.dwell(149, 136, d, v));
+  CHECK(d.survey.flags & devourer::chanmig::kFlagRetuneFailed);
+  // The observation itself still happened and is still recorded --
+  // it's the visit (and the bogus confidence that the card came home)
+  // that must not be booked.
+  CHECK(d.survey.fa_ofdm == 13);
+  CHECK(r.ch == 149);   // still parked on the candidate, not `back`
+}
+// Round 1 fix #2: main.cpp (Task 11) picks the dwell card per cycle and
+// must be able to repoint an already-constructed InflightScout at a
+// different card's control plane -- a reference can't be reseated, hence
+// the pointer member + set_radio() setter. Confirms the NEXT dwell after a
+// set_radio() call drives the new radio, not the one passed to the
+// constructor.
+TEST(set_radio_repoints_the_next_dwell) {
+  FakeRadio r1, r2; int64_t t = 0;
+  r1.ch = 200; r2.ch = 210;   // distinct starting channels so a mix-up is visible
+  InflightScout s(cfg(), r1, [&] { return t; }, [&](int ms) { t += ms * 1000; });
+  s.set_radio(r2);
+  ScoutDwell d; HopVisit v;
+  CHECK(s.dwell(149, 136, d, v));
+  CHECK(r1.log.empty());             // r1 was never touched after the reseat
+  REQUIRE(r2.log.size() == 4);
+  CHECK(r2.log[0] == "retune 149" && r2.log[3] == "retune 136");
+  CHECK(r2.ch == 136);
 }
 MTEST_MAIN
