@@ -1083,7 +1083,10 @@ class HopReportTest(unittest.TestCase):
         V = [{"t_ms": float(i), "verdict": "healthy", "evidence": 0, "ref_rung": None,
               "link_loss_pct": 0.0, "recovered": 0, "cards": []} for i in range(40)]
         V += [{"t_ms": 1000.0 + i, "verdict": "interfered", "evidence": 8, "ref_rung": 3,
-               "link_loss_pct": 5.0, "recovered": 2, "cards": []} for i in range(2)]
+               "link_loss_pct": 5.0, "recovered": 2,
+               "cards": [{"card": 0, "foreign": 15, "fa": 3, "cca": 20, "crc_fail": 1,
+                          "rssi_dbm": -58.0, "snr_db": 13.5, "d_rssi_db": -1.0}]}
+              for i in range(2)]
         scanlog = {"version": 2, "V": V, "H": [], "D": [], "M": []}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -1091,6 +1094,10 @@ class HopReportTest(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("verdicts: healthy 40 interfered 2", out)
         self.assertNotIn("HOP REPORT", out)
+        # evidence=8 (0x08) == kEvContended only -- decoded by name, not
+        # left as raw hex, and only the 2 non-healthy windows count here.
+        self.assertIn("evidence bits: impaired=0 weak=0 fading=0 contended=2 raised=0", out)
+        self.assertIn("card 0 (non-healthy, n=2): foreign=15 fa=3 rssi=-58.0 snr=13.5", out)
 
     def test_shadow_would_events_labeled_and_histogram_still_shown(self):
         """hop.enable=false: HopController still runs and still logs, every
@@ -1106,7 +1113,9 @@ class HopReportTest(unittest.TestCase):
              {"t_ms": 1900.0, "kind": "would_withdraw", "epoch": 2, "target": 42,
               "score": 0, "elapsed_ms": 600.0}]
         V = [{"t_ms": 1000.0, "verdict": "interfered", "evidence": 8, "ref_rung": 3,
-              "link_loss_pct": 5.0, "recovered": 0, "cards": []}]
+              "link_loss_pct": 5.0, "recovered": 0,
+              "cards": [{"card": 0, "foreign": 22, "fa": 4, "cca": 30, "crc_fail": 0,
+                        "rssi_dbm": -55.0, "snr_db": 14.0, "d_rssi_db": -0.5}]}]
         scanlog = {"version": 2, "V": V, "H": H, "D": [], "M": []}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -1117,6 +1126,8 @@ class HopReportTest(unittest.TestCase):
         self.assertIn("outcome would_withdraw", out)
         self.assertIn("video->restore -", out)   # never restores while disabled
         self.assertIn("verdicts: interfered 1", out)   # zero REAL hops: histogram still runs
+        self.assertIn("evidence bits: impaired=0 weak=0 fading=0 contended=1 raised=0", out)
+        self.assertIn("card 0 (non-healthy, n=1): foreign=22 fa=4 rssi=-55.0 snr=14.0", out)
 
     def test_withdrawn_hop_prints_blank_restore_not_a_stray_match(self):
         """A hop that never confirms (Ordered-state confirm_ms timeout ->

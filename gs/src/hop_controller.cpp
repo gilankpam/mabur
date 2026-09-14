@@ -35,7 +35,7 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
     ++holds_;
     state_ = HopState::Hold;
     out.kind = HopAction::Hold;
-    log_event(in.now_ms, "hold cap", epoch_, in.cur_op, 0, 0);
+    log_event(in.now_ms, "hold_cap", epoch_, in.cur_op, 0, 0);
     return;
   }
   if (in.best.has_value()) {
@@ -49,7 +49,7 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
   ++holds_;
   state_ = HopState::Hold;
   out.kind = HopAction::Hold;
-  log_event(in.now_ms, "hold exhausted", epoch_, in.cur_op, 0, 0);
+  log_event(in.now_ms, "hold_exhausted", epoch_, in.cur_op, 0, 0);
 }
 
 void HopController::ordered_tick(const HopTick& in, HopAction& out) {
@@ -95,7 +95,7 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
         ++holds_;
         state_ = HopState::Hold;
         out.kind = HopAction::Hold;
-        log_event(in.now_ms, "hold cap", epoch_, failed_target, 0, in.now_ms - verify_start_);
+        log_event(in.now_ms, "hold_cap", epoch_, failed_target, 0, in.now_ms - verify_start_);
         return;
       }
       if (next.has_value()) {

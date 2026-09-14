@@ -830,14 +830,15 @@ def load_scanlog(path):
     ref_rung|- link_loss_pct recovered [card foreign fa cca crc rssi snr
     drssi]...'.
 
-    H's kind field is NOT always one token: HopController::log_event()
-    passes the literal C++ string "hold cap" / "hold exhausted" straight
-    through %s (and, disabled, "would_hold cap" / "would_hold exhausted"),
-    so a naive positional split misreads the epoch/target/score/elapsed_ms
-    columns whenever a hold fires. epoch/target/score/elapsed_ms are always
-    single tokens and always the last 4 on the line, so the kind is
-    anchored from the END of the line (everything between t_ms and those
-    four fields), not from a fixed column count.
+    H's kind field is single-token snake_case today ("hold_cap" /
+    "hold_exhausted" included, fixed at the emitter -- they used to be the
+    literal two-word C++ strings "hold cap" / "hold exhausted", a
+    space-delimited field containing the field delimiter). The parser still
+    anchors epoch/target/score/elapsed_ms from the END of the line rather
+    than a fixed column count (kind = everything between t_ms and those
+    four always-single-token fields): harmless now that kind is always one
+    word, and it costs nothing to keep it robust against a future kind that
+    isn't.
 
     Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]}.
     Silent on lines that don't parse (older/newer record shapes) rather
@@ -919,7 +920,7 @@ def sniff_scanlog(path):
 # rest either continue an open attempt (lead_confirm, one_card_retune) or
 # close one (verify_pass, withdraw, and the two hold variants).
 _HOP_ORDER_KINDS = {"order", "verify_fail"}
-_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "hold cap", "hold exhausted"}
+_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "hold_cap", "hold_exhausted"}
 _HOP_RESTORE_WINDOW_MS = 5000.0  # generous: production fires E hop_restore
                                  # essentially in the same tick as H order/
                                  # verify_fail (main.cpp calls
@@ -1057,6 +1058,40 @@ def verdict_histogram(V):
     return {k: counts[k] for k in ("healthy", "fade", "interfered", "unknown") if counts.get(k)}
 
 
+# gs/src/hop_verdict.h's five independent evidence bits, in the same order
+# they're OR'd together in HopVerdict::window(). A window's verdict can be
+# Healthy while some of these are still set (only `impaired` gates the top-
+# level Healthy/not split; weak/fading/contended/raised are computed and
+# OR'd in unconditionally) -- so the bit tally is over ALL windows, not
+# just non-healthy ones, matching what the bitmask itself actually counts.
+_EVIDENCE_BITS = (("impaired", 1), ("weak", 2), ("fading", 4),
+                  ("contended", 8), ("raised", 16))
+
+
+def evidence_bit_tally(V):
+    """{"impaired": n, "weak": n, ...} -- how many windows set each bit."""
+    return {name: sum(1 for v in V if v["evidence"] & mask) for name, mask in _EVIDENCE_BITS}
+
+
+def evidence_card_medians(V):
+    """Per card, over NON-healthy windows only: median foreign, fa,
+    rssi_dbm, snr_db (median, not mean -- these are counter deltas with
+    outliers) and the sample count. This is the calibration read: how far
+    each threshold (hop_verdict.h's foreign_pps/fa_pps/weak_rssi_dbm/
+    weak_snr_db) actually sat from what tripped it."""
+    by_card = {}
+    for v in V:
+        if v["verdict"] == "healthy":
+            continue
+        for c in v["cards"]:
+            d = by_card.setdefault(c["card"], {"foreign": [], "fa": [], "rssi_dbm": [], "snr_db": []})
+            d["foreign"].append(c["foreign"]); d["fa"].append(c["fa"])
+            d["rssi_dbm"].append(c["rssi_dbm"]); d["snr_db"].append(c["snr_db"])
+    return {card: {"n": len(d["foreign"]),
+                   **{k: statistics.median(vals) for k, vals in d.items()}}
+            for card, d in by_card.items() if d["foreign"]}
+
+
 def dwell_cost_summary(D):
     """Per card: count and median(to_us+read_us+back_us) of scout dwells
     taken with sess==1 -- INSIDE the live session, i.e. dwells that
@@ -1097,7 +1132,10 @@ def print_hop_report(scanlog, ctllog):
     still runs and still logs every decision with a "would_" prefix, so a
     log full of would_order/would_withdraw pairs is handled as SHADOW rows
     (see build_hop_rows) printed in their own table, in addition to the
-    histogram -- not silently collapsed into "zero hops"."""
+    histogram -- not silently collapsed into "zero hops". Alongside the
+    histogram: the evidence bitmask decoded per bit, and per-card medians
+    of foreign/fa/rssi/snr over non-healthy windows -- a verdict name alone
+    can't tell contention from a weak signal from fading."""
     V, H, D = scanlog.get("V", []), scanlog.get("H", []), scanlog.get("D", [])
     restores = [e for e in ctllog.get("E", []) if e.get("reason") == "hop_restore"]
     rows = build_hop_rows(H, restores)
@@ -1118,6 +1156,19 @@ def print_hop_report(scanlog, ctllog):
         hist = verdict_histogram(V)
         print("verdicts: " + " ".join(f"{k} {n}" for k, n in hist.items()) if hist
               else "verdicts: (none)")
+        # Calibration instrument (spec Open Items: "the observe-only
+        # flights are the calibration") -- a verdict name alone can't tell
+        # contention from a weak signal from fading, nor which card drove
+        # it, so decode the evidence bitmask and show how close each
+        # per-card threshold actually sat to tripping.
+        tally = evidence_bit_tally(V)
+        print("evidence bits: " + " ".join(f"{k}={n}" for k, n in tally.items()))
+        medians = evidence_card_medians(V)
+        for card in sorted(medians):
+            m = medians[card]
+            print(f"  card {card} (non-healthy, n={m['n']}): "
+                  f"foreign={m['foreign']:.0f} fa={m['fa']:.0f} "
+                  f"rssi={m['rssi_dbm']:.1f} snr={m['snr_db']:.1f}")
 
     dsum = dwell_cost_summary(D)
     if dsum:
