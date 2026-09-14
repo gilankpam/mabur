@@ -2,6 +2,7 @@ add_library(mabur_gs_core STATIC
   src/channel_plan.cpp
   src/channel_ranker.cpp
   src/hop_verdict.cpp
+  src/hop_ranker.cpp
   src/channel_scout.cpp
   src/config.cpp
   src/card_scan.cpp
