@@ -1,0 +1,96 @@
+#include "hop_verdict.h"
+#include "mtest.h"
+using namespace maburgs;
+static HopCfg cfg() { HopCfg c; return c; }   // spec defaults
+static VerdictCardIn card(double rssi, double snr, double foreign_ps, double fa_ps, double crc_ps = 0) {
+  VerdictCardIn c; c.valid = true; c.rssi_dbm = rssi; c.snr_db = snr;
+  c.foreign = (uint32_t)(foreign_ps * 0.15 + 0.5); c.fa = (uint32_t)(fa_ps * 0.15 + 0.5);
+  c.cca = c.fa; c.crc_fail = (uint32_t)(crc_ps * 0.15 + 0.5); return c;
+}
+// 5 s of clean windows at rung 5 to build the references
+static double warm(HopVerdict& v, double t = 0) {
+  for (int i = 0; i < 40; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  return t;
+}
+TEST(baseline_is_healthy) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.005, 20}, 5);
+  CHECK(o.v == Verdict::Healthy); CHECK(!o.trigger); CHECK(o.ref_rung == -1);
+}
+TEST(co_channel_802_11_neighbour_is_interfered_after_two_windows) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  // spike jam250c120: loss 4-8 %, foreign 237/s, FA 2/s, RSSI rose to -55, SNR 33
+  auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(o1.v == Verdict::Interfered); CHECK(!o1.trigger); CHECK(o1.ref_rung == 5);
+  CHECK(o1.evidence & kEvImpaired); CHECK(o1.evidence & kEvContended); CHECK(!(o1.evidence & kEvRaised));
+  auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 4);  // ladder demoted meanwhile
+  CHECK(o2.trigger); CHECK(o2.ref_rung == 5);   // snapshot taken at the FIRST impaired window
+}
+TEST(o4_raised_floor_is_interfered_even_with_rssi_up) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = v.window(t, {card(-48, 30, 0, 744, 130), card(-50, 27, 0, 388, 130)}, {0.85, 5}, 0);
+  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvRaised); CHECK(!(o.evidence & kEvFading));
+}
+TEST(fade_is_fade_not_interfered) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = v.window(t, {card(-90, 8, 0, 0, 30), card(-86, 10, 0, 10, 5)}, {0.05, 90}, 1);
+  CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvWeak); CHECK(!o.trigger);
+}
+TEST(loss_with_no_domain_evidence_is_unknown) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.08, 100}, 5);
+  CHECK(o.v == Verdict::Unknown); CHECK(!o.trigger);
+}
+TEST(off_channel_blocking_reads_as_raised) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = v.window(t, {card(-59, 28, 0, 209, 94), card(-59, 28, 0, 299, 130)}, {0.04, 70}, 4);
+  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvRaised);
+}
+TEST(recovered_rate_alone_marks_impaired_and_its_reference_freezes) {
+  HopVerdict v(cfg(), 2); double t = warm(v);          // recovered mean 20/window
+  auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.0, 100}, 5);   // 5x
+  CHECK(o1.evidence & kEvImpaired);
+  for (int i = 1; i < 30; ++i) v.window(t + 150 * i, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.0, 100}, 0);
+  auto o2 = v.window(t + 150 * 30, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.0, 100}, 0);
+  CHECK(o2.evidence & kEvImpaired);   // frozen mean: 100 is still 5x the pre-onset 20
+}
+TEST(skipped_card_does_not_contribute_and_one_card_fade_covered_is_healthy) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  VerdictCardIn dead; dead.valid = false;
+  auto o = v.window(t, {card(-61, 30, 0, 4), dead}, {0.004, 20}, 5);
+  CHECK(o.v == Verdict::Healthy);
+  auto o2 = v.window(t + 150, {card(-88, 9, 0, 4), card(-61, 30, 0, 4)}, {0.004, 20}, 5);
+  CHECK(o2.v == Verdict::Healthy);   // best card is fine and the link is not impaired
+}
+TEST(references_thaw_after_three_healthy_windows) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(v.ref_rung() == 5);
+  for (int i = 1; i <= 3; ++i) v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 3);
+  CHECK(v.ref_rung() == -1);
+}
+// Guard fix: a mid-dwell (invalid) card with no trailing RSSI history yet
+// must not have its frozen reference fabricated from a stale rssi_dbm=0
+// reading. Freeze while card 1 has never once been valid (so its history is
+// empty), then let card 1 come back as the best card and check its fading
+// evidence is not fabricated from a bogus 0 dBm reference.
+TEST(frozen_reference_for_a_mid_dwell_card_is_not_fabricated_from_zero) {
+  HopVerdict v(cfg(), 2);
+  VerdictCardIn dead; dead.valid = false;
+  double t = 0;
+  // 5 s of clean windows -- card 1 hasn't dwelt on home once yet, so its
+  // trailing RSSI history stays empty the whole time.
+  for (int i = 0; i < 40; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), dead}, {0.0, 20}, 5);
+  // Card 0 goes interfered: freezes references, including card 1's (still
+  // invalid this window, still no history) -- it must not get ref_rssi = 0.
+  auto o1 = v.window(t, {card(-55, 33, 237, 2), dead}, {0.06, 80}, 5);
+  CHECK(o1.v == Verdict::Interfered);
+  CHECK(v.ref_rung() == 5);
+  // Card 1 now comes back as the best card (much stronger than card 0) with
+  // a perfectly normal RSSI. If its frozen reference had been fabricated as
+  // 0 dBm, this reading (well above 0) would spuriously read as "fading"
+  // relative to that bogus reference -- it must not.
+  auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-40, 30, 0, 4)}, {0.06, 80}, 5);
+  CHECK(!(o2.evidence & kEvFading));
+}
+MTEST_MAIN
