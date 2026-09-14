@@ -1,4 +1,6 @@
 #include "scan_log.h"
+#include "hop_controller.h"
+#include "hop_verdict.h"
 #include "log_writer.h"
 #include "mtest.h"
 #include <cstdlib>
@@ -39,23 +41,33 @@ TEST(scan_log_records_are_byte_exact) {
   log.pick(2001, std::nullopt, 0, all, 3);
   log.move(maburgs::MoveEvent{2100, -1, 136, 149, maburgs::MoveReason::Commit});
   log.move(maburgs::MoveEvent{9000, 0, 149, 136, maburgs::MoveReason::SplitHome});
-  maburgs::ScoutEnergy e; e.fa_valid = true; e.cca_ofdm = 61; e.fa_ofdm = 2; e.igi_valid = true; e.igi = 40;
-  log.energy(3000, 0, 149, e, 59, 1);
-  e.igi_valid = false;
-  log.energy(4000, 1, 149, e, 59, 1);
+  maburgs::VerdictOut o; o.v = maburgs::Verdict::Interfered;
+  o.evidence = maburgs::kEvImpaired | maburgs::kEvContended;
+  o.ref_rung = 5; o.d_rssi_db = 2.5;
+  std::vector<maburgs::VerdictCardIn> cards(2);
+  cards[0].valid = true; cards[0].foreign = 36; cards[0].fa = 2; cards[0].cca = 0;
+  cards[0].crc_fail = 5; cards[0].rssi_dbm = -55.4; cards[0].snr_db = 33.1;
+  cards[1].valid = true; cards[1].foreign = 35; cards[1].fa = 1; cards[1].cca = 1;
+  cards[1].crc_fail = 6; cards[1].rssi_dbm = -56.0; cards[1].snr_db = 32.0;
+  maburgs::VerdictLinkIn link; link.pre_fec_loss = 0.061; link.recovered = 80;
+  log.verdict(1234.5, o, cards, link);
+  maburgs::HopEvent h{1300.0, "order", 1, 149, 20, 0.0};
+  log.hop(h);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("scanlog 1 home=136 candidates=149,161 dwell_ms=250\n", 0) == 0);
+  CHECK(text.rfind("scanlog 2 home=136 candidates=149,161 dwell_ms=250\n", 0) == 0);
   CHECK(text.find("\nC 1000 1 RTL8822E jaguar3 2x2 1f 5080-6165 1 1 1 1 0\n") != std::string::npos);
   CHECK(text.find("\nC 1001 0 ? ? 0x0 0 0-0 0 0 0 0 0\n") != std::string::npos);
-  CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10\n") != std::string::npos);
-  CHECK(text.find("\nD 1600 1 149 0 250 0 0 0 0 - nan 0\n") != std::string::npos);
+  CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10 0 0 0 0\n") != std::string::npos);
+  CHECK(text.find("\nD 1600 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0\n") != std::string::npos);
   CHECK(text.find("\nK 2000 149 3 136:4 149:0:-96\n") != std::string::npos);
   CHECK(text.find("\nK 2001 none 0\n") != std::string::npos);
   CHECK(text.find("\nM 2100 all 136 149 commit\n") != std::string::npos);
   CHECK(text.find("\nM 9000 0 149 136 split_home\n") != std::string::npos);
-  CHECK(text.find("\nA 3000 0 149 61 2 59 1 40\n") != std::string::npos);
-  CHECK(text.find("\nA 4000 1 149 61 2 59 1 -\n") != std::string::npos);
+  CHECK(text.find(
+      "\nV 1234.5 interfered 09 5 6.1 80 0 36 2 0 5 -55.4 33.1 2.5 1 35 1 1 6 -56.0 32.0 2.5\n") !=
+      std::string::npos);
+  CHECK(text.find("\nH 1300.0 order 1 149 20 0.0\n") != std::string::npos);
   CHECK(log.path() == dir + "/scan.log");
 }
 

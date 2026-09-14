@@ -6,7 +6,7 @@
 namespace maburgs {
 
 ScanLog::ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info)
-    : w_(w), s_(w.open(dir, "scan.log", "scanlog 1 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "scan.log", "scanlog 2 " + header_info)) {}
 
 void ScanLog::put_(const char* b, int n) {
   if (s_ == LogWriter::kBadStream || n <= 0) return;
@@ -42,10 +42,12 @@ void ScanLog::dwell(double t_ms, int card, const ScoutDwell& d) {
   else std::snprintf(floor, sizeof(floor), "nan");
   char b[256];
   const int n = std::snprintf(
-      b, sizeof(b), "D %.0f %d %u %llu %lld %u %u %u %u %s %s %x", t_ms, card,
+      b, sizeof(b), "D %.0f %d %u %llu %lld %u %u %u %u %s %s %x %d %lld %lld %lld", t_ms, card,
       static_cast<unsigned>(s.def.primary), static_cast<unsigned long long>(s.round),
       static_cast<long long>(s.observe_ms), s.cca_ofdm, s.fa_ofdm, s.dvr_frames,
-      s.frames - s.dvr_frames, igi, floor, static_cast<unsigned>(s.flags));
+      s.frames - s.dvr_frames, igi, floor, static_cast<unsigned>(s.flags), d.in_session ? 1 : 0,
+      static_cast<long long>(d.to_us), static_cast<long long>(d.read_us),
+      static_cast<long long>(d.back_us));
   put_(b, std::min(n, static_cast<int>(sizeof(b) - 1)));
 }
 
@@ -78,16 +80,34 @@ void ScanLog::move(const MoveEvent& e) {
   put_(b, std::min(n, static_cast<int>(sizeof(b) - 1)));
 }
 
-void ScanLog::energy(double t_ms, int card, uint8_t ch, const ScoutEnergy& e,
-                     uint64_t own, uint64_t foreign) {
-  char igi[8];
-  if (e.igi_valid) std::snprintf(igi, sizeof(igi), "%d", static_cast<int>(e.igi));
-  else std::snprintf(igi, sizeof(igi), "-");
-  char b[160];
-  const int n = std::snprintf(b, sizeof(b), "A %.0f %d %u %u %u %llu %llu %s", t_ms, card,
-                              static_cast<unsigned>(ch), e.cca_ofdm, e.fa_ofdm,
-                              static_cast<unsigned long long>(own),
-                              static_cast<unsigned long long>(foreign), igi);
+void ScanLog::verdict(double t_ms, const VerdictOut& o, const std::vector<VerdictCardIn>& cards,
+                      const VerdictLinkIn& link) {
+  if (s_ == LogWriter::kBadStream) return;
+  char rung[8];
+  if (o.ref_rung < 0) std::snprintf(rung, sizeof(rung), "-");
+  else std::snprintf(rung, sizeof(rung), "%d", o.ref_rung);
+  char head[128];
+  const int hn = std::snprintf(head, sizeof(head), "V %.1f %s %02x %s %.1f %u", t_ms,
+                               to_string(o.v), static_cast<unsigned>(o.evidence), rung,
+                               link.pre_fec_loss * 100.0,
+                               static_cast<unsigned>(link.recovered));
+  std::string line(head, static_cast<size_t>(std::min(hn, static_cast<int>(sizeof(head) - 1))));
+  for (size_t i = 0; i < cards.size(); ++i) {
+    const VerdictCardIn& c = cards[i];
+    char cb[160];
+    const int cn = std::snprintf(cb, sizeof(cb), " %u %u %u %u %u %.1f %.1f %.1f",
+                                 static_cast<unsigned>(i), c.foreign, c.fa, c.cca, c.crc_fail,
+                                 c.rssi_dbm, c.snr_db, o.d_rssi_db);
+    line.append(cb, static_cast<size_t>(std::min(cn, static_cast<int>(sizeof(cb) - 1))));
+  }
+  put_(line.c_str(), static_cast<int>(std::min(line.size(), LogWriter::kMaxLine - 1)));
+}
+
+void ScanLog::hop(const HopEvent& e) {
+  char b[128];
+  const int n = std::snprintf(b, sizeof(b), "H %.1f %s %u %u %u %.1f", e.t_ms, e.kind.c_str(),
+                              static_cast<unsigned>(e.epoch), static_cast<unsigned>(e.target),
+                              static_cast<unsigned>(e.score), e.elapsed_ms);
   put_(b, std::min(n, static_cast<int>(sizeof(b) - 1)));
 }
 

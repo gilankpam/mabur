@@ -28,6 +28,11 @@ struct ScoutDwell {
   devourer::chanmig::SurveyDwell survey;
   bool floor_valid = false;
   int8_t floor_dbm = 0;
+  // In-session (Task 10) provenance: whether this dwell ran mid-flight, and
+  // the step timings in microseconds. Boot-time dwells leave these at their
+  // defaults (0/0/0/0) so scan.log's D record stays valid without a hop.
+  bool in_session = false;
+  int64_t to_us = 0, read_us = 0, back_us = 0;
 };
 
 // Boot-time scout (spec 2026-09-13-auto-channel-select §4). Owns one card's

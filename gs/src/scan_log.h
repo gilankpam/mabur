@@ -7,23 +7,28 @@
 #include "channel_plan.h"
 #include "channel_ranker.h"
 #include "channel_scout.h"
+#include "hop_controller.h"
+#include "hop_verdict.h"
 #include "log_writer.h"
 #include "scout_radio.h"
 
 namespace maburgs {
 
-// scan.log (scanlog 1) -- the channel-selection record in the debug-log
-// session directory (spec 2026-09-13-auto-channel-select §7). Formats are
+// scan.log (scanlog 2) -- the channel-selection record in the debug-log
+// session directory (spec 2026-09-14-inflight-channel-hop). Formats are
 // LOCKED by tests/test_scan_log.cpp:
 //
-//   scanlog 1 <header_info>
+//   scanlog 2 <header_info>
 //   C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
 //     <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 //   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
-//     <floor_dbm|nan> <flags_hex>                                # one scout dwell
+//     <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us>
+//                                                                 # one scout dwell
 //   K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... # the pick
 //   M <t> <card|all> <from> <to> <reason>                        # a link move
-//   A <t> <card> <ch> <cca> <fa> <own> <foreign> <igi|->         # in-flight energy
+//   V <t> <verdict> <evidence_hex> <ref_rung|-> <link_loss_pct> <recovered>
+//     [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi>]... # a verdict window
+//   H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
 class ScanLog {
  public:
   ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info);
@@ -39,8 +44,9 @@ class ScanLog {
   void pick(double t_ms, std::optional<uint8_t> picked, uint64_t rounds,
             const std::vector<RankEntry>& all, int min_rounds);
   void move(const MoveEvent& e);
-  void energy(double t_ms, int card, uint8_t ch, const ScoutEnergy& e,
-              uint64_t own, uint64_t foreign);
+  void verdict(double t_ms, const VerdictOut& o, const std::vector<VerdictCardIn>& cards,
+               const VerdictLinkIn& link);
+  void hop(const HopEvent& e);
 
  private:
   void put_(const char* b, int n);
