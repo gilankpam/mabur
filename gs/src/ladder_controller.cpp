@@ -22,6 +22,7 @@ const char* to_string(CtlReason r) {
     case CtlReason::S3Util: return "s3_util";
     case CtlReason::Fade: return "fade";
     case CtlReason::PromoteProbed: return "promote_probed";
+    case CtlReason::HopRestore: return "hop_restore";
   }
   return "unknown";
 }
@@ -137,7 +138,7 @@ void LadderController::update_probe_gate(const LinkHealth& h, double now_ms) {
     const double b = budget_enh_for(idx_ + 1);  // the CANDIDATE's enh budget
     probe_u_ = b > 0.0 ? h.probe_loss / b : (h.probe_loss > 0.0 ? 1e9 : 0.0);
     probe_last_sample_ms_ = now_ms;
-    store_.observe_probe(pr, probe_u_, now_ms);
+    if (now_ms >= blank_store_until_ms_) store_.observe_probe(pr, probe_u_, now_ms);
     if (probe_u_ <= probe_util_threshold()) {
       if (probe_clean_since_ms_ < 0.0) probe_clean_since_ms_ = now_ms;
       set_probe_state(ProbeGateState::Clean, pr, probe_u_, now_ms);
@@ -321,7 +322,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // can outlive the blanking; see CLAUDE.md tuning invariant). Fed BEFORE
   // the decision blocks so the sample that triggers a demote still lands
   // on the rung it actually measured.
-  if (now_ms >= s3_blank_until_ms_) {
+  if (now_ms >= s3_blank_until_ms_ && now_ms >= blank_store_until_ms_) {
     store_.observe_s1(idx_, u_, h.residual_loss > 0.0, now_ms);
     if (!std::isnan(h.rf_evm_db))
       store_.observe_evm(idx_, h.rf_evm_db, now_ms);
@@ -413,7 +414,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // number, and it is left at the 0 stamped at update() entry whenever s3 is
   // not measurable this window: a persisted last-good value would make util3()
   // (sideport link.ctl.u3) report a frozen stale reading after s3 goes quiet.
-  const bool s3_live = s3_usable(h) && now_ms >= s3_blank_until_ms_;
+  const bool s3_live =
+      s3_usable(h) && now_ms >= s3_blank_until_ms_ && now_ms >= blank_store_until_ms_;
 
   // Continuity gate. The s3 util confirm window below is an elapsed-time test
   // against a start stamp, which only means "sustained" while the
@@ -616,6 +618,22 @@ bool LadderController::on_tick(double now_ms) {
     return true;
   }
   return false;
+}
+
+void LadderController::restore(int rung, double now_ms) {
+  rung = std::clamp(rung, 0, static_cast<int>(cfg_.ladder.size()) - 1);
+  const int from = idx_;
+  idx_ = rung;
+  probation_active_ = false;
+  probation_until_ms_ = -1e18;
+  probation_rung_ = -1;
+  reset_windows();
+  mark_transition(now_ms);
+  set_event(now_ms, from, rung, CtlReason::HopRestore, u_, snr_now_);
+}
+
+void LadderController::blank_store(double until_ms) {
+  blank_store_until_ms_ = std::max(blank_store_until_ms_, until_ms);
 }
 
 }  // namespace maburgs

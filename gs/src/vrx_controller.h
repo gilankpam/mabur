@@ -72,6 +72,21 @@ class VrxController {
   // capability must wait for this to be true or they complain about a peer
   // they have not heard from yet.
   bool peer_acked() const { return peer_acked_; }
+  // In-flight channel hop (spec 2026-09-14 §4). set_hop() is carried in
+  // every RCF built from now on (build_rcf() stamps r.hop_ch/r.hop_epoch);
+  // restore_rung()/blank_store() forward straight to the ladder controller
+  // -- restore_rung() additionally refreshes cur_op_ immediately (the same
+  // way step() does after a rung change) so an RCF built in the SAME tick
+  // already carries the restored profile.
+  void set_hop(uint8_t hop_ch, uint8_t hop_epoch) {
+    hop_ch_ = hop_ch;
+    hop_epoch_ = hop_epoch;
+  }
+  void restore_rung(int rung, double now_ms);
+  void blank_store(double until_ms) { ctrl_.blank_store(until_ms); }
+  uint8_t hop_ch() const { return hop_ch_; }
+  uint8_t hop_epoch() const { return hop_epoch_; }
+
   // Rendezvous nonce for test construction of acceptable DiscAcks.
   uint32_t rz_nonce() const { return rz_.nonce(); }
   void set_proposal(uint8_t ch) { rz_.set_proposal(ch); }
@@ -85,6 +100,9 @@ class VrxController {
  private:
   mabur::rc::Rcf build_rcf();
   void note_cmd(const mabur::rc::Rcf& r);
+  // cur_op_ = OpPoint derived from ctrl_.op() -- the one place step() and
+  // restore_rung() both refresh the cached operating point from the ladder.
+  void sync_op_();
 
   VrxCfg cfg_;
   LadderController ctrl_;
@@ -98,6 +116,8 @@ class VrxController {
   uint8_t last_cmd_probe_profile_ = mabur::rc::kNoProbeProfile;
   uint8_t agreed_channel_ = 0;
   bool ack_edge_ = false;
+  uint8_t hop_ch_ = 0;
+  uint8_t hop_epoch_ = 0;
 };
 
 }  // namespace maburgs

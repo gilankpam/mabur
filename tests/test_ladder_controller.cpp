@@ -1,4 +1,5 @@
 #include <cmath>
+#include <string>
 
 #include "ladder_controller.h"
 #include "mtest.h"
@@ -1311,4 +1312,47 @@ TEST(fade_regime_shortens_the_s3_util_confirm) {
     return follow_on;
   };
   CHECK(follow_on_demotes() > 0);
+}
+
+// --- Task 8: hop restore + store blanking (spec 2026-09-14 in-flight hop) ---
+
+// restore() re-enters a rung directly: no probe gate (probe is ENABLED in
+// make_cfg() here, so a normal promote from 0 would need one), probation
+// cleared immediately, and the ctl-log event says why.
+TEST(restore_reenters_rung_without_probe_and_clears_probation) {
+  auto cfg = make_cfg();          // probe ENABLED: a normal promote would need a probe
+  LadderController ctl(cfg);
+  double t = 0;
+  feed_for(ctl, t, 1000, 0.0);
+  REQUIRE(ctl.rung() == 0);
+  ctl.restore(5, t);
+  CHECK(ctl.rung() == 5);
+  CHECK(ctl.last_event().reason == CtlReason::HopRestore);
+  CHECK(ctl.last_event().from == 0 && ctl.last_event().to == 5);
+  CHECK(ctl.probation_ms_left(t) == 0);
+  CHECK(std::string(to_string(CtlReason::HopRestore)) == "hop_restore");
+}
+
+// blank_store() gates all three RungStore write sites: while blanked, the
+// per-rung sample count (RungStat::u.n, exported as link.rungs[i].n) must
+// not move even under elevated util; once the deadline passes, writes
+// resume. The elevated-phase util (0.5) is deliberately kept UNDER
+// down_util (0.6, the ladder default): at or above down_util a confirmed
+// util demote fires within eff_confirm_ms regardless of blank_store (it
+// gates the STORE only, never decisions), which would carry the sample off
+// rung 2 for good and make the post-blank resumption unobservable on
+// stat(2) -- not a blank_store bug, just the wrong util to probe it with.
+TEST(blank_store_gates_every_store_write) {
+  auto cfg = make_cfg_noprobe();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 2);
+  feed_for(ctl, t, cfg.probation_ms + 200, 0.3);
+  const auto before = ctl.rungs().stat(2).u.n;
+  ctl.blank_store(t + 1000);
+  feed_for(ctl, t, 600, 0.5);              // elevated util, but blanked
+  CHECK(ctl.rung() == 2);                  // still parked: this really tests the blank
+  CHECK(ctl.rungs().stat(2).u.n == before);
+  feed_for(ctl, t, 600, 0.3);              // past the blank: writes resume
+  CHECK(ctl.rungs().stat(2).u.n > before);
 }

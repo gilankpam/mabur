@@ -153,7 +153,7 @@ struct LinkHealth {
 
 enum class CtlReason {
   None, Residual, Util, Probation, Starved, Timeout, Promote,
-  S3Residual, S3Util, Fade, PromoteProbed
+  S3Residual, S3Util, Fade, PromoteProbed, HopRestore
 };
 const char* to_string(CtlReason r);
 
@@ -229,6 +229,23 @@ class LadderController {
   // the failsafe rung on feedback timeout and expires survived probation.
   // Returns true when the rung changed.
   bool on_tick(double now_ms);
+
+  // In-flight channel hop (spec 2026-09-14 §4): direct re-entry into `rung`
+  // with no probe-before-promote and no probation, because the evidence that
+  // justified that rung is still valid -- only the channel changed. `rung`
+  // is clamped into the valid ladder range: the caller (VrxController, via
+  // Task 11's HopController) may hand back a rung snapshotted before the
+  // hop, and a stale or out-of-range index must not index out of bounds.
+  // Logs a HopRestore ctl event.
+  void restore(int rung, double now_ms);
+
+  // Stop feeding the per-rung EWMA store (observe_s1/observe_evm/observe_s3/
+  // observe_probe) until `until_ms`: an interferer's demoted operating point
+  // is real RF evidence for the CHANNEL that just got abandoned, not for
+  // what the rung can do in general, and must not poison the learned
+  // per-rung statistics. Takes the MAXIMUM of the existing and new deadline
+  // so overlapping blanks never shorten an existing one.
+  void blank_store(double until_ms);
 
   int rung() const { return idx_; }
   // The rung the last VALID feedback sample was measured on, stamped before
@@ -427,6 +444,8 @@ class LadderController {
   // measurement is CONTINUOUS: a gap invalidates the run (see update()).
   double s3_last_live_ms_ = -1e18;
   double s3_blank_until_ms_ = -1e18;
+  // See blank_store(): -1e18 = nothing blanked.
+  double blank_store_until_ms_ = -1e18;
   double snr_now_ = std::numeric_limits<double>::quiet_NaN();
   double evm_now_ = std::numeric_limits<double>::quiet_NaN();
 

@@ -23,6 +23,8 @@ VrxController::VrxController(VrxCfg cfg)
       rz_(VrxRzConfig{cfg.vtx_id, 1000, 20, cfg.op_channel}),
       cur_op_(op_from_rung(ctrl_.op())) {}
 
+void VrxController::sync_op_() { cur_op_ = op_from_rung(ctrl_.op()); }
+
 void VrxController::on_video(double now_ms) { rz_.feed_video(now_ms); }
 
 void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
@@ -47,7 +49,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
     cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false,
                      cfg_.pin_overhead_base, cfg_.pin_overhead_enh, 0.0};
   } else if (ctrl_.on_tick(now_ms)) {
-    cur_op_ = op_from_rung(ctrl_.op());
+    sync_op_();
   }
   const VrxAction act = rz_.tick(now_ms);
   if (act == VrxAction::Beacon)
@@ -66,7 +68,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   last_fb_ms_ = now_ms;
 
   if (cfg_.pin_mcs < 0) {
-    if (ctrl_.update(health, now_ms)) cur_op_ = op_from_rung(ctrl_.op());
+    if (ctrl_.update(health, now_ms)) sync_op_();
   }
   mabur::rc::Rcf r = build_rcf();
   // No repeat copies of an op-changing RCF: the 2026-08-14 repeat burst
@@ -90,6 +92,8 @@ mabur::rc::Rcf VrxController::build_rcf() {
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
   r.fec_overhead_base = cur_op_.overhead_base;
   r.fec_overhead_enh = cur_op_.overhead_enh;
+  r.hop_ch = hop_ch_;
+  r.hop_epoch = hop_epoch_;
   // Probe stream MCS (spec 2026-09-04): the ladder names a rung to probe on
   // every RCF, or none. In static-pin mode the ladder is out of the loop, so
   // the probe follows the dedicated pin instead.
@@ -105,6 +109,11 @@ mabur::rc::Rcf VrxController::build_rcf() {
         static_cast<uint8_t>(cur_op_.bw));
   }
   return r;
+}
+
+void VrxController::restore_rung(int rung, double now_ms) {
+  ctrl_.restore(rung, now_ms);
+  sync_op_();
 }
 
 void VrxController::note_cmd(const mabur::rc::Rcf& r) {

@@ -479,3 +479,61 @@ TEST(pinned_link_can_probe_a_fixed_mcs) {
   CHECK(first_rcf(vrx, healthy(), t).probe_profile ==
         mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
 }
+
+// --- Task 8: hop plumbing (spec 2026-09-14 in-flight channel hop) ---
+
+// set_hop() is carried in EVERY RCF from then on, defaulting to 0/0 (no
+// order ever issued) until the first call.
+TEST(set_hop_populates_every_rcf_from_then_on) {
+  auto vrx = make();
+  double t = 0;
+  CHECK(vrx.hop_ch() == 0);
+  CHECK(vrx.hop_epoch() == 0);
+  auto r0 = first_rcf(vrx, healthy(), t);
+  CHECK(r0.hop_ch == 0);
+  CHECK(r0.hop_epoch == 0);
+
+  vrx.set_hop(157, 3);
+  CHECK(vrx.hop_ch() == 157);
+  CHECK(vrx.hop_epoch() == 3);
+  auto r1 = first_rcf(vrx, healthy(), t);
+  CHECK(r1.hop_ch == 157);
+  CHECK(r1.hop_epoch == 3);
+}
+
+// restore_rung() must refresh cur_op_ synchronously -- NOT wait for the
+// next step() to notice a rung change it did not itself make (step() only
+// resyncs cur_op_ when ITS OWN ctrl_.on_tick()/ctrl_.update() call returns
+// true; a rung change made directly via ctrl_.restore() from outside would
+// otherwise leave cur_op_ stale forever).
+TEST(restore_rung_syncs_cur_op_before_any_step) {
+  LadderCfg lcfg = default_ladder();
+  lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
+  auto vrx = make(lcfg);
+  REQUIRE(vrx.cur_op().mcs == 0);
+  vrx.restore_rung(3, 0.0);           // default_ladder()[3] = mcs 5
+  CHECK(vrx.ctl().rung() == 3);
+  CHECK(vrx.cur_op().mcs == 5);
+  CHECK(vrx.ctl().last_event().reason == CtlReason::HopRestore);
+}
+
+// And the RCF built on the SAME tick as the restore already carries the
+// restored profile, not the pre-restore one.
+TEST(restore_rung_rcf_in_the_same_tick_carries_restored_profile) {
+  LadderCfg lcfg = default_ladder();
+  lcfg.feedback_timeout_ms = 100000;
+  auto vrx = make(lcfg);
+  double t = 0;
+  // Bring the link up for real first (accepts the DiscAck, and a genuine
+  // ctrl_.update() stamps the ladder's last_feedback_ms_): restore_rung on
+  // a controller that has never once been fed real feedback is not a
+  // scenario Task 11's HopController produces, and on_tick()'s blind-side
+  // timeout (measured off that never-stamped default) would otherwise
+  // force rung 0 right back on the very first tick.
+  auto r0 = first_rcf(vrx, healthy(), t);
+  CHECK(r0.profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
+
+  vrx.restore_rung(3, t);             // default_ladder()[3] = mcs 5
+  auto r1 = first_rcf(vrx, healthy(), t);
+  CHECK(r1.profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
+}
