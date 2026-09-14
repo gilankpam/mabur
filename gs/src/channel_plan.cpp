@@ -61,6 +61,12 @@ void ChannelPlan::on_ack(double now_ms, uint8_t agreed, uint8_t proposed) {
 
 void ChannelPlan::hop_order(double now_ms, uint8_t target, int lead_card) {
   now_ms_ = now_ms;
+  if (hopping_) {
+    // A second order abandons the in-flight hop: log its withdrawal before
+    // starting the new one, so the flight log carries a trace of it instead
+    // of the lead card silently snapping back to op_.
+    events_.push_back(MoveEvent{now_ms, hop_lead_, hop_target_, op_, MoveReason::HopWithdraw});
+  }
   hopping_ = true;
   hop_target_ = target;
   hop_lead_ = lead_card;
@@ -75,12 +81,14 @@ void ChannelPlan::hop_confirmed(double now_ms) {
   op_ = hop_target_;
   frozen_ = true;
   hopping_ = false;
+  have_lost_since_ = false;  // loss timed on the pre-hop channel is stale now
   events_.push_back(MoveEvent{now_ms, -1, hop_from_, op_, MoveReason::HopFollow});
 }
 
 void ChannelPlan::hop_withdraw(double now_ms) {
   now_ms_ = now_ms;
   hopping_ = false;
+  have_lost_since_ = false;  // loss timed on the pre-hop channel is stale now
   events_.push_back(MoveEvent{now_ms, hop_lead_, hop_target_, op_, MoveReason::HopWithdraw});
 }
 

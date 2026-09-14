@@ -162,4 +162,34 @@ TEST(hop_after_a_hop_uses_the_new_op_as_from) {
   auto ev = p.take_events();
   CHECK(ev[0].from == 149 && ev[0].to == 165 && ev[0].card == 0);
 }
+TEST(hop_withdraw_resets_loss_timer_for_split) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 149, 149); p.take_events();
+  p.tick(1000, false);              // lost_since_ms_ = 1000 (pre-hop loss bookkeeping)
+  p.tick(2000, false);              // 1000 ms of pre-hop loss accumulated, well under 5000
+  CHECK(!p.split());
+  p.hop_order(2000, 165, 1);
+  p.tick(2200, false);              // during the hop: no bookkeeping, no split
+  p.hop_withdraw(2500);             // lead card returns, op_ unchanged
+  p.tick(2500, false);              // continuous loss resumes right at withdraw
+  CHECK(!p.split());
+  p.tick(6000, false);              // OLD buggy split point: 1000 + split_after_ms(5000)
+  CHECK(!p.split());                // must NOT have split yet: pre-hop loss must not count
+  p.tick(7499, false);              // withdraw_time(2500) + split_after_ms(5000) - 1
+  CHECK(!p.split());
+  p.tick(7500, false);              // withdraw_time + split_after_ms
+  CHECK(p.split());
+}
+TEST(hop_order_while_hopping_emits_withdraw_for_abandoned_lead) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 136, 136); p.take_events();
+  p.hop_order(1000, 149, 1);
+  p.hop_order(2000, 165, 0);        // second order abandons the first hop's lead
+  CHECK(p.hopping() && p.hop_target() == 165 && p.hop_lead() == 0);
+  auto ev = p.take_events();
+  REQUIRE(ev.size() == 3);
+  CHECK(ev[0].reason == MoveReason::HopLead && ev[0].card == 1 && ev[0].from == 136 && ev[0].to == 149);
+  CHECK(ev[1].reason == MoveReason::HopWithdraw && ev[1].card == 1 && ev[1].from == 149 && ev[1].to == 136);
+  CHECK(ev[2].reason == MoveReason::HopLead && ev[2].card == 0 && ev[2].from == 136 && ev[2].to == 165);
+}
 MTEST_MAIN
