@@ -1113,26 +1113,44 @@ class HopReportTest(unittest.TestCase):
                   "link_loss_pct": 6.0, "recovered": 2,
                   "cards": [{"card": 1, "foreign": 1, "fa": 30, "cca": 40, "crc_fail": 2,
                              "rssi_dbm": -50.0, "snr_db": 18.0, "d_rssi_db": -1.0}]})
+        # unknown (impaired|fading = 0x05, no weak, no contended/raised):
+        # a fade in progress that hasn't crossed the WEAK thresholds yet --
+        # impaired and RSSI dropped relative to its frozen reference
+        # (d_rssi_db -5.0), but rssi/snr still well above the weak-absolute
+        # cutoffs the fade line above uses (-70.0/5.0). Under the
+        # classifier's precedence (healthy -> fade -> interfered -> else
+        # unknown) this falls through every named case: the one verdict
+        # meaning "impaired, and none of our five domain terms explains
+        # why" -- exactly the diagnostic category an observe-only
+        # threshold-calibration flight most needs surfaced. Card 2, kept
+        # off cards 0/1 so their medians above are untouched.
+        V.append({"t_ms": 1400.0, "verdict": "unknown", "evidence": 0x05, "ref_rung": 3,
+                  "link_loss_pct": 3.0, "recovered": 1,
+                  "cards": [{"card": 2, "foreign": 3, "fa": 2, "cca": 10, "crc_fail": 1,
+                             "rssi_dbm": -66.0, "snr_db": 9.0, "d_rssi_db": -5.0}]})
         scanlog = {"version": 2, "V": V, "H": [], "D": [], "M": []}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             flightreport.print_hop_report(scanlog, {"E": []})
         out = buf.getvalue()
-        self.assertIn("verdicts: healthy 40 fade 1 interfered 3", out)
+        self.assertIn("verdicts: healthy 40 fade 1 interfered 3 unknown 1", out)
         self.assertNotIn("HOP REPORT", out)
         # Bit tally is over ALL windows (weak/fading/contended/raised are
         # OR'd in unconditionally, independent of the impaired gate) --
-        # impaired=4 counts both interfered pairs' contribution plus the
-        # fade line plus the raised line; weak=1 (only the fade line);
-        # contended=2 (only the two 0x09 lines); raised=1 (only the 0x11
-        # line); fading=0 (no line here sets it).
-        self.assertIn("evidence bits: impaired=4 weak=1 fading=0 contended=2 raised=1", out)
+        # impaired=5 counts both interfered pairs, the fade line, the
+        # raised line and the unknown line; weak=1 (only the fade line);
+        # fading=1 (only the unknown line -- the one bit with zero
+        # coverage before this line was added); contended=2 (only the two
+        # 0x09 lines); raised=1 (only the 0x11 line).
+        self.assertIn("evidence bits: impaired=5 weak=1 fading=1 contended=2 raised=1", out)
         # card 0: the 2 contended-interfered windows (foreign=15/fa=3) plus
         # the 1 fade window (foreign=2/fa=1) -- median of [15,15,2]/[3,3,1]
         # is still 15/3 (2 of 3 samples agree), n=3.
         self.assertIn("card 0 (non-healthy, n=3): foreign=15 fa=3 rssi=-58.0 snr=13.5", out)
         # card 1: only the 1 raised-interfered window.
         self.assertIn("card 1 (non-healthy, n=1): foreign=1 fa=30 rssi=-50.0 snr=18.0", out)
+        # card 2: only the 1 unknown (fading) window.
+        self.assertIn("card 2 (non-healthy, n=1): foreign=3 fa=2 rssi=-66.0 snr=9.0", out)
 
     def test_shadow_would_events_labeled_and_histogram_still_shown(self):
         """hop.enable=false: HopController still runs and still logs, every
