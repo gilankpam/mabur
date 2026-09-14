@@ -31,6 +31,14 @@ TEST(stale_visits_are_dropped) {
   CHECK(r.best(5000, 136, {}).has_value());
   CHECK(!r.best(20000, 136, {}).has_value());
 }
+TEST(tie_break_prefers_home_over_config_order) {
+  // Spec 2026-09-14-inflight-channel-hop-design.md §3: "ties -> boot-time
+  // pick, then home". None of the three tied candidates below is the boot
+  // pick (200), but 165 is home -- home must win over plain config order.
+  HopRanker r(cfg(), {120, 149, 165}, 165, 200);
+  for (int i = 0; i < 3; ++i) { r.add(V(120, i * 100, 2)); r.add(V(149, i * 100, 2)); r.add(V(165, i * 100, 2)); }
+  CHECK(*r.best(1000, 255, {}) == 165);
+}
 TEST(exclude_and_skip_lists_and_tiebreak) {
   HopRanker r(cfg(), {120, 149, 165}, 136, 149);
   for (int i = 0; i < 3; ++i) { r.add(V(120, i * 100, 2)); r.add(V(149, i * 100, 2)); r.add(V(165, i * 100, 2)); }

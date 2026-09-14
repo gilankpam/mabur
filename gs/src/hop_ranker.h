@@ -37,7 +37,7 @@ class HopRanker {
   static uint32_t score(const HopVisit& v);
 
   // Best (lowest score) first, unranked last, deterministic tiebreak:
-  // boot-time pick, then config order.
+  // boot-time pick, then home, then config order.
   std::vector<HopRankEntry> ranking(double now_ms) const;
 
   // First ranked candidate that is neither exclude nor in skip.

@@ -43,14 +43,21 @@ std::vector<HopRankEntry> HopRanker::ranking(double now_ms) const {
     e.ranked = fresh >= 2;
     entries.push_back(e);
   }
-  // Ranked first, then by score; ties -> boot-time pick, then config order
-  // (config order falls out of stable_sort preserving entries' original,
-  // candidates_-derived order).
+  // Ranked first, then by score; ties among RANKED entries -> boot-time
+  // pick, then home, then config order (spec §3: "ties -> boot-time pick,
+  // then home"). Unranked entries skip both tiebreaks and fall straight
+  // to config order, so their relative order stays pure config order
+  // (stable_sort preserving entries' original, candidates_-derived
+  // order).
   std::stable_sort(entries.begin(), entries.end(), [&](const HopRankEntry& a, const HopRankEntry& b) {
     if (a.ranked != b.ranked) return a.ranked;
-    if (a.ranked && a.score != b.score) return a.score < b.score;
-    const bool a_boot = a.ch == boot_pick_, b_boot = b.ch == boot_pick_;
-    if (a_boot != b_boot) return a_boot;
+    if (a.ranked) {
+      if (a.score != b.score) return a.score < b.score;
+      const bool a_boot = a.ch == boot_pick_, b_boot = b.ch == boot_pick_;
+      if (a_boot != b_boot) return a_boot;
+      const bool a_home = a.ch == home_, b_home = b.ch == home_;
+      if (a_home != b_home) return a_home;
+    }
     return false;
   });
   return entries;
