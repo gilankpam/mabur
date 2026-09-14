@@ -37,6 +37,7 @@ page the task needs rather than carrying all of it.
 | ladder rungs, promote/demote, s3 probes, fade, attribution, RCF drain, RcAgent's encoder verbs + IDR pacing | `docs/link-adaptation.md` |
 | the stats sideport, maburtop, the debug-log session directory (ctl/probe/au/flight/lat), ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
 | auto channel selection, the boot-time scan, scan.log, home/op channels, split/reunite | `docs/channel-select.md` |
+| in-flight channel hop, verdict, dwells, hop_restore | `docs/inflight-channel-hop.md` |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
 | shipping a binary or config to a device | `docs/deploy.md` |
 | calibrating a VTX's TX-power walls, maburcal, cal.log | `docs/calibration.md` |

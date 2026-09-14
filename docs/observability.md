@@ -310,21 +310,53 @@ Consume the same numbers programmatically with:
   (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal, like
   the ctl log.
 
-**scan.log (scanlog 1).** New per-session file (spec
-2026-09-13-auto-channel-select), opened alongside `ctl.log` whenever
-`debug_log.enable` is set. Five record letters, one line each:
+**scan.log (scanlog 2).** New per-session file (spec
+2026-09-13-auto-channel-select, extended by
+2026-09-14-inflight-channel-hop), opened alongside `ctl.log` whenever
+`debug_log.enable` is set. Six record letters, one line each — `A` (the
+1 Hz in-flight energy poll) is **gone**, along with
+`radio.scan.energy_period_ms`: the in-flight hop's verdict-window reads
+(§below) replaced it as the in-session energy source, at ~150 ms cadence
+instead of 1 Hz:
 
 - `C` — a card's adapter-caps identity plus sensor validity flags, once at
   bring-up.
-- `D` — one scout dwell (the channel-ranker's raw input).
+- `D` — one scout dwell (the channel-ranker's raw input) — boot-time or
+  in-session, distinguished by a trailing `sess` flag and three step-timing
+  columns the in-flight scout added.
 - `K` — the pick at freeze, with the full ranking.
 - `M` — a GS retune that changes where the link lives (`commit`,
-  `ack_override`, `split_home`, `reunite`).
-- `A` — one card's in-flight frame-free energy sample, at
-  `radio.scan.energy_period_ms` while linked.
+  `ack_override`, `split_home`, `reunite`, plus the hop reasons
+  `hop_lead`/`hop_follow`/`hop_withdraw`/`hop_one_card`).
+- `V` — one verdict-engine window, on every verdict change and every
+  non-healthy window.
+- `H` — one hop-controller event (`order`, `lead_confirm`,
+  `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `hold_cap`,
+  `hold_exhausted`, each `would_`-prefixed while `hop.enable = false`).
 
 Full formats, the config, the sideport keys it feeds, and the
-`cca − own` ranking assumption are in `docs/channel-select.md`.
+`cca − own` ranking assumption for the boot-time (`C`/`D`/`K`/`M`) records
+are in `docs/channel-select.md`; the in-flight hop's rule table, evidence
+bits, hop sequence, and Known limitations are in
+`docs/inflight-channel-hop.md`.
+
+**Sideport: `hop` and `cards[i].dwell`.** Since 2026-09-14
+(in-flight-channel-hop) a new top-level `hop` object is unconditional
+(idle defaults while `hop.enable = false`, matching `link.probe`'s
+pattern): `hop = {enable, verdict, evidence, ref_rung, epoch, state
+(idle|ordered|verifying|hold), target, hops, holds, last_ms}` — `ref_rung`
+and `target` are `null` while unfrozen / before the first-ever order,
+`last_ms` is `null` until any hop event has fired this session. Per card,
+`cards[i].dwell` (`null` until that card's first completed dwell) carries
+`{visits, score, cost_us}` — `visits` is cumulative over every dwell,
+success or failure; `score`/`cost_us` are the last **successful** dwell's,
+since a failed retune produces no visit to score. `cards[i].energy` keeps
+its pre-existing shape but is now refilled from the verdict engine's
+~150 ms window reads instead of the deleted 1 Hz `A`-record poll.
+`tools/maburtop.py`'s header gains `hop <state>/<verdict>` and its
+per-card `busy` column tracks `cards[i].energy` at the new cadence. Full
+key semantics, the OSD `(h)` mark, and the `flightreport.py` HOP section
+are in `docs/inflight-channel-hop.md`.
 
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin

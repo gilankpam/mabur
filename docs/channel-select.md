@@ -6,12 +6,23 @@ card's own busy counters, proposes the least busy one in DISC, and the
 drone follows. Both ends always fall back to a shared **home** channel
 whenever they lose each other, so a reboot or a lost pair can always find
 each other without a laptop-side step. The pick is boot-only: it freezes at
-the first accepted DISC_ACK and never re-scans, so there is no in-flight
-channel flapping. Every measurement, the decision and every retune are
-logged to a new per-session file, `scan.log`, and once linked both GS cards
-sample the active channel's frame-free energy at 1 Hz — the evidence a
-later in-flight hopping design will read. In-flight migration itself is
-**not** built here; see "Out of scope" below.
+the first accepted DISC_ACK and never re-scans on its own — there is no
+proactive re-ranking while the link is healthy. Every measurement, the
+decision and every retune are logged to a new per-session file, `scan.log`.
+
+**In-flight migration is built** (`docs/inflight-channel-hop.md`,
+2026-09-14) as a separate, reactive-only layer on top of this one: it
+shares this page's candidate list and home channel, reuses `scan.log` (now
+`scanlog 2`) and the same debug-log session directory, but runs its own
+verdict engine, ranker and state machine, and does not touch anything
+this page describes. The two are cleanly separated: this page's scan
+freezes once, at the first DISC_ACK, and everything below still describes
+exactly that boot-time behaviour; a healthy link never moves regardless of
+which layer is asking. The 1 Hz per-card energy sample this page used to
+mention (`scan.log`'s `A` record, `radio.scan.energy_period_ms`) is
+**gone** — the in-flight hop's verdict-window reads replaced it as the
+in-session energy source; see `docs/inflight-channel-hop.md` and
+`docs/observability.md`.
 
 Design spec: `docs/superpowers/specs/2026-09-13-auto-channel-select-design.md`
 (gitignored — this page is the durable record). Continues the spike in
@@ -33,7 +44,6 @@ settle_ms        = 30
 min_rounds       = 3
 home_window_ms   = 300
 split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
-energy_period_ms = 1000     # in-flight per-card energy record (scan.log A lines); 0 = off
 home_margin      = 20       # leave home only if a candidate's worst visit is >= 20 busy units lower
 ```toml
 [radio]
@@ -53,7 +63,6 @@ settle_ms        = 30
 min_rounds       = 3
 home_window_ms   = 300
 split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
-energy_period_ms = 1000     # in-flight per-card energy record (scan.log A lines); 0 = off
 ```
 
 Drone, `bundle/mabur.default.toml` (verbatim, the relevant keys):
@@ -82,8 +91,10 @@ tick_ms       = 100
 Validation (`gs/src/config.cpp`, `drone/src/config.cpp`): every candidate in
 `[1,177]`; `dwell_ms` in `[50,10000]`; `settle_ms` in `[0,1000]`;
 `min_rounds` in `[1,100]`; `home_margin` in `[0,100000]`; `home_window_ms` in `[40,10000]`;
-`split_after_ms` in `[0,600000]`; `energy_period_ms` in `[0,60000]`;
-`move_confirm_ms` in `[200,30000]`; unknown keys fail boot as everywhere.
+`split_after_ms` in `[0,600000]`; `move_confirm_ms` in `[200,30000]`;
+unknown keys fail boot as everywhere. `radio.scan.energy_period_ms` and the
+`scan.log` `A` record it drove are removed (2026-09-14) — see
+`docs/inflight-channel-hop.md`.
 `radio.scan.enable = false` makes every DISC propose home and nothing
 moves. `follow_gs = false` makes the drone ack home and never retune, so
 the GS's `ChannelPlan` never sees a disagreeing ack and stays on home too.
@@ -225,41 +236,51 @@ from an earlier boot:
 
 New per-session file in the GS debug-log session directory (see
 `docs/observability.md`), opened whenever `debug_log.enable` is set, like
-`ctl.log`. Marker `scanlog 1`. Space-separated; formats locked by
-`tests/test_scan_log.cpp`; `nan` for an invalid float, `-` for an invalid
-int. Copied verbatim from `gs/src/scan_log.h`:
+`ctl.log`. Marker `scanlog 2` (bumped from `scanlog 1` by
+`docs/inflight-channel-hop.md`, which added the `V`/`H` records below and
+removed `A`). Space-separated; formats locked by `tests/test_scan_log.cpp`;
+`nan` for an invalid float, `-` for an invalid int. Copied verbatim from
+`gs/src/scan_log.h`, the boot-time-scan records only (the in-flight hop's
+`V`/`H` formats, and `D`'s trailing in-session columns, are in
+`docs/inflight-channel-hop.md`):
 
 ```
-scanlog 1 <header_info>
+scanlog 2 <header_info>
 C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
   <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
-  <floor_dbm|nan> <flags_hex>                                # one scout dwell
+  <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us>
+                                                              # one scout dwell
 K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... # the pick
 M <t> <card|all> <from> <to> <reason>                        # a link move
-A <t> <card> <ch> <cca> <fa> <own> <foreign> <igi|->         # in-flight energy
 ```
 
 - **C** — once per card at bring-up: `GetAdapterCaps` identity (chip,
   generation, chains, `bw_mask`, tunable 5 GHz span, fast-retune flag)
   plus the four validity flags of one `GetRxEnergy(true)` read.
 - **D** — one per scout dwell, the `SurveyDwell` fields the ranker
-  consumes; `flags` is the chanmig `SurveyFlag` mask in hex.
+  consumes; `flags` is the chanmig `SurveyFlag` mask in hex. Boot-time
+  dwells and the in-flight hop's dwells share this record; the trailing
+  `sess`/`to_us`/`read_us`/`back_us` columns are `0 0 0 0` for a boot-time
+  dwell and populated for an in-session one (`docs/inflight-channel-hop.md`
+  §3).
 - **K** — the pick at freeze: rounds completed and the full ranking as
   `ch:worst_busy[:floor]` pairs (unranked channels omitted), so the
   decision is reproducible from the log alone. `K <t> none 0` when a peer
   appeared before `min_rounds`.
 - **M** — every GS retune that changes where the link lives: `commit`,
   `ack_override` (the ack disagreed with the proposal and won anyway),
-  `split_home` (entering the `{op, home}` set), `reunite`. Scout dwells
-  and one-card interleave hops are NOT `M` lines — `D` carries the
-  dwells, and the interleave is implied by `split_home`.
-- **A** — per card every `energy_period_ms` while the rendezvous is in
-  SESSION, from a scalar `GetRxEnergy(false)` read (no NHM, no floor —
-  those cost a 2 ms window plus ~10 ms of USB and are not going on the RX
-  cards' control path at 60 fps until measured). `own` is canonical-SA
-  frames decoded in the period, so `cca − own` is foreign busy on the
-  active channel; see "The `cca − own` assumption" below.
+  `split_home` (entering the `{op, home}` set), `reunite`, plus the
+  in-flight hop's `hop_lead`/`hop_follow`/`hop_withdraw`/`hop_one_card`
+  (`docs/inflight-channel-hop.md` §1). Scout dwells and one-card interleave
+  hops are NOT `M` lines — `D` carries the dwells, and the interleave is
+  implied by `split_home`.
+- **A** (removed 2026-09-14) used to carry one card's in-flight
+  frame-free energy sample every `radio.scan.energy_period_ms` while
+  linked. Both the record and the config key are gone: the in-flight
+  hop's verdict-engine window reads replaced it as the in-session energy
+  source, at the verdict engine's ~150 ms cadence instead of 1 Hz — see
+  `docs/inflight-channel-hop.md` and `docs/observability.md`.
 
 ## Sideport keys (as built)
 
@@ -279,18 +300,24 @@ the player OSD's `ch` field):
   describes the receiver's own scan/freeze state, not the link it
   eventually picks): `scan.state` (`off|scouting|frozen`), `scan.rounds`,
   `scan.pick` (the frozen channel, or `null` before freeze).
-- `cards[i].energy` — the last `A`-record sample for that card, or `null`
-  if none has been taken yet: `{cca, fa, own, foreign, igi}`, with `igi`
-  itself `null` when that card's IGI read is invalid.
+- `cards[i].energy` — `{cca, fa, own, foreign, igi}`, `igi` itself `null`
+  when that card's IGI read is invalid; `null` if none has been taken yet.
+  Originally the last 1 Hz `A`-record sample; since 2026-09-14 it is
+  refilled every ~150 ms from the in-flight hop's verdict-engine window
+  instead (`docs/inflight-channel-hop.md`), so it no longer goes stale for
+  up to a second between samples.
 
-`flightreport.py` is unchanged this round. `tools/maburtop.py` gained the
+`flightreport.py` had no SCAN section as of this design; the log-file
+parser it deferred landed with the in-flight hop instead
+(`tools/flightreport.py`'s HOP section reads `V`/`H`/`D` off `scanlog 2` —
+see `docs/inflight-channel-hop.md` — it does not parse the boot-time
+`C`/`K`/`M` records this page describes). `tools/maburtop.py` gained the
 new header fields (`scan.state` and `scan.rounds`, and `link.home` next to
 `link.channel` — it does not display `scan.pick`, which the sideport still
 emits) and a per-card `busy` column computing
 `(cca − min(cca, own)) + fa + foreign` from `cards[i].energy` — the same
 score the ranker uses, clamped so a card whose own-frame count exceeds its
-CCA count reads 0 rather than going negative. `scanlog 1` reserves the
-log-file parser for a later task.
+CCA count reads 0 rather than going negative.
 
 ## The `cca − own` assumption
 
@@ -406,10 +433,9 @@ restoring its old config alongside it, as always.
 
 ## Out of scope
 
-In-flight channel migration — re-ranking and moving while linked, fed by
-mabur's live FEC loss as devourer chanmig's `ActiveLink` evidence through
-the same `RecommendEngine` this design deliberately does not call — is a
-later design; this one is boot-time only, and the pick never moves again
-once frozen. Also out of scope: 40 MHz and 2.4 GHz candidates, per-card
-channels, a `flightreport.py` SCAN section, and an OSD channel-scan
-display.
+In-flight channel migration was out of scope for this design — it is now
+built as a separate reactive layer, `docs/inflight-channel-hop.md`
+(2026-09-14); this page's own pick still never moves again once frozen,
+and the boot-time scan described above is unchanged by that feature's
+arrival. Still out of scope, for both pages: proactive re-ranking of a
+healthy link, 40 MHz and 2.4 GHz candidates, and per-card channels.
