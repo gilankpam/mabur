@@ -13,7 +13,7 @@ the one in the same directory or ./log whose mono-time range overlaps).
 Note: last_event is a single overwritten struct on the wire; multiple rung transitions
 inside one 500ms export window surface only as the LAST transition. Reported counts are
 a lower bound due to this schema limitation."""
-import glob, json, math, os, re, sys
+import glob, json, math, os, re, statistics, sys
 
 # Same clamp sentinel CtlLog writes at the source (mirrors StatsExporter's
 # clamp_util(): u3/u_pred/E's u carry a 1e9 zero-guard sentinel from
@@ -818,7 +818,316 @@ def print_salvage_report(rows):
               f"sub_fail={v['sub_fail']} abandoned={v['abandoned']}")
 
 
-def main(path, aulog=None, probelog_path=None):
+def load_scanlog(path):
+    """Parse a maburgs scan.log (gs/src/scan_log.cpp record formats,
+    'scanlog N' marker). Only the record kinds the HOP report needs are
+    tokenised -- V (per-window verdict), H (hop controller event), D (scout
+    dwell) and M (channel-plan move). C (adapter caps) and K (scan pick) are
+    skipped.
+
+    V's per-card block REPEATS once per card (2 cards on this hardware
+    today, but the parser must not assume that): 'V t verdict evidence_hex
+    ref_rung|- link_loss_pct recovered [card foreign fa cca crc rssi snr
+    drssi]...'.
+
+    H's kind field is NOT always one token: HopController::log_event()
+    passes the literal C++ string "hold cap" / "hold exhausted" straight
+    through %s (and, disabled, "would_hold cap" / "would_hold exhausted"),
+    so a naive positional split misreads the epoch/target/score/elapsed_ms
+    columns whenever a hold fires. epoch/target/score/elapsed_ms are always
+    single tokens and always the last 4 on the line, so the kind is
+    anchored from the END of the line (everything between t_ms and those
+    four fields), not from a fixed column count.
+
+    Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]}.
+    Silent on lines that don't parse (older/newer record shapes) rather
+    than aborting the report -- CLAUDE.md: recordings outlive the code that
+    wrote them."""
+    version = 0
+    V, H, D, M = [], [], [], []
+    with open(path) as f:
+        first = f.readline().split()
+        if len(first) >= 2 and first[0] == "scanlog" and first[1].isdigit():
+            version = int(first[1])
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            toks = line.split()
+            tag = toks[0]
+            try:
+                if tag == "V" and len(toks) >= 7:
+                    n_extra = len(toks) - 7
+                    if n_extra % 8 != 0:
+                        continue  # malformed card block; skip rather than misparse
+                    ref_rung = None if toks[4] == "-" else int(toks[4])
+                    cards = []
+                    for i in range(7, len(toks), 8):
+                        cards.append({
+                            "card": int(toks[i]), "foreign": int(toks[i + 1]),
+                            "fa": int(toks[i + 2]), "cca": int(toks[i + 3]),
+                            "crc_fail": int(toks[i + 4]), "rssi_dbm": float(toks[i + 5]),
+                            "snr_db": float(toks[i + 6]), "d_rssi_db": float(toks[i + 7]),
+                        })
+                    V.append({
+                        "t_ms": float(toks[1]), "verdict": toks[2],
+                        "evidence": int(toks[3], 16), "ref_rung": ref_rung,
+                        "link_loss_pct": float(toks[5]), "recovered": int(toks[6]),
+                        "cards": cards,
+                    })
+                elif tag == "H" and len(toks) >= 7:
+                    kind = " ".join(toks[2:-4])
+                    H.append({
+                        "t_ms": float(toks[1]), "kind": kind,
+                        "epoch": int(toks[-4]), "target": int(toks[-3]),
+                        "score": int(toks[-2]), "elapsed_ms": float(toks[-1]),
+                    })
+                elif tag == "D" and len(toks) >= 17:
+                    igi = None if toks[10] == "-" else int(toks[10])
+                    floor_dbm = None if toks[11] == "nan" else int(toks[11])
+                    D.append({
+                        "t_ms": float(toks[1]), "card": int(toks[2]), "ch": int(toks[3]),
+                        "round": int(toks[4]), "observe_ms": int(toks[5]),
+                        "cca": int(toks[6]), "fa": int(toks[7]), "own": int(toks[8]),
+                        "foreign": int(toks[9]), "igi": igi, "floor_dbm": floor_dbm,
+                        "flags_hex": int(toks[12], 16), "sess": int(toks[13]),
+                        "to_us": int(toks[14]), "read_us": int(toks[15]),
+                        "back_us": int(toks[16]),
+                    })
+                elif tag == "M" and len(toks) >= 6:
+                    card = None if toks[2] == "all" else int(toks[2])
+                    M.append({
+                        "t_ms": float(toks[1]), "card": card,
+                        "from": int(toks[3]), "to": int(toks[4]), "reason": toks[5],
+                    })
+            except ValueError:
+                continue  # malformed record; skip rather than abort the report
+    return {"version": version, "V": V, "H": H, "D": D, "M": M}
+
+
+def sniff_scanlog(path):
+    """True if `path` is a maburgs scan log (first line starts 'scanlog ')."""
+    with open(path) as f:
+        return f.readline().startswith("scanlog ")
+
+
+# HopController's own kinds (gs/src/hop_controller.cpp), stripped of any
+# "would_" prefix (cfg_.enable=false: the FSM still runs and still logs,
+# every action just suppressed -- see HopController::tick / log_event).
+# "order" and "verify_fail" are the only two that place a NEW HopAction::Order
+# (idle_tick's fresh trigger, and verifying_tick's retry-after-fail); the
+# rest either continue an open attempt (lead_confirm, one_card_retune) or
+# close one (verify_pass, withdraw, and the two hold variants).
+_HOP_ORDER_KINDS = {"order", "verify_fail"}
+_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "hold cap", "hold exhausted"}
+_HOP_RESTORE_WINDOW_MS = 5000.0  # generous: production fires E hop_restore
+                                 # essentially in the same tick as H order/
+                                 # verify_fail (main.cpp calls
+                                 # VrxController::restore_rung() synchronously
+                                 # while handling HopAction::Order, well
+                                 # before any lead_confirm/verify outcome) --
+                                 # the window only needs to reject a restore
+                                 # line that belongs to some OTHER hop.
+
+
+def _strip_would(kind):
+    return kind[len("would_"):] if kind.startswith("would_") else kind
+
+
+def _find_nearest_unused(candidates, used, anchor_ms, window_ms):
+    """Index of the closest not-yet-`used` candidate['t_ms'] to `anchor_ms`
+    within `window_ms`, or None. Marks it used."""
+    best_i, best_d = None, None
+    for i, c in enumerate(candidates):
+        if used[i]:
+            continue
+        d = abs(c["t_ms"] - anchor_ms)
+        if d <= window_ms and (best_d is None or d < best_d):
+            best_i, best_d = i, d
+    if best_i is not None:
+        used[best_i] = True
+        return candidates[best_i]["t_ms"]
+    return None
+
+
+def build_hop_rows(H, restores):
+    """One row per hop ATTEMPT (every event that places a fresh
+    HopAction::Order: HopController's "order" and retry-triggering
+    "verify_fail"), real or shadow ("would_"-prefixed, hop.enable=false).
+
+    `restores` is ctl.log's E rows already filtered to reason=='hop_restore'.
+    Each is consumed by at most one row, matched to that row's OWN order/
+    retry timestamp (the real causal anchor: LadderController::restore()
+    fires synchronously inside main.cpp's HopAction::Order handling, not at
+    lead_confirm or verify_pass) -- never reused, so a hop that never got a
+    restore (e.g. withdrawn, or a shadow row, which never restores at all)
+    correctly prints blank instead of stealing a different hop's line.
+
+    A "verify_fail" H line does double duty in the source: HopController::
+    order() logs it while ALSO bumping the epoch, so it is simultaneously
+    the outcome of the failed attempt and the start of the retry -- except
+    when there is no retry candidate, when it is logged directly (epoch
+    unchanged) as a true terminal outcome. The two are told apart here by
+    epoch: unchanged epoch = terminal, bumped epoch = retry (a new row)."""
+    used = [False] * len(restores)
+    rows = []
+    open_row = None
+
+    def close(outcome_kind, t_ms):
+        open_row["outcome"] = outcome_kind
+        open_row["outcome_ts"] = t_ms
+        rows.append(open_row)
+
+    for h in H:
+        kind = h["kind"]
+        shadow = kind.startswith("would_")
+        base = _strip_would(kind)
+
+        if base in _HOP_ORDER_KINDS:
+            if (base == "verify_fail" and open_row is not None
+                    and h["epoch"] == open_row["order_epoch"]):
+                close(kind, h["t_ms"])   # terminal: no retry follows
+                open_row = None
+                continue
+            if open_row is not None:
+                # A retry (base=="verify_fail", bumped epoch): the failed
+                # verify IS why this new order was placed. A fresh "order"
+                # while one was already open should never happen per the
+                # FSM (strictly one attempt in flight) -- defensive only.
+                close(kind if base == "verify_fail" else "interrupted", h["t_ms"])
+            open_row = {
+                "shadow": shadow, "order_ts": h["t_ms"], "order_epoch": h["epoch"],
+                "target": h["target"], "video_ts": None,
+                "outcome": None, "outcome_ts": None, "restore_ts": None,
+            }
+            if not shadow:
+                # Shadow rows never call restore() at all (main.cpp's Order
+                # case, and restore_rung() inside it, only runs when the
+                # HopAction actually kind != None -- forced None whenever
+                # cfg_.enable is false) -- searching would only risk
+                # stealing a real hop's restore line.
+                open_row["restore_ts"] = _find_nearest_unused(
+                    restores, used, h["t_ms"], _HOP_RESTORE_WINDOW_MS)
+            continue
+
+        if open_row is None:
+            continue   # a hold with no attempt in progress: not a row
+
+        if base == "lead_confirm":
+            if open_row["video_ts"] is None:
+                open_row["video_ts"] = h["t_ms"]
+            continue
+        if base == "one_card_retune":
+            continue   # informational only; doesn't end the attempt
+        if base == "verify_pass" or base in _HOP_TERMINAL_ONLY_KINDS:
+            close(kind, h["t_ms"])
+            open_row = None
+            continue
+        # Unrecognised kind (a future addition): leave the row open rather
+        # than guess at its meaning.
+
+    if open_row is not None:
+        # Log ends mid-attempt (DVR truncation, or the recording was cut).
+        close("unterminated", open_row["order_ts"])
+    return rows
+
+
+def find_hop_onset(V, order_ts):
+    """t_ms of the FIRST V in the contiguous non-healthy run immediately
+    preceding `order_ts` -- the moment things started going bad, not just
+    the last sample before the order. None if the nearest V at/before
+    order_ts is healthy (or there is no V at all yet)."""
+    before = sorted((v for v in V if v["t_ms"] <= order_ts), key=lambda v: v["t_ms"])
+    if not before or before[-1]["verdict"] == "healthy":
+        return None
+    onset = before[-1]["t_ms"]
+    for v in reversed(before[:-1]):
+        if v["verdict"] == "healthy":
+            break
+        onset = v["t_ms"]
+    return onset
+
+
+def verdict_histogram(V):
+    """{"healthy": n, ...} in the canonical hop_verdict.h order, zero counts
+    omitted."""
+    counts = {}
+    for v in V:
+        counts[v["verdict"]] = counts.get(v["verdict"], 0) + 1
+    return {k: counts[k] for k in ("healthy", "fade", "interfered", "unknown") if counts.get(k)}
+
+
+def dwell_cost_summary(D):
+    """Per card: count and median(to_us+read_us+back_us) of scout dwells
+    taken with sess==1 -- INSIDE the live session, i.e. dwells that
+    actually cost airtime (the brief's 'per-card dwell cost summary').
+    Dwells outside a session (sess==0, off-air scanning) are free and
+    excluded."""
+    by_card = {}
+    for d in D:
+        if d.get("sess") != 1:
+            continue
+        by_card.setdefault(d["card"], []).append(d["to_us"] + d["read_us"] + d["back_us"])
+    return {card: {"count": len(vals), "median_us": statistics.median(vals)}
+            for card, vals in by_card.items()}
+
+
+def _fmt_delta_ms(a, b):
+    return "-" if a is None or b is None else f"{b - a:.0f} ms"
+
+
+def _print_hop_table(rows, V):
+    for r in rows:
+        onset_ts = find_hop_onset(V, r["order_ts"])
+        print(f"  t={r['order_ts']:.0f} target={r['target']}"
+              f"{' [SHADOW]' if r['shadow'] else ''}"
+              f"  onset->order {_fmt_delta_ms(onset_ts, r['order_ts'])}"
+              f"  order->video {_fmt_delta_ms(r['order_ts'], r['video_ts'])}"
+              f"  video->restore {_fmt_delta_ms(r['video_ts'], r['restore_ts'])}"
+              f"  outcome {r['outcome']}")
+
+
+def print_hop_report(scanlog, ctllog):
+    """HOP section (Task 13): one row per hop attempt (onset->order->video
+    ->restore, outcome), the per-card dwell cost summary, and -- on a
+    session with zero REAL hops -- the verdict histogram, which for a
+    hop.enable=false flight (every hop this plan's first flight will ever
+    log) is the entire signal on whether the verdict engine is classifying
+    right. hop.enable=false does not mean zero H events: the controller
+    still runs and still logs every decision with a "would_" prefix, so a
+    log full of would_order/would_withdraw pairs is handled as SHADOW rows
+    (see build_hop_rows) printed in their own table, in addition to the
+    histogram -- not silently collapsed into "zero hops"."""
+    V, H, D = scanlog.get("V", []), scanlog.get("H", []), scanlog.get("D", [])
+    restores = [e for e in ctllog.get("E", []) if e.get("reason") == "hop_restore"]
+    rows = build_hop_rows(H, restores)
+    real_rows = [r for r in rows if not r["shadow"]]
+    shadow_rows = [r for r in rows if r["shadow"]]
+
+    if real_rows:
+        print(f"\nHOP REPORT ({len(real_rows)} hop(s))")
+        _print_hop_table(real_rows, V)
+    elif shadow_rows:
+        print(f"\nHOP REPORT -- hop.enable=false: {len(shadow_rows)} SHADOW hop(s) "
+              "(every action suppressed; these are what the controller WOULD have "
+              "ordered). video never confirms while disabled -- nothing actually "
+              "retunes -- so the outcome is structurally almost always a "
+              "would_withdraw timeout at confirm_ms; that is expected, not a bug.")
+        _print_hop_table(shadow_rows, V)
+    if not real_rows:
+        hist = verdict_histogram(V)
+        print("verdicts: " + " ".join(f"{k} {n}" for k, n in hist.items()) if hist
+              else "verdicts: (none)")
+
+    dsum = dwell_cost_summary(D)
+    if dsum:
+        print("DWELL COST (sess=1: airtime actually spent scouting inside the live session)")
+        for card in sorted(dsum):
+            s = dsum[card]
+            print(f"  card {card}: n={s['count']} median(to+read+back)={s['median_us']:.0f}us")
+
+
+def main(path, aulog=None, probelog_path=None, scanlog_path=None):
     if sniff_probelog(path):
         # A probe log on its own (bench use): just the per-body report and
         # the completion->probe join.
@@ -860,6 +1169,17 @@ def main(path, aulog=None, probelog_path=None):
             found = aulog or find_aulog_for(probe_src, probelog)
             au = load_aulog(found) if found else []
         print_probe_report(ctllog, probelog, au)
+        if scanlog_path:
+            # scan.log is session-mode-only (session.py finds it as a
+            # sibling of this same ctl.log; there is no legacy filename
+            # heuristic for it, the feature postdates the ctl-NNNN_ layout).
+            # Absent entirely, or a marker version older than the V/H/D
+            # record shapes this parses (none shipped yet, but the wire is
+            # not additive-only -- CLAUDE.md), skips the HOP section rather
+            # than printing a misparsed or empty one.
+            scanlog = load_scanlog(scanlog_path)
+            if scanlog["version"] >= 2:
+                print_hop_report(scanlog, ctllog)
         return
 
     rows = load(path)
@@ -1041,7 +1361,8 @@ if __name__ == "__main__":
         # session directory) -- find_aulog_for's index-overlap guess and
         # the ctl-NNNN_ filename-glob heuristic are not consulted at all.
         probe_arg = s.probe if primary == s.ctl else None
-        main(primary, s.au, probe_arg)
+        scan_arg = s.scan if primary == s.ctl else None
+        main(primary, s.au, probe_arg, scan_arg)
         # The ctl/probe branches of main() return before the jsonl analysis,
         # so in session mode read the sibling flight.jsonl for the SALVAGE
         # section too -- it is a flight's post-flight command, not a ctl

@@ -1036,6 +1036,169 @@ class SessionModeProbeJoinTest(unittest.TestCase):
         self.assertIn("PROBE LOG (per mcs)", out)
 
 
+HOP_CTL_LOG = """ctllog 11 ladder=0/100,2/50,4/25,5/25,6/25,7/10 down_util=0.35 up_util=0.15
+E 1380 3 5 hop_restore 0.0500 25.0 -20.0
+"""
+
+
+class HopReportTest(unittest.TestCase):
+    """Task 13: flightreport's HOP section, built from scan.log (gs/src/
+    scan_log.cpp) V/H/D records plus ctl.log's E hop_restore lines."""
+
+    FIXTURE = Path("tests/fixtures/scan-hop.log")
+
+    def _ctl(self, text=HOP_CTL_LOG):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "ctl.log")
+        with open(p, "w") as f:
+            f.write(text)
+        return flightreport.load_ctllog(p)
+
+    def test_hop_table_row_timings_and_outcome(self):
+        """onset->order / order->video / video->restore, paired end to end:
+        the onset is the FIRST of the two consecutive 'interfered' V lines
+        (not just the one immediately before the order), the restore comes
+        from ctl.log's E hop_restore matched by nearest timestamp, and the
+        per-card DWELL COST summary only counts sess=1 rows."""
+        scanlog = flightreport.load_scanlog(str(self.FIXTURE))
+        ctllog = self._ctl()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, ctllog)
+        out = buf.getvalue()
+        self.assertIn("onset->order 300 ms", out)
+        self.assertIn("order->video 80 ms", out)
+        self.assertIn("video->restore 0 ms", out)
+        self.assertIn("outcome verify_pass", out)
+        self.assertNotIn("SHADOW", out)
+        # DWELL COST: card 0 has two sess=1 dwells (350us, 390us -> median
+        # 370), the sess=0 warm-up dwell (999+999+999) must NOT count.
+        self.assertIn("card 0: n=2 median(to+read+back)=370us", out)
+        self.assertIn("card 1: n=1 median(to+read+back)=280us", out)
+
+    def test_zero_hops_prints_verdict_histogram(self):
+        """No H events at all (a perfectly healthy flight, or hop_controller
+        compiled in but never triggering): the verdict histogram, not an
+        empty hop table, per the brief's zero-hop path."""
+        V = [{"t_ms": float(i), "verdict": "healthy", "evidence": 0, "ref_rung": None,
+              "link_loss_pct": 0.0, "recovered": 0, "cards": []} for i in range(40)]
+        V += [{"t_ms": 1000.0 + i, "verdict": "interfered", "evidence": 8, "ref_rung": 3,
+               "link_loss_pct": 5.0, "recovered": 2, "cards": []} for i in range(2)]
+        scanlog = {"version": 2, "V": V, "H": [], "D": [], "M": []}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, {"E": []})
+        out = buf.getvalue()
+        self.assertIn("verdicts: healthy 40 interfered 2", out)
+        self.assertNotIn("HOP REPORT", out)
+
+    def test_shadow_would_events_labeled_and_histogram_still_shown(self):
+        """hop.enable=false: HopController still runs and still logs, every
+        event 'would_'-prefixed (HopController::log_event). video never
+        confirms while disabled (nothing actually retunes -- ChannelPlan::
+        hop_order() is only called from main.cpp's real HopAction::Order
+        case), so the FSM's own confirm_ms timeout fires every time:
+        would_order -> would_withdraw. This must not crash, must not be
+        counted as a real hop (which would suppress the verdict
+        histogram), and must say plainly that it's hypothetical."""
+        H = [{"t_ms": 1300.0, "kind": "would_order", "epoch": 1, "target": 42,
+              "score": 50, "elapsed_ms": 0.0},
+             {"t_ms": 1900.0, "kind": "would_withdraw", "epoch": 2, "target": 42,
+              "score": 0, "elapsed_ms": 600.0}]
+        V = [{"t_ms": 1000.0, "verdict": "interfered", "evidence": 8, "ref_rung": 3,
+              "link_loss_pct": 5.0, "recovered": 0, "cards": []}]
+        scanlog = {"version": 2, "V": V, "H": H, "D": [], "M": []}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, {"E": []})
+        out = buf.getvalue()
+        self.assertIn("hop.enable=false", out)
+        self.assertIn("SHADOW", out)
+        self.assertIn("outcome would_withdraw", out)
+        self.assertIn("video->restore -", out)   # never restores while disabled
+        self.assertIn("verdicts: interfered 1", out)   # zero REAL hops: histogram still runs
+
+    def test_withdrawn_hop_prints_blank_restore_not_a_stray_match(self):
+        """A hop that never confirms (Ordered-state confirm_ms timeout ->
+        withdraw, HopController::withdraw()) never gets a restore -- and an
+        unrelated hop_restore sitting far away in ctl.log (a different
+        epoch entirely) must not be stolen for this row just because it's
+        the only candidate on offer."""
+        H = [{"t_ms": 100.0, "kind": "order", "epoch": 1, "target": 42,
+              "score": 10, "elapsed_ms": 0.0},
+             {"t_ms": 2100.0, "kind": "withdraw", "epoch": 2, "target": 42,
+              "score": 0, "elapsed_ms": 2000.0}]
+        scanlog = {"version": 2, "V": [], "H": H, "D": [], "M": []}
+        ctllog = self._ctl("ctllog 11 x\nE 50000 0 1 hop_restore 0.05 25.0 -20.0\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, ctllog)
+        out = buf.getvalue()
+        self.assertIn("video->restore -", out)
+        self.assertIn("outcome withdraw", out)
+
+    def test_v_line_variable_card_count(self):
+        """The per-card block in a V line repeats once per card -- must not
+        assume exactly two (this bench has run with one card, e.g.
+        [[jgr3-nhm-abs-floor]])."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 2 x\n"
+                    "V 100.0 healthy 00 - 0.0 0 0 0 0 0 0 30.0 25.0 0.0\n"
+                    "V 200.0 interfered 08 2 4.0 3 "
+                    "0 1 2 3 4 10.0 5.0 -1.0 "
+                    "1 5 6 7 8 15.0 6.0 -2.0 "
+                    "2 9 10 11 12 20.0 7.0 -3.0\n")
+        scanlog = flightreport.load_scanlog(p)
+        self.assertEqual(len(scanlog["V"]), 2)
+        self.assertEqual(len(scanlog["V"][0]["cards"]), 1)
+        self.assertEqual(len(scanlog["V"][1]["cards"]), 3)
+        last = scanlog["V"][1]["cards"][2]
+        self.assertEqual(last, {"card": 2, "foreign": 9, "fa": 10, "cca": 11,
+                                 "crc_fail": 12, "rssi_dbm": 20.0, "snr_db": 7.0,
+                                 "d_rssi_db": -3.0})
+
+    def test_session_dir_dispatch_prints_hop_report_after_probe(self):
+        """session.py's `scan` slot + main()'s ctl-log branch: a session
+        directory carrying scan.log gets the HOP section, after PROBE."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "ctl.log"), "w") as f:
+                f.write(HOP_CTL_LOG)
+            import shutil
+            shutil.copy(str(self.FIXTURE), os.path.join(d, "scan.log"))
+            result = subprocess.run([sys.executable, "tools/flightreport.py", d],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout
+        self.assertIn("HOP REPORT", out)
+        self.assertIn("onset->order 300 ms", out)
+        self.assertLess(out.index("PROBE GATE"), out.index("HOP REPORT"))
+
+    def test_session_without_scanlog_skips_hop_section(self):
+        """No scan.log at all in the session directory: no HOP section, no
+        crash (CLAUDE.md: an older recording must still report cleanly)."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "ctl.log"), "w") as f:
+                f.write(HOP_CTL_LOG)
+            result = subprocess.run([sys.executable, "tools/flightreport.py", d],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("HOP REPORT", result.stdout)
+
+    def test_session_with_scanlog_v1_marker_skips_hop_section(self):
+        """A scan.log whose marker predates the V/H/D record shapes this
+        parses must not crash the report or print a misparsed section."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "ctl.log"), "w") as f:
+                f.write(HOP_CTL_LOG)
+            with open(os.path.join(d, "scan.log"), "w") as f:
+                f.write("scanlog 1 x\n")
+            result = subprocess.run([sys.executable, "tools/flightreport.py", d],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("HOP REPORT", result.stdout)
+
 
 if __name__ == "__main__":
     test_flightreport_structure()
