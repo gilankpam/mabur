@@ -1399,27 +1399,34 @@ static int run_radio(const maburgs::Config& cfg) {
       // matching the brief's "lead card received a video AU on hop_ch".
       ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
       ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total - rcf_sent_at_order);
-      if (hopc.state() == maburgs::HopState::Idle && last_verdict_out.trigger &&
-          ht.best && ht.lead_card >= 0) {
+      if (hopc.state() == maburgs::HopState::Idle && last_verdict_out.trigger && ht.best) {
         // Freshness burst (spec section 3): sweep every candidate once
         // more, right before a target is actually committed, rather than
         // act on a ranking built from visits up to rank_max_age_ms old.
-        // Runs synchronously on the core thread (blocking it for the whole
+        // BOTH card counts (spec: "the only card on a one-card GS since
+        // the link is already impaired") -- a one-card GS never runs the
+        // periodic scout thread (that stays two-card-only, see scout_loop
+        // above), so this burst is the ONLY source of ranking data it will
+        // ever have; without it ht.best is permanently nullopt and the
+        // controller can only order home or hold, never a candidate. Runs
+        // synchronously on the core thread (blocking it for the whole
         // sweep, a handful of candidates at a few ms each -- see the
         // report's threading notes), so inflight_mu is held for the
-        // duration to keep the scout thread's own periodic dwell from
-        // driving the same InflightScout/RadioFrontend at the same time.
+        // duration to keep the scout thread's own periodic dwell (when
+        // one is running, i.e. two-card) from driving the same
+        // InflightScout/RadioFrontend at the same time.
+        const int burst_card = ht.lead_card >= 0 ? ht.lead_card : 0;
         std::lock_guard<std::mutex> ilk(inflight_mu);
-        auto& fe = *fronts[static_cast<size_t>(ht.lead_card)];
+        auto& fe = *fronts[static_cast<size_t>(burst_card)];
         inflight.set_radio(fe);
         std::vector<maburgs::ScoutDwell> recs;
         for (const auto& v : inflight.burst(plan.op(), recs)) ranker.add(v);
         for (const auto& d : recs)
-          if (scan_log) scan_log->dwell(now_ms, ht.lead_card, d);
+          if (scan_log) scan_log->dwell(now_ms, burst_card, d);
         // Re-sync from live hardware, mirroring the periodic-dwell drain
         // below: a candidate dwell inside the burst may have failed its
         // return retune (kFlagRetuneFailed) and left the card off `op_`.
-        cur_ch[static_cast<size_t>(ht.lead_card)] = fe.channel();
+        cur_ch[static_cast<size_t>(burst_card)] = fe.channel();
         ht.best = ranker.best(now_ms, plan.op(), hopc.backed_off(now_ms));
         if (ht.best) {
           for (const auto& e : ranker.ranking(now_ms))
@@ -1432,7 +1439,20 @@ static int run_radio(const maburgs::Config& cfg) {
           vrx.set_hop(act.target, act.epoch);
           vrx.restore_rung(act.restore_rung, now_ms);
           vrx.blank_store(now_ms + hcfg.confirm_ms + 150.0);
-          plan.hop_order(now_ms, act.target, act.lead_card);
+          // Two-card (act.lead_card >= 0): retune the lead card right now
+          // -- the trailing card keeps video alive on op_ throughout, so
+          // there is nothing to wait for. One-card (act.lead_card < 0):
+          // do NOT retune yet. The sole radio must stay on the OLD channel
+          // while the order rides hop.one_card_repeats RCFs (spec section
+          // 1 step 1) -- HopController already counts those repeats and
+          // only emits OneCardRetune once enough have gone out; calling
+          // plan.hop_order() here too would move plan.desired() (and so
+          // this radio) before the drone could possibly have heard the
+          // order, abandoning the only channel it can still be reached on.
+          // vrx.set_hop/restore_rung/blank_store above still run
+          // unconditionally: the RCF has to start carrying the order
+          // immediately, which is the whole point of the repeats.
+          if (act.lead_card >= 0) plan.hop_order(now_ms, act.target, act.lead_card);
           hopping_atomic.store(true);
           rcf_sent_at_order = rcf_sent_total;
           break;
