@@ -623,6 +623,16 @@ static int run_radio(const maburgs::Config& cfg) {
   // Channel the most recent video body arrived on (batch-drain loop,
   // below): confirms a hop landed by comparing against plan.hop_target().
   uint8_t last_video_ch = cfg.radio.channel;
+  // Freshness-burst rate limiter (fix round 3): the burst's own gate
+  // (Idle/Hold + trigger) has nothing else pacing it -- Hold re-enters on
+  // every tick with the trigger latched true, and neither cooldown_ms
+  // (guards only a POST-hop re-trigger, stamped at verify_pass) nor
+  // max_hops_per_min (counted only inside order()) apply to a burst that
+  // never results in an order. Reusing dwell_period_ms caps a sustained
+  // Hold to the same off-air duty cycle the periodic scout thread already
+  // runs at (one ~30 ms burst per ~333 ms, ~9%), rather than back-to-back
+  // (~100%, and the process's own core-thread RX drain along with it).
+  double last_burst_ms = -1e18;
 
   // Control-path RTT + pts-offset estimator (link-rtt, 2026-09-02). Fed
   // from the same core thread as latest_telem: RCF send stamps below,
@@ -1405,7 +1415,17 @@ static int run_radio(const maburgs::Config& cfg) {
       // actually in progress there and the radio must not wander.
       const bool hop_free = hopc.state() == maburgs::HopState::Idle ||
                             hopc.state() == maburgs::HopState::Hold;
-      if (hop_free && last_verdict_out.trigger) {
+      // Rate-limited to at most one per dwell_period_ms (fix round 3): the
+      // gate above has nothing else pacing it -- a sustained Hold
+      // re-enters on every ~10 ms control tick with the trigger latched
+      // true (cooldown_ms/max_hops_per_min don't apply here, see
+      // last_burst_ms's declaration comment) -- so without this the burst
+      // would fire back to back, taking a one-card station's only radio
+      // off-air almost continuously right when the link is already in
+      // trouble. Reusing dwell_period_ms gives the burst the SAME duty
+      // cycle the periodic scout thread already runs at.
+      const bool burst_due = now_ms - last_burst_ms >= hcfg.dwell_period_ms;
+      if (hop_free && last_verdict_out.trigger && burst_due) {
         // Freshness burst (spec section 3): sweep every candidate once,
         // back to back, BEFORE a target is chosen -- so it must not
         // require ht.best to already hold one (dropped from this gate in
@@ -1425,6 +1445,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // inflight_mu is held for the duration to keep the scout thread's
         // own periodic dwell (when one is running, i.e. two-card) from
         // driving the same InflightScout/RadioFrontend at the same time.
+        last_burst_ms = now_ms;
         const int burst_card = ht.lead_card >= 0 ? ht.lead_card : 0;
         std::lock_guard<std::mutex> ilk(inflight_mu);
         auto& fe = *fronts[static_cast<size_t>(burst_card)];
