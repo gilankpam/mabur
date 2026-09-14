@@ -183,6 +183,26 @@ TEST(hop_excludes_only_its_own_window_from_the_split_timer) {
   p.tick(5300, false);              // 300 + split_after_ms(5000)
   CHECK(p.split());
 }
+// Same property, exercised through the SUCCESS exit (hop_confirmed) rather
+// than hop_withdraw: hop_confirmed also moves op_ to the target (165, still
+// != home), so this pins that the shift arithmetic is unaffected by that
+// state change and the split still requires exactly split_after_ms of
+// NON-hop loss.
+TEST(hop_excludes_only_its_own_window_from_the_split_timer_via_confirm) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 149, 149); p.take_events();
+  p.tick(0, false);                 // lost_since_ms_ = 0
+  p.hop_order(2100, 165, 1);        // hop_start_ms_ = 2100; 2100 ms real loss so far
+  p.tick(2200, false);              // during the hop: ignored
+  p.hop_confirmed(2400);            // op_ -> 165; shift: lost_since_ms_ += (2400-2100) = 300 -> 300
+  CHECK(!p.hopping() && p.op() == 165);
+  p.tick(2500, false);              // continuous loss resumes right after confirm
+  CHECK(!p.split());
+  p.tick(5299, false);              // 300 + split_after_ms(5000) - 1
+  CHECK(!p.split());
+  p.tick(5300, false);              // 300 + split_after_ms(5000)
+  CHECK(p.split());
+}
 // The re-review's own probe: loss from t=1, a short hop from t=4900 to
 // t=5200 (300 ms), loss unbroken after. The split must land near
 // loss_onset + split_after_ms + hop_duration = 1 + 5000 + 300 = 5301, not
