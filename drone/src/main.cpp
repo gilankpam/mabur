@@ -2535,6 +2535,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
 
           TelemInputs ti;
           ti.state = static_cast<int>(agent.state());
+          ti.channel = agent.channel();
+          ti.hop_epoch = agent.hop_epoch();
           ti.failsafe_shed = agent.failsafe_shed();
           ti.congestion_shed = agent.congestion_shed();
           ti.probe_on = agent.probe_on();

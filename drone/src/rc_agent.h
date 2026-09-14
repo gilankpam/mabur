@@ -94,12 +94,13 @@ class Actuator {
   // "nothing heard on the new channel" and recovers from on its own.
   //
   // `reason` is a stable, short literal naming WHY the move is happening --
-  // "disc" (a DISC proposed a channel we agreed to), "move_unconfirmed"
-  // (the post-move confirm window expired), "rendezvous" (the rendezvous
-  // timer sent us home). It is spec §7 observability only: the real
+  // "disc" (a DISC proposed a channel we agreed to), "hop" (an RCF carried
+  // a new hop order), "move_unconfirmed" (the post-move confirm window
+  // expired), "rendezvous" (the rendezvous timer sent us home). It is
+  // spec §7 observability only: the real
   // actuator prints it on the retune line so a stderr/serial capture says
-  // which of the three fired, which is otherwise indistinguishable from
-  // the channel numbers alone (all three can move us to home). Never null,
+  // which of the four fired, which is otherwise indistinguishable from
+  // the channel numbers alone (all four can move us to home). Never null,
   // never freed -- always a string literal.
   virtual void retune(uint8_t ch, const char* reason) = 0;
 };
@@ -158,6 +159,10 @@ class RcAgent {
   // again once the move falls back unconfirmed or the drone re-enters
   // RENDEZVOUS by any path.
   uint8_t channel() const { return channel_; }
+
+  // The epoch of the last in-flight hop order applied from an RCF (spec
+  // 2026-09-14 §1). 0 before any hop order has ever been heard.
+  uint8_t hop_epoch() const { return hop_epoch_; }
 
   // Telemetry accessors (spec 2026-07-26 drone-telemetry): read-only
   // snapshots of RcAgent-internal state the T_TELEM collector needs but
@@ -219,6 +224,12 @@ class RcAgent {
   uint8_t channel_;
   bool move_pending_ = false;
   uint64_t move_at_ms_ = 0;
+
+  // In-flight hop order (spec 2026-09-14 §1). have_hop_ is false until the
+  // first RCF carrying a nonzero hop_ch is accepted; hop_epoch_ then tracks
+  // the (epoch) of the last applied order so a repeat is idempotent.
+  uint8_t hop_epoch_ = 0;
+  bool have_hop_ = false;
 
   AppliedOp applied_;
 

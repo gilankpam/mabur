@@ -108,6 +108,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
       saturate<uint8_t>(std::clamp(in.venc_ring_fill_pct, 0, 100));
   t.air_backlog_max_ms = saturate<uint16_t>(in.air_backlog_max_ms);
   t.air_shed_drops = saturate<uint16_t>(in.air_shed_drops);
+  t.channel = in.channel;
+  t.hop_epoch = in.hop_epoch;
   return t;
 }
 

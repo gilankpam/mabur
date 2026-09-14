@@ -462,6 +462,22 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     State prev_state = state_;
     apply_ladder_op(ladder, r->fec_overhead_base, r->fec_overhead_enh, r->probe_profile);
 
+    // In-flight hop order (spec 2026-09-14 §1): a NEW (epoch, ch) pair moves
+    // us; the same pair again is a no-op; hop_ch 0 is a pre-hop GS. The order
+    // in this very RCF must not be confirmed by itself, so move_pending_ is
+    // re-armed AFTER the clear above; the next RCF heard on the new channel
+    // clears it, and move_confirm_ms sends us home if none arrives.
+    if (r->hop_ch != 0 && (!have_hop_ || r->hop_epoch != hop_epoch_)) {
+      have_hop_ = true;
+      hop_epoch_ = r->hop_epoch;
+      if (r->hop_ch != channel_) {
+        act_.retune(r->hop_ch, "hop");
+        channel_ = r->hop_ch;
+        move_pending_ = true;
+        move_at_ms_ = now_ms;
+      }
+    }
+
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;
     state_ = State::LINKED;

@@ -75,6 +75,10 @@ struct TelemInputs {
   // Air clock (spec 2026-09-06): window max backlog (main.cpp atomic,
   // exchange(0) per tick) and FramePipeline::air_dropped() mirror.
   uint64_t air_backlog_max_ms = 0, air_shed_drops = 0;
+  // In-flight channel hop readback (spec 2026-09-14 §1): RcAgent::channel()
+  // and RcAgent::hop_epoch(), straight pass-through, no saturation.
+  uint8_t channel = 0;
+  uint8_t hop_epoch = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);
