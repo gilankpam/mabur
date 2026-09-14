@@ -105,6 +105,12 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     } else {
       cj["energy"] = nullptr;
     }
+    if (c.dwell) {
+      cj["dwell"] = {{"visits", c.dwell->visits}, {"score", c.dwell->score},
+                     {"cost_us", c.dwell->cost_us}};
+    } else {
+      cj["dwell"] = nullptr;
+    }
     if (have_window) {
       const uint64_t d_exp = c.seq_expected > p.seq_expected
                                  ? c.seq_expected - p.seq_expected : 0;
@@ -474,6 +480,21 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   scan["rounds"] = in.scan_rounds;
   if (in.scan_pick) scan["pick"] = *in.scan_pick; else scan["pick"] = nullptr;
 
+  // In-flight channel hop snapshot (spec 2026-09-14-inflight-channel-hop),
+  // top-level like `scan`: it describes the hop feature's own state
+  // machine, not a per-window link measurement.
+  json& hop = j["hop"];
+  hop["enable"] = in.hop.enable;
+  hop["verdict"] = in.hop.verdict;
+  hop["evidence"] = in.hop.evidence;
+  if (in.hop.ref_rung) hop["ref_rung"] = *in.hop.ref_rung; else hop["ref_rung"] = nullptr;
+  hop["epoch"] = in.hop.epoch;
+  hop["state"] = in.hop.state;
+  if (in.hop.target) hop["target"] = *in.hop.target; else hop["target"] = nullptr;
+  hop["hops"] = in.hop.hops;
+  hop["holds"] = in.hop.holds;
+  if (in.hop.last_ms) hop["last_ms"] = *in.hop.last_ms; else hop["last_ms"] = nullptr;
+
   if (in.telem) {
     const mabur::rc::Telem& t = *in.telem;
     // A new distinct snapshot (tlm_seq changed since the last one we kept)
@@ -617,6 +638,13 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["sys"] = {{"soc_temp_c", t.soc_temp_c},
                 {"thermal_delta", t.thermal_delta},
                 {"load", t.load_x100 / 100.0}};
+    // In-flight channel hop readback (spec 2026-09-14-inflight-channel-hop
+    // §1): the channel RcAgent believes it is actually on, and the epoch of
+    // the last hop order it applied -- the drone's own confirmation,
+    // independent of the GS-side hop.* block above (which is what the GS
+    // ordered; this is what the drone landed on).
+    d["channel"] = t.channel;
+    d["hop_epoch"] = t.hop_epoch;
   } else {
     j["drone"] = nullptr;
   }

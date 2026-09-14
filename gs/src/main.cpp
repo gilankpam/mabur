@@ -98,6 +98,19 @@ uint64_t mono_us() {
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+// hop.state on the sideport (Task 12): HopState has no to_string() of its
+// own (hop_controller.h/.cpp aren't in this task's file list), so map it
+// here, next to the exporter feed's other ad hoc conversions.
+const char* hop_state_name(maburgs::HopState s) {
+  switch (s) {
+    case maburgs::HopState::Idle:      return "idle";
+    case maburgs::HopState::Ordered:   return "ordered";
+    case maburgs::HopState::Verifying: return "verifying";
+    case maburgs::HopState::Hold:      return "hold";
+  }
+  return "idle";
+}
+
 void usage() {
   std::fprintf(stderr,
                "usage: maburgs -c <config.toml> --dry-run --in <frames.bin>\n"
@@ -537,6 +550,17 @@ static int run_radio(const maburgs::Config& cfg) {
   std::mutex dwell_mu;
   std::vector<std::pair<int, maburgs::ScoutDwell>> dwell_recs;  // {card, record}
   std::vector<maburgs::HopVisit> dwell_visits;
+  // Sideport dwell snapshot per card (Task 12), single-writer: updated ONLY
+  // at the dwell_recs/dwell_visits drain below (core thread, under
+  // dwell_mu), read ONLY at the sideport feed (also core thread) -- no
+  // second lock needed. nullopt = this card has never completed a dwell.
+  // visits is cumulative over every drained dwell (success or not); score
+  // is the last SUCCESSFUL dwell's HopRanker::score() (a failed retune
+  // produces no HopVisit, so a stale score is kept rather than zeroed);
+  // cost_us is always the last dwell's to_us+read_us+back_us, success or
+  // not.
+  std::vector<std::optional<maburgs::StatsDwellIn>> dwell_stats(
+      static_cast<size_t>(n_cards));
   // Serializes every call into `inflight` (and, transitively, whichever
   // RadioFrontend it currently points at) across the scout thread's
   // periodic dwell and the core thread's own synchronous freshness burst
@@ -582,6 +606,10 @@ static int run_radio(const maburgs::Config& cfg) {
   uint64_t recovered_prev_window = 0;
   maburgs::Verdict last_verdict = maburgs::Verdict::Healthy;
   maburgs::VerdictOut last_verdict_out;
+  // hop.last_ms (Task 12): elapsed_ms of the most recent HopEvent
+  // (HopController::take_events(), drained below) -- nullopt until any
+  // hop event (order/confirm/withdraw/hold) has fired this session.
+  std::optional<uint64_t> last_hop_event_ms;
 
   // RCF send counter: the hop controller's one-card-retune escalation
   // reads the delta since the order. Bumped in send_control_frame below
@@ -1425,6 +1453,7 @@ static int run_radio(const maburgs::Config& cfg) {
         if (scan_log) scan_log->hop(e);
         std::fprintf(stderr, "maburgs hop: %s epoch %u target %u score %u +%.0f ms\n",
                      e.kind.c_str(), e.epoch, e.target, e.score, e.elapsed_ms);
+        last_hop_event_ms = static_cast<uint64_t>(e.elapsed_ms >= 0 ? e.elapsed_ms : 0.0);
       }
     }
 
@@ -1521,10 +1550,31 @@ static int run_radio(const maburgs::Config& cfg) {
         drained.swap(dwell_recs);
         visits.swap(dwell_visits);
       }
+      size_t vi = 0;
       for (auto& rec : drained) {
-        cur_ch[static_cast<size_t>(rec.first)] =
-            fronts[static_cast<size_t>(rec.first)]->channel();
-        if (scan_log) scan_log->dwell(now_ms, rec.first, rec.second);
+        const int card = rec.first;
+        cur_ch[static_cast<size_t>(card)] = fronts[static_cast<size_t>(card)]->channel();
+        if (scan_log) scan_log->dwell(now_ms, card, rec.second);
+        // Sideport dwell snapshot (Task 12, StatsCardIn::dwell). dwell_recs
+        // and dwell_visits are pushed in lockstep by scout_loop -- one
+        // ScoutDwell per completed dwell, one HopVisit iff that SAME
+        // dwell's retune didn't fail (InflightScout::dwell() sets
+        // kFlagRetuneFailed on exactly the two paths that produce no
+        // visit, never otherwise). So `visits` is a strict, order-
+        // preserving subsequence of `drained`'s successes: walking both in
+        // lockstep and consuming one visit per non-failed record
+        // attributes each score to the right card despite HopVisit itself
+        // carrying no card field.
+        const bool ok =
+            !(rec.second.survey.flags & devourer::chanmig::kFlagRetuneFailed);
+        maburgs::StatsDwellIn ds =
+            dwell_stats[static_cast<size_t>(card)].value_or(maburgs::StatsDwellIn{});
+        ++ds.visits;
+        ds.cost_us = static_cast<uint32_t>(rec.second.to_us + rec.second.read_us +
+                                           rec.second.back_us);
+        if (ok && vi < visits.size()) ds.score = maburgs::HopRanker::score(visits[vi]);
+        dwell_stats[static_cast<size_t>(card)] = ds;
+        if (ok) ++vi;
       }
       for (const auto& v : visits) ranker.add(v);
     }
@@ -2045,6 +2095,23 @@ static int run_radio(const maburgs::Config& cfg) {
                            : (scout->frozen() ? "frozen" : "scouting");
       sin.scan_rounds = scout ? scout->rounds() : 0;
       if (plan.frozen()) sin.scan_pick = plan.op();
+      // In-flight channel hop snapshot (Task 12): straight off
+      // HopController's own accessors + the latest HopVerdict output --
+      // same no-controller-reference pattern as sin.ctl further down.
+      sin.hop.enable = hcfg.enable;
+      sin.hop.verdict = maburgs::to_string(last_verdict_out.v);
+      sin.hop.evidence = last_verdict_out.evidence;
+      if (last_verdict_out.ref_rung >= 0) sin.hop.ref_rung = last_verdict_out.ref_rung;
+      sin.hop.epoch = hopc.epoch();
+      sin.hop.state = hop_state_name(hopc.state());
+      // hop_ch() is 0 sentinel ("never ordered a hop yet") until the first
+      // order; once set it never reverts to 0 again (withdraw sets it to
+      // the pre-attempt point, not to the sentinel), so this is null only
+      // for a session where the hop feature has never fired.
+      if (const uint8_t hc = hopc.hop_ch(); hc != 0) sin.hop.target = hc;
+      sin.hop.hops = hopc.hops();
+      sin.hop.holds = hopc.holds();
+      sin.hop.last_ms = last_hop_event_ms;
       sin.in_session = in_session;
       sin.tx_card = sel.selected();
       sin.op = vrx.cur_op();
@@ -2078,6 +2145,7 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.tx_frames = fronts[static_cast<size_t>(i)]->tx_frames();
         ci.tx_fail = fronts[static_cast<size_t>(i)]->tx_fail();
         ci.energy = energy_last[static_cast<size_t>(i)];  // last A sample
+        ci.dwell = dwell_stats[static_cast<size_t>(i)];  // last in-flight scout dwell
         static_assert(maburgs::kNumStatsClasses == maburgs::kNumRfClasses,
                       "class arrays must stay in lockstep");
         for (int k = 0; k < maburgs::kNumStatsClasses; ++k) {

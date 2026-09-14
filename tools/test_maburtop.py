@@ -129,6 +129,7 @@ class TopBarTest(unittest.TestCase):
         self.assertIn("restarts 1", text)
 
 
+
 class DronePanelTest(unittest.TestCase):
     def test_content(self):
         rows = panel_drone(_fresh(), 100.2)
@@ -643,6 +644,19 @@ class RenderRowsCompactTest(unittest.TestCase):
         w = dict(CARD_COLS)["busy"]
         self.assertEqual(data0[end - w:end].strip(), "5")
         self.assertEqual(data1[end - w:end].strip(), "--")  # no "energy" key
+
+    def test_header_shows_hop_state_and_verdict(self):
+        d = dict(DGRAM, hop={
+            "enable": True, "verdict": "interfered", "evidence": 6,
+            "ref_rung": 3, "epoch": 2, "state": "ordered", "target": 149,
+            "hops": 1, "holds": 0, "last_ms": 250,
+        })
+        rows = render_rows_compact(_fresh(d), wall=100.2, width=200)
+        self.assertIn("hop ordered/interfered", rows[0])
+
+    def test_header_hop_absent_renders_dashes(self):
+        rows = render_rows_compact(_fresh(), wall=100.2, width=200)
+        self.assertIn("hop --/--", rows[0])
 
 
 class HstackTest(unittest.TestCase):

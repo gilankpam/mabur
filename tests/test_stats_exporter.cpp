@@ -1121,4 +1121,58 @@ TEST(card_energy_igi_null_when_absent) {
   CHECK(j["cards"][0]["energy"]["igi"].is_null());
 }
 
+TEST(exports_hop_block_card_dwell_and_drone_channel) {
+  StatsInput in = base_input();
+  REQUIRE(in.cards.size() == 1);
+  in.hop.enable = true;
+  in.hop.verdict = "interfered";
+  in.hop.evidence = 6;
+  in.hop.ref_rung = 3;
+  in.hop.epoch = 2;
+  in.hop.state = "ordered";
+  in.hop.target = 149;
+  in.hop.hops = 1;
+  in.hop.holds = 0;
+  in.hop.last_ms = 250;
+  in.cards[0].dwell = StatsDwellIn{12, 13, 9800};
+  in.cards.push_back(StatsCardIn{});  // card 1: never scouted -> dwell stays null
+  mabur::rc::Telem t;
+  t.channel = 149;
+  t.hop_epoch = 2;
+  in.telem = t; in.telem_rx_ms = 900;
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  CHECK(ex.poll(1000, in));
+  json j = cap.last();
+  CHECK(j["hop"]["enable"] == true);
+  CHECK(j["hop"]["verdict"] == "interfered");
+  CHECK(j["hop"]["evidence"] == 6);
+  CHECK(j["hop"]["ref_rung"] == 3);
+  CHECK(j["hop"]["epoch"] == 2);
+  CHECK(j["hop"]["state"] == "ordered");
+  CHECK(j["hop"]["target"] == 149);
+  CHECK(j["hop"]["hops"] == 1);
+  CHECK(j["hop"]["holds"] == 0);
+  CHECK(j["hop"]["last_ms"] == 250);
+  CHECK(j["cards"][0]["dwell"]["visits"] == 12);
+  CHECK(j["cards"][0]["dwell"]["score"] == 13);
+  CHECK(j["cards"][0]["dwell"]["cost_us"] == 9800);
+  CHECK(j["cards"][1]["dwell"].is_null());
+  CHECK(j["drone"]["channel"] == 149);
+  CHECK(j["drone"]["hop_epoch"] == 2);
+}
+
+TEST(hop_ref_rung_and_target_null_when_absent) {
+  StatsInput in = base_input();
+  // in.hop stays default: enable=false, ref_rung/target unset.
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  CHECK(ex.poll(1000, in));
+  json j = cap.last();
+  CHECK(j["hop"]["enable"] == false);
+  CHECK(j["hop"]["ref_rung"].is_null());
+  CHECK(j["hop"]["target"].is_null());
+  CHECK(j["hop"]["last_ms"].is_null());
+}
+
 MTEST_MAIN

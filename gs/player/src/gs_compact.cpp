@@ -118,6 +118,9 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
   switch (id) {
     // "ch:--" is narrower than the numeric form, so the number sizes the
     // box; "(a)" is the auto-channel-select marker (GsSnapshot::scan_auto).
+    // The in-flight hop marker (GsSnapshot::hopped, "(h)") shares this same
+    // slot -- the two are mutually exclusive (see the render switch) and
+    // exactly as wide, so no separate worst case is needed for it.
     case GsBarField::kCh:      return "ch:999(a)";
     // Here the em-dash-free missing form is the WIDER one ("mcs:--" beats
     // "mcs:9"), which is exactly why every box is sized from an explicit
@@ -303,9 +306,17 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
       st.text = snap.channel
                     ? "ch:" + ascii_int(std::clamp(*snap.channel, 0, 999))
                     : "ch:--";
-      // radio.scan enabled on the GS: this channel may be a pick, not the
-      // configured home -- say so, in the bar's own plain-text idiom.
-      if (snap.scan_auto) st.text += "(a)";
+      // In-flight channel hop (spec 2026-09-14-inflight-channel-hop) takes
+      // priority over the boot-scan mark below -- both share one suffix
+      // slot (worst_case() reserves exactly "(a)"'s width), and a hop mid-
+      // flight is the more actionable of the two for the pilot.
+      if (snap.hopped) {
+        st.text += "(h)";
+      } else if (snap.scan_auto) {
+        // radio.scan enabled on the GS: this channel may be a pick, not the
+        // configured home -- say so, in the bar's own plain-text idiom.
+        st.text += "(a)";
+      }
       break;
     case GsBarField::kMcs:
       st.rgb = link;

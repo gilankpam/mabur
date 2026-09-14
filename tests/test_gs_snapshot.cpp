@@ -418,4 +418,35 @@ TEST(scan_auto_is_false_when_off_or_absent) {
   REQUIRE(parse(R"({"link": {"channel": 136}, "scan": {"state": 7}})", &s));   // wrong type: dropped
   CHECK(!s.scan_auto);
 }
+
+// In-flight channel hop (spec 2026-09-14-inflight-channel-hop): `hopped`
+// means "the live channel is the hop feature's own standing target, and
+// that target isn't home" -- not "a hop has ever happened this session"
+// (hop.hops is a cumulative counter that never resets) and not a plain
+// channel != home check (that also fires for an unrelated boot-scan pick).
+TEST(hopped_true_only_when_channel_matches_a_non_home_hop_target) {
+  GsSnapshot s;
+  // Landed on the hop target, target != home -> true.
+  REQUIRE(parse(R"({"link": {"channel": 149, "home": 136},
+                    "hop": {"state": "idle", "target": 149}})", &s));
+  CHECK(s.hopped);
+  // Withdrawn / returned home: target == home -> false, even with hops > 0
+  // from an earlier confirmed hop this session.
+  REQUIRE(parse(R"({"link": {"channel": 136, "home": 136},
+                    "hop": {"state": "idle", "target": 136, "hops": 2}})", &s));
+  CHECK(!s.hopped);
+  // Mid-order: hop.target is set but the live channel hasn't caught up to
+  // it yet -> false (not yet actually hopped-to).
+  REQUIRE(parse(R"({"link": {"channel": 136, "home": 136},
+                    "hop": {"state": "ordered", "target": 149}})", &s));
+  CHECK(!s.hopped);
+  // hop.target null (feature never fired this session) -> false, even on a
+  // non-home channel (that's the boot-scan pick's "(a)" mark's job).
+  REQUIRE(parse(R"({"link": {"channel": 100, "home": 136},
+                    "hop": {"state": "idle", "target": null}})", &s));
+  CHECK(!s.hopped);
+  // No "hop" block at all (older maburgs) -> false.
+  REQUIRE(parse(R"({"link": {"channel": 149, "home": 136}})", &s));
+  CHECK(!s.hopped);
+}
 MTEST_MAIN

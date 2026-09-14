@@ -315,6 +315,7 @@ def render_rows_compact(model, wall, width):
         chan = link.get("channel")
         home = link.get("home")
         scan = d.get("scan") or {}
+        hop = d.get("hop") or {}
         bw = op.get("bw")
         cmd_ov_base = op.get("overhead_base")
         cmd_ov_enh = op.get("overhead_enh")
@@ -322,7 +323,8 @@ def render_rows_compact(model, wall, width):
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
             f"maburgs   {state_s}   vtx {_s(vtx_id)}   "
-            f"ch {_s(chan)}/h{_s(home)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))}   "
+            f"ch {_s(chan)}/h{_s(home)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))} "
+            f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
             f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}"
@@ -354,6 +356,12 @@ def render_rows_compact(model, wall, width):
                 _f(c.get("self_pps"), CARD_COLS[8][1], 1),
                 _f(c.get("tx_pps"), CARD_COLS[9][1], 0),
                 _f(c.get("tx_fail"), CARD_COLS[10][1]),
+                # cards[i].energy (spec 2026-09-13-auto-channel-select): fed
+                # from a 1 Hz A-record poll pre-2026-09-14, now refreshed
+                # every ~150 ms verdict window in-session (in-flight-
+                # channel-hop, spec 2026-09-14) -- the "busy" number is
+                # noisier tick-to-tick but never goes stale for a minute
+                # between two dwell-period cycles the way the old poll did.
                 _f((e.get("cca", 0) - min(e.get("cca", 0), e.get("own", 0))) + e.get("fa", 0) + e.get("foreign", 0)
                    if (e := c.get("energy")) else None, CARD_COLS[11][1], 0),
             ]

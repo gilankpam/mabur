@@ -70,6 +70,10 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     auto it = scan->find("state");
     out->scan_auto = it != scan->end() && it->is_string() && it->get<std::string>() != "off";
   }
+  // Captured here (top-level, like `scan`) and consumed once the `link`
+  // block below has parsed out->channel and link.home -- hop.target alone
+  // says nothing about whether the LIVE channel is that target right now.
+  const json* hop = obj(j, "hop");
   if (const json* link = obj(j, "link")) {
     // The GS's operating wifi channel (radio.channel). Exported from the GS
     // config, so it is a constant for the session -- but it is the one
@@ -78,6 +82,12 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     // player's own config is what keeps it honest when the two configs
     // disagree.
     out->channel = integer(*link, "channel");
+    if (hop) {
+      const std::optional<int> target = integer(*hop, "target");
+      const std::optional<int> home = integer(*link, "home");
+      out->hopped = target && home && out->channel &&
+                    *target == *out->channel && *target != *home;
+    }
     out->air_pct = num(*link, "air_pct");
     if (const std::optional<double> r = num(*link, "residual_loss"))
       out->post_loss_pct = *r * 100.0;

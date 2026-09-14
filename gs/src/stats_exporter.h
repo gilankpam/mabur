@@ -34,6 +34,19 @@ struct StatsEnergyIn {
   std::optional<int> igi;
 };
 
+// One card's in-flight scouting activity (spec 2026-09-14-inflight-channel-
+// hop), copied plain from the drained ScoutDwell/HopVisit records -- same
+// no-controller-reference pattern as StatsCtlIn. visits is cumulative
+// (every completed dwell, success or not); score and cost_us are the LAST
+// dwell's, not an aggregate (score only updates on a successful dwell --
+// a failed retune produces no HopVisit to score, so a stale score is kept
+// rather than zeroed).
+struct StatsDwellIn {
+  uint32_t visits = 0;
+  uint32_t score = 0;
+  uint32_t cost_us = 0;
+};
+
 struct StatsCardIn {
   bool up = false;
   uint64_t frames = 0, crc_fail = 0;
@@ -46,6 +59,7 @@ struct StatsCardIn {
   uint64_t tx_fail = 0;        // send_control failures (cumulative)
   std::array<StatsClassIn, kNumStatsClasses> classes{};
   std::optional<StatsEnergyIn> energy;  // nullopt -> JSON null
+  std::optional<StatsDwellIn> dwell;    // nullopt -> JSON null (never scouted)
 };
 
 struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
@@ -180,6 +194,33 @@ struct StatsProbeIn {
   std::vector<Card> cards;
 };
 
+// In-flight channel hop snapshot (spec 2026-09-14-inflight-channel-hop),
+// straight from HopController's own accessors (state()/epoch()/hop_ch()/
+// hops()/holds()) plus the latest HopVerdict::window() output -- plain
+// values only, no controller reference, matching StatsCtlIn's pattern.
+// Unconditional (like StatsProbeIn): a disabled feature still exports
+// enable=false and the verdict/counters at their idle defaults, so a
+// consumer never has to special-case a missing block.
+struct StatsHopIn {
+  bool enable = false;
+  const char* verdict = "unknown";  // to_string(Verdict)
+  int evidence = 0;
+  std::optional<int> ref_rung;      // HopVerdict::ref_rung(), -1 -> null
+  int epoch = 0;
+  const char* state = "idle";       // idle|ordered|verifying|hold
+  // hop_ch(): the standing target every RCF carries. 0 before the first
+  // ever order -> null; otherwise whatever the controller currently
+  // believes the link should be on (may equal home again after a
+  // confirmed hop back, or after a withdraw restores the pre-attempt
+  // point).
+  std::optional<int> target;
+  uint32_t hops = 0, holds = 0;
+  // Elapsed ms of the last HopEvent (HopController::take_events()) --
+  // nullopt until the first event of any kind (order/confirm/withdraw/
+  // hold) has fired this session.
+  std::optional<uint64_t> last_ms;
+};
+
 struct StatsInput {
   uint32_t vtx_id = 0;
   // radio.channel, straight from the GS config. Exported because the
@@ -226,6 +267,8 @@ struct StatsInput {
   // Continuous probe gate snapshot; unconditional (see StatsProbeIn) so a
   // pinned link still exports link.probe (with on=false).
   StatsProbeIn probe;
+  // In-flight channel hop snapshot; unconditional (see StatsHopIn).
+  StatsHopIn hop;
   uint64_t frames_clean = 0, frames_truncated = 0, frames_dropped = 0;
   uint64_t stall_resets = 0;
   // AU ring publish health (PR C: replaced the rtp/udp blocks -- video

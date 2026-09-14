@@ -45,6 +45,17 @@ struct GsSnapshot {
   // pick rather than the configured home. False when the block is absent
   // (older maburgs) or malformed.
   bool scan_auto = false;
+  // In-flight channel hop (spec 2026-09-14-inflight-channel-hop): true
+  // only while `channel` equals hop.target and that target isn't
+  // link.home -- i.e. the live channel is one the hop feature itself put
+  // it on, right now. Deliberately NOT "a hop has ever happened this
+  // session" (hop.hops is a monotonic counter that never resets on
+  // withdraw or on hopping back to home), and NOT a plain
+  // channel != home check either (that also fires for a boot-scan pick,
+  // which already has its own "(a)" mark and is unrelated to this
+  // feature). False when the block is absent (older maburgs) or the link
+  // is on home / a stale hop target.
+  bool hopped = false;
   // link.ctl.rung.mcs / .ov_base x 100, falling back to link.op.mcs /
   // .overhead_base x 100 when the ladder block is absent -- which is the
   // normal, permanent state of a static-pinned link (link.static_mcs >= 0

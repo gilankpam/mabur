@@ -122,6 +122,27 @@ TEST(auto_channel_select_marks_the_channel) {
         "ch:--(a) mcs:5 air:62% rssi:-70/-72 snr:22/20");
 }
 
+// In-flight channel hop (spec 2026-09-14-inflight-channel-hop): the
+// channel carries an "(h)" suffix -- same slot as "(a)", mutually
+// exclusive with it -- so the pilot can tell the link is on a channel the
+// hop feature itself put it on, right now.
+TEST(inflight_hop_marks_the_channel) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  s.hopped = true;
+  CHECK(row_of(bar, s, false, player_nominal(), 0) ==
+        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+  // hopped takes priority over scan_auto when (implausibly) both are set --
+  // they share the one suffix slot worst_case() reserves.
+  s.scan_auto = true;
+  CHECK(row_of(bar, s, false, player_nominal(), 0) ==
+        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+}
+
 // A card count of four widens exactly two items and nothing else.
 TEST(four_cards_extend_the_rssi_and_snr_lists) {
   GsFont f;
