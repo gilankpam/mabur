@@ -1399,22 +1399,32 @@ static int run_radio(const maburgs::Config& cfg) {
       // matching the brief's "lead card received a video AU on hop_ch".
       ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
       ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total - rcf_sent_at_order);
-      if (hopc.state() == maburgs::HopState::Idle && last_verdict_out.trigger && ht.best) {
-        // Freshness burst (spec section 3): sweep every candidate once
-        // more, right before a target is actually committed, rather than
-        // act on a ranking built from visits up to rank_max_age_ms old.
+      // "No hop in flight" -- Idle (never triggered / just settled) or
+      // Hold (rate-capped or exhausted, spec's OTHER meaning of "no hop in
+      // flight"). Ordered/Verifying are deliberately excluded: a hop is
+      // actually in progress there and the radio must not wander.
+      const bool hop_free = hopc.state() == maburgs::HopState::Idle ||
+                            hopc.state() == maburgs::HopState::Hold;
+      if (hop_free && last_verdict_out.trigger) {
+        // Freshness burst (spec section 3): sweep every candidate once,
+        // back to back, BEFORE a target is chosen -- so it must not
+        // require ht.best to already hold one (dropped from this gate in
+        // fix round 2; the plan's own snippet had it, the spec overrules).
         // BOTH card counts (spec: "the only card on a one-card GS since
         // the link is already impaired") -- a one-card GS never runs the
         // periodic scout thread (that stays two-card-only, see scout_loop
         // above), so this burst is the ONLY source of ranking data it will
-        // ever have; without it ht.best is permanently nullopt and the
-        // controller can only order home or hold, never a candidate. Runs
-        // synchronously on the core thread (blocking it for the whole
-        // sweep, a handful of candidates at a few ms each -- see the
-        // report's threading notes), so inflight_mu is held for the
-        // duration to keep the scout thread's own periodic dwell (when
-        // one is running, i.e. two-card) from driving the same
-        // InflightScout/RadioFrontend at the same time.
+        // ever have; without it (and without also accepting Hold above)
+        // ht.best is permanently nullopt, the state machine can only ever
+        // order home once and then hold forever, and it can never leave
+        // Hold since leaving requires order(), which itself requires
+        // best. Runs synchronously on the core thread (blocking it for
+        // the whole sweep, a handful of candidates at a few ms each on
+        // two cards -- see the report's threading notes and, for the
+        // one-card case, the burst-duration note in fix round 2), so
+        // inflight_mu is held for the duration to keep the scout thread's
+        // own periodic dwell (when one is running, i.e. two-card) from
+        // driving the same InflightScout/RadioFrontend at the same time.
         const int burst_card = ht.lead_card >= 0 ? ht.lead_card : 0;
         std::lock_guard<std::mutex> ilk(inflight_mu);
         auto& fe = *fronts[static_cast<size_t>(burst_card)];
