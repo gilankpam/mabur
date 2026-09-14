@@ -46,7 +46,10 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // to the chip's efuse anchor (CalWindow int8, CalResult walls in [-64,63],
 // sentinel -128); Telem drops cal_base_ref_idx. Spec
 // 2026-09-13-relative-walls-design.md.
-constexpr uint8_t RC_VERSION = 8;
+// Bumped 8 -> 9 on 2026-09-14: RCF gains hop_ch/hop_epoch (in-flight channel
+// hop order, present in every RCF), Telem gains channel/hop_epoch (readback).
+// Spec docs/superpowers/specs/2026-09-14-inflight-channel-hop-design.md §1.
+constexpr uint8_t RC_VERSION = 9;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -89,6 +92,13 @@ struct Rcf {
   // Probe stream MCS (spec 2026-09-04): encode_profile of the rung the GS
   // wants probed, or kNoProbeProfile. Always present in the head.
   uint8_t probe_profile = kNoProbeProfile;
+
+  // In-flight hop (spec 2026-09-14 §1): the channel the drone must be on,
+  // in EVERY RCF (the standing truth, not an event), and the epoch the GS
+  // bumps on each order/withdrawal so repeats are idempotent. 0 = no order
+  // ever issued (a pre-hop GS); the drone ignores hop_ch 0.
+  uint8_t hop_ch = 0;
+  uint8_t hop_epoch = 0;
 };
 
 // VRX -> VTX discovery beacon (rendezvous), addressed to a VTX_ID.
@@ -220,6 +230,8 @@ struct Telem {
   // phase boundary's ack Telem(s) and the suppression rule never conflict.
   // The verify pass sends no command and gets no ack -- the drone
   // self-initiates it once it applies the result.
+  uint8_t channel = 0;    // RcAgent::channel() at build — spec 2026-09-14 §1
+  uint8_t hop_epoch = 0;  // last (epoch) applied from an RCF hop order
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse

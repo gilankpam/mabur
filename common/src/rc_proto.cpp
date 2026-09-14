@@ -52,10 +52,10 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-constexpr size_t RCF_HEAD_LEN = 15;
+constexpr size_t RCF_HEAD_LEN = 17;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 87;  // 2026-09-13: cal_base_ref_idx removed
+constexpr size_t TELEM_LEN = 89;  // 2026-09-14: +channel/hop_epoch
 
 // magic(2) | ver | type | flags | vtx(4) | nonce(4) | phase | fpc(2) |
 // settle(2) | gap(2) | n_windows(1) | n * 4 bytes
@@ -85,6 +85,8 @@ std::vector<uint8_t> pack_rcf(const Rcf& r) {
   body.push_back(overhead_to_x100(r.fec_overhead_base));
   body.push_back(overhead_to_x100(r.fec_overhead_enh));
   body.push_back(r.probe_profile);
+  body.push_back(r.hop_ch);
+  body.push_back(r.hop_epoch);
   put_crc(body);
   return body;
 }
@@ -101,6 +103,8 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.fec_overhead_base = buf[12] / 100.0;
   r.fec_overhead_enh = buf[13] / 100.0;
   r.probe_profile = buf[14];
+  r.hop_ch = buf[15];
+  r.hop_epoch = buf[16];
   return r;
 }
 
@@ -319,6 +323,8 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(t.venc_ring_fill_pct);
   put16(body, t.air_backlog_max_ms);
   put16(body, t.air_shed_drops);
+  body.push_back(t.channel);
+  body.push_back(t.hop_epoch);
 
   put_crc(body);
   return body;
@@ -374,6 +380,8 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.venc_ring_fill_pct = buf[82];
   t.air_backlog_max_ms = get16(buf, 83);
   t.air_shed_drops = get16(buf, 85);
+  t.channel = buf[87];
+  t.hop_epoch = buf[88];
   return t;
 }
 
