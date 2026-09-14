@@ -1356,3 +1356,28 @@ TEST(blank_store_gates_every_store_write) {
   feed_for(ctl, t, 600, 0.3);              // past the blank: writes resume
   CHECK(ctl.rungs().stat(2).u.n > before);
 }
+
+// Fix round 1: blank_store() must gate ONLY the RungStore write, never the
+// s3 demote decision itself -- the spec (2026-09-14 §4) has the ladder
+// running UNFROZEN through the whole detect+hop+settle window (a demote or
+// two, each an IDR, is expected and wanted), while the store simply must
+// not learn from a window it knows is unrepresentative of the rung on a
+// clean channel. This pins the split: with a blank active, an s3 residual
+// condition that would normally demote still demotes, but the per-rung
+// s3_resid EWMA it was measured on does not advance.
+TEST(blank_store_does_not_suspend_s3_decisions_only_the_ewma) {
+  LadderCfg cfg = make_cfg_noprobe();
+  LadderController ctl(cfg);
+  double t = 0;
+  promote_to(ctl, t, 4);
+  feed_for(ctl, t, cfg.probation_ms + 200.0, 0.3);  // retire probation
+  const int before_rung = ctl.rung();
+  const auto before_n = ctl.rungs().stat(before_rung).s3_resid.n;
+  ctl.blank_store(t + 1000);
+  const bool changed = ctl.update(ok3(0.3 * ctl.budget_base(), 0.0, 0.02), t);
+  CHECK(changed);
+  CHECK(ctl.rung() == before_rung - 1);
+  CHECK(ctl.counters().demotes_s3_residual == 1);
+  CHECK(ctl.last_event().reason == CtlReason::S3Residual);
+  CHECK(ctl.rungs().stat(before_rung).s3_resid.n == before_n);
+}

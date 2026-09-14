@@ -414,8 +414,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
   // number, and it is left at the 0 stamped at update() entry whenever s3 is
   // not measurable this window: a persisted last-good value would make util3()
   // (sideport link.ctl.u3) report a frozen stale reading after s3 goes quiet.
-  const bool s3_live =
-      s3_usable(h) && now_ms >= s3_blank_until_ms_ && now_ms >= blank_store_until_ms_;
+  const bool s3_live = s3_usable(h) && now_ms >= s3_blank_until_ms_;
 
   // Continuity gate. The s3 util confirm window below is an elapsed-time test
   // against a start stamp, which only means "sustained" while the
@@ -448,7 +447,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
     const double b3 = budget_enh_for(idx_);
     u3_ = b3 > 0.0 ? h.s3_pre_fec_loss / b3
                    : (h.s3_pre_fec_loss > 0.0 ? 1e9 : 0.0);
-    store_.observe_s3(idx_, u3_, h.s3_residual_loss > 0.0, now_ms);
+    if (now_ms >= blank_store_until_ms_)
+      store_.observe_s3(idx_, u3_, h.s3_residual_loss > 0.0, now_ms);
   }
 
   // Same bookkeeping as the s1 util/probation demotes above, deliberately —
@@ -624,6 +624,7 @@ void LadderController::restore(int rung, double now_ms) {
   rung = std::clamp(rung, 0, static_cast<int>(cfg_.ladder.size()) - 1);
   const int from = idx_;
   idx_ = rung;
+  last_change_ms_ = now_ms;
   probation_active_ = false;
   probation_until_ms_ = -1e18;
   probation_rung_ = -1;
