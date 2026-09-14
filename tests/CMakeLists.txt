@@ -280,6 +280,12 @@ add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_cal_log test_cal_log.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_cal_control test_cal_control.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
+    # rcf_dump: a plain CLI helper (not itself a ctest, no add_mtest), used
+    # by run_gs_e2e.sh's hop scenario to decode a dumped RCF wire frame with
+    # the REAL mabur::rc::parse_rcf() rather than the shell script inferring
+    # byte offsets by hand.
+    add_executable(rcf_dump integration/rcf_dump.cpp)
+    target_link_libraries(rcf_dump PRIVATE mabur_common)
     add_test(NAME gs_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_e2e.sh)
     set_tests_properties(gs_e2e PROPERTIES ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
   endif()

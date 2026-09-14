@@ -111,6 +111,291 @@ const char* hop_state_name(maburgs::HopState s) {
   return "idle";
 }
 
+#ifdef MABUR_TEST
+// In-flight hop injection seam (Task 15, 2026-09-14-inflight-channel-hop).
+// Exists ONLY when MABUR_BUILD_TESTS compiled MABUR_TEST into this binary
+// (gs/CMakeLists.txt option; never a production/device build, which passes
+// -DMABUR_BUILD_TESTS=OFF -- tools/build-arm.sh, tools/build-arm64.sh) and
+// only runs when MABUR_HOP_INJECT is actually set, so a bare `--dry-run`
+// invocation (every other gs_e2e scenario) is byte-for-byte unaffected.
+//
+// Drives the SAME classes run_radio()'s live loop wires together
+// (ChannelPlan, HopController, VrxController/LadderController, ScanLog,
+// CtlLog) through the real action-handling/RCF-building/log-writing code,
+// proving the WIRING between them -- every module underneath already has
+// its own unit tests. There is no real radio and no wall clock here: the
+// scenario runs on a private double `t` instead, advanced explicitly by
+// this function, which is what lets a 1 s verify window finish instantly
+// instead of sleeping. `agg` is the SAME Aggregator the fixture bodies were
+// fed into by the caller, so the confirming AU goes through the real
+// decode path (Aggregator::on_rx_body), not a bypass; `confirm_template` is
+// a genuine video body captured from that same fixture stream, replayed
+// with its card_id overwritten to the card under test.
+//
+// MABUR_HOP_INJECT=<target_ch>:<score> is the whole seam: everything else
+// (candidate ranking, RF windows, dwells) is exactly what test_hop_ranker.cpp
+// and test_hop_verdict.cpp already cover in isolation, so this test skips
+// straight to the one decision -- "hop to <target_ch>" -- HopController
+// would otherwise reach only after a real ranker sweep.
+int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
+                        maburgs::Aggregator& agg,
+                        const mabur::node::RxBody& confirm_template) {
+  const char* inject = std::getenv("MABUR_HOP_INJECT");
+  unsigned target_u = 0, score_u = 0;
+  if (std::sscanf(inject, "%u:%u", &target_u, &score_u) != 2) {
+    std::fprintf(stderr, "hop-test: MABUR_HOP_INJECT must be '<ch>:<score>', got '%s'\n", inject);
+    return 2;
+  }
+  const uint8_t target = static_cast<uint8_t>(target_u);
+  const uint32_t score = score_u;
+  const int lead_card = n_cards >= 2 ? n_cards - 1 : -1;
+  const int confirm_card = lead_card >= 0 ? lead_card : 0;
+
+  maburgs::DebugSession debug(cfg.debug_log.dir, cfg.debug_log.enable);
+  if (!debug.ok()) {
+    std::fprintf(stderr,
+                 "hop-test: MABUR_HOP_INJECT needs debug_log.enable=true and a "
+                 "writable debug_log.dir\n");
+    return 2;
+  }
+  maburgs::LogWriter writer;
+  maburgs::CtlLog ctl_log(writer, debug.dir(), "hop-e2e");
+  maburgs::ScanLog scan_log(writer, debug.dir(), "hop-e2e");
+
+  maburgs::VrxCfg vcfg;
+  vcfg.vtx_id = cfg.link.vtx_id;
+  vcfg.op_channel = cfg.radio.channel;
+  vcfg.feedback_ms = cfg.link.feedback_ms;
+  vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
+  vcfg.ladder = cfg.link.ladder_cfg;
+  vcfg.pin_mcs = cfg.link.static_mcs;
+  vcfg.pin_overhead_base = cfg.link.static_overhead_base;
+  vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
+  vcfg.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
+  maburgs::VrxController vrx(vcfg);
+
+  maburgs::ChannelPlan plan(maburgs::ChannelPlanCfg{
+      cfg.radio.channel, n_cards, cfg.radio.scan.split_after_ms,
+      cfg.radio.scan.home_window_ms, 20});
+  maburgs::HopController hopc(cfg.hop, cfg.radio.channel);
+  std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
+  double t = 0.0;
+  double last_ctl_t = vrx.ctl().last_event().t_ms;
+  const maburgs::LinkHealth healthy{true, 0.0, 0.0, false};
+
+  // Log the ladder's ctl.log transition line whenever LadderController's
+  // own last_event() changes -- same t_ms-change-detect pattern main.cpp's
+  // live loop uses (ctl_log->event(...) site above run_radio's `E` line).
+  auto drain_ctl_event = [&] {
+    if (const auto& e = vrx.ctl().last_event(); e.t_ms != last_ctl_t) {
+      last_ctl_t = e.t_ms;
+      ctl_log.event(e.t_ms, e.from, e.to, maburgs::to_string(e.reason), e.u,
+                   e.snr_db, e.evm_db);
+    }
+  };
+  // Apply a HopAction exactly like run_radio's switch(act.kind) does, then
+  // drain both controllers' event queues into scan.log/ctl.log. Returns the
+  // taken HopEvents so the caller can check for a specific kind (e.g.
+  // "order" or "verify_pass") without re-deriving controller state.
+  auto apply_action = [&](const maburgs::HopAction& act) {
+    switch (act.kind) {
+      case maburgs::HopAction::Order:
+        vrx.set_hop(act.target, act.epoch);
+        vrx.restore_rung(act.restore_rung, t);
+        vrx.blank_store(t + cfg.hop.confirm_ms + 150.0);
+        if (act.lead_card >= 0) plan.hop_order(t, act.target, act.lead_card);
+        break;
+      case maburgs::HopAction::OneCardRetune:
+        plan.hop_order(t, act.target, -1);
+        break;
+      case maburgs::HopAction::Confirm:
+        plan.hop_confirmed(t);
+        break;
+      case maburgs::HopAction::Withdraw:
+        vrx.set_hop(act.target, act.epoch);
+        plan.hop_withdraw(t);
+        break;
+      case maburgs::HopAction::Hold:
+      case maburgs::HopAction::None:
+        break;
+    }
+    for (int i = 0; i < n_cards; ++i)
+      cur_ch[static_cast<size_t>(i)] = plan.desired(i);
+    drain_ctl_event();
+    std::vector<maburgs::HopEvent> events = hopc.take_events();
+    for (const auto& e : events) scan_log.hop(e);
+    for (const auto& ev : plan.take_events()) scan_log.move(ev);
+    return events;
+  };
+  auto has_kind = [](const std::vector<maburgs::HopEvent>& evs, const char* kind) {
+    for (const auto& e : evs)
+      if (e.kind == kind) return true;
+    return false;
+  };
+
+  // 1) Settle: a synthetic DiscAck (mirroring vrx.on_rc_frame() off a real
+  // drone reply) so the rendezvous reaches SESSION and step() starts
+  // building real RCFs -- the same wiring point a genuine drone drives.
+  {
+    mabur::rc::DiscAck ack;
+    ack.vtx_id = cfg.link.vtx_id;
+    ack.vrx_nonce = vrx.rz_nonce();
+    ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+    ack.agreed_channel = cfg.radio.channel;
+    ack.seq = 1;
+    const auto wire = mabur::rc::pack_disc_ack(ack);
+    vrx.on_rc_frame(wire.data(), wire.size(), t);
+  }
+  bool session_up = false;
+  for (int i = 0; i < 200 && !session_up; ++i) {
+    t += 10.0;
+    vrx.on_video(t);
+    vrx.step(t, healthy);
+    session_up = vrx.link_state() == maburgs::VrxState::SESSION;
+  }
+  if (!session_up) {
+    std::fprintf(stderr, "hop-test: synthetic link never reached SESSION\n");
+    return 2;
+  }
+  plan.tick(t, true);
+  for (int i = 0; i < n_cards; ++i) cur_ch[static_cast<size_t>(i)] = plan.desired(i);
+
+  // 2) Inject the verdict: `interfered`, best candidate = target/score,
+  // bypassing HopVerdict/HopRanker -- this IS the injection seam.
+  maburgs::VerdictOut vo;
+  vo.v = maburgs::Verdict::Interfered;
+  vo.trigger = true;
+  vo.ref_rung = vrx.ctl().rung();
+  const std::vector<maburgs::VerdictCardIn> vc(static_cast<size_t>(n_cards));
+  const maburgs::VerdictLinkIn vl;
+  scan_log.verdict(t, vo, vc, vl);
+
+  maburgs::HopTick ht;
+  ht.now_ms = t;
+  ht.verdict = vo;
+  ht.cur_op = plan.op();
+  ht.n_cards = n_cards;
+  ht.lead_card = lead_card;
+  ht.best = target;
+  ht.best_score = score;
+  plan.tick(t, true);
+  maburgs::HopAction act = hopc.tick(ht);
+  if (act.kind != maburgs::HopAction::Order) {
+    std::fprintf(stderr, "hop-test: expected Order, got kind=%d\n",
+                 static_cast<int>(act.kind));
+    return 2;
+  }
+  apply_action(act);
+
+  // 3) Dump the first RCF built after the order -- it must already carry
+  // hop_ch/hop_epoch (VrxController::build_rcf() stamps them from
+  // set_hop() above). One-card (lead_card < 0): keep sending on the OLD
+  // channel and re-ticking the controller after every send, exactly the
+  // `rcf_sent_since_order` count ordered_tick() escalates on, until it
+  // fires OneCardRetune -- the spec's "one_card_repeats RCFs on the old
+  // channel before the radio moves".
+  int rcf_sent = 0;
+  bool dumped = false;
+  for (int i = 0; i < 40 && (n_cards >= 2 ? !dumped
+                                          : hopc.state() == maburgs::HopState::Ordered);
+       ++i) {
+    t += cfg.link.feedback_ms;
+    vrx.on_video(t);
+    auto out = vrx.step(t, healthy);
+    if (!out || out->is_disc) continue;
+    ++rcf_sent;
+    if (const char* path = std::getenv("MABUR_HOP_RCF_OUT"); path && !dumped) {
+      if (FILE* f = std::fopen(path, "wb")) {
+        std::fwrite(out->frame.data(), 1, out->frame.size(), f);
+        std::fclose(f);
+      }
+    }
+    dumped = true;
+    if (n_cards == 1) {
+      ht.now_ms = t;
+      ht.rcf_sent_since_order = rcf_sent;
+      ht.video_on_target = false;
+      act = hopc.tick(ht);
+      apply_action(act);
+      // Stop as soon as the radio actually moves: ordered_tick() stays in
+      // HopState::Ordered after OneCardRetune (only a Confirm/Withdraw
+      // leaves it), so without this the loop would keep re-ticking with
+      // video_on_target still false all the way to the confirm_ms
+      // timeout and withdraw before step 4 below ever gets to inject the
+      // confirming AU.
+      if (act.kind == maburgs::HopAction::OneCardRetune) break;
+    }
+  }
+  if (!dumped) {
+    std::fprintf(stderr, "hop-test: no RCF built after the order\n");
+    return 2;
+  }
+  if (n_cards == 1 && cur_ch[static_cast<size_t>(confirm_card)] != target) {
+    std::fprintf(stderr,
+                 "hop-test: one-card radio never reached the target (OneCardRetune "
+                 "did not fire within %d RCF sends)\n",
+                 rcf_sent);
+    return 2;
+  }
+
+  // 4) Confirm: replay a genuine video body (captured from the fixture
+  // stream the caller already fed through this same Aggregator) on the
+  // lead/only card, and check the SAME condition run_radio's batch-drain
+  // loop uses to decide "this is video, not RC/MSP/probe traffic" before
+  // it updates last_video_ch.
+  mabur::node::RxBody cb = confirm_template;
+  cb.card_id = static_cast<uint8_t>(confirm_card);
+  cb.mono_us = static_cast<uint64_t>(t) * 1000;
+  agg.on_rx_body(cb);
+  const int sid_peek = mabur::sbi_peek_stream_id(cb.body.data(), cb.body.size());
+  const bool is_video = cb.crc_ok &&
+                        mabur::rc::frame_type(cb.body.data(), cb.body.size()) < 0 &&
+                        sid_peek != mabur::kMspStreamId &&
+                        sid_peek != mabur::kProbeStreamId;
+  if (!is_video) {
+    std::fprintf(stderr, "hop-test: confirm_template is not a video body\n");
+    return 2;
+  }
+  const uint8_t last_video_ch = cur_ch[static_cast<size_t>(cb.card_id)];
+  vrx.on_video(t);
+  ht.now_ms = t;
+  ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
+  if (!ht.video_on_target) {
+    std::fprintf(stderr, "hop-test: confirm body did not land on the hop target\n");
+    return 2;
+  }
+  act = hopc.tick(ht);
+  if (act.kind != maburgs::HopAction::Confirm) {
+    std::fprintf(stderr, "hop-test: expected Confirm, got kind=%d\n",
+                 static_cast<int>(act.kind));
+    return 2;
+  }
+  apply_action(act);
+
+  // 5) Verify: healthy windows until verify_ms has elapsed since confirm.
+  bool verify_pass = false;
+  maburgs::VerdictOut healthy_vo;  // default Healthy, trigger=false
+  for (int i = 0; i < 200 && !verify_pass; ++i) {
+    t += cfg.hop.window_ms;
+    vrx.on_video(t);
+    vrx.step(t, healthy);
+    scan_log.verdict(t, healthy_vo, vc, vl);
+    ht.now_ms = t;
+    ht.verdict = healthy_vo;
+    ht.video_on_target = false;
+    act = hopc.tick(ht);
+    verify_pass = has_kind(apply_action(act), "verify_pass");
+  }
+  if (!verify_pass) {
+    std::fprintf(stderr, "hop-test: verify_pass never landed in scan.log\n");
+    return 2;
+  }
+  writer.flush_now();
+  std::fprintf(stderr, "hop-test: OK (n_cards=%d target=%u)\n", n_cards, target);
+  return 0;
+}
+#endif  // MABUR_TEST
+
 void usage() {
   std::fprintf(stderr,
                "usage: maburgs -c <config.toml> --dry-run --in <frames.bin>\n"
@@ -2534,9 +2819,19 @@ int main(int argc, char** argv) {
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_frames; });
 
   uint64_t last_ms = 0;
+#ifdef MABUR_TEST
+  // Captured for run_hop_inject_test()'s confirm step: any body out of this
+  // fixture is genuine video (this IS the frame stream, not an RC frame),
+  // so the first one seen is a fine template to replay on a different card.
+  mabur::node::RxBody hop_confirm_template;
+  bool hop_confirm_captured = false;
+#endif
   while (auto m = src.next()) {
     replay_ms = m->mono_us / 1000;
     agg.on_rx_body(*m);
+#ifdef MABUR_TEST
+    if (!hop_confirm_captured) { hop_confirm_template = *m; hop_confirm_captured = true; }
+#endif
     const uint64_t now_ms = m->mono_us / 1000;
     fstream.poll(now_ms);
     if (au_on) au_bell.poll();
@@ -2596,5 +2891,15 @@ int main(int argc, char** argv) {
   if (!out_aus_path.empty())
     std::fprintf(stderr, "aus_out=%llu (file)\n",
                  static_cast<unsigned long long>(file_out.written));
+#ifdef MABUR_TEST
+  if (std::getenv("MABUR_HOP_INJECT")) {
+    if (!hop_confirm_captured) {
+      std::fprintf(stderr, "hop-test: no bodies read from --in; nothing to confirm with\n");
+      return 2;
+    }
+    const int rc = run_hop_inject_test(cfg, n_cards, agg, hop_confirm_template);
+    if (rc != 0) return rc;
+  }
+#endif
   return 0;
 }
