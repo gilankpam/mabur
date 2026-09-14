@@ -226,9 +226,17 @@ class RcAgent {
   uint64_t move_at_ms_ = 0;
 
   // In-flight hop order (spec 2026-09-14 §1). have_hop_ is false until the
-  // first RCF carrying a nonzero hop_ch is accepted; hop_epoch_ then tracks
-  // the (epoch) of the last applied order so a repeat is idempotent.
+  // first RCF carrying a nonzero hop_ch is accepted; hop_epoch_/hop_ch_ then
+  // track the (epoch, ch) PAIR of the last applied order (spec §1: "an RCF
+  // whose (hop_epoch, hop_ch) differs from the last pair applied") so a
+  // repeat of the same pair is idempotent but a same-epoch new channel is
+  // still applied. Reset at every session boundary alongside have_last_seq_
+  // (new DISC, unconfirmed-move fallback, FAILSAFE entry) so a restarted
+  // GS's hop epoch numbering can't leave a stale latch here silently
+  // swallowing its first hop order -- same failure mode have_last_seq_
+  // documents at FAILSAFE entry below.
   uint8_t hop_epoch_ = 0;
+  uint8_t hop_ch_ = 0;
   bool have_hop_ = false;
 
   AppliedOp applied_;
