@@ -586,16 +586,29 @@ is the actual runbook and owns filling these in.
   every candidate still unranked, `hopc`'s `best` stays `nullopt`, and the
   controller orders home (or holds, if already home); only the *second*
   burst, one `dwell_period_ms` later, gives the ranker enough visits to
-  name a candidate. Reported (not measured — no hardware this session)
-  derived figures for the shipped defaults: **~633 ms** to the order
-  decision (300 ms detection + one 333 ms wait for burst 2), **~883 ms**
-  to the physical retune (+ `one_card_repeats` × the RCF period), **~0.9–
-  1.1 s** to a confirmed hop — around the spec's sub-second target, not
-  comfortably under it. **These figures are provisional**: derived from
-  config defaults and code paths only, pending independent re-derivation
-  and, eventually, a bench measurement. Two-card GSes are unaffected — the
-  periodic scout thread keeps the ranker continuously warm, so a two-card
-  burst typically finds already-ranked candidates on its first pass.
+  name a candidate. Derived (not measured — no hardware this session)
+  figures for the shipped defaults, named by milestone since the two
+  differ by a full second: **~633 ms** to the order decision (300 ms
+  detection + one 333 ms wait for burst 2); **~883 ms** to the physical
+  retune (+ `one_card_repeats` (5) × the RCF period — 250 ms, **not**
+  500 ms: the RCF period is `link.feedback_ms`, whose shipped bundle
+  default (`gs/bundle/maburgs.default.toml`, 50 ms) overrides the
+  struct default in `gs/src/config.h` (100 ms) — computing from the
+  header alone gives the wrong, too-pessimistic answer); **~0.9–1.1 s**
+  to `Confirm` (video lands on the target, `HopState::Verifying`) — the
+  milestone the spec's "under one second" goal is about, since that is
+  when video is restored; **~1.9–2.1 s** to `verify_pass` (a further
+  `hop.verify_ms`, 1000 ms, before the hop is declared to have stood).
+  **These figures are best/typical-case and provisional**: derived from
+  config defaults and code paths only, assuming interference present
+  continuously from t=0 and phase-aligned onset (no wait for the next
+  verdict window or RCF slot); real jitter adds up to ~150 ms
+  (verdict-window phase, `hop.window_ms`) and ~50 ms (RCF-cadence phase)
+  at the tails, and none of it is measured — pending independent
+  re-derivation and, eventually, a bench run. Two-card GSes are
+  unaffected — the periodic scout thread keeps the ranker continuously
+  warm, so a two-card burst typically finds already-ranked candidates on
+  its first pass.
 - **A one-card freshness burst takes the sole radio off-air for ~30 ms
   per sweep** (three default candidates, a few ms each). Reconciled the
   same tick: `InflightScout::dwell()`'s own return-to-`back` retune, then
