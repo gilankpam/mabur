@@ -40,6 +40,7 @@
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
 #include "hop_controller.h"
+#include "hop_burst_gate.h"
 #include "hop_ranker.h"
 #include "hop_verdict.h"
 #include "inflight_scout.h"
@@ -109,6 +110,54 @@ const char* hop_state_name(maburgs::HopState s) {
     case maburgs::HopState::Hold:      return "hold";
   }
   return "idle";
+}
+
+// Shared by run_radio()'s live loop and (under MABUR_TEST)
+// run_hop_inject_test(): the 4-case HopAction handler, extracted so gs_e2e's
+// hop scenario exercises the SAME code run_radio() runs instead of a
+// hand-copied duplicate (Task 15 fix round 1 -- the duplicate's deliberate-
+// break check was found to validate only itself, since --dry-run returns
+// before run_radio() is ever reached). Deliberately excludes run_radio()'s
+// three cross-thread bookkeeping lines (hopping_atomic x2,
+// rcf_sent_at_order) -- those have no meaning outside run_radio()'s own
+// atomics/counters, so the caller still runs them immediately after this
+// call, in the same relative order as before the extraction.
+void apply_hop_action(const maburgs::HopAction& act, double now_ms, int confirm_ms,
+                      maburgs::VrxController& vrx, maburgs::ChannelPlan& plan) {
+  switch (act.kind) {
+    case maburgs::HopAction::Order:
+      vrx.set_hop(act.target, act.epoch);
+      vrx.restore_rung(act.restore_rung, now_ms);
+      vrx.blank_store(now_ms + confirm_ms + 150.0);
+      // Two-card (act.lead_card >= 0): retune the lead card right now --
+      // the trailing card keeps video alive on op_ throughout, so there is
+      // nothing to wait for. One-card (act.lead_card < 0): do NOT retune
+      // yet. The sole radio must stay on the OLD channel while the order
+      // rides hop.one_card_repeats RCFs (spec section 1 step 1) --
+      // HopController already counts those repeats and only emits
+      // OneCardRetune once enough have gone out; calling plan.hop_order()
+      // here too would move plan.desired() (and so this radio) before the
+      // drone could possibly have heard the order, abandoning the only
+      // channel it can still be reached on. vrx.set_hop/restore_rung/
+      // blank_store above still run unconditionally: the RCF has to start
+      // carrying the order immediately, which is the whole point of the
+      // repeats.
+      if (act.lead_card >= 0) plan.hop_order(now_ms, act.target, act.lead_card);
+      break;
+    case maburgs::HopAction::OneCardRetune:
+      plan.hop_order(now_ms, act.target, -1);
+      break;
+    case maburgs::HopAction::Confirm:
+      plan.hop_confirmed(now_ms);
+      break;
+    case maburgs::HopAction::Withdraw:
+      vrx.set_hop(act.target, act.epoch);
+      plan.hop_withdraw(now_ms);
+      break;
+    case maburgs::HopAction::Hold:
+    case maburgs::HopAction::None:
+      break;
+  }
 }
 
 #ifdef MABUR_TEST
@@ -193,32 +242,15 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
                    e.snr_db, e.evm_db);
     }
   };
-  // Apply a HopAction exactly like run_radio's switch(act.kind) does, then
-  // drain both controllers' event queues into scan.log/ctl.log. Returns the
-  // taken HopEvents so the caller can check for a specific kind (e.g.
-  // "order" or "verify_pass") without re-deriving controller state.
+  // Apply a HopAction through the SAME apply_hop_action() run_radio() calls
+  // (Task 15 fix round 1 -- this used to be a hand-copied duplicate switch,
+  // which meant the deliberate-break check below only ever validated the
+  // duplicate, not the shipped code path), then drain both controllers'
+  // event queues into scan.log/ctl.log. Returns the taken HopEvents so the
+  // caller can check for a specific kind (e.g. "order" or "verify_pass")
+  // without re-deriving controller state.
   auto apply_action = [&](const maburgs::HopAction& act) {
-    switch (act.kind) {
-      case maburgs::HopAction::Order:
-        vrx.set_hop(act.target, act.epoch);
-        vrx.restore_rung(act.restore_rung, t);
-        vrx.blank_store(t + cfg.hop.confirm_ms + 150.0);
-        if (act.lead_card >= 0) plan.hop_order(t, act.target, act.lead_card);
-        break;
-      case maburgs::HopAction::OneCardRetune:
-        plan.hop_order(t, act.target, -1);
-        break;
-      case maburgs::HopAction::Confirm:
-        plan.hop_confirmed(t);
-        break;
-      case maburgs::HopAction::Withdraw:
-        vrx.set_hop(act.target, act.epoch);
-        plan.hop_withdraw(t);
-        break;
-      case maburgs::HopAction::Hold:
-      case maburgs::HopAction::None:
-        break;
-    }
+    apply_hop_action(act, t, cfg.hop.confirm_ms, vrx, plan);
     for (int i = 0; i < n_cards; ++i)
       cur_ch[static_cast<size_t>(i)] = plan.desired(i);
     drain_ctl_event();
@@ -1694,23 +1726,14 @@ static int run_radio(const maburgs::Config& cfg) {
       // matching the brief's "lead card received a video AU on hop_ch".
       ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
       ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total - rcf_sent_at_order);
-      // "No hop in flight" -- Idle (never triggered / just settled) or
-      // Hold (rate-capped or exhausted, spec's OTHER meaning of "no hop in
-      // flight"). Ordered/Verifying are deliberately excluded: a hop is
-      // actually in progress there and the radio must not wander.
-      const bool hop_free = hopc.state() == maburgs::HopState::Idle ||
-                            hopc.state() == maburgs::HopState::Hold;
-      // Rate-limited to at most one per dwell_period_ms (fix round 3): the
-      // gate above has nothing else pacing it -- a sustained Hold
-      // re-enters on every ~10 ms control tick with the trigger latched
-      // true (cooldown_ms/max_hops_per_min don't apply here, see
-      // last_burst_ms's declaration comment) -- so without this the burst
-      // would fire back to back, taking a one-card station's only radio
-      // off-air almost continuously right when the link is already in
-      // trouble. Reusing dwell_period_ms gives the burst the SAME duty
-      // cycle the periodic scout thread already runs at.
-      const bool burst_due = now_ms - last_burst_ms >= hcfg.dwell_period_ms;
-      if (hop_free && last_verdict_out.trigger && burst_due) {
+      // hop_burst_gate.h's hop_burst_due() (Task 15 fix round 1): "no hop
+      // in flight" (Idle/Hold, not Ordered/Verifying) AND the trigger AND
+      // the dwell_period_ms rate limit against last_burst_ms below -- see
+      // that header for the four properties this gate has to get right,
+      // now unit-tested directly instead of only inside this hardware-
+      // touching body.
+      if (maburgs::hop_burst_due(hopc.state(), last_verdict_out.trigger, now_ms,
+                                 last_burst_ms, hcfg.dwell_period_ms)) {
         // Freshness burst (spec section 3): sweep every candidate once,
         // back to back, BEFORE a target is chosen -- so it must not
         // require ht.best to already hold one (dropped from this gate in
@@ -1750,40 +1773,24 @@ static int run_radio(const maburgs::Config& cfg) {
         }
       }
       const maburgs::HopAction act = hopc.tick(ht);
+      // Shared with run_hop_inject_test() (Task 15 fix round 1) -- see
+      // apply_hop_action()'s own comment. The three lines below are
+      // run_radio()-only bookkeeping with no meaning to the test harness
+      // (hopping_atomic is cross-thread state for the scout/inflight
+      // threads; rcf_sent_at_order anchors the one-card RCF-repeat count
+      // to THIS run's send counter), so they stay here, immediately after
+      // the call, in the same relative order as before the extraction.
+      apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan);
       switch (act.kind) {
         case maburgs::HopAction::Order:
-          vrx.set_hop(act.target, act.epoch);
-          vrx.restore_rung(act.restore_rung, now_ms);
-          vrx.blank_store(now_ms + hcfg.confirm_ms + 150.0);
-          // Two-card (act.lead_card >= 0): retune the lead card right now
-          // -- the trailing card keeps video alive on op_ throughout, so
-          // there is nothing to wait for. One-card (act.lead_card < 0):
-          // do NOT retune yet. The sole radio must stay on the OLD channel
-          // while the order rides hop.one_card_repeats RCFs (spec section
-          // 1 step 1) -- HopController already counts those repeats and
-          // only emits OneCardRetune once enough have gone out; calling
-          // plan.hop_order() here too would move plan.desired() (and so
-          // this radio) before the drone could possibly have heard the
-          // order, abandoning the only channel it can still be reached on.
-          // vrx.set_hop/restore_rung/blank_store above still run
-          // unconditionally: the RCF has to start carrying the order
-          // immediately, which is the whole point of the repeats.
-          if (act.lead_card >= 0) plan.hop_order(now_ms, act.target, act.lead_card);
           hopping_atomic.store(true);
           rcf_sent_at_order = rcf_sent_total;
           break;
-        case maburgs::HopAction::OneCardRetune:
-          plan.hop_order(now_ms, act.target, -1);
-          break;
         case maburgs::HopAction::Confirm:
-          plan.hop_confirmed(now_ms);
-          hopping_atomic.store(false);
-          break;
         case maburgs::HopAction::Withdraw:
-          vrx.set_hop(act.target, act.epoch);
-          plan.hop_withdraw(now_ms);
           hopping_atomic.store(false);
           break;
+        case maburgs::HopAction::OneCardRetune:
         case maburgs::HopAction::Hold:
         case maburgs::HopAction::None:
           break;
