@@ -110,4 +110,56 @@ TEST(one_card_interleaves_with_quiet_gap) {
   p.on_ack(6650, 149, 149);
   CHECK(!p.split() && p.desired(0) == 149);
 }
+TEST(two_card_hop_lead_then_confirm) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 136, 136); p.take_events(); p.tick(100, true);
+  p.hop_order(1000, 149, /*lead_card=*/1);
+  CHECK(p.hopping() && p.hop_target() == 149 && p.hop_lead() == 1);
+  CHECK(p.desired(0) == 136 && p.desired(1) == 149);
+  CHECK(!p.split());
+  auto ev = p.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].reason == MoveReason::HopLead && ev[0].card == 1 && ev[0].from == 136 && ev[0].to == 149);
+  p.tick(1200, false);            // FEC starved during the split: no SplitHome
+  CHECK(!p.split() && p.desired(0) == 136);
+  p.hop_confirmed(1250);
+  CHECK(!p.hopping() && p.op() == 149);
+  CHECK(p.desired(0) == 149 && p.desired(1) == 149);
+  ev = p.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].reason == MoveReason::HopFollow && ev[0].card == -1 && ev[0].from == 136 && ev[0].to == 149);
+}
+TEST(two_card_hop_withdraw_returns_lead) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 136, 136); p.take_events();
+  p.hop_order(1000, 149, 1); p.take_events();
+  p.hop_withdraw(1500);
+  CHECK(!p.hopping() && p.op() == 136 && p.desired(1) == 136);
+  auto ev = p.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].reason == MoveReason::HopWithdraw && ev[0].card == 1 && ev[0].from == 149 && ev[0].to == 136);
+}
+TEST(one_card_hop_moves_all_and_confirms_or_withdraws) {
+  ChannelPlan p(C(1));
+  p.on_ack(0, 136, 136); p.take_events();
+  p.hop_order(1000, 165, -1);
+  CHECK(p.desired(0) == 165 && p.op() == 136);
+  auto ev = p.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].reason == MoveReason::HopOneCard && ev[0].card == -1 && ev[0].to == 165);
+  p.hop_withdraw(1600);
+  CHECK(p.desired(0) == 136 && p.op() == 136);
+  p.hop_order(2000, 165, -1); p.take_events();
+  p.hop_confirmed(2100);
+  CHECK(p.op() == 165 && p.desired(0) == 165);
+}
+TEST(hop_after_a_hop_uses_the_new_op_as_from) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 136, 136); p.take_events();
+  p.hop_order(1000, 149, 1); p.hop_confirmed(1100); p.take_events();
+  p.hop_order(3000, 165, 0);            // lead is whichever card is not TX now
+  CHECK(p.desired(0) == 165 && p.desired(1) == 149);
+  auto ev = p.take_events();
+  CHECK(ev[0].from == 149 && ev[0].to == 165 && ev[0].card == 0);
+}
 MTEST_MAIN

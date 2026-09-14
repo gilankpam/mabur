@@ -5,7 +5,7 @@
 
 namespace maburgs {
 
-enum class MoveReason { Commit, AckOverride, SplitHome, Reunite };
+enum class MoveReason { Commit, AckOverride, SplitHome, Reunite, HopLead, HopFollow, HopWithdraw, HopOneCard };
 const char* to_string(MoveReason r);
 
 struct MoveEvent {
@@ -40,6 +40,16 @@ class ChannelPlan {
   std::optional<std::vector<int>> beacon_cards() const;
   std::vector<MoveEvent> take_events();
 
+  // In-flight channel hop: one card leads onto target, the other keeps the
+  // link alive on op_ until hop_confirmed() (video seen on target) or
+  // hop_withdraw() (no video, lead card returns). op_ only moves on confirm.
+  void hop_order(double now_ms, uint8_t target, int lead_card);
+  void hop_confirmed(double now_ms);
+  void hop_withdraw(double now_ms);
+  bool hopping() const { return hopping_; }
+  uint8_t hop_target() const { return hop_target_; }
+  int hop_lead() const { return hop_lead_; }
+
  private:
   // One-card interleave: window index since split; even = home, odd = op.
   int window_(double now_ms) const;
@@ -55,6 +65,11 @@ class ChannelPlan {
   double split_at_ms_ = 0;
   double now_ms_ = 0;
   std::vector<MoveEvent> events_;
+
+  bool hopping_ = false;
+  uint8_t hop_target_ = 0;
+  int hop_lead_ = -1;
+  uint8_t hop_from_ = 0;
 };
 
 }  // namespace maburgs

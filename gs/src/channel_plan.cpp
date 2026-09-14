@@ -8,6 +8,10 @@ const char* to_string(MoveReason r) {
     case MoveReason::AckOverride: return "ack_override";
     case MoveReason::SplitHome: return "split_home";
     case MoveReason::Reunite: return "reunite";
+    case MoveReason::HopLead: return "hop_lead";
+    case MoveReason::HopFollow: return "hop_follow";
+    case MoveReason::HopWithdraw: return "hop_withdraw";
+    case MoveReason::HopOneCard: return "hop_one_card";
   }
   return "?";
 }
@@ -16,6 +20,7 @@ ChannelPlan::ChannelPlan(ChannelPlanCfg cfg) : cfg_(cfg), op_(cfg.home) {}
 
 void ChannelPlan::tick(double now_ms, bool in_session) {
   now_ms_ = now_ms;
+  if (hopping_) return;
   if (in_session) {
     have_lost_since_ = false;
     if (split_) reunite_(now_ms);
@@ -54,6 +59,31 @@ void ChannelPlan::on_ack(double now_ms, uint8_t agreed, uint8_t proposed) {
                                                  : MoveReason::AckOverride});
 }
 
+void ChannelPlan::hop_order(double now_ms, uint8_t target, int lead_card) {
+  now_ms_ = now_ms;
+  hopping_ = true;
+  hop_target_ = target;
+  hop_lead_ = lead_card;
+  hop_from_ = op_;
+  split_ = false;
+  events_.push_back(MoveEvent{now_ms, lead_card, op_, target,
+                              lead_card < 0 ? MoveReason::HopOneCard : MoveReason::HopLead});
+}
+
+void ChannelPlan::hop_confirmed(double now_ms) {
+  now_ms_ = now_ms;
+  op_ = hop_target_;
+  frozen_ = true;
+  hopping_ = false;
+  events_.push_back(MoveEvent{now_ms, -1, hop_from_, op_, MoveReason::HopFollow});
+}
+
+void ChannelPlan::hop_withdraw(double now_ms) {
+  now_ms_ = now_ms;
+  hopping_ = false;
+  events_.push_back(MoveEvent{now_ms, hop_lead_, hop_target_, op_, MoveReason::HopWithdraw});
+}
+
 void ChannelPlan::reunite_(double now_ms) {
   split_ = false;
   events_.push_back(MoveEvent{now_ms, 0, cfg_.home, op_, MoveReason::Reunite});
@@ -70,6 +100,7 @@ bool ChannelPlan::quiet_gap_(double now_ms) const {
 }
 
 uint8_t ChannelPlan::desired(int card) const {
+  if (hopping_) return (hop_lead_ < 0 || card == hop_lead_) ? hop_target_ : op_;
   if (!split_) return op_;
   if (cfg_.n_cards >= 2) return card == 0 ? cfg_.home : op_;
   return (window_(now_ms_) % 2 == 0) ? cfg_.home : op_;
