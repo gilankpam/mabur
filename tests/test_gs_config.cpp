@@ -435,7 +435,6 @@ TEST(radio_scan_defaults_when_absent) {
   CHECK(cfg.radio.scan.min_rounds == 3);
   CHECK(cfg.radio.scan.home_window_ms == 300);
   CHECK(cfg.radio.scan.split_after_ms == 5000);
-  CHECK(cfg.radio.scan.energy_period_ms == 1000);
   CHECK(cfg.radio.scan.home_margin == 20);
 }
 
@@ -444,14 +443,13 @@ TEST(radio_scan_parses_and_validates) {
       "[radio]\nchannel = 136\n[radio.scan]\nenable = false\n"
       "candidates = [149, 153, 161]\ndwell_ms = 500\nsettle_ms = 40\n"
       "min_rounds = 2\nhome_window_ms = 400\nsplit_after_ms = 8000\n"
-      "energy_period_ms = 0\nhome_margin = 5\n");
+      "home_margin = 5\n");
   auto cfg = maburgs::load_config(p);
   CHECK(cfg.radio.scan.enable == false);
   REQUIRE(cfg.radio.scan.candidates.size() == 3);
   CHECK(cfg.radio.scan.candidates[0] == 149);
   CHECK(cfg.radio.scan.candidates[2] == 161);
   CHECK(cfg.radio.scan.dwell_ms == 500);
-  CHECK(cfg.radio.scan.energy_period_ms == 0);
   CHECK(cfg.radio.scan.home_margin == 5);
 
   bool threw = false;
@@ -481,6 +479,42 @@ TEST(default_bundle_has_scan_section) {
   CHECK(cfg.radio.scan.candidates[1] == 149);
   CHECK(cfg.radio.scan.candidates[2] == 165);
   CHECK(cfg.radio.scan.home_margin == 20);
+}
+
+TEST(hop_defaults_when_absent) {
+  auto cfg = maburgs::load_config(write_tmp("[radio]\nchannel = 136\n"));
+  CHECK(cfg.hop.enable == false);
+  CHECK(cfg.hop.scout_when_disabled == true);
+  CHECK(cfg.hop.window_ms == 150 && cfg.hop.persist == 2);
+  CHECK(cfg.hop.dwell_observe_ms == 5 && cfg.hop.dwell_period_ms == 333);
+  CHECK(cfg.hop.confirm_ms == 500 && cfg.hop.verify_ms == 1000 && cfg.hop.cooldown_ms == 2000);
+  CHECK(cfg.hop.max_hops_per_min == 4 && cfg.hop.backoff_ms == 30000 && cfg.hop.one_card_repeats == 5);
+  CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.fa_pps == 100 && cfg.hop.verdict.weak_rssi_dbm == -78);
+}
+TEST(hop_parses_and_validates) {
+  auto cfg = maburgs::load_config(write_tmp(
+      "[hop]\nenable = true\nwindow_ms = 200\npersist = 3\ndwell_observe_ms = 8\n"
+      "[hop.verdict]\nfa_pps = 250\nweak_rssi_dbm = -80\n"));
+  CHECK(cfg.hop.enable && cfg.hop.window_ms == 200 && cfg.hop.persist == 3 && cfg.hop.dwell_observe_ms == 8);
+  CHECK(cfg.hop.verdict.fa_pps == 250 && cfg.hop.verdict.weak_rssi_dbm == -80);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop]\nwindow_ms = 10\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.window_ms") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[hop]\npersist = 4\n")); }   // > 3
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.persist") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nbogus = 1\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict.bogus") != std::string::npos; }
+  CHECK(threw);
+}
+TEST(radio_scan_energy_period_ms_is_gone) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\nenergy_period_ms = 1000\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.energy_period_ms") != std::string::npos; }
+  CHECK(threw);
 }
 
 MTEST_MAIN

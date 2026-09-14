@@ -28,10 +28,42 @@ struct ScanCfg {
   int min_rounds = 3;
   int home_window_ms = 300;
   int split_after_ms = 5000;
-  int energy_period_ms = 1000;
   // A candidate replaces home only if its worst visit is at least this many
   // busy units below home's (ChannelRanker). 0 = lowest worst wins.
   int home_margin = 20;
+};
+
+/// In-flight channel hop verdict thresholds (spec 2026-09-14-inflight-
+/// channel-hop, section 2: the verdict engine).
+struct HopVerdictCfg {
+  double loss_pct = 3.0;
+  double recovered_x = 3.0;
+  int weak_rssi_dbm = -78;
+  int weak_snr_db = 12;
+  int fading_drop_db = 6;
+  int foreign_pps = 50;
+  int fa_pps = 100;
+};
+
+/// In-flight channel hop (spec 2026-09-14-inflight-channel-hop). enable
+/// governs whether a bad verdict actually retunes; scout_when_disabled lets
+/// the scout keep ranking candidates for observability even while disabled.
+struct HopCfg {
+  bool enable = false;
+  bool scout_when_disabled = true;
+  int window_ms = 150;
+  int persist = 2;
+  int dwell_observe_ms = 5;
+  int dwell_period_ms = 333;
+  int rank_visits = 5;
+  int rank_max_age_ms = 10000;
+  int confirm_ms = 500;
+  int verify_ms = 1000;
+  int cooldown_ms = 2000;
+  int max_hops_per_min = 4;
+  int backoff_ms = 30000;
+  int one_card_repeats = 5;
+  HopVerdictCfg verdict;
 };
 
 /// Radio hardware: channel, bandwidth, cards, and transmit card selection.
@@ -190,6 +222,7 @@ struct Config {
   StatsCfg stats;
   AuRingOutCfg au_ring;
   DebugLogCfg debug_log;
+  HopCfg hop;
 
   /// Builds decoder configuration with per-stream RS and UEP overhead
   /// (2 streams since the airtime-balance-uep fold-in).

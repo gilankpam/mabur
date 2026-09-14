@@ -987,15 +987,12 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   // scan.log C record: once per card, the first time it reports ready.
   std::vector<bool> caps_logged(static_cast<size_t>(n_cards), false);
-  // A records (spec section 7): own/foreign frame counters at the previous
-  // energy read, and the last sample mirrored into the sideport. The flag is
-  // cleared whenever a card is skipped, so the read that follows any gap is
-  // a discard read (the chip's counters accumulated across it).
-  std::vector<maburgs::ScoutFrames> energy_prev(static_cast<size_t>(n_cards));
-  std::vector<bool> energy_prev_ok(static_cast<size_t>(n_cards), false);
+  // Last sample mirrored into the sideport. Nothing writes this since the
+  // A-record block (1 Hz in-flight energy poll, spec section 7) was removed
+  // with radio.scan.energy_period_ms -- cards[i].energy reads null on the
+  // sideport until Task 11's verdict windows refill it.
   std::vector<std::optional<maburgs::StatsEnergyIn>> energy_last(
       static_cast<size_t>(n_cards));
-  uint64_t last_energy_ms = 0;
   uint64_t last_stats_ms = 0;
   // Separate from last_stats_ms since 2026-08-15: the ctl log runs on
   // debug_log.ctl_period_ms, the stderr line stays at 1 Hz.
@@ -1236,39 +1233,6 @@ static int run_radio(const maburgs::Config& cfg) {
       const uint8_t want = plan.desired(i);
       if (cur_ch[static_cast<size_t>(i)] != want && fe.retune(want))
         cur_ch[static_cast<size_t>(i)] = want;
-    }
-    // A records: in-flight energy, per ready non-scouting card, on its own
-    // timer while the link is up. The first read after any gap is the
-    // discard read -- the chip's counters accumulated across it.
-    if (scfg.energy_period_ms > 0 &&
-        now_ms_u - last_energy_ms >= static_cast<uint64_t>(scfg.energy_period_ms)) {
-      last_energy_ms = now_ms_u;
-      for (int i = 0; i < n_cards; ++i) {
-        const size_t ci = static_cast<size_t>(i);
-        const bool scouting = !scout_joined && i == scout_card;
-        auto& fe = *fronts[ci];
-        if (!in_session || scouting || !fe.ready()) {
-          energy_prev_ok[ci] = false;
-          continue;
-        }
-        const maburgs::ScoutEnergy e = fe.read_energy(false);
-        const maburgs::ScoutFrames f = fe.frames();
-        if (energy_prev_ok[ci]) {
-          const uint64_t d_own = f.own - energy_prev[ci].own;
-          const uint64_t d_foreign = f.foreign - energy_prev[ci].foreign;
-          if (scan_log)
-            scan_log->energy(now_ms, i, cur_ch[ci], e, d_own, d_foreign);
-          maburgs::StatsEnergyIn se;
-          se.cca = e.cca_ofdm;
-          se.fa = e.fa_ofdm;
-          se.own = d_own;
-          se.foreign = d_foreign;
-          if (e.igi_valid) se.igi = static_cast<int>(e.igi);
-          energy_last[ci] = se;
-        }
-        energy_prev[ci] = f;
-        energy_prev_ok[ci] = true;
-      }
     }
     const bool fw = in_session && (vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
     // Told every tick (CalSession::set_peer): whether the link is up and

@@ -18,7 +18,6 @@ settle_ms        = 30
 min_rounds       = 3
 home_window_ms   = 300
 split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
-energy_period_ms = 1000     # in-flight per-card energy record (scan.log A lines); 0 = off
 home_margin      = 20       # leave home only if a candidate's worst visit is >= 20 busy units lower
 
 # No [[radio.cards]]: maburgs probes the USB bus at startup and uses every
@@ -152,3 +151,31 @@ enable        = false
 dir           = "/media/dvr/log"
 ctl_period_ms = 50
 rung_period_s = 10
+
+# In-flight channel hop (spec 2026-09-14-inflight-channel-hop). enable=false:
+# first flights observe-only; flip `enable` after the HOP section of
+# flightreport looks sane.
+[hop]
+enable               = false
+scout_when_disabled  = true
+window_ms            = 150
+persist              = 2
+dwell_observe_ms     = 5
+dwell_period_ms      = 333
+rank_visits          = 5
+rank_max_age_ms      = 10000
+confirm_ms           = 500
+verify_ms            = 1000
+cooldown_ms          = 2000
+max_hops_per_min     = 4
+backoff_ms           = 30000
+one_card_repeats     = 5
+
+[hop.verdict]
+loss_pct             = 3.0
+recovered_x          = 3.0
+weak_rssi_dbm        = -78
+weak_snr_db          = 12
+fading_drop_db       = 6
+foreign_pps          = 50
+fa_pps               = 100

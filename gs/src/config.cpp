@@ -122,7 +122,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   } clear_on_exit;
 
   check_keys(j, "", {"radio", "fec", "link", "video", "msp", "stats", "au_ring",
-                     "debug_log"});
+                     "debug_log", "hop"});
   // Same reason as the drone's: a missing section visits none of its keys.
   // Kept in the exact order of the check_keys list above -- if they drift a
   // section goes silently unreported.
@@ -161,8 +161,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       const Value& s = r["scan"];
       check_keys(s, "radio.scan",
                  {"enable", "candidates", "dwell_ms", "settle_ms", "min_rounds",
-                  "home_window_ms", "split_after_ms", "energy_period_ms",
-                  "home_margin"});
+                  "home_window_ms", "split_after_ms", "home_margin"});
       ScanCfg& sc = c.radio.scan;
       sc.enable = get_bool(s, "enable", sc.enable, "radio.scan");
       if (s.contains("candidates")) {
@@ -184,7 +183,6 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       // >= 2 beacon periods (20 ms): one to beacon, one quiet before leaving.
       sc.home_window_ms = static_cast<int>(get_int(s, "home_window_ms", 300, 40, 10000, "radio.scan"));
       sc.split_after_ms = static_cast<int>(get_int(s, "split_after_ms", 5000, 0, 600000, "radio.scan"));
-      sc.energy_period_ms = static_cast<int>(get_int(s, "energy_period_ms", 1000, 0, 60000, "radio.scan"));
       sc.home_margin = static_cast<int>(get_int(s, "home_margin", 20, 0, 100000, "radio.scan"));
     } else {
       note_default("radio", "scan", "(section absent)");
@@ -202,6 +200,45 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (!c.radio.auto_scan &&
       c.radio.tx_card >= static_cast<int>(c.radio.cards.size()))
     fail("radio.tx_card", "no such card");
+
+  if (j.contains("hop")) {
+    const Value& h = j["hop"];
+    check_keys(h, "hop", {"enable", "scout_when_disabled", "window_ms", "persist", "dwell_observe_ms",
+                          "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "verify_ms",
+                          "cooldown_ms", "max_hops_per_min", "backoff_ms", "one_card_repeats", "verdict"});
+    HopCfg& hc = c.hop;
+    hc.enable = get_bool(h, "enable", hc.enable, "hop");
+    hc.scout_when_disabled = get_bool(h, "scout_when_disabled", hc.scout_when_disabled, "hop");
+    hc.window_ms = (int)get_int(h, "window_ms", 150, 50, 2000, "hop");
+    hc.persist = (int)get_int(h, "persist", 2, 1, 3, "hop");
+    hc.dwell_observe_ms = (int)get_int(h, "dwell_observe_ms", 5, 1, 250, "hop");
+    hc.dwell_period_ms = (int)get_int(h, "dwell_period_ms", 333, 20, 60000, "hop");
+    hc.rank_visits = (int)get_int(h, "rank_visits", 5, 1, 100, "hop");
+    hc.rank_max_age_ms = (int)get_int(h, "rank_max_age_ms", 10000, 1000, 600000, "hop");
+    hc.confirm_ms = (int)get_int(h, "confirm_ms", 500, 100, 5000, "hop");
+    hc.verify_ms = (int)get_int(h, "verify_ms", 1000, 200, 10000, "hop");
+    hc.cooldown_ms = (int)get_int(h, "cooldown_ms", 2000, 0, 60000, "hop");
+    hc.max_hops_per_min = (int)get_int(h, "max_hops_per_min", 4, 1, 60, "hop");
+    hc.backoff_ms = (int)get_int(h, "backoff_ms", 30000, 1000, 600000, "hop");
+    hc.one_card_repeats = (int)get_int(h, "one_card_repeats", 5, 1, 50, "hop");
+    if (h.contains("verdict")) {
+      const Value& v = h["verdict"];
+      check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
+                                    "fading_drop_db", "foreign_pps", "fa_pps"});
+      HopVerdictCfg& vc = hc.verdict;
+      vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
+      vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
+      vc.weak_rssi_dbm = (int)get_int(v, "weak_rssi_dbm", -78, -110, -20, "hop.verdict");
+      vc.weak_snr_db = (int)get_int(v, "weak_snr_db", 12, 0, 40, "hop.verdict");
+      vc.fading_drop_db = (int)get_int(v, "fading_drop_db", 6, 1, 40, "hop.verdict");
+      vc.foreign_pps = (int)get_int(v, "foreign_pps", 50, 1, 100000, "hop.verdict");
+      vc.fa_pps = (int)get_int(v, "fa_pps", 100, 1, 100000, "hop.verdict");
+    } else {
+      note_default("hop", "verdict", "(section absent)");
+    }
+  } else {
+    note_default("", "hop", "(section absent)");
+  }
 
   if (j.contains("fec")) {
     const Value& r = j["fec"];
