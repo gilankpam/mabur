@@ -83,15 +83,26 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
     back_off(failed_target, in.now_ms);
     std::optional<uint8_t> next = in.best;
     if (next.has_value() && is_backed_off(*next, in.now_ms)) next.reset();   // skip backed off
-    if (next.has_value()) {
+    const bool have_candidate = next.has_value() || in.cur_op != home_;
+    if (have_candidate) {
       // Without the persist delay: act on a raw Interfered window, not a
-      // fresh multi-window trigger, and skip cooldown/rate-cap -- this
-      // path is "still on a bad channel", not a new decision to hop.
-      order(*next, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "verify_fail", out);
-      return;
-    }
-    if (in.cur_op != home_) {
-      order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "verify_fail", out);
+      // fresh multi-window trigger -- this path is "still on a bad
+      // channel", not a new decision to hop. cooldown_ms is exempt for
+      // retries (spec 2026-09-14-inflight-channel-hop-design.md §5), but
+      // max_hops_per_min is NOT -- it counts retries, then holds.
+      prune_hop_times(in.now_ms);
+      if (static_cast<int>(hop_times_.size()) >= cfg_.max_hops_per_min) {
+        ++holds_;
+        state_ = HopState::Hold;
+        out.kind = HopAction::Hold;
+        log_event(in.now_ms, "hold cap", epoch_, failed_target, 0, in.now_ms - verify_start_);
+        return;
+      }
+      if (next.has_value()) {
+        order(*next, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "verify_fail", out);
+      } else {
+        order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "verify_fail", out);
+      }
       return;
     }
     ++holds_;

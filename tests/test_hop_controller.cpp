@@ -75,4 +75,27 @@ TEST(disabled_logs_but_never_acts) {
   CHECK(h.hop_ch() == 0);
   auto ev = h.take_events(); REQUIRE(ev.size() == 1); CHECK(ev[0].kind == "would_order");
 }
+TEST(ordered_state_never_reorders_without_confirm_or_withdraw) {
+  HopController h(cfg(), 136);
+  CHECK(h.tick(T(1000, interfered(), 149, 136)).kind == HopAction::Order);
+  CHECK(h.tick(T(1100, interfered(), 149, 136)).kind == HopAction::None);   // still Ordered, before confirm_ms, no video
+  CHECK(h.state() == HopState::Ordered);
+}
+TEST(verify_fail_retries_count_against_rate_cap) {
+  HopController h(cfg(), 136);
+  double t = 1000;
+  CHECK(h.tick(T(t, interfered(), 149, 136)).kind == HopAction::Order);              // order #1
+  t += 50; CHECK(h.tick(T(t, interfered(), 149, 136, true)).kind == HopAction::Confirm);
+  t += 10; CHECK(h.tick(T(t, interfered(), 165, 149)).kind == HopAction::Order);      // retry #1 (order #2)
+  t += 10; CHECK(h.tick(T(t, interfered(), 165, 149, true)).kind == HopAction::Confirm);
+  t += 10; CHECK(h.tick(T(t, interfered(), 40, 149)).kind == HopAction::Order);       // retry #2 (order #3)
+  t += 10; CHECK(h.tick(T(t, interfered(), 40, 149, true)).kind == HopAction::Confirm);
+  t += 10; CHECK(h.tick(T(t, interfered(), 44, 149)).kind == HopAction::Order);       // retry #3 (order #4, hits the cap)
+  t += 10; CHECK(h.tick(T(t, interfered(), 44, 149, true)).kind == HopAction::Confirm);
+  t += 10;
+  auto a = h.tick(T(t, interfered(), 48, 149));                                       // retry #4: cap already at 4/min
+  CHECK(a.kind == HopAction::Hold);
+  CHECK(h.state() == HopState::Hold);
+  CHECK(h.holds() == 1);
+}
 MTEST_MAIN
