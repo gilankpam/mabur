@@ -128,4 +128,60 @@ TEST(set_radio_repoints_the_next_dwell) {
   CHECK(r2.log[0] == "retune 149" && r2.log[3] == "retune 136");
   CHECK(r2.ch == 136);
 }
+// Fix round 1 item 1: pin the CONTRACT stated on dwell()'s header docstring
+// (inflight_scout.h) -- main.cpp's sideport dwell/score attribution (Task
+// 12) depends on it and has no test of its own that would catch a
+// violation, since dwell_stats/scout_loop live in main.cpp and aren't
+// unit-testable without refactoring it. Asserted here instead, at the
+// level where the contract actually lives: false <=> flagged + no visit;
+// true <=> visit populated with visit.ch == the dwelled channel.
+TEST(dwell_return_value_flag_and_visit_population_stay_in_lockstep) {
+  // Failure path 1: the retune TO the candidate fails.
+  {
+    struct Bad : FakeRadio {
+      bool retune(uint8_t c) override {
+        log.push_back("retune " + std::to_string(c));
+        if (c == 149) return false;
+        ch = c;
+        return true;
+      }
+    } r;
+    int64_t t = 0;
+    InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; });
+    ScoutDwell d; HopVisit v;  // v default-constructed: ch == 0
+    CHECK(!s.dwell(149, 136, d, v));
+    CHECK(d.survey.flags & devourer::chanmig::kFlagRetuneFailed);
+    CHECK(v.ch == 0);   // untouched -- dwell() never wrote to it
+  }
+  // Failure path 2: the retune BACK to `back` fails (candidate retune, the
+  // observation, all succeed).
+  {
+    struct SecondFails : FakeRadio {
+      int retunes = 0;
+      bool retune(uint8_t c) override {
+        log.push_back("retune " + std::to_string(c));
+        ++retunes;
+        if (retunes == 2) return false;
+        ch = c;
+        return true;
+      }
+    } r;
+    int64_t t = 0;
+    InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; });
+    ScoutDwell d; HopVisit v;
+    CHECK(!s.dwell(149, 136, d, v));
+    CHECK(d.survey.flags & devourer::chanmig::kFlagRetuneFailed);
+    CHECK(v.ch == 0);
+  }
+  // Success path: both retunes succeed.
+  {
+    FakeRadio r;
+    int64_t t = 0;
+    InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; r.foreign += 2; });
+    ScoutDwell d; HopVisit v;
+    CHECK(s.dwell(149, 136, d, v));
+    CHECK(!(d.survey.flags & devourer::chanmig::kFlagRetuneFailed));
+    CHECK(v.ch == 149);   // populated, matches the dwelled channel
+  }
+}
 MTEST_MAIN

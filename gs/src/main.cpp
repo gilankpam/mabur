@@ -550,15 +550,18 @@ static int run_radio(const maburgs::Config& cfg) {
   std::mutex dwell_mu;
   std::vector<std::pair<int, maburgs::ScoutDwell>> dwell_recs;  // {card, record}
   std::vector<maburgs::HopVisit> dwell_visits;
-  // Sideport dwell snapshot per card (Task 12), single-writer: updated ONLY
-  // at the dwell_recs/dwell_visits drain below (core thread, under
-  // dwell_mu), read ONLY at the sideport feed (also core thread) -- no
-  // second lock needed. nullopt = this card has never completed a dwell.
-  // visits is cumulative over every drained dwell (success or not); score
-  // is the last SUCCESSFUL dwell's HopRanker::score() (a failed retune
-  // produces no HopVisit, so a stale score is kept rather than zeroed);
-  // cost_us is always the last dwell's to_us+read_us+back_us, success or
-  // not.
+  // Sideport dwell snapshot per card (Task 12). NOT guarded by dwell_mu --
+  // safe anyway because both the write (at the dwell_recs/dwell_visits
+  // drain below, AFTER that drain's lock_guard scope has already closed
+  // and swapped the shared vectors into purely local ones) and the read
+  // (at the sideport feed) run on the core thread only, same as the
+  // pre-existing cur_ch update in that same drain loop -- there is no
+  // second thread that ever touches dwell_stats for a lock to arbitrate.
+  // nullopt = this card has never completed a dwell. visits is cumulative
+  // over every drained dwell (success or not); score is the last
+  // SUCCESSFUL dwell's HopRanker::score() (a failed retune produces no
+  // HopVisit, so a stale score is kept rather than zeroed); cost_us is
+  // always the last dwell's to_us+read_us+back_us, success or not.
   std::vector<std::optional<maburgs::StatsDwellIn>> dwell_stats(
       static_cast<size_t>(n_cards));
   // Serializes every call into `inflight` (and, transitively, whichever

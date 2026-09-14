@@ -52,11 +52,27 @@ class InflightScout {
 
   // One dwell on `ch`, returning to `back`. Fills d.survey (fa/cca/frames/
   // observe_ms), d.in_session=true, and the three step timings regardless
-  // of outcome. Returns false, with d.survey.flags carrying
-  // kFlagRetuneFailed and no HopVisit produced, if EITHER the retune to
-  // `ch` failed (the card is left on `back`) OR the observation completed
-  // but the return retune to `back` itself failed (the card's position is
-  // then unknown -- it may still be parked on `ch`).
+  // of outcome.
+  //
+  // CONTRACT (relied on by gs/src/main.cpp's sideport dwell attribution,
+  // Task 12 -- HopVisit carries no card field, so main.cpp pairs each
+  // drained ScoutDwell against dwell_visits purely off this return-value/
+  // flag/visit relationship, in order, across the two vectors):
+  //   - Returns false, with d.survey.flags carrying kFlagRetuneFailed and
+  //     `visit` left UNPOPULATED (not to be read), if EITHER the retune to
+  //     `ch` failed (the card is left on `back`) OR the observation
+  //     completed but the return retune to `back` itself failed (the
+  //     card's position is then unknown -- it may still be parked on
+  //     `ch`). These are the only two failure paths; any future one MUST
+  //     also set kFlagRetuneFailed and refuse to populate `visit`.
+  //   - Returns true implies `visit` is fully populated, with
+  //     visit.ch == ch, and d.survey.flags does NOT carry
+  //     kFlagRetuneFailed.
+  // Breaking either half of this pairing (return value disagreeing with
+  // the flag, or with whether `visit` was actually filled) silently
+  // corrupts main.cpp's per-card score/visit attribution without failing
+  // any test at this call site -- see tests/test_inflight_scout.cpp's
+  // dwell_return_value_flag_and_visit_population_stay_in_lockstep group.
   bool dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& visit);
 
   // Round-robin over cfg_.candidates.
