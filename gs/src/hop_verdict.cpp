@@ -29,10 +29,13 @@ void HopVerdict::reset() {
   frozen_ = false;
   ref_rec_ = 0;
   ref_rung_ = -1;
+  ref_rssi_.clear();
   healthy_streak_ = 0;
   recent_interfered_.clear();
-  // Histories (rssi_hist_, rec_hist_) and ref_rssi_ survive a reset -- they
-  // are the trailing baseline, not per-hop state.
+  // Histories (rssi_hist_, rec_hist_) survive a reset -- they are the
+  // trailing baseline, not per-hop state. ref_rssi_/ref_rec_/ref_rung_ are
+  // the frozen snapshot taken AT a hop's onset and must not leak across a
+  // hop boundary.
 }
 
 int HopVerdict::ref_rung() const { return ref_rung_; }

@@ -93,4 +93,25 @@ TEST(frozen_reference_for_a_mid_dwell_card_is_not_fabricated_from_zero) {
   auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-40, 30, 0, 4)}, {0.06, 80}, 5);
   CHECK(!(o2.evidence & kEvFading));
 }
+// weak takes priority over interfered evidence: a link that is weak but
+// NOT currently fading (RSSI stable, just low) and also shows genuine
+// jammer symptoms (contended) must still classify as Fade and must never
+// trigger a hop -- the ladder owns weak links, not the hop.
+TEST(weak_takes_priority_over_contended_when_not_fading) {
+  HopVerdict v(cfg(), 2);
+  double t = 0;
+  // Warm at RSSI -80 / SNR 10, no loss: not impaired, so these windows are
+  // Healthy and the per-card RSSI references build at -80 (not frozen).
+  for (int i = 0; i < 40; ++i, t += 150) v.window(t, {card(-80, 10, 0, 4), card(-80, 10, 0, 4)}, {0.0, 20}, 5);
+  // Now: loss 6% (> loss_pct 3) -> impaired. RSSI/SNR still -80/10 -> weak.
+  // RSSI unchanged from the just-built -80 reference -> NOT fading.
+  // foreign 237/s (> foreign_pps 50) -> contended.
+  auto o = v.window(t, {card(-80, 10, 237, 2), card(-80, 10, 237, 2)}, {0.06, 20}, 5);
+  CHECK(o.v == Verdict::Fade);
+  CHECK(!o.trigger);
+  CHECK(o.evidence & kEvImpaired);
+  CHECK(o.evidence & kEvWeak);
+  CHECK(o.evidence & kEvContended);
+  CHECK(!(o.evidence & kEvFading));
+}
 MTEST_MAIN
