@@ -88,22 +88,19 @@ only once `rcf_sent_since_order >= hop.one_card_repeats` with still no
 video does it emit a second action, `HopAction::OneCardRetune`
 (`gs/src/hop_controller.cpp:ordered_tick`, pinned by
 `tests/test_hop_controller.cpp`'s `one_card_retunes_after_repeats`).
-**But** `ChannelPlan`'s one-card contract is different: `hop_order()` with
-`lead_card == -1` (the value a one-card GS always passes — there is no
-second card to keep behind) moves **every** card, i.e. the sole radio,
-straight to the target the instant `hop_order()` runs
-(`ChannelPlan::desired()`: `hop_lead_ < 0` → the target for every card;
-pinned by `tests/test_channel_plan.cpp`'s
-`one_card_hop_moves_all_and_confirms_or_withdraws`, whose own name says
-"moves all"). Because `gs/src/main.cpp`'s `HopAction::Order` case calls
-`plan.hop_order(now_ms, act.target, act.lead_card)` unconditionally, and
-`act.lead_card` is `-1` from the very first `Order` on a one-card GS, the
-physical retune happens **on the same tick as the order**, before any of
-the `one_card_repeats` RCFs are sent — not after, as the spec's §1 prose
-describes. `HopAction::OneCardRetune`, when it later fires, calls
-`plan.hop_order()` again with the same target and lead card, which is a
-near no-op against an already-moved `ChannelPlan` (it logs one more
-`hop_one_card` M-line and nothing else changes) — see Known limitations.
+`ChannelPlan`'s own one-card contract moves every card — the sole radio —
+the instant `hop_order()` runs (`hop_lead_ < 0` → the target for every
+card; pinned by `tests/test_channel_plan.cpp`'s
+`one_card_hop_moves_all_and_confirms_or_withdraws`), so `gs/src/main.cpp`'s
+`HopAction::Order` handler **only calls `plan.hop_order()` when
+`act.lead_card >= 0`** (i.e. two cards) — for one card it is skipped on
+`Order` and deferred to `OneCardRetune`, so the sole radio stays on the
+old channel while `vrx.set_hop()`/`restore_rung()`/`blank_store()` still
+fire immediately and the RCF starts carrying the order that same tick.
+Only once `OneCardRetune` fires — after `one_card_repeats` RCFs have gone
+out on the old channel with no video — does `plan.hop_order(now_ms,
+act.target, -1)` run and the radio actually move. This matches the
+spec's §1 sequence as written.
 
 During a two-card hop the FEC decodes from one card only; the split is
 bounded by `hop.confirm_ms`. `ChannelPlan::desired(card)` answers the
@@ -134,15 +131,28 @@ kEvRaised`):
 | raised | any card's FA/s > `fa_pps` | `fa_pps` (100) |
 
 Verdict, evaluated in this order (`HopVerdict::window`,
-`gs/src/hop_verdict.cpp`): `!impaired → healthy`; `impaired && weak →
-fade`; `impaired && (contended || raised) && !weak → interfered`;
-otherwise `impaired → unknown`. **`weak` takes priority over
-`contended`/`raised`** — an edge-of-range but otherwise stable link showing
-jammer-like FA/foreign symptoms classifies `fade`, not `interfered`, and
-never hops; the ladder owns it (this exact edge case — `weak` true,
-`fading` false, `contended`/`raised` true — was found unpinned by a
-branch-reorder mutation during review and is now covered by
-`weak_takes_priority_over_contended_when_not_fading`). The hop trigger is
+`gs/src/hop_verdict.cpp:79-82`):
+
+```cpp
+if (!impaired) o.v = Verdict::Healthy;
+else if (weak) o.v = Verdict::Fade;
+else if ((contended || raised) && !fading) o.v = Verdict::Interfered;
+else o.v = Verdict::Unknown;
+```
+
+`interfered` needs **both** contention/a raised floor **and** the absence
+of fading — an impaired, non-weak window that is fading (RSSI dropped off
+its reference) but also shows contention or a raised floor classifies
+`unknown`, not `interfered`: `weak` is checked first and wins outright if
+true, and only among the non-weak windows does `!fading` gate `interfered`
+against `unknown`. An edge-of-range but otherwise stable link showing
+jammer-like FA/foreign symptoms therefore classifies `fade` (if also
+weak) or `unknown` (if fading but not weak) — never `interfered` — and
+neither case hops; the ladder owns both. The `weak`-before-`contended`/
+`raised` edge case (`weak` true, `fading` false, `contended`/`raised`
+true) was found unpinned by a branch-reorder mutation during review and
+is now covered by `weak_takes_priority_over_contended_when_not_fading`.
+The hop trigger is
 `interfered` in `hop.persist` (2 default) of the last 3 windows
 (`VerdictOut::trigger`). `fade` and `unknown` never hop in v1 — the ladder
 handles both.
@@ -202,22 +212,39 @@ default-constructed `HopVisit{ch=0}` pushed unconditionally, which would
 have ranked channel 0 as artificially best) was caught and fixed before
 this shipped.
 
-**One-card GS: no in-session scout at all.** `gs/src/main.cpp` gates the
-scout thread's start on `n_cards >= 2` ("no point spinning it up on one
-card"), and the pre-hop "freshness burst" (below) is gated on
-`ht.lead_card >= 0`, which is `-1` for every one-card tick. So on a
-one-card GS `HopRanker` never receives a single visit; `ranker.best()` is
-always `nullopt`, and the reactive hop degrades to "retune home when
-triggered, else `hold_exhausted`" — it can never discover or try a
-different candidate mid-flight (see Known limitations).
+**The periodic scout thread stays two-card-only.** `gs/src/main.cpp`
+gates its start on `n_cards >= 2` ("no point spinning it up on one card"
+— a one-card GS has no spare radio to dedicate to it). A one-card GS's
+ranking data comes entirely from the freshness burst below instead.
 
-**Freshness burst.** `gs/src/main.cpp`: right before a target is actually
-committed (`hopc.state() == Idle && trigger && best && lead_card >= 0`),
-every candidate is swept once more via `InflightScout::burst()` rather
-than acting on a ranking that may be up to `hop.rank_max_age_ms` old.
-Two-card only (per the gate above). Runs synchronously on the core thread
-— `inflight_mu` is held for its duration to keep the periodic scout thread
-off the same `InflightScout`/`RadioFrontend` at once.
+**Freshness burst.** `gs/src/main.cpp`: rather than act on a ranking that
+may be up to `hop.rank_max_age_ms` old, every candidate is swept once,
+back to back, via `InflightScout::burst()` whenever the controller has
+no hop in flight (`HopState::Idle` **or** `HopState::Hold`) and the
+verdict's trigger is set — **on both card counts**, matching the spec's
+§3 "the only card on a one-card GS since the link is already impaired."
+The gate does not require `ht.best` to already hold a value (an earlier
+build's gate did, which on a one-card GS is circular: the burst is the
+only source of visits, so requiring a ranked candidate before running it
+made the ranker permanently empty — fixed to run the sweep unconditionally
+whenever hop-free-and-triggered). Two cards are unaffected either way,
+since the periodic scout thread already keeps the ranker warm before any
+burst runs.
+
+The burst is **rate-limited to at most one per `hop.dwell_period_ms`**
+(333 ms default, `gs/src/main.cpp`'s `last_burst_ms`/`burst_due`) — reusing
+the scout thread's own duty-cycle knob rather than adding a new key.
+Without this, a sustained `Hold` (every candidate backed off, interference
+persisting) re-enters `idle_tick` on every ~10 ms control tick with the
+trigger still latched true, and nothing else paces it: `cooldown_ms` only
+applies after a confirmed hop, and `max_hops_per_min` is only counted
+inside `order()`, neither of which a stuck `Hold` ever reaches. Unlimited,
+the burst would fire back to back — and because it runs synchronously on
+the core thread, each pass also stalls RX processing for its duration, so
+a one-card GS's sole radio would be off-air almost continuously exactly
+when the link is already in trouble. Runs with `inflight_mu` held for its
+duration, keeping the periodic scout thread (when one is running, i.e.
+two-card) off the same `InflightScout`/`RadioFrontend` at once.
 
 **Ranking** (`gs/src/hop_ranker.{h,cpp}`, pure). Per candidate, over the
 last `hop.rank_visits` (5) visits not older than `hop.rank_max_age_ms`
@@ -551,24 +578,30 @@ is the actual runbook and owns filling these in.
 
 ## Known limitations
 
-- **One-card GS gets no in-session scouting.** `gs/src/main.cpp` gates the
-  in-flight scout thread and the pre-order freshness burst on
-  `n_cards >= 2`. On one card `HopRanker` never receives a visit, so
-  `hopc`'s `best` is always `nullopt` and the reactive hop can only ever
-  retune to home (or hold once already home) — it never tries a different
-  candidate mid-flight (§3).
-- **One-card sequencing gap, unverified without hardware.** As built,
-  `ChannelPlan::hop_order()` moves a one-card GS's sole radio to the
-  target on the same tick as the order (§1) — before any of the
-  `one_card_repeats` RCFs `HopController`'s own state machine models as
-  going out first, on the old channel. Every RCF the GS sends after that
-  point, repeats included, leaves from the already-retuned target
-  channel. Whether the drone — still on the old channel until it receives
-  an RCF carrying the new pair — can ever actually hear the order on a
-  real one-card rig is unverified this session (no bench, and the module
-  and integration tests that exist model each layer's own contract, not
-  the RF reachability across the seam between them). This needs a bench
-  check before `hop.enable = true` is flown on a one-card GS.
+- **A one-card GS needs two freshness-burst passes before it can hop to
+  a real candidate.** `HopRanker` requires at least 2 fresh visits before
+  a channel counts as ranked (§3), and on one card the burst — rate-limited
+  to one pass per `hop.dwell_period_ms` (§3) — is the only source of
+  visits. So the first trigger's burst (which fires immediately) leaves
+  every candidate still unranked, `hopc`'s `best` stays `nullopt`, and the
+  controller orders home (or holds, if already home); only the *second*
+  burst, one `dwell_period_ms` later, gives the ranker enough visits to
+  name a candidate. Reported (not measured — no hardware this session)
+  derived figures for the shipped defaults: **~633 ms** to the order
+  decision (300 ms detection + one 333 ms wait for burst 2), **~883 ms**
+  to the physical retune (+ `one_card_repeats` × the RCF period), **~0.9–
+  1.1 s** to a confirmed hop — around the spec's sub-second target, not
+  comfortably under it. **These figures are provisional**: derived from
+  config defaults and code paths only, pending independent re-derivation
+  and, eventually, a bench measurement. Two-card GSes are unaffected — the
+  periodic scout thread keeps the ranker continuously warm, so a two-card
+  burst typically finds already-ranked candidates on its first pass.
+- **A one-card freshness burst takes the sole radio off-air for ~30 ms
+  per sweep** (three default candidates, a few ms each). Reconciled the
+  same tick: `InflightScout::dwell()`'s own return-to-`back` retune, then
+  a `cur_ch` resync from live `fe.channel()`, then (if either failed) the
+  ordinary mechanical per-card retune loop — all before the tick ends, not
+  deferred to the next one.
 - **`dwell_busy`/`dwell_card`'s publish is not atomic** with the
   cross-thread read that gates the mechanical retune loop, the verdict
   window, and the TX selector against a card the scout has mid-dwell
