@@ -53,11 +53,31 @@ TEST(round_robin_and_burst) {
   CHECK(visits.size() == 3 && recs.size() == 3 && r.ch == 136);
 }
 TEST(failed_retune_returns_false_and_leaves_card_on_back) {
-  struct Bad : FakeRadio { bool retune(uint8_t c) override { log.push_back("retune"); return c != 149; } } r;
+  // Bad tracks `ch` the way the base FakeRadio does -- set on a successful
+  // retune, left untouched on a failed one -- so this test can actually
+  // check the safety invariant it's named for: the card lands on `back`,
+  // not stranded on the candidate. Without this the test only checked the
+  // return value and the flag, and would still pass if the recovery
+  // retune(back) call were deleted entirely.
+  struct Bad : FakeRadio {
+    bool retune(uint8_t c) override {
+      log.push_back("retune " + std::to_string(c));
+      if (c == 149) return false;   // the candidate retune fails; ch does NOT move
+      ch = c;
+      return true;
+    }
+  } r;
+  // FakeRadio::ch defaults to 136, which is also this test's `back` -- if
+  // left at that default, a CHECK(r.ch == 136) below would pass trivially
+  // even with the recovery retune(back) call deleted entirely. Seed it to
+  // something else first so the assertion can actually tell "recovered
+  // onto back" apart from "was never touched".
+  r.ch = 0;
   int64_t t = 0; InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; r.foreign += 2; });
   ScoutDwell d; HopVisit v;
   CHECK(!s.dwell(149, 136, d, v));
   CHECK(d.survey.flags & devourer::chanmig::kFlagRetuneFailed);
+  CHECK(r.ch == 136);   // recovered onto `back`, never left parked on the candidate
 }
 // Round 1 fix #3: the return-to-`back` retune's own result must be checked
 // too -- a stranded scout card (parked on the candidate, mistaken for
