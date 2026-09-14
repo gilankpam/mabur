@@ -22,6 +22,12 @@ struct FakeRadio : ScoutRadio {
     if (with_nhm) { e.floor_valid = true; e.floor_dbm = -95; }
     return e;
   }
+  // Not exercised by ChannelScout (the boot-time scout only calls
+  // read_energy); still required by the ScoutRadio interface.
+  ScoutEnergy read_energy_scout() override {
+    calls.push_back("read_scout");
+    return ScoutEnergy{};
+  }
   ScoutFrames frames() const override { return fr; }
 };
 

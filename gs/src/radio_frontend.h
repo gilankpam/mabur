@@ -73,6 +73,7 @@ class RadioFrontend : public ScoutRadio {
   // ScoutRadio interface: the scout thread's control plane on this card.
   bool retune(uint8_t ch) override;                 // FastRetune; false pre-ready
   ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
+  ScoutEnergy read_energy_scout() override;         // GetRxEnergyScout -> ScoutEnergy
   ScoutFrames frames() const override {
     return ScoutFrames{own_.load(std::memory_order_relaxed), foreign_.load(std::memory_order_relaxed)};
   }

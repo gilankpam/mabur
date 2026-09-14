@@ -41,6 +41,11 @@ class ScoutRadio {
   virtual ~ScoutRadio() = default;
   virtual bool retune(uint8_t ch) = 0;
   virtual ScoutEnergy read_energy(bool with_nhm) = 0;
+  // Cheapest frame-free OFDM FA+CCA delta (devourer's GetRxEnergyScout):
+  // only fa_valid/fa_ofdm/cca_ofdm are meaningful, everything else
+  // (including nhm) is left invalid. For the ~10 ms in-flight dwell
+  // (inflight_scout.h), which cannot afford GetRxEnergy's NHM window.
+  virtual ScoutEnergy read_energy_scout() = 0;
   virtual ScoutFrames frames() const = 0;
 };
 

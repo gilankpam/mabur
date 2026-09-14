@@ -329,6 +329,21 @@ ScoutEnergy RadioFrontend::read_energy(bool with_nhm) {
   return out;
 }
 
+ScoutEnergy RadioFrontend::read_energy_scout() {
+  ScoutEnergy out;
+  if (!ready_.load(std::memory_order_acquire) || !device_) return out;
+  const RxEnergy e = device_->GetRxEnergyScout();
+  out.fa_valid = e.valid_fa;
+  out.cca_ofdm = e.cca_ofdm;
+  out.fa_ofdm = e.fa_ofdm;
+  out.igi_valid = e.valid_igi;
+  out.igi = e.igi;
+  out.nhm_valid = e.valid_nhm;
+  out.floor_valid = e.valid_noise_floor;
+  out.floor_dbm = e.abs_noise_floor_dbm;
+  return out;
+}
+
 bool RadioFrontend::send_control(const std::vector<uint8_t>& body) {
   if (!ready_.load(std::memory_order_acquire) || !device_) {
     tx_fail_.fetch_add(1, std::memory_order_relaxed);
