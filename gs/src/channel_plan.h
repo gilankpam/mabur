@@ -70,6 +70,7 @@ class ChannelPlan {
   uint8_t hop_target_ = 0;
   int hop_lead_ = -1;
   uint8_t hop_from_ = 0;
+  double hop_start_ms_ = 0;
 };
 
 }  // namespace maburgs

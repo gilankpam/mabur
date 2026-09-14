@@ -64,8 +64,12 @@ void ChannelPlan::hop_order(double now_ms, uint8_t target, int lead_card) {
   if (hopping_) {
     // A second order abandons the in-flight hop: log its withdrawal before
     // starting the new one, so the flight log carries a trace of it instead
-    // of the lead card silently snapping back to op_.
+    // of the lead card silently snapping back to op_. The exclusion window
+    // for the split timer (hop_start_ms_) is NOT restarted here: however
+    // many re-orders happen, the whole hopping stretch is one window.
     events_.push_back(MoveEvent{now_ms, hop_lead_, hop_target_, op_, MoveReason::HopWithdraw});
+  } else {
+    hop_start_ms_ = now_ms;
   }
   hopping_ = true;
   hop_target_ = target;
@@ -81,14 +85,18 @@ void ChannelPlan::hop_confirmed(double now_ms) {
   op_ = hop_target_;
   frozen_ = true;
   hopping_ = false;
-  have_lost_since_ = false;  // loss timed on the pre-hop channel is stale now
+  // Exclude the hop window from the split timer: loss during a deliberate
+  // hop is expected by construction, not evidence of a fade, but loss
+  // before and after the hop is real and must keep counting.
+  if (have_lost_since_) lost_since_ms_ += (now_ms - hop_start_ms_);
   events_.push_back(MoveEvent{now_ms, -1, hop_from_, op_, MoveReason::HopFollow});
 }
 
 void ChannelPlan::hop_withdraw(double now_ms) {
   now_ms_ = now_ms;
   hopping_ = false;
-  have_lost_since_ = false;  // loss timed on the pre-hop channel is stale now
+  // See hop_confirmed: shift, don't clear, so pre-hop loss still counts.
+  if (have_lost_since_) lost_since_ms_ += (now_ms - hop_start_ms_);
   events_.push_back(MoveEvent{now_ms, hop_lead_, hop_target_, op_, MoveReason::HopWithdraw});
 }
 

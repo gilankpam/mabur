@@ -162,22 +162,64 @@ TEST(hop_after_a_hop_uses_the_new_op_as_from) {
   auto ev = p.take_events();
   CHECK(ev[0].from == 149 && ev[0].to == 165 && ev[0].card == 0);
 }
-TEST(hop_withdraw_resets_loss_timer_for_split) {
+// The hop window is EXCLUDED from the split timer (shift, not clear): real
+// pre-hop loss (2100 ms, t=0..2100) plus real post-hop loss (2900 ms, from
+// withdraw at t=2400) must sum to exactly split_after_ms(5000) -> split at
+// t=5300. This fails both against the pre-round-1 carried-timestamp bug
+// (splits too early, at t=5000, because the pre-hop loss and hop window are
+// never excluded) and against the round-1 reset (splits too late, at
+// t=2500+5000=7500, because it also discards the genuine pre-hop loss).
+TEST(hop_excludes_only_its_own_window_from_the_split_timer) {
   ChannelPlan p(C(2));
   p.on_ack(0, 149, 149); p.take_events();
-  p.tick(1000, false);              // lost_since_ms_ = 1000 (pre-hop loss bookkeeping)
-  p.tick(2000, false);              // 1000 ms of pre-hop loss accumulated, well under 5000
-  CHECK(!p.split());
-  p.hop_order(2000, 165, 1);
-  p.tick(2200, false);              // during the hop: no bookkeeping, no split
-  p.hop_withdraw(2500);             // lead card returns, op_ unchanged
+  p.tick(0, false);                 // lost_since_ms_ = 0
+  p.hop_order(2100, 165, 1);        // hop_start_ms_ = 2100; 2100 ms real loss so far
+  p.tick(2200, false);              // during the hop: ignored
+  p.hop_withdraw(2400);             // shift: lost_since_ms_ += (2400-2100) = 300 -> 300
   p.tick(2500, false);              // continuous loss resumes right at withdraw
   CHECK(!p.split());
-  p.tick(6000, false);              // OLD buggy split point: 1000 + split_after_ms(5000)
-  CHECK(!p.split());                // must NOT have split yet: pre-hop loss must not count
-  p.tick(7499, false);              // withdraw_time(2500) + split_after_ms(5000) - 1
+  p.tick(5299, false);              // 300 + split_after_ms(5000) - 1
   CHECK(!p.split());
-  p.tick(7500, false);              // withdraw_time + split_after_ms
+  p.tick(5300, false);              // 300 + split_after_ms(5000)
+  CHECK(p.split());
+}
+// The re-review's own probe: loss from t=1, a short hop from t=4900 to
+// t=5200 (300 ms), loss unbroken after. The split must land near
+// loss_onset + split_after_ms + hop_duration = 1 + 5000 + 300 = 5301, not
+// at hop_end + split_after_ms = 10200 (the round-1 reset behaviour).
+TEST(short_hop_during_a_fade_does_not_meaningfully_delay_the_split) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 149, 149); p.take_events();
+  p.tick(1, false);                 // lost_since_ms_ = 1
+  p.hop_order(4900, 165, 1);        // hop_start_ms_ = 4900; 4899 ms accrued
+  p.tick(5000, false);              // during the hop: ignored
+  p.hop_withdraw(5200);             // shift: lost_since_ms_ += (5200-4900) = 300 -> 301
+  p.tick(5200, false);              // loss unbroken right at withdraw
+  CHECK(!p.split());
+  p.tick(5300, false);              // 5301 - 1
+  CHECK(!p.split());
+  p.tick(5301, false);              // loss_onset(1) + split_after_ms(5000) + hop_duration(300)
+  CHECK(p.split());
+}
+// A re-entrant hop_order() while already hopping must not restart the
+// exclusion window: the whole hopping stretch, across however many
+// re-orders, is one continuous exclusion measured from the FIRST order.
+TEST(hop_reorder_does_not_restart_the_exclusion_window) {
+  ChannelPlan p(C(2));
+  p.on_ack(0, 149, 149); p.take_events();
+  p.tick(0, false);                 // lost_since_ms_ = 0
+  p.hop_order(1000, 165, 1);        // hop_start_ms_ = 1000 (first order)
+  p.tick(1200, false);              // ignored: still hopping
+  p.hop_order(1500, 149, 0);        // re-order mid-hop: must NOT move hop_start_ms_
+  p.take_events();
+  p.hop_withdraw(2000);             // shift uses the ORIGINAL 1000, not 1500:
+                                     // lost_since_ms_ += (2000-1000) = 1000 -> 1000
+  CHECK(!p.hopping());
+  p.tick(2000, false);
+  CHECK(!p.split());
+  p.tick(5999, false);              // 1000 + split_after_ms(5000) - 1
+  CHECK(!p.split());
+  p.tick(6000, false);              // 1000 + split_after_ms(5000)
   CHECK(p.split());
 }
 TEST(hop_order_while_hopping_emits_withdraw_for_abandoned_lead) {
