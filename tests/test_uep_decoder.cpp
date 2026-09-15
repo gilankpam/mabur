@@ -162,6 +162,42 @@ TEST(layer_stats_expose_recovered_arrived) {
 // durations. Patch a real encoder body's q_ms/enc_us post-hoc (as the drone
 // TX thread does) and feed it with an explicit body_mono_us; every fragment
 // that body's arrival emits must carry those exact values.
+TEST(take_episodes_drains_a_layers_loss_episodes) {
+  // Drop one stream-1 body for good on a short-horizon decoder: the seqs
+  // it carried never arrive directly, so the layer books one episode
+  // (fec.log gauge) whose missing count is recovered + abandoned, and a
+  // second drain returns nothing.
+  UepEncoder enc(vec_layers(), /*flush_ms=*/1'000'000'000ULL);
+  std::vector<UepBody> bodies;
+  auto frames = fixture_frames();
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto unit = mtest::frame_unit(frames[i], static_cast<uint16_t>(i));
+    for (auto& b : enc.add_frame(1, unit.data(), unit.size(), 0))
+      bodies.push_back(std::move(b));
+  }
+  for (auto& b : enc.flush_all()) bodies.push_back(std::move(b));
+  UepDecoder dec(vec_layers(), /*seq_horizon=*/16);
+  bool dropped = false;
+  size_t n1 = 0;
+  for (auto& b : bodies) {
+    if (b.stream_id == 1 && ++n1 == 3 && !dropped) { dropped = true; continue; }
+    dec.add_body(b.body.data(), b.body.size(), 0);
+  }
+  REQUIRE(dropped);
+  auto eps = dec.take_episodes(1);
+  REQUIRE(eps.size() >= 1);
+  uint32_t missing = 0;
+  for (const auto& e : eps) {
+    CHECK(e.missing == e.recovered + e.abandoned);
+    CHECK(e.span >= e.missing);
+    missing += e.missing;
+  }
+  CHECK(missing >= 1);
+  CHECK(dec.take_episodes(1).empty());
+  CHECK(dec.take_episodes(0).empty());  // stream 0 saw no loss
+  CHECK(dec.take_episodes(7).empty());  // bad sid: empty, never UB
+}
+
 TEST(decoded_frag_carries_body_time_and_sbi_durations) {
   auto bodies = encode_fixture_bodies();
   REQUIRE(!bodies.empty());

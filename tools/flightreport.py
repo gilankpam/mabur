@@ -739,6 +739,87 @@ def sniff_probelog(path):
         return f.readline().startswith("probelog ")
 
 
+def sniff_feclog(path):
+    """True if `path` is a maburgs fec log (first line starts 'feclog ')."""
+    with open(path) as f:
+        return f.readline().startswith("feclog ")
+
+
+FEC_COLS = ("t_ms", "sid", "mcs", "ov", "first_seq", "span", "m", "rec",
+            "aband", "stale", "r", "w")
+FEC_CANDIDATE_OV = (0.25, 0.35, 0.50, 0.75, 1.00)
+
+
+def load_feclog(path):
+    """fec.log (feclog 1, gs/src/fec_log.h): one row per loss episode a
+    video layer's decoder closed. A rejoined session re-states the marker
+    partway through; `# dropped N` is the LogWriter's gap marker. Both
+    skipped, everything else is a row."""
+    rows = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("feclog ") or line.startswith("#"):
+                continue
+            tok = line.split()
+            if len(tok) != len(FEC_COLS):
+                continue
+            r = {}
+            for k, v in zip(FEC_COLS, tok):
+                r[k] = float(v) if k in ("t_ms", "ov") else int(v)
+            rows.append(r)
+    return rows
+
+
+def fec_ov_req(m, r, ov):
+    """The overhead this episode would have needed. At overhead x the same
+    lost air carries m*(1+ov)/(1+x) sources (an aggregate is a fixed number
+    of envelopes, fewer of them repairs) against r*x/ov covering repairs, and
+    the decoder needs repairs >= sources: x*(1+x) = m*ov*(1+ov)/r, so
+    x = (sqrt(1+4c)-1)/2 with c = m*ov*(1+ov)/r. inf when no repair
+    covered the episode at all."""
+    if r <= 0:
+        return float("inf")
+    c = m * ov * (1.0 + ov) / r
+    return (math.sqrt(1.0 + 4.0 * c) - 1.0) / 2.0
+
+
+def print_fec_report(rows):
+    """FEC EPISODES: per (sid, mcs, ov) group -- the rung and layer the
+    episode flew on -- how many episodes, how many fell inside a transition
+    (stale > 0: excluded from the counterfactual), how many actually failed
+    (aband > 0), the missing-count and ov_req distributions, and how many
+    non-stale episodes would have failed at each candidate overhead
+    (ov_req > candidate). This is the input to a static rung-table retune
+    (docs/observability.md, fec.log)."""
+    if not rows:
+        return
+    groups = {}
+    for r in rows:
+        groups.setdefault((r["sid"], r["mcs"], r["ov"]), []).append(r)
+    print("FEC EPISODES (fec.log: runs of sources never delivered; "
+          "ov_req = overhead the episode would have needed)")
+    for key in sorted(groups):
+        sid, mcs, ov = key
+        g = groups[key]
+        live = [r for r in g if r["stale"] == 0]
+        stale = len(g) - len(live)
+        failed = sum(1 for r in g if r["aband"] > 0)
+        ms = [r["m"] for r in live]
+        reqs = [fec_ov_req(r["m"], r["r"], ov) for r in live]
+        print(f"  sid {sid} mcs {mcs} ov {ov:.2f}: n={len(g)} stale={stale} "
+              f"failed={failed}")
+        if not live:
+            continue
+        print(f"    m p50/p90/max={_pct(ms, 0.5)}/{_pct(ms, 0.9)}/{max(ms)}  "
+              f"r p50={_pct([r['r'] for r in live], 0.5)}  "
+              f"w={_pct([r['w'] for r in live], 0.5)}")
+        print(f"    ov_req p50/p90/p99/max={_pct(reqs, 0.5):.2f}/"
+              f"{_pct(reqs, 0.9):.2f}/{_pct(reqs, 0.99):.2f}/{max(reqs):.2f}")
+        fails = " ".join(f"{c:.2f}:{sum(1 for x in reqs if x > c)}"
+                         for c in FEC_CANDIDATE_OV)
+        print(f"    would fail at ov {fails}  (of {len(live)} non-stale)")
+
+
 def sniff_ctllog(path):
     """True if `path` is a maburgs ctl log (first line starts 'ctllog ')."""
     with open(path) as f:
@@ -1200,6 +1281,9 @@ def print_hop_report(scanlog, ctllog):
 
 
 def main(path, aulog=None, probelog_path=None, scanlog_path=None):
+    if sniff_feclog(path):
+        print_fec_report(load_feclog(path))
+        return
     if sniff_probelog(path):
         # A probe log on its own (bench use): just the per-body report and
         # the completion->probe join.
@@ -1441,5 +1525,9 @@ if __name__ == "__main__":
         # viewer. Silent when the recording predates the counters.
         if primary != s.flight and s.flight:
             print_salvage_report(load(s.flight))
+        # fec.log (2026-09-15) is a sibling too: the FEC EPISODES section
+        # rides along whichever primary the session offered.
+        if s.fec:
+            print_fec_report(load_feclog(s.fec))
     else:
         main(arg, sys.argv[2] if len(sys.argv) > 2 else None)

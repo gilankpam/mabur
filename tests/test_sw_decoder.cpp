@@ -548,3 +548,187 @@ TEST(arrival_salvage_only_from_corrupt_body_copies) {
   CHECK(d.arr_salvage_only() == 3);
   CHECK(d.syms_abandoned() == 0);
 }
+
+// ---- loss episodes (fec.log gauge, 2026-09-15) ----
+// 62-byte packets at symbol_size 64: pkt index == seq. The window is 8, the
+// default horizon 4*8 = 32, so an episode whose last seq is L is emitted
+// once eviction passes L + window, i.e. once the newest seq reaches
+// L + 8 + 32 + 1; 60 sources is comfortably past that for a hole at 4..6.
+namespace {
+int repairs_covering(const std::vector<std::vector<uint8_t>>& envs,
+                     uint32_t lo, uint32_t hi) {
+  int n = 0;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair) continue;
+    const uint32_t ws = h.seq, we = h.seq + h.window_len;  // [ws, we)
+    if (ws <= hi && we > lo) ++n;
+  }
+  return n;
+}
+}  // namespace
+
+TEST(episode_recovered_run_reports_missing_and_covering_repairs) {
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 60, nullptr);
+  SwDecoder d(cfg);
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair && h.seq >= 4 && h.seq <= 6) continue;  // the hole
+    d.add_symbol(env.data(), env.size(), 1000);
+  }
+  CHECK(d.syms_recovered() == 3);
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  const auto& e = eps[0];
+  CHECK(e.first_seq == (1ull << 32) + 4);  // virtual seq of the first hole
+  CHECK(e.span == 3);
+  CHECK(e.missing == 3);
+  CHECK(e.recovered == 3);
+  CHECK(e.abandoned == 0);
+  CHECK(e.stale == 0);
+  CHECK(e.repairs == static_cast<uint32_t>(repairs_covering(envs, 4, 6)));
+  CHECK(e.window == 8);
+  CHECK(d.take_episodes().empty());  // drained
+}
+
+TEST(episode_runs_more_than_a_window_apart_are_separate) {
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 80, nullptr);
+  SwDecoder d(cfg);
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    // holes at 4..5 and 20..21: 15 seqs apart, more than the window (8)
+    if (!h.repair && ((h.seq >= 4 && h.seq <= 5) || (h.seq >= 20 && h.seq <= 21))) continue;
+    d.add_symbol(env.data(), env.size(), 1000);
+  }
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 2);
+  CHECK(eps[0].first_seq == (1ull << 32) + 4);
+  CHECK(eps[0].span == 2);
+  CHECK(eps[0].repairs == static_cast<uint32_t>(repairs_covering(envs, 4, 5)));
+  CHECK(eps[1].first_seq == (1ull << 32) + 20);
+  CHECK(eps[1].span == 2);
+  CHECK(eps[1].repairs == static_cast<uint32_t>(repairs_covering(envs, 20, 21)));
+}
+
+TEST(episode_runs_within_a_window_merge) {
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 80, nullptr);
+  SwDecoder d(cfg);
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    // holes at 4 and 10: 6 seqs apart, inside the window (8) -> one episode
+    if (!h.repair && (h.seq == 4 || h.seq == 10)) continue;
+    d.add_symbol(env.data(), env.size(), 1000);
+  }
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  CHECK(eps[0].first_seq == (1ull << 32) + 4);
+  CHECK(eps[0].span == 7);
+  CHECK(eps[0].missing == 2);
+  CHECK(eps[0].repairs == static_cast<uint32_t>(repairs_covering(envs, 4, 10)));
+}
+
+TEST(episode_duplicate_repairs_count_once) {
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 60, nullptr);
+  SwDecoder d(cfg);
+  for (int pass = 0; pass < 2; ++pass)  // two cards hear everything
+    for (auto& env : envs) {
+      sw::SwHeader h;
+      REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+      if (!h.repair && h.seq >= 4 && h.seq <= 6) continue;
+      d.add_symbol(env.data(), env.size(), 1000);
+    }
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  CHECK(eps[0].missing == 3);
+  CHECK(eps[0].repairs == static_cast<uint32_t>(repairs_covering(envs, 4, 6)));
+}
+
+TEST(episode_unrecoverable_run_reports_abandoned) {
+  SwConfig cfg{64, 4, 0.0};  // no repairs at all
+  auto envs = encode_stream(cfg, 60, nullptr);
+  SwDecoder d(cfg, /*seq_horizon=*/16);
+  for (size_t i = 0; i < envs.size(); ++i) {
+    if (i == 3 || i == 4) continue;
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  }
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  CHECK(eps[0].first_seq == (1ull << 32) + 3);
+  CHECK(eps[0].span == 2);
+  CHECK(eps[0].missing == 2);
+  CHECK(eps[0].recovered == 0);
+  CHECK(eps[0].abandoned == 2);
+  CHECK(eps[0].repairs == 0);
+  CHECK(eps[0].window == 4);  // no repair ever seen: the configured window
+}
+
+TEST(episode_recovered_then_heard_is_not_missing) {
+  // Drop seq 4's source on the first pass (a repair recovers it), then feed
+  // the whole stream again: the direct copy shows, so nothing was lost.
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 20, nullptr);
+  SwDecoder d(cfg);
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair && h.seq == 4) continue;
+    d.add_symbol(env.data(), env.size(), 1000);
+  }
+  CHECK(d.syms_recovered() == 1);
+  auto tail = encode_stream(cfg, 60, nullptr);  // fresh encoder restarts at 0
+  for (auto& env : envs) d.add_symbol(env.data(), env.size(), 1001);  // seq 4 heard late
+  for (auto& env : tail) d.add_symbol(env.data(), env.size(), 1002);
+  CHECK(d.syms_recovered_arrived() == 1);
+  CHECK(d.take_episodes().empty());
+}
+
+TEST(episode_below_transition_watermark_counts_stale) {
+  // Mirrors watermark_pre_transition_abandonment_books_stale: hole at 4..6,
+  // no repairs fed, transition marked before the tail pushes it out.
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 60, nullptr);
+  SwDecoder d(cfg);
+  size_t src_i = 0;
+  std::vector<std::vector<uint8_t>> fed_tail;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (h.repair) continue;
+    if (src_i >= 20) { fed_tail.push_back(env); ++src_i; continue; }
+    if (!(src_i >= 4 && src_i <= 6)) d.add_symbol(env.data(), env.size(), 1000);
+    ++src_i;
+  }
+  d.mark_transition();
+  for (auto& env : fed_tail) d.add_symbol(env.data(), env.size(), 1001, SwBoundary::kPost);
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  CHECK(eps[0].missing == 3);
+  CHECK(eps[0].abandoned == 3);
+  CHECK(eps[0].stale == 3);
+}
+
+TEST(episode_queue_is_bounded_when_never_drained) {
+  // window 2, horizon 8: a hole every 16 seqs closes an episode every 16
+  // seqs. Feed enough to close well past kMaxQueuedEpisodes without ever
+  // draining; the queue must hold the cap, not grow (MspSink never drains).
+  SwConfig cfg{64, 2, 0.0};
+  const int n = 16 * static_cast<int>(SwDecoder::kMaxQueuedEpisodes + 40);
+  auto envs = encode_stream(cfg, n, nullptr);
+  SwDecoder d(cfg, /*seq_horizon=*/8);
+  for (size_t i = 0; i < envs.size(); ++i) {
+    if (i % 16 == 5) continue;
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  }
+  auto eps = d.take_episodes();
+  CHECK(eps.size() == SwDecoder::kMaxQueuedEpisodes);
+  // The oldest were dropped: the first kept episode is not the first hole.
+  CHECK(eps.front().first_seq > (1ull << 32) + 5);
+}

@@ -35,7 +35,7 @@ class LogWriter {
   static constexpr size_t kRingBytes = 1u << 20;  // 1 MiB
   static constexpr size_t kMaxLine = 64u * 1024;  // a sideport datagram fits
   static constexpr size_t kRecHdr = 8;            // u32 len | u32 stream
-  // maburgs opens exactly four (ctl, probe, au, flight.jsonl). Fixed capacity
+  // maburgs opens six (ctl, probe, au, flight.jsonl, scan, fec). Fixed capacity
   // is what lets open() publish a new stream to the writer thread without a
   // lock: the slots never move, so only the COUNT has to be synchronised.
   static constexpr size_t kMaxStreams = 8;

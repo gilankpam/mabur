@@ -24,10 +24,11 @@ import re
 
 DEFAULT_ROOT = "/media/dvr/log"
 
-Session = collections.namedtuple("Session", "dir ctl probe au flight lat scan")
+Session = collections.namedtuple("Session", "dir ctl probe au flight lat scan fec")
 
 _FILES = {"ctl": "ctl.log", "probe": "probe.log", "au": "au.log",
-          "flight": "flight.jsonl", "lat": "lat.log", "scan": "scan.log"}
+          "flight": "flight.jsonl", "lat": "lat.log", "scan": "scan.log",
+          "fec": "fec.log"}
 _SESSION_DIR = re.compile(r"^\d{4,}$")
 
 
@@ -61,6 +62,8 @@ def _classify(path):
         return "probe"
     if first.startswith("scanlog "):
         return "scan"
+    if first.startswith("feclog "):
+        return "fec"
     if first.startswith("# aulog ") or first.startswith("# latlog "):
         return "au" if "aulog" in first else "lat"
     if first.lstrip().startswith("{"):
@@ -69,7 +72,7 @@ def _classify(path):
     base = os.path.basename(path)
     for key, prefix in (("au", "au-"), ("lat", "lat-"), ("ctl", "ctl-"),
                         ("probe", "probe-"), ("flight", "flight-"),
-                        ("scan", "scan-")):
+                        ("scan", "scan-"), ("fec", "fec-")):
         if base.startswith(prefix):
             return key
     return None
@@ -80,17 +83,19 @@ def resolve(arg=None, root=DEFAULT_ROOT):
     if arg is None:
         arg = latest(root)
         if arg is None:
-            return Session(None, None, None, None, None, None, None)
+            return Session(None, None, None, None, None, None, None, None)
     if os.path.isdir(arg):
         found = {}
         for key, name in _FILES.items():
             p = os.path.join(arg, name)
             found[key] = p if os.path.exists(p) else None
         return Session(arg, found["ctl"], found["probe"], found["au"],
-                       found["flight"], found["lat"], found["scan"])
+                       found["flight"], found["lat"], found["scan"],
+                       found["fec"])
     slot = _classify(arg)
     fields = {k: None for k in _FILES}
     if slot:
         fields[slot] = arg
     return Session(None, fields["ctl"], fields["probe"], fields["au"],
-                   fields["flight"], fields["lat"], fields["scan"])
+                   fields["flight"], fields["lat"], fields["scan"],
+                   fields["fec"])

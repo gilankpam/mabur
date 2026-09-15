@@ -34,6 +34,8 @@ void SwDecoder::reset_state(uint64_t v) {
   ++resets_;
   wm_open_ = false;
   wm_valid_ = false;
+  repairs_seen_.clear();
+  ep_open_ = false;  // a half-built episode from the old seq space is meaningless
 }
 
 void SwDecoder::mark_transition() {
@@ -76,6 +78,15 @@ void SwDecoder::advance(uint64_t newest_candidate) {
   // range is stale; closed+valid => seqs <= wm_; inactive => empty span.
   const uint64_t stale_end =
       wm_open_ ? nb : (wm_valid_ ? std::min(nb, wm_ + 1) : base_);
+  // Loss episodes: every evicted seq the channel never delivered directly
+  // (unknown, or recovered with no direct copy ever heard) is booked before
+  // the state below is torn down. One seq per iteration in steady state.
+  for (uint64_t s = base_; s < nb; ++s) {
+    const bool known = known_.count(s) != 0;
+    if (known && !recovered_await_src_.count(s)) continue;  // heard directly
+    note_missing(s, /*recovered=*/known, s < stale_end);
+  }
+  settle_episodes(nb);
   for (auto it = known_.begin(); it != known_.end() && it->first < nb;) {
     if (it->first >= base_) {
       ++known_in_range;
@@ -265,6 +276,8 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
     return out;
   }
 
+  note_repair(ws, wend, h.repair_key);
+
   Row r;
   r.payload.assign(payload, payload + ss);
   r.first_seen_ms = now_ms;
@@ -281,6 +294,64 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
   std::vector<std::pair<uint64_t, std::vector<uint8_t>>> solved;
   insert_row(std::move(r), solved);
   for (auto& [sv, sym] : solved) ingest(sv, std::move(sym), /*source=*/false, out);
+  return out;
+}
+
+// ---- loss episodes ----
+
+uint64_t SwDecoder::episode_window() const {
+  // The TX window as flown; the configured one only until a repair says.
+  return repair_window_hwm_ > 0 ? static_cast<uint64_t>(repair_window_hwm_)
+                                : static_cast<uint64_t>(cfg_.window);
+}
+
+void SwDecoder::note_repair(uint64_t ws, uint64_t we, uint32_t key) {
+  // A second-card copy of the same repair arrives within a few ms, so a
+  // backward scan finds it near the tail.
+  for (auto it = repairs_seen_.rbegin(); it != repairs_seen_.rend(); ++it)
+    if (it->ws == ws && it->key == key) return;
+  repairs_seen_.push_back(RepairSpan{ws, we, key});
+}
+
+void SwDecoder::note_missing(uint64_t v, bool recovered, bool stale) {
+  if (ep_open_ && v > ep_last_ + episode_window()) settle_episodes(v);  // too far: close first
+  if (!ep_open_) {
+    ep_ = LossEpisode{};
+    ep_.first_seq = v;
+    ep_open_ = true;
+  }
+  ep_last_ = v;
+  ++ep_.missing;
+  if (recovered) ++ep_.recovered; else ++ep_.abandoned;
+  if (stale) ++ep_.stale;
+}
+
+void SwDecoder::settle_episodes(uint64_t evict_end) {
+  const uint64_t w = episode_window();
+  // Close once every seq that could still have joined (<= last + window)
+  // has itself been evicted, i.e. evict_end - 1 > last + window.
+  if (ep_open_ && evict_end > ep_last_ + w + 1) {
+    ep_.span = static_cast<uint32_t>(ep_last_ - ep_.first_seq + 1);
+    ep_.window = static_cast<uint32_t>(w);
+    ep_.repairs = 0;
+    for (const auto& r : repairs_seen_)
+      if (r.ws <= ep_last_ && r.we > ep_.first_seq) ++ep_.repairs;
+    if (episodes_.size() >= kMaxQueuedEpisodes)
+      episodes_.erase(episodes_.begin());
+    episodes_.push_back(ep_);
+    ep_open_ = false;
+  }
+  // A repair can only matter to an episode holding a seq it covers; the
+  // open episode's first seq is the oldest such seq, else nothing below
+  // the eviction line can ever be booked again.
+  const uint64_t keep_from = ep_open_ ? ep_.first_seq : evict_end;
+  while (!repairs_seen_.empty() && repairs_seen_.front().we <= keep_from)
+    repairs_seen_.pop_front();
+}
+
+std::vector<LossEpisode> SwDecoder::take_episodes() {
+  std::vector<LossEpisode> out;
+  out.swap(episodes_);
   return out;
 }
 

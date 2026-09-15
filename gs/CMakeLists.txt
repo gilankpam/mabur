@@ -24,6 +24,7 @@ add_library(mabur_gs_core STATIC
   src/debug_session.cpp
   src/log_writer.cpp
   src/probe_log.cpp
+  src/fec_log.cpp
   src/ladder_residual.cpp
   src/tx_selector.cpp
   src/rcf_slot.cpp

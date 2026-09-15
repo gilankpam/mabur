@@ -1328,7 +1328,58 @@ class HopReportTest(unittest.TestCase):
         self.assertNotIn("HOP REPORT", result.stdout)
 
 
+FEC_LOG_ROWS = """feclog 1
+1000 0 5 1.00 100 12 12 12 0 0 32 32
+1100 0 5 1.00 300 4 4 4 0 0 32 32
+1200 0 5 1.00 500 40 40 32 8 0 32 32
+1300 0 5 1.00 700 6 6 6 0 3 32 32
+1400 1 5 0.50 900 12 12 12 0 0 16 32
+"""
+
+
+def test_fec_section_counterfactual_overhead_per_sid_and_rung():
+    """FEC (fec.log, 2026-09-15): per (sid, mcs, ov) group, the overhead
+    each episode would have needed, ov_req = (sqrt(1+4c)-1)/2 with
+    c = m*ov*(1+ov)/r (a lower overhead packs more sources into the same
+    lost aggregate, so m scales by (1+ov)/(1+ov') while the covering repairs
+    scale by ov'/ov). Rows: A m=12 r=32 -> 0.50; B m=4 -> 0.21; C m=40
+    aband=8 -> 1.16 (a real failure); D stale=3 (transition debris, counted
+    but excluded from the counterfactual); E sid 1 at ov 0.5 -> 0.40."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "fec.log"
+        p.write_text(FEC_LOG_ROWS)
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "FEC EPISODES" in out, out
+    sec = out[out.find("FEC EPISODES"):]
+    s0 = sec[sec.find("sid 0"):sec.find("sid 1")]
+    assert re.search(r"sid 0 mcs 5 ov 1\.00: n=4 stale=1 failed=1", s0), s0
+    assert "ov_req p50/p90/p99/max=0.50/1.16/1.16/1.16" in s0, s0
+    # would-fail counts at candidate overheads, non-stale rows only (3)
+    assert re.search(r"0\.25:2\b.*0\.35:2\b.*0\.50:1\b.*0\.75:1\b.*1\.00:1\b", s0), s0
+    assert "of 3 non-stale" in s0, s0
+    s1 = sec[sec.find("sid 1"):]
+    assert re.search(r"sid 1 mcs 5 ov 0\.50: n=1 stale=0 failed=0", s1), s1
+    assert "ov_req p50/p90/p99/max=0.40/0.40/0.40/0.40" in s1, s1
+
+
+def test_session_dir_mode_prints_fec_section():
+    """A session directory carrying fec.log gets the FEC section after the
+    ctl report, from the sibling file (session.resolve pairing)."""
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "ctl.log").write_text("ctllog 11\n")
+        (Path(d) / "fec.log").write_text(FEC_LOG_ROWS)
+        result = subprocess.run([sys.executable, "tools/flightreport.py", d],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "FEC EPISODES" in result.stdout, result.stdout
+
+
 if __name__ == "__main__":
+    test_fec_section_counterfactual_overhead_per_sid_and_rung()
+    test_session_dir_mode_prints_fec_section()
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_overhead_scale_break_warns_on_stderr()

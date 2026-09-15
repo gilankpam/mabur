@@ -19,9 +19,10 @@ class TestResolve(unittest.TestCase):
     def test_session_dir_resolves_every_file(self):
         with tempfile.TemporaryDirectory() as root:
             d = make_session(root, 42, ["ctl.log", "probe.log", "au.log",
-                                        "flight.jsonl", "lat.log"])
+                                        "flight.jsonl", "lat.log", "fec.log"])
             s = session.resolve(d)
             self.assertEqual(s.dir, d)
+            self.assertEqual(s.fec, os.path.join(d, "fec.log"))
             self.assertEqual(s.ctl, os.path.join(d, "ctl.log"))
             self.assertEqual(s.au, os.path.join(d, "au.log"))
             self.assertEqual(s.flight, os.path.join(d, "flight.jsonl"))

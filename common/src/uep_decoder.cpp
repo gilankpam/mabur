@@ -91,6 +91,11 @@ int UepDecoder::repair_window(int sid) const {
   return layers_[static_cast<size_t>(sid)].sw.repair_window();
 }
 
+std::vector<LossEpisode> UepDecoder::take_episodes(int sid) {
+  if (sid < 0 || sid > 1) return {};
+  return layers_[static_cast<size_t>(sid)].sw.take_episodes();
+}
+
 void UepDecoder::reset_continuity() {
   for (auto& l : layers_) {
     l.bnd_armed = false;

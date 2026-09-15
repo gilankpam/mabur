@@ -129,7 +129,7 @@ Consume the same numbers programmatically with:
   directly — nothing else holds the port any more.
 - Debug logs: maburgs writes a per-session directory when `debug_log.enable`
   is set — `<debug_log.dir>/NNNN/` holding `ctl.log`, `probe.log`, `au.log`,
-  `scan.log` and `flight.jsonl`; maburplay writes `lat.log` into the same directory by
+  `scan.log`, `fec.log` and `flight.jsonl`; maburplay writes `lat.log` into the same directory by
   following the `/tmp/mabur-session` marker and holds no logging config of
   its own. Default is **off**: nothing is written until the knob is set.
   The marker lives in tmpfs, so a reboot starts a new session while a 2 s
@@ -309,6 +309,45 @@ Consume the same numbers programmatically with:
   `MABUR_GAPLOG=1` run to place every send against the probe
   (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal, like
   the ctl log.
+
+  **fec.log (feclog 1, 2026-09-15).** Per-episode FEC loss record, the
+  measurement behind "is the rung table's overhead pair oversized" —
+  written by maburgs into the session directory (`gs/src/fec_log.h`),
+  rotating with it, never fatal. A *loss episode* is a run of source
+  symbols on one video layer that the channel never delivered directly
+  (repair-recovered-then-heard symbols do NOT count: the repair merely won
+  an arrival race), merged with any other such run within one repair
+  window of it, since those compete for the same repairs. `SwDecoder`
+  books it at horizon eviction — the only point where "never delivered" is
+  final — so a row lands roughly a horizon after the loss. Header
+  `feclog 1`, then `<t_ms> <sid> <mcs> <ov> <first_seq> <span> <m> <rec>
+  <aband> <stale> <r> <w>` per row: drain tick (mono ms, ~10 ms coarse),
+  video layer (0 base / 1 enh), the op MCS and that sid's commanded
+  overhead at drain time (so a row scores against its own rung with no
+  ctl.log join), wire seq of the first missing source, seqs spanned,
+  missing = recovered + abandoned, of those how many fell below the
+  transition watermark (`stale`, the same debris class the ladder
+  excludes), distinct covering repairs received (`r`, a two-card copy
+  counts once) and the repair window as flown (`w`). `flightreport.py`'s
+  FEC EPISODES section groups rows per (sid, mcs, ov) and prints, for the
+  non-stale ones, the overhead each episode would have needed,
+  `ov_req = (sqrt(1+4c)−1)/2` with `c = m·ov·(1+ov)/r` — at overhead x the
+  same lost air carries `m(1+ov)/(1+x)` sources against `r·x/ov` covering
+  repairs — plus how many episodes would have failed at 0.25/0.35/0.50/
+  0.75/1.00. Read it as the input to a *static* retune of
+  `[[link.ladder]]`'s `overhead_base`/`overhead_enh`: a single lost agg-6
+  aggregate at ov 1.0 / w 32 models to ~0.5, so the shipped 1.0/0.5 pair
+  is the first thing a flight's max/p99 will judge. Nothing consumes the
+  file live; `fec.log` alone is also a valid `flightreport.py` argument.
+  Bench 2026-09-16 (session 0088, 80 s at rung 5, ausniff clean): base
+  episodes are one lost aggregate each — `m` p50/max 11/16 against `r`
+  ≈ 41, `ov_req` p50/max 0.40/0.46, zero would-fail at 0.50; enh (ov 0.5)
+  `m` 12–16 against `r` ≈ 21, `ov_req` 0.38; ~0.75 episodes/s, the known
+  ~1 lost agg-6/s. ⚠ The first ~18 s after a maburgs restart log a block
+  of rung-0 episodes with `m` ≈ 200 and ~170 abandoned, `stale` 0 — the
+  same boot warm-up loss that pollutes the rung-0 residual EWMA
+  (`link.rungs[0]`), not a rung-0 verdict; drop them by time, or read
+  only rungs the ladder actually held.
 
 **scan.log (scanlog 2).** New per-session file (spec
 2026-09-13-auto-channel-select, extended by

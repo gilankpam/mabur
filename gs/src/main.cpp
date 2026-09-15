@@ -61,6 +61,7 @@
 #include "msp_sink.h"
 #include "pts_anchor.h"
 #include "probe_log.h"
+#include "fec_log.h"
 #include "probe_track.h"
 #include "rcf_slot.h"
 #include "rtt_estimator.h"
@@ -1181,6 +1182,8 @@ static int run_radio(const maburgs::Config& cfg) {
   // directory (DebugSession). Declared here, before FrameStream/au_log
   // below, and emplaced later once debug_log.enable is known.
   std::optional<maburgs::ProbeLog> probe_log;
+  // Per-episode FEC loss log (fec.log), same directory and lifetime.
+  std::optional<maburgs::FecLog> fec_log;
   // Per-AU meta log; forward-declared here so the FrameStream callbacks
   // just below can reference it by [&] capture, even though it is only
   // emplaced once debug.ok() is known (ctl/probe/au construction, below,
@@ -1370,6 +1373,7 @@ static int run_radio(const maburgs::Config& cfg) {
     header += tail;
     ctl_log.emplace(*log_writer, debug.dir(), header);
     probe_log.emplace(*log_writer, debug.dir(), probe_bpb);
+    fec_log.emplace(*log_writer, debug.dir());
     // Gated on au_on too (not just debug.ok()): with au_ring.enable=false
     // there are never any rows to write, and an emplace here would leave
     // au.log containing only its "# aulog 4" header -- reads as "the
@@ -1496,6 +1500,7 @@ static int run_radio(const maburgs::Config& cfg) {
       log_writer->reopen(flight_jsonl, debug.dir());
     if (ctl_log) ctl_log->rotate(debug.dir());
     if (probe_log) probe_log->rotate(debug.dir());
+    if (fec_log) fec_log->rotate(debug.dir());
     if (au_log) au_log->rotate(debug.dir());
     if (scan_log) scan_log->rotate(debug.dir());
     std::fprintf(stderr,
@@ -2223,6 +2228,17 @@ static int run_radio(const maburgs::Config& cfg) {
     // not depend on decoder progress after a re-key. The total feeds the
     // sideport/ctl-log gauge, the current-only side feeds block 5 (util).
     s1_loss.add(s1.arr_expected, s1.arr_arrived, now_ms);
+    // Loss episodes (fec.log): drained every tick whether or not the log is
+    // open, so the decoder's closed-episode queue never fills. Stamped with
+    // the op and the sid's own commanded overhead as of this tick.
+    {
+      const auto& fop = vrx.cur_op();
+      for (int sid = 0; sid < 2; ++sid)
+        for (const auto& e : agg.decoder().take_episodes(sid))
+          if (fec_log)
+            fec_log->row(now_ms, sid, fop.mcs,
+                         sid == 0 ? fop.overhead_base : fop.overhead_enh, e);
+    }
     const auto s1_sample = s1_loss.sample(now_ms);
     s1_loss_cur.add(s1.arr_expected - s1.arr_expected_stale,
                     s1.arr_arrived - s1.arr_arrived_stale, now_ms);

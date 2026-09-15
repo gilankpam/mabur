@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <set>
 #include <vector>
@@ -16,6 +17,27 @@ namespace mabur {
 // old-op, however late it arrived); kPost = heard at the expected
 // post-transition rate; kNone = no boundary armed or rate unknown.
 enum class SwBoundary : uint8_t { kNone = 0, kPre, kPost };
+
+// One loss episode (fec.log gauge, 2026-09-15): a run of source seqs the
+// channel never delivered directly, grouped with any other such run within
+// one repair window of it (they compete for the same repairs). Final at
+// horizon eviction, so `missing` counts only seqs whose direct copy never
+// showed inside the horizon: repair-recovered-then-heard symbols are NOT
+// missing (the repair merely won an arrival race). `repairs` is every
+// distinct repair received whose window intersects [first_seq, first_seq +
+// span) -- the parity the decoder had to work with, whether it needed it
+// or not. The reader (tools/flightreport.py) turns missing/repairs and the
+// applied overhead into "the overhead this episode would have needed".
+struct LossEpisode {
+  uint64_t first_seq = 0;  // virtual seq of the first missing source
+  uint32_t span = 0;       // last missing - first missing + 1
+  uint32_t missing = 0;    // recovered + abandoned
+  uint32_t recovered = 0;  // repaired, direct copy never heard
+  uint32_t abandoned = 0;  // fell off the horizon unknown
+  uint32_t stale = 0;      // of missing, below the transition watermark
+  uint32_t repairs = 0;    // distinct covering repairs received
+  uint32_t window = 0;     // repair window as flown at close
+};
 
 // Streaming decoder for SwEncoder envelopes. Sources deliver IMMEDIATELY
 // and register as known; repairs reduce against known symbols, then join an
@@ -74,6 +96,13 @@ class SwDecoder {
   void close_boundary() { wm_open_ = false; }
   bool boundary_open() const { return wm_open_; }
   uint64_t syms_abandoned_stale() const { return syms_abandoned_stale_; }
+  // Drains the loss episodes closed since the last call (see LossEpisode).
+  // An episode closes once eviction has passed its last seq by a full
+  // repair window with nothing else joining it. An owner that never drains
+  // (MspSink, bench tools) is bounded: past kMaxQueuedEpisodes the oldest
+  // closed episode is dropped.
+  static constexpr size_t kMaxQueuedEpisodes = 1024;
+  std::vector<LossEpisode> take_episodes();
   // Arrival-time pre-FEC accounting (ArrivalTracker, spec 2026-09-05):
   // expected = seq advance past the settle line, arrived = heard; stale
   // twins follow the same watermark boundary abandonment uses.
@@ -138,6 +167,23 @@ class SwDecoder {
   bool wm_open_ = false, wm_valid_ = false;
   uint64_t wm_ = 0;
   uint64_t syms_abandoned_stale_ = 0;
+
+  // --- loss episodes (LossEpisode) ---
+  struct RepairSpan {
+    uint64_t ws = 0, we = 0;  // covered vseqs [ws, we)
+    uint32_t key = 0;         // repair_key: (ws, key) identifies the repair
+  };
+  std::deque<RepairSpan> repairs_seen_;  // admitted repairs, oldest first
+  LossEpisode ep_;                       // the open episode (ep_open_)
+  uint64_t ep_last_ = 0;                 // its last missing seq
+  bool ep_open_ = false;
+  std::vector<LossEpisode> episodes_;    // closed, awaiting take_episodes()
+  uint64_t episode_window() const;
+  void note_repair(uint64_t ws, uint64_t we, uint32_t key);
+  // Per evicted seq: books it into the open episode (or opens one).
+  void note_missing(uint64_t v, bool recovered, bool stale);
+  // Closes the open episode if eviction has passed it, prunes repairs_seen_.
+  void settle_episodes(uint64_t evict_end);
 
   // Stale boundary in the form ArrivalTracker::advance() takes: everything
   // while a boundary is open, seqs <= wm_ once closed, nothing when inactive.

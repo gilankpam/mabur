@@ -84,6 +84,10 @@ class UepDecoder {
   // seqs restart from an unrelated value.
   void reset_continuity();
 
+  // Layer sid's closed loss episodes since the last call (SwDecoder::
+  // take_episodes, the fec.log gauge). Empty on a bad sid.
+  std::vector<LossEpisode> take_episodes(int sid);
+
   struct LayerStats {
     uint64_t bodies = 0, subblocks_failed = 0, syms_delivered = 0,
              syms_recovered = 0, syms_recovered_arrived = 0,
