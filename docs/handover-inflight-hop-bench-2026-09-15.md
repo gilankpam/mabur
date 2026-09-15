@@ -130,7 +130,12 @@ All derived from config defaults and code paths. **None measured.**
 
 Two cards are faster: the scout thread keeps the ranker warm, so the first
 burst already finds ranked candidates and the ~333 ms second-burst wait
-disappears.
+disappears. The final review's two-card budget, traced end to end, is
+**~450-550 ms onset-to-video** — detection ~300 ms, freshness burst ~30-40 ms,
+order onto the air within one `feedback_ms` plus slotter hold and RCF loss
+(~50-150 ms), drone TX-gate + drain + retune ~20 ms, first AU ~17 ms. The rung
+is already restored when video returns, because `restore_rung` fires
+synchronously at the order.
 
 `feedback_ms` is **50** in `gs/bundle/maburgs.default.toml`, overriding the
 struct default of 100 in `gs/src/config.h`. Computing from the header alone
@@ -152,6 +157,51 @@ Both are fixed and covered by a `gs_e2e` scenario. But they are the two that
 got furthest, and a third gate — the survey's rate limiter — was added late to
 stop a held station sweeping its only radio off-air continuously. **Run bench
 row 6 before trusting one-card operation.**
+
+## Watch for these specifically on the first runs
+
+Each came out of the final whole-branch review. None blocks a flight; each has
+a named symptom, so look for it rather than discovering it later.
+
+- **False `verify_fail` on a channel that looks clean.** The `impaired` term is
+  read from a **500 ms** sliding loss window while every other verdict term is a
+  true 150 ms delta, and that window is not blanked at a hop. So the first two
+  or so verify windows after landing still carry pre-hop, old-channel loss.
+  `Interfered` also needs `contended ∨ raised`, which are genuinely fresh — but
+  on a target where FA or foreign frames stay above threshold, a good-enough
+  channel can still take a `verify_fail` and a 30 s backoff. **Symptom:**
+  `H verify_fail` within ~2 windows of a `lead_confirm`, on a channel whose own
+  `V` lines look clean.
+- **`fading` measured against the old channel.** `HopVerdict::reset()` keeps the
+  trailing RSSI history, which right after a hop holds only old-channel samples.
+  For up to ~5 s the new channel's RSSI is compared against the old channel's
+  median. Fail-safe (a spurious `fading` suppresses `Interfered`), but it can
+  mask a genuinely bad target for those seconds.
+- **Hold flap.** Hold events are now logged on edges, not per tick, which cut a
+  ~100 Hz flood by 15×. But `trigger` is 2-of-3 over 150 ms windows, so an
+  alternating impaired/clean pattern still toggles it about every 300 ms —
+  roughly 6.7 `H` lines/s and `hop.holds` climbing ~3.3/s. Plausible under
+  marginal interference. If you see it, a minimum hold dwell closes it.
+- **One-card timing is thin by construction.** Five RCF repeats at
+  `feedback_ms` 50 consume 250 ms of a 500 ms `confirm_ms`, leaving 250 ms for
+  the sole radio to retune, the drone to have already retuned, and one video AU
+  to arrive. If one-card hops withdraw more often than they confirm, that
+  budget is the first thing to look at.
+
+## What is verified by inspection rather than by a test
+
+Three one-line call sites in `main.cpp` are correct by reading, not by
+execution — the host has no boot scout and no radio, and `gs_e2e` evaluates its
+own copy of the confirm gate rather than the shipped line:
+
+- the hop-confirm read of a body's receive channel, and the stamp that sets it
+  in `radio_frontend.cpp` (this is the one that matters — it is what stops the
+  ground station following to a channel the drone was never told about);
+- the boot-pick publication into the ranker;
+- the store-blank call at the first impaired window.
+
+All three fail safe if wrong, but bench row 1 and row 6 are the first real
+exercise any of them get.
 
 ## Verify on hardware — things the host cannot prove
 
