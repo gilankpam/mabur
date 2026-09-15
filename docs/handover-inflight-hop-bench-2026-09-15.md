@@ -11,8 +11,8 @@ page only covers **what is left**, and the things a bench run could invalidate.
 
 | | |
 |---|---|
-| Branch | `inflight-hop`, 36 commits off `master` at `f51f8e0`, head `8076eff` |
-| Host suite | 143/143 (`ctest -R 'test_\|host_e2e\|gs_e2e\|gs_au_e2e\|player_e2e'`) |
+| Branch | `inflight-hop`, 39 commits off `master` at `f51f8e0`, head `63e3e5d` |
+| Host suite | 144/144 (`ctest -R 'test_\|host_e2e\|gs_e2e\|gs_au_e2e\|player_e2e'`) |
 | Cross-builds | `tools/build-arm64.sh` and `tools/build-arm.sh` both clean |
 | Flown | **No.** Never deployed, never benched, never flown. |
 | PR | Not opened — the owner's call. |
