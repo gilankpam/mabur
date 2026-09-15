@@ -188,4 +188,23 @@ TEST(reset_thaws_the_snapshot_and_clears_the_latched_trigger) {
   auto o3 = v.window(t + 300, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
   CHECK(!o3.trigger && !o3.ref_frozen && o3.v == Verdict::Healthy);
 }
+// Bench 2026-09-15: main.cpp fed the aggregator's RAW EMAs (RSSI ~64,
+// SNR ~66 half-dB) straight into rssi_dbm/snr_db, so `weak` (rssi < -78
+// dBm && snr < 12 dB) could never trip and Fade was unreachable on
+// hardware. The conversion lives next to the engine so scan.log V lines
+// and flightreport's medians read in dBm/dB like ctl.log does.
+TEST(raw_units_convert_to_dbm_and_db) {
+  CHECK(rssi_raw_to_dbm(64.0) == -46.0);
+  CHECK(snr_raw_to_db(66.0) == 33.0);
+  CHECK(rssi_raw_to_dbm(0.0) == 0.0);   // "no frame heard yet" keeps the no-reference sentinel
+}
+TEST(converted_edge_of_range_reading_is_fade) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  const double r = rssi_raw_to_dbm(28), s = snr_raw_to_db(20);   // -82 dBm, 10 dB
+  auto o = v.window(t, {card(r, s, 0, 4), card(r, s, 0, 4)}, {0.06, 80}, 5);
+  CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvWeak);
+  // The same numbers unconverted are what the bug fed: never weak.
+  auto raw = v.window(t + 150, {card(28, 20, 0, 4), card(28, 20, 0, 4)}, {0.06, 80}, 5);
+  CHECK(!(raw.evidence & kEvWeak));
+}
 MTEST_MAIN

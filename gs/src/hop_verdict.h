@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "config.h"
+#include "snr_units.h"
 
 namespace maburgs {
 
@@ -11,6 +12,18 @@ enum class Verdict { Healthy, Fade, Interfered, Unknown };
 const char* to_string(Verdict v);   // "healthy" "fade" "interfered" "unknown"
 
 enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvFading = 4, kEvContended = 8, kEvRaised = 16 };
+
+// The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db /
+// fading_drop_db) are written in dBm / dB. The aggregator's EMAs are
+// devourer raw units -- RSSI on a 0..110 scale where raw - 110 is dBm
+// (the sideport's own conversion), SNR in half-dB (snr_units.h) -- so the
+// fill site converts HERE, never at the threshold, and scan.log V lines
+// and flightreport's per-card medians read in dBm/dB like ctl.log. Found
+// on the 2026-09-15 bench: unconverted, `weak` could never trip. A raw
+// RSSI of exactly 0 means "no frame heard on this card yet" and stays 0,
+// which HopVerdict::window() already treats as its no-reference sentinel.
+inline double rssi_raw_to_dbm(double raw) { return raw > 0.0 ? raw - 110.0 : 0.0; }
+inline double snr_raw_to_db(double raw) { return raw * kSnrRawToDb; }
 
 struct VerdictCardIn {
   bool valid = false;
