@@ -1,8 +1,10 @@
 # Handover — in-flight channel hop: bench, flight and validation (2026-09-15)
 
 Everything in `docs/superpowers/plans/2026-09-14-inflight-channel-hop.md` that
-can be done on a host is done. Nothing has touched hardware. This page is what
-a fresh session (or a human at the bench) needs to finish the job.
+can be done on a host is done, and the bench half was done on 2026-09-15
+(deployed both ends, matrix rows 1/4/5/6, four fixes — see "What the bench
+found"). What is left is the flights and the PR. This page is what a fresh
+session (or a human at the bench) needs to finish the job.
 
 Read `docs/inflight-channel-hop.md` first — it describes what was built. This
 page only covers **what is left**, and the things a bench run could invalidate.
@@ -11,19 +13,69 @@ page only covers **what is left**, and the things a bench run could invalidate.
 
 | | |
 |---|---|
-| Branch | `inflight-hop`, 39 commits off `master` at `f51f8e0`, head `63e3e5d` |
+| Branch | `inflight-hop`, off `master` at `f51f8e0`; bench session added 5 commits on top of `4679ff8` (`dfe09ad` verdict units, `fd1b8d5` session gate, `17b7764` TX freeze, `9ef9b00` flightreport loader, plus this doc) |
 | Host suite | 144/144 (`ctest -R 'test_\|host_e2e\|gs_e2e\|gs_au_e2e\|player_e2e'`) |
 | Cross-builds | `tools/build-arm64.sh` and `tools/build-arm.sh` both clean |
-| Flown | **No.** Never deployed, never benched, never flown. |
+| **Deployed** | **Yes, both ends, 2026-09-15.** Drone `maburd` (rollback `/usr/bin/maburd.pre-hop`, drone config untouched). GS `maburgs` at `17b7764` (rollback `maburgs.pre-hop` + `/etc/maburgs.toml.pre-hop`), `maburplay` (`maburplay.pre-hop`), `/usr/bin/maburtop`. GS config carries `[hop]`/`[hop.verdict]`, `energy_period_ms` removed. |
+| **Benched** | **Yes** — rows 1, 4, 5, 6 of the matrix plus both dwell-period baselines; results in `docs/inflight-channel-hop.md` Measurements. Rows 2 (O4) and 3 (fade) not run. |
+| Flown | **No.** |
 | PR | Not opened — the owner's call. |
-| `hop.enable` | **`false`** in the shipped bundle. The feature observes and logs; it never acts until flipped. |
+| `hop.enable` | **`false`** on the GS again (shipped default) after the bench; the GS is back on two cards, `dwell_period_ms` 333. |
 
-The devourer half (`GetRxEnergyScout`, batched control transfers) is on
-`../devourer` branch **`feat/scout-energy-ctrl-batch` @ `b4c6e5a`**, built by
-another agent in parallel. It is **not on devourer `master`**. The GS
-cross-build consumes whatever `../devourer` has checked out, so that branch
-must stay checked out — or be merged to `master` — before building a GS binary
-to deploy.
+The devourer half is on `../devourer` branch **`feat/scout-energy-ctrl-batch`**
+(head `3ad4c55` at bench time), still **not on devourer `master`**; the GS
+build consumed it. Keep it checked out (or merge it) before any GS rebuild.
+
+## What the bench found — read before the next run
+
+Four bugs, all fixed on the branch and re-verified on air, plus four
+behaviours that are design calls left for the owner.
+
+**Fixed (each has a unit test and a commit message with the trace):**
+
+1. **Verdict fed raw units** (`dfe09ad`). `VerdictCardIn::rssi_dbm/snr_db`
+   received the aggregator's raw EMAs (RSSI 64, SNR 66) against
+   `weak_rssi_dbm -78` / `weak_snr_db 12`: `weak` could never trip, so
+   `Fade` was unreachable on hardware. V lines now read `-58.0 31.4`.
+2. **Hop block ran during the boot rendezvous** (`fd1b8d5`). With the
+   link still coming up the s1 loss window reads 80–90 % and the boot
+   scout's own dwells read as `raised`, i.e. `interfered` by construction.
+   The shadow controller `would_order`ed 149, 165, 120 and exhausted before
+   the boot pick's K line; the freshness burst retuned the boot scout's
+   card mid-dwell. Everything now sits behind `hop_active(in_session,
+   scout_joined)`.
+3. **TX selector switched onto the lead card mid-hop** (`17b7764`). The
+   decisive one: within 200 ms of three of the first run's four orders the
+   RCF uplink — the frames carrying the order — moved to the target
+   channel. Two orders the drone never saw at all (Telem `hop_epoch` echo
+   never advanced), one it saw late and got stranded on. The order whose
+   TX card happened to stay put confirmed in 139 ms. Same hold the scout
+   dwell already had, now for `ChannelPlan::hopping()` too.
+4. **`flightreport` skipped the HOP section on a rejoined session**
+   (`9ef9b00`). The first `scan.log` after a deploy starts with the old
+   binary's `scanlog 1`; the loader read line 1 only.
+
+**Design calls, not changed (numbers in `docs/inflight-channel-hop.md`):**
+
+- `impaired` trips on 65 % of rest windows (the `recovered_x × trailing
+  mean` term vs one lost aggregate) — `ref_rung` is frozen nearly always.
+- A withdrawn order strands the drone for `move_confirm_ms` and every
+  order placed meanwhile burns the rate cap (36 s `hold_cap` in run 1).
+- The origin channel is never backed off, and a 5 ms observe scores a
+  250 f/s jammer at ~6, so a `verify_fail` can hop straight back into it.
+- One-card hops cost a 4-rung ladder cascade (drone ~200 ms ahead of the
+  sole GS radio during the five-RCF order window).
+
+**Bench procedure that worked** (for rows 2/3 and any rerun): jam with
+`DEVOURER_TX_SA=02:4a:41:4d:00:01 tools/bench/benchjam.sh --channel <op>
+--secs 70` — without the SA override txdemo's default is mabur's canonical
+address and the GS counts the jam as its OWN traffic. Read the op from the
+sideport (`link.channel`) after every GS restart: the boot scan re-picks
+(165 three times, 120 once today). `ausniff --seconds 100` in parallel.
+Evidence: `H`/`V`/`D` in the session `scan.log`, `E hop_restore` in
+`ctl.log`, `drone.channel`/`drone.hop_epoch`/`link.tx_card` at 200 ms in
+`flight.jsonl` (that record is what exposed bug 3), `maburd: retune ...
+(hop)` lines in the drone's `/tmp/mabur.log` (no timestamps).
 
 ## Deploy — a flag day, and the plan's own advice is wrong
 
@@ -59,7 +111,8 @@ Rolling forward is usually shorter.
 
 ## What has not been done
 
-Plan Task 11 step 6, and Task 15 steps 4–6.
+Task 15 step 5 (flights) and step 6 (PR); matrix rows 2 and 3. Sections 1
+and 2 below are DONE as of 2026-09-15 — kept as the procedure for a rerun.
 
 ### 1. Baseline — dwells on, hops off
 
@@ -70,7 +123,7 @@ tools/bench/ausniff.py --seconds 60
 ```
 
 Expect: 59.7 fps class, 0 gaps. Then check `scan.log` in the session
-directory for `V` lines (verdict windows, present in every link state) and `D`
+directory for `V` lines (verdict windows, in-session only since `fd1b8d5`) and `D`
 lines with `sess 1` carrying `to_us`/`read_us`/`back_us`.
 
 **This is also the first real measurement of the dwell cost.** The design
@@ -118,7 +171,10 @@ Only then fly with `hop.enable = true`.
 
 ## Timings to check against
 
-All derived from config defaults and code paths. **None measured.**
+Derived from config defaults and code paths before the bench. Measured
+2026-09-15: two-card onset→order 150 ms, →video 268 ms, →`verify_pass`
+1.27 s; one-card onset→order 153 ms, →retune 411 ms, →video 427 ms,
+→`verify_pass` 1.16 s. The table stands as the derivation.
 
 | Milestone | One card | Note |
 |---|---|---|
@@ -143,6 +199,10 @@ gives +500 ms for the one-card repeats and the wrong conclusion that the path
 misses its target.
 
 ## One-card: the least-validated path
+
+**Bench row 6 passed 2026-09-15** (`order` → `one_card_retune` +258 ms →
+`lead_confirm` +274 ms → `verify_pass`), with the ladder cascade noted above
+as the cost.
 
 Two real bugs were found in it *after* the per-task reviews had passed, both
 by reading source while writing documentation:

@@ -7,12 +7,11 @@ Design spec: `docs/superpowers/specs/2026-09-14-inflight-channel-hop-design.md`
 this page describes what shipped). Reactive only: a healthy link never
 moves, and there is no proactive re-ranking while the link is clean.
 
-No hardware was available for the session that built this feature: every
-host-side module is done, reviewed and ctest-covered, both cross-builds
-(`tools/build-arm64.sh`, `tools/build-arm.sh`) link clean, but nothing has
-been measured on air. `docs/handover-inflight-hop-bench-2026-09-15.md`
-covers what a bench/flight session still owes — read it before flying with
-`hop.enable = true`.
+Built without hardware, then benched on 2026-09-15: deployed both ends,
+four fixes forced by the bench (see Measurements), a co-channel hop
+confirmed in 268 ms onset-to-video on two cards and 427 ms on one, with
+`ausniff` clean through it. Not flown. `docs/handover-inflight-hop-bench-2026-09-15.md`
+covers what is still owed — read it before flying with `hop.enable = true`.
 
 ## 1. Wire and hop protocol
 
@@ -130,10 +129,17 @@ branch.
 
 ## 2. Verdict engine (`gs/src/hop_verdict.{h,cpp}`, pure)
 
-`HopVerdict::window()` runs every `hop.window_ms` (150 ms) in every link
-state, fed straight from a dedicated read block in `gs/src/main.cpp` (OFDM
+`HopVerdict::window()` runs every `hop.window_ms` (150 ms) while the link
+is in `SESSION` and the boot scout owns no card (`hop_active()` in
+`hop_burst_gate.h`; the engine is reset on the falling edge — run
+unconditionally, the boot rendezvous read as `interfered` and the shadow
+controller ordered every candidate before the boot pick had committed),
+fed straight from a dedicated read block in `gs/src/main.cpp` (OFDM
 FA/CCA via `read_energy_scout()`, foreign-frame and CRC-fail deltas from
-the aggregator, RSSI/SNR EMAs) — **a card mid-dwell that window is skipped**
+the aggregator, RSSI/SNR EMAs converted from devourer raw units by
+`rssi_raw_to_dbm()`/`snr_raw_to_db()` in `hop_verdict.h` — the first bench
+run fed the raw values and `weak` could never trip) — **a card mid-dwell
+that window is skipped**
 (`VerdictCardIn::valid = false`). Link-level: the s1 (BASE) pre-FEC loss
 window and the FEC recovered-symbol delta.
 
@@ -228,7 +234,10 @@ it `false` to fly with literally no dwells. Every `hop.dwell_period_ms`
 (333 ms default):
 1. Card = whichever the TX selector is not using this cycle (read once at
    cycle start; the selector defers switching onto a card mid-dwell —
-   `dwell_busy`/`dwell_card`).
+   `dwell_busy`/`dwell_card` — and, since the bench, onto a hop's lead
+   card while the hop is in flight: `tx_selection_frozen()` in
+   `hop_burst_gate.h`. Unfrozen, the RCF carrying the order moved to the
+   target channel within 200 ms of three of the first run's four orders).
 2. Wait for the next AU boundary on that card.
 3. `InflightScout::dwell()`: `FastRetune(candidate)` → discard read →
    sleep `hop.dwell_observe_ms` (5 ms) → real read (FA/CCA/frame counters)
@@ -638,7 +647,10 @@ since a mid-flight hop is the more actionable of the two for the pilot.
 **`tools/flightreport.py` HOP section** (`print_hop_report`,
 `load_scanlog`). Session-mode only (`scan.log` is a sibling of `ctl.log`
 in the debug-log session directory; there is no legacy filename
-heuristic), and skipped entirely on a `scanlog` version below 2. One row
+heuristic), and skipped entirely on a `scanlog` version below 2 — the
+highest marker in the file, since a GS restart rejoins the session
+directory and the first `scan.log` after a deploy starts under the old
+binary's header. One row
 per hop **attempt** — every event that places a fresh `HopAction::Order`
 (`order` and retry-triggering `verify_fail`), matched against ctl.log's
 `hop_restore` E-lines by nearest timestamp within a 5 s window anchored on
@@ -676,38 +688,103 @@ boot-scan dwells are excluded).
 
 ## Measurements
 
-No hardware was available in the session that built this feature, so
-**every cell below is unmeasured** — these are the structures the bench
-run and the first flights are expected to fill, not results. Run
-`tools/bench/ausniff.py` (fps/gaps with the scout running) and the spike's
-condition matrix with `hop.enable = true` (`benchjam` + O4 on the op
-channel), per design spec §9; `docs/handover-inflight-hop-bench-2026-09-15.md`
-is the actual runbook and owns filling these in.
+Bench, 2026-09-15 (`docs/handover-inflight-hop-bench-2026-09-15.md` has
+the run-by-run record). Two RTL8822EU cards on the GS, the drone on the
+bench, interferer = `tools/bench/benchjam.sh` (a spare 8822EU on the host,
+QoS-Data 1000 B at 6 Mbit/s, 250 frames/s, ~35 % airtime, `DEVOURER_TX_SA`
+set to a non-canonical address so the GS counts it as `foreign`). The
+three code fixes the bench forced (verdict units, session gating, TX-card
+freeze — commits `dfe09ad`, `fd1b8d5`, `17b7764`) were in place for every
+row below except where the row says otherwise. Not run: the non-802.11
+(O4) interferer and the fade row (both need hardware the bench did not
+have), and no flight yet.
 
-**Dwell cost** (`tools/flightreport.py`'s DWELL COST section, or read
-`D` lines directly):
+**Dwell cost** (`D` lines with `sess 1`; `to_us` = FastRetune to the
+candidate, `read_us` = the real counter read, `back_us` = FastRetune back;
+the discard read between retune and observe is not logged separately and
+costs about what `read_us` does):
 
-| step | planning figure (spike, not measured on this build) | measured |
+| step | planning figure | measured (median, two cards, 333 ms period) |
 |---|---|---|
-| retune to candidate | 4 ms | UNMEASURED |
-| discard read | 6.5 ms | UNMEASURED |
-| observe (`dwell_observe_ms`) | 5 ms | UNMEASURED |
-| real read | 6.8 ms | UNMEASURED |
-| retune back | 4 ms | UNMEASURED |
-| **total** | **26 ms** (target ~10 ms with the devourer batched path) | UNMEASURED |
+| retune to candidate (`to_us`) | 4 ms | 2.9–3.2 ms (max 19 ms) |
+| discard read | 6.5 ms | ~0.9 ms (not logged; same call as `read_us`) |
+| observe (`dwell_observe_ms`) | 5 ms | 5 ms |
+| real read (`read_us`) | 6.8 ms | 0.8–1.0 ms (max 19 ms) |
+| retune back (`back_us`) | 4 ms | 2.3–2.4 ms (max 5 ms) |
+| **total** | **26 ms** (target ~10 ms) | **~12 ms** (`to+read+back` median 6.2–6.5 ms first run, 5.3–5.4 ms over the whole day per `flightreport`; p90 7.7 ms, max 31 ms) |
 
-**Bench condition matrix** (design spec §9 acceptance list):
+A candidate that IS the current op channel (the boot pick is always one
+of `radio.scan.candidates`) costs nothing to "retune" to (`to_us` 4 us,
+`back_us` 2 us) but still spends the 5 ms observe on-channel; a third of
+the periodic dwells are that today.
+
+**Bench condition matrix:**
 
 | condition | onset→video (H lines) | rung restored (ctl.log) | ausniff fps/gaps with dwells on |
 |---|---|---|---|
-| co-channel 802.11 neighbour, 333 ms dwell | UNMEASURED | UNMEASURED | UNMEASURED |
-| non-802.11 (O4/analog) interferer, 333 ms dwell | UNMEASURED | UNMEASURED | UNMEASURED |
-| fade (no hop expected — verify zero hops) | UNMEASURED | n/a | UNMEASURED |
-| off-channel near-field blocking | UNMEASURED | UNMEASURED | UNMEASURED |
-| dwell period 100 ms (regression check) | UNMEASURED | UNMEASURED | UNMEASURED |
-| RCF `rx_pps` with dwells on vs off | UNMEASURED | UNMEASURED | n/a |
+| co-channel 802.11 neighbour, 333 ms dwell, two cards | first `V interfered` → `H order` **150 ms**, `lead_confirm` **+118 ms** (onset→video **268 ms**), `verify_pass` +1001 ms; drone followed 165→120 and stayed | `E hop_restore 5 5` at the order (no demote had happened in the 150 ms detection) | 59.6 fps, 0 frame_id gaps, 0 incomplete over 100 s spanning onset, hop and verify |
+| same, one-card GS (`[[radio.cards]]` pinned) | `H order` 153 ms, `one_card_retune` +258 ms (5 RCFs at `feedback_ms` 50), `lead_confirm` +274 ms (onset→video **427 ms**), `verify_pass` +1002 ms; drone followed 165→136 | `hop_restore 5 5` at the order, then a **4-rung demote cascade** in the 750 ms after the retune (`residual` 0.88, `util` 1.15–1.48: the drone retunes on the first RCF it hears, the sole GS radio only after all five, so the ladder's loss windows see ~200 ms of 100 % loss), re-promoted to rung 5 over the next 15 s | 59.5 fps, 10 frame_id gaps, 1 incomplete over 85 s |
+| non-802.11 (O4/analog) interferer | not run | not run | not run |
+| fade (no hop expected) | not run | n/a | not run |
+| jammer on a candidate only (149 jammed, link on 120) | **no hop**: zero `H` lines, `hop.target` never left 120 | n/a | 59.7 fps, 0 gaps over 85 s |
+| dwell period 100 ms (regression check) | n/a | n/a | 59.5 fps, 0 gaps; 11.5 dwells/s; step medians unchanged (6.4 ms) |
+| RCF `rx_pps` with dwells on vs off | median 17.5 (dwells on, n=84 samples) vs 18.4 (old binary, no dwells, n=1762); p10 16.5 both | n/a | n/a |
+
+The candidate-jam row is a weaker exclusion than the table reads: a 5 ms
+observe catches about one frame of a 250 frame/s jammer, so 149's dwell
+score rose from a median of 0 (mean 0.8) to a median of 6 (mean 6.7, max
+25) — and 165's rose to 6 as well from near-field leakage. Enough to rank
+it below a clean channel, not enough to call it interfered. The same
+blindness cuts the other way: the channel the link just left scores ~6
+too, so after a `verify_fail` on the target the ranker can pick the
+jammed origin channel straight back (seen in the first run; the origin is
+not backed off on hop-away). See Known limitations.
+
+**Verdict at rest** (calibration input for `[hop.verdict]`): on the clean
+bench link at rung 5, 65 % of windows carry the `impaired` bit and
+classify `unknown` — pre-FEC loss never exceeded 2.5 % (threshold 3 %),
+but `recovered > recovered_x (3.0) × its 5 s trailing mean` trips on any
+single lost aggregate, because the trailing mean is ~4.6 symbols/window
+(p50 2) and one lost aggregate recovers 10–26. Consequences: `ref_rung` is
+frozen almost continuously (the thaw needs 3 consecutive `healthy`
+windows, ~4 % likely at that rate), so the "pre-onset rung" a real hop
+restores can be many seconds stale; nothing hops on it, since `unknown`
+never triggers. A floor on the recovered term (an absolute count, or a
+fraction of expected symbols) is the obvious retune; left to the
+observe-only flights per the spec's open items.
 
 ## Known limitations
+
+Found on the 2026-09-15 bench (the handover page has the traces):
+
+- **A withdrawn two-card order strands the drone.** The drone retunes on
+  the first RCF carrying the order; if the GS withdraws (no video on the
+  target within `confirm_ms`), the withdrawal rides RCFs on the OLD
+  channel, which the drone — now on the target — cannot hear. It sits
+  there for `move_confirm_ms` (2 s), homes, and rendezvous back, and every
+  order the GS places meanwhile is sent to a drone that is not listening.
+  In the first run that burned the whole `max_hops_per_min` (4) inside
+  2 s and the controller held for 36 s under active interference. The
+  TX-card freeze (`tx_selection_frozen`) removed the cause of those
+  withdrawals; the strand-then-re-order pattern itself is unchanged and
+  will recur on any genuine withdrawal. A guard that refuses a new order
+  until the drone has been heard again (video, or its Telem `channel`
+  echo) is the candidate fix.
+- **The origin channel is never backed off.** Only withdrawn/failed
+  targets are. With a 5 ms observe scoring a 250 frame/s jammer at ~6,
+  the jammed channel stays "ranked clean" and is a legal next hop after a
+  `verify_fail` on the target (first run: 165 → 149 `verify_fail` → back
+  to 165 → `hold_cap`).
+- **`fa_pps` 100 is marginal on a busy candidate.** 149 (boot-scan busy
+  109–306 on this bench) read FA 70–133/s on both cards after the follow,
+  which is what failed that verify. Calibration, not code.
+- **One-card hops cost the ladder four rungs** (matrix table): the
+  five-RCF order window leaves the drone ahead of the GS by ~200 ms, the
+  loss windows are not blanked, and the cascade lands after the confirm.
+  `blank_store` covers the rung store only; the demote decisions are the
+  knob if this matters in flight.
+
+Carried over from the implementation session:
 
 - **A one-card GS needs two freshness-burst passes before it can hop to
   a real candidate.** `HopRanker` requires at least 2 fresh visits before
