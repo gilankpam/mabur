@@ -18,24 +18,48 @@ constexpr double kHopSettleBlankMs = 150.0;
 // instead of only ever running inside run_radio()'s hardware-touching
 // verdict block. The call site (gs/src/main.cpp, right after
 // HopVerdict::window()) feeds the result to VrxController::blank_store(),
-// which keeps the LATER of the deadlines it is given -- so this rolling
-// per-window extension composes with, and never shortens, the longer
-// deadline HopAction::Order sets (confirm_ms + the same settle).
+// which keeps the LATER of the deadlines it is given -- so this composes
+// with, and never shortens, the deadline HopAction::Order sets.
 //
-// Keyed on VerdictOut::ref_frozen, which is exactly "an impaired episode
-// is open": it turns on at the first impaired window (the instant the
-// spec names) and off when the references thaw -- 3 healthy windows, or
-// HopVerdict::reset() after a hop's verify window ends. Before this, the
-// blank started at the ORDER, which is 2-3 persistence windows later, so
-// every detection window -- including the demotes the spec explicitly
-// expects, "a demote or two, each an IDR" -- was written into the
-// per-rung store against the interfered channel.
+// Three gates, each load-bearing:
 //
-// window_ms of lead means the blank never lapses between windows; the
-// settle constant is what carries it past the last impaired window.
-inline std::optional<double> hop_store_blank_until(const VerdictOut& vo, int window_ms) {
-  if (!vo.ref_frozen) return std::nullopt;
-  return vo.t_ms + static_cast<double>(window_ms) + kHopSettleBlankMs;
+//  - `enable`. With hop.enable = false nothing is ever ordered and the
+//    rung is never restored, so there is no hop for the store to be
+//    protected from -- and blanking anyway would silently change what the
+//    observe-only flights record versus every recording made before this
+//    branch, with nothing in the log marking it. That is exactly the
+//    pre/post divergence docs/data-provenance.md exists to prevent, on the
+//    flights this branch exists to produce. HopAction::Order's own
+//    blank_store() call is already dead while disabled (tick() zeroes the
+//    action), so this keeps the two consistent.
+//
+//  - VerdictOut::first_interfered, NOT ref_frozen. ref_frozen is keyed on
+//    `impaired`, and Fade (impaired AND weak) and Unknown (impaired
+//    otherwise) are impaired too -- so keying on it blanked the store
+//    through every fade and every unknown window, while section 4's last
+//    bullet is "fade/unknown: unchanged ladder behaviour". Only
+//    interference hops, so only interference blanks.
+//
+//  - One edge per frozen episode, which is what BOUNDS the blank. The
+//    deadline is computed once, at the episode's first interfered window,
+//    and spans exactly confirm_ms + the settle -- the same span the
+//    Order-time call uses, so detection and the hop itself are scoped
+//    alike. It is not re-extended by later interfered windows, so a jam
+//    that runs for seconds (or alternates interfered and healthy windows
+//    inside one frozen episode) cannot roll it forward indefinitely; the
+//    store resumes writing confirm_ms + 150 ms after onset whether or not
+//    a hop was ever ordered. Re-arming needs a genuine thaw: 3 consecutive
+//    healthy windows, or HopVerdict::reset() after a verify window ends.
+//
+// Starting at the first interfered window rather than at the order is the
+// point: the order is 2-3 persistence windows (300-450 ms) later, so every
+// detection window -- including the demotes section 4 explicitly expects,
+// "a demote or two, each an IDR" -- was being written into the per-rung
+// store against the interfered channel.
+inline std::optional<double> hop_store_blank_until(const VerdictOut& vo, bool enable,
+                                                   int confirm_ms) {
+  if (!enable || !vo.first_interfered) return std::nullopt;
+  return vo.t_ms + static_cast<double>(confirm_ms) + kHopSettleBlankMs;
 }
 
 }  // namespace maburgs

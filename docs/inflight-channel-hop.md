@@ -191,8 +191,13 @@ survive; only the frozen snapshot (and the latched persistence window) is
 cleared. The second rule is driven by `HopAction::VerifyPass`
 (§5): `gs/src/main.cpp`'s `apply_hop_action()` calls `reset()` there, and
 only there. A `verify_fail` or a `withdraw` re-orders rather than ending
-the hop, and §5 has the retry **reuse** `ref_rung`, so thawing on those
-would hand the retry's `Order` a `ref_rung` of −1. Like every other
+the hop, and §5 has the retry **reuse** the pre-onset `ref_rung`. Thawing
+on those would not damage the retry's own `Order` — `order()` reads
+`restore_rung` off the cached `VerdictOut`, and `apply_hop_action()` runs
+`reset()` after `hopc.tick()` has already built the action. The cost lands
+one window later: after a thaw, the next impaired window re-freezes
+`ref_rung` at the **mid-hop** rung (already demoted, or already restored),
+and the pre-onset value §5 wants reused is gone. Like every other
 action, `VerifyPass` is suppressed while `hop.enable = false`, which keeps
 an observe-only flight's references measuring the channel the link is
 actually still on.
@@ -320,28 +325,49 @@ can never actually drop a real visit.
   in by the same spec sentence, and `restore()` overwrites it once the hop
   lands; the per-rung EWMA store stays uncontaminated regardless, because
   it was never written to during the blank.
-- **The blank starts at the first impaired window**, as the spec's prose
-  requires, and is extended by two independent call sites that compose
-  because `LadderController::blank_store()` keeps the LATER of the
-  deadlines it is given:
-  1. Every verdict window while `VerdictOut::ref_frozen` is set — i.e.
-     for the whole impaired episode, from the freeze edge until the
-     references thaw — pushes the deadline to `t_ms + window_ms + 150 ms`
-     (`gs/src/hop_blank.h`'s `hop_store_blank_until()`, pure and
-     unit-tested like `hop_burst_gate.h`; called from the verdict block in
-     `gs/src/main.cpp`). One window of lead means the blank never lapses
-     between windows; the 150 ms settle is what carries it past the last
-     frozen window, so it ends on its own with no "unblank" call.
+- **The blank starts at the first `interfered` window**, not at the order,
+  from two call sites that compose because
+  `LadderController::blank_store()` keeps the LATER of the deadlines it is
+  given:
+  1. `gs/src/hop_blank.h`'s `hop_store_blank_until()` — pure and
+     unit-tested like `hop_burst_gate.h`, called from the verdict block in
+     `gs/src/main.cpp` — returns `t_ms + confirm_ms + 150 ms` **once per
+     impaired episode**, on the first `interfered` window of it
+     (`VerdictOut::first_interfered`).
   2. `HopAction::Order` still calls `vrx.blank_store(now_ms +
-     hcfg.confirm_ms + 150.0)` — the longer, confirmation-shaped deadline.
+     hcfg.confirm_ms + 150.0)`, from the order.
 
   Previously only (2) existed, so the ~300–450 ms of detection windows
   before the persistence gate tripped an order — including the demotes the
   spec explicitly expects, "a demote or two, each an IDR" — were written
   into the per-rung EWMA store against the interfered channel, which is
-  exactly the pollution `blank_store` exists to prevent. Any part of the
-  verify window past `confirm_ms + 150 ms` is still outside the blank and
-  updates the store normally.
+  exactly the pollution `blank_store` exists to prevent.
+
+  Three gates on (1), each load-bearing:
+
+  - **`hop.enable`.** Disabled, nothing is ordered and the rung is never
+    restored, so there is no hop to protect the store from — and blanking
+    anyway would silently change what the observe-only flights record
+    versus every pre-branch recording, with nothing in the log marking it
+    (`docs/data-provenance.md`). (2) is already dead while disabled, since
+    `tick()` zeroes the action; this keeps the two consistent.
+  - **`interfered`, not `impaired`.** `VerdictOut::ref_frozen` is keyed on
+    `impaired`, and `fade` (impaired ∧ weak) and `unknown` (impaired
+    otherwise) are impaired too — so keying the blank on it suspended the
+    store's EWMA writes through every fade and every unknown window, while
+    this section's last bullet is "`fade`/`unknown`: unchanged ladder
+    behaviour". Only interference hops, so only interference blanks.
+  - **One edge per frozen episode**, which is what bounds it. The deadline
+    is computed once, at onset, and is not re-extended by later
+    `interfered` windows — so a jam running for seconds, or one
+    alternating `interfered` and `healthy` windows without ever reaching
+    the 3 consecutive healthy windows a thaw needs, cannot roll it
+    forward. The store resumes `confirm_ms + 150 ms` after onset whether
+    or not a hop was ever ordered. Re-arming needs a genuine thaw: 3
+    healthy windows, or `HopVerdict::reset()` after a verify window ends.
+
+  Any part of the verify window past `confirm_ms + 150 ms` is still
+  outside the blank and updates the store normally.
 - On the GS, `HopAction::Order` also calls
   `VrxController::restore_rung(ref_rung, now_ms)` → `LadderController::
   restore()`: rung set directly, probation cleared, probe-before-promote
@@ -549,9 +575,15 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   is an `M` line (`hop_follow`), not an `H` line; the spec's sketch listed
   it as an H event. `hold_end` closes a hold episode opened by
   `hold_cap`/`hold_exhausted`/`verify_fail`, and its `elapsed_ms` is the
-  episode's duration (§5); `tools/flightreport.py` treats it as
-  informational, like `one_card_retune` — it never opens or closes a hop
-  attempt row.
+  episode's duration (§5). `tools/flightreport.py` treats it as a
+  **terminal** kind, defensively: the controller does not currently emit a
+  `hold_end` while a hop-attempt row is open (a hold entry closes the row
+  first, and `verifying_tick`'s terminal `verify_fail` carries an
+  *unbumped* epoch, so `build_hop_rows`' epoch-match branch reads it as
+  the outcome rather than as a retry), but an unrecognised kind arriving
+  with a row open falls through to `unterminated` — "the log ends
+  mid-attempt" — which would misreport a flight that in fact ended in a
+  hold.
 - **D** — extended, not replaced: the existing boot-scout dwell line gains
   a trailing `<sess> <to_us> <read_us> <back_us>` (in-session flag + the
   three step timings). Boot-time dwells still emit valid lines with these

@@ -1,58 +1,126 @@
 #include "hop_blank.h"
+#include "hop_verdict.h"
 #include "mtest.h"
 using namespace maburgs;
 
-static VerdictOut W(double t_ms, bool frozen) {
-  VerdictOut o;
-  o.t_start_ms = t_ms - 150;
-  o.t_ms = t_ms;
-  o.ref_frozen = frozen;
-  return o;
+// A window straight out of HopVerdict, so these tests are pinned to what
+// the classifier can actually produce rather than to a hand-set bool.
+static HopCfg cfg() { HopCfg c; c.enable = true; return c; }
+static VerdictCardIn card(double rssi, double snr, double foreign_ps, double fa_ps) {
+  VerdictCardIn c; c.valid = true; c.rssi_dbm = rssi; c.snr_db = snr;
+  c.foreign = (uint32_t)(foreign_ps * 0.15 + 0.5); c.fa = (uint32_t)(fa_ps * 0.15 + 0.5);
+  c.cca = c.fa; return c;
+}
+static VerdictCardIn clean() { return card(-61, 30, 0, 4); }
+// 5 s of clean windows at rung 5 to build the references
+static double warm(HopVerdict& v, double t = 0) {
+  for (int i = 0; i < 40; ++i, t += 150) v.window(t, {clean(), clean()}, {0.0, 20}, 5);
+  return t;
+}
+static VerdictOut jam(HopVerdict& v, double t) {          // interfered: impaired + contended
+  return v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+}
+static VerdictOut fade(HopVerdict& v, double t) {         // impaired + weak
+  return v.window(t, {card(-90, 8, 0, 0), card(-86, 10, 0, 10)}, {0.05, 90}, 5);
+}
+static VerdictOut unknown(HopVerdict& v, double t) {      // impaired, no domain evidence
+  return v.window(t, {clean(), clean()}, {0.08, 100}, 5);
 }
 
-// Spec section 4: the rung store's EWMAs are blanked "from the first
-// impaired window", not from the hop order. As built the blank started in
-// main.cpp's HopAction::Order handler, which is 2-3 persistence windows
-// (300-450 ms) later -- so every detection window, including the demotes
-// the spec explicitly expects ("a demote or two, each an IDR"), was
-// written into the per-rung store against the interfered channel. That is
-// exactly the channel-specific pollution blank_store() exists to prevent.
 TEST(no_blank_while_the_link_is_clean) {
-  CHECK(!hop_store_blank_until(W(1000, /*frozen=*/false), 150).has_value());
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = v.window(t, {clean(), clean()}, {0.0, 20}, 5);
+  CHECK(o.v == Verdict::Healthy);
+  CHECK(!hop_store_blank_until(o, true, 500).has_value());
 }
 
-TEST(blank_opens_at_the_first_impaired_window) {
-  const auto until = hop_store_blank_until(W(1000, /*frozen=*/true), 150);
+TEST(blank_opens_at_the_first_interfered_window) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = jam(v, t);
+  CHECK(o.v == Verdict::Interfered);
+  const auto until = hop_store_blank_until(o, true, 500);
   REQUIRE(until.has_value());
-  CHECK(*until == 1000 + 150 + kHopSettleBlankMs);
+  CHECK(*until == t + 500 + kHopSettleBlankMs);   // confirm_ms + the settle, from onset
 }
 
-// A rolling deadline: each frozen window pushes it a window plus the
-// settle ahead, so the blank never lapses between windows...
-TEST(deadline_rolls_forward_and_never_lapses_between_windows) {
-  double prev = *hop_store_blank_until(W(1000, true), 150);
-  for (double t = 1150; t <= 1600; t += 150) {
-    const double now = *hop_store_blank_until(W(t, true), 150);
-    CHECK(now > prev);
-    CHECK(prev >= t);   // the previous window's deadline still covers this one
-    prev = now;
+// Spec section 4's last bullet is "fade/unknown: unchanged ladder
+// behaviour". ref_frozen is keyed on `impaired`, and BOTH of these are
+// impaired -- keying the blank on it suspended the rung store's EWMA
+// writes through every fade and every unknown window, at range for
+// seconds at a time, on flights whose whole purpose is recording what the
+// ladder does.
+TEST(a_fade_never_blanks_the_store_even_though_it_freezes_the_references) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = fade(v, t);
+  CHECK(o.v == Verdict::Fade);
+  CHECK(o.evidence & kEvImpaired);
+  CHECK(o.ref_frozen);                                   // references ARE frozen...
+  CHECK(!hop_store_blank_until(o, true, 500).has_value());   // ...and the store is NOT blanked
+  // Still nothing as the fade runs on.
+  for (int i = 1; i < 20; ++i)
+    CHECK(!hop_store_blank_until(fade(v, t + 150 * i), true, 500).has_value());
+}
+
+TEST(an_unknown_window_never_blanks_the_store) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = unknown(v, t);
+  CHECK(o.v == Verdict::Unknown);
+  CHECK(o.evidence & kEvImpaired);
+  CHECK(o.ref_frozen);
+  CHECK(!hop_store_blank_until(o, true, 500).has_value());
+}
+
+// hop.enable = false is the bundle default and the first flights' config.
+// Nothing is ever ordered and the rung is never restored, so there is no
+// hop to protect the store from -- and blanking anyway would silently
+// change what those recordings contain versus every pre-branch one.
+TEST(disabled_never_blanks) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o = jam(v, t);
+  CHECK(o.v == Verdict::Interfered);
+  CHECK(!hop_store_blank_until(o, /*enable=*/false, 500).has_value());
+}
+
+// The bound: one deadline per frozen episode. A jam that runs for seconds,
+// or one that alternates interfered and healthy windows without ever
+// reaching the 3 consecutive healthy windows a thaw needs, stays inside
+// ONE episode and cannot roll the deadline forward.
+TEST(a_sustained_jam_arms_the_blank_exactly_once) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  int armed = 0;
+  for (int i = 0; i < 40; ++i)
+    if (hop_store_blank_until(jam(v, t + 150 * i), true, 500)) ++armed;
+  CHECK(armed == 1);
+}
+TEST(interfered_healthy_alternation_inside_one_episode_does_not_rearm) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  int armed = 0;
+  for (int i = 0; i < 20; ++i) {
+    if (hop_store_blank_until(jam(v, t), true, 500)) ++armed;
+    t += 150;
+    v.window(t, {clean(), clean()}, {0.0, 20}, 5);   // one healthy window: not a thaw
+    t += 150;
   }
+  CHECK(armed == 1);
 }
 
-// ...and ends on its own once the references thaw (3 healthy windows, or
-// HopVerdict::reset() after a hop's verify window ends): nothing extends
-// it, so it expires one settle past the last frozen window. No separate
-// "unblank" call, which blank_store() could not honour anyway -- it keeps
-// the LATER of the deadlines it is given.
-TEST(blank_expires_a_settle_after_the_last_frozen_window) {
-  const double until = *hop_store_blank_until(W(1000, true), 150);
-  CHECK(!hop_store_blank_until(W(1150, /*frozen=*/false), 150).has_value());
-  CHECK(until == 1300);   // 1000 + window 150 + settle 150
+// ...and it re-arms after a genuine thaw, by either rule.
+TEST(rearms_after_three_healthy_windows) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  CHECK(hop_store_blank_until(jam(v, t), true, 500).has_value());
+  for (int i = 1; i <= 3; ++i) v.window(t + 150 * i, {clean(), clean()}, {0.0, 20}, 5);
+  CHECK(hop_store_blank_until(jam(v, t + 600), true, 500).has_value());
+}
+TEST(rearms_after_reset_ends_a_verify_window) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  CHECK(hop_store_blank_until(jam(v, t), true, 500).has_value());
+  CHECK(!hop_store_blank_until(jam(v, t + 150), true, 500).has_value());
+  v.reset();
+  CHECK(hop_store_blank_until(jam(v, t + 300), true, 500).has_value());
 }
 
-// window_ms is a config knob (50-2000); the lead has to follow it or a
-// long window leaves an unblanked gap between windows.
-TEST(lead_follows_the_configured_window) {
-  CHECK(*hop_store_blank_until(W(5000, true), 2000) == 5000 + 2000 + kHopSettleBlankMs);
+TEST(span_follows_the_configured_confirm_ms) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  CHECK(*hop_store_blank_until(jam(v, t), true, 2000) == t + 2000 + kHopSettleBlankMs);
 }
 MTEST_MAIN

@@ -134,9 +134,12 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
     ++hops_;
     // The caller's cue to thaw the verdict engine's frozen references
     // (spec section 2: "or after a hop's verify window ends"). Emitted
-    // only here, never on verify_fail/withdraw: those RE-ORDER, and the
-    // spec has the retry reuse ref_rung rather than re-snapshot it, so
-    // thawing there would hand the retry's Order a ref_rung of -1.
+    // only here, never on verify_fail/withdraw: those RE-ORDER, and spec
+    // section 5 has the retry reuse the pre-onset ref_rung. Thawing there
+    // would not damage the retry's own Order (its restore_rung is already
+    // built from the cached verdict) -- the cost lands one window later,
+    // when the next impaired window re-freezes ref_rung at the mid-hop
+    // rung instead of the pre-onset one.
     out.kind = HopAction::VerifyPass;
     out.target = landed;
     out.epoch = epoch_;

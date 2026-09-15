@@ -1076,6 +1076,48 @@ class HopReportTest(unittest.TestCase):
         self.assertIn("card 0: n=2 median(to+read+back)=370us", out)
         self.assertIn("card 1: n=1 median(to+read+back)=280us", out)
 
+    def test_a_hold_entry_still_closes_its_own_attempt_row(self):
+        """Holds are edge-logged now (one entry event, one hold_end),
+        where they used to re-log every ~10 ms control tick. That did NOT
+        change which event closes an attempt row: HopController's
+        verifying_tick logs its terminal "verify_fail" with the epoch
+        UNBUMPED, so build_hop_rows' epoch-match branch still reads it as
+        the terminal outcome -- the repeats it lost were always redundant.
+        Pinned because it was proposed as a regression of this wave and is
+        not one."""
+        def E(t, kind, epoch, target):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": 0.0}
+        rows = flightreport.build_hop_rows(
+            [E(1000, "order", 1, 149), E(1080, "lead_confirm", 1, 149),
+             E(1500, "verify_fail", 1, 149), E(4000, "hold_end", 1, 149)], [])
+        self.assertEqual([r["outcome"] for r in rows], ["verify_fail"])
+        # ...and the same for a retry that runs into the rate cap.
+        rows = flightreport.build_hop_rows(
+            [E(1000, "order", 1, 149), E(1080, "lead_confirm", 1, 149),
+             E(1500, "verify_fail", 2, 165), E(1560, "lead_confirm", 2, 165),
+             E(2000, "hold_cap", 2, 165), E(9000, "hold_end", 2, 165)], [])
+        self.assertEqual([r["outcome"] for r in rows], ["verify_fail", "hold_cap"])
+
+    def test_hold_end_closes_an_open_row_instead_of_unterminated(self):
+        """hold_end is TERMINAL, not informational. The controller does not
+        currently emit one while an attempt row is open (a hold entry
+        closes the row first, and hold_end only ever follows a hold), but
+        an unrecognised kind arriving with a row open falls through to
+        "unterminated" -- "the log ends mid-attempt" -- which would be a
+        lie about a flight that in fact ended in a hold. Closing on
+        hold_end is the safe reading, and it is what the per-tick hold
+        lines used to provide for free."""
+        def E(t, kind, epoch, target):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": 0.0}
+        rows = flightreport.build_hop_rows(
+            [E(1000, "order", 1, 149), E(1080, "lead_confirm", 1, 149),
+             E(4000, "hold_end", 1, 149)], [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["outcome"], "hold_end")
+        self.assertEqual(rows[0]["outcome_ts"], 4000.0)
+
     def test_zero_hops_prints_verdict_histogram(self):
         """No H events at all (a perfectly healthy flight, or hop_controller
         compiled in but never triggering): the verdict histogram, not an

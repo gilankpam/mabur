@@ -164,9 +164,14 @@ void apply_hop_action(const maburgs::HopAction& act, double now_ms, int confirm_
       // the OLD channel's values for the rest of the flight -- `fading` on
       // the channel we had just moved to was being measured against the
       // one we left. Only verify_pass thaws: a verify_fail or a withdraw
-      // RE-ORDERS, and the spec has the retry reuse ref_rung rather than
-      // re-snapshot it, so thawing there would hand the retry's Order a
-      // ref_rung of -1.
+      // RE-ORDERS, and spec section 5 has the retry REUSE the pre-onset
+      // ref_rung rather than re-snapshot it. (The retry's own Order is
+      // unaffected either way -- order() reads restore_rung off the cached
+      // VerdictOut and hopc.tick() has already returned by the time this
+      // runs. The cost lands one window later: after a thaw the next
+      // impaired window re-freezes ref_rung at the MID-HOP rung, already
+      // demoted or already restored, and the pre-onset value section 5
+      // wants reused is gone.)
       verdict.reset();
       break;
     case maburgs::HopAction::Hold:
@@ -1834,13 +1839,15 @@ static int run_radio(const maburgs::Config& cfg) {
         scan_log->verdict(now_ms, vo, vc, vl);
       last_verdict = vo.v;
       last_verdict_out = vo;
-      // Spec section 4's "from the first impaired window": the rung
-      // store's EWMAs stop taking writes as soon as the verdict engine
-      // freezes its references, not at the order 300-450 ms later. Rolling
-      // deadline, one window plus the settle ahead; blank_store() keeps
-      // the later of the deadlines it is given, so this never shortens
-      // HopAction::Order's own confirm_ms + settle window.
-      if (const auto blank = maburgs::hop_store_blank_until(vo, hcfg.window_ms))
+      // Spec section 4: the rung store's EWMAs stop taking writes at the
+      // first INTERFERED window of an episode, not at the order 300-450 ms
+      // later. One deadline per episode, confirm_ms + the settle wide, and
+      // only when the feature is enabled -- see hop_blank.h for why each
+      // of those three gates is load-bearing. blank_store() keeps the
+      // later of the deadlines it is given, so this never shortens
+      // HopAction::Order's own window.
+      if (const auto blank =
+              maburgs::hop_store_blank_until(vo, hcfg.enable, hcfg.confirm_ms))
         vrx.blank_store(*blank);
     }
 
@@ -1860,8 +1867,9 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       // lead_card (or the only card, one-card mode) confirms the hop by
       // landing a video body on the target channel -- last_video_ch is set
-      // in the batch-drain loop above from cur_ch[m.card_id], so this
-      // reads whichever card most recently actually delivered video,
+      // in the batch-drain loop above from RxBody::rx_channel, the channel
+      // the producing card was actually tuned to when it lifted that frame
+      // off the air (NOT cur_ch[m.card_id], where the card is tuned now),
       // matching the brief's "lead card received a video AU on hop_ch".
       ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
       ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total - rcf_sent_at_order);

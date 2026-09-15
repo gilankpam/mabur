@@ -31,6 +31,7 @@ void HopVerdict::reset() {
   ref_rung_ = -1;
   ref_rssi_.clear();
   healthy_streak_ = 0;
+  seen_interfered_ = false;
   recent_interfered_.clear();
   // The persistence window is cleared with the snapshot: leaving it
   // latched would hand the controller a trigger built from windows
@@ -106,8 +107,15 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
       // rssi_dbm == 0.
     }
   }
+  // The rung-store blank's arming edge: the first `interfered` window of
+  // this frozen episode (hop_blank.h). Re-armed only by a thaw, below or
+  // in reset().
+  if (o.v == Verdict::Interfered && !seen_interfered_) {
+    seen_interfered_ = true;
+    o.first_interfered = true;
+  }
   healthy_streak_ = (o.v == Verdict::Healthy) ? healthy_streak_ + 1 : 0;
-  if (frozen_ && healthy_streak_ >= 3) { frozen_ = false; ref_rung_ = -1; }
+  if (frozen_ && healthy_streak_ >= 3) { frozen_ = false; ref_rung_ = -1; seen_interfered_ = false; }
   if (!frozen_) {   // only unfrozen windows feed the trailing references
     for (int i = 0; i < n_cards_ && i < (int)cards.size(); ++i)
       if (cards[i].valid) {

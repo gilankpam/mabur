@@ -132,10 +132,30 @@ TEST(every_window_carries_the_span_it_was_measured_over) {
   auto o4 = v.window(1450, {dead, dead}, {0.0, 20}, 5);
   CHECK(o4.v == Verdict::Unknown && o4.t_start_ms == 1300 && o4.t_ms == 1450);
 }
-// I4: the ladder's rung store has to stop taking writes "from the first
-// impaired window" (spec section 4), which is precisely the freeze edge.
-// Nothing exported it before, so main.cpp could only start the blank at
-// the hop order, 300-450 ms of detection windows too late.
+// I4: the rung-store blank's arming edge (gs/src/hop_blank.h) -- the
+// FIRST interfered window of a frozen episode, once and once only until a
+// thaw. Deliberately not ref_frozen, which is keyed on `impaired` and so
+// is set through fades and unknown windows too.
+TEST(first_interfered_fires_once_per_frozen_episode) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  // A fade freezes the references but is not interference: no edge.
+  auto f = v.window(t, {card(-90, 8, 0, 0, 30), card(-86, 10, 0, 10, 5)}, {0.05, 90}, 1);
+  CHECK(f.v == Verdict::Fade && f.ref_frozen && !f.first_interfered);
+  t += 150;
+  auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(o1.v == Verdict::Interfered && o1.first_interfered);
+  t += 150;
+  auto o2 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(o2.v == Verdict::Interfered && !o2.first_interfered);   // same episode
+  // A thaw re-arms it.
+  for (int i = 1; i <= 3; ++i) v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  auto o3 = v.window(t + 600, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(o3.first_interfered);
+  // ...and so does reset(), the other thaw rule.
+  v.reset();
+  auto o4 = v.window(t + 750, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(o4.first_interfered);
+}
 TEST(ref_frozen_marks_the_impaired_episode) {
   HopVerdict v(cfg(), 2); double t = warm(v);
   CHECK(!v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
