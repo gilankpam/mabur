@@ -30,7 +30,29 @@
 #define STAR6E_IMAGE_FLIP           0      /* image.flip */
 #define STAR6E_VPE_LEVEL_3DNR       0      /* fpv.noiseLevel */
 #define STAR6E_SENSOR_FORCED_PAD    (-1)   /* sensor.index: auto-detect */
-#define STAR6E_SENSOR_FORCED_MODE   (-1)   /* sensor.mode: auto-select */
+#define STAR6E_SENSOR_FORCED_MODE   2      /* sensor.mode: see below */
+/* Why mode 2 is pinned rather than auto-selected (-1).  At our 1920x1080@60
+ * target, auto picks the driver's 2560x1440@60 mode -- a non-binned WINMODE
+ * crop of the 3840x2160 array, so only 66.7% of the width and height reach
+ * the lens's field of view (a 1.5x crop, 44% of the array area).  The
+ * full-FOV alternative is the 2x2-binned 1920x1080@90 mode, which the
+ * driver is happy to run at 60 (its minFps is 3), but sensor_mode_cost()
+ * can never pick it: fps excess sits in the HIGH 32 bits of the cost, so
+ * that mode's 90-60=30 excess outranks its perfect resolution match.
+ * Pinning is the only lever, since forced_mode has no config key.
+ * Measured on the bench 2026-09-16 (matched scene content, mode 2's central
+ * 66.7% upscaled to compare like for like): binning costs ~33% of fine
+ * detail (mean |grad| 1.336 -> 0.895) with strong edges untouched, and buys
+ * back the entire field of view.  On an FPV lens that is the trade we want.
+ * It also drops the VPE scale step entirely -- the sensor delivers 1920x1080
+ * 1:1 to the encoder instead of downscaling 2560x1440.
+ * THE INDEX IS DRIVER-SPECIFIC.  2 indexes the stock OpenIPC
+ * sensor_imx415_mipi.ko table (0=3840x2160@30, 1=2560x1440@60,
+ * 2=1920x1080@90, 3=1472x816@120) -- NOT the richer lineup in
+ * ../waybeam_venc/drivers/sensor_imx415_star6e.c, which this image does not
+ * insmod.  Re-check it if the sensor or its driver ever changes; a wrong
+ * index silently yields the wrong geometry rather than failing.  Verify on
+ * the device with `grep Cur /proc/mi_modules/mi_sensor/mi_sensor0`. */
 /* MJPEG snapshot channel; 7 is well clear of the encoder's ch0. */
 #define STAR6E_SNAPSHOT_CHANNEL     7
 /* Video codec is always H.265 and rate control is always CBR — the
