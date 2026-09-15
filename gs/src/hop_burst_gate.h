@@ -38,6 +38,22 @@ inline bool hop_active(bool in_session, bool scout_joined) {
   return in_session && scout_joined;
 }
 
+// Pure: whether the core loop must keep its current TX card this tick
+// instead of letting TxSelector::update() re-pick. Two reasons, same
+// shape: a card the in-flight scout has off on a candidate (dwell_busy),
+// and -- found on the 2026-09-15 bench -- a hop's lead card while the hop
+// is in flight (ChannelPlan::hopping(), Order until Confirm/Withdraw).
+// Unfrozen, the selector switched onto the lead card within 200 ms of
+// three of the four orders in the first co-channel-jam run, which moved
+// the RCF uplink -- the frames CARRYING the order -- to the target
+// channel where the drone was not yet listening. Every one of those
+// orders withdrew at confirm_ms; the one whose TX card stayed put
+// confirmed in 139 ms. After lead_confirm the trailing card follows
+// (hop_follow), hopping() clears, and the selector is free again.
+inline bool tx_selection_frozen(bool dwell_busy, bool hopping) {
+  return dwell_busy || hopping;
+}
+
 inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
                           double last_burst_ms, int dwell_period_ms) {
   const bool hop_free = state == HopState::Idle || state == HopState::Hold;

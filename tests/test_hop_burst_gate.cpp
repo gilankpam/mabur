@@ -52,4 +52,12 @@ TEST(hop_block_is_inactive_outside_session_or_while_boot_scout_owns_a_card) {
   CHECK(!hop_active(true, false));
   CHECK(!hop_active(false, false));
 }
+// Bench 2026-09-15: the TX selector must not switch onto the lead card
+// while a hop is in flight (see tx_selection_frozen's comment).
+TEST(tx_selection_is_frozen_during_a_dwell_or_an_in_flight_hop) {
+  CHECK(!tx_selection_frozen(/*dwell_busy=*/false, /*hopping=*/false));
+  CHECK(tx_selection_frozen(true, false));
+  CHECK(tx_selection_frozen(false, true));
+  CHECK(tx_selection_frozen(true, true));
+}
 MTEST_MAIN

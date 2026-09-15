@@ -2385,9 +2385,13 @@ static int run_radio(const maburgs::Config& cfg) {
       // sel.update() is what would act on a challenger and switch onto it
       // mid-dwell, which is exactly what must not happen (spec section 6).
       // Simplest correct fix: skip the update entirely and keep the last
-      // selection for this tick.
-      const int tx = dwell_busy.load() ? sel.selected()
-                                       : sel.update(snaps, now_ms_u * 1000);
+      // selection for this tick. The same hold covers a hop in flight
+      // (tx_selection_frozen, hop_burst_gate.h): the lead card is on the
+      // target and the RCF that carries the order must keep leaving on
+      // the old channel until the drone has been seen there.
+      const int tx = maburgs::tx_selection_frozen(dwell_busy.load(), plan.hopping())
+                         ? sel.selected()
+                         : sel.update(snaps, now_ms_u * 1000);
       tx_card_now.store(sel.selected(), std::memory_order_relaxed);
       // Which card(s) carry this frame. RCFs go to the TX selector's card,
       // as they always did. A DISC is rendezvous traffic and follows the
