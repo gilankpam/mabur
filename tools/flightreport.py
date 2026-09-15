@@ -847,15 +847,23 @@ def load_scanlog(path):
     version = 0
     V, H, D, M = [], [], [], []
     with open(path) as f:
-        first = f.readline().split()
-        if len(first) >= 2 and first[0] == "scanlog" and first[1].isdigit():
-            version = int(first[1])
         for line in f:
             line = line.strip()
             if not line:
                 continue
             toks = line.split()
             tag = toks[0]
+            # A GS restart REJOINS the session directory, so one scan.log can
+            # carry several 'scanlog N' markers -- after a deploy the first
+            # session starts under the old binary's header with the new
+            # binary's marker (and all its V/H/D records) further down. The
+            # highest marker seen decides the version; the old sections hold
+            # no record kind this report reads. (Bench 2026-09-15: reading
+            # only line 1 skipped the HOP section on the session with the
+            # first real hop.)
+            if tag == "scanlog" and len(toks) >= 2 and toks[1].isdigit():
+                version = max(version, int(toks[1]))
+                continue
             try:
                 if tag == "V" and len(toks) >= 7:
                     n_extra = len(toks) - 7

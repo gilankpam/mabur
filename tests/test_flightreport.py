@@ -1054,6 +1054,25 @@ class HopReportTest(unittest.TestCase):
             f.write(text)
         return flightreport.load_ctllog(p)
 
+    def test_rejoined_session_takes_the_last_scanlog_marker(self):
+        """Bench 2026-09-15: a GS restart REJOINS the session directory, so
+        the first scan.log after a deploy starts with the old binary's
+        'scanlog 1' header and carries the new binary's 'scanlog 2' marker
+        (and every V/H/D record) further down. Reading only the first line
+        skipped the whole HOP section on exactly the session that held the
+        first real hop. The highest marker seen wins."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 1 home=136 candidates=120,149,165 dwell_ms=250 min_rounds=3 enable=1 cards=2\n")
+            f.write("A 100 0 120 551 3 2510 0 32\n")
+            f.write(self.FIXTURE.read_text())
+        scanlog = flightreport.load_scanlog(p)
+        self.assertEqual(scanlog["version"], 2)
+        ref = flightreport.load_scanlog(str(self.FIXTURE))
+        self.assertEqual(len(scanlog["H"]), len(ref["H"]))
+        self.assertEqual(len(scanlog["V"]), len(ref["V"]))
+
     def test_hop_table_row_timings_and_outcome(self):
         """onset->order / order->video / video->restore, paired end to end:
         the onset is the FIRST of the two consecutive 'interfered' V lines
