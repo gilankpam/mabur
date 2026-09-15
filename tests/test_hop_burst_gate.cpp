@@ -44,4 +44,12 @@ TEST(first_burst_not_delayed_by_initial_last_burst_ms) {
   CHECK(hop_burst_due(HopState::Idle, true, /*now_ms=*/0.0, -1e18, 333));
   CHECK(hop_burst_due(HopState::Idle, true, /*now_ms=*/10.0, -1e18, 333));
 }
+// Bench 2026-09-15: nothing in the hop block may run before the link is in
+// SESSION with the boot scout's cards released (see hop_active's comment).
+TEST(hop_block_is_inactive_outside_session_or_while_boot_scout_owns_a_card) {
+  CHECK(hop_active(/*in_session=*/true, /*scout_joined=*/true));
+  CHECK(!hop_active(false, true));
+  CHECK(!hop_active(true, false));
+  CHECK(!hop_active(false, false));
+}
 MTEST_MAIN

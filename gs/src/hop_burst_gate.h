@@ -21,6 +21,23 @@ namespace maburgs {
 //     never results in an order);
 //   - last_burst_ms's caller-side initial value (-1e18) must NOT delay
 //     the very first burst.
+// Pure: whether the in-session hop block as a whole -- verdict window,
+// freshness burst, controller tick -- may run this tick. Found on the
+// 2026-09-15 bench: unconditional, the block ran during the boot
+// rendezvous, where the s1 loss window reads 80-90 % while the link is
+// still coming up and the boot scout's own 250 ms dwells read as `raised`
+// -- `interfered` by construction. The shadow controller then ordered
+// every candidate in turn and exhausted before the boot pick had even
+// committed, and the freshness burst retuned the boot scout's card out
+// from under it mid-dwell (that boot scan took 17 rounds instead of 6).
+// `scout_joined` is the same "boot scout owns no card" predicate the
+// periodic in-flight scout thread starts on; `in_session` is
+// VrxState::SESSION. The caller resets HopVerdict on the falling edge so
+// nothing measured while inactive can latch a trigger.
+inline bool hop_active(bool in_session, bool scout_joined) {
+  return in_session && scout_joined;
+}
+
 inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
                           double last_burst_ms, int dwell_period_ms) {
   const bool hop_free = state == HopState::Idle || state == HopState::Hold;
