@@ -249,8 +249,8 @@ exercise any of them get.
 ## Decisions made during implementation that a bench run could overturn
 
 The spec went stale in about ten places; each divergence was decided
-deliberately and is recorded in the execution ledger (gitignored, this machine
-only). The ones a bench result could legitimately reverse:
+deliberately, and the commit messages on this branch carry the reasoning. The
+ones a bench result could legitimately reverse:
 
 - **Rate cap includes verify-fail retries** (spec §5 says "including retries").
   If the bench shows a link that needed a 5th retry inside a minute to recover,
