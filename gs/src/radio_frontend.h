@@ -117,6 +117,14 @@ class RadioFrontend : public ScoutRadio {
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
   std::atomic<uint64_t> own_{0};
   std::atomic<uint8_t> channel_{0};
+  // What on_packet() stamps RxBody::rx_channel with: the channel this card
+  // is KNOWN to have been tuned to when the frame arrived. Distinct from
+  // channel_ (the commanded position, published after FastRetune returns)
+  // because it is cleared to 0 BEFORE the retune starts, so every frame
+  // delivered across the retune reads "unknown" rather than being
+  // attributed to either side of it. Nothing but the stamp reads it, so
+  // channel()'s existing readers are unaffected.
+  std::atomic<uint8_t> rx_channel_{0};
   CardCaps caps_;
 };
 

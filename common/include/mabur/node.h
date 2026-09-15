@@ -48,6 +48,21 @@ struct RxBody {
   // metadata, valid independent of the body CRC. Consumed by the
   // transition-attribution boundary (UepDecoder::add_body).
   uint8_t mcs = 255;
+  // The radio channel this body was actually received on, stamped by the
+  // producer (RadioFrontend::on_packet) at the instant the frame was
+  // lifted off the card -- 0 = unknown, which is also what a card that was
+  // mid-retune when the frame arrived reports, and what a frame-file
+  // replay source carries.
+  //
+  // NOT serialized by pack_rx_body/parse_rx_body: this is in-process
+  // provenance, meaningless to a future multi-node forwarder, which would
+  // have to carry the receiving node's channel out of band anyway. The
+  // in-flight channel hop confirms off it (gs/src/main.cpp) because the
+  // consumer runs a whole control tick behind the producer and BodyQueue
+  // is not flushed on a retune -- reading "where is this card tuned now"
+  // instead stamped bodies received on the OLD channel with the NEW one
+  // and confirmed a hop the drone had not made.
+  uint8_t rx_channel = 0;
 };
 
 struct CardStatus {

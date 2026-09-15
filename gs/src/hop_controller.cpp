@@ -28,28 +28,33 @@ HopAction HopController::tick(const HopTick& in) {
 }
 
 void HopController::idle_tick(const HopTick& in, HopAction& out) {
-  if (!in.verdict.trigger) return;
+  if (!in.verdict.trigger) {
+    // The reason to hold is gone. Without this a Hold entered while the
+    // trigger was latched is terminal -- every path out of Hold runs
+    // through order(), which needs a trigger -- so the state, and the
+    // sideport's hop.state with it, would read "hold" for the rest of the
+    // flight after one exhausted episode, and no hold_end would ever close
+    // the episode in scan.log.
+    leave_hold(in.now_ms, in.cur_op);
+    return;
+  }
   if (in.now_ms - last_confirm_ms_ < cfg_.cooldown_ms) return;   // still cooling down: wait, silently
   prune_hop_times(in.now_ms);
   if (static_cast<int>(hop_times_.size()) >= cfg_.max_hops_per_min) {
-    ++holds_;
-    state_ = HopState::Hold;
-    out.kind = HopAction::Hold;
-    log_event(in.now_ms, "hold_cap", epoch_, in.cur_op, 0, 0);
+    enter_hold(in.now_ms, "hold_cap", in.cur_op, 0, out);
     return;
   }
   if (in.best.has_value()) {
+    leave_hold(in.now_ms, in.cur_op);
     order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "order", out);
     return;
   }
   if (in.cur_op != home_) {
+    leave_hold(in.now_ms, in.cur_op);
     order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "order", out);
     return;
   }
-  ++holds_;
-  state_ = HopState::Hold;
-  out.kind = HopAction::Hold;
-  log_event(in.now_ms, "hold_exhausted", epoch_, in.cur_op, 0, 0);
+  enter_hold(in.now_ms, "hold_exhausted", in.cur_op, 0, out);
 }
 
 void HopController::ordered_tick(const HopTick& in, HopAction& out) {
@@ -78,7 +83,23 @@ void HopController::ordered_tick(const HopTick& in, HopAction& out) {
 }
 
 void HopController::verifying_tick(const HopTick& in, HopAction& out) {
-  if (in.verdict.v == Verdict::Interfered) {
+  // A verdict window whose measurement span STARTED before the hop landed
+  // describes the channel we just left, and on that channel the verdict is
+  // Interfered by construction -- it is why we hopped. The caller ticks
+  // this machine every control tick (~10 ms) but only recomputes a verdict
+  // every hop.window_ms (150 ms), so the cached VerdictOut immediately
+  // after a Confirm is ALWAYS that pre-hop one. Acting on it failed the
+  // verify of a perfectly good channel ~10 ms after landing on it, backed
+  // that channel off for 30 s (doubling), and marched through the
+  // remaining candidates into hold_cap in about half a second.
+  //
+  // t_start_ms (not t_ms) is the test: a window that merely ENDS after the
+  // confirm still gathered most of its counter deltas on the old channel.
+  // The cost is one verdict window of detection latency inside a 1000 ms
+  // verify window; the first eligible window lands ~2 * window_ms after
+  // the confirm, leaving five of them.
+  const bool measured_after_landing = in.verdict.t_start_ms >= verify_start_;
+  if (in.verdict.v == Verdict::Interfered && measured_after_landing) {
     const uint8_t failed_target = hop_ch_;
     back_off(failed_target, in.now_ms);
     std::optional<uint8_t> next = in.best;
@@ -92,10 +113,7 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
       // max_hops_per_min is NOT -- it counts retries, then holds.
       prune_hop_times(in.now_ms);
       if (static_cast<int>(hop_times_.size()) >= cfg_.max_hops_per_min) {
-        ++holds_;
-        state_ = HopState::Hold;
-        out.kind = HopAction::Hold;
-        log_event(in.now_ms, "hold_cap", epoch_, failed_target, 0, in.now_ms - verify_start_);
+        enter_hold(in.now_ms, "hold_cap", failed_target, in.now_ms - verify_start_, out);
         return;
       }
       if (next.has_value()) {
@@ -105,10 +123,7 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
       }
       return;
     }
-    ++holds_;
-    state_ = HopState::Hold;
-    out.kind = HopAction::Hold;
-    log_event(in.now_ms, "verify_fail", epoch_, failed_target, 0, in.now_ms - verify_start_);
+    enter_hold(in.now_ms, "verify_fail", failed_target, in.now_ms - verify_start_, out);
     return;
   }
   if (in.now_ms - verify_start_ >= cfg_.verify_ms) {
@@ -117,6 +132,14 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
     state_ = HopState::Idle;
     last_confirm_ms_ = in.now_ms;
     ++hops_;
+    // The caller's cue to thaw the verdict engine's frozen references
+    // (spec section 2: "or after a hop's verify window ends"). Emitted
+    // only here, never on verify_fail/withdraw: those RE-ORDER, and the
+    // spec has the retry reuse ref_rung rather than re-snapshot it, so
+    // thawing there would hand the retry's Order a ref_rung of -1.
+    out.kind = HopAction::VerifyPass;
+    out.target = landed;
+    out.epoch = epoch_;
     log_event(in.now_ms, "verify_pass", epoch_, landed, 0, in.now_ms - verify_start_);
   }
 }
@@ -147,6 +170,25 @@ void HopController::withdraw(uint8_t restore_to, double now, HopAction& out) {
   out.target = restore_to;
   out.epoch = epoch_;
   log_event(now, "withdraw", epoch_, failed_target, 0, now - order_ms_);
+}
+
+void HopController::enter_hold(double now, const char* why, uint8_t target, double elapsed_ms,
+                               HopAction& out) {
+  out.kind = HopAction::Hold;
+  if (state_ == HopState::Hold) return;   // already holding: a state, not a fresh event
+  state_ = HopState::Hold;
+  hold_start_ms_ = now;
+  ++holds_;
+  log_event(now, why, epoch_, target, 0, elapsed_ms);
+}
+
+void HopController::leave_hold(double now, uint8_t cur_op) {
+  if (state_ != HopState::Hold) return;
+  state_ = HopState::Idle;
+  // elapsed_ms = how long the hold lasted, which with the entry event's
+  // own kind (hold_cap / hold_exhausted / verify_fail) is everything an
+  // operator needs out of an episode that no longer logs per tick.
+  log_event(now, "hold_end", epoch_, cur_op, 0, now - hold_start_ms_);
 }
 
 void HopController::back_off(uint8_t ch, double now) {

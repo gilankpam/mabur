@@ -33,6 +33,11 @@ class HopRanker {
 
   void add(const HopVisit& v);
 
+  // The boot scan's real pick, which is not known until the drone answers
+  // the first DISC -- long after this object is constructed. Until it is
+  // set, the ranked tiebreak falls through to home, then config order.
+  void set_boot_pick(uint8_t ch) { boot_pick_ = ch; }
+
   // fa + max(cca - own, 0) + 4*foreign
   static uint32_t score(const HopVisit& v);
 

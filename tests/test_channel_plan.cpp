@@ -254,4 +254,42 @@ TEST(hop_order_while_hopping_emits_withdraw_for_abandoned_lead) {
   CHECK(ev[1].reason == MoveReason::HopWithdraw && ev[1].card == 1 && ev[1].from == 149 && ev[1].to == 136);
   CHECK(ev[2].reason == MoveReason::HopLead && ev[2].card == 0 && ev[2].from == 136 && ev[2].to == 165);
 }
+// I1: the one-card Withdraw branch, which had never executed anywhere --
+// no unit test, no gs_e2e (the harness breaks the moment OneCardRetune
+// fires), no hardware. On one card main.cpp's HopAction::Order
+// deliberately does NOT call hop_order() (the sole radio must stay on the
+// old channel while the order rides one_card_repeats RCFs); those repeats
+// are counted off real in-session RCFs, which stop being sent the moment
+// the link leaves SESSION -- exactly the case interference produces. So
+// confirm_ms expires first and main.cpp calls hop_withdraw() with no hop
+// in flight. Unguarded, that ran lost_since_ms_ += (now - hop_start_ms_)
+// with hop_start_ms_ still 0, pushing the loss timestamp a whole session
+// into the future and suppressing SplitHome -- the one-card GS's only
+// convergence mechanism when the two ends disagree.
+TEST(withdraw_with_no_hop_in_flight_leaves_the_split_timer_alone) {
+  ChannelPlan p(C(1));
+  p.on_ack(0, 149, 149); p.take_events();
+  p.tick(30000, false);             // lost_since_ms_ = 30000 (link down, deep into the flight)
+  p.hop_withdraw(30100);            // controller timed out; the plan never started hopping
+  CHECK(!p.hopping());
+  CHECK(p.take_events().empty());   // nothing moved, so nothing to log
+  p.tick(34999, false);
+  CHECK(!p.split());
+  p.tick(35000, false);             // 30000 + split_after_ms(5000)
+  CHECK(p.split());                 // pre-fix: lost_since_ms_ = 60100, no split for another 30 s
+  auto ev = p.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].reason == MoveReason::SplitHome);
+}
+TEST(confirm_with_no_hop_in_flight_is_a_no_op) {
+  ChannelPlan p(C(1));
+  p.on_ack(0, 149, 149); p.take_events();
+  p.tick(30000, false);
+  p.hop_confirmed(30100);           // pre-fix: op_ = hop_target_ = 0
+  CHECK(p.op() == 149);
+  CHECK(p.desired(0) == 149);
+  CHECK(p.take_events().empty());
+  p.tick(35000, false);
+  CHECK(p.split());
+}
 MTEST_MAIN

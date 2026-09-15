@@ -162,6 +162,7 @@ bool RadioFrontend::open_and_start() {
   if (!device_) { stop(); return false; }
   device_->InitWrite(SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
   channel_.store(cfg_.channel, std::memory_order_release);
+  rx_channel_.store(cfg_.channel, std::memory_order_release);
   {
     const devourer::AdapterCaps ac = device_->GetAdapterCaps();
     const RxEnergy e = device_->GetRxEnergy(/*with_nhm=*/true);
@@ -250,6 +251,10 @@ void RadioFrontend::on_packet(const Packet& pkt) {
       (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);
   m.body.assign(pkt.Data.begin() + static_cast<long>(body_off), pkt.Data.end());
   m.tsfl = pkt.RxAtrib.tsfl;
+  // Receive-channel provenance, stamped HERE -- on the producer thread, at
+  // the moment the frame is lifted off this card -- so no amount of
+  // queueing between here and the core loop can change it (mabur/node.h).
+  m.rx_channel = rx_channel_.load(std::memory_order_acquire);
   const uint64_t mono = m.mono_us;
   const uint32_t tsfl = m.tsfl;
   out_.push(std::move(m));
@@ -309,8 +314,18 @@ void RadioFrontend::on_packet(const Packet& pkt) {
 
 bool RadioFrontend::retune(uint8_t ch) {
   if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  // Blind the body stamp for the duration of the move (the RX thread keeps
+  // running through it). A frame the chip had already handed us before the
+  // retune but that reaches on_packet() during it is then stamped 0 =
+  // unknown instead of being mis-attributed to the new channel -- which is
+  // what lets the hop's confirmation trust the stamp. The residual window
+  // is USB-pipeline lag longer than FastRetune's own duration (~4 ms of
+  // control transfers on this path); devourer exposes no RX flush to close
+  // it outright.
+  rx_channel_.store(0, std::memory_order_release);
   device_->FastRetune(ch, /*cache_rf=*/true);
   channel_.store(ch, std::memory_order_release);
+  rx_channel_.store(ch, std::memory_order_release);
   return true;
 }
 

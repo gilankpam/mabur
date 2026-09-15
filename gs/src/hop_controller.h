@@ -26,7 +26,14 @@ struct HopTick {
 };
 
 struct HopAction {
-  enum Kind { None, Order, OneCardRetune, Confirm, Withdraw, Hold } kind = None;
+  // VerifyPass: the verify window closed clean and the hop stands. The
+  // only action with no radio/plan consequence -- it exists so the caller
+  // can run spec section 2's second thaw rule, HopVerdict::reset(), at the
+  // one instant the spec names ("after a hop's verify window ends"). Like
+  // every other kind it is suppressed wholesale when cfg_.enable is false,
+  // which is what keeps an observe-only flight's references measuring the
+  // channel the link is actually still on.
+  enum Kind { None, Order, OneCardRetune, Confirm, Withdraw, Hold, VerifyPass } kind = None;
   uint8_t target = 0;
   uint8_t epoch = 0;
   int restore_rung = -1;
@@ -60,6 +67,11 @@ class HopController {
   std::vector<uint8_t> backed_off(double now_ms) const;
   std::vector<HopEvent> take_events();
   uint32_t hops() const;
+  // Hold EPISODES entered, not ticks spent holding: idle_tick() runs from
+  // Hold as well as Idle, so a held controller with the trigger latched
+  // re-enters it at the ~100 Hz control-tick rate. Counting ticks made the
+  // sideport number (hop.holds) a meaningless six-digit ramp and pushed an
+  // H line into scan.log and a stderr line per tick with it.
   uint32_t holds() const;
 
  private:
@@ -68,6 +80,12 @@ class HopController {
   void verifying_tick(const HopTick& in, HopAction& out);
   void order(uint8_t target, int restore_rung, int lead_card, uint32_t score, double now,
              const char* event_kind, HopAction& out);
+  // A hold is a STATE: enter_hold() logs and counts only the transition
+  // into it, leave_hold() logs the matching "hold_end" with how long it
+  // lasted. Re-entering while already held sets the action and nothing
+  // else.
+  void enter_hold(double now, const char* why, uint8_t target, double elapsed_ms, HopAction& out);
+  void leave_hold(double now, uint8_t cur_op);
   void withdraw(uint8_t restore_to, double now, HopAction& out);
   void back_off(uint8_t ch, double now);
   bool is_backed_off(uint8_t ch, double now) const;
@@ -86,6 +104,7 @@ class HopController {
   uint32_t hops_ = 0;
   uint32_t holds_ = 0;
   bool one_card_retuned_ = false;
+  double hold_start_ms_ = 0;
   std::map<uint8_t, std::pair<double, int>> backoff_;   // ch -> {until_ms, repeat count k}
   std::deque<double> hop_times_;                        // order timestamps, trailing 60 s (rate cap)
   std::vector<HopEvent> events_;

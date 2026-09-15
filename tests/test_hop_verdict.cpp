@@ -114,4 +114,58 @@ TEST(weak_takes_priority_over_contended_when_not_fading) {
   CHECK(o.evidence & kEvContended);
   CHECK(!(o.evidence & kEvFading));
 }
+// C1: every VerdictOut carries the wall-clock span its counter deltas were
+// gathered over, because the consumer (main.cpp -> HopController) re-feeds
+// a cached one on every ~10 ms control tick between 150 ms windows and has
+// to be able to tell a fresh verdict from a pre-hop one.
+TEST(every_window_carries_the_span_it_was_measured_over) {
+  HopVerdict v(cfg(), 2);
+  auto o1 = v.window(1000, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  CHECK(o1.t_start_ms == 1000 && o1.t_ms == 1000);   // first window: no previous one
+  auto o2 = v.window(1150, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  CHECK(o2.t_start_ms == 1000 && o2.t_ms == 1150);
+  auto o3 = v.window(1300, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  CHECK(o3.t_start_ms == 1150 && o3.t_ms == 1300);
+  // Even a window with no valid card at all (every card mid-dwell) gets an
+  // honest span rather than the default 0/0.
+  VerdictCardIn dead; dead.valid = false;
+  auto o4 = v.window(1450, {dead, dead}, {0.0, 20}, 5);
+  CHECK(o4.v == Verdict::Unknown && o4.t_start_ms == 1300 && o4.t_ms == 1450);
+}
+// I4: the ladder's rung store has to stop taking writes "from the first
+// impaired window" (spec section 4), which is precisely the freeze edge.
+// Nothing exported it before, so main.cpp could only start the blank at
+// the hop order, 300-450 ms of detection windows too late.
+TEST(ref_frozen_marks_the_impaired_episode) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  CHECK(!v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
+  t += 150;
+  auto o = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(o.v == Verdict::Interfered);
+  CHECK(o.ref_frozen);                      // the first impaired window itself
+  t += 150;
+  CHECK(v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
+  t += 150;
+  CHECK(v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
+  t += 150;   // third consecutive healthy window: thaw
+  CHECK(!v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
+}
+// reset() is spec section 2's other thaw rule ("or after a hop's verify
+// window ends"). It had zero callers in the tree until main.cpp gained
+// HopAction::VerifyPass; this pins what it has to clear, including the
+// latched persistence window -- a trigger built from windows measured on
+// the channel we have just left must not survive the hop.
+TEST(reset_thaws_the_snapshot_and_clears_the_latched_trigger) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  CHECK(o1.ref_frozen && o2.trigger && v.ref_rung() == 5);
+  v.reset();
+  CHECK(v.ref_rung() == -1);
+  // One clean window on the NEW channel: no latched trigger, no frozen
+  // reference, and `fading` measured against the trailing history rather
+  // than the old channel's frozen median.
+  auto o3 = v.window(t + 300, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  CHECK(!o3.trigger && !o3.ref_frozen && o3.v == Verdict::Healthy);
+}
 MTEST_MAIN

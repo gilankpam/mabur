@@ -40,6 +40,7 @@
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
 #include "hop_controller.h"
+#include "hop_blank.h"
 #include "hop_burst_gate.h"
 #include "hop_ranker.h"
 #include "hop_verdict.h"
@@ -123,7 +124,8 @@ const char* hop_state_name(maburgs::HopState s) {
 // atomics/counters, so the caller still runs them immediately after this
 // call, in the same relative order as before the extraction.
 void apply_hop_action(const maburgs::HopAction& act, double now_ms, int confirm_ms,
-                      maburgs::VrxController& vrx, maburgs::ChannelPlan& plan) {
+                      maburgs::VrxController& vrx, maburgs::ChannelPlan& plan,
+                      maburgs::HopVerdict& verdict) {
   switch (act.kind) {
     case maburgs::HopAction::Order:
       vrx.set_hop(act.target, act.epoch);
@@ -153,6 +155,19 @@ void apply_hop_action(const maburgs::HopAction& act, double now_ms, int confirm_
     case maburgs::HopAction::Withdraw:
       vrx.set_hop(act.target, act.epoch);
       plan.hop_withdraw(now_ms);
+      break;
+    case maburgs::HopAction::VerifyPass:
+      // The hop stands: thaw the verdict engine's frozen references (spec
+      // section 2, "or after a hop's verify window ends"). Before this
+      // HopVerdict::reset() had ZERO callers anywhere in the tree, so the
+      // per-card RSSI median and the recovered-rate mean stayed frozen at
+      // the OLD channel's values for the rest of the flight -- `fading` on
+      // the channel we had just moved to was being measured against the
+      // one we left. Only verify_pass thaws: a verify_fail or a withdraw
+      // RE-ORDERS, and the spec has the retry reuse ref_rung rather than
+      // re-snapshot it, so thawing there would hand the retry's Order a
+      // ref_rung of -1.
+      verdict.reset();
       break;
     case maburgs::HopAction::Hold:
     case maburgs::HopAction::None:
@@ -227,6 +242,11 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
       cfg.radio.channel, n_cards, cfg.radio.scan.split_after_ms,
       cfg.radio.scan.home_window_ms, 20});
   maburgs::HopController hopc(cfg.hop, cfg.radio.channel);
+  // The real verdict engine, so the VerifyPass -> HopVerdict::reset()
+  // wiring is exercised end to end rather than asserted by reading the
+  // code. It is driven straight below to the state a real interference
+  // episode leaves it in: references frozen at the OLD channel.
+  maburgs::HopVerdict hop_verdict(cfg.hop, n_cards);
   std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
   double t = 0.0;
   double last_ctl_t = vrx.ctl().last_event().t_ms;
@@ -250,7 +270,7 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   // caller can check for a specific kind (e.g. "order" or "verify_pass")
   // without re-deriving controller state.
   auto apply_action = [&](const maburgs::HopAction& act) {
-    apply_hop_action(act, t, cfg.hop.confirm_ms, vrx, plan);
+    apply_hop_action(act, t, cfg.hop.confirm_ms, vrx, plan, hop_verdict);
     for (int i = 0; i < n_cards; ++i)
       cur_ch[static_cast<size_t>(i)] = plan.desired(i);
     drain_ctl_event();
@@ -298,9 +318,35 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   vo.v = maburgs::Verdict::Interfered;
   vo.trigger = true;
   vo.ref_rung = vrx.ctl().rung();
+  // The measurement span a real HopVerdict::window() would have stamped:
+  // this verdict was computed BEFORE the hop, on the old channel. main.cpp
+  // caches exactly this object and re-feeds it to HopController on every
+  // ~10 ms control tick until the next 150 ms window replaces it, so the
+  // first thing verifying_tick() ever sees after a Confirm is this -- step
+  // 5 below replays it deliberately.
+  vo.t_start_ms = t - cfg.hop.window_ms;
+  vo.t_ms = t;
   const std::vector<maburgs::VerdictCardIn> vc(static_cast<size_t>(n_cards));
   const maburgs::VerdictLinkIn vl;
   scan_log.verdict(t, vo, vc, vl);
+
+  // Freeze the verdict engine's references the way a real impaired window
+  // does (spec section 2), so there is something for verify_pass to thaw.
+  {
+    std::vector<maburgs::VerdictCardIn> impaired(static_cast<size_t>(n_cards));
+    for (auto& c : impaired) {
+      c.valid = true;
+      c.rssi_dbm = -55; c.snr_db = 30;
+      c.foreign = 40;                       // > foreign_pps * window_ms/1000
+    }
+    maburgs::VerdictLinkIn il;
+    il.pre_fec_loss = 0.10;                 // > loss_pct 3 %
+    hop_verdict.window(t, impaired, il, vrx.ctl().rung());
+  }
+  if (hop_verdict.ref_rung() < 0) {
+    std::fprintf(stderr, "hop-test: verdict references never froze\n");
+    return 2;
+  }
 
   maburgs::HopTick ht;
   ht.now_ms = t;
@@ -378,7 +424,6 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   mabur::node::RxBody cb = confirm_template;
   cb.card_id = static_cast<uint8_t>(confirm_card);
   cb.mono_us = static_cast<uint64_t>(t) * 1000;
-  agg.on_rx_body(cb);
   const int sid_peek = mabur::sbi_peek_stream_id(cb.body.data(), cb.body.size());
   const bool is_video = cb.crc_ok &&
                         mabur::rc::frame_type(cb.body.data(), cb.body.size()) < 0 &&
@@ -388,7 +433,44 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
     std::fprintf(stderr, "hop-test: confirm_template is not a video body\n");
     return 2;
   }
-  const uint8_t last_video_ch = cur_ch[static_cast<size_t>(cb.card_id)];
+  // 4a) The body a real card actually produces first: one received on the
+  // OLD channel before the retune landed, drained a tick later. The card
+  // is ALREADY tuned to the target by now (cur_ch[confirm_card] == target,
+  // the plan moved it), so the pre-fix "where is this card tuned now" read
+  // confirmed the hop off it -- before the order's RCF had left the
+  // slotter, and on a link that documents 30-50 % RCF uplink loss. Only
+  // RxBody::rx_channel, stamped when the frame was lifted off the card,
+  // can tell the two apart.
+  // Not fed to `agg`: this is a second copy of the SAME body (there is one
+  // template), which the decoder would rightly dedupe, and the decode path
+  // is not what 4a exercises -- the confirm gate is.
+  mabur::node::RxBody stale = cb;
+  stale.rx_channel = cfg.radio.channel;   // received before the lead card moved
+  vrx.on_video(t);
+  ht.now_ms = t;
+  ht.video_on_target = plan.hopping() && stale.rx_channel == plan.hop_target();
+  if (ht.video_on_target) {
+    std::fprintf(stderr,
+                 "hop-test: a body received on the OLD channel (%u) confirmed the "
+                 "hop to %u\n",
+                 static_cast<unsigned>(stale.rx_channel), target);
+    return 2;
+  }
+  act = hopc.tick(ht);
+  if (act.kind != maburgs::HopAction::None ||
+      hopc.state() != maburgs::HopState::Ordered) {
+    std::fprintf(stderr,
+                 "hop-test: stale-channel body moved the controller (kind=%d state=%s)\n",
+                 static_cast<int>(act.kind), hop_state_name(hopc.state()));
+    return 2;
+  }
+  apply_action(act);
+
+  // 4b) The genuine confirmation: a body stamped with the target, i.e. one
+  // the card really did receive after its retune.
+  cb.rx_channel = target;
+  agg.on_rx_body(cb);
+  const uint8_t last_video_ch = cb.rx_channel;
   vrx.on_video(t);
   ht.now_ms = t;
   ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
@@ -404,11 +486,32 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   }
   apply_action(act);
 
-  // 5) Verify: healthy windows until verify_ms has elapsed since confirm.
+  // 5a) The tick right after the Confirm, which in run_radio() is ~10 ms
+  // later and carries the SAME cached VerdictOut the order was placed on:
+  // Interfered, measured on the old channel. It must not break the verify
+  // window (C1 -- unguarded this backed the just-landed clean channel off
+  // for 30 s and ordered the next candidate ~10 ms after arriving).
+  ht.now_ms = t + 10.0;
+  ht.verdict = vo;
+  ht.video_on_target = false;
+  act = hopc.tick(ht);
+  if (act.kind != maburgs::HopAction::None ||
+      hopc.state() != maburgs::HopState::Verifying) {
+    std::fprintf(stderr,
+                 "hop-test: stale pre-hop verdict broke the verify window "
+                 "(kind=%d state=%s)\n",
+                 static_cast<int>(act.kind), hop_state_name(hopc.state()));
+    return 2;
+  }
+  apply_action(act);
+
+  // 5b) Verify: healthy windows until verify_ms has elapsed since confirm.
   bool verify_pass = false;
   maburgs::VerdictOut healthy_vo;  // default Healthy, trigger=false
   for (int i = 0; i < 200 && !verify_pass; ++i) {
+    healthy_vo.t_start_ms = t;
     t += cfg.hop.window_ms;
+    healthy_vo.t_ms = t;
     vrx.on_video(t);
     vrx.step(t, healthy);
     scan_log.verdict(t, healthy_vo, vc, vl);
@@ -420,6 +523,18 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   }
   if (!verify_pass) {
     std::fprintf(stderr, "hop-test: verify_pass never landed in scan.log\n");
+    return 2;
+  }
+  // Spec section 2's second thaw rule, driven through the SAME
+  // apply_hop_action() run_radio() uses: the references frozen on the old
+  // channel above must be gone now the hop has stood. Without the
+  // HopAction::VerifyPass wiring, HopVerdict::reset() has no caller at all
+  // and this still reads the old channel's snapshot.
+  if (hop_verdict.ref_rung() >= 0) {
+    std::fprintf(stderr,
+                 "hop-test: verify_pass did not thaw the verdict references "
+                 "(ref_rung still %d)\n",
+                 hop_verdict.ref_rung());
     return 2;
   }
   writer.flush_now();
@@ -833,7 +948,13 @@ static int run_radio(const maburgs::Config& cfg) {
   // already ranked.
   const maburgs::HopCfg& hcfg = cfg.hop;
   maburgs::HopVerdict verdict(hcfg, n_cards);
-  maburgs::HopRanker ranker(hcfg, scfg.candidates, cfg.radio.channel, cfg.radio.channel);
+  // boot_pick 0 = "no boot-time pick yet" (no channel is ever 0), so the
+  // ranked tiebreak falls through to home until the boot scan actually
+  // resolves; ranker.set_boot_pick() below publishes the real one at the
+  // first DiscAck. Passing home as BOTH arguments (as this did) collapsed
+  // spec section 3's "ties -> boot-time pick, then home" into "ties ->
+  // home" and made the tiebreak's first term dead code.
+  maburgs::HopRanker ranker(hcfg, scfg.candidates, cfg.radio.channel, 0);
   maburgs::HopController hopc(hcfg, cfg.radio.channel);
   // Constructed against card 0 as a placeholder radio -- harmless, since the
   // scout thread below always repoints this via set_radio() (Task 10)
@@ -1601,10 +1722,20 @@ static int run_radio(const maburgs::Config& cfg) {
           sid_peek != mabur::kMspStreamId && sid_peek != mabur::kProbeStreamId) {
         vrx.on_video(static_cast<double>(m.mono_us) / 1000.0);
         // In-flight hop confirmation (spec section 4): the channel THIS
-        // video body actually arrived on, off the card that carried it --
-        // cur_ch is the mechanical retune loop's own record of where each
-        // card is tuned, updated the same tick a retune lands.
-        last_video_ch = cur_ch[static_cast<size_t>(m.card_id)];
+        // video body was actually received on, stamped by the producing
+        // RadioFrontend at the instant it lifted the frame off the card
+        // (mabur/node.h's RxBody::rx_channel).
+        //
+        // NOT cur_ch[m.card_id], which is where that card is tuned NOW:
+        // this drain runs up to a full control tick behind the RX threads
+        // and RadioFrontend::retune() does not flush BodyQueue, so bodies
+        // received on the OLD channel and still queued when the lead
+        // card's retune landed were being stamped with the target and
+        // confirmed the hop ~10 ms after the order -- before the order's
+        // RCF had even left the slotter. 0 = received mid-retune (or a
+        // replay source): never equal to a real hop target, so it simply
+        // fails to confirm, which is the safe direction.
+        last_video_ch = m.rx_channel;
       }
     }
     // Re-read the clock: the drain above blocked up to 10 ms, and bodies
@@ -1703,6 +1834,14 @@ static int run_radio(const maburgs::Config& cfg) {
         scan_log->verdict(now_ms, vo, vc, vl);
       last_verdict = vo.v;
       last_verdict_out = vo;
+      // Spec section 4's "from the first impaired window": the rung
+      // store's EWMAs stop taking writes as soon as the verdict engine
+      // freezes its references, not at the order 300-450 ms later. Rolling
+      // deadline, one window plus the settle ahead; blank_store() keeps
+      // the later of the deadlines it is given, so this never shortens
+      // HopAction::Order's own confirm_ms + settle window.
+      if (const auto blank = maburgs::hop_store_blank_until(vo, hcfg.window_ms))
+        vrx.blank_store(*blank);
     }
 
     // ---- in-flight channel hop: controller tick + actions (spec
@@ -1780,7 +1919,7 @@ static int run_radio(const maburgs::Config& cfg) {
       // threads; rcf_sent_at_order anchors the one-card RCF-repeat count
       // to THIS run's send counter), so they stay here, immediately after
       // the call, in the same relative order as before the extraction.
-      apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan);
+      apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan, verdict);
       switch (act.kind) {
         case maburgs::HopAction::Order:
           hopping_atomic.store(true);
@@ -1790,6 +1929,9 @@ static int run_radio(const maburgs::Config& cfg) {
         case maburgs::HopAction::Withdraw:
           hopping_atomic.store(false);
           break;
+        case maburgs::HopAction::VerifyPass:
+          // Handled in apply_hop_action() above (HopVerdict::reset()) --
+          // nothing run_radio-specific to do.
         case maburgs::HopAction::OneCardRetune:
         case maburgs::HopAction::Hold:
         case maburgs::HopAction::None:
@@ -1825,18 +1967,23 @@ static int run_radio(const maburgs::Config& cfg) {
       plan.on_ack(now_ms, vrx.agreed_channel(), proposed);
       if (first && scout) {
         scout->freeze(plan.op());  // stops the scan for the process lifetime
-        if (scan_log) {
-          // "none" = the drone appeared before any channel reached
-          // min_rounds (the DISC proposed home by default, not by
-          // measurement).
-          const auto all = scout->ranking();
-          bool any_ranked = false;
-          for (const auto& e : all)
-            any_ranked = any_ranked || e.visits >= static_cast<uint32_t>(scfg.min_rounds);
+        // "none" = the drone appeared before any channel reached
+        // min_rounds (the DISC proposed home by default, not by
+        // measurement). Computed outside the scan_log guard because the
+        // hop ranker needs the same answer whether or not logging is on.
+        const auto all = scout->ranking();
+        bool any_ranked = false;
+        for (const auto& e : all)
+          any_ranked = any_ranked || e.visits >= static_cast<uint32_t>(scfg.min_rounds);
+        // The real boot-time pick, for HopRanker's tie-break (spec
+        // section 3). Only when the scan actually measured something: an
+        // unranked "pick" is just home proposed by default, and feeding
+        // that in would re-collapse the tiebreak.
+        if (any_ranked) ranker.set_boot_pick(proposed);
+        if (scan_log)
           scan_log->pick(now_ms,
                          any_ranked ? std::optional<uint8_t>(proposed) : std::nullopt,
                          scout->rounds(), all, scfg.min_rounds);
-        }
       }
       // Re-publish the proposal the instant the plan commits (Important
       // fix 3): set_proposal above ran BEFORE on_ack, so on the commit tick

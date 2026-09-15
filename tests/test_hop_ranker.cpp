@@ -47,4 +47,24 @@ TEST(exclude_and_skip_lists_and_tiebreak) {
   CHECK(*r.best(1000, 149, {120}) == 165);         // skip backed-off
   CHECK(!r.best(1000, 149, {120, 165}).has_value());
 }
+// I3: the boot-time pick is not known when the ranker is constructed (the
+// boot scan has not resolved yet), so main.cpp used to pass the configured
+// home as BOTH home and boot_pick -- collapsing the spec's "ties ->
+// boot-time pick, then home" into "ties -> home" and making the first
+// tiebreak term dead. The real pick arrives at the first DiscAck.
+TEST(boot_pick_published_after_construction_wins_the_tiebreak) {
+  HopRanker r(cfg(), {120, 149, 165}, 136, /*boot_pick=*/0);   // 0 = not known yet
+  for (int i = 0; i < 3; ++i) { r.add(V(120, i * 100, 2)); r.add(V(149, i * 100, 2)); r.add(V(165, i * 100, 2)); }
+  CHECK(*r.best(1000, 136, {}) == 120);   // no boot pick, home not a candidate: config order
+  r.set_boot_pick(165);
+  CHECK(*r.best(1000, 136, {}) == 165);
+}
+// No boot pick ever (radio.scan.enable off, or the drone appeared before
+// any channel reached min_rounds): 0 is never a real channel, so the
+// tiebreak falls through to home exactly as before.
+TEST(no_boot_pick_falls_through_to_home) {
+  HopRanker r(cfg(), {120, 149, 165}, 165, /*boot_pick=*/0);
+  for (int i = 0; i < 3; ++i) { r.add(V(120, i * 100, 2)); r.add(V(149, i * 100, 2)); r.add(V(165, i * 100, 2)); }
+  CHECK(*r.best(1000, 255, {}) == 165);
+}
 MTEST_MAIN

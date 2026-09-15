@@ -921,6 +921,15 @@ def sniff_scanlog(path):
 # close one (verify_pass, withdraw, and the two hold variants).
 _HOP_ORDER_KINDS = {"order", "verify_fail"}
 _HOP_TERMINAL_ONLY_KINDS = {"withdraw", "hold_cap", "hold_exhausted"}
+# A hold is a STATE, and HopController logs only its EDGES: hold_cap /
+# hold_exhausted / verify_fail on the way in (above), "hold_end" on the way
+# out, whose elapsed_ms is how long the episode lasted. hold_end never
+# belongs to a hop attempt -- the attempt was already closed by the entry
+# event -- so it is informational here, like one_card_retune. (It used to be
+# that idle_tick() re-logged its hold every ~10 ms control tick for as long
+# as the trigger stayed latched, which put ~100 H lines/s into scan.log; a
+# recording from before that fix shows exactly that and still parses.)
+_HOP_INFO_KINDS = {"one_card_retune", "hold_end"}
 _HOP_RESTORE_WINDOW_MS = 5000.0  # generous: production fires E hop_restore
                                  # essentially in the same tick as H order/
                                  # verify_fail (main.cpp calls
@@ -1018,7 +1027,7 @@ def build_hop_rows(H, restores):
             if open_row["video_ts"] is None:
                 open_row["video_ts"] = h["t_ms"]
             continue
-        if base == "one_card_retune":
+        if base in _HOP_INFO_KINDS:
             continue   # informational only; doesn't end the attempt
         if base == "verify_pass" or base in _HOP_TERMINAL_ONLY_KINDS:
             close(kind, h["t_ms"])

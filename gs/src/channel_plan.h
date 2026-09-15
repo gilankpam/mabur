@@ -44,6 +44,10 @@ class ChannelPlan {
   // link alive on op_ until hop_confirmed() (video seen on target) or
   // hop_withdraw() (no video, lead card returns). op_ only moves on confirm.
   void hop_order(double now_ms, uint8_t target, int lead_card);
+  // Both are no-ops when no hop is in flight: the caller's hop state
+  // machine and this plan do not enter hopping_ at the same instant (a
+  // one-card Order defers hop_order() until OneCardRetune), so a withdraw
+  // can legitimately arrive with nothing to withdraw.
   void hop_confirmed(double now_ms);
   void hop_withdraw(double now_ms);
   bool hopping() const { return hopping_; }

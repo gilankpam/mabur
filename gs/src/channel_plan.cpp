@@ -82,6 +82,18 @@ void ChannelPlan::hop_order(double now_ms, uint8_t target, int lead_card) {
 
 void ChannelPlan::hop_confirmed(double now_ms) {
   now_ms_ = now_ms;
+  // No hop in flight: nothing to confirm. HopController and ChannelPlan do
+  // not start hopping at the same instant -- a one-card Order deliberately
+  // does NOT call hop_order() (the sole radio has to stay on the old
+  // channel while the order rides one_card_repeats RCFs, see main.cpp), so
+  // the controller can reach Confirm or, far more often, its confirm_ms
+  // Withdraw while this plan has never entered hopping_. Unguarded, that
+  // Withdraw ran the split-timer shift below with hop_start_ms_ still 0,
+  // pushing lost_since_ms_ a whole session into the future and suppressing
+  // SplitHome -- a one-card GS's only convergence mechanism when the two
+  // ends disagree. (hop_confirmed would additionally have moved op_ to a
+  // hop_target_ of 0.)
+  if (!hopping_) return;
   op_ = hop_target_;
   frozen_ = true;
   hopping_ = false;
@@ -94,6 +106,7 @@ void ChannelPlan::hop_confirmed(double now_ms) {
 
 void ChannelPlan::hop_withdraw(double now_ms) {
   now_ms_ = now_ms;
+  if (!hopping_) return;   // see hop_confirmed: safe to call with no hop in flight
   hopping_ = false;
   // See hop_confirmed: shift, don't clear, so pre-hop loss still counts.
   if (have_lost_since_) lost_since_ms_ += (now_ms - hop_start_ms_);

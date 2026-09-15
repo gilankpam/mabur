@@ -214,6 +214,10 @@ struct StatsHopIn {
   // confirmed hop back, or after a withdraw restores the pre-attempt
   // point).
   std::optional<int> target;
+  // hops = confirmed hops that passed verify. holds = hold EPISODES
+  // entered (HopController::holds()), NOT ticks spent holding: idle_tick()
+  // runs from Hold as well as Idle, so counting ticks turned this into a
+  // six-digit ramp at the ~100 Hz control rate the moment a hold latched.
   uint32_t hops = 0, holds = 0;
   // Elapsed ms of the last HopEvent (HopController::take_events()) --
   // nullopt until the first event of any kind (order/confirm/withdraw/

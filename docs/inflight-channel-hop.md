@@ -64,10 +64,29 @@ FAILSAFE entry.
    or withdraw, logs an `M` line (`hop_lead`, `hop_follow`, `hop_withdraw`,
    or `hop_one_card` — new `MoveReason` values alongside `commit`/
    `ack_override`/`split_home`/`reunite`).
-3. First video AU received **on the target, by the lead card**
-   (`last_video_ch == plan.hop_target()`) is confirmation:
-   `HopController` emits `Confirm`, `ChannelPlan::hop_confirmed()` moves
-   `op_` to the target and the TX card follows (`M ... hop_follow`).
+3. First video AU **genuinely received on the target** by the lead card is
+   confirmation: `HopController` emits `Confirm`, `ChannelPlan::
+   hop_confirmed()` moves `op_` to the target and the TX card follows
+   (`M ... hop_follow`). "Genuinely received on" is
+   `RxBody::rx_channel` (`common/include/mabur/node.h`) — the channel the
+   producing `RadioFrontend` was known to be tuned to at the instant it
+   lifted the frame off the card, stamped there, on the producer thread,
+   and carried with the body. It is **not** "where is this card tuned
+   now": the core loop drains `BodyQueue` up to a full control tick behind
+   the RX threads and `RadioFrontend::retune()` does not flush that queue,
+   so bodies received on the OLD channel and still queued when the lead
+   card's retune landed were being stamped with the target and confirming
+   the hop ~10 ms after the order — before the order's RCF had even left
+   the slotter (held to the next end-of-AU, up to ~17 ms) on a link that
+   documents 30–50 % RCF uplink loss. The TX card then followed to a
+   channel the drone had never been told about, the drone's
+   `move_confirm_ms` never armed because it had never moved, and recovery
+   was `SplitHome` at 5 s or the drone's own 30 s rendezvous. Because the
+   stamp is taken at the source, no amount of queueing downstream can
+   change it. `retune()` additionally blanks the stamp to 0 = unknown for
+   the duration of the move, so a frame delivered across the retune is
+   attributed to neither side of it; 0 never equals a hop target, so it
+   simply fails to confirm.
 4. No video within `hop.confirm_ms` (500 ms default): `HopController`
    withdraws — epoch bumps again, `hop_ch()` reverts to the old channel,
    the lead card returns, the target is backed off (§5). A drone that had
@@ -167,8 +186,23 @@ reading is never exactly 0, so a frozen reference reading back as 0 is
 treated as "no reference yet" and the card's own current RSSI is used
 instead (`fading` can't fire off a fabricated reference). Both references
 thaw after 3 consecutive `healthy` windows, or after a hop's verify window
-ends (`HopVerdict::reset()` — the trailing histories themselves survive a
-reset; only the frozen snapshot is cleared).
+ends — `HopVerdict::reset()`, which the trailing histories themselves
+survive; only the frozen snapshot (and the latched persistence window) is
+cleared. The second rule is driven by `HopAction::VerifyPass`
+(§5): `gs/src/main.cpp`'s `apply_hop_action()` calls `reset()` there, and
+only there. A `verify_fail` or a `withdraw` re-orders rather than ending
+the hop, and §5 has the retry **reuse** `ref_rung`, so thawing on those
+would hand the retry's `Order` a `ref_rung` of −1. Like every other
+action, `VerifyPass` is suppressed while `hop.enable = false`, which keeps
+an observe-only flight's references measuring the channel the link is
+actually still on.
+
+Every `VerdictOut` also carries the wall-clock span its counter deltas
+were gathered over (`t_start_ms`, `t_ms` — the previous window's timestamp
+and this one's). The consumer needs it: `gs/src/main.cpp` recomputes a
+verdict only every `hop.window_ms` but feeds `HopController` on every
+~10 ms control tick, so a cached `VerdictOut` routinely outlives the
+window that produced it. See §5.
 
 ## 3. Scout and ranking (in-session)
 
@@ -255,7 +289,17 @@ binding text (§3: "ties → boot-time pick, then home"), not the plan's
 draft which dropped "then home"; both are ranked-clean by definition on a
 tie so the runtime risk either way is negligible, but home is what makes
 GS and drone converge rather than diverge, and it is now pinned by
-`tie_break_prefers_home_over_config_order`. Candidates =
+`tie_break_prefers_home_over_config_order`. The **boot-time pick is
+published after construction** (`HopRanker::set_boot_pick()`, called from
+`gs/src/main.cpp` at the first DiscAck, next to the `K` scan.log pick
+line): the boot scan has not resolved when the ranker is built, and
+passing the configured home as both `home` and `boot_pick` — as an earlier
+build did — collapsed the two-term tiebreak into one and made the first
+term dead code. The pick is published only when the scan actually measured
+something (some channel reached `min_rounds`); with no boot scan at all,
+or a drone that appeared before any channel ranked, `boot_pick` stays 0 —
+never a real channel — and ties fall through to home exactly as before.
+Candidates =
 `radio.scan.candidates` ∪ `{home}`, the same set the boot scout ranks — a
 strict superset of what `InflightScout` ever dwells on, so
 `HopRanker::add()`'s silent no-op for a channel outside the candidate list
@@ -276,15 +320,28 @@ can never actually drop a real visit.
   in by the same spec sentence, and `restore()` overwrites it once the hop
   lands; the per-rung EWMA store stays uncontaminated regardless, because
   it was never written to during the blank.
-- **The blank window, as built, is a fixed span from Order time**, not
-  "from the first impaired window until confirmation" as the spec's prose
-  reads: `gs/src/main.cpp`'s `HopAction::Order` case calls
-  `vrx.blank_store(now_ms + hcfg.confirm_ms + 150.0)` — `confirm_ms` +
-  the existing 150 ms post-transition settle, computed once, at the
-  moment the order is placed. Detection time (before the persistence gate
-  trips an actual order) and any part of the verify window past
-  `confirm_ms + 150 ms` are outside the blank and do update the store
-  normally.
+- **The blank starts at the first impaired window**, as the spec's prose
+  requires, and is extended by two independent call sites that compose
+  because `LadderController::blank_store()` keeps the LATER of the
+  deadlines it is given:
+  1. Every verdict window while `VerdictOut::ref_frozen` is set — i.e.
+     for the whole impaired episode, from the freeze edge until the
+     references thaw — pushes the deadline to `t_ms + window_ms + 150 ms`
+     (`gs/src/hop_blank.h`'s `hop_store_blank_until()`, pure and
+     unit-tested like `hop_burst_gate.h`; called from the verdict block in
+     `gs/src/main.cpp`). One window of lead means the blank never lapses
+     between windows; the 150 ms settle is what carries it past the last
+     frozen window, so it ends on its own with no "unblank" call.
+  2. `HopAction::Order` still calls `vrx.blank_store(now_ms +
+     hcfg.confirm_ms + 150.0)` — the longer, confirmation-shaped deadline.
+
+  Previously only (2) existed, so the ~300–450 ms of detection windows
+  before the persistence gate tripped an order — including the demotes the
+  spec explicitly expects, "a demote or two, each an IDR" — were written
+  into the per-rung EWMA store against the interfered channel, which is
+  exactly the pollution `blank_store` exists to prevent. Any part of the
+  verify window past `confirm_ms + 150 ms` is still outside the blank and
+  updates the store normally.
 - On the GS, `HopAction::Order` also calls
   `VrxController::restore_rung(ref_rung, now_ms)` → `LadderController::
   restore()`: rung set directly, probation cleared, probe-before-promote
@@ -307,7 +364,27 @@ can never actually drop a real visit.
 - **Verify window** `hop.verify_ms` (1000 ms) after confirmation:
   - `healthy`/`fade`/`unknown` throughout → stands (only a raw
     `Verdict::Interfered` window inside `verifying_tick` breaks it early);
-    `verify_pass` logged, the landed channel's backoff cleared, `hops_++`.
+    `verify_pass` logged, the landed channel's backoff cleared, `hops_++`,
+    and a `HopAction::VerifyPass` emitted for the caller to thaw the
+    verdict references with (§2).
+  - **Only a verdict measured entirely after the hop landed can fail the
+    verify.** `verifying_tick` compares `VerdictOut::t_start_ms` against
+    its own `verify_start_` and ignores anything older. Without this the
+    machine failed the verify of a perfectly good channel ~10 ms after
+    landing on it: `gs/src/main.cpp` recomputes a verdict every
+    `hop.window_ms` (150 ms) but ticks the controller every ~10 ms, so the
+    cached `VerdictOut` immediately after a `Confirm` is always the one
+    measured before or during the hop, on the old channel — `interfered`
+    by construction, since that is why we hopped. It backed the
+    just-landed channel off for 30 s, ordered the next candidate, and
+    repeated: four orders in ~0.5 s, then `hold_cap`, with the backoff
+    doubling 30 → 60 → 120 s, so after two interference events the feature
+    had disabled itself for minutes having blacklisted the good channels.
+    `t_start_ms` rather than `t_ms` because a window that merely *ends*
+    after the confirm gathered most of its deltas on the old channel. The
+    cost is one window of detection latency; the first eligible window
+    lands ~2 × `window_ms` after the confirm, leaving five inside a
+    1000 ms verify.
   - `interfered` inside the window → the target is backed off
     `hop.backoff_ms` (30 000 ms, **doubling per repeat, capped at
     300 000 ms**), and the controller hops again to the next-ranked
@@ -321,6 +398,23 @@ can never actually drop a real visit.
   copes). Automatically retried once a shorter backoff expires and a new
   trigger fires (there is no timer of its own; the next `interfered`
   window re-evaluates `ranker.best()`).
+- **A hold is a state, and only its EDGES are logged and counted.**
+  `idle_tick()` runs from `Hold` as well as `Idle`, so a held controller
+  with the trigger still latched re-enters the hold branch on every ~10 ms
+  control tick. Logging per tick pushed an `H` line into `scan.log` **and**
+  a line to stderr at ~100 Hz (~10 KB/s each) and turned `hop.holds` on
+  the sideport into a meaningless six-digit ramp — worst on exactly the
+  observe-only (`hop.enable = false`) flight this branch exists to produce
+  data from, where the shadow FSM runs the same loop and fills the log
+  with `would_hold_cap`. As built: entering logs one event naming the
+  reason (`hold_cap`, `hold_exhausted`, or `verify_fail`) and bumps
+  `holds()` once; re-entering while already held logs nothing; leaving
+  logs one `hold_end` whose `elapsed_ms` is how long the episode lasted.
+  `hop.holds` therefore counts hold **episodes**. A hold also now ends
+  when the trigger clears — every other way out runs through `order()`,
+  which needs a live trigger, so without that exit `hop.state` read
+  `hold` for the rest of the flight after a single exhausted episode and
+  no `hold_end` ever closed it.
 - **Rate limits.** `hop.max_hops_per_min` (4) **includes verify-fail
   retries** — only `hop.cooldown_ms` (2000 ms, between a confirmed hop and
   the next fresh trigger) exempts them. This is a deliberate reading of
@@ -445,7 +539,7 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is always a single snake_case token — `order`, `lead_confirm`,
   `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `hold_cap`,
-  `hold_exhausted` (the last two used to be the two-word C++ strings
+  `hold_exhausted`, `hold_end` (the hold pair used to be the two-word C++ strings
   `"hold cap"`/`"hold exhausted"`, a space-delimited field containing the
   delimiter — fixed at the emitter rather than kept as a parser
   workaround, since scan.log is designed to outlive the code that wrote
@@ -453,7 +547,11 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   machine still logs its decisions, it just never acts on them. Note:
   there is no `trail_follow` H-kind — the trailing card following the lead
   is an `M` line (`hop_follow`), not an `H` line; the spec's sketch listed
-  it as an H event.
+  it as an H event. `hold_end` closes a hold episode opened by
+  `hold_cap`/`hold_exhausted`/`verify_fail`, and its `elapsed_ms` is the
+  episode's duration (§5); `tools/flightreport.py` treats it as
+  informational, like `one_card_retune` — it never opens or closes a hop
+  attempt row.
 - **D** — extended, not replaced: the existing boot-scout dwell line gains
   a trailing `<sess> <to_us> <read_us> <back_us>` (in-session flag + the
   three step timings). Boot-time dwells still emit valid lines with these
@@ -474,7 +572,8 @@ exports `enable: false` and idle defaults, matching the existing
 hop: {
   enable, verdict, evidence, ref_rung (null while unfrozen),
   epoch, state (idle|ordered|verifying|hold),
-  target (null before the first-ever order), hops, holds,
+  target (null before the first-ever order), hops,
+  holds (hold EPISODES entered, not ticks held — §5),
   last_ms (elapsed_ms of the most recent HopEvent, null until one fires)
 }
 ```
@@ -630,6 +729,16 @@ is the actual runbook and owns filling these in.
   `cards[i].dwell`. Reading `cards[i].dwell.visits` therefore undercounts
   real scouting activity — the periodic scout's dwells are all there, a
   freshness burst's are not.
+- **`RxBody::rx_channel` still has a residual mis-stamp window** of
+  however far the USB RX pipeline lags real-time beyond `FastRetune`'s own
+  duration (~4 ms of control transfers on this path). `retune()` blanks
+  the stamp to 0 before the move and sets the new channel after it, so a
+  frame delivered at any point during those ~4 ms is correctly "unknown";
+  a frame received on the old channel but not delivered to `on_packet()`
+  until after the retune completed would still read as the new channel.
+  devourer exposes no RX flush to close it outright. This is a
+  microseconds-to-low-milliseconds window against the ~10 ms-plus, every
+  single hop, by-construction one it replaces.
 - **The 5 s `flightreport.py` `hop_restore` match window is an
   uncalibrated judgement call**, chosen with no flight data to check it
   against. It fails safe: an unmatched restore line prints "not found"

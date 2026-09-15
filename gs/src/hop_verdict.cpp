@@ -32,6 +32,10 @@ void HopVerdict::reset() {
   ref_rssi_.clear();
   healthy_streak_ = 0;
   recent_interfered_.clear();
+  // The persistence window is cleared with the snapshot: leaving it
+  // latched would hand the controller a trigger built from windows
+  // measured on the channel we have just left.
+  //
   // Histories (rssi_hist_, rec_hist_) survive a reset -- they are the
   // trailing baseline, not per-hop state. ref_rssi_/ref_rec_/ref_rung_ are
   // the frozen snapshot taken AT a hop's onset and must not leak across a
@@ -49,7 +53,13 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   for (size_t i = 0; i < cards.size(); ++i)
     if (cards[i].valid && (best < 0 || cards[i].rssi_dbm > cards[best].rssi_dbm)) best = (int)i;
   VerdictOut o;
-  if (best < 0) { o.v = Verdict::Unknown; return o; }
+  // The measurement span, stamped before any early return so even a
+  // Verdict::Unknown "no valid card" window carries an honest one.
+  o.t_start_ms = have_prev_ ? prev_ms_ : now_ms;
+  o.t_ms = now_ms;
+  prev_ms_ = now_ms;
+  have_prev_ = true;
+  if (best < 0) { o.v = Verdict::Unknown; o.ref_frozen = frozen_; return o; }
   const auto& hv = cfg_.verdict;
   // ---- terms
   const double rec_ref = frozen_ ? ref_rec_
@@ -108,11 +118,11 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
     if (rec_hist_.size() > hist_n) rec_hist_.pop_front();
   }
   o.ref_rung = ref_rung_; o.ref_rssi_dbm = rssi_ref; o.d_rssi_db = cards[best].rssi_dbm - rssi_ref;
+  o.ref_frozen = frozen_;
   // ---- persistence
   recent_interfered_.push_back(o.v == Verdict::Interfered);
   if (recent_interfered_.size() > 3) recent_interfered_.pop_front();
   o.trigger = std::count(recent_interfered_.begin(), recent_interfered_.end(), true) >= cfg_.persist;
-  (void)now_ms;
   return o;
 }
 

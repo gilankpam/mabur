@@ -30,6 +30,24 @@ struct VerdictOut {
   bool trigger = false;   // interfered in >= persist of the last 3 windows
   double ref_rssi_dbm = 0;
   double d_rssi_db = 0;
+  // The wall-clock span this verdict's counter deltas were gathered over:
+  // t_start_ms = the previous window's now_ms (== now_ms on the first
+  // window ever), t_ms = this window's now_ms. Carried because a cached
+  // VerdictOut outlives the window that produced it -- main.cpp recomputes
+  // one only every hop.window_ms but feeds HopController every ~10 ms
+  // control tick, so the CONSUMER has to be able to tell a fresh verdict
+  // from one measured before a hop landed (HopController::verifying_tick,
+  // C1). Never compare it against anything but the caller's own clock:
+  // both are the same now_ms the caller passes window().
+  double t_start_ms = 0;
+  double t_ms = 0;
+  // The frozen-reference episode is open (the first impaired window has
+  // been seen and the references have not thawed yet). Exported so the
+  // caller can blank the ladder's rung store "from the first impaired
+  // window" as spec section 4 requires -- see gs/src/hop_blank.h -- rather
+  // than only from the hop order, which is 300-450 ms of detection windows
+  // too late.
+  bool ref_frozen = false;
 };
 
 // Per-window classifier: fade / interfered / unknown / healthy (spec
@@ -41,7 +59,9 @@ class HopVerdict {
   // One window. cards[i].valid=false = skipped (mid-dwell / dead); rung = ladder rung now.
   VerdictOut window(double now_ms, const std::vector<VerdictCardIn>& cards,
                     const VerdictLinkIn& link, int rung);
-  void reset();                       // after a hop's verify window ends
+  // After a hop's verify window ends (spec section 2's second thaw rule).
+  // Called from main.cpp on HopAction::VerifyPass -- see hop_controller.h.
+  void reset();
   int ref_rung() const;               // -1 while healthy
 
  private:
@@ -51,6 +71,8 @@ class HopVerdict {
   std::vector<std::deque<double>> rssi_hist_;
   std::deque<double> rec_hist_;
   bool frozen_ = false;
+  double prev_ms_ = 0;
+  bool have_prev_ = false;
   std::vector<double> ref_rssi_;
   double ref_rec_ = 0;
   int ref_rung_ = -1;
