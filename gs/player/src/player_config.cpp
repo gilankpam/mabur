@@ -96,12 +96,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     ~Clear() { g_defaulted = nullptr; g_file.clear(); g_line = 0; }
   } clear_on_exit;
 
-  for (const char* sec : {"dvr", "osd", "input", "display"})
+  for (const char* sec : {"dvr", "osd", "input", "display", "colortrans"})
     if (!j.contains(sec)) note_default("", sec, "(section absent)");
 
   check_keys(j, "",
              {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd",
-              "input", "display"});
+              "input", "display", "colortrans"});
   Config c;
 
   c.ring_path = get_str(j, "ring_path", "/dev/shm/mabur-au", "");
@@ -208,6 +208,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         static_cast<int>(get_int(d, "vsync_lead_ms", 6, 1, 10, "display"));
     c.display.chain_budget =
         static_cast<int>(get_int(d, "chain_budget", 3, 0, 60, "display"));
+  }
+
+  if (j.contains("colortrans")) {
+    const Value& ct = j["colortrans"];
+    check_keys(ct, "colortrans", {"enable"});
+    c.colortrans.enable = get_bool(ct, "enable", c.colortrans.enable, "colortrans");
   }
 
   return c;

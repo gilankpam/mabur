@@ -110,6 +110,14 @@ struct DisplayCfg {
   int chain_budget = 3;
 };
 
+// GS-side reverse of the drone's ColorTrans sensor tuning (docs/colortrans.md).
+// One knob. The transform's constants are compiled in (colortrans.cpp,
+// kColorTrans3); retuning is a rebuild. Default off so a config without the
+// block boots unchanged.
+struct ColorTransCfg {
+  bool enable = false;
+};
+
 struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
   std::string socket = "/run/mabur-au.sock";
@@ -119,6 +127,7 @@ struct Config {
   OsdCfg osd;
   InputCfg input;
   DisplayCfg display;
+  ColorTransCfg colortrans;
 };
 
 Config load_config(const std::string& path,

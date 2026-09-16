@@ -30,6 +30,8 @@ TEST(defaults_from_bundle) {
   CHECK(c.dvr.mode == "burned");
   CHECK(c.dvr.burned.bitrate_kbps == 8000);
   CHECK(c.dvr.burned.fps_cap == 60);
+  // The drone ships the colortrans sensor bin, so the GS ships the reverse ON.
+  CHECK(c.colortrans.enable == true);
 }
 
 TEST(values_and_strictness) {
@@ -440,4 +442,23 @@ TEST(bundle_default_sets_every_known_key) {
   for (const std::string& d : defaulted)
     std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
   CHECK(defaulted.empty());
+}
+
+TEST(colortrans_enable_key) {
+  auto on = maburplay::load_config(write_tmp_play("[colortrans]\nenable = true\n"));
+  CHECK(on.colortrans.enable);
+  // Absent block: off, so a pre-colortrans config boots unchanged.
+  std::vector<std::string> defaulted;
+  auto off = maburplay::load_config(write_tmp_play("backend = \"null\"\n"), &defaulted);
+  CHECK(!off.colortrans.enable);
+  bool noted = false;
+  for (const auto& d : defaulted) if (d.find("colortrans") != std::string::npos) noted = true;
+  CHECK(noted);
+  // Only `enable` exists: the constants live in code (spec section 1).
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play("[colortrans]\ngain = 2.0\n")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("colortrans.gain") != std::string::npos;
+  }
+  CHECK(threw);
 }
