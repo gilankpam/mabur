@@ -83,7 +83,7 @@ void LadderController::mark_transition(double now_ms) {
   // rather than an inherited verdict from the rung the link just left. The
   // next update() with a usable sample flips it to Clean or Lossy and logs
   // that edge too.
-  probe_clean_since_ms_ = -1.0;
+  probe_streak_open_ = false;
   probe_last_sample_ms_ = -1e18;
   probe_hold_active_ = false;
   if (probe_state_ != ProbeGateState::Off)
@@ -102,8 +102,9 @@ ProbeGate LadderController::probe_gate(double now_ms) const {
   g.state = probe_state_;
   g.rung = probe_rung();
   g.u = probe_u_;
-  g.streak_ms = (probe_state_ == ProbeGateState::Clean && probe_clean_since_ms_ >= 0.0)
-                    ? now_ms - probe_clean_since_ms_ : 0.0;
+  (void)now_ms;
+  g.streak_bodies = (probe_state_ == ProbeGateState::Clean && probe_streak_open_)
+                        ? probe_bodies_total_ - probe_streak_start_bodies_ : 0;
   return g;
 }
 
@@ -122,7 +123,7 @@ void LadderController::set_probe_state(ProbeGateState s, int rung, double u,
 void LadderController::update_probe_gate(const LinkHealth& h, double now_ms) {
   const int pr = probe_rung();
   if (pr < 0) {
-    probe_clean_since_ms_ = -1.0;
+    probe_streak_open_ = false;
     set_probe_state(ProbeGateState::Off, -1, 0.0, now_ms);
     return;
   }
@@ -139,17 +140,24 @@ void LadderController::update_probe_gate(const LinkHealth& h, double now_ms) {
     probe_u_ = b > 0.0 ? h.probe_loss / b : (h.probe_loss > 0.0 ? 1e9 : 0.0);
     probe_last_sample_ms_ = now_ms;
     if (now_ms >= blank_store_until_ms_) store_.observe_probe(pr, probe_u_, now_ms);
+    // A counter that went backwards (maburgs restart of the track) reopens
+    // the streak at the new total rather than reading a huge unsigned gap.
+    if (h.probe_bodies_total < probe_bodies_total_) probe_streak_open_ = false;
+    probe_bodies_total_ = h.probe_bodies_total;
     if (probe_u_ <= probe_util_threshold()) {
-      if (probe_clean_since_ms_ < 0.0) probe_clean_since_ms_ = now_ms;
+      if (!probe_streak_open_) {
+        probe_streak_open_ = true;
+        probe_streak_start_bodies_ = probe_bodies_total_;
+      }
       set_probe_state(ProbeGateState::Clean, pr, probe_u_, now_ms);
     } else {
-      probe_clean_since_ms_ = -1.0;
+      probe_streak_open_ = false;
       set_probe_state(ProbeGateState::Lossy, pr, probe_u_, now_ms);
     }
   } else if (now_ms - probe_last_sample_ms_ > cfg_.probe.silence_ms) {
     // A commanded probe that has gone quiet says nothing, and saying nothing
     // holds the promote (block 6) exactly as a Lossy verdict does.
-    probe_clean_since_ms_ = -1.0;
+    probe_streak_open_ = false;
     set_probe_state(ProbeGateState::NoInfo, pr, probe_u_, now_ms);
   }
 }
@@ -560,7 +568,7 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
         now_ms - last_change_ms_ >= cfg_.min_between_changes_ms &&
         !is_penalized(static_cast<int>(next), now_ms)) {
       // Probe gate (spec 2026-09-04 §4.4): with a probe commanded, only a
-      // clean streak of probe.clean_ms may commit; Lossy AND NoInfo hold —
+      // clean streak of probe.clean_bodies may commit; Lossy AND NoInfo hold —
       // a commanded-but-absent probe is exactly the blind promote the
       // stream exists to prevent. No penalty: nothing was tried.
       //
@@ -572,7 +580,8 @@ bool LadderController::update(const LinkHealth& h, double now_ms) {
       const ProbeGate g = probe_gate(now_ms);
       CtlReason reason = CtlReason::Promote;
       if (g.state != ProbeGateState::Off) {
-        if (g.state == ProbeGateState::Clean && g.streak_ms >= cfg_.probe.clean_ms) {
+        if (g.state == ProbeGateState::Clean &&
+            g.streak_bodies >= static_cast<uint64_t>(cfg_.probe.clean_bodies)) {
           reason = CtlReason::PromoteProbed;
         } else if (g.state == ProbeGateState::Clean) {
           return false;  // clean but streak too short: not a hold

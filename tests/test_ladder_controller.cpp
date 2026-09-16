@@ -70,13 +70,24 @@ void feed_for(LadderController& ctl, double& t, double dt_total,
 
 // Healthy base sample carrying a usable probe window measured at `rung`
 // with union block loss `loss` (and usable s3 for the steady-state paths).
+// The probe streak is counted in BODIES (probe per AU, 2026-09-16), so
+// every okp() sample advances the cumulative expected-body counter by
+// kBodiesPerSample: 3 per 50 ms = 60 probes/s, one per AU at 60 fps.
+constexpr uint64_t kBodiesPerSample = 3;
+uint64_t g_probe_bodies = 0;
 LinkHealth okp(double pre, int probe_rung, double loss) {
   LinkHealth h = ok(pre);
   h.s3_valid = true; h.s3_expected_syms = 500;
   h.probe_valid = true; h.probe_loss = loss;
   h.probe_expected_syms = 60; h.probe_rung = probe_rung;
+  g_probe_bodies += kBodiesPerSample;
+  h.probe_bodies_total = g_probe_bodies;
   h.rf_snr_db = 30.0;
   return h;
+}
+// Wall time a clean streak of cfg.probe.clean_bodies takes at okp()'s cadence.
+double clean_streak_ms(const LadderCfg& cfg) {
+  return 50.0 * static_cast<double>(cfg.probe.clean_bodies) / kBodiesPerSample;
 }
 
 // Healthy sample WITH usable s3 but NO probe window: the gate reads NoInfo
@@ -534,15 +545,45 @@ TEST(clean_probe_streak_gates_the_promote) {
   CHECK(c.counters().probe_holds == 1);
   CHECK(c.penalized(t).empty());
   CHECK(c.probe_gate(t).state == ProbeGateState::Lossy);
-  // Probe turns clean: promote lands once the streak reaches probe.clean_ms.
+  // Probe turns clean: promote lands once the streak reaches
+  // probe.clean_bodies expected bodies.
   const double t_clean = t;
   while (c.rung() == 0) { c.update(okp(0.0, c.probe_rung(), 0.0), t); t += 50; REQUIRE(t < t_clean + 5000); }
   CHECK(c.rung() == 1);
-  CHECK(t - t_clean >= cfg.probe.clean_ms);
-  CHECK(t - t_clean < cfg.probe.clean_ms + 200);
+  CHECK(t - t_clean >= clean_streak_ms(cfg));
+  CHECK(t - t_clean < clean_streak_ms(cfg) + 200);
   CHECK(c.counters().promotes_probed == 1);
   CHECK(c.last_event().reason == CtlReason::PromoteProbed);
   CHECK(c.probation_ms_left(t) > 0);
+}
+
+// The streak is a BODY count, not a duration (probe per AU, 2026-09-16):
+// the same clean_bodies takes half the wall time at 60 probes/s (one per
+// AU at 60 fps) as at 30/s (30 fps, or the old enh-only cadence), so the
+// gate's confidence -- (1-p)^n over n bodies -- never depends on the frame
+// rate or the layer split, only on the config.
+TEST(probe_clean_streak_is_counted_in_bodies_not_ms) {
+  LadderCfg cfg = make_cfg();
+  cfg.clean_ms = 500;           // link streak out of the way
+  cfg.probe.clean_bodies = 90;
+  // 60 probes/s: okp() advances 3 bodies per 50 ms sample -> 1500 ms.
+  LadderController fast(cfg);
+  double t = 0;
+  while (fast.rung() == 0) { fast.update(okp(0.0, fast.probe_rung(), 0.0), t); t += 50; REQUIRE(t < 1e5); }
+  CHECK(t >= 1500);
+  CHECK(t < 1700);
+  // 30 probes/s: 1.5 bodies per sample -> the same 90 bodies take 3000 ms.
+  LadderController slow(cfg);
+  t = 0;
+  double bodies = 0;
+  while (slow.rung() == 0) {
+    LinkHealth h = okp(0.0, slow.probe_rung(), 0.0);
+    bodies += 1.5;
+    h.probe_bodies_total = static_cast<uint64_t>(bodies);
+    slow.update(h, t); t += 50; REQUIRE(t < 1e5);
+  }
+  CHECK(t >= 3000);
+  CHECK(t < 3200);
 }
 
 TEST(clean_but_short_probe_streak_is_not_a_hold) {
@@ -555,9 +596,9 @@ TEST(clean_but_short_probe_streak_is_not_a_hold) {
   // Clean streak is short. Spec §4.4: that is "wait", not a hold.
   for (; t < cfg.clean_ms - 100; t += 50) c.update(okp(0.0, c.probe_rung(), 0.9), t);
   for (; t <= cfg.clean_ms + 50; t += 50) c.update(okp(0.0, c.probe_rung(), 0.0), t);
-  CHECK(c.rung() == 0);  // not promoted: streak hasn't reached probe.clean_ms
+  CHECK(c.rung() == 0);  // not promoted: streak hasn't reached probe.clean_bodies
   CHECK(c.probe_gate(t).state == ProbeGateState::Clean);
-  CHECK(c.probe_gate(t).streak_ms < cfg.probe.clean_ms);
+  CHECK(c.probe_gate(t).streak_bodies < static_cast<uint64_t>(cfg.probe.clean_bodies));
   CHECK(c.counters().probe_holds == 0);
 }
 
@@ -601,7 +642,7 @@ TEST(probe_silence_decays_to_noinfo_and_resets_the_streak) {
   CHECK(c.probe_gate(t).state == ProbeGateState::Clean);
   for (; t < 1000 + cfg.probe.silence_ms + 100; t += 50) c.update(ok3(0.0), t);
   CHECK(c.probe_gate(t).state == ProbeGateState::NoInfo);
-  CHECK(c.probe_gate(t).streak_ms == 0.0);
+  CHECK(c.probe_gate(t).streak_bodies == 0);
 }
 
 TEST(rung_change_resets_the_probe_streak) {
@@ -610,7 +651,7 @@ TEST(rung_change_resets_the_probe_streak) {
   double t = 0;
   while (c.rung() == 0) { c.update(okp(0.0, c.probe_rung(), 0.0), t); t += 50; REQUIRE(t < 1e6); }
   // Right after the promote the new rung's probe has no streak yet.
-  CHECK(c.probe_gate(t).streak_ms < 100.0);
+  CHECK(c.probe_gate(t).streak_bodies < 2 * kBodiesPerSample);
 }
 
 TEST(probe_edges_are_recorded_with_labels) {

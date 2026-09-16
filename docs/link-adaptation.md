@@ -152,8 +152,9 @@ video-body length (1405 B at the shipped 332/bpb4 geometry since SBI
 header ver 2 (`air_ms`, 2026-09-06; was 1403 B on the 11-byte ver-1
 header),
 `13 + bpb*(2 + kSwHeaderLen + symbol_size)`, derived from the same
-`FecCfg` as video and never independently configured) — after every ENH
-access unit, all the time the link is LINKED. It flies at the profile of
+`FecCfg` as video and never independently configured) — after every
+video access unit, base and enh alike (since 2026-09-16, see "Probe per
+AU" below; enh-only before), all the time the link is LINKED. It flies at the profile of
 rung `current + link.probe.rung_offset` (default 1), commanded fresh on
 every RCF (`Rcf::probe_profile`, 0xFF = no probe: disabled, or already
 on the top rung). Every sub-block repeats a 9-byte header (magic, seq,
@@ -218,8 +219,8 @@ gate is consulted on top, only once a probe is commanded:
 
 | gate | action |
 |---|---|
-| Clean, streak ≥ `probe.clean_ms` | promote now; probation as today; `++promotes_probed`; reason `promote_probed` |
-| Clean, streak short | wait — the promote lands the tick the streak reaches `clean_ms` |
+| Clean, streak ≥ `probe.clean_bodies` (bodies, since 2026-09-16; was `clean_ms`) | promote now; probation as today; `++promotes_probed`; reason `promote_probed` |
+| Clean, streak short | wait — the promote lands the tick the streak reaches `clean_bodies` |
 | Lossy | **hold**, no penalty (nothing was tried, the probe keeps measuring for free); `++probe_holds` once per hold episode |
 | NoInfo | **hold**, same counter — a commanded-but-absent probe (enh shed, drone not sending) is precisely the blind promote this design exists to prevent |
 
@@ -246,6 +247,59 @@ would be tuned against.
 First flights 2026-09-05: `docs/probe-stream-flight-findings-2026-09-05.md`
 — the gate's loss quantum is 0.2 per lost body, so `max_util` must sit
 below 0.2 (0.15 flown: rung-5 median hold 16 s vs 1 s at 0.2).
+
+### Probe per AU (2026-09-16) — 60 probes/s, streak in bodies
+
+**Why.** The gate is a zero-loss run test: a streak of n bodies passes
+with probability (1−p)^n at candidate-rung PPDU loss p, so its resolution
+is a body count. The 2026-09-06 flights held 90 bodies (3 s at 30/s) and
+18 % of probed promotes still failed inside 2 s, all after a 90/90-clean
+streak — 90 bodies can only reject ≈3.3 % PPDU loss at 95 % (rule of
+three) and rung 5 fails below 1 %. The goal here is not more resolution
+but the SAME resolution in half the wall time: the promote latency is
+bounded by `probe.clean_bodies` and `link.clean_ms` together (block 6
+requires both streaks), so both came down.
+
+**What changed.**
+- The drone trails EVERY video AU with a probe, base and enh
+  (`probe_follows()` in `drone/src/probe_source.h`: any video sid while a
+  probe is commanded, never a shed layer's AU). 60 fps SVC-T ⇒ 60
+  probes/s; 30 fps ⇒ 30/s; enh shed ⇒ base still probes, so the gate no
+  longer drops to NoInfo whenever the enh layer is absent (30 fps with
+  SVC-T off used to mean no probe at all, and NoInfo holds every promote).
+- `ProbeTrack::on_au(sid, fid)` books one expectation per video AU
+  (`sid < UepEncoder::kNumStreams`); base and enh share one frame-id
+  counter, so the off-profile cancel path is unchanged.
+- The RcfSlotter treats a base completion like an enh one while a probe is
+  commanded (`probe_follows = true`): the release is the probe's arrival,
+  or the learned tail deadline if it is lost. Releasing at the base
+  completion would put the RCF blast exactly on the base-tail probe — the
+  2.5× GS-inflicted probe loss of 2026-09-04 again.
+- `link.probe.clean_ms` → `link.probe.clean_bodies` (default 90; the old
+  key fails boot). `LinkHealth::probe_bodies_total` (ProbeTrack union
+  `expected_blocks / bpb`) feeds `ProbeGate::streak_bodies`, counted from
+  the streak's first Clean sample. Sideport `link.probe.streak_bodies`
+  replaces `streak_ms`; maburtop prints `54b`.
+- The loss quantum halves: one lost body over the 500 ms window is
+  1/30 / 0.333 = **0.1** at 60/s (0.2 at 30/s). `max_util` 0.15 → **0.05**
+  in the bundle config so it still means "zero loss allowed" at any frame
+  rate; 0.1–0.199 would now allow one loss, the setting flight 20 showed
+  fails in ~1 s.
+- Bundle config: `link.clean_ms` 3000 → 1500, `link.probe.clean_bodies`
+  90, `link.probe.max_util` 0.05. Promote latency ≈ 1.5 s + RCF lag at
+  60 fps, unchanged confidence.
+
+**Costs.** Probe airtime doubles: ≈0.8 % of air at rung 4 (probe at mcs5),
+≈2.8 % at rung 0 (probe at mcs1), where the budget already runs tight —
+the bench "nil cost" of 2026-09-04 was measured at mcs5 only. Twice as
+many bodies are in flight across each RCF lag, so `off_profile` per rung
+change should read ~2–12, not 2–6. Mismatched pair: new drone + old GS
+reads arrived > expected (loss clamps to 0, blind gate); old drone + new
+GS reads 50 % loss and never promotes — deploy both ends together, no
+wire bytes change. What this does NOT fix: the probe is one short PPDU
+while video flies as agg6 aggregates ~6× longer on air, so it
+underestimates per-aggregate loss; that bias is the remaining fast-fail
+lever (SNR floor at the candidate rung, or `rung_offset 2`).
 
 ## Drone congestion shed (2026-09-03)
 

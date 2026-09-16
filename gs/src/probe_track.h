@@ -117,17 +117,20 @@ class ProbeTrack {
   explicit ProbeTrack(ProbeTrackCfg cfg);
 
   // Sets the profile the ladder currently has commanded. 0xFF = none
-  // (probe stream not running / not booked yet): on_enh_au is a no-op
+  // (probe stream not running / not booked yet): on_au is a no-op
   // while this holds.
   void set_commanded(uint8_t profile, double now_ms);
   uint8_t commanded() const;
 
-  // The core loop saw one enh AU begin, identified by its frame id (the
-  // same id probe bodies for it carry as ProbeRx::hdr.enh_fid). Books an
-  // expectation of `bpb` blocks, finalized `finalize_ms` later unless an
-  // off-profile body for this fid cancels it first. No-op while
-  // commanded() == 0xFF.
-  void on_enh_au(uint16_t enh_fid, double now_ms);
+  // The core loop saw one video AU begin -- base (sid 0) or enh (sid 1),
+  // the drone trails BOTH with a probe since 2026-09-16 -- identified by
+  // its frame id (the same id probe bodies for it carry as
+  // ProbeRx::hdr.enh_fid; base and enh share one frame-id counter). Books
+  // an expectation of `bpb` blocks, finalized `finalize_ms` later unless
+  // an off-profile body for this fid cancels it first. No-op while
+  // commanded() == 0xFF, and for a non-video sid (MSP, the probe stream
+  // itself): only a video AU has a probe riding its send opportunity.
+  void on_au(uint8_t sid, uint16_t fid, double now_ms);
 
   // A parsed probe body arrived on `card`. snr_db/evm_db are this card's
   // RF labels for the body (NaN if unavailable). Bodies are keyed by

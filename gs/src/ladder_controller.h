@@ -60,13 +60,21 @@ struct FadeCfg {
 
 // --- always-on probe stream (spec 2026-09-04) ---
 // The drone pushes a small canary body at the rung `current + rung_offset`
-// after every enh AU; the GS scores its loss continuously and the promote
-// trigger consults the verdict. No state machine: nothing starts, nothing
-// aborts, and a demote never has to cancel anything.
+// after every video AU (base and enh since 2026-09-16; enh-only before);
+// the GS scores its loss continuously and the promote trigger consults the
+// verdict. No state machine: nothing starts, nothing aborts, and a demote
+// never has to cancel anything.
+//
+// clean_bodies: the Clean streak the promote needs, in expected probe
+// BODIES, not ms. The gate is a zero-loss run test whose confidence is
+// (1-p)^n over the n bodies in the streak, so a duration would mean a
+// different confidence at every frame rate and layer split (60 fps SVC-T
+// = 60 probes/s, 30 fps = 30/s, enh shed = base only). 90 bodies rejects
+// ~3.3 % PPDU loss at 95 % (rule of three) and takes 1.5 s at 60/s.
 struct ProbeCfg {
   bool enable = true;
   int rung_offset = 1;
-  int clean_ms = 2000;
+  int clean_bodies = 90;
   double max_util = -1.0;   // <0 => down_util
   int min_syms = 40;
   int silence_ms = 500;
@@ -148,6 +156,10 @@ struct LinkHealth {
   bool probe_valid = false;      // probe window had a sample
   double probe_loss = 0.0;       // union block loss over the window
   uint64_t probe_expected_syms = 0;
+  // Cumulative expected probe bodies (ProbeTrack union expected_blocks /
+  // bpb), monotonic: the Clean streak is counted as bodies since the
+  // streak's first Clean sample (ProbeCfg::clean_bodies).
+  uint64_t probe_bodies_total = 0;
   int probe_rung = -1;           // rung the sample was commanded at
 };
 
@@ -169,7 +181,9 @@ struct ProbeGate {
   ProbeGateState state = ProbeGateState::Off;
   int rung = -1;         // the rung being probed; -1 when none is
   double u = 0.0;        // last scored probe utilization
-  double streak_ms = 0.0;  // how long the state has been Clean; 0 otherwise
+  // Expected probe bodies booked since the state turned Clean; 0 otherwise.
+  // The promote needs streak_bodies >= ProbeCfg::clean_bodies.
+  uint64_t streak_bodies = 0;
 };
 
 // One state change of the gate, for the ctl log / sideport. prev_dur_ms is
@@ -286,7 +300,7 @@ class LadderController {
   // top rung). Pure function of the current rung — there is no probe state.
   int probe_rung() const;
   // The gate's current verdict; consulted by the promote trigger and
-  // exported. streak_ms is live against now_ms.
+  // exported. streak_bodies counts up to the last update()'s sample.
   ProbeGate probe_gate(double now_ms) const;
   // The last gate state CHANGE (ctl log / sideport). Off with rung -1 before
   // any change has happened.
@@ -431,7 +445,11 @@ class LadderController {
   // --- probe gate state (spec 2026-09-04) ---
   ProbeGateState probe_state_ = ProbeGateState::Off;
   double probe_state_since_ms_ = 0.0;
-  double probe_clean_since_ms_ = -1.0;   // -1 = no streak
+  // Clean streak in bodies: probe_bodies_total at the streak's first Clean
+  // sample (probe_streak_open_ false = no streak) and the latest total.
+  bool probe_streak_open_ = false;
+  uint64_t probe_streak_start_bodies_ = 0;
+  uint64_t probe_bodies_total_ = 0;
   double probe_last_sample_ms_ = -1e18;
   double probe_u_ = 0.0;
   bool probe_hold_active_ = false;       // one probe_holds count per hold episode

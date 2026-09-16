@@ -362,12 +362,15 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     // defaults; the pre-2026-09-04 flat probe_* keys are gone and fail boot.
     if (r.contains("probe")) {
       const Value& pj = r["probe"];
-      check_keys(pj, "link.probe", {"enable", "rung_offset", "clean_ms", "max_util",
+      check_keys(pj, "link.probe", {"enable", "rung_offset", "clean_bodies", "max_util",
                                     "min_syms", "silence_ms", "pin_mcs"});
       auto& pc = lc.probe;
       pc.enable = get_bool(pj, "enable", pc.enable, "link.probe");
       pc.rung_offset = static_cast<int>(get_int(pj, "rung_offset", 1, 1, 7, "link.probe"));
-      pc.clean_ms = static_cast<int>(get_int(pj, "clean_ms", 2000, 100, 60000, "link.probe"));
+      // Streak in expected probe BODIES (probe per AU, 2026-09-16), so the
+      // gate's confidence is fixed by config alone, not by fps or the
+      // layer split. clean_ms is gone: it fails boot like any unknown key.
+      pc.clean_bodies = static_cast<int>(get_int(pj, "clean_bodies", 90, 10, 100000, "link.probe"));
       if (pj.contains("max_util"))
         pc.max_util = get_num(pj, "max_util", 0.35, 0.01, 2.0, "link.probe");
       else

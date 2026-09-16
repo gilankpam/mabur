@@ -414,6 +414,23 @@ player just doesn't come back). **Strip the `display.vsync_*` /
 `maburplay.pre-vsync`** — config-before-binary applies rolling back too,
 not only rolling forward.
 
+## 2026-09-16 probe per AU (no wire change, both ends together)
+
+The drone trails every video AU with a probe (60/s at 60 fps, was
+enh-only 30/s) and the GS books one expectation per video AU. No RCF or
+SBI byte changes, but the pair is still mismatched between the two swaps:
+new `maburd` + old `maburgs` books half the expectations (loss clamps to
+0, the promote gate is blind); old `maburd` + new `maburgs` reads 50 %
+probe loss and never promotes. Neither state has a control-link symptom —
+finish the deploy.
+
+**GS config first, then both binaries.** `/etc/maburgs.toml`:
+`link.probe.clean_ms` is gone and fails boot; replace it with
+`link.probe.clean_bodies = 90`; set `link.probe.max_util = 0.05` (the loss
+quantum halved to 0.1 per lost body at 60/s, 0.15 would now allow one
+loss) and `link.clean_ms = 1500`. `tools/maburtop.py` reads
+`link.probe.streak_bodies` (was `streak_ms`) — swap it with `maburgs`.
+
 ## 2026-09-04 RC_VERSION 6 (probe stream)
 
 The discrete s3 probe is replaced by an always-on probe-stream canary

@@ -1126,9 +1126,11 @@ def panel_ladder(model, wall):
     pb = (d.get("link") or {}).get("probe") or {}
     if pb.get("on"):
         cards = " ".join(f"c{i} {_s(c.get('loss'), 2)}" for i, c in enumerate(pb.get("cards") or []))
-        streak = pb.get("streak_ms") or 0
+        # streak_bodies (probe per AU, 2026-09-16): the clean streak in probe
+        # bodies, the unit link.probe.clean_bodies is set in.
+        streak = pb.get("streak_bodies") or 0
         body.append((f" probe: r{_s(pb.get('rung'))} mcs{_s(pb.get('mcs'))} {pb.get('state', '?')}"
-                     f" {streak / 1000:.1f}s u{_s(pb.get('u'), 2)} n{_s(pb.get('n'))} | {cards}", []))
+                     f" {streak}b u{_s(pb.get('u'), 2)} n{_s(pb.get('n'))} | {cards}", []))
     return _panel("LADDER", body, min_width=34)
 
 

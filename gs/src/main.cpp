@@ -1203,10 +1203,11 @@ static int run_radio(const maburgs::Config& cfg) {
          if (au_on) au_ring.begin(h, sid);
          if (au_log) au_log->begin();
          rcf_slot.on_au_first(mono_ms());
-         // One probe expectation per ENH access unit: the probe body rides
-         // the enh AU's send opportunity, so the AU count is what "expected"
-         // means (probe_track.h explains why seq gaps cannot be).
-         if (sid == 1) probe_track.on_enh_au(h.frame_id, static_cast<double>(mono_ms()));
+         // One probe expectation per video access unit, base and enh alike
+         // (probe per AU, 2026-09-16): the probe body rides the AU's send
+         // opportunity, so the AU count is what "expected" means
+         // (probe_track.h explains why seq gaps cannot be).
+         probe_track.on_au(sid, h.frame_id, static_cast<double>(mono_ms()));
        },
        [&](const uint8_t* d, size_t n) {
          if (au_on) au_ring.append(d, n);
@@ -1224,9 +1225,14 @@ static int run_radio(const maburgs::Config& cfg) {
            if (rec != UINT64_MAX && au_log)
              au_log->row(mono_us(), au_ring.last_record());
          }
+         // Every video AU is trailed by a probe while one is commanded
+         // (probe per AU, 2026-09-16), so a base completion releases
+         // nothing by itself either: the release is the probe's arrival,
+         // or the learned tail deadline if it is lost (rcf_slot.h).
          rcf_slot.on_au_complete(
              mono_ms(),
-             cur_au_sid == 1 && probe_cmd_last != mabur::rc::kNoProbeProfile);
+             cur_au_sid < mabur::UepEncoder::kNumStreams &&
+                 probe_cmd_last != mabur::rc::kNoProbeProfile);
          {
            static const bool gaplog_au = std::getenv("MABUR_GAPLOG") != nullptr;
            if (gaplog_au)
@@ -2372,6 +2378,9 @@ static int run_radio(const maburgs::Config& cfg) {
     health.probe_valid = probe_sample.valid;
     health.probe_loss = probe_sample.valid ? probe_sample.loss : 0.0;
     health.probe_expected_syms = probe_loss.expected_in_window(now_ms);
+    // Cumulative expected bodies for the body-count clean streak. Expected
+    // books bpb blocks per AU (ProbeTrack), so this is exact.
+    health.probe_bodies_total = pu.expected_blocks / static_cast<uint64_t>(probe_bpb);
     health.probe_rung = vrx.ctl().probe_rung();
     health.rf_snr_db = rf_snr_db;
     health.rf_evm_db = rf_evm_db;
@@ -2868,7 +2877,7 @@ static int run_radio(const maburgs::Config& cfg) {
             probe_sample.valid && g.state != maburgs::ProbeGateState::Off;
         pin.u = g.u;
         pin.loss = probe_sample.valid ? probe_sample.loss : 0.0;
-        pin.streak_ms = static_cast<int>(g.streak_ms);
+        pin.streak_bodies = g.streak_bodies;
         pin.n = probe_loss.expected_in_window(now_ms);
         pin.exp = pu.expected_blocks;
         pin.rx = pu.bodies_rx;

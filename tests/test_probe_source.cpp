@@ -21,4 +21,18 @@ TEST(probe_source_builds_sequential_bodies) {
   CHECK(src.built() == 2);
 }
 
+// Which AUs a probe trails (probe per AU, 2026-09-16): every video AU that
+// went on air -- base or enh -- while a probe is commanded. A shed layer's
+// AU never went on air (no expectation books on the GS), and a non-video
+// body is not an AU.
+TEST(probe_follows_every_video_au_that_went_on_air) {
+  CHECK(probe_follows(0, true, false));   // base AU
+  CHECK(probe_follows(1, true, false));   // enh AU
+  CHECK(!probe_follows(1, false, false)); // no probe commanded
+  CHECK(!probe_follows(1, true, true));   // that layer is shed
+  CHECK(!probe_follows(0, true, true));
+  CHECK(!probe_follows(kMspStreamId, true, false));
+  CHECK(!probe_follows(kProbeStreamId, true, false));
+}
+
 MTEST_MAIN

@@ -1004,7 +1004,7 @@ TEST(rcf_slot_hold_explicit_and_zero_parse) {
 TEST(probe_block_defaults) {
   auto c = maburgs::load_config(write_tmp(""));
   const auto& p = c.link.ladder_cfg.probe;
-  CHECK(p.enable); CHECK(p.rung_offset == 1); CHECK(p.clean_ms == 2000);
+  CHECK(p.enable); CHECK(p.rung_offset == 1); CHECK(p.clean_bodies == 90);
   CHECK(p.max_util == c.link.ladder_cfg.down_util);  // sentinel resolved
   CHECK(p.min_syms == 40); CHECK(p.silence_ms == 500); CHECK(p.pin_mcs == -1);
   CHECK(c.link.ladder_cfg.s3_min_syms == 50);
@@ -1013,10 +1013,10 @@ TEST(probe_block_defaults) {
 TEST(probe_block_parses_and_bounds) {
   auto c = maburgs::load_config(write_tmp(
       "[link]\ns3_min_syms = 30\n"
-      "\n[link.probe]\nenable = false\nrung_offset = 2\nclean_ms = 1500\n"
+      "\n[link.probe]\nenable = false\nrung_offset = 2\nclean_bodies = 180\n"
       "max_util = 0.4\nmin_syms = 20\nsilence_ms = 800\npin_mcs = 5\n"));
   const auto& p = c.link.ladder_cfg.probe;
-  CHECK(!p.enable); CHECK(p.rung_offset == 2); CHECK(p.clean_ms == 1500);
+  CHECK(!p.enable); CHECK(p.rung_offset == 2); CHECK(p.clean_bodies == 180);
   CHECK(std::abs(p.max_util - 0.4) < 1e-9); CHECK(p.min_syms == 20);
   CHECK(p.silence_ms == 800); CHECK(p.pin_mcs == 5);
   CHECK(c.link.ladder_cfg.s3_min_syms == 30);
@@ -1028,6 +1028,25 @@ TEST(probe_block_parses_and_bounds) {
   threw = false;
   try { maburgs::load_config(write_tmp("[link.probe]\nmin_syms = 0\n")); }
   catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  // clean_bodies is bounded [10, 100000]: fewer than 10 bodies is no
+  // evidence at all, and 9 must reject.
+  threw = false;
+  try { maburgs::load_config(write_tmp("[link.probe]\nclean_bodies = 9\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+// probe.clean_ms went with the ms streak (probe per AU, 2026-09-16): the
+// streak is clean_bodies now, and the old key fails boot like any other
+// unknown key -- a config still carrying it would silently mean a
+// different confidence at a different frame rate.
+TEST(probe_clean_ms_key_fails_boot) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[link.probe]\nclean_ms = 3000\n")); }
+  catch (const std::exception& e) {
+    threw = std::string(e.what()).find("clean_ms") != std::string::npos;
+  }
   CHECK(threw);
 }
 

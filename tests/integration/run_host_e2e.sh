@@ -130,7 +130,7 @@ EOF
 "$MABURD" -c bundle/mabur.default.toml --dry-run --in "$FIX" --out "$TMP/f3.bin" \
   --rc-in "$TMP/rc6.bin"
 
-echo "== probe stream: one sid-5 body at mcs6 after each enh AU, none after base =="
+echo "== probe stream: one sid-5 body at mcs6 after EVERY video AU, base and enh =="
 python3 - "$TMP/f3.bin" <<'PYCHK'
 import struct, sys
 frames = []
@@ -145,17 +145,25 @@ def sid_mcs(fr):
     sid = body[3] if len(body) > 10 and body[:2] == b"\xb0\xf5" else -1
     return sid, fr[12]
 seq = [sid_mcs(fr) for fr in frames]
+# Probe per AU (2026-09-16): every video AU's burst -- sid 0 (base) and
+# sid 1 (enh) alike -- ends in exactly one probe body, so the probe
+# cadence is the AU rate. A base run followed straight by an enh run (or
+# vice versa) with no probe between them is the old enh-only behaviour.
+VIDEO = (0, 1)
 probes = [i for i, (s, _) in enumerate(seq) if s == 5]
 assert probes, "no probe bodies emitted"
 for i in probes:
     assert seq[i][1] == 6, f"probe at index {i} has mcs {seq[i][1]}"
-    assert seq[i - 1][0] == 1, f"probe at {i} does not trail an enh body (prev sid {seq[i-1][0]})"
-runs = 0
+    assert seq[i - 1][0] in VIDEO, f"probe at {i} does not trail a video body (prev sid {seq[i-1][0]})"
+runs = {0: 0, 1: 0}
 for i in range(1, len(seq)):
-    if seq[i - 1][0] == 1 and seq[i][0] != 1:
-        runs += 1
-        assert seq[i][0] == 5, f"enh run ending at {i} not followed by a probe"
-print(f"probe check ok: {len(probes)} probes, {runs} enh runs")
+    prev = seq[i - 1][0]
+    if prev in VIDEO and seq[i][0] != prev:
+        runs[prev] += 1
+        assert seq[i][0] == 5, f"sid-{prev} run ending at {i} not followed by a probe (got sid {seq[i][0]})"
+assert runs[0] > 0 and runs[1] > 0, f"fixture must exercise both classes: {runs}"
+assert len(probes) == runs[0] + runs[1], f"{len(probes)} probes for {runs} runs"
+print(f"probe check ok: {len(probes)} probes, {runs[0]} base runs, {runs[1]} enh runs")
 PYCHK
 
 echo "== all E2E checks passed =="

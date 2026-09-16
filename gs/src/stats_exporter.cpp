@@ -336,7 +336,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     pj["state"] = p.state;
     pj["u"] = p.have_sample ? json(clamp_util(p.u)) : json(nullptr);
     pj["loss"] = p.have_sample ? json(p.loss) : json(nullptr);
-    pj["streak_ms"] = p.streak_ms;
+    pj["streak_bodies"] = p.streak_bodies;
     pj["n"] = p.n;
     pj["exp"] = p.exp;
     pj["rx"] = p.rx;

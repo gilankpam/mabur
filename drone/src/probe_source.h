@@ -5,11 +5,24 @@
 #include "mabur/uep_encoder.h"
 
 namespace mabur {
+// Does a probe trail the AU just pushed? Every video AU that went on air
+// -- base or enh, so the probe cadence is the AU rate, 60/s at 60 fps
+// SVC-T (probe per AU, 2026-09-16; was enh-only, 30/s) -- while a probe
+// is commanded. A shed layer's AU never went on air, so no probe: the GS
+// books no expectation for an AU it never sees, and a probe carrying that
+// fid would count as arrived-without-expected. A non-video body (MSP,
+// the probe itself) is not an AU.
+inline bool probe_follows(int au_sid, bool probe_commanded, bool layer_shed) {
+  return probe_commanded && !layer_shed && au_sid >= 0 &&
+         au_sid < UepEncoder::kNumStreams;
+}
+
 // Drone-side probe stream producer (spec 2026-09-04): one video-body-sized
-// SBI body on kProbeStreamId per enh AU, at the RCF-commanded probe MCS.
-// Pure — the caller decides WHEN (right after the enh AU's last body is
-// pushed) and stamps enqueued_ms/pushed_us like any other body. Random
-// initial seq like SwEncoder: a restarted daemon must not replay seqs.
+// SBI body on kProbeStreamId per video AU (base and enh since 2026-09-16),
+// at the RCF-commanded probe MCS. Pure — the caller decides WHEN (right
+// after the AU's last body is pushed, see probe_follows) and stamps
+// enqueued_ms/pushed_us like any other body. Random initial seq like
+// SwEncoder: a restarted daemon must not replay seqs.
 class ProbeSource {
  public:
   ProbeSource(int bpb, int block_payload, uint32_t initial_seq)

@@ -13,14 +13,14 @@ static ProbeTrack make() { return ProbeTrack(ProbeTrackCfg{4, 100, 2}); }
 
 TEST(nothing_booked_while_no_probe_commanded) {
   auto t = make();
-  t.on_enh_au(1, 0); t.tick(200);
+  t.on_au(1, 1, 0); t.tick(200);
   CHECK(t.union_counts().expected_blocks == 0);
 }
 
 TEST(union_is_or_of_card_bitmaps_and_expected_comes_from_au_count) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0);
+  t.on_au(1, 1, 0);
   t.on_body(0, rx(1, 0x06, 0b0011), 30.0, -24.0, 5);
   t.on_body(1, rx(1, 0x06, 0b1100), 28.0, -22.0, 6);
   t.tick(50);
@@ -42,7 +42,7 @@ TEST(union_is_or_of_card_bitmaps_and_expected_comes_from_au_count) {
 TEST(finalized_row_carries_first_sight_arrival_not_finalize_time) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0);
+  t.on_au(1, 1, 0);
   // Card 1 hears it first at 25.375 ms (radio stamp, µs resolution), card
   // 0 at 27.0; the row must carry the FIRST sight on ANY card, untouched
   // by the second sight and by the finalize tick (~10 ms granularity).
@@ -58,7 +58,7 @@ TEST(finalized_row_carries_first_sight_arrival_not_finalize_time) {
 TEST(delivered_body_finalizes_with_its_au) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0);
+  t.on_au(1, 1, 0);
   t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 25);
   t.tick(105);
   // The AU's own timer (t=0+100=100) has elapsed, but its matched body
@@ -71,10 +71,33 @@ TEST(delivered_body_finalizes_with_its_au) {
   CHECK(t.union_counts().arrived_blocks == 4);
 }
 
+// Probe per AU (2026-09-16): the drone trails EVERY video AU with a probe,
+// base (sid 0) as well as enh (sid 1), so an expectation books for both.
+TEST(base_au_books_an_expectation_like_enh) {
+  auto t = make();
+  t.set_commanded(0x06, 0);
+  t.on_au(0, 1, 0);
+  t.on_au(1, 2, 16);
+  t.tick(130);
+  CHECK(t.union_counts().expected_blocks == 8);
+}
+
+// The FrameStream begin callback only ever fires for video sids, but the
+// rule lives here so a non-video AU (MSP, or the probe stream itself) can
+// never book a phantom expectation from a future caller.
+TEST(non_video_sid_books_nothing) {
+  auto t = make();
+  t.set_commanded(0x06, 0);
+  t.on_au(4, 1, 0);
+  t.on_au(5, 2, 0);
+  t.tick(130);
+  CHECK(t.union_counts().expected_blocks == 0);
+}
+
 TEST(lost_probe_still_books_expected_on_the_au_timer) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0);
+  t.on_au(1, 1, 0);
   t.tick(105);
   CHECK(t.union_counts().expected_blocks == 4);
   CHECK(t.union_counts().arrived_blocks == 0);
@@ -83,7 +106,7 @@ TEST(lost_probe_still_books_expected_on_the_au_timer) {
 TEST(late_body_after_au_timer_books_arrived_only) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0);
+  t.on_au(1, 1, 0);
   t.tick(105);
   CHECK(t.union_counts().expected_blocks == 4);
   t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 200);
@@ -95,7 +118,7 @@ TEST(late_body_after_au_timer_books_arrived_only) {
 TEST(total_loss_reads_as_loss_not_silence) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  for (int i = 0; i < 15; ++i) t.on_enh_au(static_cast<uint16_t>(i), i * 33.0);
+  for (int i = 0; i < 15; ++i) t.on_au(1, static_cast<uint16_t>(i), i * 33.0);
   t.tick(15 * 33.0 + 150);
   CHECK(t.union_counts().expected_blocks == 60);
   CHECK(t.union_counts().arrived_blocks == 0);
@@ -104,7 +127,7 @@ TEST(total_loss_reads_as_loss_not_silence) {
 TEST(off_profile_body_is_not_scored_not_lost) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0); t.on_enh_au(2, 33);
+  t.on_au(1, 1, 0); t.on_au(1, 2, 33);
   t.on_body(0, rx(1, 0x05, 0b1111), 30.0, -24.0, 5);   // stale profile, cancels AU fid=1
   t.on_body(0, rx(2, 0x06, 0b1111), 30.0, -24.0, 40);
   t.tick(300);
@@ -139,7 +162,7 @@ TEST(off_profile_body_still_logs_a_finalized_row) {
 TEST(duplicate_seq_on_same_card_counts_once) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0);
+  t.on_au(1, 1, 0);
   t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 5);
   t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 6);
   t.tick(300);
@@ -158,7 +181,7 @@ TEST(ring_overflow_finalizes_oldest) {
 TEST(counters_are_monotonic_across_a_profile_switch) {
   auto t = make();
   t.set_commanded(0x06, 0);
-  t.on_enh_au(1, 0);
+  t.on_au(1, 1, 0);
   t.on_body(0, rx(1, 0x06, 0b1111), 30.0, -24.0, 5);
   t.tick(200);
   const uint64_t sample_a_expected = t.union_counts().expected_blocks;
@@ -167,9 +190,9 @@ TEST(counters_are_monotonic_across_a_profile_switch) {
   CHECK(sample_a_arrived == 4);
 
   t.set_commanded(0x07, 200);
-  t.on_enh_au(2, 233);
+  t.on_au(1, 2, 233);
   t.on_body(0, rx(2, 0x06, 0b1111), 30.0, -24.0, 240);  // stale profile, cancels AU fid=2
-  t.on_enh_au(3, 266);
+  t.on_au(1, 3, 266);
   t.on_body(0, rx(3, 0x07, 0b1111), 30.0, -24.0, 275);
 
   t.tick(300);  // neither the new AUs nor the new bodies have hit finalize_ms yet

@@ -184,7 +184,7 @@ struct StatsProbeIn {
   std::string state = "off";  // off|clean|lossy|noinfo
   bool have_sample = false;   // u/loss are meaningless until this is true
   double u = 0.0, loss = 0.0;
-  int streak_ms = 0;     // the current CLEAN streak; 0 in every other state
+  uint64_t streak_bodies = 0;  // the current CLEAN streak in probe bodies; 0 in every other state
   uint64_t n = 0, exp = 0, rx = 0, off_profile = 0;
   struct Card {
     bool have = false;   // false -> this card's loss is JSON null

@@ -400,7 +400,10 @@ are in `docs/inflight-channel-hop.md`.
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin
 mode, where there is no controller) as `link.probe = {on, rung, mcs,
-state, u, loss, streak_ms, n, exp, rx, off_profile, cards:[{loss, rx}]}`
+state, u, loss, streak_bodies, n, exp, rx, off_profile, cards:[{loss, rx}]}`
+(`streak_bodies` replaced `streak_ms` on 2026-09-16 with the body-count
+clean streak, `link.probe.clean_bodies`; recordings before that date carry
+`streak_ms`)
 — `u`/`loss` are `null` when the gate has no usable sample yet. `classes`
 gains a `probe` entry alongside `s0`/`s1`/`msp`/`ctrl` (`RfClass::Probe`,
 `kNumRfClasses` 5) with the probe stream's own per-card RSSI/SNR/EVM —
@@ -408,7 +411,8 @@ gains a `probe` entry alongside `s0`/`s1`/`msp`/`ctrl` (`RfClass::Probe`,
 2026-08-29 UEP flatten). `link.rungs[].probe_u`/`probe_n` MEAN something
 different from before this date too — see `docs/data-provenance.md`.
 `maburtop`'s LADDER panel replaces its old "last probe" line with a live
-gate line: `probe: r3 mcs5 clean 1.8s u0.12 n48 | c0 0.00 c1 0.05`, and its
+gate line: `probe: r3 mcs5 clean 54b u0.12 n48 | c0 0.00 c1 0.05` (`54b` =
+the clean streak in bodies), and its
 signal panel gains the `probe` class in `CLASS_ORDER`.
 
 **Loss-sim rig covers the probe stream too.** `LossSim::kStreams` (bench

@@ -1,5 +1,7 @@
 #include "probe_track.h"
 
+#include "mabur/uep_encoder.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -12,9 +14,10 @@ void ProbeTrack::set_commanded(uint8_t profile, double /*now_ms*/) {
 }
 uint8_t ProbeTrack::commanded() const { return commanded_; }
 
-void ProbeTrack::on_enh_au(uint16_t enh_fid, double now_ms) {
+void ProbeTrack::on_au(uint8_t sid, uint16_t fid, double now_ms) {
   if (commanded_ == 0xFF) return;
-  au_pending_.push_back(PendingAu{enh_fid, now_ms, true});
+  if (sid >= mabur::UepEncoder::kNumStreams) return;  // video AUs only
+  au_pending_.push_back(PendingAu{fid, now_ms, true});
 }
 
 void ProbeTrack::on_body(int card, const mabur::probe::ProbeRx& rx, double snr_db,

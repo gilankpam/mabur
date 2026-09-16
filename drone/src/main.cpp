@@ -892,13 +892,15 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
       ++sent_bodies;
     }
 
-    // Probe stream (spec 2026-09-04 §2): one body at the tail of every ENH
-    // burst, sent right after the AU's own bodies so it lands at the tail
-    // of the enh burst on the wire too. No enh AU (shed, base frame) =>
-    // no probe.
-    if (!bodies.empty() && bodies.back().stream_id == 1) {
+    // Probe stream (spec 2026-09-04 §2, per AU since 2026-09-16): one body
+    // at the tail of every video AU's burst, base or enh, sent right after
+    // the AU's own bodies so it lands at the tail of the burst on the wire
+    // too. No AU on air (shed) => no probe (probe_follows).
+    if (!bodies.empty()) {
+      const int au_sid = bodies.back().stream_id;
       auto op_now = shared_op.load();
-      if (op_now && op_now->probe_profile != rc::kNoProbeProfile && !op_now->shed[1]) {
+      if (op_now && probe_follows(au_sid, op_now->probe_profile != rc::kNoProbeProfile,
+                                  au_sid < UepEncoder::kNumStreams && op_now->shed[static_cast<size_t>(au_sid)])) {
         UepBody pb = probe_src.build(op_now->probe_profile,
                                      static_cast<uint16_t>(pipe.next_frame_id() - 1));
         tx.send_body(pb.stream_id, pb.body.data(), pb.body.size());
@@ -1761,12 +1763,15 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                       split_sink_sum_us += now_steady_us() - s_us;
                     });
         txq.flush();  // release the AU's partial feed_batch group, if any
-        // Probe stream (spec 2026-09-04 §2): one body at the tail of every
-        // ENH burst. FIFO order through the TxQueue puts it on air after
-        // the AU's last body, where the GS RcfSlotter's uplink blast can't
-        // reach it. No enh AU (shed, base frame) => no probe.
-        if (!first && au_sid == 1 && op &&
-            op->probe_profile != rc::kNoProbeProfile && !op->shed[1]) {
+        // Probe stream (spec 2026-09-04 §2, per AU since 2026-09-16): one
+        // body at the tail of every video AU's burst, base and enh -- the
+        // probe cadence is the AU rate, not the enh rate. FIFO order
+        // through the TxQueue puts it on air after the AU's last body,
+        // where the GS RcfSlotter's uplink blast can't reach it. No AU on
+        // air (shed) => no probe (probe_follows).
+        if (!first && op &&
+            probe_follows(au_sid, op->probe_profile != rc::kNoProbeProfile,
+                          au_sid < UepEncoder::kNumStreams && op->shed[static_cast<size_t>(au_sid)])) {
           UepBody pb = probe_src.build(op->probe_profile,
                                        static_cast<uint16_t>(pipe.next_frame_id() - 1));
           const uint64_t p_us = now_steady_us();

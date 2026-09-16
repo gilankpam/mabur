@@ -735,7 +735,7 @@ TEST(probe_block_shape_and_values) {
   StatsProbeIn p;
   p.on = true; p.rung = 3; p.mcs = 5; p.state = "clean";
   p.have_sample = true; p.u = 0.12; p.loss = 0.04;
-  p.streak_ms = 1800; p.n = 60;
+  p.streak_bodies = 108; p.n = 60;
   p.cards = {{true, 0.0, 10}, {true, 0.05, 9}};
   in.probe = p;
   ex.poll(1000, in);
@@ -747,7 +747,8 @@ TEST(probe_block_shape_and_values) {
   CHECK(pj["state"] == "clean");
   CHECK(pj["u"].get<double>() > 0.119 && pj["u"].get<double>() < 0.121);
   CHECK(pj["loss"].get<double>() > 0.039 && pj["loss"].get<double>() < 0.041);
-  CHECK(pj["streak_ms"] == 1800);
+  CHECK(pj["streak_bodies"] == 108);
+  CHECK(!pj.contains("streak_ms"));
   CHECK(pj["n"] == 60);
   REQUIRE(pj["cards"].size() == 2);
   CHECK(pj["cards"][0]["loss"].get<double>() == 0.0);
