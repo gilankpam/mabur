@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "au_ring.h"
+#include "colortrans.h"  // ColorTrans, build_cubic_lut, LutAxis (docs/colortrans.md)
 #include "dvr_mux.h"
 #include "dvr_name.h"
 #include "gs_font.h"
@@ -40,6 +41,7 @@
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
+#include "gs_draw.h"         // set_colour_inverse() for the GS overlay pre-invert
 #include "lat_tracker.h"    // tail latency segments + 1 Hz lat line (Task 11)
 #include "lat_log.h"        // persist 1 Hz lat line to <dvr>/log/lat-NNNN.log (Task 7)
 #include "mpp_backend.h"    // MppBackend::info_changes()/errors() for --decode-only
@@ -489,6 +491,29 @@ int main(int argc, char** argv) {
   }
   if (!backend_override.empty()) cfg.backend = backend_override;
 
+  // colortrans (docs/colortrans.md). The evaluator is always constructed
+  // (cheap); whether it is USED is decided per consumer below: the display
+  // stage needs the CRTC's CUBIC_LUT, the OSD inverse follows the display
+  // stage (an inverted OSD over an un-LUT'd picture is worse than nothing),
+  // and the burned DVR follows the config alone.
+  const maburplay::ColorTrans ct;
+  bool ct_display_on = false;  // set once a presenter with a usable LUT exists
+  maburplay::LutAxis lut_axis = maburplay::LutAxis::kRedFastest;
+  if (const char* ax = std::getenv("MABUR_COLORTRANS_AXIS")) {
+    // Bench-only override for the axis probe (docs/colortrans.md).
+    if (std::string(ax) == "bgr") lut_axis = maburplay::LutAxis::kBlueFastest;
+    std::fprintf(stderr, "maburplay: colortrans: MABUR_COLORTRANS_AXIS=%s\n", ax);
+  }
+#ifndef MABUR_PLAYER_HW
+  // ct_display_on and lut_axis are consumed only under MABUR_PLAYER_HW
+  // (install_colortrans, the burn-palette forward map) below, but both are
+  // declared here at main() scope -- not inside the ifdef -- because Task 12
+  // reads them for the burned-DVR path too. Silence the host build's
+  // unused-variable warning rather than restructuring the declarations.
+  (void)ct_display_on;
+  (void)lut_axis;
+#endif
+
   // Record button. An accessory: every failure here is non-fatal and said
   // exactly once. A player that refuses to show video because a pin is
   // missing is worse than one that shows video without a button -- same
@@ -606,6 +631,27 @@ int main(int argc, char** argv) {
                                       cfg.display.vsync_lead_ms,
                                       cfg.display.chain_budget);
   maburplay::LatLog lat_log;
+  // Installs the 3D LUT (identity when off) and, when the display stage is
+  // live, pre-inverts both overlays. Runs once per presenter acquire, BEFORE
+  // splash_show() and before any OSD composition. Idempotent for the OSD
+  // half (set_inverse and set_colour_inverse both replace).
+  auto install_colortrans = [&](maburplay::DrmPresenter* p) {
+    const bool avail = p->color_lut_available();
+    const bool on = cfg.colortrans.enable && avail;
+    if (!p->set_color_lut(maburplay::build_cubic_lut(on ? &ct : nullptr, lut_axis)) && avail)
+      std::fprintf(stderr, "maburplay: colortrans: CUBIC_LUT install failed -- display stays flat\n");
+    if (cfg.colortrans.enable && !avail)
+      std::fprintf(stderr,
+                   "maburplay: colortrans: CRTC has no 729-entry CUBIC_LUT -- display stays "
+                   "flat, OSD not inverted (burned DVR still corrected)\n");
+    ct_display_on = on && p->color_lut_available();
+    if (ct_display_on) {
+      osd_font.set_inverse(ct);
+      maburplay::set_colour_inverse(&ct);
+      std::fprintf(stderr, "maburplay: colortrans: display LUT on (axis=%s), OSD pre-inverted\n",
+                   lut_axis == maburplay::LutAxis::kRedFastest ? "rgb" : "bgr");
+    }
+  };
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
@@ -623,6 +669,7 @@ int main(int argc, char** argv) {
                    "decoded and released immediately\n");
       presenter.reset();
     } else {
+      install_colortrans(presenter.get());
       // Seed the servo's vblank estimator with the committed mode's exact
       // period BEFORE the first flip (splash_show below starts flipping):
       // under the default 60 Hz seed a 90/120 Hz panel's flip deltas round
@@ -846,7 +893,7 @@ int main(int argc, char** argv) {
       // empty GlyphAtlas yields a palette built from the seeds alone.
       const maburplay::GlyphAtlas empty{};
       rec->set_palette(maburplay::build_palette(
-          osd_raster ? osd_font.native() : empty, seeds, n_seeds));
+          osd_raster ? osd_font.native() : empty, seeds, n_seeds, ct_display_on ? &ct : nullptr));
     }
     // Track-header FALLBACK only. The encoded picture size is the DECODED
     // frame's, latched by MppEncoder on the first frame it sees: it comes
@@ -1490,6 +1537,7 @@ int main(int argc, char** argv) {
                     },
                     /*log_failures=*/false)) {
           presenter = std::move(p);
+          install_colortrans(presenter.get());
           // Same pre-first-flip reseed as the startup path: a hotplugged
           // panel may run a different mode/refresh than the one configured.
           regulator.set_panel_period(presenter->mode_period_us());
