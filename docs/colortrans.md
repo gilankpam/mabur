@@ -27,25 +27,24 @@ AND the constants in `kFrag` in `frame_colortrans.cpp`, rebuild, redeploy;
   installs a table (identity when `enable = false`) and keeps the blob alive
   for its whole run.
 - No `CTM`/`DEGAMMA_LUT` on this CRTC; `GAMMA_LUT` (1024) is unused here.
-- Axis order: **UNVERIFIED.** The code ships `LutAxis::kRedFastest` as the
-  default — red varies fastest across the 729 entries, `index = r + 9g +
-  81b` (`gs/player/src/colortrans.cpp`, `cubic_lut_index()`) — but this has
-  not been confirmed against real VOP2 hardware; the bench probe that would
-  confirm it (Task 13 step 2) is a live-device, by-eye check and was not run
-  as part of the work that produced this page. **Do not assume the default
-  is correct.** To confirm or correct it: boot the GS with the overlay up
-  (the drone can be off) and look at the REC marker/"fault" colour. If it
-  reads RED, the default is right and there is nothing to do. If it reads
-  BLUE (or body text carries an obvious colour cast), the axis is inverted —
-  restart with `MABUR_COLORTRANS_AXIS=bgr` (bench-only env override) and
-  check again; if THAT reads correctly, the fix is to change the default in
-  `main.cpp` (`lut_axis = LutAxis::kBlueFastest`), update the `axis=` string
-  in the same log line, rebuild, and redeploy. Re-run this check on any new
-  kernel — the axis is an undocumented VOP2 implementation detail, not a
-  spec guarantee. Two cheaper field remedies exist before that rebuild round
-  trip: export `MABUR_COLORTRANS_AXIS=bgr` from `S97maburplay` to flip the
-  axis persistently with no rebuild, or set `[colortrans] enable = false`
-  for a clean total retreat to pre-branch behaviour.
+- Axis order: **red varies fastest**, `index = r + 9g + 81b`
+  (`gs/player/src/colortrans.cpp`, `cubic_lut_index()`, `LutAxis::kRedFastest`
+  — the shipped default). Confirmed 2026-09-17 on the GS against real VOP2
+  hardware: with the overlay up and the LUT installed
+  (`DrmPresenter: CUBIC_LUT present (size 729)` followed by
+  `colortrans: display LUT on (axis=rgb), OSD pre-inverted`), the REC
+  marker read RED and body text read WHITE. A `kBlueFastest` table would
+  have swapped the marker to blue and cast the text.
+  Re-run this check on any new kernel — the axis is an undocumented VOP2
+  implementation detail, not a spec guarantee. The check itself: boot the GS
+  with the overlay up (the drone can be off) and look at the REC
+  marker/"fault" colour; RED is correct, BLUE (or an obvious cast on body
+  text) means the axis is inverted. Two field remedies need no rebuild —
+  export `MABUR_COLORTRANS_AXIS=bgr` from `S97maburplay` to flip the axis
+  persistently, or set `[colortrans] enable = false` for a clean total
+  retreat to pre-branch behaviour. The permanent fix is to change the
+  default in `main.cpp` (`lut_axis = LutAxis::kBlueFastest`), update the
+  `axis=` string in the same log line, rebuild, and redeploy.
 
 ## Build
 
