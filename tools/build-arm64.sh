@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Cross-build maburgs for ARM (aarch64) / musl, fully static.
+# Cross-build maburgs for ARM (aarch64) / musl, fully static. maburplay is
+# built twice: once here (stage 5, musl-static, kept as the maburplay-static
+# rollback) and again in stage 6 against the Buildroot glibc toolchain that
+# builds the GS image itself, since its burned-DVR colortrans stage links
+# Mesa EGL/GLESv2/GBM + librga, which exist only as glibc shared objects.
 #
 # Deviations from the original Bootlin-based plan (see
 # .superpowers/sdd/task-16-brief.md and task-16-report.md for the full
@@ -238,7 +242,7 @@ cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx maburplay e
 
 "${TARGET_TRIPLE}-strip" build-arm64/gs/maburgs -o out/arm64/maburgs
 "${TARGET_TRIPLE}-strip" build-arm64/bench/linkbench/linkbench-rx -o out/arm64/linkbench-rx
-"${TARGET_TRIPLE}-strip" build-arm64/gs/player/maburplay -o out/arm64/maburplay
+"${TARGET_TRIPLE}-strip" build-arm64/gs/player/maburplay -o out/arm64/maburplay-static
 "${TARGET_TRIPLE}-strip" build-arm64/bench/encosd/encosd -o out/arm64/encosd
 
 # maburplay's OSD glyph atlas is a runtime asset, not a linked-in blob (that
@@ -272,6 +276,52 @@ cp gs/player/bundle/splash.bin out/arm64/splash.bin
 # has nothing to read, maburplay exits 2, and the wrapper treats exit 2 as
 # terminal: no respawn, permanently black GS screen.
 cp gs/player/bundle/maburplay.default.toml out/arm64/maburplay.default.toml
+
+# --- 6. maburplay, glibc-dynamic against the Buildroot GS sysroot ----------
+#        The burned-DVR colortrans stage (docs/colortrans.md) links Mesa
+#        EGL/GLESv2/GBM + librga, which the GS image only has as glibc
+#        shared objects -- no static build can carry it. So maburplay is
+#        built a second time here with the SAME toolchain the image itself
+#        is built with (package/mabur/mabur.mk), and the musl-static binary
+#        from stage 5 is kept as out/arm64/maburplay-static (the rollback
+#        build, no GPU stage). maburgs stays static: it needs nothing here.
+MABUR_BR_HOST="${MABUR_BR_HOST:-$PWD/../sbc-groundstations-gilankpam/output/radxa_zero3_defconfig/host}"
+BR_SYSROOT="$MABUR_BR_HOST/aarch64-buildroot-linux-gnu/sysroot"
+[ -x "$MABUR_BR_HOST/bin/aarch64-none-linux-gnu-gcc" ] || {
+  echo "error: Buildroot toolchain not found at $MABUR_BR_HOST (set MABUR_BR_HOST)" >&2; exit 1; }
+[ -e "$BR_SYSROOT/usr/include/EGL/egl.h" ] && [ -e "$BR_SYSROOT/usr/include/rga/im2d.h" ] || {
+  echo "error: $BR_SYSROOT lacks EGL/egl.h or rga/im2d.h -- build mesa3d + librga in the" >&2
+  echo "       Buildroot output first (docs/colortrans.md, 'Build')" >&2; exit 1; }
+export MABUR_BR_HOST
+# Same shim package/mabur/mabur.mk uses: gs/player/CMakeLists.txt links
+# ${ROOT}/lib/lib{rockchip_mpp,drm}.a by absolute path; ld identifies an
+# input by content, so a .a-named symlink to the .so links dynamically.
+mkdir -p toolchain/br-libs/lib
+ln -sfn "$BR_SYSROOT/usr/include" toolchain/br-libs/include
+ln -sfn "$BR_SYSROOT/usr/lib/librockchip_mpp.so" toolchain/br-libs/lib/librockchip_mpp.a
+ln -sfn "$BR_SYSROOT/usr/lib/libdrm.so" toolchain/br-libs/lib/libdrm.a
+# devourer's pkg_check_modules(libusb) must resolve the SYSROOT's libusb,
+# not stage 2's Nix one; and stage 2's CPATH must not leak Nix headers into
+# a glibc build.
+(
+  unset CPATH
+  export PKG_CONFIG_LIBDIR="$BR_SYSROOT/usr/lib/pkgconfig:$BR_SYSROOT/usr/share/pkgconfig"
+  export PKG_CONFIG_SYSROOT_DIR="$BR_SYSROOT"
+  cmake -S . -B build-arm64-br -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-buildroot.cmake \
+    -DCMAKE_BUILD_TYPE=Release -DMABUR_BUILD_TESTS=OFF -DMABUR_BUILD_DRONE=OFF \
+    -DMABUR_BUILD_GS=ON -DMABUR_BUILD_LINKBENCH=OFF -DBUILD_SHARED_LIBS=OFF \
+    -DDEVOURER_JAGUAR1=OFF -DDEVOURER_8814=OFF \
+    -DDEVOURER_JAGUAR2_8822B=OFF -DDEVOURER_JAGUAR2_8821C=OFF \
+    -DDEVOURER_JAGUAR3_8822C=OFF -DDEVOURER_JAGUAR3_8822E=ON \
+    -DDEVOURER_8733B=OFF \
+    -DDEVOURER_KESTREL_8852B=OFF -DDEVOURER_KESTREL_8852C=OFF \
+    -DDEVOURER_LOG_MAX_LEVEL=WARN \
+    -DMABUR_PLAYER_HW=ON -DMABUR_PLAYER_GPU=OFF \
+    -DMABUR_MPP_ROOT="$PWD/toolchain/br-libs" -DMABUR_DRM_ROOT="$PWD/toolchain/br-libs"
+  cmake --build build-arm64-br -j"$(nproc)" --target maburplay
+)
+"$MABUR_BR_HOST/bin/aarch64-none-linux-gnu-strip" build-arm64-br/gs/player/maburplay -o out/arm64/maburplay
+echo "maburplay NEEDED:"; "$MABUR_BR_HOST/bin/aarch64-none-linux-gnu-readelf" -d out/arm64/maburplay | grep NEEDED
 
 # `file` itself isn't on a bare NixOS PATH either; stage it like pkg-config.
 if [ ! -e toolchain/file ]; then
