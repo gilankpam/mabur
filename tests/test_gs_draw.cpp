@@ -1,6 +1,7 @@
 #include "mtest.h"
 #include "gs_draw.h"
 #include "gs_font.h"
+#include "colortrans.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -475,6 +476,36 @@ TEST(utf8_next_truncated_and_malformed_sequences_advance_and_never_overrun) {
     utf8_next(&p);
     CHECK(p == s + 2);
   }
+}
+
+TEST(colour_inverse_hook_maps_tokens_and_the_shadow) {
+  ColorTrans t;
+  set_colour_inverse(&t);
+  CHECK(premul(0xFFFFFFu, 255) == 0xFF8F8F8Fu);
+  CHECK(premul(0xFFFFFFu, 0) == 0u);
+  Canvas c(2, 1);
+  fill_rect(c.s, 0, 0, 1, 1, 0xFFFFFFu);
+  CHECK(c.s.pixels[0] == 0xFF8F8F8Fu);
+  // A shadow-only pixel is black at some alpha on a plain surface; with the
+  // inverse it is invert(black) premultiplied, because the LUT maps that
+  // grey back to black. Exercised through draw_text's shadow term with a
+  // synthetic MaskAtlas: two 1x1 glyphs for 'A' (cov 255, shadow 0) and
+  // 'B' (cov 0, shadow 255). MaskAtlas is a plain struct; index_of() does a
+  // binary search over `codepoints`, so an ascending table is all it needs.
+  {
+    const uint32_t cps[2] = {'A', 'B'};
+    const uint8_t mask[4] = {255, 0, 0, 255};  // glyph 0: cov,sha; glyph 1: cov,sha
+    MaskAtlas a;
+    a.px = 1; a.glyph_w = 1; a.glyph_h = 1; a.advance_x = 1; a.baseline = 0;
+    a.n_glyphs = 2; a.codepoints = cps; a.pixels = mask;
+    Canvas d(2, 1);
+    draw_text(d.s, a, 0, 0, "AB", 0xFFFFFFu);
+    CHECK(d.s.pixels[0] == 0xFF8F8F8Fu);                        // full coverage: inverted white
+    const uint32_t kinv = invert_rgb8(t, 0x000000u);            // inverted black, ~0x252525
+    CHECK(d.s.pixels[1] == (0xFF000000u | kinv));               // shadow only: inverted black at alpha 255
+  }
+  set_colour_inverse(nullptr);
+  CHECK(premul(0xFFFFFFu, 255) == 0xFFFFFFFFu);
 }
 
 MTEST_MAIN

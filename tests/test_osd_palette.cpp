@@ -3,6 +3,7 @@
 #include "osd_font.h"
 #include "gs_draw.h"     // premul()
 #include "gs_layer.h"  // gs_palette_seeds(), tok::
+#include "colortrans.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -424,6 +425,22 @@ TEST(seeded_palette_keeps_the_alpha_ramp_not_just_solid_colours) {
   OsdIndexMap m;
   quantize(s, p, &m);
   CHECK(A(p.entry[m.px[0]]) >= 118 && A(p.entry[m.px[0]]) <= 138);
+}
+
+TEST(gs_palette_seeds_follow_the_colour_inverse) {
+  set_colour_inverse(nullptr);
+  size_t n0 = 0;
+  const uint32_t* s0 = gs_palette_seeds(&n0);
+  REQUIRE(n0 > 0);
+  CHECK(s0[0] == premul(tok::kTextPrimary, 255));
+  ColorTrans t;
+  set_colour_inverse(&t);
+  size_t n1 = 0;
+  const uint32_t* s1 = gs_palette_seeds(&n1);
+  CHECK(n1 == n0);
+  CHECK(s1[0] == premul(tok::kTextPrimary, 255));  // premul() now applies the inverse
+  CHECK(s1[0] != 0xFFF2F3F5u);
+  set_colour_inverse(nullptr);
 }
 
 MTEST_MAIN

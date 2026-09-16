@@ -8,12 +8,23 @@
 
 namespace maburplay {
 
+class ColorTrans;
+
 // Premultiplied ARGB word from an opaque 0xRRGGBB token colour and an
 // 8-bit alpha. The OSD plane blends premultiplied, so every write on this
 // surface must be premultiplied -- writing straight alpha renders the OSD
 // washed out over bright video and correct over black, which is the sort
 // of bug that only shows up in flight.
 uint32_t premul(uint32_t rgb, uint8_t a);
+
+// colortrans (docs/colortrans.md). The OSD plane is blended BEFORE the CRTC
+// LUT, so every token colour is pre-inverted here, at the source, once per
+// distinct token -- never per frame. Process-wide, main-loop only (every
+// caller of premul/fill_rect/draw_text is). nullptr = identity (default).
+// Must be set before the first gs_palette_seeds() call that should see it;
+// gs_palette_seeds re-seeds itself when this pointer changes.
+void set_colour_inverse(const ColorTrans* t);
+const ColorTrans* colour_inverse();
 
 // Opaque axis-aligned fill, clipped to the surface. `alpha` exists for the
 // meter track, which the design draws at full opacity but which a future

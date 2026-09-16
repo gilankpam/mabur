@@ -1,11 +1,35 @@
 #include "gs_draw.h"
 
 #include <cstring>
+#include <unordered_map>
+
+#include "colortrans.h"
 
 namespace maburplay {
 
-uint32_t premul(uint32_t rgb, uint8_t a) {
+namespace {
+const ColorTrans* g_inverse = nullptr;
+std::unordered_map<uint32_t, uint32_t> g_inverse_memo;  // token -> inverted token
+
+uint32_t map_token(uint32_t rgb) {
+  if (!g_inverse) return rgb;
+  auto it = g_inverse_memo.find(rgb);
+  if (it != g_inverse_memo.end()) return it->second;
+  const uint32_t m = invert_rgb8(*g_inverse, rgb & 0xFFFFFFu);
+  g_inverse_memo.emplace(rgb, m);
+  return m;
+}
+}  // namespace
+
+void set_colour_inverse(const ColorTrans* t) {
+  g_inverse = t;
+  g_inverse_memo.clear();
+}
+const ColorTrans* colour_inverse() { return g_inverse; }
+
+uint32_t premul(uint32_t rgb_in, uint8_t a) {
   if (a == 0) return 0u;
+  const uint32_t rgb = map_token(rgb_in);
   const uint32_t r = ((rgb >> 16) & 0xFF) * a / 255;
   const uint32_t g = ((rgb >> 8) & 0xFF) * a / 255;
   const uint32_t b = (rgb & 0xFF) * a / 255;
@@ -75,6 +99,14 @@ int text_width(const MaskAtlas& a, const char* utf8) {
 int draw_text(const Surface& s, const MaskAtlas& a, int pen_x, int baseline_y,
               const char* utf8, uint32_t rgb) {
   if (!utf8) return 0;
+  // Inverted colour and inverted BLACK for the shadow. The two are blended
+  // per pixel by coverage, and invert() is affine off the clip region, so
+  // inverting the two endpoints and blending equals blending then
+  // inverting. With no inverse set kr/kg/kb are 0 and this is the old code.
+  const uint32_t col = map_token(rgb);
+  const uint32_t blk = map_token(0x000000u);
+  const uint32_t cr = (col >> 16) & 0xFF, cg = (col >> 8) & 0xFF, cb = col & 0xFF;
+  const uint32_t kr = (blk >> 16) & 0xFF, kg = (blk >> 8) & 0xFF, kb = blk & 0xFF;
   int advanced = 0;
   const char* p = utf8;
   while (*p) {
@@ -107,9 +139,10 @@ int draw_text(const Surface& s, const MaskAtlas& a, int pen_x, int baseline_y,
         // alpha = cov over shadow; colour is premultiplied by cov alone
         // because the shadow is black and contributes no chroma.
         const uint32_t alpha = cov + sha * (255 - cov) / 255;
-        const uint32_t r = ((rgb >> 16) & 0xFF) * cov / 255;
-        const uint32_t gg = ((rgb >> 8) & 0xFF) * cov / 255;
-        const uint32_t b = (rgb & 0xFF) * cov / 255;
+        const uint32_t sh_w = sha * (255 - cov) / 255;  // shadow weight, premultiplied
+        const uint32_t r = (cr * cov + kr * sh_w) / 255;
+        const uint32_t gg = (cg * cov + kg * sh_w) / 255;
+        const uint32_t b = (cb * cov + kb * sh_w) / 255;
         row[px] = (alpha << 24) | (r << 16) | (gg << 8) | b;
       }
     }

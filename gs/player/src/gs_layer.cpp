@@ -78,7 +78,10 @@ const uint32_t* gs_palette_seeds(size_t* n) {
   // median cut needs the antialiased blends, not just the solid colours:
   // most GS pixels are partially covered glyph edges.
   static std::vector<uint32_t> seeds;
-  if (seeds.empty()) {
+  static const ColorTrans* seeded_for = nullptr;
+  static bool seeded = false;
+  if (!seeded || seeded_for != colour_inverse()) {
+    seeds.clear();
     const uint32_t toks[] = {tok::kTextPrimary,  tok::kTextSecondary,
                              tok::kTextLabel,    tok::kTrack,
                              tok::kStatusOk,     tok::kStatusCaution,
@@ -88,6 +91,8 @@ const uint32_t* gs_palette_seeds(size_t* n) {
     // The shadow blend: black at a ramp of alphas, which is what a
     // shadow-only pixel looks like.
     for (int a = 255; a >= 0; a -= 17) seeds.push_back(premul(0x000000u, (uint8_t)a));
+    seeded = true;
+    seeded_for = colour_inverse();
   }
   if (n) *n = seeds.size();
   return seeds.data();
