@@ -294,6 +294,11 @@ cp gs/player/bundle/maburplay.default.toml out/arm64/maburplay.default.toml
 #        is built with (package/mabur/mabur.mk), and the musl-static binary
 #        from stage 5 is kept as out/arm64/maburplay-static (the rollback
 #        build, no GPU stage). maburgs stays static: it needs nothing here.
+# Remove any prior out/arm64/maburplay before attempting this stage: it is
+# the only writer of that path, and a failure below (missing MABUR_BR_HOST,
+# no EGL/rga headers, a colortrans compile error) must not leave a stale
+# binary from a previous run sitting where the deploy step will find it.
+rm -f out/arm64/maburplay
 MABUR_BR_HOST="${MABUR_BR_HOST:-$PWD/../sbc-groundstations-gilankpam/output/radxa_zero3_defconfig/host}"
 BR_SYSROOT="$MABUR_BR_HOST/aarch64-buildroot-linux-gnu/sysroot"
 [ -x "$MABUR_BR_HOST/bin/aarch64-none-linux-gnu-gcc" ] || {

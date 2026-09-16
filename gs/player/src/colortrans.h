@@ -24,6 +24,10 @@ struct ColorTransParams {
   float matrix[9] = {1.17866031f,  0.17460893f,  0.01571472f,
                      -0.11147506f, 1.55408099f,  -0.07362197f,
                      0.03243649f,  0.11275820f,  1.22378927f};  // row-major
+  // The OSD pre-inversion in gs_draw/osd_font relies on forward() being
+  // affine (f(a*invert(C)+(1-a)*V) = a*C+(1-a)*f(V)), which pow(gamma) only
+  // satisfies while this stays 1.0 -- a retune away from 1.0 would leave
+  // every antialiased glyph edge and translucent OSD pixel subtly wrong.
   float gamma = 1.0f;
   float lift = -0.15f;
   float gain = 1.75f;

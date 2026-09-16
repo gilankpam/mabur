@@ -102,7 +102,9 @@ resolve. Host suite: `ctest --test-dir build -R 'test_|host_e2e'`.
 Cross-builds: `tools/build-arm64.sh` (maburgs), `tools/build-arm.sh`
 (maburd + the bench TX tools, OpenIPC glibc toolchain at
 `../openipc-builder`). Devices: drone `root@192.168.10.152`, GS
-`root@10.18.0.1`.
+`root@10.18.0.1`. Carve-out: `tools/build-arm64.sh` must run bare, never
+inside that `nix-shell` wrapper — Nix's pkg-config wrapper overrides
+`PKG_CONFIG_LIBDIR` and breaks its stage 6 glibc build.
 Never load the 8812eu kernel module on the GS cards.
 
 **The standing regression gate for any maburgs change is

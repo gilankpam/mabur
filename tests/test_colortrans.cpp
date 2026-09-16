@@ -86,6 +86,12 @@ TEST(invert_stays_finite_at_documented_parameter_boundaries) {
     p.gain = 0.f;
     const Vec3 y = ColorTrans(p).invert(grey);
     CHECK(std::isfinite(y.r) && std::isfinite(y.g) && std::isfinite(y.b));
+    // Black actually pins safe_div: sinv_ * {0,0,0} = {0,0,0}, so the
+    // divide is 0/0 = NaN unguarded -- clamp01 does not rescue a NaN (both
+    // its comparisons are false), unlike grey's +inf/1.0 case above.
+    const Vec3 black{0.f, 0.f, 0.f};
+    const Vec3 yb = ColorTrans(p).invert(black);
+    CHECK(std::isfinite(yb.r) && std::isfinite(yb.g) && std::isfinite(yb.b));
   }
   {
     ColorTransParams p = kColorTrans3;

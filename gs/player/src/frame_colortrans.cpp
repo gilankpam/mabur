@@ -261,8 +261,14 @@ bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, u
   glEnableVertexAttribArray(1);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   glFinish();
+  const GLenum draw_err = glGetError();
   glDeleteTextures(1, &src_tex);
   eglDestroyImageKHR_(dpy_, src);
+  if (draw_err != GL_NO_ERROR) {
+    if (fail_logs_++ % 300 == 0)
+      std::fprintf(stderr, "FrameColorTrans: draw failed (0x%x)\n", draw_err);
+    return false;
+  }
 
   rga_buffer_t s = wrapbuffer_fd_t(tgt.prime_fd, (int)width_, (int)height_, tgt.stride_px,
                                    (int)height_, RK_FORMAT_BGRA_8888);

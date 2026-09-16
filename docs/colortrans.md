@@ -42,7 +42,10 @@ AND the constants in `kFrag` in `frame_colortrans.cpp`, rebuild, redeploy;
   `main.cpp` (`lut_axis = LutAxis::kBlueFastest`), update the `axis=` string
   in the same log line, rebuild, and redeploy. Re-run this check on any new
   kernel — the axis is an undocumented VOP2 implementation detail, not a
-  spec guarantee.
+  spec guarantee. Two cheaper field remedies exist before that rebuild round
+  trip: export `MABUR_COLORTRANS_AXIS=bgr` from `S97maburplay` to flip the
+  axis persistently with no rebuild, or set `[colortrans] enable = false`
+  for a clean total retreat to pre-branch behaviour.
 
 ## Build
 

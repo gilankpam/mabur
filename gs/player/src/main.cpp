@@ -894,8 +894,12 @@ int main(int argc, char** argv) {
       // whatever foreign colour sits nearest. With no MSP font at all the
       // empty GlyphAtlas yields a palette built from the seeds alone.
       const maburplay::GlyphAtlas empty{};
+      // Forward map follows the surface's actual inversion state (the
+      // process-wide colour_inverse() pointer set_colour_inverse installed
+      // for the OSD plane), not ct_display_on -- the two agree today but
+      // the palette's invariant is with the former.
       rec->set_palette(maburplay::build_palette(
-          osd_raster ? osd_font.native() : empty, seeds, n_seeds, ct_display_on ? &ct : nullptr));
+          osd_raster ? osd_font.native() : empty, seeds, n_seeds, maburplay::colour_inverse()));
     }
     // Track-header FALLBACK only. The encoded picture size is the DECODED
     // frame's, latched by MppEncoder on the first frame it sees: it comes

@@ -423,11 +423,20 @@ libgbm.so.1, librga.so.2, libdrm.so.2, librockchip_mpp.so.1 (plus the usual
 libstdc++.so.6, libm.so.6, libgcc_s.so.1, libc.so.6 and the loader). The GS
 image must carry them — the current one does; an image built from the radxa
 defconfig between sbc-groundstations `ef55018` and the 2026-09-16 mesa3d/librga
-re-add does not.
+re-add does not. That `readelf` check only proves what the *build host*
+produced; also check the *GS* before swapping, e.g.
+`ssh root@10.18.0.1 'ls /usr/lib/libEGL.so.1 /usr/lib/libGLESv2.so.2 /usr/lib/libgbm.so.1 /usr/lib/librga.so.2'`
+— miss it and the new binary will not exec at all.
 
 Binary BEFORE config: `[colortrans] enable` is a new key (in-code default
 false). Rollback: `maburplay.pre-colortrans` (the last musl-static binary) and
 `/etc/maburplay.toml.pre-colortrans`, or strip the `[colortrans]` block.
+**Rollback order matters: strip the `[colortrans]` block from the config
+FIRST, then swap the binary back** — the old strict-parsing binary hits the
+unknown key and exits 2, and `S97maburplay` treats exit 2 as terminal, no
+respawn (same rule as the vsync rollback above). Push
+`out/arm64/maburplay-static` to the GS alongside the new binary at deploy
+time, so this rollback works even if the image turns out to lack Mesa.
 
 ## 2026-09-16 probe per AU (no wire change, both ends together)
 
