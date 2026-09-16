@@ -17,12 +17,25 @@ Vec3 mul(const float m[9], Vec3 v) {
           m[6] * v.r + m[7] * v.g + m[8] * v.b};
 }
 
-// Cofactor inverse; both matrices here are far from singular.
+// Cofactor inverse. kColorTrans3's two matrices are far from singular, but
+// this class is built to be retuned (colortrans.h), and a retune can reach
+// a singular one -- most directly, saturation == -100 collapses the
+// saturation mix matrix to rank 1 (colortrans.h documents [-100, 100] as
+// valid). Rather than divide by a zero determinant and poison the result
+// with inf/nan for the object's whole lifetime, treat an unusable matrix
+// as identity: the caller's step becomes a no-op pass-through instead of
+// an inverse, so a bad retune shows up as visibly wrong colour, not NaN.
 void invert3(const float m[9], float out[9]) {
   const float a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5], g = m[6], h = m[7],
               i = m[8];
   const float A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
   const float det = a * A + b * B + c * C;
+  if (std::fabs(det) < 1e-8f) {
+    out[0] = 1.f; out[1] = 0.f; out[2] = 0.f;
+    out[3] = 0.f; out[4] = 1.f; out[5] = 0.f;
+    out[6] = 0.f; out[7] = 0.f; out[8] = 1.f;
+    return;
+  }
   const float inv = 1.f / det;
   out[0] = A * inv;
   out[1] = -(b * i - c * h) * inv;
@@ -34,6 +47,13 @@ void invert3(const float m[9], float out[9]) {
   out[7] = -(a * h - b * g) * inv;
   out[8] = (a * e - b * d) * inv;
 }
+
+// Same reasoning as invert3's degenerate case: gain == 0 or a rgb_mult
+// component == 0 (both documented-valid boundaries, colortrans.h) makes
+// that forward step multiply by zero -- not invertible, information is
+// gone. Skip the divide rather than emit inf/nan; the value passes
+// through that step unscaled.
+float safe_div(float num, float denom) { return std::fabs(denom) < 1e-8f ? num : num / denom; }
 
 constexpr float kLumaR = 0.2126f, kLumaG = 0.7152f, kLumaB = 0.0722f;
 
@@ -76,9 +96,9 @@ Vec3 ColorTrans::invert(Vec3 c) const {
   const float k = std::min(10.f, std::max(0.f, p.gain));
   const float l = std::min(1.f, std::max(-1.f, p.lift));
   const float gm = std::min(5.f, std::max(0.1f, p.gamma));
-  y = {y.r / (k * std::min(4.f, std::max(0.f, p.rgb_mult[0]))) - l,
-       y.g / (k * std::min(4.f, std::max(0.f, p.rgb_mult[1]))) - l,
-       y.b / (k * std::min(4.f, std::max(0.f, p.rgb_mult[2]))) - l};
+  y = {safe_div(y.r, k * std::min(4.f, std::max(0.f, p.rgb_mult[0]))) - l,
+       safe_div(y.g, k * std::min(4.f, std::max(0.f, p.rgb_mult[1]))) - l,
+       safe_div(y.b, k * std::min(4.f, std::max(0.f, p.rgb_mult[2]))) - l};
   y = {clamp01(y.r), clamp01(y.g), clamp01(y.b)};
   y = {std::pow(y.r, 1.f / gm), std::pow(y.g, 1.f / gm), std::pow(y.b, 1.f / gm)};
   if (p.reverse) {

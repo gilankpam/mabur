@@ -67,4 +67,31 @@ TEST(premultiplied_helpers_keep_alpha_and_transparency) {
   CHECK(forward_premul_argb(t, 0xFF8F8F8Fu) == 0xFFFFFFFFu ||
         forward_premul_argb(t, 0xFF8F8F8Fu) == 0xFFFEFEFEu);
 }
+
+// saturation/gain/rgb_mult are documented as retunable across ranges that
+// include values making a forward step non-invertible (saturation==-100
+// collapses the saturation mix matrix to rank 1; gain==0 or a rgb_mult
+// component==0 zeroes a scale step outright). invert() must not emit
+// NaN/inf at any of those documented-valid boundaries.
+TEST(invert_stays_finite_at_documented_parameter_boundaries) {
+  const Vec3 grey{0.5f, 0.5f, 0.5f};
+  {
+    ColorTransParams p = kColorTrans3;
+    p.saturation = -100.f;
+    const Vec3 y = ColorTrans(p).invert(grey);
+    CHECK(std::isfinite(y.r) && std::isfinite(y.g) && std::isfinite(y.b));
+  }
+  {
+    ColorTransParams p = kColorTrans3;
+    p.gain = 0.f;
+    const Vec3 y = ColorTrans(p).invert(grey);
+    CHECK(std::isfinite(y.r) && std::isfinite(y.g) && std::isfinite(y.b));
+  }
+  {
+    ColorTransParams p = kColorTrans3;
+    p.rgb_mult[0] = 0.f;
+    const Vec3 y = ColorTrans(p).invert(grey);
+    CHECK(std::isfinite(y.r) && std::isfinite(y.g) && std::isfinite(y.b));
+  }
+}
 MTEST_MAIN
