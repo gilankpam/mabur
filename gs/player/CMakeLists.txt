@@ -82,6 +82,14 @@ if(MABUR_PLAYER_GPU)
   if(NOT MABUR_PLAYER_HW)
     message(FATAL_ERROR "MABUR_PLAYER_GPU=ON requires MABUR_PLAYER_HW=ON")
   endif()
+  if(NOT CMAKE_SYSROOT)
+    message(FATAL_ERROR
+      "MABUR_PLAYER_GPU=ON requires a toolchain that sets CMAKE_SYSROOT "
+      "(cmake/aarch64-buildroot.cmake); the EGL/GLES/gbm/rga search below "
+      "disables CMake's find-root-path protections and would otherwise "
+      "search raw host paths (e.g. under cmake/aarch64-musl.cmake, which "
+      "never sets CMAKE_SYSROOT).")
+  endif()
   # HINTS + NO_DEFAULT_PATH + NO_CMAKE_FIND_ROOT_PATH: cmake/aarch64-buildroot.cmake's
   # CMAKE_SYSROOT already lands "<sysroot>/usr" in CMAKE_SYSTEM_PREFIX_PATH,
   # and CMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY then prefixes CMAKE_SYSROOT
@@ -89,6 +97,10 @@ if(MABUR_PLAYER_GPU)
   # never exists, so a plain find_path(EGL/egl.h) reports NOTFOUND even though
   # the header is right there. Pointing HINTS straight at CMAKE_SYSROOT and
   # disabling root-path prefixing for this call sidesteps the double-nesting.
+  # This trades away find_path's own cross-safety net, so it is only safe
+  # because CMAKE_SYSROOT is confirmed non-empty above -- without that guard,
+  # an unset CMAKE_SYSROOT (e.g. cmake/aarch64-musl.cmake) would collapse the
+  # HINTS to the literal host path "/usr/include" and search it unprotected.
   find_path(MABUR_EGL_INC EGL/egl.h HINTS "${CMAKE_SYSROOT}/usr/include" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
   find_path(MABUR_GBM_INC gbm.h HINTS "${CMAKE_SYSROOT}/usr/include" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
   find_path(MABUR_RGA_INC rga/im2d.h HINTS "${CMAKE_SYSROOT}/usr/include" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
