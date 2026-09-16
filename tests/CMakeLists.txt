@@ -155,6 +155,7 @@ if(MABUR_BUILD_GS)
   add_mtest(test_player_config test_player_config.cpp LIBS mabur_player_core)
   target_compile_definitions(test_player_config PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
+  add_mtest(test_colortrans test_colortrans.cpp LIBS mabur_player_core)
   add_mtest(test_hevc_params test_hevc_params.cpp LIBS mabur_player_core)
   add_mtest(test_frame_regulator test_frame_regulator.cpp LIBS mabur_player_core)
   add_mtest(test_lat_tracker test_lat_tracker.cpp LIBS mabur_player_core)
