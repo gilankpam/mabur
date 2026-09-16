@@ -72,3 +72,37 @@ if(MABUR_PLAYER_HW)
     "${MABUR_DRM_ROOT}/lib/libdrm.a"
     pthread)
 endif()
+
+# Burned-DVR colortrans on the GPU (docs/colortrans.md): Mesa EGL/GLESv2/GBM
+# (panfrost) + librga from the Buildroot sysroot. Only ever ON in the
+# Buildroot glibc build (cmake/aarch64-buildroot.cmake); the musl-static
+# build cannot link Mesa and stays the rollback build without this stage.
+option(MABUR_PLAYER_GPU "GPU colortrans stage for the burned DVR (needs MABUR_PLAYER_HW and a sysroot with EGL/GLESv2/gbm/rga)" OFF)
+if(MABUR_PLAYER_GPU)
+  if(NOT MABUR_PLAYER_HW)
+    message(FATAL_ERROR "MABUR_PLAYER_GPU=ON requires MABUR_PLAYER_HW=ON")
+  endif()
+  # HINTS + NO_DEFAULT_PATH + NO_CMAKE_FIND_ROOT_PATH: cmake/aarch64-buildroot.cmake's
+  # CMAKE_SYSROOT already lands "<sysroot>/usr" in CMAKE_SYSTEM_PREFIX_PATH,
+  # and CMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY then prefixes CMAKE_SYSROOT
+  # onto that AGAIN -- doubling it to "<sysroot>/<sysroot>/usr/include", which
+  # never exists, so a plain find_path(EGL/egl.h) reports NOTFOUND even though
+  # the header is right there. Pointing HINTS straight at CMAKE_SYSROOT and
+  # disabling root-path prefixing for this call sidesteps the double-nesting.
+  find_path(MABUR_EGL_INC EGL/egl.h HINTS "${CMAKE_SYSROOT}/usr/include" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  find_path(MABUR_GBM_INC gbm.h HINTS "${CMAKE_SYSROOT}/usr/include" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  find_path(MABUR_RGA_INC rga/im2d.h HINTS "${CMAKE_SYSROOT}/usr/include" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  find_library(MABUR_EGL_LIB EGL HINTS "${CMAKE_SYSROOT}/usr/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  find_library(MABUR_GLES_LIB GLESv2 HINTS "${CMAKE_SYSROOT}/usr/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  find_library(MABUR_GBM_LIB gbm HINTS "${CMAKE_SYSROOT}/usr/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  find_library(MABUR_RGA_LIB rga HINTS "${CMAKE_SYSROOT}/usr/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  foreach(v MABUR_EGL_INC MABUR_GBM_INC MABUR_RGA_INC MABUR_EGL_LIB MABUR_GLES_LIB MABUR_GBM_LIB MABUR_RGA_LIB)
+    if(NOT ${v})
+      message(FATAL_ERROR "MABUR_PLAYER_GPU: ${v} not found in the sysroot (build mesa3d + librga in the Buildroot output; docs/colortrans.md)")
+    endif()
+  endforeach()
+  target_sources(maburplay PRIVATE src/frame_colortrans.cpp)
+  target_compile_definitions(maburplay PRIVATE MABUR_PLAYER_GPU=1)
+  target_include_directories(maburplay PRIVATE ${MABUR_EGL_INC} ${MABUR_GBM_INC} ${MABUR_RGA_INC})
+  target_link_libraries(maburplay PRIVATE ${MABUR_EGL_LIB} ${MABUR_GLES_LIB} ${MABUR_GBM_LIB} ${MABUR_RGA_LIB})
+endif()

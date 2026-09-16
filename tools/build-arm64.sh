@@ -350,7 +350,7 @@ ln -sfn "$BR_SYSROOT/usr/lib/libdrm.so" toolchain/br-libs/lib/libdrm.a
     -DDEVOURER_8733B=OFF \
     -DDEVOURER_KESTREL_8852B=OFF -DDEVOURER_KESTREL_8852C=OFF \
     -DDEVOURER_LOG_MAX_LEVEL=WARN \
-    -DMABUR_PLAYER_HW=ON -DMABUR_PLAYER_GPU=OFF \
+    -DMABUR_PLAYER_HW=ON -DMABUR_PLAYER_GPU=ON \
     -DMABUR_MPP_ROOT="$PWD/toolchain/br-libs" -DMABUR_DRM_ROOT="$PWD/toolchain/br-libs"
   cmake --build build-arm64-br -j"$(nproc)" --target maburplay
 )
