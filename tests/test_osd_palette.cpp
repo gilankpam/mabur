@@ -443,4 +443,30 @@ TEST(gs_palette_seeds_follow_the_colour_inverse) {
   set_colour_inverse(nullptr);
 }
 
+TEST(forward_map_records_the_intended_colour_but_matches_the_surface_colour) {
+  ColorTrans t;
+  const uint32_t inv_white = invert_premul_argb(t, 0xFFFFFFFFu);  // 0xFF8F8F8F on the surface
+  std::vector<uint32_t> pix = {0x00000000u, inv_white};
+  GlyphAtlas a{1, 2, 1, pix.data()};
+  const OsdPalette p = build_palette(a, nullptr, 0, &t);
+  REQUIRE(p.n == 2);
+  // The ENCODER entry is white: BT.601 limited Y=235, U=V=128.
+  CHECK(std::abs((int)Y(p.entry[1]) - 235) <= 2);
+  CHECK(std::abs((int)U(p.entry[1]) - 128) <= 2);
+  CHECK(std::abs((int)V(p.entry[1]) - 128) <= 2);
+  // The MATCH entry is the grey actually on the surface (Y of 0x8F8F8F ~ 139
+  // in BT.601 LIMITED range -- not the full-range 143 the channel value
+  // itself would suggest).
+  CHECK(std::abs((int)Y(p.match[1]) - 139) <= 2);
+  // And quantizing that surface grey picks index 1, not the transparent 0.
+  Canvas c(16, 16);
+  c.set(0, 0, inv_white);
+  OsdIndexMap m;
+  quantize(c.s, p, &m, nullptr);
+  CHECK(m.px[0] == 1);
+  // Without a forward map, match == entry.
+  const OsdPalette q = build_palette(a);
+  for (int i = 0; i < q.n; ++i) CHECK(q.match[i] == q.entry[i]);
+}
+
 MTEST_MAIN

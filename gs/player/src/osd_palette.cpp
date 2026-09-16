@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "colortrans.h"
+
 namespace maburplay {
 
 namespace {
@@ -51,6 +53,22 @@ uint32_t argb_to_yuva(uint32_t premul_argb) {
          ((uint32_t)a << 24);
 }
 
+// BT.601 limited-range YUV -> straight 0xRRGGBB. The inverse of
+// argb_to_yuva's matrix, for re-mapping a palette entry through the
+// colortrans forward map.
+uint32_t yuv_to_rgb8(uint8_t y8, uint8_t u8, uint8_t v8) {
+  const double y = (y8 - 16.0) * (255.0 / 219.0);
+  const double u = (u8 - 128.0) * (255.0 / 224.0);
+  const double v = (v8 - 128.0) * (255.0 / 224.0);
+  auto c8 = [](double f) -> uint32_t {
+    if (f < 0.0) f = 0.0;
+    if (f > 255.0) f = 255.0;
+    return (uint32_t)(f + 0.5);
+  };
+  return (c8(y + 1.402 * v) << 16) | (c8(y - 0.344136 * u - 0.714136 * v) << 8) |
+         c8(y + 1.772 * u);
+}
+
 // A distinct (already-converted) colour observed in the atlas, plus how
 // many pixels had it.
 struct HistPoint {
@@ -75,7 +93,7 @@ int nearest_entry(const OsdPalette& pal, uint32_t yuva) {
   int best = 0;
   long best_d = -1;
   for (int i = 0; i < pal.n; ++i) {
-    const uint32_t e = pal.entry[i];
+    const uint32_t e = pal.match[i];
     const long dy = y - (long)(e & 0xFF);
     const long du = u - (long)((e >> 8) & 0xFF);
     const long dv = v - (long)((e >> 16) & 0xFF);
@@ -92,9 +110,10 @@ int nearest_entry(const OsdPalette& pal, uint32_t yuva) {
 }  // namespace
 
 OsdPalette build_palette(const GlyphAtlas& atlas, const uint32_t* extra,
-                         size_t n_extra) {
+                         size_t n_extra, const ColorTrans* forward) {
   OsdPalette pal;
   pal.entry[0] = 0;  // always fully transparent
+  pal.match[0] = 0;
   pal.n = 1;
 
   const bool have_atlas = atlas.pixels && atlas.glyph_w > 0 &&
@@ -241,8 +260,19 @@ OsdPalette build_palette(const GlyphAtlas& atlas, const uint32_t* extra,
     const uint8_t eu = (uint8_t)std::lround(su / (double)wsum);
     const uint8_t ev = (uint8_t)std::lround(sv / (double)wsum);
     const uint8_t ea = (uint8_t)std::lround(sa / (double)wsum);
-    pal.entry[idx] = (uint32_t)ey | ((uint32_t)eu << 8) |
-                     ((uint32_t)ev << 16) | ((uint32_t)ea << 24);
+    const uint32_t mean = (uint32_t)ey | ((uint32_t)eu << 8) | ((uint32_t)ev << 16) |
+                          ((uint32_t)ea << 24);
+    pal.match[idx] = mean;
+    if (forward && ea != 0) {
+      const uint32_t rgb = forward_rgb8(*forward, yuv_to_rgb8(ey, eu, ev));
+      const uint32_t premul_argb = ((uint32_t)ea << 24) |
+                                   ((((rgb >> 16) & 0xFF) * ea / 255) << 16) |
+                                   ((((rgb >> 8) & 0xFF) * ea / 255) << 8) |
+                                   ((rgb & 0xFF) * ea / 255);
+      pal.entry[idx] = argb_to_yuva(premul_argb);
+    } else {
+      pal.entry[idx] = mean;
+    }
     ++idx;
   }
   pal.n = idx;

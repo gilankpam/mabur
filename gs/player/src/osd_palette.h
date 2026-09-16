@@ -11,6 +11,8 @@
 
 namespace maburplay {
 
+class ColorTrans;
+
 // A palette in the exact layout MppEncOSDPltVal::val wants.
 //
 // WARNING: rk_venc_cmd.h declares that union's bitfields as {v,u,y,alpha}
@@ -19,7 +21,12 @@ namespace maburplay {
 // Writing by the field names renders white glyphs pink. Byte order here is
 // byte0=Y, byte1=U, byte2=V, byte3=alpha, BT.601 limited range.
 struct OsdPalette {
-  uint32_t entry[256] = {0};
+  uint32_t entry[256] = {0};  // what the ENCODER composites (intended colours)
+  // What the quantizer MATCHES against: the colours as they sit on the OSD
+  // surface. Identical to entry[] unless build_palette() was given a forward
+  // map (colortrans: the surface holds pre-inverted colours, the encoder
+  // composites onto already-corrected video, so entry = forward(match)).
+  uint32_t match[256] = {0};
   int n = 0;             // entries in use; entry[0] is always transparent
 };
 
@@ -66,11 +73,18 @@ struct QuantizeCache {
 // not be the colours the screen shows). An EMPTY atlas is legal and means
 // exactly one thing -- a GS-only topology with no MSP font loaded -- and
 // yields a palette built from the seeds alone.
+// `forward`, when non-null, is the colortrans forward map: matching runs in
+// the surface's (inverted) colour space, and each entry's YUV is computed
+// from forward(colour) so the burned recording shows the intended colour.
 OsdPalette build_palette(const GlyphAtlas& atlas, const uint32_t* extra,
-                         size_t n_extra);
+                         size_t n_extra, const ColorTrans* forward);
 
+inline OsdPalette build_palette(const GlyphAtlas& atlas, const uint32_t* extra,
+                                size_t n_extra) {
+  return build_palette(atlas, extra, n_extra, nullptr);
+}
 inline OsdPalette build_palette(const GlyphAtlas& atlas) {
-  return build_palette(atlas, nullptr, 0);
+  return build_palette(atlas, nullptr, 0, nullptr);
 }
 
 // Quantizes `s` against `pal`. Sizes `out` to ceil(w/16) x ceil(h/16)
