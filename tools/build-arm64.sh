@@ -310,11 +310,19 @@ BR_SYSROOT="$MABUR_BR_HOST/aarch64-buildroot-linux-gnu/sysroot"
 # `nix-shell -p pkg-config libusb1`), the answer resolves under /nix/store
 # instead of $BR_SYSROOT, and stage 6 would build against host x86_64
 # headers -- caught here before any of stage 6's real work starts.
-_pc_leak=$(
+# Non-fatal on its own: under `set -e`, `var=$(cmd)` aborts the whole
+# script the instant cmd exits non-zero, so a query failure unrelated to
+# the nix leak (pkg-config missing, no libusb-1.0.pc, ...) must not kill
+# the build silently here -- fall through to the case below (which then
+# correctly does not match) and let cmake's own error speak.
+_pc_leak=""
+if ! _pc_leak=$(
   PKG_CONFIG_LIBDIR="$BR_SYSROOT/usr/lib/pkgconfig:$BR_SYSROOT/usr/share/pkgconfig" \
   PKG_CONFIG_SYSROOT_DIR="$BR_SYSROOT" \
   pkg-config --cflags libusb-1.0 2>/dev/null
-)
+); then
+  echo "note: pkg-config probe for libusb-1.0 inconclusive; continuing (cmake will report if something is actually missing)" >&2
+fi
 case "$_pc_leak" in
   */nix/store/*)
     echo "error: pkg-config resolved libusb-1.0 outside the Buildroot sysroot:" >&2
