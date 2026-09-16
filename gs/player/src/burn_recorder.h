@@ -12,6 +12,8 @@
 
 namespace maburplay {
 
+class ColorTrans;
+
 // Encoder-side recording settings.
 //
 // Note what is NOT here: the encoded picture size. It is the DECODED frame's
@@ -34,6 +36,12 @@ struct BurnCfg {
   int fps_cap = 30;        // encode rate ceiling, independent of display rate
   int bitrate_kbps = 12000;
   int fragment_ms = 1000;  // DvrMux fragment cut, same units as the raw path
+
+  // colortrans (docs/colortrans.md): non-null = run the GPU stage on every
+  // admitted frame before encode(). Non-owning; main.cpp owns the evaluator
+  // and it outlives the recorder. Only consulted by a MABUR_PLAYER_GPU
+  // build; otherwise every frame counts as a colortrans fallback.
+  const ColorTrans* colortrans = nullptr;
 };
 
 // dvr.mode "burned": re-encodes decoded frames with the MSP OSD composited in
@@ -194,6 +202,11 @@ class BurnRecorder {
   uint64_t frames_flushed() const;
   uint64_t encode_errors() const;
   uint64_t osd_rejects() const;
+  //   colortrans_fallbacks  admitted frames encoded FLAT because the GPU
+  //                  stage was unavailable or failed (or the binary has no
+  //                  stage). Nonzero with colortrans on = a silently
+  //                  uncorrected recording, so it is on the fps-log line.
+  uint64_t colortrans_fallbacks() const;
 
  private:
   struct Impl;

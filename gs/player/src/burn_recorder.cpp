@@ -18,6 +18,10 @@
 #include "mpp_backend.h"
 #include "mpp_encoder.h"
 
+#ifdef MABUR_PLAYER_GPU
+#include "frame_colortrans.h"
+#endif
+
 // The burned-DVR driver: an fps-capped encoder thread fed from the main loop
 // by MPP buffer reference, writing fMP4 through the same DvrMux the raw path
 // uses. See burn_recorder.h for the ownership and threading contracts; the
@@ -158,6 +162,58 @@ struct BurnRecorder::Impl {
   std::atomic<uint64_t> frames_flushed{0};   // drop_pending()/stop(): HYGIENE
   std::atomic<uint64_t> encode_errors{0};
   std::atomic<uint64_t> osd_rejects{0};
+  std::atomic<uint64_t> colortrans_fallbacks{0};
+#ifdef MABUR_PLAYER_GPU
+  // GPU stage, recorder thread only (EGL is thread-bound).
+  std::unique_ptr<FrameColorTrans> ct;
+  bool ct_failed = false;         // init failed once: stay flat, logged once
+  MppBufferGroup ct_grp = nullptr; // private DRM group for the destination
+  MppBuffer ct_dst = nullptr;
+  size_t ct_dst_size = 0;
+  int ct_w = 0, ct_h = 0;
+
+  // Recorder thread. Brings the stage and the destination buffer up for
+  // this geometry; false = encode flat this frame.
+  bool ct_prepare(int w, int h, int hs, int vs) {
+    if (ct_failed) return false;
+    if (!ct || ct_w != w || ct_h != h) {
+      ct.reset(new FrameColorTrans());
+      if (!ct->init((uint32_t)w, (uint32_t)h)) {
+        std::fprintf(stderr, "BurnRecorder: colortrans GPU stage unavailable; recording FLAT\n");
+        ct.reset();
+        ct_failed = true;
+        return false;
+      }
+      ct_w = w;
+      ct_h = h;
+    }
+    const size_t need = (size_t)hs * (size_t)vs * 3 / 2;
+    if (!ct_grp && mpp_buffer_group_get_internal(&ct_grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) {
+      std::fprintf(stderr, "BurnRecorder: colortrans buffer group failed; recording FLAT\n");
+      ct_failed = true;
+      return false;
+    }
+    if (!ct_dst || ct_dst_size < need) {
+      if (ct_dst) mpp_buffer_put(ct_dst);
+      ct_dst = nullptr;
+      if (mpp_buffer_get(ct_grp, &ct_dst, need) != MPP_OK || !ct_dst) {
+        std::fprintf(stderr, "BurnRecorder: colortrans destination alloc failed; recording FLAT\n");
+        ct_failed = true;
+        return false;
+      }
+      ct_dst_size = need;
+    }
+    return true;
+  }
+  void ct_teardown() {  // recorder thread, at the end of run()
+    ct.reset();
+    if (ct_dst) mpp_buffer_put(ct_dst);
+    ct_dst = nullptr;
+    ct_dst_size = 0;
+    if (ct_grp) mpp_buffer_group_put(ct_grp);
+    ct_grp = nullptr;
+  }
+#endif
   uint64_t consecutive_fail = 0;  // recorder thread only
 
   // One coded picture out of the encoder, on the recorder thread, from inside
@@ -242,11 +298,31 @@ struct BurnRecorder::Impl {
       // --fps-log can say so; the encoder's own log for it is once-only.
       if (have_osd && !enc->set_osd(osd_work)) osd_rejects.fetch_add(1);
 
+      void* enc_buf = m.buf;
+      bool src_released = false;
+#ifdef MABUR_PLAYER_GPU
+      if (cfg.colortrans) {
+        if (ct_prepare(m.w, m.h, m.stride, m.vstride) &&
+            ct->process(mpp_buffer_get_fd(static_cast<MppBuffer>(m.buf)), (uint32_t)m.w,
+                        (uint32_t)m.h, (uint32_t)m.stride, (uint32_t)m.vstride,
+                        mpp_buffer_get_fd(ct_dst), (uint32_t)m.stride, (uint32_t)m.vstride)) {
+          enc_buf = ct_dst;
+          // REF-ENCODE, early: the GPU and RGA are done with the source
+          // (glFinish + synchronous imcvtcolor), the encoder reads ct_dst.
+          mpp_buffer_put(static_cast<MppBuffer>(m.buf));
+          src_released = true;
+        } else {
+          colortrans_fallbacks.fetch_add(1);
+        }
+      }
+#else
+      if (cfg.colortrans) colortrans_fallbacks.fetch_add(1);  // built without the stage
+#endif
       const bool ok =
-          enc->encode(m.buf, m.w, m.h, m.stride, m.vstride, static_cast<uint64_t>(m.pts_us));
+          enc->encode(enc_buf, m.w, m.h, m.stride, m.vstride, static_cast<uint64_t>(m.pts_us));
       // REF-ENCODE: released the moment the encoder is done with it, whether
       // or not it produced a packet. encode() borrows, it never owns.
-      mpp_buffer_put(static_cast<MppBuffer>(m.buf));
+      if (!src_released) mpp_buffer_put(static_cast<MppBuffer>(m.buf));
 
       if (ok) {
         frames_encoded.fetch_add(1);
@@ -274,6 +350,9 @@ struct BurnRecorder::Impl {
         dead.store(true);
       }
     }
+#ifdef MABUR_PLAYER_GPU
+    ct_teardown();
+#endif
   }
 
   // Recorder thread, mu HELD: brings osd_work up to date with osd_map,
@@ -366,6 +445,7 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
   im.mux_open = false;
   im.mux_failed = false;
   im.dead.store(false);
+  im.colortrans_fallbacks.store(0);
   im.stopping = false;
 
   EncCfg ec;
@@ -396,14 +476,20 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
       std::fprintf(stderr, "BurnRecorder: palette upload failed; recording without the OSD\n");
   }
 
+#ifndef MABUR_PLAYER_GPU
+  if (cfg.colortrans)
+    std::fprintf(stderr, "BurnRecorder: colortrans requested but this build has no GPU stage; "
+                         "recording FLAT (colortrans_fallbacks will climb)\n");
+#endif
+
   im.idr_pending.store(true);  // consumed before the first encode
   im.started = true;
   im.th = std::thread([pim] { pim->run(); });
   std::fprintf(stderr,
                "BurnRecorder: started cap %d fps %d kbps frag %d ms osd=%s (%dx%d px region) "
-               "-> %s (picture size latches on the first decoded frame)\n",
+               "colortrans=%s -> %s (picture size latches on the first decoded frame)\n",
                cfg.fps_cap, cfg.bitrate_kbps, cfg.fragment_ms, im.palette_live ? "on" : "off",
-               cfg.osd_width, cfg.osd_height, path.c_str());
+               cfg.osd_width, cfg.osd_height, cfg.colortrans ? "on" : "off", path.c_str());
   return true;
 }
 
@@ -555,7 +641,7 @@ void BurnRecorder::stop() {
   im.started = false;
   std::fprintf(stderr,
                "BurnRecorder: stopped -- in=%llu encoded=%llu dropped=%llu flushed=%llu "
-               "errors=%llu osd_rejects=%llu (encoder frames=%llu errors=%llu) "
+               "errors=%llu osd_rejects=%llu ct_fallbacks=%llu (encoder frames=%llu errors=%llu) "
                "samples=%llu fragments=%llu\n",
                static_cast<unsigned long long>(im.frames_in.load()),
                static_cast<unsigned long long>(im.frames_encoded.load()),
@@ -563,6 +649,7 @@ void BurnRecorder::stop() {
                static_cast<unsigned long long>(im.frames_flushed.load()),
                static_cast<unsigned long long>(im.encode_errors.load()),
                static_cast<unsigned long long>(im.osd_rejects.load()),
+               static_cast<unsigned long long>(im.colortrans_fallbacks.load()),
                static_cast<unsigned long long>(enc_frames),
                static_cast<unsigned long long>(enc_errs),
                static_cast<unsigned long long>(im.mux.samples()),
@@ -577,5 +664,6 @@ uint64_t BurnRecorder::frames_dropped() const { return impl_->frames_dropped.loa
 uint64_t BurnRecorder::frames_flushed() const { return impl_->frames_flushed.load(); }
 uint64_t BurnRecorder::encode_errors() const { return impl_->encode_errors.load(); }
 uint64_t BurnRecorder::osd_rejects() const { return impl_->osd_rejects.load(); }
+uint64_t BurnRecorder::colortrans_fallbacks() const { return impl_->colortrans_fallbacks.load(); }
 
 }  // namespace maburplay

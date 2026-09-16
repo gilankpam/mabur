@@ -906,6 +906,7 @@ int main(int argc, char** argv) {
     bc.fps_cap = cfg.dvr.burned.fps_cap;
     bc.bitrate_kbps = cfg.dvr.burned.bitrate_kbps;
     bc.fragment_ms = cfg.dvr.fragment_ms;
+    bc.colortrans = cfg.colortrans.enable ? &ct : nullptr;
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the
     // decode watchdog may destroy and recreate it mid-run.
     if (rec->start(bc, dvr_filename(cfg.dvr.dir), backend.get())) burn = std::move(rec);
@@ -1927,17 +1928,18 @@ int main(int argc, char** argv) {
           // burn_enc counts encode() calls that produced a packet -- NOT
           // samples written, since a zero-length packet reaches the mux sink
           // and is dropped there.
-          char burn_fields[224] = {0};
+          char burn_fields[256] = {0};
           if (burn) {
             std::snprintf(burn_fields, sizeof(burn_fields),
                           " burn_in=%llu burn_enc=%llu burn_drop=%llu burn_flush=%llu "
-                          "burn_err=%llu burn_osdrej=%llu",
+                          "burn_err=%llu burn_osdrej=%llu burn_ctfb=%llu",
                           static_cast<unsigned long long>(burn->frames_in()),
                           static_cast<unsigned long long>(burn->frames_encoded()),
                           static_cast<unsigned long long>(burn->frames_dropped()),
                           static_cast<unsigned long long>(burn->frames_flushed()),
                           static_cast<unsigned long long>(burn->encode_errors()),
-                          static_cast<unsigned long long>(burn->osd_rejects()));
+                          static_cast<unsigned long long>(burn->osd_rejects()),
+                          static_cast<unsigned long long>(burn->colortrans_fallbacks()));
           }
           std::fprintf(stderr,
                        "fps-log: fps=%.1f flips/s=%.1f repl=%llu frames=%llu commit_errors=%llu "
