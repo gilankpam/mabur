@@ -1,5 +1,7 @@
 #include "osd_font.h"
 
+#include "colortrans.h"
+
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -96,6 +98,8 @@ bool OsdFont::load(const std::string& path, std::string* err) {
     map_bytes_ = 0;
   }
   native_ = GlyphAtlas{};
+  original_ = GlyphAtlas{};
+  inverted_.clear();
   cached_ = GlyphAtlas{};
   scaled_.clear();
   builds_ = 0;
@@ -141,9 +145,21 @@ bool OsdFont::load(const std::string& path, std::string* err) {
   }
   map_ = m;
   map_bytes_ = (size_t)st.st_size;
-  native_ = GlyphAtlas{(int)h.glyph_w, (int)h.glyph_h, (int)h.n_glyphs,
-                       reinterpret_cast<const uint32_t*>((const uint8_t*)m + sizeof(MfontHdr))};
+  original_ = GlyphAtlas{(int)h.glyph_w, (int)h.glyph_h, (int)h.n_glyphs,
+                         reinterpret_cast<const uint32_t*>((const uint8_t*)m + sizeof(MfontHdr))};
+  native_ = original_;
+  inverted_.clear();
   return true;
+}
+
+void OsdFont::set_inverse(const ColorTrans& t) {
+  if (!original_.pixels) return;
+  const size_t n = (size_t)original_.glyph_w * original_.glyph_h * original_.n_glyphs;
+  inverted_.resize(n);
+  for (size_t i = 0; i < n; ++i) inverted_[i] = invert_premul_argb(t, original_.pixels[i]);
+  native_ = GlyphAtlas{original_.glyph_w, original_.glyph_h, original_.n_glyphs, inverted_.data()};
+  cached_ = GlyphAtlas{};  // built from the old pixels; atlas_at() rebuilds
+  scaled_.clear();
 }
 
 const GlyphAtlas* OsdFont::atlas_at(int w, int h, ScaleMode mode) {

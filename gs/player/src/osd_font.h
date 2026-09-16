@@ -8,6 +8,8 @@
 
 namespace maburplay {
 
+class ColorTrans;
+
 // How a glyph is resized when the draw size differs from the atlas size.
 // kSharp is the default and is only ever handed integer multiples or
 // smaller sizes (compute_layout guarantees it), so it never blurs.
@@ -38,6 +40,19 @@ class OsdFont {
   bool ok() const { return native_.pixels != nullptr; }
   const GlyphAtlas& native() const { return native_; }
 
+  // The atlas as mmapped from disk, before any set_inverse(). This is what
+  // the burned DVR's palette must NOT be built from once an inverse is set
+  // (build_palette takes the surface-space atlas plus the forward map).
+  const GlyphAtlas& native_original() const { return original_; }
+
+  // colortrans (docs/colortrans.md): the OSD plane is blended BEFORE the
+  // CRTC LUT, so every glyph pixel is pre-inverted once, here. Copies the
+  // mmapped atlas into an owned buffer (un-premultiply, invert,
+  // re-premultiply; alpha untouched) and repoints native() at it. Any
+  // scaled atlas already built is discarded -- it was built from the old
+  // pixels. Callable more than once; the last call wins.
+  void set_inverse(const ColorTrans& t);
+
   // Atlas with glyphs exactly w x h. Cached: one non-native size at a time
   // (canvas changes are rare). Returns nullptr if not loaded, w/h <= 0, or
   // w/h exceeds the sanity bound (kMaxGlyphDim in osd_font.cpp).
@@ -52,6 +67,8 @@ class OsdFont {
   void* map_ = nullptr;
   size_t map_bytes_ = 0;
   GlyphAtlas native_;
+  GlyphAtlas original_;          // the mmap view
+  std::vector<uint32_t> inverted_;
   GlyphAtlas cached_;
   ScaleMode cached_mode_ = ScaleMode::kSharp;
   std::vector<uint32_t> scaled_;

@@ -1,3 +1,4 @@
+#include "colortrans.h"
 #include "mtest.h"
 #include "osd_font.h"
 #include "scratch.h"
@@ -187,6 +188,42 @@ TEST(atlas_at_caches_one_size) {
   // A different requested size must evict the cache and build again.
   const GlyphAtlas* c = font.atlas_at(2, 2, ScaleMode::kSharp);
   REQUIRE(c != nullptr);
+  CHECK(font.builds() == 2);
+}
+
+TEST(set_inverse_transforms_pixels_keeps_alpha_and_feeds_scaled_atlases) {
+  const ScratchFile p("osd_font", ".mfont");
+  // 2x1 glyph: opaque white, fully transparent.
+  write_font_pixels(p, 2, 1, {0xFFFFFFFFu, 0x00000000u});
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(p.path, &err));
+  ColorTrans t;
+  font.set_inverse(t);
+  CHECK(font.native().pixels[0] == 0xFF8F8F8Fu);  // invert(white) = mid grey
+  CHECK(font.native().pixels[1] == 0u);
+  CHECK(font.native_original().pixels[0] == 0xFFFFFFFFu);  // the mmap is untouched
+  const GlyphAtlas* a = font.atlas_at(4, 2, ScaleMode::kSharp);  // 2x replicate
+  REQUIRE(a != nullptr);
+  CHECK(a->pixels[0] == 0xFF8F8F8Fu);
+  CHECK(a->pixels[1] == 0xFF8F8F8Fu);
+  CHECK(a->pixels[2] == 0u);
+}
+
+TEST(set_inverse_invalidates_a_scaled_atlas_built_before_it) {
+  const ScratchFile p("osd_font", ".mfont");
+  write_font_pixels(p, 2, 1, {0xFFFFFFFFu, 0x00000000u});
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(p.path, &err));
+  const GlyphAtlas* before = font.atlas_at(4, 2, ScaleMode::kSharp);
+  REQUIRE(before != nullptr);
+  CHECK(before->pixels[0] == 0xFFFFFFFFu);
+  ColorTrans t;
+  font.set_inverse(t);
+  const GlyphAtlas* after = font.atlas_at(4, 2, ScaleMode::kSharp);
+  REQUIRE(after != nullptr);
+  CHECK(after->pixels[0] == 0xFF8F8F8Fu);
   CHECK(font.builds() == 2);
 }
 
