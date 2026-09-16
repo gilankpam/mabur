@@ -5,6 +5,15 @@
 # builds the GS image itself, since its burned-DVR colortrans stage links
 # Mesa EGL/GLESv2/GBM + librga, which exist only as glibc shared objects.
 #
+# RUN THIS SCRIPT BARE. Do NOT wrap it in the `nix-shell -p pkg-config
+# libusb1` that CLAUDE.md's Build & Test section prescribes for HOST
+# cmake/ctest invocations -- that wrapper does not apply here. When libusb1
+# is present in the shell, Nix's pkg-config wrapper overrides
+# PKG_CONFIG_LIBDIR unconditionally, which leaks the host's libusb into
+# stage 6's Buildroot-sysroot build underneath it. Stage 6 below detects
+# this and fails loudly rather than let CMake surface a confusing
+# path-does-not-exist error instead.
+#
 # Deviations from the original Bootlin-based plan (see
 # .superpowers/sdd/task-16-brief.md and task-16-report.md for the full
 # rationale): this host is NixOS, where prebuilt toolchains like Bootlin's
@@ -292,6 +301,31 @@ BR_SYSROOT="$MABUR_BR_HOST/aarch64-buildroot-linux-gnu/sysroot"
 [ -e "$BR_SYSROOT/usr/include/EGL/egl.h" ] && [ -e "$BR_SYSROOT/usr/include/rga/im2d.h" ] || {
   echo "error: $BR_SYSROOT lacks EGL/egl.h or rga/im2d.h -- build mesa3d + librga in the" >&2
   echo "       Buildroot output first (docs/colortrans.md, 'Build')" >&2; exit 1; }
+# Ask pkg-config itself, under the exact PKG_CONFIG_LIBDIR/SYSROOT_DIR the
+# cmake configure below will use, where it thinks libusb-1.0 lives -- rather
+# than guessing at IN_NIX_SHELL (a bare nix-shell without libusb1 is
+# harmless, and other environments could leak the same way). If Nix's
+# pkg-config wrapper has overridden PKG_CONFIG_LIBDIR (which it does
+# unconditionally whenever libusb1 is present in the current shell, i.e.
+# `nix-shell -p pkg-config libusb1`), the answer resolves under /nix/store
+# instead of $BR_SYSROOT, and stage 6 would build against host x86_64
+# headers -- caught here before any of stage 6's real work starts.
+_pc_leak=$(
+  PKG_CONFIG_LIBDIR="$BR_SYSROOT/usr/lib/pkgconfig:$BR_SYSROOT/usr/share/pkgconfig" \
+  PKG_CONFIG_SYSROOT_DIR="$BR_SYSROOT" \
+  pkg-config --cflags libusb-1.0 2>/dev/null
+)
+case "$_pc_leak" in
+  */nix/store/*)
+    echo "error: pkg-config resolved libusb-1.0 outside the Buildroot sysroot:" >&2
+    echo "       $_pc_leak" >&2
+    echo "error: this is Nix's pkg-config wrapper overriding PKG_CONFIG_LIBDIR because" >&2
+    echo "       libusb1 is present in the current shell -- run tools/build-arm64.sh" >&2
+    echo "       bare, NOT inside 'nix-shell -p pkg-config libusb1' (see the note at" >&2
+    echo "       the top of this file)." >&2
+    exit 1
+    ;;
+esac
 export MABUR_BR_HOST
 # Same shim package/mabur/mabur.mk uses: gs/player/CMakeLists.txt links
 # ${ROOT}/lib/lib{rockchip_mpp,drm}.a by absolute path; ld identifies an
