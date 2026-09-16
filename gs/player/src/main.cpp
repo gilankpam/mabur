@@ -506,10 +506,10 @@ int main(int argc, char** argv) {
   }
 #ifndef MABUR_PLAYER_HW
   // ct_display_on and lut_axis are consumed only under MABUR_PLAYER_HW
-  // (install_colortrans, the burn-palette forward map) below, but both are
-  // declared here at main() scope -- not inside the ifdef -- because Task 12
-  // reads them for the burned-DVR path too. Silence the host build's
-  // unused-variable warning rather than restructuring the declarations.
+  // (install_colortrans, the burn-palette forward map) below, so a host
+  // build would otherwise warn that they are unused. Silence that rather
+  // than restructuring the declarations -- ct itself must stay at this
+  // scope for Task 12, and these two are declared alongside it.
   (void)ct_display_on;
   (void)lut_axis;
 #endif
@@ -638,13 +638,15 @@ int main(int argc, char** argv) {
   auto install_colortrans = [&](maburplay::DrmPresenter* p) {
     const bool avail = p->color_lut_available();
     const bool on = cfg.colortrans.enable && avail;
-    if (!p->set_color_lut(maburplay::build_cubic_lut(on ? &ct : nullptr, lut_axis)) && avail)
+    const bool installed =
+        p->set_color_lut(maburplay::build_cubic_lut(on ? &ct : nullptr, lut_axis));
+    if (!installed && avail)
       std::fprintf(stderr, "maburplay: colortrans: CUBIC_LUT install failed -- display stays flat\n");
     if (cfg.colortrans.enable && !avail)
       std::fprintf(stderr,
                    "maburplay: colortrans: CRTC has no 729-entry CUBIC_LUT -- display stays "
                    "flat, OSD not inverted (burned DVR still corrected)\n");
-    ct_display_on = on && p->color_lut_available();
+    ct_display_on = on && installed;
     if (ct_display_on) {
       osd_font.set_inverse(ct);
       maburplay::set_colour_inverse(&ct);
