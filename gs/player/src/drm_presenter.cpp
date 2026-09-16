@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <vector>
 
 #include <drm_fourcc.h>
 #include <xf86drm.h>
@@ -270,6 +271,11 @@ struct DrmPresenter::Impl {
   uint32_t prop_connector_crtc_id = 0;
   uint32_t prop_crtc_mode_id = 0;
   uint32_t prop_crtc_active = 0;
+
+  // colortrans 3D LUT. size 0 = property absent.
+  uint32_t prop_crtc_cubic_lut = 0;
+  uint64_t cubic_lut_size = 0;
+  uint32_t cubic_lut_blob_id = 0;
 
   // zpos stacking (the black-screen fix): vop2's default z-order put the
   // Smart0 backdrop ABOVE the Esmart0 video plane -- commits all succeeded
@@ -719,6 +725,17 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
       std::fprintf(stderr, "DrmPresenter: missing connector/crtc CRTC_ID|MODE_ID|ACTIVE property\n");
     return false;
   }
+
+  prop_crtc_cubic_lut = find_property(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "CUBIC_LUT");
+  cubic_lut_size = 0;
+  if (prop_crtc_cubic_lut) {
+    uint64_t sz = 0;
+    if (find_property(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "CUBIC_LUT_SIZE", &sz)) cubic_lut_size = sz;
+  }
+  if (log_init_failures)
+    std::fprintf(stderr, "DrmPresenter: CUBIC_LUT %s (size %llu)\n",
+                 prop_crtc_cubic_lut ? "present" : "absent",
+                 static_cast<unsigned long long>(cubic_lut_size));
 
   // Plane select: iterate planes usable on our CRTC, prefer a PRIMARY-type
   // plane that lists DRM_FORMAT_NV12, else take the first OVERLAY-type one
@@ -1182,6 +1199,7 @@ bool DrmPresenter::Impl::splash_show() {
   drmModeAtomicAddProperty(r, connector_id, prop_connector_crtc_id, crtc_id);
   drmModeAtomicAddProperty(r, crtc_id, prop_crtc_mode_id, mode_blob_id);
   drmModeAtomicAddProperty(r, crtc_id, prop_crtc_active, 1);
+  if (cubic_lut_blob_id) drmModeAtomicAddProperty(r, crtc_id, prop_crtc_cubic_lut, cubic_lut_blob_id);
   if (splash_zpos_prop)
     drmModeAtomicAddProperty(r, splash_plane_id, splash_zpos_prop, splash_zpos_val);
   drmModeAtomicAddProperty(r, splash_plane_id, splash_props.fb_id, splash_fb_id);
@@ -1354,6 +1372,8 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
         drmModeAtomicAddProperty(r, connector_id, prop_connector_crtc_id, crtc_id);
         drmModeAtomicAddProperty(r, crtc_id, prop_crtc_mode_id, mode_blob_id);
         drmModeAtomicAddProperty(r, crtc_id, prop_crtc_active, 1);
+        if (cubic_lut_blob_id)
+          drmModeAtomicAddProperty(r, crtc_id, prop_crtc_cubic_lut, cubic_lut_blob_id);
       }
       if (primary_fb_id) {
         if (zpos_primary_prop)
@@ -1627,6 +1647,7 @@ DrmPresenter::Impl::~Impl() {
     if (primary_fb_id) drmModeRmFB(fd, primary_fb_id);
     if (primary_gem_handle) drmModeDestroyDumbBuffer(fd, primary_gem_handle);
     free_splash();
+    if (cubic_lut_blob_id) drmModeDestroyPropertyBlob(fd, cubic_lut_blob_id);
     if (mode_blob_id) drmModeDestroyPropertyBlob(fd, mode_blob_id);
     close(fd);
   }
@@ -1704,6 +1725,35 @@ uint64_t DrmPresenter::osd_commit_errors() const { return impl_->osd_commit_erro
 
 int DrmPresenter::osd_front_prime_fd() const {
   return osd_available() ? impl_->osd.prime_fd(impl_->osd_back ^ 1) : -1;
+}
+
+bool DrmPresenter::color_lut_available() const {
+  return impl_->inited && impl_->prop_crtc_cubic_lut != 0 &&
+         impl_->cubic_lut_size == static_cast<uint64_t>(kCubicLutEntries);
+}
+
+bool DrmPresenter::set_color_lut(const CubicLut& lut) {
+  Impl& im = *impl_;
+  if (!color_lut_available()) return false;
+  if (im.cubic_lut_blob_id) {
+    std::fprintf(stderr, "DrmPresenter: set_color_lut called twice, ignored\n");
+    return false;
+  }
+  std::vector<struct drm_color_lut> table(kCubicLutEntries);
+  for (int i = 0; i < kCubicLutEntries; ++i) {
+    table[i].red = lut.rgb[i][0];
+    table[i].green = lut.rgb[i][1];
+    table[i].blue = lut.rgb[i][2];
+    table[i].reserved = 0;
+  }
+  if (drmModeCreatePropertyBlob(im.fd, table.data(),
+                                table.size() * sizeof(struct drm_color_lut),
+                                &im.cubic_lut_blob_id) != 0) {
+    std::fprintf(stderr, "DrmPresenter: CUBIC_LUT blob create failed: %s\n", std::strerror(errno));
+    im.cubic_lut_blob_id = 0;
+    return false;
+  }
+  return true;
 }
 
 }  // namespace maburplay

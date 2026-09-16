@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 
+#include "colortrans.h"  // CubicLut
 #include "osd_raster.h"  // Surface (host-buildable; pulls in no DRM headers)
 #include "video_backend.h"
 
@@ -172,6 +173,20 @@ class DrmPresenter {
   // init() succeeds; main.cpp seeds the FrameRegulator's vblank estimator
   // with it so the servo can lock non-60 Hz panels.
   double mode_period_us() const;
+
+  // --- colortrans: CRTC 3D LUT (docs/colortrans.md) -------------------
+  // True when init() found the CRTC's CUBIC_LUT property with
+  // CUBIC_LUT_SIZE == 729 (VOP2 on RK3566: 9x9x9, 12-bit entries).
+  bool color_lut_available() const;
+  // Installs the table. Call ONCE, after init() and before the first
+  // splash_show()/present(): the blob is attached to every modeset commit
+  // from then on and lives until the presenter is destroyed. The VOP2
+  // driver keeps a raw pointer to the last applied blob's data and
+  // re-applies it on the next modeset even after the blob is gone, which
+  // is why (a) the blob is never destroyed early and (b) main.cpp always
+  // installs a table -- identity when colortrans is off. A second call is
+  // refused (logged) so that rule cannot be broken by accident.
+  bool set_color_lut(const CubicLut& lut);
 
  private:
   struct Impl;
