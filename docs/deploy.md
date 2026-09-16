@@ -414,6 +414,21 @@ player just doesn't come back). **Strip the `display.vsync_*` /
 `maburplay.pre-vsync`** — config-before-binary applies rolling back too,
 not only rolling forward.
 
+## 2026-09-16 colortrans (maburplay glibc-dynamic, `[colortrans]` key)
+
+`maburplay` is a glibc-DYNAMIC binary from this build on (Mesa EGL/GLESv2/GBM +
+librga for the burned-DVR colortrans stage; `docs/colortrans.md`). Check with
+`readelf -d out/arm64/maburplay | grep NEEDED`: libEGL.so.1, libGLESv2.so.2,
+libgbm.so.1, librga.so.2, libdrm.so.2, librockchip_mpp.so.1 (plus the usual
+libstdc++.so.6, libm.so.6, libgcc_s.so.1, libc.so.6 and the loader). The GS
+image must carry them — the current one does; an image built from the radxa
+defconfig between sbc-groundstations `ef55018` and the 2026-09-16 mesa3d/librga
+re-add does not.
+
+Binary BEFORE config: `[colortrans] enable` is a new key (in-code default
+false). Rollback: `maburplay.pre-colortrans` (the last musl-static binary) and
+`/etc/maburplay.toml.pre-colortrans`, or strip the `[colortrans]` block.
+
 ## 2026-09-16 probe per AU (no wire change, both ends together)
 
 The drone trails every video AU with a probe (60/s at 60 fps, was

@@ -36,6 +36,7 @@ page the task needs rather than carrying all of it.
 |---|---|
 | ladder rungs, promote/demote, s3 probes, fade, attribution, RCF drain, RcAgent's encoder verbs + IDR pacing | `docs/link-adaptation.md` |
 | the stats sideport, maburtop, the debug-log session directory (ctl/probe/au/flight/lat), ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
+| colortrans (CRTC 3D LUT, OSD inverse, burned-DVR GPU stage), the Buildroot glibc build of maburplay | `docs/colortrans.md` |
 | auto channel selection, the boot-time scan, scan.log, home/op channels, split/reunite | `docs/channel-select.md` |
 | in-flight channel hop, verdict, dwells, hop_restore | `docs/inflight-channel-hop.md` |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
