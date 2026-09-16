@@ -301,6 +301,28 @@ while video flies as agg6 aggregates ~6× longer on air, so it
 underestimates per-aggregate loss; that bias is the remaining fast-fail
 lever (SNR floor at the candidate rung, or `rung_offset 2`).
 
+**Bench 2026-09-16 (deployed both ends, commit 61f19e7).** Session
+`/media/dvr/log/0104` (the ctl.log's second `ctllog` header is the new
+pair; the first two climbs in that file are the boot-time old binaries —
+both boards had been power-cycled ~10 min before the deploy).
+- Cold climb 0→5, all `promote_probed`, **1.85 s/rung** (was ~3.1–3.5):
+  `noinfo` at the rung change, `clean` at +0.30–0.36 s, promote +1.5 s
+  later = 90 bodies at 60/s. Repeated on a second adaptive restart.
+- `ausniff` 60.5 fps, 0 fid gaps, 908/908 (twice); `aucadence` +2.78 ms
+  (inside the 2.4–2.9 band).
+- Pinned mcs4 / probe mcs4, 254 s, 15 255 probe bodies at **59.9/s**
+  (7628 base-tail, 7627 enh-tail, joined to au.log by fid): probe body
+  loss **0.052 % on base tails, 0.066 % on enh tails**, no partial
+  bodies, vs the enh stream's own 0.17 % symbol loss — the base-tail
+  probe is not blasted by the RCF slotter.
+- `off_profile` 10 over one 5-rung climb (2/change, inside 2–12).
+- Rung-0 air: pinned mcs0 with the probe at mcs1 (60/s) vs no probe —
+  drone `air_backlog_max_ms` ≤ 6, `air_shed` never, `txq` depth ≤ 2.
+  ⚠ The sideport `link.air_pct` (60.1 vs 60.4 %, n 100 each) sums only
+  streams 0/1, so it cannot see the probe's share; analytically the
+  probe costs ≈ 60 × 0.91 ms = **5.5 % of air at rung 0** (2.7 % before),
+  ≈ 1.6 % at rung 4.
+
 ## Drone congestion shed (2026-09-03)
 
 The GS ladder never consumes drone telemetry (`T_TELEM` is display-only,
