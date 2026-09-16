@@ -94,4 +94,52 @@ TEST(invert_stays_finite_at_documented_parameter_boundaries) {
     CHECK(std::isfinite(y.r) && std::isfinite(y.g) && std::isfinite(y.b));
   }
 }
+
+static long grid12(int i) { return std::lround(i / 8.0 * 4095.0); }
+
+TEST(identity_lut_is_the_exact_grid) {
+  for (LutAxis axis : {LutAxis::kRedFastest, LutAxis::kBlueFastest}) {
+    const CubicLut lut = build_cubic_lut(nullptr, axis);
+    for (int r = 0; r < 9; ++r)
+      for (int g = 0; g < 9; ++g)
+        for (int b = 0; b < 9; ++b) {
+          const int idx = cubic_lut_index(r, g, b, axis);
+          CHECK(idx >= 0 && idx < kCubicLutEntries);
+          CHECK(lut.rgb[idx][0] == grid12(r));
+          CHECK(lut.rgb[idx][1] == grid12(g));
+          CHECK(lut.rgb[idx][2] == grid12(b));
+        }
+  }
+  CHECK(cubic_lut_index(1, 0, 0, LutAxis::kRedFastest) == 1);
+  CHECK(cubic_lut_index(0, 0, 1, LutAxis::kRedFastest) == 81);
+  CHECK(cubic_lut_index(0, 0, 1, LutAxis::kBlueFastest) == 1);
+  CHECK(cubic_lut_index(1, 0, 0, LutAxis::kBlueFastest) == 81);
+}
+
+TEST(transformed_lut_corners_and_centre) {
+  ColorTrans t;
+  const CubicLut lut = build_cubic_lut(&t, LutAxis::kRedFastest);
+  const auto at = [&](int r, int g, int b) {
+    return lut.rgb[cubic_lut_index(r, g, b, LutAxis::kRedFastest)];
+  };
+  CHECK(at(0, 0, 0)[0] == 0 && at(0, 0, 0)[1] == 0 && at(0, 0, 0)[2] == 0);
+  CHECK(at(8, 8, 8)[0] == 4095 && at(8, 8, 8)[1] == 4095 && at(8, 8, 8)[2] == 4095);
+  // forward(0.5 grey) = 0.853268 -> 3494 (test 1's reference value)
+  CHECK(at(4, 4, 4)[0] == 3494 && at(4, 4, 4)[1] == 3494 && at(4, 4, 4)[2] == 3494);
+  for (int i = 0; i < kCubicLutEntries; ++i)
+    for (int c = 0; c < 3; ++c) CHECK(lut.rgb[i][c] <= 4095);
+}
+
+TEST(blue_fastest_is_the_index_transpose_of_red_fastest) {
+  ColorTrans t;
+  const CubicLut a = build_cubic_lut(&t, LutAxis::kRedFastest);
+  const CubicLut b = build_cubic_lut(&t, LutAxis::kBlueFastest);
+  for (int r = 0; r < 9; ++r)
+    for (int g = 0; g < 9; ++g)
+      for (int bl = 0; bl < 9; ++bl)
+        for (int c = 0; c < 3; ++c)
+          CHECK(a.rgb[cubic_lut_index(r, g, bl, LutAxis::kRedFastest)][c] ==
+                b.rgb[cubic_lut_index(r, g, bl, LutAxis::kBlueFastest)][c]);
+}
+
 MTEST_MAIN

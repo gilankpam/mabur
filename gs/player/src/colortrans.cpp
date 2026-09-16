@@ -148,4 +148,27 @@ uint32_t invert_premul_argb(const ColorTrans& t, uint32_t argb) {
   return map_premul(argb, invert_rgb8, t);
 }
 
+int cubic_lut_index(int ri, int gi, int bi, LutAxis axis) {
+  const int e = kCubicLutEdge;
+  return axis == LutAxis::kRedFastest ? ri + e * gi + e * e * bi : bi + e * gi + e * e * ri;
+}
+
+CubicLut build_cubic_lut(const ColorTrans* t, LutAxis axis) {
+  CubicLut lut;
+  const auto q12 = [](float f) -> uint16_t {
+    return (uint16_t)std::lround(clamp01(f) * 4095.f);
+  };
+  for (int r = 0; r < kCubicLutEdge; ++r)
+    for (int g = 0; g < kCubicLutEdge; ++g)
+      for (int b = 0; b < kCubicLutEdge; ++b) {
+        Vec3 in{r / 8.f, g / 8.f, b / 8.f};
+        const Vec3 out = t ? t->forward(in) : in;
+        uint16_t* e = lut.rgb[cubic_lut_index(r, g, b, axis)];
+        e[0] = q12(out.r);
+        e[1] = q12(out.g);
+        e[2] = q12(out.b);
+      }
+  return lut;
+}
+
 }  // namespace maburplay
