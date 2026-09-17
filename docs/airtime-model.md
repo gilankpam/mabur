@@ -333,3 +333,23 @@ changes MCS only, never bitrate (§1's superseded "enh probe" note above
 states the same principle for the mechanism this one replaced), so it
 costs zero encoder writes and zero IDRs. At the top of the ladder (no
 probe commanded, `probe_rung() == -1`) the cost is zero, not 1 %.
+
+## 7. Per-MCS capacity and per-rung A-MPDU (2026-09-17)
+
+`docs/bandwidth-sweep-findings-2026-09-17.md` measured the real delivered
+air per MCS at saturation (linkbench, prod geometry, three channels, all
+within 0.5 %): **0.87 / 0.78 / 0.71 / 0.76 / 0.76 / 0.76 / 0.78 / 0.76 of
+nominal at mcs0-7 with agg6**, and 0.93 / 0.88 / 0.84 / 0.80 with singles
+at mcs0-3 (0.68 / 0.63 at mcs5 / 7). Two consequences:
+
+- `run_bitrate_policy` and the air clock price off NOMINAL `phy_rate`,
+  so `encoder.airtime_budget` is a fraction of a rate the link never
+  delivers: 0.6 lands at ~99 % of the real mcs2 capacity (the low-rung
+  latency spikes), 0.5 at 76-82 % on rungs 2-5. A per-MCS efficiency
+  table consumed by both is the follow-up; the sweep numbers are the
+  table.
+- The aggregation mode is per rung since the same day: `ampdu.min_mcs`
+  (bundle 4) — singles below it, the configured aggregate at and above
+  (`drone/src/ampdu_policy.h`, switched live by `RealActuator::apply_op`).
+  Do not read a fixed A-MPDU cost into the model: at mcs0-3 the chip now
+  flies singles and the singles column applies.

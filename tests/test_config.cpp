@@ -166,6 +166,9 @@ TEST(load_config_default_file_is_the_flight_config) {
   // A-MPDU agg6; see fec.feed_batch above. agg31 cascades residuals.
   CHECK(cfg.ampdu.max_num == 6);
   CHECK(cfg.ampdu.max_time == 32);
+  // Per-rung aggregation (docs/bandwidth-sweep-findings-2026-09-17.md):
+  // singles below mcs4, agg6 from mcs4 up.
+  CHECK(cfg.ampdu.min_mcs == 4);
 
   auto layers = cfg.uep_layers();
   // Literal passthrough (Task 3): no uep_layer_overhead ladder translation
@@ -1157,11 +1160,32 @@ TEST(ampdu_defaults_when_absent) {
 }
 
 TEST(ampdu_block_parses) {
-  auto path = write_temp_toml("[ampdu]\nmax_num = 4\nmax_time = 48\n");
+  auto path = write_temp_toml("[ampdu]\nmax_num = 4\nmax_time = 48\nmin_mcs = 3\n");
   auto cfg = load_config(path.string());
   CHECK(cfg.ampdu.max_num == 4);
   CHECK(cfg.ampdu.max_time == 48);
+  CHECK(cfg.ampdu.min_mcs == 3);
   std::filesystem::remove(path);
+}
+
+TEST(ampdu_min_mcs_defaults_to_zero) {
+  // Absent min_mcs = aggregate at every rung, the pre-2026-09-17 behaviour,
+  // so a config written before the key existed flies exactly as it did.
+  auto path = write_temp_toml("[ampdu]\nmax_num = 6\n");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.ampdu.min_mcs == 0);
+  std::filesystem::remove(path);
+}
+
+TEST(ampdu_min_mcs_rejects_out_of_range) {
+  // HT MCS is 0..7; 8 would mean "never", which is what max_num 0 is for.
+  for (const char* body : {"[ampdu]\nmin_mcs = 8\n", "[ampdu]\nmin_mcs = -1\n"}) {
+    auto path = write_temp_toml(body);
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("ampdu.min_mcs") != std::string::npos);
+    std::filesystem::remove(path);
+  }
 }
 
 TEST(ampdu_zero_disables) {

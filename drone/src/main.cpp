@@ -41,6 +41,7 @@
 #endif
 
 #include "air_clock.h"
+#include "ampdu_policy.h"
 #include "cal_apply.h"
 #include "cal_sweep.h"
 #include "config.h"
@@ -315,6 +316,41 @@ struct RealActuator : mabur::Actuator {
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
+  // Per-rung A-MPDU (ampdu_policy.h): the aggregation mode follows the
+  // op's MCS. Programmed here, on the agent thread, only when the derived
+  // mode differs from what the chip holds — SetAmpduMode is one 0x455
+  // register write plus the per-frame descriptor state, live on this
+  // family, and the chip's post-InitWrite state is "singles" (enabled
+  // false), which is what `last_ampdu` starts as. Nothing at bring-up
+  // programs the mode any more; the first apply_op (BOOT -> MAX_RANGE,
+  // rung 0) decides it. Agent thread only, like everything else here.
+  AmpduCfg ampdu;
+  devourer::AmpduMode last_ampdu;
+  bool ampdu_logged = false;  // the first op logs its state even without a write
+
+  void apply_ampdu_for(const AppliedOp& op) {
+    if (!dev) return;
+    const devourer::AmpduMode want = ampdu_mode_for(ampdu, op.ladder[1].mcs);
+    if (ampdu_mode_same(want, last_ampdu)) {
+      if (!ampdu_logged) {
+        ampdu_logged = true;
+        std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d (chip default, min_mcs %d, max_num %d)\n",
+                     want.enabled ? "ON" : "OFF", op.ladder[1].mcs, ampdu.min_mcs,
+                     ampdu.max_num);
+      }
+      return;
+    }
+    if (!dev->SetAmpduMode(want)) {
+      std::fprintf(stderr, "warning: SetAmpduMode failed at mcs%d -- chip keeps %s\n",
+                   op.ladder[1].mcs, last_ampdu.enabled ? "A-MPDU" : "singles");
+      return;
+    }
+    last_ampdu = want;
+    ampdu_logged = true;
+    std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d (min_mcs %d, max_num %d)\n",
+                 want.enabled ? "ON" : "OFF", op.ladder[1].mcs, ampdu.min_mcs,
+                 ampdu.max_num);
+  }
   // Task 11 review, Important fix 2: null in dry-run and in run_dry_run's
   // own RealActuator (calibration is real-mode only), set to run_real_
   // mode's cal_active once it exists. Gates the set_ladder() call below --
@@ -359,8 +395,10 @@ struct RealActuator : mabur::Actuator {
                                     ? std::optional<rc::LayerTxSpec>(op.probe)
                                     : std::nullopt);
     }
-    // Applying an op is a ladder + FEC + shed change and nothing else — see
-    // the struct comment: there is no per-op power step to do in real mode.
+    apply_ampdu_for(op);
+    // Applying an op is a ladder + FEC + shed + aggregation-mode change and
+    // nothing else — see the struct comment: there is no per-op power step
+    // to do in real mode.
     if (!dev && dry_run) {
       std::fprintf(stderr, "[dry-run] fec_ov_base=%.3f fec_ov_enh=%.3f gen=%llu\n",
                    op.fec_ov_base, op.fec_ov_enh,
@@ -1252,6 +1290,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   actuator.shared_op = &shared_op;
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
+  actuator.ampdu = cfg.ampdu;
   actuator.tx_gate = &tx_gate;
   actuator.retune_waiting = &retune_waiting;
   actuator.cur = static_cast<uint8_t>(cfg.radio.channel);
@@ -2759,39 +2798,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     }
   }
 
-  // A-MPDU TX aggregation (spec 2026-09-01-ampdu-design.md): one devourer
-  // call marks every data frame aggregatable (data QSEL 0 + AGG_EN +
-  // MAX_AGG_NUM + density) with per-frame retry limit 0 (no_ack — no
-  // BlockAck peer exists; FEC covers loss, and without retry0 the MAC
-  // re-airs each aggregate to the retry limit: 92% wasted airtime), and
-  // programs the 0x455 aggregate-fill timer. Frames are already QoS-Data
-  // (radio_tx.cpp) whether or not this call runs — max_num 0 leaves
-  // aggregation off with the wire unchanged (the measured-identical
-  // singles path, dq-spike-findings §11). Must run after InitWrite (live
-  // register write) and before device_ready opens the TX gate.
-  if (cfg.ampdu.max_num > 0) {
-    devourer::AmpduMode am;
-    am.enabled = true;
-    am.tid = 0;
-    am.max_num = static_cast<uint8_t>(cfg.ampdu.max_num);
-    am.density = 7;
-    am.no_ack = true;
-    am.max_time = static_cast<uint8_t>(cfg.ampdu.max_time);
-    if (!rtl_device->SetAmpduMode(am)) {
-      std::fprintf(stderr,
-                   "warning: SetAmpduMode failed — running un-aggregated "
-                   "(QoS-Data singles)\n");
-    } else {
-      std::fprintf(stderr,
-                   "maburd radio: A-MPDU ON (max_num=%d density=7 no-ack "
-                   "max_time=0x%02x)\n",
-                   cfg.ampdu.max_num, cfg.ampdu.max_time);
-    }
-  } else {
-    std::fprintf(stderr,
-                 "maburd radio: A-MPDU OFF (ampdu.max_num=0) — QoS-Data "
-                 "singles\n");
-  }
+  // A-MPDU TX aggregation is NOT programmed here any more: since
+  // 2026-09-17 the mode follows the ladder rung (RealActuator::apply_ampdu_for,
+  // drone/src/ampdu_policy.h) and the agent thread programs it on every op
+  // change. The chip leaves InitWrite in the singles state, which is the
+  // right state for the boot MAX_RANGE op (rung 0) under the shipped
+  // ampdu.min_mcs 4, so there is no window in which frames fly the wrong
+  // mode. Frames are QoS-Data whether or not aggregation is on
+  // (radio_tx.cpp), so the wire never depends on this.
 
   device_ready.store(true, std::memory_order_release);
   std::fprintf(stderr, "maburd entering RX loop on channel %d\n", cfg.radio.channel);

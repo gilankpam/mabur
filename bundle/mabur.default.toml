@@ -75,6 +75,7 @@ overhead       = 1.0
 [ampdu]
 max_num  = 6
 max_time = 32
+min_mcs  = 4               # singles below mcs4: agg6 delivers 6-13 pts less there (bandwidth sweep 2026-09-17)
 
 [air_clock]
 shed_ms    = 25            # ARMED shed 25 / eff 0.73 flew clean

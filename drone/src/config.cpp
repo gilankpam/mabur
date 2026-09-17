@@ -528,9 +528,12 @@ void parse_msp(const Value& j, MspCfg& m) {
 }
 
 void parse_ampdu(const Value& j, AmpduCfg& a) {
-  check_known_keys(j, {"max_num", "max_time"}, "ampdu");
+  check_known_keys(j, {"max_num", "max_time", "min_mcs"}, "ampdu");
   assign_if_present(j, "max_num", a.max_num, "ampdu");
   assign_if_present(j, "max_time", a.max_time, "ampdu");
+  assign_if_present(j, "min_mcs", a.min_mcs, "ampdu");
+  if (a.min_mcs < 0 || a.min_mcs > 7)
+    fail("ampdu.min_mcs", "must be an HT MCS in [0,7] (0 = aggregate at every rung)");
   if (a.max_num < 0 || a.max_num > 31)
     fail("ampdu.max_num", "must be in [0,31] (5-bit MAX_AGG_NUM; 0 = off)");
   if (a.max_time < 0 || a.max_time > 255)

@@ -157,6 +157,11 @@ struct AmpduCfg {
                       // 1..8 is a hardware cliff (disables aggregation) and
                       // is rejected at load; 0 keeps the chip bring-up
                       // default (0x70 ~= 3 ms — too slow, but valid for A/B)
+  // Lowest op MCS that aggregates; rungs below fly QoS-Data singles
+  // (drone/src/ampdu_policy.h, docs/bandwidth-sweep-findings-2026-09-17.md:
+  // agg6 delivers 6-13 points LESS than singles at mcs0-2). 0 = aggregate
+  // at every rung (the pre-2026-09-17 behaviour); the bundle ships 4.
+  int min_mcs = 0;
 };
 
 // Drone air clock (spec 2026-09-06 air-clock): per-frame virtual
