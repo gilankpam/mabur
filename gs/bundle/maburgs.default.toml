@@ -63,45 +63,39 @@ static_overhead_enh    = 0.5
 
 [[link.ladder]]
 mcs = 0
-overhead_base = 1.0
-overhead_enh  = 0.5
+overhead_base = 0.5
+overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 1
-overhead_base = 1.0
-overhead_enh  = 0.5
+overhead_base = 0.5
+overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 2
-overhead_base = 1.0
-overhead_enh  = 0.5
+overhead_base = 0.5
+overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 3
-overhead_base = 1.0
+overhead_base = 1
 overhead_enh  = 0.5
 
 [[link.ladder]]
 mcs = 4
-overhead_base = 1.0
+overhead_base = 1
 overhead_enh  = 0.5
 
 [[link.ladder]]
 mcs = 5
-overhead_base = 1.0
+overhead_base = 1
 overhead_enh  = 0.5
 
 [link.probe]
 enable      = true
 rung_offset = 1
-# The gate's loss quantum is one lost body over the 500 ms window: at 60
-# probes/s (one per AU at 60 fps, base and enh) that is 1/30 / 0.333 = 0.1,
-# at 30 fps 0.2. max_util below the quantum = zero loss allowed; 0.05 is
-# zero loss at any frame rate up to 120 fps.
-max_util     = 0.05
-# Clean streak in probe BODIES, not ms: (1-p)^n confidence is fixed by n.
-# 90 = today's confidence (rejects ~3.3 % PPDU loss at 95 %), 1.5 s at 60/s.
-clean_bodies = 90
+max_util     = 0.05        # below the 0.1 quantum at 60 probes/s = zero loss allowed
+clean_bodies = 90          # clean streak in probe BODIES (1.5 s at 60/s)
 min_syms    = 40
 silence_ms  = 500
 pin_mcs     = -1
@@ -162,7 +156,7 @@ rung_period_s = 10
 # first flights observe-only; flip `enable` after the HOP section of
 # flightreport looks sane.
 [hop]
-enable               = false
+enable               = true
 scout_when_disabled  = true
 window_ms            = 150
 persist              = 2
