@@ -212,6 +212,52 @@ struct PlaneProps {
   }
 };
 
+// A sync_file that is already signalled, for the video plane's IN_FENCE_FD.
+//
+// Why: with no explicit fence on a plane, drm_gem_plane_helper_prepare_fb()
+// (vop2 has no prepare_fb of its own) collects every WRITE-usage implicit
+// fence on the framebuffer's dma-buf and the commit worker blocks on them.
+// The burned-DVR colortrans stage renders FROM the decoder's frame on the
+// GPU, and panfrost attaches a WRITE fence to every BO in a job -- the same
+// dma_resv the KMS framebuffer of that frame shares via PRIME. So while a
+// recording ran, one commit in ten waited 7-15 ms for a GPU job that only
+// READS the buffer, missed its vblank, and dsp p99 sat at one vsync (5 -> 22
+// ms, bench 2026-09-17). An explicit fence makes the helper take only
+// KERNEL-usage fences (there are none: the decoder is done before the frame
+// reaches us, the OSD is CPU-drawn), which is the documented way to opt out
+// of implicit sync. The fence content never matters, so one signalled
+// sync_file is minted once and reused on every commit for the process's
+// life; the kernel takes its own reference per commit and never closes it.
+//
+// rockchip-drm has no DRIVER_SYNCOBJ, so the syncobj is created on a render
+// node that does (panfrost) and only the exported sync_file survives; a
+// sync_file is driver-agnostic. -1 = no render node could mint one: logged
+// once, video commits stay implicitly fenced (the pre-fix behaviour).
+int make_signalled_sync_file() {
+  for (int minor = 128; minor < 128 + 8; ++minor) {
+    char path[32];
+    std::snprintf(path, sizeof(path), "/dev/dri/renderD%d", minor);
+    const int rfd = ::open(path, O_RDWR | O_CLOEXEC);
+    if (rfd < 0) continue;
+    uint32_t handle = 0;
+    int sync_fd = -1;
+    if (drmSyncobjCreate(rfd, DRM_SYNCOBJ_CREATE_SIGNALED, &handle) == 0) {
+      if (drmSyncobjExportSyncFile(rfd, handle, &sync_fd) != 0) sync_fd = -1;
+      drmSyncobjDestroy(rfd, handle);
+    }
+    close(rfd);
+    if (sync_fd >= 0) {
+      std::fprintf(stderr, "DrmPresenter: video plane commits carry an explicit IN_FENCE_FD (%s)\n",
+                   path);
+      return sync_fd;
+    }
+  }
+  std::fprintf(stderr,
+               "DrmPresenter: no render node could mint a sync_file; video commits stay "
+               "implicitly fenced (burned-DVR colortrans will cost one vsync at p99)\n");
+  return -1;
+}
+
 }  // namespace
 
 struct DrmPresenter::Impl {
@@ -227,6 +273,10 @@ struct DrmPresenter::Impl {
   uint32_t plane_id = 0;   // the NV12 plane we actually present on
   bool plane_is_primary = false;
   PlaneProps video_props;
+  // Explicit-fencing opt-out for the video plane (make_signalled_sync_file
+  // above). prop 0 or fd -1 = not carried, implicit fencing applies.
+  uint32_t prop_video_in_fence_fd = 0;
+  int video_in_fence_fd = -1;
 
   // Primary-black fallback (brief: "else overlay + keep primary black via
   // a dumb buffer") -- only populated when plane_is_primary is false AND
@@ -791,6 +841,13 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
     if (log_init_failures)
       std::fprintf(stderr, "DrmPresenter: missing standard property on plane %u\n", plane_id);
     return false;
+  }
+  prop_video_in_fence_fd = find_property(fd, plane_id, DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD");
+  if (prop_video_in_fence_fd) {
+    if (video_in_fence_fd < 0) video_in_fence_fd = make_signalled_sync_file();
+  } else {
+    std::fprintf(stderr, "DrmPresenter: plane %u has no IN_FENCE_FD property; implicit fencing\n",
+                 plane_id);
   }
 
   // This CRTC's primary plane. It has exactly one of two roles below:
@@ -1365,6 +1422,11 @@ bool DrmPresenter::Impl::present(const DmaFrame& frame) {
     drmModeAtomicAddProperty(r, plane_id, video_props.crtc_y, 0);
     drmModeAtomicAddProperty(r, plane_id, video_props.crtc_w, mode.hdisplay);
     drmModeAtomicAddProperty(r, plane_id, video_props.crtc_h, mode.vdisplay);
+    // Every video commit, not just the ones during a recording: it is free,
+    // and a recording can start between any two frames.
+    if (prop_video_in_fence_fd && video_in_fence_fd >= 0)
+      drmModeAtomicAddProperty(r, plane_id, prop_video_in_fence_fd,
+                               static_cast<uint64_t>(video_in_fence_fd));
 
     if (do_modeset || splash_handoff) {
       if (zpos_video_prop) drmModeAtomicAddProperty(r, plane_id, zpos_video_prop, zpos_video_val);
@@ -1643,6 +1705,8 @@ DrmPresenter::Impl::~Impl() {
   if (mailbox.valid) release_slot(mailbox);
   if (pending.valid) release_slot(pending);
   if (on_screen.valid) release_slot(on_screen);
+  if (video_in_fence_fd >= 0) close(video_in_fence_fd);
+  video_in_fence_fd = -1;
   if (fd >= 0) {
     if (primary_fb_id) drmModeRmFB(fd, primary_fb_id);
     if (primary_gem_handle) drmModeDestroyDumbBuffer(fd, primary_gem_handle);
