@@ -358,7 +358,10 @@ lower rate. The backlog sits past the TxQueue pop, where the congestion
 shed above cannot see it. The drone now models it directly
 (`drone/src/air_clock.h`, spec `2026-09-06-air-clock-enh-shed-design.md`):
 every body pushed to the TxQueue books `bytes × 8 / (phy_rate(layer) ×
-air_clock.efficiency) + air_clock.body_us` on a virtual air clock, priced
+air_clock.efficiency[mcs]) + air_clock.body_us` on a virtual air clock
+(`efficiency` is a per-MCS table since 2026-09-17 — the bench-measured
+delivered/nominal fraction, `drone/src/air_rate.h`, and `run_bitrate_policy`
+prices off the same table, see `docs/airtime-model.md` §7), priced
 at the APPLIED op's per-layer rate (re-priced on every AppliedOp, so the
 clock drops to the new rate the instant a demote lands), leaky at zero.
 `backlog = free_at − now` is read at every frame's arrival, stamped on the

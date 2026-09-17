@@ -21,7 +21,7 @@ struct Run {
 };
 Run drive(bool keep_enh) {
   AirClock c;
-  c.set_rates(19.5, 19.5, 0.0, 1.0, 0);
+  c.set_rates(19.5, 19.5, 0.0, 0);
   c.book(0, kIdrBytes, 0);
   Run r;
   for (int k = 1; k <= 100; ++k) {
@@ -38,7 +38,7 @@ Run drive(bool keep_enh) {
 
 TEST(air_clock_idr_books_120ms_at_rung2) {
   AirClock c;
-  c.set_rates(19.5, 19.5, 0.0, 1.0, 0);
+  c.set_rates(19.5, 19.5, 0.0, 0);
   CHECK(c.backlog_us(0) == 0);
   c.book(0, kIdrBytes, 0);
   const uint32_t b = c.backlog_us(0);
@@ -65,7 +65,7 @@ TEST(air_clock_worked_example_enh_dropped_drains_in_17_periods) {
 
 TEST(air_clock_leaks_to_zero_and_restarts_from_now) {
   AirClock c;
-  c.set_rates(19.5, 19.5, 0.0, 1.0, 0);
+  c.set_rates(19.5, 19.5, 0.0, 0);
   c.book(0, 1000, 0);                 // 410 µs
   CHECK(c.backlog_us(0) == 410);
   CHECK(c.backlog_us(10000) == 0);    // idle past free_at: clamped, no debt
@@ -75,9 +75,9 @@ TEST(air_clock_leaks_to_zero_and_restarts_from_now) {
 
 TEST(air_clock_reprices_only_later_bodies) {
   AirClock c;
-  c.set_rates(52.0, 52.0, 0.0, 1.0, 0);   // 0.1538 µs/B
+  c.set_rates(52.0, 52.0, 0.0, 0);   // 0.1538 µs/B
   c.book(0, 10000, 0);                    // 1538 µs
-  c.set_rates(6.5, 6.5, 0.0, 1.0, 0);     // demote to 1.2308 µs/B
+  c.set_rates(6.5, 6.5, 0.0, 0);     // demote to 1.2308 µs/B
   c.book(0, 10000, 0);                    // +12308
   const uint32_t b = c.backlog_us(0);
   CHECK(b >= 13840 && b <= 13850);
@@ -85,7 +85,7 @@ TEST(air_clock_reprices_only_later_bodies) {
 
 TEST(air_clock_efficiency_and_body_us_scale_the_cost) {
   AirClock c;
-  c.set_rates(19.5, 19.5, 0.0, 0.5, 100);   // half the rate, +100 µs per body
+  c.set_rates(9.75, 9.75, 0.0, 100);   // half the rate (delivered), +100 µs per body
   c.book(0, 1000, 1);                       // 1000 × 0.8205 + 100 = 920.5 -> 921
   const uint32_t b = c.backlog_us(0);
   CHECK(b >= 920 && b <= 921);
@@ -93,10 +93,10 @@ TEST(air_clock_efficiency_and_body_us_scale_the_cost) {
 
 TEST(air_clock_probe_uses_probe_rate_and_ignores_unknown_rate) {
   AirClock c;
-  c.set_rates(19.5, 19.5, 0.0, 1.0, 0);   // probe off: rate 0
+  c.set_rates(19.5, 19.5, 0.0, 0);   // probe off: rate 0
   c.book(0, 1000, AirClock::kProbeSid);
   CHECK(c.backlog_us(0) == 0);            // not booked
-  c.set_rates(19.5, 19.5, 6.5, 1.0, 0);   // probe at mcs0
+  c.set_rates(19.5, 19.5, 6.5, 0);   // probe at mcs0
   c.book(0, 1000, AirClock::kProbeSid);   // 1231 µs
   const uint32_t b = c.backlog_us(0);
   CHECK(b >= 1230 && b <= 1232);
@@ -106,7 +106,7 @@ TEST(air_clock_probe_uses_probe_rate_and_ignores_unknown_rate) {
 
 TEST(air_clock_backlog_saturates_u32) {
   AirClock c;
-  c.set_rates(19.5, 19.5, 0.0, 1.0, 4000000000u);   // absurd body_us
+  c.set_rates(19.5, 19.5, 0.0, 4000000000u);   // absurd body_us
   c.book(0, 1, 0);
   c.book(0, 1, 0);                                  // ~8e9 µs ahead
   CHECK(c.backlog_us(0) == 0xFFFFFFFFu);

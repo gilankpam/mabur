@@ -41,6 +41,7 @@
 #endif
 
 #include "air_clock.h"
+#include "air_rate.h"
 #include "ampdu_policy.h"
 #include "cal_apply.h"
 #include "cal_sweep.h"
@@ -734,11 +735,13 @@ void apply_op_to_uep(const AppliedOp& op, UepEncoder& uep) {
 // Called wherever apply_op_to_uep is, so the clock drops to the new rate
 // the instant a demote RCF lands -- while the encoder is still producing
 // at the old rung's bitrate, which is exactly when the backlog grows.
+// Rates are DELIVERED (air_rate.h: nominal × per-MCS efficiency), so the
+// probe body -- one rung up, its own MCS -- is priced at its own capacity.
 void apply_op_to_clock(const AppliedOp& op, const AirClockCfg& c, AirClock& clock) {
   const double probe_mbps = op.probe_profile != rc::kNoProbeProfile
-                                ? rc::phy_rate_mbps(op.probe) : 0.0;
-  clock.set_rates(rc::phy_rate_mbps(op.ladder[0]), rc::phy_rate_mbps(op.ladder[1]),
-                  probe_mbps, c.efficiency, static_cast<uint32_t>(c.body_us));
+                                ? delivered_mbps(op.probe, c) : 0.0;
+  clock.set_rates(delivered_mbps(op.ladder[0], c), delivered_mbps(op.ladder[1], c),
+                  probe_mbps, static_cast<uint32_t>(c.body_us));
 }
 
 // ---------------------------------------------------------------------------

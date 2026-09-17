@@ -547,12 +547,22 @@ void parse_ampdu(const Value& j, AmpduCfg& a) {
 void parse_air_clock(const Value& j, AirClockCfg& a) {
   check_known_keys(j, {"shed_ms", "efficiency", "body_us"}, "air_clock");
   assign_if_present(j, "shed_ms", a.shed_ms, "air_clock");
-  assign_if_present(j, "efficiency", a.efficiency, "air_clock");
+  if (j.contains("efficiency")) {
+    auto& arr = j.at("efficiency");
+    g_line = arr.line();
+    if (!arr.is_array() || arr.size() != 8)
+      fail("air_clock.efficiency", "must be an array of 8 fractions (HT mcs0..7)");
+    try {
+      for (size_t i = 0; i < 8; ++i) a.efficiency[i] = arr.at(i).get<double>();
+    } catch (const toml::Error&) {
+      fail("air_clock.efficiency", "wrong type");
+    }
+  }
   assign_if_present(j, "body_us", a.body_us, "air_clock");
   if (a.shed_ms < 0 || a.shed_ms > 60000)
     fail("air_clock.shed_ms", "must be in [0,60000] (0 = observe only)");
-  if (a.efficiency <= 0.0 || a.efficiency > 1.0)
-    fail("air_clock.efficiency", "must be in (0,1]");
+  for (double e : a.efficiency)
+    if (e <= 0.0 || e > 1.0) fail("air_clock.efficiency", "every entry must be in (0,1]");
   if (a.body_us < 0) fail("air_clock.body_us", "must be >= 0");
 }
 

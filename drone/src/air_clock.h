@@ -30,10 +30,10 @@ class AirClock {
   static constexpr int kProbeSid = 2;   // sid 0 = base, 1 = enh, 2 = probe body
 
   void set_rates(double base_mbps, double enh_mbps, double probe_mbps,
-                 double efficiency, uint32_t body_us) {
-    us_per_byte_[0] = per_byte(base_mbps, efficiency);
-    us_per_byte_[1] = per_byte(enh_mbps, efficiency);
-    us_per_byte_[2] = per_byte(probe_mbps, efficiency);
+                 uint32_t body_us) {
+    us_per_byte_[0] = per_byte(base_mbps);
+    us_per_byte_[1] = per_byte(enh_mbps);
+    us_per_byte_[2] = per_byte(probe_mbps);
     body_us_ = body_us;
   }
 
@@ -57,9 +57,7 @@ class AirClock {
   }
 
  private:
-  static double per_byte(double mbps, double eff) {
-    return (mbps > 0.0 && eff > 0.0) ? 8.0 / (mbps * eff) : 0.0;
-  }
+  static double per_byte(double mbps) { return mbps > 0.0 ? 8.0 / mbps : 0.0; }
   double us_per_byte_[3] = {0.0, 0.0, 0.0};
   uint32_t body_us_ = 0;
   uint64_t free_at_us_ = 0;

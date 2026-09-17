@@ -173,7 +173,13 @@ struct AmpduCfg {
 // not derived.
 struct AirClockCfg {
   int shed_ms = 0;
-  double efficiency = 0.7;
+  // Delivered/nominal air capacity per HT MCS 0..7, measured at saturation
+  // (docs/bandwidth-sweep-findings-2026-09-17.md, drone/src/air_rate.h).
+  // Priced into BOTH run_bitrate_policy (encoder.airtime_budget is a
+  // fraction of this, not of nominal) and the air clock. All ones = nominal
+  // = the pre-2026-09-17 policy; the bundle carries the measured table
+  // (singles at mcs0-3 under ampdu.min_mcs 4, agg6 above).
+  std::array<double, 8> efficiency = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
   int body_us = 0;
 };
 

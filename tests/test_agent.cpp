@@ -319,6 +319,24 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   CHECK(act.bitrates.back() == 8500);
 }
 
+// 3b. Per-MCS efficiency (docs/bandwidth-sweep-findings-2026-09-17.md): the
+// policy prices each layer at nominal × air_clock.efficiency[mcs], so the
+// budget is a fraction of the capacity the link DELIVERS. Same op as 3 with
+// efficiency[2] = 0.5: both rate terms halve, kbps 8450 -> 4225 -> 4200.
+// Entries for other MCS must not leak in.
+TEST(bitrate_policy_prices_at_delivered_rate) {
+  Config cfg = make_cfg();
+  cfg.air_clock.efficiency = {0.1, 0.1, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1};
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+
+  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  REQUIRE(!act.bitrates.empty());
+  CHECK(act.bitrates.back() == 4200);
+}
+
 // 3a. AppliedOp carries the RCF's base/enh overheads as a genuine PAIR, not
 // folded into one value (Task 6, RC_VERSION 5): base=1.0, enh=0.5 must
 // survive on_rc_frame -> apply_ladder_op -> AppliedOp distinctly.

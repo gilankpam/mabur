@@ -137,3 +137,16 @@ drone (rollback `maburd.pre-ampdurung` + `mabur.toml.pre-ampdurung`;
 binary BEFORE config, the key is unknown to the old binary); three
 restarts each climbed 0→5 with the switch at mcs4, ausniff 60.5 fps /
 0 gaps / 0 incomplete after each. Host suite 148/148. UNFLOWN.
+
+## Shipped: per-MCS efficiency table (2026-09-18, same branch)
+
+`air_clock.efficiency` is an 8-entry per-MCS array (bundle = the table
+above with singles at mcs0-3, agg6 above); `drone/src/air_rate.h`
+`delivered_mbps()` = nominal × entry, consumed by BOTH
+`RcAgent::run_bitrate_policy` (every rate term) and the air clock
+(base/enh/probe each at their own MCS). Struct default all ones =
+nominal = the old policy, so an absent section changes nothing.
+`encoder.airtime_budget` 0.5 → 0.65 in the bundle: identical command at
+rungs 4-5 (0.5/0.76), +23/16/11/5 % at rungs 0/1/2/3. Config-shape
+change (scalar → array): binary BEFORE config, rollback paired
+(`maburd.pre-efftable` + `mabur.toml.pre-efftable`).

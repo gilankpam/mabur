@@ -26,7 +26,7 @@ flush_ms        = 25
 [encoder]
 bitrate_min_kbps   = 1000
 bitrate_max_kbps   = 16000
-airtime_budget     = 0.5   # 0.5 killed the air-clock drain (peak 47->20 ms)
+airtime_budget     = 0.65  # of DELIVERED capacity (air_clock.efficiency) since 2026-09-17; 0.65 = the load 0.5-of-nominal flew at rungs 4-5
 roi_threshold_kbps = 3000
 roi_qp_low         = -24
 roi_qp_normal      = 0
@@ -79,5 +79,5 @@ min_mcs  = 4               # singles below mcs4: agg6 delivers 6-13 pts less the
 
 [air_clock]
 shed_ms    = 25            # ARMED shed 25 / eff 0.73 flew clean
-efficiency = 0.73
+efficiency = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # delivered/nominal per HT MCS, bench 2026-09-17: singles mcs0-3, agg6 above
 body_us    = 0

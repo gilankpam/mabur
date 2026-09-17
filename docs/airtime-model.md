@@ -342,12 +342,23 @@ within 0.5 %): **0.87 / 0.78 / 0.71 / 0.76 / 0.76 / 0.76 / 0.78 / 0.76 of
 nominal at mcs0-7 with agg6**, and 0.93 / 0.88 / 0.84 / 0.80 with singles
 at mcs0-3 (0.68 / 0.63 at mcs5 / 7). Two consequences:
 
-- `run_bitrate_policy` and the air clock price off NOMINAL `phy_rate`,
-  so `encoder.airtime_budget` is a fraction of a rate the link never
-  delivers: 0.6 lands at ~99 % of the real mcs2 capacity (the low-rung
-  latency spikes), 0.5 at 76-82 % on rungs 2-5. A per-MCS efficiency
-  table consumed by both is the follow-up; the sweep numbers are the
-  table.
+- Until 2026-09-17 `run_bitrate_policy` and the air clock priced off
+  NOMINAL `phy_rate`, so `encoder.airtime_budget` was a fraction of a
+  rate the link never delivers: 0.6 landed at ~99 % of the real mcs2
+  capacity (the low-rung latency spikes), 0.5 at 76-82 % on rungs 2-5.
+  **Now both price off `delivered_mbps` = nominal ×
+  `air_clock.efficiency[mcs]`** (`drone/src/air_rate.h`; the config key is
+  an 8-entry per-MCS table, bundle `[0.93, 0.88, 0.84, 0.80, 0.76, 0.76,
+  0.78, 0.76]` = the sweep with singles at mcs0-3 and agg6 above; absent
+  = all ones = nominal). The budget is therefore a fraction of measured
+  capacity: **bundle 0.65** keeps rungs 4-5 at the load 0.5-of-nominal
+  flew (0.5 / 0.76) and lifts rungs 0/1/2 by 23/16/11 % onto the singles
+  capacity. Real time-occupancy ≈ budget × ~1.16 (SBI/fragment framing
+  ~1.09-1.14 plus probe and MSP, none of them in the formula), so 0.65 ≈
+  75 % of the air at every rung and the old "0.6 of nominal" ambition is
+  ≈ 0.72 here. The 4 % gap between the bench table (no GS uplink) and the
+  flight-fitted 0.73 at rungs 1-4 is the RCF/telemetry slot share; it
+  sits inside that ~1.16, not in the table.
 - The aggregation mode is per rung since the same day: `ampdu.min_mcs`
   (bundle 4) — singles below it, the configured aggregate at and above
   (`drone/src/ampdu_policy.h`, switched live by `RealActuator::apply_op`).

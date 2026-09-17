@@ -1,4 +1,5 @@
 #include "rc_agent.h"
+#include "air_rate.h"
 
 #include <algorithm>
 #include <cmath>
@@ -211,10 +212,15 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
-  const double rate_b = rc::phy_rate_mbps(applied_.ladder[0]);
+  // DELIVERED rates (air_rate.h): nominal × the measured per-MCS
+  // air_clock.efficiency, so airtime_budget is a fraction of what the link
+  // actually moves. Priced off nominal until 2026-09-17, which is why
+  // budget 0.6 sat at ~99 % of real mcs2 capacity and spiked
+  // (docs/bandwidth-sweep-findings-2026-09-17.md).
+  const double rate_b = delivered_mbps(applied_.ladder[0], cfg_.air_clock);
   // The probe stream has its own slot and is deliberately NOT a term here
   // — a probe costs zero encoder writes.
-  const double rate_e = rc::phy_rate_mbps(applied_.ladder[1]);
+  const double rate_e = delivered_mbps(applied_.ladder[1], cfg_.air_clock);
   // The commanded pair (Task 6, RC_VERSION 5) IS the source — no single
   // ov to fan out to both terms.
   double ovb = applied_.fec_ov_base, ove = applied_.fec_ov_enh;

@@ -105,15 +105,20 @@ TEST(load_config_default_file_is_the_flight_config) {
   // alone deliberately; changing a compiled default is not a flag day.
   CHECK(cfg.encoder.bitrate_min_kbps == 1000);
   CHECK(cfg.encoder.bitrate_max_kbps == 16000);
-  CHECK(cfg.encoder.airtime_budget == 0.50);
+  // 0.65 of DELIVERED capacity since 2026-09-17 = the load 0.5-of-nominal
+  // flew at rungs 4-5 (0.5/0.76); rungs 0-2 gain the singles capacity.
+  CHECK(cfg.encoder.airtime_budget == 0.65);
   CHECK(cfg.encoder.roi_threshold_kbps == 3000);
   CHECK(cfg.encoder.roi_qp_low == -24);
   CHECK(cfg.encoder.roi_qp_normal == 0);
 
-  // air_clock: ARMED. shed 25 / efficiency 0.73 is the combination that flew
-  // clean -- 14 drops, all at rung transitions, 0 phantom (docs/airtime-model.md).
+  // air_clock: ARMED, shed 25 flew clean (14 drops, all at rung transitions,
+  // 0 phantom). efficiency is the per-MCS delivered/nominal table from the
+  // 2026-09-17 saturation sweep: singles at mcs0-3 (ampdu.min_mcs 4), agg6
+  // above (docs/bandwidth-sweep-findings-2026-09-17.md).
   CHECK(cfg.air_clock.shed_ms == 25);
-  CHECK(cfg.air_clock.efficiency == 0.73);
+  const std::array<double, 8> eff = {0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76};
+  CHECK(cfg.air_clock.efficiency == eff);
   CHECK(cfg.air_clock.body_us == 0);
 
   // venc: boot-time encoder pipeline config, bundle-pinned rather than
@@ -1238,25 +1243,43 @@ TEST(ampdu_rejects_bad_values) {
 }
 
 // air_clock (spec 2026-09-06): shed_ms 0 = observe only; efficiency is the
-// fraction of nominal PHY rate the model treats as capacity; body_us a
-// fixed per-body cost. All three are bench calibration knobs.
+// per-MCS fraction of nominal PHY rate the link delivers (8 entries, HT
+// mcs0..7, measured -- docs/bandwidth-sweep-findings-2026-09-17.md), priced
+// into both the bitrate policy and the air clock; body_us a fixed per-body
+// cost. Absent = all ones = nominal, the pre-2026-09-17 policy.
 TEST(air_clock_defaults_when_absent) {
   auto path = write_temp_toml("[link]\ntick_ms = 100\n");
   Config c = load_config(path.string());
   CHECK(c.air_clock.shed_ms == 0);
-  CHECK(c.air_clock.efficiency == 0.7);
+  for (double e : c.air_clock.efficiency) CHECK(e == 1.0);
   CHECK(c.air_clock.body_us == 0);
   std::filesystem::remove(path);
 }
 
 TEST(air_clock_section_parses) {
   auto path = write_temp_toml(
-      "[air_clock]\nshed_ms = 25\nefficiency = 0.65\nbody_us = 40\n");
+      "[air_clock]\nshed_ms = 25\nefficiency = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]\nbody_us = 40\n");
   Config c = load_config(path.string());
   CHECK(c.air_clock.shed_ms == 25);
-  CHECK(c.air_clock.efficiency == 0.65);
+  const std::array<double, 8> eff = {0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2};
+  CHECK(c.air_clock.efficiency == eff);
   CHECK(c.air_clock.body_us == 40);
   std::filesystem::remove(path);
+}
+
+TEST(air_clock_efficiency_must_be_eight_fractions) {
+  // A scalar (the pre-2026-09-17 shape), a short array, and an entry
+  // outside (0,1] all fail boot naming the key -- no shim for the old shape
+  // (CLAUDE.md: config keys are free to change).
+  for (const char* body : {"[air_clock]\nefficiency = 0.73\n",
+                           "[air_clock]\nefficiency = [0.7, 0.7]\n",
+                           "[air_clock]\nefficiency = [1, 1, 1, 1, 1, 1, 1, 0]\n",
+                           "[air_clock]\nefficiency = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]\n"}) {
+    auto path = write_temp_toml(body);
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(msg.find("air_clock.efficiency") != std::string::npos);
+    std::filesystem::remove(path);
+  }
 }
 
 TEST(air_clock_range_checks_name_the_key) {
@@ -1264,8 +1287,6 @@ TEST(air_clock_range_checks_name_the_key) {
   const Case cases[] = {
       {"[air_clock]\nshed_ms = -1\n", "air_clock.shed_ms"},
       {"[air_clock]\nshed_ms = 60001\n", "air_clock.shed_ms"},
-      {"[air_clock]\nefficiency = 0\n", "air_clock.efficiency"},
-      {"[air_clock]\nefficiency = 1.5\n", "air_clock.efficiency"},
       {"[air_clock]\nbody_us = -5\n", "air_clock.body_us"},
   };
   for (const auto& k : cases) {
