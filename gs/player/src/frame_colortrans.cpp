@@ -1,9 +1,12 @@
 #include "frame_colortrans.h"
 
+#include <dirent.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -75,6 +78,64 @@ GLuint compile(GLenum type, const char* src) {
 
 FrameColorTrans::~FrameColorTrans() { deinit(); }
 
+// Why pin the clock: the stage is one full-screen pass on a single-core
+// Mali-G52, ~10 ms at the 300 MHz simple_ondemand settles on, ~5 ms at 800.
+// Pipelined against the 13 ms encode the GPU is busy ~60 % of the time, and
+// simple_ondemand only clocks up past 90 %, so it never does -- and 16.8 ms
+// per frame cannot hold a 60 fps DVR (bench 2026-09-17: 3.7 % dropped).
+// Pinning "performance" for the stage's lifetime costs nothing outside a
+// recording (the stage exists only while one runs; panfrost runtime-PM
+// powers the GPU down when idle regardless of governor). Best-effort: a
+// kernel without the node, or without write access, just logs and runs at
+// whatever devfreq gives.
+void FrameColorTrans::gpu_boost_begin() {
+  gpu_gov_path_.clear();
+  gpu_gov_saved_.clear();
+  DIR* d = opendir("/sys/class/devfreq");
+  if (!d) return;
+  std::string path;
+  while (dirent* e = readdir(d)) {
+    if (std::strstr(e->d_name, "gpu")) {
+      path = std::string("/sys/class/devfreq/") + e->d_name + "/governor";
+      break;
+    }
+  }
+  closedir(d);
+  if (path.empty()) return;
+  char cur[64] = {0};
+  FILE* f = std::fopen(path.c_str(), "r");
+  if (!f) return;
+  if (!std::fgets(cur, sizeof(cur), f)) cur[0] = 0;
+  std::fclose(f);
+  std::string saved = cur;
+  while (!saved.empty() && (saved.back() == '\n' || saved.back() == ' ')) saved.pop_back();
+  if (saved == "performance") return;  // already pinned by someone else; leave it
+  f = std::fopen(path.c_str(), "w");
+  if (!f) {
+    std::fprintf(stderr, "FrameColorTrans: cannot write %s; GPU stays on %s\n", path.c_str(),
+                 saved.c_str());
+    return;
+  }
+  const bool ok = std::fputs("performance\n", f) >= 0;
+  std::fclose(f);
+  if (!ok) return;
+  gpu_gov_path_ = path;
+  gpu_gov_saved_ = saved;
+  std::fprintf(stderr, "FrameColorTrans: GPU governor %s -> performance for the recording\n",
+               saved.c_str());
+}
+
+void FrameColorTrans::gpu_boost_end() {
+  if (gpu_gov_path_.empty()) return;
+  if (FILE* f = std::fopen(gpu_gov_path_.c_str(), "w")) {
+    std::fputs((gpu_gov_saved_ + "\n").c_str(), f);
+    std::fclose(f);
+    std::fprintf(stderr, "FrameColorTrans: GPU governor restored to %s\n", gpu_gov_saved_.c_str());
+  }
+  gpu_gov_path_.clear();
+  gpu_gov_saved_.clear();
+}
+
 bool FrameColorTrans::init(uint32_t width, uint32_t height) {
   deinit();
   width_ = width;
@@ -127,6 +188,7 @@ bool FrameColorTrans::init(uint32_t width, uint32_t height) {
     return false;
   }
   if (!build_program() || !create_targets()) return false;
+  gpu_boost_begin();
   ready_ = true;
   std::fprintf(stderr, "FrameColorTrans: ready %ux%u (%s)\n", width_, height_,
                glGetString(GL_RENDERER) ? (const char*)glGetString(GL_RENDERER) : "?");
@@ -209,9 +271,34 @@ bool FrameColorTrans::create_targets() {
   return true;
 }
 
-bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, uint32_t vs,
-                              int dst_fd, uint32_t dst_hs, uint32_t dst_vs) {
-  if (!ready_ || w != width_ || h != height_) return false;
+void FrameColorTrans::drop_src_entry(SrcEntry& e) {
+  if (e.tex) glDeleteTextures(1, &e.tex);
+  if (e.img != EGL_NO_IMAGE_KHR) eglDestroyImageKHR_(dpy_, e.img);
+  e = SrcEntry{};
+}
+
+void FrameColorTrans::destroy_src_cache() {
+  for (int i = 0; i < n_src_; ++i) drop_src_entry(src_[i]);
+  n_src_ = 0;
+}
+
+// The cached external texture for this source dma-buf, importing on a miss.
+// 0 = import failed (logged, rate-limited).
+GLuint FrameColorTrans::src_texture(int fd, uint32_t w, uint32_t h, uint32_t hs, uint32_t vs) {
+  struct stat st {};
+  const unsigned long ino = fstat(fd, &st) == 0 ? (unsigned long)st.st_ino : 0;
+  SrcEntry* slot = nullptr;
+  for (int i = 0; i < n_src_; ++i) {
+    if (src_[i].fd != fd) continue;
+    if (src_[i].ino == ino && ino != 0) return src_[i].tex;
+    drop_src_entry(src_[i]);  // fd reused for another buffer: the old one is gone
+    slot = &src_[i];
+    break;
+  }
+  if (!slot) {
+    if (n_src_ == kMaxSrc) destroy_src_cache();  // cannot happen with a 24-deep pool
+    slot = &src_[n_src_++];
+  }
   const EGLint uv_off = (EGLint)((size_t)hs * vs);
   const EGLint attrs[] = {EGL_WIDTH,
                           (EGLint)w,
@@ -220,31 +307,53 @@ bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, u
                           EGL_LINUX_DRM_FOURCC_EXT,
                           (EGLint)DRM_FORMAT_NV12,
                           EGL_DMA_BUF_PLANE0_FD_EXT,
-                          src_fd,
+                          fd,
                           EGL_DMA_BUF_PLANE0_OFFSET_EXT,
                           0,
                           EGL_DMA_BUF_PLANE0_PITCH_EXT,
                           (EGLint)hs,
                           EGL_DMA_BUF_PLANE1_FD_EXT,
-                          src_fd,
+                          fd,
                           EGL_DMA_BUF_PLANE1_OFFSET_EXT,
                           uv_off,
                           EGL_DMA_BUF_PLANE1_PITCH_EXT,
                           (EGLint)hs,
                           EGL_NONE};
-  EGLImageKHR src = eglCreateImageKHR_(dpy_, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
-  if (src == EGL_NO_IMAGE_KHR) {
+  EGLImageKHR img = eglCreateImageKHR_(dpy_, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
+  if (img == EGL_NO_IMAGE_KHR) {
     if (fail_logs_++ % 300 == 0)
       std::fprintf(stderr, "FrameColorTrans: NV12 import failed (0x%x)\n", eglGetError());
-    return false;
+    if (slot == &src_[n_src_ - 1]) --n_src_;
+    return 0;
   }
-  GLuint src_tex = 0;
-  glGenTextures(1, &src_tex);
+  GLuint tex = 0;
+  glGenTextures(1, &tex);
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_EXTERNAL_OES, src_tex);
-  glEGLImageTargetTexture2DOES_(GL_TEXTURE_EXTERNAL_OES, src);
+  glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+  glEGLImageTargetTexture2DOES_(GL_TEXTURE_EXTERNAL_OES, img);
   glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  slot->fd = fd;
+  slot->ino = ino;
+  slot->img = img;
+  slot->tex = tex;
+  return tex;
+}
+
+bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, uint32_t vs,
+                              int dst_fd, uint32_t dst_hs, uint32_t dst_vs) {
+  if (!ready_ || w != width_ || h != height_) return false;
+  const auto t0 = std::chrono::steady_clock::now();
+  auto us_since = [](std::chrono::steady_clock::time_point t) {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now() - t)
+        .count();
+  };
+  const GLuint src_tex = src_texture(src_fd, w, h, hs, vs);
+  if (!src_tex) return false;
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_EXTERNAL_OES, src_tex);
+  const uint64_t t_import = us_since(t0);
 
   target_idx_ = (target_idx_ + 1) % kTargets;
   Target& tgt = targets_[target_idx_];
@@ -261,9 +370,8 @@ bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, u
   glEnableVertexAttribArray(1);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   glFinish();
+  const uint64_t t_draw = us_since(t0);
   const GLenum draw_err = glGetError();
-  glDeleteTextures(1, &src_tex);
-  eglDestroyImageKHR_(dpy_, src);
   if (draw_err != GL_NO_ERROR) {
     if (fail_logs_++ % 300 == 0)
       std::fprintf(stderr, "FrameColorTrans: draw failed (0x%x)\n", draw_err);
@@ -278,6 +386,11 @@ bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, u
     if (fail_logs_++ % 300 == 0) std::fprintf(stderr, "FrameColorTrans: RGA BGRA->NV12 failed\n");
     return false;
   }
+  const uint64_t t_rga = us_since(t0);
+  ++bd_.n;
+  bd_.import_us += t_import;
+  bd_.draw_us += t_draw - t_import;
+  bd_.rga_us += t_rga - t_draw;
   return true;
 }
 
@@ -293,9 +406,11 @@ void FrameColorTrans::destroy_targets() {
 }
 
 void FrameColorTrans::deinit() {
+  gpu_boost_end();
   if (dpy_ != EGL_NO_DISPLAY && ctx_ != EGL_NO_CONTEXT) {
     eglMakeCurrent(dpy_, surf_, surf_, ctx_);
     glFinish();  // drain before freeing BOs (PixelPilot: panfrost crashes otherwise)
+    destroy_src_cache();
     destroy_targets();
     if (prog_) glDeleteProgram(prog_);
     prog_ = 0;

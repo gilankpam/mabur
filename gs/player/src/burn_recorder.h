@@ -65,8 +65,15 @@ struct BurnCfg {
 // The decoder cannot recycle the buffer while either holder has a reference,
 // so the presenter's contract (it owns the handle, releases on flip, obeys the
 // flush ordering) is untouched. Cost: this class transiently holds at most two
-// buffers (one in the mailbox, one being encoded) out of the decoder's
-// 24-buffer external group.
+// buffers (one in the mailbox, one being encoded -- or, with colortrans, one
+// being read by the GPU stage; that stage releases the source as soon as its
+// own copy exists) out of the decoder's 24-buffer external group.
+//
+// The GPU stage READS the decoder's frame, and panfrost fences every buffer
+// in a job as if it wrote it. DrmPresenter carries an explicit, already
+// signalled IN_FENCE_FD on the video plane precisely so the display commit
+// of that same frame does not wait for the GPU (drm_presenter.cpp,
+// make_signalled_sync_file). Without it, recording cost one vsync at p99.
 //
 // EVERY reference taken in submit() is released on exactly one path:
 // encoded-then-put, displaced-in-the-mailbox-then-put, drop_pending(), or the
@@ -89,6 +96,15 @@ struct BurnCfg {
 //     growing queue -- a queue under sustained overload turns into unbounded
 //     buffer retention, i.e. decoder starvation, which is the one thing
 //     burned mode must never do to the video path.
+//   With colortrans (MABUR_PLAYER_GPU build, BurnCfg::colortrans set) a
+//     second thread, the ct thread, sits between the mailbox and the
+//     recorder thread: it owns the EGL context (thread-bound) and the GPU
+//     draw + RGA into one of three destination buffers, and hands the
+//     result over through a second single-slot latest-wins mailbox. Stage
+//     times overlap, so the DVR runs at max(GPU stage, encode) rather than
+//     the sum -- ~35 ms serial at 1080p meant 26-32 fps and a third of the
+//     frames dropped; overlapped it holds the admitted rate with <1 % drops
+//     (bench 2026-09-17). Drops at either mailbox count in frames_dropped().
 class BurnRecorder {
  public:
   BurnRecorder();
@@ -207,6 +223,15 @@ class BurnRecorder {
   //                  stage). Nonzero with colortrans on = a silently
   //                  uncorrected recording, so it is on the fps-log line.
   uint64_t colortrans_fallbacks() const;
+  // Recorder-thread stage timing, cumulative since start(): the colortrans
+  // stage (GPU draw + RGA, only frames that ran it) and encode() (every
+  // admitted frame). Sums and maxima in microseconds; the fps-log differences
+  // consecutive reads for a per-window mean. Zero when the stage never ran.
+  struct StageUs {
+    uint64_t ct_n = 0, ct_sum = 0, ct_max = 0;
+    uint64_t enc_n = 0, enc_sum = 0, enc_max = 0;
+  };
+  StageUs stage_us() const;
 
  private:
   struct Impl;

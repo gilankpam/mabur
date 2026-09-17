@@ -52,6 +52,10 @@ namespace {
 
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop.store(true); }
+// SIGUSR1 = one press of the record button, for benches with no hand on the
+// GPIO (`kill -USR1 $(pidof maburplay)` toggles a recording mid-session).
+std::atomic<bool> g_rec_toggle{false};
+void on_rec_toggle(int) { g_rec_toggle.store(true); }
 
 // Monotonic milliseconds. Everything the GS overlay measures -- AU arrival
 // jitter, the 1 Hz video/recording marks, the recording clock -- is an
@@ -861,6 +865,49 @@ int main(int argc, char** argv) {
   // is sized from presenter->osd_back_surface(), so it cannot be built before
   // a presenter exists. Leaving it unbuilt on that path would mean a lit
   // screen, playing video, and nothing recorded.
+  // The encoder-side OSD palette, built once per input set and memoised.
+  // build_palette() histograms the whole MSP atlas (~2 M px through a hash
+  // map) and runs a 255-step median cut: ~150 ms on the A55, and on the main
+  // loop that was most of the ~200 ms display stall every record start used
+  // to cost (bench 2026-09-17). Its inputs -- the atlas, the
+  // GS seeds, the forward map -- are fixed for a run, so the first build is
+  // done at startup below, before video flows; a later key change (a
+  // presenter acquired after startup flipping colour_inverse()) rebuilds
+  // once, logged.
+  struct BurnPaletteMemo {
+    bool valid = false;
+    bool raster = false, gs = false;
+    const maburplay::ColorTrans* fwd = nullptr;
+    maburplay::OsdPalette pal;
+  } burn_palette_memo;
+  auto burn_palette = [&]() -> const maburplay::OsdPalette& {
+    const bool raster = osd_raster != nullptr;
+    const bool gs = composer.gs_present();
+    const maburplay::ColorTrans* fwd = maburplay::colour_inverse();
+    BurnPaletteMemo& m = burn_palette_memo;
+    if (!m.valid || m.raster != raster || m.gs != gs || m.fwd != fwd) {
+      size_t n_seeds = 0;
+      // Seeds are needed even when the MSP atlas IS loaded: median cut over
+      // the Betaflight atlas alone reproduces the atlas's own hues, and the
+      // GS status colours are not among them -- they would be recorded as
+      // whatever foreign colour sits nearest. With no MSP font at all the
+      // empty GlyphAtlas yields a palette built from the seeds alone.
+      const uint32_t* seeds = gs ? maburplay::gs_palette_seeds(&n_seeds) : nullptr;
+      const maburplay::GlyphAtlas empty{};
+      // Forward map follows the surface's actual inversion state (the
+      // process-wide colour_inverse() pointer set_colour_inverse installed
+      // for the OSD plane), not ct_display_on -- the two agree today but
+      // the palette's invariant is with the former.
+      m.pal = maburplay::build_palette(raster ? osd_font.native() : empty, seeds, n_seeds, fwd);
+      m.valid = true;
+      m.raster = raster;
+      m.gs = gs;
+      m.fwd = fwd;
+      std::fprintf(stderr, "maburplay: burn palette built: %d entries\n", m.pal.n);
+    }
+    return m.pal;
+  };
+
   auto start_burn_if_needed = [&]() {
     if (burn || !burned_mode || !rec_on || !presenter) return;
     auto rec = std::make_unique<maburplay::BurnRecorder>();
@@ -884,22 +931,7 @@ int main(int argc, char** argv) {
       // looks exactly like a deliberate plain transcode.
       bc.osd_width = osd_surf.width;
       bc.osd_height = osd_surf.height;
-      size_t n_seeds = 0;
-      const uint32_t* seeds = composer.gs_present()
-                                  ? maburplay::gs_palette_seeds(&n_seeds)
-                                  : nullptr;
-      // Seeds are needed even when the MSP atlas IS loaded: median cut over
-      // the Betaflight atlas alone reproduces the atlas's own hues, and the
-      // GS status colours are not among them -- they would be recorded as
-      // whatever foreign colour sits nearest. With no MSP font at all the
-      // empty GlyphAtlas yields a palette built from the seeds alone.
-      const maburplay::GlyphAtlas empty{};
-      // Forward map follows the surface's actual inversion state (the
-      // process-wide colour_inverse() pointer set_colour_inverse installed
-      // for the OSD plane), not ct_display_on -- the two agree today but
-      // the palette's invariant is with the former.
-      rec->set_palette(maburplay::build_palette(
-          osd_raster ? osd_font.native() : empty, seeds, n_seeds, maburplay::colour_inverse()));
+      rec->set_palette(burn_palette());  // memoised; see burn_palette above
     }
     // Track-header FALLBACK only. The encoded picture size is the DECODED
     // frame's, latched by MppEncoder on the first frame it sees: it comes
@@ -926,6 +958,9 @@ int main(int argc, char** argv) {
     composer.set_burn_sink([b](const maburplay::Surface& s, const maburplay::DirtyRect* r,
                                size_t n) { b->set_osd(s, r, n); });
   };
+  // Warm the palette memo now, while nothing is on screen yet, so the
+  // first record start does not pay for it on the main loop.
+  if (burned_mode && presenter && (osd_raster || composer.gs_present())) burn_palette();
   start_burn_if_needed();
   if (rec_on && burned_mode && !burn) {
     if (presenter) {
@@ -1274,6 +1309,7 @@ int main(int argc, char** argv) {
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+  std::signal(SIGUSR1, on_rec_toggle);
 
   if (decode_only) {
     // Hardware decode gate (task-8-brief.md, amended per the sid0-join
@@ -1369,6 +1405,9 @@ int main(int argc, char** argv) {
   // same frame_count the FrameSink above already maintains.
   auto t_last_fps_log = std::chrono::steady_clock::now();
   uint64_t frames_at_last_fps_log = 0;
+#ifdef MABUR_PLAYER_HW
+  maburplay::BurnRecorder::StageUs burn_stage_prev;  // fps-log per-window stage means
+#endif
 
   uint64_t flips_at_last_fps_log = 0;
   // Decode watchdog: rkvdec2 can hang on malformed/mid-session bitstream
@@ -1460,7 +1499,7 @@ int main(int argc, char** argv) {
     backend->poll();
     // One ioctl per iteration (~500/s, microseconds each) -- far under the
     // ~1.5 ms budget tools/bench/gs_overlay_bench.cpp polices for this loop.
-    if (rec_button.is_open() && rec_button.poll(mono_ms())) {
+    if ((rec_button.is_open() && rec_button.poll(mono_ms())) || g_rec_toggle.exchange(false)) {
       if (rec_on) {
         rec_stop();
       } else {
@@ -1932,18 +1971,30 @@ int main(int argc, char** argv) {
           // burn_enc counts encode() calls that produced a packet -- NOT
           // samples written, since a zero-length packet reaches the mux sink
           // and is dropped there.
-          char burn_fields[256] = {0};
+          char burn_fields[320] = {0};
           if (burn) {
+            // Per-window mean stage times (ms): the recorder thread's
+            // colortrans stage and encode() -- what bounds the DVR's fps.
+            const maburplay::BurnRecorder::StageUs su = burn->stage_us();
+            const uint64_t dct_n = su.ct_n - burn_stage_prev.ct_n;
+            const uint64_t dct = su.ct_sum - burn_stage_prev.ct_sum;
+            const uint64_t denc_n = su.enc_n - burn_stage_prev.enc_n;
+            const uint64_t denc = su.enc_sum - burn_stage_prev.enc_sum;
+            burn_stage_prev = su;
             std::snprintf(burn_fields, sizeof(burn_fields),
                           " burn_in=%llu burn_enc=%llu burn_drop=%llu burn_flush=%llu "
-                          "burn_err=%llu burn_osdrej=%llu burn_ctfb=%llu",
+                          "burn_err=%llu burn_osdrej=%llu burn_ctfb=%llu burn_ct_ms=%.1f "
+                          "burn_enc_ms=%.1f",
                           static_cast<unsigned long long>(burn->frames_in()),
                           static_cast<unsigned long long>(burn->frames_encoded()),
                           static_cast<unsigned long long>(burn->frames_dropped()),
                           static_cast<unsigned long long>(burn->frames_flushed()),
                           static_cast<unsigned long long>(burn->encode_errors()),
                           static_cast<unsigned long long>(burn->osd_rejects()),
-                          static_cast<unsigned long long>(burn->colortrans_fallbacks()));
+                          static_cast<unsigned long long>(burn->colortrans_fallbacks()),
+                          dct_n ? dct / 1000.0 / dct_n : 0.0, denc_n ? denc / 1000.0 / denc_n : 0.0);
+          } else {
+            burn_stage_prev = maburplay::BurnRecorder::StageUs{};
           }
           std::fprintf(stderr,
                        "fps-log: fps=%.1f flips/s=%.1f repl=%llu frames=%llu commit_errors=%llu "

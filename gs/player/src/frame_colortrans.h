@@ -2,6 +2,7 @@
 #define MABUR_PLAYER_FRAME_COLORTRANS_H_
 
 #include <cstdint>
+#include <string>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -44,15 +45,31 @@ class FrameColorTrans {
   bool process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, uint32_t vs, int dst_fd,
                uint32_t dst_hs, uint32_t dst_vs);
 
+  // Cumulative per-step time of successful process() calls, microseconds:
+  // import (EGLImage + texture), draw (draw + glFinish), rga (BGRA -> NV12).
+  struct Breakdown {
+    uint64_t n = 0, import_us = 0, draw_us = 0, rga_us = 0;
+  };
+  const Breakdown& breakdown() const { return bd_; }
+
  private:
   bool build_program();
   bool create_targets();
   void destroy_targets();
 
+  // GPU devfreq governor pinned to "performance" for the stage's lifetime
+  // (see gpu_boost_begin in the .cpp); the previous governor is restored at
+  // deinit(). Empty = nothing to restore.
+  std::string gpu_gov_path_;
+  std::string gpu_gov_saved_;
+  void gpu_boost_begin();
+  void gpu_boost_end();
+
   int drm_fd_ = -1;
   uint32_t width_ = 0, height_ = 0;
   bool ready_ = false;
   uint64_t fail_logs_ = 0;
+  Breakdown bd_;
 
   gbm_device* gbm_ = nullptr;
   EGLDisplay dpy_ = EGL_NO_DISPLAY;
@@ -65,6 +82,28 @@ class FrameColorTrans {
 
   GLuint prog_ = 0;
   GLint loc_tex_ = -1;
+
+  // Source import cache: the decoder pool is a fixed set of dma-bufs (24 at
+  // 1080p), and importing one as an EGLImage + external texture costs ~2.7
+  // ms per frame plus the destroy -- a fifth of the stage's budget at 60
+  // fps. Keyed by (fd, dma-buf inode): MPP holds each pool buffer's fd for
+  // the pool's life, so a reused fd number means the old buffer is gone and
+  // its entry is replaced; a different inode on the same fd can never be
+  // served the old image. Bounded by the number of live fds. The EGLImage
+  // keeps its dma-buf alive, so stale entries are exactly what the fd-reuse
+  // rule evicts.
+  struct SrcEntry {
+    int fd = -1;
+    unsigned long ino = 0;
+    EGLImageKHR img = EGL_NO_IMAGE_KHR;
+    GLuint tex = 0;
+  };
+  static constexpr int kMaxSrc = 48;
+  SrcEntry src_[kMaxSrc];
+  int n_src_ = 0;
+  GLuint src_texture(int fd, uint32_t w, uint32_t h, uint32_t hs, uint32_t vs);
+  void drop_src_entry(SrcEntry& e);
+  void destroy_src_cache();
 
   static constexpr int kTargets = 2;
   struct Target {

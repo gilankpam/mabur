@@ -15,6 +15,7 @@
 
 #include "dvr_mux.h"
 #include "hevc_params.h"
+#include "fps_cap.h"
 #include "mpp_backend.h"
 #include "mpp_encoder.h"
 
@@ -54,25 +55,6 @@
 namespace maburplay {
 
 namespace {
-
-// Cap tolerance CEILING; the slack actually used is
-// min(kCapSlackUs, cap_interval/8), see start().
-//
-// Why any slack: with a 59.94 fps source and a 30 fps cap, the ideal spacing
-// (33'333 us) lands a hair above two source intervals (33'367 us) only when
-// arrivals are perfectly regular. Any jitter makes a strict ">= interval"
-// test reject the frame that should have been taken and wait a further 16.7
-// ms, collapsing 30 fps to 20.
-//
-// Why it must be PROPORTIONAL: a flat 5 ms un-caps the whole 47..59 band
-// against a 59.94 fps source. At cap 50 the interval is 20'000 us, so
-// "20'000 - 5'000" admits every 16'683 us frame and the encoder runs at
-// 59.94 -- ~2x the load and thermal budget that was asked for, with
-// rc:fps_* and rc:gop still programmed for 50. It also breaks the obvious
-// remediation: an operator who lowers a 60 fps default to 50 would change
-// nothing at all. One eighth of the interval erring UNDER the cap is
-// honest; erring over it is not.
-constexpr int64_t kCapSlackUs = 5000;
 
 // Consecutive refusals, with nothing ever encoded, after which the recorder
 // gives up for good. MppEncoder's documented permanent-refusal signature is
@@ -150,11 +132,10 @@ struct BurnRecorder::Impl {
   std::atomic<bool> dead{false};        // fatal: stop feeding the encoder
   std::atomic<bool> idr_pending{false};
 
-  // fps cap state, main loop only.
-  std::chrono::steady_clock::time_point last_admit;
-  bool have_last_admit = false;
-  int64_t cap_interval_us = 0;
-  int64_t cap_slack_us = 0;
+  // fps cap, main loop only. The policy and why it is schedule-based rather
+  // than last-admit-based live in fps_cap.h (host-tested, test_fps_cap).
+  FpsCap cap;
+  std::chrono::steady_clock::time_point cap_epoch;
 
   std::atomic<uint64_t> frames_in{0};
   std::atomic<uint64_t> frames_encoded{0};
@@ -163,17 +144,78 @@ struct BurnRecorder::Impl {
   std::atomic<uint64_t> encode_errors{0};
   std::atomic<uint64_t> osd_rejects{0};
   std::atomic<uint64_t> colortrans_fallbacks{0};
+  std::atomic<uint64_t> ct_n{0}, ct_sum_us{0}, ct_max_us{0};    // stage_us()
+  std::atomic<uint64_t> enc_n{0}, enc_sum_us{0}, enc_max_us{0};
+  static void account(std::atomic<uint64_t>& n, std::atomic<uint64_t>& sum,
+                      std::atomic<uint64_t>& mx, std::chrono::steady_clock::time_point t0) {
+    const uint64_t us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                  std::chrono::steady_clock::now() - t0)
+                                                  .count());
+    n.fetch_add(1);
+    sum.fetch_add(us);
+    uint64_t cur = mx.load();
+    while (us > cur && !mx.compare_exchange_weak(cur, us)) {
+    }
+  }
+  // --- colortrans stage (ct thread) and its handoff to the encoder ---------
+  //
+  // With colortrans on, the recorder is a two-stage pipeline:
+  //
+  //   main loop --box--> ct thread --ct_out--> recorder thread
+  //                      GPU draw + RGA          encode() + mux
+  //                      into ct_dst[k]
+  //
+  // Both stages are hardware waits (GPU/RGA ~13-22 ms, rkvenc ~13 ms at
+  // 1080p) and serialising them on one thread capped the burned DVR at
+  // 26-32 fps with a third of the admitted frames dropped (bench
+  // 2026-09-17). Overlapped, the DVR runs at max(stage) instead of the sum,
+  // and the GPU is busy enough for devfreq to actually clock it up.
+  //
+  // ct_out is a one-deep, latest-wins mailbox like `box`: a slow encoder
+  // displaces the previous output (frames_dropped, same meaning as a box
+  // displacement) rather than stalling the GPU stage. kCtDst = 3 covers the
+  // worst case: one destination being rendered, one waiting in ct_out, one
+  // inside encode(). ct_dst_busy[] (under mu) says which are taken.
+  //
+  // Without colortrans (or a build without the stage) there is no ct thread
+  // and the recorder thread consumes `box` directly, exactly as before.
+  struct CtMail {
+    void* buf = nullptr;  // MppBuffer: ct_dst[dst_idx], or the SOURCE when dst_idx < 0
+    int dst_idx = -1;     // < 0 = flat: buf is a held decoder reference
+    uint32_t pts_us = 0;
+    int w = 0, h = 0, stride = 0, vstride = 0;
+  };
+  bool ct_on = false;  // start(): colortrans requested AND the build has the stage
+  std::condition_variable ct_cv;  // ct_out handoff; `cv` stays the box's
+  CtMail ct_out;                  // mu
+  std::thread ct_th;
+
+  // Releases whatever a CtMail holds: a destination goes back to the free
+  // set, a flat source reference goes back to the decoder pool.
+  void release_ct(const CtMail& o) {
+    if (!o.buf) return;
+    if (o.dst_idx >= 0) {
+      std::lock_guard<std::mutex> lk(mu);
+      ct_dst_busy[o.dst_idx] = false;
+    } else {
+      mpp_buffer_put(static_cast<MppBuffer>(o.buf));
+    }
+  }
+
+  static constexpr int kCtDst = 3;
+  bool ct_dst_busy[kCtDst] = {};  // mu
 #ifdef MABUR_PLAYER_GPU
-  // GPU stage, recorder thread only (EGL is thread-bound).
-  std::unique_ptr<FrameColorTrans> ct;
-  bool ct_failed = false;         // init failed once: stay flat, logged once
-  MppBufferGroup ct_grp = nullptr; // private DRM group for the destination
-  MppBuffer ct_dst = nullptr;
+  std::unique_ptr<FrameColorTrans> ct;  // ct thread only (EGL is thread-bound)
+  bool ct_failed = false;               // init failed once: stay flat, logged once
+  MppBufferGroup ct_grp = nullptr;      // private DRM group for the destinations
+  MppBuffer ct_dst[kCtDst] = {};
   size_t ct_dst_size = 0;
   int ct_w = 0, ct_h = 0;
 
-  // Recorder thread. Brings the stage and the destination buffer up for
-  // this geometry; false = encode flat this frame.
+  // ct thread. Brings the stage and the destinations up for this geometry;
+  // false = pass this frame through flat. The destinations are sized once,
+  // on the first frame: MppEncoder latches its picture size on the first
+  // encode() anyway, so a later, larger frame cannot be recorded either way.
   bool ct_prepare(int w, int h, int hs, int vs) {
     if (ct_failed) return false;
     if (!ct || ct_w != w || ct_h != h) {
@@ -188,30 +230,116 @@ struct BurnRecorder::Impl {
       ct_h = h;
     }
     const size_t need = (size_t)hs * (size_t)vs * 3 / 2;
+    if (ct_dst_size) return need <= ct_dst_size;
     if (!ct_grp && mpp_buffer_group_get_internal(&ct_grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) {
       std::fprintf(stderr, "BurnRecorder: colortrans buffer group failed; recording FLAT\n");
       ct_failed = true;
       return false;
     }
-    if (!ct_dst || ct_dst_size < need) {
-      if (ct_dst) mpp_buffer_put(ct_dst);
-      ct_dst = nullptr;
-      if (mpp_buffer_get(ct_grp, &ct_dst, need) != MPP_OK || !ct_dst) {
+    for (int i = 0; i < kCtDst; ++i) {
+      if (mpp_buffer_get(ct_grp, &ct_dst[i], need) != MPP_OK || !ct_dst[i]) {
         std::fprintf(stderr, "BurnRecorder: colortrans destination alloc failed; recording FLAT\n");
         ct_failed = true;
         return false;
       }
-      ct_dst_size = need;
     }
+    ct_dst_size = need;
     return true;
   }
-  void ct_teardown() {  // recorder thread, at the end of run()
-    ct.reset();
-    if (ct_dst) mpp_buffer_put(ct_dst);
-    ct_dst = nullptr;
+
+  // stop(), after BOTH joins: nothing references the destinations any more.
+  void ct_free_dst() {
+    for (int i = 0; i < kCtDst; ++i) {
+      if (ct_dst[i]) mpp_buffer_put(ct_dst[i]);
+      ct_dst[i] = nullptr;
+      ct_dst_busy[i] = false;
+    }
     ct_dst_size = 0;
     if (ct_grp) mpp_buffer_group_put(ct_grp);
     ct_grp = nullptr;
+  }
+
+  // The ct thread: box -> GPU stage -> ct_out. Never blocks on the encoder.
+  void run_ct() {
+    for (;;) {
+      Mail m;
+      {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [this] { return stopping || box.buf != nullptr; });
+        if (stopping) break;
+        m = box;
+        box.buf = nullptr;
+      }
+      if (dead.load()) {
+        // REF-DEAD, ct side: the encoder gave up; nothing downstream wants this.
+        mpp_buffer_put(static_cast<MppBuffer>(m.buf));
+        frames_dropped.fetch_add(1);
+        continue;
+      }
+
+      CtMail o;
+      o.buf = m.buf;  // flat unless the stage succeeds below
+      o.pts_us = m.pts_us;
+      o.w = m.w;
+      o.h = m.h;
+      o.stride = m.stride;
+      o.vstride = m.vstride;
+
+      bool done = false;
+      if (ct_prepare(m.w, m.h, m.stride, m.vstride)) {
+        int k = -1;
+        {
+          std::lock_guard<std::mutex> lk(mu);
+          for (int i = 0; i < kCtDst && k < 0; ++i)
+            if (!ct_dst_busy[i]) k = i;
+          if (k >= 0) ct_dst_busy[k] = true;
+        }
+        // k < 0 cannot happen with kCtDst = 3 (see the pipeline comment);
+        // if it ever does, the frame records flat and is counted below.
+        if (k >= 0) {
+          const auto t_ct = std::chrono::steady_clock::now();
+          done = ct->process(mpp_buffer_get_fd(static_cast<MppBuffer>(m.buf)), (uint32_t)m.w,
+                             (uint32_t)m.h, (uint32_t)m.stride, (uint32_t)m.vstride,
+                             mpp_buffer_get_fd(ct_dst[k]), (uint32_t)m.stride,
+                             (uint32_t)m.vstride);
+          if (done) {
+            account(ct_n, ct_sum_us, ct_max_us, t_ct);
+            // REF-ENCODE, early: the GPU and RGA are done with the source
+            // (glFinish + synchronous imcvtcolor); the encoder reads ct_dst.
+            mpp_buffer_put(static_cast<MppBuffer>(m.buf));
+            o.buf = ct_dst[k];
+            o.dst_idx = k;
+          } else {
+            std::lock_guard<std::mutex> lk(mu);
+            ct_dst_busy[k] = false;
+          }
+        }
+      }
+      if (!done) colortrans_fallbacks.fetch_add(1);
+
+      CtMail displaced;
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        displaced = ct_out;  // latest wins, same rule as the box
+        ct_out = o;
+      }
+      ct_cv.notify_one();
+      if (displaced.buf) {
+        // REF-DISPLACE, ct side: the encoder is the slow stage right now.
+        release_ct(displaced);
+        frames_dropped.fetch_add(1);
+      }
+    }
+    if (ct) {
+      const FrameColorTrans::Breakdown& b = ct->breakdown();
+      if (b.n)
+        std::fprintf(stderr,
+                     "BurnRecorder: colortrans stage mean per frame over %llu: import %.1f ms, "
+                     "draw+finish %.1f ms, rga %.1f ms\n",
+                     static_cast<unsigned long long>(b.n), b.import_us / 1000.0 / b.n,
+                     b.draw_us / 1000.0 / b.n, b.rga_us / 1000.0 / b.n);
+    }
+    ct.reset();  // EGL teardown on the thread that owns the context
   }
 #endif
   uint64_t consecutive_fail = 0;  // recorder thread only
@@ -269,16 +397,28 @@ struct BurnRecorder::Impl {
 
   void run() {
     for (;;) {
-      Mail m;
+      CtMail o;
       bool have_osd = false;
       {
         std::unique_lock<std::mutex> lk(mu);
-        cv.wait(lk, [this] { return stopping || box.buf != nullptr; });
-        // stop() drains whatever is left in the box after the join, so this
-        // thread never has to decide who releases a half-handled entry.
-        if (stopping) break;
-        m = box;
-        box.buf = nullptr;
+        if (ct_on) {
+          ct_cv.wait(lk, [this] { return stopping || ct_out.buf != nullptr; });
+          if (stopping) break;
+          o = ct_out;
+          ct_out.buf = nullptr;
+        } else {
+          // stop() drains whatever is left in the box after the join, so this
+          // thread never has to decide who releases a half-handled entry.
+          cv.wait(lk, [this] { return stopping || box.buf != nullptr; });
+          if (stopping) break;
+          o.buf = box.buf;
+          o.pts_us = box.pts_us;
+          o.w = box.w;
+          o.h = box.h;
+          o.stride = box.stride;
+          o.vstride = box.vstride;
+          box.buf = nullptr;
+        }
         if (osd_pending_valid) {
           take_osd_locked();
           have_osd = true;
@@ -287,7 +427,7 @@ struct BurnRecorder::Impl {
 
       if (dead.load()) {
         // REF-DEAD: a frame admitted just before the recorder gave up.
-        mpp_buffer_put(static_cast<MppBuffer>(m.buf));
+        release_ct(o);
         frames_dropped.fetch_add(1);
         continue;
       }
@@ -298,31 +438,17 @@ struct BurnRecorder::Impl {
       // --fps-log can say so; the encoder's own log for it is once-only.
       if (have_osd && !enc->set_osd(osd_work)) osd_rejects.fetch_add(1);
 
-      void* enc_buf = m.buf;
-      bool src_released = false;
-#ifdef MABUR_PLAYER_GPU
-      if (cfg.colortrans) {
-        if (ct_prepare(m.w, m.h, m.stride, m.vstride) &&
-            ct->process(mpp_buffer_get_fd(static_cast<MppBuffer>(m.buf)), (uint32_t)m.w,
-                        (uint32_t)m.h, (uint32_t)m.stride, (uint32_t)m.vstride,
-                        mpp_buffer_get_fd(ct_dst), (uint32_t)m.stride, (uint32_t)m.vstride)) {
-          enc_buf = ct_dst;
-          // REF-ENCODE, early: the GPU and RGA are done with the source
-          // (glFinish + synchronous imcvtcolor), the encoder reads ct_dst.
-          mpp_buffer_put(static_cast<MppBuffer>(m.buf));
-          src_released = true;
-        } else {
-          colortrans_fallbacks.fetch_add(1);
-        }
-      }
-#else
-      if (cfg.colortrans) colortrans_fallbacks.fetch_add(1);  // built without the stage
-#endif
+      // Without the ct thread every frame is flat; with it, the ct thread
+      // already counted its own fallbacks.
+      if (!ct_on && cfg.colortrans) colortrans_fallbacks.fetch_add(1);
+
+      const auto t_enc = std::chrono::steady_clock::now();
       const bool ok =
-          enc->encode(enc_buf, m.w, m.h, m.stride, m.vstride, static_cast<uint64_t>(m.pts_us));
+          enc->encode(o.buf, o.w, o.h, o.stride, o.vstride, static_cast<uint64_t>(o.pts_us));
+      account(enc_n, enc_sum_us, enc_max_us, t_enc);
       // REF-ENCODE: released the moment the encoder is done with it, whether
       // or not it produced a packet. encode() borrows, it never owns.
-      if (!src_released) mpp_buffer_put(static_cast<MppBuffer>(m.buf));
+      release_ct(o);
 
       if (ok) {
         frames_encoded.fetch_add(1);
@@ -350,9 +476,6 @@ struct BurnRecorder::Impl {
         dead.store(true);
       }
     }
-#ifdef MABUR_PLAYER_GPU
-    ct_teardown();
-#endif
   }
 
   // Recorder thread, mu HELD: brings osd_work up to date with osd_map,
@@ -399,6 +522,19 @@ struct BurnRecorder::Impl {
       frames_flushed.fetch_add(1);
     }
   }
+  // Same hygiene for the ct -> encoder handoff.
+  void drain_ct_out() {
+    CtMail o;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      o = ct_out;
+      ct_out.buf = nullptr;
+    }
+    if (o.buf) {
+      release_ct(o);
+      frames_flushed.fetch_add(1);
+    }
+  }
 };
 
 BurnRecorder::BurnRecorder() : impl_(new Impl) {}
@@ -439,13 +575,18 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
 
   im.cfg = cfg;
   im.path = path;
-  im.cap_interval_us = 1000000 / cfg.fps_cap;
-  im.cap_slack_us = std::min<int64_t>(kCapSlackUs, im.cap_interval_us / 8);
-  im.have_last_admit = false;
+  im.cap.reset(cfg.fps_cap);
+  im.cap_epoch = std::chrono::steady_clock::now();
   im.mux_open = false;
   im.mux_failed = false;
   im.dead.store(false);
   im.colortrans_fallbacks.store(0);
+  im.ct_n.store(0);
+  im.ct_sum_us.store(0);
+  im.ct_max_us.store(0);
+  im.enc_n.store(0);
+  im.enc_sum_us.store(0);
+  im.enc_max_us.store(0);
   im.stopping = false;
 
   EncCfg ec;
@@ -483,8 +624,19 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
 #endif
 
   im.idr_pending.store(true);  // consumed before the first encode
+  im.ct_out = Impl::CtMail{};
+  for (int i = 0; i < Impl::kCtDst; ++i) im.ct_dst_busy[i] = false;
+#ifdef MABUR_PLAYER_GPU
+  im.ct_on = cfg.colortrans != nullptr;
+  im.ct_failed = false;
+#else
+  im.ct_on = false;
+#endif
   im.started = true;
   im.th = std::thread([pim] { pim->run(); });
+#ifdef MABUR_PLAYER_GPU
+  if (im.ct_on) im.ct_th = std::thread([pim] { pim->run_ct(); });
+#endif
   std::fprintf(stderr,
                "BurnRecorder: started cap %d fps %d kbps frag %d ms osd=%s (%dx%d px region) "
                "colortrans=%s -> %s (picture size latches on the first decoded frame)\n",
@@ -497,26 +649,20 @@ void BurnRecorder::submit(const DmaFrame& f) {
   Impl& im = *impl_;
   if (!im.started || im.dead.load()) return;
 
-  // Cap FIRST: a rejected frame must cost nothing but this clock read -- no
-  // reference, no lock, no allocation. steady_clock rather than f.pts_us
-  // deliberately: the cap is about how hard the ENCODER is driven, and it must
-  // not depend on the decoder's pts round-trip being sane (a stuck pts would
-  // otherwise wedge the cap shut and record a single frame). pts_us is still
-  // what the recording is stamped with, further down.
-  const auto now = std::chrono::steady_clock::now();
-  if (im.have_last_admit) {
-    const int64_t dt =
-        std::chrono::duration_cast<std::chrono::microseconds>(now - im.last_admit).count();
-    if (dt < im.cap_interval_us - im.cap_slack_us) return;
-  }
-
+  // Cap before anything costs: a rejected frame is two field reads and a
+  // clock read -- no reference, no lock, no allocation. steady_clock rather
+  // than f.pts_us deliberately: the cap is about how hard the ENCODER is
+  // driven, and it must not depend on the decoder's pts round-trip being sane
+  // (a stuck pts would otherwise wedge the cap shut and record a single
+  // frame). pts_us is still what the recording is stamped with, further down.
   MppFrame frame = static_cast<MppFrame>(f.opaque);
   if (!frame) return;
   MppBuffer buf = mpp_frame_get_buffer(frame);
   if (!buf) return;
-
-  im.last_admit = now;
-  im.have_last_admit = true;
+  const int64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - im.cap_epoch)
+                             .count();
+  if (!im.cap.admit(now_us)) return;
 
   // REF-SUBMIT: from here the recorder owns a reference; the decoder cannot
   // recycle this buffer until one of the release paths runs.
@@ -615,6 +761,7 @@ void BurnRecorder::request_idr() { impl_->idr_pending.store(true); }
 void BurnRecorder::drop_pending() {
   if (!impl_->started) return;
   impl_->drain_box();
+  impl_->drain_ct_out();
 }
 
 void BurnRecorder::stop() {
@@ -625,11 +772,19 @@ void BurnRecorder::stop() {
     im.stopping = true;
   }
   im.cv.notify_all();
+  im.ct_cv.notify_all();
+  // ct thread first: it only ever hands frames DOWN to the encoder thread,
+  // so once it is gone ct_out is quiescent for the encoder's own exit.
+  if (im.ct_th.joinable()) im.ct_th.join();
   if (im.th.joinable()) im.th.join();
-  // After the join nothing else touches the box, but drain_box() locks
-  // anyway -- it is the same code path drop_pending() uses and correctness
-  // here must not depend on the join having happened.
-  im.drain_box();  // REF-STOP
+  // After the joins nothing else touches the mailboxes, but the drains lock
+  // anyway -- they are the code path drop_pending() uses and correctness
+  // here must not depend on the joins having happened.
+  im.drain_box();     // REF-STOP
+  im.drain_ct_out();  // REF-STOP, ct side
+#ifdef MABUR_PLAYER_GPU
+  im.ct_free_dst();
+#endif
 
   if (im.mux_open) {
     im.mux.close();
@@ -639,10 +794,11 @@ void BurnRecorder::stop() {
   const uint64_t enc_errs = im.enc ? im.enc->errors() : 0;
   im.enc.reset();
   im.started = false;
+  const StageUs su = stage_us();
   std::fprintf(stderr,
                "BurnRecorder: stopped -- in=%llu encoded=%llu dropped=%llu flushed=%llu "
                "errors=%llu osd_rejects=%llu ct_fallbacks=%llu (encoder frames=%llu errors=%llu) "
-               "samples=%llu fragments=%llu\n",
+               "samples=%llu fragments=%llu ct_ms=%.1f/%.1f enc_ms=%.1f/%.1f (mean/max)\n",
                static_cast<unsigned long long>(im.frames_in.load()),
                static_cast<unsigned long long>(im.frames_encoded.load()),
                static_cast<unsigned long long>(im.frames_dropped.load()),
@@ -653,7 +809,9 @@ void BurnRecorder::stop() {
                static_cast<unsigned long long>(enc_frames),
                static_cast<unsigned long long>(enc_errs),
                static_cast<unsigned long long>(im.mux.samples()),
-               static_cast<unsigned long long>(im.mux.fragments()));
+               static_cast<unsigned long long>(im.mux.fragments()),
+               su.ct_n ? su.ct_sum / 1000.0 / su.ct_n : 0.0, su.ct_max / 1000.0,
+               su.enc_n ? su.enc_sum / 1000.0 / su.enc_n : 0.0, su.enc_max / 1000.0);
 }
 
 bool BurnRecorder::running() const { return impl_->started && !impl_->dead.load(); }
@@ -665,5 +823,15 @@ uint64_t BurnRecorder::frames_flushed() const { return impl_->frames_flushed.loa
 uint64_t BurnRecorder::encode_errors() const { return impl_->encode_errors.load(); }
 uint64_t BurnRecorder::osd_rejects() const { return impl_->osd_rejects.load(); }
 uint64_t BurnRecorder::colortrans_fallbacks() const { return impl_->colortrans_fallbacks.load(); }
+BurnRecorder::StageUs BurnRecorder::stage_us() const {
+  StageUs s;
+  s.ct_n = impl_->ct_n.load();
+  s.ct_sum = impl_->ct_sum_us.load();
+  s.ct_max = impl_->ct_max_us.load();
+  s.enc_n = impl_->enc_n.load();
+  s.enc_sum = impl_->enc_sum_us.load();
+  s.enc_max = impl_->enc_max_us.load();
+  return s;
+}
 
 }  // namespace maburplay
