@@ -25,6 +25,7 @@
 #include "pacer.h"
 #include "tx_pipeline.h"
 
+#include "AmpduMode.h"
 #include "RadiotapBuilder.h"
 #include "RxPacket.h"
 #include "SignalStop.h"
@@ -58,6 +59,10 @@ struct Args {
   // HalMAC family (devourer docs/aggregation.md). 1 = strict on-air frame
   // order (threads can swap ≤3-frame URB batches; RX accounting tolerates).
   int tx_threads = 4;
+  // A-MPDU TX aggregation as maburd flies it (ampdu.max_num / max_time);
+  // 0 = off (QoS-Data singles).
+  int ampdu = 0;
+  int ampdu_max_time = 32;
 };
 
 void usage(const char* argv0) {
@@ -66,7 +71,8 @@ void usage(const char* argv0) {
     "  [--overhead 0.5] [--symbol-size 64] [--window 128] [--bpb 16]\n"
     "  [--size B] [--ldpc] [--stbc]\n"
     "  [--pwr-mode override|none|offset] [--pwr 0..63] [--pwr-offset-qdb Q]\n"
-    "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n", argv0);
+    "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n"
+    "  [--ampdu N (max_num, 0=off)] [--ampdu-max-time 32]\n", argv0);
 }
 
 bool parse_args(int argc, char** argv, Args* a) {
@@ -107,6 +113,8 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--usb-vid") { int v; if (!next(&v)) return false; a->usb_vid = static_cast<uint16_t>(v); }
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
     else if (k == "--tx-threads") { if (!next(&a->tx_threads)) return false; }
+    else if (k == "--ampdu") { if (!next(&a->ampdu)) return false; }
+    else if (k == "--ampdu-max-time") { if (!next(&a->ampdu_max_time)) return false; }
     else { return false; }
   }
   const int maxp = a->fec.symbol_size - 2;
@@ -118,6 +126,7 @@ bool parse_args(int argc, char** argv, Args* a) {
   }
   if (a->mcs < 0 || a->mcs > 7) return false;
   if (a->tx_threads < 1 || a->tx_threads > 16) return false;
+  if (a->ampdu < 0 || a->ampdu > 63 || a->ampdu_max_time < 0 || a->ampdu_max_time > 255) return false;
   return true;
 }
 
@@ -239,6 +248,25 @@ int main(int argc, char** argv) {
   if (a.pwr_mode == "override") dev->SetTxPowerIndexOverride(a.pwr);
   else if (a.pwr_mode == "offset") dev->SetTxPowerOffsetQdb(a.pwr_offset_qdb);
   // "none": leave the efuse per-rate (per-MCS) calibration untouched.
+
+  // A-MPDU exactly as drone/src/main.cpp programs it (after InitWrite, before
+  // the first send): no_ack + density 7, aggregate-fill timer max_time.
+  if (a.ampdu > 0) {
+    devourer::AmpduMode am;
+    am.enabled = true;
+    am.tid = 0;
+    am.max_num = static_cast<uint8_t>(a.ampdu);
+    am.density = 7;
+    am.no_ack = true;
+    am.max_time = static_cast<uint8_t>(a.ampdu_max_time);
+    if (!dev->SetAmpduMode(am))
+      std::fprintf(stderr, "warning: SetAmpduMode failed -- running un-aggregated\n");
+    else
+      std::fprintf(stderr, "A-MPDU ON (max_num=%d density=7 no-ack max_time=0x%02x)\n",
+                   a.ampdu, a.ampdu_max_time);
+  } else {
+    std::fprintf(stderr, "A-MPDU OFF (QoS-Data singles)\n");
+  }
 
   // TX hot loop in its own thread; main blocks in StartRxLoop (which
   // watches g_devourer_should_stop) exactly like maburd.
