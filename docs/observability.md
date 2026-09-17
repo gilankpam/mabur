@@ -595,7 +595,9 @@ read the sideport. Reach for other tools only in these cases:**
   restores the unbounded behavior. The counters make either auditable.
 - **Post-mortem when no consumer was listening → the 1 Hz stderr stats
   line** in `/tmp/maburgs.log` (maburd's in `/tmp/mabur.log`, maburplay's
-  fps-log + respawn history in `/tmp/maburplay.log`). It is
+  fps-log + respawn history in `/tmp/maburplay.log`; the burned-DVR stage
+  times ride the fps-log as `burn_ct_ms=`/`burn_enc_ms=`, see
+  `docs/colortrans.md`). It is
   numerically redundant with the sideport but persists on disk; the UDP
   feed is ephemeral. The MSP OSD is now rendered by maburplay itself, from
   the UDP snapshot feed maburgs emits (maburgs no longer draws pixels); the
