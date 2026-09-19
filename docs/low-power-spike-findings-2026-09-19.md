@@ -115,3 +115,34 @@ when testing: `nohup /etc/init.d/S00mabur start </dev/null >/dev/null 2>&1 &`.
   on the ground with no airflow; on the airframe the disarmed drone has
   no prop wash either. Expect the mode to slow the climb, not stop it —
   measure the full-rate fan-off slope next to know what it buys.
+
+## Can maburd read the FC's arm state? Yes — MSP_STATUS on the OSD UART
+
+Today maburd only *listens* on `/dev/ttyS2` (`MspSerial` is read-only;
+`MspSource` parses the DisplayPort stream and forwards it as stream 4).
+The FC pushes nothing but DisplayPort (cmd 182) on its own, so the arm
+state has to be *asked for*. Probed with maburd stopped (exclusive UART),
+raw 115200 8N1, 10 requests each of `MSP_STATUS` (101) and
+`MSP_STATUS_EX` (150) at 2 Hz:
+
+```
+frames (dir,cmd,crc_ok): {('>',182,True): 1050, ('>',101,True): 10, ('>',150,True): 10}
+cmd 101 len 27: cycle=123 sensors=0x002b flightModeFlags=0x00000002 ARM_bit0=0 profile=0
+cmd 150 len 27: cycle=124 sensors=0x002b flightModeFlags=0x00000002 ARM_bit0=0 profile=0 cpu_load=42
+```
+
+- Every request was answered, checksum-clean, and the DisplayPort stream
+  kept running at 150 frames/s alongside — the port is bidirectional MSP,
+  exactly what msposd relies on for its record-on-arm.
+- `flightModeFlags` bit 0 is BOXARM (id 0) in both Betaflight and iNav;
+  it read 0 on the disarmed bench FC, bit 1 (ANGLE) set. The flip to 1
+  on arming is not yet observed here — arm the bench FC (props off) once
+  the request path is in maburd.
+- Sharing the UART with a second reader (a `cat` next to maburd) splits
+  bytes between readers and breaks checksums — the probe MUST be done
+  from inside maburd's own reader, not a side process.
+- Non-182 messages already fall through `MspScreen::apply` untouched, and
+  `msp_append_message` builds v1 requests, so the drone side needs only:
+  a `write()` on `MspSerial`, a 2 Hz `MSP_STATUS` request from the msp
+  thread, and `cmd == 101 → armed = payload[6..9] & 1` handed to RcAgent
+  as the bitrate-clamp input. Nothing on the wire to the GS changes.
