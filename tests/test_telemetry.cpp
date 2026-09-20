@@ -8,6 +8,7 @@ TEST(make_telem_maps_and_saturates) {
   mabur::TelemInputs in;
   in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probe_on = true;
   in.congestion_shed = true;
+  in.low_power = true;
   in.roi_qp = -24;
   in.generation = 7; in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
   in.applied_ov_base = 0.25;
@@ -35,7 +36,7 @@ TEST(make_telem_maps_and_saturates) {
   // (RcAgent::run_congestion_guard), distinct from bit0's failsafe shed so
   // a bench can count congestion sheds and flightreport can attribute an
   // enh gap to congestion rather than RF.
-  CHECK(t.flags == 0x1F);
+  CHECK(t.flags == 0x9F);  // | low_power (bit7, spec 2026-09-20)
   // roi_qp is the ROI override RcAgent commanded (signed). It was exported
   // as an unsigned `qp` until 2026-09-03; there is no encoder QP on the wire.
   CHECK(t.roi_qp == -24);
@@ -59,6 +60,19 @@ TEST(make_telem_maps_and_saturates) {
   // pts_at_build is a timestamp, not a gauge.
   CHECK(t.rcf_seq_echo == 0x4711);
   CHECK(t.pts_at_build == 0x0011223344556677ull);
+}
+
+TEST(low_power_flag_round_trips) {
+  mabur::TelemInputs in;
+  in.low_power = true;
+  auto t = mabur::make_telem(1, in);
+  CHECK((t.flags & 0x80) != 0);
+  auto wire = mabur::rc::pack_telem(t);
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK((back->flags & 0x80) != 0);
+  in.low_power = false;
+  CHECK((mabur::make_telem(2, in).flags & 0x80) == 0);
 }
 
 TEST(uplink_track_ema_and_thread_snapshot) {

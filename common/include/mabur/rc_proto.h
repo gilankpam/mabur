@@ -148,6 +148,7 @@ struct Telem {
                       //      is actively sweeping, so the ack(s) and the suppression do not
                       //      conflict. The verify pass has no command and therefore no ack: the
                       //      drone self-initiates it after applying the result — spec 2026-09-10)
+                      // bit7 low_power (RcAgent::low_power(): pre-arm 1 Mb/s / 15 fps operating point, spec 2026-09-20)
   uint32_t generation = 0;
   uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
   double applied_ov_base = 0.0;

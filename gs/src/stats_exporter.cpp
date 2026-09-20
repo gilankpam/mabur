@@ -576,6 +576,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["air_shed"] = (t.flags & 0x20) != 0;
     d["air_backlog_max_ms"] = t.air_backlog_max_ms;
     d["air_shed_drops"] = t.air_shed_drops;
+    // Low-power (pre-arm) operating point, flags bit7 (spec 2026-09-20):
+    // the drone is deliberately at low_power.bitrate_kbps / fps because
+    // the FC reports DISARMED. maburtop shows LP; the compact OSD tints fps.
+    d["low_power"] = (t.flags & 0x80) != 0;
     d["applied"] = {{"mcs", mcs},
                     {"bw", bw},
                     {"vht", mode == mabur::rc::PhyMode::VHT},

@@ -2599,6 +2599,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           ti.failsafe_shed = agent.failsafe_shed();
           ti.congestion_shed = agent.congestion_shed();
           ti.probe_on = agent.probe_on();
+          ti.low_power = agent.low_power();
           // "advanced in the last 2 s" (spec) approximated as "advanced over
           // the last telemetry tick" (~1 s here) — the collector runs on this
           // same 1 Hz cadence, so a stricter 2 s window would just double-count

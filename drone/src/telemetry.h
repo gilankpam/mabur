@@ -37,6 +37,7 @@ struct TelemInputs {
   bool probe_on = false;  // RcAgent::probe_on() — flags bit2, spec 2026-09-04 probe-stream
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
   bool air_shed = false;  // flags bit5: AirClock gate dropped >= 1 enh AU this window
+  bool low_power = false;  // RcAgent::low_power() — flags bit7, spec 2026-09-20
   uint64_t generation = 0;
   rc::PhyMode mode = rc::PhyMode::HT;
   uint8_t mcs = 0, bw = 20;

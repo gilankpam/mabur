@@ -58,7 +58,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
                                   (in.probe_on ? 0x04 : 0) |
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
                                   (in.congestion_shed ? 0x10 : 0) |
-                                  (in.air_shed ? 0x20 : 0));
+                                  (in.air_shed ? 0x20 : 0) |
+                                  (in.low_power ? 0x80 : 0));
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
   // Per-stream applied overhead: the commanded op pair (Task 6, RC_VERSION
