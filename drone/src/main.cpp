@@ -316,6 +316,9 @@ struct RealActuator : mabur::Actuator {
   mabur::RadioTx* tx = nullptr;
   mabur::FrameSink* sink = nullptr;
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
+  // Set after every accepted set_fps; the hot thread consumes it to
+  // re-anchor FramePipeline's vanish period (note_rate_change).
+  std::atomic<bool>* rate_change = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
   // Per-rung A-MPDU (ampdu_policy.h): the aggregation mode follows the
@@ -483,6 +486,7 @@ struct RealActuator : mabur::Actuator {
       return false;
     }
 #endif
+    if (rate_change) rate_change->store(true, std::memory_order_relaxed);
     return true;
   }
 
@@ -1303,10 +1307,16 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // shared_op, not inside either thread's lambda.
   OvOverride ov_override;
 
+  // Agent thread -> hot thread: the encoder's frame rate changed (low-power
+  // set_fps), so the vanish tracker must re-learn its period rather than
+  // book the new deltas as holes. Same shape as link_up_discont below.
+  std::atomic<bool> fps_rate_change{false};
+
   RealActuator actuator;
   actuator.tx = &tx;
   actuator.sink = &dev_sink;
   actuator.shared_op = &shared_op;
+  actuator.rate_change = &fps_rate_change;
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
   actuator.ampdu = cfg.ampdu;
@@ -1810,6 +1820,11 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
             pipe.reset_vanish_counters();
           }
         }
+        // Frame rate changed under us (low-power set_fps): re-anchor the
+        // vanish period BEFORE this frame's pts is scored, so a 60 -> 15 fps
+        // drop is learned as the new period, not booked as 3 holes/frame.
+        if (fps_rate_change.exchange(false, std::memory_order_relaxed))
+          pipe.note_rate_change();
         // Streaming push (dq-spike follow-up 2026-08-31): each body goes to
         // the TxQueue the moment its SBI group seals, so the radio drains
         // this frame's early bodies in parallel with the remaining GF256/SBI
