@@ -123,6 +123,10 @@ class GsCompactBar final : public GsLayer {
   // has run.
   std::string debug_field_text(const GsSnapshot& snap, bool stale,
                                const GsPlayerState& ps, GsBarField id) const;
+  uint32_t debug_field_rgb(const GsSnapshot& snap, bool stale,
+                           const GsPlayerState& ps, GsBarField id) const {
+    return state_of_(snap, stale, ps, id).rgb;
+  }
   DirtyRect debug_field_box(GsBarField id) const;
   int debug_atlas_px() const;
   // Width of worst-case row `row` in `a`, boxes included -- exactly what

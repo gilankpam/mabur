@@ -349,6 +349,9 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
       break;
     case GsBarField::kFps:
       st.text = "fps:" + fmt_int(std::clamp(ps.fps, 0.0, 999.0));
+      // Low-power (pre-arm) mode: the rate is low on purpose. Caution
+      // tint, same text; a player-measured figure, so it never dims.
+      if (snap.low_power) st.rgb = tok::kStatusCaution;
       break;
     case GsBarField::kJit:
       st.text = "jit:" + fmt_one_dp(std::clamp(ps.jitter_ms, 0.0, 999.9));

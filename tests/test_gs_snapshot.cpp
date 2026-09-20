@@ -449,4 +449,18 @@ TEST(hopped_true_only_when_channel_matches_a_non_home_hop_target) {
   REQUIRE(parse(R"({"link": {"channel": 149, "home": 136}})", &s));
   CHECK(!s.hopped);
 }
+
+TEST(drone_low_power_parses_and_defaults_false) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"link": {"channel": 136}, "drone": {"low_power": true}})", &s));
+  CHECK(s.low_power);
+  REQUIRE(parse(R"({"link": {"channel": 136}, "drone": {"low_power": false}})", &s));
+  CHECK(!s.low_power);
+  REQUIRE(parse(R"({"link": {"channel": 136}, "drone": null})", &s));   // no telemetry yet
+  CHECK(!s.low_power);
+  REQUIRE(parse(R"({"link": {"channel": 136}})", &s));                   // older maburgs
+  CHECK(!s.low_power);
+  REQUIRE(parse(R"({"link": {"channel": 136}, "drone": {"low_power": "yes"}})", &s));
+  CHECK(!s.low_power);                                                     // wrong type drops it
+}
 MTEST_MAIN

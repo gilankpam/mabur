@@ -728,4 +728,26 @@ TEST(make_gs_layer_builds_a_layer_that_lays_out_for_either_style) {
   }
 }
 
+// Low-power (pre-arm) mode, spec 2026-09-20: the drone is deliberately at
+// 15 fps / 1 Mb/s. The fps cell keeps its text and turns caution-coloured
+// so the pilot can tell "throttled on purpose" from a fault; no new item
+// (items that come and go are unsupported on this bar).
+TEST(low_power_tints_the_fps_cell) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  GsPlayerState ps = player_nominal();
+  ps.fps = 15.0;
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kFps) == tok::kTextPrimary);
+  s.low_power = true;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kFps) == "fps:15");
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kFps) == tok::kStatusCaution);
+  // Row text is unchanged: the tint is colour only.
+  CHECK(row_of(bar, s, false, ps, 1) ==
+        "bitrate:8.1 res:1280x720 fps:15 jit:5.2 lat:45/78 loss:0.3/0.0");
+}
+
 MTEST_MAIN

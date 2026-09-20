@@ -56,6 +56,11 @@ struct GsSnapshot {
   // feature). False when the block is absent (older maburgs) or the link
   // is on home / a stale hop target.
   bool hopped = false;
+  // drone.low_power (Telem flags bit7, spec 2026-09-20): the drone is
+  // deliberately at its pre-arm low-power operating point (1 Mb/s /
+  // 15 fps) because the FC reports DISARMED. False when the drone block is
+  // null/absent (no telemetry yet, older maburgs) or the key is not a bool.
+  bool low_power = false;
   // link.ctl.rung.mcs / .ov_base x 100, falling back to link.op.mcs /
   // .overhead_base x 100 when the ladder block is absent -- which is the
   // normal, permanent state of a static-pinned link (link.static_mcs >= 0

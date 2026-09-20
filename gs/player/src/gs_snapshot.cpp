@@ -70,6 +70,10 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     auto it = scan->find("state");
     out->scan_auto = it != scan->end() && it->is_string() && it->get<std::string>() != "off";
   }
+  if (const json* drone = obj(j, "drone")) {
+    auto it = drone->find("low_power");
+    out->low_power = it != drone->end() && it->is_boolean() && it->get<bool>();
+  }
   // Captured here (top-level, like `scan`) and consumed once the `link`
   // block below has parsed out->channel and link.home -- hop.target alone
   // says nothing about whether the LIVE channel is that target right now.
