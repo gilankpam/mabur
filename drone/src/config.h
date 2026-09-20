@@ -183,6 +183,20 @@ struct AirClockCfg {
   int body_us = 0;
 };
 
+// Low-power (pre-arm) mode, spec 2026-09-20. While the FC reports DISARMED
+// (MSP_STATUS over the OSD UART, polled at 2 Hz), RcAgent clamps the
+// encoder bitrate to bitrate_kbps and switches the frame rate to fps; the
+// first ARMED report returns full power for the life of the process. A
+// DISARMED report older than stale_ms, or none at all, means full power
+// (fail open: a dead UART can never fly you at 1 Mb/s). Struct default is
+// OFF; the bundle enables it.
+struct LowPowerCfg {
+  bool enable = false;
+  int bitrate_kbps = 1000;
+  int fps = 15;
+  int stale_ms = 2000;
+};
+
 struct Config {
   RadioCfg radio;
   FecCfg fec;
@@ -192,6 +206,7 @@ struct Config {
   MspCfg msp;
   AmpduCfg ampdu;
   AirClockCfg air_clock;
+  LowPowerCfg low_power;
   std::array<UepLayerCfg, 2> uep_layers() const;
 };
 
