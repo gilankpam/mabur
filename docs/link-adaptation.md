@@ -991,6 +991,12 @@ mode.
      the next pts (`frame_pipeline_rate_change_reanchors_the_period_
      instead_of_booking_holes`).
 
+  Follow-up the same night: `low_power.fps` raised **15 → 30** in the
+  bundle (and on the drone). At 30 fps the windows hold twice the symbols,
+  the single-loss quantum halves, and the bench ladder climbed to mcs 5
+  and held instead of saw-toothing — item 2 mitigated by config, the
+  windowing question itself still open.
+
   What is still unmeasured is the arm step itself: at ARM,
   `run_bitrate_policy(force=true)` raises the encoder from 1 Mb/s to the
   current rung's full budget in one write. On the bench the ladder was at
