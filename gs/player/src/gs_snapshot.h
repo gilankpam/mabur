@@ -61,6 +61,11 @@ struct GsSnapshot {
   // 15 fps) because the FC reports DISARMED. False when the drone block is
   // null/absent (no telemetry yet, older maburgs) or the key is not a bool.
   bool low_power = false;
+  // drone.sys.soc_temp_c: the drone SoC temperature the 1 Hz Telem carries
+  // (int8, -128 = unavailable). Empty when the drone block is null/absent,
+  // the key is missing or mistyped, or it reads the sentinel -- the compact
+  // bar's temp cell shows dashes for all of those.
+  std::optional<int> soc_temp_c;
   // link.ctl.rung.mcs / .ov_base x 100, falling back to link.op.mcs /
   // .overhead_base x 100 when the ladder block is absent -- which is the
   // normal, permanent state of a static-pinned link (link.static_mcs >= 0

@@ -73,6 +73,10 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
   if (const json* drone = obj(j, "drone")) {
     auto it = drone->find("low_power");
     out->low_power = it != drone->end() && it->is_boolean() && it->get<bool>();
+    if (const json* sys = obj(*drone, "sys")) {
+      out->soc_temp_c = integer(*sys, "soc_temp_c");
+      if (out->soc_temp_c && *out->soc_temp_c == -128) out->soc_temp_c.reset();
+    }
   }
   // Captured here (top-level, like `scan`) and consumed once the `link`
   // block below has parsed out->channel and link.home -- hop.target alone

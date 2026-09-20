@@ -463,4 +463,20 @@ TEST(drone_low_power_parses_and_defaults_false) {
   REQUIRE(parse(R"({"link": {"channel": 136}, "drone": {"low_power": "yes"}})", &s));
   CHECK(!s.low_power);                                                     // wrong type drops it
 }
+// drone.sys.soc_temp_c (Telem soc_temp_c, int8, -128 = unavailable): the
+// compact bar's temp cell. Absent block, null drone, the sentinel and a
+// wrong type all read "no value" -- never 0, never -128.
+TEST(drone_soc_temp_parses_and_drops_the_sentinel) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"drone": {"sys": {"soc_temp_c": 57}}})", &s));
+  REQUIRE(s.soc_temp_c); CHECK(*s.soc_temp_c == 57);
+  REQUIRE(parse(R"({"drone": {"sys": {"soc_temp_c": -128}}})", &s));
+  CHECK(!s.soc_temp_c);
+  REQUIRE(parse(R"({"drone": {"sys": {"thermal_delta": 4}}})", &s));
+  CHECK(!s.soc_temp_c);
+  REQUIRE(parse(R"({"drone": null})", &s));
+  CHECK(!s.soc_temp_c);
+  REQUIRE(parse(R"({"drone": {"sys": {"soc_temp_c": "hot"}}})", &s));
+  CHECK(!s.soc_temp_c);
+}
 MTEST_MAIN

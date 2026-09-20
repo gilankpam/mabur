@@ -17,8 +17,12 @@ struct MaskAtlas;
 //
 //                                                   ● REC 12:47   <- top right
 //   ...
-//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
+//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41
 //   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
+//
+// `temp` is the drone SoC temperature (sideport drone.sys.soc_temp_c),
+// caution-coloured from 70 C; it sits on the radio row because it is
+// drone-sourced, not player-measured.
 //
 // With the GS's channel scan enabled (sideport scan.state != "off") the
 // channel reads "ch:149(a)": the number may be an auto-selected pick rather
@@ -97,6 +101,7 @@ enum class GsBarField {
   kAir,
   kRssi,
   kSnr,
+  kTemp,
   kBitrate,
   kRes,
   kFps,
