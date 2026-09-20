@@ -375,7 +375,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         pc.max_util = get_num(pj, "max_util", 0.35, 0.01, 2.0, "link.probe");
       else
         note_default("link.probe", "max_util", "(defaults to link.down_util)");
-      pc.min_syms = static_cast<int>(get_int(pj, "min_syms", 40, 4, 100000, "link.probe"));
+      pc.min_syms = static_cast<int>(get_int(pj, "min_syms", 16, 4, 100000, "link.probe"));
       pc.silence_ms = static_cast<int>(get_int(pj, "silence_ms", 500, 100, 10000, "link.probe"));
       pc.pin_mcs = static_cast<int>(get_int(pj, "pin_mcs", -1, -1, 7, "link.probe"));
     } else {

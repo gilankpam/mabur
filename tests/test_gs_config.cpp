@@ -1014,7 +1014,7 @@ TEST(probe_block_defaults) {
   const auto& p = c.link.ladder_cfg.probe;
   CHECK(p.enable); CHECK(p.rung_offset == 1); CHECK(p.clean_bodies == 90);
   CHECK(p.max_util == c.link.ladder_cfg.down_util);  // sentinel resolved
-  CHECK(p.min_syms == 40); CHECK(p.silence_ms == 500); CHECK(p.pin_mcs == -1);
+  CHECK(p.min_syms == 16); CHECK(p.silence_ms == 500); CHECK(p.pin_mcs == -1);
   CHECK(c.link.ladder_cfg.s3_min_syms == 50);
 }
 

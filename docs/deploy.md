@@ -616,3 +616,10 @@ drone — the previous strict-parsing binary exits on the unknown table and
 additive (Telem flags bit7, sideport `drone.low_power`): deploy maburgs +
 maburplay + `tools/maburtop.py` together. Rollback: `maburd.pre-lowpower`
 + strip the `[low_power]` block first, then swap the binary.
+
+Same day, follow-up: the GS's `link.probe.min_syms` must be **16** (was
+40) or the ladder never promotes while the drone is disarmed — config
+value only, no wire or binary change, restart `S96maburgs` to take it
+(docs/link-adaptation.md, "Low-power (disarmed) mode" item 1). The drone
+binary from the same commit re-anchors the vanish tracker on the fps
+verb (item 3); rollback copy `maburd.pre-ratechange`.
