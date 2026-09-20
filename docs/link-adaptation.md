@@ -895,3 +895,42 @@ result 2026-06-07 in `../waybeam_venc/documentation/STAR6E_SINGLE_PID_REINIT_FIN
 is why fold-in bring-up failure is fatal-by-design (exit, respawn, cold
 bring-up ~14–17 s measured, 5/5 unaided) rather than something the daemon
 tries to heal in place.
+
+### Low-power (pre-arm) mode (2026-09-20)
+
+While the FC reports DISARMED, `RcAgent` runs the encoder at
+`low_power.bitrate_kbps` / `low_power.fps` (bundle: 1 Mb/s, 15 fps); the
+first ARMED report returns full power for the life of the process.
+Spike: `docs/low-power-spike-findings-2026-09-19.md` (bitrate is the
+thermal lever for SoC and radio alike, fps second-order, CPU clock not a
+lever at all).
+
+- **Trigger.** The MSP thread polls `MSP_STATUS` (cmd 101) at 2 Hz on the
+  OSD UART — the FC pushes only DisplayPort on its own — and hands BOXARM
+  (flightModeFlags bit 0) to `RcAgent::note_arm_state()`, one atomic like
+  the chain-break signal, consumed on the tick.
+- **Fail open.** `low_power_active_` = enabled ∧ no ARMED ever seen ∧ the
+  last DISARMED report is fresher than `low_power.stale_ms` (2 s).
+  Silence, a dead UART, `msp.enable = false`: full power. A maburd respawn
+  in flight boots full power and latches on the first reply.
+- **What changes.** `run_bitrate_policy()` gains a target fps next to the
+  target bitrate; the bitrate is additionally `min()`-clamped to the cap.
+  fps goes out first, then the bitrate — its `SetChnAttr` IDR seeds the
+  stream at the new rate, so the verb itself never requests one. Both
+  follow the existing rules: latched on success only, retried on refusal
+  (now in RENDEZVOUS too — on the ground there is no RCF to carry a
+  retry), restated by the 5 s re-assert, so an fps set behind RcAgent's
+  back is bounded like a bitrate override. Transitions run in any state.
+- **The fps verb** (`venc_set_fps`, a port of waybeam f956a52 `apply_fps`)
+  is a VPE→VENC unbind/rebind at `sensor_fps:fps` plus an RC `fpsNum` and
+  GOP rewrite plus a SuperFrame re-derive. The RC `fpsNum` alone drops
+  nothing: it is the CBR budget divisor, and writing 15 with the bind at
+  60 measured 60 fps at 3.7x the commanded bitrate with the venc ring full
+  (probe 2026-09-20). The rebind takes live in both directions on the
+  running channel: 16.1 / 61.1 fps, 0 frame-id gaps, bitrate holding, one
+  incomplete enh AU on the way down and none up. The verb logs
+  `> FPS delivered N ... in M us`.
+- **Observability.** Telem flags bit7 → sideport `drone.low_power`,
+  maburtop `LP`, the compact OSD's fps cell in caution colour; stderr
+  `rc: low_power ENTER fps=15 cap=1000 kbps` / `EXIT (armed|stale)`; the
+  `stats:` line carries `lp= armed=`.

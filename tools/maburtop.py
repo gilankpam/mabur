@@ -466,6 +466,7 @@ def render_rows_compact(model, wall, width):
             f"load {_f(sys_d.get('load'), 4, 2)}   "
             f"radio rx {_f(rx_s, 4)}   "
             f"shed {(_shed_cell(drone) or '--').ljust(4)}"
+            f"   {'LP' if drone.get('low_power') else '  '}"
         )
 
     # --- link-wide residual (per-stream delivery now lives on the dec lines)
@@ -777,6 +778,10 @@ def panel_drone(model, wall):
     if shed in ("FS", "CONG", "AIR"):
         idx = line8.rindex(shed_s)
         spans8.append((idx, len(shed_s), "warn"))
+    if drone.get("low_power"):
+        line8 += "    LP"
+        idx = line8.rindex("LP")
+        spans8.append((idx, 2, "warn"))
     body.append((line8, spans8))
 
     return _panel("DRONE", body)

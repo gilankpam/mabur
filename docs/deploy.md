@@ -606,3 +606,13 @@ binary + new config, or new binary + old config, both fail boot into the
 `S00mabur`, copy both, start with `setsid`). The GS has no config change.
 Rollback is paired: `maburd.pre-relwalls` + `mabur.toml.pre-relwalls`
 on the drone with `maburgs.pre-relwalls` on the GS.
+
+## 2026-09-20 low-power mode
+
+`[low_power]` is a new drone section: **binary BEFORE config** on the
+drone — the previous strict-parsing binary exits on the unknown table and
+`S00mabur` respawns it forever. `low_power.enable = true` requires
+`msp.enable = true` (boot failure otherwise, by design). The GS side is
+additive (Telem flags bit7, sideport `drone.low_power`): deploy maburgs +
+maburplay + `tools/maburtop.py` together. Rollback: `maburd.pre-lowpower`
++ strip the `[low_power]` block first, then swap the binary.
