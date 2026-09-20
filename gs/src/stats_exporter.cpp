@@ -641,7 +641,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     }
     d["sys"] = {{"soc_temp_c", t.soc_temp_c},
                 {"thermal_delta", t.thermal_delta},
-                {"load", t.load_x100 / 100.0}};
+                // 65535 = unavailable (first tick after a maburd start).
+                {"cpu_pct", t.cpu_busy_x100 == 65535 ? json(nullptr)
+                                                     : json(t.cpu_busy_x100 / 100.0)}};
     // In-flight channel hop readback (spec 2026-09-14-inflight-channel-hop
     // §1): the channel RcAgent believes it is actually on, and the epoch of
     // the last hop order it applied -- the drone's own confirmation,

@@ -2508,6 +2508,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // wire sequence from a different thread — see that declaration's
     // comment for why a shared counter is load-bearing there.
     uint64_t last_telem_ms = start;
+    mabur::CpuBusySampler cpu_busy;  // /proc/stat delta per telemetry tick
     uint64_t rx_beat_at_last_telem = 0;
     uint64_t air_drops_at_last_telem = 0;
 
@@ -2720,7 +2721,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
             ti.soc_temp_c = read_soc_temp_c_sigmastar();
           ti.thermal_delta = health.thermal_delta;
-          ti.load1 = read_load1();
+          ti.cpu_pct = cpu_busy.sample();
           ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
           ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
           ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);

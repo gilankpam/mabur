@@ -623,3 +623,10 @@ value only, no wire or binary change, restart `S96maburgs` to take it
 (docs/link-adaptation.md, "Low-power (disarmed) mode" item 1). The drone
 binary from the same commit re-anchors the vanish tracker on the fps
 verb (item 3); rollback copy `maburd.pre-ratechange`.
+
+**2026-09-21 `drone.sys.load` → `drone.sys.cpu_pct`.** Telem keeps its
+size and layout — the old `load_x100` slot now carries `cpu_busy_x100`
+(65535 = unavailable) — so a mismatched pair still links; an old
+maburgs just exports the new number under the old key (`load 0.14` for
+14 %). Deploy maburd + maburgs + `tools/maburtop.py` together anyway; the
+sideport key is renamed, so maburtop from before this reads `--`.

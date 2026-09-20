@@ -187,7 +187,13 @@ struct Telem {
   int8_t up_snr[2] = {0, 0};
   int8_t soc_temp_c = -128;  // -128 = unavailable
   int8_t thermal_delta = 0;
-  uint16_t load_x100 = 0;
+  // CPU busy percent x100 over the last telemetry tick, from a /proc/stat
+  // delta (user+nice+system+irq+softirq+steal over everything). 65535 =
+  // unavailable (first tick, unreadable). Replaced loadavg (`load_x100`)
+  // 2026-09-21 in the SAME 16-bit slot: on this SoC loadavg counts the
+  // SigmaStar SDK's parked D-state workers and read a flat ~13 idle or
+  // pegged (docs/dq-spike-findings-2026-08-31.md).
+  uint16_t cpu_busy_x100 = 65535;
   uint16_t idr_disagree = 0;      // saturating; spec 2026-07-26 svct-enable
   uint16_t enhance_disagree = 0;  // saturating
   // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):

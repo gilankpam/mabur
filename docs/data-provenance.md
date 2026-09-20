@@ -143,7 +143,13 @@ there is no discrete attempt any more, its live state is `link.probe`
 instead), `counters.probes_started`/`probes_ok`/`probe_fails`/
 `probe_aborts` (replaced by `counters.promotes_probed`/`probe_holds`),
 `classes.s2`/`classes.s3` (removed, were always empty since the
-2026-08-29 UEP flatten; `classes.probe` added) — probe-stream note below.
+2026-08-29 UEP flatten; `classes.probe` added) — probe-stream note below;
+2026-09-21 `drone.sys.load` (was `/proc/loadavg[0]`, which on the
+SigmaStar image counts the SDK's parked D-state workers and read a flat
+~13 whether idle or pegged — never a CPU signal in any recording;
+replaced by `drone.sys.cpu_pct`, the busy percent of the telemetry tick
+from a `/proc/stat` delta, `null` on the first tick after a maburd
+start).
 Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The

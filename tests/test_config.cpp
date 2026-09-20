@@ -170,7 +170,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   // msp.enable (the arm state comes from the FC over MSP).
   CHECK(cfg.low_power.enable == true);
   CHECK(cfg.low_power.bitrate_kbps == 1000);
-  CHECK(cfg.low_power.fps == 15);
+  CHECK(cfg.low_power.fps == 30);
   CHECK(cfg.low_power.stale_ms == 2000);
 
   // A-MPDU agg6; see fec.feed_batch above. agg31 cascades residuals.
