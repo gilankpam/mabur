@@ -470,6 +470,18 @@ struct RealActuator : mabur::Actuator {
     return true;
   }
 
+  int last_fps = 0;
+  bool set_fps(int f) override {
+    last_fps = f;
+    if (dry_run) {
+      std::fprintf(stderr, "[dry-run] set_fps(%d)\n", f);
+      return true;
+    }
+    // Wired to venc_set_fps() in the venc task; host builds report success
+    // (no encoder to diverge from).
+    return true;
+  }
+
   void request_idr() override {
     if (dry_run) {
       std::fprintf(stderr, "[dry-run] request_idr()\n");
