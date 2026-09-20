@@ -1656,7 +1656,12 @@ TEST(low_power_enters_on_fresh_disarmed_fps_then_capped_bitrate) {
 
 // LP-2. ARMED exits low power and latches: a later DISARMED report never
 // re-enters, and sends nothing.
-TEST(low_power_exits_on_armed_and_never_reenters) {
+// LP-2. ARMED exits low power; a later DISARMED report RE-ENTERS it. The
+// arm state is followed both ways, so a downed-but-powered aircraft drops
+// back to the thin stream (the post-crash case: mcs0, 15 fps reaches the GS
+// where full rate does not). armed_latched() still records that this process
+// saw an arm, but is observability only and must not gate the mode.
+TEST(low_power_exits_on_armed_and_reenters_on_disarm) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -1672,13 +1677,51 @@ TEST(low_power_exits_on_armed_and_never_reenters) {
   CHECK(act.fps.back() == 60);
   CHECK(act.bitrates.back() > cfg.low_power.bitrate_kbps);
 
+  // Disarm again: back to the low-power operating point, fps before bitrate,
+  // even though the latch is set.
   const size_t nf = act.fps.size(), nb = act.bitrates.size();
   agent.note_arm_state(false, 500);
   agent.tick(600, RadioHealth{});
-  agent.tick(700, RadioHealth{});
+  CHECK(agent.low_power());
+  CHECK(agent.armed_latched());          // still true: it records history only
+  REQUIRE(act.fps.size() == nf + 1);
+  CHECK(act.fps.back() == 15);
+  REQUIRE(act.bitrates.size() == nb + 1);
+  CHECK(act.bitrates.back() == cfg.low_power.bitrate_kbps);
+  REQUIRE(act.verbs.size() >= 2);
+  CHECK(act.verbs[act.verbs.size() - 2] == "fps");
+  CHECK(act.verbs.back() == "bitrate");
+
+  // And arming a second time exits again -- the cycle is repeatable.
+  agent.note_arm_state(true, 700);
+  agent.tick(800, RadioHealth{});
   CHECK(!agent.low_power());
-  CHECK(act.fps.size() == nf);
-  CHECK(act.bitrates.size() == nb);
+  CHECK(act.fps.back() == 60);
+}
+
+// LP-2b. Fail open is unchanged by re-entry: after an arm, the FC going
+// SILENT (crash kills its power, UART dies) must NOT re-enter low power --
+// staleness means full rate, however long the silence lasts.
+TEST(low_power_silence_after_arming_never_reenters) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  agent.note_arm_state(true, 100);
+  agent.tick(200, RadioHealth{});
+  REQUIRE(!agent.low_power());
+
+  // No further reports, ever. RCFs keep the link LINKED so the only policy
+  // runs are the ones this test is about.
+  const uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  uint16_t seq = 2;
+  for (uint64_t t = 300; t <= 9000; t += 300) {
+    auto r = make_rcf_wire(cfg.link.vtx_id, seq++, profile_byte, 8);
+    agent.on_rc_frame(r.data(), r.size(), t);
+    agent.tick(t, RadioHealth{});
+    CHECK(!agent.low_power());
+  }
+  CHECK(act.fps.back() == 60);
 }
 
 // LP-3. Silence: a DISARMED report older than stale_ms means full power

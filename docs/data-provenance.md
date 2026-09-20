@@ -646,7 +646,7 @@ as a re-statement, not as the start of a new file.
 
 ## 2026-09-20 — every recording now opens with a low-power segment
 
-Low-power (pre-arm) mode (`docs/link-adaptation.md`) runs the encoder at
+Low-power (disarmed) mode (`docs/link-adaptation.md`) runs the encoder at
 `low_power.bitrate_kbps` / `low_power.fps` — the bundle ships 1 Mb/s and
 15 fps — from boot until the FC's first ARMED report. On a normal flight
 that is the whole ground phase: power-on, radio link-up, taxi/hover checks,

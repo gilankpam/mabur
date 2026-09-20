@@ -646,7 +646,7 @@ read the sideport. Reach for other tools only in these cases:**
   four corner blocks show minus FEC, plus the channel, the decoded
   resolution and both latency percentiles. The one exception: the `fps`
   cell turns caution-coloured while `drone.low_power` is set
-  (`docs/link-adaptation.md`, "Low-power (pre-arm) mode") — text and
+  (`docs/link-adaptation.md`, "Low-power (disarmed) mode") — text and
   layout otherwise unchanged. `"essential"` selects the older
   four-corner layout with the signal bars, the airtime meter and the status
   hues. Exactly one renders; there is no both, and an unrecognised value
@@ -828,8 +828,8 @@ SBI body header (`air_ms`, ver 2) into the AU ring (SlotHdr v3, offset
 --model` compares it against the player's measured air excess.
 
 **2026-09-20 (low-power mode).** `drone.low_power` (Telem flags bit7) is
-true while the pre-arm low-power operating point is in force
-(`docs/link-adaptation.md`, "Low-power (pre-arm) mode"). maburtop shows
+true while the low-power operating point is in force
+(`docs/link-adaptation.md`, "Low-power (disarmed) mode"). maburtop shows
 `LP` in TWO places — the summary SYS row, and the DRONE panel's SoC line
 (the one carrying `soc`/`radio rx`/`shed`), where it is highlighted the
 same way a shed is; the compact bar tints its fps cell caution while set

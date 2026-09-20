@@ -50,18 +50,26 @@ void RcAgent::intake_arm_state_(uint64_t now_ms) {
   const bool fresh = arm_reported_ &&
                      (now_ms < last_arm_ms_ ||
                       now_ms - last_arm_ms_ <= static_cast<uint64_t>(cfg_.low_power.stale_ms));
-  // !last_armed_ is subsumed by !armed_latched_ (the latch is set from
-  // last_armed_ above and never cleared) and is KEPT deliberately: this is a
-  // safety predicate and the redundant term is belt-and-braces. Do not
-  // "clean it up".
-  const bool want = cfg_.low_power.enable && !armed_latched_ && fresh && !last_armed_;
+  // The mode follows the FC's CURRENT arm state, not a one-shot latch: a
+  // DISARMED report re-enters low power however many times the FC has armed
+  // before. That is the post-crash case -- aircraft down, FC still
+  // answering, link degraded to mcs0 -- where a thin 15 fps stream is more
+  // likely to reach the GS than a full-rate one. armed_latched_ survives as
+  // observability only (the stats line's armed=), never as policy.
+  //
+  // What did NOT change is fail open: `fresh` still gates everything, so
+  // silence, a dead UART or an FC that lost power all mean FULL power. A
+  // crash that kills the FC therefore gives full-rate video, not this mode.
+  const bool want = cfg_.low_power.enable && fresh && !last_armed_;
   if (want == low_power_active_) return;
   low_power_active_ = want;
   if (want)
     std::fprintf(stderr, "rc: low_power ENTER fps=%d cap=%d kbps\n",
                  cfg_.low_power.fps, cfg_.low_power.bitrate_kbps);
   else
-    std::fprintf(stderr, "rc: low_power EXIT (%s)\n", armed_latched_ ? "armed" : "stale");
+    // last_armed_, not armed_latched_: the latch never clears, so reading it
+    // here would report "armed" for every staleness exit after the first arm.
+    std::fprintf(stderr, "rc: low_power EXIT (%s)\n", last_armed_ ? "armed" : "stale");
   run_bitrate_policy(now_ms, /*force=*/true);
 }
 

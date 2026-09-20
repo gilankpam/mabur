@@ -204,11 +204,16 @@ class RcAgent {
     return state_ == State::LINKED && applied_.probe_profile != rc::kNoProbeProfile;
   }
 
-  // True while the pre-arm low-power operating point is in force (spec
-  // 2026-09-20 §2): mode enabled, no ARMED report ever seen, and the last
-  // DISARMED report fresher than low_power.stale_ms. Telem flags bit7.
+  // True while the low-power operating point is in force (spec 2026-09-20
+  // §2): mode enabled, the last arm report says DISARMED, and that report is
+  // fresher than low_power.stale_ms. Telem flags bit7. Follows the FC's
+  // current state both ways -- a DISARMED report after an arm re-enters, so
+  // a downed-but-powered aircraft falls back to the thin stream.
   bool low_power() const { return low_power_active_; }
-  // Latched by the first ARMED report; never clears.
+  // Latched by the first ARMED report; never clears. Observability only
+  // (the drone stats line's armed=): "has this process ever seen the FC
+  // armed", which separates a pre-flight drone from a downed one. NOT a
+  // policy input -- low_power() deliberately does not read it.
   bool armed_latched() const { return armed_latched_; }
 
   // Latched on a BOOT/RENDEZVOUS -> LINKED transition — the process-(re)start

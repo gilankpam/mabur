@@ -896,23 +896,44 @@ is why fold-in bring-up failure is fatal-by-design (exit, respawn, cold
 bring-up ~14–17 s measured, 5/5 unaided) rather than something the daemon
 tries to heal in place.
 
-### Low-power (pre-arm) mode (2026-09-20)
+### Low-power (disarmed) mode (2026-09-20)
 
 While the FC reports DISARMED, `RcAgent` runs the encoder at
-`low_power.bitrate_kbps` / `low_power.fps` (bundle: 1 Mb/s, 15 fps); the
-first ARMED report returns full power for the life of the process.
+`low_power.bitrate_kbps` / `low_power.fps` (bundle: 1 Mb/s, 15 fps); an
+ARMED report returns full power. The mode tracks the FC's **current** arm
+state both ways — it is not a one-shot pre-arm latch — so a DISARMED report
+re-enters it however many times the aircraft has armed before.
 Spike: `docs/low-power-spike-findings-2026-09-19.md` (bitrate is the
 thermal lever for SoC and radio alike, fps second-order, CPU clock not a
 lever at all).
+
+The second case this buys, after the pre-arm thermal one, is **recovery
+video**: an aircraft that is down but still powered keeps answering
+MSP_STATUS with DISARMED, so it drops back to the thin stream. At the mcs0
+the ladder will have fallen to, 15 fps at 1 Mb/s is far likelier to reach
+the GS than full rate — fewer FEC generations, more airtime budget per
+frame. `armed_latched()` still records whether this process ever saw the FC
+armed, which is what separates a pre-flight drone from a downed one on the
+`stats:` line; it is observability only and deliberately does not gate the
+mode.
 
 - **Trigger.** The MSP thread polls `MSP_STATUS` (cmd 101) at 2 Hz on the
   OSD UART — the FC pushes only DisplayPort on its own — and hands BOXARM
   (flightModeFlags bit 0) to `RcAgent::note_arm_state()`, one atomic like
   the chain-break signal, consumed on the tick.
-- **Fail open.** `low_power_active_` = enabled ∧ no ARMED ever seen ∧ the
-  last DISARMED report is fresher than `low_power.stale_ms` (2 s).
+- **Fail open.** `low_power_active_` = enabled ∧ the last arm report says
+  DISARMED ∧ that report is fresher than `low_power.stale_ms` (2 s).
   Silence, a dead UART, `msp.enable = false`: full power. A maburd respawn
-  in flight boots full power and latches on the first reply.
+  in flight boots full power and follows the first reply.
+  Freshness is the whole safety property now that the arm latch no longer
+  gates the mode: **a crash that kills the FC or its UART gives full-rate
+  video, not this mode**, because the reports stop. Recovery video only
+  works while the FC survives and keeps answering. The cost of dropping the
+  latch is that a spurious DISARMED — an MSP desync, a corrupt frame whose
+  XOR checksum happens to pass — throttles to 15 fps in flight until the
+  next poll corrects it 500 ms later. Judged acceptable: a *real* in-flight
+  disarm means the aircraft is already coming down. There is deliberately
+  no debounce; one bad frame costs two rebinds and self-corrects.
 - **What changes.** `run_bitrate_policy()` gains a target fps next to the
   target bitrate; the bitrate is additionally `min()`-clamped to the cap.
   fps goes out first, then the bitrate — its `SetChnAttr` IDR seeds the

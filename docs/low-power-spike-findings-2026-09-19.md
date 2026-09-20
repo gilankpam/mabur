@@ -1,7 +1,7 @@
 # Low-power (pre-arm) mode spike — 2026-09-19
 
 Shipped as the low-power (pre-arm) mode, 2026-09-20 — see
-docs/link-adaptation.md "Low-power (pre-arm) mode".
+docs/link-adaptation.md "Low-power (disarmed) mode".
 
 Question: can the drone run cool while still streaming video, and return to
 full power on arm? Bench only, **fan blowing on the drone the whole time**,

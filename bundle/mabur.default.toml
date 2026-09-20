@@ -73,7 +73,7 @@ window         = 16
 overhead       = 1.0
 
 [low_power]
-enable       = true        # pre-arm thermal mode (docs/link-adaptation.md)
+enable       = true        # disarmed thermal + recovery mode (docs/link-adaptation.md)
 bitrate_kbps = 1000
 fps          = 15
 stale_ms     = 2000        # a DISARMED report older than this = full power
