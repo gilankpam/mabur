@@ -146,3 +146,36 @@ cmd 150 len 27: cycle=124 sensors=0x002b flightModeFlags=0x00000002 ARM_bit0=0 p
   a `write()` on `MspSerial`, a 2 Hz `MSP_STATUS` request from the msp
   thread, and `cmd == 101 → armed = payload[6..9] & 1` handed to RcAgent
   as the bitrate-clamp input. Nothing on the wire to the GS changes.
+
+## Live fps change — settled 2026-09-20 (probe, branch `probe/live-fps` 3656149)
+
+The 15 fps half of the mode needs the frame rate to change at runtime, and
+the fold-in findings rule out an encoder restart. Probed on the bench
+drone (.152, stock 1080p60 / 16 Mb/s config, ladder at rung 5) with two
+throwaway debug verbs, `POST /venc/set?fps=N` and `?fps_rebind=N`, the
+GS reading the AU ring with `ausniff.py`:
+
+| step | encoder frames / 10 s | ausniff | note |
+|---|---|---|---|
+| baseline | 663 | 61.0 fps, 0 gaps, 14.4 Mb/s | |
+| RC-only: `SetChnAttr` fpsNum 60→15, gop 30→8 | 664 | — | **still 60 fps**; CBR budgets 14.3 Mb/s at 15 fps and receives 60 → `enc_pk100` 54 Mb/s, venc ring 100 % full, 509 full_drops in 10 s |
+| rebind: `UnBindChnPort` + `BindChnPort2(vpe, venc, 90, 15)` + the same attr write | 166 | 16.1 fps, 0 gaps, 12.2 Mb/s | 1 incomplete enh AU in the 20 s window spanning the transition, 0 fid gaps |
+| rebind back to 60 | 663 | 61.1 fps, 0 gaps, 14.4 Mb/s | 0 incomplete, 0 gaps across the transition |
+
+- **The RC fps does not drop frames.** It is only the rate controller's
+  budget divisor, exactly as the comment at `star6e_pipeline.c` ~1370 says:
+  writing 15 with the bind at 60 gives 60 fps at ~3.7x the commanded
+  bitrate. Never write fpsNum without the matching bind.
+- **The VPE→VENC bind ratio is the frame-rate lever and it takes live.**
+  Unbind + rebind on the running channel, no StopRecvPic, both
+  directions, no fault, and the bitrate holds at the new rate (the RC
+  budget follows fpsNum). Production already runs a ratio bind: the
+  sensor mode is 90 fps and the boot bind is 90→60.
+- Cost of a transition: one incomplete enh AU going down, none coming
+  up; the player's regulator logged one discontinuity and no stall.
+- SoC read 63 °C at the end of the run (fan state not controlled; no
+  thermal claim here).
+
+Design consequence: the mode's encoder verb is `venc_set_fps(fps)` =
+rebind + fpsNum/gop rewrite + superframe/compensation re-derive, callable
+from the agent thread like `venc_set_bitrate_kbps`. No fallback needed.
