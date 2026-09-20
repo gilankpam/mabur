@@ -748,6 +748,13 @@ TEST(low_power_tints_the_fps_cell) {
   // Row text is unchanged: the tint is colour only.
   CHECK(row_of(bar, s, false, ps, 1) ==
         "bitrate:8.1 res:1280x720 fps:15 jit:5.2 lat:45/78 loss:0.3/0.0");
+  // Stale sideport: low_power is the last value HEARD, not a current one,
+  // while fps stays player-measured and live. The tint would claim the low
+  // number is deliberate on evidence that may be arbitrarily old, so it is
+  // dropped -- the cell reads as an ordinary (undimmed) player-measured
+  // number until the link speaks again.
+  CHECK(bar.debug_field_rgb(s, true, ps, GsBarField::kFps) == tok::kTextPrimary);
+  CHECK(bar.debug_field_text(s, true, ps, GsBarField::kFps) == "fps:15");
 }
 
 MTEST_MAIN

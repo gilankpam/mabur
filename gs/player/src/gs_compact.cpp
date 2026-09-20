@@ -350,8 +350,13 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
     case GsBarField::kFps:
       st.text = "fps:" + fmt_int(std::clamp(ps.fps, 0.0, 999.0));
       // Low-power (pre-arm) mode: the rate is low on purpose. Caution
-      // tint, same text; a player-measured figure, so it never dims.
-      if (snap.low_power) st.rgb = tok::kStatusCaution;
+      // tint, same text. The CELL is player-measured and so never dims --
+      // but the FLAG is link-sourced, so it is gated on !stale: once the
+      // sideport goes quiet, snap.low_power is the last value heard and
+      // may be arbitrarily old, and tinting a live, correct fps number
+      // from a frozen flag is exactly the "looks live" failure the
+      // staleness rule exists to prevent. Quiet sideport = no claim.
+      if (snap.low_power && !stale) st.rgb = tok::kStatusCaution;
       break;
     case GsBarField::kJit:
       st.text = "jit:" + fmt_one_dp(std::clamp(ps.jitter_ms, 0.0, 999.9));

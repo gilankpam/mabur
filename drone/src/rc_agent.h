@@ -310,8 +310,9 @@ class RcAgent {
   uint64_t last_bitrate_eval_ms_ = 0;
   bool have_last_bitrate_eval_ = false;
   bool roi_low_ = false;
-  // Set by run_bitrate_policy() whenever set_bitrate_kbps()/set_roi_qp()
-  // returns false, cleared when both verbs are in the state the policy
+  // Set by run_bitrate_policy() whenever one of its three encoder verbs --
+  // set_fps() (low-power mode only), set_bitrate_kbps() or set_roi_qp() --
+  // returns false, cleared when all of them are in the state the policy
   // wants. Drives the per-tick retry half of the periodic re-assert (see
   // kReassertMs / tick()).
   bool verb_apply_failed_ = false;

@@ -69,8 +69,12 @@ struct MaskAtlas;
 // this exception touches -- takes tok::kStatusCaution instead of
 // tok::kTextPrimary, so the pilot can tell a deliberately throttled rate
 // from a fault. Colour only: the text is exactly what it would be
-// otherwise, and there is no staleness interaction (fps is
-// player-measured, so it never dims).
+// otherwise. The staleness interaction is the other way round from the
+// first exception: the fps CELL is player-measured and never dims, but the
+// low_power FLAG is link-sourced, so the tint is gated on !stale -- a
+// quiet sideport makes the flag arbitrarily old, and a caution tint driven
+// by a frozen flag over a live number is the same failure staleness
+// dimming exists to prevent.
 //
 // The glyph mask's baked drop shadow stays. It is part of the glyph, not
 // styling: without it the line is unreadable over bright video.

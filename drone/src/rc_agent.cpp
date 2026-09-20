@@ -50,6 +50,10 @@ void RcAgent::intake_arm_state_(uint64_t now_ms) {
   const bool fresh = arm_reported_ &&
                      (now_ms < last_arm_ms_ ||
                       now_ms - last_arm_ms_ <= static_cast<uint64_t>(cfg_.low_power.stale_ms));
+  // !last_armed_ is subsumed by !armed_latched_ (the latch is set from
+  // last_armed_ above and never cleared) and is KEPT deliberately: this is a
+  // safety predicate and the redundant term is belt-and-braces. Do not
+  // "clean it up".
   const bool want = cfg_.low_power.enable && !armed_latched_ && fresh && !last_armed_;
   if (want == low_power_active_) return;
   low_power_active_ = want;
@@ -576,8 +580,6 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     return;
   }
 
-  intake_arm_state_(now_ms);
-
   if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms)) {
     // Unconfirmed move (spec §6): nothing from the GS on the new channel.
     if (state_ == State::LINKED) apply_max_range(now_ms);
@@ -598,9 +600,10 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
   // matters. The LINKED gate stays, so a break raised while genuinely
   // unlinked is consumed and dropped rather than queued — affordable only
   // because the encoder's own GOP is the backstop: at the shipped
-  // venc.gop_s = 2.0 an unhealed chain break self-clears within ~2 s. Raise
-  // gop_s and that safety net stretches with it, at which point dropping
-  // refused requests instead of deferring them needs re-arguing.
+  // venc.gop_s = 0.5 (bundle/mabur.default.toml since b05c60f) an unhealed
+  // chain break self-clears within ~0.5 s. That backstop is only as short as
+  // gop_s: raise it and the safety net stretches with it, at which point
+  // dropping refused requests instead of deferring them needs re-arguing.
   if (chain_break_pending_.exchange(false, std::memory_order_relaxed) &&
       state_ == State::LINKED && idr_due(now_ms, /*chain=*/true)) {
     act_.request_idr();
@@ -634,6 +637,22 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
       go_home_("rendezvous");
     }
   }
+
+  // Arm-state intake sits HERE — below the unconfirmed-move and
+  // failsafe-entry branches, directly above the re-assert — so that its
+  // forced policy run is the LAST one of the tick. Both of those branches
+  // call apply_max_range() -> run_bitrate_policy(force=true) with no
+  // ran_this_tick guard of their own, so an arm change coincident with one
+  // of them still costs two policy runs in the same millisecond; what this
+  // ordering buys is that the run which lands on the encoder last is the one
+  // carrying BOTH the new operating point and the new low-power state, and
+  // that its last_policy_ms_ stamp makes the re-assert below a no-op for
+  // this tick. (Collapsing the coincident pair into one write would mean
+  // taking the policy call out of apply_max_range — a restructure, not a
+  // fix.) The intake must still run before the re-assert: on an ordinary
+  // tick nothing else has run the policy, and the re-assert must see the
+  // arm state this tick, not next.
+  intake_arm_state_(now_ms);
 
   // Periodic re-assert of the encoder verbs (kReassertMs). run_bitrate_policy
   // otherwise runs ONLY on an RCF, a DISC, or a max-range entry, which makes

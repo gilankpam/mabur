@@ -1604,6 +1604,15 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // its own -- so poll at kArmPollMs and hand every decoded reply to
       // RcAgent. Kept polling after the arm latch: 6 B out + ~33 B in per
       // 500 ms is free and the live flag stays observable.
+      //
+      // COUPLED to low_power.stale_ms, which is operator-configurable while
+      // this is not: a report is fresh for stale_ms and arrives at best once
+      // per kArmPollMs, so stale_ms <= 500 makes the mode flap once per poll
+      // (fresh on the reply tick, stale before the next one). Deliberately
+      // NOT validated -- the flap direction is toward FULL power, i.e. the
+      // safe side, so a too-small stale_ms costs bitrate, never safety.
+      // Keep stale_ms comfortably above this (the bundle ships 2000), and if
+      // this poll period ever changes, revisit that margin.
       constexpr uint64_t kArmPollMs = 500;
       std::vector<uint8_t> status_req;
       mabur::msp_append_status_request(status_req);
