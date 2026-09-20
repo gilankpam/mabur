@@ -21,7 +21,7 @@ speed_t speed_by_value(int baud) {
 
 bool MspSerial::open(const std::string& dev, int baud) {
   close();
-  fd_ = ::open(dev.c_str(), O_RDONLY | O_NOCTTY);
+  fd_ = ::open(dev.c_str(), O_RDWR | O_NOCTTY);
   if (fd_ < 0) return false;
   struct termios o {};
   tcgetattr(fd_, &o);
@@ -42,6 +42,13 @@ bool MspSerial::open(const std::string& dev, int baud) {
 int MspSerial::read(uint8_t* buf, size_t n) {
   if (fd_ < 0) return -1;
   ssize_t r = ::read(fd_, buf, n);
+  if (r < 0) return -1;
+  return static_cast<int>(r);
+}
+
+int MspSerial::write(const uint8_t* p, size_t n) {
+  if (fd_ < 0) return -1;
+  ssize_t r = ::write(fd_, p, n);
   if (r < 0) return -1;
   return static_cast<int>(r);
 }

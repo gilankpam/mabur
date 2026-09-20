@@ -51,6 +51,7 @@
 #include "frame_source.h"
 #include "mabur/frame_wire.h"
 #include "mabur/msp_source.h"
+#include "mabur/msp_status.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
@@ -1597,6 +1598,22 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           cfg.msp.symbol_size, cfg.msp.window,
           cfg.msp.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen),
           cfg.msp.update_rate_hz, cfg.msp.serial.c_str(), cfg.msp.baud);
+
+      // Low-power mode (spec 2026-09-20 §1): ask the FC for its arm state.
+      // MSP_STATUS is request/reply -- the FC pushes only DisplayPort on
+      // its own -- so poll at kArmPollMs and hand every decoded reply to
+      // RcAgent. Kept polling after the arm latch: 6 B out + ~33 B in per
+      // 500 ms is free and the live flag stays observable.
+      constexpr uint64_t kArmPollMs = 500;
+      std::vector<uint8_t> status_req;
+      mabur::msp_append_status_request(status_req);
+      uint64_t last_poll_ms = 0;
+      if (cfg.low_power.enable)
+        src.set_message_hook([&](const mabur::MspMessage& m) {
+          if (auto armed = mabur::msp_status_armed(m))
+            agent.note_arm_state(*armed, now_steady_ms());
+        });
+
       MspSerial serial;
       uint8_t buf[512];
       while (!g_devourer_should_stop) {
@@ -1611,6 +1628,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
         int n = serial.read(buf, sizeof buf);
         if (n > 0) src.on_serial_bytes(buf, static_cast<size_t>(n), now_steady_ms());
         else if (n < 0) serial.close();  // error -> reconnect
+
+        if (cfg.low_power.enable && serial.is_open()) {
+          uint64_t t = now_steady_ms();
+          if (t - last_poll_ms >= kArmPollMs) {
+            last_poll_ms = t;
+            if (serial.write(status_req.data(), status_req.size()) < 0) serial.close();
+          }
+        }
       }
     });
   }
@@ -2570,7 +2595,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                        "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
                        "txq=%zu txq_drop=%llu "
                        "thermal_delta=%d tx_failed=%llu venc_verb_fail=%llu "
-                       "enc_pk100=%uk\n",
+                       "enc_pk100=%uk lp=%d armed=%d\n",
                        static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
                        static_cast<unsigned long long>(rb), tx.seq(),
                        static_cast<unsigned long long>(tx.sent()),
@@ -2579,7 +2604,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                        health.thermal_delta,
                        static_cast<unsigned long long>(txstats.failed),
                        static_cast<unsigned long long>(actuator.venc_verb_failures),
-                       enc_peak.take_peak_kbps());
+                       enc_peak.take_peak_kbps(),
+                       static_cast<int>(agent.low_power()), static_cast<int>(agent.armed_latched()));
         }
 
         // Telemetry suppression (spec 2026-09-10 step 2): non-sweep PPDUs in
