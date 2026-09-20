@@ -22,9 +22,12 @@ void star6e_controls_reset(void);
 int star6e_controls_apply_bitrate(uint32_t kbps);
 
 /** Live frame-rate change: VPE->VENC rebind at sensor_fps:fps + RC fpsNum
- *  and GOP rewrite + SuperFrame/compensation re-derive.  fps in
- *  [1, sensor mode max]; same fps as delivered = 0, no-op.  -1 restores
- *  the previous bind.  Never requests an IDR (RcAgent's job). */
+ *  and GOP rewrite + SuperFrame/compensation re-derive.  fps 0 is rejected;
+ *  fps ABOVE the sensor mode's max is CLAMPED to it and logged (fail open —
+ *  the config validator cannot see the mode's rate, and rejecting would
+ *  strand a full-power restore at the low-power rate).  A request that
+ *  equals the delivered rate after clamping is a free no-op (0).  -1
+ *  restores the previous bind.  Never requests an IDR (RcAgent's job). */
 int star6e_controls_apply_fps(uint32_t fps);
 
 /** Apply ROI-based QP adjustment for FPV center emphasis. */

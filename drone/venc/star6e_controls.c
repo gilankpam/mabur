@@ -175,8 +175,28 @@ static int apply_fps(uint32_t fps)
 	uint32_t rc_fps, gop;
 	MI_S32 ret;
 
-	if (fps == 0 || fps > sensor_fps || !g_star6e_control_ctx.cfg)
+	/* Genuinely invalid: a zero request, and a context with no sensor rate
+	 * to clamp against (unbound, or a mode that reported neither maxFps
+	 * nor a configured sensor_framerate) — the old `fps > sensor_fps`
+	 * reject covered the latter by accident, so keep it explicit. */
+	if (fps == 0 || sensor_fps == 0 || !g_star6e_control_ctx.cfg)
 		return -1;
+	/* CLAMP, do not reject, a request above the sensor mode's rate — like
+	 * the waybeam reference.  RcAgent's full-power restore target is
+	 * venc.core.fps, validated only against [1,120]; the true ceiling is
+	 * the sensor mode's maxFps, which the config validator cannot see.
+	 * Boot already clamps silently (star6e_controls_bind), so a mismatch
+	 * is invisible until ARM — and rejecting there would strand the
+	 * aircraft at the low-power rate for the life of the process with the
+	 * bitrate restored.  Fail open: deliver the fastest rate we have. */
+	if (fps > sensor_fps) {
+		fprintf(stderr, "> FPS %u exceeds sensor mode max %u, clamping\n",
+			(unsigned)fps, (unsigned)sensor_fps);
+		fps = sensor_fps;
+	}
+	/* AFTER the clamp: a clamped request that equals the delivered rate
+	 * must stay a free no-op — the 5 s re-assert calls this verb at full
+	 * power on every parked link and each rebind costs one incomplete AU. */
 	if (fps == old_fps)
 		return 0;  /* idempotent: the 5 s re-assert is free */
 	clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -190,9 +210,16 @@ static int apply_fps(uint32_t fps)
 		fprintf(stderr, "> Rebind VPE->VENC at %u:%u failed %d, restoring %u:%u\n",
 			(unsigned)sensor_fps, (unsigned)fps, (int)ret,
 			(unsigned)sensor_fps, (unsigned)old_fps);
-		MI_SYS_BindChnPort2(&g_star6e_control_ctx.vpe_port,
+		ret = MI_SYS_BindChnPort2(&g_star6e_control_ctx.vpe_port,
 			&g_star6e_control_ctx.venc_port, sensor_fps, old_fps,
 			I6_SYS_LINK_FRAMEBASE, 0);
+		/* A failed RESTORE is the one path that can leave VENC unbound —
+		 * no frames at all until RcAgent's next fps verb re-binds it.
+		 * Never let that be silent. */
+		if (ret != 0)
+			fprintf(stderr, "> Restore bind VPE->VENC at %u:%u FAILED %d "
+				"-- VENC may be unbound\n", (unsigned)sensor_fps,
+				(unsigned)old_fps, (int)ret);
 		return -1;
 	}
 
@@ -226,9 +253,15 @@ restore:
 		(unsigned)sensor_fps, (unsigned)old_fps);
 	MI_SYS_UnBindChnPort(&g_star6e_control_ctx.vpe_port,
 		&g_star6e_control_ctx.venc_port);
-	MI_SYS_BindChnPort2(&g_star6e_control_ctx.vpe_port,
+	ret = MI_SYS_BindChnPort2(&g_star6e_control_ctx.vpe_port,
 		&g_star6e_control_ctx.venc_port, sensor_fps, old_fps,
 		I6_SYS_LINK_FRAMEBASE, 0);
+	/* As above: a silent restore failure is the only way VENC ends up
+	 * unbound and starved. */
+	if (ret != 0)
+		fprintf(stderr, "> Restore bind VPE->VENC at %u:%u FAILED %d "
+			"-- VENC may be unbound\n", (unsigned)sensor_fps,
+			(unsigned)old_fps, (int)ret);
 	return -1;
 }
 
