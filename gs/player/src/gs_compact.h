@@ -34,7 +34,7 @@ struct MaskAtlas;
 // video row it explains rather than with the radio figures that cause it.
 //
 // No status colours, no meters, no bars -- every glyph takes
-// tok::kTextPrimary, with two deliberate exceptions.
+// tok::kTextPrimary, with three deliberate exceptions.
 //
 // The first is staleness: the six LINK-sourced items dim to
 // tok::kTextLabel while the sideport is quiet, because the alternative is
@@ -63,6 +63,14 @@ struct MaskAtlas;
 // putting REC there would cost a size step -- 38 px to 34 at 1080p. On row
 // 0 it is free. That also happens to match where the essential layout puts
 // it, in the link block rather than the video one.
+//
+// The third is low-power (pre-arm) mode (spec 2026-09-20): while
+// snap.low_power is set, the fps cell -- the one player-measured item
+// this exception touches -- takes tok::kStatusCaution instead of
+// tok::kTextPrimary, so the pilot can tell a deliberately throttled rate
+// from a fault. Colour only: the text is exactly what it would be
+// otherwise, and there is no staleness interaction (fps is
+// player-measured, so it never dims).
 //
 // The glyph mask's baked drop shadow stays. It is part of the glyph, not
 // styling: without it the line is unreadable over bright video.
