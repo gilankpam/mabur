@@ -129,15 +129,12 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.venc.core.width == 1920);
   CHECK(cfg.venc.core.height == 1080);
   CHECK(cfg.venc.core.fps == 60);
-  CHECK(cfg.venc.core.gop_s == 2.0);
+  CHECK(cfg.venc.core.gop_s == 0.5);
   CHECK(cfg.venc.core.qp_delta == 4);
   CHECK(cfg.venc.core.max_ipprop == 2);
-  // I-frame QP floor: the only knob that caps IDR size (bench 2026-09-06,
-  // min_iqp 44 -> 2.2 kB IDRs vs 4.5-24 kB). docs/iqp-cap-findings-2026-09-06.md.
-  CHECK(cfg.venc.core.min_iqp == 44);
-  // 3, not the 1080p-derived 4: the drone encodes 720p, where the
-  // rally-equivalent row count is 3 (docs/venc-resilience).
-  CHECK(cfg.venc.core.intra_refresh_rows == 3);
+  // Re-pinned to the bundle as of b05c60f (2026-09-19 low-power spike retune).
+  CHECK(cfg.venc.core.min_iqp == 34);
+  CHECK(cfg.venc.core.intra_refresh_rows == 34);
   CHECK(cfg.venc.core.intra_refresh_qp == 36);
   // P-frame size cap, 200 % (docs/handover-venc-overshoot-2026-09-03.md).
   CHECK(cfg.venc.core.superframe_p_pct == 200);
