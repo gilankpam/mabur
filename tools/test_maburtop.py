@@ -46,7 +46,7 @@ DGRAM = {
         "txq": {"depth": 3, "cap": 64, "drop_pps": 0.0, "drops": 0},
         "radio": {"sent_pps": 1461.0, "drops": 0, "usb_fail": 0},
         "uplink": {"rssi_a": -58.9, "rssi_b": -58.0, "snr_a": 21.0, "snr_b": 22.0},
-        "sys": {"soc_temp_c": 61, "thermal_delta": 3, "load": 0.72},
+        "sys": {"soc_temp_c": 61, "thermal_delta": 3, "cpu_pct": 14.3},
     },
     "cards": [
         {"id": 0, "up": True, "frames": 123456, "crc_fail": 0,
@@ -138,7 +138,7 @@ class DronePanelTest(unittest.TestCase):
         for cell in ("LINKED", "gen", "7", "mcs5/20", "ov b0.25/e0.25", "800ms",
                      "59.9 fps", "9.21 Mbps", "9000k", "roi -24",
                      "shed CONG", "1461",
-                     "-58.9", "-58.0", "19.4", " 61", "0.72"):
+                     "-58.9", "-58.0", "19.4", " 61", "14.3%"):
             self.assertIn(cell, joined)
 
     def test_shed_cell_states(self):
@@ -691,7 +691,7 @@ class FixedWidthTest(unittest.TestCase):
             radio=dict(DGRAM["drone"]["radio"], sent_pps=999999999.0,
                        drops=999999999, usb_fail=99999),
             rcf={"age_ms": 123456789, "rx_pps": 99999.9},
-            sys={"soc_temp_c": -128, "thermal_delta": 99, "load": 9999.99},
+            sys={"soc_temp_c": -128, "thermal_delta": 99, "cpu_pct": 9999.99},
         )
         extreme["cards"] = [
             dict(DGRAM["cards"][0], frames=999999999, pps=99999, rx_mbps=999.9,

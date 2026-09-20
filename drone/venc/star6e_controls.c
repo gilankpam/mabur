@@ -42,6 +42,12 @@ static uint32_t g_superframe_logged_bytes;
 static int g_superframe_logged;
 static int apply_superframe_p(uint32_t kbps);
 
+/* Last REQUESTED rate (pre-compensation, pre-rails): what apply_fps
+ * re-applies so the >120 fps compensation and the SuperFrame P threshold
+ * (per-frame budget = kbps/fps) follow a frame-period change.  0 until
+ * the first apply_bitrate. */
+static uint32_t g_last_requested_kbps;
+
 /* One-shot readback of what the encoder holds, taken from apply_bitrate
  * (RcAgent's thread, under venc_core's verb lock -- the ONLY thread that
  * talks to MI_VENC_*RcParam) once >= RC_READBACK_AFTER_S have passed since
@@ -103,6 +109,8 @@ static int apply_bitrate(uint32_t kbps)
 	MI_VENC_ChnAttr_t attr = {0};
 	MI_U32 bits;
 
+	g_last_requested_kbps = kbps;
+
 	/* Order is pinned: the >120 fps exact-CBR compensation first, then
 	 * the absolute MIN/MAX rails, so the correction cannot push the
 	 * programmed value outside what the encoder accepts. */
@@ -139,6 +147,127 @@ static int apply_bitrate(uint32_t kbps)
 		}
 	}
 	return 0;
+}
+
+/* Live frame-rate change (spec 2026-09-20; probe 2026-09-20 in
+ * docs/low-power-spike-findings-2026-09-19.md).  Ported from waybeam
+ * f956a52 src/star6e_controls.c apply_fps().
+ *
+ * The VPE->VENC bind RATIO is the frame-rate lever on this SDK: the RC
+ * fpsNum alone is only the CBR budget divisor and drops nothing -- written
+ * without the bind it gives 60 fps at ~3.7x the commanded bitrate and a
+ * full ring (probe step 2).  So: unbind, rebind at sensor_fps:fps, THEN
+ * rewrite fpsNum and the GOP.  Both directions take live on the running
+ * channel with no StopRecvPic (probe steps 3-4: 16.1 / 61.1 fps, 0 gaps).
+ *
+ * Differences from waybeam, on purpose: the GOP is rescaled from gop_s
+ * (waybeam keeps the frame count, so 0.5 s becomes 2 s at 15 fps); the
+ * SuperFrame P cap is re-derived from the new frame period; NO IDR here --
+ * RcAgent is the only IDR authority and the bitrate write that follows a
+ * transition emits one anyway.  Rollback on either failure restores the
+ * previous ratio so VENC is never left unbound. */
+static int apply_fps(uint32_t fps)
+{
+	MI_VENC_ChnAttr_t attr = {0};
+	struct timespec t0, t1;
+	uint32_t sensor_fps = g_star6e_control_ctx.sensor_fps;
+	uint32_t old_fps = g_star6e_control_ctx.delivered_fps;
+	uint32_t rc_fps, gop;
+	MI_S32 ret;
+
+	/* Genuinely invalid: a zero request, and a context with no sensor rate
+	 * to clamp against (unbound, or a mode that reported neither maxFps
+	 * nor a configured sensor_framerate) — the old `fps > sensor_fps`
+	 * reject covered the latter by accident, so keep it explicit. */
+	if (fps == 0 || sensor_fps == 0 || !g_star6e_control_ctx.cfg)
+		return -1;
+	/* CLAMP, do not reject, a request above the sensor mode's rate — like
+	 * the waybeam reference.  RcAgent's full-power restore target is
+	 * venc.core.fps, validated only against [1,120]; the true ceiling is
+	 * the sensor mode's maxFps, which the config validator cannot see.
+	 * Boot already clamps silently (star6e_controls_bind), so a mismatch
+	 * is invisible until ARM — and rejecting there would strand the
+	 * aircraft at the low-power rate for the life of the process with the
+	 * bitrate restored.  Fail open: deliver the fastest rate we have. */
+	if (fps > sensor_fps) {
+		fprintf(stderr, "> FPS %u exceeds sensor mode max %u, clamping\n",
+			(unsigned)fps, (unsigned)sensor_fps);
+		fps = sensor_fps;
+	}
+	/* AFTER the clamp: a clamped request that equals the delivered rate
+	 * must stay a free no-op — the 5 s re-assert calls this verb at full
+	 * power on every parked link and each rebind costs one incomplete AU. */
+	if (fps == old_fps)
+		return 0;  /* idempotent: the 5 s re-assert is free */
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+
+	MI_SYS_UnBindChnPort(&g_star6e_control_ctx.vpe_port,
+		&g_star6e_control_ctx.venc_port);
+	ret = MI_SYS_BindChnPort2(&g_star6e_control_ctx.vpe_port,
+		&g_star6e_control_ctx.venc_port, sensor_fps, fps,
+		I6_SYS_LINK_FRAMEBASE, 0);
+	if (ret != 0) {
+		fprintf(stderr, "> Rebind VPE->VENC at %u:%u failed %d, restoring %u:%u\n",
+			(unsigned)sensor_fps, (unsigned)fps, (int)ret,
+			(unsigned)sensor_fps, (unsigned)old_fps);
+		ret = MI_SYS_BindChnPort2(&g_star6e_control_ctx.vpe_port,
+			&g_star6e_control_ctx.venc_port, sensor_fps, old_fps,
+			I6_SYS_LINK_FRAMEBASE, 0);
+		/* A failed RESTORE is the one path that can leave VENC unbound —
+		 * no frames at all until RcAgent's next fps verb re-binds it.
+		 * Never let that be silent. */
+		if (ret != 0)
+			fprintf(stderr, "> Restore bind VPE->VENC at %u:%u FAILED %d "
+				"-- VENC may be unbound\n", (unsigned)sensor_fps,
+				(unsigned)old_fps, (int)ret);
+		return -1;
+	}
+
+	rc_fps = fps > STAR6E_VENC_INPUT_FPS_MAX ? STAR6E_VENC_INPUT_FPS_MAX : fps;
+	gop = pipeline_common_gop_frames(g_star6e_control_ctx.cfg->gop_s, rc_fps);
+	if (MI_VENC_GetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0 ||
+	    attr.rate.mode != I6_VENC_RATEMODE_H265CBR)
+		goto restore;
+	attr.rate.h265Cbr.fpsNum = rc_fps;
+	attr.rate.h265Cbr.fpsDen = 1;
+	attr.rate.h265Cbr.gop = gop;
+	if (MI_VENC_SetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0)
+		goto restore;
+
+	g_star6e_control_ctx.delivered_fps = fps;
+	/* The compensation factor and the P cap are per frame period. */
+	if (g_last_requested_kbps)
+		(void)apply_bitrate(g_last_requested_kbps);
+
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	printf("> FPS delivered %u, RC fpsNum %u, gop %u (bind %u:%u) in %ld us\n",
+		(unsigned)fps, (unsigned)rc_fps, (unsigned)gop,
+		(unsigned)sensor_fps, (unsigned)fps,
+		(long)((t1.tv_sec - t0.tv_sec) * 1000000L +
+		       (t1.tv_nsec - t0.tv_nsec) / 1000L));
+	fflush(stdout);
+	return 0;
+
+restore:
+	fprintf(stderr, "> Encoder fps apply failed, restoring bind %u:%u\n",
+		(unsigned)sensor_fps, (unsigned)old_fps);
+	MI_SYS_UnBindChnPort(&g_star6e_control_ctx.vpe_port,
+		&g_star6e_control_ctx.venc_port);
+	ret = MI_SYS_BindChnPort2(&g_star6e_control_ctx.vpe_port,
+		&g_star6e_control_ctx.venc_port, sensor_fps, old_fps,
+		I6_SYS_LINK_FRAMEBASE, 0);
+	/* As above: a silent restore failure is the only way VENC ends up
+	 * unbound and starved. */
+	if (ret != 0)
+		fprintf(stderr, "> Restore bind VPE->VENC at %u:%u FAILED %d "
+			"-- VENC may be unbound\n", (unsigned)sensor_fps,
+			(unsigned)old_fps, (int)ret);
+	return -1;
+}
+
+int star6e_controls_apply_fps(uint32_t fps)
+{
+	return apply_fps(fps);
 }
 
 int star6e_controls_request_idr(void)
@@ -452,6 +581,7 @@ void star6e_controls_bind(Star6ePipelineState *pipeline, const VencCfg *cfg)
 	g_superframe_applied = 0;
 	g_superframe_logged = 0;
 	g_superframe_logged_bytes = 0;
+	g_last_requested_kbps = 0;
 	memset(&g_rc_intent, 0, sizeof(g_rc_intent));
 	memset(&g_rc_defaults, 0, sizeof(g_rc_defaults));
 	clock_gettime(CLOCK_MONOTONIC, &g_rc_bind_ts);
@@ -466,6 +596,7 @@ void star6e_controls_reset(void)
 	g_superframe_applied = 0;
 	g_superframe_logged = 0;
 	g_superframe_logged_bytes = 0;
+	g_last_requested_kbps = 0;
 	memset(&g_rc_intent, 0, sizeof(g_rc_intent));
 	memset(&g_rc_defaults, 0, sizeof(g_rc_defaults));
 	g_rc_readback_done = 0;

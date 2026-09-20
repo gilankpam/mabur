@@ -76,7 +76,15 @@ struct ProbeCfg {
   int rung_offset = 1;
   int clean_bodies = 90;
   double max_util = -1.0;   // <0 => down_util
-  int min_syms = 40;
+  // Availability floor: expected probe symbols the 500 ms window must hold
+  // before its verdict counts (below it the gate reads NoInfo, which HOLDS
+  // the promote). 16 = four AUs' worth at bpb 4 -- the true "no traffic"
+  // floor (shed, a stalled encoder). It has to sit under the low-power
+  // stream's rate: 15 fps x 4 x 0.5 s = 30 per window (bench 2026-09-20 read
+  // 28-32), and the original 40 -- sized against 60 fps = 120 -- held every
+  // pre-arm promote for the whole disarmed period. Keep it under
+  // low_power.fps x 2 (docs/link-adaptation.md, "Low-power (disarmed)").
+  int min_syms = 16;
   int silence_ms = 500;
   int pin_mcs = -1;         // consumed by VrxController only
 };

@@ -265,7 +265,7 @@ TEST(telem_round_trip_and_golden) {
   t.radio_sent = 400000;
   t.radio_drops = 9; t.usb_fail = 2;
   t.up_rssi[0] = 51; t.up_rssi[1] = 52; t.up_snr[0] = 21; t.up_snr[1] = 22;
-  t.soc_temp_c = 61; t.thermal_delta = 3; t.load_x100 = 72;
+  t.soc_temp_c = 61; t.thermal_delta = 3; t.cpu_busy_x100 = 72;
   t.idr_disagree = 4; t.enhance_disagree = 5;
   t.vanished_base = 7; t.vanished_enh = 8; t.self_idr_refused = 9;
   t.venc_full_drops = 10; t.venc_ring_fill_pct = 62;
@@ -287,7 +287,7 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->radio_sent == t.radio_sent);
   CHECK(back->up_snr[1] == 22);
   CHECK(back->soc_temp_c == 61);
-  CHECK(back->load_x100 == 72);
+  CHECK(back->cpu_busy_x100 == 72);
   CHECK(back->idr_disagree == 4);
   CHECK(back->enhance_disagree == 5);
   CHECK(back->vanished_base == 7);

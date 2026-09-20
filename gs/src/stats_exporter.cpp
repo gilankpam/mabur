@@ -576,6 +576,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["air_shed"] = (t.flags & 0x20) != 0;
     d["air_backlog_max_ms"] = t.air_backlog_max_ms;
     d["air_shed_drops"] = t.air_shed_drops;
+    // Low-power (pre-arm) operating point, flags bit7 (spec 2026-09-20):
+    // the drone is deliberately at low_power.bitrate_kbps / fps because
+    // the FC reports DISARMED. maburtop shows LP; the compact OSD tints fps.
+    d["low_power"] = (t.flags & 0x80) != 0;
     d["applied"] = {{"mcs", mcs},
                     {"bw", bw},
                     {"vht", mode == mabur::rc::PhyMode::VHT},
@@ -637,7 +641,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     }
     d["sys"] = {{"soc_temp_c", t.soc_temp_c},
                 {"thermal_delta", t.thermal_delta},
-                {"load", t.load_x100 / 100.0}};
+                // 65535 = unavailable (first tick after a maburd start).
+                {"cpu_pct", t.cpu_busy_x100 == 65535 ? json(nullptr)
+                                                     : json(t.cpu_busy_x100 / 100.0)}};
     // In-flight channel hop readback (spec 2026-09-14-inflight-channel-hop
     // §1): the channel RcAgent believes it is actually on, and the epoch of
     // the last hop order it applied -- the drone's own confirmation,

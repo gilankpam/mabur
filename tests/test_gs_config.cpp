@@ -792,17 +792,25 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
   CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
 }
 
-// The bundle carries the FLIGHT ladder, not a neutral seed: seven written
+// The bundle carries the FLIGHT ladder, not a neutral seed: six written
 // rungs mcs 0..5, none of which link.max_mcs = 5 filters out. mcs 0 is the
 // failsafe floor every controller starts from and falls back to -- pinned
 // here because "the failsafe rung moved" is the kind of change that must be
-// deliberate. Overheads are actual-air (airtime-balance-uep), and the flight
-// ladder splits them: base 1.0 / enh 0.5 on every rung.
+// deliberate. Overheads are actual-air (airtime-balance-uep); rungs 0-2 use
+// base 0.5/enh 0.25, rungs 3-5 use base 1.0/enh 0.5.
+// Re-pinned to the bundle as of b05c60f (2026-09-18 ladder retune).
 TEST(default_bundle_ladder_is_the_flight_ladder) {
   auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   auto& L = c.link.ladder_cfg.ladder;
   CHECK(L.size() == 6);
-  for (size_t i = 0; i < L.size(); ++i) {
+  // Rungs 0-2: base 0.5, enh 0.25
+  for (size_t i = 0; i < 3; ++i) {
+    CHECK(L[i].mcs == static_cast<int>(i));
+    CHECK(L[i].overhead_base > 0.499 && L[i].overhead_base < 0.501);
+    CHECK(L[i].overhead_enh > 0.249 && L[i].overhead_enh < 0.251);
+  }
+  // Rungs 3-5: base 1.0, enh 0.5
+  for (size_t i = 3; i < 6; ++i) {
     CHECK(L[i].mcs == static_cast<int>(i));
     CHECK(L[i].overhead_base > 0.999 && L[i].overhead_base < 1.001);
     CHECK(L[i].overhead_enh > 0.499 && L[i].overhead_enh < 0.501);
@@ -1006,7 +1014,7 @@ TEST(probe_block_defaults) {
   const auto& p = c.link.ladder_cfg.probe;
   CHECK(p.enable); CHECK(p.rung_offset == 1); CHECK(p.clean_bodies == 90);
   CHECK(p.max_util == c.link.ladder_cfg.down_util);  // sentinel resolved
-  CHECK(p.min_syms == 40); CHECK(p.silence_ms == 500); CHECK(p.pin_mcs == -1);
+  CHECK(p.min_syms == 16); CHECK(p.silence_ms == 500); CHECK(p.pin_mcs == -1);
   CHECK(c.link.ladder_cfg.s3_min_syms == 50);
 }
 

@@ -17,8 +17,12 @@ struct MaskAtlas;
 //
 //                                                   ● REC 12:47   <- top right
 //   ...
-//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
+//   ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41
 //   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
+//
+// `temp` is the drone SoC temperature (sideport drone.sys.soc_temp_c),
+// caution-coloured from 70 C; it sits on the radio row because it is
+// drone-sourced, not player-measured.
 //
 // With the GS's channel scan enabled (sideport scan.state != "off") the
 // channel reads "ch:149(a)": the number may be an auto-selected pick rather
@@ -34,7 +38,7 @@ struct MaskAtlas;
 // video row it explains rather than with the radio figures that cause it.
 //
 // No status colours, no meters, no bars -- every glyph takes
-// tok::kTextPrimary, with two deliberate exceptions.
+// tok::kTextPrimary, with three deliberate exceptions.
 //
 // The first is staleness: the six LINK-sourced items dim to
 // tok::kTextLabel while the sideport is quiet, because the alternative is
@@ -64,6 +68,18 @@ struct MaskAtlas;
 // 0 it is free. That also happens to match where the essential layout puts
 // it, in the link block rather than the video one.
 //
+// The third is low-power (pre-arm) mode (spec 2026-09-20): while
+// snap.low_power is set, the fps cell -- the one player-measured item
+// this exception touches -- takes tok::kStatusCaution instead of
+// tok::kTextPrimary, so the pilot can tell a deliberately throttled rate
+// from a fault. Colour only: the text is exactly what it would be
+// otherwise. The staleness interaction is the other way round from the
+// first exception: the fps CELL is player-measured and never dims, but the
+// low_power FLAG is link-sourced, so the tint is gated on !stale -- a
+// quiet sideport makes the flag arbitrarily old, and a caution tint driven
+// by a frozen flag over a live number is the same failure staleness
+// dimming exists to prevent.
+//
 // The glyph mask's baked drop shadow stays. It is part of the glyph, not
 // styling: without it the line is unreadable over bright video.
 //
@@ -85,6 +101,7 @@ enum class GsBarField {
   kAir,
   kRssi,
   kSnr,
+  kTemp,
   kBitrate,
   kRes,
   kFps,
@@ -123,6 +140,10 @@ class GsCompactBar final : public GsLayer {
   // has run.
   std::string debug_field_text(const GsSnapshot& snap, bool stale,
                                const GsPlayerState& ps, GsBarField id) const;
+  uint32_t debug_field_rgb(const GsSnapshot& snap, bool stale,
+                           const GsPlayerState& ps, GsBarField id) const {
+    return state_of_(snap, stale, ps, id).rgb;
+  }
   DirtyRect debug_field_box(GsBarField id) const;
   int debug_atlas_px() const;
   // Width of worst-case row `row` in `a`, boxes included -- exactly what

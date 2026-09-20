@@ -313,7 +313,7 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(static_cast<uint8_t>(t.up_snr[1]));
   body.push_back(static_cast<uint8_t>(t.soc_temp_c));
   body.push_back(static_cast<uint8_t>(t.thermal_delta));
-  put16(body, t.load_x100);
+  put16(body, t.cpu_busy_x100);
   put16(body, t.idr_disagree);
   put16(body, t.enhance_disagree);
   put16(body, t.vanished_base);
@@ -370,7 +370,7 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.up_snr[1] = static_cast<int8_t>(buf[65]);
   t.soc_temp_c = static_cast<int8_t>(buf[66]);
   t.thermal_delta = static_cast<int8_t>(buf[67]);
-  t.load_x100 = get16(buf, 68);
+  t.cpu_busy_x100 = get16(buf, 68);
   t.idr_disagree = get16(buf, 70);
   t.enhance_disagree = get16(buf, 72);
   t.vanished_base = get16(buf, 74);

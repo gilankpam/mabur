@@ -22,16 +22,18 @@ constexpr int kInsetX = 32, kInsetY = 24;
 // than by width -- an even split would put `snr` next to `bitrate`, which
 // reads as one continuous line of unrelated figures.
 //
-// Row 1 is the WIDER of the two (69 worst-case characters plus 5 gaps,
-// against row 0's 63 plus 4), so it is what decides the type size. Moving
-// an item between rows changes the size the whole bar renders at -- which
-// is one of the reasons REC is in the corner instead (see gs_compact.h).
+// Row 0 is the WIDER of the two since the temp cell joined it (71
+// worst-case characters plus 5 gaps, against row 1's 69 plus 5), so it is
+// what decides the type size. Moving an item between rows changes the size
+// the whole bar renders at -- which is one of the reasons REC is in the
+// corner instead (see gs_compact.h).
 constexpr GsBarField kOrder[] = {
-    GsBarField::kCh,  GsBarField::kMcs, GsBarField::kAir,     GsBarField::kRssi,
-    GsBarField::kSnr, GsBarField::kRec, GsBarField::kBitrate, GsBarField::kRes,
-    GsBarField::kFps, GsBarField::kJit, GsBarField::kLat,     GsBarField::kLoss,
+    GsBarField::kCh,   GsBarField::kMcs, GsBarField::kAir,     GsBarField::kRssi,
+    GsBarField::kSnr,  GsBarField::kTemp, GsBarField::kRec,    GsBarField::kBitrate,
+    GsBarField::kRes,  GsBarField::kFps, GsBarField::kJit,     GsBarField::kLat,
+    GsBarField::kLoss,
 };
-constexpr int kRow[] = {0, 0, 0, 0, 0, GsCompactBar::kCorner, 1, 1, 1, 1, 1, 1};
+constexpr int kRow[] = {0, 0, 0, 0, 0, 0, GsCompactBar::kCorner, 1, 1, 1, 1, 1, 1};
 static_assert(sizeof(kOrder) / sizeof(kOrder[0]) == (size_t)GsBarField::kCount,
               "every field must appear exactly once in the draw order");
 static_assert(sizeof(kRow) / sizeof(kRow[0]) == (size_t)GsBarField::kCount,
@@ -41,6 +43,11 @@ static_assert(sizeof(kRow) / sizeof(kRow[0]) == (size_t)GsBarField::kCount,
 // padded CELL, so stacking by glyph_h alone already separates them; this is
 // margin, not clearance.
 constexpr int kRowGap = 4;
+
+// Drone SoC caution threshold. The disarmed fan-off spike climbed to 84 C
+// in 15 min flattening at ~1 C/min (docs/low-power-spike-findings-
+// 2026-09-19.md); 70 leaves the pilot a margin to act before that.
+constexpr int kTempCautionC = 70;
 
 // Top inset for the corner-anchored recording indicator. Deeper than the
 // bar's own 24 px bottom inset: the bottom strip is a deliberate band of
@@ -129,6 +136,9 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
     case GsBarField::kAir:     return "air:100%";
     case GsBarField::kRssi:    return repeat_joined("rssi", "-999", n);
     case GsBarField::kSnr:     return repeat_joined("snr", "-99", n);
+    // int8 on the wire, rendered clamped to [0, 127]: "temp:127" beats
+    // "temp:--" by one glyph.
+    case GsBarField::kTemp:    return "temp:127";
     case GsBarField::kBitrate: return "bitrate:999.9";
     case GsBarField::kRes:     return "res:9999x9999";
     case GsBarField::kFps:     return "fps:999";
@@ -337,6 +347,21 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
       st.rgb = link;
       st.text = join_cards("snr", snap, /*snr=*/true);
       break;
+    case GsBarField::kTemp:
+      // Drone SoC temperature off the 1 Hz Telem. Link-sourced, so it dims
+      // and holds while stale like its neighbours; the caution tint is
+      // gated on !stale for the same reason the fps cell's is (a frozen
+      // value must not keep claiming "hot"). One threshold only -- the
+      // palette has no third status colour (gs_layer.h, tok).
+      st.rgb = link;
+      if (snap.soc_temp_c) {
+        const int c = std::clamp(*snap.soc_temp_c, 0, 127);
+        st.text = "temp:" + ascii_int(c);
+        if (c >= kTempCautionC && !stale) st.rgb = tok::kStatusCaution;
+      } else {
+        st.text = "temp:--";
+      }
+      break;
     case GsBarField::kBitrate:
       // Player-measured: AU bytes off the ring, not an encoder setpoint.
       st.text = "bitrate:" + fmt_one_dp(std::clamp(ps.mbps, 0.0, 999.9));
@@ -349,6 +374,14 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
       break;
     case GsBarField::kFps:
       st.text = "fps:" + fmt_int(std::clamp(ps.fps, 0.0, 999.0));
+      // Low-power (pre-arm) mode: the rate is low on purpose. Caution
+      // tint, same text. The CELL is player-measured and so never dims --
+      // but the FLAG is link-sourced, so it is gated on !stale: once the
+      // sideport goes quiet, snap.low_power is the last value heard and
+      // may be arbitrarily old, and tinting a live, correct fps number
+      // from a frozen flag is exactly the "looks live" failure the
+      // staleness rule exists to prevent. Quiet sideport = no claim.
+      if (snap.low_power && !stale) st.rgb = tok::kStatusCaution;
       break;
     case GsBarField::kJit:
       st.text = "jit:" + fmt_one_dp(std::clamp(ps.jitter_ms, 0.0, 999.9));

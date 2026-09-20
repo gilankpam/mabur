@@ -416,6 +416,33 @@ TEST(frame_pipeline_vanish_right_after_idr_is_refused_not_requested) {
   CHECK(f.pipe.self_idr_refused() == 1);
 }
 
+TEST(frame_pipeline_rate_change_reanchors_the_period_instead_of_booking_holes) {
+  // Low-power mode drops the encoder 60 -> 15 fps LIVE (venc_set_fps, spec
+  // 2026-09-20). The period EMA learns only from deltas under kVanishFactor
+  // x period, so without a re-anchor every 66.7 ms step after the drop is a
+  // 4x "hole" and books 3 phantom vanishes, forever: bench 2026-09-20 read
+  // vanished 3/4 -> 5578/5582 in four minutes at a flat 15 reads/s.
+  // note_rate_change() is the actuator's signal that the next deltas are a
+  // new period, not missing frames.
+  VanishFeeder f;
+  f.warm_up();  // 6 frames at 60 fps confirm the 16.7 ms period
+  f.pipe.note_rate_change();
+  constexpr uint32_t kSlowUs = 66667;  // 15 fps
+  uint32_t pts = 5 * kStepUs;
+  for (uint32_t i = 0; i < 8; ++i) {
+    pts += kSlowUs;
+    f.feed(pts, (i % 2) ? 0 : VENC_FRAME_FLAG_ENHANCE, 2000 + i * 70);
+  }
+  CHECK(f.pipe.vanished_base() == 0);
+  CHECK(f.pipe.vanished_enhance() == 0);
+  CHECK(!f.pipe.self_idr_pending());
+
+  // Detection is live again at the NEW period: a 2x step is one hole.
+  pts += 2 * kSlowUs;
+  f.feed(pts, VENC_FRAME_FLAG_ENHANCE, 3000);
+  CHECK(f.pipe.vanished_base() + f.pipe.vanished_enhance() == 1);
+}
+
 TEST(frame_pipeline_idr_arrival_clears_self_idr_pending) {
   // The pending latch is a LEVEL reconciled by the healing event itself: any
   // IDR passing through (granted, or a natural one) resets the decoder's DPB

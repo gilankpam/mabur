@@ -637,14 +637,20 @@ read the sideport. Reach for other tools only in these cases:**
   ```
                                               ● REC 12:47   <- top right
   ...
-  ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20
+  ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41
   bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0
   ```
 
-  — no status colours, no meters, no bars, one type size for both rows:
-  everything the
+  — no meters, no bars, one type size for both rows: everything the
   four corner blocks show minus FEC, plus the channel, the decoded
-  resolution and both latency percentiles. `"essential"` selects the older
+  resolution, both latency percentiles and (since 2026-09-21) the drone
+  SoC temperature from `drone.sys.soc_temp_c` (`temp:--` while
+  unavailable). Two colour exceptions, both single-threshold because the
+  palette has no third status colour: the `fps` cell turns caution while
+  `drone.low_power` is set (`docs/link-adaptation.md`, "Low-power
+  (disarmed) mode"), and `temp` turns caution from 70 °C. Text and layout
+  are otherwise unchanged, and both tints drop while the sideport is
+  stale. `"essential"` selects the older
   four-corner layout with the signal bars, the airtime meter and the status
   hues. Exactly one renders; there is no both, and an unrecognised value
   fails the config load rather than picking one. Three things about the bar
@@ -808,7 +814,8 @@ to attribute an enh gap to congestion rather than RF, and the only way a
 bench can count sheds at all. maburtop's system row renders the pair as
 `shed FS|CONG|AIR|off`. The drone `stats:` stderr line carries `enc_pk100=`,
 the peak 100 ms encoder byte rate (kbit/s, decimal) inside that stats
-second — the burst the 1 Hz `drone.enc.mbps` average hides.
+second — the burst the 1 Hz `drone.enc.mbps` average hides — and, since
+2026-09-20, `lp=`/`armed=` (see "2026-09-20 (low-power mode)" below).
 
 **2026-09-06 (air clock).** `drone.air_backlog_max_ms` is the per-window
 max of the drone's modelled air backlog (`AirClock`, spec
@@ -822,6 +829,16 @@ backlog reported, nothing dropped. Per frame, the same backlog rides the
 SBI body header (`air_ms`, ver 2) into the AU ring (SlotHdr v3, offset
 52) and the AU log's 12th column (`# aulog 3`); `tools/bench/airdrain.py
 --model` compares it against the player's measured air excess.
+
+**2026-09-20 (low-power mode).** `drone.low_power` (Telem flags bit7) is
+true while the low-power operating point is in force
+(`docs/link-adaptation.md`, "Low-power (disarmed) mode"). maburtop shows
+`LP` in TWO places — the summary SYS row, and the DRONE panel's SoC line
+(the one carrying `soc`/`radio rx`/`shed`), where it is highlighted the
+same way a shed is; the compact bar tints its fps cell caution while set
+(see above), but only while the sideport is fresh, since the flag is
+link-sourced while the fps number is player-measured. The drone `stats:` line carries `lp=`/`armed=` and the
+`rc: low_power ENTER/EXIT` lines mark transitions.
 
 Since the venc fold-in (spec 2026-08-28) the drone also reports the
 PRODUCER side of that ring, straight from `venc_get_stats()`:

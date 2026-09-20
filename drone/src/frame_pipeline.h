@@ -58,6 +58,19 @@ class FramePipeline {
     self_idr_pending_ = false;
   }
 
+  // The encoder's frame rate just changed under us (low-power set_fps,
+  // spec 2026-09-20): forget the learned period so the next deltas are
+  // confirmed as the new one instead of booked as holes. The EMA only ever
+  // learns from deltas under kVanishFactor x period, so a live 60 -> 15 fps
+  // drop would otherwise read every 66.7 ms step as a 4x hole and book 3
+  // phantom vanishes per frame, forever (bench 2026-09-20). Touches ONLY the
+  // period tracker: no discontinuity flag, the pts anchor and the counters
+  // stay -- nothing was lost.
+  void note_rate_change() {
+    period_samples_ = 0;
+    period_us_ = 0.0;
+  }
+
   // Air-clock enh admission (spec 2026-09-06 §3). While closed, a frame
   // that resolves to sid 1 (enh) is dropped BEFORE frame_id allocation --
   // the drop_if_shed contract: no id gap reaches the GS FrameStream,

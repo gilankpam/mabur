@@ -58,7 +58,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
                                   (in.probe_on ? 0x04 : 0) |
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
                                   (in.congestion_shed ? 0x10 : 0) |
-                                  (in.air_shed ? 0x20 : 0));
+                                  (in.air_shed ? 0x20 : 0) |
+                                  (in.low_power ? 0x80 : 0));
   t.generation = saturate<uint32_t>(in.generation);
   t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
   // Per-stream applied overhead: the commanded op pair (Task 6, RC_VERSION
@@ -95,7 +96,9 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   }
   t.soc_temp_c = saturate<int8_t>(in.soc_temp_c);
   t.thermal_delta = saturate<int8_t>(in.thermal_delta);
-  t.load_x100 = saturate<uint16_t>(std::lround(in.load1 * 100.0));
+  t.cpu_busy_x100 =
+      in.cpu_pct ? saturate<uint16_t>(std::lround(std::clamp(*in.cpu_pct, 0.0, 100.0) * 100.0))
+                 : 65535;
   t.idr_disagree = saturate<uint16_t>(in.idr_disagree);
   t.enhance_disagree = saturate<uint16_t>(in.enhance_disagree);
   t.vanished_base = saturate<uint16_t>(in.vanished_base);
@@ -133,14 +136,27 @@ int read_soc_temp_c_sigmastar(const char* path) {
   return deg;
 }
 
-double read_load1(const char* path) {
+std::optional<double> CpuBusySampler::sample(const char* path) {
   FILE* f = std::fopen(path, "r");
-  if (!f) return 0.0;
-  double load1 = 0.0;
-  int n = std::fscanf(f, "%lf", &load1);
+  if (!f) { have_ = false; return std::nullopt; }
+  // user nice system idle iowait irq softirq steal (guest columns are
+  // already folded into user/nice by the kernel).
+  unsigned long long c[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  const int n = std::fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+                            &c[0], &c[1], &c[2], &c[3], &c[4], &c[5], &c[6], &c[7]);
   std::fclose(f);
-  if (n != 1) return 0.0;
-  return load1;
+  if (n < 4) { have_ = false; return std::nullopt; }
+  uint64_t total = 0;
+  for (int i = 0; i < 8; ++i) total += c[i];
+  const uint64_t idle = c[3] + c[4];
+  const uint64_t busy = total - idle;
+  std::optional<double> out;
+  if (have_ && total > total_ && busy >= busy_)
+    out = 100.0 * static_cast<double>(busy - busy_) / static_cast<double>(total - total_);
+  have_ = true;
+  busy_ = busy;
+  total_ = total;
+  return out;
 }
 
 }  // namespace mabur

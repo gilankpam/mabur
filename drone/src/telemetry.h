@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
@@ -37,6 +38,7 @@ struct TelemInputs {
   bool probe_on = false;  // RcAgent::probe_on() — flags bit2, spec 2026-09-04 probe-stream
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
   bool air_shed = false;  // flags bit5: AirClock gate dropped >= 1 enh AU this window
+  bool low_power = false;  // RcAgent::low_power() — flags bit7, spec 2026-09-20
   uint64_t generation = 0;
   rc::PhyMode mode = rc::PhyMode::HT;
   uint8_t mcs = 0, bw = 20;
@@ -63,7 +65,8 @@ struct TelemInputs {
   UplinkTrack::Snap uplink;
   int soc_temp_c = -128;
   int thermal_delta = 0;
-  double load1 = 0.0;
+  // CpuBusySampler::sample() -- empty until two ticks have been read.
+  std::optional<double> cpu_pct;
   uint64_t idr_disagree = 0, enhance_disagree = 0;
   // FramePipeline vanish counters (venc-ring vanish detection,
   // docs/venc-ring-vanish-findings-2026-08-12.md).
@@ -93,6 +96,21 @@ int read_soc_temp_c(const char* path = "/sys/class/thermal/thermal_zone0/temp");
 // unreadable.
 int read_soc_temp_c_sigmastar(
     const char* path = "/sys/devices/system/cpu/cpufreq/temp_out");
-double read_load1(const char* path = "/proc/loadavg");
+
+// CPU busy percent between consecutive sample() calls, from the aggregate
+// "cpu" line of /proc/stat: busy = total - idle - iowait. Empty on the
+// first call (no baseline yet) and whenever the file cannot be read or
+// parsed, in which case the baseline is dropped so the next good pair
+// starts fresh. Replaces loadavg, which on the SigmaStar image counts the
+// SDK's permanently parked D-state workers (~13, load-independent). One
+// instance per reader thread; not thread-safe by design.
+class CpuBusySampler {
+ public:
+  std::optional<double> sample(const char* path = "/proc/stat");
+
+ private:
+  bool have_ = false;
+  uint64_t busy_ = 0, total_ = 0;
+};
 
 }  // namespace mabur

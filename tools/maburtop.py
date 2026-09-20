@@ -463,9 +463,10 @@ def render_rows_compact(model, wall, width):
         rows.append(
             f"SYS     soc {_f(soc, 3)}C   "
             f"rf delta {_f(sys_d.get('thermal_delta'), 3)}   "
-            f"load {_f(sys_d.get('load'), 4, 2)}   "
+            f"cpu {_f(sys_d.get('cpu_pct'), 5, 1)}%   "
             f"radio rx {_f(rx_s, 4)}   "
             f"shed {(_shed_cell(drone) or '--').ljust(4)}"
+            f"   {'LP' if drone.get('low_power') else '  '}"
         )
 
     # --- link-wide residual (per-stream delivery now lives on the dec lines)
@@ -760,7 +761,7 @@ def panel_drone(model, wall):
     soc_s = _f(soc, 3)
     line8 = (f"system    soc {soc_s}°C    "
              f"rf Δ{_f(sys_d.get('thermal_delta'), 2)}    "
-             f"load {_f(sys_d.get('load'), 5, 2)}")
+             f"cpu {_f(sys_d.get('cpu_pct'), 5, 1)}%")
     spans8 = []
     if soc is not None:
         style = "bad" if soc > 85 else ("warn" if soc > 75 else None)
@@ -777,6 +778,10 @@ def panel_drone(model, wall):
     if shed in ("FS", "CONG", "AIR"):
         idx = line8.rindex(shed_s)
         spans8.append((idx, len(shed_s), "warn"))
+    if drone.get("low_power"):
+        line8 += "    LP"
+        idx = line8.rindex("LP")
+        spans8.append((idx, 2, "warn"))
     body.append((line8, spans8))
 
     return _panel("DRONE", body)

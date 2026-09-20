@@ -513,7 +513,7 @@ TEST(drone_section_null_then_rates) {
   t.rcf_rx = 100; t.radio_sent = 5000; t.up_rssi[1] = 52; t.soc_temp_c = 61;
   t.idr_disagree = 1; t.enhance_disagree = 2;
   t.roi_qp = -24;
-  t.flags = 0x14;  // probing + congestion_shed set, failsafe_shed/radio_rx_ok clear
+  t.flags = 0x94;  // probing + congestion_shed + low_power
   in.telem = t; in.telem_rx_ms = 1400;
   ex.poll(1500, in);
   json j = cap.last();
@@ -528,6 +528,7 @@ TEST(drone_section_null_then_rates) {
   CHECK(j["drone"]["radio_rx_ok"] == false);
   CHECK(j["drone"]["probing"] == true);
   CHECK(j["drone"]["congestion_shed"] == true);
+  CHECK(j["drone"]["low_power"] == true);
   // enc.roi_qp is the ROI override (signed); there is no enc.qp key.
   CHECK(!j["drone"]["enc"].contains("qp"));
   CHECK(j["drone"]["enc"]["roi_qp"] == -24);
@@ -543,6 +544,7 @@ TEST(drone_section_null_then_rates) {
   CHECK(j["drone"]["radio"]["sent_pps"].get<double>() > 1459 && j["drone"]["radio"]["sent_pps"].get<double>() < 1461);
   CHECK(j["drone"]["probing"] == false);
   CHECK(j["drone"]["congestion_shed"] == false);
+  CHECK(j["drone"]["low_power"] == false);
   // same tlm_seq again: rates keep the last computed window, age grows
   ex.poll(3000, in);
   CHECK(cap.last()["drone"]["tlm_age_ms"] == 600);

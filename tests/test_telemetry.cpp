@@ -8,6 +8,7 @@ TEST(make_telem_maps_and_saturates) {
   mabur::TelemInputs in;
   in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probe_on = true;
   in.congestion_shed = true;
+  in.low_power = true;
   in.roi_qp = -24;
   in.generation = 7; in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
   in.applied_ov_base = 0.25;
@@ -20,7 +21,7 @@ TEST(make_telem_maps_and_saturates) {
   in.uplink.has = true;
   in.uplink.rssi[0] = 51.4; in.uplink.rssi[1] = 52.0;
   in.uplink.snr[0] = 21.2; in.uplink.snr[1] = 22.0;
-  in.soc_temp_c = 61; in.load1 = 0.72;
+  in.soc_temp_c = 61; in.cpu_pct = 14.267;
   in.idr_disagree = 3; in.enhance_disagree = 70000;
   in.rcf_seq_echo = 0x4711;
   in.rcf_seq_echo_valid = true;
@@ -35,7 +36,7 @@ TEST(make_telem_maps_and_saturates) {
   // (RcAgent::run_congestion_guard), distinct from bit0's failsafe shed so
   // a bench can count congestion sheds and flightreport can attribute an
   // enh gap to congestion rather than RF.
-  CHECK(t.flags == 0x1F);
+  CHECK(t.flags == 0x9F);  // | low_power (bit7, spec 2026-09-20)
   // roi_qp is the ROI override RcAgent commanded (signed). It was exported
   // as an unsigned `qp` until 2026-09-03; there is no encoder QP on the wire.
   CHECK(t.roi_qp == -24);
@@ -52,13 +53,26 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.up_rssi[0] == 51);         // rounded raw
   CHECK(t.up_snr[1] == 22);
   CHECK(t.soc_temp_c == 61);
-  CHECK(t.load_x100 == 72);
+  CHECK(t.cpu_busy_x100 == 1427);
   CHECK(t.idr_disagree == 3);
   CHECK(t.enhance_disagree == 65535);  // saturates to u16
   // link-rtt: seq echo + pts pass through at full width, no saturation —
   // pts_at_build is a timestamp, not a gauge.
   CHECK(t.rcf_seq_echo == 0x4711);
   CHECK(t.pts_at_build == 0x0011223344556677ull);
+}
+
+TEST(low_power_flag_round_trips) {
+  mabur::TelemInputs in;
+  in.low_power = true;
+  auto t = mabur::make_telem(1, in);
+  CHECK((t.flags & 0x80) != 0);
+  auto wire = mabur::rc::pack_telem(t);
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK((back->flags & 0x80) != 0);
+  in.low_power = false;
+  CHECK((mabur::make_telem(2, in).flags & 0x80) == 0);
 }
 
 TEST(uplink_track_ema_and_thread_snapshot) {
@@ -75,7 +89,53 @@ TEST(uplink_track_ema_and_thread_snapshot) {
 TEST(sys_readers_fail_soft) {
   CHECK(mabur::read_soc_temp_c("/nonexistent") == -128);
   CHECK(mabur::read_soc_temp_c_sigmastar("/nonexistent") == -128);
-  CHECK(mabur::read_load1("/nonexistent") == 0.0);
+  mabur::CpuBusySampler cpu;
+  CHECK(!cpu.sample("/nonexistent"));
+}
+
+// drone.sys.load was /proc/loadavg[0], which on the SigmaStar image counts
+// the SDK's parked D-state workers and read a flat ~13 idle or pegged
+// (docs/dq-spike-findings-2026-08-31.md). Replaced 2026-09-21 by the CPU
+// busy fraction of the tick, from a /proc/stat delta: bench read loadavg
+// 12.08 against 14 % busy over the same 2 s.
+TEST(cpu_busy_is_a_proc_stat_delta_not_loadavg) {
+  const char* p = "/tmp/mabur_test_stat";
+  auto write = [&](const char* line) {
+    FILE* f = std::fopen(p, "w");
+    std::fprintf(f, "%s\nintr 1 2 3\n", line); std::fclose(f);
+  };
+  mabur::CpuBusySampler cpu;
+  // The live drone's two reads, 2 s apart: user+16, system+38, idle+329.
+  write("cpu  8968 0 14081 126891 18 0 394 0 0 0");
+  CHECK(!cpu.sample(p));  // no baseline yet
+  write("cpu  8984 0 14119 127220 18 0 394 0 0 0");
+  auto v = cpu.sample(p);
+  REQUIRE(v);
+  CHECK(std::abs(*v - 100.0 * 54.0 / 383.0) < 1e-9);  // 14.1 %, not 12.08
+  // iowait counts as idle; irq/softirq/steal count as busy.
+  write("cpu  8984 0 14119 127220 118 5 404 1 0 0");
+  v = cpu.sample(p);
+  REQUIRE(v);
+  CHECK(std::abs(*v - 100.0 * 16.0 / 116.0) < 1e-9);
+  // No time passed: nothing to divide by -> unavailable, not NaN/garbage.
+  CHECK(!cpu.sample(p));
+  // A vanished/garbled file drops the baseline: the next good read is a
+  // fresh first sample, never a delta against stale counters.
+  write("cpuX garbage");
+  CHECK(!cpu.sample(p));
+  write("cpu  9000 0 14200 127500 118 5 404 1 0 0");
+  CHECK(!cpu.sample(p));
+  write("cpu  9010 0 14210 127580 118 5 404 1 0 0");
+  v = cpu.sample(p);
+  REQUIRE(v);
+  CHECK(std::abs(*v - 100.0 * 20.0 / 100.0) < 1e-9);
+  // Wire: unavailable is 65535, never 0 -- 0 is a real idle reading.
+  mabur::TelemInputs in;
+  CHECK(mabur::make_telem(1, in).cpu_busy_x100 == 65535);
+  in.cpu_pct = 0.0;
+  CHECK(mabur::make_telem(1, in).cpu_busy_x100 == 0);
+  in.cpu_pct = 100.0;
+  CHECK(mabur::make_telem(1, in).cpu_busy_x100 == 10000);
 }
 
 TEST(soc_temp_formats) {

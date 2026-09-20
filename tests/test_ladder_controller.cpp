@@ -623,6 +623,58 @@ TEST(noinfo_holds_while_a_probe_is_commanded) {
   CHECK(c.counters().probe_holds == 1);
 }
 
+// Low-power mode (docs/link-adaptation.md "Low-power (disarmed) mode") runs
+// the drone at 15 fps, so the per-AU probe books 15 AU/s x bpb 4 = 30
+// expected symbols in the gate's 500 ms window (bench session 0147 read
+// probe_n 28-32). The original min_syms = 40 floor was sized against 60 fps
+// (120 per window) and made every low-power sample unusable: the gate sat in
+// NoInfo for the whole 115 s pre-arm period and held every promote
+// (`P 9614278 1 clean ... 115446`, the first gate edge of the session,
+// landing the instant the FC armed). The floor must sit under that rate.
+TEST(probe_gate_has_information_at_the_low_power_au_rate) {
+  // The 15 fps feed: 28 expected symbols per window, bodies at 15/s (3 per
+  // 200 ms), so clean_bodies = 90 takes 6 s instead of 1.5 s. Stops at the
+  // first promote (or at `until`).
+  auto feed = [](LadderController& c, double& t, double until) {
+    uint64_t bodies = g_probe_bodies;
+    for (int i = 0; t < until; t += 50, ++i) {
+      LinkHealth h = okp(0.0, c.probe_rung(), 0.0);
+      h.probe_expected_syms = 28;
+      if (i % 4 == 0) bodies += 3;
+      h.probe_bodies_total = bodies;
+      c.update(h, t);
+      if (c.rung() != 0) break;
+    }
+    g_probe_bodies = bodies;
+  };
+  {
+    // Revert pin: the old floor holds the promote forever as NoInfo.
+    LadderCfg cfg = make_cfg();
+    cfg.probe.min_syms = 40;
+    LadderController c(cfg);
+    double t = 0;
+    feed(c, t, cfg.clean_ms + 10000);
+    CHECK(c.rung() == 0);
+    CHECK(c.probe_gate(t).state == ProbeGateState::NoInfo);
+    CHECK(c.counters().probe_holds == 1);
+  }
+  {
+    // Shipped floor: the same feed is a usable Clean sample and the promote
+    // lands once the 90-body streak has accrued at the thin rate.
+    LadderCfg cfg = make_cfg();
+    REQUIRE(cfg.probe.min_syms <= 28);
+    LadderController c(cfg);
+    double t = 0;
+    feed(c, t, cfg.clean_ms + 10000);
+    CHECK(c.rung() == 1);
+    CHECK(c.counters().promotes_probed == 1);
+    CHECK(c.counters().probe_holds == 0);
+    // ...and it took the 90-body streak at 15 bodies/s: ~6 s, not 1.5 s.
+    CHECK(t >= 6000.0);
+    CHECK(t < 6000.0 + 500.0);
+  }
+}
+
 TEST(probe_disabled_falls_back_to_legacy_direct_promote) {
   LadderCfg cfg = make_cfg();
   cfg.probe.enable = false;

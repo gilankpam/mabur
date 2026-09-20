@@ -115,6 +115,10 @@ background, not a workload. It will read ~13 whether the drone is idle or
 pegged. Do not use `sys.load` as a CPU signal; it tracks the vendor SDK,
 not mabur.
 
+**Fixed 2026-09-21:** the Telem slot now carries the CPU busy percent of
+the telemetry tick from a `/proc/stat` delta (`cpu_busy_x100`, sideport
+`drone.sys.cpu_pct`); `sys.load` is gone (docs/data-provenance.md).
+
 ## 3. USB round-trips — refuted
 
 `radio.tx_threads` swept 1 / 2 / 4 / 8, 60 s per point, config-only on

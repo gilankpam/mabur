@@ -81,6 +81,10 @@ class Actuator {
   // edition — memory: waybeam-bitrate-wedge).
   virtual bool set_bitrate_kbps(int) = 0;
   virtual bool set_roi_qp(int) = 0;
+  // Low-power mode (spec 2026-09-20): the encoder's frame rate. Same
+  // contract as set_bitrate_kbps -- true iff the encoder took it; RcAgent
+  // latches commanded_fps_ only on true and retries otherwise.
+  virtual bool set_fps(int fps) = 0;
   // No return: an IDR is a one-shot request with no latched state to keep
   // consistent, and the pacer has already spent its budget. A failed one is
   // re-raised by whatever produced it (the next chain break, or the next
@@ -145,6 +149,12 @@ class RcAgent {
   // producer.
   void note_chain_break();
 
+  // The FC's arm state as decoded from an MSP_STATUS reply (spec
+  // 2026-09-20 §1), stamped with the MSP thread's clock. The second
+  // cross-thread entry point after note_chain_break(), and like it a bare
+  // atomic store; consumed at the top of tick() on the agent thread.
+  void note_arm_state(bool armed, uint64_t now_ms);
+
   // Advances the failsafe/rendezvous timers and re-evaluates the
   // congestion guard against the given health sample. On BOOT, the first
   // call applies the MAX_RANGE op and transitions to RENDEZVOUS.
@@ -193,6 +203,18 @@ class RcAgent {
   bool probe_on() const {
     return state_ == State::LINKED && applied_.probe_profile != rc::kNoProbeProfile;
   }
+
+  // True while the low-power operating point is in force (spec 2026-09-20
+  // §2): mode enabled, the last arm report says DISARMED, and that report is
+  // fresher than low_power.stale_ms. Telem flags bit7. Follows the FC's
+  // current state both ways -- a DISARMED report after an arm re-enters, so
+  // a downed-but-powered aircraft falls back to the thin stream.
+  bool low_power() const { return low_power_active_; }
+  // Latched by the first ARMED report; never clears. Observability only
+  // (the drone stats line's armed=): "has this process ever seen the FC
+  // armed", which separates a pre-flight drone from a downed one. NOT a
+  // policy input -- low_power() deliberately does not read it.
+  bool armed_latched() const { return armed_latched_; }
 
   // Latched on a BOOT/RENDEZVOUS -> LINKED transition — the process-(re)start
   // link-up, when frames encoded so far never reached the air and the GS may
@@ -268,14 +290,34 @@ class RcAgent {
   bool have_last_chain_idr_ = false;
   bool idr_due(uint64_t now_ms, bool chain);
 
+  // Low-power (pre-arm) state, spec 2026-09-20. Everything below
+  // arm_report_ is agent-thread-only, unpacked from it once per tick by
+  // intake_arm_state_().
+  //
+  // Arm report handoff (the MSP thread's, the second cross-thread entry
+  // point after chain_break_pending_ above -- see note_arm_state):
+  // ((ms + 1) << 1) | armed, 0 = never reported. A newer report simply
+  // overwrites; the tick unpacks whatever is current.
+  std::atomic<uint64_t> arm_report_{0};
+  bool armed_latched_ = false;
+  bool arm_reported_ = false;
+  bool last_armed_ = false;
+  uint64_t last_arm_ms_ = 0;
+  bool low_power_active_ = false;
+  // Last fps the encoder ACCEPTED (0 = never), the fps twin of
+  // last_bitrate_kbps_.
+  int commanded_fps_ = 0;
+  void intake_arm_state_(uint64_t now_ms);
+
   // Bitrate policy state.
   int last_bitrate_kbps_ = 0;
   bool have_last_bitrate_ = false;
   uint64_t last_bitrate_eval_ms_ = 0;
   bool have_last_bitrate_eval_ = false;
   bool roi_low_ = false;
-  // Set by run_bitrate_policy() whenever set_bitrate_kbps()/set_roi_qp()
-  // returns false, cleared when both verbs are in the state the policy
+  // Set by run_bitrate_policy() whenever one of its three encoder verbs --
+  // set_fps() (low-power mode only), set_bitrate_kbps() or set_roi_qp() --
+  // returns false, cleared when all of them are in the state the policy
   // wants. Drives the per-tick retry half of the periodic re-assert (see
   // kReassertMs / tick()).
   bool verb_apply_failed_ = false;

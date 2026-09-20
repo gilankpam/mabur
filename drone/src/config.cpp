@@ -527,6 +527,16 @@ void parse_msp(const Value& j, MspCfg& m) {
   if (m.baud <= 0) fail("msp.baud", "must be > 0");
 }
 
+void parse_low_power(const Value& j, LowPowerCfg& lp) {
+  check_known_keys(j, {"enable", "bitrate_kbps", "fps", "stale_ms"}, "low_power");
+  assign_if_present(j, "enable", lp.enable, "low_power");
+  assign_if_present(j, "bitrate_kbps", lp.bitrate_kbps, "low_power");
+  assign_if_present(j, "fps", lp.fps, "low_power");
+  assign_if_present(j, "stale_ms", lp.stale_ms, "low_power");
+  if (lp.stale_ms < 100 || lp.stale_ms > 60000)
+    fail("low_power.stale_ms", "must be in [100,60000]");
+}
+
 void parse_ampdu(const Value& j, AmpduCfg& a) {
   check_known_keys(j, {"max_num", "max_time", "min_mcs"}, "ampdu");
   assign_if_present(j, "max_num", a.max_num, "ampdu");
@@ -594,8 +604,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   } clear_on_exit;
 
   static const char* kSections[] = {"radio", "fec", "encoder", "venc",
-                                    "link", "msp", "ampdu", "air_clock"};
-  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock"}, "");
+                                    "link", "msp", "ampdu", "air_clock", "low_power"};
+  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock", "low_power"}, "");
 
   // A whole missing section means none of its keys are visited below, so
   // report the section itself. Dropping a [table] while hand-transcribing is
@@ -612,6 +622,21 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
   if (j.contains("ampdu")) parse_ampdu(j.at("ampdu"), cfg.ampdu);
   if (j.contains("air_clock")) parse_air_clock(j.at("air_clock"), cfg.air_clock);
+  if (j.contains("low_power")) parse_low_power(j.at("low_power"), cfg.low_power);
+
+  // Cross-section checks, only when the mode is on: a disabled mode's
+  // values are irrelevant and the minimal configs the tests load (msp off,
+  // encoder struct floor 2000) must keep loading.
+  if (cfg.low_power.enable) {
+    if (!cfg.msp.enable)
+      fail("low_power.enable", "needs msp.enable (arm state comes from the FC over MSP)");
+    if (cfg.low_power.fps < 1 || cfg.low_power.fps > static_cast<int>(cfg.venc.core.fps))
+      fail("low_power.fps", "must be in [1, venc.fps]");
+    if (cfg.low_power.bitrate_kbps < cfg.encoder.bitrate_min_kbps ||
+        cfg.low_power.bitrate_kbps > cfg.encoder.bitrate_max_kbps)
+      fail("low_power.bitrate_kbps",
+           "must be within [encoder.bitrate_min_kbps, encoder.bitrate_max_kbps]");
+  }
 
   return cfg;
 }

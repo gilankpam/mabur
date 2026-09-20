@@ -129,15 +129,12 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.venc.core.width == 1920);
   CHECK(cfg.venc.core.height == 1080);
   CHECK(cfg.venc.core.fps == 60);
-  CHECK(cfg.venc.core.gop_s == 2.0);
+  CHECK(cfg.venc.core.gop_s == 0.5);
   CHECK(cfg.venc.core.qp_delta == 4);
   CHECK(cfg.venc.core.max_ipprop == 2);
-  // I-frame QP floor: the only knob that caps IDR size (bench 2026-09-06,
-  // min_iqp 44 -> 2.2 kB IDRs vs 4.5-24 kB). docs/iqp-cap-findings-2026-09-06.md.
-  CHECK(cfg.venc.core.min_iqp == 44);
-  // 3, not the 1080p-derived 4: the drone encodes 720p, where the
-  // rally-equivalent row count is 3 (docs/venc-resilience).
-  CHECK(cfg.venc.core.intra_refresh_rows == 3);
+  // Re-pinned to the bundle as of b05c60f (2026-09-19 low-power spike retune).
+  CHECK(cfg.venc.core.min_iqp == 34);
+  CHECK(cfg.venc.core.intra_refresh_rows == 34);
   CHECK(cfg.venc.core.intra_refresh_qp == 36);
   // P-frame size cap, 200 % (docs/handover-venc-overshoot-2026-09-03.md).
   CHECK(cfg.venc.core.superframe_p_pct == 200);
@@ -167,6 +164,14 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.msp.enable == true);
   CHECK(cfg.msp.serial == std::string("/dev/ttyS2"));
   CHECK(cfg.msp.update_rate_hz == 3);
+
+  // low_power (spec 2026-09-20): pre-arm thermal mode. 1 Mb/s @ 15 fps is
+  // the operating point the 2026-09-19 spike chose; enable requires
+  // msp.enable (the arm state comes from the FC over MSP).
+  CHECK(cfg.low_power.enable == true);
+  CHECK(cfg.low_power.bitrate_kbps == 1000);
+  CHECK(cfg.low_power.fps == 30);
+  CHECK(cfg.low_power.stale_ms == 2000);
 
   // A-MPDU agg6; see fec.feed_batch above. agg31 cascades residuals.
   CHECK(cfg.ampdu.max_num == 6);
@@ -1397,6 +1402,84 @@ TEST(follow_gs_and_move_confirm_parse_with_defaults) {
   std::string msg = what_of([&] { (void)load_config(bad.string()); });
   CHECK(msg.find("link.move_confirm_ms") != std::string::npos);
   std::filesystem::remove(bad);
+}
+
+TEST(low_power_defaults_are_disabled_and_parse) {
+  {
+    auto path = write_temp_toml("");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.low_power.enable == false);
+    CHECK(cfg.low_power.bitrate_kbps == 1000);
+    CHECK(cfg.low_power.fps == 15);
+    CHECK(cfg.low_power.stale_ms == 2000);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_toml(
+        "[msp]\nenable = true\n"
+        "[encoder]\nbitrate_min_kbps = 1000\nbitrate_max_kbps = 16000\n"
+        "[low_power]\nenable = true\nbitrate_kbps = 2000\nfps = 30\nstale_ms = 3000\n");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.low_power.enable == true);
+    CHECK(cfg.low_power.bitrate_kbps == 2000);
+    CHECK(cfg.low_power.fps == 30);
+    CHECK(cfg.low_power.stale_ms == 3000);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(low_power_unknown_key_throws_naming_it) {
+  auto path = write_temp_toml("[low_power]\nbogus = 1\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("low_power.bogus") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(low_power_enable_requires_msp_enable) {
+  auto path = write_temp_toml(
+      "[encoder]\nbitrate_min_kbps = 1000\nbitrate_max_kbps = 16000\n"
+      "[low_power]\nenable = true\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("low_power.enable") != std::string::npos);
+  CHECK(msg.find("msp.enable") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(low_power_fps_must_not_exceed_venc_fps) {
+  auto path = write_temp_toml(
+      "[msp]\nenable = true\n"
+      "[encoder]\nbitrate_min_kbps = 1000\nbitrate_max_kbps = 16000\n"
+      "[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nfps = 30\n"
+      "[low_power]\nenable = true\nfps = 60\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("low_power.fps") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(low_power_bitrate_must_sit_inside_the_encoder_clamp) {
+  auto path = write_temp_toml(
+      "[msp]\nenable = true\n"
+      "[encoder]\nbitrate_min_kbps = 2000\nbitrate_max_kbps = 16000\n"
+      "[low_power]\nenable = true\nbitrate_kbps = 1000\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("low_power.bitrate_kbps") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(low_power_stale_ms_range) {
+  auto path = write_temp_toml("[low_power]\nstale_ms = 50\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("low_power.stale_ms") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(low_power_disabled_skips_cross_section_checks) {
+  // A disabled mode's values are irrelevant: the empty-config path (msp off,
+  // encoder min 2000 > low_power 1000) must keep loading.
+  auto path = write_temp_toml("[low_power]\nenable = false\nbitrate_kbps = 100\nfps = 200\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.empty());
+  std::filesystem::remove(path);
 }
 
 MTEST_MAIN

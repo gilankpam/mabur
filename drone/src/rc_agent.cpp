@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "mabur/rc_proto.h"
 #include "mabur/uep_encoder.h"
@@ -26,6 +27,50 @@ RcAgent::RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr)
 
 void RcAgent::note_chain_break() {
   chain_break_pending_.store(true, std::memory_order_relaxed);
+}
+
+void RcAgent::note_arm_state(bool armed, uint64_t now_ms) {
+  arm_report_.store(((now_ms + 1) << 1) | (armed ? 1u : 0u), std::memory_order_relaxed);
+}
+
+// Spec 2026-09-20 §2. Runs once per tick, after the BOOT branch. Unpacks
+// the latest arm report, latches ARMED forever, recomputes whether the
+// low-power operating point is wanted, and on a change runs the policy
+// with force in ANY state -- pre-link RENDEZVOUS on the ground is exactly
+// when this mode matters. "Fresh" tolerates a report stamped a little
+// AFTER this tick's clock: the MSP thread stamps on its own read.
+void RcAgent::intake_arm_state_(uint64_t now_ms) {
+  const uint64_t r = arm_report_.load(std::memory_order_relaxed);
+  if (r != 0) {
+    arm_reported_ = true;
+    last_armed_ = (r & 1u) != 0;
+    last_arm_ms_ = (r >> 1) - 1;
+    if (last_armed_) armed_latched_ = true;
+  }
+  const bool fresh = arm_reported_ &&
+                     (now_ms < last_arm_ms_ ||
+                      now_ms - last_arm_ms_ <= static_cast<uint64_t>(cfg_.low_power.stale_ms));
+  // The mode follows the FC's CURRENT arm state, not a one-shot latch: a
+  // DISARMED report re-enters low power however many times the FC has armed
+  // before. That is the post-crash case -- aircraft down, FC still
+  // answering, link degraded to mcs0 -- where a thin 15 fps stream is more
+  // likely to reach the GS than a full-rate one. armed_latched_ survives as
+  // observability only (the stats line's armed=), never as policy.
+  //
+  // What did NOT change is fail open: `fresh` still gates everything, so
+  // silence, a dead UART or an FC that lost power all mean FULL power. A
+  // crash that kills the FC therefore gives full-rate video, not this mode.
+  const bool want = cfg_.low_power.enable && fresh && !last_armed_;
+  if (want == low_power_active_) return;
+  low_power_active_ = want;
+  if (want)
+    std::fprintf(stderr, "rc: low_power ENTER fps=%d cap=%d kbps\n",
+                 cfg_.low_power.fps, cfg_.low_power.bitrate_kbps);
+  else
+    // last_armed_, not armed_latched_: the latch never clears, so reading it
+    // here would report "armed" for every staleness exit after the first arm.
+    std::fprintf(stderr, "rc: low_power EXIT (%s)\n", last_armed_ ? "armed" : "stale");
+  run_bitrate_policy(now_ms, /*force=*/true);
 }
 
 // One pacer for every IDR producer (spec 2026-08-28 venc-foldin §4). 100 ms
@@ -244,6 +289,10 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   // minimum" would not be the one in force.
   kbps = std::clamp(kbps, static_cast<double>(cfg_.encoder.bitrate_min_kbps),
                      static_cast<double>(cfg_.encoder.bitrate_max_kbps));
+  // Low-power cap (spec 2026-09-20): min(), so FAILSAFE's floor and the
+  // cap compose; config validation keeps the cap inside the encoder clamp.
+  if (low_power_active_)
+    kbps = std::min(kbps, static_cast<double>(cfg_.low_power.bitrate_kbps));
   int kbps_i = round_to_100(kbps);
 
   bool decrease = have_last_bitrate_ && kbps_i < last_bitrate_kbps_;
@@ -261,6 +310,19 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
   // the old rate for the rest of the flight, because `changed` reads false
   // forever after.
   bool failed = false;
+  // Frame rate, fps BEFORE bitrate: the bitrate write's IDR then seeds the
+  // stream at the new rate. Only when the mode is configured on -- a
+  // disabled mode never touches the encoder's boot fps. Latched on
+  // success only, like every other verb; no 1 Hz throttle (that exists
+  // for the bitrate hysteresis case).
+  if (cfg_.low_power.enable) {
+    const int target_fps = low_power_active_ ? cfg_.low_power.fps
+                                             : static_cast<int>(cfg_.venc.core.fps);
+    if (force || commanded_fps_ != target_fps) {
+      if (act_.set_fps(target_fps)) commanded_fps_ = target_fps;
+      else failed = true;
+    }
+  }
   if (force || decrease || (changed && !throttled)) {
     if (act_.set_bitrate_kbps(kbps_i)) {
       last_bitrate_kbps_ = kbps_i;
@@ -546,9 +608,10 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
   // matters. The LINKED gate stays, so a break raised while genuinely
   // unlinked is consumed and dropped rather than queued — affordable only
   // because the encoder's own GOP is the backstop: at the shipped
-  // venc.gop_s = 2.0 an unhealed chain break self-clears within ~2 s. Raise
-  // gop_s and that safety net stretches with it, at which point dropping
-  // refused requests instead of deferring them needs re-arguing.
+  // venc.gop_s = 0.5 (bundle/mabur.default.toml since b05c60f) an unhealed
+  // chain break self-clears within ~0.5 s. That backstop is only as short as
+  // gop_s: raise it and the safety net stretches with it, at which point
+  // dropping refused requests instead of deferring them needs re-arguing.
   if (chain_break_pending_.exchange(false, std::memory_order_relaxed) &&
       state_ == State::LINKED && idr_due(now_ms, /*chain=*/true)) {
     act_.request_idr();
@@ -583,6 +646,22 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     }
   }
 
+  // Arm-state intake sits HERE — below the unconfirmed-move and
+  // failsafe-entry branches, directly above the re-assert — so that its
+  // forced policy run is the LAST one of the tick. Both of those branches
+  // call apply_max_range() -> run_bitrate_policy(force=true) with no
+  // ran_this_tick guard of their own, so an arm change coincident with one
+  // of them still costs two policy runs in the same millisecond; what this
+  // ordering buys is that the run which lands on the encoder last is the one
+  // carrying BOTH the new operating point and the new low-power state, and
+  // that its last_policy_ms_ stamp makes the re-assert below a no-op for
+  // this tick. (Collapsing the coincident pair into one write would mean
+  // taking the policy call out of apply_max_range — a restructure, not a
+  // fix.) The intake must still run before the re-assert: on an ordinary
+  // tick nothing else has run the policy, and the re-assert must see the
+  // arm state this tick, not next.
+  intake_arm_state_(now_ms);
+
   // Periodic re-assert of the encoder verbs (kReassertMs). run_bitrate_policy
   // otherwise runs ONLY on an RCF, a DISC, or a max-range entry, which makes
   // "retry on the next policy tick" a promise the agent cannot keep in the
@@ -607,9 +686,11 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
   // re-assert on top, while a parked one gets exactly one every 5 s. A failed
   // verb short-circuits to the next tick.
   //
-  // RENDEZVOUS is excluded: it is the pre-link state where no GS has been
-  // heard from, MAX_RANGE was applied once on the BOOT tick, and there is
-  // nothing to defend the value against.
+  // RENDEZVOUS is excluded from the CADENCE: it is the pre-link state where
+  // no GS has been heard from, MAX_RANGE was applied once on the BOOT tick,
+  // and there is nothing to defend the value against. verb_apply_failed_
+  // now retries in RENDEZVOUS too -- a refused low-power transition verb on
+  // the ground has no RCF to carry its retry (spec 2026-09-20).
   //
   // ran_this_tick keeps it to at most one policy run per distinct now_ms: a
   // tick that has ALREADY run the policy (the failsafe entry a few lines up,
@@ -617,9 +698,11 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
   // immediately run it again — most visibly when that run FAILED, where the
   // retry belongs on the next tick, not back-to-back on this one.
   bool ran_this_tick = have_last_policy_ && last_policy_ms_ == now_ms;
-  if (!ran_this_tick && (state_ == State::LINKED || state_ == State::FAILSAFE)) {
-    bool reassert_due = verb_apply_failed_ || !have_last_bitrate_eval_ ||
-                        now_ms - last_bitrate_eval_ms_ >= kReassertMs;
+  if (!ran_this_tick) {
+    const bool defended = state_ == State::LINKED || state_ == State::FAILSAFE;
+    bool reassert_due = verb_apply_failed_ ||
+                        (defended && (!have_last_bitrate_eval_ ||
+                                      now_ms - last_bitrate_eval_ms_ >= kReassertMs));
     if (reassert_due) run_bitrate_policy(now_ms, /*force=*/true);
   }
 

@@ -35,6 +35,7 @@ GsSnapshot nominal() {
   s.air_pct = 62.0;
   s.pre_loss_pct = 0.3;
   s.post_loss_pct = 0.0;
+  s.soc_temp_c = 41;
   GsCard a; a.id = 0; a.heard = true; a.rssi_dbm = -70.0; a.snr_db = 22.0;
   GsCard b; b.id = 1; b.heard = true; b.rssi_dbm = -72.0; b.snr_db = 20.0;
   s.cards = {a, b};
@@ -100,7 +101,7 @@ TEST(the_rows_read_exactly_as_specified) {
   GsCompactBar bar(f);
   REQUIRE(bar.layout(1920, 1080, &err));
   CHECK(row_of(bar, nominal(), false, player_nominal(), 0) ==
-        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20");
+        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
   CHECK(row_of(bar, nominal(), false, player_nominal(), 1) ==
         "bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0");
 }
@@ -116,10 +117,10 @@ TEST(auto_channel_select_marks_the_channel) {
   GsSnapshot s = nominal();
   s.scan_auto = true;
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:149(a) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+        "ch:149(a) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
   s.channel.reset();
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:--(a) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+        "ch:--(a) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
 }
 
 // In-flight channel hop (spec 2026-09-14-inflight-channel-hop): the
@@ -135,12 +136,12 @@ TEST(inflight_hop_marks_the_channel) {
   GsSnapshot s = nominal();
   s.hopped = true;
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
   // hopped takes priority over scan_auto when (implausibly) both are set --
   // they share the one suffix slot worst_case() reserves.
   s.scan_auto = true;
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20");
+        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
 }
 
 // A card count of four widens exactly two items and nothing else.
@@ -172,7 +173,7 @@ TEST(missing_values_render_as_double_dash_never_zero) {
   const GsSnapshot empty;          // nothing ever received, no cards
   const GsPlayerState cold;        // nothing ever decoded
   CHECK(row_of(bar, empty, false, cold, 0) ==
-        "ch:-- mcs:-- air:-- rssi:-- snr:--");
+        "ch:-- mcs:-- air:-- rssi:-- snr:-- temp:--");
   CHECK(row_of(bar, empty, false, cold, 1) ==
         "bitrate:0.0 res:-- fps:0 jit:0.0 lat:--/-- loss:--/--");
 }
@@ -276,9 +277,10 @@ TEST(the_recording_indicator_never_dims_on_a_stale_link) {
   ps.rec.kind = RecState::Kind::kRecording;
   std::vector<DirtyRect> rects;
   bar.update(s, false, ps, c.s, &rects);
-  // Fresh -> stale redraws only the six LINK items; REC is not one of them.
+  // Fresh -> stale redraws only the seven LINK items (ch, mcs, air, rssi,
+  // snr, temp, loss); REC is not one of them.
   rects.clear();
-  CHECK(bar.update(s, true, ps, c.s, &rects) == 6);
+  CHECK(bar.update(s, true, ps, c.s, &rects) == 7);
   CHECK(bar.debug_field_text(s, true, ps, GsBarField::kRec) ==
         bar.debug_field_text(s, false, ps, GsBarField::kRec));
 }
@@ -351,10 +353,10 @@ TEST(stale_dims_the_link_items_and_leaves_the_player_ones_lit) {
   // Text is unchanged by staleness -- the value is HELD, only dimmed.
   CHECK(line_of(bar, s, true, ps) == line_of(bar, s, false, ps));
   // Every field still redraws on the transition (the colour moved), and
-  // exactly the six link items are the ones that changed colour.
+  // exactly the seven link items are the ones that changed colour.
   rects.clear();
   const int drawn = bar.update(s, true, ps, c.s, &rects);
-  CHECK(drawn == 6);
+  CHECK(drawn == 7);
 }
 
 // --- geometry ---------------------------------------------------------
@@ -400,6 +402,7 @@ TEST(items_are_split_radio_above_picture_below) {
   CHECK(GsCompactBar::row_of(GsBarField::kAir) == 0);
   CHECK(GsCompactBar::row_of(GsBarField::kRssi) == 0);
   CHECK(GsCompactBar::row_of(GsBarField::kSnr) == 0);
+  CHECK(GsCompactBar::row_of(GsBarField::kTemp) == 0);  // drone-sourced: radio row
   // REC belongs to no row at all: it is anchored top-right, so it costs
   // the rows no width (and therefore the bar no type size) and cannot
   // pull a centred row off centre.
@@ -726,6 +729,70 @@ TEST(make_gs_layer_builds_a_layer_that_lays_out_for_either_style) {
     std::vector<DirtyRect> rects;
     CHECK(l->update(nominal(), false, player_nominal(), c.s, &rects) > 0);
   }
+}
+
+// Low-power (pre-arm) mode, spec 2026-09-20: the drone is deliberately at
+// 15 fps / 1 Mb/s. The fps cell keeps its text and turns caution-coloured
+// so the pilot can tell "throttled on purpose" from a fault; no new item
+// (items that come and go are unsupported on this bar).
+TEST(low_power_tints_the_fps_cell) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  GsPlayerState ps = player_nominal();
+  ps.fps = 15.0;
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kFps) == tok::kTextPrimary);
+  s.low_power = true;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kFps) == "fps:15");
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kFps) == tok::kStatusCaution);
+  // Row text is unchanged: the tint is colour only.
+  CHECK(row_of(bar, s, false, ps, 1) ==
+        "bitrate:8.1 res:1280x720 fps:15 jit:5.2 lat:45/78 loss:0.3/0.0");
+  // Stale sideport: low_power is the last value HEARD, not a current one,
+  // while fps stays player-measured and live. The tint would claim the low
+  // number is deliberate on evidence that may be arbitrarily old, so it is
+  // dropped -- the cell reads as an ordinary (undimmed) player-measured
+  // number until the link speaks again.
+  CHECK(bar.debug_field_rgb(s, true, ps, GsBarField::kFps) == tok::kTextPrimary);
+  CHECK(bar.debug_field_text(s, true, ps, GsBarField::kFps) == "fps:15");
+}
+
+// Drone SoC temperature (sideport drone.sys.soc_temp_c), 2026-09-21: a
+// link-sourced cell on the radio row. Caution tint from 70 C -- the
+// fan-off spike climbed to 84 C in 15 min (docs/low-power-spike-findings-
+// 2026-09-19.md) -- and only ONE threshold, because the palette allows no
+// third status colour. Dims like every other link item when stale, and the
+// tint is gated on !stale for the same reason the fps cell's is.
+TEST(drone_temp_reads_on_the_radio_row_and_tints_caution_from_70) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  GsPlayerState ps = player_nominal();
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kTemp) == "temp:41");
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kTemp) == tok::kTextPrimary);
+  s.soc_temp_c = 69;
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kTemp) == tok::kTextPrimary);
+  s.soc_temp_c = 70;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kTemp) == "temp:70");
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kTemp) == tok::kStatusCaution);
+  s.soc_temp_c = 84;
+  CHECK(bar.debug_field_rgb(s, false, ps, GsBarField::kTemp) == tok::kStatusCaution);
+  // Stale: dimmed, last value held, no caution claim.
+  CHECK(bar.debug_field_text(s, true, ps, GsBarField::kTemp) == "temp:84");
+  CHECK(bar.debug_field_rgb(s, true, ps, GsBarField::kTemp) == tok::kTextLabel);
+  // Unavailable (no telemetry, older maburgs, -128 sentinel): dashes.
+  s.soc_temp_c.reset();
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kTemp) == "temp:--");
+  // Clamped inside the worst case ("temp:127"): an int8 can't exceed it,
+  // and a negative SoC is not a flight condition worth a wider box.
+  s.soc_temp_c = -40;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kTemp) == "temp:0");
 }
 
 MTEST_MAIN

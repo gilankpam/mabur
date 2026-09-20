@@ -51,6 +51,7 @@
 #include "frame_source.h"
 #include "mabur/frame_wire.h"
 #include "mabur/msp_source.h"
+#include "mabur/msp_status.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/sbi.h"
@@ -315,6 +316,9 @@ struct RealActuator : mabur::Actuator {
   mabur::RadioTx* tx = nullptr;
   mabur::FrameSink* sink = nullptr;
   std::atomic<std::shared_ptr<const mabur::AppliedOp>>* shared_op = nullptr;
+  // Set after every accepted set_fps; the hot thread consumes it to
+  // re-anchor FramePipeline's vanish period (note_rate_change).
+  std::atomic<bool>* rate_change = nullptr;
   IRtlDevice* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
   // Per-rung A-MPDU (ampdu_policy.h): the aggregation mode follows the
@@ -467,6 +471,22 @@ struct RealActuator : mabur::Actuator {
       return false;
     }
 #endif
+    return true;
+  }
+
+  bool set_fps(int f) override {
+    if (dry_run) {
+      std::fprintf(stderr, "[dry-run] set_fps(%d)\n", f);
+      return true;
+    }
+#ifdef MABUR_HAVE_VENC
+    if (venc_set_fps(f) != 0) {
+      ++venc_verb_failures;
+      std::fprintf(stderr, "venc: set_fps(%d) FAILED (retry next tick)\n", f);
+      return false;
+    }
+#endif
+    if (rate_change) rate_change->store(true, std::memory_order_relaxed);
     return true;
   }
 
@@ -1287,10 +1307,16 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // shared_op, not inside either thread's lambda.
   OvOverride ov_override;
 
+  // Agent thread -> hot thread: the encoder's frame rate changed (low-power
+  // set_fps), so the vanish tracker must re-learn its period rather than
+  // book the new deltas as holes. Same shape as link_up_discont below.
+  std::atomic<bool> fps_rate_change{false};
+
   RealActuator actuator;
   actuator.tx = &tx;
   actuator.sink = &dev_sink;
   actuator.shared_op = &shared_op;
+  actuator.rate_change = &fps_rate_change;
   actuator.dev = rtl_device.get();
   actuator.dry_run = false;
   actuator.ampdu = cfg.ampdu;
@@ -1582,6 +1608,31 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           cfg.msp.symbol_size, cfg.msp.window,
           cfg.msp.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen),
           cfg.msp.update_rate_hz, cfg.msp.serial.c_str(), cfg.msp.baud);
+
+      // Low-power mode (spec 2026-09-20 §1): ask the FC for its arm state.
+      // MSP_STATUS is request/reply -- the FC pushes only DisplayPort on
+      // its own -- so poll at kArmPollMs and hand every decoded reply to
+      // RcAgent. Kept polling after the arm latch: 6 B out + ~33 B in per
+      // 500 ms is free and the live flag stays observable.
+      //
+      // COUPLED to low_power.stale_ms, which is operator-configurable while
+      // this is not: a report is fresh for stale_ms and arrives at best once
+      // per kArmPollMs, so stale_ms <= 500 makes the mode flap once per poll
+      // (fresh on the reply tick, stale before the next one). Deliberately
+      // NOT validated -- the flap direction is toward FULL power, i.e. the
+      // safe side, so a too-small stale_ms costs bitrate, never safety.
+      // Keep stale_ms comfortably above this (the bundle ships 2000), and if
+      // this poll period ever changes, revisit that margin.
+      constexpr uint64_t kArmPollMs = 500;
+      std::vector<uint8_t> status_req;
+      mabur::msp_append_status_request(status_req);
+      uint64_t last_poll_ms = 0;
+      if (cfg.low_power.enable)
+        src.set_message_hook([&](const mabur::MspMessage& m) {
+          if (auto armed = mabur::msp_status_armed(m))
+            agent.note_arm_state(*armed, now_steady_ms());
+        });
+
       MspSerial serial;
       uint8_t buf[512];
       while (!g_devourer_should_stop) {
@@ -1596,6 +1647,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
         int n = serial.read(buf, sizeof buf);
         if (n > 0) src.on_serial_bytes(buf, static_cast<size_t>(n), now_steady_ms());
         else if (n < 0) serial.close();  // error -> reconnect
+
+        if (cfg.low_power.enable && serial.is_open()) {
+          uint64_t t = now_steady_ms();
+          if (t - last_poll_ms >= kArmPollMs) {
+            last_poll_ms = t;
+            if (serial.write(status_req.data(), status_req.size()) < 0) serial.close();
+          }
+        }
       }
     });
   }
@@ -1761,6 +1820,11 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
             pipe.reset_vanish_counters();
           }
         }
+        // Frame rate changed under us (low-power set_fps): re-anchor the
+        // vanish period BEFORE this frame's pts is scored, so a 60 -> 15 fps
+        // drop is learned as the new period, not booked as 3 holes/frame.
+        if (fps_rate_change.exchange(false, std::memory_order_relaxed))
+          pipe.note_rate_change();
         // Streaming push (dq-spike follow-up 2026-08-31): each body goes to
         // the TxQueue the moment its SBI group seals, so the radio drains
         // this frame's early bodies in parallel with the remaining GF256/SBI
@@ -2444,6 +2508,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // wire sequence from a different thread — see that declaration's
     // comment for why a shared counter is load-bearing there.
     uint64_t last_telem_ms = start;
+    mabur::CpuBusySampler cpu_busy;  // /proc/stat delta per telemetry tick
     uint64_t rx_beat_at_last_telem = 0;
     uint64_t air_drops_at_last_telem = 0;
 
@@ -2555,7 +2620,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                        "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
                        "txq=%zu txq_drop=%llu "
                        "thermal_delta=%d tx_failed=%llu venc_verb_fail=%llu "
-                       "enc_pk100=%uk\n",
+                       "enc_pk100=%uk lp=%d armed=%d\n",
                        static_cast<int>(agent.state()), static_cast<unsigned long long>(hb),
                        static_cast<unsigned long long>(rb), tx.seq(),
                        static_cast<unsigned long long>(tx.sent()),
@@ -2564,7 +2629,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                        health.thermal_delta,
                        static_cast<unsigned long long>(txstats.failed),
                        static_cast<unsigned long long>(actuator.venc_verb_failures),
-                       enc_peak.take_peak_kbps());
+                       enc_peak.take_peak_kbps(),
+                       static_cast<int>(agent.low_power()), static_cast<int>(agent.armed_latched()));
         }
 
         // Telemetry suppression (spec 2026-09-10 step 2): non-sweep PPDUs in
@@ -2587,6 +2653,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           ti.failsafe_shed = agent.failsafe_shed();
           ti.congestion_shed = agent.congestion_shed();
           ti.probe_on = agent.probe_on();
+          ti.low_power = agent.low_power();
           // "advanced in the last 2 s" (spec) approximated as "advanced over
           // the last telemetry tick" (~1 s here) — the collector runs on this
           // same 1 Hz cadence, so a stricter 2 s window would just double-count
@@ -2654,7 +2721,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
             ti.soc_temp_c = read_soc_temp_c_sigmastar();
           ti.thermal_delta = health.thermal_delta;
-          ti.load1 = read_load1();
+          ti.cpu_pct = cpu_busy.sample();
           ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
           ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
           ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);

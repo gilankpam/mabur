@@ -895,3 +895,129 @@ result 2026-06-07 in `../waybeam_venc/documentation/STAR6E_SINGLE_PID_REINIT_FIN
 is why fold-in bring-up failure is fatal-by-design (exit, respawn, cold
 bring-up ~14–17 s measured, 5/5 unaided) rather than something the daemon
 tries to heal in place.
+
+### Low-power (disarmed) mode (2026-09-20)
+
+While the FC reports DISARMED, `RcAgent` runs the encoder at
+`low_power.bitrate_kbps` / `low_power.fps` (bundle: 1 Mb/s, 15 fps); an
+ARMED report returns full power. The mode tracks the FC's **current** arm
+state both ways — it is not a one-shot pre-arm latch — so a DISARMED report
+re-enters it however many times the aircraft has armed before.
+Spike: `docs/low-power-spike-findings-2026-09-19.md` (bitrate is the
+thermal lever for SoC and radio alike, fps second-order, CPU clock not a
+lever at all).
+
+The second case this buys, after the pre-arm thermal one, is **recovery
+video**: an aircraft that is down but still powered keeps answering
+MSP_STATUS with DISARMED, so it drops back to the thin stream. At the mcs0
+the ladder will have fallen to, 15 fps at 1 Mb/s is far likelier to reach
+the GS than full rate — fewer FEC generations, more airtime budget per
+frame. `armed_latched()` still records whether this process ever saw the FC
+armed, which is what separates a pre-flight drone from a downed one on the
+`stats:` line; it is observability only and deliberately does not gate the
+mode.
+
+- **Trigger.** The MSP thread polls `MSP_STATUS` (cmd 101) at 2 Hz on the
+  OSD UART — the FC pushes only DisplayPort on its own — and hands BOXARM
+  (flightModeFlags bit 0) to `RcAgent::note_arm_state()`, one atomic like
+  the chain-break signal, consumed on the tick.
+- **Fail open.** `low_power_active_` = enabled ∧ the last arm report says
+  DISARMED ∧ that report is fresher than `low_power.stale_ms` (2 s).
+  Silence, a dead UART, `msp.enable = false`: full power. A maburd respawn
+  in flight boots full power and follows the first reply.
+  Freshness is the whole safety property now that the arm latch no longer
+  gates the mode: **a crash that kills the FC or its UART gives full-rate
+  video, not this mode**, because the reports stop. Recovery video only
+  works while the FC survives and keeps answering. The cost of dropping the
+  latch is that a spurious DISARMED — an MSP desync, a corrupt frame whose
+  XOR checksum happens to pass — throttles to 15 fps in flight until the
+  next poll corrects it 500 ms later. Judged acceptable: a *real* in-flight
+  disarm means the aircraft is already coming down. There is deliberately
+  no debounce; one bad frame costs two rebinds and self-corrects.
+- **What changes.** `run_bitrate_policy()` gains a target fps next to the
+  target bitrate; the bitrate is additionally `min()`-clamped to the cap.
+  fps goes out first, then the bitrate — its `SetChnAttr` IDR seeds the
+  stream at the new rate, so the verb itself never requests one. Both
+  follow the existing rules: latched on success only, retried on refusal
+  (now in RENDEZVOUS too — on the ground there is no RCF to carry a
+  retry), restated by the 5 s re-assert, so an fps set behind RcAgent's
+  back is bounded like a bitrate override. Transitions run in any state.
+- **The fps verb** (`venc_set_fps`, a port of waybeam f956a52 `apply_fps`)
+  is a VPE→VENC unbind/rebind at `sensor_fps:fps` plus an RC `fpsNum` and
+  GOP rewrite plus a SuperFrame re-derive. The RC `fpsNum` alone drops
+  nothing: it is the CBR budget divisor, and writing 15 with the bind at
+  60 measured 60 fps at 3.7x the commanded bitrate with the venc ring full
+  (probe 2026-09-20). The rebind takes live in both directions on the
+  running channel: 16.1 / 61.1 fps, 0 frame-id gaps, bitrate holding, one
+  incomplete enh AU on the way down and none up. The verb logs
+  `> FPS delivered N ... in M us`.
+- **What the ladder does under the thin stream — measured on the bench,
+  2026-09-20 (GS session 0147, drone log).** Three things, in the order
+  they were found:
+  1. **The probe gate held every promote for the whole pre-arm period.**
+     The per-AU probe books 15 AU/s × bpb 4 = 30 expected symbols in the
+     gate's 500 ms window (S lines read `probe_n` 28-32), and
+     `link.probe.min_syms` was 40 — sized against 60 fps = 120 per window.
+     Under the floor every sample is unusable, the gate reads NoInfo, and
+     NoInfo *holds* the promote (spec §4.4). The first gate edge of the
+     session is `P 9614278 1 clean … 115446`: 115 s of NoInfo from boot,
+     ending the instant the FC armed and the stream went to 60 fps, after
+     which the ladder climbed 0→5 in 8 s. **Fixed by lowering the floor
+     to 16** (four AUs' worth — the true no-traffic floor; code default,
+     `gs/bundle`, and the GS's `/etc/maburgs.toml`). With it the promote
+     needs the same 90-body clean streak, which takes ~6 s at 15
+     bodies/s instead of 1.5 s (`probe_gate_has_information_at_the_low_
+     power_au_rate` pins both halves). Keep `min_syms` under
+     `low_power.fps × 2` if either moves.
+  2. **The thin stream makes the loss ratios hypersensitive.** After a
+     disarm from rung 5 the ladder cascaded 4→3→2→1→0 on `s3_util` in
+     50 s (dwells 27/32/11/6 s) with the bench's usual ~2 FEC repair
+     episodes/s (`fec.log`: 44 in that window, the GS-uplink self-blanking
+     class). At 60 fps one lost aggregate is ~1-2 % of a 500 ms window; at
+     15 fps × 1 Mb/s the enh window holds ~15-30 symbols, so the same
+     single loss reads `u3` 0.22-0.29 against `s3_down_util 0.15` and
+     demotes after `confirm_ms`. Expect the low-power ladder to saw-tooth
+     on a lossy bench rather than hold a rung; NOT fixed — it is the
+     window/threshold design meeting a 4-8x thinner stream, and the
+     right answer (a window in AUs, or a per-loss-event floor) is a
+     separate spec.
+  3. **A live fps drop booked phantom vanishes.** `FramePipeline`'s vanish
+     period is an EMA over "normal" deltas only, so after the 60→15 fps
+     rebind every 66.7 ms step read as a 4x hole: `vanished` ran 3/4 →
+     5578/5582 in four minutes at a flat 15 reads/s (3 per frame), and
+     the Telem counters saturate. Link-inert (the self-IDR latch has no
+     consumer), telemetry-corrupting. **Fixed:** `set_fps` raises a
+     flag the hot thread consumes to `note_rate_change()` before scoring
+     the next pts (`frame_pipeline_rate_change_reanchors_the_period_
+     instead_of_booking_holes`).
+
+  Follow-up the same night: `low_power.fps` raised **15 → 30** in the
+  bundle (and on the drone). At 30 fps the windows hold twice the symbols,
+  the single-loss quantum halves, and the bench ladder climbed to mcs 5
+  and held instead of saw-toothing — item 2 mitigated by config, the
+  windowing question itself still open.
+
+  What is still unmeasured is the arm step itself: at ARM,
+  `run_bitrate_policy(force=true)` raises the encoder from 1 Mb/s to the
+  current rung's full budget in one write. On the bench the ladder was at
+  rung 0 at arm (item 1), so the step was small; with item 1 fixed the
+  rung at arm can be anything the thin stream converged on, never loaded
+  at full rate. Read post-flight: the rung at the `drone.low_power`
+  false-edge (or `rc: low_power EXIT (armed)` in the drone log) and
+  whether a demote follows within ~5 s. If real, the fix is a ramp, or
+  holding the ladder down until the first full-rate windows have scored.
+- **ROI interaction.** Entering low power trips `roi_low_` — 1000 kbps is
+  under `encoder.roi_threshold_kbps` (3000) — so RcAgent issues
+  `set_roi_qp(-24)` on the way in and `set_roi_qp(0)` on the way out.
+  That is harmless *today* only because `[venc.roi] enabled = false`
+  short-circuits in `apply_roi_qp`. Re-enable ROI and the low-power
+  transition silently inherits the 2026-09-06 rung-0-demote-IDR hazard
+  (an IDR encoded at `roi_qp_low`); note also that Telem/maburtop will
+  read `roi -24` for the whole pre-arm period while ROI does nothing.
+- **Observability.** Telem flags bit7 → sideport `drone.low_power`,
+  maburtop `LP` (SYS row and the DRONE panel's SoC line), the compact
+  OSD's fps cell in caution colour while the sideport is fresh; stderr
+  `rc: low_power ENTER fps=15 cap=1000 kbps` / `EXIT (armed|stale)`; the
+  `stats:` line carries `lp= armed=`. Every recording now opens with a
+  low-power segment that `flightreport.py` cannot see — see
+  `docs/data-provenance.md`, 2026-09-20.

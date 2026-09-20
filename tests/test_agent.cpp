@@ -25,6 +25,11 @@ struct MockActuator : Actuator {
   std::vector<std::vector<uint8_t>> controls;
   std::vector<int> bitrates;
   std::vector<int> roi_qps;
+  std::vector<int> fps;
+  bool fps_ok = true;
+  // Verb order log: "fps" / "bitrate" in call order (the low-power
+  // transition must send fps BEFORE the bitrate whose IDR seeds the stream).
+  std::vector<std::string> verbs;
   int idr_calls = 0;
   bool bitrate_ok = true;
   bool roi_ok = true;
@@ -38,7 +43,13 @@ struct MockActuator : Actuator {
   void send_control(const std::vector<uint8_t>& body) override { controls.push_back(body); }
   bool set_bitrate_kbps(int kbps) override {
     bitrates.push_back(kbps);
+    verbs.push_back("bitrate");
     return bitrate_ok;
+  }
+  bool set_fps(int f) override {
+    fps.push_back(f);
+    verbs.push_back("fps");
+    return fps_ok;
   }
   bool set_roi_qp(int qp) override {
     roi_qps.push_back(qp);
@@ -66,6 +77,12 @@ Config make_cfg() {
   cfg.radio.channel = 136;
   cfg.radio.follow_gs = true;
   cfg.link.move_confirm_ms = 2000;
+  cfg.venc.core.fps = 60;
+  cfg.msp.enable = true;
+  cfg.low_power.enable = true;
+  cfg.low_power.bitrate_kbps = 1000;
+  cfg.low_power.fps = 15;
+  cfg.low_power.stale_ms = 2000;
   return cfg;
 }
 
@@ -1596,4 +1613,230 @@ TEST(rcf_same_epoch_different_channel_is_applied_not_ignored) {
   CHECK(act.retune_reasons[1] == "hop");
   CHECK(agent.channel() == 40);
   CHECK(agent.hop_epoch() == 1);
+}
+
+// Low-power (pre-arm) mode, spec 2026-09-20.
+
+// Helper: BOOT tick, then a LINKED mcs5 session at t=100 (ov 0.5/0.5).
+static void link_up_mcs5(RcAgent& agent, const Config& cfg) {
+  agent.tick(0, RadioHealth{});
+  uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  agent.on_rc_frame(r1.data(), r1.size(), 100);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+}
+
+// LP-1. A fresh DISARMED report enters low power: fps first, then the
+// bitrate clamped to low_power.bitrate_kbps, and never under the encoder
+// floor (test 10e's structural minimum still holds).
+TEST(low_power_enters_on_fresh_disarmed_fps_then_capped_bitrate) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  REQUIRE(!act.bitrates.empty());
+  const int full = act.bitrates.back();
+  REQUIRE(full > cfg.low_power.bitrate_kbps);
+  CHECK(!act.fps.empty());
+  CHECK(act.fps.back() == 60);          // boot/link-up asserted the config fps
+  const size_t nf = act.fps.size(), nb = act.bitrates.size();
+
+  agent.note_arm_state(false, 150);
+  agent.tick(200, RadioHealth{});
+  CHECK(agent.low_power());
+  REQUIRE(act.fps.size() == nf + 1);
+  CHECK(act.fps.back() == 15);
+  REQUIRE(act.bitrates.size() == nb + 1);
+  CHECK(act.bitrates.back() == cfg.low_power.bitrate_kbps);
+  CHECK(act.bitrates.back() >= cfg.encoder.bitrate_min_kbps);
+  REQUIRE(act.verbs.size() >= 2);
+  CHECK(act.verbs[act.verbs.size() - 2] == "fps");
+  CHECK(act.verbs.back() == "bitrate");
+}
+
+// LP-2. ARMED exits low power and latches: a later DISARMED report never
+// re-enters, and sends nothing.
+// LP-2. ARMED exits low power; a later DISARMED report RE-ENTERS it. The
+// arm state is followed both ways, so a downed-but-powered aircraft drops
+// back to the thin stream (the post-crash case: mcs0, 15 fps reaches the GS
+// where full rate does not). armed_latched() still records that this process
+// saw an arm, but is observability only and must not gate the mode.
+TEST(low_power_exits_on_armed_and_reenters_on_disarm) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  agent.note_arm_state(false, 150);
+  agent.tick(200, RadioHealth{});
+  REQUIRE(agent.low_power());
+
+  agent.note_arm_state(true, 300);
+  agent.tick(400, RadioHealth{});
+  CHECK(!agent.low_power());
+  CHECK(agent.armed_latched());
+  CHECK(act.fps.back() == 60);
+  CHECK(act.bitrates.back() > cfg.low_power.bitrate_kbps);
+
+  // Disarm again: back to the low-power operating point, fps before bitrate,
+  // even though the latch is set.
+  const size_t nf = act.fps.size(), nb = act.bitrates.size();
+  agent.note_arm_state(false, 500);
+  agent.tick(600, RadioHealth{});
+  CHECK(agent.low_power());
+  CHECK(agent.armed_latched());          // still true: it records history only
+  REQUIRE(act.fps.size() == nf + 1);
+  CHECK(act.fps.back() == 15);
+  REQUIRE(act.bitrates.size() == nb + 1);
+  CHECK(act.bitrates.back() == cfg.low_power.bitrate_kbps);
+  REQUIRE(act.verbs.size() >= 2);
+  CHECK(act.verbs[act.verbs.size() - 2] == "fps");
+  CHECK(act.verbs.back() == "bitrate");
+
+  // And arming a second time exits again -- the cycle is repeatable.
+  agent.note_arm_state(true, 700);
+  agent.tick(800, RadioHealth{});
+  CHECK(!agent.low_power());
+  CHECK(act.fps.back() == 60);
+}
+
+// LP-2b. Fail open is unchanged by re-entry: after an arm, the FC going
+// SILENT (crash kills its power, UART dies) must NOT re-enter low power --
+// staleness means full rate, however long the silence lasts.
+TEST(low_power_silence_after_arming_never_reenters) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  agent.note_arm_state(true, 100);
+  agent.tick(200, RadioHealth{});
+  REQUIRE(!agent.low_power());
+
+  // No further reports, ever. RCFs keep the link LINKED so the only policy
+  // runs are the ones this test is about.
+  const uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  uint16_t seq = 2;
+  for (uint64_t t = 300; t <= 9000; t += 300) {
+    auto r = make_rcf_wire(cfg.link.vtx_id, seq++, profile_byte, 8);
+    agent.on_rc_frame(r.data(), r.size(), t);
+    agent.tick(t, RadioHealth{});
+    CHECK(!agent.low_power());
+  }
+  CHECK(act.fps.back() == 60);
+}
+
+// LP-3. Silence: a DISARMED report older than stale_ms means full power
+// (fail open). A report stamped slightly AFTER the tick clock (the MSP
+// thread stamps on its own read) still counts as fresh.
+TEST(low_power_exits_when_the_disarmed_report_goes_stale) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  const uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  agent.note_arm_state(false, 250);     // ahead of the next tick's 200
+  agent.tick(200, RadioHealth{});
+  CHECK(agent.low_power());
+  // RCFs keep the link LINKED (failsafe_ms 1000) so the only policy runs
+  // below are the ones this test is about.
+  auto r2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  agent.on_rc_frame(r2.data(), r2.size(), 900);
+  agent.tick(1000, RadioHealth{});      // report 750 ms old: still fresh
+  CHECK(agent.low_power());
+  auto r3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  agent.on_rc_frame(r3.data(), r3.size(), 1800);
+  agent.tick(2300, RadioHealth{});      // 2050 ms old: stale
+  CHECK(!agent.low_power());
+  CHECK(act.fps.back() == 60);
+  CHECK(act.bitrates.back() > cfg.low_power.bitrate_kbps);
+}
+
+// LP-4. enable = false: no fps verb is ever sent and no clamp applies,
+// whatever the FC says.
+TEST(low_power_disabled_never_touches_fps_or_clamps) {
+  Config cfg = make_cfg();
+  cfg.low_power.enable = false;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  CHECK(act.fps.empty());
+  const int full = act.bitrates.back();
+  agent.note_arm_state(false, 150);
+  agent.tick(200, RadioHealth{});
+  agent.tick(300, RadioHealth{});
+  CHECK(!agent.low_power());
+  CHECK(act.fps.empty());
+  CHECK(act.bitrates.back() == full);
+}
+
+// LP-5. A refused set_fps is retried on the next tick -- in RENDEZVOUS, on
+// the ground, where there are no RCFs to carry a retry -- and latched only
+// on success, then the retry stops.
+TEST(low_power_refused_fps_is_retried_in_rendezvous_then_latched) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});         // BOOT -> RENDEZVOUS
+  REQUIRE(agent.state() == RcAgent::State::RENDEZVOUS);
+  const size_t nf0 = act.fps.size();
+
+  act.fps_ok = false;
+  agent.note_arm_state(false, 150);
+  agent.tick(200, RadioHealth{});       // transition: attempt 1, refused
+  CHECK(agent.low_power());
+  REQUIRE(act.fps.size() == nf0 + 1);
+  CHECK(act.fps.back() == 15);
+  agent.tick(300, RadioHealth{});       // retry
+  REQUIRE(act.fps.size() == nf0 + 2);
+  act.fps_ok = true;
+  agent.tick(400, RadioHealth{});       // lands
+  REQUIRE(act.fps.size() == nf0 + 3);
+  agent.tick(500, RadioHealth{});
+  agent.tick(600, RadioHealth{});
+  CHECK(act.fps.size() == nf0 + 3);     // latched: no more retries
+}
+
+// LP-6. The 5 s re-assert restates the fps too (force), bounding any
+// override of the encoder fps behind RcAgent's back.
+TEST(low_power_reassert_restates_fps) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  agent.note_arm_state(false, 150);
+  agent.tick(200, RadioHealth{});
+  REQUIRE(agent.low_power());
+  const size_t nf = act.fps.size();
+  const uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
+  uint16_t seq = 2;
+  for (uint64_t t = 300; t <= 5100; t += 100) {
+    agent.note_arm_state(false, t);     // FC keeps answering DISARMED
+    // Same-op RCFs keep the link LINKED; with force=false an unchanged
+    // target sends nothing (fps or bitrate).
+    auto r = make_rcf_wire(cfg.link.vtx_id, seq++, profile_byte, 8);
+    agent.on_rc_frame(r.data(), r.size(), t);
+    agent.tick(t, RadioHealth{});
+  }
+  CHECK(act.fps.size() == nf);          // nothing inside the interval
+  agent.note_arm_state(false, 5300);
+  agent.tick(5300, RadioHealth{});      // >= 5000 since the accepted bitrate at 200; no RCF this ms
+  CHECK(act.fps.size() == nf + 1);
+  CHECK(act.fps.back() == 15);
+}
+
+// LP-7. FAILSAFE entry while in low power keeps the cap: the floor is
+// min(max-range target, low_power.bitrate_kbps).
+TEST(low_power_cap_survives_failsafe_entry) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_up_mcs5(agent, cfg);
+  agent.note_arm_state(false, 150);
+  agent.tick(200, RadioHealth{});
+  REQUIRE(agent.low_power());
+  agent.note_arm_state(false, 1100);
+  agent.tick(1200, RadioHealth{});      // 1100 ms since the RCF at 100: FAILSAFE
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(agent.low_power());
+  CHECK(act.bitrates.back() <= cfg.low_power.bitrate_kbps);
+  CHECK(act.fps.back() == 15);
 }
