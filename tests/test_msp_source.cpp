@@ -96,4 +96,25 @@ TEST(single_body_loss_recovers_via_repair) {
   CHECK(delivered >= 2);  // both snapshots recovered despite the dropped source
 }
 
+TEST(message_hook_sees_every_message_and_leaves_displayport_alone) {
+  MspSourceCfg cfg;
+  std::vector<std::vector<uint8_t>> bodies;
+  MspSource src(cfg, [&](const uint8_t* b, size_t n){ bodies.emplace_back(b, b + n); });
+  std::vector<uint8_t> seen_cmds;
+  src.set_message_hook([&](const MspMessage& m) { seen_cmds.push_back(m.cmd); });
+
+  auto blob = screen_blob("ABC");           // CLEAR, DRAW_STRING, DRAW_SCREEN
+  // An MSP_STATUS reply in the middle of the DisplayPort traffic.
+  std::vector<uint8_t> reply = {'$', 'M', '>', 11, 101};
+  uint8_t cks = 11 ^ 101;
+  for (int i = 0; i < 11; ++i) { reply.push_back(0); }
+  reply.push_back(cks);
+  blob.insert(blob.end(), reply.begin(), reply.end());
+
+  src.on_serial_bytes(blob.data(), blob.size(), 1000);
+  const std::vector<uint8_t> want = {182, 182, 182, 101};
+  CHECK(seen_cmds == want);
+  CHECK(src.snapshots_sent() == 1);         // the screen still forwarded once
+}
+
 MTEST_MAIN

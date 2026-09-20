@@ -23,6 +23,7 @@ MspSource::MspSource(const MspSourceCfg& cfg, EmitFn emit, uint32_t initial_seq)
 
 void MspSource::on_serial_bytes(const uint8_t* p, size_t n, uint64_t now_ms) {
   for (auto& m : parser_.feed(p, n)) {
+    if (hook_) hook_(m);
     if (!screen_.apply(m)) continue;  // not a completed screen
     double period_ms = 1000.0 / (cfg_.update_rate_hz > 0 ? cfg_.update_rate_hz : 1.0);
     // Unsigned: assumes non-decreasing now_ms (real mode feeds monotonic

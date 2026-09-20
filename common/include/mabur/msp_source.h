@@ -29,6 +29,14 @@ class MspSource {
 
   void on_serial_bytes(const uint8_t* p, size_t n, uint64_t now_ms);
 
+  // Optional observer for EVERY parsed MSP message (any cmd), invoked on
+  // the serial thread before the DisplayPort screen model sees it. The
+  // drone's arm-state poll hangs its MSP_STATUS decoder here
+  // (mabur/msp_status.h); DisplayPort handling is unchanged whether or not
+  // a hook is installed.
+  using MessageHook = std::function<void(const MspMessage&)>;
+  void set_message_hook(MessageHook h) { hook_ = std::move(h); }
+
   uint64_t snapshots_sent() const { return snapshots_sent_; }
   uint64_t snapshots_gated() const { return snapshots_gated_; }
   uint64_t truncated() const { return truncated_; }
@@ -45,6 +53,7 @@ class MspSource {
   uint64_t last_forward_ms_ = 0;
   bool have_forwarded_ = false;
   uint64_t snapshots_sent_ = 0, snapshots_gated_ = 0, truncated_ = 0;
+  MessageHook hook_;
 };
 
 }  // namespace mabur
