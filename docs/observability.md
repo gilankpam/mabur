@@ -829,9 +829,12 @@ SBI body header (`air_ms`, ver 2) into the AU ring (SlotHdr v3, offset
 
 **2026-09-20 (low-power mode).** `drone.low_power` (Telem flags bit7) is
 true while the pre-arm low-power operating point is in force
-(`docs/link-adaptation.md`, "Low-power (pre-arm) mode"). maburtop's SYS
-row shows `LP`; the compact bar tints its fps cell caution while set (see
-above). The drone `stats:` line carries `lp=`/`armed=` and the
+(`docs/link-adaptation.md`, "Low-power (pre-arm) mode"). maburtop shows
+`LP` in TWO places — the summary SYS row, and the DRONE panel's SoC line
+(the one carrying `soc`/`radio rx`/`shed`), where it is highlighted the
+same way a shed is; the compact bar tints its fps cell caution while set
+(see above), but only while the sideport is fresh, since the flag is
+link-sourced while the fps number is player-measured. The drone `stats:` line carries `lp=`/`armed=` and the
 `rc: low_power ENTER/EXIT` lines mark transitions.
 
 Since the venc fold-in (spec 2026-08-28) the drone also reports the

@@ -643,3 +643,46 @@ A format marker line may appear more than once in a v4/v2 file — each
 daemon restart within a session appends and re-states its header, including
 a `header_info` that may have changed. Parsers must treat a repeated marker
 as a re-statement, not as the start of a new file.
+
+## 2026-09-20 — every recording now opens with a low-power segment
+
+Low-power (pre-arm) mode (`docs/link-adaptation.md`) runs the encoder at
+`low_power.bitrate_kbps` / `low_power.fps` — the bundle ships 1 Mb/s and
+15 fps — from boot until the FC's first ARMED report. On a normal flight
+that is the whole ground phase: power-on, radio link-up, taxi/hover checks,
+every second before the arm. So from this date **every recording begins
+with a leading segment that is not flight data**, and it is usually the
+longest single-operating-point stretch in the file.
+
+What differs across the arm boundary, in the same recording:
+
+- **Bitrate.** Capped at 1 Mb/s (a `min()` against the ladder's budget, so
+  the rung's own number is not what the encoder was given). Every
+  bitrate-derived figure — `drone.enc.*`, the player's measured `mbps`, AU
+  sizes in `au.log` — reads at the cap, not at the rung.
+- **Frame rate, and therefore body rate.** 15 fps instead of 60. Anything
+  counted per body or per AU changes rate by 4x without any link event
+  behind it: `au.log` row cadence, probe canaries (one per enh AU),
+  jitter/latency percentiles computed over a fixed number of samples, and
+  the ladder's body-counted promote windows.
+- **GOP frame count.** `venc_set_fps` rescales the GOP from `venc.gop_s`
+  rather than keeping the frame count, so a 0.5 s GOP is 8 frames in low
+  power and 30 at full rate. An IDR-interval histogram is bimodal in
+  frames and unimodal in seconds.
+- **Ladder rung.** The ladder converges against roughly 1/8 the offered
+  load for the whole segment, so a pre-arm rung is not comparable to an
+  in-flight rung at the same label (see the arm-transition bullet in
+  `docs/link-adaptation.md`).
+
+`drone.low_power` (sideport, Telem flags bit7) is true for exactly this
+segment and is the marker to split on; the drone `stats:` line carries
+`lp=`/`armed=` and `rc: low_power ENTER/EXIT` brackets it in stderr.
+**`tools/flightreport.py` does not know about any of this** — it neither
+excludes nor annotates the segment, so a whole-file mean of bitrate, fps,
+AU size or rung silently mixes the two operating points. The exclusion is
+**manual** for now: find the `drone.low_power` false-edge in the jsonl (or
+the `rc: low_power EXIT (armed)` line) and compare only what follows it.
+
+Recordings from before this date have no `drone.low_power` key at all and
+no leading segment — they are full power throughout, and absence of the
+key means "older build", not "full power confirmed".

@@ -930,7 +930,33 @@ lever at all).
   running channel: 16.1 / 61.1 fps, 0 frame-id gaps, bitrate holding, one
   incomplete enh AU on the way down and none up. The verb logs
   `> FPS delivered N ... in M us`.
+- **What the arm transition inherits — a known, UNMEASURED risk.** For the
+  whole pre-arm period the GS ladder converges against roughly 1/8 the
+  offered load and about 1/4 the body rate (probe canaries trail enh AUs,
+  so ~15/s instead of ~60/s, and any promote window counted in bodies
+  takes ~4x longer in wall-clock). Whatever rung that converges on was
+  never loaded at full rate. At ARM, `run_bitrate_policy(force=true)`
+  raises the encoder from 1 Mb/s to *that rung's* full budget in a single
+  write. A demote — or a cascade — in the first seconds after arm is
+  therefore plausible, i.e. exactly at takeoff. Nothing has measured it:
+  no flight has been flown on this mode. What would confirm or kill it is
+  cheap to read post-flight — the rung at the instant of arm (the
+  `drone.low_power` false-edge in the jsonl, or `rc: low_power EXIT
+  (armed)` in the drone log) and whether a demote follows within ~5 s of
+  it. If it is real, the fix is a ramp rather than a step, or holding the
+  ladder down until the first full-rate windows have been scored.
+- **ROI interaction.** Entering low power trips `roi_low_` — 1000 kbps is
+  under `encoder.roi_threshold_kbps` (3000) — so RcAgent issues
+  `set_roi_qp(-24)` on the way in and `set_roi_qp(0)` on the way out.
+  That is harmless *today* only because `[venc.roi] enabled = false`
+  short-circuits in `apply_roi_qp`. Re-enable ROI and the low-power
+  transition silently inherits the 2026-09-06 rung-0-demote-IDR hazard
+  (an IDR encoded at `roi_qp_low`); note also that Telem/maburtop will
+  read `roi -24` for the whole pre-arm period while ROI does nothing.
 - **Observability.** Telem flags bit7 → sideport `drone.low_power`,
-  maburtop `LP`, the compact OSD's fps cell in caution colour; stderr
+  maburtop `LP` (SYS row and the DRONE panel's SoC line), the compact
+  OSD's fps cell in caution colour while the sideport is fresh; stderr
   `rc: low_power ENTER fps=15 cap=1000 kbps` / `EXIT (armed|stale)`; the
-  `stats:` line carries `lp= armed=`.
+  `stats:` line carries `lp= armed=`. Every recording now opens with a
+  low-power segment that `flightreport.py` cannot see — see
+  `docs/data-provenance.md`, 2026-09-20.
