@@ -348,6 +348,19 @@ int venc_set_bitrate_kbps(int kbps)
 	return rc == 0 ? 0 : -1;
 }
 
+int venc_set_fps(int fps)
+{
+	int rc;
+
+	if (fps <= 0 || !venc_core_running())
+		return -1;
+
+	pthread_mutex_lock(&g_verb_lock);
+	rc = star6e_controls_apply_fps((uint32_t)fps);
+	pthread_mutex_unlock(&g_verb_lock);
+	return rc == 0 ? 0 : -1;
+}
+
 int venc_set_roi_qp(int qp)
 {
 	int rc;

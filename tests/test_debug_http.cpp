@@ -40,4 +40,11 @@ TEST(max_ipprop_key_whitelisted) {
   CHECK(p.key == "max_ipprop");
   CHECK(p.val == 2);
 }
+
+TEST(fps_key_whitelisted) {
+  auto p = debug_http_parse("POST /venc/set?fps=15 HTTP/1.0");
+  CHECK(p.kind == DebugReq::SET);
+  CHECK(p.key == "fps");
+  CHECK(p.val == 15);
+}
 MTEST_MAIN
