@@ -797,7 +797,12 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
 // failsafe floor every controller starts from and falls back to -- pinned
 // here because "the failsafe rung moved" is the kind of change that must be
 // deliberate. Overheads are actual-air (airtime-balance-uep); rungs 0-2 use
-// base 0.5/enh 0.25, rungs 3-5 use base 1.0/enh 0.5.
+// base 0.5/enh 0.25 at every rung since 2026-09-22: rungs 3-5 had base
+// 1.0/enh 0.5 while A-MPDU agg6 flew there (one lost aggregate = 12-16 enh
+// symbols, past what 0.25 repairs); with ampdu.max_num 1 on the drone a
+// lost PPDU is one body and the light pair holds
+// (docs/bitrate-ceiling-findings-2026-09-21.md). The two are a PAIR: do
+// not thin these rungs again without singles on the drone.
 // Re-pinned to the bundle as of b05c60f (2026-09-18 ladder retune).
 TEST(default_bundle_ladder_is_the_flight_ladder) {
   auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
@@ -809,11 +814,11 @@ TEST(default_bundle_ladder_is_the_flight_ladder) {
     CHECK(L[i].overhead_base > 0.499 && L[i].overhead_base < 0.501);
     CHECK(L[i].overhead_enh > 0.249 && L[i].overhead_enh < 0.251);
   }
-  // Rungs 3-5: base 1.0, enh 0.5
+  // Rungs 3-5: base 0.5, enh 0.25 (singles on the drone, see above)
   for (size_t i = 3; i < 6; ++i) {
     CHECK(L[i].mcs == static_cast<int>(i));
-    CHECK(L[i].overhead_base > 0.999 && L[i].overhead_base < 1.001);
-    CHECK(L[i].overhead_enh > 0.499 && L[i].overhead_enh < 0.501);
+    CHECK(L[i].overhead_base > 0.499 && L[i].overhead_base < 0.501);
+    CHECK(L[i].overhead_enh > 0.249 && L[i].overhead_enh < 0.251);
   }
   // Operator rule (uep-base-protection-constraint): base protection must
   // never fall below enh on any rung.

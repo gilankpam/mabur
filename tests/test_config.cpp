@@ -91,12 +91,14 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.fec.window == 32);
   CHECK((cfg.fec.blocks_per_body == std::array<int, 2>{4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
-  // Grouped submit, paired with ampdu.max_num 6 below: agg6 + feed_batch 6
-  // bought fec -2.3/-2.7 ms with a flat p99 (docs/observability.md A-MPDU).
-  CHECK(cfg.fec.feed_batch == 6);
+  // Singles since 2026-09-22 (ampdu.max_num 1 below): nothing to fill, so
+  // no grouped submit. agg6 + feed_batch 6 had bought fec -2.3/-2.7 ms
+  // (docs/observability.md A-MPDU) before the 0.5/0.25 ladder pair.
+  CHECK(cfg.fec.feed_batch == 1);
   CHECK(cfg.fec.flush_ms == 25);
 
-  // 16 Mbps ceiling and airtime_budget 0.5: 0.5 is what killed the air-clock
+  // 24 Mbps ceiling (CPU wall ~25 Mb/s after the table CRC,
+  // docs/bitrate-ceiling-findings-2026-09-21.md) and airtime_budget 0.5: 0.5 is what killed the air-clock
   // drain (peak 47 -> 20 ms, settle 1.9 -> 0.3 s). NOTE the sign of
   // roi_qp_low: apply_roi_qp() takes a QP OFFSET for the centre region, so
   // the useful low-bitrate value is NEGATIVE. It is still carried even though
@@ -104,7 +106,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   // offset re-derived. The struct default has the opposite sign and is left
   // alone deliberately; changing a compiled default is not a flag day.
   CHECK(cfg.encoder.bitrate_min_kbps == 1000);
-  CHECK(cfg.encoder.bitrate_max_kbps == 16000);
+  CHECK(cfg.encoder.bitrate_max_kbps == 24000);
   // 0.65 of DELIVERED capacity since 2026-09-17 = the load 0.5-of-nominal
   // flew at rungs 4-5 (0.5/0.76); rungs 0-2 gain the singles capacity.
   CHECK(cfg.encoder.airtime_budget == 0.65);
@@ -173,8 +175,11 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.low_power.fps == 30);
   CHECK(cfg.low_power.stale_ms == 2000);
 
-  // A-MPDU agg6; see fec.feed_batch above. agg31 cascades residuals.
-  CHECK(cfg.ampdu.max_num == 6);
+  // A-MPDU OFF (2026-09-22): with the 0.5/0.25 pair at rungs 3-5 one lost
+  // agg6 aggregate takes 12-16 enh symbols, past what 0.25 ov can repair
+  // (docs/bitrate-ceiling-findings-2026-09-21.md). Singles cap a loss at one
+  // body. agg31 cascades residuals.
+  CHECK(cfg.ampdu.max_num == 1);
   CHECK(cfg.ampdu.max_time == 32);
   // Per-rung aggregation (docs/bandwidth-sweep-findings-2026-09-17.md):
   // singles below mcs4, agg6 from mcs4 up.

@@ -78,18 +78,18 @@ overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 3
-overhead_base = 1
-overhead_enh  = 0.5
+overhead_base = 0.5
+overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 4
-overhead_base = 1
-overhead_enh  = 0.5
+overhead_base = 0.5
+overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 5
-overhead_base = 1
-overhead_enh  = 0.5
+overhead_base = 0.5
+overhead_enh  = 0.25
 
 [link.probe]
 enable      = true

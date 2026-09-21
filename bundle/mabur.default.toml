@@ -20,12 +20,12 @@ symbol_size     = 332      # must match the GS
 window          = 32
 blocks_per_body = [4, 4]   # base, enhance
 base_overhead   = 0.5
-feed_batch      = 6        # grouped submit, pairs with ampdu.max_num 6
+feed_batch      = 1        # singles: ampdu.max_num 1, nothing to fill (2026-09-22)
 flush_ms        = 25
 
 [encoder]
 bitrate_min_kbps   = 1000
-bitrate_max_kbps   = 16000
+bitrate_max_kbps   = 24000
 airtime_budget     = 0.65  # of DELIVERED capacity (air_clock.efficiency)
 roi_threshold_kbps = 3000
 roi_qp_low         = -24
@@ -79,7 +79,7 @@ fps          = 30
 stale_ms     = 2000        # a DISARMED report older than this = full power
 
 [ampdu]
-max_num  = 6
+max_num  = 1               # A-MPDU OFF: agg6 loses 12-16 enh symbols per lost PPDU, past what 0.25 ov repairs (2026-09-22)
 max_time = 32
 min_mcs  = 4               # singles below mcs4: agg6 delivers 6-13 pts less there
 
