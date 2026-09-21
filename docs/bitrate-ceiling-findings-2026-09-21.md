@@ -229,3 +229,73 @@ separately (aarch64, not the constraint).
 
 Remaining from the ranked list: the copy/alloc chain (lever 3), then the
 clock (lever 1, last by operator preference, thermal fan-off hold first).
+
+## Where the hot thread's time goes: a PC-sample profile (2026-09-22)
+
+`tools/bench/pcsample/` — a 120-line static sampler around
+`perf_event_open` (software cpu-clock, 1 kHz, per-thread; the drone kernel
+has perf events but no `perf` binary) plus `symbolize.py`, which maps the
+histogram through the toolchain's addr2line against the unstripped
+Buildroot build (PIE: file offset → LOAD vaddr). Cross-build with the
+openipc gcc, `-O2 -static`; run as
+`pcsample <tid> 60 1000 out.txt` on the drone, symbolize on the host.
+
+60 s at 18.3 Mb/s, rung 5, singles, 0.5/0.25, table CRC, 800 MHz:
+
+**`mbr-hot`, 27 005 samples = 45 % of its core:**
+
+| share | where |
+|---|---|
+| **64.2 %** | `SwEncoder::join()` — the frame-end spin-wait for the FEC worker |
+| 8.0 % | `crc16_ccitt` (table) |
+| 5.2 % | `memcpy` |
+| 3.9 % | `classify_frame` (the whole-payload NAL scan) |
+| ~5 % | `malloc`/`free`/`operator new` between them |
+| ~4 % | `seal_current`, `SbiPacker::add/build_body`, `pack_header`, `fragment`, `add_packet`, `drain_done` |
+| 3.3 % | kernel |
+
+**`mbr-fecw`, 9 720 samples = 16 % of cpu0:** 73.7 % `gf::lincomb` (the
+NEON GF256 kernel), 8.8 % `FecWorker::loop`, 3.8 % `gf::tables()`, 3.1 %
+`repair_coeffs`. The worker's own gauge: 100–113 µs per repair job,
+`join_wait_us mean=2860` (base) and `2115` (enh) per frame, `qdepth_max`
+31/17.
+
+So the "unexplained 100 cycles per byte" was never per-byte work. The
+real feed — fragment, symbol, envelope, ring row, pack, CRC, copies,
+allocations — is ~16 % of the core, ~2.7 ms per 38 kB frame, ~0.07 µs/B,
+exactly what the code reads as. The other 29 % of the core, ~5 ms per
+frame, is the hot thread spinning in `join()` until the worker has
+finished every repair of the frame just fed. The worker needs
+~100 µs × (symbols × ov) per frame — 5.7 ms for a 38 kB base frame at
+ov 0.5, 12.7 ms for a 47 kB one at ov 1.0 — on the core it shares with
+txw, the four USB threads, venc and the SDK. **That is the throughput
+wall's mechanism:** when the worker's repair time per frame exceeds the
+frame period minus the feed time, the join outlasts the ring, the ring
+pins, frames vanish. The 22 Mb/s / ov 1.0 collapse on 2026-09-21 is that
+arithmetic.
+
+What this does NOT change: at rung 5 the fec segment is air. The au.log
+slope (0.348 µs/B base, 0.311 enh, zero intercept) is the singles
+serialization rate (≈34.5 Mb/s delivered at mcs5 without aggregation,
+efficiency ~0.66 vs 0.76 aggregated), and the feed at 0.07 µs/B is
+five times faster than the air. The drone's CPU is not on the clean-frame
+latency path today; the join is a throughput, thermal and repair-timing
+problem.
+
+Levers, re-ranked with the profile:
+
+1. **Delete the frame-end join** (§19's lever 3): let the tail repair
+   ship when the worker finishes, one frame late at worst (`SwDecoder`
+   has no ordering contract); keep only the ring-row backstop join. −29 %
+   of the hot core immediately, and the wall moves to the worker's own
+   pace. Needs a bound on the worker backlog (drop or inline the oldest
+   when the queue would overrun a frame period) so a slow core degrades to
+   fewer repairs, never to a pinned ring.
+2. **Halve `gf::lincomb`'s cost per repair**: 100 µs for 32 rows × 332 B
+   is 9.4 ns/B; a two-rows-per-pass kernel or a wider unroll should get
+   under 5. Raises the worker's pace directly.
+3. The copy/alloc diet: ~10 % of the hot core, a few hundred µs per
+   frame. Third.
+4. `classify_frame` + `frame_is_trail_n`: two byte-wise scans of the
+   whole payload for one NAL header; the producer already knows the NAL
+   type. 4 %.
