@@ -25,6 +25,14 @@ target_link_libraries(mabur_drone_core PUBLIC mabur_common rt devourer)
 target_include_directories(mabur_drone_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/venc)
 
 add_executable(maburd src/main.cpp)
+
+# Same rule as mabur_common (common/CMakeLists.txt): the producer loop lives
+# in main.cpp and the pipeline in mabur_drone_core, and both must not fall
+# back to Buildroot's -Os. venc_core below is the deliberate exception.
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_compile_options(mabur_drone_core PRIVATE -O3)
+  target_compile_options(maburd PRIVATE -O3)
+endif()
 target_include_directories(maburd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(maburd PRIVATE mabur_drone_core mabur_common devourer pthread)
 
