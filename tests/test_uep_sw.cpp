@@ -5,7 +5,9 @@
 // delivery under the same random/burst loss the old scheme was built for
 // (bench 2026-07-13, docs/handover-video-delivery.md §2).
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <thread>
 #include <random>
 #include <vector>
 
@@ -337,6 +339,50 @@ TEST(uep_async_recovers_under_loss_like_sync) {
   FecWorker worker;
   SimResult async_r = run_sim(164, 8, 64, 4000, 5.0, 3, &worker);
   CHECK(pct(async_r) >= pct(sync_r) - 1.0);
+}
+
+// fec-join-delete (2026-09-22): the frame-end flush no longer waits for
+// the worker, so add_frame ships sources (plus whatever repairs are already
+// built) and collect() harvests the rest once the worker finishes — as
+// bodies of the right stream, with the packer's partial group flushed so
+// nothing lingers until the next frame.
+TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
+  auto layers = layers_for(164, 4, 64);
+  FecWorker worker;
+  worker.set_held(true);
+  UepEncoder enc(layers, 15, &worker);
+  UepDecoder dec(layers);
+  std::mt19937 rng(42);
+  const uint64_t now = 1000;
+  auto unit = make_unit(/*stream=*/1, 0, 1388, rng);
+  auto frame_bodies = enc.add_frame(1, unit.data(), unit.size(), now);
+  CHECK(!frame_bodies.empty());
+  std::vector<UepBody> harvested;
+  auto sink = [&](UepBody&& b) { harvested.push_back(std::move(b)); };
+  enc.collect(sink);
+  CHECK(harvested.empty());  // worker held: nothing finished yet
+  worker.set_held(false);
+  // Wait for the worker to finish the frame's repairs, then harvest.
+  for (int i = 0; i < 3000 && harvested.empty(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    enc.collect(sink);
+  }
+  REQUIRE(!harvested.empty());
+  for (auto& b : harvested) CHECK(b.stream_id == 1);
+  // Once idle, a second harvest finds nothing pending anywhere.
+  std::vector<UepBody> again;
+  enc.collect([&](UepBody&& b) { again.push_back(std::move(b)); });
+  CHECK(again.empty());
+  // Everything decodes: sources + late repairs are one consistent stream.
+  mtest::FragCollector got;
+  for (auto& b : frame_bodies)
+    for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) got.add(d);
+  for (auto& b : harvested)
+    for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) got.add(d);
+  CHECK(got.completed().size() == 1);
+  // Repairs did ship: the harvested bodies carry the frame's whole repair
+  // budget (ov 0.5 over the frame's symbols + the tail repair), never zero.
+  CHECK(enc.take_fec_gauge(1).jobs > 0);
 }
 
 MTEST_MAIN

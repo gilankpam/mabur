@@ -1,6 +1,7 @@
 #include "mabur/fec_worker.h"
 
 #include <cassert>
+#include <chrono>
 
 #include "mabur/sw_encoder.h"
 
@@ -80,6 +81,10 @@ void FecWorker::loop() {
     // tail_ store, publishing the queue-slot write. Equivalent sync, but
     // TSAN can model it (it cannot model fences).
     (void)tail_.load(std::memory_order_acquire);
+    while (held_.load(std::memory_order_relaxed)) {  // test surface only
+      if (quit_.load(std::memory_order_relaxed)) return;
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
     FecRepairJob j = q_[seen % q_.size()];
     head_.store(seen + 1, std::memory_order_release);
     ++seen;

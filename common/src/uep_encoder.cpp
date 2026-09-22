@@ -36,8 +36,12 @@ void UepEncoder::pack_envs(Layer& layer, uint8_t sid,
       sink(UepBody{sid, std::move(b)});
 }
 
-void UepEncoder::drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out) {
-  pack_envs(layer, sid, layer.sw.flush(),
+void UepEncoder::drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out,
+                             bool join) {
+  auto envs = layer.sw.flush();
+  if (join)
+    for (auto& e : layer.sw.finish()) envs.push_back(std::move(e));
+  pack_envs(layer, sid, std::move(envs),
             [&](UepBody&& b) { out.push_back(std::move(b)); });
   for (auto& b : layer.packer.flush())
     out.push_back(UepBody{sid, std::move(b)});
@@ -76,6 +80,21 @@ std::vector<UepBody> UepEncoder::add_frame(int stream_id, const uint8_t* data,
   return out;
 }
 
+void UepEncoder::collect(const UepBodySink& sink) {
+  for (int sid = 0; sid < kNumStreams; ++sid) {
+    Layer& layer = layers_[static_cast<size_t>(sid)];
+    // Read idle BEFORE the drain: idle means every repair is already in
+    // the done list, so the flush below ships a complete group. Reading it
+    // after could see a job finish between the two and strand its envelope
+    // as a one-block body at the next harvest.
+    const bool idle = !layer.sw.repairs_outstanding();
+    pack_envs(layer, static_cast<uint8_t>(sid), layer.sw.collect(), sink);
+    if (idle)
+      for (auto& b : layer.packer.flush())
+        sink(UepBody{static_cast<uint8_t>(sid), std::move(b)});
+  }
+}
+
 std::vector<UepBody> UepEncoder::poll(uint64_t now_ms) {
   std::vector<UepBody> out;
   for (int sid = 0; sid < kNumStreams; ++sid) {
@@ -83,7 +102,7 @@ std::vector<UepBody> UepEncoder::poll(uint64_t now_ms) {
     if (!layer.has_activity) continue;
     if (now_ms - layer.last_activity_ms < static_cast<uint64_t>(flush_ms_)) continue;
 
-    drain_layer(layer, static_cast<uint8_t>(sid), out);
+    drain_layer(layer, static_cast<uint8_t>(sid), out, /*join=*/false);
   }
   return out;
 }
@@ -92,7 +111,7 @@ std::vector<UepBody> UepEncoder::flush_all() {
   std::vector<UepBody> out;
   for (int sid = 0; sid < kNumStreams; ++sid) {
     Layer& layer = layers_[static_cast<size_t>(sid)];
-    drain_layer(layer, static_cast<uint8_t>(sid), out);
+    drain_layer(layer, static_cast<uint8_t>(sid), out, /*join=*/true);
   }
   return out;
 }

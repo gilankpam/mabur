@@ -1804,6 +1804,26 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       VencFrameMeta meta{};
       int n = fsrc.read(fbuf.data(), fbuf.size(), 5, &meta);
       const uint64_t t_read_us = now_steady_us();
+      if (n <= 0) {
+        // Between frames (fec-join-delete 2026-09-22): the frame-end flush
+        // no longer waits for the FEC worker, so the repairs it was still
+        // building ship here, on the ring-read timeout, ≤5 ms after the
+        // frame. No AU owns these bodies (au_first stays false, enc_us
+        // stays the packer's zero placeholder, like poll's idle tail) but
+        // their air is real: book it and release the feed_batch group.
+        bool any = false;
+        uep.collect([&](UepBody&& b) {
+          const uint64_t p_us = now_steady_us();
+          b.enqueued_ms = static_cast<uint32_t>(p_us / 1000);
+          b.pushed_us = p_us;
+          const size_t body_bytes = b.body.size();
+          const int body_sid = b.stream_id;
+          txq.push(std::move(b));
+          air_clock.book(p_us, body_bytes, body_sid);
+          any = true;
+        });
+        if (any) txq.flush();
+      }
       if (n > 0) {
         if (fsrc.reattach_count() != last_reattach) {
           last_reattach = fsrc.reattach_count();
@@ -1988,11 +2008,11 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           const uint64_t build_us = g.build_us - p.build_us;
           const uint64_t joins = g.join_waits - p.join_waits;
           const uint64_t wait_us = g.join_wait_us - p.join_wait_us;
-          if (jobs > 0 || joins > 0) {
+          if (jobs > 0 || joins > 0 || g.backlog_drops != p.backlog_drops) {
             std::fprintf(stderr,
                 "maburd fec_worker sid=%d: jobs=%llu build_us/job=%llu "
                 "inline=%llu joins=%llu join_wait_us mean=%llu max=%llu "
-                "qdepth_max=%llu\n",
+                "qdepth_max=%llu backlog_drops=%llu\n",
                 sid,
                 (unsigned long long)jobs,
                 (unsigned long long)(jobs ? build_us / jobs : 0),
@@ -2000,7 +2020,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                 (unsigned long long)joins,
                 (unsigned long long)(joins ? wait_us / joins : 0),
                 (unsigned long long)g.join_wait_max_us,
-                (unsigned long long)g.enq_depth_max);
+                (unsigned long long)g.enq_depth_max,
+                (unsigned long long)(g.backlog_drops - p.backlog_drops));
           }
           fec_gauge_prev[sid] = g;
         }

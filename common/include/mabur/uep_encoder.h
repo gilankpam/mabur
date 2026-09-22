@@ -94,8 +94,17 @@ class UepEncoder {
   std::vector<UepBody> poll(uint64_t now_ms);
 
   // Flushes every layer in stream_id ascending order: sliding-window flush,
-  // feed each resulting envelope to the SBI packer, then SBI flush.
+  // join the async worker (SwEncoder::finish), feed each resulting envelope
+  // to the SBI packer, then SBI flush. Shutdown/replay only.
   std::vector<UepBody> flush_all();
+
+  // Between-frames harvest (fec-join-delete 2026-09-22): for each layer,
+  // packs the repairs the worker has finished since the last drain and,
+  // once that layer has nothing outstanding, flushes the packer's partial
+  // group as a short body so the frame's last repairs ship now instead of
+  // riding with the next frame. Never waits. The hot loop calls it on
+  // every venc-ring read timeout (≤5 ms apart).
+  void collect(const UepBodySink& sink);
 
   // Sets both layers' FEC overhead to ov, literal — no scaling, no clamp
   // beyond SwEncoder's own.
@@ -147,8 +156,11 @@ class UepEncoder {
   void pack_envs(Layer& layer, uint8_t sid,
                  std::vector<std::vector<uint8_t>> envs,
                  const UepBodySink& sink);
-  // Flush tail: sliding-window flush then the SBI packer flush.
-  void drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out);
+  // Flush tail: sliding-window flush (+ the joining finish() when join is
+  // set — flush_all only; poll() runs on the hot loop and must not wait)
+  // then the SBI packer flush.
+  void drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out,
+                   bool join);
 
   std::array<Layer, 2> layers_;
   int flush_ms_;

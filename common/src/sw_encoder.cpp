@@ -120,6 +120,19 @@ std::vector<uint8_t> SwEncoder::build_repair(uint32_t repair_key,
 }
 
 void SwEncoder::emit_or_enqueue_repair(std::vector<std::vector<uint8_t>>& out) {
+  // Backlog bound (async only): the worker is more than kMaxBacklogJobs
+  // repairs behind, so this credit is forfeited rather than queued. The
+  // producer never waits and the ring never pins; the GS sees a lower
+  // effective overhead for as long as the core stays slow. The credit
+  // still consumes its repair_key so every repair that IS built stays
+  // byte-identical to the sync encoder's (the key seeds the coefficients);
+  // repairs_out counts built repairs only.
+  if (async_ && worker_->depth() >= kMaxBacklogJobs) {
+    ++gauge_backlog_drops_;
+    ++repair_key_;
+    tail_repair_pending_ = false;
+    return;
+  }
   const int wl = static_cast<int>(count_);
   FecRepairJob j;
   j.eng = this;
@@ -195,19 +208,44 @@ SwEncoder::SwFecGauge SwEncoder::take_fec_gauge() {
   g.join_wait_us = gauge_join_wait_us_;
   g.join_wait_max_us = gauge_join_wait_max_us_;
   g.enq_depth_max = gauge_enq_depth_max_;
+  g.backlog_drops = gauge_backlog_drops_;
   gauge_join_wait_max_us_ = 0;
   gauge_enq_depth_max_ = 0;
   return g;
+}
+
+std::vector<std::vector<uint8_t>> SwEncoder::finish() {
+  std::vector<std::vector<uint8_t>> out;
+  if (async_) {
+    join();
+    drain_done(out);
+  }
+  return out;
+}
+
+std::vector<std::vector<uint8_t>> SwEncoder::collect() {
+  std::vector<std::vector<uint8_t>> out;
+  if (async_) drain_done(out);
+  return out;
+}
+
+bool SwEncoder::repairs_outstanding() const {
+  // Acquire (one load per harvest, not a spin): a zero pairs with
+  // execute_repair_job's release decrement, so the caller's next
+  // drain_done sees every parked envelope.
+  return async_ && async_->outstanding.load(std::memory_order_acquire) != 0;
 }
 
 std::vector<std::vector<uint8_t>> SwEncoder::flush() {
   std::vector<std::vector<uint8_t>> out;
   seal_current(out);
   if (tail_repair_pending_ && count_ > 0) emit_or_enqueue_repair(out);
-  if (async_) {
-    join();
-    drain_done(out);
-  }
+  // No join here (fec-join-delete 2026-09-22): the frame-end spin-wait for
+  // the worker was 64 % of the hot thread's samples at 18 Mb/s. Repairs
+  // still building surface at the next add_packet/flush/collect drain;
+  // SwDecoder has no ordering contract and its horizon (~80 ms) dwarfs the
+  // ≤5 ms harvest cadence. finish() keeps the joining form for shutdown.
+  if (async_) drain_done(out);
   return out;
 }
 

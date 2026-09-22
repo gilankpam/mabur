@@ -53,6 +53,12 @@ class FecWorker {
            head_.load(std::memory_order_relaxed);
   }
 
+  // Test surface: a held worker parks before its next dequeue (polling at
+  // ~100 µs) so tests can pin the producer's behaviour against an
+  // arbitrarily slow worker deterministically. Never set in production;
+  // the hot-loop check is one relaxed load per job.
+  void set_held(bool held) { held_.store(held, std::memory_order_relaxed); }
+
  private:
   static constexpr long kSpinIters = 16384;  // ~50-100 us @ 800 MHz A7
 
@@ -61,7 +67,7 @@ class FecWorker {
   const int cpu_;
   std::vector<FecRepairJob> q_;
   std::atomic<uint32_t> head_{0}, tail_{0};
-  std::atomic<bool> quit_{false}, sleeping_{false};
+  std::atomic<bool> quit_{false}, sleeping_{false}, held_{false};
   std::mutex m_;
   std::condition_variable cv_;
   std::thread th_;
