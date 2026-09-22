@@ -4,6 +4,7 @@
 #include "mtest.h"
 #include "frame_fixture.h"
 #include "vectors.h"
+#include "mabur/arrival_tracker.h"
 #include "mabur/frame_wire.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
@@ -637,4 +638,15 @@ TEST(salvage_only_books_seqs_no_clean_copy_ever_delivered) {
   auto st2 = dec2.stats(0);
   CHECK(st2.subblocks_salvaged == st.subblocks_salvaged);
   CHECK(st2.arr_salvage_only == 0);
+}
+
+TEST(arrival_guard_is_plumbed_from_the_constructor) {
+  // spec 2026-09-23 tx-windows §5.2: link.arrival_guard_syms sizes the
+  // ArrivalTracker guard; 0 keeps the code default.
+  std::array<UepLayerCfg, 2> layers{};
+  for (auto& l : layers) { l.fec = SwConfig{64, 8, 0.0}; l.blocks_per_body = 1; }
+  UepDecoder d0(layers);
+  CHECK(d0.arrival_guard(0) == mabur::ArrivalTracker::kDefaultGuard);
+  UepDecoder d64(layers, 0, 64);
+  CHECK(d64.arrival_guard(0) == 64 && d64.arrival_guard(1) == 64);
 }

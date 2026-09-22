@@ -15,9 +15,11 @@ constexpr uint64_t kAnchor = 1ull << 32;  // headroom below the first vseq
 uint16_t rd16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 }  // namespace
 
-SwDecoder::SwDecoder(const SwConfig& cfg, uint32_t seq_horizon)
+SwDecoder::SwDecoder(const SwConfig& cfg, uint32_t seq_horizon, uint32_t arrival_guard)
     : cfg_(cfg),
-      horizon_(seq_horizon ? seq_horizon : 4ull * static_cast<uint64_t>(cfg.window)) {}
+      horizon_(seq_horizon ? seq_horizon : 4ull * static_cast<uint64_t>(cfg.window)),
+      arr_guard_(arrival_guard ? arrival_guard : ArrivalTracker::kDefaultGuard),
+      arr_(arr_guard_) {}
 
 uint64_t SwDecoder::unwrap(uint32_t s) const {
   const int64_t d = static_cast<int32_t>(s - static_cast<uint32_t>(newest_v_));

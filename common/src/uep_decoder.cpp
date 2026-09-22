@@ -14,8 +14,9 @@ constexpr uint64_t kBoundaryExpiryMs = 1000;
 }  // namespace
 
 UepDecoder::UepDecoder(const std::array<UepLayerCfg, 2>& layers,
-                       uint32_t seq_horizon)
-    : layers_{Layer(layers[0], seq_horizon), Layer(layers[1], seq_horizon)} {}
+                       uint32_t seq_horizon, uint32_t arrival_guard)
+    : layers_{Layer(layers[0], seq_horizon, arrival_guard),
+              Layer(layers[1], seq_horizon, arrival_guard)} {}
 
 void UepDecoder::mark_transition(int sid, uint8_t new_mcs, uint64_t now_ms) {
   if (sid < 0 || sid > 1) return;
@@ -89,6 +90,11 @@ uint64_t UepDecoder::newest_seq(int sid) const {
 int UepDecoder::repair_window(int sid) const {
   if (sid < 0 || sid > 1) return 0;
   return layers_[static_cast<size_t>(sid)].sw.repair_window();
+}
+
+uint32_t UepDecoder::arrival_guard(int sid) const {
+  if (sid < 0 || sid > 1) return 0;
+  return layers_[static_cast<size_t>(sid)].sw.arrival_guard();
 }
 
 std::vector<LossEpisode> UepDecoder::take_episodes(int sid) {

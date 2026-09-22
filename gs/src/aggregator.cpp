@@ -67,8 +67,8 @@ static void fold_rf(Track& t, double rssi, double snr, const uint8_t* rssi_ab,
 }  // namespace
 
 Aggregator::Aggregator(const std::array<mabur::UepLayerCfg, 2>& layers,
-                       uint32_t seq_horizon, int n_cards)
-    : dec_(layers, seq_horizon), cards_(static_cast<size_t>(n_cards)) {}
+                       uint32_t seq_horizon, int n_cards, uint32_t arrival_guard)
+    : dec_(layers, seq_horizon, arrival_guard), cards_(static_cast<size_t>(n_cards)) {}
 
 void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   if (m.card_id >= cards_.size()) {

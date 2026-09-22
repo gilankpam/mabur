@@ -60,7 +60,8 @@ struct LossEpisode {
 // NOT counted abandoned (the horizon owns loss accounting).
 class SwDecoder {
  public:
-  explicit SwDecoder(const SwConfig& cfg, uint32_t seq_horizon = 0);
+  explicit SwDecoder(const SwConfig& cfg, uint32_t seq_horizon = 0,
+                     uint32_t arrival_guard = 0);
 
   // Feeds one received envelope; returns app packets unpacked from every
   // symbol that became known (source first, cascades after). Malformed or
@@ -112,6 +113,10 @@ class SwDecoder {
   uint64_t arr_arrived_stale() const { return arr_.arrived_stale(); }
   uint64_t arr_late() const { return arr_.late(); }
   uint64_t arr_salvage_only() const { return arr_.salvage_only(); }
+  // The ArrivalTracker guard this decoder was constructed with (spec
+  // 2026-09-23 tx-windows §5.2). ArrivalTracker::kDefaultGuard if the
+  // constructor's arrival_guard arg was 0.
+  uint32_t arrival_guard() const { return arr_guard_; }
   uint64_t symbols_in() const { return symbols_in_; }
   // Highest virtual seq seen or implied — its ADVANCE rate is the stream's
   // send rate (loss-robust; any arriving symbol moves it). 0 before the
@@ -190,6 +195,7 @@ class SwDecoder {
   uint64_t arr_stale_end() const {
     return wm_open_ ? ~0ull : (wm_valid_ ? wm_ + 1 : 0);
   }
+  uint32_t arr_guard_ = ArrivalTracker::kDefaultGuard;
   ArrivalTracker arr_;
 };
 

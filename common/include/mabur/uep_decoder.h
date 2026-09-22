@@ -38,7 +38,7 @@ struct DecodedFrag {
 class UepDecoder {
  public:
   explicit UepDecoder(const std::array<UepLayerCfg, 2>& layers,
-                      uint32_t seq_horizon = 0);
+                      uint32_t seq_horizon = 0, uint32_t arrival_guard = 0);
 
   static constexpr uint8_t kMcsUnknown = 255;
 
@@ -79,6 +79,9 @@ class UepDecoder {
   // Layer sid's observed TX window (SwDecoder::repair_window). 0 on bad sid
   // or before the first repair.
   int repair_window(int sid) const;
+  // Layer sid's ArrivalTracker guard (spec 2026-09-23 tx-windows §5.2). 0 on
+  // bad sid.
+  uint32_t arrival_guard(int sid) const;
 
   // Drops per-layer decode state — call on a session change, where the peer's
   // seqs restart from an unrelated value.
@@ -126,9 +129,9 @@ class UepDecoder {
 
  private:
   struct Layer {
-    Layer(const UepLayerCfg& cfg, uint32_t seq_horizon)
+    Layer(const UepLayerCfg& cfg, uint32_t seq_horizon, uint32_t arrival_guard)
         : env_size(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size),
-          sw(cfg.fec, seq_horizon) {}
+          sw(cfg.fec, seq_horizon, arrival_guard) {}
     int env_size;
     SwDecoder sw;
     uint64_t bodies = 0, subblocks_failed = 0;

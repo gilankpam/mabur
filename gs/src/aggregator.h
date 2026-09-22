@@ -109,7 +109,7 @@ class Aggregator {
                                        const mabur::node::RxBody& m)>;
 
   Aggregator(const std::array<mabur::UepLayerCfg, 2>& layers,
-             uint32_t seq_horizon, int n_cards);
+             uint32_t seq_horizon, int n_cards, uint32_t arrival_guard = 0);
 
   void set_frag_sink(FragSink s) { frag_sink_ = std::move(s); }
   void set_rc_sink(RcSink s) { rc_sink_ = std::move(s); }
