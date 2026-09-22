@@ -52,6 +52,70 @@ int main() {
   }
   std::printf("verify: OK\n");
 
+  // verify lincomb_rows (the repair kernel) against n accumulated
+  // reference lincombs: random row counts, odd tails, coeffs incl. 0.
+  for (int it = 0; it < 2000; ++it) {
+    const int n = (int)(rng() % 40);
+    const size_t len = 1 + rng() % 400;
+    std::vector<std::vector<uint8_t>> rows((size_t)n, std::vector<uint8_t>(len));
+    std::vector<const uint8_t*> ptrs;
+    std::vector<uint8_t> coeffs;
+    for (auto& r : rows) {
+      for (auto& v : r) v = (uint8_t)rng();
+      ptrs.push_back(r.data());
+      coeffs.push_back((uint8_t)(it % 7 == 0 ? 0 : rng()));
+    }
+    std::vector<uint8_t> want(len, 0), got(len, 0xA5);
+    for (int k = 0; k < n; ++k) ref_lincomb(want.data(), ptrs[(size_t)k], coeffs[(size_t)k], len);
+    gf::lincomb_rows(got.data(), ptrs.data(), coeffs.data(), n, len);
+    if (got != want) {
+      std::printf("VERIFY_ROWS FAIL at it=%d n=%d len=%zu\n", it, n, len);
+      return 1;
+    }
+  }
+  std::printf("verify_rows: OK\n");
+
+  // repair-shaped throughput: one 32-row window at symbol size 332 (the
+  // flight geometry), per-row lincomb vs lincomb_rows, unpadded (332,
+  // 12 B scalar tail per row) and padded to the ring stride (336, what
+  // SwEncoder::build_repair passes since 2026-09-22). MB/s counts row
+  // bytes read; us/repair is the number the fec_worker gauge reports.
+  // "hot": the same 32 rows every repair (L1-resident). "cold": a
+  // 544-row ring (window + kSlackRows, 183 kB > L1) with the window
+  // sliding one row per repair, as the encoder's ring does in situ.
+  for (int cold = 0; cold < 2; ++cold)
+  for (size_t len : {(size_t)332, (size_t)336}) {
+    const int n = 32;
+    const size_t nrows = cold ? 544 : 32;
+    std::vector<std::vector<uint8_t>> rows(nrows, std::vector<uint8_t>(len + 16));
+    for (auto& r : rows) for (auto& v : r) v = (uint8_t)rng();
+    std::vector<uint8_t> coeffs;
+    for (int k = 0; k < n; ++k) coeffs.push_back((uint8_t)(1 + rng() % 255));
+    std::vector<const uint8_t*> ptrs((size_t)n);
+    auto window = [&](long i) {
+      for (int k = 0; k < n; ++k) ptrs[(size_t)k] = rows[((size_t)i + (size_t)k) % nrows].data();
+    };
+    std::vector<uint8_t> out(len + 16);
+    const long iters = 20000;
+    auto t0 = std::chrono::steady_clock::now();
+    for (long i = 0; i < iters; ++i) {
+      window(i);
+      std::memset(out.data(), 0, len);
+      for (int k = 0; k < n; ++k) gf::lincomb(out.data(), ptrs[(size_t)k], coeffs[(size_t)k], len);
+    }
+    double dt_row = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    t0 = std::chrono::steady_clock::now();
+    for (long i = 0; i < iters; ++i) {
+      window(i);
+      gf::lincomb_rows(out.data(), ptrs.data(), coeffs.data(), n, len);
+    }
+    double dt_rows = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double bytes = (double)iters * n * len;
+    std::printf("repair 32x%zu %s: per-row lincomb %.1f MB/s %.1f us/repair | lincomb_rows %.1f MB/s %.1f us/repair\n",
+                len, cold ? "cold" : "hot ", bytes / dt_row / 1e6, dt_row / iters * 1e6,
+                bytes / dt_rows / 1e6, dt_rows / iters * 1e6);
+  }
+
   // raw lincomb throughput
   {
     std::vector<uint8_t> acc(164), sym(164);

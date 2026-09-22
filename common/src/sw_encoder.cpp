@@ -104,18 +104,23 @@ std::vector<uint8_t> SwEncoder::build_repair(uint32_t repair_key,
   h.window_len = static_cast<uint8_t>(window_len);
   h.repair_key = repair_key;
 
+  // The envelope is built stride_ (= ss rounded up to 16) bytes long so
+  // the GF kernel never runs its scalar tail, then trimmed back to ss:
+  // ring rows are stride_ wide, and out bytes past ss are discarded, so
+  // whatever the row padding holds cannot reach the wire.
   std::vector<uint8_t> env;
-  env.reserve(sw::kSwHeaderLen + ss);
+  env.reserve(sw::kSwHeaderLen + stride_);
   sw::pack_header(env, h);
   const size_t off = env.size();
-  env.insert(env.end(), ss, 0);
+  env.insert(env.end(), stride_, 0);
 
   uint8_t coeffs[sw::kMaxWindow];
+  const uint8_t* rows[sw::kMaxWindow];
   sw::repair_coeffs(repair_key, window_len, coeffs);
   for (int i = 0; i < window_len; ++i)
-    gf::lincomb(env.data() + off,
-                ring_ + ((start_slot + static_cast<size_t>(i)) % cap_) * stride_,
-                coeffs[i], ss);
+    rows[i] = ring_ + ((start_slot + static_cast<size_t>(i)) % cap_) * stride_;
+  gf::lincomb_rows(env.data() + off, rows, coeffs, window_len, stride_);
+  env.resize(off + ss);
   return env;
 }
 

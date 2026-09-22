@@ -464,3 +464,71 @@ Bench end state: both configs restored from `*.pre-aggceil` (= the flight
 bundle: singles, 0.5/0.25, cap 24000, budget 0.65, adaptive ladder);
 drone on the cap-256 build; GS unchanged; raw GS
 `/tmp/bw-nojoin-K19agg.jsonl`, `K22agg.jsonl`; both plugs on.
+
+## Lever 2 delivered: one-pass repair kernel (2026-09-22, branch fec-join-delete)
+
+`gf::lincomb_rows(out, rows[], coeffs[], n, len)` builds a repair symbol
+from its whole window in one pass: the 64 B output block lives in four q
+registers across all n rows, so the accumulator is loaded and stored once
+per repair instead of once per row (the per-row `lincomb` did 8 loads +
+4 stores per 64 B for 4 multiplies). `SwEncoder::build_repair` calls it
+over `stride_` (= symbol size rounded up to 16, already the ring's row
+width) and trims the envelope back to `symbol_size`, which deletes the
+12 B scalar tail every row used to end with at 332 — that tail was ~20 %
+of the row's cycles and the whole of the profile's `gf::tables()` 3.8 %.
+Wire bytes are unchanged (`vectors_byte_exact` pins the repairs on the
+host; `gf_bench` verifies the NEON path byte-for-byte on the drone).
+
+**Microbench on the drone** (`tools/bench/gf_bench.cpp`, `-O3`, maburd
+stopped, one 32-row window per repair, 20 000 repairs; "cold" = a 544-row
+183 kB ring with the window sliding one row per repair, as in situ):
+
+| shape | per-row `lincomb` | `lincomb_rows` |
+|---|---|---|
+| 32 × 332 (shipped path: scalar tail) | 32.5 us/repair | 31.1 |
+| 32 × 336 (padded, what build_repair now does) | 25.7 | **21.0** |
+| 32 × 336 cold ring | 25.7 | 21.0 |
+
+So −35 % CPU per repair: −22 % from the padding alone, −16 % more from
+the one-pass kernel. It is not the halving the ranked list asked for,
+and the disassembly says why: the 64 B block loop has no spills and is
+6 loads + 16 `vtbl.8` + 20 ALU ops per row, i.e. the Cortex-A7's 64-bit
+NEON datapath limit for a nibble-table multiply (21 us = 1.55
+cycles/byte at 800 MHz). Cold rows cost nothing extra (the shared L2
+serves the ring) and a `pld` of the next row bought nothing (tried,
+removed). The remaining lever inside the kernel is sharing the nibble
+split and source loads between two repairs of the same window, worth
+~14 % on paper and needing the worker to pair jobs — not taken.
+
+**In situ, flight bundle (adaptive ladder parked at rung 5, singles,
+0.5/0.25), 17.1 Mb/s today, 60 s windows after a 120 s settle, same
+per-thread instrument (6000 ticks = one core), same session A/B:**
+
+| maburd | mbr-fecw ticks (% cpu0) | mbr-hot | sys.cpu_pct | worker build_us/job | GS fec p50 / p99 | ausniff |
+|---|---|---|---|---|---|---|
+| cap-256 no-join (`maburd.pre-gfrows`) | 1053 (17.6) | 978 | 46.5 | 100–113 (2026-09-22 morning) | 8.3 / 11.2 | 3615 AUs, 60.3 fps, 0 gaps |
+| **lincomb_rows (deployed)** | **719 (12.0)** | 976 | **43.3** | 83–92 | 8.4 / 11.1 | 3615 AUs, 60.3 fps, 0 gaps |
+
+Worker CPU −32 %, hot thread untouched, SoC −3.2 points, `pre_fec_loss`
+0 both runs. The GS `fec` segment did not move, as §"Where the hot
+thread's time goes" predicted: at rung 5 that segment is air, and the
+drone's FEC worker was never on the clean-frame latency path. The
+worker's wall gauge dropped less than its CPU (about −15 %) because on
+cpu0 it is mostly waiting out tx/usb/venc preemption, not computing.
+What the change buys is exactly what §"Levers" priced it at: the
+worker's own throughput limit moves from ~45 to ~65 Mb/s at ov 1.0 (both
+beyond mcs7/20 MHz), the 22 Mb/s / ov 1.0 / agg6 backlog-cap graze has
+a third more headroom, and 5.6 points of cpu0 come back for the thermal
+budget.
+
+Deploy state: drone `.152` runs `lincomb_rows` (md5 fe0ba97e…);
+rollback `maburd.pre-gfrows` = the cap-256 build (binary only, no config
+or wire change, deploy order irrelevant). `maburd.pre-crctab` and
+`maburd.pre-bro3` were pruned for space (3.8 MB free, three binaries).
+GS unchanged. Raw: GS `/tmp/bw-gfrows-{base,new}.jsonl`. Host suite
+148/148.
+
+Remaining from the ranked list: the copy/alloc diet (~10 % of the hot
+core), `classify_frame`'s double scan, and the clock (last, by operator
+preference). The SoC is not the wall at any rate mcs7/20 MHz carries;
+the air is (§"The knee and the 22 Mb/s collapse, re-run with A-MPDU on").

@@ -1,6 +1,7 @@
 #include "mabur/gf256.h"
 
 #include <array>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -195,6 +196,61 @@ void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len) {
   for (; i < len; ++i) {
     uint8_t s = sym[i];
     if (s) acc[i] = static_cast<uint8_t>(acc[i] ^ t.exp[static_cast<size_t>(lc) + t.log[s]]);
+  }
+}
+
+void lincomb_rows(uint8_t* out, const uint8_t* const* rows,
+                  const uint8_t* coeffs, int n, size_t len) {
+  size_t i = 0;
+#if defined(__aarch64__) || defined(__ARM_NEON) || defined(__ARM_NEON__)
+  const NibbleTables& nt = nibble_tables();
+  const uint8x16_t mask = vdupq_n_u8(0x0F);
+#if defined(__aarch64__)
+  auto mul = [&](uint8x16_t s, uint8x16_t tlo, uint8x16_t thi) {
+    return veorq_u8(vqtbl1q_u8(tlo, vandq_u8(s, mask)),
+                    vqtbl1q_u8(thi, vshrq_n_u8(s, 4)));
+  };
+#else
+  auto mul = [&](uint8x16_t s, uint8x16_t tlo, uint8x16_t thi) {
+    return mul16(s, tlo, thi, mask);
+  };
+#endif
+  // 64 B blocks: four accumulators stay in registers across every row;
+  // per row per block that is one table-pair load + four source loads and
+  // no stores (the per-row lincomb did 8 loads + 4 stores for the same).
+  for (; i + 64 <= len; i += 64) {
+    uint8x16_t a0 = vdupq_n_u8(0), a1 = a0, a2 = a0, a3 = a0;
+    for (int k = 0; k < n; ++k) {
+      const uint8_t c = coeffs[k];
+      if (c == 0) continue;
+      const uint8x16_t tlo = vld1q_u8(nt.lo[c]);
+      const uint8x16_t thi = vld1q_u8(nt.hi[c]);
+      const uint8_t* r = rows[k] + i;
+      a0 = veorq_u8(a0, mul(vld1q_u8(r), tlo, thi));
+      a1 = veorq_u8(a1, mul(vld1q_u8(r + 16), tlo, thi));
+      a2 = veorq_u8(a2, mul(vld1q_u8(r + 32), tlo, thi));
+      a3 = veorq_u8(a3, mul(vld1q_u8(r + 48), tlo, thi));
+    }
+    vst1q_u8(out + i, a0);
+    vst1q_u8(out + i + 16, a1);
+    vst1q_u8(out + i + 32, a2);
+    vst1q_u8(out + i + 48, a3);
+  }
+  for (; i + 16 <= len; i += 16) {
+    uint8x16_t a0 = vdupq_n_u8(0);
+    for (int k = 0; k < n; ++k) {
+      const uint8_t c = coeffs[k];
+      if (c == 0) continue;
+      a0 = veorq_u8(a0, mul(vld1q_u8(rows[k] + i), vld1q_u8(nt.lo[c]),
+                            vld1q_u8(nt.hi[c])));
+    }
+    vst1q_u8(out + i, a0);
+  }
+#endif
+  if (i < len) {
+    std::memset(out + i, 0, len - i);
+    for (int k = 0; k < n; ++k)
+      lincomb(out + i, rows[k] + i, coeffs[k], len - i);
   }
 }
 
