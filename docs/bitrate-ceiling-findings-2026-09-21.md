@@ -299,3 +299,111 @@ Levers, re-ranked with the profile:
 4. `classify_frame` + `frame_is_trail_n`: two byte-wise scans of the
    whole payload for one NAL header; the producer already knows the NAL
    type. 4 %.
+
+## Lever 1 delivered: the frame-end join is gone (2026-09-22, branch fec-join-delete)
+
+`SwEncoder::flush()` no longer spin-waits for the FEC worker. Repairs
+ship when the worker finishes them: `UepEncoder::collect()` harvests the
+done list on every venc-ring read timeout in the hot loop (≤5 ms apart)
+and flushes the SBI packer's partial group once a layer has nothing
+outstanding, so a frame's last repairs still ship "now" rather than with
+the next frame. `finish()` keeps the joining form for shutdown
+(`flush_all`) and tests; `poll()` never joins. Wire bytes, SBI framing
+and `RC_VERSION` are unchanged; the GS was not rebuilt (SwDecoder has no
+ordering contract and its 512-seq horizon, ~70–80 ms, dwarfs the harvest
+cadence).
+
+Two guards replace the join:
+
+- **Backlog cap** `SwEncoder::kMaxBacklogJobs = 256`: a credited repair is
+  skipped — booked as `backlog_drops=` on the 5 s `fec_worker` log line —
+  when the shared worker queue (now 512 slots) already holds that many
+  jobs, ~30 ms of worker time. A slow core degrades to fewer repairs,
+  never to a blocked producer or a pinned ring. Skipped credits still
+  consume their `repair_key`, so every repair that IS built is
+  byte-identical to the sync encoder's (tests pin async ⊆ sync and
+  sync repairs = async repairs + drops).
+- **Ring slack** `kSlackRows` 64 → 512 (~170 kB per layer at 332 B): the
+  row-safety backstop join in `seal_current` stays, but it is a backstop
+  again — the worker may now legitimately trail by a frame or two.
+
+Host: `test_sw_encoder_async` (11) and `test_uep_sw` (12) incl. held-worker
+tests (`FecWorker::set_held`, test surface) for the non-joining flush,
+`collect()`, the cap and the subset contract; suite green except the
+pre-existing `sim_shed_lag` failure (RcAgent replay vs the current
+bundle, unrelated).
+
+### Flight op point — rung 5, mcs5, 0.5/0.25 singles, 18.1 Mb/s, 800 MHz
+
+Equal `tools/build-arm.sh` -O3 builds, 60 s each, 120 s settle after each
+restart, same per-thread instrument as above (6000 ticks = one core).
+The deployed 867 kB binary of 2026-09-21 measured within 1.5 % of the
+branch-point build (2736 vs 2774 hot ticks), so the flag question is
+closed.
+
+| maburd | mbr-hot ticks | hot % core | mbr-fecw | sys.cpu_pct | joins /5 s (mean wait) | qdepth_max | GS fec p50 / p99 | jitter | ausniff |
+|---|---|---|---|---|---|---|---|---|---|
+| branch point (join) | 2774 | 46 | 903 | 56.1 | 320 + 310 (2.8 / 1.8 ms) | 31 / 17 | 12.9 / 19.0 | 5.0 | 60.3, 0 gaps |
+| no join, cap 192 | 991 | 16.5 | 883 | 40.7 | 0 | 99 / 66 | 10.3 / 14.6 | 3.3 | 60.3, 0 gaps |
+| **no join, cap 256 (deployed)** | **988** | **16.5** | 864 | **40.0** | 0 | 81 / 45 | **10.2 / 14.4** | **3.2** | 60.3, 0 gaps |
+
+`dq_split cpu_us` mean 2.0 ms (the feed itself — the profile's 16 %),
+`backlog_drops` 0, GS `clean` +3597/60 s, 0 dropped, `pre_fec_loss` 0,
+aucadence base−enh offset −0.87 ms (envelope −1.1 to −3.0, gate 4.0).
+The `qdepth_max` rise is the trail the join used to hide, not new work
+(`mbr-fecw` ticks are unchanged). The fec p50 gain (−2.7 ms) is the same
+mechanism as the CRC table's: the enh half is production-bound at this
+rate and a faster feed lands straight in AU completion. `sys.cpu_pct`
+−16 points is the spin that used to burn cpu1 at full rate.
+
+### The knee, re-tested — and re-attributed to the air
+
+Static mcs7, 1.0/0.5, budget 0.70 (19.2 Mb/s), the 2026-09-21 row's
+config, **but today's bundle runs singles at every rung** (7a4faec,
+A-MPDU `max_num 1`), so the air side differs from the two earlier rows:
+
+| | mbr-hot % core | mbr-fecw | sys.cpu_pct | venc ring mean/max | GS fec p50 / p99 | GS fps | congestion_shed samples | txq_wait mean / max |
+|---|---|---|---|---|---|---|---|---|
+| deployed, 2026-09-21 (A-MPDU) | 89 | — | 93.7 | 5 / 25 | 52.4 / 62.8 | 60.4 | — | — |
+| table CRC, -O3 (A-MPDU) | 71 | — | 77.4 | 1 / 12 | 13.7 / 23.5 | 60.3 | — | — |
+| branch point, singles | 71 | 1746 | 80.9 | 3.8 / 37 | 15.2 / 24.0 | 53.9 | 60 / 300 | 18.9 / 53 ms |
+| **no join, singles** | **19** | 1654 | **54.1** | **0 / 0** | **10.0 / 14.9** | 54.2 | 56 / 298 | 17.4 / 50 ms |
+
+Both singles rows lose ~18 % of enh AUs (ausniff enh 1441 / 1488 vs base
+1810 / 1812) with zero loss counted anywhere — GS `dropped` 0,
+`pre_fec_loss` 0, drone `vanished` +3 — because at ~3230 bodies/s the
+per-body dead time of un-aggregated PPDUs saturates the channel, the
+TxQueue wait runs 17–19 ms mean / 50 ms max, and the drone's
+**congestion shed** drops the enh layer (`drone.congestion_shed` true in
+a fifth of the samples). The FEC change is not implicated: the shed
+fraction, queue wait and fps are the same on both binaries. What the
+change buys at this point is the SoC: hot thread 71 → 19 % of its core,
+cpu 81 → 54 %, ring 37 → 0 % max, and the GS `fec` segment back to the
+flight-op-point numbers. **At 19 Mb/s and singles the air, not the SoC,
+is the wall**; re-running this point with A-MPDU on is the way to find
+the new SoC wall (linear extrapolation of `mbr-fecw` at 28 % of cpu0 for
+1.0 × 120 repairs/frame puts the worker's own limit near 45 Mb/s at ov
+1.0 — the GF256 kernel, lever 2, is now the next term).
+
+The knee run also sized the backlog cap: at cap 192 the shared queue's
+frame-end peak touched the cap in every window (77 + 21 skipped per 5 s,
+0.4 % of repairs) although the worker sat at 28 % of cpu0 — the tx/usb
+wakeups the feed triggers preempt the worker on cpu0 during the burst,
+so the peak is deeper than feed-time arithmetic (~115) says. Cap 256,
+queue 512.
+
+### Deploy state
+
+Drone `.152` runs the cap-256 build (`/usr/bin/maburd`, md5 466d8a2e…);
+rollback `maburd.pre-nojoin` = the 867 kB binary of 2026-09-21 (binary
+only — no config or wire change, deploy order irrelevant).
+`maburd.pre-bro3` and `maburd.pre-crctab` were left in place (3.4 MB
+free). GS unchanged. Both configs restored from `*.pre-nojoinceil`
+(flight bundle: cap 24000, budget 0.65, adaptive ladder). Raw: GS
+`/tmp/bw-nojoin-{A,B,C,K19,K19base,final}.jsonl`. Bench left powered on.
+
+Remaining from the ranked list: lever 2 (`gf::lincomb` cost per repair —
+the worker is now the SoC's throughput term), the copy/alloc diet (~10 %
+of the hot core), `classify_frame`'s double scan, and the clock (lever 1
+of the first list, last by operator preference). Re-measure the wall with
+A-MPDU on before ranking further.
