@@ -128,6 +128,44 @@ int main() {
     std::printf("lincomb: %.1f MB/s\n", iters * 164.0 / dt / 1e6);
   }
 
+  // end-to-end encoder frames/s at the flight geometry (symbol 332, w32,
+  // bpb 4, ov 0.5, 38 kB frames = 18 Mb/s at 60 fps), sync FEC (repairs
+  // inline, so this is feed + repair CPU on one thread): the copy/alloc
+  // diet's A/B number (2026-09-22).
+  {
+    std::array<UepLayerCfg, 2> layers{};
+    for (int s = 0; s < 2; ++s) {
+      layers[s].fec = SwConfig{332, 32, 0.5};
+      layers[s].blocks_per_body = 4;
+    }
+    UepEncoder enc(layers, 15);
+    const size_t kFrameBytes = 38000;
+    std::vector<uint8_t> unit(framewire::kFrameHdrLen + kFrameBytes);
+    const size_t off = framewire::kFrameHdrLen;
+    unit[off] = 0; unit[off + 1] = 0; unit[off + 2] = 0; unit[off + 3] = 1;
+    unit[off + 4] = 1 << 1;
+    unit[off + 5] = 1;
+    for (size_t i = off + 6; i < unit.size(); ++i) unit[i] = (uint8_t)rng();
+    const int nframes = 1000;
+    uint64_t now = 1000, bodies = 0, bytes = 0;
+    auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < nframes; ++i) {
+      framewire::FrameHdr h;
+      h.frame_id = (uint16_t)i;
+      h.pts_us = (uint32_t)i * 16667u;
+      framewire::pack_frame_hdr(h, unit.data());
+      for (auto& b : enc.add_frame(i & 1, unit.data(), unit.size(), now)) {
+        ++bodies;
+        bytes += b.body.size();
+      }
+      now += 16;
+    }
+    auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("encoder flight-geom 332/w32/bpb4/ov0.5 38kB: %.0f frames/s, %.2f ms/frame, %llu bodies %llu B\n",
+                nframes / dt, dt / nframes * 1e3,
+                (unsigned long long)bodies, (unsigned long long)bytes);
+  }
+
   // end-to-end encoder frames/s at bench geometry (symbol 164, bpb 8,
   // window 128, overhead 0.75 literal — Task 3 deleted the kUepRefOverhead
   // ladder; 0.75 reproduces the exact pre-Task-3 value byte-for-byte

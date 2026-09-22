@@ -12,56 +12,57 @@ int SbiPacker::block_stride() const { return 2 + block_payload_; }
 
 std::vector<std::vector<uint8_t>> SbiPacker::add(const uint8_t* env, size_t len) {
   std::vector<std::vector<uint8_t>> out;
-  if (static_cast<int>(len) != block_payload_) return out;
-
-  pending_.emplace_back(env, env + len);
-  while (static_cast<int>(pending_.size()) >= blocks_per_body_) {
-    std::vector<std::vector<uint8_t>> batch(
-        pending_.begin(), pending_.begin() + blocks_per_body_);
-    pending_.erase(pending_.begin(), pending_.begin() + blocks_per_body_);
-    out.push_back(build_body(batch));
-  }
+  auto b = add_one(env, len);
+  if (!b.empty()) out.push_back(std::move(b));
   return out;
 }
 
 std::vector<std::vector<uint8_t>> SbiPacker::flush() {
   std::vector<std::vector<uint8_t>> out;
-  if (pending_.empty()) return out;
-  out.push_back(build_body(pending_));
-  pending_.clear();
+  auto b = flush_one();
+  if (!b.empty()) out.push_back(std::move(b));
   return out;
 }
 
-std::vector<uint8_t> SbiPacker::build_body(
-    const std::vector<std::vector<uint8_t>>& batch) {
-  std::vector<uint8_t> out;
-  out.reserve(SBI_HDR_LEN + batch.size() * block_stride());
-
+void SbiPacker::begin_body() {
+  body_.clear();
+  body_.reserve(static_cast<size_t>(SBI_HDR_LEN) +
+                static_cast<size_t>(blocks_per_body_) * static_cast<size_t>(block_stride()));
   // Header: <u16 MAGIC LE, u8 ver, u8 stream_id, u16 block_payload LE, u8 n_blocks, u16 q_ms LE, u16 enc_us LE, u16 air_ms LE>
-  out.push_back(static_cast<uint8_t>(SBI_MAGIC & 0xFF));
-  out.push_back(static_cast<uint8_t>((SBI_MAGIC >> 8) & 0xFF));
-  out.push_back(SBI_VER);
-  out.push_back(stream_id_);
-  out.push_back(static_cast<uint8_t>(block_payload_ & 0xFF));
-  out.push_back(static_cast<uint8_t>((block_payload_ >> 8) & 0xFF));
-  out.push_back(static_cast<uint8_t>(batch.size()));
-  // q_ms placeholder (bytes 7-8)
-  out.push_back(0);
-  out.push_back(0);
-  // enc_us placeholder (bytes 9-10)
-  out.push_back(0);
-  out.push_back(0);
-  // air_ms placeholder (bytes 11-12), patched by the hot thread's sink
-  out.push_back(0);
-  out.push_back(0);
+  body_.push_back(static_cast<uint8_t>(SBI_MAGIC & 0xFF));
+  body_.push_back(static_cast<uint8_t>((SBI_MAGIC >> 8) & 0xFF));
+  body_.push_back(SBI_VER);
+  body_.push_back(stream_id_);
+  body_.push_back(static_cast<uint8_t>(block_payload_ & 0xFF));
+  body_.push_back(static_cast<uint8_t>((block_payload_ >> 8) & 0xFF));
+  body_.push_back(0);  // n_blocks, patched by take_body
+  // q_ms (7-8), enc_us (9-10), air_ms (11-12) placeholders, patched later
+  // by the tx thread / the hot thread's sink
+  for (int i = 0; i < 6; ++i) body_.push_back(0);
+}
 
-  for (auto& env : batch) {
-    uint16_t crc = crc16_ccitt(env.data(), env.size());
-    out.push_back(static_cast<uint8_t>(crc & 0xFF));
-    out.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
-    out.insert(out.end(), env.begin(), env.end());
-  }
+std::vector<uint8_t> SbiPacker::take_body() {
+  body_[6] = static_cast<uint8_t>(n_pending_);
+  n_pending_ = 0;
+  std::vector<uint8_t> out = std::move(body_);
+  body_.clear();
   return out;
+}
+
+std::vector<uint8_t> SbiPacker::add_one(const uint8_t* env, size_t len) {
+  if (static_cast<int>(len) != block_payload_) return {};
+  if (n_pending_ == 0) begin_body();
+  const uint16_t crc = crc16_ccitt(env, len);
+  body_.push_back(static_cast<uint8_t>(crc & 0xFF));
+  body_.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
+  body_.insert(body_.end(), env, env + len);
+  if (++n_pending_ >= blocks_per_body_) return take_body();
+  return {};
+}
+
+std::vector<uint8_t> SbiPacker::flush_one() {
+  if (n_pending_ == 0) return {};
+  return take_body();
 }
 
 namespace {

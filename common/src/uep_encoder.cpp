@@ -28,23 +28,25 @@ UepEncoder::UepEncoder(const std::array<UepLayerCfg, 2>& layers, int flush_ms,
       }()},
       flush_ms_(flush_ms) {}
 
-void UepEncoder::pack_envs(Layer& layer, uint8_t sid,
-                           std::vector<std::vector<uint8_t>> envs,
-                           const UepBodySink& sink) {
-  for (auto& env : envs)
-    for (auto& b : layer.packer.add(env.data(), env.size()))
-      sink(UepBody{sid, std::move(b)});
+SwEnvSink UepEncoder::env_sink(Layer& layer, const UepBodySink& sink) {
+  return [&layer, &sink](const uint8_t* env, size_t n) {
+    auto b = layer.packer.add_one(env, n);
+    if (!b.empty()) sink(UepBody{layer.sid, std::move(b)});
+  };
 }
 
-void UepEncoder::drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out,
-                             bool join) {
-  auto envs = layer.sw.flush();
+void UepEncoder::emit_flush(Layer& layer, const UepBodySink& sink) {
+  auto b = layer.packer.flush_one();
+  if (!b.empty()) sink(UepBody{layer.sid, std::move(b)});
+}
+
+void UepEncoder::drain_layer(Layer& layer, std::vector<UepBody>& out, bool join) {
+  const UepBodySink sink = [&](UepBody&& b) { out.push_back(std::move(b)); };
+  const SwEnvSink es = env_sink(layer, sink);
+  layer.sw.flush(es);
   if (join)
-    for (auto& e : layer.sw.finish()) envs.push_back(std::move(e));
-  pack_envs(layer, sid, std::move(envs),
-            [&](UepBody&& b) { out.push_back(std::move(b)); });
-  for (auto& b : layer.packer.flush())
-    out.push_back(UepBody{sid, std::move(b)});
+    for (auto& e : layer.sw.finish()) es(e.data(), e.size());
+  emit_flush(layer, sink);
 }
 
 void UepEncoder::add_frame(int stream_id, const uint8_t* data, size_t len,
@@ -55,19 +57,21 @@ void UepEncoder::add_frame(int stream_id, const uint8_t* data, size_t len,
     ++layer.dropped_count;
     return;
   }
-  auto frags = layer.frag.fragment(data, len, layer.usable);
-  for (auto& f : frags)
-    pack_envs(layer, static_cast<uint8_t>(sid),
-              layer.sw.add_packet(f.data(), f.size()), sink);
+  const SwEnvSink es = env_sink(layer, sink);
+  // Fragment header + frame bytes go straight into the envelope buffer as
+  // two spans: no fragment vector, no envelope vector, no packer copies.
+  layer.frag.fragment(data, len, layer.usable,
+                      [&](const uint8_t* hdr, const uint8_t* chunk, size_t n) {
+                        layer.sw.add_packet(hdr, Fragmenter::kHdrLen, chunk, n, es);
+                      });
   // Frame-end seal: flush() seals the partial tail symbol and emits one
   // tail repair; idle re-flush is a no-op so back-to-back empty frames
   // cannot spam repairs. Also flush the SBI packer's pending group as a
   // short final body — otherwise the tail envelope(s) just sealed above sit
   // buffered until a future frame's envelopes happen to fill the group,
   // defeating the "ship now" point of the frame-end seal.
-  pack_envs(layer, static_cast<uint8_t>(sid), layer.sw.flush(), sink);
-  for (auto& b : layer.packer.flush())
-    sink(UepBody{static_cast<uint8_t>(sid), std::move(b)});
+  layer.sw.flush(es);
+  emit_flush(layer, sink);
   layer.last_activity_ms = now_ms;
   layer.has_activity = true;
 }
@@ -88,10 +92,8 @@ void UepEncoder::collect(const UepBodySink& sink) {
     // after could see a job finish between the two and strand its envelope
     // as a one-block body at the next harvest.
     const bool idle = !layer.sw.repairs_outstanding();
-    pack_envs(layer, static_cast<uint8_t>(sid), layer.sw.collect(), sink);
-    if (idle)
-      for (auto& b : layer.packer.flush())
-        sink(UepBody{static_cast<uint8_t>(sid), std::move(b)});
+    layer.sw.collect(env_sink(layer, sink));
+    if (idle) emit_flush(layer, sink);
   }
 }
 
@@ -102,7 +104,7 @@ std::vector<UepBody> UepEncoder::poll(uint64_t now_ms) {
     if (!layer.has_activity) continue;
     if (now_ms - layer.last_activity_ms < static_cast<uint64_t>(flush_ms_)) continue;
 
-    drain_layer(layer, static_cast<uint8_t>(sid), out, /*join=*/false);
+    drain_layer(layer, out, /*join=*/false);
   }
   return out;
 }
@@ -111,7 +113,7 @@ std::vector<UepBody> UepEncoder::flush_all() {
   std::vector<UepBody> out;
   for (int sid = 0; sid < kNumStreams; ++sid) {
     Layer& layer = layers_[static_cast<size_t>(sid)];
-    drain_layer(layer, static_cast<uint8_t>(sid), out, /*join=*/true);
+    drain_layer(layer, out, /*join=*/true);
   }
   return out;
 }

@@ -7,7 +7,7 @@ using namespace linkbench;
 // SwEncoder seals a symbol LAZILY when the next packet doesn't fit — the
 // Nth max-size packet doesn't complete a symbol until the (N+1)th packet
 // arrives and finds no room. So N packets of max size yield N-1 source
-// envelopes; the Nth stays buffered in current_symbol_ until flush() (or the
+// envelopes; the Nth stays buffered in the encoder's envelope buffer until flush() (or the
 // next packet) seals it (common/src/sw_encoder.cpp add_packet/seal_current).
 TEST(txpipe_lazy_seal_yields_n_minus_1_sources) {
   FecParams p;  // overhead=0.5 symbol_size=64 window=128 → max_packet_size 62

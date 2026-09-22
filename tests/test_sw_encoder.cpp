@@ -146,4 +146,31 @@ TEST(packets_never_span_symbols) {
   for (int i = 42; i < 64; ++i) CHECK(sym[i] == 0);   // zero pad, no spill
 }
 
+// The sink form of add_packet/flush must hand out the same envelopes, in
+// the same order, as the vector form (sync mode), and the two-span
+// overload must equal one add_packet of the concatenation — that is what
+// lets the fragment header and the frame bytes go straight into the
+// envelope without a fragment vector in between.
+TEST(sink_form_matches_vector_form) {
+  SwConfig cfg{32, 8, 0.5};
+  SwEncoder a(cfg), b(cfg), c(cfg);
+  std::vector<std::vector<uint8_t>> want, got_sink, got_span;
+  auto sink_b = [&](const uint8_t* env, size_t n) { got_sink.emplace_back(env, env + n); };
+  auto sink_c = [&](const uint8_t* env, size_t n) { got_span.emplace_back(env, env + n); };
+  for (int i = 0; i < 40; ++i) {
+    size_t len = 1 + static_cast<size_t>(i * 13 % 29);
+    std::vector<uint8_t> pkt(len);
+    for (size_t k = 0; k < len; ++k) pkt[k] = static_cast<uint8_t>(i + k);
+    for (auto& e : a.add_packet(pkt.data(), len)) want.push_back(e);
+    b.add_packet(pkt.data(), len, sink_b);
+    size_t split = len / 2;
+    c.add_packet(pkt.data(), split, pkt.data() + split, len - split, sink_c);
+  }
+  for (auto& e : a.flush()) want.push_back(e);
+  b.flush(sink_b);
+  c.flush(sink_c);
+  CHECK(got_sink == want);
+  CHECK(got_span == want);
+  CHECK(!want.empty());
+}
 MTEST_MAIN

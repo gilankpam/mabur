@@ -151,4 +151,34 @@ TEST(sbi_q_ms_saturates) {
   CHECK(mabur::sbi_unpack(b.data(), b.size(), 8).q_ms == 65535);
 }
 
+// add_one/flush_one (the hot path's single-body form) must produce exactly
+// the bodies add/flush do, on the same envelope stream, body for body:
+// a body when add() yields one, empty when it yields none. Would fail if
+// the in-place builder mis-sized the header, mis-patched n_blocks, or
+// emitted at the wrong envelope.
+TEST(sbi_add_one_matches_add) {
+  for (int bpb : {1, 2, 4, 7}) {
+    SbiPacker a(20, bpb, 3), b(20, bpb, 3);
+    std::vector<std::vector<uint8_t>> want, got;
+    for (int i = 0; i < 23; ++i) {
+      std::vector<uint8_t> env(20);
+      for (size_t k = 0; k < env.size(); ++k) env[k] = static_cast<uint8_t>(i * 31 + k);
+      auto bodies = a.add(env.data(), env.size());
+      auto one = b.add_one(env.data(), env.size());
+      REQUIRE(bodies.size() <= 1);
+      CHECK(one.empty() == bodies.empty());
+      for (auto& x : bodies) want.push_back(x);
+      if (!one.empty()) got.push_back(one);
+    }
+    for (auto& x : a.flush()) want.push_back(x);
+    auto f = b.flush_one();
+    if (!f.empty()) got.push_back(f);
+    CHECK(b.flush_one().empty());  // nothing pending twice
+    CHECK(got == want);
+    // wrong-length envelope: neither form emits, neither form corrupts
+    uint8_t junk[5] = {1, 2, 3, 4, 5};
+    CHECK(a.add(junk, 5).empty());
+    CHECK(b.add_one(junk, 5).empty());
+  }
+}
 MTEST_MAIN

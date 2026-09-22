@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 namespace mabur {
 
@@ -20,6 +21,14 @@ namespace mabur {
 class Fragmenter {
  public:
   std::vector<std::vector<uint8_t>> fragment(const uint8_t* pkt, size_t len, int usable);
+
+  // Same fragments, handed out as (6-byte header, pointer into pkt, chunk
+  // length) without a vector per fragment — the hot path writes both spans
+  // straight into the FEC envelope (copy/alloc diet 2026-09-22). The
+  // vector form is this plus a concatenating sink.
+  using Sink = std::function<void(const uint8_t* hdr, const uint8_t* chunk,
+                                  size_t chunk_len)>;
+  void fragment(const uint8_t* pkt, size_t len, int usable, const Sink& sink);
 
   // Bytes every fragment spends on its header; callers size `usable` as
   // max_packet_size() - kHdrLen.

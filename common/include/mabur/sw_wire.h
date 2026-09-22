@@ -27,6 +27,9 @@ struct SwHeader {
 };
 
 void pack_header(std::vector<uint8_t>& out, const SwHeader& h);
+// Same bytes written in place at out[0..kSwHeaderLen) (the encoder seals
+// its envelope buffer without an intermediate vector).
+void pack_header(uint8_t* out, const SwHeader& h);
 
 // False on short/bad-magic/unknown-flags input or type-inconsistent fields
 // (repair with window_len 0, source with nonzero window_len/repair_key).

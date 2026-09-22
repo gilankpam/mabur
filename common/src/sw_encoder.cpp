@@ -27,6 +27,7 @@ SwEncoder::SwEncoder(const SwConfig& cfg, uint32_t initial_seq, FecWorker* worke
   ring_raw_.resize(stride_ * cap_ + 15);
   ring_ = ring_raw_.data();
   ring_ += (16 - (reinterpret_cast<uintptr_t>(ring_) & 15)) & 15;
+  env_buf_.assign(sw::kSwHeaderLen + stride_, 0);
   if (worker_) async_ = std::make_unique<AsyncState>();
 }
 
@@ -34,41 +35,52 @@ SwEncoder::~SwEncoder() {
   if (async_) join();
 }
 
-void SwEncoder::append_to_current(const uint8_t* data, size_t len) {
-  const uint16_t ln = static_cast<uint16_t>(len);
-  current_symbol_.push_back(static_cast<uint8_t>(ln & 0xFF));
-  current_symbol_.push_back(static_cast<uint8_t>((ln >> 8) & 0xFF));
-  current_symbol_.insert(current_symbol_.end(), data, data + len);
+void SwEncoder::append_to_current(const uint8_t* a, size_t alen, const uint8_t* b, size_t blen) {
+  uint8_t* p = env_buf_.data() + sw::kSwHeaderLen + cur_len_;
+  const uint16_t ln = static_cast<uint16_t>(alen + blen);
+  p[0] = static_cast<uint8_t>(ln & 0xFF);
+  p[1] = static_cast<uint8_t>((ln >> 8) & 0xFF);
+  if (alen) std::memcpy(p + 2, a, alen);
+  if (blen) std::memcpy(p + 2 + alen, b, blen);
+  cur_len_ += 2 + alen + blen;
 }
 
 std::vector<std::vector<uint8_t>> SwEncoder::add_packet(const uint8_t* data, size_t len) {
   std::vector<std::vector<uint8_t>> out;
-  if (async_) drain_done(out);
-  if (static_cast<int>(len) > cfg_.max_packet_size()) {
-    ++oversize_drops_;
-    return out;
-  }
-  const size_t needed = 2 + len;
-  const size_t remaining = static_cast<size_t>(cfg_.symbol_size) - current_symbol_.size();
-  if (needed > remaining) seal_current(out);
-  append_to_current(data, len);
+  add_packet(data, len, [&](const uint8_t* e, size_t n) { out.emplace_back(e, e + n); });
   return out;
 }
 
-void SwEncoder::seal_current(std::vector<std::vector<uint8_t>>& out) {
-  if (current_symbol_.empty()) return;
+void SwEncoder::add_packet(const uint8_t* data, size_t len, const SwEnvSink& sink) {
+  add_packet(data, len, nullptr, 0, sink);
+}
+
+void SwEncoder::add_packet(const uint8_t* a, size_t alen, const uint8_t* b, size_t blen,
+                           const SwEnvSink& sink) {
+  if (async_) drain_done(sink);
+  const size_t len = alen + blen;
+  if (static_cast<int>(len) > cfg_.max_packet_size()) {
+    ++oversize_drops_;
+    return;
+  }
+  const size_t needed = 2 + len;
+  const size_t remaining = static_cast<size_t>(cfg_.symbol_size) - cur_len_;
+  if (needed > remaining) seal_current(sink);
+  append_to_current(a, alen, b, blen);
+}
+
+void SwEncoder::seal_current(const SwEnvSink& sink) {
+  if (cur_len_ == 0) return;
   const size_t ss = static_cast<size_t>(cfg_.symbol_size);
-  current_symbol_.resize(ss, 0);
+  uint8_t* sym = env_buf_.data() + sw::kSwHeaderLen;
+  if (cur_len_ < ss) std::memset(sym + cur_len_, 0, ss - cur_len_);
 
   sw::SwHeader h;
   h.repair = false;
   h.symbol_size = static_cast<uint16_t>(cfg_.symbol_size);
   h.seq = next_seq_;
-  std::vector<uint8_t> env;
-  env.reserve(sw::kSwHeaderLen + ss);
-  sw::pack_header(env, h);
-  env.insert(env.end(), current_symbol_.begin(), current_symbol_.end());
-  out.push_back(std::move(env));
+  sw::pack_header(env_buf_.data(), h);
+  sink(env_buf_.data(), sw::kSwHeaderLen + ss);
 
   // A ring row stays readable for kSlackRows seals after leaving the
   // window; join if a queued job might still reference the row this seal
@@ -77,17 +89,17 @@ void SwEncoder::seal_current(std::vector<std::vector<uint8_t>>& out) {
   if (async_ && async_->outstanding.load(std::memory_order_acquire) != 0 &&
       ++seals_since_join_ >= static_cast<long>(kSlackRows) - 2)
     join();
-  std::memcpy(ring_ + next_slot_ * stride_, current_symbol_.data(), ss);
+  std::memcpy(ring_ + next_slot_ * stride_, sym, ss);
   next_slot_ = (next_slot_ + 1) % cap_;
   if (count_ < static_cast<size_t>(cfg_.window)) ++count_;
-  current_symbol_.clear();
+  cur_len_ = 0;
   ++next_seq_;
   ++sources_out_;
   tail_repair_pending_ = true;
 
   credit_ += cfg_.overhead;
   while (credit_ >= 1.0) {
-    emit_or_enqueue_repair(out);
+    emit_or_enqueue_repair(sink);
     credit_ -= 1.0;
   }
 }
@@ -124,7 +136,7 @@ std::vector<uint8_t> SwEncoder::build_repair(uint32_t repair_key,
   return env;
 }
 
-void SwEncoder::emit_or_enqueue_repair(std::vector<std::vector<uint8_t>>& out) {
+void SwEncoder::emit_or_enqueue_repair(const SwEnvSink& sink) {
   // Backlog bound (async only): the worker is more than kMaxBacklogJobs
   // repairs behind, so this credit is forfeited rather than queued. The
   // producer never waits and the ring never pins; the GS sees a lower
@@ -148,7 +160,8 @@ void SwEncoder::emit_or_enqueue_repair(std::vector<std::vector<uint8_t>>& out) {
   ++repairs_out_;
   tail_repair_pending_ = false;
   if (!async_) {
-    out.push_back(build_repair(j.repair_key, j.header_seq, j.window_len, j.start_slot));
+    const auto env = build_repair(j.repair_key, j.header_seq, j.window_len, j.start_slot);
+    sink(env.data(), env.size());
     return;
   }
   if (async_->outstanding.load(std::memory_order_relaxed) == 0)
@@ -179,10 +192,16 @@ void SwEncoder::execute_repair_job(const FecRepairJob& j) {
   async_->outstanding.fetch_sub(1, std::memory_order_release);
 }
 
-void SwEncoder::drain_done(std::vector<std::vector<uint8_t>>& out) {
-  std::lock_guard<std::mutex> l(async_->done_m);
-  for (auto& e : async_->done) out.push_back(std::move(e));
-  async_->done.clear();
+void SwEncoder::drain_done(const SwEnvSink& sink) {
+  // Swap the done list out under the lock, deliver outside it: the worker
+  // never waits on the sink (which may run the SBI pack + CRC).
+  std::vector<std::vector<uint8_t>> done;
+  {
+    std::lock_guard<std::mutex> l(async_->done_m);
+    if (async_->done.empty()) return;
+    done.swap(async_->done);
+  }
+  for (auto& e : done) sink(e.data(), e.size());
 }
 
 void SwEncoder::join() {
@@ -223,15 +242,19 @@ std::vector<std::vector<uint8_t>> SwEncoder::finish() {
   std::vector<std::vector<uint8_t>> out;
   if (async_) {
     join();
-    drain_done(out);
+    drain_done([&](const uint8_t* e, size_t n) { out.emplace_back(e, e + n); });
   }
   return out;
 }
 
 std::vector<std::vector<uint8_t>> SwEncoder::collect() {
   std::vector<std::vector<uint8_t>> out;
-  if (async_) drain_done(out);
+  collect([&](const uint8_t* e, size_t n) { out.emplace_back(e, e + n); });
   return out;
+}
+
+void SwEncoder::collect(const SwEnvSink& sink) {
+  if (async_) drain_done(sink);
 }
 
 bool SwEncoder::repairs_outstanding() const {
@@ -243,15 +266,19 @@ bool SwEncoder::repairs_outstanding() const {
 
 std::vector<std::vector<uint8_t>> SwEncoder::flush() {
   std::vector<std::vector<uint8_t>> out;
-  seal_current(out);
-  if (tail_repair_pending_ && count_ > 0) emit_or_enqueue_repair(out);
+  flush([&](const uint8_t* e, size_t n) { out.emplace_back(e, e + n); });
+  return out;
+}
+
+void SwEncoder::flush(const SwEnvSink& sink) {
+  seal_current(sink);
+  if (tail_repair_pending_ && count_ > 0) emit_or_enqueue_repair(sink);
   // No join here (fec-join-delete 2026-09-22): the frame-end spin-wait for
   // the worker was 64 % of the hot thread's samples at 18 Mb/s. Repairs
   // still building surface at the next add_packet/flush/collect drain;
   // SwDecoder has no ordering contract and its horizon (~80 ms) dwarfs the
   // ≤5 ms harvest cadence. finish() keeps the joining form for shutdown.
-  if (async_) drain_done(out);
-  return out;
+  if (async_) drain_done(sink);
 }
 
 }  // namespace mabur

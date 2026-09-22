@@ -136,6 +136,7 @@ class UepEncoder {
     Fragmenter frag;
     SwEncoder sw;
     SbiPacker packer;
+    uint8_t sid;  // this layer's SBI stream id (so env_sink captures two pointers: fits std::function's inline buffer, no heap per frame)
     int usable;
     bool shed = false;
     uint64_t dropped_count = 0;
@@ -148,19 +149,19 @@ class UepEncoder {
           sw(cfg.fec, initial_seq, worker),
           packer(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
+          sid(sid),
           usable(cfg.fec.max_packet_size() -
                  static_cast<int>(Fragmenter::kHdrLen)) {}
   };
 
-  // Feeds a batch of sliding-window envelopes toward layer's SBI packer.
-  void pack_envs(Layer& layer, uint8_t sid,
-                 std::vector<std::vector<uint8_t>> envs,
-                 const UepBodySink& sink);
+  // The hot-path envelope sink: one envelope in, at most one body out to
+  // sink (copy/alloc diet 2026-09-22 — no envelope vectors in between).
+  static SwEnvSink env_sink(Layer& layer, const UepBodySink& sink);
+  static void emit_flush(Layer& layer, const UepBodySink& sink);
   // Flush tail: sliding-window flush (+ the joining finish() when join is
   // set — flush_all only; poll() runs on the hot loop and must not wait)
   // then the SBI packer flush.
-  void drain_layer(Layer& layer, uint8_t sid, std::vector<UepBody>& out,
-                   bool join);
+  void drain_layer(Layer& layer, std::vector<UepBody>& out, bool join);
 
   std::array<Layer, 2> layers_;
   int flush_ms_;

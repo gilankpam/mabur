@@ -22,13 +22,27 @@ uint32_t rd32(const uint8_t* p) {
 }
 }  // namespace
 
+void pack_header(uint8_t* p, const SwHeader& h) {
+  p[0] = static_cast<uint8_t>(kSwMagic & 0xFF);
+  p[1] = static_cast<uint8_t>(kSwMagic >> 8);
+  p[2] = h.repair ? kFlagRepair : 0;
+  p[3] = static_cast<uint8_t>(h.symbol_size & 0xFF);
+  p[4] = static_cast<uint8_t>(h.symbol_size >> 8);
+  p[5] = static_cast<uint8_t>(h.seq & 0xFF);
+  p[6] = static_cast<uint8_t>((h.seq >> 8) & 0xFF);
+  p[7] = static_cast<uint8_t>((h.seq >> 16) & 0xFF);
+  p[8] = static_cast<uint8_t>(h.seq >> 24);
+  p[9] = h.window_len;
+  p[10] = static_cast<uint8_t>(h.repair_key & 0xFF);
+  p[11] = static_cast<uint8_t>((h.repair_key >> 8) & 0xFF);
+  p[12] = static_cast<uint8_t>((h.repair_key >> 16) & 0xFF);
+  p[13] = static_cast<uint8_t>(h.repair_key >> 24);
+}
+
 void pack_header(std::vector<uint8_t>& out, const SwHeader& h) {
-  put16(out, kSwMagic);
-  out.push_back(h.repair ? kFlagRepair : 0);
-  put16(out, h.symbol_size);
-  put32(out, h.seq);
-  out.push_back(h.window_len);
-  put32(out, h.repair_key);
+  const size_t off = out.size();
+  out.resize(off + kSwHeaderLen);
+  pack_header(out.data() + off, h);
 }
 
 bool parse_header(const uint8_t* p, size_t len, SwHeader* h) {

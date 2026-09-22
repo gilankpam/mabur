@@ -53,4 +53,23 @@ TEST(fragmenter_seq_wraps_u16) {
   CHECK(seq == 0);
 }
 
+// The sink form hands out (header, chunk pointer, chunk length) without
+// materializing a vector; header+chunk must equal fragment()'s vectors,
+// including the zero-length unit (one empty chunk) and the shared seq.
+TEST(fragment_sink_matches_vector_form) {
+  Fragmenter a, b;
+  std::vector<uint8_t> pkt(1000);
+  for (size_t i = 0; i < pkt.size(); ++i) pkt[i] = static_cast<uint8_t>(i * 7);
+  for (size_t len : {size_t{0}, size_t{1}, size_t{300}, size_t{301}, size_t{1000}}) {
+    auto want = a.fragment(pkt.data(), len, 300);
+    std::vector<std::vector<uint8_t>> got;
+    b.fragment(pkt.data(), len, 300,
+               [&](const uint8_t* hdr, const uint8_t* chunk, size_t n) {
+                 std::vector<uint8_t> f(hdr, hdr + Fragmenter::kHdrLen);
+                 f.insert(f.end(), chunk, chunk + n);
+                 got.push_back(std::move(f));
+               });
+    CHECK(got == want);
+  }
+}
 MTEST_MAIN

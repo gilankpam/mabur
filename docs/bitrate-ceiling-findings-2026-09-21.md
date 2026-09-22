@@ -532,3 +532,74 @@ Remaining from the ranked list: the copy/alloc diet (~10 % of the hot
 core), `classify_frame`'s double scan, and the clock (last, by operator
 preference). The SoC is not the wall at any rate mcs7/20 MHz carries;
 the air is (§"The knee and the 22 Mb/s collapse, re-run with A-MPDU on").
+
+## Lever 3 delivered: the copy/alloc diet (2026-09-22, branch fec-join-delete)
+
+Per 332 B source symbol the feed used to make seven copies and ~5.5 heap
+allocations on the hot thread: Fragmenter vector (1 copy, 1 alloc) →
+`current_symbol_` (copy) → a fresh `env` vector plus the returned list
+(copy, 2 allocs) → ring row (copy) → `SbiPacker::pending_` (copy, alloc)
+→ `batch` (copy, alloc) → body insert plus the returned list (copy,
+0.5 alloc). Repairs paid the packer's last three rows too. Now:
+
+- `SbiPacker` builds the body in place: header at the first envelope,
+  CRC + payload appended per envelope, handed out by move at the group
+  size (`add_one`/`flush_one`; `add`/`flush` are wrappers, so
+  `msp_source`, linkbench, fecbench and `test_aggregator` are untouched).
+- `SwEncoder` seals in place: the symbol accumulates inside a reusable
+  envelope buffer behind a header slot; seal writes the header, zero-pads,
+  copies the symbol into the ring and hands the envelope to a sink
+  (`SwEnvSink`). The two-span `add_packet(hdr, chunk)` overload takes the
+  fragment header and the frame bytes directly. Vector-returning
+  `add_packet`/`flush`/`collect` are wrappers, so every golden vector and
+  async test pins the same bytes.
+- `Fragmenter::fragment(..., Sink)` yields (6 B header, pointer into the
+  frame, length) with no vector per fragment.
+- `UepEncoder` wires the three: fragment → envelope buffer → `add_one` →
+  body sink, with no intermediate vectors. `drain_done` swaps the
+  worker's done list out under the lock and delivers outside it.
+
+After: three copies (envelope buffer, ring, body) and a quarter
+allocation (the body) per source symbol; repairs cost one copy plus the
+free of the worker's envelope. Wire bytes unchanged — the flight-geometry
+bench below emits identical body counts and bytes on both builds.
+
+**Drone microbench** (`gf_bench`'s new encoder line: 332/w32/bpb4/ov 0.5,
+38 kB frames, sync FEC so repairs are inline on the same thread, maburd
+stopped, two runs each): **3.14 → 2.37 ms/frame** (−0.77 ms, −25 %),
+45 000 bodies / 62 181 000 B on both. The bench-geometry line (164/w128/
+bpb8) went 194 → 222 frames/s.
+
+**In situ, flight bundle at 17.1 Mb/s, 60 s windows, 120 s settle, same
+session A/B** (baseline = the lincomb_rows build of the previous section):
+
+| maburd | mbr-hot ticks (% cpu1) | mbr-fecw | sys.cpu_pct | worker build_us/job | GS fec p50 / p99 | ausniff |
+|---|---|---|---|---|---|---|
+| lincomb_rows (`maburd.pre-diet`) | 999 (16.7) | 711 | 43.6 | 91 / 87 | 8.4 / 11.3 | 3616 AUs, 60.3 fps, 0 gaps |
+| **copy/alloc diet (deployed)** | **667 (11.1)** | 711 | **39.8** | 85 / 79 | 8.2 / 11.1 | 3615 AUs, 60.3 fps, 0 gaps |
+
+Hot thread −332 ticks = **−0.92 ms per frame**, more than the 0.75 ms the
+profile's memcpy + malloc share promised (the freed allocator traffic
+also trims `mbr-txw`/`mbr-usb` by ~10 % each and the worker's wall gauge
+by ~7 %; the main `maburd` thread's ticks vary 300–800 between windows on
+their own and are not attributed). `pre_fec_loss` 0 both windows. The GS
+`fec` segment moved −0.2 ms p50 / p99 — at the edge of window-to-window
+noise, and far less than the CRC table's −2.8 ms for a similar feed cut.
+So the "production-bound enh half" gearing seen with the CRC table does
+not hold here: at 17 Mb/s and rung 5 the fec segment is air, and the hot
+thread has now been taken from 46 % of its core (with the join) to 11 %
+without moving it. The hot thread is off the latency path for good;
+what remains of it is the CRC (8 %), the ring memcpy and the NAL scans.
+
+Deploy state: drone `.152` runs the diet build (the measured binary was
+md5 6d14f7c8…; the deployed one adds only a captured-`sid` tidy so the
+envelope sink fits std::function's inline buffer — md5 cd51d65f…, ausniff
+clean after the swap); rollback `maburd.pre-diet` = the lincomb_rows build,
+`maburd.pre-gfrows` and `maburd.pre-nojoin` still present. Binary only,
+no config or wire change. Raw: GS `/tmp/bw-diet-{base,diet}.jsonl`. Host
+suite 148/148 with three new tests (`sbi_add_one_matches_add`,
+`fragment_sink_matches_vector_form`, `sink_form_matches_vector_form`).
+
+Remaining from the ranked list: `classify_frame`'s double scan (4 %) and
+the clock (last, by operator preference). Both are CPU levers on a
+thread that is no longer on the latency path; the ceiling is the air.

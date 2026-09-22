@@ -84,16 +84,27 @@ class SbiPacker {
   // empty if nothing is pending.
   std::vector<std::vector<uint8_t>> flush();
 
+  // Single-body forms of add/flush for the hot path (copy/alloc diet
+  // 2026-09-22): the body is built in place as envelopes arrive — header
+  // at the first envelope, CRC + payload appended per envelope — and
+  // handed out by move when the group completes. Same bytes as add/flush
+  // (test_sbi pins it); empty result = no body this call. add/flush are
+  // wrappers over these.
+  std::vector<uint8_t> add_one(const uint8_t* env, size_t len);
+  std::vector<uint8_t> flush_one();
+
   // Per-block wire size: crc16 (2 bytes) + block_payload.
   int block_stride() const;
 
  private:
-  std::vector<uint8_t> build_body(const std::vector<std::vector<uint8_t>>& batch);
+  void begin_body();
+  std::vector<uint8_t> take_body();
 
   int block_payload_;
   int blocks_per_body_;
   uint8_t stream_id_;
-  std::vector<std::vector<uint8_t>> pending_;
+  std::vector<uint8_t> body_;  // in-progress body: header + n_pending_ blocks
+  int n_pending_ = 0;
 };
 
 // Receiver-side split of a radio body into CRC-surviving sub-blocks. Port of

@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -9,6 +10,12 @@ namespace mabur {
 
 class FecWorker;
 struct FecRepairJob;
+
+// Receives one complete envelope (header + symbol) the moment it is
+// sealed or drained. The pointer is valid only for the call: sources
+// point into the encoder's reusable envelope buffer, repairs into the
+// worker's envelope vector about to be freed.
+using SwEnvSink = std::function<void(const uint8_t* env, size_t len)>;
 
 // Config for the systematic sliding-window RLC FEC scheme (the sole FEC
 // scheme; block RS is retired).
@@ -64,6 +71,19 @@ class SwEncoder {
   // larger than max_packet_size() returns empty and counts oversize_drops().
   std::vector<std::vector<uint8_t>> add_packet(const uint8_t* data, size_t len);
 
+  // Sink forms (copy/alloc diet 2026-09-22): the same envelopes in the
+  // same order, delivered through sink instead of returned as vectors.
+  // Sources are sealed in place in a reusable buffer — no per-envelope
+  // allocation on the hot path. The two-span overload appends a followed
+  // by b as ONE packet (fragment header + frame bytes), so the fragment
+  // never exists as its own vector. The vector forms are these plus a
+  // copying sink; every golden vector pins them.
+  void add_packet(const uint8_t* data, size_t len, const SwEnvSink& sink);
+  void add_packet(const uint8_t* a, size_t alen, const uint8_t* b, size_t blen,
+                  const SwEnvSink& sink);
+  void flush(const SwEnvSink& sink);
+  void collect(const SwEnvSink& sink);
+
   // Seals a partially-filled symbol (if any) and emits one tail repair so a
   // burst tail is recoverable without waiting for the next source. The tail
   // repair fires at most once per sealed source (idle re-flushes are no-ops,
@@ -106,7 +126,7 @@ class SwEncoder {
   // Takes effect immediately (no block boundary to wait for).
   void set_overhead(double overhead) { cfg_.overhead = overhead; }
 
-  bool has_pending() const { return !current_symbol_.empty(); }
+  bool has_pending() const { return cur_len_ != 0; }
   size_t oversize_drops() const { return oversize_drops_; }
   uint64_t sources_out() const { return sources_out_; }
   uint64_t repairs_out() const { return repairs_out_; }
@@ -143,8 +163,8 @@ class SwEncoder {
   // ~170 kB per layer at 332 B.
   static constexpr size_t kSlackRows = 512;
 
-  void append_to_current(const uint8_t* data, size_t len);
-  void seal_current(std::vector<std::vector<uint8_t>>& out);
+  void append_to_current(const uint8_t* a, size_t alen, const uint8_t* b, size_t blen);
+  void seal_current(const SwEnvSink& sink);
   // Envelope construction shared by the sync and (later) async paths; pure
   // reader of ring rows [start_slot, start_slot + window_len).
   std::vector<uint8_t> build_repair(uint32_t repair_key, uint32_t header_seq,
@@ -162,8 +182,8 @@ class SwEncoder {
   // Sync mode: builds and returns the repair inline (today's exact
   // behavior). Async mode: enqueues (or builds inline on queue-full) and
   // returns nothing now. Both allocate key/counters identically.
-  void emit_or_enqueue_repair(std::vector<std::vector<uint8_t>>& out);
-  void drain_done(std::vector<std::vector<uint8_t>>& out);
+  void emit_or_enqueue_repair(const SwEnvSink& sink);
+  void drain_done(const SwEnvSink& sink);
   // Spins (relaxed + one acquire load) until no jobs are outstanding.
   // Reached only from finish() (shutdown/tests), the destructor, and the
   // ring-row backstop in seal_current — never per frame. Worst wait = the
@@ -175,7 +195,11 @@ class SwEncoder {
   size_t stride_ = 0, cap_ = 0, count_ = 0, next_slot_ = 0;
   std::vector<uint8_t> ring_raw_;
   uint8_t* ring_ = nullptr;  // 16B-aligned base inside ring_raw_
-  std::vector<uint8_t> current_symbol_;
+  // The source envelope under construction: [0, kSwHeaderLen) is the
+  // header slot (written at seal), the symbol accumulates after it;
+  // cur_len_ = payload bytes so far. Sized kSwHeaderLen + stride_ once.
+  std::vector<uint8_t> env_buf_;
+  size_t cur_len_ = 0;
   uint32_t next_seq_ = 0;   // seq the next sealed symbol gets
   uint32_t repair_key_ = 0;
   double credit_ = 0.0;
