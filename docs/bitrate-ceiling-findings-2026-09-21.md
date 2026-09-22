@@ -407,3 +407,60 @@ the worker is now the SoC's throughput term), the copy/alloc diet (~10 %
 of the hot core), `classify_frame`'s double scan, and the clock (lever 1
 of the first list, last by operator preference). Re-measure the wall with
 A-MPDU on before ranking further.
+
+### The knee and the 22 Mb/s collapse, re-run with A-MPDU on (2026-09-22, same session)
+
+Same pins (static mcs7, 1.0/0.5), drone `ampdu.max_num 6` +
+`fec.feed_batch 6` (the pre-7a4faec values), no-join cap-256 build, 60 s
+after a 120 s settle:
+
+| target (budget) | enc Mb/s | sys.cpu_pct | mbr-hot % core | mbr-fecw % cpu0 | venc ring mean/max | full_drops | qdepth_max | backlog_drops /5 s | txq_wait mean/max | air_pct | GS fps | GS fec p50 / p99 | ausniff |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 19.2 (0.70), 2026-09-21 deployed | 19.0 | 93.7 | 89 | 36 | 5 / 25 | 0 | 31 | — | — | — | 60.4 | 52.4 / 62.8 | 60.4, 0 gaps |
+| **19.2 (0.70), no join, agg6** | 19.0 | **53.7** | **20** | 28 | **0 / 0** | 0 | 171 / 146 | 0 | 2.9 / 4 ms | 56.4 | 60.0 | **8.0 / 11.9** | 60.3, 0 gaps |
+| 22.0 (0.80), 2026-09-21 deployed | 19.1 (fps 57.5) | 98 | 95 | 38 | **58 / 100** | **172** | — | — | — | — | 53.4 | 310 / 328 | 53.4 fps |
+| **22.0 (0.80), no join, agg6** | **21.8** | **58.9** | **23** | 32 | **0 / 0** | **0** | 245 / 256 | 0 + 15 | 3.2 / 7 ms | 65.0 | **60.0** | **9.5 / 14.2** | 60.2, 1 gap |
+
+The 22 Mb/s point that pinned the ring and dropped ~3 frames/s on
+2026-09-21 now delivers its full 21.8 Mb/s at 60 fps with the SoC at
+59 %. The hot thread is at 23 % of its core, the worker at 32 % of cpu0,
+`dq_split cpu_us` 2.6 ms/frame. The old wall is gone; **the SoC wall was
+not reached in this session** — the highest point tried is clean, and
+linear extrapolation of the two threads (hot ~1 %-of-core per Mb/s,
+worker ~1.5 % of cpu0 per Mb/s at ov 1.0/0.5) puts both cores near their
+limits only in the 45–50 Mb/s region, i.e. beyond what mcs7/20 MHz
+carries. Two things did move at 22 Mb/s:
+
+- **The air is the next term.** `air_pct` 65 % (p95 69, max 74),
+  `air_backlog_max_ms` up to 19 ms, and the first real loss of the
+  session: GS `dropped` +4 / `truncated` +1 in 60 s, ausniff 1
+  `frame_id_gap`, `pre_fec_loss` max 0.1 %. With agg6 a lost aggregate
+  is 12–16 symbols, which is exactly the 1.0/0.5-vs-0.25 trade 7a4faec
+  documents. No congestion shed (0 of 299 samples) — the queue never
+  built.
+- **The backlog cap grazed at the frame-end peak**: `qdepth_max` 245
+  (base window) / 256 (enh window), `backlog_drops` 15 per 5 s on the enh
+  encoder = 0.05 % of repairs at 22 Mb/s and ov 1.0/0.5 with agg6. The
+  peak is deeper than at singles because `feed_batch 6` releases bodies
+  in groups, so the tx/usb wakeups that preempt the worker on cpu0 come
+  in bursts too. Harmless at this rate; at the flight pair (0.5/0.25) the
+  per-frame repair count is half and the cap is not in play (81/45 at
+  18.1 Mb/s). If ov 1.0 is ever flown above ~22 Mb/s, the cap (or the
+  worker's per-repair cost, lever 2) is what to revisit.
+
+Vanish counts in the 22 Mb/s window (+1784/+1785) are the restart
+warm-up class again: GS `clean` +3596 of 3600, `enc.fps` 60.0.
+
+So the answer to "is 19.2 the limit?" is: with singles, yes, and it is a
+body-rate limit (~3200 un-aggregated bodies/s saturate the air on
+per-PPDU dead time, the drone's congestion shed drops enh). With agg6 the
+same SoC and radio carry 22 Mb/s at the 1.0/0.5 pair with margin on both
+cores; the next wall is airtime at mcs7/20 MHz (65 % at 22 Mb/s with that
+pair), reached before the SoC. On the flight pair (0.5/0.25, singles) the
+body rate at 18.1 Mb/s was 2470/s with a 2–3 ms queue wait, so its
+singles ceiling sits roughly at 22–23 Mb/s — not measured.
+
+Bench end state: both configs restored from `*.pre-aggceil` (= the flight
+bundle: singles, 0.5/0.25, cap 24000, budget 0.65, adaptive ladder);
+drone on the cap-256 build; GS unchanged; raw GS
+`/tmp/bw-nojoin-K19agg.jsonl`, `K22agg.jsonl`; both plugs on.
