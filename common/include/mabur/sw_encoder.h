@@ -89,14 +89,19 @@ class SwEncoder {
 
   // Worker backlog bound: a credited repair is skipped (booked in
   // SwFecGauge::backlog_drops) when the shared worker queue already holds
-  // this many jobs — ~1.3 frame periods of worker time at 60 fps and the
-  // measured ~100-115 µs per repair. Sized above the per-frame depth peak
-  // of the biggest legitimate frame (a 47 kB base frame at ov 1.0 queues
-  // ~115 after its 2.7 ms feed; bench 2026-09-22 read qdepth_max 99 at
-  // 18 Mb/s on the 0.5/0.25 pair) and below the 256-slot queue. A slow
+  // this many jobs — ~1.8 frame periods of worker time at 60 fps and the
+  // measured ~116 µs per repair, i.e. a repair that would ship later than
+  // that is worth less than the frame it delays. Sized above the frame-end
+  // depth peak of the biggest legitimate frame: bench 2026-09-22 read
+  // qdepth_max 99 at 18 Mb/s on the 0.5/0.25 pair and >192 (capped) at
+  // 19.2 Mb/s on the 1.0/0.5 pair — the worker is preempted on cpu0 by the
+  // tx/usb wakeups the feed itself triggers, so the peak is deeper than
+  // feed-time arithmetic says. Below FecWorker's 512-slot queue. A slow
   // core degrades to fewer repairs, never to a blocked producer or a
-  // pinned venc ring.
-  static constexpr uint32_t kMaxBacklogJobs = 192;
+  // pinned venc ring. Row safety is time-bound: at 116 µs/job and the
+  // ~11 seals/ms a 30 Mb/s stream would produce, the oldest queued job's
+  // rows age <= ~330 seals, inside kSlackRows.
+  static constexpr uint32_t kMaxBacklogJobs = 256;
 
   // Takes effect immediately (no block boundary to wait for).
   void set_overhead(double overhead) { cfg_.overhead = overhead; }

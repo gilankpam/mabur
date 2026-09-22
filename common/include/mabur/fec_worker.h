@@ -36,8 +36,10 @@ class FecWorker {
  public:
   // cpu >= 0 pins the worker thread to that core (Linux; no-op elsewhere).
   // queue_slots is a test surface — a tiny queue forces the caller's
-  // inline-fallback path; production uses the default.
-  explicit FecWorker(int cpu = -1, uint32_t queue_slots = 256);
+  // inline-fallback path; production uses the default, which sits above
+  // SwEncoder::kMaxBacklogJobs so the backlog cap (skip) always fires
+  // before queue-full (inline on the hot thread) does.
+  explicit FecWorker(int cpu = -1, uint32_t queue_slots = 512);
   ~FecWorker();
   FecWorker(const FecWorker&) = delete;
   FecWorker& operator=(const FecWorker&) = delete;
