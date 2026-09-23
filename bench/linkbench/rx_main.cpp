@@ -19,6 +19,9 @@
 #include "radio_frontend.h"
 
 #include "SignalStop.h"
+#include "mabur/cal_wire.h"
+#include <map>
+#include <utility>
 
 namespace {
 
@@ -26,20 +29,24 @@ using namespace linkbench;
 
 struct Args {
   int channel = 149;
+  int bw = 20;  // 20, or 40 = HT40+ (channel = primary, secondary above)
   int card = 0;
   uint16_t usb_vid = 0x0bda, usb_pid = 0;
   int index = 0;
   FecParams fec;
   std::string json_path;
   int time_s = 0;  // 0 = until SIGINT
+  // --wall: tally linkbench-tx --wall-sweep cal frames per (mcs, rel idx)
+  // cell and print one "cell" line each at exit (stdout).
+  bool wall = false;
 };
 
 void usage(const char* argv0) {
   std::fprintf(stderr,
-    "usage: %s --channel N [--card 0] [--usb-vid 0x0bda] [--usb-pid 0]\n"
+    "usage: %s --channel N [--bw 20|40] [--card 0] [--usb-vid 0x0bda] [--usb-pid 0]\n"
     "  [--index 0] [--overhead 0.5] [--symbol-size 64] [--window 128] "
     "[--bpb 16]\n"
-    "  [--json FILE] [--time S]\n", argv0);
+    "  [--json FILE] [--time S] [--wall]\n", argv0);
 }
 
 bool parse_args(int argc, char** argv, Args* a) {
@@ -51,6 +58,7 @@ bool parse_args(int argc, char** argv, Args* a) {
       return true;
     };
     if (k == "--channel") { if (!next(&a->channel)) return false; }
+    else if (k == "--bw") { if (!next(&a->bw) || (a->bw != 20 && a->bw != 40)) return false; }
     else if (k == "--card") { if (!next(&a->card)) return false; }
     else if (k == "--index") { if (!next(&a->index)) return false; }
     else if (k == "--overhead") {
@@ -66,6 +74,7 @@ bool parse_args(int argc, char** argv, Args* a) {
       a->json_path = argv[++i];
     }
     else if (k == "--time") { if (!next(&a->time_s)) return false; }
+    else if (k == "--wall") { a->wall = true; }
     else if (k == "--usb-vid") { int v; if (!next(&v)) return false; a->usb_vid = static_cast<uint16_t>(v); }
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
     else { return false; }
@@ -90,11 +99,11 @@ int main(int argc, char** argv) {
   install_devourer_signal_handlers();
 
   std::fprintf(stderr,
-               "linkbench-rx: ch %d card %d | fec window=%d overhead=%.2f "
+               "linkbench-rx: ch %d bw %d card %d | fec window=%d overhead=%.2f "
                "symbol=%d bpb=%d | gf256=%s\n"
                "  air bytes = dot11+body (radiotap/PLCP/FCS excluded); rssi "
                "dBm ~= pwdb-110, chains A/B\n",
-               a.channel, a.card, a.fec.window, a.fec.overhead,
+               a.channel, a.bw, a.card, a.fec.window, a.fec.overhead,
                a.fec.symbol_size, a.fec.bpb, mabur::gf::backend());
 
   FILE* jf = nullptr;
@@ -112,6 +121,7 @@ int main(int argc, char** argv) {
   fcfg.usb_pid = a.usb_pid;
   fcfg.index = a.index;
   fcfg.channel = static_cast<uint8_t>(a.channel);
+  fcfg.width_mhz = static_cast<uint8_t>(a.bw);
   fcfg.card_id = static_cast<uint8_t>(a.card);
   maburgs::RadioFrontend fe(fcfg, queue);
   if (!fe.open_and_start()) {
@@ -133,6 +143,9 @@ int main(int argc, char** argv) {
   const uint64_t deadline =
       a.time_s > 0 ? t0 + static_cast<uint64_t>(a.time_s) * 1'000'000 : 0;
 
+  struct WallCell { uint32_t rx = 0; double rssi0 = 0, rssi1 = 0; };
+  std::map<std::pair<int, int>, WallCell> wall_cells;
+  uint64_t wall_corrupt = 0;
   std::vector<mabur::node::RxBody> batch;
   while (!g_devourer_should_stop) {
     const uint64_t now = mono_us();
@@ -144,6 +157,17 @@ int main(int argc, char** argv) {
     batch.clear();
     queue.drain(batch, /*timeout_ms=*/100);
     for (auto& m : batch) {
+      if (a.wall) {
+        mabur::cal::CalFrameInfo ci;
+        if (!m.crc_ok) { ++wall_corrupt; continue; }
+        if (!mabur::cal::parse_cal_payload(m.body.data(), m.body.size(), &ci)) continue;
+        auto& c = wall_cells[{ci.rate, ci.idx}];
+        ++c.rx;
+        c.rssi0 += m.rssi[0];
+        c.rssi1 += m.rssi[1];
+        last_frame_us = now;
+        continue;
+      }
       last_mono_ms = m.mono_us / 1000;
       const uint64_t before = pipe.snapshot().frames;
       pipe.on_body(m.body.data(), m.body.size(), m.mac_seq, m.crc_ok, m.rssi,
@@ -219,6 +243,13 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(s.sig_frames),
       a.fec.window, a.fec.overhead, a.fec.symbol_size, a.fec.bpb, a.channel);
 
+  if (a.wall) {
+    for (const auto& [k, c] : wall_cells)
+      std::printf("cell mcs %d rel %d rx %u rssi %.1f %.1f\n", k.first, k.second,
+                  c.rx, c.rssi0 / c.rx - 110.0, c.rssi1 / c.rx - 110.0);
+    std::printf("corrupt %llu\n", static_cast<unsigned long long>(wall_corrupt));
+    std::fflush(stdout);
+  }
   fe.stop();
   if (jf) std::fclose(jf);
   return 0;

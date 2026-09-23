@@ -50,6 +50,9 @@ class RadioFrontend : public ScoutRadio {
     uint16_t usb_pid = 0;      // 0 = scan {0xa81a,0x881a,0x8812}
     int index = 0;             // ordinal among matching devices
     uint8_t channel = 149;
+    // RX width: 20, or 40 = HT40+ (channel is the primary/lower 20). Only the
+    // linkbench HT40 sweep sets 40 (docs/bw40-sweep-findings-2026-09-23.md).
+    uint8_t width_mhz = 20;
     uint8_t card_id = 0;
     // Set by the startup scan (card_scan.h): open the device at this
     // physical port instead of the index-th VID/PID match. Survives the

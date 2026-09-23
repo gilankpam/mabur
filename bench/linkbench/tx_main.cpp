@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "bench_wire.h"
+#include "mabur/cal_wire.h"
 #include "mabur/gf256.h"
 #include "pacer.h"
 #include "tx_pipeline.h"
@@ -30,6 +31,7 @@
 #include "RxPacket.h"
 #include "SignalStop.h"
 #include "TxMode.h"
+#include "TxPower.h"
 #include "UsbOpen.h"
 #include "WiFiDriver.h"
 #include "logger.h"
@@ -42,6 +44,7 @@ using namespace linkbench;
 
 struct Args {
   int channel = 149;
+  int bw = 20;  // 20, or 40 = HT40+ (channel = primary, secondary above)
   int mcs = 5;
   uint64_t bitrate_bps = 8'000'000;
   int time_s = 0;  // 0 = until SIGINT
@@ -63,16 +66,30 @@ struct Args {
   // 0 = off (QoS-Data singles).
   int ampdu = 0;
   int ampdu_max_time = 32;
+  // --wall-sweep: maburcal's per-rate TX-power wall sweep, FEC-free, at
+  // this tool's --bw/--ldpc/--stbc. Every frame is a mabur::cal payload
+  // stamped (mcs, rel idx); absolute index = the chip's anchor (mcs7 ref
+  // with rate diffs zeroed, as maburd reads it) + rel. linkbench-rx --wall
+  // tallies per cell (docs/bw40-sweep-findings-2026-09-23.md).
+  bool no_cca = false;  // --no-cca: MAC carrier sense off (maburd flies it ON)
+  bool wall_sweep = false;
+  int wall_lo = -41, wall_hi = 63;
+  int wall_frames = 100;
+  int wall_gap_us = 1000;
+  int wall_settle_ms = 20;
+  int wall_mcs_mask = 0xFF;
 };
 
 void usage(const char* argv0) {
   std::fprintf(stderr,
-    "usage: %s --channel N --mcs 0..7 --bitrate 8M [--time S]\n"
+    "usage: %s --channel N [--bw 20|40] --mcs 0..7 --bitrate 8M [--time S]\n"
     "  [--overhead 0.5] [--symbol-size 64] [--window 128] [--bpb 16]\n"
     "  [--size B] [--ldpc] [--stbc]\n"
     "  [--pwr-mode override|none|offset] [--pwr 0..63] [--pwr-offset-qdb Q]\n"
     "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n"
-    "  [--ampdu N (max_num, 0=off)] [--ampdu-max-time 32]\n", argv0);
+    "  [--ampdu N (max_num, 0=off)] [--ampdu-max-time 32]\n"
+    "  [--no-cca] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
+    "   [--wall-gap-us 1000] [--wall-settle-ms 20] [--wall-mcs-mask 0xff]]\n", argv0);
 }
 
 bool parse_args(int argc, char** argv, Args* a) {
@@ -84,6 +101,7 @@ bool parse_args(int argc, char** argv, Args* a) {
       return true;
     };
     if (k == "--channel") { if (!next(&a->channel)) return false; }
+    else if (k == "--bw") { if (!next(&a->bw) || (a->bw != 20 && a->bw != 40)) return false; }
     else if (k == "--mcs") { if (!next(&a->mcs)) return false; }
     else if (k == "--bitrate") {
       if (i + 1 >= argc) return false;
@@ -115,6 +133,14 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--tx-threads") { if (!next(&a->tx_threads)) return false; }
     else if (k == "--ampdu") { if (!next(&a->ampdu)) return false; }
     else if (k == "--ampdu-max-time") { if (!next(&a->ampdu_max_time)) return false; }
+    else if (k == "--no-cca") { a->no_cca = true; }
+    else if (k == "--wall-sweep") { a->wall_sweep = true; }
+    else if (k == "--wall-lo") { if (!next(&a->wall_lo)) return false; }
+    else if (k == "--wall-hi") { if (!next(&a->wall_hi)) return false; }
+    else if (k == "--wall-frames") { if (!next(&a->wall_frames)) return false; }
+    else if (k == "--wall-gap-us") { if (!next(&a->wall_gap_us)) return false; }
+    else if (k == "--wall-settle-ms") { if (!next(&a->wall_settle_ms)) return false; }
+    else if (k == "--wall-mcs-mask") { if (!next(&a->wall_mcs_mask)) return false; }
     else { return false; }
   }
   const int maxp = a->fec.symbol_size - 2;
@@ -125,6 +151,8 @@ bool parse_args(int argc, char** argv, Args* a) {
     return false;
   }
   if (a->mcs < 0 || a->mcs > 7) return false;
+  if (a->wall_lo < -64 || a->wall_hi > 63 || a->wall_lo > a->wall_hi ||
+      a->wall_frames < 1 || a->wall_frames > 65535) return false;
   if (a->tx_threads < 1 || a->tx_threads > 16) return false;
   if (a->ampdu < 0 || a->ampdu > 63 || a->ampdu_max_time < 0 || a->ampdu_max_time > 255) return false;
   return true;
@@ -178,18 +206,18 @@ int main(int argc, char** argv) {
   devourer::TxMode mode;
   mode.mode = devourer::TxMode::Mode::HT;
   mode.ht_mcs = static_cast<uint8_t>(a.mcs);
-  mode.bw_mhz = 20;
+  mode.bw_mhz = static_cast<uint8_t>(a.bw);
   mode.ldpc = a.ldpc;
   mode.stbc = a.stbc;
   const std::vector<uint8_t> radiotap = devourer::build_stream_radiotap(mode);
 
   const double afac = air_factor(a.fec, a.size, radiotap.size());
   std::fprintf(stderr,
-               "linkbench-tx: ch %d mcs %d %s%sbitrate %.2f Mbps app "
+               "linkbench-tx: ch %d bw %d mcs %d %s%sbitrate %.2f Mbps app "
                "(~%.2f Mbps air, factor %.2f)\n"
                "  fec window=%d overhead=%.2f symbol=%d bpb=%d size=%d "
                "pwr-mode=%s pwr=%d gf256=%s\n",
-               a.channel, a.mcs, a.ldpc ? "ldpc " : "", a.stbc ? "stbc " : "",
+               a.channel, a.bw, a.mcs, a.ldpc ? "ldpc " : "", a.stbc ? "stbc " : "",
                a.bitrate_bps / 1e6, a.bitrate_bps / 1e6 * afac, afac,
                a.fec.window, a.fec.overhead, a.fec.symbol_size, a.fec.bpb,
                a.size, a.pwr_mode.c_str(), a.pwr,
@@ -231,6 +259,7 @@ int main(int argc, char** argv) {
   devourer::DeviceConfig dev_cfg;
   dev_cfg.rx.enable_with_tx = true;  // TX+RX duplex bring-up, as maburd
   dev_cfg.tx.usb_agg_max = 3;        // pack up to 3 frames per bulk-OUT URB
+  dev_cfg.tuning.disable_cca = a.no_cca;
 
   WiFiDriver wifi_driver{logger};
   auto dev = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);
@@ -243,8 +272,9 @@ int main(int argc, char** argv) {
   }
 
   std::fprintf(stderr, "bringing up TX on channel %d\n", a.channel);
-  dev->InitWrite(SelectedChannel{static_cast<uint8_t>(a.channel), 0,
-                                 CHANNEL_WIDTH_20});
+  const uint8_t ch = static_cast<uint8_t>(a.channel);
+  dev->InitWrite(a.bw == 40 ? SelectedChannel{ch, 1, CHANNEL_WIDTH_40}
+                            : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
   if (a.pwr_mode == "override") dev->SetTxPowerIndexOverride(a.pwr);
   else if (a.pwr_mode == "offset") dev->SetTxPowerOffsetQdb(a.pwr_offset_qdb);
   // "none": leave the efuse per-rate (per-MCS) calibration untouched.
@@ -268,9 +298,66 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "A-MPDU OFF (QoS-Data singles)\n");
   }
 
+  int anchor = -1;
+  if (a.wall_sweep) {
+    // maburd's read_anchor_idx(): zero the custom rate-diff table, then the
+    // mcs7 index IS the chip's per-channel (and per-width) reference.
+    dev->SetTxPowerRateDiffs(devourer::TxRateDiffsQdb{});
+    const auto st = dev->GetTxPowerState();
+    anchor = (st.valid && st.mcs7_index >= 0) ? st.mcs7_index : -1;
+    std::fprintf(stderr, "wall-sweep: anchor %d (ch %d bw %d)\n", anchor,
+                 a.channel, a.bw);
+    std::printf("anchor %d ch %d bw %d ldpc %d stbc %d\n", anchor, a.channel,
+                a.bw, a.ldpc ? 1 : 0, a.stbc ? 1 : 0);
+    std::fflush(stdout);
+    if (anchor < 0) {
+      std::fprintf(stderr, "error: TXAGC anchor unreadable\n");
+      return 1;
+    }
+  }
+  auto wall_sweep = [&] {
+    uint16_t mac_seq = 0;
+    const uint64_t t0 = mono_us();
+    for (int m = 0; m < 8 && !g_devourer_should_stop; ++m) {
+      if (!(a.wall_mcs_mask & (1 << m))) continue;
+      devourer::TxMode wm = mode;
+      wm.ht_mcs = static_cast<uint8_t>(m);
+      const std::vector<uint8_t> rt = devourer::build_stream_radiotap(wm);
+      int sent_row = 0, fail_row = 0;
+      for (int rel = a.wall_lo; rel <= a.wall_hi && !g_devourer_should_stop; ++rel) {
+        dev->SetTxPowerIndexOverride(std::clamp(anchor + rel, 0, 127));
+        std::this_thread::sleep_for(std::chrono::milliseconds(a.wall_settle_ms));
+        uint64_t due = mono_us();
+        for (int k = 0; k < a.wall_frames; ++k) {
+          const auto body = mabur::cal::build_cal_payload(
+              static_cast<uint8_t>(m), static_cast<int8_t>(rel),
+              mabur::cal::kPhaseFine, static_cast<uint16_t>(k));
+          std::vector<uint8_t> f;
+          f.reserve(rt.size() + kDot11HeaderLen + body.size());
+          f.insert(f.end(), rt.begin(), rt.end());
+          const auto hdr = build_dot11_header(mac_seq);
+          mac_seq = static_cast<uint16_t>((mac_seq + 1) & 0x0FFF);
+          f.insert(f.end(), hdr.begin(), hdr.end());
+          f.insert(f.end(), body.begin(), body.end());
+          if (dev->send_packet(f.data(), f.size())) ++sent_row; else ++fail_row;
+          due += static_cast<uint64_t>(a.wall_gap_us);
+          const uint64_t now = mono_us();
+          if (due > now) std::this_thread::sleep_for(std::chrono::microseconds(due - now));
+        }
+      }
+      std::printf("row mcs %d sent %d fail %d\n", m, sent_row, fail_row);
+      std::fflush(stdout);
+      std::fprintf(stderr, "wall-sweep: mcs %d done (%d sent, %d fail) t=%.1fs\n",
+                   m, sent_row, fail_row, (mono_us() - t0) / 1e6);
+    }
+    dev->SetTxPowerIndexOverride(-1);
+    g_devourer_should_stop = true;
+  };
+
   // TX hot loop in its own thread; main blocks in StartRxLoop (which
   // watches g_devourer_should_stop) exactly like maburd.
   std::thread tx_thread([&] {
+    if (a.wall_sweep) { wall_sweep(); return; }
     // Random initial seq: a restarted linkbench-tx re-sending seq 0 within
     // SwDecoder's kResetSpan of the previous run's seqs is otherwise
     // dropped as stale for that run's lifetime (final-review Critical, see

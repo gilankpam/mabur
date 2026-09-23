@@ -162,7 +162,9 @@ bool RadioFrontend::open_and_start() {
   driver_ = std::make_unique<WiFiDriver>(logger_);
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
-  device_->InitWrite(SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
+  device_->InitWrite(cfg_.width_mhz == 40
+                         ? SelectedChannel{cfg_.channel, 1, CHANNEL_WIDTH_40}
+                         : SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
   channel_.store(cfg_.channel, std::memory_order_release);
   rx_channel_.store(cfg_.channel, std::memory_order_release);
   {
