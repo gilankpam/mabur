@@ -71,6 +71,56 @@ inline std::vector<uint8_t> build_dot11_header(uint16_t seq) {
   return h;
 }
 
+// Range-sweep payload (linkbench-tx --range-sweep → linkbench-rx --range):
+// FEC-free, self-attributing like mabur's cal frames, so an unreachable
+// drone can loop the sweep and the GS tallies per cell with no clock sync.
+// "MRNG" | bw | mcs | rel idx (int8) | cycle u16 LE | seq u16 LE | fill,
+// fill = 0x3C ^ rel ^ mcs ^ bw so an FCS-surviving corruption fails parse.
+constexpr char kRangeMagic[4] = {'M', 'R', 'N', 'G'};
+constexpr size_t kRangeHeaderLen = 11;
+
+struct RangeFrameInfo {
+  uint8_t bw = 20, mcs = 0;
+  int8_t rel = 0;
+  uint16_t cycle = 0, seq = 0;
+};
+
+inline std::vector<uint8_t> build_range_payload(const RangeFrameInfo& r,
+                                                size_t len) {
+  if (len < kRangeHeaderLen) len = kRangeHeaderLen;
+  std::vector<uint8_t> p(len);
+  std::memcpy(p.data(), kRangeMagic, 4);
+  p[4] = r.bw;
+  p[5] = r.mcs;
+  p[6] = static_cast<uint8_t>(r.rel);
+  p[7] = static_cast<uint8_t>(r.cycle & 0xFF);
+  p[8] = static_cast<uint8_t>(r.cycle >> 8);
+  p[9] = static_cast<uint8_t>(r.seq & 0xFF);
+  p[10] = static_cast<uint8_t>(r.seq >> 8);
+  const uint8_t fill = static_cast<uint8_t>(0x3C ^ p[6] ^ r.mcs ^ r.bw);
+  std::memset(p.data() + kRangeHeaderLen, fill, len - kRangeHeaderLen);
+  return p;
+}
+
+// The body may carry the trailing 4-byte FCS (RadioFrontend strips only the
+// dot11 header); the fill check stops 4 bytes early to allow for it.
+inline bool parse_range_payload(const uint8_t* p, size_t len,
+                                RangeFrameInfo* out) {
+  if (len < kRangeHeaderLen + 4 || std::memcmp(p, kRangeMagic, 4) != 0)
+    return false;
+  const uint8_t bw = p[4], mcs = p[5];
+  if ((bw != 20 && bw != 40) || mcs > 7) return false;
+  const uint8_t fill = static_cast<uint8_t>(0x3C ^ p[6] ^ mcs ^ bw);
+  for (size_t i = kRangeHeaderLen; i + 4 < len; ++i)
+    if (p[i] != fill) return false;
+  out->bw = bw;
+  out->mcs = mcs;
+  out->rel = static_cast<int8_t>(p[6]);
+  out->cycle = static_cast<uint16_t>(p[7] | (p[8] << 8));
+  out->seq = static_cast<uint16_t>(p[9] | (p[10] << 8));
+  return true;
+}
+
 // "8M" / "1.5M" / "800k" / "12345" → bits per second; 0 on any parse error.
 inline uint64_t parse_rate_bps(const std::string& s) {
   if (s.empty()) return 0;

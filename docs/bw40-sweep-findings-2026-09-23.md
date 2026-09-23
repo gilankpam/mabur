@@ -348,13 +348,93 @@ it — the every-other-frame worst case above drops to 31 Mb/s total; for
 occasional control/probe frames among video it should be small (not
 measured). The residual 0.3 % crossover at mcs4/5 is unexplained.
 
+## Range test: where each width/MCS stops decoding (2026-09-24)
+
+The bench is too strong to reach a delivery floor, so the drone was moved
+out of ssh reach and measured from the GS alone.
+
+**Method.** `linkbench-tx --range-sweep` (drone tuned 40 MHz on 132+136,
+LDPC+STBC, singles) loops: for each TX power rel index −39..41 step 2 (outer;
+the TXAGC index is the calibrated attenuator, 1 step = 0.25 dB), every
+{HT20, HT40} × MCS0–7 cell (inner) sends 30 self-attributing 1400 B range
+payloads (`bench_wire.h`, stamped bw/mcs/rel/cycle; ~50 s per cycle).
+`linkbench-rx --range FILE` on each GS card appends a per-cycle per-cell
+tally; `tools/bench/rangean.py` gives per row the 90 % floor (first index
+whose next 4 steps are all ≥ 90 %) and the interpolated 50 % point.
+A temporary `/etc/init.d/S01rangesweep` looped the sweep at boot with
+`S00mabur` made non-executable (`chmod a-x` — `chmod -x` only cleared the
+owner bit and root still executes it); both reverted afterwards, ausniff
+clean. Placement 1: drone at the edge of the house; placement 2: same, plus
+aluminium foil around the GS (~18 dB more loss on card 1). Runs swap the two
+GS cards between 40 MHz (132+136) and 20 MHz (136) tuning; E/F put both
+cards on the same tuning simultaneously. 1 step ≈ 0.25 dB below.
+
+### 1. Width at the SAME MCS costs 3.5–5 dB
+
+p50, tuned-40 cards, placement 2: MCS2 HT40 vs HT20 +14.7 / +16.6 steps,
+MCS3 +13 / +18 / +20, MCS4 +25 — **3.3–6 dB, typically ~4 dB** (theory 3 dB:
+twice the noise bandwidth at the same total power).
+
+### 2. Bottom rung: HT40 MCS0 reaches 4–6+ dB less than HT20 MCS0
+
+On every tuned-40 card HT20 MCS0 still delivered ≥ 90 % at the bottom of the
+ramp (floor below −39) except card 1 run F (floor −15); HT40 MCS0 floors were
+−13, −7, −3, +1. **Keep rungs 0–1 at 20 MHz.**
+
+### 3. Equal throughput: a wash up to ~40 Mb/s, HT40 wins from ~52 Mb/s
+
+p50 difference HT40 − HT20 (negative = HT40 reaches further), four
+tuned-40 card-runs at placement 2 (c0 C, c0 F, c1 D, c1 F):
+
+| pair (PHY Mb/s) | steps | verdict |
+|---|---|---|
+| HT40 MCS1 (27) vs HT20 MCS3 (26) | +22.6, +4.5, −5.1, −0.5 | noisy wash (c0 C's HT20 MCS3 −37 is an outlier) |
+| HT40 MCS2 (40.5) vs HT20 MCS4 (39) | +2.9, +4.6, −6.0, −3.5 | wash, ±1.5 dB |
+| HT40 MCS3 (54) vs HT20 MCS5 (52) | −6.6, −4.3; card 1: HT20 MCS5 never 50 % | **HT40 +1–1.6 dB**, more on the weaker card |
+| HT40 MCS4 (81) vs HT20 MCS6/7 (58/65) | HT40 MCS4 p50 20.1 (c0 C); HT20 MCS6/7 never | HT40 only |
+
+Placement 1 (stronger, card 0, HT20 from the tuned-20 run B): ~53 Mb/s
+HT40 MCS3 floor −15 vs HT20 MCS5 −3 (~3 dB); HT40 MCS4 (81 Mb/s) ≈ HT20
+MCS6 (58.5 Mb/s) reach.
+
+**What this means for mabur:** at equal reach the PHY rates come out equal
+up to ~40 Mb/s, so HT40 buys *no airtime (latency/jitter) at mid range* — the
+rungs mabur flies at range. Its gain is at the top: from ~52 Mb/s up it
+carries 40–60 % more throughput at the same reach, i.e. halved airtime per
+frame at short-to-medium range. The natural ladder: 20 MHz bottom rungs,
+40 MHz only for the top rungs.
+
+### 4. A 40-tuned receiver costs 20 MHz frames nothing — the 20-tuned one is the problem
+
+Placement 1, card 0, tuned 40 vs 20 (runs A/B): HT20 MCS5/6 floors +2 / +2
+steps, p50 +1.1 / +0.7 — **0.2–0.5 dB**, less than the ~1 dB SNR-readout
+proxy. But at placement 2 the 20 MHz tuning was *worse*: both cards,
+simultaneously on the same frames (runs E/F), HT20 delivery over the top of
+the ramp (strong signal for that spot, RSSI ≈ −84 dBm, SNR 19–31 dB):
+
+| | MCS0 | MCS1 | MCS2 | MCS3 |
+|---|---|---|---|---|
+| card 0 tuned 20 | 94.9 % | 91.1 % | 90.2 % | 91.2 % |
+| card 0 tuned 40 | 98.6 % | 98.3 % | 98.6 % | 98.4 % |
+| card 1 tuned 20 | 96.0 % | 92.5 % | 93.8 % | 92.2 % |
+| card 1 tuned 40 | 99.2 % | 99.4 % | 99.5 % | 98.5 % |
+
+A flat 4–10 % loss, independent of power level, on a receiver tuned 20 MHz
+— absent at the bench and absent on the same card tuned 40. **Open and
+production-relevant** (today's link receives at 20 MHz): suspect the Jaguar3
+20 MHz RX setup at weak signal (DIG / initial gain, packet detection) in
+devourer; not investigated.
+
+Caveats: one location, fading at the edge makes near-floor delivery wobble
+±5–10 % between cycles (hence p50 as the main metric); card 1 drifted ~6–8
+steps between runs D and F — only within-run comparisons are trusted.
+
 ## Not measured
 
-- Range/sensitivity: bench only (RSSI ~−68 dBm singles). The per-rate
-  margin comparison (HT40 mcs n vs HT20 mcs ~n+2 at equal throughput) needs
-  attenuation or a walk-out.
+- Range at a second location / a proper attenuator (the range test is one
+  house-edge spot, with foil).
 - Walls on a second channel (anchor moves per channel; rel walls are
   expected to hold, per `docs/calibration.md`, not re-checked at HT40).
 - The 149/153 deficit's cause.
-- The mixed-width sensitivity penalty at the actual floor (attenuated or
-  range test); secondary-channel interference desensing a 40-tuned RX.
+- The flat 4–10 % HT20 loss of a 20 MHz-tuned receiver at weak signal
+  (range test §4); secondary-channel interference desensing a 40-tuned RX.

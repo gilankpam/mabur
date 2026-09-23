@@ -92,6 +92,19 @@ struct Args {
   int wall_gap_us = 1000;
   int wall_settle_ms = 20;
   int wall_mcs_mask = 0xFF;
+  // --range-sweep: loop forever (or --time) over TX power (rel index, outer)
+  // x width x MCS (inner), --range-frames self-attributing range payloads
+  // per cell (bench_wire.h), so a drone parked out of ssh reach can be
+  // measured entirely from the GS (linkbench-rx --range). Needs --bw 40
+  // tuning to air both widths (20 MHz frames ride the primary).
+  bool range_sweep = false;
+  int range_lo = -39, range_hi = 41, range_step = 2;
+  int range_frames = 40;
+  int range_size = 1400;
+  int range_gap_us = 2500;
+  int range_settle_ms = 20;
+  int range_mcs_mask = 0xFF;
+  int range_bw_mask = 3;  // bit0 = 20 MHz, bit1 = 40 MHz
 };
 
 void usage(const char* argv0) {
@@ -103,7 +116,10 @@ void usage(const char* argv0) {
     "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n"
     "  [--ampdu N (max_num, 0=off)] [--ampdu-max-time 32]\n"
     "  [--no-cca] [--foreign-sa] [--frame-bw 20|40|mix] [--mcs-mix M2] [--no-agg-even] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
-    "   [--wall-gap-us 1000] [--wall-settle-ms 20] [--wall-mcs-mask 0xff]]\n", argv0);
+    "   [--wall-gap-us 1000] [--wall-settle-ms 20] [--wall-mcs-mask 0xff]]\n"
+    "  [--range-sweep [--range-lo -39] [--range-hi 41] [--range-step 2]\n"
+    "   [--range-frames 40] [--range-size 1400] [--range-gap-us 2500]\n"
+    "   [--range-settle-ms 20] [--range-mcs-mask 0xff] [--range-bw-mask 3]]\n", argv0);
 }
 
 bool parse_args(int argc, char** argv, Args* a) {
@@ -160,6 +176,16 @@ bool parse_args(int argc, char** argv, Args* a) {
       else return false;
     }
     else if (k == "--wall-sweep") { a->wall_sweep = true; }
+    else if (k == "--range-sweep") { a->range_sweep = true; }
+    else if (k == "--range-lo") { if (!next(&a->range_lo)) return false; }
+    else if (k == "--range-hi") { if (!next(&a->range_hi)) return false; }
+    else if (k == "--range-step") { if (!next(&a->range_step)) return false; }
+    else if (k == "--range-frames") { if (!next(&a->range_frames)) return false; }
+    else if (k == "--range-size") { if (!next(&a->range_size)) return false; }
+    else if (k == "--range-gap-us") { if (!next(&a->range_gap_us)) return false; }
+    else if (k == "--range-settle-ms") { if (!next(&a->range_settle_ms)) return false; }
+    else if (k == "--range-mcs-mask") { if (!next(&a->range_mcs_mask)) return false; }
+    else if (k == "--range-bw-mask") { if (!next(&a->range_bw_mask)) return false; }
     else if (k == "--wall-lo") { if (!next(&a->wall_lo)) return false; }
     else if (k == "--wall-hi") { if (!next(&a->wall_hi)) return false; }
     else if (k == "--wall-frames") { if (!next(&a->wall_frames)) return false; }
@@ -176,6 +202,14 @@ bool parse_args(int argc, char** argv, Args* a) {
     return false;
   }
   if (a->mcs < 0 || a->mcs > 7) return false;
+  if (a->range_sweep &&
+      (a->range_lo < -64 || a->range_hi > 63 || a->range_lo > a->range_hi ||
+       a->range_step < 1 || a->range_frames < 1 || a->range_size < 16 ||
+       a->range_size > 2000 || (a->range_bw_mask & ~3) || !a->range_bw_mask ||
+       ((a->range_bw_mask & 2) && a->bw != 40))) {
+    std::fprintf(stderr, "error: bad --range-* (40 MHz rows need --bw 40)\n");
+    return false;
+  }
   if (a->mcs_mix >= 0 && a->frame_bw != 0) {
     std::fprintf(stderr, "error: --mcs-mix and --frame-bw are exclusive\n");
     return false;
@@ -360,7 +394,7 @@ int main(int argc, char** argv) {
   }
 
   int anchor = -1;
-  if (a.wall_sweep) {
+  if (a.wall_sweep || a.range_sweep) {
     // maburd's read_anchor_idx(): zero the custom rate-diff table, then the
     // mcs7 index IS the chip's per-channel (and per-width) reference.
     dev->SetTxPowerRateDiffs(devourer::TxRateDiffsQdb{});
@@ -415,10 +449,68 @@ int main(int argc, char** argv) {
     g_devourer_should_stop = true;
   };
 
+  auto range_sweep = [&] {
+    uint16_t mac_seq = 0;
+    std::vector<uint8_t> rts[2][8];
+    for (int w = 0; w < 2; ++w)
+      for (int m = 0; m < 8; ++m) {
+        devourer::TxMode rm = mode;
+        rm.bw_mhz = static_cast<uint8_t>(w ? 40 : 20);
+        rm.ht_mcs = static_cast<uint8_t>(m);
+        rts[w][m] = devourer::build_stream_radiotap(rm);
+      }
+    const uint64_t t0 = mono_us();
+    const uint64_t deadline =
+        a.time_s > 0 ? t0 + static_cast<uint64_t>(a.time_s) * 1'000'000 : 0;
+    for (uint16_t cycle = 0; !g_devourer_should_stop; ++cycle) {
+      if (deadline && mono_us() >= deadline) break;
+      uint64_t sent = 0, fail = 0;
+      for (int rel = a.range_lo; rel <= a.range_hi && !g_devourer_should_stop;
+           rel += a.range_step) {
+        dev->SetTxPowerIndexOverride(std::clamp(anchor + rel, 0, 127));
+        std::this_thread::sleep_for(std::chrono::milliseconds(a.range_settle_ms));
+        uint64_t due = mono_us();
+        for (int w = 0; w < 2; ++w) {
+          if (!(a.range_bw_mask & (1 << w))) continue;
+          for (int m = 0; m < 8; ++m) {
+            if (!(a.range_mcs_mask & (1 << m))) continue;
+            for (int k = 0; k < a.range_frames; ++k) {
+              RangeFrameInfo ri;
+              ri.bw = static_cast<uint8_t>(w ? 40 : 20);
+              ri.mcs = static_cast<uint8_t>(m);
+              ri.rel = static_cast<int8_t>(rel);
+              ri.cycle = cycle;
+              ri.seq = static_cast<uint16_t>(k);
+              const auto body = build_range_payload(ri, static_cast<size_t>(a.range_size));
+              const auto& rt = rts[w][m];
+              std::vector<uint8_t> f;
+              f.reserve(rt.size() + kDot11HeaderLen + body.size());
+              f.insert(f.end(), rt.begin(), rt.end());
+              const auto hdr = build_dot11_header(mac_seq);
+              mac_seq = static_cast<uint16_t>((mac_seq + 1) & 0x0FFF);
+              f.insert(f.end(), hdr.begin(), hdr.end());
+              f.insert(f.end(), body.begin(), body.end());
+              if (dev->send_packet(f.data(), f.size())) ++sent; else ++fail;
+              due += static_cast<uint64_t>(a.range_gap_us);
+              const uint64_t now = mono_us();
+              if (due > now) std::this_thread::sleep_for(std::chrono::microseconds(due - now));
+            }
+          }
+        }
+      }
+      std::fprintf(stderr, "range-sweep: cycle %u done (%llu sent, %llu fail) t=%.1fs\n",
+                   cycle, static_cast<unsigned long long>(sent),
+                   static_cast<unsigned long long>(fail), (mono_us() - t0) / 1e6);
+    }
+    dev->SetTxPowerIndexOverride(-1);
+    g_devourer_should_stop = true;
+  };
+
   // TX hot loop in its own thread; main blocks in StartRxLoop (which
   // watches g_devourer_should_stop) exactly like maburd.
   std::thread tx_thread([&] {
     if (a.wall_sweep) { wall_sweep(); return; }
+    if (a.range_sweep) { range_sweep(); return; }
     // Random initial seq: a restarted linkbench-tx re-sending seq 0 within
     // SwDecoder's kResetSpan of the previous run's seqs is otherwise
     // dropped as stale for that run's lifetime (final-review Critical, see

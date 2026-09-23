@@ -22,6 +22,7 @@
 #include "SignalStop.h"
 #include "mabur/cal_wire.h"
 #include <map>
+#include <tuple>
 #include <utility>
 
 namespace {
@@ -50,6 +51,11 @@ struct Args {
   // --rate-hist: tally (mac_seq parity, received HT MCS) for CRC-clean
   // canonical frames; printed as "H parity mcs count" at exit (stdout).
   bool rate_hist = false;
+  // --range FILE: tally linkbench-tx --range-sweep frames per (cycle, bw,
+  // mcs, rel) and append each finished cycle to FILE as
+  // "C cycle bw mcs rel rx rssiA rssiB snrA snrB" (rssi/snr are sums over
+  // rx) plus "F cycle crc_bad" — append-only, so it can be read live.
+  std::string range_path;
 };
 
 void usage(const char* argv0) {
@@ -57,7 +63,7 @@ void usage(const char* argv0) {
     "usage: %s --channel N [--bw 20|40] [--card 0] [--usb-vid 0x0bda] [--usb-pid 0]\n"
     "  [--index 0] [--overhead 0.5] [--symbol-size 64] [--window 128] "
     "[--bpb 16]\n"
-    "  [--json FILE] [--time S] [--wall] [--energy-ms N] [--rate-hist]\n"
+    "  [--json FILE] [--time S] [--wall] [--energy-ms N] [--rate-hist] [--range FILE]\n"
     "  [--retune-bench ch,ch,.. [--retune-n 10]]\n", argv0);
 }
 
@@ -88,6 +94,10 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--time") { if (!next(&a->time_s)) return false; }
     else if (k == "--wall") { a->wall = true; }
     else if (k == "--rate-hist") { a->rate_hist = true; }
+    else if (k == "--range") {
+      if (i + 1 >= argc) return false;
+      a->range_path = argv[++i];
+    }
     else if (k == "--energy-ms") { if (!next(&a->energy_ms)) return false; }
     else if (k == "--retune-n") { if (!next(&a->retune_n)) return false; }
     else if (k == "--retune-bench") {
@@ -195,6 +205,36 @@ int main(int argc, char** argv) {
   std::map<std::pair<int, int>, WallCell> wall_cells;
   uint64_t wall_corrupt = 0;
   std::map<std::pair<int, int>, uint64_t> rate_hist;
+  struct RangeCell { uint32_t rx = 0; double r0 = 0, r1 = 0, s0 = 0, s1 = 0; };
+  std::map<std::tuple<int, int, int>, RangeCell> range_cur;
+  int range_cycle = -1;
+  uint64_t range_crc_bad = 0;
+  FILE* rf = nullptr;
+  if (!a.range_path.empty()) {
+    rf = std::fopen(a.range_path.c_str(), "a");
+    if (!rf) {
+      std::fprintf(stderr, "error: cannot open %s\n", a.range_path.c_str());
+      return 1;
+    }
+  }
+  auto range_flush = [&] {
+    if (!rf || range_cycle < 0) return;
+    uint64_t n = 0;
+    for (const auto& [k, c] : range_cur) {
+      std::fprintf(rf, "C %d %d %d %d %u %.0f %.0f %.0f %.0f\n", range_cycle,
+                   std::get<0>(k), std::get<1>(k), std::get<2>(k), c.rx,
+                   c.r0, c.r1, c.s0, c.s1);
+      n += c.rx;
+    }
+    std::fprintf(rf, "F %d %llu\n", range_cycle,
+                 static_cast<unsigned long long>(range_crc_bad));
+    std::fflush(rf);
+    std::fprintf(stderr, "range: cycle %d flushed (%zu cells, %llu frames, %llu crc-bad)\n",
+                 range_cycle, range_cur.size(), static_cast<unsigned long long>(n),
+                 static_cast<unsigned long long>(range_crc_bad));
+    range_cur.clear();
+    range_crc_bad = 0;
+  };
   std::vector<mabur::node::RxBody> batch;
   while (!g_devourer_should_stop) {
     const uint64_t now = mono_us();
@@ -207,6 +247,23 @@ int main(int argc, char** argv) {
     queue.drain(batch, /*timeout_ms=*/100);
     for (auto& m : batch) {
       if (a.rate_hist && m.crc_ok) ++rate_hist[{m.mac_seq & 1, m.mcs}];
+      if (rf) {
+        if (!m.crc_ok) { ++range_crc_bad; continue; }
+        RangeFrameInfo ri;
+        if (!parse_range_payload(m.body.data(), m.body.size(), &ri)) continue;
+        if (static_cast<int>(ri.cycle) != range_cycle) {
+          range_flush();
+          range_cycle = ri.cycle;
+        }
+        auto& c = range_cur[{ri.bw, ri.mcs, ri.rel}];
+        ++c.rx;
+        c.r0 += m.rssi[0] - 110.0;
+        c.r1 += m.rssi[1] - 110.0;
+        c.s0 += m.snr[0];
+        c.s1 += m.snr[1];
+        last_frame_us = now;
+        continue;
+      }
       if (a.wall) {
         mabur::cal::CalFrameInfo ci;
         if (!m.crc_ok) { ++wall_corrupt; continue; }
@@ -307,6 +364,7 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(s.sig_frames),
       a.fec.window, a.fec.overhead, a.fec.symbol_size, a.fec.bpb, a.channel);
 
+  if (rf) std::fclose(rf);  // the running (unfinished) cycle is dropped
   for (const auto& [k, n] : rate_hist)
     std::printf("H %d %d %llu\n", k.first, k.second, static_cast<unsigned long long>(n));
   if (a.wall) {
