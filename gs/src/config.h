@@ -102,6 +102,20 @@ struct LinkCfg {
   // lands in the drone's inter-AU idle instead of killing the next PPDU on
   // both RX cards. Max hold before sending anyway; 0 disables.
   int rcf_slot_hold_ms = 30;
+  // ArrivalTracker guard, symbols (cca-on 2026-09-23, from the tx-windows
+  // spec §5.2): a seq is booked missing -- and shows as link.pre_fec_loss,
+  // the OSD's LOSS row and the ladder's util input -- once a later seq
+  // arrives this far ahead of it; a symbol heard after that counts `late`
+  // and is never un-booked. The drone's parallel USB TX pool (tx_threads x
+  // 3-frame URBs, ~12 bodies = 48 symbols in flight) reorders bodies on
+  // air, so the old 32 (one FEC window) booked ~1 % of every burst as
+  // missing-then-late on a bench with 0.008 % real loss. Bench sweep
+  // 2026-09-23 at rung 5 (OSD pre-FEC loss / arr_late per s): 64 -> 0.67 %
+  // / 47, 96 -> 0.23 % / 16, 128 -> 0.09 % / 5, 192 -> 0.02 % / 0.2, real
+  // repairs flat at 0.1-0.6/s throughout. Cost of a bigger guard is booking
+  // delay on the ladder's util input: 192 symbols is ~60 ms at rung 5,
+  // ~165 ms at rung 0, both under the feedback period + probation.
+  int arrival_guard_syms = 192;
   // Static-link mode: when static_mcs >= 0 the adaptive controller is
   // bypassed entirely and every RCF commands exactly this MCS/FEC overhead
   // (HT, 20 MHz). Rendezvous/keep-alive/failsafe machinery is unaffected.

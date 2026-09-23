@@ -817,6 +817,21 @@ the peak 100 ms encoder byte rate (kbit/s, decimal) inside that stats
 second — the burst the 1 Hz `drone.enc.mbps` average hides — and, since
 2026-09-20, `lp=`/`armed=` (see "2026-09-20 (low-power mode)" below).
 
+**2026-09-23 (pre-FEC loss is late, not lost).** `link.pre_fec_loss` — the
+OSD's LOSS row, `link.ctl.pre_fec_loss`, and the ladder's util input — is
+the ArrivalTracker's "booked missing at the settle line" fraction: a seq
+counts missing once a later seq arrives `link.arrival_guard_syms` ahead of
+it, and a symbol heard after that counts `streams[*].arr_late` and is never
+un-booked. The drone's parallel USB TX pool reorders bodies on air, so at
+the old compile-time guard of 32 (one FEC window) ~1 % of every burst read
+as loss on a bench where `streams[*].recovered` (the symbols FEC actually
+had to rebuild) was 0.008 %. Bench sweep at rung 5: guard 64 → 0.67 %, 96 →
+0.23 %, 128 → 0.09 %, 192 → 0.02 % OSD loss, repairs flat. Shipped default
+192 (`gs/bundle/maburgs.default.toml`). To read real air loss use
+`streams[*].recovered` + `abandoned` per second, or `fec.log`; to compare a
+pre-2026-09-23 recording's `pre_fec_loss` against a new one, remember the
+old number carries the artefact (`docs/data-provenance.md`).
+
 **2026-09-23 (carrier sense on).** `drone.radio.rx = {own, foreign,
 crcfail}` is the drone's own RX-side view of the channel for the last
 telemetry period — the altitude view `cards[].energy` cannot give: every

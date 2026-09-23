@@ -26,6 +26,7 @@ TEST(default_bundle_config_loads) {
   auto L = cfg.uep_layers();
   CHECK(L[0].fec.overhead == 0.50);
   CHECK(L[1].fec.overhead == 0.50);
+  CHECK(cfg.link.arrival_guard_syms == 192);
 }
 
 TEST(missing_keys_fall_back_to_defaults) {
@@ -1011,6 +1012,16 @@ TEST(rcf_slot_hold_explicit_and_zero_parse) {
   auto b = maburgs::load_config(
       write_tmp("[link]\nrcf_slot_hold_ms = 0\n"));
   CHECK(b.link.rcf_slot_hold_ms == 0);
+}
+
+// --- link.arrival_guard_syms (cca-on 2026-09-23, from tx-windows §5.2) ------
+TEST(arrival_guard_defaults_and_parses) {
+  CHECK(maburgs::load_config(write_tmp("")).link.arrival_guard_syms == 192);
+  CHECK(maburgs::load_config(write_tmp("[link]\narrival_guard_syms = 96\n")).link.arrival_guard_syms == 96);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[link]\narrival_guard_syms = 8\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("link.arrival_guard_syms") != std::string::npos; }
+  CHECK(threw);
 }
 
 // --- link.probe block (spec 2026-09-04 sections 4.2, 5) ---------------------

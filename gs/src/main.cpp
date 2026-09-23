@@ -716,7 +716,8 @@ static int run_radio(const maburgs::Config& cfg) {
                  cfg.radio.tx_card, n_cards);
 
   maburgs::Aggregator agg(cfg.uep_layers(),
-                          static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
+                          static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards,
+                          static_cast<uint32_t>(cfg.link.arrival_guard_syms));
 
 #ifdef MABUR_LOSS_SIM
   // BENCH RIG (MABUR_LOSS_SIM). Off unless --loss-sim was given; rates
@@ -2980,7 +2981,8 @@ int main(int argc, char** argv) {
 
   const int n_cards = src_opt.cards;
   maburgs::Aggregator agg(cfg.uep_layers(),
-                          static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards);
+                          static_cast<uint32_t>(cfg.fec.seq_horizon), n_cards,
+                          static_cast<uint32_t>(cfg.link.arrival_guard_syms));
   AuFileOut file_out;
   if (!out_aus_path.empty() && !file_out.open(out_aus_path.c_str())) {
     std::fprintf(stderr, "error: cannot write %s\n", out_aus_path.c_str());

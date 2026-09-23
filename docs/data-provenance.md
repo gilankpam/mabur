@@ -5,7 +5,7 @@ Recordings that span one of these are not the same experiment and must
 not be pooled. Nothing in the sideport reports most of them, so the only
 reliable method is to date the recording against this page.
 
-Quick index: carrier sense off 2026-08-05 · carrier sense ON again + RC_VERSION 10 2026-09-23 · TX power constant 2026-08-12 ·
+Quick index: carrier sense off 2026-08-05 · carrier sense ON again + RC_VERSION 10 + `link.pre_fec_loss` guard 32 → 192 2026-09-23 · TX power constant 2026-08-12 ·
 sideport key removals 2026-08-12, 2026-08-15, 2026-08-29, 2026-08-30 and
 2026-09-04 ·
 SNR half-dB scale break 2026-08-04 · EVM op-point dependence 2026-08-10 ·
@@ -27,6 +27,16 @@ per-body `first_ms` arrival stamp 2026-09-05 (probe-blanking fix; a
 `au-NNNN.log` for timing) · debug logs consolidate into one per-session
 directory and `au.log`'s clock switches WALL→MONOTONIC (`# aulog 4`,
 `# latlog 2`, both drop the `# sync` bridge) 2026-09-06.
+
+**`link.pre_fec_loss` scale break 2026-09-23.** The ArrivalTracker guard
+behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
+`streams[*].arr_late`) moved from a compile-time 32 to the new
+`link.arrival_guard_syms` key, default 192. Recordings before this date
+carry ~1 % of "loss" that was late arrival from the drone's USB TX pool
+reordering, not air loss (`docs/observability.md` "pre-FEC loss is late,
+not lost"); after it the same channel reads ~0.02 %. Compare
+`streams[*].recovered` per second across the break, never
+`pre_fec_loss`.
 
 **Carrier sense is back ON on both daemons since 2026-09-23** (`RC_VERSION`
 10, `docs/cca-on-findings-2026-09-23.md`): both bring-up lines read

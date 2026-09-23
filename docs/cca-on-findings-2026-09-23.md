@@ -99,3 +99,32 @@ ends move together.
   `maburgs radio card N: ... requested ON ...`).
 - Deploy: `docs/deploy.md` "2026-09-23 RC_VERSION 10". No config change
   on either end.
+
+## Follow-up the same evening: the OSD's constant small loss
+
+With carrier sense on the compact OSD still showed a steady ~1 % on its
+LOSS row. That row is `link.pre_fec_loss`: the ArrivalTracker books a seq
+missing once a later seq arrives 32 symbols ahead of it, and a symbol
+heard after that counts `arr_late` and is never un-booked. On this bench
+`arr_late` (39k/36k per stream) exceeded missing-at-line (18k/17k) while
+FEC repaired 126/127 symbols in 1.6 M (0.008 %): every "lost" symbol was
+heard late. The drone's USB TX pool (4 threads × 3-frame URBs, ~12
+bodies = 48 symbols in flight) reorders bodies on air; the guard was one
+FEC window. The tx-windows branch had already made it a config key
+(`link.arrival_guard_syms`, cherry-picked plumbing `8a68cc8`); sweep at
+rung 5, 70 s steady per arm, config-only restarts:
+
+| guard | OSD pre-FEC loss | missing-at-line s0/s1 | `arr_late` per s | repairs per s |
+|---|---|---|---|---|
+| 32 (old compile-time) | ~1.1–1.4 % | 1.08 / 1.08 % | 73 / 73 | 0.07–0.19 |
+| 64 | 0.67 % | 0.65 / 0.47 % | 47 / 27 | 0.26 / 0.00 |
+| 96 | 0.23 % | 0.23 / 0.09 % | 16 / 5 | 0.17 / 0.23 |
+| 128 | 0.09 % | 0.08 / 0.00 % | 4.7 / 0.3 | 0.11 / 0.00 |
+| **192** | **0.02 %** | 0.02 / 0.01 % | 0.2 / 0.0 | 0.59 / 0.41 |
+
+fps 60 and 0–2 drops in every arm. Shipped default 192. Cost: the
+ladder's util input is booked ~60 ms later at rung 5 (~165 ms at rung 0),
+inside the feedback period plus probation. The root cause — bodies
+airing out of submission order — is drone-side and untouched; a single
+in-order sender would remove the need for the guard, at the ~26 Mbps
+single-URB throughput cap the pool exists to beat.

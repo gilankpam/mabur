@@ -636,9 +636,14 @@ sideport key is renamed, so maburtop from before this reads `--`.
 `RC_VERSION` 9 → 10: `Telem` grows 89 → 95 bytes with the drone's RX-side
 channel view (`rx_own`, `rx_foreign`, `rx_crcfail`), and both daemons
 now leave the MAC carrier-sense gate at the chip default
-(`disable_cca = false`; `docs/cca-on-findings-2026-09-23.md`). **No config
-change on either end** — no new keys, no removed keys — so this flag day
-is binary swaps only: `maburgs` first, then `maburd` (or the reverse; the
+(`disable_cca = false`; `docs/cca-on-findings-2026-09-23.md`). **One new GS
+key, `link.arrival_guard_syms` (default 192, in the bundle)** — the
+ArrivalTracker settle line that decides when a symbol is booked missing
+(`docs/observability.md` "pre-FEC loss is late, not lost"). It has a
+default, so an old `maburgs.toml` without it boots fine on the new binary,
+but a config that carries it fails on an old binary: binary first, then
+the key. **No drone config change.** Otherwise this flag day is binary
+swaps only: `maburgs` first, then `maburd` (or the reverse; the
 mismatched-pair window between them has no video and no control link
 exactly as every `RC_VERSION` bump, and clears once both are swapped).
 The carrier-sense flip is compiled in, not configured, and the two ends
