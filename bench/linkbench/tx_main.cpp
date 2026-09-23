@@ -22,6 +22,7 @@
 
 #include "bench_wire.h"
 #include "mabur/cal_wire.h"
+#include "mabur/ht40.h"
 #include "mabur/gf256.h"
 #include "pacer.h"
 #include "tx_pipeline.h"
@@ -44,7 +45,7 @@ using namespace linkbench;
 
 struct Args {
   int channel = 149;
-  int bw = 20;  // 20, or 40 = HT40+ (channel = primary, secondary above)
+  int bw = 20;  // 20, or 40 (channel = primary; secondary per mabur::ht40_offset)
   int mcs = 5;
   uint64_t bitrate_bps = 8'000'000;
   int time_s = 0;  // 0 = until SIGINT
@@ -71,7 +72,10 @@ struct Args {
   // stamped (mcs, rel idx); absolute index = the chip's anchor (mcs7 ref
   // with rate diffs zeroed, as maburd reads it) + rel. linkbench-rx --wall
   // tallies per cell (docs/bw40-sweep-findings-2026-09-23.md).
-  bool no_cca = false;  // --no-cca: MAC carrier sense off (maburd flies it ON)
+  bool no_cca = false;
+  // --foreign-sa: flip the SA/BSSID so a GS books these frames as foreign
+  // traffic (interferer role), not own.
+  bool foreign_sa = false;  // --no-cca: MAC carrier sense off (maburd flies it ON)
   bool wall_sweep = false;
   int wall_lo = -41, wall_hi = 63;
   int wall_frames = 100;
@@ -88,7 +92,7 @@ void usage(const char* argv0) {
     "  [--pwr-mode override|none|offset] [--pwr 0..63] [--pwr-offset-qdb Q]\n"
     "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n"
     "  [--ampdu N (max_num, 0=off)] [--ampdu-max-time 32]\n"
-    "  [--no-cca] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
+    "  [--no-cca] [--foreign-sa] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
     "   [--wall-gap-us 1000] [--wall-settle-ms 20] [--wall-mcs-mask 0xff]]\n", argv0);
 }
 
@@ -134,6 +138,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--ampdu") { if (!next(&a->ampdu)) return false; }
     else if (k == "--ampdu-max-time") { if (!next(&a->ampdu_max_time)) return false; }
     else if (k == "--no-cca") { a->no_cca = true; }
+    else if (k == "--foreign-sa") { a->foreign_sa = true; }
     else if (k == "--wall-sweep") { a->wall_sweep = true; }
     else if (k == "--wall-lo") { if (!next(&a->wall_lo)) return false; }
     else if (k == "--wall-hi") { if (!next(&a->wall_hi)) return false; }
@@ -151,6 +156,10 @@ bool parse_args(int argc, char** argv, Args* a) {
     return false;
   }
   if (a->mcs < 0 || a->mcs > 7) return false;
+  if (a->bw == 40 && mabur::ht40_offset(static_cast<uint8_t>(a->channel)) == 0) {
+    std::fprintf(stderr, "error: channel %d has no 5 GHz HT40 pair\n", a->channel);
+    return false;
+  }
   if (a->wall_lo < -64 || a->wall_hi > 63 || a->wall_lo > a->wall_hi ||
       a->wall_frames < 1 || a->wall_frames > 65535) return false;
   if (a->tx_threads < 1 || a->tx_threads > 16) return false;
@@ -273,7 +282,7 @@ int main(int argc, char** argv) {
 
   std::fprintf(stderr, "bringing up TX on channel %d\n", a.channel);
   const uint8_t ch = static_cast<uint8_t>(a.channel);
-  dev->InitWrite(a.bw == 40 ? SelectedChannel{ch, 1, CHANNEL_WIDTH_40}
+  dev->InitWrite(a.bw == 40 ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
                             : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
   if (a.pwr_mode == "override") dev->SetTxPowerIndexOverride(a.pwr);
   else if (a.pwr_mode == "offset") dev->SetTxPowerOffsetQdb(a.pwr_offset_qdb);
@@ -442,6 +451,7 @@ int main(int argc, char** argv) {
       f.reserve(radiotap.size() + kDot11HeaderLen + body.size());
       f.insert(f.end(), radiotap.begin(), radiotap.end());
       auto hdr = build_dot11_header(mac_seq);
+      if (a.foreign_sa) { hdr[15] ^= 0xFF; hdr[21] ^= 0xFF; }
       mac_seq = static_cast<uint16_t>((mac_seq + 1) & 0x0FFF);
       f.insert(f.end(), hdr.begin(), hdr.end());
       f.insert(f.end(), body.begin(), body.end());

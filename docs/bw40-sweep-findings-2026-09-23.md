@@ -12,8 +12,9 @@ above capacity at every point (`under target` every second, checked per
 log), 17 s TX, median of the steady seconds. Both daemons stopped;
 restored after (ausniff 0 gaps / 0 incomplete / 0 resyncs at the
 disarmed low-power 30 fps). New: `--bw 20|40` on both linkbench tools
-(40 = HT40+, `SelectedChannel{ch, 1, CHANNEL_WIDTH_40}`: ch136 = 136/140,
-RF centre 138 — not an 8822E spur combo) and a `width_mhz` field on
+(at the time: always HT40+, `SelectedChannel{ch, 1, CHANNEL_WIDTH_40}`, so
+ch136 = 136/140, RF centre 138 — **off the standard 5 GHz grid**, see
+"Correction" below; 149 = 149/153 was on-grid) and a `width_mhz` field on
 `RadioFrontend::Cfg` (default 20). "Clean air" = rx air × (1 − crc_bad/frames).
 
 **LDPC+STBC on (as every prod rung flies, `common/src/profile.cpp`)**
@@ -169,6 +170,89 @@ chip evidently filters the primary 20 for a 20 MHz PPDU. mac_lost is not
 worse tuned 40 (0–23 per run vs 1–125 tuned 20). Caveat: readout at
 31–34 dB SNR is near its ceiling; the real number is a floor measurement
 with attenuation (or a walk-out), which the bench cannot do.
+
+## Correction: 136/140 is not a standard 40 MHz channel
+
+The 5 GHz HT40 pairs are 36+40, 44+48, … 116+120, 124+128, **132+136,
+140+144**, 149+153, 157+161. The first `--bw 40` always put the secondary
+above the primary, so every "ch136" HT40 result above ran on 136+140
+(centre 138), straddling the real 132+136 and 140+144 — fine for a
+private link's physics, wrong for channel planning (other 40 MHz networks
+and devourer's spur table are keyed on the standard centres). Fixed:
+`common/include/mabur/ht40.h` `ht40_offset()` picks the standard side
+(static_asserts pin the pairs), used by both linkbench tools and
+`RadioFrontend`; `--bw 40` on a channel with no pair (165) is an error.
+Re-checked on the standard 132+136 (primary 136, LDPC+STBC agg6): mcs0
+10.19, mcs4 59.93, mcs7 101.69 vs 10.33 / 60.21 / 101.02 on 136+140 — the
+capacity table holds. The wall and mixed-width results are physics of the
+chip and the 20 MHz primary, not of the pairing, and are not re-run.
+
+## Scouting a 40 MHz candidate
+
+Two questions for an in-flight hop at 40 MHz (`docs/inflight-channel-hop.md`
+§3): can one 40 MHz dwell score a pair, and what does a 40 MHz retune cost?
+
+### Does a 40 MHz dwell see the secondary?
+
+Interferer: an 8812EU on the dev PC (`linkbench-tx` host build, new
+`--foreign-sa` so the GS books its frames as foreign), MCS0 20 MHz, light
+(1 Mb/s app ≈ 30 % airtime) or heavy (5 Mb/s ≈ 95 %). GS card 0 tuned
+40 MHz on 136+140 (this run predates the pairing fix; the question is
+primary vs secondary, not which pair), card 1 tuned 20 MHz on 140 — the
+per-half view. New `linkbench-rx --energy-ms 500`: `GetRxEnergy(with_nhm)`
+FA/CCA + decoded own/foreign deltas, per 500 ms. Daemons stopped.
+
+| interferer | card 0, 40 MHz 136+140 | card 1, 20 MHz on 140 |
+|---|---|---|
+| idle | FA ≈ CCA ≈ 100, foreign 0 | FA ≈ CCA ≈ 55, foreign 0 |
+| secondary 140, light | CCA 45–90 (inside idle scatter), **foreign 0** | CCA 125–150, foreign ~100 |
+| secondary 140, heavy | CCA 170–260 (~2.5x), **foreign 0** | CCA 230–290, foreign ~300 |
+| primary 136, light | CCA 110–145, foreign ~100 | FA/CCA 450–590, foreign 0 |
+| primary 136, heavy | CCA ~285, foreign ~300 | FA/CCA ~1000, foreign 0 |
+
+1. **A 40 MHz dwell is nearly blind to the secondary.** Secondary frames are
+   never decoded (foreign 0 — the ranker's heaviest term, `4·foreign`), and
+   CCA only moves once the secondary is close to saturated. Scored with
+   `fa + max(cca − own, 0) + 4·foreign`, a heavily busy secondary reads
+   ~1.6x idle on the 40 MHz dwell against ~13x on the 20 MHz one. **Score
+   each 20 MHz half with its own 20 MHz dwell** (the existing scout, twice).
+2. **Adjacent-channel leakage is large on the 20 MHz dwell.** Traffic on
+   136 put 5–10x idle FA/CCA on a card tuned 20 MHz to 140 with zero decoded
+   frames. The interferer was a strong, close source, so this is a worst
+   case — but a per-half ranker should lean on `foreign` and on CCA of the
+   half itself, and expect a busy neighbour to smear into its FA.
+3. Harness notes: the host bring-up takes ~15 s (register tables ≈ 10 s,
+   port is high-speed 480), so interferer phases must sit inside one long
+   GS capture; host `linkbench-tx` must run under `setsid` (a signal from
+   the tool's process group interrupts libusb → stop flag, error −10).
+
+### Retune cost at 40 MHz
+
+`linkbench-rx --retune-bench a,b,..` times `RadioFrontend::retune()`
+(`FastRetune`, which keeps width and offset). 10 cycles each, ms
+median / max, standard pairs (all HT40−, primary = upper 20):
+
+| hop (40 MHz) | centre(s) | ms |
+|---|---|---|
+| 136 ↔ 144 (132+136 ↔ 140+144) | 134 ↔ 142 | 1.9–12.0 / 44.7 |
+| 136 ↔ 120 (↔ 116+120) | ↔ 118 (spur) | 65–76 / 87 |
+| 136 ↔ 153 (↔ 149+153) | ↔ 151 (spur) | 73–91 / 97 |
+| 136 ↔ 161 (↔ 157+161) | ↔ 159 (spur) | 79–81 / 88 |
+
+20 MHz reference (same card): 1.8–1.9 ms between 120/136/140, 6.5–6.8 ms
+to/from 149/157, max 28.
+
+4. **Three of the four HT40 escape pairs are 8822E spur combos** (centres
+   118, 151, 159 are in `is_spur_combo_8822e`'s 40 MHz list), and devourer
+   declines the fast path into or out of every one of them → full channel
+   set, **65–91 ms per retune**. A scout dwell is two retunes, so ~150–180 ms
+   off-channel per visit instead of ~10; a hop pays it once on each end.
+   Only 132+136 ↔ 140+144 stays fast. Either the candidate list changes
+   (36+40/44+48 are spur-free but UNII-1; 124+128 is spur-free DFS), or
+   devourer's lean path learns to carry the spur state.
+5. The 149+153 capacity deficit above sits on one of these spur centres —
+   consistent with the spur handling (NBI notch / CSI mask) being the cause,
+   still unconfirmed.
 
 ## Not measured
 

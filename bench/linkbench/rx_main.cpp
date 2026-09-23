@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "bench_wire.h"
@@ -29,7 +30,7 @@ using namespace linkbench;
 
 struct Args {
   int channel = 149;
-  int bw = 20;  // 20, or 40 = HT40+ (channel = primary, secondary above)
+  int bw = 20;  // 20, or 40 (channel = primary; secondary per mabur::ht40_offset)
   int card = 0;
   uint16_t usb_vid = 0x0bda, usb_pid = 0;
   int index = 0;
@@ -39,6 +40,13 @@ struct Args {
   // --wall: tally linkbench-tx --wall-sweep cal frames per (mcs, rel idx)
   // cell and print one "cell" line each at exit (stdout).
   bool wall = false;
+  // --energy-ms N: every N ms print "E t_ms fa cca igi floor own foreign"
+  // (GetRxEnergy(with_nhm) + decoded-frame deltas) to stdout.
+  int energy_ms = 0;
+  // --retune-bench a,b,..: after bring-up cycle FastRetune through the list
+  // --retune-n times, printing "R from to us" per call, then exit.
+  std::vector<int> retune_list;
+  int retune_n = 10;
 };
 
 void usage(const char* argv0) {
@@ -46,7 +54,8 @@ void usage(const char* argv0) {
     "usage: %s --channel N [--bw 20|40] [--card 0] [--usb-vid 0x0bda] [--usb-pid 0]\n"
     "  [--index 0] [--overhead 0.5] [--symbol-size 64] [--window 128] "
     "[--bpb 16]\n"
-    "  [--json FILE] [--time S] [--wall]\n", argv0);
+    "  [--json FILE] [--time S] [--wall] [--energy-ms N]\n"
+    "  [--retune-bench ch,ch,.. [--retune-n 10]]\n", argv0);
 }
 
 bool parse_args(int argc, char** argv, Args* a) {
@@ -75,6 +84,20 @@ bool parse_args(int argc, char** argv, Args* a) {
     }
     else if (k == "--time") { if (!next(&a->time_s)) return false; }
     else if (k == "--wall") { a->wall = true; }
+    else if (k == "--energy-ms") { if (!next(&a->energy_ms)) return false; }
+    else if (k == "--retune-n") { if (!next(&a->retune_n)) return false; }
+    else if (k == "--retune-bench") {
+      if (i + 1 >= argc) return false;
+      std::string v = argv[++i];
+      size_t pos = 0;
+      while (pos < v.size()) {
+        size_t c = v.find(',', pos);
+        if (c == std::string::npos) c = v.size();
+        a->retune_list.push_back(std::atoi(v.substr(pos, c - pos).c_str()));
+        pos = c + 1;
+      }
+      if (a->retune_list.empty()) return false;
+    }
     else if (k == "--usb-vid") { int v; if (!next(&v)) return false; a->usb_vid = static_cast<uint16_t>(v); }
     else if (k == "--usb-pid") { int v; if (!next(&v)) return false; a->usb_pid = static_cast<uint16_t>(v); }
     else { return false; }
@@ -130,6 +153,25 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  if (!a.retune_list.empty()) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    int from = a.channel;
+    for (int n = 0; n < a.retune_n && !g_devourer_should_stop; ++n) {
+      for (int ch : a.retune_list) {
+        const uint64_t t = mono_us();
+        fe.retune(static_cast<uint8_t>(ch));
+        std::printf("R %d %d %llu\n", from, ch,
+                    static_cast<unsigned long long>(mono_us() - t));
+        from = ch;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+    }
+    std::fflush(stdout);
+    fe.stop();
+    if (jf) std::fclose(jf);
+    return 0;
+  }
+
   RxPipeline pipe(a.fec);
   RxSnapshot prev;
   uint64_t last_mono_ms = 0;  // latest RxBody clock seen (decoder clock)
@@ -143,6 +185,8 @@ int main(int argc, char** argv) {
   const uint64_t deadline =
       a.time_s > 0 ? t0 + static_cast<uint64_t>(a.time_s) * 1'000'000 : 0;
 
+  uint64_t next_energy = mono_us() + static_cast<uint64_t>(a.energy_ms) * 1000;
+  maburgs::ScoutFrames prev_fr = fe.frames();
   struct WallCell { uint32_t rx = 0; double rssi0 = 0, rssi1 = 0; };
   std::map<std::pair<int, int>, WallCell> wall_cells;
   uint64_t wall_corrupt = 0;
@@ -178,6 +222,20 @@ int main(int argc, char** argv) {
       }
     }
     if (last_mono_ms) pipe.expire(last_mono_ms);
+
+    if (a.energy_ms > 0 && now >= next_energy) {
+      next_energy += static_cast<uint64_t>(a.energy_ms) * 1000;
+      const maburgs::ScoutEnergy e = fe.read_energy(/*with_nhm=*/true);
+      const maburgs::ScoutFrames fr = fe.frames();
+      std::printf("E %llu %u %u %d %d %llu %llu\n",
+                  static_cast<unsigned long long>((now - t0) / 1000),
+                  e.fa_valid ? e.fa_ofdm : 0u, e.fa_valid ? e.cca_ofdm : 0u,
+                  e.igi_valid ? e.igi : -1, e.floor_valid ? e.floor_dbm : 0,
+                  static_cast<unsigned long long>(fr.own - prev_fr.own),
+                  static_cast<unsigned long long>(fr.foreign - prev_fr.foreign));
+      std::fflush(stdout);
+      prev_fr = fr;
+    }
 
     if (now >= next_stats) {
       next_stats += 1'000'000;

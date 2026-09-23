@@ -17,6 +17,7 @@
 #include "UsbOpen.h"
 #include "WiFiDriver.h"
 #include "logger.h"
+#include "mabur/ht40.h"
 #include "mabur/node.h"
 
 namespace maburgs {
@@ -163,7 +164,7 @@ bool RadioFrontend::open_and_start() {
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
   device_->InitWrite(cfg_.width_mhz == 40
-                         ? SelectedChannel{cfg_.channel, 1, CHANNEL_WIDTH_40}
+                         ? SelectedChannel{cfg_.channel, mabur::ht40_offset(cfg_.channel), CHANNEL_WIDTH_40}
                          : SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
   channel_.store(cfg_.channel, std::memory_order_release);
   rx_channel_.store(cfg_.channel, std::memory_order_release);
