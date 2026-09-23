@@ -28,10 +28,12 @@ per-body `first_ms` arrival stamp 2026-09-05 (probe-blanking fix; a
 directory and `au.log`'s clock switches WALL→MONOTONIC (`# aulog 4`,
 `# latlog 2`, both drop the `# sync` bridge) 2026-09-06.
 
-**`link.pre_fec_loss` scale break 2026-09-23.** The ArrivalTracker guard
-behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
+**`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
+guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
 `streams[*].arr_late`) moved from a compile-time 32 to the new
-`link.arrival_guard_syms` key, default 192. Recordings before this date
+`link.arrival_guard_syms` key, default 192; and the link-level key now
+pools base + enh where it was base-only before (`ctl.pre_fec_loss` is
+still base-only). Recordings before this date
 carry ~1 % of "loss" that was late arrival from the drone's USB TX pool
 reordering, not air loss (`docs/observability.md` "pre-FEC loss is late,
 not lost"); after it the same channel reads ~0.02 %. Compare

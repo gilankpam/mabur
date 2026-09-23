@@ -22,6 +22,7 @@ static const char* kLive = R"({
     "channel": 149,
     "air_pct": 61.5,
     "residual_loss": 0.0,
+    "pre_fec_loss": 0.012,
     "rtt": {"ms": 12.4, "min_ms": 8.0, "n": 42, "pts_off_us": -123456789,
             "floor_ms": 3.2},
     "ctl": {"rung": {"idx": 3, "mcs": 5, "ov_base": 0.25}, "pre_fec_loss": 0.021},
@@ -30,6 +31,20 @@ static const char* kLive = R"({
   "drone": null,
   "scan": {"state": "frozen", "rounds": 12, "pick": 149}
 })";
+
+TEST(pre_loss_falls_back_to_ctl_when_pooled_gauge_is_null) {
+  // Starved/invalid window: the pooled gauge goes null, the controller's
+  // last base-only sample still shows rather than em-dashes.
+  static const char* kNullPooled = R"({
+  "v": 1, "t_ms": 1, "cards": [],
+  "link": {"channel": 149, "pre_fec_loss": null, "residual_loss": 0.0,
+           "ctl": {"rung": {"mcs": 5, "ov_base": 0.25}, "pre_fec_loss": 0.021}},
+  "drone": null, "scan": {"state": "off"}})";
+  GsSnapshot s;
+  REQUIRE(parse(kNullPooled, &s));
+  REQUIRE(s.pre_loss_pct.has_value());
+  CHECK(*s.pre_loss_pct > 2.09 && *s.pre_loss_pct < 2.11);
+}
 
 TEST(parses_a_live_datagram) {
   GsSnapshot s;
@@ -43,8 +58,11 @@ TEST(parses_a_live_datagram) {
   CHECK(s.scan_auto);                                // scan.state != "off"
   REQUIRE(s.air_pct.has_value());
   CHECK(*s.air_pct > 61.4 && *s.air_pct < 61.6);
+  // link.pre_fec_loss (both layers pooled, 2026-09-23) is the OSD's pre-FEC
+  // figure; link.ctl.pre_fec_loss is the BASE-only sample the ladder acted
+  // on and is only the fallback when the pooled gauge is null.
   REQUIRE(s.pre_loss_pct.has_value());
-  CHECK(*s.pre_loss_pct > 2.09 && *s.pre_loss_pct < 2.11);  // 0.021 -> 2.1 %
+  CHECK(*s.pre_loss_pct > 1.19 && *s.pre_loss_pct < 1.21);  // 0.012 -> 1.2 %
   REQUIRE(s.post_loss_pct.has_value());
   CHECK(*s.post_loss_pct == 0.0);
   REQUIRE(s.cards.size() == 2);
@@ -381,15 +399,16 @@ TEST(null_pre_fec_loss_stays_empty_not_zero) {
   CHECK(!s.pre_loss_pct.has_value());
 }
 
-// The ctl figure is what the controller acted on and is the right number to
-// show while the ladder is running, so it wins over the link-level gauge.
-TEST(ctl_pre_fec_loss_wins_over_the_link_level_gauge) {
+// The link-level gauge pools both video layers (2026-09-23) and is the
+// pilot's number; the ctl figure is the base-only sample the ladder acted
+// on and only fills in when the pooled window is null.
+TEST(pooled_link_pre_fec_loss_wins_over_the_ctl_figure) {
   const char* j = R"({"v":1,
     "link":{"ctl":{"pre_fec_loss":0.021},"pre_fec_loss":0.031}})";
   GsSnapshot s;
   REQUIRE(parse(j, &s));
   REQUIRE(s.pre_loss_pct.has_value());
-  CHECK(*s.pre_loss_pct > 2.09 && *s.pre_loss_pct < 2.11);
+  CHECK(*s.pre_loss_pct > 3.09 && *s.pre_loss_pct < 3.11);
 }
 
 // The fallback must never override a ticking ladder: when link.ctl.rung is

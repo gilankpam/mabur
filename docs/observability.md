@@ -817,9 +817,12 @@ the peak 100 ms encoder byte rate (kbit/s, decimal) inside that stats
 second — the burst the 1 Hz `drone.enc.mbps` average hides — and, since
 2026-09-20, `lp=`/`armed=` (see "2026-09-20 (low-power mode)" below).
 
-**2026-09-23 (pre-FEC loss is late, not lost).** `link.pre_fec_loss` — the
-OSD's LOSS row, `link.ctl.pre_fec_loss`, and the ladder's util input — is
-the ArrivalTracker's "booked missing at the settle line" fraction: a seq
+**2026-09-23 (pre-FEC loss is late, not lost; and pooled).** `link.pre_fec_loss`
+— the OSD's LOSS row — is the ArrivalTracker's "booked missing at the
+settle line" fraction with BOTH video layers pooled in one window (until
+this date it was the base layer alone); `link.ctl.pre_fec_loss` stays the
+base-only sample the ladder acted on, and the player reads it only as the
+fallback for a null pooled window. Booked missing means: a seq
 counts missing once a later seq arrives `link.arrival_guard_syms` ahead of
 it, and a symbol heard after that counts `streams[*].arr_late` and is never
 un-booked. The drone's parallel USB TX pool reorders bodies on air, so at

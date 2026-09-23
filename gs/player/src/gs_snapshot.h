@@ -73,8 +73,9 @@ struct GsSnapshot {
   std::optional<int> mcs;
   std::optional<double> fec_pct;
   std::optional<double> air_pct;        // link.air_pct
-  // link.ctl.pre_fec_loss x 100, falling back to the link-level
-  // link.pre_fec_loss x 100 in static-pin mode (same reason as mcs above).
+  // link.pre_fec_loss x 100 -- both video layers pooled (2026-09-23) --
+  // falling back to the base-only link.ctl.pre_fec_loss x 100 when the
+  // pooled window is null (starved/invalid).
   std::optional<double> pre_loss_pct;
   // link.residual_loss x 100. Since 2026-09-02 that key is symbol
   // abandonment (base+enh pooled), not the old packet-seq delivery window --

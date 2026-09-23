@@ -1417,6 +1417,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // below is a different question over the same symbol counters (what FEC
   // could not repair at all) -- see gs/src/ladder_residual.cpp.
   maburgs::S1LossWindow s1_loss;
+  // Sideport/OSD gauge (2026-09-23): BOTH video layers' current-only
+  // arrival-tracker counts pooled in one window, so the LOSS row reads the
+  // whole downlink; the ladder keeps deciding on s1_loss_cur (base only).
+  maburgs::S1LossWindow pre_loss_all;
   // s3 probe-before-promote feedback (same windowing machinery as s1_loss,
   // stream 3): pre-FEC loss for probe/s3-demote decisions. The steady-state
   // demote path's residual (abandoned/expected) window is s3_resid_cur
@@ -2250,6 +2254,20 @@ static int run_radio(const maburgs::Config& cfg) {
     s1_loss_cur.add(s1.arr_expected - s1.arr_expected_stale,
                     s1.arr_arrived - s1.arr_arrived_stale, now_ms);
     const auto s1_cur_sample = s1_loss_cur.sample(now_ms);
+    // Both layers pooled for the exported gauge (sin.pre_fec_loss below):
+    // the enh layer's erasures are as real on air as the base layer's, and
+    // the OSD's LOSS row is the pilot's view of the downlink, not of the
+    // ladder's input. Summed monotonic totals keep S1LossWindow's reset
+    // detection intact (both layers re-key together).
+    {
+      const auto s2 = agg.decoder().stats(1);
+      pre_loss_all.add((s1.arr_expected - s1.arr_expected_stale) +
+                           (s2.arr_expected - s2.arr_expected_stale),
+                       (s1.arr_arrived - s1.arr_arrived_stale) +
+                           (s2.arr_arrived - s2.arr_arrived_stale),
+                       now_ms);
+    }
+    const auto pre_all_sample = pre_loss_all.sample(now_ms);
 
     // Block 4's instant-demote input: BASE post-FEC loss from the FEC
     // decoder's own abandonment count, mirroring s3_resid_cur below. See
@@ -2673,13 +2691,14 @@ static int run_radio(const maburgs::Config& cfg) {
         sin.gap_timeout_ms[s] = gap_policy.timeout_ms(s);
       sin.residual_loss = residual;
       sin.residual_cur = residual_cur;
-      // The same s1 window the ladder's LinkHealth reads, exported
-      // unconditionally: static-pin mode never fills sin.ctl below, and the
-      // OSD's pre-FEC LOSS figure has to come from somewhere. Left empty on
-      // an invalid window rather than defaulted to 0.0 the way LinkHealth
-      // does it -- a controller needs a number every tick, a gauge does not,
-      // and "no sample" must not render as a real zero-loss link.
-      if (s1_cur_sample.valid) sin.pre_fec_loss = s1_cur_sample.loss;
+      // The pooled base+enh window (pre_loss_all), exported unconditionally:
+      // static-pin mode never fills sin.ctl below, and the OSD's pre-FEC
+      // LOSS figure has to come from somewhere. Left empty on an invalid
+      // window rather than defaulted to 0.0 the way LinkHealth does it -- a
+      // controller needs a number every tick, a gauge does not, and "no
+      // sample" must not render as a real zero-loss link. The ladder's own
+      // base-only sample still goes out as link.ctl.pre_fec_loss.
+      if (pre_all_sample.valid) sin.pre_fec_loss = pre_all_sample.loss;
       if (const double cms = agg.decoder().last_boundary_close_ms(0); cms >= 0)
         sin.attrib_close_ms = cms;
       for (int s = 0; s < 2; ++s)

@@ -250,9 +250,10 @@ struct StatsInput {
   // whole ctl block is null -- the loss is still measured there, and the
   // OSD's LOSS row read nothing but em-dashes for the entire flight without
   // this. NOT a copy of StatsCtlIn::pre_fec_loss: that one is the last
-  // sample the CONTROLLER acted on and holds through starved/invalid
-  // windows, this one is this window's raw measurement and is nullopt when
-  // the window produced no valid sample.
+  // BASE-only sample the CONTROLLER acted on and holds through
+  // starved/invalid windows, this one is this window's raw measurement
+  // with BOTH video layers pooled (2026-09-23) and is nullopt when the
+  // window produced no valid sample.
   std::optional<double> pre_fec_loss;
   // Transition attribution (spec 2026-08-14, unconditional since
   // 2026-08-15). residual_cur = the attributed (current-rung-only) sibling

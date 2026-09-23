@@ -103,9 +103,14 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
       out->rtt_ms = num(*rtt, "ms");
       out->pts_off_us = integer64(*rtt, "pts_off_us");
     }
+    // The LOSS row's pre-FEC half: link.pre_fec_loss, the always-exported
+    // link-level gauge, which since 2026-09-23 pools BOTH video layers
+    // (base + enh arrival-tracker counts over one window). The controller's
+    // link.ctl.pre_fec_loss is base-only -- the ladder decides on the base
+    // layer -- and is read below only as the fallback for a null window.
+    if (const std::optional<double> p = num(*link, "pre_fec_loss"))
+      out->pre_loss_pct = *p * 100.0;
     if (const json* ctl = obj(*link, "ctl")) {
-      if (const std::optional<double> p = num(*ctl, "pre_fec_loss"))
-        out->pre_loss_pct = *p * 100.0;
       if (const json* rung = obj(*ctl, "rung")) {
         out->mcs = integer(*rung, "mcs");
         // link.ctl.rung.ov_base (Task 5, same-rate-fixed-pairs): the rung's
@@ -128,14 +133,14 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     // ladder IS ticking, the ctl figures are the ones the controller acted
     // on, and those are what the pilot should read.
 
-    // The LOSS row's pre-FEC half. link.pre_fec_loss is the always-exported
-    // link-level measurement, the unconditional sibling of the post-FEC
-    // link.residual_loss read above (which sat at link level all along and
-    // so never went blank); link.ctl.pre_fec_loss holds its value through
-    // starved/invalid windows, this one goes null on them.
+    // The LOSS row's pre-FEC half, fallback: the pooled link.pre_fec_loss
+    // read above goes null on a starved/invalid window, while
+    // link.ctl.pre_fec_loss holds the last (base-only) sample the controller
+    // acted on -- better than em-dashes for the length of a starve.
     if (!out->pre_loss_pct) {
-      if (const std::optional<double> p = num(*link, "pre_fec_loss"))
-        out->pre_loss_pct = *p * 100.0;
+      if (const json* ctl = obj(*link, "ctl"))
+        if (const std::optional<double> p = num(*ctl, "pre_fec_loss"))
+          out->pre_loss_pct = *p * 100.0;
     }
     // The rung field. link.op is the GS-commanded op point in BOTH modes
     // (StatsInput::op comes from vrx.cur_op(), which the pin branch writes
