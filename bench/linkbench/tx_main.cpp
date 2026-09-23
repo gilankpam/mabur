@@ -75,7 +75,17 @@ struct Args {
   bool no_cca = false;
   // --foreign-sa: flip the SA/BSSID so a GS books these frames as foreign
   // traffic (interferer role), not own.
-  bool foreign_sa = false;  // --no-cca: MAC carrier sense off (maburd flies it ON)
+  bool foreign_sa = false;
+  // --frame-bw 20|40|mix: per-frame radiotap width, independent of the
+  // tuning width --bw (0 = same as --bw). mix alternates 20/40 per frame.
+  // 20-in-40 tests that a 40-tuned radio airs 20 MHz PPDUs on the primary.
+  int frame_bw = 0;  // 0 = --bw, 20, 40, -1 = mix
+  // --mcs-mix M2: alternate --mcs / M2 per frame (even mac_seq = --mcs, odd =
+  // M2; linkbench-rx --rate-hist checks what actually aired).
+  int mcs_mix = -1;
+  // --no-agg-even: even frames of a --mcs-mix / --frame-bw mix run carry
+  // devourer TxMode::no_agg (AGG_EN=0 + BK=1: never folded into an A-MPDU).
+  bool no_agg_even = false;  // --no-cca: MAC carrier sense off (maburd flies it ON)
   bool wall_sweep = false;
   int wall_lo = -41, wall_hi = 63;
   int wall_frames = 100;
@@ -92,7 +102,7 @@ void usage(const char* argv0) {
     "  [--pwr-mode override|none|offset] [--pwr 0..63] [--pwr-offset-qdb Q]\n"
     "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n"
     "  [--ampdu N (max_num, 0=off)] [--ampdu-max-time 32]\n"
-    "  [--no-cca] [--foreign-sa] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
+    "  [--no-cca] [--foreign-sa] [--frame-bw 20|40|mix] [--mcs-mix M2] [--no-agg-even] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
     "   [--wall-gap-us 1000] [--wall-settle-ms 20] [--wall-mcs-mask 0xff]]\n", argv0);
 }
 
@@ -139,6 +149,16 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--ampdu-max-time") { if (!next(&a->ampdu_max_time)) return false; }
     else if (k == "--no-cca") { a->no_cca = true; }
     else if (k == "--foreign-sa") { a->foreign_sa = true; }
+    else if (k == "--no-agg-even") { a->no_agg_even = true; }
+    else if (k == "--mcs-mix") { if (!next(&a->mcs_mix) || a->mcs_mix < 0 || a->mcs_mix > 7) return false; }
+    else if (k == "--frame-bw") {
+      if (i + 1 >= argc) return false;
+      const std::string v = argv[++i];
+      if (v == "mix") a->frame_bw = -1;
+      else if (v == "20") a->frame_bw = 20;
+      else if (v == "40") a->frame_bw = 40;
+      else return false;
+    }
     else if (k == "--wall-sweep") { a->wall_sweep = true; }
     else if (k == "--wall-lo") { if (!next(&a->wall_lo)) return false; }
     else if (k == "--wall-hi") { if (!next(&a->wall_hi)) return false; }
@@ -156,6 +176,14 @@ bool parse_args(int argc, char** argv, Args* a) {
     return false;
   }
   if (a->mcs < 0 || a->mcs > 7) return false;
+  if (a->mcs_mix >= 0 && a->frame_bw != 0) {
+    std::fprintf(stderr, "error: --mcs-mix and --frame-bw are exclusive\n");
+    return false;
+  }
+  if (a->frame_bw != 0 && a->frame_bw != 20 && a->bw != 40) {
+    std::fprintf(stderr, "error: --frame-bw 40/mix needs --bw 40 tuning\n");
+    return false;
+  }
   if (a->bw == 40 && mabur::ht40_offset(static_cast<uint8_t>(a->channel)) == 0) {
     std::fprintf(stderr, "error: channel %d has no 5 GHz HT40 pair\n", a->channel);
     return false;
@@ -219,6 +247,30 @@ int main(int argc, char** argv) {
   mode.ldpc = a.ldpc;
   mode.stbc = a.stbc;
   const std::vector<uint8_t> radiotap = devourer::build_stream_radiotap(mode);
+  devourer::TxMode mode20 = mode, mode40 = mode;
+  mode20.bw_mhz = 20;
+  mode40.bw_mhz = 40;
+  const std::vector<uint8_t> rt20 = devourer::build_stream_radiotap(mode20);
+  const std::vector<uint8_t> rt40 = devourer::build_stream_radiotap(mode40);
+  devourer::TxMode mode_m2 = mode;
+  if (a.mcs_mix >= 0) mode_m2.ht_mcs = static_cast<uint8_t>(a.mcs_mix);
+  const std::vector<uint8_t> rt_m2 = devourer::build_stream_radiotap(mode_m2);
+  devourer::TxMode even_base = mode, even_20 = mode20;
+  even_base.no_agg = even_20.no_agg = a.no_agg_even;
+  const std::vector<uint8_t> rt_even_base = devourer::build_stream_radiotap(even_base);
+  const std::vector<uint8_t> rt_even_20 = devourer::build_stream_radiotap(even_20);
+  uint64_t frame_ctr = 0;
+  auto frame_rt = [&]() -> const std::vector<uint8_t>& {
+    const uint64_t n = frame_ctr++;
+    if (a.frame_bw == 20) return rt20;
+    if (a.frame_bw == 40) return rt40;
+    if (a.frame_bw == -1) return (n & 1) ? rt40 : rt_even_20;
+    if (a.mcs_mix >= 0) return (n & 1) ? rt_m2 : rt_even_base;
+    return radiotap;
+  };
+  if (a.frame_bw != 0)
+    std::fprintf(stderr, "  frame-bw %s (tuned %d)\n",
+                 a.frame_bw < 0 ? "mix" : a.frame_bw == 20 ? "20" : "40", a.bw);
 
   const double afac = air_factor(a.fec, a.size, radiotap.size());
   std::fprintf(stderr,
@@ -448,8 +500,9 @@ int main(int argc, char** argv) {
     };
     auto body_to_frame = [&](std::vector<uint8_t>& body) {
       std::vector<uint8_t> f;
-      f.reserve(radiotap.size() + kDot11HeaderLen + body.size());
-      f.insert(f.end(), radiotap.begin(), radiotap.end());
+      const std::vector<uint8_t>& rt = frame_rt();
+      f.reserve(rt.size() + kDot11HeaderLen + body.size());
+      f.insert(f.end(), rt.begin(), rt.end());
       auto hdr = build_dot11_header(mac_seq);
       if (a.foreign_sa) { hdr[15] ^= 0xFF; hdr[21] ^= 0xFF; }
       mac_seq = static_cast<uint16_t>((mac_seq + 1) & 0x0FFF);

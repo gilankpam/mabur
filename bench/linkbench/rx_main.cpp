@@ -47,6 +47,9 @@ struct Args {
   // --retune-n times, printing "R from to us" per call, then exit.
   std::vector<int> retune_list;
   int retune_n = 10;
+  // --rate-hist: tally (mac_seq parity, received HT MCS) for CRC-clean
+  // canonical frames; printed as "H parity mcs count" at exit (stdout).
+  bool rate_hist = false;
 };
 
 void usage(const char* argv0) {
@@ -54,7 +57,7 @@ void usage(const char* argv0) {
     "usage: %s --channel N [--bw 20|40] [--card 0] [--usb-vid 0x0bda] [--usb-pid 0]\n"
     "  [--index 0] [--overhead 0.5] [--symbol-size 64] [--window 128] "
     "[--bpb 16]\n"
-    "  [--json FILE] [--time S] [--wall] [--energy-ms N]\n"
+    "  [--json FILE] [--time S] [--wall] [--energy-ms N] [--rate-hist]\n"
     "  [--retune-bench ch,ch,.. [--retune-n 10]]\n", argv0);
 }
 
@@ -84,6 +87,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     }
     else if (k == "--time") { if (!next(&a->time_s)) return false; }
     else if (k == "--wall") { a->wall = true; }
+    else if (k == "--rate-hist") { a->rate_hist = true; }
     else if (k == "--energy-ms") { if (!next(&a->energy_ms)) return false; }
     else if (k == "--retune-n") { if (!next(&a->retune_n)) return false; }
     else if (k == "--retune-bench") {
@@ -190,6 +194,7 @@ int main(int argc, char** argv) {
   struct WallCell { uint32_t rx = 0; double rssi0 = 0, rssi1 = 0; };
   std::map<std::pair<int, int>, WallCell> wall_cells;
   uint64_t wall_corrupt = 0;
+  std::map<std::pair<int, int>, uint64_t> rate_hist;
   std::vector<mabur::node::RxBody> batch;
   while (!g_devourer_should_stop) {
     const uint64_t now = mono_us();
@@ -201,6 +206,7 @@ int main(int argc, char** argv) {
     batch.clear();
     queue.drain(batch, /*timeout_ms=*/100);
     for (auto& m : batch) {
+      if (a.rate_hist && m.crc_ok) ++rate_hist[{m.mac_seq & 1, m.mcs}];
       if (a.wall) {
         mabur::cal::CalFrameInfo ci;
         if (!m.crc_ok) { ++wall_corrupt; continue; }
@@ -301,6 +307,8 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(s.sig_frames),
       a.fec.window, a.fec.overhead, a.fec.symbol_size, a.fec.bpb, a.channel);
 
+  for (const auto& [k, n] : rate_hist)
+    std::printf("H %d %d %llu\n", k.first, k.second, static_cast<unsigned long long>(n));
   if (a.wall) {
     for (const auto& [k, c] : wall_cells)
       std::printf("cell mcs %d rel %d rx %u rssi %.1f %.1f\n", k.first, k.second,

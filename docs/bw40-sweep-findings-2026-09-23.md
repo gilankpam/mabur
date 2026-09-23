@@ -254,6 +254,100 @@ to/from 149/157, max 28.
    consistent with the spur handling (NBI notch / CSI mask) being the cause,
    still unconfirmed.
 
+## Per-frame width from a 40 MHz-tuned transmitter
+
+Width is per frame: `TxMode.bw_mhz` → radiotap MCS bandwidth flag →
+descriptor `bw_desc` (devourer `RtlJaguar3Device.cpp`); the tuning
+(`InitWrite`) sets the RF bandwidth and the primary. A 20 MHz frame from a
+40 MHz-tuned radio goes out with descriptor `data_sc = 0` (devourer only
+sets it for 40-in-80), relying on the primary index written to
+`REG_DATA_SC` (0x483) at tune time. New `linkbench-tx --frame-bw 20|40|mix`
+(mix alternates per frame) separates frame width from `--bw` tuning. Drone
+tuned 40 MHz on 132+136 (primary 136), LDPC+STBC, two GS cards as
+witnesses, daemons stopped:
+
+| run | witness A | witness B |
+|---|---|---|
+| tuned 20, 20 MHz frames (control), mcs0 singles | 136/20: 99.3 % | 132/20: 0 % |
+| tuned 40, 20 MHz frames, mcs0 singles | 136/20: 99.4 % | 132/20: 0 % |
+| tuned 40, 20 MHz frames, mcs0 singles | 136/40: 99.8 % | 136/20: 100.0 % |
+| tuned 40, **mix**, mcs0 singles | 136/40: 99.8 % | 136/20: **50.0 %** |
+| tuned 40, 20 MHz frames, mcs7 agg6, saturated | 136/20: 49.07 Mb/s | 136/40: 49.36 Mb/s |
+| tuned 40, 40 MHz frames, mcs7 agg6, saturated | 136/40: 102.02 Mb/s | 132/20: 0 % |
+| tuned 40, **mix, mcs7 agg6**, saturated | 136/40: 99.9 %, 76.8 Mb/s | 136/20: **30.5 %** |
+| tuned 40, **mix, mcs7 singles**, saturated | 136/40: 100 %, 47.6 Mb/s | 136/20: 47.1 % |
+
+(% = frames received / frames the drone sent; CRC-bad ≤ 1 everywhere.)
+
+1. **A 40-tuned radio airs 20 MHz frames on the primary, and switches width
+   frame by frame.** The secondary-only witness hears nothing; the
+   primary-only witness gets exactly every other frame in `mix`. Tuning to
+   40 costs 20 MHz frames nothing (49.1 vs 49.1 Mb/s on the HT20 table).
+   So video at 40 with control/low rungs at 20 needs no retune — width is
+   a per-stream TX choice, as `LayerTxSpec.bw` already models.
+2. **Aggregation does NOT keep widths apart.** With A-MPDU on, the 20 MHz
+   witness got 30.5 % of frames instead of 50 % — ~39 % of frames labelled
+   20 MHz went out at 40 MHz, i.e. the chip builds an aggregate at one
+   width and pulls the other width's MPDUs into it. Singles restore it
+   (47.1 %; the ~6 % shortfall at saturation is unexplained). Consequence
+   for mabur: any 20 MHz frame that must stay 20 MHz (control, anything a
+   20-tuned receiver must hear) cannot share an A-MPDU queue/TID with 40 MHz
+   video — it needs aggregation off, a separate TID, or a non-aggregable
+   frame type, and the mechanism (descriptor AGG_EN / TID / BK boundaries
+   in devourer) needs reading before a design relies on it.
+
+## Aggregation also mixes rates — and the devourer fix
+
+Same mechanism, rate instead of width: new `linkbench-tx --mcs-mix M2`
+(even mac_seq = `--mcs`, odd = M2) and `linkbench-rx --rate-hist` (per
+mac_seq parity, the HT MCS each frame actually aired at, from the RX
+descriptor). HT20 on 136, LDPC+STBC:
+
+| even / odd, load | agg | even frames aired at | odd frames aired at |
+|---|---|---|---|
+| mcs0 / mcs5, saturated | off | mcs0 100 % | mcs5 100 % |
+| mcs0 / mcs5, saturated | agg6 | **mcs5 62 %**, mcs0 38 % | mcs5 100 % |
+| mcs0 / mcs5, ~60 % airtime | agg6 | mcs5 2 %, mcs0 98 % | mcs5 100 % |
+| mcs4 / mcs5, saturated | agg6 | **mcs5 98 %**, mcs4 2 % | mcs4 1 %, mcs5 99 % |
+| mcs4 / mcs5, moderate | agg6 | mcs5 45 %, mcs4 55 % | mcs4 40 %, mcs5 60 % |
+
+An A-MPDU airs at ONE rate/width; the MAC folds co-queued frames into it
+regardless of their own descriptor. (mcs0 frames never pull mcs5 frames
+down — an mcs0 MPDU alone exceeds the aggregate time budget, so it never
+heads an aggregate.) Mechanism: with `SetAmpduMode` on, devourer writes
+every frame `AGG_EN=1` on one QSEL (`RtlJaguar3Device.cpp`); the chip
+merges consecutive AGG_EN frames on a queue.
+
+**Exposure today:** the shipped flight config has `ampdu.max_num = 1`
+(bundle, aggregation off since 2026-09-22) — no merging. The BENCH drone's
+`/etc/mabur.toml` has `max_num = 6` (comment still says OFF): there, above
+`ampdu.min_mcs` 4, control frames (`control_tx_mode()`, MCS0 LDPC+STBC) and
+probes (`op.probe`, their own rung) can air at the video rate. Any return
+to agg6, and HT40 (where aggregation pays from mcs2), needs the fix.
+
+**Fix (devourer branch `tx-noagg`):** `TxMode::no_agg` → devourer-private
+radiotap TX_FLAGS bit `kRadiotapTxFlagNoAgg` (0x0100; the HT radiotap stays
+13 bytes, which the J3 HT/VHT detection keys on) → Jaguar3 descriptor
+`AGG_EN=0` + `BK=1` (dword2[16]), the vendor rtl8822eu xmit recipe for
+frames that must air alone (EAPOL/ARP/DHCP). Same queue, so ordering is
+unchanged. Jaguar3 only; J1/J2 ignore the bit. `radiotap_txflags`
+self-test pins the round-trip on all four builders and that a default
+TxMode stays byte-identical; devourer ctest 60/60 (1 pre-existing skip).
+On air (`--no-agg-even` marks the even frames no_agg), agg6 saturated:
+
+| case | before | even frames no_agg |
+|---|---|---|
+| mcs0 / mcs5 | mcs0 frames at mcs0: 38 % | **100 %** (mcs5 100 %) |
+| mcs4 / mcs5 | mcs4 frames at mcs4: 2 % | **99.7 %** (mcs5 99.7 %) |
+| 20 / 40 MHz, tuned 40 | 20 MHz witness 30.5 % | **50.0 %** |
+
+Controls: pure HT40 mcs7 agg6 101.95 Mb/s (102.02 before — default path
+unchanged); the same mcs0/5 mix without the flag still reads 37 % (the
+flag is what fixes it). Cost: a no_agg frame breaks the aggregate around
+it — the every-other-frame worst case above drops to 31 Mb/s total; for
+occasional control/probe frames among video it should be small (not
+measured). The residual 0.3 % crossover at mcs4/5 is unexplained.
+
 ## Not measured
 
 - Range/sensitivity: bench only (RSSI ~−68 dBm singles). The per-rate
