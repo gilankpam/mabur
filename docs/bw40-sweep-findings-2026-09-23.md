@@ -1,4 +1,70 @@
-# HT40 per-MCS air capacity sweep — 2026-09-23
+# HT40 (40 MHz) findings — 2026-09-23/24
+
+## Start here: design inputs for a 40 MHz mabur
+
+This page is the bench record (chronological, sections below). The short
+version for whoever designs 40 MHz into maburd/maburgs — nothing flies HT40
+yet, and no spec exists.
+
+**Where things live.** Branch `bw40-sweep` (not merged to master; tools +
+this page). It needs `../devourer` on the LOCAL branch `tx-noagg` (0acffd0,
+`TxMode::no_agg`, deliberately not upstreamed yet) — `linkbench-tx
+--no-agg-even` does not compile against upstream devourer.
+
+**Facts the design must honour** (section in brackets):
+1. **Capacity:** HT40 delivers 2.0–2.2x HT20 at every MCS; efficiency is flat
+   0.74–0.77 of nominal (no rung-0 exception) → a per-width
+   `air_clock.efficiency` table. A-MPDU pays from MCS2 at 40 MHz (HT20: MCS4)
+   → a per-width `ampdu.min_mcs`. Air-bound, not CPU-bound. [Delivered air]
+2. **Range (the ladder shape):** same MCS costs 3.5–5 dB at 40 MHz; HT40
+   MCS0 reaches 4–6+ dB less than HT20 MCS0; at equal PHY rate it is a wash
+   up to ~40 Mb/s and HT40 wins only from ~52 Mb/s. So 40 MHz buys airtime
+   (latency/jitter) only on the TOP rungs; **bottom rungs stay 20 MHz**.
+   [Range test]
+3. **Width is per frame, one radio:** a 40-tuned radio airs 20 MHz frames on
+   the primary, switching per frame at no capacity cost; a 40-tuned receiver
+   hears them for 0.2–0.5 dB. So the GS can sit at 40 permanently and the
+   drone picks width per rung — no retune, no flag day. The wire already
+   carries it: `encode_profile(mode, mcs, bw)` / `LayerTxSpec.bw`; the
+   blockers are `maburd` forcing 20 (`drone/src/main.cpp` "not supported in
+   v1") and the GS tuning 20. A 20-tuned receiver cannot hear HT40.
+   [Mixed width, Per-frame width]
+4. **A-MPDU folds co-queued frames into one PPDU at one rate/width** — control
+   (`control_tx_mode()`, MCS0 LDPC+STBC), probes (`op.probe`) and 20 MHz
+   frames must carry `TxMode::no_agg` whenever aggregation is on (fix
+   verified on air; mabur does not set it yet; its throughput cost with real
+   traffic is unmeasured). Flight bundle has `ampdu.max_num = 1` (unaffected);
+   the bench drone's `/etc/mabur.toml` runs 6. [Aggregation]
+5. **LDPC+STBC are mandatory at HT40 64-QAM** (prod already flies them).
+   [Findings 4]
+6. **TX power:** with prod flags, HT40 walls ≥ HT20 walls, so
+   `rate_walls_rel` is safe at 40; maburcal itself sweeps flags OFF (a
+   separate maburcal question). Anchor reads the same at both widths.
+   [TX-power walls]
+7. **Channels:** use the standard pairs (`common/include/mabur/ht40.h`
+   `ht40_offset()`): home 136 → 132+136. 116+120, 149+153, 157+161 have 8822E
+   spur centres → devourer's slow retune path, 65–91 ms per retune (only
+   132+136 ↔ 140+144 is fast); 149+153 also delivers 3–9 % less (cause
+   open); 165 has no pair. The escape-candidate list must change. [Correction,
+   Retune cost, Second channel]
+8. **Scouting:** a 40 MHz dwell is nearly blind to the secondary → score each
+   20 MHz half with its own 20 MHz dwell. A dirty secondary only needs the
+   drone to narrow to 20 MHz (see 3), not a hop. [Scouting]
+
+**Decisions still open (the spec's job):** what to spend the capacity on —
+lower airtime at today's bitrate (no CPU cost) vs higher bitrate (drone
+encoder/FEC CPU: 22 Mb/s clean at 59 %, SoC wall unmeasured); which rungs
+go 40; the new escape pairs; narrow-vs-hop policy.
+
+**Still unmeasured:** drone as the 40-tuned *receiver* of the GS's 20 MHz
+uplink (same chip, likely fine); walls at 40 on a second channel; `no_agg`
+cost with real video; a second range location. And one production-relevant
+side finding: a GS card tuned 20 MHz loses a flat 4–10 % of HT20 frames at
+weak signal where the same card tuned 40 loses ~1 % [Range test §4] — open.
+
+---
+
+## Capacity sweep (2026-09-23)
 
 Question: what does 40 MHz actually deliver per MCS on our hardware, and
 does the 20 MHz efficiency (0.71–0.78 of nominal,
