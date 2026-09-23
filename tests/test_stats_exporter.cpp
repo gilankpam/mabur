@@ -513,6 +513,7 @@ TEST(drone_section_null_then_rates) {
   t.rcf_rx = 100; t.radio_sent = 5000; t.up_rssi[1] = 52; t.soc_temp_c = 61;
   t.idr_disagree = 1; t.enhance_disagree = 2;
   t.roi_qp = -24;
+  t.rx_own = 13; t.rx_foreign = 14; t.rx_crcfail = 15;
   t.flags = 0x94;  // probing + congestion_shed + low_power
   in.telem = t; in.telem_rx_ms = 1400;
   ex.poll(1500, in);
@@ -532,6 +533,11 @@ TEST(drone_section_null_then_rates) {
   // enc.roi_qp is the ROI override (signed); there is no enc.qp key.
   CHECK(!j["drone"]["enc"].contains("qp"));
   CHECK(j["drone"]["enc"]["roi_qp"] == -24);
+  // drone.radio.rx: the drone's own RX-side frame split for the last
+  // telemetry period (cca-on 2026-09-23).
+  CHECK(j["drone"]["radio"]["rx"]["own"] == 13);
+  CHECK(j["drone"]["radio"]["rx"]["foreign"] == 14);
+  CHECK(j["drone"]["radio"]["rx"]["crcfail"] == 15);
   t.tlm_seq = 2; t.enc_frames = 1060; t.enc_kbytes = 2125;
   t.rcf_rx = 120; t.radio_sent = 6460;
   t.flags = 0;  // probe over, shed lifted -- bits clear

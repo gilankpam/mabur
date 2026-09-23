@@ -55,7 +55,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 17;
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 89;  // 2026-09-14: +channel/hop_epoch
+constexpr size_t TELEM_LEN = 95;  // 2026-09-23: +rx_own/rx_foreign/rx_crcfail (was 89: +channel/hop_epoch)
 
 // magic(2) | ver | type | flags | vtx(4) | nonce(4) | phase | fpc(2) |
 // settle(2) | gap(2) | n_windows(1) | n * 4 bytes
@@ -325,6 +325,9 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put16(body, t.air_shed_drops);
   body.push_back(t.channel);
   body.push_back(t.hop_epoch);
+  put16(body, t.rx_own);
+  put16(body, t.rx_foreign);
+  put16(body, t.rx_crcfail);
 
   put_crc(body);
   return body;
@@ -382,6 +385,9 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.air_shed_drops = get16(buf, 85);
   t.channel = buf[87];
   t.hop_epoch = buf[88];
+  t.rx_own = get16(buf, 89);
+  t.rx_foreign = get16(buf, 91);
+  t.rx_crcfail = get16(buf, 93);
   return t;
 }
 

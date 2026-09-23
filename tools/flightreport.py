@@ -827,6 +827,48 @@ def sniff_ctllog(path):
     return first.startswith("ctllog ")
 
 
+def drone_rx_samples(rows):
+    """drone.radio.rx (cca-on 2026-09-23) is a PER-TELEMETRY-PERIOD count
+    the exporter repeats on every record until the next Telem, so a sample
+    is one distinct drone.tlm_seq, never one record. Returns a list of
+    (own, foreign, crcfail) tuples in order; empty on recordings that
+    predate the key."""
+    out = []
+    last_seq = None
+    for r in rows:
+        d = r.get("drone") or {}
+        e = (d.get("radio") or {}).get("rx")
+        if not isinstance(e, dict):
+            continue
+        seq = d.get("tlm_seq")
+        if seq is not None and seq == last_seq:
+            continue
+        last_seq = seq
+        out.append((e.get("own") or 0, e.get("foreign") or 0, e.get("crcfail") or 0))
+    return out
+
+
+def print_drone_rx_report(rows):
+    """DRONE RX: what the drone's own receiver saw on the channel, per
+    telemetry period -- the altitude view the GS cards cannot measure. With
+    carrier sense ON (2026-09-23) `foreign` (CRC-clean, not ours) and
+    `crcfail` (preamble heard, payload undecodable) are the frames the
+    drone's transmitter deferred to; the hop verdict only reacts above
+    hop.verdict.foreign_pps (50), so this is the number that says whether
+    deferral below that bar is costing air. Silent on old recordings."""
+    s = drone_rx_samples(rows)
+    if not s:
+        return
+    own = [x[0] for x in s]
+    foreign = [x[1] for x in s]
+    crcfail = [x[2] for x in s]
+    print()
+    print(f"DRONE RX (per telemetry period, once per tlm_seq): n={len(s)}")
+    print(f"  foreign: p50={_pct(foreign, .5):.0f} p90={_pct(foreign, .9):.0f} max={max(foreign)}"
+          f"   crcfail: p50={_pct(crcfail, .5):.0f} p90={_pct(crcfail, .9):.0f} max={max(crcfail)}"
+          f"   own: p50={_pct(own, .5):.0f} p90={_pct(own, .9):.0f} max={max(own)}")
+
+
 def print_salvage_report(rows):
     """SALVAGE: what rx.keep_corrupted (2026-09-08) bought. The sideport's
     per-card crc_fail and per-stream corrupt/salvaged/sub_fail are
@@ -1487,6 +1529,7 @@ def main(path, aulog=None, probelog_path=None, scanlog_path=None):
         print(f"  t={t} residual={rl:.4f} u[-5s..]={flat_traj} drone_state={drone_state}{rssi_str}{snr_str}")
 
     print_salvage_report(rows)
+    print_drone_rx_report(rows)
 
     # link.attrib.suppressed was removed from the sideport 2026-09-02 with
     # the packet-level delivery window it was defined against. Old
@@ -1525,6 +1568,7 @@ if __name__ == "__main__":
         # viewer. Silent when the recording predates the counters.
         if primary != s.flight and s.flight:
             print_salvage_report(load(s.flight))
+            print_drone_rx_report(load(s.flight))
         # fec.log (2026-09-15) is a sibling too: the FEC EPISODES section
         # rides along whichever primary the session offered.
         if s.fec:

@@ -14,13 +14,17 @@ agg 6, two GS cards) unless stated otherwise.
   receive while it transmits. The drone has one card. The GS has two,
   both receiving video, one of them (the `TxSelector`'s pick) also
   sending the uplink.
-- **Carrier sense is OFF on both daemons** (since 2026-08-05,
-  `dev_cfg.tuning.disable_cca = true` in `drone/src/main.cpp` and
-  `gs/src/radio_frontend.cpp`; `docs/data-provenance.md`). Neither radio
-  defers to the other or to co-channel traffic. The one thing the chip
-  still does on its own: it will not *start* a TX while an RX PPDU is
-  in progress — it fires the moment that PPDU ends
+- **Carrier sense is ON on both daemons** (since 2026-09-23,
+  `dev_cfg.tuning.disable_cca = false` in `drone/src/main.cpp` and
+  `gs/src/radio_frontend.cpp`; `docs/cca-on-findings-2026-09-23.md`).
+  Each radio defers to any decodable 802.11 preamble — the other end's
+  and anyone else's — then AIFS + backoff. From 2026-08-05 to 2026-09-23
+  both were OFF: neither deferred, and the only thing the chip did on its
+  own was refuse to *start* a TX while an RX PPDU was in progress, firing
+  the moment that PPDU ended
   (`docs/gs-uplink-self-blanking-findings-2026-09-02.md` "Mechanism").
+  That era's self-collision (next bullet) is gone with carrier sense on:
+  measured 137 → 23 both-card holes per 97 s, 0 FEC repairs.
 - **A GS send blinds both GS cards** for ~180 µs: the transmitting card
   is deaf by definition and the sibling is saturated at −4 dBm. Any
   drone PPDU whose preamble starts inside that window is lost on both
@@ -96,10 +100,11 @@ Two backstops when the burst does not fit the period:
   is queued, which the GS scores as silence, not loss.
 
 Neither is a timing mechanism; they bound the damage when the open-loop
-budget is wrong. **The drone never gates its own TX start against the
-GS** — with CCA off it will key up into an RCF that is on air, which is
-the aligned-collision mode that made GS-only CCA *worse* than nothing
-(`rcf-uplink-loss` §6).
+budget is wrong. With carrier sense on (2026-09-23) the drone's MAC does
+gate its TX start against an RCF that is on air; with it off (2026-08-05
+to 2026-09-23) it keyed up into it, which is the aligned-collision mode
+that made GS-only CCA *worse* than nothing (`rcf-uplink-loss` §6) — the
+reason the two ends only ever flip together.
 
 ### 3.2 GS: slot the uplink into the drone's idle (`RcfSlotter`)
 
@@ -148,8 +153,11 @@ mitigate the resulting 30–50 % uplink loss:
    the GS.
 
 Both-sides CCA was measured to add +15–22 delivery points on a clean
-channel but re-exposes the downlink to co-channel deferral; it is
-**not shipped** pending a congested-channel A/B (`rcf-uplink-loss` §6).
+channel (`rcf-uplink-loss` §6) and, on 2026-09-23, to remove the GS-send
+self-collision outright (RCF delivery 90.5 → 96.8 %, 0 FEC repairs); it
+is **shipped since 2026-09-23** (`docs/cca-on-findings-2026-09-23.md`).
+The co-channel deferral it re-exposes the downlink to is what the drone's
+new `rx_foreign`/`rx_crcfail` telemetry measures in flight.
 
 ## 4. How the variables interact
 
@@ -194,9 +202,10 @@ congestion shed is what currently breaks it.
    `airtime_budget`. Lever: measure `burst/T` on the drone (it knows
    every body's push→pop time) and trim the command; or lower the
    config budget. Cost: bitrate.
-3. **Drone TX start is unconditional** — it never waits for a GS send
-   to finish. Both-sides CCA would fix exactly this and measured no
-   video cost on a clean channel, but is unproven congested.
+3. ~~**Drone TX start is unconditional**~~ — DONE 2026-09-23: carrier
+   sense on both ends, the drone waits for a GS send to finish and vice
+   versa; no video cost on the clean bench. The congested case is now
+   instrumented (`drone.radio.rx`) rather than assumed.
 4. **MSP/telemetry unslotted on the drone** — 6–9 PPDUs/s outside the
    AU cadence. Measured not to correlate with losses (self-blanking
    evidence list), so cosmetic today; they do consume the shared

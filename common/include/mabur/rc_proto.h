@@ -49,7 +49,7 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 8 -> 9 on 2026-09-14: RCF gains hop_ch/hop_epoch (in-flight channel
 // hop order, present in every RCF), Telem gains channel/hop_epoch (readback).
 // Spec docs/superpowers/specs/2026-09-14-inflight-channel-hop-design.md §1.
-constexpr uint8_t RC_VERSION = 9;
+constexpr uint8_t RC_VERSION = 10;  // 2026-09-23 cca-on: Telem +rx_own/rx_foreign/rx_crcfail
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -239,6 +239,18 @@ struct Telem {
   // self-initiates it once it applies the result.
   uint8_t channel = 0;    // RcAgent::channel() at build — spec 2026-09-14 §1
   uint8_t hop_epoch = 0;  // last (epoch) applied from an RCF hop order
+  // Drone RX-side channel view, per telemetry period (cca-on 2026-09-23):
+  // every frame the monitor-mode receiver handed the RX callback, split
+  // into RC frames from the GS (own), CRC-clean frames that were not ours
+  // (foreign -- other 802.11 on our channel) and CRC-failed frames
+  // (crcfail -- a preamble was heard, the payload did not decode). With
+  // carrier sense back ON, foreign + crcfail is what the drone's
+  // transmitter deferred to: the altitude view the GS's ground cards
+  // cannot measure. Counted in software on the RX path -- deliberately NOT
+  // the chip's CCA/FA registers, whose read is a control-plane transfer
+  // that must take the TX gate exclusive and stalled the USB TX pool once
+  // a second (795 TxQueue drops in 20 min on the bench). Saturating.
+  uint16_t rx_own = 0, rx_foreign = 0, rx_crcfail = 0;
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse

@@ -62,6 +62,9 @@ struct TelemInputs {
   // consumed via .exchange(0) at the 1 Hz tick) — saturating.
   uint64_t txq_wait_max_ms = 0;
   uint64_t radio_sent = 0, radio_drops = 0, usb_fail = 0;
+  // RX-side channel view for this telemetry period (cca-on 2026-09-23):
+  // the RX callback's own / foreign / CRC-failed frame split.
+  uint64_t rx_own = 0, rx_foreign = 0, rx_crcfail = 0;
   UplinkTrack::Snap uplink;
   int soc_temp_c = -128;
   int thermal_delta = 0;

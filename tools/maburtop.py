@@ -729,7 +729,10 @@ def panel_drone(model, wall):
     sent_s = _f(radio.get("sent_pps"), 6, 0)
     rdrops_s = _f(radio.get("drops"), 5)
     usbf_s = _f(radio.get("usb_fail"), 5)
-    line5 = f"radio     sent {sent_s}/s   drops {rdrops_s}    usb fail {usbf_s}"
+    rx = radio.get("rx") or {}
+    line5 = (f"radio     sent {sent_s}/s   drops {rdrops_s}    usb fail {usbf_s}"
+             f"    rx own {_f(rx.get('own'), 3)} foreign {_f(rx.get('foreign'), 3)} "
+             f"crc {_f(rx.get('crcfail'), 3)}")
     spans5 = []
     if _increased(radio.get("drops"), prev_radio.get("drops")):
         idx = line5.index(rdrops_s)

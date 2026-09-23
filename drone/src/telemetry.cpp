@@ -83,6 +83,9 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.radio_sent = saturate<uint32_t>(in.radio_sent);
   t.radio_drops = saturate<uint32_t>(in.radio_drops);
   t.usb_fail = saturate<uint16_t>(in.usb_fail);
+  t.rx_own = saturate<uint16_t>(in.rx_own);
+  t.rx_foreign = saturate<uint16_t>(in.rx_foreign);
+  t.rx_crcfail = saturate<uint16_t>(in.rx_crcfail);
   if (in.uplink.has) {
     t.up_rssi[0] = saturate<uint8_t>(std::lround(in.uplink.rssi[0]));
     t.up_rssi[1] = saturate<uint8_t>(std::lround(in.uplink.rssi[1]));

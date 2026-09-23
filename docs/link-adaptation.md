@@ -782,7 +782,8 @@ exceed it (nothing deployed does this). Op actuation used to be U(0, `tick_ms` =
 971 ms. **Measured 2026-08-14 (follow-up session): the drain runs at 5 ms
 on the device (verified via /proc thread wake rates), but close_ms median
 is ~65 ms at n=24, not ≤30 — because 30–50% of uplink RCFs are lost to
-the drone's own half-duplex TX airtime (CCA off, GS injects blind into
+the drone's own half-duplex TX airtime (CCA off at the time — ON again
+since 2026-09-23, `docs/cca-on-findings-2026-09-23.md`; GS injects blind into
 the drone's bursts; loss tracks `link.air_pct`, 51–59% delivery at climb
 rungs 0–4, 69% parked). A lost commit-RCF costs one `feedback_ms` (50 ms)
 quantum, so close_ms = an 11–28 ms fast path (Part C working, target met)

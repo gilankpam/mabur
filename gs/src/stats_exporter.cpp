@@ -617,6 +617,16 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     txq["drops"] = t.txq_drops;
     json& radio = d["radio"];
     radio["sent_pps"] = have_telem_rates_ ? json(telem_radio_sent_pps_) : json(nullptr);
+    // The drone's own RX-side view of the channel for the last telemetry
+    // period (cca-on 2026-09-23): frames that were ours (RC from this GS),
+    // CRC-clean frames that were not (foreign 802.11 on our channel) and
+    // CRC-failed frames (preamble heard, payload undecodable). With carrier
+    // sense on, foreign + crcfail is what the drone deferred to -- the
+    // altitude view cards[].energy cannot give. Per period, NOT cumulative:
+    // repeated on every record until the next Telem -- flightreport samples
+    // it once per tlm_seq.
+    radio["rx"] = {{"own", t.rx_own}, {"foreign", t.rx_foreign},
+                   {"crcfail", t.rx_crcfail}};
     radio["drops"] = t.radio_drops;
     radio["usb_fail"] = t.usb_fail;
     // Raw rssi 0 on both chains is never a legitimate live reading — it is

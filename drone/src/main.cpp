@@ -1185,19 +1185,24 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // descriptor limit) into one bulk-OUT URB via send_packets — amortizes
   // the per-URB tax that capped inline per-frame injection at ~2500 fps.
   dev_cfg.tx.usb_agg_max = 3;
-  // MAC carrier sense OFF. The FPV downlink owns its channel, so CSMA backoff
-  // only stutters it: devourer measured injection deferring 41-45% to a
-  // co-channel 802.11 transmitter on this same Jaguar3 family, recovered ~1.5x
-  // by clearing primary CCA 0x520[14] (tests/dis_cca_tx_onair.sh). The frames
-  // are late, not lost, so the cost lands as TxQueue backpressure and aborted
-  // slice tails that the loss-driven ladder cannot see. This is the MAC TX gate
-  // only -- SetCcaMode deliberately skips the vendor BB CCA-off writes, which
-  // deafen the receiver (measured: delivery 6800 -> 10 frames). Deliberate
-  // side effect: the same flag latches _cca_disabled, which suppresses
-  // phydm's periodic EDCCA re-tracking (RtlJaguar3Device.cpp) so it stops
-  // fighting the disable by rewriting the 0x84c energy-detect thresholds
-  // every ~2 s.
-  dev_cfg.tuning.disable_cca = true;
+  // MAC carrier sense ON (the chip default; devourer leaves 0x520[14]/[15]
+  // alone and lets phydm track the EDCCA thresholds). It was OFF from
+  // 2026-08-05 to 2026-09-23 on the argument that the downlink owns its
+  // channel and CSMA only stutters it (devourer measured injection deferring
+  // 41-45% to a co-channel 802.11 transmitter, tests/dis_cca_tx_onair.sh).
+  // Two things overturned that: with both ends blind, the GS's own uplink
+  // send kills ~1.5 drone PPDUs/s on BOTH ground cards (2-3 % of the enh
+  // layer repaired from parity, +2 ms fec p99), which carrier sense on both
+  // ends removes outright -- 0 repairs, RCF delivery 90 -> 97 % -- and every
+  // recorded session on the DVR showed a 0/s foreign-preamble channel, so
+  // the deferral being avoided was never there (docs/tx-rx-timing.md §3,
+  // docs/cca-on-findings-2026-09-23.md). The altitude view the
+  // ground cards cannot see rides Telem rx_foreign/rx_crcfail; if a flight
+  // shows the drone deferring to neighbours the hop verdict ignores
+  // (foreign_pps < 50), that is the number to act on. GS-only carrier sense
+  // is NOT a fallback: it defers to the burst edge where a blind drone
+  // restarts (docs/rcf-uplink-loss-findings-2026-08-14.md §6).
+  dev_cfg.tuning.disable_cca = false;
 
   WiFiDriver wifi_driver{logger};
   auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);
@@ -1412,6 +1417,16 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // consumer -- runs on the agent thread instead.
   RcQueue cal_queue;
   std::atomic<uint64_t> rx_beat{0};
+  // RX callback -> agent thread, per telemetry period (exchange(0) at each
+  // Telem build): frames that were ours (CRC-clean RC from the GS), CRC-clean
+  // frames that were not (anything else this monitor-mode receiver decoded
+  // on the channel) and CRC-failed frames (preamble heard, payload not
+  // decodable). With carrier sense ON, foreign + crcfail is what the
+  // transmitter deferred to. Software counts on the RX path on purpose: the
+  // chip's CCA/FA registers would need a control-plane read under the TX
+  // gate (like a retune), and that stalled the USB TX pool once a second
+  // -- 795 TxQueue drops in 20 min, +5 ms air p99 (bench 2026-09-23).
+  std::atomic<uint64_t> rx_own_frames{0}, rx_foreign_frames{0}, rx_crcfail_frames{0};
   std::atomic<uint64_t> hot_beat{0};
   // Calibration session state the hot/agent threads need to read without
   // taking on CalSweep's own "single owner thread" contract (cal_sweep.h):
@@ -1546,6 +1561,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // rtl_device->Init's blocking RX loop).
   auto rx_callback = [&](const Packet& pkt) {
     rx_beat.fetch_add(1, std::memory_order_relaxed);
+    if (pkt.RxAtrib.crc_err) rx_crcfail_frames.fetch_add(1, std::memory_order_relaxed);
     if (pkt.Data.size() < kDot11HeaderLen + 4) return;
     const uint8_t* body = pkt.Data.data() + kDot11HeaderLen;
     size_t body_len = pkt.Data.size() - kDot11HeaderLen;
@@ -1563,15 +1579,20 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       }
       // Uplink EMAs feed off CRC-clean RC frames only — a corrupt frame's
       // attrib (rssi/snr) is not a trustworthy sample.
-      if (!pkt.RxAtrib.crc_err)
+      if (!pkt.RxAtrib.crc_err) {
         uplink_track.on_rc_frame(pkt.RxAtrib.rssi, pkt.RxAtrib.snr);
-    } else if (!pkt.RxAtrib.crc_err &&
-               rc::is_foreign_rc_version(body, body_len)) {
+        rx_own_frames.fetch_add(1, std::memory_order_relaxed);
+      }
+    } else if (!pkt.RxAtrib.crc_err) {
       // Same crc gate as the EMAs, and for the same class of reason:
       // RC_MAGIC is two bytes, so ~1 in 65536 corrupt bodies matches it by
-      // chance and must not print a version-mismatch scare. Log only —
-      // the frame is still dropped exactly as it was before.
-      log_foreign_rc_version(body[2]);
+      // chance and must not print a version-mismatch scare, nor count as a
+      // neighbour. Everything CRC-clean that is not ours is a foreign
+      // 802.11 frame on our channel (Telem rx_foreign); a foreign RC
+      // version is logged on top. The frame is still dropped as before.
+      rx_foreign_frames.fetch_add(1, std::memory_order_relaxed);
+      if (rc::is_foreign_rc_version(body, body_len))
+        log_foreign_rc_version(body[2]);
     }
   };
 
@@ -2737,6 +2758,12 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           ti.radio_sent = tx.sent();
           ti.radio_drops = tx.drops();
           ti.usb_fail = txstats.failed;
+          // RX-side channel view for this period (cca-on 2026-09-23): the
+          // RX callback's frame split, drained per Telem. No register read
+          // here -- see rx_own_frames' declaration for why.
+          ti.rx_own = rx_own_frames.exchange(0, std::memory_order_relaxed);
+          ti.rx_foreign = rx_foreign_frames.exchange(0, std::memory_order_relaxed);
+          ti.rx_crcfail = rx_crcfail_frames.exchange(0, std::memory_order_relaxed);
           ti.uplink = uplink_track.snap();
           ti.soc_temp_c = read_soc_temp_c();
           if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
@@ -2836,16 +2863,17 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                  e.valid_nhm ? 1 : 0, e.valid_noise_floor ? 1 : 0);
   }
 
-  // Bring-up record for the non-standard MAC state requested via
+  // Bring-up record of the MAC carrier-sense state requested via
   // dev_cfg.tuning.disable_cca above. devourer logs its own carrier-sense line
   // at info, and the production cross-build compiles info out
-  // (DEVOURER_LOG_MAX_LEVEL=WARN), so without this the deployed daemon leaves no
-  // trace that it is transmitting without carrier sense. Unconditional: the flag
-  // is hardcoded true, so there is nothing to branch on. Wording is deliberate --
-  // this records what maburd REQUESTED of devourer, not a register readback.
+  // (DEVOURER_LOG_MAX_LEVEL=WARN), so without this the deployed daemon leaves
+  // no trace of which way it was built. Records what maburd REQUESTED of
+  // devourer, not a register readback.
   std::fprintf(stderr,
-               "maburd radio: MAC carrier sense (CCA+EDCCA) requested OFF -- TX "
-               "will not defer to co-channel traffic\n");
+               "maburd radio: MAC carrier sense (CCA+EDCCA) requested %s\n",
+               dev_cfg.tuning.disable_cca
+                   ? "OFF -- TX will not defer to co-channel traffic"
+                   : "ON -- TX defers to any decodable 802.11 preamble (chip default, 2026-09-23)");
 
   // Always start clean: a flat TXAGC index override is sticky in the chip
   // across a process restart, and the ONLY place that ever sets one is a

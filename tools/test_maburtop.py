@@ -176,6 +176,15 @@ class DronePanelTest(unittest.TestCase):
                     if t.strip().startswith("queue"))
         self.assertRegex(line, r"air\s+37 ms")
 
+    def test_radio_row_shows_drone_rx_energy(self):
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"],
+                          radio=dict(DGRAM["drone"]["radio"],
+                                     rx={"own": 13, "foreign": 14, "crcfail": 15}))
+        line = next(t for t in texts(panel_drone(_fresh(d), 100.2))
+                    if t.strip().startswith("radio"))
+        self.assertRegex(line, r"own\s+13\b.*foreign\s+14\b.*crc\s+15\b")
+
     def test_null_telemetry_single_line(self):
         d = dict(DGRAM, drone=None)
         rows = panel_drone(_fresh(d), 100.2)

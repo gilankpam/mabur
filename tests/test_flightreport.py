@@ -310,6 +310,50 @@ def test_session_dir_mode_prints_salvage_from_flight_jsonl():
     assert re.search(r"SALVAGE.*\n\s*card 0:\s*crc_fail=2\b", result.stdout), result.stdout
 
 
+def _mk_drone_rx_row(t_ms, tlm_seq, own, foreign, crcfail):
+    r = _mk_stream_row(t_ms, 2)
+    r["drone"] = {"state": "linked", "tlm_seq": tlm_seq,
+                  "radio": {"sent_pps": 1000.0, "drops": 0, "usb_fail": 0,
+                            "rx": {"own": own, "foreign": foreign, "crcfail": crcfail}}}
+    return r
+
+
+def test_drone_rx_section_once_per_telemetry_period():
+    """DRONE RX section (cca-on 2026-09-23): drone.radio.rx is a
+    PER-TELEMETRY-PERIOD count repeated on every sideport record until the
+    next Telem, so it is sampled once per tlm_seq, never per record."""
+    rows = [
+        _mk_drone_rx_row(0,    1, own=18, foreign=2, crcfail=1),
+        _mk_drone_rx_row(200,  1, own=18, foreign=2, crcfail=1),   # same period, not a sample
+        _mk_drone_rx_row(1000, 2, own=20, foreign=5, crcfail=0),
+        _mk_drone_rx_row(2000, 3, own=19, foreign=2, crcfail=2),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "DRONE RX" in out, out
+    sec = out[out.find("DRONE RX"):]
+    assert re.search(r"n=3\b", sec), sec
+    assert re.search(r"foreign:\s*p50=2\b.*max=5\b", sec), sec
+    assert re.search(r"crcfail:\s*p50=1\b.*max=2\b", sec), sec
+    assert re.search(r"own:\s*p50=19\b", sec), sec
+
+
+def test_drone_rx_section_absent_on_old_recordings():
+    rows = [_mk_stream_row(0, 2), _mk_stream_row(500, 2)]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "DRONE RX" not in result.stdout
+
+
 def test_salvage_section_absent_on_old_recordings():
     """A recording that predates the counters prints no SALVAGE section
     (data-provenance: old jsonl on the DVR must still report cleanly)."""
@@ -1399,4 +1443,6 @@ if __name__ == "__main__":
     test_salvage_section_absent_on_old_recordings()
     test_salvage_section_survives_counter_reset_on_restart()
     test_session_dir_mode_prints_salvage_from_flight_jsonl()
+    test_drone_rx_section_once_per_telemetry_period()
+    test_drone_rx_section_absent_on_old_recordings()
     unittest.main()

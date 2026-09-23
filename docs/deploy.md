@@ -630,3 +630,21 @@ size and layout — the old `load_x100` slot now carries `cpu_busy_x100`
 maburgs just exports the new number under the old key (`load 0.14` for
 14 %). Deploy maburd + maburgs + `tools/maburtop.py` together anyway; the
 sideport key is renamed, so maburtop from before this reads `--`.
+
+## 2026-09-23 RC_VERSION 10 (carrier sense ON, drone RX energy telemetry)
+
+`RC_VERSION` 9 → 10: `Telem` grows 89 → 95 bytes with the drone's RX-side
+channel view (`rx_own`, `rx_foreign`, `rx_crcfail`), and both daemons
+now leave the MAC carrier-sense gate at the chip default
+(`disable_cca = false`; `docs/cca-on-findings-2026-09-23.md`). **No config
+change on either end** — no new keys, no removed keys — so this flag day
+is binary swaps only: `maburgs` first, then `maburd` (or the reverse; the
+mismatched-pair window between them has no video and no control link
+exactly as every `RC_VERSION` bump, and clears once both are swapped).
+The carrier-sense flip is compiled in, not configured, and the two ends
+must never be split: a GS with carrier sense on against a blind drone is
+the measured-worse arm of `docs/rcf-uplink-loss-findings-2026-08-14.md`
+§6. Verify after the swap: both bring-up lines read `requested ON`, the
+sideport shows `drone.radio.rx`, the drone `stats:` line keeps
+`txq_drop=0`, and `streams[*].recovered` sits near 0/s on a clean bench
+(it read 0.2–0.3/s blind).

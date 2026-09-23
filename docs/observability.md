@@ -817,6 +817,20 @@ the peak 100 ms encoder byte rate (kbit/s, decimal) inside that stats
 second — the burst the 1 Hz `drone.enc.mbps` average hides — and, since
 2026-09-20, `lp=`/`armed=` (see "2026-09-20 (low-power mode)" below).
 
+**2026-09-23 (carrier sense on).** `drone.radio.rx = {own, foreign,
+crcfail}` is the drone's own RX-side view of the channel for the last
+telemetry period — the altitude view `cards[].energy` cannot give: every
+frame the drone's RX callback saw, split into CRC-clean RC from this GS
+(`own`), CRC-clean not-ours (`foreign`, other 802.11 on the channel) and
+CRC-failed (`crcfail`, preamble heard, payload undecodable). With carrier
+sense ON, `foreign + crcfail` is what the drone's transmitter deferred to.
+Software counts, not the chip's CCA/FA registers — that read stalls the
+drone's TX pool (`docs/cca-on-findings-2026-09-23.md`). Per period, NOT cumulative:
+the exporter repeats the last Telem's values on every record until the
+next one, so sample once per `drone.tlm_seq` — `flightreport.py` does
+(`DRONE RX` section, silent on older recordings); `maburtop` shows them on
+the drone `radio` row. `docs/cca-on-findings-2026-09-23.md`.
+
 **2026-09-06 (air clock).** `drone.air_backlog_max_ms` is the per-window
 max of the drone's modelled air backlog (`AirClock`, spec
 2026-09-06; `docs/link-adaptation.md` "Drone air clock"),
