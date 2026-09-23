@@ -56,6 +56,39 @@ blind on 2026-08-14 (rung-3 RCF delivery 51 → 23 %): the GS defers to
 the burst edge, which is exactly where a blind drone restarts. The two
 ends move together.
 
+## The measurement that found it: branch vs master, A/B/A
+
+Same bench, same afternoon (2026-09-23), rung 5 adaptive, singles, scout
+ON, 1080p60; sequence tx-windows (A1) → master `7fe5a30` (B) → tx-windows
+(A2), each arm a 130 s `MABUR_GAPLOG=1` run analysed with the tx-windows
+branch's `gapan.py` plus the sideport session split at the restarts.
+
+| metric (rung 5 steady) | tx-windows A1 | master B | tx-windows A2 |
+|---|---|---|---|
+| `streams[*].recovered` per s (FEC repairs, s0 / s1) | 5.5 / 6.0 | 0.23 / 0.33 | 4.7 / 7.2 |
+| fec.log episodes, 96.6 s window | 149 | 12 | 153 |
+| `video.lat.fec` p50 / p99 ms | 10.2 / 15.4 | 9.6 / 13.2 | 10.0 / 15.5 |
+| `video.jitter_ms` | 4.44 | 3.31 | 4.91 |
+| both-card holes within 4 ms after a GS send (card-0 view) | 151 | 137 | 153 |
+| … inside an AU source span | 127 | 11 | 131 |
+| GS sends inside an AU source span | 1445 / 2006 | 27 / 2005 | 1502 / 2003 |
+| send − t_complete of the current AU, p50 | −8.9 ms | +0.97 ms | −8.8 ms |
+| `video.fps` / drops per run | 60 / 1 | 60 / 0–1 | 60 / 1 |
+
+Both builds lose one drone PPDU (two ~1400 B bodies, no CRC-failed frame
+on either card) about 1.5 times a second to the GS's own send. Master's
+AU-completion slotter released the RCF ~1 ms after the last source symbol
+of an AU, so its holes fell in the parity tail — free. The TX-window
+release landed the send 8.8 ms BEFORE the current AU completed, i.e. on
+the first source bodies of the next AU — eight source symbols per hit,
+hence the 15–20x repairs and +2 ms fec p99. The gapan zero-loss contract
+was met by neither; carrier sense on both ends (table above) is what
+removed the collision instead of relocating it. Not comparable across
+those two builds and deliberately absent from the table: `loss_pct`
+(tx-windows excludes scout-deaf cards), `pre_fec_loss` / `arr_late`
+(guard 64 vs 32), `crc_fail` (deaf suppresses it), gapan's
+"send-attributed" (chance model differs with the gap count).
+
 ## What is still open
 
 - Carrier sense reacts to a lower bar than the hop verdict: any decodable
@@ -128,3 +161,87 @@ inside the feedback period plus probation. The root cause — bodies
 airing out of submission order — is drone-side and untouched; a single
 in-order sender would remove the need for the guard, at the ~26 Mbps
 single-URB throughput cap the pool exists to beat.
+
+## The fix, as shipped on `cca-on`
+
+Four commits off master `7fe5a30`, host suite 151/151 at each, tests
+written first:
+
+1. `e2ead1c` — carrier sense ON both ends (`disable_cca = false`,
+   drone/src/main.cpp + gs/src/radio_frontend.cpp); `RC_VERSION` 10,
+   `Telem` +`rx_own`/`rx_foreign`/`rx_crcfail`; sideport
+   `drone.radio.rx`; maburtop radio row; flightreport `DRONE RX`.
+2. `7ff6473` — cherry-pick of the tx-windows ArrivalTracker-guard
+   plumbing (decoder constructors, `UepDecoder::arrival_guard`).
+3. `1b82be6` — `link.arrival_guard_syms` config key, default 192 (the
+   OSD's "constant ~1 % loss", section above).
+4. `13c5eae` — `link.pre_fec_loss` pools base + enh; maburplay reads it
+   first, `link.ctl.pre_fec_loss` (base-only, the ladder's input) only as
+   the null-window fallback. OSD row shape unchanged: `loss:<pre>/<post>`.
+
+**What the OSD's LOSS row means now.** Left: the share of source symbols
+on EITHER video layer the GS had not heard on any card within 192
+symbols of a later one — on the bench this tracks the decoder's repair
+count (0.02 % vs 0.008–0.02 %), i.e. real pre-FEC erasures. Right:
+`residual_loss`, what FEC could not rebuild — the number that costs
+frames. Both are sliding windows, booked ~60 ms late at rung 5 (~165 ms
+at rung 0). Not on the row: which layer an erasure hit (sideport
+`streams[*].recovered` per stream says), and anything the ladder did
+about it (`link.ctl.*`).
+
+**Deploy state (2026-09-23 evening).** Drone: `maburd` = commit 1
+build (later commits are GS-only), config `mabur.toml` = the master
+shape (no `[tx_window]`), rollbacks `maburd.master` + `maburd.txwin` on
+the rootfs, `maburd.pre-txwin` / `maburd.master-cca` in tmpfs only. GS:
+`maburgs` + `maburplay` at the branch head, config `maburgs.toml` =
+master shape + `arrival_guard_syms = 192`; rollbacks `maburgs.{master,
+txwin,master-cca,guard}`, `maburgs.toml.{master,txwin,pre-guard}`,
+`maburplay.pre-pooled`. The `docs/deploy.md` "2026-09-23 RC_VERSION 10"
+entry is the procedure for any other device.
+
+## Pending: flight validation
+
+Nothing above has flown. The bench cannot measure the one cost the flip
+re-exposes — deferral to 802.11 neighbours the drone hears at altitude —
+so the flight is the gate for merging `cca-on` to master. Fly the usual
+profile (climb through the rungs, a range leg, a hover at the far point)
+with the DVR recording, then:
+
+1. **Deferral exposure** — `tools/flightreport.py <session-dir>`, section
+   `DRONE RX`: `foreign` and `crcfail` per telemetry period (once per
+   `tlm_seq`). Tens per second at p90 is nothing. Hundreds means the drone
+   was deferring to traffic the hop verdict ignores
+   (`hop.verdict.foreign_pps` 50): lower that threshold or revisit the
+   flip. Cross-read `drone.air_backlog_max_ms`, `txq_wait_ms` and
+   `link.air_pct` on the same records — deferral shows as backlog at
+   unchanged commanded bitrate before it shows as loss.
+2. **The collision stays gone** — `streams[*].recovered` per second at
+   the mcs5 park should sit near the bench's ~0.1–0.6, not the blind
+   pair's 0.3 or the tx-windows 5–7; fec.log episodes per minute in
+   single digits at park; `drone.rcf.rx_pps` ≥ 19 at `feedback_ms` 50.
+3. **No TX-side cost** — drone `stats:` line `txq_drop=0` and `drops`
+   flat over the flight (the register-read regression was 795 drops in
+   20 min; the shipped build reads 0). `link.video.lat.fec` p99 at park
+   within ~1 ms of the last blind flight's; the bench read 12.7–14.6 ms
+   across arms with no build-attributable trend.
+4. **Ladder behaviour under the 192 guard** — `flightreport` transitions
+   and `U PER RUNG`: demotes should still fire on real loss (util reacts
+   ~60 ms later than before at rung 5, ~165 ms at rung 0). A promote
+   that bounces where the same site used to hold, or a demote that
+   arrives a rung late, is the guard costing reaction time — 128 is the
+   fallback value (0.09 % artefact) and it is config-only.
+5. **OSD sanity** — the LOSS row should read ~0.0/0.0 in the near field
+   and rise with `streams[*].recovered` at range, not sit at a constant
+   1 % as it did before the guard.
+
+Pass = 1 in the tens, 2–3 as stated, 4 no regression, 5 as expected →
+merge `cca-on` to master (ff), retire the `tx-windows` branch (its deaf
+accounting and `hop.fastretune_fw` remain candidates on their own
+merits), and delete the `*.master` / `*.txwin` / `*.master-cca` rollback
+binaries on both devices. Fail on 1 → the congested case is real at this
+site's altitude: options are lowering `hop.verdict.foreign_pps`, a
+drone-side EDCCA/primary-CCA split (keep the RCF-collision fix, ignore
+weak neighbours), or the tx-windows design with the window moved to the
+parity tail. Fail on 3 or 4 → roll the GS config to `arrival_guard_syms =
+128` first, the drone binary to `maburd.master` + `mabur.toml.master`
+second, as separate steps, so the two changes are not confounded.

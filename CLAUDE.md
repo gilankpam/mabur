@@ -47,6 +47,7 @@ page the task needs rather than carrying all of it.
 | airtime/serialization math, per-stream FEC overhead, why jitter ∝ frame size, encoder size knobs (max_ipprop, presets, dead SDK caps) | `docs/airtime-model.md` |
 | half-duplex timing: who transmits when, the slotter, airtime budget, why RCFs get lost | `docs/tx-rx-timing.md` |
 | boot time, the OpenIPC init chain, U-Boot/serial console on the drone | `docs/boot-time-findings-2026-09-07.md` |
+| carrier sense (CCA) on/off, the GS-send self-collision, the drone's RX channel view (`drone.radio.rx`), why the OSD LOSS row reads what it reads, the pending cca-on flight gate | `docs/cca-on-findings-2026-09-23.md` |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
 Design specs live in `docs/superpowers/specs/` — **gitignored**, so they
