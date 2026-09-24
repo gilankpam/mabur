@@ -1083,10 +1083,44 @@ class CtlLog10Test(unittest.TestCase):
         rows = flightreport.load_probelog(p)
         self.assertEqual(rows["bpb"], 4); self.assertEqual(len(rows["rows"]), 2)
         summ = flightreport.probelog_summary(rows)
-        self.assertEqual(summ[6]["bodies"], 2)
-        self.assertEqual(summ[6]["lost_bodies"], 1)   # seq 11 missing
-        self.assertEqual(summ[6]["blocks_ok"], 6)
+        self.assertEqual(summ[(6, 20)]["bodies"], 2)
+        self.assertEqual(summ[(6, 20)]["lost_bodies"], 1)   # seq 11 missing
+        self.assertEqual(summ[(6, 20)]["blocks_ok"], 6)
         self.assertIsNone(rows["rows"][0]["first_ms"])   # v1: no arrival stamp
+
+    def test_probelog_v3_bw_column_splits_20_and_40(self):
+        """probelog 3 (40 MHz rungs) adds bw after mcs: 20/3 and 40/3
+        probes are separate groups, and the report labels mcs3/40."""
+        d = tempfile.mkdtemp(); p = os.path.join(d, "probe.log")
+        with open(p, "w") as f:
+            f.write("probelog 3 bpb=4\n"
+                    "1000 10 3 20 5 4 3 30.5 28.0 -24.0 -22.0 1000.000\n"
+                    "1033 11 3 40 6 2 1 30.0 nan -23.0 nan 1033.000\n"
+                    "1066 13 3 40 7 4 1 30.0 nan -23.0 nan 1066.000\n")
+        pl = flightreport.load_probelog(p)
+        self.assertEqual(pl["version"], 3)
+        self.assertEqual([r["bw"] for r in pl["rows"]], [20, 40, 40])
+        self.assertEqual(pl["rows"][1]["enh_fid"], 6)
+        self.assertAlmostEqual(pl["rows"][2]["first_ms"], 1066.0)
+        summ = flightreport.probelog_summary(pl)
+        self.assertEqual(summ[(3, 20)]["bodies"], 1)
+        self.assertEqual(summ[(3, 40)]["bodies"], 2)
+        self.assertEqual(summ[(3, 40)]["lost_bodies"], 1)   # seq 12 missing
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_probe_report({"E": [], "P": []}, pl)
+        out = buf.getvalue()
+        self.assertIn("mcs3/20: bodies=1", out)
+        self.assertIn("mcs3/40: bodies=2", out)
+
+    def test_probelog_v2_rows_default_bw_20(self):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "probe.log")
+        with open(p, "w") as f:
+            f.write("probelog 2 bpb=4\n1130 10 4 5 4 3 30.5 28.0 -24.0 -22.0 1024.500\n")
+        pl = flightreport.load_probelog(p)
+        self.assertEqual(pl["rows"][0]["bw"], 20)
+        self.assertEqual(pl["rows"][0]["enh_fid"], 5)
+        self.assertAlmostEqual(pl["rows"][0]["first_ms"], 1024.5)
 
     def test_probelog_summary_resyncs_on_restart_and_starve(self):
         # ProbeSource seeds a RANDOM initial seq per daemon start (SwEncoder
@@ -1102,12 +1136,12 @@ class CtlLog10Test(unittest.TestCase):
             {"t_ms": 20033.0, "seq": 5, "mcs": 2, "enh_fid": 8, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 20033.0},  # backwards: restart again
         ]}
         summ = flightreport.probelog_summary(pl)
-        self.assertEqual(summ[3]["lost_bodies"], 1)
-        self.assertEqual(summ[1]["lost_bodies"], 0)
-        self.assertEqual(summ[2]["lost_bodies"], 0)
-        self.assertEqual(summ[1]["resyncs"], 2)       # the restart seed jump + the starve
-        self.assertEqual(summ[2]["resyncs"], 1)       # the backwards jump
-        self.assertEqual(summ[3].get("resyncs", 0), 0)
+        self.assertEqual(summ[(3, 20)]["lost_bodies"], 1)
+        self.assertEqual(summ[(1, 20)]["lost_bodies"], 0)
+        self.assertEqual(summ[(2, 20)]["lost_bodies"], 0)
+        self.assertEqual(summ[(1, 20)]["resyncs"], 2)       # the restart seed jump + the starve
+        self.assertEqual(summ[(2, 20)]["resyncs"], 1)       # the backwards jump
+        self.assertEqual(summ[(3, 20)].get("resyncs", 0), 0)
 
     def test_find_aulog_for_prefers_the_log_that_joins(self):
         # Every boot's mono clock starts near 0, so on a DVR holding many
@@ -1193,7 +1227,7 @@ class SessionModeProbeJoinTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 flightreport.main(s.ctl, s.au, s.probe)
             out = buf.getvalue()
-        self.assertIn("PROBE LOG (per mcs)", out)
+        self.assertIn("PROBE LOG (per mcs/bw)", out)
 
     def test_legacy_ctl_still_finds_sibling_probelog_by_filename_glob(self):
         """The legacy heuristic (ctl-NNNN_<date>.log -> sibling
@@ -1211,7 +1245,7 @@ class SessionModeProbeJoinTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 flightreport.main(ctl_p)   # no probelog_path: legacy glob heuristic
             out = buf.getvalue()
-        self.assertIn("PROBE LOG (per mcs)", out)
+        self.assertIn("PROBE LOG (per mcs/bw)", out)
 
 
 HOP_CTL_LOG = """ctllog 11 ladder=0/100,2/50,4/25,5/25,6/25,7/10 down_util=0.35 up_util=0.15
@@ -1533,14 +1567,47 @@ def test_fec_section_counterfactual_overhead_per_sid_and_rung():
     assert "FEC EPISODES" in out, out
     sec = out[out.find("FEC EPISODES"):]
     s0 = sec[sec.find("sid 0"):sec.find("sid 1")]
-    assert re.search(r"sid 0 mcs 5 ov 1\.00: n=4 stale=1 failed=1", s0), s0
+    assert re.search(r"sid 0 mcs 5/20 ov 1\.00: n=4 stale=1 failed=1", s0), s0
     assert "ov_req p50/p90/p99/max=0.50/1.16/1.16/1.16" in s0, s0
     # would-fail counts at candidate overheads, non-stale rows only (3)
     assert re.search(r"0\.25:2\b.*0\.35:2\b.*0\.50:1\b.*0\.75:1\b.*1\.00:1\b", s0), s0
     assert "of 3 non-stale" in s0, s0
     s1 = sec[sec.find("sid 1"):]
-    assert re.search(r"sid 1 mcs 5 ov 0\.50: n=1 stale=0 failed=0", s1), s1
+    assert re.search(r"sid 1 mcs 5/20 ov 0\.50: n=1 stale=0 failed=0", s1), s1
     assert "ov_req p50/p90/p99/max=0.40/0.40/0.40/0.40" in s1, s1
+
+
+FEC_LOG2_ROWS = """feclog 2
+1000 0 3 20 0.50 100 12 12 12 0 0 32 32
+1100 0 3 40 0.50 300 4 4 4 0 0 32 32
+1200 0 3 40 0.50 500 6 6 6 0 0 32 32
+"""
+
+
+def test_fec_section_feclog2_groups_by_mcs_and_bw():
+    """feclog 2 (40 MHz rungs) adds bw after mcs: 20/3 and 40/3 episodes at
+    the same overhead are separate groups."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "fec.log"
+        p.write_text(FEC_LOG2_ROWS)
+        rows = flightreport.load_feclog(str(p))
+        assert [r["bw"] for r in rows] == [20, 40, 40], rows
+        assert rows[1]["first_seq"] == 300 and rows[1]["m"] == 4, rows[1]
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert re.search(r"sid 0 mcs 3/20 ov 0\.50: n=1 ", out), out
+    assert re.search(r"sid 0 mcs 3/40 ov 0\.50: n=2 ", out), out
+
+
+def test_fec_section_feclog1_rows_default_bw_20():
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "fec.log"
+        p.write_text(FEC_LOG_ROWS)
+        rows = flightreport.load_feclog(str(p))
+    assert len(rows) == 5 and all(r["bw"] == 20 for r in rows), rows
+    assert rows[0]["first_seq"] == 100 and rows[0]["m"] == 12, rows[0]
 
 
 def test_session_dir_mode_prints_fec_section():
@@ -1558,6 +1625,8 @@ def test_session_dir_mode_prints_fec_section():
 if __name__ == "__main__":
     test_fec_section_counterfactual_overhead_per_sid_and_rung()
     test_session_dir_mode_prints_fec_section()
+    test_fec_section_feclog2_groups_by_mcs_and_bw()
+    test_fec_section_feclog1_rows_default_bw_20()
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_overhead_scale_break_warns_on_stderr()

@@ -2314,7 +2314,7 @@ static int run_radio(const maburgs::Config& cfg) {
       for (int sid = 0; sid < 2; ++sid)
         for (const auto& e : agg.decoder().take_episodes(sid))
           if (fec_log)
-            fec_log->row(now_ms, sid, fop.mcs,
+            fec_log->row(now_ms, sid, fop.mcs, fop.bw,
                          sid == 0 ? fop.overhead_base : fop.overhead_enh, e);
     }
     const auto s1_sample = s1_loss.sample(now_ms);
@@ -2401,10 +2401,14 @@ static int run_radio(const maburgs::Config& cfg) {
     // skipping the drain would grow it without limit for the life of the
     // process.
     if (probe_log)
-      for (const auto& f : probe_track.take_finalized())
-        probe_log->row(f.t_ms, f.seq, f.profile & 0x0F, f.enh_fid, f.blocks_ok,
+      for (const auto& f : probe_track.take_finalized()) {
+        mabur::rc::PhyMode pmode;
+        uint8_t pmcs = 0, pbw = 20;
+        mabur::rc::decode_profile(f.profile, pmode, pmcs, pbw);
+        probe_log->row(f.t_ms, f.seq, pmcs, pbw, f.enh_fid, f.blocks_ok,
                        f.card_mask, f.snr_db[0], f.snr_db[1], f.evm_db[0],
                        f.evm_db[1], f.first_ms);
+      }
     else
       probe_track.take_finalized();
 

@@ -92,11 +92,16 @@ def rates(rung):
 
 # ---- probe log: the drone's applied op, as heard ---------------------------
 probe_rows = []
+first_col = 10   # probelog 2; probelog 3 (2026-09-24) inserts bw after mcs
 for line in open(probe_path):
     p = line.split()
-    if not p or p[0] == 'probelog': continue
+    if not p: continue
+    if p[0] == 'probelog':
+        if len(p) >= 2 and p[1].isdigit() and int(p[1]) >= 3: first_col = 11
+        continue
     try:
-        probe_rows.append((float(p[0]), int(p[2]), float(p[10]) if len(p) >= 11 else float(p[0])))
+        probe_rows.append((float(p[0]), int(p[2]),
+                           float(p[first_col]) if len(p) > first_col else float(p[0])))
     except ValueError:
         continue
 probe_rows.sort(key=lambda r: r[2])

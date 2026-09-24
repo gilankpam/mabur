@@ -615,11 +615,13 @@ def probe_lead(E, P, horizon_ms=10000):
 
 
 def load_probelog(path):
-    """probe-NNNN_<date>.log: 'probelog <v> bpb=<n>' then
+    """probe-NNNN_<date>.log / probe.log: 'probelog <v> bpb=<n>' then
     't_ms seq mcs enh_fid blocks_ok card_mask snr_c0 snr_c1 evm_c0 evm_c1'
     plus, from probelog 2 (2026-09-05), 'first_ms': the radio's arrival
     stamp of the body's first sight (mono ms, µs fraction) -- None on v1
-    rows, whose t_ms is the ~10 ms finalize tick and useless for timing."""
+    rows, whose t_ms is the ~10 ms finalize tick and useless for timing.
+    probelog 3 (2026-09-24, 40 MHz rungs) inserts 'bw' after mcs; older
+    rows are 20 MHz."""
     rows, bpb, version = [], 4, 1
     with open(path) as f:
         first = f.readline().split()
@@ -629,9 +631,15 @@ def load_probelog(path):
             if tok.startswith("bpb="): bpb = int(tok[4:])
         for line in f:
             t = line.split()
+            if version >= 3:
+                if len(t) < 12: continue
+                bw, t = t[3], t[:3] + t[4:]   # drop bw: the rest is the v2 layout
+            else:
+                bw = "20"
             if len(t) < 10: continue
             try:
                 rows.append({"t_ms": float(t[0]), "seq": int(t[1]), "mcs": int(t[2]),
+                             "bw": int(bw),
                              "enh_fid": int(t[3]), "blocks_ok": int(t[4]),
                              "card_mask": int(t[5]),
                              "snr": [float(t[6]), float(t[7])],
@@ -731,8 +739,8 @@ PROBE_RESYNC_BODIES = 10000   # ~5 min of enh AUs: a bigger seq jump is a new ra
 
 
 def probelog_summary(pl):
-    """Per mcs: received bodies, lost bodies (seq gaps, attributed to the
-    NEXT received body's mcs), surviving blocks, per-card body counts.
+    """Per (mcs, bw): received bodies, lost bodies (seq gaps, attributed to
+    the NEXT received body's (mcs, bw)), surviving blocks, per-card body counts.
     A seq gap is loss only inside a live link: ProbeSource seeds a RANDOM
     initial seq per daemon start (the SwEncoder restart contract), and
     across a starve the GS is deaf for > failsafe_ms while the drone keeps
@@ -743,7 +751,7 @@ def probelog_summary(pl):
     out = {}
     prev_seq = None; prev_t = None
     for r in pl["rows"]:
-        s = out.setdefault(r["mcs"], {"bodies": 0, "lost_bodies": 0, "blocks_ok": 0,
+        s = out.setdefault((r["mcs"], r.get("bw", 20)), {"bodies": 0, "lost_bodies": 0, "blocks_ok": 0,
                                        "card0": 0, "card1": 0, "resyncs": 0})
         if prev_seq is not None:
             gap = r["seq"] - prev_seq - 1
@@ -770,12 +778,12 @@ def print_probe_report(ctllog, probelog, au_rows=None):
               f"probe lead={l} edges={e['edges']}")
     if probelog:
         bpb = probelog["bpb"]
-        print("PROBE LOG (per mcs)")
-        for mcs, s in sorted(probelog_summary(probelog).items()):
+        print("PROBE LOG (per mcs/bw)")
+        for (mcs, bw), s in sorted(probelog_summary(probelog).items()):
             tot = s["bodies"] + s["lost_bodies"]
             body_loss = s["lost_bodies"] / tot if tot else float("nan")
             blk_loss = 1 - s["blocks_ok"] / (tot * bpb) if tot else float("nan")
-            print(f"  mcs{mcs}: bodies={s['bodies']} lost={s['lost_bodies']} "
+            print(f"  mcs{mcs}/{bw}: bodies={s['bodies']} lost={s['lost_bodies']} "
                   f"body_loss={body_loss:.3f} block_loss={blk_loss:.3f} "
                   f"c0={s['card0']} c1={s['card1']}"
                   + (f" resyncs={s['resyncs']}" if s.get("resyncs") else ""))
@@ -789,9 +797,9 @@ def print_probe_report(ctllog, probelog, au_rows=None):
                       f"max={max(offs):.2f} min={min(offs):.2f}")
                 by_mcs = {}
                 for r, o in pairs:
-                    by_mcs.setdefault(r["mcs"], []).append(o)
-                for mcs, v in sorted(by_mcs.items()):
-                    print(f"    mcs{mcs}: n={len(v)} p50={_pct(v, .5):.2f} p90={_pct(v, .9):.2f} "
+                    by_mcs.setdefault((r["mcs"], r.get("bw", 20)), []).append(o)
+                for (mcs, bw), v in sorted(by_mcs.items()):
+                    print(f"    mcs{mcs}/{bw}: n={len(v)} p50={_pct(v, .5):.2f} p90={_pct(v, .9):.2f} "
                           f"p99={_pct(v, .99):.2f}")
             else:
                 print("  completion->probe: no joinable rows (probelog v1, or no "
@@ -810,22 +818,31 @@ def sniff_feclog(path):
         return f.readline().startswith("feclog ")
 
 
-FEC_COLS = ("t_ms", "sid", "mcs", "ov", "first_seq", "span", "m", "rec",
+FEC_COLS = ("t_ms", "sid", "mcs", "bw", "ov", "first_seq", "span", "m", "rec",
             "aband", "stale", "r", "w")
 FEC_CANDIDATE_OV = (0.25, 0.35, 0.50, 0.75, 1.00)
 
 
 def load_feclog(path):
-    """fec.log (feclog 1, gs/src/fec_log.h): one row per loss episode a
-    video layer's decoder closed. A rejoined session re-states the marker
-    partway through; `# dropped N` is the LogWriter's gap marker. Both
-    skipped, everything else is a row."""
+    """fec.log (gs/src/fec_log.h): one row per loss episode a video layer's
+    decoder closed. A rejoined session re-states the marker partway
+    through; `# dropped N` is the LogWriter's gap marker. Both skipped,
+    everything else is a row. feclog 2 (2026-09-24, 40 MHz rungs) inserts
+    `bw` after mcs; feclog 1 rows carry no bw and are 20 MHz."""
     rows = []
+    version = 1
     with open(path) as f:
         for line in f:
-            if line.startswith("feclog ") or line.startswith("#"):
+            if line.startswith("feclog "):
+                tok = line.split()
+                if len(tok) >= 2 and tok[1].isdigit():
+                    version = int(tok[1])
+                continue
+            if line.startswith("#"):
                 continue
             tok = line.split()
+            if version < 2:
+                tok = tok[:3] + ["20"] + tok[3:]
             if len(tok) != len(FEC_COLS):
                 continue
             r = {}
@@ -849,7 +866,7 @@ def fec_ov_req(m, r, ov):
 
 
 def print_fec_report(rows):
-    """FEC EPISODES: per (sid, mcs, ov) group -- the rung and layer the
+    """FEC EPISODES: per (sid, mcs, bw, ov) group -- the rung and layer the
     episode flew on -- how many episodes, how many fell inside a transition
     (stale > 0: excluded from the counterfactual), how many actually failed
     (aband > 0), the missing-count and ov_req distributions, and how many
@@ -860,18 +877,18 @@ def print_fec_report(rows):
         return
     groups = {}
     for r in rows:
-        groups.setdefault((r["sid"], r["mcs"], r["ov"]), []).append(r)
+        groups.setdefault((r["sid"], r["mcs"], r.get("bw", 20), r["ov"]), []).append(r)
     print("FEC EPISODES (fec.log: runs of sources never delivered; "
           "ov_req = overhead the episode would have needed)")
     for key in sorted(groups):
-        sid, mcs, ov = key
+        sid, mcs, bw, ov = key
         g = groups[key]
         live = [r for r in g if r["stale"] == 0]
         stale = len(g) - len(live)
         failed = sum(1 for r in g if r["aband"] > 0)
         ms = [r["m"] for r in live]
         reqs = [fec_ov_req(r["m"], r["r"], ov) for r in live]
-        print(f"  sid {sid} mcs {mcs} ov {ov:.2f}: n={len(g)} stale={stale} "
+        print(f"  sid {sid} mcs {mcs}/{bw} ov {ov:.2f}: n={len(g)} stale={stale} "
               f"failed={failed}")
         if not live:
             continue

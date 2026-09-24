@@ -9,6 +9,8 @@ Quick index: carrier sense off 2026-08-05 · carrier sense ON again + RC_VERSION
 40 MHz rungs — `ctllog 12` (bw: prefix), `scanlog 3` (per-half dwells, pair
 pick), `air_clock.efficiency`/`ampdu.min_mcs` → `_20`/`_40`, new required
 `link.ladder[].bw` — 2026-09-24 (`docs/bw40.md`) ·
+`feclog 2` adds a `bw` column after `mcs` 2026-09-24 (`feclog 1` rows are 20 MHz) ·
+`probelog 3` adds a `bw` column after `mcs` 2026-09-24 (`probelog 1`/`2` rows are 20 MHz) ·
 sideport key removals 2026-08-12, 2026-08-15, 2026-08-29, 2026-08-30 and
 2026-09-04 ·
 SNR half-dB scale break 2026-08-04 · EVM op-point dependence 2026-08-10 ·
