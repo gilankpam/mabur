@@ -148,9 +148,16 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
   applied_.fec_ov_enh = ov_enh;
   applied_.probe_profile = probe_profile;
   if (probe_profile != rc::kNoProbeProfile) {
+    // The probe flies the probe rung's own (mcs, bw) — not the current op's
+    // width — so a 20->40 promote is actually measured at 40 (controller
+    // Task 11b, 2026-09-24, docs/bw40.md). Only the mode is kept from the
+    // current op's ladder: the wire profile byte doesn't vary mode
+    // independently of mcs/bw in practice, and ladder[1].mode is already
+    // validated/known-good, so there's no reason to trust a decoded mode
+    // over it.
     PhyMode pm; uint8_t pmcs, pbw;
     rc::decode_profile(probe_profile, pm, pmcs, pbw);
-    applied_.probe = rc::ladder_from(ladder[1].mode, pmcs, ladder[1].bw)[1];
+    applied_.probe = rc::ladder_from(ladder[1].mode, pmcs, pbw)[1];
   }
   applied_.shed[0] = false;
   // shed_level_ still counts 0..3 (congestion semantics untouched — see

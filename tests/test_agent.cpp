@@ -1088,6 +1088,35 @@ TEST(probe_rcf_does_not_change_bitrate) {
   CHECK(act.bitrates.back() == before);
 }
 
+// 11d. The probe airs at the probe profile's OWN width, not the current
+// op's — a 20/4 op with a 40/3 probe_profile (GS sitting on 20 with 40
+// above it) must measure the 40 rung at 40, or a 20->40 promote is blind
+// (controller Task 11b, 2026-09-24, docs/bw40.md).
+TEST(probe_rcf_airs_at_the_probe_profiles_own_width) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  const uint8_t probe_byte = encode_profile(PhyMode::HT, 3, 40);
+  auto wire = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 4, 20), 8, 8, probe_byte);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  REQUIRE(!act.applied.empty());
+  const AppliedOp& op = act.applied.back();
+  CHECK(op.ladder[1].bw == 20);   // video ladder stays at the op's width
+  CHECK(op.probe.mcs == 3);
+  CHECK(op.probe.bw == 40);       // probe airs at its own width, not 20
+
+  // Reverse: op already on 40, probe_profile also 40 (a different mcs) ->
+  // probe stays 40 too, not silently coerced to the op's mode/width.
+  auto wire2 = make_rcf_wire(1, 2, encode_profile(PhyMode::HT, 3, 40), 8, 8,
+                             encode_profile(PhyMode::HT, 4, 40));
+  agent.on_rc_frame(wire2.data(), wire2.size(), 200);
+  const AppliedOp& op2 = act.applied.back();
+  CHECK(op2.ladder[1].bw == 40);
+  CHECK(op2.probe.mcs == 4);
+  CHECK(op2.probe.bw == 40);
+}
+
 TEST(link_established_latches_on_disc_link_up) {
   Config cfg = make_cfg();
   MockActuator act;
