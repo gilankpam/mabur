@@ -66,7 +66,17 @@ for line in open(ctl_path):
     if p[0] == 'ctllog':
         for tok in p[1:]:
             if tok.startswith('ladder='):
-                ladder = [int(r.split('/')[0]) for r in tok[7:].split(',')]
+                # ladder is MCS-only, indexed by rung (frm/to in the E lines
+                # are rung indices, not MCS) -- width is irrelevant to the
+                # rate math below, so a ctllog 12 bw: prefix is just
+                # stripped, not tracked.
+                mcs_toks = []
+                for r in tok[7:].split(','):
+                    mcs_s = r.split('/')[0]
+                    if ':' in mcs_s:
+                        mcs_s = mcs_s.split(':', 1)[1]
+                    mcs_toks.append(mcs_s)
+                ladder = [int(m) for m in mcs_toks]
     elif p[0] == 'E':
         events.append(dict(t=float(p[1]), frm=int(p[2]), to=int(p[3]), reason=p[4],
                            u=float(p[5]), snr=p[6]))
