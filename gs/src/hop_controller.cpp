@@ -1,5 +1,7 @@
 #include "hop_controller.h"
 
+#include "hop_blank.h"
+
 #include <cmath>
 
 namespace maburgs {
@@ -80,7 +82,7 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
     order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "order", out);
     return;
   }
-  if (in.cur_op != home_) {
+  if (home_available(in.cur_op, in.now_ms)) {
     leave_hold(in.now_ms, in.cur_op);
     flee(in.cur_op, in.now_ms);
     order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "order", out);
@@ -130,13 +132,21 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
   // The cost is one verdict window of detection latency inside a 1000 ms
   // verify window; the first eligible window lands ~2 * window_ms after
   // the confirm, leaving five of them.
-  const bool measured_after_landing = in.verdict.t_start_ms >= verify_start_;
+  //
+  // And not merely after the confirm: after the confirm PLUS the landing
+  // settle (kHopSettleBlankMs, the span the verdict's loss window is blanked
+  // for). The hop's own retune gap is still being repaired then, so a window
+  // starting inside the settle carries that debris as "recovered" symbols:
+  // 40 failed its verify on 85 then 32 of them with 0 % loss, in a window
+  // starting 27 ms after landing (bench 2026-09-24).
+  const bool measured_after_landing =
+      in.verdict.t_start_ms >= verify_start_ + kHopSettleBlankMs;
   if (in.verdict.v == Verdict::Interfered && measured_after_landing) {
     const uint8_t failed_target = hop_ch_;
     back_off(failed_target, in.now_ms);
     std::optional<uint8_t> next = in.best;
     if (next.has_value() && is_backed_off(*next, in.now_ms)) next.reset();   // skip backed off
-    const bool have_candidate = next.has_value() || in.cur_op != home_;
+    const bool have_candidate = next.has_value() || home_available(in.cur_op, in.now_ms);
     if (have_candidate) {
       // Without the persist delay: act on a raw Interfered window, not a
       // fresh multi-window trigger -- this path is "still on a bad
@@ -235,6 +245,15 @@ void HopController::leave_hold(double now, uint8_t cur_op) {
 // still returns to it: that path restores the op, it does not consult the
 // ranker.
 void HopController::flee(uint8_t ch, double now) { back_off(ch, now); }
+
+// Home is the fallback when nothing is ranked -- unless the link is already
+// there, or home is backed off (it is the channel just fled, or it failed a
+// verify): then going home is going back into the problem, and holding on
+// the current channel is the better answer (bench 2026-09-24, run 1: the jam
+// was on home and the fallback ordered it straight back).
+bool HopController::home_available(uint8_t cur_op, double now) const {
+  return cur_op != home_ && !is_backed_off(home_, now);
+}
 
 void HopController::back_off(uint8_t ch, double now) {
   auto it = backoff_.find(ch);

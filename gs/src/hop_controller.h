@@ -89,6 +89,7 @@ class HopController {
   void leave_hold(double now, uint8_t cur_op);
   void withdraw(uint8_t restore_to, double now, HopAction& out);
   void flee(uint8_t ch, double now);
+  bool home_available(uint8_t cur_op, double now) const;
   void back_off(uint8_t ch, double now);
   bool is_backed_off(uint8_t ch, double now) const;
   void prune_hop_times(double now);

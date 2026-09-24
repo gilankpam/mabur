@@ -433,7 +433,12 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
     after the confirm gathered most of its deltas on the old channel. The
     cost is one window of detection latency; the first eligible window
     lands ~2 × `window_ms` after the confirm, leaving five inside a
-    1000 ms verify.
+    1000 ms verify. Since 2026-09-24 the bound is the confirm **plus the
+    150 ms landing settle** (`kHopSettleBlankMs`): the hop's own retune gap
+    is still being repaired then, and those repairs read as `recovered`
+    symbols — 40 failed a verify on 85 then 32 of them at 0 % loss, in a
+    window starting 27 ms after landing. The first eligible window now
+    lands ~3 × `window_ms` after the confirm, leaving four.
   - `interfered` inside the window → the target is backed off
     `hop.backoff_ms` (30 000 ms, **doubling per repeat, capped at
     300 000 ms**), and the controller hops again to the next-ranked
@@ -448,7 +453,11 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
   go straight back to the channel just fled — and the in-flight ranker
   (event counts over 5 ms dwells) scores a long-frame jammer low, so it
   did (bench, GS session 0207: 144 → 128 → 144). A withdraw still returns
-  to it: that path restores op, it does not consult the ranker.
+  to it: that path restores op, it does not consult the ranker. The
+  "nothing ranked: go home" fallback (fresh trigger and verify-fail alike)
+  also skips a backed-off home and holds instead
+  (`HopController::home_available`) — on the bench the jam was on home and
+  the fallback ordered the link straight back into it.
 - **Session lost mid-hop** (`HopController::on_session_lost`, called on
   `hop_active`'s falling edge). The controller is only ticked in SESSION,
   and `ChannelPlan::tick` ignores link loss while a hop is in flight, so an

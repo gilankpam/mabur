@@ -114,13 +114,16 @@ TEST(verify_fail_retries_count_against_rate_cap) {
   double t = 1000;
   CHECK(h.tick(T(t, interfered(), 149, 136)).kind == HopAction::Order);              // order #1
   t += 50; CHECK(h.tick(T(t, interfered(), 149, 136, true)).kind == HopAction::Confirm);
-  t += 10; CHECK(h.tick(T(t, interfered(), 165, 149)).kind == HopAction::Order);      // retry #1 (order #2)
+  // Each failing verdict lands past the landing settle (a window starting
+  // inside it is the transition's own debris and does not count).
+  const double kPast = 160;
+  t += kPast; CHECK(h.tick(T(t, interfered(), 165, 149)).kind == HopAction::Order);   // retry #1 (order #2)
   t += 10; CHECK(h.tick(T(t, interfered(), 165, 149, true)).kind == HopAction::Confirm);
-  t += 10; CHECK(h.tick(T(t, interfered(), 40, 149)).kind == HopAction::Order);       // retry #2 (order #3)
+  t += kPast; CHECK(h.tick(T(t, interfered(), 40, 149)).kind == HopAction::Order);    // retry #2 (order #3)
   t += 10; CHECK(h.tick(T(t, interfered(), 40, 149, true)).kind == HopAction::Confirm);
-  t += 10; CHECK(h.tick(T(t, interfered(), 44, 149)).kind == HopAction::Order);       // retry #3 (order #4, hits the cap)
+  t += kPast; CHECK(h.tick(T(t, interfered(), 44, 149)).kind == HopAction::Order);    // retry #3 (order #4, hits the cap)
   t += 10; CHECK(h.tick(T(t, interfered(), 44, 149, true)).kind == HopAction::Confirm);
-  t += 10;
+  t += kPast;
   auto a = h.tick(T(t, interfered(), 48, 149));                                       // retry #4: cap already at 4/min
   CHECK(a.kind == HopAction::Hold);
   CHECK(h.state() == HopState::Hold);
@@ -291,4 +294,46 @@ TEST(verify_fail_never_retries_the_channel_it_fled) {
   auto a = h.tick(T(1300, interfered(), 144, 128));  // 128 "fails"; ranker offers 144
   CHECK(a.kind == HopAction::Order && a.target != 144);
   CHECK(a.target == 136);                            // nothing else ranked: home
+}
+
+// ---- the verify ignores the landing's own debris (bench 2026-09-24) ----
+// The first verify window that counted used to start ANY time after the
+// confirm, and the hop's own retune gap is still being repaired then: 40
+// failed its verify on 85 then 32 recovered symbols in windows starting
+// 27 ms after landing, with 0 % loss. A window must start at least the
+// settle (kHopSettleBlankMs, the same one the loss window is blanked for)
+// after the confirm to count.
+TEST(verify_ignores_a_window_that_starts_inside_the_landing_settle) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, measured(interfered(5), 850, 1000), 149, 136));
+  h.tick(T(1080, measured(interfered(5), 850, 1000), 149, 136, true));   // confirm at 1080
+  // starts 27 ms after landing: repairs of the transition, not the channel
+  CHECK(h.tick(T(1260, measured(interfered(5), 1107, 1257), 165, 149)).kind == HopAction::None);
+  CHECK(h.state() == HopState::Verifying);
+  // starts after confirm + settle: genuine, fails the verify
+  auto a = h.tick(T(1410, measured(interfered(5), 1257, 1407), 165, 149));
+  CHECK(a.kind == HopAction::Order && a.target == 165);
+}
+
+// ---- nor go home when home is the channel being fled -------------------
+// Run 1 of the fix bench: the jam was on home (136). 136 was correctly
+// backed off as the fled channel, but when 144, 128 and 40 each failed
+// their verify, the "nothing ranked: go home" fallback ordered 136 anyway
+// -- straight back into the jam. A backed-off home is not a candidate.
+TEST(verify_fail_does_not_fall_back_to_a_backed_off_home) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, interfered(), 149, 136));             // flee the jam on home
+  h.tick(T(1080, interfered(), 149, 136, true));       // landed on 149
+  auto a = h.tick(T(1400, measured(interfered(), 1250, 1400), std::nullopt, 149));
+  CHECK(a.kind != HopAction::Order || a.target != 136);
+  CHECK(a.kind == HopAction::Hold);
+}
+TEST(fresh_trigger_does_not_fall_back_to_a_backed_off_home) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, interfered(), 149, 136));             // flee 136 (backs it off)
+  h.tick(T(1080, interfered(), 149, 136, true));
+  h.tick(T(2200, healthy(), std::nullopt, 149));       // verify passes on 149
+  // cooldown over, 149 now jammed, nothing ranked, home still backed off
+  auto a = h.tick(T(5000, interfered(), std::nullopt, 149));
+  CHECK(a.kind != HopAction::Order || a.target != 136);
 }
