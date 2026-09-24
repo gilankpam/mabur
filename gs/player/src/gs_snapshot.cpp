@@ -113,6 +113,7 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     if (const json* ctl = obj(*link, "ctl")) {
       if (const json* rung = obj(*ctl, "rung")) {
         out->mcs = integer(*rung, "mcs");
+        out->bw = integer(*rung, "bw");
         // link.ctl.rung.ov_base (Task 5, same-rate-fixed-pairs): the rung's
         // overhead split into a base/enh pair; the OSD shows the base
         // figure (the pilot-facing budget number -- base is the layer that
@@ -150,6 +151,7 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     // settled rung -- hence ctl first.
     if (const json* op = obj(*link, "op")) {
       if (!out->mcs) out->mcs = integer(*op, "mcs");
+      if (!out->bw) out->bw = integer(*op, "bw");
       if (!out->fec_pct) {
         if (const std::optional<double> ov = num(*op, "overhead_base"))
           out->fec_pct = *ov * 100.0;

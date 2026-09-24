@@ -25,7 +25,7 @@ static const char* kLive = R"({
     "pre_fec_loss": 0.012,
     "rtt": {"ms": 12.4, "min_ms": 8.0, "n": 42, "pts_off_us": -123456789,
             "floor_ms": 3.2},
-    "ctl": {"rung": {"idx": 3, "mcs": 5, "ov_base": 0.25}, "pre_fec_loss": 0.021},
+    "ctl": {"rung": {"idx": 3, "mcs": 5, "bw": 40, "ov_base": 0.25}, "pre_fec_loss": 0.021},
     "video": {"fps": 60.0, "jitter_ms": 3.1, "mbps": 24.6}
   },
   "drone": null,
@@ -51,6 +51,8 @@ TEST(parses_a_live_datagram) {
   REQUIRE(parse(kLive, &s));
   REQUIRE(s.mcs.has_value());
   CHECK(*s.mcs == 5);
+  REQUIRE(s.bw.has_value());
+  CHECK(*s.bw == 40);
   REQUIRE(s.fec_pct.has_value());
   CHECK(*s.fec_pct > 24.9 && *s.fec_pct < 25.1);      // ov 0.25 -> 25 %
   REQUIRE(s.channel.has_value());
@@ -372,6 +374,8 @@ TEST(pinned_link_reads_the_rung_from_link_op) {
   REQUIRE(parse(j, &s));
   REQUIRE(s.mcs.has_value());
   CHECK(*s.mcs == 4);
+  REQUIRE(s.bw.has_value());
+  CHECK(*s.bw == 20);
   REQUIRE(s.fec_pct.has_value());
   CHECK(*s.fec_pct > 49.9 && *s.fec_pct < 50.1);       // ov 0.5 -> 50 %
 }
