@@ -23,6 +23,11 @@ struct Rung {
   int mcs = 0;
   double overhead_base = 1.0;
   double overhead_enh = 1.0;
+  // Channel width the rung airs at, 20 or 40 (2026-09-24). LAST so the
+  // {mcs, ov_base, ov_enh} initializers everywhere keep compiling at 20.
+  // Carried to the drone in the RCF profile byte; a 40 rung needs
+  // radio.width = 40 on the GS (a 20-tuned receiver cannot hear HT40).
+  int bw = 20;
 };
 
 // --- fade-aware demotes (spec 2026-08-14 fade-demote) ---

@@ -3,6 +3,7 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "mabur/ht40.h"
 #include "mabur/toml.h"
 
 namespace maburgs {
@@ -138,7 +139,13 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     const Value& r = j["radio"];
     check_keys(r, "radio", {"channel", "width", "cards", "tx_card", "scan"});
     c.radio.channel = static_cast<uint8_t>(get_int(r, "channel", 149, 1, 200, "radio"));
-    c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 80, "radio"));
+    c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 40, "radio"));
+    if (c.radio.width != 20 && c.radio.width != 40)
+      fail("radio.width", "must be 20 or 40 (HT20 / HT40)");
+    if (c.radio.width == 40 && mabur::ht40_offset(c.radio.channel) == 0)
+      fail("radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
+                              std::to_string(static_cast<int>(c.radio.channel)) +
+                              " has none (common/include/mabur/ht40.h)");
     c.radio.tx_card = static_cast<int>(get_int(r, "tx_card", -1, -1, 15, "radio"));
     if (r.contains("cards")) {
       if (!r["cards"].is_array() || r["cards"].empty())
@@ -271,6 +278,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     check_keys(r, "link",
                {"vtx_id", "feedback_ms", "beacon_keepalive_ms",
                 "static_mcs", "static_overhead_base", "static_overhead_enh",
+                "static_bw",
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
@@ -291,6 +299,9 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         get_num(r, "static_overhead_base", 0.5, 0.1, 2.0, "link");
     c.link.static_overhead_enh =
         get_num(r, "static_overhead_enh", 0.5, 0.1, 2.0, "link");
+    c.link.static_bw = static_cast<int>(get_int(r, "static_bw", 20, 20, 40, "link"));
+    if (c.link.static_bw != 20 && c.link.static_bw != 40)
+      fail("link.static_bw", "must be 20 or 40");
 
     // Measured-loss ladder: rungs (c.link.ladder_cfg.ladder already holds the
     // struct default 6-rung ladder; an explicit "ladder" array replaces it
@@ -305,9 +316,16 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       int i = 0;
       for (const Value& rj : r["ladder"]) {
         const std::string where = "link.ladder[" + std::to_string(i++) + "]";
-        check_keys(rj, where, {"mcs", "overhead_base", "overhead_enh"});
+        check_keys(rj, where, {"mcs", "bw", "overhead_base", "overhead_enh"});
         Rung rung;
         rung.mcs = static_cast<int>(get_int(rj, "mcs", 0, 0, 7, where));
+        // Per-rung width (2026-09-24 40 MHz top rungs): required, no
+        // default -- a rung silently airing at 20 when the author meant 40
+        // (or vice versa) is exactly the wrong-width mistake this is meant
+        // to catch.
+        if (!rj.contains("bw")) fail(where + ".bw", "required: 20 or 40 (per-rung width, 2026-09-24)");
+        rung.bw = static_cast<int>(get_int(rj, "bw", 20, 20, 40, where));
+        if (rung.bw != 20 && rung.bw != 40) fail(where + ".bw", "must be 20 or 40");
         // Actual-air overhead (airtime-balance-uep): literal, not a scaled
         // cmd value -- old cmd default/range 1.0 [0.05, 1.0] x2 everywhere.
         // Same-rate-fixed-pairs (Task 3): base/enh pair, same default/range.
@@ -431,6 +449,20 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     c.link.ladder_cfg.probe.max_util = c.link.ladder_cfg.down_util;
   if (c.link.ladder_cfg.s3_down_util < 0)
     c.link.ladder_cfg.s3_down_util = c.link.ladder_cfg.down_util;
+
+  // ---- Width cross-checks (2026-09-24, 40 MHz top rungs) -------------------
+  // A 40 MHz rung or pin needs the GS tuned 40 -- a 20-tuned receiver cannot
+  // hear HT40 at all (docs/bw40.md). Runs unconditionally, after both radio
+  // and link sections are settled, and after the max_mcs filter above: a
+  // rung filtered out by max_mcs is not checked here, which matches "what
+  // will fly". Task 6 appends the scan-candidate checks to this same block.
+  for (std::size_t i = 0; i < c.link.ladder_cfg.ladder.size(); ++i)
+    if (c.link.ladder_cfg.ladder[i].bw == 40 && c.radio.width != 40)
+      fail("link.ladder[" + std::to_string(i) + "].bw",
+           "40 MHz rung but radio.width is 20: the GS could not receive it");
+  if (c.link.static_bw == 40 && c.radio.width != 40)
+    fail("link.static_bw", "40 MHz pin but radio.width is 20");
+  // ---------------------------------------------------------------------
 
   if (j.contains("video")) {
     const Value& r = j["video"];

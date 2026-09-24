@@ -9,7 +9,7 @@ namespace {
 // Rebuild an OpPoint from the ladder's current rung. Power is constant and
 // is not part of the operating point (spec 2026-08-12-constant-txpower).
 OpPoint op_from_rung(const Rung& r) {
-  return OpPoint{false, r.mcs, 20, false, r.overhead_base, r.overhead_enh, 0.0};
+  return OpPoint{false, r.mcs, r.bw, false, r.overhead_base, r.overhead_enh, 0.0};
 }
 }  // namespace
 
@@ -46,7 +46,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   if (cfg_.pin_mcs >= 0) {
     // Static-link mode: fixed op, ladder fully out of the loop (never
     // ticked/updated — health is ignored entirely).
-    cur_op_ = OpPoint{false, cfg_.pin_mcs, 20, false,
+    cur_op_ = OpPoint{false, cfg_.pin_mcs, cfg_.pin_bw, false,
                      cfg_.pin_overhead_base, cfg_.pin_overhead_enh, 0.0};
   } else if (ctrl_.on_tick(now_ms)) {
     sync_op_();
@@ -104,9 +104,11 @@ mabur::rc::Rcf VrxController::build_rcf() {
       r.probe_profile = mabur::rc::encode_profile(mode, static_cast<uint8_t>(cfg_.probe_pin_mcs),
                                                   static_cast<uint8_t>(cur_op_.bw));
   } else if (const int pr = ctrl_.probe_rung(); pr >= 0) {
+    // The PROBE rung's own width, not the current op's: sitting on 20/4
+    // with 40/3 above, the probe must fly 40 MHz (2026-09-24).
+    const Rung& prung = cfg_.ladder.ladder[static_cast<std::size_t>(pr)];
     r.probe_profile = mabur::rc::encode_profile(
-        mode, static_cast<uint8_t>(cfg_.ladder.ladder[static_cast<std::size_t>(pr)].mcs),
-        static_cast<uint8_t>(cur_op_.bw));
+        mode, static_cast<uint8_t>(prung.mcs), static_cast<uint8_t>(prung.bw));
   }
   return r;
 }

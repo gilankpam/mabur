@@ -29,6 +29,7 @@ struct VrxCfg {
   // LinkCfg::static_mcs). overhead pair used only when pinned (from
   // LinkCfg::static_overhead_base/enh).
   int pin_mcs = -1;
+  int pin_bw = 20;  // link.static_bw
   double pin_overhead_base = 0.25;
   double pin_overhead_enh = 0.25;
   // link.probe.pin_mcs: static-pin mode only -- probe a fixed MCS while

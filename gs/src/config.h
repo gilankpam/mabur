@@ -69,6 +69,10 @@ struct HopCfg {
 /// Radio hardware: channel, bandwidth, cards, and transmit card selection.
 struct RadioCfg {
   uint8_t channel = 149;
+  // HT20/HT40 (2026-09-24 HT40 top rungs): validated to 20 or 40 in
+  // config.cpp, and 40 additionally requires `channel` to sit on a standard
+  // 5 GHz pair (mabur::ht40_offset) -- a 20-tuned receiver cannot hear a 40
+  // MHz transmission at all (docs/bw40.md).
   uint8_t width = 20;
   // Empty + auto_scan: probe the bus and use every supported card found
   // (card_scan.h). A non-empty list pins exactly those devices and skips
@@ -128,6 +132,9 @@ struct LinkCfg {
   // scalar's value -- Task 4 gives them independent semantics.
   double static_overhead_base = 0.5;
   double static_overhead_enh = 0.5;
+  // Width of the static-pin op (link.static_mcs >= 0), 20 or 40; 40 needs
+  // radio.width = 40. Lets the bench pin a 40 MHz rung.
+  int static_bw = 20;
 
   // Measured-loss ladder controller config (spec
   // docs/superpowers/specs/2026-07-27-ladder-controller-design.md): rungs

@@ -239,6 +239,7 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
   vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
+  vcfg.pin_bw = cfg.link.static_bw;
   vcfg.pin_overhead_base = cfg.link.static_overhead_base;
   vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
   vcfg.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
@@ -1329,6 +1330,7 @@ static int run_radio(const maburgs::Config& cfg) {
   vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
   vcfg.ladder = cfg.link.ladder_cfg;
   vcfg.pin_mcs = cfg.link.static_mcs;
+  vcfg.pin_bw = cfg.link.static_bw;
   vcfg.pin_overhead_base = cfg.link.static_overhead_base;
   vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
   vcfg.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
