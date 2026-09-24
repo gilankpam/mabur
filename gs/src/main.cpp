@@ -979,6 +979,14 @@ static int run_radio(const maburgs::Config& cfg) {
                                 ? maburgs::scan_half_set(cfg.radio.channel, scfg.candidates)
                                 : scfg.candidates,
                             cfg.radio.channel, 0);
+  // ...but hop TARGETS stay primaries (home + candidates): a secondary half
+  // is scored evidence only, since FastRetune keeps the card's offset and a
+  // hop to e.g. 140 from 136 would tune the off-grid 136+140.
+  if (cfg.radio.width == 40) {
+    std::vector<uint8_t> targets = scfg.candidates;
+    targets.push_back(cfg.radio.channel);
+    ranker.set_targets(std::move(targets));
+  }
   maburgs::HopController hopc(hcfg, cfg.radio.channel);
   // Constructed against card 0 as a placeholder radio -- harmless, since the
   // scout thread below always repoints this via set_radio() (Task 10)

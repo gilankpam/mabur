@@ -67,4 +67,27 @@ TEST(no_boot_pick_falls_through_to_home) {
   for (int i = 0; i < 3; ++i) { r.add(V(120, i * 100, 2)); r.add(V(149, i * 100, 2)); r.add(V(165, i * 100, 2)); }
   CHECK(*r.best(1000, 255, {}) == 165);
 }
+TEST(best_never_returns_a_non_target_half_even_when_it_is_cleanest) {
+  // 40 MHz: the ranker holds every 20 MHz half as scored evidence (the boot
+  // scan dwells on them), but only primaries are hop targets -- FastRetune
+  // keeps the card's offset, so a hop to secondary 140 would land on the
+  // off-grid pair 136+140.
+  HopRanker r(cfg(), {132, 136, 140, 144, 36, 40}, 136, 0);
+  r.set_targets({144, 40, 136});
+  for (double t : {0.0, 1.0}) {
+    r.add(V(140, t, 0));    // cleanest of all, but a secondary half
+    r.add(V(36, t, 1));
+    r.add(V(144, t, 50));
+    r.add(V(40, t, 20));    // best PRIMARY
+    r.add(V(136, t, 90));
+  }
+  CHECK(r.ranking(1000).front().ch == 140);   // still ranked as evidence
+  CHECK(*r.best(1000, 255, {}) == 40);
+  CHECK(*r.best(1000, 40, {}) == 144);        // exclude/skip still apply over targets
+  CHECK(!r.best(1000, 136, {40, 144}));       // only halves left: no target
+  // Default (no set_targets): every candidate is a target, 20 MHz unchanged.
+  HopRanker all(cfg(), {132, 136, 140, 144}, 136, 0);
+  for (double t : {0.0, 1.0}) { all.add(V(140, t, 0)); all.add(V(144, t, 50)); }
+  CHECK(*all.best(1000, 255, {}) == 140);
+}
 MTEST_MAIN

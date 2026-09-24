@@ -66,6 +66,8 @@ std::vector<HopRankEntry> HopRanker::ranking(double now_ms) const {
 std::optional<uint8_t> HopRanker::best(double now_ms, uint8_t exclude, const std::vector<uint8_t>& skip) const {
   for (const auto& e : ranking(now_ms)) {
     if (!e.ranked || e.ch == exclude) continue;
+    if (!targets_.empty() && std::find(targets_.begin(), targets_.end(), e.ch) == targets_.end())
+      continue;
     if (std::find(skip.begin(), skip.end(), e.ch) != skip.end()) continue;
     return e.ch;
   }
