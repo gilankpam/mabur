@@ -1184,4 +1184,35 @@ TEST(hop_ref_rung_and_target_null_when_absent) {
   CHECK(j["hop"]["last_ms"].is_null());
 }
 
+TEST(ctl_rung_ladder_and_rungs_carry_bw) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.op.mcs = 3;
+  in.op.bw = 40;
+  // base_input() already gives stream 0 bodies -> already "seen".
+  StatsCtlIn ci;
+  ci.rung_idx = 1; ci.rung_mcs = 3; ci.rung_bw = 40;
+  ci.ladder = {{4, 0.5, 0.25}, {3, 0.5, 0.25, 40}};   // bw defaults 20 when omitted
+  StatsRungIn r0; r0.mcs = 4;                          // bw default 20
+  StatsRungIn r1; r1.mcs = 3; r1.bw = 40;
+  ci.rungs = {r0, r1};
+  in.ctl = ci;
+  CHECK(ex.poll(1000, in));
+  const json j = cap.last();
+  const json ctl = j["link"]["ctl"];
+  CHECK(ctl["rung"]["bw"] == 40);
+  REQUIRE(ctl["ladder"].size() == 2);
+  CHECK(ctl["ladder"][0]["bw"] == 20);
+  CHECK(ctl["ladder"][1]["mcs"] == 3);
+  CHECK(ctl["ladder"][1]["bw"] == 40);
+  REQUIRE(j["link"]["rungs"].size() == 2);
+  CHECK(j["link"]["rungs"][0]["bw"] == 20);
+  CHECK(j["link"]["rungs"][1]["bw"] == 40);
+  CHECK(j["link"]["op"]["bw"] == 40);
+  REQUIRE(j["link"]["streams"].size() >= 1);
+  CHECK(j["link"]["streams"][0]["rung_mcs"] == 3);
+  CHECK(j["link"]["streams"][0]["rung_bw"] == 40);
+}
+
 MTEST_MAIN

@@ -2845,6 +2845,7 @@ static int run_radio(const maburgs::Config& cfg) {
         maburgs::StatsCtlIn ci;
         ci.rung_idx = c.rung();
         ci.rung_mcs = c.op().mcs;
+        ci.rung_bw = c.op().bw;
         ci.rung_ov_base = c.op().overhead_base;
         ci.rung_ov_enh = c.op().overhead_enh;
         ci.util = c.util();
@@ -2853,7 +2854,8 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.probation_ms_left = c.probation_ms_left(now_ms);
         for (const auto& p : c.penalized(now_ms)) ci.penalized.push_back(p);
         for (const auto& r : cfg.link.ladder_cfg.ladder)
-          ci.ladder.emplace_back(r.mcs, r.overhead_base, r.overhead_enh);
+          ci.ladder.push_back(maburgs::StatsLadderRung{
+              r.mcs, r.overhead_base, r.overhead_enh, r.bw});
         ci.down_util = cfg.link.ladder_cfg.down_util;
         ci.up_util = cfg.link.ladder_cfg.up_util;
         const auto& cnt = c.counters();
@@ -2885,6 +2887,7 @@ static int run_radio(const maburgs::Config& cfg) {
           const maburgs::RungStat& rs = rstore.stat(static_cast<int>(ri));
           maburgs::StatsRungIn rg;
           rg.mcs = cfg.link.ladder_cfg.ladder[ri].mcs;
+          rg.bw = cfg.link.ladder_cfg.ladder[ri].bw;
           rg.ov_base = cfg.link.ladder_cfg.ladder[ri].overhead_base;
           rg.ov_enh = cfg.link.ladder_cfg.ladder[ri].overhead_enh;
           rg.u = rs.u.v;

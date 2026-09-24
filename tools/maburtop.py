@@ -105,15 +105,15 @@ def _cell_offsets(widths, label_w=LABEL_W):
     return offsets
 
 
-def _rung_cell(strm, w=7):
-    """TX rung the drone airs this stream at, e.g. 'mcs5+LS' (L=LDPC,
+def _rung_cell(strm, w=10):
+    """TX rung the drone airs this stream at, e.g. 'mcs3/40+LS' (L=LDPC,
     S=STBC). Derived GS-side from the commanded op; '--' pre-schema."""
     m = strm.get("rung_mcs")
     if m is None:
         return "--".ljust(w)
     flags = ("L" if strm.get("rung_ldpc") else "") + \
             ("S" if strm.get("rung_stbc") else "")
-    s = f"mcs{m}" + (f"+{flags}" if flags else "")
+    s = f"mcs{m}/{strm.get('rung_bw', '--')}" + (f"+{flags}" if flags else "")
     return s[:w].ljust(w) if len(s) > w else s.ljust(w)
 
 
@@ -1044,7 +1044,7 @@ def _ladder_rung_rows(ctl):
     rows = []
     for idx in range(len(ladder) - 1, -1, -1):
         r = ladder[idx] if isinstance(ladder[idx], dict) else {}
-        cell = (f"{idx} mcs{_s(r.get('mcs'))}"
+        cell = (f"{idx} mcs{_s(r.get('mcs'))}/{_s(r.get('bw'))}"
                 f"/ov{_s(r.get('ov_base'), 2)}:{_s(r.get('ov_enh'), 2)}")
         marker = "▶" if idx == cur else " "
         note, note_style = "", None
@@ -1054,7 +1054,7 @@ def _ladder_rung_rows(ctl):
             note, note_style = f"pen {max(pen[idx], 0) // 1000}s", "dim"
         elif idx == 0:
             note, note_style = "failsafe", "dim"
-        text = f" {marker}{cell:<20} {note}".rstrip()
+        text = f" {marker}{cell:<23} {note}".rstrip()
         spans = []
         if idx == cur:
             spans.append((1, 1 + len(cell), "good"))

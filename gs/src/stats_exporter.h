@@ -6,7 +6,6 @@
 #include <functional>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include "lat_window.h"
@@ -78,6 +77,7 @@ struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats
 // StatsCtlIn. evm/evm_sd NaN -> JSON null; ages -1 = never sampled.
 struct StatsRungIn {
   int mcs = 0;
+  int bw = 20;
   double ov_base = 0.0, ov_enh = 0.0;
   double u = 0.0, resid = 0.0, u3 = 0.0, resid3 = 0.0;
   double evm_db = 0.0, evm_sd_db = 0.0;
@@ -88,12 +88,21 @@ struct StatsRungIn {
   double probe_u = 0.0;
 };
 
+// One effective-ladder rung as the sideport reports it (link.ctl.ladder[]).
+// bw LAST: the {mcs, ov_base, ov_enh} initializers keep compiling at 20.
+struct StatsLadderRung {
+  int mcs = 0;
+  double ov_base = 0.0, ov_enh = 0.0;
+  int bw = 20;
+};
+
 // Copied from LadderController's accessors (gs/src/ladder_controller.h) —
 // plain values only, no controller reference: main fills this from
 // vrx.ctl() each poll, matching the exporter's existing pattern for `op`.
 struct StatsCtlIn {
   int rung_idx = 0;
   int rung_mcs = 0;
+  int rung_bw = 20;
   double rung_ov_base = 0.0;
   double rung_ov_enh = 0.0;
   double util = 0.0;
@@ -110,7 +119,7 @@ struct StatsCtlIn {
   // Effective ladder ({mcs, overhead_base, overhead_enh} per rung, index =
   // rung index) and the util thresholds, copied from LadderCfg — static
   // per-run but re-sent every datagram so consumers stay stateless.
-  std::vector<std::tuple<int, double, double>> ladder;  // {mcs, ov_base, ov_enh}
+  std::vector<StatsLadderRung> ladder;  // {mcs, ov_base, ov_enh, bw} per rung
   double down_util = 0.0, up_util = 0.0;
 
   // --- s3 probe-before-promote / s3 steady-state (Tasks 4/5) ---
