@@ -462,6 +462,21 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
            "40 MHz rung but radio.width is 20: the GS could not receive it");
   if (c.link.static_bw == 40 && c.radio.width != 40)
     fail("link.static_bw", "40 MHz pin but radio.width is 20");
+  if (c.radio.width == 40) {
+    const uint8_t home_off = mabur::ht40_offset(c.radio.channel);
+    for (uint8_t ch : c.radio.scan.candidates) {
+      const uint8_t off = mabur::ht40_offset(ch);
+      if (off == 0)
+        fail("radio.scan.candidates", "channel " + std::to_string(static_cast<int>(ch)) +
+                                          " has no 40 MHz pair (docs/bw40.md)");
+      if (off != home_off)
+        fail("radio.scan.candidates",
+             "channel " + std::to_string(static_cast<int>(ch)) +
+                 " is on the other side of the pair grid from home " +
+                 std::to_string(static_cast<int>(c.radio.channel)) +
+                 "; FastRetune keeps the offset, list the pair's primary on home's side (docs/bw40.md)");
+    }
+  }
   // ---------------------------------------------------------------------
 
   if (j.contains("video")) {

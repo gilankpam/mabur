@@ -36,33 +36,30 @@ channel each end boots on and the channel both return to whenever they
 lose each other. There is no `"auto"` value — both ends need a concrete
 channel to find each other on.
 
-GS, `gs/bundle/maburgs.default.toml` `[radio.scan]
-enable           = true
-candidates       = [120, 149, 165]
-dwell_ms         = 250
-settle_ms        = 30
-min_rounds       = 3
-home_window_ms   = 300
-split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
-home_margin      = 20       # leave home only if a candidate's worst visit is >= 20 busy units lower
+GS, `gs/bundle/maburgs.default.toml` (relevant keys):
+
 ```toml
 [radio]
 channel = 136
-width   = 20
+width   = 40               # HT40 on the standard pair (132+136 for home 136)
 tx_card = -1               # -1 = auto-select the best-SNR card
 
 # Boot-time channel scan: while waiting for the drone the spare card measures
 # these plus `channel` (home) and the DISC proposes the least busy one. The
 # pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
 # One card: the same card alternates home windows and dwells.
+# Candidates are 40 MHz pair PRIMARIES on home's side of the grid (home 136 =
+# 132+136, primary upper half): 144 (140+144, the only fast retune, DFS
+# like home), 40 (36+40, UNII-1, spur-free), 128 (124+128, DFS, spur-free).
 [radio.scan]
 enable           = true
-candidates       = [149, 153, 161]
+candidates       = [144, 40, 128]
 dwell_ms         = 250
 settle_ms        = 30
 min_rounds       = 3
 home_window_ms   = 300
 split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
+home_margin      = 20       # leave home only if a candidate's worst visit is >= 20 busy units lower
 ```
 
 Drone, `bundle/mabur.default.toml` (verbatim, the relevant keys):
@@ -126,6 +123,9 @@ anchor rather than the boot channel's.
   is at least `home_margin` busy units below home's (default 20: a clean
   channel reads 0-10, a weak AP 20-140, a router or the FPV band 145-445).
   Among the candidates themselves the lowest worst visit still wins.
+- At `radio.width = 40` candidates are pair primaries sharing home's
+  `ht40_offset`; the boot scan scores both halves and the pick is per pair
+  (`docs/bw40.md`).
 
 - **Home is a number on both ends**, configured independently; both must
   agree on it out of band (it is never negotiated). A cold boot, a

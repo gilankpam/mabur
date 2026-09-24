@@ -476,12 +476,47 @@ TEST(radio_scan_parses_and_validates) {
 TEST(default_bundle_has_scan_section) {
   auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   CHECK(cfg.radio.scan.enable == true);
-  // One escape per band block that is not home (docs/channel-select.md).
+  // 40 MHz pair primaries on home's side of the grid (docs/bw40.md §3):
+  // 140+144 (the only fast retune from 132+136), 36+40 (UNII-1,
+  // spur-free), 124+128 (DFS, spur-free). 120/149/165 went: spur centres
+  // or no pair.
   REQUIRE(cfg.radio.scan.candidates.size() == 3);
-  CHECK(cfg.radio.scan.candidates[0] == 120);
-  CHECK(cfg.radio.scan.candidates[1] == 149);
-  CHECK(cfg.radio.scan.candidates[2] == 165);
+  CHECK(cfg.radio.scan.candidates[0] == 144);
+  CHECK(cfg.radio.scan.candidates[1] == 40);
+  CHECK(cfg.radio.scan.candidates[2] == 128);
   CHECK(cfg.radio.scan.home_margin == 20);
+}
+
+TEST(scan_candidates_must_share_home_offset_at_40) {
+  // FastRetune keeps width AND offset on both ends: with home 136
+  // (132+136, primary = upper half, offset 2) a retune to 140 would land
+  // on the off-grid 136+140, not 140+144, and the drone's ht40_offset(140)
+  // would disagree. Candidates are pair primaries on home's side.
+  auto ok = maburgs::load_config(write_tmp(
+      "[radio]\nchannel = 136\nwidth = 40\n[radio.scan]\ncandidates = [144, 40, 128]\n"));
+  CHECK(ok.radio.scan.candidates.size() == 3);
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        "[radio]\nchannel = 136\nwidth = 40\n[radio.scan]\ncandidates = [140]\n"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("radio.scan.candidates") != std::string::npos &&
+            std::string(e.what()).find("140") != std::string::npos;
+  }
+  CHECK(threw);
+  threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        "[radio]\nchannel = 136\nwidth = 40\n[radio.scan]\ncandidates = [165]\n"));
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("radio.scan.candidates") != std::string::npos &&
+            std::string(e.what()).find("165") != std::string::npos;
+  }
+  CHECK(threw);
+  // At 20 MHz nothing changes: any 20 MHz channel is a candidate.
+  auto c20 = maburgs::load_config(write_tmp(
+      "[radio]\nchannel = 136\nwidth = 20\n[radio.scan]\ncandidates = [140, 165]\n"));
+  CHECK(c20.radio.scan.candidates.size() == 2);
 }
 
 TEST(hop_defaults_when_absent) {
