@@ -972,22 +972,13 @@ static int run_radio(const maburgs::Config& cfg) {
   // spec section 3's "ties -> boot-time pick, then home" into "ties ->
   // home" and made the tiebreak's first term dead code.
   //
-  // At 40 MHz the boot scan visits every HALF (pair_pick.h); the ranker's
-  // candidate set must hold them all or add() drops those visits. In
-  // session the scout only ever dwells on primaries.
-  maburgs::HopRanker ranker(hcfg,
-                            cfg.radio.width == 40
-                                ? maburgs::scan_half_set(cfg.radio.channel, scfg.candidates)
-                                : scfg.candidates,
-                            cfg.radio.channel, 0);
-  // ...but hop TARGETS stay primaries (home + candidates): a secondary half
-  // is scored evidence only, since FastRetune keeps the card's offset and a
-  // hop to e.g. 140 from 136 would tune the off-grid 136+140.
-  if (cfg.radio.width == 40) {
-    std::vector<uint8_t> targets = scfg.candidates;
-    targets.push_back(cfg.radio.channel);
-    ranker.set_targets(std::move(targets));
-  }
+  // Primaries only, at both widths. Nothing from the boot scan reaches
+  // HopRanker::add() -- only inflight.burst() and the in-flight dwells do,
+  // and both visit primaries -- and at radio.width 40 every candidate is a
+  // pair primary sharing home's ht40_offset (config rule), which FastRetune
+  // keeps, so every candidate is also a valid hop target. The 20 MHz halves
+  // scan_half_set() adds are the boot ChannelScout's business alone.
+  maburgs::HopRanker ranker(hcfg, scfg.candidates, cfg.radio.channel, 0);
   maburgs::HopController hopc(hcfg, cfg.radio.channel);
   // Constructed against card 0 as a placeholder radio -- harmless, since the
   // scout thread below always repoints this via set_radio() (Task 10)
