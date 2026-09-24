@@ -26,10 +26,11 @@ mabur::UepDecoder make_dec() {
   return mabur::UepDecoder(layers);
 }
 
-OpPoint op_at(int mcs, double ov = 1.0) {
+OpPoint op_at(int mcs, double ov = 1.0, int bw = 20) {
   OpPoint o;
   o.mcs = mcs;
   o.overhead_base = ov;
+  o.bw = bw;
   return o;
 }
 
@@ -102,6 +103,21 @@ TEST(overhead_only_step_blanks_base_not_enh) {
   CHECK(edge.on_tick(op_at(4, 0.5), dec, s1, s3, 2050.0));
   CHECK(!s1.sample(2050.0).valid);
   CHECK(s3.sample(2050.0).valid);
+}
+
+TEST(width_only_step_blanks_both_residual_windows) {
+  // 20/3 -> 40/3 (2026-09-24 40 MHz rungs): same MCS, different PHY rate
+  // and airtime -- a real rung transition, so both edges fire.
+  auto dec = make_dec();
+  S1LossWindow s1(500), s3(500);
+  TransitionEdge edge;
+  edge.on_tick(op_at(3, 1.0, 20), dec, s1, s3, 1000.0);
+  book_loss(s1, 2000.0);
+  book_loss(s3, 2000.0);
+  CHECK(edge.on_tick(op_at(3, 1.0, 40), dec, s1, s3, 2050.0));
+  CHECK(!s1.sample(2050.0).valid);
+  CHECK(!s3.sample(2050.0).valid);
+  CHECK(!edge.on_tick(op_at(3, 1.0, 40), dec, s1, s3, 2100.0));   // and only once
 }
 
 TEST(no_change_never_blanks) {
