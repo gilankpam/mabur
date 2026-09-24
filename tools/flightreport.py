@@ -1152,7 +1152,11 @@ _HOP_ORDER_KINDS = {"order", "verify_fail"}
 # about a flight that ended in a hold. Recordings from before the
 # edge-logging fix still parse: their first per-tick hold line closes the
 # row exactly as the single one does now.
-_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "hold_cap", "hold_exhausted", "hold_end"}
+# "session_lost" (2026-09-24): HopController::on_session_lost withdrew an
+# order that was still waiting for its confirm when the link's session
+# dropped -- the attempt is over, with its own outcome.
+_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "session_lost", "hold_cap", "hold_exhausted",
+                            "hold_end"}
 _HOP_RESTORE_WINDOW_MS = 5000.0  # generous: production fires E hop_restore
                                  # essentially in the same tick as H order/
                                  # verify_fail (main.cpp calls

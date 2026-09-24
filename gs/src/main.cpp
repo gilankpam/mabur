@@ -1437,6 +1437,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // below is a different question over the same symbol counters (what FEC
   // could not repair at all) -- see gs/src/ladder_residual.cpp.
   maburgs::S1LossWindow s1_loss;
+  // The hop verdict's own copy of s1_loss, fed identically but blanked when a
+  // hop lands (hop_verdict_loss_blank_until, gs/src/hop_blank.h) so a verify
+  // is judged on the channel it verifies. Separate so the blank never touches
+  // the sideport/ctl-log/OSD loss gauge s1_loss also feeds.
+  maburgs::S1LossWindow s1_hop_loss;
   // Sideport/OSD gauge (2026-09-23): BOTH video layers' current-only
   // arrival-tracker counts pooled in one window, so the LOSS row reads the
   // whole downlink; the ladder keeps deciding on s1_loss_cur (base only).
@@ -1829,6 +1834,40 @@ static int run_radio(const maburgs::Config& cfg) {
     // ---- auto channel selection, per tick (spec 2026-09-13) ----
     plan.tick(now_ms, in_session);
 
+    // Everything run_radio() does with a HopAction: the shared
+    // apply_hop_action() (also driven by run_hop_inject_test), then this
+    // loop's own cross-thread bookkeeping, the verdict loss-window blank,
+    // and draining the controller's events to scan.log/stderr. One path for
+    // both the controller's tick and the session falling edge below.
+    auto dispatch_hop_action = [&](const maburgs::HopAction& act) {
+      apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan, verdict);
+      if (auto b = maburgs::hop_verdict_loss_blank_until(act, now_ms))
+        s1_hop_loss.blank_until(*b);
+      switch (act.kind) {
+        case maburgs::HopAction::Order:
+          hopping_atomic.store(true);
+          rcf_sent_at_order = rcf_sent_total;
+          break;
+        case maburgs::HopAction::Confirm:
+        case maburgs::HopAction::Withdraw:
+          hopping_atomic.store(false);
+          break;
+        case maburgs::HopAction::VerifyPass:
+          // Handled in apply_hop_action() above (HopVerdict::reset()) --
+          // nothing run_radio-specific to do.
+        case maburgs::HopAction::OneCardRetune:
+        case maburgs::HopAction::Hold:
+        case maburgs::HopAction::None:
+          break;
+      }
+      for (const auto& e : hopc.take_events()) {
+        if (scan_log) scan_log->hop(e);
+        std::fprintf(stderr, "maburgs hop: %s epoch %u target %u score %u +%.0f ms\n",
+                     e.kind.c_str(), e.epoch, e.target, e.score, e.elapsed_ms);
+        last_hop_event_ms = static_cast<uint64_t>(e.elapsed_ms >= 0 ? e.elapsed_ms : 0.0);
+      }
+    };
+
     // ---- in-flight channel hop: verdict window (spec section 2) ----
     // Placed right after plan.tick() so a hop ordered below lands on
     // plan.op()/plan.hopping() this SAME tick -- the mechanical retune loop
@@ -1844,6 +1883,12 @@ static int run_radio(const maburgs::Config& cfg) {
     const bool hop_active = maburgs::hop_active(in_session, scout_joined);
     if (hop_active != hop_was_active) {
       hop_was_active = hop_active;
+      // Falling edge: the controller is about to stop being ticked, so an
+      // order still awaiting its confirm must be withdrawn NOW -- ChannelPlan
+      // ignores link loss while a hop is in flight, and nothing else would
+      // ever clear it (bench 2026-09-24, GS session 0207: the GS sat on the
+      // target and the old op forever while the drone waited on home).
+      if (!hop_active) dispatch_hop_action(hopc.on_session_lost(now_ms, plan.op()));
       verdict.reset();
       last_verdict = maburgs::Verdict::Healthy;
       last_verdict_out = maburgs::VerdictOut{};
@@ -1890,7 +1935,7 @@ static int run_radio(const maburgs::Config& cfg) {
       // before that window's .add() for THIS tick, so it reflects state as
       // of the end of the previous tick: one control-loop tick (~10-20 ms)
       // stale against a 150 ms-default verdict window, immaterial.
-      const auto s1_hop_sample = s1_loss.sample(now_ms);
+      const auto s1_hop_sample = s1_hop_loss.sample(now_ms);
       vl.pre_fec_loss = s1_hop_sample.valid ? s1_hop_sample.loss : 0.0;
       const uint64_t recovered_now = agg.decoder().stats(0).syms_recovered +
                                      agg.decoder().stats(1).syms_recovered;
@@ -1984,37 +2029,7 @@ static int run_radio(const maburgs::Config& cfg) {
         }
       }
       const maburgs::HopAction act = hopc.tick(ht);
-      // Shared with run_hop_inject_test() (Task 15 fix round 1) -- see
-      // apply_hop_action()'s own comment. The three lines below are
-      // run_radio()-only bookkeeping with no meaning to the test harness
-      // (hopping_atomic is cross-thread state for the scout/inflight
-      // threads; rcf_sent_at_order anchors the one-card RCF-repeat count
-      // to THIS run's send counter), so they stay here, immediately after
-      // the call, in the same relative order as before the extraction.
-      apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan, verdict);
-      switch (act.kind) {
-        case maburgs::HopAction::Order:
-          hopping_atomic.store(true);
-          rcf_sent_at_order = rcf_sent_total;
-          break;
-        case maburgs::HopAction::Confirm:
-        case maburgs::HopAction::Withdraw:
-          hopping_atomic.store(false);
-          break;
-        case maburgs::HopAction::VerifyPass:
-          // Handled in apply_hop_action() above (HopVerdict::reset()) --
-          // nothing run_radio-specific to do.
-        case maburgs::HopAction::OneCardRetune:
-        case maburgs::HopAction::Hold:
-        case maburgs::HopAction::None:
-          break;
-      }
-      for (const auto& e : hopc.take_events()) {
-        if (scan_log) scan_log->hop(e);
-        std::fprintf(stderr, "maburgs hop: %s epoch %u target %u score %u +%.0f ms\n",
-                     e.kind.c_str(), e.epoch, e.target, e.score, e.elapsed_ms);
-        last_hop_event_ms = static_cast<uint64_t>(e.elapsed_ms >= 0 ? e.elapsed_ms : 0.0);
-      }
+      dispatch_hop_action(act);   // the shared path, defined above the verdict window
     }
 
     // Proposal for the next DISC: the frozen op once the drone has answered,
@@ -2298,6 +2313,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // not depend on decoder progress after a re-key. The total feeds the
     // sideport/ctl-log gauge, the current-only side feeds block 5 (util).
     s1_loss.add(s1.arr_expected, s1.arr_arrived, now_ms);
+    s1_hop_loss.add(s1.arr_expected, s1.arr_arrived, now_ms);
     // Loss episodes (fec.log): drained every tick whether or not the log is
     // open, so the decoder's closed-episode queue never fills. Stamped with
     // the op and the sid's own commanded overhead as of this tick.

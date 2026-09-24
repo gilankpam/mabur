@@ -20,6 +20,13 @@ static HopTick T(double t, VerdictOut v, std::optional<uint8_t> best, uint8_t cu
 static VerdictOut measured(VerdictOut v, double t_start, double t_end) {
   v.t_start_ms = t_start; v.t_ms = t_end; return v;
 }
+// Whether one channel is currently backed off (the fled channel is backed
+// off too since the trigger-flees rule, so "nothing backed off" is no longer
+// the way to say "the landed channel was not penalised").
+static bool backed(const HopController& h, uint8_t ch, double now) {
+  for (auto c : h.backed_off(now)) if (c == ch) return true;
+  return false;
+}
 TEST(trigger_orders_best_and_video_confirms_then_verify_passes) {
   HopController h(cfg(), 136);
   auto a = h.tick(T(1000, interfered(5), 149, 136));
@@ -45,8 +52,10 @@ TEST(no_video_withdraws_and_backs_off_target) {
   auto a = h.tick(T(1600, interfered(), 149, 136));
   CHECK(a.kind == HopAction::Withdraw && a.target == 136 && a.epoch == 2);
   CHECK(h.hop_ch() == 136 && h.state() == HopState::Idle);
+  // The failed target AND the channel the trigger fled (136) are backed
+  // off; both expire on the same 30 s first-repeat schedule.
   auto bo = h.backed_off(1601);
-  REQUIRE(bo.size() == 1); CHECK(bo[0] == 149);
+  REQUIRE(bo.size() == 2); CHECK(bo[0] == 136 && bo[1] == 149);
   CHECK(h.backed_off(1600 + 30000 + 1).empty());
 }
 TEST(verify_fail_hops_again_immediately_to_next_best) {
@@ -55,7 +64,8 @@ TEST(verify_fail_hops_again_immediately_to_next_best) {
   h.tick(T(1080, interfered(), 149, 136, true));
   auto a = h.tick(T(1300, interfered(), 165, 149));     // still interfered on 149; ranker now says 165
   CHECK(a.kind == HopAction::Order && a.target == 165 && a.epoch == 2 && a.restore_rung == 5);
-  auto bo = h.backed_off(1301); CHECK(bo.size() == 1 && bo[0] == 149);
+  auto bo = h.backed_off(1301);   // the fled 136 and the failed 149
+  CHECK(bo.size() == 2 && bo[0] == 136 && bo[1] == 149);
 }
 TEST(exhausted_goes_home_then_holds) {
   HopController h(cfg(), 136);
@@ -135,11 +145,11 @@ TEST(stale_pre_hop_interfered_does_not_break_the_verify_window) {
     CHECK(h.tick(T(t, pre_hop, 165, 149)).kind == HopAction::None);
     CHECK(h.state() == HopState::Verifying);
   }
-  CHECK(h.backed_off(1230).empty());   // the channel we just landed on is NOT backed off
+  CHECK(!backed(h, 149, 1230));   // the channel we just landed on is NOT backed off
   // A verdict genuinely measured after the landing still fails the verify.
   auto a = h.tick(T(1400, measured(interfered(5), 1250, 1400), 165, 149));
   CHECK(a.kind == HopAction::Order && a.target == 165);
-  auto bo = h.backed_off(1401); CHECK(bo.size() == 1 && bo[0] == 149);
+  CHECK(backed(h, 149, 1401));   // now it is: a genuine post-landing failure
 }
 // The boundary: a window that merely ENDS after the confirm gathered most
 // of its deltas on the old channel, so it is still stale.
@@ -149,7 +159,7 @@ TEST(verify_window_rejects_a_window_that_straddles_the_confirm) {
   h.tick(T(1080, measured(interfered(5), 850, 1000), 149, 136, true));   // confirm at 1080
   CHECK(h.tick(T(1160, measured(interfered(5), 1000, 1150), 165, 149)).kind == HopAction::None);
   CHECK(h.state() == HopState::Verifying);
-  CHECK(h.backed_off(1161).empty());
+  CHECK(!backed(h, 149, 1161));
 }
 // C3: idle_tick() runs from Hold as well as Idle, so a held controller
 // with the trigger still latched re-entered the hold branch on every ~10 ms
@@ -194,3 +204,91 @@ TEST(re_entering_a_hold_after_it_ended_counts_a_second_episode) {
   CHECK(h.holds() == 2);
 }
 MTEST_MAIN
+
+// ---- session lost mid-hop (bench 2026-09-24, GS session 0207) ----------
+// run_radio() only ticks this controller while the link is in SESSION, and
+// ChannelPlan::tick() ignores link loss entirely while a hop is in flight.
+// A session that dropped while an order was still unconfirmed therefore
+// left BOTH frozen forever: lead card parked on the target, trailing card
+// on the old op, no split_home, while the drone had long since gone home
+// on move_confirm_ms. on_session_lost() is the falling-edge exit.
+TEST(session_loss_while_ordered_withdraws_the_hop) {
+  HopController h(cfg(), 136);
+  CHECK(h.tick(T(1000, interfered(), 40, 128)).kind == HopAction::Order);
+  auto a = h.on_session_lost(1050, 128);
+  CHECK(a.kind == HopAction::Withdraw && a.target == 128 && a.epoch == 2);
+  CHECK(h.state() == HopState::Idle && h.hop_ch() == 128);
+  bool forty = false;
+  for (auto c : h.backed_off(1051)) forty = forty || c == 40;
+  CHECK(forty);   // the unconfirmed target failed, same as a confirm_ms withdraw
+  auto ev = h.take_events();
+  REQUIRE(!ev.empty());
+  CHECK(ev.back().kind == "session_lost" && ev.back().target == 40);
+}
+TEST(session_loss_when_idle_does_nothing) {
+  HopController h(cfg(), 136);
+  CHECK(h.on_session_lost(1000, 136).kind == HopAction::None);
+  CHECK(h.state() == HopState::Idle && h.take_events().empty());
+}
+TEST(session_loss_while_verifying_ends_the_verify) {
+  // Confirmed already, so ChannelPlan has moved op_ and its own link-loss
+  // path works; the controller must just not resume a stale verify.
+  HopController h(cfg(), 136);
+  h.tick(T(1000, interfered(), 149, 136));
+  CHECK(h.tick(T(1080, interfered(), 149, 136, true)).kind == HopAction::Confirm);
+  CHECK(h.on_session_lost(1200, 149).kind == HopAction::None);
+  CHECK(h.state() == HopState::Idle);
+}
+TEST(session_loss_is_shadow_only_when_disabled) {
+  HopController h(cfg(false), 136);
+  h.tick(T(1000, interfered(), 40, 128));
+  CHECK(h.on_session_lost(1050, 128).kind == HopAction::None);
+  auto ev = h.take_events();
+  REQUIRE(!ev.empty());
+  CHECK(ev.back().kind == "would_session_lost");
+}
+
+// The deadlock itself, with the real ChannelPlan: the recorded sequence
+// (op 128, order 40 on card 0, session drops before any confirm). The GS
+// must have a card on home within split_after_ms, where the drone waits.
+#include "channel_plan.h"
+TEST(session_loss_mid_hop_lets_the_plan_split_home) {
+  ChannelPlan plan(ChannelPlanCfg{136, 2, 5000, 300, 20});
+  plan.on_ack(0, 128, 128);                  // link lives on 128
+  plan.tick(100, true);
+  HopController h(cfg(), 136);
+  auto a = h.tick(T(1000, interfered(), 40, 128, false, /*lead=*/0));
+  REQUIRE(a.kind == HopAction::Order);
+  plan.hop_order(1000, a.target, a.lead_card);
+  // session drops: the caller stops ticking h; the falling edge calls this
+  a = h.on_session_lost(1100, plan.op());
+  REQUIRE(a.kind == HopAction::Withdraw);
+  plan.hop_withdraw(1100);
+  bool home = false;
+  for (double t = 1100; t <= 1100 + 5000 + 100; t += 10) {
+    plan.tick(t, false);
+    home = home || plan.desired(0) == 136 || plan.desired(1) == 136;
+  }
+  CHECK(home);
+}
+
+// ---- never retry the channel being fled (same session) -----------------
+// Only failed TARGETS were backed off. The channel the trigger fled stayed
+// eligible, and the in-flight ranker (event counts over 5 ms dwells) scored
+// the jammed 144 a clean 25, so when 128's verify failed the retry went
+// straight back into the jam.
+TEST(trigger_backs_off_the_channel_it_flees) {
+  HopController h(cfg(), 136);
+  CHECK(h.tick(T(1000, interfered(), 128, 144)).kind == HopAction::Order);
+  bool fled = false;
+  for (auto c : h.backed_off(1001)) fled = fled || c == 144;
+  CHECK(fled);
+}
+TEST(verify_fail_never_retries_the_channel_it_fled) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, interfered(), 128, 144));           // flee the jam on 144
+  h.tick(T(1062, interfered(), 128, 144, true));     // landed on 128
+  auto a = h.tick(T(1300, interfered(), 144, 128));  // 128 "fails"; ranker offers 144
+  CHECK(a.kind == HopAction::Order && a.target != 144);
+  CHECK(a.target == 136);                            // nothing else ranked: home
+}

@@ -1,6 +1,7 @@
 #pragma once
 #include <optional>
 
+#include "hop_controller.h"
 #include "hop_verdict.h"
 
 namespace maburgs {
@@ -60,6 +61,23 @@ inline std::optional<double> hop_store_blank_until(const VerdictOut& vo, bool en
                                                    int confirm_ms) {
   if (!enable || !vo.first_interfered) return std::nullopt;
   return vo.t_ms + static_cast<double>(confirm_ms) + kHopSettleBlankMs;
+}
+
+// Pure: when the hop verdict's own link-loss window (a 500 ms trailing
+// S1LossWindow, main.cpp's s1_hop_loss) must be blanked. At Confirm -- the
+// instant the link lands on the new channel -- plus the same settle as the
+// store blank, so the verify that follows is judged on loss measured on the
+// channel it is verifying. Unblanked, the first eligible verify window still
+// carried the jam on the old channel and the hop's own retune gap: 128 read
+// 50.9 % loss with zero foreign frames and failed (bench 2026-09-24, GS
+// session 0207), which sent the retry back into the jam. The verdict gets
+// its own window rather than blanking s1_loss, which also feeds the
+// sideport/ctl-log/OSD loss gauge the pilot reads. Every other action keeps
+// the link where it was (Order/OneCardRetune: the confirm has not happened;
+// Withdraw: the trailing card never left op), so it blanks nothing.
+inline std::optional<double> hop_verdict_loss_blank_until(const HopAction& act, double now_ms) {
+  if (act.kind != HopAction::Confirm) return std::nullopt;
+  return now_ms + kHopSettleBlankMs;
 }
 
 }  // namespace maburgs

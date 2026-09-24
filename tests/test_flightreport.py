@@ -1370,6 +1370,26 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual(rows[0]["outcome"], "hold_end")
         self.assertEqual(rows[0]["outcome_ts"], 4000.0)
 
+    def test_session_lost_closes_the_attempt_row(self):
+        """HopController::on_session_lost (bench 2026-09-24, GS session
+        0207): the link's session dropped while an order was still waiting
+        for its confirm, and the order is withdrawn at that falling edge.
+        That ENDS the attempt -- it must read as its own outcome, not fall
+        through to "unterminated" (the log ending mid-attempt), and the
+        shadow (hop.enable = false) spelling must close it too."""
+        def E(t, kind, epoch, target):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": 0.0}
+        rows = flightreport.build_hop_rows(
+            [E(1000, "order", 9, 40), E(1400, "session_lost", 10, 40)], [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["outcome"], "session_lost")
+        self.assertEqual(rows[0]["outcome_ts"], 1400.0)
+        rows = flightreport.build_hop_rows(
+            [E(1000, "would_order", 9, 40), E(1400, "would_session_lost", 10, 40)], [])
+        self.assertEqual(len(rows), 1)
+        self.assertIn("session_lost", rows[0]["outcome"])
+
     def test_zero_hops_prints_verdict_histogram(self):
         """No H events at all (a perfectly healthy flight, or hop_controller
         compiled in but never triggering): the verdict histogram, not an

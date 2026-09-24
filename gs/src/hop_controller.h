@@ -60,6 +60,7 @@ class HopController {
   HopController(HopCfg cfg, uint8_t home);
 
   HopAction tick(const HopTick& in);
+  HopAction on_session_lost(double now_ms, uint8_t cur_op);
 
   uint8_t hop_ch() const;   // what every RCF carries: the standing target (0 until the first order)
   uint8_t epoch() const;
@@ -87,6 +88,7 @@ class HopController {
   void enter_hold(double now, const char* why, uint8_t target, double elapsed_ms, HopAction& out);
   void leave_hold(double now, uint8_t cur_op);
   void withdraw(uint8_t restore_to, double now, HopAction& out);
+  void flee(uint8_t ch, double now);
   void back_off(uint8_t ch, double now);
   bool is_backed_off(uint8_t ch, double now) const;
   void prune_hop_times(double now);

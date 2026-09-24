@@ -141,7 +141,12 @@ the aggregator, RSSI/SNR EMAs converted from devourer raw units by
 run fed the raw values and `weak` could never trip) — **a card mid-dwell
 that window is skipped**
 (`VerdictCardIn::valid = false`). Link-level: the s1 (BASE) pre-FEC loss
-window and the FEC recovered-symbol delta.
+window and the FEC recovered-symbol delta. The loss input is the verdict's
+own 500 ms window (`s1_hop_loss` in `gs/src/main.cpp`, fed like `s1_loss`),
+blanked when a hop lands (`HopAction::Confirm` + 150 ms settle,
+`hop_verdict_loss_blank_until` in `gs/src/hop_blank.h`) so a verify is
+judged on the channel it verifies; `s1_loss` itself, which feeds the
+sideport/ctl-log/OSD gauge, is never blanked.
 
 Five independent evidence bits, OR'd together every window
 (`gs/src/hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvFading/kEvContended/
@@ -437,6 +442,25 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
     re-snapshotted.
   - No video within `hop.confirm_ms` while `Ordered` → withdrawal (§1),
     same backoff.
+- **The channel a trigger flees is backed off too** (same schedule as a
+  failed target, `HopController::flee`). Before 2026-09-24 only failed
+  targets were, so when the first target failed its verify the retry could
+  go straight back to the channel just fled — and the in-flight ranker
+  (event counts over 5 ms dwells) scores a long-frame jammer low, so it
+  did (bench, GS session 0207: 144 → 128 → 144). A withdraw still returns
+  to it: that path restores op, it does not consult the ranker.
+- **Session lost mid-hop** (`HopController::on_session_lost`, called on
+  `hop_active`'s falling edge). The controller is only ticked in SESSION,
+  and `ChannelPlan::tick` ignores link loss while a hop is in flight, so an
+  order still waiting for its confirm when the session dropped used to
+  freeze both: lead card on the target, trailing card on the old op, no
+  `split_home`, the drone's DiscAcks ignored (`plan.hopping()`), while the
+  drone had gone home on `move_confirm_ms` — link down until a GS restart
+  (bench 2026-09-24, session 0207). Now an `Ordered` hop is withdrawn at
+  that edge like a `confirm_ms` timeout (target backed off, epoch bumped,
+  `session_lost` logged), which frees the plan's own link-loss path: a
+  card is on home within `split_after_ms`. A `Verifying` hop (already
+  confirmed, so the plan's op has moved) just drops its stale verify.
 - **Exhaustion.** All candidates backed off or unranked: home if not
   already there; else `hold` (`hold_exhausted`, no retune — the ladder
   copes). Automatically retried once a shorter backoff expires and a new
@@ -582,7 +606,7 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   card's chunk, not a genuinely per-card value.
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is always a single snake_case token — `order`, `lead_confirm`,
-  `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `hold_cap`,
+  `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `session_lost`, `hold_cap`,
   `hold_exhausted`, `hold_end` (the hold pair used to be the two-word C++ strings
   `"hold cap"`/`"hold exhausted"`, a space-delimited field containing the
   delimiter — fixed at the emitter rather than kept as a parser

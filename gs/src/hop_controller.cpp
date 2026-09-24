@@ -27,6 +27,36 @@ HopAction HopController::tick(const HopTick& in) {
   return out;
 }
 
+// The session's falling edge (run_radio() stops ticking this machine while
+// the link is out of SESSION). An order still waiting for its confirm must
+// not survive that: ChannelPlan ignores link loss while a hop is in flight,
+// so an open order parked the lead card on the target and the trailing card
+// on the old op forever -- no split_home -- while the drone, which never
+// confirmed, had gone home on move_confirm_ms (bench 2026-09-24, GS session
+// 0207). Withdraw it exactly like a confirm_ms timeout (target backed off,
+// epoch bumped so the RCF stops carrying the order), which clears the plan's
+// hop and lets its ordinary link-loss path put a card on home. A confirmed
+// hop has already moved the plan's op; only the stale verify is dropped.
+HopAction HopController::on_session_lost(double now_ms, uint8_t cur_op) {
+  HopAction out;
+  if (state_ == HopState::Ordered) {
+    const uint8_t failed_target = hop_ch_;
+    back_off(failed_target, now_ms);
+    ++epoch_;
+    hop_ch_ = cur_op;
+    state_ = HopState::Idle;
+    out.kind = HopAction::Withdraw;
+    out.target = cur_op;
+    out.epoch = epoch_;
+    log_event(now_ms, "session_lost", epoch_, failed_target, 0, now_ms - order_ms_);
+  } else if (state_ == HopState::Verifying) {
+    state_ = HopState::Idle;
+    log_event(now_ms, "session_lost", epoch_, hop_ch_, 0, now_ms - verify_start_);
+  }
+  if (!cfg_.enable) out = HopAction{};   // same kill switch as tick()
+  return out;
+}
+
 void HopController::idle_tick(const HopTick& in, HopAction& out) {
   if (!in.verdict.trigger) {
     // The reason to hold is gone. Without this a Hold entered while the
@@ -46,11 +76,13 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
   }
   if (in.best.has_value()) {
     leave_hold(in.now_ms, in.cur_op);
+    flee(in.cur_op, in.now_ms);
     order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "order", out);
     return;
   }
   if (in.cur_op != home_) {
     leave_hold(in.now_ms, in.cur_op);
+    flee(in.cur_op, in.now_ms);
     order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "order", out);
     return;
   }
@@ -193,6 +225,16 @@ void HopController::leave_hold(double now, uint8_t cur_op) {
   // operator needs out of an episode that no longer logs per tick.
   log_event(now, "hold_end", epoch_, cur_op, 0, now - hold_start_ms_);
 }
+
+// The channel a trigger is fleeing is as bad as a target that failed its
+// verify, so it gets the same backoff. Without it only failed TARGETS were
+// excluded and the fled channel stayed a retry candidate -- and the in-flight
+// ranker (event counts over 5 ms dwells) scores a long-frame jammer low, so
+// when the first target failed its verify the retry went straight back into
+// the jam (bench 2026-09-24, GS session 0207: 144 -> 128 -> 144). A withdraw
+// still returns to it: that path restores the op, it does not consult the
+// ranker.
+void HopController::flee(uint8_t ch, double now) { back_off(ch, now); }
 
 void HopController::back_off(uint8_t ch, double now) {
   auto it = backoff_.find(ch);
