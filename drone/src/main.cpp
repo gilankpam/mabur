@@ -335,26 +335,27 @@ struct RealActuator : mabur::Actuator {
 
   void apply_ampdu_for(const AppliedOp& op) {
     if (!dev) return;
-    const devourer::AmpduMode want = ampdu_mode_for(ampdu, op.ladder[1].mcs);
+    const uint8_t mcs = op.ladder[1].mcs;
+    const uint8_t bw = op.ladder[1].bw;
+    const int min_mcs = bw == 40 ? ampdu.min_mcs_40 : ampdu.min_mcs_20;
+    const devourer::AmpduMode want = ampdu_mode_for(ampdu, mcs, bw);
     if (ampdu_mode_same(want, last_ampdu)) {
       if (!ampdu_logged) {
         ampdu_logged = true;
-        std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d (chip default, min_mcs %d, max_num %d)\n",
-                     want.enabled ? "ON" : "OFF", op.ladder[1].mcs, ampdu.min_mcs,
-                     ampdu.max_num);
+        std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d/%d (chip default, min_mcs_%d %d, max_num %d)\n",
+                     want.enabled ? "ON" : "OFF", mcs, bw, bw, min_mcs, ampdu.max_num);
       }
       return;
     }
     if (!dev->SetAmpduMode(want)) {
-      std::fprintf(stderr, "warning: SetAmpduMode failed at mcs%d -- chip keeps %s\n",
-                   op.ladder[1].mcs, last_ampdu.enabled ? "A-MPDU" : "singles");
+      std::fprintf(stderr, "warning: SetAmpduMode failed at mcs%d/%d -- chip keeps %s\n",
+                   mcs, bw, last_ampdu.enabled ? "A-MPDU" : "singles");
       return;
     }
     last_ampdu = want;
     ampdu_logged = true;
-    std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d (min_mcs %d, max_num %d)\n",
-                 want.enabled ? "ON" : "OFF", op.ladder[1].mcs, ampdu.min_mcs,
-                 ampdu.max_num);
+    std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d/%d (min_mcs_%d %d, max_num %d)\n",
+                 want.enabled ? "ON" : "OFF", mcs, bw, bw, min_mcs, ampdu.max_num);
   }
   // Task 11 review, Important fix 2: null in dry-run and in run_dry_run's
   // own RealActuator (calibration is real-mode only), set to run_real_
@@ -2922,7 +2923,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // drone/src/ampdu_policy.h) and the agent thread programs it on every op
   // change. The chip leaves InitWrite in the singles state, which is the
   // right state for the boot MAX_RANGE op (rung 0) under the shipped
-  // ampdu.min_mcs 4, so there is no window in which frames fly the wrong
+  // ampdu.min_mcs_20 4, so there is no window in which frames fly the wrong
   // mode. Frames are QoS-Data whether or not aggregation is on
   // (radio_tx.cpp), so the wire never depends on this.
 

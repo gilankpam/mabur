@@ -7,10 +7,11 @@
 // when aggregates barely form, amortised only once the MPDUs are short
 // enough to pack six per PPDU. The rung-pinned A/B (sessions 0121-0128)
 // found singles never worse on fec/air/e2e at rungs 0-3. So the mode
-// follows the op's MCS: below ampdu.min_mcs the chip flies singles, at and
-// above it the configured aggregate. devourer's SetAmpduMode is a live
-// switch (per-frame descriptor half + one 0x455 timer write), so the
-// actuator flips it on the agent thread as the ladder moves.
+// follows the op's MCS AND width: below the width's `ampdu.min_mcs_<bw>`
+// the chip flies singles, at and above it the configured aggregate.
+// devourer's SetAmpduMode is a live switch (per-frame descriptor half + one
+// 0x455 timer write), so the actuator flips it on the agent thread as the
+// ladder moves.
 #include <cstdint>
 
 #include "AmpduMode.h"
@@ -18,9 +19,10 @@
 
 namespace mabur {
 
-inline devourer::AmpduMode ampdu_mode_for(const AmpduCfg& c, uint8_t mcs) {
+inline devourer::AmpduMode ampdu_mode_for(const AmpduCfg& c, uint8_t mcs, uint8_t bw) {
   devourer::AmpduMode m;  // enabled=false: singles, the chip's post-InitWrite state
-  if (c.max_num <= 0 || mcs < c.min_mcs) return m;
+  const int min_mcs = bw == 40 ? c.min_mcs_40 : c.min_mcs_20;
+  if (c.max_num <= 0 || mcs < min_mcs) return m;
   m.enabled = true;
   m.tid = 0;
   m.max_num = static_cast<uint8_t>(c.max_num);

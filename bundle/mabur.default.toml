@@ -20,7 +20,7 @@ symbol_size     = 332      # must match the GS
 window          = 32
 blocks_per_body = [4, 4]   # base, enhance
 base_overhead   = 0.5
-feed_batch      = 1        # singles: ampdu.max_num 1, nothing to fill (2026-09-22)
+feed_batch      = 1        # 1: unchanged when the drone went to agg6 (2026-09-24); no measured win from >1
 flush_ms        = 25
 
 [encoder]
@@ -79,11 +79,13 @@ fps          = 30
 stale_ms     = 2000        # a DISARMED report older than this = full power
 
 [ampdu]
-max_num  = 1               # A-MPDU OFF: agg6 loses 12-16 enh symbols per lost PPDU, past what 0.25 ov repairs (2026-09-22)
-max_time = 32
-min_mcs  = 4               # singles below mcs4: agg6 delivers 6-13 pts less there
+max_num    = 6             # agg6 from the per-width min_mcs up: the flight config, bench-clean with carrier sense on (2026-09-24). Was 1 (singles) 2026-09-22.
+max_time   = 32
+min_mcs_20 = 4             # singles below mcs4 at 20 MHz: agg6 delivers 6-13 pts less there (2026-09-17 sweep)
+min_mcs_40 = 2             # A-MPDU pays from mcs2 at 40 MHz (2026-09-23 sweep); the 40 rungs are mcs3/4, both aggregate
 
 [air_clock]
-shed_ms    = 25            # ARMED shed 25 / eff 0.73 flew clean
-efficiency = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # delivered/nominal per HT MCS: singles mcs0-3, agg6 above
-body_us    = 0
+shed_ms       = 25         # ARMED shed 25 / eff 0.73 flew clean
+efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # delivered/nominal per HT MCS at 20 MHz: singles mcs0-3, agg6 above (2026-09-17)
+efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # agg6 at 40 MHz, flat, no rung-0 exception (2026-09-23)
+body_us       = 0

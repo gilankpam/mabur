@@ -91,9 +91,9 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.fec.window == 32);
   CHECK((cfg.fec.blocks_per_body == std::array<int, 2>{4, 4}));
   CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
-  // Singles since 2026-09-22 (ampdu.max_num 1 below): nothing to fill, so
-  // no grouped submit. agg6 + feed_batch 6 had bought fec -2.3/-2.7 ms
-  // (docs/observability.md A-MPDU) before the 0.5/0.25 ladder pair.
+  // feed_batch 1 held when the drone went to agg6 (2026-09-24). agg6 +
+  // feed_batch 6 had bought fec -2.3/-2.7 ms (docs/observability.md
+  // A-MPDU) before the 0.5/0.25 ladder pair; no re-measured win since.
   CHECK(cfg.fec.feed_batch == 1);
   CHECK(cfg.fec.flush_ms == 25);
 
@@ -114,13 +114,15 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.encoder.roi_qp_low == -24);
   CHECK(cfg.encoder.roi_qp_normal == 0);
 
-  // air_clock: ARMED, shed 25 flew clean (14 drops, all at rung transitions,
-  // 0 phantom). efficiency is the per-MCS delivered/nominal table from the
-  // 2026-09-17 saturation sweep: singles at mcs0-3 (ampdu.min_mcs 4), agg6
-  // above (docs/bandwidth-sweep-findings-2026-09-17.md).
+  // air_clock: ARMED, shed 25 flew clean. Per-width delivered/nominal
+  // tables: 20 MHz from the 2026-09-17 saturation sweep (singles at mcs0-3
+  // under ampdu.min_mcs_20 4, agg6 above), 40 MHz from the 2026-09-23 HT40
+  // sweep (agg6, flat 0.74-0.77).
   CHECK(cfg.air_clock.shed_ms == 25);
-  const std::array<double, 8> eff = {0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76};
-  CHECK(cfg.air_clock.efficiency == eff);
+  const std::array<double, 8> eff20 = {0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76};
+  const std::array<double, 8> eff40 = {0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75};
+  CHECK(cfg.air_clock.efficiency_20 == eff20);
+  CHECK(cfg.air_clock.efficiency_40 == eff40);
   CHECK(cfg.air_clock.body_us == 0);
 
   // venc: boot-time encoder pipeline config, bundle-pinned rather than
@@ -175,15 +177,14 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.low_power.fps == 30);
   CHECK(cfg.low_power.stale_ms == 2000);
 
-  // A-MPDU OFF (2026-09-22): with the 0.5/0.25 pair at rungs 3-5 one lost
-  // agg6 aggregate takes 12-16 enh symbols, past what 0.25 ov can repair
-  // (docs/bitrate-ceiling-findings-2026-09-21.md). Singles cap a loss at one
-  // body. agg31 cascades residuals.
-  CHECK(cfg.ampdu.max_num == 1);
+  // agg6 from the per-width threshold up: the flight config since
+  // 2026-09-24 (bench-clean with carrier sense on both ends).
+  CHECK(cfg.ampdu.max_num == 6);
   CHECK(cfg.ampdu.max_time == 32);
-  // Per-rung aggregation (docs/bandwidth-sweep-findings-2026-09-17.md):
-  // singles below mcs4, agg6 from mcs4 up.
-  CHECK(cfg.ampdu.min_mcs == 4);
+  // Per-rung, per-width aggregation: singles below mcs4 at 20 MHz
+  // (2026-09-17 sweep), aggregation from mcs2 at 40 MHz (2026-09-23 sweep).
+  CHECK(cfg.ampdu.min_mcs_20 == 4);
+  CHECK(cfg.ampdu.min_mcs_40 == 2);
 
   auto layers = cfg.uep_layers();
   // Literal passthrough (Task 3): no uep_layer_overhead ladder translation
@@ -1175,32 +1176,52 @@ TEST(ampdu_defaults_when_absent) {
 }
 
 TEST(ampdu_block_parses) {
-  auto path = write_temp_toml("[ampdu]\nmax_num = 4\nmax_time = 48\nmin_mcs = 3\n");
+  auto path = write_temp_toml("[ampdu]\nmax_num = 4\nmax_time = 48\nmin_mcs_20 = 3\nmin_mcs_40 = 1\n");
   auto cfg = load_config(path.string());
   CHECK(cfg.ampdu.max_num == 4);
   CHECK(cfg.ampdu.max_time == 48);
-  CHECK(cfg.ampdu.min_mcs == 3);
+  CHECK(cfg.ampdu.min_mcs_20 == 3);
+  CHECK(cfg.ampdu.min_mcs_40 == 1);
   std::filesystem::remove(path);
 }
 
-TEST(ampdu_min_mcs_defaults_to_zero) {
-  // Absent min_mcs = aggregate at every rung, the pre-2026-09-17 behaviour,
-  // so a config written before the key existed flies exactly as it did.
+TEST(ampdu_min_mcs_keys_default_to_zero) {
+  // Absent min_mcs_20/min_mcs_40 = aggregate at every rung of that width,
+  // the pre-2026-09-17 behaviour, so a config written before the keys
+  // existed flies exactly as it did.
   auto path = write_temp_toml("[ampdu]\nmax_num = 6\n");
   auto cfg = load_config(path.string());
-  CHECK(cfg.ampdu.min_mcs == 0);
+  CHECK(cfg.ampdu.min_mcs_20 == 0);
+  CHECK(cfg.ampdu.min_mcs_40 == 0);
   std::filesystem::remove(path);
 }
 
 TEST(ampdu_min_mcs_rejects_out_of_range) {
   // HT MCS is 0..7; 8 would mean "never", which is what max_num 0 is for.
-  for (const char* body : {"[ampdu]\nmin_mcs = 8\n", "[ampdu]\nmin_mcs = -1\n"}) {
-    auto path = write_temp_toml(body);
+  {
+    auto path = write_temp_toml("[ampdu]\nmin_mcs_20 = 8\n");
     std::string msg = what_of([&] { (void)load_config(path.string()); });
     CHECK(!msg.empty());
-    CHECK(msg.find("ampdu.min_mcs") != std::string::npos);
+    CHECK(msg.find("ampdu.min_mcs_20") != std::string::npos);
     std::filesystem::remove(path);
   }
+  {
+    auto path = write_temp_toml("[ampdu]\nmin_mcs_40 = -1\n");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(!msg.empty());
+    CHECK(msg.find("ampdu.min_mcs_40") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(ampdu_old_min_mcs_key_fails_boot) {
+  // Renamed to min_mcs_20/min_mcs_40 with the 40 MHz rungs (2026-09-24);
+  // the old key is unknown, like every removed key (CLAUDE.md policy).
+  auto path = write_temp_toml("[ampdu]\nmax_num = 6\nmin_mcs = 4\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("ampdu.min_mcs") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
 }
 
 TEST(ampdu_zero_disables) {
@@ -1252,27 +1273,34 @@ TEST(ampdu_rejects_bad_values) {
   }
 }
 
-// air_clock (spec 2026-09-06): shed_ms 0 = observe only; efficiency is the
-// per-MCS fraction of nominal PHY rate the link delivers (8 entries, HT
-// mcs0..7, measured -- docs/bandwidth-sweep-findings-2026-09-17.md), priced
-// into both the bitrate policy and the air clock; body_us a fixed per-body
-// cost. Absent = all ones = nominal, the pre-2026-09-17 policy.
+// air_clock (spec 2026-09-06): shed_ms 0 = observe only; efficiency_20/
+// efficiency_40 are the per-MCS fraction of nominal PHY rate the link
+// delivers at each width (8 entries, HT mcs0..7, measured --
+// docs/bandwidth-sweep-findings-2026-09-17.md,
+// docs/bw40-sweep-findings-2026-09-23.md), priced into both the bitrate
+// policy and the air clock; body_us a fixed per-body cost. Absent = all
+// ones = nominal, the pre-2026-09-17 policy.
 TEST(air_clock_defaults_when_absent) {
   auto path = write_temp_toml("[link]\ntick_ms = 100\n");
   Config c = load_config(path.string());
   CHECK(c.air_clock.shed_ms == 0);
-  for (double e : c.air_clock.efficiency) CHECK(e == 1.0);
+  for (double e : c.air_clock.efficiency_20) CHECK(e == 1.0);
+  for (double e : c.air_clock.efficiency_40) CHECK(e == 1.0);
   CHECK(c.air_clock.body_us == 0);
   std::filesystem::remove(path);
 }
 
 TEST(air_clock_section_parses) {
   auto path = write_temp_toml(
-      "[air_clock]\nshed_ms = 25\nefficiency = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]\nbody_us = 40\n");
+      "[air_clock]\nshed_ms = 25\n"
+      "efficiency_20 = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]\n"
+      "efficiency_40 = [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]\nbody_us = 40\n");
   Config c = load_config(path.string());
   CHECK(c.air_clock.shed_ms == 25);
-  const std::array<double, 8> eff = {0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2};
-  CHECK(c.air_clock.efficiency == eff);
+  const std::array<double, 8> eff20 = {0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2};
+  const std::array<double, 8> eff40 = {0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1};
+  CHECK(c.air_clock.efficiency_20 == eff20);
+  CHECK(c.air_clock.efficiency_40 == eff40);
   CHECK(c.air_clock.body_us == 40);
   std::filesystem::remove(path);
 }
@@ -1281,15 +1309,47 @@ TEST(air_clock_efficiency_must_be_eight_fractions) {
   // A scalar (the pre-2026-09-17 shape), a short array, and an entry
   // outside (0,1] all fail boot naming the key -- no shim for the old shape
   // (CLAUDE.md: config keys are free to change).
-  for (const char* body : {"[air_clock]\nefficiency = 0.73\n",
-                           "[air_clock]\nefficiency = [0.7, 0.7]\n",
-                           "[air_clock]\nefficiency = [1, 1, 1, 1, 1, 1, 1, 0]\n",
-                           "[air_clock]\nefficiency = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]\n"}) {
+  for (const char* body : {"[air_clock]\nefficiency_20 = 0.73\n",
+                           "[air_clock]\nefficiency_20 = [0.7, 0.7]\n",
+                           "[air_clock]\nefficiency_20 = [1, 1, 1, 1, 1, 1, 1, 0]\n",
+                           "[air_clock]\nefficiency_20 = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]\n"}) {
     auto path = write_temp_toml(body);
     std::string msg = what_of([&] { (void)load_config(path.string()); });
-    CHECK(msg.find("air_clock.efficiency") != std::string::npos);
+    CHECK(msg.find("air_clock.efficiency_20") != std::string::npos);
     std::filesystem::remove(path);
   }
+  for (const char* body : {"[air_clock]\nefficiency_40 = 0.73\n",
+                           "[air_clock]\nefficiency_40 = [0.7, 0.7]\n",
+                           "[air_clock]\nefficiency_40 = [1, 1, 1, 1, 1, 1, 1, 0]\n",
+                           "[air_clock]\nefficiency_40 = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]\n"}) {
+    auto path = write_temp_toml(body);
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(msg.find("air_clock.efficiency_40") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(air_clock_old_efficiency_key_fails_boot) {
+  auto path = write_temp_toml(
+      "[air_clock]\nefficiency = [0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9]\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("air_clock.efficiency") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(air_clock_per_width_tables_parse_and_validate) {
+  auto path = write_temp_toml(
+      "[air_clock]\nefficiency_20 = [0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9]\n"
+      "efficiency_40 = [0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7]\n");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.air_clock.efficiency_20[0] == 0.9);
+  CHECK(cfg.air_clock.efficiency_40[7] == 0.7);
+  std::filesystem::remove(path);
+  auto bad = write_temp_toml("[air_clock]\nefficiency_40 = [0.7, 0.7, 0.7]\n");
+  std::string msg = what_of([&] { (void)load_config(bad.string()); });
+  CHECK(msg.find("air_clock.efficiency_40") != std::string::npos);
+  std::filesystem::remove(bad);
 }
 
 TEST(air_clock_range_checks_name_the_key) {

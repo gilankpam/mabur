@@ -337,13 +337,13 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
 }
 
 // 3b. Per-MCS efficiency (docs/bandwidth-sweep-findings-2026-09-17.md): the
-// policy prices each layer at nominal × air_clock.efficiency[mcs], so the
-// budget is a fraction of the capacity the link DELIVERS. Same op as 3 with
-// efficiency[2] = 0.5: both rate terms halve, kbps 8450 -> 4225 -> 4200.
-// Entries for other MCS must not leak in.
+// policy prices each layer at nominal × air_clock.efficiency_<bw>[mcs], so
+// the budget is a fraction of the capacity the link DELIVERS. Same op as 3
+// (20 MHz) with efficiency_20[2] = 0.5: both rate terms halve, kbps
+// 8450 -> 4225 -> 4200. Entries for other MCS must not leak in.
 TEST(bitrate_policy_prices_at_delivered_rate) {
   Config cfg = make_cfg();
-  cfg.air_clock.efficiency = {0.1, 0.1, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1};
+  cfg.air_clock.efficiency_20 = {0.1, 0.1, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1};
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});

@@ -257,10 +257,10 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
-  // DELIVERED rates (air_rate.h): nominal × the measured per-MCS
-  // air_clock.efficiency, so airtime_budget is a fraction of what the link
-  // actually moves. Priced off nominal until 2026-09-17, which is why
-  // budget 0.6 sat at ~99 % of real mcs2 capacity and spiked
+  // DELIVERED rates (air_rate.h): nominal × the measured per-MCS,
+  // per-width air_clock.efficiency_20/_40, so airtime_budget is a fraction
+  // of what the link actually moves. Priced off nominal until 2026-09-17,
+  // which is why budget 0.6 sat at ~99 % of real mcs2 capacity and spiked
   // (docs/bandwidth-sweep-findings-2026-09-17.md).
   const double rate_b = delivered_mbps(applied_.ladder[0], cfg_.air_clock);
   // The probe stream has its own slot and is deliberately NOT a term here
