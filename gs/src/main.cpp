@@ -59,6 +59,7 @@
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
+#include "pair_pick.h"
 #include "pts_anchor.h"
 #include "probe_log.h"
 #include "fec_log.h"
@@ -690,6 +691,11 @@ static int run_radio(const maburgs::Config& cfg) {
                           : static_cast<int>(cfg.radio.cards.size());
   maburgs::BodyQueue queue;  // all cards share one queue; card_id tags origin
   std::vector<std::unique_ptr<maburgs::RadioFrontend>> fronts;
+  // The boot scout card (spare card, or the only card) scans the 20 MHz
+  // halves at 20 MHz tuning and joins the link at radio.width once the
+  // pick freezes (ChannelScout::run -> retune_width). Every other card,
+  // and every card when the scan is off, tunes radio.width from the start.
+  const int boot_scout_card = n_cards == 1 ? 0 : n_cards - 1;
   for (int i = 0; i < n_cards; ++i) {
     maburgs::RadioFrontend::Cfg fc;
     if (cfg.radio.auto_scan) {
@@ -703,6 +709,7 @@ static int run_radio(const maburgs::Config& cfg) {
       fc.index = cfg.radio.cards[static_cast<size_t>(i)].index;
     }
     fc.channel = cfg.radio.channel;
+    fc.width_mhz = (cfg.radio.scan.enable && i == boot_scout_card) ? 20 : cfg.radio.width;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
   }
@@ -913,7 +920,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // scout thread is joined.
   std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
   const bool one_card = n_cards == 1;
-  const int scout_card = one_card ? 0 : n_cards - 1;
+  const int scout_card = boot_scout_card;
   std::unique_ptr<maburgs::ChannelScout> scout;
   std::thread scout_thread;
   bool scout_joined = true;  // no thread running
@@ -928,6 +935,7 @@ static int run_radio(const maburgs::Config& cfg) {
     sc.beacon_period_ms = 20;
     sc.home_margin = static_cast<uint32_t>(scfg.home_margin);
     sc.one_card = one_card;
+    sc.link_width_mhz = cfg.radio.width;
     scout = std::make_unique<maburgs::ChannelScout>(
         sc, *fronts[static_cast<size_t>(scout_card)],
         [] { return static_cast<int64_t>(mono_ms()); },
@@ -962,13 +970,22 @@ static int run_radio(const maburgs::Config& cfg) {
   // first DiscAck. Passing home as BOTH arguments (as this did) collapsed
   // spec section 3's "ties -> boot-time pick, then home" into "ties ->
   // home" and made the tiebreak's first term dead code.
-  maburgs::HopRanker ranker(hcfg, scfg.candidates, cfg.radio.channel, 0);
+  //
+  // At 40 MHz the boot scan visits every HALF (pair_pick.h); the ranker's
+  // candidate set must hold them all or add() drops those visits. In
+  // session the scout only ever dwells on primaries.
+  maburgs::HopRanker ranker(hcfg,
+                            cfg.radio.width == 40
+                                ? maburgs::scan_half_set(cfg.radio.channel, scfg.candidates)
+                                : scfg.candidates,
+                            cfg.radio.channel, 0);
   maburgs::HopController hopc(hcfg, cfg.radio.channel);
   // Constructed against card 0 as a placeholder radio -- harmless, since the
   // scout thread below always repoints this via set_radio() (Task 10)
   // before every dwell/burst and never touches it beforehand.
   maburgs::InflightScout inflight(
-      maburgs::InflightScoutCfg{hcfg.dwell_observe_ms, hcfg.dwell_period_ms, scfg.candidates},
+      maburgs::InflightScoutCfg{hcfg.dwell_observe_ms, hcfg.dwell_period_ms, scfg.candidates,
+                                cfg.radio.width},
       *fronts[static_cast<size_t>(scout_card)],
       [] { return static_cast<int64_t>(mono_us()); },
       [](int ms) {
@@ -1647,7 +1664,7 @@ static int run_radio(const maburgs::Config& cfg) {
         join_scout(scout->proposal());
         std::fprintf(stderr,
                      "maburgs channel: scout card %d died, scan abandoned at "
-                     "%llu rounds\n",
+                     "%llu rounds, card stays at 20 MHz\n",
                      i, static_cast<unsigned long long>(rounds));
       }
       if (!fe.alive() && now_ms_u >= retry_at_ms[static_cast<size_t>(i)]) {
@@ -2022,8 +2039,17 @@ static int run_radio(const maburgs::Config& cfg) {
         // hop ranker needs the same answer whether or not logging is on.
         const auto all = scout->ranking();
         bool any_ranked = false;
-        for (const auto& e : all)
-          any_ranked = any_ranked || e.visits >= static_cast<uint32_t>(scfg.min_rounds);
+        if (cfg.radio.width == 40) {
+          // At 40 MHz the entries are per HALF and pair_proposal only ranks
+          // a pair once BOTH halves reach min_rounds; one half there (e.g.
+          // the one-card home half, which also books home-window visits)
+          // would call home-by-default a measured pick.
+          any_ranked = maburgs::any_pair_ranked(all, cfg.radio.channel, scfg.candidates,
+                                                scfg.min_rounds);
+        } else {
+          for (const auto& e : all)
+            any_ranked = any_ranked || e.visits >= static_cast<uint32_t>(scfg.min_rounds);
+        }
         // The real boot-time pick, for HopRanker's tie-break (spec
         // section 3). Only when the scan actually measured something: an
         // unranked "pick" is just home proposed by default, and feeding

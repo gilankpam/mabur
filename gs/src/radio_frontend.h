@@ -50,9 +50,9 @@ class RadioFrontend : public ScoutRadio {
     uint16_t usb_pid = 0;      // 0 = scan {0xa81a,0x881a,0x8812}
     int index = 0;             // ordinal among matching devices
     uint8_t channel = 149;
-    // RX width: 20, or 40 (channel is the primary 20; the secondary side is
-    // the standard 5 GHz pairing, mabur::ht40_offset). Only the linkbench
-    // HT40 sweep sets 40 (docs/bw40-sweep-findings-2026-09-23.md).
+    // RX width: 20, or 40 (channel is the primary 20; the secondary is the
+    // standard pairing, mabur::ht40_offset). radio.width for link cards; the
+    // boot scout card starts at 20 and joins at 40 via set_width().
     uint8_t width_mhz = 20;
     uint8_t card_id = 0;
     // Set by the startup scan (card_scan.h): open the device at this
@@ -76,6 +76,11 @@ class RadioFrontend : public ScoutRadio {
 
   // ScoutRadio interface: the scout thread's control plane on this card.
   bool retune(uint8_t ch) override;                 // FastRetune; false pre-ready
+  // Full SetMonitorChannel to `ch` at `width_mhz` (20|40): the boot scout
+  // card joining the 40 MHz link once the pick freezes (docs/bw40.md §3).
+  // Tens of ms, once per process; false pre-ready or when 40 has no pair.
+  bool set_width(uint8_t ch, uint8_t width_mhz);
+  bool retune_width(uint8_t ch, uint8_t width_mhz) override { return set_width(ch, width_mhz); }
   ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
   ScoutEnergy read_energy_scout() override;         // GetRxEnergyScout -> ScoutEnergy
   ScoutFrames frames() const override {

@@ -1025,6 +1025,7 @@ def load_scanlog(path):
                         "flags_hex": int(toks[12], 16), "sess": int(toks[13]),
                         "to_us": int(toks[14]), "read_us": int(toks[15]),
                         "back_us": int(toks[16]),
+                        "bw": int(toks[17]) if len(toks) >= 18 else 20,
                     })
                 elif tag == "M" and len(toks) >= 6:
                     card = None if toks[2] == "all" else int(toks[2])

@@ -23,4 +23,11 @@ uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t home,
                       const std::vector<uint8_t>& candidates, int min_rounds,
                       uint32_t home_margin);
 
+// True when home's pair or any candidate's pair is ranked under the same
+// both-halves rule pair_proposal uses. The boot-pick freeze's "did the scan
+// measure anything" test at radio.width 40: one half at min_rounds (e.g. the
+// one-card home half, which also books home-window visits) is not a pick.
+bool any_pair_ranked(const std::vector<RankEntry>& all, uint8_t home,
+                     const std::vector<uint8_t>& candidates, int min_rounds);
+
 }  // namespace maburgs

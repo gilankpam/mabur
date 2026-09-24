@@ -13,6 +13,7 @@ struct InflightScoutCfg {
   int observe_ms = 5;
   int period_ms = 333;
   std::vector<uint8_t> candidates;
+  uint8_t width_mhz = 20;  // radio.width: the dwell keeps the card's tuning (FastRetune), recorded here
 };
 
 // The ~10 ms mid-flight dwell (spec 2026-09-14-inflight-channel-hop §3): a

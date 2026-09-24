@@ -1,5 +1,7 @@
 #include "inflight_scout.h"
 
+#include "mabur/ht40.h"
+
 namespace maburgs {
 
 InflightScout::InflightScout(InflightScoutCfg cfg, ScoutRadio& radio, NowUsFn now_us, SleepFn sleep_ms)
@@ -12,7 +14,10 @@ bool InflightScout::dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& vis
   s.seq = seq_++;
   s.def.band = ch >= 36 ? 5 : 2;
   s.def.primary = ch;
-  s.def.width = CHANNEL_WIDTH_20;
+  // FastRetune keeps the card's width and offset: a 40 MHz dwell scores the
+  // candidate's PRIMARY only (secondary-blind, docs/bw40.md §3).
+  s.def.width = cfg_.width_mhz == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20;
+  s.def.offset = cfg_.width_mhz == 40 ? mabur::ht40_offset(ch) : 0;
   d.in_session = true;
 
   const int64_t t0 = now_us_();

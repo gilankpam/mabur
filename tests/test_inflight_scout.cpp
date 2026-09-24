@@ -184,4 +184,21 @@ TEST(dwell_return_value_flag_and_visit_population_stay_in_lockstep) {
     CHECK(v.ch == 149);   // populated, matches the dwelled channel
   }
 }
+TEST(dwell_record_carries_the_tuned_width_and_pair_offset) {
+  FakeRadio r;
+  int64_t t = 0;
+  InflightScout s(InflightScoutCfg{5, 333, {144}, 40}, r,
+                  [&] { return t; }, [&](int ms) { t += ms * 1000; });
+  ScoutDwell d; HopVisit v;
+  CHECK(s.dwell(144, 136, d, v));
+  CHECK(d.survey.def.width == CHANNEL_WIDTH_40);
+  CHECK(d.survey.def.offset == 2);   // 140+144: primary is the upper half
+  InflightScout s20(InflightScoutCfg{5, 333, {149}, 20}, r,
+                    [&] { return t; }, [&](int ms) { t += ms * 1000; });
+  ScoutDwell d20; HopVisit v20;
+  CHECK(s20.dwell(149, 136, d20, v20));
+  CHECK(d20.survey.def.width == CHANNEL_WIDTH_20);
+  CHECK(d20.survey.def.offset == 0);
+}
+
 MTEST_MAIN

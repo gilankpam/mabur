@@ -49,4 +49,23 @@ TEST(pair_ties_go_home_then_a_strictly_cleaner_pair_wins_at_margin_zero) {
   CHECK(pair_proposal(all, 136, {144, 40}, 3, 0) == 40);
 }
 
+TEST(any_pair_ranked_needs_both_halves_of_some_pair) {
+  // The boot-pick freeze's "was anything measured" test at radio.width 40:
+  // one half of home's pair at min_rounds (the one-card home half also
+  // collects home-window visits) is NOT a ranked pair.
+  std::vector<RankEntry> one_half = {{136, 0, 3, false, 0}, {132, 0, 1, false, 0},
+                                     {144, 0, 2, false, 0}, {140, 0, 2, false, 0}};
+  CHECK(!any_pair_ranked(one_half, 136, {144}, 3));
+  CHECK(!any_pair_ranked({{136, 0, 3, false, 0}}, 136, {144}, 3));   // 132 never visited
+  CHECK(!any_pair_ranked({}, 136, {144}, 3));
+  // Both halves of a candidate pair: ranked, home's pair still is not.
+  std::vector<RankEntry> cand = {{136, 0, 3, false, 0}, {132, 0, 1, false, 0},
+                                 {144, 0, 3, false, 0}, {140, 0, 3, false, 0}};
+  CHECK(any_pair_ranked(cand, 136, {144}, 3));
+  // Both halves of home's pair, no candidate ranked.
+  std::vector<RankEntry> home = {{136, 0, 3, false, 0}, {132, 0, 4, false, 0},
+                                 {144, 0, 1, false, 0}};
+  CHECK(any_pair_ranked(home, 136, {144}, 3));
+}
+
 MTEST_MAIN

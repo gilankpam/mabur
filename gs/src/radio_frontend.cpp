@@ -334,6 +334,23 @@ bool RadioFrontend::retune(uint8_t ch) {
   return true;
 }
 
+bool RadioFrontend::set_width(uint8_t ch, uint8_t width_mhz) {
+  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  if (width_mhz == 40 && mabur::ht40_offset(ch) == 0) return false;
+  const uint8_t was = cfg_.width_mhz;
+  rx_channel_.store(0, std::memory_order_release);   // same blinding as retune()
+  device_->SetMonitorChannel(width_mhz == 40
+                                 ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
+                                 : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
+  cfg_.width_mhz = width_mhz;
+  channel_.store(ch, std::memory_order_release);
+  rx_channel_.store(ch, std::memory_order_release);
+  std::fprintf(stderr, "maburgs radio: card %u width %u -> %u MHz on ch %u\n",
+               static_cast<unsigned>(cfg_.card_id), static_cast<unsigned>(was),
+               static_cast<unsigned>(width_mhz), static_cast<unsigned>(ch));
+  return true;
+}
+
 ScoutEnergy RadioFrontend::read_energy(bool with_nhm) {
   ScoutEnergy out;
   if (!ready_.load(std::memory_order_acquire) || !device_) return out;

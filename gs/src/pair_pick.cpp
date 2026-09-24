@@ -65,4 +65,12 @@ uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t home,
   return best->score + home_margin <= h->score ? best->primary : home;
 }
 
+bool any_pair_ranked(const std::vector<RankEntry>& all, uint8_t home,
+                     const std::vector<uint8_t>& candidates, int min_rounds) {
+  if (score_pair(all, home, min_rounds)) return true;
+  for (uint8_t c : candidates)
+    if (score_pair(all, c, min_rounds)) return true;
+  return false;
+}
+
 }  // namespace maburgs
