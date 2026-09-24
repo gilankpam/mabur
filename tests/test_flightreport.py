@@ -812,6 +812,77 @@ def test_bw40_summary_counts_time_held_and_promotes():
     assert "promotes onto 40 MHz: 2, held past 3 s: 1" in out
 
 
+CTL12_CLIMB = """ctllog 12 ladder=20:0/50:25,20:4/50:25,40:3/50:25,40:4/50:25 down_util=0.35 up_util=0.15 probe_offset=1
+S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 2 0.1200 60
+E 2000 1 2 promote_probed 0.0100 31.0 -24.0
+E 3800 2 3 promote_probed 0.0100 31.0 -24.0
+S 12000 3 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0
+"""
+
+
+def _bw40(text, **kw):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+        b = flightreport.bw40_summary(log, **kw)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+    return b, buf.getvalue()
+
+
+def test_bw40_climb_within_40_counts_as_held():
+    """20/4 -> 40/3 then the normal 40/3 -> 40/4 promote 1.8 s later: the
+    link never left 40 MHz, so the promote held -- no fall-back alarm."""
+    b, out = _bw40(CTL12_CLIMB)
+    assert b["promotes"] == 1
+    assert b["held_past_probation"] == 1
+    assert abs(b["held_s"] - 10.0) < 1e-6
+    assert "held past 3 s: 1" in out
+    assert "fell straight back" not in out
+
+
+def test_bw40_fall_back_to_20_within_probation_is_not_held():
+    text = CTL12_CLIMB.replace("E 3800 2 3 promote_probed", "E 3800 2 1 residual")
+    b, out = _bw40(text)
+    assert b["promotes"] == 1
+    assert b["held_past_probation"] == 0
+    assert "fell straight back" in out
+
+
+def test_bw40_leave_via_second_40_rung_within_probation_is_not_held():
+    """40/3 -> 40/4 -> 20/4, all inside 3 s of the promote: it left 40."""
+    text = CTL12_CLIMB.replace(
+        "E 3800 2 3 promote_probed 0.0100 31.0 -24.0\n",
+        "E 3800 2 3 promote_probed 0.0100 31.0 -24.0\n"
+        "E 4500 3 1 residual 0.4000 29.0 -23.0\n")
+    b, _ = _bw40(text)
+    assert b["promotes"] == 1
+    assert b["held_past_probation"] == 0
+
+
+def test_bw40_probation_label_follows_probation_ms():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12_CLIMB)
+        log = flightreport.load_ctllog(str(p))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_bw40_report(log, probation_ms=1500.0)
+    assert "held past 1.5 s: 1" in buf.getvalue()
+
+
+def test_bw40_s_lines_only_seed_the_rung_from_s():
+    """No E lines: the whole span sat on the S lines' rung (a 40 rung)."""
+    text = ("ctllog 12 ladder=20:0/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+            "S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
+            "S 5000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n")
+    b, _ = _bw40(text)
+    assert abs(b["held_s"] - 4.0) < 1e-6
+    assert b["promotes"] == 0
+
+
 def test_bw40_section_absent_without_40_rungs():
     with tempfile.TemporaryDirectory() as tmp_dir:
         p = Path(tmp_dir) / "ctl-0001_x.log"
@@ -1500,6 +1571,11 @@ if __name__ == "__main__":
     test_ctllog_pre_v12_ladder_token_defaults_bw_20()
     test_bw40_summary_counts_time_held_and_promotes()
     test_bw40_section_absent_without_40_rungs()
+    test_bw40_climb_within_40_counts_as_held()
+    test_bw40_fall_back_to_20_within_probation_is_not_held()
+    test_bw40_leave_via_second_40_rung_within_probation_is_not_held()
+    test_bw40_probation_label_follows_probation_ms()
+    test_bw40_s_lines_only_seed_the_rung_from_s()
     test_ctllog_r_lines_and_inversion()
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()

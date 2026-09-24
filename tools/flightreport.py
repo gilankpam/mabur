@@ -257,9 +257,10 @@ def print_rung_store_report(R):
 def bw40_summary(ctllog, probation_ms=3000.0):
     """Time held on 40 MHz rungs and promotes onto them, from the ctllog 12
     header's per-rung bw and the E lines. None when no rung is 40 MHz (every
-    pre-v12 recording). A promote counts as held when no further transition
-    follows within probation_ms (the bundle's link.probation_ms, 3 s -- the
-    log does not carry it)."""
+    pre-v12 recording). A promote onto 40 MHz counts as held unless the link
+    LEAVES the 40 MHz region (reaches a 20 MHz rung) within probation_ms --
+    a climb 40/3 -> 40/4 stays on 40 and still holds. probation_ms is the
+    bundle's link.probation_ms, 3 s; the log does not carry it."""
     rungs = ctllog["header"].get("_ladder") or []
     if not any(r.get("bw") == 40 for r in rungs):
         return None
@@ -272,15 +273,24 @@ def bw40_summary(ctllog, probation_ms=3000.0):
     def bw_of(idx):
         return rungs[idx]["bw"] if 0 <= idx < len(rungs) else 20
 
-    cur = E[0]["from"] if E else 0
+    # Initial rung: the first E line's `from`; with no E lines, the first S
+    # line's rung (S carries the live rung); else rung 0.
+    if E:
+        cur = E[0]["from"]
+    elif S:
+        cur = min(S, key=lambda s: s["t_ms"])["rung"]
+    else:
+        cur = 0
     t_prev, held, promotes, held_past = t0, 0.0, 0, 0
     for i, e in enumerate(E):
         if bw_of(cur) == 40:
             held += e["t_ms"] - t_prev
         if bw_of(e["from"]) != 40 and bw_of(e["to"]) == 40:
             promotes += 1
-            nxt = E[i + 1]["t_ms"] if i + 1 < len(E) else t1
-            if nxt - e["t_ms"] >= probation_ms:
+            # First time the link reaches a 20 MHz rung after this promote;
+            # the end of the recording when it never does.
+            left = next((x["t_ms"] for x in E[i + 1:] if bw_of(x["to"]) != 40), t1)
+            if left - e["t_ms"] >= probation_ms:
                 held_past += 1
         cur, t_prev = e["to"], e["t_ms"]
     if bw_of(cur) == 40:
@@ -289,13 +299,14 @@ def bw40_summary(ctllog, probation_ms=3000.0):
             "promotes": promotes, "held_past_probation": held_past}
 
 
-def print_bw40_report(ctllog):
-    b = bw40_summary(ctllog)
+def print_bw40_report(ctllog, probation_ms=3000.0):
+    b = bw40_summary(ctllog, probation_ms)
     if b is None:
         return
     print("BW40 (40 MHz rungs; per-rung width from the ctllog 12 header)")
     print(f"  held {b['held_s']:.1f} s of {b['total_s']:.1f} s on 40 MHz rungs;"
-          f" promotes onto 40 MHz: {b['promotes']}, held past 3 s: {b['held_past_probation']}")
+          f" promotes onto 40 MHz: {b['promotes']},"
+          f" held past {probation_ms / 1000.0:g} s: {b['held_past_probation']}")
     if b["promotes"] and b["held_past_probation"] == 0:
         print("  !! every promote onto 40 MHz fell straight back: suspect a busy"
               " secondary -- the scout cannot see it (docs/bw40.md)")
