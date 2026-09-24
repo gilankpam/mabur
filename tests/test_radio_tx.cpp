@@ -9,7 +9,9 @@
 #include "radio_tx.h"
 
 #include "RadiotapBuilder.h"
+#include "RadiotapTxFlags.h"
 #include "TxMode.h"
+#include "control_tx_mode.h"
 
 using namespace mabur;
 using namespace mabur::rc;
@@ -266,7 +268,9 @@ TEST(probe_stream_rides_third_slot) {
   REQUIRE(sink.frames_.size() == 1);
   const auto& f = sink.frames_[0];
   const uint16_t rl = read_le16(&f[2]);
-  const auto want = devourer::build_stream_radiotap(to_tx_mode(probe, probe.bw));
+  devourer::TxMode want_mode = to_tx_mode(probe, probe.bw);
+  want_mode.no_agg = true;  // the probe layer always airs alone (task 4)
+  const auto want = devourer::build_stream_radiotap(want_mode);
   REQUIRE(rl == want.size());
   CHECK(std::equal(want.begin(), want.end(), f.begin()));
   CHECK(f[12] == 6);  // HT radiotap MCS byte
@@ -281,6 +285,45 @@ TEST(probe_stream_dropped_when_no_probe_slot) {
   CHECK(sink.frames_.empty());
   CHECK(tx.drops() == 1);
   CHECK(tx.seq() == 1);  // seq consumed like every other drop
+}
+
+// HT radiotap layout (devourer RadiotapBuilder.cpp): 8-byte header, then
+// TX_FLAGS u16 LE at offset 8, then the 3-byte MCS field. no_agg is the
+// devourer-private TX_FLAGS bit kRadiotapTxFlagNoAgg.
+static bool radiotap_no_agg(const std::vector<uint8_t>& frame) {
+  REQUIRE(frame.size() >= 13);
+  return (read_le16(frame.data() + 8) & devourer::kRadiotapTxFlagNoAgg) != 0;
+}
+
+TEST(probe_frames_are_no_agg_and_video_frames_are_not) {
+  // With A-MPDU on, the chip folds co-queued frames into one PPDU at ONE
+  // rate/width (docs/bw40-sweep-findings-2026-09-23.md "Aggregation"): a
+  // probe at the next rung pulled into the current rung's aggregate
+  // measures nothing. The probe layer therefore airs alone.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  auto ladder = ladder_from(PhyMode::HT, 4, 20);
+  auto probe = ladder_from(PhyMode::HT, 3, 40)[1];
+  tx.set_ladder(ladder, probe);
+  const uint8_t body[] = {0x01};
+  CHECK(tx.send_body(0, body, 1));
+  CHECK(tx.send_body(1, body, 1));
+  CHECK(tx.send_body(kProbeStreamId, body, 1));
+  REQUIRE(sink.frames_.size() == 3);
+  CHECK(!radiotap_no_agg(sink.frames_[0]));
+  CHECK(!radiotap_no_agg(sink.frames_[1]));
+  CHECK(radiotap_no_agg(sink.frames_[2]));
+}
+
+TEST(control_tx_mode_is_mcs0_20mhz_coded_and_no_agg) {
+  const devourer::TxMode m = control_tx_mode();
+  CHECK(m.mode == devourer::TxMode::Mode::HT);
+  CHECK(m.ht_mcs == 0);
+  CHECK(m.bw_mhz == 20);
+  CHECK(m.ldpc && m.stbc && !m.sgi);
+  CHECK(m.no_agg);
+  const auto rt = devourer::build_stream_radiotap(m);
+  CHECK(radiotap_no_agg(rt));
 }
 
 MTEST_MAIN

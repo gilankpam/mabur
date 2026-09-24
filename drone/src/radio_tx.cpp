@@ -69,9 +69,14 @@ void RadioTx::set_ladder(const std::array<rc::LayerTxSpec, 2>& ladder,
   for (size_t i = 0; i < ladder.size(); ++i)
     next->layers[i].radiotap =
         devourer::build_stream_radiotap(to_tx_mode(ladder[i], ladder[i].bw));
-  if (probe)
-    next->layers[2].radiotap =
-        devourer::build_stream_radiotap(to_tx_mode(*probe, probe->bw));
+  if (probe) {
+    // The probe airs alone (no_agg): folded into the current rung's
+    // aggregate it would fly at the current rung's rate/width and its
+    // clean streak would prove nothing (see control_tx_mode.h).
+    devourer::TxMode pm = to_tx_mode(*probe, probe->bw);
+    pm.no_agg = true;
+    next->layers[2].radiotap = devourer::build_stream_radiotap(pm);
+  }
   // Single atomic swap: the whole radiotap table changes together, so
   // send_body() (hot thread) can never observe a torn mix of old and new
   // layer entries.

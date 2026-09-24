@@ -46,6 +46,7 @@
 #include "cal_apply.h"
 #include "cal_sweep.h"
 #include "config.h"
+#include "control_tx_mode.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
 #include "frame_source.h"
@@ -275,25 +276,6 @@ std::vector<uint8_t> build_dot11_header(uint16_t seq) {
   h[22] = static_cast<uint8_t>(seq_ctl & 0xff);
   h[23] = static_cast<uint8_t>((seq_ctl >> 8) & 0xff);
   return h;
-}
-
-// devourer::TxMode for the MAX_RANGE control-channel rate (mirrors
-// radio_tx.cpp's to_tx_mode helper — kept local since RadioTx doesn't expose
-// its private conversion). DISC_ACK and any other control frame must fly at
-// the same robustness as the MAX_RANGE data profile: MCS0/20MHz WITH
-// LDPC+STBC. Flying control frames without them (the pre-fix behavior) was
-// weaker than MAX_RANGE's own data profile despite control traffic needing
-// to be at least as robust — a DISC_ACK lost at exactly the range where
-// MAX_RANGE is needed defeats the whole point of the robust floor.
-devourer::TxMode control_tx_mode() {
-  devourer::TxMode m;
-  m.mode = devourer::TxMode::Mode::HT;
-  m.ht_mcs = 0;
-  m.bw_mhz = 20;
-  m.sgi = false;
-  m.ldpc = true;
-  m.stbc = true;
-  return m;
 }
 
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
