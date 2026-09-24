@@ -6,6 +6,9 @@ not be pooled. Nothing in the sideport reports most of them, so the only
 reliable method is to date the recording against this page.
 
 Quick index: carrier sense off 2026-08-05 · carrier sense ON again + RC_VERSION 10 + `link.pre_fec_loss` guard 32 → 192 2026-09-23 · TX power constant 2026-08-12 ·
+40 MHz rungs — `ctllog 12` (bw: prefix), `scanlog 3` (per-half dwells, pair
+pick), `air_clock.efficiency`/`ampdu.min_mcs` → `_20`/`_40`, new required
+`link.ladder[].bw` — 2026-09-24 (`docs/bw40.md`) ·
 sideport key removals 2026-08-12, 2026-08-15, 2026-08-29, 2026-08-30 and
 2026-09-04 ·
 SNR half-dB scale break 2026-08-04 · EVM op-point dependence 2026-08-10 ·
@@ -713,3 +716,24 @@ the `rc: low_power EXIT (armed)` line) and compare only what follows it.
 Recordings from before this date have no `drone.low_power` key at all and
 no leading segment — they are full power throughout, and absence of the
 key means "older build", not "full power confirmed".
+
+## 2026-09-24 — 40 MHz rungs: ctllog 12, scanlog 3, per-width config keys
+
+Full detail: `docs/bw40.md`.
+
+- **`ctllog 12`.** The ctl.log header's `ladder=` token gains a `bw:` prefix
+  per rung (`ladder=bw:mcs/ovb:ove,...`); `ctllog 11` and earlier have no
+  prefix and every rung is implicitly 20 MHz. `tools/bench/switchloss.py`
+  parses the prefix but still keys rungs by MCS only.
+- **`scanlog 3`.** Bumped from `scanlog 2`: the `D` dwell line gains a
+  trailing `bw` column (the dwell's tuned width — 20 during a boot scan,
+  `radio.width` in an in-flight session), and the `K` pick line gains a
+  trailing `pair=<lo>+<hi>|-` (the picked channel's standard 40 MHz pair, or
+  `-`). A `scanlog 2` file has neither column.
+- **Removed drone config keys:** `air_clock.efficiency` → `efficiency_20` /
+  `efficiency_40`; `ampdu.min_mcs` → `min_mcs_20` / `min_mcs_40` — both keyed
+  by width, not a single table/threshold. No migration; an old key fails
+  boot.
+- **New GS config key:** `link.ladder[].bw`, required (20 or 40) — a rung is
+  now `(bw, mcs)`, not just `mcs`. A pre-2026-09-24 `[[link.ladder]]` block
+  with no `bw` fails boot rather than defaulting to 20.

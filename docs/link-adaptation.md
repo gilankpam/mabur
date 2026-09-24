@@ -47,6 +47,10 @@ own budget: `budget_base()`/`budget_base_for(rung)` for sid 0 (base),
 `gs/src/ladder_controller.h`. There is no shared `budget()`/
 `budget_for()` anymore.
 
+Since 2026-09-24 a rung is `(bw, mcs)`, not just `mcs`: `[[link.ladder]] bw`
+is a required per-rung key and the RCF profile byte already carried width,
+so this cost no wire change (`docs/bw40.md`).
+
 **The runtime `AirBalancer` solver is deleted, and so is `AirFeed`.**
 The drone applies the commanded overhead pair directly to UEP; there is
 no per-frame redistribution or solve. `AirFeed`, the solver's
@@ -358,7 +362,7 @@ lower rate. The backlog sits past the TxQueue pop, where the congestion
 shed above cannot see it. The drone now models it directly
 (`drone/src/air_clock.h`, spec `2026-09-06-air-clock-enh-shed-design.md`):
 every body pushed to the TxQueue books `bytes × 8 / (phy_rate(layer) ×
-air_clock.efficiency[mcs]) + air_clock.body_us` on a virtual air clock
+air_clock.efficiency_<bw>[mcs]) + air_clock.body_us` on a virtual air clock
 (`efficiency` is a per-MCS table since 2026-09-17 — the bench-measured
 delivered/nominal fraction, `drone/src/air_rate.h`, and `run_bitrate_policy`
 prices off the same table, see `docs/airtime-model.md` §7), priced

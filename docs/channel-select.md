@@ -69,7 +69,7 @@ Drone, `bundle/mabur.default.toml` (verbatim, the relevant keys):
 usb_vid    = 3034
 usb_pid    = 0
 channel    = 136
-width      = 20
+width      = 40        # HT40 on the standard pair (132+136 for home 136); per-rung width comes from the GS ladder (docs/bw40.md)
 follow_gs  = true        # honour the GS's DISC op_channel (auto channel select)
 power_mode = "none"      # set to offset to use rate_walls_rel
 tx_threads = 4
@@ -192,8 +192,8 @@ anchor rather than the boot channel's.
   card dies mid-scan — the scan is abandoned and frozen on whatever the
   ranker has measured so far, GS-only: the drone has no idea a scan is
   running at all. Logged as a GS stderr line (`maburgs channel: scout
-  card N died, scan abandoned at R rounds`, `gs/src/main.cpp`); see
-  `scan.log` below for the frozen pick that results.
+  card N died, scan abandoned at R rounds, card stays at 20 MHz`,
+  `gs/src/main.cpp`); see `scan.log` below for the frozen pick that results.
 - **One-card mode gates every send while the scout is off-home.** With a
   single pinned card the same radio is doing scouting and TX, so the core
   thread sends DISC (and everything else) only while the scout reports it
@@ -236,24 +236,34 @@ from an earlier boot:
 
 New per-session file in the GS debug-log session directory (see
 `docs/observability.md`), opened whenever `debug_log.enable` is set, like
-`ctl.log`. Marker `scanlog 2` (bumped from `scanlog 1` by
-`docs/inflight-channel-hop.md`, which added the `V`/`H` records below and
-removed `A`). Space-separated; formats locked by `tests/test_scan_log.cpp`;
-`nan` for an invalid float, `-` for an invalid int. Copied verbatim from
-`gs/src/scan_log.h`, the boot-time-scan records only (the in-flight hop's
-`V`/`H` formats, and `D`'s trailing in-session columns, are in
-`docs/inflight-channel-hop.md`):
+`ctl.log`. Marker `scanlog 3` (bumped from `scanlog 2` by the 40 MHz rungs
+work, 2026-09-24, `docs/bw40.md`; `scanlog 2` itself was bumped from
+`scanlog 1` by `docs/inflight-channel-hop.md`, which added the `V`/`H`
+records below and removed `A`). Space-separated; formats locked by
+`tests/test_scan_log.cpp`; `nan` for an invalid float, `-` for an invalid
+int. Copied verbatim from `gs/src/scan_log.h`, the boot-time-scan records
+only (the in-flight hop's `V`/`H` formats, and `D`'s trailing in-session
+columns, are in `docs/inflight-channel-hop.md`):
 
 ```
-scanlog 2 <header_info>
+scanlog 3 <header_info>
 C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
   <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
-  <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us>
+  <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us> <bw>
                                                               # one scout dwell
-K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... # the pick
+K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... pair=<lo>+<hi>|-
+                                                              # the pick
 M <t> <card|all> <from> <to> <reason>                        # a link move
 ```
+
+`scanlog 3` adds one trailing column to each of `D` and `K`: `D`'s `<bw>`
+is the dwell's tuned width (20 during a boot scan — every half is scanned
+at 20 MHz — `radio.width` for an in-flight dwell); `K`'s trailing
+`pair=<lo>+<hi>|-` is the picked channel's standard 40 MHz pair, `-` when
+`radio.width` is 20 or no pick was made. A `scanlog 2` file has neither
+column. Detail on the 40 MHz boot scan (dwelling every half, picking a
+pair) is in `docs/bw40.md`.
 
 - **C** — once per card at bring-up: `GetAdapterCaps` identity (chip,
   generation, chains, `bw_mask`, tunable 5 GHz span, fast-retune flag)
@@ -263,10 +273,11 @@ M <t> <card|all> <from> <to> <reason>                        # a link move
   dwells and the in-flight hop's dwells share this record; the trailing
   `sess`/`to_us`/`read_us`/`back_us` columns are `0 0 0 0` for a boot-time
   dwell and populated for an in-session one (`docs/inflight-channel-hop.md`
-  §3).
+  §3), and the trailing `bw` is the dwell's tuned width (`scanlog 3`).
 - **K** — the pick at freeze: rounds completed and the full ranking as
   `ch:worst_busy[:floor]` pairs (unranked channels omitted), so the
-  decision is reproducible from the log alone. `K <t> none 0` when a peer
+  decision is reproducible from the log alone, plus the trailing
+  `pair=<lo>+<hi>|-` (`scanlog 3`). `K <t> none 0 pair=-` when a peer
   appeared before `min_rounds`.
 - **M** — every GS retune that changes where the link lives: `commit`,
   `ack_override` (the ack disagreed with the proposal and won anyway),

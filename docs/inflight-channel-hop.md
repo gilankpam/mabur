@@ -319,6 +319,14 @@ strict superset of what `InflightScout` ever dwells on, so
 `HopRanker::add()`'s silent no-op for a channel outside the candidate list
 can never actually drop a real visit.
 
+At `radio.width = 40` dwells keep the 40 MHz tuning and score the primary
+only; the ranker's candidate set is the boot scan's half set (`pair_pick.h`)
+so a boot-time visit to any half is held as scored evidence, but hop
+TARGETS stay primaries only — home plus `radio.scan.candidates`
+(`HopRanker::set_targets`) — because FastRetune keeps the card's offset and
+a hop to a secondary half would land off-grid; scan.log is `scanlog 3`
+(`docs/bw40.md`).
+
 ## 4. Ladder interaction: restore the pre-onset rung
 
 - `ref_rung` is snapshotted by `HopVerdict` at the first impaired window
