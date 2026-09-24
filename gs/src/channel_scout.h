@@ -22,6 +22,7 @@ struct ScoutCfg {
   int beacon_period_ms = 20;
   uint32_t home_margin = 0;
   bool one_card = false;
+  uint8_t link_width_mhz = 20;  // radio.width: 40 = dwell every half at 20, pick a pair, park at 40
 };
 
 struct ScoutDwell {

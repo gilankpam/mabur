@@ -40,6 +40,13 @@ class ScoutRadio {
  public:
   virtual ~ScoutRadio() = default;
   virtual bool retune(uint8_t ch) = 0;
+  // Full retune to `ch` AT a new width (SetMonitorChannel, tens of ms):
+  // the boot scout card joining the 40 MHz link once the pick freezes
+  // (docs/bw40.md §3). Default keeps 20 MHz-only radios/fakes unchanged.
+  virtual bool retune_width(uint8_t ch, uint8_t width_mhz) {
+    (void)width_mhz;
+    return retune(ch);
+  }
   virtual ScoutEnergy read_energy(bool with_nhm) = 0;
   // Cheapest frame-free OFDM FA+CCA delta (devourer's GetRxEnergyScout):
   // only fa_valid/fa_ofdm/cca_ofdm are meaningful, everything else
