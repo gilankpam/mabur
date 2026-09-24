@@ -1395,7 +1395,7 @@ static int run_radio(const maburgs::Config& cfg) {
     for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
       const maburgs::Rung& r = cfg.link.ladder_cfg.ladder[i];
       if (i) header += ",";
-      header += std::to_string(r.mcs) + "/" +
+      header += std::to_string(r.bw) + ":" + std::to_string(r.mcs) + "/" +
                 std::to_string(static_cast<int>(std::lround(r.overhead_base * 100))) +
                 ":" +
                 std::to_string(static_cast<int>(std::lround(r.overhead_enh * 100)));

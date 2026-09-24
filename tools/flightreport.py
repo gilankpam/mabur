@@ -43,12 +43,14 @@ def load(path):
 
 def _parse_ladder_token(raw):
     """Parse the ctllog header's `ladder=` value into a list of
-    {"mcs": int, "ov_base": float, "ov_enh": float} rungs.
+    {"mcs": int, "bw": int, "ov_base": float, "ov_enh": float} rungs.
 
     v1-v7 wrote a single per-rung overhead x100 (`mcs/ov`, e.g. "5/25");
     v8 (Task 5, same-rate-fixed-pairs) splits it into a base/enh pair
     (`mcs/ovb:ove`, e.g. "5/25:50"). A single (pre-v8) value is treated as
-    both base and enh -- that rung had no split to lose."""
+    both base and enh -- that rung had no split to lose. v12 (2026-09-24,
+    40 MHz rungs) prefixes the width (`bw:mcs/ovb:ove`, e.g. "40:3/50:25");
+    older tokens are 20 MHz."""
     rungs = []
     if not raw:
         return rungs
@@ -56,8 +58,13 @@ def _parse_ladder_token(raw):
         if "/" not in entry:
             continue
         mcs_s, ov_s = entry.split("/", 1)
+        # v12 (40 MHz rungs): bw:mcs. Older tokens carry mcs alone = 20 MHz.
+        if ":" in mcs_s:
+            bw_s, mcs_s = mcs_s.split(":", 1)
+        else:
+            bw_s = "20"
         try:
-            mcs = int(mcs_s)
+            mcs, bw = int(mcs_s), int(bw_s)
         except ValueError:
             continue
         if ":" in ov_s:
@@ -68,7 +75,7 @@ def _parse_ladder_token(raw):
             ov_base, ov_enh = float(ovb_s) / 100.0, float(ove_s) / 100.0
         except ValueError:
             continue
-        rungs.append({"mcs": mcs, "ov_base": ov_base, "ov_enh": ov_enh})
+        rungs.append({"mcs": mcs, "bw": bw, "ov_base": ov_base, "ov_enh": ov_enh})
     return rungs
 
 
@@ -245,6 +252,53 @@ def print_rung_store_report(R):
                 print(f"  !! INVERSION rung {hi_i} worse than rung {lo_i}"
                       f" ({key}: {hi[key]:.3f} vs {lo[key]:.3f},"
                       f" n {hi['n']}/{lo['n']})")
+
+
+def bw40_summary(ctllog, probation_ms=3000.0):
+    """Time held on 40 MHz rungs and promotes onto them, from the ctllog 12
+    header's per-rung bw and the E lines. None when no rung is 40 MHz (every
+    pre-v12 recording). A promote counts as held when no further transition
+    follows within probation_ms (the bundle's link.probation_ms, 3 s -- the
+    log does not carry it)."""
+    rungs = ctllog["header"].get("_ladder") or []
+    if not any(r.get("bw") == 40 for r in rungs):
+        return None
+    S, E = ctllog.get("S", []), ctllog.get("E", [])
+    ts = [s["t_ms"] for s in S] + [e["t_ms"] for e in E]
+    if not ts:
+        return {"held_s": 0.0, "total_s": 0.0, "promotes": 0, "held_past_probation": 0}
+    t0, t1 = min(ts), max(ts)
+
+    def bw_of(idx):
+        return rungs[idx]["bw"] if 0 <= idx < len(rungs) else 20
+
+    cur = E[0]["from"] if E else 0
+    t_prev, held, promotes, held_past = t0, 0.0, 0, 0
+    for i, e in enumerate(E):
+        if bw_of(cur) == 40:
+            held += e["t_ms"] - t_prev
+        if bw_of(e["from"]) != 40 and bw_of(e["to"]) == 40:
+            promotes += 1
+            nxt = E[i + 1]["t_ms"] if i + 1 < len(E) else t1
+            if nxt - e["t_ms"] >= probation_ms:
+                held_past += 1
+        cur, t_prev = e["to"], e["t_ms"]
+    if bw_of(cur) == 40:
+        held += t1 - t_prev
+    return {"held_s": held / 1000.0, "total_s": (t1 - t0) / 1000.0,
+            "promotes": promotes, "held_past_probation": held_past}
+
+
+def print_bw40_report(ctllog):
+    b = bw40_summary(ctllog)
+    if b is None:
+        return
+    print("BW40 (40 MHz rungs; per-rung width from the ctllog 12 header)")
+    print(f"  held {b['held_s']:.1f} s of {b['total_s']:.1f} s on 40 MHz rungs;"
+          f" promotes onto 40 MHz: {b['promotes']}, held past 3 s: {b['held_past_probation']}")
+    if b["promotes"] and b["held_past_probation"] == 0:
+        print("  !! every promote onto 40 MHz fell straight back: suspect a busy"
+              " secondary -- the scout cannot see it (docs/bw40.md)")
 
 
 def print_wall_report(ctllog):
@@ -1342,6 +1396,7 @@ def main(path, aulog=None, probelog_path=None, scanlog_path=None):
         ctllog = load_ctllog(path)
         print_wall_report(ctllog)
         print_episode_report(ctllog)
+        print_bw40_report(ctllog)
         probelog = None
         probe_src = None
         if probelog_path:

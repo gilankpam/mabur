@@ -21,7 +21,7 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 11 <header_info>                                 # once, first line
+//   ctllog 12 <header_info>                                 # once, first line
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr> <rssi_dbm> <probe_rung> <probe_u> <probe_n>
 //                                              # dwell sample, debug_log.ctl_period_ms
@@ -46,6 +46,11 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added 2026-08-14 (ctllog 3).
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 12 (2026-09-24, 40 MHz rungs): no column change. The header's
+// ladder= token is bw:mcs/ovb:ove per rung (was mcs/ovb:ove); with 20/3 and
+// 40/3 both in one ladder the MCS alone no longer names a rung. Rung
+// indices in S/E/P/N/R are unchanged; width follows from the header.
 //
 // ctllog 11 (2026-09-05, arrival tracker): no column change. The S line's
 // <u> and <u3> (and the E line's u for util/probation reasons) are now

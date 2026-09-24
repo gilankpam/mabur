@@ -719,8 +719,8 @@ def test_ctllog_v8_pair_ladder_token_parsed():
     assert log["header"]["_version"] == 8
     rungs = log["header"]["_ladder"]
     assert rungs == [
-        {"mcs": 0, "ov_base": 1.0, "ov_enh": 1.0},
-        {"mcs": 5, "ov_base": 0.25, "ov_enh": 0.5},
+        {"mcs": 0, "bw": 20, "ov_base": 1.0, "ov_enh": 1.0},
+        {"mcs": 5, "bw": 20, "ov_base": 0.25, "ov_enh": 0.5},
     ]
 
 
@@ -732,7 +732,7 @@ def test_ctllog_pre_v8_ladder_token_treated_as_both():
         p = Path(tmp_dir) / "ctl-0001_x.log"
         p.write_text(text)
         log = flightreport.load_ctllog(str(p))
-    assert log["header"]["_ladder"] == [{"mcs": 5, "ov_base": 0.25, "ov_enh": 0.25}]
+    assert log["header"]["_ladder"] == [{"mcs": 5, "bw": 20, "ov_base": 0.25, "ov_enh": 0.25}]
 
 
 def test_ctllog_pre_v8_note():
@@ -757,6 +757,69 @@ def test_ctllog_pre_v8_note():
             flightreport.main(str(p))
         out = buf.getvalue()
     assert "same-rate-fixed-pairs" not in out
+
+
+CTL12 = """ctllog 12 ladder=20:0/50:25,20:4/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1
+S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 2 0.1200 60
+E 2000 1 2 promote_probed 0.0100 31.0 -24.0
+E 2500 2 1 residual 0.4000 29.0 -23.0
+E 6000 1 2 promote_probed 0.0100 31.0 -24.0
+S 12000 2 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0
+"""
+
+
+def test_ctllog_v12_ladder_token_carries_bw():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        log = flightreport.load_ctllog(str(p))
+    assert log["header"]["_version"] == 12
+    assert log["header"]["_ladder"] == [
+        {"mcs": 0, "bw": 20, "ov_base": 0.5, "ov_enh": 0.25},
+        {"mcs": 4, "bw": 20, "ov_base": 0.5, "ov_enh": 0.25},
+        {"mcs": 3, "bw": 40, "ov_base": 0.5, "ov_enh": 0.25},
+    ]
+
+
+def test_ctllog_pre_v12_ladder_token_defaults_bw_20():
+    """Recordings on the DVR predate per-rung width: every rung is 20 MHz."""
+    text = "ctllog 11 ladder=0/50:25,5/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert all(r["bw"] == 20 for r in log["header"]["_ladder"])
+    assert flightreport.bw40_summary(log) is None
+
+
+def test_bw40_summary_counts_time_held_and_promotes():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        log = flightreport.load_ctllog(str(p))
+        b = flightreport.bw40_summary(log)
+        # On rung 2 (40/3) from 2000-2500 and 6000-12000: 6.5 s of 11 s.
+        assert abs(b["held_s"] - 6.5) < 1e-6
+        assert abs(b["total_s"] - 11.0) < 1e-6
+        assert b["promotes"] == 2
+        assert b["held_past_probation"] == 1    # the first fell back after 500 ms
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+    assert "BW40" in out
+    assert "held 6.5 s of 11.0 s" in out
+    assert "promotes onto 40 MHz: 2, held past 3 s: 1" in out
+
+
+def test_bw40_section_absent_without_40_rungs():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL10)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+    assert "BW40" not in buf.getvalue()
 
 
 def test_ctllog_r_lines_and_inversion():
@@ -1433,6 +1496,10 @@ if __name__ == "__main__":
     test_ctllog_v8_pair_ladder_token_parsed()
     test_ctllog_pre_v8_ladder_token_treated_as_both()
     test_ctllog_pre_v8_note()
+    test_ctllog_v12_ladder_token_carries_bw()
+    test_ctllog_pre_v12_ladder_token_defaults_bw_20()
+    test_bw40_summary_counts_time_held_and_promotes()
+    test_bw40_section_absent_without_40_rungs()
     test_ctllog_r_lines_and_inversion()
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()
