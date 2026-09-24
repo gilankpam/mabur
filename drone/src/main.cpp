@@ -50,6 +50,7 @@
 #include "frame_pipeline.h"
 #include "frame_source.h"
 #include "mabur/frame_wire.h"
+#include "mabur/ht40.h"
 #include "mabur/msp_source.h"
 #include "mabur/msp_status.h"
 #include "mabur/profile.h"
@@ -1244,8 +1245,10 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // exits before there is anything to contend with.
     if (two_core_target()) pin_self_to(kHotCore);
     try {
-      rtl_device->InitWrite(
-          SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+      const uint8_t ch = static_cast<uint8_t>(cfg.radio.channel);
+      rtl_device->InitWrite(cfg.radio.width == 40
+                                ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
+                                : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
     } catch (...) {
       radio_init_error = std::current_exception();
     }
@@ -2825,15 +2828,9 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   });
 
 
-  // v1 only ever tunes the radio to 20 MHz — cfg.radio.width is parsed and
-  // validated (config.cpp) but not otherwise consulted here. Rather than
-  // silently ignoring a configured 40/80 and running at 20 MHz anyway, warn
-  // once at startup so a mismatched config is visible in the log instead of
-  // just quietly not doing what it says.
-  if (cfg.radio.width != 20) {
-    std::fprintf(stderr, "warning: radio.width=%d not supported in v1, using 20 MHz\n",
-                 cfg.radio.width);
-  }
+  // radio.width is honoured by the InitWrite above (2026-09-24): 40 tunes
+  // the standard pair via ht40_offset; FastRetune keeps width and offset
+  // across every later hop.
 
   // TX bring-up must be complete before anything transmits. InitWrite (on
   // radio_init_thread, started right after CreateRtlDevice above) runs the

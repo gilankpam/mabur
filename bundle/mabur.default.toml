@@ -2,7 +2,7 @@
 usb_vid    = 3034
 usb_pid    = 0
 channel    = 136
-width      = 20
+width      = 40        # HT40 on the standard pair (132+136 for home 136); per-rung width comes from the GS ladder (docs/bw40.md)
 follow_gs  = true        # honour the GS's DISC op_channel (auto channel select)
 power_mode = "none"      # set to offset to use rate_walls_rel
 tx_threads = 4

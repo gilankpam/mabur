@@ -104,12 +104,9 @@ networking is down).
 
 ### Config notes
 
-`radio.channel` and `radio.width` are both validated by `load_config()`, but
-in v1 the radio is always tuned at 20 MHz regardless of `radio.width` — a
-configured 40/80 is accepted (no config error) but ignored, logging a
-startup warning (`radio.width=N not supported in v1, using 20 MHz`) instead
-of silently doing something the config didn't ask for. 40/80 MHz tuning
-support is not implemented in v1.
+`radio.width` is honoured (20 or 40); at 40 the drone tunes the standard 5 GHz
+pair of `radio.channel` and airs each rung at the width the GS ladder names
+(`docs/bw40.md`).
 
 ## MSP DisplayPort OSD (ground-side)
 

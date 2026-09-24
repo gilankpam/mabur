@@ -61,7 +61,7 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.radio.usb_vid == def.radio.usb_vid);
   CHECK(cfg.radio.usb_pid == def.radio.usb_pid);
   CHECK(cfg.radio.channel == 136);
-  CHECK(cfg.radio.width == def.radio.width);
+  CHECK(cfg.radio.width == 40);  // GS at 40 on 132+136, top rungs fly HT40 (2026-09-24)
   // "none" = leave the chip's efuse power table untouched. The bundle ships
   // this way because rate_walls_rel below is a per-UNIT calibration and the
   // shipped file cannot know the wall of the board it lands on -- flashing
@@ -1544,6 +1544,31 @@ TEST(low_power_disabled_skips_cross_section_checks) {
   auto path = write_temp_toml("[low_power]\nenable = false\nbitrate_kbps = 100\nfps = 200\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(msg.empty());
+  std::filesystem::remove(path);
+}
+
+// ---- radio.width is real (2026-09-24, 40 MHz rungs) ----------------------
+
+TEST(radio_width_accepts_20_and_40_only) {
+  auto p20 = write_temp_toml("[radio]\nchannel = 136\nwidth = 20\n");
+  CHECK(load_config(p20.string()).radio.width == 20);
+  std::filesystem::remove(p20);
+  auto p40 = write_temp_toml("[radio]\nchannel = 136\nwidth = 40\n");
+  CHECK(load_config(p40.string()).radio.width == 40);
+  std::filesystem::remove(p40);
+  auto p80 = write_temp_toml("[radio]\nchannel = 136\nwidth = 80\n");
+  std::string msg = what_of([&] { (void)load_config(p80.string()); });
+  CHECK(msg.find("radio.width") != std::string::npos);
+  std::filesystem::remove(p80);
+}
+
+TEST(radio_width_40_needs_a_standard_pair) {
+  // 165 is the top of UNII-3 with nothing above it on the 40 MHz grid
+  // (common/include/mabur/ht40.h): a 40 MHz tune there has no secondary.
+  auto path = write_temp_toml("[radio]\nchannel = 165\nwidth = 40\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("radio.width") != std::string::npos);
+  CHECK(msg.find("165") != std::string::npos);
   std::filesystem::remove(path);
 }
 

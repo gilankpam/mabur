@@ -10,6 +10,7 @@
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
 #include "mabur/rc_proto.h"
+#include "mabur/ht40.h"
 
 namespace mabur {
 namespace {
@@ -90,6 +91,12 @@ void parse_radio(const Value& j, RadioCfg& r) {
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
   assign_if_present(j, "channel", r.channel, "radio");
   assign_if_present(j, "width", r.width, "radio");
+  if (r.width != 20 && r.width != 40)
+    fail("radio.width", "must be 20 or 40 (HT20 / HT40; nothing else is measured)");
+  if (r.width == 40 && mabur::ht40_offset(r.channel) == 0)
+    fail("radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
+                            std::to_string(static_cast<int>(r.channel)) +
+                            " has none (common/include/mabur/ht40.h)");
   assign_if_present(j, "follow_gs", r.follow_gs, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
