@@ -883,6 +883,27 @@ def test_bw40_s_lines_only_seed_the_rung_from_s():
     assert b["promotes"] == 0
 
 
+def test_dwell_table_names_each_rungs_mcs_and_bw():
+    """DWELL rows carry the rung's mcs/bw from the ctllog header's ladder,
+    so a rung index reads as 20/4 or 40/3 without cross-referencing."""
+    _, out = _bw40(CTL12_CLIMB)
+    dwell = out[out.find("DWELL (S records)"):out.find("EVENTS")]
+    assert "rung 1 (mcs4/20): n=1" in dwell, dwell
+    assert "rung 3 (mcs4/40): n=1" in dwell, dwell
+
+
+def test_dwell_table_without_ladder_keeps_the_bare_rung():
+    text = ("ctllog 4 down_util=0.35 up_util=0.15\n"
+            "S 1000 2 0.0500 31.5 0.0000 0.1000 0.0000 -24.5\n")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+    assert "  rung 2: n=1" in buf.getvalue(), buf.getvalue()
+
+
 def test_bw40_section_absent_without_40_rungs():
     with tempfile.TemporaryDirectory() as tmp_dir:
         p = Path(tmp_dir) / "ctl-0001_x.log"
@@ -1645,6 +1666,8 @@ if __name__ == "__main__":
     test_bw40_leave_via_second_40_rung_within_probation_is_not_held()
     test_bw40_probation_label_follows_probation_ms()
     test_bw40_s_lines_only_seed_the_rung_from_s()
+    test_dwell_table_names_each_rungs_mcs_and_bw()
+    test_dwell_table_without_ladder_keeps_the_bare_rung()
     test_ctllog_r_lines_and_inversion()
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()

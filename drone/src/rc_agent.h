@@ -39,7 +39,8 @@ struct AppliedOp {
 
   // Probe stream (spec 2026-09-04): the RCF's probe_profile byte as received
   // (kNoProbeProfile = no stream) and the resolved TX spec for it — same
-  // mode/bw as the op, LDPC+STBC like the video slots. RadioTx slot 2.
+  // mode as the op, but the probe rung's OWN bw (a 20/4 op probes 40/3),
+  // LDPC+STBC like the video slots. RadioTx slot 2.
   uint8_t probe_profile = rc::kNoProbeProfile;
   rc::LayerTxSpec probe;
 };

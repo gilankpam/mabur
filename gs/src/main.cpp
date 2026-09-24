@@ -632,7 +632,8 @@ static int run_radio(const maburgs::Config& cfg) {
   for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
     const maburgs::Rung& rung = cfg.link.ladder_cfg.ladder[i];
     const auto spec = mabur::rc::ladder_from(mabur::rc::PhyMode::HT,
-                                              static_cast<uint8_t>(rung.mcs), 20);
+                                              static_cast<uint8_t>(rung.mcs),
+                                              static_cast<uint8_t>(rung.bw));
     // Same-rate-fixed-pairs (Task 4): both sids run the same PHY rate now,
     // so one `rate` covers the whole rung; only the per-sid overhead
     // (hence per-sid budget) still differs.
@@ -641,8 +642,8 @@ static int run_radio(const maburgs::Config& cfg) {
                          0.5 * (1 + rung.overhead_enh) / rate;
     const double src_mbps = 0.65 / denom;
     std::fprintf(stderr,
-                 "ladder[%zu]: mcs%d ov %.2f/%.2f budgets=%.0f%%/%.0f%% ~%.1f Mbps src\n",
-                 i, rung.mcs, rung.overhead_base, rung.overhead_enh,
+                 "ladder[%zu]: mcs%d/%d ov %.2f/%.2f budgets=%.0f%%/%.0f%% ~%.1f Mbps src\n",
+                 i, rung.mcs, rung.bw, rung.overhead_base, rung.overhead_enh,
                  100.0 * rung.overhead_base / (1 + rung.overhead_base),
                  100.0 * rung.overhead_enh / (1 + rung.overhead_enh), src_mbps);
   }

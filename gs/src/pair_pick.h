@@ -14,9 +14,12 @@ std::vector<uint8_t> scan_half_set(uint8_t home, const std::vector<uint8_t>& can
 
 // Pair pick over per-half RankEntry rows (ChannelRanker::all()). A pair is
 // ranked once BOTH halves have >= min_rounds visits; its score is the worse
-// half's worst_busy. Home's pair keeps home_margin exactly as
+// half's worst_busy. Home's pair keeps home_margin the way
 // ChannelRanker::proposal does for a single channel; ties go to home; among
-// candidates the lowest score wins, config order breaking ties. Returns the
+// candidates the lowest score wins, config order breaking ties. Unlike
+// ChannelRanker::ranked(), an exact worst_busy tie ignores the noise-floor
+// tie-break (valid floor first, then lower floor_dbm): config order alone
+// decides it. Returns the
 // winning pair's PRIMARY (home, or the candidate as listed), home when no
 // pair is ranked, and the best ranked candidate when home's pair is not.
 uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t home,

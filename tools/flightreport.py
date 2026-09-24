@@ -364,6 +364,9 @@ def print_wall_report(ctllog):
         print("  u/u3: completion-booked pre-FEC loss (lags the air; transition-inflated) -- pre-ctllog-11")
 
     print("DWELL (S records)")
+    # The rung's mcs/bw from the ctllog header's ladder (ctllog 6+); a bare
+    # index when the header carries none or the index is outside it.
+    ladder = header.get("_ladder") or []
     by_rung = {}
     for s in S: by_rung.setdefault(s["rung"], []).append(s)
     for rung in sorted(by_rung):
@@ -377,7 +380,9 @@ def print_wall_report(ctllog):
         extra = ""
         if nan_n: extra += f" nan_snr={nan_n}"
         if sentinel_n: extra += f" u3_sentinel={sentinel_n}"
-        print(f"  rung {rung}: n={len(samples)} snr={snr_str}{evm_str}{extra}")
+        label = (f" (mcs{ladder[rung]['mcs']}/{ladder[rung]['bw']})"
+                 if 0 <= rung < len(ladder) else "")
+        print(f"  rung {rung}{label}: n={len(samples)} snr={snr_str}{evm_str}{extra}")
 
     print("EVENTS")
     reason_counts = {}
