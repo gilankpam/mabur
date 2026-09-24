@@ -77,6 +77,7 @@
 #include "tx_selector.h"
 #include "udp_sink.h"
 #include "vrx_controller.h"
+#include "width_resync.h"
 
 namespace {
 
@@ -1634,6 +1635,8 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   // scan.log C record: once per card, the first time it reports ready.
   std::vector<bool> caps_logged(static_cast<size_t>(n_cards), false);
+  // Width resync (width_resync.h): one set_width per card bring-up at most.
+  std::vector<bool> width_tried(static_cast<size_t>(n_cards), false);
   // Last sample mirrored into the sideport. Nothing writes this since the
   // A-record block (1 Hz in-flight energy poll, spec section 7) was removed
   // with radio.scan.energy_period_ms -- cards[i].energy reads null on the
@@ -1672,15 +1675,18 @@ static int run_radio(const maburgs::Config& cfg) {
         join_scout(scout->proposal());
         std::fprintf(stderr,
                      "maburgs channel: scout card %d died, scan abandoned at "
-                     "%llu rounds, card stays at 20 MHz\n",
-                     i, static_cast<unsigned long long>(rounds));
+                     "%llu rounds, card rejoins at %u MHz once reopened\n",
+                     i, static_cast<unsigned long long>(rounds),
+                     static_cast<unsigned>(cfg.radio.width));
       }
       if (!fe.alive() && now_ms_u >= retry_at_ms[static_cast<size_t>(i)]) {
         fe.stop();
         if (!fe.open_and_start())
           std::fprintf(stderr, "card %d: open failed, retrying\n", i);
-        else
+        else {
           cur_ch[static_cast<size_t>(i)] = cfg.radio.channel;  // InitWrite tunes home
+          width_tried[static_cast<size_t>(i)] = false;         // new bring-up
+        }
         retry_at_ms[static_cast<size_t>(i)] = now_ms_u + 2000;
       }
       if (fe.ready() && !caps_logged[static_cast<size_t>(i)]) {
@@ -2153,6 +2159,31 @@ static int run_radio(const maburgs::Config& cfg) {
         if (ok) ++vi;
       }
       for (const auto& v : visits) ranker.add(v);
+    }
+    // Width resync (width_resync.h): width is desired per-card state, like
+    // cur_ch. Once no boot scout owns a card and the scan is over, any ready
+    // card not at radio.width gets ONE set_width on its live channel -- the
+    // scout card that died mid-scan (revived at 20) or whose scan never ran
+    // (first DISC_ACK before it was ready). Under inflight_mu, and skipping a
+    // card the in-flight scout has off on a dwell, like the mechanical
+    // retune below. A no-op for every card already at radio.width, so it
+    // costs a few loads per tick.
+    if (maburgs::width_resync_open(scout_joined, scout != nullptr,
+                                   scout && scout->frozen())) {
+      for (int i = 0; i < n_cards; ++i) {
+        auto& fe = *fronts[static_cast<size_t>(i)];
+        const maburgs::WidthCard wc{fe.ready(), fe.width(), width_tried[static_cast<size_t>(i)],
+                                    dwell_busy.load() && dwell_card.load() == i};
+        if (!maburgs::needs_width_fix(wc, cfg.radio.width)) continue;
+        width_tried[static_cast<size_t>(i)] = true;
+        std::lock_guard<std::mutex> ilk(inflight_mu);
+        const uint8_t ch = fe.channel();
+        if (fe.set_width(ch, cfg.radio.width))
+          cur_ch[static_cast<size_t>(i)] = fe.channel();
+        else
+          std::fprintf(stderr, "maburgs radio: card %d width resync to %u MHz on ch %u failed\n",
+                       i, static_cast<unsigned>(cfg.radio.width), static_cast<unsigned>(ch));
+      }
     }
     // Every move that changes where the link lives -> M line + stderr.
     for (const auto& ev : plan.take_events()) {

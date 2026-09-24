@@ -13,10 +13,12 @@ struct FakeRadio : ScoutRadio {
   uint32_t cca_per_ms_on[256] = {};  // busy rate per channel
   ScoutFrames fr;
   int64_t last_read = 0;
+  bool fail_width = false;   // retune_width() reports failure (dead/unready card)
   bool retune(uint8_t c) override { ch = c; calls.push_back("retune " + std::to_string(c)); return true; }
   bool retune_width(uint8_t c, uint8_t w) override {
-    ch = c;
     calls.push_back("retune_width " + std::to_string(c) + "/" + std::to_string(w));
+    if (fail_width) return false;
+    ch = c;
     return true;
   }
   ScoutEnergy read_energy(bool with_nhm) override {
@@ -223,6 +225,32 @@ TEST(bw40_run_parks_the_card_at_40_on_the_target) {
   s20.freeze(149);
   s20.run();
   CHECK(r20.calls.back() == "retune 149");
+}
+
+TEST(bw40_one_card_run_parks_the_only_card_at_40) {
+  // One card: the scout IS the link card. run() must end on retune_width
+  // at 40 on the frozen target, or the link stays capped at the 20 rungs.
+  FakeRadio r;
+  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  for (int i = 0; i < 3; ++i) s.run_once();
+  s.freeze(136);
+  s.run();
+  CHECK(s.done());
+  REQUIRE(!r.calls.empty());
+  CHECK(r.calls.back() == "retune_width 136/40");
+  CHECK(r.ch == 136);
+}
+
+TEST(bw40_run_completes_even_when_the_width_switch_fails) {
+  // A dead/unready card: run() still ends (done) so the core can join it;
+  // the core loop's width resync (width_resync.h) fixes the card later.
+  FakeRadio r;
+  r.fail_width = true;
+  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  s.freeze(144);
+  s.run();
+  CHECK(s.done());
+  CHECK(r.calls.back() == "retune_width 144/40");
 }
 
 TEST(bw40_one_card_dwells_the_other_half_of_home_but_not_home) {

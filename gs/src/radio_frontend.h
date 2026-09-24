@@ -78,8 +78,11 @@ class RadioFrontend : public ScoutRadio {
   bool retune(uint8_t ch) override;                 // FastRetune; false pre-ready
   // Full SetMonitorChannel to `ch` at `width_mhz` (20|40): the boot scout
   // card joining the 40 MHz link once the pick freezes (docs/bw40.md §3).
-  // Tens of ms, once per process; false pre-ready or when 40 has no pair.
+  // Tens of ms, once per process. False when 40 has no pair (nothing
+  // recorded) or pre-ready -- the width is then still recorded as desired,
+  // so the next open_and_start() comes up at it (width_resync.h).
   bool set_width(uint8_t ch, uint8_t width_mhz);
+  uint8_t width() const { return width_.load(std::memory_order_acquire); }  // current/desired RX width
   bool retune_width(uint8_t ch, uint8_t width_mhz) override { return set_width(ch, width_mhz); }
   ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
   ScoutEnergy read_energy_scout() override;         // GetRxEnergyScout -> ScoutEnergy
@@ -126,6 +129,9 @@ class RadioFrontend : public ScoutRadio {
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
   std::atomic<uint64_t> own_{0};
   std::atomic<uint8_t> channel_{0};
+  // RX width the card is tuned to, or will InitWrite at on the next open
+  // (set_width() records it even pre-ready). Seeded from cfg_.width_mhz.
+  std::atomic<uint8_t> width_{20};
   // What on_packet() stamps RxBody::rx_channel with: the channel this card
   // is KNOWN to have been tuned to when the frame arrived. Distinct from
   // channel_ (the commanded position, published after FastRetune returns)

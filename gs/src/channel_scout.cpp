@@ -1,5 +1,7 @@
 #include "channel_scout.h"
 
+#include <cstdio>
+
 #include "pair_pick.h"
 
 namespace maburgs {
@@ -54,8 +56,17 @@ void ChannelScout::freeze(uint8_t target) {
 void ChannelScout::run() {
   while (run_once()) {}
   const uint8_t target = target_.load(std::memory_order_acquire);
-  if (cfg_.link_width_mhz == 40) radio_.retune_width(target, 40);   // join the link at 40 (docs/bw40.md §3)
-  else radio_.retune(target);
+  if (cfg_.link_width_mhz == 40) {
+    // Join the link at 40 (docs/bw40.md §3). A failure (dead or unready
+    // card) is not retried here: the core loop's width resync
+    // (width_resync.h) sets the card's width once it is ready again.
+    if (!radio_.retune_width(target, 40))
+      std::fprintf(stderr, "maburgs channel: scout card width switch to 40 MHz on ch %u "
+                           "failed; the core loop retries once the card is ready\n",
+                   static_cast<unsigned>(target));
+  } else {
+    radio_.retune(target);
+  }
   at_home_.store(false, std::memory_order_release);
   quiet_.store(false, std::memory_order_release);
   done_.store(true, std::memory_order_release);

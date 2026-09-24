@@ -78,7 +78,8 @@ size_t dot11_body_offset(const uint8_t* dot11, size_t len) {
 
 // --- device management (mirrors drone/src/main.cpp bring-up) ----------------
 
-RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out) : cfg_(cfg), out_(out) {}
+RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out)
+    : cfg_(cfg), out_(out), width_(cfg.width_mhz) {}
 RadioFrontend::~RadioFrontend() { stop(); }
 
 bool RadioFrontend::open_and_start() {
@@ -163,7 +164,10 @@ bool RadioFrontend::open_and_start() {
   driver_ = std::make_unique<WiFiDriver>(logger_);
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
-  device_->InitWrite(cfg_.width_mhz == 40
+  // width_, not the constructor's cfg_.width_mhz: a set_width() that landed
+  // while the card was down (the boot scout card dying mid-scan) is the
+  // width a revive must come up at.
+  device_->InitWrite(width() == 40
                          ? SelectedChannel{cfg_.channel, mabur::ht40_offset(cfg_.channel), CHANNEL_WIDTH_40}
                          : SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
   channel_.store(cfg_.channel, std::memory_order_release);
@@ -335,14 +339,17 @@ bool RadioFrontend::retune(uint8_t ch) {
 }
 
 bool RadioFrontend::set_width(uint8_t ch, uint8_t width_mhz) {
-  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
   if (width_mhz == 40 && mabur::ht40_offset(ch) == 0) return false;
-  const uint8_t was = cfg_.width_mhz;
+  const uint8_t was = width();
+  // Desired state, like the channel: recorded even when the card is down so
+  // the next open_and_start() (a revive) InitWrites at it. The caller still
+  // sees false -- nothing was tuned now.
+  width_.store(width_mhz, std::memory_order_release);
+  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
   rx_channel_.store(0, std::memory_order_release);   // same blinding as retune()
   device_->SetMonitorChannel(width_mhz == 40
                                  ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
                                  : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
-  cfg_.width_mhz = width_mhz;
   channel_.store(ch, std::memory_order_release);
   rx_channel_.store(ch, std::memory_order_release);
   std::fprintf(stderr, "maburgs radio: card %u width %u -> %u MHz on ch %u\n",

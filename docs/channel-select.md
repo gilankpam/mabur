@@ -192,8 +192,10 @@ anchor rather than the boot channel's.
   card dies mid-scan — the scan is abandoned and frozen on whatever the
   ranker has measured so far, GS-only: the drone has no idea a scan is
   running at all. Logged as a GS stderr line (`maburgs channel: scout
-  card N died, scan abandoned at R rounds, card stays at 20 MHz`,
-  `gs/src/main.cpp`); see `scan.log` below for the frozen pick that results.
+  card N died, scan abandoned at R rounds, card rejoins at W MHz once
+  reopened`, `gs/src/main.cpp`; W = `radio.width` — the revive, or the core
+  loop's one-shot width resync, brings the card back at the link width);
+  see `scan.log` below for the frozen pick that results.
 - **One-card mode gates every send while the scout is off-home.** With a
   single pinned card the same radio is doing scouting and TX, so the core
   thread sends DISC (and everything else) only while the scout reports it
