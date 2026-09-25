@@ -1008,6 +1008,14 @@ static int run_radio(const maburgs::Config& cfg) {
   std::atomic<bool> hopping_atomic{false};
   std::atomic<int> tx_card_now{tx_card_pin < 0 ? 0 : tx_card_pin};
   std::atomic<int> dwell_card{-1};
+  // Bumped by scout_loop right after every completed in-flight dwell
+  // (success or fail) on that card (fix round 1, task-6 review): the NHM
+  // verdict-window tracker's period/channel checks alone miss a dwell
+  // that lands mid-window, since InflightScout::dwell()'s FastRetune
+  // neither clears devourer's NHM-ready state nor leaves the card off its
+  // own channel by the next tick. The core loop pins arm/read to the
+  // generation it armed under -- see gs/src/nhm_window.h.
+  std::vector<std::atomic<uint32_t>> dwell_gen(static_cast<size_t>(n_cards));
   // Bumped once per completed AU (end-of-AU FrameStream callback, below):
   // the scout thread's alignment wait, so a dwell starts on an AU boundary
   // rather than mid-burst.
@@ -1065,6 +1073,7 @@ static int run_radio(const maburgs::Config& cfg) {
       maburgs::ScoutDwell d;
       maburgs::HopVisit v;
       const bool ok = inflight.dwell(*dwell_ch, fe.channel(), d, v);
+      dwell_gen[static_cast<size_t>(card)].fetch_add(1, std::memory_order_release);
       dwell_busy.store(false);
       dwell_card.store(-1);
       std::lock_guard<std::mutex> lk(dwell_mu);
@@ -1929,11 +1938,14 @@ static int run_radio(const maburgs::Config& cfg) {
         // Order matters (spec §6): the NHM window that just ended is read
         // BEFORE the FA/CCA counter reset, then re-armed for the next one.
         const maburgs::NhmBusyRead nb = fe.read_nhm_busy();
-        const bool nhm_ok = nhm_win[si].usable(nb, fe.channel());
+        const bool nhm_ok = nhm_win[si].usable(nb, fe.channel(),
+                                               dwell_gen[si].load(std::memory_order_acquire));
         const maburgs::ScoutEnergy e = fe.read_energy_scout();
         const maburgs::ScoutFrames f = fe.frames();
         const auto& t = agg.card(i);
-        if (fe.arm_nhm_busy(nhm_op_period)) nhm_win[si].armed(fe.channel(), nhm_op_period);
+        if (fe.arm_nhm_busy(nhm_op_period))
+          nhm_win[si].armed(fe.channel(), nhm_op_period,
+                            dwell_gen[si].load(std::memory_order_acquire));
         else nhm_win[si].invalidate();
         if (window_prev_ok[si]) {
           vc[si].valid = true;
@@ -2058,6 +2070,11 @@ static int run_radio(const maburgs::Config& cfg) {
         // below: a candidate dwell inside the burst may have failed its
         // return retune (kFlagRetuneFailed) and left the card off `op_`.
         cur_ch[static_cast<size_t>(burst_card)] = fe.channel();
+        // The burst swept this card off-channel through one or more
+        // candidates on the core thread itself (fix round 1, task-6
+        // review) -- any NHM window we'd armed on it before the burst is
+        // contaminated the same way a scout dwell would contaminate it.
+        nhm_win[static_cast<size_t>(burst_card)].invalidate();
         ht.best = ranker.best(now_ms, plan.op(), hopc.backed_off(now_ms));
         if (ht.best) {
           for (const auto& e : ranker.ranking(now_ms))

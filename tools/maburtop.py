@@ -367,8 +367,10 @@ def render_rows_compact(model, wall, width):
                 # NHM busy airtime minus our own video's airtime (spec
                 # 2026-09-25-nhm-airtime): what's left for someone else to
                 # be blocking us with. None (blank cell) when the card's
-                # NHM window didn't cover the last verdict window.
-                _f((e.get("busy_pct") - (e.get("own_air_pct") or 0))
+                # NHM window didn't cover the last verdict window; clamped
+                # at 0 since own_air is measured over a different (wider)
+                # span than the NHM bucket read and can outrun busy_pct.
+                _f(max(0, e.get("busy_pct") - (e.get("own_air_pct") or 0))
                    if (e := c.get("energy")) and e.get("busy_pct") is not None else None,
                    CARD_COLS[12][1], 0),
             ]
@@ -1203,7 +1205,7 @@ def panel_gs_radios(model, wall):
                 _f(txf, CARD_COLS[10][1]),
                 _f((e.get("cca", 0) - min(e.get("cca", 0), e.get("own", 0))) + e.get("fa", 0) + e.get("foreign", 0)
                    if (e := c.get("energy")) else None, CARD_COLS[11][1], 0),
-                _f((e.get("busy_pct") - (e.get("own_air_pct") or 0))
+                _f(max(0, e.get("busy_pct") - (e.get("own_air_pct") or 0))
                    if (e := c.get("energy")) and e.get("busy_pct") is not None else None,
                    CARD_COLS[12][1], 0),
             ]
