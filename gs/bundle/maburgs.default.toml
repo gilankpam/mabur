@@ -9,17 +9,18 @@ tx_card = -1               # -1 = auto-select the best-SNR card
 # One card: the same card alternates home windows and dwells.
 # Candidates are 40 MHz pair PRIMARIES on home's side of the grid (home 136 =
 # 132+136, primary upper half), all spur-free: 144 (140+144, next door, the
-# cheap escape from a narrow interferer on home), 64 (60+64) and 112
-# (108+112), both in the 5.25-5.6 GHz DFS block clear of every FPV system
+# cheap escape from a narrow interferer on home) and 112 (108+112), in the
+# 5.25-5.6 GHz DFS block clear of every FPV system
 # (analog/HDZero raceband 5.645-5.945, DJI O4 5.725-5.85 and 5.17-5.25 GHz,
 # Walksnail 5.8) -- the scout cannot see analog, so distance is the only
-# defence. 36+40 went 2026-09-25 (DJI O4's 5.1 GHz band + home routers),
+# defence. 60+64 went 2026-09-26 (bench: 40/2 probes lossy and 4-14 %
+# per-card loss at strong signal -- deferred, docs/bw40.md). 36+40 went 2026-09-25 (DJI O4's 5.1 GHz band + home routers),
 # 124+128 too (E4 5645 at its edge). 120/149/165 went 2026-09-24: 116+120
 # and 149+153 are 8822E spur centres (65-91 ms retunes), 165 has no pair. The boot scan dwells on BOTH halves
 # of every pair at 20 MHz and picks the pair whose worse half is cleanest.
 [radio.scan]
 enable           = true
-candidates       = [144, 64, 112]
+candidates       = [144, 112]
 dwell_ms         = 250
 settle_ms        = 30
 min_rounds       = 3
