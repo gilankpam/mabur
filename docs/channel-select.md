@@ -49,11 +49,12 @@ tx_card = -1               # -1 = auto-select the best-SNR card
 # pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
 # One card: the same card alternates home windows and dwells.
 # Candidates are 40 MHz pair PRIMARIES on home's side of the grid (home 136 =
-# 132+136, primary upper half): 144 (140+144, the only fast retune, DFS
-# like home), 40 (36+40, UNII-1, spur-free), 128 (124+128, DFS, spur-free).
+# 132+136, primary upper half), all spur-free: 144 (140+144, next door),
+# 64 (60+64) and 112 (108+112), the DFS block clear of analog/DJI/Walksnail
+# (docs/bw40.md "Channels").
 [radio.scan]
 enable           = true
-candidates       = [144, 40, 128]
+candidates       = [144, 64, 112]
 dwell_ms         = 250
 settle_ms        = 30
 min_rounds       = 3

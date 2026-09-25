@@ -477,13 +477,13 @@ TEST(default_bundle_has_scan_section) {
   auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   CHECK(cfg.radio.scan.enable == true);
   // 40 MHz pair primaries on home's side of the grid (docs/bw40.md §3):
-  // 140+144 (the only fast retune from 132+136), 36+40 (UNII-1,
-  // spur-free), 124+128 (DFS, spur-free). 120/149/165 went: spur centres
-  // or no pair.
+  // 140+144 (next door), 60+64 and 108+112 (5.25-5.6 GHz, clear of the
+  // analog raceband and DJI O4), all spur-free. 40/128 went 2026-09-25
+  // (DJI 5.1 GHz / E4 5645), 120/149/165 earlier: spur centres or no pair.
   REQUIRE(cfg.radio.scan.candidates.size() == 3);
   CHECK(cfg.radio.scan.candidates[0] == 144);
-  CHECK(cfg.radio.scan.candidates[1] == 40);
-  CHECK(cfg.radio.scan.candidates[2] == 128);
+  CHECK(cfg.radio.scan.candidates[1] == 64);
+  CHECK(cfg.radio.scan.candidates[2] == 112);
   CHECK(cfg.radio.scan.home_margin == 20);
 }
 
