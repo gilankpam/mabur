@@ -95,7 +95,8 @@ class VrxController {
   // is the old op by construction, and a drone that has already followed the
   // order's RCF would otherwise process the DISC it received on the old
   // channel and retune straight back (bench 2026-09-26). RCFs are unaffected;
-  // the keep-alive is due at once when the hold lifts.
+  // the keep-alive is due at once when the hold lifts. Ignored until the
+  // peer has acked (the stale-caps fast cadence always runs).
   void set_keepalive_hold(bool hold) { keepalive_hold_ = hold; }
   uint8_t proposal() const { return rz_.proposal(); }
   // Last accepted ack's agreed_channel (0 before any accept). Set BEFORE

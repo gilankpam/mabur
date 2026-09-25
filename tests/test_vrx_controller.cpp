@@ -99,6 +99,21 @@ TEST(keepalive_disc_held_while_a_hop_is_in_flight) {
   CHECK(first_after >= 4000 && first_after <= 4020);   // overdue keep-alive fires at once
 }
 
+// The hop hold must never delay the stale-caps re-teach: before the first
+// DiscAck the fast keep-alive runs even while held. Revert = drop the
+// `|| !peer_acked_` term: no DISC goes out in the held, unacked span.
+TEST(keepalive_hold_ignored_until_peer_acked) {
+  auto vrx = make();
+  vrx.set_keepalive_hold(true);
+  int disc = 0;
+  for (int t = 0; t < 1000; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()))
+      if (mabur::rc::frame_type(out->frame.data(), out->frame.size()) == mabur::rc::T_DISC) ++disc;
+  }
+  CHECK(disc >= 3);   // unacked cadence (250 ms) despite the hold
+}
+
 TEST(rcf_fields_are_correct) {
   auto vrx = make();
   vrx.on_video(0.0);

@@ -2167,9 +2167,12 @@ static int run_radio(const maburgs::Config& cfg) {
     // the scout's current best before that, home with scanning off.
     vrx.set_proposal(plan.frozen() ? plan.op()
                                    : (scout ? scout->proposal() : cfg.radio.channel));
-    // No keep-alive DISC while a hop order is in flight: it would propose the
-    // old op to a drone that may already have followed the order (vrx_controller.h).
-    vrx.set_keepalive_hold(plan.hopping());
+    // No keep-alive DISC while a hop order is outstanding: it would propose
+    // the old op to a drone that may already have followed the order
+    // (vrx_controller.h). Keyed on the controller's Ordered state, not
+    // plan.hopping(): a one-card GS only enters plan.hopping() at
+    // OneCardRetune, but its RCFs carry the order from the Order on.
+    vrx.set_keepalive_hold(hopc.state() == maburgs::HopState::Ordered);
     // Consumed every tick regardless (an edge left unread would otherwise
     // sit stale until the next real ack -- take_ack_edge() clears it on
     // read), but only ACTED on outside a hop: ChannelPlan::on_ack() carries
