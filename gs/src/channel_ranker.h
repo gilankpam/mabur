@@ -27,7 +27,11 @@ struct RankEntry {
 
 // Pure boot-time ranking: worst visit wins-or-loses; tie-break by valid floor
 // before none, lower floor_dbm first among valid, then config order (home first).
-// No improvement margin, no "clean" bar.
+// No improvement margin, no "clean" bar. The blocked tier sorts ahead of
+// worst_busy: a channel whose worst-visit NHM busy % reaches blocked_pct
+// ranks after every unblocked channel regardless of worst_busy, tiebroken
+// among the blocked by lower busy (spec 2026-09-25-nhm-airtime §7) -- see
+// is_blocked() below.
 class ChannelRanker {
  public:
   // home_margin: a candidate replaces home only when its worst visit is at

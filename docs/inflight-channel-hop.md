@@ -148,9 +148,9 @@ blanked when a hop lands (`HopAction::Confirm` + 150 ms settle,
 judged on the channel it verifies; `s1_loss` itself, which feeds the
 sideport/ctl-log/OSD gauge, is never blanked.
 
-Five independent evidence bits, OR'd together every window
+Six independent evidence bits, OR'd together every window
 (`gs/src/hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvFading/kEvContended/
-kEvRaised`):
+kEvRaised/kEvBlocked`):
 
 | bit | rule | key (default) |
 |---|---|---|
@@ -159,24 +159,58 @@ kEvRaised`):
 | fading | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
 | contended | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised | any card's FA/s > `fa_pps` | `fa_pps` (100) |
+| blocked | any valid card's NHM busy % minus its own reconstructed airtime % > `blocked_pct` | `busy_dbm` (−83), `blocked_pct` (50) |
+
+`blocked` is the NHM-airtime evidence added 2026-09-25 (spec
+`docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`; bench numbers
+in `docs/nhm-airtime-spike-findings-2026-09-25.md`). The other five bits
+are all derived from the preamble detector (`foreign`, `fa`) or from RSSI/
+SNR, so an interferer that fills airtime without tripping the correlator —
+a long-frame 802.11 jam at low pps, or a co-channel analog VTX carrier,
+which desenses the front end and reads as a fade with SNR intact
+(`docs/analog-vtx-findings-2026-09-25.md`) — was invisible to every one of
+them. `nhm_busy_pct` comes from the chip's NHM histogram (airtime above
+`busy_dbm`, an `nf::kNhmAbsThDbm` bucket edge — config validation rejects
+any other value), armed and read once per verdict window per op card
+(§below); `own_air_pct` is the GS's own reconstruction of that card's
+airtime from the CRC-good frames it decoded (bytes·8 / HT rate, plus one
+preamble per PPDU from the `physt` A-MPDU boundary). A card's busy reading
+is invalid — `blocked` simply can't fire off it — under the same kind of
+condition that already invalidates a verdict window: the chip has no NHM,
+the card was mid-dwell, its channel changed mid-window, or an in-flight
+scout dwell landed inside the armed window (caught by a per-card dwell-
+generation counter, since `InflightScout::dwell()`'s `FastRetune` doesn't
+disturb devourer's NHM-ready state or the period it reports).
 
 Verdict, evaluated in this order (`HopVerdict::window`,
-`gs/src/hop_verdict.cpp:79-82`):
+`gs/src/hop_verdict.cpp:92-98`):
 
 ```cpp
 if (!impaired) o.v = Verdict::Healthy;
 else if (weak) o.v = Verdict::Fade;
+else if (blocked) o.v = Verdict::Interfered;
 else if ((contended || raised) && !fading) o.v = Verdict::Interfered;
 else o.v = Verdict::Unknown;
 ```
 
+`blocked` is checked right after `weak` and before the fading gate:
+`weak` still wins outright (range edge, a hop does not help), but
+`blocked` classifies `interfered` **even while `fading` is also true** —
+unlike `contended`/`raised`, which need `!fading`. A real fade lowers RX
+power and cannot raise NHM busy airtime, so a window that is both fading
+and blocked is desense from an interferer, not a genuine range fade; the
+analog-VTX case above is exactly this shape (RSSI −58 → −70…−79, SNR
+intact) and is the reason `blocked` beats `fading` rather than being
+gated by it the same way `contended`/`raised` are.
+
 `interfered` needs **both** contention/a raised floor **and** the absence
-of fading — an impaired, non-weak window that is fading (RSSI dropped off
-its reference) but also shows contention or a raised floor classifies
-`unknown`, not `interfered`: `weak` is checked first and wins outright if
-true, and only among the non-weak windows does `!fading` gate `interfered`
-against `unknown`. An edge-of-range but otherwise stable link showing
-jammer-like FA/foreign symptoms therefore classifies `fade` (if also
+of fading — an impaired, non-weak, non-blocked window that is fading
+(RSSI dropped off its reference) but also shows contention or a raised
+floor classifies `unknown`, not `interfered`: `weak` is checked first and
+wins outright if true, and only among the non-weak, non-blocked windows
+does `!fading` gate `interfered` against `unknown`. An edge-of-range but
+otherwise stable link showing jammer-like FA/foreign symptoms therefore
+classifies `fade` (if also
 weak) or `unknown` (if fading but not weak) — never `interfered` — and
 neither case hops; the ladder owns both. The `weak`-before-`contended`/
 `raised` edge case (`weak` true, `fading` false, `contended`/`raised`
@@ -339,6 +373,23 @@ the ranking for the whole flight, and one dwell in N landed on the op
 channel itself — a visit `best()` excludes. With no candidates configured
 the old rotation also indexed an empty list (`% 0`).
 
+**Blocked tier (2026-09-25).** Each `HopVisit` carries the same NHM
+busy-airtime reading the verdict uses (`busy_valid`/`busy_pct`, armed by
+`InflightScout::dwell()` for `dwell_observe_ms` right after the discard
+read and collected before the FA/CCA pass, no own-airtime subtraction
+needed since none of our frames land on a candidate). `HopRankEntry.busy_pct`
+is the **mean** over an entry's fresh, `busy_valid` visits (a 5 ms window
+on a bursty interferer reads 0 or 100, so a single visit is not trusted);
+an entry is `blocked` when that mean is `>= hop.verdict.blocked_pct`. This
+is tiering, not a weight added into `score`: `ranking()`'s sort puts every
+blocked-but-ranked entry after every unblocked-but-ranked one regardless
+of event score, tiebreaking a blocked-vs-blocked pair by lower `busy_pct`
+before falling through to the existing score/boot-pick/home/config-order
+chain. A channel with events but no busy evidence at all (no NHM, or every
+visit invalid) ranks purely on score as before — the tier only ever adds a
+worse rank, never a better one. Rationale and defaults in
+`docs/nhm-airtime-spike-findings-2026-09-25.md`.
+
 At `radio.width = 40` dwells keep the 40 MHz tuning and score the primary
 only, and the ranker stays built over the same primaries as at 20 MHz. That
 suffices: boot-scan visits never reach `HopRanker::add()` (only
@@ -346,7 +397,7 @@ suffices: boot-scan visits never reach `HopRanker::add()` (only
 candidate is a pair primary sharing home's `ht40_offset` (a GS config rule),
 which FastRetune keeps — so every ranked channel is also a valid hop target.
 The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
-`scan_half_set`); scan.log is `scanlog 3` (`docs/bw40.md`).
+`scan_half_set`); scan.log is `scanlog 4` (`docs/bw40.md`).
 
 ## 4. Ladder interaction: restore the pre-onset rung
 
@@ -573,7 +624,17 @@ weak_snr_db          = 12
 fading_drop_db       = 6
 foreign_pps          = 50
 fa_pps               = 100
+busy_dbm             = -83
+blocked_pct          = 50
 ```
+
+`busy_dbm`/`blocked_pct` (added 2026-09-25, spec
+`docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`) feed the
+`blocked` evidence bit (§2) and are shared unchanged by both rankers
+(§3); the spec's own draft carried a provisional `blocked_pct = 30`, the
+hw spike (`docs/nhm-airtime-spike-findings-2026-09-25.md`) replaced it
+with 50 — midway between the worst clean-channel error (~10 in a single
+window) and a real interferer's reading (95–99).
 
 Validation (`gs/src/config.cpp`), same fail-fast style as `radio.scan` —
 unknown keys fail boot:
@@ -599,6 +660,8 @@ unknown keys fail boot:
 | `hop.verdict.fading_drop_db` | 1–40 |
 | `hop.verdict.foreign_pps` | 1–100000 |
 | `hop.verdict.fa_pps` | 1–100000 |
+| `hop.verdict.busy_dbm` | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
+| `hop.verdict.blocked_pct` | 1.0–100.0 |
 
 `[hop]`/`[hop.verdict]` are wholly new sections with defaults for every
 key, so an old config without them boots unchanged on the new binary
@@ -608,16 +671,18 @@ config.
 
 ## 8. Observability
 
-**`scan.log`, marker `scanlog 2`** (`gs/src/scan_log.h/.cpp`; formats
-locked by `tests/test_scan_log.cpp`). The `A` (1 Hz in-flight energy)
-record and `radio.scan.energy_period_ms` are **gone** — the verdict
-engine's window reads replace them, feeding `cards[i].energy` on the
-sideport continuously in-session instead of once a second (§below). Two
-new record kinds:
+**`scan.log`, marker `scanlog 4`** (`gs/src/scan_log.h/.cpp`; formats
+locked by `tests/test_scan_log.cpp`; bumped from `scanlog 3` by the NHM
+airtime work, 2026-09-25 — see `docs/data-provenance.md` for the break).
+The `A` (1 Hz in-flight energy) record and `radio.scan.energy_period_ms`
+are **gone** — the verdict engine's window reads replace them, feeding
+`cards[i].energy` on the sideport continuously in-session instead of once
+a second (§below). Two new record kinds:
 
 ```
 V <t> <verdict> <evidence_hex> <ref_rung|-> <link_loss_pct> <recovered>
-  [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi>]... # a verdict window
+  [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi> <nhm_busy|->
+   <own_air>]...                                             # a verdict window
 H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
 ```
 
@@ -625,7 +690,10 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   or was non-healthy** (not every 150 ms window unconditionally). Per-card
   block order is `foreign fa cca crc rssi snr drssi` (task review caught
   and fixed a fixture/golden mismatch here before shipping — the wire
-  order is authoritative). `drssi` is the **link-level** `d_rssi_db`
+  order is authoritative), followed since `scanlog 4` by `nhm_busy`
+  (`-` when the card's NHM window didn't cover this verdict window on this
+  channel — see the invalidation list in §2) and `own_air` (always
+  present, % of the window). `drssi` is the **link-level** `d_rssi_db`
   (best-card RSSI minus its reference), repeated identically in every
   card's chunk, not a genuinely per-card value.
 - **H** — one per `HopController` state transition or logged decision.
@@ -653,7 +721,12 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
 - **D** — extended, not replaced: the existing boot-scout dwell line gains
   a trailing `<sess> <to_us> <read_us> <back_us>` (in-session flag + the
   three step timings). Boot-time dwells still emit valid lines with these
-  four fields at their defaults (`0 0 0 0`).
+  four fields at their defaults (`0 0 0 0`). Since `scanlog 4` a further
+  trailing `<busy|->` carries the NHM busy % over the dwell's observe span
+  (`-` when the card has no NHM or the dwell's busy read was invalid);
+  format and the `K` pick line's matching `<busy|->` addition are in
+  `docs/channel-select.md`, since both records are shared with the
+  boot-time scan.
 
 Full boot-time record formats (`C`/`K`/`M`) are unchanged and still
 documented in `docs/channel-select.md`.
@@ -681,16 +754,23 @@ dwell): `{visits, score, cost_us}` — `visits` is cumulative over every
 completed dwell (success or failure), `score`/`cost_us` are the **last**
 successful dwell's, not an aggregate (a failed retune produces no
 `HopVisit` to score, so a stale score is kept rather than zeroed).
-`cards[i].energy` is unchanged in shape but now refilled every ~150 ms
-verdict window instead of once a second from the deleted A-record poll —
-noisier tick-to-tick, but it never goes stale for up to a second the way
-the old poll could.
+`cards[i].energy` is refilled every ~150 ms verdict window instead of once
+a second from the deleted A-record poll — noisier tick-to-tick, but it
+never goes stale for up to a second the way the old poll could. Since
+2026-09-25 it also carries `busy_pct`/`own_air_pct` (both `null` when the
+window's busy reading was invalid or none has landed yet), the same
+`nhm_busy_pct`/`own_air_pct` the verdict computes — see §2 and
+`docs/observability.md`.
 
 **`tools/maburtop.py`:** the header line gains `hop <state>/<verdict>`
 next to the existing `scan <state>:<rounds>`; the per-card `busy` column
 (`(cca − min(cca,own)) + fa + foreign`, the same score the ranker uses)
 now tracks `cards[i].energy` at verdict-window cadence rather than the old
-1 Hz poll.
+1 Hz poll. A further per-card `air%` column
+(`max(0, busy_pct − own_air_pct)`, clamped at 0 so a stale
+`own_air_pct` reading past a fresher `busy_pct` can't go negative) shows
+the same foreign-busy-airtime figure the `blocked` evidence bit and both
+rankers use.
 
 **Player OSD:** the compact bar's `ch:` field appends `(h)` while a hop's
 target is the live channel and that target is not home

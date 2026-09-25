@@ -14,9 +14,14 @@ std::vector<uint8_t> scan_half_set(uint8_t home, const std::vector<uint8_t>& can
 
 // Pair pick over per-half RankEntry rows (ChannelRanker::all()). A pair is
 // ranked once BOTH halves have >= min_rounds visits; its score is the worse
-// half's worst_busy. Home's pair keeps home_margin the way
-// ChannelRanker::proposal does for a single channel; ties go to home; among
-// candidates the lowest score wins, config order breaking ties. Unlike
+// half's worst_busy. A pair is blocked if EITHER half's worst-visit NHM busy
+// % reaches blocked_pct; the blocked tier takes precedence over score AND
+// home_margin -- an unblocked pair always beats a blocked one regardless of
+// score, and a blocked home loses to any unblocked candidate outright (spec
+// 2026-09-25-nhm-airtime §7). Home's pair keeps home_margin the way
+// ChannelRanker::proposal does for a single channel, applied within a tier;
+// ties go to home; among candidates the lowest score wins, config order
+// breaking ties. Unlike
 // ChannelRanker::ranked(), an exact worst_busy tie ignores the noise-floor
 // tie-break (valid floor first, then lower floor_dbm): config order alone
 // decides it. Returns the

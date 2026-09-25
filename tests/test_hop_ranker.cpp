@@ -72,7 +72,7 @@ static maburgs::HopVisit bv(uint8_t ch, double t, uint32_t fa, double busy) {
   maburgs::HopVisit v; v.ch = ch; v.t_ms = t; v.fa = fa; v.busy_valid = true; v.busy_pct = busy; return v;
 }
 TEST(blocked_channel_loses_to_a_busier_by_events_unblocked_one) {
-  maburgs::HopCfg c;   // blocked_pct 30
+  maburgs::HopCfg c;   // blocked_pct 50
   maburgs::HopRanker r(c, {144, 64}, 136, 0);
   for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 90)); r.add(bv(64, i, 40, 0)); }
   auto b = r.best(10, 136, {});

@@ -393,11 +393,18 @@ and `target` are `null` while unfrozen / before the first-ever order,
 success or failure; `score`/`cost_us` are the last **successful** dwell's,
 since a failed retune produces no visit to score. `cards[i].energy` keeps
 its pre-existing shape but is now refilled from the verdict engine's
-~150 ms window reads instead of the deleted 1 Hz `A`-record poll.
+~150 ms window reads instead of the deleted 1 Hz `A`-record poll. Since
+2026-09-25 (NHM airtime evidence, `docs/nhm-airtime-spike-findings-2026-09-25.md`)
+it also carries `busy_pct` (NHM busy %, `null` when that window's reading
+was invalid or none has landed) and `own_air_pct` (the GS's own
+reconstructed airtime on that card, `null` only before the first window).
 `tools/maburtop.py`'s header gains `hop <state>/<verdict>` and its
-per-card `busy` column tracks `cards[i].energy` at the new cadence. Full
-key semantics, the OSD `(h)` mark, and the `flightreport.py` HOP section
-are in `docs/inflight-channel-hop.md`.
+per-card `busy` column tracks `cards[i].energy` at the new cadence, plus a
+further `air%` column (`max(0, busy_pct − own_air_pct)`, clamped so a
+stale `own_air_pct` past a fresher `busy_pct` can't read negative) — the
+same foreign-busy-airtime figure the verdict's `blocked` bit and both
+rankers use. Full key semantics, the OSD `(h)` mark, and the
+`flightreport.py` HOP section are in `docs/inflight-channel-hop.md`.
 
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin
