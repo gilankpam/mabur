@@ -243,11 +243,19 @@ it `false` to fly with literally no dwells. Every `hop.dwell_period_ms`
    card while the hop is in flight: `tx_selection_frozen()` in
    `hop_burst_gate.h`. Unfrozen, the RCF carrying the order moved to the
    target channel within 200 ms of three of the first run's four orders).
-2. Wait for the next AU boundary on that card.
-3. `InflightScout::dwell()`: `FastRetune(candidate)` → discard read →
+2. Channel = `InflightScout::next_candidate(fe.channel())`: round-robin
+   over the **dwell set** — `radio.scan.candidates` plus home, in
+   `HopRanker`'s order (config order, home appended when not listed) —
+   skipping the channel the card already sits on (the op channel; this
+   loop never runs mid-hop). Nothing else in the set (no candidates, link
+   on home) = no dwell that cycle. The rate stays one dwell per period
+   whatever the set size; a bigger set only revisits each channel less
+   often (3 candidates + home off-home: each ~1 s).
+3. Wait for the next AU boundary on that card.
+4. `InflightScout::dwell()`: `FastRetune(candidate)` → discard read →
    sleep `hop.dwell_observe_ms` (5 ms) → real read (FA/CCA/frame counters)
    → `FastRetune(back)`.
-4. A `D` scan.log line with `sess=1` and the four step-timing columns.
+5. A `D` scan.log line with `sess=1` and the four step-timing columns.
 
 `InflightScout::dwell()` checks **both** retunes' results, not just the
 first: if the retune to the candidate fails, or the observation completes
@@ -271,7 +279,8 @@ gates its start on `n_cards >= 2` ("no point spinning it up on one card"
 ranking data comes entirely from the freshness burst below instead.
 
 **Freshness burst.** `gs/src/main.cpp`: rather than act on a ranking that
-may be up to `hop.rank_max_age_ms` old, every candidate is swept once,
+may be up to `hop.rank_max_age_ms` old, every channel of the dwell set
+except the op channel (home included) is swept once,
 back to back, via `InflightScout::burst()` whenever the controller has
 no hop in flight (`HopState::Idle` **or** `HopState::Hold`) and the
 verdict's trigger is set — **on both card counts**, matching the spec's
@@ -319,10 +328,16 @@ something (some channel reached `min_rounds`); with no boot scan at all,
 or a drone that appeared before any channel ranked, `boot_pick` stays 0 —
 never a real channel — and ties fall through to home exactly as before.
 Candidates =
-`radio.scan.candidates` ∪ `{home}`, the same set the boot scout ranks — a
-strict superset of what `InflightScout` ever dwells on, so
-`HopRanker::add()`'s silent no-op for a channel outside the candidate list
-can never actually drop a real visit.
+`radio.scan.candidates` ∪ `{home}`, the same set the boot scout ranks and
+the same set `InflightScout` dwells on, so `HopRanker::add()`'s silent
+no-op for a channel outside the candidate list can never actually drop a
+real visit. Until 2026-09-25 the scout dwelt on `radio.scan.candidates`
+only: home got no in-flight visit ever, so it was never ranked, a hop off
+home was one-way (home reachable only as the blind "nothing ranked"
+fallback, with no score behind it), a boot pick off home kept it out of
+the ranking for the whole flight, and one dwell in N landed on the op
+channel itself — a visit `best()` excludes. With no candidates configured
+the old rotation also indexed an empty list (`% 0`).
 
 At `radio.width = 40` dwells keep the 40 MHz tuning and score the primary
 only, and the ranker stays built over the same primaries as at 20 MHz. That

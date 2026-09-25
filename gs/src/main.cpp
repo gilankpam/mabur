@@ -986,7 +986,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // before every dwell/burst and never touches it beforehand.
   maburgs::InflightScout inflight(
       maburgs::InflightScoutCfg{hcfg.dwell_observe_ms, hcfg.dwell_period_ms, scfg.candidates,
-                                cfg.radio.width},
+                                cfg.radio.width, cfg.radio.channel},
       *fronts[static_cast<size_t>(scout_card)],
       [] { return static_cast<int64_t>(mono_us()); },
       [](int ms) {
@@ -1045,6 +1045,15 @@ static int run_radio(const maburgs::Config& cfg) {
       const int card = tx_card_now.load() == 0 ? 1 : 0;
       auto& fe = *fronts[static_cast<size_t>(card)];
       if (!fe.ready()) continue;
+      // Candidates plus home, minus the card's own channel (the op channel:
+      // this loop never runs mid-hop). Pick before the AU wait so a GS with
+      // nothing else to dwell on idles without touching the card.
+      std::optional<uint8_t> dwell_ch;
+      {
+        std::lock_guard<std::mutex> ilk(inflight_mu);
+        dwell_ch = inflight.next_candidate(fe.channel());
+      }
+      if (!dwell_ch) continue;
       const uint64_t s0 = au_seq.load();  // align to the next AU boundary (<= 17 ms wait)
       for (int i = 0; i < 20 && au_seq.load() == s0; ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1054,7 +1063,7 @@ static int run_radio(const maburgs::Config& cfg) {
       dwell_busy.store(true);
       maburgs::ScoutDwell d;
       maburgs::HopVisit v;
-      const bool ok = inflight.dwell(inflight.next_candidate(), fe.channel(), d, v);
+      const bool ok = inflight.dwell(*dwell_ch, fe.channel(), d, v);
       dwell_busy.store(false);
       dwell_card.store(-1);
       std::lock_guard<std::mutex> lk(dwell_mu);

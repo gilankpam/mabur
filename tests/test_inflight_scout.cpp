@@ -22,7 +22,7 @@ struct FakeRadio : ScoutRadio {
   ScoutEnergy read_energy_scout() override { log.push_back("read_scout"); ScoutEnergy e; e.fa_valid = true; e.fa_ofdm = fa_next; e.cca_ofdm = fa_next; return e; }
   ScoutFrames frames() const override { return ScoutFrames{own, foreign}; }
 };
-static InflightScoutCfg cfg() { InflightScoutCfg c; c.candidates = {120, 149, 165}; return c; }
+static InflightScoutCfg cfg() { InflightScoutCfg c; c.candidates = {120, 149, 165}; c.home = 136; return c; }
 
 TEST(dwell_sequence_and_record) {
   FakeRadio r; int64_t t = 0;
@@ -47,10 +47,86 @@ TEST(dwell_sequence_and_record) {
 TEST(round_robin_and_burst) {
   FakeRadio r; int64_t t = 0;
   InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; r.foreign += 2; });
-  CHECK(s.next_candidate() == 120 && s.next_candidate() == 149 && s.next_candidate() == 165 && s.next_candidate() == 120);
+  // Sitting on home: the rotation is the three candidates, home skipped.
+  CHECK(s.next_candidate(136) == 120 && s.next_candidate(136) == 149 && s.next_candidate(136) == 165 &&
+        s.next_candidate(136) == 120);
   std::vector<ScoutDwell> recs;
   auto visits = s.burst(136, recs);
   CHECK(visits.size() == 3 && recs.size() == 3 && r.ch == 136);
+}
+// The in-flight ranker is the scout's only source of visits (boot visits
+// never reach it), so a channel the rotation never dwells on can never be
+// ranked. Home used to be exactly that: after a hop off home it was
+// reachable only as the blind "nothing ranked" fallback. Revert = the
+// rotation over cfg.candidates alone (home never returned).
+TEST(rotation_visits_home_once_off_it) {
+  FakeRadio r; int64_t t = 0;
+  InflightScout s(cfg(), r, [&] { return t; }, [&](int) {});
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 8; ++i) got.push_back(*s.next_candidate(149));
+  // On 149: home appended after the candidates, 149 itself skipped.
+  CHECK((got == std::vector<uint8_t>{120, 165, 136, 120, 165, 136, 120, 165}));
+}
+// A dwell on the channel the card already sits on is a no-op retune whose
+// visit best() then excludes -- a wasted slot. Revert = no skip.
+TEST(rotation_never_returns_the_skipped_channel) {
+  FakeRadio r; int64_t t = 0;
+  InflightScout s(cfg(), r, [&] { return t; }, [&](int) {});
+  for (uint8_t skip : {uint8_t{120}, uint8_t{149}, uint8_t{165}, uint8_t{136}})
+    for (int i = 0; i < 9; ++i) CHECK(*s.next_candidate(skip) != skip);
+}
+// Home listed among the candidates too: one entry, not two.
+TEST(home_listed_as_candidate_is_not_doubled) {
+  FakeRadio r; int64_t t = 0;
+  InflightScoutCfg c; c.candidates = {144, 136, 64}; c.home = 136;
+  InflightScout s(c, r, [&] { return t; }, [&](int) {});
+  std::vector<uint8_t> got;
+  for (int i = 0; i < 6; ++i) got.push_back(*s.next_candidate(64));
+  CHECK((got == std::vector<uint8_t>{144, 136, 144, 136, 144, 136}));
+}
+// Nothing but the op channel to dwell on (no candidates: the config
+// default) -> nullopt, not an index into an empty list. Revert = the old
+// `% candidates.size()` (division by zero with no candidates).
+TEST(nothing_to_dwell_on_is_nullopt) {
+  FakeRadio r; int64_t t = 0;
+  InflightScoutCfg c; c.home = 136;
+  InflightScout s(c, r, [&] { return t; }, [&](int) {});
+  CHECK(!s.next_candidate(136).has_value());
+  CHECK(*s.next_candidate(144) == 136);   // off home, home is the one channel left
+  std::vector<ScoutDwell> recs;
+  CHECK(s.burst(136, recs).empty() && recs.empty() && r.log.empty());
+}
+// The freshness burst sweeps the same set: home included, `back` skipped.
+TEST(burst_covers_home_and_skips_back) {
+  FakeRadio r; int64_t t = 0;
+  InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; r.foreign += 2; });
+  r.ch = 149;
+  std::vector<ScoutDwell> recs;
+  auto visits = s.burst(149, recs);
+  REQUIRE(visits.size() == 3 && recs.size() == 3);
+  CHECK(visits[0].ch == 120 && visits[1].ch == 165 && visits[2].ch == 136);
+  CHECK(r.ch == 149);
+}
+// End to end with the ranker: after a hop to 149, the rotation alone gets
+// home ranked, and a clean home beats dirtier candidates in best().
+TEST(home_becomes_a_ranked_hop_target_after_a_hop) {
+  struct Busy : FakeRadio {
+    ScoutEnergy read_energy_scout() override {
+      ScoutEnergy e; e.fa_valid = true; e.fa_ofdm = e.cca_ofdm = ch == 136 ? 1 : 50; return e;
+    }
+  } r;
+  r.ch = 149;
+  int64_t t = 0;
+  InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; });
+  HopCfg hc;
+  HopRanker ranker(hc, {120, 149, 165}, 136, 0);
+  for (int i = 0; i < 6; ++i) {
+    ScoutDwell d; HopVisit v;
+    if (s.dwell(*s.next_candidate(149), 149, d, v)) ranker.add(v);
+  }
+  auto best = ranker.best(t / 1000.0, 149, {});
+  REQUIRE(best.has_value());
+  CHECK(*best == 136);
 }
 TEST(failed_retune_returns_false_and_leaves_card_on_back) {
   // Bad tracks `ch` the way the base FakeRadio does -- set on a successful
