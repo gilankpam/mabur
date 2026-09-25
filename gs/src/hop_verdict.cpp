@@ -79,16 +79,21 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
       ? (frozen_ref != 0.0 ? frozen_ref : cards[best].rssi_dbm)
       : (rssi_hist_[best].empty() ? cards[best].rssi_dbm : median(rssi_hist_[best]));
   const bool fading = cards[best].rssi_dbm < rssi_ref - hv.fading_drop_db;
-  bool contended = false, raised = false;
+  bool contended = false, raised = false, blocked = false;
   for (const auto& c : cards) {
     if (!c.valid) continue;
     contended = contended || c.foreign / w_s > hv.foreign_pps;
     raised = raised || c.fa / w_s > hv.fa_pps;
+    if (c.busy_valid)
+      blocked = blocked || std::max(c.nhm_busy_pct - c.own_air_pct, 0.0) > hv.blocked_pct;
   }
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
-               (contended ? kEvContended : 0) | (raised ? kEvRaised : 0);
+               (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0);
   if (!impaired) o.v = Verdict::Healthy;
   else if (weak) o.v = Verdict::Fade;
+  // blocked beats fading: a real fade lowers power and cannot raise NHM
+  // busy; analog desense reads as a fade (docs/analog-vtx-findings-2026-09-25.md).
+  else if (blocked) o.v = Verdict::Interfered;
   else if ((contended || raised) && !fading) o.v = Verdict::Interfered;
   else o.v = Verdict::Unknown;
   // ---- reference freeze / thaw

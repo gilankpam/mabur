@@ -208,3 +208,67 @@ TEST(converted_edge_of_range_reading_is_fade) {
   CHECK(!(raw.evidence & kEvWeak));
 }
 MTEST_MAIN
+
+static maburgs::VerdictCardIn busy_card(double busy, double own, bool valid = true) {
+  maburgs::VerdictCardIn c;
+  c.valid = true; c.rssi_dbm = -48; c.snr_db = 30;
+  c.busy_valid = valid; c.nhm_busy_pct = busy; c.own_air_pct = own;
+  return c;
+}
+// Run 1 of 2026-09-25: 80 % loss, no foreign/FA, strong signal, air 95 % busy.
+// blocked_pct default is 50 (hw spike findings, docs/nhm-airtime-spike-
+// findings-2026-09-25.md), not the spec's 30 -- 95-2=93 still clears it.
+TEST(long_frame_jam_is_interfered_via_blocked) {
+  maburgs::HopCfg cfg;
+  maburgs::HopVerdict v(cfg, 1);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.80;
+  maburgs::VerdictOut o;
+  double t = 0;
+  for (int i = 0; i < 3; ++i) o = v.window(t += 150, {busy_card(95, 2)}, bad, 0);
+  CHECK(o.v == maburgs::Verdict::Interfered);
+  CHECK(o.evidence & maburgs::kEvBlocked);
+  CHECK(o.trigger);
+}
+TEST(busy_but_healthy_link_stays_healthy) {
+  maburgs::HopCfg cfg;
+  maburgs::HopVerdict v(cfg, 1);
+  maburgs::VerdictLinkIn ok; ok.pre_fec_loss = 0.0;
+  auto o = v.window(150, {busy_card(95, 2)}, ok, 0);
+  CHECK(o.v == maburgs::Verdict::Healthy);
+}
+TEST(own_airtime_is_subtracted) {
+  maburgs::HopCfg cfg;
+  maburgs::HopVerdict v(cfg, 1);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.20;
+  auto o = v.window(150, {busy_card(60, 45)}, bad, 0);   // 15 % foreign < 50
+  CHECK(!(o.evidence & maburgs::kEvBlocked));
+  CHECK(o.v == maburgs::Verdict::Unknown);
+}
+TEST(blocked_beats_fading_but_not_weak) {
+  maburgs::HopCfg cfg;
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.5;
+  {  // fading: RSSI 15 dB under its trailing reference (analog desense)
+    maburgs::HopVerdict v(cfg, 1);
+    maburgs::VerdictLinkIn ok;
+    double t = 0;
+    for (int i = 0; i < 10; ++i) v.window(t += 150, {busy_card(0, 2)}, ok, 0);
+    auto c = busy_card(100, 2); c.rssi_dbm = -63;
+    auto o = v.window(t += 150, {c}, bad, 0);
+    CHECK(o.evidence & maburgs::kEvFading);
+    CHECK(o.v == maburgs::Verdict::Interfered);
+  }
+  {  // weak: range edge
+    maburgs::HopVerdict v(cfg, 1);
+    auto c = busy_card(100, 2); c.rssi_dbm = -85; c.snr_db = 5;
+    auto o = v.window(150, {c}, bad, 0);
+    CHECK(o.v == maburgs::Verdict::Fade);
+  }
+}
+TEST(no_busy_reading_is_todays_verdict) {
+  maburgs::HopCfg cfg;
+  maburgs::HopVerdict v(cfg, 1);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.8;
+  auto o = v.window(150, {busy_card(100, 0, /*valid=*/false)}, bad, 0);
+  CHECK(o.v == maburgs::Verdict::Unknown);
+  CHECK(!(o.evidence & maburgs::kEvBlocked));
+}

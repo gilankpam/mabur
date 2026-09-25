@@ -1265,3 +1265,19 @@ TEST(bundle_default_sets_every_known_key_but_radio_cards) {
   CHECK(defaulted.size() == 1);
   CHECK(!defaulted.empty() && defaulted[0] == "radio.cards=(auto-scan)");
 }
+
+// spec 2026-09-25-nhm-airtime §6; default blocked_pct is 50, not the spec's
+// 30 -- hw spike findings (docs/nhm-airtime-spike-findings-2026-09-25.md).
+TEST(hop_verdict_busy_keys) {
+  auto c = maburgs::load_config(write_tmp(
+      "[hop]\nenable = true\n[hop.verdict]\nbusy_dbm = -80\nblocked_pct = 25\n"));
+  CHECK(c.hop.verdict.busy_dbm == -80);
+  CHECK(c.hop.verdict.blocked_pct == 25.0);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nbusy_dbm = -82\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict") != std::string::npos; }
+  CHECK(threw);   // -82 is not an NHM bucket edge
+  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
+  CHECK(b.hop.verdict.busy_dbm == -83);
+  CHECK(b.hop.verdict.blocked_pct == 50.0);
+}

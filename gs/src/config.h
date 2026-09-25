@@ -43,6 +43,13 @@ struct HopVerdictCfg {
   int fading_drop_db = 6;
   int foreign_pps = 50;
   int fa_pps = 100;
+  // NHM busy-airtime evidence (spec 2026-09-25-nhm-airtime §6). busy_dbm
+  // must be an nf::kNhmAbsThDbm bucket edge (nhm_busy.h::busy_dbm_is_edge).
+  // blocked_pct default is 50, not the spec's 30 -- the hw spike found
+  // busy_dbm -83 / blocked_pct 50 the working pair (docs/nhm-airtime-
+  // spike-findings-2026-09-25.md).
+  int busy_dbm = -83;
+  double blocked_pct = 50.0;  // foreign busy airtime that makes a window/channel "blocked"
 };
 
 /// In-flight channel hop (spec 2026-09-14-inflight-channel-hop). enable

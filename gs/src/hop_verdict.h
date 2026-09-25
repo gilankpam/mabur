@@ -11,7 +11,8 @@ namespace maburgs {
 enum class Verdict { Healthy, Fade, Interfered, Unknown };
 const char* to_string(Verdict v);   // "healthy" "fade" "interfered" "unknown"
 
-enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvFading = 4, kEvContended = 8, kEvRaised = 16 };
+enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvFading = 4, kEvContended = 8, kEvRaised = 16,
+                 kEvBlocked = 32 };
 
 // The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db /
 // fading_drop_db) are written in dBm / dB. The aggregator's EMAs are
@@ -29,6 +30,11 @@ struct VerdictCardIn {
   bool valid = false;
   uint32_t foreign = 0, crc_fail = 0, fa = 0, cca = 0;
   double rssi_dbm = 0, snr_db = 0;
+  // Busy airtime (spec 2026-09-25-nhm-airtime §6): NHM busy % of the window
+  // and our own video's airtime %, valid only when the card's NHM window
+  // covered this window on this channel.
+  bool busy_valid = false;
+  double nhm_busy_pct = 0, own_air_pct = 0;
 };
 
 struct VerdictLinkIn {
