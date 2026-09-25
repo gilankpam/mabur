@@ -24,7 +24,7 @@ std::vector<uint8_t> scan_half_set(uint8_t home, const std::vector<uint8_t>& can
 // pair is ranked, and the best ranked candidate when home's pair is not.
 uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t home,
                       const std::vector<uint8_t>& candidates, int min_rounds,
-                      uint32_t home_margin);
+                      uint32_t home_margin, double blocked_pct = 1e9);
 
 // True when home's pair or any candidate's pair is ranked under the same
 // both-halves rule pair_proposal uses. The boot-pick freeze's "did the scan

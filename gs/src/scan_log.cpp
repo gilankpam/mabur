@@ -68,8 +68,10 @@ void ScanLog::pick(double t_ms, std::optional<uint8_t> picked, uint64_t rounds,
   if (picked) {
     for (const RankEntry& e : all) {
       if (e.visits < static_cast<uint32_t>(min_rounds)) continue;
-      line += " " + std::to_string(static_cast<unsigned>(e.ch)) + ":" + std::to_string(e.worst_busy);
-      if (e.floor_valid) line += ":" + std::to_string(static_cast<int>(e.floor_dbm));
+      line += " " + std::to_string(static_cast<unsigned>(e.ch)) + ":" + std::to_string(e.worst_busy) + ":" +
+              (e.floor_valid ? std::to_string(static_cast<int>(e.floor_dbm)) : std::string("nan")) + ":";
+      if (e.busy_valid) { char b[16]; std::snprintf(b, sizeof(b), "%.1f", e.worst_busy_pct); line += b; }
+      else line += "-";
     }
   }
   if (picked && mabur::ht40_pair_other(*picked) != 0) {

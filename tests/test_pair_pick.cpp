@@ -68,4 +68,17 @@ TEST(any_pair_ranked_needs_both_halves_of_some_pair) {
   CHECK(any_pair_ranked(home, 136, {144}, 3));
 }
 
+static maburgs::RankEntry re(uint8_t ch, uint32_t busy, double bpct) {
+  maburgs::RankEntry e; e.ch = ch; e.worst_busy = busy; e.visits = 3;
+  e.busy_valid = true; e.worst_busy_pct = bpct; return e;
+}
+TEST(one_blocked_half_blocks_the_pair) {
+  std::vector<maburgs::RankEntry> all = {re(132, 0, 0), re(136, 0, 0), re(140, 0, 90), re(144, 0, 0),
+                                         re(60, 5, 0), re(64, 5, 0)};
+  // 140+144 scores 0 events but its 140 half is blocked; 60+64 wins over it.
+  CHECK(maburgs::pair_proposal(all, 136, {144, 64}, 3, 1000, 30.0) == 136);   // home clean, margin
+  all[0] = re(132, 0, 100);   // home's other half blocked
+  CHECK(maburgs::pair_proposal(all, 136, {144, 64}, 3, 1000, 30.0) == 64);
+}
+
 MTEST_MAIN

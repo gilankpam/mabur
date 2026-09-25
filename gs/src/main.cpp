@@ -911,6 +911,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // Spec 2026-07-26 drone-telemetry.
   struct { std::optional<mabur::rc::Telem> t; uint64_t rx_ms = 0; } latest_telem;
 
+  // Hoisted above the boot scout's ScoutCfg fill (moved up from its
+  // original spot just below the InflightScout comment) so the boot scan
+  // can read hcfg.verdict.busy_dbm / .blocked_pct.
+  const maburgs::HopCfg& hcfg = cfg.hop;
   // Auto channel selection (spec 2026-09-13-auto-channel-select). The plan
   // owns where the link lives; the scout (only while radio.scan.enable and
   // until the first ack) measures candidates on the spare card, or on the
@@ -939,6 +943,8 @@ static int run_radio(const maburgs::Config& cfg) {
     sc.home_margin = static_cast<uint32_t>(scfg.home_margin);
     sc.one_card = one_card;
     sc.link_width_mhz = cfg.radio.width;
+    sc.busy_dbm = hcfg.verdict.busy_dbm;
+    sc.blocked_pct = hcfg.verdict.blocked_pct;
     scout = std::make_unique<maburgs::ChannelScout>(
         sc, *fronts[static_cast<size_t>(scout_card)],
         [] { return static_cast<int64_t>(mono_ms()); },
@@ -964,8 +970,8 @@ static int run_radio(const maburgs::Config& cfg) {
   // below, so HopRanker::add() (which silently drops a visit for any
   // channel outside its own list, Task 5's carried finding) can never
   // discard a scout visit: every channel the scout can ever dwell on is
-  // already ranked.
-  const maburgs::HopCfg& hcfg = cfg.hop;
+  // already ranked. (hcfg itself is declared above, before the boot
+  // scout's ScoutCfg fill, which also reads it.)
   maburgs::HopVerdict verdict(hcfg, n_cards);
   // boot_pick 0 = "no boot-time pick yet" (no channel is ever 0), so the
   // ranked tiebreak falls through to home until the boot scan actually

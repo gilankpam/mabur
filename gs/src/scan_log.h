@@ -28,9 +28,10 @@ namespace maburgs {
 //     scan, radio.width in session)
 //     (scanlog 4: D + trailing <busy|-> = NHM busy % over the dwell's
 //     observe span)
-//   K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... pair=<lo>+<hi>|-
-//                                                                 # the pick
+//   K <t> <picked|none> <rounds> <ch>:<worst_busy>:<floor|nan>:<busy|-> ...
+//     pair=<lo>+<hi>|-                                            # the pick
 //     (scanlog 3: the picked channel's standard 40 MHz pair, - when none)
+//     (scanlog 4: K entries <ch>:<worst_busy>:<floor|nan>:<busy|->)
 //   M <t> <card|all> <from> <to> <reason>                        # a link move
 //   V <t> <verdict> <evidence_hex> <ref_rung|-> <link_loss_pct> <recovered>
 //     [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi> <nhm_busy|->

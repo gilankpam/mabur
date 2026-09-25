@@ -2,6 +2,7 @@
 
 #include <cstdio>
 
+#include "nhm_busy.h"
 #include "pair_pick.h"
 
 namespace maburgs {
@@ -44,7 +45,7 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       now_(std::move(now_ms)),
       sleep_(std::move(sleep_ms)),
       sched_(plan_for(cfg_)),
-      ranker_(cfg_.home, dwell_channels(cfg_), cfg_.min_rounds, cfg_.home_margin),
+      ranker_(cfg_.home, dwell_channels(cfg_), cfg_.min_rounds, cfg_.home_margin, cfg_.blocked_pct),
       proposal_(cfg_.home) {}
 
 void ChannelScout::freeze(uint8_t target) {
@@ -127,9 +128,16 @@ bool ChannelScout::dwell(uint8_t ch, Kind kind, uint64_t round) {
   }
   // Discard barrier: zero the delta counters and let the USB pipe drain.
   (void)radio_.read_energy(false);
+  const uint16_t nhm_period = nhm_period_4us(cfg_.dwell_ms);   // clamps at ~262 ms
+  const bool nhm_armed = radio_.arm_nhm_busy(nhm_period);
   const ScoutFrames f0 = radio_.frames();
   const int64_t t0 = now_();
   sleep_(cfg_.dwell_ms);
+  const NhmBusyRead nb = nhm_armed ? radio_.read_nhm_busy() : NhmBusyRead{};
+  const std::optional<double> busy =
+      (nb.valid && nb.period == nhm_period) ? nhm_busy_pct(nb, cfg_.busy_dbm) : std::nullopt;
+  d.busy_valid = busy.has_value();
+  d.busy_pct = busy.value_or(0.0);
   const ScoutEnergy e = radio_.read_energy(true);
   const ScoutFrames f1 = radio_.frames();
   s.observe_ms = now_() - t0;
@@ -155,6 +163,8 @@ bool ChannelScout::dwell(uint8_t ch, Kind kind, uint64_t round) {
   rs.foreign = s.frames - s.dvr_frames;
   rs.floor_valid = e.floor_valid;
   rs.floor_dbm = e.floor_dbm;
+  rs.busy_valid = d.busy_valid;
+  rs.busy_pct = d.busy_pct;
   {
     std::lock_guard<std::mutex> lk(mu_);
     if (e.fa_valid) ranker_.add(rs);
@@ -169,7 +179,7 @@ void ChannelScout::publish_() {
   std::lock_guard<std::mutex> lk(mu_);
   const uint8_t p = cfg_.link_width_mhz == 40
                         ? pair_proposal(ranker_.all(), cfg_.home, cfg_.candidates,
-                                        cfg_.min_rounds, cfg_.home_margin)
+                                        cfg_.min_rounds, cfg_.home_margin, cfg_.blocked_pct)
                         : ranker_.proposal();
   proposal_.store(p, std::memory_order_release);
 }

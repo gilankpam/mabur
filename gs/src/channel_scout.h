@@ -23,6 +23,8 @@ struct ScoutCfg {
   uint32_t home_margin = 0;
   bool one_card = false;
   uint8_t link_width_mhz = 20;  // radio.width: 40 = dwell every half at 20, pick a pair, park at 40
+  int busy_dbm = -83;
+  double blocked_pct = 1e9;
 };
 
 struct ScoutDwell {

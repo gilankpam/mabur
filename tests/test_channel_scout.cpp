@@ -2,6 +2,7 @@
 #include <vector>
 #include "mtest.h"
 #include "channel_scout.h"
+#include "nhm_busy.h"
 using namespace maburgs;
 
 // Fake radio + fake clock: sleep() advances time, so a dwell "takes" exactly
@@ -265,5 +266,29 @@ TEST(bw40_one_card_dwells_the_other_half_of_home_but_not_home) {
   REQUIRE(sched.size() == 5);
   CHECK(sched[0] == "retune 132"); CHECK(sched[1] == "retune 140");
   CHECK(sched[4] == "retune 40");
+}
+
+TEST(boot_dwell_books_nhm_busy_before_the_floor_read) {
+  struct Nhm : FakeRadio {
+    uint16_t armed = 0;
+    bool arm_nhm_busy(uint16_t p) override { calls.push_back("arm " + std::to_string(p)); armed = p; return true; }
+    NhmBusyRead read_nhm_busy() override {
+      calls.push_back("nhm");
+      NhmBusyRead r; r.valid = true; r.period = armed; r.buckets[0] = 51; r.buckets[11] = 204; return r;
+    }
+  } r;
+  ScoutCfg c = cfg2(); c.blocked_pct = 30.0;
+  ChannelScout s(c, r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  CHECK(s.run_once());
+  // retune -> discard read -> ARM (250 ms = 62500) -> observe -> NHM read -> floor read (reprograms NHM)
+  REQUIRE(r.calls.size() == 5);
+  CHECK(r.calls[2] == "arm 62500");
+  CHECK(r.calls[3] == "nhm");
+  CHECK(r.calls[4] == "read+nhm");
+  auto d = s.take_dwells();
+  REQUIRE(d.size() == 1);
+  CHECK(d[0].busy_valid && d[0].busy_pct == 80.0);
+  for (const auto& e : s.ranking())
+    if (e.ch == 136) { CHECK(e.busy_valid); CHECK(e.worst_busy_pct == 80.0); }
 }
 MTEST_MAIN
