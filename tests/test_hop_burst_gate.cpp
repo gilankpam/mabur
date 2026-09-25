@@ -60,4 +60,16 @@ TEST(tx_selection_is_frozen_during_a_dwell_or_an_in_flight_hop) {
   CHECK(tx_selection_frozen(false, true));
   CHECK(tx_selection_frozen(true, true));
 }
+// Task 12 (f): the op verdict describes the op channel, so a card tuned
+// anywhere else -- a hop's lead card parked on the target during Ordered --
+// contributes nothing, exactly like a card mid-dwell. Before this the lead
+// card's clean target reading won the MIN-across-cards `blocked` term and
+// cleared kEvBlocked within ~3 windows of every order.
+// Revert (drop the channel comparison): the target-card check reads usable.
+TEST(verdict_card_usable_only_on_the_op_channel) {
+  CHECK(verdict_card_usable(true, false, 144, 144));     // on op
+  CHECK(!verdict_card_usable(true, false, 112, 144));    // lead card on the hop target
+  CHECK(!verdict_card_usable(true, true, 144, 144));     // mid-dwell
+  CHECK(!verdict_card_usable(false, false, 144, 144));   // not ready
+}
 MTEST_MAIN

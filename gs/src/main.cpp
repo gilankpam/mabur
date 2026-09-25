@@ -1945,7 +1945,12 @@ static int run_radio(const maburgs::Config& cfg) {
         auto& fe = *fronts[static_cast<size_t>(i)];
         const size_t si = static_cast<size_t>(i);
         const bool busy = dwell_busy.load() && dwell_card.load() == i;
-        if (busy || !fe.ready()) {
+        // The verdict describes the OP channel: a card tuned elsewhere (a
+        // hop's lead card parked on the target until Confirm) contributes
+        // nothing, exactly like one mid-dwell. Mixing its clean-target
+        // readings in was a latent bug that cleared kEvBlocked during every
+        // Ordered (hop_burst_gate.h::verdict_card_usable).
+        if (!maburgs::verdict_card_usable(fe.ready(), busy, fe.channel(), plan.op())) {
           window_prev_ok[si] = false;
           nhm_win[si].invalidate();
           continue;

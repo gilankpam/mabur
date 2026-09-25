@@ -480,3 +480,118 @@ TEST(escape_after_verify_fail) {
   m.escape = 112;
   CHECK(g.tick(m).kind == HopAction::Hold);
 }
+
+// ---- Task 12 (f): undelivered orders are not channel failures ----------
+// Bench 2026-09-26 (GS session 0232): the jammer next to the drone also
+// jammed the uplink, so the order (carried by every RCF) never arrived;
+// after confirm_ms the controller backed the clean target off as FAILED,
+// the escape (which skips Failed) had nowhere to go, and the link held 30 s
+// on the jammed op. While the op reads blocked, the order is given until
+// confirm_extend_ms (3000) before it is withdrawn as undelivered.
+static uint8_t evcount(const std::vector<HopEvent>& ev, const char* k) {
+  uint8_t n = 0;
+  for (const auto& e : ev) if (e.kind == k) ++n;
+  return n;
+}
+// Revert (drop the extension branch in ordered_tick): Withdraw at 1500.
+TEST(confirm_extends_while_op_blocked) {
+  HopController h(cfg(), 136);
+  REQUIRE(h.tick(T(1000, blocked_here(), 112, 144)).kind == HopAction::Order);
+  (void)h.take_events();
+  CHECK(h.tick(T(1500, blocked_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.tick(T(2000, blocked_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.tick(T(3900, blocked_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.state() == HopState::Ordered && h.hop_ch() == 112);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);   // logged once, on entering the extension
+  CHECK(ev[0].kind == "confirm_extend" && ev[0].target == 112 && ev[0].elapsed_ms == 500);
+}
+// Revert (record Failed on an extended withdraw): 112 is in
+// backed_off_failed(); or keep "withdraw" as the event kind.
+TEST(extension_expires_as_undelivered) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, blocked_here(), 112, 144));
+  h.tick(T(1500, blocked_here(), 112, 144));
+  (void)h.take_events();
+  auto a = h.tick(T(4000, blocked_here(), 112, 144));
+  CHECK(a.kind == HopAction::Withdraw && a.target == 144);
+  CHECK(h.state() == HopState::Idle && h.hop_ch() == 144);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "withdraw_undelivered" && ev[0].target == 112 && ev[0].elapsed_ms == 3000);
+  CHECK(!has(h.backed_off_failed(4001), 112));
+  CHECK(has(h.backed_off(4001), 112));   // the normal ranker still skips it
+}
+// Today's behaviour when the op is not blocked, and with the key at 0.
+// Revert (extend regardless of kEvBlocked): None at 1500.
+TEST(unblocked_op_withdraws_at_confirm_ms) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, raised_here(), 112, 144));
+  (void)h.take_events();
+  CHECK(h.tick(T(1500, raised_here(), 112, 144)).kind == HopAction::Withdraw);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "withdraw");
+  CHECK(has(h.backed_off_failed(1501), 112));
+  // confirm_extend_ms 0 (<= confirm_ms): no extension even when blocked
+  HopCfg c = cfg(); c.confirm_extend_ms = 0;
+  HopController g(c, 136);
+  g.tick(T(1000, blocked_here(), 112, 144));
+  CHECK(g.tick(T(1500, blocked_here(), 112, 144)).kind == HopAction::Withdraw);
+  CHECK(has(g.backed_off_failed(1501), 112));
+  CHECK(evcount(g.take_events(), "confirm_extend") == 0);
+}
+// An extension that sees the op unblock withdraws then (not at 3000), and
+// still as undelivered: the extension was entered for this order.
+TEST(extension_ends_when_op_unblocks) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, blocked_here(), 112, 144));
+  h.tick(T(1500, blocked_here(), 112, 144));
+  (void)h.take_events();
+  CHECK(h.tick(T(1800, raised_here(), 112, 144)).kind == HopAction::Withdraw);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "withdraw_undelivered");
+}
+// The escape skips only Failed channels, so an undelivered target is
+// still an escape once the op reads blocked again.
+// Revert (Undelivered counted in backed_off_failed): Hold, hold_exhausted.
+TEST(escape_may_target_undelivered_channel) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, blocked_here(), 112, 144));   // flee 144, order 112
+  h.tick(T(1500, blocked_here(), 112, 144));
+  REQUIRE(h.tick(T(4000, blocked_here(), 112, 144)).kind == HopAction::Withdraw);
+  (void)h.take_events();
+  // after cooldown: nothing ranked (112 backed off), home 136 blocked
+  HopTick k = T(6100, blocked_here(), std::nullopt, 144); k.home_blocked = true;
+  k.escape = 112; k.escape_score = 4;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Order && a.target == 112);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "escape");
+}
+// Revert (check the timeout before video_on_target): no Confirm.
+TEST(confirm_during_extension_proceeds_to_verifying) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, blocked_here(), 112, 144));
+  h.tick(T(1500, blocked_here(), 112, 144));
+  auto a = h.tick(T(2700, blocked_here(), 112, 144, /*video=*/true));
+  CHECK(a.kind == HopAction::Confirm && a.target == 112);
+  CHECK(h.state() == HopState::Verifying);
+  auto ev = h.take_events();
+  CHECK(ev.back().kind == "lead_confirm" && ev.back().elapsed_ms == 1700);
+}
+// A later verify_pass on the undelivered channel erases its back-off.
+// Revert (drop backoff_.erase(landed) in verifying_tick): 112 stays backed off.
+TEST(verify_pass_clears_undelivered_backoff) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, blocked_here(), 112, 144));
+  h.tick(T(1500, blocked_here(), 112, 144));
+  h.tick(T(4000, blocked_here(), 112, 144));   // withdraw_undelivered
+  HopTick k = T(6100, blocked_here(), std::nullopt, 144); k.home_blocked = true; k.escape = 112;
+  REQUIRE(h.tick(k).kind == HopAction::Order);
+  REQUIRE(h.tick(T(6150, blocked_here(), std::nullopt, 144, true)).kind == HopAction::Confirm);
+  CHECK(h.tick(T(7200, healthy(), std::nullopt, 112)).kind == HopAction::VerifyPass);
+  CHECK(!has(h.backed_off(7201), 112));
+}

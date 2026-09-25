@@ -76,7 +76,8 @@ class HopController {
   HopState state() const;
   std::vector<uint8_t> backed_off(double now_ms) const;
   // Only the channels backed off for FAILING (verify fail, withdraw,
-  // session lost) -- not the ones merely fled. The escape's skip list.
+  // session lost) -- not the ones merely fled, nor an order withdrawn as
+  // undelivered after a confirm extension. The escape's skip list.
   std::vector<uint8_t> backed_off_failed(double now_ms) const;
   std::vector<HopEvent> take_events();
   uint32_t hops() const;
@@ -99,13 +100,17 @@ class HopController {
   // else.
   void enter_hold(double now, const char* why, uint8_t target, double elapsed_ms, HopAction& out);
   void leave_hold(double now, uint8_t cur_op);
-  void withdraw(uint8_t restore_to, double now, HopAction& out);
+  // extended: the order was held past confirm_ms because the op read
+  // blocked -- the target is backed off as Undelivered, not Failed.
+  void withdraw(uint8_t restore_to, double now, bool extended, HopAction& out);
   void flee(uint8_t ch, double now);
   bool home_available(uint8_t cur_op, double now, bool home_blocked) const;
   // Why a channel is backed off: fled (flee() -- the trigger left it) or
-  // failed (a verify fail, a withdraw, a lost session). One map; a later
+  // failed (a verify fail, a withdraw, a lost session), or undelivered (a
+  // withdraw after a confirm extension: the order probably never reached
+  // the drone, so nothing is known against the target). One map; a later
   // back-off overwrites the reason and keeps doubling.
-  enum class BackoffWhy { Fled, Failed };
+  enum class BackoffWhy { Fled, Failed, Undelivered };
   void back_off(uint8_t ch, double now, BackoffWhy why = BackoffWhy::Failed);
   // Task 11 (d): the escape from a blocked hold. Orders in.escape when
   // there is nothing else to go to and the channel we are on is blocked.
@@ -126,6 +131,7 @@ class HopController {
   uint32_t hops_ = 0;
   uint32_t holds_ = 0;
   bool one_card_retuned_ = false;
+  bool confirm_extended_ = false;   // this order entered the confirm extension
   double hold_start_ms_ = 0;
   struct Backoff { double until_ms; int k; BackoffWhy why; };
   std::map<uint8_t, Backoff> backoff_;                  // ch -> {until_ms, repeat count k, reason}

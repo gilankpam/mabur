@@ -121,7 +121,23 @@ void HopController::ordered_tick(const HopTick& in, HopAction& out) {
     return;
   }
   if (in.now_ms - order_ms_ >= cfg_.confirm_ms) {
-    withdraw(in.cur_op, in.now_ms, out);
+    // The confirm extension (Task 12 (f)): while the op channel reads
+    // BLOCKED, the jam is probably on the uplink too -- the order rides
+    // every RCF, and the drone cannot act on RCFs it never hears (bench
+    // 2026-09-26, session 0232: the jammer sat next to the drone, the order
+    // never arrived, the clean target was backed off as FAILED at
+    // confirm_ms, the escape had nowhere to go and the link held 30 s on
+    // the jammed op). Keep ordering until confirm_extend_ms; an order that
+    // still does not land is withdrawn as undelivered, not failed.
+    if (cfg_.confirm_extend_ms > cfg_.confirm_ms && (in.verdict.evidence & kEvBlocked) &&
+        in.now_ms - order_ms_ < cfg_.confirm_extend_ms) {
+      if (!confirm_extended_) {
+        confirm_extended_ = true;
+        log_event(in.now_ms, "confirm_extend", epoch_, hop_ch_, 0, in.now_ms - order_ms_);
+      }
+      return;
+    }
+    withdraw(in.cur_op, in.now_ms, confirm_extended_, out);
     return;
   }
   // Still waiting on the lead card: no action, no event.
@@ -220,6 +236,7 @@ void HopController::order(uint8_t target, int restore_rung, int lead_card, uint3
   state_ = HopState::Ordered;
   order_ms_ = now;
   one_card_retuned_ = false;
+  confirm_extended_ = false;
   hop_times_.push_back(now);
   out.kind = HopAction::Order;
   out.target = target;
@@ -229,16 +246,17 @@ void HopController::order(uint8_t target, int restore_rung, int lead_card, uint3
   log_event(now, event_kind, epoch_, target, score, 0);
 }
 
-void HopController::withdraw(uint8_t restore_to, double now, HopAction& out) {
+void HopController::withdraw(uint8_t restore_to, double now, bool extended, HopAction& out) {
   const uint8_t failed_target = hop_ch_;
-  back_off(failed_target, now);
+  back_off(failed_target, now, extended ? BackoffWhy::Undelivered : BackoffWhy::Failed);
   ++epoch_;
   hop_ch_ = restore_to;
   state_ = HopState::Idle;
   out.kind = HopAction::Withdraw;
   out.target = restore_to;
   out.epoch = epoch_;
-  log_event(now, "withdraw", epoch_, failed_target, 0, now - order_ms_);
+  log_event(now, extended ? "withdraw_undelivered" : "withdraw", epoch_, failed_target, 0,
+            now - order_ms_);
 }
 
 void HopController::enter_hold(double now, const char* why, uint8_t target, double elapsed_ms,

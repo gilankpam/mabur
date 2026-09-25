@@ -1172,8 +1172,13 @@ _HOP_ORDER_KINDS = {"order", "verify_fail", "escape"}
 # "session_lost" (2026-09-24): HopController::on_session_lost withdrew an
 # order that was still waiting for its confirm when the link's session
 # dropped -- the attempt is over, with its own outcome.
-_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "session_lost", "hold_cap", "hold_exhausted",
-                            "hold_end"}
+# "withdraw_undelivered" (2026-09-26, Task 12 (f)): a withdraw after the
+# confirm extension (the op read blocked, so the order was held past
+# confirm_ms) -- the target is backed off as undelivered, not failed.
+# "confirm_extend" (same day) marks entry into that extension and is
+# informational: the attempt stays open.
+_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "withdraw_undelivered", "session_lost", "hold_cap",
+                            "hold_exhausted", "hold_end"}
 _HOP_RESTORE_WINDOW_MS = 5000.0  # generous: production fires E hop_restore
                                  # essentially in the same tick as H order/
                                  # verify_fail (main.cpp calls
@@ -1271,7 +1276,7 @@ def build_hop_rows(H, restores):
             if open_row["video_ts"] is None:
                 open_row["video_ts"] = h["t_ms"]
             continue
-        if base == "one_card_retune":
+        if base in ("one_card_retune", "confirm_extend"):
             continue   # informational only; doesn't end the attempt
         if base == "verify_pass" or base in _HOP_TERMINAL_ONLY_KINDS:
             close(kind, h["t_ms"])
@@ -1430,6 +1435,11 @@ def print_hop_report(scanlog, ctllog):
     escapes = sum(1 for h in H if _strip_would(h["kind"]) == "escape")
     starved = sum(1 for v in V if v["evidence"] & 0x40)
     print(f"escapes: {escapes}  starved windows: {starved} (evidence & 0x40)")
+    # Task 12 (f): orders held past confirm_ms because the op read blocked,
+    # and how many of those still never landed.
+    extends = sum(1 for h in H if _strip_would(h["kind"]) == "confirm_extend")
+    undelivered = sum(1 for h in H if _strip_would(h["kind"]) == "withdraw_undelivered")
+    print(f"confirm extensions: {extends}  undelivered withdraws: {undelivered}")
 
     dsum = dwell_cost_summary(D)
     if dsum:

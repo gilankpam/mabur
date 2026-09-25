@@ -212,7 +212,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (j.contains("hop")) {
     const Value& h = j["hop"];
     check_keys(h, "hop", {"enable", "scout_when_disabled", "window_ms", "persist", "dwell_observe_ms",
-                          "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "verify_ms",
+                          "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "confirm_extend_ms", "verify_ms",
                           "cooldown_ms", "max_hops_per_min", "backoff_ms", "one_card_repeats", "verdict"});
     HopCfg& hc = c.hop;
     hc.enable = get_bool(h, "enable", hc.enable, "hop");
@@ -224,6 +224,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     hc.rank_visits = (int)get_int(h, "rank_visits", 5, 1, 100, "hop");
     hc.rank_max_age_ms = (int)get_int(h, "rank_max_age_ms", 10000, 1000, 600000, "hop");
     hc.confirm_ms = (int)get_int(h, "confirm_ms", 500, 100, 5000, "hop");
+    hc.confirm_extend_ms = (int)get_int(h, "confirm_extend_ms", 3000, 0, 30000, "hop");
     hc.verify_ms = (int)get_int(h, "verify_ms", 1000, 200, 10000, "hop");
     hc.cooldown_ms = (int)get_int(h, "cooldown_ms", 2000, 0, 60000, "hop");
     hc.max_hops_per_min = (int)get_int(h, "max_hops_per_min", 4, 1, 60, "hop");

@@ -190,6 +190,7 @@ dwell_period_ms      = 333
 rank_visits          = 5
 rank_max_age_ms      = 10000
 confirm_ms           = 500
+confirm_extend_ms    = 3000   # keep an unconfirmed order this long while the op reads blocked (uplink jammed too); 0 = off
 verify_ms            = 1000
 cooldown_ms          = 2000
 max_hops_per_min     = 4

@@ -1593,6 +1593,26 @@ class HopReportTest(unittest.TestCase):
         self.assertIn("escapes: 1", out)
         self.assertIn("starved windows: 2", out)
 
+    def test_confirm_extend_and_withdraw_undelivered_are_counted(self):
+        """Task 12 (f): `confirm_extend` is informational (the attempt stays
+        open), `withdraw_undelivered` closes it like a withdraw, and the HOP
+        report counts both. Revert (drop "withdraw_undelivered" from
+        _HOP_TERMINAL_ONLY_KINDS / the counters): the row reads
+        "unterminated" and no count line."""
+        def E(t, kind, epoch, target, el=0.0):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": el}
+        H = [E(1000, "order", 1, 112), E(1500, "confirm_extend", 1, 112, 500.0),
+             E(4000, "withdraw_undelivered", 2, 112, 3000.0)]
+        rows = flightreport.build_hop_rows(H, [])
+        self.assertEqual([r["outcome"] for r in rows], ["withdraw_undelivered"])
+        scanlog = {"version": 4, "V": [], "H": H, "D": [], "M": []}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, {"E": []})
+        out = buf.getvalue()
+        self.assertIn("confirm extensions: 1  undelivered withdraws: 1", out)
+
     def test_v_line_variable_card_count(self):
         """The per-card block in a V line repeats once per card -- must not
         assume exactly two (this bench has run with one card, e.g.

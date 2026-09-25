@@ -1324,3 +1324,24 @@ TEST(hop_verdict_starved_frac_key) {
   CHECK(b.hop.verdict.starved_frac == 0.25);
   CHECK(maburgs::HopVerdictCfg{}.starved_frac == 0.25);
 }
+
+// Task 12 (f): the confirm extension while the op reads blocked.
+// Revert (drop the key from check_keys / the parse): the first load throws
+// "unknown key" and the bundle read is not 3000.
+TEST(hop_confirm_extend_ms_key) {
+  auto c = maburgs::load_config(write_tmp("[hop]\nconfirm_extend_ms = 0\n"));
+  CHECK(c.hop.confirm_extend_ms == 0);
+  auto d = maburgs::load_config(write_tmp("[hop]\nconfirm_extend_ms = 30000\n"));
+  CHECK(d.hop.confirm_extend_ms == 30000);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop]\nconfirm_extend_ms = 30001\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[hop]\nconfirm_extend_ms = -1\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
+  CHECK(b.hop.confirm_extend_ms == 3000);
+  CHECK(maburgs::HopCfg{}.confirm_extend_ms == 3000);
+}

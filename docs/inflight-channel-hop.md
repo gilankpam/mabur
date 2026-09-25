@@ -553,7 +553,41 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
     detection delay — `ref_rung` from the triggering verdict is reused, not
     re-snapshotted.
   - No video within `hop.confirm_ms` while `Ordered` → withdrawal (§1),
-    same backoff.
+    same backoff — unless the op reads blocked (next bullet).
+- **Confirm extension: undelivered orders are not failures** (2026-09-26,
+  Task 12 (f)). In GS session 0232 the jammer sat next to the drone, so it
+  jammed the uplink too: the order (carried by every RCF, ~20/s) never
+  reached the drone, the GS withdrew at `confirm_ms` and backed the clean
+  target (112) off as **failed**, the escape (which skips failed) had
+  nowhere to go, and the link held 30 s on 144 at 95–99 % loss. Now, once
+  `confirm_ms` has passed without a confirm, if `hop.confirm_extend_ms`
+  (3000) > `confirm_ms` **and** the current verdict carries `kEvBlocked`
+  **and** the order is younger than `confirm_extend_ms`, the controller
+  stays `Ordered` — no action, the RCFs keep carrying the order — and logs
+  one H `confirm_extend` (elapsed = time since the order) the first time.
+  When it finally withdraws, an order that entered the extension logs
+  `withdraw_undelivered` and backs the target off as **undelivered**;
+  otherwise it is today's `withdraw` / failed. A confirm during the
+  extension proceeds to `Verifying` as usual; the op unblocking during the
+  extension withdraws on the next tick (still undelivered). Undelivered is
+  in `backed_off()` (the normal ranker still skips it) but not in
+  `backed_off_failed()`, so the escape may target it; a later
+  `verify_pass` on it erases the back-off like any other.
+  `on_session_lost` still records failed, and the one-card
+  `OneCardRetune` path is unchanged.
+- **The op verdict runs on op-channel cards only** (2026-09-26, found
+  with the extension). `main.cpp`'s verdict loop skips a card whose tuned
+  channel is not `plan.op()` exactly like a card mid-dwell
+  (`verdict_card_usable`, `gs/src/hop_burst_gate.h`): no foreign/FA/CCA,
+  busy or starved input. Before, a hop's lead card parked on the target
+  during `Ordered` fed its clean-target readings into the op verdict — a
+  latent bug that, through `blocked`'s min-across-cards rule, cleared
+  `kEvBlocked` within ~3 windows of every order, which would have
+  disabled the extension on a two-card GS. Consequences: during `Ordered`
+  the op verdict runs on the TX card alone; on a one-card GS after
+  `OneCardRetune` there is no valid card (`unknown`, no `kEvBlocked`), so
+  the extension does not engage there and the order withdraws at
+  `confirm_ms` as before.
 - **The channel a trigger flees is backed off too** (same schedule as a
   failed target, `HopController::flee`). Before 2026-09-24 only failed
   targets were, so when the first target failed its verify the retry could
@@ -577,8 +611,9 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
   the link sat ~33 s on it in `hold_exhausted`. When every option is
   blocked the controller now holds on the existing paths instead.
 - **Back-off reasons and the escape** (2026-09-26). Each back-off entry
-  records why: `fled` (`flee()`) or `failed` (verify fail, withdraw,
-  session lost). A later back-off of the same channel overwrites the
+  records why: `fled` (`flee()`), `failed` (verify fail, withdraw,
+  session lost) or `undelivered` (a withdraw after a confirm extension,
+  see above). A later back-off of the same channel overwrites the
   reason and keeps doubling. `backed_off()` still returns both;
   `backed_off_failed()` only the failed ones. `main.cpp` fills
   `HopTick::escape` = `ranker.best(op, backed_off_failed(), require_unblocked)`
@@ -678,6 +713,7 @@ dwell_period_ms      = 333
 rank_visits          = 5
 rank_max_age_ms      = 10000
 confirm_ms           = 500
+confirm_extend_ms    = 3000
 verify_ms            = 1000
 cooldown_ms          = 2000
 max_hops_per_min     = 4
@@ -701,6 +737,9 @@ starved_frac         = 0.25
 `recovered_min` (added 2026-09-26, §2) is the floor under the recovered
 term of `impaired`; 0 disables it. `starved_frac` (added 2026-09-26, §2)
 is the AU-rate collapse that reads `starved`; 0 disables the AU term.
+`[hop] confirm_extend_ms` (added 2026-09-26, §5) is how long an
+unconfirmed order is kept while the op reads blocked; <= `confirm_ms`
+(e.g. 0) disables the extension.
 
 `busy_dbm`/`blocked_pct` (added 2026-09-25, spec
 `docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`) feed the
@@ -722,6 +761,7 @@ unknown keys fail boot:
 | `rank_visits` | 1–100 |
 | `rank_max_age_ms` | 1000–600000 |
 | `confirm_ms` | 100–5000 |
+| `confirm_extend_ms` | 0–30000 (<= `confirm_ms` = no extension) |
 | `verify_ms` | 200–10000 |
 | `cooldown_ms` | 0–60000 |
 | `max_hops_per_min` | 1–60 |
@@ -778,8 +818,11 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is always a single snake_case token — `order`, `lead_confirm`,
   `one_card_retune`, `verify_pass`, `verify_fail`, `escape`, `withdraw`, `session_lost`, `hold_cap`,
-  `hold_exhausted`, `hold_end` (`escape`, added 2026-09-26 under the same
+  `hold_exhausted`, `hold_end`, `confirm_extend`, `withdraw_undelivered`
+  (`escape`, added 2026-09-26 under the same
   `scanlog 4` marker, is an order placed to leave a blocked channel, §5;
+  `confirm_extend` / `withdraw_undelivered`, added the same day, same
+  marker, are the confirm extension's entry and its expiry, §5;
   the hold pair used to be the two-word C++ strings
   `"hold cap"`/`"hold exhausted"`, a space-delimited field containing the
   delimiter — fixed at the emitter rather than kept as a parser
@@ -902,7 +945,10 @@ that nearly tripped.
 
 Always printed (2026-09-26): `escapes: N  starved windows: M` — how many
 `escape` H events (§5) the session logged and how many V windows carried
-the starved bit (evidence & 0x40, §2). Then a per-card dwell-cost summary (count and
+the starved bit (evidence & 0x40, §2) — and `confirm extensions: N
+undelivered withdraws: M` (the H `confirm_extend` / `withdraw_undelivered`
+counts, §5; `withdraw_undelivered` closes its attempt row like a
+`withdraw`, `confirm_extend` leaves it open). Then a per-card dwell-cost summary (count and
 median(`to_us+read_us+back_us`) for dwells with `sess == 1`, i.e. dwells
 that actually cost airtime inside a live session — the free off-session
 boot-scan dwells are excluded).

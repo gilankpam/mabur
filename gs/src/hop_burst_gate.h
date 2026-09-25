@@ -54,6 +54,19 @@ inline bool tx_selection_frozen(bool dwell_busy, bool hopping) {
   return dwell_busy || hopping;
 }
 
+// Pure: whether card i contributes to this window's op-channel verdict.
+// The verdict describes the OP channel, so a card tuned anywhere else is
+// skipped exactly like one mid-dwell. Found with Task 12 (f): a hop's lead
+// card sits on the target from the Order to the Confirm, and its readings
+// (clean target, no own frames) were mixed into the op verdict -- a latent
+// bug that, through blocked's MIN-across-cards rule, cleared kEvBlocked
+// within ~3 windows of every order. During Ordered the op verdict now runs
+// on the TX card alone; a one-card GS after its OneCardRetune has no valid
+// card at all (Verdict::Unknown, no kEvBlocked).
+inline bool verdict_card_usable(bool ready, bool mid_dwell, uint8_t card_ch, uint8_t op_ch) {
+  return ready && !mid_dwell && card_ch == op_ch;
+}
+
 inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
                           double last_burst_ms, int dwell_period_ms) {
   const bool hop_free = state == HopState::Idle || state == HopState::Hold;

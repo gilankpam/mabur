@@ -75,6 +75,11 @@ struct HopCfg {
   int rank_visits = 5;
   int rank_max_age_ms = 10000;
   int confirm_ms = 500;
+  // While the op channel reads blocked, an unconfirmed order is kept this
+  // long (from the order) before it is withdrawn -- the jam that blocks the
+  // op usually blocks the uplink carrying the order too (bench session
+  // 0232, 2026-09-26). <= confirm_ms disables the extension.
+  int confirm_extend_ms = 3000;
   int verify_ms = 1000;
   int cooldown_ms = 2000;
   int max_hops_per_min = 4;
