@@ -92,7 +92,9 @@ class RadioFrontend : public ScoutRadio {
                        own_air_us_.load(std::memory_order_relaxed)};
   }
   bool arm_nhm_busy(uint16_t period_4us) override;  // arms the card's NHM window
-  NhmBusyRead read_nhm_busy() override;              // reads it back
+  NhmBusyRead read_nhm_busy() override;
+  // Debug: the chip's programmed central channel (RF18 readback), -1 if unknown.
+  int tuned_central();              // reads it back
   CardCaps caps() const { return caps_; }            // filled in open_and_start() after InitWrite
   uint8_t channel() const { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
 

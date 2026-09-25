@@ -57,6 +57,48 @@ TEST(rcf_pacing_and_keepalive_disc) {
   CHECK(disc >= 6 && disc <= 7);   // 2 fast DISCs at 250ms (t=0,250), ack at t~500, 4 slow at 1000ms (t=1250,2250,3250,4250) (fix a)
 }
 
+// Bench 2026-09-26 (GS session 0232, escape 144 -> 112): the drone took the
+// hop order from an RCF, then processed a keep-alive DISC it had received on
+// the OLD channel just after it -- proposal 144 != its new channel 112 ->
+// a "disc" retune straight back, and GS and drone sat apart ~33 s until
+// rendezvous. While a hop order is in flight the keep-alive must not go out
+// (its proposal is the old op by construction); it resumes, due at once,
+// when the hold lifts. Revert = drop the hold check in step(): a DISC
+// appears inside the held span and this fails.
+TEST(keepalive_disc_held_while_a_hop_is_in_flight) {
+  auto vrx = make();
+  auto link = [&](double now) {
+    mabur::rc::DiscAck ack;
+    ack.vtx_id = 1;
+    ack.vrx_nonce = vrx.rz_nonce();
+    ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+    ack.seq = 1;
+    auto wire = mabur::rc::pack_disc_ack(ack);
+    vrx.on_rc_frame(wire.data(), wire.size(), now);
+  };
+  int disc_held = 0, rcf_held = 0, disc_after = 0;
+  double first_after = -1;
+  for (int t = 0; t < 6000; t += 10) {
+    const double now = t;
+    vrx.on_video(now);
+    if (t == 500) link(now);
+    vrx.set_keepalive_hold(t >= 1000 && t < 4000);
+    if (auto out = vrx.step(now, healthy())) {
+      const int ft = mabur::rc::frame_type(out->frame.data(), out->frame.size());
+      const bool held = t >= 1000 && t < 4000;
+      if (held) (ft == mabur::rc::T_DISC ? disc_held : rcf_held)++;
+      if (!held && t >= 4000 && ft == mabur::rc::T_DISC) {
+        ++disc_after;
+        if (first_after < 0) first_after = now;
+      }
+    }
+  }
+  CHECK(disc_held == 0);
+  CHECK(rcf_held >= 25);             // RCFs (which carry the order) keep flowing
+  CHECK(disc_after >= 1);
+  CHECK(first_after >= 4000 && first_after <= 4020);   // overdue keep-alive fires at once
+}
+
 TEST(rcf_fields_are_correct) {
   auto vrx = make();
   vrx.on_video(0.0);

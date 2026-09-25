@@ -1823,6 +1823,34 @@ static int run_radio(const maburgs::Config& cfg) {
         // replay source): never equal to a real hop target, so it simply
         // fails to confirm, which is the safe direction.
         last_video_ch = m.rx_channel;
+        // MABUR_HOP_DEBUG: every CRC-good video body stamped with the hop
+        // target while a hop is in flight, next to the latest seq seen on a
+        // card NOT stamped with the target -- tells adjacent-channel leakage
+        // (current seq, weak RSSI) from a lead card that never left the old
+        // channel (current seq, strong RSSI) from USB-pipeline stragglers
+        // (old seq, right after the retune).
+        static const bool hopdbg = std::getenv("MABUR_HOP_DEBUG") != nullptr;
+        static uint16_t other_seq = 0;
+        static uint64_t other_mono = 0;
+        if (hopdbg) {
+          if (plan.hopping() && m.rx_channel == plan.hop_target()) {
+            std::fprintf(stderr,
+                         "hopdbg t=%llu card=%u rx_ch=%u target=%u op=%u seq=%u other_seq=%u "
+                         "other_age_ms=%lld mcs=%u rssi=%d/%d snr=%d/%d len=%zu chip_central=%d\n",
+                         static_cast<unsigned long long>(m.mono_us / 1000),
+                         static_cast<unsigned>(m.card_id), static_cast<unsigned>(m.rx_channel),
+                         static_cast<unsigned>(plan.hop_target()), static_cast<unsigned>(plan.op()),
+                         static_cast<unsigned>(m.mac_seq), static_cast<unsigned>(other_seq),
+                         static_cast<long long>((m.mono_us - other_mono) / 1000),
+                         static_cast<unsigned>(m.mcs), static_cast<int>(m.rssi[0]) - 110,
+                         static_cast<int>(m.rssi[1]) - 110, static_cast<int>(m.snr[0]),
+                         static_cast<int>(m.snr[1]), m.body.size(),
+                         m.card_id < fronts.size() ? fronts[m.card_id]->tuned_central() : -1);
+          } else {
+            other_seq = m.mac_seq;
+            other_mono = m.mono_us;
+          }
+        }
       }
     }
     // Re-read the clock: the drain above blocked up to 10 ms, and bodies
@@ -2139,6 +2167,9 @@ static int run_radio(const maburgs::Config& cfg) {
     // the scout's current best before that, home with scanning off.
     vrx.set_proposal(plan.frozen() ? plan.op()
                                    : (scout ? scout->proposal() : cfg.radio.channel));
+    // No keep-alive DISC while a hop order is in flight: it would propose the
+    // old op to a drone that may already have followed the order (vrx_controller.h).
+    vrx.set_keepalive_hold(plan.hopping());
     // Consumed every tick regardless (an edge left unread would otherwise
     // sit stale until the next real ack -- take_ack_edge() clears it on
     // read), but only ACTED on outside a hop: ChannelPlan::on_ack() carries

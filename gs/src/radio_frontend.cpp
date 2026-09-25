@@ -1,5 +1,7 @@
 #include "radio_frontend.h"
 
+#include <functional>
+
 #include <libusb.h>
 
 #include <chrono>
@@ -340,9 +342,19 @@ bool RadioFrontend::retune(uint8_t ch) {
   // is USB-pipeline lag longer than FastRetune's own duration (~4 ms of
   // control transfers on this path); devourer exposes no RX flush to close
   // it outright.
+  static const bool hopdbg = std::getenv("MABUR_HOP_DEBUG") != nullptr;
+  const uint64_t dbg_t0 = hopdbg ? mono_us_now() : 0;
+  const uint8_t dbg_from = channel_.load(std::memory_order_acquire);
   rx_channel_.store(0, std::memory_order_release);
   device_->FastRetune(ch, /*cache_rf=*/true);
   channel_.store(ch, std::memory_order_release);
+  if (hopdbg)
+    std::fprintf(stderr, "retunedbg card=%u tid=%lu %u->%u t0=%llu dur_us=%llu rf_central=%d\n",
+                 static_cast<unsigned>(cfg_.card_id),
+                 static_cast<unsigned long>(std::hash<std::thread::id>{}(std::this_thread::get_id()) % 100000),
+                 static_cast<unsigned>(dbg_from), static_cast<unsigned>(ch),
+                 static_cast<unsigned long long>(dbg_t0 / 1000),
+                 static_cast<unsigned long long>(mono_us_now() - dbg_t0), device_->ReadTunedCentral());
   rx_channel_.store(ch, std::memory_order_release);
   return true;
 }
@@ -400,6 +412,10 @@ ScoutEnergy RadioFrontend::read_energy_scout() {
 bool RadioFrontend::arm_nhm_busy(uint16_t period_4us) {
   if (!ready_.load(std::memory_order_acquire) || !device_) return false;
   return device_->ArmNhmBusy(period_4us);
+}
+
+int RadioFrontend::tuned_central() {
+  return (ready_.load(std::memory_order_acquire) && device_) ? device_->ReadTunedCentral() : -1;
 }
 
 NhmBusyRead RadioFrontend::read_nhm_busy() {
