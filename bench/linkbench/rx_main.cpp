@@ -18,6 +18,7 @@
 
 #include "body_queue.h"
 #include "radio_frontend.h"
+#include "nhm_busy.h"
 
 #include "SignalStop.h"
 #include "mabur/cal_wire.h"
@@ -44,6 +45,11 @@ struct Args {
   // --energy-ms N: every N ms print "E t_ms fa cca igi floor own foreign"
   // (GetRxEnergy(with_nhm) + decoded-frame deltas) to stdout.
   int energy_ms = 0;
+  // --nhm-busy-ms N: every N ms print an "N" line for a busy-airtime NHM
+  // window armed at the previous one (spec 2026-09-25-nhm-airtime spike).
+  // --nhm-reset: also run a FA/CCA counter reset mid-window (spike q. b).
+  int nhm_busy_ms = 0;
+  bool nhm_reset = false;
   // --retune-bench a,b,..: after bring-up cycle FastRetune through the list
   // --retune-n times, printing "R from to us" per call, then exit.
   std::vector<int> retune_list;
@@ -63,7 +69,7 @@ void usage(const char* argv0) {
     "usage: %s --channel N [--bw 20|40] [--card 0] [--usb-vid 0x0bda] [--usb-pid 0]\n"
     "  [--index 0] [--overhead 0.5] [--symbol-size 64] [--window 128] "
     "[--bpb 16]\n"
-    "  [--json FILE] [--time S] [--wall] [--energy-ms N] [--rate-hist] [--range FILE]\n"
+    "  [--json FILE] [--time S] [--wall] [--energy-ms N] [--nhm-busy-ms N] [--nhm-reset] [--rate-hist] [--range FILE]\n"
     "  [--retune-bench ch,ch,.. [--retune-n 10]]\n", argv0);
 }
 
@@ -99,6 +105,8 @@ bool parse_args(int argc, char** argv, Args* a) {
       a->range_path = argv[++i];
     }
     else if (k == "--energy-ms") { if (!next(&a->energy_ms)) return false; }
+    else if (k == "--nhm-busy-ms") { if (!next(&a->nhm_busy_ms)) return false; }
+    else if (k == "--nhm-reset") { a->nhm_reset = true; }
     else if (k == "--retune-n") { if (!next(&a->retune_n)) return false; }
     else if (k == "--retune-bench") {
       if (i + 1 >= argc) return false;
@@ -201,6 +209,15 @@ int main(int argc, char** argv) {
 
   uint64_t next_energy = mono_us() + static_cast<uint64_t>(a.energy_ms) * 1000;
   maburgs::ScoutFrames prev_fr = fe.frames();
+  uint64_t next_nhm = 0, mid_nhm = 0, last_nhm = mono_us();
+  maburgs::ScoutFrames nhm_prev_fr = fe.frames();
+  const uint16_t nhm_period =
+      maburgs::nhm_period_4us(a.nhm_busy_ms > 10 ? a.nhm_busy_ms - 10 : a.nhm_busy_ms);
+  if (a.nhm_busy_ms > 0) {
+    fe.arm_nhm_busy(nhm_period);
+    next_nhm = mono_us() + static_cast<uint64_t>(a.nhm_busy_ms) * 1000;
+    mid_nhm = mono_us() + static_cast<uint64_t>(a.nhm_busy_ms) * 500;
+  }
   struct WallCell { uint32_t rx = 0; double rssi0 = 0, rssi1 = 0; };
   std::map<std::pair<int, int>, WallCell> wall_cells;
   uint64_t wall_corrupt = 0;
@@ -286,6 +303,31 @@ int main(int argc, char** argv) {
     }
     if (last_mono_ms) pipe.expire(last_mono_ms);
 
+    if (a.nhm_busy_ms > 0 && a.nhm_reset && mid_nhm && now >= mid_nhm) {
+      (void)fe.read_energy_scout();   // spike (b): does a counter reset kill the window?
+      mid_nhm = 0;
+    }
+    if (a.nhm_busy_ms > 0 && now >= next_nhm) {
+      const maburgs::NhmBusyRead nb = fe.read_nhm_busy();
+      const maburgs::ScoutFrames fr = fe.frames();
+      const double own_pct = 100.0 * static_cast<double>(fr.own_air_us - nhm_prev_fr.own_air_us) /
+                             static_cast<double>(now - last_nhm);
+      last_nhm = now;
+      std::printf("N %llu %d %u %u", static_cast<unsigned long long>((now - t0) / 1000),
+                  nb.valid ? 1 : 0, nb.duration, nb.period);
+      unsigned sum = 0;
+      for (int i = 0; i < 12; ++i) { std::printf(" %u", nb.buckets[i]); sum += nb.buckets[i]; }
+      const auto b83 = maburgs::nhm_busy_pct(nb, -83), b80 = maburgs::nhm_busy_pct(nb, -80),
+                 b75 = maburgs::nhm_busy_pct(nb, -75);
+      std::printf(" sum=%u busy83=%.1f busy80=%.1f busy75=%.1f own=%.1f own_n=%llu\n", sum,
+                  b83 ? *b83 : -1.0, b80 ? *b80 : -1.0, b75 ? *b75 : -1.0, own_pct,
+                  static_cast<unsigned long long>(fr.own - nhm_prev_fr.own));
+      std::fflush(stdout);
+      nhm_prev_fr = fr;
+      fe.arm_nhm_busy(nhm_period);
+      next_nhm += static_cast<uint64_t>(a.nhm_busy_ms) * 1000;
+      mid_nhm = now + static_cast<uint64_t>(a.nhm_busy_ms) * 500;
+    }
     if (a.energy_ms > 0 && now >= next_energy) {
       next_energy += static_cast<uint64_t>(a.energy_ms) * 1000;
       const maburgs::ScoutEnergy e = fe.read_energy(/*with_nhm=*/true);
