@@ -55,6 +55,11 @@ struct HopVerdictCfg {
   // spike-findings-2026-09-25.md).
   int busy_dbm = -83;
   double blocked_pct = 50.0;  // foreign busy airtime that makes a window/channel "blocked"
+  // AU rate below this fraction of the trailing per-window AU mean reads
+  // `starved` even when a trickle of own frames still arrives (bench
+  // session 0232, 2026-09-26: 5-30 own frames/s under a long-frame jam).
+  // 0 disables the AU term. 60->30 fps low-power is 0.5, so keep it below.
+  double starved_frac = 0.25;
 };
 
 /// In-flight channel hop (spec 2026-09-14-inflight-channel-hop). enable

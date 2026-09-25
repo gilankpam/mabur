@@ -45,6 +45,10 @@ struct VerdictLinkIn {
   // is valid). No frames means no loss, so without this a drone starved
   // by a jam read `healthy`. Counts as impaired (kEvStarved).
   bool starved = false;
+  // Video AUs published this window (main.cpp: the au_seq delta). Against
+  // its trailing mean it widens `starved` to an AU-rate collapse -- see
+  // HopVerdictCfg::starved_frac.
+  uint32_t au_count = 0;
 };
 
 struct VerdictOut {
@@ -100,12 +104,14 @@ class HopVerdict {
   // trailing references (5 s = 5000 / window_ms samples), per card RSSI median, link recovered mean
   std::vector<std::deque<double>> rssi_hist_;
   std::deque<double> rec_hist_;
+  std::deque<double> au_hist_;     // per-window AU count, same trailing rule as rec_hist_
   bool frozen_ = false;
   double prev_ms_ = 0;
   bool have_prev_ = false;
   bool seen_interfered_ = false;   // an `interfered` window in the current frozen episode
   std::vector<double> ref_rssi_;
   double ref_rec_ = 0;
+  double ref_au_ = 0;
   int ref_rung_ = -1;
   int healthy_streak_ = 0;
   std::deque<bool> recent_interfered_;   // last 3

@@ -207,3 +207,4 @@ foreign_pps          = 50
 fa_pps               = 100
 busy_dbm             = -83    # NHM busy-airtime level; must be a bucket edge (docs/nhm-airtime-spike-findings-2026-09-25.md)
 blocked_pct          = 50     # foreign busy airtime % that marks a window / channel blocked
+starved_frac         = 0.25   # AU rate below this fraction of the trailing rate = starved; 60->30 fps low-power is 0.5

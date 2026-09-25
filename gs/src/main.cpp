@@ -1103,6 +1103,9 @@ static int run_radio(const maburgs::Config& cfg) {
   const uint16_t nhm_op_period = maburgs::nhm_period_4us(std::max(hcfg.window_ms - 10, 1));
   uint64_t last_window_ms = 0;
   uint64_t recovered_prev_window = 0;
+  // au_seq at the previous verdict window: VerdictLinkIn::au_count is the
+  // delta. Re-primed with recovered_prev_window on every hop_active edge.
+  uint64_t au_seq_prev = 0;
   bool hop_was_active = false;   // hop_active() edge tracker (hop_burst_gate.h)
   maburgs::Verdict last_verdict = maburgs::Verdict::Healthy;
   maburgs::VerdictOut last_verdict_out;
@@ -1927,6 +1930,7 @@ static int run_radio(const maburgs::Config& cfg) {
       std::fill(window_prev_ok.begin(), window_prev_ok.end(), false);
       recovered_prev_window = agg.decoder().stats(0).syms_recovered +
                               agg.decoder().stats(1).syms_recovered;
+      au_seq_prev = au_seq.load(std::memory_order_relaxed);
       last_window_ms = now_ms_u;
     }
     if (hop_active && now_ms_u - last_window_ms >= static_cast<uint64_t>(hcfg.window_ms)) {
@@ -2009,6 +2013,11 @@ static int run_radio(const maburgs::Config& cfg) {
       vl.recovered = static_cast<uint32_t>(recovered_now - recovered_prev_window);
       recovered_prev_window = recovered_now;
       vl.starved = starved_valid > 0 && starved_all_zero;
+      // AUs published this window (Task 12 (e)): HopVerdict reads a
+      // collapse against the trailing mean as starved.
+      const uint64_t au_seq_now = au_seq.load(std::memory_order_relaxed);
+      vl.au_count = static_cast<uint32_t>(au_seq_now - au_seq_prev);
+      au_seq_prev = au_seq_now;
       const auto vo = verdict.window(now_ms, vc, vl, vrx.ctl().rung());
       if (scan_log && (vo.v != maburgs::Verdict::Healthy || vo.v != last_verdict))
         scan_log->verdict(now_ms, vo, vc, vl);

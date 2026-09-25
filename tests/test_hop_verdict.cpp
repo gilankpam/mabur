@@ -391,3 +391,71 @@ TEST(starved_windows_do_not_feed_the_trailing_references) {
   auto ok = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 12}, 5);
   CHECK(!(ok.evidence & kEvImpaired));
 }
+
+// ---- Task 12 (e): an AU-rate collapse counts as starved -----------------
+// Bench 2026-09-26 (GS session 0232): a long-frame jam let a trickle of own
+// frames through (5-30/s vs ~3200/s), so the zero-own-frames rule missed
+// it and the loss tracker had nothing to measure yet: the second window
+// read `healthy` and broke the 2-of-3 persistence. The AU count against its
+// trailing mean catches it.
+static VerdictLinkIn au_link(uint32_t au) { VerdictLinkIn l; l.recovered = 20; l.au_count = au; return l; }
+static double warm_au(HopVerdict& v, uint32_t au, double t = 0, int n = 10) {
+  for (int i = 0; i < n; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, au_link(au), 5);
+  return t;
+}
+// Revert (drop the au_count term from `starved`): Healthy, no kEvStarved.
+TEST(au_collapse_is_starved) {
+  HopVerdict v(cfg(), 2); double t = warm_au(v, 9);
+  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
+  CHECK(o.evidence & kEvStarved);
+  CHECK(o.evidence & kEvImpaired);
+  CHECK(o.v == Verdict::Interfered);
+}
+// Revert (threshold 0.5 instead of starved_frac): 4 < 4.5 reads starved.
+TEST(half_rate_is_not_starved) {
+  HopVerdict v(cfg(), 2); double t = warm_au(v, 9);
+  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(4), 5);
+  CHECK(!(o.evidence & kEvStarved));
+  CHECK(o.v == Verdict::Healthy);
+}
+// No history (first window, or a trailing mean under 2 AUs): the AU rule
+// has no baseline and stays silent; own frames are present so the
+// zero-own-frames rule is not set either.
+// Revert (drop `au_ref >= 2.0`): 0 < 0.25 * 0 is false anyway, so the
+// second half pins it -- a mean of 1 with au_count 0 would read starved.
+TEST(no_au_baseline_is_not_starved) {
+  HopVerdict v(cfg(), 2);
+  auto o = v.window(0, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
+  CHECK(!(o.evidence & kEvStarved));
+  CHECK(o.v == Verdict::Healthy);
+  HopVerdict w(cfg(), 2); double t = warm_au(w, 1);
+  auto p = w.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
+  CHECK(!(p.evidence & kEvStarved));
+}
+// Revert (ignore starved_frac == 0): au 1 against 9 reads starved.
+TEST(starved_frac_zero_disables_au_rule) {
+  HopCfg c = cfg(); c.verdict.starved_frac = 0.0;
+  HopVerdict v(c, 2); double t = warm_au(v, 9);
+  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
+  CHECK(!(o.evidence & kEvStarved));
+  CHECK(o.v == Verdict::Healthy);
+}
+// A starved window freezes the references; every later window of the
+// episode compares against the pre-freeze AU rate, not a mean poisoned by
+// the collapse itself. 30 windows at 1 AU would drag a live mean under the
+// 2-AU baseline floor and silence the rule mid-jam.
+// Revert (push au_hist_ regardless of frozen_ and read the live mean):
+// the later windows lose kEvStarved.
+TEST(frozen_au_reference_is_used_while_frozen) {
+  HopVerdict v(cfg(), 2); double t = warm_au(v, 9, 0, 33);
+  for (int i = 0; i < 30; ++i, t += 150) {
+    auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
+    CHECK(o.evidence & kEvStarved);
+    CHECK(o.ref_frozen);
+  }
+  // reset() drops the frozen snapshot; the trailing history (still 9s)
+  // survives, so the rule keeps its baseline.
+  v.reset();
+  auto r = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
+  CHECK(r.evidence & kEvStarved);
+}

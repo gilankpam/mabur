@@ -28,6 +28,7 @@ HopVerdict::HopVerdict(HopCfg cfg, int n_cards)
 void HopVerdict::reset() {
   frozen_ = false;
   ref_rec_ = 0;
+  ref_au_ = 0;
   ref_rung_ = -1;
   ref_rssi_.clear();
   healthy_streak_ = 0;
@@ -37,10 +38,10 @@ void HopVerdict::reset() {
   // latched would hand the controller a trigger built from windows
   // measured on the channel we have just left.
   //
-  // Histories (rssi_hist_, rec_hist_) survive a reset -- they are the
-  // trailing baseline, not per-hop state. ref_rssi_/ref_rec_/ref_rung_ are
-  // the frozen snapshot taken AT a hop's onset and must not leak across a
-  // hop boundary.
+  // Histories (rssi_hist_, rec_hist_, au_hist_) survive a reset -- they
+  // are the trailing baseline, not per-hop state. ref_rssi_/ref_rec_/
+  // ref_au_/ref_rung_ are the frozen snapshot taken AT a hop's onset and
+  // must not leak across a hop boundary.
 }
 
 int HopVerdict::ref_rung() const { return ref_rung_; }
@@ -66,15 +67,27 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   const double rec_ref = frozen_ ? ref_rec_
                                   : (rec_hist_.empty() ? 0.0
                                          : std::accumulate(rec_hist_.begin(), rec_hist_.end(), 0.0) / rec_hist_.size());
+  const double au_ref = frozen_ ? ref_au_
+                                 : (au_hist_.empty() ? 0.0
+                                        : std::accumulate(au_hist_.begin(), au_hist_.end(), 0.0) / au_hist_.size());
+  // starved: zero own frames on every valid card (main.cpp), OR the AU rate
+  // collapsed under starved_frac of its trailing mean. A long-frame jam
+  // lets a trickle of own frames through (bench 2026-09-26, session 0232:
+  // 5-30/s vs ~3200/s), so the zero-frames rule alone read the second jam
+  // window `healthy` and broke the 2-of-3 persistence. au_ref < 2 AUs per
+  // window is no baseline (boot, or a stream that barely runs).
+  const bool starved =
+      link.starved || (hv.starved_frac > 0 && au_ref >= 2.0 &&
+                       static_cast<double>(link.au_count) < hv.starved_frac * au_ref);
   // recovered_min: a floor under the recovered term. On a clean channel
   // the trailing mean sits near 0.2/window, so 1-5 recovered symbols read
   // "3x the reference" with 0 % loss (bench 2026-09-26, session 0232: 97 %
-  // of recovered-only impaired windows had <= 8). starved: no own frame on
-  // any valid card -- no frames, no loss, but not healthy either.
+  // of recovered-only impaired windows had <= 8). starved (above): no
+  // frames means no loss, but not healthy either.
   const bool impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
                         (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
                          link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
-                        link.starved;
+                        starved;
   const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm && cards[best].snr_db < hv.weak_snr_db;
   // Guard: a frozen reference that was never established for this card
   // (out-of-range or invalid-with-no-history at freeze time, see below)
@@ -112,7 +125,7 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   blocked = have_busy_reading && min_foreign_busy_pct >= hv.blocked_pct;
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
                (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0) |
-               (link.starved ? kEvStarved : 0);
+               (starved ? kEvStarved : 0);
   if (!impaired) o.v = Verdict::Healthy;
   else if (weak) o.v = Verdict::Fade;
   // blocked beats fading: a real fade lowers power and cannot raise NHM
@@ -122,7 +135,7 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   else o.v = Verdict::Unknown;
   // ---- reference freeze / thaw
   if (impaired && !frozen_) {
-    frozen_ = true; ref_rung_ = rung; ref_rec_ = rec_ref;
+    frozen_ = true; ref_rung_ = rung; ref_rec_ = rec_ref; ref_au_ = au_ref;
     if ((int)ref_rssi_.size() != n_cards_) ref_rssi_.assign(n_cards_, 0);
     for (int i = 0; i < n_cards_; ++i) {
       if (!rssi_hist_[i].empty()) {
@@ -153,6 +166,8 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
       }
     rec_hist_.push_back(link.recovered);
     if (rec_hist_.size() > hist_n) rec_hist_.pop_front();
+    au_hist_.push_back(link.au_count);
+    if (au_hist_.size() > hist_n) au_hist_.pop_front();
   }
   o.ref_rung = ref_rung_; o.ref_rssi_dbm = rssi_ref; o.d_rssi_db = cards[best].rssi_dbm - rssi_ref;
   o.ref_frozen = frozen_;

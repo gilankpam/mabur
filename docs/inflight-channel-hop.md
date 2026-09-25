@@ -160,7 +160,7 @@ kEvRaised/kEvBlocked/kEvStarved`):
 | contended | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised | any card's FA/s > `fa_pps` | `fa_pps` (100) |
 | blocked | the MINIMUM, across cards with a busy reading, of that card's NHM busy % minus its own reconstructed airtime % >= `blocked_pct` | `busy_dbm` (−83), `blocked_pct` (50) |
-| starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`, set in `main.cpp`'s per-card loop) | — |
+| starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`, set in `main.cpp`'s per-card loop), **or** the window's AU count (`VerdictLinkIn::au_count`, the `au_seq` delta) < `starved_frac` × its trailing mean, when that mean is >= 2 AUs/window | `starved_frac` (0.25; 0 = zero-frames rule only) |
 
 **`recovered_min` and `starved` (2026-09-26).** Two holes in `impaired`
 found on the long-frame jam bench run. (1) On a clean channel the
@@ -179,6 +179,19 @@ impaired, so it freezes the references and — like every impaired window —
 pushes nothing into the trailing RSSI/recovered histories (`HopVerdict`
 only pushes while `!frozen_`, and the freeze happens before the push in
 the same window); pinned by `starved_windows_do_not_feed_the_trailing_references`.
+
+**Near-starved (2026-09-26, Task 12 (e)).** A long-frame jam does not
+starve the link to zero: session 0232's second jam window saw 5–30 own
+frames/s (vs ~3200/s), so the zero-frames rule read "not starved", the
+loss tracker had nothing to measure yet, and the window read `healthy` —
+breaking the 2-of-3 persistence (loss only showed at +1.05 s, the order
+at +1.36 s). `starved` now also fires when the AUs published this window
+fall below `starved_frac` (0.25) of the trailing per-window AU mean. The
+AU reference follows the recovered one exactly: a 5 s history pushed only
+while `!frozen_`, captured at the freeze and used while frozen (so a long
+collapse never drags its own baseline down), cleared by `reset()` with the
+other snapshots. A mean under 2 AUs/window is no baseline and disables the
+term; 60→30 fps low-power is a 0.5 drop, so keep `starved_frac` below it.
 
 `blocked` is the NHM-airtime evidence added 2026-09-25 (spec
 `docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`; bench numbers
@@ -682,10 +695,12 @@ fa_pps               = 100
 busy_dbm             = -83
 blocked_pct          = 50
 recovered_min        = 8
+starved_frac         = 0.25
 ```
 
 `recovered_min` (added 2026-09-26, §2) is the floor under the recovered
-term of `impaired`; 0 disables it.
+term of `impaired`; 0 disables it. `starved_frac` (added 2026-09-26, §2)
+is the AU-rate collapse that reads `starved`; 0 disables the AU term.
 
 `busy_dbm`/`blocked_pct` (added 2026-09-25, spec
 `docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`) feed the
@@ -722,6 +737,7 @@ unknown keys fail boot:
 | `hop.verdict.fa_pps` | 1–100000 |
 | `hop.verdict.busy_dbm` | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
 | `hop.verdict.blocked_pct` | 1.0–100.0 |
+| `hop.verdict.starved_frac` | 0.0–1.0 (0 = zero-own-frames rule only) |
 
 `[hop]`/`[hop.verdict]` are wholly new sections with defaults for every
 key, so an old config without them boots unchanged on the new binary

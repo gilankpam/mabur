@@ -1303,3 +1303,24 @@ TEST(hop_verdict_recovered_min_key) {
   CHECK(b.hop.verdict.recovered_min == 8);
   CHECK(maburgs::HopVerdictCfg{}.recovered_min == 8);
 }
+
+// Task 12 (e): the AU-rate starved term. Revert (drop the key from
+// check_keys / the parse): the first load throws "unknown key" and the
+// bundle read is not 0.25.
+TEST(hop_verdict_starved_frac_key) {
+  auto c = maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0\n"));
+  CHECK(c.hop.verdict.starved_frac == 0.0);
+  auto d = maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0.5\n"));
+  CHECK(d.hop.verdict.starved_frac == 0.5);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 1.5\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = -0.1\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
+  CHECK(b.hop.verdict.starved_frac == 0.25);
+  CHECK(maburgs::HopVerdictCfg{}.starved_frac == 0.25);
+}

@@ -233,7 +233,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
                                     "fading_drop_db", "foreign_pps", "fa_pps", "busy_dbm",
-                                    "blocked_pct", "recovered_min"});
+                                    "blocked_pct", "recovered_min", "starved_frac"});
       HopVerdictCfg& vc = hc.verdict;
       vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
       vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
@@ -248,6 +248,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         fail("hop.verdict.busy_dbm",
              "must be an NHM bucket edge: -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70");
       vc.blocked_pct = get_num(v, "blocked_pct", 50.0, 1.0, 100.0, "hop.verdict");
+      vc.starved_frac = get_num(v, "starved_frac", 0.25, 0.0, 1.0, "hop.verdict");
     } else {
       note_default("hop", "verdict", "(section absent)");
     }
