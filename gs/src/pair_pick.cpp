@@ -77,7 +77,11 @@ uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t home,
   if (!h) return best->primary;                                  // home unranked: best ranked candidate
   if (h->blocked && !best->blocked) return best->primary;         // margin applies within a tier
   if (!better(*best, *h)) return home;                            // ties -> home
-  if (best->blocked != h->blocked) return best->primary;
+  // best->blocked != h->blocked is unreachable here: the (home blocked,
+  // best unblocked) case already returned above, and the reverse (home
+  // unblocked, best blocked) makes better(*best, *h) false, so the
+  // !better(...) check above already returned home for it. Both branches
+  // below this point therefore share a tier.
   return best->score + home_margin <= h->score ? best->primary : home;
 }
 

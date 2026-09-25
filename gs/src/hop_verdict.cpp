@@ -80,13 +80,29 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
       : (rssi_hist_[best].empty() ? cards[best].rssi_dbm : median(rssi_hist_[best]));
   const bool fading = cards[best].rssi_dbm < rssi_ref - hv.fading_drop_db;
   bool contended = false, raised = false, blocked = false;
+  // blocked = the MINIMUM foreign-busy reading across cards that have one,
+  // not any-card. A weakly-receiving diversity card's NHM busy counts our
+  // own frames too, but its own_air_pct is reconstructed only from the
+  // frames it actually decoded -- so a card that hears little of our video
+  // reads "foreign" close to our own airtime and would false-block alone.
+  // The strong card in the same window reads the interferer's real share,
+  // so requiring every reading card to agree needs an interferer that all
+  // of them can see, not a receive-weak diversity path. No card with a
+  // reading -> not blocked (same as today).
+  bool have_busy_reading = false;
+  double min_foreign_busy_pct = 0.0;
   for (const auto& c : cards) {
     if (!c.valid) continue;
     contended = contended || c.foreign / w_s > hv.foreign_pps;
     raised = raised || c.fa / w_s > hv.fa_pps;
-    if (c.busy_valid)
-      blocked = blocked || std::max(c.nhm_busy_pct - c.own_air_pct, 0.0) > hv.blocked_pct;
+    if (c.busy_valid) {
+      const double foreign_pct = std::max(c.nhm_busy_pct - c.own_air_pct, 0.0);
+      min_foreign_busy_pct = have_busy_reading ? std::min(min_foreign_busy_pct, foreign_pct)
+                                                : foreign_pct;
+      have_busy_reading = true;
+    }
   }
+  blocked = have_busy_reading && min_foreign_busy_pct >= hv.blocked_pct;
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
                (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0);
   if (!impaired) o.v = Verdict::Healthy;

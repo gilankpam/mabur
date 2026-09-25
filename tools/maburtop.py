@@ -31,7 +31,7 @@ STALE_S = 2.0
 LABEL_W = 6
 CARD_COLS = [("st", 4), ("pps", 5), ("inj", 5), ("Mbps", 5), ("loss%", 5),
              ("crc", 5), ("age", 6), ("forgn", 6), ("self", 6), ("tx", 4),
-             ("txf", 4), ("busy", 6), ("air%", 5)]
+             ("txf", 4), ("busy", 6), ("fbusy", 5)]
 # LNK blocks (compact renderer only): one block per link type (class), a
 # decode line for the FEC streams, then per-card signal rows sharing these
 # columns across all blocks (their titles live on the LNK rule line).

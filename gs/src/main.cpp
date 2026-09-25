@@ -1949,9 +1949,15 @@ static int run_radio(const maburgs::Config& cfg) {
         const maburgs::ScoutEnergy e = fe.read_energy_scout();
         const maburgs::ScoutFrames f = fe.frames();
         const auto& t = agg.card(i);
+        // Capture the channel and dwell generation BEFORE arming -- read
+        // from fe.channel()/dwell_gen[si] only after arm_nhm_busy() returns
+        // would let a scout dwell complete between the arm call and these
+        // reads, attributing that dwell's window to the arm we are about
+        // to make (fix round 2, final review).
+        const uint8_t arm_ch = fe.channel();
+        const uint32_t arm_gen = dwell_gen[si].load(std::memory_order_acquire);
         if (fe.arm_nhm_busy(nhm_op_period))
-          nhm_win[si].armed(fe.channel(), nhm_op_period,
-                            dwell_gen[si].load(std::memory_order_acquire));
+          nhm_win[si].armed(arm_ch, nhm_op_period, arm_gen);
         else nhm_win[si].invalidate();
         if (window_prev_ok[si]) {
           vc[si].valid = true;

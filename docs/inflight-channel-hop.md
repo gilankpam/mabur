@@ -159,7 +159,7 @@ kEvRaised/kEvBlocked`):
 | fading | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
 | contended | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised | any card's FA/s > `fa_pps` | `fa_pps` (100) |
-| blocked | any valid card's NHM busy % minus its own reconstructed airtime % > `blocked_pct` | `busy_dbm` (−83), `blocked_pct` (50) |
+| blocked | the MINIMUM, across cards with a busy reading, of that card's NHM busy % minus its own reconstructed airtime % >= `blocked_pct` | `busy_dbm` (−83), `blocked_pct` (50) |
 
 `blocked` is the NHM-airtime evidence added 2026-09-25 (spec
 `docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`; bench numbers
@@ -181,6 +181,15 @@ the card was mid-dwell, its channel changed mid-window, or an in-flight
 scout dwell landed inside the armed window (caught by a per-card dwell-
 generation counter, since `InflightScout::dwell()`'s `FastRetune` doesn't
 disturb devourer's NHM-ready state or the period it reports).
+
+`blocked` takes the MINIMUM foreign-busy reading across cards with a
+reading, not any single card's (final-review fix, 2026-09-25). A weakly-
+receiving diversity card's NHM busy counts our own frames too, but its
+`own_air_pct` is reconstructed only from the frames it actually decoded —
+so a card that hears little of our own video reads "foreign" close to its
+own busy % even with no interferer present, and would false-block alone.
+No card with a busy reading this window -> not blocked, same as before;
+one-card GS -> the minimum over one card is that card, unchanged.
 
 Verdict, evaluated in this order (`HopVerdict::window`,
 `gs/src/hop_verdict.cpp:92-98`):
@@ -766,7 +775,8 @@ window's busy reading was invalid or none has landed yet), the same
 next to the existing `scan <state>:<rounds>`; the per-card `busy` column
 (`(cca − min(cca,own)) + fa + foreign`, the same score the ranker uses)
 now tracks `cards[i].energy` at verdict-window cadence rather than the old
-1 Hz poll. A further per-card `air%` column
+1 Hz poll. A further per-card `fbusy` column (renamed from `air%` in the
+final-review fix wave: it was always foreign busy, never own airtime)
 (`max(0, busy_pct − own_air_pct)`, clamped at 0 so a stale
 `own_air_pct` reading past a fresher `busy_pct` can't go negative) shows
 the same foreign-busy-airtime figure the `blocked` evidence bit and both

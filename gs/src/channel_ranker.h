@@ -32,6 +32,12 @@ struct RankEntry {
 // ranks after every unblocked channel regardless of worst_busy, tiebroken
 // among the blocked by lower busy (spec 2026-09-25-nhm-airtime §7) -- see
 // is_blocked() below.
+//
+// When home and the best candidate are BOTH blocked, the tiebreak above
+// (lower busy) decides ordering -- but proposal()'s home_margin check (like
+// pair_pick.h's pair_proposal()) compares the *event* score, not busy, so a
+// candidate that out-orders home on busy alone usually still loses to
+// home_margin on score and home keeps the channel.
 class ChannelRanker {
  public:
   // home_margin: a candidate replaces home only when its worst visit is at

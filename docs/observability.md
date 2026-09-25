@@ -400,10 +400,12 @@ was invalid or none has landed) and `own_air_pct` (the GS's own
 reconstructed airtime on that card, `null` only before the first window).
 `tools/maburtop.py`'s header gains `hop <state>/<verdict>` and its
 per-card `busy` column tracks `cards[i].energy` at the new cadence, plus a
-further `air%` column (`max(0, busy_pct − own_air_pct)`, clamped so a
+further `fbusy` column (`max(0, busy_pct − own_air_pct)`, clamped so a
 stale `own_air_pct` past a fresher `busy_pct` can't read negative) — the
 same foreign-busy-airtime figure the verdict's `blocked` bit and both
-rankers use. Full key semantics, the OSD `(h)` mark, and the
+rankers use (renamed from `air%` in the final-review fix wave: the column
+was always foreign busy, never own airtime). Full key semantics, the OSD
+`(h)` mark, and the
 `flightreport.py` HOP section are in `docs/inflight-channel-hop.md`.
 
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe

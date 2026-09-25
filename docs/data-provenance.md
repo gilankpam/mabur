@@ -781,5 +781,6 @@ Full detail: `docs/inflight-channel-hop.md` §2/§3/§8,
   (`flightreport.py`'s HOP section) are not comparable across the break.
 - **Sideport:** `cards[i].energy` gains `busy_pct`/`own_air_pct` (both
   `null` on an older maburgs or before the first verdict window lands);
-  `tools/maburtop.py` gains a per-card `air%` column
-  (`max(0, busy_pct − own_air_pct)`). See `docs/observability.md`.
+  `tools/maburtop.py` gains a per-card `fbusy` column (renamed from `air%`
+  in the final-review fix wave: it was always foreign busy, never own
+  airtime) (`max(0, busy_pct − own_air_pct)`). See `docs/observability.md`.

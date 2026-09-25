@@ -272,3 +272,37 @@ TEST(no_busy_reading_is_todays_verdict) {
   CHECK(o.v == maburgs::Verdict::Unknown);
   CHECK(!(o.evidence & maburgs::kEvBlocked));
 }
+// Final-review fix wave 2026-09-25: blocked is the MINIMUM foreign-busy
+// reading across cards that have one, not any-card's. Reverting to
+// any-card makes weak_diversity_card_alone_is_not_blocked fail (it would
+// see card A's foreign 65 alone and call Interfered).
+TEST(weak_diversity_card_alone_is_not_blocked) {
+  maburgs::HopCfg cfg;
+  maburgs::HopVerdict v(cfg, 2);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
+  auto a = busy_card(70, 5);    // foreign 65 -- would clear blocked_pct(50) alone
+  auto b = busy_card(70, 68);   // foreign 2 -- the same interferer, seen weakly
+  auto o = v.window(150, {a, b}, bad, 0);
+  CHECK(!(o.evidence & maburgs::kEvBlocked));
+  CHECK(o.v != maburgs::Verdict::Interfered);
+}
+TEST(interferer_seen_by_both_cards_is_blocked) {
+  maburgs::HopCfg cfg;
+  maburgs::HopVerdict v(cfg, 2);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
+  auto a = busy_card(95, 2);   // foreign 93
+  auto b = busy_card(95, 2);   // foreign 93
+  auto o = v.window(150, {a, b}, bad, 0);
+  CHECK(o.evidence & maburgs::kEvBlocked);
+  CHECK(o.v == maburgs::Verdict::Interfered);
+}
+TEST(card_without_reading_does_not_veto) {
+  maburgs::HopCfg cfg;
+  maburgs::HopVerdict v(cfg, 2);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
+  auto a = busy_card(95, 2);                     // foreign 93, only reading card
+  auto b = busy_card(100, 0, /*valid=*/false);   // no busy reading this window
+  auto o = v.window(150, {a, b}, bad, 0);
+  CHECK(o.evidence & maburgs::kEvBlocked);
+  CHECK(o.v == maburgs::Verdict::Interfered);
+}

@@ -27,6 +27,13 @@ std::vector<uint8_t> scan_half_set(uint8_t home, const std::vector<uint8_t>& can
 // decides it. Returns the
 // winning pair's PRIMARY (home, or the candidate as listed), home when no
 // pair is ranked, and the best ranked candidate when home's pair is not.
+//
+// When home's pair and the best candidate pair are BOTH blocked, `better()`
+// orders them by busy (the worse half's worst_busy_pct) -- but the
+// home_margin check below it compares `score` (the worse half's
+// worst_busy event count), not busy, so a candidate that out-orders home
+// on busy alone usually still loses to home_margin on score and home
+// keeps the pair.
 uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t home,
                       const std::vector<uint8_t>& candidates, int min_rounds,
                       uint32_t home_margin, double blocked_pct = 1e9);
