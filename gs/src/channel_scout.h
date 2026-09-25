@@ -34,6 +34,8 @@ struct ScoutDwell {
   // defaults (0/0/0/0) so scan.log's D record stays valid without a hop.
   bool in_session = false;
   int64_t to_us = 0, read_us = 0, back_us = 0;
+  bool busy_valid = false;
+  double busy_pct = 0;  // NHM busy % over the observe span (scanlog 4 D)
 };
 
 // Boot-time scout (spec 2026-09-13-auto-channel-select §4). Owns one card's

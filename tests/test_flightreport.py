@@ -1335,6 +1335,23 @@ class HopReportTest(unittest.TestCase):
         self.assertIsNone(v4["cards"][1]["nhm_busy"])
         self.assertEqual(v4["cards"][1]["own_air"], 2.0)
 
+    def test_d_line_carries_busy(self):
+        """scanlog 4 (spec 2026-09-25-nhm-airtime §6): the D record gains a
+        trailing NHM busy % field, '-' when the in-flight dwell had no
+        reading (no NHM support, or the arm/read period mismatched)."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 4 home=136 candidates=149,161 dwell_ms=250\n")
+            f.write("D 1300 1 161 2 250 812 790 3 2 42 -93 10 1 0 0 0 20 78.4\n")
+            f.write("D 1600 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 40 -\n")
+            f.write("D 1900 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 40\n")
+        scanlog = flightreport.load_scanlog(p)
+        self.assertEqual(len(scanlog["D"]), 3)
+        self.assertEqual(scanlog["D"][0]["busy"], 78.4)
+        self.assertIsNone(scanlog["D"][1]["busy"])
+        self.assertIsNone(scanlog["D"][2]["busy"])   # 18 fields: no busy column at all
+
     def test_hop_table_row_timings_and_outcome(self):
         """onset->order / order->video / video->restore, paired end to end:
         the onset is the FIRST of the two consecutive 'interfered' V lines

@@ -987,7 +987,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // before every dwell/burst and never touches it beforehand.
   maburgs::InflightScout inflight(
       maburgs::InflightScoutCfg{hcfg.dwell_observe_ms, hcfg.dwell_period_ms, scfg.candidates,
-                                cfg.radio.width, cfg.radio.channel},
+                                cfg.radio.width, cfg.radio.channel, hcfg.verdict.busy_dbm},
       *fronts[static_cast<size_t>(scout_card)],
       [] { return static_cast<int64_t>(mono_us()); },
       [](int ms) {

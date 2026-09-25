@@ -42,15 +42,18 @@ void ScanLog::dwell(double t_ms, int card, const ScoutDwell& d) {
   else std::snprintf(igi, sizeof(igi), "-");
   if (d.floor_valid) std::snprintf(floor, sizeof(floor), "%d", static_cast<int>(d.floor_dbm));
   else std::snprintf(floor, sizeof(floor), "nan");
+  char busy[16];
+  if (d.busy_valid) std::snprintf(busy, sizeof(busy), "%.1f", d.busy_pct);
+  else std::snprintf(busy, sizeof(busy), "-");
   char b[256];
   const int n = std::snprintf(
-      b, sizeof(b), "D %.0f %d %u %llu %lld %u %u %u %u %s %s %x %d %lld %lld %lld %u", t_ms, card,
+      b, sizeof(b), "D %.0f %d %u %llu %lld %u %u %u %u %s %s %x %d %lld %lld %lld %u %s", t_ms, card,
       static_cast<unsigned>(s.def.primary), static_cast<unsigned long long>(s.round),
       static_cast<long long>(s.observe_ms), s.cca_ofdm, s.fa_ofdm, s.dvr_frames,
       s.frames - s.dvr_frames, igi, floor, static_cast<unsigned>(s.flags), d.in_session ? 1 : 0,
       static_cast<long long>(d.to_us), static_cast<long long>(d.read_us),
       static_cast<long long>(d.back_us),
-      static_cast<unsigned>(s.def.width == CHANNEL_WIDTH_40 ? 40 : 20));
+      static_cast<unsigned>(s.def.width == CHANNEL_WIDTH_40 ? 40 : 20), busy);
   put_(b, std::min(n, static_cast<int>(sizeof(b) - 1)));
 }
 

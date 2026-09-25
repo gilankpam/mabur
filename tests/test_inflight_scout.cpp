@@ -1,3 +1,4 @@
+#include <cmath>
 #include <string>
 #include <vector>
 #include "inflight_scout.h"
@@ -43,6 +44,25 @@ TEST(dwell_sequence_and_record) {
   CHECK(r.ch == 136);
   CHECK(d.in_session && d.survey.observe_ms == 5 && d.survey.fa_ofdm == 13);
   CHECK(v.ch == 149 && v.fa == 13 && v.foreign == 2);
+  CHECK(!v.busy_valid);
+}
+TEST(dwell_arms_and_reads_busy_for_the_observe_span) {
+  struct Nhm : FakeRadio {
+    uint16_t armed = 0;
+    bool arm_nhm_busy(uint16_t p) override { log.push_back("arm"); armed = p; return true; }
+    NhmBusyRead read_nhm_busy() override {
+      log.push_back("nhm"); NhmBusyRead r; r.valid = true; r.period = armed;
+      r.buckets[0] = 55; r.buckets[11] = 200; return r;
+    }
+  } r;
+  int64_t t = 0;
+  InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; });
+  ScoutDwell d; HopVisit v;
+  REQUIRE(s.dwell(149, 136, d, v));
+  // retune, discard read, ARM, observe, NHM read, FA read, retune back
+  CHECK((r.log == std::vector<std::string>{"retune 149", "read_scout", "arm", "nhm", "read_scout", "retune 136"}));
+  CHECK(v.busy_valid && std::fabs(v.busy_pct - 100.0 * 200 / 255) < 1e-9);
+  CHECK(d.busy_valid);
 }
 TEST(round_robin_and_burst) {
   FakeRadio r; int64_t t = 0;

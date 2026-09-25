@@ -16,6 +16,7 @@ struct InflightScoutCfg {
   std::vector<uint8_t> candidates;
   uint8_t width_mhz = 20;  // radio.width: the dwell keeps the card's tuning (FastRetune), recorded here
   uint8_t home = 0;        // radio.channel: dwelt on like a candidate whenever the link is off it
+  int busy_dbm = -83;      // HopCfg::verdict.busy_dbm: NHM bucket edge for the dwell's busy-airtime read
 };
 
 // The ~10 ms mid-flight dwell (spec 2026-09-14-inflight-channel-hop §3): a
@@ -55,7 +56,10 @@ class InflightScout {
 
   // One dwell on `ch`, returning to `back`. Fills d.survey (fa/cca/frames/
   // observe_ms), d.in_session=true, and the three step timings regardless
-  // of outcome.
+  // of outcome. Also arms an NHM busy-airtime window for the observe span
+  // and reads it back (spec 2026-09-25-nhm-airtime §6), filling
+  // d.busy_valid/d.busy_pct and, on success, visit.busy_valid/busy_pct --
+  // left at their false/0 defaults on radios without NHM support.
   //
   // CONTRACT (relied on by gs/src/main.cpp's sideport dwell attribution,
   // Task 12 -- HopVisit carries no card field, so main.cpp pairs each

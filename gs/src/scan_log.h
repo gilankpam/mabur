@@ -23,9 +23,11 @@ namespace maburgs {
 //     <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 //   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
 //     <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us> <bw>
-//                                                                 # one scout dwell
+//     <busy|->                                                    # one scout dwell
 //     (scanlog 3: <bw> = tuned width of the dwell, 20 during the boot
 //     scan, radio.width in session)
+//     (scanlog 4: D + trailing <busy|-> = NHM busy % over the dwell's
+//     observe span)
 //   K <t> <picked|none> <rounds> <ch>:<worst_busy>[:<floor>] ... pair=<lo>+<hi>|-
 //                                                                 # the pick
 //     (scanlog 3: the picked channel's standard 40 MHz pair, - when none)
