@@ -12,6 +12,7 @@
 #include "body_queue.h"
 #include "card_scan.h"
 #include "logger.h"
+#include "own_air.h"
 #include "scout_radio.h"
 
 // Forward declarations for devourer types
@@ -87,8 +88,11 @@ class RadioFrontend : public ScoutRadio {
   ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
   ScoutEnergy read_energy_scout() override;         // GetRxEnergyScout -> ScoutEnergy
   ScoutFrames frames() const override {
-    return ScoutFrames{own_.load(std::memory_order_relaxed), foreign_.load(std::memory_order_relaxed)};
+    return ScoutFrames{own_.load(std::memory_order_relaxed), foreign_.load(std::memory_order_relaxed),
+                       own_air_us_.load(std::memory_order_relaxed)};
   }
+  bool arm_nhm_busy(uint16_t period_4us) override;  // arms the card's NHM window
+  NhmBusyRead read_nhm_busy() override;              // reads it back
   CardCaps caps() const { return caps_; }            // filled in open_and_start() after InitWrite
   uint8_t channel() const { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
 
@@ -128,6 +132,10 @@ class RadioFrontend : public ScoutRadio {
   uint16_t tx_seq_ = 0;
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
   std::atomic<uint64_t> own_{0};
+  // Own video airtime (spec 2026-09-25-nhm-airtime §5): published copy of
+  // own_air_'s running total. own_air_ itself is RX-thread only.
+  std::atomic<uint64_t> own_air_us_{0};
+  OwnAirAcc own_air_;
   std::atomic<uint8_t> channel_{0};
   // RX width the card is tuned to, or will InitWrite at on the next open
   // (set_width() records it even pre-ready). Seeded from cfg_.width_mhz.

@@ -20,6 +20,16 @@ struct ScoutEnergy {
 // rest. The scout diffs two snapshots to attribute a dwell's occupancy.
 struct ScoutFrames {
   uint64_t own = 0, foreign = 0;
+  uint64_t own_air_us = 0;
+};
+
+// One busy-airtime NHM window from devourer (IRtlDevice::ReadNhmBusy):
+// `period` is the LAST arm's period on the card, whoever armed it.
+struct NhmBusyRead {
+  bool valid = false;
+  uint8_t buckets[12] = {};
+  uint16_t duration = 0;
+  uint16_t period = 0;
 };
 
 // "What does this card support" -- the scan.log C record. Static identity
@@ -54,6 +64,12 @@ class ScoutRadio {
   // (inflight_scout.h), which cannot afford GetRxEnergy's NHM window.
   virtual ScoutEnergy read_energy_scout() = 0;
   virtual ScoutFrames frames() const = 0;
+
+  // Busy-airtime NHM window (spec 2026-09-25-nhm-airtime): arm at the start
+  // of an observation, read at its end. Defaults = unsupported, so fakes and
+  // non-Jaguar3 radios read as "no airtime evidence".
+  virtual bool arm_nhm_busy(uint16_t period_4us) { (void)period_4us; return false; }
+  virtual NhmBusyRead read_nhm_busy() { return {}; }
 };
 
 }  // namespace maburgs

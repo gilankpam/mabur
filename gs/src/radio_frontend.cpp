@@ -228,7 +228,16 @@ void RadioFrontend::on_packet(const Packet& pkt) {
     foreign_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  if (!pkt.RxAtrib.crc_err) own_.fetch_add(1, std::memory_order_relaxed);
+  if (!pkt.RxAtrib.crc_err) {
+    own_.fetch_add(1, std::memory_order_relaxed);
+    // Own airtime (spec 2026-09-25-nhm-airtime §5), CRC-good own frames only.
+    const uint16_t r = pkt.RxAtrib.data_rate;
+    const uint8_t mcs = (r >= 0x0C && r <= 0x13) ? static_cast<uint8_t>(r - 0x0C)
+                        : (r >= 0x80 && r <= 0x87) ? static_cast<uint8_t>(r - 0x80) : 255;
+    own_air_.on_frame(pkt.Data.size(), mcs, pkt.RxAtrib.physt,
+                      pkt.RxAtrib.bw == 1 ? 40 : 20, pkt.RxAtrib.stbc != 0, pkt.RxAtrib.sgi != 0);
+    own_air_us_.store(own_air_.total_us(), std::memory_order_relaxed);
+  }
   mabur::node::RxBody m;
   m.card_id = cfg_.card_id;
   m.mono_us = mono_us_now();
@@ -385,6 +394,22 @@ ScoutEnergy RadioFrontend::read_energy_scout() {
   out.nhm_valid = e.valid_nhm;
   out.floor_valid = e.valid_noise_floor;
   out.floor_dbm = e.abs_noise_floor_dbm;
+  return out;
+}
+
+bool RadioFrontend::arm_nhm_busy(uint16_t period_4us) {
+  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  return device_->ArmNhmBusy(period_4us);
+}
+
+NhmBusyRead RadioFrontend::read_nhm_busy() {
+  NhmBusyRead out;
+  if (!ready_.load(std::memory_order_acquire) || !device_) return out;
+  const NhmBusy b = device_->ReadNhmBusy();
+  out.valid = b.valid;
+  for (int i = 0; i < 12; ++i) out.buckets[i] = b.buckets[i];
+  out.duration = b.duration;
+  out.period = b.period;
   return out;
 }
 
