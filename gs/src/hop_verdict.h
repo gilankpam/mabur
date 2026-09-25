@@ -96,6 +96,13 @@ class HopVerdict {
   // After a hop's verify window ends (spec section 2's second thaw rule).
   // Called from main.cpp on HopAction::VerifyPass -- see hop_controller.h.
   void reset();
+  // A new in-session verdict run is starting (main.cpp: hop_active's
+  // rising edge, where the AU/recovered counter baselines are re-primed).
+  // Drops the AU history and its frozen reference only: the frame rate
+  // before an outage is no baseline for the one after it (a session that
+  // comes back at a lower fps would read starved). RSSI/recovered
+  // histories are untouched; reset() is still the per-hop thaw.
+  void new_session();
   int ref_rung() const;               // -1 while healthy
 
  private:

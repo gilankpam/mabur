@@ -44,6 +44,11 @@ void HopVerdict::reset() {
   // must not leak across a hop boundary.
 }
 
+void HopVerdict::new_session() {
+  au_hist_.clear();
+  ref_au_ = 0;
+}
+
 int HopVerdict::ref_rung() const { return ref_rung_; }
 
 VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& cards,

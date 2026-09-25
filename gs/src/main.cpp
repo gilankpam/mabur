@@ -1931,6 +1931,10 @@ static int run_radio(const maburgs::Config& cfg) {
       recovered_prev_window = agg.decoder().stats(0).syms_recovered +
                               agg.decoder().stats(1).syms_recovered;
       au_seq_prev = au_seq.load(std::memory_order_relaxed);
+      // The AU baseline restarts with the session (both edges run this
+      // block; the rising one is what matters -- the falling one only
+      // clears state nothing reads until then).
+      verdict.new_session();
       last_window_ms = now_ms_u;
     }
     if (hop_active && now_ms_u - last_window_ms >= static_cast<uint64_t>(hcfg.window_ms)) {

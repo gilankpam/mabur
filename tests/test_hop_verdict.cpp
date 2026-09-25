@@ -459,3 +459,18 @@ TEST(frozen_au_reference_is_used_while_frozen) {
   auto r = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
   CHECK(r.evidence & kEvStarved);
 }
+// A new in-session verdict run (hop_active rising edge) drops the AU
+// baseline: the frame rate before an outage says nothing about the one
+// after it. rssi/recovered histories are left alone.
+// Revert (new_session() a no-op): the first window at 0 AUs reads starved.
+TEST(new_session_clears_au_baseline) {
+  HopVerdict v(cfg(), 2); double t = warm_au(v, 9);
+  v.new_session();
+  for (int i = 0; i < 3; ++i, t += 150) {
+    auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
+    CHECK(!(o.evidence & kEvStarved));
+  }
+  // recovered history survived: 100 is 5x the pre-session mean of 20
+  auto r = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 100}, 5);
+  CHECK(r.evidence & kEvImpaired);
+}

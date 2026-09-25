@@ -190,7 +190,11 @@ fall below `starved_frac` (0.25) of the trailing per-window AU mean. The
 AU reference follows the recovered one exactly: a 5 s history pushed only
 while `!frozen_`, captured at the freeze and used while frozen (so a long
 collapse never drags its own baseline down), cleared by `reset()` with the
-other snapshots. A mean under 2 AUs/window is no baseline and disables the
+other snapshots. The AU history and reference (only those) are also
+dropped by `HopVerdict::new_session()`, which `main.cpp` calls on the
+`hop_active` edge where it re-primes the `au_seq`/recovered baselines —
+the frame rate before an outage is no baseline for the session after it.
+A mean under 2 AUs/window is no baseline and disables the
 term; 60→30 fps low-power is a 0.5 drop, so keep `starved_frac` below it.
 
 `blocked` is the NHM-airtime evidence added 2026-09-25 (spec
@@ -567,9 +571,15 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
   one H `confirm_extend` (elapsed = time since the order) the first time.
   When it finally withdraws, an order that entered the extension logs
   `withdraw_undelivered` and backs the target off as **undelivered**;
-  otherwise it is today's `withdraw` / failed. A confirm during the
-  extension proceeds to `Verifying` as usual; the op unblocking during the
-  extension withdraws on the next tick (still undelivered). Undelivered is
+  otherwise it is today's `withdraw` / failed. The extension is engaged
+  only by a blocked verdict at the `confirm_ms` expiry, but once engaged it
+  holds to `confirm_extend_ms` whatever later windows say — the jam lifting
+  is exactly when the order lands, and withdrawing then would race the
+  drone's retune into a `move_unconfirmed` split. A confirm during the
+  extension proceeds to `Verifying` as usual. A session loss during the
+  extension backs the target off as **failed** (the unchanged
+  `on_session_lost` rule). `confirm_extend_ms <= confirm_ms` (e.g. 400
+  with `confirm_ms` 500, or 0) never extends. Undelivered is
   in `backed_off()` (the normal ranker still skips it) but not in
   `backed_off_failed()`, so the escape may target it; a later
   `verify_pass` on it erases the back-off like any other.

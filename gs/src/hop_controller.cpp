@@ -129,7 +129,13 @@ void HopController::ordered_tick(const HopTick& in, HopAction& out) {
     // confirm_ms, the escape had nowhere to go and the link held 30 s on
     // the jammed op). Keep ordering until confirm_extend_ms; an order that
     // still does not land is withdrawn as undelivered, not failed.
-    if (cfg_.confirm_extend_ms > cfg_.confirm_ms && (in.verdict.evidence & kEvBlocked) &&
+    //
+    // Engaged only by a blocked verdict at the confirm_ms expiry; once
+    // engaged it holds to confirm_extend_ms whatever later windows say.
+    // The jam lifting is exactly when the order lands, and withdrawing then
+    // would race the drone's retune into a move_unconfirmed split.
+    const bool engage = confirm_extended_ || (in.verdict.evidence & kEvBlocked);
+    if (cfg_.confirm_extend_ms > cfg_.confirm_ms && engage &&
         in.now_ms - order_ms_ < cfg_.confirm_extend_ms) {
       if (!confirm_extended_) {
         confirm_extended_ = true;

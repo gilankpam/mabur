@@ -541,17 +541,42 @@ TEST(unblocked_op_withdraws_at_confirm_ms) {
   CHECK(has(g.backed_off_failed(1501), 112));
   CHECK(evcount(g.take_events(), "confirm_extend") == 0);
 }
-// An extension that sees the op unblock withdraws then (not at 3000), and
-// still as undelivered: the extension was entered for this order.
-TEST(extension_ends_when_op_unblocks) {
+// Once entered, the extension holds to confirm_extend_ms whatever later
+// windows say: the jam lifting is exactly when the order lands, and a
+// withdraw then races the drone's retune into a move_unconfirmed split.
+// Revert (re-check kEvBlocked on every tick of the extension): Withdraw at 1800.
+TEST(extension_holds_after_op_unblocks) {
   HopController h(cfg(), 136);
   h.tick(T(1000, blocked_here(), 112, 144));
-  h.tick(T(1500, blocked_here(), 112, 144));
+  h.tick(T(1500, blocked_here(), 112, 144));   // blocked at confirm_ms: extended
   (void)h.take_events();
-  CHECK(h.tick(T(1800, raised_here(), 112, 144)).kind == HopAction::Withdraw);
-  auto ev = h.take_events();
+  CHECK(h.tick(T(1800, raised_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.tick(T(2500, healthy(), 112, 144)).kind == HopAction::None);
+  CHECK(h.state() == HopState::Ordered && h.hop_ch() == 112);
+  CHECK(h.take_events().empty());
+  auto a = h.tick(T(2600, healthy(), 112, 144, /*video=*/true));
+  CHECK(a.kind == HopAction::Confirm && h.state() == HopState::Verifying);
+  // ...and an unblocked extension that never confirms still expires as undelivered
+  HopController g(cfg(), 136);
+  g.tick(T(1000, blocked_here(), 112, 144));
+  g.tick(T(1500, blocked_here(), 112, 144));
+  CHECK(g.tick(T(3900, healthy(), 112, 144)).kind == HopAction::None);
+  (void)g.take_events();
+  CHECK(g.tick(T(4000, healthy(), 112, 144)).kind == HopAction::Withdraw);
+  auto ev = g.take_events();
   REQUIRE(ev.size() == 1);
   CHECK(ev[0].kind == "withdraw_undelivered");
+}
+// 0 < confirm_extend_ms <= confirm_ms is "no extension", not a shorter one.
+// Revert (gate on confirm_extend_ms > 0): None at 500.
+TEST(confirm_extend_not_above_confirm_ms_never_extends) {
+  HopCfg c = cfg(); c.confirm_extend_ms = 400;
+  HopController h(c, 136);
+  h.tick(T(1000, blocked_here(), 112, 144));
+  CHECK(h.tick(T(1500, blocked_here(), 112, 144)).kind == HopAction::Withdraw);
+  auto ev = h.take_events();
+  CHECK(evcount(ev, "confirm_extend") == 0 && evcount(ev, "withdraw") == 1);
+  CHECK(has(h.backed_off_failed(1501), 112));
 }
 // The escape skips only Failed channels, so an undelivered target is
 // still an escape once the op reads blocked again.
