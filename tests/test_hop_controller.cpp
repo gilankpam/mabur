@@ -337,3 +337,146 @@ TEST(fresh_trigger_does_not_fall_back_to_a_backed_off_home) {
   auto a = h.tick(T(5000, interfered(), std::nullopt, 149));
   CHECK(a.kind != HopAction::Order || a.target != 136);
 }
+
+// ---- Task 11: hop-logic fixes after the 2026-09-26 long-frame jam run ----
+static VerdictOut blocked_here(int ref = 5) {
+  VerdictOut o = interfered(ref); o.evidence = kEvImpaired | kEvBlocked; return o;
+}
+static VerdictOut raised_here(int ref = 5) {
+  VerdictOut o = interfered(ref); o.evidence = kEvImpaired | kEvRaised; return o;
+}
+static bool has(const std::vector<uint8_t>& v, uint8_t ch) {
+  for (auto c : v) if (c == ch) return true;
+  return false;
+}
+// (a) A blocked home is not the "nothing ranked" fallback: ordering it is
+// ordering a channel the dwells already read as jammed.
+// Revert (drop `!home_blocked` from home_available()): both ticks Order 136.
+TEST(blocked_home_is_not_a_fallback) {
+  HopController h(cfg(), 136);
+  HopTick k = T(1000, interfered(), std::nullopt, 149); k.home_blocked = true;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Hold);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "hold_exhausted");
+  // ...and not the verify-fail retry's fallback either.
+  HopController g(cfg(), 136);
+  g.tick(T(1000, interfered(), 149, 120));
+  g.tick(T(1080, interfered(), 149, 120, true));
+  HopTick f = T(1400, measured(interfered(), 1250, 1400), std::nullopt, 149); f.home_blocked = true;
+  auto b = g.tick(f);
+  CHECK(b.kind == HopAction::Hold);
+}
+// (d) Stuck on a blocked op with nothing ranked and home unavailable: the
+// escape (a fled, unblocked channel) is ordered instead of a hold.
+// Revert (drop the escape branch in idle_tick): Hold, hold_exhausted.
+TEST(escape_from_blocked_op_into_fled_channel) {
+  HopController h(cfg(), 136);
+  HopTick k = T(1000, blocked_here(), std::nullopt, 136);   // on home: home unavailable
+  k.escape = 112; k.escape_score = 7;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Order && a.target == 112 && a.restore_rung == 5);
+  CHECK(h.state() == HopState::Ordered);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "escape" && ev[0].target == 112 && ev[0].score == 7);
+  CHECK(backed(h, 136, 1001));                          // the blocked op is fled
+  CHECK(!has(h.backed_off_failed(1001), 136));          // ...fled, not failed
+  // the escape target goes through the normal confirm/verify flow
+  CHECK(h.tick(T(1080, blocked_here(), std::nullopt, 136, true)).kind == HopAction::Confirm);
+  CHECK(h.state() == HopState::Verifying);
+}
+// Revert (escape without the kEvBlocked gate): Order 112.
+TEST(no_escape_when_op_not_blocked) {
+  HopController h(cfg(), 136);
+  HopTick k = T(1000, raised_here(), std::nullopt, 136);
+  k.escape = 112;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Hold);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "hold_exhausted");
+}
+// main.cpp passes backed_off_failed() as the escape's skip list, so a
+// verify-failed channel is never an escape while a fled one is.
+// Revert (backed_off_failed returns every entry, or flee() records
+// verify_failed): 144 appears in the failed list.
+TEST(backed_off_failed_lists_only_verify_failed_channels) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, interfered(), 128, 144));             // flee 144
+  h.tick(T(1062, interfered(), 128, 144, true));       // landed on 128
+  auto a = h.tick(T(1300, interfered(), 40, 128));     // 128 fails its verify -> 40
+  REQUIRE(a.kind == HopAction::Order && a.target == 40);
+  auto failed = h.backed_off_failed(1301);
+  CHECK(failed.size() == 1 && has(failed, 128));
+  auto all = h.backed_off(1301);
+  CHECK(all.size() == 2 && has(all, 144) && has(all, 128));
+  // a withdraw (confirm timeout) is a failure too
+  h.tick(T(1300 + 600, interfered(), 40, 128));
+  CHECK(has(h.backed_off_failed(1901), 40));
+  CHECK(!has(h.backed_off_failed(1901), 144));
+  // expiry applies to the failed view the same way
+  CHECK(h.backed_off_failed(1300 + 60000 + 1000).empty());
+}
+// A later back-off of a fled channel for a verify failure takes the new
+// reason (and keeps doubling).
+// Revert (back_off() keeps the first reason): 144 stays "fled".
+TEST(back_off_reason_is_overwritten_by_a_later_failure) {
+  HopController g(cfg(), 136);
+  g.tick(T(1000, interfered(), 128, 144));             // flee 144 (k=1, fled)
+  g.tick(T(1062, interfered(), 128, 144, true));
+  g.tick(T(2200, healthy(), std::nullopt, 128));       // verify passes on 128
+  CHECK(!has(g.backed_off_failed(2201), 144));
+  g.tick(T(40000, interfered(), 144, 128));            // 144's first backoff expired: order 144
+  g.tick(T(40062, interfered(), 144, 128, true));
+  g.tick(T(40300, interfered(), std::nullopt, 144));   // 144 fails its verify
+  CHECK(has(g.backed_off_failed(40301), 144));
+  // doubled: k=2 -> 60 s from the failure, still backed off at +59 s
+  CHECK(has(g.backed_off(40300 + 59000), 144));
+}
+// Revert (no hop-cap check before the verify-fail escape): Order 112.
+TEST(escape_respects_hop_cap) {
+  HopController h(cfg(), 136);
+  double t = 1000;
+  const double kPast = 160;
+  CHECK(h.tick(T(t, interfered(), 149, 136)).kind == HopAction::Order);               // #1
+  t += 50; h.tick(T(t, interfered(), 149, 136, true));
+  t += kPast; CHECK(h.tick(T(t, interfered(), 165, 149)).kind == HopAction::Order);   // #2
+  t += 10; h.tick(T(t, interfered(), 165, 149, true));
+  t += kPast; CHECK(h.tick(T(t, interfered(), 40, 149)).kind == HopAction::Order);    // #3
+  t += 10; h.tick(T(t, interfered(), 40, 149, true));
+  t += kPast; CHECK(h.tick(T(t, interfered(), 44, 149)).kind == HopAction::Order);    // #4: cap full
+  t += 10; h.tick(T(t, interfered(), 44, 149, true));
+  (void)h.take_events();
+  t += kPast;
+  HopTick k = T(t, blocked_here(), std::nullopt, 44);   // home 136 fled -> unavailable
+  k.escape = 112;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Hold);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "hold_cap");
+}
+// Revert (drop the escape branch in verifying_tick): Hold, verify_fail.
+TEST(escape_after_verify_fail) {
+  HopController h(cfg(), 136);
+  h.tick(T(1000, interfered(), 149, 136));              // flee home 136
+  h.tick(T(1080, interfered(), 149, 136, true));        // landed on 149
+  (void)h.take_events();
+  HopTick k = T(1400, measured(blocked_here(), 1250, 1400), std::nullopt, 149);
+  k.escape = 112; k.escape_score = 3;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Order && a.target == 112);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "escape" && ev[0].target == 112);
+  CHECK(has(h.backed_off_failed(1401), 149));           // the failed target is still penalised
+  // not blocked here: the old verify_fail hold stands
+  HopController g(cfg(), 136);
+  g.tick(T(1000, interfered(), 149, 136));
+  g.tick(T(1080, interfered(), 149, 136, true));
+  HopTick m = T(1400, measured(raised_here(), 1250, 1400), std::nullopt, 149);
+  m.escape = 112;
+  CHECK(g.tick(m).kind == HopAction::Hold);
+}

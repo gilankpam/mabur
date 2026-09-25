@@ -306,3 +306,88 @@ TEST(card_without_reading_does_not_veto) {
   CHECK(o.evidence & maburgs::kEvBlocked);
   CHECK(o.v == maburgs::Verdict::Interfered);
 }
+
+// ---- Task 11 (b): a floor on the recovered-symbols impaired term --------
+// Bench 2026-09-26 (session 0232): on a clean channel whose trailing
+// recovered mean is ~0.2/window, 1-5 recovered symbols read "3x the
+// reference" and marked the window impaired with 0 % loss -- which, next
+// to 112's ambient FA background (`raised`), hopped a perfectly good link
+// into a blocked channel. recovered_min (default 8) removes ~97 % of those.
+// Revert (drop `&& recovered >= recovered_min` in hop_verdict.cpp):
+// recovered_below_floor_is_not_impaired fails (impaired, not healthy).
+static double warm_quiet(HopVerdict& v, double t = 0) {
+  // trailing recovered mean ~0.2/window: one recovered symbol every 5th window
+  for (int i = 0; i < 40; ++i, t += 150)
+    v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, (uint32_t)(i % 5 == 0 ? 1 : 0)}, 5);
+  return t;
+}
+TEST(recovered_below_floor_is_not_impaired) {
+  HopVerdict v(cfg(), 2); double t = warm_quiet(v);
+  auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 2}, 5);
+  CHECK(!(o.evidence & kEvImpaired));
+  CHECK(o.v == Verdict::Healthy);
+}
+// Revert (floor compared with > 12 instead of >=, or floor applied to the
+// loss term too): the at/above-floor case must still be impaired.
+TEST(recovered_at_floor_is_impaired) {
+  HopVerdict v(cfg(), 2); double t = warm_quiet(v);
+  auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 12}, 5);
+  CHECK(o.evidence & kEvImpaired);
+  HopVerdict v8(cfg(), 2); t = warm_quiet(v8);
+  auto o8 = v8.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 8}, 5);
+  CHECK(o8.evidence & kEvImpaired);   // exactly the floor counts
+}
+// Revert (treat 0 as "use the default"): the zero-floor window stays healthy.
+TEST(recovered_min_zero_disables_floor) {
+  HopCfg c = cfg(); c.verdict.recovered_min = 0;
+  HopVerdict v(c, 2); double t = warm_quiet(v);
+  auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 2}, 5);
+  CHECK(o.evidence & kEvImpaired);
+}
+
+// ---- Task 11 (c): a starved window is impaired --------------------------
+// Earlier bench run: the drone was completely starved by a jam (zero own
+// frames on every card) and the verdict read `healthy` -- no frames means
+// no loss. main.cpp now sets VerdictLinkIn::starved.
+// Revert (drop `|| link.starved`): starved_and_blocked_is_interfered reads
+// Healthy with no kEvStarved.
+TEST(starved_and_blocked_is_interfered) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  VerdictLinkIn s; s.pre_fec_loss = 0.0; s.recovered = 0; s.starved = true;
+  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
+  CHECK(o.v == Verdict::Interfered);
+  CHECK(o.evidence & kEvStarved);
+  CHECK(o.evidence & kEvBlocked);
+  CHECK(o.evidence & kEvImpaired);
+}
+// Starved with nothing else to explain it falls through to Unknown, like
+// any other unexplained impairment -- never a trigger on its own.
+// Revert (classify starved as Interfered directly): this reads Interfered.
+TEST(starved_alone_is_unknown) {
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  VerdictLinkIn s; s.starved = true;
+  VerdictOut o;
+  for (int i = 0; i < 3; ++i) o = v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, s, 5);
+  CHECK(o.v == Verdict::Unknown);
+  CHECK(o.evidence & kEvStarved);
+  CHECK(!o.trigger);
+}
+// The reference-poisoning check the brief asks for: a starved window is
+// impaired, so it freezes the references and pushes nothing into the
+// trailing histories; after the starve ends, the recovered reference is
+// still the pre-starve one.
+TEST(starved_windows_do_not_feed_the_trailing_references) {
+  HopVerdict v(cfg(), 2); double t = warm(v);   // recovered mean 20
+  VerdictLinkIn s; s.starved = true;             // recovered 0 while starved
+  for (int i = 0; i < 30; ++i, t += 150) {
+    auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, s, 5);
+    CHECK(o.ref_frozen);
+  }
+  // 3 healthy windows thaw. 12 recovered is well under 3x the pre-starve
+  // mean of 20 -- had the 30 zero-recovered starved windows been pushed,
+  // the mean would sit near 2 and 12 would trip (it clears the floor of 8).
+  // Revert (push histories regardless of frozen_): this window is impaired.
+  for (int i = 0; i < 3; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  auto ok = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 12}, 5);
+  CHECK(!(ok.evidence & kEvImpaired));
+}

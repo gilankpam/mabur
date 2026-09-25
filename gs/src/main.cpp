@@ -1932,6 +1932,11 @@ static int run_radio(const maburgs::Config& cfg) {
     if (hop_active && now_ms_u - last_window_ms >= static_cast<uint64_t>(hcfg.window_ms)) {
       last_window_ms = now_ms_u;
       std::vector<maburgs::VerdictCardIn> vc(static_cast<size_t>(n_cards));
+      // Starved (Task 11 (c)): at least one valid card, and not one own
+      // frame on ANY valid card this window. No frames means no loss, so a
+      // drone starved by a jam otherwise reads `healthy`.
+      int starved_valid = 0;
+      bool starved_all_zero = true;
       for (int i = 0; i < n_cards; ++i) {
         auto& fe = *fronts[static_cast<size_t>(i)];
         const size_t si = static_cast<size_t>(i);
@@ -1961,6 +1966,8 @@ static int run_radio(const maburgs::Config& cfg) {
         else nhm_win[si].invalidate();
         if (window_prev_ok[si]) {
           vc[si].valid = true;
+          ++starved_valid;
+          if (f.own - window_prev[si].own != 0) starved_all_zero = false;
           vc[si].fa = e.fa_ofdm;
           vc[si].cca = e.cca_ofdm;
           vc[si].foreign = static_cast<uint32_t>(f.foreign - window_prev[si].foreign);
@@ -2001,6 +2008,7 @@ static int run_radio(const maburgs::Config& cfg) {
                                      agg.decoder().stats(1).syms_recovered;
       vl.recovered = static_cast<uint32_t>(recovered_now - recovered_prev_window);
       recovered_prev_window = recovered_now;
+      vl.starved = starved_valid > 0 && starved_all_zero;
       const auto vo = verdict.window(now_ms, vc, vl, vrx.ctl().rung());
       if (scan_log && (vo.v != maburgs::Verdict::Healthy || vo.v != last_verdict))
         scan_log->verdict(now_ms, vo, vc, vl);
@@ -2023,17 +2031,33 @@ static int run_radio(const maburgs::Config& cfg) {
     // in-flight hop's own timers simply resume on the next active tick
     // (confirm_ms elapsed -> withdraw, the fail-safe outcome).
     if (hop_active) {
+      // Every target the controller may order, from the ranker (Task 11):
+      //   best   -- never blocked, never backed off (fled or failed);
+      //   escape -- never blocked, never verify-failed, fled allowed: the
+      //             way out of a hold on a blocked channel (the controller
+      //             only uses it when the current verdict is blocked);
+      //   home_blocked -- the dwells read the configured home as blocked,
+      //             so it is no fallback either.
+      auto fill_hop_targets = [&](maburgs::HopTick& k) {
+        k.best = ranker.best(now_ms, plan.op(), hopc.backed_off(now_ms), /*require_unblocked=*/true);
+        k.escape = ranker.best(now_ms, plan.op(), hopc.backed_off_failed(now_ms),
+                               /*require_unblocked=*/true);
+        k.best_score = 0;
+        k.escape_score = 0;
+        k.home_blocked = false;
+        for (const auto& e : ranker.ranking(now_ms)) {
+          if (k.best && e.ch == *k.best) k.best_score = e.score;
+          if (k.escape && e.ch == *k.escape) k.escape_score = e.score;
+          if (e.ch == cfg.radio.channel) k.home_blocked = e.blocked;
+        }
+      };
       maburgs::HopTick ht;
       ht.now_ms = now_ms;
       ht.verdict = last_verdict_out;
       ht.cur_op = plan.op();
       ht.n_cards = n_cards;
       ht.lead_card = n_cards >= 2 ? (sel.selected() == 0 ? 1 : 0) : -1;
-      ht.best = ranker.best(now_ms, plan.op(), hopc.backed_off(now_ms));
-      if (ht.best) {
-        for (const auto& e : ranker.ranking(now_ms))
-          if (e.ch == *ht.best) { ht.best_score = e.score; break; }
-      }
+      fill_hop_targets(ht);
       // lead_card (or the only card, one-card mode) confirms the hop by
       // landing a video body on the target channel -- last_video_ch is set
       // in the batch-drain loop above from RxBody::rx_channel, the channel
@@ -2087,11 +2111,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // review) -- any NHM window we'd armed on it before the burst is
         // contaminated the same way a scout dwell would contaminate it.
         nhm_win[static_cast<size_t>(burst_card)].invalidate();
-        ht.best = ranker.best(now_ms, plan.op(), hopc.backed_off(now_ms));
-        if (ht.best) {
-          for (const auto& e : ranker.ranking(now_ms))
-            if (e.ch == *ht.best) { ht.best_score = e.score; break; }
-        }
+        fill_hop_targets(ht);
       }
       const maburgs::HopAction act = hopc.tick(ht);
       dispatch_hop_action(act);   // the shared path, defined above the verdict window

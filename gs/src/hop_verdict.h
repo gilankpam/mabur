@@ -12,7 +12,7 @@ enum class Verdict { Healthy, Fade, Interfered, Unknown };
 const char* to_string(Verdict v);   // "healthy" "fade" "interfered" "unknown"
 
 enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvFading = 4, kEvContended = 8, kEvRaised = 16,
-                 kEvBlocked = 32 };
+                 kEvBlocked = 32, kEvStarved = 64 };
 
 // The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db /
 // fading_drop_db) are written in dBm / dB. The aggregator's EMAs are
@@ -40,6 +40,11 @@ struct VerdictCardIn {
 struct VerdictLinkIn {
   double pre_fec_loss = 0;   // 0..1 over the window
   uint32_t recovered = 0;
+  // No own frame on ANY valid card this window (main.cpp: the own-frame
+  // delta is 0 on every card with a valid reading, and at least one card
+  // is valid). No frames means no loss, so without this a drone starved
+  // by a jam read `healthy`. Counts as impaired (kEvStarved).
+  bool starved = false;
 };
 
 struct VerdictOut {

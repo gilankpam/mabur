@@ -101,3 +101,27 @@ TEST(visits_without_busy_rank_as_today) {
   CHECK(*r.best(10, 136, {}) == 64);
 }
 MTEST_MAIN
+
+// ---- Task 11 (a): never hop INTO a blocked channel ----------------------
+// Bench 2026-09-26: every candidate but one was blocked by the long-frame
+// jam leaking from 144, the "all blocked -> least busy wins" tier handed
+// back 136 (99.6-100 % busy on every dwell), and the link sat on it for
+// ~33 s. ranking() keeps the blocked tier for display; best() with
+// require_unblocked skips it.
+// Revert (ignore require_unblocked in best()): the second CHECK returns 144.
+TEST(best_require_unblocked_skips_blocked) {
+  maburgs::HopCfg c;   // blocked_pct 50
+  maburgs::HopRanker r(c, {144, 112}, 136, 0);
+  for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 95)); r.add(bv(112, i, 40, 0)); }
+  auto b = r.best(10, 136, {}, /*require_unblocked=*/true);
+  REQUIRE(b.has_value());
+  CHECK(*b == 112);
+  // only a blocked channel ranked -> nothing
+  CHECK(!r.best(10, 136, {112}, /*require_unblocked=*/true).has_value());
+  // default (display / legacy callers): the blocked tier is still a pick
+  CHECK(*r.best(10, 136, {112}) == 144);
+  // ranking() itself is unchanged: 144 is still listed, flagged blocked
+  bool seen = false;
+  for (const auto& e : r.ranking(10)) if (e.ch == 144) { seen = true; CHECK(e.blocked); }
+  CHECK(seen);
+}

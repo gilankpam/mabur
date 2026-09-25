@@ -60,7 +60,10 @@ class HopRanker {
   std::vector<HopRankEntry> ranking(double now_ms) const;
 
   // First ranked candidate that is neither exclude nor in skip.
-  std::optional<uint8_t> best(double now_ms, uint8_t exclude, const std::vector<uint8_t>& skip) const;
+  // require_unblocked: also skip entries whose `blocked` is set -- the hop
+  // never orders a channel the dwells read as blocked (Task 11 (a)).
+  std::optional<uint8_t> best(double now_ms, uint8_t exclude, const std::vector<uint8_t>& skip,
+                              bool require_unblocked = false) const;
 
  private:
   HopCfg cfg_;

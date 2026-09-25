@@ -82,10 +82,21 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
     order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "order", out);
     return;
   }
-  if (home_available(in.cur_op, in.now_ms)) {
+  if (home_available(in.cur_op, in.now_ms, in.home_blocked)) {
     leave_hold(in.now_ms, in.cur_op);
     flee(in.cur_op, in.now_ms);
     order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "order", out);
+    return;
+  }
+  // Nothing ranked and no home, but the channel we are on is BLOCKED:
+  // holding here is holding on a jammed channel (bench 2026-09-26: ~33 s
+  // on the 98 %-blocked 136 while 112, which had carried video, sat backed
+  // off as merely fled). The escape is an unblocked channel that did not
+  // fail a verify; cooldown and the hop cap were both checked above.
+  if (escape_allowed(in)) {
+    leave_hold(in.now_ms, in.cur_op);
+    flee(in.cur_op, in.now_ms);
+    order(*in.escape, in.verdict.ref_rung, in.lead_card, in.escape_score, in.now_ms, "escape", out);
     return;
   }
   enter_hold(in.now_ms, "hold_exhausted", in.cur_op, 0, out);
@@ -146,7 +157,8 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
     back_off(failed_target, in.now_ms);
     std::optional<uint8_t> next = in.best;
     if (next.has_value() && is_backed_off(*next, in.now_ms)) next.reset();   // skip backed off
-    const bool have_candidate = next.has_value() || home_available(in.cur_op, in.now_ms);
+    const bool have_candidate =
+        next.has_value() || home_available(in.cur_op, in.now_ms, in.home_blocked);
     if (have_candidate) {
       // Without the persist delay: act on a raw Interfered window, not a
       // fresh multi-window trigger -- this path is "still on a bad
@@ -163,6 +175,18 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
       } else {
         order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "verify_fail", out);
       }
+      return;
+    }
+    // No retry candidate: escape instead of holding when the channel just
+    // landed on is itself blocked -- same retry rules as above (cooldown
+    // exempt, the hop cap counted).
+    if (escape_allowed(in) && *in.escape != failed_target) {
+      prune_hop_times(in.now_ms);
+      if (static_cast<int>(hop_times_.size()) >= cfg_.max_hops_per_min) {
+        enter_hold(in.now_ms, "hold_cap", failed_target, in.now_ms - verify_start_, out);
+        return;
+      }
+      order(*in.escape, in.verdict.ref_rung, in.lead_card, in.escape_score, in.now_ms, "escape", out);
       return;
     }
     enter_hold(in.now_ms, "verify_fail", failed_target, in.now_ms - verify_start_, out);
@@ -244,28 +268,43 @@ void HopController::leave_hold(double now, uint8_t cur_op) {
 // the jam (bench 2026-09-24, GS session 0207: 144 -> 128 -> 144). A withdraw
 // still returns to it: that path restores the op, it does not consult the
 // ranker.
-void HopController::flee(uint8_t ch, double now) { back_off(ch, now); }
+void HopController::flee(uint8_t ch, double now) { back_off(ch, now, BackoffWhy::Fled); }
 
 // Home is the fallback when nothing is ranked -- unless the link is already
 // there, or home is backed off (it is the channel just fled, or it failed a
 // verify): then going home is going back into the problem, and holding on
 // the current channel is the better answer (bench 2026-09-24, run 1: the jam
 // was on home and the fallback ordered it straight back).
-bool HopController::home_available(uint8_t cur_op, double now) const {
-  return cur_op != home_ && !is_backed_off(home_, now);
+//
+// Nor when the ranker's dwells read home as BLOCKED (NHM busy): the
+// fallback would order a channel already known to be jammed (Task 11 (a)).
+bool HopController::home_available(uint8_t cur_op, double now, bool home_blocked) const {
+  return cur_op != home_ && !is_backed_off(home_, now) && !home_blocked;
 }
 
-void HopController::back_off(uint8_t ch, double now) {
+// The escape is used only when (the callers have already established)
+// there is no ranked target and no home: the caller supplied one, and the
+// verdict in hand says the channel we are on is blocked. A verify-failed
+// channel is excluded upstream (main.cpp skips backed_off_failed()) and
+// again here, so a stale tick can never order one.
+bool HopController::escape_allowed(const HopTick& in) const {
+  if (!in.escape.has_value() || !(in.verdict.evidence & kEvBlocked)) return false;
+  auto it = backoff_.find(*in.escape);
+  return !(it != backoff_.end() && it->second.until_ms > in.now_ms &&
+           it->second.why == BackoffWhy::Failed);
+}
+
+void HopController::back_off(uint8_t ch, double now, BackoffWhy why) {
   auto it = backoff_.find(ch);
-  const int k = (it == backoff_.end()) ? 1 : it->second.second + 1;
+  const int k = (it == backoff_.end()) ? 1 : it->second.k + 1;
   double dur = static_cast<double>(cfg_.backoff_ms) * std::pow(2.0, k - 1);
   if (dur > 300000.0) dur = 300000.0;
-  backoff_[ch] = {now + dur, k};
+  backoff_[ch] = {now + dur, k, why};
 }
 
 bool HopController::is_backed_off(uint8_t ch, double now) const {
   auto it = backoff_.find(ch);
-  return it != backoff_.end() && it->second.first > now;
+  return it != backoff_.end() && it->second.until_ms > now;
 }
 
 void HopController::prune_hop_times(double now) {
@@ -291,7 +330,14 @@ HopState HopController::state() const { return state_; }
 std::vector<uint8_t> HopController::backed_off(double now_ms) const {
   std::vector<uint8_t> v;
   for (const auto& kv : backoff_)
-    if (kv.second.first > now_ms) v.push_back(kv.first);
+    if (kv.second.until_ms > now_ms) v.push_back(kv.first);
+  return v;
+}
+
+std::vector<uint8_t> HopController::backed_off_failed(double now_ms) const {
+  std::vector<uint8_t> v;
+  for (const auto& kv : backoff_)
+    if (kv.second.until_ms > now_ms && kv.second.why == BackoffWhy::Failed) v.push_back(kv.first);
   return v;
 }
 

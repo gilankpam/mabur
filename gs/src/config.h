@@ -38,6 +38,11 @@ struct ScanCfg {
 struct HopVerdictCfg {
   double loss_pct = 3.0;
   double recovered_x = 3.0;
+  // Floor on the recovered-symbols impaired term: fewer recovered symbols
+  // than this never mark a window impaired, whatever the trailing mean.
+  // 0 disables. Bench session 0232 (2026-09-26): 97 % of recovered-only
+  // impaired windows at <= 3 % loss had 1-8 recovered.
+  int recovered_min = 8;
   int weak_rssi_dbm = -78;
   int weak_snr_db = 12;
   int fading_drop_db = 6;

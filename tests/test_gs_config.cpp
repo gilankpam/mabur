@@ -1281,3 +1281,25 @@ TEST(hop_verdict_busy_keys) {
   CHECK(b.hop.verdict.busy_dbm == -83);
   CHECK(b.hop.verdict.blocked_pct == 50.0);
 }
+
+// Task 11 (b): the floor on the recovered-symbols impaired term (bench
+// session 0232: 97 % of recovered-only impaired windows had <= 8).
+// Revert (drop the key from check_keys / the parse): the first load throws
+// "unknown key" and the default read is not 8.
+TEST(hop_verdict_recovered_min_key) {
+  auto c = maburgs::load_config(write_tmp("[hop.verdict]\nrecovered_min = 0\n"));
+  CHECK(c.hop.verdict.recovered_min == 0);
+  auto d = maburgs::load_config(write_tmp("[hop.verdict]\nrecovered_min = 25\n"));
+  CHECK(d.hop.verdict.recovered_min == 25);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nrecovered_min = 1001\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict") != std::string::npos; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nrecovered_min = -1\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
+  CHECK(b.hop.verdict.recovered_min == 8);
+  CHECK(maburgs::HopVerdictCfg{}.recovered_min == 8);
+}

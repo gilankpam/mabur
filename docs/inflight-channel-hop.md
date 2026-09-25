@@ -148,18 +148,37 @@ blanked when a hop lands (`HopAction::Confirm` + 150 ms settle,
 judged on the channel it verifies; `s1_loss` itself, which feeds the
 sideport/ctl-log/OSD gauge, is never blanked.
 
-Six independent evidence bits, OR'd together every window
+Seven independent evidence bits, OR'd together every window
 (`gs/src/hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvFading/kEvContended/
-kEvRaised/kEvBlocked`):
+kEvRaised/kEvBlocked/kEvStarved`):
 
 | bit | rule | key (default) |
 |---|---|---|
-| impaired | link pre-FEC loss % > `loss_pct` **or** recovered count > `recovered_x` × its 5 s trailing mean | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0) |
+| impaired | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `starved` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
 | weak | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
 | fading | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
 | contended | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised | any card's FA/s > `fa_pps` | `fa_pps` (100) |
 | blocked | the MINIMUM, across cards with a busy reading, of that card's NHM busy % minus its own reconstructed airtime % >= `blocked_pct` | `busy_dbm` (−83), `blocked_pct` (50) |
+| starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`, set in `main.cpp`'s per-card loop) | — |
+
+**`recovered_min` and `starved` (2026-09-26).** Two holes in `impaired`
+found on the long-frame jam bench run. (1) On a clean channel the
+recovered term's trailing mean sits near 0.2/window, so 1–5 recovered
+symbols read "3× the reference" at 0 % loss; on 112, whose ambient FA
+background reads `raised` (240–460/s), that made `interfered` (evidence
+0x11) and hopped a link that had 0.0 % pre-FEC loss into a blocked
+channel. Session 0232's scan.log had 529 windows impaired only via the
+recovered term at <= 3 % loss: recovered 1: 251, 2: 154, 3: 42, 4: 36,
+5: 18, 6–8: 10, >8: ~18 — a floor of 8 removes ~97 %. The loss term is
+unchanged. (2) A drone starved by a jam (zero frames) read `healthy`: no
+frames, no loss. `starved` now counts as impaired; with `blocked` it
+classifies `interfered`, alone it falls through to `unknown` like any
+unexplained impairment (never a trigger by itself). A starved window is
+impaired, so it freezes the references and — like every impaired window —
+pushes nothing into the trailing RSSI/recovered histories (`HopVerdict`
+only pushes while `!frozen_`, and the freeze happens before the push in
+the same window); pinned by `starved_windows_do_not_feed_the_trailing_references`.
 
 `blocked` is the NHM-airtime evidence added 2026-09-25 (spec
 `docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`; bench numbers
@@ -532,7 +551,34 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
   "nothing ranked: go home" fallback (fresh trigger and verify-fail alike)
   also skips a backed-off home and holds instead
   (`HopController::home_available`) — on the bench the jam was on home and
-  the fallback ordered the link straight back into it.
+  the fallback ordered the link straight back into it. Nor is a home the
+  ranker reads as **blocked** a fallback (`HopTick::home_blocked`, filled
+  from `ranking()`'s entry for the configured home).
+- **Never hop into a blocked channel** (2026-09-26). Every
+  `ranker.best()` that feeds `HopTick::best` passes `require_unblocked`,
+  so a channel whose fresh dwells average `>= blocked_pct` busy is never
+  ordered — `ranking()` keeps the blocked tier ("least busy first among
+  blocked") for display and logs only. Before, "all blocked → least busy
+  wins" handed back 136, which every in-flight dwell had read 99.6–100 %
+  busy (the jammer on 144 leaked into 132 and 136); its verify failed and
+  the link sat ~33 s on it in `hold_exhausted`. When every option is
+  blocked the controller now holds on the existing paths instead.
+- **Back-off reasons and the escape** (2026-09-26). Each back-off entry
+  records why: `fled` (`flee()`) or `failed` (verify fail, withdraw,
+  session lost). A later back-off of the same channel overwrites the
+  reason and keeps doubling. `backed_off()` still returns both;
+  `backed_off_failed()` only the failed ones. `main.cpp` fills
+  `HopTick::escape` = `ranker.best(op, backed_off_failed(), require_unblocked)`
+  — fled channels allowed, verify-failed and blocked never. The controller
+  orders it (H kind `escape`) only when there is no `best`, home is
+  unavailable, the current verdict carries `kEvBlocked` (the channel the
+  link is on is itself blocked) and `max_hops_per_min` allows it: in
+  `idle_tick` before `hold_exhausted` (after the existing cooldown check),
+  and in `verifying_tick`'s verify-fail branch before its `verify_fail`
+  hold (cooldown exempt, hop cap counted, like any retry — a full cap logs
+  `hold_cap`). The escape target then runs the normal Ordered/Verifying
+  flow. On the bench this is the missing move: 112 had carried video and
+  was only backed off as fled, while the link sat on the blocked 136.
 - **Session lost mid-hop** (`HopController::on_session_lost`, called on
   `hop_active`'s falling edge). The controller is only ticked in SESSION,
   and `ChannelPlan::tick` ignores link loss while a hop is in flight, so an
@@ -635,7 +681,11 @@ foreign_pps          = 50
 fa_pps               = 100
 busy_dbm             = -83
 blocked_pct          = 50
+recovered_min        = 8
 ```
+
+`recovered_min` (added 2026-09-26, §2) is the floor under the recovered
+term of `impaired`; 0 disables it.
 
 `busy_dbm`/`blocked_pct` (added 2026-09-25, spec
 `docs/superpowers/specs/2026-09-25-nhm-airtime-design.md`) feed the
@@ -664,6 +714,7 @@ unknown keys fail boot:
 | `one_card_repeats` | 1–50 |
 | `hop.verdict.loss_pct` | 0.1–100.0 |
 | `hop.verdict.recovered_x` | 1.0–100.0 |
+| `hop.verdict.recovered_min` | 0–1000 (0 = no floor) |
 | `hop.verdict.weak_rssi_dbm` | −110 – −20 |
 | `hop.verdict.weak_snr_db` | 0–40 |
 | `hop.verdict.fading_drop_db` | 1–40 |
@@ -704,11 +755,16 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   channel — see the invalidation list in §2) and `own_air` (always
   present, % of the window). `drssi` is the **link-level** `d_rssi_db`
   (best-card RSSI minus its reference), repeated identically in every
-  card's chunk, not a genuinely per-card value.
+  card's chunk, not a genuinely per-card value. The evidence field is the
+  §2 bitmask in hex: impaired 0x01, weak 0x02, fading 0x04, contended
+  0x08, raised 0x10, blocked 0x20, starved 0x40 (0x40 added 2026-09-26,
+  additive — the marker stays `scanlog 4`).
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is always a single snake_case token — `order`, `lead_confirm`,
-  `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `session_lost`, `hold_cap`,
-  `hold_exhausted`, `hold_end` (the hold pair used to be the two-word C++ strings
+  `one_card_retune`, `verify_pass`, `verify_fail`, `escape`, `withdraw`, `session_lost`, `hold_cap`,
+  `hold_exhausted`, `hold_end` (`escape`, added 2026-09-26 under the same
+  `scanlog 4` marker, is an order placed to leave a blocked channel, §5;
+  the hold pair used to be the two-word C++ strings
   `"hold cap"`/`"hold exhausted"`, a space-delimited field containing the
   delimiter — fixed at the emitter rather than kept as a parser
   workaround, since scan.log is designed to outlive the code that wrote
@@ -799,7 +855,7 @@ highest marker in the file, since a GS restart rejoins the session
 directory and the first `scan.log` after a deploy starts under the old
 binary's header. One row
 per hop **attempt** — every event that places a fresh `HopAction::Order`
-(`order` and retry-triggering `verify_fail`), matched against ctl.log's
+(`order`, retry-triggering `verify_fail`, and `escape`), matched against ctl.log's
 `hop_restore` E-lines by nearest timestamp within a 5 s window anchored on
 the attempt's own order/retry time (not lead-confirm, per §4's
 synchronous-restore finding):
@@ -828,7 +884,9 @@ defaults that are spike numbers, not measurements, and a verdict name
 alone cannot say whether `foreign_pps` or `weak_rssi_dbm` was the one
 that nearly tripped.
 
-Also printed: a per-card dwell-cost summary (count and
+Always printed (2026-09-26): `escapes: N  starved windows: M` — how many
+`escape` H events (§5) the session logged and how many V windows carried
+the starved bit (evidence & 0x40, §2). Then a per-card dwell-cost summary (count and
 median(`to_us+read_us+back_us`) for dwells with `sess == 1`, i.e. dwells
 that actually cost airtime inside a live session — the free off-session
 boot-scan dwells are excluded).

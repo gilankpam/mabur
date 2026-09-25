@@ -66,8 +66,15 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   const double rec_ref = frozen_ ? ref_rec_
                                   : (rec_hist_.empty() ? 0.0
                                          : std::accumulate(rec_hist_.begin(), rec_hist_.end(), 0.0) / rec_hist_.size());
+  // recovered_min: a floor under the recovered term. On a clean channel
+  // the trailing mean sits near 0.2/window, so 1-5 recovered symbols read
+  // "3x the reference" with 0 % loss (bench 2026-09-26, session 0232: 97 %
+  // of recovered-only impaired windows had <= 8). starved: no own frame on
+  // any valid card -- no frames, no loss, but not healthy either.
   const bool impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
-                        (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref);
+                        (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
+                         link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
+                        link.starved;
   const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm && cards[best].snr_db < hv.weak_snr_db;
   // Guard: a frozen reference that was never established for this card
   // (out-of-range or invalid-with-no-history at freeze time, see below)
@@ -104,7 +111,8 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   }
   blocked = have_busy_reading && min_foreign_busy_pct >= hv.blocked_pct;
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
-               (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0);
+               (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0) |
+               (link.starved ? kEvStarved : 0);
   if (!impaired) o.v = Verdict::Healthy;
   else if (weak) o.v = Verdict::Fade;
   // blocked beats fading: a real fade lowers power and cannot raise NHM

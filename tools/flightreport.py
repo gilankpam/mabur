@@ -1151,7 +1151,11 @@ def sniff_scanlog(path):
 # (idle_tick's fresh trigger, and verifying_tick's retry-after-fail); the
 # rest either continue an open attempt (lead_confirm, one_card_retune) or
 # close one (verify_pass, withdraw, and the two hold variants).
-_HOP_ORDER_KINDS = {"order", "verify_fail"}
+# "escape" (2026-09-26) places one too: the controller's way out of a hold
+# on a BLOCKED channel -- from idle (a fresh row) or in place of the
+# verify-fail hold (then, like a verify_fail retry, it also closes the
+# failed attempt).
+_HOP_ORDER_KINDS = {"order", "verify_fail", "escape"}
 # A hold is a STATE, and HopController logs only its EDGES: hold_cap /
 # hold_exhausted / verify_fail on the way in, "hold_end" on the way out,
 # whose elapsed_ms is how long the episode lasted (holds used to re-log
@@ -1244,7 +1248,7 @@ def build_hop_rows(H, restores):
                 # verify IS why this new order was placed. A fresh "order"
                 # while one was already open should never happen per the
                 # FSM (strictly one attempt in flight) -- defensive only.
-                close(kind if base == "verify_fail" else "interrupted", h["t_ms"])
+                close(kind if base in ("verify_fail", "escape") else "interrupted", h["t_ms"])
             open_row = {
                 "shadow": shadow, "order_ts": h["t_ms"], "order_epoch": h["epoch"],
                 "target": h["target"], "video_ts": None,
@@ -1420,6 +1424,12 @@ def print_hop_report(scanlog, ctllog):
             print(f"  card {card} (non-healthy, n={m['n']}): "
                   f"foreign={m['foreign']:.0f} fa={m['fa']:.0f} "
                   f"rssi={m['rssi_dbm']:.1f} snr={m['snr_db']:.1f}")
+
+    # Task 11: how often the controller escaped a blocked hold, and how many
+    # windows read `starved` (no own frame on any valid card, evidence 0x40).
+    escapes = sum(1 for h in H if _strip_would(h["kind"]) == "escape")
+    starved = sum(1 for v in V if v["evidence"] & 0x40)
+    print(f"escapes: {escapes}  starved windows: {starved} (evidence & 0x40)")
 
     dsum = dwell_cost_summary(D)
     if dsum:

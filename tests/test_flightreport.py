@@ -1564,6 +1564,35 @@ class HopReportTest(unittest.TestCase):
         self.assertIn("video->restore -", out)
         self.assertIn("outcome withdraw", out)
 
+    def test_escape_events_and_starved_windows_are_counted(self):
+        """Task 11 (d)/(c): an `escape` H event places an order (a fresh
+        row, and -- after a verify fail -- the outcome of the attempt it
+        replaced, like a verify_fail retry), and V windows with evidence
+        0x40 (kEvStarved) are counted. Revert (drop "escape" from
+        _HOP_ORDER_KINDS / the two counters): one row, no counts."""
+        def E(t, kind, epoch, target):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": 0.0}
+        H = [E(1000, "order", 1, 136), E(1080, "lead_confirm", 1, 136),
+             E(1400, "escape", 2, 112), E(1460, "lead_confirm", 2, 112),
+             E(2500, "verify_pass", 2, 112)]
+        rows = flightreport.build_hop_rows(H, [])
+        self.assertEqual([r["outcome"] for r in rows], ["escape", "verify_pass"])
+        self.assertEqual([r["target"] for r in rows], [136, 112])
+        V = [{"t_ms": 900.0, "verdict": "interfered", "evidence": 0x61, "ref_rung": 3,
+              "link_loss_pct": 0.0, "recovered": 0, "cards": []},
+             {"t_ms": 950.0, "verdict": "unknown", "evidence": 0x41, "ref_rung": 3,
+              "link_loss_pct": 0.0, "recovered": 0, "cards": []},
+             {"t_ms": 1300.0, "verdict": "interfered", "evidence": 0x21, "ref_rung": 3,
+              "link_loss_pct": 9.0, "recovered": 0, "cards": []}]
+        scanlog = {"version": 4, "V": V, "H": H, "D": [], "M": []}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, {"E": []})
+        out = buf.getvalue()
+        self.assertIn("escapes: 1", out)
+        self.assertIn("starved windows: 2", out)
+
     def test_v_line_variable_card_count(self):
         """The per-card block in a V line repeats once per card -- must not
         assume exactly two (this bench has run with one card, e.g.

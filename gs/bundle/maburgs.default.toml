@@ -199,6 +199,7 @@ one_card_repeats     = 5
 [hop.verdict]
 loss_pct             = 3.0
 recovered_x          = 3.0
+recovered_min        = 8      # recovered-symbols floor for `impaired`; 0 = off (bench 0232: ~97 % of recovered-only windows had <= 8)
 weak_rssi_dbm        = -78
 weak_snr_db          = 12
 fading_drop_db       = 6

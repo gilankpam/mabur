@@ -233,10 +233,11 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
                                     "fading_drop_db", "foreign_pps", "fa_pps", "busy_dbm",
-                                    "blocked_pct"});
+                                    "blocked_pct", "recovered_min"});
       HopVerdictCfg& vc = hc.verdict;
       vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
       vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
+      vc.recovered_min = (int)get_int(v, "recovered_min", 8, 0, 1000, "hop.verdict");
       vc.weak_rssi_dbm = (int)get_int(v, "weak_rssi_dbm", -78, -110, -20, "hop.verdict");
       vc.weak_snr_db = (int)get_int(v, "weak_snr_db", 12, 0, 40, "hop.verdict");
       vc.fading_drop_db = (int)get_int(v, "fading_drop_db", 6, 1, 40, "hop.verdict");
