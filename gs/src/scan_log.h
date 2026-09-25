@@ -14,11 +14,11 @@
 
 namespace maburgs {
 
-// scan.log (scanlog 3) -- the channel-selection record in the debug-log
+// scan.log (scanlog 4) -- the channel-selection record in the debug-log
 // session directory (spec 2026-09-14-inflight-channel-hop). Formats are
 // LOCKED by tests/test_scan_log.cpp:
 //
-//   scanlog 3 <header_info>
+//   scanlog 4 <header_info>
 //   C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
 //     <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 //   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
@@ -31,7 +31,11 @@ namespace maburgs {
 //     (scanlog 3: the picked channel's standard 40 MHz pair, - when none)
 //   M <t> <card|all> <from> <to> <reason>                        # a link move
 //   V <t> <verdict> <evidence_hex> <ref_rung|-> <link_loss_pct> <recovered>
-//     [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi>]... # a verdict window
+//     [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi> <nhm_busy|->
+//      <own_air>]...                                             # a verdict window
+//     (scanlog 4: + nhm_busy/own_air per card, % of the window; nhm_busy
+//     is - when the card's NHM window didn't cover this verdict window on
+//     this channel, own_air is always present)
 //   H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
 class ScanLog {
  public:

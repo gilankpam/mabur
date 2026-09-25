@@ -1038,7 +1038,11 @@ def load_scanlog(path):
     V's per-card block REPEATS once per card (2 cards on this hardware
     today, but the parser must not assume that): 'V t verdict evidence_hex
     ref_rung|- link_loss_pct recovered [card foreign fa cca crc rssi snr
-    drssi]...'.
+    drssi]...' (scanlog <= 3, 8-field blocks) or 'V ... [card foreign fa
+    cca crc rssi snr drssi nhm_busy|- own_air]...' (scanlog 4, 10-field
+    blocks) -- the stride is picked from the marker version seen so far,
+    since a rejoined session's later section can be v4 while its header
+    line is still the old marker.
 
     H's kind field is single-token snake_case today ("hold_cap" /
     "hold_exhausted" included, fixed at the emitter -- they used to be the
@@ -1076,18 +1080,26 @@ def load_scanlog(path):
                 continue
             try:
                 if tag == "V" and len(toks) >= 7:
+                    stride = 10 if version >= 4 else 8
                     n_extra = len(toks) - 7
-                    if n_extra % 8 != 0:
+                    if n_extra % stride != 0:
                         continue  # malformed card block; skip rather than misparse
                     ref_rung = None if toks[4] == "-" else int(toks[4])
                     cards = []
-                    for i in range(7, len(toks), 8):
-                        cards.append({
+                    for i in range(7, len(toks), stride):
+                        card = {
                             "card": int(toks[i]), "foreign": int(toks[i + 1]),
                             "fa": int(toks[i + 2]), "cca": int(toks[i + 3]),
                             "crc_fail": int(toks[i + 4]), "rssi_dbm": float(toks[i + 5]),
                             "snr_db": float(toks[i + 6]), "d_rssi_db": float(toks[i + 7]),
-                        })
+                        }
+                        if stride == 10:
+                            card["nhm_busy"] = None if toks[i + 8] == "-" else float(toks[i + 8])
+                            card["own_air"] = float(toks[i + 9])
+                        else:
+                            card["nhm_busy"] = None
+                            card["own_air"] = None
+                        cards.append(card)
                     V.append({
                         "t_ms": float(toks[1]), "verdict": toks[2],
                         "evidence": int(toks[3], 16), "ref_rung": ref_rung,
@@ -1392,6 +1404,8 @@ def print_hop_report(scanlog, ctllog):
         hist = verdict_histogram(V)
         print("verdicts: " + " ".join(f"{k} {n}" for k, n in hist.items()) if hist
               else "verdicts: (none)")
+        blocked = sum(1 for v in V if v["evidence"] & 0x20)
+        print(f"blocked windows: {blocked} (evidence & 0x20)")
         # Calibration instrument (spec Open Items: "the observe-only
         # flights are the calibration") -- a verdict name alone can't tell
         # contention from a weak signal from fading, nor which card drove

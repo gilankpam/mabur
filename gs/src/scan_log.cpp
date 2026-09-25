@@ -8,7 +8,7 @@
 namespace maburgs {
 
 ScanLog::ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info)
-    : w_(w), s_(w.open(dir, "scan.log", "scanlog 3 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "scan.log", "scanlog 4 " + header_info)) {}
 
 void ScanLog::put_(const char* b, int n) {
   if (s_ == LogWriter::kBadStream || n <= 0) return;
@@ -104,10 +104,13 @@ void ScanLog::verdict(double t_ms, const VerdictOut& o, const std::vector<Verdic
   std::string line(head, static_cast<size_t>(std::min(hn, static_cast<int>(sizeof(head) - 1))));
   for (size_t i = 0; i < cards.size(); ++i) {
     const VerdictCardIn& c = cards[i];
-    char cb[160];
-    const int cn = std::snprintf(cb, sizeof(cb), " %u %u %u %u %u %.1f %.1f %.1f",
+    char busy[16];
+    if (c.busy_valid) std::snprintf(busy, sizeof(busy), "%.1f", c.nhm_busy_pct);
+    else std::snprintf(busy, sizeof(busy), "-");
+    char cb[192];
+    const int cn = std::snprintf(cb, sizeof(cb), " %u %u %u %u %u %.1f %.1f %.1f %s %.1f",
                                  static_cast<unsigned>(i), c.foreign, c.fa, c.cca, c.crc_fail,
-                                 c.rssi_dbm, c.snr_db, o.d_rssi_db);
+                                 c.rssi_dbm, c.snr_db, o.d_rssi_db, busy, c.own_air_pct);
     line.append(cb, static_cast<size_t>(std::min(cn, static_cast<int>(sizeof(cb) - 1))));
   }
   put_(line.c_str(), static_cast<int>(std::min(line.size(), LogWriter::kMaxLine - 1)));

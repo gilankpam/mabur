@@ -59,6 +59,7 @@
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
+#include "nhm_window.h"
 #include "pair_pick.h"
 #include "pts_anchor.h"
 #include "probe_log.h"
@@ -1078,6 +1079,13 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<maburgs::ScoutFrames> window_prev(static_cast<size_t>(n_cards));
   std::vector<uint64_t> window_prev_crc(static_cast<size_t>(n_cards), 0);
   std::vector<bool> window_prev_ok(static_cast<size_t>(n_cards), false);
+  std::vector<uint64_t> window_prev_ms(static_cast<size_t>(n_cards), 0);
+  // NHM busy-airtime bookkeeping (spec 2026-09-25-nhm-airtime §6): one
+  // arm/read tracker per card, and the period we (not a scout dwell) arm
+  // with -- clamped to the window itself, less a 10 ms margin so the read
+  // lands before the next window's arm.
+  std::vector<maburgs::NhmWindowTracker> nhm_win(static_cast<size_t>(n_cards));
+  const uint16_t nhm_op_period = maburgs::nhm_period_4us(std::max(hcfg.window_ms - 10, 1));
   uint64_t last_window_ms = 0;
   uint64_t recovered_prev_window = 0;
   bool hop_was_active = false;   // hop_active() edge tracker (hop_burst_gate.h)
@@ -1913,10 +1921,20 @@ static int run_radio(const maburgs::Config& cfg) {
         auto& fe = *fronts[static_cast<size_t>(i)];
         const size_t si = static_cast<size_t>(i);
         const bool busy = dwell_busy.load() && dwell_card.load() == i;
-        if (busy || !fe.ready()) { window_prev_ok[si] = false; continue; }
+        if (busy || !fe.ready()) {
+          window_prev_ok[si] = false;
+          nhm_win[si].invalidate();
+          continue;
+        }
+        // Order matters (spec §6): the NHM window that just ended is read
+        // BEFORE the FA/CCA counter reset, then re-armed for the next one.
+        const maburgs::NhmBusyRead nb = fe.read_nhm_busy();
+        const bool nhm_ok = nhm_win[si].usable(nb, fe.channel());
         const maburgs::ScoutEnergy e = fe.read_energy_scout();
         const maburgs::ScoutFrames f = fe.frames();
         const auto& t = agg.card(i);
+        if (fe.arm_nhm_busy(nhm_op_period)) nhm_win[si].armed(fe.channel(), nhm_op_period);
+        else nhm_win[si].invalidate();
         if (window_prev_ok[si]) {
           vc[si].valid = true;
           vc[si].fa = e.fa_ofdm;
@@ -1927,14 +1945,23 @@ static int run_radio(const maburgs::Config& cfg) {
           // (hop_verdict.h); feeding raw here left `weak` unreachable.
           vc[si].rssi_dbm = maburgs::rssi_raw_to_dbm(t.rssi_a_ema);
           vc[si].snr_db = maburgs::snr_raw_to_db(t.snr_ema);
+          const double win_us = static_cast<double>(now_ms_u - window_prev_ms[si]) * 1000.0;
+          const double own_pct = win_us > 0
+              ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev[si].own_air_us) / win_us)
+              : 0.0;
+          const auto busy_pct = nhm_ok ? maburgs::nhm_busy_pct(nb, hcfg.verdict.busy_dbm) : std::nullopt;
+          vc[si].busy_valid = busy_pct.has_value();
+          vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
+          vc[si].own_air_pct = own_pct;
           // Keep cards[i].energy on the sideport alive from this window --
           // Task 3 removed the 1 Hz A-record poll that used to feed it.
           energy_last[si] = maburgs::StatsEnergyIn{
               e.cca_ofdm, e.fa_ofdm, f.own - window_prev[si].own,
-              f.foreign - window_prev[si].foreign, std::nullopt};
+              f.foreign - window_prev[si].foreign, std::nullopt, busy_pct, own_pct};
         }
         window_prev[si] = f;
         window_prev_crc[si] = t.crc_fail;
+        window_prev_ms[si] = now_ms_u;
         window_prev_ok[si] = true;
       }
       maburgs::VerdictLinkIn vl;
@@ -2194,9 +2221,10 @@ static int run_radio(const maburgs::Config& cfg) {
         width_tried[static_cast<size_t>(i)] = true;
         std::lock_guard<std::mutex> ilk(inflight_mu);
         const uint8_t ch = fe.channel();
-        if (fe.set_width(ch, cfg.radio.width))
+        if (fe.set_width(ch, cfg.radio.width)) {
           cur_ch[static_cast<size_t>(i)] = fe.channel();
-        else
+          nhm_win[static_cast<size_t>(i)].invalidate();
+        } else
           std::fprintf(stderr, "maburgs radio: card %d width resync to %u MHz on ch %u failed\n",
                        i, static_cast<unsigned>(cfg.radio.width), static_cast<unsigned>(ch));
       }
@@ -2220,8 +2248,10 @@ static int run_radio(const maburgs::Config& cfg) {
       auto& fe = *fronts[static_cast<size_t>(i)];
       if (scouting || inflight_dwelling || !fe.ready()) continue;
       const uint8_t want = plan.desired(i);
-      if (cur_ch[static_cast<size_t>(i)] != want && fe.retune(want))
+      if (cur_ch[static_cast<size_t>(i)] != want && fe.retune(want)) {
         cur_ch[static_cast<size_t>(i)] = want;
+        nhm_win[static_cast<size_t>(i)].invalidate();
+      }
     }
     const bool fw = in_session && (vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
     // Told every tick (CalSession::set_peer): whether the link is up and

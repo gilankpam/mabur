@@ -31,6 +31,11 @@ struct StatsEnergyIn {
   uint32_t cca = 0, fa = 0;
   uint64_t own = 0, foreign = 0;
   std::optional<int> igi;
+  // Busy airtime (spec 2026-09-25-nhm-airtime §6): NHM busy % and own
+  // video's airtime % of the verdict window, nullopt when the card's NHM
+  // window didn't cover this window on this channel (busy_pct) or when no
+  // window has landed yet (own_air_pct).
+  std::optional<double> busy_pct, own_air_pct;
 };
 
 // One card's in-flight scouting activity (spec 2026-09-14-inflight-channel-

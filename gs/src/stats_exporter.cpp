@@ -102,6 +102,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       cj["energy"] = {{"cca", c.energy->cca}, {"fa", c.energy->fa}, {"own", c.energy->own},
                       {"foreign", c.energy->foreign}};
       if (c.energy->igi) cj["energy"]["igi"] = *c.energy->igi; else cj["energy"]["igi"] = nullptr;
+      cj["energy"]["busy_pct"] = c.energy->busy_pct ? json(*c.energy->busy_pct) : json(nullptr);
+      cj["energy"]["own_air_pct"] = c.energy->own_air_pct ? json(*c.energy->own_air_pct) : json(nullptr);
     } else {
       cj["energy"] = nullptr;
     }

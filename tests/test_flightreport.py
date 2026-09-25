@@ -1306,6 +1306,35 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual(len(scanlog["H"]), len(ref["H"]))
         self.assertEqual(len(scanlog["V"]), len(ref["V"]))
 
+    def test_v4_scanlog_carries_busy_and_own_air(self):
+        """scanlog 4 (spec 2026-09-25-nhm-airtime §6): the V card block
+        grows two fields, nhm_busy (%, '-' when the window wasn't ours) and
+        own_air (%). A rejoined session can carry a v3 section ahead of the
+        v4 one (see test_rejoined_session_takes_the_last_scanlog_marker) --
+        each V line must parse with the stride its own section's marker
+        set, not the file's final version."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 3 home=136 candidates=149,161 dwell_ms=250\n")
+            f.write("V 500.0 healthy 00 - 0.0 0 0 10 2 0 1 -50.0 25.0 0.0\n")
+            f.write("scanlog 4 home=136 candidates=149,161 dwell_ms=250\n")
+            f.write("V 1000.0 interfered 21 0 80.0 0 0 0 0 0 0 -48.0 30.0 0.0 94.9 2.0 "
+                     "1 0 0 0 0 -48.0 30.0 0.0 - 2.0\n")
+        scanlog = flightreport.load_scanlog(p)
+        self.assertEqual(scanlog["version"], 4)
+        self.assertEqual(len(scanlog["V"]), 2)
+        v3 = scanlog["V"][0]
+        self.assertEqual(len(v3["cards"]), 1)
+        self.assertIsNone(v3["cards"][0]["nhm_busy"])
+        self.assertIsNone(v3["cards"][0]["own_air"])
+        v4 = scanlog["V"][1]
+        self.assertEqual(len(v4["cards"]), 2)
+        self.assertEqual(v4["cards"][0]["nhm_busy"], 94.9)
+        self.assertEqual(v4["cards"][0]["own_air"], 2.0)
+        self.assertIsNone(v4["cards"][1]["nhm_busy"])
+        self.assertEqual(v4["cards"][1]["own_air"], 2.0)
+
     def test_hop_table_row_timings_and_outcome(self):
         """onset->order / order->video / video->restore, paired end to end:
         the onset is the FIRST of the two consecutive 'interfered' V lines
@@ -1538,7 +1567,7 @@ class HopReportTest(unittest.TestCase):
         last = scanlog["V"][1]["cards"][2]
         self.assertEqual(last, {"card": 2, "foreign": 9, "fa": 10, "cca": 11,
                                  "crc_fail": 12, "rssi_dbm": 20.0, "snr_db": 7.0,
-                                 "d_rssi_db": -3.0})
+                                 "d_rssi_db": -3.0, "nhm_busy": None, "own_air": None})
 
     def test_session_dir_dispatch_prints_hop_report_after_probe(self):
         """session.py's `scan` slot + main()'s ctl-log branch: a session

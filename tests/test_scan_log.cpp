@@ -56,7 +56,7 @@ TEST(scan_log_records_are_byte_exact) {
   log.hop(h);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("scanlog 3 home=136 candidates=149,161 dwell_ms=250\n", 0) == 0);
+  CHECK(text.rfind("scanlog 4 home=136 candidates=149,161 dwell_ms=250\n", 0) == 0);
   CHECK(text.find("\nC 1000 1 RTL8822E jaguar3 2x2 1f 5080-6165 1 1 1 1 0\n") != std::string::npos);
   CHECK(text.find("\nC 1001 0 ? ? 0x0 0 0-0 0 0 0 0 0\n") != std::string::npos);
   CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10 0 0 0 0 20\n") != std::string::npos);
@@ -66,10 +66,33 @@ TEST(scan_log_records_are_byte_exact) {
   CHECK(text.find("\nM 2100 all 136 149 commit\n") != std::string::npos);
   CHECK(text.find("\nM 9000 0 149 136 split_home\n") != std::string::npos);
   CHECK(text.find(
-      "\nV 1234.5 interfered 09 5 6.1 80 0 36 2 0 5 -55.4 33.1 2.5 1 35 1 1 6 -56.0 32.0 2.5\n") !=
+      "\nV 1234.5 interfered 09 5 6.1 80 0 36 2 0 5 -55.4 33.1 2.5 - 0.0 "
+      "1 35 1 1 6 -56.0 32.0 2.5 - 0.0\n") !=
       std::string::npos);
   CHECK(text.find("\nH 1300.0 order 1 149 20 0.0\n") != std::string::npos);
   CHECK(log.path() == dir + "/scan.log");
+}
+
+TEST(verdict_line_carries_busy_and_own_air) {
+  std::string dir = "build_scan_log_test2";
+  reset_dir(dir);
+  maburgs::LogWriter w;
+  maburgs::ScanLog log(w, dir, "home=136 candidates=149,161 dwell_ms=250");
+  REQUIRE(log.ok());
+  maburgs::VerdictOut o; o.v = maburgs::Verdict::Interfered; o.evidence = 0x21; o.ref_rung = 0;
+  maburgs::VerdictCardIn a; a.valid = true; a.rssi_dbm = -48; a.snr_db = 30;
+  a.busy_valid = true; a.nhm_busy_pct = 94.9; a.own_air_pct = 2.04;
+  maburgs::VerdictCardIn b = a; b.busy_valid = false;
+  maburgs::VerdictLinkIn l; l.pre_fec_loss = 0.8;
+  log.verdict(1000, o, {a, b}, l);
+  w.flush_now();
+  std::string text = read_all(log.path());
+  std::vector<std::string> lines;
+  std::stringstream ss(text);
+  std::string ln;
+  while (std::getline(ss, ln)) lines.push_back(ln);
+  CHECK(lines.back() ==
+        "V 1000.0 interfered 21 0 80.0 0 0 0 0 0 0 -48.0 30.0 0.0 94.9 2.0 1 0 0 0 0 -48.0 30.0 0.0 - 2.0");
 }
 
 TEST(scan_log_bad_dir_is_nonfatal) {
