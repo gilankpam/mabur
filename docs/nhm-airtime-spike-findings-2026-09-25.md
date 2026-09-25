@@ -86,3 +86,54 @@ The first long-jam captures alternated valid / not-ready windows: the spike
 mode scheduled reads off the previous deadline, so a late window's successor
 was read before its period had elapsed (fixed, 112a6db). The daemon's verdict
 loop re-arms at read time and reads ≥ 150 ms later.
+
+## Bench validation, 2026-09-26 (full daemon, GS session 0232)
+
+Long-frame jam (`linkbench-tx --symbol-size 1000 --no-cca --foreign-sa`,
+~16 kB frames at MCS0, ~95 % airtime) from this PC's EU card on the op
+channel, the jammer within a metre of both the GS and the drone.
+
+**Detection works.** Onset to hop order 143-297 ms (was: never, verdict
+`unknown`); first window already `interfered` with evidence 0x61
+(starved|blocked|impaired). Both cards read 96-100 % busy against ~0 % own
+airtime.
+
+**What went wrong around it, and the fixes (all on `nhm-airtime`):**
+
+| run | failure | fix |
+|---|---|---|
+| 1 | a false `raised`+recovered trigger on 112 (loss 0, ambient FA 240-460/s) hopped the link into 136, which the dwells already read 100 % busy (jam leakage); hold on a blocked channel ~33 s | never hop into a blocked channel; `recovered_min` 8; escape from a blocked hold (27459aa) |
+| 2 | a trickle of frames broke the starved rule for a second; the order never reached the drone (uplink jammed at the drone too) and the withdraw blacklisted the clean target | AU-rate near-starved (`starved_frac`); keep an unconfirmed order up to `confirm_extend_ms` while the op is blocked, withdraw as `undelivered` (9e22fa0, 8709d87, d79949a) |
+| 3-5 | GS and drone apart 33-47 s after a hop | **root cause below** (bcf398e) |
+
+**Root cause of the splits.** Instrumented with `MABUR_HOP_DEBUG` (every
+video body stamped with the hop target, the other card's latest drone seq,
+and the chip's RF18 readback; every retune with thread and readback).
+1444 retunes: RF18 always matched the requested channel, so the chip was
+where the GS thought. The confirming frames were genuine — the drone had
+hopped. Its log then showed the bounce:
+`144 -> 112 (hop)`, immediately `112 -> 144 (disc)`. During a hop the TX
+card stays on the old channel and sends both the RCF carrying the order and
+the ~1 Hz keep-alive DISC proposing `plan.op()` = the OLD channel; the drone
+took the order, then processed the DISC it had received on the old channel
+just after it, and retuned back. Fix: hold the keep-alive DISC while
+`plan.hopping()`.
+
+**After the fix:** 5 jams on the op channel, the drone followed every hop
+(no `disc` bounce in its log), dead video per jam ~0.2 s for a single hop,
+~1.0 s for a double hop (144 blocked by leakage → 112), versus 33-47 s
+before. `ausniff` clean throughout.
+
+**Open, not fixed:**
+- Verify on 112 can still fail on the pre-existing event evidence: `raised`
+  (112's ambient FA background) plus recovered symbols from the hop's own
+  gap. The link stays up (hold with video flowing), but 112 is backed off
+  as Failed for 30 s.
+- After a GS restart the drone oscillated `disc` ↔ `move_unconfirmed`
+  between 136 and 112 three times before settling (boot-pick move; not
+  hop-related).
+- With the jammer beside the drone, orders can still be undeliverable on
+  the jammed channel; the extension + undelivered rules only bound the
+  damage. In the field the jammer and drone are usually far apart.
+- Analog VTX and DJI O4 rows (operator), candidate-only and clean-rung rows
+  of the matrix: not run yet.
