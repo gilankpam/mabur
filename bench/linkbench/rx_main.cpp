@@ -325,7 +325,10 @@ int main(int argc, char** argv) {
       std::fflush(stdout);
       nhm_prev_fr = fr;
       fe.arm_nhm_busy(nhm_period);
-      next_nhm += static_cast<uint64_t>(a.nhm_busy_ms) * 1000;
+      // Re-armed NOW, so the next read is a full window from here (like the
+      // daemon's verdict loop) -- scheduling off the previous deadline read a
+      // late window's successor before its NHM period had elapsed.
+      next_nhm = now + static_cast<uint64_t>(a.nhm_busy_ms) * 1000;
       mid_nhm = now + static_cast<uint64_t>(a.nhm_busy_ms) * 500;
     }
     if (a.energy_ms > 0 && now >= next_energy) {
