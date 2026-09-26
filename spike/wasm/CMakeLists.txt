@@ -49,7 +49,8 @@ target_include_directories(gsweb_core PUBLIC
 target_compile_options(gsweb_core PRIVATE -O3)
 
 add_executable(gsweb gsweb.cpp)
-target_link_libraries(gsweb PRIVATE gsweb_core)
+target_include_directories(gsweb PRIVATE ${DEVOURER_DIR}/src)
+target_link_libraries(gsweb PRIVATE gsweb_core devourer)
 
 if(NOT EMSCRIPTEN)
   add_subdirectory(${MABUR_DIR}/common ${CMAKE_BINARY_DIR}/mabur_common EXCLUDE_FROM_ALL)
@@ -63,5 +64,12 @@ if(EMSCRIPTEN)
   add_executable(gsweb_node gsweb.cpp)
   target_link_libraries(gsweb_node PRIVATE gsweb_core)
   target_link_options(gsweb_node PRIVATE
-    -pthread -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH -sEXIT_RUNTIME)
+    -pthread -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH -sEXIT_RUNTIME
+    --bind -sASYNCIFY)  # libusb WebUSB backend (linked via devourer, never called in replay)
+  target_link_options(gsweb PRIVATE
+    -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=8 -sINITIAL_MEMORY=268435456
+    -sASYNCIFY -sMODULARIZE -sEXPORT_NAME=createGsweb -sEXIT_RUNTIME
+    -sENVIRONMENT=web,worker --bind -sEXPORTED_FUNCTIONS=_main,_free,_malloc)
+  target_link_libraries(gsweb_node PRIVATE devourer)
+  target_include_directories(gsweb_node PRIVATE ${DEVOURER_DIR}/src)
 endif()

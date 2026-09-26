@@ -34,3 +34,10 @@ pick the card once by hand in a persistent Chrome profile; after that
 `getDevices()` returns it and `node drive.mjs <page-ws-url> <secs>` automates
 runs (`peek.mjs` dumps the page log). Chrome keeps the interface claimed until
 the tab closes — native runs fail BUSY meanwhile.
+
+## gsweb live check (native)
+
+    ./build-native/gsweb live 136 40 20
+
+Pass: after init, every STAT line shows aus ≈ the drone's fps (60 ± 5),
+trunc ≤ 1 % of aus, bad_cfg=0, qdrop=0.
