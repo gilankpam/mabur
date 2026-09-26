@@ -50,3 +50,9 @@ target_compile_options(gsweb_core PRIVATE -O3)
 
 add_executable(gsweb gsweb.cpp)
 target_link_libraries(gsweb PRIVATE gsweb_core)
+
+if(NOT EMSCRIPTEN)
+  add_subdirectory(${MABUR_DIR}/common ${CMAKE_BINARY_DIR}/mabur_common EXCLUDE_FROM_ALL)
+  add_executable(mkbodies mkbodies.cpp)
+  target_link_libraries(mkbodies PRIVATE mabur_common)
+endif()
