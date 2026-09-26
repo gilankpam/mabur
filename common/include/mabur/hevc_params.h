@@ -1,11 +1,11 @@
-#ifndef MABUR_PLAYER_HEVC_PARAMS_H_
-#define MABUR_PLAYER_HEVC_PARAMS_H_
+#ifndef MABUR_HEVC_PARAMS_H_
+#define MABUR_HEVC_PARAMS_H_
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
-namespace maburplay {
+namespace mabur {
 
 // A NAL unit found inside an Annex-B access unit. `p`/`n` bound the bytes
 // starting at the 2-byte NAL header (the start code itself is excluded);
@@ -54,6 +54,6 @@ class HevcParams {
 // conversion, for fMP4 samples.
 std::vector<uint8_t> annexb_to_length_prefixed(const uint8_t* au, size_t n);
 
-}  // namespace maburplay
+}  // namespace mabur
 
-#endif  // MABUR_PLAYER_HEVC_PARAMS_H_
+#endif  // MABUR_HEVC_PARAMS_H_

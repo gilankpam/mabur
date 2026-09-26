@@ -6,10 +6,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "dvr_name.h"
+#include "mabur/dvr_name.h"
 #include "mtest.h"
 
-using maburplay::DvrNamer;
+using mabur::DvrNamer;
 
 namespace {
 

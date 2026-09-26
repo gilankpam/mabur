@@ -1,13 +1,13 @@
 #include <cstring>
 #include <vector>
-#include "hevc_params.h"
+#include "mabur/hevc_params.h"
 #include "mtest.h"
 
-using maburplay::annexb_to_length_prefixed;
-using maburplay::au_is_irap;
-using maburplay::HevcParams;
-using maburplay::NalView;
-using maburplay::split_nals;
+using mabur::annexb_to_length_prefixed;
+using mabur::au_is_irap;
+using mabur::HevcParams;
+using mabur::NalView;
+using mabur::split_nals;
 
 namespace {
 

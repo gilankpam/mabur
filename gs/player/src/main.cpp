@@ -18,15 +18,15 @@
 
 #include "au_ring.h"
 #include "colortrans.h"  // ColorTrans, build_cubic_lut, LutAxis (docs/colortrans.md)
-#include "dvr_mux.h"
-#include "dvr_name.h"
+#include "mabur/dvr_mux.h"
+#include "mabur/dvr_name.h"
 #include "gs_font.h"
 #include "gs_metrics.h"
 #include "gs_layer.h"
 #include "gs_overlay.h"
 #include "osd_compose.h"
 #include "gs_source.h"
-#include "hevc_params.h"
+#include "mabur/hevc_params.h"
 #include "mabur/frame_wire.h"
 #include "osd_font.h"
 #include "osd_raster.h"
@@ -171,7 +171,7 @@ int run_mux_annexb(const std::string& in_path, const std::string& out_path) {
 
   std::vector<std::vector<uint8_t>> aus;
   std::vector<uint8_t> cur;
-  for (const maburplay::NalView& nal : maburplay::split_nals(data.data(), data.size())) {
+  for (const mabur::NalView& nal : mabur::split_nals(data.data(), data.size())) {
     if (nal.type == 35 && !cur.empty()) {  // AUD: starts a new AU
       aus.push_back(std::move(cur));
       cur.clear();
@@ -184,14 +184,14 @@ int run_mux_annexb(const std::string& in_path, const std::string& out_path) {
   }
   if (!cur.empty()) aus.push_back(std::move(cur));
 
-  maburplay::HevcParams params;
-  maburplay::DvrMux dvr;
+  mabur::HevcParams params;
+  mabur::DvrMux dvr;
   bool dvr_open = false;
   uint32_t pts_us = 0;
   const maburplay::BackendCfg bcfg;  // 1920x1080 default; tkhd/stsd metadata
                                       // only -- decode uses the SPS, not this.
   for (const std::vector<uint8_t>& au : aus) {
-    const bool key = maburplay::au_is_irap(au.data(), au.size());
+    const bool key = mabur::au_is_irap(au.data(), au.size());
     if (key) params.feed(au.data(), au.size());
     if (!dvr_open && params.complete()) {
       dvr_open = dvr.open(out_path, params.hvcc(), bcfg.width, bcfg.height);
@@ -322,7 +322,7 @@ int run_gs_render(const std::string& snap_path, const std::string& out_path,
 std::string dvr_filename(const std::string& dir) {
   // Main-loop-thread only (the ring sink and rec_start's
   // start_burn_if_needed), so a plain static needs no synchronisation.
-  static maburplay::DvrNamer namer;
+  static mabur::DvrNamer namer;
   return namer.next(dir);
 }
 
@@ -1056,8 +1056,8 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  maburplay::HevcParams params;
-  maburplay::DvrMux dvr;
+  mabur::HevcParams params;
+  mabur::DvrMux dvr;
   bool dvr_open = false;
   // Latched so the GS overlay can tell "no file yet" (armed) from "the file
   // could not be created" (fault). Nothing else needs the distinction.

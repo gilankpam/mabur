@@ -13,8 +13,8 @@
 
 #include <rockchip/rk_mpi.h>
 
-#include "dvr_mux.h"
-#include "hevc_params.h"
+#include "mabur/dvr_mux.h"
+#include "mabur/hevc_params.h"
 #include "fps_cap.h"
 #include "mpp_backend.h"
 #include "mpp_encoder.h"
@@ -87,7 +87,7 @@ struct BurnRecorder::Impl {
   std::string path;
 
   std::unique_ptr<MppEncoder> enc;
-  DvrMux mux;
+  mabur::DvrMux mux;
   bool mux_open = false;
   bool mux_failed = false;  // open refused once; do not retry per frame
 
@@ -359,7 +359,7 @@ struct BurnRecorder::Impl {
       // reaches this sink it is non-empty. The AU itself is fed too, for the
       // (currently impossible, but free) case of an encoder that does put its
       // parameter sets in band on the first IDR.
-      HevcParams params;
+      mabur::HevcParams params;
       const std::vector<uint8_t>& hdr = enc->header();
       if (!hdr.empty()) params.feed(hdr.data(), hdr.size());
       if (!params.complete()) params.feed(p, n);

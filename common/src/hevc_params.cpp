@@ -1,8 +1,8 @@
-#include "hevc_params.h"
+#include "mabur/hevc_params.h"
 
 #include <cassert>
 
-namespace maburplay {
+namespace mabur {
 namespace {
 
 // Locates the earliest start code (00 00 01 or 00 00 00 01) at or after
@@ -167,4 +167,4 @@ std::vector<uint8_t> annexb_to_length_prefixed(const uint8_t* au, size_t n) {
   return out;
 }
 
-}  // namespace maburplay
+}  // namespace mabur

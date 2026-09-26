@@ -5,10 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "dvr_mux.h"
+#include "mabur/dvr_mux.h"
 #include "mtest.h"
 
-using maburplay::DvrMux;
+using mabur::DvrMux;
 
 namespace {
 
@@ -392,6 +392,35 @@ TEST(reopen_starts_a_clean_file) {
 
   std::remove(p1.c_str());
   std::remove(p2.c_str());
+}
+
+TEST(bytes_written_matches_file_size_and_sync_succeeds) {
+  const std::string path = scratch_path("durable.mp4");
+  mabur::DvrMux m;
+  const std::vector<uint8_t> hvcc(23, 0);
+  REQUIRE(m.open(path, hvcc, 1920, 1080, 1000));
+  CHECK(m.ok());
+  CHECK(m.bytes_written() > 0);             // init segment is on its way to disk
+  auto k = fake_au(0x11);
+  m.write_sample(k.data(), k.size(), 1000, true);
+  auto p = fake_au(0x22);
+  m.write_sample(p.data(), p.size(), 17667, false);
+  m.write_sample(k.data(), k.size(), 34334, true);   // key cuts fragment 1
+  CHECK(m.fragments() == 1);
+  CHECK(m.sync());
+  m.close(/*durable=*/true);
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  CHECK(static_cast<uint64_t>(f.tellg()) == m.bytes_written());
+  CHECK(!m.sync());                          // no file open any more
+}
+
+TEST(open_on_full_device_reports_failure) {
+  // /dev/full accepts fopen and buffered fwrite, then fails the flush with
+  // ENOSPC -- exactly a card that filled or vanished under the writer.
+  mabur::DvrMux m;
+  const std::vector<uint8_t> hvcc(23, 0);
+  CHECK(!m.open("/dev/full", hvcc, 1920, 1080, 1000));
+  CHECK(!m.ok());
 }
 
 MTEST_MAIN

@@ -1,10 +1,11 @@
-#include "dvr_mux.h"
+#include "mabur/dvr_mux.h"
 
 #include <cstring>
+#include <unistd.h>
 
-#include "hevc_params.h"
+#include "mabur/hevc_params.h"
 
-namespace maburplay {
+namespace mabur {
 namespace {
 
 // Small big-endian box builder. Mirrors the writer style used elsewhere
@@ -92,6 +93,8 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
   last_pts64_ = 0;
   fragment_start_pts_ = 0;
   last_dur_us_ = 16667;
+  bytes_written_ = 0;
+  ok_ = true;
 
   width_ = width;
   height_ = height;
@@ -320,9 +323,10 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
     b.end(moov_at);
   }
 
-  size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
-  std::fflush(f_);
-  return n == b.buf.size();
+  const size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  bytes_written_ += n;
+  if (n != b.buf.size() || std::fflush(f_) != 0) ok_ = false;
+  return ok_;
 }
 
 uint64_t DvrMux::unwrap_pts(uint32_t pts_us) {
@@ -456,18 +460,29 @@ void DvrMux::flush_fragment() {
   for (auto& s : pending_) b.bytes(s.data);
   b.end(mdat_at);
 
-  std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
-  std::fflush(f_);
+  const size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  bytes_written_ += n;
+  if (n != b.buf.size() || std::fflush(f_) != 0) ok_ = false;
 
   pending_.clear();
 }
 
-void DvrMux::close() {
+void DvrMux::close(bool durable) {
   flush_fragment();
   if (f_) {
+    if (durable) (void)sync();
     std::fclose(f_);
     f_ = nullptr;
   }
 }
 
-}  // namespace maburplay
+bool DvrMux::sync() {
+  if (!f_) return false;
+  if (std::fflush(f_) != 0 || ::fsync(fileno(f_)) != 0) {
+    ok_ = false;
+    return false;
+  }
+  return true;
+}
+
+}  // namespace mabur
