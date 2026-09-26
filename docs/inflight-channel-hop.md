@@ -98,10 +98,13 @@ FAILSAFE entry.
    `move_confirm_ms` there goes home (RENDEZVOUS). Until 2026-09-26 the
    timeout went straight HOME, so with the hop target == home the drone
    stayed put while the GS sat on the old op — a 60 s split on the bench
-   (GS on 112 in a `hold_cap`, drone on home 153). Still open on the GS
-   side: the scout's home dwells trickled the drone's frames into
+   (GS on 112 in a `hold_cap`, drone on home 153). The GS side of the same
+   split: the scout's home dwells trickled the drone's frames into
    `feed_video`, so the GS never counted the link lost and
-   `split_after_ms` never engaged.
+   `split_after_ms` never engaged. Since 2026-09-26 only video received on
+   op (or on the hop target while a hop is in flight) refreshes the
+   rendezvous silence timer (`ChannelPlan::is_link_video`, keyed on the
+   body's `rx_channel`; 0 = unknown still counts).
 
 A second `hop_order()` while one is already in flight (a fresh trigger
 before the first attempt resolved) does not leave the abandoned lead card

@@ -293,3 +293,39 @@ TEST(confirm_with_no_hop_in_flight_is_a_no_op) {
   CHECK(p.split());
 }
 MTEST_MAIN
+
+// Only video heard where the link lives keeps the session alive (bench
+// 2026-09-26, GS session 0233): after a withdraw the GS sat on 112 while the
+// drone was on home 153, and the scout's periodic home dwells caught the
+// drone's frames often enough (every ~333 ms, link_lost_ms 1000) that the
+// rendezvous never left SESSION, so split_after_ms never engaged -- 60 s
+// split. Returning true unconditionally makes the "home dwell" CHECK fail.
+TEST(link_video_is_op_channel_only) {
+  ChannelPlan p(C(2));
+  p.on_ack(1000, 112, 112);                          // op 112, home 136
+  CHECK(p.is_link_video(112));
+  CHECK(!p.is_link_video(136));                      // a scout dwell on home
+  CHECK(!p.is_link_video(144));                      // a scout dwell on a candidate
+}
+
+// The lead card's frames on the target ARE the link while a hop is in
+// flight: the drone has moved and the op card hears nothing. Without this a
+// confirm slower than link_lost_ms would drop the session mid-hop.
+TEST(link_video_includes_the_hop_target_while_hopping) {
+  ChannelPlan p(C(2));
+  p.on_ack(1000, 112, 112);
+  p.hop_order(2000, 144, 0);
+  CHECK(p.is_link_video(144));
+  CHECK(p.is_link_video(112));
+  CHECK(!p.is_link_video(136));
+  p.hop_withdraw(2600);
+  CHECK(!p.is_link_video(144));                      // withdrawn: target no longer counts
+}
+
+// rx_channel 0 = received mid-retune or from a replay source: unknown, so it
+// keeps counting, as before this rule existed.
+TEST(link_video_with_unknown_channel_still_counts) {
+  ChannelPlan p(C(2));
+  p.on_ack(1000, 112, 112);
+  CHECK(p.is_link_video(0));
+}

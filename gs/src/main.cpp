@@ -1807,7 +1807,11 @@ static int run_radio(const maburgs::Config& cfg) {
       if (m.crc_ok &&
           mabur::rc::frame_type(m.body.data(), m.body.size()) < 0 &&
           sid_peek != mabur::kMspStreamId && sid_peek != mabur::kProbeStreamId) {
-        vrx.on_video(static_cast<double>(m.mono_us) / 1000.0);
+        // Only video heard where the link lives refreshes the silence timer
+        // (ChannelPlan::is_link_video): a scout dwell catching the drone on
+        // home must not hold a split GS in SESSION (bench 2026-09-26: 60 s).
+        if (plan.is_link_video(m.rx_channel))
+          vrx.on_video(static_cast<double>(m.mono_us) / 1000.0);
         // In-flight hop confirmation (spec section 4): the channel THIS
         // video body was actually received on, stamped by the producing
         // RadioFrontend at the instant it lifted the frame off the card
