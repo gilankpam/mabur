@@ -58,7 +58,7 @@ struct RecorderPaths {
 
 struct RecorderLimits {
   uint64_t rotate_bytes = 3900ull * 1000 * 1000;  // FAT32 caps a file at 4 GiB
-  size_t queue_depth = 64;                         // ~2.5 s of AUs at 40 Mb/s
+  size_t queue_depth = 64;                         // AUs, not bytes: ~1.07 s at 60 fps
   int fragment_ms = 1000;                          // loss bound on power cut
 };
 

@@ -464,13 +464,26 @@ void DvrMux::flush_fragment() {
   b.buf[data_offset_pos + 2] = static_cast<uint8_t>((data_offset >> 8) & 0xFF);
   b.buf[data_offset_pos + 3] = static_cast<uint8_t>(data_offset & 0xFF);
 
-  size_t mdat_at = b.begin("mdat");
-  for (auto& s : pending_) b.bytes(s.data);
-  b.end(mdat_at);
+  // Only the mdat HEADER goes into the box buffer: the sample payloads are
+  // streamed to the file straight from pending_ below. Copying them into
+  // `b` first doubled the fragment's peak memory for nothing -- a 1 s
+  // fragment at the drone recorder's bitrate is megabytes, on a SoC that
+  // counts them. Same bytes on disk either way.
+  uint64_t mdat_size = 8;
+  for (const auto& s : pending_) mdat_size += s.data.size();
+  b.u32(static_cast<uint32_t>(mdat_size));
+  b.fourcc("mdat");
 
-  const size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  size_t want = b.buf.size();
+  size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  for (const auto& s : pending_) {
+    want += s.data.size();
+    n += std::fwrite(s.data.data(), 1, s.data.size(), f_);
+  }
   bytes_written_ += n;
-  if (n != b.buf.size() || std::fflush(f_) != 0) ok_ = false;
+  // The fflush still ends the fragment: once it returns (and the caller's
+  // sync()), the whole moof+mdat is on disk.
+  if (n != want || std::fflush(f_) != 0) ok_ = false;
 
   pending_.clear();
 }

@@ -27,8 +27,10 @@ class DvrMux {
   // pts_us: 32-bit capture stamp, unwrapped internally to 64-bit monotonic.
   // key: AU is IRAP. Fragments are cut at each key AU or when fragment_ms
   // elapsed since the fragment's first sample, whichever first; a fragment
-  // is flushed to disk whole (moof+mdat in one write) so a crash loses at
-  // most the open fragment.
+  // is written out whole when it closes (moof + mdat header, then each
+  // sample's payload streamed from its own buffer, then one fflush) so a
+  // crash loses at most the open fragment -- sync() after it makes that
+  // hold across power loss too.
   void write_sample(const uint8_t* au, size_t n, uint32_t pts_us, bool key);
 
   // Flushes the open fragment and closes the file. durable = fsync first,
