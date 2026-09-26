@@ -206,6 +206,25 @@ the fix. The 4 s of 75–100 % `link_loss_pct` after the jam in `scan.log` is
 that metric's averaging window, not dead video. Config restored to
 `confirm_ms` 1000 / `confirm_extend_ms` 3000; `ausniff` 0 gaps.
 
+**One-card GS (`[[radio.cards]]` pinned to card 0), same day, session 0234.**
+
+| row | result |
+|---|---|
+| long-frame jam, adjacent (op 136, jam on 144, ~1 m) | leakage read 99 % busy, but loss 0: no hop (busy but healthy). Then starved: 136 → 112 → 144, `one_card_retune` +254–266 ms, `lead_confirm` +280 ms; AUs dipped to 23/s, never 0 |
+| long-frame jam, co-channel (op 144) | 144 → 136 (`lead_confirm` +250 ms, `verify_fail`: 136 also reads the jammer), `escape` → 112 (+308 ms, `verify_fail` on 112's FA background), then `hold_cap` on 112; AUs 22–26/s for ~3 s, never 0 |
+| analog VTX, 3 m, operator swept the E band onto E3 | detected (`0x61`, 100 %), 136 → 112 +296 ms; followed the sweep 112 → 144 → 136 → `escape` 112; all 6 hops confirmed 224–300 ms, drone followed each. **This card read the WHOLE band ~100 % busy, 112 included** (two cards at the same 3 m read 112 ~10 %), so the link sat on 112 at 10–34 % loss, 20–27 fps, cycling `hold_exhausted` until the VTX went off; then 112 → 136 `verify_pass`, 32 fps |
+| DJI O4 ch2, air unit away, goggles 3 m | op 153 ~10–15 % foreign, loss 3–5 %: no hop, correct (busy but healthy), 32 fps |
+| DJI O4 ch3 | 153 hit → 112, `one_card_retune` +511 ms, **`lead_confirm` +570 ms** (a withdraw under the old 500 ms `confirm_ms`). Then **~3 min stuck on 112 at 36–52 % loss** (RSSI −51.6 / SNR 32.8, same as when it was clean; NHM invalid in 139/142 windows; 8–24 AUs/s), cycling `hold_exhausted`, until a 112 → 153 (`verify_fail`) → 161 (`verify_pass`) hop restored 30 fps. Not resolved: whether the O4 was still on when that hop fired, i.e. whether the O4 desensed the card on 112 or 112 was bad by itself |
+
+One-card confirms run 224–300 ms on fast pairs and 516–570 ms on the spur
+pairs (the order's 5 RCF repeats come first), inside `confirm_ms` 1000.
+**Gap (open):** one card has no in-session dwells, so once a hop lands on a
+lossy channel and its verify fails, the GS has no fresh evidence about the
+alternatives and can loop `hold_exhausted` for minutes (3 min at 40–50 %
+loss above). Two cards did not hit this. A one-card GS may need a
+time-bounded retry of the backed-off candidates, or short dwells while
+held on an impaired channel.
+
 **Unexplained baseline:** with nothing on air, home 153 and 161 ran at
 rung 0–1 with 3–15 % loss in some windows and no foreign airtime
 (run 3). Run 1 held rung 3–4 on 153.
