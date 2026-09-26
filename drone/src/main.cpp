@@ -1191,6 +1191,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // is NOT a fallback: it defers to the burst edge where a blind drone
   // restarts (docs/rcf-uplink-loss-findings-2026-08-14.md §6).
   dev_cfg.tuning.disable_cca = false;
+  // Pinned here now that devourer defaults both the other way. A multi-packet
+  // bulk-OUT that times out mid-transfer wedges the 8822EU's TX endpoint for
+  // the rest of the session, so data sends never cancel one (the cost -- a
+  // send can block while the chip NAKs -- is devourer's DeviceConfig doc).
+  // Zerocopy RX went deaf intermittently on an xhci host; the heap path has
+  // not.
+  dev_cfg.tx.no_cancel_multipkt = true;
+  dev_cfg.usb.rx_zerocopy = false;
 
   WiFiDriver wifi_driver{logger};
   auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);

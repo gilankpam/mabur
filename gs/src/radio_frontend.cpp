@@ -160,6 +160,11 @@ bool RadioFrontend::open_and_start() {
   // and logs its own bring-up line below -- inert on RX-only cards, since
   // this gates TX only.
   dev_cfg.tuning.disable_cca = false;
+  // Same pins as maburd (see drone/src/main.cpp): data sends never cancel a
+  // multi-packet bulk-OUT (a mid-transfer timeout wedges the TX endpoint),
+  // and RX stays on the heap path, not zerocopy.
+  dev_cfg.tx.no_cancel_multipkt = true;
+  dev_cfg.usb.rx_zerocopy = false;
   // (The 0x41e8 protect_pathb_agc knob was chased here too — exonerated:
   // the real path-B killer was the DPDT pin-mux, fixed by devourer's eFEM
   // pinmux port; see DEVOURER_DPDT_MODE in RtlJaguar3Device.)
