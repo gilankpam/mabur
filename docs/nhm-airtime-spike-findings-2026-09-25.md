@@ -225,6 +225,26 @@ loss above). Two cards did not hit this. A one-card GS may need a
 time-bounded retry of the backed-off candidates, or short dwells while
 held on an impaired channel.
 
+**20 MHz only (both ends `radio.width = 20`, every rung `bw = 20`, two
+cards), same day.** Host EU card as the jammer (`linkbench-tx --bw 20
+--symbol-size 1000 --no-cca --foreign-sa`, 6 s), ~1 m from both ends.
+
+| run | result |
+|---|---|
+| jam on op 136 | first window `interfered 0x61` (both cards 100 %) → order 144 **150 ms** later, `lead_confirm` **217 ms**, `verify_pass`. 3.8 s later 144 → 112 (`lead_confirm` 190 ms, `verify_pass`): on 144, 64 % loss at ~6 % busy while the jam lasted. AUs 18/s at the first hop, 6–16/s for ~3 s around the second |
+| jam on 112, but the link had already left 112 for 136 (112's `raised` FA trigger) | off-channel jam, yet **video on 136 fell to 1–4 AUs/s for 7 s with no hop**. The GS cards on 136 read clean (busy ~10 %, foreign 0, RSSI −54, SNR 30); the dwells read 112 at 100 %. Verdict `unknown 0x41` (starved + impaired, no blocked/raised), so no `interfered`, no order |
+
+The second row, and the 64 %-loss-at-6 %-busy leg of the first, point to
+loss at the DRONE's end with the jammer loud and ~1 m away: the drone's
+carrier sense (CCA is on both ends) deferring its TX, or its front end
+desensed. **Unverified:** maburd exports no CCA-deferral counter (`drops`,
+`tx_failed`, `txq_drop` all 0), and the GS cannot tell this from a clean
+channel, so a hop is neither triggered nor obviously useful. It is a bench
+geometry artifact first (in flight the jammer is not beside the drone),
+but it is the same blind spot as the drone's RX view in
+`docs/cca-on-findings-2026-09-23.md`. 112's `raised` trigger fired at 20 MHz
+too, so that open item is width-independent.
+
 **Unexplained baseline:** with nothing on air, home 153 and 161 ran at
 rung 0–1 with 3–15 % loss in some windows and no foreign airtime
 (run 3). Run 1 held rung 3–4 on 153.
