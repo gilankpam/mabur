@@ -124,6 +124,19 @@ static void star6e_pipeline_pre_init_teardown(void)
 		.module = I6_SYS_MOD_VPE, .device = 0, .channel = 0, .port = 0 };
 	MI_SYS_ChnPort_t venc_port = {
 		.module = I6_SYS_MOD_VENC, .device = 0, .channel = 0, .port = 0 };
+	MI_U32 rec_dev = 0;
+	MI_SYS_ChnPort_t rec_port;
+
+	/* The VTX recorder's channel (venc_record.c) shares the VPE port with
+	 * ch0, so an unclean exit can leave it bound and created too. Same
+	 * order as ch0; every call is a harmless failure when ch1 never
+	 * existed (GetChnDevid leaves rec_dev at 0 then). */
+	(void)MI_VENC_GetChnDevid(STAR6E_RECORD_CHANNEL, &rec_dev);
+	rec_port = (MI_SYS_ChnPort_t){ .module = I6_SYS_MOD_VENC,
+		.device = rec_dev, .channel = STAR6E_RECORD_CHANNEL, .port = 0 };
+	(void)MI_SYS_UnBindChnPort(&vpe_port, &rec_port);
+	(void)MI_VENC_StopRecvPic(STAR6E_RECORD_CHANNEL);
+	(void)MI_VENC_DestroyChn(STAR6E_RECORD_CHANNEL);
 
 	(void)MI_SYS_UnBindChnPort(&vpe_port, &venc_port);
 	(void)MI_SYS_UnBindChnPort(&vif_port, &vpe_port);

@@ -554,6 +554,9 @@ void parse_record(const Value& j, RecordCfg& r) {
   if (r.bitrate_kbps < 2000 || r.bitrate_kbps > 80000)
     fail("record.bitrate_kbps", "must be in [2000,80000]");
   if (r.dir.empty() || r.dir[0] != '/') fail("record.dir", "must be an absolute path");
+  // The recorder matches record.dir against /proc/mounts' mount point,
+  // which never ends in '/': "/mnt/sd/" would read NotMounted forever.
+  while (r.dir.size() > 1 && r.dir.back() == '/') r.dir.pop_back();
   if (r.min_free_mb < 0 || r.min_free_mb > 1000000)
     fail("record.min_free_mb", "must be in [0,1000000]");
 }

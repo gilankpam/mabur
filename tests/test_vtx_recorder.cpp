@@ -136,6 +136,25 @@ TEST(records_from_first_key_then_stops_on_off_wish) {
   CHECK(fs::file_size(path) > 100);
 }
 
+// Final-review fix: the channel's key flag comes from the pack header
+// (packNum==0 or a mis-typed first pack leaves it false). An IDR the
+// flag missed must still open the file -- otherwise the recorder waits
+// for a key that, at gop = fps, may never be flagged either.
+TEST(an_idr_au_flagged_not_key_still_opens_a_file) {
+  Tree t;
+  FakeChannel ch;
+  VtxRecorder r(t.cfg(), ch, 1920, 1080, t.paths);
+  r.request(true);
+  r.service(0);
+  feed(r, key_au(), 1000, /*key=*/false);
+  for (uint32_t i = 1; i < 10; ++i) feed(r, p_au(), 1000 + i * 16667, false);
+  r.service(0);
+  CHECK(r.state() == RecState::Recording);
+  CHECK(r.files() == 1);
+  r.request(false);
+  r.service(0);
+}
+
 TEST(queue_overflow_drops_then_resyncs_on_key) {
   Tree t;
   FakeChannel ch;

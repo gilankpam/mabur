@@ -1604,6 +1604,30 @@ TEST(record_defaults_are_disabled_and_parse) {
   }
 }
 
+// Final-review fix: record.dir is compared against /proc/mounts' mount
+// point, which never carries a trailing slash -- "/mnt/sd/" would read
+// NotMounted forever. Strip it; "/" itself stays.
+TEST(record_dir_trailing_slash_is_stripped) {
+  {
+    auto path = write_temp_toml("[record]\ndir = \"/mnt/sd/\"\n");
+    auto cfg = load_config(path.string());
+    std::filesystem::remove(path);
+    CHECK(cfg.record.dir == "/mnt/sd");
+  }
+  {
+    auto path = write_temp_toml("[record]\ndir = \"/mnt/sd//\"\n");
+    auto cfg = load_config(path.string());
+    std::filesystem::remove(path);
+    CHECK(cfg.record.dir == "/mnt/sd");
+  }
+  {
+    auto path = write_temp_toml("[record]\ndir = \"/\"\n");
+    auto cfg = load_config(path.string());
+    std::filesystem::remove(path);
+    CHECK(cfg.record.dir == "/");
+  }
+}
+
 TEST(record_unknown_key_throws_naming_it) {
   auto path = write_temp_toml("[record]\nbogus = 1\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });

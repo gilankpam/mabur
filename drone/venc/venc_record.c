@@ -237,6 +237,7 @@ int venc_record_attach(const MI_SYS_ChnPort_t *vpe_port, uint32_t width,
 		goto fail;
 	}
 	g_thr_started = 1;
+	(void)pthread_setname_np(g_thr, "mbr-recdrain");  /* top/perf, next to mbr-rec */
 	g_attached = 1;
 	fprintf(stderr, "[record] ch%d %ux%u %u fps CBR %u kbps bound before the link (idle)\n",
 		STAR6E_RECORD_CHANNEL, width, height, fps, g_cfg.bitrate_kbps);

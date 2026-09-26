@@ -280,23 +280,6 @@ std::vector<uint8_t> build_dot11_header(uint16_t seq) {
   return h;
 }
 
-// RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
-// FrameSink), the hot-thread-owned UepEncoder (via the shared_op handoff),
-// and the in-process encoder (venc_core.h's verbs, called directly — the
-// HTTP control plane and its WaybeamClient went away with the fold-in,
-// spec 2026-08-28 venc-foldin).
-//
-// It deliberately has NO TX-power knob. Power is constant: bring-up programs
-// the wall-equalized per-rate diff table and zeroes the global offset once
-// (the `power_mode == "offset"` block in run_real_mode()), and nothing
-// touches power again for the life of the process. Spec
-// 2026-08-12-constant-txpower-design.md.
-//
-// Threading: apply_op()/send_control()/set_bitrate_kbps()/set_roi_qp()/
-// request_idr() are all called from the agent thread only (RcAgent's
-// contract). apply_op() publishes the new AppliedOp into shared_op via an
-// atomic store of a fresh shared_ptr — the hot thread picks it up with an
-// atomic load, so there is no lock and no torn read.
 // The recorder's encoder side: drone/venc/venc_record.c on the drone, a
 // channel that is never there on host builds (the recorder then reports
 // Disabled on a start, which a host build can never be asked for anyway).
@@ -320,6 +303,23 @@ struct VencRecordChannel : mabur::RecordChannel {
   }
 };
 
+// RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
+// FrameSink), the hot-thread-owned UepEncoder (via the shared_op handoff),
+// and the in-process encoder (venc_core.h's verbs, called directly — the
+// HTTP control plane and its WaybeamClient went away with the fold-in,
+// spec 2026-08-28 venc-foldin).
+//
+// It deliberately has NO TX-power knob. Power is constant: bring-up programs
+// the wall-equalized per-rate diff table and zeroes the global offset once
+// (the `power_mode == "offset"` block in run_real_mode()), and nothing
+// touches power again for the life of the process. Spec
+// 2026-08-12-constant-txpower-design.md.
+//
+// Threading: apply_op()/send_control()/set_bitrate_kbps()/set_roi_qp()/
+// request_idr() are all called from the agent thread only (RcAgent's
+// contract). apply_op() publishes the new AppliedOp into shared_op via an
+// atomic store of a fresh shared_ptr — the hot thread picks it up with an
+// atomic load, so there is no lock and no torn read.
 struct RealActuator : mabur::Actuator {
   mabur::RadioTx* tx = nullptr;
   mabur::FrameSink* sink = nullptr;

@@ -94,6 +94,10 @@ void VtxRecorder::request(bool on) {
 }
 
 void VtxRecorder::on_au(const uint8_t* au, size_t n, uint32_t pts_us, bool key) {
+  // The channel's flag can miss an IDR (packNum == 0, an odd first pack);
+  // the bitstream cannot. Scanned outside mx_: the drain thread must not
+  // hold the writer off for a NAL walk.
+  key = key || au_is_irap(au, n);
   {
     std::lock_guard<std::mutex> lk(mx_);
     if (!accepting_) return;
@@ -202,12 +206,16 @@ void VtxRecorder::do_stop() {
   }
   running_ = false;
   set_status(RecState::Off, RecErr::None);
-  std::fprintf(stderr, "maburd rec: STOP (%s)\n", path_.c_str());
+  std::fprintf(stderr, "maburd rec: STOP (%s) files=%llu dropped=%llu\n", path_.c_str(),
+               static_cast<unsigned long long>(files()),
+               static_cast<unsigned long long>(dropped()));
 }
 
 void VtxRecorder::fail(RecErr e) {
-  std::fprintf(stderr, "maburd rec: STOPPED on error %u (%s)\n", static_cast<unsigned>(e),
-               path_.c_str());
+  std::fprintf(stderr, "maburd rec: STOPPED on error %u (%s) files=%llu dropped=%llu\n",
+               static_cast<unsigned>(e), path_.c_str(),
+               static_cast<unsigned long long>(files()),
+               static_cast<unsigned long long>(dropped()));
   ch_.stop();
   {
     std::lock_guard<std::mutex> lk(mx_);
@@ -215,7 +223,9 @@ void VtxRecorder::fail(RecErr e) {
     q_.clear();
   }
   if (file_open_) {
-    mux_.close();
+    // Low space: the card is healthy, so fsync what is there. A write
+    // error: the card may be gone, and an fsync could block on it.
+    mux_.close(/*durable=*/e == RecErr::LowSpace);
     file_open_ = false;
   }
   running_ = false;
