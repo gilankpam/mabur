@@ -423,4 +423,23 @@ TEST(open_on_full_device_reports_failure) {
   CHECK(!m.ok());
 }
 
+TEST(failed_reopen_after_a_good_open_reports_not_ok) {
+  // A card can vanish (or its mount point disappear) between recordings --
+  // the record button calls open() again with no intervening destructor.
+  // ok()/bytes_written() must describe THIS open() call, not linger at the
+  // previous file's success.
+  const std::string path = scratch_path("reopen_then_fail.mp4");
+  mabur::DvrMux m;
+  const std::vector<uint8_t> hvcc(23, 0);
+  REQUIRE(m.open(path, hvcc, 1920, 1080, 1000));
+  CHECK(m.ok());
+  m.close();
+
+  CHECK(!m.open("/nonexistent-dir/x.mp4", hvcc, 1920, 1080, 1000));
+  CHECK(!m.ok());
+  CHECK(m.bytes_written() == 0);
+
+  std::remove(path.c_str());
+}
+
 MTEST_MAIN

@@ -74,17 +74,19 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
     std::fclose(f_);
     f_ = nullptr;
   }
-  f_ = std::fopen(path.c_str(), "wb");
-  if (!f_) return false;
 
-  // Per-FILE state, reset on every open: the record button re-opens this
-  // mux for each new recording. Without this, pending_ carries the
-  // previous file's queued samples into the new file's first fragment and
-  // the PTS unwrap keeps the old origin. samples()/fragments() therefore
-  // mean "this file" -- which is what both consumers want: --oneshot only
-  // ever sees one file, and RecTracker reads a count returning to 0 as
-  // ARMED-again. They are NOT cleared in close(), so rec_stop() can still
-  // report the sample count of the file it just sealed.
+  // Per-FILE state, reset on every open() call -- success or not. The
+  // record button re-opens this mux for each new recording, so without
+  // this pending_ would carry the previous file's queued samples into the
+  // new file's first fragment and the PTS unwrap would keep the old
+  // origin. samples()/fragments() therefore mean "this file" -- which is
+  // what both consumers want: --oneshot only ever sees one file, and
+  // RecTracker reads a count returning to 0 as ARMED-again. They are NOT
+  // cleared in close(), so rec_stop() can still report the sample count of
+  // the file it just sealed. Resetting before the fopen attempt (rather
+  // than after) matters for ok()/bytes_written(): a failed reopen (bad
+  // path, missing directory, card gone) must leave both reporting "this
+  // (failed) open", not the previous file's success.
   pending_.clear();
   samples_ = 0;
   fragments_ = 0;
@@ -95,6 +97,12 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
   last_dur_us_ = 16667;
   bytes_written_ = 0;
   ok_ = true;
+
+  f_ = std::fopen(path.c_str(), "wb");
+  if (!f_) {
+    ok_ = false;
+    return false;
+  }
 
   width_ = width;
   height_ = height;
