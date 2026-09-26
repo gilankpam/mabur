@@ -28,6 +28,7 @@ TEST(make_telem_maps_and_saturates) {
   in.pts_at_build_us = 0x0011223344556677ull;
   in.rx_crcfail = 70000;             // saturates u16
   in.rx_own = 6; in.rx_foreign = 7;
+  in.rec_status = 0x16;
   const auto t = mabur::make_telem(9, in);
   CHECK(t.tlm_seq == 9);
   CHECK(t.state == 2);
@@ -66,6 +67,7 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.rx_crcfail == 65535);
   CHECK(t.rx_own == 6);
   CHECK(t.rx_foreign == 7);
+  CHECK(t.rec_status == 0x16);
 }
 
 TEST(low_power_flag_round_trips) {

@@ -68,6 +68,7 @@
 #include "mi_ready.h"
 #include "telemetry.h"
 #include "peak_rate.h"
+#include "vtx_recorder.h"
 #include "tick_gate.h"
 #include "tx_queue.h"
 #include "usb_tx_pool.h"
@@ -615,6 +616,16 @@ struct RealActuator : mabur::Actuator {
                  "maburd: retune %u -> %u: tx power re-applied (%s)\n",
                  static_cast<unsigned>(from), static_cast<unsigned>(ch),
                  tx_power_ok ? "ok" : "failed");
+  }
+
+  mabur::VtxRecorder* recorder = nullptr;  // null until the recorder exists
+  bool set_record(bool on) override {
+    if (dry_run) {
+      std::fprintf(stderr, "[dry-run] set_record(%d)\n", on ? 1 : 0);
+      return true;
+    }
+    if (recorder) recorder->request(on);   // non-blocking; outcome in rec_status
+    return true;
   }
 };
 

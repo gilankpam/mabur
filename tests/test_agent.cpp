@@ -60,6 +60,12 @@ struct MockActuator : Actuator {
     retunes.push_back(ch);
     retune_reasons.push_back(reason ? reason : "");
   }
+  std::vector<bool> records;
+  bool record_ok = true;
+  bool set_record(bool on) override {
+    records.push_back(on);
+    return record_ok;
+  }
 };
 
 Config make_cfg() {
@@ -1717,6 +1723,61 @@ TEST(rcf_same_epoch_different_channel_is_applied_not_ignored) {
   CHECK(act.retune_reasons[1] == "hop");
   CHECK(agent.channel() == 40);
   CHECK(agent.hop_epoch() == 1);
+}
+
+// VTX onboard recorder (spec 2026-09-26): RcAgent applies the RCF `rec` wish.
+
+static std::vector<uint8_t> make_rcf_wire_rec(uint32_t vtx, uint16_t seq, uint8_t rec) {
+  Rcf r; r.vtx_id = vtx; r.seq = seq; r.profile = 0x24;
+  r.fec_overhead_base = 1.0; r.fec_overhead_enh = 0.5; r.rec = rec;
+  return pack_rcf(r);
+}
+
+TEST(rcf_rec_known_on_calls_set_record_once) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  auto w1 = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  agent.on_rc_frame(w1.data(), w1.size(), 200);
+  auto w2 = make_rcf_wire_rec(cfg.link.vtx_id, 2, kRecKnown | kRecOn);
+  agent.on_rc_frame(w2.data(), w2.size(), 210);
+  REQUIRE(act.records.size() == 1);
+  CHECK(act.records[0] == true);
+}
+
+TEST(rcf_rec_unknown_leaves_recorder) {
+  // maburgs restarted: its wish is unknown until the player re-sends. The
+  // onboard recording must NOT stop on that.
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  auto on = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  agent.on_rc_frame(on.data(), on.size(), 200);
+  auto unk = make_rcf_wire_rec(cfg.link.vtx_id, 2, 0);
+  agent.on_rc_frame(unk.data(), unk.size(), 210);
+  CHECK(act.records.size() == 1);
+}
+
+TEST(rcf_rec_known_off_stops_and_link_loss_does_not) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  auto on = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  agent.on_rc_frame(on.data(), on.size(), 200);
+  agent.tick(200 + cfg.link.failsafe_ms + 100, RadioHealth{});   // link lost
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(act.records.size() == 1);                                // no timer stop
+  auto off = make_rcf_wire_rec(cfg.link.vtx_id, 2, kRecKnown);
+  agent.on_rc_frame(off.data(), off.size(), 2000);
+  REQUIRE(act.records.size() == 2);
+  CHECK(act.records[1] == false);
+}
+
+TEST(rcf_rec_retries_until_the_actuator_takes_it) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  act.record_ok = false;
+  auto w1 = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  agent.on_rc_frame(w1.data(), w1.size(), 200);
+  act.record_ok = true;
+  auto w2 = make_rcf_wire_rec(cfg.link.vtx_id, 2, kRecKnown | kRecOn);
+  agent.on_rc_frame(w2.data(), w2.size(), 210);
+  auto w3 = make_rcf_wire_rec(cfg.link.vtx_id, 3, kRecKnown | kRecOn);
+  agent.on_rc_frame(w3.data(), w3.size(), 220);
+  CHECK(act.records.size() == 2);   // failed once, taken once, then latched
 }
 
 // Low-power (pre-arm) mode, spec 2026-09-20.
