@@ -23,6 +23,15 @@ struct HopTick {
   uint8_t cur_op = 0;
   int n_cards = 2;
   int lead_card = -1;                // non-TX card index, -1 = one card
+  // The ranker marks the configured home blocked (NHM busy): then it is
+  // no fallback -- ordering it is ordering a channel already read jammed.
+  bool home_blocked = false;
+  // The escape from a blocked hold (Task 11 (d)): the best UNBLOCKED
+  // candidate that is not verify-failed (fled channels allowed). Used only
+  // when there is no `best`, home is unavailable, and the current
+  // verdict's evidence carries kEvBlocked.
+  std::optional<uint8_t> escape;
+  uint32_t escape_score = 0;
 };
 
 struct HopAction {
@@ -60,11 +69,16 @@ class HopController {
   HopController(HopCfg cfg, uint8_t home);
 
   HopAction tick(const HopTick& in);
+  HopAction on_session_lost(double now_ms, uint8_t cur_op);
 
   uint8_t hop_ch() const;   // what every RCF carries: the standing target (0 until the first order)
   uint8_t epoch() const;
   HopState state() const;
   std::vector<uint8_t> backed_off(double now_ms) const;
+  // Only the channels backed off for FAILING (verify fail, withdraw,
+  // session lost) -- not the ones merely fled, nor an order withdrawn as
+  // undelivered after a confirm extension. The escape's skip list.
+  std::vector<uint8_t> backed_off_failed(double now_ms) const;
   std::vector<HopEvent> take_events();
   uint32_t hops() const;
   // Hold EPISODES entered, not ticks spent holding: idle_tick() runs from
@@ -86,8 +100,21 @@ class HopController {
   // else.
   void enter_hold(double now, const char* why, uint8_t target, double elapsed_ms, HopAction& out);
   void leave_hold(double now, uint8_t cur_op);
-  void withdraw(uint8_t restore_to, double now, HopAction& out);
-  void back_off(uint8_t ch, double now);
+  // extended: the order was held past confirm_ms because the op read
+  // blocked -- the target is backed off as Undelivered, not Failed.
+  void withdraw(uint8_t restore_to, double now, bool extended, HopAction& out);
+  void flee(uint8_t ch, double now);
+  bool home_available(uint8_t cur_op, double now, bool home_blocked) const;
+  // Why a channel is backed off: fled (flee() -- the trigger left it) or
+  // failed (a verify fail, a withdraw, a lost session), or undelivered (a
+  // withdraw after a confirm extension: the order probably never reached
+  // the drone, so nothing is known against the target). One map; a later
+  // back-off overwrites the reason and keeps doubling.
+  enum class BackoffWhy { Fled, Failed, Undelivered };
+  void back_off(uint8_t ch, double now, BackoffWhy why = BackoffWhy::Failed);
+  // Task 11 (d): the escape from a blocked hold. Orders in.escape when
+  // there is nothing else to go to and the channel we are on is blocked.
+  bool escape_allowed(const HopTick& in) const;
   bool is_backed_off(uint8_t ch, double now) const;
   void prune_hop_times(double now);
   void log_event(double now, const std::string& kind, uint8_t epoch, uint8_t target, uint32_t score,
@@ -104,8 +131,10 @@ class HopController {
   uint32_t hops_ = 0;
   uint32_t holds_ = 0;
   bool one_card_retuned_ = false;
+  bool confirm_extended_ = false;   // this order entered the confirm extension
   double hold_start_ms_ = 0;
-  std::map<uint8_t, std::pair<double, int>> backoff_;   // ch -> {until_ms, repeat count k}
+  struct Backoff { double until_ms; int k; BackoffWhy why; };
+  std::map<uint8_t, Backoff> backoff_;                  // ch -> {until_ms, repeat count k, reason}
   std::deque<double> hop_times_;                        // order timestamps, trailing 60 s (rate cap)
   std::vector<HopEvent> events_;
 };

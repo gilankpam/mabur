@@ -1,5 +1,7 @@
 #include "radio_frontend.h"
 
+#include <functional>
+
 #include <libusb.h>
 
 #include <chrono>
@@ -17,6 +19,7 @@
 #include "UsbOpen.h"
 #include "WiFiDriver.h"
 #include "logger.h"
+#include "mabur/ht40.h"
 #include "mabur/node.h"
 
 namespace maburgs {
@@ -77,7 +80,8 @@ size_t dot11_body_offset(const uint8_t* dot11, size_t len) {
 
 // --- device management (mirrors drone/src/main.cpp bring-up) ----------------
 
-RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out) : cfg_(cfg), out_(out) {}
+RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out)
+    : cfg_(cfg), out_(out), width_(cfg.width_mhz) {}
 RadioFrontend::~RadioFrontend() { stop(); }
 
 bool RadioFrontend::open_and_start() {
@@ -162,7 +166,12 @@ bool RadioFrontend::open_and_start() {
   driver_ = std::make_unique<WiFiDriver>(logger_);
   device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
   if (!device_) { stop(); return false; }
-  device_->InitWrite(SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
+  // width_, not the constructor's cfg_.width_mhz: a set_width() that landed
+  // while the card was down (the boot scout card dying mid-scan) is the
+  // width a revive must come up at.
+  device_->InitWrite(width() == 40
+                         ? SelectedChannel{cfg_.channel, mabur::ht40_offset(cfg_.channel), CHANNEL_WIDTH_40}
+                         : SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});
   channel_.store(cfg_.channel, std::memory_order_release);
   rx_channel_.store(cfg_.channel, std::memory_order_release);
   {
@@ -221,7 +230,16 @@ void RadioFrontend::on_packet(const Packet& pkt) {
     foreign_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  if (!pkt.RxAtrib.crc_err) own_.fetch_add(1, std::memory_order_relaxed);
+  if (!pkt.RxAtrib.crc_err) {
+    own_.fetch_add(1, std::memory_order_relaxed);
+    // Own airtime (spec 2026-09-25-nhm-airtime §5), CRC-good own frames only.
+    const uint16_t r = pkt.RxAtrib.data_rate;
+    const uint8_t mcs = (r >= 0x0C && r <= 0x13) ? static_cast<uint8_t>(r - 0x0C)
+                        : (r >= 0x80 && r <= 0x87) ? static_cast<uint8_t>(r - 0x80) : 255;
+    own_air_.on_frame(pkt.Data.size(), mcs, pkt.RxAtrib.physt,
+                      pkt.RxAtrib.bw == 1 ? 40 : 20, pkt.RxAtrib.stbc != 0, pkt.RxAtrib.sgi != 0);
+    own_air_us_.store(own_air_.total_us(), std::memory_order_relaxed);
+  }
   mabur::node::RxBody m;
   m.card_id = cfg_.card_id;
   m.mono_us = mono_us_now();
@@ -324,10 +342,40 @@ bool RadioFrontend::retune(uint8_t ch) {
   // is USB-pipeline lag longer than FastRetune's own duration (~4 ms of
   // control transfers on this path); devourer exposes no RX flush to close
   // it outright.
+  static const bool hopdbg = std::getenv("MABUR_HOP_DEBUG") != nullptr;
+  const uint64_t dbg_t0 = hopdbg ? mono_us_now() : 0;
+  const uint8_t dbg_from = channel_.load(std::memory_order_acquire);
   rx_channel_.store(0, std::memory_order_release);
   device_->FastRetune(ch, /*cache_rf=*/true);
   channel_.store(ch, std::memory_order_release);
+  if (hopdbg)
+    std::fprintf(stderr, "retunedbg card=%u tid=%lu %u->%u t0=%llu dur_us=%llu rf_central=%d\n",
+                 static_cast<unsigned>(cfg_.card_id),
+                 static_cast<unsigned long>(std::hash<std::thread::id>{}(std::this_thread::get_id()) % 100000),
+                 static_cast<unsigned>(dbg_from), static_cast<unsigned>(ch),
+                 static_cast<unsigned long long>(dbg_t0 / 1000),
+                 static_cast<unsigned long long>(mono_us_now() - dbg_t0), device_->ReadTunedCentral());
   rx_channel_.store(ch, std::memory_order_release);
+  return true;
+}
+
+bool RadioFrontend::set_width(uint8_t ch, uint8_t width_mhz) {
+  if (width_mhz == 40 && mabur::ht40_offset(ch) == 0) return false;
+  const uint8_t was = width();
+  // Desired state, like the channel: recorded even when the card is down so
+  // the next open_and_start() (a revive) InitWrites at it. The caller still
+  // sees false -- nothing was tuned now.
+  width_.store(width_mhz, std::memory_order_release);
+  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  rx_channel_.store(0, std::memory_order_release);   // same blinding as retune()
+  device_->SetMonitorChannel(width_mhz == 40
+                                 ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
+                                 : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
+  channel_.store(ch, std::memory_order_release);
+  rx_channel_.store(ch, std::memory_order_release);
+  std::fprintf(stderr, "maburgs radio: card %u width %u -> %u MHz on ch %u\n",
+               static_cast<unsigned>(cfg_.card_id), static_cast<unsigned>(was),
+               static_cast<unsigned>(width_mhz), static_cast<unsigned>(ch));
   return true;
 }
 
@@ -358,6 +406,26 @@ ScoutEnergy RadioFrontend::read_energy_scout() {
   out.nhm_valid = e.valid_nhm;
   out.floor_valid = e.valid_noise_floor;
   out.floor_dbm = e.abs_noise_floor_dbm;
+  return out;
+}
+
+bool RadioFrontend::arm_nhm_busy(uint16_t period_4us) {
+  if (!ready_.load(std::memory_order_acquire) || !device_) return false;
+  return device_->ArmNhmBusy(period_4us);
+}
+
+int RadioFrontend::tuned_central() {
+  return (ready_.load(std::memory_order_acquire) && device_) ? device_->ReadTunedCentral() : -1;
+}
+
+NhmBusyRead RadioFrontend::read_nhm_busy() {
+  NhmBusyRead out;
+  if (!ready_.load(std::memory_order_acquire) || !device_) return out;
+  const NhmBusy b = device_->ReadNhmBusy();
+  out.valid = b.valid;
+  for (int i = 0; i < 12; ++i) out.buckets[i] = b.buckets[i];
+  out.duration = b.duration;
+  out.period = b.period;
   return out;
 }
 

@@ -1,9 +1,17 @@
 #include "inflight_scout.h"
 
+#include <algorithm>
+
+#include "mabur/ht40.h"
+#include "nhm_busy.h"
+
 namespace maburgs {
 
 InflightScout::InflightScout(InflightScoutCfg cfg, ScoutRadio& radio, NowUsFn now_us, SleepFn sleep_ms)
-    : cfg_(std::move(cfg)), radio_(&radio), now_us_(std::move(now_us)), sleep_ms_(std::move(sleep_ms)) {}
+    : cfg_(std::move(cfg)), radio_(&radio), now_us_(std::move(now_us)), sleep_ms_(std::move(sleep_ms)) {
+  set_ = cfg_.candidates;
+  if (cfg_.home != 0 && std::find(set_.begin(), set_.end(), cfg_.home) == set_.end()) set_.push_back(cfg_.home);
+}
 
 void InflightScout::set_radio(ScoutRadio& radio) { radio_ = &radio; }
 
@@ -12,7 +20,10 @@ bool InflightScout::dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& vis
   s.seq = seq_++;
   s.def.band = ch >= 36 ? 5 : 2;
   s.def.primary = ch;
-  s.def.width = CHANNEL_WIDTH_20;
+  // FastRetune keeps the card's width and offset: a 40 MHz dwell scores the
+  // candidate's PRIMARY only (secondary-blind, docs/bw40.md §3).
+  s.def.width = cfg_.width_mhz == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20;
+  s.def.offset = cfg_.width_mhz == 40 ? mabur::ht40_offset(ch) : 0;
   d.in_session = true;
 
   const int64_t t0 = now_us_();
@@ -35,11 +46,19 @@ bool InflightScout::dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& vis
   // observation window starts (see ScoutRadio::read_energy_scout and
   // devourer's GetRxEnergyScout contract).
   (void)radio_->read_energy_scout();
+  const uint16_t nhm_period = nhm_period_4us(cfg_.observe_ms);
+  const bool nhm_armed = radio_->arm_nhm_busy(nhm_period);
   const ScoutFrames f0 = radio_->frames();
   const int64_t t2 = now_us_();
 
   sleep_ms_(cfg_.observe_ms);
   const int64_t t3 = now_us_();
+
+  const NhmBusyRead nb = nhm_armed ? radio_->read_nhm_busy() : NhmBusyRead{};
+  const std::optional<double> busy =
+      (nb.valid && nb.period == nhm_period) ? nhm_busy_pct(nb, cfg_.busy_dbm) : std::nullopt;
+  d.busy_valid = busy.has_value();
+  d.busy_pct = busy.value_or(0.0);
 
   const ScoutEnergy e = radio_->read_energy_scout();
   const ScoutFrames f1 = radio_->frames();
@@ -89,19 +108,25 @@ bool InflightScout::dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& vis
   visit.cca = e.cca_ofdm;
   visit.own = dvr_frames;
   visit.foreign = foreign_delta;
+  visit.busy_valid = d.busy_valid;
+  visit.busy_pct = d.busy_pct;
   return true;
 }
 
-uint8_t InflightScout::next_candidate() {
-  const uint8_t ch = cfg_.candidates[next_idx_];
-  next_idx_ = (next_idx_ + 1) % cfg_.candidates.size();
-  return ch;
+std::optional<uint8_t> InflightScout::next_candidate(uint8_t skip) {
+  for (size_t i = 0; i < set_.size(); ++i) {
+    const uint8_t ch = set_[next_idx_];
+    next_idx_ = (next_idx_ + 1) % set_.size();
+    if (ch != skip) return ch;
+  }
+  return std::nullopt;
 }
 
 std::vector<HopVisit> InflightScout::burst(uint8_t back, std::vector<ScoutDwell>& records) {
   std::vector<HopVisit> visits;
-  visits.reserve(cfg_.candidates.size());
-  for (uint8_t ch : cfg_.candidates) {
+  visits.reserve(set_.size());
+  for (uint8_t ch : set_) {
+    if (ch == back) continue;
     ScoutDwell d;
     HopVisit v;
     if (dwell(ch, back, d, v)) visits.push_back(v);

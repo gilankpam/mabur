@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "mabur/ht40.h"
+
 namespace maburgs {
 
 ScanLog::ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info)
-    : w_(w), s_(w.open(dir, "scan.log", "scanlog 2 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "scan.log", "scanlog 4 " + header_info)) {}
 
 void ScanLog::put_(const char* b, int n) {
   if (s_ == LogWriter::kBadStream || n <= 0) return;
@@ -40,14 +42,18 @@ void ScanLog::dwell(double t_ms, int card, const ScoutDwell& d) {
   else std::snprintf(igi, sizeof(igi), "-");
   if (d.floor_valid) std::snprintf(floor, sizeof(floor), "%d", static_cast<int>(d.floor_dbm));
   else std::snprintf(floor, sizeof(floor), "nan");
+  char busy[16];
+  if (d.busy_valid) std::snprintf(busy, sizeof(busy), "%.1f", d.busy_pct);
+  else std::snprintf(busy, sizeof(busy), "-");
   char b[256];
   const int n = std::snprintf(
-      b, sizeof(b), "D %.0f %d %u %llu %lld %u %u %u %u %s %s %x %d %lld %lld %lld", t_ms, card,
+      b, sizeof(b), "D %.0f %d %u %llu %lld %u %u %u %u %s %s %x %d %lld %lld %lld %u %s", t_ms, card,
       static_cast<unsigned>(s.def.primary), static_cast<unsigned long long>(s.round),
       static_cast<long long>(s.observe_ms), s.cca_ofdm, s.fa_ofdm, s.dvr_frames,
       s.frames - s.dvr_frames, igi, floor, static_cast<unsigned>(s.flags), d.in_session ? 1 : 0,
       static_cast<long long>(d.to_us), static_cast<long long>(d.read_us),
-      static_cast<long long>(d.back_us));
+      static_cast<long long>(d.back_us),
+      static_cast<unsigned>(s.def.width == CHANNEL_WIDTH_40 ? 40 : 20), busy);
   put_(b, std::min(n, static_cast<int>(sizeof(b) - 1)));
 }
 
@@ -62,9 +68,18 @@ void ScanLog::pick(double t_ms, std::optional<uint8_t> picked, uint64_t rounds,
   if (picked) {
     for (const RankEntry& e : all) {
       if (e.visits < static_cast<uint32_t>(min_rounds)) continue;
-      line += " " + std::to_string(static_cast<unsigned>(e.ch)) + ":" + std::to_string(e.worst_busy);
-      if (e.floor_valid) line += ":" + std::to_string(static_cast<int>(e.floor_dbm));
+      line += " " + std::to_string(static_cast<unsigned>(e.ch)) + ":" + std::to_string(e.worst_busy) + ":" +
+              (e.floor_valid ? std::to_string(static_cast<int>(e.floor_dbm)) : std::string("nan")) + ":";
+      if (e.busy_valid) { char b[16]; std::snprintf(b, sizeof(b), "%.1f", e.worst_busy_pct); line += b; }
+      else line += "-";
     }
+  }
+  if (picked && mabur::ht40_pair_other(*picked) != 0) {
+    const uint8_t o = mabur::ht40_pair_other(*picked);
+    line += " pair=" + std::to_string(static_cast<unsigned>(std::min(*picked, o))) + "+" +
+            std::to_string(static_cast<unsigned>(std::max(*picked, o)));
+  } else {
+    line += " pair=-";
   }
   put_(line.c_str(), static_cast<int>(std::min(line.size(), LogWriter::kMaxLine - 1)));
 }
@@ -94,10 +109,13 @@ void ScanLog::verdict(double t_ms, const VerdictOut& o, const std::vector<Verdic
   std::string line(head, static_cast<size_t>(std::min(hn, static_cast<int>(sizeof(head) - 1))));
   for (size_t i = 0; i < cards.size(); ++i) {
     const VerdictCardIn& c = cards[i];
-    char cb[160];
-    const int cn = std::snprintf(cb, sizeof(cb), " %u %u %u %u %u %.1f %.1f %.1f",
+    char busy[16];
+    if (c.busy_valid) std::snprintf(busy, sizeof(busy), "%.1f", c.nhm_busy_pct);
+    else std::snprintf(busy, sizeof(busy), "-");
+    char cb[192];
+    const int cn = std::snprintf(cb, sizeof(cb), " %u %u %u %u %u %.1f %.1f %.1f %s %.1f",
                                  static_cast<unsigned>(i), c.foreign, c.fa, c.cca, c.crc_fail,
-                                 c.rssi_dbm, c.snr_db, o.d_rssi_db);
+                                 c.rssi_dbm, c.snr_db, o.d_rssi_db, busy, c.own_air_pct);
     line.append(cb, static_cast<size_t>(std::min(cn, static_cast<int>(sizeof(cb) - 1))));
   }
   put_(line.c_str(), static_cast<int>(std::min(line.size(), LogWriter::kMaxLine - 1)));

@@ -22,6 +22,9 @@ struct ScoutCfg {
   int beacon_period_ms = 20;
   uint32_t home_margin = 0;
   bool one_card = false;
+  uint8_t link_width_mhz = 20;  // radio.width: 40 = dwell every half at 20, pick a pair, park at 40
+  int busy_dbm = -83;
+  double blocked_pct = 1e9;
 };
 
 struct ScoutDwell {
@@ -33,6 +36,8 @@ struct ScoutDwell {
   // defaults (0/0/0/0) so scan.log's D record stays valid without a hop.
   bool in_session = false;
   int64_t to_us = 0, read_us = 0, back_us = 0;
+  bool busy_valid = false;
+  double busy_pct = 0;  // NHM busy % over the observe span (scanlog 4 D)
 };
 
 // Boot-time scout (spec 2026-09-13-auto-channel-select §4). Owns one card's

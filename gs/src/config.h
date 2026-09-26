@@ -38,11 +38,28 @@ struct ScanCfg {
 struct HopVerdictCfg {
   double loss_pct = 3.0;
   double recovered_x = 3.0;
+  // Floor on the recovered-symbols impaired term: fewer recovered symbols
+  // than this never mark a window impaired, whatever the trailing mean.
+  // 0 disables. Bench session 0232 (2026-09-26): 97 % of recovered-only
+  // impaired windows at <= 3 % loss had 1-8 recovered.
+  int recovered_min = 8;
   int weak_rssi_dbm = -78;
   int weak_snr_db = 12;
   int fading_drop_db = 6;
   int foreign_pps = 50;
   int fa_pps = 100;
+  // NHM busy-airtime evidence (spec 2026-09-25-nhm-airtime §6). busy_dbm
+  // must be an nf::kNhmAbsThDbm bucket edge (nhm_busy.h::busy_dbm_is_edge).
+  // blocked_pct default is 50, not the spec's 30 -- the hw spike found
+  // busy_dbm -83 / blocked_pct 50 the working pair (docs/nhm-airtime-
+  // spike-findings-2026-09-25.md).
+  int busy_dbm = -83;
+  double blocked_pct = 50.0;  // foreign busy airtime that makes a window/channel "blocked"
+  // AU rate below this fraction of the trailing per-window AU mean reads
+  // `starved` even when a trickle of own frames still arrives (bench
+  // session 0232, 2026-09-26: 5-30 own frames/s under a long-frame jam).
+  // 0 disables the AU term. 60->30 fps low-power is 0.5, so keep it below.
+  double starved_frac = 0.25;
 };
 
 /// In-flight channel hop (spec 2026-09-14-inflight-channel-hop). enable
@@ -58,6 +75,11 @@ struct HopCfg {
   int rank_visits = 5;
   int rank_max_age_ms = 10000;
   int confirm_ms = 500;
+  // While the op channel reads blocked, an unconfirmed order is kept this
+  // long (from the order) before it is withdrawn -- the jam that blocks the
+  // op usually blocks the uplink carrying the order too (bench session
+  // 0232, 2026-09-26). <= confirm_ms disables the extension.
+  int confirm_extend_ms = 3000;
   int verify_ms = 1000;
   int cooldown_ms = 2000;
   int max_hops_per_min = 4;
@@ -69,6 +91,10 @@ struct HopCfg {
 /// Radio hardware: channel, bandwidth, cards, and transmit card selection.
 struct RadioCfg {
   uint8_t channel = 149;
+  // HT20/HT40 (2026-09-24 HT40 top rungs): validated to 20 or 40 in
+  // config.cpp, and 40 additionally requires `channel` to sit on a standard
+  // 5 GHz pair (mabur::ht40_offset) -- a 20-tuned receiver cannot hear a 40
+  // MHz transmission at all (docs/bw40.md).
   uint8_t width = 20;
   // Empty + auto_scan: probe the bus and use every supported card found
   // (card_scan.h). A non-empty list pins exactly those devices and skips
@@ -128,6 +154,9 @@ struct LinkCfg {
   // scalar's value -- Task 4 gives them independent semantics.
   double static_overhead_base = 0.5;
   double static_overhead_enh = 0.5;
+  // Width of the static-pin op (link.static_mcs >= 0), 20 or 40; 40 needs
+  // radio.width = 40. Lets the bench pin a 40 MHz rung.
+  int static_bw = 20;
 
   // Measured-loss ladder controller config (spec
   // docs/superpowers/specs/2026-07-27-ladder-controller-design.md): rungs

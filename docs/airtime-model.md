@@ -347,10 +347,12 @@ at mcs0-3 (0.68 / 0.63 at mcs5 / 7). Two consequences:
   rate the link never delivers: 0.6 landed at ~99 % of the real mcs2
   capacity (the low-rung latency spikes), 0.5 at 76-82 % on rungs 2-5.
   **Now both price off `delivered_mbps` = nominal ×
-  `air_clock.efficiency[mcs]`** (`drone/src/air_rate.h`; the config key is
-  an 8-entry per-MCS table, bundle `[0.93, 0.88, 0.84, 0.80, 0.76, 0.76,
-  0.78, 0.76]` = the sweep with singles at mcs0-3 and agg6 above; absent
-  = all ones = nominal). The budget is therefore a fraction of measured
+  `air_clock.efficiency_<bw>[mcs]`** (`drone/src/air_rate.h`; the config key
+  is a pair of 8-entry per-MCS tables, one per width since 2026-09-24
+  (`docs/bw40.md`) — 20 MHz bundle `[0.93, 0.88, 0.84, 0.80, 0.76, 0.76,
+  0.78, 0.76]` = the sweep with singles at mcs0-3 and agg6 above; 40 MHz
+  bundle a flat `[0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]` with agg6;
+  absent = all ones = nominal). The budget is therefore a fraction of measured
   capacity: **bundle 0.65** keeps rungs 4-5 at the load 0.5-of-nominal
   flew (0.5 / 0.76) and lifts rungs 0/1/2 by 23/16/11 % onto the singles
   capacity. Real time-occupancy ≈ budget × ~1.16 (SBI/fragment framing
@@ -363,4 +365,7 @@ at mcs0-3 (0.68 / 0.63 at mcs5 / 7). Two consequences:
   (bundle 4) — singles below it, the configured aggregate at and above
   (`drone/src/ampdu_policy.h`, switched live by `RealActuator::apply_op`).
   Do not read a fixed A-MPDU cost into the model: at mcs0-3 the chip now
-  flies singles and the singles column applies.
+  flies singles and the singles column applies. Since 2026-09-24 the key is
+  per width, `ampdu.min_mcs_20` (bundle 4) / `ampdu.min_mcs_40` (bundle 2) —
+  the 40 MHz rungs (mcs3/4) both clear their own floor and aggregate
+  (`docs/bw40.md`).

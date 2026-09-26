@@ -71,6 +71,9 @@ struct GsSnapshot {
   // normal, permanent state of a static-pinned link (link.static_mcs >= 0
   // never ticks the controller, so the exporter emits link.ctl: null).
   std::optional<int> mcs;
+  // link.ctl.rung.bw, falling back to link.op.bw (2026-09-24, 40 MHz rungs):
+  // with 20/3 and 40/3 both in the ladder the MCS alone does not name the rung.
+  std::optional<int> bw;
   std::optional<double> fec_pct;
   std::optional<double> air_pct;        // link.air_pct
   // link.pre_fec_loss x 100 -- both video layers pooled (2026-09-23) --

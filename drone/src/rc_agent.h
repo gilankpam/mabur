@@ -39,7 +39,8 @@ struct AppliedOp {
 
   // Probe stream (spec 2026-09-04): the RCF's probe_profile byte as received
   // (kNoProbeProfile = no stream) and the resolved TX spec for it — same
-  // mode/bw as the op, LDPC+STBC like the video slots. RadioTx slot 2.
+  // mode as the op, but the probe rung's OWN bw (a 20/4 op probes 40/3),
+  // LDPC+STBC like the video slots. RadioTx slot 2.
   uint8_t probe_profile = rc::kNoProbeProfile;
   rc::LayerTxSpec probe;
 };
@@ -246,6 +247,12 @@ class RcAgent {
   uint8_t channel_;
   bool move_pending_ = false;
   uint64_t move_at_ms_ = 0;
+  // The channel a hop order moved us FROM, while that move is unconfirmed
+  // (0 = none: a DISC move, or the revert already spent). The move-confirm
+  // fallback returns here first -- where a withdrawing GS goes (spec
+  // 2026-09-14 §1 step 4) -- and only then home. Bench 2026-09-26: with the
+  // hop target == home, going "home" was a no-op and the pair split 60 s.
+  uint8_t move_from_ch_ = 0;
 
   // In-flight hop order (spec 2026-09-14 §1). have_hop_ is false until the
   // first RCF carrying a nonzero hop_ch is accepted; hop_epoch_/hop_ch_ then

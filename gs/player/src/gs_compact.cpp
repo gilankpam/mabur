@@ -129,10 +129,11 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
     // slot -- the two are mutually exclusive (see the render switch) and
     // exactly as wide, so no separate worst case is needed for it.
     case GsBarField::kCh:      return "ch:999(a)";
-    // Here the em-dash-free missing form is the WIDER one ("mcs:--" beats
-    // "mcs:9"), which is exactly why every box is sized from an explicit
-    // worst case rather than from whatever the live value happens to be.
-    case GsBarField::kMcs:     return "mcs:--";
+    // 40 MHz rungs (2026-09-24): the width suffix makes the live form the
+    // WIDER one now ("mcs:9/40" beats the dash form "mcs:--"), the reverse
+    // of the pre-bw worst case -- still an explicit worst case rather than
+    // whatever the live value happens to be, just on the other side.
+    case GsBarField::kMcs:     return "mcs:9/40";
     case GsBarField::kAir:     return "air:100%";
     case GsBarField::kRssi:    return repeat_joined("rssi", "-999", n);
     case GsBarField::kSnr:     return repeat_joined("snr", "-99", n);
@@ -330,8 +331,12 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
       break;
     case GsBarField::kMcs:
       st.rgb = link;
-      st.text = snap.mcs ? "mcs:" + ascii_int(std::clamp(*snap.mcs, 0, 9))
-                         : "mcs:--";
+      if (snap.mcs) {
+        st.text = "mcs:" + ascii_int(std::clamp(*snap.mcs, 0, 9)) + "/" +
+                  (snap.bw ? ascii_int(std::clamp(*snap.bw, 20, 40)) : std::string("--"));
+      } else {
+        st.text = "mcs:--";
+      }
       break;
     case GsBarField::kAir:
       st.rgb = link;

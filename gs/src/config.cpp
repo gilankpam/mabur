@@ -3,7 +3,9 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "mabur/ht40.h"
 #include "mabur/toml.h"
+#include "nhm_busy.h"
 
 namespace maburgs {
 namespace {
@@ -138,7 +140,13 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     const Value& r = j["radio"];
     check_keys(r, "radio", {"channel", "width", "cards", "tx_card", "scan"});
     c.radio.channel = static_cast<uint8_t>(get_int(r, "channel", 149, 1, 200, "radio"));
-    c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 80, "radio"));
+    c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 40, "radio"));
+    if (c.radio.width != 20 && c.radio.width != 40)
+      fail("radio.width", "must be 20 or 40 (HT20 / HT40)");
+    if (c.radio.width == 40 && mabur::ht40_offset(c.radio.channel) == 0)
+      fail("radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
+                              std::to_string(static_cast<int>(c.radio.channel)) +
+                              " has none (common/include/mabur/ht40.h)");
     c.radio.tx_card = static_cast<int>(get_int(r, "tx_card", -1, -1, 15, "radio"));
     if (r.contains("cards")) {
       if (!r["cards"].is_array() || r["cards"].empty())
@@ -204,7 +212,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (j.contains("hop")) {
     const Value& h = j["hop"];
     check_keys(h, "hop", {"enable", "scout_when_disabled", "window_ms", "persist", "dwell_observe_ms",
-                          "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "verify_ms",
+                          "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "confirm_extend_ms", "verify_ms",
                           "cooldown_ms", "max_hops_per_min", "backoff_ms", "one_card_repeats", "verdict"});
     HopCfg& hc = c.hop;
     hc.enable = get_bool(h, "enable", hc.enable, "hop");
@@ -216,6 +224,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     hc.rank_visits = (int)get_int(h, "rank_visits", 5, 1, 100, "hop");
     hc.rank_max_age_ms = (int)get_int(h, "rank_max_age_ms", 10000, 1000, 600000, "hop");
     hc.confirm_ms = (int)get_int(h, "confirm_ms", 500, 100, 5000, "hop");
+    hc.confirm_extend_ms = (int)get_int(h, "confirm_extend_ms", 3000, 0, 30000, "hop");
     hc.verify_ms = (int)get_int(h, "verify_ms", 1000, 200, 10000, "hop");
     hc.cooldown_ms = (int)get_int(h, "cooldown_ms", 2000, 0, 60000, "hop");
     hc.max_hops_per_min = (int)get_int(h, "max_hops_per_min", 4, 1, 60, "hop");
@@ -224,15 +233,23 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     if (h.contains("verdict")) {
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
-                                    "fading_drop_db", "foreign_pps", "fa_pps"});
+                                    "fading_drop_db", "foreign_pps", "fa_pps", "busy_dbm",
+                                    "blocked_pct", "recovered_min", "starved_frac"});
       HopVerdictCfg& vc = hc.verdict;
       vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
       vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
+      vc.recovered_min = (int)get_int(v, "recovered_min", 8, 0, 1000, "hop.verdict");
       vc.weak_rssi_dbm = (int)get_int(v, "weak_rssi_dbm", -78, -110, -20, "hop.verdict");
       vc.weak_snr_db = (int)get_int(v, "weak_snr_db", 12, 0, 40, "hop.verdict");
       vc.fading_drop_db = (int)get_int(v, "fading_drop_db", 6, 1, 40, "hop.verdict");
       vc.foreign_pps = (int)get_int(v, "foreign_pps", 50, 1, 100000, "hop.verdict");
       vc.fa_pps = (int)get_int(v, "fa_pps", 100, 1, 100000, "hop.verdict");
+      vc.busy_dbm = (int)get_int(v, "busy_dbm", -83, -104, -70, "hop.verdict");
+      if (!maburgs::busy_dbm_is_edge(vc.busy_dbm))
+        fail("hop.verdict.busy_dbm",
+             "must be an NHM bucket edge: -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70");
+      vc.blocked_pct = get_num(v, "blocked_pct", 50.0, 1.0, 100.0, "hop.verdict");
+      vc.starved_frac = get_num(v, "starved_frac", 0.25, 0.0, 1.0, "hop.verdict");
     } else {
       note_default("hop", "verdict", "(section absent)");
     }
@@ -271,6 +288,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     check_keys(r, "link",
                {"vtx_id", "feedback_ms", "beacon_keepalive_ms",
                 "static_mcs", "static_overhead_base", "static_overhead_enh",
+                "static_bw",
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
                 "clean_ms", "probation_ms", "penalty_base_ms", "penalty_max_ms",
                 "hold_after_down_ms", "min_between_changes_ms", "feedback_timeout_ms",
@@ -291,6 +309,9 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         get_num(r, "static_overhead_base", 0.5, 0.1, 2.0, "link");
     c.link.static_overhead_enh =
         get_num(r, "static_overhead_enh", 0.5, 0.1, 2.0, "link");
+    c.link.static_bw = static_cast<int>(get_int(r, "static_bw", 20, 20, 40, "link"));
+    if (c.link.static_bw != 20 && c.link.static_bw != 40)
+      fail("link.static_bw", "must be 20 or 40");
 
     // Measured-loss ladder: rungs (c.link.ladder_cfg.ladder already holds the
     // struct default 6-rung ladder; an explicit "ladder" array replaces it
@@ -305,9 +326,16 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       int i = 0;
       for (const Value& rj : r["ladder"]) {
         const std::string where = "link.ladder[" + std::to_string(i++) + "]";
-        check_keys(rj, where, {"mcs", "overhead_base", "overhead_enh"});
+        check_keys(rj, where, {"mcs", "bw", "overhead_base", "overhead_enh"});
         Rung rung;
         rung.mcs = static_cast<int>(get_int(rj, "mcs", 0, 0, 7, where));
+        // Per-rung width (2026-09-24 40 MHz top rungs): required, no
+        // default -- a rung silently airing at 20 when the author meant 40
+        // (or vice versa) is exactly the wrong-width mistake this is meant
+        // to catch.
+        if (!rj.contains("bw")) fail(where + ".bw", "required: 20 or 40 (per-rung width, 2026-09-24)");
+        rung.bw = static_cast<int>(get_int(rj, "bw", 20, 20, 40, where));
+        if (rung.bw != 20 && rung.bw != 40) fail(where + ".bw", "must be 20 or 40");
         // Actual-air overhead (airtime-balance-uep): literal, not a scaled
         // cmd value -- old cmd default/range 1.0 [0.05, 1.0] x2 everywhere.
         // Same-rate-fixed-pairs (Task 3): base/enh pair, same default/range.
@@ -431,6 +459,35 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     c.link.ladder_cfg.probe.max_util = c.link.ladder_cfg.down_util;
   if (c.link.ladder_cfg.s3_down_util < 0)
     c.link.ladder_cfg.s3_down_util = c.link.ladder_cfg.down_util;
+
+  // ---- Width cross-checks (2026-09-24, 40 MHz top rungs) -------------------
+  // A 40 MHz rung or pin needs the GS tuned 40 -- a 20-tuned receiver cannot
+  // hear HT40 at all (docs/bw40.md). Runs unconditionally, after both radio
+  // and link sections are settled, and after the max_mcs filter above: a
+  // rung filtered out by max_mcs is not checked here, which matches "what
+  // will fly". Task 6 appends the scan-candidate checks to this same block.
+  for (std::size_t i = 0; i < c.link.ladder_cfg.ladder.size(); ++i)
+    if (c.link.ladder_cfg.ladder[i].bw == 40 && c.radio.width != 40)
+      fail("link.ladder[" + std::to_string(i) + "].bw",
+           "40 MHz rung but radio.width is 20: the GS could not receive it");
+  if (c.link.static_bw == 40 && c.radio.width != 40)
+    fail("link.static_bw", "40 MHz pin but radio.width is 20");
+  if (c.radio.width == 40) {
+    const uint8_t home_off = mabur::ht40_offset(c.radio.channel);
+    for (uint8_t ch : c.radio.scan.candidates) {
+      const uint8_t off = mabur::ht40_offset(ch);
+      if (off == 0)
+        fail("radio.scan.candidates", "channel " + std::to_string(static_cast<int>(ch)) +
+                                          " has no 40 MHz pair (docs/bw40.md)");
+      if (off != home_off)
+        fail("radio.scan.candidates",
+             "channel " + std::to_string(static_cast<int>(ch)) +
+                 " is on the other side of the pair grid from home " +
+                 std::to_string(static_cast<int>(c.radio.channel)) +
+                 "; FastRetune keeps the offset, list the pair's primary on home's side (docs/bw40.md)");
+    }
+  }
+  // ---------------------------------------------------------------------
 
   if (j.contains("video")) {
     const Value& r = j["video"];

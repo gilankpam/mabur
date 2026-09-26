@@ -157,6 +157,15 @@ class GsCompactBar final : public GsLayer {
   static int row_of(GsBarField id);
   static constexpr int kRows = 2;
   static constexpr int kCorner = -1;
+  // The widest string field `id` can render with `n_cards` cards -- what
+  // its box is sized from, and the only thing standing between a corrupt
+  // datagram's 300-character number and permanent garbage on the glass
+  // (draw_text clips to the SURFACE, clear_region only to the box). Every
+  // clamp in state_of_ exists to keep the live string inside this one.
+  // Public (not just an implementation detail of layout()) so a worst-case
+  // format change -- like the 40 MHz rung's width suffix -- can be pinned
+  // by its own test rather than only indirectly through worst_row_width.
+  static std::string worst_case(GsBarField id, int n_cards);
   // The number of card slots the line is currently drawn for, -1 before the
   // first update() has reconciled one.
   int debug_cards() const { return n_cards_; }
@@ -187,13 +196,6 @@ class GsCompactBar final : public GsLayer {
     FieldState last;
     bool valid = false;
   };
-
-  // The widest string field `id` can render with `n_cards` cards -- what
-  // its box is sized from, and the only thing standing between a corrupt
-  // datagram's 300-character number and permanent garbage on the glass
-  // (draw_text clips to the SURFACE, clear_region only to the box). Every
-  // clamp in state_of_ exists to keep the live string inside this one.
-  static std::string worst_case(GsBarField id, int n_cards);
 
   FieldState state_of_(const GsSnapshot& snap, bool stale,
                        const GsPlayerState& ps, GsBarField id) const;

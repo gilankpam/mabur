@@ -124,3 +124,36 @@ TEST(span_follows_the_configured_confirm_ms) {
   CHECK(*hop_store_blank_until(jam(v, t), true, 2000) == t + 2000 + kHopSettleBlankMs);
 }
 MTEST_MAIN
+
+// ---- the verify's loss input must describe the channel it verifies -----
+// The verdict's link-loss input is a 500 ms trailing S1LossWindow. Nothing
+// cleared it when a hop landed, so the first verify window on the new
+// channel still carried the jam on the old one plus the hop's own retune
+// gap: 128 read 50.9 % loss with 0 foreign frames and failed its verify
+// (bench 2026-09-24, GS session 0207).
+#include "hop_controller.h"
+#include "s1_loss.h"
+TEST(verify_loss_window_blanks_when_the_hop_lands) {
+  HopAction confirm; confirm.kind = HopAction::Confirm;
+  auto b = hop_verdict_loss_blank_until(confirm, 1000);
+  REQUIRE(b.has_value());
+  CHECK(*b == 1000 + kHopSettleBlankMs);
+}
+TEST(verify_loss_window_untouched_by_every_other_action) {
+  for (auto k : {HopAction::None, HopAction::Order, HopAction::OneCardRetune,
+                 HopAction::Withdraw, HopAction::Hold, HopAction::VerifyPass}) {
+    HopAction a; a.kind = k;
+    CHECK(!hop_verdict_loss_blank_until(a, 1000).has_value());
+  }
+}
+TEST(carried_over_loss_does_not_reach_the_new_channels_verify) {
+  S1LossWindow w;   // the verdict's 500 ms window
+  uint64_t exp = 0, arr = 0; double t = 0;
+  for (; t < 1000; t += 10) { exp += 10; arr += 5; w.add(exp, arr, t); }   // 50 % on the jammed op
+  REQUIRE(w.sample(t).valid && w.sample(t).loss > 0.4);
+  HopAction confirm; confirm.kind = HopAction::Confirm;
+  if (auto b = hop_verdict_loss_blank_until(confirm, t)) w.blank_until(*b);
+  for (; t < 1400; t += 10) { exp += 10; arr += 10; w.add(exp, arr, t); }  // clean on the new channel
+  auto s = w.sample(t);
+  CHECK(!s.valid || s.loss < 0.001);
+}

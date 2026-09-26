@@ -283,16 +283,17 @@ Consume the same numbers programmatically with:
   `ctl.log` from one boot are siblings in the same session directory, so
   they pair by directory rather than by a shared NNNN (before that, NNNN
   was taken from the paired `CtlLog::index()` so a `probe-NNNN`/`ctl-NNNN`
-  pair from one boot lined up). Header `probelog 2 bpb=<bpb>`, then `<t_ms>
-  <seq> <mcs> <enh_fid> <blocks_ok> <card_mask> <snr_c0> <snr_c1> <evm_c0>
-  <evm_c1> <first_ms>` per row (`probelog 1`, 2026-09-04 only, lacked
+  pair from one boot lined up). Header `probelog 3 bpb=<bpb>`, then `<t_ms>
+  <seq> <mcs> <bw> <enh_fid> <blocks_ok> <card_mask> <snr_c0> <snr_c1>
+  <evm_c0> <evm_c1> <first_ms>` per row (`probelog 2`, to 2026-09-24,
+  lacked `bw` and is all 20 MHz; `probelog 1`, 2026-09-04 only, also lacked
   `first_ms`) — `t_ms` is the finalize tick (~10 ms coarse), `first_ms`
   the radio's arrival stamp of the body's first sight on any card (mono ms
   to 3 decimals, same CLOCK_MONOTONIC as `au.log`'s `t_complete`),
   `blocks_ok` is the union of surviving blocks, `card_mask` the bitmask of
   cards that delivered any block, snr/evm per-card in dB (`nan` when that
   card heard nothing this row). A row is written for EVERY finalized body,
-  on- or off-profile: `mcs` is that body's OWN profile, not the commanded
+  on- or off-profile: `mcs`/`bw` are that body's OWN profile, not the commanded
   one, so an RCF-lag body (arrives just after a profile switch, before the
   drone has caught up) still logs a row at its stale mcs instead of
   vanishing. A wholly-lost probe body is the only case with no row;
@@ -310,7 +311,7 @@ Consume the same numbers programmatically with:
   (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal, like
   the ctl log.
 
-  **fec.log (feclog 1, 2026-09-15).** Per-episode FEC loss record, the
+  **fec.log (feclog 2; feclog 1 from 2026-09-15 had no `bw`).** Per-episode FEC loss record, the
   measurement behind "is the rung table's overhead pair oversized" —
   written by maburgs into the session directory (`gs/src/fec_log.h`),
   rotating with it, never fatal. A *loss episode* is a run of source
@@ -320,16 +321,17 @@ Consume the same numbers programmatically with:
   window of it, since those compete for the same repairs. `SwDecoder`
   books it at horizon eviction — the only point where "never delivered" is
   final — so a row lands roughly a horizon after the loss. Header
-  `feclog 1`, then `<t_ms> <sid> <mcs> <ov> <first_seq> <span> <m> <rec>
-  <aband> <stale> <r> <w>` per row: drain tick (mono ms, ~10 ms coarse),
-  video layer (0 base / 1 enh), the op MCS and that sid's commanded
+  `feclog 2`, then `<t_ms> <sid> <mcs> <bw> <ov> <first_seq> <span> <m>
+  <rec> <aband> <stale> <r> <w>` per row: drain tick (mono ms, ~10 ms coarse),
+  video layer (0 base / 1 enh), the op MCS and width (`feclog 1` rows are
+  20 MHz) and that sid's commanded
   overhead at drain time (so a row scores against its own rung with no
   ctl.log join), wire seq of the first missing source, seqs spanned,
   missing = recovered + abandoned, of those how many fell below the
   transition watermark (`stale`, the same debris class the ladder
   excludes), distinct covering repairs received (`r`, a two-card copy
   counts once) and the repair window as flown (`w`). `flightreport.py`'s
-  FEC EPISODES section groups rows per (sid, mcs, ov) and prints, for the
+  FEC EPISODES section groups rows per (sid, mcs, bw, ov) and prints, for the
   non-stale ones, the overhead each episode would have needed,
   `ov_req = (sqrt(1+4c)−1)/2` with `c = m·ov·(1+ov)/r` — at overhead x the
   same lost air carries `m(1+ov)/(1+x)` sources against `r·x/ov` covering
@@ -391,11 +393,20 @@ and `target` are `null` while unfrozen / before the first-ever order,
 success or failure; `score`/`cost_us` are the last **successful** dwell's,
 since a failed retune produces no visit to score. `cards[i].energy` keeps
 its pre-existing shape but is now refilled from the verdict engine's
-~150 ms window reads instead of the deleted 1 Hz `A`-record poll.
+~150 ms window reads instead of the deleted 1 Hz `A`-record poll. Since
+2026-09-25 (NHM airtime evidence, `docs/nhm-airtime-spike-findings-2026-09-25.md`)
+it also carries `busy_pct` (NHM busy %, `null` when that window's reading
+was invalid or none has landed) and `own_air_pct` (the GS's own
+reconstructed airtime on that card, `null` only before the first window).
 `tools/maburtop.py`'s header gains `hop <state>/<verdict>` and its
-per-card `busy` column tracks `cards[i].energy` at the new cadence. Full
-key semantics, the OSD `(h)` mark, and the `flightreport.py` HOP section
-are in `docs/inflight-channel-hop.md`.
+per-card `busy` column tracks `cards[i].energy` at the new cadence, plus a
+further `fbusy` column (`max(0, busy_pct − own_air_pct)`, clamped so a
+stale `own_air_pct` past a fresher `busy_pct` can't read negative) — the
+same foreign-busy-airtime figure the verdict's `blocked` bit and both
+rankers use (renamed from `air%` in the final-review fix wave: the column
+was always foreign busy, never own airtime). Full key semantics, the OSD
+`(h)` mark, and the
+`flightreport.py` HOP section are in `docs/inflight-channel-hop.md`.
 
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin

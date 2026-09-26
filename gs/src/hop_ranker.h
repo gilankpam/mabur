@@ -15,6 +15,11 @@ struct HopVisit {
   uint8_t ch = 0;
   double t_ms = 0;
   uint32_t fa = 0, cca = 0, own = 0, foreign = 0;
+  // NHM busy-airtime evidence (spec 2026-09-25-nhm-airtime §6), from the
+  // in-flight dwell that gathered this visit. Absent (busy_valid false) for
+  // visits from radios/fakes without NHM support.
+  bool busy_valid = false;
+  double busy_pct = 0;
 };
 
 struct HopRankEntry {
@@ -22,9 +27,18 @@ struct HopRankEntry {
   uint32_t score = 0;
   int visits = 0;
   bool ranked = false;
+  // Mean busy_pct over this entry's fresh, busy_valid visits (0 when none
+  // had a reading), and whether that mean clears HopCfg::verdict.blocked_pct
+  // -- a channel with any busy evidence at or above the threshold ranks
+  // behind every non-blocked ranked channel, tiebroken by lower busy_pct.
+  bool blocked = false;
+  double busy_pct = 0;
 };
 
-// Ranks candidate channels by how busy recent brief visits found them.
+// Ranks candidate channels by how busy recent brief visits found them, with
+// NHM-blocked channels (mean busy_pct >= HopCfg::verdict.blocked_pct) pushed
+// into their own tier below every non-blocked ranked channel, tiebroken by
+// lower busy_pct (spec 2026-09-25-nhm-airtime §6).
 // Pure: no I/O, no clock of its own -- the caller passes now_ms (spec
 // 2026-09-14-inflight-channel-hop §3).
 class HopRanker {
@@ -46,7 +60,10 @@ class HopRanker {
   std::vector<HopRankEntry> ranking(double now_ms) const;
 
   // First ranked candidate that is neither exclude nor in skip.
-  std::optional<uint8_t> best(double now_ms, uint8_t exclude, const std::vector<uint8_t>& skip) const;
+  // require_unblocked: also skip entries whose `blocked` is set -- the hop
+  // never orders a channel the dwells read as blocked (Task 11 (a)).
+  std::optional<uint8_t> best(double now_ms, uint8_t exclude, const std::vector<uint8_t>& skip,
+                              bool require_unblocked = false) const;
 
  private:
   HopCfg cfg_;

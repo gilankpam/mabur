@@ -31,7 +31,7 @@ STALE_S = 2.0
 LABEL_W = 6
 CARD_COLS = [("st", 4), ("pps", 5), ("inj", 5), ("Mbps", 5), ("loss%", 5),
              ("crc", 5), ("age", 6), ("forgn", 6), ("self", 6), ("tx", 4),
-             ("txf", 4), ("busy", 6)]
+             ("txf", 4), ("busy", 6), ("fbusy", 5)]
 # LNK blocks (compact renderer only): one block per link type (class), a
 # decode line for the FEC streams, then per-card signal rows sharing these
 # columns across all blocks (their titles live on the LNK rule line).
@@ -105,15 +105,15 @@ def _cell_offsets(widths, label_w=LABEL_W):
     return offsets
 
 
-def _rung_cell(strm, w=7):
-    """TX rung the drone airs this stream at, e.g. 'mcs5+LS' (L=LDPC,
+def _rung_cell(strm, w=10):
+    """TX rung the drone airs this stream at, e.g. 'mcs3/40+LS' (L=LDPC,
     S=STBC). Derived GS-side from the commanded op; '--' pre-schema."""
     m = strm.get("rung_mcs")
     if m is None:
         return "--".ljust(w)
     flags = ("L" if strm.get("rung_ldpc") else "") + \
             ("S" if strm.get("rung_stbc") else "")
-    s = f"mcs{m}" + (f"+{flags}" if flags else "")
+    s = f"mcs{m}/{strm.get('rung_bw', '--')}" + (f"+{flags}" if flags else "")
     return s[:w].ljust(w) if len(s) > w else s.ljust(w)
 
 
@@ -364,6 +364,15 @@ def render_rows_compact(model, wall, width):
                 # between two dwell-period cycles the way the old poll did.
                 _f((e.get("cca", 0) - min(e.get("cca", 0), e.get("own", 0))) + e.get("fa", 0) + e.get("foreign", 0)
                    if (e := c.get("energy")) else None, CARD_COLS[11][1], 0),
+                # NHM busy airtime minus our own video's airtime (spec
+                # 2026-09-25-nhm-airtime): what's left for someone else to
+                # be blocking us with. None (blank cell) when the card's
+                # NHM window didn't cover the last verdict window; clamped
+                # at 0 since own_air is measured over a different (wider)
+                # span than the NHM bucket read and can outrun busy_pct.
+                _f(max(0, e.get("busy_pct") - (e.get("own_air_pct") or 0))
+                   if (e := c.get("energy")) and e.get("busy_pct") is not None else None,
+                   CARD_COLS[12][1], 0),
             ]
             rows.append(_grid_row(f"  c{_s(c.get('id'))}", cells))
 
@@ -1044,7 +1053,7 @@ def _ladder_rung_rows(ctl):
     rows = []
     for idx in range(len(ladder) - 1, -1, -1):
         r = ladder[idx] if isinstance(ladder[idx], dict) else {}
-        cell = (f"{idx} mcs{_s(r.get('mcs'))}"
+        cell = (f"{idx} mcs{_s(r.get('mcs'))}/{_s(r.get('bw'))}"
                 f"/ov{_s(r.get('ov_base'), 2)}:{_s(r.get('ov_enh'), 2)}")
         marker = "▶" if idx == cur else " "
         note, note_style = "", None
@@ -1054,7 +1063,7 @@ def _ladder_rung_rows(ctl):
             note, note_style = f"pen {max(pen[idx], 0) // 1000}s", "dim"
         elif idx == 0:
             note, note_style = "failsafe", "dim"
-        text = f" {marker}{cell:<20} {note}".rstrip()
+        text = f" {marker}{cell:<23} {note}".rstrip()
         spans = []
         if idx == cur:
             spans.append((1, 1 + len(cell), "good"))
@@ -1196,6 +1205,9 @@ def panel_gs_radios(model, wall):
                 _f(txf, CARD_COLS[10][1]),
                 _f((e.get("cca", 0) - min(e.get("cca", 0), e.get("own", 0))) + e.get("fa", 0) + e.get("foreign", 0)
                    if (e := c.get("energy")) else None, CARD_COLS[11][1], 0),
+                _f(max(0, e.get("busy_pct") - (e.get("own_air_pct") or 0))
+                   if (e := c.get("energy")) and e.get("busy_pct") is not None else None,
+                   CARD_COLS[12][1], 0),
             ]
             text = _grid_row(f"  c{_s(c.get('id'))}", cells)
             spans = []

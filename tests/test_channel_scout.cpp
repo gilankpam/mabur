@@ -2,6 +2,7 @@
 #include <vector>
 #include "mtest.h"
 #include "channel_scout.h"
+#include "nhm_busy.h"
 using namespace maburgs;
 
 // Fake radio + fake clock: sleep() advances time, so a dwell "takes" exactly
@@ -13,7 +14,14 @@ struct FakeRadio : ScoutRadio {
   uint32_t cca_per_ms_on[256] = {};  // busy rate per channel
   ScoutFrames fr;
   int64_t last_read = 0;
+  bool fail_width = false;   // retune_width() reports failure (dead/unready card)
   bool retune(uint8_t c) override { ch = c; calls.push_back("retune " + std::to_string(c)); return true; }
+  bool retune_width(uint8_t c, uint8_t w) override {
+    calls.push_back("retune_width " + std::to_string(c) + "/" + std::to_string(w));
+    if (fail_width) return false;
+    ch = c;
+    return true;
+  }
   ScoutEnergy read_energy(bool with_nhm) override {
     calls.push_back(std::string(with_nhm ? "read+nhm" : "read"));
     ScoutEnergy e; e.fa_valid = true;
@@ -156,5 +164,131 @@ TEST(one_card_home_counts_as_visits) {
   CHECK(s.proposal() == 136);   // only home has 2 visits (busy but the only ranked one)
   s.run_once(); s.run_once();
   CHECK(s.proposal() == 149);
+}
+
+// ---- 40 MHz boot scan (docs/bw40.md §3) ------------------------------------
+
+static ScoutCfg cfg40(bool one_card = false) {
+  ScoutCfg c = cfg2(one_card);
+  c.home = 136; c.candidates = {144, 40}; c.link_width_mhz = 40;
+  return c;
+}
+
+static std::vector<std::string> retunes_of(const FakeRadio& r) {
+  std::vector<std::string> out;
+  for (const auto& c : r.calls) if (c.rfind("retune", 0) == 0) out.push_back(c);
+  return out;
+}
+
+TEST(bw40_scan_dwells_every_half_of_every_pair_in_order) {
+  FakeRadio r;
+  ChannelScout s(cfg40(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  for (int i = 0; i < 6; ++i) s.run_once();   // one round: 132,136,140,144,36,40
+  CHECK(s.rounds() == 1);
+  const auto rt = retunes_of(r);
+  REQUIRE(rt.size() == 6);
+  CHECK(rt[0] == "retune 132"); CHECK(rt[1] == "retune 136");
+  CHECK(rt[2] == "retune 140"); CHECK(rt[3] == "retune 144");
+  CHECK(rt[4] == "retune 36");  CHECK(rt[5] == "retune 40");
+  auto d = s.take_dwells();
+  REQUIRE(d.size() == 6);
+  for (const auto& x : d) CHECK(x.survey.def.width == CHANNEL_WIDTH_20);   // halves are scored at 20
+}
+
+TEST(bw40_proposal_is_the_primary_of_the_pair_with_the_cleanest_worse_half) {
+  FakeRadio r;
+  r.cca_per_ms_on[132] = 40;   // home's SECONDARY is dirty
+  r.cca_per_ms_on[136] = 0;
+  r.cca_per_ms_on[140] = 0; r.cca_per_ms_on[144] = 0;
+  r.cca_per_ms_on[36] = 2;  r.cca_per_ms_on[40] = 0;
+  ChannelScout s(cfg40(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  for (int i = 0; i < 6; ++i) s.run_once();
+  CHECK(s.proposal() == 136);                // min_rounds 2 not met -> home
+  for (int i = 0; i < 6; ++i) s.run_once();
+  CHECK(s.rounds() == 2);
+  CHECK(s.proposal() == 144);                // 140+144 worse half 0 < home's 40*250; 36+40 worse half 500
+  auto k = s.ranking();
+  CHECK(k.size() == 6);                      // per-half entries
+  CHECK(k[0].ch == 136 && k[1].ch == 132);   // ChannelRanker keeps home at [0], then the half set in order
+}
+
+TEST(bw40_run_parks_the_card_at_40_on_the_target) {
+  FakeRadio r;
+  ChannelScout s(cfg40(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  s.freeze(144);
+  s.run();
+  CHECK(s.done());
+  REQUIRE(!r.calls.empty());
+  CHECK(r.calls.back() == "retune_width 144/40");
+  // 20 MHz link: plain retune, as before.
+  FakeRadio r20;
+  ChannelScout s20(cfg2(), r20, [&] { return r20.now; }, [&](int ms) { r20.now += ms; });
+  s20.freeze(149);
+  s20.run();
+  CHECK(r20.calls.back() == "retune 149");
+}
+
+TEST(bw40_one_card_run_parks_the_only_card_at_40) {
+  // One card: the scout IS the link card. run() must end on retune_width
+  // at 40 on the frozen target, or the link stays capped at the 20 rungs.
+  FakeRadio r;
+  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  for (int i = 0; i < 3; ++i) s.run_once();
+  s.freeze(136);
+  s.run();
+  CHECK(s.done());
+  REQUIRE(!r.calls.empty());
+  CHECK(r.calls.back() == "retune_width 136/40");
+  CHECK(r.ch == 136);
+}
+
+TEST(bw40_run_completes_even_when_the_width_switch_fails) {
+  // A dead/unready card: run() still ends (done) so the core can join it;
+  // the core loop's width resync (width_resync.h) fixes the card later.
+  FakeRadio r;
+  r.fail_width = true;
+  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  s.freeze(144);
+  s.run();
+  CHECK(s.done());
+  CHECK(r.calls.back() == "retune_width 144/40");
+}
+
+TEST(bw40_one_card_dwells_the_other_half_of_home_but_not_home) {
+  FakeRadio r;
+  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  // One-card cycle: home window dwell (136, HomeOneCard) then one scheduler
+  // dwell. Over a full round the scheduler visits 132, 140, 144, 36, 40.
+  for (int i = 0; i < 5; ++i) s.run_once();
+  const auto rt = retunes_of(r);
+  std::vector<std::string> sched;
+  for (const auto& x : rt) if (x != "retune 136") sched.push_back(x);
+  REQUIRE(sched.size() == 5);
+  CHECK(sched[0] == "retune 132"); CHECK(sched[1] == "retune 140");
+  CHECK(sched[4] == "retune 40");
+}
+
+TEST(boot_dwell_books_nhm_busy_before_the_floor_read) {
+  struct Nhm : FakeRadio {
+    uint16_t armed = 0;
+    bool arm_nhm_busy(uint16_t p) override { calls.push_back("arm " + std::to_string(p)); armed = p; return true; }
+    NhmBusyRead read_nhm_busy() override {
+      calls.push_back("nhm");
+      NhmBusyRead r; r.valid = true; r.period = armed; r.buckets[0] = 51; r.buckets[11] = 204; return r;
+    }
+  } r;
+  ScoutCfg c = cfg2(); c.blocked_pct = 30.0;
+  ChannelScout s(c, r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
+  CHECK(s.run_once());
+  // retune -> discard read -> ARM (250 ms = 62500) -> observe -> NHM read -> floor read (reprograms NHM)
+  REQUIRE(r.calls.size() == 5);
+  CHECK(r.calls[2] == "arm 62500");
+  CHECK(r.calls[3] == "nhm");
+  CHECK(r.calls[4] == "read+nhm");
+  auto d = s.take_dwells();
+  REQUIRE(d.size() == 1);
+  CHECK(d[0].busy_valid && d[0].busy_pct == 80.0);
+  for (const auto& e : s.ranking())
+    if (e.ch == 136) { CHECK(e.busy_valid); CHECK(e.worst_busy_pct == 80.0); }
 }
 MTEST_MAIN

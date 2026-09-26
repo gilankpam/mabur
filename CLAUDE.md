@@ -48,6 +48,7 @@ page the task needs rather than carrying all of it.
 | half-duplex timing: who transmits when, the slotter, airtime budget, why RCFs get lost | `docs/tx-rx-timing.md` |
 | boot time, the OpenIPC init chain, U-Boot/serial console on the drone | `docs/boot-time-findings-2026-09-07.md` |
 | carrier sense (CCA) on/off, the GS-send self-collision, the drone's RX channel view (`drone.radio.rx`), why the OSD LOSS row reads what it reads, the pending cca-on flight gate | `docs/cca-on-findings-2026-09-23.md` |
+| 40 MHz (HT40): which rungs fly 40, per-width tables, pair candidates, the boot scan's pair pick, no_agg, scanlog 3 / ctllog 12 | `docs/bw40.md` (as built: per-rung width, pairs, scan, no_agg) + `docs/bw40-sweep-findings-2026-09-23.md` ("Start here") |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
 Design specs live in `docs/superpowers/specs/` — **gitignored**, so they

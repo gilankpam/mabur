@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "channel_scout.h"
@@ -13,6 +14,9 @@ struct InflightScoutCfg {
   int observe_ms = 5;
   int period_ms = 333;
   std::vector<uint8_t> candidates;
+  uint8_t width_mhz = 20;  // radio.width: the dwell keeps the card's tuning (FastRetune), recorded here
+  uint8_t home = 0;        // radio.channel: dwelt on like a candidate whenever the link is off it
+  int busy_dbm = -83;      // HopCfg::verdict.busy_dbm: NHM bucket edge for the dwell's busy-airtime read
 };
 
 // The ~10 ms mid-flight dwell (spec 2026-09-14-inflight-channel-hop §3): a
@@ -52,7 +56,10 @@ class InflightScout {
 
   // One dwell on `ch`, returning to `back`. Fills d.survey (fa/cca/frames/
   // observe_ms), d.in_session=true, and the three step timings regardless
-  // of outcome.
+  // of outcome. Also arms an NHM busy-airtime window for the observe span
+  // and reads it back (spec 2026-09-25-nhm-airtime §6), filling
+  // d.busy_valid/d.busy_pct and, on success, visit.busy_valid/busy_pct --
+  // left at their false/0 defaults on radios without NHM support.
   //
   // CONTRACT (relied on by gs/src/main.cpp's sideport dwell attribution,
   // Task 12 -- HopVisit carries no card field, so main.cpp pairs each
@@ -75,17 +82,25 @@ class InflightScout {
   // dwell_return_value_flag_and_visit_population_stay_in_lockstep group.
   bool dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& visit);
 
-  // Round-robin over cfg_.candidates.
-  uint8_t next_candidate();
+  // Round-robin over the dwell set -- cfg_.candidates plus home, in
+  // HopRanker's order (config order, home appended when not listed) --
+  // skipping `skip`, the channel the card already sits on (a dwell there is
+  // a no-op retune whose visit HopRanker::best() excludes anyway). Home is
+  // in the set because these dwells are HopRanker's only source of visits:
+  // without them home is never ranked in flight and a hop off it is one-way
+  // (reachable only as the blind "nothing ranked" fallback). nullopt when
+  // `skip` is the only channel in the set.
+  std::optional<uint8_t> next_candidate(uint8_t skip);
 
-  // Every candidate once, back to back, each returning to `back` in
-  // between. Appends one ScoutDwell per candidate to `records` (in
-  // candidate order) and returns the matching HopVisits (fewer than
-  // records.size() if any candidate's dwell failed).
+  // Every channel of the dwell set except `back` once, back to back, each
+  // returning to `back` in between. Appends one ScoutDwell per dwell to
+  // `records` (in set order) and returns the matching HopVisits (fewer
+  // than records.size() if any dwell failed).
   std::vector<HopVisit> burst(uint8_t back, std::vector<ScoutDwell>& records);
 
  private:
   InflightScoutCfg cfg_;
+  std::vector<uint8_t> set_;   // cfg_.candidates, home appended if not listed
   ScoutRadio* radio_;
   NowUsFn now_us_;
   SleepFn sleep_ms_;

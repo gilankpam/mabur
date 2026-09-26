@@ -43,12 +43,14 @@ def load(path):
 
 def _parse_ladder_token(raw):
     """Parse the ctllog header's `ladder=` value into a list of
-    {"mcs": int, "ov_base": float, "ov_enh": float} rungs.
+    {"mcs": int, "bw": int, "ov_base": float, "ov_enh": float} rungs.
 
     v1-v7 wrote a single per-rung overhead x100 (`mcs/ov`, e.g. "5/25");
     v8 (Task 5, same-rate-fixed-pairs) splits it into a base/enh pair
     (`mcs/ovb:ove`, e.g. "5/25:50"). A single (pre-v8) value is treated as
-    both base and enh -- that rung had no split to lose."""
+    both base and enh -- that rung had no split to lose. v12 (2026-09-24,
+    40 MHz rungs) prefixes the width (`bw:mcs/ovb:ove`, e.g. "40:3/50:25");
+    older tokens are 20 MHz."""
     rungs = []
     if not raw:
         return rungs
@@ -56,8 +58,13 @@ def _parse_ladder_token(raw):
         if "/" not in entry:
             continue
         mcs_s, ov_s = entry.split("/", 1)
+        # v12 (40 MHz rungs): bw:mcs. Older tokens carry mcs alone = 20 MHz.
+        if ":" in mcs_s:
+            bw_s, mcs_s = mcs_s.split(":", 1)
+        else:
+            bw_s = "20"
         try:
-            mcs = int(mcs_s)
+            mcs, bw = int(mcs_s), int(bw_s)
         except ValueError:
             continue
         if ":" in ov_s:
@@ -68,7 +75,7 @@ def _parse_ladder_token(raw):
             ov_base, ov_enh = float(ovb_s) / 100.0, float(ove_s) / 100.0
         except ValueError:
             continue
-        rungs.append({"mcs": mcs, "ov_base": ov_base, "ov_enh": ov_enh})
+        rungs.append({"mcs": mcs, "bw": bw, "ov_base": ov_base, "ov_enh": ov_enh})
     return rungs
 
 
@@ -247,6 +254,64 @@ def print_rung_store_report(R):
                       f" n {hi['n']}/{lo['n']})")
 
 
+def bw40_summary(ctllog, probation_ms=3000.0):
+    """Time held on 40 MHz rungs and promotes onto them, from the ctllog 12
+    header's per-rung bw and the E lines. None when no rung is 40 MHz (every
+    pre-v12 recording). A promote onto 40 MHz counts as held unless the link
+    LEAVES the 40 MHz region (reaches a 20 MHz rung) within probation_ms --
+    a climb 40/3 -> 40/4 stays on 40 and still holds. probation_ms is the
+    bundle's link.probation_ms, 3 s; the log does not carry it."""
+    rungs = ctllog["header"].get("_ladder") or []
+    if not any(r.get("bw") == 40 for r in rungs):
+        return None
+    S, E = ctllog.get("S", []), ctllog.get("E", [])
+    ts = [s["t_ms"] for s in S] + [e["t_ms"] for e in E]
+    if not ts:
+        return {"held_s": 0.0, "total_s": 0.0, "promotes": 0, "held_past_probation": 0}
+    t0, t1 = min(ts), max(ts)
+
+    def bw_of(idx):
+        return rungs[idx]["bw"] if 0 <= idx < len(rungs) else 20
+
+    # Initial rung: the first E line's `from`; with no E lines, the first S
+    # line's rung (S carries the live rung); else rung 0.
+    if E:
+        cur = E[0]["from"]
+    elif S:
+        cur = min(S, key=lambda s: s["t_ms"])["rung"]
+    else:
+        cur = 0
+    t_prev, held, promotes, held_past = t0, 0.0, 0, 0
+    for i, e in enumerate(E):
+        if bw_of(cur) == 40:
+            held += e["t_ms"] - t_prev
+        if bw_of(e["from"]) != 40 and bw_of(e["to"]) == 40:
+            promotes += 1
+            # First time the link reaches a 20 MHz rung after this promote;
+            # the end of the recording when it never does.
+            left = next((x["t_ms"] for x in E[i + 1:] if bw_of(x["to"]) != 40), t1)
+            if left - e["t_ms"] >= probation_ms:
+                held_past += 1
+        cur, t_prev = e["to"], e["t_ms"]
+    if bw_of(cur) == 40:
+        held += t1 - t_prev
+    return {"held_s": held / 1000.0, "total_s": (t1 - t0) / 1000.0,
+            "promotes": promotes, "held_past_probation": held_past}
+
+
+def print_bw40_report(ctllog, probation_ms=3000.0):
+    b = bw40_summary(ctllog, probation_ms)
+    if b is None:
+        return
+    print("BW40 (40 MHz rungs; per-rung width from the ctllog 12 header)")
+    print(f"  held {b['held_s']:.1f} s of {b['total_s']:.1f} s on 40 MHz rungs;"
+          f" promotes onto 40 MHz: {b['promotes']},"
+          f" held past {probation_ms / 1000.0:g} s: {b['held_past_probation']}")
+    if b["promotes"] and b["held_past_probation"] == 0:
+        print("  !! every promote onto 40 MHz fell straight back: suspect a busy"
+              " secondary -- the scout cannot see it (docs/bw40.md)")
+
+
 def print_wall_report(ctllog):
     header, S, E, P, N = (ctllog[k] for k in ("header", "S", "E", "P", "N"))
 
@@ -299,6 +364,9 @@ def print_wall_report(ctllog):
         print("  u/u3: completion-booked pre-FEC loss (lags the air; transition-inflated) -- pre-ctllog-11")
 
     print("DWELL (S records)")
+    # The rung's mcs/bw from the ctllog header's ladder (ctllog 6+); a bare
+    # index when the header carries none or the index is outside it.
+    ladder = header.get("_ladder") or []
     by_rung = {}
     for s in S: by_rung.setdefault(s["rung"], []).append(s)
     for rung in sorted(by_rung):
@@ -312,7 +380,9 @@ def print_wall_report(ctllog):
         extra = ""
         if nan_n: extra += f" nan_snr={nan_n}"
         if sentinel_n: extra += f" u3_sentinel={sentinel_n}"
-        print(f"  rung {rung}: n={len(samples)} snr={snr_str}{evm_str}{extra}")
+        label = (f" (mcs{ladder[rung]['mcs']}/{ladder[rung]['bw']})"
+                 if 0 <= rung < len(ladder) else "")
+        print(f"  rung {rung}{label}: n={len(samples)} snr={snr_str}{evm_str}{extra}")
 
     print("EVENTS")
     reason_counts = {}
@@ -550,11 +620,13 @@ def probe_lead(E, P, horizon_ms=10000):
 
 
 def load_probelog(path):
-    """probe-NNNN_<date>.log: 'probelog <v> bpb=<n>' then
+    """probe-NNNN_<date>.log / probe.log: 'probelog <v> bpb=<n>' then
     't_ms seq mcs enh_fid blocks_ok card_mask snr_c0 snr_c1 evm_c0 evm_c1'
     plus, from probelog 2 (2026-09-05), 'first_ms': the radio's arrival
     stamp of the body's first sight (mono ms, µs fraction) -- None on v1
-    rows, whose t_ms is the ~10 ms finalize tick and useless for timing."""
+    rows, whose t_ms is the ~10 ms finalize tick and useless for timing.
+    probelog 3 (2026-09-24, 40 MHz rungs) inserts 'bw' after mcs; older
+    rows are 20 MHz."""
     rows, bpb, version = [], 4, 1
     with open(path) as f:
         first = f.readline().split()
@@ -564,9 +636,15 @@ def load_probelog(path):
             if tok.startswith("bpb="): bpb = int(tok[4:])
         for line in f:
             t = line.split()
+            if version >= 3:
+                if len(t) < 12: continue
+                bw, t = t[3], t[:3] + t[4:]   # drop bw: the rest is the v2 layout
+            else:
+                bw = "20"
             if len(t) < 10: continue
             try:
                 rows.append({"t_ms": float(t[0]), "seq": int(t[1]), "mcs": int(t[2]),
+                             "bw": int(bw),
                              "enh_fid": int(t[3]), "blocks_ok": int(t[4]),
                              "card_mask": int(t[5]),
                              "snr": [float(t[6]), float(t[7])],
@@ -666,8 +744,8 @@ PROBE_RESYNC_BODIES = 10000   # ~5 min of enh AUs: a bigger seq jump is a new ra
 
 
 def probelog_summary(pl):
-    """Per mcs: received bodies, lost bodies (seq gaps, attributed to the
-    NEXT received body's mcs), surviving blocks, per-card body counts.
+    """Per (mcs, bw): received bodies, lost bodies (seq gaps, attributed to
+    the NEXT received body's (mcs, bw)), surviving blocks, per-card body counts.
     A seq gap is loss only inside a live link: ProbeSource seeds a RANDOM
     initial seq per daemon start (the SwEncoder restart contract), and
     across a starve the GS is deaf for > failsafe_ms while the drone keeps
@@ -678,7 +756,7 @@ def probelog_summary(pl):
     out = {}
     prev_seq = None; prev_t = None
     for r in pl["rows"]:
-        s = out.setdefault(r["mcs"], {"bodies": 0, "lost_bodies": 0, "blocks_ok": 0,
+        s = out.setdefault((r["mcs"], r.get("bw", 20)), {"bodies": 0, "lost_bodies": 0, "blocks_ok": 0,
                                        "card0": 0, "card1": 0, "resyncs": 0})
         if prev_seq is not None:
             gap = r["seq"] - prev_seq - 1
@@ -705,12 +783,12 @@ def print_probe_report(ctllog, probelog, au_rows=None):
               f"probe lead={l} edges={e['edges']}")
     if probelog:
         bpb = probelog["bpb"]
-        print("PROBE LOG (per mcs)")
-        for mcs, s in sorted(probelog_summary(probelog).items()):
+        print("PROBE LOG (per mcs/bw)")
+        for (mcs, bw), s in sorted(probelog_summary(probelog).items()):
             tot = s["bodies"] + s["lost_bodies"]
             body_loss = s["lost_bodies"] / tot if tot else float("nan")
             blk_loss = 1 - s["blocks_ok"] / (tot * bpb) if tot else float("nan")
-            print(f"  mcs{mcs}: bodies={s['bodies']} lost={s['lost_bodies']} "
+            print(f"  mcs{mcs}/{bw}: bodies={s['bodies']} lost={s['lost_bodies']} "
                   f"body_loss={body_loss:.3f} block_loss={blk_loss:.3f} "
                   f"c0={s['card0']} c1={s['card1']}"
                   + (f" resyncs={s['resyncs']}" if s.get("resyncs") else ""))
@@ -724,9 +802,9 @@ def print_probe_report(ctllog, probelog, au_rows=None):
                       f"max={max(offs):.2f} min={min(offs):.2f}")
                 by_mcs = {}
                 for r, o in pairs:
-                    by_mcs.setdefault(r["mcs"], []).append(o)
-                for mcs, v in sorted(by_mcs.items()):
-                    print(f"    mcs{mcs}: n={len(v)} p50={_pct(v, .5):.2f} p90={_pct(v, .9):.2f} "
+                    by_mcs.setdefault((r["mcs"], r.get("bw", 20)), []).append(o)
+                for (mcs, bw), v in sorted(by_mcs.items()):
+                    print(f"    mcs{mcs}/{bw}: n={len(v)} p50={_pct(v, .5):.2f} p90={_pct(v, .9):.2f} "
                           f"p99={_pct(v, .99):.2f}")
             else:
                 print("  completion->probe: no joinable rows (probelog v1, or no "
@@ -745,22 +823,31 @@ def sniff_feclog(path):
         return f.readline().startswith("feclog ")
 
 
-FEC_COLS = ("t_ms", "sid", "mcs", "ov", "first_seq", "span", "m", "rec",
+FEC_COLS = ("t_ms", "sid", "mcs", "bw", "ov", "first_seq", "span", "m", "rec",
             "aband", "stale", "r", "w")
 FEC_CANDIDATE_OV = (0.25, 0.35, 0.50, 0.75, 1.00)
 
 
 def load_feclog(path):
-    """fec.log (feclog 1, gs/src/fec_log.h): one row per loss episode a
-    video layer's decoder closed. A rejoined session re-states the marker
-    partway through; `# dropped N` is the LogWriter's gap marker. Both
-    skipped, everything else is a row."""
+    """fec.log (gs/src/fec_log.h): one row per loss episode a video layer's
+    decoder closed. A rejoined session re-states the marker partway
+    through; `# dropped N` is the LogWriter's gap marker. Both skipped,
+    everything else is a row. feclog 2 (2026-09-24, 40 MHz rungs) inserts
+    `bw` after mcs; feclog 1 rows carry no bw and are 20 MHz."""
     rows = []
+    version = 1
     with open(path) as f:
         for line in f:
-            if line.startswith("feclog ") or line.startswith("#"):
+            if line.startswith("feclog "):
+                tok = line.split()
+                if len(tok) >= 2 and tok[1].isdigit():
+                    version = int(tok[1])
+                continue
+            if line.startswith("#"):
                 continue
             tok = line.split()
+            if version < 2:
+                tok = tok[:3] + ["20"] + tok[3:]
             if len(tok) != len(FEC_COLS):
                 continue
             r = {}
@@ -784,7 +871,7 @@ def fec_ov_req(m, r, ov):
 
 
 def print_fec_report(rows):
-    """FEC EPISODES: per (sid, mcs, ov) group -- the rung and layer the
+    """FEC EPISODES: per (sid, mcs, bw, ov) group -- the rung and layer the
     episode flew on -- how many episodes, how many fell inside a transition
     (stale > 0: excluded from the counterfactual), how many actually failed
     (aband > 0), the missing-count and ov_req distributions, and how many
@@ -795,18 +882,18 @@ def print_fec_report(rows):
         return
     groups = {}
     for r in rows:
-        groups.setdefault((r["sid"], r["mcs"], r["ov"]), []).append(r)
+        groups.setdefault((r["sid"], r["mcs"], r.get("bw", 20), r["ov"]), []).append(r)
     print("FEC EPISODES (fec.log: runs of sources never delivered; "
           "ov_req = overhead the episode would have needed)")
     for key in sorted(groups):
-        sid, mcs, ov = key
+        sid, mcs, bw, ov = key
         g = groups[key]
         live = [r for r in g if r["stale"] == 0]
         stale = len(g) - len(live)
         failed = sum(1 for r in g if r["aband"] > 0)
         ms = [r["m"] for r in live]
         reqs = [fec_ov_req(r["m"], r["r"], ov) for r in live]
-        print(f"  sid {sid} mcs {mcs} ov {ov:.2f}: n={len(g)} stale={stale} "
+        print(f"  sid {sid} mcs {mcs}/{bw} ov {ov:.2f}: n={len(g)} stale={stale} "
               f"failed={failed}")
         if not live:
             continue
@@ -951,7 +1038,11 @@ def load_scanlog(path):
     V's per-card block REPEATS once per card (2 cards on this hardware
     today, but the parser must not assume that): 'V t verdict evidence_hex
     ref_rung|- link_loss_pct recovered [card foreign fa cca crc rssi snr
-    drssi]...'.
+    drssi]...' (scanlog <= 3, 8-field blocks) or 'V ... [card foreign fa
+    cca crc rssi snr drssi nhm_busy|- own_air]...' (scanlog 4, 10-field
+    blocks) -- the stride is picked from the marker version seen so far,
+    since a rejoined session's later section can be v4 while its header
+    line is still the old marker.
 
     H's kind field is single-token snake_case today ("hold_cap" /
     "hold_exhausted" included, fixed at the emitter -- they used to be the
@@ -989,18 +1080,26 @@ def load_scanlog(path):
                 continue
             try:
                 if tag == "V" and len(toks) >= 7:
+                    stride = 10 if version >= 4 else 8
                     n_extra = len(toks) - 7
-                    if n_extra % 8 != 0:
+                    if n_extra % stride != 0:
                         continue  # malformed card block; skip rather than misparse
                     ref_rung = None if toks[4] == "-" else int(toks[4])
                     cards = []
-                    for i in range(7, len(toks), 8):
-                        cards.append({
+                    for i in range(7, len(toks), stride):
+                        card = {
                             "card": int(toks[i]), "foreign": int(toks[i + 1]),
                             "fa": int(toks[i + 2]), "cca": int(toks[i + 3]),
                             "crc_fail": int(toks[i + 4]), "rssi_dbm": float(toks[i + 5]),
                             "snr_db": float(toks[i + 6]), "d_rssi_db": float(toks[i + 7]),
-                        })
+                        }
+                        if stride == 10:
+                            card["nhm_busy"] = None if toks[i + 8] == "-" else float(toks[i + 8])
+                            card["own_air"] = float(toks[i + 9])
+                        else:
+                            card["nhm_busy"] = None
+                            card["own_air"] = None
+                        cards.append(card)
                     V.append({
                         "t_ms": float(toks[1]), "verdict": toks[2],
                         "evidence": int(toks[3], 16), "ref_rung": ref_rung,
@@ -1025,6 +1124,8 @@ def load_scanlog(path):
                         "flags_hex": int(toks[12], 16), "sess": int(toks[13]),
                         "to_us": int(toks[14]), "read_us": int(toks[15]),
                         "back_us": int(toks[16]),
+                        "bw": int(toks[17]) if len(toks) >= 18 else 20,
+                        "busy": (None if toks[18] == "-" else float(toks[18])) if len(toks) >= 19 else None,
                     })
                 elif tag == "M" and len(toks) >= 6:
                     card = None if toks[2] == "all" else int(toks[2])
@@ -1050,7 +1151,11 @@ def sniff_scanlog(path):
 # (idle_tick's fresh trigger, and verifying_tick's retry-after-fail); the
 # rest either continue an open attempt (lead_confirm, one_card_retune) or
 # close one (verify_pass, withdraw, and the two hold variants).
-_HOP_ORDER_KINDS = {"order", "verify_fail"}
+# "escape" (2026-09-26) places one too: the controller's way out of a hold
+# on a BLOCKED channel -- from idle (a fresh row) or in place of the
+# verify-fail hold (then, like a verify_fail retry, it also closes the
+# failed attempt).
+_HOP_ORDER_KINDS = {"order", "verify_fail", "escape"}
 # A hold is a STATE, and HopController logs only its EDGES: hold_cap /
 # hold_exhausted / verify_fail on the way in, "hold_end" on the way out,
 # whose elapsed_ms is how long the episode lasted (holds used to re-log
@@ -1064,7 +1169,16 @@ _HOP_ORDER_KINDS = {"order", "verify_fail"}
 # about a flight that ended in a hold. Recordings from before the
 # edge-logging fix still parse: their first per-tick hold line closes the
 # row exactly as the single one does now.
-_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "hold_cap", "hold_exhausted", "hold_end"}
+# "session_lost" (2026-09-24): HopController::on_session_lost withdrew an
+# order that was still waiting for its confirm when the link's session
+# dropped -- the attempt is over, with its own outcome.
+# "withdraw_undelivered" (2026-09-26, Task 12 (f)): a withdraw after the
+# confirm extension (the op read blocked, so the order was held past
+# confirm_ms) -- the target is backed off as undelivered, not failed.
+# "confirm_extend" (same day) marks entry into that extension and is
+# informational: the attempt stays open.
+_HOP_TERMINAL_ONLY_KINDS = {"withdraw", "withdraw_undelivered", "session_lost", "hold_cap",
+                            "hold_exhausted", "hold_end"}
 _HOP_RESTORE_WINDOW_MS = 5000.0  # generous: production fires E hop_restore
                                  # essentially in the same tick as H order/
                                  # verify_fail (main.cpp calls
@@ -1139,7 +1253,7 @@ def build_hop_rows(H, restores):
                 # verify IS why this new order was placed. A fresh "order"
                 # while one was already open should never happen per the
                 # FSM (strictly one attempt in flight) -- defensive only.
-                close(kind if base == "verify_fail" else "interrupted", h["t_ms"])
+                close(kind if base in ("verify_fail", "escape") else "interrupted", h["t_ms"])
             open_row = {
                 "shadow": shadow, "order_ts": h["t_ms"], "order_epoch": h["epoch"],
                 "target": h["target"], "video_ts": None,
@@ -1162,7 +1276,7 @@ def build_hop_rows(H, restores):
             if open_row["video_ts"] is None:
                 open_row["video_ts"] = h["t_ms"]
             continue
-        if base == "one_card_retune":
+        if base in ("one_card_retune", "confirm_extend"):
             continue   # informational only; doesn't end the attempt
         if base == "verify_pass" or base in _HOP_TERMINAL_ONLY_KINDS:
             close(kind, h["t_ms"])
@@ -1300,6 +1414,8 @@ def print_hop_report(scanlog, ctllog):
         hist = verdict_histogram(V)
         print("verdicts: " + " ".join(f"{k} {n}" for k, n in hist.items()) if hist
               else "verdicts: (none)")
+        blocked = sum(1 for v in V if v["evidence"] & 0x20)
+        print(f"blocked windows: {blocked} (evidence & 0x20)")
         # Calibration instrument (spec Open Items: "the observe-only
         # flights are the calibration") -- a verdict name alone can't tell
         # contention from a weak signal from fading, nor which card drove
@@ -1313,6 +1429,17 @@ def print_hop_report(scanlog, ctllog):
             print(f"  card {card} (non-healthy, n={m['n']}): "
                   f"foreign={m['foreign']:.0f} fa={m['fa']:.0f} "
                   f"rssi={m['rssi_dbm']:.1f} snr={m['snr_db']:.1f}")
+
+    # Task 11: how often the controller escaped a blocked hold, and how many
+    # windows read `starved` (no own frame on any valid card, evidence 0x40).
+    escapes = sum(1 for h in H if _strip_would(h["kind"]) == "escape")
+    starved = sum(1 for v in V if v["evidence"] & 0x40)
+    print(f"escapes: {escapes}  starved windows: {starved} (evidence & 0x40)")
+    # Task 12 (f): orders held past confirm_ms because the op read blocked,
+    # and how many of those still never landed.
+    extends = sum(1 for h in H if _strip_would(h["kind"]) == "confirm_extend")
+    undelivered = sum(1 for h in H if _strip_would(h["kind"]) == "withdraw_undelivered")
+    print(f"confirm extensions: {extends}  undelivered withdraws: {undelivered}")
 
     dsum = dwell_cost_summary(D)
     if dsum:
@@ -1341,6 +1468,7 @@ def main(path, aulog=None, probelog_path=None, scanlog_path=None):
         ctllog = load_ctllog(path)
         print_wall_report(ctllog)
         print_episode_report(ctllog)
+        print_bw40_report(ctllog)
         probelog = None
         probe_src = None
         if probelog_path:

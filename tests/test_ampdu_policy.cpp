@@ -1,39 +1,46 @@
-// Per-rung A-MPDU policy (docs/bandwidth-sweep-findings-2026-09-17.md): the
-// saturation sweep measured agg6 LOSING 6/10/13/4 points of delivered
-// capacity at mcs0-3 versus QoS-Data singles and gaining 8-13 points at
-// mcs5/7, crossover near mcs4; the rung-pinned A/B (sessions 0121-0128)
-// showed singles never worse on latency at rungs 0-3. So the aggregation
-// mode follows the op's MCS: below ampdu.min_mcs the chip flies singles.
+// Per-rung, per-width A-MPDU policy. 20 MHz: agg6 loses 6-13 points vs
+// singles at mcs0-3 (docs/bandwidth-sweep-findings-2026-09-17.md), so the
+// threshold is 4. 40 MHz: frames are half as long on air, the fixed
+// per-PPDU cost doubles its share, and aggregation pays from mcs2
+// (docs/bw40-sweep-findings-2026-09-23.md "Findings" 3) -- a separate
+// threshold per width.
 #include "mtest.h"
 #include "ampdu_policy.h"
 using namespace mabur;
 
 TEST(ampdu_policy_off_when_max_num_zero) {
-  AmpduCfg c; c.max_num = 0; c.min_mcs = 0;
-  for (uint8_t m = 0; m <= 7; ++m) CHECK(!ampdu_mode_for(c, m).enabled);
+  AmpduCfg c; c.max_num = 0; c.min_mcs_20 = 0; c.min_mcs_40 = 0;
+  for (uint8_t m = 0; m <= 7; ++m) {
+    CHECK(!ampdu_mode_for(c, m, 20).enabled);
+    CHECK(!ampdu_mode_for(c, m, 40).enabled);
+  }
 }
 
-TEST(ampdu_policy_threshold_is_inclusive) {
-  AmpduCfg c; c.max_num = 6; c.max_time = 32; c.min_mcs = 4;
-  CHECK(!ampdu_mode_for(c, 3).enabled);
-  CHECK(ampdu_mode_for(c, 4).enabled);
-  CHECK(ampdu_mode_for(c, 7).enabled);
-  CHECK(!ampdu_mode_for(c, 0).enabled);
+TEST(ampdu_policy_threshold_is_inclusive_and_per_width) {
+  AmpduCfg c; c.max_num = 6; c.max_time = 32; c.min_mcs_20 = 4; c.min_mcs_40 = 2;
+  CHECK(!ampdu_mode_for(c, 3, 20).enabled);
+  CHECK(ampdu_mode_for(c, 4, 20).enabled);
+  CHECK(ampdu_mode_for(c, 7, 20).enabled);
+  CHECK(!ampdu_mode_for(c, 0, 20).enabled);
+  // The same MCS aggregates at 40 MHz but not at 20: the 40/3 rung
+  // aggregates, the 20/3 rung flies singles.
+  CHECK(!ampdu_mode_for(c, 1, 40).enabled);
+  CHECK(ampdu_mode_for(c, 2, 40).enabled);
+  CHECK(ampdu_mode_for(c, 3, 40).enabled);
+  CHECK(!ampdu_mode_for(c, 3, 20).enabled);
 }
 
 TEST(ampdu_policy_min_mcs_zero_aggregates_every_rung) {
-  // min_mcs 0 is the pre-2026-09-17 behaviour: aggregate everywhere.
-  AmpduCfg c; c.max_num = 6; c.min_mcs = 0;
-  for (uint8_t m = 0; m <= 7; ++m) CHECK(ampdu_mode_for(c, m).enabled);
+  AmpduCfg c; c.max_num = 6; c.min_mcs_20 = 0; c.min_mcs_40 = 0;
+  for (uint8_t m = 0; m <= 7; ++m) {
+    CHECK(ampdu_mode_for(c, m, 20).enabled);
+    CHECK(ampdu_mode_for(c, m, 40).enabled);
+  }
 }
 
 TEST(ampdu_policy_enabled_mode_is_maburd_recipe) {
-  // The exact recipe drone/src/main.cpp programmed at bring-up before the
-  // policy moved into the actuator: tid 0, density 7, no-ack, config
-  // max_num/max_time. A different descriptor half is a different
-  // measurement, not the one the sweep validated.
-  AmpduCfg c; c.max_num = 6; c.max_time = 32; c.min_mcs = 4;
-  const devourer::AmpduMode m = ampdu_mode_for(c, 5);
+  AmpduCfg c; c.max_num = 6; c.max_time = 32; c.min_mcs_20 = 4; c.min_mcs_40 = 2;
+  const devourer::AmpduMode m = ampdu_mode_for(c, 5, 20);
   CHECK(m.enabled);
   CHECK(m.tid == 0);
   CHECK(m.max_num == 6);
@@ -43,14 +50,12 @@ TEST(ampdu_policy_enabled_mode_is_maburd_recipe) {
 }
 
 TEST(ampdu_policy_same_mode_compares_equal) {
-  // The actuator only writes the chip when the mode CHANGES (a register
-  // write per RCF would be pointless USB traffic on the agent thread), so
-  // two modes derived for rungs on the same side of the threshold must
-  // compare equal, and modes across it must not.
-  AmpduCfg c; c.max_num = 6; c.max_time = 32; c.min_mcs = 4;
-  CHECK(ampdu_mode_same(ampdu_mode_for(c, 4), ampdu_mode_for(c, 7)));
-  CHECK(ampdu_mode_same(ampdu_mode_for(c, 0), ampdu_mode_for(c, 3)));
-  CHECK(!ampdu_mode_same(ampdu_mode_for(c, 3), ampdu_mode_for(c, 4)));
+  AmpduCfg c; c.max_num = 6; c.max_time = 32; c.min_mcs_20 = 4; c.min_mcs_40 = 2;
+  CHECK(ampdu_mode_same(ampdu_mode_for(c, 4, 20), ampdu_mode_for(c, 7, 20)));
+  CHECK(ampdu_mode_same(ampdu_mode_for(c, 0, 20), ampdu_mode_for(c, 3, 20)));
+  CHECK(!ampdu_mode_same(ampdu_mode_for(c, 3, 20), ampdu_mode_for(c, 4, 20)));
+  // Crossing from 20/4 to 40/3 keeps aggregation on: no chip write.
+  CHECK(ampdu_mode_same(ampdu_mode_for(c, 4, 20), ampdu_mode_for(c, 3, 40)));
 }
 
 MTEST_MAIN

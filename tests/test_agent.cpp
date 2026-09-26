@@ -337,13 +337,13 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
 }
 
 // 3b. Per-MCS efficiency (docs/bandwidth-sweep-findings-2026-09-17.md): the
-// policy prices each layer at nominal × air_clock.efficiency[mcs], so the
-// budget is a fraction of the capacity the link DELIVERS. Same op as 3 with
-// efficiency[2] = 0.5: both rate terms halve, kbps 8450 -> 4225 -> 4200.
-// Entries for other MCS must not leak in.
+// policy prices each layer at nominal × air_clock.efficiency_<bw>[mcs], so
+// the budget is a fraction of the capacity the link DELIVERS. Same op as 3
+// (20 MHz) with efficiency_20[2] = 0.5: both rate terms halve, kbps
+// 8450 -> 4225 -> 4200. Entries for other MCS must not leak in.
 TEST(bitrate_policy_prices_at_delivered_rate) {
   Config cfg = make_cfg();
-  cfg.air_clock.efficiency = {0.1, 0.1, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1};
+  cfg.air_clock.efficiency_20 = {0.1, 0.1, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1};
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
@@ -1088,6 +1088,35 @@ TEST(probe_rcf_does_not_change_bitrate) {
   CHECK(act.bitrates.back() == before);
 }
 
+// 11d. The probe airs at the probe profile's OWN width, not the current
+// op's — a 20/4 op with a 40/3 probe_profile (GS sitting on 20 with 40
+// above it) must measure the 40 rung at 40, or a 20->40 promote is blind
+// (controller Task 11b, 2026-09-24, docs/bw40.md).
+TEST(probe_rcf_airs_at_the_probe_profiles_own_width) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  const uint8_t probe_byte = encode_profile(PhyMode::HT, 3, 40);
+  auto wire = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 4, 20), 8, 8, probe_byte);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  REQUIRE(!act.applied.empty());
+  const AppliedOp& op = act.applied.back();
+  CHECK(op.ladder[1].bw == 20);   // video ladder stays at the op's width
+  CHECK(op.probe.mcs == 3);
+  CHECK(op.probe.bw == 40);       // probe airs at its own width, not 20
+
+  // Reverse: op already on 40, probe_profile also 40 (a different mcs) ->
+  // probe stays 40 too, not silently coerced to the op's mode/width.
+  auto wire2 = make_rcf_wire(1, 2, encode_profile(PhyMode::HT, 3, 40), 8, 8,
+                             encode_profile(PhyMode::HT, 4, 40));
+  agent.on_rc_frame(wire2.data(), wire2.size(), 200);
+  const AppliedOp& op2 = act.applied.back();
+  CHECK(op2.ladder[1].bw == 40);
+  CHECK(op2.probe.mcs == 4);
+  CHECK(op2.probe.bw == 40);
+}
+
 TEST(link_established_latches_on_disc_link_up) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -1538,6 +1567,81 @@ TEST(rcf_hop_withdrawal_returns_to_previous_channel) {
   CHECK(act.retunes[1] == 136);
   CHECK(act.retune_reasons[1] == "hop");
   CHECK(agent.hop_epoch() == 2);
+}
+
+// Unconfirmed hop falls back to the PRE-HOP channel, not home (spec
+// 2026-09-14 §1 step 4: "both converge on the old channel"). A GS that
+// withdraws at confirm_ms goes back to the old op; a drone that had already
+// moved must go there too. Bench 2026-09-26 (GS session 0233): hop 112 ->
+// 153 with home == 153, GS withdrew at 510 ms, the drone's fallback went
+// "home" -- the channel it was already on -- and the pair sat split 60 s.
+// Reverting to go_home_() here makes these fail: the first two stay on (or
+// go to) home instead of 149.
+static void hop_and_confirm(RcAgent& agent, const Config& cfg, uint8_t ch, uint8_t epoch,
+                            uint16_t seq, uint64_t t) {
+  auto order = make_rcf_wire_hop(cfg.link.vtx_id, seq, 0x24, 1.0, 0.5, ch, epoch);
+  agent.on_rc_frame(order.data(), order.size(), t);
+  auto confirm = make_rcf_wire_hop(cfg.link.vtx_id, seq + 1, 0x24, 1.0, 0.5, ch, epoch);
+  agent.on_rc_frame(confirm.data(), confirm.size(), t + 60);   // heard on ch: confirmed
+}
+
+TEST(unconfirmed_hop_into_home_reverts_to_pre_hop_channel) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);                  // op is now 149
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, /*hop_ch=*/136, 2);  // target == home
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  REQUIRE(act.retunes.size() == 2);
+  CHECK(act.retunes[1] == 136);
+  agent.tick(1000 + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  CHECK(act.retunes[2] == 149);
+  CHECK(act.retune_reasons[2] == "move_unconfirmed");
+  CHECK(agent.channel() == 149);
+}
+
+TEST(unconfirmed_hop_reverts_to_pre_hop_channel_not_home) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  agent.tick(1000 + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  CHECK(act.retunes[2] == 149);
+  CHECK(agent.channel() == 149);
+}
+
+// The revert is one step: silence on the pre-hop channel too means the GS is
+// gone, and the existing fallback (home, RENDEZVOUS) takes over.
+TEST(silence_after_hop_revert_falls_back_home) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
+  agent.tick(t_revert, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  REQUIRE(act.retunes.size() == 4);
+  CHECK(act.retunes[3] == 136);
+  CHECK(act.retune_reasons[3] == "move_unconfirmed");
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+}
+
+// The withdrawing GS's RCF (new epoch, old channel) heard after the revert
+// confirms it: no further retune, the drone stays on the pre-hop channel.
+TEST(withdraw_rcf_after_hop_revert_confirms_it) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
+  agent.tick(t_revert, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  auto wd = make_rcf_wire_hop(cfg.link.vtx_id, 4, 0x24, 1.0, 0.5, 149, 3);
+  agent.on_rc_frame(wd.data(), wd.size(), t_revert + 50);
+  agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  CHECK(act.retunes.size() == 3);
+  CHECK(agent.channel() == 149);
 }
 
 TEST(rcf_hop_ch_zero_is_ignored) {

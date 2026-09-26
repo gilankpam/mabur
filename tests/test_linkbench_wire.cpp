@@ -50,6 +50,35 @@ TEST(dot11_header_layout) {
   CHECK((seq_ctl >> 4) == 0x123);
 }
 
+TEST(range_payload_roundtrip_with_and_without_fcs) {
+  RangeFrameInfo in;
+  in.bw = 40; in.mcs = 5; in.rel = -17; in.cycle = 0x1234; in.seq = 0xBEEF;
+  auto p = build_range_payload(in, 1400);
+  REQUIRE(p.size() == 1400);
+  RangeFrameInfo out;
+  REQUIRE(parse_range_payload(p.data(), p.size(), &out));
+  CHECK(out.bw == 40); CHECK(out.mcs == 5); CHECK(out.rel == -17);
+  CHECK(out.cycle == 0x1234); CHECK(out.seq == 0xBEEF);
+  p.insert(p.end(), {0xde, 0xad, 0xbe, 0xef});  // trailing FCS as RX delivers it
+  REQUIRE(parse_range_payload(p.data(), p.size(), &out));
+  CHECK(out.rel == -17);
+}
+
+TEST(range_payload_rejects_corruption_and_foreign) {
+  RangeFrameInfo in;
+  in.bw = 20; in.mcs = 0; in.rel = 3;
+  auto p = build_range_payload(in, 200);
+  RangeFrameInfo out;
+  auto bad = p; bad[100] ^= 0x01;                 // fill byte flipped
+  CHECK(!parse_range_payload(bad.data(), bad.size(), &out));
+  bad = p; bad[4] = 30;                           // impossible width
+  CHECK(!parse_range_payload(bad.data(), bad.size(), &out));
+  bad = p; bad[0] = 'X';                          // not ours
+  CHECK(!parse_range_payload(bad.data(), bad.size(), &out));
+  auto bp = build_bench_packet(7, 200);           // a bench packet is not one
+  CHECK(!parse_range_payload(bp.data(), bp.size(), &out));
+}
+
 TEST(parse_rate_bps_forms) {
   CHECK(parse_rate_bps("8M") == 8000000ull);
   CHECK(parse_rate_bps("1.5M") == 1500000ull);

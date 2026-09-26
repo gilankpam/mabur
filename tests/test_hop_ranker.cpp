@@ -67,4 +67,61 @@ TEST(no_boot_pick_falls_through_to_home) {
   for (int i = 0; i < 3; ++i) { r.add(V(120, i * 100, 2)); r.add(V(149, i * 100, 2)); r.add(V(165, i * 100, 2)); }
   CHECK(*r.best(1000, 255, {}) == 165);
 }
+
+static maburgs::HopVisit bv(uint8_t ch, double t, uint32_t fa, double busy) {
+  maburgs::HopVisit v; v.ch = ch; v.t_ms = t; v.fa = fa; v.busy_valid = true; v.busy_pct = busy; return v;
+}
+TEST(blocked_channel_loses_to_a_busier_by_events_unblocked_one) {
+  maburgs::HopCfg c;   // blocked_pct 50
+  maburgs::HopRanker r(c, {144, 64}, 136, 0);
+  for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 90)); r.add(bv(64, i, 40, 0)); }
+  auto b = r.best(10, 136, {});
+  REQUIRE(b.has_value());
+  CHECK(*b == 64);   // today's score alone would pick 144 (0 events)
+}
+TEST(busy_is_the_mean_over_fresh_visits) {
+  maburgs::HopCfg c;
+  maburgs::HopRanker r(c, {144}, 136, 0);
+  r.add(bv(144, 1, 0, 100)); r.add(bv(144, 2, 0, 0)); r.add(bv(144, 3, 0, 0)); r.add(bv(144, 4, 0, 0));
+  for (const auto& e : r.ranking(10)) if (e.ch == 144) { CHECK(!e.blocked); CHECK(e.busy_pct == 25.0); }
+}
+TEST(all_blocked_least_busy_wins) {
+  maburgs::HopCfg c;
+  maburgs::HopRanker r(c, {144, 64}, 136, 0);
+  for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 95)); r.add(bv(64, i, 0, 60)); }
+  CHECK(*r.best(10, 136, {}) == 64);
+}
+TEST(visits_without_busy_rank_as_today) {
+  maburgs::HopCfg c;
+  maburgs::HopRanker r(c, {144, 64}, 136, 0);
+  for (int i = 0; i < 3; ++i) {
+    maburgs::HopVisit a; a.ch = 144; a.t_ms = i; a.fa = 5; r.add(a);
+    maburgs::HopVisit b; b.ch = 64; b.t_ms = i; b.fa = 1; r.add(b);
+  }
+  CHECK(*r.best(10, 136, {}) == 64);
+}
 MTEST_MAIN
+
+// ---- Task 11 (a): never hop INTO a blocked channel ----------------------
+// Bench 2026-09-26: every candidate but one was blocked by the long-frame
+// jam leaking from 144, the "all blocked -> least busy wins" tier handed
+// back 136 (99.6-100 % busy on every dwell), and the link sat on it for
+// ~33 s. ranking() keeps the blocked tier for display; best() with
+// require_unblocked skips it.
+// Revert (ignore require_unblocked in best()): the second CHECK returns 144.
+TEST(best_require_unblocked_skips_blocked) {
+  maburgs::HopCfg c;   // blocked_pct 50
+  maburgs::HopRanker r(c, {144, 112}, 136, 0);
+  for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 95)); r.add(bv(112, i, 40, 0)); }
+  auto b = r.best(10, 136, {}, /*require_unblocked=*/true);
+  REQUIRE(b.has_value());
+  CHECK(*b == 112);
+  // only a blocked channel ranked -> nothing
+  CHECK(!r.best(10, 136, {112}, /*require_unblocked=*/true).has_value());
+  // default (display / legacy callers): the blocked tier is still a pick
+  CHECK(*r.best(10, 136, {112}) == 144);
+  // ranking() itself is unchanged: 144 is still listed, flagged blocked
+  bool seen = false;
+  for (const auto& e : r.ranking(10)) if (e.ch == 144) { seen = true; CHECK(e.blocked); }
+  CHECK(seen);
+}

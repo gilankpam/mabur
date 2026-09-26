@@ -5,6 +5,7 @@ add_library(mabur_gs_core STATIC
   src/hop_ranker.cpp
   src/hop_controller.cpp
   src/channel_scout.cpp
+  src/pair_pick.cpp
   src/inflight_scout.cpp
   src/config.cpp
   src/card_scan.cpp

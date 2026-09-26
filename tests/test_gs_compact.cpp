@@ -32,6 +32,7 @@ GsSnapshot nominal() {
   GsSnapshot s;
   s.channel = 149;
   s.mcs = 5;
+  s.bw = 20;
   s.air_pct = 62.0;
   s.pre_loss_pct = 0.3;
   s.post_loss_pct = 0.0;
@@ -101,9 +102,27 @@ TEST(the_rows_read_exactly_as_specified) {
   GsCompactBar bar(f);
   REQUIRE(bar.layout(1920, 1080, &err));
   CHECK(row_of(bar, nominal(), false, player_nominal(), 0) ==
-        "ch:149 mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
+        "ch:149 mcs:5/20 air:62% rssi:-70/-72 snr:22/20 temp:41");
   CHECK(row_of(bar, nominal(), false, player_nominal(), 1) ==
         "bitrate:8.1 res:1280x720 fps:60 jit:5.2 lat:45/78 loss:0.3/0.0");
+}
+
+// 40 MHz rungs (2026-09-24): with 20/3 and 40/3 both live in the ladder, the
+// MCS number alone no longer names the rung -- the cell grows a width
+// suffix. Absent bw (older maburgs, or the fallback exhausted) draws dashes
+// instead of a fabricated width.
+TEST(compact_mcs_cell_shows_width_and_dashes_without_it) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  s.mcs = 3; s.bw = 40;
+  CHECK(row_of(bar, s, false, player_nominal(), 0).find("mcs:3/40") != std::string::npos);
+  s.bw.reset();
+  CHECK(row_of(bar, s, false, player_nominal(), 0).find("mcs:3/--") != std::string::npos);
+  CHECK(GsCompactBar::worst_case(GsBarField::kMcs, 2) == "mcs:9/40");
 }
 
 // radio.scan enabled on the GS: the channel carries an "(a)" suffix so the
@@ -117,10 +136,10 @@ TEST(auto_channel_select_marks_the_channel) {
   GsSnapshot s = nominal();
   s.scan_auto = true;
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:149(a) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
+        "ch:149(a) mcs:5/20 air:62% rssi:-70/-72 snr:22/20 temp:41");
   s.channel.reset();
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:--(a) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
+        "ch:--(a) mcs:5/20 air:62% rssi:-70/-72 snr:22/20 temp:41");
 }
 
 // In-flight channel hop (spec 2026-09-14-inflight-channel-hop): the
@@ -136,12 +155,12 @@ TEST(inflight_hop_marks_the_channel) {
   GsSnapshot s = nominal();
   s.hopped = true;
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
+        "ch:149(h) mcs:5/20 air:62% rssi:-70/-72 snr:22/20 temp:41");
   // hopped takes priority over scan_auto when (implausibly) both are set --
   // they share the one suffix slot worst_case() reserves.
   s.scan_auto = true;
   CHECK(row_of(bar, s, false, player_nominal(), 0) ==
-        "ch:149(h) mcs:5 air:62% rssi:-70/-72 snr:22/20 temp:41");
+        "ch:149(h) mcs:5/20 air:62% rssi:-70/-72 snr:22/20 temp:41");
 }
 
 // A card count of four widens exactly two items and nothing else.

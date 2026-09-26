@@ -102,6 +102,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       cj["energy"] = {{"cca", c.energy->cca}, {"fa", c.energy->fa}, {"own", c.energy->own},
                       {"foreign", c.energy->foreign}};
       if (c.energy->igi) cj["energy"]["igi"] = *c.energy->igi; else cj["energy"]["igi"] = nullptr;
+      cj["energy"]["busy_pct"] = c.energy->busy_pct ? json(*c.energy->busy_pct) : json(nullptr);
+      cj["energy"]["own_air_pct"] = c.energy->own_air_pct ? json(*c.energy->own_air_pct) : json(nullptr);
     } else {
       cj["energy"] = nullptr;
     }
@@ -248,6 +250,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     json& ctl = link["ctl"];
     ctl["rung"] = {{"idx", c.rung_idx},
                    {"mcs", c.rung_mcs},
+                   {"bw", c.rung_bw},
                    {"ov_base", c.rung_ov_base},
                    {"ov_enh", c.rung_ov_enh}};
     ctl["util"] = c.util;
@@ -260,9 +263,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     ctl["penalized"] = std::move(pen);
     json lad = json::array();
     for (const auto& r : c.ladder)
-      lad.push_back({{"mcs", std::get<0>(r)},
-                     {"ov_base", std::get<1>(r)},
-                     {"ov_enh", std::get<2>(r)}});
+      lad.push_back({{"mcs", r.mcs},
+                     {"bw", r.bw},
+                     {"ov_base", r.ov_base},
+                     {"ov_enh", r.ov_enh}});
     ctl["ladder"] = std::move(lad);
     ctl["down_util"] = c.down_util;
     ctl["up_util"] = c.up_util;
@@ -302,6 +306,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       const StatsRungIn& rg = c.rungs[i];
       rungs.push_back({{"i", static_cast<int>(i)},
                        {"mcs", rg.mcs},
+                       {"bw", rg.bw},
                        {"ov_base", rg.ov_base},
                        {"ov_enh", rg.ov_enh},
                        {"u", clamp_util(rg.u)},
@@ -375,6 +380,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                                     : in.telem->applied_ov_enh;
     else fj["ov"] = s == 0 ? in.op.overhead_base : in.op.overhead_enh;
     fj["rung_mcs"] = rung.mcs;
+    fj["rung_bw"] = rung.bw;
     fj["rung_ldpc"] = rung.ldpc;
     fj["rung_stbc"] = rung.stbc;
     fj["phy_mbps"] = phy;

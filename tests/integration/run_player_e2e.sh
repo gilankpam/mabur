@@ -86,7 +86,23 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # says nothing; what was checked instead is the geometry floor below (two
 # bands, both centred, block hugging the bottom) plus the per-row strings
 # pinned in tests/test_gs_compact.cpp.
-BAR_SHA_EXPECTED=658c9593edf0dbba8a83ec4e47240e19cc4454daf79dd1eec758bfb525d03281
+#
+# Re-blessed 2026-09-24 (was 658c9593...): compact bar mcs cell shows width
+# (Task 11, 2026-09-24-bw40-rungs spec -- 40 MHz rungs). GsSnapshot::bw and
+# the "mcs:<mcs>/<bw>" cell format were added in commit 66e52ba; the fixture
+# (tests/fixtures/gs_snapshot_nominal.json) carries no ctl.rung.bw or op.bw,
+# so the cell now reads "mcs:5/--" instead of "mcs:5", widening row 0 and
+# recentring every item on it. Verified this is the ONLY change: rebuilt
+# maburplay against the pre-commit (5df752c) sources with the fixture and
+# CLI flags unchanged reproduces the old 658c9593... hash exactly, and a
+# pixel diff old->new shows every differing pixel confined to the row-0
+# scanline band (y 944..996) -- 31,963 px differ (lit 135,694 -> 139,190,
+# delta 3,496), ZERO of them in the REC corner band (y 42..94) or row 1 (y
+# 1003..1055), which stay byte-identical. Nothing else pinned in this script
+# depends on the compact bar: OSD_SHA_EXPECTED is the drone-side MSP OSD,
+# and GS_SHA_EXPECTED renders --style essential, whose kRung field ("MCS 7 /
+# FEC 25%") never reads bw.
+BAR_SHA_EXPECTED=c71946028138f8bc46bf27626317275c3c8fa24224b82e6a83c1ec3b80735e8d
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

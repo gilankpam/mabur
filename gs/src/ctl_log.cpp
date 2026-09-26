@@ -14,7 +14,7 @@ double clamp_util(double u) { return std::min(u, 1e3); }
 
 CtlLog::CtlLog(LogWriter& w, const std::string& dir,
                const std::string& header_info)
-    : w_(w), s_(w.open(dir, "ctl.log", "ctllog 11 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "ctl.log", "ctllog 12 " + header_info)) {}
 
 void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
                      double resid, double u3, double resid3, double evm_db,

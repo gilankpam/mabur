@@ -21,12 +21,15 @@ namespace maburgs {
 // Record format is LOCKED (tests/test_probe_log.cpp depends on the exact
 // byte layout):
 //
-//   probelog 2 bpb=<bpb>                                     # once, first line
-//   <t_ms> <seq> <mcs> <enh_fid> <blocks_ok> <card_mask> <snr0> <snr1>
+//   probelog 3 bpb=<bpb>                                     # once, first line
+//   <t_ms> <seq> <mcs> <bw> <enh_fid> <blocks_ok> <card_mask> <snr0> <snr1>
 //     <evm0> <evm1> <first_ms>                               # one row per finalized body
 //
-// probelog 1 (2026-09-04, one day) had no first_ms column; everything
-// else is identical, and flightreport.py reads both.
+// probelog 1 (2026-09-04, one day) had no first_ms column; probelog 2
+// (2026-09-05 .. 2026-09-24) had no bw column (every body was 20 MHz).
+// probelog 3 (40 MHz rungs) adds bw -- the probe body's own width from its
+// profile byte -- right after mcs, so 20/3 and 40/3 do not pool.
+// flightreport.py reads all three.
 //
 // bpb (blocks-per-body) is the probe stream's block count, echoed in the
 // header so a row's blocks_ok is self-describing without cross-referencing
@@ -62,7 +65,7 @@ class ProbeLog {
   void rotate(const std::string& dir) { w_.reopen(s_, dir); }
   const std::string& path() const { return w_.path(s_); }
 
-  void row(double t_ms, uint32_t seq, int mcs, uint16_t enh_fid,
+  void row(double t_ms, uint32_t seq, int mcs, int bw, uint16_t enh_fid,
            int blocks_ok, uint32_t card_mask, double snr0, double snr1,
            double evm0, double evm1, double first_ms);
 

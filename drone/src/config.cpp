@@ -10,6 +10,7 @@
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
 #include "mabur/rc_proto.h"
+#include "mabur/ht40.h"
 
 namespace mabur {
 namespace {
@@ -90,6 +91,12 @@ void parse_radio(const Value& j, RadioCfg& r) {
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
   assign_if_present(j, "channel", r.channel, "radio");
   assign_if_present(j, "width", r.width, "radio");
+  if (r.width != 20 && r.width != 40)
+    fail("radio.width", "must be 20 or 40 (HT20 / HT40; nothing else is measured)");
+  if (r.width == 40 && mabur::ht40_offset(r.channel) == 0)
+    fail("radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
+                            std::to_string(static_cast<int>(r.channel)) +
+                            " has none (common/include/mabur/ht40.h)");
   assign_if_present(j, "follow_gs", r.follow_gs, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
@@ -538,12 +545,15 @@ void parse_low_power(const Value& j, LowPowerCfg& lp) {
 }
 
 void parse_ampdu(const Value& j, AmpduCfg& a) {
-  check_known_keys(j, {"max_num", "max_time", "min_mcs"}, "ampdu");
+  check_known_keys(j, {"max_num", "max_time", "min_mcs_20", "min_mcs_40"}, "ampdu");
   assign_if_present(j, "max_num", a.max_num, "ampdu");
   assign_if_present(j, "max_time", a.max_time, "ampdu");
-  assign_if_present(j, "min_mcs", a.min_mcs, "ampdu");
-  if (a.min_mcs < 0 || a.min_mcs > 7)
-    fail("ampdu.min_mcs", "must be an HT MCS in [0,7] (0 = aggregate at every rung)");
+  assign_if_present(j, "min_mcs_20", a.min_mcs_20, "ampdu");
+  assign_if_present(j, "min_mcs_40", a.min_mcs_40, "ampdu");
+  if (a.min_mcs_20 < 0 || a.min_mcs_20 > 7)
+    fail("ampdu.min_mcs_20", "must be an HT MCS in [0,7] (0 = aggregate at every 20 MHz rung)");
+  if (a.min_mcs_40 < 0 || a.min_mcs_40 > 7)
+    fail("ampdu.min_mcs_40", "must be an HT MCS in [0,7] (0 = aggregate at every 40 MHz rung)");
   if (a.max_num < 0 || a.max_num > 31)
     fail("ampdu.max_num", "must be in [0,31] (5-bit MAX_AGG_NUM; 0 = off)");
   if (a.max_time < 0 || a.max_time > 255)
@@ -555,24 +565,28 @@ void parse_ampdu(const Value& j, AmpduCfg& a) {
 }
 
 void parse_air_clock(const Value& j, AirClockCfg& a) {
-  check_known_keys(j, {"shed_ms", "efficiency", "body_us"}, "air_clock");
+  check_known_keys(j, {"shed_ms", "efficiency_20", "efficiency_40", "body_us"}, "air_clock");
   assign_if_present(j, "shed_ms", a.shed_ms, "air_clock");
-  if (j.contains("efficiency")) {
-    auto& arr = j.at("efficiency");
+  auto parse_eff = [&](const char* key, std::array<double, 8>& out) {
+    if (!j.contains(key)) return;
+    const std::string field = std::string("air_clock.") + key;
+    auto& arr = j.at(key);
     g_line = arr.line();
     if (!arr.is_array() || arr.size() != 8)
-      fail("air_clock.efficiency", "must be an array of 8 fractions (HT mcs0..7)");
+      fail(field, "must be an array of 8 fractions (HT mcs0..7)");
     try {
-      for (size_t i = 0; i < 8; ++i) a.efficiency[i] = arr.at(i).get<double>();
+      for (size_t i = 0; i < 8; ++i) out[i] = arr.at(i).get<double>();
     } catch (const toml::Error&) {
-      fail("air_clock.efficiency", "wrong type");
+      fail(field, "wrong type");
     }
-  }
+    for (double e : out)
+      if (e <= 0.0 || e > 1.0) fail(field, "every entry must be in (0,1]");
+  };
+  parse_eff("efficiency_20", a.efficiency_20);
+  parse_eff("efficiency_40", a.efficiency_40);
   assign_if_present(j, "body_us", a.body_us, "air_clock");
   if (a.shed_ms < 0 || a.shed_ms > 60000)
     fail("air_clock.shed_ms", "must be in [0,60000] (0 = observe only)");
-  for (double e : a.efficiency)
-    if (e <= 0.0 || e > 1.0) fail("air_clock.efficiency", "every entry must be in (0,1]");
   if (a.body_us < 0) fail("air_clock.body_us", "must be >= 0");
 }
 

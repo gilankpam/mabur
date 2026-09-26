@@ -4,7 +4,7 @@
 // the dry-run e2e never runs the ladder, so before this nothing on the
 // host could pin which decision windows get settle-blanked at an edge.
 //
-// On a COMMANDED op change this (1) marks the decoder's per-sid transition
+// On a COMMANDED op change (mcs, bw or base overhead) this (1) marks the decoder's per-sid transition
 // watermark and (2) settle-blanks the two residual decision windows; the
 // util windows stopped being blanked on 2026-09-05 when they moved to the
 // ArrivalTracker -- the base (s1) residual window since 2026-09-02 (flight
@@ -43,9 +43,14 @@ struct TransitionEdge {
   // by which time the window holds nothing older than settle_ms.
   static constexpr double kResidSettleMs = 150.0;
 
+  // A rung is (mcs, bw) since the 40 MHz rungs (2026-09-24): 20/3 -> 40/3
+  // changes the PHY rate and airtime with the MCS unchanged, so the width
+  // is part of every "changed" test below.
   int last_op_mcs = -1;
+  int last_op_bw = -1;
   double last_op_ov = -1.0;
   int last_enh_mcs = -1;
+  int last_enh_bw = -1;
 
   // Returns true when any edge fired this tick. Only the two RESIDUAL
   // (post-FEC) windows are settle-blanked: abandonment books ~80 ms late.
@@ -62,7 +67,7 @@ struct TransitionEdge {
     // .mcs) and always tracks the op. Overhead-only steps mark sid 0 too
     // (FEC re-key debris exists without a PHY change; the decoder then uses
     // the plain same-MCS fallback). Static-pin mode: nothing ever arms.
-    if (op.mcs != last_op_mcs || op.overhead_base != last_op_ov) {
+    if (op.mcs != last_op_mcs || op.bw != last_op_bw || op.overhead_base != last_op_ov) {
       const auto base_spec = mabur::rc::ladder_from(
           op.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
           static_cast<uint8_t>(op.mcs), static_cast<uint8_t>(op.bw))[0];
@@ -70,17 +75,19 @@ struct TransitionEdge {
                           static_cast<uint64_t>(now_ms));
       s1_resid_cur.blank_until(now_ms + kResidSettleMs);
       last_op_mcs = op.mcs;
+      last_op_bw = op.bw;
       last_op_ov = op.overhead_base;
       fired = true;
     }
     // sid 1 (enh) runs the op MCS too -- since the continuous probe stream
     // replaced the discrete probe attempt (2026-09-04) the enh layer is
     // never diverted to a candidate rate.
-    if (op.mcs != last_enh_mcs) {
+    if (op.mcs != last_enh_mcs || op.bw != last_enh_bw) {
       dec.mark_transition(1, static_cast<uint8_t>(op.mcs),
                           static_cast<uint64_t>(now_ms));
       s3_resid_cur.blank_until(now_ms + kResidSettleMs);
       last_enh_mcs = op.mcs;
+      last_enh_bw = op.bw;
       fired = true;
     }
     return fired;

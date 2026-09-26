@@ -12,6 +12,7 @@
 #include "body_queue.h"
 #include "card_scan.h"
 #include "logger.h"
+#include "own_air.h"
 #include "scout_radio.h"
 
 // Forward declarations for devourer types
@@ -50,6 +51,10 @@ class RadioFrontend : public ScoutRadio {
     uint16_t usb_pid = 0;      // 0 = scan {0xa81a,0x881a,0x8812}
     int index = 0;             // ordinal among matching devices
     uint8_t channel = 149;
+    // RX width: 20, or 40 (channel is the primary 20; the secondary is the
+    // standard pairing, mabur::ht40_offset). radio.width for link cards; the
+    // boot scout card starts at 20 and joins at 40 via set_width().
+    uint8_t width_mhz = 20;
     uint8_t card_id = 0;
     // Set by the startup scan (card_scan.h): open the device at this
     // physical port instead of the index-th VID/PID match. Survives the
@@ -72,11 +77,24 @@ class RadioFrontend : public ScoutRadio {
 
   // ScoutRadio interface: the scout thread's control plane on this card.
   bool retune(uint8_t ch) override;                 // FastRetune; false pre-ready
+  // Full SetMonitorChannel to `ch` at `width_mhz` (20|40): the boot scout
+  // card joining the 40 MHz link once the pick freezes (docs/bw40.md §3).
+  // Tens of ms, once per process. False when 40 has no pair (nothing
+  // recorded) or pre-ready -- the width is then still recorded as desired,
+  // so the next open_and_start() comes up at it (width_resync.h).
+  bool set_width(uint8_t ch, uint8_t width_mhz);
+  uint8_t width() const { return width_.load(std::memory_order_acquire); }  // current/desired RX width
+  bool retune_width(uint8_t ch, uint8_t width_mhz) override { return set_width(ch, width_mhz); }
   ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
   ScoutEnergy read_energy_scout() override;         // GetRxEnergyScout -> ScoutEnergy
   ScoutFrames frames() const override {
-    return ScoutFrames{own_.load(std::memory_order_relaxed), foreign_.load(std::memory_order_relaxed)};
+    return ScoutFrames{own_.load(std::memory_order_relaxed), foreign_.load(std::memory_order_relaxed),
+                       own_air_us_.load(std::memory_order_relaxed)};
   }
+  bool arm_nhm_busy(uint16_t period_4us) override;  // arms the card's NHM window
+  NhmBusyRead read_nhm_busy() override;
+  // Debug: the chip's programmed central channel (RF18 readback), -1 if unknown.
+  int tuned_central();              // reads it back
   CardCaps caps() const { return caps_; }            // filled in open_and_start() after InitWrite
   uint8_t channel() const { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
 
@@ -116,7 +134,14 @@ class RadioFrontend : public ScoutRadio {
   uint16_t tx_seq_ = 0;
   std::shared_ptr<devourer::UsbDeviceLock> usb_lock_;
   std::atomic<uint64_t> own_{0};
+  // Own video airtime (spec 2026-09-25-nhm-airtime §5): published copy of
+  // own_air_'s running total. own_air_ itself is RX-thread only.
+  std::atomic<uint64_t> own_air_us_{0};
+  OwnAirAcc own_air_;
   std::atomic<uint8_t> channel_{0};
+  // RX width the card is tuned to, or will InitWrite at on the next open
+  // (set_width() records it even pre-ready). Seeded from cfg_.width_mhz.
+  std::atomic<uint8_t> width_{20};
   // What on_packet() stamps RxBody::rx_channel with: the channel this card
   // is KNOWN to have been tuned to when the frame arrived. Distinct from
   // channel_ (the commanded position, published after FastRetune returns)

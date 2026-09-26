@@ -157,11 +157,14 @@ struct AmpduCfg {
                       // 1..8 is a hardware cliff (disables aggregation) and
                       // is rejected at load; 0 keeps the chip bring-up
                       // default (0x70 ~= 3 ms — too slow, but valid for A/B)
-  // Lowest op MCS that aggregates; rungs below fly QoS-Data singles
-  // (drone/src/ampdu_policy.h, docs/bandwidth-sweep-findings-2026-09-17.md:
-  // agg6 delivers 6-13 points LESS than singles at mcs0-2). 0 = aggregate
-  // at every rung (the pre-2026-09-17 behaviour); the bundle ships 4.
-  int min_mcs = 0;
+  // Lowest op MCS that aggregates, PER WIDTH; rungs below fly QoS-Data
+  // singles (drone/src/ampdu_policy.h). 20 MHz: agg6 delivers 6-13 points
+  // LESS than singles at mcs0-2 (docs/bandwidth-sweep-findings-2026-09-17.md),
+  // the bundle ships 4. 40 MHz: frames are half as long on air and
+  // aggregation pays from mcs2 (docs/bw40-sweep-findings-2026-09-23.md),
+  // the bundle ships 2. 0 = aggregate at every rung of that width.
+  int min_mcs_20 = 0;
+  int min_mcs_40 = 0;
 };
 
 // Drone air clock (spec 2026-09-06 air-clock): per-frame virtual
@@ -173,13 +176,16 @@ struct AmpduCfg {
 // not derived.
 struct AirClockCfg {
   int shed_ms = 0;
-  // Delivered/nominal air capacity per HT MCS 0..7, measured at saturation
-  // (docs/bandwidth-sweep-findings-2026-09-17.md, drone/src/air_rate.h).
-  // Priced into BOTH run_bitrate_policy (encoder.airtime_budget is a
-  // fraction of this, not of nominal) and the air clock. All ones = nominal
-  // = the pre-2026-09-17 policy; the bundle carries the measured table
-  // (singles at mcs0-3 under ampdu.min_mcs 4, agg6 above).
-  std::array<double, 8> efficiency = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  // Delivered/nominal air capacity per HT MCS 0..7, measured at saturation,
+  // one table per width (drone/src/air_rate.h picks by LayerTxSpec.bw).
+  // 20 MHz: docs/bandwidth-sweep-findings-2026-09-17.md (singles at
+  // mcs0-3 under ampdu.min_mcs_20 4, agg6 above). 40 MHz:
+  // docs/bw40-sweep-findings-2026-09-23.md (agg6, flat 0.74-0.77, no
+  // rung-0 exception). Priced into BOTH run_bitrate_policy
+  // (encoder.airtime_budget is a fraction of this, not of nominal) and the
+  // air clock. All ones = nominal = the pre-2026-09-17 policy.
+  std::array<double, 8> efficiency_20 = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  std::array<double, 8> efficiency_40 = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
   int body_us = 0;
 };
 

@@ -1,18 +1,26 @@
 [radio]
 channel = 136
-width   = 20
+width   = 40               # HT40 on the standard pair (132+136 for home 136); the scout card scans halves at 20 and joins at 40 (docs/bw40.md)
 tx_card = -1               # -1 = auto-select the best-SNR card
 
 # Boot-time channel scan: while waiting for the drone the spare card measures
 # these plus `channel` (home) and the DISC proposes the least busy one. The
 # pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
 # One card: the same card alternates home windows and dwells.
-# Candidates = one escape per 5 GHz block that is not home (136 sits in
-# 132-144): 120 (UNII-2e, DFS, APs avoid it), 149 (calibrated walls exist),
-# 165 (20 MHz-only top of UNII-3). Each one costs ~280 ms per scan round.
+# Candidates are 40 MHz pair PRIMARIES on home's side of the grid (home 136 =
+# 132+136, primary upper half), all spur-free: 144 (140+144, next door, the
+# cheap escape from a narrow interferer on home) and 112 (108+112), in the
+# 5.25-5.6 GHz DFS block clear of every FPV system
+# (analog/HDZero raceband 5.645-5.945, DJI O4 5.725-5.85 and 5.17-5.25 GHz,
+# Walksnail 5.8) -- the scout cannot see analog, so distance is the only
+# defence. 60+64 went 2026-09-26 (bench: 40/2 probes lossy and 4-14 %
+# per-card loss at strong signal -- deferred, docs/bw40.md). 36+40 went 2026-09-25 (DJI O4's 5.1 GHz band + home routers),
+# 124+128 too (E4 5645 at its edge). 120/149/165 went 2026-09-24: 116+120
+# and 149+153 are 8822E spur centres (65-91 ms retunes), 165 has no pair. The boot scan dwells on BOTH halves
+# of every pair at 20 MHz and picks the pair whose worse half is cleanest.
 [radio.scan]
 enable           = true
-candidates       = [120, 149, 165]
+candidates       = [144, 112]
 dwell_ms         = 250
 settle_ms        = 30
 min_rounds       = 3
@@ -41,7 +49,8 @@ rcf_slot_hold_ms       = 30   # hold each RCF for the next AU; 0 disables
 arrival_guard_syms     = 192  # ArrivalTracker settle line: above the drone TX pool's reorder depth, else late reads as pre-FEC loss (sweep 2026-09-23: 64 -> 0.67 %, 192 -> 0.02 %)
 beacon_keepalive_ms    = 1000
 static_mcs             = -1   # -1 = adaptive ladder
-max_mcs                = 5    # mcs5 is unholdable at range; 5 is the reach ceiling
+static_bw              = 20   # width of the static pin; 40 needs radio.width 40
+max_mcs                = 5    # filters on MCS only; both 40 rungs pass
 down_util              = 0.35
 up_util                = 0.15
 confirm_ms             = 250
@@ -60,35 +69,50 @@ s3_settle_ms           = 300
 static_overhead_base   = 0.5  # static_mcs mode only
 static_overhead_enh    = 0.5
 
-# Ladder rungs, low to high. base overhead must stay >= enh overhead.
+# Ladder rungs, low to high in CAPACITY. bw is per rung: 20 MHz bottom,
+# 40 MHz top -- HT40 MCS3 (54 Mb/s) reaches 1-1.6 dB further than HT20 MCS5
+# at more capacity, HT40 MCS4 reaches like HT20 MCS6 (docs/bw40-sweep-
+# findings-2026-09-23.md range test). base overhead must stay >= enh overhead.
 
 [[link.ladder]]
 mcs = 0
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 1
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 2
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 3
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 4
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
-mcs = 5
+mcs = 3
+bw  = 40
+overhead_base = 0.5
+overhead_enh  = 0.25
+
+[[link.ladder]]
+mcs = 4
+bw  = 40
 overhead_base = 0.5
 overhead_enh  = 0.25
 
@@ -165,7 +189,8 @@ dwell_observe_ms     = 5
 dwell_period_ms      = 333
 rank_visits          = 5
 rank_max_age_ms      = 10000
-confirm_ms           = 500
+confirm_ms           = 1000   # hop: drone video on the target within this, else withdraw; spur-pair hops confirmed in 423-460 ms (bench 2026-09-26)
+confirm_extend_ms    = 3000   # keep an unconfirmed order this long while the op reads blocked (uplink jammed too); 0 = off
 verify_ms            = 1000
 cooldown_ms          = 2000
 max_hops_per_min     = 4
@@ -175,8 +200,12 @@ one_card_repeats     = 5
 [hop.verdict]
 loss_pct             = 3.0
 recovered_x          = 3.0
+recovered_min        = 8      # recovered-symbols floor for `impaired`; 0 = off (bench 0232: ~97 % of recovered-only windows had <= 8)
 weak_rssi_dbm        = -78
 weak_snr_db          = 12
 fading_drop_db       = 6
 foreign_pps          = 50
 fa_pps               = 100
+busy_dbm             = -83    # NHM busy-airtime level; must be a bucket edge (docs/nhm-airtime-spike-findings-2026-09-25.md)
+blocked_pct          = 50     # foreign busy airtime % that marks a window / channel blocked
+starved_frac         = 0.25   # AU rate below this fraction of the trailing rate = starved; 60->30 fps low-power is 0.5

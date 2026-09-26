@@ -1,5 +1,7 @@
 #include "hop_controller.h"
 
+#include "hop_blank.h"
+
 #include <cmath>
 
 namespace maburgs {
@@ -27,6 +29,36 @@ HopAction HopController::tick(const HopTick& in) {
   return out;
 }
 
+// The session's falling edge (run_radio() stops ticking this machine while
+// the link is out of SESSION). An order still waiting for its confirm must
+// not survive that: ChannelPlan ignores link loss while a hop is in flight,
+// so an open order parked the lead card on the target and the trailing card
+// on the old op forever -- no split_home -- while the drone, which never
+// confirmed, had gone home on move_confirm_ms (bench 2026-09-24, GS session
+// 0207). Withdraw it exactly like a confirm_ms timeout (target backed off,
+// epoch bumped so the RCF stops carrying the order), which clears the plan's
+// hop and lets its ordinary link-loss path put a card on home. A confirmed
+// hop has already moved the plan's op; only the stale verify is dropped.
+HopAction HopController::on_session_lost(double now_ms, uint8_t cur_op) {
+  HopAction out;
+  if (state_ == HopState::Ordered) {
+    const uint8_t failed_target = hop_ch_;
+    back_off(failed_target, now_ms);
+    ++epoch_;
+    hop_ch_ = cur_op;
+    state_ = HopState::Idle;
+    out.kind = HopAction::Withdraw;
+    out.target = cur_op;
+    out.epoch = epoch_;
+    log_event(now_ms, "session_lost", epoch_, failed_target, 0, now_ms - order_ms_);
+  } else if (state_ == HopState::Verifying) {
+    state_ = HopState::Idle;
+    log_event(now_ms, "session_lost", epoch_, hop_ch_, 0, now_ms - verify_start_);
+  }
+  if (!cfg_.enable) out = HopAction{};   // same kill switch as tick()
+  return out;
+}
+
 void HopController::idle_tick(const HopTick& in, HopAction& out) {
   if (!in.verdict.trigger) {
     // The reason to hold is gone. Without this a Hold entered while the
@@ -46,12 +78,25 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
   }
   if (in.best.has_value()) {
     leave_hold(in.now_ms, in.cur_op);
+    flee(in.cur_op, in.now_ms);
     order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "order", out);
     return;
   }
-  if (in.cur_op != home_) {
+  if (home_available(in.cur_op, in.now_ms, in.home_blocked)) {
     leave_hold(in.now_ms, in.cur_op);
+    flee(in.cur_op, in.now_ms);
     order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "order", out);
+    return;
+  }
+  // Nothing ranked and no home, but the channel we are on is BLOCKED:
+  // holding here is holding on a jammed channel (bench 2026-09-26: ~33 s
+  // on the 98 %-blocked 136 while 112, which had carried video, sat backed
+  // off as merely fled). The escape is an unblocked channel that did not
+  // fail a verify; cooldown and the hop cap were both checked above.
+  if (escape_allowed(in)) {
+    leave_hold(in.now_ms, in.cur_op);
+    flee(in.cur_op, in.now_ms);
+    order(*in.escape, in.verdict.ref_rung, in.lead_card, in.escape_score, in.now_ms, "escape", out);
     return;
   }
   enter_hold(in.now_ms, "hold_exhausted", in.cur_op, 0, out);
@@ -76,7 +121,29 @@ void HopController::ordered_tick(const HopTick& in, HopAction& out) {
     return;
   }
   if (in.now_ms - order_ms_ >= cfg_.confirm_ms) {
-    withdraw(in.cur_op, in.now_ms, out);
+    // The confirm extension (Task 12 (f)): while the op channel reads
+    // BLOCKED, the jam is probably on the uplink too -- the order rides
+    // every RCF, and the drone cannot act on RCFs it never hears (bench
+    // 2026-09-26, session 0232: the jammer sat next to the drone, the order
+    // never arrived, the clean target was backed off as FAILED at
+    // confirm_ms, the escape had nowhere to go and the link held 30 s on
+    // the jammed op). Keep ordering until confirm_extend_ms; an order that
+    // still does not land is withdrawn as undelivered, not failed.
+    //
+    // Engaged only by a blocked verdict at the confirm_ms expiry; once
+    // engaged it holds to confirm_extend_ms whatever later windows say.
+    // The jam lifting is exactly when the order lands, and withdrawing then
+    // would race the drone's retune into a move_unconfirmed split.
+    const bool engage = confirm_extended_ || (in.verdict.evidence & kEvBlocked);
+    if (cfg_.confirm_extend_ms > cfg_.confirm_ms && engage &&
+        in.now_ms - order_ms_ < cfg_.confirm_extend_ms) {
+      if (!confirm_extended_) {
+        confirm_extended_ = true;
+        log_event(in.now_ms, "confirm_extend", epoch_, hop_ch_, 0, in.now_ms - order_ms_);
+      }
+      return;
+    }
+    withdraw(in.cur_op, in.now_ms, confirm_extended_, out);
     return;
   }
   // Still waiting on the lead card: no action, no event.
@@ -98,13 +165,22 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
   // The cost is one verdict window of detection latency inside a 1000 ms
   // verify window; the first eligible window lands ~2 * window_ms after
   // the confirm, leaving five of them.
-  const bool measured_after_landing = in.verdict.t_start_ms >= verify_start_;
+  //
+  // And not merely after the confirm: after the confirm PLUS the landing
+  // settle (kHopSettleBlankMs, the span the verdict's loss window is blanked
+  // for). The hop's own retune gap is still being repaired then, so a window
+  // starting inside the settle carries that debris as "recovered" symbols:
+  // 40 failed its verify on 85 then 32 of them with 0 % loss, in a window
+  // starting 27 ms after landing (bench 2026-09-24).
+  const bool measured_after_landing =
+      in.verdict.t_start_ms >= verify_start_ + kHopSettleBlankMs;
   if (in.verdict.v == Verdict::Interfered && measured_after_landing) {
     const uint8_t failed_target = hop_ch_;
     back_off(failed_target, in.now_ms);
     std::optional<uint8_t> next = in.best;
     if (next.has_value() && is_backed_off(*next, in.now_ms)) next.reset();   // skip backed off
-    const bool have_candidate = next.has_value() || in.cur_op != home_;
+    const bool have_candidate =
+        next.has_value() || home_available(in.cur_op, in.now_ms, in.home_blocked);
     if (have_candidate) {
       // Without the persist delay: act on a raw Interfered window, not a
       // fresh multi-window trigger -- this path is "still on a bad
@@ -121,6 +197,18 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
       } else {
         order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "verify_fail", out);
       }
+      return;
+    }
+    // No retry candidate: escape instead of holding when the channel just
+    // landed on is itself blocked -- same retry rules as above (cooldown
+    // exempt, the hop cap counted).
+    if (escape_allowed(in) && *in.escape != failed_target) {
+      prune_hop_times(in.now_ms);
+      if (static_cast<int>(hop_times_.size()) >= cfg_.max_hops_per_min) {
+        enter_hold(in.now_ms, "hold_cap", failed_target, in.now_ms - verify_start_, out);
+        return;
+      }
+      order(*in.escape, in.verdict.ref_rung, in.lead_card, in.escape_score, in.now_ms, "escape", out);
       return;
     }
     enter_hold(in.now_ms, "verify_fail", failed_target, in.now_ms - verify_start_, out);
@@ -154,6 +242,7 @@ void HopController::order(uint8_t target, int restore_rung, int lead_card, uint3
   state_ = HopState::Ordered;
   order_ms_ = now;
   one_card_retuned_ = false;
+  confirm_extended_ = false;
   hop_times_.push_back(now);
   out.kind = HopAction::Order;
   out.target = target;
@@ -163,16 +252,17 @@ void HopController::order(uint8_t target, int restore_rung, int lead_card, uint3
   log_event(now, event_kind, epoch_, target, score, 0);
 }
 
-void HopController::withdraw(uint8_t restore_to, double now, HopAction& out) {
+void HopController::withdraw(uint8_t restore_to, double now, bool extended, HopAction& out) {
   const uint8_t failed_target = hop_ch_;
-  back_off(failed_target, now);
+  back_off(failed_target, now, extended ? BackoffWhy::Undelivered : BackoffWhy::Failed);
   ++epoch_;
   hop_ch_ = restore_to;
   state_ = HopState::Idle;
   out.kind = HopAction::Withdraw;
   out.target = restore_to;
   out.epoch = epoch_;
-  log_event(now, "withdraw", epoch_, failed_target, 0, now - order_ms_);
+  log_event(now, extended ? "withdraw_undelivered" : "withdraw", epoch_, failed_target, 0,
+            now - order_ms_);
 }
 
 void HopController::enter_hold(double now, const char* why, uint8_t target, double elapsed_ms,
@@ -194,17 +284,51 @@ void HopController::leave_hold(double now, uint8_t cur_op) {
   log_event(now, "hold_end", epoch_, cur_op, 0, now - hold_start_ms_);
 }
 
-void HopController::back_off(uint8_t ch, double now) {
+// The channel a trigger is fleeing is as bad as a target that failed its
+// verify, so it gets the same backoff. Without it only failed TARGETS were
+// excluded and the fled channel stayed a retry candidate -- and the in-flight
+// ranker (event counts over 5 ms dwells) scores a long-frame jammer low, so
+// when the first target failed its verify the retry went straight back into
+// the jam (bench 2026-09-24, GS session 0207: 144 -> 128 -> 144). A withdraw
+// still returns to it: that path restores the op, it does not consult the
+// ranker.
+void HopController::flee(uint8_t ch, double now) { back_off(ch, now, BackoffWhy::Fled); }
+
+// Home is the fallback when nothing is ranked -- unless the link is already
+// there, or home is backed off (it is the channel just fled, or it failed a
+// verify): then going home is going back into the problem, and holding on
+// the current channel is the better answer (bench 2026-09-24, run 1: the jam
+// was on home and the fallback ordered it straight back).
+//
+// Nor when the ranker's dwells read home as BLOCKED (NHM busy): the
+// fallback would order a channel already known to be jammed (Task 11 (a)).
+bool HopController::home_available(uint8_t cur_op, double now, bool home_blocked) const {
+  return cur_op != home_ && !is_backed_off(home_, now) && !home_blocked;
+}
+
+// The escape is used only when (the callers have already established)
+// there is no ranked target and no home: the caller supplied one, and the
+// verdict in hand says the channel we are on is blocked. A verify-failed
+// channel is excluded upstream (main.cpp skips backed_off_failed()) and
+// again here, so a stale tick can never order one.
+bool HopController::escape_allowed(const HopTick& in) const {
+  if (!in.escape.has_value() || !(in.verdict.evidence & kEvBlocked)) return false;
+  auto it = backoff_.find(*in.escape);
+  return !(it != backoff_.end() && it->second.until_ms > in.now_ms &&
+           it->second.why == BackoffWhy::Failed);
+}
+
+void HopController::back_off(uint8_t ch, double now, BackoffWhy why) {
   auto it = backoff_.find(ch);
-  const int k = (it == backoff_.end()) ? 1 : it->second.second + 1;
+  const int k = (it == backoff_.end()) ? 1 : it->second.k + 1;
   double dur = static_cast<double>(cfg_.backoff_ms) * std::pow(2.0, k - 1);
   if (dur > 300000.0) dur = 300000.0;
-  backoff_[ch] = {now + dur, k};
+  backoff_[ch] = {now + dur, k, why};
 }
 
 bool HopController::is_backed_off(uint8_t ch, double now) const {
   auto it = backoff_.find(ch);
-  return it != backoff_.end() && it->second.first > now;
+  return it != backoff_.end() && it->second.until_ms > now;
 }
 
 void HopController::prune_hop_times(double now) {
@@ -230,7 +354,14 @@ HopState HopController::state() const { return state_; }
 std::vector<uint8_t> HopController::backed_off(double now_ms) const {
   std::vector<uint8_t> v;
   for (const auto& kv : backoff_)
-    if (kv.second.first > now_ms) v.push_back(kv.first);
+    if (kv.second.until_ms > now_ms) v.push_back(kv.first);
+  return v;
+}
+
+std::vector<uint8_t> HopController::backed_off_failed(double now_ms) const {
+  std::vector<uint8_t> v;
+  for (const auto& kv : backoff_)
+    if (kv.second.until_ms > now_ms && kv.second.why == BackoffWhy::Failed) v.push_back(kv.first);
   return v;
 }
 

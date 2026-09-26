@@ -50,6 +50,14 @@ class ChannelPlan {
   // can legitimately arrive with nothing to withdraw.
   void hop_confirmed(double now_ms);
   void hop_withdraw(double now_ms);
+  // Does a video body received on rx_ch keep the session alive? Only where
+  // the link lives: op, or the hop target while a hop is in flight (the lead
+  // card's confirming frames). Scout dwells elsewhere must not -- bench
+  // 2026-09-26: home-dwell frames held a split GS in SESSION for 60 s.
+  // rx_ch 0 = mid-retune or a replay source: unknown, counts.
+  bool is_link_video(uint8_t rx_ch) const {
+    return rx_ch == 0 || rx_ch == op_ || (hopping_ && rx_ch == hop_target_);
+  }
   bool hopping() const { return hopping_; }
   uint8_t hop_target() const { return hop_target_; }
   int hop_lead() const { return hop_lead_; }

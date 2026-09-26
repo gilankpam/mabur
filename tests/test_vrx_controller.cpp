@@ -57,6 +57,63 @@ TEST(rcf_pacing_and_keepalive_disc) {
   CHECK(disc >= 6 && disc <= 7);   // 2 fast DISCs at 250ms (t=0,250), ack at t~500, 4 slow at 1000ms (t=1250,2250,3250,4250) (fix a)
 }
 
+// Bench 2026-09-26 (GS session 0232, escape 144 -> 112): the drone took the
+// hop order from an RCF, then processed a keep-alive DISC it had received on
+// the OLD channel just after it -- proposal 144 != its new channel 112 ->
+// a "disc" retune straight back, and GS and drone sat apart ~33 s until
+// rendezvous. While a hop order is in flight the keep-alive must not go out
+// (its proposal is the old op by construction); it resumes, due at once,
+// when the hold lifts. Revert = drop the hold check in step(): a DISC
+// appears inside the held span and this fails.
+TEST(keepalive_disc_held_while_a_hop_is_in_flight) {
+  auto vrx = make();
+  auto link = [&](double now) {
+    mabur::rc::DiscAck ack;
+    ack.vtx_id = 1;
+    ack.vrx_nonce = vrx.rz_nonce();
+    ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+    ack.seq = 1;
+    auto wire = mabur::rc::pack_disc_ack(ack);
+    vrx.on_rc_frame(wire.data(), wire.size(), now);
+  };
+  int disc_held = 0, rcf_held = 0, disc_after = 0;
+  double first_after = -1;
+  for (int t = 0; t < 6000; t += 10) {
+    const double now = t;
+    vrx.on_video(now);
+    if (t == 500) link(now);
+    vrx.set_keepalive_hold(t >= 1000 && t < 4000);
+    if (auto out = vrx.step(now, healthy())) {
+      const int ft = mabur::rc::frame_type(out->frame.data(), out->frame.size());
+      const bool held = t >= 1000 && t < 4000;
+      if (held) (ft == mabur::rc::T_DISC ? disc_held : rcf_held)++;
+      if (!held && t >= 4000 && ft == mabur::rc::T_DISC) {
+        ++disc_after;
+        if (first_after < 0) first_after = now;
+      }
+    }
+  }
+  CHECK(disc_held == 0);
+  CHECK(rcf_held >= 25);             // RCFs (which carry the order) keep flowing
+  CHECK(disc_after >= 1);
+  CHECK(first_after >= 4000 && first_after <= 4020);   // overdue keep-alive fires at once
+}
+
+// The hop hold must never delay the stale-caps re-teach: before the first
+// DiscAck the fast keep-alive runs even while held. Revert = drop the
+// `|| !peer_acked_` term: no DISC goes out in the held, unacked span.
+TEST(keepalive_hold_ignored_until_peer_acked) {
+  auto vrx = make();
+  vrx.set_keepalive_hold(true);
+  int disc = 0;
+  for (int t = 0; t < 1000; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()))
+      if (mabur::rc::frame_type(out->frame.data(), out->frame.size()) == mabur::rc::T_DISC) ++disc;
+  }
+  CHECK(disc >= 3);   // unacked cadence (250 ms) despite the hold
+}
+
 TEST(rcf_fields_are_correct) {
   auto vrx = make();
   vrx.on_video(0.0);
@@ -478,6 +535,54 @@ TEST(pinned_link_can_probe_a_fixed_mcs) {
   double t = 0;
   CHECK(first_rcf(vrx, healthy(), t).probe_profile ==
         mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
+}
+
+// ---- per-rung width (2026-09-24) ------------------------------------------
+
+static LadderCfg bw40_ladder() {
+  LadderCfg lcfg;
+  lcfg.ladder = {{0, 0.5, 0.25, 20}, {4, 0.5, 0.25, 20}, {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}};
+  return lcfg;
+}
+
+TEST(rcf_profile_carries_the_rungs_width) {
+  auto vrx = make(bw40_ladder());   // starts at rung 0 = 20/0
+  double t = 0;
+  auto r = first_rcf(vrx, healthy(), t);
+  CHECK(r.profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
+  CHECK(vrx.cur_op().bw == 20);
+}
+
+TEST(rcf_probe_profile_carries_the_probe_rungs_width) {
+  // Rung 1 is 20/4 and rung 2 is 40/3: sitting on rung 1 the probe must
+  // fly 40 MHz, or its clean streak says nothing about the 40 rung.
+  //
+  // restore_rung() does not stamp last_feedback_ms_, so calling it before
+  // any real feedback has ever landed lets on_tick()'s blind-side timeout
+  // (measured off the never-stamped default) force rung 0 right back on
+  // the very next tick -- same as
+  // restore_rung_rcf_in_the_same_tick_carries_restored_profile works
+  // around it: bring the link up for real first, THEN restore.
+  LadderCfg l = bw40_ladder();
+  l.feedback_timeout_ms = 100000;
+  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = l;
+  VrxController vrx(cfg);
+  double t = 0;
+  first_rcf(vrx, healthy(), t);  // stamps last_feedback_ms_ before the restore
+  vrx.restore_rung(1, t);   // park the ladder on rung 1 (20/4)
+  auto r = first_rcf(vrx, healthy(), t);
+  CHECK(r.profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 4, 20));
+  CHECK(r.probe_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 3, 40));
+}
+
+TEST(static_pin_carries_pin_bw) {
+  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = bw40_ladder(); cfg.pin_mcs = 3; cfg.pin_bw = 40;
+  cfg.probe_pin_mcs = 4;
+  VrxController vrx(cfg);
+  double t = 0;
+  auto r = first_rcf(vrx, healthy(), t);
+  CHECK(r.profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 3, 40));
+  CHECK(r.probe_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 4, 40));
 }
 
 // --- Task 8: hop plumbing (spec 2026-09-14 in-flight channel hop) ---

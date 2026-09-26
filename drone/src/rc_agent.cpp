@@ -148,9 +148,16 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
   applied_.fec_ov_enh = ov_enh;
   applied_.probe_profile = probe_profile;
   if (probe_profile != rc::kNoProbeProfile) {
+    // The probe flies the probe rung's own (mcs, bw) — not the current op's
+    // width — so a 20->40 promote is actually measured at 40 (controller
+    // Task 11b, 2026-09-24, docs/bw40.md). Only the mode is kept from the
+    // current op's ladder: the wire profile byte doesn't vary mode
+    // independently of mcs/bw in practice, and ladder[1].mode is already
+    // validated/known-good, so there's no reason to trust a decoded mode
+    // over it.
     PhyMode pm; uint8_t pmcs, pbw;
     rc::decode_profile(probe_profile, pm, pmcs, pbw);
-    applied_.probe = rc::ladder_from(ladder[1].mode, pmcs, ladder[1].bw)[1];
+    applied_.probe = rc::ladder_from(ladder[1].mode, pmcs, pbw)[1];
   }
   applied_.shed[0] = false;
   // shed_level_ still counts 0..3 (congestion semantics untouched — see
@@ -257,10 +264,10 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 
   last_policy_ms_ = now_ms;
   have_last_policy_ = true;
-  // DELIVERED rates (air_rate.h): nominal × the measured per-MCS
-  // air_clock.efficiency, so airtime_budget is a fraction of what the link
-  // actually moves. Priced off nominal until 2026-09-17, which is why
-  // budget 0.6 sat at ~99 % of real mcs2 capacity and spiked
+  // DELIVERED rates (air_rate.h): nominal × the measured per-MCS,
+  // per-width air_clock.efficiency_20/_40, so airtime_budget is a fraction
+  // of what the link actually moves. Priced off nominal until 2026-09-17,
+  // which is why budget 0.6 sat at ~99 % of real mcs2 capacity and spiked
   // (docs/bandwidth-sweep-findings-2026-09-17.md).
   const double rate_b = delivered_mbps(applied_.ladder[0], cfg_.air_clock);
   // The probe stream has its own slot and is deliberately NOT a term here
@@ -458,6 +465,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       if (move) {
         act_.retune(d->op_channel, "disc");
         channel_ = d->op_channel;
+        move_from_ch_ = 0;
         move_pending_ = true;
         move_at_ms_ = now_ms;
       } else {
@@ -470,6 +478,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     if (move) {
       act_.retune(d->op_channel, "disc");
       channel_ = d->op_channel;
+      move_from_ch_ = 0;
       move_pending_ = true;
       move_at_ms_ = now_ms;
     } else {
@@ -549,6 +558,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       hop_ch_ = r->hop_ch;
       if (r->hop_ch != channel_) {
         act_.retune(r->hop_ch, "hop");
+        move_from_ch_ = channel_;
         channel_ = r->hop_ch;
         move_pending_ = true;
         move_at_ms_ = now_ms;
@@ -588,8 +598,19 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     return;
   }
 
+  if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms) &&
+      move_from_ch_ != 0 && move_from_ch_ != cfg_.radio.channel && move_from_ch_ != channel_) {
+    // Unconfirmed HOP: first back to the channel we hopped from, where a GS
+    // that withdrew the order is (spec 2026-09-14 §1 step 4). One step only:
+    // the move stays pending, so silence there falls through to home below.
+    act_.retune(move_from_ch_, "move_unconfirmed");
+    channel_ = move_from_ch_;
+    move_from_ch_ = 0;
+    move_at_ms_ = now_ms;
+  }
   if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms)) {
     // Unconfirmed move (spec §6): nothing from the GS on the new channel.
+    move_from_ch_ = 0;
     if (state_ == State::LINKED) apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;
     have_last_seq_ = false;

@@ -46,10 +46,12 @@
 #include "cal_apply.h"
 #include "cal_sweep.h"
 #include "config.h"
+#include "control_tx_mode.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
 #include "frame_source.h"
 #include "mabur/frame_wire.h"
+#include "mabur/ht40.h"
 #include "mabur/msp_source.h"
 #include "mabur/msp_status.h"
 #include "mabur/profile.h"
@@ -276,25 +278,6 @@ std::vector<uint8_t> build_dot11_header(uint16_t seq) {
   return h;
 }
 
-// devourer::TxMode for the MAX_RANGE control-channel rate (mirrors
-// radio_tx.cpp's to_tx_mode helper — kept local since RadioTx doesn't expose
-// its private conversion). DISC_ACK and any other control frame must fly at
-// the same robustness as the MAX_RANGE data profile: MCS0/20MHz WITH
-// LDPC+STBC. Flying control frames without them (the pre-fix behavior) was
-// weaker than MAX_RANGE's own data profile despite control traffic needing
-// to be at least as robust — a DISC_ACK lost at exactly the range where
-// MAX_RANGE is needed defeats the whole point of the robust floor.
-devourer::TxMode control_tx_mode() {
-  devourer::TxMode m;
-  m.mode = devourer::TxMode::Mode::HT;
-  m.ht_mcs = 0;
-  m.bw_mhz = 20;
-  m.sgi = false;
-  m.ldpc = true;
-  m.stbc = true;
-  return m;
-}
-
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
 // FrameSink), the hot-thread-owned UepEncoder (via the shared_op handoff),
 // and the in-process encoder (venc_core.h's verbs, called directly — the
@@ -335,26 +318,27 @@ struct RealActuator : mabur::Actuator {
 
   void apply_ampdu_for(const AppliedOp& op) {
     if (!dev) return;
-    const devourer::AmpduMode want = ampdu_mode_for(ampdu, op.ladder[1].mcs);
+    const uint8_t mcs = op.ladder[1].mcs;
+    const uint8_t bw = op.ladder[1].bw;
+    const int min_mcs = bw == 40 ? ampdu.min_mcs_40 : ampdu.min_mcs_20;
+    const devourer::AmpduMode want = ampdu_mode_for(ampdu, mcs, bw);
     if (ampdu_mode_same(want, last_ampdu)) {
       if (!ampdu_logged) {
         ampdu_logged = true;
-        std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d (chip default, min_mcs %d, max_num %d)\n",
-                     want.enabled ? "ON" : "OFF", op.ladder[1].mcs, ampdu.min_mcs,
-                     ampdu.max_num);
+        std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d/%d (chip default, min_mcs_%d %d, max_num %d)\n",
+                     want.enabled ? "ON" : "OFF", mcs, bw, bw, min_mcs, ampdu.max_num);
       }
       return;
     }
     if (!dev->SetAmpduMode(want)) {
-      std::fprintf(stderr, "warning: SetAmpduMode failed at mcs%d -- chip keeps %s\n",
-                   op.ladder[1].mcs, last_ampdu.enabled ? "A-MPDU" : "singles");
+      std::fprintf(stderr, "warning: SetAmpduMode failed at mcs%d/%d -- chip keeps %s\n",
+                   mcs, bw, last_ampdu.enabled ? "A-MPDU" : "singles");
       return;
     }
     last_ampdu = want;
     ampdu_logged = true;
-    std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d (min_mcs %d, max_num %d)\n",
-                 want.enabled ? "ON" : "OFF", op.ladder[1].mcs, ampdu.min_mcs,
-                 ampdu.max_num);
+    std::fprintf(stderr, "maburd radio: A-MPDU %s at mcs%d/%d (min_mcs_%d %d, max_num %d)\n",
+                 want.enabled ? "ON" : "OFF", mcs, bw, bw, min_mcs, ampdu.max_num);
   }
   // Task 11 review, Important fix 2: null in dry-run and in run_dry_run's
   // own RealActuator (calibration is real-mode only), set to run_real_
@@ -1243,8 +1227,10 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // exits before there is anything to contend with.
     if (two_core_target()) pin_self_to(kHotCore);
     try {
-      rtl_device->InitWrite(
-          SelectedChannel{static_cast<uint8_t>(cfg.radio.channel), 0, CHANNEL_WIDTH_20});
+      const uint8_t ch = static_cast<uint8_t>(cfg.radio.channel);
+      rtl_device->InitWrite(cfg.radio.width == 40
+                                ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
+                                : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
     } catch (...) {
       radio_init_error = std::current_exception();
     }
@@ -2824,15 +2810,9 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   });
 
 
-  // v1 only ever tunes the radio to 20 MHz — cfg.radio.width is parsed and
-  // validated (config.cpp) but not otherwise consulted here. Rather than
-  // silently ignoring a configured 40/80 and running at 20 MHz anyway, warn
-  // once at startup so a mismatched config is visible in the log instead of
-  // just quietly not doing what it says.
-  if (cfg.radio.width != 20) {
-    std::fprintf(stderr, "warning: radio.width=%d not supported in v1, using 20 MHz\n",
-                 cfg.radio.width);
-  }
+  // radio.width is honoured by the InitWrite above (2026-09-24): 40 tunes
+  // the standard pair via ht40_offset; FastRetune keeps width and offset
+  // across every later hop.
 
   // TX bring-up must be complete before anything transmits. InitWrite (on
   // radio_init_thread, started right after CreateRtlDevice above) runs the
@@ -2922,7 +2902,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // drone/src/ampdu_policy.h) and the agent thread programs it on every op
   // change. The chip leaves InitWrite in the singles state, which is the
   // right state for the boot MAX_RANGE op (rung 0) under the shipped
-  // ampdu.min_mcs 4, so there is no window in which frames fly the wrong
+  // ampdu.min_mcs_20 4, so there is no window in which frames fly the wrong
   // mode. Frames are QoS-Data whether or not aggregation is on
   // (radio_tx.cpp), so the wire never depends on this.
 

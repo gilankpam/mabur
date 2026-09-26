@@ -16,12 +16,12 @@ DGRAM = {
         "deadline_ms": 60, "residual_loss": 0.012,
         "layer_delivery_pct": [100, 100],
         "streams": [
-            {"stream": 0, "ov": 1.0, "rung_mcs": 5, "rung_ldpc": True,
+            {"stream": 0, "ov": 1.0, "rung_mcs": 5, "rung_bw": 20, "rung_ldpc": True,
              "rung_stbc": True, "phy_mbps": 52.0, "inj_kbps": 650.0,
              "recovered_s": 12.0, "abandoned_s": 0.0,
              "syms_in_s": 4210.0, "recovered": 4021, "abandoned": 3,
              "stale": 0, "bad_cfg": 0, "sub_fail": 1, "in_flight": 2},
-            {"stream": 1, "ov": 0.25, "rung_mcs": 5, "rung_ldpc": True,
+            {"stream": 1, "ov": 0.25, "rung_mcs": 5, "rung_bw": 20, "rung_ldpc": True,
              "rung_stbc": True, "phy_mbps": 52.0, "inj_kbps": 15600.0,
              "recovered_s": 50.0, "abandoned_s": 0.0,
              "syms_in_s": 10876.0, "recovered": 9000, "abandoned": 0,
@@ -339,7 +339,7 @@ class LinksPanelTest(unittest.TestCase):
         rows = panel_links(_fresh(), 100.2)
         block = self._block(rows, "s1 ·")
         joined = "\n".join(t for t, _ in block)
-        for cell in ("mcs5+LS", "52.0M", "ov 0.25", "dlv 100%", "inj ~15.6M",
+        for cell in ("mcs5/20+LS", "52.0M", "ov 0.25", "dlv 100%", "inj ~15.6M",
                      "rec/s   50.0", "in/s  10876", "sfail  0", "flt  0",
                      "890", "14200", "-50.1", "-50.9", "-52.3", "27.1"):
             self.assertIn(cell, joined)
@@ -489,8 +489,8 @@ class LinksPanelTest(unittest.TestCase):
             "pre_fec_loss": 0.01, "budget": 0.4,
             "probation_ms_left": 0, "penalized": [],
             "ladder": [
-                {"mcs": 1, "ov_base": 1.0, "ov_enh": 1.0},
-                {"mcs": 3, "ov_base": 0.5, "ov_enh": 0.25},
+                {"mcs": 1, "bw": 20, "ov_base": 1.0, "ov_enh": 1.0},
+                {"mcs": 3, "bw": 40, "ov_base": 0.5, "ov_enh": 0.25},
             ],
             "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
                          "probation_fails": 0, "starved_drops": 0, "timeout_drops": 0},
@@ -500,8 +500,8 @@ class LinksPanelTest(unittest.TestCase):
                   "off_profile": 0, "cards": [{"loss": 0.0, "rx": 12}, {"loss": 0.05, "rx": 11}]})
         rows = panel_ladder(_fresh(d), 100.2)
         joined = "\n".join(t for t, _ in rows)
-        self.assertIn("1 mcs3/ov0.50:0.25", joined)
-        self.assertIn("0 mcs1/ov1.00:1.00", joined)
+        self.assertIn("1 mcs3/40/ov0.50:0.25", joined)
+        self.assertIn("0 mcs1/20/ov1.00:1.00", joined)
         self.assertNotIn("--", joined.split("\n")[1])  # current rung row
         self.assertIn("probe: r1 mcs3 clean 54b u0.12 n60 | c0 0.00 c1 0.05", joined)
 

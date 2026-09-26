@@ -6,6 +6,15 @@ not be pooled. Nothing in the sideport reports most of them, so the only
 reliable method is to date the recording against this page.
 
 Quick index: carrier sense off 2026-08-05 · carrier sense ON again + RC_VERSION 10 + `link.pre_fec_loss` guard 32 → 192 2026-09-23 · TX power constant 2026-08-12 ·
+40 MHz rungs — `ctllog 12` (bw: prefix), `scanlog 3` (per-half dwells, pair
+pick), `air_clock.efficiency`/`ampdu.min_mcs` → `_20`/`_40`, new required
+`link.ladder[].bw` — 2026-09-24 (`docs/bw40.md`) ·
+`feclog 2` adds a `bw` column after `mcs` 2026-09-24 (`feclog 1` rows are 20 MHz) ·
+`probelog 3` adds a `bw` column after `mcs` 2026-09-24 (`probelog 1`/`2` rows are 20 MHz) ·
+NHM airtime evidence — `scanlog 4` (V card block gains `nhm_busy`/`own_air`,
+D gains `busy`, K entries reshape to `ch:worst_busy:floor:busy`), `[hop.verdict]`
+`busy_dbm`/`blocked_pct`, sideport `cards[i].energy.busy_pct`/`.own_air_pct`
+— 2026-09-25 (`docs/inflight-channel-hop.md`, `docs/nhm-airtime-spike-findings-2026-09-25.md`) ·
 sideport key removals 2026-08-12, 2026-08-15, 2026-08-29, 2026-08-30 and
 2026-09-04 ·
 SNR half-dB scale break 2026-08-04 · EVM op-point dependence 2026-08-10 ·
@@ -713,3 +722,65 @@ the `rc: low_power EXIT (armed)` line) and compare only what follows it.
 Recordings from before this date have no `drone.low_power` key at all and
 no leading segment — they are full power throughout, and absence of the
 key means "older build", not "full power confirmed".
+
+## 2026-09-24 — 40 MHz rungs: ctllog 12, scanlog 3, per-width config keys
+
+Full detail: `docs/bw40.md`.
+
+- **`ctllog 12`.** The ctl.log header's `ladder=` token gains a `bw:` prefix
+  per rung (`ladder=bw:mcs/ovb:ove,...`); `ctllog 11` and earlier have no
+  prefix and every rung is implicitly 20 MHz. `tools/bench/switchloss.py`
+  parses the prefix but still keys rungs by MCS only.
+- **`scanlog 3`.** Bumped from `scanlog 2`: the `D` dwell line gains a
+  trailing `bw` column (the dwell's tuned width — 20 during a boot scan,
+  `radio.width` in an in-flight session), and the `K` pick line gains a
+  trailing `pair=<lo>+<hi>|-` (the picked channel's standard 40 MHz pair, or
+  `-`). A `scanlog 2` file has neither column.
+- **Removed drone config keys:** `air_clock.efficiency` → `efficiency_20` /
+  `efficiency_40`; `ampdu.min_mcs` → `min_mcs_20` / `min_mcs_40` — both keyed
+  by width, not a single table/threshold. No migration; an old key fails
+  boot.
+- **New GS config key:** `link.ladder[].bw`, required (20 or 40) — a rung is
+  now `(bw, mcs)`, not just `mcs`. A pre-2026-09-24 `[[link.ladder]]` block
+  with no `bw` fails boot rather than defaulting to 20.
+
+## 2026-09-25 — NHM airtime evidence: scanlog 4
+
+Full detail: `docs/inflight-channel-hop.md` §2/§3/§8,
+`docs/channel-select.md` ("`scan.log`"), `docs/bw40.md`,
+`docs/nhm-airtime-spike-findings-2026-09-25.md` (the measured defaults).
+
+- **`scanlog 4`.** Bumped from `scanlog 3`:
+  - `V`'s per-card block grows from 7 fields to 9: `foreign fa cca crc rssi
+    snr drssi` gains a trailing `nhm_busy` (`-` when the card's NHM window
+    didn't cover this verdict window on this channel) and `own_air` (always
+    present, % of the window, never `-`).
+  - `D` gains a further trailing `busy` column (NHM busy % over the dwell's
+    observe span, `-` when the card has no NHM or the read was invalid) —
+    on top of `scanlog 3`'s `bw` column, so a `scanlog 4` `D` line has one
+    more field than a `scanlog 3` one and two more than `scanlog 2`.
+  - `K`'s per-channel entries **reshape**, not just extend: `scanlog 3`'s
+    `ch:worst_busy[:floor]` (floor bracket-optional) becomes
+    `ch:worst_busy:floor:busy`, with `floor` now always present (a number or
+    `nan`) and `busy` appended (`-` when invalid) — a `scanlog 3` parser
+    that assumed a variable 2-or-3-field entry will misparse a `scanlog 4`
+    line. `tools/flightreport.py` reads `scanlog 3` and `4`.
+- **New GS config keys:** `[hop.verdict] busy_dbm = -83` (must sit on an
+  `nf::kNhmAbsThDbm` bucket edge — config validation rejects any other
+  value) and `blocked_pct = 50` (the design spec's own draft carried a
+  provisional 30; the hw spike replaced it before shipping). Both are
+  wholly new keys with defaults, so an old config without them boots
+  unchanged.
+- **New evidence bit and verdict rule:** `kEvBlocked` (hex `0x20`) in `V`'s
+  `evidence_hex` column — a `scanlog 3` recording's evidence hex never has
+  this bit set, since the code that could set it did not exist yet, not
+  because the channel was never blocked. `blocked` also changes which
+  windows classify `interfered`: a window reading `unknown` under a
+  pre-2026-09-25 build could read `interfered` on the identical air under
+  the new one if it also has NHM evidence, so verdict-histogram counts
+  (`flightreport.py`'s HOP section) are not comparable across the break.
+- **Sideport:** `cards[i].energy` gains `busy_pct`/`own_air_pct` (both
+  `null` on an older maburgs or before the first verdict window lands);
+  `tools/maburtop.py` gains a per-card `fbusy` column (renamed from `air%`
+  in the final-review fix wave: it was always foreign busy, never own
+  airtime) (`max(0, busy_pct − own_air_pct)`). See `docs/observability.md`.

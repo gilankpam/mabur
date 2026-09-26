@@ -1,8 +1,21 @@
 #include "channel_scout.h"
 
+#include <cstdio>
+
+#include "nhm_busy.h"
+#include "pair_pick.h"
+
 namespace maburgs {
 
 namespace {
+// Channels the scan dwells on (before the one-card home exclusion).
+std::vector<uint8_t> dwell_channels(const ScoutCfg& c) {
+  if (c.link_width_mhz == 40) return scan_half_set(c.home, c.candidates);
+  std::vector<uint8_t> out{c.home};
+  for (uint8_t ch : c.candidates) out.push_back(ch);
+  return out;
+}
+
 devourer::chanmig::ScanPlanConfig plan_for(const ScoutCfg& c) {
   devourer::chanmig::ScanPlanConfig p;
   auto add = [&p](uint8_t ch) {
@@ -13,8 +26,8 @@ devourer::chanmig::ScanPlanConfig plan_for(const ScoutCfg& c) {
     d.width = CHANNEL_WIDTH_20;
     p.candidates.push_back(d);
   };
-  if (!c.one_card) add(c.home);   // one card: home is the window, not a dwell
-  for (uint8_t ch : c.candidates) if (c.one_card ? ch != c.home : true) add(ch);
+  for (uint8_t ch : dwell_channels(c))
+    if (!(c.one_card && ch == c.home)) add(ch);   // one card: home is the window, not a dwell
   p.dwell_ms = c.dwell_ms;
   p.settle_ms = c.settle_ms;
   // One flat cadence: every bin is equally due, so next() is plan-order
@@ -32,7 +45,7 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       now_(std::move(now_ms)),
       sleep_(std::move(sleep_ms)),
       sched_(plan_for(cfg_)),
-      ranker_(cfg_.home, cfg_.candidates, cfg_.min_rounds, cfg_.home_margin),
+      ranker_(cfg_.home, dwell_channels(cfg_), cfg_.min_rounds, cfg_.home_margin, cfg_.blocked_pct),
       proposal_(cfg_.home) {}
 
 void ChannelScout::freeze(uint8_t target) {
@@ -43,7 +56,18 @@ void ChannelScout::freeze(uint8_t target) {
 
 void ChannelScout::run() {
   while (run_once()) {}
-  radio_.retune(target_.load(std::memory_order_acquire));
+  const uint8_t target = target_.load(std::memory_order_acquire);
+  if (cfg_.link_width_mhz == 40) {
+    // Join the link at 40 (docs/bw40.md §3). A failure (dead or unready
+    // card) is not retried here: the core loop's width resync
+    // (width_resync.h) sets the card's width once it is ready again.
+    if (!radio_.retune_width(target, 40))
+      std::fprintf(stderr, "maburgs channel: scout card width switch to 40 MHz on ch %u "
+                           "failed; the core loop retries once the card is ready\n",
+                   static_cast<unsigned>(target));
+  } else {
+    radio_.retune(target);
+  }
   at_home_.store(false, std::memory_order_release);
   quiet_.store(false, std::memory_order_release);
   done_.store(true, std::memory_order_release);
@@ -104,9 +128,16 @@ bool ChannelScout::dwell(uint8_t ch, Kind kind, uint64_t round) {
   }
   // Discard barrier: zero the delta counters and let the USB pipe drain.
   (void)radio_.read_energy(false);
+  const uint16_t nhm_period = nhm_period_4us(cfg_.dwell_ms);   // clamps at ~262 ms
+  const bool nhm_armed = radio_.arm_nhm_busy(nhm_period);
   const ScoutFrames f0 = radio_.frames();
   const int64_t t0 = now_();
   sleep_(cfg_.dwell_ms);
+  const NhmBusyRead nb = nhm_armed ? radio_.read_nhm_busy() : NhmBusyRead{};
+  const std::optional<double> busy =
+      (nb.valid && nb.period == nhm_period) ? nhm_busy_pct(nb, cfg_.busy_dbm) : std::nullopt;
+  d.busy_valid = busy.has_value();
+  d.busy_pct = busy.value_or(0.0);
   const ScoutEnergy e = radio_.read_energy(true);
   const ScoutFrames f1 = radio_.frames();
   s.observe_ms = now_() - t0;
@@ -132,6 +163,8 @@ bool ChannelScout::dwell(uint8_t ch, Kind kind, uint64_t round) {
   rs.foreign = s.frames - s.dvr_frames;
   rs.floor_valid = e.floor_valid;
   rs.floor_dbm = e.floor_dbm;
+  rs.busy_valid = d.busy_valid;
+  rs.busy_pct = d.busy_pct;
   {
     std::lock_guard<std::mutex> lk(mu_);
     if (e.fa_valid) ranker_.add(rs);
@@ -144,7 +177,11 @@ bool ChannelScout::dwell(uint8_t ch, Kind kind, uint64_t round) {
 void ChannelScout::publish_() {
   if (frozen()) return;
   std::lock_guard<std::mutex> lk(mu_);
-  proposal_.store(ranker_.proposal(), std::memory_order_release);
+  const uint8_t p = cfg_.link_width_mhz == 40
+                        ? pair_proposal(ranker_.all(), cfg_.home, cfg_.candidates,
+                                        cfg_.min_rounds, cfg_.home_margin, cfg_.blocked_pct)
+                        : ranker_.proposal();
+  proposal_.store(p, std::memory_order_release);
 }
 
 std::vector<RankEntry> ChannelScout::ranking() const {

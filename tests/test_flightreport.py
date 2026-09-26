@@ -719,8 +719,8 @@ def test_ctllog_v8_pair_ladder_token_parsed():
     assert log["header"]["_version"] == 8
     rungs = log["header"]["_ladder"]
     assert rungs == [
-        {"mcs": 0, "ov_base": 1.0, "ov_enh": 1.0},
-        {"mcs": 5, "ov_base": 0.25, "ov_enh": 0.5},
+        {"mcs": 0, "bw": 20, "ov_base": 1.0, "ov_enh": 1.0},
+        {"mcs": 5, "bw": 20, "ov_base": 0.25, "ov_enh": 0.5},
     ]
 
 
@@ -732,7 +732,7 @@ def test_ctllog_pre_v8_ladder_token_treated_as_both():
         p = Path(tmp_dir) / "ctl-0001_x.log"
         p.write_text(text)
         log = flightreport.load_ctllog(str(p))
-    assert log["header"]["_ladder"] == [{"mcs": 5, "ov_base": 0.25, "ov_enh": 0.25}]
+    assert log["header"]["_ladder"] == [{"mcs": 5, "bw": 20, "ov_base": 0.25, "ov_enh": 0.25}]
 
 
 def test_ctllog_pre_v8_note():
@@ -757,6 +757,161 @@ def test_ctllog_pre_v8_note():
             flightreport.main(str(p))
         out = buf.getvalue()
     assert "same-rate-fixed-pairs" not in out
+
+
+CTL12 = """ctllog 12 ladder=20:0/50:25,20:4/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1
+S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 2 0.1200 60
+E 2000 1 2 promote_probed 0.0100 31.0 -24.0
+E 2500 2 1 residual 0.4000 29.0 -23.0
+E 6000 1 2 promote_probed 0.0100 31.0 -24.0
+S 12000 2 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0
+"""
+
+
+def test_ctllog_v12_ladder_token_carries_bw():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        log = flightreport.load_ctllog(str(p))
+    assert log["header"]["_version"] == 12
+    assert log["header"]["_ladder"] == [
+        {"mcs": 0, "bw": 20, "ov_base": 0.5, "ov_enh": 0.25},
+        {"mcs": 4, "bw": 20, "ov_base": 0.5, "ov_enh": 0.25},
+        {"mcs": 3, "bw": 40, "ov_base": 0.5, "ov_enh": 0.25},
+    ]
+
+
+def test_ctllog_pre_v12_ladder_token_defaults_bw_20():
+    """Recordings on the DVR predate per-rung width: every rung is 20 MHz."""
+    text = "ctllog 11 ladder=0/50:25,5/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert all(r["bw"] == 20 for r in log["header"]["_ladder"])
+    assert flightreport.bw40_summary(log) is None
+
+
+def test_bw40_summary_counts_time_held_and_promotes():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        log = flightreport.load_ctllog(str(p))
+        b = flightreport.bw40_summary(log)
+        # On rung 2 (40/3) from 2000-2500 and 6000-12000: 6.5 s of 11 s.
+        assert abs(b["held_s"] - 6.5) < 1e-6
+        assert abs(b["total_s"] - 11.0) < 1e-6
+        assert b["promotes"] == 2
+        assert b["held_past_probation"] == 1    # the first fell back after 500 ms
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+    assert "BW40" in out
+    assert "held 6.5 s of 11.0 s" in out
+    assert "promotes onto 40 MHz: 2, held past 3 s: 1" in out
+
+
+CTL12_CLIMB = """ctllog 12 ladder=20:0/50:25,20:4/50:25,40:3/50:25,40:4/50:25 down_util=0.35 up_util=0.15 probe_offset=1
+S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 2 0.1200 60
+E 2000 1 2 promote_probed 0.0100 31.0 -24.0
+E 3800 2 3 promote_probed 0.0100 31.0 -24.0
+S 12000 3 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0
+"""
+
+
+def _bw40(text, **kw):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+        b = flightreport.bw40_summary(log, **kw)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+    return b, buf.getvalue()
+
+
+def test_bw40_climb_within_40_counts_as_held():
+    """20/4 -> 40/3 then the normal 40/3 -> 40/4 promote 1.8 s later: the
+    link never left 40 MHz, so the promote held -- no fall-back alarm."""
+    b, out = _bw40(CTL12_CLIMB)
+    assert b["promotes"] == 1
+    assert b["held_past_probation"] == 1
+    assert abs(b["held_s"] - 10.0) < 1e-6
+    assert "held past 3 s: 1" in out
+    assert "fell straight back" not in out
+
+
+def test_bw40_fall_back_to_20_within_probation_is_not_held():
+    text = CTL12_CLIMB.replace("E 3800 2 3 promote_probed", "E 3800 2 1 residual")
+    b, out = _bw40(text)
+    assert b["promotes"] == 1
+    assert b["held_past_probation"] == 0
+    assert "fell straight back" in out
+
+
+def test_bw40_leave_via_second_40_rung_within_probation_is_not_held():
+    """40/3 -> 40/4 -> 20/4, all inside 3 s of the promote: it left 40."""
+    text = CTL12_CLIMB.replace(
+        "E 3800 2 3 promote_probed 0.0100 31.0 -24.0\n",
+        "E 3800 2 3 promote_probed 0.0100 31.0 -24.0\n"
+        "E 4500 3 1 residual 0.4000 29.0 -23.0\n")
+    b, _ = _bw40(text)
+    assert b["promotes"] == 1
+    assert b["held_past_probation"] == 0
+
+
+def test_bw40_probation_label_follows_probation_ms():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12_CLIMB)
+        log = flightreport.load_ctllog(str(p))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_bw40_report(log, probation_ms=1500.0)
+    assert "held past 1.5 s: 1" in buf.getvalue()
+
+
+def test_bw40_s_lines_only_seed_the_rung_from_s():
+    """No E lines: the whole span sat on the S lines' rung (a 40 rung)."""
+    text = ("ctllog 12 ladder=20:0/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+            "S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
+            "S 5000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n")
+    b, _ = _bw40(text)
+    assert abs(b["held_s"] - 4.0) < 1e-6
+    assert b["promotes"] == 0
+
+
+def test_dwell_table_names_each_rungs_mcs_and_bw():
+    """DWELL rows carry the rung's mcs/bw from the ctllog header's ladder,
+    so a rung index reads as 20/4 or 40/3 without cross-referencing."""
+    _, out = _bw40(CTL12_CLIMB)
+    dwell = out[out.find("DWELL (S records)"):out.find("EVENTS")]
+    assert "rung 1 (mcs4/20): n=1" in dwell, dwell
+    assert "rung 3 (mcs4/40): n=1" in dwell, dwell
+
+
+def test_dwell_table_without_ladder_keeps_the_bare_rung():
+    text = ("ctllog 4 down_util=0.35 up_util=0.15\n"
+            "S 1000 2 0.0500 31.5 0.0000 0.1000 0.0000 -24.5\n")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(text)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+    assert "  rung 2: n=1" in buf.getvalue(), buf.getvalue()
+
+
+def test_bw40_section_absent_without_40_rungs():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL10)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+    assert "BW40" not in buf.getvalue()
 
 
 def test_ctllog_r_lines_and_inversion():
@@ -949,10 +1104,44 @@ class CtlLog10Test(unittest.TestCase):
         rows = flightreport.load_probelog(p)
         self.assertEqual(rows["bpb"], 4); self.assertEqual(len(rows["rows"]), 2)
         summ = flightreport.probelog_summary(rows)
-        self.assertEqual(summ[6]["bodies"], 2)
-        self.assertEqual(summ[6]["lost_bodies"], 1)   # seq 11 missing
-        self.assertEqual(summ[6]["blocks_ok"], 6)
+        self.assertEqual(summ[(6, 20)]["bodies"], 2)
+        self.assertEqual(summ[(6, 20)]["lost_bodies"], 1)   # seq 11 missing
+        self.assertEqual(summ[(6, 20)]["blocks_ok"], 6)
         self.assertIsNone(rows["rows"][0]["first_ms"])   # v1: no arrival stamp
+
+    def test_probelog_v3_bw_column_splits_20_and_40(self):
+        """probelog 3 (40 MHz rungs) adds bw after mcs: 20/3 and 40/3
+        probes are separate groups, and the report labels mcs3/40."""
+        d = tempfile.mkdtemp(); p = os.path.join(d, "probe.log")
+        with open(p, "w") as f:
+            f.write("probelog 3 bpb=4\n"
+                    "1000 10 3 20 5 4 3 30.5 28.0 -24.0 -22.0 1000.000\n"
+                    "1033 11 3 40 6 2 1 30.0 nan -23.0 nan 1033.000\n"
+                    "1066 13 3 40 7 4 1 30.0 nan -23.0 nan 1066.000\n")
+        pl = flightreport.load_probelog(p)
+        self.assertEqual(pl["version"], 3)
+        self.assertEqual([r["bw"] for r in pl["rows"]], [20, 40, 40])
+        self.assertEqual(pl["rows"][1]["enh_fid"], 6)
+        self.assertAlmostEqual(pl["rows"][2]["first_ms"], 1066.0)
+        summ = flightreport.probelog_summary(pl)
+        self.assertEqual(summ[(3, 20)]["bodies"], 1)
+        self.assertEqual(summ[(3, 40)]["bodies"], 2)
+        self.assertEqual(summ[(3, 40)]["lost_bodies"], 1)   # seq 12 missing
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_probe_report({"E": [], "P": []}, pl)
+        out = buf.getvalue()
+        self.assertIn("mcs3/20: bodies=1", out)
+        self.assertIn("mcs3/40: bodies=2", out)
+
+    def test_probelog_v2_rows_default_bw_20(self):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "probe.log")
+        with open(p, "w") as f:
+            f.write("probelog 2 bpb=4\n1130 10 4 5 4 3 30.5 28.0 -24.0 -22.0 1024.500\n")
+        pl = flightreport.load_probelog(p)
+        self.assertEqual(pl["rows"][0]["bw"], 20)
+        self.assertEqual(pl["rows"][0]["enh_fid"], 5)
+        self.assertAlmostEqual(pl["rows"][0]["first_ms"], 1024.5)
 
     def test_probelog_summary_resyncs_on_restart_and_starve(self):
         # ProbeSource seeds a RANDOM initial seq per daemon start (SwEncoder
@@ -968,12 +1157,12 @@ class CtlLog10Test(unittest.TestCase):
             {"t_ms": 20033.0, "seq": 5, "mcs": 2, "enh_fid": 8, "blocks_ok": 4, "card_mask": 3, "snr": [30, 30], "evm": [-20, -20], "first_ms": 20033.0},  # backwards: restart again
         ]}
         summ = flightreport.probelog_summary(pl)
-        self.assertEqual(summ[3]["lost_bodies"], 1)
-        self.assertEqual(summ[1]["lost_bodies"], 0)
-        self.assertEqual(summ[2]["lost_bodies"], 0)
-        self.assertEqual(summ[1]["resyncs"], 2)       # the restart seed jump + the starve
-        self.assertEqual(summ[2]["resyncs"], 1)       # the backwards jump
-        self.assertEqual(summ[3].get("resyncs", 0), 0)
+        self.assertEqual(summ[(3, 20)]["lost_bodies"], 1)
+        self.assertEqual(summ[(1, 20)]["lost_bodies"], 0)
+        self.assertEqual(summ[(2, 20)]["lost_bodies"], 0)
+        self.assertEqual(summ[(1, 20)]["resyncs"], 2)       # the restart seed jump + the starve
+        self.assertEqual(summ[(2, 20)]["resyncs"], 1)       # the backwards jump
+        self.assertEqual(summ[(3, 20)].get("resyncs", 0), 0)
 
     def test_find_aulog_for_prefers_the_log_that_joins(self):
         # Every boot's mono clock starts near 0, so on a DVR holding many
@@ -1059,7 +1248,7 @@ class SessionModeProbeJoinTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 flightreport.main(s.ctl, s.au, s.probe)
             out = buf.getvalue()
-        self.assertIn("PROBE LOG (per mcs)", out)
+        self.assertIn("PROBE LOG (per mcs/bw)", out)
 
     def test_legacy_ctl_still_finds_sibling_probelog_by_filename_glob(self):
         """The legacy heuristic (ctl-NNNN_<date>.log -> sibling
@@ -1077,7 +1266,7 @@ class SessionModeProbeJoinTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 flightreport.main(ctl_p)   # no probelog_path: legacy glob heuristic
             out = buf.getvalue()
-        self.assertIn("PROBE LOG (per mcs)", out)
+        self.assertIn("PROBE LOG (per mcs/bw)", out)
 
 
 HOP_CTL_LOG = """ctllog 11 ladder=0/100,2/50,4/25,5/25,6/25,7/10 down_util=0.35 up_util=0.15
@@ -1116,6 +1305,52 @@ class HopReportTest(unittest.TestCase):
         ref = flightreport.load_scanlog(str(self.FIXTURE))
         self.assertEqual(len(scanlog["H"]), len(ref["H"]))
         self.assertEqual(len(scanlog["V"]), len(ref["V"]))
+
+    def test_v4_scanlog_carries_busy_and_own_air(self):
+        """scanlog 4 (spec 2026-09-25-nhm-airtime §6): the V card block
+        grows two fields, nhm_busy (%, '-' when the window wasn't ours) and
+        own_air (%). A rejoined session can carry a v3 section ahead of the
+        v4 one (see test_rejoined_session_takes_the_last_scanlog_marker) --
+        each V line must parse with the stride its own section's marker
+        set, not the file's final version."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 3 home=136 candidates=149,161 dwell_ms=250\n")
+            f.write("V 500.0 healthy 00 - 0.0 0 0 10 2 0 1 -50.0 25.0 0.0\n")
+            f.write("scanlog 4 home=136 candidates=149,161 dwell_ms=250\n")
+            f.write("V 1000.0 interfered 21 0 80.0 0 0 0 0 0 0 -48.0 30.0 0.0 94.9 2.0 "
+                     "1 0 0 0 0 -48.0 30.0 0.0 - 2.0\n")
+        scanlog = flightreport.load_scanlog(p)
+        self.assertEqual(scanlog["version"], 4)
+        self.assertEqual(len(scanlog["V"]), 2)
+        v3 = scanlog["V"][0]
+        self.assertEqual(len(v3["cards"]), 1)
+        self.assertIsNone(v3["cards"][0]["nhm_busy"])
+        self.assertIsNone(v3["cards"][0]["own_air"])
+        v4 = scanlog["V"][1]
+        self.assertEqual(len(v4["cards"]), 2)
+        self.assertEqual(v4["cards"][0]["nhm_busy"], 94.9)
+        self.assertEqual(v4["cards"][0]["own_air"], 2.0)
+        self.assertIsNone(v4["cards"][1]["nhm_busy"])
+        self.assertEqual(v4["cards"][1]["own_air"], 2.0)
+
+    def test_d_line_carries_busy(self):
+        """scanlog 4 (spec 2026-09-25-nhm-airtime §6): the D record gains a
+        trailing NHM busy % field, '-' when the in-flight dwell had no
+        reading (no NHM support, or the arm/read period mismatched)."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 4 home=136 candidates=149,161 dwell_ms=250\n")
+            f.write("D 1300 1 161 2 250 812 790 3 2 42 -93 10 1 0 0 0 20 78.4\n")
+            f.write("D 1600 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 40 -\n")
+            f.write("D 1900 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 40\n")
+        scanlog = flightreport.load_scanlog(p)
+        self.assertEqual(len(scanlog["D"]), 3)
+        self.assertEqual(scanlog["D"][0]["busy"], 78.4)
+        self.assertIsNone(scanlog["D"][1]["busy"])
+        self.assertIsNone(scanlog["D"][2]["busy"])   # 18 fields: no busy column at all
 
     def test_hop_table_row_timings_and_outcome(self):
         """onset->order / order->video / video->restore, paired end to end:
@@ -1180,6 +1415,26 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["outcome"], "hold_end")
         self.assertEqual(rows[0]["outcome_ts"], 4000.0)
+
+    def test_session_lost_closes_the_attempt_row(self):
+        """HopController::on_session_lost (bench 2026-09-24, GS session
+        0207): the link's session dropped while an order was still waiting
+        for its confirm, and the order is withdrawn at that falling edge.
+        That ENDS the attempt -- it must read as its own outcome, not fall
+        through to "unterminated" (the log ending mid-attempt), and the
+        shadow (hop.enable = false) spelling must close it too."""
+        def E(t, kind, epoch, target):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": 0.0}
+        rows = flightreport.build_hop_rows(
+            [E(1000, "order", 9, 40), E(1400, "session_lost", 10, 40)], [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["outcome"], "session_lost")
+        self.assertEqual(rows[0]["outcome_ts"], 1400.0)
+        rows = flightreport.build_hop_rows(
+            [E(1000, "would_order", 9, 40), E(1400, "would_session_lost", 10, 40)], [])
+        self.assertEqual(len(rows), 1)
+        self.assertIn("session_lost", rows[0]["outcome"])
 
     def test_zero_hops_prints_verdict_histogram(self):
         """No H events at all (a perfectly healthy flight, or hop_controller
@@ -1309,6 +1564,55 @@ class HopReportTest(unittest.TestCase):
         self.assertIn("video->restore -", out)
         self.assertIn("outcome withdraw", out)
 
+    def test_escape_events_and_starved_windows_are_counted(self):
+        """Task 11 (d)/(c): an `escape` H event places an order (a fresh
+        row, and -- after a verify fail -- the outcome of the attempt it
+        replaced, like a verify_fail retry), and V windows with evidence
+        0x40 (kEvStarved) are counted. Revert (drop "escape" from
+        _HOP_ORDER_KINDS / the two counters): one row, no counts."""
+        def E(t, kind, epoch, target):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": 0.0}
+        H = [E(1000, "order", 1, 136), E(1080, "lead_confirm", 1, 136),
+             E(1400, "escape", 2, 112), E(1460, "lead_confirm", 2, 112),
+             E(2500, "verify_pass", 2, 112)]
+        rows = flightreport.build_hop_rows(H, [])
+        self.assertEqual([r["outcome"] for r in rows], ["escape", "verify_pass"])
+        self.assertEqual([r["target"] for r in rows], [136, 112])
+        V = [{"t_ms": 900.0, "verdict": "interfered", "evidence": 0x61, "ref_rung": 3,
+              "link_loss_pct": 0.0, "recovered": 0, "cards": []},
+             {"t_ms": 950.0, "verdict": "unknown", "evidence": 0x41, "ref_rung": 3,
+              "link_loss_pct": 0.0, "recovered": 0, "cards": []},
+             {"t_ms": 1300.0, "verdict": "interfered", "evidence": 0x21, "ref_rung": 3,
+              "link_loss_pct": 9.0, "recovered": 0, "cards": []}]
+        scanlog = {"version": 4, "V": V, "H": H, "D": [], "M": []}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, {"E": []})
+        out = buf.getvalue()
+        self.assertIn("escapes: 1", out)
+        self.assertIn("starved windows: 2", out)
+
+    def test_confirm_extend_and_withdraw_undelivered_are_counted(self):
+        """Task 12 (f): `confirm_extend` is informational (the attempt stays
+        open), `withdraw_undelivered` closes it like a withdraw, and the HOP
+        report counts both. Revert (drop "withdraw_undelivered" from
+        _HOP_TERMINAL_ONLY_KINDS / the counters): the row reads
+        "unterminated" and no count line."""
+        def E(t, kind, epoch, target, el=0.0):
+            return {"t_ms": float(t), "kind": kind, "epoch": epoch,
+                    "target": target, "score": 0, "elapsed_ms": el}
+        H = [E(1000, "order", 1, 112), E(1500, "confirm_extend", 1, 112, 500.0),
+             E(4000, "withdraw_undelivered", 2, 112, 3000.0)]
+        rows = flightreport.build_hop_rows(H, [])
+        self.assertEqual([r["outcome"] for r in rows], ["withdraw_undelivered"])
+        scanlog = {"version": 4, "V": [], "H": H, "D": [], "M": []}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, {"E": []})
+        out = buf.getvalue()
+        self.assertIn("confirm extensions: 1  undelivered withdraws: 1", out)
+
     def test_v_line_variable_card_count(self):
         """The per-card block in a V line repeats once per card -- must not
         assume exactly two (this bench has run with one card, e.g.
@@ -1329,7 +1633,7 @@ class HopReportTest(unittest.TestCase):
         last = scanlog["V"][1]["cards"][2]
         self.assertEqual(last, {"card": 2, "foreign": 9, "fa": 10, "cca": 11,
                                  "crc_fail": 12, "rssi_dbm": 20.0, "snr_db": 7.0,
-                                 "d_rssi_db": -3.0})
+                                 "d_rssi_db": -3.0, "nhm_busy": None, "own_air": None})
 
     def test_session_dir_dispatch_prints_hop_report_after_probe(self):
         """session.py's `scan` slot + main()'s ctl-log branch: a session
@@ -1399,14 +1703,47 @@ def test_fec_section_counterfactual_overhead_per_sid_and_rung():
     assert "FEC EPISODES" in out, out
     sec = out[out.find("FEC EPISODES"):]
     s0 = sec[sec.find("sid 0"):sec.find("sid 1")]
-    assert re.search(r"sid 0 mcs 5 ov 1\.00: n=4 stale=1 failed=1", s0), s0
+    assert re.search(r"sid 0 mcs 5/20 ov 1\.00: n=4 stale=1 failed=1", s0), s0
     assert "ov_req p50/p90/p99/max=0.50/1.16/1.16/1.16" in s0, s0
     # would-fail counts at candidate overheads, non-stale rows only (3)
     assert re.search(r"0\.25:2\b.*0\.35:2\b.*0\.50:1\b.*0\.75:1\b.*1\.00:1\b", s0), s0
     assert "of 3 non-stale" in s0, s0
     s1 = sec[sec.find("sid 1"):]
-    assert re.search(r"sid 1 mcs 5 ov 0\.50: n=1 stale=0 failed=0", s1), s1
+    assert re.search(r"sid 1 mcs 5/20 ov 0\.50: n=1 stale=0 failed=0", s1), s1
     assert "ov_req p50/p90/p99/max=0.40/0.40/0.40/0.40" in s1, s1
+
+
+FEC_LOG2_ROWS = """feclog 2
+1000 0 3 20 0.50 100 12 12 12 0 0 32 32
+1100 0 3 40 0.50 300 4 4 4 0 0 32 32
+1200 0 3 40 0.50 500 6 6 6 0 0 32 32
+"""
+
+
+def test_fec_section_feclog2_groups_by_mcs_and_bw():
+    """feclog 2 (40 MHz rungs) adds bw after mcs: 20/3 and 40/3 episodes at
+    the same overhead are separate groups."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "fec.log"
+        p.write_text(FEC_LOG2_ROWS)
+        rows = flightreport.load_feclog(str(p))
+        assert [r["bw"] for r in rows] == [20, 40, 40], rows
+        assert rows[1]["first_seq"] == 300 and rows[1]["m"] == 4, rows[1]
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert re.search(r"sid 0 mcs 3/20 ov 0\.50: n=1 ", out), out
+    assert re.search(r"sid 0 mcs 3/40 ov 0\.50: n=2 ", out), out
+
+
+def test_fec_section_feclog1_rows_default_bw_20():
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "fec.log"
+        p.write_text(FEC_LOG_ROWS)
+        rows = flightreport.load_feclog(str(p))
+    assert len(rows) == 5 and all(r["bw"] == 20 for r in rows), rows
+    assert rows[0]["first_seq"] == 100 and rows[0]["m"] == 12, rows[0]
 
 
 def test_session_dir_mode_prints_fec_section():
@@ -1424,6 +1761,8 @@ def test_session_dir_mode_prints_fec_section():
 if __name__ == "__main__":
     test_fec_section_counterfactual_overhead_per_sid_and_rung()
     test_session_dir_mode_prints_fec_section()
+    test_fec_section_feclog2_groups_by_mcs_and_bw()
+    test_fec_section_feclog1_rows_default_bw_20()
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_overhead_scale_break_warns_on_stderr()
@@ -1433,6 +1772,17 @@ if __name__ == "__main__":
     test_ctllog_v8_pair_ladder_token_parsed()
     test_ctllog_pre_v8_ladder_token_treated_as_both()
     test_ctllog_pre_v8_note()
+    test_ctllog_v12_ladder_token_carries_bw()
+    test_ctllog_pre_v12_ladder_token_defaults_bw_20()
+    test_bw40_summary_counts_time_held_and_promotes()
+    test_bw40_section_absent_without_40_rungs()
+    test_bw40_climb_within_40_counts_as_held()
+    test_bw40_fall_back_to_20_within_probation_is_not_held()
+    test_bw40_leave_via_second_40_rung_within_probation_is_not_held()
+    test_bw40_probation_label_follows_probation_ms()
+    test_bw40_s_lines_only_seed_the_rung_from_s()
+    test_dwell_table_names_each_rungs_mcs_and_bw()
+    test_dwell_table_without_ladder_keeps_the_bare_rung()
     test_ctllog_r_lines_and_inversion()
     test_find_episodes_clusters_and_first_reason()
     test_false_fade_and_attribution_miss()

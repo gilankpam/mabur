@@ -95,4 +95,24 @@ TEST(home_margin_keeps_home_unless_a_candidate_is_clearly_cleaner) {
   r6.add(S(136, 6, 0, 0, 0)); r6.add(S(149, 2, 0, 0, 0));
   CHECK(r6.proposal() == 149);                // margin 0 = old rule
 }
+
+static maburgs::RankSample rsb(uint8_t ch, uint32_t fa, double busy) {
+  maburgs::RankSample s; s.ch = ch; s.fa = fa; s.busy_valid = true; s.busy_pct = busy; return s;
+}
+TEST(worst_busy_visit_blocks_the_channel) {
+  maburgs::ChannelRanker r(136, {144}, 1, 0, 30.0);
+  r.add(rsb(144, 0, 5)); r.add(rsb(144, 0, 80));
+  for (const auto& e : r.all()) if (e.ch == 144) CHECK(r.is_blocked(e));
+}
+TEST(blocked_home_loses_despite_margin) {
+  maburgs::ChannelRanker r(136, {144}, 1, /*home_margin=*/20, 30.0);
+  r.add(rsb(136, 0, 100));   // analog on home: FA 0, 100 % busy
+  r.add(rsb(144, 15, 0));    // 15 events, unblocked
+  CHECK(r.proposal() == 144);
+}
+TEST(unblocked_candidate_still_needs_the_margin) {
+  maburgs::ChannelRanker r(136, {144}, 1, 20, 30.0);
+  r.add(rsb(136, 10, 0)); r.add(rsb(144, 0, 0));
+  CHECK(r.proposal() == 136);
+}
 MTEST_MAIN

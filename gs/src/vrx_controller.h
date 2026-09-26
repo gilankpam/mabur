@@ -29,6 +29,7 @@ struct VrxCfg {
   // LinkCfg::static_mcs). overhead pair used only when pinned (from
   // LinkCfg::static_overhead_base/enh).
   int pin_mcs = -1;
+  int pin_bw = 20;  // link.static_bw
   double pin_overhead_base = 0.25;
   double pin_overhead_enh = 0.25;
   // link.probe.pin_mcs: static-pin mode only -- probe a fixed MCS while
@@ -90,6 +91,13 @@ class VrxController {
   // Rendezvous nonce for test construction of acceptable DiscAcks.
   uint32_t rz_nonce() const { return rz_.nonce(); }
   void set_proposal(uint8_t ch) { rz_.set_proposal(ch); }
+  // Hold the SESSION keep-alive DISC (a hop order is in flight): its proposal
+  // is the old op by construction, and a drone that has already followed the
+  // order's RCF would otherwise process the DISC it received on the old
+  // channel and retune straight back (bench 2026-09-26). RCFs are unaffected;
+  // the keep-alive is due at once when the hold lifts. Ignored until the
+  // peer has acked (the stale-caps fast cadence always runs).
+  void set_keepalive_hold(bool hold) { keepalive_hold_ = hold; }
   uint8_t proposal() const { return rz_.proposal(); }
   // Last accepted ack's agreed_channel (0 before any accept). Set BEFORE
   // peer_caps_ so a caller reading both on one tick sees a consistent pair.
@@ -113,6 +121,7 @@ class VrxController {
   OpPoint cur_op_;
   uint16_t peer_caps_ = 0;
   bool peer_acked_ = false;
+  bool keepalive_hold_ = false;
   uint8_t last_cmd_probe_profile_ = mabur::rc::kNoProbeProfile;
   uint8_t agreed_channel_ = 0;
   bool ack_edge_ = false;
