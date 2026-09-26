@@ -33,6 +33,24 @@ through each window: mean sum 251.8 vs 252.1, busy 74.2 vs 74.4 — the reset
 does not touch NHM. The daemon's read → reset → re-arm order is tidy, not
 required.
 
+That run could not tell a cleared window from an intact one: the histogram
+is normalised (a), so on a steady channel a window cut to its tail reads
+the same. Settled 2026-09-26 with a time-varying jam (`bench/nhmreset`
+probe on one GS 8812EU, ch 144; host EU card `linkbench-tx --mcs 7
+--bitrate 40M --tx-threads 1 --duty 100:100 --no-cca --foreign-sa`), 200 ms
+windows so each spans exactly one on- and one off-phase:
+
+| windows | reset | busy mean | sd |
+|---|---|---|---|
+| 200 × 200 ms | none (coex 2 s tick only) | 48.3 % | 0.5 |
+| 200 × 200 ms | `GetRxEnergy(false)` at +150 ms | 48.3 % | 0.4 |
+| 100 × 50 ms (positive control) | none | 49.2 % | 39.5 (0–97 %) |
+
+A window cleared to its last 50 ms would have scattered like the control;
+none did, and ready latency (~201 ms) and the 255 sum were unchanged. The
+0x1eb4[25] reset — scout read, energy read or the coex tick — does not
+disturb an armed busy window. One unit, 5 GHz only.
+
 ## (c) Our own airtime vs NHM busy on a clean channel
 
 `err = busy(−83) − own`, per 150 ms window, ~160 windows each:

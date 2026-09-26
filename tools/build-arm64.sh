@@ -247,10 +247,11 @@ cmake -S . -B build-arm64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-musl.cmake \
   -DDEVOURER_LOG_MAX_LEVEL=WARN \
   -DMABUR_PLAYER_HW=ON -DMABUR_MPP_ROOT="$MABUR_MPP_ROOT" -DMABUR_DRM_ROOT="$MABUR_DRM_ROOT"
 
-cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx maburplay encosd
+cmake --build build-arm64 -j"$(nproc)" --target maburgs linkbench-rx maburplay encosd nhm-reset-probe
 
 "${TARGET_TRIPLE}-strip" build-arm64/gs/maburgs -o out/arm64/maburgs
 "${TARGET_TRIPLE}-strip" build-arm64/bench/linkbench/linkbench-rx -o out/arm64/linkbench-rx
+"${TARGET_TRIPLE}-strip" build-arm64/bench/nhmreset/nhm-reset-probe -o out/arm64/nhm-reset-probe
 "${TARGET_TRIPLE}-strip" build-arm64/gs/player/maburplay -o out/arm64/maburplay-static
 "${TARGET_TRIPLE}-strip" build-arm64/bench/encosd/encosd -o out/arm64/encosd
 

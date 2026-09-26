@@ -86,6 +86,10 @@ struct Args {
   // --no-agg-even: even frames of a --mcs-mix / --frame-bw mix run carry
   // devourer TxMode::no_agg (AGG_EN=0 + BK=1: never folded into an A-MPDU).
   bool no_agg_even = false;  // --no-cca: MAC carrier sense off (maburd flies it ON)
+  // --duty ON:OFF (ms): square-wave the paced run -- transmit ON ms, then
+  // drop the offered load and the queued frames for OFF ms. A time-varying
+  // jam for measurement windows that must see the air change inside them.
+  int duty_on_ms = 0, duty_off_ms = 0;
   bool wall_sweep = false;
   int wall_lo = -41, wall_hi = 63;
   int wall_frames = 100;
@@ -115,7 +119,7 @@ void usage(const char* argv0) {
     "  [--pwr-mode override|none|offset] [--pwr 0..63] [--pwr-offset-qdb Q]\n"
     "  [--usb-vid 0x0bda] [--usb-pid 0] [--tx-threads 4]\n"
     "  [--ampdu N (max_num, 0=off)] [--ampdu-max-time 32]\n"
-    "  [--no-cca] [--foreign-sa] [--frame-bw 20|40|mix] [--mcs-mix M2] [--no-agg-even] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
+    "  [--no-cca] [--foreign-sa] [--frame-bw 20|40|mix] [--mcs-mix M2] [--no-agg-even] [--duty ON_MS:OFF_MS] [--wall-sweep [--wall-lo -41] [--wall-hi 63] [--wall-frames 100]\n"
     "   [--wall-gap-us 1000] [--wall-settle-ms 20] [--wall-mcs-mask 0xff]]\n"
     "  [--range-sweep [--range-lo -39] [--range-hi 41] [--range-step 2]\n"
     "   [--range-frames 40] [--range-size 1400] [--range-gap-us 2500]\n"
@@ -166,6 +170,11 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--no-cca") { a->no_cca = true; }
     else if (k == "--foreign-sa") { a->foreign_sa = true; }
     else if (k == "--no-agg-even") { a->no_agg_even = true; }
+    else if (k == "--duty") {
+      if (i + 1 >= argc) return false;
+      if (std::sscanf(argv[++i], "%d:%d", &a->duty_on_ms, &a->duty_off_ms) != 2 ||
+          a->duty_on_ms <= 0 || a->duty_off_ms <= 0) return false;
+    }
     else if (k == "--mcs-mix") { if (!next(&a->mcs_mix) || a->mcs_mix < 0 || a->mcs_mix > 7) return false; }
     else if (k == "--frame-bw") {
       if (i + 1 >= argc) return false;
@@ -318,6 +327,8 @@ int main(int argc, char** argv) {
                a.size, a.pwr_mode.c_str(), a.pwr,
                mabur::gf::backend());
   std::fprintf(stderr, "  tx-threads %d (URBs in flight)\n", a.tx_threads);
+  if (a.duty_on_ms > 0)
+    std::fprintf(stderr, "  duty %d ms on / %d ms off\n", a.duty_on_ms, a.duty_off_ms);
 
   auto logger = std::make_shared<Logger>();
   // set_level() gates the diagnostic channel only; the JSON event stream is
@@ -610,6 +621,16 @@ int main(int argc, char** argv) {
       if (deadline && now >= deadline) break;
       bucket.advance(now);
       bodies.clear();
+      if (a.duty_on_ms > 0 &&
+          ((now - t0) / 1000) % static_cast<uint64_t>(a.duty_on_ms + a.duty_off_ms) >=
+              static_cast<uint64_t>(a.duty_on_ms)) {
+        // Off phase: spend the tokens without sending and drop what is still
+        // queued, so the air goes quiet within the in-flight URBs' tail.
+        while (bucket.spend(static_cast<size_t>(a.size))) {}
+        std::lock_guard<std::mutex> lk(qm);
+        q.clear();
+        q_space.notify_all();
+      }
       while (bucket.spend(static_cast<size_t>(a.size))) {
         auto pkt = build_bench_packet(app_seq++, static_cast<size_t>(a.size));
         app_bytes += pkt.size();
