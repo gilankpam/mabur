@@ -7,7 +7,7 @@
 usb_vid    = 3034        # Realtek USB vendor ID (0x0bda) in decimal
 usb_pid    = 0           # 0 = find the card automatically (8812EU or 8812CU)
 channel    = 136         # home channel: where the drone waits for the ground station
-width      = 40          # 20 or 40 MHz. The ground station picks the width per link rung
+width      = 40          # 20 or 40 MHz. The ground station picks the width for each link speed
 follow_gs  = true        # move to the channel the ground station asks for
 power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
@@ -24,11 +24,11 @@ wall_margin_db  = 1.0    # safety margin below the walls; raise it to lower TX p
 [fec]
 # Forward error correction. symbol_size must match the ground station.
 symbol_size     = 332
-window          = 32
+window          = 32       # repair window in symbols: larger survives longer loss bursts
 blocks_per_body = [4, 4]   # base layer, enhance layer
 base_overhead   = 0.5      # extra repair data on the base layer (0.5 = +50 %)
-feed_batch      = 1
-flush_ms        = 25
+feed_batch      = 1        # blocks handed to the radio together (1 = send each as soon as it is ready)
+flush_ms        = 25       # send out a partly filled block after this many ms without new video
 
 [encoder]
 bitrate_min_kbps   = 1000
@@ -46,12 +46,12 @@ gop_s      = 0.5           # seconds between keyframes
 qp_delta   = 4             # quality offset between keyframes and P-frames
 max_ipprop = 2             # keyframe may be at most this many times a P-frame's size
 min_iqp    = 34            # keyframe quality floor: higher = smaller keyframes
-intra_refresh_frames = 1   # frames to intra-refresh the whole picture, so a lost frame heals
-                           # without a keyframe (1 = every P; rows/frame follow venc.size)
-intra_refresh_qp   = 36    # quality of those refresh rows
+intra_refresh_frames = 1   # frames to refresh the whole picture, so a lost frame heals without
+                           # a keyframe (1 = fastest; larger = steadier bitrate, slower recovery; 0 = off)
+intra_refresh_qp   = 36    # quality of the refreshed areas: lower = sharper, more bits
 ref_base    = 1            # temporal layering: a base layer every frame can decode from...
 ref_enhance = 1            # ...plus droppable enhance frames between them
-ref_pred    = true
+ref_pred    = true         # enhance frames may also predict from the base layer
 ae_fps      = 15           # auto-exposure update rate
 awb_fps     = 15           # auto-white-balance update rate
 snapshot_quality = 80      # JPEG quality of camera snapshots
@@ -68,10 +68,10 @@ center  = 0.4
 [link]
 vtx_id          = 1        # must match the ground station
 failsafe_ms     = 3000     # no word from the ground station this long = drop to the most robust link setting
-rc_drain_ms     = 5
+rc_drain_ms     = 5        # how often commands from the ground station are applied
 rendezvous_ms   = 30000    # still silent this long after failsafe = return to the home channel
 move_confirm_ms = 2000     # after a channel move, hear the ground station within this or return home
-tick_ms         = 100
+tick_ms         = 100      # housekeeping interval (health checks, stats)
 
 [msp]
 # Flight-controller link for the OSD and arm state.
@@ -79,9 +79,9 @@ enable         = true
 serial         = "/dev/ttyS2"   # UART the flight controller is wired to
 baud           = 115200
 update_rate_hz = 3              # OSD updates per second sent to the ground station
-symbol_size    = 1312
-window         = 16
-overhead       = 1.0
+symbol_size    = 1312           # bytes per OSD packet
+window         = 16             # error-correction window, in packets
+overhead       = 1.0            # extra repair data (1.0 = +100 %)
 
 [low_power]
 # While disarmed: lower bitrate and frame rate to keep the VTX cool.
@@ -95,7 +95,7 @@ stale_ms     = 2000        # no arm-state report for this long = assume armed, f
 # Frame aggregation: packs several frames into one transmission at the
 # faster link rates, raising throughput.
 max_num    = 6             # frames per aggregate (0 = off)
-max_time   = 32
+max_time   = 32            # how long the radio waits to fill an aggregate (32 = about 0.8 ms; 1..8 turns it off)
 min_mcs_20 = 4             # aggregate only from this MCS up at 20 MHz
 min_mcs_40 = 2             # ...and at 40 MHz
 
@@ -105,17 +105,19 @@ min_mcs_40 = 2             # ...and at 40 MHz
 shed_ms       = 25         # skip droppable enhance frames while the air backlog exceeds this
 efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # at 20 MHz
 efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # at 40 MHz
-body_us       = 0
+body_us       = 0          # fixed extra airtime per transmission, in microseconds
 
 [record]
 # Onboard microSD recorder: a constant-bitrate copy of the camera on the
-# drone's own card, started and stopped by the GS record button when the
-# GS sets dvr.target = "vtx" or "both". No card or slot is not an error.
+# drone's own card, started and stopped by the ground station's record
+# button when its dvr.target is "vtx" or "both". A missing card is not an
+# error: the OSD shows why nothing is being recorded.
 enable       = true
 dir          = "/mnt/mmcblk0p1"   # where the card is auto-mounted
 bitrate_kbps = 40000              # constant bitrate of the recording
-fps          = 60
+fps          = 60                 # at most venc.fps
 min_free_mb  = 512                # stop (or refuse to start) below this much free space
-size         = "1920x1080"        # = venc.size: shares the link's scaler. Another size (same
-                                  # aspect) uses VPE port 1; above 1920x1080 the sensor
-                                  # switches to 3840x2160@30 and venc.fps must be <= 30
+size         = "1920x1080"        # recording resolution, same aspect ratio as venc.size. It may differ
+                                  # from venc.size (e.g. fly 1280x720, record 1920x1080). Above
+                                  # 1920x1080 the whole camera drops to 30 fps (set venc.fps = 30)
+                                  # and the live video lags badly, so 1920x1080 is the practical max
