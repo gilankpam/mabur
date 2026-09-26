@@ -19,6 +19,7 @@ static Rcf rcf_from_json(const nlohmann::json& f) {
                                                 : kNoProbeProfile;
   r.hop_ch = f.contains("hop_ch") ? f["hop_ch"].get<uint8_t>() : 0;
   r.hop_epoch = f.contains("hop_epoch") ? f["hop_epoch"].get<uint8_t>() : 0;
+  r.rec = f.contains("rec") ? f["rec"].get<uint8_t>() : 0;
   return r;
 }
 
@@ -53,11 +54,11 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520a0100efbeadde0700243232ff00009378",
-      "43520a010001000000ffff006464ff0000a98e",
+      "43520b0100efbeadde0700243232ff000000bbc4",
+      "43520b010001000000ffff006464ff0000030141",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "43520a0100443322112a00086432060000a67c",
+      "43520b0100443322112a00086432060000027d91",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -75,6 +76,7 @@ TEST(rcf_matches_golden_wire) {
     CHECK(parsed->profile == r.profile);
     CHECK(std::abs(parsed->fec_overhead_base - r.fec_overhead_base) < 1e-9);
     CHECK(std::abs(parsed->fec_overhead_enh - r.fec_overhead_enh) < 1e-9);
+    CHECK(parsed->rec == r.rec);
     CHECK(frame_type(raw.data(), raw.size()) == T_RCF);
     ++i;
   }
@@ -87,7 +89,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520a0204010000000100feca9514010000000200318b",
+      "43520b0204010000000100feca95140100000002002e55",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -120,7 +122,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520a0304010000000100feca0300951401005676",
+      "43520b0304010000000100feca030095140100b466",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -273,6 +275,8 @@ TEST(telem_round_trip_and_golden) {
   // drone's own frame split -- ours (RC from the GS), foreign CRC-clean,
   // and CRC-failed (preamble heard, payload not decodable).
   t.rx_own = 13; t.rx_foreign = 14; t.rx_crcfail = 15;
+  // VTX recorder status (spec 2026-09-26): state 2 (Error) | err 5 (LowSpace) << 2.
+  t.rec_status = 0x16;
   auto wire = mabur::rc::pack_telem(t);
   CHECK(mabur::rc::frame_type(wire.data(), wire.size()) == mabur::rc::T_TELEM);
   auto back = mabur::rc::parse_telem(wire.data(), wire.size());
@@ -302,14 +306,15 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->rx_own == 13);
   CHECK(back->rx_foreign == 14);
   CHECK(back->rx_crcfail == 15);
+  CHECK(back->rec_status == 0x16);
   // Golden pin: byte-exact wire so the format can never drift silently.
   // Print-once, then hardcode: std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // (fill GOLDEN with the printed hex in the same commit — the test must
   // not pass with an empty golden)
   const std::string GOLDEN =
-      "43520a04030201020706050405191e2d0034127766554433221100a0860100400d03"
+      "43520b04030201020706050405191e2d0034127766554433221100a0860100400d03"
       "00e09304002823e80100034007000000d204801a0600090000000200333415163d03"
-      "4800040005000700080009000a003e0000000000000d000e000f00f726";
+      "4800040005000700080009000a003e0000000000000d000e000f0016a246";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -344,7 +349,7 @@ TEST(rcf_probe_profile_is_a_fixed_head_byte) {
   none.probe_profile = kNoProbeProfile;
   auto wire_none = mabur::rc::pack_rcf(none);
   CHECK(wire.size() == wire_none.size());   // fixed byte, no optional tail
-  CHECK(wire.size() == 17 + 2);              // head 17 + crc
+  CHECK(wire.size() == 18 + 2);              // head 18 + crc
   CHECK(wire[4] == 0);                       // flags byte carries nothing
   CHECK(wire[14] == r.probe_profile);
   CHECK(wire_none[14] == 0xFF);
@@ -365,7 +370,7 @@ TEST(rcf_v5_wire_is_rejected) {
 }
 
 TEST(version_mismatch_rejected_both_directions) {
-  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored v6 frame
+  // Reverting the RC_VERSION bump in rc_proto.h makes the doctored frame
   // become current-version, so it parses and the first CHECK fails.
   mabur::rc::Rcf r;
   r.vtx_id = 7;
@@ -379,14 +384,14 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
   // Byte 2 is the version. Any other version must be refused outright —
-  // including 9, the previous wire this build bumped away from.
-  auto v6 = body;
-  v6[2] = 9;
-  CHECK(!mabur::rc::parse_rcf(v6.data(), v6.size()).has_value());
+  // including 10, the previous version before bumping to 11.
+  auto v_old = body;
+  v_old[2] = 10;
+  CHECK(!mabur::rc::parse_rcf(v_old.data(), v_old.size()).has_value());
 
-  auto v9 = body;
-  v9[2] = 11;
-  CHECK(!mabur::rc::parse_rcf(v9.data(), v9.size()).has_value());
+  auto v_future = body;
+  v_future[2] = 12;
+  CHECK(!mabur::rc::parse_rcf(v_future.data(), v_future.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
   // direction (drone -> GS). A half-deployed pair must fail BOTH ways.
@@ -399,22 +404,23 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(!mabur::rc::parse_telem(tv1.data(), tv1.size()).has_value());
 }
 
-TEST(rcf_head_is_seventeen_bytes) {
+TEST(rcf_head_is_eighteen_bytes) {
   mabur::rc::Rcf r; r.vtx_id = 0xdeadbeef; r.seq = 7; r.profile = 0x24;
   r.fec_overhead_base = 0.42; r.fec_overhead_enh = 0.37; r.hop_ch = 149; r.hop_epoch = 3;
+  r.rec = 0x05;
   auto body = mabur::rc::pack_rcf(r);
-  CHECK(body.size() == 17 + 2);
+  CHECK(body.size() == 18 + 2);
   CHECK(body[12] == 42); CHECK(body[13] == 37); CHECK(body[14] == mabur::rc::kNoProbeProfile);
-  CHECK(body[15] == 149); CHECK(body[16] == 3);
+  CHECK(body[15] == 149); CHECK(body[16] == 3); CHECK(body[17] == 5);
   auto back = mabur::rc::parse_rcf(body.data(), body.size());
   REQUIRE(back.has_value());
-  CHECK(back->hop_ch == 149); CHECK(back->hop_epoch == 3);
+  CHECK(back->hop_ch == 149); CHECK(back->hop_epoch == 3); CHECK(back->rec == 5);
 }
 
 TEST(telem_carries_channel_and_hop_epoch) {
   mabur::rc::Telem t; t.tlm_seq = 5; t.channel = 165; t.hop_epoch = 9;
   auto b = mabur::rc::pack_telem(t);
-  CHECK(b.size() == 95 + 2);
+  CHECK(b.size() == 96 + 2);
   CHECK(b[87] == 165); CHECK(b[88] == 9);
   auto back = mabur::rc::parse_telem(b.data(), b.size());
   REQUIRE(back.has_value());
@@ -558,19 +564,19 @@ TEST(cal_result_sentinel_is_minus_128_and_minus_1_is_a_real_wall) {
 
 TEST(telem_ack_is_the_cal_active_bit_alone) {
   // The anchor never leaves the drone (spec 2026-09-13): the calibration
-  // ack is flags bit6 and nothing else. TELEM_LEN shrank 88 -> 87 (95 since 2026-09-23, +rx_*).
+  // ack is flags bit6 and nothing else. TELEM_LEN shrank 88 -> 87 (95 since 2026-09-23, +rx_*), now 96 since 2026-09-26 (+rec_status).
   mabur::rc::Telem t;
   t.flags = 0x40;
   auto b = mabur::rc::pack_telem(t);
-  CHECK(b.size() == 95 + 2);  // body + crc16
+  CHECK(b.size() == 96 + 2);  // body + crc16
   auto got = mabur::rc::parse_telem(b.data(), b.size());
   REQUIRE(got.has_value());
   CHECK((got->flags & 0x40) != 0);
 }
 
-TEST(rc_version_is_ten) {
-  // 2026-09-23 cca-on: Telem +rx_own/rx_foreign/rx_crcfail.
-  CHECK(mabur::rc::RC_VERSION == 10);
+TEST(rc_version_is_eleven) {
+  // 2026-09-26 vtx-recorder: RCF +rec, Telem +rec_status.
+  CHECK(mabur::rc::RC_VERSION == 11);
 }
 
 MTEST_MAIN

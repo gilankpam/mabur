@@ -33,6 +33,7 @@
     "hop_ch": 0,
     "hop_epoch": 0,
     "profile": 36,
+    "rec": 0,
     "seq": 7,
     "vtx_id": 3735928559
    }
@@ -44,6 +45,7 @@
     "hop_ch": 0,
     "hop_epoch": 0,
     "profile": 0,
+    "rec": 3,
     "seq": 65535,
     "vtx_id": 1
    }
@@ -56,6 +58,7 @@
     "hop_epoch": 0,
     "probe_profile": 6,
     "profile": 8,
+    "rec": 2,
     "seq": 42,
     "vtx_id": 287454020
    }

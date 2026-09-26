@@ -23,23 +23,23 @@ import rc_proto
 # mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
 # rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
 # byte plus the deleted ack_seq/score/layer_delivery fields, so its
-# pack_rcf() output is rejected outright by maburd. Pack the 17-byte head
+# pack_rcf() output is rejected outright by maburd. Pack the 18-byte head
 # here instead (magic, ver, type, flags, vtx_id, seq, profile,
 # fec_overhead_base_x100, fec_overhead_enh_x100, probe_profile, hop_ch,
-# hop_epoch -- RC_VERSION 6, 2026-09-04, made probe_profile a fixed head
+# hop_epoch, rec -- RC_VERSION 6, 2026-09-04, made probe_profile a fixed head
 # byte, 0xFF = no probe stream; every bump since (7, T_CAL_CMD/T_CAL_RESULT
 # plus a wider Telem; 8, relative calibration indices; 9, 2026-09-14, RCF
-# gains hop_ch/hop_epoch -- 0/0 = no hop order issued) moved only the
-# version byte plus, for 9, the two trailing zero bytes here. encode_profile
-# and the CRC are unversioned.
+# gains hop_ch/hop_epoch -- 0/0 = no hop order issued; 11, 2026-09-26, RCF
+# gains rec -- 0 = unknown) moved only the version byte plus trailing bytes.
+# encode_profile and the CRC are unversioned.
 # So read that byte from the header rather than pinning it: as a literal it
 # half-landed the RC_VERSION 8 bump (2026-09-13) -- this script kept packing
 # 7, maburd dropped the RCF as a foreign peer's, the shed of sid 1 never
 # lifted, and the lost enhance stream read as a decoder bug.
 RC_VERSION = int(re.search(r"RC_VERSION\s*=\s*(\d+)",
                            open("common/include/mabur/rc_proto.h").read()).group(1))
-body = struct.pack("<HBBBIHBBBBBB", rc_proto.RC_MAGIC, RC_VERSION, rc_proto.T_RCF, 0,
-                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0xFF, 0, 0)
+body = struct.pack("<HBBBIHBBBBBBB", rc_proto.RC_MAGIC, RC_VERSION, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0xFF, 0, 0, 0)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)

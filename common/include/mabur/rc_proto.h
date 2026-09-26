@@ -49,10 +49,16 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 8 -> 9 on 2026-09-14: RCF gains hop_ch/hop_epoch (in-flight channel
 // hop order, present in every RCF), Telem gains channel/hop_epoch (readback).
 // Spec docs/superpowers/specs/2026-09-14-inflight-channel-hop-design.md §1.
-constexpr uint8_t RC_VERSION = 10;  // 2026-09-23 cca-on: Telem +rx_own/rx_foreign/rx_crcfail
+// Bumped 10 -> 11 on 2026-09-26: RCF gains `rec` (VTX recorder wish), Telem
+// gains `rec_status`. Spec 2026-09-26-vtx-recorder-design.md.
+constexpr uint8_t RC_VERSION = 11;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
+
+// Rcf::rec bits (VTX onboard recorder, spec 2026-09-26).
+constexpr uint8_t kRecOn = 0x01;     // the operator wants the VTX recording
+constexpr uint8_t kRecKnown = 0x02;  // the GS knows the wish; 0 = unknown, drone keeps its state
 
 constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
@@ -99,6 +105,11 @@ struct Rcf {
   // ever issued (a pre-hop GS); the drone ignores hop_ch 0.
   uint8_t hop_ch = 0;
   uint8_t hop_epoch = 0;
+
+  // VTX recorder wish (spec 2026-09-26): kRecKnown | (kRecOn if recording).
+  // 0 = unknown (maburgs just started, no player message yet): the drone
+  // leaves the recorder alone. Level-triggered, in EVERY RCF; no decay.
+  uint8_t rec = 0;
 };
 
 // VRX -> VTX discovery beacon (rendezvous), addressed to a VTX_ID.
@@ -251,6 +262,10 @@ struct Telem {
   // that must take the TX gate exclusive and stalled the USB TX pool once
   // a second (795 TxQueue drops in 20 min on the bench). Saturating.
   uint16_t rx_own = 0, rx_foreign = 0, rx_crcfail = 0;
+
+  // VTX recorder (spec 2026-09-26): bits 0-1 RecState (0 off, 1 recording,
+  // 2 error), bits 2-7 RecErr (drone/src/vtx_recorder.h).
+  uint8_t rec_status = 0;
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse
