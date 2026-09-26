@@ -16,11 +16,11 @@ class ColorTrans;
 
 // Encoder-side recording settings.
 //
-// Note what is NOT here: the encoded picture size. It is the DECODED frame's
-// size, latched by MppEncoder on the first frame it sees, and the mux's
-// track header follows that latch. width/height below are only a fallback
-// for the header if the mux somehow opens before a frame has been encoded
-// (it cannot today -- the mux opens on the first encoded keyframe).
+// Note what is NOT here: the encoded picture size. MppEncoder latches it
+// from the first frame it sees, and the mux's track header follows that
+// latch. width/height below are only a fallback for the header if the mux
+// somehow opens before a frame has been encoded (it cannot today -- the mux
+// opens on the first encoded keyframe).
 //
 // osd_width/osd_height must be the size of the SURFACE set_osd() is called
 // with -- the actual DRM OSD buffer, not the configured screen_mode, which
@@ -28,6 +28,15 @@ class ColorTrans;
 // and a region that disagrees with the maps rejects every one of them: a
 // recording with no OSD at all, which looks exactly like a deliberate plain
 // transcode. 0 means "no OSD" and is a legal configuration.
+//
+// They ALSO set the recording's picture size whenever they are nonzero: the
+// encoder lays the map 1:1 from the picture's top-left, while the display
+// stretches the video under an OSD drawn at the panel's size, so a decoded
+// frame of any other size (a 720p drone on a 1080p panel) is scaled to the
+// OSD surface first -- the recording is what was on the glass. Zero records
+// at the decoded size. The scale is part of the stage thread, so it needs a
+// MABUR_PLAYER_GPU build; without one a mismatched picture records its OSD
+// misplaced (logged at start()).
 struct BurnCfg {
   int width = 1920;        // track-header fallback only
   int height = 1080;       // track-header fallback only
@@ -100,7 +109,9 @@ struct BurnCfg {
 //     second thread, the ct thread, sits between the mailbox and the
 //     recorder thread: it owns the EGL context (thread-bound) and the GPU
 //     draw + RGA into one of three destination buffers, and hands the
-//     result over through a second single-slot latest-wins mailbox. Stage
+//     result over through a second single-slot latest-wins mailbox. The
+//     same thread scales frames to the OSD surface's size (BurnCfg), so it
+//     also runs with colortrans off whenever there is an OSD region. Stage
 //     times overlap, so the DVR runs at max(GPU stage, encode) rather than
 //     the sum -- ~35 ms serial at 1080p meant 26-32 fps and a third of the
 //     frames dropped; overlapped it holds the admitted rate with <1 % drops

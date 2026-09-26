@@ -17,6 +17,16 @@ code, true in the bundle). Retuning = edit `kColorTrans3` in `colortrans.cpp`
 AND the constants in `kFrag` in `frame_colortrans.cpp`, rebuild, redeploy;
 `tests/test_colortrans.cpp` pins the C++ side to the glsl reference values.
 
+The ct thread also SCALES (2026-09-27): the burned DVR's picture is the OSD
+surface's size, not the decoded size, because the encoder lays the OSD 1:1
+from the top-left while the panel stretches the video under it — a 720p
+drone on a 1080p panel used to record the OSD offset and clipped. With
+colortrans the shader draw scales (target = OSD size, LINEAR sampler);
+without it, one RGA NV12 resize (~5 ms 720p→1080p). So the ct thread runs
+whenever there is an OSD region, colortrans or not, and a 720p drone
+records a 1080p file. Bench 720p→1080p: ct 11.4 ms / enc 13.6 ms mean with
+colortrans, ~1 % dropped at the 60 fps cap.
+
 ## Kernel facts (GS kernel 6.1.84, `rockchip_drm_vop2.c`)
 
 - Entries are 12-bit (`& 0xfff`), 729 per table; the blob is 729

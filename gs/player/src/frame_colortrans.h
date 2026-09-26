@@ -24,8 +24,10 @@ namespace maburplay {
 // glFlush returns and RGA would read a half-written target (PixelPilot).
 //
 // THREAD-BOUND: init(), process() and deinit() on ONE thread (the EGL
-// context is current on it). BurnRecorder runs all three on its recorder
-// thread. Same-size only: dst is w x h with its own strides.
+// context is current on it). BurnRecorder runs all three on its stage
+// thread. The OUTPUT size is fixed at init() and need not match the source:
+// the quad is drawn at the output size, so the texture sampler scales (the
+// burned DVR records at the OSD surface's size, see burn_recorder.h).
 class FrameColorTrans {
  public:
   FrameColorTrans() = default;
@@ -35,13 +37,13 @@ class FrameColorTrans {
 
   // Opens its own fd on /dev/dri/card0 (Mesa's kmsro routes rendering to
   // panfrost; PixelPilot's proven route), creates GBM + EGL + the program +
-  // two render targets. false = logged, stage unusable.
-  bool init(uint32_t width, uint32_t height);
+  // two render targets of the OUTPUT size. false = logged, stage unusable.
+  bool init(uint32_t out_width, uint32_t out_height);
   void deinit();
   bool ready() const { return ready_; }
 
-  // src: NV12, two planes in one dmabuf, UV at hs*vs. dst: NV12 same size.
-  // false = logged (rate-limited), caller encodes the source flat.
+  // src: NV12 w x h, two planes in one dmabuf, UV at hs*vs. dst: NV12 at the
+  // init() output size, UV at dst_hs*dst_vs. false = logged (rate-limited).
   bool process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, uint32_t vs, int dst_fd,
                uint32_t dst_hs, uint32_t dst_vs);
 

@@ -20,6 +20,9 @@
 #include "mpp_encoder.h"
 
 #ifdef MABUR_PLAYER_GPU
+#include <rga/im2d.h>
+#include <rga/rga.h>
+
 #include "frame_colortrans.h"
 #endif
 
@@ -157,13 +160,25 @@ struct BurnRecorder::Impl {
     while (us > cur && !mx.compare_exchange_weak(cur, us)) {
     }
   }
-  // --- colortrans stage (ct thread) and its handoff to the encoder ---------
+  // --- stage thread (colortrans and/or scale) and its handoff -------------
   //
-  // With colortrans on, the recorder is a two-stage pipeline:
+  // With colortrans on, or an OSD region to fit, the recorder is a
+  // two-stage pipeline:
   //
   //   main loop --box--> ct thread --ct_out--> recorder thread
   //                      GPU draw + RGA          encode() + mux
+  //                      (or RGA resize)
   //                      into ct_dst[k]
+  //
+  // SCALE: the encoder lays the OSD index map 1:1 from the picture's top-left
+  // and cannot scale either input, while the display stretches the video
+  // plane to the full mode under an OSD drawn at the mode's size. So a
+  // picture smaller than the OSD surface (a 720p drone on a 1080p panel)
+  // recorded the 1080p OSD offset toward the bottom-right and clipped. The
+  // stage therefore scales every frame to the OSD SURFACE's size (out_w x
+  // out_h), which is the recording's picture size: what was on the glass.
+  // With colortrans the shader draw scales for free; without it, one RGA
+  // resize. A frame already at the OSD size passes through flat.
   //
   // Both stages are hardware waits (GPU/RGA ~13-22 ms, rkvenc ~13 ms at
   // 1080p) and serialising them on one thread capped the burned DVR at
@@ -177,15 +192,18 @@ struct BurnRecorder::Impl {
   // worst case: one destination being rendered, one waiting in ct_out, one
   // inside encode(). ct_dst_busy[] (under mu) says which are taken.
   //
-  // Without colortrans (or a build without the stage) there is no ct thread
-  // and the recorder thread consumes `box` directly, exactly as before.
+  // With neither (no colortrans, no OSD region) or a build without the stage
+  // there is no ct thread and the recorder thread consumes `box` directly.
   struct CtMail {
     void* buf = nullptr;  // MppBuffer: ct_dst[dst_idx], or the SOURCE when dst_idx < 0
     int dst_idx = -1;     // < 0 = flat: buf is a held decoder reference
     uint32_t pts_us = 0;
     int w = 0, h = 0, stride = 0, vstride = 0;
   };
-  bool ct_on = false;  // start(): colortrans requested AND the build has the stage
+  bool ct_on = false;  // start(): the stage thread runs (colortrans and/or OSD fit)
+  // Recording picture size and its strides, fixed at start() from the OSD
+  // surface; 0 = no OSD region, record at the decoded size.
+  int out_w = 0, out_h = 0, out_hs = 0, out_vs = 0;
   std::condition_variable ct_cv;  // ct_out handoff; `cv` stays the box's
   CtMail ct_out;                  // mu
   std::thread ct_th;
@@ -206,45 +224,64 @@ struct BurnRecorder::Impl {
   bool ct_dst_busy[kCtDst] = {};  // mu
 #ifdef MABUR_PLAYER_GPU
   std::unique_ptr<FrameColorTrans> ct;  // ct thread only (EGL is thread-bound)
-  bool ct_failed = false;               // init failed once: stay flat, logged once
+  bool ct_failed = false;               // init failed once: no GPU pass, logged once
+  bool dst_failed = false;              // destinations failed once: stay flat
+  uint64_t scale_fail_logs = 0;
   MppBufferGroup ct_grp = nullptr;      // private DRM group for the destinations
   MppBuffer ct_dst[kCtDst] = {};
   size_t ct_dst_size = 0;
   int ct_w = 0, ct_h = 0;
 
-  // ct thread. Brings the stage and the destinations up for this geometry;
-  // false = pass this frame through flat. The destinations are sized once,
-  // on the first frame: MppEncoder latches its picture size on the first
-  // encode() anyway, so a later, larger frame cannot be recorded either way.
-  bool ct_prepare(int w, int h, int hs, int vs) {
+  // ct thread. Brings the colortrans stage up at the OUTPUT size; false =
+  // no GPU pass for this frame (logged once, then stays off).
+  bool ct_ready(int ow, int oh) {
     if (ct_failed) return false;
-    if (!ct || ct_w != w || ct_h != h) {
+    if (!ct || ct_w != ow || ct_h != oh) {
       ct.reset(new FrameColorTrans());
-      if (!ct->init((uint32_t)w, (uint32_t)h)) {
+      if (!ct->init((uint32_t)ow, (uint32_t)oh)) {
         std::fprintf(stderr, "BurnRecorder: colortrans GPU stage unavailable; recording FLAT\n");
         ct.reset();
         ct_failed = true;
         return false;
       }
-      ct_w = w;
-      ct_h = h;
+      ct_w = ow;
+      ct_h = oh;
     }
-    const size_t need = (size_t)hs * (size_t)vs * 3 / 2;
+    return true;
+  }
+
+  // ct thread. The destinations, sized once on the first frame: MppEncoder
+  // latches its picture size on the first encode() anyway, so a later,
+  // larger frame cannot be recorded either way. false = pass through flat.
+  bool dst_prepare(size_t need) {
+    if (dst_failed) return false;
     if (ct_dst_size) return need <= ct_dst_size;
     if (!ct_grp && mpp_buffer_group_get_internal(&ct_grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) {
-      std::fprintf(stderr, "BurnRecorder: colortrans buffer group failed; recording FLAT\n");
-      ct_failed = true;
+      std::fprintf(stderr, "BurnRecorder: stage buffer group failed; recording FLAT\n");
+      dst_failed = true;
       return false;
     }
     for (int i = 0; i < kCtDst; ++i) {
       if (mpp_buffer_get(ct_grp, &ct_dst[i], need) != MPP_OK || !ct_dst[i]) {
-        std::fprintf(stderr, "BurnRecorder: colortrans destination alloc failed; recording FLAT\n");
-        ct_failed = true;
+        std::fprintf(stderr, "BurnRecorder: stage destination alloc failed; recording FLAT\n");
+        dst_failed = true;
         return false;
       }
     }
     ct_dst_size = need;
     return true;
+  }
+
+  // ct thread. NV12 -> NV12 resize on RGA, synchronous.
+  bool rga_scale(int src_fd, const Mail& m, int dst_fd, int ow, int oh, int ohs, int ovs) {
+    rga_buffer_t s = wrapbuffer_fd_t(src_fd, m.w, m.h, m.stride, m.vstride,
+                                     RK_FORMAT_YCbCr_420_SP);
+    rga_buffer_t d = wrapbuffer_fd_t(dst_fd, ow, oh, ohs, ovs, RK_FORMAT_YCbCr_420_SP);
+    if (imresize(s, d, 0, 0, INTER_LINEAR) == IM_STATUS_SUCCESS) return true;
+    if (scale_fail_logs++ % 300 == 0)
+      std::fprintf(stderr, "BurnRecorder: RGA resize %dx%d -> %dx%d failed (%llu so far)\n", m.w,
+                   m.h, ow, oh, static_cast<unsigned long long>(scale_fail_logs));
+    return false;
   }
 
   // stop(), after BOTH joins: nothing references the destinations any more.
@@ -285,8 +322,15 @@ struct BurnRecorder::Impl {
       o.stride = m.stride;
       o.vstride = m.vstride;
 
-      bool done = false;
-      if (ct_prepare(m.w, m.h, m.stride, m.vstride)) {
+      // Output geometry: the OSD surface's when there is one, else the
+      // frame's own (colortrans only, same size and strides as before).
+      const bool scale = out_w > 0 && (m.w != out_w || m.h != out_h);
+      const int ow = scale ? out_w : m.w, oh = scale ? out_h : m.h;
+      const int ohs = scale ? out_hs : m.stride, ovs = scale ? out_vs : m.vstride;
+      const bool want_ct = cfg.colortrans != nullptr;
+
+      bool ct_done = false, done = false;
+      if ((want_ct || scale) && dst_prepare((size_t)ohs * (size_t)ovs * 3 / 2)) {
         int k = -1;
         {
           std::lock_guard<std::mutex> lk(mu);
@@ -298,24 +342,33 @@ struct BurnRecorder::Impl {
         // if it ever does, the frame records flat and is counted below.
         if (k >= 0) {
           const auto t_ct = std::chrono::steady_clock::now();
-          done = ct->process(mpp_buffer_get_fd(static_cast<MppBuffer>(m.buf)), (uint32_t)m.w,
-                             (uint32_t)m.h, (uint32_t)m.stride, (uint32_t)m.vstride,
-                             mpp_buffer_get_fd(ct_dst[k]), (uint32_t)m.stride,
-                             (uint32_t)m.vstride);
+          const int src_fd = mpp_buffer_get_fd(static_cast<MppBuffer>(m.buf));
+          const int dst_fd = mpp_buffer_get_fd(ct_dst[k]);
+          if (want_ct && ct_ready(ow, oh))
+            ct_done = ct->process(src_fd, (uint32_t)m.w, (uint32_t)m.h, (uint32_t)m.stride,
+                                  (uint32_t)m.vstride, dst_fd, (uint32_t)ohs, (uint32_t)ovs);
+          // Without the GPU pass (off, or failed) a mismatched frame is still
+          // scaled: a flat recording with the OSD in place beats a corrected
+          // one with it misplaced.
+          done = ct_done || (scale && rga_scale(src_fd, m, dst_fd, ow, oh, ohs, ovs));
           if (done) {
             account(ct_n, ct_sum_us, ct_max_us, t_ct);
             // REF-ENCODE, early: the GPU and RGA are done with the source
-            // (glFinish + synchronous imcvtcolor); the encoder reads ct_dst.
+            // (glFinish + synchronous RGA); the encoder reads ct_dst.
             mpp_buffer_put(static_cast<MppBuffer>(m.buf));
             o.buf = ct_dst[k];
             o.dst_idx = k;
+            o.w = ow;
+            o.h = oh;
+            o.stride = ohs;
+            o.vstride = ovs;
           } else {
             std::lock_guard<std::mutex> lk(mu);
             ct_dst_busy[k] = false;
           }
         }
       }
-      if (!done) colortrans_fallbacks.fetch_add(1);
+      if (want_ct && !ct_done) colortrans_fallbacks.fetch_add(1);
 
       CtMail displaced;
       {
@@ -594,7 +647,8 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
   ec.bitrate_kbps = cfg.bitrate_kbps;
   // The OSD region follows the OSD SURFACE, never the picture and never the
   // configured screen mode. The picture size is not passed at all: the
-  // encoder latches it from the first decoded frame.
+  // encoder latches it from the first frame it is handed, which the stage
+  // thread has already scaled to the OSD surface's size (see Impl).
   ec.osd_width = cfg.osd_width;
   ec.osd_height = cfg.osd_height;
 
@@ -627,10 +681,27 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
   im.ct_out = Impl::CtMail{};
   for (int i = 0; i < Impl::kCtDst; ++i) im.ct_dst_busy[i] = false;
 #ifdef MABUR_PLAYER_GPU
-  im.ct_on = cfg.colortrans != nullptr;
+  // Fit the picture to the OSD region: the region follows the OSD surface,
+  // so the picture does too (see the stage comment in Impl). Strides at the
+  // encoder's 16-px alignment; 1080 rows become a 1088-row buffer.
+  if (cfg.osd_width > 0 && cfg.osd_height > 0) {
+    im.out_w = cfg.osd_width;
+    im.out_h = cfg.osd_height;
+    im.out_hs = (cfg.osd_width + 15) & ~15;
+    im.out_vs = (cfg.osd_height + 15) & ~15;
+  } else {
+    im.out_w = im.out_h = im.out_hs = im.out_vs = 0;
+  }
+  im.ct_on = cfg.colortrans != nullptr || im.out_w > 0;
   im.ct_failed = false;
+  im.dst_failed = false;
+  im.scale_fail_logs = 0;
 #else
   im.ct_on = false;
+  if (cfg.osd_width > 0)
+    std::fprintf(stderr, "BurnRecorder: this build has no scale stage; a picture smaller than "
+                         "the %dx%d OSD records it misplaced\n",
+                 cfg.osd_width, cfg.osd_height);
 #endif
   im.started = true;
   im.th = std::thread([pim] { pim->run(); });
@@ -639,9 +710,11 @@ bool BurnRecorder::start(const BurnCfg& cfg, const std::string& path,
 #endif
   std::fprintf(stderr,
                "BurnRecorder: started cap %d fps %d kbps frag %d ms osd=%s (%dx%d px region) "
-               "colortrans=%s -> %s (picture size latches on the first decoded frame)\n",
+               "colortrans=%s picture=%s -> %s\n",
                cfg.fps_cap, cfg.bitrate_kbps, cfg.fragment_ms, im.palette_live ? "on" : "off",
-               cfg.osd_width, cfg.osd_height, cfg.colortrans ? "on" : "off", path.c_str());
+               cfg.osd_width, cfg.osd_height, cfg.colortrans ? "on" : "off",
+               im.out_w > 0 ? "scaled to the OSD region" : "decoded size (latches on frame 0)",
+               path.c_str());
   return true;
 }
 

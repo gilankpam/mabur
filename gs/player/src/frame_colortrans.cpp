@@ -331,8 +331,11 @@ GLuint FrameColorTrans::src_texture(int fd, uint32_t w, uint32_t h, uint32_t hs,
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
   glEGLImageTargetTexture2DOES_(GL_TEXTURE_EXTERNAL_OES, img);
-  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  // LINEAR: the draw scales whenever the source is smaller than the output
+  // (a 720p drone on a 1080p panel). At 1:1 every sample lands on a texel
+  // centre, so it is the same picture NEAREST gave.
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   slot->fd = fd;
   slot->ino = ino;
   slot->img = img;
@@ -342,7 +345,7 @@ GLuint FrameColorTrans::src_texture(int fd, uint32_t w, uint32_t h, uint32_t hs,
 
 bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, uint32_t vs,
                               int dst_fd, uint32_t dst_hs, uint32_t dst_vs) {
-  if (!ready_ || w != width_ || h != height_) return false;
+  if (!ready_) return false;
   const auto t0 = std::chrono::steady_clock::now();
   auto us_since = [](std::chrono::steady_clock::time_point t) {
     return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
@@ -380,7 +383,7 @@ bool FrameColorTrans::process(int src_fd, uint32_t w, uint32_t h, uint32_t hs, u
 
   rga_buffer_t s = wrapbuffer_fd_t(tgt.prime_fd, (int)width_, (int)height_, tgt.stride_px,
                                    (int)height_, RK_FORMAT_BGRA_8888);
-  rga_buffer_t d = wrapbuffer_fd_t(dst_fd, (int)w, (int)h, (int)dst_hs, (int)dst_vs,
+  rga_buffer_t d = wrapbuffer_fd_t(dst_fd, (int)width_, (int)height_, (int)dst_hs, (int)dst_vs,
                                    RK_FORMAT_YCbCr_420_SP);
   if (imcvtcolor(s, d, RK_FORMAT_BGRA_8888, RK_FORMAT_YCbCr_420_SP) != IM_STATUS_SUCCESS) {
     if (fail_logs_++ % 300 == 0) std::fprintf(stderr, "FrameColorTrans: RGA BGRA->NV12 failed\n");
