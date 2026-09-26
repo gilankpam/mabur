@@ -299,9 +299,11 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     }
 
     y += standard->glyph_h + gap6;  // see the comment on the line above
-    const int rec_w = text_width(*secondary, kRecWorst);
+    // Sized for dvr.target, not for every target (gs_layer.h rec_worst).
+    const char* rec_worst_s = rec_worst(rec_target_);
+    const int rec_w = text_width(*secondary, rec_worst_s);
     place(GsFieldId::kRec, secondary, right - rec_w - pad_h(secondary), y,
-          kRecWorst);
+          rec_worst_s);
   }
 
   // --- bottom right: video health ------------------------------------
@@ -792,8 +794,8 @@ void GsOverlay::draw_field_(GsFieldId id, const FieldState& st, const Surface& s
 
   int pen_x = f.pen_x;
   if (id == GsFieldId::kRec) {
-    // kRec's box is sized to kRecWorst (gs_layer.h), which is far wider
-    // than most of the strings rec_text() actually returns -- a GS-only
+    // kRec's box is sized to rec_worst(target) (gs_layer.h), which is
+    // wider than most of the strings rec_text() actually returns -- a GS-only
     // "REC mm:ss"/"REC FAULT" must land EXACTLY where it always did, not
     // wherever the widest VTX+GS fault combo would start. Right-align
     // within the box instead of drawing from its (fixed) left edge: the

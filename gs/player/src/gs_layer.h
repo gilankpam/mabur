@@ -121,8 +121,23 @@ struct RecText {
   int aux = 0;
 };
 RecText rec_text(const RecState& r);
-// Widest string rec_text() can return; both layouts size the field on it.
+// Widest string rec_text() can return for ANY target (the GS+VTX combos).
 extern const char* const kRecWorst;
+
+// dvr.target (spec 2026-09-26): which recorders the button drives. Both
+// layouts size their kRec box on rec_worst(target) -- the widest string
+// rec_text() can return for a player with that target -- rather than on
+// kRecWorst for everyone: the box is cleared whole on every REC redraw and
+// wins repaint_intersecting over MSP cells, so a box wider than anything
+// the target can draw costs the FC OSD a strip of glyphs for nothing.
+enum class RecTarget {
+  kGs,    // "gs": byte- and pixel-identical to the pre-VTX-recorder field
+  kVtx,   // "vtx"
+  kBoth,  // "both"
+};
+// "gs" | "vtx" | "both" -> target. False on anything else.
+bool parse_rec_target(const std::string& s, RecTarget* out);
+const char* rec_worst(RecTarget t);
 
 // What the GS overlay draws. Two implementations, chosen by osd.gs.style:
 //
@@ -180,7 +195,8 @@ enum class GsStyle {
 bool parse_gs_style(const std::string& s, GsStyle* out);
 
 class GsFont;
-std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font);
+std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font,
+                                       RecTarget rec_target = RecTarget::kGs);
 
 // Every token colour at full alpha plus its shadow blend, for
 // build_palette()'s extra seeds. Without these the burned DVR quantizes

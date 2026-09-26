@@ -815,9 +815,14 @@ int main(int argc, char** argv) {
       // Three, not one: two DRM buffers plus the burned DVR's index map, all
       // three needing their own record of what they already show. See
       // osd_compose.h for why a shared shadow strobes.
-      composer.set_gs(maburplay::make_gs_layer(gs_style, gs_font),
-                      maburplay::make_gs_layer(gs_style, gs_font),
-                      maburplay::make_gs_layer(gs_style, gs_font));
+      // dvr.target sizes the REC field (gs_layer.h rec_worst): "gs" keeps
+      // the pre-VTX-recorder box. player_config already rejected anything
+      // parse_rec_target would.
+      maburplay::RecTarget rec_target = maburplay::RecTarget::kGs;
+      maburplay::parse_rec_target(cfg.dvr.target, &rec_target);
+      composer.set_gs(maburplay::make_gs_layer(gs_style, gs_font, rec_target),
+                      maburplay::make_gs_layer(gs_style, gs_font, rec_target),
+                      maburplay::make_gs_layer(gs_style, gs_font, rec_target));
       std::fprintf(stderr,
                    "maburplay: gs osd on udp 127.0.0.1:%d font=%s style=%s "
                    "stale_ms=%d\n",

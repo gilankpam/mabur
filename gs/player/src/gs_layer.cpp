@@ -61,6 +61,30 @@ std::string fmt_clock(int seconds) {
 
 const char* const kRecWorst = "\xE2\x97\x8F REC GS FAULT VTX NO CARD";
 
+bool parse_rec_target(const std::string& s, RecTarget* out) {
+  RecTarget t;
+  if (s == "gs") t = RecTarget::kGs;
+  else if (s == "vtx") t = RecTarget::kVtx;
+  else if (s == "both") t = RecTarget::kBoth;
+  else return false;
+  if (out) *out = t;
+  return true;
+}
+
+const char* rec_worst(RecTarget t) {
+  switch (t) {
+    // gs_target, VTX leg always kNone: "REC mm:ss" or "REC FAULT", both
+    // eleven glyphs -- exactly the box the field had before the VTX
+    // recorder existed.
+    case RecTarget::kGs:   return "\xE2\x97\x8F REC FAULT";
+    // GS leg ignored: "REC VTX mm:ss" (15) or "REC VTX <problem>", widest
+    // "VTX NO CARD" (17). A recording VTX carries no problem text.
+    case RecTarget::kVtx:  return "\xE2\x97\x8F REC VTX NO CARD";
+    case RecTarget::kBoth: break;
+  }
+  return kRecWorst;
+}
+
 RecText rec_text(const RecState& r) {
   RecText out;
   const bool gs_rec = r.gs_target && r.kind == RecState::Kind::kRecording;
@@ -109,12 +133,13 @@ bool parse_gs_style(const std::string& s, GsStyle* out) {
   return false;
 }
 
-std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font) {
+std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font,
+                                       RecTarget rec_target) {
   switch (style) {
-    case GsStyle::kCompact:   return std::make_unique<GsCompactBar>(font);
+    case GsStyle::kCompact:   return std::make_unique<GsCompactBar>(font, rec_target);
     case GsStyle::kEssential: break;
   }
-  return std::make_unique<GsOverlay>(font);
+  return std::make_unique<GsOverlay>(font, rec_target);
 }
 
 const uint32_t* gs_palette_seeds(size_t* n) {

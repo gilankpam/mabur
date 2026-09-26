@@ -80,4 +80,16 @@ TEST(worst_case_is_at_least_as_long_as_any_state) {
   CHECK(rec_text(r).text.size() <= std::string(maburplay::kRecWorst).size());
 }
 
+TEST(parse_rec_target_takes_exactly_the_three_dvr_target_values) {
+  using maburplay::RecTarget;
+  RecTarget t = RecTarget::kBoth;
+  CHECK(maburplay::parse_rec_target("gs", &t) && t == RecTarget::kGs);
+  CHECK(maburplay::parse_rec_target("vtx", &t) && t == RecTarget::kVtx);
+  CHECK(maburplay::parse_rec_target("both", &t) && t == RecTarget::kBoth);
+  CHECK(!maburplay::parse_rec_target("GS", &t));
+  CHECK(!maburplay::parse_rec_target("", &t));
+  CHECK(std::string(maburplay::rec_worst(RecTarget::kGs)) == kDot + " REC FAULT");
+  CHECK(std::string(maburplay::rec_worst(RecTarget::kBoth)) == maburplay::kRecWorst);
+}
+
 MTEST_MAIN

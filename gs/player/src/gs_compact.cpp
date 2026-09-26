@@ -120,7 +120,8 @@ std::string repeat_joined(const std::string& label, const char* per, int n) {
 
 }  // namespace
 
-std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
+std::string GsCompactBar::worst_case(GsBarField id, int n_cards,
+                                     RecTarget rec_target) {
   const int n = std::clamp(n_cards, 0, kMaxCards);
   switch (id) {
     // "ch:--" is narrower than the numeric form, so the number sizes the
@@ -146,11 +147,12 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
     case GsBarField::kJit:     return "jit:999.9";
     case GsBarField::kLat:     return "lat:999/999";
     case GsBarField::kLoss:    return "loss:100.0/100.0";
-    // Sized on kRecWorst (gs_layer.h): the widest REC text, GS+VTX states included.
+    // Sized on rec_worst(target) (gs_layer.h): the widest REC text this
+    // dvr.target can produce -- "● REC FAULT" for "gs", as it always was.
     // Armed renders nothing and leaves the box blank -- the same
     // fixed-width reservation every other item makes, and the same thing
     // the essential overlay does.
-    case GsBarField::kRec:     return kRecWorst;
+    case GsBarField::kRec:     return rec_worst(rec_target);
     case GsBarField::kCount:   break;
   }
   return "";
@@ -251,7 +253,7 @@ void GsCompactBar::place_(int n_cards) {
   int w[(size_t)GsBarField::kCount];
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
     f_(kOrder[i]).active = true;
-    w[i] = text_width(*atlas_, worst_case(kOrder[i], n_cards).c_str());
+    w[i] = text_width(*atlas_, worst_case(kOrder[i], n_cards, rec_target_).c_str());
   }
 
   // The corner item: right-flushed at the top inset, reserving the shadow
@@ -450,7 +452,7 @@ void GsCompactBar::draw_field_(GsBarField id, const FieldState& st,
 
   int pen_x = f.pen_x;
   if (id == GsBarField::kRec) {
-    // kRec's box is sized to kRecWorst (gs_layer.h), far wider than most
+    // kRec's box is sized to rec_worst(target) (gs_layer.h), wider than most
     // of what rec_text() actually returns -- see the essential overlay's
     // draw_field_ for the full reasoning. Right-align within the box so a
     // GS-only "REC mm:ss"/"REC FAULT" lands exactly where it always did.
