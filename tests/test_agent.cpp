@@ -1569,6 +1569,81 @@ TEST(rcf_hop_withdrawal_returns_to_previous_channel) {
   CHECK(agent.hop_epoch() == 2);
 }
 
+// Unconfirmed hop falls back to the PRE-HOP channel, not home (spec
+// 2026-09-14 §1 step 4: "both converge on the old channel"). A GS that
+// withdraws at confirm_ms goes back to the old op; a drone that had already
+// moved must go there too. Bench 2026-09-26 (GS session 0233): hop 112 ->
+// 153 with home == 153, GS withdrew at 510 ms, the drone's fallback went
+// "home" -- the channel it was already on -- and the pair sat split 60 s.
+// Reverting to go_home_() here makes these fail: the first two stay on (or
+// go to) home instead of 149.
+static void hop_and_confirm(RcAgent& agent, const Config& cfg, uint8_t ch, uint8_t epoch,
+                            uint16_t seq, uint64_t t) {
+  auto order = make_rcf_wire_hop(cfg.link.vtx_id, seq, 0x24, 1.0, 0.5, ch, epoch);
+  agent.on_rc_frame(order.data(), order.size(), t);
+  auto confirm = make_rcf_wire_hop(cfg.link.vtx_id, seq + 1, 0x24, 1.0, 0.5, ch, epoch);
+  agent.on_rc_frame(confirm.data(), confirm.size(), t + 60);   // heard on ch: confirmed
+}
+
+TEST(unconfirmed_hop_into_home_reverts_to_pre_hop_channel) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);                  // op is now 149
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, /*hop_ch=*/136, 2);  // target == home
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  REQUIRE(act.retunes.size() == 2);
+  CHECK(act.retunes[1] == 136);
+  agent.tick(1000 + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  CHECK(act.retunes[2] == 149);
+  CHECK(act.retune_reasons[2] == "move_unconfirmed");
+  CHECK(agent.channel() == 149);
+}
+
+TEST(unconfirmed_hop_reverts_to_pre_hop_channel_not_home) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  agent.tick(1000 + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  CHECK(act.retunes[2] == 149);
+  CHECK(agent.channel() == 149);
+}
+
+// The revert is one step: silence on the pre-hop channel too means the GS is
+// gone, and the existing fallback (home, RENDEZVOUS) takes over.
+TEST(silence_after_hop_revert_falls_back_home) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
+  agent.tick(t_revert, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  REQUIRE(act.retunes.size() == 4);
+  CHECK(act.retunes[3] == 136);
+  CHECK(act.retune_reasons[3] == "move_unconfirmed");
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+}
+
+// The withdrawing GS's RCF (new epoch, old channel) heard after the revert
+// confirms it: no further retune, the drone stays on the pre-hop channel.
+TEST(withdraw_rcf_after_hop_revert_confirms_it) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  hop_and_confirm(agent, cfg, 149, 1, 1, 200);
+  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  agent.on_rc_frame(w.data(), w.size(), 1000);
+  const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
+  agent.tick(t_revert, RadioHealth{});
+  REQUIRE(act.retunes.size() == 3);
+  auto wd = make_rcf_wire_hop(cfg.link.vtx_id, 4, 0x24, 1.0, 0.5, 149, 3);
+  agent.on_rc_frame(wd.data(), wd.size(), t_revert + 50);
+  agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  CHECK(act.retunes.size() == 3);
+  CHECK(agent.channel() == 149);
+}
+
 TEST(rcf_hop_ch_zero_is_ignored) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   auto w = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, 0, 5);

@@ -93,12 +93,15 @@ FAILSAFE entry.
    withdraws — epoch bumps again, `hop_ch()` reverts to the old channel,
    the lead card returns, the target is backed off (§5). A drone that had
    already moved sees the withdrawal RCF or times out on its own
-   `move_confirm_ms`. **As built these do NOT always converge:** the
-   drone's timeout goes HOME (`rc_agent.cpp` `go_home_("move_unconfirmed")`),
-   not to the old channel, so when the target IS home the drone stays on
-   it while the GS sits on the old op — a 60 s split on the bench
-   2026-09-26 (GS on 112 in a `hold_cap`, drone on home 153; the scout's
-   home dwells trickled frames so `split_after_ms` never engaged). Open.
+   `move_confirm_ms`, which returns it to the channel it hopped FROM
+   (`RcAgent::move_from_ch_`), and only after a second silent
+   `move_confirm_ms` there goes home (RENDEZVOUS). Until 2026-09-26 the
+   timeout went straight HOME, so with the hop target == home the drone
+   stayed put while the GS sat on the old op — a 60 s split on the bench
+   (GS on 112 in a `hold_cap`, drone on home 153). Still open on the GS
+   side: the scout's home dwells trickled the drone's frames into
+   `feed_video`, so the GS never counted the link lost and
+   `split_after_ms` never engaged.
 
 A second `hop_order()` while one is already in flight (a fresh trigger
 before the first attempt resolved) does not leave the abandoned lead card

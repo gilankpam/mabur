@@ -465,6 +465,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       if (move) {
         act_.retune(d->op_channel, "disc");
         channel_ = d->op_channel;
+        move_from_ch_ = 0;
         move_pending_ = true;
         move_at_ms_ = now_ms;
       } else {
@@ -477,6 +478,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     if (move) {
       act_.retune(d->op_channel, "disc");
       channel_ = d->op_channel;
+      move_from_ch_ = 0;
       move_pending_ = true;
       move_at_ms_ = now_ms;
     } else {
@@ -556,6 +558,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       hop_ch_ = r->hop_ch;
       if (r->hop_ch != channel_) {
         act_.retune(r->hop_ch, "hop");
+        move_from_ch_ = channel_;
         channel_ = r->hop_ch;
         move_pending_ = true;
         move_at_ms_ = now_ms;
@@ -595,8 +598,19 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     return;
   }
 
+  if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms) &&
+      move_from_ch_ != 0 && move_from_ch_ != cfg_.radio.channel && move_from_ch_ != channel_) {
+    // Unconfirmed HOP: first back to the channel we hopped from, where a GS
+    // that withdrew the order is (spec 2026-09-14 §1 step 4). One step only:
+    // the move stays pending, so silence there falls through to home below.
+    act_.retune(move_from_ch_, "move_unconfirmed");
+    channel_ = move_from_ch_;
+    move_from_ch_ = 0;
+    move_at_ms_ = now_ms;
+  }
   if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms)) {
     // Unconfirmed move (spec §6): nothing from the GS on the new channel.
+    move_from_ch_ = 0;
     if (state_ == State::LINKED) apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;
     have_last_seq_ = false;

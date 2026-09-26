@@ -247,6 +247,12 @@ class RcAgent {
   uint8_t channel_;
   bool move_pending_ = false;
   uint64_t move_at_ms_ = 0;
+  // The channel a hop order moved us FROM, while that move is unconfirmed
+  // (0 = none: a DISC move, or the revert already spent). The move-confirm
+  // fallback returns here first -- where a withdrawing GS goes (spec
+  // 2026-09-14 §1 step 4) -- and only then home. Bench 2026-09-26: with the
+  // hop target == home, going "home" was a no-op and the pair split 60 s.
+  uint8_t move_from_ch_ = 0;
 
   // In-flight hop order (spec 2026-09-14 §1). have_hop_ is false until the
   // first RCF carrying a nonzero hop_ch is accepted; hop_epoch_/hop_ch_ then
