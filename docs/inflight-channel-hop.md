@@ -86,11 +86,19 @@ FAILSAFE entry.
    the duration of the move, so a frame delivered across the retune is
    attributed to neither side of it; 0 never equals a hop target, so it
    simply fails to confirm.
-4. No video within `hop.confirm_ms` (500 ms default): `HopController`
+4. No video within `hop.confirm_ms` (code default 500 ms; the bundle ships
+   1000 since 2026-09-26 — hops to or from the 8822E spur pairs 149+153 /
+   157+161 confirmed in 423–460 ms, and two 506/510 ms withdraws against
+   an O4 split the link): `HopController`
    withdraws — epoch bumps again, `hop_ch()` reverts to the old channel,
    the lead card returns, the target is backed off (§5). A drone that had
    already moved sees the withdrawal RCF or times out on its own
-   `move_confirm_ms`; both converge on the old channel.
+   `move_confirm_ms`. **As built these do NOT always converge:** the
+   drone's timeout goes HOME (`rc_agent.cpp` `go_home_("move_unconfirmed")`),
+   not to the old channel, so when the target IS home the drone stays on
+   it while the GS sits on the old op — a 60 s split on the bench
+   2026-09-26 (GS on 112 in a `hold_cap`, drone on home 153; the scout's
+   home dwells trickled frames so `split_after_ms` never engaged). Open.
 
 A second `hop_order()` while one is already in flight (a fresh trigger
 before the first attempt resolved) does not leave the abandoned lead card
@@ -1001,7 +1009,9 @@ the periodic dwells are that today.
 |---|---|---|---|
 | co-channel 802.11 neighbour, 333 ms dwell, two cards | first `V interfered` → `H order` **150 ms**, `lead_confirm` **+118 ms** (onset→video **268 ms**), `verify_pass` +1001 ms; drone followed 165→120 and stayed | `E hop_restore 5 5` at the order (no demote had happened in the 150 ms detection) | 59.6 fps, 0 frame_id gaps, 0 incomplete over 100 s spanning onset, hop and verify |
 | same, one-card GS (`[[radio.cards]]` pinned) | `H order` 153 ms, `one_card_retune` +258 ms (5 RCFs at `feedback_ms` 50), `lead_confirm` +274 ms (onset→video **427 ms**), `verify_pass` +1002 ms; drone followed 165→136 | `hop_restore 5 5` at the order, then a **4-rung demote cascade** in the 750 ms after the retune (`residual` 0.88, `util` 1.15–1.48: the drone retunes on the first RCF it hears, the sole GS radio only after all five, so the ladder's loss windows see ~200 ms of 100 % loss), re-promoted to rung 5 over the next 15 s | 59.5 fps, 10 frame_id gaps, 1 incomplete over 85 s |
-| non-802.11 (O4/analog) interferer | not run | not run | not run |
+| non-802.11 (analog VTX co-channel, 2026-09-25, one-card host GS) | **no hop**: 0 `interfered` over 176 windows (FA 0 on every one — an FM carrier never trips the preamble detector), 131 `unknown`; see `docs/analog-vtx-findings-2026-09-25.md` | n/a — ladder shed 6→3 five times on `util` and re-promoted each time | 19–20 fps (from 31), 4–6 gaps / 45 s while the carrier desensed the card (RSSI −58 → −70…−79) |
+| analog VTX co-channel, two-card GS, NHM `blocked` (2026-09-26, VTX ~3 m from GS, op 132+136) | first `V interfered 21` (blocked, both cards 100 % busy) → `H order` **150 ms**, `lead_confirm` +83 ms, `verify_pass` +1016 ms (136→144); operator cycling E-channels then chased the link 144→112 (+82 ms, `verify_fail` on 112's FA background → hold) and later escape/return hops, 6 hops all confirmed 82–116 ms, drone followed every one; see `docs/nhm-airtime-spike-findings-2026-09-25.md` "Analog VTX and DJI O4" | not read | 30.8–31.6 fps, 0 gaps on every pass (disarmed 30 fps) |
+| DJI O4 co-channel, two-card GS (2026-09-26, O4 ch2 20 MHz, link home 153 = 149+153) | run 1 (candidates [161,144], `confirm_ms` 500): blocked `0x61/0x71` at onset but loss 0 for ~3 s (busy-but-healthy holds), order at 48 % loss → 161 +460 ms; O4 read 80 % on BOTH 144 and 153, 161 25–37 % → stuck lossy, 13 gaps/10 s. Run 2 ([161,112]): 161→112 clean escape, then a false `raised` on 112 ordered 153, **withdraw at 510 ms** with the drone already moved → **60 s split**. Run 3 ([161,112], `confirm_ms` 1000): order **152 ms** after the first blocked window, `lead_confirm` +468 ms, `verify_pass`, no further H | not read | run 3: 31.8 fps, 0 gaps, 0 incomplete on 161 |
 | fade (no hop expected) | not run | n/a | not run |
 | jammer on a candidate only (149 jammed, link on 120) | **no hop**: zero `H` lines, `hop.target` never left 120 | n/a | 59.7 fps, 0 gaps over 85 s |
 | dwell period 100 ms (regression check) | n/a | n/a | 59.5 fps, 0 gaps; 11.5 dwells/s; step medians unchanged (6.4 ms) |

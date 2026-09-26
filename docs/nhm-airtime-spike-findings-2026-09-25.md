@@ -135,5 +135,65 @@ before. `ausniff` clean throughout.
 - With the jammer beside the drone, orders can still be undeliverable on
   the jammed channel; the extension + undelivered rules only bound the
   damage. In the field the jammer and drone are usually far apart.
-- Analog VTX and DJI O4 rows (operator), candidate-only and clean-rung rows
-  of the matrix: not run yet.
+- Candidate-only, busy-but-healthy (analog) and clean-rung rows of the
+  matrix: not run yet. Analog and O4 co-channel: below.
+
+## Analog VTX and DJI O4, 2026-09-26 (full daemon, GS session 0233)
+
+Two-card GS, drone on the desk, disarmed (30 fps). Interferers placed by
+the operator: analog VTX ~3 m from the GS, DJI O4 air unit moved further
+away after the first run with its goggles ~3 m from the GS.
+
+**Analog VTX (home 136 = 132+136, candidates [144, 112]).** The case
+2026-09-25 could not see at all (`docs/analog-vtx-findings-2026-09-25.md`)
+now triggers on the blocked bit. First window with the VTX on the op pair:
+`interfered 0x21`, both cards 100 % busy, own ~4 %; `H order` 150 ms later,
+`lead_confirm` 83 ms, `verify_pass`. The operator then cycled through the
+E band, which chased the link 144 → 112 (`0x61`), and on switch-off it
+went 112 → 144 → 136 → (escape) 112 → 136. Six hops, every
+`lead_confirm` 82–116 ms, the drone followed each (no `disc` bounce),
+`ausniff` 0 gaps on every pass.
+- `verify_fail` on 112 and ~20 `hold_exhausted` there: 112's FA
+  background (100–200/s, present with the VTX off too) sets `raised`, and
+  with 136 and 144 both blocked the GS had nowhere to go. It correctly
+  never hopped into a blocked channel. The known open item, reproduced.
+- 144 (5690–5730) read 100 % busy on every dwell while the VTX was
+  reported on E4 (5645). Unexplained. It was probably not really on E4, or
+  the VTX desensed the scout at 3 m.
+
+**DJI O4 (home 153 = 149+153; O4 ch2, 20 MHz).** Three runs:
+
+| run | candidates, `confirm_ms` | what happened |
+|---|---|---|
+| 1 | [161, 144], 500 | Blocked at onset (`0x61`/`0x71`, ~80 %), but loss 0 for ~3 s, so no hop (busy but healthy). Hopped at 48 % loss → 161, `lead_confirm` 460 ms. The O4 read ~80 % on **both** 144 and 153 (also after moving the air unit away) and 25–37 % on 161, so the link sat lossy on 161 at rung 0–2 with `hold_exhausted`, 13 gaps / 10 s. Also one 161→153 hop into a momentary dip, then a `withdraw` at 506 ms. |
+| 2 | [161, 112], 500 | The O4 had shifted (boot scan: 157/161 ~33 %, 153 clean). 153 → 161 → **112**, a clean escape (rung 4, 20 s clean). Then two `interfered 0x11` windows on 112 (FA background + 6.7 % loss) ordered 153. The drone moved (`112 -> 153 (hop)`), and the GS **withdrew at 510 ms** and went back to 112. **60 s split**: GS on 112 in `hold_cap`, drone on 153, 5–9 fps. It ended when `hold_cap` (50 s) expired and the GS re-ordered 153. |
+| 3 | [161, 112], **1000** | Order **152 ms** after the first blocked window (82–83 % both cards), `lead_confirm` 468 ms, `verify_pass`, no further `H`; 161 carried no foreign airtime; `ausniff` 31.8 fps, 0 gaps, 0 incomplete. |
+
+**Confirm times depend on the pair.** Hops between 136/144/112 confirmed
+in 82–116 ms. Hops touching 149+153 or 157+161 (8822E spur centres 151/159,
+which `fast_retune` declines) took 423–460 ms, and 214 ms once. The
+retune path accounts for only ~65–91 ms of that; the rest is not yet
+explained (O4 loss on the new channel, the full-retune cost with
+spur-notch setup, and whether the drone's 8812EU also takes the slow path
+are all unchecked). A 500 ms `confirm_ms` left ~40 ms margin. The
+**bundle now ships `hop.confirm_ms = 1000`** (the drone's
+`move_confirm_ms` 2000 stays above it).
+
+**The split's root cause is a design/code mismatch, still open.**
+`docs/inflight-channel-hop.md` §1 says a drone that moved before a
+withdraw times out on `move_confirm_ms` and converges on the old
+channel. `RcAgent::tick` instead calls `go_home_("move_unconfirmed")`.
+With home == the hop target, the drone was already "home" and stayed.
+On the GS side, the scout's periodic home dwells caught the drone's
+frames, so the session never counted as lost, `split_after_ms` never
+engaged, and only `hold_cap` ended it. Fix candidates: the drone falls
+back to the pre-hop channel, not home; and/or the GS's split detector
+ignores frames that arrive only on scout dwells.
+
+**Unexplained baseline:** with nothing on air, home 153 and 161 ran at
+rung 0–1 with 3–15 % loss in some windows and no foreign airtime
+(run 3). Run 1 held rung 3–4 on 153.
+
+Bench restored: home 136 / [144, 112] both ends (`confirm_ms` 1000 kept
+on the GS); the boot scan picked 144 (136 ambient 17.7 %); `ausniff`
+0 gaps, 30.8 fps.
