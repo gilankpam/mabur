@@ -183,15 +183,16 @@ dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
 # a different overhead than BASE, not just a duplicated scalar.
 # RC_VERSION 6: fixed probe byte; cases 1-2 leave it at the 0xFF default.
 # RC_VERSION 9: hop_ch/hop_epoch, all three cases at the 0/0 no-hop-order default.
+# RC_VERSION 11: rec byte (bit1 known, bit0 on) -- case 1 unknown, 2 known-on, 3 known-off.
 rcfs = [{"vtx_id": 0xDEADBEEF, "seq": 7, "profile": 0x24,
          "fec_overhead_base": 0.5, "fec_overhead_enh": 0.5,
-         "hop_ch": 0, "hop_epoch": 0},
+         "hop_ch": 0, "hop_epoch": 0, "rec": 0},
         {"vtx_id": 1, "seq": 65535, "profile": 0x00,
          "fec_overhead_base": 1.0, "fec_overhead_enh": 1.0,
-         "hop_ch": 0, "hop_epoch": 0},
+         "hop_ch": 0, "hop_epoch": 0, "rec": 3},
         {"vtx_id": 0x11223344, "seq": 42, "profile": 0x08,
          "fec_overhead_base": 1.0, "fec_overhead_enh": 0.5,
-         "probe_profile": 0x06, "hop_ch": 0, "hop_epoch": 0}]
+         "probe_profile": 0x06, "hop_ch": 0, "hop_epoch": 0, "rec": 2}]
 discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,

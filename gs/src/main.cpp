@@ -27,6 +27,7 @@
 #include "au_ring.h"
 #include "body_queue.h"
 #include "cal_control.h"
+#include "rec_control.h"
 #include "cal_log.h"
 #include "cal_session.h"
 #include "card_scan.h"
@@ -765,6 +766,13 @@ static int run_radio(const maburgs::Config& cfg) {
     std::fprintf(stderr,
                  "warning: calibration control port 8400 unusable; "
                  "`maburcal start` will not reach this daemon\n");
+  // VTX onboard recorder wish from maburplay (rec_control.h). Loopback
+  // only; a failure just means the drone never gets a known wish.
+  maburgs::RecControl rec_ctl;
+  if (!rec_ctl.open(maburgs::kRecControlPort))
+    std::fprintf(stderr,
+                 "warning: record control port %d unusable; the VTX recorder "
+                 "will not follow the record button\n", maburgs::kRecControlPort);
   // Telem (the drone's only calibration ack signal, flags bit6 cal_active)
   // carries no nonce of its own, so this is what the T_TELEM handler below
   // hands back to CalSession::on_ack() -- stashed from the CalCmd the last
@@ -1877,6 +1885,8 @@ static int run_radio(const maburgs::Config& cfg) {
     // Compiled into every prod build, unlike loss_ctl above (cal_control.h).
     const auto cal_state_before_poll = cal_session.state();
     cal_ctl.poll(cal_session);
+    rec_ctl.poll();
+    vrx.set_rec_wish(rec_ctl.wire());
     // Loud, exactly once per accepted `maburcal start` (Idle/Done/Failed ->
     // AwaitAck): the operator's own terminal is streaming CalControl's
     // "CAL start -> ok started" reply already, but this is the one place

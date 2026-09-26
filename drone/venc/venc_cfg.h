@@ -46,20 +46,20 @@ typedef struct {
    * hardware left to surprise anyone.
    *
    * MI_VENC_IntraRefresh_t {bEnable, u32RefreshLineNum, u32ReqIQp}: */
-  uint16_t intra_refresh_rows; /* venc.intra_refresh_rows: CTU rows forced
-                                * intra per P-frame. 0 = rolling refresh off,
-                                * and SetIntraRefresh is not called at all
-                                * (the channel is created fresh every start,
-                                * so there is no prior enable to clear).
-                                * Otherwise 1..ceil(height/32)
-                                * (H.265 CTU is 32x32; 1080 = 34 rows), and
-                                * the sweep takes ceil(rows_total/rows)
-                                * frames. Larger = faster self-heal, more
-                                * bitrate per P and more frame-size swing. */
+  uint16_t intra_refresh_frames; /* venc.intra_refresh_frames: rolling
+                                * refresh (GDR) sweep length in frames,
+                                * 0..255. 0 = off, and SetIntraRefresh is not
+                                * called at all (the channel is created fresh
+                                * every start, so there is no prior enable to
+                                * clear). The rows forced intra per P-frame
+                                * are derived from the ENCODED height,
+                                * venc_cfg_intra_rows(). Shorter = faster
+                                * self-heal, more bitrate per P and more
+                                * frame-size swing. */
   uint8_t intra_refresh_qp;    /* venc.intra_refresh_qp: u32ReqIQp, the QP
                                 * of the stripe. 1..51. Lower = cleaner
                                 * recovery anchor, more bits. Unused while
-                                * intra_refresh_rows is 0. */
+                                * intra_refresh_frames is 0. */
   /* MI_VENC_ParamRef_t {u32Base, u32Enhance, bEnablePred} — SVC-T temporal
    * hierarchy, applied once between CreateChn and StartRecvPic: */
   uint8_t ref_base;            /* venc.ref_base: u32Base. 0 = SVC-T off,
@@ -132,9 +132,14 @@ extern "C" {
 void venc_cfg_defaults(VencCfg *cfg);
 
 /* Total CTU rows in a picture of `height` lines (H.265 CTU is 32x32).
- * The upper bound on venc.intra_refresh_rows, and the divisor that turns
- * a rows-per-P setting into a sweep length in frames. Pure, host-tested. */
+ * Pure, host-tested. */
 uint16_t venc_cfg_ctu_rows(uint16_t height);
+
+/* CTU rows forced intra per P-frame so a `frames`-long sweep covers a
+ * `height`-line picture: ceil(ctu_rows / frames), at least 1 while on, and
+ * 0 when frames or height is 0. The actual sweep, ceil(ctu_rows / rows), is
+ * never longer than `frames`. Pure, host-tested. */
+uint16_t venc_cfg_intra_rows(uint16_t height, uint16_t frames);
 
 /* P-frame SuperFrame threshold in BYTES for a pct-of-budget cap at the
  * given programmed rate and frame rate: pct * (kbps*1024) / (fps*8*100).

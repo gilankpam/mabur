@@ -8,6 +8,7 @@
 #include "pipeline_common.h"
 #include "venc_cfg.h"
 #include "venc_jpeg.h"
+#include "venc_record.h"
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -53,6 +54,10 @@
  * insmod.  Re-check it if the sensor or its driver ever changes; a wrong
  * index silently yields the wrong geometry rather than failing.  Verify on
  * the device with `grep Cur /proc/mi_modules/mi_sensor/mi_sensor0`. */
+/* A record.size above 1920x1080 needs a bigger capture than mode 2's: the
+ * same table's 3840x2160@30 (full array, full FOV, not binned). Everything
+ * then runs at <= 30 fps -- the config loader requires venc.fps <= 30. */
+#define STAR6E_SENSOR_MODE_4K       0
 /* MJPEG snapshot channel; 7 is well clear of the encoder's ch0. */
 #define STAR6E_SNAPSHOT_CHANNEL     7
 /* Video codec is always H.265 and rate control is always CBR — the
@@ -123,6 +128,22 @@ static void star6e_pipeline_pre_init_teardown(void)
 		.module = I6_SYS_MOD_VPE, .device = 0, .channel = 0, .port = 0 };
 	MI_SYS_ChnPort_t venc_port = {
 		.module = I6_SYS_MOD_VENC, .device = 0, .channel = 0, .port = 0 };
+	MI_U32 rec_dev = 0;
+	MI_SYS_ChnPort_t rec_port;
+
+	/* The VTX recorder's channel (venc_record.c) shares the VPE port with
+	 * ch0, so an unclean exit can leave it bound and created too. Same
+	 * order as ch0; every call is a harmless failure when ch1 never
+	 * existed (GetChnDevid leaves rec_dev at 0 then). */
+	(void)MI_VENC_GetChnDevid(STAR6E_RECORD_CHANNEL, &rec_dev);
+	rec_port = (MI_SYS_ChnPort_t){ .module = I6_SYS_MOD_VENC,
+		.device = rec_dev, .channel = STAR6E_RECORD_CHANNEL, .port = 0 };
+	(void)MI_SYS_UnBindChnPort(&vpe_port, &rec_port);
+	vpe_port.port = 1;   /* record.size != venc.size binds it to port 1 */
+	(void)MI_SYS_UnBindChnPort(&vpe_port, &rec_port);
+	vpe_port.port = 0;
+	(void)MI_VENC_StopRecvPic(STAR6E_RECORD_CHANNEL);
+	(void)MI_VENC_DestroyChn(STAR6E_RECORD_CHANNEL);
 
 	(void)MI_SYS_UnBindChnPort(&vpe_port, &venc_port);
 	(void)MI_SYS_UnBindChnPort(&vif_port, &vpe_port);
@@ -703,17 +724,14 @@ static void star6e_pipeline_stop_venc(MI_VENC_CHN chn)
 	MI_VENC_DestroyChn(chn);
 }
 
-/* Rolling intra refresh (GDR) — venc.intra_refresh_rows CTU rows forced
- * intra per P-frame at venc.intra_refresh_qp, straight onto
- * MI_VENC_IntraRefresh_t.  rows == 0 is the off switch and makes no SDK
- * call at all.
+/* Rolling intra refresh (GDR) — a venc.intra_refresh_frames-long sweep at
+ * venc.intra_refresh_qp onto MI_VENC_IntraRefresh_t, its rows per P-frame
+ * derived from `height` by venc_cfg_intra_rows().  frames == 0 is the off
+ * switch and makes no SDK call at all.
  *
- * `height` is the ENCODED picture height, not cfg->height: config already
- * rejected a rows value wider than the configured venc.size, but
+ * `height` is the ENCODED picture height, not cfg->height:
  * pipeline_common_clamp_image_size() can shrink the picture to what the
- * sensor actually delivers, and a stripe wider than the picture would
- * reach the SDK.  Hence the clamp below survives even though config
- * validates — the two guard different heights.
+ * sensor actually delivers, and the rows must cover that picture.
  *
  * Returns 1 when the stripe is live, 0 when it is off or could not be
  * applied — never fatal, the stream works without rolling refresh. */
@@ -725,23 +743,19 @@ static int star6e_pipeline_apply_intra_refresh(MI_VENC_CHN chn,
 	uint32_t rows;
 	uint32_t sweep_frames;
 
-	if (!cfg || cfg->intra_refresh_rows == 0)
+	if (!cfg || cfg->intra_refresh_frames == 0)
 		return 0;
 	if (!g_mi_venc.fnSetIntraRefresh) {
-		fprintf(stderr, "[venc] WARNING: intra_refresh_rows=%u requested "
+		fprintf(stderr, "[venc] WARNING: intra_refresh_frames=%u requested "
 			"but libmi_venc.so does not export MI_VENC_SetIntraRefresh\n",
-			cfg->intra_refresh_rows);
+			cfg->intra_refresh_frames);
 		return 0;
 	}
 
 	total_rows = venc_cfg_ctu_rows((uint16_t)height);
-	rows = cfg->intra_refresh_rows;
-	if (total_rows && rows > total_rows) {
-		fprintf(stderr, "[venc] WARNING: intra_refresh_rows=%u exceeds "
-			"the %u CTU rows of the %ux%u picture actually encoded, "
-			"clamped\n", rows, total_rows, cfg->width, height);
-		rows = total_rows;
-	}
+	rows = venc_cfg_intra_rows((uint16_t)height, cfg->intra_refresh_frames);
+	if (rows == 0)
+		return 0;
 
 	memset(&ir, 0, sizeof(ir));
 	ir.bEnable = 1;
@@ -923,9 +937,16 @@ static int prepare_pipeline_config(const VencCfg *cfg,
 	 * the live sensor name is known.  Leave empty here. */
 	pconf->isp_bin_path[0] = '\0';
 
-	pconf->sensor_cfg = pipeline_common_build_sensor_select_config(
-		STAR6E_SENSOR_FORCED_PAD, STAR6E_SENSOR_FORCED_MODE,
-		pconf->sensor_width, pconf->sensor_height, pconf->sensor_framerate);
+	{
+		uint32_t rec_w, rec_h;
+		int mode = STAR6E_SENSOR_FORCED_MODE;
+		venc_record_size(&rec_w, &rec_h);
+		if (rec_w > 1920 || rec_h > 1080)
+			mode = STAR6E_SENSOR_MODE_4K;
+		pconf->sensor_cfg = pipeline_common_build_sensor_select_config(
+			STAR6E_SENSOR_FORCED_PAD, mode, pconf->sensor_width,
+			pconf->sensor_height, pconf->sensor_framerate);
+	}
 	pconf->sensor_cfg.image_mirror = STAR6E_IMAGE_MIRROR;
 	pconf->sensor_cfg.image_flip   = STAR6E_IMAGE_FLIP;
 	/* IMX415/IMX335 high-FPS register hook: MI_SNR_CustFunction(pad,
@@ -1111,6 +1132,15 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	 * the encoder actually outputs it.  The RC fpsNum is separately capped
 	 * to STAR6E_VENC_INPUT_FPS_MAX — see venc_fps in pipeline_start. */
 
+	/* VTX onboard recorder: bound BEFORE the link channel, so the link is
+	 * the newest VPE peer and its encode runs first on the single-task
+	 * H.265 engine (docs/sd-record-findings-2026-09-26.md, R1 vs R2-R4).
+	 * Nothing may bind a new ACTIVE peer to this port after the link.
+	 * Non-fatal: a failure leaves the recorder reporting Disabled. */
+	(void)venc_record_attach(&state->vpe_port, state->image_width,
+		state->image_height, pconf->precrop.w, pconf->precrop.h,
+		bind_src_fps);
+
 	/* FRAMEBASE is the only link mode this hop accepts.
 	 * I6_SYS_LINK_LOWLATENCY was tried on hardware 2026-08-31 (it would
 	 * overlap encode with sensor readout, worth ~4-6 ms of the `enc`
@@ -1121,6 +1151,7 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	ret = MI_SYS_BindChnPort2(&state->vpe_port, &state->venc_port,
 		bind_src_fps, bind_dst_fps, I6_SYS_LINK_FRAMEBASE, 0);
 	if (ret != 0) {
+		venc_record_detach();
 		fprintf(stderr, "ERROR: MI_SYS_Bind VPE->VENC failed %d\n", ret);
 		MI_SYS_UnBindChnPort(&state->vif_port, &state->vpe_port);
 		state->bound_vif_vpe = 0;
@@ -1149,6 +1180,7 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 
 	if (star6e_output_init(&state->output, VENC_RING_NAME) != 0) {
 		star6e_output_teardown(&state->output);
+		venc_record_detach();
 		MI_SYS_UnBindChnPort(&state->vpe_port, &state->venc_port);
 		state->bound_vpe_venc = 0;
 		MI_SYS_UnBindChnPort(&state->vif_port, &state->vpe_port);
@@ -1283,6 +1315,10 @@ void star6e_pipeline_stop(Star6ePipelineState *state)
 	 * must run while the SDK still holds a consistent view of the VPE
 	 * source.  Idempotent; safe even if init was skipped or failed. */
 	venc_jpeg_shutdown();
+
+	/* The record channel is ACTIVE when recording: detach runs StopRecvPic
+	 * -> drain -> unbind -> destroy, the same order as ch0 below. */
+	venc_record_detach();
 
 	/* MI teardown order: StopRecvPic the VENC consumer BEFORE unbinding
 	 * its input port.  The previous Star6E order unbound VPE→VENC first and
@@ -1431,14 +1467,15 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 
 		state->output.gdr_active = gdr_applied;
 		state->output.svct_active = svct_applied;
-		if (gdr_applied && cfg->intra_refresh_rows) {
+		if (gdr_applied) {
 			uint16_t total = venc_cfg_ctu_rows(
 				(uint16_t)pconf.image_height);
-			uint32_t rows = cfg->intra_refresh_rows;
+			uint32_t rows = venc_cfg_intra_rows(
+				(uint16_t)pconf.image_height,
+				cfg->intra_refresh_frames);
 
-			if (total && rows > total)
-				rows = total;  /* same clamp as the apply site */
-			clen = (total + rows - 1u) / rows;
+			if (rows)  /* same rows as the apply site */
+				clen = (total + rows - 1u) / rows;
 		}
 		state->output.gdr_cycle_len = clen > 255 ? 255 : (uint8_t)clen;
 		state->output.gdr_counter = 0;

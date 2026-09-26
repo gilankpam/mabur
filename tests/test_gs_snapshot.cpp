@@ -502,4 +502,21 @@ TEST(drone_soc_temp_parses_and_drops_the_sentinel) {
   REQUIRE(parse(R"({"drone": {"sys": {"soc_temp_c": "hot"}}})", &s));
   CHECK(!s.soc_temp_c);
 }
+
+// drone.rec (spec 2026-09-26-vtx-recorder): the drone recorder's state/err,
+// and drone.tlm_age_ms alongside it. Empty when the drone block is
+// null/absent or the keys are missing/mistyped.
+TEST(drone_rec_parses_and_is_empty_when_absent) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"link": {"channel": 136}, "drone": {"tlm_age_ms": 250, "rec": {"state": 2, "err": 3}}})", &s));
+  REQUIRE(s.rec_state.has_value());
+  CHECK(*s.rec_state == 2);
+  CHECK(*s.rec_err == 3);
+  CHECK(*s.drone_tlm_age_ms == 250);
+  REQUIRE(parse(R"({"link": {"channel": 136}, "drone": {"low_power": false}})", &s));
+  CHECK(!s.rec_state.has_value());
+  CHECK(!s.drone_tlm_age_ms.has_value());
+  REQUIRE(parse(R"({"link": {"channel": 136}, "drone": null})", &s));
+  CHECK(!s.rec_state.has_value());
+}
 MTEST_MAIN

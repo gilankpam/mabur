@@ -42,153 +42,16 @@ std::string what_of(const std::function<void()>& fn) {
 
 }  // namespace
 
-TEST(load_config_default_file_is_the_flight_config) {
+// The shipped bundle is baked into the drone image as /etc/mabur.toml, so it
+// must load through the real loader: a typo or out-of-range value there
+// would put a freshly flashed drone into maburd's restart loop. Its VALUES
+// are tuning and deliberately not pinned here -- retuning must not fail a
+// test. (bundle_default_sets_every_known_key keeps it complete.)
+TEST(bundle_config_loads) {
   Config cfg = load_config(default_config_path());
-  Config def;  // struct defaults
-
-  // What this test is for: `bundle/mabur.default.toml` is not a "sensible
-  // starting point" any more. Since 2026-09-08 it is a verbatim copy of the
-  // drone's own /etc/mabur.toml, and openipc-builder bakes it into the image
-  // as /etc/mabur.toml -- so a fresh flash boots the flight configuration
-  // with no hand-editing. That makes the file a deployment artifact, and this
-  // test the change-detector on it: every literal below is a value someone
-  // measured and flew, with the doc that justifies it. Changing one here
-  // without changing the drone (or the reverse) is the bug this catches.
-  //
-  // It therefore checks against `def` only where bundle and struct still
-  // legitimately agree; everywhere else it pins the flown literal.
-
-  CHECK(cfg.radio.usb_vid == def.radio.usb_vid);
-  CHECK(cfg.radio.usb_pid == def.radio.usb_pid);
-  CHECK(cfg.radio.channel == 136);
-  CHECK(cfg.radio.width == 40);  // GS at 40 on 132+136, top rungs fly HT40 (2026-09-24)
-  // "none" = leave the chip's efuse power table untouched. The bundle ships
-  // this way because rate_walls_rel below is a per-UNIT calibration and the
-  // shipped file cannot know the wall of the board it lands on -- flashing
-  // someone else's walls would park every rate at a ceiling never measured
-  // there. Set "offset" once you have run `maburcal start` on your own vtx
-  // (see docs/calibration.md); then wall_margin_db is the only lever that
-  // moves TX power.
-  // NOTE this drone flies "offset": /etc/mabur.toml and this file diverge on
-  // exactly this key, deliberately.
-  CHECK(cfg.radio.power_mode == "none");
-  CHECK(cfg.radio.follow_gs == true);
-
-  // Reference wall-equalization from the author's 8812EU, RELATIVE to the
-  // chip's per-channel anchor (2026-09-13 ch136 means). Inert while
-  // power_mode is "none", pinned so the calibration is not lost.
-  CHECK((cfg.radio.rate_walls_rel ==
-         std::array<int, 8>{63, 63, 62, 45, 22, 6, 9, 5}));
-  CHECK(cfg.radio.legacy_wall_rel == 63);
-  CHECK(cfg.radio.wall_margin_db == 1.0);
-
-  // 332/w32/bpb4 is the 2026-07-29 geometry: same CPU/air profile as the
-  // 2026-07-25 gated 328 (docs/fec-symbol-size-328.md), shifted +4 because
-  // 328x4 = 1396 B air frames sit exactly in the mcs6+STBC PHY hole
-  // (docs/mcs6-bench-anomaly.md -- air MPDUs 1392-1400 B vanish whole at RX).
-  // Any new size needs the all-8-MCS hole-scan.
-  CHECK((cfg.fec.symbol_size == std::array<int, 2>{332, 332}));
-  CHECK(cfg.fec.window == 32);
-  CHECK((cfg.fec.blocks_per_body == std::array<int, 2>{4, 4}));
-  CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
-  // feed_batch 1 held when the drone went to agg6 (2026-09-24). agg6 +
-  // feed_batch 6 had bought fec -2.3/-2.7 ms (docs/observability.md
-  // A-MPDU) before the 0.5/0.25 ladder pair; no re-measured win since.
-  CHECK(cfg.fec.feed_batch == 1);
-  CHECK(cfg.fec.flush_ms == 25);
-
-  // 24 Mbps ceiling (CPU wall ~25 Mb/s after the table CRC,
-  // docs/bitrate-ceiling-findings-2026-09-21.md) and airtime_budget 0.5: 0.5 is what killed the air-clock
-  // drain (peak 47 -> 20 ms, settle 1.9 -> 0.3 s). NOTE the sign of
-  // roi_qp_low: apply_roi_qp() takes a QP OFFSET for the centre region, so
-  // the useful low-bitrate value is NEGATIVE. It is still carried even though
-  // venc.roi is off (below) -- turning ROI back on must not also need the
-  // offset re-derived. The struct default has the opposite sign and is left
-  // alone deliberately; changing a compiled default is not a flag day.
-  CHECK(cfg.encoder.bitrate_min_kbps == 1000);
-  CHECK(cfg.encoder.bitrate_max_kbps == 24000);
-  // 0.65 of DELIVERED capacity since 2026-09-17 = the load 0.5-of-nominal
-  // flew at rungs 4-5 (0.5/0.76); rungs 0-2 gain the singles capacity.
-  CHECK(cfg.encoder.airtime_budget == 0.65);
-  CHECK(cfg.encoder.roi_threshold_kbps == 3000);
-  CHECK(cfg.encoder.roi_qp_low == -24);
-  CHECK(cfg.encoder.roi_qp_normal == 0);
-
-  // air_clock: ARMED, shed 25 flew clean. Per-width delivered/nominal
-  // tables: 20 MHz from the 2026-09-17 saturation sweep (singles at mcs0-3
-  // under ampdu.min_mcs_20 4, agg6 above), 40 MHz from the 2026-09-23 HT40
-  // sweep (agg6, flat 0.74-0.77).
-  CHECK(cfg.air_clock.shed_ms == 25);
-  const std::array<double, 8> eff20 = {0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76};
-  const std::array<double, 8> eff40 = {0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75};
-  CHECK(cfg.air_clock.efficiency_20 == eff20);
-  CHECK(cfg.air_clock.efficiency_40 == eff40);
-  CHECK(cfg.air_clock.body_us == 0);
-
-  // venc: boot-time encoder pipeline config, bundle-pinned rather than
-  // struct-default (struct defaults are all-zero/empty, not a bootable
-  // encoder configuration).
-  CHECK(cfg.venc.core.sensor_bin ==
-        std::string("/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"));
-  CHECK(cfg.venc.core.width == 1920);
-  CHECK(cfg.venc.core.height == 1080);
-  CHECK(cfg.venc.core.fps == 60);
-  CHECK(cfg.venc.core.gop_s == 0.5);
-  CHECK(cfg.venc.core.qp_delta == 4);
-  CHECK(cfg.venc.core.max_ipprop == 2);
-  // Re-pinned to the bundle as of b05c60f (2026-09-19 low-power spike retune).
-  CHECK(cfg.venc.core.min_iqp == 34);
-  CHECK(cfg.venc.core.intra_refresh_rows == 34);
-  CHECK(cfg.venc.core.intra_refresh_qp == 36);
-  // P-frame size cap, 200 % (docs/handover-venc-overshoot-2026-09-03.md).
-  CHECK(cfg.venc.core.superframe_p_pct == 200);
-  CHECK(cfg.venc.core.ref_base == 1);
-  CHECK(cfg.venc.core.ref_enhance == 1);
-  CHECK(cfg.venc.core.ref_pred == true);
-  // ROI OFF since 2026-09-06: roi_qp_low -24 was being applied to the
-  // SetChnAttr IDR at a rung-0 demote and blew it up 1.7-2.6x
-  // (docs/link-adaptation.md, rung-0 demote IDR).
-  CHECK(cfg.venc.core.roi_enabled == false);
-  CHECK(cfg.venc.core.roi_steps == 2);
-  CHECK(cfg.venc.core.roi_center == 0.4);
-  CHECK(cfg.venc.core.ae_fps == 15);
-  CHECK(cfg.venc.core.awb_fps == 15);
-  CHECK(cfg.venc.core.snapshot_quality == 80);
-  CHECK(cfg.venc.debug_port == 8301);
-
-  CHECK(cfg.link.vtx_id == def.link.vtx_id);
-  // 3 s, not the compiled 1 s: a 1 s failsafe fired on ordinary rung
-  // transitions in flight.
-  CHECK(cfg.link.failsafe_ms == 3000);
-  CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
-  CHECK(cfg.link.move_confirm_ms == 2000);
-  CHECK(cfg.link.tick_ms == def.link.tick_ms);
-
-  // MSP OSD is on in flight (stream_id 4), 3 Hz.
-  CHECK(cfg.msp.enable == true);
-  CHECK(cfg.msp.serial == std::string("/dev/ttyS2"));
-  CHECK(cfg.msp.update_rate_hz == 3);
-
-  // low_power (spec 2026-09-20): pre-arm thermal mode. 1 Mb/s @ 15 fps is
-  // the operating point the 2026-09-19 spike chose; enable requires
-  // msp.enable (the arm state comes from the FC over MSP).
-  CHECK(cfg.low_power.enable == true);
-  CHECK(cfg.low_power.bitrate_kbps == 1000);
-  CHECK(cfg.low_power.fps == 30);
-  CHECK(cfg.low_power.stale_ms == 2000);
-
-  // agg6 from the per-width threshold up: the flight config since
-  // 2026-09-24 (bench-clean with carrier sense on both ends).
-  CHECK(cfg.ampdu.max_num == 6);
-  CHECK(cfg.ampdu.max_time == 32);
-  // Per-rung, per-width aggregation: singles below mcs4 at 20 MHz
-  // (2026-09-17 sweep), aggregation from mcs2 at 40 MHz (2026-09-23 sweep).
-  CHECK(cfg.ampdu.min_mcs_20 == 4);
-  CHECK(cfg.ampdu.min_mcs_40 == 2);
-
+  // Loader behaviour, not a bundle value: every layer's overhead is
+  // exactly fec.base_overhead.
   auto layers = cfg.uep_layers();
-  // Literal passthrough (Task 3): no uep_layer_overhead ladder translation
-  // left -- every layer's overhead is exactly fec.base_overhead.
   CHECK(layers[0].fec.overhead == cfg.fec.base_overhead);
   CHECK(layers[1].fec.overhead == cfg.fec.base_overhead);
 }
@@ -302,7 +165,7 @@ std::string valid_venc_block() {
          "fps = 60\n"
          "gop_s = 2.0\n"
          "qp_delta = -4\n"
-         "intra_refresh_rows = 4\n"
+         "intra_refresh_frames = 9\n"
          "intra_refresh_qp = 36\n"
          "ref_base = 1\n"
          "ref_enhance = 1\n"
@@ -331,7 +194,7 @@ TEST(venc_section_parses_and_validates) {
   Config c = load_config(path.string());
   CHECK(c.venc.core.width == 1920);
   CHECK(c.venc.core.height == 1080);
-  CHECK(c.venc.core.intra_refresh_rows == 4);
+  CHECK(c.venc.core.intra_refresh_frames == 9);
   CHECK(c.venc.core.ref_enhance == 1);
   CHECK(c.encoder.airtime_budget == 0.65);
   std::filesystem::remove(path);
@@ -393,8 +256,9 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.superframe_p_pct == 0);
   // The decomposed resilience components (venc.resilience was deleted
   // 2026-09-04): defaults reproduce the old "rally" preset at 1080p60 —
-  // 4 CTU rows/P at QP 36, 1:1 SVC-T with enhance prediction on.
-  CHECK(c.venc.core.intra_refresh_rows == 4);
+  // a 9-frame sweep (4 CTU rows/P at 1080p) at QP 36, 1:1 SVC-T with
+  // enhance prediction on.
+  CHECK(c.venc.core.intra_refresh_frames == 9);
   CHECK(c.venc.core.intra_refresh_qp == 36);
   CHECK(c.venc.core.ref_base == 1);
   CHECK(c.venc.core.ref_enhance == 1);
@@ -409,21 +273,21 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   std::filesystem::remove(path);
 }
 
-// The six decomposed knobs land on VencCfg verbatim — they are the two MI
-// structs' fields (MI_VENC_IntraRefresh_t {bEnable, u32RefreshLineNum,
-// u32ReqIQp} and MI_VENC_ParamRef_t {u32Base, u32Enhance, bEnablePred}),
-// so config carries no derivation the operator cannot see.
+// The intra-refresh + SVC-T knobs land on VencCfg verbatim, except the
+// sweep: venc.intra_refresh_frames is its length in frames, and the rows per
+// P-frame (MI_VENC_IntraRefresh_t.u32RefreshLineNum) are derived from the
+// encoded height (venc_cfg_intra_rows), so the key survives a venc.size change.
 TEST(venc_intra_refresh_and_ref_keys_parse) {
   auto path = write_temp_toml(
       "[venc]\n"
       "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
-      "intra_refresh_rows = 1\n"
+      "intra_refresh_frames = 1\n"
       "intra_refresh_qp = 28\n"
       "ref_base = 1\n"
       "ref_enhance = 4\n"
       "ref_pred = false\n");
   Config c = load_config(path.string());
-  CHECK(c.venc.core.intra_refresh_rows == 1);
+  CHECK(c.venc.core.intra_refresh_frames == 1);
   CHECK(c.venc.core.intra_refresh_qp == 28);
   CHECK(c.venc.core.ref_base == 1);
   CHECK(c.venc.core.ref_enhance == 4);
@@ -431,81 +295,52 @@ TEST(venc_intra_refresh_and_ref_keys_parse) {
   std::filesystem::remove(path);
 }
 
-// rows 0 is the off switch (bEnable=0): no stripe, and the QP alongside it
+// frames 0 is the off switch (bEnable=0): no stripe, and the QP alongside it
 // is simply unused rather than an error.
-TEST(venc_intra_refresh_rows_zero_is_off) {
+TEST(venc_intra_refresh_frames_zero_is_off) {
   auto path = write_temp_toml(
       "[venc]\n"
       "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
-      "intra_refresh_rows = 0\n");
+      "intra_refresh_frames = 0\n");
   Config c = load_config(path.string());
-  CHECK(c.venc.core.intra_refresh_rows == 0);
+  CHECK(c.venc.core.intra_refresh_frames == 0);
   std::filesystem::remove(path);
 }
 
-// The stripe cannot be wider than the picture. H.265 CTU is 32x32, so 1080
-// lines is 34 CTU rows: 34 is the widest legal sweep (one row per frame is
-// the slowest), 35 is a config error. The old preset path silently CLAMPED
-// here and warned on stderr, which meant the encoder ran a sweep the
-// config did not describe; boot failure is the forcing function instead.
-TEST(venc_intra_refresh_rows_beyond_picture_rejected) {
-  auto ok = write_temp_toml(
-      "[venc]\n"
-      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
-      "size = \"1920x1080\"\n"
-      "intra_refresh_rows = 34\n");
-  Config c = load_config(ok.string());
-  CHECK(c.venc.core.intra_refresh_rows == 34);
-  std::filesystem::remove(ok);
-
-  auto bad = write_temp_toml(
-      "[venc]\n"
-      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
-      "size = \"1920x1080\"\n"
-      "intra_refresh_rows = 35\n");
-  std::string msg = what_of([&] { (void)load_config(bad.string()); });
-  CHECK(!msg.empty());
-  CHECK(msg.find("venc.intra_refresh_rows") != std::string::npos);
-  std::filesystem::remove(bad);
-}
-
-// The bound tracks venc.size, and is checked against the height whether or
-// not the rows key is present. Testing it only at 1920x1080 -- which is also
-// the default height -- would pass against a hardcoded 34, and against a
-// check that ran BEFORE "size" was parsed. 720 lines is 23 CTU rows: a
-// pre-size check would see the 1080 default, compute 34, and accept 24.
-TEST(venc_intra_refresh_rows_bound_tracks_venc_size) {
-  auto ok = write_temp_toml(
-      "[venc]\n"
-      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
-      "size = \"1280x720\"\n"
-      "intra_refresh_rows = 23\n");
-  Config c = load_config(ok.string());
-  CHECK(c.venc.core.intra_refresh_rows == 23);
-  std::filesystem::remove(ok);
-
-  auto bad = write_temp_toml(
-      "[venc]\n"
-      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
-      "size = \"1280x720\"\n"
-      "intra_refresh_rows = 24\n");
-  std::string msg = what_of([&] { (void)load_config(bad.string()); });
-  CHECK(!msg.empty());
-  CHECK(msg.find("venc.intra_refresh_rows") != std::string::npos);
-  std::filesystem::remove(bad);
-}
-
-// The default rows value is validated too. Omitting the key does not buy a
-// pass: a picture shorter than the default 4 CTU rows must fail boot, not
-// reach the encoder and get silently clamped there -- boot failure is the
-// whole point of the range check.
-TEST(venc_default_intra_refresh_rows_validated_against_size) {
+// The whole point of a sweep-length key: the 1080p "whole picture per P"
+// value must boot at 720p too (the raw rows key made 34 a boot failure there).
+TEST(venc_intra_refresh_frames_is_size_independent) {
   auto path = write_temp_toml(
       "[venc]\n"
       "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
-      "size = \"640x64\"\n");
+      "size = \"1280x720\"\n"
+      "intra_refresh_frames = 1\n");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.intra_refresh_frames == 1);
+  std::filesystem::remove(path);
+}
+
+// The sweep feeds an 8-bit GDR cycle counter (star6e_output gdr_cycle_len).
+TEST(venc_intra_refresh_frames_range_checked) {
+  auto bad = [](const char* v) {
+    auto path = write_temp_toml(
+        std::string("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nintra_refresh_frames = ") + v + "\n");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    std::filesystem::remove(path);
+    return msg.find("venc.intra_refresh_frames") != std::string::npos;
+  };
+  CHECK(bad("-1"));
+  CHECK(bad("256"));
+  CHECK(!bad("255"));
+}
+
+// The raw rows key is gone (2026-09-27); a stale config fails boot naming it.
+TEST(venc_intra_refresh_rows_key_removed) {
+  auto path = write_temp_toml(
+      "[venc]\n"
+      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
+      "intra_refresh_rows = 34\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(!msg.empty());
   CHECK(msg.find("venc.intra_refresh_rows") != std::string::npos);
   std::filesystem::remove(path);
 }
@@ -1440,7 +1275,7 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
     // bare "=0" here would be exactly the lie a naive `else
     // note_default(key, to_text(local_temp))` would have produced.
     for (const char* wrong : {"venc.fps=0", "venc.qp_delta=0",
-                              "venc.intra_refresh_rows=0",
+                              "venc.intra_refresh_frames=0",
                               "venc.intra_refresh_qp=0", "venc.ref_base=0",
                               "venc.ref_enhance=0", "venc.ae_fps=0",
                               "venc.awb_fps=0", "venc.snapshot_quality=0",
@@ -1455,7 +1290,9 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
 }
 
 TEST(follow_gs_and_move_confirm_parse_with_defaults) {
-  Config def = load_config(default_config_path());
+  auto e = write_temp_toml("");
+  Config def = load_config(e.string());
+  std::filesystem::remove(e);
   CHECK(def.radio.follow_gs == true);
   CHECK(def.link.move_confirm_ms == 2000);
   auto p = write_temp_toml("[radio]\nchannel = 136\nfollow_gs = false\n[link]\nmove_confirm_ms = 500\n");
@@ -1570,6 +1407,97 @@ TEST(radio_width_40_needs_a_standard_pair) {
   CHECK(msg.find("radio.width") != std::string::npos);
   CHECK(msg.find("165") != std::string::npos);
   std::filesystem::remove(path);
+}
+
+TEST(record_defaults_are_disabled_and_parse) {
+  {
+    auto path = write_temp_toml("");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.record.enable == false);
+    CHECK(cfg.record.dir == "/mnt/mmcblk0p1");
+    CHECK(cfg.record.bitrate_kbps == 40000);
+    CHECK(cfg.record.fps == 60);
+    CHECK(cfg.record.min_free_mb == 512);
+    CHECK(cfg.record.width == 0 && cfg.record.height == 0);  // follows venc.size
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_toml(
+        "[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nfps = 60\n"
+        "[record]\nenable = true\ndir = \"/mnt/sd\"\nbitrate_kbps = 30000\nfps = 30\nmin_free_mb = 100\n");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.record.enable == true);
+    CHECK(cfg.record.dir == "/mnt/sd");
+    CHECK(cfg.record.bitrate_kbps == 30000);
+    CHECK(cfg.record.fps == 30);
+    CHECK(cfg.record.min_free_mb == 100);
+    std::filesystem::remove(path);
+  }
+}
+
+// Final-review fix: record.dir is compared against /proc/mounts' mount
+// point, which never carries a trailing slash -- "/mnt/sd/" would read
+// NotMounted forever. Strip it; "/" itself stays.
+TEST(record_dir_trailing_slash_is_stripped) {
+  {
+    auto path = write_temp_toml("[record]\ndir = \"/mnt/sd/\"\n");
+    auto cfg = load_config(path.string());
+    std::filesystem::remove(path);
+    CHECK(cfg.record.dir == "/mnt/sd");
+  }
+  {
+    auto path = write_temp_toml("[record]\ndir = \"/mnt/sd//\"\n");
+    auto cfg = load_config(path.string());
+    std::filesystem::remove(path);
+    CHECK(cfg.record.dir == "/mnt/sd");
+  }
+  {
+    auto path = write_temp_toml("[record]\ndir = \"/\"\n");
+    auto cfg = load_config(path.string());
+    std::filesystem::remove(path);
+    CHECK(cfg.record.dir == "/");
+  }
+}
+
+TEST(record_unknown_key_throws_naming_it) {
+  auto path = write_temp_toml("[record]\nbogus = 1\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("record.bogus") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(record_ranges_are_checked) {
+  auto bad = [](const char* body, const char* field) {
+    auto path = write_temp_toml(body);
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    std::filesystem::remove(path);
+    return msg.find(field) != std::string::npos;
+  };
+  CHECK(bad("[record]\nbitrate_kbps = 1000\n", "record.bitrate_kbps"));
+  CHECK(bad("[record]\nbitrate_kbps = 90000\n", "record.bitrate_kbps"));
+  CHECK(bad("[record]\ndir = \"relative\"\n", "record.dir"));
+  CHECK(bad("[record]\nmin_free_mb = -1\n", "record.min_free_mb"));
+  // fps is checked against venc.fps only when the recorder is enabled.
+  CHECK(bad("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nfps = 60\n[record]\nenable = true\nfps = 90\n", "record.fps"));
+  CHECK(bad("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nfps = 60\n[record]\nenable = true\nfps = 0\n", "record.fps"));
+  // size: malformed, other aspect than venc.size, odd, and 4K at 60 fps
+  // (the 3840x2160 sensor mode tops out at 30).
+  CHECK(bad("[record]\nsize = \"4k\"\n", "record.size"));
+  CHECK(bad("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nsize = \"1920x1080\"\nfps = 30\n"
+            "[record]\nenable = true\nfps = 30\nsize = \"1440x1080\"\n", "record.size"));
+  CHECK(bad("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nsize = \"1920x1080\"\nfps = 30\n"
+            "[record]\nenable = true\nfps = 30\nsize = \"368x207\"\n", "record.size"));
+  CHECK(bad("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nsize = \"1920x1080\"\nfps = 60\n"
+            "[record]\nenable = true\nfps = 30\nsize = \"3840x2160\"\n", "record.size"));
+}
+
+TEST(record_size_parses) {
+  auto path = write_temp_toml(
+      "[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nsize = \"1920x1080\"\nfps = 30\n"
+      "[record]\nenable = true\nfps = 30\nsize = \"3840x2160\"\n");
+  auto cfg = load_config(path.string());
+  std::filesystem::remove(path);
+  CHECK(cfg.record.width == 3840 && cfg.record.height == 2160);
 }
 
 MTEST_MAIN

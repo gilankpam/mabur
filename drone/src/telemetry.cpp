@@ -116,6 +116,7 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.air_shed_drops = saturate<uint16_t>(in.air_shed_drops);
   t.channel = in.channel;
   t.hop_epoch = in.hop_epoch;
+  t.rec_status = in.rec_status;
   return t;
 }
 

@@ -688,3 +688,36 @@ the measured-worse arm of `docs/rcf-uplink-loss-findings-2026-08-14.md`
 sideport shows `drone.radio.rx`, the drone `stats:` line keeps
 `txq_drop=0`, and `streams[*].recovered` sits near 0/s on a clean bench
 (it read 0.2–0.3/s blind).
+
+## 2026-09-26 RC_VERSION 11 (VTX onboard SD recorder)
+
+`RC_VERSION` 10 → 11: the RCF gains the one-byte `rec` wish and `Telem`
+gains `rec_status` (`docs/vtx-recorder.md`). This is a flag day like every
+bump. Between the two swaps there is no control link and no video. Finish
+the deploy.
+
+**Order is binary first, then config.** This reverses the usual
+config-before-binary rule, and the reason is the direction of the new keys.
+The new `maburd` boots without `[record]` (recorder disabled, presses
+report Disabled), but an old `maburd` refuses the unknown `[record]`
+section and crash-loops. The same holds for `maburplay` and
+`dvr.target`. So:
+
+1. Drone: `df -h /` (keep one rollback: `maburd.pre-vtxrec`), stop
+   `S00mabur` in its own ssh call, and wait until no process with comm
+   `maburd` remains in `/proc`. Swap the binary, save
+   `/etc/mabur.toml.pre-vtxrec`, append the `[record]` block from
+   `bundle/mabur.default.toml`, then start with `setsid`.
+2. GS: stop `S96maburgs`, swap `maburgs` and `maburplay` (keeping
+   `.pre-vtxrec` copies), add `target = "gs" | "vtx" | "both"` under
+   `[dvr]` in `/etc/maburplay.toml` (keeping `.pre-vtxrec`), then start
+   `S96maburgs` and restart `S97maburplay`.
+
+Verify: the drone log has
+`[record] ch1 … bound before the link (idle)` before the link comes up.
+The sideport carries `drone.rec`. After one press and about 5 s, the
+drone log shows `rec: recording -> /mnt/mmcblk0p1/record-NNNN.mp4`. GS
+`lat.log` `enc` still reads 7/8. `ausniff` is clean. Rollback is paired
+per device: `maburd.pre-vtxrec` + `mabur.toml.pre-vtxrec`,
+`maburgs.pre-vtxrec` + `maburplay.pre-vtxrec` +
+`maburplay.toml.pre-vtxrec`, on both ends together.

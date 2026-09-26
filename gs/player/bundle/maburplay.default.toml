@@ -11,19 +11,21 @@ screen_mode = "1920x1080@60"        # display resolution and refresh rate
 # Video recorder (DVR).
 [dvr]
 autostart   = false        # true = record from the start; false = wait for the record button ([input.rec])
-dir         = "/media/dvr"
-fragment_ms = 1000
+dir         = "/media/dvr"   # where recordings are saved
+fragment_ms = 1000         # recording is saved in pieces this long, so a power cut loses at most this much
 mode        = "burned"     # "raw" = video exactly as received; "burned" = re-encoded with the OSD drawn in
+target      = "gs"         # where the record button records: "gs" = here, "vtx" = the drone's SD card, "both"
 
+# Recording settings for mode = "burned".
 [dvr.burned]
 bitrate_kbps = 8000
-fps_cap      = 60
+fps_cap      = 60          # highest recorded frame rate
 
 # Flight-controller OSD (from the drone, relayed by maburgs).
 [osd]
 enable   = true
 port     = 14560           # must match maburgs' msp.out.port
-font     = "/usr/local/share/mabur/font_btfl.mfont"
+font     = "/usr/local/share/mabur/font_btfl.mfont"   # OSD font file
 scale    = "sharp"         # "sharp" = crisp pixels; "fill" = stretch to fill the screen
 stale_ms = 5000            # hide the OSD after this long without updates; 0 = never
 
@@ -31,7 +33,7 @@ stale_ms = 5000            # hide the OSD after this long without updates; 0 = n
 [osd.gs]
 enable   = true
 port     = 8302            # must match a [[stats.out]] port in maburgs.toml
-font     = "/usr/local/share/mabur/gs_osd.gfont"
+font     = "/usr/local/share/mabur/gs_osd.gfont"      # stats font file
 style    = "compact"       # "compact" = two rows along the bottom; "essential" = four corners with colours and bars
 stale_ms = 3000            # dim the stats after this long without updates
 

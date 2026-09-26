@@ -114,7 +114,10 @@ enum class GsBarField {
 
 class GsCompactBar final : public GsLayer {
  public:
-  explicit GsCompactBar(GsFont& font) : font_(font) {}
+  // rec_target sizes the kRec box (gs_layer.h rec_worst); the default is
+  // dvr.target's own default, "gs".
+  explicit GsCompactBar(GsFont& font, RecTarget rec_target = RecTarget::kGs)
+      : font_(font), rec_target_(rec_target) {}
 
   // Picks the LARGEST baked atlas whose worst-case rows (kMaxCards cards,
   // every value at the magnitude its clamp allows) both fit between the
@@ -146,6 +149,7 @@ class GsCompactBar final : public GsLayer {
   }
   DirtyRect debug_field_box(GsBarField id) const;
   int debug_atlas_px() const;
+  int debug_rec_atlas_px() const;  // the REC indicator's size, 0 before layout()
   // Width of worst-case row `row` in `a`, boxes included -- exactly what
   // layout() compares against the space between the insets. Exposed so the
   // size-choice test can assert "no larger baked size fits" by the same
@@ -165,7 +169,10 @@ class GsCompactBar final : public GsLayer {
   // Public (not just an implementation detail of layout()) so a worst-case
   // format change -- like the 40 MHz rung's width suffix -- can be pinned
   // by its own test rather than only indirectly through worst_row_width.
-  static std::string worst_case(GsBarField id, int n_cards);
+  // kRec's worst case depends on dvr.target (gs_layer.h rec_worst); every
+  // other field ignores rec_target.
+  static std::string worst_case(GsBarField id, int n_cards,
+                                RecTarget rec_target = RecTarget::kGs);
   // The number of card slots the line is currently drawn for, -1 before the
   // first update() has reconciled one.
   int debug_cards() const { return n_cards_; }
@@ -208,8 +215,15 @@ class GsCompactBar final : public GsLayer {
   const Field& f_(GsBarField id) const { return fields_[(size_t)id]; }
 
   GsFont& font_;
+  RecTarget rec_target_;
   Field fields_[(size_t)GsBarField::kCount];
   const MaskAtlas* atlas_ = nullptr;
+  // The REC corner item's atlas: the nearest baked size to half of atlas_
+  // (2026-09-26). Every other field shares atlas_.
+  const MaskAtlas* rec_atlas_ = nullptr;
+  const MaskAtlas* atlas_for_(GsBarField id) const {
+    return id == GsBarField::kRec && rec_atlas_ ? rec_atlas_ : atlas_;
+  }
   DirtyRect bounds_{0, 0, 0, 0};
   int screen_w_ = 0, gap_ = 0, inset_x_ = 0;
   // Baseline of each row, absolute within the surface. Row 1 is the bottom

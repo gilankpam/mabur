@@ -476,6 +476,7 @@ def render_rows_compact(model, wall, width):
             f"radio rx {_f(rx_s, 4)}   "
             f"shed {(_shed_cell(drone) or '--').ljust(4)}"
             f"   {'LP' if drone.get('low_power') else '  '}"
+            f"   {_rec_cell(drone) or ''}"
         )
 
     # --- link-wide residual (per-stream delivery now lives on the dec lines)
@@ -639,6 +640,24 @@ def _shed_cell(drone):
     return "AIR" if drone.get("air_shed") else "off"
 
 
+_REC_ERR = {1: "OFF", 2: "NOSLOT", 3: "NOCARD", 4: "NOMNT", 5: "FULL", 6: "WRERR"}
+
+
+def _rec_cell(drone):
+    """VTX onboard recorder cell from drone.rec (spec 2026-09-26):
+    "VREC" recording, "VREC!<why>" error, None otherwise or when the key
+    predates the recorder."""
+    rec = drone.get("rec")
+    if not isinstance(rec, dict):
+        return None
+    st = rec.get("state")
+    if st == 1:
+        return "VREC"
+    if st == 2:
+        return "VREC!" + _REC_ERR.get(rec.get("err"), "?")
+    return None
+
+
 def panel_drone(model, wall):
     d = model.d or {}
     link = d.get("link") or {}
@@ -794,6 +813,11 @@ def panel_drone(model, wall):
         line8 += "    LP"
         idx = line8.rindex("LP")
         spans8.append((idx, 2, "warn"))
+    rec_cell = _rec_cell(drone)
+    if rec_cell:
+        line8 += f"    {rec_cell}"
+        idx = line8.rindex(rec_cell)
+        spans8.append((idx, len(rec_cell), "bad" if rec_cell.startswith("VREC!") else "good"))
     body.append((line8, spans8))
 
     return _panel("DRONE", body)

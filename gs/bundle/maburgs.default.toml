@@ -6,7 +6,7 @@
 
 [radio]
 channel = 136              # home channel: must match the drone's radio.channel
-width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz rungs of the ladder below
+width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
 
 # Boot-time channel scan. While waiting for the drone, a spare card measures
@@ -39,41 +39,43 @@ home_margin      = 20       # leave home only if a candidate is at least this mu
 
 [fec]
 symbol_size = 332          # must match the drone
-seq_horizon = 512
+seq_horizon = 512          # how far back (in symbols) a missing piece can still be repaired
 
 [link]
 vtx_id                 = 1      # must match the drone
 feedback_ms            = 50     # how often link feedback is sent to the drone
 rcf_slot_hold_ms       = 30     # time feedback so it doesn't collide with incoming video; 0 = off
 arrival_guard_syms     = 192    # how late a packet may arrive before it counts as lost
-beacon_keepalive_ms    = 1000
+beacon_keepalive_ms    = 1000   # while linked, re-announce the ground station to the drone this often
 static_mcs             = -1     # -1 = adaptive link; 0..7 pins a fixed MCS (bench testing)
 static_bw              = 20     # width used with static_mcs; 40 needs radio.width = 40
 max_mcs                = 5      # highest MCS the adaptive link may use
 
-# Adaptive link: the ladder steps DOWN a rung when loss goes over down_util
-# for confirm_ms, and UP when it stays under up_util for clean_ms (and the
-# next rung passes its probe, see [link.probe]).
-down_util              = 0.35
-up_util                = 0.15
+# Adaptive link: the link speed is chosen from a ladder of rungs (listed
+# below). It steps DOWN a rung when loss goes over down_util for confirm_ms,
+# and UP when loss stays under up_util for clean_ms (and the next rung passes
+# its probe, see [link.probe]).
+down_util              = 0.35   # loss level that triggers a step down (0.35 = 35 % of the repair capacity used)
+up_util                = 0.15   # loss must stay under this to step up
 confirm_ms             = 250
 clean_ms               = 1500
 probation_ms           = 3000   # after stepping up, a quick fall back counts as a failed promote
 penalty_base_ms        = 5000   # a failed rung is blocked this long, doubling on repeats...
 penalty_max_ms         = 10000  # ...up to this
 hold_after_down_ms     = 0      # wait after stepping down before stepping up again
-min_between_changes_ms = 150
+min_between_changes_ms = 150    # minimum time between any two rung changes
 feedback_timeout_ms    = 1000   # no link reports this long = fall to the most robust rung
 starved_confirm_ms     = 300    # no video this long = fall to the most robust rung
 
-# Steady-state check on the enhance-layer stream.
-s3_demote              = true
-s3_down_util           = 0.15
+# A second loss check on the droppable enhance-layer frames, which show
+# trouble earlier than the base layer.
+s3_demote              = true   # step down on enhance-layer loss too
+s3_down_util           = 0.15   # enhance-layer loss level that triggers a step down
 s3_min_syms            = 50     # below this much traffic, a window tells us nothing
 s3_settle_ms           = 300    # ignore this check just after a rung change
 
 static_overhead_base   = 0.5    # FEC overhead with static_mcs only
-static_overhead_enh    = 0.5
+static_overhead_enh    = 0.5    # ...and on the enhance layer
 
 # Ladder rungs, from most robust to fastest. Each rung is an MCS, a channel
 # width (20 or 40 MHz; 40 needs radio.width = 40 here and on the drone) and
@@ -119,27 +121,28 @@ rung_offset  = 1           # probe this many rungs above the current one
 max_util     = 0.05        # loss allowed on the probe (0.05 = none at 60 probes/s)
 clean_bodies = 90          # clean probes needed in a row (1.5 s at 60 fps)
 min_syms     = 16          # keep below 2x the drone's low_power.fps, or disarmed probes never pass
-silence_ms   = 500
-pin_mcs      = -1
+silence_ms   = 500         # no probe results this long = the probe counts as failed
+pin_mcs      = -1          # -1 = normal; 0..7 always probes this MCS (bench testing)
 
 # Fade handling: step down early when the signal is fading, before loss hits.
 [link.fade]
 cascade    = true          # after a loss-driven step down, react faster for hold_ms
 predict    = true          # step down on a sudden RSSI + SNR drop
-hold_ms    = 2500
-confirm_ms = 100
+hold_ms    = 2500          # how long the faster reaction lasts
+confirm_ms = 100           # loss must persist this long to step down during it
 rssi_db    = 14.0          # RSSI drop that counts as a fade...
 snr_db     = 6.0           # ...together with this SNR drop...
 trigger_ms = 300           # ...sustained this long
 min_rung   = 2             # never predict-step below this rung
 
+# Per-rung link history shown in the stats (it does not steer the link).
 [link.rung_stats]
-half_life_samples = 600
+half_life_samples = 600    # samples for old data to count half (600 = about 30 s)
 
 [video]
 frame_gap_timeout_ms     = 50   # how long to wait for a missing piece of a frame
 frame_gap_timeout_max_ms = 100  # the same, upper limit at slow link rates
-frame_lookahead          = 8
+frame_lookahead          = 8    # frames that may arrive ahead of a stuck one before it is given up
 
 # Flight-controller OSD relayed from the drone, forwarded to maburplay.
 [msp]
@@ -154,7 +157,7 @@ port = 14560               # must match maburplay's osd.port
 # Link statistics, sent as UDP JSON.
 [stats]
 enable      = true
-interval_ms = 200
+interval_ms = 200          # how often stats are sent
 
 [[stats.out]]
 host = "127.0.0.1"
@@ -169,15 +172,15 @@ port = 8302                # maburplay's on-screen link stats (osd.gs.port)
 enable     = true
 path       = "/dev/shm/mabur-au"    # must match maburplay's ring_path
 socket     = "/run/mabur-au.sock"   # must match maburplay's socket
-slot_kb    = 512
-slot_count = 16
+slot_kb    = 512                    # largest frame that fits, in KB
+slot_count = 16                     # frames buffered
 
 # Detailed per-session logs for troubleshooting; off by default.
 [debug_log]
 enable        = false
 dir           = "/media/dvr/log"
-ctl_period_ms = 50
-rung_period_s = 10
+ctl_period_ms = 50            # link-state log interval
+rung_period_s = 10            # per-rung summary log interval
 
 # In-flight channel hop: when the current channel goes bad, move the link to
 # a cleaner candidate from [radio.scan]. A spare card keeps "scouting" the
@@ -195,7 +198,7 @@ confirm_ms           = 1000   # drone video must appear on the new channel withi
 confirm_extend_ms    = 3000   # wait up to this instead while the current channel is jammed; 0 = off
 verify_ms            = 1000   # after arriving, watch the new channel this long
 cooldown_ms          = 2000   # minimum time between hops
-max_hops_per_min     = 4
+max_hops_per_min     = 4      # hop limit
 backoff_ms           = 30000  # a channel that proved bad is avoided this long (doubles on repeats)
 one_card_repeats     = 5      # single card: send the hop order this many times before retuning
 
@@ -206,9 +209,9 @@ recovered_x          = 3.0    # FEC repairs this many times above normal
 recovered_min        = 8      # ...and at least this many repairs; 0 = off
 weak_rssi_dbm        = -78    # below this signal AND weak_snr_db, loss is blamed on range, not interference
 weak_snr_db          = 12
-fading_drop_db       = 6
+fading_drop_db       = 6      # signal this much below its recent level = fading, not interference
 foreign_pps          = 50     # other transmitters' packets per second
 fa_pps               = 100    # false detections per second (non-Wi-Fi noise)
-busy_dbm             = -83    # energy level that counts the air as busy (must be one of the hardware's steps)
+busy_dbm             = -83    # energy level that counts the air as busy: -104 to -74 in steps of 3
 blocked_pct          = 50     # % of time the air is busy with others = channel blocked
 starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)

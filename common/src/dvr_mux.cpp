@@ -1,10 +1,12 @@
-#include "dvr_mux.h"
+#include "mabur/dvr_mux.h"
 
 #include <cstring>
+#include <utility>
+#include <unistd.h>
 
-#include "hevc_params.h"
+#include "mabur/hevc_params.h"
 
-namespace maburplay {
+namespace mabur {
 namespace {
 
 // Small big-endian box builder. Mirrors the writer style used elsewhere
@@ -73,17 +75,19 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
     std::fclose(f_);
     f_ = nullptr;
   }
-  f_ = std::fopen(path.c_str(), "wb");
-  if (!f_) return false;
 
-  // Per-FILE state, reset on every open: the record button re-opens this
-  // mux for each new recording. Without this, pending_ carries the
-  // previous file's queued samples into the new file's first fragment and
-  // the PTS unwrap keeps the old origin. samples()/fragments() therefore
-  // mean "this file" -- which is what both consumers want: --oneshot only
-  // ever sees one file, and RecTracker reads a count returning to 0 as
-  // ARMED-again. They are NOT cleared in close(), so rec_stop() can still
-  // report the sample count of the file it just sealed.
+  // Per-FILE state, reset on every open() call -- success or not. The
+  // record button re-opens this mux for each new recording, so without
+  // this pending_ would carry the previous file's queued samples into the
+  // new file's first fragment and the PTS unwrap would keep the old
+  // origin. samples()/fragments() therefore mean "this file" -- which is
+  // what both consumers want: --oneshot only ever sees one file, and
+  // RecTracker reads a count returning to 0 as ARMED-again. They are NOT
+  // cleared in close(), so rec_stop() can still report the sample count of
+  // the file it just sealed. Resetting before the fopen attempt (rather
+  // than after) matters for ok()/bytes_written(): a failed reopen (bad
+  // path, missing directory, card gone) must leave both reporting "this
+  // (failed) open", not the previous file's success.
   pending_.clear();
   samples_ = 0;
   fragments_ = 0;
@@ -92,6 +96,14 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
   last_pts64_ = 0;
   fragment_start_pts_ = 0;
   last_dur_us_ = 16667;
+  bytes_written_ = 0;
+  ok_ = true;
+
+  f_ = std::fopen(path.c_str(), "wb");
+  if (!f_) {
+    ok_ = false;
+    return false;
+  }
 
   width_ = width;
   height_ = height;
@@ -320,9 +332,10 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
     b.end(moov_at);
   }
 
-  size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
-  std::fflush(f_);
-  return n == b.buf.size();
+  const size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  bytes_written_ += n;
+  if (n != b.buf.size() || std::fflush(f_) != 0) ok_ = false;
+  return ok_;
 }
 
 uint64_t DvrMux::unwrap_pts(uint32_t pts_us) {
@@ -349,6 +362,10 @@ uint64_t DvrMux::unwrap_pts(uint32_t pts_us) {
 }
 
 void DvrMux::write_sample(const uint8_t* au, size_t n, uint32_t pts_us, bool key) {
+  write_sample_prefixed(annexb_to_length_prefixed(au, n), pts_us, key);
+}
+
+void DvrMux::write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us, bool key) {
   uint64_t pts64 = unwrap_pts(pts_us);
 
   bool cut = false;
@@ -364,7 +381,7 @@ void DvrMux::write_sample(const uint8_t* au, size_t n, uint32_t pts_us, bool key
   if (pending_.empty()) fragment_start_pts_ = pts64;
 
   Sample s;
-  s.data = annexb_to_length_prefixed(au, n);
+  s.data = std::move(sample);
   s.pts64 = pts64;
   s.key = key;
   pending_.push_back(std::move(s));
@@ -452,22 +469,46 @@ void DvrMux::flush_fragment() {
   b.buf[data_offset_pos + 2] = static_cast<uint8_t>((data_offset >> 8) & 0xFF);
   b.buf[data_offset_pos + 3] = static_cast<uint8_t>(data_offset & 0xFF);
 
-  size_t mdat_at = b.begin("mdat");
-  for (auto& s : pending_) b.bytes(s.data);
-  b.end(mdat_at);
+  // Only the mdat HEADER goes into the box buffer: the sample payloads are
+  // streamed to the file straight from pending_ below. Copying them into
+  // `b` first doubled the fragment's peak memory for nothing -- a 1 s
+  // fragment at the drone recorder's bitrate is megabytes, on a SoC that
+  // counts them. Same bytes on disk either way.
+  uint64_t mdat_size = 8;
+  for (const auto& s : pending_) mdat_size += s.data.size();
+  b.u32(static_cast<uint32_t>(mdat_size));
+  b.fourcc("mdat");
 
-  std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
-  std::fflush(f_);
+  size_t want = b.buf.size();
+  size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  for (const auto& s : pending_) {
+    want += s.data.size();
+    n += std::fwrite(s.data.data(), 1, s.data.size(), f_);
+  }
+  bytes_written_ += n;
+  // The fflush still ends the fragment: once it returns (and the caller's
+  // sync()), the whole moof+mdat is on disk.
+  if (n != want || std::fflush(f_) != 0) ok_ = false;
 
   pending_.clear();
 }
 
-void DvrMux::close() {
+void DvrMux::close(bool durable) {
   flush_fragment();
   if (f_) {
+    if (durable) (void)sync();
     std::fclose(f_);
     f_ = nullptr;
   }
 }
 
-}  // namespace maburplay
+bool DvrMux::sync() {
+  if (!f_) return false;
+  if (std::fflush(f_) != 0 || ::fsync(fileno(f_)) != 0) {
+    ok_ = false;
+    return false;
+  }
+  return true;
+}
+
+}  // namespace mabur

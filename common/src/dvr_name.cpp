@@ -1,11 +1,11 @@
-#include "dvr_name.h"
+#include "mabur/dvr_name.h"
 
 #include <algorithm>
 #include <cstdio>
 
 #include <dirent.h>
 
-namespace maburplay {
+namespace mabur {
 
 std::string DvrNamer::next(const std::string& dir) {
   // Best-effort scan of a directory maburplay does not own exclusively
@@ -32,4 +32,4 @@ std::string DvrNamer::next(const std::string& dir) {
   return dir + "/" + buf;
 }
 
-}  // namespace maburplay
+}  // namespace mabur

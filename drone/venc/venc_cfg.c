@@ -34,11 +34,10 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->superframe_p_pct = 0; /* no P-frame ceiling */
 	/* Error-resilience structure. These reproduce, at 1080p60, exactly
 	 * what the deleted "rally" preset expanded to: its "fast" intra mode
-	 * targeted a 150 ms sweep, which is ceil(34 CTU rows / 9 frames) = 4
-	 * rows per P-frame at QP 36, over 1:1 SVC-T with prediction on. The
-	 * rows figure is now a raw count, so unlike the preset it does NOT
-	 * re-derive itself if venc.size changes — set it explicitly there. */
-	cfg->intra_refresh_rows = 4;
+	 * targeted a 150 ms sweep: 9 frames, ceil(34 CTU rows / 9) = 4 rows
+	 * per P-frame at QP 36, over 1:1 SVC-T with prediction on. Being a
+	 * sweep length, it re-derives its rows at any venc.size. */
+	cfg->intra_refresh_frames = 9;
 	cfg->intra_refresh_qp = 36;
 	cfg->ref_base = 1;
 	cfg->ref_enhance = 1;
@@ -51,14 +50,19 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->snapshot_quality = 80;
 }
 
-/* H.265 CTU is 32x32, so a 1080-line picture is 34 CTU rows.  The upper
- * bound on venc.intra_refresh_rows (a stripe cannot be wider than the
- * picture) and the divisor for sweep length.  Shared by the config loader,
- * which rejects an out-of-range rows value at boot, and the pipeline,
- * which reports the derived sweep in its boot log. */
+/* H.265 CTU is 32x32, so a 1080-line picture is 34 CTU rows. */
 uint16_t venc_cfg_ctu_rows(uint16_t height)
 {
 	return (uint16_t)((height + 31u) / 32u);
+}
+
+uint16_t venc_cfg_intra_rows(uint16_t height, uint16_t frames)
+{
+	uint16_t total = venc_cfg_ctu_rows(height);
+
+	if (frames == 0 || total == 0)
+		return 0;
+	return (uint16_t)((total + frames - 1u) / frames);
 }
 
 uint32_t venc_superframe_p_bytes(unsigned pct, unsigned kbps, unsigned fps)

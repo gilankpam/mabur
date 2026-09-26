@@ -57,6 +57,74 @@ std::string fmt_clock(int seconds) {
   return b;
 }
 
+// --- REC field text -------------------------------------------------------
+
+const char* const kRecWorst = "\xE2\x97\x8F REC GS FAULT VTX NO CARD";
+
+bool parse_rec_target(const std::string& s, RecTarget* out) {
+  RecTarget t;
+  if (s == "gs") t = RecTarget::kGs;
+  else if (s == "vtx") t = RecTarget::kVtx;
+  else if (s == "both") t = RecTarget::kBoth;
+  else return false;
+  if (out) *out = t;
+  return true;
+}
+
+const char* rec_worst(RecTarget t) {
+  switch (t) {
+    // gs_target, VTX leg always kNone: "REC mm:ss" or "REC FAULT", both
+    // eleven glyphs -- exactly the box the field had before the VTX
+    // recorder existed.
+    case RecTarget::kGs:   return "\xE2\x97\x8F REC FAULT";
+    // GS leg ignored: "REC VTX mm:ss" (15) or "REC VTX <problem>", widest
+    // "VTX NO CARD" (17). A recording VTX carries no problem text.
+    case RecTarget::kVtx:  return "\xE2\x97\x8F REC VTX NO CARD";
+    case RecTarget::kBoth: break;
+  }
+  return kRecWorst;
+}
+
+RecText rec_text(const RecState& r) {
+  RecText out;
+  const bool gs_rec = r.gs_target && r.kind == RecState::Kind::kRecording;
+  const bool gs_bad = r.gs_target && r.kind == RecState::Kind::kFault;
+  const bool vtx_rec = r.vtx == RecState::Vtx::kRecording;
+  const bool vtx_shown = r.vtx != RecState::Vtx::kNone;
+  const char* vtx_bad = nullptr;
+  switch (r.vtx) {
+    case RecState::Vtx::kWait:   vtx_bad = "VTX WAIT"; break;
+    case RecState::Vtx::kNoCard: vtx_bad = "VTX NO CARD"; break;
+    case RecState::Vtx::kFull:   vtx_bad = "VTX FULL"; break;
+    case RecState::Vtx::kFault:  vtx_bad = "VTX FAULT"; break;
+    case RecState::Vtx::kOff:    vtx_bad = "VTX OFF"; break;
+    case RecState::Vtx::kNone:
+    case RecState::Vtx::kRecording: break;
+  }
+  // Who is recording. A GS-only setup (vtx kNone) keeps the bare
+  // "REC mm:ss" it always had.
+  std::string who;
+  if (gs_rec && vtx_rec) who = "GS+VTX";
+  else if (gs_rec) who = vtx_shown ? "GS" : "";
+  else if (vtx_rec) who = "VTX";
+  // What is wrong, GS first.
+  std::string bad;
+  if (gs_bad) bad = vtx_shown ? "GS FAULT" : "FAULT";
+  if (vtx_bad) bad += (bad.empty() ? "" : " ") + std::string(vtx_bad);
+
+  if (gs_rec || vtx_rec) {
+    out.text = std::string(kDotFilled) + " REC " + (who.empty() ? "" : who + " ") +
+               fmt_clock(gs_rec ? r.elapsed_s : r.vtx_elapsed_s) +
+               (bad.empty() ? "" : " " + bad);
+    out.rgb = bad.empty() ? tok::kTextPrimary : tok::kStatusCaution;
+    out.aux = 1;
+  } else if (!bad.empty()) {
+    out.text = std::string(kDotFilled) + " REC " + bad;
+    out.rgb = tok::kStatusCaution;
+  }
+  return out;
+}
+
 // --- style selection ----------------------------------------------------
 
 bool parse_gs_style(const std::string& s, GsStyle* out) {
@@ -65,12 +133,13 @@ bool parse_gs_style(const std::string& s, GsStyle* out) {
   return false;
 }
 
-std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font) {
+std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font,
+                                       RecTarget rec_target) {
   switch (style) {
-    case GsStyle::kCompact:   return std::make_unique<GsCompactBar>(font);
+    case GsStyle::kCompact:   return std::make_unique<GsCompactBar>(font, rec_target);
     case GsStyle::kEssential: break;
   }
-  return std::make_unique<GsOverlay>(font);
+  return std::make_unique<GsOverlay>(font, rec_target);
 }
 
 const uint32_t* gs_palette_seeds(size_t* n) {

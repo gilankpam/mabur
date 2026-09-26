@@ -61,6 +61,13 @@ struct GsSnapshot {
   // 15 fps) because the FC reports DISARMED. False when the drone block is
   // null/absent (no telemetry yet, older maburgs) or the key is not a bool.
   bool low_power = false;
+  // drone.rec (spec 2026-09-26 vtx-recorder): the drone recorder's state
+  // (0 off, 1 recording, 2 error) and error code. Empty when the drone
+  // block is null/absent or the keys are missing or mistyped.
+  std::optional<int> rec_state;
+  std::optional<int> rec_err;
+  // drone.tlm_age_ms: how old the drone's last Telem was at export.
+  std::optional<int> drone_tlm_age_ms;
   // drone.sys.soc_temp_c: the drone SoC temperature the 1 Hz Telem carries
   // (int8, -128 = unavailable). Empty when the drone block is null/absent,
   // the key is missing or mistyped, or it reads the sentinel -- the compact

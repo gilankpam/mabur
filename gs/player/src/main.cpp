@@ -18,23 +18,25 @@
 
 #include "au_ring.h"
 #include "colortrans.h"  // ColorTrans, build_cubic_lut, LutAxis (docs/colortrans.md)
-#include "dvr_mux.h"
-#include "dvr_name.h"
+#include "mabur/dvr_mux.h"
+#include "mabur/dvr_name.h"
 #include "gs_font.h"
 #include "gs_metrics.h"
 #include "gs_layer.h"
 #include "gs_overlay.h"
 #include "osd_compose.h"
 #include "gs_source.h"
-#include "hevc_params.h"
+#include "mabur/hevc_params.h"
 #include "mabur/frame_wire.h"
 #include "osd_font.h"
 #include "osd_raster.h"
 #include "osd_source.h"
 #include "player_config.h"
 #include "rec_button.h"
+#include "rec_control.h"  // maburgs::kRecControlPort (Task 7)
 #include "ring_client.h"
 #include "video_backend.h"
+#include "vtx_rec_client.h"  // sends the button's VTX wish to maburgs (Task 8)
 #include "splash_image.h"  // startup splash asset + cover-fit painter
 
 #ifdef MABUR_PLAYER_HW
@@ -171,7 +173,7 @@ int run_mux_annexb(const std::string& in_path, const std::string& out_path) {
 
   std::vector<std::vector<uint8_t>> aus;
   std::vector<uint8_t> cur;
-  for (const maburplay::NalView& nal : maburplay::split_nals(data.data(), data.size())) {
+  for (const mabur::NalView& nal : mabur::split_nals(data.data(), data.size())) {
     if (nal.type == 35 && !cur.empty()) {  // AUD: starts a new AU
       aus.push_back(std::move(cur));
       cur.clear();
@@ -184,14 +186,14 @@ int run_mux_annexb(const std::string& in_path, const std::string& out_path) {
   }
   if (!cur.empty()) aus.push_back(std::move(cur));
 
-  maburplay::HevcParams params;
-  maburplay::DvrMux dvr;
+  mabur::HevcParams params;
+  mabur::DvrMux dvr;
   bool dvr_open = false;
   uint32_t pts_us = 0;
   const maburplay::BackendCfg bcfg;  // 1920x1080 default; tkhd/stsd metadata
                                       // only -- decode uses the SPS, not this.
   for (const std::vector<uint8_t>& au : aus) {
-    const bool key = maburplay::au_is_irap(au.data(), au.size());
+    const bool key = mabur::au_is_irap(au.data(), au.size());
     if (key) params.feed(au.data(), au.size());
     if (!dvr_open && params.complete()) {
       dvr_open = dvr.open(out_path, params.hvcc(), bcfg.width, bcfg.height);
@@ -322,7 +324,7 @@ int run_gs_render(const std::string& snap_path, const std::string& out_path,
 std::string dvr_filename(const std::string& dir) {
   // Main-loop-thread only (the ring sink and rec_start's
   // start_burn_if_needed), so a plain static needs no synchronisation.
-  static maburplay::DvrNamer namer;
+  static mabur::DvrNamer namer;
   return namer.next(dir);
 }
 
@@ -813,9 +815,14 @@ int main(int argc, char** argv) {
       // Three, not one: two DRM buffers plus the burned DVR's index map, all
       // three needing their own record of what they already show. See
       // osd_compose.h for why a shared shadow strobes.
-      composer.set_gs(maburplay::make_gs_layer(gs_style, gs_font),
-                      maburplay::make_gs_layer(gs_style, gs_font),
-                      maburplay::make_gs_layer(gs_style, gs_font));
+      // dvr.target sizes the REC field (gs_layer.h rec_worst): "gs" keeps
+      // the pre-VTX-recorder box. player_config already rejected anything
+      // parse_rec_target would.
+      maburplay::RecTarget rec_target = maburplay::RecTarget::kGs;
+      maburplay::parse_rec_target(cfg.dvr.target, &rec_target);
+      composer.set_gs(maburplay::make_gs_layer(gs_style, gs_font, rec_target),
+                      maburplay::make_gs_layer(gs_style, gs_font, rec_target),
+                      maburplay::make_gs_layer(gs_style, gs_font, rec_target));
       std::fprintf(stderr,
                    "maburplay: gs osd on udp 127.0.0.1:%d font=%s style=%s "
                    "stale_ms=%d\n",
@@ -841,12 +848,19 @@ int main(int argc, char** argv) {
   // ring and no DRM -- see tests/test_gs_metrics.cpp.
   maburplay::AuJitter gs_jitter;
   maburplay::RecTracker gs_rec;
+  maburplay::VtxRecTracker vtx_trk;
   bool statvfs_warned = false;
 
   // Whether a recording is running RIGHT NOW. Seeded from dvr.autostart;
   // the record button flips it. Declared here because start_burn_if_needed
   // below reads it.
   bool rec_on = cfg.dvr.autostart;
+  // dvr.target (spec 2026-09-26): which recorders the button drives.
+  const bool rec_gs = cfg.dvr.target != "vtx";
+  const bool rec_vtx = cfg.dvr.target != "gs";
+  maburplay::VtxRecClient vtx_rec;
+  if (!vtx_rec.open(maburgs::kRecControlPort))
+    std::fprintf(stderr, "maburplay: rec: VTX wish socket failed -- the drone recorder will not follow the button\n");
   // dvr.mode "burned": the recording is produced by re-encoding decoded
   // frames with the OSD composited in by the hardware encoder, so the
   // BurnRecorder owns the file and the raw remux in the ring sink below is
@@ -909,7 +923,7 @@ int main(int argc, char** argv) {
   };
 
   auto start_burn_if_needed = [&]() {
-    if (burn || !burned_mode || !rec_on || !presenter) return;
+    if (burn || !burned_mode || !rec_on || !rec_gs || !presenter) return;
     auto rec = std::make_unique<maburplay::BurnRecorder>();
     maburplay::BurnCfg bc;
     // Palette (and with it the encoder's OSD region) whenever EITHER overlay
@@ -962,7 +976,9 @@ int main(int argc, char** argv) {
   // first record start does not pay for it on the main loop.
   if (burned_mode && presenter && (osd_raster || composer.gs_present())) burn_palette();
   start_burn_if_needed();
-  if (rec_on && burned_mode && !burn) {
+  // rec_gs: with dvr.target "vtx" the GS recorder is never started, so
+  // its absence is not news.
+  if (rec_on && rec_gs && burned_mode && !burn) {
     if (presenter) {
       // A real recorder failure: BurnRecorder::start() already logged why.
       std::fprintf(stderr,
@@ -976,7 +992,7 @@ int main(int argc, char** argv) {
     }
   }
 #else
-  if (rec_on && burned_mode) {
+  if (rec_on && rec_gs && burned_mode) {
     std::fprintf(stderr,
                  "maburplay: dvr.mode \"burned\" needs the hardware build (mpp encoder); "
                  "NOTHING is being recorded\n");
@@ -1056,8 +1072,8 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  maburplay::HevcParams params;
-  maburplay::DvrMux dvr;
+  mabur::HevcParams params;
+  mabur::DvrMux dvr;
   bool dvr_open = false;
   // Latched so the GS overlay can tell "no file yet" (armed) from "the file
   // could not be created" (fault). Nothing else needs the distinction.
@@ -1070,7 +1086,12 @@ int main(int argc, char** argv) {
     if (rec_on) return;
     rec_on = true;
     gs_rec.reset();  // the OSD clock counts THIS file
+    vtx_trk.reset();
     dvr_open_failed = false;
+    if (!rec_gs) {
+      std::fprintf(stderr, "maburplay: rec: START (vtx only)\n");
+      return;
+    }
 #ifdef MABUR_PLAYER_HW
     if (burned_mode) {
       start_burn_if_needed();
@@ -1099,6 +1120,10 @@ int main(int argc, char** argv) {
   auto rec_stop = [&]() {
     if (!rec_on) return;
     rec_on = false;
+    if (!rec_gs) {
+      std::fprintf(stderr, "maburplay: rec: STOP (vtx only)\n");
+      return;
+    }
     if (!burned_mode) {
       // Read BEFORE the close, and gated on dvr_open. samples() survives
       // close() and is only cleared by the next open(), so with a file in
@@ -1206,7 +1231,7 @@ int main(int argc, char** argv) {
         // slices whose references are not in the file. A no-op for the
         // first recording: params.feed() only runs on is_key, so
         // complete() cannot first become true anywhere but a key AU.
-        if (!dvr_open && params.complete() && is_key) {
+        if (!dvr_open && rec_gs && params.complete() && is_key) {
           const std::string path = dvr_filename(cfg.dvr.dir);
           dvr_open = dvr.open(path, params.hvcc(), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
           if (!dvr_open) {
@@ -1506,6 +1531,8 @@ int main(int argc, char** argv) {
         rec_start();
       }
     }
+    // Every iteration: sends on change, re-sends each second (VtxRecClient).
+    vtx_rec.tick(rec_on && rec_vtx, mono_ms());
     // Idle window: true when no release is due within the next 8 ms, so
     // the heavy 1 Hz blocks below (stats/statvfs, lat flush, OSD compose)
     // run clear of a release deadline. This REDUCES misses, it does not
@@ -1608,7 +1635,7 @@ int main(int argc, char** argv) {
           // rec_on, not burned_mode alone: a player deliberately stopped (or
           // never started -- autostart:false) has nothing to report here, and
           // saying otherwise would be a false alarm on every late display.
-          if (rec_on && burned_mode && !burn)
+          if (rec_on && rec_gs && burned_mode && !burn)
             std::fprintf(stderr,
                          "maburplay: display acquired but the burned recorder did not start -- "
                          "NOTHING is being recorded\n");
@@ -1740,6 +1767,20 @@ int main(int argc, char** argv) {
           }
         }
         gs_ps.rec = gs_rec.update(rin, now_ms);
+        {
+          // VTX leg (spec 2026-09-26) from the drone's drone.rec via maburgs.
+          const maburplay::GsSnapshot& snap = gs_src->snapshot();
+          maburplay::VtxRecTracker::Inputs vin;
+          vin.requested = rec_on && rec_vtx;
+          vin.fresh = gs_src->have_any() && !gs_src->stale(now_ms) && snap.drone_tlm_age_ms &&
+                      *snap.drone_tlm_age_ms <= static_cast<int>(maburplay::VtxRecTracker::kFreshMs);
+          vin.state = snap.rec_state;
+          vin.err = snap.rec_err;
+          const auto leg = vtx_trk.update(vin, now_ms);
+          gs_ps.rec.gs_target = rec_gs;
+          gs_ps.rec.vtx = leg.leg;
+          gs_ps.rec.vtx_elapsed_s = leg.elapsed_s;
+        }
 
       }
     }

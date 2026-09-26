@@ -108,6 +108,10 @@ class Actuator {
   // the channel numbers alone (all four can move us to home). Never null,
   // never freed -- always a string literal.
   virtual void retune(uint8_t ch, const char* reason) = 0;
+  // VTX onboard recorder (spec 2026-09-26): hand the operator's wish to the
+  // recorder. true = handed over (the recorder reports its own outcome in
+  // Telem::rec_status); RcAgent latches the wish only on true.
+  virtual bool set_record(bool on) = 0;
 };
 
 // Radio-side health signals sampled once per tick. thermal_delta is
@@ -314,6 +318,9 @@ class RcAgent {
   // Last fps the encoder ACCEPTED (0 = never), the fps twin of
   // last_bitrate_kbps_.
   int commanded_fps_ = 0;
+  // Last recorder wish the actuator TOOK (-1 = none yet). Only a KNOWN wish
+  // (rc::kRecKnown) is applied; link loss never touches it.
+  int rec_applied_ = -1;
   void intake_arm_state_(uint64_t now_ms);
 
   // Bitrate policy state.

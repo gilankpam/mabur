@@ -341,6 +341,10 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
         // Same-rate-fixed-pairs (Task 3): base/enh pair, same default/range.
         rung.overhead_base = get_num(rj, "overhead_base", 2.0, 0.1, 2.0, where);
         rung.overhead_enh = get_num(rj, "overhead_enh", 2.0, 0.1, 2.0, where);
+        // Operator rule: the base layer every frame depends on never gets
+        // less protection than the droppable enhance layer.
+        if (rung.overhead_base < rung.overhead_enh)
+          fail(where + ".overhead_base", "must be >= overhead_enh");
         parsed.push_back(rung);
       }
       c.link.ladder_cfg.ladder = parsed;

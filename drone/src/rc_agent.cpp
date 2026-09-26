@@ -565,6 +565,14 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       }
     }
 
+    // VTX recorder wish (spec 2026-09-26). Unknown (maburgs just restarted,
+    // no player message yet) leaves the recorder alone; only a received
+    // known-off stops it. Latched on success, retried on the next RCF.
+    if (r->rec & rc::kRecKnown) {
+      const int want = (r->rec & rc::kRecOn) ? 1 : 0;
+      if (want != rec_applied_ && act_.set_record(want == 1)) rec_applied_ = want;
+    }
+
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;
     state_ = State::LINKED;

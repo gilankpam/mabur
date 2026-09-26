@@ -59,6 +59,11 @@ class GsFont {
   // Atlas for exactly `px`, or nullptr. Deliberately exact: a near-miss
   // fallback would silently ship the wrong type size.
   const MaskAtlas* atlas(int px) const;
+  // The baked atlas closest to `px` (ties go to the larger), or nullptr
+  // when nothing is loaded. For a size DERIVED from another field's, such
+  // as the REC indicator at half the text size, where any nearby baked size
+  // is right and none is exact by design.
+  const MaskAtlas* nearest(int px) const;
   int n_sizes() const { return (int)atlases_.size(); }
 
  private:

@@ -91,6 +91,7 @@ struct TimedActuator : Actuator {
   bool set_fps(int) override { return true; }
   void request_idr() override { ++idr_calls; }
   void retune(uint8_t, const char*) override {}
+  bool set_record(bool) override { return true; }
 };
 
 Config make_cfg() {

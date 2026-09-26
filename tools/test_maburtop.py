@@ -154,6 +154,20 @@ class DronePanelTest(unittest.TestCase):
         del d["drone"]["congestion_shed"]
         self.assertIn("shed --", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
 
+    def test_vtx_rec_cell(self):
+        # drone.rec (spec 2026-09-26): state 1 = recording, 2 = error + code;
+        # a datagram from before the key existed renders nothing, not a crash.
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"], rec={"state": 1, "err": 0})
+        self.assertIn("VREC", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+        d["drone"] = dict(DGRAM["drone"], rec={"state": 2, "err": 3})
+        self.assertIn("VREC!NOCARD", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+        d["drone"] = dict(DGRAM["drone"], rec={"state": 0, "err": 0})
+        self.assertNotIn("VREC", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+        d["drone"] = dict(DGRAM["drone"])
+        d["drone"].pop("rec", None)
+        self.assertNotIn("VREC", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+
     def test_shed_cell_air_tier(self):
         # Air-clock admission gate (2026-09-06): AIR ranks below FS and
         # CONG, above off; None (recording predates congestion_shed) is

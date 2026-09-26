@@ -565,6 +565,12 @@ older material:
 - The preset path **clamped** an over-wide stripe to the picture height and
   warned on stderr; config now refuses to boot instead. No flown config ever
   hit the clamp.
+- **2026-09-27: `venc.intra_refresh_rows` → `venc.intra_refresh_frames`.**
+  The key is now the sweep length in frames; the pipeline derives rows/P as
+  ceil(CTU rows / frames) from the encoded height (so the boot-time bound
+  above is gone too). The encoder output is unchanged for the values in
+  use: rows 34 at 1080p = frames 1, rows 4 at 1080p = frames 9 (the
+  default). The boot log's `intraRefresh: rows=R/T` line reads the same.
 - Auto-GOP (one IDR per full stripe sweep, when no explicit GOP was set) is
   gone. It was unreachable in mabur for its whole life — every preset pinned
   a GOP — so no recording was ever produced under it.

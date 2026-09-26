@@ -1,4 +1,4 @@
-add_library(mabur_common STATIC src/crc16.cpp src/gf256.cpp src/sbi.cpp src/nal.cpp src/frag.cpp src/uep_encoder.cpp src/uep_decoder.cpp src/rc_proto.cpp src/profile.cpp src/node.cpp src/sw_wire.cpp src/sw_encoder.cpp src/sw_decoder.cpp src/msp_dp.cpp src/msp_source.cpp src/msp_status.cpp src/fec_worker.cpp src/frame_wire.cpp src/probe_wire.cpp src/toml.cpp)
+add_library(mabur_common STATIC src/crc16.cpp src/gf256.cpp src/sbi.cpp src/nal.cpp src/frag.cpp src/uep_encoder.cpp src/uep_decoder.cpp src/rc_proto.cpp src/profile.cpp src/node.cpp src/sw_wire.cpp src/sw_encoder.cpp src/sw_decoder.cpp src/msp_dp.cpp src/msp_source.cpp src/msp_status.cpp src/fec_worker.cpp src/frame_wire.cpp src/probe_wire.cpp src/toml.cpp src/dvr_mux.cpp src/hevc_params.cpp src/dvr_name.cpp)
 
 # Speed, not size, for the hot path (frag -> SwEncoder -> SbiPacker -> CRC):
 # Buildroot's toolchain file pins CMAKE_CXX_FLAGS to -Os and empties the

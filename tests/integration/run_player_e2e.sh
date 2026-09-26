@@ -61,7 +61,11 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # The preceding commit fc44c70 (per-card EVM) is NOT in this delta: rebuilt and
 # rendered, it still hashes 3d926998..., because the fixture's cards carry no
 # EVM and that field blanks.
-GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
+# Re-blessed 2026-09-26 (was 77352a37...): the REC indicator draws at half
+# the secondary size (nearest baked; 19 px in this synthetic font, 24 before).
+# Pixel diff old vs new: 5103 px changed, all inside x 1663..1822 y 178..213
+# (the REC field), 0 outside; REC ink still ends flush at x 1822.
+GS_SHA_EXPECTED=a8f4637f98c88e78cad41f3c67107df355e1bf04059565c22ad87cf82fbb2099
 # Golden for PART E, the compact bar (osd.gs.style = "compact"). Same rule
 # as the two above: re-bless only from a pixel diff, never from a hash swap
 # alone -- the geometry floor below sees a bar that moved or lost a row, but
@@ -102,7 +106,11 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # depends on the compact bar: OSD_SHA_EXPECTED is the drone-side MSP OSD,
 # and GS_SHA_EXPECTED renders --style essential, whose kRung field ("MCS 7 /
 # FEC 25%") never reads bw.
-BAR_SHA_EXPECTED=c71946028138f8bc46bf27626317275c3c8fa24224b82e6a83c1ec3b80735e8d
+# Re-blessed 2026-09-26 (was c7194602...): the REC corner item draws at half
+# the bar's size (nearest baked; 19 px here). Pixel diff old vs new: 11768 px
+# changed, all inside x 1639..1886 y 42..94 (the REC field), 0 outside; REC
+# ink still ends flush at x 1886 and its top stays on the 40 px inset.
+BAR_SHA_EXPECTED=6e8c67a6a3c8b0a498736d2a04ed56dc8acf5cabe41e3773528b08a328650d7c
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -119,23 +127,23 @@ import rc_proto
 # mabur owns the RC wire as of RC_VERSION 2 (2026-08-12): devourer's frozen
 # rc_proto.py is pinned at RC_VERSION 1 and still packs the deleted pwr_idx
 # byte plus the deleted ack_seq/score/layer_delivery fields, so its
-# pack_rcf() output is rejected outright by maburd. Pack the 17-byte head
+# pack_rcf() output is rejected outright by maburd. Pack the 18-byte head
 # here instead (magic, ver, type, flags, vtx_id, seq, profile,
 # fec_overhead_base_x100, fec_overhead_enh_x100, probe_profile, hop_ch,
-# hop_epoch -- RC_VERSION 6, 2026-09-04, made probe_profile a fixed head
+# hop_epoch, rec -- RC_VERSION 6, 2026-09-04, made probe_profile a fixed head
 # byte, 0xFF = no probe stream; every bump since (7, T_CAL_CMD/T_CAL_RESULT
 # plus a wider Telem; 8, relative calibration indices; 9, 2026-09-14, RCF
-# gains hop_ch/hop_epoch -- 0/0 = no hop order issued) moved only the
-# version byte plus, for 9, the two trailing zero bytes here. encode_profile
-# and the CRC are unversioned.
+# gains hop_ch/hop_epoch -- 0/0 = no hop order issued; 11, 2026-09-26, RCF
+# gains rec -- 0 = unknown) moved only the version byte plus trailing bytes.
+# encode_profile and the CRC are unversioned.
 # So read that byte from the header rather than pinning it: as a literal it
 # half-landed the RC_VERSION 8 bump (2026-09-13) -- this script kept packing
 # 7, maburd dropped the RCF as a foreign peer's, the shed of sid 1 never
 # lifted, and the lost enhance stream read as a decoder bug.
 RC_VERSION = int(re.search(r"RC_VERSION\s*=\s*(\d+)",
                            open("common/include/mabur/rc_proto.h").read()).group(1))
-body = struct.pack("<HBBBIHBBBBBB", rc_proto.RC_MAGIC, RC_VERSION, rc_proto.T_RCF, 0,
-                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0xFF, 0, 0)
+body = struct.pack("<HBBBIHBBBBBBB", rc_proto.RC_MAGIC, RC_VERSION, rc_proto.T_RCF, 0,
+                   1, 1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0xFF, 0, 0, 0)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)
