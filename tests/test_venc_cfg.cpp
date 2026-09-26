@@ -11,13 +11,14 @@
 // venc_cfg_defaults() is the one table of truth for "key absent from the
 // config". The intra-refresh + SVC-T defaults reproduce, at 1080p60,
 // exactly what the deleted "rally" preset expanded to: a 150 ms sweep is
-// ceil(34 CTU rows / 9 frames) = 4 rows per P-frame, its stripe QP was 36,
+// 9 frames = ceil(34 CTU rows / 9) = 4 rows per P-frame, its stripe QP was 36,
 // and rally ran 1:1 SVC-T with enhance->base prediction on. Deploying this
 // change therefore does not move the encoder.
 TEST(defaults_reproduce_the_old_rally_preset) {
   VencCfg c{};
   venc_cfg_defaults(&c);
-  CHECK(c.intra_refresh_rows == 4);
+  CHECK(c.intra_refresh_frames == 9);
+  CHECK(venc_cfg_intra_rows(1080, c.intra_refresh_frames) == 4);
   CHECK(c.intra_refresh_qp == 36);
   CHECK(c.ref_base == 1);
   CHECK(c.ref_enhance == 1);
@@ -26,9 +27,8 @@ TEST(defaults_reproduce_the_old_rally_preset) {
 }
 
 // venc_cfg_ctu_rows(): H.265 CTU is 32x32, so a picture is ceil(height/32)
-// CTU rows. This is the bound the config loader enforces on
-// venc.intra_refresh_rows and the divisor that turns rows-per-P into a
-// sweep length, so its boundaries matter at every supported picture size.
+// CTU rows -- what venc_cfg_intra_rows() spreads over the sweep, so its
+// boundaries matter at every supported picture size.
 // (The deleted test_venc_intra_refresh.cpp pinned the 1080 and 720 cases
 // through intra_refresh_compute(); this is the same arithmetic, direct.)
 TEST(ctu_rows_is_ceil_height_over_32) {
@@ -39,6 +39,23 @@ TEST(ctu_rows_is_ceil_height_over_32) {
   CHECK(venc_cfg_ctu_rows(1088) == 34);  // exact multiple, same as 1080
   CHECK(venc_cfg_ctu_rows(1) == 1);      // never rounds to zero rows
   CHECK(venc_cfg_ctu_rows(0) == 0);
+}
+
+// venc_cfg_intra_rows(): venc.intra_refresh_frames is the sweep length, so
+// the rows per P-frame follow the ENCODED height -- the same key means the
+// same self-heal time at 1080p and 720p (the old raw rows key failed boot
+// at 720p with its 1080p value). ceil() so the sweep never runs longer than
+// asked; a sweep longer than the picture's rows bottoms out at 1 row.
+TEST(intra_rows_spreads_the_picture_over_the_sweep) {
+  CHECK(venc_cfg_intra_rows(1080, 1) == 34);  // whole picture every P
+  CHECK(venc_cfg_intra_rows(720, 1) == 23);
+  CHECK(venc_cfg_intra_rows(1080, 2) == 17);
+  CHECK(venc_cfg_intra_rows(720, 2) == 12);   // 11.5 rounds up
+  CHECK(venc_cfg_intra_rows(1080, 9) == 4);   // the default, = old rows 4
+  CHECK(venc_cfg_intra_rows(720, 9) == 3);
+  CHECK(venc_cfg_intra_rows(1080, 100) == 1); // never 0 rows while on
+  CHECK(venc_cfg_intra_rows(1080, 0) == 0);   // off
+  CHECK(venc_cfg_intra_rows(0, 9) == 0);
 }
 
 // venc_superframe_p_bytes(): P-frame SuperFrame threshold as a percentage

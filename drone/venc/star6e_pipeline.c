@@ -54,6 +54,10 @@
  * insmod.  Re-check it if the sensor or its driver ever changes; a wrong
  * index silently yields the wrong geometry rather than failing.  Verify on
  * the device with `grep Cur /proc/mi_modules/mi_sensor/mi_sensor0`. */
+/* A record.size above 1920x1080 needs a bigger capture than mode 2's: the
+ * same table's 3840x2160@30 (full array, full FOV, not binned). Everything
+ * then runs at <= 30 fps -- the config loader requires venc.fps <= 30. */
+#define STAR6E_SENSOR_MODE_4K       0
 /* MJPEG snapshot channel; 7 is well clear of the encoder's ch0. */
 #define STAR6E_SNAPSHOT_CHANNEL     7
 /* Video codec is always H.265 and rate control is always CBR — the
@@ -135,6 +139,9 @@ static void star6e_pipeline_pre_init_teardown(void)
 	rec_port = (MI_SYS_ChnPort_t){ .module = I6_SYS_MOD_VENC,
 		.device = rec_dev, .channel = STAR6E_RECORD_CHANNEL, .port = 0 };
 	(void)MI_SYS_UnBindChnPort(&vpe_port, &rec_port);
+	vpe_port.port = 1;   /* record.size != venc.size binds it to port 1 */
+	(void)MI_SYS_UnBindChnPort(&vpe_port, &rec_port);
+	vpe_port.port = 0;
 	(void)MI_VENC_StopRecvPic(STAR6E_RECORD_CHANNEL);
 	(void)MI_VENC_DestroyChn(STAR6E_RECORD_CHANNEL);
 
@@ -717,17 +724,14 @@ static void star6e_pipeline_stop_venc(MI_VENC_CHN chn)
 	MI_VENC_DestroyChn(chn);
 }
 
-/* Rolling intra refresh (GDR) — venc.intra_refresh_rows CTU rows forced
- * intra per P-frame at venc.intra_refresh_qp, straight onto
- * MI_VENC_IntraRefresh_t.  rows == 0 is the off switch and makes no SDK
- * call at all.
+/* Rolling intra refresh (GDR) — a venc.intra_refresh_frames-long sweep at
+ * venc.intra_refresh_qp onto MI_VENC_IntraRefresh_t, its rows per P-frame
+ * derived from `height` by venc_cfg_intra_rows().  frames == 0 is the off
+ * switch and makes no SDK call at all.
  *
- * `height` is the ENCODED picture height, not cfg->height: config already
- * rejected a rows value wider than the configured venc.size, but
+ * `height` is the ENCODED picture height, not cfg->height:
  * pipeline_common_clamp_image_size() can shrink the picture to what the
- * sensor actually delivers, and a stripe wider than the picture would
- * reach the SDK.  Hence the clamp below survives even though config
- * validates — the two guard different heights.
+ * sensor actually delivers, and the rows must cover that picture.
  *
  * Returns 1 when the stripe is live, 0 when it is off or could not be
  * applied — never fatal, the stream works without rolling refresh. */
@@ -739,23 +743,19 @@ static int star6e_pipeline_apply_intra_refresh(MI_VENC_CHN chn,
 	uint32_t rows;
 	uint32_t sweep_frames;
 
-	if (!cfg || cfg->intra_refresh_rows == 0)
+	if (!cfg || cfg->intra_refresh_frames == 0)
 		return 0;
 	if (!g_mi_venc.fnSetIntraRefresh) {
-		fprintf(stderr, "[venc] WARNING: intra_refresh_rows=%u requested "
+		fprintf(stderr, "[venc] WARNING: intra_refresh_frames=%u requested "
 			"but libmi_venc.so does not export MI_VENC_SetIntraRefresh\n",
-			cfg->intra_refresh_rows);
+			cfg->intra_refresh_frames);
 		return 0;
 	}
 
 	total_rows = venc_cfg_ctu_rows((uint16_t)height);
-	rows = cfg->intra_refresh_rows;
-	if (total_rows && rows > total_rows) {
-		fprintf(stderr, "[venc] WARNING: intra_refresh_rows=%u exceeds "
-			"the %u CTU rows of the %ux%u picture actually encoded, "
-			"clamped\n", rows, total_rows, cfg->width, height);
-		rows = total_rows;
-	}
+	rows = venc_cfg_intra_rows((uint16_t)height, cfg->intra_refresh_frames);
+	if (rows == 0)
+		return 0;
 
 	memset(&ir, 0, sizeof(ir));
 	ir.bEnable = 1;
@@ -937,9 +937,16 @@ static int prepare_pipeline_config(const VencCfg *cfg,
 	 * the live sensor name is known.  Leave empty here. */
 	pconf->isp_bin_path[0] = '\0';
 
-	pconf->sensor_cfg = pipeline_common_build_sensor_select_config(
-		STAR6E_SENSOR_FORCED_PAD, STAR6E_SENSOR_FORCED_MODE,
-		pconf->sensor_width, pconf->sensor_height, pconf->sensor_framerate);
+	{
+		uint32_t rec_w, rec_h;
+		int mode = STAR6E_SENSOR_FORCED_MODE;
+		venc_record_size(&rec_w, &rec_h);
+		if (rec_w > 1920 || rec_h > 1080)
+			mode = STAR6E_SENSOR_MODE_4K;
+		pconf->sensor_cfg = pipeline_common_build_sensor_select_config(
+			STAR6E_SENSOR_FORCED_PAD, mode, pconf->sensor_width,
+			pconf->sensor_height, pconf->sensor_framerate);
+	}
 	pconf->sensor_cfg.image_mirror = STAR6E_IMAGE_MIRROR;
 	pconf->sensor_cfg.image_flip   = STAR6E_IMAGE_FLIP;
 	/* IMX415/IMX335 high-FPS register hook: MI_SNR_CustFunction(pad,
@@ -1131,7 +1138,8 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	 * Nothing may bind a new ACTIVE peer to this port after the link.
 	 * Non-fatal: a failure leaves the recorder reporting Disabled. */
 	(void)venc_record_attach(&state->vpe_port, state->image_width,
-		state->image_height, bind_src_fps);
+		state->image_height, pconf->precrop.w, pconf->precrop.h,
+		bind_src_fps);
 
 	/* FRAMEBASE is the only link mode this hop accepts.
 	 * I6_SYS_LINK_LOWLATENCY was tried on hardware 2026-08-31 (it would
@@ -1459,14 +1467,15 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 
 		state->output.gdr_active = gdr_applied;
 		state->output.svct_active = svct_applied;
-		if (gdr_applied && cfg->intra_refresh_rows) {
+		if (gdr_applied) {
 			uint16_t total = venc_cfg_ctu_rows(
 				(uint16_t)pconf.image_height);
-			uint32_t rows = cfg->intra_refresh_rows;
+			uint32_t rows = venc_cfg_intra_rows(
+				(uint16_t)pconf.image_height,
+				cfg->intra_refresh_frames);
 
-			if (total && rows > total)
-				rows = total;  /* same clamp as the apply site */
-			clen = (total + rows - 1u) / rows;
+			if (rows)  /* same rows as the apply site */
+				clen = (total + rows - 1u) / rows;
 		}
 		state->output.gdr_cycle_len = clen > 255 ? 255 : (uint8_t)clen;
 		state->output.gdr_counter = 0;

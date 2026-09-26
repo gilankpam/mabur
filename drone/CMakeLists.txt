@@ -12,7 +12,7 @@ add_library(mabur_drone_core STATIC
   src/cal_sweep.cpp
   vendor/venc_frame_ring.c
   # venc_cfg.c is dependency-free C99 (string.h only), so it compiles on
-  # host too — config.cpp's parse_venc() needs venc_cfg_ctu_rows() at
+  # host too — config.cpp's parse_venc() needs venc_cfg_defaults() at
   # host-test time, not just on the ARM cross-build. Excluded from venc_core's glob below to avoid compiling it
   # twice into the same link.
   venc/venc_cfg.c)

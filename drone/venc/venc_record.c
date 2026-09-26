@@ -2,7 +2,9 @@
  * docs/superpowers/specs/2026-09-26-vtx-recorder-design.md).
  *
  * One H.265 CBR channel (STAR6E_RECORD_CHANNEL) bound FRAMEBASE to the VPE
- * port the link channel taps, created and bound BEFORE the link channel so
+ * port the link channel taps (or, at a record.size other than the link's, to
+ * the same VPE channel's second scaler, port 1), created and bound BEFORE the
+ * link channel so
  * the link is the newest peer and its encode runs first (bench R1 vs R2-R4,
  * docs/sd-record-findings-2026-09-26.md).
  *
@@ -28,6 +30,8 @@
 
 #define REC_MAX_PACKS 8
 #define REC_STOP_EMPTY_WAKES 3   /* after StopRecvPic: this many empty wakes = drained */
+#define REC_VPE_PORT1 1
+#define REC_NO_FRAME_WARN_MS 2000
 
 static VencRecordConfig g_cfg;
 static VencRecordSink g_sink;
@@ -36,6 +40,8 @@ static void *g_sink_user;
 static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static int g_attached, g_bound, g_created;
+static int g_port1;   /* VPE port 1 enabled by us (the record size differs from the link's) */
+static uint64_t g_start_ms;   /* active since; 0 once a frame arrived or the warning fired */
 static int g_active, g_stopping, g_empty, g_quit;
 static int g_in_drain;   /* drain thread is inside drain_one (may call the sink) */
 static int g_want;   /* start() called and not stopped: survives a pipeline re-attach */
@@ -183,6 +189,13 @@ static int drain_one(int fd)
 	return 1;
 }
 
+static uint64_t mono_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
 static void *drain_fn(void *arg)
 {
 	int fd = MI_VENC_GetFd(STAR6E_RECORD_CHANNEL);
@@ -206,6 +219,14 @@ static void *drain_fn(void *arg)
 			g_stopping = 0;
 		} else if (got > 0) {
 			g_empty = 0;
+			g_start_ms = 0;
+		} else if (g_start_ms && mono_ms() - g_start_ms > REC_NO_FRAME_WARN_MS) {
+			/* SetPortMode + EnablePort accept port-1 geometries the scaler
+			 * never drives (waybeam's luma tap: 160x90 enabled, 0 frames). */
+			fprintf(stderr, "[record] no frame %d ms after start%s\n",
+				REC_NO_FRAME_WARN_MS, g_port1 ?
+				" -- VPE port1 at this size may not be driveable" : "");
+			g_start_ms = 0;
 		}
 	}
 	pthread_cond_broadcast(&g_cv);
@@ -222,6 +243,7 @@ static int start_locked(void)
 		return -1;
 	}
 	(void)MI_VENC_RequestIdr(STAR6E_RECORD_CHANNEL, 1);
+	g_start_ms = mono_ms();
 	g_active = 1;
 	g_stopping = 0;
 	g_empty = 0;
@@ -229,16 +251,24 @@ static int start_locked(void)
 	return 0;
 }
 
-int venc_record_attach(const MI_SYS_ChnPort_t *vpe_port, uint32_t width,
-	uint32_t height, uint32_t src_fps)
+void venc_record_size(uint32_t *width, uint32_t *height)
+{
+	*width = g_cfg.enabled ? g_cfg.width : 0;
+	*height = g_cfg.enabled ? g_cfg.height : 0;
+}
+
+int venc_record_attach(const MI_SYS_ChnPort_t *vpe_port, uint32_t link_w,
+	uint32_t link_h, uint32_t cap_w, uint32_t cap_h, uint32_t src_fps)
 {
 	MI_VENC_ChnAttr_t attr;
 	MI_U32 dev = 0;
-	uint32_t fps;
+	uint32_t fps, width, height;
 	MI_S32 ret;
 
 	if (!g_cfg.enabled || !vpe_port || g_attached)
 		return 0;
+	width = g_cfg.width ? g_cfg.width : link_w;
+	height = g_cfg.height ? g_cfg.height : link_h;
 	fps = g_cfg.fps;
 	if (src_fps && fps > src_fps)
 		fps = src_fps;
@@ -277,6 +307,33 @@ int venc_record_attach(const MI_SYS_ChnPort_t *vpe_port, uint32_t width,
 		goto fail;
 	}
 	g_src = *vpe_port;
+	if (width != link_w || height != link_h) {
+		/* Own size: the VPE channel's second scaler, scaling the same
+		 * capture window as the link's port 0. It cannot upscale past
+		 * the capture (the sensor mode fixes that, star6e_pipeline.c). */
+		MI_VPE_PortAttr_t pa;
+		if (width > cap_w || height > cap_h) {
+			fprintf(stderr, "[record] %ux%u exceeds the VPE capture %ux%u "
+				"-- recorder disabled\n", width, height, cap_w, cap_h);
+			goto fail;
+		}
+		memset(&pa, 0, sizeof(pa));
+		pa.output.width = (unsigned short)width;
+		pa.output.height = (unsigned short)height;
+		pa.pixFmt = I6_PIXFMT_YUV420SP;
+		pa.compress = I6_COMPR_NONE;
+		ret = MI_VPE_SetPortMode(vpe_port->channel, REC_VPE_PORT1, &pa);
+		if (ret == 0)
+			ret = MI_VPE_EnablePort(vpe_port->channel, REC_VPE_PORT1);
+		if (ret != 0) {
+			fprintf(stderr, "[record] VPE port1 %ux%u failed %d -- "
+				"recorder disabled\n", width, height, ret);
+			(void)MI_VPE_DisablePort(vpe_port->channel, REC_VPE_PORT1);
+			goto fail;
+		}
+		g_port1 = 1;
+		g_src.port = REC_VPE_PORT1;
+	}
 	g_port = (MI_SYS_ChnPort_t){ .module = I6_SYS_MOD_VENC, .device = dev,
 		.channel = STAR6E_RECORD_CHANNEL, .port = 0 };
 	ret = MI_SYS_BindChnPort2(&g_src, &g_port, src_fps ? src_fps : fps, fps,
@@ -299,8 +356,9 @@ int venc_record_attach(const MI_SYS_ChnPort_t *vpe_port, uint32_t width,
 	g_thr_started = 1;
 	(void)pthread_setname_np(g_thr, "mbr-recdrain");  /* top/perf, next to mbr-rec */
 	g_attached = 1;
-	fprintf(stderr, "[record] ch%d %ux%u %u fps CBR %u kbps bound before the link (idle)\n",
-		STAR6E_RECORD_CHANNEL, width, height, fps, g_cfg.bitrate_kbps);
+	fprintf(stderr, "[record] ch%d %ux%u %u fps CBR %u kbps on VPE port%u, bound before the link (idle)\n",
+		STAR6E_RECORD_CHANNEL, width, height, fps, g_cfg.bitrate_kbps,
+		(unsigned)g_src.port);
 	/* A pipeline re-attach while the operator wanted a recording: resume. */
 	pthread_mutex_lock(&g_mx);
 	if (g_want)
@@ -382,6 +440,10 @@ void venc_record_detach(void)
 	if (g_bound) {
 		MI_SYS_UnBindChnPort(&g_src, &g_port);
 		g_bound = 0;
+	}
+	if (g_port1) {
+		MI_VPE_DisablePort(g_src.channel, REC_VPE_PORT1);
+		g_port1 = 0;
 	}
 	if (g_created) {
 		MI_VENC_DestroyChn(STAR6E_RECORD_CHANNEL);

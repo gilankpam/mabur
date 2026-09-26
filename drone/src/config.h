@@ -214,6 +214,10 @@ struct RecordCfg {
   int bitrate_kbps = 40000;            // CBR
   int fps = 60;
   int min_free_mb = 512;               // refuse to start / stop below this
+  // Recording size; 0x0 = venc.size. A size other than venc.size records
+  // from the second VPE scaler (port 1) instead of the link's port 0; above
+  // 1920x1080 the sensor switches to its 3840x2160@30 mode.
+  int width = 0, height = 0;
 };
 
 struct Config {

@@ -53,12 +53,59 @@ dir          = "/mnt/mmcblk0p1" # mdev automount point; must be a mountpoint at 
 bitrate_kbps = 40000            # CBR, 2000..80000
 fps          = 60               # 1..venc.fps
 min_free_mb  = 512              # refuse to start / stop below this
+size         = "1920x1080"      # default venc.size; see "Recording size" below
 ```
 
 The following values are compiled in: fragment 1000 ms, GOP 1 s, a new
 file at 3.9 GB (FAT32 limits a file to 4 GiB), and a writer queue of
 64 AUs (about 1.07 s at 60 fps). Files are named `record-NNNN.mp4` in
 `dir`, using the GS DVR's namer. `maburd` never deletes a file.
+
+## Recording size — `record.size` (bench 2026-09-27)
+
+The recorder records at `venc.size` unless `record.size` names another
+size. The SigmaStar encoder cannot scale, so the sizes decide the port:
+
+- **`record.size` = `venc.size`** (the bundle's 1920x1080 for both): ch1
+  shares the link's VPE port 0, the bench-proven topology above.
+- **Any other size** enables the same VPE channel's second scaler, port 1,
+  at `record.size` and binds ch1 there (`venc_record_attach`). Both ports
+  scale the one capture window, so the loader requires `venc.size`'s aspect
+  ratio, even dimensions, 320x180..3840x2160. `SetPortMode` + `EnablePort`
+  succeed for sizes the scaler never drives, so the drain logs
+  `[record] no frame 2000 ms after start` if none arrive. An idle port 1
+  reads `Pixel MAX, OutputW 0` in `/proc/mi_modules/mi_vpe/mi_vpe0` until
+  ch1 starts; that is not a failure.
+- **Above 1920x1080** the pinned sensor mode 2 (1080p, binned) cannot feed
+  it: the pipeline switches to mode 0, 3840x2160@30 (full FOV, not binned,
+  `STAR6E_SENSOR_MODE_4K`), and the loader requires `venc.fps <= 30`. The
+  link then also runs at 30 fps from a downscaled 4K capture.
+
+Measured on `.152`, rung 5 / mcs 4 / 24 Mb/s, `low_power.enable = false`:
+
+| link | recording | link `enc` p50/p99 idle → recording | recording |
+|---|---|---|---|
+| 1920x1080@30 (4K sensor mode) | 3840x2160@30, port 1, 40 Mb/s | 9.1/9.2 → **40.8/50.5 ms** | valid HEVC 4K, 38.7 Mb/s, **28.4 fps** (181 of 1366 gaps are 62 ms) |
+| 1280x720@60 | 1920x1080@60, port 1 | 4.6/4.8 → 4.2/5.0 ms | recorded, no writer drops |
+| 1920x1080@60 | 1920x1080@60, port 0 | 7.8 ms idle (unchanged topology) | see above |
+
+- **4K is not usable next to the link.** One 4K encode is ~30 ms against a
+  31 ms frame period (the 4K mode runs 32 fps), so the single-task H.265
+  engine is over budget: the link queues behind the 4K encode (+32 ms glass
+  latency) and the recorder drops ~12 % of its frames. Bind order cannot
+  help once the engine is saturated. 2560x1440 from the 4K mode (~13 ms +
+  ~8 ms) is the untested size that should fit.
+- **720p link + 1080p recording works and costs the link nothing.** The
+  port-1 1080p recorder did not move the link's `enc`.
+- **A 720p link under-delivers CBR on the bench scene: 9.8 Mb/s against a
+  24 Mb/s command, recorder on or off**, where 1080p60 on the same scene
+  and rung delivered 23.8. That is ~ the 2.25x pixel ratio, consistent with
+  the RC sitting at the `MinQp 12` floor on a static scene (the live QP is
+  not exposed; not confirmed). No config key moves `MinQp`.
+- Switching `venc.size` needs no other key change: the rolling-refresh
+  key is `venc.intra_refresh_frames` (sweep length), whose rows per P the
+  pipeline derives from the encoded height. The raw `intra_refresh_rows`
+  it replaced (2026-09-27) failed boot at 720p with the 1080p value 34.
 
 ## Bind-order invariant (why ch1 is bound before the link)
 
@@ -67,7 +114,7 @@ one bound peer's whole encode before it starts the next peer's, and it
 starts with the peer that was bound most recently. The spike bound the
 recorder after the link, and the link then waited for one full recorder
 encode: +8 ms `enc`. For that reason `venc_record_init()` creates ch1 and
-binds it to VPE port 0 **immediately before** the link channel's bind,
+binds it (to VPE port 0, or port 1 at its own size) **immediately before** the link channel's bind,
 and leaves it idle under `StopRecvPic`. The link channel is therefore the
 newest peer. A live `venc_set_fps` rebind of the link keeps it the newest
 peer. **Nothing may bind a new active peer to VPE port 0 after the

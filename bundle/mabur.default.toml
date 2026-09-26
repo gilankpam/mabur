@@ -46,7 +46,8 @@ gop_s      = 0.5           # seconds between keyframes
 qp_delta   = 4             # quality offset between keyframes and P-frames
 max_ipprop = 2             # keyframe may be at most this many times a P-frame's size
 min_iqp    = 34            # keyframe quality floor: higher = smaller keyframes
-intra_refresh_rows = 34    # rows refreshed per frame, so a lost frame heals without a keyframe
+intra_refresh_frames = 1   # frames to intra-refresh the whole picture, so a lost frame heals
+                           # without a keyframe (1 = every P; rows/frame follow venc.size)
 intra_refresh_qp   = 36    # quality of those refresh rows
 ref_base    = 1            # temporal layering: a base layer every frame can decode from...
 ref_enhance = 1            # ...plus droppable enhance frames between them
@@ -115,3 +116,6 @@ dir          = "/mnt/mmcblk0p1"   # where the card is auto-mounted
 bitrate_kbps = 40000              # constant bitrate of the recording
 fps          = 60
 min_free_mb  = 512                # stop (or refuse to start) below this much free space
+size         = "1920x1080"        # = venc.size: shares the link's scaler. Another size (same
+                                  # aspect) uses VPE port 1; above 1920x1080 the sensor
+                                  # switches to 3840x2160@30 and venc.fps must be <= 30

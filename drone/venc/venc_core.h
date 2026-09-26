@@ -75,6 +75,7 @@ typedef struct {
 	int enabled;            /* 0 = no channel is created */
 	uint32_t bitrate_kbps;  /* CBR */
 	uint32_t fps;           /* clamped to the sensor rate */
+	uint32_t width, height; /* 0 = the link's size; else VPE port 1 */
 } VencRecordConfig;
 /* Before venc_core_start. The sink runs on the record drain thread and must copy. */
 void venc_record_configure(const VencRecordConfig *cfg, VencRecordSink sink, void *user);

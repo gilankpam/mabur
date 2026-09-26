@@ -236,11 +236,33 @@ void parse_encoder(const Value& j, EncoderCfg& e) {
 // there is intentionally NO "bitrate" key here — it's simply absent from
 // the known-key set below, so one lands on the ordinary unknown-key path
 // like any other stale key (global constraint: no venc.bitrate ever).
+// "WIDTHxHEIGHT" at j["size"], e.g. "1920x1080"; fails naming <section>.size.
+void parse_wxh(const Value& j, const char* section, int& w, int& h) {
+  std::string s;
+  assign_if_present(j, "size", s, section);
+  auto x = s.find('x');
+  w = 0;
+  h = 0;
+  bool ok = x != std::string::npos && x > 0 && x + 1 < s.size();
+  if (ok) {
+    try {
+      size_t wend = 0, hend = 0;
+      w = std::stoi(s.substr(0, x), &wend);
+      h = std::stoi(s.substr(x + 1), &hend);
+      ok = wend == x && hend == s.size() - x - 1;
+    } catch (const std::exception&) {
+      ok = false;
+    }
+  }
+  if (!ok || w <= 0 || h <= 0)
+    fail(std::string(section) + ".size", "malformed, expected WIDTHxHEIGHT (e.g. \"1920x1080\")");
+}
+
 void parse_venc(const Value& j, VencSectionCfg& v) {
   check_known_keys(j,
                     {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
                      "max_ipprop", "min_iqp", "superframe_p_pct",
-                     "intra_refresh_rows", "intra_refresh_qp",
+                     "intra_refresh_frames", "intra_refresh_qp",
                      "ref_base", "ref_enhance", "ref_pred",
                      "roi", "ae_fps", "awb_fps", "snapshot_quality",
                      "debug_port"},
@@ -265,23 +287,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
   }
 
   if (j.contains("size")) {
-    std::string s;
-    assign_if_present(j, "size", s, "venc");
-    auto x = s.find('x');
     int w = 0, h = 0;
-    bool ok = x != std::string::npos && x > 0 && x + 1 < s.size();
-    if (ok) {
-      try {
-        size_t wend = 0, hend = 0;
-        w = std::stoi(s.substr(0, x), &wend);
-        h = std::stoi(s.substr(x + 1), &hend);
-        ok = wend == x && hend == s.size() - x - 1;
-      } catch (const std::exception&) {
-        ok = false;
-      }
-    }
-    if (!ok || w <= 0 || h <= 0)
-      fail("venc.size", "malformed, expected WIDTHxHEIGHT (e.g. \"1920x1080\")");
+    parse_wxh(j, "venc", w, h);
     v.core.width = static_cast<uint16_t>(w);
     v.core.height = static_cast<uint16_t>(h);
   } else {
@@ -345,16 +352,18 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
 
   // Error-resilience structure: the five components venc.resilience used to
   // name a preset for (deleted 2026-09-04). Each lands on an MI struct field
-  // verbatim, so the checks below are the hardware's own limits, not policy.
-  // Parsed AFTER "size" because the rows bound depends on the picture height.
-  if (j.contains("intra_refresh_rows")) {
-    int rows = 0;
-    assign_if_present(j, "intra_refresh_rows", rows, "venc");
-    if (rows < 0 || rows > UINT16_MAX)
-      fail("venc.intra_refresh_rows", "must be >= 0");
-    v.core.intra_refresh_rows = static_cast<uint16_t>(rows);
+  // verbatim, so the checks below are the hardware's own limits, not policy --
+  // except the sweep, a length in frames whose rows per P-frame the pipeline
+  // derives from the encoded height (venc_cfg_intra_rows), so it needs no
+  // venc.size-dependent bound. 255: the 8-bit GDR cycle counter.
+  if (j.contains("intra_refresh_frames")) {
+    int frames = 0;
+    assign_if_present(j, "intra_refresh_frames", frames, "venc");
+    if (frames < 0 || frames > 255)
+      fail("venc.intra_refresh_frames", "must be 0 (off) or in [1,255]");
+    v.core.intra_refresh_frames = static_cast<uint16_t>(frames);
   } else {
-    note_default("venc", "intra_refresh_rows", to_text(kDef.core.intra_refresh_rows));
+    note_default("venc", "intra_refresh_frames", to_text(kDef.core.intra_refresh_frames));
   }
 
   if (j.contains("intra_refresh_qp")) {
@@ -458,23 +467,6 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
     note_default("venc", "debug_port", to_text(kDef.debug_port));
   }
 
-  // A stripe cannot be wider than the picture. Checked here rather than
-  // inside the key's own block for two reasons: it depends on venc.size,
-  // which is parsed above, and the DEFAULT rows value has to face the same
-  // bound — omitting the key must not buy a pass on a picture too short to
-  // hold the default sweep. The preset path clamped instead and warned on
-  // stderr, which ran a sweep the config did not describe; boot failure is
-  // the forcing function. (The apply site keeps its own clamp for the
-  // narrower case where the sensor delivers a shorter picture than
-  // venc.size asked for — see star6e_pipeline_apply_intra_refresh.)
-  {
-    const int max_rows = venc_cfg_ctu_rows(v.core.height);
-    if (v.core.intra_refresh_rows > max_rows)
-      fail("venc.intra_refresh_rows",
-           "must be 0 (off) or in [1," + std::to_string(max_rows) +
-               "] CTU rows for this venc.size");
-  }
-
   // sensor_bin is the ONE venc key with no default (venc_cfg_defaults()
   // seeds every other field, see venc_cfg.c): it names a device-specific
   // ISP calibration blob, and guessing one gets you a booted encoder
@@ -545,7 +537,11 @@ void parse_low_power(const Value& j, LowPowerCfg& lp) {
 }
 
 void parse_record(const Value& j, RecordCfg& r) {
-  check_known_keys(j, {"enable", "dir", "bitrate_kbps", "fps", "min_free_mb"}, "record");
+  check_known_keys(j, {"enable", "dir", "bitrate_kbps", "fps", "min_free_mb", "size"}, "record");
+  if (j.contains("size"))
+    parse_wxh(j, "record", r.width, r.height);
+  else
+    note_default("record", "size", "(venc.size)");
   assign_if_present(j, "enable", r.enable, "record");
   assign_if_present(j, "dir", r.dir, "record");
   assign_if_present(j, "bitrate_kbps", r.bitrate_kbps, "record");
@@ -673,6 +669,21 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (cfg.record.enable &&
       (cfg.record.fps < 1 || cfg.record.fps > static_cast<int>(cfg.venc.core.fps)))
     fail("record.fps", "must be in [1, venc.fps]");
+
+  if (cfg.record.enable && cfg.record.width > 0) {
+    const int rw = cfg.record.width, rh = cfg.record.height;
+    const int vw = cfg.venc.core.width, vh = cfg.venc.core.height;
+    // Both VPE ports scale the one capture window, which keeps venc.size's
+    // aspect: another aspect would come out stretched.
+    if (static_cast<long>(rw) * vh != static_cast<long>(vw) * rh)
+      fail("record.size", "must have venc.size's aspect ratio");
+    if (rw % 2 || rh % 2 || rw < 320 || rh < 180 || rw > 3840 || rh > 2160)
+      fail("record.size", "must be even and within 320x180..3840x2160");
+    // Above 1080p only the sensor's 3840x2160@30 mode can feed it
+    // (star6e_pipeline.c STAR6E_SENSOR_MODE_4K), and that caps the link too.
+    if ((rw > 1920 || rh > 1080) && cfg.venc.core.fps > 30)
+      fail("record.size", "above 1920x1080 needs the 30 fps sensor mode: set venc.fps <= 30");
+  }
 
   return cfg;
 }

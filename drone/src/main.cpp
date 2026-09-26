@@ -1441,6 +1441,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     rcfg.enabled = cfg.record.enable ? 1 : 0;
     rcfg.bitrate_kbps = static_cast<uint32_t>(cfg.record.bitrate_kbps);
     rcfg.fps = static_cast<uint32_t>(cfg.record.fps);
+    rcfg.width = static_cast<uint32_t>(cfg.record.width);
+    rcfg.height = static_cast<uint32_t>(cfg.record.height);
     venc_record_configure(
         &rcfg,
         [](void* u, const uint8_t* au, size_t n, uint32_t pts, int key, int prefixed) {
