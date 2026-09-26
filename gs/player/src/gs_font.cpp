@@ -149,4 +149,17 @@ const MaskAtlas* GsFont::atlas(int px) const {
   return nullptr;
 }
 
+const MaskAtlas* GsFont::nearest(int px) const {
+  const MaskAtlas* best = nullptr;
+  int best_d = 0;
+  for (const MaskAtlas& a : atlases_) {  // ascending: a later tie is larger
+    const int d = a.px > px ? a.px - px : px - a.px;
+    if (!best || d <= best_d) {
+      best = &a;
+      best_d = d;
+    }
+  }
+  return best;
+}
+
 }  // namespace maburplay

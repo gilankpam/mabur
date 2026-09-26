@@ -61,7 +61,11 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # The preceding commit fc44c70 (per-card EVM) is NOT in this delta: rebuilt and
 # rendered, it still hashes 3d926998..., because the fixture's cards carry no
 # EVM and that field blanks.
-GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
+# Re-blessed 2026-09-26 (was 77352a37...): the REC indicator draws at half
+# the secondary size (nearest baked; 19 px in this synthetic font, 24 before).
+# Pixel diff old vs new: 5103 px changed, all inside x 1663..1822 y 178..213
+# (the REC field), 0 outside; REC ink still ends flush at x 1822.
+GS_SHA_EXPECTED=a8f4637f98c88e78cad41f3c67107df355e1bf04059565c22ad87cf82fbb2099
 # Golden for PART E, the compact bar (osd.gs.style = "compact"). Same rule
 # as the two above: re-bless only from a pixel diff, never from a hash swap
 # alone -- the geometry floor below sees a bar that moved or lost a row, but
@@ -102,7 +106,11 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # depends on the compact bar: OSD_SHA_EXPECTED is the drone-side MSP OSD,
 # and GS_SHA_EXPECTED renders --style essential, whose kRung field ("MCS 7 /
 # FEC 25%") never reads bw.
-BAR_SHA_EXPECTED=c71946028138f8bc46bf27626317275c3c8fa24224b82e6a83c1ec3b80735e8d
+# Re-blessed 2026-09-26 (was c7194602...): the REC corner item draws at half
+# the bar's size (nearest baked; 19 px here). Pixel diff old vs new: 11768 px
+# changed, all inside x 1639..1886 y 42..94 (the REC field), 0 outside; REC
+# ink still ends flush at x 1886 and its top stays on the 40 px inset.
+BAR_SHA_EXPECTED=6e8c67a6a3c8b0a498736d2a04ed56dc8acf5cabe41e3773528b08a328650d7c
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

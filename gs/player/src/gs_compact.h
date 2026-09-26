@@ -149,6 +149,7 @@ class GsCompactBar final : public GsLayer {
   }
   DirtyRect debug_field_box(GsBarField id) const;
   int debug_atlas_px() const;
+  int debug_rec_atlas_px() const;  // the REC indicator's size, 0 before layout()
   // Width of worst-case row `row` in `a`, boxes included -- exactly what
   // layout() compares against the space between the insets. Exposed so the
   // size-choice test can assert "no larger baked size fits" by the same
@@ -217,6 +218,12 @@ class GsCompactBar final : public GsLayer {
   RecTarget rec_target_;
   Field fields_[(size_t)GsBarField::kCount];
   const MaskAtlas* atlas_ = nullptr;
+  // The REC corner item's atlas: the nearest baked size to half of atlas_
+  // (2026-09-26). Every other field shares atlas_.
+  const MaskAtlas* rec_atlas_ = nullptr;
+  const MaskAtlas* atlas_for_(GsBarField id) const {
+    return id == GsBarField::kRec && rec_atlas_ ? rec_atlas_ : atlas_;
+  }
   DirtyRect bounds_{0, 0, 0, 0};
   int screen_w_ = 0, gap_ = 0, inset_x_ = 0;
   // Baseline of each row, absolute within the surface. Row 1 is the bottom

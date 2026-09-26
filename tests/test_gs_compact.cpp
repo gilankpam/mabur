@@ -379,7 +379,7 @@ TEST(rec_box_for_the_gs_target_is_the_pre_vtx_recorder_box) {
   REQUIRE(f.load(GSFONT_SCALED, &err));
   for (GsCompactBar* bar : {new GsCompactBar(f), new GsCompactBar(f, RecTarget::kGs)}) {
     REQUIRE(bar->layout(1920, 1080, &err));
-    const MaskAtlas* a = f.atlas(bar->debug_atlas_px());
+    const MaskAtlas* a = f.atlas(bar->debug_rec_atlas_px());  // REC has its own half size
     REQUIRE(a != nullptr);
     const DirtyRect b = bar->debug_field_box(GsBarField::kRec);
     CHECK(b.w == text_width(*a, "\xE2\x97\x8F REC FAULT") + 2 * ((a->glyph_w - a->advance_x) / 2));
@@ -394,7 +394,7 @@ TEST(every_rec_text_for_the_target_fits_its_rec_box) {
   for (RecTarget t : {RecTarget::kGs, RecTarget::kVtx, RecTarget::kBoth}) {
     GsCompactBar bar(f, t);
     REQUIRE(bar.layout(1920, 1080, &err));
-    const MaskAtlas* a = f.atlas(bar.debug_atlas_px());
+    const MaskAtlas* a = f.atlas(bar.debug_rec_atlas_px());  // REC has its own half size
     REQUIRE(a != nullptr);
     const DirtyRect b = bar.debug_field_box(GsBarField::kRec);
     const int inner = b.w - 2 * ((a->glyph_w - a->advance_x) / 2);
@@ -710,7 +710,10 @@ TEST(absurd_values_never_draw_outside_their_field_boxes) {
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
     const std::string t = bar.debug_field_text(s, false, ps, (GsBarField)i);
     const DirtyRect box = bar.debug_field_box((GsBarField)i);
-    const int w = text_width(*atlas, t.c_str());
+    const MaskAtlas* fa = (GsBarField)i == GsBarField::kRec
+                              ? f.atlas(bar.debug_rec_atlas_px())  // REC's own half size
+                              : atlas;
+    const int w = text_width(*fa, t.c_str());
     if (w > box.w) std::printf("  field %d: \"%s\" %d px in a %d px box\n", i,
                                t.c_str(), w, box.w);
     CHECK(w <= box.w);
@@ -948,6 +951,23 @@ TEST(drone_temp_reads_on_the_radio_row_and_tints_caution_from_70) {
   // and a negative SoC is not a flight condition worth a wider box.
   s.soc_temp_c = -40;
   CHECK(bar.debug_field_text(s, false, ps, GsBarField::kTemp) == "temp:0");
+}
+
+// 2026-09-26: the REC indicator draws at half the bar's type size (the
+// nearest baked size to it), so it no longer shouts over the video.
+TEST(rec_indicator_is_half_the_bar_size) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  const MaskAtlas* half = f.nearest(bar.debug_atlas_px() / 2);
+  REQUIRE(half != nullptr);
+  CHECK(bar.debug_rec_atlas_px() == half->px);
+  CHECK(bar.debug_rec_atlas_px() < bar.debug_atlas_px());
+  // Its box is that size too, and it still hangs off the top inset.
+  const DirtyRect b = bar.debug_field_box(GsBarField::kRec);
+  CHECK(b.h == half->glyph_h);
 }
 
 MTEST_MAIN

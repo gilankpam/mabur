@@ -301,9 +301,11 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     y += standard->glyph_h + gap6;  // see the comment on the line above
     // Sized for dvr.target, not for every target (gs_layer.h rec_worst).
     const char* rec_worst_s = rec_worst(rec_target_);
-    const int rec_w = text_width(*secondary, rec_worst_s);
-    place(GsFieldId::kRec, secondary, right - rec_w - pad_h(secondary), y,
-          rec_worst_s);
+    // Half the secondary size (2026-09-26): the indicator only has to be
+    // noticed, not read at a glance like the link numbers above it.
+    const MaskAtlas* rec = font_.nearest(secondary->px / 2);
+    const int rec_w = text_width(*rec, rec_worst_s);
+    place(GsFieldId::kRec, rec, right - rec_w - pad_h(rec), y, rec_worst_s);
   }
 
   // --- bottom right: video health ------------------------------------

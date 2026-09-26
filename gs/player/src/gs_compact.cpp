@@ -222,6 +222,7 @@ bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
   }
 
   atlas_ = best;
+  rec_atlas_ = font_.nearest(best->px / 2);
   screen_w_ = screen_w;
   inset_x_ = inset_x;
   gap_ = item_gap(best);
@@ -237,7 +238,7 @@ bool GsCompactBar::layout(int screen_w, int screen_h, std::string* err) {
     baseline_y_[row] = baseline_y_[row + 1] - row_pitch;
   // The corner item hangs off the TOP inset instead, so its box's top edge
   // -- shadow pad included -- sits exactly on it.
-  corner_baseline_ = (int)(kInsetTop * scale + 0.5) + best->baseline;
+  corner_baseline_ = (int)(kInsetTop * scale + 0.5) + rec_atlas_->baseline;
   // Reserve the worst case until the first snapshot says how many cards
   // there really are. Nothing draws before then (update() reconciles the
   // count first), but bounds() is legitimately asked for in between, and it
@@ -253,7 +254,8 @@ void GsCompactBar::place_(int n_cards) {
   int w[(size_t)GsBarField::kCount];
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
     f_(kOrder[i]).active = true;
-    w[i] = text_width(*atlas_, worst_case(kOrder[i], n_cards, rec_target_).c_str());
+    w[i] = text_width(*atlas_for_(kOrder[i]),
+                      worst_case(kOrder[i], n_cards, rec_target_).c_str());
   }
 
   // The corner item: right-flushed at the top inset, reserving the shadow
@@ -261,10 +263,12 @@ void GsCompactBar::place_(int n_cards) {
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
     if (kRow[i] != kCorner) continue;
     Field& f = f_(kOrder[i]);
-    f.pen_x = screen_w_ - inset_x_ - w[i] - pad;
+    const MaskAtlas* ca = atlas_for_(kOrder[i]);
+    const int cpad = pad_h(ca);
+    f.pen_x = screen_w_ - inset_x_ - w[i] - cpad;
     f.baseline_y = corner_baseline_;
-    f.box = DirtyRect{f.pen_x - pad, corner_baseline_ - atlas_->baseline,
-                      w[i] + 2 * pad, atlas_->glyph_h};
+    f.box = DirtyRect{f.pen_x - cpad, corner_baseline_ - ca->baseline,
+                      w[i] + 2 * cpad, ca->glyph_h};
     bounds_ = union_of(bounds_, f.box);
   }
 
@@ -438,6 +442,7 @@ std::string GsCompactBar::debug_field_text(const GsSnapshot& snap, bool stale,
 }
 
 int GsCompactBar::debug_atlas_px() const { return atlas_ ? atlas_->px : 0; }
+int GsCompactBar::debug_rec_atlas_px() const { return rec_atlas_ ? rec_atlas_->px : 0; }
 
 DirtyRect GsCompactBar::debug_field_box(GsBarField id) const {
   return f_(id).box;
@@ -446,7 +451,8 @@ DirtyRect GsCompactBar::debug_field_box(GsBarField id) const {
 void GsCompactBar::draw_field_(GsBarField id, const FieldState& st,
                                const Surface& s) {
   Field& f = f_(id);
-  if (!atlas_ || !f.active) return;
+  const MaskAtlas* a = atlas_for_(id);
+  if (!a || !f.active) return;
   clear_region(s, f.box);
   if (st.text.empty()) return;  // cleared above; nothing more to draw
 
@@ -456,20 +462,20 @@ void GsCompactBar::draw_field_(GsBarField id, const FieldState& st,
     // of what rec_text() actually returns -- see the essential overlay's
     // draw_field_ for the full reasoning. Right-align within the box so a
     // GS-only "REC mm:ss"/"REC FAULT" lands exactly where it always did.
-    const int pad = (atlas_->glyph_w - atlas_->advance_x) / 2;
-    pen_x = f.box.x + f.box.w - pad - text_width(*atlas_, st.text.c_str());
+    const int pad = (a->glyph_w - a->advance_x) / 2;
+    pen_x = f.box.x + f.box.w - pad - text_width(*a, st.text.c_str());
   }
 
   if (st.aux == 1) {
     // The recording dot takes kStatusRec while the rest of the item takes
     // the field colour.
-    const int adv = draw_text(s, *atlas_, pen_x, f.baseline_y, kDotFilled,
+    const int adv = draw_text(s, *a, pen_x, f.baseline_y, kDotFilled,
                               tok::kStatusRec);
-    draw_text(s, *atlas_, pen_x + adv, f.baseline_y,
+    draw_text(s, *a, pen_x + adv, f.baseline_y,
               st.text.c_str() + std::string(kDotFilled).size(), st.rgb);
     return;
   }
-  draw_text(s, *atlas_, pen_x, f.baseline_y, st.text.c_str(), st.rgb);
+  draw_text(s, *a, pen_x, f.baseline_y, st.text.c_str(), st.rgb);
 }
 
 int GsCompactBar::update(const GsSnapshot& snap, bool stale,

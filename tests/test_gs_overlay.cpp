@@ -1200,4 +1200,20 @@ TEST(the_card_block_stays_clear_of_the_loss_block) {
   }
 }
 
+// 2026-09-26: the REC indicator draws at half the secondary type size (the
+// nearest baked size to it) -- kJit is a secondary-size field.
+TEST(rec_indicator_is_half_the_secondary_size) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  const int secondary_px = ov.debug_field_atlas_px(GsFieldId::kJit);
+  REQUIRE(secondary_px > 0);
+  const MaskAtlas* half = f.nearest(secondary_px / 2);
+  REQUIRE(half != nullptr);
+  CHECK(ov.debug_field_atlas_px(GsFieldId::kRec) == half->px);
+  CHECK(ov.debug_field_box(GsFieldId::kRec).h == half->glyph_h);
+}
+
 MTEST_MAIN
