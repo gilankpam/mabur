@@ -190,6 +190,22 @@ engaged, and only `hold_cap` ended it. Fix candidates: the drone falls
 back to the pre-hop channel, not home; and/or the GS's split detector
 ignores frames that arrive only on scout dwells.
 
+**Split fixes, hardware check (same day, GS session 0234).** Drone
+`dd9478e` (an unconfirmed hop reverts to the pre-hop channel before going
+home) + GS `ea872a5` (only op/hop-target video refreshes the rendezvous
+silence timer). To force the failure, the GS ran `confirm_ms` 100 and
+`confirm_extend_ms` 100 (extension off), and the host EU card jammed op 144
+for 4 s (`linkbench-tx --symbol-size 1000 --no-cca --foreign-sa`). Twice:
+the GS ordered 144 → **136 = home** (the failing case) and withdrew at
+100–104 ms after the drone had already moved; then 112, withdrawn too,
+which the drone never heard. The drone logged `144 -> 136 (hop)`, then
+`136 -> 144 (move_unconfirmed)` ~2 s later (the old code would have stayed
+silent on home). `au.log`: 0 AUs for ~2 s, partial while the jam lasted,
+full 30 fps within ~1 s of the jam ending; both times, versus 60 s before
+the fix. The 4 s of 75–100 % `link_loss_pct` after the jam in `scan.log` is
+that metric's averaging window, not dead video. Config restored to
+`confirm_ms` 1000 / `confirm_extend_ms` 3000; `ausniff` 0 gaps.
+
 **Unexplained baseline:** with nothing on air, home 153 and 161 ran at
 rung 0–1 with 3–15 % loss in some windows and no foreign airtime
 (run 3). Run 1 held rung 3–4 on 153.
