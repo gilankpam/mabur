@@ -56,3 +56,12 @@ if(NOT EMSCRIPTEN)
   add_executable(mkbodies mkbodies.cpp)
   target_link_libraries(mkbodies PRIVATE mabur_common)
 endif()
+
+if(EMSCRIPTEN)
+  # Replay-only build for Node: direct host FS, no WebUSB, no pthreads needed
+  # at runtime (objects are still -pthread compiled; Node supports that).
+  add_executable(gsweb_node gsweb.cpp)
+  target_link_libraries(gsweb_node PRIVATE gsweb_core)
+  target_link_options(gsweb_node PRIVATE
+    -pthread -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH -sEXIT_RUNTIME)
+endif()
