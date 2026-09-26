@@ -42,6 +42,13 @@ struct RecState {
   };
   Kind kind = Kind::kArmed;
   int elapsed_s = 0;
+  // VTX onboard recorder leg (spec 2026-09-26). kNone = the VTX is not a
+  // target or the button is off; with kNone and gs_target the field renders
+  // exactly as it did before the VTX recorder existed.
+  enum class Vtx { kNone, kWait, kRecording, kNoCard, kFull, kFault, kOff };
+  Vtx vtx = Vtx::kNone;
+  int vtx_elapsed_s = 0;
+  bool gs_target = true;   // false with dvr.target = "vtx": the GS leg is ignored
 };
 
 struct GsPlayerState {
@@ -105,6 +112,33 @@ std::string fmt_one_dp(double v);      // always one decimal place
 std::string fmt_signed_int(double v);  // U+2212 for negatives
 std::string fmt_clock(int seconds);    // mm:ss, saturating at 99:59
 
+// The REC field's text for both OSD layouts (gs_overlay kRec, gs_compact
+// kRec): where recording happens (GS, VTX, GS+VTX) and why a selected
+// target is not recording. aux = 1 paints the leading dot in kStatusRec.
+struct RecText {
+  std::string text;
+  uint32_t rgb = 0;
+  int aux = 0;
+};
+RecText rec_text(const RecState& r);
+// Widest string rec_text() can return for ANY target (the GS+VTX combos).
+extern const char* const kRecWorst;
+
+// dvr.target (spec 2026-09-26): which recorders the button drives. Both
+// layouts size their kRec box on rec_worst(target) -- the widest string
+// rec_text() can return for a player with that target -- rather than on
+// kRecWorst for everyone: the box is cleared whole on every REC redraw and
+// wins repaint_intersecting over MSP cells, so a box wider than anything
+// the target can draw costs the FC OSD a strip of glyphs for nothing.
+enum class RecTarget {
+  kGs,    // "gs": byte- and pixel-identical to the pre-VTX-recorder field
+  kVtx,   // "vtx"
+  kBoth,  // "both"
+};
+// "gs" | "vtx" | "both" -> target. False on anything else.
+bool parse_rec_target(const std::string& s, RecTarget* out);
+const char* rec_worst(RecTarget t);
+
 // What the GS overlay draws. Two implementations, chosen by osd.gs.style:
 //
 //   GsOverlay    "essential" -- four corner blocks, status colours, meters
@@ -161,7 +195,8 @@ enum class GsStyle {
 bool parse_gs_style(const std::string& s, GsStyle* out);
 
 class GsFont;
-std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font);
+std::unique_ptr<GsLayer> make_gs_layer(GsStyle style, GsFont& font,
+                                       RecTarget rec_target = RecTarget::kGs);
 
 // Every token colour at full alpha plus its shadow blend, for
 // build_palette()'s extra seeds. Without these the burned DVR quantizes

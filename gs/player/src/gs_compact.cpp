@@ -120,7 +120,8 @@ std::string repeat_joined(const std::string& label, const char* per, int n) {
 
 }  // namespace
 
-std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
+std::string GsCompactBar::worst_case(GsBarField id, int n_cards,
+                                     RecTarget rec_target) {
   const int n = std::clamp(n_cards, 0, kMaxCards);
   switch (id) {
     // "ch:--" is narrower than the numeric form, so the number sizes the
@@ -146,12 +147,12 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
     case GsBarField::kJit:     return "jit:999.9";
     case GsBarField::kLat:     return "lat:999/999";
     case GsBarField::kLoss:    return "loss:100.0/100.0";
-    // Both live states are eleven glyphs wide ("● REC 99:59" and
-    // "● REC FAULT"); fmt_clock saturates at 99:59 so neither can grow.
+    // Sized on rec_worst(target) (gs_layer.h): the widest REC text this
+    // dvr.target can produce -- "● REC FAULT" for "gs", as it always was.
     // Armed renders nothing and leaves the box blank -- the same
     // fixed-width reservation every other item makes, and the same thing
     // the essential overlay does.
-    case GsBarField::kRec:     return "● REC FAULT";
+    case GsBarField::kRec:     return rec_worst(rec_target);
     case GsBarField::kCount:   break;
   }
   return "";
@@ -252,7 +253,7 @@ void GsCompactBar::place_(int n_cards) {
   int w[(size_t)GsBarField::kCount];
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
     f_(kOrder[i]).active = true;
-    w[i] = text_width(*atlas_, worst_case(kOrder[i], n_cards).c_str());
+    w[i] = text_width(*atlas_, worst_case(kOrder[i], n_cards, rec_target_).c_str());
   }
 
   // The corner item: right-flushed at the top inset, reserving the shadow
@@ -414,26 +415,16 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
                      ? fmt_one_dp(std::clamp(*snap.post_loss_pct, 0.0, 100.0))
                      : "--";
       break;
-    case GsBarField::kRec:
+    case GsBarField::kRec: {
       // Byte-for-byte the essential overlay's kRec, deliberately: one
       // aircraft, one recording indicator. Never dimmed -- the recorder is
       // the player's own business and says nothing about the link.
-      switch (ps.rec.kind) {
-        case RecState::Kind::kArmed:
-          // Nothing at all. An idle placeholder clock is permanent clutter,
-          // and "no REC" already reads as "not recording".
-          break;
-        case RecState::Kind::kRecording:
-          st.text = std::string(kDotFilled) + " REC " + fmt_clock(ps.rec.elapsed_s);
-          st.rgb = tok::kTextPrimary;
-          st.aux = 1;  // draw_field_ paints the dot in kStatusRec
-          break;
-        case RecState::Kind::kFault:
-          st.text = std::string(kDotFilled) + " REC FAULT";
-          st.rgb = tok::kStatusCaution;
-          break;
-      }
+      const RecText t = rec_text(ps.rec);
+      st.text = t.text;
+      st.rgb = t.rgb;
+      st.aux = t.aux;
       break;
+    }
     case GsBarField::kCount:
       break;
   }
@@ -458,16 +449,27 @@ void GsCompactBar::draw_field_(GsBarField id, const FieldState& st,
   if (!atlas_ || !f.active) return;
   clear_region(s, f.box);
   if (st.text.empty()) return;  // cleared above; nothing more to draw
+
+  int pen_x = f.pen_x;
+  if (id == GsBarField::kRec) {
+    // kRec's box is sized to rec_worst(target) (gs_layer.h), wider than most
+    // of what rec_text() actually returns -- see the essential overlay's
+    // draw_field_ for the full reasoning. Right-align within the box so a
+    // GS-only "REC mm:ss"/"REC FAULT" lands exactly where it always did.
+    const int pad = (atlas_->glyph_w - atlas_->advance_x) / 2;
+    pen_x = f.box.x + f.box.w - pad - text_width(*atlas_, st.text.c_str());
+  }
+
   if (st.aux == 1) {
     // The recording dot takes kStatusRec while the rest of the item takes
     // the field colour.
-    const int adv = draw_text(s, *atlas_, f.pen_x, f.baseline_y, kDotFilled,
+    const int adv = draw_text(s, *atlas_, pen_x, f.baseline_y, kDotFilled,
                               tok::kStatusRec);
-    draw_text(s, *atlas_, f.pen_x + adv, f.baseline_y,
+    draw_text(s, *atlas_, pen_x + adv, f.baseline_y,
               st.text.c_str() + std::string(kDotFilled).size(), st.rgb);
     return;
   }
-  draw_text(s, *atlas_, f.pen_x, f.baseline_y, st.text.c_str(), st.rgb);
+  draw_text(s, *atlas_, pen_x, f.baseline_y, st.text.c_str(), st.rgb);
 }
 
 int GsCompactBar::update(const GsSnapshot& snap, bool stale,

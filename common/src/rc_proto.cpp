@@ -52,10 +52,10 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-constexpr size_t RCF_HEAD_LEN = 17;
+constexpr size_t RCF_HEAD_LEN = 18;  // 2026-09-26: +rec
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 95;  // 2026-09-23: +rx_own/rx_foreign/rx_crcfail (was 89: +channel/hop_epoch)
+constexpr size_t TELEM_LEN = 96;  // 2026-09-26: +rec_status (was 95: +rx_own/rx_foreign/rx_crcfail)
 
 // magic(2) | ver | type | flags | vtx(4) | nonce(4) | phase | fpc(2) |
 // settle(2) | gap(2) | n_windows(1) | n * 4 bytes
@@ -87,6 +87,7 @@ std::vector<uint8_t> pack_rcf(const Rcf& r) {
   body.push_back(r.probe_profile);
   body.push_back(r.hop_ch);
   body.push_back(r.hop_epoch);
+  body.push_back(r.rec);
   put_crc(body);
   return body;
 }
@@ -105,6 +106,7 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.probe_profile = buf[14];
   r.hop_ch = buf[15];
   r.hop_epoch = buf[16];
+  r.rec = buf[17];
   return r;
 }
 
@@ -328,6 +330,7 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put16(body, t.rx_own);
   put16(body, t.rx_foreign);
   put16(body, t.rx_crcfail);
+  body.push_back(t.rec_status);
 
   put_crc(body);
   return body;
@@ -388,6 +391,7 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.rx_own = get16(buf, 89);
   t.rx_foreign = get16(buf, 91);
   t.rx_crcfail = get16(buf, 93);
+  t.rec_status = buf[95];
   return t;
 }
 

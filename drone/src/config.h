@@ -206,6 +206,16 @@ struct LowPowerCfg {
   int stale_ms = 2000;
 };
 
+// VTX onboard SD recorder (spec 2026-09-26-vtx-recorder). enable creates
+// the record VENC channel at boot; the GS record button starts/stops it.
+struct RecordCfg {
+  bool enable = false;
+  std::string dir = "/mnt/mmcblk0p1";  // mdev automount point of the SD card
+  int bitrate_kbps = 40000;            // CBR
+  int fps = 60;
+  int min_free_mb = 512;               // refuse to start / stop below this
+};
+
 struct Config {
   RadioCfg radio;
   FecCfg fec;
@@ -216,6 +226,7 @@ struct Config {
   AmpduCfg ampdu;
   AirClockCfg air_clock;
   LowPowerCfg low_power;
+  RecordCfg record;
   std::array<UepLayerCfg, 2> uep_layers() const;
 };
 

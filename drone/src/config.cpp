@@ -544,6 +544,23 @@ void parse_low_power(const Value& j, LowPowerCfg& lp) {
     fail("low_power.stale_ms", "must be in [100,60000]");
 }
 
+void parse_record(const Value& j, RecordCfg& r) {
+  check_known_keys(j, {"enable", "dir", "bitrate_kbps", "fps", "min_free_mb"}, "record");
+  assign_if_present(j, "enable", r.enable, "record");
+  assign_if_present(j, "dir", r.dir, "record");
+  assign_if_present(j, "bitrate_kbps", r.bitrate_kbps, "record");
+  assign_if_present(j, "fps", r.fps, "record");
+  assign_if_present(j, "min_free_mb", r.min_free_mb, "record");
+  if (r.bitrate_kbps < 2000 || r.bitrate_kbps > 80000)
+    fail("record.bitrate_kbps", "must be in [2000,80000]");
+  if (r.dir.empty() || r.dir[0] != '/') fail("record.dir", "must be an absolute path");
+  // The recorder matches record.dir against /proc/mounts' mount point,
+  // which never ends in '/': "/mnt/sd/" would read NotMounted forever.
+  while (r.dir.size() > 1 && r.dir.back() == '/') r.dir.pop_back();
+  if (r.min_free_mb < 0 || r.min_free_mb > 1000000)
+    fail("record.min_free_mb", "must be in [0,1000000]");
+}
+
 void parse_ampdu(const Value& j, AmpduCfg& a) {
   check_known_keys(j, {"max_num", "max_time", "min_mcs_20", "min_mcs_40"}, "ampdu");
   assign_if_present(j, "max_num", a.max_num, "ampdu");
@@ -618,8 +635,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   } clear_on_exit;
 
   static const char* kSections[] = {"radio", "fec", "encoder", "venc",
-                                    "link", "msp", "ampdu", "air_clock", "low_power"};
-  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock", "low_power"}, "");
+                                    "link", "msp", "ampdu", "air_clock", "low_power", "record"};
+  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock", "low_power", "record"}, "");
 
   // A whole missing section means none of its keys are visited below, so
   // report the section itself. Dropping a [table] while hand-transcribing is
@@ -637,6 +654,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (j.contains("ampdu")) parse_ampdu(j.at("ampdu"), cfg.ampdu);
   if (j.contains("air_clock")) parse_air_clock(j.at("air_clock"), cfg.air_clock);
   if (j.contains("low_power")) parse_low_power(j.at("low_power"), cfg.low_power);
+  if (j.contains("record")) parse_record(j.at("record"), cfg.record);
 
   // Cross-section checks, only when the mode is on: a disabled mode's
   // values are irrelevant and the minimal configs the tests load (msp off,
@@ -651,6 +669,10 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       fail("low_power.bitrate_kbps",
            "must be within [encoder.bitrate_min_kbps, encoder.bitrate_max_kbps]");
   }
+
+  if (cfg.record.enable &&
+      (cfg.record.fps < 1 || cfg.record.fps > static_cast<int>(cfg.venc.core.fps)))
+    fail("record.fps", "must be in [1, venc.fps]");
 
   return cfg;
 }

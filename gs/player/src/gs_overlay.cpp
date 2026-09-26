@@ -299,9 +299,11 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     }
 
     y += standard->glyph_h + gap6;  // see the comment on the line above
-    const int rec_w = text_width(*secondary, "● REC FAULT");
+    // Sized for dvr.target, not for every target (gs_layer.h rec_worst).
+    const char* rec_worst_s = rec_worst(rec_target_);
+    const int rec_w = text_width(*secondary, rec_worst_s);
     place(GsFieldId::kRec, secondary, right - rec_w - pad_h(secondary), y,
-          "● REC FAULT");
+          rec_worst_s);
   }
 
   // --- bottom right: video health ------------------------------------
@@ -567,29 +569,14 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
                            (kMeterW * scale_) / 100.0)
                    : 0;
       break;
-    case GsFieldId::kRec:
-      switch (ps.rec.kind) {
-        case RecState::Kind::kArmed:
-          // Armed draws nothing at all -- an idle placeholder clock is
-          // permanent clutter, and "no REC field" already reads as "not
-          // recording". draw_field_ clears the box before it bails on the
-          // empty text, so a stopped recording's clock is erased.
-          break;
-        case RecState::Kind::kRecording:
-          // fmt_clock saturates internally (mm:ss, cap 99:59) -- already
-          // fixed-width for any int, no clamp needed here.
-          st.text = std::string(kDotFilled) + " REC " + fmt_clock(ps.rec.elapsed_s);
-          st.rgb = tok::kTextPrimary;
-          // aux distinguishes the dot's colour from the text's; draw_field_
-          // paints the leading glyph in kStatusRec when aux == 1.
-          st.aux = 1;
-          break;
-        case RecState::Kind::kFault:
-          st.text = std::string(kDotFilled) + " REC FAULT";
-          st.rgb = tok::kStatusCaution;
-          break;
-      }
+    case GsFieldId::kRec: {
+      // One text for both layouts and every target (gs_layer.h rec_text).
+      const RecText t = rec_text(ps.rec);
+      st.text = t.text;
+      st.rgb = t.rgb;
+      st.aux = t.aux;
       break;
+    }
     case GsFieldId::kLossLabel:
       st.rgb = tok::kTextLabel;
       st.text = "LOSS";
@@ -805,17 +792,30 @@ void GsOverlay::draw_field_(GsFieldId id, const FieldState& st, const Surface& s
 
   if (st.text.empty()) return;  // cleared above; nothing more to draw
 
+  int pen_x = f.pen_x;
+  if (id == GsFieldId::kRec) {
+    // kRec's box is sized to rec_worst(target) (gs_layer.h), which is
+    // wider than most of the strings rec_text() actually returns -- a GS-only
+    // "REC mm:ss"/"REC FAULT" must land EXACTLY where it always did, not
+    // wherever the widest VTX+GS fault combo would start. Right-align
+    // within the box instead of drawing from its (fixed) left edge: the
+    // pad on both sides is symmetric, so box_right - pad - text_width is
+    // the mirror of layout()'s box_left + pad.
+    const int pad = (f.atlas->glyph_w - f.atlas->advance_x) / 2;
+    pen_x = f.box.x + f.box.w - pad - text_width(*f.atlas, st.text.c_str());
+  }
+
   // The recording dot takes kStatusRec while the rest of the line takes the
   // field colour -- one field, two colours, because they change together
   // and splitting them would double the dirty rects for no benefit.
   if (id == GsFieldId::kRec && st.aux == 1) {
-    const int adv = draw_text(s, *f.atlas, f.pen_x, f.baseline_y, kDotFilled,
+    const int adv = draw_text(s, *f.atlas, pen_x, f.baseline_y, kDotFilled,
                               tok::kStatusRec);
-    draw_text(s, *f.atlas, f.pen_x + adv, f.baseline_y,
+    draw_text(s, *f.atlas, pen_x + adv, f.baseline_y,
               st.text.c_str() + std::string(kDotFilled).size(), st.rgb);
     return;
   }
-  draw_text(s, *f.atlas, f.pen_x, f.baseline_y, st.text.c_str(), st.rgb);
+  draw_text(s, *f.atlas, pen_x, f.baseline_y, st.text.c_str(), st.rgb);
 }
 
 int GsOverlay::update(const GsSnapshot& snap, bool stale, const GsPlayerState& ps,

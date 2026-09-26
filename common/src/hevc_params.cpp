@@ -1,8 +1,8 @@
-#include "hevc_params.h"
+#include "mabur/hevc_params.h"
 
 #include <cassert>
 
-namespace maburplay {
+namespace mabur {
 namespace {
 
 // Locates the earliest start code (00 00 01 or 00 00 00 01) at or after
@@ -88,6 +88,25 @@ bool HevcParams::feed(const uint8_t* au, size_t n) {
   return complete();
 }
 
+bool HevcParams::feed_prefixed(const uint8_t* au, size_t n) {
+  size_t i = 0;
+  while (n - i >= 4) {
+    const size_t len = (static_cast<size_t>(au[i]) << 24) | (static_cast<size_t>(au[i + 1]) << 16) |
+                       (static_cast<size_t>(au[i + 2]) << 8) | static_cast<size_t>(au[i + 3]);
+    i += 4;
+    if (len == 0 || len > n - i) break;  // truncated or garbage: stop, never read past n
+    const uint8_t* p = au + i;
+    switch ((p[0] >> 1) & 0x3F) {
+      case 32: vps_.assign(p, p + len); break;
+      case 33: sps_.assign(p, p + len); break;
+      case 34: pps_.assign(p, p + len); break;
+      default: break;
+    }
+    i += len;
+  }
+  return complete();
+}
+
 std::vector<uint8_t> HevcParams::hvcc() const {
   assert(complete());
 
@@ -167,4 +186,4 @@ std::vector<uint8_t> annexb_to_length_prefixed(const uint8_t* au, size_t n) {
   return out;
 }
 
-}  // namespace maburplay
+}  // namespace mabur

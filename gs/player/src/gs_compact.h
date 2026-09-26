@@ -114,7 +114,10 @@ enum class GsBarField {
 
 class GsCompactBar final : public GsLayer {
  public:
-  explicit GsCompactBar(GsFont& font) : font_(font) {}
+  // rec_target sizes the kRec box (gs_layer.h rec_worst); the default is
+  // dvr.target's own default, "gs".
+  explicit GsCompactBar(GsFont& font, RecTarget rec_target = RecTarget::kGs)
+      : font_(font), rec_target_(rec_target) {}
 
   // Picks the LARGEST baked atlas whose worst-case rows (kMaxCards cards,
   // every value at the magnitude its clamp allows) both fit between the
@@ -165,7 +168,10 @@ class GsCompactBar final : public GsLayer {
   // Public (not just an implementation detail of layout()) so a worst-case
   // format change -- like the 40 MHz rung's width suffix -- can be pinned
   // by its own test rather than only indirectly through worst_row_width.
-  static std::string worst_case(GsBarField id, int n_cards);
+  // kRec's worst case depends on dvr.target (gs_layer.h rec_worst); every
+  // other field ignores rec_target.
+  static std::string worst_case(GsBarField id, int n_cards,
+                                RecTarget rec_target = RecTarget::kGs);
   // The number of card slots the line is currently drawn for, -1 before the
   // first update() has reconciled one.
   int debug_cards() const { return n_cards_; }
@@ -208,6 +214,7 @@ class GsCompactBar final : public GsLayer {
   const Field& f_(GsBarField id) const { return fields_[(size_t)id]; }
 
   GsFont& font_;
+  RecTarget rec_target_;
   Field fields_[(size_t)GsBarField::kCount];
   const MaskAtlas* atlas_ = nullptr;
   DirtyRect bounds_{0, 0, 0, 0};

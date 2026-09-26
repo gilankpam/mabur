@@ -60,6 +60,28 @@ uint64_t venc_cur_pts_us(void);
  * frees) and its size, or -1. Debug endpoint only. */
 int venc_snapshot_jpeg(uint8_t **out, size_t *out_len, int quality);
 
+/* VTX onboard recorder channel (spec 2026-09-26-vtx-recorder). A second
+ * H.265 CBR channel bound to the link's VPE port BEFORE the link channel:
+ * the single-task H.265 engine serves the most recently bound peer first,
+ * so the link keeps encoding ahead of it (docs/sd-record-findings-2026-09-26.md).
+ * Idle until venc_record_start(). */
+/* prefixed = 1: the AU is in MP4 layout (4-byte big-endian length before
+ * each NAL) and is_key came from the encoder's NAL table. prefixed = 0: an
+ * Annex-B fallback AU (no usable NAL table); the consumer should re-check
+ * is_key against the bitstream. */
+typedef void (*VencRecordSink)(void *user, const uint8_t *au, size_t len,
+	uint32_t pts_us, int is_key, int prefixed);
+typedef struct {
+	int enabled;            /* 0 = no channel is created */
+	uint32_t bitrate_kbps;  /* CBR */
+	uint32_t fps;           /* clamped to the sensor rate */
+} VencRecordConfig;
+/* Before venc_core_start. The sink runs on the record drain thread and must copy. */
+void venc_record_configure(const VencRecordConfig *cfg, VencRecordSink sink, void *user);
+int venc_record_start(void);        /* 0 ok, -1 no record channel */
+void venc_record_stop(void);        /* returns once the last AU reached the sink (<= 500 ms) */
+void venc_record_request_idr(void);
+
 #ifdef __cplusplus
 }
 #endif

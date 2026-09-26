@@ -32,6 +32,22 @@ TEST(defaults_from_bundle) {
   CHECK(c.dvr.burned.fps_cap == 60);
   // The drone ships the colortrans sensor bin, so the GS ships the reverse ON.
   CHECK(c.colortrans.enable == true);
+  CHECK(c.dvr.target == "gs");
+}
+
+// dvr.target (spec 2026-09-26-vtx-recorder): which recorders the record
+// button drives. Default "gs" (identical to pre-feature behaviour).
+TEST(dvr_target_values_and_strictness) {
+  auto c = maburplay::load_config(write_tmp_play("[dvr]\ntarget = \"both\"\n"));
+  CHECK(c.dvr.target == "both");
+  c = maburplay::load_config(write_tmp_play("[dvr]\ntarget = \"vtx\"\n"));
+  CHECK(c.dvr.target == "vtx");
+  c = maburplay::load_config(write_tmp_play("[dvr]\nautostart = false\n"));
+  CHECK(c.dvr.target == "gs");
+  std::string msg;
+  try { maburplay::load_config(write_tmp_play("[dvr]\ntarget = \"sd\"\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("dvr.target") != std::string::npos);
 }
 
 TEST(values_and_strictness) {

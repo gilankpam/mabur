@@ -1,9 +1,9 @@
-#ifndef MABUR_PLAYER_DVR_NAME_H_
-#define MABUR_PLAYER_DVR_NAME_H_
+#ifndef MABUR_DVR_NAME_H_
+#define MABUR_DVR_NAME_H_
 
 #include <string>
 
-namespace maburplay {
+namespace mabur {
 
 // Mints DVR recording paths: `<dir>/record-NNNN.mp4`, %04d, zero-based.
 //
@@ -32,6 +32,6 @@ class DvrNamer {
   int last_issued_ = -1;
 };
 
-}  // namespace maburplay
+}  // namespace mabur
 
-#endif  // MABUR_PLAYER_DVR_NAME_H_
+#endif  // MABUR_DVR_NAME_H_

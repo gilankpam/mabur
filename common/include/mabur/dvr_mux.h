@@ -1,12 +1,12 @@
-#ifndef MABUR_PLAYER_DVR_MUX_H_
-#define MABUR_PLAYER_DVR_MUX_H_
+#ifndef MABUR_DVR_MUX_H_
+#define MABUR_DVR_MUX_H_
 
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
-namespace maburplay {
+namespace mabur {
 
 // Fragmented MP4 (init segment + moof/mdat fragments). One video track,
 // hvc1, timescale 1'000'000 (pts_us native). No B-frames in this encoder
@@ -27,11 +27,36 @@ class DvrMux {
   // pts_us: 32-bit capture stamp, unwrapped internally to 64-bit monotonic.
   // key: AU is IRAP. Fragments are cut at each key AU or when fragment_ms
   // elapsed since the fragment's first sample, whichever first; a fragment
-  // is flushed to disk whole (moof+mdat in one write) so a crash loses at
-  // most the open fragment.
+  // is written out whole when it closes (moof + mdat header, then each
+  // sample's payload streamed from its own buffer, then one fflush) so a
+  // crash loses at most the open fragment -- sync() after it makes that
+  // hold across power loss too.
   void write_sample(const uint8_t* au, size_t n, uint32_t pts_us, bool key);
 
-  void close();  // flushes the open fragment
+  // Same, for a sample that is already in MP4 layout (each NAL behind a
+  // 4-byte big-endian length) -- the drone's VTX recorder builds that while
+  // copying out of the encoder, so it skips the conversion and hands the
+  // buffer over by move. write_sample() is exactly
+  // write_sample_prefixed(annexb_to_length_prefixed(au, n), ...), so both
+  // paths write the same bytes.
+  void write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us, bool key);
+
+  // Flushes the open fragment and closes the file. durable = fsync first,
+  // so the directory entry and FAT chain reach the medium before fclose
+  // (the drone's VTX recorder; the GS DVR keeps the old behaviour).
+  void close(bool durable = false);
+
+  // Push everything written so far to the medium: fflush + fsync. False on
+  // failure or when no file is open. After a true return the file plays to
+  // the last flushed fragment even if power dies now.
+  bool sync();
+
+  // Bytes handed to the file since open() (init segment + fragments).
+  uint64_t bytes_written() const { return bytes_written_; }
+
+  // False once any write or flush to this file failed (card full or gone).
+  // Sticky until the next open().
+  bool ok() const { return ok_; }
 
   uint64_t samples() const { return samples_; }
   uint64_t fragments() const { return fragments_; }
@@ -54,6 +79,8 @@ class DvrMux {
 
   uint64_t samples_ = 0;
   uint64_t fragments_ = 0;
+  uint64_t bytes_written_ = 0;
+  bool ok_ = true;
 
   bool have_pts_ = false;
   uint32_t last_pts_raw_ = 0;
@@ -73,6 +100,6 @@ class DvrMux {
   uint32_t last_dur_us_ = 16667;
 };
 
-}  // namespace maburplay
+}  // namespace mabur
 
-#endif  // MABUR_PLAYER_DVR_MUX_H_
+#endif  // MABUR_DVR_MUX_H_

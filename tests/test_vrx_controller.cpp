@@ -642,3 +642,20 @@ TEST(restore_rung_rcf_in_the_same_tick_carries_restored_profile) {
   auto r1 = first_rcf(vrx, healthy(), t);
   CHECK(r1.profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
 }
+
+TEST(rcf_carries_the_rec_wish) {
+  auto vrx = make();
+  vrx.set_rec_wish(mabur::rc::kRecKnown | mabur::rc::kRecOn);
+  vrx.on_video(0.0);
+  std::optional<VrxController::Out> out;
+  double now = 0;
+  LinkHealth h{true, 0.0, 0.05, false};
+  while (!out || out->is_disc) {
+    now += 10;
+    vrx.on_video(now);
+    out = vrx.step(now, h);
+  }
+  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+  REQUIRE(r.has_value());
+  CHECK(r->rec == (mabur::rc::kRecKnown | mabur::rc::kRecOn));
+}

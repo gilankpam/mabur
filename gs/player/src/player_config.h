@@ -22,6 +22,9 @@ struct DvrCfg {
     int bitrate_kbps = 12000;
     int fps_cap = 30;   // encode is capped independently of display rate
   } burned;
+  // Where the record button records (spec 2026-09-26-vtx-recorder):
+  // "gs" = this GS's DVR only, "vtx" = the drone's SD card only, "both".
+  std::string target = "gs";
 };
 
 // MSP DisplayPort OSD. `port` must match maburgs' msp.out.port -- separate

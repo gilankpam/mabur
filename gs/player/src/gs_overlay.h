@@ -115,7 +115,10 @@ struct MaskAtlas;
 // the shm ring is slotted. And the quantize half is burned-DVR-only.)
 class GsOverlay final : public GsLayer {
  public:
-  explicit GsOverlay(GsFont& font) : font_(font) {}
+  // rec_target sizes the kRec box (gs_layer.h rec_worst); the default is
+  // dvr.target's own default, "gs".
+  explicit GsOverlay(GsFont& font, RecTarget rec_target = RecTarget::kGs)
+      : font_(font), rec_target_(rec_target) {}
 
   // Computes every field box for this surface size. Type sizes scale by
   // height/1080 and snap to an available atlas size; below an 18 px floor
@@ -221,6 +224,7 @@ class GsOverlay final : public GsLayer {
   const Field& f_(GsFieldId id) const { return fields_[(size_t)id]; }
 
   GsFont& font_;
+  RecTarget rec_target_;
   Field fields_[(size_t)GsFieldId::kCount];
   DirtyRect bounds_{0, 0, 0, 0};
   CardGeom card_geom_;

@@ -68,6 +68,7 @@
 #include "mi_ready.h"
 #include "telemetry.h"
 #include "peak_rate.h"
+#include "vtx_recorder.h"
 #include "tick_gate.h"
 #include "tx_queue.h"
 #include "usb_tx_pool.h"
@@ -278,6 +279,29 @@ std::vector<uint8_t> build_dot11_header(uint16_t seq) {
   h[23] = static_cast<uint8_t>((seq_ctl >> 8) & 0xff);
   return h;
 }
+
+// The recorder's encoder side: drone/venc/venc_record.c on the drone, a
+// channel that is never there on host builds (the recorder then reports
+// Disabled on a start, which a host build can never be asked for anyway).
+struct VencRecordChannel : mabur::RecordChannel {
+  bool start() override {
+#ifdef MABUR_HAVE_VENC
+    return venc_record_start() == 0;
+#else
+    return false;
+#endif
+  }
+  void stop() override {
+#ifdef MABUR_HAVE_VENC
+    venc_record_stop();
+#endif
+  }
+  void request_idr() override {
+#ifdef MABUR_HAVE_VENC
+    venc_record_request_idr();
+#endif
+  }
+};
 
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
 // FrameSink), the hot-thread-owned UepEncoder (via the shared_op handoff),
@@ -615,6 +639,16 @@ struct RealActuator : mabur::Actuator {
                  "maburd: retune %u -> %u: tx power re-applied (%s)\n",
                  static_cast<unsigned>(from), static_cast<unsigned>(ch),
                  tx_power_ok ? "ok" : "failed");
+  }
+
+  mabur::VtxRecorder* recorder = nullptr;  // null until the recorder exists
+  bool set_record(bool on) override {
+    if (dry_run) {
+      std::fprintf(stderr, "[dry-run] set_record(%d)\n", on ? 1 : 0);
+      return true;
+    }
+    if (recorder) recorder->request(on);   // non-blocking; outcome in rec_status
+    return true;
   }
 };
 
@@ -1339,6 +1373,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // commanded before the first transition ever happens.
   actuator.last_roi_qp = cfg.encoder.roi_qp_normal;
 
+  // VTX onboard recorder (spec 2026-09-26). Constructed before the agent
+  // (which reaches it through actuator.recorder) and before venc boots
+  // (venc_record_configure hands it the drain sink).
+  VencRecordChannel rec_channel;
+  mabur::VtxRecorder vtx_rec(cfg.record, rec_channel, cfg.venc.core.width,
+                             cfg.venc.core.height);
+  actuator.recorder = &vtx_rec;
+
   RcAgent agent(cfg, actuator, &ov_override);
 
 #ifdef MABUR_HAVE_VENC
@@ -1394,6 +1436,18 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       std::fprintf(stderr, "waited %d ms for the MI modules\n", mi.waited_ms);
     }
   }
+  {
+    VencRecordConfig rcfg{};
+    rcfg.enabled = cfg.record.enable ? 1 : 0;
+    rcfg.bitrate_kbps = static_cast<uint32_t>(cfg.record.bitrate_kbps);
+    rcfg.fps = static_cast<uint32_t>(cfg.record.fps);
+    venc_record_configure(
+        &rcfg,
+        [](void* u, const uint8_t* au, size_t n, uint32_t pts, int key, int prefixed) {
+          static_cast<mabur::VtxRecorder*>(u)->on_au(au, n, pts, key != 0, prefixed != 0);
+        },
+        &vtx_rec);
+  }
   if (venc_core_start(&cfg.venc.core, &vcb) != 0) {
     // Boot failure, not a transient: the wrapper's 2 s respawn is the retry.
     // Release the USB device on the way out (same shape as the
@@ -1407,6 +1461,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     return 3;
   }
 #endif
+  vtx_rec.start_thread();
   // After venc_core_start: RcAgent's first tick (below) already commands a
   // bitrate through the verbs, so the ring/stats the debug endpoint reads
   // are live from here on. localhost-only, always on -- bind failure logs
@@ -2701,6 +2756,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           ti.congestion_shed = agent.congestion_shed();
           ti.probe_on = agent.probe_on();
           ti.low_power = agent.low_power();
+          ti.rec_status = vtx_rec.status_byte();
           // "advanced in the last 2 s" (spec) approximated as "advanced over
           // the last telemetry tick" (~1 s here) — the collector runs on this
           // same 1 Hz cadence, so a stricter 2 s window would just double-count
@@ -2940,6 +2996,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   if (msp_thread.joinable()) msp_thread.join();
   tx_pool.stop();  // drain + join senders before device teardown
 
+  vtx_rec.shutdown();   // close the file before the record channel is torn down
 #ifdef MABUR_HAVE_VENC
   // After the thread joins above: the hot thread reads the frame ring that
   // stop() tears down.

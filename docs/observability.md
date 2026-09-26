@@ -860,6 +860,20 @@ next one, so sample once per `drone.tlm_seq` — `flightreport.py` does
 (`DRONE RX` section, silent on older recordings); `maburtop` shows them on
 the drone `radio` row. `docs/cca-on-findings-2026-09-23.md`.
 
+**2026-09-26 (VTX recorder).** `drone.rec = {state, err}` is the drone's
+onboard SD recorder status, taken from `Telem.rec_status` and sent on both
+sideport outputs (8300 maburtop, 8302 player OSD). `state`: 0 off,
+1 recording, 2 error. `err`: 0 none, 1 Disabled (`[record] enable =
+false` or ch1 failed to bind), 2 NoSlot (no `/sys/class/mmc_host/mmc*`),
+3 NoCard (no `/dev/mmcblk0p1`), 4 NotMounted (`record.dir` is not a
+mountpoint in `/proc/mounts`), 5 LowSpace (below `record.min_free_mb`),
+6 WriteError (a write or fsync failed, so the file was closed). An error
+stays until the GS wish goes off, which returns the status to `{0, 0}`.
+The next on retries; the drone never retries by itself. The value is repeated on every record until the next Telem.
+maburtop shows `VREC` / `VREC!<OFF|NOSLOT|NOCARD|NOMNT|FULL|WRERR>` on
+the drone line. The player turns the value into the REC field's VTX leg
+(`docs/vtx-recorder.md`). Recordings made before this date have no key.
+
 **2026-09-06 (air clock).** `drone.air_backlog_max_ms` is the per-window
 max of the drone's modelled air backlog (`AirClock`, spec
 2026-09-06; `docs/link-adaptation.md` "Drone air clock"),

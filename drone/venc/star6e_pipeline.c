@@ -8,6 +8,7 @@
 #include "pipeline_common.h"
 #include "venc_cfg.h"
 #include "venc_jpeg.h"
+#include "venc_record.h"
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -123,6 +124,19 @@ static void star6e_pipeline_pre_init_teardown(void)
 		.module = I6_SYS_MOD_VPE, .device = 0, .channel = 0, .port = 0 };
 	MI_SYS_ChnPort_t venc_port = {
 		.module = I6_SYS_MOD_VENC, .device = 0, .channel = 0, .port = 0 };
+	MI_U32 rec_dev = 0;
+	MI_SYS_ChnPort_t rec_port;
+
+	/* The VTX recorder's channel (venc_record.c) shares the VPE port with
+	 * ch0, so an unclean exit can leave it bound and created too. Same
+	 * order as ch0; every call is a harmless failure when ch1 never
+	 * existed (GetChnDevid leaves rec_dev at 0 then). */
+	(void)MI_VENC_GetChnDevid(STAR6E_RECORD_CHANNEL, &rec_dev);
+	rec_port = (MI_SYS_ChnPort_t){ .module = I6_SYS_MOD_VENC,
+		.device = rec_dev, .channel = STAR6E_RECORD_CHANNEL, .port = 0 };
+	(void)MI_SYS_UnBindChnPort(&vpe_port, &rec_port);
+	(void)MI_VENC_StopRecvPic(STAR6E_RECORD_CHANNEL);
+	(void)MI_VENC_DestroyChn(STAR6E_RECORD_CHANNEL);
 
 	(void)MI_SYS_UnBindChnPort(&vpe_port, &venc_port);
 	(void)MI_SYS_UnBindChnPort(&vif_port, &vpe_port);
@@ -1111,6 +1125,14 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	 * the encoder actually outputs it.  The RC fpsNum is separately capped
 	 * to STAR6E_VENC_INPUT_FPS_MAX — see venc_fps in pipeline_start. */
 
+	/* VTX onboard recorder: bound BEFORE the link channel, so the link is
+	 * the newest VPE peer and its encode runs first on the single-task
+	 * H.265 engine (docs/sd-record-findings-2026-09-26.md, R1 vs R2-R4).
+	 * Nothing may bind a new ACTIVE peer to this port after the link.
+	 * Non-fatal: a failure leaves the recorder reporting Disabled. */
+	(void)venc_record_attach(&state->vpe_port, state->image_width,
+		state->image_height, bind_src_fps);
+
 	/* FRAMEBASE is the only link mode this hop accepts.
 	 * I6_SYS_LINK_LOWLATENCY was tried on hardware 2026-08-31 (it would
 	 * overlap encode with sensor readout, worth ~4-6 ms of the `enc`
@@ -1121,6 +1143,7 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	ret = MI_SYS_BindChnPort2(&state->vpe_port, &state->venc_port,
 		bind_src_fps, bind_dst_fps, I6_SYS_LINK_FRAMEBASE, 0);
 	if (ret != 0) {
+		venc_record_detach();
 		fprintf(stderr, "ERROR: MI_SYS_Bind VPE->VENC failed %d\n", ret);
 		MI_SYS_UnBindChnPort(&state->vif_port, &state->vpe_port);
 		state->bound_vif_vpe = 0;
@@ -1149,6 +1172,7 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 
 	if (star6e_output_init(&state->output, VENC_RING_NAME) != 0) {
 		star6e_output_teardown(&state->output);
+		venc_record_detach();
 		MI_SYS_UnBindChnPort(&state->vpe_port, &state->venc_port);
 		state->bound_vpe_venc = 0;
 		MI_SYS_UnBindChnPort(&state->vif_port, &state->vpe_port);
@@ -1283,6 +1307,10 @@ void star6e_pipeline_stop(Star6ePipelineState *state)
 	 * must run while the SDK still holds a consistent view of the VPE
 	 * source.  Idempotent; safe even if init was skipped or failed. */
 	venc_jpeg_shutdown();
+
+	/* The record channel is ACTIVE when recording: detach runs StopRecvPic
+	 * -> drain -> unbind -> destroy, the same order as ch0 below. */
+	venc_record_detach();
 
 	/* MI teardown order: StopRecvPic the VENC consumer BEFORE unbinding
 	 * its input port.  The previous Star6E order unbound VPE→VENC first and

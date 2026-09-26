@@ -304,6 +304,142 @@ TEST(the_recording_indicator_never_dims_on_a_stale_link) {
         bar.debug_field_text(s, false, ps, GsBarField::kRec));
 }
 
+// Fix round 1 (2026-09-26): kRec's box is sized to kRecWorst, far wider
+// than a GS-only state's own text, so drawing left-aligned from the box's
+// fixed left edge put the indicator ~577 px further left than it used to
+// sit. draw_field_ must right-align instead -- a short state's own ink
+// ends at the SAME column as the widest state's, both flush with the
+// box's right edge (which the anchored-top-right test above already pins).
+TEST(short_rec_text_ends_flush_with_the_box_right_edge_like_the_widest_state) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f, RecTarget::kBoth);  // kRecWorst reachable only here
+  REQUIRE(bar.layout(1920, 1080, &err));
+  const GsSnapshot s = nominal();
+  Canvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+
+  auto rightmost_ink = [&]() {
+    const DirtyRect b = bar.debug_field_box(GsBarField::kRec);
+    int x1 = -1;
+    for (int y = b.y; y < b.y + b.h; ++y)
+      for (int x = b.x; x < b.x + b.w; ++x)
+        if (c.px[(size_t)y * 1920 + x] && x > x1) x1 = x;
+    return x1;
+  };
+
+  GsPlayerState ps = player_nominal();
+  ps.rec.kind = RecState::Kind::kRecording;
+  ps.rec.elapsed_s = 9;  // "● REC 00:09" -- far shorter than kRecWorst
+  bar.update(s, false, ps, c.s, &rects);
+  const int short_x1 = rightmost_ink();
+  REQUIRE(short_x1 >= 0);
+
+  rects.clear();
+  ps.rec.kind = RecState::Kind::kFault;
+  ps.rec.vtx = RecState::Vtx::kNoCard;  // "● REC GS FAULT VTX NO CARD" == kRecWorst
+  bar.update(s, false, ps, c.s, &rects);
+  const int widest_x1 = rightmost_ink();
+  REQUIRE(widest_x1 >= 0);
+
+  CHECK(short_x1 == widest_x1);
+}
+
+// Final-review fix (2026-09-26): the kRec box is sized per dvr.target --
+// same rule and same reasoning as the essential overlay's tests.
+std::vector<RecState> rec_states_for(RecTarget t) {
+  std::vector<RecState> out;
+  const RecState::Kind kinds[] = {RecState::Kind::kArmed, RecState::Kind::kRecording,
+                                  RecState::Kind::kFault};
+  const RecState::Vtx vtxs[] = {RecState::Vtx::kNone,   RecState::Vtx::kWait,
+                                RecState::Vtx::kRecording, RecState::Vtx::kNoCard,
+                                RecState::Vtx::kFull,   RecState::Vtx::kFault,
+                                RecState::Vtx::kOff};
+  const int secs[] = {0, 9, 767, 5999, 100000};
+  for (RecState::Kind k : kinds)
+    for (RecState::Vtx v : vtxs) {
+      if (t == RecTarget::kGs && v != RecState::Vtx::kNone) continue;
+      for (int sec : secs) {
+        RecState r;
+        r.kind = k;
+        r.elapsed_s = sec;
+        r.vtx = v;
+        r.vtx_elapsed_s = sec;
+        r.gs_target = t != RecTarget::kVtx;
+        out.push_back(r);
+      }
+    }
+  return out;
+}
+
+TEST(rec_box_for_the_gs_target_is_the_pre_vtx_recorder_box) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  for (GsCompactBar* bar : {new GsCompactBar(f), new GsCompactBar(f, RecTarget::kGs)}) {
+    REQUIRE(bar->layout(1920, 1080, &err));
+    const MaskAtlas* a = f.atlas(bar->debug_atlas_px());
+    REQUIRE(a != nullptr);
+    const DirtyRect b = bar->debug_field_box(GsBarField::kRec);
+    CHECK(b.w == text_width(*a, "\xE2\x97\x8F REC FAULT") + 2 * ((a->glyph_w - a->advance_x) / 2));
+    delete bar;
+  }
+}
+
+TEST(every_rec_text_for_the_target_fits_its_rec_box) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  for (RecTarget t : {RecTarget::kGs, RecTarget::kVtx, RecTarget::kBoth}) {
+    GsCompactBar bar(f, t);
+    REQUIRE(bar.layout(1920, 1080, &err));
+    const MaskAtlas* a = f.atlas(bar.debug_atlas_px());
+    REQUIRE(a != nullptr);
+    const DirtyRect b = bar.debug_field_box(GsBarField::kRec);
+    const int inner = b.w - 2 * ((a->glyph_w - a->advance_x) / 2);
+    int widest = 0;
+    for (const RecState& r : rec_states_for(t)) {
+      const std::string txt = rec_text(r).text;
+      const int w = text_width(*a, txt.c_str());
+      CHECK(w <= inner);
+      widest = std::max(widest, w);
+    }
+    CHECK(widest == inner);
+  }
+}
+
+TEST(rec_redraw_for_the_gs_target_leaves_the_strip_left_of_its_box_alone) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar wide(f, RecTarget::kBoth);
+  REQUIRE(wide.layout(1920, 1080, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  const DirtyRect wb = wide.debug_field_box(GsBarField::kRec);
+  const DirtyRect b = bar.debug_field_box(GsBarField::kRec);
+  REQUIRE(wb.x < b.x);
+  Canvas c(1920, 1080);
+  for (int y = b.y; y < b.y + b.h; ++y)
+    for (int x = wb.x; x < b.x; ++x) c.px[(size_t)y * 1920 + x] = 0xff123456u;
+  std::vector<DirtyRect> rects;
+  GsPlayerState ps = player_nominal();
+  ps.rec.kind = RecState::Kind::kRecording;
+  ps.rec.elapsed_s = 767;
+  bar.update(nominal(), false, ps, c.s, &rects);
+  ps.rec.kind = RecState::Kind::kFault;
+  bar.update(nominal(), false, ps, c.s, &rects);
+  ps.rec.kind = RecState::Kind::kArmed;
+  bar.update(nominal(), false, ps, c.s, &rects);
+  int kept = 0, total = 0;
+  for (int y = b.y; y < b.y + b.h; ++y)
+    for (int x = wb.x; x < b.x; ++x, ++total)
+      if (c.px[(size_t)y * 1920 + x] == 0xff123456u) ++kept;
+  CHECK(total > 0);
+  CHECK(kept == total);
+}
+
 // The indicator is anchored top-right and stays there: neither the
 // recorder's state nor the card count may move it, and it must not drag
 // the centred rows around the way an in-row box did.

@@ -726,6 +726,156 @@ TEST(recording_states_render_distinctly) {
         std::string(kDotFilled) + " REC FAULT");
 }
 
+// Fix round 1 (2026-09-26): kRec's box is sized to kRecWorst, far wider
+// than a GS-only state's own text, so drawing left-aligned from the box's
+// fixed left edge put "REC 12:47" ~370 px further left than it used to
+// sit. draw_field_ must right-align instead -- a short state's own ink
+// ends at the SAME column as the widest state's, both flush with the
+// box's right edge.
+TEST(short_rec_text_ends_flush_with_the_box_right_edge_like_the_widest_state) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f, RecTarget::kBoth);  // kRecWorst reachable only here
+  REQUIRE(ov.layout(1920, 1080, &err));
+  const GsSnapshot s = nominal();
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+
+  auto rightmost_ink = [&]() {
+    const DirtyRect b = ov.debug_field_box(GsFieldId::kRec);
+    int x1 = -1;
+    for (int y = b.y; y < b.y + b.h; ++y)
+      for (int x = b.x; x < b.x + b.w; ++x)
+        if (c.px[(size_t)y * 1920 + x] && x > x1) x1 = x;
+    return x1;
+  };
+
+  GsPlayerState p;
+  p.rec.kind = RecState::Kind::kRecording;
+  p.rec.elapsed_s = 767;  // "● REC 12:47" -- far shorter than kRecWorst
+  ov.update(s, false, p, c.s, &rects);
+  const int short_x1 = rightmost_ink();
+  REQUIRE(short_x1 >= 0);
+
+  rects.clear();
+  p.rec.kind = RecState::Kind::kFault;
+  p.rec.vtx = RecState::Vtx::kNoCard;  // "● REC GS FAULT VTX NO CARD" == kRecWorst
+  ov.update(s, false, p, c.s, &rects);
+  const int widest_x1 = rightmost_ink();
+  REQUIRE(widest_x1 >= 0);
+
+  CHECK(short_x1 == widest_x1);
+}
+
+// Final-review fix (2026-09-26): the kRec box is sized per dvr.target.
+// Every RecState a player with this target can hand the overlay: main.cpp
+// sets gs_target = (target != vtx), and the VTX leg is only ever non-kNone
+// when the VTX is a target. elapsed covers the saturated clock too.
+std::vector<RecState> rec_states_for(RecTarget t) {
+  std::vector<RecState> out;
+  const RecState::Kind kinds[] = {RecState::Kind::kArmed, RecState::Kind::kRecording,
+                                  RecState::Kind::kFault};
+  const RecState::Vtx vtxs[] = {RecState::Vtx::kNone,   RecState::Vtx::kWait,
+                                RecState::Vtx::kRecording, RecState::Vtx::kNoCard,
+                                RecState::Vtx::kFull,   RecState::Vtx::kFault,
+                                RecState::Vtx::kOff};
+  const int secs[] = {0, 9, 767, 5999, 100000};
+  for (RecState::Kind k : kinds)
+    for (RecState::Vtx v : vtxs) {
+      if (t == RecTarget::kGs && v != RecState::Vtx::kNone) continue;
+      for (int s : secs) {
+        RecState r;
+        r.kind = k;
+        r.elapsed_s = s;
+        r.vtx = v;
+        r.vtx_elapsed_s = s;
+        r.gs_target = t != RecTarget::kVtx;
+        out.push_back(r);
+      }
+    }
+  return out;
+}
+
+// Default dvr.target "gs": the box is exactly the pre-VTX-recorder one,
+// sized on "● REC FAULT" -- not on the GS+VTX worst case, whose extra
+// ~15 glyphs of box would clear (and, through repaint_intersecting, win
+// over) FC OSD cells the REC field never draws on.
+TEST(rec_box_for_the_gs_target_is_the_pre_vtx_recorder_box) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_DESIGN, &err));
+  for (GsOverlay* ov : {new GsOverlay(f), new GsOverlay(f, RecTarget::kGs)}) {
+    REQUIRE(ov->layout(1920, 1080, &err));
+    const MaskAtlas* a = f.atlas(ov->debug_field_atlas_px(GsFieldId::kRec));
+    REQUIRE(a != nullptr);
+    const DirtyRect b = ov->debug_field_box(GsFieldId::kRec);
+    CHECK(b.w == text_width(*a, "\xE2\x97\x8F REC FAULT") + (a->glyph_w - a->advance_x));
+    delete ov;
+  }
+}
+
+// vtx / both: every string rec_text() can produce for that target fits
+// inside the box (inner width = box minus the shadow pad on both sides).
+TEST(every_rec_text_for_the_target_fits_its_rec_box) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_DESIGN, &err));
+  for (RecTarget t : {RecTarget::kGs, RecTarget::kVtx, RecTarget::kBoth}) {
+    GsOverlay ov(f, t);
+    REQUIRE(ov.layout(1920, 1080, &err));
+    const MaskAtlas* a = f.atlas(ov.debug_field_atlas_px(GsFieldId::kRec));
+    REQUIRE(a != nullptr);
+    const DirtyRect b = ov.debug_field_box(GsFieldId::kRec);
+    const int inner = b.w - (a->glyph_w - a->advance_x);
+    int widest = 0;
+    for (const RecState& r : rec_states_for(t)) {
+      const std::string txt = rec_text(r).text;
+      const int w = text_width(*a, txt.c_str());
+      CHECK(w <= inner);
+      widest = std::max(widest, w);
+    }
+    // And no slack: the box is the widest reachable string, not wider.
+    CHECK(widest == inner);
+  }
+}
+
+// The strip a both-sized box would cover left of the gs-sized one belongs
+// to whatever else is on the surface (the MSP grid): a REC redraw with the
+// gs target must leave it alone.
+TEST(rec_redraw_for_the_gs_target_leaves_the_strip_left_of_its_box_alone) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_DESIGN, &err));
+  GsOverlay wide(f, RecTarget::kBoth);
+  REQUIRE(wide.layout(1920, 1080, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  const DirtyRect wb = wide.debug_field_box(GsFieldId::kRec);
+  const DirtyRect b = ov.debug_field_box(GsFieldId::kRec);
+  REQUIRE(wb.x < b.x);
+  OverlayCanvas c(1920, 1080);
+  // Stand-in MSP ink across the whole strip.
+  for (int y = b.y; y < b.y + b.h; ++y)
+    for (int x = wb.x; x < b.x; ++x) c.px[(size_t)y * 1920 + x] = 0xff123456u;
+  std::vector<DirtyRect> rects;
+  GsPlayerState p;
+  p.rec.kind = RecState::Kind::kRecording;
+  p.rec.elapsed_s = 767;
+  ov.update(nominal(), false, p, c.s, &rects);
+  p.rec.kind = RecState::Kind::kFault;
+  ov.update(nominal(), false, p, c.s, &rects);
+  p.rec.kind = RecState::Kind::kArmed;
+  ov.update(nominal(), false, p, c.s, &rects);
+  int kept = 0, total = 0;
+  for (int y = b.y; y < b.y + b.h; ++y)
+    for (int x = wb.x; x < b.x; ++x, ++total)
+      if (c.px[(size_t)y * 1920 + x] == 0xff123456u) ++kept;
+  CHECK(total > 0);
+  CHECK(kept == total);
+}
+
 // Text alone doesn't prove the pixels go away: the recording clock is
 // already painted when the button stops it, and only draw_field_'s clear
 // erases it. Without that, "REC 12:47" freezes on screen forever.
