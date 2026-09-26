@@ -33,8 +33,10 @@
 #include "osd_source.h"
 #include "player_config.h"
 #include "rec_button.h"
+#include "rec_control.h"  // maburgs::kRecControlPort (Task 7)
 #include "ring_client.h"
 #include "video_backend.h"
+#include "vtx_rec_client.h"  // sends the button's VTX wish to maburgs (Task 8)
 #include "splash_image.h"  // startup splash asset + cover-fit painter
 
 #ifdef MABUR_PLAYER_HW
@@ -847,6 +849,12 @@ int main(int argc, char** argv) {
   // the record button flips it. Declared here because start_burn_if_needed
   // below reads it.
   bool rec_on = cfg.dvr.autostart;
+  // dvr.target (spec 2026-09-26): which recorders the button drives.
+  const bool rec_gs = cfg.dvr.target != "vtx";
+  const bool rec_vtx = cfg.dvr.target != "gs";
+  maburplay::VtxRecClient vtx_rec;
+  if (!vtx_rec.open(maburgs::kRecControlPort))
+    std::fprintf(stderr, "maburplay: rec: VTX wish socket failed -- the drone recorder will not follow the button\n");
   // dvr.mode "burned": the recording is produced by re-encoding decoded
   // frames with the OSD composited in by the hardware encoder, so the
   // BurnRecorder owns the file and the raw remux in the ring sink below is
@@ -909,7 +917,7 @@ int main(int argc, char** argv) {
   };
 
   auto start_burn_if_needed = [&]() {
-    if (burn || !burned_mode || !rec_on || !presenter) return;
+    if (burn || !burned_mode || !rec_on || !rec_gs || !presenter) return;
     auto rec = std::make_unique<maburplay::BurnRecorder>();
     maburplay::BurnCfg bc;
     // Palette (and with it the encoder's OSD region) whenever EITHER overlay
@@ -1071,6 +1079,10 @@ int main(int argc, char** argv) {
     rec_on = true;
     gs_rec.reset();  // the OSD clock counts THIS file
     dvr_open_failed = false;
+    if (!rec_gs) {
+      std::fprintf(stderr, "maburplay: rec: START (vtx only)\n");
+      return;
+    }
 #ifdef MABUR_PLAYER_HW
     if (burned_mode) {
       start_burn_if_needed();
@@ -1099,6 +1111,10 @@ int main(int argc, char** argv) {
   auto rec_stop = [&]() {
     if (!rec_on) return;
     rec_on = false;
+    if (!rec_gs) {
+      std::fprintf(stderr, "maburplay: rec: STOP (vtx only)\n");
+      return;
+    }
     if (!burned_mode) {
       // Read BEFORE the close, and gated on dvr_open. samples() survives
       // close() and is only cleared by the next open(), so with a file in
@@ -1206,7 +1222,7 @@ int main(int argc, char** argv) {
         // slices whose references are not in the file. A no-op for the
         // first recording: params.feed() only runs on is_key, so
         // complete() cannot first become true anywhere but a key AU.
-        if (!dvr_open && params.complete() && is_key) {
+        if (!dvr_open && rec_gs && params.complete() && is_key) {
           const std::string path = dvr_filename(cfg.dvr.dir);
           dvr_open = dvr.open(path, params.hvcc(), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
           if (!dvr_open) {
@@ -1506,6 +1522,8 @@ int main(int argc, char** argv) {
         rec_start();
       }
     }
+    // Every iteration: sends on change, re-sends each second (VtxRecClient).
+    vtx_rec.tick(rec_on && rec_vtx, mono_ms());
     // Idle window: true when no release is due within the next 8 ms, so
     // the heavy 1 Hz blocks below (stats/statvfs, lat flush, OSD compose)
     // run clear of a release deadline. This REDUCES misses, it does not

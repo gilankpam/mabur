@@ -14,6 +14,7 @@ autostart   = false        # true = record from the start; false = wait for the 
 dir         = "/media/dvr"
 fragment_ms = 1000
 mode        = "burned"     # "raw" = video exactly as received; "burned" = re-encoded with the OSD drawn in
+target      = "gs"         # where the record button records: "gs" = here, "vtx" = the drone's SD card, "both"
 
 [dvr.burned]
 bitrate_kbps = 8000
