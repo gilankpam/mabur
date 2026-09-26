@@ -23,3 +23,30 @@ if(EMSCRIPTEN)
     -sASYNCIFY -sMODULARIZE -sEXPORT_NAME=createRxProbe -sEXIT_RUNTIME
     -sENVIRONMENT=web,worker --bind)
 endif()
+
+# --- gsweb: mabur receive core (replay + live) ------------------------------
+set(MABUR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." CACHE PATH "mabur checkout")
+# Receive subset of mabur_common + FrameStream. Never sw_encoder / uep_encoder
+# / fec_worker (pthread_setaffinity_np breaks the WASM build). If the link
+# reports an undefined mabur symbol, add the common/src file that defines it.
+add_library(gsweb_core STATIC
+  gsweb_core.cpp
+  ${MABUR_DIR}/common/src/crc16.cpp
+  ${MABUR_DIR}/common/src/gf256.cpp
+  ${MABUR_DIR}/common/src/sbi.cpp
+  ${MABUR_DIR}/common/src/frag.cpp
+  ${MABUR_DIR}/common/src/nal.cpp
+  ${MABUR_DIR}/common/src/uep_decoder.cpp
+  ${MABUR_DIR}/common/src/sw_wire.cpp
+  ${MABUR_DIR}/common/src/sw_decoder.cpp
+  ${MABUR_DIR}/common/src/frame_wire.cpp
+  ${MABUR_DIR}/common/src/rc_proto.cpp
+  ${MABUR_DIR}/common/src/profile.cpp
+  ${MABUR_DIR}/common/src/node.cpp
+  ${MABUR_DIR}/gs/src/frame_stream.cpp)
+target_include_directories(gsweb_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR} ${MABUR_DIR}/common/include ${MABUR_DIR}/gs/src)
+target_compile_options(gsweb_core PRIVATE -O3)
+
+add_executable(gsweb gsweb.cpp)
+target_link_libraries(gsweb PRIVATE gsweb_core)
