@@ -20,6 +20,7 @@ if(MABUR_BUILD_GS)
 endif()
 if(MABUR_BUILD_LINKBENCH)
   add_subdirectory(bench/linkbench)
+  add_subdirectory(bench/nhmreset)
 endif()
 # encosd needs mabur_player_core + the MPP root, so it can only exist after
 # gs/player has been added and only in the MABUR_PLAYER_HW (aarch64) build --
