@@ -73,6 +73,41 @@ it had not happened. `S96mabur stop` kills a PID read from
 something else. **Never chain work after a `stop` in the same ssh command:
 stop in one invocation, verify with `ps`, then swap in the next.**
 
+## Supported drone cards
+
+`tools/build-arm.sh` builds maburd for the **RTL8812EU** only (devourer
+rtl8822e) — the bench drone's card. The **RTL8812CU** (rtl8822c) is
+supported through a separate firmware image, the openipc-builder board
+`ssc338q_fpv_emax-wyvern-link-alpha`, whose `mabur.mk` builds devourer with
+the 8822C alone (`BR2_PACKAGE_MABUR_RADIO_8812CU`). One image, one chip: a
+binary on the wrong card fails at `CreateRtlDevice` ("unsupported chip").
+The shipped `usb_pid = 0` scan covers both (`a81a`, then `c812`/`c82c`), so
+the same `mabur.toml` boots either board; the `opened device 0bda:XXXX`
+line in `/tmp/mabur.log` says which card was found. GS cards stay 8812EU.
+
+The one behavioural difference is **TX power**. Mechanism is identical
+(same TXAGC block, same per-rate diffs, same offset), so maburcal and
+`power_mode = "offset"` work unchanged (`docs/calibration.md`) — but the
+anchor the relative walls ride on is not:
+
+- **8812EU**: per-channel efuse reference (39 on ch136, 53 on ch149 on the
+  bench unit), which absorbs the channel-to-channel gain difference — one
+  wall table covers every channel.
+- **8812CU**: devourer's flat reference, index 40 on every channel, no
+  efuse per-channel correction and no efuse rate shape. With the shipped
+  `power_mode = "none"` the card flies that flat, uncalibrated power. After
+  maburcal the walls are exact on the calibrated channel and approximate
+  (a few dB, unmeasured) elsewhere, e.g. after an auto-select move or an
+  in-flight hop. Calibrate on the channel flown most. Reading the CU's
+  efuse per channel is a devourer change, worth it only if a mismatch is
+  actually seen.
+
+The 8812CU is 2T2R, so STBC airs on two real chains; none of the 8822E
+constraints in devourer's `docs/8822e-quirks.md` (spur channels,
+single-path 1SS TX, DPDT front end) apply to it. **The 8812CU path is not
+hardware-verified on this bench** — there is no CU unit here; its only
+on-hardware check is an external tester's rig.
+
 ## Config format
 
 The three configs are TOML. The parser (`common/src/toml.cpp`) accepts a

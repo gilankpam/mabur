@@ -1052,7 +1052,11 @@ uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
   if (configured_pid != 0) {
     pids.push_back(configured_pid);
   } else {
-    pids = {0xa81a, 0x881a, 0x8812};
+    // Scan order: 8812EU, then the Jaguar3 8822C dies (RTL8812CU c812,
+    // RTL8822CU c82c -- the EMAX Wyvern Link board), then 8812AU. Which of
+    // these the binary can actually drive is devourer's build-time chip
+    // selection; an unbuilt chip fails at CreateRtlDevice, not here.
+    pids = {0xa81a, 0xc812, 0xc82c, 0x881a, 0x8812};
   }
   for (uint16_t pid : pids) {
     libusb_device_handle* h = libusb_open_device_with_vid_pid(ctx, vid, pid);
@@ -2884,16 +2888,16 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // power_mode == "offset": program the wall-equalized per-rate diff table
   // once at bring-up, then zero the global offset once (see below) — power
   // is constant for the life of the process, no per-op trim.
-  // SetTxPowerRateDiffs returns false on non-8822E boards (8822E-only in
-  // v1, TxPower.h) — warn and continue rather than aborting bring-up, so
-  // "offset" configured on an unsupported chip degrades to the untrimmed
-  // efuse table instead of failing to fly.
+  // SetTxPowerRateDiffs returns false on chips without a rate-diff table
+  // (both Jaguar3 dies, 8822E and 8822C, have one) — warn and continue
+  // rather than aborting bring-up, so "offset" configured on an unsupported
+  // chip degrades to the chip's default power instead of failing to fly.
   if (cfg.radio.power_mode == "offset") {
     if (!apply_offset_power_plan(cfg.radio.rate_walls_rel, cfg.radio.legacy_wall_rel,
                                  cfg.radio.wall_margin_db)) {
       std::fprintf(stderr,
-                   "warning: SetTxPowerRateDiffs failed (non-8822E board?); "
-                   "power_mode=offset will trim the untrimmed efuse table\n");
+                   "warning: SetTxPowerRateDiffs failed; power_mode=offset "
+                   "falls back to the chip's default TX power\n");
     }
   }
 
