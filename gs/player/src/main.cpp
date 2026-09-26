@@ -976,7 +976,9 @@ int main(int argc, char** argv) {
   // first record start does not pay for it on the main loop.
   if (burned_mode && presenter && (osd_raster || composer.gs_present())) burn_palette();
   start_burn_if_needed();
-  if (rec_on && burned_mode && !burn) {
+  // rec_gs: with dvr.target "vtx" the GS recorder is never started, so
+  // its absence is not news.
+  if (rec_on && rec_gs && burned_mode && !burn) {
     if (presenter) {
       // A real recorder failure: BurnRecorder::start() already logged why.
       std::fprintf(stderr,
@@ -990,7 +992,7 @@ int main(int argc, char** argv) {
     }
   }
 #else
-  if (rec_on && burned_mode) {
+  if (rec_on && rec_gs && burned_mode) {
     std::fprintf(stderr,
                  "maburplay: dvr.mode \"burned\" needs the hardware build (mpp encoder); "
                  "NOTHING is being recorded\n");
@@ -1633,7 +1635,7 @@ int main(int argc, char** argv) {
           // rec_on, not burned_mode alone: a player deliberately stopped (or
           // never started -- autostart:false) has nothing to report here, and
           // saying otherwise would be a false alarm on every late display.
-          if (rec_on && burned_mode && !burn)
+          if (rec_on && rec_gs && burned_mode && !burn)
             std::fprintf(stderr,
                          "maburplay: display acquired but the burned recorder did not start -- "
                          "NOTHING is being recorded\n");
