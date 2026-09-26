@@ -74,7 +74,11 @@ class VtxRecorder {
   void shutdown();       // join the worker, close the file; idempotent
 
   void request(bool on);
-  void on_au(const uint8_t* au, size_t n, uint32_t pts_us, bool key);
+  // prefixed: the AU is already in MP4 layout (4-byte length before each
+  // NAL) and `key` came from the encoder's NAL table -- the drain builds that
+  // while copying, so nothing here rescans it. Otherwise it is Annex-B and
+  // the key flag is double-checked against the bitstream.
+  void on_au(const uint8_t* au, size_t n, uint32_t pts_us, bool key, bool prefixed = false);
   bool service(int wait_ms);   // one worker iteration; true if it did work
 
   uint8_t status_byte() const { return status_.load(std::memory_order_relaxed); }
@@ -92,13 +96,14 @@ class VtxRecorder {
     std::vector<uint8_t> data;
     uint32_t pts = 0;
     bool key = false;
+    bool prefixed = false;  // MP4 layout already (see on_au)
   };
 
   RecErr probe() const;
   void do_start();
   void do_stop();
   void fail(RecErr e);
-  void write_au(const Au& a);
+  void write_au(Au& a);  // moves a.data into the muxer
   void set_status(RecState s, RecErr e) {
     status_.store(pack_rec_status(s, e), std::memory_order_relaxed);
   }

@@ -36,6 +36,10 @@ class HevcParams {
  public:
   // Feeds one AU; returns complete().
   bool feed(const uint8_t* au, size_t n);
+  // Same, for an AU already in MP4 layout (4-byte big-endian length before
+  // each NAL): walks length to length instead of scanning for start codes.
+  // Stops at the first length that runs past the buffer.
+  bool feed_prefixed(const uint8_t* au, size_t n);
   bool complete() const { return !vps_.empty() && !sps_.empty() && !pps_.empty(); }
 
   // Assembles an ISO/IEC 14496-15 HEVCDecoderConfigurationRecord (hvcC).

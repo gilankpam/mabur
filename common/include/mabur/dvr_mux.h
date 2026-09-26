@@ -33,6 +33,14 @@ class DvrMux {
   // hold across power loss too.
   void write_sample(const uint8_t* au, size_t n, uint32_t pts_us, bool key);
 
+  // Same, for a sample that is already in MP4 layout (each NAL behind a
+  // 4-byte big-endian length) -- the drone's VTX recorder builds that while
+  // copying out of the encoder, so it skips the conversion and hands the
+  // buffer over by move. write_sample() is exactly
+  // write_sample_prefixed(annexb_to_length_prefixed(au, n), ...), so both
+  // paths write the same bytes.
+  void write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us, bool key);
+
   // Flushes the open fragment and closes the file. durable = fsync first,
   // so the directory entry and FAT chain reach the medium before fclose
   // (the drone's VTX recorder; the GS DVR keeps the old behaviour).

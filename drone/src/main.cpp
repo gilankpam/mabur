@@ -1443,8 +1443,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     rcfg.fps = static_cast<uint32_t>(cfg.record.fps);
     venc_record_configure(
         &rcfg,
-        [](void* u, const uint8_t* au, size_t n, uint32_t pts, int key) {
-          static_cast<mabur::VtxRecorder*>(u)->on_au(au, n, pts, key != 0);
+        [](void* u, const uint8_t* au, size_t n, uint32_t pts, int key, int prefixed) {
+          static_cast<mabur::VtxRecorder*>(u)->on_au(au, n, pts, key != 0, prefixed != 0);
         },
         &vtx_rec);
   }

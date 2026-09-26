@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "mabur/dvr_mux.h"
+#include "mabur/hevc_params.h"
 #include "mtest.h"
 
 using mabur::DvrMux;
@@ -440,6 +441,33 @@ TEST(failed_reopen_after_a_good_open_reports_not_ok) {
   CHECK(m.bytes_written() == 0);
 
   std::remove(path.c_str());
+}
+
+TEST(prefixed_path_writes_byte_identical_files) {
+  // The drone's VTX recorder hands DvrMux frames that are already
+  // length-prefixed (write_sample_prefixed); the GS hands it start-code
+  // frames (write_sample). Same frames either way => the same file bytes.
+  const std::string pa = scratch_path("dvr_prefixed_a.mp4");
+  const std::string pb = scratch_path("dvr_prefixed_b.mp4");
+  const std::vector<uint8_t> hvcc(23, 0x5A);
+  mabur::DvrMux a, b;
+  REQUIRE(a.open(pa, hvcc, 1920, 1080, 1000));
+  REQUIRE(b.open(pb, hvcc, 1920, 1080, 1000));
+  for (int i = 0; i < 150; ++i) {
+    const bool key = (i % 60) == 0;
+    const auto au = fake_au(static_cast<uint8_t>(i));
+    const uint32_t pts = 1000u + static_cast<uint32_t>(i) * 16667u;
+    a.write_sample(au.data(), au.size(), pts, key);
+    b.write_sample_prefixed(mabur::annexb_to_length_prefixed(au.data(), au.size()), pts, key);
+  }
+  a.close();
+  b.close();
+  CHECK(a.samples() == b.samples());
+  CHECK(a.fragments() == b.fragments());
+  CHECK(a.bytes_written() == b.bytes_written());
+  CHECK(read_whole_file(pa) == read_whole_file(pb));
+  std::remove(pa.c_str());
+  std::remove(pb.c_str());
 }
 
 MTEST_MAIN

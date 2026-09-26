@@ -252,4 +252,33 @@ TEST(annexb_to_length_prefixed_skips_trailing_empty_start_code) {
   CHECK(out.size() == 4 + a.size());
 }
 
+TEST(feed_prefixed_matches_feed) {
+  std::vector<uint8_t> au = cat({kSc4, make_vps(), kSc3, make_sps(), kSc3, make_pps(),
+                                 kSc4, nal_header(19), {0xAA, 0xBB}});
+  HevcParams a, b;
+  CHECK(a.feed(au.data(), au.size()));
+  const auto lp = annexb_to_length_prefixed(au.data(), au.size());
+  CHECK(b.feed_prefixed(lp.data(), lp.size()));
+  CHECK(a.vps() == b.vps());
+  CHECK(a.sps() == b.sps());
+  CHECK(a.pps() == b.pps());
+  CHECK(a.hvcc() == b.hvcc());
+}
+
+TEST(feed_prefixed_stops_at_a_truncated_length) {
+  // A length that runs past the buffer must end the walk, never read past it.
+  std::vector<uint8_t> lp = annexb_to_length_prefixed(
+      cat({kSc4, make_vps()}).data(), cat({kSc4, make_vps()}).size());
+  lp.push_back(0x00); lp.push_back(0x00); lp.push_back(0x01); lp.push_back(0x00);  // len 256
+  lp.push_back(static_cast<uint8_t>(33 << 1)); lp.push_back(0x01);                  // 2 bytes only
+  HevcParams p;
+  CHECK(!p.feed_prefixed(lp.data(), lp.size()));
+  CHECK(p.vps() == make_vps());
+  CHECK(p.sps().empty());
+  lp.resize(3);                                                                      // < 4-byte length
+  HevcParams q;
+  CHECK(!q.feed_prefixed(lp.data(), lp.size()));
+  CHECK(q.vps().empty());
+}
+
 MTEST_MAIN

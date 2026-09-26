@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -267,6 +268,43 @@ TEST(channel_missing_reports_disabled) {
   feed(r, key_au(), 1000, true);           // not accepting: ignored
   r.service(0);
   CHECK(r.files() == 0);
+}
+
+TEST(length_prefixed_aus_record_without_rescanning) {
+  // The drain hands over MP4-framed (length-prefixed) AUs with the key flag
+  // taken from the SDK's NAL table; the recorder must mux them as-is.
+  Tree t;
+  FakeChannel ch;
+  VtxRecorder r(t.cfg(), ch, 1920, 1080, t.paths);
+  r.request(true);
+  r.service(0);
+  const auto k = mabur::annexb_to_length_prefixed(key_au().data(), key_au().size());
+  const auto p = mabur::annexb_to_length_prefixed(p_au().data(), p_au().size());
+  r.on_au(k.data(), k.size(), 1000, true, /*prefixed=*/true);
+  for (uint32_t i = 1; i < 30; ++i) r.on_au(p.data(), p.size(), 1000 + i * 16667, false, true);
+  r.service(0);
+  CHECK(r.state() == RecState::Recording);
+  CHECK(r.files() == 1);
+  const std::string path = r.current_path();
+  r.request(false);
+  r.service(0);
+  // Same frames through the start-code path must give the same file.
+  Tree t2;
+  FakeChannel ch2;
+  VtxRecorder r2(t2.cfg(), ch2, 1920, 1080, t2.paths);
+  r2.request(true);
+  r2.service(0);
+  feed(r2, key_au(), 1000, true);
+  for (uint32_t i = 1; i < 30; ++i) feed(r2, p_au(), 1000 + i * 16667, false);
+  r2.service(0);
+  const std::string path2 = r2.current_path();
+  r2.request(false);
+  r2.service(0);
+  std::ifstream fa(path, std::ios::binary), fb(path2, std::ios::binary);
+  const std::vector<char> a((std::istreambuf_iterator<char>(fa)), std::istreambuf_iterator<char>());
+  const std::vector<char> b((std::istreambuf_iterator<char>(fb)), std::istreambuf_iterator<char>());
+  CHECK(!a.empty());
+  CHECK(a == b);
 }
 
 MTEST_MAIN

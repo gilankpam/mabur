@@ -8,14 +8,15 @@
  *
  * Idle (no StartRecvPic) until venc_record_start(). A drain thread waits on
  * the channel fd (poll, 20 ms cap -- correctness never depends on the fd
- * firing: every wake Queries), concatenates a frame's packs into one Annex-B
- * AU and hands it to the sink. Record-channel MI calls take g_mx, never
+ * firing: every wake Queries), copies a frame's NAL slices straight into MP4
+ * layout (length-prefixed, rec_frame.h) and hands the AU to the sink. Record-channel MI calls take g_mx, never
  * venc_core's g_verb_lock: the link's verbs and the recorder never wait on
  * each other.
  */
 #include "venc_record.h"
 #include "venc_core.h"
 #include "star6e_pipeline.h"   /* STAR6E_VENC_INPUT_FPS_MAX */
+#include "rec_frame.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -52,15 +53,91 @@ void venc_record_configure(const VencRecordConfig *cfg, VencRecordSink sink, voi
 	g_sink_user = user;
 }
 
+/* Fallback frame assembly: Annex-B, as the SDK laid it out. Used only when a
+ * pack has no usable NAL table (packNum 0 or > 8, or a slice without a start
+ * code); the recorder then re-checks the key flag against the bitstream.
+ * Returns the bytes written into g_buf (cap already ensured). */
+static size_t assemble_annexb(const MI_VENC_Pack_t *packs, unsigned int count,
+	size_t cap, int *key)
+{
+	size_t len = 0;
+	unsigned int i;
+
+	for (i = 0; i < count; ++i) {
+		const MI_VENC_Pack_t *pk = &packs[i];
+		if (!pk->data)
+			continue;
+		if (pk->packNum > 0 && pk->packNum <= 8) {
+			unsigned int k;
+			for (k = 0; k < pk->packNum; ++k) {
+				unsigned int off = pk->packetInfo[k].offset;
+				unsigned int n = pk->packetInfo[k].length;
+				uint8_t nt = (uint8_t)pk->packetInfo[k].packType.h265Nalu;
+				if (n == 0 || off >= pk->length || n > pk->length - off)
+					continue;
+				if (n > cap - len)   /* overlapping packetInfo: never overrun g_buf */
+					continue;
+				memcpy(g_buf + len, pk->data + off, n);
+				len += n;
+				if (nt == 19 || nt == 20)
+					*key = 1;
+			}
+		} else if (pk->length > pk->offset &&
+		           pk->length - pk->offset <= cap - len) {
+			/* No table, or more NALs than packetInfo[8] can describe:
+			 * the whole pack, start codes and all. */
+			memcpy(g_buf + len, pk->data + pk->offset, pk->length - pk->offset);
+			len += pk->length - pk->offset;
+		}
+	}
+	return len;
+}
+
+/* Normal frame assembly: each NAL slice named by the SDK's table is copied
+ * straight into MP4 layout (4-byte length instead of the start code), and
+ * the key flag comes from the table's NAL types -- so the recorder neither
+ * rescans nor re-copies the frame (rec_frame.h). Returns the bytes written,
+ * or 0 when any pack can't be handled this way (caller falls back). */
+static size_t assemble_prefixed(const MI_VENC_Pack_t *packs, unsigned int count,
+	size_t cap, int *key)
+{
+	size_t len = 0;
+	unsigned int i;
+
+	for (i = 0; i < count; ++i) {
+		const MI_VENC_Pack_t *pk = &packs[i];
+		unsigned int k;
+		if (!pk->data)
+			continue;
+		if (pk->packNum == 0 || pk->packNum > 8)
+			return 0;
+		for (k = 0; k < pk->packNum; ++k) {
+			unsigned int off = pk->packetInfo[k].offset;
+			unsigned int n = pk->packetInfo[k].length;
+			size_t w;
+			int t = -1;
+			if (n == 0 || off >= pk->length || n > pk->length - off)
+				return 0;
+			w = rec_put_nal(g_buf + len, cap - len, pk->data + off, n, &t);
+			if (w == 0)
+				return 0;
+			len += w;
+			if (t >= 16 && t <= 23)   /* IRAP */
+				*key = 1;
+		}
+	}
+	return len;
+}
+
 /* 1 = delivered an AU, 0 = nothing ready, -1 = out of memory. */
 static int drain_one(int fd)
 {
 	MI_VENC_Pack_t packs[REC_MAX_PACKS];
 	MI_VENC_Stream_t stream;
 	MI_VENC_Stat_t stat;
-	size_t cap = 0, len = 0;
+	size_t cap = 0, len;
 	uint32_t pts;
-	int key = 0;
+	int key = 0, prefixed = 1;
 	unsigned int i;
 
 	if (fd >= 0) {
@@ -80,8 +157,10 @@ static int drain_one(int fd)
 	if (MI_VENC_GetStream(STAR6E_RECORD_CHANNEL, &stream, 40) != 0)
 		return 0;
 
+	/* A 3-byte start code becomes a 4-byte length: at most one byte of
+	 * growth per NAL, and a pack names at most 8. */
 	for (i = 0; i < stream.count; ++i)
-		cap += packs[i].length;
+		cap += packs[i].length + 8;
 	if (cap > g_buf_cap) {
 		uint8_t *nb = realloc(g_buf, cap);
 		if (!nb) {
@@ -91,35 +170,16 @@ static int drain_one(int fd)
 		g_buf = nb;
 		g_buf_cap = cap;
 	}
-	for (i = 0; i < stream.count; ++i) {
-		const MI_VENC_Pack_t *pk = &packs[i];
-		if (!pk->data)
-			continue;
-		if (pk->packNum > 0) {
-			unsigned int k;
-			for (k = 0; k < pk->packNum && k < 8; ++k) {
-				unsigned int off = pk->packetInfo[k].offset;
-				unsigned int n = pk->packetInfo[k].length;
-				uint8_t nt = (uint8_t)pk->packetInfo[k].packType.h265Nalu;
-				if (n == 0 || off >= pk->length || n > pk->length - off)
-					continue;
-				if (n > cap - len)   /* overlapping packetInfo: never overrun g_buf */
-					continue;
-				memcpy(g_buf + len, pk->data + off, n);
-				len += n;
-				if (nt == 19 || nt == 20)
-					key = 1;
-			}
-		} else if (pk->length > pk->offset &&
-		           pk->length - pk->offset <= cap - len) {
-			memcpy(g_buf + len, pk->data + pk->offset, pk->length - pk->offset);
-			len += pk->length - pk->offset;
-		}
+	len = assemble_prefixed(packs, stream.count, cap, &key);
+	if (len == 0) {
+		prefixed = 0;
+		key = 0;
+		len = assemble_annexb(packs, stream.count, cap, &key);
 	}
 	pts = (uint32_t)packs[0].timestamp;
 	MI_VENC_ReleaseStream(STAR6E_RECORD_CHANNEL, &stream);
 	if (len && g_sink)
-		g_sink(g_sink_user, g_buf, len, pts, key);
+		g_sink(g_sink_user, g_buf, len, pts, key, prefixed);
 	return 1;
 }
 

@@ -1,6 +1,7 @@
 #include "mabur/dvr_mux.h"
 
 #include <cstring>
+#include <utility>
 #include <unistd.h>
 
 #include "mabur/hevc_params.h"
@@ -361,6 +362,10 @@ uint64_t DvrMux::unwrap_pts(uint32_t pts_us) {
 }
 
 void DvrMux::write_sample(const uint8_t* au, size_t n, uint32_t pts_us, bool key) {
+  write_sample_prefixed(annexb_to_length_prefixed(au, n), pts_us, key);
+}
+
+void DvrMux::write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us, bool key) {
   uint64_t pts64 = unwrap_pts(pts_us);
 
   bool cut = false;
@@ -376,7 +381,7 @@ void DvrMux::write_sample(const uint8_t* au, size_t n, uint32_t pts_us, bool key
   if (pending_.empty()) fragment_start_pts_ = pts64;
 
   Sample s;
-  s.data = annexb_to_length_prefixed(au, n);
+  s.data = std::move(sample);
   s.pts64 = pts64;
   s.key = key;
   pending_.push_back(std::move(s));

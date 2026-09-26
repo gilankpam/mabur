@@ -10,6 +10,7 @@
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <utility>
 
 namespace mabur {
 namespace {
@@ -93,11 +94,13 @@ void VtxRecorder::request(bool on) {
   cv_.notify_all();
 }
 
-void VtxRecorder::on_au(const uint8_t* au, size_t n, uint32_t pts_us, bool key) {
-  // The channel's flag can miss an IDR (packNum == 0, an odd first pack);
-  // the bitstream cannot. Scanned outside mx_: the drain thread must not
-  // hold the writer off for a NAL walk.
-  key = key || au_is_irap(au, n);
+void VtxRecorder::on_au(const uint8_t* au, size_t n, uint32_t pts_us, bool key, bool prefixed) {
+  // An Annex-B AU only reaches here when the encoder gave no usable NAL
+  // table (packNum == 0, a slice without a start code), so its key flag may
+  // miss an IDR: check the bitstream. Scanned outside mx_ so the drain never
+  // holds the writer off for a NAL walk. A prefixed AU's flag came from that
+  // table and needs no second look.
+  if (!prefixed) key = key || au_is_irap(au, n);
   {
     std::lock_guard<std::mutex> lk(mx_);
     if (!accepting_) return;
@@ -110,7 +113,7 @@ void VtxRecorder::on_au(const uint8_t* au, size_t n, uint32_t pts_us, bool key) 
       idr_wanted_ = true;
     } else {
       need_key_ = false;
-      q_.push_back(Au{std::vector<uint8_t>(au, au + n), pts_us, key});
+      q_.push_back(Au{std::vector<uint8_t>(au, au + n), pts_us, key, prefixed});
     }
   }
   cv_.notify_all();
@@ -134,7 +137,7 @@ bool VtxRecorder::service(int wait_ms) {
   batch.swap(q_);
   lk.unlock();
   if (idr && running_) ch_.request_idr();
-  for (const Au& a : batch) {
+  for (Au& a : batch) {
     if (!running_) break;
     write_au(a);
   }
@@ -195,7 +198,7 @@ void VtxRecorder::do_stop() {
     accepting_ = false;
     rest.swap(q_);
   }
-  for (const Au& a : rest) {
+  for (Au& a : rest) {
     if (!running_) break;
     write_au(a);
   }
@@ -232,8 +235,11 @@ void VtxRecorder::fail(RecErr e) {
   set_status(RecState::Error, e);
 }
 
-void VtxRecorder::write_au(const Au& a) {
-  if (a.key) params_.feed(a.data.data(), a.data.size());
+void VtxRecorder::write_au(Au& a) {
+  if (a.key) {
+    if (a.prefixed) params_.feed_prefixed(a.data.data(), a.data.size());
+    else params_.feed(a.data.data(), a.data.size());
+  }
   if (!file_open_) {
     if (!a.key || !params_.complete()) return;  // a file begins at a key AU with VPS/SPS/PPS
     path_ = mint(cfg_.dir);
@@ -247,7 +253,8 @@ void VtxRecorder::write_au(const Au& a) {
     set_status(RecState::Recording, RecErr::None);
     std::fprintf(stderr, "maburd rec: recording -> %s\n", path_.c_str());
   }
-  mux_.write_sample(a.data.data(), a.data.size(), a.pts, a.key);
+  if (a.prefixed) mux_.write_sample_prefixed(std::move(a.data), a.pts, a.key);
+  else mux_.write_sample(a.data.data(), a.data.size(), a.pts, a.key);
   if (!mux_.ok()) {
     fail(RecErr::WriteError);
     return;
