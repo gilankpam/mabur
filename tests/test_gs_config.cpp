@@ -13,20 +13,12 @@ static std::string write_tmp(const std::string& text) {
   return path;
 }
 
+// The shipped bundle must load through the real loader. Its values are
+// tuning and deliberately not pinned -- retuning must not fail a test.
+// (bundle_default_sets_every_known_key_but_radio_cards keeps it complete.)
 TEST(default_bundle_config_loads) {
   auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(cfg.radio.channel == 136);
-  // The shipped default lists no cards: the GS auto-scans the bus.
-  CHECK(cfg.radio.auto_scan == true);
-  CHECK(cfg.radio.cards.empty());
-  CHECK(cfg.radio.tx_card == -1);
-  CHECK(cfg.fec.seq_horizon == 512);
-  CHECK(cfg.link.vtx_id == 1);
-  CHECK(cfg.video.frame_gap_timeout_ms == 50);
-  auto L = cfg.uep_layers();
-  CHECK(L[0].fec.overhead == 0.50);
-  CHECK(L[1].fec.overhead == 0.50);
-  CHECK(cfg.link.arrival_guard_syms == 192);
+  CHECK(!cfg.link.ladder_cfg.ladder.empty());
 }
 
 TEST(missing_keys_fall_back_to_defaults) {
@@ -473,20 +465,6 @@ TEST(radio_scan_parses_and_validates) {
   CHECK(threw);
 }
 
-TEST(default_bundle_has_scan_section) {
-  auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(cfg.radio.scan.enable == true);
-  // 40 MHz pair primaries on home's side of the grid (docs/bw40.md §3):
-  // 140+144 (next door) and 108+112 (5.25-5.6 GHz, clear of the analog
-  // raceband and DJI O4), both spur-free. 60+64 went 2026-09-26 (lossy on
-  // the bench, deferred). 40/128 went 2026-09-25
-  // (DJI 5.1 GHz / E4 5645), 120/149/165 earlier: spur centres or no pair.
-  REQUIRE(cfg.radio.scan.candidates.size() == 2);
-  CHECK(cfg.radio.scan.candidates[0] == 144);
-  CHECK(cfg.radio.scan.candidates[1] == 112);
-  CHECK(cfg.radio.scan.home_margin == 20);
-}
-
 TEST(scan_candidates_must_share_home_offset_at_40) {
   // FastRetune keeps width AND offset on both ends: with home 136
   // (132+136, primary = upper half, offset 2) a retune to 140 would land
@@ -626,18 +604,21 @@ TEST(static_bw_defaults_20_and_40_needs_radio_width_40) {
   CHECK(threw);
 }
 
-TEST(default_bundle_ladder_is_five_40_rungs) {
-  auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(cfg.radio.width == 40);
-  CHECK(cfg.link.static_bw == 20);
-  auto& L = cfg.link.ladder_cfg.ladder;
-  REQUIRE(L.size() == 5);
-  for (size_t i = 0; i < 5; ++i) {
-    CHECK(L[i].mcs == static_cast<int>(i));
-    CHECK(L[i].bw == 40);
-    CHECK(std::abs(L[i].overhead_base - 0.5) < 1e-9);
-    CHECK(std::abs(L[i].overhead_enh - 0.25) < 1e-9);
+// Operator rule: the base layer, which every frame depends on, never gets
+// less FEC than the droppable enhance layer. Enforced by the loader so any
+// config -- not just the shipped one -- fails boot on an inverted rung.
+TEST(ladder_rung_with_base_below_enh_overhead_is_rejected) {
+  bool threw = false;
+  try {
+    maburgs::load_config(write_tmp(
+        "[[link.ladder]]\nmcs = 0\nbw = 20\noverhead_base = 0.25\noverhead_enh = 0.5\n"));
+  } catch (const std::runtime_error& e) {
+    threw = std::string(e.what()).find("link.ladder[0]") != std::string::npos;
   }
+  CHECK(threw);
+  auto ok = maburgs::load_config(write_tmp(
+      "[[link.ladder]]\nmcs = 0\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.5\n"));
+  CHECK(ok.link.ladder_cfg.ladder.size() == 1);
 }
 
 MTEST_MAIN
@@ -916,42 +897,10 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
   CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
 }
 
-// The bundle carries the FLIGHT ladder, not a neutral seed: five written
-// rungs, mcs 0..4 all at 40 MHz (2026-09-26; was mcs 0..4 at 20 then 3,4 at
-// 40 from 2026-09-24), none of which link.max_mcs = 5 filters out. mcs 0 is the
-// failsafe floor every controller starts from and falls back to -- pinned
-// here because "the failsafe rung moved" is the kind of change that must be
-// deliberate. Overheads are actual-air (airtime-balance-uep) at base
-// 0.5/enh 0.25 on every rung; the mcs/bw pinning itself is
-// default_bundle_ladder_is_five_40_rungs above, so this
-// test carries the invariants that one doesn't: base>=enh, the static pin,
-// and uep_layers.
-// Re-pinned to the bundle as of b05c60f (2026-09-18 ladder retune), then
-// extended to 40 MHz rungs (2026-09-24), then all-40 (2026-09-26).
-TEST(default_bundle_ladder_is_the_flight_ladder) {
-  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  auto& L = c.link.ladder_cfg.ladder;
-  CHECK(L.size() == 5);
-  for (auto& r : L) {
-    CHECK(r.overhead_base > 0.499 && r.overhead_base < 0.501);
-    CHECK(r.overhead_enh > 0.249 && r.overhead_enh < 0.251);
-  }
-  // Operator rule (uep-base-protection-constraint): base protection must
-  // never fall below enh on any rung.
-  for (auto& r : L) CHECK(r.overhead_base >= r.overhead_enh);
-  CHECK(c.link.static_overhead_base > 0.499 && c.link.static_overhead_base < 0.501);
-  CHECK(c.link.static_overhead_enh > 0.499 && c.link.static_overhead_enh < 0.501);
-  auto layers = c.uep_layers();
-  CHECK(layers[0].fec.symbol_size == 332);
-  CHECK(layers[1].fec.symbol_size == 332);
-}
-
 TEST(au_ring_defaults) {
-  auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  // PR C: the ring IS the video output, so the shipped bundle enables it;
-  // the STRUCT default stays false (empty config checked below).
-  CHECK(c.au_ring.enable);
-  CHECK(!maburgs::load_config(write_tmp("")).au_ring.enable);
+  // The STRUCT default stays off; the shipped bundle turns it on.
+  auto c = maburgs::load_config(write_tmp(""));
+  CHECK(!c.au_ring.enable);
   CHECK(c.au_ring.path == "/dev/shm/mabur-au");
   CHECK(c.au_ring.socket == "/run/mabur-au.sock");
   CHECK(c.au_ring.slot_kb == 512);
@@ -1275,9 +1224,6 @@ TEST(hop_verdict_busy_keys) {
   try { maburgs::load_config(write_tmp("[hop.verdict]\nbusy_dbm = -82\n")); }
   catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict") != std::string::npos; }
   CHECK(threw);   // -82 is not an NHM bucket edge
-  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(b.hop.verdict.busy_dbm == -83);
-  CHECK(b.hop.verdict.blocked_pct == 50.0);
 }
 
 // Task 11 (b): the floor on the recovered-symbols impaired term (bench
@@ -1297,14 +1243,11 @@ TEST(hop_verdict_recovered_min_key) {
   try { maburgs::load_config(write_tmp("[hop.verdict]\nrecovered_min = -1\n")); }
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
-  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(b.hop.verdict.recovered_min == 8);
   CHECK(maburgs::HopVerdictCfg{}.recovered_min == 8);
 }
 
 // Task 12 (e): the AU-rate starved term. Revert (drop the key from
-// check_keys / the parse): the first load throws "unknown key" and the
-// bundle read is not 0.25.
+// check_keys / the parse): the first load throws "unknown key".
 TEST(hop_verdict_starved_frac_key) {
   auto c = maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0\n"));
   CHECK(c.hop.verdict.starved_frac == 0.0);
@@ -1318,14 +1261,12 @@ TEST(hop_verdict_starved_frac_key) {
   try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = -0.1\n")); }
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
-  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(b.hop.verdict.starved_frac == 0.25);
   CHECK(maburgs::HopVerdictCfg{}.starved_frac == 0.25);
 }
 
 // Task 12 (f): the confirm extension while the op reads blocked.
 // Revert (drop the key from check_keys / the parse): the first load throws
-// "unknown key" and the bundle read is not 3000.
+// "unknown key".
 TEST(hop_confirm_extend_ms_key) {
   auto c = maburgs::load_config(write_tmp("[hop]\nconfirm_extend_ms = 0\n"));
   CHECK(c.hop.confirm_extend_ms == 0);
@@ -1339,7 +1280,5 @@ TEST(hop_confirm_extend_ms_key) {
   try { maburgs::load_config(write_tmp("[hop]\nconfirm_extend_ms = -1\n")); }
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
-  auto b = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
-  CHECK(b.hop.confirm_extend_ms == 3000);
   CHECK(maburgs::HopCfg{}.confirm_extend_ms == 3000);
 }

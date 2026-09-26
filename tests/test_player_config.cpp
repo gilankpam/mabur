@@ -12,29 +12,6 @@ static std::string write_tmp_play(const char* text) {
   return path;
 }
 
-TEST(defaults_from_bundle) {
-  auto c = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
-  CHECK(c.ring_path == "/dev/shm/mabur-au");
-  CHECK(c.socket == "/run/mabur-au.sock");
-  CHECK(c.backend == "mpp");
-  CHECK(c.screen_mode == "1920x1080@60");
-  // The bundle is the flight config: the record button arms the DVR, so
-  // autostart ships OFF even though DvrCfg::autostart defaults to true.
-  CHECK(c.dvr.autostart == false);
-  CHECK(c.dvr.dir == "/media/dvr");
-  CHECK(c.dvr.fragment_ms == 1000);
-  // The shipped bundle records with the OSD burned in. Pinned here because
-  // it is a product decision, not a code default -- DvrCfg::mode still
-  // defaults to "raw" so an omitted key keeps the pristine remux.
-  CHECK(c.dvr.mode == "burned");
-  CHECK(c.dvr.burned.bitrate_kbps == 8000);
-  CHECK(c.dvr.burned.fps_cap == 60);
-  // The drone ships the colortrans sensor bin, so the GS ships the reverse ON.
-  CHECK(c.colortrans.enable == true);
-  CHECK(c.dvr.target == "gs");
-}
-
 // dvr.target (spec 2026-09-26-vtx-recorder): which recorders the record
 // button drives. Default "gs" (identical to pre-feature behaviour).
 TEST(dvr_target_values_and_strictness) {
@@ -115,16 +92,6 @@ TEST(osd_rejects_unknown_keys_and_bad_scale) {
   try { maburplay::load_config(write_tmp_play("[osd]\nscale = \"blurry\"\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw == true);
-}
-
-TEST(bundle_default_parses_with_osd_enabled) {
-  auto c = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
-  CHECK(c.osd.enable == true);
-  // The shipped bundle draws the compact bar. Pinned for the same reason
-  // dvr.mode is: it is a product decision, and the file is what lands on
-  // the GS at the next wipe.
-  CHECK(c.osd.gs.style == "compact");
 }
 
 TEST(dvr_mode_defaults_to_raw) {
@@ -268,18 +235,6 @@ TEST(gs_osd_bounds_and_types_are_enforced) {
   CHECK(threw == true);
 }
 
-// The shipped bundle must parse, and ships with the GS overlay ON -- the
-// bundle is the flight config, and maburgs' sideport ships enabled to feed
-// it. The STRUCT default stays false (see gs_osd_defaults_are_off_on_8302).
-TEST(bundle_default_parses_with_gs_osd_on) {
-  auto c = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
-  CHECK(c.osd.gs.enable == true);
-  CHECK(c.osd.gs.port == 8302);
-  CHECK(c.osd.gs.stale_ms == 3000);
-  CHECK(c.osd.gs.font == "/usr/local/share/mabur/gs_osd.gfont");
-}
-
 TEST(input_rec_defaults_to_absent) {
   auto c = maburplay::load_config(write_tmp_play("backend = \"null\"\n"));
   CHECK(c.input.rec.configured == false);
@@ -338,9 +293,7 @@ TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
 }
 
 TEST(display_vsync_defaults) {
-  // Bundle default toml must carry the new keys with spec defaults.
-  const auto cfg = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
+  const auto cfg = maburplay::load_config(write_tmp_play(""));
   CHECK(cfg.display.vsync_lock == true);
   CHECK(cfg.display.vsync_lead_ms == 6);
 }
@@ -433,9 +386,6 @@ TEST(display_chain_budget_key) {
   // display.chain_budget: frames a sequential-slot chain may run before
   // the regulator cuts it with one drop. Default 3 (bench A/B
   // 2026-09-02, operator choice); 0 = unbounded; range [0, 60].
-  const auto def = maburplay::load_config(
-      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
-  CHECK(def.display.chain_budget == 3);
   const auto bare = maburplay::load_config(write_tmp_play(""));
   CHECK(bare.display.chain_budget == 3);
   const auto cfg = maburplay::load_config(

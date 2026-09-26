@@ -42,160 +42,16 @@ std::string what_of(const std::function<void()>& fn) {
 
 }  // namespace
 
-TEST(load_config_default_file_is_the_flight_config) {
+// The shipped bundle is baked into the drone image as /etc/mabur.toml, so it
+// must load through the real loader: a typo or out-of-range value there
+// would put a freshly flashed drone into maburd's restart loop. Its VALUES
+// are tuning and deliberately not pinned here -- retuning must not fail a
+// test. (bundle_default_sets_every_known_key keeps it complete.)
+TEST(bundle_config_loads) {
   Config cfg = load_config(default_config_path());
-  Config def;  // struct defaults
-
-  // What this test is for: `bundle/mabur.default.toml` is not a "sensible
-  // starting point" any more. Since 2026-09-08 it is a verbatim copy of the
-  // drone's own /etc/mabur.toml, and openipc-builder bakes it into the image
-  // as /etc/mabur.toml -- so a fresh flash boots the flight configuration
-  // with no hand-editing. That makes the file a deployment artifact, and this
-  // test the change-detector on it: every literal below is a value someone
-  // measured and flew, with the doc that justifies it. Changing one here
-  // without changing the drone (or the reverse) is the bug this catches.
-  //
-  // It therefore checks against `def` only where bundle and struct still
-  // legitimately agree; everywhere else it pins the flown literal.
-
-  CHECK(cfg.radio.usb_vid == def.radio.usb_vid);
-  CHECK(cfg.radio.usb_pid == def.radio.usb_pid);
-  CHECK(cfg.radio.channel == 136);
-  CHECK(cfg.radio.width == 40);  // GS at 40 on 132+136, top rungs fly HT40 (2026-09-24)
-  // "none" = leave the chip's efuse power table untouched. The bundle ships
-  // this way because rate_walls_rel below is a per-UNIT calibration and the
-  // shipped file cannot know the wall of the board it lands on -- flashing
-  // someone else's walls would park every rate at a ceiling never measured
-  // there. Set "offset" once you have run `maburcal start` on your own vtx
-  // (see docs/calibration.md); then wall_margin_db is the only lever that
-  // moves TX power.
-  // NOTE this drone flies "offset": /etc/mabur.toml and this file diverge on
-  // exactly this key, deliberately.
-  CHECK(cfg.radio.power_mode == "none");
-  CHECK(cfg.radio.follow_gs == true);
-
-  // Reference wall-equalization from the author's 8812EU, RELATIVE to the
-  // chip's per-channel anchor (2026-09-13 ch136 means). Inert while
-  // power_mode is "none", pinned so the calibration is not lost.
-  CHECK((cfg.radio.rate_walls_rel ==
-         std::array<int, 8>{63, 63, 62, 45, 22, 6, 9, 5}));
-  CHECK(cfg.radio.legacy_wall_rel == 63);
-  CHECK(cfg.radio.wall_margin_db == 1.0);
-
-  // 332/w32/bpb4 is the 2026-07-29 geometry: same CPU/air profile as the
-  // 2026-07-25 gated 328 (docs/fec-symbol-size-328.md), shifted +4 because
-  // 328x4 = 1396 B air frames sit exactly in the mcs6+STBC PHY hole
-  // (docs/mcs6-bench-anomaly.md -- air MPDUs 1392-1400 B vanish whole at RX).
-  // Any new size needs the all-8-MCS hole-scan.
-  CHECK((cfg.fec.symbol_size == std::array<int, 2>{332, 332}));
-  CHECK(cfg.fec.window == 32);
-  CHECK((cfg.fec.blocks_per_body == std::array<int, 2>{4, 4}));
-  CHECK(cfg.fec.base_overhead == def.fec.base_overhead);
-  // feed_batch 1 held when the drone went to agg6 (2026-09-24). agg6 +
-  // feed_batch 6 had bought fec -2.3/-2.7 ms (docs/observability.md
-  // A-MPDU) before the 0.5/0.25 ladder pair; no re-measured win since.
-  CHECK(cfg.fec.feed_batch == 1);
-  CHECK(cfg.fec.flush_ms == 25);
-
-  // 24 Mbps ceiling (CPU wall ~25 Mb/s after the table CRC,
-  // docs/bitrate-ceiling-findings-2026-09-21.md) and airtime_budget 0.5: 0.5 is what killed the air-clock
-  // drain (peak 47 -> 20 ms, settle 1.9 -> 0.3 s). NOTE the sign of
-  // roi_qp_low: apply_roi_qp() takes a QP OFFSET for the centre region, so
-  // the useful low-bitrate value is NEGATIVE. It is still carried even though
-  // venc.roi is off (below) -- turning ROI back on must not also need the
-  // offset re-derived. The struct default has the opposite sign and is left
-  // alone deliberately; changing a compiled default is not a flag day.
-  CHECK(cfg.encoder.bitrate_min_kbps == 1000);
-  CHECK(cfg.encoder.bitrate_max_kbps == 24000);
-  // 0.65 of DELIVERED capacity since 2026-09-17 = the load 0.5-of-nominal
-  // flew at rungs 4-5 (0.5/0.76); rungs 0-2 gain the singles capacity.
-  CHECK(cfg.encoder.airtime_budget == 0.65);
-  CHECK(cfg.encoder.roi_threshold_kbps == 3000);
-  CHECK(cfg.encoder.roi_qp_low == -24);
-  CHECK(cfg.encoder.roi_qp_normal == 0);
-
-  // air_clock: ARMED, shed 25 flew clean. Per-width delivered/nominal
-  // tables: 20 MHz from the 2026-09-17 saturation sweep (singles at mcs0-3
-  // under ampdu.min_mcs_20 4, agg6 above), 40 MHz from the 2026-09-23 HT40
-  // sweep (agg6, flat 0.74-0.77).
-  CHECK(cfg.air_clock.shed_ms == 25);
-  const std::array<double, 8> eff20 = {0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76};
-  const std::array<double, 8> eff40 = {0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75};
-  CHECK(cfg.air_clock.efficiency_20 == eff20);
-  CHECK(cfg.air_clock.efficiency_40 == eff40);
-  CHECK(cfg.air_clock.body_us == 0);
-
-  // venc: boot-time encoder pipeline config, bundle-pinned rather than
-  // struct-default (struct defaults are all-zero/empty, not a bootable
-  // encoder configuration).
-  CHECK(cfg.venc.core.sensor_bin ==
-        std::string("/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"));
-  CHECK(cfg.venc.core.width == 1920);
-  CHECK(cfg.venc.core.height == 1080);
-  CHECK(cfg.venc.core.fps == 60);
-  CHECK(cfg.venc.core.gop_s == 0.5);
-  CHECK(cfg.venc.core.qp_delta == 4);
-  CHECK(cfg.venc.core.max_ipprop == 2);
-  // Re-pinned to the bundle as of b05c60f (2026-09-19 low-power spike retune).
-  CHECK(cfg.venc.core.min_iqp == 34);
-  CHECK(cfg.venc.core.intra_refresh_frames == 1);  // was rows 34 at 1080p
-  CHECK(cfg.venc.core.intra_refresh_qp == 36);
-  // P-frame size cap, 200 % (docs/handover-venc-overshoot-2026-09-03.md).
-  CHECK(cfg.venc.core.superframe_p_pct == 200);
-  CHECK(cfg.venc.core.ref_base == 1);
-  CHECK(cfg.venc.core.ref_enhance == 1);
-  CHECK(cfg.venc.core.ref_pred == true);
-  // ROI OFF since 2026-09-06: roi_qp_low -24 was being applied to the
-  // SetChnAttr IDR at a rung-0 demote and blew it up 1.7-2.6x
-  // (docs/link-adaptation.md, rung-0 demote IDR).
-  CHECK(cfg.venc.core.roi_enabled == false);
-  CHECK(cfg.venc.core.roi_steps == 2);
-  CHECK(cfg.venc.core.roi_center == 0.4);
-  CHECK(cfg.venc.core.ae_fps == 15);
-  CHECK(cfg.venc.core.awb_fps == 15);
-  CHECK(cfg.venc.core.snapshot_quality == 80);
-  CHECK(cfg.venc.debug_port == 8301);
-
-  CHECK(cfg.link.vtx_id == def.link.vtx_id);
-  // 3 s, not the compiled 1 s: a 1 s failsafe fired on ordinary rung
-  // transitions in flight.
-  CHECK(cfg.link.failsafe_ms == 3000);
-  CHECK(cfg.link.rendezvous_ms == def.link.rendezvous_ms);
-  CHECK(cfg.link.move_confirm_ms == 2000);
-  CHECK(cfg.link.tick_ms == def.link.tick_ms);
-
-  // MSP OSD is on in flight (stream_id 4), 3 Hz.
-  CHECK(cfg.msp.enable == true);
-  CHECK(cfg.msp.serial == std::string("/dev/ttyS2"));
-  CHECK(cfg.msp.update_rate_hz == 3);
-
-  // low_power (spec 2026-09-20): pre-arm thermal mode. 1 Mb/s @ 15 fps is
-  // the operating point the 2026-09-19 spike chose; enable requires
-  // msp.enable (the arm state comes from the FC over MSP).
-  CHECK(cfg.low_power.enable == true);
-  CHECK(cfg.low_power.bitrate_kbps == 1000);
-  CHECK(cfg.low_power.fps == 30);
-  CHECK(cfg.low_power.stale_ms == 2000);
-
-  // record (spec 2026-09-26): onboard SD recorder
-  CHECK(cfg.record.enable == true);
-  CHECK(cfg.record.dir == "/mnt/mmcblk0p1");
-  CHECK(cfg.record.bitrate_kbps == 40000);
-  CHECK(cfg.record.fps == 60);
-  CHECK(cfg.record.min_free_mb == 512);
-
-  // agg6 from the per-width threshold up: the flight config since
-  // 2026-09-24 (bench-clean with carrier sense on both ends).
-  CHECK(cfg.ampdu.max_num == 6);
-  CHECK(cfg.ampdu.max_time == 32);
-  // Per-rung, per-width aggregation: singles below mcs4 at 20 MHz
-  // (2026-09-17 sweep), aggregation from mcs2 at 40 MHz (2026-09-23 sweep).
-  CHECK(cfg.ampdu.min_mcs_20 == 4);
-  CHECK(cfg.ampdu.min_mcs_40 == 2);
-
+  // Loader behaviour, not a bundle value: every layer's overhead is
+  // exactly fec.base_overhead.
   auto layers = cfg.uep_layers();
-  // Literal passthrough (Task 3): no uep_layer_overhead ladder translation
-  // left -- every layer's overhead is exactly fec.base_overhead.
   CHECK(layers[0].fec.overhead == cfg.fec.base_overhead);
   CHECK(layers[1].fec.overhead == cfg.fec.base_overhead);
 }
@@ -1434,7 +1290,9 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
 }
 
 TEST(follow_gs_and_move_confirm_parse_with_defaults) {
-  Config def = load_config(default_config_path());
+  auto e = write_temp_toml("");
+  Config def = load_config(e.string());
+  std::filesystem::remove(e);
   CHECK(def.radio.follow_gs == true);
   CHECK(def.link.move_confirm_ms == 2000);
   auto p = write_temp_toml("[radio]\nchannel = 136\nfollow_gs = false\n[link]\nmove_confirm_ms = 500\n");
