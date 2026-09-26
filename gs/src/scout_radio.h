@@ -23,7 +23,7 @@ struct ScoutFrames {
   uint64_t own_air_us = 0;
 };
 
-// One busy-airtime NHM window from devourer (IRtlDevice::ReadNhmBusy):
+// One busy-airtime NHM window from devourer (IRtlRadio::ReadNhmBusy):
 // `period` is the LAST arm's period on the card, whoever armed it.
 struct NhmBusyRead {
   bool valid = false;

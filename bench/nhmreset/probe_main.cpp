@@ -26,6 +26,7 @@
 #include "RxPacket.h"
 #include "SignalStop.h"
 #include "UsbOpen.h"
+#include "IRtlRadio.h"
 #include "WiFiDriver.h"
 #include "logger.h"
 #include <libusb.h>
@@ -107,9 +108,12 @@ int main(int argc, char** argv) {
   cfg.tuning.disable_cca = false;
   cfg.usb.rx_zerocopy = false;
   WiFiDriver drv{logger};
-  auto dev = drv.CreateRtlDevice(h, ctx, lock, cfg);
+  std::unique_ptr<IRtlRadio> dev;
+  if (auto radio = drv.CreateRadio(h, ctx, lock, cfg);
+      radio && dynamic_cast<IRtlRadio*>(radio.get()))
+    dev.reset(static_cast<IRtlRadio*>(radio.release()));
   if (!dev) {
-    std::fprintf(stderr, "error: CreateRtlDevice failed\n");
+    std::fprintf(stderr, "error: CreateRadio failed (or not a Realtek radio)\n");
     return 1;
   }
   dev->InitWrite(SelectedChannel{static_cast<uint8_t>(a.channel), 0, CHANNEL_WIDTH_20});

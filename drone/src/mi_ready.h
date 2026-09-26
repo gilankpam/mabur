@@ -4,7 +4,7 @@
 // the MI insmod chain (load_sigmastar: mhal, mi_common, mi_sys, ... mi_venc,
 // sensor detect, sensor driver) is ~0.7 s on a cold boot, and maburd's own
 // first ~1.2 s -- exec + shared-library page-in, the USB port reset,
-// CreateRtlDevice -- touch none of it. Letting the init script background
+// CreateRadio -- touch none of it. Letting the init script background
 // load_sigmastar and start maburd immediately overlaps the two, but only if
 // the venc bring-up waits for the modules instead of failing MI_SYS_Init and
 // exiting for a 2 s respawn. This is that wait.

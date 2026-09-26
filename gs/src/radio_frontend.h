@@ -17,7 +17,7 @@
 
 // Forward declarations for devourer types
 class WiFiDriver;
-class IRtlDevice;
+class IRtlRadio;
 struct Packet;
 
 namespace devourer {
@@ -123,7 +123,7 @@ class RadioFrontend : public ScoutRadio {
   libusb_context* usb_ctx_ = nullptr;
   libusb_device_handle* handle_ = nullptr;
   std::shared_ptr<WiFiDriver> driver_;
-  std::shared_ptr<IRtlDevice> device_;
+  std::shared_ptr<IRtlRadio> device_;
   std::thread rx_thread_;
   std::atomic<bool> ready_{false};
   std::atomic<bool> alive_{false};

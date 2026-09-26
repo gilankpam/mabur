@@ -34,6 +34,7 @@
 #include "TxMode.h"
 #include "TxPower.h"
 #include "UsbOpen.h"
+#include "IRtlRadio.h"
 #include "WiFiDriver.h"
 #include "logger.h"
 
@@ -368,9 +369,12 @@ int main(int argc, char** argv) {
   dev_cfg.tuning.disable_cca = a.no_cca;
 
   WiFiDriver wifi_driver{logger};
-  auto dev = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);
+  std::unique_ptr<IRtlRadio> dev;  /* Realtek TX-power/A-MPDU controls below */
+  if (auto radio = wifi_driver.CreateRadio(handle, usb_ctx, usb_lock, dev_cfg);
+      radio && dynamic_cast<IRtlRadio*>(radio.get()))
+    dev.reset(static_cast<IRtlRadio*>(radio.release()));
   if (!dev) {
-    std::fprintf(stderr, "error: CreateRtlDevice failed\n");
+    std::fprintf(stderr, "error: CreateRadio failed (or not a Realtek radio)\n");
     libusb_release_interface(handle, 0);
     libusb_close(handle);
     libusb_exit(usb_ctx);

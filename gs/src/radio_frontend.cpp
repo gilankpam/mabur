@@ -17,6 +17,7 @@
 #include "TxMode.h"
 #include "UsbDeviceLock.h"
 #include "UsbOpen.h"
+#include "IRtlRadio.h"
 #include "WiFiDriver.h"
 #include "logger.h"
 #include "mabur/ht40.h"
@@ -169,7 +170,11 @@ bool RadioFrontend::open_and_start() {
   // the real path-B killer was the DPDT pin-mux, fixed by devourer's eFEM
   // pinmux port; see DEVOURER_DPDT_MODE in RtlJaguar3Device.)
   driver_ = std::make_unique<WiFiDriver>(logger_);
-  device_ = driver_->CreateRtlDevice(handle_, usb_ctx_, usb_lock_, dev_cfg);
+  // Realtek-only controls follow (energy/NHM reads, FastRetune, TX power),
+  // so a radio that is not an IRtlRadio is refused like an unsupported chip.
+  if (auto radio = driver_->CreateRadio(handle_, usb_ctx_, usb_lock_, dev_cfg);
+      radio && dynamic_cast<IRtlRadio*>(radio.get()))
+    device_.reset(static_cast<IRtlRadio*>(radio.release()));
   if (!device_) { stop(); return false; }
   // width_, not the constructor's cfg_.width_mhz: a set_width() that landed
   // while the card was down (the boot scout card dying mid-scan) is the

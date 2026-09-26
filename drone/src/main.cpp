@@ -88,6 +88,7 @@
 #include "SignalStop.h"
 #include "TxMode.h"
 #include "UsbOpen.h"
+#include "IRtlRadio.h"
 #include "WiFiDriver.h"
 #include "logger.h"
 
@@ -182,10 +183,10 @@ inline void await_retune_gate(const std::atomic<bool>* waiting) {
   while (waiting->load(std::memory_order_acquire)) std::this_thread::yield();
 }
 
-// Wraps IRtlDevice::send_packet with a mutex — shared between the hot
+// Wraps IRtlRadio::send_packet with a mutex — shared between the hot
 // thread (video bodies) and the agent thread (send_control / DISC_ACK).
 struct DevourerSink : mabur::FrameSink {
-  IRtlDevice* dev = nullptr;
+  IRtlRadio* dev = nullptr;
   std::mutex m;
   // Opened true only after InitWrite() finishes device bring-up (power-on,
   // firmware download, TX-path enable). Until then every send is dropped:
@@ -302,7 +303,7 @@ struct RealActuator : mabur::Actuator {
   // Set after every accepted set_fps; the hot thread consumes it to
   // re-anchor FramePipeline's vanish period (note_rate_change).
   std::atomic<bool>* rate_change = nullptr;
-  IRtlDevice* dev = nullptr;  // nullptr in dry-run
+  IRtlRadio* dev = nullptr;  // nullptr in dry-run
   bool dry_run = false;
   // Per-rung A-MPDU (ampdu_policy.h): the aggregation mode follows the
   // op's MCS. Programmed here, on the agent thread, only when the derived
@@ -505,7 +506,7 @@ struct RealActuator : mabur::Actuator {
   const char* deferred_reason = "";
 
   // Threading (Critical fix 1): FastRetune is a control-plane call, and
-  // devourer's IRtlDevice.h threading contract forbids one concurrent with
+  // devourer's IRtlRadio.h threading contract forbids one concurrent with
   // ANY other device call — not just a bulk-OUT. A calibration sweep runs
   // the three TX-power knobs (DevicePowerCtl, below) from the TX writer
   // thread for up to 180 s, which is far longer than link.rendezvous_ms
@@ -524,7 +525,7 @@ struct RealActuator : mabur::Actuator {
   // did not take" (it hears nothing on the new channel and goes home), so a
   // deferral degrades to that path rather than to a wedged link.
   // Not host-testable: RealActuator lives in main.cpp and needs a real
-  // IRtlDevice, so this comment is the specification.
+  // IRtlRadio, so this comment is the specification.
   void retune(uint8_t ch, const char* reason) override {
     if (!dev) {
       std::fprintf(stderr, "[dry-run] retune(%u, %s)\n", static_cast<unsigned>(ch),
@@ -599,7 +600,7 @@ struct RealActuator : mabur::Actuator {
       // (devourer threading contract), and because a send landing between
       // the retune and the re-apply would air at the stale anchor.
       //
-      // FastRetune returns void (IRtlDevice.h), so there is no success to
+      // FastRetune returns void (IRtlRadio.h), so there is no success to
       // branch on: re-apply unconditionally. ReApplyTxPower() is the one
       // that reports -- false means the chip is not brought up or a CW
       // tone is active, i.e. the diffs are NOT sitting on this channel's
@@ -1017,7 +1018,7 @@ std::atomic<bool> g_sigusr1_flag{false};
 
 void handle_sigusr1(int) { g_sigusr1_flag.store(true); }
 
-// SIGINT/SIGTERM shutdown: devourer's IRtlDevice::Init() runs a blocking RX
+// SIGINT/SIGTERM shutdown: devourer's IRtlRadio::Init() runs a blocking RX
 // loop that only observes the library-global g_devourer_should_stop (see
 // ../devourer/src/SignalStop.h and how examples/rx, examples/tx, and
 // examples/doctor all call install_devourer_signal_handlers() instead of
@@ -1055,7 +1056,7 @@ uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
     // Scan order: 8812EU, then the Jaguar3 8822C dies (RTL8812CU c812,
     // RTL8822CU c82c -- the EMAX Wyvern Link board), then 8812AU. Which of
     // these the binary can actually drive is devourer's build-time chip
-    // selection; an unbuilt chip fails at CreateRtlDevice, not here.
+    // selection; an unbuilt chip fails at CreateRadio, not here.
     pids = {0xa81a, 0xc812, 0xc82c, 0x881a, 0x8812};
   }
   for (uint16_t pid : pids) {
@@ -1079,7 +1080,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   }
   std::signal(SIGUSR1, handle_sigusr1);
   // Installs the SIGINT/SIGTERM handlers that set g_devourer_should_stop —
-  // the flag IRtlDevice::Init()'s blocking RX loop actually watches.
+  // the flag IRtlRadio::Init()'s blocking RX loop actually watches.
   install_devourer_signal_handlers();
 
   // Cold boot: the MI kernel modules are loaded by maburd itself (see the
@@ -1201,9 +1202,15 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   dev_cfg.usb.rx_zerocopy = false;
 
   WiFiDriver wifi_driver{logger};
-  auto rtl_device = wifi_driver.CreateRtlDevice(handle, usb_ctx, usb_lock, dev_cfg);
+  // mabur drives Realtek-only controls (TX-power tables, FastRetune, the
+  // energy reads), so the radio must be an IRtlRadio; anything else is
+  // refused here like an unsupported chip.
+  std::unique_ptr<IRtlRadio> rtl_device;
+  if (auto radio = wifi_driver.CreateRadio(handle, usb_ctx, usb_lock, dev_cfg);
+      radio && dynamic_cast<IRtlRadio*>(radio.get()))
+    rtl_device.reset(static_cast<IRtlRadio*>(radio.release()));
   if (!rtl_device) {
-    std::fprintf(stderr, "error: CreateRtlDevice failed (unsupported chip or already in use)\n");
+    std::fprintf(stderr, "error: CreateRadio failed (unsupported or non-Realtek chip, or already in use)\n");
     libusb_release_interface(handle, 0);
     libusb_close(handle);
     libusb_exit(usb_ctx);
@@ -1390,7 +1397,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   if (venc_core_start(&cfg.venc.core, &vcb) != 0) {
     // Boot failure, not a transient: the wrapper's 2 s respawn is the retry.
     // Release the USB device on the way out (same shape as the
-    // CreateRtlDevice failure path above) — the radio is not up yet, so
+    // CreateRadio failure path above) — the radio is not up yet, so
     // there is nothing else to unwind.
     std::fprintf(stderr, "venc_core_start failed — exiting\n");
     join_radio_init();
@@ -2076,7 +2083,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // state machine instead of a one-shot bring-up plan.
   //
   // Threading (Critical fix 1): all three are device control-plane calls
-  // made from the TX writer thread, and devourer's IRtlDevice.h contract
+  // made from the TX writer thread, and devourer's IRtlRadio.h contract
   // forbids any of them concurrent with a channel set. RealActuator::retune
   // takes tx_gate exclusive around FastRetune, so each call here takes it
   // SHARED -- a cal session lasts up to 180 s while link.rendezvous_ms is
@@ -2090,11 +2097,11 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // the replayed FastRetune (which takes it exclusive) therefore cannot
   // overlap either. Held only for the single call, never across pump().
   struct DevicePowerCtl : CalSweep::PowerCtl {
-    IRtlDevice* dev;
+    IRtlRadio* dev;
     std::shared_mutex* gate = nullptr;
     std::atomic<bool>* gate_waiting = nullptr;
     bool set_index_override(int idx) override {
-      // SetTxPowerIndexOverride is void on every family (IRtlDevice.h) —
+      // SetTxPowerIndexOverride is void on every family (IRtlRadio.h) —
       // there is no failure it could report back.
       await_retune_gate(gate_waiting);
       std::shared_lock<std::shared_mutex> sg;
@@ -2827,7 +2834,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // across every later hop.
 
   // TX bring-up must be complete before anything transmits. InitWrite (on
-  // radio_init_thread, started right after CreateRtlDevice above) runs the
+  // radio_init_thread, started right after CreateRadio above) runs the
   // full power-on + firmware download + TX-path enable and returns only
   // once the chip is ready; StartRxLoop then runs the (blocking) RX worker
   // with TX+RX concurrent on the same handle. Opening device_ready between
