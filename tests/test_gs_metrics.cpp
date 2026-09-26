@@ -6,11 +6,14 @@
 // storm doing the same. Both are one-line cases here.
 #include "gs_metrics.h"
 
+#include <utility>
+
 #include "mtest.h"
 
 using maburplay::AuJitter;
 using maburplay::RecState;
 using maburplay::RecTracker;
+using maburplay::VtxRecTracker;
 
 namespace {
 
@@ -273,6 +276,50 @@ TEST(rec_tracker_reset_restarts_the_clock_for_a_second_recording) {
   s = t.update(in, 32000);
   CHECK(s.kind == RecState::Kind::kRecording);  // Fails if stall_since_ms_ not reset
   CHECK(s.elapsed_s == 2);  // Fails if start_ms_ not reset (would be 22 if latched at 10000)
+}
+
+TEST(vtx_leg_none_when_not_requested) {
+  VtxRecTracker t;
+  VtxRecTracker::Inputs in;
+  in.fresh = true; in.state = 1; in.err = 0;
+  CHECK(t.update(in, 1000).leg == RecState::Vtx::kNone);
+}
+
+TEST(vtx_leg_wait_until_the_drone_confirms_then_clock_runs) {
+  VtxRecTracker t;
+  VtxRecTracker::Inputs in;
+  in.requested = true; in.fresh = true; in.state = 0; in.err = 0;
+  CHECK(t.update(in, 1000).leg == RecState::Vtx::kWait);   // armed, no IDR yet
+  in.state = 1;
+  auto o = t.update(in, 2000);
+  CHECK(o.leg == RecState::Vtx::kRecording);
+  CHECK(o.elapsed_s == 0);
+  CHECK(t.update(in, 7500).elapsed_s == 5);
+}
+
+TEST(vtx_leg_wait_on_link_loss_keeps_the_clock) {
+  VtxRecTracker t;
+  VtxRecTracker::Inputs in;
+  in.requested = true; in.fresh = true; in.state = 1; in.err = 0;
+  t.update(in, 1000);
+  in.fresh = false;                                        // no drone report for > 3 s
+  CHECK(t.update(in, 20000).leg == RecState::Vtx::kWait);  // drone keeps recording
+  in.fresh = true;
+  CHECK(t.update(in, 31000).elapsed_s == 30);              // same recording, same clock
+}
+
+TEST(vtx_leg_maps_error_codes) {
+  VtxRecTracker t;
+  VtxRecTracker::Inputs in;
+  in.requested = true; in.fresh = true; in.state = 2;
+  const std::pair<int, RecState::Vtx> cases[] = {
+      {1, RecState::Vtx::kOff}, {2, RecState::Vtx::kNoCard}, {3, RecState::Vtx::kNoCard},
+      {4, RecState::Vtx::kNoCard}, {5, RecState::Vtx::kFull}, {6, RecState::Vtx::kFault},
+      {42, RecState::Vtx::kFault}};
+  for (auto& c : cases) {
+    in.err = c.first;
+    CHECK(t.update(in, 1000).leg == c.second);
+  }
 }
 
 MTEST_MAIN

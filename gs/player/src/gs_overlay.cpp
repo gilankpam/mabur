@@ -299,9 +299,9 @@ bool GsOverlay::layout(int screen_w, int screen_h, std::string* err) {
     }
 
     y += standard->glyph_h + gap6;  // see the comment on the line above
-    const int rec_w = text_width(*secondary, "● REC FAULT");
+    const int rec_w = text_width(*secondary, kRecWorst);
     place(GsFieldId::kRec, secondary, right - rec_w - pad_h(secondary), y,
-          "● REC FAULT");
+          kRecWorst);
   }
 
   // --- bottom right: video health ------------------------------------
@@ -567,29 +567,14 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
                            (kMeterW * scale_) / 100.0)
                    : 0;
       break;
-    case GsFieldId::kRec:
-      switch (ps.rec.kind) {
-        case RecState::Kind::kArmed:
-          // Armed draws nothing at all -- an idle placeholder clock is
-          // permanent clutter, and "no REC field" already reads as "not
-          // recording". draw_field_ clears the box before it bails on the
-          // empty text, so a stopped recording's clock is erased.
-          break;
-        case RecState::Kind::kRecording:
-          // fmt_clock saturates internally (mm:ss, cap 99:59) -- already
-          // fixed-width for any int, no clamp needed here.
-          st.text = std::string(kDotFilled) + " REC " + fmt_clock(ps.rec.elapsed_s);
-          st.rgb = tok::kTextPrimary;
-          // aux distinguishes the dot's colour from the text's; draw_field_
-          // paints the leading glyph in kStatusRec when aux == 1.
-          st.aux = 1;
-          break;
-        case RecState::Kind::kFault:
-          st.text = std::string(kDotFilled) + " REC FAULT";
-          st.rgb = tok::kStatusCaution;
-          break;
-      }
+    case GsFieldId::kRec: {
+      // One text for both layouts and every target (gs_layer.h rec_text).
+      const RecText t = rec_text(ps.rec);
+      st.text = t.text;
+      st.rgb = t.rgb;
+      st.aux = t.aux;
       break;
+    }
     case GsFieldId::kLossLabel:
       st.rgb = tok::kTextLabel;
       st.text = "LOSS";

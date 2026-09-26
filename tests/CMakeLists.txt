@@ -207,6 +207,7 @@ if(MABUR_BUILD_GS)
   target_compile_definitions(test_gs_asset PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_gs_metrics test_gs_metrics.cpp LIBS mabur_player_core)
+  add_mtest(test_rec_text test_rec_text.cpp LIBS mabur_player_core)
   add_mtest(test_osd_layout test_osd_layout.cpp LIBS mabur_player_core)
   add_mtest(test_osd_raster test_osd_raster.cpp LIBS mabur_player_core)
   add_mtest(test_zpos_plan test_zpos_plan.cpp LIBS mabur_player_core)

@@ -81,4 +81,44 @@ void RecTracker::reset() {
   started_ = false;
 }
 
+VtxRecTracker::Out VtxRecTracker::update(const Inputs& in, uint64_t now_ms) {
+  Out o;
+  if (!in.requested) {
+    reset();
+    return o;
+  }
+  // No current drone report: the drone keeps its last state (no decay), so
+  // say WAIT rather than guess. The clock origin survives the gap.
+  if (!in.fresh || !in.state) {
+    o.leg = RecState::Vtx::kWait;
+    return o;
+  }
+  switch (*in.state) {
+    case 1:
+      if (!started_) {
+        started_ = true;
+        start_ms_ = now_ms;
+      }
+      o.leg = RecState::Vtx::kRecording;
+      o.elapsed_s = static_cast<int>((now_ms - start_ms_) / 1000);
+      return o;
+    case 2:
+      switch (in.err.value_or(0)) {
+        case 1: o.leg = RecState::Vtx::kOff; break;
+        case 2: case 3: case 4: o.leg = RecState::Vtx::kNoCard; break;
+        case 5: o.leg = RecState::Vtx::kFull; break;
+        default: o.leg = RecState::Vtx::kFault; break;
+      }
+      return o;
+    default:   // 0: armed on the drone, waiting for its first IDR
+      o.leg = RecState::Vtx::kWait;
+      return o;
+  }
+}
+
+void VtxRecTracker::reset() {
+  started_ = false;
+  start_ms_ = 0;
+}
+
 }  // namespace maburplay

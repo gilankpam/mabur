@@ -2,6 +2,7 @@
 #define MABUR_PLAYER_GS_METRICS_H_
 
 #include <cstdint>
+#include <optional>
 
 #include "gs_overlay.h"  // RecState
 
@@ -82,6 +83,33 @@ class RecTracker {
   // link took to come up.
   uint64_t start_ms_ = 0;
   bool started_ = false;
+};
+
+// The VTX leg of the recording indicator (spec 2026-09-26): what the
+// drone's recorder reports (drone.rec over the 8302 sideport), turned into
+// RecState::Vtx plus a clock that counts from the drone's first
+// "recording" report of this press.
+class VtxRecTracker {
+ public:
+  static constexpr uint64_t kFreshMs = 3000;   // a drone report older than this is WAIT
+
+  struct Inputs {
+    bool requested = false;       // button on AND dvr.target includes vtx
+    bool fresh = false;           // a drone report newer than kFreshMs is in hand
+    std::optional<int> state;     // drone.rec.state
+    std::optional<int> err;       // drone.rec.err
+  };
+  struct Out {
+    RecState::Vtx leg = RecState::Vtx::kNone;
+    int elapsed_s = 0;
+  };
+
+  Out update(const Inputs& in, uint64_t now_ms);
+  void reset();   // a new press: the clock counts THIS recording
+
+ private:
+  bool started_ = false;
+  uint64_t start_ms_ = 0;
 };
 
 }  // namespace maburplay

@@ -843,6 +843,7 @@ int main(int argc, char** argv) {
   // ring and no DRM -- see tests/test_gs_metrics.cpp.
   maburplay::AuJitter gs_jitter;
   maburplay::RecTracker gs_rec;
+  maburplay::VtxRecTracker vtx_trk;
   bool statvfs_warned = false;
 
   // Whether a recording is running RIGHT NOW. Seeded from dvr.autostart;
@@ -1078,6 +1079,7 @@ int main(int argc, char** argv) {
     if (rec_on) return;
     rec_on = true;
     gs_rec.reset();  // the OSD clock counts THIS file
+    vtx_trk.reset();
     dvr_open_failed = false;
     if (!rec_gs) {
       std::fprintf(stderr, "maburplay: rec: START (vtx only)\n");
@@ -1758,6 +1760,20 @@ int main(int argc, char** argv) {
           }
         }
         gs_ps.rec = gs_rec.update(rin, now_ms);
+        {
+          // VTX leg (spec 2026-09-26) from the drone's drone.rec via maburgs.
+          const maburplay::GsSnapshot& snap = gs_src->snapshot();
+          maburplay::VtxRecTracker::Inputs vin;
+          vin.requested = rec_on && rec_vtx;
+          vin.fresh = gs_src->have_any() && !gs_src->stale(now_ms) && snap.drone_tlm_age_ms &&
+                      *snap.drone_tlm_age_ms <= static_cast<int>(maburplay::VtxRecTracker::kFreshMs);
+          vin.state = snap.rec_state;
+          vin.err = snap.rec_err;
+          const auto leg = vtx_trk.update(vin, now_ms);
+          gs_ps.rec.gs_target = rec_gs;
+          gs_ps.rec.vtx = leg.leg;
+          gs_ps.rec.vtx_elapsed_s = leg.elapsed_s;
+        }
 
       }
     }

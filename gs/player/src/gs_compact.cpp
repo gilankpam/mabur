@@ -146,12 +146,11 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards) {
     case GsBarField::kJit:     return "jit:999.9";
     case GsBarField::kLat:     return "lat:999/999";
     case GsBarField::kLoss:    return "loss:100.0/100.0";
-    // Both live states are eleven glyphs wide ("● REC 99:59" and
-    // "● REC FAULT"); fmt_clock saturates at 99:59 so neither can grow.
+    // Sized on kRecWorst (gs_layer.h): the widest REC text, GS+VTX states included.
     // Armed renders nothing and leaves the box blank -- the same
     // fixed-width reservation every other item makes, and the same thing
     // the essential overlay does.
-    case GsBarField::kRec:     return "● REC FAULT";
+    case GsBarField::kRec:     return kRecWorst;
     case GsBarField::kCount:   break;
   }
   return "";
@@ -414,26 +413,16 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
                      ? fmt_one_dp(std::clamp(*snap.post_loss_pct, 0.0, 100.0))
                      : "--";
       break;
-    case GsBarField::kRec:
+    case GsBarField::kRec: {
       // Byte-for-byte the essential overlay's kRec, deliberately: one
       // aircraft, one recording indicator. Never dimmed -- the recorder is
       // the player's own business and says nothing about the link.
-      switch (ps.rec.kind) {
-        case RecState::Kind::kArmed:
-          // Nothing at all. An idle placeholder clock is permanent clutter,
-          // and "no REC" already reads as "not recording".
-          break;
-        case RecState::Kind::kRecording:
-          st.text = std::string(kDotFilled) + " REC " + fmt_clock(ps.rec.elapsed_s);
-          st.rgb = tok::kTextPrimary;
-          st.aux = 1;  // draw_field_ paints the dot in kStatusRec
-          break;
-        case RecState::Kind::kFault:
-          st.text = std::string(kDotFilled) + " REC FAULT";
-          st.rgb = tok::kStatusCaution;
-          break;
-      }
+      const RecText t = rec_text(ps.rec);
+      st.text = t.text;
+      st.rgb = t.rgb;
+      st.aux = t.aux;
       break;
+    }
     case GsBarField::kCount:
       break;
   }

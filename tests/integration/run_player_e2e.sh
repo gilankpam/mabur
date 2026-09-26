@@ -61,7 +61,18 @@ OSD_SHA_EXPECTED=e202e5d127467752984bda2c135d166661f8c0eb2c8481a77d54b39ed8f76a8
 # The preceding commit fc44c70 (per-card EVM) is NOT in this delta: rebuilt and
 # rendered, it still hashes 3d926998..., because the fixture's cards carry no
 # EVM and that field blanks.
-GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
+#
+# Re-blessed 2026-09-26 (was 77352a37...): Task 9 (spec
+# 2026-09-26-vtx-recorder) widened the REC field's worst-case reservation
+# from "● REC FAULT" (11 glyphs) to kRecWorst, "● REC GS FAULT VTX NO CARD"
+# (gs_layer.h), so a GS-only recording -- --rec recording, the only state
+# this harness's CLI can render -- now sits in a wider, further-left box.
+# Pixel diff old->new: 11,488 px differ, ALL confined to the REC field's own
+# bbox (x 1453..1822 y 178..213), ZERO recoloured (erased == added ==
+# 5,744 exactly) and lit total unchanged at 88,394 -- a pure leftward
+# translation of the same "● REC 12:47" text, nothing else on the surface
+# moved.
+GS_SHA_EXPECTED=79d2fbab20dc695d48b6697709043194428d6ecc69923957f81eb49de0f60bda
 # Golden for PART E, the compact bar (osd.gs.style = "compact"). Same rule
 # as the two above: re-bless only from a pixel diff, never from a hash swap
 # alone -- the geometry floor below sees a bar that moved or lost a row, but
@@ -102,7 +113,15 @@ GS_SHA_EXPECTED=77352a37acfdda3260ae167c060efc0a232b0e0ec5c52cba2a44c30292f7e511
 # depends on the compact bar: OSD_SHA_EXPECTED is the drone-side MSP OSD,
 # and GS_SHA_EXPECTED renders --style essential, whose kRung field ("MCS 7 /
 # FEC 25%") never reads bw.
-BAR_SHA_EXPECTED=c71946028138f8bc46bf27626317275c3c8fa24224b82e6a83c1ec3b80735e8d
+# Re-blessed 2026-09-26 (was c7194602...): same REC-field widening as
+# GS_SHA_EXPECTED above (Task 9, spec 2026-09-26-vtx-recorder) -- the bar
+# renders kRec byte-for-byte the essential overlay's, so the box grows here
+# too. Pixel diff old->new: 26,256 px differ, ALL confined to the REC corner
+# band (x 1309..1886 y 42..94, the same band the 2026-09-24 rebless above
+# calls out as untouched by ITS change), ZERO recoloured (erased == added ==
+# 13,128 exactly) and lit total unchanged at 139,190 -- the same pure
+# leftward translation, nothing else on the bar moved.
+BAR_SHA_EXPECTED=7f075ffc51ceb71bfd0f13bc7998b1a3d5996b6e95e0b1dda0f84c32cde36d25
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -472,8 +491,15 @@ print("  rec: x %d..%d y %d..%d" % (rx0, rx1, ry0, ry1))
 # Its box's top edge sits on the 40 px inset; the ink starts a few px in
 # (the cell's ascender gap and the shadow pad).
 assert 40 <= ry0 < 40 + 24, "rec not at the top inset (y0=%d)" % ry0
-# Right-flushed against the same 32 px inset the rows use.
-assert 1920 - 32 - 24 <= rx1 <= 1920 - 32, "rec not flush right (x1=%d)" % rx1
+# The corner BOX is right-flushed against the same 32 px inset the rows
+# use, but the ink drawn inside it is left-aligned -- so a short value's own
+# ink no longer has to touch that edge now that the box is sized on
+# kRecWorst (gs_layer.h), the widest of the VTX-recorder REC states (Task 9,
+# spec 2026-09-26-vtx-recorder): "GS 12:47" is far shorter than "GS FAULT
+# VTX NO CARD". Only bound the ink from overflowing the inset; the box
+# itself staying flush right is what test_gs_compact.cpp's
+# debug_field_box(kRec) pins.
+assert rx1 <= 1920 - 32, "rec ink overflows the right inset (x1=%d)" % rx1
 # In the RIGHT half, unambiguously -- this is what says "corner", not "top".
 assert rx0 > w // 2, "rec is not in the right half (x0=%d)" % rx0
 

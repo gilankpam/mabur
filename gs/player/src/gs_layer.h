@@ -42,6 +42,13 @@ struct RecState {
   };
   Kind kind = Kind::kArmed;
   int elapsed_s = 0;
+  // VTX onboard recorder leg (spec 2026-09-26). kNone = the VTX is not a
+  // target or the button is off; with kNone and gs_target the field renders
+  // exactly as it did before the VTX recorder existed.
+  enum class Vtx { kNone, kWait, kRecording, kNoCard, kFull, kFault, kOff };
+  Vtx vtx = Vtx::kNone;
+  int vtx_elapsed_s = 0;
+  bool gs_target = true;   // false with dvr.target = "vtx": the GS leg is ignored
 };
 
 struct GsPlayerState {
@@ -104,6 +111,18 @@ std::string fmt_int(double v);         // nearest integer, never negative-zero
 std::string fmt_one_dp(double v);      // always one decimal place
 std::string fmt_signed_int(double v);  // U+2212 for negatives
 std::string fmt_clock(int seconds);    // mm:ss, saturating at 99:59
+
+// The REC field's text for both OSD layouts (gs_overlay kRec, gs_compact
+// kRec): where recording happens (GS, VTX, GS+VTX) and why a selected
+// target is not recording. aux = 1 paints the leading dot in kStatusRec.
+struct RecText {
+  std::string text;
+  uint32_t rgb = 0;
+  int aux = 0;
+};
+RecText rec_text(const RecState& r);
+// Widest string rec_text() can return; both layouts size the field on it.
+extern const char* const kRecWorst;
 
 // What the GS overlay draws. Two implementations, chosen by osd.gs.style:
 //
