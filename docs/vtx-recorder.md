@@ -125,6 +125,15 @@ the MI origin. `lat.log` `enc` is the GS player's per-second p50/p99.
   **+19.7 points**. This is higher than the spike's +14. Per thread:
   `mbr-rec` (writer) 12.4 % and `mbr-recdrain` 6.2 % of one core. The rest
   is kernel time for vfat/SD. A repeat after a fresh boot gave 39.9 → 56.7.
+- **CPU after the drain rewrite** (4704246, same day): the drain now copies
+  each NAL straight into MP4 layout from the SDK's NAL table
+  (`drone/venc/rec_frame.h`) and the writer no longer rescans or re-copies
+  frames. Per-thread user time, % of one core, 20 s windows at 40 Mb/s:
+  `mbr-rec` 5.5 → 0.4, `mbr-recdrain` 6.0 → 1.7. System-wide user time
+  added by recording (of 200 % on two cores) fell from +14.4 to +3.9. What
+  remains is `fwrite` + one `fsync` per fragment (`mbr-rec` sys ~7 %),
+  kernel vfat/SD writeback, and ~20 % iowait behind the fsyncs. A 33.6 s
+  recording made with it decodes cleanly (2003 frames, 1080p60).
 - **Memory** at 40 Mb/s: `maburd` VmRSS peaked at 18.8 MB and MemAvailable
   never fell below 58.8 MB. With a parallel `dd` of 300 MB `conv=fsync` to
   the card, the peaks were 22.5 MB RSS and 53.3 MB MemAvailable, with 18
