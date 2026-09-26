@@ -1,91 +1,107 @@
-[radio]
-usb_vid    = 3034
-usb_pid    = 0
-channel    = 136
-width      = 40        # HT40 on the standard pair (132+136 for home 136); per-rung width comes from the GS ladder (docs/bw40.md)
-follow_gs  = true        # honour the GS's DISC op_channel (auto channel select)
-power_mode = "none"      # set to offset to use rate_walls_rel
-tx_threads = 4
+# maburd — drone-side configuration (/etc/mabur.toml)
+#
+# maburd refuses to start on an unknown or misspelled key, and restarts
+# every 2 s until the file is fixed: check /tmp/mabur.log after editing.
 
-# Wall-equalization measured on my vtx not yours, set power_mode to offset to use.
-# Calibrated on 8812EU, 2026-09-13, ch136. Values are RELATIVE to the chip's
-# own per-channel efuse anchor, so one table covers every channel.
-# Only wall_margin_db moves TX power in offset mode.
-rate_walls_rel  = [63, 63, 62, 45, 22, 6, 9, 5]
+[radio]
+usb_vid    = 3034        # Realtek USB vendor ID (0x0bda) in decimal
+usb_pid    = 0           # 0 = find the card automatically (8812EU or 8812CU)
+channel    = 136         # home channel: where the drone waits for the ground station
+width      = 40          # 20 or 40 MHz. The ground station picks the width per link rung
+follow_gs  = true        # move to the channel the ground station asks for
+power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
+tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
+
+# TX-power calibration ("walls"). These numbers belong to ONE card: the
+# author's 8812EU. They do nothing while power_mode = "none". To calibrate
+# your own card, run `maburcal start` on the ground station: it measures the
+# walls, writes them here and switches power_mode to "offset" for you.
+# On an 8812CU, calibrate on the channel you fly most.
+rate_walls_rel  = [63, 63, 62, 45, 22, 6, 9, 5]   # per MCS 0..7
 legacy_wall_rel = 63
-wall_margin_db  = 1.0
+wall_margin_db  = 1.0    # safety margin below the walls; raise it to lower TX power
 
 [fec]
-symbol_size     = 332      # must match the GS
+# Forward error correction. symbol_size must match the ground station.
+symbol_size     = 332
 window          = 32
-blocks_per_body = [4, 4]   # base, enhance
-base_overhead   = 0.5
-feed_batch      = 1        # 1: unchanged when the drone went to agg6 (2026-09-24); no measured win from >1
+blocks_per_body = [4, 4]   # base layer, enhance layer
+base_overhead   = 0.5      # extra repair data on the base layer (0.5 = +50 %)
+feed_batch      = 1
 flush_ms        = 25
 
 [encoder]
 bitrate_min_kbps   = 1000
 bitrate_max_kbps   = 24000
-airtime_budget     = 0.65  # of DELIVERED capacity (air_clock.efficiency)
-roi_threshold_kbps = 3000
+airtime_budget     = 0.65  # share of the link's real capacity the video may use
+roi_threshold_kbps = 3000  # below this bitrate, apply roi_qp_low (only when [venc.roi] is enabled)
 roi_qp_low         = -24
 roi_qp_normal      = 0
 
 [venc]
-sensor_bin = "/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"
+sensor_bin = "/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"  # camera sensor tuning file
 size       = "1920x1080"
 fps        = 60
-gop_s      = 0.5
-qp_delta   = 4
-max_ipprop = 2
-min_iqp    = 34            # I-frame QP floor, caps IDR size
-intra_refresh_rows = 34
-intra_refresh_qp   = 36
-ref_base    = 1
-ref_enhance = 1
+gop_s      = 0.5           # seconds between keyframes
+qp_delta   = 4             # quality offset between keyframes and P-frames
+max_ipprop = 2             # keyframe may be at most this many times a P-frame's size
+min_iqp    = 34            # keyframe quality floor: higher = smaller keyframes
+intra_refresh_rows = 34    # rows refreshed per frame, so a lost frame heals without a keyframe
+intra_refresh_qp   = 36    # quality of those refresh rows
+ref_base    = 1            # temporal layering: a base layer every frame can decode from...
+ref_enhance = 1            # ...plus droppable enhance frames between them
 ref_pred    = true
-ae_fps      = 15
-awb_fps     = 15
-snapshot_quality = 80
-debug_port  = 8301
-superframe_p_pct = 200     # P-frame cap
+ae_fps      = 15           # auto-exposure update rate
+awb_fps     = 15           # auto-white-balance update rate
+snapshot_quality = 80      # JPEG quality of camera snapshots
+debug_port  = 8301         # local HTTP status port (curl 127.0.0.1:8301/venc)
+superframe_p_pct = 200     # cap a P-frame at this % of the per-frame bitrate budget
 
 [venc.roi]
-enabled = false            # OFF or roi_qp_low blew up the rung-0 demote IDR
+# Region of interest: sharper centre, softer edges at low bitrate. Off by
+# default: it made the keyframe after a link drop much larger.
+enabled = false
 steps   = 2
 center  = 0.4
 
 [link]
-vtx_id        = 1
-failsafe_ms   = 3000
-rc_drain_ms   = 5
-rendezvous_ms = 30000
-move_confirm_ms = 2000  # after a GS-commanded retune, hear the GS within this or return home
-tick_ms       = 100
+vtx_id          = 1        # must match the ground station
+failsafe_ms     = 3000     # no word from the ground station this long = drop to the most robust link setting
+rc_drain_ms     = 5
+rendezvous_ms   = 30000    # still silent this long after failsafe = return to the home channel
+move_confirm_ms = 2000     # after a channel move, hear the ground station within this or return home
+tick_ms         = 100
 
 [msp]
+# Flight-controller link for the OSD and arm state.
 enable         = true
-serial         = "/dev/ttyS2"
+serial         = "/dev/ttyS2"   # UART the flight controller is wired to
 baud           = 115200
-update_rate_hz = 3
+update_rate_hz = 3              # OSD updates per second sent to the ground station
 symbol_size    = 1312
 window         = 16
 overhead       = 1.0
 
 [low_power]
-enable       = true        # disarmed thermal + recovery mode (docs/link-adaptation.md)
+# While disarmed: lower bitrate and frame rate to keep the VTX cool.
+# Needs the flight controller's arm state over [msp].
+enable       = true
 bitrate_kbps = 1000
 fps          = 30
-stale_ms     = 2000        # a DISARMED report older than this = full power
+stale_ms     = 2000        # no arm-state report for this long = assume armed, full power
 
 [ampdu]
-max_num    = 6             # agg6 from the per-width min_mcs up: the flight config, bench-clean with carrier sense on (2026-09-24). Was 1 (singles) 2026-09-22.
+# Frame aggregation: packs several frames into one transmission at the
+# faster link rates, raising throughput.
+max_num    = 6             # frames per aggregate (0 = off)
 max_time   = 32
-min_mcs_20 = 4             # singles below mcs4 at 20 MHz: agg6 delivers 6-13 pts less there (2026-09-17 sweep)
-min_mcs_40 = 2             # A-MPDU pays from mcs2 at 40 MHz (2026-09-23 sweep); the 40 rungs are mcs3/4, both aggregate
+min_mcs_20 = 4             # aggregate only from this MCS up at 20 MHz
+min_mcs_40 = 2             # ...and at 40 MHz
 
 [air_clock]
-shed_ms       = 25         # ARMED shed 25 / eff 0.73 flew clean
-efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # delivered/nominal per HT MCS at 20 MHz: singles mcs0-3, agg6 above (2026-09-17)
-efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # agg6 at 40 MHz, flat, no rung-0 exception (2026-09-23)
+# How much of the nominal link rate is really delivered, per MCS 0..7.
+# Measured on the bench; keeps the bitrate from outrunning the air.
+shed_ms       = 25         # skip droppable enhance frames while the air backlog exceeds this
+efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # at 20 MHz
+efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # at 40 MHz
 body_us       = 0

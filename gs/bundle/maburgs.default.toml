@@ -1,40 +1,39 @@
-[radio]
-channel = 136
-width   = 40               # HT40 on the standard pair (132+136 for home 136); the scout card scans halves at 20 and joins at 40 (docs/bw40.md)
-tx_card = -1               # -1 = auto-select the best-SNR card
+# maburgs — ground-station link daemon configuration (/etc/maburgs.toml)
+#
+# maburgs refuses to start on an unknown or misspelled key, and restarts
+# every 2 s until the file is fixed: check /tmp/maburgs.log after editing.
+# Keys marked "must match the drone" have a twin in the drone's mabur.toml.
 
-# Boot-time channel scan: while waiting for the drone the spare card measures
-# these plus `channel` (home) and the DISC proposes the least busy one. The
-# pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
-# One card: the same card alternates home windows and dwells.
-# Candidates are 40 MHz pair PRIMARIES on home's side of the grid (home 136 =
-# 132+136, primary upper half), all spur-free: 144 (140+144, next door, the
-# cheap escape from a narrow interferer on home) and 112 (108+112), in the
-# 5.25-5.6 GHz DFS block clear of every FPV system
-# (analog/HDZero raceband 5.645-5.945, DJI O4 5.725-5.85 and 5.17-5.25 GHz,
-# Walksnail 5.8) -- the scout cannot see analog, so distance is the only
-# defence. 60+64 went 2026-09-26 (bench: 40/2 probes lossy and 4-14 %
-# per-card loss at strong signal -- deferred, docs/bw40.md). 36+40 went 2026-09-25 (DJI O4's 5.1 GHz band + home routers),
-# 124+128 too (E4 5645 at its edge). 120/149/165 went 2026-09-24: 116+120
-# and 149+153 are 8822E spur centres (65-91 ms retunes), 165 has no pair. The boot scan dwells on BOTH halves
-# of every pair at 20 MHz and picks the pair whose worse half is cleanest.
+[radio]
+channel = 136              # home channel: must match the drone's radio.channel
+width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz rungs of the ladder below
+tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
+
+# Boot-time channel scan. While waiting for the drone, a spare card measures
+# the candidates plus the home channel and the ground station proposes the
+# least busy one. The choice is fixed once the drone answers; restart maburgs
+# to scan again. With a single card, that card alternates between listening
+# on home and visiting candidates.
+#
+# The candidates are 40 MHz channel pairs picked to stay clear of other FPV
+# systems (analog, HDZero, DJI, Walksnail) and of home Wi-Fi. The scan cannot
+# detect an analog transmitter, so keep the candidate list far from any band
+# one might use.
 [radio.scan]
 enable           = true
 candidates       = [144, 112]
-dwell_ms         = 250
-settle_ms        = 30
-min_rounds       = 3
-home_window_ms   = 300
-split_after_ms   = 5000     # after link loss, beacon on the op channel this long, then also on home
-home_margin      = 20       # leave home only if a candidate's worst visit is >= 20 busy units lower
+dwell_ms         = 250      # time spent listening on each candidate per visit
+settle_ms        = 30       # time after tuning before measuring starts
+min_rounds       = 3        # full passes over the candidates before choosing
+home_window_ms   = 300      # time back on home between visits
+split_after_ms   = 5000     # after losing the link, search the last channel this long, then also home
+home_margin      = 20       # leave home only if a candidate is at least this much quieter
 
-# No [[radio.cards]]: maburgs probes the USB bus at startup and uses every
-# supported card it finds (chip-id, not PID -- see card_scan.h). Adding
-# explicit [[radio.cards]] blocks pins exactly that set AND skips the probe;
-# that is how you fly one card without unplugging an antenna. Absence is the
-# knob here, so this stays commented out.
+# Radio cards: by default maburgs uses every supported card it finds on USB.
+# To use only specific cards (e.g. fly one card without unplugging the other),
+# uncomment and repeat this block per card; the list then replaces the scan.
 #[[radio.cards]]
-#usb_vid = 3034   # decimal: the TOML subset rejects hex
+#usb_vid = 3034   # Realtek (0x0bda), in decimal
 #usb_pid = 0
 #index   = 0
 
@@ -43,64 +42,60 @@ symbol_size = 332          # must match the drone
 seq_horizon = 512
 
 [link]
-vtx_id                 = 1
-feedback_ms            = 50
-rcf_slot_hold_ms       = 30   # hold each RCF for the next AU; 0 disables
-arrival_guard_syms     = 192  # ArrivalTracker settle line: above the drone TX pool's reorder depth, else late reads as pre-FEC loss (sweep 2026-09-23: 64 -> 0.67 %, 192 -> 0.02 %)
+vtx_id                 = 1      # must match the drone
+feedback_ms            = 50     # how often link feedback is sent to the drone
+rcf_slot_hold_ms       = 30     # time feedback so it doesn't collide with incoming video; 0 = off
+arrival_guard_syms     = 192    # how late a packet may arrive before it counts as lost
 beacon_keepalive_ms    = 1000
-static_mcs             = -1   # -1 = adaptive ladder
-static_bw              = 20   # width of the static pin; 40 needs radio.width 40
-max_mcs                = 5    # filters on MCS only; both 40 rungs pass
+static_mcs             = -1     # -1 = adaptive link; 0..7 pins a fixed MCS (bench testing)
+static_bw              = 20     # width used with static_mcs; 40 needs radio.width = 40
+max_mcs                = 5      # highest MCS the adaptive link may use
+
+# Adaptive link: the ladder steps DOWN a rung when loss goes over down_util
+# for confirm_ms, and UP when it stays under up_util for clean_ms (and the
+# next rung passes its probe, see [link.probe]).
 down_util              = 0.35
 up_util                = 0.15
 confirm_ms             = 250
-clean_ms               = 1500   # current-rung util streak; the NEXT rung's evidence is link.probe.clean_bodies
-probation_ms           = 3000
-penalty_base_ms        = 5000
-penalty_max_ms         = 10000
-hold_after_down_ms     = 0
+clean_ms               = 1500
+probation_ms           = 3000   # after stepping up, a quick fall back counts as a failed promote
+penalty_base_ms        = 5000   # a failed rung is blocked this long, doubling on repeats...
+penalty_max_ms         = 10000  # ...up to this
+hold_after_down_ms     = 0      # wait after stepping down before stepping up again
 min_between_changes_ms = 150
-feedback_timeout_ms    = 1000
-starved_confirm_ms     = 300
+feedback_timeout_ms    = 1000   # no link reports this long = fall to the most robust rung
+starved_confirm_ms     = 300    # no video this long = fall to the most robust rung
+
+# Steady-state check on the enhance-layer stream.
 s3_demote              = true
 s3_down_util           = 0.15
-s3_min_syms            = 50   # below this many expected symbols = no traffic
-s3_settle_ms           = 300
-static_overhead_base   = 0.5  # static_mcs mode only
+s3_min_syms            = 50     # below this much traffic, a window tells us nothing
+s3_settle_ms           = 300    # ignore this check just after a rung change
+
+static_overhead_base   = 0.5    # FEC overhead with static_mcs only
 static_overhead_enh    = 0.5
 
-# Ladder rungs, low to high in CAPACITY. bw is per rung: 20 MHz bottom,
-# 40 MHz top -- HT40 MCS3 (54 Mb/s) reaches 1-1.6 dB further than HT20 MCS5
-# at more capacity, HT40 MCS4 reaches like HT20 MCS6 (docs/bw40-sweep-
-# findings-2026-09-23.md range test). base overhead must stay >= enh overhead.
+# Ladder rungs, from most robust to fastest. Each rung is an MCS, a channel
+# width (20 or 40 MHz; 40 needs radio.width = 40 here and on the drone) and
+# the extra FEC repair data per layer (0.5 = +50 %). Keep
+# overhead_base >= overhead_enh on every rung: the base layer is the one
+# every frame depends on.
 
 [[link.ladder]]
 mcs = 0
-bw  = 20
+bw  = 40
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 1
-bw  = 20
+bw  = 40
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 2
-bw  = 20
-overhead_base = 0.5
-overhead_enh  = 0.25
-
-[[link.ladder]]
-mcs = 3
-bw  = 20
-overhead_base = 0.5
-overhead_enh  = 0.25
-
-[[link.ladder]]
-mcs = 4
-bw  = 20
+bw  = 40
 overhead_base = 0.5
 overhead_enh  = 0.25
 
@@ -116,42 +111,47 @@ bw  = 40
 overhead_base = 0.5
 overhead_enh  = 0.25
 
+# Before stepping up, the drone sends test packets at the next rung; the
+# step happens only if they arrive clean.
 [link.probe]
-enable      = true
-rung_offset = 1
-max_util     = 0.05        # below the 0.1 quantum at 60 probes/s = zero loss allowed
-clean_bodies = 90          # clean streak in probe BODIES (1.5 s at 60/s)
-min_syms    = 16           # window availability floor; MUST stay under the low-power rate: 15 fps x bpb 4 x 0.5 s = 30 (40 held every pre-arm promote, 2026-09-20)
-silence_ms  = 500
-pin_mcs     = -1
+enable       = true
+rung_offset  = 1           # probe this many rungs above the current one
+max_util     = 0.05        # loss allowed on the probe (0.05 = none at 60 probes/s)
+clean_bodies = 90          # clean probes needed in a row (1.5 s at 60 fps)
+min_syms     = 16          # keep below 2x the drone's low_power.fps, or disarmed probes never pass
+silence_ms   = 500
+pin_mcs      = -1
 
+# Fade handling: step down early when the signal is fading, before loss hits.
 [link.fade]
-cascade    = true
-predict    = true
+cascade    = true          # after a loss-driven step down, react faster for hold_ms
+predict    = true          # step down on a sudden RSSI + SNR drop
 hold_ms    = 2500
 confirm_ms = 100
-rssi_db    = 14.0
-snr_db     = 6.0
-trigger_ms = 300
-min_rung   = 2
+rssi_db    = 14.0          # RSSI drop that counts as a fade...
+snr_db     = 6.0           # ...together with this SNR drop...
+trigger_ms = 300           # ...sustained this long
+min_rung   = 2             # never predict-step below this rung
 
 [link.rung_stats]
 half_life_samples = 600
 
 [video]
-frame_gap_timeout_ms     = 50
-frame_gap_timeout_max_ms = 100
+frame_gap_timeout_ms     = 50   # how long to wait for a missing piece of a frame
+frame_gap_timeout_max_ms = 100  # the same, upper limit at slow link rates
 frame_lookahead          = 8
 
+# Flight-controller OSD relayed from the drone, forwarded to maburplay.
 [msp]
 enable      = true
-symbol_size = 1312
-window      = 16
+symbol_size = 1312         # must match the drone
+window      = 16           # must match the drone
 
 [msp.out]
 host = "127.0.0.1"
-port = 14560
+port = 14560               # must match maburplay's osd.port
 
+# Link statistics, sent as UDP JSON.
 [stats]
 enable      = true
 interval_ms = 200
@@ -162,50 +162,53 @@ port = 8300                # maburtop
 
 [[stats.out]]
 host = "127.0.0.1"
-port = 8302                # player GS-OSD
+port = 8302                # maburplay's on-screen link stats (osd.gs.port)
 
+# Hand-off of received video frames to maburplay (shared memory).
 [au_ring]
 enable     = true
-path       = "/dev/shm/mabur-au"
-socket     = "/run/mabur-au.sock"
+path       = "/dev/shm/mabur-au"    # must match maburplay's ring_path
+socket     = "/run/mabur-au.sock"   # must match maburplay's socket
 slot_kb    = 512
 slot_count = 16
 
+# Detailed per-session logs for troubleshooting; off by default.
 [debug_log]
 enable        = false
 dir           = "/media/dvr/log"
 ctl_period_ms = 50
 rung_period_s = 10
 
-# In-flight channel hop (spec 2026-09-14-inflight-channel-hop). enable=false:
-# first flights observe-only; flip `enable` after the HOP section of
-# flightreport looks sane.
+# In-flight channel hop: when the current channel goes bad, move the link to
+# a cleaner candidate from [radio.scan]. A spare card keeps "scouting" the
+# candidates in the background to rank them.
 [hop]
 enable               = true
-scout_when_disabled  = true
-window_ms            = 150
-persist              = 2
-dwell_observe_ms     = 5
-dwell_period_ms      = 333
-rank_visits          = 5
-rank_max_age_ms      = 10000
-confirm_ms           = 1000   # hop: drone video on the target within this, else withdraw; spur-pair hops confirmed in 423-460 ms (bench 2026-09-26)
-confirm_extend_ms    = 3000   # keep an unconfirmed order this long while the op reads blocked (uplink jammed too); 0 = off
-verify_ms            = 1000
-cooldown_ms          = 2000
+scout_when_disabled  = true   # keep ranking candidates even with enable = false
+window_ms            = 150    # length of one channel-health check
+persist              = 2      # bad checks in a row before hopping
+dwell_observe_ms     = 5      # scout: time listening per candidate visit...
+dwell_period_ms      = 333    # ...and time between visits
+rank_visits          = 5      # visits remembered per candidate
+rank_max_age_ms      = 10000  # visits older than this are ignored
+confirm_ms           = 1000   # drone video must appear on the new channel within this, else cancel
+confirm_extend_ms    = 3000   # wait up to this instead while the current channel is jammed; 0 = off
+verify_ms            = 1000   # after arriving, watch the new channel this long
+cooldown_ms          = 2000   # minimum time between hops
 max_hops_per_min     = 4
-backoff_ms           = 30000
-one_card_repeats     = 5
+backoff_ms           = 30000  # a channel that proved bad is avoided this long (doubles on repeats)
+one_card_repeats     = 5      # single card: send the hop order this many times before retuning
 
+# What counts as a bad channel.
 [hop.verdict]
-loss_pct             = 3.0
-recovered_x          = 3.0
-recovered_min        = 8      # recovered-symbols floor for `impaired`; 0 = off (bench 0232: ~97 % of recovered-only windows had <= 8)
-weak_rssi_dbm        = -78
+loss_pct             = 3.0    # packet loss %
+recovered_x          = 3.0    # FEC repairs this many times above normal
+recovered_min        = 8      # ...and at least this many repairs; 0 = off
+weak_rssi_dbm        = -78    # below this signal AND weak_snr_db, loss is blamed on range, not interference
 weak_snr_db          = 12
 fading_drop_db       = 6
-foreign_pps          = 50
-fa_pps               = 100
-busy_dbm             = -83    # NHM busy-airtime level; must be a bucket edge (docs/nhm-airtime-spike-findings-2026-09-25.md)
-blocked_pct          = 50     # foreign busy airtime % that marks a window / channel blocked
-starved_frac         = 0.25   # AU rate below this fraction of the trailing rate = starved; 60->30 fps low-power is 0.5
+foreign_pps          = 50     # other transmitters' packets per second
+fa_pps               = 100    # false detections per second (non-Wi-Fi noise)
+busy_dbm             = -83    # energy level that counts the air as busy (must be one of the hardware's steps)
+blocked_pct          = 50     # % of time the air is busy with others = channel blocked
+starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)

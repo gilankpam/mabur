@@ -626,17 +626,15 @@ TEST(static_bw_defaults_20_and_40_needs_radio_width_40) {
   CHECK(threw);
 }
 
-TEST(default_bundle_ladder_is_five_20_rungs_then_two_40_rungs) {
+TEST(default_bundle_ladder_is_five_40_rungs) {
   auto cfg = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   CHECK(cfg.radio.width == 40);
   CHECK(cfg.link.static_bw == 20);
   auto& L = cfg.link.ladder_cfg.ladder;
-  REQUIRE(L.size() == 7);
-  const int mcs[7] = {0, 1, 2, 3, 4, 3, 4};
-  const int bw[7] = {20, 20, 20, 20, 20, 40, 40};
-  for (size_t i = 0; i < 7; ++i) {
-    CHECK(L[i].mcs == mcs[i]);
-    CHECK(L[i].bw == bw[i]);
+  REQUIRE(L.size() == 5);
+  for (size_t i = 0; i < 5; ++i) {
+    CHECK(L[i].mcs == static_cast<int>(i));
+    CHECK(L[i].bw == 40);
     CHECK(std::abs(L[i].overhead_base - 0.5) < 1e-9);
     CHECK(std::abs(L[i].overhead_enh - 0.25) < 1e-9);
   }
@@ -918,22 +916,22 @@ TEST(ladder_threshold_keys_parse_with_defaults) {
   CHECK(cfg2.link.ladder_cfg.penalty_max_ms == 30000);
 }
 
-// The bundle carries the FLIGHT ladder, not a neutral seed: seven written
-// rungs, mcs 0..4 at 20 MHz then mcs 3,4 again at 40 MHz (2026-09-24 40 MHz
-// top rungs), none of which link.max_mcs = 5 filters out. mcs 0 is the
+// The bundle carries the FLIGHT ladder, not a neutral seed: five written
+// rungs, mcs 0..4 all at 40 MHz (2026-09-26; was mcs 0..4 at 20 then 3,4 at
+// 40 from 2026-09-24), none of which link.max_mcs = 5 filters out. mcs 0 is the
 // failsafe floor every controller starts from and falls back to -- pinned
 // here because "the failsafe rung moved" is the kind of change that must be
 // deliberate. Overheads are actual-air (airtime-balance-uep) at base
 // 0.5/enh 0.25 on every rung; the mcs/bw pinning itself is
-// default_bundle_ladder_is_five_20_rungs_then_two_40_rungs above, so this
+// default_bundle_ladder_is_five_40_rungs above, so this
 // test carries the invariants that one doesn't: base>=enh, the static pin,
 // and uep_layers.
 // Re-pinned to the bundle as of b05c60f (2026-09-18 ladder retune), then
-// extended to 40 MHz rungs (2026-09-24).
+// extended to 40 MHz rungs (2026-09-24), then all-40 (2026-09-26).
 TEST(default_bundle_ladder_is_the_flight_ladder) {
   auto c = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
   auto& L = c.link.ladder_cfg.ladder;
-  CHECK(L.size() == 7);
+  CHECK(L.size() == 5);
   for (auto& r : L) {
     CHECK(r.overhead_base > 0.499 && r.overhead_base < 0.501);
     CHECK(r.overhead_enh > 0.249 && r.overhead_enh < 0.251);

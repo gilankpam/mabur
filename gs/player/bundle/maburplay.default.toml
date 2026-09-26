@@ -1,47 +1,56 @@
+# maburplay — ground-station video player configuration (/etc/maburplay.toml)
+#
+# maburplay refuses to start on an unknown or misspelled key: check its log
+# after editing.
+
 ring_path   = "/dev/shm/mabur-au"   # must match maburgs' au_ring.path
 socket      = "/run/mabur-au.sock"  # must match maburgs' au_ring.socket
-backend     = "mpp"                 # "mpp" | "null"
-screen_mode = "1920x1080@60"
+backend     = "mpp"                 # "mpp" = hardware decode to the screen; "null" = decode nothing (testing)
+screen_mode = "1920x1080@60"        # display resolution and refresh rate
 
+# Video recorder (DVR).
 [dvr]
-autostart   = false        # record button arms it; see input.rec below
+autostart   = false        # true = record from the start; false = wait for the record button ([input.rec])
 dir         = "/media/dvr"
 fragment_ms = 1000
-mode        = "burned"     # "raw" | "burned"
+mode        = "burned"     # "raw" = video exactly as received; "burned" = re-encoded with the OSD drawn in
 
 [dvr.burned]
 bitrate_kbps = 8000
 fps_cap      = 60
 
+# Flight-controller OSD (from the drone, relayed by maburgs).
 [osd]
 enable   = true
 port     = 14560           # must match maburgs' msp.out.port
 font     = "/usr/local/share/mabur/font_btfl.mfont"
-scale    = "sharp"         # "sharp" | "fill"
-stale_ms = 5000
+scale    = "sharp"         # "sharp" = crisp pixels; "fill" = stretch to fill the screen
+stale_ms = 5000            # hide the OSD after this long without updates; 0 = never
 
+# Ground-station link stats drawn on screen (signal, link rate, loss).
 [osd.gs]
 enable   = true
-port     = 8302            # must match a stats.out entry in maburgs.toml
+port     = 8302            # must match a [[stats.out]] port in maburgs.toml
 font     = "/usr/local/share/mabur/gs_osd.gfont"
-style    = "compact"       # "compact" (two bottom rows) | "essential" (corners)
-stale_ms = 3000
+style    = "compact"       # "compact" = two rows along the bottom; "essential" = four corners with colours and bars
+stale_ms = 3000            # dim the stats after this long without updates
 
-# GPIO record button. The whole [input.rec] block is the knob: with it absent
-# the player never records unless dvr.autostart is true.
+# GPIO record button: toggles the DVR. Delete this whole block if no button
+# is wired; the DVR then records only with dvr.autostart = true.
 [input.rec]
-pin        = 32            # header pin number, resolved by kernel line name
-active_low = true          # button to GND with the internal pull-up
+pin        = 32            # pin number on the 40-pin header
+active_low = true          # button connects the pin to GND
 bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
 
+# Frame timing: shows each frame in step with the screen's refresh for
+# steady, low-latency video.
 [display]
-regulate_ms   = 12         # fallback hold while the vblank estimator is cold
-vsync_lock    = true
-vsync_lead_ms = 6
-chain_budget  = 3
+regulate_ms   = 12         # fallback delay before showing a frame, used until refresh timing is learned
+vsync_lock    = true       # time frames to the screen refresh
+vsync_lead_ms = 6          # hand a frame to the display this long before the refresh
+chain_budget  = 3          # after this many frames shown back-to-back, drop one to cut latency; 0 = never
 
-# GS-side reverse of the drone's ColorTrans sensor tuning: CRTC 3D LUT on the
-# live picture, the OSD pre-inverted, and the burned DVR corrected on the GPU.
-# The transform's constants are compiled in (docs/colortrans.md).
+# Undo the drone camera's colour tuning (the "colortrans" sensor file in the
+# drone's venc.sensor_bin) on the screen, the OSD and the recording.
 [colortrans]
 enable = true
