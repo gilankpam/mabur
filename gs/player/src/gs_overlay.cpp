@@ -790,17 +790,30 @@ void GsOverlay::draw_field_(GsFieldId id, const FieldState& st, const Surface& s
 
   if (st.text.empty()) return;  // cleared above; nothing more to draw
 
+  int pen_x = f.pen_x;
+  if (id == GsFieldId::kRec) {
+    // kRec's box is sized to kRecWorst (gs_layer.h), which is far wider
+    // than most of the strings rec_text() actually returns -- a GS-only
+    // "REC mm:ss"/"REC FAULT" must land EXACTLY where it always did, not
+    // wherever the widest VTX+GS fault combo would start. Right-align
+    // within the box instead of drawing from its (fixed) left edge: the
+    // pad on both sides is symmetric, so box_right - pad - text_width is
+    // the mirror of layout()'s box_left + pad.
+    const int pad = (f.atlas->glyph_w - f.atlas->advance_x) / 2;
+    pen_x = f.box.x + f.box.w - pad - text_width(*f.atlas, st.text.c_str());
+  }
+
   // The recording dot takes kStatusRec while the rest of the line takes the
   // field colour -- one field, two colours, because they change together
   // and splitting them would double the dirty rects for no benefit.
   if (id == GsFieldId::kRec && st.aux == 1) {
-    const int adv = draw_text(s, *f.atlas, f.pen_x, f.baseline_y, kDotFilled,
+    const int adv = draw_text(s, *f.atlas, pen_x, f.baseline_y, kDotFilled,
                               tok::kStatusRec);
-    draw_text(s, *f.atlas, f.pen_x + adv, f.baseline_y,
+    draw_text(s, *f.atlas, pen_x + adv, f.baseline_y,
               st.text.c_str() + std::string(kDotFilled).size(), st.rgb);
     return;
   }
-  draw_text(s, *f.atlas, f.pen_x, f.baseline_y, st.text.c_str(), st.rgb);
+  draw_text(s, *f.atlas, pen_x, f.baseline_y, st.text.c_str(), st.rgb);
 }
 
 int GsOverlay::update(const GsSnapshot& snap, bool stale, const GsPlayerState& ps,

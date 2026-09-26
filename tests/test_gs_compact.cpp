@@ -304,6 +304,48 @@ TEST(the_recording_indicator_never_dims_on_a_stale_link) {
         bar.debug_field_text(s, false, ps, GsBarField::kRec));
 }
 
+// Fix round 1 (2026-09-26): kRec's box is sized to kRecWorst, far wider
+// than a GS-only state's own text, so drawing left-aligned from the box's
+// fixed left edge put the indicator ~577 px further left than it used to
+// sit. draw_field_ must right-align instead -- a short state's own ink
+// ends at the SAME column as the widest state's, both flush with the
+// box's right edge (which the anchored-top-right test above already pins).
+TEST(short_rec_text_ends_flush_with_the_box_right_edge_like_the_widest_state) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  const GsSnapshot s = nominal();
+  Canvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+
+  auto rightmost_ink = [&]() {
+    const DirtyRect b = bar.debug_field_box(GsBarField::kRec);
+    int x1 = -1;
+    for (int y = b.y; y < b.y + b.h; ++y)
+      for (int x = b.x; x < b.x + b.w; ++x)
+        if (c.px[(size_t)y * 1920 + x] && x > x1) x1 = x;
+    return x1;
+  };
+
+  GsPlayerState ps = player_nominal();
+  ps.rec.kind = RecState::Kind::kRecording;
+  ps.rec.elapsed_s = 9;  // "● REC 00:09" -- far shorter than kRecWorst
+  bar.update(s, false, ps, c.s, &rects);
+  const int short_x1 = rightmost_ink();
+  REQUIRE(short_x1 >= 0);
+
+  rects.clear();
+  ps.rec.kind = RecState::Kind::kFault;
+  ps.rec.vtx = RecState::Vtx::kNoCard;  // "● REC GS FAULT VTX NO CARD" == kRecWorst
+  bar.update(s, false, ps, c.s, &rects);
+  const int widest_x1 = rightmost_ink();
+  REQUIRE(widest_x1 >= 0);
+
+  CHECK(short_x1 == widest_x1);
+}
+
 // The indicator is anchored top-right and stays there: neither the
 // recorder's state nor the card count may move it, and it must not drag
 // the centred rows around the way an in-row box did.

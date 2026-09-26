@@ -447,16 +447,27 @@ void GsCompactBar::draw_field_(GsBarField id, const FieldState& st,
   if (!atlas_ || !f.active) return;
   clear_region(s, f.box);
   if (st.text.empty()) return;  // cleared above; nothing more to draw
+
+  int pen_x = f.pen_x;
+  if (id == GsBarField::kRec) {
+    // kRec's box is sized to kRecWorst (gs_layer.h), far wider than most
+    // of what rec_text() actually returns -- see the essential overlay's
+    // draw_field_ for the full reasoning. Right-align within the box so a
+    // GS-only "REC mm:ss"/"REC FAULT" lands exactly where it always did.
+    const int pad = (atlas_->glyph_w - atlas_->advance_x) / 2;
+    pen_x = f.box.x + f.box.w - pad - text_width(*atlas_, st.text.c_str());
+  }
+
   if (st.aux == 1) {
     // The recording dot takes kStatusRec while the rest of the item takes
     // the field colour.
-    const int adv = draw_text(s, *atlas_, f.pen_x, f.baseline_y, kDotFilled,
+    const int adv = draw_text(s, *atlas_, pen_x, f.baseline_y, kDotFilled,
                               tok::kStatusRec);
-    draw_text(s, *atlas_, f.pen_x + adv, f.baseline_y,
+    draw_text(s, *atlas_, pen_x + adv, f.baseline_y,
               st.text.c_str() + std::string(kDotFilled).size(), st.rgb);
     return;
   }
-  draw_text(s, *atlas_, f.pen_x, f.baseline_y, st.text.c_str(), st.rgb);
+  draw_text(s, *atlas_, pen_x, f.baseline_y, st.text.c_str(), st.rgb);
 }
 
 int GsCompactBar::update(const GsSnapshot& snap, bool stale,

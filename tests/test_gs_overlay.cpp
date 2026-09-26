@@ -726,6 +726,49 @@ TEST(recording_states_render_distinctly) {
         std::string(kDotFilled) + " REC FAULT");
 }
 
+// Fix round 1 (2026-09-26): kRec's box is sized to kRecWorst, far wider
+// than a GS-only state's own text, so drawing left-aligned from the box's
+// fixed left edge put "REC 12:47" ~370 px further left than it used to
+// sit. draw_field_ must right-align instead -- a short state's own ink
+// ends at the SAME column as the widest state's, both flush with the
+// box's right edge.
+TEST(short_rec_text_ends_flush_with_the_box_right_edge_like_the_widest_state) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  const GsSnapshot s = nominal();
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+
+  auto rightmost_ink = [&]() {
+    const DirtyRect b = ov.debug_field_box(GsFieldId::kRec);
+    int x1 = -1;
+    for (int y = b.y; y < b.y + b.h; ++y)
+      for (int x = b.x; x < b.x + b.w; ++x)
+        if (c.px[(size_t)y * 1920 + x] && x > x1) x1 = x;
+    return x1;
+  };
+
+  GsPlayerState p;
+  p.rec.kind = RecState::Kind::kRecording;
+  p.rec.elapsed_s = 767;  // "● REC 12:47" -- far shorter than kRecWorst
+  ov.update(s, false, p, c.s, &rects);
+  const int short_x1 = rightmost_ink();
+  REQUIRE(short_x1 >= 0);
+
+  rects.clear();
+  p.rec.kind = RecState::Kind::kFault;
+  p.rec.vtx = RecState::Vtx::kNoCard;  // "● REC GS FAULT VTX NO CARD" == kRecWorst
+  ov.update(s, false, p, c.s, &rects);
+  const int widest_x1 = rightmost_ink();
+  REQUIRE(widest_x1 >= 0);
+
+  CHECK(short_x1 == widest_x1);
+}
+
 // Text alone doesn't prove the pixels go away: the recording clock is
 // already painted when the button stops it, and only draw_field_'s clear
 // erases it. Without that, "REC 12:47" freezes on screen forever.
