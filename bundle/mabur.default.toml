@@ -105,3 +105,13 @@ shed_ms       = 25         # skip droppable enhance frames while the air backlog
 efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # at 20 MHz
 efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # at 40 MHz
 body_us       = 0
+
+[record]
+# Onboard microSD recorder: a constant-bitrate copy of the camera on the
+# drone's own card, started and stopped by the GS record button when the
+# GS sets dvr.target = "vtx" or "both". No card or slot is not an error.
+enable       = true
+dir          = "/mnt/mmcblk0p1"   # where the card is auto-mounted
+bitrate_kbps = 40000              # constant bitrate of the recording
+fps          = 60
+min_free_mb  = 512                # stop (or refuse to start) below this much free space

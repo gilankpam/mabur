@@ -177,6 +177,13 @@ TEST(load_config_default_file_is_the_flight_config) {
   CHECK(cfg.low_power.fps == 30);
   CHECK(cfg.low_power.stale_ms == 2000);
 
+  // record (spec 2026-09-26): onboard SD recorder
+  CHECK(cfg.record.enable == true);
+  CHECK(cfg.record.dir == "/mnt/mmcblk0p1");
+  CHECK(cfg.record.bitrate_kbps == 40000);
+  CHECK(cfg.record.fps == 60);
+  CHECK(cfg.record.min_free_mb == 512);
+
   // agg6 from the per-width threshold up: the flight config since
   // 2026-09-24 (bench-clean with carrier sense on both ends).
   CHECK(cfg.ampdu.max_num == 6);
@@ -1570,6 +1577,54 @@ TEST(radio_width_40_needs_a_standard_pair) {
   CHECK(msg.find("radio.width") != std::string::npos);
   CHECK(msg.find("165") != std::string::npos);
   std::filesystem::remove(path);
+}
+
+TEST(record_defaults_are_disabled_and_parse) {
+  {
+    auto path = write_temp_toml("");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.record.enable == false);
+    CHECK(cfg.record.dir == "/mnt/mmcblk0p1");
+    CHECK(cfg.record.bitrate_kbps == 40000);
+    CHECK(cfg.record.fps == 60);
+    CHECK(cfg.record.min_free_mb == 512);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_toml(
+        "[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nfps = 60\n"
+        "[record]\nenable = true\ndir = \"/mnt/sd\"\nbitrate_kbps = 30000\nfps = 30\nmin_free_mb = 100\n");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.record.enable == true);
+    CHECK(cfg.record.dir == "/mnt/sd");
+    CHECK(cfg.record.bitrate_kbps == 30000);
+    CHECK(cfg.record.fps == 30);
+    CHECK(cfg.record.min_free_mb == 100);
+    std::filesystem::remove(path);
+  }
+}
+
+TEST(record_unknown_key_throws_naming_it) {
+  auto path = write_temp_toml("[record]\nbogus = 1\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("record.bogus") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(record_ranges_are_checked) {
+  auto bad = [](const char* body, const char* field) {
+    auto path = write_temp_toml(body);
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    std::filesystem::remove(path);
+    return msg.find(field) != std::string::npos;
+  };
+  CHECK(bad("[record]\nbitrate_kbps = 1000\n", "record.bitrate_kbps"));
+  CHECK(bad("[record]\nbitrate_kbps = 90000\n", "record.bitrate_kbps"));
+  CHECK(bad("[record]\ndir = \"relative\"\n", "record.dir"));
+  CHECK(bad("[record]\nmin_free_mb = -1\n", "record.min_free_mb"));
+  // fps is checked against venc.fps only when the recorder is enabled.
+  CHECK(bad("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nfps = 60\n[record]\nenable = true\nfps = 90\n", "record.fps"));
+  CHECK(bad("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nfps = 60\n[record]\nenable = true\nfps = 0\n", "record.fps"));
 }
 
 MTEST_MAIN
