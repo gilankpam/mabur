@@ -515,6 +515,7 @@ TEST(drone_section_null_then_rates) {
   t.roi_qp = -24;
   t.rx_own = 13; t.rx_foreign = 14; t.rx_crcfail = 15;
   t.flags = 0x94;  // probing + congestion_shed + low_power
+  t.rec_status = 0x0E;  // state 2 (error), err 3 (no card)
   in.telem = t; in.telem_rx_ms = 1400;
   ex.poll(1500, in);
   json j = cap.last();
@@ -530,6 +531,8 @@ TEST(drone_section_null_then_rates) {
   CHECK(j["drone"]["probing"] == true);
   CHECK(j["drone"]["congestion_shed"] == true);
   CHECK(j["drone"]["low_power"] == true);
+  CHECK(j["drone"]["rec"]["state"] == 2);
+  CHECK(j["drone"]["rec"]["err"] == 3);
   // enc.roi_qp is the ROI override (signed); there is no enc.qp key.
   CHECK(!j["drone"]["enc"].contains("qp"));
   CHECK(j["drone"]["enc"]["roi_qp"] == -24);

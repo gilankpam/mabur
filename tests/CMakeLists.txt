@@ -298,6 +298,7 @@ add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_cal_session test_cal_session.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_cal_log test_cal_log.cpp LIBS mabur_gs_core pthread)
   add_mtest(test_cal_control test_cal_control.cpp LIBS mabur_gs_core)
+  add_mtest(test_rec_control test_rec_control.cpp LIBS mabur_gs_core)
   if(MABUR_BUILD_DRONE)
     # rcf_dump: a plain CLI helper (not itself a ctest, no add_mtest), used
     # by run_gs_e2e.sh's hop scenario to decode a dumped RCF wire frame with
