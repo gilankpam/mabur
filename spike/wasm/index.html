@@ -19,6 +19,14 @@ document.getElementById('go').onclick = async () => {
     log(`picked ${d.productName} ${d.vendorId.toString(16)}:${d.productId.toString(16)}`);
   } catch (e) { log('ERROR requestDevice ' + e); return; }
   const args = ['ch', 'w', 's'].map(id => document.getElementById(id).value);
+  if (q.get('worker')) {
+    const w = new Worker('worker.js');
+    w.onmessage = (m) => log(m.data);
+    w.onerror = (e) => log('ERROR worker ' + e.message);
+    w.postMessage({args: args.concat(extra)});
+    log('running in dedicated worker');
+    return;
+  }
   createRxProbe({arguments: args.concat(extra), print: log, printErr: (t) => { if (!t.startsWith('{"ev"')) console.log('ERR ' + t); }});
 };
 </script></body></html>

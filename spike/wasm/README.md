@@ -7,6 +7,13 @@ throughput and loss at 16, 38 and 54 Mb/s on air; the jitter tail is worse:
 periodic ~9 s spikes of 8-14 ms under load (native max 1.7 ms). `rxprobe ... bench`
 walks linkbench-tx frames instead of maburd video. Numbers in the commit messages.
 
+Spike cause (Chrome trace, `trace.mjs`): Blink's Oilpan incremental sweep
+(`cppgc::Sweeper::IncrementalSweepTask`, 4-8 ms slices) of the per-transfer
+WebUSB objects, after a major GC every ~8-13 s at 38 Mb/s. It runs on the
+thread that owns the WebUSB objects — moving the runtime into a dedicated
+worker (`index.html?worker=1`, `worker.js`) moves the sweep with it, spikes
+unchanged. Lever left: fewer transfers (chip RX aggregation), a latency trade.
+
 `rxprobe.cpp` builds unchanged both ways:
 
     # native (host, NixOS)

@@ -45,12 +45,14 @@ struct Window {
   uint64_t frames = 0, own = 0, crc = 0, bytes = 0, walked = 0;
   int64_t lost = 0;
   std::vector<int64_t> offs;  // host_us - tsf_us (unwrapped)
+  std::vector<int64_t> hosts;  // host_us per offs entry
 };
 
 std::mutex g_mu;
 Window g_win;
 int g_last_seq = -1;
 bool g_bench = false;
+int64_t g_mono0 = 0, g_epoch0 = 0;  // steady <-> epoch anchor, us
 uint32_t g_last_tsf = 0;
 int64_t g_tsf_hi = 0;
 
@@ -81,6 +83,7 @@ void on_packet(const Packet& pkt) {
   if (t < g_last_tsf) g_tsf_hi += (int64_t{1} << 32);
   g_last_tsf = t;
   g_win.offs.push_back(host - (g_tsf_hi + t));
+  g_win.hosts.push_back(host);
 }
 }  // namespace
 
@@ -92,6 +95,9 @@ int main(int argc, char** argv) {
   std::printf("rxprobe: ch %u width %d secs %d%s\n", ch, width, secs, g_bench ? " (linkbench frames)" : "");
 
   const int64_t t0 = now_us();
+  g_mono0 = t0;
+  g_epoch0 = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
   libusb_context* ctx = nullptr;
   if (libusb_init(&ctx) != 0) { std::printf("libusb_init failed\n"); return 1; }
   libusb_device** list = nullptr;
@@ -146,6 +152,12 @@ int main(int argc, char** argv) {
     if (!w.offs.empty()) {
       const int64_t mn = *std::min_element(w.offs.begin(), w.offs.end());
       for (auto& o : w.offs) o -= mn;
+      // Spike log: first frame of each >4 ms excursion, stamped in ms since
+      // the Unix epoch so it lines up with V8 --trace-gc / Chrome traces.
+      for (size_t i = 0; i < w.offs.size(); ++i)
+        if (w.offs[i] > 4000 && (i == 0 || w.offs[i - 1] <= 4000))
+          std::printf("SPIKE at %.1f ms late %lld us\n",
+                      (w.hosts[i] - g_mono0 + g_epoch0) / 1e3, (long long)w.offs[i]);
       std::sort(w.offs.begin(), w.offs.end());
       p50 = w.offs[w.offs.size() / 2];
       p99 = w.offs[w.offs.size() * 99 / 100];
