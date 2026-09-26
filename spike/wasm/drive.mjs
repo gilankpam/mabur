@@ -1,6 +1,6 @@
 // THROWAWAY SPIKE: drives Chrome over CDP -- clicks the button with a user
 // gesture, answers the WebUSB chooser (DeviceAccess domain), streams console.
-// usage: node drive.mjs <ws-debugger-url-of-page> [secs]
+// usage: node drive.mjs <ws-debugger-url-of-page> [secs] [bench=1]
 const ws = new WebSocket(process.argv[2]);
 let armed = false; let id = 0; const pend = new Map();
 const send = (method, params = {}) => new Promise(r => { const i = ++id; pend.set(i, r); ws.send(JSON.stringify({id: i, method, params})); });
@@ -20,7 +20,7 @@ ws.onmessage = async (m) => {
 };
 ws.onopen = async () => {
   await send('Runtime.enable'); await send('DeviceAccess.enable');
-  await send('Page.enable'); await send('Page.navigate', {url: 'http://127.0.0.1:8808/index.html?s=' + (process.argv[3] || 30)});
+  await send('Page.enable'); await send('Page.navigate', {url: 'http://127.0.0.1:8808/index.html?' + (process.argv[4] || '') + '&s=' + (process.argv[3] || 30)});
   await new Promise(r => setTimeout(r, 1500));
   armed = true;
   const r = await send('Runtime.evaluate', {expression: "document.getElementById('go').click()", userGesture: true});

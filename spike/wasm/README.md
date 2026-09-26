@@ -2,9 +2,10 @@
 
 Question: can devourer, compiled to WASM and run in Chrome over WebUSB, bring
 up the RTL8812EU in usable time and keep up with live mabur video?
-Answer (2026-09-27, bench drone ch136 HT40, top rung, ~16 Mb/s on air):
-yes — parity with native on init, throughput and loss; jitter tail slightly
-wider (a few 2-7 ms spikes/min). Numbers in the branch's commit message.
+Answer (2026-09-27, bench drone ch136 HT40): yes. Parity with native on init,
+throughput and loss at 16, 38 and 54 Mb/s on air; the jitter tail is worse:
+periodic ~9 s spikes of 8-14 ms under load (native max 1.7 ms). `rxprobe ... bench`
+walks linkbench-tx frames instead of maburd video. Numbers in the commit messages.
 
 `rxprobe.cpp` builds unchanged both ways:
 

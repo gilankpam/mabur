@@ -8,7 +8,7 @@
 // minus the chip's RX TSF stamp, relative to the window's minimum (i.e. how
 // late past the best-case USB path each frame reached the host).
 //
-// usage: rxprobe [channel=136] [width=40] [seconds=30]
+// usage: rxprobe [channel=136] [width=40] [seconds=30] [bench]
 
 #include <libusb.h>
 
@@ -42,13 +42,15 @@ int64_t now_us() {
 }
 
 struct Window {
-  uint64_t frames = 0, own = 0, crc = 0, bytes = 0, lost = 0;
+  uint64_t frames = 0, own = 0, crc = 0, bytes = 0, walked = 0;
+  int64_t lost = 0;
   std::vector<int64_t> offs;  // host_us - tsf_us (unwrapped)
 };
 
 std::mutex g_mu;
 Window g_win;
 int g_last_seq = -1;
+bool g_bench = false;
 uint32_t g_last_tsf = 0;
 int64_t g_tsf_hi = 0;
 
@@ -62,11 +64,16 @@ void on_packet(const Packet& pkt) {
   ++g_win.own;
   // Seq walk on the drone's QoS-data (video/MSP) frames only: the GS's own
   // uplink frames share the SA but come from the GS card's seq counter.
-  if (pkt.Data[0] != 0x88) return;
+  // g_bench (linkbench-tx): its frames are 0x40 like the GS's, so walk the
+  // big ones only -- GS beacons/RCFs are small.
+  if (g_bench ? (pkt.Data[0] != 0x40 || pkt.Data.size() < 1000) : pkt.Data[0] != 0x88) return;
+  ++g_win.walked;
   const int seq = (pkt.Data[22] | (pkt.Data[23] << 8)) >> 4;
   if (g_last_seq >= 0) {
     const int gap = (seq - g_last_seq) & 0xfff;
-    if (gap >= 2048) return;  // reorder / behind the mark
+    // Behind the high-water mark (linkbench's parallel senders reorder <=3
+    // frames): it was booked missing when the mark jumped, so un-book it.
+    if (gap >= 2048) { if (4096 - gap < 64) --g_win.lost; return; }
     if (gap > 1 && gap < 64) g_win.lost += gap - 1;
   }
   g_last_seq = seq;
@@ -81,7 +88,8 @@ int main(int argc, char** argv) {
   const uint8_t ch = argc > 1 ? static_cast<uint8_t>(std::atoi(argv[1])) : 136;
   const int width = argc > 2 ? std::atoi(argv[2]) : 40;
   const int secs = argc > 3 ? std::atoi(argv[3]) : 30;
-  std::printf("rxprobe: ch %u width %d secs %d\n", ch, width, secs);
+  g_bench = argc > 4 && std::strcmp(argv[4], "bench") == 0;
+  std::printf("rxprobe: ch %u width %d secs %d%s\n", ch, width, secs, g_bench ? " (linkbench frames)" : "");
 
   const int64_t t0 = now_us();
   libusb_context* ctx = nullptr;
@@ -144,14 +152,14 @@ int main(int argc, char** argv) {
       mx = w.offs.back();
       if (s > 0) all_jit.insert(all_jit.end(), w.offs.begin(), w.offs.end());  // skip startup backlog
     }
-    const double loss = w.own + w.lost ? 100.0 * w.lost / (w.own + w.lost) : 0;
+    const double loss = w.walked + w.lost > 0 ? 100.0 * w.lost / (w.walked + w.lost) : 0;
     std::printf("t=%2d frames %5llu own %5llu crc %4llu %6.2f Mb/s loss %5.2f%% jit p50 %5lld p99 %6lld max %6lld us\n",
                 s + 1, (unsigned long long)w.frames, (unsigned long long)w.own,
                 (unsigned long long)w.crc, w.bytes * 8 / 1e6, loss, (long long)p50,
                 (long long)p99, (long long)mx);
     std::fflush(stdout);
     total.frames += w.frames; total.own += w.own; total.crc += w.crc;
-    total.bytes += w.bytes; total.lost += w.lost;
+    total.bytes += w.bytes; total.lost += w.lost; total.walked += w.walked;
   }
   std::sort(all_jit.begin(), all_jit.end());
   const auto pct = [&](double q) {
@@ -160,7 +168,7 @@ int main(int argc, char** argv) {
   std::printf("SUMMARY frames %llu own %llu crc %llu avg %.2f Mb/s loss %.3f%% jit p50 %lld p99 %lld p99.9 %lld max %lld us\n",
               (unsigned long long)total.frames, (unsigned long long)total.own,
               (unsigned long long)total.crc, total.bytes * 8 / 1e6 / secs,
-              total.own + total.lost ? 100.0 * total.lost / (total.own + total.lost) : 0.0,
+              total.walked + total.lost > 0 ? 100.0 * total.lost / (total.walked + total.lost) : 0.0,
               pct(0.5), pct(0.99), pct(0.999), all_jit.empty() ? 0LL : (long long)all_jit.back());
   std::fflush(stdout);
   rtl->StopRxLoop();

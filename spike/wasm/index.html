@@ -9,6 +9,7 @@
 <script src="build-wasm/rxprobe.js"></script>
 <script>
 const q = new URLSearchParams(location.search); for (const k of ['ch','w','s']) if (q.get(k)) document.getElementById(k).value = q.get(k);
+const extra = q.get('bench') ? ['bench'] : [];
 const log = (t) => { document.getElementById('log').textContent += t + '\n'; console.log(t); };
 document.getElementById('go').onclick = async () => {
   if (!crossOriginIsolated) { log('ERROR not crossOriginIsolated (need COOP/COEP)'); return; }
@@ -18,6 +19,6 @@ document.getElementById('go').onclick = async () => {
     log(`picked ${d.productName} ${d.vendorId.toString(16)}:${d.productId.toString(16)}`);
   } catch (e) { log('ERROR requestDevice ' + e); return; }
   const args = ['ch', 'w', 's'].map(id => document.getElementById(id).value);
-  createRxProbe({arguments: args, print: log, printErr: (t) => { if (!t.startsWith('{"ev"')) console.log('ERR ' + t); }});
+  createRxProbe({arguments: args.concat(extra), print: log, printErr: (t) => { if (!t.startsWith('{"ev"')) console.log('ERR ' + t); }});
 };
 </script></body></html>
