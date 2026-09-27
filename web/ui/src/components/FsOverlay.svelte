@@ -1,7 +1,7 @@
 <script>
   import Icon from './Icon.svelte';
   import RecDot from './RecDot.svelte';
-  let { live, mode, chLine, recOn, recClock, recErr, recDisabled, recTitle, onConn, onRec, onStats, onCfg, onExitFs, showExitFs } = $props();
+  let { live, mode, chLine, recOn, recClock, recErr, recDisabled, recTitle, onConn, onRec, onStats, onCfg, onFs, fsButton = null } = $props();
 </script>
 <div class="tl">
   <span class="tag glass" style="gap:6px;color:var(--color-neutral-100)">
@@ -20,8 +20,10 @@
   <button class="btn btn-icon glass round44" type="button" title={recTitle} aria-label="Record" onclick={onRec} disabled={recDisabled}><RecDot on={recOn} size={14} /></button>
   <button class="btn btn-icon glass round44" type="button" title="Flight stats (S)" aria-label="Flight stats" onclick={onStats}><Icon name="chart-line-up" size="19px" /></button>
   <button class="btn btn-icon glass round44" type="button" title="Configuration" aria-label="Configuration" onclick={onCfg}><Icon name="gear-six" size="19px" /></button>
-  {#if showExitFs}
-    <button class="btn btn-icon glass round44" type="button" title="Exit fullscreen (F)" aria-label="Exit fullscreen" onclick={onExitFs}><Icon name="corners-in" size="19px" /></button>
+  {#if fsButton}
+    <button class="btn btn-icon glass round44" type="button" title={fsButton.on ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+      aria-label={fsButton.on ? 'Exit fullscreen' : 'Fullscreen'} onclick={onFs}>
+      <Icon name={fsButton.on ? 'corners-in' : 'corners-out'} size="19px" /></button>
   {/if}
 </div>
 <style>

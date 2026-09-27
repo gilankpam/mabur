@@ -142,6 +142,22 @@
     } catch { /* layout still switches */ }
   }
 
+  // Phones: the layout is already immersive, but the browser bars stay until
+  // the page asks for real fullscreen. Tracks the Fullscreen API state (not
+  // ui.fs, the desktop layout flag); no button where the API is unavailable
+  // (iPhone Safari).
+  let realFs = $state(!!document.fullscreenElement);
+  const fsSupported = !!document.fullscreenEnabled;
+  async function toggleRealFs() {
+    try {
+      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+      await document.documentElement.requestFullscreen();
+      // Android Chrome allows an orientation lock only while fullscreen.
+      const lock = screen.orientation?.lock?.('landscape');
+      if (lock) lock.catch(() => {});
+    } catch { /* refused: stay as is */ }
+  }
+
   let copyTimer = null;
   async function copyStats() {
     const text = tele.copyPayload();
@@ -163,7 +179,10 @@
   onMount(() => {
     const iv = setInterval(refresh, 200);
     refresh();
-    const onFsChange = () => { if (!document.fullscreenElement) ui.fs = false; };
+    const onFsChange = () => {
+      realFs = !!document.fullscreenElement;
+      if (!realFs) ui.fs = false;
+    };
     document.addEventListener('fullscreenchange', onFsChange);
     const onVis = () => {
       if (document.hidden) { if (sess.mode === 'gs' && live && !hiddenShown) { hiddenBanner = true; hiddenShown = true; } }
@@ -216,7 +235,8 @@
   {#if layout === 'immersive' && view}
     <FsOverlay {live} mode={sess.mode} {chLine} {recOn} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
       onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
-      onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} onExitFs={toggleFs} showExitFs={!isMobile(W, H)} />
+      onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} fsButton={isMobile(W, H) ? (fsSupported ? { on: realFs } : null) : { on: true }}
+      onFs={isMobile(W, H) ? toggleRealFs : toggleFs} />
     {#if ui.statsVisible && !ui.cfgOpen}
       <FloatStats v={view} mobile={isMobile(W, H)} open={ui.floatOpen} pos={ui.fpos}
         onOpen={(o) => (ui.floatOpen = o)} onMove={(p) => (ui.fpos = p)} cw={W} ch={H} />

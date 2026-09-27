@@ -471,7 +471,8 @@ bench drone on ch136 HT40, GS box off for GS mode):
   60 fps, jitter 2.6 ms — within noise of (or better than) the numbers
   above.
 - **Layouts**: windowed, F → fullscreen immersive, config side panel,
-  844×390 phone emulation (no exit-fullscreen button, 236 px float panel),
+  844×390 phone emulation (236 px float panel; its fullscreen button
+  toggles the real Fullscreen API — see below),
   390×844 portrait notice; float-panel drag follows the pointer and clamps
   to x = 844 − 236 − 8, y = 390 − 48; video kept playing across every
   layout switch (one canvas).
@@ -481,6 +482,14 @@ bench drone on ch136 HT40, GS box off for GS mode):
   ~5 min of GS mode, each followed by one decoder reset; one drone boot
   came up with a deaf radio (no RX on the host card natively either) until
   the drone was power-cycled.
+
+On a phone the layout is always the immersive one, but the browser's own
+bars stay until the page asks for real fullscreen: the fifth round button
+(corners-out / corners-in) calls `requestFullscreen()` and then tries
+`screen.orientation.lock('landscape')` (Android Chrome allows the lock only
+while fullscreen), and follows the actual `fullscreenchange` state. It is
+hidden where the Fullscreen API isn't available (`document.fullscreenEnabled`
+false — iPhone Safari).
 
 Not yet exercised: a real phone over LAN TLS (layouts were checked in
 Chrome's device emulation only), and the spotter mirroring a
