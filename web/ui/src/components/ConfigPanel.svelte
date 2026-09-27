@@ -2,6 +2,7 @@
   import Icon from './Icon.svelte';
   import { CHANNELS, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, channelWarning, describeEdit, describeRungEdit } from '../lib/config.js';
   let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '' } = $props();
+  const uid = $props.id();   // unique per mounted instance -- two panels (sidebar + Task 11 side panel) never share a radio group.
 
   const groupClass = $derived(variant === 'card' ? 'card cardg' : 'group');
   const set = (key, val) => onChange(applyEdit(cfg, key, val), describeEdit(key, val));
@@ -32,8 +33,8 @@
       <div class="field">
         <span id="cfg-width-label" class="fieldlabel">Channel width</span>
         <div class="seg" role="radiogroup" aria-labelledby="cfg-width-label">
-          <label class="seg-opt"><input type="radio" checked={cfg.width === 20} onchange={() => set('width', 20)}>20 MHz</label>
-          <label class="seg-opt"><input type="radio" checked={cfg.width === 40} onchange={() => set('width', 40)}>40 MHz</label>
+          <label class="seg-opt"><input type="radio" name="{uid}width" checked={cfg.width === 20} onchange={() => set('width', 20)}>20 MHz</label>
+          <label class="seg-opt"><input type="radio" name="{uid}width" checked={cfg.width === 40} onchange={() => set('width', 40)}>40 MHz</label>
         </div>
       </div>
     </div>
