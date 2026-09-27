@@ -112,6 +112,26 @@ std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
   return out;
 }
 
+std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width) {
+  if (width != 20 && width != 40)
+    return ConfigIssue{"radio.width", "must be 20 or 40 (HT20 / HT40)"};
+  if (width == 40 && mabur::ht40_offset(channel) == 0)
+    return ConfigIssue{"radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
+                                          std::to_string(static_cast<int>(channel)) +
+                                          " has none (common/include/mabur/ht40.h)"};
+  return std::nullopt;
+}
+
+std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width) {
+  for (std::size_t i = 0; i < link.ladder_cfg.ladder.size(); ++i)
+    if (link.ladder_cfg.ladder[i].bw == 40 && width != 40)
+      return ConfigIssue{"link.ladder[" + std::to_string(i) + "].bw",
+                         "40 MHz rung but radio.width is 20: the GS could not receive it"};
+  if (link.static_bw == 40 && width != 40)
+    return ConfigIssue{"link.static_bw", "40 MHz pin but radio.width is 20"};
+  return std::nullopt;
+}
+
 Config load_config(const std::string& path, std::vector<std::string>* defaulted) {
   Value j;
   try {
@@ -143,12 +163,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     check_keys(r, "radio", {"channel", "width", "cards", "tx_card", "scan"});
     c.radio.channel = static_cast<uint8_t>(get_int(r, "channel", 149, 1, 200, "radio"));
     c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 40, "radio"));
-    if (c.radio.width != 20 && c.radio.width != 40)
-      fail("radio.width", "must be 20 or 40 (HT20 / HT40)");
-    if (c.radio.width == 40 && mabur::ht40_offset(c.radio.channel) == 0)
-      fail("radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
-                              std::to_string(static_cast<int>(c.radio.channel)) +
-                              " has none (common/include/mabur/ht40.h)");
+    if (auto e = radio_width_issue(c.radio.channel, c.radio.width)) fail(e->field, e->why);
     c.radio.tx_card = static_cast<int>(get_int(r, "tx_card", -1, -1, 15, "radio"));
     if (r.contains("cards")) {
       if (!r["cards"].is_array() || r["cards"].empty())
@@ -472,12 +487,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   // and link sections are settled, and after the max_mcs filter above: a
   // rung filtered out by max_mcs is not checked here, which matches "what
   // will fly". Task 6 appends the scan-candidate checks to this same block.
-  for (std::size_t i = 0; i < c.link.ladder_cfg.ladder.size(); ++i)
-    if (c.link.ladder_cfg.ladder[i].bw == 40 && c.radio.width != 40)
-      fail("link.ladder[" + std::to_string(i) + "].bw",
-           "40 MHz rung but radio.width is 20: the GS could not receive it");
-  if (c.link.static_bw == 40 && c.radio.width != 40)
-    fail("link.static_bw", "40 MHz pin but radio.width is 20");
+  if (auto e = link_width_issue(c.link, c.radio.width)) fail(e->field, e->why);
   if (c.radio.width == 40) {
     const uint8_t home_off = mabur::ht40_offset(c.radio.channel);
     for (uint8_t ch : c.radio.scan.candidates) {

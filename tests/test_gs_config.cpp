@@ -593,6 +593,24 @@ TEST(radio_width_is_20_or_40_and_40_needs_a_pair) {
   CHECK(threw);
 }
 
+TEST(width_issue_helpers_match_the_loader) {
+  // The web GS validates its page channel/width override with these same
+  // helpers; load_config's radio.width / ladder checks go through them.
+  CHECK(!maburgs::radio_width_issue(136, 40));
+  CHECK(!maburgs::radio_width_issue(165, 20));
+  auto e = maburgs::radio_width_issue(165, 40);
+  REQUIRE(e.has_value());
+  CHECK(e->field == "radio.width" && e->why.find("165") != std::string::npos);
+  CHECK(maburgs::radio_width_issue(136, 80).has_value());
+  maburgs::LinkCfg link;
+  CHECK(!maburgs::link_width_issue(link, 20));   // default ladder is all 20
+  link.ladder_cfg.ladder.back().bw = 40;
+  auto l = maburgs::link_width_issue(link, 20);
+  REQUIRE(l.has_value());
+  CHECK(l->field.rfind("link.ladder[", 0) == 0);
+  CHECK(!maburgs::link_width_issue(link, 40));
+}
+
 TEST(static_bw_defaults_20_and_40_needs_radio_width_40) {
   CHECK(maburgs::load_config(write_tmp("")).link.static_bw == 20);
   auto cfg = maburgs::load_config(write_tmp(

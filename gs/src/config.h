@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -271,6 +272,24 @@ struct Config {
   /// (2 streams since the airtime-balance-uep fold-in).
   std::array<mabur::UepLayerCfg, 2> uep_layers() const;
 };
+
+/// One radio/width validation failure: `field` and `why` exactly as
+/// load_config reports them ("config: ...: <field>: <why>").
+struct ConfigIssue {
+  std::string field, why;
+};
+
+/// radio.width's own checks: 20 or 40, and 40 only on a channel with a
+/// standard 5 GHz HT40 pair (mabur::ht40_offset). load_config runs it on the
+/// file's radio section; the web GS runs it on its page channel/width
+/// override. std::nullopt = OK.
+std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width);
+
+/// Ladder/static-pin width vs the receiver's tuned width: a 40 MHz rung or
+/// static_bw pin needs width 40 (a 20-tuned receiver cannot hear HT40).
+/// load_config runs it against radio.width; the web GS (GS mode) against
+/// its override. std::nullopt = OK.
+std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width);
 
 /// Loads configuration from a TOML file (MABUR_GS_BUNDLE_DIR/maburgs.default.toml).
 /// Fail-fast: missing keys use struct defaults; unknown keys, out-of-range values,

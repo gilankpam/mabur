@@ -93,6 +93,26 @@ TEST(probe_profile_edge_returns_tail_and_blanks) {
   REQUIRE(k3.probe_tail_ms.has_value());
   CHECK(*k3.probe_tail_ms == 0);
   CHECK(k3.health.probe_rung == 2);     // passed through from inputs
+
+  // The blank: fill the probe window at profile P until it is valid, then
+  // switch to P2 -- the window must read invalid for the 150 ms settle
+  // blank, not carry P's sample across the edge.
+  in.probe_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 4, 20);
+  double t = 100.0;
+  a.tick(t, agg, in);                   // edge back to P
+  bool valid_before = false;
+  for (uint16_t fid = 1; fid <= 120; ++fid) {
+    t += 16.0;
+    a.on_au_begin(1, fid, t);
+    a.on_probe_body(0, make_probe_body(in.probe_profile, fid, fid, t));
+    valid_before = a.tick(t, agg, in).health.probe_valid;
+  }
+  REQUIRE(valid_before);
+  in.probe_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20);
+  auto e1 = a.tick(t + 1.0, agg, in);   // the edge
+  REQUIRE(e1.probe_tail_ms.has_value());
+  CHECK(!e1.health.probe_valid);
+  CHECK(!a.tick(t + 100.0, agg, in).health.probe_valid);   // still inside 150 ms
 }
 
 TEST(probe_finalized_is_per_tick) {
