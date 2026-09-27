@@ -28,6 +28,9 @@ srv = http.server.ThreadingHTTPServer((bind, port), handler)
 if tls:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(os.path.join(HERE, 'tls/cert.pem'), os.path.join(HERE, 'tls/key.pem'))
-    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    # Handshake lazily, on the handler thread's first read: done in accept()
+    # (the default) one idle or speculative client connection that never
+    # handshakes blocks the only accepting thread, and the page hangs.
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
 print(f"serving {'https' if tls else 'http'}://{bind}:{port}/  (root {ROOT})", flush=True)
 srv.serve_forever()
