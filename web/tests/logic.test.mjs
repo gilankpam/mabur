@@ -1,7 +1,7 @@
 // node --test web/tests/logic.test.mjs (promoted from the wasm-spike throwaway)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl } from '../www/logic.mjs';
+import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl } from '../ui/src/lib/logic.mjs';
 
 const nal = (type, len = 4, four = true) =>
   [...(four ? [0, 0, 0, 1] : [0, 0, 1]), type << 1, 1, ...Array(len).fill(0x55)];
@@ -81,7 +81,7 @@ test('pctl', () => {
   assert.equal(pctl([5, 1, 3, 2, 4], 1), 5);
 });
 
-import { annexbToLengthPrefixed } from '../www/logic.mjs';
+import { annexbToLengthPrefixed } from '../ui/src/lib/logic.mjs';
 
 test('annexbToLengthPrefixed rewrites 3- and 4-byte start codes as u32 BE lengths', () => {
   const ab = new Uint8Array([0, 0, 0, 1, 0x40, 1, 7, 0, 0, 1, 0x02, 1, 9, 9]);
@@ -96,7 +96,7 @@ test('GDR parameter-set AUs never arm the gate: WebCodecs needs an IRAP key (fin
   assert.equal(g.onAu(au(PARAMS)).type, 'key');
 });
 
-import { DecoderSlot } from '../www/logic.mjs';
+import { DecoderSlot } from '../ui/src/lib/logic.mjs';
 
 test('DecoderSlot.replace closes the previous decoder unless already closed (final review)', () => {
   const mk = () => ({ state: 'configured', closed: 0, close() { this.closed++; this.state = 'closed'; } });
@@ -115,7 +115,7 @@ import {
   SegWindow, capToGlass, rcfHeardPct, rcfHeardPctWindowed, errorText, ht40Offset,
   checkChannelWidth, pruneSubmitted, trimBefore, copyStatsPayload, controlsLocked,
   isStalePresentSample,
-} from '../www/logic.mjs';
+} from '../ui/src/lib/logic.mjs';
 
 test('SegWindow p50/p99/max over 1 s and 60 s', () => {
   let now = 0; const w = new SegWindow(() => now);

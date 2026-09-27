@@ -73,31 +73,29 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_options(webgs_node PRIVATE -pthread -sENVIRONMENT=node -sNODERAWFS=1
     -sALLOW_MEMORY_GROWTH -sEXIT_RUNTIME --bind -sASYNCIFY)
 
-  # Page files (web/www) next to webgs.{js,wasm}. Only when www/ exists;
-  # web/'s own mtime is a configure dependency so creating www/ later
-  # re-runs this. Per-file OUTPUTs in web/dist (not a build-dir stamp, fix
-  # round 1's own gap): a stamp only tracks "the copy ran since www/
-  # changed", so deleting web/dist by mistake (e.g. `git clean`) and
-  # rebuilding left the stamp satisfied and dist NOT restored. Per-file
-  # copy_if_different targets re-run whenever their own dist file is
-  # missing or stale, regardless of the stamp. (www/ is flat today -- a
-  # subdirectory would need GLOB_RECURSE plus relative-path handling below.)
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR})
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/www)
-    file(GLOB WEB_WWW_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/www/*)
-    set(WEB_WWW_DIST_FILES "")
-    foreach(src ${WEB_WWW_FILES})
-      get_filename_component(name ${src} NAME)
-      set(dst ${CMAKE_CURRENT_SOURCE_DIR}/dist/${name})
-      add_custom_command(
-        OUTPUT ${dst}
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${src} ${dst}
-        DEPENDS ${src}
-        COMMENT "Copying ${name} -> web/dist")
-      list(APPEND WEB_WWW_DIST_FILES ${dst})
-    endforeach()
-    add_custom_target(webgs_www ALL DEPENDS ${WEB_WWW_DIST_FILES})
-  endif()
+  # Page UI (web/ui, Vite + Svelte) built into web/dist next to webgs.{js,wasm}.
+  # npm ci re-runs when the lockfile changes; vite build re-runs when any UI
+  # source changes OR dist/index.html is missing (deleting dist rebuilds it).
+  # dist/assets is cleared first so stale hashed bundles don't pile up; Vite
+  # itself runs with emptyOutDir=false so the Emscripten outputs survive.
+  set(WEB_UI ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+  set(WEB_DIST ${CMAKE_CURRENT_SOURCE_DIR}/dist)
+  find_program(NPM npm REQUIRED)
+  set(NPM_STAMP ${CMAKE_BINARY_DIR}/npm-ci.stamp)
+  add_custom_command(OUTPUT ${NPM_STAMP}
+    COMMAND ${NPM} ci --no-audit --no-fund
+    COMMAND ${CMAKE_COMMAND} -E touch ${NPM_STAMP}
+    WORKING_DIRECTORY ${WEB_UI}
+    DEPENDS ${WEB_UI}/package.json ${WEB_UI}/package-lock.json
+    COMMENT "npm ci (web/ui)")
+  file(GLOB_RECURSE WEB_UI_SRC CONFIGURE_DEPENDS ${WEB_UI}/src/*)
+  add_custom_command(OUTPUT ${WEB_DIST}/index.html
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${WEB_DIST}/assets
+    COMMAND ${NPM} run build
+    WORKING_DIRECTORY ${WEB_UI}
+    DEPENDS ${NPM_STAMP} ${WEB_UI_SRC} ${WEB_UI}/index.html ${WEB_UI}/vite.config.js
+    COMMENT "vite build -> web/dist")
+  add_custom_target(webgs_ui ALL DEPENDS ${WEB_DIST}/index.html)
 else()
   # Included from the root build: native core + tests.
   add_library(mabur_web_core STATIC src/web_gs.cpp)

@@ -1,0 +1,47 @@
+/* mono scheme (handoff README "Design tokens") + app-wide rules. */
+:root {
+  --color-bg: #141414;
+  --color-surface: #202020;
+  --color-text: #ebebeb;
+  --color-accent: #bebebe;
+  --color-accent-2: #bebebe;
+  --color-divider: rgba(235, 235, 235, 0.16);
+  --color-accent-100: #f5f5f5; --color-neutral-100: #f5f5f5; --color-accent-2-100: #f5f5f5;
+  --color-accent-200: #e8e8e8; --color-neutral-200: #e8e8e8; --color-accent-2-200: #e8e8e8;
+  --color-accent-300: #d4d4d4; --color-neutral-300: #d4d4d4; --color-accent-2-300: #d4d4d4;
+  --color-accent-400: #bababa; --color-neutral-400: #bababa; --color-accent-2-400: #bababa;
+  --color-accent-500: #9b9b9b; --color-neutral-500: #9b9b9b; --color-accent-2-500: #9b9b9b;
+  --color-accent-600: #7d7d7d; --color-neutral-600: #7d7d7d; --color-accent-2-600: #7d7d7d;
+  --color-accent-700: #606060; --color-neutral-700: #606060; --color-accent-2-700: #606060;
+  --color-accent-800: #454545; --color-neutral-800: #454545; --color-accent-2-800: #454545;
+  --color-accent-900: #2b2b2b; --color-neutral-900: #2b2b2b; --color-accent-2-900: #2b2b2b;
+  --shadow-sm: 0 0 0 1px #454545;
+  --shadow-md: 0 0 0 1px #606060, 0 6px 18px rgba(0, 0, 0, .55);
+  --shadow-lg: 0 0 0 1px #7d7d7d, 0 16px 40px rgba(0, 0, 0, .65);
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --rule-h: linear-gradient(to right, transparent, var(--color-divider) 48px,
+            var(--color-divider) calc(100% - 48px), transparent) no-repeat bottom / 100% 1px;
+  --rule-v: linear-gradient(to bottom, transparent, var(--color-divider) 48px,
+            var(--color-divider) calc(100% - 48px), transparent) no-repeat left / 1px 100%;
+}
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--color-bg); color: var(--color-text); }
+#app { position: fixed; inset: 0; }
+a { color: var(--color-accent); } a:hover { color: var(--color-accent-400); }
+@keyframes recpulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+
+/* Modified segmented control (handoff "Components used"). */
+.seg { display: flex; padding: 2px; gap: 2px; overflow: visible; }
+.seg-opt { flex: 1; justify-content: center; border-radius: 5px; border-left: 0 !important; }
+
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--font-mono); font-weight: 500; }
+.rule-h { background: var(--rule-h); }
+.rule-v { background: var(--rule-v); }
+.scroll-thin { scrollbar-width: thin; scrollbar-color: var(--color-neutral-800) transparent; }
+.glass { background: color-mix(in srgb, var(--color-bg) 70%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.glass-panel { background: color-mix(in srgb, var(--color-surface) 80%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: var(--shadow-md); border-radius: var(--radius-lg); }
+/* Instrument group: not a card; fading rule at the bottom. */
+.group { display: flex; flex-direction: column; gap: var(--space-3); flex: none; padding: var(--space-4) 0 var(--space-6); background: var(--rule-h); }
+.kick-row { display: flex; justify-content: space-between; align-items: center; }
+.dim4 { color: var(--color-neutral-400); } .dim5 { color: var(--color-neutral-500); } .dim6 { color: var(--color-neutral-600); }
+.round44 { width: 44px; height: 44px; border-radius: 50%; border-color: var(--color-divider); }
