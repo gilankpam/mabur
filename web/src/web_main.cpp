@@ -449,9 +449,24 @@ int run_live(const LiveOpts& o) {
                   static_cast<unsigned long long>(q.dropped()));
     report_stats(j + extra);
   }
+  const uint64_t t_stop0 = now_us();
   if (!rx_ended.load()) rtl->StopRxLoop();
   q.close();
+  // WebUSB has no transfer cancel (libusb's emscripten backend cancel is a
+  // no-op): on a quiet channel the RX loop's pending transferIn calls never
+  // complete and rx.join() would wait for the next received frame -- forever
+  // with the drone off. Releasing the interface makes Chrome abort them
+  // (AbortError), which ends the loop. Re-claimed below for Stop()'s de-init.
+  bool released_early = false;
+  for (int waited = 0; !rx_ended.load(std::memory_order_acquire) && waited < 300; waited += 10)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  if (!rx_ended.load(std::memory_order_acquire)) {
+    libusb_release_interface(h, 0);
+    released_early = true;
+  }
   rx.join();
+  if (released_early) libusb_claim_interface(h, 0);
+  const uint64_t t_rx = now_us();
   // In-page Disconnect needs a real teardown (the page builds a fresh module
   // on the next Connect): radio before the handle it drives, interface
   // released before close, context last (devourer's DeviceSession order).
@@ -460,11 +475,17 @@ int run_live(const LiveOpts& o) {
   // swallows that. The lock is not a claim: it releases no interface.
   // Returning from main lets -sEXIT_RUNTIME fire Module.onExit(rc).
   rtl->Stop();
+  const uint64_t t_chip = now_us();
   radio.reset();
   libusb_release_interface(h, 0);
   libusb_close(h);
   lock.reset();
   libusb_exit(ctx);
+  std::printf("teardown: rx %llu ms%s, chip stop %llu ms, close %llu ms\n",
+              static_cast<unsigned long long>((t_rx - t_stop0) / 1000),
+              released_early ? " (reads aborted)" : "",
+              static_cast<unsigned long long>((t_chip - t_rx) / 1000),
+              static_cast<unsigned long long>((now_us() - t_chip) / 1000));
   std::printf("DONE\n");
   std::fflush(stdout);
   return rc;
