@@ -14,4 +14,12 @@ else()
   target_include_directories(mabur_web_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
   target_link_libraries(mabur_web_core PUBLIC mabur_gs_core mabur_common)
+
+  # webgs CLI: replay (the web_au_parity gate) + live (libusb + devourer,
+  # the same loop the WASM build runs).
+  add_executable(webgs src/web_main.cpp)
+  target_link_libraries(webgs PRIVATE mabur_web_core mabur_gs_dot11 devourer pthread)
+  target_include_directories(webgs PRIVATE ${DEVOURER_DIR}/src ${CMAKE_SOURCE_DIR}/gs/src)
+  target_compile_definitions(webgs PRIVATE WEBGS_LIVE=1
+    MABUR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()

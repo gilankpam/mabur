@@ -333,6 +333,9 @@ if(MABUR_BUILD_DRONE AND MABUR_BUILD_GS)
   add_test(NAME player_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_player_e2e.sh)
   set_tests_properties(player_e2e PROPERTIES
     ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
+  # Web GS AU parity vs maburgs --dry-run (spec 2026-09-27-web-gs 6.3).
+  add_test(NAME web_au_parity COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_web_au_parity.sh)
+  set_tests_properties(web_au_parity PROPERTIES ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
 endif()
 # Host-only burst-loss simulator (spec 2026-07-15-per-layer-symbol-size).
 # Not a benchmark of real time — fake clock — so safe as a ctest.
