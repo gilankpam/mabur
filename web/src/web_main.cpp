@@ -143,6 +143,30 @@ void emit_au(webgs::Au&& a) {
 #endif
 }
 
+// Hands one MSP OSD screen to the page (spec 2026-09-27-web-msp-osd).
+// Native live: nothing (the STATS line counts osd_screens).
+void emit_osd(int rows, int cols, const uint16_t* cells) {
+#ifdef WEBGS_PAGE
+  const size_t bytes = static_cast<size_t>(rows) * static_cast<size_t>(cols) * sizeof(uint16_t);
+  if (bytes == 0) return;
+  auto* p = static_cast<uint8_t*>(std::malloc(bytes));
+  std::memcpy(p, cells, bytes);
+  // HEAPU8.slice returns a fresh, 0-aligned ArrayBuffer, so viewing it as
+  // Uint16Array is safe; HEAPU16 itself is not relied on from EM_ASM.
+  MAIN_THREAD_ASYNC_EM_ASM(
+      {
+        const cells = new Uint16Array(HEAPU8.slice($0, $0 + $1).buffer);
+        _free($0);
+        if (Module['onOsd']) Module['onOsd']($2, $3, cells);
+      },
+      p, static_cast<int>(bytes), rows, cols);
+#else
+  (void)rows;
+  (void)cols;
+  (void)cells;
+#endif
+}
+
 bool load_cfg(const std::string& path, const std::string& overlay, maburgs::Config& cfg) {
   try {
     cfg = maburgs::load_config(path, nullptr, overlay);
@@ -400,6 +424,7 @@ int run_live(const LiveOpts& o) {
   // Can fire from inside on_rx (spotter drone-restart reset) as well as from
   // tick(): emit_au keeps no glue state.
   io.on_au = [](webgs::Au&& a) { emit_au(std::move(a)); };
+  io.on_osd = emit_osd;
   uint16_t tx_seq = 0;
   uint64_t txfail = 0;
   if (o.mode == webgs::Mode::Gs)
