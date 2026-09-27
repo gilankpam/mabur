@@ -14,7 +14,7 @@ const mem = (init = {}) => {
 test('defaults match maburgs.default.toml', () => {
   const c = defaultConfig();
   assert.deepEqual(c, { channel: 136, width: 40, staticMcs: -1, maxMcs: 5,
-    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })) });
+    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true });
   c.ladder[0].mcs = 7;
   assert.equal(defaultConfig().ladder[0].mcs, 0, 'fresh copy each call');
   assert.ok(CHANNELS.includes(136) && CHANNELS.includes(165) && CHANNELS.length === 25);
@@ -34,6 +34,9 @@ test('normalize_config_falls_back_per_field', () => {
   const nine = Array.from({ length: 9 }, () => ({ mcs: 0, bw: 20, ob: 0.5, oe: 0.25 }));
   assert.deepEqual(normalizeConfig({ ladder: nine }).ladder, d.ladder);
   assert.deepEqual(normalizeConfig({ ladder: [] }).ladder, d.ladder);
+  assert.equal(normalizeConfig({ colortrans: false }).colortrans, false);
+  assert.equal(normalizeConfig({ colortrans: 'no' }).colortrans, true);   // non-boolean -> default on
+  assert.equal(normalizeConfig({}).colortrans, true);
 });
 
 test('load/save round trip, storage failures tolerated, URL ch/w override', () => {
@@ -113,6 +116,7 @@ test('rung add/remove limits and labels', () => {
   assert.equal(applyRungEdit(one, 0, '__remove').ladder.length, 1, 'never below 1');
   assert.equal(describeEdit('width', 40), 'Channel width set to 40 MHz');
   assert.equal(describeEdit('staticMcs', -1), 'Fixed MCS set to Adaptive');
+  assert.equal(describeEdit('colortrans', false), 'Colour correction off');
   assert.equal(describeEdit('channel', 149), 'Channel set to 149');
   assert.equal(describeRungEdit(c, 7, '__add'), 'Rung 7 added');
   assert.equal(describeRungEdit(c, 2, '__remove'), 'Rung 2 removed');

@@ -16,6 +16,10 @@ export function defaultConfig() {
   return {
     channel: 136, width: 40, staticMcs: -1, maxMcs: 5,
     ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })),
+    // Page-only (never sent to the core): reverse the drone's colortrans
+    // sensor tuning on the video (lib/colortrans.js). maburplay's bundle
+    // default is on too.
+    colortrans: true,
   };
 }
 
@@ -50,6 +54,7 @@ export function normalizeConfig(raw) {
     staticMcs: inRange(sm, -1, 7) ? sm : d.staticMcs,
     maxMcs: inRange(mm, 0, 7) ? mm : d.maxMcs,
     ladder,
+    colortrans: typeof raw.colortrans === 'boolean' ? raw.colortrans : d.colortrans,
   };
 }
 
@@ -144,6 +149,7 @@ export function applyRungEdit(cfg, i, key, val) {
 
 const EDIT_LABEL = { channel: 'Channel', width: 'Channel width', staticMcs: 'Fixed MCS', maxMcs: 'Max MCS' };
 export function describeEdit(key, val) {
+  if (key === 'colortrans') return `Colour correction ${val ? 'on' : 'off'}`;
   const shown = key === 'width' ? `${val} MHz` : key === 'staticMcs' && val < 0 ? 'Adaptive' : val;
   return `${EDIT_LABEL[key]} set to ${shown}`;
 }

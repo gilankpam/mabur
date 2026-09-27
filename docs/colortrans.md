@@ -2,20 +2,24 @@
 
 The drone's `venc.sensor_bin` (`imx415_greg_fpvXIX_colortrans.bin`) flattens the
 picture on purpose (a 3x3 "ColorTrans" matrix plus a luma offset in the ISP)
-so the encoder spends bits evenly. The GS undoes it in three places, all from
+so the encoder spends bits evenly. `maburplay` undoes it in three places, all from
 one evaluator, `gs/player/src/colortrans.{h,cpp}` (`kColorTrans3`, a
-transcription of the operator's `colortrans3.glsl`):
+transcription of the operator's `colortrans3.glsl`); the web GS carries a
+pinned JS/GLSL copy for its video:
 
 | Where | Mechanism | Cost |
 |---|---|---|
 | Live picture | VOP2 CRTC `CUBIC_LUT`, 9x9x9, 12-bit entries, built by `build_cubic_lut()` and attached on every modeset commit (`drm_presenter.cpp`) | none (scanout hardware) |
 | OSD (both overlays) | pre-inverted at the source: `OsdFont::set_inverse()` on the MSP atlas, `set_colour_inverse()` in `gs_draw` for the GS tokens and shadow | once at startup |
 | Burned DVR | `FrameColorTrans` (`frame_colortrans.cpp`): NV12 dmabuf -> GLES2 shader (colortrans3 verbatim) -> ARGB GBM target -> RGA -> NV12, on the recorder's ct thread, pipelined with `encode()` (see "Latency" below) | ct thread only; `burn_ctfb=` on the fps-log counts frames that fell back to flat, `burn_ct_ms=`/`burn_enc_ms=` are the per-window mean stage times |
+| Web GS video (`web/`) | `web/ui/src/lib/colortrans.js`: each decoded `VideoFrame` -> `texImage2D` -> the same shader on a WebGL canvas stacked over the flat 2D one; the MSP OSD is its own canvas above, so nothing is pre-inverted. Page toggle, see `docs/web-gs.md` ("Colour correction") | one GPU pass per frame; off = the old 2D `drawImage` path untouched |
 
 Config: `[colortrans] enable = true|false` in `maburplay.toml` (default false in
 code, true in the bundle). Retuning = edit `kColorTrans3` in `colortrans.cpp`
-AND the constants in `kFrag` in `frame_colortrans.cpp`, rebuild, redeploy;
-`tests/test_colortrans.cpp` pins the C++ side to the glsl reference values.
+AND the constants in `kFrag` in `frame_colortrans.cpp`, rebuild, redeploy — AND `CT_PARAMS` in `web/ui/src/lib/colortrans.js`;
+`tests/test_colortrans.cpp` pins the C++ side to the glsl reference values,
+`web/tests/colortrans.test.mjs` pins the web copy to the same values and to
+`colortrans.h`'s defaults (a retune that misses the page fails it).
 
 The ct thread also SCALES (2026-09-27): the burned DVR's picture is the OSD
 surface's size, not the decoded size, because the encoder lays the OSD 1:1

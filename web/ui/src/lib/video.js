@@ -6,13 +6,23 @@ import {
   capToGlass, pruneSubmitted, trimBefore, isStalePresentSample,
 } from './logic.mjs';
 import { PageMetrics } from './metrics.js';
+import { ColorTransGl } from './colortrans.js';
 
 const now = () => performance.timeOrigin + performance.now();
 
 export class VideoPipeline {
-  constructor({ getCanvas, getMode }) {
+  // getCanvas: the flat 2D canvas; getGlCanvas: the colortrans WebGL one
+  // (a canvas cannot change context type). getColortrans: the live toggle.
+  constructor({ getCanvas, getGlCanvas = () => null, getMode, getColortrans = () => false }) {
     this.getCanvas = getCanvas;
+    this.getGlCanvas = getGlCanvas;
     this.getMode = getMode;
+    this.getColortrans = getColortrans;
+    // Page lifetime, like the canvases: built on the first colortrans frame;
+    // a failure (no WebGL, lost context) falls back to flat for good.
+    this.ct = null;
+    this.ctFailed = false;
+    this.shown = null;
     // ONE slot for the page lifetime: every replace() closes the decoder it
     // held, so a Connect never leaks the previous session's hardware decoder.
     this.decoderSlot = new DecoderSlot();
@@ -36,6 +46,7 @@ export class VideoPipeline {
     this.hitchTimes = [];
     this.hitchesTotal = 0;
     this.videoSize = null;
+    this.colour = null;   // 'colortrans' | 'flat' | 'unavailable', per last drawn frame
     this.waitingSinceMs = performance.now();
   }
 
@@ -59,14 +70,7 @@ export class VideoPipeline {
           this.submitted.delete(frame.timestamp);
         }
         this.videoSize = { w: frame.displayWidth, h: frame.displayHeight };
-        const canvas = this.getCanvas();
-        if (canvas) {
-          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-            canvas.width = frame.displayWidth;
-            canvas.height = frame.displayHeight;
-          }
-          canvas.getContext('2d').drawImage(frame, 0, 0);
-        }
+        this.draw(frame);
         frame.close();
         this.metrics.addDraw(t);
         const gap = this.hitch.addDraw(t, this.period.periodMs());
@@ -98,6 +102,51 @@ export class VideoPipeline {
         this.replaceDecoder();
       },
     });
+  }
+
+  // null when colortrans can't run (canvas not mounted yet, or failed).
+  colorTrans() {
+    if (this.ctFailed) return null;
+    if (this.ct && !this.ct.ok) {
+      console.error('[webgs] colortrans: WebGL context lost, video drawn flat from now on');
+      this.ctFailed = true;
+      return null;
+    }
+    if (!this.ct) {
+      const c = this.getGlCanvas();
+      if (!c) return null;
+      try { this.ct = new ColorTransGl(c); }
+      catch (e) {
+        console.error('[webgs] colortrans unavailable, video drawn flat:', e);
+        this.ctFailed = true;
+        return null;
+      }
+    }
+    return this.ct;
+  }
+
+  draw(frame) {
+    const want = this.getColortrans();
+    const ct = want ? this.colorTrans() : null;
+    this.colour = ct ? 'colortrans' : want ? 'unavailable' : 'flat';
+    let canvas;
+    if (ct) {
+      canvas = this.getGlCanvas();
+      ct.draw(frame);
+    } else {
+      canvas = this.getCanvas();
+      if (!canvas) return;
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+      }
+      canvas.getContext('2d').drawImage(frame, 0, 0);
+    }
+    // Only the canvas that got this frame is visible (the toggle flips live).
+    if (canvas !== this.shown) {
+      for (const c of [this.getCanvas(), this.getGlCanvas()]) if (c) c.style.visibility = c === canvas ? 'visible' : 'hidden';
+      this.shown = canvas;
+    }
   }
 
   // Module.onAu argument order is web/src/web_main.cpp emit_au's.

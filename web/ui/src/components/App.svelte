@@ -20,6 +20,7 @@
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
 
   let canvas = $state(null);
+  let glCanvas = $state(null);
   let osdCanvas = $state(null);
   let W = $state(innerWidth), H = $state(innerHeight);
   let sess = $state({ state: 'idle', mode: ui.mode, ch: null, w: null, error: null, notice: null, startedAt: null, recWish: false });
@@ -28,7 +29,8 @@
   let hiddenBanner = $state(false), hiddenShown = false;
   const recClock = new RecClock();
 
-  const video = new VideoPipeline({ getCanvas: () => canvas, getMode: () => sess.mode });
+  const video = new VideoPipeline({ getCanvas: () => canvas, getGlCanvas: () => glCanvas, getMode: () => sess.mode,
+    getColortrans: () => ui.cfg.colortrans });
   const tele = new Telemetry(video);
   // MSP OSD (spec 2026-09-27-web-msp-osd): latest DisplayPort grid, painted on
   // a second canvas over the video. The atlas URL resolves against the page
@@ -100,7 +102,8 @@
     if (live) tele.sample(nowMs, sess.mode);
     core = live ? tele.core : null;
     view = statsView({ connected: live, mode: shownMode, ch: live ? sess.ch : ui.cfg.channel, w: live ? sess.w : ui.cfg.width,
-      core, page: live ? tele.page : null, sessionCfg: live ? sessionCfg : ui.cfg, videoSize: video.videoSize });
+      core, page: live ? tele.page : null, sessionCfg: live ? sessionCfg : ui.cfg, videoSize: video.videoSize,
+      colour: live ? video.colour : null });
     groups = debugGroups({ connected: live, mode: shownMode, core, rcfPct: tele.rcfPct, ausRate: tele.ausRate,
       hitches60: tele.hitches60(nowMs), hitchesTotal: video.hitchesTotal, seg: tele.seg || { w1: {}, w60: {} } });
     spark = live ? sparkPoints(tele.spark) : '0,24 100,24';
@@ -242,6 +245,8 @@
         <!-- ONE canvas for the page lifetime: never inside a layout-dependent {#if}. -->
         <div class="videoinner">
           <canvas bind:this={canvas} width="1280" height="720"></canvas>
+          <!-- colortrans (WebGL): stacked on the flat canvas; VideoPipeline shows whichever drew the last frame. -->
+          <canvas class="vgl" bind:this={glCanvas} width="1280" height="720" style="visibility:hidden"></canvas>
           <!-- MSP OSD: page-lifetime like the video canvas; .videoinner IS the visible area in every layout. -->
           <canvas class="osd" bind:this={osdCanvas}></canvas>
           {#if live && status}<div class="status glass">{status}</div>{/if}
@@ -288,7 +293,7 @@
   .videobox { flex: 1; min-height: 0; display: grid; place-items: center; container-type: size; background: var(--color-bg); }
   .videoinner { position: relative; aspect-ratio: 16 / 9; width: min(100cqw, calc(100cqh * 16 / 9)); border-radius: var(--radius-sm); overflow: hidden; background: #000; }
   canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
-  .osd { position: absolute; inset: 0; pointer-events: none; }
+  .osd, .vgl { position: absolute; inset: 0; pointer-events: none; }
   .immersive .row { position: absolute; inset: 0; padding: 0; gap: 0; }
   .immersive .videobox { display: block; }
   .immersive .videoinner { position: absolute; inset: 0; width: auto; aspect-ratio: auto; border-radius: 0; }

@@ -384,6 +384,33 @@ once more. The 5 s blank counts from the last *published* screen, where
 `maburplay` counts from the last datagram — the same thing in practice,
 since Betaflight sends DRAW_SCREEN continuously.
 
+## Colour correction
+
+The drone flies the colortrans sensor file, which flattens the picture on
+purpose; `maburplay` undoes it in the CRTC LUT (`docs/colortrans.md`). The
+page does the same on the video, **on by default**, with an On/Off toggle
+in the Config form's Display group. It is page-only (never sent to the
+core, persisted in `webgs.cfg` as `colortrans`) and stays editable while
+live — it takes effect on the next frame.
+
+On: `VideoPipeline.draw()` (`web/ui/src/lib/video.js`) hands each decoded
+`VideoFrame` to `ColorTransGl` (`web/ui/src/lib/colortrans.js`), which
+uploads it with `texImage2D` and runs `frame_colortrans.cpp`'s shader over
+one full-screen quad on a WebGL canvas. Off: the pre-existing 2D
+`drawImage` on its own canvas — a canvas cannot change context type, so
+the two are stacked in `App.svelte` and whichever drew the last frame is
+the visible one; turning it off costs exactly what the page cost before.
+The MSP OSD canvas sits above both, so no OSD pre-inversion is needed.
+No WebGL, a shader that fails to build, or a lost context falls back to
+flat for the rest of the page's life (one console line). The Stats
+panel's Video line says which path is live: `· colortrans`,
+`· colortrans unavailable` (wanted but fell back), or nothing (off).
+
+Checked in headless Chromium (SwiftShader) against `ctForward`: 8 sample
+pixels identical, frame the right way up. The constants are pinned by
+`web/tests/colortrans.test.mjs` (see `docs/colortrans.md` for the retune
+rule).
+
 ## Known limits
 
 - **RTL8812AU on a Linux host: unload `rtw88_8812au` first.** The kernel

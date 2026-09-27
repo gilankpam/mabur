@@ -18,7 +18,7 @@ export function latencyNow(snap, mode) {
   return parts.reduce((n, e) => n + e.p50, 0);
 }
 
-export function statsView({ connected, mode, ch, w, core, page, sessionCfg, videoSize }) {
+export function statsView({ connected, mode, ch, w, core, page, sessionCfg, videoSize, colour }) {
   const on = !!connected && !!core;
   const spot = mode === 'spotter';
   const pinned = !spot && sessionCfg.staticMcs >= 0;
@@ -42,7 +42,8 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
     latency: on && page ? fx(page.latencyMs, 0) : D,
     fps: on && page ? fx(page.fps, 0) : D,
     jitter: on && page ? fx(page.jitterMs, 1) : D,
-    codecLine: on && videoSize ? `H.265 · ${videoSize.w}×${videoSize.h}` : 'H.265',
+    codecLine: (on && videoSize ? `H.265 · ${videoSize.w}×${videoSize.h}` : 'H.265')
+      + (colour === 'colortrans' ? ' · colortrans' : colour === 'unavailable' ? ' · colortrans unavailable' : ''),
     latencyCaption: spot ? 'rx→glass latency, last 12 s' : 'Latency, last 12 s',
   };
 }

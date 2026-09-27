@@ -24,6 +24,12 @@ test('stats view, GS adaptive', () => {
   assert.equal(v.latency, '38'); assert.equal(v.codecLine, 'H.265 · 1280×720');
 });
 
+test('codec line names the colour path', () => {
+  assert.equal(statsView({ ...base, colour: 'colortrans' }).codecLine, 'H.265 · 1280×720 · colortrans');
+  assert.equal(statsView({ ...base, colour: 'unavailable' }).codecLine, 'H.265 · 1280×720 · colortrans unavailable');
+  assert.equal(statsView({ ...base, colour: 'flat' }).codecLine, 'H.265 · 1280×720');
+});
+
 test('rung count is the effective ladder (max MCS filter)', () => {
   const v = statsView({ ...base, sessionCfg: applyEdit(defaultConfig(), 'maxMcs', 2),
     core: { ...core, rung: 1, mcs: 1 } });

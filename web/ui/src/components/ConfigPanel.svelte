@@ -98,6 +98,19 @@
     </div>
   </fieldset>
 
+  <!-- Page-only, applied on the next frame: stays editable while live. -->
+  <div class={groupClass}>
+    <span class="card-kicker">Display</span>
+    <div class="field">
+      <span id="{uid}ct-label" class="fieldlabel">Colour correction</span>
+      <div class="seg" role="radiogroup" aria-labelledby="{uid}ct-label">
+        <label class="seg-opt"><input type="radio" name="{uid}ct" checked={cfg.colortrans} onchange={() => set('colortrans', true)}>On</label>
+        <label class="seg-opt"><input type="radio" name="{uid}ct" checked={!cfg.colortrans} onchange={() => set('colortrans', false)}>Off</label>
+      </div>
+      <div class="hint">Undoes the drone camera's colortrans tuning. Turn off for a drone without the colortrans sensor file.</div>
+    </div>
+  </div>
+
   {#if applied}
     <div style="display:flex;gap:6px;align-items:center;font-size:12px" class="dim4">
       <Icon name="check-circle" size="15px" style="color:var(--color-accent)" /><span>{applied}</span></div>
