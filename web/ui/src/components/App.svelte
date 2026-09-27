@@ -93,7 +93,11 @@
     refresh();
   }
   function localStorageSafe() { try { return localStorage; } catch { return null; } }
-  const disconnect = () => session.disconnect();
+  function disconnect() {
+    const p = session.disconnect();
+    refresh();   // the stopping tag/overlay without waiting for the next tick
+    return p;
+  }
 
   function onCfgChange(next, label) {
     ui.cfg = next;
@@ -161,7 +165,7 @@
 
 <div class="root" class:immersive={layout !== 'windowed'}>
   {#if layout === 'windowed'}
-    <Header {tag} {chLine} {live} {busy}
+    <Header {tag} {chLine} {live} {busy} blocked={!!blocker}
       onConnect={connect} onDisconnect={disconnect} rec={recOn} {recLabel} {recDisabled} {recTitle}
       onRec={toggleRec} onFs={toggleFs} />
   {/if}
@@ -174,7 +178,7 @@
           {#if live && status}<div class="status glass">{status}</div>{/if}
           {#if !live}
             <DisconnectedOverlay mode={ui.mode} onMode={(m) => (ui.mode = m)} onConnect={connect}
-              error={sess.state === 'error' ? sess.error : null} notice={sess.notice} {blocker} {busy}
+              error={sess.state === 'error' ? sess.error : null} notice={sess.notice} {blocker} {busy} stopping={sess.state === 'stopping'}
               padRight={layout === 'immersive' && ui.cfgOpen} mobile={layout !== 'windowed' && W < 1000} />
           {/if}
         </div>

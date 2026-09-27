@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  let { mode, onMode, onConnect, error = null, notice = null, blocker = null, busy = false,
+  let { mode, onMode, onConnect, error = null, notice = null, blocker = null, busy = false, stopping = false,
         padRight = false, mobile = false } = $props();
   const HINT = {
     gs: 'Full link control. Sends link feedback to the drone and runs the adaptive ladder.',
@@ -9,7 +9,7 @@
 </script>
 <div class="ov" style="padding-right:{padRight ? 444 : 24}px">
   <Icon name="plugs" size="32px" style="color:var(--color-neutral-500)" />
-  <span style="font-size:16px">{busy ? 'Connecting…' : 'Not connected'}</span>
+  <span style="font-size:16px">{busy ? (stopping ? 'Disconnecting…' : 'Connecting…') : 'Not connected'}</span>
   {#if error}<span class="msg err">{error}</span>{:else if notice}<span class="msg">{notice}</span>{/if}
   <div class="seg" style="width:min(300px,100%);margin-top:4px">
     <label class="seg-opt" style={mobile ? 'min-height:40px' : ''}><input type="radio" name="webgs-mode" checked={mode === 'gs'} disabled={busy}

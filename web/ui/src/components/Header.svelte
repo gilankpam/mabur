@@ -1,7 +1,7 @@
 <script>
   import Icon from './Icon.svelte';
   import RecDot from './RecDot.svelte';
-  let { tag, chLine, live, busy, onConnect, onDisconnect, rec, recLabel, recDisabled, recTitle, onRec, onFs } = $props();
+  let { tag, chLine, live, busy, blocked = false, onConnect, onDisconnect, rec, recLabel, recDisabled, recTitle, onRec, onFs } = $props();
 </script>
 <header class="nav" style="gap:var(--space-4);padding:var(--space-3) var(--space-6);min-height:52px">
   <div style="display:flex;align-items:baseline;gap:8px;margin-right:auto">
@@ -16,7 +16,7 @@
   {#if live}
     <button class="btn btn-secondary" type="button" onclick={onDisconnect}><Icon name="plugs" />Disconnect</button>
   {:else}
-    <button class="btn btn-primary" type="button" onclick={onConnect} disabled={busy}><Icon name="plugs-connected" />Connect</button>
+    <button class="btn btn-primary" type="button" onclick={onConnect} disabled={busy || blocked}><Icon name="plugs-connected" />Connect</button>
   {/if}
   <button class="btn btn-secondary num" type="button" style="gap:8px" onclick={onRec} disabled={recDisabled} title={recTitle}>
     <RecDot on={rec} size={9} />{recLabel}</button>
