@@ -240,3 +240,8 @@ test('errorText maps glue errors', () => {
     /Channel\/width refused: radio\.width: 40 MHz needs/);
   assert.equal(errorText('ERROR something new'), 'ERROR something new');
 });
+
+test('errorText maps bad config and strips the file:line prefix', () => {
+  assert.equal(errorText('bad config: config: /maburgs.toml:88: link.ladder[0].overhead_base: must be >= overhead_enh'),
+    'Config refused: link.ladder[0].overhead_base: must be >= overhead_enh. Fix it in Config and press Connect.');
+});

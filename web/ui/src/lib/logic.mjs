@@ -290,6 +290,12 @@ export function errorText(line) {
   if (line.includes('unsupported chip')) {
     return 'Unsupported card chip.';
   }
+  const bc = line.indexOf('bad config:');
+  if (bc >= 0) {
+    const rest = line.slice(bc + 'bad config:'.length).trim()
+      .replace(/^config:\s*(?:[^:\s]+:\d+:\s*)?/, '');
+    return 'Config refused: ' + rest + '. Fix it in Config and press Connect.';
+  }
   const bad = line.indexOf('bad channel/width:');
   if (bad >= 0) {
     return 'Channel/width refused: ' + line.slice(bad + 'bad channel/width:'.length).trim() +
