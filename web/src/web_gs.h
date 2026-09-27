@@ -7,10 +7,15 @@
 //
 // Two modes:
 //  - Gs: drives the drone link (rendezvous DISC, ladder, slotted RCFs) via
-//    Io::send.
+//    Io::send (required: the ctor throws std::invalid_argument without it).
+//    Video is decoded only while in SESSION with a peer that advertised
+//    CAP_FRAME_WIRE (maburgs main.cpp's `frame_wire`); either edge resets the
+//    decoder's continuity and the FrameStream.
 //  - Spotter: passive. There is no transmit path by construction: the send
 //    callback is dropped in the constructor and no VrxController/RcfSlotter
 //    exists. The op point shown is the drone's own applied one (Telem).
+//    Video is always decoded; a drone restart (Telem tlm_seq stepping back,
+//    DroneRestartDetector) resets the decoder continuity + FrameStream.
 //
 // Single-threaded: on_rx/tick/stats from one thread, one clock (core mono
 // us) for both the RX stamps and tick().
@@ -24,6 +29,7 @@
 
 #include "aggregator.h"
 #include "config.h"
+#include "drone_restart.h"
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
 #include "link_health.h"
@@ -52,7 +58,8 @@ struct Stats {
   Mode mode = Mode::Gs;
   bool session = false;            // rendezvous SESSION (Gs only)
   bool peer_acked = false;
-  int rung = -1, mcs = -1, bw = 0; // commanded (Gs) / drone-applied (Spotter)
+  int rung = -1;                   // commanded (Gs); -1 in Spotter
+  int mcs = -1, bw = 0;            // commanded (Gs) / drone-applied (Spotter)
   std::string probe_state;         // to_string(ProbeGateState), "" in Spotter
   std::optional<double> pre_fec_loss, residual;
   double snr_db = std::numeric_limits<double>::quiet_NaN();
@@ -76,7 +83,8 @@ struct Io {
   // stored in Spotter mode.
   std::function<void(const std::vector<uint8_t>& rc_body)> send;
   // Optional, both modes: once per tick() after the control step.
-  // `sent` is non-null when a frame went out this tick.
+  // `sent` is the LAST frame sent this tick (a tick can send more than one:
+  // a direct send plus slotter releases), nullptr when none went out.
   std::function<void(double now_ms, const maburgs::LinkHealth&, int rung,
                      const std::vector<uint8_t>* sent)> on_control_tick;
 };
@@ -98,11 +106,14 @@ class WebGs {
   const maburgs::VrxController* vrx() const { return vrx_.get(); }  // nullptr in Spotter
   const maburgs::LinkHealthAssembler& health() const { return lha_; }
   uint64_t sends() const { return sends_; }
+  // Video-tail resets so far (session edges in Gs, drone restarts in Spotter).
+  uint64_t resets() const { return resets_; }
   // replay only: synthesize the drone's DISC_ACK (as run_hop_inject_test does)
   void inject_disc_ack_for_replay(uint64_t now_us);
 
  private:
   void send_(const maburgs::SlotFrame& f);
+  void reset_video_();
   const Mode mode_;
   Io io_;
   const Opts opts_;
@@ -116,11 +127,15 @@ class WebGs {
   std::unique_ptr<maburgs::VrxController> vrx_;   // Gs only
   std::unique_ptr<maburgs::RcfSlotter> slot_;     // Gs only
   maburgs::RttEstimator rtt_;
+  // Gs: in SESSION && peer CAP_FRAME_WIRE (edge-reset). Spotter: always true.
+  bool frame_wire_ = false;
+  maburgs::DroneRestartDetector restart_;         // Spotter only
   maburgs::LinkHealth last_health_;
   maburgs::OpPoint spotter_op_;                   // from drone Telem
   std::optional<mabur::rc::Telem> telem_;
   Au cur_;
   uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0;
+  uint64_t resets_ = 0;
 };
 
 }  // namespace webgs

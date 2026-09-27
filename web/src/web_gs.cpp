@@ -1,12 +1,14 @@
 #include "web_gs.h"
 
 #include <cmath>
+#include <stdexcept>
 #include <utility>
 
 #include "json.hpp"
 #include "mabur/profile.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
+#include "vrx_cfg.h"
 
 namespace webgs {
 
@@ -21,21 +23,6 @@ maburgs::LinkHealthCfg lh_cfg(const maburgs::Config& cfg) {
   const auto enh = cfg.uep_layers()[1];
   return {1, enh.blocks_per_body,
           static_cast<int>(mabur::sw::kSwHeaderLen) + enh.fec.symbol_size};
-}
-maburgs::VrxCfg vrx_cfg(const maburgs::Config& cfg, uint8_t ch) {
-  // Same field mapping as maburgs run_radio (gs/src/main.cpp "VrxCfg vcfg").
-  maburgs::VrxCfg v;
-  v.vtx_id = cfg.link.vtx_id;
-  v.op_channel = ch;
-  v.feedback_ms = cfg.link.feedback_ms;
-  v.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
-  v.ladder = cfg.link.ladder_cfg;
-  v.pin_mcs = cfg.link.static_mcs;
-  v.pin_bw = cfg.link.static_bw;
-  v.pin_overhead_base = cfg.link.static_overhead_base;
-  v.pin_overhead_enh = cfg.link.static_overhead_enh;
-  v.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
-  return v;
 }
 }  // namespace
 
@@ -77,14 +64,17 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
       lha_(lh_cfg(cfg)) {
   (void)width;  // the radio is tuned by the glue; the rung width comes from the ladder
   if (mode_ == Mode::Gs) {
-    vrx_ = std::make_unique<maburgs::VrxController>(vrx_cfg(cfg, channel));
+    if (!io_.send) throw std::invalid_argument("webgs: Gs mode needs Io::send");
+    vrx_ = std::make_unique<maburgs::VrxController>(maburgs::vrx_cfg_from(cfg, channel));
     vrx_->set_proposal(channel);   // never move the drone: we cannot follow
     slot_ = std::make_unique<maburgs::RcfSlotter>(
         maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
   } else {
     io_.send = nullptr;   // spotter: no transmit path exists
+    frame_wire_ = true;   // no session to gate on: always decode
   }
   agg_.set_frag_sink([this](const mabur::DecodedFrag& f) {
+    if (!frame_wire_) return;
     fs_.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), now_us_ / 1000,
                       {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms});
   });
@@ -92,6 +82,11 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
       if (auto t = mabur::rc::parse_telem(f.data(), f.size())) {
         telem_ = t;
+        // Spotter has no session edge: a maburd restart (new seqs, frame_ids
+        // from 0) is the one discontinuity it can see. Safe mid-drain: an RC
+        // body never reaches the decoder.
+        if (!vrx_ && restart_.on_telem(t->tlm_seq, static_cast<double>(us) / 1000.0))
+          reset_video_();
         // RTT pairs telem echoes with our own sends: Gs only.
         if (vrx_)
           rtt_.on_telem(t->rcf_seq_echo, (t->flags & 0x08) != 0, t->rcf_age_ms,
@@ -127,6 +122,13 @@ void WebGs::on_rx(const mabur::node::RxBody& m) {
     vrx_->on_video(static_cast<double>(m.mono_us) / 1000.0);
 }
 
+void WebGs::reset_video_() {
+  agg_.decoder().reset_continuity();
+  fs_.reset();   // closes in-flight frames as truncated AUs (end_frame)
+  cur_ = Au{};
+  ++resets_;
+}
+
 void WebGs::send_(const maburgs::SlotFrame& f) {
   io_.send(f.frame);
   ++sends_;
@@ -144,7 +146,19 @@ void WebGs::tick(uint64_t now_us) {
       fs_.set_gap_timeout(s, static_cast<uint64_t>(gap_.timeout_ms(s)));
     }
   }
-  fs_.poll(now_ms_u);
+  if (vrx_) {
+    // maburgs main.cpp: video tail only while in SESSION with a
+    // CAP_FRAME_WIRE peer; any change drops FRAG-seq continuity and
+    // half-assembled frames -- the new session's seqs/frame_ids are
+    // unrelated to the old one's.
+    const bool fw = vrx_->link_state() == maburgs::VrxState::SESSION &&
+                    (vrx_->peer_caps() & mabur::rc::CAP_FRAME_WIRE);
+    if (fw != frame_wire_) {
+      frame_wire_ = fw;
+      reset_video_();
+    }
+  }
+  if (frame_wire_) fs_.poll(now_ms_u);
   maburgs::LinkHealthInputs in;
   if (vrx_) {
     in.op = vrx_->cur_op();

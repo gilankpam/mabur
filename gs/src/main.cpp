@@ -79,6 +79,7 @@
 #include "transition_edge.h"
 #include "tx_selector.h"
 #include "udp_sink.h"
+#include "vrx_cfg.h"
 #include "vrx_controller.h"
 #include "width_resync.h"
 
@@ -237,18 +238,7 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   maburgs::CtlLog ctl_log(writer, debug.dir(), "hop-e2e");
   maburgs::ScanLog scan_log(writer, debug.dir(), "hop-e2e");
 
-  maburgs::VrxCfg vcfg;
-  vcfg.vtx_id = cfg.link.vtx_id;
-  vcfg.op_channel = cfg.radio.channel;
-  vcfg.feedback_ms = cfg.link.feedback_ms;
-  vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
-  vcfg.ladder = cfg.link.ladder_cfg;
-  vcfg.pin_mcs = cfg.link.static_mcs;
-  vcfg.pin_bw = cfg.link.static_bw;
-  vcfg.pin_overhead_base = cfg.link.static_overhead_base;
-  vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
-  vcfg.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
-  maburgs::VrxController vrx(vcfg);
+  maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, cfg.radio.channel));
 
   maburgs::ChannelPlan plan(maburgs::ChannelPlanCfg{
       cfg.radio.channel, n_cards, cfg.radio.scan.split_after_ms,
@@ -1382,18 +1372,7 @@ static int run_radio(const maburgs::Config& cfg) {
                             {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms});
   });
 
-  maburgs::VrxCfg vcfg;
-  vcfg.vtx_id = cfg.link.vtx_id;
-  vcfg.op_channel = cfg.radio.channel;
-  vcfg.feedback_ms = cfg.link.feedback_ms;
-  vcfg.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;
-  vcfg.ladder = cfg.link.ladder_cfg;
-  vcfg.pin_mcs = cfg.link.static_mcs;
-  vcfg.pin_bw = cfg.link.static_bw;
-  vcfg.pin_overhead_base = cfg.link.static_overhead_base;
-  vcfg.pin_overhead_enh = cfg.link.static_overhead_enh;
-  vcfg.probe_pin_mcs = cfg.link.ladder_cfg.probe.pin_mcs;
-  maburgs::VrxController vrx(vcfg);
+  maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, cfg.radio.channel));
 
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
   // section 5): maburgs' own compact S/E/P/N record of every rung decision,
