@@ -91,6 +91,20 @@ nix-shell -p nodejs --run "node --test web/tests/*.test.mjs"
 
 ## Serve
 
+**Hosted: <https://gilankpam.github.io/mabur/>** — the simplest way in, and
+the only one that works on a phone without extra setup. The `Pages`
+workflow (`.github/workflows/pages.yml`) builds the WASM core and the page
+on every push to `web-gs` or `master` that touches `web/`, `gs/src/`,
+`gs/bundle/` or `common/` (or by hand: Actions → Pages → Run workflow) and
+deploys `web/dist` as-is. It is real HTTPS on a public certificate, so no
+local CA is needed on any device. GitHub Pages cannot send the COOP/COEP
+headers WASM pthreads need, so `web/ui/public/coi-serviceworker.js`
+(vendored coi-serviceworker v0.1.7, MIT) installs a service worker that
+adds them: the very first visit reloads the page once, after which it is
+cross-origin isolated. The WebUSB grant is per origin, so each device picks
+the card once on this site. The page is the bundle-default ladder build,
+same as a local one.
+
 `web/serve.py` is a static server for `web/dist` that sets the COOP/COEP
 headers WASM pthreads need (`Cross-Origin-Opener-Policy: same-origin`,
 `Cross-Origin-Embedder-Policy: require-corp`).
@@ -479,10 +493,8 @@ Not built here, all noted in the spec as later work:
 
 - A periodic or GS-relayed IDR request, so a spotter opened mid-flight does
   not wait indefinitely for the ladder to move on its own.
-- Hosting beyond a local `serve.py` — GitHub Pages plus a
-  `coi-serviceworker` shim (for the COOP/COEP headers a static host cannot
-  set) and a PWA wrapper. The build output is already static and
-  host-agnostic, so this is a deploy step, not a redesign.
+- A PWA wrapper (install to home screen, offline cache) on top of the
+  GitHub Pages hosting.
 - Foreign-GS detection, so a second GS-mode page against the same drone
   gets a warning instead of silently fighting the first one's ladder.
 - Auto-reconnect after the card is unplugged and replugged, instead of

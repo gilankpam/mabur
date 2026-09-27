@@ -1,0 +1,80 @@
+name: Pages
+
+# The browser ground station (web/, docs/web-gs.md) on GitHub Pages:
+# https://gilankpam.github.io/mabur/ . Builds the WASM core (Emscripten +
+# the WebUSB libusb) and the Vite page into web/dist and deploys that as-is.
+# Pages can't send COOP/COEP headers; web/ui/public/coi-serviceworker.js adds
+# them client-side (one reload on the first visit).
+on:
+  push:
+    branches: [master, web-gs]
+    paths:
+      - 'web/**'
+      - 'gs/src/**'
+      - 'gs/bundle/**'
+      - 'common/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push supersedes a queued one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mabur
+    steps:
+      # Same two-checkout layout as ci.yml: the web build wants devourer as a
+      # sibling (web/CMakeLists.txt DEVOURER_DIR), tracking devourer master.
+      - uses: actions/checkout@v5
+        with:
+          path: mabur
+      - uses: actions/checkout@v5
+        with:
+          repository: gilankpam/devourer
+          ref: master
+          path: devourer
+
+      - uses: cachix/install-nix-action@v31.11.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      # Upstream libusb with the Emscripten WebUSB backend, into the
+      # repo-local EM_CACHE sysroot the page build links against.
+      - name: libusb (WASM)
+        run: |
+          nix-shell -p emscripten autoconf automake libtool pkg-config --run \
+            web/tools/build-libusb-wasm.sh
+
+      # webgs.{js,wasm} + npm ci + vite build, all into web/dist.
+      - name: Build page
+        run: |
+          nix-shell -p emscripten cmake pkg-config python3 nodejs --run \
+            "export EM_CACHE=$PWD/web/.deps/emcache; \
+             emcmake cmake -S web -B web/build-wasm -DCMAKE_BUILD_TYPE=Release \
+               -DDEVOURER_DIR=$GITHUB_WORKSPACE/devourer && \
+             cmake --build web/build-wasm -j$(nproc)"
+          ls -la web/dist
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: mabur/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -92,7 +92,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     WORKING_DIRECTORY ${WEB_UI}
     DEPENDS ${WEB_UI}/package.json ${WEB_UI}/package-lock.json
     COMMENT "npm ci (web/ui)")
-  file(GLOB_RECURSE WEB_UI_SRC CONFIGURE_DEPENDS ${WEB_UI}/src/*)
+  file(GLOB_RECURSE WEB_UI_SRC CONFIGURE_DEPENDS ${WEB_UI}/src/* ${WEB_UI}/public/*)
   add_custom_command(OUTPUT ${WEB_DIST}/index.html
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${WEB_DIST}/assets
     COMMAND ${NPM} run build
