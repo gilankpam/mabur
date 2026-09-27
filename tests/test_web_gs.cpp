@@ -248,6 +248,72 @@ TEST(gs_session_loss_then_reack_resets_and_flows) {
   CHECK(n > 50);
 }
 
+namespace {
+// Last RCF the core sent after feeding n AUs from t0.
+std::vector<uint8_t> last_rcf_after(WebGs& g, std::vector<uint8_t>& last, int n, uint64_t t0) {
+  last.clear();
+  feed(g, n, t0);
+  return last;
+}
+}  // namespace
+
+TEST(vtx_rec_wish_reaches_rcf_byte) {
+  std::vector<uint8_t> last;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.send = [](const std::vector<uint8_t>&) {};
+  io.on_control_tick = [&](double, const maburgs::LinkHealth&, int,
+                           const std::vector<uint8_t>* sent) {
+    if (sent && mabur::rc::frame_type(sent->data(), sent->size()) == mabur::rc::T_RCF)
+      last = *sent;
+  };
+  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  const uint64_t t0 = 1'000'000;
+  g.inject_disc_ack_for_replay(t0);
+  g.tick(t0);
+
+  auto r0 = last_rcf_after(g, last, 30, t0);
+  REQUIRE(!r0.empty());
+  CHECK(mabur::rc::parse_rcf(r0.data(), r0.size())->rec == 0);   // never pressed: unknown
+
+  g.set_vtx_rec(true);
+  auto r1 = last_rcf_after(g, last, 30, t0 + 1'000'000);
+  REQUIRE(!r1.empty());
+  CHECK(mabur::rc::parse_rcf(r1.data(), r1.size())->rec ==
+        (mabur::rc::kRecKnown | mabur::rc::kRecOn));
+
+  g.set_vtx_rec(false);
+  auto r2 = last_rcf_after(g, last, 30, t0 + 2'000'000);
+  REQUIRE(!r2.empty());
+  CHECK(mabur::rc::parse_rcf(r2.data(), r2.size())->rec == mabur::rc::kRecKnown);
+}
+
+TEST(vtx_rec_wish_is_noop_in_spotter) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  g.set_vtx_rec(true);   // must not crash; there is no send path
+  CHECK(g.vrx() == nullptr);
+  CHECK(g.sends() == 0);
+}
+
+TEST(rec_status_from_telem_in_stats_json) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  CHECK(!g.stats().rec_status.has_value());
+  CHECK(stats_json(g.stats()).find("\"rec_state\":null") != std::string::npos);
+  mabur::rc::Telem t;
+  t.tlm_seq = 1;
+  t.rec_status = static_cast<uint8_t>(2 | (5 << 2));   // Error, LowSpace
+  g.on_rx(rc_body(mabur::rc::pack_telem(t), 1'000'000));
+  g.tick(1'000'000);
+  REQUIRE(g.stats().rec_status.has_value());
+  const std::string j = stats_json(g.stats());
+  CHECK(j.find("\"rec_state\":2") != std::string::npos);
+  CHECK(j.find("\"rec_err\":5") != std::string::npos);
+}
+
 TEST(spotter_drone_restart_resets_and_flows) {
   int n = 0;
   Io io;

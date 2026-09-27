@@ -72,6 +72,7 @@ struct Stats {
   uint64_t rcf_sent = 0;
   std::optional<uint32_t> drone_rcf_rx;   // Telem, cumulative
   std::optional<uint8_t> drone_state;
+  std::optional<uint8_t> rec_status;      // Telem.rec_status raw (VTX recorder)
 };
 std::string stats_json(const Stats& s);   // one line, no trailing newline
 
@@ -114,6 +115,10 @@ class WebGs {
   void on_rx(const mabur::node::RxBody& m);   // m.mono_us = core clock
   void tick(uint64_t now_us);                 // same clock as on_rx stamps
   Stats stats() const;
+  // VTX onboard recorder wish (spec 2026-09-27-web-ui §3.3), RecControl
+  // semantics: the RCF byte stays 0 until the first call, then
+  // kRecKnown | (on ? kRecOn : 0). Spotter: no-op (no VrxController).
+  void set_vtx_rec(bool on);
   Mode mode() const { return mode_; }
   // Test seams.
   const maburgs::VrxController* vrx() const { return vrx_.get(); }  // nullptr in Spotter

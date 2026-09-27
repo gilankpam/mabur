@@ -222,6 +222,11 @@ void WebGs::inject_disc_ack_for_replay(uint64_t now_us) {
   vrx_->on_rc_frame(wire.data(), wire.size(), static_cast<double>(now_us) / 1000.0);
 }
 
+void WebGs::set_vtx_rec(bool on) {
+  if (!vrx_) return;
+  vrx_->set_rec_wish(static_cast<uint8_t>(mabur::rc::kRecKnown | (on ? mabur::rc::kRecOn : 0)));
+}
+
 Stats WebGs::stats() const {
   Stats s;
   s.mode = mode_;
@@ -255,6 +260,7 @@ Stats WebGs::stats() const {
   if (telem_) {
     s.drone_rcf_rx = telem_->rcf_rx;
     s.drone_state = telem_->state;
+    s.rec_status = telem_->rec_status;
   }
   return s;
 }
@@ -281,6 +287,13 @@ std::string stats_json(const Stats& s) {
   opt("pts_off_us", s.pts_off_us);
   opt("drone_rcf_rx", s.drone_rcf_rx);
   opt("drone_state", s.drone_state);
+  if (s.rec_status) {
+    j["rec_state"] = *s.rec_status & 0x03;
+    j["rec_err"] = *s.rec_status >> 2;
+  } else {
+    j["rec_state"] = nullptr;
+    j["rec_err"] = nullptr;
+  }
   j["snr_db"] = std::isnan(s.snr_db) ? nlohmann::json(nullptr) : nlohmann::json(s.snr_db);
   j["rssi_dbm"] = std::isnan(s.rssi_dbm) ? nlohmann::json(nullptr) : nlohmann::json(s.rssi_dbm);
   j["bodies"] = s.bodies;
