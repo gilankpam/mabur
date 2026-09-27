@@ -94,6 +94,17 @@ bool get_bool(const Value& o, const char* key, bool dflt,
   if (!o[key].is_boolean()) fail(where + "." + key, "not a boolean");
   return o[key].get<bool>();
 }
+
+// Overlay merge (spec 2026-09-27-web-ui §3.2): tables recurse, anything else
+// replaces -- so an overlay [[link.ladder]] replaces the file's ladder whole.
+void merge_overlay(Value& base, const Value& ov) {
+  for (const auto& [k, v] : ov.items()) {
+    Value* b = base.find(k);
+    if (b && b->is_object() && v.is_object()) merge_overlay(*b, v);
+    else if (b) *b = v;
+    else base.set(k, v);
+  }
+}
 }  // namespace
 
 std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
@@ -132,10 +143,12 @@ std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width) {
   return std::nullopt;
 }
 
-Config load_config(const std::string& path, std::vector<std::string>* defaulted) {
+Config load_config(const std::string& path, std::vector<std::string>* defaulted,
+                   const std::string& overlay_path) {
   Value j;
   try {
     j = toml::parse_toml_file(path);
+    if (!overlay_path.empty()) merge_overlay(j, toml::parse_toml_file(overlay_path));
   } catch (const toml::Error& e) {
     throw std::runtime_error(std::string("config: ") + e.what());
   }

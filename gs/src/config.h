@@ -298,7 +298,15 @@ std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width);
 /// `defaulted`, when non-null, receives "dotted.key=value" for every known
 /// key the file did not set. main() prints it once at startup so a
 /// hand-transcribed config shows its gaps in the log, not in the air.
+///
+/// `overlay_path`, when non-empty, names a second TOML file deep-merged into
+/// the main document BEFORE any validation: tables merge key-by-key, every
+/// other value (arrays included -- `[[link.ladder]]` replaces the whole
+/// ladder) replaces. Strict-key and range checks then run on the merged
+/// document exactly as for a single file. The web GS writes its config form
+/// as an overlay (spec 2026-09-27-web-ui §3.2); maburgs never passes one.
 Config load_config(const std::string& path,
-                   std::vector<std::string>* defaulted = nullptr);
+                   std::vector<std::string>* defaulted = nullptr,
+                   const std::string& overlay_path = {});
 
 }  // namespace maburgs
