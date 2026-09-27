@@ -18,6 +18,7 @@
   import { layoutMode, keyAction, isMobile } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
+  import { ScreenWake } from '../lib/wakelock.js';
 
   let canvas = $state(null);
   let glCanvas = $state(null);
@@ -28,6 +29,7 @@
   let copyMsg = $state('');
   let hiddenBanner = $state(false), hiddenShown = false;
   const recClock = new RecClock();
+  const wake = new ScreenWake();
 
   const video = new VideoPipeline({ getCanvas: () => canvas, getGlCanvas: () => glCanvas, getMode: () => sess.mode,
     getColortrans: () => ui.cfg.colortrans });
@@ -75,6 +77,7 @@
     sess = s;
     // Left live (stopping/idle/error): free the hardware decoder now.
     if (s.state !== 'live' && s.state !== 'connecting') { video.close(); clearOsd(); }
+    wake.set(s.state === 'live' || s.state === 'connecting');
     if (s.state === 'live' && prevState !== 'live') { ui.tab = 'stats'; ui.cfgOpen = false; ui.statsVisible = true; }
     if (prevState === 'stopping' && s.state === 'idle') { ui.tab = 'config'; ui.cfgOpen = true; }
     if (s.state === 'error' && prevState === 'live') { ui.tab = 'config'; }
@@ -217,7 +220,7 @@
     document.addEventListener('fullscreenchange', onFsChange);
     const onVis = () => {
       if (document.hidden) { if (sess.mode === 'gs' && live && !hiddenShown) { hiddenBanner = true; hiddenShown = true; } }
-      else hiddenBanner = false;
+      else { hiddenBanner = false; wake.onVisible(); }
     };
     document.addEventListener('visibilitychange', onVis);
     const onWinErr = (e) => {
@@ -227,7 +230,7 @@
     };
     window.addEventListener('error', onWinErr);
     return () => { clearInterval(iv); ro.disconnect(); clearTimeout(copyTimer); document.removeEventListener('fullscreenchange', onFsChange);
-      document.removeEventListener('visibilitychange', onVis); window.removeEventListener('error', onWinErr); };
+      document.removeEventListener('visibilitychange', onVis); window.removeEventListener('error', onWinErr); wake.set(false); };
   });
 </script>
 
