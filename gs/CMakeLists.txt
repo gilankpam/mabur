@@ -55,9 +55,15 @@ if(RT_LIB AND NOT CMAKE_CROSSCOMPILING)
   target_link_libraries(mabur_gs_core PUBLIC ${RT_LIB})
 endif()
 
+# Pure dot11 helpers (build_control_frame, fill_rx_body): shared with the
+# web GS (web/), which cannot link radio_frontend's threads/libusb device code.
+add_library(mabur_gs_dot11 STATIC src/dot11.cpp)
+target_include_directories(mabur_gs_dot11 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mabur_gs_dot11 PUBLIC mabur_common devourer)
+
 add_library(mabur_gs_radio STATIC src/radio_frontend.cpp src/card_scan_usb.cpp)
 target_include_directories(mabur_gs_radio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(mabur_gs_radio PUBLIC mabur_gs_core mabur_common devourer)
+target_link_libraries(mabur_gs_radio PUBLIC mabur_gs_core mabur_gs_dot11 mabur_common devourer)
 
 add_executable(maburgs src/main.cpp)
 target_include_directories(maburgs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

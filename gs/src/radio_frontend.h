@@ -11,6 +11,7 @@
 
 #include "body_queue.h"
 #include "card_scan.h"
+#include "dot11.h"
 #include "logger.h"
 #include "own_air.h"
 #include "scout_radio.h"
@@ -25,24 +26,6 @@ class UsbDeviceLock;
 }
 
 namespace maburgs {
-
-// Pure: MAX_RANGE radiotap + 24-byte dot11 probe-req header (canonical SA
-// 57:42:75:05:d6:00, broadcast DA, seq<<4) + body. Builds the GS's own
-// uplink 0x40 control frame. The drone's video downlink switched to QoS-Data
-// (A-MPDU), but the uplink RCF remains probe-req (unchanged by the wire change).
-std::vector<uint8_t> build_control_frame(uint16_t seq, const uint8_t* body, size_t len);
-
-// Pure: true when the dot11 header's SA (bytes 10..15) is the canonical
-// mabur SA. Frames too short to carry an SA are not canonical.
-bool sa_canonical(const uint8_t* dot11, size_t len);
-
-// Pure: byte offset of the mabur body inside a dot11 frame, keyed on the
-// frame-control type. QoS-Data (0x88, the post-A-MPDU drone wire) carries a
-// 26-byte header; everything else (the legacy probe-req 0x40 wire, and any
-// frame the SA filter passes) parses at the legacy 24-byte offset. Returns
-// 0 when len cannot hold the header plus at least one body byte. seq_ctl
-// sits at bytes 22-23 in BOTH layouts, so mac_seq extraction is unchanged.
-size_t dot11_body_offset(const uint8_t* dot11, size_t len);
 
 class RadioFrontend : public ScoutRadio {
  public:
