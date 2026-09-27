@@ -63,12 +63,30 @@ WASM/native parity (`web/tests/test_wasm_parity.sh`; needs both the host
 nix-shell -p nodejs python3 --run "BUILD=$PWD/build web/tests/test_wasm_parity.sh"
 ```
 
-Page logic tests (IRAP gate, decoder slot, hitch/stat math, segment
-alignment) — pass the file explicitly, a bare directory argument fails on
-this machine's Node 22:
+The page UI itself (`web/ui/`, Vite + Svelte 5, lockfile committed) is a
+separate build step folded into the same WASM CMake invocation above: after
+the Emscripten module is built, the standalone `web/` CMakeLists also runs
+`npm ci` (when the lockfile changed) and `npm run build` (`vite build`) in
+`web/ui`, writing the page's JS/CSS bundle into `web/dist` next to
+`webgs.js`/`webgs.wasm`. It needs `nodejs` in the shell alongside
+`emscripten`:
 
 ```sh
-nix-shell -p nodejs --run "node --test web/tests/logic.test.mjs"
+nix-shell -p emscripten cmake pkg-config python3 nodejs --run "export EM_CACHE=$PWD/web/.deps/emcache; emcmake cmake -S web -B web/build-wasm -DCMAKE_BUILD_TYPE=Release && cmake --build web/build-wasm -j"
+```
+
+For UI-only iteration, `npm run dev` in `web/ui` (inside `nix-shell -p
+nodejs`) runs Vite's dev server, serving `webgs.js`/`webgs.wasm` straight out
+of `web/dist` (build that once via the CMake step above) with the same
+COOP/COEP headers the static server sets — no rebuild-the-WASM-module round
+trip for a page-only change.
+
+Page logic tests (session lifecycle, config form, rec state, hitch/stat
+math, segment alignment, layout) — pass the files explicitly, a bare
+directory argument fails on this machine's Node 22:
+
+```sh
+nix-shell -p nodejs --run "node --test web/tests/*.test.mjs"
 ```
 
 ## Serve
@@ -140,23 +158,31 @@ while the ladder has any 40 MHz rung, because the GS could not receive
 it. A refusal reads `Channel/width refused: <reason>` (core line
 `ERROR bad channel/width: <reason>`).
 
-This page's ladder is whatever `web/CMakeLists.txt` embeds into the WASM
-module at build time — the bundle default,
+This page's ladder starts from whatever `web/CMakeLists.txt` embeds into the
+WASM module at build time — the bundle default,
 `gs/bundle/maburgs.default.toml` (5 rungs, all 40 MHz, top = rung 4
-mcs4/40) — not a GS's own tuned `/etc/maburgs.toml`. A GS box on the same
-drone may run a different (e.g. mcs-wider or narrower) ladder; don't read
-this page's rung numbers as if they were that GS's.
+mcs4/40) — not a GS's own tuned `/etc/maburgs.toml`; the Config form (below)
+overrides it per session. A GS box on the same drone may run a different
+(e.g. mcs-wider or narrower) ladder; don't read this page's rung numbers as
+if they were that GS's unless the form was left at its defaults.
 
-**The mode radio and the channel/width inputs lock as soon as Connect is
-pressed and stay locked for as long as the page is connecting or
-connected** (`controlsLocked()`, `web/www/logic.mjs`): a running WASM
-module keeps the mode/channel/width it was started with, and changing
-them live did nothing but leave the page fighting a `maburgs` it had
-switched away from commanding, on the bench. A hint next to the controls
-says "Reload the page to change mode, channel or width." Reload the page
-to actually change any of the three; the controls re-enable on their own
-on every path that already re-enables the Connect button (error, cancel,
-module-start failure, card lost).
+**Connect/Disconnect are in-page** — no reload to change mode, channel,
+width or (GS mode) the ladder, and no reload between flights.
+`Session` (`web/ui/src/lib/session.js`) drives a small state machine
+(`idle → connecting → live → stopping → idle`, plus `error`): Connect
+requests the device, builds a **fresh** WASM module every time (never
+reused across connects) with `--mode`/`--ch`/`--w` and, in GS mode when the
+form differs from the embedded default, `--overlay /overlay.toml` (the
+overlay TOML written into the module's virtual FS before `main()` runs).
+Disconnect calls the exported `webgs_stop()`, which sets an atomic the core
+loop polls; the core tears down cleanly and returns from `main()`, and
+`-sEXIT_RUNTIME` fires `Module.onExit()`, which the page treats as the
+signal that the module is gone and the UI can go back to `idle` (or
+straight into a new Connect). If `onExit` doesn't arrive within 3 s
+(`stopTimeoutMs`), the page treats that as the module being stuck rather
+than waiting indefinitely: it reloads the page as a fallback, landing back
+on the Config tab. Recording is stopped first if it was on (see Record,
+below) before the stop request goes out.
 
 The browser's own device
 chooser asks for the RTL8812EU (WebUSB's per-origin device grant — pick it
@@ -179,7 +205,7 @@ origin). What the status overlay shows after that:
   Connect.` / `No RTL8812EU/8812AU card found — plug it in and press
   Connect.` / `Card lost (unplugged?). Press Connect to restart.` /
   `WebUSB unavailable in this browser.` / `Unsupported card chip.` — mapped
-  from the core's `ERROR <reason>` lines (`web/www/logic.mjs`'s
+  from the core's `ERROR <reason>` lines (`web/ui/src/lib/logic.mjs`'s
   `errorText()`); Connect re-enables so trying again costs nothing.
 - `Page worker failed — if served over LAN, the TLS CA is not trusted on
   this device (see docs/web-gs.md).` — the untrusted-cert failure mode
@@ -196,14 +222,74 @@ this problem: linking a previously-unlinked drone changes its bitrate
 a self-linking GS's own link-up produces the first key frame roughly a
 second after DISC_ACK.
 
+## Config form
+
+The Config tab (`web/ui/src/components/ConfigPanel.svelte`, and
+`ConfigSide.svelte` for the immersive/mobile layout) edits channel and width
+in both modes, plus — GS mode only — Fixed MCS (`static_mcs`, −1 =
+adaptive), Max MCS, and the ladder rungs (mcs/bw/FEC overhead per rung, add/
+remove up to 8). `web/ui/src/lib/config.js` normalizes and persists the
+form to `localStorage` under `webgs.cfg` (per-field fallback to the bundle
+default, so a stale or hand-edited entry can never break the page), and
+`?ch=`/`?w=` query params override the saved channel/width on load the same
+way `?mode=` overrides the saved mode. On Connect, a GS-mode form that
+differs from the embedded default is serialized to TOML
+(`toOverlayToml()`: `[link] static_mcs/static_bw/max_mcs` plus one
+`[[link.ladder]]` block per rung, `static_bw` carrying the form's width) and
+handed to the core as `--overlay /overlay.toml`; `maburgs::load_config`'s
+`overlay_path` argument (`gs/src/config.h`/`.cpp`) deep-merges it over the
+embedded `maburgs.default.toml` (an overlay `[[link.ladder]]` replaces the
+file's ladder whole, it does not append) and re-runs the same validation
+the native loader runs. A rejected overlay surfaces as `ERROR bad config:
+<reason>` from the core; `connectBlocker()` mirrors the same checks
+page-side (channel/width, FEC overhead range 0.1–2.0, enh ≤ base, at least
+one rung at-or-below Max MCS, no 40 MHz rung under a 20 MHz width) so a bad
+form is refused before Connect ever starts the device request, and a
+per-field warning (`rungWarnings()`/`channelWarning()`) flags a rung that's
+above Max MCS or a channel with no HT40 pair without blocking the rest of
+the form. Spotter mode sends no overlay — it only listens, so only channel/
+width apply.
+
+## Record
+
+VTX recorder control only — there is no browser-side recording and no DVR
+target in this build (see Known limits). GS mode's Record button calls
+`Session.setRec()`, which calls the exported `webgs_set_rec(1|0)`; the core
+(`WebGs::set_vtx_rec`, `web/src/web_gs.h`/`.cpp`) sets the RCF's recorder
+wish byte the same way `maburgs` does (`kRecKnown | kRecOn`), so the drone's
+onboard VTX SD recorder starts/stops exactly as it would under a native GS
+(`docs/vtx-recorder.md`). The indicator (`RecDot.svelte`, both modes)
+follows the drone's own report, not the click: it reads `Telem.rec_status`
+back off the stats stream (core `rec_state`/`rec_err` keys, `rec.js`'s
+`recView()`) and only shows "recording" once the drone confirms it, with
+the on-screen clock (`RecClock`) starting from that first confirmation, not
+button-press time. Spotter mode has no send path, so it mirrors the same
+`rec_state`/`rec_err` read-only — it can watch a `maburgs`-started
+recording (as in the Validation section's spotter run) but cannot start or
+stop one. Disconnect in GS mode with the wish still on sends the "off" RCF
+and waits up to 1 s (`recOffTimeoutMs`) for the drone to confirm
+`rec_state != 1` before stopping the module, so a Disconnect doesn't leave
+the VTX recording with nothing left to turn it off.
+
 ## Stats panel
 
 A 1 Hz snapshot from the core (`webgs::Stats` / `stats_json()` in
-`web/src/web_gs.cpp`), plus page-side timing JS adds on receipt. Every
-page-side segment row shows p50/p99/max over both a 1 s and a 60 s window
-(USB lateness is the core's own 1 s window). "Copy stats" copies
-`{core: [last 60 s of 1 Hz stats lines], segments: {w1, w60}}` as JSON.
-Segments (spec §4):
+`web/src/web_gs.cpp`), plus page-side timing JS adds on receipt, including
+the recorder's `rec_state`/`rec_err` (Record, above). In the windowed
+layout this lives in the sidebar's Stats/Config/Debug tabs
+(`Sidebar.svelte`); in immersive/fullscreen or on mobile it's a floating,
+draggable panel (`FloatStats.svelte`, `web/ui/src/lib/layout.js`) instead,
+so it stays visible over the fullscreen video. Every page-side segment row
+shows p50/p99/max over both a 1 s and a 60 s window (USB lateness is the
+core's own 1 s window). Page-side video metrics
+(`web/ui/src/lib/metrics.js`'s `PageMetrics`, distinct from the core's 1 Hz
+stats) resample every 200 ms over a trailing 1 s window: bitrate (AU bytes),
+fps (draw count), and jitter (mean deviation from the nominal draw period);
+latency there is capture→glass p50 in GS mode, and the rx→glass segment sum
+in Spotter mode (no capture-side clock to measure capture→glass from
+without the RTT estimator's offset — see Capture→glass below). "Copy
+stats" copies `{core: [last 60 s of 1 Hz stats lines], segments: {w1, w60}}`
+as JSON. Segments (spec §4):
 
 | Segment | What it measures | Mode |
 |---|---|---|
@@ -212,7 +298,7 @@ Segments (spec §4):
 | FEC/assembly | first body seen for the AU → AU complete, both timestamps on the core clock (`AuLatMeta`, `gs/src/frame_stream.cpp`) | both |
 | Hand-off | AU complete (core/worker thread) → page receives it, both sides aligned to `performance.timeOrigin` | both |
 | Decode | `VideoDecoder` chunk submit → decoded output callback | both |
-| Present | decoded output → the first `requestAnimationFrame` after `drawImage` — an **estimate**, not `requestVideoFrameCallback`'s presentation time, because MSE/DRM-level present timestamps are not exposed to a WebCodecs canvas path; a callback that fires >1000 ms after its `drawImage` (a hidden tab suspends rAF, so the callback only runs once it's visible again — ~18 s outliers seen on the bench) is dropped rather than counted (`isStalePresentSample()`, `web/www/logic.mjs`) | both |
+| Present | decoded output → the first `requestAnimationFrame` after `drawImage` — an **estimate**, not `requestVideoFrameCallback`'s presentation time, because MSE/DRM-level present timestamps are not exposed to a WebCodecs canvas path; a callback that fires >1000 ms after its `drawImage` (a hidden tab suspends rAF, so the callback only runs once it's visible again — ~18 s outliers seen on the bench) is dropped rather than counted (`isStalePresentSample()`, `web/ui/src/lib/logic.mjs`) | both |
 | Capture→glass (estimate) | drone `pts` + `RttEstimator`'s min-RTT-filtered `pts_off_us` → page present, same method as `maburplay`'s `lat.log`, but computed GS-side; shares Present's rAF path, so the same >1000 ms stale-sample drop applies (`isStalePresentSample()`) | GS only |
 
 Capture→glass is GS-only because it needs the RTT estimator's pts-clock
@@ -223,7 +309,7 @@ the panel says so rather than showing a stale or borrowed number.
 Link state shown alongside: rung/MCS/width, probe gate state, pre-FEC loss,
 residual, SNR/RSSI, RCF heard % (Δ`Telem.rcf_rx` / Δ`rcf_sent` over a
 trailing ~10 s window of the stats ring, not the adjacent 1 s tick —
-`rcfHeardPctWindowed()` in `web/www/logic.mjs`; the two counters are
+`rcfHeardPctWindowed()` in `web/ui/src/lib/logic.mjs`; the two counters are
 sampled at different instants, so diffing consecutive ticks read
 100–105 % on the bench, and clamping would have hidden a real fault
 instead of fixing the measurement. `rcf_sent` counts RCFs only, not the
@@ -262,9 +348,10 @@ this build — the panel is measurement-only, by design (see the spec's
   commander; both DISC and both send RCFs, and the ladder each one drives
   fights the other's. Spotter mode has no such conflict since it never
   transmits.
-- **No C++ exceptions in the WASM build** (Emscripten build flags omit
-  them): a config load error aborts the module rather than surfacing a
-  caught exception's message the way the native CLI's `load_cfg` does.
+- **MSP OSD and browser-side recording not built** (DVR target hidden).
+  This page only ever controls the VTX's onboard SD recorder (see Record,
+  above); there is no local capture of the decoded stream and no MSP OSD
+  overlay path, unlike `maburplay`.
 - **Capture→glass can use a stale RTT offset for up to ~30 s after a drone
   restart.** `RttEstimator`'s pts-clock offset is never explicitly reset on
   a detected drone restart, in this page or in `maburgs` itself — the
@@ -331,6 +418,36 @@ Bench, 2026-09-27, bench drone on ch136 HT40, drone `low_power` off:
   ~10 min (each recovered on the next IRAP — the existing `gate.armed =
   false` / re-arm path, `onDecoderError()`). Left as a follow-up; no
   drone/wire signature was found in the ~10 min sample to attribute it to.
+
+**The bench numbers above predate this redesign** (in-page Connect/
+Disconnect, the Config overlay form, VTX record) — they validated the
+underlying core (`WebGs`/`LinkHealthAssembler`/`RttEstimator`), which this
+redesign does not touch, but the new page itself (`web/ui/`) has **not**
+been hardware-validated. Host gates (build, `ctest`, page logic tests, WASM/
+native parity) pass; the following still need a bench/HW run before this
+page can be trusted in the field:
+
+- [ ] Connect → Disconnect → Connect ×10 in GS mode without a page reload:
+  every reconnect links and shows video, and the 3 s reload fallback never
+  fires (no `core did not exit after stop` in the console). If it does
+  fire, how often — that decides whether in-page teardown is actually the
+  normal path.
+- [ ] Config form: Max MCS 3 → reconnect → the climb stops at MCS 3 (rung
+  count 4); Fixed MCS 2 → `Pinned`, MCS 2 steady; a bad value is blocked
+  page-side (never reaches the core as a rejected overlay).
+- [ ] VTX record: Record → drone `rec_state` 1 within ~1 s, clock runs;
+  Stop → off; Record then Disconnect → VTX actually stops (check maburtop /
+  drone log, not just the page). Spotter next to `maburgs`: start recording
+  from `maburgs`'s own button → the page's REC tag shows; spotter `sends 0 /
+  rcf_sent 0` throughout.
+- [ ] Latency: capture→glass p50/p99, decode, hand-off within noise of the
+  numbers above (p50 ~24 ms, p99 ~45 ms, decode ~0.8 ms, hand-off 0.1 ms) —
+  confirms the overlay/record additions didn't add core-loop cost.
+- [ ] Phone over LAN TLS: immersive landscape, portrait notice, drag, the
+  config side panel.
+- [ ] Resize the desktop window across 760 px while live: video keeps
+  playing (the windowed/immersive layout breakpoint, `web/ui/src/lib/
+  layout.js`'s `isMobile()`).
 
 ## Follow-ups
 
