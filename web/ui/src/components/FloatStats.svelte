@@ -2,7 +2,9 @@
   import Icon from './Icon.svelte';
   import RungBar from './RungBar.svelte';
   import { clampFloatPos, dragStarted, FLOAT_W } from '../lib/layout.js';
-  let { v, mobile, open, pos, onOpen, onMove, cw, ch } = $props();
+  // toLocal: client (screen) point -> the page's layout coords; not identity
+  // when App draws the UI rotated on an upright phone.
+  let { v, mobile, open, pos, onOpen, onMove, cw, ch, toLocal = (x, y) => ({ x, y }) } = $props();
 
   const fw = $derived(mobile ? FLOAT_W.mobile : FLOAT_W.desktop);
   let justDragged = false;
@@ -13,20 +15,23 @@
   });
 
   // Prototype startDrag: 5 px dead zone, then follow the pointer, clamped
-  // 8 px inside the parent with 48 px kept reachable at the bottom.
+  // 8 px inside the parent with 48 px kept reachable at the bottom. Layout
+  // coords throughout (offset*, client*), never getBoundingClientRect: those
+  // are screen coords and go sideways under App's portrait rotation.
   function startDrag(e) {
     if (e.button && e.button !== 0) return;
     const el = e.currentTarget.closest('[data-float]');
     const parent = el && el.offsetParent;
     if (!parent) return;
-    const pr = parent.getBoundingClientRect(), r = el.getBoundingClientRect();
-    const ox = e.clientX - r.left, oy = e.clientY - r.top, sx = e.clientX, sy = e.clientY;
+    const s = toLocal(e.clientX, e.clientY);
+    const ox = s.x - el.offsetLeft, oy = s.y - el.offsetTop;
     let moved = false;
     const move = (ev) => {
-      if (!moved && !dragStarted(sx, sy, ev.clientX, ev.clientY)) return;
+      const p = toLocal(ev.clientX, ev.clientY);
+      if (!moved && !dragStarted(s.x, s.y, p.x, p.y)) return;
       moved = true;
-      onMove(clampFloatPos({ x: ev.clientX - pr.left - ox, y: ev.clientY - pr.top - oy },
-        { cw: pr.width, ch: pr.height }, r.width));
+      onMove(clampFloatPos({ x: p.x - ox, y: p.y - oy },
+        { cw: parent.clientWidth, ch: parent.clientHeight }, el.offsetWidth));
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
@@ -51,10 +56,9 @@
     const el = e.currentTarget.closest('[data-float]');
     const parent = el && el.offsetParent;
     if (!parent) return;
-    const pr = parent.getBoundingClientRect(), r = el.getBoundingClientRect();
     const k = e.shiftKey ? 40 : 10;
-    onMove(clampFloatPos({ x: r.left - pr.left + d[0] * k, y: r.top - pr.top + d[1] * k },
-      { cw: pr.width, ch: pr.height }, r.width));
+    onMove(clampFloatPos({ x: el.offsetLeft + d[0] * k, y: el.offsetTop + d[1] * k },
+      { cw: parent.clientWidth, ch: parent.clientHeight }, el.offsetWidth));
   }
 </script>
 

@@ -7,7 +7,6 @@
   import FsOverlay from './FsOverlay.svelte';
   import FloatStats from './FloatStats.svelte';
   import ConfigSide from './ConfigSide.svelte';
-  import PortraitNotice from './PortraitNotice.svelte';
   import { ui, saveMode, reloadToConfig } from '../lib/ui.svelte.js';
   import { Session, WORKER_FAILED } from '../lib/session.js';
   import { VideoPipeline } from '../lib/video.js';
@@ -15,7 +14,7 @@
   import { statsView, debugGroups, statusText, linkTag } from '../lib/view.js';
   import { recView, RecClock, formatClock } from '../lib/rec.js';
   import { sparkPoints } from '../lib/metrics.js';
-  import { layoutMode, keyAction, isMobile } from '../lib/layout.js';
+  import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
   import { ScreenWake } from '../lib/wakelock.js';
@@ -84,7 +83,11 @@
     prevState = s.state;
   });
 
-  const layout = $derived(layoutMode({ w: W, h: H, fs: ui.fs }));
+  // Upright phone: the UI is drawn rotated (layout.js uiFrame). LW x LH is
+  // its own landscape size; everything below lays out in it, not in W x H.
+  const frame = $derived(uiFrame(W, H));
+  const LW = $derived(frame.lw), LH = $derived(frame.lh);
+  const layout = $derived(layoutMode({ w: LW, h: LH, fs: ui.fs }));
   const live = $derived(sess.state === 'live');
   const busy = $derived(sess.state === 'connecting' || sess.state === 'stopping');
   const shownMode = $derived(live || busy ? sess.mode : ui.mode);
@@ -129,11 +132,16 @@
     // session's pipeline for a press it will ignore.
     const st = session.snapshot.state;
     if (st !== 'idle' && st !== 'error') return;
+    // Phones: Connect also goes fullscreen + landscape-locked -- but only once
+    // the card is already granted: fullscreen consumes the tap's activation,
+    // which the first-time WebUSB chooser needs.
+    if (isMobile(LW, LH) && usbGranted) goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
     const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg) });
     refresh();   // the connecting tag/overlay without waiting for the next tick
     await p;
     refresh();
+    checkUsbGranted();
   }
   function localStorageSafe() { try { return localStorage; } catch { return null; } }
   function disconnect() {
@@ -180,13 +188,23 @@
   let realFs = $state(!!document.fullscreenElement);
   const fsSupported = !!document.fullscreenEnabled;
   async function toggleRealFs() {
+    if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch { /* stay */ } return; }
+    await goLandscape();
+  }
+  // Fullscreen + lock to 'landscape' (either side: the sensor still flips it
+  // 180°, never to portrait). Android Chrome allows the lock only while
+  // fullscreen; must run inside the tap, before any await.
+  async function goLandscape() {
+    if (!fsSupported) return;
     try {
-      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
-      await document.documentElement.requestFullscreen();
-      // Android Chrome allows an orientation lock only while fullscreen.
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
       const lock = screen.orientation?.lock?.('landscape');
       if (lock) lock.catch(() => {});
     } catch { /* refused: stay as is */ }
+  }
+  let usbGranted = false;
+  function checkUsbGranted() {
+    navigator.usb?.getDevices().then((d) => { usbGranted = d.some((x) => x.vendorId === 0x0bda); }).catch(() => {});
   }
 
   let copyTimer = null;
@@ -209,6 +227,7 @@
 
   onMount(() => {
     const iv = setInterval(refresh, 200);
+    checkUsbGranted();
     refresh();
     osd.attach(osdCanvas);
     const ro = new ResizeObserver(([e]) => osd.resize(e.contentRect.width, e.contentRect.height, window.devicePixelRatio || 1));
@@ -236,7 +255,7 @@
 
 <svelte:window bind:innerWidth={W} bind:innerHeight={H} onkeydown={onKey} />
 
-<div class="root" class:immersive={layout !== 'windowed'}>
+<div class="root" class:immersive={layout !== 'windowed'} style={frame.style}>
   {#if layout === 'windowed'}
     <Header {tag} {chLine} {live} {busy} blocked={!!blocker}
       onConnect={connect} onDisconnect={disconnect} rec={recOn} {recLabel} {recDisabled} {recTitle}
@@ -256,7 +275,7 @@
           {#if !live}
             <DisconnectedOverlay mode={ui.mode} onMode={(m) => (ui.mode = m)} onConnect={connect}
               error={sess.state === 'error' ? sess.error : null} notice={sess.notice} {blocker} {busy} stopping={sess.state === 'stopping'}
-              padRight={layout === 'immersive' && ui.cfgOpen} mobile={layout !== 'windowed' && W < 1000} />
+              padRight={layout === 'immersive' && ui.cfgOpen} mobile={layout !== 'windowed' && LW < 1000} />
           {/if}
         </div>
       </div>
@@ -273,11 +292,11 @@
   {#if layout === 'immersive' && view}
     <FsOverlay {live} mode={sess.mode} {chLine} {recOn} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
       onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
-      onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} fsButton={isMobile(W, H) ? (fsSupported ? { on: realFs } : null) : { on: true }}
-      onFs={isMobile(W, H) ? toggleRealFs : toggleFs} />
+      onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} fsButton={isMobile(LW, LH) ? (fsSupported ? { on: realFs } : null) : { on: true }}
+      onFs={isMobile(LW, LH) ? toggleRealFs : toggleFs} />
     {#if ui.statsVisible && !ui.cfgOpen}
-      <FloatStats v={view} mobile={isMobile(W, H)} open={ui.floatOpen} pos={ui.fpos}
-        onOpen={(o) => (ui.floatOpen = o)} onMove={(p) => (ui.fpos = p)} cw={W} ch={H} />
+      <FloatStats v={view} mobile={isMobile(LW, LH)} open={ui.floatOpen} pos={ui.fpos}
+        onOpen={(o) => (ui.floatOpen = o)} onMove={(p) => (ui.fpos = p)} cw={LW} ch={LH} toLocal={frame.toLocal} />
     {/if}
     {#if ui.cfgOpen}
       <ConfigSide onClose={() => (ui.cfgOpen = false)}>
@@ -286,7 +305,6 @@
       </ConfigSide>
     {/if}
   {/if}
-  {#if layout === 'portrait'}<PortraitNotice />{/if}
 </div>
 
 <style>

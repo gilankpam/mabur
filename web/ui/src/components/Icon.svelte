@@ -21,7 +21,6 @@
   import checkCircle from '@phosphor-icons/core/assets/regular/check-circle.svg?raw';
   import plus from '@phosphor-icons/core/assets/regular/plus.svg?raw';
   import trash from '@phosphor-icons/core/assets/regular/trash.svg?raw';
-  import deviceRotate from '@phosphor-icons/core/assets/regular/device-rotate.svg?raw';
   import stop from '@phosphor-icons/core/assets/regular/stop.svg?raw';
   import record from '@phosphor-icons/core/assets/regular/record.svg?raw';
 
@@ -30,7 +29,7 @@
     'chart-line-up': chartLineUp, 'sliders-horizontal': slidersHorizontal, bug, 'gear-six': gearSix,
     x, 'caret-up': caretUp, 'caret-down': caretDown, 'dots-six-vertical': dotsSixVertical,
     broadcast, binoculars, 'lock-simple': lockSimple, info, warning, 'check-circle': checkCircle,
-    plus, trash, 'device-rotate': deviceRotate, stop, record,
+    plus, trash, stop, record,
   };
   let { name, size = '1em', style = '' } = $props();
 </script>

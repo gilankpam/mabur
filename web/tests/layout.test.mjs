@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isMobile, layoutMode, clampFloatPos, dragStarted, keyAction } from '../ui/src/lib/layout.js';
+import { isMobile, layoutMode, clampFloatPos, dragStarted, keyAction, uiFrame } from '../ui/src/lib/layout.js';
 
 test('mobile detection matches the handoff', () => {
   assert.equal(isMobile(759, 900), true);
@@ -13,7 +13,18 @@ test('layout modes', () => {
   assert.equal(layoutMode({ w: 1440, h: 900, fs: false }), 'windowed');
   assert.equal(layoutMode({ w: 1440, h: 900, fs: true }), 'immersive');
   assert.equal(layoutMode({ w: 844, h: 390, fs: false }), 'immersive');
-  assert.equal(layoutMode({ w: 390, h: 844, fs: false }), 'portrait');
+});
+
+test('upright phone: UI drawn rotated at landscape size, pointer mapped back', () => {
+  assert.equal(uiFrame(1440, 900).style, '');
+  assert.equal(uiFrame(844, 390).style, '');
+  assert.equal(uiFrame(800, 1280).style, '');          // portrait tablet: not a phone
+  const f = uiFrame(390, 844);
+  assert.deepEqual([f.lw, f.lh], [844, 390]);
+  assert.equal(layoutMode({ w: f.lw, h: f.lh, fs: false }), 'immersive');
+  // UI top-left sits at the screen's top-right; UI bottom-right at bottom-left.
+  assert.deepEqual(f.toLocal(390, 0), { x: 0, y: 0 });
+  assert.deepEqual(f.toLocal(0, 844), { x: 844, y: 390 });
 });
 
 test('clamp_float_pos_after_shrink', () => {

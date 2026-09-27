@@ -5,10 +5,22 @@ export function isMobile(w, h) {
   return w < 760 || (h < 500 && w < 1000);
 }
 
+// Phones are landscape-only: held upright (w x h = the window), the whole UI
+// is drawn rotated 90° -- its top edge along the screen's right edge, the
+// landscape-primary view -- so turning the phone just un-rotates it. lw x lh
+// is the UI's own (landscape) size; toLocal maps a client (screen) point into
+// it, the inverse of the transform in style.
+export function uiFrame(w, h) {
+  if (!(isMobile(w, h) && h > w)) return { lw: w, lh: h, style: '', toLocal: (x, y) => ({ x, y }) };
+  return { lw: h, lh: w,
+    style: `inset:auto;left:0;top:0;width:${h}px;height:${w}px;transform-origin:0 0;transform:translateX(${w}px) rotate(90deg)`,
+    toLocal: (x, y) => ({ x: y, y: w - x }) };
+}
+
+// w x h is the UI's own size: App already swaps it for an upright phone,
+// which it draws rotated.
 export function layoutMode({ w, h, fs }) {
-  const mobile = isMobile(w, h);
-  if (mobile && h > w) return 'portrait';
-  return mobile || fs ? 'immersive' : 'windowed';
+  return isMobile(w, h) || fs ? 'immersive' : 'windowed';
 }
 
 // 8 px inside the screen; keep 48 px of the panel reachable at the bottom.
