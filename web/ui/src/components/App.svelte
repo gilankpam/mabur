@@ -4,6 +4,10 @@
   import Sidebar from './Sidebar.svelte';
   import ConfigPanel from './ConfigPanel.svelte';
   import DisconnectedOverlay from './DisconnectedOverlay.svelte';
+  import FsOverlay from './FsOverlay.svelte';
+  import FloatStats from './FloatStats.svelte';
+  import ConfigSide from './ConfigSide.svelte';
+  import PortraitNotice from './PortraitNotice.svelte';
   import { ui, saveMode, reloadToConfig } from '../lib/ui.svelte.js';
   import { Session, WORKER_FAILED } from '../lib/session.js';
   import { VideoPipeline } from '../lib/video.js';
@@ -11,7 +15,7 @@
   import { statsView, debugGroups, statusText, linkTag } from '../lib/view.js';
   import { recView, RecClock, formatClock } from '../lib/rec.js';
   import { sparkPoints } from '../lib/metrics.js';
-  import { layoutMode, keyAction } from '../lib/layout.js';
+  import { layoutMode, keyAction, isMobile } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
 
   let canvas = $state(null);
@@ -97,6 +101,12 @@
     const p = session.disconnect();
     refresh();   // the stopping tag/overlay without waiting for the next tick
     return p;
+  }
+
+  // Immersive connect/disconnect button: one control, ignored mid-transition.
+  function toggleConn() {
+    if (busy) return;
+    if (live) disconnect(); else connect();
   }
 
   function onCfgChange(next, label) {
@@ -193,7 +203,22 @@
       </Sidebar>
     {/if}
   </div>
-  <!-- Task 11: immersive overlays + portrait notice go here -->
+  {#if layout === 'immersive' && view}
+    <FsOverlay {live} mode={sess.mode} {chLine} {recOn} recClock={formatClock(recMs)} {recDisabled} {recTitle}
+      onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
+      onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} onExitFs={toggleFs} showExitFs={!isMobile(W, H)} />
+    {#if ui.statsVisible && !ui.cfgOpen}
+      <FloatStats v={view} mobile={isMobile(W, H)} open={ui.floatOpen} pos={ui.fpos}
+        onOpen={(o) => (ui.floatOpen = o)} onMove={(p) => (ui.fpos = p)} cw={W} ch={H} />
+    {/if}
+    {#if ui.cfgOpen}
+      <ConfigSide onClose={() => (ui.cfgOpen = false)}>
+        <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
+          onDisconnect={live ? disconnect : null} variant="card" applied={ui.applied} />
+      </ConfigSide>
+    {/if}
+  {/if}
+  {#if layout === 'portrait'}<PortraitNotice />{/if}
 </div>
 
 <style>
