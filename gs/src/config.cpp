@@ -55,12 +55,14 @@ void check_keys(const Value& o, const std::string& where,
   }
 }
 
-long get_int(const Value& o, const char* key, long dflt, long lo, long hi,
-             const std::string& where) {
+// int64_t, not long: long is 32-bit on wasm32 (the web GS build), where
+// link.vtx_id's 0xFFFFFFFF bound wrapped to -1 and failed every config.
+int64_t get_int(const Value& o, const char* key, int64_t dflt, int64_t lo, int64_t hi,
+                const std::string& where) {
   if (!o.contains(key)) { note_default(where, key, to_text(dflt)); return dflt; }
   g_line = o[key].line();
   if (!o[key].is_number_integer()) fail(where + "." + key, "not an integer");
-  const long v = o[key].get<long>();
+  const int64_t v = o[key].get<int64_t>();
   if (v < lo || v > hi) fail(where + "." + key, "out of range");
   return v;
 }

@@ -16,6 +16,12 @@
 #include <thread>
 #include <vector>
 
+// The browser page build (Emscripten + live): AUs/stats/errors go to the page
+// through Module callbacks. The Node replay build (webgs_node) is plain CLI.
+#if defined(__EMSCRIPTEN__) && defined(WEBGS_LIVE)
+#define WEBGS_PAGE 1
+#endif
+
 #include "au_file.h"
 #include "config.h"
 #include "frame_file_source.h"
@@ -32,7 +38,7 @@
 #include "logger.h"
 #include "mabur/ht40.h"
 #endif
-#ifdef __EMSCRIPTEN__
+#ifdef WEBGS_PAGE
 #include <emscripten/em_asm.h>
 #include "mabur/hevc_params.h"
 #include "mabur/nal.h"
@@ -58,7 +64,7 @@ void report_error(const char* fmt, ...) {
   va_start(ap, fmt);
   std::vsnprintf(buf, sizeof buf, fmt, ap);
   va_end(ap);
-#ifdef __EMSCRIPTEN__
+#ifdef WEBGS_PAGE
   MAIN_THREAD_ASYNC_EM_ASM({ Module['onError'](UTF8ToString($0)); _free($0); }, strdup(buf));
 #endif
   std::printf("ERROR %s\n", buf);
@@ -66,7 +72,7 @@ void report_error(const char* fmt, ...) {
 }
 
 void report_stats(const std::string& json) {
-#ifdef __EMSCRIPTEN__
+#ifdef WEBGS_PAGE
   MAIN_THREAD_ASYNC_EM_ASM({ Module['onStats'](UTF8ToString($0)); _free($0); },
                            strdup(json.c_str()));
 #else
@@ -77,7 +83,7 @@ void report_stats(const std::string& json) {
 
 // Hands one AU to the page. Native live: nothing (the STATS line counts AUs).
 void emit_au(webgs::Au&& a) {
-#ifdef __EMSCRIPTEN__
+#ifdef WEBGS_PAGE
   // Page-side hand-off clock, taken on THIS (core) thread so the page can
   // subtract it from its own arrival time on the same epoch-aligned clock.
   const double t_emit_ms = EM_ASM_DOUBLE({ return performance.timeOrigin + performance.now(); });
@@ -428,9 +434,11 @@ int parse_live(int argc, char** argv, int first, LiveOpts& o) {
 }  // namespace
 
 int main(int argc, char** argv) {
-#ifdef __EMSCRIPTEN__
-  // The page passes `arguments` straight through: live options only
-  // (--mode, --ch, --w); an optional leading "live" is accepted.
+#ifdef WEBGS_PAGE
+  // The page build. The page passes `arguments` straight through: live
+  // options only (--mode, --ch, --w); an optional leading "live" is accepted.
+  // (The Node build, webgs_node, has no WEBGS_LIVE and takes the CLI below:
+  // replay for the native/WASM parity gate.)
   LiveOpts lo;
   const int first = (argc > 1 && std::string(argv[1]) == "live") ? 2 : 1;
   if (int rc = parse_live(argc, argv, first, lo); rc >= 0) return rc;
