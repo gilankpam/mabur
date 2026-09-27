@@ -44,7 +44,14 @@ add_library(gsweb_core STATIC
   ${MABUR_DIR}/common/src/profile.cpp
   ${MABUR_DIR}/common/src/node.cpp
   ${MABUR_DIR}/common/src/hevc_params.cpp
-  ${MABUR_DIR}/gs/src/frame_stream.cpp)
+  ${MABUR_DIR}/gs/src/frame_stream.cpp
+  # control uplink (pinned rung): VrxController + rendezvous; the ladder is
+  # constructed but never ticked in pin mode.
+  ${MABUR_DIR}/gs/src/vrx_controller.cpp
+  ${MABUR_DIR}/gs/src/rendezvous.cpp
+  ${MABUR_DIR}/gs/src/ladder_controller.cpp
+  ${MABUR_DIR}/gs/src/rung_store.cpp
+  ${MABUR_DIR}/gs/src/rcf_slot.cpp)
 target_include_directories(gsweb_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR} ${MABUR_DIR}/common/include ${MABUR_DIR}/gs/src)
 target_compile_options(gsweb_core PRIVATE -O3)

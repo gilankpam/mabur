@@ -104,5 +104,7 @@ document.getElementById('go').onclick = async () => {
     else log(m.line);
   };
   w.onerror = (e) => log('ERROR worker ' + e.message);
-  w.postMessage({ args: ['live', ch, width] });
+  // pin=M: the page runs the control uplink itself at MCS M (-1 = listen only).
+  const pin = new URLSearchParams(location.search).get('pin') ?? '3';
+  w.postMessage({ args: ['live', ch, width, '0', '--pin-mcs', pin] });
 };

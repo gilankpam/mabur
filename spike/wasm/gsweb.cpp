@@ -14,10 +14,13 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 #include "IRtlRadio.h"
+#include "RadiotapBuilder.h"
 #include "RxPacket.h"
+#include "TxMode.h"
 #include "UsbDeviceLock.h"
 #include "UsbOpen.h"
 #include "WiFiDriver.h"
@@ -25,6 +28,9 @@
 #include "logger.h"
 #include "mabur/ht40.h"
 #include "mabur/hevc_params.h"
+#include "mabur/rc_proto.h"
+#include "rcf_slot.h"
+#include "vrx_controller.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten/em_asm.h>
 #endif
@@ -155,8 +161,37 @@ void emit_au(gsweb::Au&& a) {
 #endif
 }
 
-int run_live(uint8_t ch, int width, int secs, int symbol_size) {
-  std::printf("gsweb live: ch %u width %d symbol %d\n", ch, width, symbol_size);
+// Control uplink (spike): RadioFrontend::build_control_frame -- max-range
+// radiotap (HT MCS0 20 MHz LDPC+STBC), dot11 data header with the canonical SA.
+std::vector<uint8_t> control_frame(uint16_t seq, const std::vector<uint8_t>& body) {
+  static const std::vector<uint8_t> rt = [] {
+    devourer::TxMode m;
+    m.mode = devourer::TxMode::Mode::HT;
+    m.ht_mcs = 0;
+    m.bw_mhz = 20;
+    m.ldpc = true;
+    m.stbc = true;
+    return devourer::build_stream_radiotap(m);
+  }();
+  static constexpr uint8_t kSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
+  std::vector<uint8_t> f(rt.size() + 24 + body.size());
+  std::memcpy(f.data(), rt.data(), rt.size());
+  uint8_t* d = f.data() + rt.size();
+  d[0] = 0x40;
+  std::memset(d + 4, 0xff, 6);
+  std::memcpy(d + 10, kSa, 6);
+  std::memcpy(d + 16, kSa, 6);
+  const uint16_t sc = static_cast<uint16_t>(seq << 4);
+  d[22] = static_cast<uint8_t>(sc & 0xff);
+  d[23] = static_cast<uint8_t>(sc >> 8);
+  std::memcpy(d + 24, body.data(), body.size());
+  return f;
+}
+
+int run_live(uint8_t ch, int width, int secs, int symbol_size, int pin_mcs, int fb_ms,
+             bool slot) {
+  std::printf("gsweb live: ch %u width %d symbol %d ctl %s (pin mcs %d, fb %d ms, slot %d)\n",
+              ch, width, symbol_size, pin_mcs >= 0 ? "on" : "off", pin_mcs, fb_ms, slot);
   std::fflush(stdout);
   const int64_t t0 = now_us(), e0 = epoch_us();
   libusb_context* ctx = nullptr;
@@ -209,6 +244,9 @@ int run_live(uint8_t ch, int width, int secs, int symbol_size) {
     });
   });
 
+  // maburgs's RCF slotter (rcf_slot.h), GS defaults: hold control sends to the
+  // drone's inter-AU idle. Single card, no probe stream.
+  auto rcf_slot = std::make_unique<maburgs::RcfSlotter>(maburgs::RcfSlotCfg{30, 100, 2, 3, 1});
   // AU emission gaps at the core (> 25 ms after the previous AU): the same
   // measure the page takes at arrival, so a page-side gap with no core-side
   // gap is the browser's (worker / postMessage), not the link's.
@@ -222,16 +260,78 @@ int run_live(uint8_t ch, int width, int secs, int symbol_size) {
       std::printf("COREGAP at %.1f ms gap %.1f ms\n", (t - t0 + e0) / 1e3, (t - last_au) / 1e3);
     }
     last_au = t;
+    if (slot) rcf_slot->on_au_complete(static_cast<uint64_t>(t / 1000), false);
     emit_au(std::move(a));
   });
+  // Control uplink: maburgs's VrxController in static-pin mode (one rung,
+  // ladder never ticked), proposing the channel we sit on so the drone
+  // never moves. Sent straight from this thread -- no RCF slotter.
+  maburgs::VrxCfg vc;
+  vc.vtx_id = 1;
+  vc.op_channel = ch;
+  vc.feedback_ms = fb_ms;
+  vc.pin_mcs = pin_mcs;
+  vc.pin_bw = width;
+  vc.pin_overhead_base = 0.5;
+  vc.pin_overhead_enh = 0.25;
+  vc.ladder.ladder = {maburgs::Rung{std::max(pin_mcs, 0), 0.5, 0.25, width}};
+  maburgs::VrxController vrx(vc);
+  uint16_t tx_seq = 0;
+  uint64_t n_disc = 0, n_rcf = 0, n_txfail = 0, n_ack = 0, n_telem = 0;
+  std::optional<mabur::rc::Telem> telem;
+  int last_state = -1;
+  if (slot) core.on_first = [&] { rcf_slot->on_au_first(static_cast<uint64_t>(now_us() / 1000)); };
+  auto send_ctl = [&](const std::vector<uint8_t>& body) {
+    const auto f = control_frame(tx_seq, body);
+    tx_seq = static_cast<uint16_t>((tx_seq + 1) & 0xFFF);
+    if (!rtl->send_packet(f.data(), f.size())) ++n_txfail;
+  };
   std::vector<mabur::node::RxBody> batch;
   int64_t next_stat = now_us() + 1000000;
   for (int s = 0; secs == 0 || s < secs;) {
     batch.clear();
     q.drain(batch, 5);
     const uint64_t now_ms = static_cast<uint64_t>(now_us() / 1000);
-    for (auto& m : batch) core.on_body(m, now_ms);
+    for (auto& m : batch) {
+      if (pin_mcs >= 0) {
+        const uint8_t* b = m.body.data();
+        const size_t n = m.body.size();
+        const int ty = mabur::rc::frame_type(b, n);
+        if (ty == mabur::rc::T_DISC_ACK) {
+          const bool was = vrx.peer_acked();
+          vrx.on_rc_frame(b, n, static_cast<double>(now_ms));
+          if (vrx.take_ack_edge()) {
+            ++n_ack;
+            if (!was)
+              std::printf("CTL ack at %.1f s caps=0x%04x agreed_ch=%u\n", (now_us() - t0) / 1e6,
+                          vrx.peer_caps(), vrx.agreed_channel());
+          }
+        } else if (ty == mabur::rc::T_TELEM) {
+          if (auto t = mabur::rc::parse_telem(b, n)) {
+            ++n_telem;
+            if (t->state != last_state)
+              std::printf("CTL drone state %d -> %u at %.1f s (rcf_rx %u)\n", last_state,
+                          t->state, (now_us() - t0) / 1e6, t->rcf_rx);
+            last_state = t->state;
+            telem = *t;
+          }
+        } else if (ty < 0 && m.crc_ok) {
+          vrx.on_video(static_cast<double>(now_ms));
+        }
+      }
+      core.on_body(m, now_ms);
+    }
     core.poll(now_ms);
+    if (pin_mcs >= 0) {
+      const uint64_t sm = static_cast<uint64_t>(now_us() / 1000);
+      if (auto out = vrx.step(static_cast<double>(now_ms), maburgs::LinkHealth{})) {
+        ++(out->is_disc ? n_disc : n_rcf);
+        maburgs::SlotFrame sf{std::move(out->frame), vrx.rcf_seq(), 0, !out->is_disc};
+        if (!slot || !rcf_slot->offer(sf, sm, false)) send_ctl(sf.frame);
+      }
+      if (slot)
+        for (const auto& f : rcf_slot->take_due(sm)) send_ctl(f.frame);
+    }
     if (now_us() < next_stat) continue;
     next_stat += 1000000;
     ++s;
@@ -259,6 +359,25 @@ int run_live(uint8_t ch, int width, int secs, int symbol_size) {
                 (unsigned long long)st.side, (unsigned long long)st.bad_cfg,
                 (unsigned long long)q.dropped(), (long long)p99, (long long)mx,
                 (unsigned long long)au_gaps, (long long)gap_max);
+    if (pin_mcs >= 0) {
+      if (slot)
+        std::printf("SLOT au=%llu timeout=%llu passthru=%llu pending=%zu\n",
+                    (unsigned long long)rcf_slot->released_au(),
+                    (unsigned long long)rcf_slot->released_timeout(),
+                    (unsigned long long)rcf_slot->passthru(), rcf_slot->pending());
+      std::printf("CTL t=%d rz=%s disc=%llu rcf=%llu txfail=%llu acks=%llu telem=%llu",
+                  s, vrx.link_state() == maburgs::VrxState::SESSION ? "session" : "beacon",
+                  (unsigned long long)n_disc, (unsigned long long)n_rcf,
+                  (unsigned long long)n_txfail, (unsigned long long)n_ack,
+                  (unsigned long long)n_telem);
+      if (telem)
+        std::printf(" drone_state=%u rcf_rx=%u rcf_age_ms=%u profile=0x%02x ov=%.2f/%.2f "
+                    "kbps=%u flags=0x%02x",
+                    telem->state, telem->rcf_rx, telem->rcf_age_ms, telem->applied_profile,
+                    telem->applied_ov_base, telem->applied_ov_enh, telem->cmd_kbps,
+                    telem->flags);
+      std::printf("\n");
+    }
     std::fflush(stdout);
   }
   rtl->StopRxLoop();
@@ -273,7 +392,8 @@ int usage() {
   std::fprintf(stderr,
                "usage: gsweb replay <in-bodies> <out-aus> [--symbol-size N] "
                "[--drop-pct P] [--seed S] [--skip N]\n"
-               "       gsweb live [channel=136] [width=40] [seconds=0] [--symbol-size N]\n");
+               "       gsweb live [channel=136] [width=40] [seconds=0] [--symbol-size N] "
+               "[--pin-mcs M (-1 = listen only)] [--fb-ms 50] [--slot 0|1]\n");
   return 2;
 }
 
@@ -299,10 +419,14 @@ int main(int argc, char** argv) {
     const uint8_t ch = argc > 2 ? static_cast<uint8_t>(std::atoi(argv[2])) : 136;
     const int width = argc > 3 ? std::atoi(argv[3]) : 40;
     const int secs = argc > 4 ? std::atoi(argv[4]) : 0;
-    int ss = 332;
-    for (int i = 5; i + 1 < argc; i += 2)
+    int ss = 332, pin = 3, fb = 50, slot = 0;
+    for (int i = 5; i + 1 < argc; i += 2) {
       if (std::string(argv[i]) == "--symbol-size") ss = std::atoi(argv[i + 1]);
-    return run_live(ch, width, secs, ss);
+      else if (std::string(argv[i]) == "--pin-mcs") pin = std::atoi(argv[i + 1]);
+      else if (std::string(argv[i]) == "--fb-ms") fb = std::atoi(argv[i + 1]);
+      else if (std::string(argv[i]) == "--slot") slot = std::atoi(argv[i + 1]);
+    }
+    return run_live(ch, width, secs, ss, pin, fb, slot != 0);
   }
   return usage();
 }

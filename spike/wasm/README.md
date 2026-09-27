@@ -66,3 +66,31 @@ Results 2026-09-27 (bench drone ch136 HT40, top rung, real GS flying):
   gap already at the core. Native gsweb on the same link: 13 core gaps
   (25-57 ms) per 90 s vs 16 in the browser. The hitches are the link's
   (FEC repair waits), not WebUSB; the Oilpan stalls add ~3 per 90 s.
+
+## Control uplink (the browser links the drone by itself)
+
+gsweb live now runs maburgs's `VrxController` in static-pin mode: DISC until
+a DISC_ACK, then an RCF every `--fb-ms` (50) at `--pin-mcs` (default 3; -1 =
+listen only), proposing the channel it sits on, sent via devourer
+`send_packet` with maburgs's control frame (HT MCS0 20 MHz LDPC+STBC).
+`--slot 1` holds sends to the drone's inter-AU idle with maburgs's
+`RcfSlotter`. No ladder, no scan/hop. Viewer: `viewer.html?...&pin=M`.
+
+Results 2026-09-27 (bench drone ch136 HT40, GS powered OFF, no maburgs):
+- **Browser, pin mcs3/40, 180 s**: DISC_ACK (caps 0x0007) and drone LINKED
+  0.1 s after card init; 3434 RCFs sent, drone counted 3384 (98.5 %), 0 TX
+  failures; 59-60 AUs/s decoded for 174 s. WebUSB bulk-out mixed with the
+  RX load works first try, no source changes to devourer.
+- **Bonus, key frames**: link-up makes the drone's encoder change bitrate
+  (max-range floor -> rung), and that SetChnAttr costs an IDR, so the
+  first IRAP (`32 33 34 19`) reached the page ~1 s after link and decode
+  started at once. A self-linking browser does not need a periodic IDR;
+  a passive one still does.
+- **Hitches are the rung's, not the uplink's** (native A/B, 60 s each,
+  pin mcs3): core gaps 66 (RCF 50 ms, unslotted) / 66 (50 ms, slotted) /
+  64 (500 ms, unslotted) -- send rate and slotting change nothing. Mostly
+  25-29 ms, just over the 25 ms gap threshold (18.8 Mb/s at mcs3/40). Pin
+  mcs4 (24 Mb/s): 11 gaps, on par with the real-GS baseline.
+- Chrome must be launched via the Nix wrapper (`bin/google-chrome-stable`):
+  the raw `share/google/chrome/chrome` has no libEGL, the GPU process dies
+  and WebCodecs rejects HEVC ("Unsupported configuration").

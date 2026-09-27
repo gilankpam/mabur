@@ -42,6 +42,7 @@ RxCore::RxCore(int symbol_size, std::function<void(Au&&)> on_au)
              cur_.pts_us = h.pts_us;
              cur_.sid = sid;
              cur_.flags = h.flags;
+             if (on_first) on_first();
            },
            [this](const uint8_t* p, size_t n) {
              cur_.data.insert(cur_.data.end(), p, p + n);

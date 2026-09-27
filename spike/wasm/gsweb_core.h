@@ -39,6 +39,8 @@ class RxCore {
   void on_body(const mabur::node::RxBody& m, uint64_t now_ms);
   void poll(uint64_t now_ms);
   CoreStats stats() const;
+  // Optional: called at each AU's first fragment (RcfSlotter::on_au_first).
+  std::function<void()> on_first;
 
  private:
   int block_payload_;  // 14-byte SW envelope header + symbol_size
