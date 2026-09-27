@@ -69,24 +69,30 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_options(webgs_node PRIVATE -pthread -sENVIRONMENT=node -sNODERAWFS=1
     -sALLOW_MEMORY_GROWTH -sEXIT_RUNTIME --bind -sASYNCIFY)
 
-  # Page files (web/www) next to webgs.{js,wasm}. copy_directory fails on a
-  # missing source, so only when www/ exists; web/'s own mtime is a configure
-  # dependency so creating www/ later re-runs this. Keyed off www/*'s own
-  # mtimes (not POST_BUILD on the webgs executable): webgs only relinks when
-  # its C++ sources or link flags change, so a POST_BUILD copy attached to it
-  # silently skips a `cmake --build` that only touched web/www/* -- dist goes
-  # stale with no error (found on the 2026-09-27 bench, fix round 1 review).
+  # Page files (web/www) next to webgs.{js,wasm}. Only when www/ exists;
+  # web/'s own mtime is a configure dependency so creating www/ later
+  # re-runs this. Per-file OUTPUTs in web/dist (not a build-dir stamp, fix
+  # round 1's own gap): a stamp only tracks "the copy ran since www/
+  # changed", so deleting web/dist by mistake (e.g. `git clean`) and
+  # rebuilding left the stamp satisfied and dist NOT restored. Per-file
+  # copy_if_different targets re-run whenever their own dist file is
+  # missing or stale, regardless of the stamp. (www/ is flat today -- a
+  # subdirectory would need GLOB_RECURSE plus relative-path handling below.)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR})
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/www)
     file(GLOB WEB_WWW_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/www/*)
-    add_custom_command(
-      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/www.stamp
-      COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/www
-              ${CMAKE_CURRENT_SOURCE_DIR}/dist
-      COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/www.stamp
-      DEPENDS ${WEB_WWW_FILES}
-      COMMENT "Copying web/www -> web/dist")
-    add_custom_target(webgs_www ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/www.stamp)
+    set(WEB_WWW_DIST_FILES "")
+    foreach(src ${WEB_WWW_FILES})
+      get_filename_component(name ${src} NAME)
+      set(dst ${CMAKE_CURRENT_SOURCE_DIR}/dist/${name})
+      add_custom_command(
+        OUTPUT ${dst}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${src} ${dst}
+        DEPENDS ${src}
+        COMMENT "Copying ${name} -> web/dist")
+      list(APPEND WEB_WWW_DIST_FILES ${dst})
+    endforeach()
+    add_custom_target(webgs_www ALL DEPENDS ${WEB_WWW_DIST_FILES})
   endif()
 else()
   # Included from the root build: native core + tests.
