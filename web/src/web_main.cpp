@@ -6,6 +6,7 @@
 #include <chrono>
 #include <climits>
 #include <cerrno>
+#include <csignal>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +42,7 @@
 #endif
 #ifdef WEBGS_PAGE
 #include <emscripten/em_asm.h>
+#include <emscripten/emscripten.h>
 #include "mabur/hevc_params.h"
 #include "mabur/nal.h"
 #endif
@@ -55,12 +57,18 @@
 
 namespace {
 
+// Page -> core requests (spec 2026-09-27-web-ui §3.1/§3.3). Written from the
+// browser main thread (Module._webgs_stop/_webgs_set_rec) or a native signal
+// handler; read by the live loop. Shared memory under pthreads: no proxying.
+std::atomic<bool> g_stop{false};
+std::atomic<int> g_rec{-1};   // -1 never pressed, 0 off, 1 on
+
 // ---- page / console reporting --------------------------------------------
 
 // `ERROR <reason>` lines: the page maps the reason to text. Natively a
 // stdout line; in the browser Module.onError.
 void report_error(const char* fmt, ...) {
-  char buf[256];
+  char buf[512];
   va_list ap;
   va_start(ap, fmt);
   std::vsnprintf(buf, sizeof buf, fmt, ap);
@@ -135,11 +143,11 @@ void emit_au(webgs::Au&& a) {
 #endif
 }
 
-bool load_cfg(const std::string& path, maburgs::Config& cfg) {
+bool load_cfg(const std::string& path, const std::string& overlay, maburgs::Config& cfg) {
   try {
-    cfg = maburgs::load_config(path);
+    cfg = maburgs::load_config(path, nullptr, overlay);
   } catch (const std::exception& e) {
-    report_error("config %s", e.what());
+    report_error("bad config: %s", e.what());
     return false;
   }
   return true;
@@ -167,7 +175,7 @@ struct ReplayOpts {
 // last + frame_gap_timeout_ms + 1 (main.cpp's closing fstream.poll).
 int run_replay(const ReplayOpts& o) {
   maburgs::Config cfg;
-  if (!load_cfg(o.config, cfg)) return 2;
+  if (!load_cfg(o.config, "", cfg)) return 2;
   maburgs::FrameFileSource src(o.in, {1, o.drop_pct, o.seed});
   if (!src.ok()) { std::fprintf(stderr, "error: cannot read %s\n", o.in.c_str()); return 2; }
   webgs::AuFileWriter w;
@@ -269,6 +277,7 @@ struct UsbLate {
 
 struct LiveOpts {
   std::string config = WEBGS_CONFIG_PATH;
+  std::string overlay;       // optional TOML merged over config (the page's /overlay.toml)
   webgs::Mode mode = webgs::Mode::Gs;
   int ch = -1, width = -1;   // -1 = the config's radio.channel / radio.width
   int secs = 0;              // 0 = until the card goes away
@@ -288,7 +297,7 @@ bool parse_int(const char* v, int& out) {
 
 int run_live(const LiveOpts& o) {
   maburgs::Config cfg;
-  if (!load_cfg(o.config, cfg)) return 2;
+  if (!load_cfg(o.config, o.overlay, cfg)) return 2;
   if (!o.bad_chw.empty()) {
     report_error("bad channel/width: %s", o.bad_chw.c_str());
     return 2;
@@ -322,14 +331,22 @@ int run_live(const LiveOpts& o) {
   if (!dev || libusb_open(dev, &h) != 0) {
     if (list) libusb_free_device_list(list, 1);
     report_error("no RTL card");
+    libusb_exit(ctx);
     return 1;
   }
   libusb_free_device_list(list, 1);
+  // Early-error unwind once the handle is open (the page reconnects in the
+  // same tab, so nothing may leak).
+  auto bail = [&](int code) {
+    if (h) libusb_close(h);
+    libusb_exit(ctx);
+    return code;
+  };
   auto logger = std::make_shared<Logger>();
   std::shared_ptr<devourer::UsbDeviceLock> lock;
   if (int rc = devourer::claim_interface_then_reset(h, 0, logger, true, lock); rc != 0) {
     report_error("claim failed rc=%d", rc);
-    return 1;
+    return bail(1);
   }
   devourer::DeviceConfig dcfg;
   dcfg.rx.enable_with_tx = true;
@@ -340,7 +357,12 @@ int run_live(const LiveOpts& o) {
   WiFiDriver driver(logger);
   auto radio = driver.CreateRadio(h, ctx, lock, dcfg);
   auto* rtl = dynamic_cast<IRtlRadio*>(radio.get());
-  if (!rtl) { report_error("unsupported chip"); return 1; }
+  if (!rtl) {
+    report_error("unsupported chip");
+    radio.reset();
+    lock.reset();
+    return bail(1);
+  }
   rtl->InitWrite(width == 40 ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
                              : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
 
@@ -388,10 +410,21 @@ int run_live(const LiveOpts& o) {
     };
   webgs::WebGs g(cfg, o.mode, ch, width, std::move(io));
 
+#ifndef WEBGS_PAGE
+  std::signal(SIGINT, [](int) { g_stop.store(true); });
+  std::signal(SIGTERM, [](int) { g_stop.store(true); });
+#endif
+
   int rc = 0;
   std::vector<mabur::node::RxBody> batch;
   uint64_t next_stat = now_us() + 1000000;
+  int applied_rec = -1;
   for (int s = 0; o.secs == 0 || s < o.secs;) {
+    if (g_stop.load(std::memory_order_acquire)) break;
+    if (const int rw = g_rec.load(std::memory_order_acquire); rw != applied_rec && rw >= 0) {
+      g.set_vtx_rec(rw == 1);
+      applied_rec = rw;
+    }
     batch.clear();
     q.drain(batch, 5);
     for (const auto& m : batch) g.on_rx(m);
@@ -419,11 +452,22 @@ int run_live(const LiveOpts& o) {
   if (!rx_ended.load()) rtl->StopRxLoop();
   q.close();
   rx.join();
+  // In-page Disconnect needs a real teardown (the page builds a fresh module
+  // on the next Connect): radio before the handle it drives, interface
+  // released before close, context last (devourer's DeviceSession order).
+  // Stop() powers the chip down to a re-enumerable state first, as maburgs'
+  // RadioFrontend::stop does; on a lost card its de-init writes fail and it
+  // swallows that. The lock is not a claim: it releases no interface.
+  // Returning from main lets -sEXIT_RUNTIME fire Module.onExit(rc).
+  rtl->Stop();
+  radio.reset();
+  libusb_release_interface(h, 0);
+  libusb_close(h);
+  lock.reset();
+  libusb_exit(ctx);
   std::printf("DONE\n");
   std::fflush(stdout);
-  // devourer/libusb teardown order is not worth getting right for a CLI
-  // that is exiting anyway (the spike's choice).
-  std::_Exit(rc);
+  return rc;
 }
 #endif  // WEBGS_LIVE
 
@@ -433,8 +477,9 @@ int usage(FILE* out, int rc) {
                "                    [--drop-pct P] [--seed S] [--fixed-gap]\n"
                "                    [--control-trace <file>] [--fake-ack]\n"
 #ifdef WEBGS_LIVE
-               "       webgs live [-c config.toml] [--ch N] [--w 20|40] [--secs 0]\n"
-               "                  [--mode gs|spotter]   (ch/w default to radio.channel/width)\n"
+               "       webgs live [-c config.toml] [--overlay file.toml] [--ch N] [--w 20|40]\n"
+               "                  [--secs 0] [--mode gs|spotter]\n"
+               "                  (ch/w default to radio.channel/width)\n"
 #endif
                "default config: %s\n",
                WEBGS_CONFIG_PATH);
@@ -452,6 +497,7 @@ int parse_live(int argc, char** argv, int first, LiveOpts& o) {
     if (i + 1 >= argc) return usage(stderr, 2);
     const char* v = argv[++i];
     if (k == "-c") o.config = v;
+    else if (k == "--overlay") o.overlay = v;
     else if (k == "--ch") {
       if (!parse_int(v, o.ch) || o.ch < 0)
         o.bad_chw = std::string("channel '") + v + "' is not a channel number";
@@ -468,6 +514,13 @@ int parse_live(int argc, char** argv, int first, LiveOpts& o) {
 #endif
 
 }  // namespace
+
+#ifdef WEBGS_PAGE
+extern "C" {
+EMSCRIPTEN_KEEPALIVE void webgs_stop() { g_stop.store(true); }
+EMSCRIPTEN_KEEPALIVE void webgs_set_rec(int on) { g_rec.store(on ? 1 : 0); }
+}
+#endif
 
 int main(int argc, char** argv) {
 #ifdef WEBGS_PAGE
