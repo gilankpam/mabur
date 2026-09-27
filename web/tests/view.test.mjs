@@ -77,7 +77,7 @@ test('debug groups carry the handoff keys verbatim + counters', () => {
   assert.equal(sp[0].rows[2].v, 'n/a'); assert.equal(sp[1].rows[4].v, '–');
   const off = debugGroups({ connected: false, mode: 'gs', core: null, rcfPct: null, ausRate: 0,
     hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} } });
-  assert.ok(off.slice(0, 3).every((grp) => grp.rows.every((r) => r.v === '–')));
+  assert.ok(off.every((grp) => grp.rows.every((r) => r.v === '–')));
 });
 
 test('status text and link tag', () => {

@@ -80,7 +80,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
       ['drone_state', v(core?.drone_state ?? D)], ['drone_rcf_rx', v(core?.drone_rcf_rx ?? D)],
     ]) },
     { title: 'Client', rows: rows([
-      ['AUs/s', on ? ausRate : 0], ['hitches', `${hitches60} last 60s (total ${hitchesTotal})`],
+      ['AUs/s', v(on ? ausRate : D)], ['hitches', v(`${hitches60} last 60s (total ${hitchesTotal})`)],
     ]) },
     { title: 'Latency (ms; 1 s | 60 s windows)', rows: rows([
       ['usb (core, 1 s)', v(has(core?.usb_p99_us) ? `p99 ${fmt(core.usb_p99_us / 1000)} max ${fmt(core.usb_max_us / 1000)}` : D)],
