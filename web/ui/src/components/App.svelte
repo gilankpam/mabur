@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import Header from './Header.svelte';
   import Sidebar from './Sidebar.svelte';
+  import ConfigPanel from './ConfigPanel.svelte';
   import DisconnectedOverlay from './DisconnectedOverlay.svelte';
   import { ui, saveMode, reloadToConfig } from '../lib/ui.svelte.js';
   import { Session, WORKER_FAILED } from '../lib/session.js';
@@ -94,6 +95,12 @@
   function localStorageSafe() { try { return localStorage; } catch { return null; } }
   const disconnect = () => session.disconnect();
 
+  function onCfgChange(next, label) {
+    ui.cfg = next;
+    saveConfig(localStorageSafe(), $state.snapshot(next));
+    ui.applied = `${label} · saved ${new Date().toTimeString().slice(0, 8)}`;
+  }
+
   const recOn = $derived(rec.state === 'recording');
   // GS mode AND live AND the core reports session && peer_acked (spotter never).
   const recDisabled = $derived(!(live && sess.mode === 'gs' && !!core?.session && !!core?.peer_acked));
@@ -175,7 +182,10 @@
     </div>
     {#if layout === 'windowed' && view}
       <Sidebar tab={ui.tab} onTab={(t) => (ui.tab = t)} v={view} {spark} {groups} onCopy={copyStats} {copyMsg}>
-        {#snippet config()}<div class="dim5">Config panel — Task 10</div>{/snippet}
+        {#snippet config()}
+          <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
+            onDisconnect={live ? disconnect : null} variant="rule" applied={ui.applied} />
+        {/snippet}
       </Sidebar>
     {/if}
   </div>
