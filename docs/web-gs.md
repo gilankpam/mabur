@@ -377,7 +377,11 @@ Font: Betaflight only, `web/ui/public/font_btfl.png` (32 glyphs per row,
 36×54), generated from `maburplay`'s `gs/player/bundle/font_btfl.mfont` by
 `tools/msp/gen_webfont.py` (re-run it if the `.mfont` changes; it
 self-checks the round trip). The page fetches it on the first screen; a
-failed fetch logs once to the console and leaves the OSD off until reload.
+failed fetch logs once to the console and leaves the OSD off for the rest of
+that session (it is not refetched per screen), and the next Connect tries
+once more. The 5 s blank counts from the last *published* screen, where
+`maburplay` counts from the last datagram — the same thing in practice,
+since Betaflight sends DRAW_SCREEN continuously.
 
 ## Known limits
 

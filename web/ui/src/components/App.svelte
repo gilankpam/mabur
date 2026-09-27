@@ -123,7 +123,7 @@
     // session's pipeline for a press it will ignore.
     const st = session.snapshot.state;
     if (st !== 'idle' && st !== 'error') return;
-    video.reset(); tele.reset(); hiddenShown = false; hiddenBanner = false;
+    video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
     const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg) });
     refresh();   // the connecting tag/overlay without waiting for the next tick
     await p;

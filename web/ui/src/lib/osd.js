@@ -54,13 +54,16 @@ export class OsdLayer {
 // Paints an OsdLayer onto the overlay canvas: one rAF repaint per burst of
 // schedule() calls, full clear + redraw (<= ~900 drawImage from one bitmap).
 // The atlas is fetched on the first paint that has a screen; a failed fetch
-// logs once and leaves the OSD off until a page reload -- video is unaffected.
+// logs once and leaves the OSD off for the rest of that session (never a
+// refetch per screen) -- video is unaffected. resetAtlasFailure(), called on
+// Connect, allows one more attempt per session.
 export class OsdPainter {
   constructor({ layer, loadAtlas, raf = (f) => requestAnimationFrame(f), log = console }) {
     Object.assign(this, { layer, loadAtlas, raf, log });
     this.canvas = null;
     this.atlas = null;
     this.atlasP = null;
+    this.atlasFailed = false;
     this.pending = false;
   }
 
@@ -101,6 +104,16 @@ export class OsdPainter {
     if (this.atlasP) return;
     this.atlasP = Promise.resolve().then(() => this.loadAtlas()).then(
       (bmp) => { this.atlas = bmp; this.schedule(); },
-      (e) => { this.log.error('[webgs] OSD font atlas failed to load; OSD off until reload', e); });
+      (e) => {
+        this.atlasFailed = true;
+        this.log.error('[webgs] OSD font atlas failed to load; OSD off until the next Connect', e);
+      });
+  }
+
+  // A loaded or in-flight atlas is kept; only a failed one is forgotten.
+  resetAtlasFailure() {
+    if (!this.atlasFailed) return;
+    this.atlasFailed = false;
+    this.atlasP = null;
   }
 }

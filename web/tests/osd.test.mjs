@@ -172,3 +172,26 @@ test('painter: a cleared layer paints an empty canvas', async () => {
   assert.equal(cv.ctx.clears, clearsBefore + 1);
   assert.equal(cv.ctx.draws.length, 0);
 });
+
+test('painter: a failed atlas load is retried once per session after resetAtlasFailure()', async () => {
+  const layer = new OsdLayer();
+  const raf = fakeRaf();
+  let loads = 0;
+  const p = new OsdPainter({ layer, raf, log: { error: () => {} },
+    loadAtlas: async () => { loads++; if (loads === 1) throw new Error('offline'); return { id: 'atlas' }; } });
+  const cv = fakeCanvas();
+  p.attach(cv);
+  layer.onScreen(18, 50, grid(18, 50, { 0: 0x48 }), 1000);
+  p.schedule(); raf.flush(); await settle(); raf.flush();
+  assert.equal(loads, 1);
+  assert.equal(cv.ctx.draws.length, 0);
+  p.schedule(); raf.flush(); await settle();
+  assert.equal(loads, 1);                       // still latched within the session
+  p.resetAtlasFailure();                        // next Connect
+  p.schedule(); raf.flush(); await settle(); raf.flush();
+  assert.equal(loads, 2);
+  assert.equal(cv.ctx.draws.length, 1);
+  p.resetAtlasFailure();                        // a loaded atlas is kept
+  p.schedule(); raf.flush(); await settle(); raf.flush();
+  assert.equal(loads, 2);
+});
