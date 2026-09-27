@@ -6,7 +6,7 @@
 
 <div class="group">
   <div class="kick-row"><span class="card-kicker">Link</span>
-    <span class="dim4 nowrap" style="font-size:12px">{v.rungMode}{#if v.rungMode === 'Adaptive'} · rung {v.rungNum}/{v.rungCount}{/if}</span></div>
+    <span class="dim4 nowrap" style="font-size:12px">{v.rungMode}{#if v.rungMode === 'Adaptive'}{' · '}rung {v.rungNum}/{v.rungCount}{/if}</span></div>
   <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
     <span class="num nowrap" style="font-size:28px;line-height:1;font-weight:500">MCS {v.mcs}</span>
     <span class="dim4 nowrap" style="font-size:13px">{v.bw} MHz</span>
@@ -34,18 +34,18 @@
 <div class="group">
   <span class="card-kicker">Loss</span>
   <div class="grid2" style="gap:var(--space-3)">
-    <div class="cell"><span class="lbl">Pre-FEC</span><span class="val num">{v.preLoss}<span class="unit"> %</span></span></div>
-    <div class="cell"><span class="lbl">Post-FEC</span><span class="val num">{v.postLoss}<span class="unit"> %</span></span></div>
+    <div class="cell"><span class="lbl">Pre-FEC</span><span class="val num">{v.preLoss}<span class="unit">{' %'}</span></span></div>
+    <div class="cell"><span class="lbl">Post-FEC</span><span class="val num">{v.postLoss}<span class="unit">{' %'}</span></span></div>
   </div>
 </div>
 
 <div class="group">
   <div class="kick-row"><span class="card-kicker">Video</span><span class="dim4 num" style="font-size:12px">{v.codecLine}</span></div>
   <div class="grid2" style="gap:var(--space-4) var(--space-3)">
-    <div class="cell"><span class="lbl">Bitrate</span><span class="val num">{v.bitrate}<span class="unit"> Mbps</span></span></div>
-    <div class="cell"><span class="lbl">Latency</span><span class="val num">{v.latency}<span class="unit"> ms</span></span></div>
-    <div class="cell"><span class="lbl">Frame rate</span><span class="val num">{v.fps}<span class="unit"> fps</span></span></div>
-    <div class="cell"><span class="lbl">Jitter</span><span class="val num">{v.jitter}<span class="unit"> ms</span></span></div>
+    <div class="cell"><span class="lbl">Bitrate</span><span class="val num">{v.bitrate}<span class="unit">{' Mbps'}</span></span></div>
+    <div class="cell"><span class="lbl">Latency</span><span class="val num">{v.latency}<span class="unit">{' ms'}</span></span></div>
+    <div class="cell"><span class="lbl">Frame rate</span><span class="val num">{v.fps}<span class="unit">{' fps'}</span></span></div>
+    <div class="cell"><span class="lbl">Jitter</span><span class="val num">{v.jitter}<span class="unit">{' ms'}</span></span></div>
   </div>
   <Sparkline points={spark} />
   <span class="dim6" style="font-size:11px">{v.latencyCaption}</span>

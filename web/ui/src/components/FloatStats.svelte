@@ -70,7 +70,7 @@
       </div>
       <div style="display:flex;flex-direction:column;gap:6px">
         <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:20px;line-height:1">MCS {v.mcs}</span>
-          <span class="dim4" style="font-size:12px">{v.bw} MHz{#if v.rungMode === 'Adaptive'} · rung {v.rungNum}/{v.rungCount}{/if}</span></div>
+          <span class="dim4" style="font-size:12px">{v.bw} MHz{#if v.rungMode === 'Adaptive'}{' · '}rung {v.rungNum}/{v.rungCount}{/if}</span></div>
         <RungBar segs={v.segs} height={3} />
         <div class="dim4" style="font-size:11px">CH {v.chLine.split(' · ')[0]} · {v.rungMode}</div>
       </div>
@@ -81,10 +81,10 @@
         {/each}
       </div>
       <div class="g2">
-        <div class="c"><span class="l">Pre / post FEC</span><span class="n">{v.preLoss} / {v.postLoss}<span class="l"> %</span></span></div>
-        <div class="c"><span class="l">Bitrate</span><span class="n">{v.bitrate}<span class="l"> Mbps</span></span></div>
-        <div class="c"><span class="l">Latency</span><span class="n">{v.latency}<span class="l"> ms</span></span></div>
-        <div class="c"><span class="l">FPS · jitter</span><span class="n">{v.fps} · {v.jitter}<span class="l"> ms</span></span></div>
+        <div class="c"><span class="l">Pre / post FEC</span><span class="n">{v.preLoss} / {v.postLoss}<span class="l">{' %'}</span></span></div>
+        <div class="c"><span class="l">Bitrate</span><span class="n">{v.bitrate}<span class="l">{' Mbps'}</span></span></div>
+        <div class="c"><span class="l">Latency</span><span class="n">{v.latency}<span class="l">{' ms'}</span></span></div>
+        <div class="c"><span class="l">FPS · jitter</span><span class="n">{v.fps} · {v.jitter}<span class="l">{' ms'}</span></span></div>
       </div>
     </div>
   {:else}
