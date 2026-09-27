@@ -71,12 +71,22 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
   # Page files (web/www) next to webgs.{js,wasm}. copy_directory fails on a
   # missing source, so only when www/ exists; web/'s own mtime is a configure
-  # dependency so creating www/ later re-runs this.
+  # dependency so creating www/ later re-runs this. Keyed off www/*'s own
+  # mtimes (not POST_BUILD on the webgs executable): webgs only relinks when
+  # its C++ sources or link flags change, so a POST_BUILD copy attached to it
+  # silently skips a `cmake --build` that only touched web/www/* -- dist goes
+  # stale with no error (found on the 2026-09-27 bench, fix round 1 review).
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR})
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/www)
-    add_custom_command(TARGET webgs POST_BUILD
+    file(GLOB WEB_WWW_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/www/*)
+    add_custom_command(
+      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/www.stamp
       COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/www
-              ${CMAKE_CURRENT_SOURCE_DIR}/dist)
+              ${CMAKE_CURRENT_SOURCE_DIR}/dist
+      COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/www.stamp
+      DEPENDS ${WEB_WWW_FILES}
+      COMMENT "Copying web/www -> web/dist")
+    add_custom_target(webgs_www ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/www.stamp)
   endif()
 else()
   # Included from the root build: native core + tests.
