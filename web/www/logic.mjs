@@ -1,7 +1,7 @@
-// THROWAWAY SPIKE (branch wasm-spike): pure viewer logic, unit-tested in
-// Node. Gate rules = maburplay's (gs/player/src/main.cpp sink + RingClient),
-// fixed for the 2-stream space: arm on a complete AU carrying VPS+SPS+PPS
-// (sid 0 alone no longer implies parameter sets).
+// Pure, node-testable logic for the web-GS page (promoted from the
+// wasm-spike throwaway). Gate rules = maburplay's (gs/player/src/main.cpp
+// sink + RingClient), fixed for the 2-stream space: arm on a complete AU
+// carrying VPS+SPS+PPS (sid 0 alone no longer implies parameter sets).
 
 export function nalTypes(u8) {
   const out = [];
@@ -110,4 +110,94 @@ export class DecoderSlot {
     this.d = next;
     return next;
   }
+}
+
+// Rolling per-segment latency stats (e.g. 'decode', 'present') over a 1 s
+// and a 60 s trailing window, both measured back from `snapshot`'s `now`
+// (default: nowFn()). Entries older than 60 s are pruned as they age out
+// on add, so the backing arrays never grow unbounded.
+export class SegWindow {
+  constructor(nowFn) {
+    this.nowFn = nowFn || (() => Date.now());
+    this.byName = new Map();
+  }
+  add(name, ms) {
+    const now = this.nowFn();
+    let arr = this.byName.get(name);
+    if (!arr) { arr = []; this.byName.set(name, arr); }
+    arr.push({ t: now, v: ms });
+    const cutoff60 = now - 60000;
+    let drop = 0;
+    while (drop < arr.length && arr[drop].t <= cutoff60) drop++;
+    if (drop > 0) arr.splice(0, drop);
+  }
+  snapshot(now) {
+    if (now === undefined) now = this.nowFn();
+    const cutoff1 = now - 1000;
+    const cutoff60 = now - 60000;
+    const w1 = {}, w60 = {};
+    for (const [name, arr] of this.byName) {
+      const v1 = [], v60 = [];
+      for (const e of arr) {
+        if (e.t > cutoff60) v60.push(e.v);
+        if (e.t > cutoff1) v1.push(e.v);
+      }
+      w1[name] = summarize(v1);
+      w60[name] = summarize(v60);
+    }
+    return { w1, w60 };
+  }
+}
+
+function summarize(values) {
+  return {
+    p50: pctl(values, 0.5),
+    p99: pctl(values, 0.99),
+    max: values.length ? Math.max(...values) : 0,
+    n: values.length,
+  };
+}
+
+// Capture (drone encode-complete) to glass (present) latency, ms:
+// cap-to-complete (drone-side, us) plus the two GS-side hop deltas. null
+// when the drone didn't report a cap-to-complete offset (absent, or a
+// negative sentinel meaning "no measurement").
+export function capToGlass({ capToCompleteUs, tEmitMs, tRecvMs, tPresentMs }) {
+  if (capToCompleteUs == null || capToCompleteUs < 0) return null;
+  return capToCompleteUs / 1000 + (tRecvMs - tEmitMs) + (tPresentMs - tRecvMs);
+}
+
+// % of drone->GS RCF sends the drone reports having heard, over the delta
+// between two stats snapshots. null when either snapshot is missing, either
+// is missing drone_rcf_rx/sends, sends didn't advance, or drone_rcf_rx went
+// backwards (counter reset, e.g. drone restart) rather than wrapping cleanly.
+export function rcfHeardPct(prev, cur) {
+  if (!prev || !cur) return null;
+  if (prev.drone_rcf_rx == null || cur.drone_rcf_rx == null) return null;
+  if (prev.sends == null || cur.sends == null) return null;
+  const dSends = cur.sends - prev.sends;
+  if (!(dSends > 0)) return null;
+  const dRcf = cur.drone_rcf_rx - prev.drone_rcf_rx;
+  if (dRcf < 0) return null;
+  return 100 * dRcf / dSends;
+}
+
+// Maps a glue `ERROR ...` line (web/src/web_gs.cpp) to user-facing text.
+export function errorText(line) {
+  if (line.includes('no RTL card')) {
+    return 'No RTL8812EU/8812AU card found — plug it in and press Connect.';
+  }
+  if (line.includes('claim failed')) {
+    return 'Card busy — maburgs or another tab has it. Close that and press Connect.';
+  }
+  if (line.includes('card lost')) {
+    return 'Card lost (unplugged?). Press Connect to restart.';
+  }
+  if (line.includes('libusb_init')) {
+    return 'WebUSB unavailable in this browser.';
+  }
+  if (line.includes('unsupported chip')) {
+    return 'Unsupported card chip.';
+  }
+  return line;
 }

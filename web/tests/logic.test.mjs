@@ -1,7 +1,7 @@
-// THROWAWAY SPIKE: node --test spike/wasm/test_viewer_logic.mjs
+// node --test web/tests/logic.test.mjs (promoted from the wasm-spike throwaway)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl } from './viewer_logic.mjs';
+import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl } from '../www/logic.mjs';
 
 const nal = (type, len = 4, four = true) =>
   [...(four ? [0, 0, 0, 1] : [0, 0, 1]), type << 1, 1, ...Array(len).fill(0x55)];
@@ -81,7 +81,7 @@ test('pctl', () => {
   assert.equal(pctl([5, 1, 3, 2, 4], 1), 5);
 });
 
-import { annexbToLengthPrefixed } from './viewer_logic.mjs';
+import { annexbToLengthPrefixed } from '../www/logic.mjs';
 
 test('annexbToLengthPrefixed rewrites 3- and 4-byte start codes as u32 BE lengths', () => {
   const ab = new Uint8Array([0, 0, 0, 1, 0x40, 1, 7, 0, 0, 1, 0x02, 1, 9, 9]);
@@ -96,7 +96,7 @@ test('GDR parameter-set AUs never arm the gate: WebCodecs needs an IRAP key (fin
   assert.equal(g.onAu(au(PARAMS)).type, 'key');
 });
 
-import { DecoderSlot } from './viewer_logic.mjs';
+import { DecoderSlot } from '../www/logic.mjs';
 
 test('DecoderSlot.replace closes the previous decoder unless already closed (final review)', () => {
   const mk = () => ({ state: 'configured', closed: 0, close() { this.closed++; this.state = 'closed'; } });
@@ -109,4 +109,40 @@ test('DecoderSlot.replace closes the previous decoder unless already closed (fin
   slot.replace(c);
   assert.equal(b.closed, 0);
   assert.equal(slot.d, c);
+});
+
+import { SegWindow, capToGlass, rcfHeardPct, errorText } from '../www/logic.mjs';
+
+test('SegWindow p50/p99/max over 1 s and 60 s', () => {
+  let now = 0; const w = new SegWindow(() => now);
+  for (let i = 1; i <= 100; i++) { now = i * 5; w.add('decode', i); }  // 0..500 ms
+  now = 1400;
+  w.add('decode', 1000);
+  const s = w.snapshot();
+  // t=5,10,...,500 (i=1..100) plus t=1400 (value 1000); cutoff = now-1000 = 400.
+  // t>400 => i=81..100 (20 entries) + the t=1400 entry = 21, not the brief's 81
+  // (fixed per task-7-brief.md's own escape hatch: test number was
+  // arithmetically inconsistent with the stated "t > 400" semantics).
+  assert.equal(s.w1.decode.n, 21);            // entries with t > 400
+  assert.equal(s.w1.decode.max, 1000);
+  assert.equal(s.w60.decode.n, 101);
+  assert.equal(s.w60.decode.p50, 51);
+});
+
+test('capToGlass null without offset, sum with it', () => {
+  assert.equal(capToGlass({ capToCompleteUs: -1, tEmitMs: 0, tRecvMs: 1, tPresentMs: 5 }), null);
+  assert.equal(capToGlass({ capToCompleteUs: 30000, tEmitMs: 100, tRecvMs: 102, tPresentMs: 120 }), 50);
+});
+
+test('rcfHeardPct deltas, resets and missing fields', () => {
+  assert.equal(rcfHeardPct(null, { drone_rcf_rx: 5, sends: 5 }), null);
+  assert.equal(rcfHeardPct({ drone_rcf_rx: 100, sends: 100 }, { drone_rcf_rx: 119, sends: 120 }), 95);
+  assert.equal(rcfHeardPct({ drone_rcf_rx: 100, sends: 100 }, { drone_rcf_rx: 3, sends: 120 }), null);
+  assert.equal(rcfHeardPct({ drone_rcf_rx: null, sends: 1 }, { drone_rcf_rx: null, sends: 2 }), null);
+});
+
+test('errorText maps glue errors', () => {
+  assert.match(errorText('ERROR claim failed rc=-6'), /Card busy/);
+  assert.match(errorText('ERROR card lost'), /Card lost/);
+  assert.equal(errorText('ERROR something new'), 'ERROR something new');
 });
