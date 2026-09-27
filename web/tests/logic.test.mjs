@@ -112,8 +112,9 @@ test('DecoderSlot.replace closes the previous decoder unless already closed (fin
 });
 
 import {
-  SegWindow, capToGlass, rcfHeardPct, errorText, ht40Offset, checkChannelWidth,
-  pruneSubmitted, trimBefore, copyStatsPayload,
+  SegWindow, capToGlass, rcfHeardPct, rcfHeardPctWindowed, errorText, ht40Offset,
+  checkChannelWidth, pruneSubmitted, trimBefore, copyStatsPayload, controlsLocked,
+  isStalePresentSample,
 } from '../www/logic.mjs';
 
 test('SegWindow p50/p99/max over 1 s and 60 s', () => {
@@ -191,6 +192,45 @@ test('copyStatsPayload carries core stats and page segments', () => {
   const out = JSON.parse(copyStatsPayload(['{"aus":1}', 'garbage'], snap));
   assert.deepEqual(out.core, [{ aus: 1 }, 'garbage']);
   assert.deepEqual(out.segments, snap);
+});
+
+test('rcfHeardPctWindowed diffs newest vs. ~10 ticks back, not adjacent ticks (F2)', () => {
+  // Jittery per-tick rcf_sent deltas (10, 1, 19, 1, 19, 1, 19, 1, 19, 10) with
+  // rx advancing evenly by 9/tick: tick 2 alone is 9/1 = 900 %, but the
+  // 10-tick window (idx 0 vs idx 10) is 90/100 = 90 %.
+  const sent = [0, 10, 11, 30, 31, 50, 51, 70, 71, 90, 100];
+  const ring = sent.map((s, i) => ({ drone_rcf_rx: i * 9, rcf_sent: s }));
+  assert.equal(rcfHeardPct(ring[0], ring[1]), 90);
+  assert.ok(rcfHeardPct(ring[1], ring[2]) > 100);
+  assert.equal(rcfHeardPctWindowed(ring), 90);
+});
+
+test('rcfHeardPctWindowed uses the oldest available entry when the ring is shorter than the window', () => {
+  const ring = [
+    { drone_rcf_rx: 0, rcf_sent: 0 },
+    { drone_rcf_rx: 10, rcf_sent: 10 },
+    { drone_rcf_rx: 19, rcf_sent: 20 },
+  ];
+  assert.equal(rcfHeardPctWindowed(ring), 95);   // vs ring[0], not ring[1]
+});
+
+test('rcfHeardPctWindowed null on an empty or single-entry ring', () => {
+  assert.equal(rcfHeardPctWindowed([]), null);
+  assert.equal(rcfHeardPctWindowed([{ drone_rcf_rx: 1, rcf_sent: 1 }]), null);
+});
+
+test('controlsLocked locks while connecting or connected, not when idle (R12/F1)', () => {
+  assert.equal(controlsLocked({ connecting: false, connected: false }), false);
+  assert.equal(controlsLocked({ connecting: true, connected: false }), true);
+  assert.equal(controlsLocked({ connecting: false, connected: true }), true);
+  assert.equal(controlsLocked({ connecting: true, connected: true }), true);
+});
+
+test('isStalePresentSample drops rAF callbacks that fired long after the draw (F3)', () => {
+  assert.equal(isStalePresentSample(1000, 1016), false);   // a normal ~16 ms frame
+  assert.equal(isStalePresentSample(1000, 1999), false);   // right at the edge
+  assert.equal(isStalePresentSample(1000, 2001), true);    // just over the 1000 ms gap
+  assert.equal(isStalePresentSample(1000, 19000), true);   // the observed ~18 s outlier
 });
 
 test('errorText maps glue errors', () => {

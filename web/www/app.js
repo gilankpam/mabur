@@ -4,8 +4,9 @@
 // Module.onAu/onStats/onError (web/src/web_main.cpp).
 import {
   Gate, PtsUnwrap, PeriodEstimator, HitchMeter,
-  annexbToLengthPrefixed, DecoderSlot, SegWindow, capToGlass, rcfHeardPct, errorText,
-  checkChannelWidth, pruneSubmitted, trimBefore, copyStatsPayload,
+  annexbToLengthPrefixed, DecoderSlot, SegWindow, capToGlass, rcfHeardPctWindowed, errorText,
+  checkChannelWidth, pruneSubmitted, trimBefore, copyStatsPayload, controlsLocked,
+  isStalePresentSample,
 } from './logic.mjs';
 
 // ---- elements ---------------------------------------------------------
@@ -13,8 +14,10 @@ const canvas = document.getElementById('v');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 const connectBtn = document.getElementById('connect');
+const modeField = document.getElementById('modefield');
 const chInput = document.getElementById('ch');
 const widthSel = document.getElementById('w');
+const lockHint = document.getElementById('lockhint');
 const statsTable = document.getElementById('statstable');
 const copyBtn = document.getElementById('copystats');
 const copyMsg = document.getElementById('copystats-msg');
@@ -58,6 +61,7 @@ let mode = currentMode();
 let ch = chInput.value;
 let w = widthSel.value;
 let gsModule = null;
+let connecting = false;   // true from Connect click to the resolved/rejected module start (F1/R12)
 let connected = false;
 let stopped = false;      // true after onError / worker failure: ignore AUs
 let connectStartMs = 0;   // performance.now(): when the module actually started (fix round 1)
@@ -70,6 +74,7 @@ let submitted;          // pts (unwrapped) -> {tSubmit, tRecvMs, tEmitMs, capUs}
                         // cleared on decoder replace, entries > 1 s pruned
 let segWindow;
 let statsRing = [];     // last 60 raw JSON lines, for "Copy stats"
+let rcfRing = [];       // last 60 parsed stats ticks, for the 10 s RCF-heard window (F2)
 let lastStats = null;
 let hitchTimes = [];     // epoch ms of each detected hitch, trimmed to the last 60 s
 let hitchesTotal = 0;
@@ -87,6 +92,7 @@ function resetPageState() {
   configuredWith = null;
   segWindow = new SegWindow(now);
   statsRing = [];
+  rcfRing = [];
   lastStats = null;
   hitchTimes = [];
   hitchesTotal = 0;
@@ -128,6 +134,10 @@ function makeDecoder() {
       if (document.hidden) return;
       requestAnimationFrame((ts) => {
         const presentMs = performance.timeOrigin + ts;
+        // F3: an rAF queued just before the tab went hidden fires only once
+        // it's visible again, ~seconds to minutes later -- not a real
+        // present sample. Drop it rather than let it skew p99/max.
+        if (isStalePresentSample(t, presentMs)) return;
         segWindow.add('present', presentMs - t);
         if (rec && mode === 'gs') {
           const cap = capToGlass({
@@ -206,7 +216,10 @@ function onStats(text) {
   if (statsRing.length > 60) statsRing.shift();
   const prev = lastStats;
   ausTotalRate = prev ? Math.max(0, (s.aus ?? 0) - (prev.aus ?? 0)) : 0;
-  const rcfPct = rcfHeardPct(prev, s);
+  rcfRing.push(s);
+  if (rcfRing.length > 60) rcfRing.shift();
+  // F2: a 10 s window, not the adjacent tick -- see rcfHeardPctWindowed.
+  const rcfPct = rcfHeardPctWindowed(rcfRing);
   lastStats = s;
   renderStats(s, rcfPct);
   updateOverlay();
@@ -348,6 +361,20 @@ function updateOverlay() {
   setStatusText(text, false);
 }
 
+// R12 / F1: lock the mode radios and channel/width inputs while a connect
+// attempt is in flight or a module is connected -- the running module
+// doesn't observe a later change, so leaving them live invites fighting
+// maburgs after switching mode mid-flight (bench finding). Every path that
+// re-enables the Connect button also flips `connecting`/`connected` back
+// and calls this.
+function updateControlsLock() {
+  const locked = controlsLocked({ connecting, connected });
+  modeField.disabled = locked;
+  chInput.disabled = locked;
+  widthSel.disabled = locked;
+  lockHint.hidden = !locked;
+}
+
 function showWorkerFailure() {
   if (stopped) return;
   stopped = true;
@@ -356,6 +383,8 @@ function showWorkerFailure() {
   connectBtn.disabled = false;
   connectBtn.textContent = 'Connect';
   connected = false;
+  connecting = false;
+  updateControlsLock();
 }
 
 function onError(text) {
@@ -365,6 +394,8 @@ function onError(text) {
   connectBtn.disabled = false;
   connectBtn.textContent = 'Connect';
   connected = false;
+  connecting = false;
+  updateControlsLock();
 }
 
 window.addEventListener('error', (e) => {
@@ -431,6 +462,11 @@ async function startModule(modeArg, chArg, wArg) {
 connectBtn.addEventListener('click', async () => {
   if (connectBtn.disabled) return;
   connectBtn.disabled = true;
+  // Lock the mode/channel/width controls for the whole attempt (R12/F1):
+  // every early-return below restores them, and a successful startModule
+  // keeps them locked via `connected`.
+  connecting = true;
+  updateControlsLock();
   setStatusText('Requesting device…', false);
 
   const chosenMode = currentMode();
@@ -442,6 +478,8 @@ connectBtn.addEventListener('click', async () => {
   if (bad) {
     setStatusText(bad, true);
     connectBtn.disabled = false;
+    connecting = false;
+    updateControlsLock();
     return;
   }
 
@@ -463,11 +501,17 @@ connectBtn.addEventListener('click', async () => {
     console.warn('[webgs] device request did not complete', e);
     setStatusText('No device selected — press Connect to try again.', false);
     connectBtn.disabled = false;
+    connecting = false;
+    updateControlsLock();
     return;
   }
 
   saveLast({ mode: chosenMode, ch: chosenCh, w: chosenW });
   await startModule(chosenMode, chosenCh, chosenW);
+  // startModule resolves `connected` either way (true on success, false on
+  // module-start failure); either way the attempt is no longer "in flight".
+  connecting = false;
+  updateControlsLock();
 });
 
 // Initial overlay: nothing connected yet -- an idle hint, never the

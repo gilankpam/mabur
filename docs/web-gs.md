@@ -140,6 +140,24 @@ while the ladder has any 40 MHz rung, because the GS could not receive
 it. A refusal reads `Channel/width refused: <reason>` (core line
 `ERROR bad channel/width: <reason>`).
 
+This page's ladder is whatever `web/CMakeLists.txt` embeds into the WASM
+module at build time — the bundle default,
+`gs/bundle/maburgs.default.toml` (5 rungs, all 40 MHz, top = rung 4
+mcs4/40) — not a GS's own tuned `/etc/maburgs.toml`. A GS box on the same
+drone may run a different (e.g. mcs-wider or narrower) ladder; don't read
+this page's rung numbers as if they were that GS's.
+
+**The mode radio and the channel/width inputs lock as soon as Connect is
+pressed and stay locked for as long as the page is connecting or
+connected** (`controlsLocked()`, `web/www/logic.mjs`): a running WASM
+module keeps the mode/channel/width it was started with, and changing
+them live did nothing but leave the page fighting a `maburgs` it had
+switched away from commanding, on the bench. A hint next to the controls
+says "Reload the page to change mode, channel or width." Reload the page
+to actually change any of the three; the controls re-enable on their own
+on every path that already re-enables the Connect button (error, cancel,
+module-start failure, card lost).
+
 The browser's own device
 chooser asks for the RTL8812EU (WebUSB's per-origin device grant — pick it
 once and later `getDevices()` calls see it without asking again on the same
@@ -194,7 +212,7 @@ Segments (spec §4):
 | FEC/assembly | first body seen for the AU → AU complete, both timestamps on the core clock (`AuLatMeta`, `gs/src/frame_stream.cpp`) | both |
 | Hand-off | AU complete (core/worker thread) → page receives it, both sides aligned to `performance.timeOrigin` | both |
 | Decode | `VideoDecoder` chunk submit → decoded output callback | both |
-| Present | decoded output → the first `requestAnimationFrame` after `drawImage` — an **estimate**, not `requestVideoFrameCallback`'s presentation time, because MSE/DRM-level present timestamps are not exposed to a WebCodecs canvas path | both |
+| Present | decoded output → the first `requestAnimationFrame` after `drawImage` — an **estimate**, not `requestVideoFrameCallback`'s presentation time, because MSE/DRM-level present timestamps are not exposed to a WebCodecs canvas path; a callback that fires >1000 ms after its `drawImage` (a hidden tab suspends rAF, so the callback only runs once it's visible again — ~18 s outliers seen on the bench) is dropped rather than counted (`isStalePresentSample()`, `web/www/logic.mjs`) | both |
 | Capture→glass (estimate) | drone `pts` + `RttEstimator`'s min-RTT-filtered `pts_off_us` → page present, same method as `maburplay`'s `lat.log`, but computed GS-side | GS only |
 
 Capture→glass is GS-only because it needs the RTT estimator's pts-clock
@@ -203,10 +221,15 @@ with the drone — a spotter has no control channel to measure it over, and
 the panel says so rather than showing a stale or borrowed number.
 
 Link state shown alongside: rung/MCS/width, probe gate state, pre-FEC loss,
-residual, SNR/RSSI, RCF heard % (Δ`Telem.rcf_rx` / Δ`rcf_sent` — `rcf_sent`
-counts RCFs only, not the DISC beacons/keep-alives that `sends` also counts,
-because the drone's `rcf_rx` counts RCFs only; dividing by `sends` capped the
-ratio below the 95 % pass mark), AUs/s, and hitches (gaps
+residual, SNR/RSSI, RCF heard % (Δ`Telem.rcf_rx` / Δ`rcf_sent` over a
+trailing ~10 s window of the stats ring, not the adjacent 1 s tick —
+`rcfHeardPctWindowed()` in `web/www/logic.mjs`; the two counters are
+sampled at different instants, so diffing consecutive ticks read
+100–105 % on the bench, and clamping would have hidden a real fault
+instead of fixing the measurement. `rcf_sent` counts RCFs only, not the
+DISC beacons/keep-alives that `sends` also counts, because the drone's
+`rcf_rx` counts RCFs only; dividing by `sends` capped the ratio below the
+95 % pass mark), AUs/s, and hitches (gaps
 > 1.5× the frame period). No playout regulator and no vsync lock exist in
 this build — the panel is measurement-only, by design (see the spec's
 "Decided" list).
@@ -279,9 +302,35 @@ module.
 
 ## Validation
 
-Pending — bench hardware acceptance (GS mode flying the bench link with the
-GS box off, spotter mode next to a live `maburgs`) is a follow-up task, not
-covered by this commit.
+Bench, 2026-09-27, bench drone on ch136 HT40, drone `low_power` off:
+
+- **maburgs regression** (this page's changes don't regress the native
+  daemon — same `LinkHealthAssembler`): two A/B pairs (master vs. this
+  branch's `maburgs`, second pair run in reversed order), each leg fed two
+  15 s `benchjam` episodes (power 63, 2000 pps, 1500 B, 6M) from a host
+  8822EU. Identical demote reasons, ~1 s cascade to rung 0, probed
+  re-climb 0→5 in 7–9 s in every leg; rung-5 `s3_residual` bounce rate 1.21
+  vs. 1.13/min in the reversed pair (the *first* pair's 2.6 vs. 1.7/min
+  tracked the time slot, not the binary — not attributable to this
+  branch). `ausniff` 30 s clean in every leg (~1815 AUs, 60.5 fps, ≤3
+  incomplete enh).
+- **Web GS mode, GS daemon stopped**: linked (DISC→ACK→SESSION), climbed
+  to the bundle ladder's top (rung 4, mcs4/40). Hand-covering the host
+  card's antenna (RSSI −83..−86 dBm, SNR 9–13 dB) demoted to rung 1–2 and
+  it recovered via clean probes in ~15–20 s; after a 30 s total outage it
+  re-linked by itself. txfail 0. capture→glass p50 ~24 ms, p99 ~45 ms;
+  link RTT ~9 ms (min 3–4 ms); FEC/assembly p50 ~6.6 ms; decode ~0.8 ms;
+  hand-off 0.1 ms.
+- **Spotter mode next to a running `maburgs`**: browser `sends` 0 /
+  `rcf_sent` 0 / `txfail` 0 (Spotter never transmits, confirmed on the
+  wire, not just by code inspection) — drone RCF rx rate 18.7/s over 30 s
+  matched `maburgs`'s own sideport `drone.rcf.rx_pps` 18.5 (a transmitting
+  browser would roughly double it). Video started after an 11 s wait for
+  a natural IDR (see "Spotter key frames" above), then ran at 61 AUs/s.
+- **Seen but not fixed**: 2 WebCodecs `EncodingError` decoder resets in
+  ~10 min (each recovered on the next IRAP — the existing `gate.armed =
+  false` / re-arm path, `onDecoderError()`). Left as a follow-up; no
+  drone/wire signature was found in the ~10 min sample to attribute it to.
 
 ## Follow-ups
 

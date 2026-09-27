@@ -185,6 +185,44 @@ export function rcfHeardPct(prev, cur) {
   return 100 * dRcf / dSent;
 }
 
+// F2: dividing adjacent 1 s stats ticks overshoots (100-105 %) because
+// drone_rcf_rx (drone Telem, 1 Hz) and rcf_sent (GS-side) are sampled at
+// different instants -- the two counters' phase drifts a tick's worth
+// relative to each other. Diffing over a ~10-tick (~10 s) window absorbs
+// that skew instead of clamping it away. `ring` is the trailing stats
+// history, oldest first, one entry per second (the page's existing 60-
+// entry stats ring); picks the entry `windowTicks` back from the newest,
+// or the oldest available if the ring is shorter than that. null on an
+// empty or single-entry ring (rcfHeardPct itself covers the missing-field
+// / reset / non-positive-delta cases).
+export function rcfHeardPctWindowed(ring, windowTicks = 10) {
+  if (!ring || ring.length < 2) return null;
+  const cur = ring[ring.length - 1];
+  const prev = ring[Math.max(0, ring.length - 1 - windowTicks)];
+  return rcfHeardPct(prev, cur);
+}
+
+// R12 / F1: the running WASM module keeps the mode/channel/width it was
+// started with -- changing the mode radio or the channel/width inputs
+// after Connect does nothing but fight the module's actual (unchanged)
+// behaviour. Lock those controls for as long as a connect attempt is in
+// flight or a module is connected; app.js re-enables them on every path
+// that already re-enables the Connect button (error, cancel, module-start
+// failure, card lost).
+export function controlsLocked({ connecting, connected }) {
+  return !!connecting || !!connected;
+}
+
+// F3: an rAF callback scheduled just before the tab is hidden fires only
+// once the tab becomes visible again, producing a present / capture->glass
+// sample of however long the tab was hidden (observed ~18 s outliers on
+// the bench). Reject a sample whose rAF timestamp lands more than staleMs
+// after the draw that scheduled it -- a gap that large can only mean the
+// callback was suspended, never a real frame.
+export function isStalePresentSample(drawMs, rafMs, staleMs = 1000) {
+  return (rafMs - drawMs) > staleMs;
+}
+
 // common/include/mabur/ht40.h's ht40_offset: 1 = HT40+, 2 = HT40-, 0 = no pair.
 export function ht40Offset(ch) {
   if (ch >= 36 && ch <= 144 && (ch - 36) % 4 === 0) return ((ch - 36) / 4) % 2 === 0 ? 1 : 2;
