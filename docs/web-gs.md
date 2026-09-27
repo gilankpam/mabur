@@ -14,7 +14,7 @@ its own.
 ## What it is
 
 A single page, one card, a fixed channel — no channel scan, no in-flight
-hop, no DVR/recording, no MSP OSD, no multi-card. Two modes, picked before
+hop, no DVR/recording, no multi-card. Two modes, picked before
 Connect:
 
 - **GS mode** — the *only* ground station for the drone. Runs rendezvous
@@ -347,6 +347,38 @@ DISC beacons/keep-alives that `sends` also counts, because the drone's
 this build — the panel is measurement-only, by design (see the spec's
 "Decided" list).
 
+The core stats line also carries `osd_snaps` (MSP snapshots out of the FEC
+sink) and `osd_screens` (OSD screens handed to the page); see MSP OSD below.
+
+## MSP OSD
+
+The flight controller's MSP DisplayPort OSD is drawn over the video in both
+modes (it is receive-only, so Spotter's no-send guarantee is untouched, and
+it does not wait for the GS session). The path is `maburgs`'s: `WebGs` feeds
+stream-id 4 bodies to the same `maburgs::MspSink` (SBI unpack + sliding-
+window FEC, `symbol_size`/`window` from the embedded config's `[msp]`, which
+must match the drone; `[msp] enable = false` turns it off, `[msp.out]` is
+ignored — there is no UDP here). `webgs::OsdScreen`
+(`web/src/osd_screen.h`) runs each snapshot through the shared
+`MspParser`/`MspScreen` and publishes a completed screen at most every 30 ms,
+latest wins — `OsdSource`'s gate. The glue posts it as
+`Module.onOsd(rows, cols, Uint16Array)`.
+
+The page (`web/ui/src/lib/osd.js`) spreads the grid over the whole visible
+video box — the 16:9 box when windowed, the full viewport in immersive,
+where the video is `cover`-cropped — so edge elements stay on screen; glyphs
+are stretched to the cell (on a 20:9 phone that is ~20 % wider than the
+font's 2:3). It paints on a second canvas over the video, once per animation
+frame at most, and blanks after 5 s without a screen (`maburplay`'s
+`stale_ms` default) and on Disconnect. There is no toggle — trim elements in
+the Betaflight OSD tab.
+
+Font: Betaflight only, `web/ui/public/font_btfl.png` (32 glyphs per row,
+36×54), generated from `maburplay`'s `gs/player/bundle/font_btfl.mfont` by
+`tools/msp/gen_webfont.py` (re-run it if the `.mfont` changes; it
+self-checks the round trip). The page fetches it on the first screen; a
+failed fetch logs once to the console and leaves the OSD off until reload.
+
 ## Known limits
 
 - **Oilpan GC spikes.** Blink's incremental GC sweep of per-transfer WebUSB
@@ -375,10 +407,9 @@ this build — the panel is measurement-only, by design (see the spec's
   commander; both DISC and both send RCFs, and the ladder each one drives
   fights the other's. Spotter mode has no such conflict since it never
   transmits.
-- **MSP OSD and browser-side recording not built** (DVR target hidden).
-  This page only ever controls the VTX's onboard SD recorder (see Record,
-  above); there is no local capture of the decoded stream and no MSP OSD
-  overlay path, unlike `maburplay`.
+- **Browser-side recording not built** (DVR target hidden). This page only
+  ever controls the VTX's onboard SD recorder (see Record, above); there is
+  no local capture of the decoded stream, and so no recorded OSD either.
 - **Capture→glass can use a stale RTT offset for up to ~30 s after a drone
   restart.** `RttEstimator`'s pts-clock offset is never explicitly reset on
   a detected drone restart, in this page or in `maburgs` itself — the
