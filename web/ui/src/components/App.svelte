@@ -17,8 +17,10 @@
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
+  import { OsdLayer, OsdPainter } from '../lib/osd.js';
 
   let canvas = $state(null);
+  let osdCanvas = $state(null);
   let W = $state(innerWidth), H = $state(innerHeight);
   let sess = $state({ state: 'idle', mode: ui.mode, ch: null, w: null, error: null, notice: null, startedAt: null, recWish: false });
   let sessionCfg = $state(ui.cfg);        // the config the running session started with
@@ -28,6 +30,20 @@
 
   const video = new VideoPipeline({ getCanvas: () => canvas, getMode: () => sess.mode });
   const tele = new Telemetry(video);
+  // MSP OSD (spec 2026-09-27-web-msp-osd): latest DisplayPort grid, painted on
+  // a second canvas over the video. The atlas URL resolves against the page
+  // (works under the Pages /mabur/ base as well as at a local root).
+  const osdLayer = new OsdLayer();
+  const osd = new OsdPainter({
+    layer: osdLayer,
+    loadAtlas: async () => {
+      const r = await fetch(new URL('font_btfl.png', document.baseURI));
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return createImageBitmap(await r.blob());
+    },
+  });
+  function clearOsd() { if (osdLayer.screen) { osdLayer.clear(); osd.schedule(); } }
+
   const session = new Session({
     createModule: (opts) => window.createWebGs(opts),
     requestDevice: async () => {
@@ -41,6 +57,14 @@
     // failed module's straggler AUs must not rebuild the decoder close() freed.
     onAu: (...a) => { const st = session.snapshot.state; if (st === 'live' || st === 'connecting') video.onAu(...a); },
     onStats: (text, s) => { tele.onCoreStats(text, s); ui.tick++; },
+    // Same live/connecting gate as onAu: a stopping module's straggler
+    // screens must not repaint after Disconnect cleared the layer.
+    onOsd: (rows, cols, cells) => {
+      const st = session.snapshot.state;
+      if (st !== 'live' && st !== 'connecting') return;
+      osdLayer.onScreen(rows, cols, cells, performance.now());
+      osd.schedule();
+    },
     reload: reloadToConfig,
   });
 
@@ -48,7 +72,7 @@
   session.subscribe((s) => {
     sess = s;
     // Left live (stopping/idle/error): free the hardware decoder now.
-    if (s.state !== 'live' && s.state !== 'connecting') video.close();
+    if (s.state !== 'live' && s.state !== 'connecting') { video.close(); clearOsd(); }
     if (s.state === 'live' && prevState !== 'live') { ui.tab = 'stats'; ui.cfgOpen = false; ui.statsVisible = true; }
     if (prevState === 'stopping' && s.state === 'idle') { ui.tab = 'config'; ui.cfgOpen = true; }
     if (s.state === 'error' && prevState === 'live') { ui.tab = 'config'; }
@@ -72,6 +96,7 @@
   let rec = $state({ state: 'unknown', err: null }), recMs = $state(0);
   function refresh() {
     const nowMs = performance.timeOrigin + performance.now();
+    if (osdLayer.isStale(performance.now())) clearOsd();   // 5 s without MSP
     if (live) tele.sample(nowMs, sess.mode);
     core = live ? tele.core : null;
     view = statsView({ connected: live, mode: shownMode, ch: live ? sess.ch : ui.cfg.channel, w: live ? sess.w : ui.cfg.width,
@@ -179,6 +204,9 @@
   onMount(() => {
     const iv = setInterval(refresh, 200);
     refresh();
+    osd.attach(osdCanvas);
+    const ro = new ResizeObserver(([e]) => osd.resize(e.contentRect.width, e.contentRect.height, window.devicePixelRatio || 1));
+    ro.observe(osdCanvas);
     const onFsChange = () => {
       realFs = !!document.fullscreenElement;
       if (!realFs) ui.fs = false;
@@ -195,7 +223,7 @@
       if (msg.includes('worker sent an error') || fromWorker) session.fail(WORKER_FAILED);
     };
     window.addEventListener('error', onWinErr);
-    return () => { clearInterval(iv); clearTimeout(copyTimer); document.removeEventListener('fullscreenchange', onFsChange);
+    return () => { clearInterval(iv); ro.disconnect(); clearTimeout(copyTimer); document.removeEventListener('fullscreenchange', onFsChange);
       document.removeEventListener('visibilitychange', onVis); window.removeEventListener('error', onWinErr); };
   });
 </script>
@@ -214,6 +242,8 @@
         <!-- ONE canvas for the page lifetime: never inside a layout-dependent {#if}. -->
         <div class="videoinner">
           <canvas bind:this={canvas} width="1280" height="720"></canvas>
+          <!-- MSP OSD: page-lifetime like the video canvas; .videoinner IS the visible area in every layout. -->
+          <canvas class="osd" bind:this={osdCanvas}></canvas>
           {#if live && status}<div class="status glass">{status}</div>{/if}
           {#if !live}
             <DisconnectedOverlay mode={ui.mode} onMode={(m) => (ui.mode = m)} onConnect={connect}
@@ -258,6 +288,7 @@
   .videobox { flex: 1; min-height: 0; display: grid; place-items: center; container-type: size; background: var(--color-bg); }
   .videoinner { position: relative; aspect-ratio: 16 / 9; width: min(100cqw, calc(100cqh * 16 / 9)); border-radius: var(--radius-sm); overflow: hidden; background: #000; }
   canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+  .osd { position: absolute; inset: 0; pointer-events: none; }
   .immersive .row { position: absolute; inset: 0; padding: 0; gap: 0; }
   .immersive .videobox { display: block; }
   .immersive .videoinner { position: absolute; inset: 0; width: auto; aspect-ratio: auto; border-radius: 0; }

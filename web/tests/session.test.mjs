@@ -269,3 +269,24 @@ test('fail() tolerates a throwing _webgs_stop', async () => {
   s.fail('x');
   assert.equal(s.snapshot.state, 'error');
 });
+
+test('onOsd reaches the page only from the current module', async () => {
+  const got = [];
+  const f = fakeModuleFactory();
+  const s = new Session({
+    createModule: f.create, requestDevice: async () => {}, onAu: () => {}, onStats: () => {},
+    onOsd: (...a) => got.push(a), reload: () => {}, timers: fakeTimers(),
+  });
+  await s.connect({ mode: 'spotter', ch: 136, w: 40 });
+  const m1 = f.made[0];
+  m1.opts.onOsd(18, 50, new Uint16Array(900));
+  assert.equal(got.length, 1);
+  await s.disconnect();
+  await tick();
+  await s.connect({ mode: 'spotter', ch: 136, w: 40 });
+  m1.opts.onOsd(18, 50, new Uint16Array(900));   // straggler from the old module
+  assert.equal(got.length, 1);
+  f.made[1].opts.onOsd(16, 30, new Uint16Array(480));
+  assert.equal(got.length, 2);
+  assert.deepEqual(got[1].slice(0, 2), [16, 30]);
+});

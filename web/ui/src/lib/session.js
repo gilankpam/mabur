@@ -21,11 +21,11 @@ export const WORKER_FAILED = 'Page worker failed — if served over LAN, the TLS
   + 'this device (see docs/web-gs.md).';
 
 export class Session {
-  constructor({ createModule, requestDevice, onAu, onStats, reload,
+  constructor({ createModule, requestDevice, onAu, onStats, onOsd = () => {}, reload,
                 // Wrapped: a bare window.setTimeout called as timers.setTimeout(...) throws "Illegal invocation".
                 timers = { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h) },
                 stopTimeoutMs = 3000, recOffTimeoutMs = 1000 }) {
-    Object.assign(this, { createModule, requestDevice, onAu, onStats, reload, timers,
+    Object.assign(this, { createModule, requestDevice, onAu, onStats, onOsd, reload, timers,
       stopTimeoutMs, recOffTimeoutMs });
     this.subs = new Set();
     this.mod = null;
@@ -73,6 +73,7 @@ export class Session {
         preRun: overlay ? [(m) => m.FS.writeFile('/overlay.toml', overlay)] : [],
         onAu: (...a) => { if (this.token === token) this.onAu(...a); },
         onStats: (text) => { if (this.token === token) this.handleStats(text); },
+        onOsd: (rows, cols, cells) => { if (this.token === token) this.onOsd(rows, cols, cells); },
         onError: (text) => { if (this.token === token) this.handleError(text); },
         onExit: (code) => { token.exited = true; if (this.token === token) this.handleExit(code); },
         print: (t) => console.log('[webgs]', t),
