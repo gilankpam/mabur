@@ -98,11 +98,22 @@ Results 2026-09-27 (bench drone ch136 HT40, GS powered OFF, no maburgs):
 ## Phone / LAN (HTTPS)
 
 WebUSB and SharedArrayBuffer need a secure context; plain http is one only
-on localhost. For another device on the LAN (Android Chrome + the card on
-USB-C OTG): `nix-shell -p openssl --run ./mkcert.sh` (self-signed, SAN =
-localhost + this host's IPv4s; `tls/` is gitignored), then
-`python3 serve.py 8808 0.0.0.0 --tls` and open
-`https://<host-ip>:8808/viewer.html?ch=136&w=40`, accepting the cert
-warning. NixOS firewall: open 8808 first
-(`sudo iptables -I nixos-fw -p tcp --dport 8808 -j nixos-fw-accept`, lost on
+on localhost. A click-through on a self-signed cert is NOT enough: the
+bypass covers the tab, but Emscripten's pthread pool is workers spawned
+from a worker, and those still fail the cert check -- "worker sent an
+error! undefined:undefined: undefined" (checked 2026-09-27: after the
+bypass a page->worker loads, a worker->worker does not). So the cert must
+be really trusted:
+
+    nix-shell -p openssl --run ./mkcert.sh   # local CA (once) + server cert; tls/ is gitignored
+    python3 serve.py 8808 0.0.0.0 --tls
+
+Install `tls/ca.crt` on each viewing device -- Android: Settings > Security >
+Encryption & credentials > Install a certificate > CA certificate; Linux
+Chrome: `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n mabur-spike-ca -i
+tls/ca.crt` (nix-shell -p nssTools; remove with `-D -n mabur-spike-ca`),
+then restart Chrome. The CA is name-constrained to localhost and private
+IPv4 ranges. Open `https://<host-ip>:8808/viewer.html?ch=136&w=40`; the USB
+grant is per origin, so pick the card once in the chooser. NixOS firewall:
+`sudo iptables -I nixos-fw -p tcp --dport 8808 -j nixos-fw-accept` (lost on
 firewall reload).
