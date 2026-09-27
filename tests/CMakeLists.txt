@@ -297,6 +297,9 @@ add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
   else()
     add_mtest(test_frame_e2e test_frame_e2e.cpp LIBS mabur_gs_core)
   endif()
+  # Drives a real Aggregator with drone-encoder bodies (tests/body_gen.h);
+  # UepEncoder lives in mabur_common, so no drone_core split is needed.
+  add_mtest(test_link_health test_link_health.cpp LIBS mabur_gs_core)
   add_mtest(test_stats_exporter test_stats_exporter.cpp LIBS mabur_gs_core)
   add_mtest(test_stats_sink test_stats_sink.cpp LIBS mabur_gs_core)
   add_mtest(test_cal_analysis test_cal_analysis.cpp LIBS mabur_gs_core)

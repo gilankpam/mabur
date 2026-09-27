@@ -35,6 +35,7 @@ add_library(mabur_gs_core STATIC
   src/au_log.cpp
   src/au_doorbell.cpp
   src/probe_track.cpp
+  src/link_health.cpp
   src/rtt_estimator.cpp
   src/stats_exporter.cpp
   src/stats_sink.cpp)
