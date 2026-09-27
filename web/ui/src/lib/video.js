@@ -13,6 +13,10 @@ export class VideoPipeline {
   constructor({ getCanvas, getMode }) {
     this.getCanvas = getCanvas;
     this.getMode = getMode;
+    // ONE slot for the page lifetime: every replace() closes the decoder it
+    // held, so a Connect never leaks the previous session's hardware decoder.
+    this.decoderSlot = new DecoderSlot();
+    this.noCodecWarned = false;
     this.reset();
   }
 
@@ -21,9 +25,10 @@ export class VideoPipeline {
     this.unwrap = new PtsUnwrap();
     this.period = new PeriodEstimator();
     this.hitch = new HitchMeter();
-    this.decoderSlot = new DecoderSlot();
     this.submitted = new Map();
-    this.decoder = this.decoderSlot.replace(this.makeDecoder());
+    // Created lazily on the first key frame (onAu): a browser without
+    // WebCodecs must still load the page.
+    this.decoder = this.decoderSlot.replace(null);
     this.hvcc = null;
     this.configuredWith = null;
     this.segWindow = new SegWindow(now);
@@ -38,9 +43,10 @@ export class VideoPipeline {
   periodMs() { return this.period.periodMs(); }
 
   // A replaced decoder never outputs its queued chunks: drop their records.
+  // The next key frame builds a fresh one (onAu).
   replaceDecoder() {
     this.submitted.clear();
-    this.decoder = this.decoderSlot.replace(this.makeDecoder());
+    this.decoder = this.decoderSlot.replace(null);
   }
 
   makeDecoder() {
@@ -112,6 +118,16 @@ export class VideoPipeline {
 
     const pts = this.unwrap.add(ptsUs);
     this.period.add(pts);
+    if (!this.decoder) {
+      // A fresh decoder starts on a key frame: re-gate to the next IRAP.
+      if (g.type !== 'key') { this.gate.onDecoderError(); return; }
+      if (typeof VideoDecoder === 'undefined') {
+        if (!this.noCodecWarned) { this.noCodecWarned = true; console.error('[webgs] WebCodecs VideoDecoder unavailable in this browser'); }
+        this.gate.onDecoderError();
+        return;
+      }
+      this.decoder = this.decoderSlot.replace(this.makeDecoder());
+    }
     if (g.type === 'key' && (this.decoder.state !== 'configured' || this.configuredWith !== this.hvcc)) {
       if (!this.hvcc) { this.gate.onDecoderError(); return; }
       this.decoder.configure({
@@ -132,5 +148,10 @@ export class VideoPipeline {
     }
   }
 
-  close() { this.decoderSlot.replace(null); }
+  // Session left live: release the hardware decoder now, not at the next Connect.
+  close() {
+    this.gate.onDecoderError();
+    this.submitted.clear();
+    this.decoder = this.decoderSlot.replace(null);
+  }
 }

@@ -31,13 +31,15 @@
   const session = new Session({
     createModule: (opts) => window.createWebGs(opts),
     requestDevice: async () => {
-      if (!window.crossOriginIsolated) throw new Error('not cross-origin isolated');
-      if (!navigator.usb) throw new Error('WebUSB unavailable');
+      if (!window.crossOriginIsolated) throw new Error('Page is not cross-origin isolated (COOP/COEP headers missing) — serve it as docs/web-gs.md describes.');
+      if (!navigator.usb) throw new Error('WebUSB unavailable in this browser — use Chrome or Edge.');
       let granted = [];
       try { granted = (await navigator.usb.getDevices()).filter((d) => d.vendorId === 0x0bda); } catch { /* requestDevice is the real gate */ }
       if (!granted.length) await navigator.usb.requestDevice({ filters: [{ vendorId: 0x0bda }] });
     },
-    onAu: (...a) => video.onAu(...a),
+    // Plain-JS state read (no Svelte on the per-frame path): a stopping or
+    // failed module's straggler AUs must not rebuild the decoder close() freed.
+    onAu: (...a) => { const st = session.snapshot.state; if (st === 'live' || st === 'connecting') video.onAu(...a); },
     onStats: (text, s) => { tele.onCoreStats(text, s); ui.tick++; },
     reload: reloadToConfig,
   });
@@ -45,6 +47,8 @@
   let prevState = 'idle';
   session.subscribe((s) => {
     sess = s;
+    // Left live (stopping/idle/error): free the hardware decoder now.
+    if (s.state !== 'live' && s.state !== 'connecting') video.close();
     if (s.state === 'live' && prevState !== 'live') { ui.tab = 'stats'; ui.cfgOpen = false; ui.statsVisible = true; }
     if (prevState === 'stopping' && s.state === 'idle') { ui.tab = 'config'; ui.cfgOpen = true; }
     if (s.state === 'error' && prevState === 'live') { ui.tab = 'config'; }
@@ -90,6 +94,10 @@
     saveMode(ui.mode);
     saveConfig(localStorageSafe(), $state.snapshot(ui.cfg));
     sessionCfg = structuredClone($state.snapshot(ui.cfg));
+    // Session.connect() is a no-op unless idle/error; don't wipe a running
+    // session's pipeline for a press it will ignore.
+    const st = session.snapshot.state;
+    if (st !== 'idle' && st !== 'error') return;
     video.reset(); tele.reset(); hiddenShown = false; hiddenBanner = false;
     const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg) });
     refresh();   // the connecting tag/overlay without waiting for the next tick
@@ -121,7 +129,9 @@
   const recLabel = $derived(recOn ? formatClock(recMs) : rec.state === 'error' ? 'REC!' : 'Record');
   const recTitle = $derived(rec.state === 'error' ? rec.err
     : sess.mode === 'spotter' && (live || busy) ? 'Spotter cannot start or stop VTX recording' : 'Record on the VTX (R)');
-  function toggleRec() { if (!recDisabled) session.setRec(!sess.recWish); }
+  // Toggle from what is shown: if the drone already records (e.g. after a
+  // reconnect, recWish false), the press stops it.
+  function toggleRec() { if (!recDisabled) session.setRec(!(recOn || sess.recWish)); }
 
   function toggleFs() {
     const on = !ui.fs;
@@ -204,7 +214,7 @@
     {/if}
   </div>
   {#if layout === 'immersive' && view}
-    <FsOverlay {live} mode={sess.mode} {chLine} {recOn} recClock={formatClock(recMs)} {recDisabled} {recTitle}
+    <FsOverlay {live} mode={sess.mode} {chLine} {recOn} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
       onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
       onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} onExitFs={toggleFs} showExitFs={!isMobile(W, H)} />
     {#if ui.statsVisible && !ui.cfgOpen}

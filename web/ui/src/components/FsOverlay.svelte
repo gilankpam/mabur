@@ -1,7 +1,7 @@
 <script>
   import Icon from './Icon.svelte';
   import RecDot from './RecDot.svelte';
-  let { live, mode, chLine, recOn, recClock, recDisabled, recTitle, onConn, onRec, onStats, onCfg, onExitFs, showExitFs } = $props();
+  let { live, mode, chLine, recOn, recClock, recErr, recDisabled, recTitle, onConn, onRec, onStats, onCfg, onExitFs, showExitFs } = $props();
 </script>
 <div class="tl">
   <span class="tag glass" style="gap:6px;color:var(--color-neutral-100)">
@@ -10,6 +10,8 @@
   {#if recOn}
     <span class="tag glass num" style="gap:6px;color:var(--color-neutral-100)">
       <span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent-400);animation:recpulse 1.2s infinite"></span>REC {recClock}</span>
+  {:else if recErr}
+    <span class="tag glass" style="gap:6px;color:var(--color-neutral-100)" title={recErr}><strong style="color:var(--color-accent-400)">REC!</strong>{recErr}</span>
   {/if}
 </div>
 <div class="tr">
