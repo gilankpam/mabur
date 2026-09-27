@@ -59,8 +59,8 @@ let w = widthSel.value;
 let gsModule = null;
 let connected = false;
 let stopped = false;      // true after onError / worker failure: ignore AUs
-let connectStartMs = 0;   // performance.now() epoch of Connect
-let waitingSince = 0;     // performance.now() epoch: start of "waiting for key"
+let connectStartMs = 0;   // performance.now(): when the module actually started (fix round 1)
+let waitingSince = 0;     // performance.now(): start of "waiting for key" (same instant)
 let hiddenBannerShownOnce = false;
 let hiddenBannerActive = false;
 
@@ -133,13 +133,17 @@ function makeDecoder() {
   });
 }
 
-// buf, pts_us, sid, flags, complete, t_complete_us, hvcc, capUs, tEmitMs --
-// the actual Module.onAu arg order (web/src/web_main.cpp emit_au), which
-// overrides the brief's own sketch.
-function onAu(buf, ptsUs, sid, flags, complete, _tCompleteUs, hvccBuf, capUs, tEmitMs) {
+// buf, pts_us, sid, flags, complete, t_complete_us, hvcc, capUs, tEmitMs,
+// t_first_us -- the actual Module.onAu arg order (web/src/web_main.cpp
+// emit_au), which overrides the brief's own sketch. t_first_us is the last
+// argument (fix round 1 / Ruling R7): core clock, 0 when unknown.
+function onAu(buf, ptsUs, sid, flags, complete, tCompleteUs, hvccBuf, capUs, tEmitMs, tFirstUs) {
   if (stopped) return;
   const tRecvMs = now();
   segWindow.add('handoff', tRecvMs - tEmitMs);
+  if (tFirstUs > 0 && tCompleteUs > 0) {
+    segWindow.add('fec', (tCompleteUs - tFirstUs) / 1000);
+  }
 
   const data = new Uint8Array(buf);
   const g = gate.onAu({ sid, flags, complete: !!complete, data });
@@ -236,7 +240,7 @@ function renderStats(s, rcfPct) {
     ['usb (core)', s.usb_p99_us != null
       ? `p99 ${fmt(s.usb_p99_us / 1000)} max ${fmt(s.usb_max_us / 1000)}`
       : '–'],
-    ['fec (core, first→complete)', 'not exposed to the page yet'],
+    ['fec (core, first→complete)', segRow('fec', snap.w1)],
     ['handoff', segRow('handoff', snap.w1)],
     ['decode', segRow('decode', snap.w1)],
     ['present', segRow('present', snap.w1)],
@@ -302,7 +306,8 @@ function setStatusText(text, isErr) {
 }
 
 function updateOverlay() {
-  if (stopped) return;   // error/worker-failure text stays until next Connect
+  if (stopped) return;    // error/worker-failure text stays until next Connect
+  if (!connected) return; // idle text (blank, or a cancel/start-failure message) stays too
   const nowMs = performance.now();
   let primary = '';
   if (mode === 'gs' && lastStats && lastStats.peer_acked === false &&
@@ -342,7 +347,11 @@ function onError(text) {
 window.addEventListener('error', (e) => {
   const msg = String((e && e.message) || '');
   console.error('[webgs] window error', e);
-  if (msg.toLowerCase().includes('worker')) showWorkerFailure();
+  // Precise match (same signature the printErr path checks), or an error
+  // reported against the worker script itself -- not any message that
+  // happens to mention the word "worker" (fix round 1).
+  const fromWorkerFile = typeof e?.filename === 'string' && /webgs\.js|worker/i.test(e.filename);
+  if (msg.includes('worker sent an error') || fromWorkerFile) showWorkerFailure();
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -365,9 +374,9 @@ setInterval(updateOverlay, 1000);
 async function startModule(modeArg, chArg, wArg) {
   mode = modeArg; ch = chArg; w = wArg;
   resetPageState();
-  connectStartMs = performance.now();
-  waitingSince = connectStartMs;
-  connected = true;
+  connected = false;   // not yet -- becomes true once the module actually starts, below;
+                        // updateOverlay's `if (!connected) return;` keeps "Starting..." on
+                        // screen (untouched by the 1 Hz tick) until then.
   hiddenBannerShownOnce = false;
   hiddenBannerActive = false;
   setStatusText('Starting…', false);
@@ -382,6 +391,12 @@ async function startModule(modeArg, chArg, wArg) {
       },
     });
     connectBtn.textContent = 'Connected';
+    // The module is up now: start the "waiting for key frame" / "no drone"
+    // clocks from here, not from the Connect click (fix round 1).
+    connectStartMs = performance.now();
+    waitingSince = connectStartMs;
+    connected = true;
+    updateOverlay();
   } catch (e) {
     console.error('[webgs] module start failed', e);
     setStatusText('ERROR starting module: ' + ((e && e.message) || e), true);
@@ -424,5 +439,6 @@ connectBtn.addEventListener('click', async () => {
   await startModule(chosenMode, chosenCh, chosenW);
 });
 
-// Initial overlay: nothing connected yet.
-setStatusText('', false);
+// Initial overlay: nothing connected yet -- an idle hint, never the
+// waiting-for-key/no-drone text (those need a live `gate`/`stats`, fix round 1).
+setStatusText('Press Connect to begin.', false);
