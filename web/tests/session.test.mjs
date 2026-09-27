@@ -1,0 +1,215 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Session } from '../ui/src/lib/session.js';
+import { errorText } from '../ui/src/lib/logic.mjs';
+
+function fakeTimers() {
+  const q = [];
+  return {
+    setTimeout: (fn, ms) => { const h = { fn, ms, done: false }; q.push(h); return h; },
+    clearTimeout: (h) => { if (h) h.done = true; },
+    fire(ms) { for (const h of q) if (!h.done && h.ms === ms) { h.done = true; h.fn(); } },
+    pending: (ms) => q.some((h) => !h.done && h.ms === ms),
+  };
+}
+
+function fakeModuleFactory({ exitOnStop = true, failStart = false } = {}) {
+  const made = [];
+  const create = async (opts) => {
+    if (failStart) throw new Error('boom');
+    const files = {};
+    const m = {
+      opts, files, recCalls: [],
+      FS: { writeFile: (p, t) => { files[p] = t; } },
+      _webgs_stop() { m.stopped = true; if (exitOnStop) queueMicrotask(() => opts.onExit(0)); },
+      _webgs_set_rec(on) { m.recCalls.push(on); },
+    };
+    for (const f of opts.preRun || []) f(m);
+    made.push(m);
+    return m;
+  };
+  return { create, made };
+}
+
+const mk = (over = {}) => {
+  const t = fakeTimers();
+  const f = fakeModuleFactory(over.factory);
+  let reloads = 0;
+  const s = new Session({
+    createModule: f.create, requestDevice: over.requestDevice || (async () => {}),
+    onAu: () => {}, onStats: () => {}, reload: () => { reloads++; }, timers: t,
+  });
+  const states = [];
+  s.subscribe((v) => states.push(v.state));
+  return { s, t, f, states, reloads: () => reloads };
+};
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+test('gs connect passes args + overlay, disconnect tears down to idle', async () => {
+  const { s, f, states } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '[link]\nmax_mcs = 3\n' });
+  assert.equal(states.at(-1), 'live');
+  const m = f.made[0];
+  assert.deepEqual(m.opts.arguments,
+    ['live', '--mode', 'gs', '--ch', '136', '--w', '40', '--overlay', '/overlay.toml']);
+  assert.equal(m.files['/overlay.toml'], '[link]\nmax_mcs = 3\n');
+  await s.disconnect();
+  await tick();
+  assert.ok(m.stopped);
+  assert.deepEqual(states.slice(-2), ['stopping', 'idle']);
+});
+
+test('spotter sends no overlay', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'spotter', ch: 136, w: 40, overlayToml: 'x' });
+  assert.deepEqual(f.made[0].opts.arguments, ['live', '--mode', 'spotter', '--ch', '136', '--w', '40']);
+  assert.deepEqual(f.made[0].files, {});
+});
+
+test('device chooser cancelled -> idle with a notice, no module', async () => {
+  const { s, f, states } = mk({ requestDevice: async () => { throw new Error('cancel'); } });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(states.at(-1), 'idle');
+  assert.match(s.snapshot.notice, /No device selected/);
+  assert.equal(f.made.length, 0);
+});
+
+test('module start failure -> error', async () => {
+  const { s } = mk({ factory: { failStart: true } });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.snapshot.state, 'error');
+  assert.match(s.snapshot.error, /boom/);
+});
+
+test('card_lost_goes_to_error_and_reconnects', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  f.made[0].opts.onError('card lost');
+  f.made[0].opts.onExit(1);
+  assert.equal(s.snapshot.state, 'error');
+  assert.match(s.snapshot.error, /Card lost/);
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.snapshot.state, 'live');
+  assert.equal(f.made.length, 2, 'a fresh module instance');
+});
+
+test('connect_is_noop_unless_idle_or_error', async () => {
+  const { s, f } = mk();
+  const p1 = s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const p2 = s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  await Promise.all([p1, p2]);
+  assert.equal(f.made.length, 1);
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(f.made.length, 1);
+});
+
+test('disconnect_is_noop_unless_live', async () => {
+  const { s, states } = mk();
+  await s.disconnect();
+  assert.deepEqual(states, ['idle']);
+});
+
+test('stop timeout falls back to reload', async () => {
+  const { s, t, reloads } = mk({ factory: { exitOnStop: false } });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  await s.disconnect();
+  assert.equal(s.snapshot.state, 'stopping');
+  assert.ok(t.pending(3000));
+  t.fire(3000);
+  assert.equal(reloads(), 1);
+});
+
+test('rec off before stop: waits for the drone to report off (or 1 s)', async () => {
+  const { s, f, t } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  s.setRec(true);
+  m.opts.onStats(JSON.stringify({ rec_state: 1, rec_err: 0 }));
+  const done = s.disconnect();
+  await tick();
+  assert.deepEqual(m.recCalls, [1, 0]);
+  assert.ok(!m.stopped, 'still waiting for rec off');
+  m.opts.onStats(JSON.stringify({ rec_state: 0, rec_err: 0 }));
+  await done; await tick();
+  assert.ok(m.stopped);
+  assert.equal(s.snapshot.state, 'idle');
+  assert.ok(!t.pending(1000));
+});
+
+test('rec off wait gives up after 1 s', async () => {
+  const { s, f, t } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  s.setRec(true);
+  m.opts.onStats(JSON.stringify({ rec_state: 1, rec_err: 0 }));
+  const done = s.disconnect();
+  await tick();
+  t.fire(1000);
+  await done; await tick();
+  assert.ok(m.stopped);
+});
+
+test('setRec_noop_in_spotter and when not live', async () => {
+  const { s, f } = mk();
+  s.setRec(true);   // idle: nothing to call
+  await s.connect({ mode: 'spotter', ch: 136, w: 40, overlayToml: '' });
+  s.setRec(true);
+  assert.deepEqual(f.made[0].recCalls, []);
+  assert.equal(s.snapshot.recWish, false);
+});
+
+test('external failure (worker) -> error', async () => {
+  const { s } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  s.fail('Page worker failed');
+  assert.equal(s.snapshot.state, 'error');
+  assert.equal(s.snapshot.error, 'Page worker failed');
+});
+
+// Ruling (Task 3 review): onExit and onError can arrive in either order.
+// The session must end in 'error' showing the MAPPED onError text
+// regardless of which callback the runtime fires first.
+test('exit_before_error_still_shows_mapped_error', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  const line = 'bad config: config: /maburgs.toml:88: link.x: why';
+  m.opts.onExit(2);
+  m.opts.onError(line);
+  assert.equal(s.snapshot.state, 'error');
+  assert.equal(s.snapshot.error, errorText(line));
+});
+
+test('exit_before_error_during_connecting_still_shows_mapped_error, no live reached', async () => {
+  const line = 'bad config: config: /maburgs.toml:88: link.x: why';
+  const create = async (opts) => {
+    opts.onExit(2);
+    opts.onError(line);
+    return { FS: { writeFile() {} }, _webgs_stop() {}, _webgs_set_rec() {} };
+  };
+  const t = fakeTimers();
+  const states = [];
+  const s = new Session({
+    createModule: create, requestDevice: async () => {},
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: t,
+  });
+  s.subscribe((v) => states.push(v.state));
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.snapshot.state, 'error');
+  assert.equal(s.snapshot.error, errorText(line));
+  assert.ok(!states.includes('live'));
+});
+
+// A late onError from an already-stopped module must not flip a clean
+// idle back into error.
+test('late_onError_after_clean_stop_does_not_flip_idle_to_error', async () => {
+  const { s, f, states } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  await s.disconnect();
+  await tick();
+  assert.equal(s.snapshot.state, 'idle');
+  m.opts.onError('card lost');
+  assert.equal(s.snapshot.state, 'idle');
+  assert.ok(!states.includes('error'));
+});
