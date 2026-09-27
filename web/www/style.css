@@ -1,0 +1,145 @@
+/* mabur web GS page. Plain, phone-width usable, no horizontal scroll. */
+:root {
+  color-scheme: dark;
+  --bg: #111;
+  --fg: #ddd;
+  --dim: #888;
+  --accent: #6cf;
+  --bad: #f66;
+  --ok: #6f9;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.4 system-ui, -apple-system, sans-serif;
+}
+
+body { padding: 10px 12px 24px; }
+
+header#controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+fieldset#modefield {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+fieldset#modefield legend { color: var(--dim); font-size: 12px; }
+fieldset#modefield label { display: flex; align-items: center; gap: 4px; }
+
+p.hint {
+  margin: 0;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+#params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+#params label { display: flex; align-items: center; gap: 6px; }
+#params input, #params select {
+  background: #1a1a1a;
+  color: var(--fg);
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+}
+#params input#ch { width: 5em; }
+
+button {
+  font: inherit;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #222;
+  color: var(--fg);
+}
+button:active { background: #2a2a2a; }
+button:disabled { opacity: 0.6; }
+
+#videowrap {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+canvas#v {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  background: #000;
+}
+
+#status {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--ok);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+#status.err { color: var(--bad); }
+#status.hidden { display: none; }
+
+details#stats {
+  margin-top: 14px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+details#stats summary { cursor: pointer; color: var(--accent); }
+
+table#statstable {
+  width: 100%;
+  max-width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12px;
+}
+table#statstable td, table#statstable th {
+  padding: 3px 6px;
+  border-bottom: 1px solid #222;
+  text-align: left;
+  word-break: break-word;
+}
+table#statstable tr.section td {
+  color: var(--dim);
+  font-weight: bold;
+  padding-top: 10px;
+  border-bottom: 1px solid #333;
+}
+table#statstable td.val { text-align: right; font-family: monospace; }
+
+#copystats-msg {
+  margin-left: 8px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+@media (max-width: 480px) {
+  #params { gap: 8px; }
+  table#statstable { font-size: 11px; }
+}
