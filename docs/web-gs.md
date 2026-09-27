@@ -1,8 +1,8 @@
 # Web GS — mabur ground station in the browser
 
 `web/` is a browser page (WebUSB + WebAssembly) that runs the same receive
-and ladder-control core as `maburgs`, on one RTL8812EU card, with no native
-daemon involved. It supersedes the throwaway `spike/wasm/` (deleted on this
+and ladder-control core as `maburgs`, on one RTL8812EU or RTL8812AU card, with no
+native daemon involved. It supersedes the throwaway `spike/wasm/` (deleted on this
 branch; branch `wasm-spike`, d54a9b2) — the spike answered "can devourer run
 in Chrome over WebUSB and keep up with live video" (yes), this is that
 answer turned into a real feature. Design: PR that added this page (see the
@@ -212,8 +212,9 @@ requested while the card is still initialising (~5 s after Connect) takes
 effect only once init finishes.
 
 The browser's own device
-chooser asks for the RTL8812EU (WebUSB's per-origin device grant — pick it
-once and later `getDevices()` calls see it without asking again on the same
+chooser asks for the card — an RTL8812EU (Jaguar3) or an RTL8812AU
+(Jaguar1); the WASM core builds both devourer drivers (WebUSB's per-origin
+device grant — pick it once and later `getDevices()` calls see it without asking again on the same
 origin). What the status overlay shows after that:
 
 - `Starting…` / `Requesting device…` — module bring-up, before the core
@@ -385,6 +386,19 @@ since Betaflight sends DRAW_SCREEN continuously.
 
 ## Known limits
 
+- **RTL8812AU on a Linux host: unload `rtw88_8812au` first.** The kernel
+  has an in-tree driver for the AU (the EU has none). devourer's
+  `claim_interface_then_reset` resets the port after claiming, the kernel
+  re-probes the interface, and `rtw88_8812au` takes it back mid-bring-up;
+  Chrome cannot detach a kernel driver, so every transfer after init fails
+  and the page reports `card lost` (an unbound card fails earlier, at
+  `claimInterface`, once a re-enumeration has rebound it). Native `webgs`
+  / `maburgs` don't see this — libusb detaches the kernel driver itself.
+  Fix: `sudo modprobe -r rtw88_8812au` (holds until a replug or reboot; a
+  reset keeps the device number, so nothing reloads it), or blacklist it
+  (NixOS: `boot.blacklistedKernelModules = [ "rtw88_8812au" ];`). Bench
+  2026-09-28: with the module unloaded, GS mode on an 8812AU (C-cut 2T2R,
+  USB 3) connects, flies the ladder and plays video.
 - **Oilpan GC spikes.** Blink's incremental GC sweep of per-transfer WebUSB
   objects (`cppgc::Sweeper::IncrementalSweepTask`) runs on the thread that
   owns those objects and, after a major GC roughly every 8–13 s, costs one
