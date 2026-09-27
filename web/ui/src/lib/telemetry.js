@@ -14,6 +14,8 @@ export class Telemetry {
     this.ausRate = 0;
     this.page = null;
     this.spark = [];
+    this.seg = null;       // { w1, w60 } for the Debug tab
+    this.seg60At = null;   // when w60 was last computed (ms)
     this.version = 0;
   }
   onCoreStats(text, s) {
@@ -29,7 +31,15 @@ export class Telemetry {
   }
   sample(nowMs, mode) {
     const m = this.video.metrics.sample(nowMs, this.video.periodMs());
-    const snap = this.video.segWindow.snapshot();
+    // 200 ms tick: only the 1 s window (latencyNow's input). The 60 s window
+    // is O(60 s of samples) -- recomputed at 1 Hz for the Debug tab.
+    let snap;
+    if (this.seg60At === null || nowMs - this.seg60At >= 1000) {
+      snap = this.video.segWindow.snapshot();
+      this.seg60At = nowMs;
+    } else {
+      snap = { w1: this.video.segWindow.snapshot1().w1, w60: this.seg?.w60 || {} };
+    }
     const latencyMs = latencyNow(snap, mode);
     this.page = { ...m, latencyMs };
     this.seg = snap;

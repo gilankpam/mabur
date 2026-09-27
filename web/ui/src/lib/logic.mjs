@@ -131,6 +131,8 @@ export class SegWindow {
     while (drop < arr.length && arr[drop].t <= cutoff60) drop++;
     if (drop > 0) arr.splice(0, drop);
   }
+  // Both windows. O(60 s of samples) -- the page calls it at 1 Hz and for
+  // Copy stats, never on the 200 ms tick.
   snapshot(now) {
     if (now === undefined) now = this.nowFn();
     const cutoff1 = now - 1000;
@@ -147,15 +149,27 @@ export class SegWindow {
     }
     return { w1, w60 };
   }
+  // The 1 s window only (all latencyNow needs): walks back from the newest
+  // sample, so the cost is ~1 s of samples, not 60 s.
+  snapshot1(now) {
+    if (now === undefined) now = this.nowFn();
+    const cutoff1 = now - 1000;
+    const w1 = {};
+    for (const [name, arr] of this.byName) {
+      const v1 = [];
+      for (let i = arr.length - 1; i >= 0 && arr[i].t > cutoff1; i--) v1.push(arr[i].v);
+      w1[name] = summarize(v1);
+    }
+    return { w1 };
+  }
 }
 
 function summarize(values) {
-  return {
-    p50: pctl(values, 0.5),
-    p99: pctl(values, 0.99),
-    max: values.length ? Math.max(...values) : 0,
-    n: values.length,
-  };
+  // One sort serves p50, p99 and max.
+  const s = values.sort((a, b) => a - b);
+  const n = s.length;
+  const at = (q) => (n ? s[Math.min(n - 1, Math.floor(n * q))] : 0);
+  return { p50: at(0.5), p99: at(0.99), max: n ? s[n - 1] : 0, n };
 }
 
 // Capture (drone encode-complete) to glass (present) latency, ms:

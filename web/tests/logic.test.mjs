@@ -245,3 +245,21 @@ test('errorText maps bad config and strips the file:line prefix', () => {
   assert.equal(errorText('bad config: config: /maburgs.toml:88: link.ladder[0].overhead_base: must be >= overhead_enh'),
     'Config refused: link.ladder[0].overhead_base: must be >= overhead_enh. Fix it in Config and press Connect.');
 });
+
+test('SegWindow snapshot1: 1 s window only, same numbers as snapshot().w1', () => {
+  let now = 0; const w = new SegWindow(() => now);
+  for (let i = 1; i <= 100; i++) { now = i * 5; w.add('decode', i); }
+  now = 1400;
+  w.add('decode', 1000);
+  w.add('present', 3);
+  const full = w.snapshot();
+  const s1 = w.snapshot1();
+  assert.deepEqual(Object.keys(s1), ['w1']);
+  assert.deepEqual(s1.w1, full.w1);
+  assert.equal(s1.w1.decode.n, 21);
+  assert.equal(s1.w1.decode.p50, 91);
+  assert.equal(s1.w1.decode.p99, 1000);
+  // a segment whose samples all aged out of the 1 s window reads empty
+  now = 2500;
+  assert.deepEqual(w.snapshot1(now).w1.decode, { p50: 0, p99: 0, max: 0, n: 0 });
+});
