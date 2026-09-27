@@ -16,6 +16,8 @@
 //    exists. The op point shown is the drone's own applied one (Telem).
 //    Video is always decoded; a drone restart (Telem tlm_seq stepping back,
 //    DroneRestartDetector) resets the decoder continuity + FrameStream.
+// Both modes decode the MSP OSD stream (stream_id 4) into Io::on_osd; it is
+// receive-only and independent of the video gate.
 //
 // Single-threaded: on_rx/tick/stats from one thread, one clock (core mono
 // us) for both the RX stamps and tick().
@@ -35,6 +37,8 @@
 #include "link_health.h"
 #include "mabur/node.h"
 #include "mabur/rc_proto.h"
+#include "msp_sink.h"
+#include "osd_screen.h"
 #include "rcf_slot.h"
 #include "rtt_estimator.h"
 #include "vrx_controller.h"
@@ -73,6 +77,8 @@ struct Stats {
   std::optional<uint32_t> drone_rcf_rx;   // Telem, cumulative
   std::optional<uint8_t> drone_state;
   std::optional<uint8_t> rec_status;      // Telem.rec_status raw (VTX recorder)
+  uint64_t osd_snaps = 0;     // MSP snapshots out of the FEC sink
+  uint64_t osd_screens = 0;   // OSD screens published (Io::on_osd)
 };
 std::string stats_json(const Stats& s);   // one line, no trailing newline
 
@@ -101,6 +107,9 @@ struct Io {
   // a direct send plus slotter releases), nullptr when none went out.
   std::function<void(double now_ms, const maburgs::LinkHealth&, int rung,
                      const std::vector<uint8_t>* sent)> on_control_tick;
+  // Optional, both modes: one MSP OSD screen (spec 2026-09-27-web-msp-osd),
+  // at most every 30 ms. rows x cols cells, row-major, char | page << 8.
+  std::function<void(int rows, int cols, const uint16_t* cells)> on_osd;
 };
 
 struct Opts {
@@ -142,6 +151,9 @@ class WebGs {
   maburgs::GapTimeoutPolicy gap_;
   uint64_t gap_update_ms_ = 0;
   maburgs::LinkHealthAssembler lha_;
+  OsdScreen osd_;                                  // MSP OSD, both modes
+  std::unique_ptr<maburgs::MspSink> msp_;          // null when [msp] enable = false
+  uint64_t msp_tick_ms_ = 0;
   std::unique_ptr<maburgs::VrxController> vrx_;   // Gs only
   std::unique_ptr<maburgs::RcfSlotter> slot_;     // Gs only
   maburgs::RttEstimator rtt_;

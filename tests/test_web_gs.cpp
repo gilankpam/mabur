@@ -7,6 +7,7 @@
 #include "mtest.h"
 #include "web_gs.h"
 #include "mabur/msp_dp.h"
+#include "mabur/msp_source.h"
 #include "osd_screen.h"
 using namespace webgs;
 
@@ -67,6 +68,17 @@ OsdScreen::PublishFn collect(std::vector<Pub>& out) {
   return [&out](int r, int c, const uint16_t* p) {
     out.push_back({r, c, std::vector<uint16_t>(p, p + static_cast<size_t>(r) * c)});
   };
+}
+// The drone's MSP path for one screen: MspSource (defaults 1312/16 == the
+// bundle's [msp]) -> SBI/FEC bodies stamped at mono_us.
+std::vector<mabur::node::RxBody> msp_bodies(const std::string& text, uint64_t mono_us) {
+  std::vector<mabur::node::RxBody> out;
+  mabur::MspSource src(mabur::MspSourceCfg{}, [&](const uint8_t* b, size_t n) {
+    out.push_back(rc_body(std::vector<uint8_t>(b, b + n), mono_us));
+  });
+  const auto blob = osd_blob(text);
+  src.on_serial_bytes(blob.data(), blob.size(), mono_us / 1000);
+  return out;
 }
 }  // namespace
 
@@ -474,4 +486,66 @@ TEST(osd_screen_sd_canvas_from_set_options) {
   REQUIRE(pubs.size() == 2);
   CHECK(pubs[1].rows == 18);
   CHECK(pubs[1].cols == 50);
+}
+
+TEST(spotter_msp_bodies_reach_on_osd) {
+  std::vector<Pub> pubs;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.on_osd = collect(pubs);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  const uint64_t t = 1'000'000;
+  const auto bodies = msp_bodies("HELLO", t);
+  REQUIRE(!bodies.empty());
+  for (const auto& b : bodies) { g.on_rx(b); g.tick(t); }
+  REQUIRE(pubs.size() == 1);
+  CHECK(pubs[0].rows == 18);
+  CHECK(pubs[0].cells[0] == 'H');
+  CHECK(g.stats().osd_snaps == 1);
+  CHECK(g.stats().osd_screens == 1);
+  CHECK(g.sends() == 0);   // OSD never opens a send path in Spotter
+  const auto j = stats_json(g.stats());
+  CHECK(j.find("\"osd_snaps\":1") != std::string::npos);
+  CHECK(j.find("\"osd_screens\":1") != std::string::npos);
+}
+
+TEST(gs_mode_shows_osd_before_session) {
+  // MSP is independent of the video gate: the OSD shows while rendezvous
+  // is still beaconing.
+  std::vector<Pub> pubs;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.send = [](const std::vector<uint8_t>&) {};
+  io.on_osd = collect(pubs);
+  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  const uint64_t t = 1'000'000;
+  for (const auto& b : msp_bodies("GS", t)) { g.on_rx(b); g.tick(t); }
+  CHECK(!g.stats().peer_acked);   // no DISC_ACK yet: rendezvous starts in SESSION, so peer_acked is the gate
+  REQUIRE(pubs.size() == 1);
+  CHECK(pubs[0].cells[1] == 'S');
+}
+
+TEST(msp_disabled_publishes_nothing) {
+  std::vector<Pub> pubs;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.on_osd = collect(pubs);
+  auto c = cfg();
+  c.msp.enable = false;
+  WebGs g(c, Mode::Spotter, 136, 40, io);
+  const uint64_t t = 1'000'000;
+  for (const auto& b : msp_bodies("OFF", t)) { g.on_rx(b); g.tick(t); }
+  CHECK(pubs.empty());
+  CHECK(g.stats().osd_snaps == 0);
+  CHECK(g.stats().osd_screens == 0);
+}
+
+TEST(osd_without_on_osd_is_counted_not_crashing) {
+  // Replay/Node builds leave Io::on_osd unset.
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  const uint64_t t = 1'000'000;
+  for (const auto& b : msp_bodies("X", t)) { g.on_rx(b); g.tick(t); }
+  CHECK(g.stats().osd_screens == 1);
 }

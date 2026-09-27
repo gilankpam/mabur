@@ -73,7 +73,10 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
              cur_ = Au{};
            }}),
       gap_(cfg.video.frame_gap_timeout_ms, cfg.video.frame_gap_timeout_max_ms),
-      lha_(lh_cfg(cfg)) {
+      lha_(lh_cfg(cfg)),
+      osd_([this](int rows, int cols, const uint16_t* cells) {
+        if (io_.on_osd) io_.on_osd(rows, cols, cells);
+      }) {
   (void)width;  // the radio is tuned by the glue; the rung width comes from the ladder
   if (mode_ == Mode::Gs) {
     if (!io_.send) throw std::invalid_argument("webgs: Gs mode needs Io::send");
@@ -120,6 +123,15 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
     if (slot_) slot_->on_probe_tail(now_us_ / 1000);
     lha_.on_probe_body(card, m);
   });
+  // MSP OSD (maburgs main.cpp's msp sink): receive-only, both modes.
+  if (cfg.msp.enable) {
+    msp_ = std::make_unique<maburgs::MspSink>(
+        cfg.msp.symbol_size, cfg.msp.window,
+        [this](const uint8_t* d, size_t n) { osd_.feed(d, n, now_us_ / 1000); });
+    agg_.set_msp_sink([this](const uint8_t* b, size_t n, uint64_t us) {
+      msp_->on_body(b, n, us / 1000);
+    });
+  }
 }
 
 void WebGs::on_rx(const mabur::node::RxBody& m) {
@@ -162,6 +174,11 @@ void WebGs::tick(uint64_t now_us) {
       fs_.set_gap_timeout(s, static_cast<uint64_t>(gap_.timeout_ms(s)));
     }
   }
+  if (msp_ && now_ms_u >= msp_tick_ms_ + 1000) {
+    msp_tick_ms_ = now_ms_u;
+    msp_->tick(now_ms_u);   // expire stale repair rows (~1 Hz, as maburgs)
+  }
+  osd_.tick(now_ms_u);      // publishes a held screen once its 30 ms is up
   if (vrx_) {
     // maburgs main.cpp: video tail only while in SESSION with a
     // CAP_FRAME_WIRE peer; any change drops FRAG-seq continuity and
@@ -262,6 +279,8 @@ Stats WebGs::stats() const {
     s.drone_state = telem_->state;
     s.rec_status = telem_->rec_status;
   }
+  s.osd_snaps = msp_ ? msp_->snapshots_out() : 0;
+  s.osd_screens = osd_.screens();
   return s;
 }
 
@@ -301,6 +320,8 @@ std::string stats_json(const Stats& s) {
   j["trunc"] = s.aus_truncated;
   j["sends"] = s.sends;
   j["rcf_sent"] = s.rcf_sent;
+  j["osd_snaps"] = s.osd_snaps;
+  j["osd_screens"] = s.osd_screens;
   return j.dump();
 }
 

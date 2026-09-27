@@ -47,7 +47,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${MABUR_DIR}/gs/src/ladder_residual.cpp ${MABUR_DIR}/gs/src/vrx_controller.cpp
     ${MABUR_DIR}/gs/src/rendezvous.cpp ${MABUR_DIR}/gs/src/ladder_controller.cpp
     ${MABUR_DIR}/gs/src/rung_store.cpp ${MABUR_DIR}/gs/src/rcf_slot.cpp
-    ${MABUR_DIR}/gs/src/rtt_estimator.cpp ${MABUR_DIR}/gs/src/dot11.cpp)
+    ${MABUR_DIR}/gs/src/rtt_estimator.cpp ${MABUR_DIR}/gs/src/dot11.cpp
+    ${MABUR_DIR}/gs/src/msp_sink.cpp)
   target_include_directories(webgs_core PUBLIC src ${MABUR_DIR}/common/include
     ${MABUR_DIR}/gs/src ${MABUR_DIR}/third_party ${DEVOURER_DIR}/src)
   target_compile_options(webgs_core PRIVATE -O3)
