@@ -32,7 +32,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   # (pthread_setaffinity_np). Undefined mabur symbol at link -> add the
   # common/src or gs/src file that defines it here.
   add_library(webgs_core STATIC
-    src/web_gs.cpp
+    src/web_gs.cpp src/osd_screen.cpp
     ${MABUR_DIR}/common/src/crc16.cpp ${MABUR_DIR}/common/src/gf256.cpp
     ${MABUR_DIR}/common/src/sbi.cpp ${MABUR_DIR}/common/src/frag.cpp
     ${MABUR_DIR}/common/src/nal.cpp ${MABUR_DIR}/common/src/uep_decoder.cpp
@@ -40,7 +40,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${MABUR_DIR}/common/src/frame_wire.cpp ${MABUR_DIR}/common/src/rc_proto.cpp
     ${MABUR_DIR}/common/src/profile.cpp ${MABUR_DIR}/common/src/node.cpp
     ${MABUR_DIR}/common/src/hevc_params.cpp ${MABUR_DIR}/common/src/toml.cpp
-    ${MABUR_DIR}/common/src/probe_wire.cpp
+    ${MABUR_DIR}/common/src/probe_wire.cpp ${MABUR_DIR}/common/src/msp_dp.cpp
     ${MABUR_DIR}/gs/src/aggregator.cpp ${MABUR_DIR}/gs/src/frame_stream.cpp
     ${MABUR_DIR}/gs/src/frame_file_source.cpp ${MABUR_DIR}/gs/src/config.cpp
     ${MABUR_DIR}/gs/src/link_health.cpp ${MABUR_DIR}/gs/src/probe_track.cpp
@@ -102,7 +102,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_custom_target(webgs_ui ALL DEPENDS ${WEB_DIST}/index.html)
 else()
   # Included from the root build: native core + tests.
-  add_library(mabur_web_core STATIC src/web_gs.cpp)
+  add_library(mabur_web_core STATIC src/web_gs.cpp src/osd_screen.cpp)
   target_include_directories(mabur_web_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
   target_link_libraries(mabur_web_core PUBLIC mabur_gs_core mabur_common)

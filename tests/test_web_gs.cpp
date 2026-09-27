@@ -6,6 +6,8 @@
 #include "body_gen.h"
 #include "mtest.h"
 #include "web_gs.h"
+#include "mabur/msp_dp.h"
+#include "osd_screen.h"
 using namespace webgs;
 
 namespace {
@@ -37,6 +39,34 @@ mabur::node::RxBody telem_body(uint16_t tlm_seq, uint64_t mono_us) {
   mabur::rc::Telem t;
   t.tlm_seq = tlm_seq;
   return rc_body(mabur::rc::pack_telem(t), mono_us);
+}
+// One full DisplayPort screen: CLEAR, optional SET_OPTIONS (hd_option),
+// `text` at row 0 col 0, then DRAW_SCREEN unless `finish` is false.
+std::vector<uint8_t> osd_blob(const std::string& text, int hd_option = -1, bool finish = true) {
+  std::vector<uint8_t> s;
+  const uint8_t clr = mabur::MSP_DP_CLEAR;
+  mabur::msp_append_message(s, mabur::MSP_CMD_DISPLAYPORT, &clr, 1);
+  if (hd_option >= 0) {
+    const uint8_t opt[3] = {mabur::MSP_DP_SET_OPTIONS, 0, static_cast<uint8_t>(hd_option)};
+    mabur::msp_append_message(s, mabur::MSP_CMD_DISPLAYPORT, opt, 3);
+  }
+  std::vector<uint8_t> ds = {mabur::MSP_DP_DRAW_STRING, 0, 0, 0};
+  for (char ch : text) ds.push_back(static_cast<uint8_t>(ch));
+  mabur::msp_append_message(s, mabur::MSP_CMD_DISPLAYPORT, ds.data(), ds.size());
+  if (finish) {
+    const uint8_t scr = mabur::MSP_DP_DRAW_SCREEN;
+    mabur::msp_append_message(s, mabur::MSP_CMD_DISPLAYPORT, &scr, 1);
+  }
+  return s;
+}
+struct Pub {
+  int rows = 0, cols = 0;
+  std::vector<uint16_t> cells;
+};
+OsdScreen::PublishFn collect(std::vector<Pub>& out) {
+  return [&out](int r, int c, const uint16_t* p) {
+    out.push_back({r, c, std::vector<uint16_t>(p, p + static_cast<size_t>(r) * c)});
+  };
 }
 }  // namespace
 
@@ -370,3 +400,78 @@ TEST(channel_width_override_validation) {
 }
 
 MTEST_MAIN
+
+TEST(osd_screen_publishes_one_snapshot) {
+  std::vector<Pub> pubs;
+  OsdScreen o(collect(pubs));
+  const auto b = osd_blob("HELLO");
+  o.feed(b.data(), b.size(), 1000);
+  REQUIRE(pubs.size() == 1);
+  CHECK(pubs[0].rows == 18);
+  CHECK(pubs[0].cols == 50);
+  CHECK(pubs[0].cells[0] == 'H');
+  CHECK(pubs[0].cells[4] == 'O');
+  CHECK(pubs[0].cells[5] == 0);
+  CHECK(o.screens() == 1);
+}
+
+TEST(osd_screen_holds_inside_interval_latest_wins) {
+  std::vector<Pub> pubs;
+  OsdScreen o(collect(pubs));
+  const auto a = osd_blob("AAA"), b = osd_blob("BBB"), c = osd_blob("CCC");
+  o.feed(a.data(), a.size(), 1000);
+  o.feed(b.data(), b.size(), 1010);
+  o.feed(c.data(), c.size(), 1020);
+  CHECK(pubs.size() == 1);
+  o.tick(1029);
+  CHECK(pubs.size() == 1);
+  o.tick(1030);
+  REQUIRE(pubs.size() == 2);
+  CHECK(pubs[1].cells[0] == 'C');   // latest wins, B never shown
+  o.tick(2000);
+  CHECK(pubs.size() == 2);          // nothing pending: no re-publish
+  CHECK(o.screens() == 2);
+}
+
+TEST(osd_screen_ignores_garbage_and_unfinished) {
+  std::vector<Pub> pubs;
+  OsdScreen o(collect(pubs));
+  const std::string junk = "not msp at all $M< garbage";
+  o.feed(reinterpret_cast<const uint8_t*>(junk.data()), junk.size(), 1000);
+  const auto part = osd_blob("XYZ", -1, /*finish=*/false);
+  o.feed(part.data(), part.size(), 1100);
+  o.tick(5000);
+  CHECK(pubs.empty());
+  CHECK(o.screens() == 0);
+}
+
+TEST(osd_screen_held_copy_survives_later_partial) {
+  // A held screen is the copy taken at its DRAW_SCREEN: a later unfinished
+  // snapshot (CLEAR + DRAW_STRING, no DRAW_SCREEN) must not leak into it.
+  std::vector<Pub> pubs;
+  OsdScreen o(collect(pubs));
+  const auto a = osd_blob("AAA"), b = osd_blob("BBB"), z = osd_blob("ZZZ", -1, false);
+  o.feed(a.data(), a.size(), 1000);
+  o.feed(b.data(), b.size(), 1010);   // held
+  o.feed(z.data(), z.size(), 1015);   // unfinished
+  o.tick(1040);
+  REQUIRE(pubs.size() == 2);
+  CHECK(pubs[1].cells[0] == 'B');
+}
+
+TEST(osd_screen_sd_canvas_from_set_options) {
+  std::vector<Pub> pubs;
+  OsdScreen o(collect(pubs));
+  const auto sd = osd_blob("SD", /*hd_option=*/0);   // msp_hd_options_e 0 = SD 30x16
+  o.feed(sd.data(), sd.size(), 1000);
+  REQUIRE(pubs.size() == 1);
+  CHECK(pubs[0].rows == 16);
+  CHECK(pubs[0].cols == 30);
+  CHECK(pubs[0].cells.size() == 480);
+  CHECK(pubs[0].cells[1] == 'D');
+  const auto hd = osd_blob("HD", /*hd_option=*/1);   // back to HD 50x18
+  o.feed(hd.data(), hd.size(), 1100);
+  REQUIRE(pubs.size() == 2);
+  CHECK(pubs[1].rows == 18);
+  CHECK(pubs[1].cols == 50);
+}
