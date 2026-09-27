@@ -365,11 +365,11 @@ ignored — there is no UDP here). `webgs::OsdScreen`
 latest wins — `OsdSource`'s gate. The glue posts it as
 `Module.onOsd(rows, cols, Uint16Array)`.
 
-The page (`web/ui/src/lib/osd.js`) spreads the grid over the whole visible
-video box — the 16:9 box when windowed, the full viewport in immersive,
-where the video is `cover`-cropped — so edge elements stay on screen; glyphs
-are stretched to the cell (on a 20:9 phone that is ~20 % wider than the
-font's 2:3). It paints on a second canvas over the video, once per animation
+The page (`web/ui/src/lib/osd.js`) spreads the grid over the video box,
+which is 16:9 in every layout — immersive (fullscreen, phones) letterboxes
+the video instead of cropping it, so the OSD sits exactly on the picture and
+an HD grid's (53x20) cells keep the font's 2:3 shape; an SD grid is widened
+to 16:9 as on `maburplay`. It paints on a second canvas over the video, once per animation
 frame at most, and blanks after 5 s without a screen (`maburplay`'s
 `stale_ms` default) and on Disconnect. There is no toggle — trim elements in
 the Betaflight OSD tab.

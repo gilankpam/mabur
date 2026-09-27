@@ -295,9 +295,9 @@
   canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
   .osd, .vgl { position: absolute; inset: 0; pointer-events: none; }
   .immersive .row { position: absolute; inset: 0; padding: 0; gap: 0; }
-  .immersive .videobox { display: block; }
-  .immersive .videoinner { position: absolute; inset: 0; width: auto; aspect-ratio: auto; border-radius: 0; }
-  .immersive canvas { object-fit: cover; }
+  /* Letterboxed, never cropped: the 16:9 box fits the viewport, black bars fill the rest. */
+  .immersive .videobox { background: #000; }
+  .immersive .videoinner { border-radius: 0; }
   .status { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 6px 12px; border-radius: 6px;
             font-size: 12px; color: var(--color-neutral-100); white-space: pre-wrap; text-align: center; pointer-events: none; }
 </style>
