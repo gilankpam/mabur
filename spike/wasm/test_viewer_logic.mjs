@@ -8,7 +8,8 @@ const nal = (type, len = 4, four = true) =>
 const au = (types, extra = {}) => ({
   sid: 0, flags: 0, complete: true,
   data: new Uint8Array(types.flatMap((t, i) => nal(t, 4, i % 2 === 0))), ...extra });
-const PARAMS = [32, 33, 34, 1];
+const PARAMS = [32, 33, 34, 19];  // parameter sets + IDR_W_RADL (IRAP)
+const GDR = [32, 33, 34, 1];       // parameter sets + TRAIL_R refresh (drone's GDR)
 
 test('nalTypes finds 3- and 4-byte start codes', () => {
   assert.deepEqual(nalTypes(au([32, 33, 34, 19]).data), [32, 33, 34, 19]);
@@ -86,4 +87,26 @@ test('annexbToLengthPrefixed rewrites 3- and 4-byte start codes as u32 BE length
   const ab = new Uint8Array([0, 0, 0, 1, 0x40, 1, 7, 0, 0, 1, 0x02, 1, 9, 9]);
   assert.deepEqual([...annexbToLengthPrefixed(ab)],
     [0, 0, 0, 3, 0x40, 1, 7, 0, 0, 0, 4, 0x02, 1, 9, 9]);
+});
+
+test('GDR parameter-set AUs never arm the gate: WebCodecs needs an IRAP key (final review)', () => {
+  const g = new Gate();
+  assert.deepEqual(g.onAu(au(GDR)), { type: null, reset: false, skip: 'awaiting-irap' });
+  assert.equal(g.armed, false);
+  assert.equal(g.onAu(au(PARAMS)).type, 'key');
+});
+
+import { DecoderSlot } from './viewer_logic.mjs';
+
+test('DecoderSlot.replace closes the previous decoder unless already closed (final review)', () => {
+  const mk = () => ({ state: 'configured', closed: 0, close() { this.closed++; this.state = 'closed'; } });
+  const slot = new DecoderSlot();
+  const a = mk(), b = mk(), c = mk();
+  slot.replace(a);
+  slot.replace(b);
+  assert.equal(a.closed, 1);
+  b.state = 'closed';        // WebCodecs already closed it (error callback)
+  slot.replace(c);
+  assert.equal(b.closed, 0);
+  assert.equal(slot.d, c);
 });

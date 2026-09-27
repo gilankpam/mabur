@@ -27,6 +27,10 @@ export class Gate {
     if (!this.armed) {
       const t = nalTypes(data);
       if (t.includes(VPS) && t.includes(SPS) && t.includes(PPS)) {
+        // WebCodecs rejects a non-IRAP first key chunk (Annex-B and hvcC
+        // alike), and the drone is GDR: its parameter sets usually ride a
+        // TRAIL_R refresh. Arm only on an IRAP (BLA/IDR/CRA, types 16-21).
+        if (!t.some((x) => x >= 16 && x <= 21)) return { type: null, reset, skip: 'awaiting-irap' };
         this.armed = true;
         return { type: 'key', reset, skip: null };
       }
@@ -95,4 +99,15 @@ export function annexbToLengthPrefixed(u8) {
     o += 4 + x.length;
   }
   return out;
+}
+
+// Holds the live VideoDecoder; replacing it closes the old one (a rejected
+// or reset decoder left open pins a hardware decode slot until GC).
+export class DecoderSlot {
+  constructor() { this.d = null; }
+  replace(next) {
+    if (this.d && this.d.state !== 'closed') this.d.close();
+    this.d = next;
+    return next;
+  }
 }
