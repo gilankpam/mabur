@@ -2,8 +2,8 @@
 
 `web/` is a browser page (WebUSB + WebAssembly) that runs the same receive
 and ladder-control core as `maburgs`, on one RTL8812EU card, with no native
-daemon involved. It supersedes the throwaway `spike/wasm/` (deleted this
-commit; branch `wasm-spike`, d54a9b2) — the spike answered "can devourer run
+daemon involved. It supersedes the throwaway `spike/wasm/` (deleted on this
+branch; branch `wasm-spike`, d54a9b2) — the spike answered "can devourer run
 in Chrome over WebUSB and keep up with live video" (yes), this is that
 answer turned into a real feature. Design: PR that added this page (see the
 git log for `web/`); the working spec lived at
@@ -125,7 +125,22 @@ firewall reload — not persistent).
 
 ## Use
 
-Pick a mode, channel and width, press Connect. The browser's own device
+Pick a mode, channel and width, press Connect. The page defaults to
+**Spotter** mode (URL `?mode=` or the last-used choice override it) — a
+deliberate safety default, although the design spec named `gs`: opening
+the page must never start commanding a drone that a `maburgs` or another
+tab may already be flying; GS mode is an explicit opt-in.
+
+Channel/width are checked before the device is requested (an integer in
+1–200, width 20 or 40, 40 only on a standard HT40 pair), and the core
+re-checks them with `maburgs`'s own config-loader checks
+(`maburgs::radio_width_issue` / `link_width_issue`, `gs/src/config.cpp`,
+via `webgs::channel_width_error`): in GS mode a 20 MHz tuning is refused
+while the ladder has any 40 MHz rung, because the GS could not receive
+it. A refusal reads `Channel/width refused: <reason>` (core line
+`ERROR bad channel/width: <reason>`).
+
+The browser's own device
 chooser asks for the RTL8812EU (WebUSB's per-origin device grant — pick it
 once and later `getDevices()` calls see it without asking again on the same
 origin). What the status overlay shows after that:
@@ -136,7 +151,8 @@ origin). What the status overlay shows after that:
   10 s of module start; it keeps sending DISC and the message keeps
   counting, it does not give up.
 - `Waiting for key frame (sent on the next rung change) — N s` — the video
-  decoder is armed but has not seen an IRAP yet. See "Spotter key frames"
+  gate is NOT armed yet: it arms only on a complete AU carrying
+  VPS+SPS+PPS plus an IRAP, and none has arrived. See "Spotter key frames"
   below for why this can run indefinitely.
 - `GS mode keeps flying the link while this tab is hidden.` — a one-time
   banner (GS mode only) confirming the ladder and RCF sends do not pause
@@ -152,7 +168,7 @@ origin). What the status overlay shows after that:
   above; that is this file.
 
 **Spotter key frames.** WebCodecs will only start decoding on a real IRAP
-(NAL type 19), never on the drone's GDR parameter-set refresh
+(IRAP NAL types 16–21: BLA/IDR/CRA), never on the drone's GDR parameter-set refresh
 (`32 33 34 1`, TRAIL_R). The drone only emits a real IDR on a rung change
 or link-up, so a spotter opened mid-flight on a steady link can sit on
 "Waiting for key frame" until the ladder next moves — there is no drone,
@@ -165,8 +181,11 @@ second after DISC_ACK.
 ## Stats panel
 
 A 1 Hz snapshot from the core (`webgs::Stats` / `stats_json()` in
-`web/src/web_gs.cpp`), plus page-side timing JS adds on receipt. Segments
-(spec §4):
+`web/src/web_gs.cpp`), plus page-side timing JS adds on receipt. Every
+page-side segment row shows p50/p99/max over both a 1 s and a 60 s window
+(USB lateness is the core's own 1 s window). "Copy stats" copies
+`{core: [last 60 s of 1 Hz stats lines], segments: {w1, w60}}` as JSON.
+Segments (spec §4):
 
 | Segment | What it measures | Mode |
 |---|---|---|
@@ -184,7 +203,10 @@ with the drone — a spotter has no control channel to measure it over, and
 the panel says so rather than showing a stale or borrowed number.
 
 Link state shown alongside: rung/MCS/width, probe gate state, pre-FEC loss,
-residual, SNR/RSSI, RCF heard % (`Telem.rcf_rx`), AUs/s, and hitches (gaps
+residual, SNR/RSSI, RCF heard % (Δ`Telem.rcf_rx` / Δ`rcf_sent` — `rcf_sent`
+counts RCFs only, not the DISC beacons/keep-alives that `sends` also counts,
+because the drone's `rcf_rx` counts RCFs only; dividing by `sends` capped the
+ratio below the 95 % pass mark), AUs/s, and hitches (gaps
 > 1.5× the frame period). No playout regulator and no vsync lock exist in
 this build — the panel is measurement-only, by design (see the spec's
 "Decided" list).

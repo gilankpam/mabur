@@ -111,7 +111,10 @@ test('DecoderSlot.replace closes the previous decoder unless already closed (fin
   assert.equal(slot.d, c);
 });
 
-import { SegWindow, capToGlass, rcfHeardPct, errorText } from '../www/logic.mjs';
+import {
+  SegWindow, capToGlass, rcfHeardPct, errorText, ht40Offset, checkChannelWidth,
+  pruneSubmitted, trimBefore, copyStatsPayload,
+} from '../www/logic.mjs';
 
 test('SegWindow p50/p99/max over 1 s and 60 s', () => {
   let now = 0; const w = new SegWindow(() => now);
@@ -135,14 +138,65 @@ test('capToGlass null without offset, sum with it', () => {
 });
 
 test('rcfHeardPct deltas, resets and missing fields', () => {
-  assert.equal(rcfHeardPct(null, { drone_rcf_rx: 5, sends: 5 }), null);
-  assert.equal(rcfHeardPct({ drone_rcf_rx: 100, sends: 100 }, { drone_rcf_rx: 119, sends: 120 }), 95);
-  assert.equal(rcfHeardPct({ drone_rcf_rx: 100, sends: 100 }, { drone_rcf_rx: 3, sends: 120 }), null);
-  assert.equal(rcfHeardPct({ drone_rcf_rx: null, sends: 1 }, { drone_rcf_rx: null, sends: 2 }), null);
+  assert.equal(rcfHeardPct(null, { drone_rcf_rx: 5, rcf_sent: 5 }), null);
+  assert.equal(rcfHeardPct({ drone_rcf_rx: 100, rcf_sent: 100 }, { drone_rcf_rx: 119, rcf_sent: 120 }), 95);
+  assert.equal(rcfHeardPct({ drone_rcf_rx: 100, rcf_sent: 100 }, { drone_rcf_rx: 3, rcf_sent: 120 }), null);
+  assert.equal(rcfHeardPct({ drone_rcf_rx: null, rcf_sent: 1 }, { drone_rcf_rx: null, rcf_sent: 2 }), null);
+});
+
+test('rcfHeardPct divides by rcf_sent, not sends (DISC keep-alives are not RCFs)', () => {
+  // 20 RCFs all heard, plus 5 DISC keep-alives in the same second: 100 %,
+  // not 80 %.
+  const prev = { drone_rcf_rx: 100, rcf_sent: 100, sends: 110 };
+  const cur = { drone_rcf_rx: 120, rcf_sent: 120, sends: 135 };
+  assert.equal(rcfHeardPct(prev, cur), 100);
+  // No rcf_sent (old core): no number rather than a wrong one.
+  assert.equal(rcfHeardPct({ drone_rcf_rx: 1, sends: 1 }, { drone_rcf_rx: 2, sends: 2 }), null);
+});
+
+test('ht40Offset matches common/include/mabur/ht40.h', () => {
+  assert.equal(ht40Offset(36), 1); assert.equal(ht40Offset(40), 2);
+  assert.equal(ht40Offset(132), 1); assert.equal(ht40Offset(136), 2);
+  assert.equal(ht40Offset(149), 1); assert.equal(ht40Offset(161), 2);
+  assert.equal(ht40Offset(165), 0); assert.equal(ht40Offset(6), 0);
+});
+
+test('checkChannelWidth refuses bad channel/width before connect', () => {
+  assert.equal(checkChannelWidth('136', '40'), null);
+  assert.equal(checkChannelWidth('165', '20'), null);
+  assert.match(checkChannelWidth('abc', '20'), /not a number/);
+  assert.match(checkChannelWidth('', '20'), /not a number/);
+  assert.match(checkChannelWidth('13.5', '20'), /not a number/);
+  assert.match(checkChannelWidth('0', '20'), /out of range/);
+  assert.match(checkChannelWidth('201', '20'), /out of range/);
+  assert.match(checkChannelWidth('136', '80'), /20 or 40/);
+  assert.match(checkChannelWidth('165', '40'), /no 40 MHz pair/);
+});
+
+test('pruneSubmitted drops records older than 1 s', () => {
+  const m = new Map([[1, { tSubmit: 0 }], [2, { tSubmit: 1000 }], [3, { tSubmit: 1500 }]]);
+  pruneSubmitted(m, 1950);
+  assert.deepEqual([...m.keys()], [2, 3]);
+});
+
+test('trimBefore trims ascending times in place', () => {
+  const a = [1, 2, 3, 10];
+  assert.equal(trimBefore(a, 3), a);
+  assert.deepEqual(a, [10]);
+  assert.deepEqual(trimBefore([], 5), []);
+});
+
+test('copyStatsPayload carries core stats and page segments', () => {
+  const snap = { w1: { decode: { p50: 1, p99: 2, max: 3, n: 4 } }, w60: { decode: { p50: 1, p99: 2, max: 3, n: 40 } } };
+  const out = JSON.parse(copyStatsPayload(['{"aus":1}', 'garbage'], snap));
+  assert.deepEqual(out.core, [{ aus: 1 }, 'garbage']);
+  assert.deepEqual(out.segments, snap);
 });
 
 test('errorText maps glue errors', () => {
   assert.match(errorText('ERROR claim failed rc=-6'), /Card busy/);
   assert.match(errorText('ERROR card lost'), /Card lost/);
+  assert.match(errorText('bad channel/width: radio.width: 40 MHz needs a standard 5 GHz pair'),
+    /Channel\/width refused: radio\.width: 40 MHz needs/);
   assert.equal(errorText('ERROR something new'), 'ERROR something new');
 });

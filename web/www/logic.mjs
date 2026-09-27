@@ -167,19 +167,72 @@ export function capToGlass({ capToCompleteUs, tEmitMs, tRecvMs, tPresentMs }) {
   return capToCompleteUs / 1000 + (tRecvMs - tEmitMs) + (tPresentMs - tRecvMs);
 }
 
-// % of drone->GS RCF sends the drone reports having heard, over the delta
-// between two stats snapshots. null when either snapshot is missing, either
-// is missing drone_rcf_rx/sends, sends didn't advance, or drone_rcf_rx went
+// % of GS->drone RCFs the drone reports having heard, over the delta
+// between two stats snapshots. The denominator is `rcf_sent` (RCFs only),
+// never `sends`: the drone's Telem.rcf_rx counts RCFs only, and `sends`
+// also counts DISC beacons/keep-alives, which would cap the ratio below the
+// 95 % pass mark. null when either snapshot is missing, either is missing
+// drone_rcf_rx/rcf_sent, rcf_sent didn't advance, or drone_rcf_rx went
 // backwards (counter reset, e.g. drone restart) rather than wrapping cleanly.
 export function rcfHeardPct(prev, cur) {
   if (!prev || !cur) return null;
   if (prev.drone_rcf_rx == null || cur.drone_rcf_rx == null) return null;
-  if (prev.sends == null || cur.sends == null) return null;
-  const dSends = cur.sends - prev.sends;
-  if (!(dSends > 0)) return null;
+  if (prev.rcf_sent == null || cur.rcf_sent == null) return null;
+  const dSent = cur.rcf_sent - prev.rcf_sent;
+  if (!(dSent > 0)) return null;
   const dRcf = cur.drone_rcf_rx - prev.drone_rcf_rx;
   if (dRcf < 0) return null;
-  return 100 * dRcf / dSends;
+  return 100 * dRcf / dSent;
+}
+
+// common/include/mabur/ht40.h's ht40_offset: 1 = HT40+, 2 = HT40-, 0 = no pair.
+export function ht40Offset(ch) {
+  if (ch >= 36 && ch <= 144 && (ch - 36) % 4 === 0) return ((ch - 36) / 4) % 2 === 0 ? 1 : 2;
+  if (ch >= 149 && ch <= 161 && (ch - 149) % 4 === 0) return ((ch - 149) / 4) % 2 === 0 ? 1 : 2;
+  return 0;
+}
+
+// Pre-connect check of the page's channel/width (strings from the inputs).
+// Mirrors the glue's checks that need no config (web_gs.cpp
+// channel_width_error): channel an integer in [1,200], width 20|40, 40 only
+// on an HT40 pair. The GS-mode "40 MHz rung while tuned 20" check needs the
+// ladder and stays in the glue (ERROR bad channel/width: ...). Returns null
+// when OK, else a user-facing message.
+export function checkChannelWidth(chStr, wStr) {
+  const chS = String(chStr ?? '').trim();
+  if (!/^\d+$/.test(chS)) return `Channel "${chS}" is not a number.`;
+  const ch = Number(chS);
+  if (ch < 1 || ch > 200) return `Channel ${ch} is out of range (1–200).`;
+  const w = String(wStr ?? '').trim();
+  if (w !== '20' && w !== '40') return `Width "${w}" must be 20 or 40 MHz.`;
+  if (w === '40' && ht40Offset(ch) === 0) {
+    return `Channel ${ch} has no 40 MHz pair — pick 20 MHz or a paired channel (e.g. 136).`;
+  }
+  return null;
+}
+
+// Drops decode-submit records older than maxAgeMs (their frame will never
+// be output: decoder replaced/reset, or the chunk was dropped). Mutates and
+// returns the map.
+export function pruneSubmitted(map, nowMs, maxAgeMs = 1000) {
+  for (const [k, v] of map) if (nowMs - v.tSubmit > maxAgeMs) map.delete(k);
+  return map;
+}
+
+// Drops leading entries <= cutoff from an ascending array of times, in place.
+export function trimBefore(times, cutoff) {
+  let drop = 0;
+  while (drop < times.length && times[drop] <= cutoff) drop++;
+  if (drop) times.splice(0, drop);
+  return times;
+}
+
+// "Copy stats" payload: the core's last 60 s of 1 Hz stats lines (parsed;
+// an unparsable line is kept as its raw string) plus the page-side latency
+// segments (SegWindow.snapshot(): w1 + w60).
+export function copyStatsPayload(statsRing, segSnapshot) {
+  const core = statsRing.map((t) => { try { return JSON.parse(t); } catch { return t; } });
+  return JSON.stringify({ core, segments: segSnapshot }, null, 1);
 }
 
 // Maps a glue `ERROR ...` line (web/src/web_gs.cpp) to user-facing text.
@@ -198,6 +251,11 @@ export function errorText(line) {
   }
   if (line.includes('unsupported chip')) {
     return 'Unsupported card chip.';
+  }
+  const bad = line.indexOf('bad channel/width:');
+  if (bad >= 0) {
+    return 'Channel/width refused: ' + line.slice(bad + 'bad channel/width:'.length).trim() +
+      '. Pick another channel/width and press Connect.';
   }
   return line;
 }

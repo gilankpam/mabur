@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -105,9 +106,11 @@ void emit_au(webgs::Au&& a) {
       has_vps |= nal.type == 32;
     if (hp.feed(a.data.data(), a.data.size()) && has_vps) {
       const std::vector<uint8_t> rec = hp.hvcc();
-      hv = static_cast<uint8_t*>(std::malloc(rec.size()));
-      std::memcpy(hv, rec.data(), rec.size());
-      hv_len = static_cast<int>(rec.size());
+      if (!rec.empty()) {   // $8 == 0 tells the page "no hvcC": nothing to free
+        hv = static_cast<uint8_t*>(std::malloc(rec.size()));
+        std::memcpy(hv, rec.data(), rec.size());
+        hv_len = static_cast<int>(rec.size());
+      }
     }
   }
   const double cap_us =
@@ -269,14 +272,37 @@ struct LiveOpts {
   webgs::Mode mode = webgs::Mode::Gs;
   int ch = -1, width = -1;   // -1 = the config's radio.channel / radio.width
   int secs = 0;              // 0 = until the card goes away
+  std::string bad_chw;       // non-numeric --ch/--w, reported by run_live
 };
+
+// Strict decimal int: the whole string, no sign games, fits an int.
+bool parse_int(const char* v, int& out) {
+  if (!v || !*v) return false;
+  char* end = nullptr;
+  errno = 0;
+  const long x = std::strtol(v, &end, 10);
+  if (errno || *end || x < INT_MIN || x > INT_MAX) return false;
+  out = static_cast<int>(x);
+  return true;
+}
 
 int run_live(const LiveOpts& o) {
   maburgs::Config cfg;
   if (!load_cfg(o.config, cfg)) return 2;
-  const uint8_t ch = static_cast<uint8_t>(o.ch >= 0 ? o.ch : cfg.radio.channel);
+  if (!o.bad_chw.empty()) {
+    report_error("bad channel/width: %s", o.bad_chw.c_str());
+    return 2;
+  }
+  const int ch_i = o.ch >= 0 ? o.ch : cfg.radio.channel;
   const int width = o.width >= 0 ? o.width : cfg.radio.width;
-  if (width != 20 && width != 40) { report_error("bad width %d", width); return 2; }
+  // maburgs's own loader checks on the override (the page picks ch/w, not
+  // the config): range, 20|40, HT40 pair, and in GS mode no 40 MHz rung
+  // while tuned 20.
+  if (auto e = webgs::channel_width_error(cfg, o.mode, ch_i, width)) {
+    report_error("bad channel/width: %s", e->c_str());
+    return 2;
+  }
+  const uint8_t ch = static_cast<uint8_t>(ch_i);
   std::printf("webgs live: mode %s ch %u width %d\n",
               o.mode == webgs::Mode::Gs ? "gs" : "spotter", ch, width);
   std::fflush(stdout);
@@ -426,8 +452,13 @@ int parse_live(int argc, char** argv, int first, LiveOpts& o) {
     if (i + 1 >= argc) return usage(stderr, 2);
     const char* v = argv[++i];
     if (k == "-c") o.config = v;
-    else if (k == "--ch") o.ch = std::atoi(v);
-    else if (k == "--w") o.width = std::atoi(v);
+    else if (k == "--ch") {
+      if (!parse_int(v, o.ch) || o.ch < 0)
+        o.bad_chw = std::string("channel '") + v + "' is not a channel number";
+    } else if (k == "--w") {
+      if (!parse_int(v, o.width) || o.width < 0)
+        o.bad_chw = std::string("width '") + v + "' is not 20 or 40";
+    }
     else if (k == "--secs") o.secs = std::atoi(v);
     else if (k == "--mode") { if (!parse_mode(v, o.mode)) return usage(stderr, 2); }
     else return usage(stderr, 2);

@@ -18,6 +18,18 @@ int64_t cap_to_complete_us(uint32_t pts32, uint64_t t_complete_us, int64_t pts_o
   return static_cast<int32_t>(cap_in_pts - pts32);
 }
 
+std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode mode,
+                                               int channel, int width) {
+  // Same range as load_config's radio.channel.
+  if (channel < 1 || channel > 200)
+    return "channel " + std::to_string(channel) + " out of range [1,200]";
+  if (auto e = maburgs::radio_width_issue(static_cast<uint8_t>(channel), width))
+    return e->field + ": " + e->why;
+  if (mode == Mode::Gs)
+    if (auto e = maburgs::link_width_issue(cfg.link, width)) return e->field + ": " + e->why;
+  return std::nullopt;
+}
+
 namespace {
 maburgs::LinkHealthCfg lh_cfg(const maburgs::Config& cfg) {
   const auto enh = cfg.uep_layers()[1];
@@ -132,7 +144,11 @@ void WebGs::reset_video_() {
 void WebGs::send_(const maburgs::SlotFrame& f) {
   io_.send(f.frame);
   ++sends_;
-  if (f.stamp_rtt) rtt_.on_rcf_sent(f.seq, now_us_);
+  // stamp_rtt is set exactly for RCFs (tick(): `!out->is_disc`).
+  if (f.stamp_rtt) {
+    ++rcf_sent_;
+    rtt_.on_rcf_sent(f.seq, now_us_);
+  }
 }
 
 void WebGs::tick(uint64_t now_us) {
@@ -235,6 +251,7 @@ Stats WebGs::stats() const {
   s.aus_complete = aus_complete_;
   s.aus_truncated = aus_truncated_;
   s.sends = sends_;
+  s.rcf_sent = rcf_sent_;
   if (telem_) {
     s.drone_rcf_rx = telem_->rcf_rx;
     s.drone_state = telem_->state;
@@ -270,6 +287,7 @@ std::string stats_json(const Stats& s) {
   j["aus"] = s.aus_complete;
   j["trunc"] = s.aus_truncated;
   j["sends"] = s.sends;
+  j["rcf_sent"] = s.rcf_sent;
   return j.dump();
 }
 

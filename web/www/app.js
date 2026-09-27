@@ -5,6 +5,7 @@
 import {
   Gate, PtsUnwrap, PeriodEstimator, HitchMeter,
   annexbToLengthPrefixed, DecoderSlot, SegWindow, capToGlass, rcfHeardPct, errorText,
+  checkChannelWidth, pruneSubmitted, trimBefore, copyStatsPayload,
 } from './logic.mjs';
 
 // ---- elements ---------------------------------------------------------
@@ -65,11 +66,12 @@ let hiddenBannerShownOnce = false;
 let hiddenBannerActive = false;
 
 let gate, unwrap, period, hitch, decoderSlot, decoder, hvcc, configuredWith;
-let submitted;          // pts (unwrapped) -> {tSubmit, tRecvMs, tEmitMs, capUs}
+let submitted;          // pts (unwrapped) -> {tSubmit, tRecvMs, tEmitMs, capUs};
+                        // cleared on decoder replace, entries > 1 s pruned
 let segWindow;
 let statsRing = [];     // last 60 raw JSON lines, for "Copy stats"
 let lastStats = null;
-let hitchTimes = [];     // epoch ms of each detected hitch (all-time; trimmed to last 60s view)
+let hitchTimes = [];     // epoch ms of each detected hitch, trimmed to the last 60 s
 let hitchesTotal = 0;
 let ausTotalRate = 0;    // AUs/s, delta of stats.aus between ticks
 
@@ -79,10 +81,10 @@ function resetPageState() {
   period = new PeriodEstimator();
   hitch = new HitchMeter();
   decoderSlot = new DecoderSlot();
+  submitted = new Map();
   decoder = decoderSlot.replace(makeDecoder());
   hvcc = null;
   configuredWith = null;
-  submitted = new Map();
   segWindow = new SegWindow(now);
   statsRing = [];
   lastStats = null;
@@ -93,6 +95,12 @@ function resetPageState() {
 }
 
 // ---- decode -------------------------------------------------------------
+// A replaced decoder never outputs its queued chunks: drop their records.
+function replaceDecoder() {
+  submitted.clear();
+  decoder = decoderSlot.replace(makeDecoder());
+}
+
 function makeDecoder() {
   return new VideoDecoder({
     output: (frame) => {
@@ -111,8 +119,13 @@ function makeDecoder() {
       const gap = hitch.addDraw(t, period.periodMs());
       if (gap !== null) {
         hitchTimes.push(t);
+        trimBefore(hitchTimes, t - 60000);
         hitchesTotal++;
       }
+      // Hidden tab: rAF is paused, so a callback queued now fires only when
+      // the tab returns and would book a minutes-long "present" sample. No
+      // glass while hidden -> no present / capture->glass sample.
+      if (document.hidden) return;
       requestAnimationFrame((ts) => {
         const presentMs = performance.timeOrigin + ts;
         segWindow.add('present', presentMs - t);
@@ -128,7 +141,7 @@ function makeDecoder() {
     error: (e) => {
       console.error('[webgs] decoder error', e);
       gate.onDecoderError();
-      decoder = decoderSlot.replace(makeDecoder());
+      replaceDecoder();
     },
   });
 }
@@ -149,7 +162,7 @@ function onAu(buf, ptsUs, sid, flags, complete, tCompleteUs, hvccBuf, capUs, tEm
   const g = gate.onAu({ sid, flags, complete: !!complete, data });
   if (g.reset) {
     waitingSince = performance.now();
-    decoder = decoderSlot.replace(makeDecoder());
+    replaceDecoder();
   }
   if (hvccBuf) hvcc = hvccBuf;
   updateOverlay();
@@ -166,7 +179,9 @@ function onAu(buf, ptsUs, sid, flags, complete, tCompleteUs, hvccBuf, capUs, tEm
     });
     configuredWith = hvcc;
   }
-  submitted.set(pts, { tSubmit: now(), tRecvMs, tEmitMs, capUs });
+  const tSubmit = now();
+  pruneSubmitted(submitted, tSubmit, 1000);   // dropped/never-output chunks
+  submitted.set(pts, { tSubmit, tRecvMs, tEmitMs, capUs });
   try {
     decoder.decode(new EncodedVideoChunk({
       type: g.type, timestamp: pts, data: annexbToLengthPrefixed(data),
@@ -174,7 +189,7 @@ function onAu(buf, ptsUs, sid, flags, complete, tCompleteUs, hvccBuf, capUs, tEm
   } catch (e) {
     console.error('[webgs] decode() threw', e);
     gate.onDecoderError();
-    decoder = decoderSlot.replace(makeDecoder());
+    replaceDecoder();
   }
 }
 
@@ -202,10 +217,16 @@ function fmt(v, digits = 1, suffix = '') {
   return Number(v).toFixed(digits) + suffix;
 }
 
-function segRow(name, w1) {
-  const e = w1[name];
+function segCell(e) {
   if (!e || e.n === 0) return '–';
   return `p50 ${fmt(e.p50)} p99 ${fmt(e.p99)} max ${fmt(e.max)} (n=${e.n})`;
+}
+
+// Spec §4: every segment row shows the 1 s and the 60 s window.
+function segRow(name, snap) {
+  const a = snap.w1[name], b = snap.w60[name];
+  if ((!a || a.n === 0) && (!b || b.n === 0)) return '–';
+  return `1 s: ${segCell(a)} | 60 s: ${segCell(b)}`;
 }
 
 function renderStats(s, rcfPct) {
@@ -234,21 +255,22 @@ function renderStats(s, rcfPct) {
 
     ['section', 'Client'],
     ['AUs/s', ausTotalRate],
-    ['hitches', `${hitchTimes.filter((t) => t > now() - 60000).length} last 60s (total ${hitchesTotal})`],
+    ['hitches', `${trimBefore(hitchTimes, now() - 60000).length} last 60s (total ${hitchesTotal})`],
 
-    ['section', 'Latency (1 s window, ms)'],
-    ['usb (core)', s.usb_p99_us != null
+    ['section', 'Latency (ms; 1 s | 60 s windows)'],
+    ['usb (core, 1 s)', s.usb_p99_us != null
       ? `p99 ${fmt(s.usb_p99_us / 1000)} max ${fmt(s.usb_max_us / 1000)}`
       : '–'],
-    ['fec (core, first→complete)', segRow('fec', snap.w1)],
-    ['handoff', segRow('handoff', snap.w1)],
-    ['decode', segRow('decode', snap.w1)],
-    ['present', segRow('present', snap.w1)],
-    ['capture→glass (GS)', mode === 'gs' ? segRow('capture→glass (GS)', snap.w1)
+    ['fec (core, first→complete)', segRow('fec', snap)],
+    ['handoff', segRow('handoff', snap)],
+    ['decode', segRow('decode', snap)],
+    ['present', segRow('present', snap)],
+    ['capture→glass (GS)', mode === 'gs' ? segRow('capture→glass (GS)', snap)
       : 'capture→glass needs the control link (GS mode)'],
 
     ['section', 'Counters'],
     ['bodies', s.bodies], ['aus', s.aus], ['trunc', s.trunc], ['sends', s.sends],
+    ['rcf_sent', s.rcf_sent ?? '–'],
     ['txfail', s.txfail ?? '–'], ['qdrop', s.qdrop ?? '–'],
   ];
 
@@ -275,7 +297,8 @@ function renderStats(s, rcfPct) {
 }
 
 copyBtn.addEventListener('click', async () => {
-  const text = statsRing.join('\n');
+  // {core: last 60 s of the core's 1 Hz stats, segments: page-side w1/w60}.
+  const text = copyStatsPayload(statsRing, segWindow ? segWindow.snapshot() : { w1: {}, w60: {} });
   try {
     await navigator.clipboard.writeText(text);
     copyMsg.textContent = 'copied';
@@ -411,8 +434,16 @@ connectBtn.addEventListener('click', async () => {
   setStatusText('Requesting device…', false);
 
   const chosenMode = currentMode();
-  const chosenCh = chInput.value || '136';
+  const chosenCh = (chInput.value || '').trim();
   const chosenW = widthSel.value || '40';
+  // Refuse a bad channel/width here with a clear message; the glue re-checks
+  // (and adds the GS-mode ladder check) as `ERROR bad channel/width: ...`.
+  const bad = checkChannelWidth(chosenCh, chosenW);
+  if (bad) {
+    setStatusText(bad, true);
+    connectBtn.disabled = false;
+    return;
+  }
 
   try {
     if (!window.crossOriginIsolated) {

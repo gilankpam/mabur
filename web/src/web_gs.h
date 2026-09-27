@@ -67,10 +67,23 @@ struct Stats {
   std::optional<double> rtt_ms, rtt_min_ms;
   std::optional<int64_t> pts_off_us;
   uint64_t bodies = 0, aus_complete = 0, aus_truncated = 0, sends = 0;
+  // RCFs only (sends minus DISC beacons/keep-alives): the denominator for
+  // "RCF heard %" against the drone's Telem.rcf_rx, which counts RCFs only.
+  uint64_t rcf_sent = 0;
   std::optional<uint32_t> drone_rcf_rx;   // Telem, cumulative
   std::optional<uint8_t> drone_state;
 };
 std::string stats_json(const Stats& s);   // one line, no trailing newline
+
+// Validates the page's channel/width override (spec: ch/w come from the
+// page, not the config) with maburgs's own loader checks
+// (maburgs::radio_width_issue / link_width_issue): channel in the loader's
+// [1,200], width 20|40, 40 only on an HT40 pair, and -- GS mode, which
+// commands the ladder -- no 40 MHz rung / static pin while tuned 20.
+// Spotter only listens, so a 20 MHz spotter under a 40-capable ladder is
+// fine (it sees the 20 MHz rungs). std::nullopt = OK, else the reason.
+std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode mode,
+                                               int channel, int width);
 
 // Capture -> AU complete, core clock, from the drone's u32 pts and the
 // RTT estimator's pts offset (pts - GS-mono). Modular in 32 bits: valid
@@ -134,7 +147,7 @@ class WebGs {
   maburgs::OpPoint spotter_op_;                   // from drone Telem
   std::optional<mabur::rc::Telem> telem_;
   Au cur_;
-  uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0;
+  uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0, rcf_sent_ = 0;
   uint64_t resets_ = 0;
 };
 

@@ -71,6 +71,11 @@ TEST(gs_beacons_then_rcf_after_ack) {
   for (int i = 0; i < 50; ++i) g.tick(t += 10000);    // 500 ms, no drone
   REQUIRE(!sent.empty());
   for (auto& s : sent) CHECK(mabur::rc::frame_type(s.data(), s.size()) == mabur::rc::T_DISC);
+  // Beacons are sends but not RCFs: "RCF heard %" divides the drone's
+  // RCF-only rcf_rx by rcf_sent, never by sends.
+  CHECK(g.stats().sends == sent.size());
+  CHECK(g.stats().rcf_sent == 0);
+  const uint64_t sends_before = g.stats().sends;
   g.inject_disc_ack_for_replay(t);
   sent.clear();
   auto bodies = gen_bodies(120, 16.0, 0);
@@ -81,6 +86,10 @@ TEST(gs_beacons_then_rcf_after_ack) {
   const int nominal = static_cast<int>(1900 / c.link.feedback_ms);
   CHECK(rcf >= nominal / 2);
   CHECK(g.stats().session);
+  CHECK(g.stats().rcf_sent == static_cast<uint64_t>(rcf));
+  CHECK(g.stats().sends == sends_before + sent.size());
+  CHECK(g.stats().rcf_sent < g.stats().sends);
+  CHECK(stats_json(g.stats()).find("\"rcf_sent\":" + std::to_string(rcf)) != std::string::npos);
 }
 
 TEST(probe_expectation_wired_from_frame_stream) {
@@ -113,7 +122,6 @@ TEST(cap_to_complete_basic_and_wrap) {
 TEST(no_cap_without_offset) {
   Au last;
   Io io;
-  io.on_au = [&](Au&& a) { last = std::move(a); };
   io.send = [](const std::vector<uint8_t>&) {};
   int n = 0;
   io.on_au = [&](Au&& a) { ++n; last = std::move(a); };
@@ -272,6 +280,27 @@ TEST(gs_without_send_throws) {
   CHECK(threw);
   WebGs s(cfg(), Mode::Spotter, 136, 40, io);   // spotter needs no send
   CHECK(s.vrx() == nullptr);
+}
+
+TEST(channel_width_override_validation) {
+  const auto c = cfg();   // bundle: ch 136 / 40, ladder has 40 MHz rungs
+  CHECK(!channel_width_error(c, Mode::Gs, 136, 40));
+  CHECK(!channel_width_error(c, Mode::Spotter, 136, 40));
+  CHECK(channel_width_error(c, Mode::Gs, 0, 20).has_value());
+  CHECK(channel_width_error(c, Mode::Gs, 201, 20).has_value());
+  CHECK(channel_width_error(c, Mode::Spotter, 136, 80).has_value());
+  auto e = channel_width_error(c, Mode::Spotter, 165, 40);   // no HT40 pair
+  REQUIRE(e.has_value());
+  CHECK(e->find("radio.width") != std::string::npos && e->find("165") != std::string::npos);
+  // GS commands the ladder: a 40 MHz rung while tuned 20 is refused...
+  bool has40 = false;
+  for (const auto& r : c.link.ladder_cfg.ladder) has40 |= r.bw == 40;
+  REQUIRE(has40);
+  auto g = channel_width_error(c, Mode::Gs, 165, 20);
+  REQUIRE(g.has_value());
+  CHECK(g->find("link.ladder[") != std::string::npos);
+  // ...a spotter only listens, so 20 is fine.
+  CHECK(!channel_width_error(c, Mode::Spotter, 165, 20));
 }
 
 MTEST_MAIN
