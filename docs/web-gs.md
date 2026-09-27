@@ -185,6 +185,18 @@ than waiting indefinitely: it reloads the page as a fallback, landing back
 on the Config tab. Recording is stopped first if it was on (see Record,
 below) before the stop request goes out.
 
+WebUSB has no transfer cancel (libusb's emscripten backend `cancel` is a
+no-op), so on a quiet channel — drone off, nothing on air — the RX loop's
+pending `transferIn` calls would never complete and the core could not
+exit. The teardown waits 300 ms for the RX loop to end on its own; if it
+hasn't, it releases interface 0, which makes Chrome abort those reads
+(they surface in the console as `NetworkError: ... A transfer error has
+occurred`), joins the RX thread, re-claims the interface for the chip's
+power-down writes, and continues. The core prints one line per stop:
+`teardown: rx <ms> [(reads aborted)], chip stop <ms>, close <ms>`. A stop
+requested while the card is still initialising (~5 s after Connect) takes
+effect only once init finishes.
+
 The browser's own device
 chooser asks for the RTL8812EU (WebUSB's per-origin device grant — pick it
 once and later `getDevices()` calls see it without asking again on the same
@@ -420,40 +432,46 @@ Bench, 2026-09-27, bench drone on ch136 HT40, drone `low_power` off:
   false` / re-arm path, `onDecoderError()`). Left as a follow-up; no
   drone/wire signature was found in the ~10 min sample to attribute it to.
 
-**The bench numbers above predate this redesign** (in-page Connect/
-Disconnect, the Config overlay form, VTX record) — they validated the
-underlying core (`WebGs`/`LinkHealthAssembler`/`RttEstimator`), which this
-redesign does not touch, but the new page itself (`web/ui/`) has **not**
-been hardware-validated. Host gates (build, `ctest`, page logic tests, WASM/
-native parity) pass; the following still need a bench/HW run before this
-page can be trusted in the field:
+**Redesigned page, bench 2026-09-27** (Chrome 147 driven over DevTools,
+bench drone on ch136 HT40, GS box off for GS mode):
 
-- [ ] Connect → Disconnect → Connect ×10 in GS mode without a page reload:
-  every reconnect links and shows video, and the 3 s reload fallback never
-  fires (no `core did not exit after stop` in the console). If it does
-  fire, how often — that decides whether in-page teardown is actually the
-  normal path.
-- [ ] Disconnect with the drone powered off / on a quiet channel: the
-  libusb WebUSB cancel is a no-op, so the RX join waits for the pending
-  `transferIn` to complete. Check the 3 s reload fallback doesn't become
-  the normal path here, and that the next Connect can claim the card (no
-  "Card busy").
-- [ ] Config form: Max MCS 3 → reconnect → the climb stops at MCS 3 (rung
-  count 4); Fixed MCS 2 → `Pinned`, MCS 2 steady; a bad value is blocked
-  page-side (never reaches the core as a rejected overlay).
-- [ ] VTX record: Record → drone `rec_state` 1 within ~1 s, clock runs;
-  Stop → off; Record then Disconnect → VTX actually stops (check maburtop /
-  drone log, not just the page). Spotter next to `maburgs`: start recording
-  from `maburgs`'s own button → the page's REC tag shows; spotter `sends 0 /
-  rcf_sent 0` throughout.
-- [ ] Latency: capture→glass p50/p99, decode, hand-off within noise of the
-  numbers above (p50 ~24 ms, p99 ~45 ms, decode ~0.8 ms, hand-off 0.1 ms) —
-  confirms the overlay/record additions didn't add core-loop cost.
-- [ ] Phone over LAN TLS: immersive landscape, portrait notice, drag, the
-  config side panel.
-- [ ] Resize the desktop window across 760 px while live: video keeps
-  playing (the windowed/immersive layout breakpoint, `web/ui/src/lib/
-  layout.js`'s `isMobile()`).
+- **Connect → Disconnect → Connect ×10** (GS mode, drone on): 10/10, no
+  reload fallback; Disconnect ~200 ms (`teardown: rx 10–20 ms, chip stop
+  45–100 ms`), relink ~6.2 s (dominated by the card's ~5 s init), video
+  back at once (link-up IDR).
+- **Disconnect with the drone powered off**: before the interface-release
+  abort (above) the core never exited and the 3 s reload fallback fired
+  every time (recovery itself worked: page back on Config, next Connect
+  claimed the card, "No drone on ch 136 / 40 MHz (still trying)" after
+  10 s). With the abort: 3/3 in-page, click → Disconnected 584 ms
+  (`rx 305 ms (reads aborted), chip stop 79 ms`), next Connect claims the
+  card; drone-on cycles unchanged afterwards (5/5, 150–200 ms).
+- **Config form**: Max MCS 3 → 4 rungs, link tops out at MCS 3; Fixed
+  MCS 2 → `Pinned`, steady MCS 2 at 40 MHz.
+- **VTX record** round trip: Record reached the drone and its `Telem`
+  answer came back — this drone has no SD card, so the page showed
+  `REC!` with "No SD card" (windowed button title and immersive tag). A
+  recording that actually runs was not exercised.
+- **Latency** (60 s steady, rung 4 mcs4/40): capture→glass p50 23 ms /
+  p99 34 ms, FEC p99 11–13 ms, decode p99 1.0 ms, hand-off 0.1–0.2 ms,
+  60 fps, jitter 2.6 ms — within noise of (or better than) the numbers
+  above.
+- **Layouts**: windowed, F → fullscreen immersive, config side panel,
+  844×390 phone emulation (no exit-fullscreen button, 236 px float panel),
+  390×844 portrait notice; float-panel drag follows the pointer and clamps
+  to x = 844 − 236 − 8, y = 390 − 48; video kept playing across every
+  layout switch (one canvas).
+- **Spotter next to `maburgs`**: `sends 0 / rcf_sent 0 / txfail 0`,
+  60 AUs/s, Record disabled with its reason, Disconnect 200 ms.
+- Seen, not attributed to this page: 4 TX `bulk_send` timeouts (rc −7) in
+  ~5 min of GS mode, each followed by one decoder reset; one drone boot
+  came up with a deaf radio (no RX on the host card natively either) until
+  the drone was power-cycled.
+
+Not yet exercised: a real phone over LAN TLS (layouts were checked in
+Chrome's device emulation only), and the spotter mirroring a
+`maburgs`-started recording (the GS's record wish was reset to off right
+after `vtx_rec on` on the bench).
 
 ## Follow-ups
 
