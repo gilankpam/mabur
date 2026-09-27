@@ -94,3 +94,15 @@ Results 2026-09-27 (bench drone ch136 HT40, GS powered OFF, no maburgs):
 - Chrome must be launched via the Nix wrapper (`bin/google-chrome-stable`):
   the raw `share/google/chrome/chrome` has no libEGL, the GPU process dies
   and WebCodecs rejects HEVC ("Unsupported configuration").
+
+## Phone / LAN (HTTPS)
+
+WebUSB and SharedArrayBuffer need a secure context; plain http is one only
+on localhost. For another device on the LAN (Android Chrome + the card on
+USB-C OTG): `nix-shell -p openssl --run ./mkcert.sh` (self-signed, SAN =
+localhost + this host's IPv4s; `tls/` is gitignored), then
+`python3 serve.py 8808 0.0.0.0 --tls` and open
+`https://<host-ip>:8808/viewer.html?ch=136&w=40`, accepting the cert
+warning. NixOS firewall: open 8808 first
+(`sudo iptables -I nixos-fw -p tcp --dport 8808 -j nixos-fw-accept`, lost on
+firewall reload).
