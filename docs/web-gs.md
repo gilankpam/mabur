@@ -171,9 +171,10 @@ width or (GS mode) the ladder, and no reload between flights.
 `Session` (`web/ui/src/lib/session.js`) drives a small state machine
 (`idle → connecting → live → stopping → idle`, plus `error`): Connect
 requests the device, builds a **fresh** WASM module every time (never
-reused across connects) with `--mode`/`--ch`/`--w` and, in GS mode when the
-form differs from the embedded default, `--overlay /overlay.toml` (the
-overlay TOML written into the module's virtual FS before `main()` runs).
+reused across connects) with `--mode`/`--ch`/`--w` and, in GS mode always
+(even when the form matches the embedded default), `--overlay
+/overlay.toml` (the form's overlay TOML written into the module's virtual
+FS before `main()` runs).
 Disconnect calls the exported `webgs_stop()`, which sets an atomic the core
 loop polls; the core tears down cleanly and returns from `main()`, and
 `-sEXIT_RUNTIME` fires `Module.onExit()`, which the page treats as the
@@ -232,8 +233,8 @@ remove up to 8). `web/ui/src/lib/config.js` normalizes and persists the
 form to `localStorage` under `webgs.cfg` (per-field fallback to the bundle
 default, so a stale or hand-edited entry can never break the page), and
 `?ch=`/`?w=` query params override the saved channel/width on load the same
-way `?mode=` overrides the saved mode. On Connect, a GS-mode form that
-differs from the embedded default is serialized to TOML
+way `?mode=` overrides the saved mode. On Connect, the GS-mode form (always, even
+when it matches the embedded default) is serialized to TOML
 (`toOverlayToml()`: `[link] static_mcs/static_bw/max_mcs` plus one
 `[[link.ladder]]` block per rung, `static_bw` carrying the form's width) and
 handed to the core as `--overlay /overlay.toml`; `maburgs::load_config`'s
@@ -432,6 +433,11 @@ page can be trusted in the field:
   fires (no `core did not exit after stop` in the console). If it does
   fire, how often — that decides whether in-page teardown is actually the
   normal path.
+- [ ] Disconnect with the drone powered off / on a quiet channel: the
+  libusb WebUSB cancel is a no-op, so the RX join waits for the pending
+  `transferIn` to complete. Check the 3 s reload fallback doesn't become
+  the normal path here, and that the next Connect can claim the card (no
+  "Card busy").
 - [ ] Config form: Max MCS 3 → reconnect → the climb stops at MCS 3 (rung
   count 4); Fixed MCS 2 → `Pinned`, MCS 2 steady; a bad value is blocked
   page-side (never reaches the core as a rejected overlay).

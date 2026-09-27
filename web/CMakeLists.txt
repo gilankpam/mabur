@@ -74,16 +74,20 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     -sALLOW_MEMORY_GROWTH -sEXIT_RUNTIME --bind -sASYNCIFY)
 
   # Page UI (web/ui, Vite + Svelte) built into web/dist next to webgs.{js,wasm}.
-  # npm ci re-runs when the lockfile changes; vite build re-runs when any UI
+  # npm ci re-runs when the lockfile changes or node_modules is gone (its
+  # OUTPUT is node_modules/.package-lock.json, which npm itself writes --
+  # a build-dir stamp would survive rm -rf node_modules); vite build re-runs when any UI
   # source changes OR dist/index.html is missing (deleting dist rebuilds it).
   # dist/assets is cleared first so stale hashed bundles don't pile up; Vite
   # itself runs with emptyOutDir=false so the Emscripten outputs survive.
   set(WEB_UI ${CMAKE_CURRENT_SOURCE_DIR}/ui)
   set(WEB_DIST ${CMAKE_CURRENT_SOURCE_DIR}/dist)
   find_program(NPM npm REQUIRED)
-  set(NPM_STAMP ${CMAKE_BINARY_DIR}/npm-ci.stamp)
+  set(NPM_STAMP ${WEB_UI}/node_modules/.package-lock.json)
   add_custom_command(OUTPUT ${NPM_STAMP}
     COMMAND ${NPM} ci --no-audit --no-fund
+    # Touch: the output must be newer than package-lock.json even if npm
+    # leaves the hidden lockfile's mtime alone.
     COMMAND ${CMAKE_COMMAND} -E touch ${NPM_STAMP}
     WORKING_DIRECTORY ${WEB_UI}
     DEPENDS ${WEB_UI}/package.json ${WEB_UI}/package-lock.json
