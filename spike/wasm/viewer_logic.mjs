@@ -75,3 +75,24 @@ export function pctl(values, q) {
   const s = [...values].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.floor(s.length * q))];
 }
+
+// Annex-B -> 4-byte big-endian length-prefixed NAL units (the hvcC framing
+// WebCodecs expects once a `description` is configured).
+export function annexbToLengthPrefixed(u8) {
+  const starts = [];  // [payloadStart, startCodeStart]
+  for (let i = 0; i + 2 < u8.length; i++) {
+    if (u8[i] === 0 && u8[i + 1] === 0 && u8[i + 2] === 1) {
+      starts.push([i + 3, i > 0 && u8[i - 1] === 0 ? i - 1 : i]);
+      i += 2;
+    }
+  }
+  const nals = starts.map(([s], k) => u8.subarray(s, k + 1 < starts.length ? starts[k + 1][1] : u8.length));
+  const out = new Uint8Array(nals.reduce((n, x) => n + 4 + x.length, 0));
+  let o = 0;
+  for (const x of nals) {
+    new DataView(out.buffer).setUint32(o, x.length);
+    out.set(x, o + 4);
+    o += 4 + x.length;
+  }
+  return out;
+}

@@ -43,6 +43,7 @@ add_library(gsweb_core STATIC
   ${MABUR_DIR}/common/src/rc_proto.cpp
   ${MABUR_DIR}/common/src/profile.cpp
   ${MABUR_DIR}/common/src/node.cpp
+  ${MABUR_DIR}/common/src/hevc_params.cpp
   ${MABUR_DIR}/gs/src/frame_stream.cpp)
 target_include_directories(gsweb_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR} ${MABUR_DIR}/common/include ${MABUR_DIR}/gs/src)

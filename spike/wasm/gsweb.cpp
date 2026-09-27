@@ -24,6 +24,7 @@
 #include "body_queue.h"
 #include "logger.h"
 #include "mabur/ht40.h"
+#include "mabur/hevc_params.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten/em_asm.h>
 #endif
@@ -121,14 +122,34 @@ void emit_au(gsweb::Au&& a) {
   // receives a plain transferable ArrayBuffer.
   auto* p = static_cast<uint8_t*>(std::malloc(a.data.empty() ? 1 : a.data.size()));
   if (!a.data.empty()) std::memcpy(p, a.data.data(), a.data.size());
+  // hvcC for WebCodecs' `description`: WebCodecs refuses a non-IRAP key
+  // chunk in Annex-B mode and the drone is GDR (parameter sets ride a
+  // TRAIL_R refresh, never an IRAP), so the page configures with hvcC and
+  // feeds length-prefixed chunks. Sent with every complete AU that carries
+  // a VPS, built by mabur's own HevcParams (the DVR muxer's).
+  static mabur::HevcParams hp;
+  uint8_t* hv = nullptr;
+  int hv_len = 0;
+  if (a.complete) {
+    bool has_vps = false;
+    for (const auto& nal : mabur::split_nals(a.data.data(), a.data.size())) has_vps |= nal.type == 32;
+    if (hp.feed(a.data.data(), a.data.size()) && has_vps) {
+      const std::vector<uint8_t> rec = hp.hvcc();
+      hv = static_cast<uint8_t*>(std::malloc(rec.size()));
+      std::memcpy(hv, rec.data(), rec.size());
+      hv_len = static_cast<int>(rec.size());
+    }
+  }
   MAIN_THREAD_ASYNC_EM_ASM(
       {
         const buf = HEAPU8.slice($0, $0 + $1).buffer;
         _free($0);
-        Module['onAu'](buf, $2, $3, $4, $5, $6);
+        let hvcc = null;
+        if ($8) { hvcc = HEAPU8.slice($7, $7 + $8).buffer; _free($7); }
+        Module['onAu'](buf, $2, $3, $4, $5, $6, hvcc);
       },
       p, static_cast<int>(a.data.size()), static_cast<double>(a.pts_us), a.sid,
-      a.flags, a.complete ? 1 : 0, static_cast<double>(a.t_complete_us));
+      a.flags, a.complete ? 1 : 0, static_cast<double>(a.t_complete_us), hv, hv_len);
 #else
   (void)a;
 #endif
@@ -188,7 +209,21 @@ int run_live(uint8_t ch, int width, int secs, int symbol_size) {
     });
   });
 
-  gsweb::RxCore core(symbol_size, emit_au);
+  // AU emission gaps at the core (> 25 ms after the previous AU): the same
+  // measure the page takes at arrival, so a page-side gap with no core-side
+  // gap is the browser's (worker / postMessage), not the link's.
+  uint64_t au_gaps = 0;
+  int64_t last_au = 0, gap_max = 0;
+  gsweb::RxCore core(symbol_size, [&](gsweb::Au&& a) {
+    const int64_t t = now_us();
+    if (last_au && t - last_au > 25000) {
+      ++au_gaps;
+      gap_max = std::max(gap_max, t - last_au);
+      std::printf("COREGAP at %.1f ms gap %.1f ms\n", (t - t0 + e0) / 1e3, (t - last_au) / 1e3);
+    }
+    last_au = t;
+    emit_au(std::move(a));
+  });
   std::vector<mabur::node::RxBody> batch;
   int64_t next_stat = now_us() + 1000000;
   for (int s = 0; secs == 0 || s < secs;) {
@@ -218,11 +253,12 @@ int run_live(uint8_t ch, int width, int secs, int symbol_size) {
     }
     const gsweb::CoreStats st = core.stats();
     std::printf("STAT t=%d bodies=%llu aus=%llu trunc=%llu rc=%llu side=%llu bad_cfg=%llu "
-                "qdrop=%llu usb_p99=%lld usb_max=%lld\n",
+                "qdrop=%llu usb_p99=%lld usb_max=%lld core_gaps=%llu core_gap_max=%lld\n",
                 s, (unsigned long long)st.bodies, (unsigned long long)st.aus_complete,
                 (unsigned long long)st.aus_truncated, (unsigned long long)st.rc,
                 (unsigned long long)st.side, (unsigned long long)st.bad_cfg,
-                (unsigned long long)q.dropped(), (long long)p99, (long long)mx);
+                (unsigned long long)q.dropped(), (long long)p99, (long long)mx,
+                (unsigned long long)au_gaps, (long long)gap_max);
     std::fflush(stdout);
   }
   rtl->StopRxLoop();

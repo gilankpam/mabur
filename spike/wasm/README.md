@@ -41,3 +41,28 @@ the tab closes — native runs fail BUSY meanwhile.
 
 Pass: after init, every STAT line shows aus ≈ the drone's fps (60 ± 5),
 trunc ≤ 1 % of aus, bad_cfg=0, qdrop=0.
+
+## Web viewer (gsweb in the browser)
+
+Build: `gsweb` (native) and `gsweb` + `gsweb_node` (emcmake, `build-wasm/`).
+Run: `python3 serve.py 8808`, headful Chrome on
+`http://127.0.0.1:8808/viewer.html?ch=136&w=40`, click Connect (card grant
+remembered per profile). `view_drive.mjs <page-ws> <secs> <log>` drives it
+over CDP and records METRIC / HITCH / AUGAP / SPIKE / KEY lines.
+Tests: `BIG=1 ./test_replay.sh`, `./test_wasm_replay.sh` (under
+`nix-shell -p nodejs`), `node --test test_viewer_logic.mjs`.
+
+Results 2026-09-27 (bench drone ch136 HT40, top rung, real GS flying):
+- Whole chain in the browser: 60/60 AUs/s decoded, decode p50 0.6 ms /
+  max 9.7 ms, AU lateness at the page p99 ~7 ms (max 61 ms).
+- **Key frames**: WebCodecs accepts only an IRAP as the first key chunk,
+  in Annex-B *and* hvcC mode. The drone is GDR: the parameter-set AUs are
+  `32 33 34 1` (TRAIL_R refresh) and are rejected. Decoding starts on the
+  next real IDR (`32 33 34 19`). One boot sent IDRs every few seconds
+  (likely the drone's self-IDR/vanish bug); another sent none in 40 s.
+  Without a periodic IDR from the drone, the browser may never start.
+- **Hitches**: 38 in 180 s (mostly 25-38 ms = one frame, some 56-76 ms).
+  Every page hitch follows an AU arrival gap, and 16/17 of those follow a
+  gap already at the core. Native gsweb on the same link: 13 core gaps
+  (25-57 ms) per 90 s vs 16 in the browser. The hitches are the link's
+  (FEC repair waits), not WebUSB; the Oilpan stalls add ~3 per 90 s.

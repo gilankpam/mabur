@@ -79,3 +79,11 @@ test('pctl', () => {
   assert.equal(pctl([5, 1, 3, 2, 4], 0.5), 3);
   assert.equal(pctl([5, 1, 3, 2, 4], 1), 5);
 });
+
+import { annexbToLengthPrefixed } from './viewer_logic.mjs';
+
+test('annexbToLengthPrefixed rewrites 3- and 4-byte start codes as u32 BE lengths', () => {
+  const ab = new Uint8Array([0, 0, 0, 1, 0x40, 1, 7, 0, 0, 1, 0x02, 1, 9, 9]);
+  assert.deepEqual([...annexbToLengthPrefixed(ab)],
+    [0, 0, 0, 3, 0x40, 1, 7, 0, 0, 0, 4, 0x02, 1, 9, 9]);
+});

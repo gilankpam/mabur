@@ -10,7 +10,8 @@ self.onmessage = ({ data }) => {
     mainScriptUrlOrBlob: new URL('build-wasm/gsweb.js', self.location).href,
     print: (line) => postMessage({ t: 'log', line }),
     printErr: (line) => { if (!line.startsWith('{"ev"')) postMessage({ t: 'log', line: 'ERR ' + line }); },
-    onAu: (buf, pts, sid, flags, complete, tc) =>
-      postMessage({ t: 'au', buf, pts, sid, flags, complete: !!complete, tc }, [buf]),
+    onAu: (buf, pts, sid, flags, complete, tc, hvcc) =>
+      postMessage({ t: 'au', buf, pts, sid, flags, complete: !!complete, tc, hvcc },
+                  hvcc ? [buf, hvcc] : [buf]),
   });
 };

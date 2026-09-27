@@ -1,6 +1,6 @@
 // THROWAWAY SPIKE: page side -- gate, decode (WebCodecs, latency-first),
 // draw, and the 1 Hz metrics that tie a visible hitch to its cause.
-import { Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl } from './viewer_logic.mjs';
+import { Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl, annexbToLengthPrefixed, nalTypes } from './viewer_logic.mjs';
 
 const q = new URLSearchParams(location.search);
 const ch = q.get('ch') || '136', width = q.get('w') || '40';
@@ -30,12 +30,24 @@ function makeDecoder() {
     },
     error: (e) => { log('ERROR decoder ' + e.message); gate.onDecoderError(); tot.resets++; decoder = makeDecoder(); },
   });
-  d.configure({ codec: 'hev1.1.6.L120.B0', hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true });
-  return d;
+  return d;  // configured on the first key chunk, with the hvcC description
 }
 
+// WebCodecs needs hvcC + length-prefixed chunks to accept the drone's GDR
+// refresh (parameter sets + TRAIL_R) as a key frame; Annex-B mode demands
+// an IRAP. The worker sends hvcC with every parameter-set AU.
+let hvcc = null, configuredWith = null;
+function configure() {
+  decoder.configure({ codec: 'hvc1.1.6.L120.B0', description: hvcc,
+                      hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true });
+  configuredWith = hvcc;
+}
+
+let lastArr = null;
 function onAu(m) {
   const t = now();
+  if (lastArr !== null && t - lastArr > 25) log(`AUGAP at ${t.toFixed(1)} ms gap ${(t - lastArr).toFixed(1)} ms complete ${m.complete} sid ${m.sid}`);
+  lastArr = t;
   win.in++; tot.in++;
   const pts = unwrap.add(m.pts);
   period.add(pts);
@@ -44,10 +56,17 @@ function onAu(m) {
   if (g.reset) { tot.resets++; decoder.reset(); decoder = makeDecoder(); log('reset (DISCONT)'); }
   if (g.skip === 'truncated') { win.trunc++; tot.trunc++; }
   if (g.skip === 'gated') { win.gated++; tot.gated++; }
+  if (m.hvcc) hvcc = m.hvcc;
   if (!g.type) return;
+  if (g.type === 'key' && (decoder.state !== 'configured' || configuredWith !== hvcc)) {
+    if (!hvcc) { gate.onDecoderError(); return; }
+    configure();
+  }
+  if (g.type === 'key') log(`KEY nal ${nalTypes(new Uint8Array(m.buf)).join(' ')} flags ${m.flags}`);
   submitted.set(pts, t);
   try {
-    decoder.decode(new EncodedVideoChunk({ type: g.type, timestamp: pts, data: m.buf }));
+    decoder.decode(new EncodedVideoChunk({ type: g.type, timestamp: pts,
+                                           data: annexbToLengthPrefixed(new Uint8Array(m.buf)) }));
   } catch (e) {
     log('ERROR decode ' + e.message); gate.onDecoderError(); tot.resets++; decoder = makeDecoder();
   }

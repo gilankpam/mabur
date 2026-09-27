@@ -14,7 +14,7 @@ ws.onmessage = (m) => {
     const t = msg.params.args.map(a => a.value ?? a.description).join(' ');
     if (t.startsWith('{"ev"')) return;
     lines.push(`${Date.now()} ${t}`);
-    if (/^(ERROR|TIMING|HITCH|picked)/.test(t)) console.log(t);
+    if (/^(ERROR|TIMING|picked)/.test(t)) console.log(t);
     if (/^ERROR (claim|no RTL|requestDevice|not crossOrigin)/.test(t)) setTimeout(() => finish('error'), 500);
   } else if (msg.method === 'Runtime.exceptionThrown' && armed) {
     const t = 'EXC ' + JSON.stringify(msg.params.exceptionDetails).slice(0, 400);
