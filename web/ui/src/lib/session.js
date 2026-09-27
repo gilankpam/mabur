@@ -51,9 +51,16 @@ export class Session {
     this.set({ state: 'connecting', mode, ch, w, error: null, notice: null, recWish: false, startedAt: null });
     try {
       await this.requestDevice();
-    } catch {
+    } catch (e) {
       if (this.token !== token) return;
-      this.set({ state: 'idle', notice: 'No device selected — press Connect to try again.' });
+      // The chooser closed without a pick (WebUSB rejects with NotFoundError)
+      // is not a failure; anything else (not cross-origin isolated, no
+      // WebUSB, SecurityError) is, and its own message says why.
+      if (e && e.name === 'NotFoundError') {
+        this.set({ state: 'idle', notice: 'No device selected — press Connect to try again.' });
+      } else {
+        this.set({ state: 'error', error: (e && e.message) || String(e) });
+      }
       return;
     }
     const args = ['live', '--mode', mode, '--ch', String(ch), '--w', String(w)];
@@ -67,7 +74,7 @@ export class Session {
         onAu: (...a) => { if (this.token === token) this.onAu(...a); },
         onStats: (text) => { if (this.token === token) this.handleStats(text); },
         onError: (text) => { if (this.token === token) this.handleError(text); },
-        onExit: (code) => { if (this.token === token) this.handleExit(code); },
+        onExit: (code) => { token.exited = true; if (this.token === token) this.handleExit(code); },
         print: (t) => console.log('[webgs]', t),
         printErr: (t) => {
           console.error('[webgs]', t);
@@ -81,7 +88,13 @@ export class Session {
       return;
     }
     if (this.token !== token) return;               // superseded by a newer connect()
-    if (this.snapshot.state !== 'connecting') return; // onExit/onError already resolved this attempt
+    if (this.snapshot.state !== 'connecting') {
+      // onExit/onError already resolved this attempt -- or fail() did while
+      // the module was still starting, which leaves it running: stop it so
+      // the next Connect doesn't find the card claimed.
+      if (!token.exited) stopQuietly(mod);
+      return;
+    }
     this.mod = mod;
     this.set({ state: 'live', startedAt: Date.now() });
   }
@@ -150,8 +163,17 @@ export class Session {
     mod._webgs_stop();
   }
 
+  // External failure (page worker). A still-running module is stopped,
+  // best-effort, so a later Connect doesn't hit "Card busy". stopRequested
+  // stays false: its onExit must leave the session in 'error', not 'idle'.
   fail(text) {
-    if (this.snapshot.state === 'idle') return;
+    const st = this.snapshot.state;
+    if (st === 'idle') return;
+    if ((st === 'live' || st === 'connecting') && this.mod) stopQuietly(this.mod);
     this.set({ state: 'error', error: text });
   }
+}
+
+function stopQuietly(mod) {
+  try { mod._webgs_stop(); } catch (e) { console.error('[webgs] stop after failure threw', e); }
 }

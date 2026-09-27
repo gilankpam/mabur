@@ -67,7 +67,7 @@ test('spotter sends no overlay', async () => {
 });
 
 test('device chooser cancelled -> idle with a notice, no module', async () => {
-  const { s, f, states } = mk({ requestDevice: async () => { throw new Error('cancel'); } });
+  const { s, f, states } = mk({ requestDevice: async () => { throw Object.assign(new Error('cancel'), { name: 'NotFoundError' }); } });
   await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
   assert.equal(states.at(-1), 'idle');
   assert.match(s.snapshot.notice, /No device selected/);
@@ -212,4 +212,60 @@ test('late_onError_after_clean_stop_does_not_flip_idle_to_error', async () => {
   m.opts.onError('card lost');
   assert.equal(s.snapshot.state, 'idle');
   assert.ok(!states.includes('error'));
+});
+
+test('device chooser NotFoundError -> idle with the chooser notice', async () => {
+  const err = Object.assign(new Error('No device selected.'), { name: 'NotFoundError' });
+  const { s, f } = mk({ requestDevice: async () => { throw err; } });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.snapshot.state, 'idle');
+  assert.equal(s.snapshot.notice, 'No device selected — press Connect to try again.');
+  assert.equal(f.made.length, 0);
+});
+
+test('requestDevice non-chooser failure -> error with its message', async () => {
+  const { s, f } = mk({ requestDevice: async () => { throw new Error('WebUSB unavailable'); } });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.snapshot.state, 'error');
+  assert.equal(s.snapshot.error, 'WebUSB unavailable');
+  assert.equal(s.snapshot.notice, null);
+  assert.equal(f.made.length, 0);
+});
+
+test('fail() on a live session stops the running module', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  s.fail('Page worker failed');
+  assert.ok(m.stopped, '_webgs_stop called');
+  await tick();
+  assert.equal(s.snapshot.state, 'error');
+  assert.equal(s.snapshot.error, 'Page worker failed');
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.snapshot.state, 'live');
+});
+
+test('fail() while connecting stops the module once it resolves', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const f = fakeModuleFactory();
+  const s = new Session({
+    createModule: async (opts) => { await gate; return f.create(opts); },
+    requestDevice: async () => {}, onAu: () => {}, onStats: () => {}, reload: () => {}, timers: fakeTimers(),
+  });
+  const p = s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  await tick();
+  s.fail('Page worker failed');
+  release();
+  await p;
+  assert.ok(f.made[0].stopped, '_webgs_stop called on the orphaned module');
+  assert.equal(s.snapshot.state, 'error');
+});
+
+test('fail() tolerates a throwing _webgs_stop', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  f.made[0]._webgs_stop = () => { throw new Error('runtime gone'); };
+  s.fail('x');
+  assert.equal(s.snapshot.state, 'error');
 });
