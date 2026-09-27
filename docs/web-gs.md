@@ -60,7 +60,7 @@ WASM/native parity (`web/tests/test_wasm_parity.sh`; needs both the host
 `build/web/webgs` and `web/build-wasm/webgs_node.js` already built):
 
 ```sh
-nix-shell -p nodejs --run "BUILD=$PWD/build web/tests/test_wasm_parity.sh"
+nix-shell -p nodejs python3 --run "BUILD=$PWD/build web/tests/test_wasm_parity.sh"
 ```
 
 Page logic tests (IRAP gate, decoder slot, hitch/stat math, segment
@@ -193,14 +193,22 @@ this build — the panel is measurement-only, by design (see the spec's
 
 - **Oilpan GC spikes.** Blink's incremental GC sweep of per-transfer WebUSB
   objects (`cppgc::Sweeper::IncrementalSweepTask`) runs on the thread that
-  owns those objects and, after a major GC roughly every 8–13 s at ≥38 Mb/s
-  on air, costs one periodic spike of 8–14 ms (native `maburgs`'s
-  equivalent tail: ≤1.7 ms). Moving the runtime into a dedicated worker
-  moves the sweep with it — the spike is unchanged. The only lever found is
-  fewer USB transfers (chip-side RX aggregation), which is a latency trade,
-  not taken here.
+  owns those objects and, after a major GC roughly every 8–13 s, costs one
+  periodic spike of 8–14 ms — measured at both 38 and 54 Mb/s on air
+  (native `maburgs`'s equivalent tail: ≤1.7 ms). Moving the runtime into a
+  dedicated worker moves the sweep with it — the spike is unchanged. The
+  only lever found is fewer USB transfers (chip-side RX aggregation), which
+  is a latency trade, not taken here.
 - **Spotter can never force an IDR.** No GS-relayed IDR request path exists
   (see "Spotter key frames" above and Follow-ups).
+- **Spotter cannot gate on `CAP_FRAME_WIRE`.** Spotter mode has no
+  rendezvous or caps exchange of its own — `web/src/web_gs.h`'s Spotter
+  gate is always true, unlike GS mode, which only decodes while in
+  SESSION with a peer that has advertised `CAP_FRAME_WIRE`. So a spotter
+  cannot detect a caps-mismatched drone (a half-deployed `RC_VERSION`
+  flag-day pair, `docs/deploy.md`): instead of refusing the stream the way
+  a caps-aware GS would, it feeds the decoder whatever bitstream arrives,
+  parseable or not.
 - **Chrome must run via the Nix wrapper** (`bin/google-chrome-stable`), not
   the raw `share/google/chrome/chrome` binary — the raw binary has no
   libEGL, its GPU process dies, and WebCodecs then rejects the drone's HEVC
