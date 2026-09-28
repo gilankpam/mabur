@@ -1,7 +1,7 @@
 <script>
   import Icon from './Icon.svelte';
   import { CHANNELS, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, channelWarning, describeEdit, describeRungEdit } from '../lib/config.js';
-  let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '' } = $props();
+  let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '', recordings = null } = $props();
   const uid = $props.id();   // unique per mounted instance -- two panels (sidebar + Task 11 side panel) never share a radio group.
 
   const groupClass = $derived(variant === 'card' ? 'card cardg' : 'group');
@@ -111,9 +111,30 @@
     </div>
   </div>
 
+  <div class={groupClass}>
+    <span class="card-kicker">DVR</span>
+    <div class="field">
+      <span id="{uid}dvr-label" class="fieldlabel">Recording target</span>
+      <div class="seg" role="radiogroup" aria-labelledby="{uid}dvr-label">
+        <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'web'} onchange={() => set('dvr', 'web')}>mabur web</label>
+        <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'vtx'} disabled={spotter} onchange={() => set('dvr', 'vtx')}>VTX</label>
+        <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'both'} disabled={spotter} onchange={() => set('dvr', 'both')}>Both</label>
+      </div>
+      <div class="hint">{{ web: 'Recorded in this browser and downloaded when you stop.', vtx: 'Recorded on the VTX storage.', both: 'Recorded in this browser and on the VTX.' }[cfg.dvr]}</div>
+      {#if spotter && cfg.dvr !== 'web'}<div class="note"><Icon name="binoculars" size="14px" /><span>Spotter records in this browser only.</span></div>{/if}
+    </div>
+  </div>
+
   {#if applied}
     <div style="display:flex;gap:6px;align-items:center;font-size:12px" class="dim4">
       <Icon name="check-circle" size="15px" style="color:var(--color-accent)" /><span>{applied}</span></div>
+  {/if}
+
+  {#if recordings}
+    <div class={groupClass}>
+      <span class="card-kicker">Recordings</span>
+      {@render recordings()}
+    </div>
   {/if}
 </div>
 

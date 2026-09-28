@@ -21,11 +21,11 @@ export const WORKER_FAILED = 'Page worker failed — if served over LAN, the TLS
   + 'this device (see docs/web-gs.md).';
 
 export class Session {
-  constructor({ createModule, requestDevice, onAu, onStats, onOsd = () => {}, reload,
+  constructor({ createModule, requestDevice, onAu, onStats, onOsd = () => {}, onRecClosed = () => {}, reload,
                 // Wrapped: a bare window.setTimeout called as timers.setTimeout(...) throws "Illegal invocation".
                 timers = { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h) },
                 stopTimeoutMs = 3000, recOffTimeoutMs = 1000 }) {
-    Object.assign(this, { createModule, requestDevice, onAu, onStats, onOsd, reload, timers,
+    Object.assign(this, { createModule, requestDevice, onAu, onStats, onOsd, onRecClosed, reload, timers,
       stopTimeoutMs, recOffTimeoutMs });
     this.subs = new Set();
     this.mod = null;
@@ -35,7 +35,7 @@ export class Session {
     this.stopTimer = null;
     this.recWaiter = null;   // resolve fn while waiting for rec_state != 1
     this.snapshot = { state: 'idle', mode: 'spotter', ch: null, w: null, error: null, notice: null,
-                      startedAt: null, recWish: false };
+                      startedAt: null, recWish: false, localWish: false };
   }
 
   subscribe(fn) { this.subs.add(fn); fn(this.snapshot); return () => this.subs.delete(fn); }
@@ -48,7 +48,7 @@ export class Session {
     const token = {};
     this.token = token;
     this.stopRequested = false;
-    this.set({ state: 'connecting', mode, ch, w, error: null, notice: null, recWish: false, startedAt: null });
+    this.set({ state: 'connecting', mode, ch, w, error: null, notice: null, recWish: false, localWish: false, startedAt: null });
     try {
       await this.requestDevice();
     } catch (e) {
@@ -75,6 +75,9 @@ export class Session {
         onStats: (text) => { if (this.token === token) this.handleStats(text); },
         onOsd: (rows, cols, cells) => { if (this.token === token) this.onOsd(rows, cols, cells); },
         onError: (text) => { if (this.token === token) this.handleError(text); },
+        // Not gated on state: the core seals the file on its way out, so this
+        // can land after onExit. The token still drops a superseded module's.
+        onRecClosed: (name, bytes, err) => { if (this.token === token) this.onRecClosed(name, bytes, err); },
         onExit: (code) => { token.exited = true; if (this.token === token) this.handleExit(code); },
         print: (t) => console.log('[webgs]', t),
         printErr: (t) => {
@@ -122,7 +125,7 @@ export class Session {
     this.mod = null;
     if (this.stopRequested) {
       this.stopRequested = false;
-      this.set({ state: 'idle', recWish: false });
+      this.set({ state: 'idle', recWish: false, localWish: false });
       return;
     }
     const st = this.snapshot.state;
@@ -130,7 +133,7 @@ export class Session {
       // Unexpected exit. If onError already ran first, keep its mapped
       // text; otherwise fall back to a generic message that a following
       // onError (handleError always overwrites) will replace.
-      this.set({ state: 'error', error: this.snapshot.error || `Core exited (code ${code}).` });
+      this.set({ state: 'error', error: this.snapshot.error || `Core exited (code ${code}).`, localWish: false });
     }
   }
 
@@ -138,6 +141,20 @@ export class Session {
     if (this.snapshot.state !== 'live' || this.snapshot.mode !== 'gs' || !this.mod) return;
     this.mod._webgs_set_rec(on ? 1 : 0);
     this.set({ recWish: !!on });
+  }
+
+  // Local (OPFS) recording, both modes. null = stop. The core copies the
+  // name synchronously, so the heap string is freed right away.
+  setLocalRec(name) {
+    if (this.snapshot.state !== 'live' || !this.mod) return;
+    if (name) {
+      const p = this.mod.stringToNewUTF8(name);
+      this.mod._webgs_set_local_rec(1, p);
+      this.mod._free(p);
+    } else {
+      this.mod._webgs_set_local_rec(0, 0);
+    }
+    this.set({ localWish: !!name });
   }
 
   async disconnect() {

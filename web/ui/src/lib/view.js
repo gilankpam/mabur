@@ -1,6 +1,7 @@
 // Core stats + page metrics -> display strings for the Stats tab, the
 // floating panel, the Debug tab and the live status line. Pure.
 import { effectiveLadder } from './config.js';
+import { formatBytes } from './localrec.js';
 
 const D = '–';
 const has = (v) => v !== null && v !== undefined && !(typeof v === 'number' && Number.isNaN(v));
@@ -58,7 +59,16 @@ function segRow(name, seg) {
   return `${segCell(a)} | ${segCell(b)}`;
 }
 
-export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60, hitchesTotal, seg }) {
+// rateBps = bytes/s over the last stats tick (App computes it).
+function lrecText(l) {
+  if (!l || l.state === 'off' || l.state === 'unknown') return 'off';
+  if (l.state === 'waiting') return 'waiting for sync';
+  const size = formatBytes(l.bytes || 0);
+  if (l.state === 'error') return `error · ${size}`;
+  return `${l.state} · ${size} · ${((l.rateBps || 0) * 8 / 1e6).toFixed(1)} Mb/s`;
+}
+
+export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60, hitchesTotal, seg, lrec }) {
   const on = !!connected && !!core;
   const spot = mode === 'spotter';
   const v = (x) => (on ? x : D);
@@ -82,6 +92,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
     ]) },
     { title: 'Client', rows: rows([
       ['AUs/s', v(on ? ausRate : D)], ['hitches', v(`${hitches60} last 60s (total ${hitchesTotal})`)],
+      ['local rec', v(lrecText(lrec))],
     ]) },
     { title: 'Latency (ms; 1 s | 60 s windows)', rows: rows([
       ['usb (core, 1 s)', v(has(core?.usb_p99_us) ? `p99 ${fmt(core.usb_p99_us / 1000)} max ${fmt(core.usb_max_us / 1000)}` : D)],

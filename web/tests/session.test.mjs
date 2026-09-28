@@ -19,10 +19,13 @@ function fakeModuleFactory({ exitOnStop = true, failStart = false } = {}) {
     if (failStart) throw new Error('boom');
     const files = {};
     const m = {
-      opts, files, recCalls: [],
+      opts, files, recCalls: [], localCalls: [], utf8: [], freed: [],
       FS: { writeFile: (p, t) => { files[p] = t; } },
       _webgs_stop() { m.stopped = true; if (exitOnStop) queueMicrotask(() => opts.onExit(0)); },
       _webgs_set_rec(on) { m.recCalls.push(on); },
+      stringToNewUTF8(str) { m.utf8.push(str); return 42; },
+      _free(p) { m.freed.push(p); },
+      _webgs_set_local_rec(on, p) { m.localCalls.push([on, p]); },
     };
     for (const f of opts.preRun || []) f(m);
     made.push(m);
@@ -37,7 +40,7 @@ const mk = (over = {}) => {
   let reloads = 0;
   const s = new Session({
     createModule: f.create, requestDevice: over.requestDevice || (async () => {}),
-    onAu: () => {}, onStats: () => {}, reload: () => { reloads++; }, timers: t,
+    onAu: () => {}, onStats: () => {}, onRecClosed: over.onRecClosed || (() => {}), reload: () => { reloads++; }, timers: t,
   });
   const states = [];
   s.subscribe((v) => states.push(v.state));
@@ -289,4 +292,52 @@ test('onOsd reaches the page only from the current module', async () => {
   f.made[1].opts.onOsd(16, 30, new Uint16Array(480));
   assert.equal(got.length, 2);
   assert.deepEqual(got[1].slice(0, 2), [16, 30]);
+});
+
+test('setLocalRec passes the name through the heap and frees it', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'spotter', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  s.setLocalRec('mabur-20260928-070509.mp4');
+  assert.deepEqual(m.utf8, ['mabur-20260928-070509.mp4']);
+  assert.deepEqual(m.localCalls, [[1, 42]]);
+  assert.deepEqual(m.freed, [42]);
+  assert.equal(s.snapshot.localWish, true);
+  s.setLocalRec(null);
+  assert.deepEqual(m.localCalls, [[1, 42], [0, 0]]);
+  assert.equal(s.snapshot.localWish, false);
+});
+
+test('setLocalRec is ignored unless live', () => {
+  const { s, f } = mk();
+  s.setLocalRec('a.mp4');
+  assert.equal(f.made.length, 0);
+  assert.equal(s.snapshot.localWish, false);
+});
+
+test('onRecClosed reaches the page after the module exited (disconnect seals the file)', async () => {
+  const got = [];
+  const { s, f } = mk({ onRecClosed: (...a) => got.push(a) });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  s.setLocalRec('a.mp4');
+  await s.disconnect();
+  await tick();                              // onExit(0) has run: idle
+  assert.equal(s.snapshot.state, 'idle');
+  assert.equal(s.snapshot.localWish, false);
+  m.opts.onRecClosed('a.mp4', 100, 0);       // the core's seal lands after exit
+  assert.deepEqual(got, [['a.mp4', 100, 0]]);
+});
+
+test('onRecClosed from a superseded module is dropped', async () => {
+  const got = [];
+  const { s, f } = mk({ onRecClosed: (...a) => got.push(a) });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  await s.disconnect();
+  await tick();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  f.made[0].opts.onRecClosed('old.mp4', 5, 0);
+  assert.deepEqual(got, []);
+  f.made[1].opts.onRecClosed('new.mp4', 7, 0);
+  assert.deepEqual(got, [['new.mp4', 7, 0]]);
 });

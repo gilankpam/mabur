@@ -86,6 +86,17 @@ test('debug groups carry the handoff keys verbatim + counters', () => {
   assert.ok(off.every((grp) => grp.rows.every((r) => r.v === '–')));
 });
 
+test('debug Client group shows the local recorder', () => {
+  const base = { connected: true, mode: 'gs', core: { mode: 'gs' }, rcfPct: null, ausRate: 60,
+    hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} } };
+  const row = (g) => g.find((x) => x.title === 'Client').rows.find((r) => r.k === 'local rec').v;
+  assert.equal(row(debugGroups({ ...base, lrec: { state: 'recording', bytes: 3 * 1024 * 1024, rateBps: 4e6 } })),
+    'recording · 3.0 MB · 32.0 Mb/s');
+  assert.equal(row(debugGroups({ ...base, lrec: { state: 'waiting', bytes: 0, rateBps: 0 } })), 'waiting for sync');
+  assert.equal(row(debugGroups({ ...base, lrec: null })), 'off');
+  assert.equal(row(debugGroups({ ...base, connected: false, lrec: null })), '–');
+});
+
 test('status text and link tag', () => {
   assert.equal(statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, core: { peer_acked: false },
     gateArmed: false, sinceStartMs: 12000, waitingMs: 12000, hiddenBanner: false }),

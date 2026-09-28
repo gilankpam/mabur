@@ -3,6 +3,7 @@
   import Header from './Header.svelte';
   import Sidebar from './Sidebar.svelte';
   import ConfigPanel from './ConfigPanel.svelte';
+  import Recordings from './Recordings.svelte';
   import DisconnectedOverlay from './DisconnectedOverlay.svelte';
   import FsOverlay from './FsOverlay.svelte';
   import FloatStats from './FloatStats.svelte';
@@ -16,6 +17,8 @@
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
+  import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
+    formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
   import { ScreenWake } from '../lib/wakelock.js';
 
@@ -29,6 +32,41 @@
   let hiddenBanner = $state(false), hiddenShown = false;
   const recClock = new RecClock();
   const wake = new ScreenWake();
+
+  let recItems = $state([]), recStorage = $state(''), recWarn = $state(null), opfsOk = $state(true);
+  let lrec = $state(null), lrecPrevBytes = 0, lrecPrevT = 0;
+  let persistAsked = false;
+  async function refreshRecordings() {
+    const root = await opfsRoot();
+    if (!root) { opfsOk = false; recItems = []; return; }
+    try { recItems = await listRecordings(root); } catch (e) { console.error('[webgs] list recordings', e); }
+    try {
+      const est = await navigator.storage.estimate();
+      recStorage = `${formatBytes(est.usage || 0)} used · ${formatBytes(Math.max(0, (est.quota || 0) - (est.usage || 0)))} free`;
+      recWarn = headroomWarning(est);
+    } catch { recStorage = ''; recWarn = null; }
+  }
+  async function onRecClosed(name, bytes, err) {
+    if (bytes > 0) {
+      const root = await opfsRoot();
+      if (root) {
+        try { await downloadRecording(root, name); }
+        catch (e) { console.error('[webgs] download', name, e); }
+      }
+    }
+    if (err) console.error('[webgs] local recording ended with error', err, name);
+    refreshRecordings();
+  }
+  async function delRecording(name) {
+    const root = await opfsRoot();
+    if (!root) return;
+    try { await deleteRecording(root, name); } catch (e) { console.error('[webgs] delete', name, e); }
+    refreshRecordings();
+  }
+  async function dlRecording(name) {
+    const root = await opfsRoot();
+    if (root) try { await downloadRecording(root, name); } catch (e) { console.error('[webgs] download', name, e); }
+  }
 
   const video = new VideoPipeline({ getCanvas: () => canvas, getGlCanvas: () => glCanvas, getMode: () => sess.mode,
     getColortrans: () => ui.cfg.colortrans });
@@ -68,6 +106,7 @@
       osdLayer.onScreen(rows, cols, cells, performance.now());
       osd.schedule();
     },
+    onRecClosed: (n, b, e) => onRecClosed(n, b, e),
     reload: reloadToConfig,
   });
 
@@ -110,11 +149,20 @@
     view = statsView({ connected: live, mode: shownMode, ch: live ? sess.ch : ui.cfg.channel, w: live ? sess.w : ui.cfg.width,
       core, page: live ? tele.page : null, sessionCfg: live ? sessionCfg : ui.cfg, videoSize: video.videoSize,
       colour: live ? video.colour : null });
+    const target = effectiveTarget(sessionCfg.dvr, sess.mode);
+    const lv = live ? localView(core) : { state: 'unknown', err: null, bytes: 0 };
+    rec = live ? combinedRec({ target, vtx: recView(core), local: lv }) : { state: 'unknown', err: null };
+    if (lv.bytes !== lrecPrevBytes) {
+      const dt = (nowMs - lrecPrevT) / 1000;
+      lrec = { ...lv, rateBps: lrecPrevT && dt > 0 ? Math.max(0, lv.bytes - lrecPrevBytes) / dt : 0 };
+      lrecPrevBytes = lv.bytes; lrecPrevT = nowMs;
+    } else if (!live || lv.state !== (lrec && lrec.state)) {
+      lrec = live ? { ...lv, rateBps: lrec ? lrec.rateBps : 0 } : null;
+    }
     groups = debugGroups({ connected: live, mode: shownMode, core, rcfPct: tele.rcfPct, ausRate: tele.ausRate,
-      hitches60: tele.hitches60(nowMs), hitchesTotal: video.hitchesTotal, seg: tele.seg || { w1: {}, w60: {} } });
+      hitches60: tele.hitches60(nowMs), hitchesTotal: video.hitchesTotal, seg: tele.seg || { w1: {}, w60: {} }, lrec });
     spark = live ? sparkPoints(tele.spark) : '0,24 100,24';
     tag = linkTag({ state: sess.state, mode: sess.mode, core });
-    rec = live ? recView(core) : { state: 'unknown', err: null };
     recClock.update(rec.state, nowMs);
     recMs = recClock.elapsedMs(nowMs);
     const p = performance.now();
@@ -162,15 +210,35 @@
     ui.applied = `${label} · saved ${new Date().toTimeString().slice(0, 8)}`;
   }
 
+  const recTarget = $derived(effectiveTarget((live || busy ? sessionCfg : ui.cfg).dvr, live || busy ? sess.mode : ui.mode));
+  const recCovers = $derived(targetCovers(recTarget));
   const recOn = $derived(rec.state === 'recording');
-  // GS mode AND live AND the core reports session && peer_acked (spotter never).
-  const recDisabled = $derived(!(live && sess.mode === 'gs' && !!core?.session && !!core?.peer_acked));
-  const recLabel = $derived(recOn ? formatClock(recMs) : rec.state === 'error' ? 'REC!' : 'Record');
+  const recWaiting = $derived(rec.state === 'waiting');
+  const vtxReady = $derived(live && sess.mode === 'gs' && !!core?.session && !!core?.peer_acked);
+  const localReady = $derived(live && opfsOk && core?.lrec_avail !== 0);
+  // Local needs only a live module with OPFS; VTX-only keeps today's rule.
+  const recDisabled = $derived(recCovers.web ? !localReady : !vtxReady);
+  const recLabel = $derived(recOn ? formatClock(recMs) : recWaiting ? 'waiting for sync…'
+    : rec.state === 'error' ? 'REC!' : 'Record');
   const recTitle = $derived(rec.state === 'error' ? rec.err
-    : sess.mode === 'spotter' && (live || busy) ? 'Spotter cannot start or stop VTX recording' : 'Record on the VTX (R)');
-  // Toggle from what is shown: if the drone already records (e.g. after a
-  // reconnect, recWish false), the press stops it.
-  function toggleRec() { if (!recDisabled) session.setRec(!(recOn || sess.recWish)); }
+    : recCovers.web && live && !localReady ? 'Browser storage unavailable — local recording is off'
+    : { web: 'Record in this browser (R)', vtx: 'Record on the VTX (R)', both: 'Record in this browser and on the VTX (R)' }[recTarget]);
+  // Toggle from what is shown (a drone already recording after a reconnect
+  // is stopped by the press), plus our own wishes.
+  function toggleRec() {
+    if (recDisabled) return;
+    const on = !(recOn || recWaiting || sess.recWish || sess.localWish);
+    if (recCovers.vtx && sess.mode === 'gs') session.setRec(on);
+    if (recCovers.web) {
+      if (on) {
+        if (!persistAsked) { persistAsked = true; navigator.storage?.persist?.().then((p) => console.log('[webgs] storage persist', p)).catch(() => {}); }
+        session.setLocalRec(recFileName(new Date(), recItems.map((r) => r.name)));
+        setTimeout(refreshRecordings, 1500);   // show the new file as "recording"
+      } else {
+        session.setLocalRec(null);
+      }
+    }
+  }
 
   function toggleFs() {
     const on = !ui.fs;
@@ -228,6 +296,7 @@
   onMount(() => {
     const iv = setInterval(refresh, 200);
     checkUsbGranted();
+    refreshRecordings();
     refresh();
     osd.attach(osdCanvas);
     const ro = new ResizeObserver(([e]) => osd.resize(e.contentRect.width, e.contentRect.height, window.devicePixelRatio || 1));
@@ -284,7 +353,7 @@
       <Sidebar tab={ui.tab} onTab={(t) => (ui.tab = t)} v={view} {spark} {groups} onCopy={copyStats} {copyMsg}>
         {#snippet config()}
           <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
-            onDisconnect={live ? disconnect : null} variant="rule" applied={ui.applied} />
+            onDisconnect={live ? disconnect : null} variant="rule" applied={ui.applied} recordings={recList} />
         {/snippet}
       </Sidebar>
     {/if}
@@ -301,11 +370,16 @@
     {#if ui.cfgOpen}
       <ConfigSide onClose={() => (ui.cfgOpen = false)}>
         <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
-          onDisconnect={live ? disconnect : null} variant="card" applied={ui.applied} />
+          onDisconnect={live ? disconnect : null} variant="card" applied={ui.applied} recordings={recList} />
       </ConfigSide>
     {/if}
   {/if}
 </div>
+
+{#snippet recList()}
+  <Recordings items={recItems} active={live && (sess.localWish || rec.state === 'recording') ? (core?.lrec_name || null) : null}
+    storage={recStorage} warn={recWarn} available={opfsOk} onDownload={dlRecording} onDelete={delRecording} />
+{/snippet}
 
 <style>
   .root { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); }
