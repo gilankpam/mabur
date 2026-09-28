@@ -38,6 +38,30 @@ void push_array(std::vector<uint8_t>& out, uint8_t nal_type,
   out.insert(out.end(), nal.begin(), nal.end());
 }
 
+// MSB-first reader over de-escaped RBSP; `bad` latches on overrun.
+struct BitReader {
+  const std::vector<uint8_t>& b;
+  size_t pos = 0;
+  bool bad = false;
+  uint32_t u(int n) {
+    uint32_t v = 0;
+    for (int i = 0; i < n; ++i) {
+      const size_t byte = pos >> 3;
+      if (byte >= b.size()) { bad = true; return 0; }
+      v = (v << 1) | ((b[byte] >> (7 - (pos & 7))) & 1u);
+      ++pos;
+    }
+    return v;
+  }
+  uint32_t ue() {
+    int lz = 0;
+    while (u(1) == 0) {
+      if (bad || ++lz > 31) { bad = true; return 0; }
+    }
+    return ((1u << lz) - 1) + u(lz);
+  }
+};
+
 }  // namespace
 
 std::vector<NalView> split_nals(const uint8_t* au, size_t n) {
@@ -171,6 +195,48 @@ std::vector<uint8_t> HevcParams::hvcc() const {
 #pragma GCC diagnostic pop
 #endif
   return out;
+}
+
+bool HevcParams::sps_dimensions(int* w, int* h) const {
+  if (sps_.size() < 3) return false;
+  std::vector<uint8_t> rbsp;
+  rbsp.reserve(sps_.size());
+  size_t zeros = 0;
+  for (size_t i = 2; i < sps_.size(); ++i) {  // skip the 2-byte NAL header
+    const uint8_t b = sps_[i];
+    if (zeros >= 2 && b == 0x03) { zeros = 0; continue; }  // emulation prevention
+    zeros = (b == 0x00) ? zeros + 1 : 0;
+    rbsp.push_back(b);
+  }
+  BitReader r{rbsp};
+  r.u(4);                          // sps_video_parameter_set_id
+  const uint32_t max_sub = r.u(3); // sps_max_sub_layers_minus1
+  r.u(1);                          // temporal_id_nesting
+  // profile_tier_level(1, max_sub): general = 88 bits + level 8.
+  r.u(8); r.u(32); r.u(24); r.u(24); r.u(8);
+  bool prof[8] = {}, lvl[8] = {};
+  for (uint32_t i = 0; i < max_sub; ++i) { prof[i] = r.u(1); lvl[i] = r.u(1); }
+  if (max_sub > 0)
+    for (uint32_t i = max_sub; i < 8; ++i) r.u(2);  // reserved_zero_2bits
+  for (uint32_t i = 0; i < max_sub; ++i) {
+    if (prof[i]) { r.u(32); r.u(32); r.u(24); }      // 88 bits
+    if (lvl[i]) r.u(8);
+  }
+  r.ue();                                  // sps_seq_parameter_set_id
+  const uint32_t chroma = r.ue();
+  if (chroma == 3) r.u(1);                 // separate_colour_plane_flag
+  int64_t pw = r.ue(), ph = r.ue();
+  if (r.u(1)) {                            // conformance_window_flag
+    const int64_t l = r.ue(), rt = r.ue(), t = r.ue(), bt = r.ue();
+    const int64_t sw = (chroma == 1 || chroma == 2) ? 2 : 1;
+    const int64_t sh = chroma == 1 ? 2 : 1;
+    pw -= sw * (l + rt);
+    ph -= sh * (t + bt);
+  }
+  if (r.bad || pw <= 0 || ph <= 0 || pw > 16384 || ph > 16384) return false;
+  *w = static_cast<int>(pw);
+  *h = static_cast<int>(ph);
+  return true;
 }
 
 std::vector<uint8_t> annexb_to_length_prefixed(const uint8_t* au, size_t n) {

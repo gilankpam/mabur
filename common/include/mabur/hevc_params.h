@@ -46,6 +46,11 @@ class HevcParams {
   // complete() must be true; asserts otherwise.
   std::vector<uint8_t> hvcc() const;
 
+  // Display size from the stored SPS: pic_width/height_in_luma_samples minus
+  // the conformance window. False when there is no SPS or it does not parse.
+  // Feeds only the DVR's tkhd/hvc1 dimensions.
+  bool sps_dimensions(int* w, int* h) const;
+
   const std::vector<uint8_t>& vps() const { return vps_; }
   const std::vector<uint8_t>& sps() const { return sps_; }
   const std::vector<uint8_t>& pps() const { return pps_; }

@@ -281,4 +281,144 @@ TEST(feed_prefixed_stops_at_a_truncated_length) {
   CHECK(q.vps().empty());
 }
 
+// ---- sps_dimensions --------------------------------------------------
+// Real x265 SPS NALs (header included, escaped), captured 2026-09-28 with
+// ffmpeg -f lavfi testsrc2 -c:v libx265.
+const std::vector<uint8_t> kSps720 = {
+    0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00, 0x00,
+    0x03, 0x00, 0x78, 0xa0, 0x02, 0x80, 0x80, 0x2d, 0x16, 0x59, 0x59, 0xa4, 0x93, 0x2b, 0xc0,
+    0x5a, 0x02, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x78, 0x10};
+// 1080p is coded 1920x1088 with an 8-row conformance window.
+const std::vector<uint8_t> kSps1080 = {
+    0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00, 0x00,
+    0x03, 0x00, 0x7b, 0xa0, 0x03, 0xc0, 0x80, 0x10, 0xe5, 0x96, 0x56, 0x69, 0x24, 0xca, 0xf0,
+    0x16, 0x80, 0x80, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x1e, 0x04};
+
+// Bit writer for a synthetic SPS with sub-layers (the drone is SVC-T; x265
+// never emits sps_max_sub_layers_minus1 > 0).
+struct Bits {
+  std::vector<uint8_t> out;
+  int nbits = 0;
+  void u(uint32_t v, int n) {
+    for (int i = n - 1; i >= 0; --i) {
+      if (nbits % 8 == 0) out.push_back(0);
+      if ((v >> i) & 1) out.back() |= static_cast<uint8_t>(0x80 >> (nbits % 8));
+      ++nbits;
+    }
+  }
+  void ue(uint32_t v) {
+    const uint32_t x = v + 1;
+    int len = 0;
+    while ((x >> len) > 1) ++len;
+    u(0, len);
+    u(x, len + 1);
+  }
+};
+
+std::vector<uint8_t> escape_rbsp(const std::vector<uint8_t>& rbsp) {
+  std::vector<uint8_t> o;
+  int zeros = 0;
+  for (uint8_t b : rbsp) {
+    if (zeros >= 2 && b <= 3) { o.push_back(3); zeros = 0; }
+    o.push_back(b);
+    zeros = b == 0 ? zeros + 1 : 0;
+  }
+  return o;
+}
+
+std::vector<uint8_t> sps_with_sublayers(uint32_t w, uint32_t h) {
+  Bits b;
+  b.u(0, 4);            // sps_video_parameter_set_id
+  b.u(1, 3);            // sps_max_sub_layers_minus1 = 1
+  b.u(1, 1);            // temporal_id_nesting
+  b.u(0x01, 8);         // profile_space/tier/idc (Main)
+  b.u(0x60000000, 32);  // compat flags
+  b.u(0x900000, 24);    // 48 constraint bits, part 1
+  b.u(0, 24);           //                     part 2
+  b.u(0x5d, 8);         // general_level_idc
+  b.u(0, 1);            // sub_layer_profile_present_flag[0]
+  b.u(1, 1);            // sub_layer_level_present_flag[0]
+  b.u(0, 14);           // reserved_zero_2bits x (8 - 1)
+  b.u(0x5a, 8);         // sub_layer_level_idc[0]
+  b.ue(0);              // sps_seq_parameter_set_id
+  b.ue(1);              // chroma_format_idc 4:2:0
+  b.ue(w);
+  b.ue(h);
+  b.u(0, 1);            // conformance_window_flag
+  b.u(0, 8);            // trailing junk: the parser stops before here
+  std::vector<uint8_t> nal = {0x42, 0x01};
+  const std::vector<uint8_t> esc = escape_rbsp(b.out);
+  nal.insert(nal.end(), esc.begin(), esc.end());
+  return nal;
+}
+
+mabur::HevcParams params_with_sps(const std::vector<uint8_t>& sps) {
+  std::vector<uint8_t> au = {0, 0, 0, 1};
+  au.insert(au.end(), sps.begin(), sps.end());
+  mabur::HevcParams hp;
+  hp.feed(au.data(), au.size());
+  return hp;
+}
+
+TEST(sps_dimensions_720p) {
+  int w = 0, h = 0;
+  CHECK(params_with_sps(kSps720).sps_dimensions(&w, &h));
+  CHECK(w == 1280);
+  CHECK(h == 720);
+}
+
+TEST(sps_dimensions_1080p_applies_conformance_window) {
+  int w = 0, h = 0;
+  CHECK(params_with_sps(kSps1080).sps_dimensions(&w, &h));
+  CHECK(w == 1920);
+  CHECK(h == 1080);
+}
+
+TEST(sps_dimensions_with_sub_layers) {
+  int w = 0, h = 0;
+  CHECK(params_with_sps(sps_with_sublayers(1280, 720)).sps_dimensions(&w, &h));
+  CHECK(w == 1280);
+  CHECK(h == 720);
+}
+
+TEST(sps_dimensions_false_without_sps_or_on_truncation) {
+  int w = 0, h = 0;
+  mabur::HevcParams empty;
+  CHECK(!empty.sps_dimensions(&w, &h));
+  std::vector<uint8_t> cut(kSps720.begin(), kSps720.begin() + 20);  // ends inside the ue() fields
+  CHECK(!params_with_sps(cut).sps_dimensions(&w, &h));
+}
+
+TEST(sps_dimensions_applies_conformance_window_when_present) {
+  // SPS with conformance window: 1280x720 coded, with 4-pixel margins all sides (chroma 4:2:0)
+  // Conformance window: left=4, right=4, top=4, bottom=4
+  // Expected display: (1280 - 2*(4+4)) x (720 - 2*(4+4)) = 1280-16 x 720-16 = 1264 x 704
+  Bits b;
+  b.u(0, 4);            // sps_video_parameter_set_id
+  b.u(0, 3);            // sps_max_sub_layers_minus1 = 0
+  b.u(1, 1);            // temporal_id_nesting
+  b.u(0x01, 8);         // profile_space/tier/idc (Main)
+  b.u(0x60000000, 32);  // compat flags
+  b.u(0x900000, 24);    // constraint bits, part 1
+  b.u(0, 24);           //                 part 2
+  b.u(0x5d, 8);         // general_level_idc
+  b.ue(0);              // sps_seq_parameter_set_id
+  b.ue(1);              // chroma_format_idc 4:2:0
+  b.ue(1280);           // pic_width_in_luma_samples
+  b.ue(720);            // pic_height_in_luma_samples
+  b.u(1, 1);            // conformance_window_flag = 1
+  b.ue(4);              // conf_win_left_offset
+  b.ue(4);              // conf_win_right_offset
+  b.ue(4);              // conf_win_top_offset
+  b.ue(4);              // conf_win_bottom_offset
+  std::vector<uint8_t> nal = {0x42, 0x01};
+  const std::vector<uint8_t> esc = escape_rbsp(b.out);
+  nal.insert(nal.end(), esc.begin(), esc.end());
+
+  int w = 0, h = 0;
+  CHECK(params_with_sps(nal).sps_dimensions(&w, &h));
+  CHECK(w == 1264);  // 1280 - 2*(4+4)
+  CHECK(h == 704);   // 720 - 2*(4+4)
+}
+
 MTEST_MAIN
