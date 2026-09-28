@@ -5,7 +5,7 @@ import { defaultConfig, applyEdit } from '../ui/src/lib/config.js';
 
 const core = { mode: 'gs', session: true, peer_acked: true, rung: 3, mcs: 3, bw: 40, probe: 'armed',
   pre_fec_loss: 0.032, residual: 0.0004, snr_db: 28.4, rssi_dbm: -58.2, rtt_ms: 8, rtt_min_ms: 4.2,
-  drone_state: 2, drone_rcf_rx: 1533, rec_state: 0, rec_err: 0, usb_p99_us: 200, usb_max_us: 250 };
+  drone_state: 2, drone_rcf_rx: 1533, drone_temp_c: 67, rec_state: 0, rec_err: 0, usb_p99_us: 200, usb_max_us: 250 };
 const page = { bitrateMbps: 17.84, fps: 59.6, jitterMs: 1.94, latencyMs: 38.2 };
 const base = { connected: true, mode: 'gs', ch: 136, w: 40, core, page,
   sessionCfg: defaultConfig(), videoSize: { w: 1280, h: 720 } };
@@ -22,6 +22,8 @@ test('stats view, GS adaptive', () => {
   assert.equal(v.preLoss, '3.2'); assert.equal(v.postLoss, '0.04');
   assert.equal(v.bitrate, '17.8'); assert.equal(v.fps, '60'); assert.equal(v.jitter, '1.9');
   assert.equal(v.latency, '38'); assert.equal(v.codecLine, 'H.265 · 1280×720');
+  assert.equal(v.droneTemp, '67');
+  assert.equal(statsView({ ...base, core: { ...core, drone_temp_c: null } }).droneTemp, '–');
 });
 
 test('codec line names the colour path', () => {
@@ -30,9 +32,9 @@ test('codec line names the colour path', () => {
   assert.equal(statsView({ ...base, colour: 'flat' }).codecLine, 'H.265 · 1280×720');
 });
 
-test('rung count is the effective ladder (max MCS filter)', () => {
-  const v = statsView({ ...base, sessionCfg: applyEdit(defaultConfig(), 'maxMcs', 2),
-    core: { ...core, rung: 1, mcs: 1 } });
+test('rung count is the whole ladder', () => {
+  const cfg = { ...defaultConfig(), ladder: defaultConfig().ladder.slice(0, 3) };
+  const v = statsView({ ...base, sessionCfg: cfg, core: { ...core, rung: 1, mcs: 1 } });
   assert.equal(v.rungCount, '3'); assert.equal(v.segs.length, 3);
 });
 
@@ -49,7 +51,7 @@ test('pinned and spotter modes', () => {
 
 test('disconnected: every value is a dash, bars empty', () => {
   const v = statsView({ ...base, connected: false, core: null, page: null });
-  for (const k of ['mcs', 'bw', 'preLoss', 'postLoss', 'bitrate', 'latency', 'fps', 'jitter', 'bestRssi']) {
+  for (const k of ['mcs', 'bw', 'preLoss', 'postLoss', 'bitrate', 'latency', 'fps', 'jitter', 'bestRssi', 'droneTemp']) {
     assert.equal(v[k], '–', k);
   }
   assert.ok(v.segs.every((s) => !s));

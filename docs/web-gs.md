@@ -310,26 +310,33 @@ above.
 The Config tab (`web/ui/src/components/ConfigPanel.svelte`, and
 `ConfigSide.svelte` for the immersive/mobile layout) edits channel and width
 in both modes, plus — GS mode only — Fixed MCS (`static_mcs`, −1 =
-adaptive), Max MCS, and the ladder rungs (mcs/bw/FEC overhead per rung, add/
-remove up to 8). `web/ui/src/lib/config.js` normalizes and persists the
+adaptive) and the ladder rungs (mcs/bw/FEC overhead per rung, add/
+remove up to 8, drag the ⋮⋮ handle — or focus it and use ↑/↓ — to reorder;
+`applyRungEdit(cfg, from, '__move', to)`). `web/ui/src/lib/config.js` normalizes and persists the
 form to `localStorage` under `webgs.cfg` (per-field fallback to the bundle
 default, so a stale or hand-edited entry can never break the page), and
 `?ch=`/`?w=` query params override the saved channel/width on load the same
 way `?mode=` overrides the saved mode. On Connect, the GS-mode form (always, even
 when it matches the embedded default) is serialized to TOML
 (`toOverlayToml()`: `[link] static_mcs/static_bw/max_mcs` plus one
-`[[link.ladder]]` block per rung, `static_bw` carrying the form's width) and
-handed to the core as `--overlay /overlay.toml`; `maburgs::load_config`'s
+`[[link.ladder]]` block per rung, `static_bw` carrying the form's width,
+`max_mcs` always 7 — the form has no Max MCS since 2026-09-29, the ladder
+as listed is the whole policy) and
+handed to the core as `--overlay /overlay.toml`. While Fixed MCS is
+pinned the form hides the ladder, and the overlay sends a single `{mcs = static_mcs, bw = width}` rung instead
+of the saved ladder (the loader validates the ladder even when pinned — a
+40 MHz rung at width 20 would fail boot — and the user can't see those
+fields to fix them); `connectBlocker()` skips the ladder checks likewise,
+and the saved ladder comes back untouched with Adaptive; `maburgs::load_config`'s
 `overlay_path` argument (`gs/src/config.h`/`.cpp`) deep-merges it over the
 embedded `maburgs.default.toml` (an overlay `[[link.ladder]]` replaces the
 file's ladder whole, it does not append) and re-runs the same validation
 the native loader runs. A rejected overlay surfaces as `ERROR bad config:
 <reason>` from the core; `connectBlocker()` mirrors the same checks
-page-side (channel/width, FEC overhead range 0.1–2.0, enh ≤ base, at least
-one rung at-or-below Max MCS, no 40 MHz rung under a 20 MHz width) so a bad
+page-side (channel/width, FEC overhead range 0.1–2.0, enh ≤ base, no 40 MHz rung under a 20 MHz width) so a bad
 form is refused before Connect ever starts the device request, and a
-per-field warning (`rungWarnings()`/`channelWarning()`) flags a rung that's
-above Max MCS or a channel with no HT40 pair without blocking the rest of
+per-field warning (`rungWarnings()`/`channelWarning()`) flags a 40 MHz rung
+under a 20 MHz width, enh above base, or a channel with no HT40 pair without blocking the rest of
 the form. Spotter mode sends no overlay — it only listens, so only channel/
 width apply.
 
@@ -411,7 +418,10 @@ recorder's own row.
 
 A 1 Hz snapshot from the core (`webgs::Stats` / `stats_json()` in
 `web/src/web_gs.cpp`), plus page-side timing JS adds on receipt, including
-the recorder's `rec_state`/`rec_err` (Record, above). In the windowed
+the recorder's `rec_state`/`rec_err` (Record, above) and `drone_temp_c`
+(Telem `soc_temp_c`, null until a Telem lands or when the drone reports
+−128 = no thermal source), shown as "Drone temp" on both the Stats tab and
+the floating panel. In the windowed
 layout this lives in the sidebar's Stats/Config/Debug tabs
 (`Sidebar.svelte`); in immersive/fullscreen or on mobile it's a floating,
 draggable panel (`FloatStats.svelte`, `web/ui/src/lib/layout.js`) instead,

@@ -14,6 +14,8 @@
   <RungBar segs={v.segs} height={4} />
   <div style="display:flex;justify-content:space-between;font-size:12px">
     <span class="dim5">Channel</span><span class="num nowrap">{v.chLine}</span></div>
+  <div style="display:flex;justify-content:space-between;font-size:12px">
+    <span class="dim5">Drone temp</span><span class="num nowrap">{v.droneTemp}{' °C'}</span></div>
 </div>
 
 <div class="group">

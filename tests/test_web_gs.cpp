@@ -392,6 +392,23 @@ TEST(drone_idr_gs_from_telem_in_stats_json) {
   CHECK(stats_json(g.stats()).find("\"drone_idr_gs\":9") != std::string::npos);
 }
 
+TEST(drone_temp_from_telem_in_stats_json) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  CHECK(stats_json(g.stats()).find("\"drone_temp_c\":null") != std::string::npos);
+  mabur::rc::Telem t;
+  t.tlm_seq = 1;   // soc_temp_c defaults to -128 = unavailable
+  g.on_rx(rc_body(mabur::rc::pack_telem(t), 1'000'000));
+  g.tick(1'000'000);
+  CHECK(stats_json(g.stats()).find("\"drone_temp_c\":null") != std::string::npos);
+  t.tlm_seq = 2;
+  t.soc_temp_c = 67;
+  g.on_rx(rc_body(mabur::rc::pack_telem(t), 2'000'000));
+  g.tick(2'000'000);
+  CHECK(stats_json(g.stats()).find("\"drone_temp_c\":67") != std::string::npos);
+}
+
 TEST(rec_status_from_telem_in_stats_json) {
   Io io;
   io.on_au = [](Au&&) {};

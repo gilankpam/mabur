@@ -285,6 +285,7 @@ Stats WebGs::stats() const {
     s.drone_state = telem_->state;
     s.rec_status = telem_->rec_status;
     s.drone_idr_gs = telem_->idr_gs;
+    if (telem_->soc_temp_c != -128) s.drone_temp_c = telem_->soc_temp_c;
   }
   s.osd_snaps = msp_ ? msp_->snapshots_out() : 0;
   s.osd_screens = osd_.screens();
@@ -314,6 +315,7 @@ std::string stats_json(const Stats& s) {
   opt("drone_rcf_rx", s.drone_rcf_rx);
   opt("drone_state", s.drone_state);
   opt("drone_idr_gs", s.drone_idr_gs);
+  opt("drone_temp_c", s.drone_temp_c);
   if (s.rec_status) {
     j["rec_state"] = *s.rec_status & 0x03;
     j["rec_err"] = *s.rec_status >> 2;

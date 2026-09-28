@@ -79,6 +79,7 @@ struct Stats {
   std::optional<uint8_t> rec_status;      // Telem.rec_status raw (VTX recorder)
   uint32_t idr_req = 0;                   // page IDR requests so far (set_idr_requests)
   std::optional<uint16_t> drone_idr_gs;   // Telem.idr_gs: requests the drone served
+  std::optional<int> drone_temp_c;        // Telem.soc_temp_c; unset when -128 (unavailable)
   uint64_t osd_snaps = 0;     // MSP snapshots out of the FEC sink
   uint64_t osd_screens = 0;   // OSD screens published (Io::on_osd)
 };

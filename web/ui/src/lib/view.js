@@ -1,6 +1,5 @@
 // Core stats + page metrics -> display strings for the Stats tab, the
 // floating panel, the Debug tab and the live status line. Pure.
-import { effectiveLadder } from './config.js';
 import { formatBytes } from './localrec.js';
 
 const D = '–';
@@ -23,7 +22,7 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
   const on = !!connected && !!core;
   const spot = mode === 'spotter';
   const pinned = !spot && sessionCfg.staticMcs >= 0;
-  const eff = effectiveLadder(sessionCfg);
+  const n = sessionCfg.ladder.length;
   const rung = on && !spot && !pinned && core.rung >= 0 ? core.rung : -1;
   const rssi = on ? core.rssi_dbm : null;
   const barPct = has(rssi) ? Math.max(5, Math.min(100, (rssi + 90) / 60 * 100)) : 0;
@@ -31,12 +30,15 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
     mcs: on && core.mcs >= 0 ? String(core.mcs) : D,
     bw: on && core.bw ? String(core.bw) : D,
     rungNum: rung >= 0 ? String(rung + 1) : D,
-    rungCount: String(eff.length),
+    rungCount: String(n),
     rungMode: spot ? 'Observed' : pinned ? 'Pinned' : 'Adaptive',
-    segs: eff.map((_, i) => rung >= 0 && i <= rung),
+    segs: sessionCfg.ladder.map((_, i) => rung >= 0 && i <= rung),
     chLine: `${ch} · ${w} MHz`,
     cards: [{ idx: 0, tx: !spot, rssi: fx(rssi, 0), snr: fx(on ? core.snr_db : null, 0), barPct }],
     bestRssi: fx(rssi, 0),
+    // Telem.soc_temp_c, 1 Hz; the core sends null until a Telem with a
+    // reading lands (-128 on the wire = the drone has no thermal source).
+    droneTemp: on ? fx(core.drone_temp_c, 0) : D,
     preLoss: on && has(core.pre_fec_loss) ? (core.pre_fec_loss * 100).toFixed(1) : D,
     postLoss: on && has(core.residual) ? (core.residual * 100).toFixed(2) : D,
     bitrate: on && page ? fx(page.bitrateMbps, 1) : D,

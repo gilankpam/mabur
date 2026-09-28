@@ -12,6 +12,43 @@
   };
   const MCS = [0, 1, 2, 3, 4, 5, 6, 7];
   const chWarn = $derived(channelWarning(cfg));
+  const pinned = $derived(cfg.staticMcs >= 0);
+
+  // Rung drag-to-reorder. Pointer events, not HTML5 DnD (no touch support);
+  // the drop target is hit-tested with elementFromPoint on client coords, so
+  // it stays right when App draws the UI rotated on an upright phone.
+  let drag = $state(null);   // { from, over } while a handle is held
+  function rungAt(x, y) {
+    const el = document.elementFromPoint(x, y)?.closest('[data-rung]');
+    return el ? Number(el.dataset.rung) : null;
+  }
+  function startRungDrag(e, i) {
+    if (locked || (e.button && e.button !== 0)) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    drag = { from: i, over: i };
+  }
+  function moveRungDrag(e) {
+    if (!drag) return;
+    const i = rungAt(e.clientX, e.clientY);
+    if (i !== null) drag.over = i;
+  }
+  function endRungDrag() {
+    if (!drag) return;
+    const { from, over } = drag;
+    drag = null;
+    if (over !== from) setRung(from, '__move', over);
+  }
+  // Keyboard equivalent: arrows on the handle move the rung one step.
+  function rungKey(e, i) {
+    const to = e.key === 'ArrowUp' ? i - 1 : e.key === 'ArrowDown' ? i + 1 : null;
+    if (to === null) return;
+    e.preventDefault();
+    if (to < 0 || to >= cfg.ladder.length) return;
+    setRung(i, '__move', to);
+    const h = e.currentTarget.closest('.rungs');
+    requestAnimationFrame(() => h?.querySelector(`[data-rung="${to}"] .grip`)?.focus());
+  }
 </script>
 
 <div class="cfg" style="display:flex;flex-direction:column;gap:var(--space-6);font-size:13px;color:var(--color-text)">
@@ -42,26 +79,19 @@
     <div class={groupClass}>
       <span class="card-kicker">Link</span>
       {#if spotter}<div class="note"><Icon name="binoculars" size="14px" /><span>Not applied in spotter mode.</span></div>{/if}
-      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--space-4)">
-        <div class="field">
-          <label for="cfg-static">Fixed MCS</label>
-          <select id="cfg-static" class="input" style="min-height:34px;padding:5px 8px" onchange={(e) => set('staticMcs', +e.currentTarget.value)}>
-            <option value="-1" selected={cfg.staticMcs < 0}>Adaptive</option>
-            {#each MCS as m}<option value={m} selected={m === cfg.staticMcs}>MCS {m}</option>{/each}
-          </select>
-        </div>
-        <div class="field">
-          <label for="cfg-max">Max MCS</label>
-          <select id="cfg-max" class="input" style="min-height:34px;padding:5px 8px" onchange={(e) => set('maxMcs', +e.currentTarget.value)}>
-            {#each MCS as m}<option value={m} selected={m === cfg.maxMcs}>MCS {m}</option>{/each}
-          </select>
-        </div>
+      <div class="field">
+        <label for="cfg-static">Fixed MCS</label>
+        <select id="cfg-static" class="input" style="min-height:34px;padding:5px 8px" onchange={(e) => set('staticMcs', +e.currentTarget.value)}>
+          <option value="-1" selected={cfg.staticMcs < 0}>Adaptive</option>
+          {#each MCS as m}<option value={m} selected={m === cfg.staticMcs}>MCS {m}</option>{/each}
+        </select>
       </div>
-      {#if cfg.staticMcs >= 0}
-        <div class="note"><Icon name="info" size="14px" /><span>Link pinned to MCS {cfg.staticMcs}. The ladder is ignored until Fixed MCS is set back to Adaptive.</span></div>
+      {#if pinned}
+        <div class="note"><Icon name="info" size="14px" /><span>Link pinned to MCS {cfg.staticMcs}. The ladder is kept but unused until Fixed MCS is set back to Adaptive.</span></div>
       {/if}
     </div>
 
+    {#if !pinned}
     <div class={groupClass}>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <div style="display:flex;flex-direction:column;gap:1px">
@@ -72,12 +102,19 @@
           onclick={() => setRung(-1, '__add')}><Icon name="plus" />Add rung</button>
       </div>
       {#if spotter}<div class="note"><Icon name="binoculars" size="14px" /><span>Not applied in spotter mode.</span></div>{/if}
-      <div class="rg hdr"><span>#</span><span>MCS</span><span>BW</span><span>FEC base</span><span>FEC enh</span><span></span></div>
+      <div class="rg hdr"><span></span><span>MCS</span><span>BW</span><span>FEC base</span><span>FEC enh</span><span></span></div>
+      <div class="rungs">
       {#each cfg.ladder as r, i}
         {@const warns = rungWarnings(cfg, i)}
-        <div style="display:flex;flex-direction:column;gap:3px">
+        <div data-rung={i} class="rung" class:dragging={drag?.from === i}
+          class:drop-above={drag && drag.over === i && drag.over < drag.from}
+          class:drop-below={drag && drag.over === i && drag.over > drag.from}>
           <div class="rg">
-            <span class="dim5 num" style="font-size:12px">{i}</span>
+            <button class="grip" type="button" title="Drag to reorder (or focus and use ↑/↓)"
+              aria-label="Move rung {i + 1} (MCS {r.mcs}); arrow keys move it"
+              onpointerdown={(e) => startRungDrag(e, i)} onpointermove={moveRungDrag}
+              onpointerup={endRungDrag} onpointercancel={() => (drag = null)}
+              onkeydown={(e) => rungKey(e, i)}><Icon name="dots-six-vertical" size="16px" /></button>
             <select class="input sm" aria-label="Rung {i} MCS" onchange={(e) => setRung(i, 'mcs', e.currentTarget.value)}>
               {#each MCS as m}<option value={m} selected={m === r.mcs}>{m}</option>{/each}
             </select>
@@ -91,11 +128,13 @@
             <button class="btn btn-secondary trash" type="button" title="Remove rung" disabled={cfg.ladder.length <= 1}
               onclick={() => setRung(i, '__remove')}><Icon name="trash" /></button>
           </div>
-          {#if warns.length}<div class="warn" style="padding-left:22px"><Icon name="warning" /><span>{warns.join(' · ')}</span></div>{/if}
+          {#if warns.length}<div class="warn" style="padding-left:26px"><Icon name="warning" /><span>{warns.join(' · ')}</span></div>{/if}
         </div>
       {/each}
+      </div>
       <div class="dim5" style="font-size:11px;text-wrap:pretty">FEC overhead is extra repair data per layer (0.5 = +50%). Keep base ≥ enh on every rung.</div>
     </div>
+    {/if}
 
     <div class={groupClass}>
       <span class="card-kicker">DVR</span>
@@ -146,7 +185,18 @@
   .hint { font-size: 11px; color: var(--color-neutral-500); margin-top: 5px; }
   .note { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; color: var(--color-accent-300); }
   .warn { display: flex; gap: 5px; align-items: center; font-size: 11px; color: var(--color-accent-300); margin-top: 4px; }
-  .rg { display: grid; grid-template-columns: 16px minmax(0,1.1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 28px; gap: 6px; align-items: center; }
+  .rg { display: grid; grid-template-columns: 20px minmax(0,1.1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 28px; gap: 6px; align-items: center; }
+  .rungs { display: flex; flex-direction: column; gap: var(--space-4); }
+  .rung { display: flex; flex-direction: column; gap: 3px; border-radius: var(--radius-sm, 4px);
+          box-shadow: 0 0 0 transparent; transition: opacity .1s; }
+  .rung.dragging { opacity: .45; }
+  .rung.drop-above { box-shadow: 0 -2px 0 var(--color-accent); }
+  .rung.drop-below { box-shadow: 0 2px 0 var(--color-accent); }
+  .grip { display: flex; align-items: center; justify-content: center; width: 20px; height: 28px; padding: 0;
+          border: 0; background: none; color: var(--color-neutral-500); cursor: grab; touch-action: none; user-select: none; }
+  .grip:hover { color: var(--color-text); }
+  .grip:active { cursor: grabbing; }
+  .grip:disabled { cursor: default; }
   .rg.hdr { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--color-neutral-500); }
   .input.sm { min-height: 30px; padding: 3px 6px; font-size: 13px; }
   .trash { width: 28px; height: 28px; padding: 0; border-color: transparent; color: var(--color-neutral-500); }

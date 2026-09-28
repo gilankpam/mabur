@@ -1,6 +1,6 @@
 // The page's config form model (spec 2026-09-27-web-ui §4.4). The form edits
-// channel/width (passed as --ch/--w) and, in GS mode, static_mcs / max_mcs /
-// ladder (written as a TOML overlay the core merges into its embedded
+// channel/width (passed as --ch/--w) and, in GS mode, static_mcs / ladder
+// (written as a TOML overlay, with max_mcs = 7 so the ladder flies as listed, the core merges into its embedded
 // maburgs.default.toml, then validates with maburgs's own loader).
 import { checkChannelWidth, ht40Offset } from './logic.mjs';
 
@@ -14,7 +14,7 @@ const OV_MIN = 0.1, OV_MAX = 2.0;
 // gs/bundle/maburgs.default.toml
 export function defaultConfig() {
   return {
-    channel: 136, width: 40, staticMcs: -1, maxMcs: 5,
+    channel: 136, width: 40, staticMcs: -1,
     ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })),
     // Page-only (never sent to the core): reverse the drone's colortrans
     // sensor tuning on the video (lib/colortrans.js). maburplay's bundle
@@ -44,7 +44,6 @@ export function normalizeConfig(raw) {
   const ch = int(raw.channel);
   const w = int(raw.width);
   const sm = int(raw.staticMcs);
-  const mm = int(raw.maxMcs);
   let ladder = d.ladder;
   if (Array.isArray(raw.ladder) && raw.ladder.length >= 1 && raw.ladder.length <= MAX_RUNGS) {
     const rungs = raw.ladder.map(normRung);
@@ -54,7 +53,6 @@ export function normalizeConfig(raw) {
     channel: inRange(ch, 1, 200) ? ch : d.channel,
     width: w === 20 || w === 40 ? w : d.width,
     staticMcs: inRange(sm, -1, 7) ? sm : d.staticMcs,
-    maxMcs: inRange(mm, 0, 7) ? mm : d.maxMcs,
     ladder,
     colortrans: typeof raw.colortrans === 'boolean' ? raw.colortrans : d.colortrans,
     dvr: ['web', 'vtx', 'both'].includes(raw.dvr) ? raw.dvr : d.dvr,
@@ -83,7 +81,6 @@ export function rungWarnings(cfg, i) {
   const r = cfg.ladder[i];
   const out = [];
   if (r.bw === 40 && cfg.width === 20) out.push('40 MHz needs channel width 40');
-  if (r.mcs > cfg.maxMcs) out.push('Above max MCS, never used');
   if (Number(r.oe) > Number(r.ob)) out.push('Enh overhead above base');
   return out;
 }
@@ -95,16 +92,13 @@ export function channelWarning(cfg) {
   return null;
 }
 
-export function effectiveLadder(cfg) {
-  return cfg.ladder.map((rung, index) => ({ rung, index })).filter((e) => e.rung.mcs <= cfg.maxMcs);
-}
-
 // Page-side mirror of what the core's loader would refuse (so Connect never
 // ends in `ERROR bad config`). null = OK, else a user-facing sentence.
 export function connectBlocker(cfg, mode) {
   const cw = checkChannelWidth(String(cfg.channel), String(cfg.width));
   if (cw) return cw;
   if (mode !== 'gs') return null;   // spotter sends no overlay
+  if (cfg.staticMcs >= 0) return null;   // pinned: the ladder is hidden and not sent (toOverlayToml)
   for (let i = 0; i < cfg.ladder.length; i++) {
     const { ob, oe } = cfg.ladder[i];
     const b = Number(ob), e = Number(oe);
@@ -113,11 +107,9 @@ export function connectBlocker(cfg, mode) {
     if (!ok(ob) || !ok(oe)) return `Rung ${i}: FEC overhead must be a number from ${OV_MIN} to ${OV_MAX}.`;
     if (e > b) return `Rung ${i}: enh overhead is above base — keep base ≥ enh.`;
   }
-  const eff = effectiveLadder(cfg);
-  if (!eff.length) return 'Max MCS filters out every rung — raise Max MCS or add a lower rung.';
   if (cfg.width === 20) {
-    const bad = eff.find((e) => e.rung.bw === 40);
-    if (bad) return `Rung ${bad.index} is 40 MHz but channel width is 20 — set width to 40 or the rung to 20.`;
+    const bad = cfg.ladder.findIndex((r) => r.bw === 40);
+    if (bad >= 0) return `Rung ${bad} is 40 MHz but channel width is 20 — set width to 40 or the rung to 20.`;
   }
   return null;
 }
@@ -125,8 +117,16 @@ export function connectBlocker(cfg, mode) {
 const num = (v) => String(Number(v));
 
 export function toOverlayToml(cfg) {
-  let t = `[link]\nstatic_mcs = ${cfg.staticMcs}\nstatic_bw = ${cfg.width}\nmax_mcs = ${cfg.maxMcs}\n`;
-  for (const r of cfg.ladder) {
+  const pinned = cfg.staticMcs >= 0;
+  // max_mcs 7: the form has no Max MCS -- the ladder is the whole policy, so
+  // override the bundle's max_mcs filter rather than let it drop rungs.
+  let t = `[link]\nstatic_mcs = ${cfg.staticMcs}\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`;
+  // Pinned, the form hides the ladder and the link never walks it, but
+  // maburgs's loader still validates it (a 40 MHz rung at width
+  // 20 fails boot). Send one rung that always loads instead; the saved
+  // ladder is untouched for when Fixed MCS goes back to Adaptive.
+  const ladder = pinned ? [{ mcs: cfg.staticMcs, bw: cfg.width, ob: 0.5, oe: 0.25 }] : cfg.ladder;
+  for (const r of ladder) {
     t += `\n[[link.ladder]]\nmcs = ${r.mcs}\nbw = ${r.bw}\noverhead_base = ${num(r.ob)}\noverhead_enh = ${num(r.oe)}\n`;
   }
   return t;
@@ -144,13 +144,19 @@ export function applyRungEdit(cfg, i, key, val) {
     L.push({ mcs: Math.min(7, last.mcs + 1), bw: last.bw, ob: 0.5, oe: 0.25 });
   } else if (key === '__remove') {
     if (L.length > 1) L.splice(i, 1);
+  } else if (key === '__move') {
+    // val = destination index; the rung is taken out and re-inserted there.
+    const to = Number(val);
+    if (Number.isInteger(to) && to >= 0 && to < L.length && i >= 0 && i < L.length && to !== i) {
+      L.splice(to, 0, L.splice(i, 1)[0]);
+    }
   } else {
     L[i] = { ...L[i], [key]: key === 'mcs' || key === 'bw' ? Number(val) : val };
   }
   return { ...cfg, ladder: L };
 }
 
-const EDIT_LABEL = { channel: 'Channel', width: 'Channel width', staticMcs: 'Fixed MCS', maxMcs: 'Max MCS' };
+const EDIT_LABEL = { channel: 'Channel', width: 'Channel width', staticMcs: 'Fixed MCS' };
 export function describeEdit(key, val) {
   if (key === 'dvr') return `Recording target set to ${{ web: 'mabur web', vtx: 'VTX', both: 'Both' }[val]}`;
   if (key === 'colortrans') return `Colour correction ${val ? 'on' : 'off'}`;
@@ -161,5 +167,7 @@ const RUNG_LABEL = { mcs: 'MCS', bw: 'BW', ob: 'FEC base', oe: 'FEC enh' };
 export function describeRungEdit(cfg, i, key, val) {
   if (key === '__add') return `Rung ${cfg.ladder.length - 1} added`;
   if (key === '__remove') return `Rung ${i} removed`;
+  // cfg is the post-move config: the rung now sits at val.
+  if (key === '__move') return `MCS ${cfg.ladder[val].mcs} rung moved to position ${val + 1} of ${cfg.ladder.length}`;
   return `Rung ${i} ${RUNG_LABEL[key]} set to ${val}`;
 }

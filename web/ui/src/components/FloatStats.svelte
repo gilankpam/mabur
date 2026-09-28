@@ -89,6 +89,7 @@
         <div class="c"><span class="l">Bitrate</span><span class="n">{v.bitrate}<span class="l">{' Mbps'}</span></span></div>
         <div class="c"><span class="l">Latency</span><span class="n">{v.latency}<span class="l">{' ms'}</span></span></div>
         <div class="c"><span class="l">FPS · jitter</span><span class="n">{v.fps} · {v.jitter}<span class="l">{' ms'}</span></span></div>
+        <div class="c"><span class="l">Drone temp</span><span class="n">{v.droneTemp}<span class="l">{' °C'}</span></span></div>
       </div>
     </div>
   {:else}
