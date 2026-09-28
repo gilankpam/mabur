@@ -14,8 +14,9 @@ its own.
 ## What it is
 
 A single page, one card, a fixed channel — no channel scan, no in-flight
-hop, no DVR/recording, no multi-card. Two modes, picked before
-Connect:
+hop, no DVR on the VTX side beyond its SD recorder, no multi-card. Local raw
+recording into the browser's own storage exists (see Record, below). Two
+modes, picked before Connect:
 
 - **GS mode** — the *only* ground station for the drone. Runs rendezvous
   (DISC until DISC_ACK), the same measured-loss ladder as `maburgs`
@@ -88,6 +89,20 @@ directory argument fails on this machine's Node 22:
 ```sh
 nix-shell -p nodejs --run "node --test web/tests/*.test.mjs"
 ```
+
+**The OPFS sink** (`web/src/opfs_file.h`/`.cpp`, page build only). Local
+recording writes through `OpfsFile`, which holds `FileSystemSyncAccessHandle`s
+on the core pthread — the dedicated Worker where that API exists —
+opened/removed with `EM_ASYNC_JS` (awaited through ASYNCIFY, called only from
+the core loop, never from inside an AU callback) and written synchronously
+thereafter. A startup probe (`opfs_probe()`) creates, writes, checks and
+removes a throwaway file once at module start and prints `webgs: opfs
+ok|unavailable`, gating whether local recording is offered at all. This is
+**not WASMFS**: `-sWASMFS` (Emscripten 4.0.12) makes `fcntl(F_SETFL,
+O_NONBLOCK)` return `EINVAL`, which breaks the WebUSB libusb backend's
+`libusb_init` — so the page keeps its ordinary Emscripten filesystem and
+talks to OPFS directly instead. `webgs_node` and the native `webgs` CLI keep
+the plain `FILE*` `DvrSink` (`common/dvr_mux.h`) both raw DVR paths share.
 
 ## Serve
 
@@ -280,24 +295,72 @@ width apply.
 
 ## Record
 
-VTX recorder control only — there is no browser-side recording and no DVR
-target in this build (see Known limits). GS mode's Record button calls
-`Session.setRec()`, which calls the exported `webgs_set_rec(1|0)`; the core
-(`WebGs::set_vtx_rec`, `web/src/web_gs.h`/`.cpp`) sets the RCF's recorder
-wish byte the same way `maburgs` does (`kRecKnown | kRecOn`), so the drone's
-onboard VTX SD recorder starts/stops exactly as it would under a native GS
-(`docs/vtx-recorder.md`). The indicator (`RecDot.svelte`, both modes)
-follows the drone's own report, not the click: it reads `Telem.rec_status`
-back off the stats stream (core `rec_state`/`rec_err` keys, `rec.js`'s
-`recView()`) and only shows "recording" once the drone confirms it, with
-the on-screen clock (`RecClock`) starting from that first confirmation, not
-button-press time. Spotter mode has no send path, so it mirrors the same
-`rec_state`/`rec_err` read-only — it can watch a `maburgs`-started
-recording (as in the Validation section's spotter run) but cannot start or
-stop one. Disconnect in GS mode with the wish still on sends the "off" RCF
-and waits up to 1 s (`recOffTimeoutMs`) for the drone to confirm
-`rec_state != 1` before stopping the module, so a Disconnect doesn't leave
-the VTX recording with nothing left to turn it off.
+One Record button drives up to two recorders, picked by the Config form's
+DVR target (`sessionCfg.dvr`, `web/ui/src/lib/localrec.js`'s
+`DVR_TARGETS`): `web` (local browser recording, the default), `vtx` (the
+drone's onboard SD recorder), or `both`. The target is editable only while
+disconnected — it takes a fresh Connect to change what one press covers,
+same as channel/width. Spotter mode has no send path, so `effectiveTarget()`
+forces it to `web` regardless of the saved config, and the target control
+shows VTX/Both disabled with the reason.
+
+**VTX target.** Unchanged: `Session.setRec()` calls the exported
+`webgs_set_rec(1|0)`; the core (`WebGs::set_vtx_rec`, `web/src/web_gs.h`/
+`.cpp`) sets the RCF's recorder wish byte the same way `maburgs` does
+(`kRecKnown | kRecOn`), so the drone's onboard VTX SD recorder starts/stops
+exactly as it would under a native GS (`docs/vtx-recorder.md`). The VTX part
+of the indicator follows the drone's own report, not the click: it reads
+`Telem.rec_status` back off the stats stream (core `rec_state`/`rec_err`
+keys) and only counts as "recording" once the drone confirms it. Disconnect
+in GS mode with the wish still on sends the "off" RCF and waits up to 1 s
+(`recOffTimeoutMs`) for the drone to confirm `rec_state != 1` before stopping
+the module, so a Disconnect doesn't leave the VTX recording with nothing
+left to turn it off.
+
+**Local (`web`) target.** `RawDvr` (`common/raw_dvr.h`, shared with
+`maburplay`'s raw DVR mode — see `docs/observability.md`) runs on the core
+thread, fed every AU in `io.on_au` before the page hand-off. Its sync point
+is the first *complete* AU carrying VPS+SPS+PPS (`au_has_param_sets()`) —
+the live GDR encoder's parameter-set refresh, not an IRAP and not sid 0 —
+so pressing Record shows the button label `waiting for sync…` for up to
+~2 s (the drone's refresh period) until that AU arrives and the file
+actually opens; before that point nothing is armed and a press-then-release
+inside the window writes nothing. Files are named
+`mabur-YYYYMMDD-HHMMSS.mp4` (`recFileName()`, browser local clock, `-2`/`-3`
+suffix on a same-second collision) and created directly in the OPFS root via
+`OpfsFile::open()` (see Build, above), wrapped as a `DvrSink` (`OpfsSink` in
+`web_main.cpp`) that `RawDvr` writes through exactly like the FILE* sink.
+
+`Module.onRecClosed(name, bytes, err)` fires once per recording, on every
+way it can end: an explicit stop, a `RawDvr::Error` (sticky, surfaces once),
+Disconnect, and card loss — `seal_local_rec()` runs on every exit path
+including the module teardown, so nothing is left open when the WASM module
+goes away. `bytes > 0` triggers a download: `downloadRecording()` reads the
+file back with the disk-backed `getFile()` (no in-memory copy of a
+multi-gigabyte flight) and drives a synthetic `<a download>` click. A
+recording sealed at 0 bytes (stopped before the sync point, or the open
+failed) is removed from OPFS rather than downloaded or listed.
+
+**Recordings list** (Config tab, `Recordings.svelte`): every `.mp4` left in
+OPFS, newest first, with Download/Delete per row and a running storage-used
+line. Nothing is ever auto-deleted — a recording survives a page reload or a
+crashed tab and reappears in the list next time the page opens (`Config →
+Recordings` is how you get a file whose download the crash itself
+interrupted). The first local recording of a session calls
+`navigator.storage.persist()` (`App.svelte`) so the browser is less likely
+to evict OPFS under storage pressure; `headroomWarning()` checks
+`navigator.storage.estimate()` and shows a "Low browser storage: ~N MB free"
+note under 1 GiB free, without blocking Record. `opfsOk` (the startup probe
+result) gates the whole feature: with no usable OPFS the Recordings list
+says so and local recording is off, VTX recording is unaffected.
+
+**Stats and errors.** The 1 Hz stats line carries `lrec_avail` (0/1, the
+startup probe result), `lrec_state` (0 off, 1 waiting-for-sync, 2 recording,
+3 error), `lrec_bytes`, `lrec_err`, and `lrec_name`. `lrec_err` codes: 1 =
+file open failed, 2 = write failed (storage full or gone), 3 = no OPFS in
+this browser. The Debug tab's Client group has a `local rec` row (state ·
+size · Mb/s, from `lrec_state`/`lrec_bytes` deltas) alongside the VTX
+recorder's own row.
 
 ## Stats panel
 
@@ -452,9 +515,17 @@ rule).
   commander; both DISC and both send RCFs, and the ladder each one drives
   fights the other's. Spotter mode has no such conflict since it never
   transmits.
-- **Browser-side recording not built** (DVR target hidden). This page only
-  ever controls the VTX's onboard SD recorder (see Record, above); there is
-  no local capture of the decoded stream, and so no recorded OSD either.
+- **No OSD in the local recording.** `RawDvr` captures the raw HEVC
+  bitstream ahead of the MSP OSD compositing, which only happens on the
+  decoded/presented side — same limitation as `maburplay`'s raw DVR mode
+  (`docs/observability.md`). Burning the OSD into the local file would need
+  a decode+recompose+re-encode pass this page doesn't do.
+- **A local recording may not play in Chrome's own `<video>` element**
+  (pending the live browser bench, plan Task 9 Step 2 — this is expected,
+  not yet confirmed): the file starts on the drone's GDR parameter-set
+  refresh, not a real IRAP, and browsers commonly refuse to seek to or
+  start playback on a non-IRAP first frame the way WebCodecs' `EncodedVideoChunk`
+  API does. `mpv`/`ffmpeg` decode a GDR-first stream without issue.
 - **Capture→glass can use a stale RTT offset for up to ~30 s after a drone
   restart.** `RttEstimator`'s pts-clock offset is never explicitly reset on
   a detected drone restart, in this page or in `maburgs` itself — the
@@ -571,6 +642,27 @@ Not yet exercised: a real phone over LAN TLS (layouts were checked in
 Chrome's device emulation only), and the spotter mirroring a
 `maburgs`-started recording (the GS's record wish was reset to off right
 after `vtx_rec on` on the bench).
+
+### Local recording, 2026-09-28
+
+Host gates only — the live browser bench (this feature's own plan, Task 9
+Step 2: record-and-play round trips, the mid-recording tab-kill/reopen
+case, disconnect/card-loss downloads, `Both`-target start/stop, Recordings
+list delete) is pending; the controller will add its results here after
+the human runs it on the bench card and drone.
+
+- **Host suite**: `ctest --test-dir build -R 'test_|host_e2e'` 162/162
+  passed; `ctest --test-dir build -R 'gs_e2e|gs_au_e2e|player_e2e'` 3/3
+  passed.
+- **WASM/native parity** (`web/tests/test_wasm_parity.sh`, native `webgs`
+  vs. `webgs_node`, includes the `--record` mp4 path added for this
+  feature): 5/5 fixtures passed — byte-identical AUs, control traces and,
+  where a run reaches a sync point, byte-identical mp4s. The standing
+  fixture and the 25 %-drop long run correctly record nothing on both
+  sides (no complete parameter-set AU reaches `RawDvr` in either case, by
+  construction of those fixtures — see the script's own comments); the
+  clean and 10 %-drop long runs each recorded a matching ~1.4–2.0 MB mp4
+  on both sides.
 
 ## Follow-ups
 

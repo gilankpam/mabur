@@ -716,7 +716,17 @@ read the sideport. Reach for other tools only in these cases:**
   press-pair produces one file, in whichever `dvr.mode` is configured — raw
   mode waits for the next sync point (up to ~2 s) before the new file
   opens, so the OSD REC indicator visibly lags the press, while burned mode
-  resumes at the next decoded frame. Files are `record-NNNN.mp4` under
+  resumes at the next decoded frame. As of the 2026-09-28 web local-recording
+  work, raw mode's sync point is decided by `common/`'s shared `RawDvr`
+  (`mabur::RawDvr`, `common/raw_dvr.h`) rather than code local to the player
+  — the same class the web GS's local recording uses — and that sync point
+  is a complete AU carrying VPS+SPS+PPS (`au_has_param_sets()`), the live
+  GDR encoder's own parameter-set refresh. **Before 2026-09-28** the
+  player's raw DVR synced on sid == 0 (BASE), which since the 2026-08-29
+  4→2 stream collapse is every other AU, not the refresh — so a raw file
+  recorded before that date marks every base frame as a sync point and its
+  fragments run ~33 ms (one base+enh pair) instead of the refresh period.
+  Files are `record-NNNN.mp4` under
   `dvr.dir`, indexed one past the highest `record-NNNN` already on the card
   — no timestamp, since the GS RTC is wrong at boot (same reasoning as the
   debug-log session directory's own `NNNN` index, above). The index
