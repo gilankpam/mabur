@@ -57,7 +57,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(webgs_core PUBLIC devourer)
 
   # The page build: live only (WebUSB), default config embedded.
-  add_executable(webgs src/web_main.cpp)
+  add_executable(webgs src/web_main.cpp src/opfs_file.cpp)
   target_compile_definitions(webgs PRIVATE WEBGS_LIVE=1 WEBGS_CONFIG_PATH="/maburgs.toml")
   target_link_libraries(webgs PRIVATE webgs_core)
   target_link_options(webgs PRIVATE

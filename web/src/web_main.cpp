@@ -45,6 +45,7 @@
 #include <emscripten/emscripten.h>
 #include "mabur/hevc_params.h"
 #include "mabur/nal.h"
+#include "opfs_file.h"
 #endif
 
 #ifndef WEBGS_CONFIG_PATH
@@ -62,6 +63,10 @@ namespace {
 // handler; read by the live loop. Shared memory under pthreads: no proxying.
 std::atomic<bool> g_stop{false};
 std::atomic<int> g_rec{-1};   // -1 never pressed, 0 off, 1 on
+
+// Browser storage for local recordings (spec 2026-09-28-web-local-recording
+// §1.3): true once the startup OPFS probe passed. Always false natively.
+std::atomic<bool> g_opfs_ok{false};
 
 // ---- page / console reporting --------------------------------------------
 
@@ -576,6 +581,9 @@ int main(int argc, char** argv) {
   // replay for the native/WASM parity gate.)
   LiveOpts lo;
   const int first = (argc > 1 && std::string(argv[1]) == "live") ? 2 : 1;
+  g_opfs_ok.store(webgs::opfs_probe());
+  std::printf("webgs: opfs %s\n", g_opfs_ok.load() ? "ok" : "unavailable");
+  std::fflush(stdout);
   if (int rc = parse_live(argc, argv, first, lo); rc >= 0) return rc;
   return run_live(lo);
 #else
