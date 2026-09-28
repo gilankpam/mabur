@@ -110,13 +110,18 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
   ];
 }
 
-// Live-state message over the video. A frozen gate shows nothing here: the
-// last frame stays up while the page requests an IDR (spec 2026-09-28).
-export function statusText({ state, mode, ch, core, sinceStartMs, w, hiddenBanner }) {
+// Live-state message over the video. Before the first picture of a Connect
+// the screen is black, so say what the page is waiting for; after it, a
+// frozen gate shows nothing here: the last frame stays up while the page
+// requests an IDR (spec 2026-09-28).
+export function statusText({ state, mode, ch, core, sinceStartMs, w, hiddenBanner, hasPicture }) {
   if (state !== 'live') return '';
   let primary = '';
-  if (mode === 'gs' && core && core.peer_acked === false && sinceStartMs >= 10000) {
+  const noPeer = mode === 'gs' && core?.peer_acked !== true;
+  if (noPeer && core && core.peer_acked === false && sinceStartMs >= 10000) {
     primary = `No drone on ch ${ch} / ${w} MHz (still trying)`;
+  } else if (!hasPicture) {
+    primary = noPeer ? `Searching for drone on ch ${ch} / ${w} MHz…` : 'Waiting for video…';
   }
   const banner = hiddenBanner ? 'GS mode keeps flying the link while this tab is hidden.' : '';
   return [primary, banner].filter(Boolean).join('\n');

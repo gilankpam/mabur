@@ -53,6 +53,10 @@ export class VideoPipeline {
     this.hitchesTotal = 0;
     this.videoSize = null;
     this.colour = null;   // 'colortrans' | 'flat' | 'unavailable', per last drawn frame
+    // A frame has been decoded since this Connect. Until then the screen is
+    // black and the page says what it is waiting for; after it, a freeze
+    // keeps the last frame up with nothing drawn over it.
+    this.hasPicture = false;
   }
 
   gateArmed() { return this.gate.armed; }
@@ -80,6 +84,7 @@ export class VideoPipeline {
           this.submitted.delete(frame.timestamp);
         }
         this.videoSize = { w: frame.displayWidth, h: frame.displayHeight };
+        this.hasPicture = true;
         this.draw(frame);
         frame.close();
         this.metrics.addDraw(t);

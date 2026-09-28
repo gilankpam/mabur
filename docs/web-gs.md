@@ -237,8 +237,13 @@ origin). What the status overlay shows after that:
 - `No drone on ch N / W MHz (still trying)` — GS mode, no DISC_ACK within
   10 s of module start; it keeps sending DISC and the message keeps
   counting, it does not give up.
-- No overlay text covers the video while the key-frame gate is unarmed — GS
-  mode requests an IDR instead of waiting; see "Key-frame recovery" below.
+- `Searching for drone on ch N / W MHz…` (GS, no DISC_ACK yet, first 10 s)
+  and `Waiting for video…` (GS after the ack, or spotter) — shown only
+  until the first frame of this Connect is decoded, while the screen is
+  still black (`VideoPipeline.hasPicture`, cleared by `reset()`).
+- After the first frame, no overlay text covers the video while the
+  key-frame gate is unarmed — a freeze holds the last frame and GS mode
+  requests an IDR instead of waiting; see "Key-frame recovery" below.
   A spotter has no request path and can still sit unarmed indefinitely; see
   "Spotter key frames" below.
 - `GS mode keeps flying the link while this tab is hidden.` — a one-time

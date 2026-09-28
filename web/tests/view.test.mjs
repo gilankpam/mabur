@@ -106,15 +106,36 @@ test('debug Drone group shows IDR req / served in GS, n/a in spotter', () => {
   assert.equal(row(debugGroups({ ...args, mode: 'spotter' })), 'n/a');
 });
 
+test('status text before the first picture says what the page is waiting for', () => {
+  const at = (over) => statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, sinceStartMs: 3000,
+    hiddenBanner: false, hasPicture: false, ...over });
+  // GS, drone not answered yet (and not yet the 10 s "No drone" verdict).
+  assert.equal(at({ core: { peer_acked: false } }), 'Searching for drone on ch 136 / 40 MHz…');
+  assert.equal(at({ core: null }), 'Searching for drone on ch 136 / 40 MHz…');
+  // GS, drone answered, no frame drawn yet.
+  assert.equal(at({ core: { peer_acked: true } }), 'Waiting for video…');
+  // Spotter never has peer_acked: it only waits for video.
+  assert.equal(at({ mode: 'spotter', core: {} }), 'Waiting for video…');
+  // The 10 s verdict still wins over the searching text.
+  assert.equal(at({ core: { peer_acked: false }, sinceStartMs: 12000 }),
+    'No drone on ch 136 / 40 MHz (still trying)');
+  // The hidden-tab banner stacks under it.
+  assert.equal(at({ core: { peer_acked: true }, hiddenBanner: true }),
+    'Waiting for video…\nGS mode keeps flying the link while this tab is hidden.');
+  // Once a picture has been drawn, nothing (a freeze keeps the last frame, uncovered).
+  assert.equal(at({ core: { peer_acked: true }, hasPicture: true }), '');
+  assert.equal(at({ mode: 'spotter', core: {}, hasPicture: true }), '');
+});
+
 test('status text and link tag', () => {
   assert.equal(statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, core: { peer_acked: false },
-    sinceStartMs: 12000, hiddenBanner: false }),
+    sinceStartMs: 12000, hiddenBanner: false, hasPicture: false }),
     'No drone on ch 136 / 40 MHz (still trying)');
-  // A frozen gate never paints over the video (spec 2026-09-28).
+  // A frozen gate never paints over the video once a picture exists (spec 2026-09-28).
   assert.equal(statusText({ state: 'live', mode: 'spotter', ch: 136, w: 40, core: {},
-    sinceStartMs: 3000, hiddenBanner: false }), '');
+    sinceStartMs: 3000, hiddenBanner: false, hasPicture: true }), '');
   assert.equal(statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, core: { peer_acked: true },
-    sinceStartMs: 3000, hiddenBanner: true }),
+    sinceStartMs: 3000, hiddenBanner: true, hasPicture: true }),
     'GS mode keeps flying the link while this tab is hidden.');
   assert.equal(statusText({ state: 'idle' }), '');
   assert.deepEqual(linkTag({ state: 'idle', mode: 'gs', core: null }), { label: 'Disconnected', on: false });

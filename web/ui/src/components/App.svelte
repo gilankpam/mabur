@@ -166,7 +166,8 @@
     recClock.update(rec.state, nowMs);
     recMs = recClock.elapsedMs(nowMs);
     status = statusText({ state: sess.state, mode: sess.mode, ch: sess.ch, w: sess.w, core,
-      sinceStartMs: sess.startedAt ? Date.now() - sess.startedAt : 0, hiddenBanner });
+      sinceStartMs: sess.startedAt ? Date.now() - sess.startedAt : 0, hiddenBanner,
+      hasPicture: video.hasPicture });
   }
 
   async function connect() {

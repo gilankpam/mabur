@@ -171,6 +171,21 @@ test('mid-stream decoder error after output does not back off (the normal missin
   } finally { performance.now = realNow; }
 });
 
+test('hasPicture: false until the first decoded frame, survives a freeze, cleared by reset()', () => {
+  globalThis.VideoDecoder = FakeDecoder;
+  made.length = 0;
+  const v = new VideoPipeline({ getCanvas: () => null, getMode: () => 'gs' });
+  assert.equal(v.hasPicture, false);
+  au(v, IRAP, 1000, hvcc);                   // key frame submitted, nothing decoded yet
+  assert.equal(v.hasPicture, false);
+  made[0].init.output({ timestamp: 1000, displayWidth: 2, displayHeight: 2, close() {} });
+  assert.equal(v.hasPicture, true);
+  made[0].init.error(new Error('missing reference'));   // mid-stream freeze
+  assert.equal(v.hasPicture, true, 'a freeze keeps the last frame on screen');
+  v.reset();                                 // next Connect
+  assert.equal(v.hasPicture, false);
+});
+
 test('onWantIdr returning false is not counted: the next AU asks again immediately', () => {
   globalThis.VideoDecoder = FakeDecoder;
   let t = 0;
