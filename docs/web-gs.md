@@ -237,10 +237,10 @@ origin). What the status overlay shows after that:
 - `No drone on ch N / W MHz (still trying)` — GS mode, no DISC_ACK within
   10 s of module start; it keeps sending DISC and the message keeps
   counting, it does not give up.
-- `Waiting for key frame (sent on the next rung change) — N s` — the video
-  gate is NOT armed yet: it arms only on a complete AU carrying
-  VPS+SPS+PPS plus an IRAP, and none has arrived. See "Spotter key frames"
-  below for why this can run indefinitely.
+- No overlay text covers the video while the key-frame gate is unarmed — GS
+  mode requests an IDR instead of waiting; see "Key-frame recovery" below.
+  A spotter has no request path and can still sit unarmed indefinitely; see
+  "Spotter key frames" below.
 - `GS mode keeps flying the link while this tab is hidden.` — a one-time
   banner (GS mode only) confirming the ladder and RCF sends do not pause
   when the tab loses visibility; the worker keeps running headless.
@@ -254,16 +254,32 @@ origin). What the status overlay shows after that:
   this device (see docs/web-gs.md).` — the untrusted-cert failure mode
   above; that is this file.
 
+### Key-frame recovery (spec 2026-09-28)
+
+The gate arms only on an IRAP, and the drone's periodic refresh is GDR, so
+after a DISCONT or a decoder error the page cannot heal on its own. In GS
+mode it asks: `IdrRequester` (logic.mjs) fires on the drop and every 300 ms
+while unarmed, `Module._webgs_request_idr()` bumps a count whose low byte
+rides every RCF as `idr_epoch`, and RcAgent serves one paced IDR per
+change. Expected freeze ≈ 150 ms (≈ 450 ms if the IDR itself is lost). A
+spotter cannot ask and waits for the next drone-side IDR. No text is drawn
+over the video while frozen; the debug panel's `IDR req / served` pair
+(page count vs Telem `idr_gs`) attributes a slow recovery to lost RCFs
+(served lags req) or lost IDRs (served keeps up, gate still unarmed).
+
 **Spotter key frames.** WebCodecs will only start decoding on a real IRAP
 (IRAP NAL types 16–21: BLA/IDR/CRA), never on the drone's GDR parameter-set refresh
-(`32 33 34 1`, TRAIL_R). The drone only emits a real IDR on a rung change
-or link-up, so a spotter opened mid-flight on a steady link can sit on
-"Waiting for key frame" until the ladder next moves — there is no drone,
-wire or config change to force one (see Follow-ups). GS mode does not have
-this problem: linking a previously-unlinked drone changes its bitrate
-(max-range floor → rung), and that `SetChnAttr` costs an IDR on its own, so
-a self-linking GS's own link-up produces the first key frame roughly a
-second after DISC_ACK.
+(`32 33 34 1`, TRAIL_R). The drone emits a real IDR unsolicited on a rung
+change, link-up, or chain break, and — in GS mode only — on request (see
+"Key-frame recovery" above). Spotter mode has no request path, so a
+spotter opened mid-flight on a steady link can sit unarmed until one of
+those unsolicited IDRs happens to land — there is no drone, wire or config
+change to force one (see Follow-ups). GS mode does not have this gap: on
+first link a self-linking GS's own link-up already produces a key frame
+roughly a second after DISC_ACK (linking a previously-unlinked drone
+changes its bitrate, max-range floor → rung, and that `SetChnAttr` costs
+an IDR on its own), and any later drop is covered by the request path
+above.
 
 ## Config form
 
@@ -674,8 +690,10 @@ the human runs it on the bench card and drone.
 
 Not built here, all noted in the spec as later work:
 
-- A periodic or GS-relayed IDR request, so a spotter opened mid-flight does
-  not wait indefinitely for the ladder to move on its own.
+- A GS-relayed IDR request for Spotter mode (GS mode has its own periodic
+  request since spec 2026-09-28, "Key-frame recovery" above), so a spotter
+  opened mid-flight does not wait indefinitely for the drone's next
+  unsolicited IDR.
 - A PWA wrapper (install to home screen, offline cache) on top of the
   GitHub Pages hosting.
 - Foreign-GS detection, so a second GS-mode page against the same drone
