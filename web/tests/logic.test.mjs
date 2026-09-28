@@ -1,7 +1,7 @@
 // node --test web/tests/logic.test.mjs (promoted from the wasm-spike throwaway)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl } from '../ui/src/lib/logic.mjs';
+import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl, IdrRequester } from '../ui/src/lib/logic.mjs';
 
 const nal = (type, len = 4, four = true) =>
   [...(four ? [0, 0, 0, 1] : [0, 0, 1]), type << 1, 1, ...Array(len).fill(0x55)];
@@ -262,4 +262,29 @@ test('SegWindow snapshot1: 1 s window only, same numbers as snapshot().w1', () =
   // a segment whose samples all aged out of the 1 s window reads empty
   now = 2500;
   assert.deepEqual(w.snapshot1(now).w1.decode, { p50: 0, p99: 0, max: 0, n: 0 });
+});
+
+test('IdrRequester fires at once when unarmed, then every retryMs', () => {
+  const r = new IdrRequester(300);
+  assert.equal(r.poll(false, 1000), true);    // gate starts unarmed: ask now
+  assert.equal(r.poll(false, 1100), false);
+  assert.equal(r.poll(false, 1299), false);
+  assert.equal(r.poll(false, 1300), true);    // IDR presumed lost: ask again
+  assert.equal(r.poll(false, 1400), false);
+});
+
+test('IdrRequester is silent while armed and re-fires on the next drop', () => {
+  const r = new IdrRequester(300);
+  assert.equal(r.poll(true, 1000), false);
+  assert.equal(r.poll(true, 5000), false);
+  assert.equal(r.poll(false, 5010), true);    // drop edge: immediate, not 300 ms later
+  assert.equal(r.poll(true, 5100), false);
+  assert.equal(r.poll(false, 5150), true);    // re-armed in between resets the clock
+});
+
+test('IdrRequester does not fire faster than retryMs', () => {
+  const r = new IdrRequester(300);
+  let n = 0;
+  for (let t = 0; t < 3000; t += 16) if (r.poll(false, t)) n++;   // 60 AU/s, unarmed 3 s
+  assert.equal(n, 10);
 });

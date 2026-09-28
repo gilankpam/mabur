@@ -150,6 +150,13 @@ export class Session {
     this.set({ recWish: !!on });
   }
 
+  // GS-requested IDR (spec 2026-09-28). GS mode only: a spotter has no
+  // send path, so asking would only count.
+  requestIdr() {
+    if (this.snapshot.state !== 'live' || this.snapshot.mode !== 'gs' || !this.mod) return;
+    this.mod._webgs_request_idr();
+  }
+
   // Local (OPFS) recording, both modes. null = stop. The core copies the
   // name synchronously, so the heap string is freed right away.
   setLocalRec(name) {

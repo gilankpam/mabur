@@ -3,7 +3,7 @@
 // segments and the 200 ms page metrics. Never touched by Svelte per frame.
 import {
   Gate, PtsUnwrap, PeriodEstimator, HitchMeter, annexbToLengthPrefixed, DecoderSlot, SegWindow,
-  capToGlass, pruneSubmitted, trimBefore, isStalePresentSample,
+  capToGlass, pruneSubmitted, trimBefore, isStalePresentSample, IdrRequester,
 } from './logic.mjs';
 import { PageMetrics } from './metrics.js';
 import { ColorTransGl } from './colortrans.js';
@@ -13,11 +13,12 @@ const now = () => performance.timeOrigin + performance.now();
 export class VideoPipeline {
   // getCanvas: the flat 2D canvas; getGlCanvas: the colortrans WebGL one
   // (a canvas cannot change context type). getColortrans: the live toggle.
-  constructor({ getCanvas, getGlCanvas = () => null, getMode, getColortrans = () => false }) {
+  constructor({ getCanvas, getGlCanvas = () => null, getMode, getColortrans = () => false, onWantIdr = () => {} }) {
     this.getCanvas = getCanvas;
     this.getGlCanvas = getGlCanvas;
     this.getMode = getMode;
     this.getColortrans = getColortrans;
+    this.onWantIdr = onWantIdr;
     // Page lifetime, like the canvases: built on the first colortrans frame;
     // a failure (no WebGL, lost context) falls back to flat for good.
     this.ct = null;
@@ -32,6 +33,7 @@ export class VideoPipeline {
 
   reset() {
     this.gate = new Gate();
+    this.idr = new IdrRequester();
     this.unwrap = new PtsUnwrap();
     this.period = new PeriodEstimator();
     this.hitch = new HitchMeter();
@@ -47,7 +49,6 @@ export class VideoPipeline {
     this.hitchesTotal = 0;
     this.videoSize = null;
     this.colour = null;   // 'colortrans' | 'flat' | 'unavailable', per last drawn frame
-    this.waitingSinceMs = performance.now();
   }
 
   gateArmed() { return this.gate.armed; }
@@ -100,6 +101,7 @@ export class VideoPipeline {
         console.error('[webgs] decoder error', e);
         this.gate.onDecoderError();
         this.replaceDecoder();
+        this.pollIdr();
       },
     });
   }
@@ -149,8 +151,7 @@ export class VideoPipeline {
     }
   }
 
-  // Module.onAu argument order is web/src/web_main.cpp emit_au's.
-  onAu(buf, ptsUs, sid, flags, complete, tCompleteUs, hvccBuf, capUs, tEmitMs, tFirstUs) {
+  onAuInner(buf, ptsUs, sid, flags, complete, tCompleteUs, hvccBuf, capUs, tEmitMs, tFirstUs) {
     const tRecvMs = now();
     this.segWindow.add('handoff', tRecvMs - tEmitMs);
     if (tFirstUs > 0 && tCompleteUs > 0) this.segWindow.add('fec', (tCompleteUs - tFirstUs) / 1000);
@@ -159,7 +160,6 @@ export class VideoPipeline {
     const data = new Uint8Array(buf);
     const g = this.gate.onAu({ sid, flags, complete: !!complete, data });
     if (g.reset) {
-      this.waitingSinceMs = performance.now();
       this.replaceDecoder();
     }
     if (hvccBuf) this.hvcc = hvccBuf;
@@ -195,6 +195,18 @@ export class VideoPipeline {
       this.gate.onDecoderError();
       this.replaceDecoder();
     }
+  }
+
+  // Module.onAu argument order is web/src/web_main.cpp emit_au's.
+  onAu(...a) {
+    this.onAuInner(...a);
+    this.pollIdr();
+  }
+
+  // GS-requested IDR (spec 2026-09-28): ask when the gate is unarmed, paced
+  // by IdrRequester. Every early return in onAuInner still reaches this.
+  pollIdr() {
+    if (this.idr.poll(this.gate.armed, performance.now())) this.onWantIdr();
   }
 
   // Session left live: release the hardware decoder now, not at the next Connect.

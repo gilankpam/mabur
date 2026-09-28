@@ -69,7 +69,7 @@
   }
 
   const video = new VideoPipeline({ getCanvas: () => canvas, getGlCanvas: () => glCanvas, getMode: () => sess.mode,
-    getColortrans: () => ui.cfg.colortrans });
+    getColortrans: () => ui.cfg.colortrans, onWantIdr: () => session.requestIdr() });
   const tele = new Telemetry(video);
   // MSP OSD (spec 2026-09-27-web-msp-osd): latest DisplayPort grid, painted on
   // a second canvas over the video. The atlas URL resolves against the page
@@ -165,10 +165,8 @@
     tag = linkTag({ state: sess.state, mode: sess.mode, core });
     recClock.update(rec.state, nowMs);
     recMs = recClock.elapsedMs(nowMs);
-    const p = performance.now();
     status = statusText({ state: sess.state, mode: sess.mode, ch: sess.ch, w: sess.w, core,
-      gateArmed: video.gateArmed(), sinceStartMs: sess.startedAt ? Date.now() - sess.startedAt : 0,
-      waitingMs: p - video.waitingSinceMs, hiddenBanner });
+      sinceStartMs: sess.startedAt ? Date.now() - sess.startedAt : 0, hiddenBanner });
   }
 
   async function connect() {

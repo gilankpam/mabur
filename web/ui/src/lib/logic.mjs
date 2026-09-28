@@ -41,6 +41,20 @@ export class Gate {
   onDecoderError() { this.armed = false; }
 }
 
+// GS-requested IDR pacing (spec 2026-09-28): ask the moment the gate is
+// unarmed, then every retryMs while it stays so (the IDR itself was lost).
+// Polled per AU and on decoder errors; no timer -- with no AUs the link is
+// down and the drone's link-up path covers it.
+export class IdrRequester {
+  constructor(retryMs = 300) { this.retryMs = retryMs; this.lastMs = null; }
+  poll(armed, nowMs) {
+    if (armed) { this.lastMs = null; return false; }
+    if (this.lastMs !== null && nowMs - this.lastMs < this.retryMs) return false;
+    this.lastMs = nowMs;
+    return true;
+  }
+}
+
 export class PtsUnwrap {
   constructor() { this.hi = 0; this.last = null; }
   add(pts) {

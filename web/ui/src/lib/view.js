@@ -89,6 +89,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
     ]) },
     { title: 'Drone', rows: rows([
       ['drone_state', v(core?.drone_state ?? D)], ['drone_rcf_rx', v(core?.drone_rcf_rx ?? D)],
+      ['IDR req / served', v(spot ? 'n/a' : `${core?.idr_req ?? D} / ${core?.drone_idr_gs ?? D}`)],
     ]) },
     { title: 'Client', rows: rows([
       ['AUs/s', v(on ? ausRate : D)], ['hitches', v(`${hitches60} last 60s (total ${hitchesTotal})`)],
@@ -109,14 +110,13 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
   ];
 }
 
-// Live-state message over the video (the old page's status texts).
-export function statusText({ state, mode, ch, w, core, gateArmed, sinceStartMs, waitingMs, hiddenBanner }) {
+// Live-state message over the video. A frozen gate shows nothing here: the
+// last frame stays up while the page requests an IDR (spec 2026-09-28).
+export function statusText({ state, mode, ch, core, sinceStartMs, w, hiddenBanner }) {
   if (state !== 'live') return '';
   let primary = '';
   if (mode === 'gs' && core && core.peer_acked === false && sinceStartMs >= 10000) {
     primary = `No drone on ch ${ch} / ${w} MHz (still trying)`;
-  } else if (!gateArmed) {
-    primary = `Waiting for key frame (sent on the next rung change) — ${Math.max(0, Math.round(waitingMs / 1000))} s`;
   }
   const banner = hiddenBanner ? 'GS mode keeps flying the link while this tab is hidden.' : '';
   return [primary, banner].filter(Boolean).join('\n');

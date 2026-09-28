@@ -19,13 +19,14 @@ function fakeModuleFactory({ exitOnStop = true, failStart = false } = {}) {
     if (failStart) throw new Error('boom');
     const files = {};
     const m = {
-      opts, files, recCalls: [], localCalls: [], utf8: [], freed: [],
+      opts, files, recCalls: [], localCalls: [], utf8: [], freed: [], idrCalls: 0,
       FS: { writeFile: (p, t) => { files[p] = t; } },
       _webgs_stop() { m.stopped = true; if (exitOnStop) queueMicrotask(() => opts.onExit(0)); },
       _webgs_set_rec(on) { m.recCalls.push(on); },
       stringToNewUTF8(str) { m.utf8.push(str); return 42; },
       _free(p) { m.freed.push(p); },
       _webgs_set_local_rec(on, p) { m.localCalls.push([on, p]); },
+      _webgs_request_idr() { m.idrCalls++; },
     };
     for (const f of opts.preRun || []) f(m);
     made.push(m);
@@ -159,6 +160,22 @@ test('setRec_noop_in_spotter and when not live', async () => {
   s.setRec(true);
   assert.deepEqual(f.made[0].recCalls, []);
   assert.equal(s.snapshot.recWish, false);
+});
+
+test('requestIdr calls the core in live GS mode only', async () => {
+  const { s, f } = mk();
+  s.requestIdr();                               // idle: nothing to call
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  s.requestIdr();
+  s.requestIdr();
+  assert.equal(f.made[0].idrCalls, 2);
+});
+
+test('requestIdr is a no-op in spotter', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'spotter', ch: 136, w: 40, overlayToml: '' });
+  s.requestIdr();
+  assert.equal(f.made[0].idrCalls, 0);
 });
 
 test('external failure (worker) -> error', async () => {

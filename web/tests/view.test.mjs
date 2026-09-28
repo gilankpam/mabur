@@ -97,15 +97,24 @@ test('debug Client group shows the local recorder', () => {
   assert.equal(row(debugGroups({ ...base, connected: false, lrec: null })), '–');
 });
 
+test('debug Drone group shows IDR req / served in GS, n/a in spotter', () => {
+  const args = { connected: true, mode: 'gs', core: { mode: 'gs', idr_req: 4, drone_idr_gs: 3 },
+    rcfPct: null, ausRate: 60, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} } };
+  const row = (g) => g.find((x) => x.title === 'Drone').rows.find((r) => r.k === 'IDR req / served').v;
+  assert.equal(row(debugGroups(args)), '4 / 3');
+  assert.equal(row(debugGroups({ ...args, core: { mode: 'gs', idr_req: 1, drone_idr_gs: null } })), '1 / –');
+  assert.equal(row(debugGroups({ ...args, mode: 'spotter' })), 'n/a');
+});
+
 test('status text and link tag', () => {
   assert.equal(statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, core: { peer_acked: false },
-    gateArmed: false, sinceStartMs: 12000, waitingMs: 12000, hiddenBanner: false }),
+    sinceStartMs: 12000, hiddenBanner: false }),
     'No drone on ch 136 / 40 MHz (still trying)');
+  // A frozen gate never paints over the video (spec 2026-09-28).
   assert.equal(statusText({ state: 'live', mode: 'spotter', ch: 136, w: 40, core: {},
-    gateArmed: false, sinceStartMs: 3000, waitingMs: 3000, hiddenBanner: false }),
-    'Waiting for key frame (sent on the next rung change) — 3 s');
+    sinceStartMs: 3000, hiddenBanner: false }), '');
   assert.equal(statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, core: { peer_acked: true },
-    gateArmed: true, sinceStartMs: 3000, waitingMs: 0, hiddenBanner: true }),
+    sinceStartMs: 3000, hiddenBanner: true }),
     'GS mode keeps flying the link while this tab is hidden.');
   assert.equal(statusText({ state: 'idle' }), '');
   assert.deepEqual(linkTag({ state: 'idle', mode: 'gs', core: null }), { label: 'Disconnected', on: false });
