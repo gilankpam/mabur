@@ -64,8 +64,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_options(webgs PRIVATE
     -pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=8 -sINITIAL_MEMORY=268435456
     -sASYNCIFY -sMODULARIZE -sEXPORT_NAME=createWebGs -sEXIT_RUNTIME
-    -sENVIRONMENT=web,worker --bind -sEXPORTED_FUNCTIONS=_main,_free,_malloc,_webgs_stop,_webgs_set_rec
-    -sEXPORTED_RUNTIME_METHODS=FS
+    -sENVIRONMENT=web,worker --bind
+    -sEXPORTED_FUNCTIONS=_main,_free,_malloc,_webgs_stop,_webgs_set_rec,_webgs_set_local_rec
+    -sEXPORTED_RUNTIME_METHODS=FS,stringToNewUTF8
     "--embed-file=${MABUR_DIR}/gs/bundle/maburgs.default.toml@/maburgs.toml")
   set_target_properties(webgs PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/dist)
 
